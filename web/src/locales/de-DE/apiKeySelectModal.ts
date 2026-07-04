@@ -1,0 +1,15 @@
+export default {
+  titleSessionForbidden: 'Sitzungsschlüssel stimmt nicht überein',
+  titleManual: 'API-Schlüssel auswählen',
+  hintSessionForbidden: 'Die mit diesem Gespräch verbundene Gateway-Sitzung gehört zu einem anderen API-Schlüssel. Bitte wählen Sie den Schlüssel aus, der die Sitzung besitzt, und das System wird die letzte Nachricht automatisch erneut senden.',
+  hintManual: 'Das Gespräch erfordert einen vollständigen sk-* Schlüssel. Bitte wählen Sie einen verfügbaren Schlüssel aus der Liste unten aus.',
+  closeLabel: 'Schließen',
+  unrevealabledBadge: 'Nicht wiederherstellbar',
+  buttonLoading: 'Wird geladen…',
+  buttonUnavailable: 'Nicht verfügbar',
+  buttonCurrent: 'Aktueller Schlüssel',
+  buttonUse: 'Diesen Schlüssel verwenden',
+  emptyMessage: 'Keine verfügbaren Schlüssel. Bitte erstellen oder beantragen Sie zuerst einen API-Schlüssel.',
+  createNewKey: 'Neuen Schlüssel ausstellen',
+  goToKeyManagement: 'Zur API-Schlüsselverwaltung',
+}

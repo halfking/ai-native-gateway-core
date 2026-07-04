@@ -1,0 +1,15 @@
+export default {
+  titleSessionForbidden: 'عدم تطابق مفتاح الجلسة',
+  titleManual: 'اختر مفتاح API',
+  hintSessionForbidden: 'جلسة البوابة المرتبطة بهذه المحادثة تنتمي إلى مفتاح API آخر. يرجى تحديد المفتاح الذي يمتلك الجلسة، وسيقوم النظام تلقائيًا بإعادة إرسال الرسالة الأخيرة.',
+  hintManual: 'تتطلب المحادثة مفتاح sk-* كامل. يرجى تحديد مفتاح متاح من القائمة أدناه.',
+  closeLabel: 'إغلاق',
+  unrevealabledBadge: 'لا يمكن الاستعادة',
+  buttonLoading: 'جارٍ التحميل…',
+  buttonUnavailable: 'غير متاح',
+  buttonCurrent: 'المفتاح الحالي',
+  buttonUse: 'استخدم هذا المفتاح',
+  emptyMessage: 'لا توجد مفاتيح متاحة. يرجى إنشاء أو طلب مفتاح API أولاً.',
+  createNewKey: 'إصدار مفتاح جديد',
+  goToKeyManagement: 'الانتقال إلى إدارة مفاتيح API',
+}

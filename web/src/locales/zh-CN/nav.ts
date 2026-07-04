@@ -1,0 +1,43 @@
+// nav.ts — 侧栏导航文案，对应 config/appNav.ts 中的 NAV_PRIMARY_ITEMS / NAV_GROUPS。
+// Key 命名：nav.<group>.<item> 或 nav.primary.<item>，与 appNav labelKey 一一对应。
+export default {
+  primary: {
+    overview: '总览',
+  },
+  group: {
+    tenantPortal: '我的服务',
+    modelsRouting: '模型与路由',
+    tenantUsers: '租户用户',
+    requestsSessions: '请求与会话',
+    dataOps: '数据运维',
+    guide: '接入指南',
+    chat: '对话',
+  },
+  item: {
+    tenantModels: '标准模型',
+    tenantAccount: '我的账户',
+    tenantPricing: '套餐与充值',
+    tenantUsage: '我的消耗',
+    modelsCatalog: '模型与目录',
+    routingOverview: '路由全景',
+    routingCredentials: '凭据监控',
+    providers: '供应商',
+    pricing: '成本价格',
+    modelPricing: '定价管理',
+    freePool: '免费资源',
+    tenants: '租户管理',
+    users: '用户管理',
+    keys: 'API 密钥',
+    keyApplications: '密钥申请',
+    auditLogs: '审计日志',
+    requestLogs: '请求日志',
+    sessions: '会话列表',
+    sessionCompare: '会话对比',
+    compression: '压缩概览',
+    sessionContext: '会话上下文',
+    adminSettings: '系统设置',
+    dataLifecycle: '数据生命周期',
+    examples: '接入示例',
+    chat: '对话',
+  },
+}

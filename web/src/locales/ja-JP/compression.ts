@@ -1,0 +1,63 @@
+// Auto-translated draft (zh-TW/ja-JP) · 2026-07-02 · please review
+// compression.ts — CompressionView 文案。
+export default {
+  title: '圧縮概要',
+  refresh: '更新',
+  loading: '読み込み中…',
+  tabs: {
+    h24: '24時間',
+    d7: '7日間',
+    d30: '30日間',
+    custom: 'カスタム',
+  },
+  custom: {
+    from: '開始時刻',
+    to: '終了時刻',
+    apply: '検索',
+    sep: '～',
+  },
+  stats: {
+    totalRequests: '総リクエスト数',
+    compressed: '圧縮済み',
+    compressionRate: '圧縮率',
+    estimatedSaved: '推定節約トークン',
+  },
+  charts: {
+    strategyDistribution: '圧縮戦略の分布',
+    compressionRateTrend: '圧縮率の推移',
+    timeBucketHour: '時間別',
+    timeBucket6Hour: '6時間ごと',
+    timeBucketDay: '日別',
+    noData: '利用可能な時系列データがありません',
+    titleSuffix: '{strategy}: {count} 件 ({pct})',
+    barTitle: '{hour}: {n} リクエスト, {pct} 圧縮率',
+  },
+  table: {
+    title: 'セッション圧縮の詳細',
+    count: '全 {n} 件',
+    sessionId: 'セッションID',
+    strategy: '戦略',
+    requests: 'リクエスト数',
+    compressedMsgs: '圧縮メッセージ数',
+    compressedTokens: '圧縮トークン数',
+    msgSaved: 'メッセージ節約',
+    lastTime: '最終時刻',
+    empty: '選択した期間に圧縮セッション記録がありません',
+  },
+  pagination: {
+    previous: '前へ',
+    next: '次へ',
+    pageInfo: '{current} / {total}',
+  },
+  strategies: {
+    delta_append: 'デルタ追加',
+    sliding_window_token: 'スライディングウィンドウ(トークン)',
+    sliding_window_count: 'スライディングウィンドウ(件数)',
+    sliding_window_idle: 'スライディングウィンドウ(アイドル)',
+    mechanical_trim: '機械的トリミング',
+    memora_l1_inject: 'Memora注入',
+    llm_summary: 'LLM要約',
+    noop: '何もしない',
+    none: '未圧縮',
+  },
+}

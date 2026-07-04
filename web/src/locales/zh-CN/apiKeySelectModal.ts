@@ -1,0 +1,15 @@
+export default {
+  titleSessionForbidden: '会话密钥不匹配',
+  titleManual: '选择 API 密钥',
+  hintSessionForbidden: '此对话绑定的网关会话属于另一把 API 密钥。请选择拥有该会话的密钥，系统将自动重发上一条消息。',
+  hintManual: '对话需要完整的 sk-* 密钥。请从下方选择一把可用密钥。',
+  closeLabel: '关闭',
+  unrevealabledBadge: '无法还原',
+  buttonLoading: '加载中…',
+  buttonUnavailable: '不可选',
+  buttonCurrent: '当前密钥',
+  buttonUse: '使用此密钥',
+  emptyMessage: '没有可用的密钥。请先申请或创建 API 密钥。',
+  createNewKey: '签发新密钥',
+  goToKeyManagement: '前往 API 密钥管理',
+}

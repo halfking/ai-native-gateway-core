@@ -1,0 +1,43 @@
+// Auto-translated draft (es-ES) · 2026-07-02 · please review
+// nav.ts — Etiquetas de navegación lateral, reflejando config/appNav.ts.
+export default {
+  primary: {
+    overview: 'Resumen',
+  },
+  group: {
+    tenantPortal: 'Mis servicios',
+    modelsRouting: 'Modelos y enrutamiento',
+    tenantUsers: 'Inquilinos y usuarios',
+    requestsSessions: 'Solicitudes y sesiones',
+    dataOps: 'Operaciones de datos',
+    guide: 'Guía de integración',
+    chat: 'Chat',
+  },
+  item: {
+    tenantModels: 'Modelos estándar',
+    tenantAccount: 'Mi cuenta',
+    tenantPricing: 'Planes y recarga',
+    tenantUsage: 'Mi consumo',
+    modelsCatalog: 'Modelos y catálogo',
+    routingOverview: 'Panorama de enrutamiento',
+    routingCredentials: 'Monitor de credenciales',
+    providers: 'Proveedores',
+    pricing: 'Precios de coste',
+    modelPricing: 'Gestión de precios',
+    freePool: 'Pool gratuito',
+    tenants: 'Inquilinos',
+    users: 'Usuarios',
+    keys: 'Claves API',
+    keyApplications: 'Solicitudes de claves',
+    auditLogs: 'Registros de auditoría',
+    requestLogs: 'Registros de solicitudes',
+    sessions: 'Sesiones',
+    sessionCompare: 'Comparar sesiones',
+    compression: 'Compresión',
+    sessionContext: 'Contexto de sesión',
+    adminSettings: 'Ajustes del sistema',
+    dataLifecycle: 'Ciclo de vida de datos',
+    examples: 'Ejemplos',
+    chat: 'Chat',
+  },
+}

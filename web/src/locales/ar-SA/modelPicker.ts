@@ -1,0 +1,18 @@
+export default {
+  placeholderSelect: 'اختر النموذج…',
+  titleSelect: 'اختر النموذج',
+  loadFailed: 'فشل تحميل النماذج',
+  selectedCount: 'تم تحديد {count} نماذج',
+  editButton: 'تحرير',
+  selectButton: 'اختيار',
+  clearTitle: 'مسح',
+  closeLabel: 'إغلاق',
+  loading: 'جارٍ التحميل…',
+  sectionPopular: 'النماذج الشائعة',
+  moreButton: 'المزيد… ({count})',
+  footerHint: 'تم تحديد {count}',
+  cancelButton: 'إلغاء',
+  confirmButton: 'تأكيد',
+  backButton: 'رجوع',
+  other: 'آخر',
+}

@@ -1,0 +1,71 @@
+// Auto-translated draft (de-DE) · 2026-07-02 · please review
+// auditLog.ts — AuditLogView copy. Namespace: page / filter / table / pagination / detail / actions / errors.
+// Technical field names (target_type / before_json / after_json) remain untranslated.
+export default {
+  page: {
+    title: 'Audit-Log',
+    desc: 'Protokolliert Benutzerverwaltungs- und Authentifizierungsvorgänge. Nur für Super-Admins einsehbar.',
+    totalChip: '{n} Einträge',
+    refresh: 'Aktualisieren',
+    refreshing: 'Wird aktualisiert…',
+    emptyTitle: 'Keine Audit-Einträge',
+    emptyHint: 'Passen Sie die Filter an oder erweitern Sie den Zeitraum und versuchen Sie es erneut',
+    loading: 'Wird geladen…',
+  },
+  filter: {
+    actorLabel: 'Akteur',
+    actorPlaceholder: 'Unscharfe Suche nach Benutzername',
+    actorAria: 'Akteur-Filter',
+    actionLabel: 'Aktion',
+    actionPlaceholder: 'z. B. user.* oder auth.*',
+    actionAria: 'Aktion-Filter',
+    fromLabel: 'Von',
+    fromAria: 'Startzeit',
+    toLabel: 'Bis',
+    toAria: 'Endzeit',
+    query: 'Suchen',
+    reset: 'Zurücksetzen',
+  },
+  table: {
+    headers: {
+      time: 'Zeit',
+      actor: 'Akteur',
+      action: 'Aktion',
+      target: 'Ziel',
+      details: 'Details',
+    },
+  },
+  pagination: {
+    total: '{n} Einträge',
+    pageOf: '· Seite {page} / {total}',
+    perPage: 'Pro Seite',
+    previous: 'Zurück',
+    next: 'Weiter',
+    dash: '—',
+  },
+  detail: {
+    titleWithId: 'Audit-Details #{id}',
+    close: 'Schließen',
+    metaTime: 'Zeit',
+    metaActor: 'Akteur',
+    metaAction: 'Aktion',
+    metaTarget: 'Ziel',
+    beforeTitle: 'Vorher',
+    afterTitle: 'Nachher',
+    noExtra: 'Keine weiteren Details',
+  },
+  actions: {
+    'user.create': 'Benutzer erstellen',
+    'user.update': 'Benutzer aktualisieren',
+    'user.delete': 'Benutzer löschen',
+    'user.reset_password': 'Passwort zurücksetzen',
+    'user.change_password': 'Passwort ändern',
+    'auth.login': 'Anmeldung',
+    'auth.login_failed': 'Anmeldung fehlgeschlagen',
+    'auth.logout': 'Abmeldung',
+    'auth.rate_limited': 'Ratenbegrenzung',
+  },
+  errors: {
+    loadFailed: 'Laden fehlgeschlagen',
+  },
+}

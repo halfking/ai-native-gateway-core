@@ -1,0 +1,63 @@
+// Auto-translated draft (zh-TW/ja-JP) · 2026-07-02 · please review
+// compression.ts — CompressionView 文案。
+export default {
+  title: '壓縮概覽',
+  refresh: '重新整理',
+  loading: '載入中…',
+  tabs: {
+    h24: '24小時',
+    d7: '7天',
+    d30: '30天',
+    custom: '自訂',
+  },
+  custom: {
+    from: '開始時間',
+    to: '結束時間',
+    apply: '查詢',
+    sep: '至',
+  },
+  stats: {
+    totalRequests: '總請求數',
+    compressed: '已壓縮',
+    compressionRate: '壓縮率',
+    estimatedSaved: '預估節省 Token',
+  },
+  charts: {
+    strategyDistribution: '壓縮策略分佈',
+    compressionRateTrend: '壓縮率趨勢',
+    timeBucketHour: '依小時',
+    timeBucket6Hour: '每6小時',
+    timeBucketDay: '依天',
+    noData: '暫無可用的時間序列資料',
+    titleSuffix: '{strategy}: {count} 條 ({pct})',
+    barTitle: '{hour}: {n} 請求, {pct} 壓縮率',
+  },
+  table: {
+    title: '會話壓縮詳情',
+    count: '共 {n} 條',
+    sessionId: '會話ID',
+    strategy: '策略',
+    requests: '請求數',
+    compressedMsgs: '壓縮訊息數',
+    compressedTokens: '壓縮Token數',
+    msgSaved: '訊息節省',
+    lastTime: '最後時間',
+    empty: '所選時間段內沒有壓縮會話紀錄',
+  },
+  pagination: {
+    previous: '上一頁',
+    next: '下一頁',
+    pageInfo: '{current} / {total}',
+  },
+  strategies: {
+    delta_append: '增量拼接',
+    sliding_window_token: '滑動視窗(Token)',
+    sliding_window_count: '滑動視窗(條數)',
+    sliding_window_idle: '滑動視窗(閒置)',
+    mechanical_trim: '機械裁剪',
+    memora_l1_inject: 'Memora注入',
+    llm_summary: 'LLM總結',
+    noop: '空操作',
+    none: '未壓縮',
+  },
+}

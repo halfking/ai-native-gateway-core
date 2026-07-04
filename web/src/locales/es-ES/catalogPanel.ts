@@ -1,0 +1,15 @@
+export default {
+  tierAll: 'Todos',
+  tierLocal: 'Local',
+  loadFailed: 'Error al cargar',
+  tierLabel: 'Nivel',
+  searchLabel: 'Buscar',
+  providerCount: '{count} proveedores',
+  noMatchingProviders: 'No hay proveedores que coincidan con los criterios de búsqueda actuales',
+  searchPlaceholder: 'Buscar proveedores…',
+  loading: 'Cargando…',
+  domestic: 'Nacional',
+  modelCount: '{count} modelos',
+  documentation: 'Documentación →',
+  noResults: 'Sin resultados',
+}

@@ -1,0 +1,15 @@
+export default {
+  tierAll: 'الكل',
+  tierLocal: 'محلي',
+  loadFailed: 'فشل التحميل',
+  tierLabel: 'المستوى',
+  searchLabel: 'بحث',
+  providerCount: '{count} مزود',
+  noMatchingProviders: 'لا يوجد مزودون مطابقون لمعايير البحث الحالية',
+  searchPlaceholder: 'البحث عن المزودين…',
+  loading: 'جارٍ التحميل…',
+  domestic: 'محلي',
+  modelCount: '{count} نموذج',
+  documentation: 'التوثيق ←',
+  noResults: 'لا توجد نتائج',
+}

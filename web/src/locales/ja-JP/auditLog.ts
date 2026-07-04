@@ -1,0 +1,71 @@
+// Auto-translated draft (zh-TW/ja-JP) · 2026-07-02 · please review
+// auditLog.ts — AuditLogView 文案。名前空間：page / filter / table / pagination / detail / actions / errors。
+// 技術用語は翻訳しない：target_type / before_json / after_json。
+export default {
+  page: {
+    title: '監査ログ',
+    desc: 'ユーザー管理と認証関連の操作を記録します。スーパー管理者のみ閲覧可能です。',
+    totalChip: '全 {n} 件',
+    refresh: '更新',
+    refreshing: '更新中…',
+    emptyTitle: '監査記録がありません',
+    emptyHint: 'フィルター条件を調整するか、期間を広げて再試行してください',
+    loading: '読み込み中…',
+  },
+  filter: {
+    actorLabel: '操作者',
+    actorPlaceholder: 'ユーザー名をあいまい検索',
+    actorAria: '操作者フィルター',
+    actionLabel: 'アクション',
+    actionPlaceholder: '例: user.* または auth.*',
+    actionAria: 'アクションフィルター',
+    fromLabel: '開始時刻',
+    fromAria: '開始時刻',
+    toLabel: '終了時刻',
+    toAria: '終了時刻',
+    query: '検索',
+    reset: 'リセット',
+  },
+  table: {
+    headers: {
+      time: '時刻',
+      actor: '操作者',
+      action: 'アクション',
+      target: '対象',
+      details: '詳細',
+    },
+  },
+  pagination: {
+    total: '全 {n} 件',
+    pageOf: '· {page} / {total} ページ',
+    perPage: 'ページあたり',
+    previous: '前へ',
+    next: '次へ',
+    dash: '—',
+  },
+  detail: {
+    titleWithId: '監査詳細 #{id}',
+    close: '閉じる',
+    metaTime: '時刻',
+    metaActor: '操作者',
+    metaAction: 'アクション',
+    metaTarget: '対象',
+    beforeTitle: '変更前',
+    afterTitle: '変更後',
+    noExtra: '追加情報なし',
+  },
+  actions: {
+    'user.create': 'ユーザー作成',
+    'user.update': 'ユーザー更新',
+    'user.delete': 'ユーザー削除',
+    'user.reset_password': 'パスワードリセット',
+    'user.change_password': 'パスワード変更',
+    'auth.login': 'ログイン',
+    'auth.login_failed': 'ログイン失敗',
+    'auth.logout': 'ログアウト',
+    'auth.rate_limited': 'レート制限',
+  },
+  errors: {
+    loadFailed: '読み込み失敗',
+  },
+}

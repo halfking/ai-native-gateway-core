@@ -1,0 +1,15 @@
+export default {
+  tierAll: '全部',
+  tierLocal: '本地',
+  loadFailed: '加载失败',
+  tierLabel: '层级',
+  searchLabel: '搜索',
+  providerCount: '{count} 个提供商',
+  noMatchingProviders: '当前搜索条件下无匹配提供商',
+  searchPlaceholder: '搜索提供商…',
+  loading: '加载中…',
+  domestic: '国内',
+  modelCount: '{count} 个模型',
+  documentation: '文档 →',
+  noResults: '无匹配结果',
+}
