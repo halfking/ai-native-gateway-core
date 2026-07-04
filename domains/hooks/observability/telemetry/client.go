@@ -407,8 +407,17 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 	defer cancel()
 	rawModelsJSON, _ := json.Marshal(coalesceRawModels(entry.ResolutionRawModels))
 	traceJSON := coalesceTrace(entry.DecisionTrace)
+	// INSERT directly targets routing_decision_log_default (the canonical
+	// write target per the 2026-07 data-lifecycle architecture). Monthly
+	// partitions are pre-created for current+next month by
+	// bg/partition_manager.go ensure_routing_decision_log_partition(), but
+	// INSERTs always land in *_default and a separate background migrator
+	// moves historical rows into the matching month partition. Bypassing
+	// the parent's auto-routing ensures writes never accidentally land in
+	// a non-default partition (which would block subsequent UPDATEs once
+	// the partition is converted to columnar).
 	_, err := c.dbPool.Exec(ctx, `
-		INSERT INTO routing_decision_log (
+		INSERT INTO routing_decision_log_default (
 			ts, request_id, idempotency_key, tenant_id, api_key_id,
 			model, chosen_credential_id, chosen_provider_id, tier,
 			candidates_tried, latency_ms, success, error_class,
@@ -513,8 +522,14 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
+	// INSERT directly targets usage_ledger_default (the canonical write
+	// target per the 2026-07 data-lifecycle architecture). UPDATE-heavy
+	// operations (cost/tokens/latency enrichment after streaming) require
+	// a heap-storage row that supports UPDATE in place. *_default stays
+	// heap; the matching month partition (after migration) is also heap
+	// (columnar cannot hold UPDATE-heavy data).
 	_, err = tx.Exec(ctx, `
-		INSERT INTO usage_ledger (
+		INSERT INTO usage_ledger_default (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, credential_id, provider_id, canonical_id,
 			raw_model_name, prompt_tokens, completion_tokens,
@@ -550,8 +565,21 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if err != nil {
 		return err
 	}
+	// INSERT directly targets request_logs_default (the canonical write
+	// target per the 2026-07 data-lifecycle architecture). All
+	// INSERT/UPDATE/DELETE on request_logs must go through *_default —
+	// the parent's auto-routing is intentionally bypassed so writes never
+	// land in a non-default partition (which would block subsequent
+	// UPDATE/DELETE once that partition is converted to columnar storage
+	// by the background migrator).
+	//
+	// The ON CONFLICT (request_id, ts) clause catches same-row upserts
+	// from race conditions (e.g. async retry landing on the same
+	// request_id). The default partition's UNIQUE constraint covers the
+	// conflict target because we only ever write to *_default — migrated
+	// rows in monthly partitions are exclusive of the default partition.
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs (
+		INSERT INTO request_logs_default (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, client_model, outbound_model,
 			credential_id, provider_id, canonical_id,
@@ -841,8 +869,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	defer tx.Rollback(ctx)
 
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
+		// UPDATE directly targets usage_ledger_default — UPDATE-heavy
+		// operations require heap storage with row-level UPDATE support.
+		// *_default stays heap regardless of how monthly partitions are
+		// (re)configured.
 		_, err = tx.Exec(ctx, `
-			UPDATE usage_ledger
+			UPDATE usage_ledger_default
 			   SET prompt_tokens = COALESCE($2, prompt_tokens),
 			       completion_tokens = COALESCE($3, completion_tokens),
 			       total_tokens = COALESCE($4, total_tokens),
@@ -869,8 +901,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			return err
 		}
 	} else {
+		// UPDATE directly targets usage_ledger_default.
 		_, err = tx.Exec(ctx, `
-			UPDATE usage_ledger
+			UPDATE usage_ledger_default
 			   SET latency_ms = COALESCE($2, latency_ms),
 			       success = COALESCE($3, success),
 			       error_kind = COALESCE($4, error_kind),
@@ -889,14 +922,24 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	}
 
 	tag, err := tx.Exec(ctx, `
+		-- CTE selects the latest row from the canonical write target
+		-- (request_logs_default). Once data is migrated into a monthly
+		-- partition by the background migrator, that row leaves
+		-- *_default and is no longer editable in-place (columnar /
+		-- long-archived partitions do not support UPDATE). That is the
+		-- intended behavior: late updates after migration are silently
+		-- dropped, which is exactly what the data-lifecycle architecture
+		-- promises.
 		WITH latest AS (
 			SELECT id, ts
-			FROM request_logs
+			FROM request_logs_default
 			WHERE request_id = $1
 			ORDER BY ts DESC
 			LIMIT 1
 		)
-		UPDATE request_logs
+		-- UPDATE directly targets request_logs_default — the canonical
+		-- write target per the 2026-07 data-lifecycle architecture.
+		UPDATE request_logs_default
 		   SET client_model = COALESCE($2, client_model),
 		       outbound_model = COALESCE($3, outbound_model),
 		       credential_id = COALESCE($4, credential_id),

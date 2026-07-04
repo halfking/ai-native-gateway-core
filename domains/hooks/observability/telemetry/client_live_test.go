@@ -164,7 +164,10 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 
 	// Cleanup — best-effort, ignore errors (the row is keyed by
 	// a timestamped request_id that no real request would use).
-	_, _ = pool.Exec(ctx, `DELETE FROM request_logs WHERE request_id = $1`, entry.RequestID)
+	// DELETE targets request_logs_default — the canonical write target
+	// per the 2026-07 data-lifecycle architecture (all INSERT/UPDATE/DELETE
+	// must go through the *_default partition, never the parent).
+	_, _ = pool.Exec(ctx, `DELETE FROM request_logs_default WHERE request_id = $1`, entry.RequestID)
 
 	// Verify the new column write + also a sanity check that
 	// quality_flags and quality_fix_actions are written as

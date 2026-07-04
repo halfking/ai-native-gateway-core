@@ -612,8 +612,12 @@ func (s *Service) writeLedgerWithBalance(ctx context.Context, tx pgx.Tx, tenantI
 	if pool != "" {
 		poolVal = &pool
 	}
+	// INSERT directly targets credit_ledger_default (the canonical write
+	// target per the 2026-07 data-lifecycle architecture — never the
+	// parent table, which would let PG auto-route rows into monthly
+	// partitions that cannot be UPDATEd/DELETEd later).
 	_, err := tx.Exec(ctx, `
-		INSERT INTO credit_ledger (tenant_id, entry_type, amount, balance_after, pool, ref_type, ref_id, note)
+		INSERT INTO credit_ledger_default (tenant_id, entry_type, amount, balance_after, pool, ref_type, ref_id, note)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, tenantID, entryType, amount, balanceAfter, poolVal, refTypeVal, refIDVal, note)
 	return err
