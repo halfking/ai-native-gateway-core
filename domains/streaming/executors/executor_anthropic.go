@@ -397,6 +397,11 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		}
 		// Override model to outbound model (matching existing behavior)
 		irReq.Model = resolveOutboundModel(params, cand)
+		// Pass target provider catalog code to IR so the serializer can handle
+		// provider-specific protocol variants (e.g. MiniMax uses tool_call_id
+		// instead of the Anthropic-standard tool_use_id for tool_result blocks).
+		// Fixes MiniMax-M3 tool_call_id not found (2013) bug.
+		irReq.TargetProvider = cand.CatalogCode
 		bodyBytes, err := e.IR.SerializeAnthropic(irReq)
 		if err != nil {
 			return nil, fmt.Errorf("ir serialize anthropic: %w", err)
@@ -830,7 +835,8 @@ func (e *Executor) executeAnthropicOnce(
 			}
 		} else if errKind == errorsx.KindRateLimit {
 			e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
-		} else if errKind == errorsx.KindConcurrent {			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, errorsx.KindConcurrent,
+		} else if errKind == errorsx.KindConcurrent {
+			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, errorsx.KindConcurrent,
 				fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
 			e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
 		}
@@ -911,7 +917,8 @@ func (e *Executor) executeAnthropicOnce(
 			isResumable := outcome.Resumable && outcome.ChunkCount < e.StreamRetryThreshold
 			isBenignEOF := outcome.Reason == "eof_without_done" && outcome.ChunkCount > 0
 
-			if !isBenignEOF && isResumable {			} else if !isBenignEOF {
+			if !isBenignEOF && isResumable {
+			} else if !isBenignEOF {
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
 			}
 			return &ExecuteResult{
