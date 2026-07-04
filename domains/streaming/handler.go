@@ -2881,6 +2881,9 @@ func (h *ChatHandler) recordInitialRequestLog(
 	if isStream {
 		zero := 0
 		reqLog.StreamChunkCount = &zero
+		// 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
+		// Initialize to 0 for in-flight requests to prevent INSERT violations.
+		reqLog.StreamChunksSent = &zero
 	}
 	applyAutoRouteFields(reqLog, autoCtx)
 	if h.requestLogHook != nil {
