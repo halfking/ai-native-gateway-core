@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -370,5 +371,89 @@ func TestPoolAcquireReleaseRespectsCapacity_Concurrent(t *testing.T) {
 	// With concurrent goroutines, some may acquire after others release
 	if acquiredCount.Load() == 0 {
 		t.Error("expected at least 1 acquisition")
+	}
+}
+
+// 2026-07-04 V15 fix: Dead pool should recover via 3 successful probes.
+// Without the fix, the pool stays Dead forever (terminal state bug).
+func TestPoolDeadRecovery(t *testing.T) {
+	key := PoolKey{IdentityHash: "test", ProviderID: 1, CredentialID: 1}
+	p := NewPool(key, "", nil)
+	p.gracePeriod = 50 * time.Millisecond
+
+	// Drive to Dead
+	for i := 0; i < deadThreshold; i++ {
+		p.RecordFailure()
+	}
+	if p.State() != PoolDraining {
+		t.Fatalf("expected PoolDraining after failures, got %v", p.State())
+	}
+	time.Sleep(100 * time.Millisecond)
+	p.checkDrainingGracePeriod()
+	if p.State() != PoolDead {
+		t.Fatalf("expected PoolDead after grace period, got %v", p.State())
+	}
+
+	// Acquire should still fail
+	if err := p.Acquire(context.Background()); err != ErrPoolClosed {
+		t.Errorf("acquire on dead pool: want ErrPoolClosed, got %v", err)
+	}
+
+	// healthLoop probes succeed 3 times → should revive
+	for i := 0; i < successThreshold; i++ {
+		p.RecordSuccess()
+	}
+	if p.State() != PoolActive {
+		t.Fatalf("expected PoolActive after success probes, got %v", p.State())
+	}
+
+	// Acquire should succeed again
+	if err := p.Acquire(context.Background()); err != nil {
+		t.Errorf("acquire after revive: want nil, got %v", err)
+	}
+	p.Release()
+}
+
+// 2026-07-04 V15 fix: Dead → Draining transition (revival path).
+func TestPoolDeadRevivedByProbeFailure(t *testing.T) {
+	key := PoolKey{IdentityHash: "test", ProviderID: 1, CredentialID: 1}
+	p := NewPool(key, "", nil)
+	p.gracePeriod = 50 * time.Millisecond
+
+	for i := 0; i < deadThreshold; i++ {
+		p.RecordFailure()
+	}
+	time.Sleep(100 * time.Millisecond)
+	p.checkDrainingGracePeriod()
+	if p.State() != PoolDead {
+		t.Fatalf("setup: expected PoolDead, got %v", p.State())
+	}
+
+	// New failures should wake the pool back up to Draining
+	for i := 0; i < deadThreshold; i++ {
+		p.RecordFailure()
+	}
+
+	if p.State() == PoolDead {
+		t.Errorf("expected pool revived to Draining after new failures, still Dead")
+	}
+	if p.State() != PoolDraining {
+		t.Errorf("expected PoolDraining after failures from Dead, got %v", p.State())
+	}
+}
+
+// 2026-07-04 V16 fix: Acquire racing with Close should return ErrPoolClosed,
+// not silently succeed and use a closed transport.
+func TestPoolAcquireClosedRace(t *testing.T) {
+	key := PoolKey{IdentityHash: "race-test", ProviderID: 1, CredentialID: 1}
+	p := NewPool(key, "", nil)
+
+	// Close the pool
+	p.Close()
+
+	// Attempt to acquire after close
+	err := p.Acquire(context.Background())
+	if !errors.Is(err, ErrPoolClosed) {
+		t.Errorf("expected ErrPoolClosed after Close, got %v", err)
 	}
 }
