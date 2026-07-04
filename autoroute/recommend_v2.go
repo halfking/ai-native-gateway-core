@@ -37,7 +37,16 @@ func (idx *Index) RecommendV2(
 	// Step 1: hard filter - keep only currently available candidates.
 	filtered, err := idx.filterCurrentlyAvailable(ctx, pool, availabilityFilter, all)
 	if err != nil {
+		// 2026-07-04 V17 fix: do NOT silently fall back to snapshot. The
+		// snapshot may be up to 5min stale (Refresh interval) and would
+		// route to credentials that have since been disabled. Surface
+		// the failure to: (a) metrics — so operators see "live filter
+		// failed" spikes; (b) a degraded log; (c) a counter that
+		// thresholds-trigger an alert after sustained failures.
+		recordLiveFilterFailure(pool != nil, err)
 		filtered = fallbackSnapshotAvailability(all)
+	} else {
+		recordLiveFilterSuccess(len(all) - len(filtered))
 	}
 
 	available := make([]Candidate, 0, len(filtered))
