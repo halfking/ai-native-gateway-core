@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import {
   listModels, listTags, patchModelTags, resetModelTags,
   listModelFamilies, createModel, getModel, updateModel,
@@ -18,6 +19,8 @@ import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useDynamicNamespaceFilters } from '../composables/useDynamicNamespaceFilters'
 import { isReadOnlyMode, isPlatformOpsView } from '../store'
 import { normalizeTags, resolveVendor, matchesModelCatalogSearch } from '../utils/modelCatalog'
+
+const { t } = useI18n()
 
 type PageTab = 'canonical' | 'catalog'
 
@@ -228,7 +231,7 @@ async function loadModels() {
     const r = await listModels({ status: statusFilter.value || undefined })
     models.value = r.items
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('models.error.loadFailed')
   } finally {
     loading.value = false
   }
@@ -323,7 +326,7 @@ async function saveTags(m: ModelCanonical) {
     editingId.value = null
     await loadTags()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '保存失败'
+    error.value = e instanceof Error ? e.message : t('models.error.saveFailed')
   }
 }
 
@@ -335,7 +338,7 @@ async function doReset(m: ModelCanonical) {
     if (editingId.value === m.id) editTags.value = [...updated.tags]
     await loadTags()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '重置失败'
+    error.value = e instanceof Error ? e.message : t('models.error.resetFailed')
   }
 }
 
@@ -358,7 +361,7 @@ async function openDetail(m: ModelCanonical) {
     }
     newAlias.value = { raw_name: '', surface: '', quantization: '', notes: '' }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载详情失败'
+    error.value = e instanceof Error ? e.message : t('models.error.loadDetailFailed')
   } finally {
     detailLoading.value = false
   }

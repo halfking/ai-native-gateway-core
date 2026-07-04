@@ -116,11 +116,11 @@ const tenantLabel = computed(() => {
   const isDefault = isDefaultTenant()
   
   if (isAdmin && isDefault) {
-    return '整站数据'
+    return t('requests.defaultTenantOptions.whole')
   } else if (isDefault) {
-    return '默认租户'
+    return t('requests.defaultTenantOptions.defaultTenant')
   } else {
-    return `租户: ${tenantId}`
+    return t('requests.defaultTenantOptions.tenantPrefix', { id: tenantId })
   }
 })
 
@@ -154,29 +154,29 @@ function onModelFilterChange(name: string | string[]) {
 }
 
 const ERROR_KIND_LABELS: Record<string, string> = {
-  model_not_found: '模型未找到',
-  provider_error: '供应商错误',
-  auth_error: '认证失败',
-  missing_key: '无Key',
-  invalid_key: 'Key无效',
-  auth_unavailable: '鉴权不可用',
-  body_read_error: 'Body读取失败',
-  body_too_large: 'Body过大',
-  json_parse_error: 'JSON无效',
-  rate_limit: '供应商限流',
-  rate_limit_exceeded: '网关RPM限流',
-  key_throttled: '密钥节流',
-  budget_exhausted: '预算耗尽',
-  insufficient_credits: '积分不足',
-  timeout: '超时',
-  canceled: '已取消',
-  upstream_error: '上游错误',
-  stream_error: '流中断',
-  no_candidate: '无可用路由',
-  session_forbidden: '会话无权',
-  executor_unavailable: '执行器不可用',
-  empty_response: '模型未返回任何内容',
-  empty_upstream_response: '模型未返回任何内容',
+  model_not_found: t('requests.errorKind.model_not_found'),
+  provider_error: t('requests.errorKind.provider_error'),
+  auth_error: t('requests.errorKind.auth_error'),
+  missing_key: t('requests.errorKind.missing_key'),
+  invalid_key: t('requests.errorKind.invalid_key'),
+  auth_unavailable: t('requests.errorKind.auth_unavailable'),
+  body_read_error: t('requests.errorKind.body_read_error'),
+  body_too_large: t('requests.errorKind.body_too_large'),
+  json_parse_error: t('requests.errorKind.json_parse_error'),
+  rate_limit: t('requests.errorKind.rate_limit'),
+  rate_limit_exceeded: t('requests.errorKind.rate_limit_exceeded'),
+  key_throttled: t('requests.errorKind.key_throttled'),
+  budget_exhausted: t('requests.errorKind.budget_exhausted'),
+  insufficient_credits: t('requests.errorKind.insufficient_credits'),
+  timeout: t('requests.errorKind.timeout'),
+  canceled: t('requests.errorKind.canceled'),
+  upstream_error: t('requests.errorKind.upstream_error'),
+  stream_error: t('requests.errorKind.stream_error'),
+  no_candidate: t('requests.errorKind.no_candidate'),
+  session_forbidden: t('requests.errorKind.session_forbidden'),
+  executor_unavailable: t('requests.errorKind.executor_unavailable'),
+  empty_response: t('requests.errorKind.unknown_failure'),
+  empty_upstream_response: t('requests.errorKind.unknown_failure'),
 }
 
 // 2026-06-19 T-NEW-7: labels for actual gateway failure codes (the only
@@ -185,29 +185,29 @@ const ERROR_KIND_LABELS: Record<string, string> = {
 // client_cancel are kept as "successful with caveat" in the status
 // column; only the "真" gateway errors get a Chinese label here.
 const FAILURE_DETAIL_LABELS: Record<string, string> = {
-  gw_rpm_exceeded: '网关RPM限流',
-  gw_concurrent_exceeded: '网关并发限流',
-  gw_tpm_exceeded: '网关TPM限流',
-  gw_key_throttled: '密钥节流',
-  gw_budget_exhausted: '预算耗尽',
-  gw_no_candidate: '无可用路由',
-  gw_session_forbidden: '会话无权',
-  eof_without_done: '上游EOF无[DONE]',
-  stream_timeout: '流超时',
-  client_cancel: '客户端取消',
-  client_disconnected: '客户端断连',
-  no_deltas: '无内容块',
-  invalid_first_chunk: '首块无效',
-  invalid_json: 'JSON无效',
-  upstream_5xx: '上游5xx',
-  upstream_4xx: '上游4xx',
-  unexpected_status: '状态异常',
-  connection_reset: '连接重置',
-  write_failed: '写入失败',
-  hangup: '远端挂断',
-  body_too_large: 'Body过大',
-  eof_mid_tool_call: '工具调用中断',
-  first_byte_timeout: '首字节超时',
+  gw_rpm_exceeded: t('requests.gwErrorKind.gw_rpm_exceeded'),
+  gw_concurrent_exceeded: t('requests.gwErrorKind.gw_concurrent_exceeded'),
+  gw_tpm_exceeded: t('requests.gwErrorKind.gw_tpm_exceeded'),
+  gw_key_throttled: t('requests.gwErrorKind.gw_key_throttled'),
+  gw_budget_exhausted: t('requests.gwErrorKind.gw_budget_exhausted'),
+  gw_no_candidate: t('requests.gwErrorKind.gw_no_candidate'),
+  gw_session_forbidden: t('requests.gwErrorKind.gw_session_forbidden'),
+  eof_without_done: t('requests.gwErrorKind.eof_without_done'),
+  stream_timeout: t('requests.gwErrorKind.stream_timeout'),
+  client_cancel: t('requests.gwErrorKind.client_cancel'),
+  client_disconnected: t('requests.gwErrorKind.client_disconnected'),
+  no_deltas: t('requests.gwErrorKind.no_deltas'),
+  invalid_first_chunk: t('requests.gwErrorKind.invalid_first_chunk'),
+  invalid_json: t('requests.gwErrorKind.invalid_json'),
+  upstream_5xx: t('requests.gwErrorKind.upstream_5xx'),
+  upstream_4xx: t('requests.gwErrorKind.upstream_4xx'),
+  unexpected_status: t('requests.gwErrorKind.unexpected_status'),
+  connection_reset: t('requests.gwErrorKind.connection_reset'),
+  write_failed: t('requests.gwErrorKind.write_failed'),
+  hangup: t('requests.gwErrorKind.hangup'),
+  body_too_large: t('requests.gwErrorKind.body_too_large'),
+  eof_mid_tool_call: t('requests.gwErrorKind.eof_mid_tool_call'),
+  first_byte_timeout: t('requests.gwErrorKind.first_byte_timeout'),
 }
 
 // 2026-06-19 T-NEW-7: labels for the SOLE home of the upstream

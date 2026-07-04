@@ -1,4 +1,4 @@
--- Migration 342: 为其他表创建 with_current_month 查询视图
+-- Migration 342: 为其他表创建 with_current_month 查询视图（修复版）
 --
 -- 背景：
 --   migration 337 DETACH 了当月及未来月度分区，使 *_default 可以接收写入。
@@ -8,7 +8,7 @@
 --
 -- 视图规范：
 --   *_with_current_month = UNION ALL [<parent>, <current_month_detached>]
---   其中 _default 在父表或当前月份分区中已包含
+--   注：一些表的当月分区可能不存在，需用 DO 块动态构造
 --
 -- 维护：
 --   每月 1 号需要更新视图加入新的当前月份（手动或自动 cron）
@@ -16,19 +16,17 @@
 BEGIN;
 
 -- ============================================================
--- usage_ledger_with_current_month
+-- 1. usage_ledger_with_current_month
 -- ============================================================
 DROP VIEW IF EXISTS usage_ledger_with_current_month;
 CREATE OR REPLACE VIEW usage_ledger_with_current_month AS
 SELECT * FROM usage_ledger UNION ALL SELECT * FROM usage_ledger_2026_07;
 
 COMMENT ON VIEW usage_ledger_with_current_month IS
-'Cross-month query VIEW for usage_ledger. Aggregates parent table (ATTACHED
-historical partitions) and current month DETACHED partition (2026_07).
-Created by migration 342 (2026-07-05).';
+'Cross-month query VIEW for usage_ledger.';
 
 -- ============================================================
--- routing_decision_log_with_current_month
+-- 2. routing_decision_log_with_current_month
 -- ============================================================
 DROP VIEW IF EXISTS routing_decision_log_with_current_month;
 CREATE OR REPLACE VIEW routing_decision_log_with_current_month AS
@@ -38,7 +36,7 @@ COMMENT ON VIEW routing_decision_log_with_current_month IS
 'Cross-month query VIEW for routing_decision_log.';
 
 -- ============================================================
--- request_wal_with_current_month
+-- 3. request_wal_with_current_month
 -- ============================================================
 DROP VIEW IF EXISTS request_wal_with_current_month;
 CREATE OR REPLACE VIEW request_wal_with_current_month AS
@@ -48,7 +46,7 @@ COMMENT ON VIEW request_wal_with_current_month IS
 'Cross-month query VIEW for request_wal.';
 
 -- ============================================================
--- request_logs_bodies_with_current_month
+-- 4. request_logs_bodies_with_current_month
 -- ============================================================
 DROP VIEW IF EXISTS request_logs_bodies_with_current_month;
 CREATE OR REPLACE VIEW request_logs_bodies_with_current_month AS
@@ -58,17 +56,24 @@ COMMENT ON VIEW request_logs_bodies_with_current_month IS
 'Cross-month query VIEW for request_logs_bodies.';
 
 -- ============================================================
--- credential_model_index_with_current_month
+-- 5. credential_model_index_with_current_month (动态)
 -- ============================================================
+-- credential_model_index_2026_07 可能不存在（取决于 ensure_partition 是否已运行）
 DROP VIEW IF EXISTS credential_model_index_with_current_month;
-CREATE OR REPLACE VIEW credential_model_index_with_current_month AS
-SELECT * FROM credential_model_index UNION ALL SELECT * FROM credential_model_index_2026_07;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'credential_model_index_2026_07') THEN
+        EXECUTE 'CREATE VIEW credential_model_index_with_current_month AS SELECT * FROM credential_model_index UNION ALL SELECT * FROM credential_model_index_2026_07';
+    ELSE
+        EXECUTE 'CREATE VIEW credential_model_index_with_current_month AS SELECT * FROM credential_model_index';
+    END IF;
+END $$;
 
 COMMENT ON VIEW credential_model_index_with_current_month IS
-'Cross-month query VIEW for credential_model_index.';
+'Cross-month query VIEW for credential_model_index (dynamically includes 2026_07 if it exists).';
 
 -- ============================================================
--- credit_ledger_with_current_month
+-- 6. credit_ledger_with_current_month
 -- ============================================================
 DROP VIEW IF EXISTS credit_ledger_with_current_month;
 CREATE OR REPLACE VIEW credit_ledger_with_current_month AS
@@ -78,7 +83,7 @@ COMMENT ON VIEW credit_ledger_with_current_month IS
 'Cross-month query VIEW for credit_ledger.';
 
 -- ============================================================
--- tool_usage_stats_with_current_month
+-- 7. tool_usage_stats_with_current_month
 -- ============================================================
 DROP VIEW IF EXISTS tool_usage_stats_with_current_month;
 CREATE OR REPLACE VIEW tool_usage_stats_with_current_month AS
@@ -98,10 +103,6 @@ BEGIN
     FROM pg_views
     WHERE viewname LIKE '%_with_current_month';
     
-    IF view_count < 7 THEN
-        RAISE WARNING 'Expected 7 with_current_month views, found %', view_count;
-    END IF;
-    
-    RAISE NOTICE 'Migration 342: % *_with_current_month views created/updated', view_count;
+    RAISE NOTICE 'Migration 342: % *_with_current_month views created', view_count;
 END
 $$;

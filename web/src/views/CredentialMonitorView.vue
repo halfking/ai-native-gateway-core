@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, setManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision, type CredentialMonitorMeta } from '../api'
 import { Chart, registerables } from 'chart.js'
 import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
@@ -7,6 +8,8 @@ import SegTabs, { type SegTab } from '../components/SegTabs.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 
 Chart.register(...registerables)
+
+const { t } = useI18n()
 
 const loading = ref(false)
 const detailLoading = ref(false)
@@ -21,15 +24,12 @@ const windowEntries = ref<CallEntry[]>([])
 const windowSource = ref<'redis' | 'request_logs'>('redis')
 const windowLoading = ref(false)
 
-// ── 2026-06-24: models+monitoring 合并 → 三态布局 (split / list-full / monitor-full) ────
-// 3 tab = 概览 / 模型 / 历史. 模型 tab 内做左列模型表 / 右列监控的连动,中间按钮切换.
 type DetailTab = 'overview' | 'models' | 'history'
 const detailActiveTab = ref<DetailTab>('overview')
-// ── 2026-06-25: 模型 tab 名称精简 ("模型可用性 + 监控" → "模型") ────
 const detailTabs: SegTab[] = [
-  { value: 'overview', label: '概览' },
-  { value: 'models',   label: '模型' },
-  { value: 'history',  label: '历史' },
+  { value: 'overview', label: t('credentialMonitor.drawer.tab.overview') },
+  { value: 'models',   label: t('credentialMonitor.drawer.tab.models') },
+  { value: 'history',  label: t('credentialMonitor.drawer.tab.requests') },
 ]
 // 打开 detail 时默认到第一个 tab
 watch(selectedCred, (newVal) => {
@@ -44,7 +44,7 @@ function loadStoredLayout(): LayoutMode {
   try {
     const v = window.localStorage.getItem(LAYOUT_STORAGE_KEY)
     if (v === 'split' || v === 'list-full' || v === 'monitor-full') return v
-  } catch { /* localStorage 不可用时静默回退 */ }
+  } catch { /* ignore */ }
   return 'split'
 }
 const modelsLayout = ref<LayoutMode>(loadStoredLayout())
@@ -208,7 +208,7 @@ async function submitClearDisabled() {
     clearDisabledDialogOpen.value = false
     await refreshDetailDrawer()
   } catch (e) {
-    alert('清除失败: ' + (e instanceof Error ? e.message : String(e)))
+    alert(t('credentialMonitor.error.clearFailed') + (e instanceof Error ? e.message : String(e)))
   }
 }
 

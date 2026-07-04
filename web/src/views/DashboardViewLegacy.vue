@@ -1,33 +1,29 @@
 <script setup lang="ts">
-// DashboardView.vue — 仪表盘入口（新旧版本切换）
-// 2026-07-05: 支持V1（旧版）和V2（新版泳道系统）切换
-
-import { ref, onMounted, computed } from 'vue'
-import DashboardViewV2 from './DashboardViewV2.vue'
-import DashboardViewLegacy from './DashboardViewLegacy.vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { RouterLink } from 'vue-router'
+import MemoraStatusButton from '../components/MemoraStatusButton.vue'
+import LiveRequestStream from '../components/LiveRequestStream.vue'
+import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import TenantDashboardView from './TenantDashboardView.vue'
-import { isDefaultTenant } from '../store'
-
-const STORAGE_KEY = 'dashboard_version'
-
-// 版本选择（默认V2）
-const version = ref<'v1' | 'v2'>('v2')
-
-// 从localStorage恢复版本选择
-onMounted(() => {
-  const saved = localStorage.getItem(STORAGE_KEY)
-  if (saved === 'v1' || saved === 'v2') {
-    version.value = saved
-  }
-})
-
-// 切换版本
-function switchVersion(v: 'v1' | 'v2') {
-  version.value = v
-  localStorage.setItem(STORAGE_KEY, v)
-}
-
-const showTenantDashboard = computed(() => !isDefaultTenant())
+import {
+  getUsageSummary,
+  getUsageByModel,
+  getDashboardOverview,
+  getHotApiKeys,
+  getModelDiscoveryStatus,
+  getHealth,
+  getRecentModelFailures,
+  getCompressionStats,
+  type UsageSummary,
+  type ModelUsage,
+  type DashboardOverview,
+  type HotApiKeyEntry,
+  type ModelDiscoveryStatusResponse,
+  type HealthResponse,
+  type CompressionStats,
+} from '../api'
+import { useLiveStream } from '../composables/useLiveStream'
+import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
 const days    = ref(7)
 const summary = ref<UsageSummary | null>(null)
