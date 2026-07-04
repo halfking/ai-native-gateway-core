@@ -2,13 +2,13 @@
 //
 // 2026-07-05: 更新為中性化、全球化的產品定位。
 export default {
-  kicker: '核心開源 · 企業級 · 全球部署',
+  kicker: '內核開源 · 企業級 · 私有部署',
   title: 'LLM Gateway — 企業級開源 AI 網關',
-  subtitle: '核心開源的企業級 AI 網關。統一治理、全球 LLM 接入、合規與資料主權 — 全部核心開源。',
+  subtitle: '內核開源的企業級 AI 網關。統一治理、全球 LLM 接入、合規與資料主權 — 全部內核開源。',
   featuresTitle: '核心能力',
   featuresSubtitle: '覆蓋從接入到營運的關鍵環節',
   heroPoints: [
-    '核心開源 · Apache 2.0',
+    '內核開源 · Apache 2.0',
     '企業級治理',
     '全球 LLM 接入',
     '資料安全防護',
@@ -55,8 +55,8 @@ export default {
   advantagesSubtitle: '面向全球企業的企業級 AI 網關',
   advantages: {
     local: {
-      title: '全球化部署',
-      description: '多語言介面支援、全球主流 LLM 優先接入、靈活的支付整合、全球雲端基礎設施就緒',
+      title: '內核開源',
+      description: '資料面、控制面、認證鑑權、路由排程全部開源，零黑盒，企業可稽核、可客製、可演進',
     },
     private: {
       title: '私有化部署',
@@ -71,7 +71,7 @@ export default {
       description: '原生 Go 實作，40MB 輕量映像，200 並發 P99 < 500ms，SSE 串流穩定中繼',
     },
   },
-  footer: 'LLM Gateway · 核心開源 · 企業級部署 · 全球化支援',
+  footer: 'LLM Gateway · 內核開源 · 企業級部署 · 資料主權',
   ariaPoints: '核心亮點',
   roadmap: {
     title: '產品演進路線',
