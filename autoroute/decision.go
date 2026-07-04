@@ -189,7 +189,10 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	// Step 0: check session intent cache (skip if no sessionID or cache disabled)
 	if sessionID != "" && d.intentCache != nil {
 		if cached, ok := d.intentCache.Get(sessionID); ok {
-			if !shouldReclassify(cached.TaskType, sigs) {
+			// 2026-07-04 V18: increment hit count and check drift threshold
+			cached.HitCount++
+			d.intentCache.Put(sessionID, cached)
+			if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
 				return &Decision{
 					ChosenModel:        cached.ChosenModel,
 					ChosenCredentialID: cached.CredentialID,

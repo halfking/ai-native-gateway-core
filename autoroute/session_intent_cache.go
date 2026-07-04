@@ -7,6 +7,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// 2026-07-04 V18: task-drift detection threshold.
+// After this many cache hits, force reclassification to detect task drift
+// (e.g., user starts with chat, then switches to code review with tools).
+const intentCacheDriftThreshold = 50
+
 // CachedIntent stores the auto-route decision for a session so that
 // subsequent requests in the same session skip classification + scoring.
 //
@@ -26,6 +31,10 @@ type CachedIntent struct {
 	Classifier   string
 	ClassifiedAt time.Time
 	ExpiresAt    time.Time
+	// 2026-07-04 V18 fix: task-drift detection. Count requests served
+	// from this cached intent. After N hits (default 50), force
+	// reclassification to catch drift (chat → code, or tool adoption).
+	HitCount int
 }
 
 // SessionIntentCache is a thread-safe in-memory cache of per-session
@@ -133,10 +142,19 @@ func (c *SessionIntentCache) Len() int {
 //   - HasImages → vision (regardless of cached type)
 //   - EstimatedTokens > 50k → long_context
 //   - ToolCount >= 3 + HasToolResults → agent
+//   - HitCount >= intentCacheDriftThreshold → forced refresh (V18)
 //
 // Soft signals (keyword changes within the same task type) do NOT
 // trigger reclassification — the session keeps its intent.
-func shouldReclassify(cached TaskType, sigs ClassificationSignals) bool {
+func shouldReclassify(cached TaskType, sigs ClassificationSignals, hitCount int) bool {
+	// 2026-07-04 V18 fix: task-drift detection. After N hits on the same
+	// cached intent, force reclassification to catch user behavior drift
+	// (e.g., chat → code, or tool adoption). This prevents a session from
+	// being permanently locked to a stale task type for its entire 10min TTL.
+	if hitCount >= intentCacheDriftThreshold {
+		return true
+	}
+
 	// Vision override: images present but cached wasn't vision
 	if sigs.HasImages && cached != TaskVision {
 		return true
