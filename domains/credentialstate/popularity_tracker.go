@@ -63,7 +63,7 @@ func (t *ModelPopularityTracker) refresh(ctx context.Context) error {
 
 	rows, err := t.db.Query(queryCtx, `
 		SELECT client_model, COUNT(*) AS request_count
-		FROM request_logs
+		FROM request_logs_default
 		WHERE created_at > NOW() - INTERVAL '1 hour'
 		  AND client_model IS NOT NULL
 		  AND client_model != ''

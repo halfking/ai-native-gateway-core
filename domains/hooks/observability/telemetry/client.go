@@ -251,9 +251,12 @@ func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identit
 	defer cancel()
 
 	var sessionID string
+	// 2026-07 partition-aware: 会话查找窗口（默认 5 分钟）落在 request_logs_default
+	// 的 7 天热数据范围内，查询 _default 表（heap 性能最优）即可。
+	// 符合 docs/partition/partition-standards.md 查询规范。
 	err := c.dbPool.QueryRow(queryCtx, `
 		SELECT gw_session_id
-		FROM request_logs
+		FROM request_logs_default
 		WHERE tenant_id = $1
 		  AND api_key_id = $2
 		  AND identity_hash = $3
