@@ -235,13 +235,10 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 
 	// 2. 执行（仅 super_admin）
 	if execute {
-		// UPDATE targets request_logs_default — the canonical write
-		// target per the 2026-07 data-lifecycle architecture. We never
-		// write to the parent table; the parent's auto-routing is
-		// intentionally bypassed so blob cleanup never touches a
-		// columnar/archived partition where UPDATE would fail.
+		// 2026-07-05 migration 341: UPDATE targets request_logs_hot (独立热表)。
+		// Blob 清理仅针对热表中的 0-7 天数据，已迁移到月度分区的数据不受影响。
 		_, err := h.db.Exec(ctx, `
-			UPDATE request_logs_default
+			UPDATE request_logs_hot
 			SET request_body = NULL,
 			    outbound_body = NULL
 			`+where, args...)
@@ -250,8 +247,8 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 			writeError(w, http.StatusInternalServerError, "执行失败: "+err.Error())
 			return
 		}
-		// VACUUM 释放空间需要单独在 idle 时刻跑，这里先记录
-		_, _ = h.db.Exec(ctx, `VACUUM (VERBOSE, ANALYZE) request_logs`)
+		// VACUUM 释放空间
+		_, _ = h.db.Exec(ctx, `VACUUM (VERBOSE, ANALYZE) request_logs_hot`)
 	}
 
 	resp.FinishedAt = time.Now().UTC().Format(time.RFC3339)

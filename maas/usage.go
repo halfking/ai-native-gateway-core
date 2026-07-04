@@ -87,12 +87,12 @@ func (s *Service) queryUsageSummary(ctx context.Context, tenantID string, days, 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// 2026-07 partition-aware: 当 days <= 7 时查询 *_default（heap 热数据，性能最优），
-	// 当 days > 7 时跨月查询父表（聚合所有分区）。符合
-	// docs/partition/partition-standards.md 查询规范。
-	logsTable := "request_logs"
+	// 2026-07-05 migration 341: 当 days <= 7 时查询 request_logs_hot（heap 热数据，
+	// 性能最优），当 days > 7 时查询 request_logs_with_current_month 视图
+	// （聚合热表 + 月度分区）。符合 docs/partition/partition-standards.md 查询规范。
+	logsTable := "request_logs_with_current_month"
 	if days <= 7 {
-		logsTable = "request_logs_default"
+		logsTable = "request_logs_hot"
 	}
 
 	if includeCost {
