@@ -692,7 +692,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		quality_score = EXCLUDED.quality_score,
 		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
 		tool_calls = EXCLUDED.tool_calls,
-client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs.client_request_id),
+		client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs_default.client_request_id),
 		-- 2026-06-30: upstream diagnostics (migration 320)
 		upstream_status_code = EXCLUDED.upstream_status_code,
 		client_timeout = EXCLUDED.client_timeout,
@@ -704,7 +704,7 @@ client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs.client_req
 		stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0),
 		-- 2026-07-01: 附件元数据 (migration 325)。仅在目标行尚无附件时
 		-- 写入，避免后续 upsert（如失败补写）覆盖首次提取的完整附件列表。
-		attachments = COALESCE(request_logs.attachments, EXCLUDED.attachments)
+		attachments = COALESCE(request_logs_default.attachments, EXCLUDED.attachments)
 	`,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
