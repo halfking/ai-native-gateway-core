@@ -223,11 +223,11 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 	}
 
 	var ec errorClassification
-	// 24 小时窗口查询走 request_logs_default（heap 落地热数据，性能最优）
-	// 符合 docs/partition/partition-standards.md 查询规范：最近数据走 _default
+	// 24 小时窗口查询走 request_logs_hot（独立热表，heap 性能最优）
+	// 符合 docs/partition/partition-standards.md 查询规范
 	ecRows, err := h.db.Query(ctx, `
 		SELECT COALESCE(error_kind,'other'), COUNT(*)
-		FROM request_logs_default
+		FROM request_logs_hot
 		WHERE provider_id = $1 AND ts >= now() - interval '24 hours'
 		GROUP BY error_kind
 	`, providerID)
@@ -481,11 +481,12 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 	}
 	var ec errorClassification
 	// Per 2026-07 partition architecture (docs/partition/partition-standards.md):
-	// recent-data queries (<= 7 days) should target *_default directly to
+	// recent-data queries (<= 7 days) should target request_logs_hot directly to
 	// skip partition pruning and read the heap landing pad without scanning
-	// any monthly partitions. request_logs_default holds the last 7 days
-	// before promote_*_default_batch migrates them out.
-	ecRows, _ := h.db.Query(ctx, `SELECT COALESCE(error_kind,'other'), COUNT(*) FROM request_logs_default WHERE provider_id = $1 AND ts >= now() - interval '24 hours' GROUP BY error_kind`, providerID)
+	// any monthly partitions. request_logs_hot holds the last 7 days
+	// before promote_request_logs_hot_to_partition migrates them out
+	// (migration 341, 2026-07-05).
+	ecRows, _ := h.db.Query(ctx, `SELECT COALESCE(error_kind,'other'), COUNT(*) FROM request_logs_hot WHERE provider_id = $1 AND ts >= now() - interval '24 hours' GROUP BY error_kind`, providerID)
 	if ecRows != nil {
 		for ecRows.Next() {
 			var kind string
