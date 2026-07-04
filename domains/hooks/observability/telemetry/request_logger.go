@@ -103,7 +103,7 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// INSERT directly targets request_wal_default (the canonical write
+	// INSERT directly targets request_wal_hot (the canonical write
 	// target per the 2026-07 data-lifecycle architecture). All
 	// INSERT/UPDATE/DELETE on request_wal goes through *_default — the
 	// parent's auto-routing is intentionally bypassed so writes never
@@ -111,7 +111,7 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 	// UPDATE/DELETE once that partition is converted to columnar storage
 	// by the background migrator).
 	_, err := rl.db.Exec(ctx, `
-		INSERT INTO request_wal_default (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
+		INSERT INTO request_wal_hot (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW())
 		ON CONFLICT (request_id, created_at) DO NOTHING
 	`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel)
@@ -246,15 +246,15 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 	// caller passes an empty status (incremental update that only sets
 	// tokens/provider), the guard is skipped via NULLIF so legitimate
 	// mid-flight field updates still apply.
-	// UPDATE directly targets request_wal_default — the canonical write
+	// UPDATE directly targets request_wal_hot — the canonical write
 	// target per the 2026-07 data-lifecycle architecture. The inner SELECT
-	// for "the latest row" also reads from request_wal_default since rows
+	// for "the latest row" also reads from request_wal_hot since rows
 	// that have already been migrated to a monthly partition are no
 	// longer editable (columnar storage / archived partitions do not
 	// support UPDATE). Late updates after migration are silently
 	// dropped, which is the intended behavior.
 	_, err := tx.Exec(ctx, `
-		UPDATE request_wal_default SET
+		UPDATE request_wal_hot SET
 			status = COALESCE(NULLIF($2, ''), status),
 			stage = COALESCE($3, stage),
 			completed_at = COALESCE($4, completed_at),
@@ -269,15 +269,15 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 			compression_meta = COALESCE($13, compression_meta)
 		WHERE request_id = $1
 		  AND created_at = (
-		      SELECT created_at FROM request_wal_default
+		      SELECT created_at FROM request_wal_hot
 		      WHERE request_id = $1
 		      ORDER BY created_at DESC
 		      LIMIT 1
 		  )
 		  AND (
 		      NULLIF($2, '') IS NULL
-		      OR request_wal_default.status IS NULL
-		      OR request_wal_default.status = 'pending'
+		      OR request_wal_hot.status IS NULL
+		      OR request_wal_hot.status = 'pending'
 		  )
 	`, update.RequestID, update.Status, update.Stage, update.CompletedAt,
 		update.UpstreamRequestAt, update.UpstreamResponseAt,

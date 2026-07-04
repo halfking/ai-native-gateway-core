@@ -39,12 +39,12 @@ func (h *Handler) persistResolveProbe(ctx context.Context, model string, candida
 	}
 	traceJSON, _ := json.Marshal(trace)
 	reqID := uuid.New()
-	// INSERT directly targets routing_decision_log_default (the canonical
+	// INSERT directly targets routing_decision_log_hot (the canonical
 	// write target per the 2026-07 data-lifecycle architecture — never
 	// the parent table, which would let PG auto-route rows into a monthly
 	// partition that cannot be UPDATEd/DELETEd later).
 	_, err := h.db.Exec(ctx, `
-		INSERT INTO routing_decision_log_default (
+		INSERT INTO routing_decision_log_hot (
 			ts, request_id, model, client_model, canonical_model,
 			chosen_credential_id, candidates_tried, success,
 			resolution_path, decision_trace
