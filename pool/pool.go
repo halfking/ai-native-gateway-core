@@ -147,6 +147,18 @@ func (p *Pool) Acquire(ctx context.Context) error {
 	}
 	select {
 	case p.activeConns <- struct{}{}:
+		// 2026-07-04 V16 fix: double-check closed flag after acquiring
+		// the slot. PoolManager.evictLoop may have called Close()
+		// concurrently between the initial check and this send. If so,
+		// release the slot and return; without this, callers proceed
+		// to use a transport that has been CloseIdleConnections'd.
+		if p.closed.Load() {
+			select {
+			case <-p.activeConns:
+			default:
+			}
+			return ErrPoolClosed
+		}
 		p.touch()
 		return nil
 	case <-ctx.Done():
@@ -205,13 +217,19 @@ func (p *Pool) RecordFailure() {
 
 	currentState := p.State()
 
-	// Transition to draining if consecutive failures exceed dead threshold
-	if count >= deadThreshold && currentState != PoolDead && currentState != PoolDraining {
+	// 2026-07-04 V15 fix: allow Dead → Draining when new failures come in,
+	// so the pool can be revived by healthLoop's probe path. Without this
+	// branch, a single 10-failure blip permanently kills the pool until
+	// process restart. The Dead state was wrongly treated as terminal.
+	if count >= deadThreshold && currentState != PoolDraining {
 		p.state.Store(int32(PoolDraining))
 		p.drainingSince.Store(time.Now().UnixMilli())
+		p.failCount.Store(0) // reset so we don't immediately re-Dead
+		p.successCount.Store(0)
 		slog.Warn("pool marked draining (grace period started)",
 			"key", p.key.String(),
 			"failures", count,
+			"from_state", currentState.String(),
 			"grace_period", p.gracePeriod,
 		)
 		return
@@ -223,6 +241,7 @@ func (p *Pool) RecordFailure() {
 		slog.Warn("pool marked degraded",
 			"key", p.key.String(),
 			"failures", count,
+			"from_state", currentState.String(),
 		)
 	}
 }
@@ -233,6 +252,24 @@ func (p *Pool) RecordSuccess() {
 	n := p.successCount.Add(1)
 
 	currentState := p.State()
+
+	// 2026-07-04 V15 fix: also recover from Dead state. After grace period
+	// (3 min) expires with no successful probe, state stays Dead and
+	// Acquire returns ErrPoolClosed forever. healthLoop probes keep
+	// firing, but RecordSuccess was a no-op on Dead. Adding the recovery
+	// branch: 3 consecutive successful probes revive the pool.
+	if currentState == PoolDead && n >= successThreshold {
+		p.state.Store(int32(PoolActive))
+		p.successCount.Store(0)
+		p.drainingSince.Store(0)
+		p.failCount.Store(0)
+		slog.Info("pool recovered from dead",
+			"key", p.key.String(),
+			"successes", n,
+			"from_state", currentState.String(),
+		)
+		return
+	}
 
 	// Recover from degraded or draining to active after enough consecutive successes
 	if (currentState == PoolDegraded || currentState == PoolDraining) && n >= successThreshold {
