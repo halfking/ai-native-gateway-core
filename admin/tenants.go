@@ -675,14 +675,16 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	var s tenantStats
 	s.Days = days
 
-	// 2026-07 partition-aware: 当 days <= 7 时查询 *_default（heap 热数据，性能最优），
-	// 当 days > 7 时跨月查询父表（聚合所有分区）。符合
-	// docs/partition/partition-standards.md 查询规范。
-	usageTable := "usage_ledger"
+	// 2026-07-05 migration 341: 当 days <= 7 时查询 *_default（等价于 _hot），
+	// 当 days > 7 时跨月查询 request_logs_with_current_month 视图（聚合热表 + 月度分区）。
+	// 符合 docs/partition/partition-standards.md 查询规范。
+	// 当 days <= 7 时查 _default 热表（heap，最快）
+	// 当 days > 7 时查询父表（自动聚合所有 ATTACHED 月度分区）
 	logsTable := "request_logs"
+	usageTable := "usage_ledger"
 	if days <= 7 {
+		logsTable = "request_logs_hot"
 		usageTable = "usage_ledger_default"
-		logsTable = "request_logs_default"
 	}
 
 	// Overall totals (upstream cost from usage_ledger; credits from request_logs)

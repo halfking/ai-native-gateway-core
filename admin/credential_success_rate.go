@@ -120,13 +120,11 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		// Delete failed requests older than 10 minutes to allow immediate recovery
-		// DELETE targets request_logs_default — the canonical write
-		// target per the 2026-07 data-lifecycle architecture. We never
-		// delete from the parent table; the parent's auto-routing is
-		// intentionally bypassed so this cleanup never touches a
-		// columnar/archived partition where DELETE would fail.
+		// 2026-07-05 migration 341: DELETE targets request_logs_hot (独立热表)。
+		// 数据迁移到月度分区后无法再编辑（只读），但 _hot 表中 0-7 天数据
+		// 可被删除以重置失败凭据的评估状态。
 		result, err := db.Exec(r.Context(), `
-		DELETE FROM request_logs_default
+		DELETE FROM request_logs_hot
 		WHERE credential_id = $1
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
 		  AND success = false
