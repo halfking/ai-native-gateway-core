@@ -134,6 +134,30 @@ func (c *SessionIntentCache) Len() int {
 	return len(c.entries)
 }
 
+// inferTaskFromSignals heuristically infers the task type from classification signals.
+// This is a lightweight heuristic used only for drift detection, not for actual routing.
+// It returns "" if signals are too weak to infer a task type, which means "no drift detection"
+// and shouldReclassify will only rely on hard signal checks.
+func inferTaskFromSignals(sigs ClassificationSignals) TaskType {
+	// Hard signals take precedence
+	if sigs.HasImages {
+		return TaskVision
+	}
+	if sigs.EstimatedTokens > 50_000 {
+		return TaskLongContext
+	}
+	if sigs.ToolCount >= 3 && sigs.HasToolResults {
+		return TaskAgent
+	}
+	// Soft heuristics (only when tool count is present but below threshold)
+	if sigs.ToolCount > 0 {
+		return TaskAgent // Lighter agent threshold for drift detection
+	}
+	// Return empty string when no strong signal present - this disables drift detection
+	// for pure text prompts, avoiding false positives
+	return ""
+}
+
 // shouldReclassify checks if the current request signals conflict with
 // the cached task type. Returns true when the request has fundamentally
 // changed nature (e.g. user switched from chat to code, or added images).
@@ -143,6 +167,7 @@ func (c *SessionIntentCache) Len() int {
 //   - EstimatedTokens > 50k → long_context
 //   - ToolCount >= 3 + HasToolResults → agent
 //   - HitCount >= intentCacheDriftThreshold → forced refresh (V18)
+//   - Soft task drift detection (V21) → DetectSessionDrift
 //
 // Soft signals (keyword changes within the same task type) do NOT
 // trigger reclassification — the session keeps its intent.
@@ -152,6 +177,18 @@ func shouldReclassify(cached TaskType, sigs ClassificationSignals, hitCount int)
 	// (e.g., chat → code, or tool adoption). This prevents a session from
 	// being permanently locked to a stale task type for its entire 10min TTL.
 	if hitCount >= intentCacheDriftThreshold {
+		return true
+	}
+
+	// 2026-07-05 V21 fix: Call DetectSessionDrift to catch soft task type changes
+	// (e.g., chat → code review without hard signals). This fixes the V18 incomplete
+	// fix where only hitCount threshold was used.
+	//
+	// Only call DetectSessionDrift when inferTaskFromSignals returns a non-empty task.
+	// Empty string means signals are too weak to infer task type, so we skip drift detection
+	// to avoid false positives on pure text prompts.
+	inferredTask := inferTaskFromSignals(sigs)
+	if inferredTask != "" && DetectSessionDrift(cached, inferredTask) {
 		return true
 	}
 
