@@ -1,3 +1,12 @@
+# ⚠️ 本文件已废弃 / This File Is Deprecated
+
+> **归档日期**: 2026-07-05
+> **替代文档**: [`docs/partition/IMPLEMENTATION_NOTES.md`](../../docs/partition/IMPLEMENTATION_NOTES.md) 第 §13 节
+> **原因**: 内容已合并到主实施记录（与参考标准的差距分析 5 大 GAP）
+> **保留原因**: 提供历史归档追溯
+
+---
+
 # Partition Architecture Gap Analysis Report
 **Date**: 2026-07-04
 **Environments**: 71 (llm.kxpms.cn) & 184 (both working)

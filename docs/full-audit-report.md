@@ -76,7 +76,7 @@
 
 #### ✅ 文档
 
-1. **docs/data-lifecycle-management.md** (341 行)
+1. **docs/partition/OPERATIONS_RUNBOOK.md** §8 数据生命周期管理（已合并 docs/data-lifecycle-management.md）
    - 完整的设计方案
    - 三温数据模型
    - 三种归档方案
@@ -285,7 +285,7 @@ cd /opt/llm-gateway-go
 ## 📞 支持与维护
 
 ### 文档位置
-- 设计方案: `docs/data-lifecycle-management.md`
+- 设计方案: `docs/partition/OPERATIONS_RUNBOOK.md` §8（已合并 docs/data-lifecycle-management.md）
 - 实施总结: `docs/data-lifecycle-implementation-summary.md`
 - 审计报告: `docs/full-audit-report.md`（本文件）
 

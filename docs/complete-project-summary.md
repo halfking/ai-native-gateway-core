@@ -17,7 +17,7 @@
 ### Phase 0: 文档与规划（已完成）
 
 **文档**:
-- `docs/data-lifecycle-management.md` (341 行) - 完整设计方案
+- `docs/partition/OPERATIONS_RUNBOOK.md` §8 数据生命周期管理（已合并 docs/data-lifecycle-management.md） - 完整设计方案
 - `docs/data-lifecycle-implementation-summary.md` (323 行) - 实施总结
 - `docs/full-audit-report.md` (323 行) - 审计报告
 - `docs/phase2-4-implementation-report.md` (新增) - Phase 2 & 4 报告
@@ -445,7 +445,7 @@ tail -f /var/log/llm-gateway-cleanup.log
 ## 📚 相关文档
 
 ### 设计文档
-- `docs/data-lifecycle-management.md` - 完整设计方案
+- `docs/partition/OPERATIONS_RUNBOOK.md` §8 数据生命周期管理（已合并 docs/data-lifecycle-management.md） - 完整设计方案
 - `docs/data-lifecycle-implementation-summary.md` - 实施总结
 - `docs/full-audit-report.md` - 审计报告
 - `docs/phase2-4-implementation-report.md` - Phase 2 & 4 报告

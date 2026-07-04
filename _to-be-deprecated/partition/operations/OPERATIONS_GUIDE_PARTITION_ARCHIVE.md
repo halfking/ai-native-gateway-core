@@ -1,3 +1,12 @@
+# ⚠️ 本文件已废弃 / This File Is Deprecated
+
+> **归档日期**: 2026-07-05
+> **替代文档**: [`docs/partition/OPERATIONS_RUNBOOK.md`](../../docs/partition/OPERATIONS_RUNBOOK.md) 第 §7 节
+> **原因**: 内容已合并到主运维手册（HTTP API 归档流程、批量归档、空间回收、监控脚本、数据恢复）
+> **保留原因**: 提供历史归档追溯
+
+---
+
 # 分区归档运维手册
 
 ## 日常运维

@@ -394,7 +394,7 @@ SELECT promote_request_wal_default_batch();
 
 ## 8. 参考资料
 
-- `docs/2026-07-04-PARTITION-AUDIT-REPORT.md` - 本次审计的上一版本（发现 P0 问题）
+- `docs/partition/IMPLEMENTATION_NOTES.md` §14（已合并 docs/2026-07-04-PARTITION-AUDIT-REPORT.md） - 本次审计的上一版本（发现 P0 问题）
 - `docs/partition/partition-standards.md` - 分区表读写规范
 - `docs/partition/partition-architecture.md` - 分区表架构设计
 - `docs/partition/partition-background.md` - 架构演进背景

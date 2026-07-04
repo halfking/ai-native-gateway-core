@@ -1,3 +1,12 @@
+# ⚠️ 本文件已废弃 / This File Is Deprecated
+
+> **归档日期**: 2026-07-05
+> **替代文档**: [`docs/partition/MONTHLY_CHECKLIST.md`](../../docs/partition/MONTHLY_CHECKLIST.md) 第 §4-Table 分区与归档部署检查 节
+> **原因**: 内容已合并到主月度维护清单（4-Table 分区与归档部署清单 2026-06-30、镜像信息、k8s 部署步骤）
+> **保留原因**: 提供历史归档追溯
+
+---
+
 # LLM Gateway 4-Table Partition & Archive 部署清单
 ## 2026-06-30
 

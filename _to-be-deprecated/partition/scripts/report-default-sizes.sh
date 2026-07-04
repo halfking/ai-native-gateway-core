@@ -1,4 +1,24 @@
 #!/bin/bash
+# ========================================
+# ⚠️ 本脚本已废弃 / This Script Is Deprecated
+# ========================================
+# 功能已合并至 scripts/partition/check-partition-health.sh
+# 等价命令：
+#   ./scripts/partition/check-partition-health.sh --report-only                    # text
+#   ./scripts/partition/check-partition-health.sh --report-only --format json     # json
+#   ./scripts/partition/check-partition-health.sh --report-only --format csv      # csv
+# 归档日期：2026-07-05
+# ========================================
+#
+# ========================================
+# 修订历史 / Revision History
+# ========================================
+# | 版本 | 日期       | 变更         | 作者                |
+# |------|------------|--------------|---------------------|
+# | 1.0  | 2026-07-05 | 初始版本     | Infrastructure Team |
+# | 1.1  | 2026-07-05 | 废弃（合并至 check-partition-health.sh --report-only）| Infrastructure Team |
+# ========================================
+#
 # Report Default Table Sizes
 #
 # 用途：报告所有 *_default 表的存储使用情况

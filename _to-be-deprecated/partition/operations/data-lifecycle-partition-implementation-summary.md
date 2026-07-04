@@ -1,3 +1,12 @@
+# ⚠️ 本文件已废弃 / This File Is Deprecated
+
+> **归档日期**: 2026-07-05
+> **替代文档**: [`docs/partition/OPERATIONS_RUNBOOK.md`](../../docs/partition/OPERATIONS_RUNBOOK.md) 第 §8 节
+> **原因**: 内容已合并到主运维手册（实施总结、技术亮点、测试情况）
+> **保留原因**: 提供历史归档追溯
+
+---
+
 # 数据生命周期管理 - 分区表列存储归档功能实现总结
 
 ## 实现概述

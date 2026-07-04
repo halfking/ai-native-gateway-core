@@ -1,3 +1,12 @@
+# ⚠️ 本文件已废弃 / This File Is Deprecated
+
+> **归档日期**: 2026-07-05
+> **替代文档**: [`docs/partition/MONTHLY_CHECKLIST.md`](../../docs/partition/MONTHLY_CHECKLIST.md) 第 §部署前分区归档验证清单 节
+> **原因**: 内容已合并到主月度维护清单（部署前验证、API 端点测试、回滚计划）
+> **保留原因**: 提供历史归档追溯
+
+---
+
 # 分区表列存储归档功能 - 部署检查清单
 
 ## 部署前检查
