@@ -86,8 +86,13 @@ func TestResolveRequestStatus(t *testing.T) {
 }
 
 func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T) {
+	// Per the 2026-07 data-lifecycle architecture, UPDATE must target
+	// request_logs_default (the canonical write target), not the parent
+	// table. Tests below pin the schema: the SET clause is unqualified
+	// (no `rl.` alias) and the WHERE clause references the same
+	// request_logs_default target — never the parent.
 	const updateSQL = `
-		UPDATE request_logs
+		UPDATE request_logs_default
 		   SET client_model = COALESCE($2, client_model),
 		       outbound_model = COALESCE($3, outbound_model),
 		       credential_id = COALESCE($4, credential_id),
@@ -155,8 +160,8 @@ func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T)
 		       tool_calls = COALESCE(CAST($63 AS jsonb), tool_calls),
 		       client_request_id = COALESCE($64, client_request_id)
 		  FROM latest
-		 WHERE request_logs.id = latest.id
-		   AND request_logs.ts = latest.ts
+		 WHERE request_logs_default.id = latest.id
+		   AND request_logs_default.ts = latest.ts
 	`
 
 	setIdx := strings.Index(updateSQL, "SET ")
@@ -171,18 +176,27 @@ func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T)
 	if strings.Contains(updateSQL, "UPDATE request_logs rl") {
 		t.Fatal("UPDATE must not alias request_logs as rl")
 	}
+	if !strings.Contains(updateSQL, "UPDATE request_logs_default") {
+		t.Fatal("UPDATE must target the *_default canonical write target (request_logs_default)")
+	}
+	if !strings.Contains(updateSQL, "request_logs_default.id") {
+		t.Fatal("WHERE clause must reference request_logs_default.id (never the parent table)")
+	}
 }
 
 func TestInsertUpsertSQL_DoesNotReferenceUndefinedRLAlias(t *testing.T) {
+	// Per the 2026-07 data-lifecycle architecture, INSERT INTO ...
+	// ON CONFLICT DO UPDATE targets request_logs_default (the canonical
+	// write target), not the parent table.
 	const upsertTail = `
 		ON CONFLICT (request_id, ts) DO UPDATE SET
-			client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs.client_request_id)
+			client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs_default.client_request_id)
 	`
 	if strings.Contains(upsertTail, "rl.client_request_id") {
 		t.Fatal("upsert tail must not reference undefined rl alias")
 	}
-	if !strings.Contains(upsertTail, "request_logs.client_request_id") {
-		t.Fatal("upsert tail must qualify the existing column with the request_logs table name to avoid ambiguity")
+	if !strings.Contains(upsertTail, "request_logs_default.client_request_id") {
+		t.Fatal("upsert tail must qualify the existing column with the request_logs_default table name to avoid ambiguity")
 	}
 }
 
