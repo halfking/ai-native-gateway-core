@@ -1,119 +1,100 @@
-// Auto-translated draft (de-DE) · 2026-07-02 · please review
-// landing.ts — Landing page copy for the public (logged-out) home view.
-// Mirrors the props that LandingView passes to ServiceLandingPage plus the
-// extra "Roadmap" section that lives directly in LandingView's template.
+// landing.ts — Landing-Page-Texte (Gast-Startseite).
 //
-// Keys use camelCase nested objects so vue-i18n's `t()` interpolation and
-// `t('landing.features.X.title', { ... })` substitution both work.
+// 2026-07-05: Aktualisiert auf den tatsächlichen Inhalt des aktuellen official-deploy-Projekts (entspricht LandingView.vue).
 export default {
-  kicker: 'AI-Native · Enterprise Governance',
-  title: 'KI-native Organisations-Kern-Gateway',
-  subtitle: [
-    'Machen Sie KI zur nativen Fähigkeit Ihrer Organisation.',
-    'Open Core + Enterprise-Erweiterung + Vibe-Coding-Governance + Sitzungs-Assetisierung.',
-  ],
+  kicker: 'Kern Open Source · China-Lokalisierung · Enterprise-Grade',
+  title: 'LLM Gateway — Open Source AI Gateway für globale Märkte',
+  subtitle: 'Das einzige AI Gateway, das Kern-Open-Source mit tiefer China-Lokalisierung kombiniert. Enterprise-Governance, globaler LLM-Zugang, Compliance und Datensouveränität — alles Kern-Open-Source.',
   featuresTitle: 'Kernfunktionen',
-  featuresSubtitle: 'Deckt die gesamte Kette vom Zugang bis zum Betrieb ab',
+  featuresSubtitle: 'Abdeckung wichtiger Aspekte vom Zugang bis zum Betrieb',
   heroPoints: [
-    'Intelligentes Routing',
-    'Aufrufsicherheit',
-    'Cache-Kostenreduzierung',
-    'Agent-bereit',
-    'Vollständige Audit-Kette',
-    'MaaS-Abrechnung',
+    'Kern Open Source · Apache 2.0',
+    'China-Lokalisierung · Djbh 2.0',
+    'Enterprise AI Gateway',
+    'Vibe Coding Governance',
+    'AI Session Asset Management',
+    'Datensicherheitsschild',
   ],
   features: {
     smartRouting: {
-      title: 'Intelligentes Routing & Anmeldedaten-Pool',
-      description:
-        'Automatische Auswahl nach Mandant, Modell und Aufgabentyp. Multi-Anmeldedaten-Fingerprint-Pool plus adaptive Prüfung — Failover unter einer Sekunde, nahezu null Sperrungen.',
+      title: 'Smart Routing & Credential Pool',
+      description: 'Auto-Routing nach Mandant, Modell und Aufgabentyp; Multi-Credential-Fingerprint-Pool + adaptives Probing, Failover in Sekunden, nahezu null Ban-Rate.',
     },
     safety: {
-      title: 'Aufruf-Sicherheits-Schild',
-      description:
-        'LLM-as-judge Prompt-Injection-Erkennung (v1 beobachtbarer Modus) und Planung zur Maskierung sensibler Daten — Compliance-Verteidigung auf Unternehmensniveau.',
+      title: 'Call Security Shield',
+      description: 'LLM-as-judge Prompt-Injection-Erkennung (v1 Observability-Modus) + Planung zur Maskierung sensibler Daten, Enterprise-Compliance-Verteidigung.',
       badge: 'beta',
     },
     cache: {
       title: 'Cache-Ausrichtung & Kostensenkung',
-      description:
-        'Stabilisierung des Prompt-Präfixes plus semantisches Caching maximieren die KV-Cache-Trefferrate und reduzieren die Token-Rechenkosten.',
+      description: 'Prompt-Präfix-Stabilisierung + semantisches Caching, Maximierung der KV Cache-Trefferquote, Reduzierung des Token-Rechenaufwands.',
     },
     agent: {
-      title: 'Agent- & MCP-Gateway',
-      description:
-        'Agent-Registry, A2A-Protokoll, MCP-Tool-Hosting und Protokollkonvertierung — entwickeln Sie sich vom LLM-Proxy zum Agent-Orchestrierungs-Einstiegspunkt.',
-      badge: 'Demnächst verfügbar',
+      title: 'Agent & MCP Gateway',
+      description: 'Agent-Registry, A2A-Protokoll, MCP-Tool-Hosting und Protokollkonvertierung — Upgrade vom LLM-Proxy zum Agent-Orchestrierungs-Gateway.',
+      badge: 'Demnächst',
     },
     observability: {
-      title: 'Vollständige Beobachtbarkeit',
-      description:
-        'Anfrage-Logs, Routing-Entscheidungs-Audit, OpenTelemetry-Tracing, SIEM/CEF-Ereignisexport — bereit für MLPS 2.0 und DSGVO.',
+      title: 'Full-Chain Observability',
+      description: 'Request-Logs, Routing-Entscheidungs-Audit, OTel-Tracing, SIEM/CEF-Event-Export, Djbh 2.0 und GDPR bereit.',
     },
     billing: {
       title: 'MaaS-Abrechnungssystem',
-      description:
-        'Tarife + Credits + Drei-Pool-Wallet (Abonnement / Guthaben / Aufladung) — kompletter Self-Service-Kommerzialisierungs-Loop für Mandanten.',
+      description: 'Plan + Credits + Drei-Pool-Wallet (Abonnement / Kredit / Aufladung), vollständige Kommerzialisierungsschleife für Mandanten-Self-Service.',
     },
     multiProtocol: {
       title: 'Multi-Protokoll-Kompatibilität',
-      description:
-        'OpenAI Chat / Anthropic Messages / Responses — drei eingehende Formate normalisiert, nahtlose Integration chinesischer und globaler Modelle.',
+      description: 'OpenAI Chat / Anthropic Messages / Responses drei eingehende Protokolle vereinheitlicht, nahtloser Zugang zu Open-Source- und kommerziellen Modellen.',
     },
     multiTenant: {
-      title: 'Mandanten-Isolation',
-      description:
-        'PostgreSQL RLS-Zeilenebene-Sicherheit + 43-Runden-Audit L1=0, null mandantenübergreifender Datenverlust, pro-Mandant-Richtlinie und -Kontingent.',
+      title: 'Multi-Mandanten-Isolation',
+      description: 'PostgreSQL RLS Row-Level-Security + 43 Audit-Runden L1=0, null Datenleck zwischen Mandanten, unabhängige Richtlinie und Quote pro Mandant.',
     },
   },
-  advantagesTitle: 'Differenzierte Vorteile',
-  advantagesSubtitle: 'Was globale Anbieter nicht bieten können',
+  advantagesTitle: 'Warum LLM Gateway wählen',
+  advantagesSubtitle: 'Für globale Unternehmen mit China-Geschäftsanforderungen',
   advantages: {
     local: {
-      title: 'China-Lokalisierung',
-      description: 'Vollständige chinesische Benutzeroberfläche, Priorität für inländische Modelle, Alipay / WeChat Pay, MLPS-konforme Vorlagen',
+      title: 'Tiefe China-Lokalisierung',
+      description: 'Vollständige chinesische Benutzeroberfläche, inländischer Open-Source-LLM-Prioritätszugang, Alipay/WeChat-Pay-Integration, Djbh 2.0-Compliance-Vorlagen, inländische Cloud-Infrastruktur bereit',
     },
     private: {
       title: 'Private Bereitstellung',
-      description: 'Vollständig On-Premise, Daten verlassen das Unternehmen nicht, k3s + Docker Dual-Modus, null externe Abhängigkeiten',
+      description: 'Vollständig private Bereitstellung, Daten bleiben im Unternehmen, k3s + Docker Dualform, null externe Abhängigkeiten',
     },
     antiBan: {
-      title: 'Anti-Sperr-System',
-      description: '50+ UA-Rotation + utls TLS-Fingerprint-Pool + 11 Browser-Profile + 5-Minuten-Autorotation',
+      title: 'Anti-Ban-System',
+      description: '50+ UA-Rotation + utls TLS-Fingerprint-Pool + 11 Browser-Profile + 5-Minuten-Auto-Rotation',
     },
     perf: {
-      title: 'Go-Hochleistungs-Datenebene',
-      description: 'Natives Go, 40 MB leichtgewichtiges Image, 200 gleichzeitig P99 < 500 ms, stabiles SSE-Streaming-Relais',
+      title: 'Go High-Performance Data Plane',
+      description: 'Native Go-Implementierung, 40MB leichtes Image, 200 Parallelität P99 < 500ms, SSE-Streaming stabiles Relay',
     },
   },
-  footer: 'Kaixuan LLM Gateway · [GATEWAY_DOMAIN] · Private Bereitstellung · China-Lokalisierung',
-  ariaPoints: 'Highlights',
+  footer: 'LLM Gateway · llmgateway.internal.example.com · Kern Open Source · China-Lokalisierung · Private Bereitstellung',
+  ariaPoints: 'Wichtige Highlights',
   roadmap: {
-    title: 'Produktentwicklungs-Roadmap',
-    subtitle: 'Von der LLM-Datenebene zum Enterprise-Agent-Gateway — kontinuierlich aufgebaut',
+    title: 'Produkt-Roadmap',
+    subtitle: 'Von der LLM-Datenebene zum Enterprise Agent Gateway, kontinuierlicher Aufbau',
     v31: {
       phase: 'v3.1 · 2026 Q3',
-      title: 'API-Hub-Asset-Center + MCP-Tool-Hosting',
-      description:
-        'Einheitliche Registrierung von LLM-Endpunkten, MCP-Diensten und Agenten. Self-Service-Entdeckung und -Wiederverwendung für Entwickler.',
+      title: 'API Hub Asset Center + MCP-Tool-Hosting',
+      description: 'Einheitliche Registrierung von LLM-Endpunkten, MCP-Services und Agents, Entwickler-Self-Service-Erkennung und Wiederverwendung.',
     },
     v32: {
       phase: 'v3.2 · 2026 Q4',
-      title: 'Sicherheits-Schild GA + SIEM-Integration + SpecBoost',
-      description:
-        'Prompt-Injection-Blockierung, Maskierung sensibler Daten, intelligente API-Beschreibungs-Anreicherung zur Verbesserung der Function-Calling-Genauigkeit.',
+      title: 'Security Shield GA + SIEM-Integration + SpecBoost',
+      description: 'Prompt-Injection-Blockierung, Maskierung sensibler Daten, intelligente API-Beschreibungsanreicherung zur Verbesserung der Function-Calling-Genauigkeit.',
     },
     v40: {
       phase: 'v4.0 · 2027 Q1',
-      title: 'Agent-Registry + A2A-Protokoll-Gateway',
-      description:
-        'Mandantenübergreifende Aufgabendelegation und -Orchestrierung, einheitlicher Einstieg für OpenClaw und Geschäfts-Agenten.',
+      title: 'Agent Registry + A2A Protocol Gateway',
+      description: 'Cross-Agent-Task-Delegation und Orchestrierung, einheitlicher Zugang zu OpenClaw und Business Agents.',
     },
     v50: {
       phase: 'v5.0 · 2027 Q3',
-      title: 'Branchenlösungen GA',
-      description:
-        'Kundenservice-, HR-, Vertriebs- und Logistik-Branchenvorlagen — sofort einsatzbereite Agent-Lösungen.',
+      title: 'Branchenlösungs-GA',
+      description: 'Vier Branchenvorlagen für Kundenservice, HR, Vertrieb, Logistik, sofort einsatzbereite Agent-Lösungen.',
     },
   },
 }
