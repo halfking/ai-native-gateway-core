@@ -174,42 +174,56 @@ func (c *Candidate) IsAvailable() bool {
 }
 
 // UnavailableReason returns a human-readable reason string when the
-// candidate cannot be used, or "" if it is fully available. Order matches
-// IsAvailable() so the first non-nil branch is the dominant reason.
+// candidate cannot be used, or "" if it is fully available.
+//
+// 2026-07-05 V25 fix: Changed from short-circuit evaluation to accumulating
+// all failure reasons. This improves debuggability when multiple failure
+// conditions are present (e.g., routing_blocked + quota_exhausted + circuit_open).
+//
+// Before V25: returned first reason only
+// After V25: returns all reasons joined with "; "
 func (c *Candidate) UnavailableReason() string {
+	var reasons []string
+
 	if !c.Routable {
 		if c.BlockReason != nil && *c.BlockReason != "" {
-			return "routing_blocked:" + *c.BlockReason
+			reasons = append(reasons, "routing_blocked:"+*c.BlockReason)
+		} else {
+			reasons = append(reasons, "routing_blocked")
 		}
-		return "routing_blocked"
 	}
 	if c.LifecycleStatus != "" && c.LifecycleStatus != "active" {
-		return "lifecycle:" + c.LifecycleStatus
+		reasons = append(reasons, "lifecycle:"+c.LifecycleStatus)
 	}
 	switch c.AvailabilityState {
 	case "suspended":
-		return "availability:suspended"
+		reasons = append(reasons, "availability:suspended")
 	case "auth_failed":
-		return "availability:auth_failed"
+		reasons = append(reasons, "availability:auth_failed")
 	case "cooling":
-		return "availability:cooling"
+		reasons = append(reasons, "availability:cooling")
 	case "rate_limited":
-		return "availability:rate_limited"
+		reasons = append(reasons, "availability:rate_limited")
 	case "unreachable":
-		return "availability:unreachable"
+		reasons = append(reasons, "availability:unreachable")
 	}
 	switch c.QuotaState {
 	case "balance_exhausted":
-		return "quota:balance_exhausted"
+		reasons = append(reasons, "quota:balance_exhausted")
 	case "permanently_exhausted":
-		return "quota:permanently_exhausted"
+		reasons = append(reasons, "quota:permanently_exhausted")
 	case "periodic_exhausted":
-		return "quota:periodic_exhausted"
+		reasons = append(reasons, "quota:periodic_exhausted")
 	}
 	if c.BalanceUSD != nil && *c.BalanceUSD <= 0 {
-		return "balance:zero"
+		reasons = append(reasons, "balance:zero")
 	}
-	return ""
+
+	if len(reasons) == 0 {
+		return ""
+	}
+	// Join multiple reasons with "; " for better debuggability
+	return strings.Join(reasons, "; ")
 }
 
 type Policy struct {

@@ -271,16 +271,21 @@ func (p *Pool) RecordSuccess() {
 		return
 	}
 
-	// Recover from degraded or draining to active after enough consecutive successes
+	// 2026-07-05 V24 fix: Recover from degraded or draining to active after enough consecutive successes.
+	// Use CompareAndSwap to ensure atomic state transition and reset all failure counters.
+	// This fixes a race where drainingSince was not always cleared, causing premature Dead transitions.
 	if (currentState == PoolDegraded || currentState == PoolDraining) && n >= successThreshold {
-		p.state.Store(int32(PoolActive))
-		p.successCount.Store(0)
-		p.drainingSince.Store(0)
-		slog.Info("pool recovered to active",
-			"key", p.key.String(),
-			"successes", n,
-			"from_state", currentState.String(),
-		)
+		if p.state.CompareAndSwap(int32(PoolDegraded), int32(PoolActive)) ||
+			p.state.CompareAndSwap(int32(PoolDraining), int32(PoolActive)) {
+			p.successCount.Store(0)
+			p.failCount.Store(0)
+			p.drainingSince.Store(0)
+			slog.Info("pool recovered to active",
+				"key", p.key.String(),
+				"successes", n,
+				"from_state", currentState.String(),
+			)
+		}
 	}
 }
 
