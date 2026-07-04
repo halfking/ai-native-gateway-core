@@ -197,12 +197,12 @@ function handleChangePasswordSuccess() {
         <button
           type="button"
           class="sidebar-toggle"
-          :title="collapsed ? '展开侧栏' : '收起侧栏'"
-          :aria-label="collapsed ? '展开侧栏' : '收起侧栏'"
+          :title="collapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')"
+          :aria-label="collapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')"
           @click="toggleSidebar"
         >
           <span class="toggle-icon" aria-hidden="true">{{ collapsed ? '»' : '«' }}</span>
-          <span v-show="!collapsed" class="toggle-label">收起菜单</span>
+          <span v-show="!collapsed" class="toggle-label">{{ t('nav.collapseSidebar') }}</span>
         </button>
       </div>
     </aside>
@@ -212,7 +212,7 @@ function handleChangePasswordSuccess() {
         <button
           type="button"
           class="header-sidebar-toggle btn btn-ghost btn-sm"
-          :title="collapsed ? '展开侧栏' : '收起侧栏'"
+          :title="collapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')"
           @click="toggleSidebar"
         >
           {{ collapsed ? '»' : '«' }}
@@ -223,7 +223,7 @@ function handleChangePasswordSuccess() {
             <template v-if="store.userInfo">
               <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
               <span class="meta-sep" aria-hidden="true">·</span>
-              <span class="user-role">{{ store.userInfo.role === 'super_admin' ? '超级管理员' : '租户管理员' }}</span>
+              <span class="user-role">{{ store.userInfo.role ? t(`role.${store.userInfo.role}`) : '' }}</span>
             </template>
             <template v-if="versionInfo.version">
               <span v-if="store.userInfo" class="meta-sep" aria-hidden="true">·</span>
@@ -234,8 +234,9 @@ function handleChangePasswordSuccess() {
               </template>
             </template>
           </div>
-          <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">修改密码</button>
-          <button class="btn btn-ghost btn-sm" @click="logout">退出</button>
+          <LanguageSelector />
+          <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('changePassword') }}</button>
+          <button class="btn btn-ghost btn-sm" @click="logout">{{ t('logout') }}</button>
         </div>
       </header>
       <section class="main-body">
