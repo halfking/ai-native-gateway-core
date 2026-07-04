@@ -522,3 +522,36 @@ func TestClassifyError_ProductionIncident_MinimaxM3_ToolCallIdMismatch(t *testin
 			got, KindToolCallIdMismatch)
 	}
 }
+
+// 2026-07-04 V20: test generic web-server 404 exclusion.
+func TestClassifyErrorWithBody_GenericWeb404(t *testing.T) {
+	// Generic Nginx 404
+	kind := ClassifyErrorWithBody(404, []byte("404 Not Found\nnginx/1.18.0"))
+	if kind == KindModelNotFound {
+		t.Error("generic Nginx 404 should NOT be KindModelNotFound")
+	}
+
+	// Generic "page not found"
+	kind = ClassifyErrorWithBody(404, []byte("<html><body><h1>404 page not found</h1></body></html>"))
+	if kind == KindModelNotFound {
+		t.Error("generic HTML 404 should NOT be KindModelNotFound")
+	}
+
+	// Generic "The page you requested was not found"
+	kind = ClassifyErrorWithBody(404, []byte("The page you requested was not found"))
+	if kind == KindModelNotFound {
+		t.Error("generic web error message should NOT be KindModelNotFound")
+	}
+
+	// Real LLM provider model_not_found (should still match)
+	kind = ClassifyErrorWithBody(404, []byte(`{"error": "model gpt-4-turbo is not found"}`))
+	if kind != KindModelNotFound {
+		t.Errorf("LLM provider model error should be KindModelNotFound, got %q", kind)
+	}
+
+	// Real provider with model name
+	kind = ClassifyErrorWithBody(400, []byte(`{"code": 1002, "message": "no such model: glm-5.1"}`))
+	if kind != KindModelNotFound {
+		t.Errorf("provider 'no such model' should be KindModelNotFound, got %q", kind)
+	}
+}

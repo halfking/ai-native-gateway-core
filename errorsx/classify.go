@@ -267,6 +267,30 @@ func ClassifyResponseStatus(resp *http.Response) ErrorKind {
 // stays with the caller.
 func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 	if len(body) > 0 {
+		// 2026-07-04 V20 fix: exclude generic web-server 404 bodies from
+		// model_not_found classification. Patterns like "404 page not found",
+		// "404 Not Found", "The page you requested was not found" come from
+		// Nginx, Apache, Caddy, Traefik, or cloud load balancers when the
+		// upstream service is unreachable or misconfigured — not from LLM
+		// providers. Without this guard, such responses are mis-classified as
+		// KindModelNotFound, causing the router to skip cross-credential retry
+		// and surface a 404 to the client when the real problem is routing or
+		// infrastructure (should be KindUpstreamDown or KindEmpty).
+		//
+		// Exclusion heuristic: if body contains HTTP status line artifacts
+		// ("404 Not Found", "404 page not found") OR generic web phrases
+		// ("page you requested", "resource not found", "page not found")
+		// within the first 512 bytes, do NOT apply model-specific patterns.
+		bodyLower := strings.ToLower(string(body))
+		if len(bodyLower) > 512 {
+			bodyLower = bodyLower[:512]
+		}
+		isGenericWebError := strings.Contains(bodyLower, "404 not found") ||
+			strings.Contains(bodyLower, "404 page not found") ||
+			strings.Contains(bodyLower, "page you requested") ||
+			strings.Contains(bodyLower, "page not found") ||
+			strings.Contains(bodyLower, "resource not found")
+
 		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
 			return KindConcurrent
 		}
@@ -275,7 +299,12 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// "model not found" (e.g. a misconfigured proxy returning 502 with
 		// a downstream 404 embedded) must be KindUpstreamDown, not
 		// KindModelNotFound — the failure is connectivity, not model existence.
-		if (status == 400 || status == 404 || status == 422) &&
+		//
+		// V20 (2026-07-04): additionally gate on !isGenericWebError. If the
+		// body looks like a generic web server 404 (Nginx/Apache/LB), do NOT
+		// classify as KindModelNotFound even if modelNotFoundRe matches.
+		if !isGenericWebError &&
+			(status == 400 || status == 404 || status == 422) &&
 			(modelNotFoundRe.Match(body) || modelNotFoundCJKRe.Match(body)) {
 			return KindModelNotFound
 		}

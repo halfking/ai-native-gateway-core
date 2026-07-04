@@ -240,6 +240,22 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
 	key := m.cacheKey(state.CredentialID, state.Model)
 
+	// 2026-07-04 Bug #8 fix (part 2): invalidate candidate cache when
+	// probe flips Available from false → true. Without this, router sees
+	// stale candidate list (without the newly-recovered credential) for
+	// up to 30s (cache TTL). This complements the UpdateOnFailure fix
+	// (part 1) which invalidates on true → false transition.
+	oldState, _ := m.getFromMemCache(key)
+	if oldState != nil && !oldState.Available && state.Available {
+		if m.invalidateCandidateCache != nil {
+			m.invalidateCandidateCache()
+		}
+		slog.Info("credstate: probe recovered credential, invalidated candidate cache",
+			"credential_id", state.CredentialID,
+			"model", state.Model,
+		)
+	}
+
 	m.setToMemCache(key, state)
 	go m.setToRedis(ctx, key, state)
 
