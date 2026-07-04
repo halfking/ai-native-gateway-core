@@ -61,9 +61,10 @@ func (t *ModelPopularityTracker) refresh(ctx context.Context) error {
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	// 2026-07-05 migration 341: 查询 request_logs_hot（1 小时窗口完全在热表范围内）
 	rows, err := t.db.Query(queryCtx, `
 		SELECT client_model, COUNT(*) AS request_count
-		FROM request_logs_default
+		FROM request_logs_hot
 		WHERE created_at > NOW() - INTERVAL '1 hour'
 		  AND client_model IS NOT NULL
 		  AND client_model != ''

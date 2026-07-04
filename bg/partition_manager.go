@@ -260,17 +260,17 @@ func archiveSpecs() []archiveSpec {
 	}
 }
 
-// promoteSpecs lists every *_default → monthly-partition migration
-// function installed by migration 336. Ordered roughly by traffic
-// volume (descending) so the highest-volume tables drain first within
-// each tick.
+// promoteSpecs lists every hot → monthly-partition migration function.
+// Migration 341 (2026-07-05) replaced *_default promote functions with
+// request_logs_hot_to_partition. Other tables still use *_default_batch.
 //
-// Each function signature is promote_<table>_default_batch(p_retention
-// interval, p_batch_size int) RETURNS bigint; the caller loops until
-// the function returns 0 (no more eligible cold rows for this table).
+// Each function signature is promote_<table>_xxx(p_retention interval,
+// p_batch_size int) RETURNS bigint; the caller loops until the function
+// returns 0 (no more eligible cold rows for this table).
 func promoteSpecs() []archiveSpec {
 	return []archiveSpec{
-		{fnName: "promote_request_logs_default_batch", label: "request_logs"},
+		// 2026-07-05: request_logs uses hot table (migration 341)
+		{fnName: "promote_request_logs_hot_to_partition", label: "request_logs_hot"},
 		{fnName: "promote_request_wal_default_batch", label: "request_wal"},
 		{fnName: "promote_usage_ledger_default_batch", label: "usage_ledger"},
 		{fnName: "promote_routing_decision_log_default_batch", label: "routing_decision_log"},
