@@ -514,7 +514,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO usage_ledger (
+		INSERT INTO usage_ledger_default (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, credential_id, provider_id, canonical_id,
 			raw_model_name, prompt_tokens, completion_tokens,
@@ -551,7 +551,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		return err
 	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs (
+		INSERT INTO request_logs_default (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, client_model, outbound_model,
 			credential_id, provider_id, canonical_id,
