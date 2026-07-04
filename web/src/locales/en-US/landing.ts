@@ -1,110 +1,100 @@
-// landing.ts — Landing page copy for the public (logged-out) home view.
-// Mirrors the props that LandingView passes to ServiceLandingPage plus the
-// extra "Roadmap" section that lives directly in LandingView's template.
+// landing.ts — Landing page copy (guest homepage).
 //
-// Keys use camelCase nested objects so vue-i18n's `t()` interpolation and
-// `t('landing.features.X.title', { ... })` substitution both work.
+// 2026-07-05: Updated to match current official-deploy project content (LandingView.vue).
 export default {
-  kicker: 'AI-Native · Enterprise Governance',
-  title: 'AI-Native Organization Core Gateway',
-  subtitle: [
-    'Make AI a native capability of your organization.',
-    'Open core + enterprise enhancement + Vibe Coding governance + session asset-ification.',
-  ],
+  kicker: 'Core Open Source · China Localization · Enterprise-Grade',
+  title: 'LLM Gateway — Open Source AI Gateway for Global Markets',
+  subtitle: 'The only AI gateway combining core open source with deep China localization. Enterprise governance, global LLM access, compliance and data sovereignty — all core open source.',
   featuresTitle: 'Core Capabilities',
-  featuresSubtitle: 'Covering the full chain from access to operations',
+  featuresSubtitle: 'Covering key aspects from access to operations',
   heroPoints: [
-    'Enterprise AI Entry',
+    'Core Open Source · Apache 2.0',
+    'China Localization · Djbh 2.0',
+    'Enterprise AI Gateway',
     'Vibe Coding Governance',
-    'AI Session Assets',
-    'Enterprise Knowledge',
+    'AI Session Asset Management',
     'Data Security Shield',
-    'Private Deployment',
   ],
   features: {
     smartRouting: {
-      title: 'Enterprise AI Entry',
-      description:
-        '1045 Offers / 410 Models / 100% Coverage. Unified access to global LLMs and AI tools with smart routing and sticky binding. Every AI call is controllable, observable, billable, and governable.',
+      title: 'Smart Routing & Credential Pool',
+      description: 'Auto-routing by tenant, model and task type; multi-credential fingerprint pool + adaptive probing, failover in seconds, near-zero ban rate.',
     },
     safety: {
-      title: 'Vibe Coding Governance',
-      description:
-        'Code quality +35% · Security vulnerabilities -78% · Tech debt -60%. Full-lifecycle AI-assisted coding governance with complete quality assurance from prompts to code output.',
+      title: 'Call Security Shield',
+      description: 'LLM-as-judge prompt injection detection (v1 observability mode) + sensitive data masking planning, enterprise compliance defense.',
+      badge: 'beta',
     },
     cache: {
-      title: 'AI Session Assets',
-      description: '13,000+ sessions archived · Onboarding -40%. Transform every AI conversation into searchable, reusable enterprise knowledge assets, sharing wisdom across teams.',
+      title: 'Cache Alignment & Cost Reduction',
+      description: 'Prompt prefix stabilization + semantic caching, maximize KV Cache hit rate, reduce token compute overhead.',
     },
     agent: {
-      title: 'Enterprise Knowledge Deposition',
-      description: 'Knowledge auto-grows · Cross-generation inheritance. Models change, Agents change, but enterprise memory persists. Build a knowledge foundation independent of specific tools.',
+      title: 'Agent & MCP Gateway',
+      description: 'Agent registry, A2A protocol, MCP tool hosting and protocol conversion — upgrade from LLM proxy to agent orchestration gateway.',
+      badge: 'Coming Soon',
     },
     observability: {
-      title: 'Data Security Shield',
-      description: 'Injection blocking 98% · Compliance risk 0. LLM-as-judge prompt injection detection, sensitive data masking, SIEM/SOAR integration, MLPS 2.0 and GDPR ready.',
+      title: 'Full-Chain Observability',
+      description: 'Request logs, routing decision audit, OTel tracing, SIEM/CEF event export, Djbh 2.0 and GDPR ready.',
     },
     billing: {
-      title: 'Multi-credential Fingerprint Pool + Anti-ban',
-      description: '50+ UA · 35 lang · 11 utls · 5min rotation. Adaptive probing with sub-second failover, near-zero ban rate, ensuring service continuity.',
+      title: 'MaaS Billing System',
+      description: 'Plan + credits + three-pool wallet (subscription / credit / recharge), complete commercialization loop for tenant self-service.',
     },
     multiProtocol: {
-      title: 'Fully Private Deployment',
-      description: '184 k3s + 71 docker · 10-minute installation. Data stays in-house, zero external dependencies, open-source architecture and compliance requirements.',
+      title: 'Multi-Protocol Compatibility',
+      description: 'OpenAI Chat / Anthropic Messages / Responses three inbound protocols unified, seamless access to open source and commercial models.',
     },
     multiTenant: {
-      title: 'Enterprise Management + MaaS',
-      description: 'Plans + credits + top-up · 60%+ cheaper than SaaS. Complete commercialization loop with multi-tenant isolation, PostgreSQL RLS row-level security L1=0.',
+      title: 'Multi-Tenant Isolation',
+      description: 'PostgreSQL RLS row-level security + 43 rounds of audit L1=0, zero data leakage between tenants, independent policy and quota per tenant.',
     },
   },
-  advantagesTitle: 'Differentiated Advantages',
-  advantagesSubtitle: 'What global vendors cannot offer',
+  advantagesTitle: 'Why Choose LLM Gateway',
+  advantagesSubtitle: 'For global enterprises with China business needs',
   advantages: {
     local: {
-      title: 'China Localization',
-      description: 'Full Chinese UI, open-source model priority, Alipay / WeChat Pay, MLPS-compliant templates',
+      title: 'Deep China Localization',
+      description: 'Full Chinese interface, domestic open source LLM priority access, Alipay/WeChat Pay integration, Djbh 2.0 compliance templates, domestic cloud infrastructure ready',
     },
     private: {
       title: 'Private Deployment',
-      description: 'Fully on-prem, data never leaves the enterprise, k3s + Docker dual modes, zero external dependencies',
+      description: 'Fully private deployment, data stays in enterprise, k3s + Docker dual form, zero external dependencies',
     },
     antiBan: {
-      title: 'Anti-ban System',
-      description: '50+ UA rotation + utls TLS fingerprint pool + 11 browser profiles + 5-minute auto rotation',
+      title: 'Anti-Ban System',
+      description: '50+ UA rotation + utls TLS fingerprint pool + 11 browser profiles + 5-minute auto-rotation',
     },
     perf: {
-      title: 'Go High-performance Dataplane',
-      description: 'Native Go, 40MB lightweight image, 200 concurrent P99 < 500ms, stable SSE streaming relay',
+      title: 'Go High-Performance Data Plane',
+      description: 'Native Go implementation, 40MB lightweight image, 200 concurrency P99 < 500ms, SSE streaming stable relay',
     },
   },
-  footer: 'Kaixuan LLM Gateway · [GATEWAY_DOMAIN] · Private deployment · China localization',
-  ariaPoints: 'Highlight points',
+  footer: 'LLM Gateway · llmgateway.internal.example.com · Core Open Source · China Localization · Private Deployment',
+  ariaPoints: 'Key Highlights',
   roadmap: {
-    title: 'Product Evolution Roadmap',
-    subtitle: 'From LLM dataplane to enterprise Agent gateway — built continuously',
+    title: 'Product Roadmap',
+    subtitle: 'From LLM data plane to enterprise Agent gateway, continuous build',
     v31: {
-      phase: 'Step 1',
+      phase: 'v3.1 · 2026 Q3',
       title: 'API Hub Asset Center + MCP Tool Hosting',
-      description:
-        'Unified registration of LLM endpoints, MCP services, and Agents. Developer self-service discovery and reuse. Credential SLA guarantee + semantic cache API.',
+      description: 'Unified registration of LLM endpoints, MCP services and Agents, developer self-service discovery and reuse.',
     },
     v32: {
-      phase: 'Step 2',
-      title: 'Model Armor Security Shield + SIEM Integration',
-      description:
-        'Prompt injection blocking GA, sensitive data masking (SDP), SIEM/SOAR integration. SpecBoost smart enrichment to improve Function Calling accuracy.',
+      phase: 'v3.2 · 2026 Q4',
+      title: 'Security Shield GA + SIEM Integration + SpecBoost',
+      description: 'Prompt injection blocking, sensitive data masking, API description intelligent enrichment to improve Function Calling accuracy.',
     },
     v40: {
-      phase: 'Step 3',
+      phase: 'v4.0 · 2027 Q1',
       title: 'Agent Registry + A2A Protocol Gateway',
-      description:
-        'Cross-agent task delegation and orchestration, OpenClaw and business Agents unified entry. Auto asset discovery + compliance GA + SpecBoost GA.',
+      description: 'Cross-agent task delegation and orchestration, unified access to OpenClaw and business Agents.',
     },
     v50: {
-      phase: 'Step 4',
-      title: 'Industry Solutions GA + External Customers',
-      description:
-        'Customer service, HR, sales, logistics industry templates — out-of-the-box agent solutions. 2 external customers + documentation system + billing online.',
+      phase: 'v5.0 · 2027 Q3',
+      title: 'Industry Solution GA',
+      description: 'Four industry templates for customer service, HR, sales, logistics, out-of-the-box agent solutions.',
     },
   },
 }
