@@ -278,7 +278,12 @@ func parseAnthropicContentBlocks(blocks []any) ([]ContentBlock, error) {
 			}
 
 		case "tool_result":
+			// MiniMax（Anthropic 兼容协议）使用 tool_call_id 字段名。
+			// 优先解析 tool_use_id，回退到 tool_call_id。
 			toolUseID, _ := blockMap["tool_use_id"].(string)
+			if toolUseID == "" {
+				toolUseID, _ = blockMap["tool_call_id"].(string)
+			}
 			content := blockMap["content"]
 			isError, _ := blockMap["is_error"].(bool)
 

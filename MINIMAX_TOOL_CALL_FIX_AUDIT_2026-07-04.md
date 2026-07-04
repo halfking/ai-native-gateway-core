@@ -17,7 +17,7 @@
 |-----|------|------|---------|
 | Bug #1: 序列化丢失 `tool_calls` | ✅ 已修复 | `internal/ir/serialize_openai.go:189-203` | **高危** |
 | Bug #2: 缺少完整性校验 | ✅ 已修复 | `internal/ir/serialize_openai.go:90-98` | **高危** |
-| Bug #3: Anthropic 协议 `tool_call_id` | ⚠️ 需架构决策 | `internal/ir/serialize_anthropic.go` | **中危** |
+| Bug #3: Anthropic 协议 `tool_call_id` | ✅ 已修复 | `internal/ir/serialize_anthropic.go:162-171, 327-330` | **中危** |
 
 ---
 
@@ -304,6 +304,8 @@ if msg.ToolCallID != "" {
 |------|--------|---------|
 | `serialize_openai_toolcalls_test.go` | 2 | Bug #1: 空 content + tool_calls |
 | `serialize_openai_validation_test.go` | 5 | Bug #2: 孤儿 tool result 校验 |
+| `serialize_anthropic_minimax_test.go` | 3 | Bug #3: MiniMax tool_call_id vs tool_use_id |
+| `parse_anthropic_minimax_test.go` | 3 | Bug #3: 解析 tool_call_id (MiniMax) + 完整往返 |
 
 ### 测试用例明细
 
@@ -375,7 +377,7 @@ ok  	github.com/kaixuan/llm-gateway-go/internal/ir	0.213s
 | 1 | `serializeOpenAIMessage` 中空 content 分支是否补 `tool_calls` | `internal/ir/serialize_openai.go:189-203` | ✅ 已修复 |
 | 2 | `SerializeOpenAI` 末尾是否调用 `validateToolCallIntegrity` | `internal/ir/serialize_openai.go:90-98` | ✅ 已添加 |
 | 3 | 是否有同样的 bug 出现在 Gemini / 其他协议序列化器 | `internal/ir/serialize_*.go` | ✅ 仅 OpenAI/Anthropic，已审计 |
-| 4 | `serializeAnthropicMessage` 对 `minimax` provider 的 tool_call_id 分支 | `internal/ir/serialize_anthropic.go:162-163` | ⚠️ 待架构决策 |
+| 4 | `serializeAnthropicMessage` 对 `minimax` provider 的 tool_call_id 分支 | `internal/ir/serialize_anthropic.go:162-171` | ✅ 已处理 |
 | 5 | `Minimax.SerializeRequest` 是否调用 `ensureToolCallID` 兜底 | `internal/adapter/minimax.go` | ❌ 本分支无 adapter 目录 |
 
 ### 6.2 通用审计规则（已应用）
@@ -392,11 +394,18 @@ ok  	github.com/kaixuan/llm-gateway-go/internal/ir	0.213s
 
 ### 修改文件
 
-| 文件 | 变更类型 | 变更行数 | 说明 |
-|------|---------|---------|------|
-| `internal/ir/serialize_openai.go` | 修改 + 新增 | +59 lines | Bug #1 + Bug #2 修复 |
-| `internal/ir/serialize_openai_toolcalls_test.go` | 新增 | +157 lines | Bug #1 测试覆盖 |
-| `internal/ir/serialize_openai_validation_test.go` | 新增 | +213 lines | Bug #2 测试覆盖 |
+| 文件 | 变更类型 | 说明 |
+|------|---------|------|
+| `internal/ir/serialize_openai.go` | 修改 + 新增 | Bug #1 + Bug #2 修复 |
+| `internal/ir/serialize_anthropic.go` | 修改 | Bug #3 修复：tool_call_id 分支 |
+| `internal/ir/parse_anthropic.go` | 修改 | Bug #3 修复：双字段名解析 |
+| `internal/ir/types.go` | 修改 | 添加 TargetProvider 字段 |
+| `domains/streaming/executors/executor_anthropic.go` | 修改 | 传递 cand.CatalogCode 给 IR |
+| `domains/streaming/executors/executor_ir_test.go` | 修改 | 修复测试数据使用合法 tool_call 链路 |
+| `internal/ir/serialize_openai_toolcalls_test.go` | 新增 | Bug #1 测试覆盖 |
+| `internal/ir/serialize_openai_validation_test.go` | 新增 | Bug #2 测试覆盖 |
+| `internal/ir/serialize_anthropic_minimax_test.go` | 新增 | Bug #3 序列化测试 |
+| `internal/ir/parse_anthropic_minimax_test.go` | 新增 | Bug #3 解析测试 + 往返 |
 
 ### Git Diff 摘要
 
@@ -479,14 +488,18 @@ alerts:
 
 | 问题 | 优先级 | 责任方 |
 |------|--------|--------|
-| Bug #3 修复方案选择（架构改动 vs 临时方案） | **高** | 架构组 + 后端组 |
+| ~~Bug #3 修复方案选择~~ | ✅ 已完成 | — |
 | 是否需要在 Anthropic 序列化器也添加孤儿校验 | 中 | 后端组 |
 | 客户端压缩逻辑修复（根因治理） | 高 | 客户端团队 |
 
 ### 9.2 后续任务
 
-1. **Bug #3 修复**（依赖架构决策）
-   - 若选择方案 A，需修改 IR 架构并同步所有 executor
+1. **Bug #3 修复**（已完成 ✅）
+   - 已在 IR 层添加 `TargetProvider` 字段
+   - `serialize_anthropic.go` 的 tool role 和 tool_result 块都根据 provider 分支选择字段名
+   - `parse_anthropic.go` 支持 `tool_call_id` 和 `tool_use_id` 双字段名解析
+   - `executor_anthropic.go` 传递 `cand.CatalogCode` 给 IR
+   - 添加完整的测试覆盖（parse + serialize + round-trip）
    - 若选择方案 B，需在 provider executor 层添加兜底重写
    - 若选择方案 C，需在测试环境验证双字段输出的兼容性
 
