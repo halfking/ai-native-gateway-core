@@ -219,7 +219,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO usage_ledger_default (
+		INSERT INTO usage_ledger (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, credential_id, provider_id, canonical_id,
 			raw_model_name, prompt_tokens, completion_tokens,
@@ -245,7 +245,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_default (
+		INSERT INTO request_logs (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, client_model, outbound_model,
 			credential_id, provider_id, canonical_id,

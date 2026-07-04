@@ -59,6 +59,48 @@
 
 BEGIN;
 
+-- Step 0: Create ensure_usage_ledger_partition function if not exists
+-- This function is normally created in phase-23 but we need it here for migration
+CREATE OR REPLACE FUNCTION ensure_usage_ledger_partition(target_month timestamp with time zone)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    partition_name text;
+    start_date timestamp with time zone;
+    end_date timestamp with time zone;
+BEGIN
+    -- Calculate partition boundaries
+    start_date := date_trunc('month', target_month);
+    end_date := start_date + interval '1 month';
+    partition_name := 'usage_ledger_' || to_char(start_date, 'YYYY_MM');
+
+    -- Check if partition already exists
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relname = partition_name
+          AND n.nspname = 'public'
+    ) THEN
+        RETURN partition_name || ' (already exists)';
+    END IF;
+
+    -- Create partition (heap storage, not columnar, because we need UPDATE support)
+    EXECUTE format(
+        'CREATE TABLE %I PARTITION OF usage_ledger FOR VALUES FROM (%L) TO (%L)',
+        partition_name, start_date, end_date
+    );
+
+    RAISE NOTICE 'ensure_usage_ledger_partition: created % as heap', partition_name;
+    RETURN partition_name;
+END;
+$$;
+
+COMMENT ON FUNCTION ensure_usage_ledger_partition(timestamp with time zone) IS
+'Create monthly partition for usage_ledger. Stays heap storage (not columnar) '
+'because telemetry/client.go performs UPDATE operations on tokens/cost/latency '
+'after streaming completes.';
+
 -- Step 1: Check if table is already partitioned
 DO $$
 BEGIN
