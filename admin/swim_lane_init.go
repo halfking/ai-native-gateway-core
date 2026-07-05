@@ -93,7 +93,7 @@ func (h *Handler) fetchSwimLaneData(ctx context.Context, hours int) ([]SwimLaneR
 			COALESCE(cost_usd, 0) as cost_usd,
 			COALESCE(prompt_tokens, 0) as prompt_tokens,
 			COALESCE(completion_tokens, 0) as completion_tokens
-		FROM request_logs_default
+		FROM request_logs_hot
 		WHERE request_at >= $1
 		ORDER BY request_at DESC
 		LIMIT 500

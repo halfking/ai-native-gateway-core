@@ -274,9 +274,9 @@ func promoteSpecs() []archiveSpec {
 		{fnName: "promote_request_wal_hot_to_partition", label: "request_wal_hot"},
 		{fnName: "promote_routing_decision_log_hot_to_partition", label: "routing_decision_log_hot"},
 		{fnName: "promote_credential_model_index_hot_to_partition", label: "credential_model_index_hot"},
-		{fnName: "promote_request_logs_bodies_default_batch", label: "request_logs_bodies"}, // TODO: migration pending
-		{fnName: "promote_credit_ledger_default_batch", label: "credit_ledger"},             // TODO: migration pending
-		{fnName: "promote_tool_usage_stats_default_batch", label: "tool_usage_stats"},       // TODO: migration pending
+		{fnName: "promote_request_logs_bodies_hot_to_partition", label: "request_logs_bodies"},
+		{fnName: "promote_credit_ledger_hot_to_partition", label: "credit_ledger"},
+		{fnName: "promote_tool_usage_stats_hot_to_partition", label: "tool_usage_stats"},
 	}
 }
 
