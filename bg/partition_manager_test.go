@@ -38,20 +38,21 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 	specs := promoteSpecs()
 
-	// Migration 336 (2026-07-04) installed promote_*_default_batch
-	// functions for every *_default partition created by migrations
-	// 317 / 328a / 330 / 332 / 333 / 334 / 335. Pin the set so a future
-	// table onboarding reminds us to wire both the ensure function
-	// (above) and the promote function.
+	// Migration 341-350 (2026-07-05) replaced *_default catch-all
+	// partitions with independent *_hot tables. promote functions now
+	// use *_hot_to_partition for tables that have been migrated, and
+	// *_default_batch for tables where the hot-table migration is pending.
+	// Pin the set so a future table onboarding reminds us to wire both
+	// the ensure function (above) and the promote function.
 	expected := map[string]bool{
-		"promote_request_logs_default_batch":           false,
-		"promote_request_wal_default_batch":            false,
-		"promote_usage_ledger_default_batch":           false,
-		"promote_routing_decision_log_default_batch":   false,
-		"promote_credential_model_index_default_batch": false,
-		"promote_request_logs_bodies_default_batch":    false,
-		"promote_credit_ledger_default_batch":          false,
-		"promote_tool_usage_stats_default_batch":       false,
+		"promote_request_logs_hot_to_partition":           false,
+		"promote_usage_ledger_hot_to_partition":           false,
+		"promote_request_wal_hot_to_partition":            false,
+		"promote_routing_decision_log_hot_to_partition":   false,
+		"promote_credential_model_index_hot_to_partition": false,
+		"promote_request_logs_bodies_default_batch":       false,
+		"promote_credit_ledger_default_batch":             false,
+		"promote_tool_usage_stats_default_batch":          false,
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
