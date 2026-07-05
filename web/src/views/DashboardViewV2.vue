@@ -194,29 +194,58 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
 
 <template>
   <div class="dashboard-v2">
+    <!-- 紧凑型页面头部 - 单行布局 -->
     <div class="page-header">
-      <div class="page-header-title">
+      <div class="page-header-left">
         <h2>仪表盘</h2>
-        <span class="version-badge">V2</span>
         <MemoraStatusButton />
       </div>
-      <div class="page-header-actions">
+      
+      <div class="page-header-right">
+        <!-- 快捷按钮 -->
+        <button 
+          type="button" 
+          class="quick-btn"
+          @click="openStatsDrawer('apikeys')"
+          :disabled="loading"
+          title="查看API Key排行"
+        >
+          📊 API Key
+        </button>
+        <button 
+          type="button" 
+          class="quick-btn"
+          @click="openStatsDrawer('models')"
+          :disabled="loading"
+          title="查看模型统计"
+        >
+          📈 模型
+        </button>
+        
+        <!-- 租户标签 -->
         <span class="tenant-badge" :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }">
           {{ tenantLabel }}
         </span>
+        
+        <!-- 时间范围选择 -->
         <select v-model.number="days" class="days-select" @change="load">
           <option :value="1">今日</option>
           <option :value="7">近 7 天</option>
           <option :value="30">近 30 天</option>
           <option :value="90">近 90 天</option>
         </select>
-        <button class="btn btn-ghost btn-sm" @click="load" :disabled="loading">刷新</button>
+        
+        <!-- 刷新按钮 -->
+        <button class="btn btn-refresh" @click="load" :disabled="loading" title="刷新数据">
+          <span v-if="loading">⏳</span>
+          <span v-else>🔄</span>
+        </button>
       </div>
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
-    <!-- 紧凑统计行 + 快捷按钮 -->
+    <!-- 紧凑统计行 -->
     <div class="stats-section">
       <div class="stats-row" v-if="summary && overview">
         <!-- 9个指标 -->
@@ -262,26 +291,6 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
       <div class="stats-row stats-row--loading" v-else-if="loading">
         <div class="stat-mini stat-mini--skeleton" v-for="i in 9" :key="i"></div>
       </div>
-      
-      <!-- 快捷按钮 -->
-      <div class="quick-actions">
-        <button 
-          type="button" 
-          class="quick-btn"
-          @click="openStatsDrawer('apikeys')"
-          :disabled="loading"
-        >
-          📊 API Key 排行
-        </button>
-        <button 
-          type="button" 
-          class="quick-btn"
-          @click="openStatsDrawer('models')"
-          :disabled="loading"
-        >
-          📈 模型统计
-        </button>
-      </div>
     </div>
 
     <!-- 实时请求流V2 -->
@@ -312,37 +321,56 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
   justify-content: space-between;
   margin-bottom: 16px;
   gap: 12px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-height: 40px;
 }
 
-.page-header-title {
+.page-header-left {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
 }
 
-.page-header-title h2 {
+.page-header-left h2 {
   margin: 0;
   font-size: 20px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
-.version-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  font-weight: 600;
-  background: rgba(99, 102, 241, 0.15);
-  color: #6366f1;
-}
-
-.page-header-actions {
+.page-header-right {
   display: flex;
   gap: 8px;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.quick-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg, #0f1117);
+  color: var(--text, #e6edf3);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.quick-btn:hover:not(:disabled) {
+  background: var(--bg-subtle, #161b22);
+  border-color: var(--accent, #6366f1);
+}
+
+.quick-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .tenant-badge {
@@ -354,6 +382,8 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
   font-weight: 500;
   background: var(--surface-secondary, #f3f4f6);
   color: var(--text-secondary, #6b7280);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .tenant-badge--admin {
@@ -374,6 +404,32 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
   color: var(--text, #e6edf3);
   font-size: 13px;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 90px;
+}
+
+.btn-refresh {
+  padding: 6px 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg, #0f1117);
+  color: var(--text, #e6edf3);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.btn-refresh:hover:not(:disabled) {
+  background: var(--bg-subtle, #161b22);
+  border-color: var(--accent, #6366f1);
+}
+
+.btn-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .stats-section {
@@ -444,34 +500,14 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
   100% { background-position: -200% 0; }
 }
 
-.quick-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.quick-btn {
-  padding: 8px 16px;
-  border: 1px solid var(--border, #30363d);
-  border-radius: 6px;
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.quick-btn:hover:not(:disabled) {
-  background: var(--bg-subtle, #161b22);
-  border-color: var(--accent, #6366f1);
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-}
-
-.quick-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+@media (max-width: 1024px) {
+  .page-header {
+    flex-wrap: wrap;
+  }
+  
+  .page-header-right {
+    flex-wrap: wrap;
+  }
 }
 
 @media (max-width: 768px) {
@@ -480,8 +516,13 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
     align-items: stretch;
   }
   
-  .page-header-actions {
-    flex-direction: column;
+  .page-header-left,
+  .page-header-right {
+    width: 100%;
+  }
+  
+  .page-header-right {
+    justify-content: space-between;
   }
   
   .stat-mini {
