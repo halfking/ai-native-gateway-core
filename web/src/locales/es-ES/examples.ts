@@ -5,6 +5,28 @@ export default {
   intro: 'El gateway es compatible con la API de OpenAI. Apunte su base_url aquí para usar cualquier modelo compatible, o use la página de "Chat" de la barra lateral.',
   sectionClientConfig: 'Configuraciones comunes de cliente',
   sectionApiExamples: 'Ejemplos de solicitud a la API',
+  tools: {
+    zcode: {
+      name: 'ZCode',
+      description: 'IDE de programación de Zhipu AI, basado en el esquema de configuración de OpenCode',
+    },
+    opencode: {
+      name: 'OpenCode',
+      description: 'Agente de codificación IA de terminal (opencode.ai)',
+    },
+    cursor: {
+      name: 'Cursor',
+      description: 'Editor de código AI-first, compatible con la API de OpenAI',
+    },
+    cherry_studio: {
+      name: 'Cherry Studio',
+      description: 'Cliente de escritorio multi-modelo, admite importación por lotes de proveedores',
+    },
+    roocode: {
+      name: 'Roo Code / VS Code',
+      description: 'VS Code + extensión Roo Code, configurar roo-cline',
+    },
+  },
   keyHint: 'La clave API en el código de ejemplo está enmascarada. Haga clic en "Probar" para ejecutarla con la clave de su sesión actual. Reemplácela con una clave real antes de usarla.',
   copyKey: 'Copiar clave completa',
   copied: '¡Copiado!',
