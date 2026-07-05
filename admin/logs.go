@@ -517,9 +517,10 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	// Detail drawer needs the full payload including outbound_body /
 	// outbound_msg_hashes / compression_meta, so use requestLogsDetailCols
 	// (NOT the slimmed requestLogsListCols used by the list endpoint).
+	// 2026-07-06: 使用视图查询，避免遗漏 hot 表数据（migration 341）
 	err = h.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT %s, rl.request_body::text, rl.response_body::text
-		  FROM request_logs rl
+		  FROM request_logs_with_current_month rl
 		%s
 		 WHERE rl.request_id = $1
 		   AND ($2 OR ak.tenant_id = $3)
