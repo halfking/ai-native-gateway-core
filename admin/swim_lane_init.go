@@ -86,13 +86,13 @@ func (h *Handler) fetchSwimLaneData(ctx context.Context, hours int) ([]SwimLaneR
 			request_at,
 			model,
 			COALESCE(original_model_family, 'unknown') as vendor,
-			COALESCE(credential_name, 'unknown') as provider,
+			COALESCE(NULLIF(credential_name, ''), credential_code) as provider,
 			status,
-			error_kind,
-			latency_ms,
-			cost_usd,
-			prompt_tokens,
-			completion_tokens
+			COALESCE(error_kind, '') as error_kind,
+			COALESCE(latency_ms, 0) as latency_ms,
+			COALESCE(cost_usd, 0) as cost_usd,
+			COALESCE(prompt_tokens, 0) as prompt_tokens,
+			COALESCE(completion_tokens, 0) as completion_tokens
 		FROM request_logs_default
 		WHERE request_at >= $1
 		ORDER BY request_at DESC

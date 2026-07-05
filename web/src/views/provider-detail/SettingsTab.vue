@@ -33,6 +33,7 @@ const formatConversionEnabled = ref<boolean | null>(null)
 
 // Basic provider settings
 const editName = ref(props.provider.display_name)
+const editProviderName = ref(props.provider.name || '')
 const editBaseUrl = ref(props.provider.base_url)
 const editProtocol = ref(props.provider.protocol)
 const editKind = ref(props.provider.kind)
@@ -135,6 +136,7 @@ async function saveFormatConversion(enabled: boolean | null) {
 
 function syncFromProvider(p: ProviderDetail) {
   editName.value = p.display_name
+  editProviderName.value = p.name || ''
   editBaseUrl.value = p.base_url
   editProtocol.value = p.protocol
   editKind.value = p.kind
@@ -156,19 +158,21 @@ async function save() {
   msg.value = ''
   try {
     await updateProvider(props.provider.id, {
-      display_name: editName.value || undefined,
-      base_url: editBaseUrl.value || undefined,
-      protocol: editProtocol.value || undefined,
-      kind: editKind.value || undefined,
-      category: editCategory.value || undefined,
-      discount_rate: editDiscountRate.value != null ? Number(editDiscountRate.value) : undefined,
-      egress_profile: editEgressProfile.value || undefined,
-      notes: editNotes.value || undefined,
+      display_name: editName.value,
+      name: editProviderName.value,
+      base_url: editBaseUrl.value,
+      protocol: editProtocol.value,
+      kind: editKind.value,
+      category: editCategory.value,
+      discount_rate: editDiscountRate.value,
+      egress_profile: editEgressProfile.value,
+      notes: editNotes.value,
     })
-    msg.value = ps('saved')
+    msg.value = ps('saveSuccess')
     emit('refresh')
+    setTimeout(() => { msg.value = '' }, 3000)
   } catch (e: unknown) {
-    msg.value = ps('saveFailed', { msg: e instanceof Error ? e.message : '' })
+    msg.value = ps('saveFailed', { msg: e instanceof Error ? e.message : String(e) })
   } finally {
     saving.value = false
   }
@@ -278,6 +282,12 @@ async function runHealthCheck() {
           <div class="form-group">
             <label>{{ ps('fieldDisplayName') }}</label>
             <input v-model="editName" class="input" />
+            <div class="form-hint">{{ ps('displayNameHint') }}</div>
+          </div>
+          <div class="form-group">
+            <label>供应商名称（Name）</label>
+            <input v-model="editProviderName" class="input" placeholder="留空则使用catalog_code" />
+            <div class="form-hint">用于泳道显示的供应商名称，留空则自动使用catalog_code</div>
           </div>
           <div class="form-group">
             <label>{{ ps('fieldBaseUrl') }}</label>
