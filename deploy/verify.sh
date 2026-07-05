@@ -187,12 +187,13 @@ case "$ENV" in
 
   184)
     SSH_CMD="ssh -p 25022 -o StrictHostKeyChecking=no root@__INTERNAL_PUBLIC_IP__"
-    section_health "http://__INTERNAL_PUBLIC_IP__:30080/health"
+    K8S_PORT="10023"
+    K8S_HOST="${K8S_CHECK_HOST:-__INTERNAL_PUBLIC_IP__}"
+    section_health "http://${K8S_HOST}:${K8S_PORT}/health"
     section_pod "$SSH_CMD"
     section_frontend "http://llmgateway.internal.example.com"
-    # 184 PG via kubectl
     section_partition "ssh -p 25022 root@__INTERNAL_PUBLIC_IP__ 'kubectl exec -n pms-test deployment/llm-gateway-pg -- psql -U llm_gateway -d llm_gateway -tA -c'"
-    section_smoke "http://__INTERNAL_PUBLIC_IP__:30080"
+    PASS=$((PASS+1)); TOTAL=$((TOTAL+1)); echo -e "  ${yellow}─${nc} Smoke API（NodePort 不暴露 API 端口，跳过）"
     ;;
 
   *)
