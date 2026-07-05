@@ -105,7 +105,7 @@ autoroute/
 
 ### 数据库
 ```
-sql/schema/
+sql/scripts/
   └── 20260629_auto_control.sql ✅ 完整的migration脚本
 ```
 

@@ -9,8 +9,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MIGRATIONS_DIR="${SCRIPT_DIR}/../db/migrations"
-TESTS_DIR="${SCRIPT_DIR}/../db/tests"
+MIGRATIONS_DIR="${SCRIPT_DIR}/../sql/migrations/startup"
+TESTS_DIR="${SCRIPT_DIR}/../sql/tests"
 
 # ============================================================
 # 环境配置
