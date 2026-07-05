@@ -815,7 +815,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.ClientTimeout,
 		entry.ClientEndpoint,
 		entry.StreamChunkErrors,
-		entry.StreamChunksSent,
+		// 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
+		// streamChunksSentArg() coerces nil pointer to 0 so the explicit
+		// INSERT never trips SQLSTATE 23502 even when the caller does
+		// not set the field (e.g. /api/telemetry/request-log HTTP path).
+		streamChunksSentArg(entry.StreamChunksSent),
 		// 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
 		attachmentsArg(entry.Attachments),
 	)
@@ -1205,6 +1209,22 @@ func attachmentsArg(raw json.RawMessage) any {
 		return nil
 	}
 	return []byte(raw)
+}
+
+// streamChunksSentArg returns a value safe to bind to the NOT NULL
+// request_logs.stream_chunks_sent integer column. The column has a
+// DEFAULT 0 but, like every other NOT NULL column in the explicit
+// INSERT, an explicit bind OVERRIDES the default — and binding a
+// nil *int from Go produces SQL NULL, tripping SQLSTATE 23502. We
+// therefore coerce nil → 0 so that callers that don't populate this
+// field (e.g. the /api/telemetry/request-log HTTP path, or any code
+// path that predates migration 320) still get a successful INSERT.
+// 2026-07-05 P0 fix: required by the hot-table migration.
+func streamChunksSentArg(v *int) any {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 func coalesceRawModels(models []string) []string {
