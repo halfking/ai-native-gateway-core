@@ -148,6 +148,16 @@ deploy/prod-*.yml
 # 加密文件可提交
 # .env.*.enc
 deployment-report-*.md
+FINAL_AUDIT_REPORT_*.md
+FINAL_SUMMARY_REPORT.md
+FINAL_SUMMARY.md
+FINAL_COMPLETION_REPORT.md
+*_REPORT.md
+*_SUMMARY.md
+*_AUDIT.md
+TEST_RESULTS_*.md
+test_output.log
+reports/
 _to-be-deprecated/
 Dockerfile.web-fix
 web-dist.tar.gz
