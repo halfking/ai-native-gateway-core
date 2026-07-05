@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch, inject, type Ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStream from '../components/LiveRequestStream.vue'
@@ -24,6 +24,12 @@ import {
 } from '../api'
 import { useLiveStream } from '../composables/useLiveStream'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
+
+// 从父组件注入版本切换器
+const versionSwitcher = inject<{
+  version: Ref<'v1' | 'v2'>
+  switchVersion: (v: 'v1' | 'v2') => void
+}>('versionSwitcher')
 
 const days    = ref(7)
 const summary = ref<UsageSummary | null>(null)
@@ -291,6 +297,29 @@ scheduleStatsRecalibrate()
     <div class="page-header">
       <div class="page-header-title">
         <h2>仪表盘</h2>
+        
+        <!-- 版本切换器（集成到标题旁） -->
+        <div v-if="versionSwitcher" class="version-switcher">
+          <button
+            type="button"
+            class="version-btn"
+            :class="{ 'version-btn--active': versionSwitcher.version.value === 'v2' }"
+            @click="versionSwitcher.switchVersion('v2')"
+            title="新版仪表盘（推荐）- 泳道可视化"
+          >
+            V2
+          </button>
+          <button
+            type="button"
+            class="version-btn"
+            :class="{ 'version-btn--active': versionSwitcher.version.value === 'v1' }"
+            @click="versionSwitcher.switchVersion('v1')"
+            title="旧版仪表盘"
+          >
+            V1
+          </button>
+        </div>
+        
         <MemoraStatusButton />
       </div>
       <div class="page-header-actions">
@@ -636,5 +665,40 @@ scheduleStatsRecalibrate()
 .probe-failures-meta {
   color: var(--text-secondary, #6b7280);
   font-size: 11px;
+}
+
+/* 版本切换器样式（与V2保持一致） */
+.version-switcher {
+  display: inline-flex;
+  gap: 3px;
+  padding: 2px;
+  background: var(--bg-subtle, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 5px;
+}
+
+.version-btn {
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  min-width: 36px;
+}
+
+.version-btn:hover {
+  color: var(--text, #e6edf3);
+  background: var(--bg, #0f1117);
+}
+
+.version-btn--active {
+  background: var(--accent, #6366f1);
+  color: white;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 </style>
