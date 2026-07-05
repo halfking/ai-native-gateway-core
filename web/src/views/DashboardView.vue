@@ -25,6 +25,7 @@ const STORAGE_KEY = 'dashboard_version'
 
 // 版本选择（默认V2）
 const version = ref<'v1' | 'v2'>('v2')
+const swimLaneReinitKey = ref(0) // 用于强制重新初始化泳道
 
 // 是否为默认租户
 const isDefault = computed(() => isDefaultTenant())
@@ -65,6 +66,12 @@ onMounted(() => {
 function switchVersion(v: 'v1' | 'v2') {
   version.value = v
   localStorage.setItem(STORAGE_KEY, v)
+  
+  // 切换到V2时，强制重新初始化泳道
+  // 这样可以从缓存的liveRequests中重新加载数据
+  if (v === 'v2') {
+    swimLaneReinitKey.value++
+  }
 }
 
 // 加载数据
@@ -140,6 +147,9 @@ provide('versionSwitcher', {
   version,
   switchVersion,
 })
+
+// 提供泳道重新初始化key给V2
+provide('swimLaneReinitKey', swimLaneReinitKey)
 </script>
 
 <template>
