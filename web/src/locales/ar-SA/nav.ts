@@ -1,10 +1,10 @@
 // Auto-translated draft (ar-SA) · 2026-07-02 · please review
 // nav.ts — نصوص التنقل في الشريط الجانبي، المطابقة لـ NAV_PRIMARY_ITEMS / NAV_GROUPS في config/appNav.ts.
-// تسمية المفاتيح: nav.<group>.<item> أو nav.primary.<item>، مطابقة لـ labelKey في appNav.
+// تسمية المفاتيح: nav.<group>.<item>، مطابقة لـ labelKey في appNav.
 export default {
-  primary: {
-    overview: 'نظرة عامة',
-  },
+  collapseSidebar: 'طي الشريط الجانبي',
+  expandSidebar: 'توسيع الشريط الجانبي',
+
   group: {
     tenantPortal: 'خدماتي',
     modelsRouting: 'النماذج والتوجيه',
@@ -14,14 +14,17 @@ export default {
     guide: 'دليل التكامل',
     chat: 'محادثة',
   },
+
   item: {
+    overview: 'نظرة عامة',
     tenantModels: 'النماذج القياسية',
     tenantAccount: 'حسابي',
     tenantPricing: 'الباقات والشحن',
     tenantUsage: 'استهلاكي',
-    modelsCatalog: 'النماذج والكتالوج',
+    models: 'النماذج والكتالوج',
     routingOverview: 'نظرة التوجيه',
-    routingCredentials: 'مراقبة بيانات الاعتماد',
+    credentialMonitor: 'مراقبة بيانات الاعتماد',
+    probeHealth: 'صحة الاستكشاف',
     providers: 'المزودون',
     pricing: 'تكلفة التسعير',
     modelPricing: 'إدارة التسعير',
@@ -36,8 +39,11 @@ export default {
     sessionCompare: 'مقارنة الجلسات',
     compression: 'نظرة الضغط',
     sessionContext: 'سياق الجلسة',
-    adminSettings: 'إعدادات النظام',
+    settings: 'إعدادات النظام',
     dataLifecycle: 'دورة حياة البيانات',
+    formatAnomalies: 'مراقبة شذوذ التنسيق',
+    modules: 'إدارة الوحدات',
+    agents: 'سجل الوكلاء',
     examples: 'أمثلة التكامل',
     chat: 'محادثة',
   },

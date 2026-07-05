@@ -1,9 +1,9 @@
 // Auto-translated draft (de-DE) · 2026-07-02 · please review
 // nav.ts — sidebar navigation labels, mirroring config/appNav.ts NAV_PRIMARY_ITEMS / NAV_GROUPS.
 export default {
-  primary: {
-    overview: 'Übersicht',
-  },
+  collapseSidebar: 'Seitenleiste einklappen',
+  expandSidebar: 'Seitenleiste ausklappen',
+
   group: {
     tenantPortal: 'Meine Dienste',
     modelsRouting: 'Modelle & Routing',
@@ -13,14 +13,17 @@ export default {
     guide: 'Onboarding',
     chat: 'Chat',
   },
+
   item: {
+    overview: 'Übersicht',
     tenantModels: 'Standardmodelle',
     tenantAccount: 'Mein Konto',
     tenantPricing: 'Tarife & Aufladung',
     tenantUsage: 'Meine Nutzung',
-    modelsCatalog: 'Modelle & Katalog',
+    models: 'Modelle & Katalog',
     routingOverview: 'Routing-Übersicht',
-    routingCredentials: 'Anmeldedaten-Überwachung',
+    credentialMonitor: 'Anmeldedaten-Überwachung',
+    probeHealth: 'Sondengesundheit',
     providers: 'Anbieter',
     pricing: 'Kostenpreise',
     modelPricing: 'Preisverwaltung',
@@ -35,8 +38,11 @@ export default {
     sessionCompare: 'Sitzungsvergleich',
     compression: 'Komprimierung',
     sessionContext: 'Sitzungskontext',
-    adminSettings: 'Systemeinstellungen',
+    settings: 'Systemeinstellungen',
     dataLifecycle: 'Datenlebenszyklus',
+    formatAnomalies: 'Formatanomalie-Überwachung',
+    modules: 'Modulverwaltung',
+    agents: 'Agent-Registry',
     examples: 'Beispiele',
     chat: 'Chat',
   },

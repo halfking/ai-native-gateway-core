@@ -106,6 +106,7 @@ export default {
       status: '状态',
       openai: 'OpenAI',
       anthropic: 'Anthropic',
+      domestic: '本地',
       oss: '开源',
       other: '其他',
       success: '成功',
