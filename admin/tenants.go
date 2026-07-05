@@ -684,7 +684,7 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	usageTable := "usage_ledger"
 	if days <= 7 {
 		logsTable = "request_logs_hot"
-		usageTable = "usage_ledger_default"
+		usageTable = "usage_ledger_hot"
 	}
 
 	// Overall totals (upstream cost from usage_ledger; credits from request_logs)
