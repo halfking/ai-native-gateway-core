@@ -439,13 +439,14 @@ onMounted(load)
   color: var(--muted);
 }
 .days-select {
-  width: 100px;
+  width: auto;
   padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
   font-size: 13px;
+  min-width: 80px;
 }
 .stat-grid {
   display: grid;

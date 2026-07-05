@@ -326,7 +326,7 @@ scheduleStatsRecalibrate()
         <span class="tenant-badge" :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }">
           {{ tenantLabel }}
         </span>
-        <select v-model.number="days" style="width:100px" @change="load">
+        <select v-model.number="days" class="days-select" @change="load">
           <option :value="1">今日</option>
           <option :value="7">近 7 天</option>
           <option :value="30">近 30 天</option>
@@ -615,6 +615,17 @@ scheduleStatsRecalibrate()
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.days-select {
+  width: auto;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+  min-width: 80px;
 }
 
 /* Model probe failures (spec 2026-06-18-model-probe-rounds) */

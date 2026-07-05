@@ -370,6 +370,7 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
 }
 
 .days-select {
+  width: auto;
   padding: 6px 12px;
   border: 1px solid var(--border, #30363d);
   border-radius: 6px;
@@ -379,7 +380,7 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
-  min-width: 90px;
+  min-width: 80px;
 }
 
 .btn-refresh {
