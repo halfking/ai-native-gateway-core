@@ -307,10 +307,10 @@ onMounted(() => {
               :disabled="toggling === selectedModule.key"
               @click="doToggle(selectedModule.key)"
             >
-              {{ toggling === selectedModule.key ? '处理中…' : selectedEnabled ? '禁用此模块' : '启用此模块' }}
+              {{ toggling === selectedModule.key ? t('modulesView.status.processing') : selectedEnabled ? t('modulesView.status.enabledAction') : t('modulesView.status.disabledAction') }}
             </button>
             <button class="btn-ghost" @click="goToSettings(selectedModule.key)">
-              查看所有系统设置
+              {{ t('modulesView.overview.viewAllSettings') }}
             </button>
           </div>
         </div>
@@ -318,7 +318,7 @@ onMounted(() => {
         <!-- Config tab -->
         <div v-if="activeTab === 'config'" class="tab-content">
           <div class="info-section" v-if="moduleSettings.length === 0">
-            <p class="text-muted">此模块没有可配置的设置项。</p>
+            <p class="text-muted">{{ t('modulesView.config.noSettings') }}</p>
           </div>
           <div
             v-for="setting in moduleSettings"
@@ -328,7 +328,7 @@ onMounted(() => {
             <div class="config-header">
               <code class="config-key">{{ setting.key }}</code>
               <span class="src-badge" :class="'src-' + setting.source">
-                {{ setting.source || '默认' }}
+                {{ setting.source || t('modulesView.config.sourceDefault') }}
               </span>
             </div>
             <p class="config-desc">{{ setting.description }}</p>
@@ -345,7 +345,7 @@ onMounted(() => {
                   <span class="toggle-track-sm">
                     <span class="toggle-knob-sm" />
                   </span>
-                  <span class="switch-text-sm">{{ setting.value === true ? '启用' : '禁用' }}</span>
+                  <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
                 </label>
               </div>
               <!-- Number -->
@@ -365,7 +365,7 @@ onMounted(() => {
                   class="text-input"
                   :value="setting.value ?? setting.default"
                   @change="saveSetting(setting.key, ($event.target as HTMLInputElement).value)"
-                  :placeholder="'输入' + setting.description"
+                  :placeholder="t('modulesView.config.inputPlaceholder', { description: setting.description })"
                 />
               </div>
               <!-- Select (enum) -->
@@ -394,13 +394,16 @@ onMounted(() => {
                 {{ selectedModule.key === 'feishu_bot' ? '📱' : '🔗' }}
               </span>
               <div class="integ-info">
-                <h3 class="integ-title">{{ selectedModule.integration.label }} 集成</h3>
-                <p class="integ-desc">{{ selectedModule.integration.description }}</p>
+<h3 class="integ-title">
+                {{ selectedModule.key === 'feishu_bot' ? t('modulesView.integration.feishuBotIntegration') : selectedModule.integration.label }}
+                {{ t('modulesView.tabs.integration') }}
+              </h3>
+              <p class="integ-desc">{{ selectedModule.integration.description }}</p>
               </div>
             </div>
             <div class="integ-body">
               <div class="integ-docs" v-if="selectedModule.integration.doc_url">
-                <span class="integ-docs-label">对接文档：</span>
+                <span class="integ-docs-label">{{ t('modulesView.integration.docsLabel') }}</span>
                 <a
                   :href="selectedModule.integration.doc_url"
                   target="_blank"
@@ -409,17 +412,14 @@ onMounted(() => {
                 >{{ selectedModule.integration.doc_url }}</a>
               </div>
               <div class="integ-steps">
-                <h4 class="steps-title">配置步骤</h4>
+                <h4 class="steps-title">{{ t('modulesView.integration.stepsTitle') }}</h4>
                 <ol class="steps-list">
-                  <li>在飞书开放平台创建自定义机器人</li>
-                  <li>复制 Webhook URL 并粘贴到下方配置中</li>
-                  <li>（可选）配置签名验证令牌</li>
-                  <li>开启"飞书机器人集成"开关</li>
+                  <li v-for="(step, i) in t('modulesView.integration.feishuSteps')" :key="i">{{ step }}</li>
                 </ol>
               </div>
               <div class="integ-status">
                 <span class="status-indicator" :class="selectedEnabled ? 'connected' : 'disconnected'" />
-                <span>{{ selectedEnabled ? '集成已启用' : '集成未启用 — 请先开启此模块' }}</span>
+                <span>{{ selectedEnabled ? t('modulesView.integration.enabledStatus') : t('modulesView.integration.disabledHint') }}</span>
               </div>
             </div>
           </div>
@@ -430,7 +430,7 @@ onMounted(() => {
       <aside v-else class="detail-pane detail-empty">
         <div class="empty-state">
           <span class="empty-icon">⚙️</span>
-          <p>选择一个模块查看详情与配置</p>
+          <p>{{ t('modulesView.empty.selectModule') }}</p>
         </div>
       </aside>
     </div>
