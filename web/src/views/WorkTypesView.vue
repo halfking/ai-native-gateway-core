@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -13,6 +14,9 @@ import {
 } from '../api-autoroute'
 import { probeModel, type ProbeResult } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
+
+const { t } = useI18n()
+
 
 const MAX_ROUTES = 3
 
@@ -204,7 +208,7 @@ async function saveDetailMeta() {
       sort_order: detailForm.value.sort_order,
     })
     syncDetailForm(detail.value)
-    detailMsg.value = '基本配置已保存'
+    detailMsg.value = t('workTypes.savedOk')
     await loadSettings()
   } catch (e) {
     detailMsg.value = String(e)
@@ -216,7 +220,7 @@ async function saveDetailMeta() {
 async function toggleEnabled() {
   if (!detail.value || !detailKey.value) return
   const next = !detail.value.enabled
-  const msg = next ? '启用' : '禁用'
+  const msg = next ? t('workTypes.enable') : t('workTypes.disable')
   if (!next && !confirm(`确定${msg}工作类型「${detail.value.label}」？`)) return
   try {
     if (next) {
@@ -241,7 +245,7 @@ async function saveRoutes() {
     await putWorkTypeRoutes(detailKey.value, payload)
     detail.value = await getWorkType(detailKey.value)
     routesDraft.value = (detail.value.model_routes ?? []).slice(0, MAX_ROUTES).map(r => ({ ...r }))
-    routesMsg.value = '模型路由已保存'
+    routesMsg.value = t('workTypes.savedOk')
     await loadSettings()
   } catch (e) {
     routesMsg.value = String(e)
@@ -267,7 +271,7 @@ async function testRoute(rt: ModelRoute) {
   try {
     testResults.value[name] = await probeModel(name, [{ role: 'user', content: 'ping' }], 8)
   } catch (e) {
-    testErrors.value[name] = e instanceof Error ? e.message : '测试失败'
+    testErrors.value[name] = e instanceof Error ? e.message : t('workTypes.testFailedShort')
     delete testResults.value[name]
   } finally {
     if (testingModel.value === name) testingModel.value = null
@@ -429,14 +433,14 @@ watch(activeTab, (tab) => {
           <code class="key-code">{{ detail.key }}</code>
         </div>
         <span :class="detail.enabled ? 'badge badge-green' : 'badge badge-red'">
-          {{ detail.enabled ? '已启用' : '已禁用' }}
+          {{ detail.enabled ? t('workTypes.enabled') : t('workTypes.disabled') }}
         </span>
         <button
           class="btn btn-sm"
           :class="detail.enabled ? 'btn-ghost' : 'btn-primary'"
           @click="toggleEnabled"
         >
-          {{ detail.enabled ? '禁用' : '启用' }}
+          {{ detail.enabled ? t('workTypes.disable') : t('workTypes.enable') }}
         </button>
       </div>
 
@@ -446,7 +450,7 @@ watch(activeTab, (tab) => {
             <span class="layer-tag l1">WT</span>
             <h3>基本配置</h3>
             <button class="btn btn-primary btn-sm" :disabled="detailSaving" @click="saveDetailMeta">
-              {{ detailSaving ? '保存中…' : '保存' }}
+              {{ detailSaving ? t('workTypes.saving') : t('workTypes.save') }}
             </button>
           </div>
           <div v-if="detailMsg" class="inline-msg">{{ detailMsg }}</div>
@@ -484,7 +488,7 @@ watch(activeTab, (tab) => {
               @click="addRouteRow"
             >+ 添加</button>
             <button class="btn btn-primary btn-sm" :disabled="routesSaving" @click="saveRoutes">
-              {{ routesSaving ? '保存中…' : '保存路由' }}
+              {{ routesSaving ? t('workTypes.saving') : t('workTypes.saveBtn') }}
             </button>
           </div>
           <div v-if="routesMsg" class="inline-msg">{{ routesMsg }}</div>
@@ -528,14 +532,14 @@ watch(activeTab, (tab) => {
                   :disabled="!rt.canonical_name.trim() || testingModel === rt.canonical_name"
                   @click="testRoute(rt)"
                 >
-                  {{ testingModel === rt.canonical_name ? '测试中…' : '测试' }}
+                  {{ testingModel === rt.canonical_name ? t('workTypes.testing') : t('workTypes.test') }}
                 </button>
               </div>
               <div v-if="testErrors[rt.canonical_name]" class="test-result test-result--fail">
                 {{ testErrors[rt.canonical_name] }}
               </div>
               <div v-else-if="testResults[rt.canonical_name]" class="test-result" :class="testResults[rt.canonical_name].success ? 'test-result--ok' : 'test-result--fail'">
-                <span>{{ testResults[rt.canonical_name].success ? '成功' : '失败' }}</span>
+                <span>{{ testResults[rt.canonical_name].success ? t('workTypes.testOk') : t('workTypes.testFail') }}</span>
                 <span v-if="testResults[rt.canonical_name].latency_ms != null">{{ testResults[rt.canonical_name].latency_ms }}ms</span>
                 <span v-if="testResults[rt.canonical_name].model_name">{{ testResults[rt.canonical_name].provider_name }}</span>
                 <span v-if="testResults[rt.canonical_name].error" class="test-err">{{ testResults[rt.canonical_name].error }}</span>
@@ -545,7 +549,7 @@ watch(activeTab, (tab) => {
 
           <div v-if="routesDraft.length" class="route-actions">
             <button class="btn btn-ghost btn-sm" :disabled="testingAll" @click="testAllRoutes">
-              {{ testingAll ? '批量测试中…' : '测试全部启用路由' }}
+              {{ testingAll ? t('workTypes.testingAll') : t('workTypes.testAll') }}
             </button>
           </div>
         </section>
@@ -605,7 +609,7 @@ watch(activeTab, (tab) => {
                   <span v-if="!routeSummary(wt).length" class="text-muted">未配置</span>
                   <span v-for="m in routeSummary(wt)" :key="m" class="route-chip">{{ m }}</span>
                 </td>
-                <td><span :class="wt.enabled ? 'badge badge-green' : 'badge badge-red'">{{ wt.enabled ? '启用' : '禁用' }}</span></td>
+                <td><span :class="wt.enabled ? 'badge badge-green' : 'badge badge-red'">{{ wt.enabled ? t('workTypes.enable') : t('workTypes.disable') }}</span></td>
               </tr>
             </tbody>
           </table>

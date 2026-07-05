@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, getKeyConflict, type ApiKey, type KeyCreatedResponse, type DefaultLimits, type KeyConflict } from '../api'
 import { store, clearApiKey, setApiKey, setPreferredChatKeyId, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import FilterInput from '../components/FilterInput.vue'
+
+const { t } = useI18n()
+
 
 const router = useRouter()
 const route = useRoute()
@@ -37,9 +41,9 @@ function keyState(k: ApiKey): 'active' | 'pending' | 'closed' {
 }
 
 function keyStateLabel(k: ApiKey): string {
-  if (k.status === 'pending') return '待审批'
-  if (k.status === 'active' && !isExpired(k) && k.enabled) return '正常'
-  return isExpired(k) ? '已过期' : '已作废'
+  if (k.status === 'pending') return t('keys.pending')
+  if (k.status === 'active' && !isExpired(k) && k.enabled) return t('keys.active')
+  return isExpired(k) ? t('keys.expired') : t('keys.revoked')
 }
 
 function keyStateBadgeClass(k: ApiKey): string {
@@ -56,10 +60,10 @@ const statusTabs = computed(() => {
     summary[keyState(k)] += 1
   }
   return [
-    { value: 'all' as const, label: '全部', count: summary.all },
-    { value: 'active' as const, label: '可用', count: summary.active },
-    { value: 'pending' as const, label: '待审', count: summary.pending },
-    { value: 'closed' as const, label: '已作废/过期', count: summary.closed },
+    { value: 'all' as const, label: t('keys.all'), count: summary.all },
+    { value: 'active' as const, label: t('keys.active'), count: summary.active },
+    { value: 'pending' as const, label: t('keys.pendingShort'), count: summary.pending },
+    { value: 'closed' as const, label: t('keys.closed'), count: summary.closed },
   ]
 })
 
@@ -243,7 +247,7 @@ async function saveKeyProfile() {
     closeKeyDrawer()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '保存失败'
+    error.value = e instanceof Error ? e.message : t('keys.saveFailed')
   } finally {
     profileSaving.value = false
   }
@@ -255,7 +259,7 @@ async function load() {
   try {
     keys.value = await getKeys()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('keys.loadFailed')
   } finally {
     loading.value = false
   }
@@ -284,8 +288,8 @@ function openNew() {
 }
 
 async function submitNew() {
-  if (!newApp.value) { newErr.value = '请填写应用代码'; return }
-  if (!newKeyAlias.value.trim()) { newErr.value = '请填写密钥别名'; return }
+  if (!newApp.value) { newErr.value = t('keys.appCodeRequired'); return }
+  if (!newKeyAlias.value.trim()) { newErr.value = t('keys.aliasRequired'); return }
   if (newConflict.value) {
     newErr.value = newConflict.value.isSystem
       ? `系统密钥 #${newConflict.value.id} (${newConflict.value.prefix}****) 已占用该租户+应用+别名，请先禁用或吊销后再签发。`
@@ -307,7 +311,7 @@ async function submitNew() {
     createdKey.value = resp
     await load()
   } catch (e: unknown) {
-    newErr.value = e instanceof Error ? e.message : '创建失败'
+    newErr.value = e instanceof Error ? e.message : t('keys.createFailed')
   } finally {
     newSaving.value = false
   }
@@ -319,7 +323,7 @@ async function revoke(k: ApiKey) {
     await revokeKey(k.id)
     keys.value = keys.value.filter(x => x.id !== k.id)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '吊销失败'
+    error.value = e instanceof Error ? e.message : t('keys.revokeFailed')
   }
 }
 
@@ -381,14 +385,14 @@ async function copyKey(k: ApiKey, id: string) {
     }
     await copyText(val)
     copiedId.value = id
-    copyNotice.value = '已复制完整密钥'
+    copyNotice.value = t('keys.copiedFullKey')
   } catch (e) {
     // 409 means key was created before encrypted storage feature - can't reveal retroactively
     const msg = e instanceof Error ? e.message : String(e)
     if (msg.includes('No encrypted key stored') || msg.includes('409')) {
-      copyNotice.value = '此密钥不支持复制完整内容，请重新签发密钥'
+      copyNotice.value = t('keys.copyNotSupported')
     } else {
-      copyNotice.value = msg || '复制失败'
+      copyNotice.value = msg || t('keys.copyFailed')
     }
   }
   if (copyNoticeTimer) window.clearTimeout(copyNoticeTimer)
@@ -401,12 +405,12 @@ async function copyKey(k: ApiKey, id: string) {
 async function copyCreatedKey(id: string) {
   const val = createdKey.value?.api_key
   try {
-    if (!val) throw new Error('后端未返回有效密钥')
+    if (!val) throw new Error(t('keys.backendNoValidKey'))
     await copyText(val)
     copiedId.value = id
-    copyNotice.value = '已复制完整密钥'
+    copyNotice.value = t('keys.copiedFullKey')
   } catch (e) {
-    copyNotice.value = e instanceof Error ? e.message : '复制失败，请手动复制'
+    copyNotice.value = e instanceof Error ? e.message : t('keys.copyFailedManual')
   }
   if (copyNoticeTimer) window.clearTimeout(copyNoticeTimer)
   copyNoticeTimer = window.setTimeout(() => {
@@ -423,7 +427,7 @@ async function approveSelected() {
     closeKeyDrawer()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '审批失败'
+    error.value = e instanceof Error ? e.message : t('keys.approveFailed')
   }
 }
 
@@ -431,7 +435,7 @@ async function disableSelected() {
   const k = selectedKey.value
   if (!k) return
   if ((k as any).is_system) {
-    error.value = '系统密钥无法禁用'
+    error.value = t('keys.systemKeyCannotDisable')
     return
   }
   if (!confirm(`确认禁用密钥 ${k.key_prefix}？可通过"启用"恢复。`)) return
@@ -446,7 +450,7 @@ async function disableSelected() {
     closeKeyDrawer()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '禁用失败'
+    error.value = e instanceof Error ? e.message : t('keys.disableFailed')
   }
 }
 
@@ -458,7 +462,7 @@ async function enableSelected() {
     closeKeyDrawer()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '启用失败'
+    error.value = e instanceof Error ? e.message : t('keys.enableFailed')
   }
 }
 
@@ -481,7 +485,7 @@ function rateLimitLabel(k: ApiKey): string {
   const conc = k.rate_limit_concurrent
   if (rpm == null && conc == null) {
     const d = defaultLimits.value
-    const parts: string[] = ['默认配置']
+    const parts: string[] = [t('keys.defaultConfig')]
     if (d.rate_limit_rpm) parts.push(`${d.rate_limit_rpm} RPM`)
     if (d.rate_limit_concurrent) parts.push(`${d.rate_limit_concurrent} 并发`)
     return parts.join(' (') + (parts.length > 1 ? ')' : '')
@@ -508,10 +512,10 @@ async function saveDefaultLimits() {
       data.rate_limit_tpm = null
     }
     await setDefaultLimits(data as DefaultLimits)
-    limitsSuccess.value = '默认限制已保存，将在 15 秒内生效'
+    limitsSuccess.value = t('keys.savedToast')
     showDefaultLimits.value = false
   } catch (e: unknown) {
-    limitsErr.value = e instanceof Error ? e.message : '保存失败'
+    limitsErr.value = e instanceof Error ? e.message : t('keys.saveFailed')
   } finally {
     limitsSaving.value = false
   }
@@ -545,9 +549,9 @@ async function useExistingKeyAndReturn(k: ApiKey) {
     const dest = redirectAfter.value
     if (dest) await router.push(dest)
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : '获取密钥失败'
+    const msg = e instanceof Error ? e.message : t('keys.getKeyFailed')
     error.value = msg.includes('no ciphertext')
-      ? '此密钥无法还原完整内容，请重新签发'
+      ? t('keys.cannotRestoreFullKey')
       : msg
   }
 }
@@ -582,7 +586,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
-    <div v-if="copyNotice" class="copy-toast" :class="{ error: copyNotice.startsWith('复制失败') }">{{ copyNotice }}</div>
+    <div v-if="copyNotice" class="copy-toast" :class="{ error: copyNotice.startsWith(t('keys.copyFailed')) }">{{ copyNotice }}</div>
     <div v-if="loading" class="empty">加载中…</div>
 
     <div class="card" v-if="!loading">
@@ -688,7 +692,7 @@ onBeforeUnmount(() => {
               </span>
               <span v-if="(k as any).is_system" class="badge badge-system">系统</span>
             </td>
-            <td>{{ k.budget_usd != null ? fmtCost(k.budget_usd) : '无限制' }}</td>
+            <td>{{ k.budget_usd != null ? fmtCost(k.budget_usd) : t('keys.unlimited') }}</td>
             <td>{{ rateLimitLabel(k) }}</td>
             <td style="font-size:12px;color:var(--muted);text-align:right">{{ formatRequests(k.total_requests) }}</td>
             <td style="font-size:12px;color:var(--muted);text-align:right" :title="`入 ${formatTokens(k.total_prompt_tokens)} / 出 ${formatTokens(k.total_completion_tokens)}`">
@@ -741,7 +745,7 @@ onBeforeUnmount(() => {
                   <span class="badge" :class="keyStateBadgeClass(selectedKey)">{{ keyStateLabel(selectedKey) }}</span>
                   <span v-if="(selectedKey as any).is_system" class="badge badge-system">系统</span>
                 </span>
-                <span class="dk">预算</span><span class="dv">{{ selectedKey.budget_usd != null ? fmtCost(selectedKey.budget_usd) : '无限制' }}</span>
+                <span class="dk">预算</span><span class="dv">{{ selectedKey.budget_usd != null ? fmtCost(selectedKey.budget_usd) : t('keys.unlimited') }}</span>
                 <span class="dk">速率限制</span><span class="dv">{{ rateLimitLabel(selectedKey) }}</span>
                 <span class="dk">到期</span><span class="dv">{{ fmtDate(selectedKey.expires_at) }}</span>
                 <span class="dk">备注</span><span class="dv">{{ selectedKey.remark || '—' }}</span>
@@ -784,7 +788,7 @@ onBeforeUnmount(() => {
                 :class="{ 'btn-success': copiedId === `drawer-${selectedKey.id}` }"
                 @click="copySelectedKey"
               >
-                {{ copiedId === `drawer-${selectedKey.id}` ? '✓ 已复制' : '📋 复制密钥' }}
+                {{ copiedId === `drawer-${selectedKey.id}` ? t('keys.copied') : t('keys.copy') }}
               </button>
               <button class="btn btn-secondary btn-sm" @click="viewStats(selectedKey)">📊 使用统计</button>
               <button
@@ -806,7 +810,7 @@ onBeforeUnmount(() => {
             <div class="drawer-save-row">
               <button class="btn btn-ghost" @click="closeKeyDrawer">取消</button>
               <button class="btn btn-primary" @click="saveKeyProfile" :disabled="profileSaving">
-                {{ profileSaving ? '保存中…' : '保存' }}
+                {{ profileSaving ? t('keys.saving') : t('keys.save') }}
               </button>
             </div>
           </div>
@@ -822,7 +826,7 @@ onBeforeUnmount(() => {
         <template v-if="createdKey">
           <div class="alert alert-success">密钥已创建，请立即保存！关闭后无法再次查看完整密钥。</div>
           <div class="key-display">
-            <code>{{ createdKey.api_key || '（密钥返回异常）' }}</code>
+            <code>{{ createdKey.api_key || t('keys.keyMissing') }}</code>
           </div>
           <div class="key-copy-row">
             <button
@@ -831,9 +835,9 @@ onBeforeUnmount(() => {
               @click="copyCreatedKey('new-key')"
               :disabled="!createdKey.api_key"
             >
-              {{ copiedId === 'new-key' ? '✓ 已复制' : '📋 复制密钥' }}
+              {{ copiedId === 'new-key' ? t('keys.copied') : t('keys.copy') }}
             </button>
-            <span class="hint">{{ createdKey.api_key ? '可多次点击复制' : '后端未返回有效密钥，请检查接口返回' }}</span>
+            <span class="hint">{{ createdKey.api_key ? t('keys.copyHintOk') : t('keys.copyHintErr') }}</span>
           </div>
           <div style="text-align:right;margin-top:16px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
             <button
@@ -881,7 +885,7 @@ onBeforeUnmount(() => {
               v-model="newTenant" 
               placeholder="default"
               :disabled="!isDefaultTenant()"
-              :title="isDefaultTenant() ? '可修改租户' : '非 default 租户只能签发当前租户的密钥'"
+              :title="isDefaultTenant() ? t('keys.tenantTitleModifiable') : t('keys.tenantTitleFixed')"
             />
             <span v-if="!isDefaultTenant()" class="hint">
               非 default 租户只能签发当前租户（{{ getCurrentTenantId() }}）的密钥
@@ -918,7 +922,7 @@ onBeforeUnmount(() => {
               @click="submitNew"
               :disabled="newSaving || newConflict !== null"
             >
-              {{ newSaving ? '签发中…' : (newConflict ? '存在重复，无法签发' : '签发') }}
+              {{ newSaving ? t('keys.submitting') : (newConflict ? t('keys.conflictBlocked') : t('keys.submit')) }}
             </button>
           </div>
         </template>
@@ -950,7 +954,7 @@ onBeforeUnmount(() => {
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
           <button class="btn btn-ghost" @click="showDefaultLimits = false">取消</button>
           <button class="btn btn-primary" @click="saveDefaultLimits" :disabled="limitsSaving">
-            {{ limitsSaving ? '保存中…' : '保存' }}
+            {{ limitsSaving ? t('keys.saving') : t('keys.save') }}
           </button>
         </div>
       </div>

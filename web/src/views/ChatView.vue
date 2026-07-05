@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { deleteGatewaySession, getAvailableModels, type PopularModel } from '../api'
 import {
@@ -18,6 +19,9 @@ import { formatSessionModelLabel, useChatSessions } from '../composables/useChat
 import { useGatewayApiKey } from '../composables/useGatewayApiKey'
 import ApiKeySelectModal from '../components/ApiKeySelectModal.vue'
 import GatewayApiKeyPicker from '../components/GatewayApiKeyPicker.vue'
+
+const { t } = useI18n()
+
 
 interface SendOptions {
   text?: string
@@ -111,8 +115,8 @@ const currentKeyLabel = computed(() => {
   const match = candidateKeys.value.find((k) => k.id === selectedKeyId.value)
   if (match) return formatApiKeyLabel(match)
   if (selectedKeyId.value) return `密钥 #${selectedKeyId.value}`
-  if (keyLoading.value) return '加载中…'
-  return '未选择'
+  if (keyLoading.value) return t('chat.loading')
+  return t('chat.keyNotSelected')
 })
 
 const hasMessages = computed(() => messages.value.length > 0)
@@ -155,7 +159,7 @@ function sessionListModelLabel(s: (typeof sessions.value)[0]): string {
 function stripFailedAssistantTail<T extends { role: string; content: string }>(msgs: T[]): T[] {
   const copy = [...msgs]
   const last = copy[copy.length - 1]
-  if (last?.role === 'assistant' && (!last.content || last.content.startsWith('错误：'))) {
+  if (last?.role === 'assistant' && (!last.content || last.content.startsWith(t('chat.errorPrefix')))) {
     copy.pop()
   }
   return copy
@@ -262,12 +266,12 @@ async function send(opts?: SendOptions) {
   sendError.value = ''
   const key = apiKey.value || (await resolveApiKey())
   if (!key) {
-    sendError.value = keyError.value || '无法获取 API 密钥'
+    sendError.value = keyError.value || t('chat.fetchKeyFailed')
     openKeyModal('manual')
     return
   }
   if (!selectedKeyId.value) {
-    sendError.value = '无法确定 API 密钥，请选择一把密钥'
+    sendError.value = t('chat.selectKeyRequired')
     openKeyModal('manual')
     return
   }
@@ -347,14 +351,14 @@ async function send(opts?: SendOptions) {
   } catch (e: unknown) {
     if (isSessionForbiddenError(e) && !opts?.isAutoRetry) {
       pendingRetryText.value = text
-      sendError.value = '当前 API 密钥无法访问此会话，请选择正确的密钥'
+      sendError.value = t('chat.sessionForbidden')
       const errMsgs = stripFailedAssistantTail(activeSession.value?.messages ?? withPlaceholder)
       updateActive({ messages: errMsgs })
       openKeyModal('session-forbidden')
       return
     }
 
-    const msg = e instanceof Error ? e.message : '发送失败'
+    const msg = e instanceof Error ? e.message : t('chat.sendFailed')
     sendError.value = msg
     const errMsgs = [...(activeSession.value?.messages ?? withPlaceholder)]
     if (errMsgs[assistantIdx] && !errMsgs[assistantIdx].content) {
@@ -454,7 +458,7 @@ async function runSummarize() {
       result.usage,
     )
   } catch (e: unknown) {
-    sendError.value = e instanceof Error ? e.message : '总结失败'
+    sendError.value = e instanceof Error ? e.message : t('chat.summarizeFailed')
   } finally {
     summarizing.value = false
   }
@@ -488,12 +492,12 @@ function onKeydown(e: KeyboardEvent) {
             <option value="" disabled>
               {{
                 keyLoading
-                  ? '加载中…'
+                  ? t('chat.loading')
                   : hasNoKeys
-                    ? '无可用密钥'
+                    ? t('chat.noAvailableKeys')
                     : candidateKeys.length
-                      ? '选择密钥…'
-                      : '无可用密钥'
+                      ? t('chat.selectKey')
+                      : t('chat.noAvailableKeys')
               }}
             </option>
             <option
@@ -502,7 +506,7 @@ function onKeydown(e: KeyboardEvent) {
               :value="k.id"
               :disabled="unrevealableKeyIds.has(k.id)"
             >
-              {{ formatApiKeyLabel(k) }}{{ unrevealableKeyIds.has(k.id) ? '（无法还原）' : '' }}
+              {{ formatApiKeyLabel(k) }}{{ unrevealableKeyIds.has(k.id) ? t('chat.unrevealable') : '' }}
             </option>
           </select>
         </label>
@@ -621,7 +625,7 @@ function onKeydown(e: KeyboardEvent) {
           <div class="chat-session-bar__info">
             <span class="chat-session-bar__title">{{ activeSession.title }}</span>
             <span class="chat-session-bar__model" :title="sessionModelLabel">
-              当前: {{ pickerModel === 'auto' ? '自动' : (modelDisplayMap.get(pickerModel) || pickerModel) }}
+              当前: {{ pickerModel === 'auto' ? t('chat.auto') : (modelDisplayMap.get(pickerModel) || pickerModel) }}
               <template v-if="activeSession.lastResolvedModel">
                 · 最近实际: {{ modelDisplayMap.get(activeSession.lastResolvedModel) || activeSession.lastResolvedModel }}
               </template>
@@ -651,7 +655,7 @@ function onKeydown(e: KeyboardEvent) {
               :disabled="sending || summarizing"
               @click="runSummarize"
             >
-              {{ summarizing ? '总结中…' : '总结' }}
+              {{ summarizing ? t('chat.summarizing') : t('chat.summarize') }}
             </button>
             <button
               type="button"
@@ -677,9 +681,9 @@ function onKeydown(e: KeyboardEvent) {
           >
             <div class="bubble-head">
               <span class="bubble-role">
-                {{ msg.role === 'user' ? '你' : '助手' }}
+                {{ msg.role === 'user' ? t('chat.roleUser') : t('chat.roleAssistant') }}
                 <template v-if="msg.role === 'user' && msg.requestedModel">
-                  · {{ msg.requestedModel === 'auto' ? '自动' : (modelDisplayMap.get(msg.requestedModel) || msg.requestedModel) }}
+                  · {{ msg.requestedModel === 'auto' ? t('chat.auto') : (modelDisplayMap.get(msg.requestedModel) || msg.requestedModel) }}
                 </template>
                 <template v-if="msg.role === 'assistant' && msg.resolvedModel">
                   · {{ modelDisplayMap.get(msg.resolvedModel) || msg.resolvedModel }}
@@ -699,10 +703,10 @@ function onKeydown(e: KeyboardEvent) {
                 <button
                   type="button"
                   class="bubble-btn"
-                  :title="copiedKey === `copy-${i}` ? '已复制' : '复制'"
+                  :title="copiedKey === `copy-${i}` ? t('chat.copied') : t('chat.copy')"
                   @click="onCopy(msg.content, `copy-${i}`)"
                 >
-                  {{ copiedKey === `copy-${i}` ? '✓' : '复制' }}
+                  {{ copiedKey === `copy-${i}` ? '✓' : t('chat.copy') }}
                 </button>
                 <button
                   v-if="msg.role === 'user'"
@@ -742,7 +746,7 @@ function onKeydown(e: KeyboardEvent) {
             :disabled="sending || keyLoading || showPicker || hasNoKeys || !input.trim()"
             @click="send()"
           >
-            {{ sending ? '生成中…' : '发送' }}
+            {{ sending ? t('chat.sending') : t('chat.send') }}
           </button>
         </div>
       </div>
@@ -757,7 +761,7 @@ function onKeydown(e: KeyboardEvent) {
         <div class="modal-body">{{ summaryText }}</div>
         <div class="modal-foot">
           <button type="button" class="btn btn-ghost btn-sm" @click="onCopy(summaryText, 'summary')">
-            {{ copiedKey === 'summary' ? '已复制' : '复制总结' }}
+            {{ copiedKey === 'summary' ? t('chat.copied') : t('chat.copySummary') }}
           </button>
           <button type="button" class="btn btn-primary btn-sm" @click="showSummaryModal = false">关闭</button>
         </div>

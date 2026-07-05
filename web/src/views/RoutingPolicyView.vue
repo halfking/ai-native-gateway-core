@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, onMounted, computed } from 'vue'
 import {
   getPolicy, patchPolicy, getFeatured, patchFeatured,
@@ -6,6 +7,9 @@ import {
   type RoutingPolicy, type ScoringWeights,
 } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
+
+const { t } = useI18n()
+
 
 const policy   = ref<RoutingPolicy | null>(null)
 const draft    = ref<Partial<RoutingPolicy>>({})
@@ -25,15 +29,15 @@ const weights   = ref<ScoringWeights>({
 const weightsDraft = ref<ScoringWeights>({ ...weights.value })
 
 const FIELDS: { key: keyof RoutingPolicy; label: string; min?: number; max?: number; step?: number }[] = [
-  { key: 'algorithm_version',         label: '算法版本 (1=旧, 2=v2 分层)', min: 1, max: 2, step: 1 },
-  { key: 'retry_per_credential',      label: '同凭据重试次数',              min: 0, max: 5, step: 1 },
-  { key: 'tier_fallback_max',         label: '跨级回退最大候选数',          min: 1, max: 20, step: 1 },
-  { key: 'slot_soft_limit_ratio',     label: '并发软上限比例',              min: 0.1, max: 5,  step: 0.1 },
-  { key: 'slot_hard_limit_ratio',     label: '并发硬上限比例',              min: 0.1, max: 5,  step: 0.1 },
-  { key: 'slot_wait_max_ms',          label: '槽位等待最大毫秒',            min: 0, max: 5000, step: 10 },
-  { key: 'circuit_open_seconds',      label: '熔断基础冷却秒',              min: 1, max: 3600, step: 1 },
-  { key: 'circuit_failure_threshold', label: '熔断触发连续失败次数',        min: 1, max: 50, step: 1 },
-  { key: 'circuit_max_open_seconds',  label: '熔断最大冷却秒',              min: 1, max: 86400, step: 1 },
+  { key: 'algorithm_version',         label: t('routing.algorithm_version'), min: 1, max: 2, step: 1 },
+  { key: 'retry_per_credential',      label: t('routing.retry_per_credential'),              min: 0, max: 5, step: 1 },
+  { key: 'tier_fallback_max',         label: t('routing.tier_fallback_max'),          min: 1, max: 20, step: 1 },
+  { key: 'slot_soft_limit_ratio',     label: t('routing.slot_soft_limit_ratio'),              min: 0.1, max: 5,  step: 0.1 },
+  { key: 'slot_hard_limit_ratio',     label: t('routing.slot_hard_limit_ratio'),              min: 0.1, max: 5,  step: 0.1 },
+  { key: 'slot_wait_max_ms',          label: t('routing.slot_wait_max_ms'),            min: 0, max: 5000, step: 10 },
+  { key: 'circuit_open_seconds',      label: t('routing.circuit_open_seconds'),              min: 1, max: 3600, step: 1 },
+  { key: 'circuit_failure_threshold', label: t('routing.circuit_failure_threshold'),        min: 1, max: 50, step: 1 },
+  { key: 'circuit_max_open_seconds',  label: t('routing.circuit_max_open_seconds'),              min: 1, max: 86400, step: 1 },
 ]
 
 const formulaPreview = computed(() => {
@@ -53,7 +57,7 @@ async function load() {
     weights.value = w
     weightsDraft.value = { ...w }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('routing.loadFailed')
   } finally {
     loading.value = false
   }
@@ -76,7 +80,7 @@ const weightsDirty = computed(() => {
 
 async function savePolicy() {
   if (!dirtyKeys.value.length) {
-    message.value = '没有变更'
+    message.value = t('routing.noChanges')
     return
   }
   saving.value = true
@@ -88,9 +92,9 @@ async function savePolicy() {
     const updated = await patchPolicy(patch as Partial<RoutingPolicy>)
     policy.value = updated
     draft.value  = { ...updated }
-    message.value = '策略已更新'
+    message.value = t('routing.updatedPolicy')
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '保存失败'
+    error.value = e instanceof Error ? e.message : t('routing.saveFailed')
   } finally {
     saving.value = false
   }
@@ -103,9 +107,9 @@ async function saveWeights() {
   try {
     await updateScoringWeights(weightsDraft.value)
     weights.value = { ...weightsDraft.value }
-    message.value = '综合得分系数已更新'
+    message.value = t('routing.updatedWeights')
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '保存失败'
+    error.value = e instanceof Error ? e.message : t('routing.saveFailed')
   } finally {
     saving.value = false
   }
@@ -121,7 +125,7 @@ async function saveFeatured() {
     message.value = `特色模型已更新（${list.length}）`
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '保存失败'
+    error.value = e instanceof Error ? e.message : t('routing.saveFailed')
   } finally {
     saving.value = false
   }
@@ -169,7 +173,7 @@ onMounted(load)
       </table>
       <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
         <button class="btn btn-primary" @click="savePolicy" :disabled="saving || !dirtyKeys.length">
-          {{ saving ? '保存中…' : '保存策略' }}
+          {{ saving ? t('routing.saving') : t('routing.savePolicy') }}
         </button>
         <span v-if="dirtyKeys.length" style="color:var(--muted);font-size:12px">
           {{ dirtyKeys.length }} 项变更：{{ dirtyKeys.join(', ') }}
@@ -214,7 +218,7 @@ onMounted(load)
       </div>
       <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
         <button class="btn btn-primary" @click="saveWeights" :disabled="saving || !weightsDirty">
-          {{ saving ? '保存中…' : '保存系数' }}
+          {{ saving ? t('routing.saving') : t('routing.savingWeights') }}
         </button>
         <span v-if="weightsDirty" style="color:var(--muted);font-size:12px">
           系数有变更，未保存
@@ -235,7 +239,7 @@ onMounted(load)
       />
       <div style="margin-top:8px">
         <button class="btn btn-primary" @click="saveFeatured" :disabled="saving">
-          {{ saving ? '保存中…' : '保存特色模型' }}
+          {{ saving ? t('routing.saving') : t('routing.saveFeatured') }}
         </button>
       </div>
     </div>

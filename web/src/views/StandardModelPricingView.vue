@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, computed, onMounted } from 'vue'
 import {
   getAdminMaasModelRates,
@@ -12,6 +13,9 @@ import {
 } from '../api'
 import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useModelCatalogFilters } from '../composables/useModelCatalogFilters'
+
+const { t } = useI18n()
+
 
 type RateField = 'in' | 'out' | 'cache_in' | 'cache_out'
 
@@ -27,9 +31,9 @@ function isFullyManual(m: AdminMaasModelRate) {
 }
 
 const pricingStatusOptions = [
-  { value: 'default', label: '仅全局基准' },
-  { value: 'custom', label: '含手工定价' },
-  { value: 'partial', label: '部分手工' },
+  { value: 'default', label: t('standardModelPricing.defaultOnly') },
+  { value: 'custom', label: t('standardModelPricing.customOnly') },
+  { value: 'partial', label: t('standardModelPricing.partialOnly') },
 ]
 
 const {
@@ -41,7 +45,7 @@ const {
   clearFilters: clearCatalogFilters,
 } = useModelCatalogFilters<AdminMaasModelRate>({
   items: models,
-  getVendor: (m) => m.vendor?.trim() || '其他',
+  getVendor: (m) => m.vendor?.trim() || t('standardModelPricing.otherVendor'),
   getCanonicalName: (m) => m.canonical_name,
   getDisplayName: (m) => m.display_name,
   matchExtra: (m, mode) => {
@@ -128,7 +132,7 @@ async function load() {
       global_discount: rates.settings.global_discount ?? 1,
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('standardModelPricing.loadFailed')
   } finally {
     loading.value = false
   }
@@ -149,10 +153,10 @@ async function saveSettings() {
       global_discount: settings.value.global_discount ?? 1,
       currency_display: settings.value.currency_display,
     })
-    settingsMsg.value = '全局基准已保存（仅影响未手工定价的维度）'
+    settingsMsg.value = t('standardModelPricing.saved')
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '保存失败'
+    error.value = e instanceof Error ? e.message : t('standardModelPricing.saveFailed')
   } finally {
     savingSettings.value = false
   }
@@ -179,7 +183,7 @@ function closeEdit() {
 async function saveEdit() {
   if (!editRow.value) return
   if (!editForm.value.manual_in && !editForm.value.manual_out && !editForm.value.manual_cache_in && !editForm.value.manual_cache_out) {
-    error.value = '请至少勾选一个「手工定价」维度'
+    error.value = t('standardModelPricing.needOneManual')
     return
   }
   savingRow.value = true
@@ -189,7 +193,7 @@ async function saveEdit() {
     closeEdit()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '保存失败'
+    error.value = e instanceof Error ? e.message : t('standardModelPricing.saveFailed')
   } finally {
     savingRow.value = false
   }
@@ -203,7 +207,7 @@ async function resetAll(row: AdminMaasModelRate) {
     await deleteAdminMaasModelRate(row.canonical_id)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '恢复失败'
+    error.value = e instanceof Error ? e.message : t('standardModelPricing.resetFailed')
   }
 }
 
@@ -214,7 +218,7 @@ async function resetField(row: AdminMaasModelRate, field: RateField) {
     if (editRow.value?.canonical_id === row.canonical_id) closeEdit()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '恢复失败'
+    error.value = e instanceof Error ? e.message : t('standardModelPricing.resetFailed')
   }
 }
 
@@ -226,10 +230,10 @@ function fillGlobalToEdit() {
 }
 
 const rateFields: { key: RateField; label: string; formKey: keyof MaasModelRateUpsert; manualKey: keyof MaasModelRateUpsert; valueKey: keyof AdminMaasModelRate; manualFlag: keyof AdminMaasModelRate }[] = [
-  { key: 'in', label: '输入', formKey: 'credits_per_1m_in', manualKey: 'manual_in', valueKey: 'credits_per_1m_in', manualFlag: 'manual_in' },
-  { key: 'out', label: '输出', formKey: 'credits_per_1m_out', manualKey: 'manual_out', valueKey: 'credits_per_1m_out', manualFlag: 'manual_out' },
-  { key: 'cache_in', label: '缓存读', formKey: 'credits_per_1m_cache_in', manualKey: 'manual_cache_in', valueKey: 'credits_per_1m_cache_in', manualFlag: 'manual_cache_in' },
-  { key: 'cache_out', label: '缓存写', formKey: 'credits_per_1m_cache_out', manualKey: 'manual_cache_out', valueKey: 'credits_per_1m_cache_out', manualFlag: 'manual_cache_out' },
+  { key: 'in', label: t('standardModelPricing.input'), formKey: 'credits_per_1m_in', manualKey: 'manual_in', valueKey: 'credits_per_1m_in', manualFlag: 'manual_in' },
+  { key: 'out', label: t('standardModelPricing.output'), formKey: 'credits_per_1m_out', manualKey: 'manual_out', valueKey: 'credits_per_1m_out', manualFlag: 'manual_out' },
+  { key: 'cache_in', label: t('standardModelPricing.cacheRead'), formKey: 'credits_per_1m_cache_in', manualKey: 'manual_cache_in', valueKey: 'credits_per_1m_cache_in', manualFlag: 'manual_cache_in' },
+  { key: 'cache_out', label: t('standardModelPricing.cacheWrite'), formKey: 'credits_per_1m_cache_out', manualKey: 'manual_cache_out', valueKey: 'credits_per_1m_cache_out', manualFlag: 'manual_cache_out' },
 ]
 
 onMounted(load)
@@ -240,7 +244,7 @@ onMounted(load)
     <div class="page-header">
       <h2>定价管理</h2>
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-        {{ loading ? '加载中…' : '刷新' }}
+        {{ loading ? t('standardModelPricing.refreshLoading') : t('standardModelPricing.refresh') }}
       </button>
     </div>
 
@@ -297,7 +301,7 @@ onMounted(load)
       </div>
       <div class="settings-actions">
         <button class="btn btn-primary btn-sm" :disabled="savingSettings" @click="saveSettings">
-          {{ savingSettings ? '保存中…' : '保存全局设置' }}
+          {{ savingSettings ? t('standardModelPricing.saving') : t('standardModelPricing.save') }}
         </button>
         <span class="cf-meta">
           手工 {{ customCount }} · 全局 {{ defaultCount }} / {{ models.length }}
@@ -386,7 +390,7 @@ onMounted(load)
         </div>
         <div class="modal-actions">
           <button class="btn btn-primary btn-sm" :disabled="savingRow" @click="saveEdit">
-            {{ savingRow ? '保存中…' : '保存' }}
+            {{ savingRow ? t('standardModelPricing.saving') : t('standardModelPricing.save') }}
           </button>
           <button class="btn btn-ghost btn-sm" type="button" @click="fillGlobalToEdit">填入当前全局</button>
           <button class="btn btn-ghost btn-sm" type="button" @click="closeEdit">取消</button>

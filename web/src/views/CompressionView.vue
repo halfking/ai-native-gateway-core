@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -7,6 +8,9 @@ import {
   type CompressionStats,
   type CompressionSessionItem,
 } from '../api'
+
+const { t } = useI18n()
+
 
 const router = useRouter()
 
@@ -129,15 +133,15 @@ function fmtDate(v: string | null | undefined): string {
 }
 
 const strategyLabels: Record<string, string> = {
-  delta_append: '增量拼接',
-  sliding_window_token: '滑动窗口(Token)',
-  sliding_window_count: '滑动窗口(条数)',
-  sliding_window_idle: '滑动窗口(空闲)',
-  mechanical_trim: '机械裁剪',
-  memora_l1_inject: 'Memora注入',
-  llm_summary: 'LLM总结',
-  noop: '空操作',
-  none: '未压缩',
+  delta_append: t('compression.delta_append'),
+  sliding_window_token: t('compression.sliding_window_token'),
+  sliding_window_count: t('compression.sliding_window_count'),
+  sliding_window_idle: t('compression.sliding_window_idle'),
+  mechanical_trim: t('compression.mechanical_trim'),
+  memora_l1_inject: t('compression.memora_l1_inject'),
+  llm_summary: t('compression.llm_summary'),
+  noop: t('compression.noop'),
+  none: t('compression.none'),
 }
 
 const strategyColors: Record<string, string> = {
@@ -171,9 +175,9 @@ const timeBucketLabel = computed(() => {
         ? (new Date(customTo.value).getTime() - new Date(customFrom.value).getTime()) / 3600000
         : 24)
     : (displayHours.value || 24)
-  if (hours <= 48) return '按小时'
-  if (hours <= 168) return '每6小时'
-  return '按天'
+  if (hours <= 48) return t('compression.timeBucketHour')
+  if (hours <= 168) return t('compression.timeBucket6Hour')
+  return t('compression.timeBucketDay')
 })
 
 const chartBuckets = computed(() => {
@@ -210,10 +214,10 @@ watch(activeTab, loadAll)
       <div class="time-range-tabs">
         <button
           v-for="tab in ([
-            { id: '24h' as TabId, label: '24小时' },
-            { id: '7d' as TabId, label: '7天' },
-            { id: '30d' as TabId, label: '30天' },
-            { id: 'custom' as TabId, label: '自定义' },
+            { id: '24h' as TabId, label: t('compression.h24') },
+            { id: '7d' as TabId, label: t('compression.d7') },
+            { id: '30d' as TabId, label: t('compression.d30') },
+            { id: 'custom' as TabId, label: t('compression.custom') },
           ])"
           :key="tab.id"
           class="tab-btn"
@@ -240,7 +244,7 @@ watch(activeTab, loadAll)
         <button class="btn btn-sm btn-primary" @click="applyCustom">查询</button>
       </div>
       <button class="btn btn-ghost btn-sm refresh-btn" @click="loadAll" :disabled="loading">
-        {{ loading ? '加载中…' : '刷新' }}
+        {{ loading ? t('compression.loading') : t('compression.refresh') }}
       </button>
     </div>
 

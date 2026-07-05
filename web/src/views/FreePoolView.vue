@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, onMounted, computed } from 'vue'
 import {
   getFreePoolStatus,
@@ -25,6 +26,9 @@ import {
   type SignupHubResponse,
   type SignupPlatformEntry,
 } from '../api'
+
+const { t } = useI18n()
+
 
 const poolData  = ref<FreePoolStatusResponse | null>(null)
 const poolKeys  = ref<FreePoolKeyEntry[]>([])
@@ -132,7 +136,7 @@ async function load() {
     poolKeys.value = keysRes.keys
     signupHub.value = hub
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('freePool.loadFailed')
   } finally {
     loading.value = false
   }
@@ -149,7 +153,7 @@ async function runBootstrap() {
     message.value = `一键建设完成：镜像 ${mirror} 个 Provider，发现/更新 ${discover} 个`
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '一键建设失败'
+    error.value = e instanceof Error ? e.message : t('freePool.bootstrapFailed')
   } finally {
     syncing.value = false
   }
@@ -164,7 +168,7 @@ async function runBridgeOAuth() {
     message.value = `OAuth 桥接：${res.registered ?? 0} 个 OAuth 凭证已注入池子`
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : 'OAuth 桥接失败'
+    error.value = e instanceof Error ? e.message : t('freePool.oauthBridgeFailed')
   } finally {
     syncing.value = false
   }
@@ -179,7 +183,7 @@ async function runDiscover() {
     message.value = `自动学习完成：本轮注册/更新 ${res.registered ?? 0} 个 Provider`
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '自动学习失败'
+    error.value = e instanceof Error ? e.message : t('freePool.discoverFailed')
   } finally {
     syncing.value = false
   }
@@ -194,7 +198,7 @@ async function runImportEnv() {
     message.value = `环境变量导入：${res.registered ?? 0} 个 Key 已注入池子`
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '环境变量导入失败'
+    error.value = e instanceof Error ? e.message : t('freePool.importEnvFailed')
   } finally {
     syncing.value = false
   }
@@ -225,7 +229,7 @@ function openUrl(url: string) {
 
 async function runQuickProbe() {
   if (!quickEntry.value.base_url.trim()) {
-    error.value = '请填写 Base URL'
+    error.value = t('freePool.baseUrlRequired')
     return
   }
   quickProbing.value = true
@@ -239,7 +243,7 @@ async function runQuickProbe() {
     probeResult.value = res.probe
     message.value = res.probe?.ok
       ? `探活通过 · HTTP ${res.probe.status_code} · 模型 ${res.probe.model_count ?? 0} 个`
-      : `探活未通过：${res.probe?.reason || res.probe?.error || 'unknown'}`
+      : `探活未通过：${res.probe?.reason || res.probe?.error || t('freePool.probeFailedReason')}`
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '探活失败'
   } finally {
@@ -249,7 +253,7 @@ async function runQuickProbe() {
 
 async function runQuickSave(probeFirst = true) {
   if (!quickEntry.value.base_url.trim()) {
-    error.value = '请填写 Base URL'
+    error.value = t('freePool.baseUrlRequired')
     return
   }
   quickSaving.value = true
@@ -270,14 +274,14 @@ async function runQuickSave(probeFirst = true) {
     })
     probeResult.value = res.probe ?? null
     if (res.status === 'ok') {
-      message.value = `凭据已入库 · catalog=${res.catalog_code} · credential #${res.credential_id ?? '—'}`
+      message.value = `凭据已入库 · catalog=${res.catalog_code} · credential #${res.credential_id ?? t('freePool.credentialSavedPlaceholder')}`
       quickEntry.value.api_key = ''
       await load()
     } else {
       error.value = res.error || `入库失败 (${res.status})`
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '入库失败'
+    error.value = e instanceof Error ? e.message : t('freePool.saveFailed')
   } finally {
     quickSaving.value = false
   }
@@ -289,7 +293,7 @@ async function generateTempEmail() {
   try {
     const res = await createFreePoolTempEmail()
     if (!res.ok || !res.address) {
-      error.value = res.error || '临时邮箱创建失败'
+      error.value = res.error || t('freePool.tempEmailFailed')
       return
     }
     tempEmail.value = {
@@ -301,7 +305,7 @@ async function generateTempEmail() {
     tempInbox.value = []
     message.value = `临时邮箱已生成：${res.address}`
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '临时邮箱创建失败'
+    error.value = e instanceof Error ? e.message : t('freePool.tempEmailFailed')
   } finally {
     tempEmailLoading.value = false
   }
@@ -316,10 +320,10 @@ async function pollTempInbox() {
       tempInbox.value = res.messages
       message.value = `收件箱 ${res.total ?? res.messages.length} 封`
     } else {
-      error.value = res.error || '拉取邮件失败'
+      error.value = res.error || t('freePool.fetchInboxFailed')
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '拉取邮件失败'
+    error.value = e instanceof Error ? e.message : t('freePool.fetchInboxFailed')
   } finally {
     tempPolling.value = false
   }
@@ -328,15 +332,15 @@ async function pollTempInbox() {
 async function copyText(text: string) {
   try {
     await navigator.clipboard.writeText(text)
-    message.value = '已复制到剪贴板'
+    message.value = t('freePool.copySuccess')
   } catch {
-    error.value = '复制失败，请手动选择复制'
+    error.value = t('freePool.copyFailed')
   }
 }
 
 async function submitKey() {
   if (!newKey.value.catalog_code || (!newKey.value.api_key && newKey.value.source !== 'no_key')) {
-    error.value = '请填写 catalog_code 和 api_key'
+    error.value = t('freePool.catalogAndApiKeyRequired')
     return
   }
   keySubmitting.value = true
@@ -350,12 +354,12 @@ async function submitKey() {
       source_detail: newKey.value.source_detail || undefined,
       label: newKey.value.label || undefined,
     })
-    message.value = '凭据已加密写入数据库'
+    message.value = t('freePool.encryptedWriteSuccess')
     showKeyForm.value = false
     newKey.value = { catalog_code: 'openrouter-free', api_key: '', source: 'signup', source_detail: '', label: '' }
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '写入失败'
+    error.value = e instanceof Error ? e.message : t('freePool.writeFailed')
   } finally {
     keySubmitting.value = false
   }
@@ -363,7 +367,7 @@ async function submitKey() {
 
 async function submitNew() {
   if (!newProvider.value.catalog_code || !newProvider.value.base_url) {
-    error.value = '请填写 Catalog Code 和 Base URL'
+    error.value = t('freePool.catalogAndBaseUrlRequired')
     return
   }
   submitting.value = true
@@ -395,7 +399,7 @@ async function submitNew() {
     }
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '注册失败'
+    error.value = e instanceof Error ? e.message : t('freePool.registerFailed')
   } finally {
     submitting.value = false
   }
@@ -411,19 +415,19 @@ function statusBadgeClass(entry: FreePoolEntry | FreePoolModelEntry): string {
 }
 
 function statusLabel(entry: FreePoolEntry): string {
-  if (entry.credential_status !== 'active') return '已禁用'
-  if (entry.availability_state === 'rate_limited') return '限流'
-  if (entry.availability_state === 'cooling') return '冷却'
-  if (entry.availability_state === 'unreachable') return '不可达'
-  if (entry.quota_state === 'exhausted') return '配额用尽'
-  return '可用'
+  if (entry.credential_status !== 'active') return t('freePool.disabled')
+  if (entry.availability_state === 'rate_limited') return t('freePool.rateLimited')
+  if (entry.availability_state === 'cooling') return t('freePool.cooling')
+  if (entry.availability_state === 'unreachable') return t('freePool.unreachable')
+  if (entry.quota_state === 'exhausted') return t('freePool.quotaExhausted')
+  return t('freePool.availableUnit')
 }
 
 function modelStatusLabel(m: FreePoolModelEntry): string {
-  if (m.credential_status !== 'active') return '已禁用'
-  if (!m.available) return '已关闭'
-  if (!m.routable) return '不可路由'
-  return '可路由'
+  if (m.credential_status !== 'active') return t('freePool.disabled')
+  if (!m.available) return t('freePool.modelClosed')
+  if (!m.routable) return t('freePool.notRoutable')
+  return t('freePool.routable')
 }
 
 function riskClass(risk: string): string {
@@ -434,13 +438,13 @@ function riskClass(risk: string): string {
 
 function acquisitionLabel(mode: string): string {
   const map: Record<string, string> = {
-    signup: '注册 Key',
-    env: '环境变量',
-    no_key: '无需 Key',
-    oauth: 'OAuth',
-    mirrored: '镜像',
-    manual: '手动',
-    discovered: '自动发现',
+    signup: t('freePool.signup'),
+    env: t('freePool.env'),
+    no_key: t('freePool.templateNoKey'),
+    oauth: t('freePool.oauth'),
+    mirrored: t('freePool.mirrored'),
+    manual: t('freePool.manual'),
+    discovered: t('freePool.discovered'),
   }
   return map[mode] || mode
 }
@@ -460,7 +464,7 @@ onMounted(load)
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-ghost" @click="load" :disabled="loading || syncing">刷新</button>
         <button class="btn btn-ghost" @click="runBootstrap" :disabled="loading || syncing">
-          {{ syncing ? '处理中…' : '一键建设' }}
+          {{ syncing ? t('freePool.bootstrapSyncing') : t('freePool.bootstrap') }}
         </button>
         <button class="btn btn-ghost" @click="runBridgeOAuth" :disabled="loading || syncing">
           OAuth 桥接
@@ -475,10 +479,10 @@ onMounted(load)
           快速录入
         </button>
         <button class="btn btn-primary" @click="showKeyForm = !showKeyForm">
-          {{ showKeyForm ? '取消' : '写入 DB 凭据' }}
+          {{ showKeyForm ? t('freePool.hideKeyForm') : t('freePool.showKeyForm') }}
         </button>
         <button class="btn btn-primary" @click="showAddForm = !showAddForm">
-          {{ showAddForm ? '取消' : '添加 Provider' }}
+          {{ showAddForm ? t('freePool.hideKeyForm') : t('freePool.showAddForm') }}
         </button>
       </div>
     </div>
@@ -552,7 +556,7 @@ onMounted(load)
       </div>
       <div style="margin-top:12px;display:flex;gap:8px">
         <button class="btn btn-primary" :disabled="keySubmitting" @click="submitKey">
-          {{ keySubmitting ? '写入中…' : '加密写入数据库' }}
+          {{ keySubmitting ? t('freePool.submitting') : t('freePool.submit') }}
         </button>
         <button class="btn btn-ghost" @click="showKeyForm = false">取消</button>
       </div>
@@ -600,7 +604,7 @@ onMounted(load)
             class="btn btn-ghost btn-sm"
             @click="useTemplate(tpl)"
             style="font-size:12px"
-            :title="tpl.pool_registered ? '已接入池子' : (tpl.env_configured ? '环境变量已配置' : (tpl.needs_key ? '需注册或配置环境变量' : '无需 Key'))"
+            :title="tpl.pool_registered ? t('freePool.templateInPool') : (tpl.env_configured ? t('freePool.templateEnvConfigured') : (tpl.needs_key ? t('freePool.templateNeedsKey') : t('freePool.templateNoKey')))"
           >
             {{ tpl.display_name }}{{ tpl.pool_registered ? ' ✓' : (tpl.env_configured ? ' 🔑' : '') }}
           </button>
@@ -609,7 +613,7 @@ onMounted(load)
 
       <div style="margin-top:16px;display:flex;gap:8px;align-items:center">
         <button class="btn btn-primary" @click="submitNew" :disabled="submitting">
-          {{ submitting ? '注册中…' : '注册 Provider' }}
+          {{ submitting ? t('freePool.submitting') : t('freePool.submit') }}
         </button>
         <button class="btn btn-ghost" @click="showAddForm = false" :disabled="submitting">取消</button>
       </div>
@@ -687,10 +691,10 @@ onMounted(load)
           </div>
           <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn btn-ghost" :disabled="quickProbing || quickSaving" @click="runQuickProbe">
-              {{ quickProbing ? '探活中…' : '仅探活验证' }}
+              {{ quickProbing ? t('freePool.probeOnlyLoading') : t('freePool.probeOnly') }}
             </button>
             <button class="btn btn-primary" :disabled="quickProbing || quickSaving" @click="runQuickSave(true)">
-              {{ quickSaving ? '入库中…' : '探活并入库' }}
+              {{ quickSaving ? t('freePool.probeAndSaveLoading') : t('freePool.probeAndSave') }}
             </button>
             <button
               v-if="quickEntry.signup_url"
@@ -707,14 +711,14 @@ onMounted(load)
           </p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
             <button class="btn btn-primary" :disabled="tempEmailLoading" @click="generateTempEmail">
-              {{ tempEmailLoading ? '生成中…' : '生成临时邮箱' }}
+              {{ tempEmailLoading ? t('freePool.generateTempEmailLoading') : t('freePool.generateTempEmail') }}
             </button>
             <button
               v-if="tempEmail"
               class="btn btn-ghost"
               :disabled="tempPolling"
               @click="pollTempInbox"
-            >{{ tempPolling ? '刷新中…' : '刷新收件箱' }}</button>
+            >{{ tempPolling ? t('freePool.refreshInboxLoading') : t('freePool.refreshInbox') }}</button>
             <button v-if="tempEmail" class="btn btn-ghost" @click="openUrl(tempEmail.web_url)">打开 mail.tm</button>
           </div>
           <div v-if="tempEmail" class="temp-email-box">
@@ -731,7 +735,7 @@ onMounted(load)
           </div>
           <ul v-if="tempInbox.length" class="inbox-list">
             <li v-for="m in tempInbox" :key="m.id">
-              <strong>{{ m.subject || '(无主题)' }}</strong>
+              <strong>{{ m.subject || t('freePool.noSubject') }}</strong>
               <div class="cell-muted">{{ m.from }} · {{ m.intro }}</div>
             </li>
           </ul>
@@ -773,7 +777,7 @@ onMounted(load)
               <div class="platform-head">
                 <strong>{{ p.name }}</strong>
                 <span class="badge" :class="p.pool_registered ? 'badge-green' : 'badge-gray'">
-                  {{ p.pool_registered ? '已接入' : '未接入' }}
+                  {{ p.pool_registered ? t('freePool.registered') : t('freePool.notRegistered') }}
                 </span>
               </div>
               <div class="cell-muted">{{ categoryLabel(p.category) }} · {{ p.difficulty }}</div>
@@ -873,7 +877,7 @@ onMounted(load)
               </td>
               <td>
                 <div>{{ entry.credential_label }}</div>
-                <div class="cell-muted">#{{ entry.credential_id }} · {{ entry.availability_state || 'ready' }}</div>
+                <div class="cell-muted">#{{ entry.credential_id }} · {{ entry.availability_state || t('freePool.ready') }}</div>
               </td>
               <td>
                 <span class="badge" :class="statusBadgeClass(entry)">{{ statusLabel(entry) }}</span>
@@ -885,7 +889,7 @@ onMounted(load)
                     :key="m.offer_id"
                     class="model-tag"
                     :class="{ routable: m.routable, dim: !m.available }"
-                    :title="m.routable ? '可路由' : '不可路由'"
+                    :title="m.routable ? t('freePool.routable') : t('freePool.notRoutable')"
                   >{{ m.raw_model_name }}</span>
                 </div>
                 <div v-else class="cell-muted">无模型 offer</div>
@@ -922,7 +926,7 @@ onMounted(load)
               </td>
               <td>
                 <span class="badge" :class="tpl.pool_registered ? 'badge-green' : 'badge-gray'">
-                  {{ tpl.pool_registered ? '已接入' : '未接入' }}
+                  {{ tpl.pool_registered ? t('freePool.registered') : t('freePool.notRegistered') }}
                 </span>
                 <div v-if="tpl.env_configured" class="cell-muted">环境变量已配置</div>
               </td>
@@ -976,9 +980,9 @@ onMounted(load)
                 <code style="font-size:11px">{{ k.catalog_code }}</code>
                 <div class="cell-muted">#{{ k.credential_id }} · {{ k.credential_label }}</div>
               </td>
-              <td><code class="model-code">{{ k.key_masked || (k.has_secret ? '***' : '无 Key') }}</code></td>
+              <td><code class="model-code">{{ k.key_masked || (k.has_secret ? '***' : t('freePool.noKey')) }}</code></td>
               <td><span class="acq-pill">{{ acquisitionLabel(k.acquisition_source || 'manual') }}</span></td>
-              <td class="cell-muted">{{ k.acquisition_detail || '—' }}</td>
+              <td class="cell-muted">{{ k.acquisition_detail || t('freePool.credentialSavedPlaceholder') }}</td>
               <td>
                 <span class="badge" :class="k.credential_status === 'active' ? 'badge-green' : 'badge-gray'">
                   {{ k.credential_status }}
@@ -1008,7 +1012,7 @@ onMounted(load)
             <ol class="guide-steps">
               <li v-for="(step, i) in m.steps" :key="i">{{ step }}</li>
             </ol>
-            <div class="cell-muted">{{ m.automated ? '✓ 可自动化' : '需人工' }} · 风险 {{ m.risk }}</div>
+            <div class="cell-muted">{{ m.automated ? t('freePool.automated') : t('freePool.manual') }} · 风险 {{ m.risk }}</div>
           </div>
         </div>
         <h4 style="margin:24px 0 12px">安全审计规则</h4>

@@ -46,6 +46,8 @@ import apiKeySelectModal from './apiKeySelectModal'
 import fpSlotVisualizer from './fpSlotVisualizer'
 import modelPicker from './modelPicker'
 import modulesView from './modulesView'
+import formatAnomaliesView from './formatAnomaliesView'
+import agentRegistryView from './agentRegistryView'
 
 export default {
   common,
@@ -94,4 +96,6 @@ export default {
   fpSlotVisualizer,
   modelPicker,
   modulesView,
+  formatAnomaliesView,
+  agentRegistryView,
 }

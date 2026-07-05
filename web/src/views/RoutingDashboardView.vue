@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
@@ -28,6 +29,9 @@ import { computeSankeyCardHeight, SANKEY_DOM_LEGEND_H, SANKEY_SECTION_HEAD_H } f
 import ModelTaskIndexPanel from '../components/analytics/ModelTaskIndexPanel.vue'
 import DecisionDetail from '../components/analytics/DecisionDetail.vue'
 import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
+
+const { t } = useI18n()
+
 
 const RESOLVE_LOG_KEY = 'llmgw_resolve_log'
 const RESOLVE_LOG_MAX = 50
@@ -293,12 +297,12 @@ const savingPolicy = ref(false)
 const policyMsg = ref('')
 
 const POLICY_FIELDS: { key: keyof RoutingPolicy; label: string; min?: number; max?: number; step?: number }[] = [
-  { key: 'algorithm_version',         label: '算法版本', min: 1, max: 2, step: 1 },
-  { key: 'retry_per_credential',      label: '同凭据重试', min: 0, max: 5, step: 1 },
-  { key: 'tier_fallback_max',         label: '跨级回退', min: 1, max: 20, step: 1 },
-  { key: 'circuit_open_seconds',      label: '熔断冷却(s)', min: 1, max: 3600, step: 1 },
-  { key: 'circuit_failure_threshold', label: '熔断失败次数', min: 1, max: 50, step: 1 },
-  { key: 'circuit_max_open_seconds',  label: '熔断上限(s)', min: 1, max: 86400, step: 1 },
+  { key: 'algorithm_version',         label: t('routing.algorithmVersion'), min: 1, max: 2, step: 1 },
+  { key: 'retry_per_credential',      label: t('routing.retryPerCredential'), min: 0, max: 5, step: 1 },
+  { key: 'tier_fallback_max',         label: t('routing.tierFallback'), min: 1, max: 20, step: 1 },
+  { key: 'circuit_open_seconds',      label: t('routing.circuitOpen'), min: 1, max: 3600, step: 1 },
+  { key: 'circuit_failure_threshold', label: t('routing.circuitThreshold'), min: 1, max: 50, step: 1 },
+  { key: 'circuit_max_open_seconds',  label: t('routing.circuitMaxOpen'), min: 1, max: 86400, step: 1 },
 ]
 
 async function loadPolicy() {
@@ -322,7 +326,7 @@ async function savePolicy() {
       policy.value = await patchPolicy(dirty)
       policyDraft.value = { ...policy.value }
     }
-    policyMsg.value = '策略已保存'
+    policyMsg.value = t('routing.savedPolicy')
   } catch (e) { policyMsg.value = '保存失败: ' + String(e) }
   finally { savingPolicy.value = false }
 }
@@ -333,7 +337,7 @@ async function saveWeights() {
   try {
     await updateScoringWeights(weightsDraft.value)
     weights.value = { ...weightsDraft.value }
-    policyMsg.value = '权重已保存'
+    policyMsg.value = t('routing.savedWeights')
   } catch (e) { policyMsg.value = '保存失败: ' + String(e) }
   finally { savingPolicy.value = false }
 }
@@ -354,7 +358,7 @@ const expandedDecision = ref<string>('')
 const autoRefresh = ref(true)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-const simPrompt = ref('用 Python 写一个快速排序')
+const simPrompt = ref(t('routing.simulatorPromptDefault'))
 const simProfile = ref('smart')
 const simResult = ref<{ status: number; decision?: Record<string, unknown>; error?: string } | null>(null)
 const simLoading = ref(false)
@@ -397,9 +401,9 @@ const resolveFunnelStages = computed<AnalyticsFunnelStage[]>(() => {
   const total = resolveCandidates.value.length
   const routable = resolveCandidates.value.filter(c => c.routable).length
   return [
-    { key: 'candidates', label: '总候选', value: total, hint: '本次解析候选数' },
-    { key: 'routable', label: '可路由', value: routable, hint: '通过可用性检查' },
-    { key: 'success', label: '首选凭据', value: routable > 0 ? 1 : 0, hint: 'Top 可路由凭据' },
+    { key: 'candidates', label: t('routing.candidates'), value: total, hint: t('routing.candidatesHint') },
+    { key: 'routable', label: t('routing.routable'), value: routable, hint: t('routing.routableHint') },
+    { key: 'success', label: t('routing.success'), value: routable > 0 ? 1 : 0, hint: t('routing.successHint') },
   ]
 })
 
@@ -463,7 +467,7 @@ async function doResolve() {
     resolved.value = true
     appendResolveLog(res, profile)
   } catch (e: unknown) {
-    resolveErr.value = e instanceof Error ? e.message : '查询失败'
+    resolveErr.value = e instanceof Error ? e.message : t('routing.queryFailed')
   } finally {
     resolving.value = false
   }
@@ -514,57 +518,57 @@ function taskLabel(key: string): string {
   return TASK_TYPES.find(t => t.key === key)?.label ?? key
 }
 
-const L1_STEPS = ['Prompt', '8类分类', '6维评分', 'Profile', '选模型']
-const L2_STEPS = ['模型解析', 'Tier回退', '计费轮次', 'P2C得分', '执行/熔断']
+const L1_STEPS = ['Prompt', '8类分类', t('routing.sixDimScore'), 'Profile', t('routing.chooseModel')]
+const L2_STEPS = [t('routing.modelParse'), t('routing.tierFallback'), '计费轮次', 'P2C得分', '执行/熔断']
 
 const heroChips = computed(() => {
   if (activeTab.value === 'analytics') {
     const topTask = distEntries(audit.value.task_distribution)[0]
     const topModel = audit.value.top_chosen_models[0]
     const chips = [
-      { label: 'Auto', value: String(audit.value.total_auto_requests) },
-      { label: '成功率', value: fmt(audit.value.success_rate * 100, 1) + '%' },
-      { label: 'Top任务', value: topTask?.[0] || '-' },
-      { label: 'Top模型', value: topModel?.model || '-' },
+      { label: t('routing.auto'), value: String(audit.value.total_auto_requests) },
+      { label: t('routing.successRate'), value: fmt(audit.value.success_rate * 100, 1) + '%' },
+      { label: t('routing.topTask'), value: topTask?.[0] || '-' },
+      { label: t('routing.topModel'), value: topModel?.model || '-' },
     ]
     if (wtSyncMeta.value) {
-      chips.push({ label: '工作类型', value: String(wtSyncMeta.value.enabled_count) })
-      chips.push({ label: '映射', value: String(wtSyncMeta.value.route_count) })
+      chips.push({ label: t('routing.workTypes'), value: String(wtSyncMeta.value.enabled_count) })
+      chips.push({ label: t('routing.mappings'), value: String(wtSyncMeta.value.route_count) })
       if (wtSyncMeta.value.last_synced_at) {
         const d = new Date(wtSyncMeta.value.last_synced_at)
-        chips.push({ label: 'ACC同步', value: d.toLocaleString() })
+        chips.push({ label: t('routing.accSync'), value: d.toLocaleString() })
       }
     }
     return chips
   }
   if (activeTab.value === 'overview') {
     return [
-      { label: '候选', value: String(indexData.value.length) },
+      { label: t('routing.candidates'), value: String(indexData.value.length) },
       { label: '24h', value: String(audit.value.total_auto_requests) },
-      { label: '成功率', value: fmt(audit.value.success_rate * 100, 1) + '%' },
+      { label: t('routing.successRate'), value: fmt(audit.value.success_rate * 100, 1) + '%' },
     ]
   }
   if (activeTab.value === 'live') {
     const topTask = distEntries(audit.value.task_distribution)[0]
     const topModel = audit.value.top_chosen_models[0]
     return [
-      { label: 'Auto', value: String(audit.value.total_auto_requests) },
-      { label: 'Top任务', value: topTask?.[0] || '-' },
-      { label: 'Top模型', value: topModel?.model || '-' },
+      { label: t('routing.auto'), value: String(audit.value.total_auto_requests) },
+      { label: t('routing.topTask'), value: topTask?.[0] || '-' },
+      { label: t('routing.topModel'), value: topModel?.model || '-' },
     ]
   }
   if (activeTab.value === 'resolve') {
     const routable = resolveCandidates.value.filter(c => c.routable).length
     return [
-      { label: '可路由', value: resolved.value ? String(routable) : '-' },
-      { label: '候选', value: resolved.value ? String(resolveCandidates.value.length) : '-' },
-      { label: '记录', value: String(resolveLog.value.length) },
+      { label: t('routing.routable'), value: resolved.value ? String(routable) : '-' },
+      { label: t('routing.candidates'), value: resolved.value ? String(resolveCandidates.value.length) : '-' },
+      { label: t('routing.records'), value: String(resolveLog.value.length) },
     ]
   }
   return [
-    { label: '算法', value: 'v' + (policy.value?.algorithm_version ?? '-') },
-    { label: 'Tier回退', value: String(policy.value?.tier_fallback_max ?? '-') },
-    { label: '熔断', value: (policy.value?.circuit_failure_threshold ?? '-') + '次' },
+    { label: t('routing.algorithm'), value: 'v' + (policy.value?.algorithm_version ?? '-') },
+    { label: t('routing.tierFallback'), value: String(policy.value?.tier_fallback_max ?? '-') },
+    { label: t('routing.circuit'), value: (policy.value?.circuit_failure_threshold ?? '-') + t('routing.circuitSuffix') },
   ]
 })
 
@@ -655,7 +659,7 @@ onUnmounted(() => stopPoll())
         <p>暂无 Auto 路由数据 — 请前往 <button class="link-btn" @click="activeTab = 'live'">实时决策</button> Tab 使用模拟器产生请求，或等待生产流量写入。</p>
       </div>
       <template v-else>
-        <p class="analytics-hint text-muted">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }}×模型匹配统计 · 点击单元格查看决策明细与 L2 漏斗</p>
+        <p class="analytics-hint text-muted">{{ analyticsRowDim === 'work_type' ? t('routing.workTypes') : t('routing.task') }}×模型匹配统计 · 点击单元格查看决策明细与 L2 漏斗</p>
         <div class="card compact-card flat-card">
           <AnalyticsKpiBar :audit="audit" />
         </div>
@@ -663,7 +667,7 @@ onUnmounted(() => stopPoll())
           <div class="card compact-card chart-card" :style="{ minHeight: heatmapCardHeight + 'px' }">
             <div class="card-toolbar">
               <div class="toolbar-left">
-                <span class="toolbar-title">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }} × 模型热力图</span>
+                <span class="toolbar-title">{{ analyticsRowDim === 'work_type' ? t('routing.workTypes') : t('routing.task') }} × 模型热力图</span>
               </div>
               <div class="toolbar-filters">
                 <button
@@ -672,7 +676,7 @@ onUnmounted(() => stopPoll())
                   class="profile-pill"
                   :class="{ active: analyticsRowDim === rd }"
                   @click="analyticsRowDim = rd"
-                >{{ rd === 'task_type' ? 'L1任务' : '工作类型' }}</button>
+                >{{ rd === 'task_type' ? t('routing.l1Task') : t('routing.workTypes') }}</button>
                 <span class="toolbar-divider" />
                 <button
                   v-for="w in (['7d', '24h'] as AnalyticsWindow[])"
@@ -688,7 +692,7 @@ onUnmounted(() => stopPoll())
                   class="profile-pill"
                   :class="{ active: analyticsMetric === m }"
                   @click="analyticsMetric = m"
-                >{{ m === 'count' ? '请求' : m === 'success_rate' ? '成功率' : m === 'p95_ms' ? 'P95' : '费用' }}</button>
+                >{{ m === 'count' ? t('routing.metricCount') : m === 'success_rate' ? t('routing.successRate') : m === 'p95_ms' ? t('routing.metricP95') : t('routing.metricCost') }}</button>
               </div>
             </div>
             <HeatmapMatrix
@@ -894,7 +898,7 @@ onUnmounted(() => stopPoll())
         <div class="section-head tight"><span class="layer-tag l1">L1</span><h3>Profile 权重矩阵</h3></div>
         <div class="profile-grid flat">
           <div v-for="(w, name) in DEFAULT_PROFILE_WEIGHTS" :key="name" class="profile-col">
-            <div class="profile-col-head">{{ name === 'smart' ? '智能' : name === 'speed_first' ? '速度' : '成本' }}</div>
+            <div class="profile-col-head">{{ name === 'smart' ? t('routing.profileSmart') : name === 'speed_first' ? t('routing.profileSpeed') : t('routing.profileCost') }}</div>
             <SixDimScoreBar compact :scores="{
               price_score: (w as ProfileWeights).Price / maxDimValue(w as ProfileWeights) * 100,
               speed_score: (w as ProfileWeights).Speed / maxDimValue(w as ProfileWeights) * 100,
@@ -1002,7 +1006,7 @@ onUnmounted(() => stopPoll())
             title="cursor / roocode / cline"
           />
           <button class="btn btn-primary btn-sm" :disabled="resolving || !modelInput.trim()" @click="doResolve">
-            {{ resolving ? '查询中…' : '查询路由' }}
+            {{ resolving ? t('routing.querying') : t('routing.queryRoute') }}
           </button>
         </div>
         <div v-if="resolveErr" class="alert alert-danger compact-alert">{{ resolveErr }}</div>
@@ -1062,7 +1066,7 @@ onUnmounted(() => stopPoll())
                 <td>{{ c.billing_mode || 'token' }}<span v-if="c.billing_round === 2" class="text-muted"> R2</span></td>
                 <td>
                   <span class="badge" :class="c.routable ? 'badge-green' : 'badge-red'">
-                    {{ c.routable ? '可路由' : '不可用' }}
+                    {{ c.routable ? t('routing.routable') : t('routing.unavailable') }}
                   </span>
                 </td>
               </tr>
@@ -1116,7 +1120,7 @@ onUnmounted(() => stopPoll())
                 <option value="speed_first">速度</option>
                 <option value="cost_first">成本</option>
               </select>
-              <button class="btn btn-primary btn-sm" :disabled="simLoading" @click="runSim">{{ simLoading ? '…' : '模拟' }}</button>
+              <button class="btn btn-primary btn-sm" :disabled="simLoading" @click="runSim">{{ simLoading ? '…' : t('routing.simulate') }}</button>
             </div>
             <div v-if="simResult" class="sim-out">
               <div v-if="simResult.error" class="alert alert-danger compact-alert">{{ simResult.error }}</div>
