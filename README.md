@@ -48,7 +48,7 @@
 | **凭据** | 多凭据 + 指纹池 + 自适应探测 + 手动 disable |
 | **部署** | 双实例（71 host docker + 184 k3s NodePort），共享 PG schema |
 
-详细架构见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
+详细架构见 [`ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md)。
 
 ---
 
@@ -126,7 +126,7 @@ git clone https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git
 cd llm-gateway-go
 
 # 2. 安装钩子
-./scripts/pre-commit-install.sh        # pre-commit: go vet + SQL lint + migration 编号
+./scripts/install-githooks.sh --pre-commit  # pre-commit: go vet + SQL lint + migration 编号
 ./scripts/install-githooks.sh          # pre-push: github 推送敏感信息扫描
 
 # 3. 构建
@@ -144,7 +144,7 @@ go build -o gateway ./cmd/gateway
 
 | 类别 | 文档 |
 |------|------|
-| **架构** | [`ARCHITECTURE.md`](ARCHITECTURE.md) — V3 架构方案 |
+| **架构** | [`ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) — V3 架构方案 |
 | **双仓库** | [`docs/REPO-MIRROR-POLICY.md`](docs/REPO-MIRROR-POLICY.md) — codeup ⇄ github 工作流 |
 | **安全** | [`SECURITY.md`](SECURITY.md) — 漏洞报告 + 扫描器用法 |
 | **贡献** | [`CONTRIBUTING.md`](CONTRIBUTING.md) — 开发规范 + 提交规范 |

@@ -25,8 +25,8 @@ LOCAL_DB="${LOCAL_DB:-llm_gateway}"
 LOCAL_DB_USER="${LOCAL_DB_USER:-kxuser}"
 LOCAL_DB_PASS="${LOCAL_DB_PASS:-kxpass}"
 
-PHASE22_DIR="$ROOT_DIR/deploy/sql/phase-22-extension-and-role-sync"
-PHASE23_DIR="$ROOT_DIR/deploy/sql/phase-23-columnar-invariant"
+PHASE22_DIR="$ROOT_DIR/sql/scripts/phase-22-extension-and-role-sync"
+PHASE23_DIR="$ROOT_DIR/sql/scripts/phase-23-columnar-invariant"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 err()  { printf "${RED}✗ %s${NC}\n" "$*" >&2; }

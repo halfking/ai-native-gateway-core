@@ -82,7 +82,7 @@
 
 1. **271 处 import 路径**（所有 `github.com/kaixuan/llm-gateway-go/domains` → `github.com/kaixuan/llm-gateway-go/pipeline`）
 2. **目录结构**（`mv domains/ pipeline/`）
-3. **文档引用**（README / ARCHITECTURE.md / design docs）
+3. **文档引用**（README / docs/architecture/ARCHITECTURE.md / design docs）
 4. **注释中的引用**（代码注释中提到 "domains" 的地方）
 5. **可能的配置文件**（如果有硬编码路径）
 
@@ -207,7 +207,7 @@ git push origin main
 ## 附录: 相关文档
 
 - Phase 2 Go module 拆分计划: `docs/go-migration/2026-06-12-master-plan.md`
-- 架构设计: `docs/llm-gateway-go/ARCHITECTURE.md`
+- 架构设计: `docs/architecture/ARCHITECTURE.md`
 - 重命名工具: `gofmt -w -r` (Go 官方工具)
 
 ---

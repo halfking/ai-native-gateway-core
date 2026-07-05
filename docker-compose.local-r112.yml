@@ -2,8 +2,8 @@
 #
 # 用法:
 #   docker-compose -f docker-compose.local-r112.yml config    # 验证语法
-#   ./scripts/local-r112-up.sh                                  # 启动 + 等健康
-#   ./scripts/local-r112-down.sh                                # 停止 + 清理 volumes
+#   ./scripts/local-up.sh                                       # 启动 + 等健康
+#   ./scripts/local-down.sh [--volumes]                         # 停止 + 清理 volumes
 #
 # 端口映射 (避免与本地其他 compose 冲突):
 #   - 5432  postgres  (citusdata/citus:11.3.0, 与生产一致)
