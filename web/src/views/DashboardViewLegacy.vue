@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch, inject, type Ref } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch, inject, type Ref, type ComputedRef } from 'vue'
 import { RouterLink } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStream from '../components/LiveRequestStream.vue'
@@ -22,7 +22,7 @@ import {
   type HealthResponse,
   type CompressionStats,
 } from '../api'
-import { useLiveStream } from '../composables/useLiveStream'
+import { type LiveRequest } from '../composables/useLiveStream'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
 // 从父组件注入版本切换器
@@ -198,17 +198,18 @@ function scheduleProbeFailuresPoll() {
 // update the stat cards instead of re-fetching the full summary
 // on every push.
 //
-// ID-based dedup: the store buffers up to N requests and silently
-// evicts the oldest when full. We cannot rely on a positional delta
-// (`items[prevCount:]`) because the buffer can roll over between
-// two ticks. Instead, every request_id is added to
-// `seenLiveRequestIds` the first time it shows up in the buffer
-// (and removed when the store evicts it via `onRequestEvicted`).
-const {
-  requests: liveRequests,
-  onRequestEvicted,
-  reset: resetLiveStream,
-} = useLiveStream()
+// 🔥 2026-07-06: 从父组件 DashboardView 通过 inject 获取 liveRequests
+// 不再直接调用 useLiveStream()，避免重复订阅和 refCount 冲突
+const dashboardData = inject<{
+  liveRequests: ComputedRef<LiveRequest[]>
+  onRequestEvicted: (callback: (id: string) => void) => void
+  resetLiveStream: () => void
+}>('dashboardData')
+
+const liveRequests = dashboardData?.liveRequests || computed(() => [] as LiveRequest[])
+const onRequestEvicted = dashboardData?.onRequestEvicted || ((_callback: (id: string) => void) => {})
+const resetLiveStream = dashboardData?.resetLiveStream || (() => {})
+
 const activeRequestId = ref<string | null>(null)
 function openRequestDetail(id: string) {
   activeRequestId.value = id
