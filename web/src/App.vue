@@ -287,7 +287,12 @@ function handleChangePasswordSuccess() {
   width: 220px;
   flex-shrink: 0;
   background: var(--sidebar);
-  border-right: 1px solid var(--border);
+  /* border-right: in LTR this is the inline-end of the sidebar (the
+   * edge facing the main content); in RTL the sidebar moves to the
+   * right side of the viewport and the facing edge flips. postcss-rtlcss
+   * handles `border-right` automatically, but we use the logical form
+   * here so the intent is explicit to future readers. */
+  border-inline-end: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   transition: width 0.2s ease;
@@ -409,13 +414,23 @@ function handleChangePasswordSuccess() {
   height: 0;
   border-top: 4px solid transparent;
   border-bottom: 4px solid transparent;
-  border-left: 5px solid currentColor;
+  /* In LTR the caret points right (border-left → `>`). postcss-rtlcss
+   * mirrors this to `border-right`, making it point left (the
+   * directionally-correct chevron for RTL). */
+  border-inline-start: 5px solid currentColor;
   opacity: 0.55;
   transition: transform 0.15s ease;
 }
 
+/* When expanded, rotate so the caret points down. The base rotation
+ * (90deg → clockwise) produces a downward chevron in LTR; in RTL the
+ * starting caret already points the other way, so we need a different
+ * rotation to keep the "expanded = points down" affordance. */
 .nav-group-header.expanded .nav-group-chevron {
   transform: rotate(90deg);
+}
+[dir="rtl"] .nav-group-header.expanded .nav-group-chevron {
+  transform: rotate(-90deg);
 }
 
 .nav-group-items {
@@ -499,6 +514,20 @@ function handleChangePasswordSuccess() {
   flex-shrink: 0;
 }
 
+/* The sidebar-collapse caret is a single glyph (« or »). postcss-rtlcss
+ * cannot mirror glyphs, so we flip the whole character with scaleX(-1).
+ * LTR rendering: « collapsed (drawer stays open) | » collapsed (close it).
+ * RTL rendering: the meanings swap because the sidebar sits on the right,
+ * so the SAME characters now point the wrong way; mirroring them restores
+ * the correct affordance. */
+[dir="rtl"] .toggle-icon {
+  transform: scaleX(-1);
+}
+/* Same treatment for the header sidebar toggle button on mobile. */
+[dir="rtl"] .header-sidebar-toggle {
+  transform: scaleX(-1);
+}
+
 .user-name {
   font-size: 12px;
   font-weight: 600;
@@ -565,7 +594,10 @@ function handleChangePasswordSuccess() {
   flex-wrap: wrap;
   justify-content: flex-end;
   min-width: 0;
-  margin-left: auto;
+  /* Push the cluster to the inline-end of the header in both directions.
+   * `margin-inline-start: auto` is the logical equivalent of `margin-left: auto`
+   * and works regardless of <html dir>. */
+  margin-inline-start: auto;
 }
 
 .header-meta {
