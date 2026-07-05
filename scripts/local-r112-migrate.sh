@@ -5,8 +5,8 @@
 # 流程:
 #   1. 等待 r112_postgres 启动
 #   2. 重建 llm_gateway 库（本地测试需要干净基线）
-#   3. 加载 deploy/sql/00-prereqs.sql + 01-schema.sql + 02-seed.sql
-#   4. 按文件名顺序应用 db/migrations/*.sql (增量迁移)
+#   3. 加载 sql/schema/00-prereqs.sql + 01-schema.sql + 02-seed.sql
+#   4. 按文件名顺序应用 sql/migrations/startup/*.sql (增量迁移)
 #   4. 每个 migration 单独 try/catch, 失败时精确定位
 #
 # 用法:
@@ -21,8 +21,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-MIGRATIONS_DIR="$ROOT_DIR/db/migrations"
-BASE_SCHEMA_SQL="$ROOT_DIR/deploy/sql/01-schema.sql"
+MIGRATIONS_DIR="$ROOT_DIR/sql/migrations/startup"
+BASE_SCHEMA_SQL="$ROOT_DIR/sql/schema/01-schema.sql"
 
 PG_CONTAINER="r112_postgres"
 PG_USER="kxuser"
@@ -51,7 +51,7 @@ esac
 
 if ! docker ps --format '{{.Names}}' | grep -q "^${PG_CONTAINER}\$"; then
   err "容器 $PG_CONTAINER 未运行"
-  err "  修复: ./scripts/local-r112-up.sh  (会先启动 postgres)"
+  err "  修复: ./scripts/local-up.sh  (会先启动 postgres)"
   exit 1
 fi
 
@@ -101,7 +101,7 @@ pg_exec_db -c "CREATE EXTENSION IF NOT EXISTS citus;" >/dev/null 2>&1 || {
 }
 
 info "加载基线 SQL: 00-prereqs.sql / 01-schema.sql / 02-seed.sql..."
-for BASE_SQL in "$ROOT_DIR/deploy/sql/00-prereqs.sql" "$BASE_SCHEMA_SQL" "$ROOT_DIR/deploy/sql/02-seed.sql"; do
+for BASE_SQL in "$ROOT_DIR/sql/schema/00-prereqs.sql" "$BASE_SCHEMA_SQL" "$ROOT_DIR/sql/schema/02-seed.sql"; do
   BASE_NAME="$(basename "$BASE_SQL")"
   printf "  [%s] %s ... " "$BASE_NAME" "loading"
   if [[ "$BASE_NAME" == "02-seed.sql" ]]; then
@@ -187,7 +187,7 @@ done
 ok "Migrations 完成: $APPLIED applied, $SKIPPED skipped, $FAILED failed (total $TOTAL)"
 
 # ── 加载本地 mock credential seed (让 v1 /v1/chat 能转发到 mock) ──
-LOCAL_SEED="$ROOT_DIR/deploy/sql/03-local-mock-credential.sql"
+LOCAL_SEED="$ROOT_DIR/sql/scripts/03-local-mock-credential.sql"
 if [ -f "$LOCAL_SEED" ]; then
   info "加载本地 mock credential seed: $(basename "$LOCAL_SEED")"
   if PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" \

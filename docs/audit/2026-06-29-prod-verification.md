@@ -1,6 +1,6 @@
 # 2026-06-29 Production Deployment Verification Report
 
-> **关联审计**：[SECURITY-AUDIT-2026-06-28.md](../../SECURITY-AUDIT-2026-06-28.md) v1.6（19/19 项全部修复）
+> **关联审计**：[SECURITY-AUDIT-2026-06-28.md](../SECURITY-AUDIT-2026-06-28.md) v1.6（19/19 项全部修复）
 > **关联脚本**：[scripts/deploy-verify-network-security.sh](../../scripts/deploy-verify-network-security.sh)
 > **验证日期**：2026-06-29
 > **结论**：✅ **24/24 全部通过**（0 失败，0 跳过）—— 生产部署可继续
@@ -98,7 +98,7 @@ v1 (6 处) + v2 (1 处) 都支持 TLS
 - [x] 启用 audit pipeline
 - [x] 凭据轮换 cron 已配置
 - [x] SIEM 推送已配置（v3.2 之后）
-- [x] 已复跑 [SECURITY-AUDIT-2026-06-28.md §7 附录](SECURITY-AUDIT-2026-06-28.md) 的 11 条检测命令（本报告即为自动化形式）
+- [x] 已复跑 [SECURITY-AUDIT-2026-06-28.md §7 附录](../SECURITY-AUDIT-2026-06-28.md) 的 11 条检测命令（本报告即为自动化形式）
 - [x] 已跑 [scripts/deploy-verify-network-security.sh](../../scripts/deploy-verify-network-security.sh) 自动化部署验证（24 项检查）
 - [ ] **`go test ./...`** 全绿
 - [ ] **`govulncheck ./...`** 无高危 CVE
@@ -116,6 +116,6 @@ v1 (6 处) + v2 (1 处) 都支持 TLS
 ## 5. 跟踪链接
 
 - 自动化脚本：[scripts/deploy-verify-network-security.sh](../../scripts/deploy-verify-network-security.sh)
-- 主审计：[SECURITY-AUDIT-2026-06-28.md](../../SECURITY-AUDIT-2026-06-28.md)
+- 主审计：[SECURITY-AUDIT-2026-06-28.md](../SECURITY-AUDIT-2026-06-28.md)
 - 索引：[docs/SECURITY-AUDIT-INDEX.md](../SECURITY-AUDIT-INDEX.md)
 - 部署规范：[SECURITY.md](../../SECURITY.md)

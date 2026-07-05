@@ -50,7 +50,7 @@ CREATE TABLE request_wal_2026_06 PARTITION OF request_wal
 **验证结果**: 错误日志停止，写入恢复正常
 
 ### 预防措施
-建议添加自动分区创建函数（参考 `deploy/sql/01-schema.sql` 中的 `ensure_request_logs_partition()`）:
+建议添加自动分区创建函数（参考 `sql/schema/01-schema.sql` 中的 `ensure_request_logs_partition()`）:
 
 ```sql
 CREATE OR REPLACE FUNCTION ensure_request_wal_partition(

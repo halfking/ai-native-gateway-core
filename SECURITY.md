@@ -78,7 +78,7 @@
 - [ ] 启用 audit pipeline (不要禁用 DLQ)
 - [ ] 凭据轮换 cron 已配置
 - [ ] SIEM 推送已配置（v3.2 之后）
-- [ ] 已复跑 [`SECURITY-AUDIT-2026-06-28.md`](SECURITY-AUDIT-2026-06-28.md) §7 附录的 11 条检测命令，未命中新增问题（特别是 NET-001/NET-005/NET-007/NET-008 这 4 项易回归）
+- [ ] 已复跑 [`SECURITY-AUDIT-2026-06-28.md`](docs/SECURITY-AUDIT-2026-06-28.md) §7 附录的 11 条检测命令，未命中新增问题（特别是 NET-001/NET-005/NET-007/NET-008 这 4 项易回归）
 - [ ] 已跑 [`scripts/deploy-verify-network-security.sh`](scripts/deploy-verify-network-security.sh) 自动化部署验证（24 项检查）—— 见 [`docs/audit/2026-06-29-prod-verification.md`](docs/audit/2026-06-29-prod-verification.md)
 
 ---
@@ -102,7 +102,7 @@ go list -m -json -u all | jq '.Path + " " + .Version'  # 详细
 
 最新：
 
-- **2026-06-28 — [网络/传输层审计](SECURITY-AUDIT-2026-06-28.md)**：**v1.6 已修复全部 19/19 项**（含原 NET-001~011 审计 + NET-012/013 WIP build break + NET-014 v2 overlay 重复注册 + NET-015~019 业务安全补强）。剩余为常规维护与下一次发版前的 §7 一键检测脚本复跑。
+- **2026-06-28 — [网络/传输层审计](docs/SECURITY-AUDIT-2026-06-28.md)**：**v1.6 已修复全部 19/19 项**（含原 NET-001~011 审计 + NET-012/013 WIP build break + NET-014 v2 overlay 重复注册 + NET-015~019 业务安全补强）。剩余为常规维护与下一次发版前的 §7 一键检测脚本复跑。
 
 ---
 

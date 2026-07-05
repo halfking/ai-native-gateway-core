@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/deploy-verify-network-security.sh
 #
-# 用途：生产部署前的网络安全回归验证。对应 SECURITY-AUDIT-2026-06-28.md
+# 用途：生产部署前的网络安全回归验证。对应 docs/SECURITY-AUDIT-2026-06-28.md
 #       v1.6（19 项发现全部修复）的 §7 附录检测命令 + 业务安全回归。
 #
 # 用法：

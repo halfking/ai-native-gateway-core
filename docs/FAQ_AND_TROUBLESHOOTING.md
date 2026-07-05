@@ -497,7 +497,7 @@ sshpass -e ssh -p 25022 root@14.103.112.184 \
 ## 相关文档
 
 - [构建与部署指南](BUILD_AND_DEPLOY_GUIDE.md) - 详细的构建和部署流程
-- [ARCHITECTURE.md](../ARCHITECTURE.md) - 系统架构文档
+- [ARCHITECTURE.md](architecture/ARCHITECTURE.md) - 系统架构文档
 - [README.md](../README.md) - 项目总体说明
 
 ## 更新历史

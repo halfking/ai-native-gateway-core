@@ -303,7 +303,7 @@ go test ./domains/... -v -cover
 
 ## 📚 相关资源
 
-- [原始架构文档](../../ARCHITECTURE.md)
+- [原始架构文档](ARCHITECTURE.md)
 - [domain/ 包 README](../../domain/README.md)
 - [transport/ 包 README](../../transport/README.md)
 - [_to-be-deprecated/ README](../../_to-be-deprecated/README.md) ⭐

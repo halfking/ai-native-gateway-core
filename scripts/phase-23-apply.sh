@@ -35,7 +35,7 @@ esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PHASE_DIR="$PROJECT_ROOT/deploy/sql/phase-23-columnar-invariant"
+PHASE_DIR="$PROJECT_ROOT/sql/scripts/phase-23-columnar-invariant"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info() { echo -e "${GREEN}[INFO]${NC} $*"; }

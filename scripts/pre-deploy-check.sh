@@ -1,6 +1,11 @@
 #!/bin/bash
 # LLM Gateway 部署前自动化健康检查脚本
 # 用途：在部署新版本前自动验证系统健康状态
+#
+# 用法:
+#   ./scripts/pre-deploy-check.sh                         # 标准检查
+#   ./scripts/pre-deploy-check.sh --partition-archive     # 含分区归档检查
+#   ./scripts/pre-deploy-check.sh --skip-db               # 跳过数据库检查
 
 set -e
 
@@ -10,6 +15,16 @@ DB_HOST="${DB_HOST:-172.31.0.3}"
 DB_USER="${DB_USER:-llm_gateway}"
 DB_NAME="${DB_NAME:-llm_gateway}"
 DB_PASSWORD="${DB_PASSWORD:-<DB_PASSWORD_REDACTED>}"
+
+# 参数解析
+CHECK_PARTITION_ARCHIVE=0
+SKIP_DB=0
+for arg in "$@"; do
+  case "$arg" in
+    --partition-archive) CHECK_PARTITION_ARCHIVE=1 ;;
+    --skip-db)           SKIP_DB=1 ;;
+  esac
+done
 
 # 颜色
 RED='\033[0;31m'
@@ -273,6 +288,45 @@ if [ -n "$SUCCESS_RATE" ]; then
     fi
 else
     check_warn "无最近请求数据"
+fi
+
+# ============================================
+# 7. 分区归档检查（可选: --partition-archive）
+# ============================================
+if [ "$CHECK_PARTITION_ARCHIVE" = "1" ]; then
+  echo ""
+  echo "【第 7 部分：分区归档】"
+  echo ""
+
+  EXPECTED_FUNCS=("archive_request_logs" "archive_request_wal" "archive_routing_decision_log" "archive_credential_model_index")
+  for fn in "${EXPECTED_FUNCS[@]}"; do
+    check_start "归档函数 $fn"
+    FUNC_COUNT=$(db_query "SELECT COUNT(*) FROM pg_proc WHERE proname = '$fn';" 2>/dev/null || echo "0")
+    if [ "$FUNC_COUNT" -gt 0 ]; then
+      check_pass
+    else
+      check_fail "$fn() 函数不存在"
+    fi
+  done
+
+  EXPECTED_TABLES=("request_logs_archive" "request_wal_archive" "routing_decision_log_archive" "credential_model_index_archive")
+  for tbl in "${EXPECTED_TABLES[@]}"; do
+    check_start "归档表 $tbl"
+    TABLE_COUNT=$(db_query "SELECT COUNT(*) FROM pg_class WHERE relname = '$tbl' AND relnamespace = 'public'::regnamespace;" 2>/dev/null || echo "0")
+    if [ "$TABLE_COUNT" -gt 0 ]; then
+      check_pass
+    else
+      check_fail "$tbl 表不存在"
+    fi
+  done
+
+  check_start "credential_model_index 分区检查"
+  RELKIND=$(db_query "SELECT relkind FROM pg_class WHERE relname = 'credential_model_index' AND relnamespace = 'public'::regnamespace;" 2>/dev/null | tr -d ' ')
+  if [ "$RELKIND" = "p" ]; then
+    check_pass
+  else
+    check_fail "credential_model_index 未分区（relkind=$RELKIND）"
+  fi
 fi
 
 # ============================================

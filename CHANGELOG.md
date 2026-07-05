@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-07-05] - Script 合并 (deploy-scripts-merge)
+
+### 🛠 重构
+
+#### 部署脚本统一合并
+
+- **184 部署 5→1**: `deploy-184.sh` 合并 `deploy-to-184-with-migration.sh`, `deploy-to-184-after-local-test.sh`, `deploy-columnar-184.sh`, `quick-deploy-to-184.sh`，支持 `--with-migration/-m`、`--after-local-test/-l`、`--columnar/-c`、`--quick/-q` 模式。
+- **本地环境 6→2**: `local-up.sh` + `local-down.sh` 合并了 `local-r112-up.sh`、`local-r112-down.sh` 功能。
+- **列存轮转 2→1**: `pg-columnar-rotate.sh` 新增 `--local` 模式，合并 `pg-columnar-rotate-local.sh`。
+- **请求日志管理 6→1**: `manage-request-logs.sh` 合并 `cleanup-request-logs.sh`、`archive-request-logs.sh`、`delete-old-request-logs.sh`、`analyze-request-logs-size.sh`、`check-archive-table-sizes.sh`，支持 `--analyze`、`--archive`、`--delete`、`--check-sizes`、`--cleanup`、`--dry-run` 模式。
+- **运行时测试 3→1**: `test-runtime-tc.sh` 合并 `test_tc6_quota_silent_failover.sh`、`test_tc7_no_infinite_loop.sh`、`test_tc8_client_disconnect.sh`，支持 `--tc6`、`--tc7`、`--tc8`、`--all`。
+- **热表迁移 2→1**: `apply-hot-table-migrations.sh` 新增 `--env` 参数，合并 `apply_hot_table_migrations.sh` + `apply_hot_table_migrations_v2.sh`。
+- **安装钩子**: `install-githooks.sh` 新增 `--pre-commit`，合并 `pre-commit-install.sh`。
+- **预部署检查**: `pre-deploy-check.sh` 新增 `--partition-archive`，合并 `deploy-verify-partition-archive.sh`。
+- 所有旧脚本保留为薄包装器（deprecation wrapper），向后兼容。
+
 ## [2026-07-03] - build_seq 6 (r1.13-done-2bde6aad)
 
 ### 🐛 Bug Fixes

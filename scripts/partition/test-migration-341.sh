@@ -69,7 +69,7 @@ ok "备份完成: $BACKUP_COUNT 行"
 # ========================================
 
 log "步骤 2: 应用 Migration 341"
-"${PSQL_CMD[@]}" < db/migrations/341_hot_table_independence.sql >/dev/null || fail "Migration 341 应用失败"
+"${PSQL_CMD[@]}" < sql/migrations/startup/341_hot_table_independence.sql >/dev/null || fail "Migration 341 应用失败"
 ok "Migration 341 应用成功"
 
 # ========================================

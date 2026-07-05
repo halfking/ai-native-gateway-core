@@ -88,7 +88,7 @@ CREATE INDEX idx_request_wal_request_id ON request_wal (request_id, created_at D
 CREATE INDEX idx_request_wal_tenant_ts ON request_wal (tenant_id, created_at DESC);
 
 -- 4. 创建 request_logs 主表（分区表）
--- 从 deploy/sql/01-schema.sql 中复制完整定义
+-- 从 sql/schema/01-schema.sql 中复制完整定义
 -- （见附录A：完整SQL脚本）
 
 -- 5. 验证
@@ -96,7 +96,7 @@ SELECT count(*) FROM request_wal;
 SELECT count(*) FROM request_logs;
 ```
 
-**完整SQL脚本**: 见 `deploy/sql/01-schema.sql` 中的 `request_wal` 和 `request_logs` 定义
+**完整SQL脚本**: 见 `sql/schema/01-schema.sql` 中的 `request_wal` 和 `request_logs` 定义
 
 ---
 
@@ -138,7 +138,7 @@ SELECT count(*) FROM request_logs;
 
 ### 关键发现
 
-查看 `deploy/sql/01-schema.sql` 中的 `recent_success_rate()` 函数定义，当 `request_logs` 不存在时：
+查看 `sql/schema/01-schema.sql` 中的 `recent_success_rate()` 函数定义，当 `request_logs` 不存在时：
 - 函数会抛出 `relation "request_logs" does not exist` 错误
 - 导致整个查询失败，返回0行
 
@@ -326,12 +326,12 @@ SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ 
 
 ### 步骤2: 创建表结构（20分钟）
 ```bash
-# 1. 将 deploy/sql/01-schema.sql 上传到71服务器
-scp -P 25022 deploy/sql/01-schema.sql root@__HOST_71_IP__:/tmp/
+# 1. 将 sql/schema/01-schema.sql 上传到71服务器
+scp -P 25022 sql/schema/01-schema.sql root@__HOST_71_IP__:/tmp/
 
 # 2. 提取 request_wal 和 request_logs 相关定义
-grep -A 100 "CREATE TABLE public.request_wal" deploy/sql/01-schema.sql > /tmp/request_tables.sql
-grep -A 200 "CREATE TABLE public.request_logs" deploy/sql/01-schema.sql >> /tmp/request_tables.sql
+grep -A 100 "CREATE TABLE public.request_wal" sql/schema/01-schema.sql > /tmp/request_tables.sql
+grep -A 200 "CREATE TABLE public.request_logs" sql/schema/01-schema.sql >> /tmp/request_tables.sql
 
 # 3. 在71数据库执行
 SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
@@ -397,7 +397,7 @@ SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ 
 
 ## 附录A: 完整SQL脚本
 
-见 `deploy/sql/01-schema.sql` 文件，关键部分:
+见 `sql/schema/01-schema.sql` 文件，关键部分:
 - Line 107-109: `request_wal` 表定义
 - Line 2500-2600: `request_logs` 表定义
 - Line 4000-4100: 分区创建函数 `ensure_request_logs_partition()`
@@ -409,7 +409,7 @@ SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ 
 1. `domains/hooks/observability/telemetry/request_logger.go` - 请求日志记录器
 2. `provider/client.go:654-853` - 候选节点加载逻辑
 3. `domains/streaming/stream.go` - 流式响应处理
-4. `deploy/sql/01-schema.sql` - 数据库schema定义
+4. `sql/schema/01-schema.sql` - 数据库schema定义
 
 ---
 

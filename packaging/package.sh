@@ -96,9 +96,9 @@ fi
 # ── 5. 复制 SQL 文件 ────────────────────────────────────────────
 echo ""
 echo "═══ 5. 复制 SQL 文件 ═══"
-cp "${PROJECT_ROOT}/deploy/sql/00-prereqs.sql" "${BUILD_DIR}/sql/"
-cp "${PROJECT_ROOT}/deploy/sql/01-schema.sql"  "${BUILD_DIR}/sql/"
-cp "${PROJECT_ROOT}/deploy/sql/02-seed.sql"    "${BUILD_DIR}/sql/"
+cp "${PROJECT_ROOT}/sql/schema/00-prereqs.sql" "${BUILD_DIR}/sql/"
+cp "${PROJECT_ROOT}/sql/schema/01-schema.sql"  "${BUILD_DIR}/sql/"
+cp "${PROJECT_ROOT}/sql/schema/02-seed.sql"    "${BUILD_DIR}/sql/"
 ls -lh "${BUILD_DIR}/sql/"
 
 # ── 6. 复制 installer 二进制 ────────────────────────────────────

@@ -272,7 +272,7 @@ SessionHeadersPriority = []string{
    - `route-node-state-design.md`（RouteNodeState 详细设计）
    - `last-system-session-design.md`（5分钟复用详细设计）
    - `session-pref-vs-sticky.md`（两者关系澄清）
-2. 在 `ARCHITECTURE.md` 补充三层路由的架构图
+2. 在 `docs/architecture/ARCHITECTURE.md` 补充三层路由的架构图
 
 ---
 

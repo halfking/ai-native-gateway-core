@@ -105,7 +105,7 @@ autoroute/
 
 ### 数据库
 ```
-deploy/sql/
+sql/schema/
   └── 20260629_auto_control.sql ✅ 完整的migration脚本
 ```
 
@@ -169,7 +169,7 @@ type SettingsGetter interface {
 ### Step 1: 运行数据库Migration (5分钟)
 ```bash
 cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
-psql -d llm_gateway -f deploy/sql/20260629_auto_control.sql
+psql -d llm_gateway -f sql/scripts/20260629_auto_control.sql
 ```
 
 ### Step 2: 在Main.go中集成 (15分钟)

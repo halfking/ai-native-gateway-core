@@ -537,7 +537,7 @@ if [[ $attached_count -gt 0 ]]; then
   echo ""
   echo "🔧 修复步骤："
   echo "  1. 应用 migration 337："
-  echo "     psql < db/migrations/337_detach_current_future_partitions.sql"
+  echo "     psql < sql/migrations/startup/337_detach_current_future_partitions.sql"
   echo ""
   echo "  2. 验证修复："
   echo "     $0 $ENV"
