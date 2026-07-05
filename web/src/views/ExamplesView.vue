@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, computed } from 'vue'
 import { resolveRouting } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
 import ClientConfigGenerator from '../components/ClientConfigGenerator.vue'
 import { useGatewayApiKey } from '../composables/useGatewayApiKey'
+
+const { t } = useI18n()
+
 
 const { apiKey: gatewayApiKey } = useGatewayApiKey()
 
@@ -11,7 +15,7 @@ const selectedModel = ref('glm-4-flash')
 const realApiKey = computed(() => gatewayApiKey.value || '')
 const maskedApiKey = computed(() => {
   const k = realApiKey.value
-  if (!k) return '<YOUR_API_KEY>'
+  if (!k) return t('examples.placeholder')
   if (k.length <= 16) return `${k.slice(0, 4)}****`
   return `${k.slice(0, 12)}****${k.slice(-4)}`
 })
@@ -205,7 +209,7 @@ async function runTest(exampleId: ExampleId) {
         const route = await resolveRouting(selectedModel.value)
         d.routing = `模型: ${route.client_model}\n标准名: ${route.canonical_name || '未映射'}\n路径: ${route.resolution_path}\n候选数: ${route.candidates?.length || 0}\n原始模型: ${route.raw_models?.join(', ') || '无'}`
       } catch {
-        d.routing = '路由信息获取失败'
+        d.routing = t('examples.failed')
       }
     }
   } catch (err: any) {
@@ -221,11 +225,11 @@ function closeDrawer(exampleId: ExampleId) {
 }
 
 const exampleTitle: Record<ExampleId, string> = {
-  curl: 'cURL Chat 测试',
-  python: 'Python Chat 测试',
-  stream: '流式输出测试',
-  js: 'JavaScript Chat 测试',
-  models: '列出模型测试',
+  curl: t('examples.titleCurl'),
+  python: t('examples.titlePython'),
+  stream: t('examples.titleStream'),
+  js: t('examples.titleJs'),
+  models: t('examples.titleModels'),
 }
 
 type ClientGuideId = 'cherry' | 'cursor' | 'claude' | 'roocode'
@@ -242,7 +246,7 @@ interface ClientGuide {
 const clientGuides = computed((): ClientGuide[] => [
   {
     id: 'cherry',
-    name: 'Cherry Studio',
+    name: t('examples.name'),
     icon: '🍒',
     steps: [
       '打开 Cherry Studio → 设置 → 模型服务 → 添加 OpenAI 兼容提供商',
@@ -255,7 +259,7 @@ const clientGuides = computed((): ClientGuide[] => [
   },
   {
     id: 'cursor',
-    name: 'Cursor IDE',
+    name: t('examples.name'),
     icon: '⌨️',
     steps: [
       'Cursor Settings（Cmd/Ctrl+Shift+J）→ Models',
@@ -269,7 +273,7 @@ const clientGuides = computed((): ClientGuide[] => [
   },
   {
     id: 'claude',
-    name: 'Claude Desktop',
+    name: t('examples.name'),
     icon: '🤖',
     steps: [
       'Claude Desktop 本身走 Anthropic 账号；若需接入启圭WM MCP 工具：',
@@ -281,7 +285,7 @@ const clientGuides = computed((): ClientGuide[] => [
   },
   {
     id: 'roocode',
-    name: 'Roo Code / VS Code',
+    name: t('examples.name'),
     icon: '🧩',
     steps: [
       '扩展设置中选择 OpenAI Compatible 提供商',
@@ -331,7 +335,7 @@ function toggleGuide(id: ClientGuideId) {
     <p v-if="realApiKey" class="key-hint">
       示例代码中的 API Key 已脱敏显示；点击「测试」将使用当前登录密钥。复制示例后请自行替换为真实 Key。
       <button type="button" class="btn btn-ghost btn-sm" @click="copyCode('realkey', realApiKey)">
-        {{ copied === 'realkey' ? '已复制!' : '复制完整 Key' }}
+        {{ copied === 'realkey' ? t('examples.copied') : t('examples.copyKey') }}
       </button>
     </p>
 
@@ -359,10 +363,10 @@ function toggleGuide(id: ClientGuideId) {
         <h4 style="margin:0">cURL — Chat Completions</h4>
         <div style="display:flex;gap:8px">
           <button class="btn btn-ghost btn-sm" @click="copyCode('curl', curlExample)">
-            {{ copied === 'curl' ? '已复制!' : '复制' }}
+            {{ copied === 'curl' ? t('examples.copied') : t('examples.copy') }}
           </button>
           <button class="btn btn-primary btn-sm" @click="runTest('curl')" :disabled="drawers.curl.loading">
-            {{ drawers.curl.loading ? '测试中...' : '测试' }}
+            {{ drawers.curl.loading ? t('examples.testing') : t('examples.test') }}
           </button>
         </div>
       </div>
@@ -374,10 +378,10 @@ function toggleGuide(id: ClientGuideId) {
         <h4 style="margin:0">Python (openai SDK)</h4>
         <div style="display:flex;gap:8px">
           <button class="btn btn-ghost btn-sm" @click="copyCode('python', pythonExample)">
-            {{ copied === 'python' ? '已复制!' : '复制' }}
+            {{ copied === 'python' ? t('examples.copied') : t('examples.copy') }}
           </button>
           <button class="btn btn-primary btn-sm" @click="runTest('python')" :disabled="drawers.python.loading">
-            {{ drawers.python.loading ? '测试中...' : '测试' }}
+            {{ drawers.python.loading ? t('examples.testing') : t('examples.test') }}
           </button>
         </div>
       </div>
@@ -389,10 +393,10 @@ function toggleGuide(id: ClientGuideId) {
         <h4 style="margin:0">Python — 流式输出 (Streaming)</h4>
         <div style="display:flex;gap:8px">
           <button class="btn btn-ghost btn-sm" @click="copyCode('stream', streamExample)">
-            {{ copied === 'stream' ? '已复制!' : '复制' }}
+            {{ copied === 'stream' ? t('examples.copied') : t('examples.copy') }}
           </button>
           <button class="btn btn-primary btn-sm" @click="runTest('stream')" :disabled="drawers.stream.loading">
-            {{ drawers.stream.loading ? '测试中...' : '测试' }}
+            {{ drawers.stream.loading ? t('examples.testing') : t('examples.test') }}
           </button>
         </div>
       </div>
@@ -404,10 +408,10 @@ function toggleGuide(id: ClientGuideId) {
         <h4 style="margin:0">JavaScript / TypeScript (openai SDK)</h4>
         <div style="display:flex;gap:8px">
           <button class="btn btn-ghost btn-sm" @click="copyCode('js', jsExample)">
-            {{ copied === 'js' ? '已复制!' : '复制' }}
+            {{ copied === 'js' ? t('examples.copied') : t('examples.copy') }}
           </button>
           <button class="btn btn-primary btn-sm" @click="runTest('js')" :disabled="drawers.js.loading">
-            {{ drawers.js.loading ? '测试中...' : '测试' }}
+            {{ drawers.js.loading ? t('examples.testing') : t('examples.test') }}
           </button>
         </div>
       </div>
@@ -419,10 +423,10 @@ function toggleGuide(id: ClientGuideId) {
         <h4 style="margin:0">cURL — 列出可用模型</h4>
         <div style="display:flex;gap:8px">
           <button class="btn btn-ghost btn-sm" @click="copyCode('models', listModelsExample)">
-            {{ copied === 'models' ? '已复制!' : '复制' }}
+            {{ copied === 'models' ? t('examples.copied') : t('examples.copy') }}
           </button>
           <button class="btn btn-primary btn-sm" @click="runTest('models')" :disabled="drawers.models.loading">
-            {{ drawers.models.loading ? '测试中...' : '测试' }}
+            {{ drawers.models.loading ? t('examples.testing') : t('examples.test') }}
           </button>
         </div>
       </div>

@@ -1,6 +1,10 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, onMounted, computed } from 'vue'
 import { getAuditLogs, type AuditLogEntry } from '../api'
+
+const { t } = useI18n()
+
 
 const entries = ref<AuditLogEntry[]>([])
 const total = ref(0)
@@ -34,7 +38,7 @@ async function load() {
     entries.value = r.entries || []
     total.value = r.total || 0
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('auditLog.loadFailed')
     entries.value = []
     total.value = 0
   } finally {
@@ -87,17 +91,17 @@ function actionLabel(action: string): string {
 }
 
 function fmtDate(s: string) {
-  if (!s) return '—'
+  if (!s) return t('auditLog.dash')
   return new Date(s).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
 }
 
 function fmtTime(s: string) {
-  if (!s) return '—'
+  if (!s) return t('auditLog.dash')
   return new Date(s).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 function fmtTs(s: string) {
-  if (!s) return '—'
+  if (!s) return t('auditLog.dash')
   return new Date(s).toLocaleString('zh-CN', { hour12: false })
 }
 
@@ -119,7 +123,7 @@ function fmtJson(v: unknown): string {
 
 function detailPreview(e: AuditLogEntry): string {
   const raw = e.after_json ?? e.before_json
-  if (raw == null) return '—'
+  if (raw == null) return t('auditLog.dash')
   const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
   if (text.length <= 80) return text
   return text.slice(0, 79) + '…'
@@ -145,7 +149,7 @@ onMounted(load)
       <div class="header-actions">
         <span class="count-chip" aria-live="polite">共 {{ total }} 条</span>
         <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">
-          {{ loading ? '刷新中…' : '刷新' }}
+          {{ loading ? t('auditLog.refreshing') : t('auditLog.refresh') }}
         </button>
       </div>
     </div>
@@ -248,7 +252,7 @@ onMounted(load)
                 <div class="cell-line2">{{ fmtTime(e.ts) }}</div>
               </td>
               <td class="col-actor">
-                <span class="actor-name">{{ e.actor || '—' }}</span>
+                <span class="actor-name">{{ e.actor || t('auditLog.dash') }}</span>
               </td>
               <td class="col-action">
                 <span class="badge" :class="actionBadgeClass(e.action)" :title="e.action">
@@ -300,7 +304,7 @@ onMounted(load)
 
         <div class="drawer-section detail-meta">
           <span><strong>时间</strong> {{ fmtTs(detailEntry.ts) }}</span>
-          <span><strong>操作员</strong> {{ detailEntry.actor || '—' }}</span>
+          <span><strong>操作员</strong> {{ detailEntry.actor || t('auditLog.dash') }}</span>
           <span>
             <strong>动作</strong>
             <span class="badge" :class="actionBadgeClass(detailEntry.action)">{{ detailEntry.action }}</span>

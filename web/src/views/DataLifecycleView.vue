@@ -4,7 +4,7 @@
       <h2 class="page-title">数据生命周期管理</h2>
       <div class="header-actions">
         <button class="btn btn-ghost btn-sm" @click="refreshAll" :disabled="isLoading">
-          {{ isLoading ? '加载中…' : '刷新全部' }}
+          {{ isLoading ? t('dataLifecycle.loading') : '刷新全部' }}
         </button>
       </div>
     </div>
@@ -132,7 +132,7 @@
           </div>
           <div class="form-actions">
             <button class="btn btn-primary btn-sm" @click="previewCleanup" :disabled="isLoading">
-              {{ isLoading ? '加载中…' : '预览影响' }}
+              {{ isLoading ? t('dataLifecycle.loading') : t('dataLifecycle.preview') }}
             </button>
             <button class="btn btn-ghost btn-sm" @click="executeCleanup" :disabled="isLoading || !previewResult">
               执行清理
@@ -190,6 +190,7 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, onMounted, nextTick, reactive } from 'vue'
 import { Chart, ChartConfiguration, registerables } from 'chart.js'
 import {
@@ -203,6 +204,9 @@ import AttachmentManager from './data-lifecycle/AttachmentManager.vue'
 import FilesystemMaintenance from './data-lifecycle/FilesystemMaintenance.vue'
 import StorageConfig from './data-lifecycle/StorageConfig.vue'
 import LogManagement from './data-lifecycle/LogManagement.vue'
+
+const { t } = useI18n()
+
 
 Chart.register(...registerables)
 
@@ -279,7 +283,7 @@ function renderChart() {
   const config: ChartConfiguration = {
     type: 'doughnut',
     data: {
-      labels: ['热数据 (0-7天)', '温数据 (7-30天)', '冷数据 (30-90天)', '过期数据 (>90天)'],
+      labels: [t('dataLifecycle.hotData'), t('dataLifecycle.warmData'), t('dataLifecycle.coldData'), t('dataLifecycle.expiredData')],
       datasets: [{
         data,
         backgroundColor: [
@@ -317,7 +321,7 @@ function renderChart() {
 
 async function previewCleanup() {
   if (!cleanupForm.from || !cleanupForm.to) {
-    alert('请选择起始日期和结束日期')
+    alert(t('dataLifecycle.missingDate'))
     return
   }
   isLoading.value = true
@@ -327,7 +331,7 @@ async function previewCleanup() {
     )
   } catch (e) {
     console.error('preview failed', e)
-    alert('预览失败')
+    alert(t('dataLifecycle.previewFailed'))
   } finally {
     isLoading.value = false
   }
@@ -335,7 +339,7 @@ async function previewCleanup() {
 
 function executeCleanup() {
   if (!previewResult.value) {
-    alert('请先预览影响')
+    alert(t('dataLifecycle.needPreview'))
     return
   }
   const confirmed = confirm(
@@ -344,7 +348,7 @@ function executeCleanup() {
     `此操作不可逆！`
   )
   if (!confirmed) return
-  alert('清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。')
+  alert(t('dataLifecycle.executeNotImpl'))
 }
 
 onMounted(async () => {

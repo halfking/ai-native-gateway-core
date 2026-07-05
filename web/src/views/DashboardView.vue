@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 // DashboardView.vue — 仪表盘统一入口
 // 2026-07-05 v3: 统一数据源 + 版本切换器集成到标题栏
 
@@ -20,6 +21,9 @@ import {
   type CompressionStats,
 } from '../api'
 import { useLiveStream } from '../composables/useLiveStream'
+
+const { t } = useI18n()
+
 
 const STORAGE_KEY = 'dashboard_version'
 
@@ -93,7 +97,7 @@ async function load() {
     
     await loadCompressionStats()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('dashboard.loadError')
   } finally {
     loading.value = false
   }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getTenantsAdmin, TENANT_STATUSES, TENANT_STATUS_LABELS, TENANT_STATUS_COLORS } from '../api'
@@ -6,6 +7,9 @@ import type { Tenant } from '../api'
 import TenantCreateDialog from './TenantCreateDialog.vue'
 import FeeCostCell from '../components/FeeCostCell.vue'
 import { isPlatformOpsView } from '../store'
+
+const { t } = useI18n()
+
 
 const router = useRouter()
 const tenants = ref<Tenant[]>([])
@@ -20,7 +24,7 @@ async function load() {
   try {
     tenants.value = await getTenantsAdmin(filterStatus.value || undefined)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('tenants.loadFailed')
   } finally {
     loading.value = false
   }

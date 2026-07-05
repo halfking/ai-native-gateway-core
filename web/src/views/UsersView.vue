@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, computed, onMounted } from 'vue'
 import { getUsers, createUser, updateUser, deleteUser, resetUserPassword, getTenantsAdmin } from '../api'
 import type { Tenant } from '../api'
 import { store, isReadOnlyMode, isTenantAdmin } from '../store'
 import { checkPasswordPolicy, passwordsMatch } from '../utils/passwordPolicy'
+
+const { t } = useI18n()
+
 
 const readOnly = computed(() => isReadOnlyMode())
 const tenantAdmin = computed(() => isTenantAdmin())
@@ -68,7 +72,7 @@ async function load() {
 
 async function handleCreate() {
   if (!form.value.username || !form.value.password) {
-    error.value = '用户名和密码不能为空'
+    error.value = t('users.usernamePasswordRequired')
     return
   }
   if (!passwordsMatch(form.value.password, createConfirmPwd.value)) {
@@ -85,7 +89,7 @@ async function handleCreate() {
     form.value = { username: '', password: '', tenant_id: 'default', display_name: '', email: '', role: 'tenant_admin' }
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '创建失败'
+    error.value = e instanceof Error ? e.message : t('users.createFailed')
   }
 }
 
@@ -122,12 +126,12 @@ async function handleResetPwd() {
     resetPwdUser.value = null
     newPwd.value = ''
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '重置失败'
+    error.value = e instanceof Error ? e.message : t('users.resetFailed')
   }
 }
 
 function roleLabel(r: string) {
-  return r === 'super_admin' ? '超级管理员' : '租户管理员'
+  return r === 'super_admin' ? t('users.super_admin') : t('users.tenant_admin')
 }
 
 function fmtDate(s: string | null) {
