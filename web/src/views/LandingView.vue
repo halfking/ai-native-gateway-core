@@ -54,9 +54,9 @@ const features = computed(() => [
 
 const advantages = computed(() => [
   { 
-    icon: '📖', 
-    title: t('landing.advantages.local.title'), 
-    description: t('landing.advantages.local.description') 
+    icon: '🌐', 
+    title: t('landing.advantages.openSource.title'), 
+    description: t('landing.advantages.openSource.description') 
   },
   { 
     icon: '🔒', 
