@@ -54,7 +54,7 @@ export default {
   advantagesTitle: '為什麼選擇 LLM Gateway',
   advantagesSubtitle: '面向全球企業的企業級 AI 網關',
   advantages: {
-    local: {
+    openSource: {
       title: '內核開源',
       description: '資料面、控制面、認證鑑權、路由排程全部開源，零黑盒，企業可稽核、可客製、可演進',
     },
