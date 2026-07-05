@@ -137,7 +137,8 @@ check_migration_unique() {
   local dups
   dups=$(ls "$mig_dir"/ 2>/dev/null \
          | grep -E '^[0-9]{3}_' \
-         | grep -v '\.down\.sql$' \
+         | grep -v '\.down\.sql' \
+         | grep '\.sql$' \
          | sed -E 's/^([0-9]{3})_.*/\1/' \
          | sort | uniq -d)
   if [[ -n "$dups" ]]; then
