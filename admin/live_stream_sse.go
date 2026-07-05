@@ -217,7 +217,7 @@ func (h *LiveStreamSSEHub) Stop() {
 	}
 }
 
-// ProviderCodeFor resolves a providers.id to its catalog_code, with
+// ProviderCodeFor resolves a providers.id to its catalog_code or name (fallback to code), with
 // a one-shot per-id DB lookup cached in memory.
 func (h *LiveStreamSSEHub) ProviderCodeFor(ctx context.Context, providerID int) string {
 	if providerID == 0 {
@@ -229,14 +229,19 @@ func (h *LiveStreamSSEHub) ProviderCodeFor(ctx context.Context, providerID int) 
 	if cached, ok := h.providerCache.Load(providerID); ok {
 		return cached.(string)
 	}
-	var code string
-	row := h.db.QueryRow(ctx, "SELECT COALESCE(NULLIF(catalog_code, ''), '') FROM providers WHERE id = $1", providerID)
-	if err := row.Scan(&code); err != nil {
+	var code, name string
+	row := h.db.QueryRow(ctx, "SELECT COALESCE(NULLIF(catalog_code, ''), ''), COALESCE(NULLIF(name, ''), '') FROM providers WHERE id = $1", providerID)
+	if err := row.Scan(&code, &name); err != nil {
 		h.providerCache.Store(providerID, "")
 		return ""
 	}
-	h.providerCache.Store(providerID, code)
-	return code
+	// 优先使用name，如果name为空则使用code
+	result := name
+	if result == "" {
+		result = code
+	}
+	h.providerCache.Store(providerID, result)
+	return result
 }
 
 func (h *LiveStreamSSEHub) closeAll() {

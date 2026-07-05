@@ -128,6 +128,7 @@ export function createProvider(data: { catalog_code: string; code?: string; disp
 
 export function updateProvider(id: number, data: {
   display_name?: string
+  name?: string
   base_url?: string
   protocol?: string
   kind?: string
@@ -363,6 +364,7 @@ export interface ProviderDetail {
   id: number
   code: string
   display_name: string
+  name?: string | null
   catalog_code: string | null
   kind: string
   category: string
