@@ -101,9 +101,12 @@ DECLARE
 BEGIN
     WITH del AS (
         DELETE FROM public.request_logs_default
-        WHERE ts < now() - p_retention
-        ORDER BY ts
-        LIMIT p_batch_size
+        WHERE request_id IN (
+            SELECT request_id FROM public.request_logs_default
+            WHERE ts < now() - p_retention
+            ORDER BY ts
+            LIMIT p_batch_size
+        )
         RETURNING *
     ),
     ins AS (
@@ -139,9 +142,12 @@ DECLARE
 BEGIN
     WITH del AS (
         DELETE FROM public.request_wal_default
-        WHERE created_at < now() - p_retention
-        ORDER BY created_at
-        LIMIT p_batch_size
+        WHERE request_id IN (
+            SELECT request_id FROM public.request_wal_default
+            WHERE created_at < now() - p_retention
+            ORDER BY created_at
+            LIMIT p_batch_size
+        )
         RETURNING *
     ),
     ins AS (
@@ -176,9 +182,12 @@ DECLARE
 BEGIN
     WITH del AS (
         DELETE FROM public.usage_ledger_default
-        WHERE ts < now() - p_retention
-        ORDER BY ts
-        LIMIT p_batch_size
+        WHERE id IN (
+            SELECT id FROM public.usage_ledger_default
+            WHERE ts < now() - p_retention
+            ORDER BY ts
+            LIMIT p_batch_size
+        )
         RETURNING *
     ),
     ins AS (
@@ -213,9 +222,12 @@ DECLARE
 BEGIN
     WITH del AS (
         DELETE FROM public.routing_decision_log_default
-        WHERE ts < now() - p_retention
-        ORDER BY ts
-        LIMIT p_batch_size
+        WHERE id IN (
+            SELECT id FROM public.routing_decision_log_default
+            WHERE ts < now() - p_retention
+            ORDER BY ts
+            LIMIT p_batch_size
+        )
         RETURNING *
     ),
     ins AS (
@@ -252,9 +264,12 @@ DECLARE
 BEGIN
     WITH del AS (
         DELETE FROM public.credential_model_index_default
-        WHERE bucket < now() - p_retention
-        ORDER BY bucket
-        LIMIT p_batch_size
+        WHERE id IN (
+            SELECT id FROM public.credential_model_index_default
+            WHERE bucket < now() - p_retention
+            ORDER BY bucket
+            LIMIT p_batch_size
+        )
         RETURNING *
     ),
     ins AS (
@@ -290,9 +305,12 @@ DECLARE
 BEGIN
     WITH del AS (
         DELETE FROM public.request_logs_bodies_default
-        WHERE ts < now() - p_retention
-        ORDER BY ts
-        LIMIT p_batch_size
+        WHERE request_id IN (
+            SELECT request_id FROM public.request_logs_bodies_default
+            WHERE ts < now() - p_retention
+            ORDER BY ts
+            LIMIT p_batch_size
+        )
         RETURNING *
     ),
     ins AS (
@@ -327,9 +345,12 @@ DECLARE
 BEGIN
     WITH del AS (
         DELETE FROM public.credit_ledger_default
-        WHERE created_at < now() - p_retention
-        ORDER BY created_at
-        LIMIT p_batch_size
+        WHERE id IN (
+            SELECT id FROM public.credit_ledger_default
+            WHERE created_at < now() - p_retention
+            ORDER BY created_at
+            LIMIT p_batch_size
+        )
         RETURNING *
     ),
     ins AS (
@@ -373,9 +394,12 @@ BEGIN
     -- time component.
     WITH del AS (
         DELETE FROM public.tool_usage_stats_default
-        WHERE usage_date < current_date - retention_days
-        ORDER BY usage_date
-        LIMIT p_batch_size
+        WHERE id IN (
+            SELECT id FROM public.tool_usage_stats_default
+            WHERE usage_date < current_date - retention_days
+            ORDER BY usage_date
+            LIMIT p_batch_size
+        )
         RETURNING *
     ),
     ins AS (
@@ -475,3 +499,4 @@ COMMIT;
 \echo '  - bg/partition_manager.go add promoteDefaultToPartitions() called at 1h interval'
 \echo '  - verify with: SELECT promote_request_logs_default_batch(); -- repeat until 0'
 \echo ''
+
