@@ -22,7 +22,7 @@
 ./scripts/partition/check-partition-health.sh --env 71
 
 # 2. 查看后台调度器日志
-grep "partition_manager" /var/log/llm-gateway.log | tail -50
+grep "partition_manager" __SERVER_PATH_6__.log | tail -50
 
 # 3. 验证架构对齐
 ./scripts/partition/verify-partition-alignment.sh --env 71
@@ -133,7 +133,7 @@ ALERT: PartitionDefaultTableSizeWarning
 ./scripts/partition/check-partition-health.sh --env 71 --report-only
 
 # 2. 检查 promote 函数执行日志
-grep "promote failed\|promote batch" /var/log/llm-gateway.log | tail -20
+grep "promote failed\|promote batch" __SERVER_PATH_6__.log | tail -20
 
 # 3. 检查月度分区是否存在
 psql -c "SELECT count(*) FROM pg_class WHERE relname LIKE 'request_logs_2026_%';"
@@ -407,7 +407,7 @@ SELECT promote_request_logs_default_batch('7 days'::interval, 100);
 
 ```bash
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions | \
+  https://__DOMAIN_8__/api/admin/data-lifecycle/partitions | \
   jq '.[] | {table: .table_name, archivable: .archivable_count, archived: .archived_count, total: .total_partitions}'
 ```
 
@@ -427,14 +427,14 @@ curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"table_name\":\"$TABLE\",\"archive_month\":\"$MONTH\",\"dry_run\":true}" \
-  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive | jq .
+  https://__DOMAIN_8__/api/admin/data-lifecycle/partitions/archive | jq .
 
 # 2. 确认无误后执行实际归档
 curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"table_name\":\"$TABLE\",\"archive_month\":\"$MONTH\",\"dry_run\":false}" \
-  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive | jq .
+  https://__DOMAIN_8__/api/admin/data-lifecycle/partitions/archive | jq .
 ```
 
 **预期结果**：
@@ -459,7 +459,7 @@ curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"table_name\":\"$TABLE\",\"months\":$MONTHS,\"dry_run\":false}" \
-  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive-batch | jq .
+  https://__DOMAIN_8__/api/admin/data-lifecycle/partitions/archive-batch | jq .
 ```
 
 **最佳实践**：
@@ -490,7 +490,7 @@ VACUUM FULL ANALYZE request_wal;
 # Partition archive monitoring script
 
 ADMIN_TOKEN="${ADMIN_TOKEN}"
-API_BASE_URL="${API_BASE_URL:-https://llmgateway.internal.example.com}"
+API_BASE_URL="${API_BASE_URL:-https://__DOMAIN_8__}"
 
 echo "=========================================="
 echo "Partition Archive Status - $(date)"
@@ -584,8 +584,8 @@ defer pm.Stop()
 
 查看日志：
 ```bash
-grep "partition_manager" /var/log/llm-gateway.log
-grep "archive succeeded" /var/log/llm-gateway.log | tail -5
+grep "partition_manager" __SERVER_PATH_6__.log
+grep "archive succeeded" __SERVER_PATH_6__.log | tail -5
 ```
 
 ### 8.5 备份策略

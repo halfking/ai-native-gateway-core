@@ -133,15 +133,15 @@ go build -o /tmp/llm-gateway-go ./cmd/gateway  # ✅ Clean build
 ### Deployment Steps
 
 1. **Build new image** with the fix
-2. **Deploy to 184 k3s** (llmgateway.internal.example.com)
-3. **Deploy to 71 systemd** (llmgateway.internal.example.com)
+2. **Deploy to 184 k3s** (__DOMAIN_8__)
+3. **Deploy to 71 systemd** (__DOMAIN_8__)
 4. **Verify** with a claude-sonnet-4-6 tool call request
 
 ### Verification Commands
 
 ```bash
 # Test tool call with claude-sonnet-4-6
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer <api-key>" \
   -H "Content-Type: application/json" \
   -d '{

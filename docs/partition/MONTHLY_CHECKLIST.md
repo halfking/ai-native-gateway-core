@@ -238,7 +238,7 @@ ALTER TABLE request_logs DETACH PARTITION request_logs_2026_08;
 
 ```bash
 # 如果 *_default 大小异常，执行手动迁移
-./scripts/partition/manual-promote-default.sh --all --retention 7 --batch 5000
+./scripts/partition/manual-promote-default.sh --all --retention 7 --batch __PORT_8__
 ```
 
 ---
@@ -379,7 +379,7 @@ ALTER TABLE request_logs DETACH PARTITION request_logs_2026_08;
 3. 如果 `*_default` 数据量很大（> 10GB），分批处理：
    ```bash
    # 先清理 7 天前的数据
-   ./scripts/partition/manual-promote-default.sh --all --retention 7 --batch 5000
+   ./scripts/partition/manual-promote-default.sh --all --retention 7 --batch __PORT_8__
    ```
 
 ---
@@ -456,14 +456,14 @@ kubectl rollout restart deployment/llm-gateway-go -n production
 ```bash
 # 1. 查询分区状态
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions | jq .
+  https://__DOMAIN_8__/api/admin/data-lifecycle/partitions | jq .
 
 # 2. 测试试运行归档
 curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"table_name":"request_logs","archive_month":"2026-04","dry_run":true}' \
-  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive | jq .
+  https://__DOMAIN_8__/api/admin/data-lifecycle/partitions/archive | jq .
 ```
 
 #### Step 5：功能测试
@@ -474,7 +474,7 @@ curl -X POST \
   -H "Authorization: Bearer $NON_SUPER_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"table_name":"request_logs","archive_month":"2026-04","dry_run":true}' \
-  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive
+  https://__DOMAIN_8__/api/admin/data-lifecycle/partitions/archive
 # 预期：403 Forbidden
 ```
 
@@ -509,10 +509,10 @@ sudo systemctl restart llm-gateway-go
 
 ```bash
 # SSH 到 184
-ssh -p 25022 root@__INTERNAL_PUBLIC_IP__
+ssh -p __PORT_1__ root@__INTERNAL_PUBLIC_IP__
 
 # 检查 migrations 是否已应用
-export PGPASSWORD='__REDACTED_DB_PASSWORD__'
+export PGPASSWORD='__SECRET_2__'
 POD=$(kubectl get pod -n pms-test -l app=llm-gateway-pg -o jsonpath="{.items[0].metadata.name}")
 
 kubectl exec -n pms-test $POD -c citus -- psql -U llm_gateway -d llm_gateway -c "
@@ -539,7 +539,7 @@ crontab -l | grep columnar
 
 #### 镜像信息（参考 2026-06-30 部署）
 
-- 镜像名：`registry.internal.example.com/kx-llm-gateway-go:gitsha-0b0d80e8`
+- 镜像名：`__DOMAIN_9__/kx-llm-gateway-go:gitsha-0b0d80e8`
 - 构建时间：2026-06-29T22:48:35Z
 - Git SHA：0b0d80e8
 - 部署日期：2026-06-30
@@ -555,7 +555,7 @@ kubectl delete pod -n pms-test -l app=llm-gateway-go \
 
 # 更新镜像
 kubectl set image deployment/llm-gateway-go-deployment -n pms-test \
-  llm-gateway-go=registry.internal.example.com/kx-llm-gateway-go:gitsha-0b0d80e8
+  llm-gateway-go=__DOMAIN_9__/kx-llm-gateway-go:gitsha-0b0d80e8
 
 # 监控 Rollout
 kubectl rollout status deployment/llm-gateway-go-deployment -n pms-test --timeout=180s
@@ -566,7 +566,7 @@ kubectl rollout status deployment/llm-gateway-go-deployment -n pms-test --timeou
 ```bash
 # 一键部署
 kubectl set image deployment/llm-gateway-go-deployment -n pms-test \
-  llm-gateway-go=registry.internal.example.com/kx-llm-gateway-go:gitsha-0b0d80e8 && \
+  llm-gateway-go=__DOMAIN_9__/kx-llm-gateway-go:gitsha-0b0d80e8 && \
 kubectl rollout status deployment/llm-gateway-go-deployment -n pms-test
 
 # 一键验证

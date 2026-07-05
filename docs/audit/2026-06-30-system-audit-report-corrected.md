@@ -1,7 +1,7 @@
 # LLM Gateway 系统审计报告（修正版）
 **日期**: 2026-06-30  
 **审计范围**: 错误处理、数据统计、凭据路由  
-**服务器**: __HOST_71_IP__ (71服务器)  
+**服务器**: __SECRET_1__ (71服务器)  
 **数据库**: llm_gateway (NOT crm - 初次审计错误)
 
 ## 执行摘要
@@ -452,7 +452,7 @@ GROUP BY tenant_id, date_trunc('day', ts);
 Container: llm-gateway-pg-71-replica (Citus 11.3.0)
 Database: llm_gateway (NOT crm)
 User: llm_gateway
-Port: 5432 (容器内)
+Port: __PORT_5__ (容器内)
 Max Connections: 1000
 ```
 
@@ -668,5 +668,5 @@ LIMIT 20;
 - AI Agent (Claude Opus 4)
 - 初次审计时间: 2026-06-30 14:00-15:30 CST
 - 修正审计时间: 2026-06-30 15:30-16:30 CST
-- 服务器: __HOST_71_IP__ (71)
+- 服务器: __SECRET_1__ (71)
 - 数据库: llm_gateway @ llm-gateway-pg-71-replica

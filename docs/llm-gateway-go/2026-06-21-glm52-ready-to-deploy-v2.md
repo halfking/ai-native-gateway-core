@@ -78,24 +78,24 @@ if isOpenAIFormatData(data) {
 
 #### 1. 构建
 ```bash
-cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 GOOS=linux GOARCH=amd64 go build -o llm-gateway-go-linux ./cmd/gateway
 ```
 
 #### 2. 备份当前版本
 ```bash
-ssh root@__HOST_71_IP__
+ssh __SSH_TARGET_2__
 cp /usr/local/bin/llm-gateway-go /usr/local/bin/llm-gateway-go.backup-$(date +%Y%m%d-%H%M%S)
 ```
 
 #### 3. 上传新版本
 ```bash
-scp llm-gateway-go-linux root@__HOST_71_IP__:/tmp/
+scp llm-gateway-go-linux __SSH_TARGET_2__:/tmp/
 ```
 
 #### 4. 部署
 ```bash
-ssh root@__HOST_71_IP__ << 'ENDSSH'
+ssh __SSH_TARGET_2__ << 'ENDSSH'
 systemctl stop llm-gateway-go
 mv /tmp/llm-gateway-go-linux /usr/local/bin/llm-gateway-go
 chmod +x /usr/local/bin/llm-gateway-go
@@ -108,10 +108,10 @@ ENDSSH
 #### 5. 验证
 ```bash
 # 检查健康状态
-curl -i http://__HOST_71_IP__:8780/healthz
+curl -i http://__PUB_IP_2__:__PORT_2__/healthz
 
 # 重新运行诊断
-export GLM_API_KEY="__REDACTED_GLM_API_KEY__"
+export GLM_API_KEY="__API_KEY_8__"
 ./scripts/diagnose-glm52.sh -v
 ```
 
@@ -163,25 +163,25 @@ export K8S_SSH_PASSWORD='__REDACTED_SSH_PASSWORD__'
 
 - [ ] **服务启动成功**
   ```bash
-  ssh root@__HOST_71_IP__ 'systemctl status llm-gateway-go'
+  ssh __SSH_TARGET_2__ 'systemctl status llm-gateway-go'
   ```
 
 - [ ] **健康检查通过**
   ```bash
-  curl http://__HOST_71_IP__:8780/healthz
+  curl http://__PUB_IP_2__:__PORT_2__/healthz
   # 期望: {"status":"ok","version":"0.2.0"}
   ```
 
 - [ ] **重新运行诊断**
   ```bash
-  export GLM_API_KEY="__REDACTED_GLM_API_KEY__"
+  export GLM_API_KEY="__API_KEY_8__"
   ./scripts/diagnose-glm52.sh -v
   # 期望: 流式测试 ✅ 通过
   ```
 
 - [ ] **检查日志**
   ```bash
-  ssh root@__HOST_71_IP__
+  ssh __SSH_TARGET_2__
   journalctl -u llm-gateway-go -n 50 | grep "detected OpenAI-format"
   # 期望: 看到拦截日志
   ```
@@ -198,7 +198,7 @@ export K8S_SSH_PASSWORD='__REDACTED_SSH_PASSWORD__'
 如果出现问题，立即回滚：
 
 ```bash
-ssh root@__HOST_71_IP__
+ssh __SSH_TARGET_2__
 systemctl stop llm-gateway-go
 cp /usr/local/bin/llm-gateway-go.backup-* /usr/local/bin/llm-gateway-go
 systemctl start llm-gateway-go

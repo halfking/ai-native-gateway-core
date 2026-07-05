@@ -49,7 +49,7 @@ $ kubectl logs -n pms-test <pod> | grep "Phase 2"
 |------|---|
 | Namespace | pms-test |
 | Pod | llm-gateway-go-deployment-7cbbb64f49-qjbfm |
-| 镜像 | 127.0.0.1:5000/kx-llm-gateway-go:module-mgmt-899f106a* |
+| 镜像 | 127.0.0.1:__PORT_8__/kx-llm-gateway-go:module-mgmt-899f106a* |
 | 启动时间 | 2026-07-01T04:37:06Z |
 | 状态 | Running |
 
@@ -231,7 +231,7 @@ $ go test -v -run TestStateObserver ./domains/streaming/executors/
 === RUN   TestStateObserver_ConcurrentCalls
 --- PASS: TestStateObserver_ConcurrentCalls (0.00s)
 PASS
-ok      github.com/kaixuan/llm-gateway-go/domains/streaming/executors  0.522s
+ok      __REPO_URL_3__/domains/streaming/executors  0.522s
 ```
 
 ---
@@ -351,7 +351,7 @@ ok      github.com/kaixuan/llm-gateway-go/domains/streaming/executors  0.522s
 
 | 验收项 | 期望 | 实际 | 状态 |
 |--------|------|------|------|
-| 镜像构建 | 成功 | 127.0.0.1:5000/kx-llm-gateway-go:gitsha-0d5aec70 | ✅ |
+| 镜像构建 | 成功 | 127.0.0.1:__PORT_8__/kx-llm-gateway-go:gitsha-0d5aec70 | ✅ |
 | Pod 部署 | Running | llm-gateway-go-deployment-7cbbb64f49-qjbfm | ✅ |
 | 数据库连接 | 正常 | postgres connected | ✅ |
 | 服务可用 | 200 OK | /healthz 返回 ok | ✅ |
@@ -487,7 +487,7 @@ kubectl logs -n pms-test -l app=llm-gateway-go --tail=100 --follow
 
 - **开发**: ACC 团队
 - **运维**: 184测试环境管理员
-- **Git**: https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go
+- **Git**: __REPO_URL_1__
 
 ---
 

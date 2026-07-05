@@ -188,7 +188,7 @@ HTTP 200 OK
 }
 ```
 
-**Service URL**: `https://llmgateway.internal.example.com` (184 k3s)
+**Service URL**: `https://__DOMAIN_8__` (184 k3s)
 
 ---
 

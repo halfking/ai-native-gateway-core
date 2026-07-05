@@ -99,7 +99,7 @@ services/llm-gateway-go/
 ### 前端功能
 ```bash
 # 在浏览器中测试
-1. 访问 https://llmgateway.internal.example.com/routing-v2/credentials
+1. 访问 https://__DOMAIN_8__/routing-v2/credentials
 2. 点击任一凭据打开详情
 3. 验证：
    - ✅ 右上角显示 [✓自动刷新] [5秒▼] [↻] [关闭]
@@ -115,7 +115,7 @@ services/llm-gateway-go/
 ### 后端API验证
 ```bash
 # 测试路由决策API
-curl "https://llmgateway.internal.example.com/api/credentials/decisions?credential_id=123&limit=10" \
+curl "https://__DOMAIN_8__/api/credentials/decisions?credential_id=123&limit=10" \
   -H "Authorization: Bearer <token>"
 
 # 预期响应
@@ -126,7 +126,7 @@ curl "https://llmgateway.internal.example.com/api/credentials/decisions?credenti
 }
 
 # 测试清除manual_disabled
-curl -X POST "https://llmgateway.internal.example.com/api/credentials/clear-manual-disabled" \
+curl -X POST "https://__DOMAIN_8__/api/credentials/clear-manual-disabled" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{"credential_id": 123, "reason": "测试"}'
@@ -173,14 +173,14 @@ go build -o llm-gateway-go ./cmd/gateway
 go test ./admin/... -v
 
 # 6. 构建镜像
-docker build -t registry.internal.example.com/kx-llm-gateway-go:2026-06-23 .
+docker build -t __DOMAIN_9__/kx-llm-gateway-go:2026-06-23 .
 
 # 7. 推送镜像
-docker push registry.internal.example.com/kx-llm-gateway-go:2026-06-23
+docker push __DOMAIN_9__/kx-llm-gateway-go:2026-06-23
 
 # 8. 部署到k3s
 kubectl -n pms-test set image deployment/kx-llm-gateway-go \
-  llm-gateway-go=registry.internal.example.com/kx-llm-gateway-go:2026-06-23
+  llm-gateway-go=__DOMAIN_9__/kx-llm-gateway-go:2026-06-23
 
 # 9. 验证部署
 kubectl -n pms-test rollout status deployment/kx-llm-gateway-go
@@ -191,30 +191,30 @@ kubectl -n pms-test get pods | grep llm-gateway-go
 
 ```bash
 # 1. SSH到71服务器
-sshpass -e ssh -o StrictHostKeyChecking=no root@__HOST_71_IP__
+sshpass -e ssh -o StrictHostKeyChecking=no root@__SECRET_1__
 
 # 2. 停止服务
 systemctl stop llm-gateway-go
 
 # 3. 备份旧版本
-cp /opt/llm-gateway-go/llm-gateway-go /opt/llm-gateway-go/llm-gateway-go.backup-$(date +%Y%m%d)
+cp __SERVER_PATH_1__/llm-gateway-go __SERVER_PATH_1__/llm-gateway-go.backup-$(date +%Y%m%d)
 
 # 4. 拷贝新版本（从184或本地）
 # 方式A：从184拉取镜像后提取
-docker pull registry.internal.example.com/kx-llm-gateway-go:2026-06-23
-docker create --name temp registry.internal.example.com/kx-llm-gateway-go:2026-06-23
-docker cp temp:/app/llm-gateway-go /opt/llm-gateway-go/llm-gateway-go
+docker pull __DOMAIN_9__/kx-llm-gateway-go:2026-06-23
+docker create --name temp __DOMAIN_9__/kx-llm-gateway-go:2026-06-23
+docker cp temp:/app/llm-gateway-go __SERVER_PATH_1__/llm-gateway-go
 docker rm temp
 
 # 方式B：从本地scp
-# scp llm-gateway-go root@__HOST_71_IP__:/opt/llm-gateway-go/
+# scp llm-gateway-go root@__SECRET_1__:__SERVER_PATH_1__/
 
 # 5. 启动服务
 systemctl start llm-gateway-go
 
 # 6. 检查状态
 systemctl status llm-gateway-go
-curl http://localhost:8781/healthz
+curl http://localhost:__PORT_3__/healthz
 ```
 
 ## 🔍 验证清单

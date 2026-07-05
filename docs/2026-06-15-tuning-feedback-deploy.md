@@ -45,16 +45,16 @@
 **推荐做法**：
 1. 维护者先合并 submodule 中其他未完成修改（让 relay/ 通过编译）
 2. 然后合并本批 5 个 commit
-3. 重新构建镜像 `registry.internal.example.com/kx-llm-gateway-go:gitsha-<new-sha>`
+3. 重新构建镜像 `__DOMAIN_9__/kx-llm-gateway-go:gitsha-<new-sha>`
 4. 在 184 k3s 节点滚动部署
 
 ### 3. 验证
 ```bash
 # 健康检查
-curl https://llmgateway.internal.example.com/healthz
+curl https://__DOMAIN_8__/healthz
 
 # 提交一个 auto 请求触发完整链路
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <api_key>" \
   -d '{"model": "auto", "messages": [{"role":"user","content":"水池问题..."}]}'
@@ -65,7 +65,7 @@ psql -h 184 -U __DB_USER__ -d casdoor \
 
 # 查看提议
 curl -H "Authorization: Bearer <admin_token>" \
-  https://llmgateway.internal.example.com/api/admin/auto-route/tuning/proposals
+  https://__DOMAIN_8__/api/admin/auto-route/tuning/proposals
 ```
 
 ## 验收标准

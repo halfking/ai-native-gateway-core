@@ -45,8 +45,8 @@
 **新包**: `domains/credential/writer.go` (已存在，19 文件 / 5,574 LOC)
 
 **受影响文件**:
-1. `bg/passive_probe_listener.go:7` — `import credentialstate "github.com/kaixuan/llm-gateway-go/_to-be-deprecated/credentialstate"`
-2. `cmd/gateway/main.go:19` — `credentialstate "github.com/kaixuan/llm-gateway-go/_to-be-deprecated/credentialstate"`
+1. `bg/passive_probe_listener.go:7` — `import credentialstate "__REPO_URL_3__/_to-be-deprecated/credentialstate"`
+2. `cmd/gateway/main.go:19` — `credentialstate "__REPO_URL_3__/_to-be-deprecated/credentialstate"`
 
 **API 对比**（100% 兼容）:
 
@@ -68,7 +68,7 @@ type Writer interface { Write(ctx, credID, kind, detail string, retryAfter time.
 **新包**: `domains/streaming/executors/score.go` (已存在，27 文件 / 10,458 LOC)
 
 **受影响文件**:
-1. `admin/routing.go:13` — `"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/routing"`
+1. `admin/routing.go:13` — `"__REPO_URL_3__/_to-be-deprecated/routing"`
 
 **API 对比**（100% 兼容）:
 
@@ -92,9 +92,9 @@ func CalculateCompositeScore(base, latency, streak float64, failCount int) float
 - `domains/memory/client/` (新建) — 接收 client.go + sink.go + *_test.go (3 文件 / ~900 LOC)
 
 **受影响文件**:
-1. `cmd/gateway/memory_adapter.go:5` — `"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"`
-2. `cmd/gateway/main_v3_wiring.go:10` — `"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"`
-3. `admin/memora_handlers.go:10` — `"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"`
+1. `cmd/gateway/memory_adapter.go:5` — `"__REPO_URL_3__/_to-be-deprecated/memora"`
+2. `cmd/gateway/main_v3_wiring.go:10` — `"__REPO_URL_3__/_to-be-deprecated/memora"`
+3. `admin/memora_handlers.go:10` — `"__REPO_URL_3__/_to-be-deprecated/memora"`
 
 **API 对比**:
 
@@ -179,12 +179,12 @@ ls -lh build/gateway*-r1.13-pre
 
 ### 5.2 当前 import（第 7 行）
 ```go
-credentialstate "github.com/kaixuan/llm-gateway-go/_to-be-deprecated/credentialstate"
+credentialstate "__REPO_URL_3__/_to-be-deprecated/credentialstate"
 ```
 
 ### 5.3 新 import
 ```go
-credentialstate "github.com/kaixuan/llm-gateway-go/domains/credential"
+credentialstate "__REPO_URL_3__/domains/credential"
 ```
 
 ### 5.4 代码变更
@@ -216,12 +216,12 @@ git revert HEAD
 
 ### 6.2 当前 import（第 19 行）
 ```go
-credentialstate "github.com/kaixuan/llm-gateway-go/_to-be-deprecated/credentialstate"
+credentialstate "__REPO_URL_3__/_to-be-deprecated/credentialstate"
 ```
 
 ### 6.3 新 import
 ```go
-credentialstate "github.com/kaixuan/llm-gateway-go/domains/credential"
+credentialstate "__REPO_URL_3__/domains/credential"
 ```
 
 ### 6.4 使用位置（第 ~820 行，仅 1 处）
@@ -260,12 +260,12 @@ git revert HEAD
 
 ### 7.2 当前 import（第 13 行）
 ```go
-"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/routing"
+"__REPO_URL_3__/_to-be-deprecated/routing"
 ```
 
 ### 7.3 新 import
 ```go
-"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+"__REPO_URL_3__/domains/streaming/executors"
 ```
 
 ### 7.4 代码变更（第 ~1894 行，仅 1 处）
@@ -305,12 +305,12 @@ git revert HEAD
 
 ### 8.2 当前 import（第 10 行）
 ```go
-"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+"__REPO_URL_3__/_to-be-deprecated/memora"
 ```
 
 ### 8.3 新 import
 ```go
-"github.com/kaixuan/llm-gateway-go/domains/memory"
+"__REPO_URL_3__/domains/memory"
 ```
 
 ### 8.4 代码变更（第 ~67 行，仅 1 处）
@@ -363,10 +363,10 @@ cp _to-be-deprecated/memora/client_config_test.go domains/memory/client/client_c
 + package client
 
 - import (
--     "github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+-     "__REPO_URL_3__/_to-be-deprecated/memora"
 - )
 + import (
-+     "github.com/kaixuan/llm-gateway-go/domains/memory"
++     "__REPO_URL_3__/domains/memory"
 + )
 
   // 所有 memora.Message → memory.Message
@@ -380,10 +380,10 @@ cp _to-be-deprecated/memora/client_config_test.go domains/memory/client/client_c
 + package client
 
 - import (
--     "github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+-     "__REPO_URL_3__/_to-be-deprecated/memora"
 - )
 + import (
-+     "github.com/kaixuan/llm-gateway-go/domains/memory"
++     "__REPO_URL_3__/domains/memory"
 + )
 
   // 所有 WriteOp → memory.WriteOp
@@ -396,10 +396,10 @@ cp _to-be-deprecated/memora/client_config_test.go domains/memory/client/client_c
 + package client
 
 - import (
--     "github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+-     "__REPO_URL_3__/_to-be-deprecated/memora"
 - )
 + import (
-+     "github.com/kaixuan/llm-gateway-go/domains/memory"
++     "__REPO_URL_3__/domains/memory"
 + )
 ```
 
@@ -408,11 +408,11 @@ cp _to-be-deprecated/memora/client_config_test.go domains/memory/client/client_c
 **cmd/gateway/memory_adapter.go**:
 ```diff
 - import (
--     "github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+-     "__REPO_URL_3__/_to-be-deprecated/memora"
 - )
 + import (
-+     "github.com/kaixuan/llm-gateway-go/domains/memory"
-+     memoraclient "github.com/kaixuan/llm-gateway-go/domains/memory/client"
++     "__REPO_URL_3__/domains/memory"
++     memoraclient "__REPO_URL_3__/domains/memory/client"
 + )
 
 - var _ memory.Writer = (*legacyMemoraWriter)(nil)
@@ -441,10 +441,10 @@ cp _to-be-deprecated/memora/client_config_test.go domains/memory/client/client_c
 **cmd/gateway/main_v3_wiring.go**:
 ```diff
 - import (
--     "github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+-     "__REPO_URL_3__/_to-be-deprecated/memora"
 - )
 + import (
-+     memoraclient "github.com/kaixuan/llm-gateway-go/domains/memory/client"
++     memoraclient "__REPO_URL_3__/domains/memory/client"
 + )
 
 - var memoraClient *memora.Client

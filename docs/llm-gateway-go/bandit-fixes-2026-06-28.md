@@ -148,7 +148,7 @@ go test -v ./domains/credential -run TestBanditIntegration_EndToEnd
 ### High Priority
 1. **Apply migration 033 to local/staging database**
    ```bash
-   psql -h localhost -p 5434 -U kxuser -d postgres -f deploy/sql/migrations/033_bandit_scoring.sql
+   psql -h localhost -p __PORT_7__ -U kxuser -d postgres -f deploy/sql/migrations/033_bandit_scoring.sql
    ```
 
 2. **Run integration test to validate end-to-end flow**

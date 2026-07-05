@@ -97,14 +97,14 @@ go build -o /tmp/llm-gateway-go ./cmd/gateway  # ✅ 编译成功
 ### 部署步骤
 1. ✅ **代码已提交** (commit `53dcf1c6`)
 2. **构建新镜像** 
-3. **部署到 184 k3s** (`llmgateway.internal.example.com`)
-4. **部署到 71 systemd** (`llmgateway.internal.example.com`)
+3. **部署到 184 k3s** (`__DOMAIN_8__`)
+4. **部署到 71 systemd** (`__DOMAIN_8__`)
 5. **验证** 使用 claude-sonnet-4-6 测试工具调用
 
 ### 验证命令
 ```bash
 # 测试 claude-sonnet-4-6 工具调用
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer <api-key>" \
   -H "Content-Type: application/json" \
   -d '{

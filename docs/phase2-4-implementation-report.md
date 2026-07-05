@@ -33,7 +33,7 @@ TRIM_DAYS=7-30
 ARCHIVE_DAYS=30-90
 DELETE_DAYS=90
 DRY_RUN=false               # 预览模式
-LOG_FILE=/var/log/llm-gateway-cleanup.log
+LOG_FILE=__SERVER_PATH_7__
 ```
 
 **执行流程**:
@@ -60,7 +60,7 @@ LOG_FILE=/var/log/llm-gateway-cleanup.log
 **功能**:
 - 检查 cron 服务状态
 - 创建必要的目录
-- 安装 crontab 到 `/etc/cron.d/llm-gateway-cleanup`
+- 安装 crontab 到 `__SERVER_PATH_8__`
 - 验证安装
 - 提供使用提示
 
@@ -78,13 +78,13 @@ sudo bash scripts/install-cleanup-cron.sh
 **返回数据**:
 ```json
 {
-  "total_rows": 15000000,
+  "total_rows": 1__PORT_8__000,
   "total_size_bytes": 52428800000,
-  "hot_data_rows": 500000,
+  "hot_data_rows": __PORT_8__00,
   "hot_data_size_bytes": 2147483648,
-  "warm_data_rows": 1500000,
+  "warm_data_rows": 1__PORT_8__00,
   "warm_data_size_bytes": 6442450944,
-  "cold_data_rows": 5000000,
+  "cold_data_rows": __PORT_8__000,
   "cold_data_size_bytes": 15032385536,
   "expired_data_rows": 8000000,
   "expired_data_size_bytes": 28806324224
@@ -219,7 +219,7 @@ $ go build ./...
 ✅ 通过
 
 $ go test ./admin/...
-ok  	github.com/kaixuan/llm-gateway-go/admin	0.789s
+ok  	__REPO_URL_3__/admin	0.789s
 ✅ 通过
 ```
 
@@ -253,11 +253,11 @@ $ bash -n scripts/install-cleanup-cron.sh
 ssh root@__INTERNAL_PUBLIC_IP__
 
 # 安装定时任务
-cd /opt/llm-gateway-go
+cd __SERVER_PATH_1__
 sudo bash scripts/install-cleanup-cron.sh
 
 # 查看日志
-tail -f /var/log/llm-gateway-cleanup.log
+tail -f __SERVER_PATH_7__
 ```
 
 ### 2. 手动执行清理（测试）
@@ -273,7 +273,7 @@ bash scripts/cleanup-request-logs.sh
 ### 3. 访问管理界面
 
 ```
-URL: https://llmgateway.internal.example.com/admin/data-lifecycle
+URL: https://__DOMAIN_8__/admin/data-lifecycle
 权限: platform_ops 或 super_admin
 ```
 
@@ -291,7 +291,7 @@ URL: https://llmgateway.internal.example.com/admin/data-lifecycle
 scrape_configs:
   - job_name: 'llm-gateway-data-lifecycle'
     static_configs:
-      - targets: ['llmgateway.internal.example.com']
+      - targets: ['__DOMAIN_8__']
     metrics_path: '/api/admin/data-lifecycle/metrics'
     scrape_interval: 5m
 ```

@@ -131,7 +131,7 @@ type ApprovalManager interface {
 ```bash
 go test ./domains/approval/channels -v
 PASS
-ok      github.com/kaixuan/llm-gateway-go/domains/approval/channels     0.260s
+ok      __REPO_URL_3__/domains/approval/channels     0.260s
 ```
 
 ### 6. 文档 (`docs/wechat-notification-guide.md`)
@@ -212,8 +212,8 @@ ok      github.com/kaixuan/llm-gateway-go/domains/approval/channels     0.260s
 ### 初始化通知渠道
 ```go
 import (
-    "github.com/kaixuan/llm-gateway-go/config"
-    "github.com/kaixuan/llm-gateway-go/domains/approval/channels"
+    "__REPO_URL_3__/config"
+    "__REPO_URL_3__/domains/approval/channels"
 )
 
 cfg := config.Load()
@@ -247,7 +247,7 @@ err := wechatChannel.SendApprovalNotification(ctx, req, approvers)
 
 ### 处理回调
 ```go
-import "github.com/kaixuan/llm-gateway-go/api/webhooks"
+import "__REPO_URL_3__/api/webhooks"
 
 handler := webhooks.NewWeChatCallbackHandler(
     approvalManager,

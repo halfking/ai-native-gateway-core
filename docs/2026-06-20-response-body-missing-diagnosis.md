@@ -16,7 +16,7 @@
 ### 数据库查询结果
 
 **数据库**: `llm_gateway` (独立 PostgreSQL 实例)  
-**服务**: `llm-gateway-pg-svc` (k8s NodePort 5432:11033)  
+**服务**: `llm-gateway-pg-svc` (k8s NodePort __PORT_5__:11033)  
 **Pod**: `llm-gateway-pg-58cbbc4559-qq2rh`  
 **用户**: `llm_gateway`
 
@@ -90,7 +90,7 @@ has_outbound:  f (FALSE) ❌
 kubectl -n pms-test exec deployment/llm-gateway-go-deployment -- env | grep -i "RESPONSE\|BODY\|SKIP\|SAVE"
 
 # 71 环境变量
-ssh root@__HOST_71_IP__ "cat /etc/llm-gateway-go/env | grep -i 'RESPONSE\|BODY\|SKIP\|SAVE'"
+ssh root@__SECRET_1__ "cat __SERVER_PATH_3__/env | grep -i 'RESPONSE\|BODY\|SKIP\|SAVE'"
 ```
 
 ### 2. 代码逻辑问题
@@ -129,7 +129,7 @@ ssh root@__HOST_71_IP__ "cat /etc/llm-gateway-go/env | grep -i 'RESPONSE\|BODY\|
 kubectl -n pms-test get deploy llm-gateway-go-deployment -o yaml | grep -A 10 "env:"
 
 # 在 71 上检查
-ssh root@__HOST_71_IP__ "cat /etc/llm-gateway-go/env"
+ssh root@__SECRET_1__ "cat __SERVER_PATH_3__/env"
 ```
 
 ### 步骤 2: 查看源代码中的日志写入逻辑
@@ -146,7 +146,7 @@ grep -rn "func.*Log\|func.*Write.*Request" . --include="*.go" | grep -v test
 
 ```bash
 # 发送请求
-REQUEST_ID=$(curl -s -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+REQUEST_ID=$(curl -s -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -d '{"model":"claude-opus-4-8","messages":[{"role":"user","content":"test"}]}' \
   | jq -r '.id' | sed 's/msg_//')
@@ -166,7 +166,7 @@ kubectl -n pms-test exec -i llm-gateway-pg-58cbbc4559-qq2rh -- \
 kubectl -n pms-test logs deployment/llm-gateway-go-deployment --tail=200 | grep -i "response\|body\|save\|write"
 
 # 71 日志
-ssh root@__HOST_71_IP__ "journalctl -u llm-gateway-go.service --since '1 hour ago' | grep -i 'response\|body\|save\|write'"
+ssh root@__SECRET_1__ "journalctl -u llm-gateway-go.service --since '1 hour ago' | grep -i 'response\|body\|save\|write'"
 ```
 
 ---

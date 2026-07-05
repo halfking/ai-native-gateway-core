@@ -100,7 +100,7 @@ if probe.Model != "" {
     --- PASS: TestMessagesHandler_BodyWithoutModel_RecordsUnknownModel (0.00s)
 
 PASS
-ok  	github.com/kaixuan/llm-gateway-go/relay	0.848s
+ok  	__REPO_URL_3__/relay	0.848s
 ```
 
 **全量回归测试**：`go test ./relay/ -short` ✅ 全部通过 (2.147s)

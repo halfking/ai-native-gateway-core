@@ -465,11 +465,11 @@ func (s *CostScorer) calculatePriceScore(node RouteNode) float64 {
 }
 
 func (s *CostScorer) calculateSpeedScore(node RouteNode) float64 {
-    // P95延迟: 100ms=100分, 5000ms=0分
+    // P95延迟: 100ms=100分, __PORT_8__ms=0分
     if node.P95LatencyMs <= 100 {
         return 100
     }
-    if node.P95LatencyMs >= 5000 {
+    if node.P95LatencyMs >= __PORT_8__ {
         return 0
     }
     score := 100 - float64(node.P95LatencyMs - 100) / 49.0

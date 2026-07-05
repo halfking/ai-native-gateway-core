@@ -1,8 +1,8 @@
 # LLM Gateway 系统审计与修复总结
 
 **执行日期**: 2026-06-30  
-**服务器**: __HOST_71_IP__ (71服务器)  
-**数据库**: llm_gateway @ llm-gateway-pg-71-replica:5432
+**服务器**: __SECRET_1__ (71服务器)  
+**数据库**: llm_gateway @ llm-gateway-pg-71-replica:__PORT_5__
 
 ---
 
@@ -212,7 +212,7 @@ if len(candidates) == 0 {
 ### 1. 数据库连接失败测试
 ```bash
 docker stop llm-gateway-pg-71-replica
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]}'
 
@@ -222,7 +222,7 @@ docker start llm-gateway-pg-71-replica
 
 ### 2. 真实no_candidate测试
 ```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "non-existent-model", "messages": [{"role": "user", "content": "Hi"}]}'
 

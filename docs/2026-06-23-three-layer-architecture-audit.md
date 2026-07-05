@@ -178,13 +178,13 @@ PASS: TestAcquire_Sticky_AcrossReleases
 3. 部署到 71：`./scripts/deploy-llm-gateway-go-71.sh`
 4. 配置全局身份池上限：
    ```bash
-   curl -X POST https://llmgateway.internal.example.com/api/admin/identity-pool/max \
+   curl -X POST https://__DOMAIN_8__/api/admin/identity-pool/max \
      -H "Authorization: Bearer <token>" \
      -d '{"max_identities": 10000}'
    ```
 5. 监控：
    ```bash
-   curl https://llmgateway.internal.example.com/api/admin/identity-pool/stats
+   curl https://__DOMAIN_8__/api/admin/identity-pool/stats
    ```
 
 ## 📚 相关文档

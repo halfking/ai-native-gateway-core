@@ -39,8 +39,8 @@ wechat_base_url: "https://your-domain.com"
 
 ```go
 import (
-    "github.com/kaixuan/llm-gateway-go/config"
-    "github.com/kaixuan/llm-gateway-go/domains/approval/channels"
+    "__REPO_URL_3__/config"
+    "__REPO_URL_3__/domains/approval/channels"
 )
 
 // 从配置加载
@@ -60,7 +60,7 @@ wechatChannel := channels.NewWeChatChannel(
 ```go
 import (
     "context"
-    "github.com/kaixuan/llm-gateway-go/domains/approval"
+    "__REPO_URL_3__/domains/approval"
 )
 
 // 准备审批请求

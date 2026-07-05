@@ -131,7 +131,7 @@ client bookmarks/replays continue to work after upgrade.
 
 ### Live Deployment on 184 (2026-07-01)
 
-Image: `127.0.0.1:5000/kx-llm-gateway-go:gitsha-bdc48509-fix2`
+Image: `127.0.0.1:__PORT_8__/kx-llm-gateway-go:gitsha-bdc48509-fix2`
 Deployed via `k3s kubectl set image ...` then waited for `1/1 Running`.
 
 `/v1/responses` end-to-end (curl):

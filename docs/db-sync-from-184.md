@@ -15,10 +15,10 @@ The scripts are:
 
 | Server | IP | SSH port | SSH key | PG location | k8s? |
 |---|---|---|---|---|---|
-| **184** (`test-apps-apps`) | `__INTERNAL_PUBLIC_IP__` | 25022 | `~/.ssh/id_ed25519` | k8s deployment `llm-gateway-pg` in `pms-test` namespace | Yes |
-| **71** (`test-apps-infra`) | `__HOST_71_IP__` | 25022 | `~/.ssh/71_id_rsa` | host docker container `llm-gateway-pg-71-replica` | No |
+| **184** (`test-apps-apps`) | `__INTERNAL_PUBLIC_IP__` | __PORT_1__ | `~/.ssh/id_ed25519` | k8s deployment `llm-gateway-pg` in `pms-test` namespace | Yes |
+| **71** (`test-apps-infra`) | `__SECRET_1__` | __PORT_1__ | `~/.ssh/71_id_rsa` | host docker container `llm-gateway-pg-71-replica` | No |
 
-The 71 PG container is the same `citusdata/citus:11.3.0` image as local, runs as the `llm_gateway` superuser, and uses the password `__REDACTED_DB_PASSWORD__` (set in the container's `POSTGRES_USER` / `POSTGRES_PASSWORD`).
+The 71 PG container is the same `citusdata/citus:11.3.0` image as local, runs as the `llm_gateway` superuser, and uses the password `__SECRET_2__` (set in the container's `POSTGRES_USER` / `POSTGRES_PASSWORD`).
 
 ## Choosing a sync strategy
 
@@ -141,15 +141,15 @@ Earlier versions of these checks asserted on `hook_durations_ms.observability.me
 ## Current Defaults
 
 - Remote SSH host: `root@__INTERNAL_PUBLIC_IP__`
-- Remote SSH port: `25022` (changed from default 22 in 2026-06)
+- Remote SSH port: `__PORT_1__` (changed from default 22 in 2026-06)
 - Remote k8s namespace: `pms-test`
 - Remote PG deployment: `deployment/llm-gateway-pg`
 - Remote DB user: `llm_gateway` (superuser; required to bypass RLS on tables like `approval_queue`)
 - Local container: `r112_postgres`
 - Local DB user: `kxuser`
-- Local DB password: `kxpass`
+- Local DB password: `__DB_PWD_3__`
 - Local compose service: `gateway-v2` (container `r112_gateway_v2`)
-- Local gateway URL: `http://localhost:8782`
+- Local gateway URL: `http://localhost:__PORT_4__`
 
 These can be overridden with environment variables if the topology changes.
 
@@ -165,7 +165,7 @@ If you upgrade the local `citusdata/citus` image to one with `psql` 16+, this fi
 
 ### SSH port change
 
-In 2026-06 the 184 server moved SSH off port 22 to port 25022. The script's `REMOTE_SSH_PORT` default is 25022; override it if the topology changes again.
+In 2026-06 the 184 server moved SSH off port 22 to port __PORT_1__. The script's `REMOTE_SSH_PORT` default is __PORT_1__; override it if the topology changes again.
 
 ### 184 RLS-protected tables
 

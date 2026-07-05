@@ -118,7 +118,7 @@ $ go test -v -run TestStateObserver ./domains/streaming/executors/
 === RUN   TestStateObserver_ConcurrentCalls
 --- PASS: TestStateObserver_ConcurrentCalls (0.00s)
 PASS
-ok      github.com/kaixuan/llm-gateway-go/domains/streaming/executors  0.522s
+ok      __REPO_URL_3__/domains/streaming/executors  0.522s
 ```
 
 #### 编译验证
@@ -141,7 +141,7 @@ ok      github.com/kaixuan/llm-gateway-go/domains/streaming/executors  0.522s
 | 目标环境 | 184测试环境 |
 | Namespace | pms-test |
 | Deployment | llm-gateway-go-deployment |
-| 镜像 | 127.0.0.1:5000/kx-llm-gateway-go:gitsha-0d5aec70 |
+| 镜像 | 127.0.0.1:__PORT_8__/kx-llm-gateway-go:gitsha-0d5aec70 |
 | 构建时间 | 2026-07-01 |
 
 ### 部署步骤
@@ -155,14 +155,14 @@ ok      github.com/kaixuan/llm-gateway-go/domains/streaming/executors  0.522s
 2. **镜像构建** ✅
    ```bash
    docker build -t kx-llm-gateway-go:gitsha-0d5aec70 .
-   docker tag → 127.0.0.1:5000/kx-llm-gateway-go:gitsha-0d5aec70
+   docker tag → 127.0.0.1:__PORT_8__/kx-llm-gateway-go:gitsha-0d5aec70
    docker push → 本地registry
    ```
 
 3. **Deployment 更新** ✅
    ```bash
    kubectl set image deployment/llm-gateway-go-deployment \
-       llm-gateway-go=127.0.0.1:5000/kx-llm-gateway-go:gitsha-0d5aec70
+       llm-gateway-go=127.0.0.1:__PORT_8__/kx-llm-gateway-go:gitsha-0d5aec70
    
    kubectl patch deployment/llm-gateway-go-deployment \
        --type='json' \
@@ -179,7 +179,7 @@ ok      github.com/kaixuan/llm-gateway-go/domains/streaming/executors  0.522s
    ```bash
    $ kubectl get pod llm-gateway-go-deployment-d86985f4f-bftqc -n pms-test \
        -o jsonpath='{.spec.containers[0].image}'
-   127.0.0.1:5000/kx-llm-gateway-go:gitsha-0d5aec70
+   127.0.0.1:__PORT_8__/kx-llm-gateway-go:gitsha-0d5aec70
    ```
 
 ### 启动日志分析
@@ -189,7 +189,7 @@ ok      github.com/kaixuan/llm-gateway-go/domains/streaming/executors  0.522s
 2026/06/30 20:43:04 WARN postgres disabled error="ERROR: relation \"public.analysis_events\" does not exist (SQLSTATE 42P01)"
 2026/06/30 20:43:04 WARN routing executor disabled (no database connection)
 2026/06/30 20:43:04 WARN API key authentication disabled (no database connection)
-2026/06/30 20:43:04 INFO gateway listening listen=:8781
+2026/06/30 20:43:04 INFO gateway listening listen=:__PORT_3__
 ```
 
 **问题诊断**:
@@ -505,20 +505,20 @@ if os.Getenv("LLM_GATEWAY_REQUIRE_DB") == "false" {
 ```
 2026/06/30 20:43:04 observability: OTLP/HTTP exporter enabled
 2026/06/30 20:43:04 WARN auth: INSECURE fail-open mode
-2026/06/30 20:43:04 INFO gateway starting listen=:8781 log_level=info
+2026/06/30 20:43:04 INFO gateway starting listen=:__PORT_3__ log_level=info
 2026/06/30 20:43:04 INFO postgres connected
 2026/06/30 20:43:04 WARN postgres disabled error="ERROR: relation \"public.analysis_events\" does not exist (SQLSTATE 42P01)"
 2026/06/30 20:43:04 WARN routing executor disabled (no database connection)
 2026/06/30 20:43:04 WARN API key authentication disabled (no database connection)
 2026/06/30 20:43:04 INFO session endpoints enabled
-2026/06/30 20:43:04 INFO gateway listening listen=:8781
+2026/06/30 20:43:04 INFO gateway listening listen=:__PORT_3__
 ```
 
 ### B. 环境变量清单
 
 | 变量名 | 值 | 说明 |
 |--------|---|------|
-| `LLM_GATEWAY_DATABASE_URL` | `postgres://...@10.43.118.61:5432/llm_gateway` | 数据库连接 |
+| `LLM_GATEWAY_DATABASE_URL` | `postgres://...@__PRIV_IP_7__:__PORT_5__/llm_gateway` | 数据库连接 |
 | `LLM_GATEWAY_ENABLE_POPULARITY_TRACKING` | (未设置) | Phase 2 热度追踪 |
 | `LLM_GATEWAY_ENV` | (未设置) | production 强制认证 |
 

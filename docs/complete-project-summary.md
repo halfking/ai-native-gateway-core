@@ -209,7 +209,7 @@ $ go build ./...
 ✅ 通过
 
 $ go test ./admin/...
-ok  	github.com/kaixuan/llm-gateway-go/admin	0.789s
+ok  	__REPO_URL_3__/admin	0.789s
 ✅ 通过
 
 $ npm run build
@@ -246,7 +246,7 @@ $ shellcheck scripts/*.sh
 ssh root@__INTERNAL_PUBLIC_IP__
 
 # 拉取最新代码
-cd /opt/llm-gateway-go
+cd __SERVER_PATH_1__
 git pull origin main
 
 # 重新构建
@@ -263,7 +263,7 @@ systemctl restart llm-gateway
 sudo bash scripts/install-cleanup-cron.sh
 
 # 验证安装
-cat /etc/cron.d/llm-gateway-cleanup
+cat __SERVER_PATH_8__
 
 # 手动测试（预览模式）
 DRY_RUN=true bash scripts/cleanup-request-logs.sh
@@ -276,7 +276,7 @@ DRY_RUN=true bash scripts/cleanup-request-logs.sh
 scrape_configs:
   - job_name: 'llm-gateway-data-lifecycle'
     static_configs:
-      - targets: ['llmgateway.internal.example.com']
+      - targets: ['__DOMAIN_8__']
     metrics_path: '/api/admin/data-lifecycle/metrics'
     scrape_interval: 5m
     bearer_token: '<platform_ops_token>'
@@ -285,7 +285,7 @@ scrape_configs:
 ### 4. 访问管理界面
 
 ```
-URL: https://llmgateway.internal.example.com/admin/data-lifecycle
+URL: https://__DOMAIN_8__/admin/data-lifecycle
 权限: platform_ops 或 super_admin
 ```
 
@@ -298,15 +298,15 @@ URL: https://llmgateway.internal.example.com/admin/data-lifecycle
 ```bash
 # 命令行
 ssh root@__INTERNAL_PUBLIC_IP__
-cd /opt/llm-gateway-go
+cd __SERVER_PATH_1__
 ./scripts/analyze-request-logs-size.sh
 
 # API
-curl https://llmgateway.internal.example.com/api/admin/data-lifecycle/stats \
+curl https://__DOMAIN_8__/api/admin/data-lifecycle/stats \
   -H "Authorization: Bearer $TOKEN"
 
 # Web 界面
-https://llmgateway.internal.example.com/admin/data-lifecycle
+https://__DOMAIN_8__/admin/data-lifecycle
 ```
 
 ### 归档冷数据（30-90天）
@@ -335,7 +335,7 @@ https://llmgateway.internal.example.com/admin/data-lifecycle
 ### 查看清理日志
 
 ```bash
-tail -f /var/log/llm-gateway-cleanup.log
+tail -f __SERVER_PATH_7__
 ```
 
 ---

@@ -202,7 +202,7 @@ import (
     "sort"
     "time"
     
-    "github.com/kaixuan/llm-gateway-go/domain"
+    "__REPO_URL_3__/domain"
     "golang.org/x/sync/errgroup"
 )
 
@@ -356,17 +356,17 @@ echo "开始迁移代码到 domains/"
 # 迁移 identity
 echo "迁移 identity/ → domains/identity/"
 cp -r identity/ domains/identity/
-find domains/identity/ -name "*.go" -exec sed -i '' 's|"github.com/kaixuan/llm-gateway-go/identity|"github.com/kaixuan/llm-gateway-go/domains/identity|g' {} \;
+find domains/identity/ -name "*.go" -exec sed -i '' 's|"__REPO_URL_3__/identity|"__REPO_URL_3__/domains/identity|g' {} \;
 
 # 迁移 auth
 echo "迁移 auth/ → domains/authentication/"
 cp -r auth/ domains/authentication/
-find domains/authentication/ -name "*.go" -exec sed -i '' 's|"github.com/kaixuan/llm-gateway-go/auth|"github.com/kaixuan/llm-gateway-go/domains/authentication|g' {} \;
+find domains/authentication/ -name "*.go" -exec sed -i '' 's|"__REPO_URL_3__/auth|"__REPO_URL_3__/domains/authentication|g' {} \;
 
 # 迁移 provider
 echo "迁移 provider/ → domains/provider/"
 cp -r provider/ domains/provider/
-find domains/provider/ -name "*.go" -exec sed -i '' 's|"github.com/kaixuan/llm-gateway-go/provider|"github.com/kaixuan/llm-gateway-go/domains/provider|g' {} \;
+find domains/provider/ -name "*.go" -exec sed -i '' 's|"__REPO_URL_3__/provider|"__REPO_URL_3__/domains/provider|g' {} \;
 
 # 更多迁移...
 
@@ -441,7 +441,7 @@ package identity
 
 import (
     "time"
-    "github.com/kaixuan/llm-gateway-go/eventbus"
+    "__REPO_URL_3__/eventbus"
 )
 
 type ClientIdentifiedEvent struct {

@@ -86,7 +86,7 @@ cp credentialstate/writer_regression_test.go domains/credential/writer_regressio
 
 # 步骤 2: 更新 import 路径
 find domains/credential/writer*.go -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/credentialstate|"github.com/kaixuan/llm-gateway-go/domains/credential|g' {} \;
+  's|"__REPO_URL_3__/credentialstate|"__REPO_URL_3__/domains/credential|g' {} \;
 
 # 步骤 3: 修复 package 声明
 sed -i '' 's|^package credentialstate|package credential|' domains/credential/writer.go
@@ -128,7 +128,7 @@ cp circuit/breaker_test.go domains/credential/breaker_test.go
 
 # 步骤 3: 更新 import 路径
 find domains/credential/breaker*.go -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/circuit|"github.com/kaixuan/llm-gateway-go/domains/credential|g' {} \;
+  's|"__REPO_URL_3__/circuit|"__REPO_URL_3__/domains/credential|g' {} \;
 
 # 步骤 4: 修复 package 声明
 sed -i '' 's|^package circuit|package credential|' domains/credential/breaker.go
@@ -186,7 +186,7 @@ cp limiter/redis_identity.go domains/credential/redis_identity.go
 # 步骤 3: 更新 import 路径
 find domains/credential/limiter*.go domains/credential/redis_identity.go \
   -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/limiter|"github.com/kaixuan/llm-gateway-go/domains/credential|g' {} \;
+  's|"__REPO_URL_3__/limiter|"__REPO_URL_3__/domains/credential|g' {} \;
 
 # 步骤 4: 修复 package 声明
 sed -i '' 's|^package limiter|package credential|' domains/credential/limiter.go
@@ -254,7 +254,7 @@ done
 
 # 步骤 3: 更新 import 路径
 find domains/streaming/executors/ -name "*.go" -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/routing|"github.com/kaixuan/llm-gateway-go/domains/streaming/executors|g' {} \;
+  's|"__REPO_URL_3__/routing|"__REPO_URL_3__/domains/streaming/executors|g' {} \;
 
 # 步骤 4: 修复 package 声明
 find domains/streaming/executors/ -name "*.go" -exec sed -i '' \
@@ -311,7 +311,7 @@ done
 # 步骤 3: 更新 import 路径
 find domains/streaming/handler.go domains/streaming/responses_stream.go domains/streaming/stream_*.go \
   -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/relay|"github.com/kaixuan/llm-gateway-go/domains/streaming|g' {} \;
+  's|"__REPO_URL_3__/relay|"__REPO_URL_3__/domains/streaming|g' {} \;
 
 # 步骤 4: 修复 package 声明
 sed -i '' 's|^package relay|package streaming|' domains/streaming/handler.go
@@ -378,7 +378,7 @@ cp -r compressor/* domains/hooks/compression/
 
 # 步骤 3: 更新 import 路径
 find domains/hooks/compression/ -name "*.go" -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/compressor|"github.com/kaixuan/llm-gateway-go/domains/hooks/compression|g' {} \;
+  's|"__REPO_URL_3__/compressor|"__REPO_URL_3__/domains/hooks/compression|g' {} \;
 
 # 步骤 4: 修复 package 声明
 find domains/hooks/compression/ -name "*.go" -exec sed -i '' \
@@ -429,7 +429,7 @@ cp routing/context_summarize_test.go domains/hooks/compression/context_summarize
 
 # 步骤 2: 更新 import 路径
 find domains/hooks/compression/context_summarize*.go -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/routing|"github.com/kaixuan/llm-gateway-go/domains/hooks/compression|g' {} \;
+  's|"__REPO_URL_3__/routing|"__REPO_URL_3__/domains/hooks/compression|g' {} \;
 
 # 步骤 3: 修复 package 声明
 sed -i '' 's|^package routing|package compression|' domains/hooks/compression/context_summarize.go
@@ -475,7 +475,7 @@ done
 
 # 步骤 3: 更新 import 路径
 find domains/transformation/anthropic/ -name "*.go" -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/relay|"github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic|g' {} \;
+  's|"__REPO_URL_3__/relay|"__REPO_URL_3__/domains/transformation/anthropic|g' {} \;
 
 # 步骤 4: 修复 package 声明
 find domains/transformation/anthropic/ -name "*.go" -exec sed -i '' \
@@ -532,7 +532,7 @@ cp -r telemetry/* domains/hooks/observability/telemetry/
 
 # 步骤 3: 更新 import 路径
 find domains/hooks/observability/telemetry/ -name "*.go" -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/telemetry|"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry|g' {} \;
+  's|"__REPO_URL_3__/telemetry|"__REPO_URL_3__/domains/hooks/observability/telemetry|g' {} \;
 
 # 步骤 4: 修复 package 声明
 find domains/hooks/observability/telemetry/ -name "*.go" -exec sed -i '' \
@@ -561,7 +561,7 @@ cp -r audit/* domains/hooks/audit/
 
 # 步骤 2: 更新 import 路径
 find domains/hooks/audit/ -name "*.go" -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/audit|"github.com/kaixuan/llm-gateway-go/domains/hooks/audit|g' {} \;
+  's|"__REPO_URL_3__/audit|"__REPO_URL_3__/domains/hooks/audit|g' {} \;
 
 # 步骤 3: 修复 package 声明
 find domains/hooks/audit/ -name "*.go" -exec sed -i '' \
@@ -594,9 +594,9 @@ cp -r transport/* domains/transformation/
 
 # 步骤 3: 更新 import 路径
 find domains/transformation/ -name "*.go" -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/transform|"github.com/kaixuan/llm-gateway-go/domains/transformation|g' {} \;
+  's|"__REPO_URL_3__/transform|"__REPO_URL_3__/domains/transformation|g' {} \;
 find domains/transformation/ -name "*.go" -exec sed -i '' \
-  's|"github.com/kaixuan/llm-gateway-go/transport|"github.com/kaixuan/llm-gateway-go/domains/transformation|g' {} \;
+  's|"__REPO_URL_3__/transport|"__REPO_URL_3__/domains/transformation|g' {} \;
 
 # 步骤 4: 修复 package 声明
 find domains/transformation/ -name "*.go" -exec sed -i '' \
@@ -746,23 +746,23 @@ mv security _deprecated/security
 
 # 步骤 3: 更新所有 import 路径
 find . -name "*.go" -not -path "./_deprecated/*" -exec sed -i '' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/identity|"github.com/kaixuan/llm-gateway-go/domains/identity|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/sessions|"github.com/kaixuan/llm-gateway-go/domains/session|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/auth|"github.com/kaixuan/llm-gateway-go/domains/authentication|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/routing|"github.com/kaixuan/llm-gateway-go/domains/routing|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/credentialstate|"github.com/kaixuan/llm-gateway-go/domains/credential|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/circuit|"github.com/kaixuan/llm-gateway-go/domains/credential|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/limiter|"github.com/kaixuan/llm-gateway-go/domains/credential|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/provider|"github.com/kaixuan/llm-gateway-go/domains/provider|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/relay|"github.com/kaixuan/llm-gateway-go/domains/streaming|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/transform|"github.com/kaixuan/llm-gateway-go/domains/transformation|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/transport|"github.com/kaixuan/llm-gateway-go/domains/transformation|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/compressor|"github.com/kaixuan/llm-gateway-go/domains/hooks/compression|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/cache|"github.com/kaixuan/llm-gateway-go/domains/hooks/cache|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/observability|"github.com/kaixuan/llm-gateway-go/domains/hooks/observability|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/audit|"github.com/kaixuan/llm-gateway-go/domains/hooks/audit|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/telemetry|"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry|g' \
-  -e 's|"github.com/kaixuan/llm-gateway-go/security|"github.com/kaixuan/llm-gateway-go/domains/hooks/security|g' \
+  -e 's|"__REPO_URL_3__/identity|"__REPO_URL_3__/domains/identity|g' \
+  -e 's|"__REPO_URL_3__/sessions|"__REPO_URL_3__/domains/session|g' \
+  -e 's|"__REPO_URL_3__/auth|"__REPO_URL_3__/domains/authentication|g' \
+  -e 's|"__REPO_URL_3__/routing|"__REPO_URL_3__/domains/routing|g' \
+  -e 's|"__REPO_URL_3__/credentialstate|"__REPO_URL_3__/domains/credential|g' \
+  -e 's|"__REPO_URL_3__/circuit|"__REPO_URL_3__/domains/credential|g' \
+  -e 's|"__REPO_URL_3__/limiter|"__REPO_URL_3__/domains/credential|g' \
+  -e 's|"__REPO_URL_3__/provider|"__REPO_URL_3__/domains/provider|g' \
+  -e 's|"__REPO_URL_3__/relay|"__REPO_URL_3__/domains/streaming|g' \
+  -e 's|"__REPO_URL_3__/transform|"__REPO_URL_3__/domains/transformation|g' \
+  -e 's|"__REPO_URL_3__/transport|"__REPO_URL_3__/domains/transformation|g' \
+  -e 's|"__REPO_URL_3__/compressor|"__REPO_URL_3__/domains/hooks/compression|g' \
+  -e 's|"__REPO_URL_3__/cache|"__REPO_URL_3__/domains/hooks/cache|g' \
+  -e 's|"__REPO_URL_3__/observability|"__REPO_URL_3__/domains/hooks/observability|g' \
+  -e 's|"__REPO_URL_3__/audit|"__REPO_URL_3__/domains/hooks/audit|g' \
+  -e 's|"__REPO_URL_3__/telemetry|"__REPO_URL_3__/domains/hooks/observability/telemetry|g' \
+  -e 's|"__REPO_URL_3__/security|"__REPO_URL_3__/domains/hooks/security|g' \
   {} \;
 
 # 步骤 4: 验证编译
@@ -841,7 +841,7 @@ go build ./cmd/gateway/
 # 4. 启动服务
 ./gateway &
 sleep 5
-curl -i http://localhost:8781/healthz
+curl -i http://localhost:__PORT_3__/healthz
 
 # 5. E2E 测试
 ./scripts/e2e-core-domains.sh

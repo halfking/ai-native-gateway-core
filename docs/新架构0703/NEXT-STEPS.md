@@ -116,7 +116,7 @@ info:
 servers:
   - url: http://localhost:8000
     description: kxmemory本地开发
-  - url: http://localhost:8781
+  - url: http://localhost:__PORT_3__
     description: llm-gateway-go本地开发
 
 paths:

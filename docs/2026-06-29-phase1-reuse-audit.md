@@ -206,8 +206,8 @@
 ```
 
 **问题**:
-- `cmd/gateway/main.go` 引用 `github.com/kaixuan/llm-gateway-go/provider`（顶层）
-- `cmd/gateway/main_pipeline.go` 引用 `github.com/kaixuan/llm-gateway-go/domains/provider`（新域）
+- `cmd/gateway/main.go` 引用 `__REPO_URL_3__/provider`（顶层）
+- `cmd/gateway/main_pipeline.go` 引用 `__REPO_URL_3__/domains/provider`（新域）
 - 两包功能重叠但不完全等价
 
 **顶层包独有功能**:
@@ -412,7 +412,7 @@ cp _to-be-deprecated/routing/candidate_planner.go domains/routing/
 
 ```go
 // domains/provider/hook.go
-import "github.com/kaixuan/llm-gateway-go/provider" // 引用数据层
+import "__REPO_URL_3__/provider" // 引用数据层
 
 func NewProviderDiscoveryHook(client *provider.Client) *ProviderDiscoveryHook {
     // Hook 层调用数据层

@@ -73,7 +73,7 @@ Composite = IntentMatch*0.4 + PriceScore*0.2 + ChannelQuality*0.3 + Reliability*
 delta = 0
 if success_rate > 0.95 AND p95_latency_ms < 2000: delta += 10
 if success_rate < 0.80:                        delta -= 20
-if p95_latency_ms > 5000:                      delta -= 15
+if p95_latency_ms > __PORT_8__:                      delta -= 15
 if success_rate < 0.60:                        delta -= 30  // 强 demotion
 if is_free AND success_rate < 0.90:            delta -= 25  // 免费+不可靠 → 大幅降权
 ```
@@ -89,8 +89,8 @@ Reliability = success_rate*80 + latencyFactor
 latencyFactor:
    p95 <= 1000ms → 20
    p95 <= 3000ms → 12
-   p95 <= 5000ms → 6
-   p95 >  5000ms → 0
+   p95 <= __PORT_8__ms → 6
+   p95 >  __PORT_8__ms → 0
    p95 unknown   → 10  // 中性
 ```
 
