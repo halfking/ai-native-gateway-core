@@ -54,7 +54,7 @@ export default {
   advantagesTitle: 'Why Choose LLM Gateway',
   advantagesSubtitle: 'Enterprise AI gateway for global enterprises',
   advantages: {
-    local: {
+    openSource: {
       title: 'Core Open Source',
       description: 'Data plane, control plane, authentication, routing scheduler all open source. Zero black box, enterprise auditable, customizable, and evolvable',
     },
