@@ -173,6 +173,40 @@ section_smoke() {
   fi
 }
 
+# 184 专用：通过 kubectl exec 在 Pod 内执行 smoke
+section_smoke_k8s() {
+  local ssh_cmd="$1"
+  local pod_name="$2"
+  info "Smoke API (kubectl exec in pod)"
+  
+  local result
+  result=$($ssh_cmd "kubectl exec -n pms-test $pod_name -- curl -sS -w '\n%{http_code}' -X POST http://localhost:8781/v1/chat/completions -H 'Authorization: Bearer test-key' -H 'Content-Type: application/json' -d '{\"model\":\"claude-3-5-sonnet-20241022\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":10}' --max-time 30" 2>/dev/null || echo "EXEC_FAIL")
+  
+  if [[ "$result" == "EXEC_FAIL" ]]; then
+    skip "Smoke API（kubectl exec 失败）"
+    write_record "smoke" "kubectl exec failed"
+    return
+  fi
+  
+  local code; code=$(echo "$result" | tail -1)
+  local body; body=$(echo "$result" | head -n -1)
+  
+  if [[ "$code" == "200" ]]; then
+    local has_choices; has_choices=$(echo "$body" | jq '.choices | length > 0' 2>/dev/null || echo "false")
+    if [[ "$has_choices" == "true" ]]; then
+      pass "Smoke API 200 OK（含 choices）"
+      write_record "smoke" "HTTP 200 (in-pod), choices OK\n$(echo "$body" | jq -r '.choices[0].message.content' | head -c 100)"
+    else
+      fail "Smoke API 200 但无 choices"
+      write_record "smoke" "HTTP 200, no choices"
+    fi
+  else
+    fail "Smoke API HTTP $code"
+    info "Body: $(echo "$body" | head -c 200)"
+    write_record "smoke" "HTTP $code\n$body"
+  fi
+}
+
 # ══════════════════════════════════════════════════
 # Main 逻辑
 # ══════════════════════════════════════════════════
@@ -190,10 +224,19 @@ case "$ENV" in
     K8S_PORT="10023"
     K8S_HOST="${K8S_CHECK_HOST:-14.103.112.184}"
     section_health "http://${K8S_HOST}:${K8S_PORT}/health"
+    
+    # 获取 Pod 名称
+    POD_NAME=$($SSH_CMD "kubectl get pods -n pms-test -l app=llm-gateway-go --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || echo "")
     section_pod "$SSH_CMD"
     section_frontend "http://llmgo.kxpms.cn"
     section_partition "ssh -p 25022 root@14.103.112.184 'kubectl exec -n pms-test deployment/llm-gateway-pg -- psql -U llm_gateway -d llm_gateway -tA -c'"
-    PASS=$((PASS+1)); TOTAL=$((TOTAL+1)); echo -e "  ${yellow}─${nc} Smoke API（NodePort 不暴露 API 端口，跳过）"
+    
+    # 184 smoke: 通过 kubectl exec 在 Pod 内执行
+    if [[ -n "$POD_NAME" ]]; then
+      section_smoke_k8s "$SSH_CMD" "$POD_NAME"
+    else
+      skip "Smoke API（无 Running Pod）"
+    fi
     ;;
 
   *)
