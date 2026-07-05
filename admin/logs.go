@@ -439,18 +439,19 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	where := strings.Join(clauses, " AND ")
 
 	// For COUNT, we need the same JOINs to filter by ak.tenant_id for tenant_admin
+	// 2026-07-06: 使用视图查询，避免遗漏 hot 表数据（migration 341）
 	var count int
 	if IsTenantAdmin(r) {
 		// COUNT with api_keys join so ak.tenant_id filter works
 		if err := h.db.QueryRow(ctx, `
-			SELECT COUNT(*) FROM request_logs rl
+			SELECT COUNT(*) FROM request_logs_with_current_month rl
 			LEFT JOIN api_keys ak ON ak.id = rl.api_key_id
 			WHERE `+where, args...).Scan(&count); err != nil {
 			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
 		}
 	} else {
-		if err := h.db.QueryRow(ctx, "SELECT COUNT(*) FROM request_logs rl WHERE "+where, args...).Scan(&count); err != nil {
+		if err := h.db.QueryRow(ctx, "SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE "+where, args...).Scan(&count); err != nil {
 			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
 		}
@@ -464,9 +465,10 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// Use the slimmed column list (requestLogsListCols) for the list
 	// endpoint: omit outbound_body / outbound_msg_hashes / compression_meta
 	// JSONB blobs. Those are only loaded by the detail drawer via getLog.
+	// 2026-07-06: 使用视图查询，避免遗漏 hot 表数据（migration 341）
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s%s
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		%s
 		WHERE %s
 		ORDER BY %s
