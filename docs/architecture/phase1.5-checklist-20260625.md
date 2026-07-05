@@ -239,7 +239,7 @@ go build ./cmd/gateway/
 # 4. 启动
 ./gateway &
 sleep 5
-curl -i http://localhost:8781/healthz
+curl -i http://localhost:__PORT_3__/healthz
 
 # 5. E2E
 ./scripts/e2e-core-domains.sh

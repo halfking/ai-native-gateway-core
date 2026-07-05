@@ -2,7 +2,7 @@
 
 **文档版本**: 1.0  
 **创建日期**: 2026-07-04  
-**测试环境**: 71 生产环境 (llm.kxpms.cn)  
+**测试环境**: 71 生产环境 (__DOMAIN_2__)  
 **覆盖率**: 100% 关键路径
 
 ---
@@ -50,7 +50,7 @@ go test -bench=. ./telemetry
 - `request_logs_default` 处于 ATTACHED 状态
 
 **测试步骤**:
-1. 发送 API 请求到 `https://llm.kxpms.cn/v1/chat/completions`
+1. 发送 API 请求到 `https://__DOMAIN_2__/v1/chat/completions`
 2. 获取返回的 `request_id`
 3. 查询 `request_logs_default` 表验证数据存在
 4. 查询 `request_logs_2026_07` 表验证数据不存在
@@ -76,7 +76,7 @@ request_id: 305f15d5ab40bd2472e946782a13274f
 ```bash
 # tests/partition_write_test.sh - 测试 1
 REQUEST_ID=$(curl -s -X POST "$API_ENDPOINT/v1/chat/completions" \
-  -H "Authorization: Bearer sk-test" \
+  -H "Authorization: Bearer __API_KEY_6__" \
   -d '{"model":"gpt-4o-mini","messages":[...]}' | jq -r '.error.request_id')
 
 RESULT=$(psql -c "SELECT COUNT(*) FROM request_logs_default WHERE request_id = '$REQUEST_ID'")
@@ -624,8 +624,8 @@ go test -bench=. -benchmem ./telemetry
 
 # 预期输出
 BenchmarkPartitionRouter/hot_data-8         10000000    150 ns/op    0 B/op    0 allocs/op
-BenchmarkPartitionRouter/cold_data-8         5000000    280 ns/op   48 B/op    2 allocs/op
-BenchmarkPartitionWrite/insert_default-8        5000    2.5 ms/op  512 B/op   12 allocs/op
+BenchmarkPartitionRouter/cold_data-8         __PORT_8__000    280 ns/op   48 B/op    2 allocs/op
+BenchmarkPartitionWrite/insert_default-8        __PORT_8__    2.5 ms/op  512 B/op   12 allocs/op
 BenchmarkPartitionWrite/update_default-8        3000    3.8 ms/op  384 B/op   10 allocs/op
 ```
 

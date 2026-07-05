@@ -368,11 +368,11 @@
 
 | 提交 | 摘要 |
 |---|---|
-| 75842cfa | feat(scripts): sync 184→local handles port 25022 + pg_dump 15.18 \restrict |
+| 75842cfa | feat(scripts): sync 184→local handles port __PORT_1__ + pg_dump 15.18 \restrict |
 | 98ee0001 | feat(deploy): rule 22 标准化 — deploy/*.sh + doctor.sh + .env.example + LOCAL_CONFIG |
-| db556316 | fix(dockerfile): registry.internal.example.com → registry.internal.example.com |
+| db556316 | fix(dockerfile): __DOMAIN_9__ → __DOMAIN_9__ |
 | feae6f38 | feat(scripts): 184→local DB sync + one-click deploy/verify |
-| a921709c | fix(scripts): deploy to /opt/llm-gateway-go/llm-gateway |
+| a921709c | fix(scripts): deploy to __SERVER_PATH_1__/llm-gateway |
 | 1c481705 | fix(scripts): sanitize deploy-to-71.sh — 替换硬编码 secret |
 | 53922204 | infra(llmgw): R1.12 本地测试环境（docker-compose + 4 scripts） |
 | 642ab4b2 / 225bfc12 | chore(gitignore): ignore build artifacts |
@@ -381,7 +381,7 @@
 
 **风险点**:
 - `1c481705` 替换硬编码 secret → 暗示之前存在**已落仓的 secret** → 必须做 `git log -p` 全量扫描确认是否还有残留。
-- `feae6f38` 184→local sync 走端口 25022 + pg_dump 15.18 `\restrict` → 需要审计是否对生产 DB 安全。
+- `feae6f38` 184→local sync 走端口 __PORT_1__ + pg_dump 15.18 `\restrict` → 需要审计是否对生产 DB 安全。
 - `98ee0001` rule 22 标准化 → 期望产生 `LOCAL_CONFIG.md` / `doctor.sh` 是否真的全部就位。
 
 ---

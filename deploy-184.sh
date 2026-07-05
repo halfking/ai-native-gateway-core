@@ -18,16 +18,21 @@
 set -euo pipefail
 
 # ==================== 配置区 ====================
-SERVER="root@14.103.112.184"
-SERVER_IP="14.103.112.184"
-SSH_PORT="25022"
-NAMESPACE="pms-test"
-DEPLOYMENT="llm-gateway-go-deployment"
-IMAGE_NAME="kx-llm-gateway-go"
-REGISTRY_INTERNAL="registry.kxpms.cn"
-REGISTRY_LOCAL="127.0.0.1:5000"
-HEALTH_ENDPOINT="http://localhost:30080/health"
-OLD_IMAGE_DAYS=30
+# 所有敏感值优先从环境变量读取，fallback 到默认值。
+# 环境变量由 scripts/load-env.sh 统一加载。
+# 配置指南见 docs/CONFIGURATION_GUIDE.md
+# 配置来源（优先级: 环境变量 > 默认值）
+# 生产环境部署前请先 source scripts/load-env.sh
+SERVER="${LLM_GATEWAY_184_SERVER:-root@14.103.112.184}"
+SERVER_IP="${LLM_GATEWAY_184_HOST:-14.103.112.184}"
+SSH_PORT="${LLM_GATEWAY_184_SSH_PORT:-25022}"
+NAMESPACE="${LLM_GATEWAY_184_NAMESPACE:-pms-test}"
+DEPLOYMENT="${LLM_GATEWAY_184_DEPLOYMENT:-llm-gateway-go-deployment}"
+IMAGE_NAME="${LLM_GATEWAY_184_IMAGE:-kx-llm-gateway-go}"
+REGISTRY_INTERNAL="${LLM_GATEWAY_184_REGISTRY:-registry.kxpms.cn}"
+REGISTRY_LOCAL="${REGISTRY_LOCAL:-127.0.0.1:5000}"
+HEALTH_ENDPOINT="${LLM_GATEWAY_184_HEALTH:-http://localhost:8781/health}"
+OLD_IMAGE_DAYS="${LLM_GATEWAY_184_OLD_IMAGE_DAYS:-30}"
 REPO_DIR="${LLM_GATEWAY_REPO:-$(cd "$(dirname "$0")" && pwd)}"
 
 # ==================== 颜色输出 ====================
@@ -263,7 +268,7 @@ generate_report() {
 
 ## 部署信息
 - **部署时间**: $(date '+%Y-%m-%d %H:%M:%S')
-- **部署环境**: 184 (14.103.112.184)
+- **部署环境**: 184 (${SERVER_IP})
 - **命名空间**: ${NAMESPACE}
 - **部署名称**: ${DEPLOYMENT}
 - **操作人员**: $(whoami)
@@ -505,7 +510,7 @@ main() {
     log_success "=========================================="
     echo ""
     log_info "快速验证命令:"
-    echo "  curl http://14.103.112.184:30080/health | jq ."
+    echo "  curl http://${SERVER_IP}:30080/health | jq ."
     echo "  ssh -p ${SSH_PORT} ${SERVER} 'kubectl get pods -n ${NAMESPACE} -l app=llm-gateway-go'"
     echo "  ssh -p ${SSH_PORT} ${SERVER} 'kubectl logs -n ${NAMESPACE} -l app=llm-gateway-go --tail=50'"
     echo ""

@@ -1,7 +1,7 @@
 # LLM Gateway 测试报告
 
 **测试日期**: 2026-07-01  
-**测试环境**: https://llmgo.kxpms.cn (184服务器 pms-test namespace)  
+**测试环境**: https://__DOMAIN_1__ (184服务器 pms-test namespace)  
 **部署版本**: `r1.13-done-a2214914-20260701-765`  
 **测试人员**: Kiro AI
 
@@ -30,7 +30,7 @@
 
 **测试请求**:
 ```bash
-curl https://llmgo.kxpms.cn/api/system/version
+curl https://__DOMAIN_1__/api/system/version
 ```
 
 **响应结果**:
@@ -52,7 +52,7 @@ curl https://llmgo.kxpms.cn/api/system/version
 
 **测试请求**:
 ```bash
-curl https://llmgo.kxpms.cn/healthz
+curl https://__DOMAIN_1__/healthz
 ```
 
 **响应结果**:
@@ -69,25 +69,25 @@ curl https://llmgo.kxpms.cn/healthz
 
 ### 3. 管理端点认证
 
-**Admin API Key**: `sk-k40DVd9aqFGumYcEkfkQvSgdv06uepSNDK0BqHwtwS3RzTgY` (从 k8s secret 获取)
+**Admin API Key**: `__API_KEY_2__` (从 k8s secret 获取)
 
 #### 3.1 模型列表
 ```bash
-curl -H "Authorization: Bearer ${ADMIN_KEY}" https://llmgo.kxpms.cn/api/models
+curl -H "Authorization: Bearer ${ADMIN_KEY}" https://__DOMAIN_1__/api/models
 ```
 
 ✅ **结果**: 返回 72 个模型，数据结构正确，包含模型元信息、标签、别名等
 
 #### 3.2 API Keys 列表
 ```bash
-curl -H "Authorization: Bearer ${ADMIN_KEY}" https://llmgo.kxpms.cn/api/keys
+curl -H "Authorization: Bearer ${ADMIN_KEY}" https://__DOMAIN_1__/api/keys
 ```
 
 ✅ **结果**: 返回 45 个 API keys
 
 #### 3.3 租户列表
 ```bash
-curl -H "Authorization: Bearer ${ADMIN_KEY}" https://llmgo.kxpms.cn/api/admin/tenants
+curl -H "Authorization: Bearer ${ADMIN_KEY}" https://__DOMAIN_1__/api/admin/tenants
 ```
 
 ✅ **结果**: 返回 8 个租户
@@ -95,7 +95,7 @@ curl -H "Authorization: Bearer ${ADMIN_KEY}" https://llmgo.kxpms.cn/api/admin/te
 #### 3.4 使用统计
 ```bash
 curl -H "Authorization: Bearer ${ADMIN_KEY}" \
-  "https://llmgo.kxpms.cn/api/usage?start_date=2026-07-01&end_date=2026-07-01"
+  "https://__DOMAIN_1__/api/usage?start_date=2026-07-01&end_date=2026-07-01"
 ```
 
 ✅ **结果**:
@@ -118,7 +118,7 @@ curl -H "Authorization: Bearer ${ADMIN_KEY}" \
 
 ```bash
 curl -H "Authorization: Bearer ${ADMIN_KEY}" \
-  "https://llmgo.kxpms.cn/api/routing/resolve?model=doubao-1-5-pro-32k"
+  "https://__DOMAIN_1__/api/routing/resolve?model=doubao-1-5-pro-32k"
 ```
 
 ✅ **结果**: 
@@ -136,7 +136,7 @@ curl -H "Authorization: Bearer ${ADMIN_KEY}" \
 
 ```bash
 curl -H "Authorization: Bearer ${ADMIN_KEY}" \
-  https://llmgo.kxpms.cn/api/system/background-tasks
+  https://__DOMAIN_1__/api/system/background-tasks
 ```
 
 ✅ **结果**:
@@ -196,7 +196,7 @@ curl -H "Authorization: Bearer ${ADMIN_KEY}" \
 
 #### 测试 1: doubao-1-5-pro-32k
 ```bash
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://__DOMAIN_1__/v1/chat/completions \
   -H "Authorization: Bearer ${ADMIN_KEY}" \
   -d '{"model": "doubao-1-5-pro-32k", "messages": [...]}'
 ```
@@ -218,7 +218,7 @@ curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
 
 #### 测试 2: claude-sonnet-4.5
 ```bash
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://__DOMAIN_1__/v1/chat/completions \
   -H "Authorization: Bearer ${ADMIN_KEY}" \
   -d '{"model": "claude-sonnet-4.5", "messages": [...]}'
 ```
@@ -404,7 +404,7 @@ WARN admin api key fallback deprecated, migrate to JWT (removal 2026-07-27)
 
 ### 测试环境信息
 
-- **服务地址**: https://llmgo.kxpms.cn
+- **服务地址**: https://__DOMAIN_1__
 - **K8s Namespace**: pms-test
 - **Deployment**: llm-gateway-go-deployment
 - **Pod**: llm-gateway-go-deployment-75c6589f56-gcgrt

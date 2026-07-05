@@ -8,12 +8,12 @@
 
 ```bash
 # 本地确认代码
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 git log --oneline -1
 # 应显示: 3342cfca feat(credentialstate): Phase 2 热度感知探测
 
 # 检查184连接
-ssh root@8.155.23.184 "echo OK"
+ssh __SSH_TARGET_3__ "echo OK"
 ```
 
 ---
@@ -22,7 +22,7 @@ ssh root@8.155.23.184 "echo OK"
 
 ```bash
 # 本地执行
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 ./deploy_phase2_to_184.sh
 ```
 
@@ -39,7 +39,7 @@ cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
 
 ```bash
 # 1. SSH登录
-ssh root@8.155.23.184
+ssh __SSH_TARGET_3__
 
 # 2. 拉取代码
 cd /data/services/llm-gateway-go
@@ -134,10 +134,10 @@ ps aux | grep llm-gateway-go | grep -v grep
 tail -100 logs/gateway.log | grep -i error
 
 # 检查端口
-netstat -tlnp | grep :8080
+netstat -tlnp | grep :__PORT_12__
 
 # 测试请求
-curl -s http://localhost:8080/health | jq .
+curl -s http://localhost:__PORT_12__/health | jq .
 ```
 
 **健康检查通过指标**:
@@ -183,7 +183,7 @@ systemctl start llm-gateway
 | 问题 | 检查命令 | 解决方案 |
 |------|---------|---------|
 | 服务未启动 | `systemctl status llm-gateway` | `systemctl start llm-gateway` |
-| 端口未监听 | `netstat -tlnp \| grep 8080` | 检查日志，可能端口冲突 |
+| 端口未监听 | `netstat -tlnp \| grep __PORT_12__` | 检查日志，可能端口冲突 |
 | 查询超时 | `tail logs/gateway.log \| grep timeout` | 检查数据库索引 |
 | 内存泄漏 | `ps aux \| grep llm-gateway` | 禁用热度追踪，回滚版本 |
 | 热度追踪失败 | `grep "popularity.*fail" logs/gateway.log` | 检查数据库连接和表结构 |

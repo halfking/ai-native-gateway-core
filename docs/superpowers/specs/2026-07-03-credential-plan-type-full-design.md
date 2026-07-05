@@ -32,7 +32,7 @@
 
 1. **单一标准类型化**：plan_type 是套餐 SSOT，billing_mode 是派生
 2. **计费模式与路由分离**：Pricing 页只管价格，不再决定路由；「免费」开关单独控制
-3. **凭据级 UI 控制**：在 `https://llm.kxpms.cn/providers/{id}` 凭据表中直接观察+设置 plan_type
+3. **凭据级 UI 控制**：在 `https://__DOMAIN_2__/providers/{id}` 凭据表中直接观察+设置 plan_type
 4. **路由即时性**：plan_type / billing_mode / free 切换后，路由 `is_routable` 在毫秒级（同一请求内）正确反映
 
 ---
@@ -303,7 +303,7 @@ ALTER TABLE credentials DROP CONSTRAINT IF EXISTS credentials_plan_type_check;
 | 2 | `SELECT billing_mode, count(*) FROM cmb WHERE credential_id = 6 GROUP BY 1;` | 仅 1 行 = `token_plan` |
 | 3 | admin UI 凭据表 #6 行 套餐 select 选 `token_plan` → 保存 → 截图验 cmb 列显式一致 | UI 显式一致 |
 | 4 | Pricing 页模型 X 勾「免费」→ admin/routing 选该模型 → 候选列表最低成本排序第一 | free 立即生效 |
-| 5 | `curl :8781/api/routing/minimax-m3` v view | 该 cred cmb `is_routable=true` 且 `unavailable_reason=NULL` |
+| 5 | `curl :__PORT_3__/api/routing/minimax-m3` v view | 该 cred cmb `is_routable=true` 且 `unavailable_reason=NULL` |
 
 ---
 

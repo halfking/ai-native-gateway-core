@@ -80,7 +80,7 @@
 ### 4. 依赖检查
 - [ ] **数据库可用性**：
   ```bash
-  PGPASSWORD='xxx' psql -h 172.31.0.3 -U llm_gateway -d llm_gateway -c "SELECT 1;"
+  PGPASSWORD='xxx' psql -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway -c "SELECT 1;"
   ```
 
 - [ ] **Redis 可用性**：
@@ -102,7 +102,7 @@
 ### 1. 备份
 - [ ] **数据库备份**：
   ```bash
-  pg_dump -h 172.31.0.3 -U llm_gateway llm_gateway > backup_$(date +%Y%m%d_%H%M%S).sql
+  pg_dump -h __PRIV_IP_2__ -U llm_gateway llm_gateway > backup_$(date +%Y%m%d_%H%M%S).sql
   ```
 
 - [ ] **配置备份**：
@@ -117,7 +117,7 @@
   ./bin/storage-migrate up
   
   # 或手动应用
-  PGPASSWORD='xxx' psql -h 172.31.0.3 -U llm_gateway -d llm_gateway < migrations/327_credential_plan_type_full.sql
+  PGPASSWORD='xxx' psql -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway < migrations/327_credential_plan_type_full.sql
   ```
 
 - [ ] **验证迁移结果**：
@@ -135,7 +135,7 @@
 ### 3. 部署新版本
 - [ ] **拉取新镜像**：
   ```bash
-  docker pull registry.kxpms.cn/llm-gateway-go:v2.3.x
+  docker pull __DOMAIN_4__/llm-gateway-go:v2.3.x
   ```
 
 - [ ] **停止旧容器**（滚动更新）：
@@ -169,7 +169,7 @@
 
 - [ ] **健康端点**：
   ```bash
-  curl http://localhost:8781/healthz
+  curl http://localhost:__PORT_3__/healthz
   # 应该返回: {"status":"ok","version":"..."}
   ```
 
@@ -206,8 +206,8 @@
 ### 3. 端到端测试
 - [ ] **简单请求测试**：
   ```bash
-  curl -X POST http://localhost:8781/v1/chat/completions \
-    -H "Authorization: Bearer sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9" \
+  curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
+    -H "Authorization: Bearer __API_KEY_1__" \
     -H "Content-Type: application/json" \
     -d '{
       "model": "glm-4-flash",
@@ -219,7 +219,7 @@
 
 - [ ] **流式响应测试**：
   ```bash
-  curl -X POST http://localhost:8781/v1/chat/completions \
+  curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
     -H "Authorization: Bearer <key>" \
     -H "Content-Type: application/json" \
     -d '{
@@ -233,7 +233,7 @@
 
 - [ ] **错误处理测试**：
   ```bash
-  curl -X POST http://localhost:8781/v1/chat/completions \
+  curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
     -H "Authorization: Bearer invalid-key" \
     -H "Content-Type: application/json" \
     -d '{"model": "xxx", "messages": []}'
@@ -243,7 +243,7 @@
 ### 4. 性能验证
 - [ ] **响应时间**：
   ```bash
-  time curl -s -X POST http://localhost:8781/v1/chat/completions \
+  time curl -s -X POST http://localhost:__PORT_3__/v1/chat/completions \
     -H "Authorization: Bearer <key>" \
     -H "Content-Type: application/json" \
     -d '{"model": "glm-4-flash", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 5}'
@@ -253,13 +253,13 @@
 - [ ] **并发测试**（可选）：
   ```bash
   # 使用 ab 或 hey 进行压力测试
-  ab -n 100 -c 10 -p request.json -T 'application/json' http://localhost:8781/v1/chat/completions
+  ab -n 100 -c 10 -p request.json -T 'application/json' http://localhost:__PORT_3__/v1/chat/completions
   ```
 
 ### 5. 监控指标检查
 - [ ] **Prometheus 指标**：
   ```bash
-  curl http://localhost:8781/metrics | grep llm_gateway
+  curl http://localhost:__PORT_3__/metrics | grep llm_gateway
   ```
 
 - [ ] **最近请求统计**：
@@ -288,21 +288,21 @@
    ```bash
    docker run -d --name llm-gateway-go \
      --env-file .env.backup \
-     registry.kxpms.cn/llm-gateway-go:v2.3.x-previous
+     __DOMAIN_4__/llm-gateway-go:v2.3.x-previous
    ```
 
 3. **回滚数据库**（如果应用了迁移）：
    ```bash
    # 使用 down 迁移
-   PGPASSWORD='xxx' psql -h 172.31.0.3 -U llm_gateway -d llm_gateway < migrations/327_xxx.down.sql
+   PGPASSWORD='xxx' psql -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway < migrations/327_xxx.down.sql
    
    # 或恢复备份
-   pg_restore -h 172.31.0.3 -U llm_gateway -d llm_gateway backup_xxx.sql
+   pg_restore -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway backup_xxx.sql
    ```
 
 4. **验证回滚**：
    ```bash
-   curl http://localhost:8781/healthz
+   curl http://localhost:__PORT_3__/healthz
    docker logs llm-gateway-go --tail 50
    ```
 
@@ -411,7 +411,7 @@ echo "✅ 部署成功！"
 echo ""
 echo "后续步骤:"
 echo "1. 监控日志: docker logs llm-gateway-go -f"
-echo "2. 检查指标: curl http://localhost:8781/metrics"
+echo "2. 检查指标: curl http://localhost:__PORT_3__/metrics"
 echo "3. 查看仪表盘: https://grafana/d/llm-gateway"
 ```
 

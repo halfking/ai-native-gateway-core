@@ -115,10 +115,10 @@ type GoalStore interface {
 
 ```go
 import (
-    "github.com/kaixuan/llm-gateway-go/domains/hooks/response"
-    "github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"
-    "github.com/kaixuan/llm-gateway-go/domains/hooks/goal"
-    "github.com/kaixuan/llm-gateway-go/settings"
+    "__REPO_URL_3__/domains/hooks/response"
+    "__REPO_URL_3__/domains/hooks/handoff"
+    "__REPO_URL_3__/domains/hooks/goal"
+    "__REPO_URL_3__/settings"
 )
 
 func main() {
@@ -254,7 +254,7 @@ go test ./domains/hooks/goal/...
 
 ```bash
 # 模拟handoff触发
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "X-Gw-Session-Id: test-session-1" \
   -d '{
@@ -263,7 +263,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 
 # 模拟goal模式
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "X-Goal-Mode: true" \
   -d '{

@@ -142,7 +142,7 @@ export interface ProviderCredential {
 
 ```bash
 # 禁用凭据
-curl -X PATCH "https://llmgateway.internal.example.com/api/providers/1/credentials/123/manual-disabled" \
+curl -X PATCH "https://__DOMAIN_8__/api/providers/1/credentials/123/manual-disabled" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -151,7 +151,7 @@ curl -X PATCH "https://llmgateway.internal.example.com/api/providers/1/credentia
   }'
 
 # 恢复凭据
-curl -X PATCH "https://llmgateway.internal.example.com/api/providers/1/credentials/123/manual-disabled" \
+curl -X PATCH "https://__DOMAIN_8__/api/providers/1/credentials/123/manual-disabled" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

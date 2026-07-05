@@ -1,7 +1,7 @@
 # Migration 341 热表独立化 - 生产部署完成报告
 
 **日期**: 2026-07-05
-**环境**: 184 生产环境 (https://llmgo.kxpms.cn)
+**环境**: 184 生产环境 (https://__DOMAIN_1__)
 **版本**: `r1.13-done-4b345451-20260705-50`
 **状态**: ✅ 已部署并通过端到端验证
 
@@ -276,7 +276,7 @@ SELECT promote_request_wal_default_batch();
 git revert 4b345451 443417fb
 kubectl set image deploy/llm-gateway-go-deployment \
   -n pms-test \
-  llm-gateway-go=127.0.0.1:5000/kx-llm-gateway-go:旧版本镜像
+  llm-gateway-go=127.0.0.1:__PORT_8__/kx-llm-gateway-go:旧版本镜像
 ```
 
 ### 8.2 数据库回滚

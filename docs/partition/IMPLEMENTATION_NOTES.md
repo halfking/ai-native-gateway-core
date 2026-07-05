@@ -136,7 +136,7 @@ WHERE c.relname LIKE '%_2026_07%';
 
 **默认参数**：
 - 保留窗口：7 天
-- 批次大小：5000 行
+- 批次大小：__PORT_8__ 行
 
 ---
 
@@ -153,7 +153,7 @@ WHERE c.relname LIKE '%_2026_07%';
 ```go
 const DefaultRetentionWindow = 7 * 24 * time.Hour
 const DefaultPromoteInterval = 1 * time.Hour
-const promoteBatchSize = 5000
+const promoteBatchSize = __PORT_8__
 ```
 
 ### 4.2 日志输出

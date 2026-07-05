@@ -64,7 +64,7 @@ Memora 异步索引 → L1 会话事实 → (可选) distill_knowledge 沉淀 jo
 {
   "task_id": "abc-123",
   "user_id": "k:42:abc-123",
-  "project_id": "kaixuan-1-deploy",
+  "project_id": "__USER_2__-1-deploy",
   "written": 3,
   "skipped_noise": 12,
   "skipped_duplicate": 2,
@@ -86,7 +86,7 @@ Memora 异步索引 → L1 会话事实 → (可选) distill_knowledge 沉淀 jo
 |------|------|------|
 | `LLM_GATEWAY_MEMORA_BASE_URL` | — | Memora `/product/add` 基址（已有） |
 | `LLM_GATEWAY_MEMORA_API_KEY` | — | Bearer token（已有） |
-| `MEMORA_PROJECT_ID` | `kaixuan-1-deploy` | 写入 info.project_id |
+| `MEMORA_PROJECT_ID` | `__USER_2__-1-deploy` | 写入 info.project_id |
 
 ## 持久化
 

@@ -211,7 +211,7 @@ export const NAV_GROUPS = [
 # scripts/i18n-translate.js
 # 1. 读取 locales/zh-CN/**/*.ts
 # 2. 提取所有叶子键值对
-# 3. 调用 llm.kxpms.cn API 批量翻译
+# 3. 调用 __DOMAIN_2__ API 批量翻译
 # 4. 写入 locales/{en-US,ja-JP,...}/**/*.ts
 ```
 
@@ -340,7 +340,7 @@ cd ~/workspace/official-deploy/services/llm-gateway-go
 bash scripts/deploy-184.sh
 
 # 5. 184 实测验证
-# - 访问 https://llmgo.kxpms.cn
+# - 访问 https://__DOMAIN_1__
 # - 切换到英文/日文/德文...
 # - 验证首页/导航/登录流程全部显示对应语言
 # - 截图留存

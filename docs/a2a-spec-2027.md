@@ -2,7 +2,7 @@
 
 > **文档版本**：v1.0
 > **调研日期**：2026-06-25
-> **作者**：kaixuan-ai-agent
+> **作者**：__USER_2__-ai-agent
 > **配套**：实施计划 `2026-06-23-llmgw-implementation-plan.md` Part 6 D2（Q1 2027）
 > **Spec 版本**：A2A v1.0（a2aproject/A2A, commit main @ 2026-06-24）
 >
@@ -148,7 +148,7 @@ message Task {
     }
   ],
   "supportedInterfaces": [
-    { "url": "https://brandmind.internal.example.com/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0" }
+    { "url": "https://brandmind.__DOMAIN_12__/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0" }
   ],
   "securitySchemes": { "bearer": { "http": { "scheme": "bearer" } } }
 }

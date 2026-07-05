@@ -216,9 +216,9 @@ domains/authentication/
 ```go
 // cmd/gateway/main.go 第 30-64 行
 import (
-	"github.com/kaixuan/llm-gateway-go/auth"          // 旧包
-	"github.com/kaixuan/llm-gateway-go/sessions"      // 旧包
-	"github.com/kaixuan/llm-gateway-go/routing"       // 旧包
+	"__REPO_URL_3__/auth"          // 旧包
+	"__REPO_URL_3__/sessions"      // 旧包
+	"__REPO_URL_3__/routing"       // 旧包
 	// ... 没有 domains/ 导入
 )
 ```

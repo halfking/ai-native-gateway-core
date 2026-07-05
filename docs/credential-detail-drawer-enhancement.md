@@ -2,7 +2,7 @@
 
 ## 概述
 
-在凭据监控页面（`https://llmgateway.internal.example.com/routing-v2/credentials`）的详情抽屉中新增以下功能：
+在凭据监控页面（`https://__DOMAIN_8__/routing-v2/credentials`）的详情抽屉中新增以下功能：
 
 1. **详情页内刷新** - 无需关闭抽屉即可刷新所有数据
 2. **自动刷新开关** - 可选的5秒/10秒/30秒自动刷新
@@ -345,11 +345,11 @@ kubectl -n pms-test rollout undo deployment/kx-llm-gateway-go
 ```bash
 # 184 k3s
 kubectl -n pms-test set image deployment/kx-llm-gateway-go \
-  llm-gateway-go=registry.internal.example.com/kx-llm-gateway-go:<previous-tag>
+  llm-gateway-go=__DOMAIN_9__/kx-llm-gateway-go:<previous-tag>
 
 # 71 systemd
 systemctl stop llm-gateway-go
-cp /opt/llm-gateway-go/llm-gateway-go.backup /opt/llm-gateway-go/llm-gateway-go
+cp __SERVER_PATH_1__/llm-gateway-go.backup __SERVER_PATH_1__/llm-gateway-go
 systemctl start llm-gateway-go
 ```
 

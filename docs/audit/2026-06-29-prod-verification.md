@@ -24,7 +24,7 @@
 ## 2. 验证场景覆盖
 
 ### 2.1 网络可达性预检
-- v1（`:8781`）`/healthz` → HTTP 200 ✅
+- v1（`:__PORT_3__`）`/healthz` → HTTP 200 ✅
 - v2（`:8789`）`/healthz` → HTTP 401 ✅（v2 设计强制 auth）
 
 ### 2.2 NET-001 CORS fail-closed

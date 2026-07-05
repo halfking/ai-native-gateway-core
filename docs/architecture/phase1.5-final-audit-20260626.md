@@ -15,7 +15,7 @@ The new domain architecture (`domains/*`) is fully migrated from `_to-be-depreca
 ### 1. Old `_to-be-deprecated/transport` — COMPLETELY REMOVED
 
 ```bash
-$ rg -n 'github.com/kaixuan/llm-gateway-go/_to-be-deprecated/transport' --glob '*.go' .
+$ rg -n '__REPO_URL_3__/_to-be-deprecated/transport' --glob '*.go' .
 
 # Result: NO MATCHES
 ```
@@ -26,7 +26,7 @@ $ rg -n 'github.com/kaixuan/llm-gateway-go/_to-be-deprecated/transport' --glob '
 ### 2. Old `_to-be-deprecated/relay` in `domains/` — REMOVED
 
 ```bash
-$ rg -n 'github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay' domains --glob '*.go'
+$ rg -n '__REPO_URL_3__/_to-be-deprecated/relay' domains --glob '*.go'
 
 # Result: NO MATCHES
 ```
@@ -45,7 +45,7 @@ $ rg -n 'github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay' domains --gl
 ### 3. Old `_to-be-deprecated/transform` in `domains/` — REMOVED
 
 ```bash
-$ rg -n 'github.com/kaixuan/llm-gateway-go/_to-be-deprecated/transform' domains --glob '*.go'
+$ rg -n '__REPO_URL_3__/_to-be-deprecated/transform' domains --glob '*.go'
 
 # Result: NO MATCHES
 ```
@@ -56,7 +56,7 @@ $ rg -n 'github.com/kaixuan/llm-gateway-go/_to-be-deprecated/transform' domains 
 ### 4. Remaining `_to-be-deprecated/memora` in `domains/` — STILL PRESENT
 
 ```bash
-$ rg -n 'github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora' domains --glob '*.go'
+$ rg -n '__REPO_URL_3__/_to-be-deprecated/memora' domains --glob '*.go'
 
 # Result:
 # domains/hooks/compression/compaction.go:50
@@ -70,7 +70,7 @@ $ rg -n 'github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora' domains --g
 ### 5. `cmd/gateway/main.go` Remaining Dependencies
 
 ```bash
-$ rg -n 'github.com/kaixuan/llm-gateway-go/_to-be-deprecated/' cmd/gateway/main.go
+$ rg -n '__REPO_URL_3__/_to-be-deprecated/' cmd/gateway/main.go
 
 # Result:
 # cmd/gateway/main.go:34:  _to-be-deprecated/relay

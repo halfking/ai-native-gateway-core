@@ -13,8 +13,8 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        生产环境 (71)                              │
-│  服务器: __HOST_71_IP__ (公网IP，请勿公开)                        │
-│  SSH端口: 25022                                                  │
+│  服务器: __SECRET_1__ (公网IP，请勿公开)                        │
+│  SSH端口: __PORT_1__                                                  │
 │  认证: ~/.ssh/71_id_rsa                                          │
 │  数据库: llm-gateway-pg-71-replica (Docker容器)                   │
 │  用途: 生产数据，严禁未授权访问和修改                              │
@@ -24,7 +24,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                        测试环境 (184)                             │
 │  服务器: __INTERNAL_PUBLIC_IP__ (公网IP，请勿公开)                │
-│  SSH端口: 25022                                                  │
+│  SSH端口: __PORT_1__                                                  │
 │  认证: ~/.ssh/id_ed25519                                         │
 │  数据库: llm-gateway-pg (K3s Pod, namespace: pms-test)            │
 │  用途: 测试、开发、验证，可以进行数据同步和迁移测试                 │
@@ -34,7 +34,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                        本地开发环境                               │
 │  容器: r112_postgres (Docker容器)                                │
-│  端口: 5432                                                      │
+│  端口: __PORT_5__                                                      │
 │  用途: 本地开发和测试，可从184同步数据                             │
 │  标识: ENV=local, DB_ENV=local                                   │
 └─────────────────────────────────────────────────────────────────┘
@@ -62,13 +62,13 @@
    ```bash
    # ❌ 错误示例
    ./deploy.sh --target 71
-   ssh root@__HOST_71_IP__ "docker restart llm-gateway-go"
+   ssh root@__SECRET_1__ "docker restart llm-gateway-go"
    ```
 
 2. **禁止未经审批修改71数据库结构**
    ```bash
    # ❌ 错误示例
-   ssh root@__HOST_71_IP__ "docker exec llm-gateway-pg-71-replica psql ... -c 'ALTER TABLE ...'"
+   ssh root@__SECRET_1__ "docker exec llm-gateway-pg-71-replica psql ... -c 'ALTER TABLE ...'"
    ```
 
 3. **禁止从71同步数据到其他环境**（数据泄露风险）
@@ -80,7 +80,7 @@
 4. **禁止在脚本中硬编码71的IP地址或密码**
    ```bash
    # ❌ 错误示例
-   SERVER="14.103.174.71"
+   SERVER="__PUB_IP_2__"
    DB_PASSWORD="plaintext_password"
    ```
 
@@ -89,7 +89,7 @@
 1. **只读查询（需授权）**
    ```bash
    # ✅ 正确示例
-   ssh root@__HOST_71_IP__ "docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway -c 'SELECT count(*) FROM request_logs'"
+   ssh root@__SECRET_1__ "docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway -c 'SELECT count(*) FROM request_logs'"
    ```
 
 2. **监控和诊断（非侵入式）**
@@ -145,13 +145,13 @@
 
 ```bash
 # ✅ 正确示例
-SERVER_71="${SERVER_71:-__HOST_71_IP__}"
+SERVER_71="${SERVER_71:-__SECRET_1__}"
 SERVER_184="${SERVER_184:-__INTERNAL_PUBLIC_IP__}"
-DB_PASSWORD="${DB_PASSWORD:-__REDACTED_DB_PASSWORD__}"
+DB_PASSWORD="${DB_PASSWORD:-__SECRET_2__}"
 
 # ❌ 错误示例
-SERVER_71="14.103.174.71"
-SERVER_184="14.103.112.184"
+SERVER_71="__PUB_IP_2__"
+SERVER_184="__PUB_IP_1__"
 DB_PASSWORD="actual_password_here"
 ```
 
@@ -242,7 +242,7 @@ ssh root@__INTERNAL_PUBLIC_IP__ "cd /opt/official-deploy/services/llm-gateway-go
 ssh root@__INTERNAL_PUBLIC_IP__ "kubectl -n pms-test set image deployment/llm-gateway app=kx-llm-gateway:test-$(date +%Y%m%d)"
 
 # 4. 验证
-curl -s https://llmgateway-test.kxpms.cn/healthz | jq .
+curl -s https://__DOMAIN_7__/healthz | jq .
 ```
 
 ### 4.2 到71生产环境（需审批）
@@ -280,20 +280,20 @@ APPROVAL_ID="CHG-2026-XXX" ./scripts/rollback-prod.sh --env 71
 ```bash
 # ── 服务器 IP ──────────────────────────────────────────────────
 # 71 服务器公网 IP（生产环境）
-HOST_71_IP=__HOST_71_IP__
+HOST_71_IP=__SECRET_1__
 # 184 服务器公网 IP（测试环境）
 INTERNAL_PUBLIC_IP=__INTERNAL_PUBLIC_IP__
 
 # ── SSH 连接 ───────────────────────────────────────────────────
-SSH_PORT_71=25022
-SSH_PORT_184=25022
+SSH_PORT_71=__PORT_1__
+SSH_PORT_184=__PORT_1__
 SSH_KEY_71_PATH=$HOME/.ssh/71_id_rsa
 SSH_KEY_184_PATH=$HOME/.ssh/id_ed25519
-SSHPASS_71=__REDACTED_SSH_PASSWORD__
+SSHPASS_71=__SECRET_3__
 
 # ── 数据库 ─────────────────────────────────────────────────────
 DB_USER=__DB_USER__
-DB_ADMIN_PASSWORD=__REDACTED_DB_PASSWORD__
+DB_ADMIN_PASSWORD=__SECRET_2__
 ```
 
 ### 5.2 真实值存储位置
@@ -301,7 +301,7 @@ DB_ADMIN_PASSWORD=__REDACTED_DB_PASSWORD__
 真实的IP地址、密码等敏感信息存储在：
 - **仓库外**: `~/Documents/llm-gateway-env.md` (本地加密文件)
 - **密码管理器**: 1Password / LastPass (推荐)
-- **服务器**: `/etc/llm-gateway-go/env` (chmod 600)
+- **服务器**: `__SERVER_PATH_3__/env` (chmod 600)
 
 ---
 
@@ -310,7 +310,7 @@ DB_ADMIN_PASSWORD=__REDACTED_DB_PASSWORD__
 ### 6.1 需要修正的技能
 
 1. **deploy-acc** (`~/.agents/skills/deploy-acc/SKILL.md`)
-   - 替换所有 `14.103.112.184` 为 `__INTERNAL_PUBLIC_IP__`
+   - 替换所有 `__PUB_IP_1__` 为 `__INTERNAL_PUBLIC_IP__`
    - 添加环境确认提示
 
 2. **kx-image-build** (`~/.agents/skills/kx-image-build/SKILL.md`)
@@ -420,12 +420,12 @@ SELECT current_database(), inet_server_addr();
 
 | 占位符 | 说明 | 真实值位置 |
 |--------|------|-----------|
-| `__HOST_71_IP__` | 71生产服务器公网IP | ~/Documents/llm-gateway-env.md |
+| `__SECRET_1__` | 71生产服务器公网IP | ~/Documents/llm-gateway-env.md |
 | `__INTERNAL_PUBLIC_IP__` | 184测试服务器公网IP | ~/Documents/llm-gateway-env.md |
 | `__INTERNAL_K8S_HOST__` | 184内网K8s节点IP | ~/Documents/llm-gateway-env.md |
 | `__INTERNAL_DOCKER_HOST__` | 184内网Docker主机IP | ~/Documents/llm-gateway-env.md |
-| `__REDACTED_DB_PASSWORD__` | 数据库密码 | 密码管理器 |
-| `__REDACTED_SSH_PASSWORD__` | SSH密码 | 密码管理器 |
+| `__SECRET_2__` | 数据库密码 | 密码管理器 |
+| `__SECRET_3__` | SSH密码 | 密码管理器 |
 | `__DB_USER__` | 数据库用户名 | ~/Documents/llm-gateway-env.md |
 
 ---

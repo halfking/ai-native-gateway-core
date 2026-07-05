@@ -3,7 +3,7 @@
 > **Last updated:** 2026-06-30
 > **Status:** ✅ Production (daily running since 2026-06-30)
 > **Maintainer:** Kaixuan DevOps Team
-> **Scope:** 71 server (__INTERNAL_K8S_HOST__ / __HOST_71_IP__) — `llm-gateway-pg-71-replica` 容器
+> **Scope:** 71 server (__INTERNAL_K8S_HOST__ / __SECRET_1__) — `llm-gateway-pg-71-replica` 容器
 > **Environment:** volcano 71 (formerly a streaming replica, now promoted primary after 184 outage)
 
 ---
@@ -12,7 +12,7 @@
 
 71 上的 PostgreSQL（`llm-gateway-pg-71-replica` 容器，运行 `citusdata/citus:11.3.0` 镜像）承载 **15 个业务数据库 + globals**，包含：
 
-- 14 个业务库：`llm_gateway`, `casdoor`, `kaixuan`, `trendaradar`, `crm`, `brandmind`, `brandmind_test`, `doc_tools`, `geo_flow`, `smart_bidding`, `stock_trading`, `port_email`, `memos`, `aicms_db`
+- 14 个业务库：`llm_gateway`, `casdoor`, `__USER_2__`, `trendaradar`, `crm`, `brandmind`, `brandmind_test`, `doc_tools`, `geo_flow`, `smart_bidding`, `stock_trading`, `port_email`, `memos`, `aicms_db`
 - 全局用户/角色 (`pg_dumpall --globals-only`)
 - **4 个按月分区的列存大表**：`request_logs` (RANGE ts), `credential_model_index` (RANGE bucket), `routing_decision_log` (RANGE ts), `request_wal` (RANGE created_at)
 - **4 个 archive 子分区**（列存 `citus_columnar` 11.3）
@@ -21,13 +21,13 @@
 
 | User | Password | 库 | 用途 |
 |------|----------|----|----|
-| **`llm_gateway`** | `__REDACTED_DB_PASSWORD__` | 14 个库（superuser） | 主超级用户（备份 + 跨库 admin） |
-| `kaixuan_user` | `kaixuan_pass123` | `kaixuan` | 开轩主应用 |
+| **`llm_gateway`** | `__SECRET_2__` | 14 个库（superuser） | 主超级用户（备份 + 跨库 admin） |
+| `__USER_2___user` | `__USER_2___pass123` | `__USER_2__` | 开轩主应用 |
 | `casdoor_user` | `casdoor_pass123` | `casdoor` | Casdoor 认证 |
 | `crm_user` | `crm_pass123` | `crm` | CRM |
 | `doc_tools_user` | `doc_tools_pass123` | `doc_tools` | 文档工具 |
-| `kxuser` (旧) | `__REDACTED_DB_PASSWORD__` | 11 个库 | 184 流复制继承的访问账号 |
-| `casdoor_user` (旧) | `__REDACTED_DB_PASSWORD__` | 多个库 | 184 默认密码 |
+| `kxuser` (旧) | `__SECRET_2__` | 11 个库 | 184 流复制继承的访问账号 |
+| `casdoor_user` (旧) | `__SECRET_2__` | 多个库 | 184 默认密码 |
 
 **凭据加载机制（脚本 `load_secret()` 函数）**：
 1. **环境变量**：`PG_PASSWORD` / `REMOTE_SSHPASS`
@@ -128,7 +128,7 @@
 **安全考虑**：
 - 密码是 56 的 SSH 密码（root）
 - 不入 git，不入 SOPS
-- 只在脚本顶部作为 `REMOTE_SSHPASS="${REMOTE_SSHPASS:-__REDACTED_SSH_PASSWORD__}"` 兜底
+- 只在脚本顶部作为 `REMOTE_SSHPASS="${REMOTE_SSHPASS:-__SECRET_3__}"` 兜底
 - 实际生产建议用 vault 注入
 
 ## 5. 脚本 (Scripts)
@@ -148,15 +148,15 @@ bash /opt/scripts/backup-pg-71.sh list           # 列出所有 backup（本地 
 - `RETENTION_DAYS=3`
 - `DOCKER_CONTAINER=llm-gateway-pg-71-replica`
 - `PG_USER="llm_gateway"` (superuser)
-- `PG_PASSWORD="__REDACTED_DB_PASSWORD__"`
+- `PG_PASSWORD="__SECRET_2__"`
 - `REMOTE_HOST="root@__HOST_56_IP__"`
-- `REMOTE_PORT="25022"`
+- `REMOTE_PORT="__PORT_1__"`
 - `REMOTE_DIR="/opt/databackups-71-mirror"`
 
 **14 业务库**（按 AGENTS.md 14 库清单）：
 ```bash
 DATABASES=(
-    "llm_gateway" "casdoor" "kaixuan" "trendaradar" "crm"
+    "llm_gateway" "casdoor" "__USER_2__" "trendaradar" "crm"
     "brandmind" "brandmind_test" "doc_tools" "geo_flow"
     "smart_bidding" "stock_trading" "port_email" "memos" "aicms_db"
 )
@@ -167,7 +167,7 @@ DATABASES=(
 **真实 restore test**（100% 隔离，不碰 71 生产）：
 - 起独立 `citusdata/citus:11.3.0` 容器
 - data dir 用 **tmpfs 8GB**（不是 bind mount）
-- port **55499**（不是 5432/5433/5434）
+- port **55499**（不是 __PORT_5__/__PORT_6__/__PORT_7__）
 - 不挂 `/data/llm-gateway-pg-71-replica`
 - 恢复 backup 到**新库 `llm_gateway_iso_<TS>`**（不污染原库名）
 - 验证 4 个 archive 子表数据 + 4 个 archive 函数
@@ -273,12 +273,12 @@ ssh 71 "docker run -d --name llm-gateway-pg-71-replica \
   --network host --restart=no \
   -v /data/llm-gateway-pg-71-replica:/var/lib/postgresql/data \
   -e POSTGRES_USER=llm_gateway \
-  -e POSTGRES_PASSWORD=__REDACTED_DB_PASSWORD__ \
+  -e POSTGRES_PASSWORD=__SECRET_2__ \
   citusdata/citus:11.3.0 \
   -c shared_preload_libraries=citus,citus_columnar -c max_connections=1000"
 
-# 6. 改 env /etc/llm-gateway-go/env 指向 127.0.0.1（如果之前指 184）
-ssh 71 "sed -i 's|@__INTERNAL_K8S_HOST__:5432|@127.0.0.1:5432|g' /etc/llm-gateway-go/env"
+# 6. 改 env __SERVER_PATH_3__/env 指向 127.0.0.1（如果之前指 184）
+ssh 71 "sed -i 's|@__INTERNAL_K8S_HOST__:__PORT_5__|@127.0.0.1:__PORT_5__|g' __SERVER_PATH_3__/env"
 ```
 
 ### 8.2 应急恢复（71 → 56 同步 + 56 上启动）
@@ -355,8 +355,8 @@ ssh 71 "df -h /opt/databackups/ && du -sh /opt/databackups/*"
 
 ### 2026-06-30 13:00 — 184 整体宕机
 
-- **症状**：184 上 k3s / Casdoor / ACC / llm-gateway-go / PG 5432 全部不可达
-- **影响**：71 流复制副本断流，71 上 trendaradar-go / brandmind-go / kaixuan 全部 Restarting
+- **症状**：184 上 k3s / Casdoor / ACC / llm-gateway-go / PG __PORT_5__ 全部不可达
+- **影响**：71 流复制副本断流，71 上 trendaradar-go / brandmind-go / __USER_2__ 全部 Restarting
 - **响应**：
   1. 71 副本 promote 成独立主库（`pg_promote()`）
   2. llm-gateway-go env 改 184 → 127.0.0.1
@@ -367,7 +367,7 @@ ssh 71 "df -h /opt/databackups/ && du -sh /opt/databackups/*"
 
 - **症状**：测试脚本用 `-v /data/llm-gateway-pg-71-replica:/var/lib/postgresql/data` 把生产 data 挂到测试容器
 - **影响**：测试容器启动 PG 时往 71 的 data 写 `postmaster.pid`，与生产容器 lock file 冲突，生产 PG 异常退出
-- **恢复**：docker rm 旧容器 + 用同样参数 docker run 新容器，5432 重新监听，186,422 行数据完整
+- **恢复**：docker rm 旧容器 + 用同样参数 docker run 新容器，__PORT_5__ 重新监听，186,422 行数据完整
 - **修复**：所有 restore test 改用 `--tmpfs /var/lib/postgresql/data:rw,size=8g` 隔离
 
 ## 12. 关联文档 (Related Docs)

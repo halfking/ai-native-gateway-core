@@ -246,6 +246,6 @@ c4ccca94 Merge feat/plan-type-full: Plan type 标准化 + 路由可用性修复
 
 **交付状态**: ✅ **开发完成，已验证，可交付部署**
 
-**Git 仓库**: https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git  
+**Git 仓库**: __REPO_URL_1__.git  
 **分支**: main  
 **Commit**: 2ed2be2f

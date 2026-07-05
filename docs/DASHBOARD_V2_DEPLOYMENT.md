@@ -22,13 +22,13 @@ go build -o llm-gateway-go-v2 .
 
 ```bash
 # 1. 确保数据库连接正常
-export DATABASE_URL="postgres://user:pass@localhost:5432/dbname"
+export DATABASE_URL="postgres://user:pass@localhost:__PORT_5__/dbname"
 
 # 2. 启动服务
 ./llm-gateway-go-v2
 
 # 3. 打开浏览器
-# 访问 http://localhost:8080/
+# 访问 http://localhost:__PORT_12__/
 # 点击顶部 "V2 新版（泳道）" 按钮
 ```
 
@@ -57,7 +57,7 @@ docker build -t llm-gateway-go:v2 .
 # 2. 运行容器
 docker run -d \
   --name llm-gateway-go \
-  -p 8080:8080 \
+  -p __PORT_12__:__PORT_12__ \
   -e DATABASE_URL="..." \
   llm-gateway-go:v2
 ```
@@ -123,7 +123,7 @@ docker run -d \
 #### 3.1 发送测试请求
 ```bash
 # 发送一个测试请求
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -143,7 +143,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```bash
 # 发送100个并发请求
 for i in {1..100}; do
-  curl -X POST http://localhost:8080/v1/chat/completions \
+  curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
     -H "Authorization: Bearer YOUR_API_KEY" \
     -H "Content-Type: application/json" \
     -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Test"}]}' &

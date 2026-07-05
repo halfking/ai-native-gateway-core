@@ -147,7 +147,7 @@ PASS
 ✅ TestAdaptiveResponseConverter_FormatFallback
 ✅ TestAdaptiveResponseConverter_AllFormatsFail
 ✅ TestValidateResponseFormat
-ok  	github.com/kaixuan/llm-gateway-go/domains/streaming	0.531s
+ok  	__REPO_URL_3__/domains/streaming	0.531s
 ```
 
 ---

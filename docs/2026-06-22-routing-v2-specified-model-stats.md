@@ -2,7 +2,7 @@
 
 ## 背景
 
-`https://llmgateway.internal.example.com/routing-v2` 的「数据分析」Tab 当前只统计
+`https://__DOMAIN_8__/routing-v2` 的「数据分析」Tab 当前只统计
 `is_auto_request = TRUE` 的请求。客户端发送 `model: "gpt-4o"` 这种
 **指定模型**请求的用量完全不在视图里，导致 KPI Bar、热力图、Sankey
 流量图都只看到「自动选择」部分，与实际 gateway 流量不符。
@@ -100,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_explicit_model
   2. build 镜像 `cd services/llm-gateway-go && ./build.sh`
   3. deploy 184：`./scripts/deploy-llm-gateway-go-184.sh`
   4. deploy 71：`./scripts/deploy-llm-gateway-go-71.sh`
-  5. smoke test：`curl -H "Authorization: Bearer $ADMIN_TOKEN" https://llmgateway.internal.example.com/api/admin/auto-route/audit` 检查 `specified_model_requests` 字段
+  5. smoke test：`curl -H "Authorization: Bearer $ADMIN_TOKEN" https://__DOMAIN_8__/api/admin/auto-route/audit` 检查 `specified_model_requests` 字段
 
 ## 兼容性
 

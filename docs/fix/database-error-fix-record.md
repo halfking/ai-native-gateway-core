@@ -329,7 +329,7 @@ func TestGetCandidates_RealNoCandidate(t *testing.T) {
 docker stop llm-gateway-pg-71-replica
 
 # 发送请求
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer test-key" \
   -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]}'
@@ -360,7 +360,7 @@ docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway \
 **测试3: 真实的 no_candidate**
 ```bash
 # 请求不存在的模型（但数据库正常）
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer test-key" \
   -d '{"model": "non-existent-model-12345", "messages": [{"role": "user", "content": "Hi"}]}'

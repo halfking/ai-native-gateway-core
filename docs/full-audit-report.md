@@ -130,8 +130,8 @@ $ go vet ./admin/... ./compressor/...
 ### 单元测试
 ```bash
 $ go test ./admin/... ./compressor/...
-ok  	github.com/kaixuan/llm-gateway-go/admin	0.955s
-ok  	github.com/kaixuan/llm-gateway-go/compressor	0.721s
+ok  	__REPO_URL_3__/admin	0.955s
+ok  	__REPO_URL_3__/compressor	0.721s
 ✅ 全部通过
 ```
 
@@ -204,18 +204,18 @@ Commits:
 
 ### 1. 查看压缩概览
 ```
-访问: https://llmgateway.internal.example.com/compression
+访问: https://__DOMAIN_8__/compression
 ```
 
 ### 2. 查看数据统计
 ```bash
-curl https://llmgateway.internal.example.com/api/admin/data-lifecycle/stats \
+curl https://__DOMAIN_8__/api/admin/data-lifecycle/stats \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### 3. 预览清理
 ```bash
-curl -X POST https://llmgateway.internal.example.com/api/admin/data-lifecycle/cleanup/preview \
+curl -X POST https://__DOMAIN_8__/api/admin/data-lifecycle/cleanup/preview \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"action": "archive", "from": "2026-03-01", "to": "2026-04-01"}'
@@ -224,7 +224,7 @@ curl -X POST https://llmgateway.internal.example.com/api/admin/data-lifecycle/cl
 ### 4. 分析数据量
 ```bash
 ssh root@__INTERNAL_PUBLIC_IP__
-cd /opt/llm-gateway-go
+cd __SERVER_PATH_1__
 ./scripts/analyze-request-logs-size.sh
 ```
 
@@ -295,7 +295,7 @@ cd /opt/llm-gateway-go
 - 删除工具: `scripts/delete-old-request-logs.sh`
 
 ### API 文档
-- Swagger: https://llmgateway.internal.example.com/swagger
+- Swagger: https://__DOMAIN_8__/swagger
 - 或查看源码注释: `admin/data_lifecycle.go`
 
 ---

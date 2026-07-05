@@ -106,7 +106,7 @@ package myplugin
 
 import (
     "context"
-    "github.com/kaixuan/llm-gateway-go/domains/hooks"
+    "__REPO_URL_3__/domains/hooks"
 )
 
 type MyHook struct {

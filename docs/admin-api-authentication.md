@@ -17,7 +17,7 @@ Admin API 支持三种认证方式，按以下优先级依次尝试：
 **使用方法：**
 ```bash
 curl -H "Authorization: Bearer YOUR_API_KEY" \
-  https://llmgo.kxpms.cn/api/admin/tenants
+  https://__DOMAIN_1__/api/admin/tenants
 ```
 
 **优点：**
@@ -123,10 +123,10 @@ const eventSource = new EventSource(
 ### API 客户端
 ```bash
 # ✅ 推荐
-curl -H "Authorization: Bearer sk-xxx" https://llmgo.kxpms.cn/api/admin/tenants
+curl -H "Authorization: Bearer sk-xxx" https://__DOMAIN_1__/api/admin/tenants
 
 # ❌ 不推荐（token 泄露到 shell 历史）
-curl https://llmgo.kxpms.cn/api/admin/tenants?token=sk-xxx
+curl https://__DOMAIN_1__/api/admin/tenants?token=sk-xxx
 ```
 
 ### 浏览器前端

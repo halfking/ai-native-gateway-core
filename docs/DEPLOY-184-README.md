@@ -35,7 +35,7 @@
 
 ```bash
 # SSH访问权限
-ssh -p 25022 root@14.103.112.184
+ssh -p __PORT_1__ __SSH_TARGET_1__
 
 # Docker环境
 docker version
@@ -101,8 +101,8 @@ Image Tag:  r1.13-done-4f05275c-20260702-770
 - 同时打上完整标签和 `latest` 标签
 
 #### 步骤 4/8: 推送镜像
-- 推送到内部registry: `registry.kxpms.cn`
-- 推送到184本地registry: `127.0.0.1:5000`
+- 推送到内部registry: `__DOMAIN_4__`
+- 推送到184本地registry: `127.0.0.1:__PORT_8__`
 
 #### 步骤 5/8: 更新K8s部署
 - 使用 `kubectl set image` 更新deployment
@@ -161,14 +161,14 @@ git tag -l
 
 ```bash
 # ==================== 配置区 ====================
-SERVER="root@14.103.112.184"        # 服务器地址
-SSH_PORT="25022"                     # SSH端口
+SERVER="__SSH_TARGET_1__"        # 服务器地址
+SSH_PORT="__PORT_1__"                     # SSH端口
 NAMESPACE="pms-test"                 # K8s命名空间
 DEPLOYMENT="llm-gateway-go-deployment"  # Deployment名称
 IMAGE_NAME="kx-llm-gateway-go"       # 镜像名称
-REGISTRY_INTERNAL="registry.kxpms.cn"  # 内部Registry
-REGISTRY_LOCAL="127.0.0.1:5000"      # 本地Registry
-HEALTH_ENDPOINT="http://localhost:30080/health"  # 健康检查端点
+REGISTRY_INTERNAL="__DOMAIN_4__"  # 内部Registry
+REGISTRY_LOCAL="127.0.0.1:__PORT_8__"      # 本地Registry
+HEALTH_ENDPOINT="http://localhost:__PORT_9__/health"  # 健康检查端点
 OLD_IMAGE_DAYS=30                    # 过期镜像天数
 ```
 
@@ -179,10 +179,10 @@ OLD_IMAGE_DAYS=30                    # 过期镜像天数
 
 ## 部署信息
 - **部署时间**: 2026-07-02 13:45:23
-- **部署环境**: 184 (14.103.112.184)
+- **部署环境**: 184 (__PUB_IP_1__)
 - **命名空间**: pms-test
 - **部署名称**: llm-gateway-go-deployment
-- **操作人员**: xutaohuang
+- **操作人员**: __USER_1__
 
 ## 版本信息
 - **Git Tag**: r1.13-done
@@ -193,8 +193,8 @@ OLD_IMAGE_DAYS=30                    # 过期镜像天数
 
 ## 镜像信息
 - **镜像名称**: kx-llm-gateway-go:r1.13-done-4f05275c-20260702-770
-- **内部Registry**: registry.kxpms.cn/kx-llm-gateway-go:r1.13-done-4f05275c-20260702-770
-- **本地Registry**: 127.0.0.1:5000/kx-llm-gateway-go:r1.13-done-4f05275c-20260702-770
+- **内部Registry**: __DOMAIN_4__/kx-llm-gateway-go:r1.13-done-4f05275c-20260702-770
+- **本地Registry**: 127.0.0.1:__PORT_8__/kx-llm-gateway-go:r1.13-done-4f05275c-20260702-770
 ```
 
 ## 验证命令
@@ -203,21 +203,21 @@ OLD_IMAGE_DAYS=30                    # 过期镜像天数
 
 ```bash
 # 查看Pod状态
-ssh -p 25022 root@14.103.112.184 "kubectl get pods -n pms-test -l app=llm-gateway-go"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl get pods -n pms-test -l app=llm-gateway-go"
 
 # 查看实时日志
-ssh -p 25022 root@14.103.112.184 "kubectl logs -n pms-test -l app=llm-gateway-go -f"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl logs -n pms-test -l app=llm-gateway-go -f"
 
 # 健康检查
-curl http://14.103.112.184:30080/health | jq .
+curl http://__PUB_IP_1__:__PORT_9__/health | jq .
 ```
 
 ### 查看版本信息
 
 ```bash
 # 查看容器内版本文件
-POD_NAME=$(ssh -p 25022 root@14.103.112.184 "kubectl get pods -n pms-test -l app=llm-gateway-go -o jsonpath='{.items[0].metadata.name}'")
-ssh -p 25022 root@14.103.112.184 "kubectl exec -n pms-test ${POD_NAME} -- cat /opt/llm-gateway-go/VERSION"
+POD_NAME=$(ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl get pods -n pms-test -l app=llm-gateway-go -o jsonpath='{.items[0].metadata.name}'")
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl exec -n pms-test ${POD_NAME} -- cat __SERVER_PATH_1__/VERSION"
 ```
 
 ### 查看镜像
@@ -227,7 +227,7 @@ ssh -p 25022 root@14.103.112.184 "kubectl exec -n pms-test ${POD_NAME} -- cat /o
 docker images | grep kx-llm-gateway-go
 
 # 184服务器镜像
-ssh -p 25022 root@14.103.112.184 "docker images | grep kx-llm-gateway-go"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "docker images | grep kx-llm-gateway-go"
 ```
 
 ## 回滚操作
@@ -235,17 +235,17 @@ ssh -p 25022 root@14.103.112.184 "docker images | grep kx-llm-gateway-go"
 ### 快速回滚到上一个版本
 
 ```bash
-ssh -p 25022 root@14.103.112.184 "kubectl rollout undo deployment/llm-gateway-go-deployment -n pms-test"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl rollout undo deployment/llm-gateway-go-deployment -n pms-test"
 ```
 
 ### 回滚到指定版本
 
 ```bash
 # 查看部署历史
-ssh -p 25022 root@14.103.112.184 "kubectl rollout history deployment/llm-gateway-go-deployment -n pms-test"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl rollout history deployment/llm-gateway-go-deployment -n pms-test"
 
 # 回滚到指定revision
-ssh -p 25022 root@14.103.112.184 "kubectl rollout undo deployment/llm-gateway-go-deployment -n pms-test --to-revision=3"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl rollout undo deployment/llm-gateway-go-deployment -n pms-test --to-revision=3"
 ```
 
 ## 故障排查
@@ -270,7 +270,7 @@ docker build -t test . 2>&1 | tee build.log
 **解决方法**:
 ```bash
 # 检查registry连接
-docker pull 127.0.0.1:5000/hello-world
+docker pull 127.0.0.1:__PORT_8__/hello-world
 
 # 检查Docker配置
 cat ~/.docker/config.json
@@ -286,13 +286,13 @@ sudo systemctl restart docker
 **解决方法**:
 ```bash
 # 查看Pod事件
-ssh -p 25022 root@14.103.112.184 "kubectl describe pod -n pms-test -l app=llm-gateway-go"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl describe pod -n pms-test -l app=llm-gateway-go"
 
 # 查看deployment事件
-ssh -p 25022 root@14.103.112.184 "kubectl describe deployment llm-gateway-go-deployment -n pms-test"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl describe deployment llm-gateway-go-deployment -n pms-test"
 
 # 手动删除Pod强制重启
-ssh -p 25022 root@14.103.112.184 "kubectl delete pod -n pms-test -l app=llm-gateway-go"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl delete pod -n pms-test -l app=llm-gateway-go"
 ```
 
 ### 4. 健康检查失败
@@ -302,13 +302,13 @@ ssh -p 25022 root@14.103.112.184 "kubectl delete pod -n pms-test -l app=llm-gate
 **解决方法**:
 ```bash
 # 查看服务日志
-ssh -p 25022 root@14.103.112.184 "kubectl logs -n pms-test -l app=llm-gateway-go --tail=100"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl logs -n pms-test -l app=llm-gateway-go --tail=100"
 
 # 进入容器调试
-ssh -p 25022 root@14.103.112.184 "kubectl exec -it -n pms-test <pod-name> -- /bin/sh"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl exec -it -n pms-test <pod-name> -- /bin/sh"
 
 # 检查服务端口
-ssh -p 25022 root@14.103.112.184 "kubectl get svc -n pms-test"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "kubectl get svc -n pms-test"
 ```
 
 ### 5. 版本号不正确
@@ -354,7 +354,7 @@ git describe --tags --abbrev=0
 docker system prune -a -f
 
 # 每月检查磁盘空间
-ssh -p 25022 root@14.103.112.184 "df -h"
+ssh -p __PORT_1__ __SSH_TARGET_1__ "df -h"
 
 # 定期审查部署日志
 ls -lh deployment-report-*.md

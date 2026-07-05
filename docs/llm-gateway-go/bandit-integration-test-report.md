@@ -14,7 +14,7 @@
 
 ### Test Environment
 - **Database**: PostgreSQL (local-main-pg container)
-- **Host**: localhost:5434
+- **Host**: localhost:__PORT_7__
 - **Database**: postgres
 - **User**: kxuser
 - **Migration**: 033_bandit_scoring.sql (applied successfully)
@@ -49,7 +49,7 @@
     --- PASS: ColdStartRecovery (0.00s)
     --- PASS: ThompsonSamplingSelection (0.00s)
 
-ok  	github.com/kaixuan/llm-gateway-go/domains/credential	0.643s
+ok  	__REPO_URL_3__/domains/credential	0.643s
 ```
 
 ---

@@ -18,13 +18,13 @@
 
 ### 测试环境
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 ./scripts/apply_hot_table_migrations.sh test
 ```
 
 ### 生产环境
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 ./scripts/apply_hot_table_migrations.sh prod
 ```
 

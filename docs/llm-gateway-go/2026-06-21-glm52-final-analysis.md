@@ -275,16 +275,16 @@ slog.Warn("anthropic_to_openai: problematic event detected",
 **步骤**:
 ```bash
 # 1. 运行诊断脚本
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 export GLM_API_KEY="your-actual-key"
 ./scripts/diagnose-glm52.sh -v
 
 # 2. 收集生产日志
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 docker logs llm-gateway-go --tail 100 | grep -E "glm-5\.2|anthropic_to_openai"
 
 # 3. 手动测试
-curl -X POST https://llm.kxpms.cn/v1/chat/completions \
+curl -X POST https://__DOMAIN_2__/v1/chat/completions \
   -H "Authorization: Bearer <key>" \
   -H "Content-Type: application/json" \
   -d '{"model":"glm-5.2","messages":[{"role":"user","content":"Hello"}],"stream":true}'

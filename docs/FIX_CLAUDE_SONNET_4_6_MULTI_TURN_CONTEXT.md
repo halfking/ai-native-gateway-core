@@ -2,7 +2,7 @@
 
 ## 问题描述
 
-在 llmgo.kxpms.cn 调用 claude-sonnet-4-6 时，进行多轮会话后，模型返回"我需要更多信息才能帮助你"，表明模型端没有收到正确的对话历史。
+在 __DOMAIN_1__ 调用 claude-sonnet-4-6 时，进行多轮会话后，模型返回"我需要更多信息才能帮助你"，表明模型端没有收到正确的对话历史。
 
 ## 根本原因
 
@@ -136,7 +136,7 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 
 ### 1. 代码审查
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 git diff domains/streaming/anthropic_bridge.go
 ```
 
@@ -149,7 +149,7 @@ go test ./domains/streaming -run=TestConvertChatRequestToAnthropic -v
 部署后使用 claude-sonnet-4-6 进行多轮对话：
 ```bash
 # 第1轮
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://__DOMAIN_1__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "claude-sonnet-4-6",
@@ -159,7 +159,7 @@ curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
   }'
 
 # 第2轮（使用相同的messages数组，追加新消息）
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://__DOMAIN_1__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "claude-sonnet-4-6",
@@ -233,4 +233,4 @@ fix(streaming): 修复claude-sonnet-4-6多轮对话上下文丢失
 
 **修复时间**: 2026-07-02  
 **修复作者**: Kiro (AI Agent)  
-**问题报告**: llmgo.kxpms.cn claude-sonnet-4-6 多轮对话测试
+**问题报告**: __DOMAIN_1__ claude-sonnet-4-6 多轮对话测试

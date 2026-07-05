@@ -653,5 +653,5 @@ $ git log --oneline -3
 **报告人**: AI Agent (OpenCode)  
 **审核状态**: 待人工审核  
 **Git提交**: 089b5307 (main分支)  
-**仓库**: https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git  
+**仓库**: __REPO_URL_1__.git  
 **下一步**: 测试环境部署验证

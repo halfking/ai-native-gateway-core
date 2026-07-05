@@ -26,7 +26,7 @@
    - TransformResponseIR: 格式化输出
    - 添加单元测试
 
-工作目录: /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+工作目录: __LOCAL_PATH_1__
 
 要求：
 - 参考 domains/session/state_machine.go 和 context.go 的设计风格

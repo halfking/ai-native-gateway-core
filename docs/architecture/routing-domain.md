@@ -139,7 +139,7 @@ routing/                          # [新] 顶层包
 
 1. `git mv services/llm-gateway-go/autoroute services/llm-gateway-go/routing`
 2. 在 `routing/admin/` 创建子包，迁移 `admin/auto_route.go` 等
-3. 全局替换 import path：`github.com/kaixuan/llm-gateway-go/autoroute` → `.../routing`
+3. 全局替换 import path：`__REPO_URL_3__/autoroute` → `.../routing`
 4. `admin/handler.go` 只留路由注册壳，实际 handler 在 `routing/admin/`
 5. `go test ./...` + `golangci-lint run` 全绿
 6. 提交 PR 标题：`refactor(routing): migrate to top-level domain package (Phase B)`

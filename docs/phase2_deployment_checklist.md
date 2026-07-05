@@ -5,7 +5,7 @@
 - **提交**: `3342cfca`
 - **分支**: `main`
 - **日期**: 2026-07-01
-- **目标环境**: 184测试服务器 (8.155.23.184)
+- **目标环境**: 184测试服务器 (__PUB_IP_4__)
 
 ---
 
@@ -14,7 +14,7 @@
 ### 1.1 本地构建验证
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 
 # 拉取最新代码
 git pull origin main
@@ -49,7 +49,7 @@ ls -lh llm-gateway-go-linux-amd64
 
 ```bash
 # SSH 到184服务器
-ssh root@8.155.23.184
+ssh __SSH_TARGET_3__
 
 # 切换到项目目录
 cd /data/services/llm-gateway-go
@@ -103,7 +103,7 @@ cat /tmp/phase2_db_check.log
 
 ```bash
 # 在本地执行
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 ./deploy_phase2_to_184.sh
 ```
 
@@ -121,7 +121,7 @@ cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
 
 ```bash
 # SSH 到184
-ssh root@8.155.23.184
+ssh __SSH_TARGET_3__
 cd /data/services/llm-gateway-go
 
 # 拉取最新代码
@@ -149,7 +149,7 @@ ps aux | grep llm-gateway-go
 ### 3.3 部署验证检查点
 
 - [ ] 服务进程正在运行
-- [ ] 端口正常监听（检查 8080/8443）
+- [ ] 端口正常监听（检查 __PORT_12__/8443）
 - [ ] 日志无错误
 - [ ] 版本信息正确（包含 3342cfca commit）
 
@@ -429,7 +429,7 @@ go tool pprof -top /tmp/heap.prof
 
 ## 附录 B: 联系人
 
-- **开发负责人**: xutaohuang
+- **开发负责人**: __USER_1__
 - **运维负责人**: _____________
 - **紧急联系**: _____________
 

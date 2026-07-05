@@ -32,7 +32,7 @@
 
 ### 1. 诊断脚本（3 分钟快速测试）
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 export GLM_API_KEY="your-actual-key"
 ./scripts/diagnose-glm52.sh -v
 ```
@@ -136,14 +136,14 @@ export K8S_SSH_PASSWORD='your-password'
 ./scripts/deploy-glm52-enhancement.sh
 
 # 4. 验证
-curl http://14.103.174.71:8780/healthz
+curl http://__PUB_IP_2__:__PORT_2__/healthz
 ./scripts/diagnose-glm52.sh -v
 ```
 
 ### 场景 C: 监控和评估
 ```bash
 # 1. 查看实时日志
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 journalctl -u llm-gateway-go -f | grep "detected OpenAI-format"
 
 # 2. 统计过滤事件
@@ -308,12 +308,12 @@ go test -v ./relay -run GLM52
 ./scripts/deploy-glm52-enhancement.sh
 
 # 日志
-ssh root@14.103.174.71 'journalctl -u llm-gateway-go -f'
+ssh __SSH_TARGET_2__ 'journalctl -u llm-gateway-go -f'
 ```
 
 ### 文件位置
 ```
-/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go/
+__LOCAL_PATH_1__/
 ├── relay/
 │   ├── openai_format_detector.go          ← 检测器
 │   ├── openai_format_detector_test.go     ← 测试

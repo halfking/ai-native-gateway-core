@@ -18,7 +18,7 @@
 ### 2. 代码提交 ✅
 ```bash
 Commit: 1e60fe9d
-Author: xutaohuang
+Author: __USER_1__
 Message: fix(relay): add OpenAI format detector for glm-5.2 empty choices issue
 
 Files changed:
@@ -47,13 +47,13 @@ Status: Pushed to origin/main
 
 ```bash
 # SSH 到 71
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 
 # 1. 检查镜像是否已传输
 docker images | grep kx-llm-gateway-go
 
 # 如果镜像不存在，从 184 获取：
-ssh root@14.103.112.184 "docker save kx-llm-gateway-go:gitsha-1e60fe9d | gzip" | \
+ssh __SSH_TARGET_1__ "docker save kx-llm-gateway-go:gitsha-1e60fe9d | gzip" | \
   gunzip | docker load
 
 # 2. 更新 systemd 服务配置
@@ -74,7 +74,7 @@ docker logs llm-gateway-go | tail -20
 
 ```bash
 # SSH 到 184
-ssh root@14.103.112.184
+ssh __SSH_TARGET_1__
 
 # 检查 k3s pod
 kubectl -n pms-test get pods -l app=llm-gateway-go
@@ -93,17 +93,17 @@ kubectl -n pms-test rollout status deployment/llm-gateway-go-deployment
 ### 1. 检查服务运行
 ```bash
 # 71
-curl -s http://14.103.174.71:8781/healthz | jq .
+curl -s http://__PUB_IP_2__:__PORT_3__/healthz | jq .
 
 # 184
-curl -s http://14.103.112.184:10023/healthz | jq .
+curl -s http://__PUB_IP_1__:10023/healthz | jq .
 ```
 
 ### 2. 测试 GLM-5.2 流式请求
 ```bash
-export GLM_API_KEY="sk-1R7IBh2THq1Id2BDWOWHstpFu2oG09Qd1kgYn9hasxFcKZw7"
+export GLM_API_KEY="__API_KEY_8__"
 
-curl -N -X POST https://llm.kxpms.cn/v1/chat/completions \
+curl -N -X POST https://__DOMAIN_2__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GLM_API_KEY" \
   -d '{
@@ -119,11 +119,11 @@ curl -N -X POST https://llm.kxpms.cn/v1/chat/completions \
 ### 3. 检查拦截日志
 ```bash
 # 71
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 docker logs llm-gateway-go 2>&1 | grep "detected OpenAI-format"
 
 # 184
-ssh root@14.103.112.184
+ssh __SSH_TARGET_1__
 kubectl -n pms-test logs -l app=llm-gateway-go --tail=100 | grep "detected OpenAI-format"
 ```
 
@@ -162,7 +162,7 @@ kubectl -n pms-test logs -l app=llm-gateway-go --tail=100 | grep "detected OpenA
 
 #### 71
 ```bash
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 sed -i 's/gitsha-1e60fe9d/gitsha-8cc5b8d7/' /etc/systemd/system/llm-gateway-go.service
 systemctl daemon-reload
 systemctl restart llm-gateway-go
@@ -170,14 +170,14 @@ systemctl restart llm-gateway-go
 
 #### 184
 ```bash
-ssh root@14.103.112.184
+ssh __SSH_TARGET_1__
 kubectl -n pms-test set image deployment/llm-gateway-go-deployment \
   llm-gateway-go=kx-llm-gateway-go:gitsha-387dd253
 ```
 
 ### 回滚代码
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 git revert 1e60fe9d
 git push
 ```
@@ -234,8 +234,8 @@ if isOpenAIFormatData(data) {
 
 **测试命令**:
 ```bash
-export GLM_API_KEY="sk-1R7IBh2THq1Id2BDWOWHstpFu2oG09Qd1kgYn9hasxFcKZw7"
-curl -N -X POST https://llm.kxpms.cn/v1/chat/completions \
+export GLM_API_KEY="__API_KEY_8__"
+curl -N -X POST https://__DOMAIN_2__/v1/chat/completions \
   -H "Authorization: Bearer $GLM_API_KEY" \
   -d '{"model":"glm-5.2","messages":[{"role":"user","content":"test"}],"stream":true}'
 ```

@@ -32,7 +32,7 @@ notifier.NotifyApproval() 触发通知
 ```bash
 # PostgreSQL 连接（审批记录 + 路由规则）
 LLM_GATEWAY_DB_HOST=localhost
-LLM_GATEWAY_DB_PORT=5432
+LLM_GATEWAY_DB_PORT=__PORT_5__
 LLM_GATEWAY_DB_NAME=llm_gateway
 LLM_GATEWAY_DB_USER=postgres
 LLM_GATEWAY_DB_PASSWORD=your_password
@@ -219,7 +219,7 @@ docker run -d \
   -e LARK_APP_ID=cli_xxx \
   -e LARK_APP_SECRET=xxx \
   -e LLM_GATEWAY_DB_HOST=postgres \
-  -p 8781:8781 \
+  -p __PORT_3__:__PORT_3__ \
   llm-gateway:latest
 ```
 
@@ -237,7 +237,7 @@ INFO session audit chat-time hook wired (v1) approval_timeout=15m0s
 
 发送一个高风险请求（包含敏感词）：
 ```bash
-curl -X POST 'http://localhost:8781/v1/chat/completions' \
+curl -X POST 'http://localhost:__PORT_3__/v1/chat/completions' \
   -H 'Authorization: Bearer <api_key>' \
   -H 'Content-Type: application/json' \
   -d '{

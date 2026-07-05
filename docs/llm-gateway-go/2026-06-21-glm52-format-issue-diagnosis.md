@@ -1,7 +1,7 @@
 # GLM-5.2 格式转换混乱问题诊断报告
 
 > **日期**: 2026-06-21  
-> **问题**: 通过 `llm.kxpms.cn/v1` 调用 glm-5.2 时请求混乱  
+> **问题**: 通过 `__DOMAIN_2__/v1` 调用 glm-5.2 时请求混乱  
 > **根因**: Q3 路径格式转换 + 上游混合格式响应  
 > **状态**: 诊断完成，修复方案已制定
 
@@ -189,7 +189,7 @@ case "thinking":
 
 2. 发起测试请求：
    ```bash
-   curl -X POST https://llm.kxpms.cn/v1/chat/completions \
+   curl -X POST https://__DOMAIN_2__/v1/chat/completions \
      -H "Content-Type: application/json" \
      -H "Authorization: Bearer <your-key>" \
      -d '{
@@ -217,7 +217,7 @@ case "thinking":
 
 **运行**:
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 go test -tags=integration ./tests/integration -v -run TestGLM52
 ```
 
@@ -472,7 +472,7 @@ WHERE model_id LIKE 'glm-5.2%';
 set -e
 
 API_KEY="${GLM_TEST_KEY:-test-key}"
-BASE_URL="https://llm.kxpms.cn"
+BASE_URL="https://__DOMAIN_2__"
 
 echo "=== GLM-5.2 诊断测试 ==="
 echo "API Key: ${API_KEY:0:10}..."

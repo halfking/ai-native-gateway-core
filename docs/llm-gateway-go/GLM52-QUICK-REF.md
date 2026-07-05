@@ -18,7 +18,7 @@ export GLM_API_KEY="your-actual-key"
 
 ### 2. 运行诊断（3 分钟）
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 ./scripts/diagnose-glm52.sh -v
 ```
 
@@ -59,7 +59,7 @@ if strings.Contains(string(data), `"choices"`) {
 ### 验证方法
 ```bash
 # 1. 部署后测试
-curl -X POST https://llm.kxpms.cn/v1/chat/completions \
+curl -X POST https://__DOMAIN_2__/v1/chat/completions \
   -H "Authorization: Bearer <key>" \
   -d '{"model":"glm-5.2","messages":[...],"stream":true}'
 
@@ -67,7 +67,7 @@ curl -X POST https://llm.kxpms.cn/v1/chat/completions \
 docker logs llm-gateway-go | grep -E "dropping|anthropic_to_openai"
 
 # 3. 检查 metrics
-curl http://localhost:8780/metrics | grep dropped_non_anthropic
+curl http://localhost:__PORT_2__/metrics | grep dropped_non_anthropic
 ```
 
 ## 📂 重要文件

@@ -39,7 +39,7 @@ mkdir -p ./data/logs
 docker cp $CONTAINER_ID:/data/attachments/. ./data/attachments/
 
 # 从容器复制现有日志数据（如果有）
-docker cp $CONTAINER_ID:/var/log/llm-gateway/. ./data/logs/ 2>/dev/null || true
+docker cp $CONTAINER_ID:__SERVER_PATH_6__/. ./data/logs/ 2>/dev/null || true
 
 # 停止旧容器
 docker stop $CONTAINER_ID
@@ -52,7 +52,7 @@ docker-compose -f docker-compose.persistent.yml up -d
 
 ```bash
 # 上传测试附件或查看现有附件
-curl -X GET http://localhost:8080/admin/storage/config
+curl -X GET http://localhost:__PORT_12__/admin/storage/config
 
 # 重启容器
 docker-compose -f docker-compose.persistent.yml restart
@@ -96,12 +96,12 @@ spec:
         - name: LLM_GATEWAY_ATTACHMENT_DIR
           value: "/data/attachments"
         - name: LLM_GATEWAY_LOG_FILE
-          value: "/var/log/llm-gateway/gateway.log"
+          value: "__SERVER_PATH_6__/gateway.log"
         volumeMounts:
         - name: attachments-storage
           mountPath: /data/attachments
         - name: logs-storage
-          mountPath: /var/log/llm-gateway
+          mountPath: __SERVER_PATH_6__
       volumes:
       - name: attachments-storage
         persistentVolumeClaim:
@@ -175,7 +175,7 @@ kubectl get pods -n llm-gateway
 
 # 验证存储挂载
 kubectl exec -n llm-gateway deployment/llm-gateway -- df -h /data/attachments
-kubectl exec -n llm-gateway deployment/llm-gateway -- df -h /var/log/llm-gateway
+kubectl exec -n llm-gateway deployment/llm-gateway -- df -h __SERVER_PATH_6__
 ```
 
 ## 存储配置说明
@@ -189,7 +189,7 @@ kubectl exec -n llm-gateway deployment/llm-gateway -- df -h /var/log/llm-gateway
 LLM_GATEWAY_ATTACHMENT_DIR=/data/attachments
 
 # 日志文件路径（留空则输出到 stderr）
-LLM_GATEWAY_LOG_FILE=/var/log/llm-gateway/gateway.log
+LLM_GATEWAY_LOG_FILE=__SERVER_PATH_6__/gateway.log
 
 # 日志轮转配置
 LLM_GATEWAY_LOG_MAX_SIZE_MB=100
@@ -204,7 +204,7 @@ LLM_GATEWAY_LOG_COMPRESS=true
   - 按日期和内容哈希组织：`YYYY/MM/DD/{content-hash}.ext`
   - 支持文件去重（相同内容只存储一次）
   
-- **日志存储**：`/var/log/llm-gateway`
+- **日志存储**：`__SERVER_PATH_6__`
   - 主日志文件：`gateway.log`
   - 轮转日志：`gateway.log.1.gz`, `gateway.log.2.gz`, ...
 
@@ -235,10 +235,10 @@ LLM_GATEWAY_LOG_COMPRESS=true
 
 ```bash
 # 查看当前配置
-curl -X GET http://localhost:8080/admin/storage/config
+curl -X GET http://localhost:__PORT_12__/admin/storage/config
 
 # 配置附件保留策略（保留 90 天）
-curl -X POST http://localhost:8080/admin/storage/config \
+curl -X POST http://localhost:__PORT_12__/admin/storage/config \
   -H "Content-Type: application/json" \
   -d '{
     "attachment_retention_days": 90,
@@ -270,7 +270,7 @@ tar czf attachments-$(date +%Y%m%d).tar.gz -C /data attachments
 ```bash
 # 监控磁盘使用率
 df -h /data/attachments
-df -h /var/log/llm-gateway
+df -h __SERVER_PATH_6__
 
 # 统计附件数量和大小
 find /data/attachments -type f | wc -l
@@ -316,7 +316,7 @@ kubectl get storageclass
 find /data/attachments -type f -mtime +90 -delete
 
 # 或使用 Admin API 触发自动清理
-curl -X POST http://localhost:8080/admin/data-lifecycle/cleanup
+curl -X POST http://localhost:__PORT_12__/admin/data-lifecycle/cleanup
 ```
 
 ## 参考资料

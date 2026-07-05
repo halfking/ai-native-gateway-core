@@ -21,24 +21,24 @@
 
 ```json
 {
-  "total_rows": 15000000,
+  "total_rows": 1__PORT_8__000,
   "total_size_bytes": 52428800000,
   "total_size_human": "50 GB",
   "hot_data": {
-    "rows": 500000,
+    "rows": __PORT_8__00,
     "size_bytes": 2147483648,
     "size_human": "2 GB",
     "days": 7,
     "percent_of_total": 3.33
   },
-  "warm_data": { "rows": 1500000, ... },
-  "cold_data": { "rows": 5000000, ... },
+  "warm_data": { "rows": 1__PORT_8__00, ... },
+  "cold_data": { "rows": __PORT_8__000, ... },
   "expired_data": { "rows": 8000000, ... },
   "by_tenant": [
     { "tenant_id": "tenant_abc", "rows": 3000000, ... }
   ],
   "growth_trend": [
-    { "date": "2026-06-20", "requests": 50000, "compressed": 30000, "compression_rate": 60.0 }
+    { "date": "2026-06-20", "requests": __PORT_8__0, "compressed": 30000, "compression_rate": 60.0 }
   ]
 }
 ```
@@ -91,14 +91,14 @@
 
 # 输出示例：
 # [INFO] === 总体统计 ===
-# 总行数: 15000000
+# 总行数: 1__PORT_8__000
 # 表大小: 50 GB
 # 索引大小: 8 GB
 # 
 # [INFO] === 按时间段统计 ===
-# 热数据 (最近7天): 500000 行 (3.3%)
-# 温数据 (7-30天): 1500000 行 (10.0%)
-# 冷数据 (30-90天): 5000000 行 (33.3%)
+# 热数据 (最近7天): __PORT_8__00 行 (3.3%)
+# 温数据 (7-30天): 1__PORT_8__00 行 (10.0%)
+# 冷数据 (30-90天): __PORT_8__000 行 (33.3%)
 # 过期数据 (>90天): 8000000 行 (53.3%)
 ```
 
@@ -215,7 +215,7 @@ $ go build ./admin/...
 
 # 单元测试
 $ go test ./admin/...
-ok  	github.com/kaixuan/llm-gateway-go/admin	0.955s
+ok  	__REPO_URL_3__/admin	0.955s
 ✅ 通过
 
 # 完整构建
@@ -256,7 +256,7 @@ $ go build ./...
 
 2. **预览清理计划**：
 ```bash
-curl -X POST https://llmgateway.internal.example.com/api/admin/data-lifecycle/cleanup/preview \
+curl -X POST https://__DOMAIN_8__/api/admin/data-lifecycle/cleanup/preview \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"action": "archive", "from": "2026-03-01", "to": "2026-04-01"}'
@@ -281,7 +281,7 @@ curl -X POST https://llmgateway.internal.example.com/api/admin/data-lifecycle/cl
 crontab -e
 
 # 添加每天凌晨 2:00 执行清理任务
-0 2 * * * cd /opt/llm-gateway-go && ./scripts/archive-request-logs.sh --days 30-90 >> /var/log/llm-gateway-cleanup.log 2>&1
+0 2 * * * cd __SERVER_PATH_1__ && ./scripts/archive-request-logs.sh --days 30-90 >> __SERVER_PATH_7__ 2>&1
 ```
 
 ## 📈 后续计划

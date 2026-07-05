@@ -1,8 +1,8 @@
 # Phase 2 热度感知探测 - 184测试环境部署报告
 
 **部署时间**: 2026-07-01 02:50  
-**部署人**: xutaohuang  
-**目标环境**: 184测试服务器 (14.103.112.184:25022, k8s命名空间: pms-test)  
+**部署人**: __USER_1__  
+**目标环境**: 184测试服务器 (__PUB_IP_1__:__PORT_1__, k8s命名空间: pms-test)  
 **部署状态**: ✅ **成功**
 
 ---
@@ -62,7 +62,7 @@
 
 ```bash
 # 1. 在184服务器构建镜像
-cd /opt/kx-memora-build/services/llm-gateway-go
+cd __SERVER_PATH_2__
 docker build -t kx-llm-gateway-go:gitsha-ba7baff2 .
 
 # 2. 修改Deployment配置
@@ -94,7 +94,7 @@ Pod: llm-gateway-go-deployment-54c896fdd4-k2hf8
 {"time":"2026-06-30T18:49:03.067Z","level":"INFO","msg":"postgres connected"}
 {"time":"2026-06-30T18:49:03.067Z","level":"INFO","msg":"credential state manager created","redis_enabled":true}
 {"time":"2026-06-30T18:49:03.067Z","level":"INFO","msg":"credential state manager started","mem_cache_ttl":"10s","redis_cache_ttl":"5m0s","stale_ttl":"2m0s"}
-{"time":"2026-06-30T18:49:03.067Z","level":"INFO","msg":"gateway listening","listen":":8781"}
+{"time":"2026-06-30T18:49:03.067Z","level":"INFO","msg":"gateway listening","listen":":__PORT_3__"}
 ```
 
 **关键验证点**:
@@ -323,7 +323,7 @@ kubectl logs -n pms-test -l app=llm-gateway-go | grep -i "popularity.*error"
 
 | 文件 | 路径 | 说明 |
 |------|------|------|
-| 部署脚本 | `/opt/kx-memora-build/services/llm-gateway-go/deploy_phase2_k8s_upload.sh` | 上传模式部署 |
+| 部署脚本 | `__SERVER_PATH_2__/deploy_phase2_k8s_upload.sh` | 上传模式部署 |
 | SQL脚本 | `sql/phase2_db_setup.sql` | 数据库诊断+索引创建 |
 | 完整清单 | `docs/phase2_deployment_checklist.md` | 7阶段验收清单 |
 | 快速指南 | `docs/phase2_quick_deploy.md` | 5分钟部署指南 |
@@ -350,8 +350,8 @@ kubectl rollout restart deployment/llm-gateway-go-deployment -n pms-test
 
 ### C. 联系方式
 
-- **开发负责人**: xutaohuang
-- **Git仓库**: https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go
+- **开发负责人**: __USER_1__
+- **Git仓库**: __REPO_URL_1__
 - **Commit**: ba7baff2 (2026-07-01)
 
 ---

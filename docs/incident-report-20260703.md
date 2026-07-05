@@ -9,7 +9,7 @@
 
 ## 执行摘要
 
-**问题现象：** llmgo.kxpms.cn 的 AI 网关无法正常处理请求，所有请求超时或失败，模型端未收到任何信息。
+**问题现象：** __DOMAIN_1__ 的 AI 网关无法正常处理请求，所有请求超时或失败，模型端未收到任何信息。
 
 **根本原因：** 数据库架构不完整，缺少 `plan_type` 和 `plan_type_origin` 列，导致模型发现全部失败（0/619 模型），路由无可用凭据。
 
@@ -25,8 +25,8 @@
 
 #### 1.1 初始症状
 - 用户报告：提交请求后，模型端没有任何响应
-- 网关访问：http://llmgo.kxpms.cn 返回 502 Bad Gateway
-- 直接访问：http://localhost:8781 请求超时
+- 网关访问：http://__DOMAIN_1__ 返回 502 Bad Gateway
+- 直接访问：http://localhost:__PORT_3__ 请求超时
 
 #### 1.2 日志分析
 查看容器日志发现大量错误：
@@ -206,8 +206,8 @@ WHERE credential_id = 11;
 
 #### 测试 1：使用 glm-4-flash 模型
 ```bash
-curl -X POST http://localhost:8781/v1/chat/completions \
-  -H "Authorization: Bearer sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9" \
+curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
+  -H "Authorization: Bearer __API_KEY_1__" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "glm-4-flash",
@@ -290,8 +290,8 @@ fi
 #### 1.2 部署前自动化测试
 ```bash
 # 在部署前运行健康检查
-curl http://localhost:8781/healthz
-curl http://localhost:8781/v1/models | jq '.data | length'  # 应该 > 0
+curl http://localhost:__PORT_3__/healthz
+curl http://localhost:__PORT_3__/v1/models | jq '.data | length'  # 应该 > 0
 ```
 
 ### 2. 监控告警增强

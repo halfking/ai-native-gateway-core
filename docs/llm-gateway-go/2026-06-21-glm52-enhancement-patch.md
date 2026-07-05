@@ -111,7 +111,7 @@ go test -v ./relay -run GLM52
 ### 1. 应用补丁
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 
 # 1. 已创建的文件（无需操作）
 # - relay/openai_format_detector.go
@@ -145,8 +145,8 @@ GOOS=linux GOARCH=amd64 go build -o llm-gateway-go-linux ./cmd/gateway
 ./scripts/deploy-llm-gateway-71.sh
 
 # 或手动部署
-scp llm-gateway-go-linux root@14.103.174.71:/tmp/
-ssh root@14.103.174.71 'systemctl stop llm-gateway-go && \
+scp llm-gateway-go-linux __SSH_TARGET_2__:/tmp/
+ssh __SSH_TARGET_2__ 'systemctl stop llm-gateway-go && \
   mv /tmp/llm-gateway-go-linux /usr/local/bin/llm-gateway-go && \
   systemctl start llm-gateway-go'
 ```
@@ -155,7 +155,7 @@ ssh root@14.103.174.71 'systemctl stop llm-gateway-go && \
 
 ```bash
 # 查看日志中是否有新的警告
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 docker logs llm-gateway-go -f | grep "detected OpenAI-format data"
 
 # 运行诊断脚本
@@ -176,7 +176,7 @@ export GLM_API_KEY="your-key"
 
 ```bash
 # 1. 恢复到上一个版本
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 git checkout <previous-commit>
 go build -o llm-gateway-go ./cmd/gateway
 systemctl restart llm-gateway-go

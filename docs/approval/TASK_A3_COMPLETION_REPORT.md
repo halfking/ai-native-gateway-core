@@ -102,7 +102,7 @@
 
 ```
 commit 1ffadc23
-Author: xutaohuang
+Author: __USER_1__
 Date: 2026-07-03
 
 feat(approval): 实现敏感信息检测器 (任务 A3)

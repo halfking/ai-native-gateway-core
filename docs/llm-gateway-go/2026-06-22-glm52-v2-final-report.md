@@ -64,7 +64,7 @@ Status: ✅ Pushed to origin/main
 #### 方案 A: 使用标准部署脚本（推荐）
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy
+cd /Users/__USER_1__/workspace/official-deploy
 
 # 1. 在 184 上构建镜像
 export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
@@ -78,10 +78,10 @@ export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
 
 ```bash
 # SSH 到 71
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 
 # 1. 获取新镜像（如果 184 已构建）
-ssh root@14.103.112.184 "docker save kx-llm-gateway-go:gitsha-2d18aa30 | gzip" | \
+ssh __SSH_TARGET_1__ "docker save kx-llm-gateway-go:gitsha-2d18aa30 | gzip" | \
   gunzip | docker load
 
 # 2. 更新服务配置
@@ -100,7 +100,7 @@ docker ps | grep llm-gateway-go
 #### 方案 C: 临时替换二进制（快速验证）
 
 ```bash
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 
 # 1. 上传新二进制（已完成：/tmp/llm-gateway-go-v2）
 
@@ -111,8 +111,8 @@ docker stop llm-gateway-go
 docker run -d \
   --name llm-gateway-go-test \
   --network host \
-  --env-file /etc/llm-gateway-go/env \
-  -v /opt/llm-gateway-go/data:/opt/llm-gateway-go/data \
+  --env-file __SERVER_PATH_3__/env \
+  -v __SERVER_PATH_1__/data:__SERVER_PATH_1__/data \
   -v /tmp/llm-gateway-go-v2:/usr/local/bin/llm-gateway-go:ro \
   alpine:3.18 sh -c "apk add --no-cache ca-certificates libc6-compat && /usr/local/bin/llm-gateway-go"
 
@@ -127,9 +127,9 @@ docker logs llm-gateway-go-test -f
 ### 1. 测试 glm-5.2 流式请求
 
 ```bash
-export GLM_API_KEY="sk-1R7IBh2THq1Id2BDWOWHstpFu2oG09Qd1kgYn9hasxFcKZw7"
+export GLM_API_KEY="__API_KEY_8__"
 
-curl -N -X POST https://llm.kxpms.cn/v1/chat/completions \
+curl -N -X POST https://__DOMAIN_2__/v1/chat/completions \
   -H "Authorization: Bearer $GLM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -145,7 +145,7 @@ curl -N -X POST https://llm.kxpms.cn/v1/chat/completions \
 ### 2. 检查拦截日志
 
 ```bash
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 docker logs llm-gateway-go 2>&1 | grep "dropping empty choices"
 ```
 
@@ -159,12 +159,12 @@ relay: dropping empty choices block
 
 ```bash
 # 非流式
-curl -X POST https://llm.kxpms.cn/v1/chat/completions \
+curl -X POST https://__DOMAIN_2__/v1/chat/completions \
   -H "Authorization: Bearer $GLM_API_KEY" \
   -d '{"model":"glm-5.2","messages":[{"role":"user","content":"Hi"}]}'
 
 # 流式
-curl -N -X POST https://llm.kxpms.cn/v1/chat/completions \
+curl -N -X POST https://__DOMAIN_2__/v1/chat/completions \
   -H "Authorization: Bearer $GLM_API_KEY" \
   -d '{"model":"glm-5.2","messages":[{"role":"user","content":"Hi"}],"stream":true}'
 ```
@@ -278,7 +278,7 @@ curl -N -X POST https://llm.kxpms.cn/v1/chat/completions \
 
 **测试 API Key**:
 ```
-sk-1R7IBh2THq1Id2BDWOWHstpFu2oG09Qd1kgYn9hasxFcKZw7
+__API_KEY_8__
 ```
 
 **验证命令**:

@@ -198,7 +198,7 @@ Callback (回调)
 === RUN   TestFormatHelpers
 --- PASS: TestFormatHelpers (0.00s)
 PASS
-ok      github.com/kaixuan/llm-gateway-go/domains/notification  0.402s
+ok      __REPO_URL_3__/domains/notification  0.402s
 ```
 
 ---
@@ -238,8 +238,8 @@ LARK_ENCRYPT_KEY=xxx
 
 ```go
 import (
-    "github.com/kaixuan/llm-gateway-go/domains/notification"
-    "github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
+    "__REPO_URL_3__/domains/notification"
+    "__REPO_URL_3__/domains/sessionaudit"
 )
 
 // 1. 创建路由规则
@@ -296,7 +296,7 @@ callbackSrv.RegisterHandler("reject", func(ctx context.Context, callback *notifi
 
 // 启动HTTP服务器
 http.Handle("/api/lark/callback", callbackSrv)
-http.ListenAndServe(":8080", nil)
+http.ListenAndServe(":__PORT_12__", nil)
 ```
 
 ---

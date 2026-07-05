@@ -1,7 +1,7 @@
 # 分区表架构审计报告与优化方案
 
 **审计日期**: 2026-07-05
-**数据库**: llm_gateway @ 184 (10.43.118.61)
+**数据库**: llm_gateway @ 184 (__PRIV_IP_7__)
 **审计范围**: 所有分区表的热表/默认分区架构
 
 ---
@@ -203,12 +203,12 @@ done
 # 2. 构建 + 推送
 go build ./...
 docker build -t llm-gateway-go:hot-all .
-docker push registry.kxpms.cn/llm-gateway-go:hot-all
+docker push __DOMAIN_4__/llm-gateway-go:hot-all
 
 # 3. 部署
 kubectl set image deploy/llm-gateway-go-deployment \
     -n pms-test \
-    llm-gateway-go=127.0.0.1:5000/llm-gateway-go:hot-all
+    llm-gateway-go=127.0.0.1:__PORT_8__/llm-gateway-go:hot-all
 
 # 4. 端到端验证
 ./scripts/e2e-test-all-hot-tables.sh

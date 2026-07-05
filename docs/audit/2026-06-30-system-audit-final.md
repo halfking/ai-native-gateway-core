@@ -1,8 +1,8 @@
 # LLM Gateway 系统深度审计报告（最终版）
 **日期**: 2026-06-30  
 **审计范围**: Token统计完整性、错误处理、数据传输解析  
-**服务器**: __HOST_71_IP__ (71服务器)  
-**数据库**: llm_gateway @ llm-gateway-pg-71-replica:5432
+**服务器**: __SECRET_1__ (71服务器)  
+**数据库**: llm_gateway @ llm-gateway-pg-71-replica:__PORT_5__
 
 ---
 
@@ -625,5 +625,5 @@ WHERE success = false
 - 第一轮审计: 2026-06-30 14:00-15:30 CST (数据库错误)
 - 第二轮审计: 2026-06-30 15:30-16:30 CST (分区修复)
 - 第三轮审计: 2026-06-30 16:30-18:00 CST (token深度分析)
-- 服务器: __HOST_71_IP__ (71)
+- 服务器: __SECRET_1__ (71)
 - 数据库: llm_gateway @ llm-gateway-pg-71-replica

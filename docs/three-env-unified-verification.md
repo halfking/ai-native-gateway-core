@@ -160,10 +160,10 @@ INSERT INTO request_logs ... RETURNING ...;
 **解决方案：**
 - 📋 完整安装指南已生成：`docs/71-pg-trgm-installation-guide.md`
 - ⏱️ 预计耗时：15-20 分钟
-- 🔧 需要：在 172.31.0.3 上安装 postgresql-contrib-15
+- 🔧 需要：在 __PRIV_IP_2__ 上安装 postgresql-contrib-15
 
 **待执行步骤：**
-1. 在 172.31.0.3 上安装 postgresql-contrib-15
+1. 在 __PRIV_IP_2__ 上安装 postgresql-contrib-15
 2. 创建 pg_trgm 扩展
 3. 重建现有分区的 trgm 索引
 4. 创建 2026-09~12 分区
@@ -352,7 +352,7 @@ $$;
 ### 立即行动（本周）
 
 **71 环境修复：**
-1. [ ] 联系运维或 DBA 在 172.31.0.3 上安装 postgresql-contrib-15
+1. [ ] 联系运维或 DBA 在 __PRIV_IP_2__ 上安装 postgresql-contrib-15
 2. [ ] 执行 `docs/71-pg-trgm-installation-guide.md` 中的步骤
 3. [ ] 验证分区创建和写入功能
 4. [ ] 测试 ILIKE 查询性能
@@ -433,7 +433,7 @@ $$;
 
 ## 验证签名
 
-**测试执行：** @xutaohuang  
+**测试执行：** @__USER_1__  
 **验证时间：** 2026-07-04 01:40  
 **184 环境：** ✅ 测试通过  
 **本地环境：** ✅ 测试通过  

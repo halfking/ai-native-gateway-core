@@ -231,11 +231,11 @@ route:
 receivers:
 - name: 'default-receiver'
   webhook_configs:
-  - url: 'http://alertmanager-webhook:5000/alert'
+  - url: 'http://alertmanager-webhook:__PORT_8__/alert'
 
 - name: 'critical-receiver'
   webhook_configs:
-  - url: 'http://alertmanager-webhook:5000/alert'
+  - url: 'http://alertmanager-webhook:__PORT_8__/alert'
   email_configs:
   - to: 'ops-critical@example.com'
     from: 'alertmanager@example.com'
@@ -247,7 +247,7 @@ receivers:
 
 - name: 'warning-receiver'
   webhook_configs:
-  - url: 'http://alertmanager-webhook:5000/alert'
+  - url: 'http://alertmanager-webhook:__PORT_8__/alert'
   slack_configs:
   - api_url: '<slack_webhook_url>'
     channel: '#llm-gateway-alerts'
@@ -263,9 +263,9 @@ receivers:
 
 ```bash
 #!/bin/bash
-# 文件：/opt/llm-gateway/scripts/health-check.sh
+# 文件：__SERVER_PATH_9__
 
-GATEWAY_URL="http://localhost:8781"
+GATEWAY_URL="http://localhost:__PORT_3__"
 ALERT_THRESHOLD=3
 CONSECUTIVE_FAILURES=0
 
@@ -367,20 +367,20 @@ done
 docker logs llm-gateway-go | grep "model discovery completed" | tail -1
 
 # 2. 检查计费模式一致性
-PGPASSWORD='xxx' psql -h 172.31.0.3 -U llm_gateway -d llm_gateway -c "
+PGPASSWORD='xxx' psql -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway -c "
 SELECT COUNT(*) as mismatch FROM credentials c
 JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 WHERE (c.plan_type = 'token' AND cmb.billing_mode != 'per_token');"
 
 # 3. 检查最近 1 小时的成功率
-PGPASSWORD='xxx' psql -h 172.31.0.3 -U llm_gateway -d llm_gateway -c "
+PGPASSWORD='xxx' psql -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway -c "
 SELECT 
     COUNT(CASE WHEN status = 200 THEN 1 END) * 100.0 / COUNT(*) as success_rate
 FROM request_logs
 WHERE created_at > NOW() - INTERVAL '1 hour';"
 
 # 4. 检查不健康的凭据
-PGPASSWORD='xxx' psql -h 172.31.0.3 -U llm_gateway -d llm_gateway -c "
+PGPASSWORD='xxx' psql -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway -c "
 SELECT id, label, circuit_state, availability_state, quota_state
 FROM credentials
 WHERE status = 'active'
@@ -403,9 +403,9 @@ WHERE status = 'active'
 
 3. **部署健康检查脚本**
    ```bash
-   scp health-check.sh root@14.103.174.71:/opt/llm-gateway/scripts/
-   ssh root@14.103.174.71 "chmod +x /opt/llm-gateway/scripts/health-check.sh"
-   ssh root@14.103.174.71 "nohup /opt/llm-gateway/scripts/health-check.sh > /var/log/health-check.log 2>&1 &"
+   scp health-check.sh __SSH_TARGET_2__:/opt/llm-gateway/scripts/
+   ssh __SSH_TARGET_2__ "chmod +x __SERVER_PATH_9__"
+   ssh __SSH_TARGET_2__ "nohup __SERVER_PATH_9__ > __SERVER_PATH_10__ 2>&1 &"
    ```
 
 4. **导入 Grafana 仪表盘**

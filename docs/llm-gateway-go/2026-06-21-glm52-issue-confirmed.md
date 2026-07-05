@@ -10,7 +10,7 @@
 
 ### 测试结果
 
-通过网关 `llm.kxpms.cn` 测试 glm-5.2：
+通过网关 `__DOMAIN_2__` 测试 glm-5.2：
 
 | 测试项 | 结果 | 问题 |
 |--------|------|------|
@@ -280,7 +280,7 @@ export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
 
 ```bash
 # 重新运行诊断
-export GLM_API_KEY="sk-1R7IBh2THq1Id2BDWOWHstpFu2oG09Qd1kgYn9hasxFcKZw7"
+export GLM_API_KEY="__API_KEY_8__"
 ./scripts/diagnose-glm52.sh -v
 ```
 

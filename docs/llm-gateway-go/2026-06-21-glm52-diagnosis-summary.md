@@ -2,7 +2,7 @@
 
 ## 📋 问题描述
 
-用户报告通过 `llm.kxpms.cn/v1` 调用 `glm-5.2` 模型时，整个请求混乱。
+用户报告通过 `__DOMAIN_2__/v1` 调用 `glm-5.2` 模型时，整个请求混乱。
 
 ## 🔍 已完成的分析
 
@@ -88,7 +88,7 @@ llm-gateway-go 使用 **四象限路由模型**：
 ### 立即执行（需要用户提供 API Key）
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 
 # 方式 1: 使用环境变量
 export GLM_API_KEY="your-actual-api-key"
@@ -105,7 +105,7 @@ go test -tags=integration ./tests/integration -v -run TestGLM52
 
 ```bash
 # SSH 到 71 服务器
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 
 # 查看实时日志
 docker logs -f llm-gateway-go | grep -E "glm-5\.2|anthropic_to_openai|chat_to_anthropic"
@@ -118,7 +118,7 @@ docker logs llm-gateway-go --tail 100 | grep -E "glm-5\.2|anthropic_to_openai"
 
 ```bash
 # 使用真实 API Key 测试
-curl -X POST https://llm.kxpms.cn/v1/chat/completions \
+curl -X POST https://__DOMAIN_2__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <your-key>" \
   -d '{

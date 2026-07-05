@@ -11,15 +11,15 @@
 
 | 环境 | 服务器 | 部署方式 | 镜像 | 状态 | 健康检查 |
 |------|--------|---------|------|------|----------|
-| **184** | __INTERNAL_PUBLIC_IP__ | k3s (2 replicas) | gitsha-f222c0b0 | ✅ Running | https://llmgateway.internal.example.com/healthz |
-| **71** | __HOST_71_IP__ | systemd + docker | gitsha-f222c0b0 | ✅ Running | http://__HOST_71_IP__:8781/healthz |
+| **184** | __INTERNAL_PUBLIC_IP__ | k3s (2 replicas) | gitsha-f222c0b0 | ✅ Running | https://__DOMAIN_8__/healthz |
+| **71** | __SECRET_1__ | systemd + docker | gitsha-f222c0b0 | ✅ Running | http://__SECRET_1__:__PORT_3__/healthz |
 
 ### 域名映射
 
 | 域名 | 后端 | 用途 |
 |------|------|------|
-| `llmgateway.internal.example.com` | 184:10023 (k3s NodePort) | Go 版本单独域名 |
-| `llmgateway.internal.example.com` | 71:8781 (host docker) | Python 版本历史域名 |
+| `__DOMAIN_8__` | 184:10023 (k3s NodePort) | Go 版本单独域名 |
+| `__DOMAIN_8__` | 71:__PORT_3__ (host docker) | Python 版本历史域名 |
 
 **注意**: 71 和 184 **不能混用**，否则会导致 Vue SPA 静态资源 404。
 
@@ -31,7 +31,7 @@
 ```bash
 ✅ Pod 状态: 2/2 Running
 ✅ 滚动更新: 成功完成
-✅ 健康检查: https://llmgateway.internal.example.com/healthz → 200 OK
+✅ 健康检查: https://__DOMAIN_8__/healthz → 200 OK
 ✅ 镜像版本: kx-llm-gateway-go:gitsha-f222c0b0
 ```
 
@@ -39,8 +39,8 @@
 ```bash
 ✅ 服务状态: active (running)
 ✅ 镜像更新: gitsha-4a00d8cd → gitsha-f222c0b0
-✅ 健康检查: http://__HOST_71_IP__:8781/healthz → 200 OK
-✅ Nginx 转发: https://llmgateway.internal.example.com/healthz → 200 OK
+✅ 健康检查: http://__SECRET_1__:__PORT_3__/healthz → 200 OK
+✅ Nginx 转发: https://__DOMAIN_8__/healthz → 200 OK
 ```
 
 ---
@@ -90,7 +90,7 @@ export LLM_GATEWAY_API_KEY="your-api-key-here"
 
 **手动测试**:
 ```bash
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer $LLM_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -131,7 +131,7 @@ curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
 
 **手动测试**:
 ```bash
-curl -X POST https://llmgateway.internal.example.com/v1/messages \
+curl -X POST https://__DOMAIN_8__/v1/messages \
   -H "Authorization: Bearer $LLM_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -173,7 +173,7 @@ curl -X POST https://llmgateway.internal.example.com/v1/messages \
 **测试**:
 ```bash
 # 普通 OpenAI 格式调用（无 thinking）
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer $LLM_GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{

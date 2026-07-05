@@ -2,7 +2,7 @@
 
 **日期：** 2026-07-04  
 **目标：** 在 71 环境安装 pg_trgm 扩展并创建 2026-09 到 2026-12 分区  
-**数据库：** 172.31.0.3:5432（PostgreSQL 15.3）
+**数据库：** __PRIV_IP_2__:__PORT_5__（PostgreSQL 15.3）
 
 ---
 
@@ -14,7 +14,7 @@
 - ✅ 本地环境：pg_trgm 已安装，2026-09~12 分区已创建并测试
 
 **需要行动：**
-1. 在 172.31.0.3 服务器上安装 postgresql-contrib-15
+1. 在 __PRIV_IP_2__ 服务器上安装 postgresql-contrib-15
 2. 在数据库中创建 pg_trgm 扩展
 3. 重建现有分区的 trgm 索引
 4. 创建未来分区（2026-09 到 2026-12）
@@ -24,13 +24,13 @@
 
 ## 步骤 1：在数据库服务器上安装 postgresql-contrib-15
 
-### 方法 A：直接在 172.31.0.3 上执行（推荐）
+### 方法 A：直接在 __PRIV_IP_2__ 上执行（推荐）
 
 **需要：** root 或 sudo 权限
 
 ```bash
 # 登录到数据库服务器
-ssh 172.31.0.3  # 或通过跳板机
+ssh __PRIV_IP_2__  # 或通过跳板机
 
 # 检查 PostgreSQL 版本
 psql --version
@@ -50,14 +50,14 @@ systemctl restart postgresql
 
 ### 方法 B：通过 71 服务器作为跳板
 
-**如果无法直接 SSH 到 172.31.0.3：**
+**如果无法直接 SSH 到 __PRIV_IP_2__：**
 
 ```bash
 # 在 71 服务器上
-ssh -p 25022 root@14.103.174.71
+ssh -p __PORT_1__ __SSH_TARGET_2__
 
-# 从 71 跳转到 172.31.0.3（如果配置了 SSH key）
-ssh root@172.31.0.3
+# 从 71 跳转到 __PRIV_IP_2__（如果配置了 SSH key）
+ssh root@__PRIV_IP_2__
 
 # 执行方法 A 的安装步骤
 ```
@@ -67,7 +67,7 @@ ssh root@172.31.0.3
 如果以上方法都不可行，请联系运维团队并提供以下信息：
 
 ```
-服务器：172.31.0.3
+服务器：__PRIV_IP_2__
 服务：PostgreSQL 15.3
 需求：安装 postgresql-contrib-15 包
 原因：启用 pg_trgm 扩展以支持全文搜索索引
@@ -81,10 +81,10 @@ ssh root@172.31.0.3
 **在 71 服务器上执行：**
 
 ```bash
-ssh -p 25022 root@14.103.174.71
+ssh -p __PORT_1__ __SSH_TARGET_2__
 
-PGPASSWORD='<DB_PASSWORD_REDACTED>' \
-psql -h 172.31.0.3 -p 5432 -U llm_gateway -d llm_gateway << 'SQL'
+PGPASSWORD='__DB_PWD_1__' \
+psql -h __PRIV_IP_2__ -p __PORT_5__ -U llm_gateway -d llm_gateway << 'SQL'
 
 -- 创建扩展
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -119,8 +119,8 @@ CREATE EXTENSION
 **目的：** 为 request_logs_2026_07 和 request_logs_2026_08 添加 trgm 索引
 
 ```bash
-PGPASSWORD='<DB_PASSWORD_REDACTED>' \
-psql -h 172.31.0.3 -p 5432 -U llm_gateway -d llm_gateway << 'SQL'
+PGPASSWORD='__DB_PWD_1__' \
+psql -h __PRIV_IP_2__ -p __PORT_5__ -U llm_gateway -d llm_gateway << 'SQL'
 
 -- 为现有分区创建 trgm 索引
 DO $$
@@ -187,8 +187,8 @@ SQL
 ## 步骤 4：创建未来分区（2026-09 到 2026-12）
 
 ```bash
-PGPASSWORD='<DB_PASSWORD_REDACTED>' \
-psql -h 172.31.0.3 -p 5432 -U llm_gateway -d llm_gateway << 'SQL'
+PGPASSWORD='__DB_PWD_1__' \
+psql -h __PRIV_IP_2__ -p __PORT_5__ -U llm_gateway -d llm_gateway << 'SQL'
 
 -- 创建 2026-09 到 2026-12 分区
 DO $$
@@ -276,8 +276,8 @@ NOTICE:  ✅ 分区 request_logs_2026_12 创建完成（heap + 2 trgm 索引）
 ## 步骤 5：测试写入功能
 
 ```bash
-PGPASSWORD='<DB_PASSWORD_REDACTED>' \
-psql -h 172.31.0.3 -p 5432 -U llm_gateway -d llm_gateway << 'SQL'
+PGPASSWORD='__DB_PWD_1__' \
+psql -h __PRIV_IP_2__ -p __PORT_5__ -U llm_gateway -d llm_gateway << 'SQL'
 
 -- 测试写入到各个月份
 INSERT INTO request_logs (ts, tenant_id, request_id, client_model, success)
@@ -502,11 +502,11 @@ SELECT * FROM request_logs_2027_01 LIMIT 1;
 
 set -euo pipefail
 
-export PGHOST=172.31.0.3
-export PGPORT=5432
+export PGHOST=__PRIV_IP_2__
+export PGPORT=__PORT_5__
 export PGUSER=llm_gateway
 export PGDATABASE=llm_gateway
-export PGPASSWORD='<DB_PASSWORD_REDACTED>'
+export PGPASSWORD='__DB_PWD_1__'
 
 echo "=== 71 环境 pg_trgm 安装与分区创建 ==="
 echo ""

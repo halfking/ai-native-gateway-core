@@ -387,7 +387,7 @@ export $(cat .env | xargs)
 ./gateway-callback-server
 
 # 5. 验证服务状态
-curl http://localhost:8080/health
+curl http://localhost:__PORT_12__/health
 ```
 
 ---

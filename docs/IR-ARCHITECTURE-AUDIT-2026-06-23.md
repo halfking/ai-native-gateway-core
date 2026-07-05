@@ -441,7 +441,7 @@ type StreamDelta struct {
 **Example** (from `anthropic_to_openai_stream.go`):
 ```go
 import (
-    "github.com/kaixuan/llm-gateway-go/internal/ir"
+    "__REPO_URL_3__/internal/ir"
 )
 
 // Line 225: ✅ Uses IR parser
@@ -736,7 +736,7 @@ golangci-lint run ./internal/ir/ ./relay/
 
 # 4. Integration test (184 deployment)
 # Test multi-turn tool conversation:
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{

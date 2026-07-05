@@ -7,7 +7,7 @@
 
 ## 背景
 
-`cmd/gateway-v2/main.go` 是新的 Pipeline 架构入口（端口 8782），独立运行 5+ 小时。当前是**演示级**实现，只有 2 个端点。生产入口 `cmd/gateway/main.go` 有 24 个端点，gateway-v2 距离生产可用还有 22 个端点待补全。
+`cmd/gateway-v2/main.go` 是新的 Pipeline 架构入口（端口 __PORT_4__），独立运行 5+ 小时。当前是**演示级**实现，只有 2 个端点。生产入口 `cmd/gateway/main.go` 有 24 个端点，gateway-v2 距离生产可用还有 22 个端点待补全。
 
 ## 当前端点
 

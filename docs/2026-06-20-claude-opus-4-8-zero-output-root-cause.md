@@ -231,7 +231,7 @@ kubectl -n pms-test exec deployment/llm-gateway-go-deployment -- \
 
 ```bash
 # 使用测试 key
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer <不同的key>" \
   -d '{"model":"claude-opus-4-8","messages":[...]}'
 ```

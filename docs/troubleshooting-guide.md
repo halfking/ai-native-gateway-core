@@ -5,14 +5,14 @@
 ### 1. 检查服务状态
 ```bash
 # 71 服务器
-ssh -p 25022 root@14.103.174.71
+ssh -p __PORT_1__ __SSH_TARGET_2__
 
 # 检查容器状态
 docker ps | grep llm-gateway
 docker logs llm-gateway-go --tail 50
 
 # 健康检查
-curl http://localhost:8781/healthz
+curl http://localhost:__PORT_3__/healthz
 ```
 
 ### 2. 检查模型发现状态
@@ -27,7 +27,7 @@ docker logs llm-gateway-go | grep "model discovery completed" | tail -5
 ### 3. 检查数据库连接
 ```bash
 # 连接数据库
-PGPASSWORD='<DB_PASSWORD_REDACTED>' psql -h 172.31.0.3 -U llm_gateway -d llm_gateway
+PGPASSWORD='__DB_PWD_1__' psql -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway
 
 # 检查可用模型数量
 SELECT COUNT(*) FROM credential_model_bindings WHERE available = true;
@@ -35,8 +35,8 @@ SELECT COUNT(*) FROM credential_model_bindings WHERE available = true;
 
 ### 4. 测试请求
 ```bash
-curl -X POST http://localhost:8781/v1/chat/completions \
-  -H "Authorization: Bearer sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9" \
+curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
+  -H "Authorization: Bearer __API_KEY_1__" \
   -H "Content-Type: application/json" \
   -H "X-Request-Id: test-$(date +%s)" \
   -d '{
@@ -67,7 +67,7 @@ curl -X POST http://localhost:8781/v1/chat/completions \
 
 2. **检查端口监听**
    ```bash
-   netstat -tlnp | grep 8781
+   netstat -tlnp | grep __PORT_3__
    # 应该显示 LISTEN
    ```
 
@@ -347,10 +347,10 @@ docker restart llm-gateway-go
 sleep 10
 
 # 3. 检查健康状态
-curl http://localhost:8781/healthz
+curl http://localhost:__PORT_3__/healthz
 
 # 4. 测试请求
-curl -X POST http://localhost:8781/v1/chat/completions \
+curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
   -H "Authorization: Bearer <key>" \
   -H "Content-Type: application/json" \
   -d '{"model":"glm-4-flash","messages":[{"role":"user","content":"test"}],"max_tokens":5}'
@@ -360,7 +360,7 @@ curl -X POST http://localhost:8781/v1/chat/completions \
 
 ```bash
 # 1. 检查当前迁移版本
-PGPASSWORD='xxx' psql -h 172.31.0.3 -U llm_gateway -d llm_gateway \
+PGPASSWORD='xxx' psql -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway \
   -c "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;"
 
 # 2. 查看待应用的迁移

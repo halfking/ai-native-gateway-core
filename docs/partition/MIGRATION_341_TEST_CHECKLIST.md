@@ -9,7 +9,7 @@
 ## ⚠️ 重要约束
 
 **禁止操作**：
-- ❌ 不得连接 71 环境数据库（llm.kxpms.cn）
+- ❌ 不得连接 71 环境数据库（__DOMAIN_2__）
 - ❌ 不得修改 71 环境任何数据
 - ❌ 不得部署代码到 71 环境
 
@@ -86,7 +86,7 @@ psql -h localhost -U kxuser -d llm_gateway -c "
 ### Step 2: 运行自动化测试
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 ./scripts/partition/test-migration-341.sh
 ```
 
@@ -95,7 +95,7 @@ cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
 ========================================
 Migration 341 本地测试
 ========================================
-环境: localhost:5432/llm_gateway
+环境: localhost:__PORT_5__/llm_gateway
 
 ✅ 备份完成: XXXX 行
 ✅ Migration 341 应用成功
@@ -158,14 +158,14 @@ go build -o llm-gateway cmd/gateway/main.go
 ./llm-gateway &
 
 # 观察日志
-tail -f /var/log/llm-gateway.log | grep "request_logs\|partition"
+tail -f __SERVER_PATH_6__.log | grep "request_logs\|partition"
 ```
 
 ### Step 5: 实际业务测试
 
 ```bash
 # 发送真实请求
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -214,15 +214,15 @@ systemctl restart llm-gateway
 
 ```bash
 # 1. 连接 184
-export PGHOST=184.kxpms.cn
+export PGHOST=__DOMAIN_6__
 export PGUSER=kxuser
 export PGDATABASE=llm_gateway
 
 # 2. 备份
-pg_dump -h 184.kxpms.cn -U kxuser llm_gateway > backup_184_before_341.sql
+pg_dump -h __DOMAIN_6__ -U kxuser llm_gateway > backup_184_before_341.sql
 
 # 3. 应用 migration
-psql -h 184.kxpms.cn < db/migrations/341_hot_table_independence.sql
+psql -h __DOMAIN_6__ < db/migrations/341_hot_table_independence.sql
 
 # 4. 验证
 ./scripts/partition/check-partition-health.sh --env 184

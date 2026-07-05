@@ -56,15 +56,15 @@ cat version.json | jq
 
 ```bash
 # 在 K8s 中查看
-kubectl exec -n pms-test deployment/llm-gateway-go-deployment -- cat /opt/llm-gateway-go/VERSION
+kubectl exec -n pms-test deployment/llm-gateway-go-deployment -- cat __SERVER_PATH_1__/VERSION
 
 # 本地 Docker 镜像
-docker run --rm --entrypoint cat kx-llm-gateway-go:tag /opt/llm-gateway-go/VERSION
+docker run --rm --entrypoint cat kx-llm-gateway-go:tag __SERVER_PATH_1__/VERSION
 
 # SSH 到 184 查看
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
-sshpass -e ssh -p 25022 root@14.103.112.184 \
-  "kubectl exec -n pms-test deployment/llm-gateway-go-deployment -- cat /opt/llm-gateway-go/VERSION"
+export SSHPASS='__SSH_PWD_1__'
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
+  "kubectl exec -n pms-test deployment/llm-gateway-go-deployment -- cat __SERVER_PATH_1__/VERSION"
 ```
 
 ---
@@ -80,8 +80,8 @@ sshpass -e ssh -p 25022 root@14.103.112.184 \
 docker images | grep kx-base
 
 # 如果没有，从 184 或 71 服务器拉取
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+export SSHPASS='__SSH_PWD_1__'
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "docker save kx-base:go-vue-amd64 | gzip" | gunzip | docker load
 ```
 
@@ -140,22 +140,22 @@ ls -lh llm-gateway-go*
 **A**: 查看日志和事件排查。
 
 ```bash
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
+export SSHPASS='__SSH_PWD_1__'
 
 # 查看 Pod 状态
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "kubectl get pods -n pms-test | grep llm-gateway-go"
 
 # 查看详细事件
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "kubectl describe pod <pod-name> -n pms-test"
 
 # 查看日志
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "kubectl logs -n pms-test <pod-name> --tail=100"
 
 # 如果是 CrashLoopBackOff，查看之前容器日志
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "kubectl logs -n pms-test <pod-name> --previous"
 ```
 
@@ -164,18 +164,18 @@ sshpass -e ssh -p 25022 root@14.103.112.184 \
 **A**: 使用 kubectl rollout undo。
 
 ```bash
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
+export SSHPASS='__SSH_PWD_1__'
 
 # 回滚到上一个版本
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "kubectl rollout undo deployment/llm-gateway-go-deployment -n pms-test"
 
 # 查看 rollout 历史
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "kubectl rollout history deployment/llm-gateway-go-deployment -n pms-test"
 
 # 回滚到指定版本
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "kubectl rollout undo deployment/llm-gateway-go-deployment -n pms-test --to-revision=3"
 ```
 
@@ -184,14 +184,14 @@ sshpass -e ssh -p 25022 root@14.103.112.184 \
 **A**: 使用 kubectl rollout restart。
 
 ```bash
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
+export SSHPASS='__SSH_PWD_1__'
 
 # 重启 deployment
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "kubectl rollout restart deployment/llm-gateway-go-deployment -n pms-test"
 
 # 等待完成
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "kubectl rollout status deployment/llm-gateway-go-deployment -n pms-test"
 ```
 
@@ -217,9 +217,9 @@ git pull origin main
 
 **测试流式响应**:
 ```bash
-curl -s -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -s -X POST https://__DOMAIN_1__/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9" \
+  -H "Authorization: Bearer __API_KEY_1__" \
   -d '{
     "model": "claude-sonnet-5",
     "messages": [{"role": "user", "content": "ping"}],
@@ -255,14 +255,14 @@ git pull origin main
 
 ```bash
 # 方式1: SSH 隧道
-ssh -p 25022 -L 5433:127.0.0.1:5432 root@14.103.112.184
+ssh -p __PORT_1__ -L __PORT_6__:127.0.0.1:__PORT_5__ __SSH_TARGET_1__
 
 # 然后在本地连接
-psql -h 127.0.0.1 -p 5433 -U llm_gateway -d crm
+psql -h 127.0.0.1 -p __PORT_6__ -U llm_gateway -d crm
 
 # 方式2: 使用 sshpass（脚本中）
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+export SSHPASS='__SSH_PWD_1__'
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "psql -h 127.0.0.1 -U llm_gateway -d crm -c 'SELECT version();'"
 ```
 
@@ -272,14 +272,14 @@ sshpass -e ssh -p 25022 root@14.103.112.184 \
 
 ```
 PostgreSQL 数据库：
-- IP: 14.103.112.184（需通过 SSH）
-- 端口: 5432
+- IP: __PUB_IP_1__（需通过 SSH）
+- 端口: __PORT_5__
 - 数据库: crm
 
 账号列表：
-- llm_gateway / <DB_PASSWORD_REDACTED> (主超级用户)
+- llm_gateway / __DB_PWD_1__ (主超级用户)
 - crm_user / crm_pass123 (CRM)
-- kaixuan_user / kaixuan_pass123 (开轩主应用)
+- __USER_2___user / __USER_2___pass123 (开轩主应用)
 - doc_tools_user / doc_tools_pass123 (doc-tools)
 - casdoor_user / casdoor_pass123 (Casdoor)
 - kxuser / kxuser123 (列存表owner)
@@ -322,8 +322,8 @@ PostgreSQL 数据库：
 # 创建一个快速脚本
 cat > scripts/check-184-status.sh <<'EOF'
 #!/bin/bash
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
-sshpass -e ssh -p 25022 root@14.103.112.184 "
+export SSHPASS='__SSH_PWD_1__'
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ "
   echo '=== Pods Status ==='
   kubectl get pods -n pms-test | grep llm-gateway
   echo ''
@@ -346,10 +346,10 @@ chmod +x scripts/check-184-status.sh
 # 创建测试脚本
 cat > scripts/test-api.sh <<'EOF'
 #!/bin/bash
-API_KEY="${1:-sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9}"
+API_KEY="${1:-__API_KEY_1__}"
 
-echo "Testing llmgo.kxpms.cn..."
-curl -s -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+echo "Testing __DOMAIN_1__..."
+curl -s -X POST https://__DOMAIN_1__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${API_KEY}" \
   -d '{
@@ -372,28 +372,28 @@ chmod +x scripts/test-api.sh
 
 | 服务器 | IP | 内网IP | 用途 | 密码 |
 |--------|-----|--------|------|------|
-| 56 | 14.103.169.56 | 172.31.0.2 | 网关 (nps+nginx) | root/<SSH_PASSWORD_REDACTED> |
-| 71 | 14.103.174.71 | 172.31.0.3 | infra (docker+llm-gateway老版本) | root/<SSH_PASSWORD_REDACTED> |
-| 184 | 14.103.112.184 | 172.31.0.4 | 核心应用 (k8s+llm-gateway-go) | root/<SSH_PASSWORD_REDACTED> |
+| 56 | __PUB_IP_3__ | __PRIV_IP_1__ | 网关 (nps+nginx) | root/__SSH_PWD_1__ |
+| 71 | __PUB_IP_2__ | __PRIV_IP_2__ | infra (docker+llm-gateway老版本) | root/__SSH_PWD_1__ |
+| 184 | __PUB_IP_1__ | __PRIV_IP_3__ | 核心应用 (k8s+llm-gateway-go) | root/__SSH_PWD_1__ |
 
 ### 阿里云服务器
 
 | 服务器 | 公网IP | 内网IP | 用途 | 密码 |
 |--------|--------|--------|------|------|
-| 252 | 115.29.212.252 | 172.16.2.210 | llm.itestu.cn+nps+vpn | root/<SSH_PASSWORD_REDACTED> |
-| 245 | 8.136.114.245 | 172.16.2.241 | 网关 | root/<SSH_PASSWORD_REDACTED> |
-| 154 | 47.97.111.154 | 172.16.2.209 | 旧网关 | root/<SSH_PASSWORD_REDACTED> |
-| 186 | 118.31.18.168 | - | 应用服务器 | root/<SSH_PASSWORD_REDACTED> |
+| 252 | __PUB_IP_5__ | __PRIV_IP_4__ | __DOMAIN_3__+nps+vpn | root/__SSH_PWD_1__ |
+| 245 | __PUB_IP_6__ | __PRIV_IP_5__ | 网关 | root/__SSH_PWD_1__ |
+| 154 | __PUB_IP_7__ | __PRIV_IP_6__ | 旧网关 | root/__SSH_PWD_1__ |
+| 186 | __PUB_IP_8__ | - | 应用服务器 | root/__SSH_PWD_1__ |
 
 ### SSH 连接
 
 ```bash
 # 标准方式
-ssh -p 25022 root@14.103.112.184
+ssh -p __PORT_1__ __SSH_TARGET_1__
 
 # 使用 sshpass（脚本中）
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
-sshpass -e ssh -p 25022 -o StrictHostKeyChecking=no root@14.103.112.184
+export SSHPASS='__SSH_PWD_1__'
+sshpass -e ssh -p __PORT_1__ -o StrictHostKeyChecking=no __SSH_TARGET_1__
 ```
 
 ---
@@ -402,27 +402,27 @@ sshpass -e ssh -p 25022 -o StrictHostKeyChecking=no root@14.103.112.184
 
 ### LLM Gateway 服务
 
-- **184 (主服务)**: https://llmgo.kxpms.cn
-- **71 (老版本)**: https://llm.kxpms.cn
-- **252**: https://llm.itestu.cn
+- **184 (主服务)**: https://__DOMAIN_1__
+- **71 (老版本)**: https://__DOMAIN_2__
+- **252**: https://__DOMAIN_3__
 
 ### 测试 API Key
 
 ```
-sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9
+__API_KEY_1__
 ```
 
 ### Registry 和 Nexus
 
 ```bash
 # Registry
-registry.kxpms.cn
-用户: kaixuan / <ADMIN_PASSWORD_REDACTED>
+__DOMAIN_4__
+用户: __USER_2__ / __ADMIN_PWD_1__
 
 # Nexus
-nexus.kxpms.cn
-用户: admin / <ADMIN_PASSWORD_REDACTED>
-NuGet API Key: 834a588e-dcfe-4daf-90c0-e65435c6e6ba
+__DOMAIN_5__
+用户: admin / __ADMIN_PWD_1__
+NuGet API Key: __API_KEY_7__
 ```
 
 ---
@@ -453,10 +453,10 @@ git commit -m "your message"
 
 # 2. 验证镜像版本
 VERSION=$(cat VERSION)
-docker run --rm --entrypoint cat kx-llm-gateway-go:${VERSION} /opt/llm-gateway-go/VERSION
+docker run --rm --entrypoint cat kx-llm-gateway-go:${VERSION} __SERVER_PATH_1__/VERSION
 
 # 3. 本地运行测试（需要配置环境变量）
-docker run -p 8781:8781 \
+docker run -p __PORT_3__:__PORT_3__ \
   -e LLM_GATEWAY_ENV=development \
   -e LLM_GATEWAY_CORS_ORIGINS="*" \
   kx-llm-gateway-go:${VERSION}
@@ -483,12 +483,12 @@ git pull origin main
 
 ```bash
 # 实时查看日志
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+export SSHPASS='__SSH_PWD_1__'
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "kubectl logs -n pms-test deployment/llm-gateway-go-deployment -f"
 
 # 查看最近错误
-sshpass -e ssh -p 25022 root@14.103.112.184 \
+sshpass -e ssh -p __PORT_1__ __SSH_TARGET_1__ \
   "kubectl logs -n pms-test deployment/llm-gateway-go-deployment --tail=100 | grep -i error"
 ```
 

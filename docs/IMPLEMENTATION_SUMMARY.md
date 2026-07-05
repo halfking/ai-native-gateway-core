@@ -177,9 +177,9 @@ psql -d llm_gateway -f sql/scripts/20260629_auto_control.sql
 
 ```go
 import (
-    "github.com/kaixuan/llm-gateway-go/domains/hooks/response"
-    "github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"
-    "github.com/kaixuan/llm-gateway-go/domains/hooks/goal"
+    "__REPO_URL_3__/domains/hooks/response"
+    "__REPO_URL_3__/domains/hooks/handoff"
+    "__REPO_URL_3__/domains/hooks/goal"
 )
 
 func main() {
@@ -232,7 +232,7 @@ go build -o gateway ./cmd/gateway
 ./gateway
 
 # 2. 测试handoff触发
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "X-Gw-Session-Id: test-session-1" \
   -d '{"model": "gpt-4", "messages": [...]}'

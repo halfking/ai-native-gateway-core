@@ -60,8 +60,8 @@ CREATE TABLE goal_sessions (
 ### 🔧 部署位置
 
 **184测试环境**:
-- 服务器: 14.103.112.184:25022
-- 代码目录: `/opt/kx-memora-build/services/llm-gateway-go`
+- 服务器: __PUB_IP_1__:__PORT_1__
+- 代码目录: `__SERVER_PATH_2__`
 - K8s命名空间: `pms-test`
 - Deployment: `llm-gateway-go-deployment`
 - 数据库: `llm-gateway-pg-7cf67bff95-m4c7b` (PostgreSQL 15.3)
@@ -69,7 +69,7 @@ CREATE TABLE goal_sessions (
 ### ⏸️ 待完成
 
 1. **Docker镜像重建**: 
-   - 需要访问registry.internal.example.com/kx-base:go-vue基础镜像
+   - 需要访问__DOMAIN_9__/kx-base:go-vue基础镜像
    - 当前镜像版本不包含最新的injectFollowUpRequest实现
 
 2. **K8s Deployment更新**:

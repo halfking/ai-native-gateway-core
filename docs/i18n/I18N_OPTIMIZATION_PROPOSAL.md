@@ -172,7 +172,7 @@ locales/
 # 扫描 .vue 文件中的硬编码 CJK，生成待翻译清单
 
 # scripts/i18n-translate.js
-# 调用 LLM API（如 llm.kxpms.cn）批量翻译
+# 调用 LLM API（如 __DOMAIN_2__）批量翻译
 # 输入：zh-CN.ts 新增的键
 # 输出：en-US.ts / ja-JP.ts / ... 自动补全对应翻译
 ```

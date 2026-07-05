@@ -150,7 +150,7 @@ for i in "${!TARGET_LOCALES[@]}"; do
   echo "翻译 $LOCALE ($LANG)..."
   
   # 调用 LLM API（示例）
-  curl -s https://llm.kxpms.cn/v1/chat/completions \
+  curl -s https://__DOMAIN_2__/v1/chat/completions \
     -H "Authorization: Bearer YOUR_API_KEY" \
     -H "Content-Type: application/json" \
     -d "{
@@ -262,4 +262,4 @@ npm run dev
 2. 如果没有 API 但有时间 → 执行**方案 A**（3-4 小时完成）
 3. 如果紧急部署 → 执行**方案 C**（10 分钟应急止血，后续再补）
 
-**我的建议**: 使用本地 `llm.kxpms.cn` API + 方案 B，30 分钟内完成所有翻译。
+**我的建议**: 使用本地 `__DOMAIN_2__` API + 方案 B，30 分钟内完成所有翻译。

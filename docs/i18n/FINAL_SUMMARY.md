@@ -2,7 +2,7 @@
 
 > 完成时间：2026-07-05  
 > 工作时长：约 5 小时  
-> 部署状态：✅ 已部署到生产环境（llmgo.kxpms.cn）
+> 部署状态：✅ 已部署到生产环境（__DOMAIN_1__）
 
 ---
 
@@ -96,7 +96,7 @@ ece281f9 docs(i18n): 添加审计修正方案与完整总结
 
 ### Docker 镜像
 ```
-已部署：127.0.0.1:5000/kx-llm-gateway-go:r1.13-done-05425722-20260705-49
+已部署：127.0.0.1:__PORT_8__/kx-llm-gateway-go:r1.13-done-05425722-20260705-49
 SHA256: cf19da41d4fc273473e4374e92c3714049e293a6ec10f3c473d0a4313754fbb0
 Size: 54.1MB
 Status: ✅ Running on 184
@@ -186,7 +186,7 @@ Status: ✅ Running on 184
 ### 必测项（等待人工确认）
 
 #### 1. 中性化内容验证
-- [ ] 访问 https://llmgo.kxpms.cn
+- [ ] 访问 https://__DOMAIN_1__
 - [ ] 确认 kicker 显示"核心开源 · 企业级 · 全球部署"
 - [ ] 确认优势卡片显示"全球化部署"（非"深度中国本地化"）
 - [ ] 确认路线图显示"v3.1"（无具体时间）
@@ -249,7 +249,7 @@ Status: ✅ Running on 184
 ## 📞 支持信息
 
 ### 验证地址
-- **生产环境**: https://llmgo.kxpms.cn
+- **生产环境**: https://__DOMAIN_1__
 - **浏览器**: 已打开（--headed 模式）
 
 ### 回滚方案
@@ -260,7 +260,7 @@ kubectl rollout undo deployment/llm-gateway-go-deployment -n pms-test
 ```
 
 ### 联系方式
-- **Git 仓库**: https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git
+- **Git 仓库**: __REPO_URL_1__.git
 - **最新提交**: c8d8994f
 
 ---

@@ -64,7 +64,7 @@ ExecStart=/usr/bin/docker run ... kx-llm-gateway-go:gitsha-8cc5b8d7
 **执行**:
 ```bash
 # 1. 提交代码
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 git add relay/openai_format_detector.go relay/anthropic_to_openai_stream.go
 git commit -m "fix(relay): add OpenAI format detector for glm-5.2 empty choices"
 git push
@@ -81,7 +81,7 @@ git push
 **在 71 上手动构建**（避免网络问题）:
 
 ```bash
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 
 # 使用本地已有的 Ubuntu 镜像构建
 cat > /tmp/Dockerfile << 'EOF'
@@ -109,13 +109,13 @@ systemctl status llm-gateway-go
 ### 方案 C: 修改现有容器（最快，但不推荐）
 
 ```bash
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 
 # 停止容器
 docker stop llm-gateway-go
 
 # 复制新二进制到容器卷
-docker run --rm -v /opt/llm-gateway-go/data:/data \
+docker run --rm -v __SERVER_PATH_1__/data:/data \
   -v /tmp:/tmp alpine sh -c \
   "cp /tmp/llm-gateway-go-linux /data/llm-gateway-go-new"
 
@@ -129,7 +129,7 @@ docker run --rm -v /opt/llm-gateway-go/data:/data \
 
 ### 1. 检查服务状态
 ```bash
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 systemctl status llm-gateway-go
 docker ps | grep llm-gateway-go
 docker logs llm-gateway-go | tail -20
@@ -137,9 +137,9 @@ docker logs llm-gateway-go | tail -20
 
 ### 2. 测试流式请求
 ```bash
-export GLM_API_KEY="sk-1R7IBh2THq1Id2BDWOWHstpFu2oG09Qd1kgYn9hasxFcKZw7"
+export GLM_API_KEY="__API_KEY_8__"
 
-curl -N -X POST https://llm.kxpms.cn/v1/chat/completions \
+curl -N -X POST https://__DOMAIN_2__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GLM_API_KEY" \
   -d '{
@@ -164,7 +164,7 @@ done
 
 ### 3. 检查拦截日志
 ```bash
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 docker logs llm-gateway-go 2>&1 | grep "detected OpenAI-format"
 ```
 
@@ -256,7 +256,7 @@ if strings.Contains(dataStr, `"choices":[`) ||
 ## 📞 关键文件位置
 
 ```
-/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go/
+__LOCAL_PATH_1__/
 ├── relay/
 │   ├── openai_format_detector.go          ← 新增（已创建）
 │   └── anthropic_to_openai_stream.go      ← 已修改

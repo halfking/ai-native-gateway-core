@@ -109,7 +109,7 @@ curl -X POST http://localhost:8000/api/sessions/ingest \
 └────────────────────┬────────────────────────────────────┘
                      │ HTTP/WebSocket
 ┌────────────────────▼────────────────────────────────────┐
-│           llm-gateway-go 网关层 (:8781)                 │
+│           llm-gateway-go 网关层 (:__PORT_3__)                 │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │           插件化Hook处理链                         │  │
 │  │  PreRouting → Routing → PreUpstream →             │  │

@@ -826,7 +826,7 @@ cat domains/session/context.go
 
 ### Step 1: 创建文件
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 
 # 创建核心文件
 touch domains/hooks/types.go

@@ -1,7 +1,7 @@
 # llm-gateway-go 多级 Sticky 路由部署验证报告
 
 **部署时间**: 2026-06-25 21:23  
-**部署环境**: 184 k3s (llmgateway.internal.example.com)  
+**部署环境**: 184 k3s (__DOMAIN_8__)  
 **版本**: ee72c966  
 **部署方式**: `./scripts/deploy-llm-gateway-go-184.sh --only app`  
 
@@ -19,10 +19,10 @@ pod/llm-gateway-go-deployment-6d7c5fddd7-qz949 condition met
 
 **健康检查**:
 ```bash
-$ curl -s https://llmgateway.internal.example.com/healthz | jq .status
+$ curl -s https://__DOMAIN_8__/healthz | jq .status
 "ok"
 
-$ curl -s https://llmgateway.internal.example.com/healthz | jq .version
+$ curl -s https://__DOMAIN_8__/healthz | jq .version
 "V2.2.0-77-gee72c966-ee72c966-2026-06-25-690"
 ```
 

@@ -361,7 +361,7 @@ $ go test ./internal/ir/... -v -run "TestSerializeOpenAI"
 --- PASS: TestSerializeOpenAI_MultipleToolCallsWithEmptyContent (0.00s)
 ... (所有测试通过)
 PASS
-ok  	github.com/kaixuan/llm-gateway-go/internal/ir	0.213s
+ok  	__REPO_URL_3__/internal/ir	0.213s
 ```
 
 **✅ 所有测试通过，包括新增测试和现有回归测试。**

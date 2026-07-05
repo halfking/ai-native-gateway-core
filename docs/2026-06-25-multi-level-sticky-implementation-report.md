@@ -11,8 +11,8 @@
 ## 问题回顾
 
 用户报告的现象：
-1. 手工选择 `claude-opus-4-8` (kaixuan组第3个)
-2. 实际使用了 `minimax-m2.7-quickspeed` (kaixuan组第2个)
+1. 手工选择 `claude-opus-4-8` (__USER_2__组第3个)
+2. 实际使用了 `minimax-m2.7-quickspeed` (__USER_2__组第2个)
 3. 两次失败后才用上正确的模型
 4. 第一个成功的claude请求看起来像"第二回合"
 
@@ -156,7 +156,7 @@ cd __DEV_HOME__/workspace/official-deploy
 **验证**:
 ```bash
 # 检查健康
-curl -s https://llmgateway.internal.example.com/healthz
+curl -s https://__DOMAIN_8__/healthz
 
 # 检查日志
 kubectl -n pms-test logs deploy/kx-llm-gateway-go -f | grep "sticky"
@@ -177,7 +177,7 @@ cd __DEV_HOME__/workspace/official-deploy
 **验证**:
 ```bash
 # 检查健康
-curl -s https://llmgateway.internal.example.com/healthz
+curl -s https://__DOMAIN_8__/healthz
 
 # 检查日志
 K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@__INTERNAL_K8S_HOST__ \
@@ -190,7 +190,7 @@ K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@__INTERNAL_K8S_HOST__ \
 
 ```bash
 # 场景1: 选择 claude-opus-4-8，应该直接用 claude 的 credential
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "X-Gw-Session-Id: test-session-001" \
   -H "Content-Type: application/json" \
@@ -203,7 +203,7 @@ curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
 # 应该显示使用了 claude 相关的 credential
 
 # 场景2: 同一会话切换到 minimax，应该用 minimax 的 credential
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "X-Gw-Session-Id: test-session-001" \
   -H "Content-Type: application/json" \
@@ -215,7 +215,7 @@ curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
 # 应该使用 minimax 的 credential，而不是之前的 claude
 
 # 场景3: 切回 claude，应该复用之前的 claude credential (L1)
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "X-Gw-Session-Id: test-session-001" \
   -H "Content-Type: application/json" \

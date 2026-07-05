@@ -200,7 +200,7 @@ No longer needs explicit UNION for current month.';
 
 CREATE OR REPLACE FUNCTION promote_request_logs_hot_to_partition(
   p_retention interval DEFAULT '7 days',
-  p_batch_size int DEFAULT 5000
+  p_batch_size int DEFAULT __PORT_8__
 )
 RETURNS bigint
 LANGUAGE plpgsql AS $$

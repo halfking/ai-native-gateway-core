@@ -42,7 +42,7 @@
 
 - [ ] **运行诊断脚本** (3 分钟)
   ```bash
-  cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+  cd __LOCAL_PATH_1__
   ./scripts/diagnose-glm52.sh -v
   ```
 
@@ -54,7 +54,7 @@
 
 - [ ] **收集生产日志**
   ```bash
-  ssh root@14.103.174.71
+  ssh __SSH_TARGET_2__
   docker logs llm-gateway-go --tail 100 | grep -E "glm-5\.2|anthropic_to_openai"
   ```
 
@@ -117,12 +117,12 @@
 
 - [ ] **上传**
   ```bash
-  scp llm-gateway-go-linux root@14.103.174.71:/tmp/
+  scp llm-gateway-go-linux __SSH_TARGET_2__:/tmp/
   ```
 
 - [ ] **部署**
   ```bash
-  ssh root@14.103.174.71
+  ssh __SSH_TARGET_2__
   systemctl stop llm-gateway-go
   mv /tmp/llm-gateway-go-linux /usr/local/bin/llm-gateway-go
   chmod +x /usr/local/bin/llm-gateway-go
@@ -133,12 +133,12 @@
 
 - [ ] **检查服务状态**
   ```bash
-  ssh root@14.103.174.71 'systemctl status llm-gateway-go'
+  ssh __SSH_TARGET_2__ 'systemctl status llm-gateway-go'
   ```
 
 - [ ] **检查健康状态**
   ```bash
-  curl http://14.103.174.71:8780/healthz
+  curl http://__PUB_IP_2__:__PORT_2__/healthz
   ```
 
 - [ ] **运行诊断**
@@ -148,7 +148,7 @@
 
 - [ ] **查看日志**
   ```bash
-  ssh root@14.103.174.71
+  ssh __SSH_TARGET_2__
   journalctl -u llm-gateway-go -f | grep -E "detected OpenAI-format|glm-5.2"
   ```
 
@@ -237,7 +237,7 @@
 ### 快速回滚（恢复备份）
 
 ```bash
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 systemctl stop llm-gateway-go
 cp /usr/local/bin/llm-gateway-go.backup-* /usr/local/bin/llm-gateway-go
 systemctl start llm-gateway-go
@@ -247,7 +247,7 @@ systemctl status llm-gateway-go
 ### 代码回滚（如果已提交）
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 git revert <commit-hash>
 ./scripts/deploy-llm-gateway-71.sh
 ```

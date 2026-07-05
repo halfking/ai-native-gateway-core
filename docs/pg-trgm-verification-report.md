@@ -1,8 +1,8 @@
 # pg_trgm 扩展问题核实报告
 
 **核实时间：** 2026-07-04 01:10  
-**数据库：** 71 环境（172.31.0.3:5432）  
-**核实人员：** @xutaohuang
+**数据库：** 71 环境（__PRIV_IP_2__:__PORT_5__）  
+**核实人员：** @__USER_1__
 
 ---
 
@@ -138,7 +138,7 @@ func (d *DB) Open(ctx context.Context, databaseURL string) (*DB, error) {
 
 ### 安装方法
 
-**在 172.31.0.3 数据库服务器上执行：**
+**在 __PRIV_IP_2__ 数据库服务器上执行：**
 
 ```bash
 # 方案 1：如果有 root 权限
@@ -212,9 +212,9 @@ END $$;
 
 ### 立即行动（本周）
 
-1. **联系运维或 DBA 在 172.31.0.3 上安装 postgresql-contrib-15**
+1. **联系运维或 DBA 在 __PRIV_IP_2__ 上安装 postgresql-contrib-15**
    ```bash
-   ssh 172.31.0.3
+   ssh __PRIV_IP_2__
    apt-get install postgresql-contrib-15
    systemctl restart postgresql
    ```

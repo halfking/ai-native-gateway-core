@@ -16,7 +16,7 @@ Phase 5 真实 API 测试成功完成。Request WAL 系统在实际负载下工�
 ## Test 1: 50 Mixed Requests
 
 ### Setup
-- API Key: `sk-e2e-1781897808-B-3322` (E2E test key)
+- API Key: `__API_KEY_3__` (E2E test key)
 - Models tested: gpt-4o-mini, claude-haiku-4-5, deepseek-v3, gpt-oss-20b, glm-4.5-flash, glm-5.2, minimax-m3
 - Failure injection: bad model, no auth, empty messages, missing model, bad role
 

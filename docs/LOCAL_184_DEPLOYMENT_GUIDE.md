@@ -5,7 +5,7 @@
 ### 1. 验证当前状态
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 
 # 检查本地和184环境的架构状态
 ./scripts/verify_partition_architecture.sh
@@ -62,20 +62,20 @@ cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
 ### 本地环境变量（可选）
 ```bash
 export LOCAL_DB_HOST=localhost
-export LOCAL_DB_PORT=5432
+export LOCAL_DB_PORT=__PORT_5__
 export LOCAL_DB_USER=postgres
 export LOCAL_DB_NAME=llm_gateway
-export LOCAL_SERVICE_URL=http://localhost:8080
+export LOCAL_SERVICE_URL=http://localhost:__PORT_12__
 ```
 
 ### 184环境变量（可选）
 ```bash
 export REMOTE_184_HOST=10.0.0.184
 export REMOTE_184_DB_HOST=10.0.0.184
-export REMOTE_184_DB_PORT=5432
+export REMOTE_184_DB_PORT=__PORT_5__
 export REMOTE_184_DB_USER=postgres
 export REMOTE_184_DB_NAME=llm_gateway
-export REMOTE_184_SERVICE_URL=http://10.0.0.184:8080
+export REMOTE_184_SERVICE_URL=http://10.0.0.184:__PORT_12__
 ```
 
 如果需要密码：
@@ -130,12 +130,12 @@ export PGPASSWORD=your_password
 **解决**:
 ```bash
 # 检查PostgreSQL是否运行
-pg_isready -h localhost -p 5432
+pg_isready -h localhost -p __PORT_5__
 
 # 检查数据库是否存在
 psql -h localhost -U postgres -l | grep llm_gateway
 
-# 如果端口不是5432，设置环境变量
+# 如果端口不是__PORT_5__，设置环境变量
 export LOCAL_DB_PORT=你的端口
 ```
 

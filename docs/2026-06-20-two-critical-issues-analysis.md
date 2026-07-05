@@ -317,7 +317,7 @@ grep -rn "gw_invalid_key" . --include="*.go" -A 5 -B 5
 
 ```bash
 # 在服务中添加详细日志
-kubectl -n pms-test logs deployment/llm-gateway-go-deployment --tail=5000 | \
+kubectl -n pms-test logs deployment/llm-gateway-go-deployment --tail=__PORT_8__ | \
   grep -E "auth|invalid|sk-JhU" | \
   tail -50
 ```

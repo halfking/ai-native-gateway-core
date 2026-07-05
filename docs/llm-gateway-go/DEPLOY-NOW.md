@@ -45,7 +45,7 @@
 ### 方式 1: 一键部署（推荐）
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 
 # 设置 SSH 密码
 export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
@@ -65,16 +65,16 @@ export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
 ### 方式 2: 手动部署（分步执行）
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 
 # 1. 构建
 GOOS=linux GOARCH=amd64 go build -o llm-gateway-go-linux ./cmd/gateway
 
 # 2. 上传
-scp llm-gateway-go-linux root@14.103.174.71:/tmp/
+scp llm-gateway-go-linux __SSH_TARGET_2__:/tmp/
 
 # 3. 部署
-ssh root@14.103.174.71 << 'EOF'
+ssh __SSH_TARGET_2__ << 'EOF'
   # 备份
   cp /usr/local/bin/llm-gateway-go /usr/local/bin/llm-gateway-go.backup-$(date +%Y%m%d-%H%M%S)
   
@@ -94,7 +94,7 @@ ssh root@14.103.174.71 << 'EOF'
 EOF
 
 # 4. 验证
-curl http://14.103.174.71:8780/healthz
+curl http://__PUB_IP_2__:__PORT_2__/healthz
 ```
 
 ---
@@ -104,7 +104,7 @@ curl http://14.103.174.71:8780/healthz
 ### 1. 重新运行诊断（最重要）
 
 ```bash
-export GLM_API_KEY="sk-1R7IBh2THq1Id2BDWOWHstpFu2oG09Qd1kgYn9hasxFcKZw7"
+export GLM_API_KEY="__API_KEY_8__"
 ./scripts/diagnose-glm52.sh -v
 ```
 
@@ -116,7 +116,7 @@ export GLM_API_KEY="sk-1R7IBh2THq1Id2BDWOWHstpFu2oG09Qd1kgYn9hasxFcKZw7"
 ### 2. 检查日志
 
 ```bash
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 journalctl -u llm-gateway-go -n 50 | grep "detected OpenAI-format"
 ```
 
@@ -139,7 +139,7 @@ anthropic_to_openai: detected OpenAI-format data, dropping
 ## 🔄 回滚方案（如果需要）
 
 ```bash
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 systemctl stop llm-gateway-go
 cp /usr/local/bin/llm-gateway-go.backup-* /usr/local/bin/llm-gateway-go
 systemctl start llm-gateway-go
@@ -237,7 +237,7 @@ Layer 3: OpenAI 格式精细检测
 **推荐命令**（全自动）：
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
 ./scripts/deploy-glm52-fix-now.sh
 ```

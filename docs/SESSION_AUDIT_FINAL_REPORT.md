@@ -189,7 +189,7 @@ func (d *FastDetector) Detect(ctx context.Context, content string) (*DetectResul
 
 **性能基准**:
 - 1000 字符文本: ~2-3ms
-- 5000 字符文本: ~4-5ms
+- __PORT_8__ 字符文本: ~4-5ms
 - 50KB 上限截断: 防止 DoS
 
 ---
@@ -289,8 +289,8 @@ psql -c "\d approval_queue"
 
 ```go
 import (
-    "github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
-    sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"
+    "__REPO_URL_3__/domains/sessionaudit"
+    sessionaudithook "__REPO_URL_3__/domains/hooks/sessionaudit"
 )
 
 func main() {
@@ -341,7 +341,7 @@ SESSION_AUDIT_SENSITIVE_WORDS=/etc/llm-gateway/sensitive_words.txt
 
 **请求**:
 ```bash
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -d '{
     "model": "gpt-4",
@@ -361,7 +361,7 @@ curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
 
 **请求**:
 ```bash
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -d '{
     "model": "gpt-4",
@@ -390,11 +390,11 @@ curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
 **管理员操作**:
 ```bash
 # 查看待审批列表
-curl https://llmgateway.internal.example.com/api/admin/session-approvals?status=pending \
+curl https://__DOMAIN_8__/api/admin/session-approvals?status=pending \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # 批准
-curl -X POST https://llmgateway.internal.example.com/api/admin/session-approvals/uuid-xxx/approve \
+curl -X POST https://__DOMAIN_8__/api/admin/session-approvals/uuid-xxx/approve \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d '{"reason": "Verified as security research"}'
 ```

@@ -144,7 +144,7 @@ ON CONFLICT (request_id, ts) DO UPDATE SET
 对于 < 0.1% 的历史补录场景，使用 `partition_router.go`：
 
 ```go
-import "github.com/kaixuan/llm-gateway-go/telemetry"
+import "__REPO_URL_3__/telemetry"
 
 // 判断目标表
 ts := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)  // 历史时间

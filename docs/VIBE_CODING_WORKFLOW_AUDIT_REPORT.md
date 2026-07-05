@@ -3,7 +3,7 @@
 **文档版本**: v1.0  
 **创建时间**: 2026-07-02  
 **审计范围**: LLM Gateway 项目 Vibe Coding 规范体系  
-**项目路径**: `/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go`
+**项目路径**: `__LOCAL_PATH_1__`
 
 ---
 
@@ -128,13 +128,13 @@ docs/
 
 | 端点 | 用途 | 认证 |
 |------|------|------|
-| `https://llmgo.kxpms.cn/v1/chat/completions` | 聊天补全 | `Authorization: Bearer <API_KEY>` |
-| `https://llmgo.kxpms.cn/api/logs` | 请求日志查询 | `Authorization: Bearer <ADMIN_API_KEY>` |
-| `https://llmgo.kxpms.cn/health` | 健康检查 | 无需认证 |
+| `https://__DOMAIN_1__/v1/chat/completions` | 聊天补全 | `Authorization: Bearer <API_KEY>` |
+| `https://__DOMAIN_1__/api/logs` | 请求日志查询 | `Authorization: Bearer <ADMIN_API_KEY>` |
+| `https://__DOMAIN_1__/health` | 健康检查 | 无需认证 |
 
 ### 认证信息
 
-- **API Key** (测试用): `sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9`
+- **API Key** (测试用): `__API_KEY_1__`
 - **Admin API Key**: 从环境变量 `LLM_GATEWAY_ADMIN_API_KEY` 获取
 
 ## 常用命令速查
@@ -151,7 +151,7 @@ go build
 go test ./...
 
 # 部署
-ssh -p 25022 root@14.103.112.184
+ssh -p __PORT_1__ __SSH_TARGET_1__
 systemctl status llm-gateway-go
 systemctl restart llm-gateway-go
 
@@ -271,7 +271,7 @@ psql -h 127.0.0.1 -U llm_gateway -d llm_gateway
 ## 七、关键文件路径
 
 ```
-/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go/
+__LOCAL_PATH_1__/
 ├── PROJECT_CONFIG.md                   # 项目配置（Layer 1）
 ├── config/config.go                    # Go 配置加载
 ├── .env.local                          # 本地环境变量
@@ -305,7 +305,7 @@ go mod tidy                             # 整理依赖
 
 ### 部署相关
 ```bash
-ssh -p 25022 root@14.103.112.184        # SSH 到 184 服务器
+ssh -p __PORT_1__ __SSH_TARGET_1__        # SSH 到 184 服务器
 systemctl status llm-gateway-go         # 检查服务状态
 systemctl restart llm-gateway-go        # 重启服务
 journalctl -u llm-gateway-go -f         # 查看实时日志

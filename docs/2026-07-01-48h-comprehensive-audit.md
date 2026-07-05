@@ -193,7 +193,7 @@ Day 3 — Jul 1 00:39 ───────────────────�
 **Changes:**
 - `fix(domains)`: detector/checker 初始化表回退
 - `fix(phase7)`: P0 — multi-tenant + LastSeenAt + txn type
-- `fix(dockerfile)`: registry.internal.example.com → registry.kxpms.cn
+- `fix(dockerfile)`: __DOMAIN_9__ → __DOMAIN_4__
 - `docs(r1.13)`: mark checklist complete
 - `fix(phase7)`: P1 — Health pagination + multi-tenant + ProbeOnce pagination
 - `chore(version)`: bump
@@ -201,7 +201,7 @@ Day 3 — Jul 1 00:39 ───────────────────�
 ### P17 — DB 同步脚本增强 (04:55–13:13, 7 commits)
 **Files:** `scripts/*`, `db/migrations/*`, `domains/*`  
 **Changes:**
-- sync 184→local: port 25022 + pg_dump 15.18
+- sync 184→local: port __PORT_1__ + pg_dump 15.18
 - completion_tokens + cache_tokens for non-streaming
 - pg_basebackup 184→local (~3-5 min)
 - 4-table partition & archive + columnar storage (317–319)
@@ -288,7 +288,7 @@ Day 3 — Jul 1 00:39 ───────────────────�
 | Total lines changed | ~45,000 (+22,874 net) |
 | Files touched | ~400 |
 | Active time span | 40h 11m |
-| Authors | 3 (opencode-agent: 127, agent: 6, kaixuan-agent: 6) |
+| Authors | 3 (opencode-agent: 127, agent: 6, __USER_2__-agent: 6) |
 | Merge commits | 4 |
 | Bug fixes | ~45 commits |
 | New features | ~50 commits |

@@ -107,14 +107,14 @@ go build -o llm-gateway-go ./cmd/gateway
 ### 3. 版本信息在镜像中的位置
 
 Docker 镜像内可从以下位置读取版本信息：
-- `/opt/llm-gateway-go/VERSION` - 完整版本字符串
-- `/opt/llm-gateway-go/.deploy_seq` - 编译序号
+- `__SERVER_PATH_1__/VERSION` - 完整版本字符串
+- `__SERVER_PATH_1__/.deploy_seq` - 编译序号
 - `/.VERSION` - 完整版本字符串（根目录）
 - `/.deploy_seq` - 编译序号（根目录）
 
 验证镜像版本：
 ```bash
-docker run --rm --entrypoint cat <image>:tag /opt/llm-gateway-go/VERSION
+docker run --rm --entrypoint cat <image>:tag __SERVER_PATH_1__/VERSION
 ```
 
 ---
@@ -123,9 +123,9 @@ docker run --rm --entrypoint cat <image>:tag /opt/llm-gateway-go/VERSION
 
 ### 部署架构
 
-- **56 (网关)**: 14.103.169.56 (172.31.0.2) - nps + nginx
-- **71 (infra)**: 14.103.174.71 (172.31.0.3) - docker + llm-gateway (老版本)
-- **184 (核心应用)**: 14.103.112.184 (172.31.0.4) - k8s + llm-gateway-go
+- **56 (网关)**: __PUB_IP_3__ (__PRIV_IP_1__) - nps + nginx
+- **71 (infra)**: __PUB_IP_2__ (__PRIV_IP_2__) - docker + llm-gateway (老版本)
+- **184 (核心应用)**: __PUB_IP_1__ (__PRIV_IP_3__) - k8s + llm-gateway-go
 
 ### 部署到 184 服务器（K8s）
 
@@ -143,25 +143,25 @@ docker run --rm --entrypoint cat <image>:tag /opt/llm-gateway-go/VERSION
 docker save kx-llm-gateway-go:${VERSION_STRING} | gzip > /tmp/kx-llm-gateway-go-${VERSION_STRING}.tar.gz
 
 # 上传到 184 服务器
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
-sshpass -e scp -P 25022 -o StrictHostKeyChecking=no \
+export SSHPASS='__SSH_PWD_1__'
+sshpass -e scp -P __PORT_1__ -o StrictHostKeyChecking=no \
   /tmp/kx-llm-gateway-go-${VERSION_STRING}.tar.gz \
-  root@14.103.112.184:/tmp/
+  __SSH_TARGET_1__:/tmp/
 ```
 
 #### 步骤 3: 在 184 服务器上加载镜像
 
 ```bash
 # SSH 到 184
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
-sshpass -e ssh -p 25022 -o StrictHostKeyChecking=no root@14.103.112.184
+export SSHPASS='__SSH_PWD_1__'
+sshpass -e ssh -p __PORT_1__ -o StrictHostKeyChecking=no __SSH_TARGET_1__
 
 # 加载镜像
 docker load < /tmp/kx-llm-gateway-go-${VERSION_STRING}.tar.gz
 
 # 推送到本地 registry
-docker tag kx-llm-gateway-go:${VERSION_STRING} 127.0.0.1:5000/kx-llm-gateway-go:${VERSION_STRING}
-docker push 127.0.0.1:5000/kx-llm-gateway-go:${VERSION_STRING}
+docker tag kx-llm-gateway-go:${VERSION_STRING} 127.0.0.1:__PORT_8__/kx-llm-gateway-go:${VERSION_STRING}
+docker push 127.0.0.1:__PORT_8__/kx-llm-gateway-go:${VERSION_STRING}
 ```
 
 #### 步骤 4: 更新 K8s Deployment
@@ -169,7 +169,7 @@ docker push 127.0.0.1:5000/kx-llm-gateway-go:${VERSION_STRING}
 ```bash
 # 在 184 服务器上执行
 kubectl set image deployment/llm-gateway-go-deployment \
-  llm-gateway-go=127.0.0.1:5000/kx-llm-gateway-go:${VERSION_STRING} \
+  llm-gateway-go=127.0.0.1:__PORT_8__/kx-llm-gateway-go:${VERSION_STRING} \
   -n pms-test
 
 # 等待 rollout 完成
@@ -186,9 +186,9 @@ kubectl logs -n pms-test deployment/llm-gateway-go-deployment --tail=50
 
 ```bash
 # 测试流式响应（从本地）
-curl -s -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -s -X POST https://__DOMAIN_1__/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9" \
+  -H "Authorization: Bearer __API_KEY_1__" \
   -d '{
     "model": "claude-sonnet-5",
     "messages": [{"role": "user", "content": "ping"}],
@@ -196,10 +196,10 @@ curl -s -X POST https://llmgo.kxpms.cn/v1/chat/completions \
   }' | head -20
 
 # 检查服务健康
-curl -s https://llmgo.kxpms.cn/healthz
+curl -s https://__DOMAIN_1__/healthz
 
 # 在 184 上检查版本
-kubectl exec -n pms-test deployment/llm-gateway-go-deployment -- cat /opt/llm-gateway-go/VERSION
+kubectl exec -n pms-test deployment/llm-gateway-go-deployment -- cat __SERVER_PATH_1__/VERSION
 ```
 
 ---
@@ -225,16 +225,16 @@ echo "部署版本: ${VERSION}"
 docker save kx-llm-gateway-go:${VERSION} | gzip > /tmp/kx-llm-gateway-go-${VERSION}.tar.gz
 
 # 4. 上传并部署
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
-sshpass -e scp -P 25022 -o StrictHostKeyChecking=no \
-  /tmp/kx-llm-gateway-go-${VERSION}.tar.gz root@14.103.112.184:/tmp/
+export SSHPASS='__SSH_PWD_1__'
+sshpass -e scp -P __PORT_1__ -o StrictHostKeyChecking=no \
+  /tmp/kx-llm-gateway-go-${VERSION}.tar.gz __SSH_TARGET_1__:/tmp/
 
-sshpass -e ssh -p 25022 -o StrictHostKeyChecking=no root@14.103.112.184 <<EOF
+sshpass -e ssh -p __PORT_1__ -o StrictHostKeyChecking=no __SSH_TARGET_1__ <<EOF
   docker load < /tmp/kx-llm-gateway-go-${VERSION}.tar.gz
-  docker tag kx-llm-gateway-go:${VERSION} 127.0.0.1:5000/kx-llm-gateway-go:${VERSION}
-  docker push 127.0.0.1:5000/kx-llm-gateway-go:${VERSION}
+  docker tag kx-llm-gateway-go:${VERSION} 127.0.0.1:__PORT_8__/kx-llm-gateway-go:${VERSION}
+  docker push 127.0.0.1:__PORT_8__/kx-llm-gateway-go:${VERSION}
   kubectl set image deployment/llm-gateway-go-deployment \
-    llm-gateway-go=127.0.0.1:5000/kx-llm-gateway-go:${VERSION} -n pms-test
+    llm-gateway-go=127.0.0.1:__PORT_8__/kx-llm-gateway-go:${VERSION} -n pms-test
   kubectl rollout status deployment/llm-gateway-go-deployment -n pms-test --timeout=120s
 EOF
 
@@ -328,8 +328,8 @@ kubectl logs -n pms-test <pod-name> --previous
 **验证步骤**:
 ```bash
 # 检查镜像内的版本文件
-docker run --rm --entrypoint cat kx-llm-gateway-go:${VERSION_STRING} /opt/llm-gateway-go/VERSION
-docker run --rm --entrypoint cat kx-llm-gateway-go:${VERSION_STRING} /opt/llm-gateway-go/.deploy_seq
+docker run --rm --entrypoint cat kx-llm-gateway-go:${VERSION_STRING} __SERVER_PATH_1__/VERSION
+docker run --rm --entrypoint cat kx-llm-gateway-go:${VERSION_STRING} __SERVER_PATH_1__/.deploy_seq
 
 # 检查镜像构建参数
 docker image inspect kx-llm-gateway-go:${VERSION_STRING} | jq '.[0].Config.Labels'

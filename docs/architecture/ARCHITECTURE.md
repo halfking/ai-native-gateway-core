@@ -169,7 +169,7 @@ func (p *AuditPipeline) flush(ctx context.Context, batch *[]AuditEvent) {
     *batch = (*batch)[:0]
 }
 
-// 磁盘回退: 写入 /var/log/llm-gateway/audit-fallback/ 目录
+// 磁盘回退: 写入 __SERVER_PATH_6__/audit-fallback/ 目录
 // 定时任务: 每5分钟扫描回退目录, 重新尝试写入DB
 // 文件保留: 7天自动清理
 ```
@@ -227,7 +227,7 @@ Phase 1 (Python only, 稳定现状):
   - 升级telemetry为队列化 (P-4)
 
 Phase 2 (Go旁路验证):
-  - 部署Go数据面到独立端口 (8781)
+  - 部署Go数据面到独立端口 (__PORT_3__)
   - 通过X-Go-Tunnel: true header 控制转发
   - 仅转发特定client_profile (如"roocode-test")
   - 对比Go/Python的处理结果一致性
@@ -252,7 +252,7 @@ Phase 4 (Go全量):
 // 两层: 全局 + 按API Key
 
 type RateLimiter struct {
-    global   *tokenBucket  // 全局: 5000 req/s, burst=200
+    global   *tokenBucket  // 全局: __PORT_8__ req/s, burst=200
     perKey   *tokenBucket  // 按API Key: 100 req/s, burst=50
 }
 

@@ -101,9 +101,9 @@
 
 ## ⚙️ 环境信息
 
-**工作目录**: `/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go`  
+**工作目录**: `__LOCAL_PATH_1__`  
 **Git 分支**: `main`  
-**远程仓库**: `https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git`
+**远程仓库**: `__REPO_URL_1__.git`
 
 ---
 

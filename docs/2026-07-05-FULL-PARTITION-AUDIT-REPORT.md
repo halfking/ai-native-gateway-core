@@ -168,30 +168,30 @@
 
 ```bash
 # 在 71 服务器上创建 migrations 目录
-ssh root@14.103.174.71 -p 25022 "mkdir -p /tmp/migrations_71"
+ssh __SSH_TARGET_2__ -p __PORT_1__ "mkdir -p /tmp/migrations_71"
 
 # 从 184 复制 migrations 343-347
-scp -P 25022 db/migrations/343_*.sql root@14.103.174.71:/tmp/migrations_71/
-scp -P 25022 db/migrations/344_*.sql root@14.103.174.71:/tmp/migrations_71/
-scp -P 25022 db/migrations/345_*.sql root@14.103.174.71:/tmp/migrations_71/
-scp -P 25022 db/migrations/346_*.sql root@14.103.174.71:/tmp/migrations_71/
-scp -P 25022 db/migrations/347_*.sql root@14.103.174.71:/tmp/migrations_71/
+scp -P __PORT_1__ db/migrations/343_*.sql __SSH_TARGET_2__:/tmp/migrations_71/
+scp -P __PORT_1__ db/migrations/344_*.sql __SSH_TARGET_2__:/tmp/migrations_71/
+scp -P __PORT_1__ db/migrations/345_*.sql __SSH_TARGET_2__:/tmp/migrations_71/
+scp -P __PORT_1__ db/migrations/346_*.sql __SSH_TARGET_2__:/tmp/migrations_71/
+scp -P __PORT_1__ db/migrations/347_*.sql __SSH_TARGET_2__:/tmp/migrations_71/
 ```
 
 ##### 第 2 步：应用 migrations（15 分钟）
 
 ```bash
 # 在 71 服务器上执行
-ssh root@14.103.174.71 -p 25022
+ssh __SSH_TARGET_2__ -p __PORT_1__
 
 # 逐个应用 migration
 for m in 343 344 345 346 347; do
     echo "=== Applying migration $m ==="
-    PGPASSWORD='llm_gateway_2024' psql -h 127.0.0.1 -U llm_gateway -d llm_gateway \
+    PGPASSWORD='__DB_PWD_2__' psql -h 127.0.0.1 -U llm_gateway -d llm_gateway \
         -f /tmp/migrations_71/${m}_*.sql
     
     # 记录到 schema_migrations
-    PGPASSWORD='llm_gateway_2024' psql -h 127.0.0.1 -U llm_gateway -d llm_gateway \
+    PGPASSWORD='__DB_PWD_2__' psql -h 127.0.0.1 -U llm_gateway -d llm_gateway \
         -c "INSERT INTO schema_migrations (version, description, applied_at) 
             VALUES ('$m', '${m}_*.sql', NOW()) ON CONFLICT DO NOTHING;"
 done
@@ -201,24 +201,24 @@ done
 
 ```bash
 # 复制测试脚本到 71
-scp -P 25022 scripts/e2e-test-all-hot-tables.sh root@14.103.174.71:/tmp/scripts_71/
+scp -P __PORT_1__ scripts/e2e-test-all-hot-tables.sh __SSH_TARGET_2__:/tmp/scripts_71/
 
 # 修改脚本中的数据库密码
-ssh root@14.103.174.71 -p 25022 "
-    sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=\"llm_gateway_2024\"/' /tmp/scripts_71/e2e-test-all-hot-tables.sh
+ssh __SSH_TARGET_2__ -p __PORT_1__ "
+    sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=\"__DB_PWD_2__\"/' /tmp/scripts_71/e2e-test-all-hot-tables.sh
     sed -i 's/DB_HOST=.*/DB_HOST=\"127.0.0.1\"/' /tmp/scripts_71/e2e-test-all-hot-tables.sh
     chmod +x /tmp/scripts_71/e2e-test-all-hot-tables.sh
 "
 
 # 运行测试
-ssh root@14.103.174.71 -p 25022 "/tmp/scripts_71/e2e-test-all-hot-tables.sh"
+ssh __SSH_TARGET_2__ -p __PORT_1__ "/tmp/scripts_71/e2e-test-all-hot-tables.sh"
 ```
 
 ##### 第 4 步：部署代码（10 分钟）
 
 ```bash
 # 在本地构建并推送
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 git pull
 go build ./...
 
@@ -231,8 +231,8 @@ go build ./...
 
 ```bash
 # 1. 检查热表数据
-ssh root@14.103.174.71 -p 25022 "
-    PGPASSWORD='llm_gateway_2024' psql -h 127.0.0.1 -U llm_gateway -d llm_gateway -c '
+ssh __SSH_TARGET_2__ -p __PORT_1__ "
+    PGPASSWORD='__DB_PWD_2__' psql -h 127.0.0.1 -U llm_gateway -d llm_gateway -c '
         SELECT 
             relname, 
             pg_size_pretty(pg_total_relation_size(oid)) AS size,
@@ -245,10 +245,10 @@ ssh root@14.103.174.71 -p 25022 "
 "
 
 # 2. 检查应用日志
-ssh root@14.103.174.71 -p 25022 "tail -100 /opt/llm-gateway-go/logs/app.log | grep -i 'error\|panic'"
+ssh __SSH_TARGET_2__ -p __PORT_1__ "tail -100 __SERVER_PATH_1__/logs/app.log | grep -i 'error\|panic'"
 
 # 3. 检查写入成功率
-curl -s http://llm.kxpms.cn/admin/telemetry/summary | jq '.success_rate'
+curl -s http://__DOMAIN_2__/admin/telemetry/summary | jq '.success_rate'
 ```
 
 #### 预期结果
@@ -269,10 +269,10 @@ curl -s http://llm.kxpms.cn/admin/telemetry/summary | jq '.success_rate'
 systemctl stop llm-gateway-go
 
 # 2. 恢复旧代码
-cp /opt/llm-gateway-go/llm-gateway-go.bak /opt/llm-gateway-go/llm-gateway-go
+cp __SERVER_PATH_1__/llm-gateway-go.bak __SERVER_PATH_1__/llm-gateway-go
 
 # 3. 重建 _default 分区（每张表）
-PGPASSWORD='llm_gateway_2024' psql -h 127.0.0.1 -U llm_gateway -d llm_gateway << EOF
+PGPASSWORD='__DB_PWD_2__' psql -h 127.0.0.1 -U llm_gateway -d llm_gateway << EOF
 BEGIN;
 CREATE TABLE usage_ledger_default PARTITION OF usage_ledger DEFAULT;
 INSERT INTO usage_ledger_default SELECT * FROM usage_ledger_hot ON CONFLICT DO NOTHING;
@@ -382,7 +382,7 @@ DROP TABLE IF EXISTS test_heal_parent CASCADE;
 | 查询响应时间 P99 | - | <500ms | Prometheus `request_latency_p99` |
 | 热表数据量 | 0 | <10GB | `pg_total_relation_size(*_hot)` |
 | Promote 成功率 | - | >99% | `partition_manager_logs` |
-| 错误日志 | - | 0 | `grep ERROR /opt/llm-gateway-go/logs/app.log` |
+| 错误日志 | - | 0 | `grep ERROR __SERVER_PATH_1__/logs/app.log` |
 
 ---
 

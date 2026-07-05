@@ -15,7 +15,7 @@ EXPLAIN ANALYZE
 SELECT * FROM request_logs WHERE ts >= '2026-07-01';
 
 -- 执行计划（PostgreSQL 自动优化）
-Append  (cost=0.00..1000 rows=5000)
+Append  (cost=0.00..1000 rows=__PORT_8__)
   ->  Seq Scan on request_logs_2026_07  (cost=0.00..500 rows=2500)
         Filter: (ts >= '2026-07-01')
   ->  Seq Scan on request_logs_default  (cost=0.00..500 rows=2500)

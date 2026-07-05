@@ -26,7 +26,7 @@ OpenAI Chat Completions 格式调用 Anthropic Claude 模型
 
 ### 测试用例 1.1: 简单问答
 ```bash
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -d '{
     "model": "claude-opus-4-8",
@@ -57,7 +57,7 @@ curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
 
 ### 测试用例 1.2: 复杂推理（尝试触发 thinking）
 ```bash
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -d '{
     "model": "claude-opus-4-8",
@@ -91,7 +91,7 @@ curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
 
 ### 测试用例 2.1: 标准 OpenAI 调用
 ```bash
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -d '{
     "model": "claude-opus-4-8",
@@ -124,7 +124,7 @@ Anthropic Messages API 格式调用 OpenAI 模型
 
 ### 测试用例 3.1: 调用 gpt-4
 ```bash
-curl -X POST https://llmgateway.internal.example.com/v1/messages \
+curl -X POST https://__DOMAIN_8__/v1/messages \
   -H "Authorization: Bearer $API_KEY" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
@@ -216,7 +216,7 @@ if len(thinkingParts) > 0 {
 **方法 1**: 使用返回 thinking blocks 的模型
 ```bash
 # 如果有其他 Claude 模型返回 thinking blocks
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -d '{"model": "claude-sonnet-3.5-thinking", ...}'
 ```
 

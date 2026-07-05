@@ -24,8 +24,8 @@
 
 ### 1.3 敏感信息检查
 
-- [ ] 所有IP地址使用占位符（`__HOST_71_IP__`, `__INTERNAL_PUBLIC_IP__`）
-- [ ] 所有密码使用占位符（`__REDACTED_DB_PASSWORD__`）
+- [ ] 所有IP地址使用占位符（`__SECRET_1__`, `__INTERNAL_PUBLIC_IP__`）
+- [ ] 所有密码使用占位符（`__SECRET_2__`）
 - [ ] 没有提交`.env`文件到仓库
 - [ ] 所有敏感配置使用环境变量
 
@@ -167,7 +167,7 @@ ps aux | grep llm-gateway | grep -v grep
 
 ```bash
 # 检查配置文件权限
-ls -la /etc/llm-gateway-go/
+ls -la __SERVER_PATH_3__/
 
 # 预期：敏感文件 chmod 600
 ```
@@ -184,7 +184,7 @@ ls -la /etc/llm-gateway-go/
 ss -tlnp | grep llm-gateway
 
 # 检查防火墙规则
-iptables -L -n | grep 8780
+iptables -L -n | grep __PORT_2__
 ```
 
 - [ ] 只监听必要端口
@@ -254,7 +254,7 @@ docker tag llm-gateway-go:previous llm-gateway-go:current
 systemctl start llm-gateway-go
 
 # 3. 验证服务
-curl -fsS http://localhost:8780/healthz
+curl -fsS http://localhost:__PORT_2__/healthz
 
 # 4. 回滚数据库（如需要）
 psql -U kxuser -d llm_gateway < /backup/schema-before-deploy.sql
@@ -329,7 +329,7 @@ echo "Target: $TARGET_ENV"
 grep -r "14.103" . --include="*.sh" --include="*.go" && echo "❌ Hard-coded IP found" || echo "✅ No hard-coded IP"
 
 # 3. 服务健康
-curl -fsS http://localhost:8780/healthz && echo "✅ Healthy" || echo "❌ Unhealthy"
+curl -fsS http://localhost:__PORT_2__/healthz && echo "✅ Healthy" || echo "❌ Unhealthy"
 
 # 4. 日志检查
 docker logs llm-gateway-go --tail=50 | grep -i error && echo "⚠️  Errors found" || echo "✅ No errors"
@@ -382,7 +382,7 @@ A: 立即检查日志 `docker logs llm-gateway-go --tail=100`，如5分钟内未
 echo "=== Pre-deployment Security Check ==="
 
 # 1. 硬编码IP检查
-if grep -r "192.168.1\|14.103.174.71\|14.103.112.184" . \
+if grep -r "192.168.1\|__PUB_IP_2__\|__PUB_IP_1__" . \
     --include="*.sh" --include="*.go" --include="*.yaml" \
     --exclude-dir=vendor --exclude-dir=node_modules | grep -v "DISABLED"; then
     echo "❌ Hard-coded IP addresses found"
@@ -419,7 +419,7 @@ TARGET="$1"
 echo "=== Post-deployment Verification ==="
 
 # 1. 健康检查
-if curl -fsS "http://$TARGET:8780/healthz" > /dev/null; then
+if curl -fsS "http://$TARGET:__PORT_2__/healthz" > /dev/null; then
     echo "✅ Health check passed"
 else
     echo "❌ Health check failed"
@@ -427,7 +427,7 @@ else
 fi
 
 # 2. 版本检查
-VERSION=$(curl -s "http://$TARGET:8780/healthz" | jq -r .version)
+VERSION=$(curl -s "http://$TARGET:__PORT_2__/healthz" | jq -r .version)
 echo "Version: $VERSION"
 
 # 3. 日志检查

@@ -10,7 +10,7 @@
 
 ### 1.1 问题描述
 
-- **71服务器** (`__HOST_71_IP__`): 生产环境，包含真实用户数据
+- **71服务器** (`__SECRET_1__`): 生产环境，包含真实用户数据
 - **184服务器** (`__INTERNAL_PUBLIC_IP__`): 测试环境，用于开发和测试
 - 两个环境之间存在Schema版本差异和数据差异
 - 存在误操作风险：脚本可能直接操作生产数据库或从生产同步数据
@@ -51,7 +51,7 @@
 **文件**: `~/.agents/skills/deploy-acc/SKILL.md`
 
 **修正内容**:
-- 替换所有 `14.103.112.184` 为 `__INTERNAL_PUBLIC_IP__`
+- 替换所有 `__PUB_IP_1__` 为 `__INTERNAL_PUBLIC_IP__`
 - 添加环境说明：标注184为测试环境
 - 更新所有命令示例使用占位符
 - 添加文档引用链接
@@ -161,8 +161,8 @@
 
 | 原IP | 占位符 | 替换次数 |
 |------|--------|---------|
-| `14.103.112.184` | `__INTERNAL_PUBLIC_IP__` | 22处 |
-| `14.103.174.71` | `__HOST_71_IP__` | 6处 |
+| `__PUB_IP_1__` | `__INTERNAL_PUBLIC_IP__` | 22处 |
+| `__PUB_IP_2__` | `__SECRET_1__` | 6处 |
 | **总计** | | **28处** |
 
 ---
@@ -249,7 +249,7 @@ rm scripts/sync-db-from-71.sh.temp
 
 ```bash
 # 在项目根目录执行
-grep -r "192.168.1.71\|192.168.1.184\|14.103.174.71\|14.103.112.184" \
+grep -r "192.168.1.71\|192.168.1.184\|__PUB_IP_2__\|__PUB_IP_1__" \
   . --include="*.sh" --include="*.go" --include="*.md" \
   --exclude-dir=node_modules --exclude-dir=vendor \
   | grep -v "DISABLED\|# 原"
@@ -273,7 +273,7 @@ grep -r "14.103" ~/.agents/skills/deploy-acc/ \
 
 ```bash
 # 检查是否正确使用占位符
-grep -r "__HOST_71_IP__\|__INTERNAL_PUBLIC_IP__" . \
+grep -r "__SECRET_1__\|__INTERNAL_PUBLIC_IP__" . \
   --include="*.sh" --include="*.md" \
   | head -20
 

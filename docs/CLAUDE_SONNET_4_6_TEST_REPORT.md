@@ -2,9 +2,9 @@
 
 ## 测试概览
 - **测试时间**: 2026-07-02
-- **测试端点**: https://llmgo.kxpms.cn/v1/chat/completions
+- **测试端点**: https://__DOMAIN_1__/v1/chat/completions
 - **测试模型**: claude-sonnet-4-6
-- **API Key**: sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9
+- **API Key**: __API_KEY_1__
 
 ## 测试结果
 
@@ -34,7 +34,7 @@
 
 ### 3. 数据库日志完整性验证
 
-通过直接查询数据库（14.103.112.184:5432），验证了请求日志记录的完整性：
+通过直接查询数据库（__PUB_IP_1__:__PORT_5__），验证了请求日志记录的完整性：
 
 #### 统计数据（最近1小时）
 - **总请求数**: 699
@@ -111,7 +111,7 @@
 3. ✅ 数据库日志记录系统验证通过
 
 ## 测试环境信息
-- **数据库**: PostgreSQL @ 14.103.112.184:5432
+- **数据库**: PostgreSQL @ __PUB_IP_1__:__PORT_5__
 - **表**: request_logs（分区表）
 - **记录保留**: 完整的请求/响应元数据
 - **时区**: Asia/Shanghai (CST)

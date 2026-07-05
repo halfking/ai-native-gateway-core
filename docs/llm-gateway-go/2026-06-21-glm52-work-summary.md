@@ -2,7 +2,7 @@
 
 ## 📋 任务概述
 
-**用户问题**: 通过 `llm.kxpms.cn/v1` 调用 glm-5.2 时，整个请求混乱。
+**用户问题**: 通过 `__DOMAIN_2__/v1` 调用 glm-5.2 时，整个请求混乱。
 
 **任务目标**: 
 1. 分析格式转换逻辑是否存在问题
@@ -180,11 +180,11 @@ if strings.Contains(string(data), `"choices"`) {
 export GLM_API_KEY="your-actual-key"
 
 # 2. 运行诊断
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 ./scripts/diagnose-glm52.sh -v
 
 # 3. 收集日志
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 docker logs llm-gateway-go --tail 100 | grep glm-5.2
 ```
 
@@ -268,7 +268,7 @@ go test -tags=integration ./tests/integration -v -run TestGLM52
 ### 如何查看日志
 ```bash
 # 71 服务器
-ssh root@14.103.174.71
+ssh __SSH_TARGET_2__
 docker logs llm-gateway-go -f | grep -E "glm-5\.2|anthropic_to_openai"
 ```
 

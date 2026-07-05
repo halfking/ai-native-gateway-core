@@ -15,7 +15,7 @@
 **最低配置**：
 - 2 GB 内存
 - 5 GB 可用磁盘
-- **可选**：能访问 `registry.kxpms.cn` 或公网（用于镜像拉取）
+- **可选**：能访问 `__DOMAIN_4__` 或公网（用于镜像拉取）
 
 ## 二、5 步部署
 
@@ -54,9 +54,9 @@ cd release-v1.0.0
 
 ```
   1. 安装路径 [/Users/foo/llm-gateway]:    [回车]
-  2. 应用端口 (HTTP) [8781]:                 [回车]
-  3. PostgreSQL 端口 [5432]:                [回车]
-  4. Redis 端口 [6379]:                     [回车]
+  2. 应用端口 (HTTP) [__PORT_3__]:                 [回车]
+  3. PostgreSQL 端口 [__PORT_5__]:                [回车]
+  4. Redis 端口 [__PORT_10__]:                     [回车]
   5. PostgreSQL 密码 (留空自动生成):        [回车]
   6. Redis 密码 (留空自动生成):             [回车]
   7. LLM Gateway API Key (留空自动生成):    [回车]
@@ -73,7 +73,7 @@ cd release-v1.0.0
 ### 第 5 步：验证
 
 ```bash
-curl http://localhost:8781/healthz
+curl http://localhost:__PORT_3__/healthz
 # 应该返回 {"status":"ok"}
 ```
 
@@ -98,7 +98,7 @@ curl http://localhost:8781/healthz
 │
 ├── app/                                 ← 应用相关
 │   ├── VERSION                          ← 版本号（bind-mount 到容器）
-│   └── logs/                            ⭐ bind-mount → /var/log/llm-gateway
+│   └── logs/                            ⭐ bind-mount → __SERVER_PATH_6__
 │
 ├── db/                                  ← PostgreSQL
 │   ├── data/                            ⭐ bind-mount → /var/lib/postgresql/data
@@ -191,11 +191,11 @@ cd ~/llm-gateway && docker compose up -d
 
 ## 六、故障排查
 
-### Q1：端口被占用（8781/5432/6379）？
+### Q1：端口被占用（__PORT_3__/__PORT_5__/__PORT_10__）？
 在第 2/3/4 步指定其他端口，或停止占用端口的程序：
 ```bash
 # 查找占用端口的进程
-lsof -i :5432
+lsof -i :__PORT_5__
 ```
 
 ### Q2：磁盘空间不足？

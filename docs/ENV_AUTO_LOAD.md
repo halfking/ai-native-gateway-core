@@ -34,7 +34,7 @@ ssh root@71 'bash -l -c "echo $HOST_71_IP"'  # 验证
 
 ## 加载优先级
 
-1. 服务器: `/etc/llm-gateway-go/ops-env.sh` (最高)
+1. 服务器: `__SERVER_PATH_3__/ops-env.sh` (最高)
 2. 本地: `.env.local` (本地开发)
 3. SOPS: `.env.71.enc` 解密 (fallback)
 
@@ -63,5 +63,5 @@ bash deploy/sync-env.sh 71
 
 - 明文配置 (`.env.local`, `.env.71`) 通过 `.gitignore` 排除
 - 加密配置 (`.env.*.enc`) 使用 SOPS + age 加密，可安全提交
-- 服务器配置 (`/etc/llm-gateway-go/ops-env.sh`) 权限 600
+- 服务器配置 (`__SERVER_PATH_3__/ops-env.sh`) 权限 600
 - age 私钥 (`~/.config/sops/age/keys.txt`) 仅开发者本地持有

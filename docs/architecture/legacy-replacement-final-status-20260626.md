@@ -116,7 +116,7 @@ Document that `_to-be-deprecated/relay` and `_to-be-deprecated/transform` are "l
 
 ```bash
 # Verify no new domains depend on old relay/transform
-rg -n 'github.com/kaixuan/llm-gateway-go/_to-be-deprecated/(relay|transform|transport)' domains --glob '*.go'
+rg -n '__REPO_URL_3__/_to-be-deprecated/(relay|transform|transport)' domains --glob '*.go'
 
 # Should only return memora imports:
 # domains/hooks/compression/compaction.go:50:  "_to-be-deprecated/memora"

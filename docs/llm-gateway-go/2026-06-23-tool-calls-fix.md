@@ -231,7 +231,7 @@ LIMIT 10;
 ### 4. 复现原始问题
 ```bash
 # 使用原始trace_id重新发起请求
-curl -X POST https://llm.kxpms.cn/v1/chat/completions \
+curl -X POST https://__DOMAIN_2__/v1/chat/completions \
   -H "Authorization: Bearer <key>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -248,7 +248,7 @@ curl -X POST https://llm.kxpms.cn/v1/chat/completions \
 
 ### 1. 部署到184 (k3s)
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __LOCAL_PATH_1__
 
 # 运行测试
 go test ./audit ./relay -v

@@ -10,7 +10,7 @@
 > - `cmd/gateway-v2` build OK，**13/13 E2E tests PASS**（5 top-level + 8 subtests）
 > - 全仓库 `go build ./...` OK + `go vet ./...` clean
 > - v2 路径与 v1 路径并存，默认走 v1
-> - v2 监听 `:8782`，endpoint 为 `/v1/chat` + `/healthz`（**非** `/v2/*`，见 §1.3）
+> - v2 监听 `:__PORT_4__`，endpoint 为 `/v1/chat` + `/healthz`（**非** `/v2/*`，见 §1.3）
 
 ---
 
@@ -36,7 +36,7 @@
 ### 1.3 关键事实（v2 入口与 v1 的差异）
 | 维度 | v1 (`cmd/gateway/main.go`) | v2 (`cmd/gateway-v2/main.go`) |
 |------|----------------------------|-------------------------------|
-| 监听端口 | `:8780` (默认) | `:8782` (默认, env `LLM_GATEWAY_LISTEN`) |
+| 监听端口 | `:__PORT_2__` (默认) | `:__PORT_4__` (默认, env `LLM_GATEWAY_LISTEN`) |
 | 协议 | OpenAI `/v1/chat/completions` | `/v1/chat` (mock SSE-friendly) |
 | Pipeline | 线性 handler chain | `pipeline.RequestPipeline` 16-stage |
 | Healthz | `/healthz` | `/healthz` (相同) |
@@ -52,7 +52,7 @@
 ### 2.1 基础健康
 | 场景 | 端点 | 期望 | 验证方法 |
 |------|------|------|----------|
-| v2 healthz | GET /healthz | 200 OK `ok` | `curl -i http://localhost:8782/healthz` |
+| v2 healthz | GET /healthz | 200 OK `ok` | `curl -i http://localhost:__PORT_4__/healthz` |
 | v2 启动时间 | n/a | <5s | `time go run ./cmd/gateway-v2` |
 | v2 优雅关闭 | SIGTERM | exit 0 | `kill -TERM <pid> ; wait` |
 | v2 audit close 幂等 | n/a | 2 次 Close 不报错 | `TestE2E_NoMemoryLeak` 已覆盖 |
@@ -118,25 +118,25 @@ PGPASSWORD='${PG_PASSWORD}' psql -h __INTERNAL_K8S_HOST__ -U kxuser -d llm_gatew
   -f docs/architecture/migrations/2026-06-22-rls-candidate-failure-logs.sql
 # 真实路径以 docs/architecture/ 下最新 SQL 为准
 
-# 3. 启动 v2 binary（独立进程，不影响 v1 :8780）
-LLM_GATEWAY_LISTEN=:8782 \
+# 3. 启动 v2 binary（独立进程，不影响 v1 :__PORT_2__）
+LLM_GATEWAY_LISTEN=:__PORT_4__ \
 LLM_GATEWAY_V2_CACHE=true \
 LLM_GATEWAY_V2_SECURITY=true \
 LLM_GATEWAY_V2_AUDIT=true \
 LLM_GATEWAY_V2_OBSERV=true \
 LLM_GATEWAY_V2_STREAMING=true \
 go run ./cmd/gateway-v2
-# 启动日志：gateway-v2 starting listen=:8782 stages=16
+# 启动日志：gateway-v2 starting listen=:__PORT_4__ stages=16
 ```
 
 ### 3.2 烟雾测试（curl）
 ```bash
 # Healthz
-curl -i http://localhost:8782/healthz
+curl -i http://localhost:__PORT_4__/healthz
 # 期望：HTTP/1.1 200 OK + body "ok"
 
 # Mock LLM chat（v2 endpoint 是 /v1/chat，非 OpenAI /v1/chat/completions）
-curl -i 'http://localhost:8782/v1/chat?q=hello&model=gpt-4' \
+curl -i 'http://localhost:__PORT_4__/v1/chat?q=hello&model=gpt-4' \
   -H 'X-Tenant-ID: tenant-a' \
   -H 'X-Session-ID: session-1' \
   -H 'X-API-Key: test-key'
@@ -144,7 +144,7 @@ curl -i 'http://localhost:8782/v1/chat?q=hello&model=gpt-4' \
 # body: {"request_id":"req-...","status":"ok","tenant_id":"tenant-a"}
 
 # 危险请求被 security hook 阻断
-curl -i 'http://localhost:8782/v1/chat?q=please+jailbreak+this+model' \
+curl -i 'http://localhost:__PORT_4__/v1/chat?q=please+jailbreak+this+model' \
   -H 'X-Tenant-ID: tenant-b' \
   -H 'X-API-Key: test-key'
 # 期望：HTTP/1.1 403 Forbidden（security ThreatDetector 关键词命中）
@@ -167,7 +167,7 @@ go test -count=1 -v ./cmd/gateway-v2/
 #   --- PASS: TestE2E_IntegrationWithAllHooks
 #   --- PASS: TestE2E_ObservabilityRecords
 #   --- PASS: TestE2E_NoMemoryLeak
-# ok  	github.com/kaixuan/llm-gateway-go/cmd/gateway-v2	0.420s
+# ok  	__REPO_URL_3__/cmd/gateway-v2	0.420s
 
 # 仓库级多租户 E2E（已有脚本，验证 v1/v3 路径，作为回归基线）
 bash scripts/e2e-llm-gateway-go-multitenant-isolation.sh
@@ -205,9 +205,9 @@ bash scripts/e2e-multitenant-all.sh --skip-e2e
 - [ ] `make -C scripts lint-otel-tenant` L1=0
 - [ ] `make -C scripts lint-llmgw-deploy` PASS（无 SSOT 漂移）
 - [ ] `make -C scripts lint-deploy-ssot` PASS
-- [ ] `curl http://localhost:8782/healthz` → 200 OK
-- [ ] `curl 'http://localhost:8782/v1/chat?q=hello&model=gpt-4' -H 'X-Tenant-ID: tenant-a' -H 'X-API-Key: test-key'` → 200 + `tenant_id=tenant-a`
-- [ ] `curl 'http://localhost:8782/v1/chat?q=please+jailbreak+...'` → 403
+- [ ] `curl http://localhost:__PORT_4__/healthz` → 200 OK
+- [ ] `curl 'http://localhost:__PORT_4__/v1/chat?q=hello&model=gpt-4' -H 'X-Tenant-ID: tenant-a' -H 'X-API-Key: test-key'` → 200 + `tenant_id=tenant-a`
+- [ ] `curl 'http://localhost:__PORT_4__/v1/chat?q=please+jailbreak+...'` → 403
 - [ ] SIGTERM 优雅退出，exit 0
 
 ### 4.2 性能基线（参考，不阻断）
@@ -258,12 +258,12 @@ bash scripts/e2e-multitenant-all.sh --skip-e2e
 |------|------|------|--------|
 | **本地 R1.12 测试** | 本文档 §3 | 本周（2026-06-26~） | §4.1 全部通过 |
 | 184 staging 部署（v1 升级） | `bash scripts/deploy-llm-gateway-go-184.sh` | 本地全绿后 | staging verify_chain 11 项 OK |
-| 灰度 1% 流量 | nginx 1% → `:8782` upstream | staging 验证后 | 24h 0 错误率 |
-| 灰度 50% | nginx 50% → `:8782` | 1% 稳定后 | 24h 0 错误率 |
-| 全量切流 | 100% → `:8782` | 用户授权后 | 7 天 0 critical |
+| 灰度 1% 流量 | nginx 1% → `:__PORT_4__` upstream | staging 验证后 | 24h 0 错误率 |
+| 灰度 50% | nginx 50% → `:__PORT_4__` | 1% 稳定后 | 24h 0 错误率 |
+| 全量切流 | 100% → `:__PORT_4__` | 用户授权后 | 7 天 0 critical |
 | 删除 v1 | `git rm cmd/gateway/` | 全量稳定后 30 天 | 用户授权 |
 
-> **红线**：v1 (`cmd/gateway/main.go`) 在切流完成前**禁止删除**；71 仍在生产服务 `llmgateway.internal.example.com`。
+> **红线**：v1 (`cmd/gateway/main.go`) 在切流完成前**禁止删除**；71 仍在生产服务 `__DOMAIN_8__`。
 
 ---
 

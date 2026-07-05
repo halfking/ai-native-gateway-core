@@ -183,4 +183,4 @@ modality: 'text' | 'vision' | 'audio' | 'multimodal'
 
 **报告生成时间：** 2026-07-05  
 **执行人：** OpenCode AI Agent  
-**工作目录：** `/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go`
+**工作目录：** `__LOCAL_PATH_1__`

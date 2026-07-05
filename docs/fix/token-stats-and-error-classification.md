@@ -338,7 +338,7 @@ GetCandidates 返回错误?
 
 ```bash
 # 测试
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "test-model", "messages": []}'
 
@@ -488,7 +488,7 @@ func TestEmitFailedDecisionLog_WithTokens(t *testing.T) {
 ```bash
 # 测试1: 数据库连接失败
 docker stop llm-gateway-pg-71-replica
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]}'
 
@@ -501,7 +501,7 @@ docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway \
 # 发送请求，预期: 日志写入失败但请求仍能处理
 
 # 测试3: Token统计
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "invalid-model", "messages": [{"role": "user", "content": "Test"}]}'
 

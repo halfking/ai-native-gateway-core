@@ -331,8 +331,8 @@ Cleanup: `trap cleanup EXIT` removes test tenants on exit
 
 # 2. Build + push image
 cd services/llm-gateway-go
-docker build -t registry.internal.example.com/kx-llm-gateway-go:1.0.0-r48-tenant-policy .
-docker push registry.internal.example.com/kx-llm-gateway-go:1.0.0-r48-tenant-policy
+docker build -t __DOMAIN_9__/kx-llm-gateway-go:1.0.0-r48-tenant-policy .
+docker push __DOMAIN_9__/kx-llm-gateway-go:1.0.0-r48-tenant-policy
 
 # 3. Deploy (rolls k3s deployment)
 ./scripts/deploy-llm-gateway-go-184.sh

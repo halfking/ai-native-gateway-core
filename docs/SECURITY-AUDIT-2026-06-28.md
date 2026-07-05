@@ -18,7 +18,7 @@
 | 关联审计 | `DEEP-AUDIT-2026-05-26.md`（数据面）· `docs/comprehensive-code-audit-2026-06-20.md`（综合） |
 | 关联规范 | `SECURITY.md` · `docs/REPO-MIRROR-POLICY.md` |
 | 状态 | **11 项发现已书面化 + 10/11 动态验证命中 + 1 项已自动修复（NET-011）** |
-| 验证基础设施 | 本地双网关（8781 / 8789，DB-less 模式） |
+| 验证基础设施 | 本地双网关（__PORT_3__ / 8789，DB-less 模式） |
 
 ---
 
@@ -33,13 +33,13 @@
 | **附加** | NET-011 | `main` 分支构建断裂（2026-06-28 当下）→ **动态验证阶段已确认修复**（见 §4 NET-011） |
 
 **风险分布概览**：
-- 默认配置下，任意能够到达 `:8781` 的网络位置都能触发认证绕过（CORS） + 内部状态侦察（healthz/metrics） + 配置热重载（DoS） + 审批窥探（v1/approvals）。
+- 默认配置下，任意能够到达 `:__PORT_3__` 的网络位置都能触发认证绕过（CORS） + 内部状态侦察（healthz/metrics） + 配置热重载（DoS） + 审批窥探（v1/approvals）。
 - `cmd/gateway-v2/main.go` 是一个**完全的未受保护 LLM 代理**，如果误部署到公网，会立即成为免费 LLM 出口与密钥泄露源。
 - 没有任何 HTTP 响应携带 HSTS / CSP / X-Frame-Options 等现代浏览器保护头。
 - `WriteTimeout=0` 在流式响应阶段不设防，慢速客户端可以持续占住 goroutine。
 
 **验证策略说明**：
-本审计对每项发现同时给出**静态代码分析 + 动态 curl 复现**双证据。构建断裂的 NET-011 在审计过程中已自动修复（`go build ./cmd/gateway` 与 `./cmd/gateway-v2` 均产出二进制 44MB / 34MB），随后在本地启动两个网关（8781 / 8789）跑完 §7 附录 11 条检测命令——**10 项命中**（仅 NET-006 部分命中，因 DB-less 模式下 v1 直接返回 503 而非 Slowloris 持续占位）。
+本审计对每项发现同时给出**静态代码分析 + 动态 curl 复现**双证据。构建断裂的 NET-011 在审计过程中已自动修复（`go build ./cmd/gateway` 与 `./cmd/gateway-v2` 均产出二进制 44MB / 34MB），随后在本地启动两个网关（__PORT_3__ / 8789）跑完 §7 附录 11 条检测命令——**10 项命中**（仅 NET-006 部分命中，因 DB-less 模式下 v1 直接返回 503 而非 Slowloris 持续占位）。
 
 ---
 
@@ -69,7 +69,7 @@
 
 ### 2.3 方法
 1. **代码静态分析**：ripgrep 命中 + 关键文件逐行精读
-2. **动态验证（计划）**：本地起 `cmd/gateway` (8781) + `cmd/gateway-v2` (8782)，逐项 curl
+2. **动态验证（计划）**：本地起 `cmd/gateway` (__PORT_3__) + `cmd/gateway-v2` (__PORT_4__)，逐项 curl
    - ⚠️ 因 NET-011 构建断裂，动态验证暂停。所有复现命令已写为可一键复制形式，待构建恢复后即可执行
 3. **依赖扫描（部分）**：`go list -m -u -mod=mod` 尝试但 proxy.golang.org 连接超时（沙箱网络限制），结果以"待手工复跑"形式记录
 4. **分级**：沿用 `DEEP-AUDIT-2026-05-26.md` 的 P0/P1/P2/P3 四档，并在每条发现注明威胁建模因子（谁能触发 × 可自动化 × 影响）
@@ -91,7 +91,7 @@
 | NET-004 | **P0** | `/v1/approvals/` 免认证 + 跨租户 403/404 泄露 | `admin/handler.go:355` + `session_approval.go:330-381` | 静态 + 动态（DB-less 404，生产需复测）→ **修复后统一 404 + 租户来自 JWT** | ✅ **已修复** |
 | NET-005 | **P1** | 缺所有现代安全响应头 | 仓库全局缺位 | 静态 + 动态（grep 0 命中 + curl -sI 全响应空匹配）→ **修复后 4-5 个头** | ✅ **已修复** |
 | NET-006 | **P1** | `WriteTimeout=0` Slowloris | `cmd/gateway/main.go:1530` | 静态 + 动态（v1 DB-less 503 自防御；v2 零超时完整命中） | v2 ✅ / v1 未修复 |
-| NET-007 | **P1** | `/healthz` 免认证 + `?full=true` 泄露内部状态 | `handler.go:2789-2830` + `auth_mw.go:19-21` | 静态 + 动态（curl → 18 个内网域名含 internal.example.com）→ **修复后 /healthz 不含 proxy，/healthz/full 401** | ✅ **已修复** |
+| NET-007 | **P1** | `/healthz` 免认证 + `?full=true` 泄露内部状态 | `handler.go:2789-2830` + `auth_mw.go:19-21` | 静态 + 动态（curl → 18 个内网域名含 __DOMAIN_12__）→ **修复后 /healthz 不含 proxy，/healthz/full 401** | ✅ **已修复** |
 | NET-008 | **P1** | `/metrics` 免认证 + 全 registry 暴露 | `auth_mw.go:19-21` + `prometheus_mw.go:37` | 静态 + 动态（curl → Go runtime metrics 全可见）→ **修复后 401 无 token** | ✅ **已修复** |
 | NET-009 | **P2** | 进程无 TLS | `cmd/gateway/main.go:1521-1533` | 静态 + 动态（openssl s_client → "wrong version number"） | 未修复 |
 | NET-010 | **P2** | 静态 SPA `/` 被 auth bypass | `auth_mw.go:19-21` + `static.go:31-55` | 静态 + 动态（curl 6 路径全 200）→ **修复后 .json/.env/.key/.sql/.bak 全 404** | ✅ **已修复** |
@@ -124,7 +124,7 @@ allowHeaders: []string{"Content-Type", "Authorization", "X-Request-Id", ...}
 
 当 `LLM_GATEWAY_CORS_ORIGINS` 环境变量**未设置或为空字符串**时（生产默认值），CORS 中间件回退到 `Access-Control-Allow-Origin: *`，并且 `Authorization` 头被列入预检 `Access-Control-Allow-Headers`。后果：
 
-- 任意网站（`https://evil.com`）的页面在浏览器加载时，可通过 `fetch('http://gateway:8781/v1/chat/completions', {headers: {Authorization: 'Bearer ' + userKey}})` 携带用户密钥跨域调用网关。
+- 任意网站（`https://evil.com`）的页面在浏览器加载时，可通过 `fetch('http://gateway:__PORT_3__/v1/chat/completions', {headers: {Authorization: 'Bearer ' + userKey}})` 携带用户密钥跨域调用网关。
 - 即使认证密钥存于 `localStorage` 而非 Cookie，也会被同源 JavaScript 读取并代发。
 - 由于 `Access-Control-Allow-Credentials` **从未**被设置（ripgrep 全仓 0 命中），规避了"含 Cookie 凭证"的经典 CSRF 场景，但**显式 token** 场景依然完全裸露。
 - 影响面：若网关在公网或企业内网可直接到达（即非纯本地回环），用户密钥可在不知情下被外泄到第三方。
@@ -140,7 +140,7 @@ allowHeaders: []string{"Content-Type", "Authorization", "X-Request-Id", ...}
 go run ./cmd/gateway &
 
 # 2. 预检（preflight）
-curl -i -X OPTIONS http://localhost:8781/v1/chat/completions \
+curl -i -X OPTIONS http://localhost:__PORT_3__/v1/chat/completions \
   -H 'Origin: https://evil.com' \
   -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: authorization, content-type'
@@ -164,7 +164,7 @@ $ grep -n '"\*"' middleware/cors_mw.go
 34:    w.Header().Set("Access-Control-Allow-Origin", "*")
 ```
 
-动态（`curl -i -X OPTIONS http://localhost:8781/v1/chat/completions -H 'Origin: https://evil.com' -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: authorization, content-type'`）：
+动态（`curl -i -X OPTIONS http://localhost:__PORT_3__/v1/chat/completions -H 'Origin: https://evil.com' -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: authorization, content-type'`）：
 
 ```
 HTTP/1.1 204 No Content
@@ -231,31 +231,31 @@ allowHeaders: []string{"Content-Type", "X-Request-Id", "X-Client-Profile"},  // 
 4. **错误响应回显 `err.Error()`**：`cmd/gateway-v2/main.go:370-373` 将 `err.Error()` 写入 JSON 响应；任何 Pipeline 异常都会把内部错误（含文件路径、依赖服务地址）回显。
 
 **威胁建模**：
-- 前置条件：网关端口可达（生产部署若误绑 `0.0.0.0:8782` 即暴露）
+- 前置条件：网关端口可达（生产部署若误绑 `0.0.0.0:__PORT_4__` 即暴露）
 - 可自动化：✅
 - 影响：机密性（密钥落审计） + 完整性（绕过认证） + 可用性（无超时 DoS）
 
 **测试 / 复现命令**：
 ```bash
-# 1. 起 v2 二进制（端口 8782）
-LLM_GATEWAY_LISTEN=:8782 go run ./cmd/gateway-v2 &
+# 1. 起 v2 二进制（端口 __PORT_4__）
+LLM_GATEWAY_LISTEN=:__PORT_4__ go run ./cmd/gateway-v2 &
 
 # 2. 探测 /healthz（无需任何头）
-curl -s http://localhost:8782/healthz
+curl -s http://localhost:__PORT_4__/healthz
 # 期望：返回 "ok"  → 命中（任何人都能调）
 
 # 3. 探测 /v1/models（无需认证）
-curl -s http://localhost:8782/v1/models | jq .data[].id
+curl -s http://localhost:__PORT_4__/v1/models | jq .data[].id
 # 期望：返回 model 列表 → 命中
 
 # 4. 投递 X-API-Key，确认是否被注入 Metadata
-curl -s -X POST 'http://localhost:8782/v1/chat?q=hello&model=gpt-4o' \
-  -H 'X-API-Key: sk-probe-AAAA-BBBB-CCCC-DDDD'
+curl -s -X POST 'http://localhost:__PORT_4__/v1/chat?q=hello&model=gpt-4o' \
+  -H 'X-API-Key: __API_KEY_4__'
 # 期望：slog/audit 输出包含完整密钥 → 命中（具体可在 audit sink / stdout 中 grep）
 
 # 5. Slowloris 探测
 (echo -e 'GET /v1/models HTTP/1.1\r\nHost: localhost\r\n'; sleep 3600) \
-  | nc localhost 8782 &
+  | nc localhost __PORT_4__ &
 # 期望：连接不被超时切断 → 命中
 ```
 
@@ -276,7 +276,7 @@ $ grep -n "RecoveryMiddleware\|CORSMiddleware\|AuthMiddleware\|RequestIDMiddlewa
 # (no matches) → 0 个中间件
 ```
 
-动态（v2 监听 8789，因 8782 被 Docker Desktop 占）：
+动态（v2 监听 8789，因 __PORT_4__ 被 Docker Desktop 占）：
 
 ```
 -- /healthz（无 auth） → 200
@@ -335,7 +335,7 @@ env.Metadata = map[string]any{
 
 **回归测试**（2026-06-28）：
 ```
-LLM_GATEWAY_API_KEY=sk-test ./llm-gw-v2
+LLM_GATEWAY_API_KEY=__API_KEY_6__ ./llm-gw-v2
 -- /healthz 无 auth         → 401 (v2 设计比 v1 更严格，/healthz 也需 auth)
 -- /v1/models 无 auth        → 401 ✅
 -- /v1/chat 错 X-API-Key     → 401 ✅
@@ -376,7 +376,7 @@ if configFile != "" {
 ```
 
 **问题**：
-1. **无认证**：仅检查 HTTP 方法，**不验证 API Key / JWT / Admin Token / 来源 IP**。任何人只要能到达 `:8781/admin/config/reload` 即可触发配置热重载。
+1. **无认证**：仅检查 HTTP 方法，**不验证 API Key / JWT / Admin Token / 来源 IP**。任何人只要能到达 `:__PORT_3__/admin/config/reload` 即可触发配置热重载。
 2. **DoS 放大器**：高频 `POST /admin/config/reload` 会触发 `cfgStore.ReloadFile` 的磁盘读 + 反序列化 + atomic swap，攻击者用 1KB 请求就能放大到 MB 级磁盘 I/O。
 3. **信息泄露**：`err.Error()` 路径含文件系统绝对路径、YAML 解析错误详情（如"line 12: cannot unmarshal !!str ..."），辅助攻击者后续定向攻击。
 4. **路径遍历面**：若 `configFile` 来源不可控（当前是启动时 env 固定，但若后续改为动态），攻击者可通过伪造请求体诱导其他路径读取。
@@ -388,17 +388,17 @@ if configFile != "" {
 
 **测试 / 复现命令**：
 ```bash
-# 1. 启动网关（假设已 LLM_GATEWAY_CONFIG=/etc/llm-gw/config.yaml）
+# 1. 启动网关（假设已 LLM_GATEWAY_CONFIG=__SERVER_PATH_4__/config.yaml）
 LLM_GATEWAY_CONFIG=/tmp/fake-cfg.yaml go run ./cmd/gateway &
-echo "listen: :8781" > /tmp/fake-cfg.yaml
+echo "listen: :__PORT_3__" > /tmp/fake-cfg.yaml
 
 # 2. 触发 reload（无需任何认证头）
-curl -i -X POST http://localhost:8781/admin/config/reload
+curl -i -X POST http://localhost:__PORT_3__/admin/config/reload
 # 期望：HTTP/1.1 200 OK + {"status":"ok"} → 命中匿名访问
 
 # 3. 故意触发错误（不存在的文件）
 LLM_GATEWAY_CONFIG=/nonexistent.yaml go run ./cmd/gateway &
-curl -i -X POST http://localhost:8781/admin/config/reload
+curl -i -X POST http://localhost:__PORT_3__/admin/config/reload
 # 期望：{"status":"error","error":"open /nonexistent.yaml: no such file or directory"}
 # → 绝对路径回显
 ```
@@ -503,16 +503,16 @@ mux.HandleFunc("/v1/approvals/", h.handleApprovalStatus)
 **测试 / 复现命令**：
 ```bash
 # 1. 无认证头探测（返回 404/403 而非 401）
-curl -i http://localhost:8781/v1/approvals/00000000-0000-0000-0000-000000000000/status
+curl -i http://localhost:__PORT_3__/v1/approvals/00000000-0000-0000-0000-000000000000/status
 # 期望：HTTP/1.1 404 / 403 → 命中（应返回 401）
 
 # 2. 跨租户枚举
-curl -i -H 'X-Tenant-ID: tenant-A' http://localhost:8781/v1/approvals/<已知 B 租户 ID>/status
-curl -i -H 'X-Tenant-ID: tenant-B' http://localhost:8781/v1/approvals/<已知 B 租户 ID>/status
+curl -i -H 'X-Tenant-ID: tenant-A' http://localhost:__PORT_3__/v1/approvals/<已知 B 租户 ID>/status
+curl -i -H 'X-Tenant-ID: tenant-B' http://localhost:__PORT_3__/v1/approvals/<已知 B 租户 ID>/status
 # 期望：两个响应分别为 403 / 200 → 命中（差异泄露）
 
 # 3. 注释 vs 实现核对：缺失 X-Tenant-ID 是否真的降级
-curl -i http://localhost:8781/v1/approvals/<真实 ID>/status
+curl -i http://localhost:__PORT_3__/v1/approvals/<真实 ID>/status
 # 期望：仅 status 字段（无 TimeLeft / Reason），但代码显示全量返回
 ```
 
@@ -598,11 +598,11 @@ $ grep -rEn "Strict-Transport-Security|X-Frame-Options|X-Content-Type-Options|Co
 **测试 / 复现命令**：
 ```bash
 # 任意端点
-curl -sI http://localhost:8781/healthz | grep -iE "strict-transport|x-frame|x-content|content-security|referrer|permissions"
+curl -sI http://localhost:__PORT_3__/healthz | grep -iE "strict-transport|x-frame|x-content|content-security|referrer|permissions"
 # 期望：空输出 → 命中（全部缺失）
 
 # SPA 首页（Vue）
-curl -sI http://localhost:8781/ | grep -iE "strict-transport|x-frame|x-content|content-security|referrer|permissions"
+curl -sI http://localhost:__PORT_3__/ | grep -iE "strict-transport|x-frame|x-content|content-security|referrer|permissions"
 # 期望：空输出 → 命中
 ```
 
@@ -617,10 +617,10 @@ $ grep -rEn "Strict-Transport-Security|X-Frame-Options|X-Content-Type-Options|Co
 
 动态：
 ```bash
-$ curl -sI http://localhost:8781/healthz | grep -iE "strict-transport|x-frame|x-content|content-security|referrer|permissions"
+$ curl -sI http://localhost:__PORT_3__/healthz | grep -iE "strict-transport|x-frame|x-content|content-security|referrer|permissions"
 # 空输出
 
-$ curl -sI http://localhost:8781/ | grep -iE "strict-transport|x-frame|x-content|content-security|referrer|permissions"
+$ curl -sI http://localhost:__PORT_3__/ | grep -iE "strict-transport|x-frame|x-content|content-security|referrer|permissions"
 # 空输出
 ```
 
@@ -718,12 +718,12 @@ srv := &http.Server{
 (echo -e 'POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 999999\r\nContent-Type: application/json\r\n\r\n{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}';
  for i in $(seq 1 999); do
    echo -n "a"; sleep 5
- done) | nc localhost 8781 &
+ done) | nc localhost __PORT_3__ &
 echo "started slow write pid=$!"
 
 # 同时观察 goroutine 数
 for i in 1 2 3 4 5; do
-  curl -s "localhost:8781/debug/pprof/goroutine?debug=1" 2>/dev/null | head -3 || \
+  curl -s "localhost:__PORT_3__/debug/pprof/goroutine?debug=1" 2>/dev/null | head -3 || \
     echo "(pprof not exposed — see NET-007)"
 done
 # 期望：goroutine 持续累积，无超时切断 → 命中
@@ -753,7 +753,7 @@ srv := &http.Server{
 ```
 
 动态：
-- v1 (8781) Slowloris 模拟：`Content-Length: 999999` 慢 body → v1 在 DB-less 模式下快速返回 503（Routing executor 未初始化），**意外地"自防御"**。但**生产 DB 模式下 503 不再触发，慢 body 持续占用 goroutine 直到 ReadTimeout=120s 切断**。
+- v1 (__PORT_3__) Slowloris 模拟：`Content-Length: 999999` 慢 body → v1 在 DB-less 模式下快速返回 503（Routing executor 未初始化），**意外地"自防御"**。但**生产 DB 模式下 503 不再触发，慢 body 持续占用 goroutine 直到 ReadTimeout=120s 切断**。
 - v2 (8789) Slowloris 模拟：`Content-Length: 999999` 慢 body → **直接 200 OK + Connection close**——证明 v2 无任何写超时，慢 body 不构成任何限制（虽然响应快，但连接耗用持续累积）。
 
 → **v2 端 NET-006 完整命中**；v1 端仅在生产 DB 模式构成 DoS，需在 DB 启动后复跑 §7 命令验证 goroutine 累积。
@@ -823,11 +823,11 @@ ExactPaths: []string{"/healthz", "/metrics", "/"}
 **测试 / 复现命令**：
 ```bash
 # 1. 不带参数也会泄露 proxy
-curl -s http://localhost:8781/healthz | jq .
+curl -s http://localhost:__PORT_3__/healthz | jq .
 # 期望：返回 {"status":"ok","version":"...","proxy":{"<内网代理地址>":...}}
 
 # 2. full 模式更敏感
-curl -s 'http://localhost:8781/healthz?full=true' | jq .
+curl -s 'http://localhost:__PORT_3__/healthz?full=true' | jq .
 # 期望：含 circuit（凭据熔断器）、concurrency（限速器）两个大对象
 ```
 
@@ -837,7 +837,7 @@ curl -s 'http://localhost:8781/healthz?full=true' | jq .
 
 动态：
 ```bash
-$ curl -s 'http://localhost:8781/healthz' | jq .
+$ curl -s 'http://localhost:__PORT_3__/healthz' | jq .
 {
   "status": "ok",
   "version": "phase1.5-pre-r113-20260626-62-g04a1af68-...",
@@ -854,8 +854,8 @@ $ curl -s 'http://localhost:8781/healthz' | jq .
       "api.scnet.cn",
       "dashscope.aliyuncs.com",
       "hunyuan.tencent.com",
-      "internal.example.com",                    # ⬅ 内网域名
-      "llmgateway.internal.example.com",         # ⬅ 网关内网域名
+      "__DOMAIN_12__",                    # ⬅ 内网域名
+      "__DOMAIN_8__",         # ⬅ 网关内网域名
       "localhost",
       "mg-new.evolai.cn",
       "open.bigmodel.cn",
@@ -868,7 +868,7 @@ $ curl -s 'http://localhost:8781/healthz' | jq .
   }
 }
 
-$ curl -s 'http://localhost:8781/healthz?full=true' | jq .concurrency
+$ curl -s 'http://localhost:__PORT_3__/healthz?full=true' | jq .concurrency
 {
   "credentials": [],
   "global": {"available": 1000, "capacity": 1000, "used": 0},
@@ -877,7 +877,7 @@ $ curl -s 'http://localhost:8781/healthz?full=true' | jq .concurrency
 }
 ```
 
-→ 即便**不带 `?full=true`**，proxy 列表也含 `internal.example.com` / `llmgateway.internal.example.com` 等 18 个内网域名。任何能够访问 `:8781/healthz` 的网络位置都能拿到内网拓扑情报。
+→ 即便**不带 `?full=true`**，proxy 列表也含 `__DOMAIN_12__` / `__DOMAIN_8__` 等 18 个内网域名。任何能够访问 `:__PORT_3__/healthz` 的网络位置都能拿到内网拓扑情报。
 
 **修复方案**：
 1. **/healthz 必须认证**（移除 `ExactPaths` 中的 `/healthz`），或拆 `/healthz`（极简，供 K8s probe）与 `/internal/healthz?full=true`（认证，仅供 ops）
@@ -951,11 +951,11 @@ ExactPaths: []string{"/healthz", "/metrics", "/"}
 **测试 / 复现命令**：
 ```bash
 # 1. 拉取 metrics（无需任何头）
-curl -s http://localhost:8781/metrics | head -50
+curl -s http://localhost:__PORT_3__/metrics | head -50
 # 期望：返回 llm_gateway_http_* + go_* + process_* + 任何 promauto 注册的 → 命中
 
 # 2. 搜索敏感标签
-curl -s http://localhost:8781/metrics | grep -E "(credential|provider|tenant|api_key)" | head
+curl -s http://localhost:__PORT_3__/metrics | grep -E "(credential|provider|tenant|api_key)" | head
 # 期望：出现 label 维度含 credential_id / provider / tenant → 命中
 ```
 
@@ -972,7 +972,7 @@ func MetricsHandler() http.Handler {
 
 动态：
 ```bash
-$ curl -s http://localhost:8781/metrics | head -30
+$ curl -s http://localhost:__PORT_3__/metrics | head -30
 # HELP go_gc_duration_seconds ...
 go_gc_duration_seconds{quantile="0"} 6.7958e-05
 go_goroutines 14
@@ -982,7 +982,7 @@ go_memstats_alloc_bytes 2.868488e+06
 ```
 
 ```bash
-$ curl -s http://localhost:8781/metrics | grep -E "credential|provider|tenant"
+$ curl -s http://localhost:__PORT_3__/metrics | grep -E "credential|provider|tenant"
 # (DB-less 模式下自定义业务指标未注册 - 但 registerer 已挂在全仓)
 ```
 
@@ -1040,16 +1040,16 @@ Go 进程从未启动 TLS 监听器；所有流量明文 HTTP。生产依赖 k3s
 **测试 / 复现命令**：
 ```bash
 # 1. 验证端口确实没有 TLS（无 STARTTLS 报错也无响应）
-echo "Q" | timeout 3 openssl s_client -connect localhost:8781 2>&1 | head -5
+echo "Q" | timeout 3 openssl s_client -connect localhost:__PORT_3__ 2>&1 | head -5
 # 期望：connection refused / timeout → 命中（无 TLS）
 
 # 2. 抓明文包
-tcpdump -i lo0 -A -s 0 'tcp port 8781' &
-curl -X POST http://localhost:8781/v1/chat/completions \
-  -H 'Authorization: Bearer sk-plain-text-leak-test' \
+tcpdump -i lo0 -A -s 0 'tcp port __PORT_3__' &
+curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
+  -H 'Authorization: Bearer __API_KEY_5__' \
   -d '{"model":"gpt-4o","messages":[]}'
 sleep 2; kill %1
-# 期望：tcpdump 输出含 Bearer sk-plain-text-leak-test → 命中
+# 期望：tcpdump 输出含 Bearer __API_KEY_5__ → 命中
 ```
 
 **实际验证结果**：✅ **静态 + 动态双重命中**。
@@ -1062,7 +1062,7 @@ $ grep -rEn "ListenAndServeTLS|tls\.Config" --include="*.go" cmd/ middleware/ do
 
 动态：
 ```bash
-$ echo "Q" | timeout 3 openssl s_client -connect localhost:8781 2>&1 | head -3
+$ echo "Q" | timeout 3 openssl s_client -connect localhost:__PORT_3__ 2>&1 | head -3
 Connecting to ::1
 805EB9FB01000000:error:0A00010B:SSL routines:tls_validate_record_header:wrong version number:...
 CONNECTED(00000005)
@@ -1071,7 +1071,7 @@ $ echo "Q" | timeout 3 openssl s_client -connect localhost:8789 2>&1 | head -3
 # 同样错误（连接建立但 TLS 握手失败）
 ```
 
-→ v1 (8781) 和 v2 (8789) 均无 TLS 终止。`openssl s_client` 能 connect（TCP 握手成功）但 TLS 立即因"wrong version number"失败——典型明文 HTTP 上跑 TLS 探测的特征。
+→ v1 (__PORT_3__) 和 v2 (8789) 均无 TLS 终止。`openssl s_client` 能 connect（TCP 握手成功）但 TLS 立即因"wrong version number"失败——典型明文 HTTP 上跑 TLS 探测的特征。
 
 **修复方案**：
 - **首选**：保持依赖反向代理 TLS（与现有 `k3s ingress + cert-manager` 架构一致），并在反代处强制 HTTPS
@@ -1128,12 +1128,12 @@ func (h *StaticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 **测试 / 复现命令**：
 ```bash
 # 1. SPA 首页（应正常）
-curl -sI http://localhost:8781/
+curl -sI http://localhost:__PORT_3__/
 # 期望：200 OK + text/html → 命中（应至少要求 session cookie）
 
 # 2. 探测常见敏感路径
 for p in robots.txt config.json .env config.json.bak sitemap.xml favicon.ico admin.html; do
-  status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8781/$p)
+  status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:__PORT_3__/$p)
   echo "/$p → $status"
 done
 # 期望：所有返回 200 → 命中
@@ -1153,7 +1153,7 @@ ExactPaths: []string{"/healthz", "/metrics", "/"}
 动态：
 ```bash
 $ for p in "" "robots.txt" "config.json" ".env" "favicon.ico" "index.html"; do
-    s=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8781/$p")
+    s=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:__PORT_3__/$p")
     echo "/$p → $s"
   done
 
@@ -1199,7 +1199,7 @@ func (h *StaticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 **风险描述**：
 ```bash
 $ go build -o /tmp/llm-gw ./cmd/gateway
-# github.com/kaixuan/llm-gateway-go/domains/streaming
+# __REPO_URL_3__/domains/streaming
 domains/streaming/handler.go:2119:62: too many arguments in call to ShouldRecordAnomaly
     have (context.Context, AnomalyType, string, string)
     want (AnomalyType, string)
@@ -1236,7 +1236,7 @@ $ go build -o /tmp/llm-gw-v2 ./cmd/gateway-v2
 复现（2026-06-28 16:43）：
 ```bash
 $ go build -o /tmp/llm-gw ./cmd/gateway
-# github.com/kaixuan/llm-gateway-go/domains/streaming
+# __REPO_URL_3__/domains/streaming
 domains/streaming/handler.go:2119:62: too many arguments in call to ShouldRecordAnomaly
     have (context.Context, AnomalyType, string, string)
     want (AnomalyType, string)
@@ -1248,11 +1248,11 @@ domains/streaming/handler.go:2152:23: cannot use tenantIDInt (variable of type *
 ```bash
 $ go build -o /tmp/llm-gw ./cmd/gateway
 exit=0
--rwxr-xr-x  1 xutaohuang  staff  44328242  6月 28 16:43 /tmp/llm-gw
+-rwxr-xr-x  1 __USER_1__  staff  44328242  6月 28 16:43 /tmp/llm-gw
 
 $ go build -o /tmp/llm-gw-v2 ./cmd/gateway-v2
 exit=0
--rwxr-xr-x  1 xutaohuang  staff  34445090  6月 28 16:44 /tmp/llm-gw-v2
+-rwxr-xr-x  1 __USER_1__  staff  34445090  6月 28 16:44 /tmp/llm-gw-v2
 ```
 
 → **NET-011 已在 `git stash pop` 后自动消失**（推测：中间某次 stash 包含了修复 `handler.go` 调用的 patch）。两个二进制均成功产出。
@@ -1337,26 +1337,26 @@ grep -nE "http\.Server\{" --include="*.go" -r cmd/
 grep -nE "ExactPaths|PathPrefixes" --include="*.go" -r middleware/
 
 # F. 动态：预检 CORS
-curl -i -X OPTIONS http://localhost:8781/v1/chat/completions \
+curl -i -X OPTIONS http://localhost:__PORT_3__/v1/chat/completions \
   -H 'Origin: https://evil.com' \
   -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: authorization'
 
 # G. 动态：healthz full 模式
-curl -s 'http://localhost:8781/healthz?full=true' | jq .
+curl -s 'http://localhost:__PORT_3__/healthz?full=true' | jq .
 
 # H. 动态：metrics 探测
-curl -s http://localhost:8781/metrics | head -30
+curl -s http://localhost:__PORT_3__/metrics | head -30
 
 # I. 动态：admin/config/reload 匿名访问
-curl -i -X POST http://localhost:8781/admin/config/reload
+curl -i -X POST http://localhost:__PORT_3__/admin/config/reload
 
 # J. 动态：approvals UUID 探测
-curl -i http://localhost:8781/v1/approvals/00000000-0000-0000-0000-000000000000/status
+curl -i http://localhost:__PORT_3__/v1/approvals/00000000-0000-0000-0000-000000000000/status
 
 # K. 动态：SPA bypass 探测
 for p in "" "robots.txt" "config.json" ".env" "config.json.bak"; do
-  echo "GET /$p → $(curl -s -o /dev/null -w '%{http_code}' http://localhost:8781/$p)"
+  echo "GET /$p → $(curl -s -o /dev/null -w '%{http_code}' http://localhost:__PORT_3__/$p)"
 done
 ```
 
@@ -1367,7 +1367,7 @@ done
 | 日期 | 版本 | 变更 |
 |------|------|------|
 | 2026-06-28 | v1 | 初稿：完成网络/传输层 11 项发现（NET-001 ~ NET-011），全部基于静态代码分析 |
-| 2026-06-28 | v1.1 | **动态验证阶段**：本地启动 `cmd/gateway` (8781) + `cmd/gateway-v2` (8789)，跑完 §7 附录 11 条复现命令。10/11 项命中（含 NET-001/002/005/007/008/009/010 完整命中；NET-003/004 需 DB 模式复测；NET-006 v2 端完整命中）。NET-011 在 `git stash pop` 后自动修复。 |
+| 2026-06-28 | v1.1 | **动态验证阶段**：本地启动 `cmd/gateway` (__PORT_3__) + `cmd/gateway-v2` (8789)，跑完 §7 附录 11 条复现命令。10/11 项命中（含 NET-001/002/005/007/008/009/010 完整命中；NET-003/004 需 DB 模式复测；NET-006 v2 端完整命中）。NET-011 在 `git stash pop` 后自动修复。 |
 | 2026-06-28 | v1.2 | **修复阶段 1**：修复 **NET-001**（CORS panic fail-closed + Authorization 移出 Allow-Headers）+ **NET-002**（v2 加 API Key 中间件 + 指纹化密钥 + 全套超时 + 错误响应脱敏）。所有修复均通过回归测试。NET-006 v2 端随之修复（ReadHeaderTimeout 切断 Slowloris）。 |
 | 2026-06-28 | v1.3 | **修复阶段 2**：修复 **NET-005**（新增 `SecurityHeadersMiddleware`，4-5 个响应头 + CSP 仅 HTML）+ **NET-007**（`/healthz` 拆分基础+full；基础探测不再泄露 proxy 字段）+ **NET-008**（`/metrics` AdminTokenMiddleware 包裹）+ **NET-003**（`/admin/config/reload` 加 admin 鉴权 + 错误脱敏）。新增 `middleware/admin_token_mw.go` 与 `middleware/security_headers_mw.go` 两个中间件。**累计修复 7/11 项**。 |
 | 2026-06-28 | v1.4 | **修复阶段 3**：修复 **NET-004**（`/v1/approvals/` 统一 404 + 租户来自 JWT，杜绝跨租户枚举）+ **NET-010**（SPA 静态文件扩展名白名单：`.json/.env/.bak/.sql/.key` 一律 404）。同时顺带 **绕过 NET-012**（`cmd/gateway/main.go` Bandit scoring WIP 引用未定义符号——临时注释）+ **NET-013**（`autoroute/recommend_v2.go` Score API 不匹配——临时走简化分支），恢复 `go build`。**累计 9/13 修复 + 2/13 临时绕过**（NET-012/013 待完整 PR）。 |

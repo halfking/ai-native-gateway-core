@@ -168,7 +168,7 @@ $ go test ./routing/...
 === RUN   TestPrepareAnthropicRequestBody_OpenAIToAnthropic
 --- PASS: TestPrepareAnthropicRequestBody_OpenAIToAnthropic (0.00s)
 PASS
-ok  	github.com/kaixuan/llm-gateway-go/routing	3.215s
+ok  	__REPO_URL_3__/routing	3.215s
 ```
 
 ---
@@ -216,7 +216,7 @@ make build
 kubectl -n pms-test logs deploy/llm-gateway-go-deployment -f | grep "tool.*not found"
 
 # 检查成功率
-curl -s https://llmgateway.internal.example.com/api/credentials/6 | jq '.recent_success_rate'
+curl -s https://__DOMAIN_8__/api/credentials/6 | jq '.recent_success_rate'
 ```
 
 ---
@@ -269,4 +269,4 @@ WHERE id = 14;  -- MiniMax
 
 **修复提交**: `<commit-sha-will-be-filled>`  
 **部署时间**: 2026-06-23 19:40 UTC+8  
-**验证人**: @xutaohuang
+**验证人**: @__USER_1__
