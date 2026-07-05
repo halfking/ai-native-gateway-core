@@ -173,7 +173,7 @@ trg_notify_auto_route_cmb → NOTIFY → candidate cache invalidated
 #### 步骤 3: 验证路由
 ```bash
 # 测试请求
-curl -X POST http://localhost:8781/v1/chat/completions \
+curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
   -H "Authorization: Bearer <key>" \
   -H "Content-Type: application/json" \
   -d '{

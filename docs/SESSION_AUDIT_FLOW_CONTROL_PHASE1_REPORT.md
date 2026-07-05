@@ -183,7 +183,7 @@ LARK_VERIFICATION_TOKEN=xxx
 LARK_ENCRYPT_KEY=xxx
 
 # 数据库配置
-DATABASE_URL=postgresql://user:pass@host:5432/dbname
+DATABASE_URL=postgresql://user:pass@host:__PORT_5__/dbname
 
 # 流程控制配置
 FLOW_DEFAULT_TIMEOUT=30s

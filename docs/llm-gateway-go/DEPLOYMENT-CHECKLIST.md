@@ -90,7 +90,7 @@
 
 - [ ] 请求正常响应
   ```bash
-  curl -H "Authorization: Bearer $API_KEY" http://localhost:8080/v1/models
+  curl -H "Authorization: Bearer $API_KEY" http://localhost:__PORT_12__/v1/models
   # 200 OK
   ```
 

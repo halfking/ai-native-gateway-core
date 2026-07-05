@@ -26,7 +26,7 @@
 ### 4. 部署
 - ✅ 3 次生产环境部署
 - ✅ 版本：r1.13-done-41561148-20260705-50
-- ✅ URL：https://llmgateway.internal.example.com
+- ✅ URL：https://__DOMAIN_1__
 
 ---
 
@@ -247,14 +247,14 @@ PYTHON
 
 ### Git 仓库
 ```
-远程：https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git
+远程：__REPO_URL_1__.git
 当前分支：main
 最新提交：f4167a35 docs(i18n): P0 核心视图迁移计划
 ```
 
 ### 部署环境
 ```
-生产：https://llmgateway.internal.example.com (__INTERNAL_PUBLIC_IP__)
+生产：https://__DOMAIN_1__ (__PUB_IP_1__)
 版本：r1.13-done-41561148-20260705-50
 状态：✅ Running
 ```

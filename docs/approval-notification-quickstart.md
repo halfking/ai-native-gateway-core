@@ -100,7 +100,7 @@ INSERT INTO approval_routing_rules (
 ### 方式 1: 触发高风险请求
 
 ```bash
-curl -X POST 'http://localhost:8781/v1/chat/completions' \
+curl -X POST 'http://localhost:__PORT_3__/v1/chat/completions' \
   -H 'Authorization: Bearer <your_api_key>' \
   -H 'Content-Type: application/json' \
   -d '{

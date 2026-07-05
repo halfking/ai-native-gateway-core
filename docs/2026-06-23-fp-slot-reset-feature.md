@@ -3,7 +3,7 @@
 ## 问题分析
 
 ### 症状
-在 `https://llmgateway.internal.example.com/providers/587` 页面，发现指纹槽的"已占用"数量只涨不降，即使请求已经完成，槽位也没有被释放。
+在 `https://__DOMAIN_8__/providers/587` 页面，发现指纹槽的"已占用"数量只涨不降，即使请求已经完成，槽位也没有被释放。
 
 ### 根因分析
 
@@ -118,7 +118,7 @@ export function resetCredentialFpSlots(providerId: number, credId: number) {
 
 ### 操作步骤
 
-1. 进入 `https://llmgateway.internal.example.com/providers/{provider_id}`
+1. 进入 `https://__DOMAIN_8__/providers/{provider_id}`
 2. 在"凭据列表"中点击目标凭据
 3. 在右侧抽屉的"并发与有效期"区块中，点击"复位槽位"按钮
 4. 确认对话框中点击"确定"
@@ -157,7 +157,7 @@ export function resetCredentialFpSlots(providerId: number, credId: number) {
 - [ ] 前端构建：`cd web && npm run build`
 - [ ] 184 部署：`./scripts/deploy-llm-gateway-go-184.sh`
 - [ ] 71 部署：`./scripts/deploy-llm-gateway-go-71.sh`
-- [ ] 验证 API：`curl -X POST https://llmgateway.internal.example.com/api/providers/587/credentials/{cred_id}/reset-fp-slots -H "Authorization: Bearer <token>"`
+- [ ] 验证 API：`curl -X POST https://__DOMAIN_8__/api/providers/587/credentials/{cred_id}/reset-fp-slots -H "Authorization: Bearer <token>"`
 - [ ] 前端验证：在 Chrome DevTools 中验证"复位槽位"按钮可见且点击成功
 
 ## 未来优化方向

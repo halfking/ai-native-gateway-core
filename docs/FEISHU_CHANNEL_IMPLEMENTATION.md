@@ -45,7 +45,7 @@
 ### 配置飞书通道
 
 ```go
-import "github.com/kaixuan/llm-gateway-go/domains/approval/channels"
+import "__REPO_URL_3__/domains/approval/channels"
 
 // 创建飞书通道
 channel, err := channels.NewFeishuChannel(channels.FeishuConfig{
@@ -98,7 +98,7 @@ err = channel.SendApprovalNotification(ctx, req, approvers)
 ### 设置回调处理器
 
 ```go
-import "github.com/kaixuan/llm-gateway-go/api/webhooks"
+import "__REPO_URL_3__/api/webhooks"
 
 // 创建回调处理器
 handler := webhooks.NewFeishuCallbackHandler(webhooks.FeishuCallbackConfig{

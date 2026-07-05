@@ -124,7 +124,7 @@ captureAndEmitFailure := func(errCode, errMsg string, providerID, credentialID *
 === RUN   TestMethodNotAllowed_BodyIsValidJSON
     --- PASS: TestMethodNotAllowed_BodyIsValidJSON (0.00s)
 PASS
-ok  	github.com/kaixuan/llm-gateway-go/relay	0.674s
+ok  	__REPO_URL_3__/relay	0.674s
 ```
 
 ### 现有测试（全部通过）
@@ -136,7 +136,7 @@ ok  	github.com/kaixuan/llm-gateway-go/relay	0.674s
 **回归测试结果**：
 ```bash
 go test ./relay/ -short -timeout 60s
-ok  	github.com/kaixuan/llm-gateway-go/relay	0.674s
+ok  	__REPO_URL_3__/relay	0.674s
 ```
 
 ---

@@ -172,7 +172,7 @@ Tool-related streaming tests: ✅ **ALL PASS**
 **Verification Command** (after deployment):
 ```bash
 # Test multi-turn tool conversation
-curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
+curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{

@@ -291,10 +291,10 @@ psql -U postgres -d llm_gateway -c "\dt output_compliance*"
 ```go
 // main.go
 import (
-    "github.com/kaixuan/llm-gateway-go/admin"
-    "github.com/kaixuan/llm-gateway-go/domains/promptinjection"
-    "github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
-    "github.com/kaixuan/llm-gateway-go/domains/sessionsummary"
+    "__REPO_URL_3__/admin"
+    "__REPO_URL_3__/domains/promptinjection"
+    "__REPO_URL_3__/domains/outputcompliance"
+    "__REPO_URL_3__/domains/sessionsummary"
 )
 
 // 初始化检测器

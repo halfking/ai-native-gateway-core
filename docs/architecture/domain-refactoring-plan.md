@@ -271,7 +271,7 @@ go build ./domains/agent-ecosystem/...
 psql -d llm_gateway -f migrations/xxx_agent_ecosystem.sql
 
 # 智能体注册测试
-curl -X POST https://llmgateway.internal.example.com/api/admin/agents \
+curl -X POST https://__DOMAIN_8__/api/admin/agents \
   -H "X-Agent-ID: test-agent" \
   -H "X-Agent-Name: Test Agent" \
   -d '{"category":"coding"}'
@@ -305,7 +305,7 @@ go test ./domains/hooks/session-inspector/... -v
 - [ ] **T4.2**: 更新所有 import 路径
   ```bash
   # 全局替换
-  find . -name "*.go" -exec sed -i 's|github.com/kaixuan/llm-gateway-go/identity|github.com/kaixuan/llm-gateway-go/domains/identity|g' {} \;
+  find . -name "*.go" -exec sed -i 's|__REPO_URL_3__/identity|__REPO_URL_3__/domains/identity|g' {} \;
   ```
 
 - [ ] **T4.3**: 性能优化

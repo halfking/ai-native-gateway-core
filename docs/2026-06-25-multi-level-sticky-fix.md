@@ -3,8 +3,8 @@
 ## 问题描述
 
 2026-06-25 用户报告：
-- 手工选择 `claude-opus-4-8` (kaixuan组第3个)
-- 实际使用了 `minimax-m2.7-quickspeed` (kaixuan组第2个)
+- 手工选择 `claude-opus-4-8` (__USER_2__组第3个)
+- 实际使用了 `minimax-m2.7-quickspeed` (__USER_2__组第2个)
 - 两次失败后才用上正确的模型
 - 第一个成功的claude请求看起来像是"第二回合"
 

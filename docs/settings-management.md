@@ -75,34 +75,34 @@
 
 ```bash
 # SSH to 184
-export SSHPASS='__REDACTED_SSH_PASSWORD__'
+export SSHPASS='__SECRET_3__'
 sshpass -e ssh root@__INTERNAL_PUBLIC_IP__
 
 # 1. 应用 migration 022 (settings_kv + tenant_settings_kv)
-PGPASSWORD=__REDACTED_DB_PASSWORD__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway \
-  -f /opt/llm-gateway-go/db/migrations/022_settings_kv.sql
+PGPASSWORD=__SECRET_2__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway \
+  -f __SERVER_PATH_1__/db/migrations/022_settings_kv.sql
 
 # 2. 应用 migration 023 (settings_audit)
-PGPASSWORD=__REDACTED_DB_PASSWORD__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway \
-  -f /opt/llm-gateway-go/db/migrations/023_settings_audit.sql
+PGPASSWORD=__SECRET_2__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway \
+  -f __SERVER_PATH_1__/db/migrations/023_settings_audit.sql
 
 # 3. 验证表结构
-PGPASSWORD=__REDACTED_DB_PASSWORD__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "\d settings_kv"
-PGPASSWORD=__REDACTED_DB_PASSWORD__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "\d tenant_settings_kv"
-PGPASSWORD=__REDACTED_DB_PASSWORD__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "\d settings_audit"
+PGPASSWORD=__SECRET_2__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "\d settings_kv"
+PGPASSWORD=__SECRET_2__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "\d tenant_settings_kv"
+PGPASSWORD=__SECRET_2__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "\d settings_audit"
 ```
 
 ### 5.2 部署 llm-gateway-go
 
 ```bash
 cd __DEV_HOME__/workspace/official-deploy
-K8S_SSH_PASSWORD='__REDACTED_SSH_PASSWORD__' bash scripts/llm-gateway-go-184-deploy.sh
+K8S_SSH_PASSWORD='__SECRET_3__' bash scripts/llm-gateway-go-184-deploy.sh
 ```
 
 ### 5.3 验证服务健康
 
 ```bash
-curl -sk https://llmgateway.internal.example.com/healthz
+curl -sk https://__DOMAIN_8__/healthz
 # 期望: {"status":"ok",...}
 ```
 
@@ -112,7 +112,7 @@ curl -sk https://llmgateway.internal.example.com/healthz
 
 ```bash
 curl -sk -H "Authorization: Bearer $TOKEN" \
-  https://llmgateway.internal.example.com/api/admin/settings | jq .
+  https://__DOMAIN_8__/api/admin/settings | jq .
 ```
 
 返回示例：
@@ -143,7 +143,7 @@ curl -sk -H "Authorization: Bearer $TOKEN" \
 
 ```bash
 curl -sk -H "Authorization: Bearer $TOKEN" \
-  https://llmgateway.internal.example.com/api/admin/settings/compression.mode | jq .
+  https://__DOMAIN_8__/api/admin/settings/compression.mode | jq .
 ```
 
 ### 6.3 修改设置（立即生效）
@@ -153,11 +153,11 @@ curl -sk -H "Authorization: Bearer $TOKEN" \
 curl -sk -X PUT -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"value": "off"}' \
-  https://llmgateway.internal.example.com/api/admin/settings/compression.mode | jq .
+  https://__DOMAIN_8__/api/admin/settings/compression.mode | jq .
 
 # 期望: 立即生效
 curl -sk -H "Authorization: Bearer $TOKEN" \
-  https://llmgateway.internal.example.com/api/admin/settings/compression.mode | jq .value
+  https://__DOMAIN_8__/api/admin/settings/compression.mode | jq .value
 # "off"
 ```
 
@@ -166,7 +166,7 @@ curl -sk -H "Authorization: Bearer $TOKEN" \
 ```bash
 # 回滚 compression_mode 到上次的值
 curl -sk -X POST -H "Authorization: Bearer $TOKEN" \
-  https://llmgateway.internal.example.com/api/admin/settings/compression.mode/rollback | jq .
+  https://__DOMAIN_8__/api/admin/settings/compression.mode/rollback | jq .
 ```
 
 ### 6.5 查看修改历史
@@ -174,7 +174,7 @@ curl -sk -X POST -H "Authorization: Bearer $TOKEN" \
 ```bash
 # 查看 compression.mode 最近 50 条修改记录
 curl -sk -H "Authorization: Bearer $TOKEN" \
-  https://llmgateway.internal.example.com/api/admin/settings/compression.mode/history | jq .
+  https://__DOMAIN_8__/api/admin/settings/compression.mode/history | jq .
 ```
 
 ### 6.6 租户级设置（需要 super_admin）
@@ -184,14 +184,14 @@ curl -sk -H "Authorization: Bearer $TOKEN" \
 curl -sk -X PUT -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"value": 200}' \
-  "https://llmgateway.internal.example.com/api/admin/tenants/tenant_abc/settings/rate_limit_rpm" | jq .
+  "https://__DOMAIN_8__/api/admin/tenants/tenant_abc/settings/rate_limit_rpm" | jq .
 ```
 
 ## 7. UI 使用（暗色主题）
 
 ### 7.1 访问
 
-URL: `https://llmgateway.internal.example.com/admin/settings`
+URL: `https://__DOMAIN_8__/admin/settings`
 
 ### 7.2 界面布局
 

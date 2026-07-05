@@ -1,7 +1,7 @@
 # LLM Gateway 系统审计报告
 **日期**: 2026-06-30  
 **审计范围**: 错误处理、数据统计、凭据路由  
-**服务器**: __HOST_71_IP__ (71服务器)
+**服务器**: __SECRET_1__ (71服务器)
 
 ## 执行摘要
 
@@ -320,27 +320,27 @@ func (sc *StreamCapture) RecordChunk(chunk []byte) {
 ### 步骤1: 备份现有数据（10分钟）
 ```bash
 # 在71服务器执行
-SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
+SSHPASS='__SECRET_3__' sshpass -e ssh -p __PORT_1__ root@__SECRET_1__ \
   "docker exec llm-gateway-pg-71-replica pg_dump -U llm_gateway -d crm -Fc -f /tmp/crm_backup_20260630.dump"
 ```
 
 ### 步骤2: 创建表结构（20分钟）
 ```bash
 # 1. 将 sql/schema/01-schema.sql 上传到71服务器
-scp -P 25022 sql/schema/01-schema.sql root@__HOST_71_IP__:/tmp/
+scp -P __PORT_1__ sql/schema/01-schema.sql root@__SECRET_1__:/tmp/
 
 # 2. 提取 request_wal 和 request_logs 相关定义
 grep -A 100 "CREATE TABLE public.request_wal" sql/schema/01-schema.sql > /tmp/request_tables.sql
 grep -A 200 "CREATE TABLE public.request_logs" sql/schema/01-schema.sql >> /tmp/request_tables.sql
 
 # 3. 在71数据库执行
-SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
+SSHPASS='__SECRET_3__' sshpass -e ssh -p __PORT_1__ root@__SECRET_1__ \
   "docker exec -i llm-gateway-pg-71-replica psql -U llm_gateway -d crm < /tmp/request_tables.sql"
 ```
 
 ### 步骤3: 验证表创建（5分钟）
 ```bash
-SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
+SSHPASS='__SECRET_3__' sshpass -e ssh -p __PORT_1__ root@__SECRET_1__ \
   "docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d crm -c '\dt request*'"
 ```
 
@@ -356,14 +356,14 @@ SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ 
 
 ### 步骤4: 重启服务（5分钟）
 ```bash
-SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
+SSHPASS='__SECRET_3__' sshpass -e ssh -p __PORT_1__ root@__SECRET_1__ \
   "docker restart llm-gateway-go"
 ```
 
 ### 步骤5: 验证日志（10分钟）
 ```bash
 # 观察日志，不应再出现 "no partition of relation" 错误
-SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
+SSHPASS='__SECRET_3__' sshpass -e ssh -p __PORT_1__ root@__SECRET_1__ \
   "docker logs -f llm-gateway-go 2>&1 | grep -E 'request_logger|routing'"
 ```
 
@@ -416,4 +416,4 @@ SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ 
 ## 审计人员
 - AI Agent (Claude Opus 4)
 - 审计时间: 2026-06-30 14:00-15:30 CST
-- 服务器: __HOST_71_IP__ (71)
+- 服务器: __SECRET_1__ (71)

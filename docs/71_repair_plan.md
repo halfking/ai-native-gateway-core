@@ -1,7 +1,7 @@
 # 71 环境分区修复详细计划
 
 **生成时间**: 2026-07-04 13:15  
-**环境**: 71 生产环境 (__HOST_71_IP__)
+**环境**: 71 生产环境 (__PUB_IP_2__)
 
 ---
 
@@ -108,7 +108,7 @@ COMMIT;
 ### **步骤 2: 停止网关服务**
 
 ```bash
-ssh root@__HOST_71_IP__
+ssh __SSH_TARGET_2__
 systemctl stop llm-gateway-go
 # 验证服务已停止
 systemctl status llm-gateway-go

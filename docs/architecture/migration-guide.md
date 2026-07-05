@@ -191,7 +191,7 @@ hook.Execute(ctx, env)  // 自动读 cache + 写入 env.UpstreamResponse
 ```bash
 # 启动旧 gateway
 go run ./cmd/gateway
-# 配置: LLM_GATEWAY_LISTEN=:8781
+# 配置: LLM_GATEWAY_LISTEN=:__PORT_3__
 # 行为: 走 transport/ 旧路径, 串联旧 middleware
 ```
 
@@ -200,7 +200,7 @@ go run ./cmd/gateway
 ```bash
 # 启动新 gateway-v2
 go run ./cmd/gateway-v2
-# 配置: LLM_GATEWAY_LISTEN=:8782 (默认)
+# 配置: LLM_GATEWAY_LISTEN=:__PORT_4__ (默认)
 # 行为: 走 Pipeline 路径, 串联所有新 Hook
 # 特性:
 #   - LLM_GATEWAY_V2_CACHE=true|false
@@ -251,7 +251,7 @@ go test ./cmd/gateway-v2/... -v
    - 修改 `cmd/gateway/main.go` 让特定路径（如 `/v1/chat` 带 `X-Use-V2: true` header）走新 Pipeline
    - 监控指标差异
 2. **放量 (50% → 100%)**:
-   - 修改 nginx `upstream` 50% 流量到 `:8782`
+   - 修改 nginx `upstream` 50% 流量到 `:__PORT_4__`
    - 持续 1 周无异常后切 100%
 3. **替换**:
    - `cmd/gateway-v2/` 改名 `cmd/gateway/`

@@ -30,14 +30,14 @@
 ```yaml
 生产环境:
   - 域名: *.internal.example.com
-  - 主服务: llmgateway.internal.example.com
-  - SSH端口: 25022
-  - 默认用户: admin/<ADMIN_PASSWORD_REDACTED>
-  - Root密码: <SSH_PASSWORD_REDACTED>
+  - 主服务: __DOMAIN_1__
+  - SSH端口: __PORT_1__
+  - 默认用户: admin/__ADMIN_PWD_1__
+  - Root密码: __SSH_PWD_1__
 
 数据库:
-  - 主机: __INTERNAL_PUBLIC_IP__:25022 (SSH)
-  - PostgreSQL: 127.0.0.1:5432
+  - 主机: __PUB_IP_1__:__PORT_1__ (SSH)
+  - PostgreSQL: 127.0.0.1:__PORT_5__
   - 数据库名: llm_gateway
   - 用户: postgres
 ```
@@ -45,12 +45,12 @@
 #### API认证配置
 ```yaml
 用户API:
-  - 端点: https://llmgateway.internal.example.com/v1/*
+  - 端点: https://__DOMAIN_1__/v1/*
   - 认证: Bearer sk-*
-  - 示例Key: sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9
+  - 示例Key: __API_KEY_1__
 
 Admin API:
-  - 端点: https://llmgateway.internal.example.com/api/*
+  - 端点: https://__DOMAIN_1__/api/*
   - 认证: Bearer $LLM_GATEWAY_ADMIN_API_KEY
   - 用途: 日志查询、系统管理
 ```

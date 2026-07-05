@@ -6,7 +6,7 @@
 
 ## 测试环境
 - 数据库：r112_postgres (已应用 mig 136+137)
-- 网关：本地 8080 端口
+- 网关：本地 __PORT_12__ 端口
 - 客户端：curl / Postman / 自动化脚本
 
 ## 测试矩阵
@@ -112,7 +112,7 @@ for model in "${MODELS[@]}"; do
     echo "=== Testing: model=$model state=$state ==="
     setup_state "$state"
     for i in {1..10}; do
-      curl -X POST http://localhost:8080/v1/chat/completions \
+      curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
         -H "Authorization: Bearer test-key" \
         -H "Content-Type: application/json" \
         -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"test\"}]}" \
@@ -133,7 +133,7 @@ done
 psql -c "UPDATE credentials SET quota_state='exhausted' WHERE id=1"
 
 # 2. 发送 100 个并发请求
-seq 1 100 | xargs -P 10 -I {} curl -X POST http://localhost:8080/v1/chat/completions \
+seq 1 100 | xargs -P 10 -I {} curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Authorization: Bearer test-key" \
   -d '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"test"}]}' \
   > results_quota_failover.txt 2>&1
@@ -159,7 +159,7 @@ psql -c "UPDATE credentials SET quota_state='exhausted'"
 
 # 2. 发送请求并记录耗时
 START=$(date +%s)
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
   -H "Authorization: Bearer test-key" \
   -d '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"test"}]}' \
   > result.json 2>&1

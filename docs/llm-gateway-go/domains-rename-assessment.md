@@ -80,7 +80,7 @@
 ### 2.1 需要修改的地方
 如果执行 `domains/` → `pipeline/` 重命名，需要修改：
 
-1. **271 处 import 路径**（所有 `github.com/kaixuan/llm-gateway-go/domains` → `github.com/kaixuan/llm-gateway-go/pipeline`）
+1. **271 处 import 路径**（所有 `__REPO_URL_3__/domains` → `__REPO_URL_3__/pipeline`）
 2. **目录结构**（`mv domains/ pipeline/`）
 3. **文档引用**（README / docs/architecture/ARCHITECTURE.md / design docs）
 4. **注释中的引用**（代码注释中提到 "domains" 的地方）
@@ -122,7 +122,7 @@
 ### 4.1 推荐方案: 延迟到 Phase 2
 **理由**:
 - Phase 2 计划将 Go 代码拆分为多个 module（`application/` / `infrastructure/` / `domain/`）
-- 届时 `domains/` 会整体移动到 `application/` module，路径会变成 `github.com/kaixuan/llm-gateway-go/application/pipeline`
+- 届时 `domains/` 会整体移动到 `application/` module，路径会变成 `__REPO_URL_3__/application/pipeline`
 - **一次性处理路径变更 + module 拆分**，避免二次修改
 
 **优势**:
@@ -150,7 +150,7 @@ git status  # 确认 clean
 mv domains pipeline
 
 # 3. 批量替换 import 路径（使用 gofmt）
-gofmt -w -r 'github.com/kaixuan/llm-gateway-go/domains -> github.com/kaixuan/llm-gateway-go/pipeline' .
+gofmt -w -r '__REPO_URL_3__/domains -> __REPO_URL_3__/pipeline' .
 
 # 4. 验证编译
 go build ./...
@@ -181,7 +181,7 @@ git push origin main
    package pipeline
    
    // 临时别名，供旧代码使用
-   import "github.com/kaixuan/llm-gateway-go/domains"
+   import "__REPO_URL_3__/domains"
    ```
 
 2. **分批重命名**（每周处理 50-80 处引用）:

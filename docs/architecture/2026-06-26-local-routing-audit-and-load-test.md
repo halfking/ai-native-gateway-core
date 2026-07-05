@@ -68,8 +68,8 @@ Problems:
 Fixes:
 - Added `cmd/gateway-v2/Dockerfile`.
 - Pointed local compose to that Dockerfile.
-- Fixed gateway-v2 port mapping to `8782:8782`.
-- Fixed gateway-v2 healthcheck to target `localhost:8782/healthz`.
+- Fixed gateway-v2 port mapping to `__PORT_4__:__PORT_4__`.
+- Fixed gateway-v2 healthcheck to target `localhost:__PORT_4__/healthz`.
 
 ### 5. Local mock dependencies were unstable
 
@@ -107,7 +107,7 @@ Local dependency stack was recovered successfully:
 - `r112_gateway_v2`
 
 Health verification:
-- `GET http://localhost:8782/healthz` => `200 ok`
+- `GET http://localhost:__PORT_4__/healthz` => `200 ok`
 
 Sample request verification:
 - `GET /v1/chat?q=hello&model=gpt-4o`
@@ -116,7 +116,7 @@ Sample request verification:
 ## High-Concurrency Routing Simulation
 
 Target:
-- `GET http://localhost:8782/v1/chat?q=hello&model=gpt-4o`
+- `GET http://localhost:__PORT_4__/v1/chat?q=hello&model=gpt-4o`
 
 Headers:
 - `X-Tenant-ID: t1`
@@ -151,7 +151,7 @@ Results:
 ## Replay Status
 
 The historical replay tool `cmd/traffic-replay` was not completed end-to-end in this pass because:
-- The local host `5432` is conflicted by both Docker and a host PostgreSQL instance.
+- The local host `__PORT_5__` is conflicted by both Docker and a host PostgreSQL instance.
 - The new local DB has no meaningful historical `request_logs` traffic to replay.
 
 This means:

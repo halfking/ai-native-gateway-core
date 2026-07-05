@@ -11,7 +11,7 @@
 
 | Remote | URL | 角色 | 推送方式 | 扫描器 |
 |--------|-----|------|----------|--------|
-| `codeup` (origin) | `https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git` | 主仓库（日常开发） | `git push` | 无 |
+| `codeup` (origin) | `__REPO_URL_1__.git` | 主仓库（日常开发） | `git push` | 无 |
 | `github` | `git@github.com:halfking/SI-LLM-Gateway.git` | 公开镜像（阶段发布） | `git push github` | **严格模式** |
 
 **默认 push 永远走 codeup**。github 推送必须显式调用 `git push github`，
@@ -51,7 +51,7 @@
 | **DB 连接串** | `postgres://<USER>/<PASSWORD>@<HOST>` (带密码字段) |
 | **SSH 密码** | `K8S_SSH_PASSWORD=...` 含字面量赋值 |
 | **内部 IP** | RFC1918 段 (10.x / 172.16-31.x / 192.168.x) |
-| **内部域名** | 公司内部 `<corp>.internal.example.com` 段 |
+| **内部域名** | 公司内部 `<corp>.__DOMAIN_12__` 段 |
 | **已知泄露** | 之前从仓库提取的真实凭据字面量（黑名单） |
 | **敏感文件** | `.env*` / `*.pem` / `*.key` / `*.kubeconfig` |
 
@@ -145,16 +145,16 @@ git push --no-verify github
 
 | 模式类别 | 替换为 |
 |------|--------|
-| 已知 DB 密码 | `__REDACTED_DB_PASSWORD__` |
-| 已知 SSH 密码 | `__REDACTED_SSH_PASSWORD__` |
+| 已知 DB 密码 | `__SECRET_2__` |
+| 已知 SSH 密码 | `__SECRET_3__` |
 | 已知第三方 API key | `__REDACTED_<VENDOR>_API_KEY__` |
 | 已知公网 IP（含内网 NAT） | `__INTERNAL_PUBLIC_IP__` |
 | K8s host IP (10.43.62.x 段) | `__INTERNAL_K8S_HOST__` |
 | Docker host IP (10.43.61.x 段) | `__INTERNAL_DOCKER_HOST__` |
 | K8s 节点 IP (172.31.x 段) | `__INTERNAL_K8S_HOST__` |
-| 内部镜像仓库 (registry.<corp>.cn) | `registry.<corp>.internal.example.com` |
-| 业务主域名 (<svc>.<corp>.cn) | `<svc>.internal.example.com` |
-| 通用内部域 (含 `.cn` / `.com`) | `internal.example.com` |
+| 内部镜像仓库 (registry.<corp>.cn) | `registry.<corp>.__DOMAIN_12__` |
+| 业务主域名 (<svc>.<corp>.cn) | `<svc>.__DOMAIN_12__` |
+| 通用内部域 (含 `.cn` / `.com`) | `__DOMAIN_12__` |
 
 > 注：具体替换表见 `scripts/scan-secrets.replacements` (生产环境内网 IP / 域名)。
 

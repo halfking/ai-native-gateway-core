@@ -104,7 +104,7 @@ admin API stay on v1.
    k3s pod only**. Watch logs for `"v2 pipeline: LLM_GATEWAY_V2_ENABLED=true,
    /v2/* routes registered"`. Manually `curl /v2/healthz` from inside the
    pod to confirm registration. **No production traffic is routed to `/v2/*`
-   because nginx points 56→71:8781 and llmgateway.internal.example.com upstream does not include
+   because nginx points 56→71:__PORT_3__ and __DOMAIN_8__ upstream does not include
    `/v2/`.**
 2. **Manual probe (5 requests)** — `curl /v2/chat/completions?q=test&model=gpt-4`
    from a non-production client. Verify the response is

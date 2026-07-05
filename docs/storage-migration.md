@@ -29,7 +29,7 @@
 LLM_GATEWAY_ATTACHMENT_DIR=/data/attachments
 
 # 日志文件路径（留空则输出到 stderr）
-LLM_GATEWAY_LOG_FILE=/var/log/llm-gateway/gateway.log
+LLM_GATEWAY_LOG_FILE=__SERVER_PATH_6__/gateway.log
 
 # 日志轮转配置
 LLM_GATEWAY_LOG_MAX_SIZE_MB=100      # 单个日志文件最大大小（MB）
@@ -59,7 +59,7 @@ docker-compose -f docker-compose.yml -f docker-compose.persistent.yml up -d
 配置文件创建以下命名卷：
 
 - `llm-gateway-attachments`：附件存储卷，挂载到 `/data/attachments`
-- `llm-gateway-logs`：日志存储卷，挂载到 `/var/log/llm-gateway`
+- `llm-gateway-logs`：日志存储卷，挂载到 `__SERVER_PATH_6__`
 
 ### 自定义配置
 
@@ -71,10 +71,10 @@ services:
     volumes:
       # 绑定挂载到宿主机目录
       - /host/path/to/attachments:/data/attachments
-      - /host/path/to/logs:/var/log/llm-gateway
+      - /host/path/to/logs:__SERVER_PATH_6__
     environment:
       - LLM_GATEWAY_ATTACHMENT_DIR=/data/attachments
-      - LLM_GATEWAY_LOG_FILE=/var/log/llm-gateway/gateway.log
+      - LLM_GATEWAY_LOG_FILE=__SERVER_PATH_6__/gateway.log
 ```
 
 ### 数据迁移步骤
@@ -89,7 +89,7 @@ docker ps | grep llm-gateway
 docker cp <container_id>:/data/attachments ./backup/attachments
 
 # 从容器中拷贝现有日志数据（如果配置了文件日志）
-docker cp <container_id>:/var/log/llm-gateway ./backup/logs
+docker cp <container_id>:__SERVER_PATH_6__ ./backup/logs
 ```
 
 #### 2. 停止现有服务
@@ -114,9 +114,9 @@ docker run --rm -v llm-gateway-attachments:/data/attachments \
   -v $(pwd)/backup/attachments:/backup \
   alpine sh -c "cp -r /backup/* /data/attachments/"
 
-docker run --rm -v llm-gateway-logs:/var/log/llm-gateway \
+docker run --rm -v llm-gateway-logs:__SERVER_PATH_6__ \
   -v $(pwd)/backup/logs:/backup \
-  alpine sh -c "cp -r /backup/* /var/log/llm-gateway/"
+  alpine sh -c "cp -r /backup/* __SERVER_PATH_6__/"
 ```
 
 #### 5. 启动新配置
@@ -132,7 +132,7 @@ docker-compose -f docker-compose.persistent.yml up -d
 docker exec <container_id> ls -lh /data/attachments
 
 # 验证日志数据
-docker exec <container_id> ls -lh /var/log/llm-gateway
+docker exec <container_id> ls -lh __SERVER_PATH_6__
 
 # 检查应用日志确认无错误
 docker-compose logs -f
@@ -175,12 +175,12 @@ spec:
         - name: LLM_GATEWAY_ATTACHMENT_DIR
           value: /data/attachments
         - name: LLM_GATEWAY_LOG_FILE
-          value: /var/log/llm-gateway/gateway.log
+          value: __SERVER_PATH_6__/gateway.log
         volumeMounts:
         - name: attachments
           mountPath: /data/attachments
         - name: logs
-          mountPath: /var/log/llm-gateway
+          mountPath: __SERVER_PATH_6__
       volumes:
       - name: attachments
         persistentVolumeClaim:
@@ -202,7 +202,7 @@ kubectl get pods -n <namespace>
 kubectl cp <namespace>/<pod_name>:/data/attachments ./backup/attachments
 
 # 从 Pod 中拷贝现有日志数据
-kubectl cp <namespace>/<pod_name>:/var/log/llm-gateway ./backup/logs
+kubectl cp <namespace>/<pod_name>:__SERVER_PATH_6__ ./backup/logs
 ```
 
 #### 2. 创建 PVC/PV
@@ -230,7 +230,7 @@ spec:
     - name: attachments
       mountPath: /data/attachments
     - name: logs
-      mountPath: /var/log/llm-gateway
+      mountPath: __SERVER_PATH_6__
   volumes:
   - name: attachments
     persistentVolumeClaim:
@@ -247,7 +247,7 @@ kubectl wait --for=condition=ready pod/data-migration -n <namespace>
 kubectl cp ./backup/attachments <namespace>/data-migration:/data/
 
 # 拷贝日志数据
-kubectl cp ./backup/logs <namespace>/data-migration:/var/log/llm-gateway/
+kubectl cp ./backup/logs <namespace>/data-migration:__SERVER_PATH_6__/
 
 # 删除临时 Pod
 kubectl delete pod data-migration -n <namespace>
@@ -273,7 +273,7 @@ kubectl get pods -n <namespace>
 kubectl exec -it <pod_name> -n <namespace> -- ls -lh /data/attachments
 
 # 验证日志数据
-kubectl exec -it <pod_name> -n <namespace> -- ls -lh /var/log/llm-gateway
+kubectl exec -it <pod_name> -n <namespace> -- ls -lh __SERVER_PATH_6__
 
 # 检查应用日志
 kubectl logs -f <pod_name> -n <namespace>
@@ -331,7 +331,7 @@ kubectl logs -f <pod_name> -n <namespace>
 
 ```bash
 # 设置保留策略：30 天
-curl -X PUT http://localhost:8080/admin/storage/retention \
+curl -X PUT http://localhost:__PORT_12__/admin/storage/retention \
   -H "Content-Type: application/json" \
   -d '{
     "max_age_days": 30,
@@ -339,7 +339,7 @@ curl -X PUT http://localhost:8080/admin/storage/retention \
   }'
 
 # 手动触发清理
-curl -X POST http://localhost:8080/admin/storage/cleanup
+curl -X POST http://localhost:__PORT_12__/admin/storage/cleanup
 ```
 
 #### Kubernetes CronJob 自动清理
@@ -365,7 +365,7 @@ spec:
             - /bin/sh
             - -c
             - |
-              curl -X POST http://llm-gateway:8080/admin/storage/cleanup
+              curl -X POST http://llm-gateway:__PORT_12__/admin/storage/cleanup
           restartPolicy: OnFailure
 ```
 
@@ -424,7 +424,7 @@ kubectl exec <pod_name> -n <namespace> -- \
 
 #### 1. 容器无法启动：权限问题
 
-**症状**：容器日志显示无法写入 `/data/attachments` 或 `/var/log/llm-gateway`
+**症状**：容器日志显示无法写入 `/data/attachments` 或 `__SERVER_PATH_6__`
 
 **解决方案**：
 
@@ -502,7 +502,7 @@ kubectl apply -f deploy/k8s/storage-pvc.yaml
 docker exec <container_id> find /data/attachments -type f -mtime +30 -delete
 
 # 手动清理旧日志
-docker exec <container_id> find /var/log/llm-gateway -name "*.gz" -delete
+docker exec <container_id> find __SERVER_PATH_6__ -name "*.gz" -delete
 ```
 
 **长期方案**：
@@ -534,7 +534,7 @@ docker exec <container_id> find /var/log/llm-gateway -name "*.gz" -delete
 #### 日志存储
 
 ```
-/var/log/llm-gateway/
+__SERVER_PATH_6__/
 ├── gateway.log           # 当前日志文件
 ├── gateway.log.1         # 轮转日志文件 1
 ├── gateway.log.2.gz      # 压缩的轮转日志文件 2

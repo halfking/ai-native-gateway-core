@@ -131,7 +131,7 @@ sankeySvgMinHeight   = chartHeight - SANKEY_SECTION_HEAD_H - SANKEY_DOM_LEGEND_H
 1. **前端热修路径**：仅改 `web/` 时可在 **184** 上只替换静态资源或走 `deploy-llm-gateway-go-184.sh --only app`，无需完整 Go 镜像重建。
 2. **完整构建**：本机构建若 `kx-base:go` 拉取 **403**（daocloud/GFW），应在 **184 构建机**上 build，或使用已烤 mirror 的 buildx builder（`setup-buildx-builder.sh`）。
 3. **后端标签修复**（`49ea1f1c`）需 **Go 二进制** 部署；仅前端 patch 无法修正中间列 canonical 名。
-4. 验证入口：`https://llmgateway.internal.example.com` → 路由全景 → 数据分析 Tab；确认双卡等高、Sankey 不裁切、中间列为标准模型名。
+4. 验证入口：`https://__DOMAIN_8__` → 路由全景 → 数据分析 Tab；确认双卡等高、Sankey 不裁切、中间列为标准模型名。
 
 ---
 

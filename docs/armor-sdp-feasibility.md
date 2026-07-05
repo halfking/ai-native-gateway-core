@@ -2,7 +2,7 @@
 
 > **文档版本**：v1.0
 > **调研日期**：2026-06-25
-> **作者**：kaixuan-ai-agent
+> **作者**：__USER_2__-ai-agent
 > **配套**：实施计划 `2026-06-23-llmgw-implementation-plan.md` Part 4 B2（Q4 第 6-9 周）
 > **依赖**：`security/armor/` 包（NOW-2 已完成，commit `ecea00cc`）
 >
@@ -150,7 +150,7 @@ spec:
     spec:
       containers:
       - name: presidio
-        image: registry.internal.example.com/kx-presidio-sidecar:v0.1  # 自建镜像
+        image: __DOMAIN_9__/kx-presidio-sidecar:v0.1  # 自建镜像
         ports: [{ containerPort: 3004 }]
         resources:
           requests: { cpu: 200m, memory: 200Mi }
