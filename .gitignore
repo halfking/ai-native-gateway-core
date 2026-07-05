@@ -139,6 +139,9 @@ deploy/prod-*.yaml
 deploy/prod-*.yml
 .env.*.k8s
 
+# 部署记录目录（含完整方案/SQL变更/验证记录）
+deploy/r*-*/
+
 
 # 环境变量（明文，不提交）
 .env.local

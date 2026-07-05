@@ -28,21 +28,18 @@ func (tr *ToolRegistry) RecordToolCall(ctx context.Context, toolID, tenantID, st
 	//   tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_key).
 	// We try the column-tuple form first (production safe) and fall
 	// back to the named constraint when the local schema diverges.
-	// INSERT directly targets tool_usage_stats_default (the canonical
-	// write target per the 2026-07 data-lifecycle architecture). We
-	// never write to the parent table; the parent's auto-routing is
-	// intentionally bypassed so writes never land in a non-default
-	// partition that cannot be UPDATEd/DELETEd later.
+	// INSERT directly targets tool_usage_stats_hot (the canonical
+	// write target per the 2026-07 hot-table architecture).
 	query := `
-		INSERT INTO tool_usage_stats_default
+		INSERT INTO tool_usage_stats_hot
 			(tool_id, tenant_id, usage_date, call_count, success_count, error_count, avg_latency_ms, last_called_at)
 		VALUES ($1, $2, CURRENT_DATE, 1, $3, $4, $5, NOW())
 		ON CONFLICT (tool_id, tenant_id, usage_date)
 		DO UPDATE SET
-			call_count = tool_usage_stats_default.call_count + 1,
-			success_count = tool_usage_stats_default.success_count + $3,
-			error_count = tool_usage_stats_default.error_count + $4,
-			avg_latency_ms = (tool_usage_stats_default.avg_latency_ms * tool_usage_stats_default.call_count + $5) / (tool_usage_stats_default.call_count + 1),
+			call_count = tool_usage_stats_hot.call_count + 1,
+			success_count = tool_usage_stats_hot.success_count + $3,
+			error_count = tool_usage_stats_hot.error_count + $4,
+			avg_latency_ms = (tool_usage_stats_hot.avg_latency_ms * tool_usage_stats_hot.call_count + $5) / (tool_usage_stats_hot.call_count + 1),
 			last_called_at = NOW(),
 			updated_at = NOW()
 	`
@@ -56,10 +53,8 @@ func (tr *ToolRegistry) RecordToolCall(ctx context.Context, toolID, tenantID, st
 
 	_, err := tr.db.Exec(ctx, query, toolID, tenantID, successDelta, errorDelta, latencyMs)
 	if err != nil {
-		// Local r112 / sandbox: tool_usage_stats_default may not exist;
-		// fall back to the parent table for migration windows. The
-		// column-tuple ON CONFLICT works against either parent or
-		// default partition (same UNIQUE constraint).
+		// Fallback: tool_usage_stats_hot may not exist in some env;
+		// use parent table instead.
 		partitionedQuery := `
 			INSERT INTO tool_usage_stats
 				(tool_id, tenant_id, usage_date, call_count, success_count, error_count, avg_latency_ms, last_called_at)

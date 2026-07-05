@@ -290,12 +290,12 @@ func (h *Handler) getCredentialUsage(w http.ResponseWriter, r *http.Request, cre
 	var promptTok, compTok int
 	var cost, avgLatency, successRate float64
 	//nolint:errcheck // scan error non-critical
-	// 2026-07 partition-aware: 当 days <= 7 时查询 *_default（heap 热数据，性能最优），
+	// 2026-07 partition-aware: 当 days <= 7 时查询 *_hot（heap 热数据，性能最优），
 	// 当 days > 7 时跨月查询父表（聚合所有分区）。符合
 	// docs/partition/partition-standards.md 查询规范。
 	usageTable := "usage_ledger"
 	if days <= 7 {
-		usageTable = "usage_ledger_default"
+		usageTable = "usage_ledger_hot"
 	}
 	h.db.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
