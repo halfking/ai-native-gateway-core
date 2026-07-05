@@ -1,10 +1,10 @@
 // Auto-translated draft (zh-TW/ja-JP) · 2026-07-02 · please review
 // nav.ts — サイドバーナビゲーション文案、config/appNav.ts の NAV_PRIMARY_ITEMS / NAV_GROUPS に対応。
-// キーの命名:nav.<group>.<item> または nav.primary.<item>、appNav labelKey と一対一で対応。
+// キーの命名:nav.<group>.<item>、appNav labelKey と一対一で対応。
 export default {
-  primary: {
-    overview: '概要',
-  },
+  collapseSidebar: 'サイドバーを折りたたむ',
+  expandSidebar: 'サイドバーを展開',
+
   group: {
     tenantPortal: 'マイサービス',
     modelsRouting: 'モデルとルーティング',
@@ -14,14 +14,17 @@ export default {
     guide: '接続ガイド',
     chat: 'チャット',
   },
+
   item: {
+    overview: '概要',
     tenantModels: '標準モデル',
     tenantAccount: 'マイアカウント',
     tenantPricing: 'プランとチャージ',
     tenantUsage: '私の利用状況',
-    modelsCatalog: 'モデルとカタログ',
+    models: 'モデルとカタログ',
     routingOverview: 'ルーティング概要',
-    routingCredentials: '認証情報モニター',
+    credentialMonitor: '認証情報モニター',
+    probeHealth: 'プローブヘルス',
     providers: 'プロバイダー',
     pricing: 'コスト価格',
     modelPricing: '価格管理',
@@ -36,8 +39,11 @@ export default {
     sessionCompare: 'セッション比較',
     compression: '圧縮概要',
     sessionContext: 'セッションコンテキスト',
-    adminSettings: 'システム設定',
+    settings: 'システム設定',
     dataLifecycle: 'データライフサイクル',
+    formatAnomalies: 'フォーマット異常モニター',
+    modules: 'モジュール管理',
+    agents: 'エージェントレジストリ',
     examples: '接続例',
     chat: 'チャット',
   },

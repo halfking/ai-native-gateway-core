@@ -1,9 +1,9 @@
 // Auto-translated draft (es-ES) · 2026-07-02 · please review
 // nav.ts — Etiquetas de navegación lateral, reflejando config/appNav.ts.
 export default {
-  primary: {
-    overview: 'Resumen',
-  },
+  collapseSidebar: 'Contraer barra lateral',
+  expandSidebar: 'Expandir barra lateral',
+
   group: {
     tenantPortal: 'Mis servicios',
     modelsRouting: 'Modelos y enrutamiento',
@@ -13,14 +13,17 @@ export default {
     guide: 'Guía de integración',
     chat: 'Chat',
   },
+
   item: {
+    overview: 'Resumen',
     tenantModels: 'Modelos estándar',
     tenantAccount: 'Mi cuenta',
     tenantPricing: 'Planes y recarga',
     tenantUsage: 'Mi consumo',
-    modelsCatalog: 'Modelos y catálogo',
+    models: 'Modelos y catálogo',
     routingOverview: 'Panorama de enrutamiento',
-    routingCredentials: 'Monitor de credenciales',
+    credentialMonitor: 'Monitor de credenciales',
+    probeHealth: 'Salud del sondeo',
     providers: 'Proveedores',
     pricing: 'Precios de coste',
     modelPricing: 'Gestión de precios',
@@ -35,8 +38,11 @@ export default {
     sessionCompare: 'Comparar sesiones',
     compression: 'Compresión',
     sessionContext: 'Contexto de sesión',
-    adminSettings: 'Ajustes del sistema',
+    settings: 'Ajustes del sistema',
     dataLifecycle: 'Ciclo de vida de datos',
+    formatAnomalies: 'Monitor de anomalías de formato',
+    modules: 'Gestión de módulos',
+    agents: 'Registro de agentes',
     examples: 'Ejemplos',
     chat: 'Chat',
   },

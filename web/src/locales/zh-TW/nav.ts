@@ -1,10 +1,10 @@
 // Auto-translated draft (zh-TW/ja-JP) · 2026-07-02 · please review
 // nav.ts — 側欄導航文案，對應 config/appNav.ts 中的 NAV_PRIMARY_ITEMS / NAV_GROUPS。
-// Key 命名：nav.<group>.<item> 或 nav.primary.<item>，與 appNav labelKey 一一對應。
+// Key 命名：nav.<group>.<item>，與 appNav labelKey 一一對應。
 export default {
-  primary: {
-    overview: '總覽',
-  },
+  collapseSidebar: '摺疊側邊欄',
+  expandSidebar: '展開側邊欄',
+
   group: {
     tenantPortal: '我的服務',
     modelsRouting: '模型與路由',
@@ -14,14 +14,17 @@ export default {
     guide: '接入指南',
     chat: '對話',
   },
+
   item: {
+    overview: '總覽',
     tenantModels: '標準模型',
     tenantAccount: '我的帳號',
     tenantPricing: '套餐與儲值',
     tenantUsage: '我的消耗',
-    modelsCatalog: '模型與目錄',
+    models: '模型與目錄',
     routingOverview: '路由全景',
-    routingCredentials: '憑證監控',
+    credentialMonitor: '憑證監控',
+    probeHealth: '探測健康度',
     providers: '供應商',
     pricing: '成本價格',
     modelPricing: '定價管理',
@@ -36,8 +39,11 @@ export default {
     sessionCompare: '會話對比',
     compression: '壓縮概覽',
     sessionContext: '會話上下文',
-    adminSettings: '系統設定',
+    settings: '系統設定',
     dataLifecycle: '資料生命週期',
+    formatAnomalies: '格式異常監控',
+    modules: '模組管理',
+    agents: 'Agent Registry',
     examples: '接入範例',
     chat: '對話',
   },
