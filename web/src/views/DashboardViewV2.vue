@@ -37,6 +37,9 @@ const versionSwitcher = inject<{
   switchVersion: (v: 'v1' | 'v2') => void
 }>('versionSwitcher')!
 
+// 从父组件注入泳道重新初始化key
+const swimLaneReinitKey = inject<Ref<number>>('swimLaneReinitKey')!
+
 const statsDrawerRef = ref<InstanceType<typeof StatsDrawer> | null>(null)
 const activeRequestId = ref<string | null>(null)
 
@@ -225,8 +228,11 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
       </div>
     </div>
 
-    <!-- 实时请求流V2 -->
-    <LiveRequestStreamV2 @open-detail="openRequestDetail" />
+    <!-- 实时请求流V2（带重新初始化key） -->
+    <LiveRequestStreamV2 
+      :key="swimLaneReinitKey" 
+      @open-detail="openRequestDetail" 
+    />
 
     <!-- 抽屉组件 -->
     <StatsDrawer
