@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { computed, onMounted, ref } from 'vue'
 import {
   getFormatAnomalies,
@@ -11,6 +12,9 @@ import { isSuperAdmin } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
 import ProviderPicker from '../components/ProviderPicker.vue'
 import AnomalyTypePicker, { type AnomalyTypeOption } from '../components/AnomalyTypePicker.vue'
+
+const { t } = useI18n()
+
 
 const anomalies = ref<FormatAnomalyRecord[]>([])
 const summaries = ref<FormatAnomalySummary[]>([])
@@ -32,27 +36,27 @@ const resolutionNotes = ref('')
 const resolving = ref(false)
 
 const anomalyTypeLabels: Record<string, string> = {
-  missing_usage_block: '缺失 Usage 块',
-  zero_completion_tokens: 'Completion Tokens 为 0',
-  extraction_failed: '提取失败',
-  unexpected_structure: '非预期结构',
-  null_usage_values: 'Usage 值为 Null',
+  missing_usage_block: t('formatAnomaliesView.missing_usage_block'),
+  zero_completion_tokens: t('formatAnomaliesView.zero_completion_tokens'),
+  extraction_failed: t('formatAnomaliesView.extraction_failed'),
+  unexpected_structure: t('formatAnomaliesView.unexpected_structure'),
+  null_usage_values: t('formatAnomaliesView.null_usage_values'),
 }
 
 const anomalyTypeOptions: AnomalyTypeOption[] = [
-  { value: '', label: '全部异常类型' },
-  { value: 'missing_usage_block', label: '缺失 Usage 块', description: '上游响应缺失 usage 块' },
-  { value: 'zero_completion_tokens', label: 'Completion Tokens = 0', description: '响应有内容但 completion_tokens 为 0' },
-  { value: 'extraction_failed', label: '提取失败', description: '无法从响应中提取可用 usage 信息' },
-  { value: 'unexpected_structure', label: '非预期结构', description: '上游返回结构与预期不一致' },
-  { value: 'null_usage_values', label: 'Usage 值为 Null', description: 'usage 中字段存在但值为空' },
+  { value: '', label: t('formatAnomaliesView.all') },
+  { value: 'missing_usage_block', label: t('formatAnomaliesView.missing_usage_block'), description: t('formatAnomaliesView.missing_usage_block') },
+  { value: 'zero_completion_tokens', label: 'Completion Tokens = 0', description: t('formatAnomaliesView.zero_completion_tokens') },
+  { value: 'extraction_failed', label: t('formatAnomaliesView.extraction_failed'), description: t('formatAnomaliesView.extraction_failed') },
+  { value: 'unexpected_structure', label: t('formatAnomaliesView.unexpected_structure'), description: t('formatAnomaliesView.unexpected_structure') },
+  { value: 'null_usage_values', label: t('formatAnomaliesView.null_usage_values'), description: t('formatAnomaliesView.null_usage_values') },
 ]
 
 const severityLabels: Record<string, string> = {
-  low: '低',
-  medium: '中',
-  high: '高',
-  critical: '严重',
+  low: t('formatAnomaliesView.low'),
+  medium: t('formatAnomaliesView.medium'),
+  high: t('formatAnomaliesView.high'),
+  critical: t('formatAnomaliesView.critical'),
 }
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
@@ -106,7 +110,7 @@ async function load() {
     anomalies.value = resp.anomalies
     total.value = resp.count
   } catch (err: any) {
-    error.value = err?.message || '加载失败'
+    error.value = err?.message || t('formatAnomaliesView.loadFailed')
   } finally {
     loading.value = false
   }
@@ -118,7 +122,7 @@ async function loadSummary() {
     const resp = await getFormatAnomalySummary(summaryHours.value)
     summaries.value = resp.summaries
   } catch (err: any) {
-    error.value = err?.message || '统计加载失败'
+    error.value = err?.message || t('formatAnomaliesView.summaryLoadFailed')
   } finally {
     summaryLoading.value = false
   }
@@ -146,7 +150,7 @@ async function markResolved() {
     await Promise.all([load(), loadSummary()])
     closeDetail()
   } catch (err: any) {
-    error.value = err?.message || '标记失败'
+    error.value = err?.message || t('formatAnomaliesView.markFailed')
   } finally {
     resolving.value = false
   }
@@ -171,7 +175,7 @@ function nextPage() {
 
 onMounted(async () => {
   if (!isSuperAdmin()) {
-    error.value = '需要超级管理员权限'
+    error.value = t('formatAnomaliesView.needSuperAdmin')
     return
   }
   await Promise.all([load(), loadSummary()])
@@ -273,7 +277,7 @@ onMounted(async () => {
             </td>
             <td>
               <span :class="item.resolved ? 'status-ok' : 'status-warn'">
-                {{ item.resolved ? '已解决' : '未解决' }}
+                {{ item.resolved ? t('formatAnomaliesView.resolved') : t('formatAnomaliesView.unresolved') }}
               </span>
             </td>
             <td><button class="btn btn-link" @click="openDetail(item)">详情</button></td>
@@ -315,14 +319,14 @@ onMounted(async () => {
           <textarea v-model="resolutionNotes" rows="4" placeholder="记录修复说明，方便后续追踪" />
           <div class="detail-actions">
             <button class="btn btn-primary" @click="markResolved" :disabled="resolving">
-              {{ resolving ? '处理中...' : '标记为已解决' }}
+              {{ resolving ? t('formatAnomaliesView.processing') : t('formatAnomaliesView.markResolved') }}
             </button>
           </div>
         </div>
         <div v-else class="detail-block">
           <strong>解决信息</strong>
           <div>{{ fmtTime(selected.resolved_at) }}</div>
-          <div class="muted">{{ selected.resolution_notes || '无解决说明' }}</div>
+          <div class="muted">{{ selected.resolution_notes || t('formatAnomaliesView.noNotes') }}</div>
         </div>
       </div>
     </div>

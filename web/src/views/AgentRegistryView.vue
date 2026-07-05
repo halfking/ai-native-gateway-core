@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import {
   getAgents,
@@ -13,17 +14,20 @@ import {
 } from '../api/agents'
 import { isSuperAdmin, isDefaultTenant } from '../store'
 
+const { t } = useI18n()
+
+
 const KIND_OPTIONS: Array<{ value: AssetKind | 'all'; label: string }> = [
-  { value: 'all', label: '全部' },
-  { value: 'llm_endpoint', label: 'LLM 端点' },
-  { value: 'mcp_server', label: 'MCP 服务' },
-  { value: 'agent', label: 'Agent' },
+  { value: 'all', label: t('agentRegistryView.all') },
+  { value: 'llm_endpoint', label: t('agentRegistryView.llm_endpoint') },
+  { value: 'mcp_server', label: t('agentRegistryView.mcp_server') },
+  { value: 'agent', label: t('agentRegistryView.agent') },
 ]
 
 const RELATION_OPTIONS: Array<{ value: RelationType; label: string }> = [
-  { value: 'depends_on', label: 'depends_on（依赖）' },
-  { value: 'calls', label: 'calls（调用）' },
-  { value: 'similar_to', label: 'similar_to（替代）' },
+  { value: 'depends_on', label: t('agentRegistryView.depends_on') },
+  { value: 'calls', label: t('agentRegistryView.calls') },
+  { value: 'similar_to', label: t('agentRegistryView.similar_to') },
 ]
 
 const agents = ref<AgentAsset[]>([])
@@ -110,7 +114,7 @@ function load() {
       total.value = search.value.trim() ? filtered.length : resp.total
     })
     .catch((e: unknown) => {
-      error.value = e instanceof Error ? e.message : '加载失败'
+      error.value = e instanceof Error ? e.message : t('agentRegistryView.loadFailed')
       agents.value = []
       total.value = 0
     })
@@ -140,10 +144,10 @@ function clearFilters() {
 
 function healthLabel(s: string): string {
   const map: Record<string, string> = {
-    healthy: '健康',
-    degraded: '降级',
-    down: '不可用',
-    unknown: '未知',
+    healthy: t('agentRegistryView.healthy'),
+    degraded: t('agentRegistryView.degraded'),
+    down: t('agentRegistryView.down'),
+    unknown: t('agentRegistryView.unknown'),
   }
   return map[s] || s
 }
@@ -157,9 +161,9 @@ function healthBadgeClass(s: string): string {
 
 function kindLabel(k: string): string {
   const map: Record<string, string> = {
-    llm_endpoint: 'LLM',
-    mcp_server: 'MCP',
-    agent: 'Agent',
+    llm_endpoint: t('agentRegistryView.llm_endpoint'),
+    mcp_server: t('agentRegistryView.mcp_server'),
+    agent: t('agentRegistryView.agent'),
   }
   return map[k] || k
 }
@@ -196,7 +200,7 @@ function showDetail(row: AgentAsset) {
       detail.value = r.agent
     })
     .catch((e: unknown) => {
-      detailError.value = e instanceof Error ? e.message : '加载详情失败'
+      detailError.value = e instanceof Error ? e.message : t('agentRegistryView.detailFailed')
     })
     .finally(() => {
       detailLoading.value = false
@@ -228,7 +232,7 @@ async function submitLink() {
   if (!linkSource.value) return
   const tid = typeof linkTargetId.value === 'number' ? linkTargetId.value : Number(linkTargetId.value)
   if (!Number.isFinite(tid) || tid <= 0) {
-    linkError.value = '请输入有效的目标 Agent ID'
+    linkError.value = t('agentRegistryView.invalidTargetId')
     return
   }
   linkSubmitting.value = true
@@ -237,7 +241,7 @@ async function submitLink() {
     await linkAgent(linkSource.value.ref_id, tid, linkType.value)
     closeLinkDialog()
   } catch (e: unknown) {
-    linkError.value = e instanceof Error ? e.message : '创建关联失败'
+    linkError.value = e instanceof Error ? e.message : t('agentRegistryView.linkFailed')
   } finally {
     linkSubmitting.value = false
   }
@@ -257,7 +261,7 @@ async function loadStats() {
     const resp = await getAgentStats()
     stats.value = resp
   } catch (e: unknown) {
-    statsError.value = e instanceof Error ? e.message : '加载统计失败'
+    statsError.value = e instanceof Error ? e.message : t('agentRegistryView.statsFailed')
   } finally {
     statsLoading.value = false
   }
@@ -278,7 +282,7 @@ async function openNeighborsDialog(row: AgentAsset) {
       count: resp.count,
     }
   } catch (e: unknown) {
-    neighborsError.value = e instanceof Error ? e.message : '加载拓扑失败'
+    neighborsError.value = e instanceof Error ? e.message : t('agentRegistryView.topologyFailed')
   } finally {
     neighborsLoading.value = false
   }
@@ -536,7 +540,7 @@ onBeforeUnmount(() => {
           <div style="display:flex;gap:8px;justify-content:flex-end">
             <button class="btn btn-ghost btn-sm" @click="closeLinkDialog">取消</button>
             <button class="btn btn-primary btn-sm" :disabled="linkSubmitting" @click="submitLink">
-              {{ linkSubmitting ? '创建中…' : '创建关联' }}
+              {{ linkSubmitting ? '创建中…' : t('agentRegistryView.submit') }}
             </button>
           </div>
         </div>
