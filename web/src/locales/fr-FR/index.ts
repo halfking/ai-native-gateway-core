@@ -44,6 +44,7 @@ import catalogPanel from './catalogPanel'
 import apiKeySelectModal from './apiKeySelectModal'
 import fpSlotVisualizer from './fpSlotVisualizer'
 import modelPicker from './modelPicker'
+import modulesView from './modulesView'
 
 export default {
   common,
@@ -91,4 +92,5 @@ export default {
   apiKeySelectModal,
   fpSlotVisualizer,
   modelPicker,
+  modulesView,
 }
