@@ -1,41 +1,59 @@
 <script setup lang="ts">
 // DashboardViewV2.vue — 新版仪表盘（紧凑统计 + 泳道系统）
 // 2026-07-05: 单行统计卡片 + 多泳道实时请求流
+// 2026-07-05 v3: 使用父组件提供的共享数据源
 
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, computed, inject, type Ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import StatsDrawer from '../components/StatsDrawer.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
-import {
-  getUsageSummary,
-  getUsageByModel,
-  getDashboardOverview,
-  getHotApiKeys,
-  getCompressionStats,
-  type UsageSummary,
-  type ModelUsage,
-  type DashboardOverview,
-  type HotApiKeyEntry,
-  type CompressionStats,
+import type {
+  UsageSummary,
+  ModelUsage,
+  DashboardOverview,
+  HotApiKeyEntry,
+  CompressionStats,
 } from '../api'
-import { useLiveStream } from '../composables/useLiveStream'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
-const days = ref(7)
-const summary = ref<UsageSummary | null>(null)
-const overview = ref<DashboardOverview | null>(null)
-const models = ref<ModelUsage[]>([])
-const hotKeys = ref<HotApiKeyEntry[]>([])
-const compStats = ref<CompressionStats | null>(null)
-const loading = ref(false)
-const error = ref('')
+// 从父组件注入共享数据
+const dashboardData = inject<{
+  days: Ref<number>
+  loading: Ref<boolean>
+  error: Ref<string | null>
+  summary: Ref<UsageSummary | null>
+  overview: Ref<DashboardOverview | null>
+  models: Ref<ModelUsage[]>
+  hotKeys: Ref<HotApiKeyEntry[]>
+  compStats: Ref<CompressionStats | null>
+  load: () => Promise<void>
+}>('dashboardData')!
+
+// 从父组件注入版本切换器
+const versionSwitcher = inject<{
+  version: Ref<'v1' | 'v2'>
+  switchVersion: (v: 'v1' | 'v2') => void
+}>('versionSwitcher')!
 
 const statsDrawerRef = ref<InstanceType<typeof StatsDrawer> | null>(null)
 const activeRequestId = ref<string | null>(null)
 
-let statsRecalibrateTimer: ReturnType<typeof setInterval> | null = null
+// 使用注入的数据
+const days = dashboardData.days
+const loading = dashboardData.loading
+const error = dashboardData.error
+const summary = dashboardData.summary
+const overview = dashboardData.overview
+const models = dashboardData.models
+const hotKeys = dashboardData.hotKeys
+const compStats = dashboardData.compStats
+const load = dashboardData.load
+
+// 版本切换
+const version = versionSwitcher.version
+const switchVersion = versionSwitcher.switchVersion
 
 // Tenant info
 const tenantLabel = computed(() => {
@@ -51,36 +69,6 @@ const tenantLabel = computed(() => {
     return `租户: ${tenantId}`
   }
 })
-
-async function load() {
-  loading.value = true
-  error.value = ''
-  try {
-    const [s, m, o, h] = await Promise.all([
-      getUsageSummary(days.value),
-      getUsageByModel(days.value),
-      getDashboardOverview(days.value),
-      getHotApiKeys(days.value, 10),
-    ])
-    summary.value = s
-    models.value = m
-    overview.value = o
-    hotKeys.value = h
-    void loadCompressionStats()
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadCompressionStats() {
-  try {
-    compStats.value = await getCompressionStats({ hours: 24 })
-  } catch {
-    /* non-blocking */
-  }
-}
 
 function fmt(n: number | undefined, decimals = 0) {
   if (n === undefined || n === null) return '—'
@@ -99,85 +87,6 @@ function fmtPct(v: number | undefined) {
   return (Number(v) * 100).toFixed(1) + '%'
 }
 
-// Live stream integration
-const {
-  requests: liveRequests,
-  onRequestEvicted,
-  reset: resetLiveStream,
-} = useLiveStream()
-
-const seenLiveRequestIds = new Set<string>()
-
-onRequestEvicted((id: string) => {
-  seenLiveRequestIds.delete(id)
-})
-
-function applyIncrementalStats() {
-  if (!summary.value) return
-  const items = liveRequests.value
-  const added: typeof items = []
-  for (const r of items) {
-    if (r.type === 'idle_marker' || !r.request_id) continue
-    if (seenLiveRequestIds.has(r.request_id)) continue
-    seenLiveRequestIds.add(r.request_id)
-    added.push(r)
-  }
-  if (added.length === 0) return
-
-  const costDelta = added.reduce((s, r) => s + (r.cost_usd ?? 0), 0)
-  const successes = added.filter((r) => r.status === 'success').length
-
-  summary.value.total_requests = (summary.value.total_requests ?? 0) + added.length
-  summary.value.total_prompt_tokens = (summary.value.total_prompt_tokens ?? 0) +
-    added.reduce((s, r) => s + (r.prompt_tokens ?? 0), 0)
-  summary.value.total_completion_tokens = (summary.value.total_completion_tokens ?? 0) +
-    added.reduce((s, r) => s + (r.completion_tokens ?? 0), 0)
-  summary.value.total_cost_usd = (summary.value.total_cost_usd ?? 0) + costDelta
-
-  // Latency
-  const addedLatency = added.reduce((s, r) => s + (r.latency_ms ?? 0), 0)
-  const addedLatencyN = added.filter((r) => r.latency_ms != null).length
-  if (addedLatencyN > 0) {
-    const prevAvg = summary.value.avg_latency_ms ?? 0
-    const prevN = Math.max(0, (summary.value.total_requests ?? 0) - added.length)
-    const totalN = prevN + addedLatencyN
-    if (totalN > 0) {
-      summary.value.avg_latency_ms = Math.round((prevAvg * prevN + addedLatency) / totalN)
-    }
-  }
-
-  // Success rate
-  const knownSuccesses = Math.round((summary.value.success_rate ?? 1) * (summary.value.total_requests - added.length))
-  const newSuccesses = knownSuccesses + successes
-  if (summary.value.total_requests > 0) {
-    summary.value.success_rate = newSuccesses / summary.value.total_requests
-  }
-}
-
-watch(liveRequests, applyIncrementalStats, { deep: true })
-
-function scheduleStatsRecalibrate() {
-  if (statsRecalibrateTimer) clearInterval(statsRecalibrateTimer)
-  statsRecalibrateTimer = setInterval(async () => {
-    try {
-      const fresh = await getUsageSummary(days.value)
-      summary.value = fresh
-      seenLiveRequestIds.clear()
-      resetLiveStream()
-    } catch {
-      /* non-blocking */
-    }
-  }, 5 * 60 * 1000)
-}
-
-onMounted(() => {
-  void load()
-  scheduleStatsRecalibrate()
-})
-
-onUnmounted(() => {
-  if (statsRecalibrateTimer) clearInterval(statsRecalibrateTimer)
-})
 
 function openRequestDetail(id: string) {
   activeRequestId.value = id
@@ -194,10 +103,33 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
 
 <template>
   <div class="dashboard-v2">
-    <!-- 紧凑型页面头部 - 单行布局 -->
+    <!-- 紧凑型页面头部 - 单行布局 + 版本切换器 -->
     <div class="page-header">
       <div class="page-header-left">
         <h2>仪表盘</h2>
+        
+        <!-- 版本切换器（集成到标题旁） -->
+        <div class="version-switcher">
+          <button
+            type="button"
+            class="version-btn"
+            :class="{ 'version-btn--active': version === 'v2' }"
+            @click="switchVersion('v2')"
+            title="新版仪表盘（推荐）- 泳道可视化"
+          >
+            V2
+          </button>
+          <button
+            type="button"
+            class="version-btn"
+            :class="{ 'version-btn--active': version === 'v1' }"
+            @click="switchVersion('v1')"
+            title="旧版仪表盘"
+          >
+            V1
+          </button>
+        </div>
+        
         <MemoraStatusButton />
       </div>
       
@@ -337,6 +269,41 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
   font-size: 20px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+/* 版本切换器 */
+.version-switcher {
+  display: inline-flex;
+  gap: 3px;
+  padding: 2px;
+  background: var(--bg-subtle, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 5px;
+}
+
+.version-btn {
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  min-width: 36px;
+}
+
+.version-btn:hover {
+  color: var(--text, #e6edf3);
+  background: var(--bg, #0f1117);
+}
+
+.version-btn--active {
+  background: var(--accent, #6366f1);
+  color: white;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 .page-header-right {
