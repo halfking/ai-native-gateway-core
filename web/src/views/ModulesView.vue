@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
   listModules,
@@ -10,6 +11,7 @@ import {
 } from '../api/modules'
 import { listSettings, getSetting, updateSetting, type SettingItem } from '../api'
 
+const { t } = useI18n()
 const router = useRouter()
 const modules = ref<ModuleWithStatus[]>([])
 const loading = ref(false)
@@ -23,12 +25,12 @@ const activeTab = ref<'overview' | 'config' | 'integration'>('overview')
 
 const categoryOrder = ['compression', 'session', 'security', 'rate_limit', 'general', 'integration']
 const categoryLabels: Record<string, string> = {
-  compression: '请求压缩',
-  session: '会话管理',
-  security: '安全防护',
-  rate_limit: '流量控制',
-  general: '通用能力',
-  integration: '集成对接',
+  compression: t('modulesView.category.compression'),
+  session: t('modulesView.category.session'),
+  security: t('modulesView.category.security'),
+  rate_limit: t('modulesView.category.rate_limit'),
+  general: t('modulesView.category.general'),
+  integration: t('modulesView.category.integration'),
 }
 
 const groupedModules = computed(() => {
@@ -68,7 +70,7 @@ async function loadModules() {
       await selectModule(selectedKey.value)
     }
   } catch (e: any) {
-    error.value = e.message || '加载模块列表失败'
+    error.value = e.message || t('modulesView.error.loadFailed')
   } finally {
     loading.value = false
   }
@@ -115,7 +117,7 @@ async function doToggle(key: string) {
       selectedEnabled.value = r.enabled
     }
   } catch (e: any) {
-    error.value = e.message || '操作失败'
+    error.value = e.message || t('modulesView.error.operationFailed')
   } finally {
     toggling.value = null
   }
@@ -126,17 +128,17 @@ async function saveSetting(settingKey: string, value: any) {
     await updateSetting(settingKey, { value })
     await selectModule(selectedKey.value!)
   } catch (e: any) {
-    error.value = e.message || '保存配置失败'
+    error.value = e.message || t('modulesView.error.saveFailed')
   }
 }
 
 function dangerLevelLabel(level: number): { label: string; cls: string } {
   switch (level) {
-    case 0: return { label: '安全', cls: 'level-safe' }
-    case 1: return { label: '注意', cls: 'level-warn' }
-    case 2: return { label: '危险', cls: 'level-danger' }
-    case 3: return { label: '高危', cls: 'level-breaking' }
-    default: return { label: '未知', cls: '' }
+    case 0: return { label: t('modulesView.dangerLevel.safe'), cls: 'level-safe' }
+    case 1: return { label: t('modulesView.dangerLevel.warn'), cls: 'level-warn' }
+    case 2: return { label: t('modulesView.dangerLevel.danger'), cls: 'level-danger' }
+    case 3: return { label: t('modulesView.dangerLevel.breaking'), cls: 'level-breaking' }
+    default: return { label: t('modulesView.dangerLevel.unknown'), cls: '' }
   }
 }
 
@@ -154,15 +156,15 @@ onMounted(() => {
     <!-- Header -->
     <div class="page-header">
       <div class="page-header-left">
-        <h1 class="page-title">模块管理</h1>
-        <p class="page-subtitle">企业级功能模块统一管理，按需开启/关闭各项能力</p>
+        <h1 class="page-title">{{ t('modulesView.pageTitle') }}</h1>
+        <p class="page-subtitle">{{ t('modulesView.pageSubtitle') }}</p>
       </div>
       <div class="page-header-right">
         <div class="summary-badge">
           <span class="summary-count">{{ enabledCount }}</span>
           <span class="summary-sep">/</span>
           <span class="summary-total">{{ totalCount }}</span>
-          <span class="summary-label">模块已启用</span>
+          <span class="summary-label">{{ t('modulesView.modulesEnabled') }}</span>
         </div>
       </div>
     </div>
@@ -172,7 +174,7 @@ onMounted(() => {
     <div class="layout">
       <!-- Left: Module list grouped by category -->
       <section class="list-pane">
-        <div v-if="loading && !modules.length" class="loading">加载中…</div>
+        <div v-if="loading && !modules.length" class="loading">{{ t('modulesView.loading') }}</div>
         <template v-else>
           <div
             v-for="group in groupedModules"
@@ -200,7 +202,7 @@ onMounted(() => {
                   <span
                     class="status-dot"
                     :class="mod.enabled ? 'dot-on' : 'dot-off'"
-                    :title="mod.enabled ? '已启用' : '已禁用'"
+                    :title="mod.enabled ? t('modulesView.status.enabled') : t('modulesView.status.disabled')"
                   />
                 </div>
                 <div class="card-desc">{{ mod.description }}</div>
@@ -232,7 +234,7 @@ onMounted(() => {
               class="status-badge"
               :class="selectedEnabled ? 'badge-on' : 'badge-off'"
             >
-              {{ selectedEnabled ? '已启用' : '已禁用' }}
+              {{ selectedEnabled ? t('modulesView.status.enabled') : t('modulesView.status.disabled') }}
             </span>
           </div>
         </div>
@@ -243,29 +245,29 @@ onMounted(() => {
             class="tab-btn"
             :class="{ active: activeTab === 'overview' }"
             @click="activeTab = 'overview'"
-          >概览</button>
+          >{{ t('modulesView.tabs.overview') }}</button>
           <button
             class="tab-btn"
             :class="{ active: activeTab === 'config' }"
             @click="activeTab = 'config'"
-          >配置</button>
+          >{{ t('modulesView.tabs.config') }}</button>
           <button
             v-if="selectedModule.integration"
             class="tab-btn"
             :class="{ active: activeTab === 'integration' }"
             @click="activeTab = 'integration'"
-          >集成</button>
+          >{{ t('modulesView.tabs.integration') }}</button>
         </div>
 
         <!-- Overview tab -->
         <div v-if="activeTab === 'overview'" class="tab-content">
           <div class="info-section">
-            <h3 class="section-title">模块描述</h3>
+            <h3 class="section-title">{{ t('modulesView.overview.sectionDescription') }}</h3>
             <p class="section-text">{{ selectedModule.description }}</p>
           </div>
 
           <div class="info-section">
-            <h3 class="section-title">能力清单</h3>
+            <h3 class="section-title">{{ t('modulesView.overview.sectionCapabilities') }}</h3>
             <ul class="cap-list">
               <li v-for="(cap, i) in selectedModule.capabilities" :key="i" class="cap-item">
                 <span class="cap-check">✓</span>
@@ -276,24 +278,24 @@ onMounted(() => {
 
           <div class="meta-grid">
             <div class="meta-item">
-              <span class="meta-label">模块标识</span>
+              <span class="meta-label">{{ t('modulesView.overview.labelKey') }}</span>
               <code class="meta-value">{{ selectedModule.key }}</code>
             </div>
             <div class="meta-item">
-              <span class="meta-label">危险级别</span>
+              <span class="meta-label">{{ t('modulesView.overview.labelDanger') }}</span>
               <span
                 class="level-badge"
                 :class="dangerLevelLabel(selectedModule.danger_level).cls"
               >{{ dangerLevelLabel(selectedModule.danger_level).label }}</span>
             </div>
             <div class="meta-item">
-              <span class="meta-label">配置项数</span>
+              <span class="meta-label">{{ t('modulesView.overview.labelConfigCount') }}</span>
               <span class="meta-value">{{ selectedModule.config_keys?.length || 0 }}</span>
             </div>
             <div class="meta-item">
-              <span class="meta-label">当前状态</span>
+              <span class="meta-label">{{ t('modulesView.overview.labelStatus') }}</span>
               <span class="meta-value" :class="selectedEnabled ? 'text-green' : 'text-muted'">
-                {{ selectedEnabled ? '已启用' : '已禁用' }}
+                {{ selectedEnabled ? t('modulesView.status.enabled') : t('modulesView.status.disabled') }}
               </span>
             </div>
           </div>
