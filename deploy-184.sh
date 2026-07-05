@@ -42,6 +42,7 @@ log_step()    { echo ""; echo -e "${GREEN}======================================
 MODE="standard"
 SKIP_LOCAL_TEST="${SKIP_LOCAL_TEST:-0}"
 SKIP_BUILD_SEQ_COMMIT="${SKIP_BUILD_SEQ_COMMIT:-0}"
+RECORD_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -49,7 +50,8 @@ while [[ $# -gt 0 ]]; do
     --after-local-test|-l) MODE="after-local-test"; shift ;;
     --columnar|-c)        MODE="columnar"; shift ;;
     --quick|-q)           MODE="quick"; shift ;;
-    --help|-h)            echo "用法: $0 [--with-migration|--after-local-test|--columnar]"; exit 0 ;;
+    --record|-r)          MODE="record"; shift ;;
+    --help|-h)            echo "用法: $0 [--with-migration|--after-local-test|--columnar|--record]"; exit 0 ;;
     *)                    log_error "未知参数: $1"; exit 1 ;;
   esac
 done
@@ -118,6 +120,17 @@ EOF
     echo "  Build Seq:  ${NEW_BUILD_SEQ}"
     echo "  Build Date: ${BUILD_DATE}"
     echo "  Image Tag:  ${IMAGE_TAG}"
+
+    if [[ "$MODE" == "record" ]]; then
+      log_info "初始化部署记录目录..."
+      if BUILD_SEQ="$NEW_BUILD_SEQ" bash "$REPO_DIR/scripts/init-deploy-record.sh"; then
+        SEQ_PAD=$(printf "%03d" "$NEW_BUILD_SEQ")
+        RECORD_DIR="$REPO_DIR/deploy/r${SEQ_PAD}-${BUILD_DATE}"
+        log_success "部署记录目录: $RECORD_DIR"
+      else
+        log_warn "init-deploy-record.sh 失败，跳过记录"
+      fi
+    fi
 }
 
 build_docker_image() {
@@ -236,6 +249,15 @@ REMOTE_SCRIPT
 generate_report() {
     log_step "步骤 10/10: 生成部署报告"
     REPORT_FILE="deployment-report-$(date +%Y%m%d-%H%M%S).md"
+    if [[ -n "$RECORD_DIR" ]]; then
+      REPORT_FILE="$RECORD_DIR/deploy-report.md"
+      # 更新 README.md 状态
+      if [[ -f "$RECORD_DIR/README.md" ]]; then
+        sed -i '' "s/状态.*/状态 | **✅ 已部署** |/" "$RECORD_DIR/README.md" 2>/dev/null || true
+      fi
+      # 写镜像标签到 artifacts
+      echo "${REGISTRY_INTERNAL}/${IMAGE_NAME}:${IMAGE_TAG}" > "$RECORD_DIR/artifacts/docker-image.txt"
+    fi
     cat > ${REPORT_FILE} <<EOF
 # 184环境部署报告
 
@@ -326,6 +348,27 @@ commit_build_seq() {
         fi
     else
         log_info "跳过 build_seq 提交"
+    fi
+}
+
+# ==================== 部署后验证（record 模式）====================
+run_record_verify() {
+    log_step "阶段: 部署后验证"
+    local verify_args="--env 184"
+    if [[ -n "$RECORD_DIR" ]]; then
+      verify_args="$verify_args --record $RECORD_DIR"
+    fi
+    if "$REPO_DIR/deploy/verify.sh" $verify_args; then
+        log_success "部署后验证全部通过"
+        if [[ -n "$RECORD_DIR" ]]; then
+          echo "验证通过" > "$RECORD_DIR/verify/result.txt"
+        fi
+    else
+        log_error "部署后验证有失败项"
+        if [[ -n "$RECORD_DIR" ]]; then
+          echo "验证失败" > "$RECORD_DIR/verify/result.txt"
+        fi
+        exit 1
     fi
 }
 
@@ -438,6 +481,14 @@ main() {
             standard_deploy_flow
             run_db_migration
             restart_pod
+            commit_build_seq
+            ;;
+        record)
+            log_step "记录模式部署: 标准部署 + migration + 验证"
+            standard_deploy_flow
+            run_db_migration
+            restart_pod
+            run_record_verify
             commit_build_seq
             ;;
         standard)
