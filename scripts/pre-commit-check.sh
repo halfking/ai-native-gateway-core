@@ -7,11 +7,11 @@
 #
 #   1. Vue type-check (cd web && npx vue-tsc --noEmit)
 #   2. SQL lint: forbid `$1` inside `SET LOCAL` statements (PG placeholder trap)
-#   3. Migration numbering: every db/migrations/NNN_*.sql must have a unique NNN
+    #   3. Migration numbering: every sql/migrations/startup/NNN_*.sql must have a unique NNN
 #   4. go vet ./...  (cheap, runs in <2s)
 #
 # Install (one-time per clone):
-#   bash scripts/pre-commit-install.sh
+#   bash scripts/install-githooks.sh --pre-commit
 # Or wire to your own git hook runner.
 #
 # Bypass (NOT recommended):
@@ -105,15 +105,16 @@ check_go_vet() {
 
 # ── 2. SQL lint: ban `$1` in SET LOCAL ─────────────────────────────────
 check_sql_set_local() {
-  if [[ ! -d db/migrations ]]; then
-    echo "db/migrations not found; skipping"
+  local mig_dir="sql/migrations/startup"
+  if [[ ! -d "$mig_dir" ]]; then
+    echo "$mig_dir not found; skipping"
     return 0
   fi
   local bad
   # The PostgreSQL trap: SET/SET LOCAL do not accept placeholders. AI agents
   # frequently write `SET LOCAL app.x = $1` and only find out at runtime.
   bad=$(grep -rE 'SET[[:space:]]+(LOCAL[[:space:]]+)?[A-Za-z_][A-Za-z0-9_.]*[[:space:]]*=' \
-        db/migrations/ 2>/dev/null \
+        "$mig_dir"/ 2>/dev/null \
       | grep -E '\$[0-9]+' || true)
   if [[ -n "$bad" ]]; then
     echo "Found SET ... = \$N placeholders (PostgreSQL does not support placeholders in SET):"
@@ -125,21 +126,22 @@ check_sql_set_local() {
 
 # ── 3. Migration numbering: unique NNN_*.sql ───────────────────────────
 check_migration_unique() {
-  if [[ ! -d db/migrations ]]; then
-    echo "db/migrations not found; skipping"
+  local mig_dir="sql/migrations/startup"
+  if [[ ! -d "$mig_dir" ]]; then
+    echo "$mig_dir not found; skipping"
     return 0
   fi
   # NNN_*.sql and NNN_*.down.sql are a pair; only the .sql counts as the
   # forward migration. Otherwise 020_unique_request_id and
   # 020_unique_request_id.down.sql would falsely collide.
   local dups
-  dups=$(ls db/migrations/ 2>/dev/null \
+  dups=$(ls "$mig_dir"/ 2>/dev/null \
          | grep -E '^[0-9]{3}_' \
          | grep -v '\.down\.sql$' \
          | sed -E 's/^([0-9]{3})_.*/\1/' \
          | sort | uniq -d)
   if [[ -n "$dups" ]]; then
-    echo "Duplicate migration numbers in db/migrations/: $dups"
+    echo "Duplicate migration numbers in $mig_dir/: $dups"
     echo "Round-48 audit found 024/025 collisions; this guard prevents recurrence."
     return 1
   fi

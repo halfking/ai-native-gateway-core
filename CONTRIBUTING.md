@@ -32,7 +32,7 @@ git clone https://codeup.aliyun.com/<your-fork>/llm-gateway-go.git
 cd llm-gateway-go
 
 # 2. 安装 git 钩子
-./scripts/pre-commit-install.sh   # pre-commit: go vet + SQL lint
+./scripts/install-githooks.sh --pre-commit   # pre-commit: go vet + SQL lint
 ./scripts/install-githooks.sh     # pre-push: 敏感信息扫描
 
 # 3. 拉取子模块（如有）

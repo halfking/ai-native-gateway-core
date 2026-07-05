@@ -303,7 +303,7 @@ if [ "$FUNC_EXISTS" -gt 0 ]; then
     echo "✓ recent_success_rate() 函数已存在"
 else
     echo "⚠️  recent_success_rate() 函数不存在，路由可能仍有问题"
-    echo "   请执行 deploy/sql/migrations/035_routing_recent_success_rate.sql"
+    echo "   请执行 sql/migrations/startup/035_routing_recent_success_rate.sql"
 fi
 
 echo ""

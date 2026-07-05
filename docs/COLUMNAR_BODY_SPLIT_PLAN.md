@@ -229,6 +229,6 @@ COMMIT;
 
 ## 7. References
 
-- Phase 23 columnar invariant: `deploy/sql/phase-23-columnar-invariant/README.md`
+- Phase 23 columnar invariant: `sql/scripts/phase-23-columnar-invariant/README.md`
 - 184 audit (2026-07-02): see `docs/STORAGE_MIGRATION.md`
 - Citus columnar 1 GB buffer: migration 318b comment

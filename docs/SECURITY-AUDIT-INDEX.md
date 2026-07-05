@@ -8,7 +8,7 @@
 
 | 文档 ID | 日期 | 主题 | 范围 | 严重度体系 | 状态 |
 |---------|------|------|------|------------|------|
-| [`SECURITY-AUDIT-2026-06-28`](../SECURITY-AUDIT-2026-06-28.md) | 2026-06-28 | 网络/传输层 | HTTP/CORS/Headers/暴露面/Slowloris/XFF | P0/P1/P2 | **11 项原审计 + 2 项 WIP build break = 13 项；9 项已修复 + 2 项临时绕过 + 2 项未修复（v1.4）** |
+| [`SECURITY-AUDIT-2026-06-28`](SECURITY-AUDIT-2026-06-28.md) | 2026-06-28 | 网络/传输层 | HTTP/CORS/Headers/暴露面/Slowloris/XFF | P0/P1/P2 | **11 项原审计 + 2 项 WIP build break = 13 项；9 项已修复 + 2 项临时绕过 + 2 项未修复（v1.4）** |
 | `DEEP-AUDIT-2026-05-26.md` | 2026-05-26 | 数据面 18 个源文件 | 熔断、审计、shutdown、body cap、panic 恢复 | P0/P1/P2/P3 | 已审计 |
 | `docs/comprehensive-code-audit-2026-06-20.md` | 2026-06-20 | 全量代码审计 | 错误路径 request-log、限速 peek 等 | CRITICAL 标签 | 已审计 |
 | `docs/REPO-MIRROR-POLICY.md` | 持续 | 仓库镜像策略 | secret 扫描 + RFC1918 + 内部域名 | BLOCK/WARN/INFO | 持续维护 |

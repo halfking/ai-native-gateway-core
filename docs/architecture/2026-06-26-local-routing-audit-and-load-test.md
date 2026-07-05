@@ -36,9 +36,9 @@ Problems:
 Fixes:
 - Reworked local migration flow to rebuild the local test DB.
 - Added base bootstrap order:
-  - `deploy/sql/00-prereqs.sql`
-  - `deploy/sql/01-schema.sql`
-  - `deploy/sql/02-seed.sql`
+  - `sql/schema/00-prereqs.sql`
+  - `sql/schema/01-schema.sql`
+  - `sql/schema/02-seed.sql`
 - Filtered redacted placeholder rows from local seed loading.
 - Skipped local-only demo/seed migrations that conflict with the base schema.
 - Treated local duplicate-object / duplicate-seed cases as benign for local verification.

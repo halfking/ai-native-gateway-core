@@ -23,7 +23,7 @@
 - 完整的panic recovery和错误处理
 
 #### 2. 数据库Schema
-**Migration**: `deploy/sql/20260629_auto_control.sql`
+**Migration**: `sql/scripts/20260629_auto_control.sql`
 
 **新增表**:
 ```sql
