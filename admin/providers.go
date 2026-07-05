@@ -851,6 +851,7 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int) {
 	var req struct {
 		DisplayName    *string  `json:"display_name"`
+		Name           *string  `json:"name"`
 		BaseURL        *string  `json:"base_url"`
 		Protocol       *string  `json:"protocol"`
 		Kind           *string  `json:"kind"`
@@ -874,6 +875,10 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 	if req.DisplayName != nil {
 		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE providers SET display_name = $1, updated_at = now() WHERE id = $2`, *req.DisplayName, id)
+	}
+	if req.Name != nil {
+		//nolint:errcheck // best-effort exec, non-critical
+		h.db.Exec(ctx, `UPDATE providers SET name = $1, updated_at = now() WHERE id = $2`, *req.Name, id)
 	}
 	if req.BaseURL != nil {
 		//nolint:errcheck // best-effort exec, non-critical
