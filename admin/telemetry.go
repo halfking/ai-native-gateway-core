@@ -71,10 +71,15 @@ type requestLogInput struct {
 	IdentityHash       *string  `json:"identity_hash,omitempty"`
 	StreamFirstChunkMs *int     `json:"stream_first_chunk_ms,omitempty"`
 	StreamChunkCount   *int     `json:"stream_chunk_count,omitempty"`
-	StreamDoneReceived *bool    `json:"stream_done_received,omitempty"`
-	StreamInterrupted  *bool    `json:"stream_interrupted,omitempty"`
-	ResponseChecksum   *string  `json:"response_checksum,omitempty"`
-	FailureDetailCode  *string  `json:"failure_detail_code,omitempty"`
+	// 2026-07-05: stream_chunks_sent is NOT NULL (migration 320). HTTP
+	// callers that don't populate it fall back to 0 via the COALESCE
+	// wrapper on the INSERT — see also the matching default in
+	// domains/hooks/observability/telemetry/client.go.
+	StreamChunksSent   *int    `json:"stream_chunks_sent,omitempty"`
+	StreamDoneReceived *bool   `json:"stream_done_received,omitempty"`
+	StreamInterrupted  *bool   `json:"stream_interrupted,omitempty"`
+	ResponseChecksum   *string `json:"response_checksum,omitempty"`
+	FailureDetailCode  *string `json:"failure_detail_code,omitempty"`
 	// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
 	// New column is the SOLE home for the upstream finish_reason.
 	UpstreamFinishReason *string `json:"upstream_finish_reason,omitempty"`
@@ -93,15 +98,19 @@ type batchEntry struct {
 }
 
 type telemetryIngester struct {
-	db    *pgxpool.Pool //nolint:unused
+	db    *pgxpool.Pool
 	queue chan any
-	done  chan struct{}  //nolint:unused
-	wg    sync.WaitGroup //nolint:unused
+	done  chan struct{}
+	wg    sync.WaitGroup
 }
 
 var ingester *telemetryIngester
 
-func startIngester(db *pgxpool.Pool) { //nolint:unused
+// StartIngester spins up the in-process telemetry ingest worker.
+// Called from cmd/gateway/main.go once the DB pool is ready.
+// Without this, POST /api/telemetry/request-log queues rows but
+// never persists them — the queue has no consumer. 2026-07-05 fix.
+func StartIngester(db *pgxpool.Pool) {
 	if db == nil {
 		return
 	}
@@ -114,14 +123,15 @@ func startIngester(db *pgxpool.Pool) { //nolint:unused
 	go ingester.worker()
 }
 
-func stopIngester() { //nolint:unused
+// StopIngester drains the queue and stops the worker.
+func StopIngester() {
 	if ingester != nil {
 		close(ingester.done)
 		ingester.wg.Wait()
 	}
 }
 
-func (t *telemetryIngester) worker() { //nolint:unused
+func (t *telemetryIngester) worker() {
 	defer t.wg.Done()
 	batch := make([]any, 0, 100)
 	timer := time.NewTimer(200 * time.Millisecond)
@@ -150,7 +160,7 @@ func (t *telemetryIngester) worker() { //nolint:unused
 	}
 }
 
-func (t *telemetryIngester) flush(batch []any) { //nolint:unused
+func (t *telemetryIngester) flush(batch []any) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -164,7 +174,7 @@ func (t *telemetryIngester) flush(batch []any) { //nolint:unused
 	}
 }
 
-func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionLogInput) { //nolint:unused
+func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionLogInput) {
 	rawModelsJSON, _ := json.Marshal(coalesceRawModels(e.ResolutionRawModels))
 	traceJSON := coalesceTrace(e.DecisionTrace)
 	// INSERT directly targets routing_decision_log_hot (the canonical
@@ -209,7 +219,7 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 	}
 }
 
-func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLogInput) { //nolint:unused
+func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLogInput) {
 	totalTok := calcTotal(e.PromptTokens, e.CompletionTokens)
 	rawModel := firstNonEmptyStr(e.OutboundModel, e.ClientModel)
 	search := buildSearchText(e)
@@ -271,6 +281,10 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			request_body, response_body,
 			stream_first_chunk_ms, stream_chunk_count, stream_done_received,
 			stream_interrupted,
+			-- 2026-07-01 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
+			-- COALESCE so a missing value from any code path falls back to 0
+			-- instead of crashing the INSERT with SQLSTATE 23502.
+			stream_chunks_sent,
 			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
 			-- New column is the SOLE home for the upstream finish_reason.
 			upstream_finish_reason
@@ -288,7 +302,8 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			CAST($31 AS jsonb), CAST($32 AS jsonb),
 			$33, $34, $35,
 			$36,
-			$37
+			COALESCE($37, 0),
+			$38
 		)
 	`,
 		e.RequestID, nonEmptyDefault(e.TenantID), e.ApplicationID, e.APIKeyID,
@@ -304,6 +319,9 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		e.RequestBody, e.ResponseBody,
 		e.StreamFirstChunkMs, e.StreamChunkCount, e.StreamDoneReceived,
 		e.StreamInterrupted,
+		// 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
+		// COALESCE(0) above tolerates nil pointer (HTTP callers don't set it).
+		e.StreamChunksSent,
 		// 2026-06-19 T-NEW-7: see migration 018 + relay/handler.go.
 		e.UpstreamFinishReason,
 	)

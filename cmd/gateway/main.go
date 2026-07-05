@@ -1364,6 +1364,13 @@ func main() {
 		slog.Info("CHECKPOINT: after settingsAuditCleaner.Start")
 		envelopeCleaner.Start(context.Background())
 		slog.Info("CHECKPOINT: after envelopeCleaner.Start")
+		// 2026-07-05: wire the telemetry ingest worker so HTTP
+		// /api/telemetry/request-log (and friends) actually persist
+		// rows. Without this, the request handler queues into a
+		// channel that no consumer ever drains.
+		admin.StartIngester(dbConn.Pool())
+		defer admin.StopIngester()
+		slog.Info("CHECKPOINT: after StartIngester")
 		// 2026-06-27: 启动审批超时扫描 worker。approvalMgr 在前面
 		// 已通过 adminHandler.SetApprovalManager 注入；这里直接构造 worker
 		// 并把 mgr 复用过去。
@@ -2183,12 +2190,12 @@ func main() {
 	}
 	if autoIndexRefresher != nil {
 		autoIndexRefresher.Stop()
-	if autoRouteListener != nil {
-		autoRouteListener.Stop()
-	}
-	if healthAutoRecover != nil {
-		healthAutoRecover.Stop()
-	}
+		if autoRouteListener != nil {
+			autoRouteListener.Stop()
+		}
+		if healthAutoRecover != nil {
+			healthAutoRecover.Stop()
+		}
 	}
 	// Drain the Memora sink queue on shutdown so in-flight writes
 	// are not lost. Bounded to 5s so shutdown is not held hostage
