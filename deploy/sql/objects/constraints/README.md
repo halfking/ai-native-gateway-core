@@ -1,0 +1,173 @@
+# Constraints
+
+> 本目录包含 constraints 对象的 DDL 定义，从 `sql/objects/constraints/` 同步。
+
+## 统计
+
+- **文件数量**: 127
+- **同步来源**: `sql/objects/constraints/`
+- **同步方式**: 通过 `sync-objects.sh` 自动同步
+
+## 文件列表
+
+```
+api_key_auto_profile_api_key_auto_profile_pkey.sql
+api_key_model_cost_api_key_model_cost_pkey.sql
+api_keys_api_keys_key_hash_key.sql
+api_keys_api_keys_pkey.sql
+applications_applications_pkey.sql
+applications_applications_tenant_id_code_key.sql
+auto_tune_audit_auto_tune_audit_pkey.sql
+background_tasks_background_tasks_pkey.sql
+billing_orders_billing_orders_order_no_key.sql
+billing_orders_billing_orders_pkey.sql
+candidate_failure_logs_candidate_failure_logs_pkey.sql
+credential_capabilities_credential_capabilities_credential_id_capability_key.sql
+credential_capabilities_credential_capabilities_pkey.sql
+credential_health_checks_credential_health_checks_pkey.sql
+credential_model_bindings_cmb_unique_credential_model.sql
+credential_model_bindings_credential_model_bindings_pkey.sql
+credential_model_call_history_credential_model_call_history_pkey.sql
+credential_model_index_credential_model_index_pkey.sql
+credential_model_peak_1m_credential_model_peak_1m_pkey.sql
+credential_model_stats_1m_credential_model_stats_1m_pkey.sql
+credential_model_weekly_peak_credential_model_weekly_peak_pkey.sql
+credential_probe_model_log_credential_probe_model_log_pkey.sql
+credential_quota_usage_credential_quota_usage_pkey.sql
+credential_quota_usage_credential_quota_usage_quota_id_window_started_at_key.sql
+credential_quotas_credential_quotas_credential_id_quota_name_key.sql
+credential_quotas_credential_quotas_pkey.sql
+credentials_credentials_pkey.sql
+credentials_credentials_unique_provider_label.sql
+credit_ledger_credit_ledger_pkey.sql
+internal_service_keys_internal_service_keys_pkey.sql
+key_applications_key_applications_pkey.sql
+key_rpm_daily_key_rpm_daily_pkey.sql
+local_models_local_models_pkey.sql
+local_models_local_models_runtime_id_raw_name_key.sql
+local_runtimes_local_runtimes_host_code_runtime_type_base_url_key.sql
+local_runtimes_local_runtimes_pkey.sql
+maas_settings_maas_settings_pkey.sql
+model_aliases_model_aliases_pkey.sql
+model_credit_rates_model_credit_rates_pkey.sql
+model_discovery_runs_model_discovery_runs_pkey.sql
+model_families_model_families_pkey.sql
+model_fingerprints_model_fingerprints_credential_id_canonical_id_key.sql
+model_fingerprints_model_fingerprints_pkey.sql
+model_lifecycle_jobs_model_lifecycle_jobs_pkey.sql
+model_offer_events_model_offer_events_pkey.sql
+model_offers_legacy_model_offers_credential_id_raw_model_name_key.sql
+model_offers_legacy_model_offers_pkey.sql
+model_probe_runs_model_probe_runs_pkey.sql
+model_probe_state_model_probe_state_pkey.sql
+model_reconcile_log_model_reconcile_log_pkey.sql
+model_task_index_model_task_index_pkey.sql
+models_canonical_models_canonical_canonical_name_key.sql
+models_canonical_models_canonical_pkey.sql
+ops_model_offers_backup_ops_model_offers_backup_pkey.sql
+passive_probe_state_passive_probe_state_pkey.sql
+price_change_events_price_change_events_pkey.sql
+pricing_plans_pricing_plans_no_overlap.sql
+pricing_plans_pricing_plans_pkey.sql
+pricing_refresh_log_pricing_refresh_log_pkey.sql
+provider_catalog_provider_catalog_pkey.sql
+provider_events_provider_events_pkey.sql
+provider_header_profiles_provider_header_profiles_pkey.sql
+provider_header_profiles_provider_header_profiles_profile_code_key.sql
+provider_models_provider_models_pkey.sql
+provider_models_provider_models_unique_provider_model.sql
+provider_quality_rollup_provider_quality_rollup_pkey.sql
+provider_scores_provider_scores_pkey.sql
+provider_settings_provider_settings_pkey.sql
+provider_settings_provider_settings_unique_key.sql
+providers_providers_pkey.sql
+providers_providers_tenant_id_code_key.sql
+request_envelope_request_envelope_pkey.sql
+request_logs_2026_04_request_logs_2026_04_pkey.sql
+request_logs_2026_05_request_logs_2026_05_pkey.sql
+request_logs_2026_06_request_logs_2026_06_pkey.sql
+request_logs_2026_07_request_logs_2026_07_pkey.sql
+request_logs_2026_08_request_logs_2026_08_pkey.sql
+request_logs_default_request_logs_default_pkey.sql
+request_logs_request_logs_pkey.sql
+request_wal_2026_06_request_wal_2026_06_pkey.sql
+request_wal_2026_07_request_wal_2026_07_pkey.sql
+request_wal_bodies_request_wal_bodies_pkey.sql
+request_wal_request_wal_pkey.sql
+route_decisions_route_decisions_pkey.sql
+routing_audit_log_routing_audit_log_pkey.sql
+routing_decision_log_routing_decision_log_pkey.sql
+routing_overrides_audit_routing_overrides_audit_pkey.sql
+routing_overrides_routing_overrides_pkey.sql
+routing_policy_routing_policy_pkey.sql
+schema_migration_audit_schema_migration_audit_pkey.sql
+schema_migrations_schema_migrations_pkey.sql
+security_audit_log_security_audit_log_pkey.sql
+session_memora_extraction_log_session_memora_extraction_log_pkey.sql
+session_titles_session_titles_pkey.sql
+settings_audit_settings_audit_pkey.sql
+settings_kv_settings_kv_pkey.sql
+sticky_sessions_sticky_sessions_pkey.sql
+subscription_plans_subscription_plans_code_key.sql
+subscription_plans_subscription_plans_pkey.sql
+system_identity_pool_system_identity_pool_pkey.sql
+tenant_credit_wallets_tenant_credit_wallets_pkey.sql
+tenant_model_policies_audit_tenant_model_policies_audit_pkey.sql
+tenant_model_policies_tenant_model_policies_pkey.sql
+tenant_model_policies_tenant_model_policies_tenant_id_canonical_name_key.sql
+tenant_settings_kv_tenant_settings_kv_pkey.sql
+tenant_subscriptions_tenant_subscriptions_pkey.sql
+tenant_tool_policies_tenant_tool_policies_pkey.sql
+tenant_tool_policies_uk_tenant_tool_policy.sql
+tenants_tenants_pkey.sql
+token_audit_events_token_audit_events_pkey.sql
+tool_call_events_tool_call_events_pkey.sql
+tool_categories_tool_categories_pkey.sql
+tool_registry_tool_registry_pkey.sql
+tool_registry_tool_registry_tool_name_key.sql
+tool_usage_stats_tool_usage_stats_pkey.sql
+tool_usage_stats_uk_tool_usage_stats.sql
+topup_packages_topup_packages_code_key.sql
+topup_packages_topup_packages_pkey.sql
+tuning_params_tuning_params_pkey.sql
+tuning_proposals_tuning_proposals_pkey.sql
+tuning_signals_tuning_signals_pkey.sql
+usage_ledger_usage_ledger_pkey.sql
+users_users_pkey.sql
+users_users_username_key.sql
+work_type_config_work_type_config_pkey.sql
+work_type_model_route_work_type_model_route_pkey.sql
+work_type_model_route_work_type_model_route_work_type_key_canonical_name_key.sql
+```
+
+## 使用说明
+
+### 查看对象定义
+
+```bash
+# 查看某个对象的定义
+cat deploy/sql/objects/constraints/<object_name>.sql
+```
+
+### 应用对象
+
+```bash
+# 应用单个对象
+psql "$DATABASE_URL" -f deploy/sql/objects/constraints/<object_name>.sql
+
+# 应用所有对象（按字母顺序）
+for f in deploy/sql/objects/constraints/*.sql; do
+  psql "$DATABASE_URL" -f "$f"
+done
+```
+
+## 维护说明
+
+- **不要手动编辑本目录**：所有更改应在 `sql/objects/constraints/` 进行
+- **同步方式**：运行 `bash deploy/sql/sync-objects.sh` 重新同步
+- **验证方式**：运行 `bash deploy/sql/verify-migration.sh` 验证完整性
+
+## 相关文档
+
+- [sql/objects/README.md](../../../sql/README.md) - 源对象定义
+- [deploy/sql/README.md](../README.md) - 部署 SQL 资产说明

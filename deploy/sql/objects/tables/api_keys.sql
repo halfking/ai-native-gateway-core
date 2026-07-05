@@ -1,0 +1,46 @@
+--
+-- Name: api_keys; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.api_keys (
+    id bigint NOT NULL,
+    application_id bigint NOT NULL,
+    tenant_id text DEFAULT 'default'::text NOT NULL,
+    key_hash text NOT NULL,
+    key_prefix text NOT NULL,
+    owner_user text,
+    data_sensitivity text DEFAULT 'internal'::text NOT NULL,
+    default_end_user_id text,
+    budget_usd numeric(14,6),
+    rate_limit_rpm integer,
+    enabled boolean DEFAULT true NOT NULL,
+    expires_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_used_at timestamp with time zone,
+    status character varying(16) DEFAULT 'active'::character varying NOT NULL,
+    key_ciphertext text,
+    is_system boolean DEFAULT false NOT NULL,
+    rate_limit_concurrent integer,
+    rate_limit_tpm integer,
+    key_tier character varying(16) DEFAULT 'default'::character varying NOT NULL,
+    key_ciphertext_kid text,
+    throttled_at timestamp with time zone,
+    throttled_reason text,
+    ewma_rpm_baseline numeric(10,3),
+    ewma_updated_at timestamp with time zone,
+    reveal_count integer DEFAULT 0 NOT NULL,
+    last_revealed_at timestamp with time zone,
+    last_revealed_by text,
+    remark text,
+    key_alias text,
+    total_requests bigint DEFAULT 0 NOT NULL,
+    total_prompt_tokens bigint DEFAULT 0 NOT NULL,
+    total_completion_tokens bigint DEFAULT 0 NOT NULL,
+    total_tokens bigint DEFAULT 0 NOT NULL,
+    total_cost_usd numeric(14,8) DEFAULT 0 NOT NULL,
+    last_request_at timestamp with time zone,
+    default_client_profile text,
+    CONSTRAINT api_keys_data_sensitivity_check CHECK ((data_sensitivity = ANY (ARRAY['public'::text, 'internal'::text, 'confidential'::text]))),
+    CONSTRAINT api_keys_status_check CHECK (((status)::text = ANY (ARRAY[('active'::character varying)::text, ('pending'::character varying)::text, ('disabled'::character varying)::text, ('throttled'::character varying)::text, ('revoked'::character varying)::text])))
+);
+
