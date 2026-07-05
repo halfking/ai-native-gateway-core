@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -10,6 +11,9 @@ import {
   type FeaturedModel,
 } from '../api'
 import { isReadOnlyMode, isSuperAdmin } from '../store'
+
+const { t } = useI18n()
+
 
 interface FlatVariant {
   id: string
@@ -106,10 +110,10 @@ const heroChips = computed(() => {
   const routable = flatVariants.value.filter(v => v.routableCount > 0).length
   const creds = flatVariants.value.reduce((s, v) => s + v.credentials.length, 0)
   return [
-    { label: '系列', value: String(seriesList.value.length) },
-    { label: '变体', value: String(total) },
-    { label: '可路由', value: String(routable) },
-    { label: '凭据', value: readOnly.value ? '—' : String(creds) },
+    { label: t('routing.seriesLabel'), value: String(seriesList.value.length) },
+    { label: t('routing.variantsLabel'), value: String(total) },
+    { label: t('routing.routable'), value: String(routable) },
+    { label: t('routing.credential'), value: readOnly.value ? '—' : String(creds) },
   ]
 })
 
@@ -127,20 +131,20 @@ function isCredentialRoutable(c: RoutingTreeCredential): boolean {
 
 function reasonLabel(reason: string | null | undefined): string {
   switch (reason) {
-    case 'circuit_open': return '熔断中'
-    case 'balance_exhausted': return '余额耗尽'
-    case 'quota_periodic_exhausted': return '周期额度耗尽'
-    case 'quota_balance_exhausted': return '额度耗尽'
-    case 'quota_permanently_exhausted': return '永久额度耗尽'
-    case 'availability_cooling': return '冷却中'
-    case 'availability_rate_limited': return '限流中'
-    case 'availability_unreachable': return '暂不可达'
-    case 'availability_auth_failed': return '鉴权失败'
-    case 'availability_suspended': return '已暂停'
-    case 'lifecycle_disabled': return '生命周期禁用'
-    case 'lifecycle_suspended': return '生命周期暂停'
-    case 'lifecycle_retired': return '生命周期退役'
-    default: return reason || '可路由'
+    case 'circuit_open': return t('routing.circuit_open')
+    case 'balance_exhausted': return t('routing.balance_exhausted')
+    case 'quota_periodic_exhausted': return t('routing.quota_periodic_exhausted')
+    case 'quota_balance_exhausted': return t('routing.quota_balance_exhausted')
+    case 'quota_permanently_exhausted': return t('routing.quota_permanently_exhausted')
+    case 'availability_cooling': return t('routing.availability_cooling')
+    case 'availability_rate_limited': return t('routing.availability_rate_limited')
+    case 'availability_unreachable': return t('routing.availability_unreachable')
+    case 'availability_auth_failed': return t('routing.availability_auth_failed')
+    case 'availability_suspended': return t('routing.availability_suspended')
+    case 'lifecycle_disabled': return t('routing.lifecycle_disabled')
+    case 'lifecycle_suspended': return t('routing.lifecycle_suspended')
+    case 'lifecycle_retired': return t('routing.lifecycle_retired')
+    default: return reason || t('routing.routable')
   }
 }
 
@@ -194,7 +198,7 @@ async function load() {
       selectedVariantId.value = ''
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('routing.loadFailed')
   } finally {
     loading.value = false
   }
@@ -220,14 +224,14 @@ async function adoptRecommendedFeatured() {
     const resp = await getFeaturedModelsDynamic()
     const models: FeaturedModel[] = (resp?.models ?? []).filter(m => m.name)
     if (models.length === 0) {
-      recommendMessage.value = '没有可推荐的模型（最近 7 天无请求或策略已空）'
+      recommendMessage.value = t('routing.noModelsToRecommend')
       return
     }
     await patchFeatured(models.map(m => m.name))
     recommendMessage.value = `已采用 ${models.length} 个推荐模型作为特色`
     await load()
   } catch (e: unknown) {
-    recommendMessage.value = e instanceof Error ? e.message : '采用推荐失败'
+    recommendMessage.value = e instanceof Error ? e.message : t('routing.adoptFailed')
   } finally {
     recommendLoading.value = false
   }
@@ -247,7 +251,7 @@ onMounted(load)
             class="profile-pill"
             :class="{ active: featuredOnly }"
             @click="toggleFeatured"
-          >{{ featuredOnly ? '★ 仅特色' : '☆ 仅特色' }}</button>
+          >{{ featuredOnly ? t('routing.featuredOnly') : t('routing.featuredOnlyOff') }}</button>
         </div>
         <button class="btn btn-sm btn-ghost refresh-btn" :disabled="loading" @click="load" title="刷新">↻</button>
       </div>
@@ -324,7 +328,7 @@ onMounted(load)
               class="btn btn-sm btn-primary"
               :disabled="recommendLoading"
               @click="adoptRecommendedFeatured"
-            >⚡ 一键采用最近 7 天 Top {{ recommendLoading ? '加载中…' : '推荐' }}</button>
+            >⚡ 一键采用最近 7 天 Top {{ recommendLoading ? t('routing.loading') : t('routing.recommendText') }}</button>
             <router-link to="/routing-policy" class="btn btn-sm btn-ghost">
               ⚙ 前往路由策略手动配置
             </router-link>
@@ -348,7 +352,7 @@ onMounted(load)
 
         <div v-if="readOnly" class="readonly-summary">
           <span :class="selectedVariant.routableCount > 0 ? 'status-ok' : 'status-bad'">
-            {{ selectedVariant.routableCount > 0 ? '✓ 可路由' : '✗ 暂不可路由' }}
+            {{ selectedVariant.routableCount > 0 ? t('routing.readonlySummaryRoutable') : t('routing.readonlySummaryUnroutable') }}
           </span>
           <span class="text-muted">凭据 {{ selectedVariant.credentials.length }} 条（详情已隐藏）</span>
         </div>
@@ -374,7 +378,7 @@ onMounted(load)
                 <td><span class="badge" :class="statusClass(cred)">T{{ cred.tier }} · w{{ cred.weight }}</span></td>
                 <td>
                   <span :class="cred.runtime_routable ? 'badge badge-green' : 'badge badge-red'">
-                    {{ cred.runtime_routable ? '可路由' : reasonLabel(cred.runtime_block_reason) }}
+                    {{ cred.runtime_routable ? t('routing.routable') : reasonLabel(cred.runtime_block_reason) }}
                   </span>
                 </td>
                 <td>{{ rateLabel(cred.success_rate) }}</td>

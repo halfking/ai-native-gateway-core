@@ -4,7 +4,7 @@
       <h2>成本价格</h2>
       <div class="pm-actions">
         <button class="btn btn-sm" @click="fetchData" :disabled="loading">
-          {{ loading ? '加载中…' : '刷新' }}
+          {{ loading ? t('pricingManagement.refreshLoading') : t('pricingManagement.refresh') }}
         </button>
         <button class="btn btn-sm" @click="exportCsv">导出 CSV</button>
         <button v-if="!readOnly" class="btn btn-sm btn-primary" @click="showImport = true">导入 CSV</button>
@@ -251,7 +251,7 @@
         <input type="file" accept=".csv" @change="onFileChange" />
         <div class="form-actions">
           <button class="btn btn-primary btn-sm" @click="importCsv" :disabled="!importFile || importing">
-            {{ importing ? '导入中…' : '导入' }}
+            {{ importing ? t('pricingManagement.submitting') : t('pricingManagement.submit') }}
           </button>
           <button class="btn btn-sm" @click="showImport = false">取消</button>
           <span v-if="importMsg">{{ importMsg }}</span>
@@ -286,7 +286,7 @@
                 </div>
                 <div class="param">
                   <label>可用</label>
-                  <span class="param-val" :class="{ ok: selectedOffer.available }">{{ selectedOffer.available ? '是' : '否' }}</span>
+                  <span class="param-val" :class="{ ok: selectedOffer.available }">{{ selectedOffer.available ? t('pricingManagement.yes') : t('pricingManagement.no') }}</span>
                 </div>
                 <div class="param">
                   <label>成功率</label>
@@ -360,13 +360,13 @@
             </div>
 
             <div class="detail-balance" v-if="selectedOffer.balance_usd != null">
-              <strong>余额：</strong> {{ selectedOffer.balance_usd }} {{ selectedOffer.balance_currency || 'USD' }}
+              <strong>余额：</strong> {{ selectedOffer.balance_usd }} {{ selectedOffer.balance_currency || t('pricingManagement.usd') }}
               <span v-if="selectedOffer.pool_group"> | 资源池：{{ selectedOffer.pool_group }}</span>
             </div>
 
             <div class="form-actions">
               <button class="btn btn-primary btn-sm" @click="saveOffer" :disabled="saving">
-                {{ saving ? '保存中…' : '保存' }}
+                {{ saving ? t('pricingManagement.saving') : t('pricingManagement.save') }}
               </button>
               <button class="btn btn-sm" @click="copyPrice">复制价格</button>
               <button class="btn btn-sm" @click="pastePrice" :disabled="!clipboard">粘贴</button>
@@ -390,7 +390,7 @@
         </div>
         <div class="form-actions">
           <button class="btn btn-primary btn-sm" @click="confirmInherit" :disabled="inheriting">
-            {{ inheriting ? '继承中…' : '确认继承' }}
+            {{ inheriting ? t('pricingManagement.confirming') : t('pricingManagement.confirm') }}
           </button>
           <button class="btn btn-sm" @click="showInheritPreview = false">取消</button>
         </div>
@@ -400,9 +400,13 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, computed, onMounted, watch } from 'vue'
 import { store, isReadOnlyMode, authBearer } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
+
+const { t } = useI18n()
+
 
 const readOnly = computed(() => isReadOnlyMode())
 
@@ -531,7 +535,7 @@ function buildCoverageByCred(offers: Offer[]) {
     const e = byCred.get(o.credential_id) || { name: credName, total: 0, priced: 0, token_plan: 0 }
     e.total += 1
     if (o.unit_price_in_per_1m && Number(o.unit_price_in_per_1m) > 0) e.priced += 1
-    if (o.billing_mode === 'token_plan') e.token_plan += 1
+    if (o.billing_mode === t('pricingManagement.tokenPlanSuffix')) e.token_plan += 1
     byCred.set(o.credential_id, e)
   }
   const arr: any[] = []
@@ -685,7 +689,7 @@ function selectOffer(offer: Offer) {
     unit_price_out_per_1m: offer.unit_price_out_per_1m,
     cache_read_price_per_1m: offer.cache_read_price_per_1m,
     cache_write_price_per_1m: offer.cache_write_price_per_1m,
-    currency: offer.currency || 'USD',
+    currency: offer.currency || t('pricingManagement.usd'),
     billing_mode: offer.billing_mode || 'per_token',
   }
   saveMsg.value = ''
@@ -710,15 +714,15 @@ async function saveOffer() {
     })
     const data = await res.json()
     if (data.updated > 0) {
-      saveMsg.value = '已保存'
+      saveMsg.value = t('pricingManagement.saved')
       saveOk.value = true
       await fetchData()
     } else {
-      saveMsg.value = '无变更'
+      saveMsg.value = t('pricingManagement.noChange')
       saveOk.value = false
     }
   } catch (e) {
-    saveMsg.value = '保存失败'
+    saveMsg.value = t('pricingManagement.saveFailed')
     saveOk.value = false
   } finally {
     saving.value = false
@@ -728,7 +732,7 @@ async function saveOffer() {
 function copyPrice() {
   if (selectedOffer.value) {
     clipboard.value = { ...selectedOffer.value }
-    saveMsg.value = '价格已复制'
+    saveMsg.value = t('pricingManagement.copied')
     saveOk.value = true
   }
 }
@@ -740,16 +744,16 @@ function pastePrice() {
     unit_price_out_per_1m: clipboard.value.unit_price_out_per_1m,
     cache_read_price_per_1m: clipboard.value.cache_read_price_per_1m,
     cache_write_price_per_1m: clipboard.value.cache_write_price_per_1m,
-    currency: clipboard.value.currency || 'USD',
+    currency: clipboard.value.currency || t('pricingManagement.usd'),
     billing_mode: clipboard.value.billing_mode || 'per_token',
   }
-  saveMsg.value = '已粘贴，请点击保存生效'
+  saveMsg.value = t('pricingManagement.pasted')
   saveOk.value = true
 }
 
 function copyPriceFromTable(item: Offer) {
   clipboard.value = { ...item }
-  saveMsg.value = '价格已复制'
+  saveMsg.value = t('pricingManagement.copied')
   saveOk.value = true
 }
 
@@ -848,7 +852,7 @@ async function confirmInherit() {
     saveOk.value = true
     await fetchData()
   } catch (e) {
-    saveMsg.value = '自动继承失败'
+    saveMsg.value = t('pricingManagement.failed')
     saveOk.value = false
   } finally {
     inheriting.value = false
@@ -888,7 +892,7 @@ async function importCsv() {
     showImport.value = false
     await fetchData()
   } catch (e) {
-    importMsg.value = '导入失败'
+    importMsg.value = t('pricingManagement.failed')
   } finally {
     importing.value = false
   }

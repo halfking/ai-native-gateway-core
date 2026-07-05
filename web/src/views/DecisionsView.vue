@@ -1,7 +1,11 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { getDecisions, type RoutingDecision } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
+
+const { t } = useI18n()
+
 
 const rows = ref<RoutingDecision[]>([])
 const loading = ref(false)
@@ -74,13 +78,13 @@ function fmtTs(ts: string) {
 }
 
 function traceList(v: unknown): string {
-  if (!Array.isArray(v) || !v.length) return '—'
+  if (!Array.isArray(v) || !v.length) return t('decisions.dash')
   return v
     .map((item) => {
       if (!item || typeof item !== 'object') return String(item)
       const row = item as Record<string, unknown>
-      const provider = row.provider_id ?? '—'
-      const credential = row.credential_id ?? '—'
+      const provider = row.provider_id ?? t('decisions.dash')
+      const credential = row.credential_id ?? t('decisions.dash')
       const reason = row.reason ?? row.raw_model ?? ''
       return `p${provider}/c${credential} ${reason}`.trim()
     })
@@ -192,22 +196,22 @@ onUnmounted(() => {
             <td style="white-space:nowrap;font-size:12px">{{ fmtTs(r.ts) }}</td>
             <td>
               <span :class="r.success ? 'badge-ok' : 'badge-err'">
-                {{ r.success ? '✓' : '✗' }}
+                {{ r.success ? t('decisions.stickyHitOk') : t('decisions.stickyHitNo') }}
               </span>
             </td>
             <td style="font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.model }}</td>
             <td style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis">
-              <div>{{ r.resolution_path ?? '—' }} / {{ r.canonical_model ?? '—' }}</div>
-              <div style="color:var(--muted)">{{ (r.resolution_raw_models || []).join(', ') || '—' }}</div>
+              <div>{{ r.resolution_path ?? t('decisions.dash') }} / {{ r.canonical_model ?? t('decisions.dash') }}</div>
+              <div style="color:var(--muted)">{{ (r.resolution_raw_models || []).join(', ') || t('decisions.dash') }}</div>
             </td>
-            <td style="text-align:center">{{ r.tier ?? '—' }}</td>
-            <td style="text-align:right">{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</td>
-            <td style="font-size:12px">{{ r.chosen_provider_id ?? '—' }}</td>
-            <td style="font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.outbound_model ?? '—' }}</td>
-            <td style="text-align:right">{{ r.prompt_tokens ?? '—' }}</td>
-            <td style="text-align:right">{{ r.completion_tokens ?? '—' }}</td>
+            <td style="text-align:center">{{ r.tier ?? t('decisions.dash') }}</td>
+            <td style="text-align:right">{{ r.latency_ms != null ? r.latency_ms + t('decisions.msUnit') : t('decisions.dash') }}</td>
+            <td style="font-size:12px">{{ r.chosen_provider_id ?? t('decisions.dash') }}</td>
+            <td style="font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.outbound_model ?? t('decisions.dash') }}</td>
+            <td style="text-align:right">{{ r.prompt_tokens ?? t('decisions.dash') }}</td>
+            <td style="text-align:right">{{ r.completion_tokens ?? t('decisions.dash') }}</td>
             <td style="text-align:right;font-size:12px">
-              {{ r.cost_usd != null ? '$' + Number(r.cost_usd).toFixed(5) : '—' }}
+              {{ r.cost_usd != null ? t('decisions.costUnit') + Number(r.cost_usd).toFixed(5) : t('decisions.dash') }}
             </td>
             <td style="font-size:11px;max-width:260px;overflow:hidden;text-overflow:ellipsis">
               {{ traceList((r.decision_trace || {}).planned_candidates) }}
@@ -251,20 +255,20 @@ onUnmounted(() => {
               <div class="detail-grid">
                 <span class="dk">时间</span><span class="dv">{{ selectedRow.ts }}</span>
                 <span class="dk">Request ID</span><span class="dv mono">{{ selectedRow.request_id }}</span>
-                <span class="dk">Idempotency Key</span><span class="dv mono">{{ selectedRow.idempotency_key ?? '—' }}</span>
+                <span class="dk">Idempotency Key</span><span class="dv mono">{{ selectedRow.idempotency_key ?? t('decisions.dash') }}</span>
                 <span class="dk">Tenant</span><span class="dv mono">{{ selectedRow.tenant_id }}</span>
                 <span class="dk">状态</span>
                 <span class="dv">
                   <span :class="selectedRow.success ? 'badge-ok' : 'badge-err'">
-                    {{ selectedRow.success ? '✓ 成功' : '✗ 失败' }}
+                    {{ selectedRow.success ? t('decisions.successOk') : t('decisions.successFail') }}
                   </span>
                 </span>
-                <span class="dk">延迟</span><span class="dv">{{ selectedRow.latency_ms != null ? selectedRow.latency_ms + ' ms' : '—' }}</span>
+                <span class="dk">延迟</span><span class="dv">{{ selectedRow.latency_ms != null ? selectedRow.latency_ms + t('decisions.latencyUnit') : t('decisions.dash') }}</span>
                 <span class="dk">客户端模型</span><span class="dv mono">{{ selectedRow.client_model ?? selectedRow.model }}</span>
-                <span class="dk">出站模型</span><span class="dv mono">{{ selectedRow.outbound_model ?? '—' }}</span>
-                <span class="dk">Request Mode</span><span class="dv">{{ selectedRow.request_mode ?? '—' }}</span>
-                <span class="dk">协议</span><span class="dv">{{ selectedRow.egress_protocol ?? '—' }}</span>
-                <span class="dk">Sticky Hit</span><span class="dv">{{ selectedRow.sticky_hit ? '✓' : '✗' }}</span>
+                <span class="dk">出站模型</span><span class="dv mono">{{ selectedRow.outbound_model ?? t('decisions.dash') }}</span>
+                <span class="dk">Request Mode</span><span class="dv">{{ selectedRow.request_mode ?? t('decisions.dash') }}</span>
+                <span class="dk">协议</span><span class="dv">{{ selectedRow.egress_protocol ?? t('decisions.dash') }}</span>
+                <span class="dk">Sticky Hit</span><span class="dv">{{ selectedRow.sticky_hit ? t('decisions.stickyHitOk') : t('decisions.stickyHitNo') }}</span>
               </div>
             </div>
 
@@ -272,12 +276,12 @@ onUnmounted(() => {
             <div class="drawer-section">
               <div class="drawer-section-title">模型解析</div>
               <div class="detail-grid">
-                <span class="dk">Resolution Path</span><span class="dv mono">{{ selectedRow.resolution_path ?? '—' }}</span>
-                <span class="dk">Canonical Model</span><span class="dv mono">{{ selectedRow.canonical_model ?? '—' }}</span>
+                <span class="dk">Resolution Path</span><span class="dv mono">{{ selectedRow.resolution_path ?? t('decisions.dash') }}</span>
+                <span class="dk">Canonical Model</span><span class="dv mono">{{ selectedRow.canonical_model ?? t('decisions.dash') }}</span>
                 <span class="dk">Raw Models</span>
-                <span class="dv mono">{{ (selectedRow.resolution_raw_models || []).join(', ') || '—' }}</span>
-                <span class="dk">Client Profile</span><span class="dv">{{ selectedRow.client_profile ?? '—' }}</span>
-                <span class="dk">Transform Rule</span><span class="dv mono">{{ selectedRow.transform_rule_id ?? '—' }}</span>
+                <span class="dv mono">{{ (selectedRow.resolution_raw_models || []).join(', ') || t('decisions.dash') }}</span>
+                <span class="dk">Client Profile</span><span class="dv">{{ selectedRow.client_profile ?? t('decisions.dash') }}</span>
+                <span class="dk">Transform Rule</span><span class="dv mono">{{ selectedRow.transform_rule_id ?? t('decisions.dash') }}</span>
               </div>
             </div>
 
@@ -285,9 +289,9 @@ onUnmounted(() => {
             <div class="drawer-section">
               <div class="drawer-section-title">路由决策</div>
               <div class="detail-grid">
-                <span class="dk">供应商 ID</span><span class="dv">{{ selectedRow.chosen_provider_id ?? '—' }}</span>
-                <span class="dk">凭据 ID</span><span class="dv">{{ selectedRow.chosen_credential_id ?? '—' }}</span>
-                <span class="dk">Tier</span><span class="dv">{{ selectedRow.tier ?? '—' }}</span>
+                <span class="dk">供应商 ID</span><span class="dv">{{ selectedRow.chosen_provider_id ?? t('decisions.dash') }}</span>
+                <span class="dk">凭据 ID</span><span class="dv">{{ selectedRow.chosen_credential_id ?? t('decisions.dash') }}</span>
+                <span class="dk">Tier</span><span class="dv">{{ selectedRow.tier ?? t('decisions.dash') }}</span>
                 <span class="dk">候选数</span><span class="dv">{{ selectedRow.candidates_tried }}</span>
               </div>
             </div>
@@ -296,12 +300,12 @@ onUnmounted(() => {
             <div class="drawer-section">
               <div class="drawer-section-title">Token 与费用</div>
               <div class="detail-grid">
-                <span class="dk">Prompt Tokens</span><span class="dv">{{ selectedRow.prompt_tokens ?? '—' }}</span>
-                <span class="dk">Completion Tokens</span><span class="dv">{{ selectedRow.completion_tokens ?? '—' }}</span>
+                <span class="dk">Prompt Tokens</span><span class="dv">{{ selectedRow.prompt_tokens ?? t('decisions.dash') }}</span>
+                <span class="dk">Completion Tokens</span><span class="dv">{{ selectedRow.completion_tokens ?? t('decisions.dash') }}</span>
                 <span class="dk">费用 (USD)</span>
-                <span class="dv">{{ selectedRow.cost_usd != null ? '$' + Number(selectedRow.cost_usd).toFixed(6) : '—' }}</span>
-                <span class="dk">请求体积</span><span class="dv">{{ selectedRow.request_bytes != null ? selectedRow.request_bytes + ' B' : '—' }}</span>
-                <span class="dk">响应体积</span><span class="dv">{{ selectedRow.response_bytes != null ? selectedRow.response_bytes + ' B' : '—' }}</span>
+                <span class="dv">{{ selectedRow.cost_usd != null ? t('decisions.costUnit') + Number(selectedRow.cost_usd).toFixed(6) : t('decisions.dash') }}</span>
+                <span class="dk">请求体积</span><span class="dv">{{ selectedRow.request_bytes != null ? selectedRow.request_bytes + t('decisions.bytesUnit') : t('decisions.dash') }}</span>
+                <span class="dk">响应体积</span><span class="dv">{{ selectedRow.response_bytes != null ? selectedRow.response_bytes + t('decisions.bytesUnit') : t('decisions.dash') }}</span>
               </div>
             </div>
 
@@ -309,9 +313,9 @@ onUnmounted(() => {
             <div v-if="!selectedRow.success" class="drawer-section">
               <div class="drawer-section-title" style="color:var(--danger)">错误信息</div>
               <div class="detail-grid">
-                <span class="dk">Error Class</span><span class="dv" style="color:var(--danger)">{{ selectedRow.error_class ?? '—' }}</span>
-                <span class="dk">Failure Stage</span><span class="dv">{{ selectedRow.failure_stage ?? '—' }}</span>
-                <span class="dk">Failure Code</span><span class="dv mono">{{ selectedRow.failure_detail_code ?? '—' }}</span>
+                <span class="dk">Error Class</span><span class="dv" style="color:var(--danger)">{{ selectedRow.error_class ?? t('decisions.dash') }}</span>
+                <span class="dk">Failure Stage</span><span class="dv">{{ selectedRow.failure_stage ?? t('decisions.dash') }}</span>
+                <span class="dk">Failure Code</span><span class="dv mono">{{ selectedRow.failure_detail_code ?? t('decisions.dash') }}</span>
               </div>
             </div>
 
