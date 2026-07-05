@@ -112,8 +112,9 @@ func (h *Handler) ListByRequest(w http.ResponseWriter, r *http.Request, requestI
 	defer cancel()
 
 	var raw []byte
+	// Query from view (hot + partitions) to include recent 7-day data
 	err := h.dbPool.QueryRow(ctx,
-		`SELECT attachments::text FROM request_logs WHERE request_id = $1 ORDER BY ts DESC LIMIT 1`,
+		`SELECT attachments::text FROM request_logs_with_current_month WHERE request_id = $1 ORDER BY ts DESC LIMIT 1`,
 		requestID,
 	).Scan(&raw)
 

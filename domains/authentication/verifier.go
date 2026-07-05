@@ -368,7 +368,8 @@ func (kv *KeyVerifier) checkBudgetDB(ctx context.Context, keyID int) error {
 		return nil
 	}
 	var spent float64
-	if err := kv.dbPool.QueryRow(ctx, "SELECT COALESCE(SUM(cost_usd), 0)::float8 FROM usage_ledger WHERE api_key_id = $1", keyID).Scan(&spent); err != nil {
+	// Query from view (hot + partitions) to include recent 7-day data
+	if err := kv.dbPool.QueryRow(ctx, "SELECT COALESCE(SUM(cost_usd), 0)::float8 FROM usage_ledger_with_current_month WHERE api_key_id = $1", keyID).Scan(&spent); err != nil {
 		return err
 	}
 	if spent >= *budget {
