@@ -109,6 +109,7 @@ export default {
       status: 'Status',
       openai: 'OpenAI',
       anthropic: 'Anthropic',
+      domestic: 'Domestic',
       oss: 'Open source',
       other: 'Other',
       success: 'Success',
