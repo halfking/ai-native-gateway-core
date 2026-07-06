@@ -92,7 +92,7 @@ async def session_worker(
                 }
                 headers = {
                     "Content-Type": "application/json",
-                    "X-Session-ID": session_id,
+                    "X-Gw-Session-Id": session_id,
                 }
                 if gateway_url:
                     url = f"{gateway_url}/v1/chat/completions"

@@ -711,43 +711,23 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 	// 2026-07-07: Use multi-level sticky lookup (L1: session+model, L2: client+model, L3: client)
 	// instead of the old single-level lookup (L3 only). This ensures different session IDs
-	// get different credentials, fixing the load balancing issue.
-	var stickyCredID *int
-	if params.SessionID != "" && params.Model != "" {
-		// Multi-level lookup available
-		stickyCredID = e.stickyCredentialIDMultiLevel(
-			params.TenantID,
-			params.AppID,
-			params.ApiKeyID,
-			params.ClientID.Fingerprint.ClientProfile,
-			params.SessionID,
-			params.Model,
+	// get different credentials, fixing the load balancing issue. The pickStickyCredentialID
+	// helper is also used by the sync-retry path so both legs stay consistent.
+	stickyCredID := e.pickStickyCredentialID(params)
+	if os.Getenv("STICKY_MULTILEVEL_DEBUG") == "1" {
+		slog.Info("STICKY_PICK",
+			"session_id", params.SessionID,
+			"model", params.Model,
+			"tenant", params.TenantID,
+			"sticky_key", params.StickyKey,
+			"found", stickyCredID != nil,
+			"cred_id", func() int {
+				if stickyCredID != nil {
+					return *stickyCredID
+				}
+				return 0
+			}(),
 		)
-		if os.Getenv("STICKY_MULTILEVEL_DEBUG") == "1" {
-			slog.Info("STICKY_MULTILEVEL",
-				"session_id", params.SessionID,
-				"model", params.Model,
-				"tenant", params.TenantID,
-				"found", stickyCredID != nil,
-				"cred_id", func() int {
-					if stickyCredID != nil {
-						return *stickyCredID
-					}
-					return 0
-				}(),
-			)
-		}
-	} else {
-		// Fallback to L3-only lookup
-		stickyCredID = e.stickyCredentialID(params.StickyKey)
-		if os.Getenv("STICKY_MULTILEVEL_DEBUG") == "1" {
-			slog.Info("STICKY_L3_FALLBACK",
-				"session_id", params.SessionID,
-				"model", params.Model,
-				"sticky_key", params.StickyKey,
-				"found", stickyCredID != nil,
-			)
-		}
 	}
 
 	candidates := e.Router.PlanCandidates(
@@ -1491,7 +1471,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			if errorsx.IsCredentialFatal(lastKind) {
 				retryStickyID = nil // 强制切换
 			} else {
-				retryStickyID = e.stickyCredentialID(params.StickyKey) // 保留
+				retryStickyID = e.pickStickyCredentialID(params) // 保留（与首次 Execute() 同口径：L1→L2→L3）
 			}
 			subCandidates := e.Router.PlanCandidates(
 				params.Candidates,
@@ -1962,6 +1942,28 @@ func (e *Executor) stickyCredentialID(stickyKey string) *int {
 		return nil
 	}
 	return &credentialID
+}
+
+// pickStickyCredentialID picks the sticky credential for the current request
+// using the multi-level lookup (L1 → L2 → L3) when SessionID and Model are
+// available, falling back to the L3-only lookup otherwise.
+//
+// 2026-07-07: Extracted so both the first Execute() pass and the sync-retry
+// path invoke the same logic. Previously the retry path at line ~1494 only did
+// L3, so a session-scoped request retried after a transient error could hop
+// to a different credential than the first attempt.
+func (e *Executor) pickStickyCredentialID(params *ExecParams) *int {
+	if params.SessionID != "" && params.Model != "" {
+		return e.stickyCredentialIDMultiLevel(
+			params.TenantID,
+			params.AppID,
+			params.ApiKeyID,
+			params.ClientID.Fingerprint.ClientProfile,
+			params.SessionID,
+			params.Model,
+		)
+	}
+	return e.stickyCredentialID(params.StickyKey)
 }
 
 // stickyCredentialIDMultiLevel uses the multi-level sticky lookup (L1 → L2 → L3).
