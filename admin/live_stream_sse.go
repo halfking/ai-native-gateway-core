@@ -147,6 +147,11 @@ type LiveStreamSSEHub struct {
 	// telemetry hot path can resolve a provider_id cheaply.
 	providerCache sync.Map
 
+	// modelFamilyCache is a sync.Map of model → vendor.
+	// Populated lazily by ModelVendorFor() to resolve model vendor from
+	// models_canonical.family → model_families.vendor.
+	modelFamilyCache sync.Map
+
 	stopCh chan struct{}
 
 	// cachedSnapshot holds the last-known snapshot per tenant so broadcast
@@ -331,6 +336,42 @@ func (h *LiveStreamSSEHub) ProviderCodeForCredential(ctx context.Context, creden
 	return display
 }
 
+// ModelVendorFor resolves a model name to its vendor via models_canonical.family → model_families.vendor.
+// Falls back to pattern matching when DB lookup fails.
+func (h *LiveStreamSSEHub) ModelVendorFor(ctx context.Context, model string) string {
+	if model == "" {
+		return classifyModelCategoryFallback(model)
+	}
+	if h == nil || h.db == nil {
+		return classifyModelCategoryFallback(model)
+	}
+
+	// Check cache first
+	if cached, ok := h.modelFamilyCache.Load(model); ok {
+		return cached.(string)
+	}
+
+	// Query database: model → family → vendor
+	var vendor string
+	row := h.db.QueryRow(ctx, `
+		SELECT COALESCE(mf.vendor, '')
+		FROM models_canonical mc
+		LEFT JOIN model_families mf ON mf.id = mc.family
+		WHERE mc.canonical_name = $1
+		LIMIT 1
+	`, model)
+
+	if err := row.Scan(&vendor); err != nil || vendor == "" {
+		// Fallback to pattern matching
+		vendor = classifyModelCategoryFallback(model)
+		h.modelFamilyCache.Store(model, vendor)
+		return vendor
+	}
+
+	h.modelFamilyCache.Store(model, vendor)
+	return vendor
+}
+
 func (h *LiveStreamSSEHub) closeAll() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -355,8 +396,9 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 	}
 	now := time.Now().UTC()
 	if h.store != nil {
-		if err := h.store.RecordIdleMarker(context.Background(), now); err != nil {
-			slog.Debug("live stream redis idle marker failed", "err", err.Error())
+		// Use new method that scans and records idle markers for all dimension queues
+		if err := h.store.ScanAndRecordIdleMarkers(context.Background(), now); err != nil {
+			slog.Debug("live stream scan and record idle markers failed", "err", err.Error(), "timestamp", now.Format(time.RFC3339))
 		}
 	}
 	// Idle marker is a visual gap indicator only. We intentionally do NOT
@@ -486,7 +528,7 @@ func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
 	if h.store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		if err := h.store.Record(ctx, req); err != nil {
-			slog.Debug("live stream redis record failed", "request_id", req.RequestID, "err", err.Error())
+			slog.Debug("live stream redis record failed", "request_id", req.RequestID, "tenant_id", req.TenantID, "model", req.Model, "provider", req.ProviderCode, "err", err.Error())
 		}
 		cancel()
 	}
@@ -663,16 +705,16 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 			continue
 		}
 		r.Ts = ts.UTC().Format(time.RFC3339)
-		r.ModelCategory = classifyModelCategory(r.Model)
+		r.ModelCategory = h.ModelVendorFor(cctx, r.Model)
 		out = append(out, r)
 	}
 	return out, nil
 }
 
-// classifyModelCategory reduces a model name to one of the model family
-// categories. Categories are based on the original model creators/vendors,
-// dynamically grouping by most-used providers for international compatibility.
-func classifyModelCategory(model string) string {
+// classifyModelCategoryFallback provides pattern-based vendor classification
+// when database lookup is unavailable or fails.
+// This is a fallback mechanism; prefer using ModelVendorFor with database lookup.
+func classifyModelCategoryFallback(model string) string {
 	m := strings.ToLower(model)
 	switch {
 	case strings.Contains(m, "gpt"), strings.Contains(m, "o1"), strings.Contains(m, "o3"), strings.Contains(m, "o4"):
@@ -701,6 +743,8 @@ func classifyModelCategory(model string) string {
 		return "meta"
 	case strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"):
 		return "mistral"
+	case strings.Contains(m, "mimo"):
+		return "xiaomi"
 	case strings.Contains(m, "phi"):
 		return "microsoft"
 	case strings.Contains(m, "gemma"):
@@ -711,8 +755,8 @@ func classifyModelCategory(model string) string {
 }
 
 // LiveRequestFromTelemetry adapts a raw RequestLogEntry into a
-// LiveRequest.
-func LiveRequestFromTelemetry(requestID string, ts time.Time, tenantID, clientModel, outboundModel, providerCode, status string, success bool, errorKind *string, latencyMs, promptTokens, completionTokens *int, totalTokens *int, costUSD *float64) LiveRequest {
+// LiveRequest. This is a method on Hub to enable database-backed model vendor lookup.
+func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(ctx context.Context, requestID string, ts time.Time, tenantID, clientModel, outboundModel, providerCode, status string, success bool, errorKind *string, latencyMs, promptTokens, completionTokens *int, totalTokens *int, costUSD *float64) LiveRequest {
 	out := LiveRequest{
 		RequestID:        requestID,
 		Ts:               ts.UTC().Format(time.RFC3339),
@@ -730,7 +774,7 @@ func LiveRequestFromTelemetry(requestID string, ts time.Time, tenantID, clientMo
 	} else {
 		out.Model = clientModel
 	}
-	out.ModelCategory = classifyModelCategory(out.Model)
+	out.ModelCategory = h.ModelVendorFor(ctx, out.Model)
 	if status == "" {
 		switch {
 		case success:

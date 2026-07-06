@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -98,13 +99,14 @@ type liveRequestRedisPayload struct {
 }
 
 const (
-	liveStreamMainKey    = "llmgw:live:main"
-	liveStreamDimPrefix  = "llmgw:live:dim:"
-	liveStreamStatPrefix = "llmgw:live:status:"
-	liveStreamTenantSet  = "llmgw:live:tenants"
-	liveStreamTTL        = 3600 * time.Second // 1 hour
-	liveStreamTopN       = 5
-	liveStreamLaneLimit  = 30
+	liveStreamMainKey        = "llmgw:live:main"
+	liveStreamDimPrefix      = "llmgw:live:dim:"
+	liveStreamStatPrefix     = "llmgw:live:status:"
+	liveStreamTenantSet      = "llmgw:live:tenants"
+	liveStreamActivityPrefix = "llmgw:live:activity:"
+	liveStreamTTL            = 28800 * time.Second // 8 hours
+	liveStreamLaneLimit      = 30
+	idleThresholdSeconds     = 60 // 1 minute
 )
 
 // NewLiveStreamRedisStore constructs a store. Safe to pass nil client
@@ -131,7 +133,7 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	}
 	data, err := marshalLiveRequestRedisPayload(req)
 	if err != nil {
-		return fmt.Errorf("marshal request: %w", err)
+		return fmt.Errorf("marshal live request failed: request_id=%s tenant_id=%s model=%s: %w", req.RequestID, tenantID, req.Model, err)
 	}
 
 	ts, err := time.Parse(time.RFC3339, req.Ts)
@@ -150,6 +152,25 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 
 	pipe.SAdd(ctx, liveStreamTenantSet, tenantID)
 	pipe.Expire(ctx, liveStreamTenantSet, liveStreamTTL)
+
+	// Track last activity time for each dimension queue
+	nowUnix := time.Now().Unix()
+	if req.ModelCategory != "" {
+		pipe.Set(ctx, liveStreamActivityKey("", "vendor", req.ModelCategory), nowUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "vendor", req.ModelCategory), nowUnix, liveStreamTTL)
+	}
+	if req.ProviderCode != "" {
+		pipe.Set(ctx, liveStreamActivityKey("", "provider", req.ProviderCode), nowUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "provider", req.ProviderCode), nowUnix, liveStreamTTL)
+	}
+	if req.Model != "" {
+		pipe.Set(ctx, liveStreamActivityKey("", "model", req.Model), nowUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "model", req.Model), nowUnix, liveStreamTTL)
+	}
+	// Track main queue activity
+	pipe.Set(ctx, liveStreamActivityKey("", "main", ""), nowUnix, liveStreamTTL)
+	pipe.Set(ctx, liveStreamActivityKey(tenantID, "main", ""), nowUnix, liveStreamTTL)
+
 	for _, key := range liveRequestQueueKeys(tenantID, req) {
 		pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: req.RequestID})
 		pipe.Expire(ctx, key, liveStreamTTL)
@@ -158,7 +179,10 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	pipe.Set(ctx, liveStreamGlobalRequestDetailKey(req.RequestID), data, liveStreamTTL)
 
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return fmt.Errorf("redis pipeline exec failed: request_id=%s tenant_id=%s: %w", req.RequestID, tenantID, err)
+	}
+	return nil
 }
 
 func removeLiveRequestFromQueues(ctx context.Context, pipe redis.Pipeliner, tenantID string, req LiveRequest) {
@@ -196,61 +220,6 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 	return keys
 }
 
-// RecordIdleMarker inserts a 1-minute silence marker into the main queue.
-func (s *LiveStreamRedisStore) RecordIdleMarker(ctx context.Context, ts time.Time) error {
-	if s == nil || s.rdb == nil {
-		return nil
-	}
-	marker := LiveRequest{
-		Type:          "idle_marker",
-		RequestID:     fmt.Sprintf("idle-%d", ts.UnixMilli()),
-		Ts:            ts.UTC().Format(time.RFC3339),
-		Model:         "空闲",
-		ModelCategory: "__idle__",
-		ProviderCode:  "系统心跳",
-		Status:        "idle",
-	}
-	data, err := marshalLiveRequestRedisPayload(marker)
-	if err != nil {
-		return err
-	}
-	score := float64(ts.UnixMilli())
-	tenants, err := s.rdb.SMembers(ctx, liveStreamTenantSet).Result()
-	if err != nil {
-		tenants = nil
-	}
-	pipe := s.rdb.Pipeline()
-	pipe.Set(ctx, liveStreamGlobalRequestDetailKey(marker.RequestID), data, liveStreamTTL)
-	writeIdleMarkerToPipe(ctx, pipe, marker.RequestID, liveStreamMainKey, liveStreamStatPrefix+"idle", liveStreamDimPrefix+"vendor:__idle__", liveStreamDimPrefix+"provider:系统心跳", liveStreamDimPrefix+"model:空闲", score)
-	for _, tenantID := range tenants {
-		tenantMarker := marker
-		tenantMarker.TenantID = normalizeLiveStreamTenant(tenantID)
-		tenantData, mErr := marshalLiveRequestRedisPayload(tenantMarker)
-		if mErr != nil {
-			continue
-		}
-		pipe.Set(ctx, liveStreamRequestDetailKey(tenantID, tenantMarker.RequestID), tenantData, liveStreamTTL)
-		writeIdleMarkerToPipe(ctx, pipe,
-			tenantMarker.RequestID,
-			tenantLiveStreamKey(tenantID, "main"),
-			tenantLiveStreamKey(tenantID, "status:idle"),
-			tenantLiveStreamKey(tenantID, "dim:vendor:__idle__"),
-			tenantLiveStreamKey(tenantID, "dim:provider:系统心跳"),
-			tenantLiveStreamKey(tenantID, "dim:model:空闲"),
-			score,
-		)
-	}
-	_, err = pipe.Exec(ctx)
-	return err
-}
-
-func writeIdleMarkerToPipe(ctx context.Context, pipe redis.Pipeliner, requestID, mainKey, statusKey, vendorKey, providerKey, modelKey string, score float64) {
-	for _, key := range []string{mainKey, statusKey, vendorKey, providerKey, modelKey} {
-		pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: requestID})
-		pipe.Expire(ctx, key, liveStreamTTL)
-	}
-}
-
 // Replay fetches the most recent N requests from the main queue in
 // ascending timestamp order. Returns empty slice (not error) when
 // Redis is unavailable.
@@ -270,7 +239,7 @@ func (s *LiveStreamRedisStore) Replay(ctx context.Context, tenantID string, isSu
 	// Fetch last N request ids (ZREVRANGE returns DESC, so we reverse later)
 	requestIDs, err := s.rdb.ZRevRange(ctx, key, 0, int64(limit-1)).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("redis zrevrange failed: key=%s tenant_id=%s is_super=%v: %w", key, tenantID, isSuper, err)
 	}
 
 	out := make([]LiveRequest, 0, len(requestIDs))
@@ -281,10 +250,12 @@ func (s *LiveStreamRedisStore) Replay(ctx context.Context, tenantID string, isSu
 		}
 		data, err := s.rdb.Get(ctx, detailKey).Result()
 		if err != nil {
+			slog.Debug("failed to fetch live request detail", "request_id", requestIDs[i], "tenant_id", tenantID, "detail_key", detailKey, "err", err.Error())
 			continue
 		}
 		req, err := unmarshalLiveRequestRedisPayload(data)
 		if err != nil {
+			slog.Debug("failed to unmarshal live request payload", "request_id", requestIDs[i], "tenant_id", tenantID, "err", err.Error())
 			continue
 		}
 		// Tenant filtering (same logic as DB replay)
@@ -421,28 +392,12 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		return stats[keys[i]].Total > stats[keys[j]].Total
 	})
 
-	detailLanes := make([]LiveStreamLane, 0, len(keys))
-	for _, key := range keys {
-		detailLanes = append(detailLanes, LiveStreamLane{
-			ID:        key,
-			Name:      key,
-			Dimension: dimension,
-			Requests:  lastTiles(grouped[key], liveStreamLaneLimit),
-			Stats:     stats[key],
-			IsOthers:  false,
-		})
-	}
+	// Build lanes - no more top N or others aggregation, return all lanes
+	lanes := make([]LiveStreamLane, 0, len(keys))
+	legends := make([]LiveStreamLegendItem, 0, len(keys))
 
-	viewLanes := make([]LiveStreamLane, 0, liveStreamTopN+1)
-	legends := make([]LiveStreamLegendItem, 0, liveStreamTopN+1)
-	top := keys
-	if len(top) > liveStreamTopN {
-		top = top[:liveStreamTopN]
-	}
-	topSet := map[string]struct{}{}
-	for _, key := range top {
-		topSet[key] = struct{}{}
-		viewLanes = append(viewLanes, LiveStreamLane{
+	for _, key := range keys {
+		lanes = append(lanes, LiveStreamLane{
 			ID:        key,
 			Name:      key,
 			Dimension: dimension,
@@ -453,28 +408,8 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		legends = append(legends, LiveStreamLegendItem{Key: key, Name: key, Count: stats[key].Total})
 	}
 
-	othersStats := LiveStreamStats{}
-	othersReqs := make([]LiveStreamTile, 0)
-	for _, key := range keys {
-		if _, ok := topSet[key]; ok {
-			continue
-		}
-		mergeStats(&othersStats, stats[key])
-		othersReqs = append(othersReqs, grouped[key]...)
-	}
-	if othersStats.Total > 0 {
-		viewLanes = append(viewLanes, LiveStreamLane{
-			ID:        "__others__",
-			Name:      "其它",
-			Dimension: dimension,
-			Requests:  lastTiles(othersReqs, liveStreamLaneLimit),
-			Stats:     othersStats,
-			IsOthers:  true,
-		})
-		legends = append(legends, LiveStreamLegendItem{Key: "__others__", Name: "其它", Count: othersStats.Total})
-	}
-
-	return viewLanes, detailLanes, legends
+	// Both viewLanes and detailLanes return the same full list
+	return lanes, lanes, legends
 }
 
 func buildStatusLegends(items []LiveRequest) []LiveStreamLegendItem {
@@ -555,13 +490,6 @@ func countStatus(stats *LiveStreamStats, status string) {
 	}
 }
 
-func mergeStats(dst *LiveStreamStats, src LiveStreamStats) {
-	dst.Total += src.Total
-	dst.Success += src.Success
-	dst.Failure += src.Failure
-	dst.InProgress += src.InProgress
-}
-
 func lastTiles(items []LiveStreamTile, limit int) []LiveStreamTile {
 	if limit <= 0 || len(items) <= limit {
 		return items
@@ -596,6 +524,233 @@ func (s *LiveStreamRedisStore) Stats(ctx context.Context) map[string]int64 {
 	}
 	main, _ := s.rdb.ZCard(ctx, liveStreamMainKey).Result()
 	return map[string]int64{"main": main}
+}
+
+// liveStreamActivityKey builds the Redis key that records the last
+// activity timestamp for a (tenant, dimension, dimensionKey) tuple.
+// The scope segment ("global" vs "tenant:<id>") is the FIRST field so
+// parsing can never be ambiguous even when the dimensionKey contains ":".
+func liveStreamActivityKey(tenantID, dimension, key string) string {
+	scope := "global"
+	if tenantID != "" {
+		scope = "tenant:" + normalizeLiveStreamTenant(tenantID)
+	}
+	if key == "" {
+		return fmt.Sprintf("%s%s:%s", liveStreamActivityPrefix, scope, dimension)
+	}
+	return fmt.Sprintf("%s%s:%s:%s", liveStreamActivityPrefix, scope, dimension, key)
+}
+
+// activityKeyInfo decodes a liveStreamActivityKey back into its parts.
+// Returns ok=false when the key is malformed. The scope segment is
+// consumed first (it never contains ":" outside the "tenant:<id>" form),
+// so the remainder is split into dimension + dimensionKey unambiguously.
+type activityKeyInfo struct {
+	tenantID    string
+	dimension   string
+	dimensionKey string
+}
+
+func parseActivityKey(key string) (activityKeyInfo, bool) {
+	rest := strings.TrimPrefix(key, liveStreamActivityPrefix)
+	if rest == key { // prefix did not match
+		return activityKeyInfo{}, false
+	}
+	var info activityKeyInfo
+	// Scope is either "global" or "tenant:<id>"; take everything up to the first ":" after it.
+	if strings.HasPrefix(rest, "tenant:") {
+		// tenant:<id>:dimension[:dimKey]
+		afterTenant := strings.TrimPrefix(rest, "tenant:")
+		idx := strings.Index(afterTenant, ":")
+		if idx < 0 {
+			return activityKeyInfo{}, false
+		}
+		info.tenantID = afterTenant[:idx]
+		rest = afterTenant[idx+1:]
+	} else if strings.HasPrefix(rest, "global:") {
+		rest = strings.TrimPrefix(rest, "global:")
+	} else {
+		return activityKeyInfo{}, false
+	}
+	// rest is now "dimension" or "dimension:dimKey"
+	if idx := strings.Index(rest, ":"); idx >= 0 {
+		info.dimension = rest[:idx]
+		info.dimensionKey = rest[idx+1:]
+	} else {
+		info.dimension = rest
+	}
+	if info.dimension == "" {
+		return activityKeyInfo{}, false
+	}
+	return info, true
+}
+
+// ScanAndRecordIdleMarkers scans all dimension queues and inserts idle
+// markers for queues that have been idle for more than idleThresholdSeconds.
+// Each idle marker is written ONLY to the queue it pertains to (plus its
+// tenant-scoped twin), so an idle vendor marker never pollutes the model
+// lane or the main queue.
+func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts time.Time) error {
+	if s == nil || s.rdb == nil {
+		return nil
+	}
+
+	nowUnix := ts.Unix()
+
+	// 1) Collect candidate activity keys via SCAN.
+	var activityKeys []string
+	iter := s.rdb.Scan(ctx, 0, liveStreamActivityPrefix+"*", 0).Iterator()
+	for iter.Next(ctx) {
+		activityKeys = append(activityKeys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("scan activity keys failed: %w", err)
+	}
+	if len(activityKeys) == 0 {
+		return nil
+	}
+
+	// 2) Batch-fetch all timestamps in one pipeline (avoid N round-trips).
+	pipe := s.rdb.Pipeline()
+	cmds := make([]*redis.StringCmd, len(activityKeys))
+	for i, k := range activityKeys {
+		cmds[i] = pipe.Get(ctx, k)
+	}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return fmt.Errorf("mget activity timestamps failed: %w", err)
+	}
+
+	type pending struct {
+		info    activityKeyInfo
+		key     string
+	}
+	var idle []pending
+	refreshPipe := s.rdb.Pipeline()
+	for i, k := range activityKeys {
+		val, err := cmds[i].Result()
+		if err != nil {
+			continue // key expired between scan and get
+		}
+		var lastActivity int64
+		if _, err := fmt.Sscanf(val, "%d", &lastActivity); err != nil {
+			slog.Debug("activity key has non-numeric timestamp", "key", k, "value", val)
+			continue
+		}
+		if nowUnix-lastActivity < idleThresholdSeconds {
+			continue
+		}
+		info, ok := parseActivityKey(k)
+		if !ok {
+			slog.Debug("skipping malformed activity key", "key", k)
+			continue
+		}
+		idle = append(idle, pending{info: info, key: k})
+		// Refresh the activity timestamp so we do not re-emit on every tick.
+		refreshPipe.Set(ctx, k, nowUnix, liveStreamTTL)
+	}
+
+	if len(idle) == 0 {
+		// Still flush the refresh pipeline (no-op if empty).
+		if _, err := refreshPipe.Exec(ctx); err != nil && err != redis.Nil {
+			return fmt.Errorf("refresh activity timestamps failed: %w", err)
+		}
+		return nil
+	}
+
+	// 3) Build + persist idle markers, writing only to the relevant lane(s).
+	writePipe := s.rdb.Pipeline()
+	for _, p := range idle {
+		marker := createIdleMarkerForDimension(p.info.dimension, p.info.dimensionKey, p.info.tenantID, ts)
+		data, err := marshalLiveRequestRedisPayload(marker)
+		if err != nil {
+			slog.Debug("failed to marshal idle marker", "dimension", p.info.dimension, "dimension_key", p.info.dimensionKey, "tenant_id", p.info.tenantID, "err", err.Error())
+			continue
+		}
+		score := float64(ts.UnixMilli())
+
+		// Detail lookups: store under the global key always, and the
+		// tenant key when scoped, so Replay can resolve the marker.
+		writePipe.Set(ctx, liveStreamGlobalRequestDetailKey(marker.RequestID), data, liveStreamTTL)
+		tenantID := normalizeLiveStreamTenant(marker.TenantID)
+		writePipe.Set(ctx, liveStreamRequestDetailKey(tenantID, marker.RequestID), data, liveStreamTTL)
+
+		for _, qkey := range idleMarkerQueueKeys(tenantID, p.info.dimension, p.info.dimensionKey) {
+			writePipe.ZAdd(ctx, qkey, redis.Z{Score: score, Member: marker.RequestID})
+			writePipe.Expire(ctx, qkey, liveStreamTTL)
+		}
+	}
+
+	if _, err := writePipe.Exec(ctx); err != nil && err != redis.Nil {
+		return fmt.Errorf("write idle markers failed: %w", err)
+	}
+	if _, err := refreshPipe.Exec(ctx); err != nil && err != redis.Nil {
+		slog.Debug("refresh activity timestamps failed (non-fatal)", "err", err.Error())
+	}
+	return nil
+}
+
+// idleMarkerQueueKeys returns the Redis ZSET keys an idle marker for the
+// given dimension should land in: the global lane and the tenant-scoped
+// lane. Crucially it does NOT include the main queue or status queues,
+// so a per-lane idle marker stays inside its own lane.
+func idleMarkerQueueKeys(tenantID, dimension, dimensionKey string) []string {
+	tenantID = normalizeLiveStreamTenant(tenantID)
+	switch dimension {
+	case "vendor":
+		k := liveStreamDimPrefix + "vendor:" + dimensionKey
+		return []string{k, tenantLiveStreamKey(tenantID, "dim:vendor:"+dimensionKey)}
+	case "provider":
+		k := liveStreamDimPrefix + "provider:" + dimensionKey
+		return []string{k, tenantLiveStreamKey(tenantID, "dim:provider:"+dimensionKey)}
+	case "model":
+		k := liveStreamDimPrefix + "model:" + dimensionKey
+		return []string{k, tenantLiveStreamKey(tenantID, "dim:model:"+dimensionKey)}
+	case "main":
+		// Main-queue idle markers DO belong on the main lane.
+		return []string{liveStreamMainKey, tenantLiveStreamKey(tenantID, "main")}
+	default:
+		return nil
+	}
+}
+
+func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time) LiveRequest {
+	// requestID must be unique per (scope, dimension, key, tick); the ts
+	// suffix guarantees uniqueness across ticks.
+	requestID := fmt.Sprintf("idle-%s-%d", dimension, ts.UnixNano())
+
+	marker := LiveRequest{
+		Type:      "idle_marker",
+		RequestID: requestID,
+		Ts:        ts.UTC().Format(time.RFC3339),
+		TenantID:  tenantID,
+		Status:    "idle",
+	}
+
+	switch dimension {
+	case "vendor":
+		// Vendor lane idle: carry the vendor as ModelCategory so the
+		// lane keeps showing its real identity.
+		marker.ModelCategory = key
+		marker.Model = "空闲"
+		marker.ProviderCode = "系统心跳"
+	case "provider":
+		// Provider lane idle: carry the provider as ProviderCode.
+		marker.ProviderCode = key
+		marker.Model = "空闲"
+		marker.ModelCategory = "__idle__"
+	case "model":
+		// Model lane idle: carry the model name.
+		marker.Model = key
+		marker.ModelCategory = "__idle__"
+		marker.ProviderCode = "系统心跳"
+	default:
+		// Main queue idle: generic heartbeat.
+		marker.Model = "空闲"
+		marker.ModelCategory = "__idle__"
+		marker.ProviderCode = "系统心跳"
+	}
+
+	return marker
 }
 
 // ComputeDelta compares old and new snapshots, returning only the
