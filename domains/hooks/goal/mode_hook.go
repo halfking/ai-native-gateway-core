@@ -64,7 +64,7 @@ type ModeConfig struct {
 	CompletionConfidence float64
 	// MaxFollowUpDepth / MaxFollowUpsPerSession override the hard-coded
 	// follow-up engine limits in domains/streaming. Zero = use the engine
-	// defaults (MaxFollowUpDepth=5, MaxFollowUpsPerSession=50).
+	// defaults (MaxFollowUpDepth=15, MaxFollowUpsPerSession=50).
 	MaxFollowUpDepth       int
 	MaxFollowUpsPerSession int
 }

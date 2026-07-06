@@ -39,7 +39,7 @@ import (
 var guardRegressed = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "compression_regressed_total",
-		Help: "Requests where a compression/transform produced output >= raw length and was discarded by the never_worse guard. Labelled by the stage that regressed (compress|stabilize|inject).",
+		Help: "Requests where a compression/transform produced output >= raw length and was discarded by the never_worse guard. Labelled by the stage that regressed (compress|stabilize|inject). Compress guards the session-compressor output; inject guards cache-control-marker injection. Stabilize is intentionally unguarded (it's a reorder, not a shrink).",
 	},
 	[]string{"stage"},
 )
