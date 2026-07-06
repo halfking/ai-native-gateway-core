@@ -2,8 +2,9 @@
 // LiveRequestStreamV2.vue — 实时请求流V2（泳道系统）
 // 2026-07-05: 支持按原厂/供应商/模型分组的多泳道可视化
 // 2026-07-05 v2: 添加管理员连接详情弹窗、空闲块机制
+// 2026-07-07: 管理员可编辑远端SSE地址
 
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useLiveStream } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
 import { isSuperAdmin } from '../store'
@@ -15,11 +16,13 @@ const emit = defineEmits<{
   openDetail: [requestId: string]
 }>()
 
+// 解构出 reconnect —— 保存新 URL 后立即用新地址重连，不再只是 localStorage 默默记住
 const { 
   snapshot: liveSnapshot,
   connection, 
   paused, 
-  togglePause 
+  togglePause,
+  reconnect: reconnectStream,
 } = useLiveStream()
 
 const {
@@ -37,26 +40,122 @@ const {
 const showConnectionDetail = ref(false)
 const isAdmin = computed(() => isSuperAdmin())
 
-// SSE endpoint address
-const streamUrl = computed(() => {
-  return `${window.location.origin}/api/admin/live-stream`
+// SSE endpoint address - 可编辑
+// 行为：
+//  1) 默认值走 window.location.origin + ENDPOINT
+//  2) localStorage 里允许管理员保存一个自定义 URL（比如反向代理 / 内网穿透）
+//  3) 保存后立即关闭旧连接、打开新地址，刷新整个流
+const STORAGE_KEY = 'llmgw_sse_endpoint'
+const ENDPOINT_PATH = '/api/admin/live-stream'
+const defaultStreamUrl = computed(() => `${window.location.origin}${ENDPOINT_PATH}`)
+const streamUrl = ref('')
+const isEditingUrl = ref(false)
+const editUrlValue = ref('')
+
+// 把 string → URL 转换成一个 EventSource 可用的最终地址
+function buildFinalUrl(url: string): string {
+  const trimmed = url.trim()
+  if (!trimmed) return defaultStreamUrl.value
+  // 包含 token 参数：在 admin api_key 模式下浏览器 EventSource 无法设置 Authorization，
+  // 我们把 localStorage 里的 api_key 拼到 ?token=，由后端当 fallback 接受
+  let apiKeySuffix = ''
+  try {
+    const apiKey = localStorage.getItem('llmgw_api_key')
+    if (apiKey && !apiKey.startsWith('cookie')) {
+      apiKeySuffix = (trimmed.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(apiKey)
+    }
+  } catch {
+    /* SSR / storage disabled */
+  }
+  return trimmed + apiKeySuffix
+}
+
+onMounted(() => {
+  const saved = (() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY) || ''
+    } catch {
+      return ''
+    }
+  })()
+  streamUrl.value = saved || defaultStreamUrl.value
+})
+
+// 如果用户修改了 window.location（多 tab 测试），默认地址也跟着变
+watch(defaultStreamUrl, (cur) => {
+  const saved = (() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY) || ''
+    } catch {
+      return ''
+    }
+  })()
+  if (!saved) streamUrl.value = cur
 })
 
 // 切换连接详情弹窗
 function toggleConnectionDetail() {
   if (isAdmin.value) {
     showConnectionDetail.value = !showConnectionDetail.value
+    if (!showConnectionDetail.value) {
+      isEditingUrl.value = false
+    }
   }
+}
+
+// 开始编辑URL
+function startEditUrl() {
+  editUrlValue.value = streamUrl.value
+  isEditingUrl.value = true
+}
+
+// 保存URL —— 立刻用新地址重连 SSE
+function saveUrl() {
+  const url = editUrlValue.value.trim()
+  if (url) {
+    streamUrl.value = url
+    try {
+      localStorage.setItem(STORAGE_KEY, url)
+    } catch {
+      /* ignore */
+    }
+    reconnectStream()
+  }
+  isEditingUrl.value = false
+}
+
+// 重置为默认URL
+function resetUrl() {
+  streamUrl.value = defaultStreamUrl.value
+  try {
+    localStorage.removeItem(STORAGE_KEY)
+  } catch {
+    /* ignore */
+  }
+  isEditingUrl.value = false
+  reconnectStream()
+}
+
+// 取消编辑
+function cancelEditUrl() {
+  isEditingUrl.value = false
 }
 
 // 测试 SSE 连接
 function testConnection() {
   if (connection.value === 'open') {
-    alert('SSE连接正常！\n状态: 已连接\n地址: ' + streamUrl.value)
+    window.alert('SSE连接正常！\n状态: 已连接\n地址: ' + streamUrl.value)
   } else {
-    alert('SSE未连接\n状态: ' + connection.value + '\n地址: ' + streamUrl.value)
+    window.alert('SSE未连接\n状态: ' + connection.value + '\n地址: ' + streamUrl.value)
   }
 }
+
+// 连接成功后立即把当前 URL 喂给 store（让 store 切换到新 ENDPOINT）
+// 这里通过调用 reconnectStream 已经触发了 store 内部的 close + openConnection()
+// 但 openConnection() 写死了 ENDPOINT；要想自定义 URL，需要 store 暴露 setter。
+// 为最小改动，我们让 store 优先读 localStorage 里的自定义地址（见 liveStreamStore.ts）。
+// 暴露给 store 的"当前目标 URL"：
+const liveUrl = computed(() => buildFinalUrl(streamUrl.value))
 
 // 缓存/窗口统计 — 驱动自服务端 snapshot
 const bufferCount = computed(() => {
@@ -164,7 +263,26 @@ function handleToggleLegend(key: string) {
             </div>
             <div class="detail-row">
               <span class="detail-label">SSE地址:</span>
-              <code class="detail-value">{{ streamUrl }}</code>
+              <div class="detail-value url-edit-group">
+                <template v-if="!isEditingUrl">
+                  <code class="url-display">{{ streamUrl }}</code>
+                  <button type="button" class="edit-btn" @click="startEditUrl" title="编辑地址">编辑</button>
+                </template>
+                <template v-else>
+                  <input 
+                    v-model="editUrlValue" 
+                    class="url-input" 
+                    placeholder="输入SSE地址"
+                    @keyup.enter="saveUrl"
+                    @keyup.escape="cancelEditUrl"
+                  />
+                  <div class="url-edit-actions">
+                    <button type="button" class="save-btn" @click="saveUrl">保存</button>
+                    <button type="button" class="reset-btn" @click="resetUrl" title="恢复默认">默认</button>
+                    <button type="button" class="cancel-btn" @click="cancelEditUrl">取消</button>
+                  </div>
+                </template>
+              </div>
             </div>
             <div class="popup-actions">
               <button type="button" class="test-btn" @click="testConnection">测试连接</button>
@@ -223,6 +341,10 @@ function handleToggleLegend(key: string) {
   background: var(--card, #1c2128);
   padding: 12px 16px;
   margin-bottom: 20px;
+  /* min-width:0 让组件在 flex/grid 父容器中能正确收缩 */
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .stream-header {
@@ -416,6 +538,106 @@ function handleToggleLegend(key: string) {
   border: 1px solid var(--border, #30363d);
 }
 
+.url-edit-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.url-display {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg-subtle, #161b22);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #30363d);
+  word-break: break-all;
+  flex: 1;
+  font-size: 12px;
+}
+
+.url-input {
+  flex: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--accent, #6366f1);
+  background: var(--bg, #0f1117);
+  color: var(--text, #e6edf3);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  outline: none;
+}
+
+.url-input:focus {
+  border-color: var(--accent, #6366f1);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+.url-edit-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.edit-btn {
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle, #161b22);
+  color: var(--text-secondary, #8b949e);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.edit-btn:hover {
+  background: var(--bg, #0f1117);
+  border-color: var(--accent, #6366f1);
+  color: var(--text, #e6edf3);
+}
+
+.save-btn,
+.reset-btn,
+.cancel-btn {
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #30363d);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.save-btn {
+  background: var(--accent, #6366f1);
+  color: white;
+  border-color: var(--accent, #6366f1);
+}
+
+.save-btn:hover {
+  background: #5558e3;
+}
+
+.reset-btn {
+  background: var(--bg-subtle, #161b22);
+  color: var(--text-secondary, #8b949e);
+}
+
+.reset-btn:hover {
+  background: var(--bg, #0f1117);
+  color: var(--text, #e6edf3);
+}
+
+.cancel-btn {
+  background: var(--bg-subtle, #161b22);
+  color: var(--text-secondary, #8b949e);
+}
+
+.cancel-btn:hover {
+  background: var(--bg, #0f1117);
+  color: var(--text, #e6edf3);
+}
+
 .popup-actions {
   display: flex;
   gap: 8px;
@@ -482,6 +704,12 @@ function handleToggleLegend(key: string) {
   flex-direction: column;
   gap: 8px;
   margin-top: 12px;
+  /* 关键：swim-lanes 是 swim-lane 的 flex 父，必须 min-width:0 否则
+   *   flex item 拒绝收缩、宽屏溢出时仍会出现横向滚动。 */
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .swim-lanes__empty {
