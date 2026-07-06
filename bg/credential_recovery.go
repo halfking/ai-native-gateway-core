@@ -119,7 +119,9 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	// quota_recover_at，但 probe-v2 路径不会。两条路径都可能把凭据推进 periodic_exhausted，
 	// 所以这里不能用 quota_recover_at 判断是否恢复，而应以"健康探测成功"为准。
 	//
-	// 恢复条件：health_status='healthy' 且最近 1 小时内探测过 → 凭据已恢复但 quota_state 未清除。
+	// 恢复条件：health_status='healthy' 且最近 2 小时内探测过 → 凭据已恢复但 quota_state 未清除。
+	// 使用 2 小时窗口是因为 probe-v2 探测在每小时 :30 分运行 (nextHalfHour)，
+	// 两次探测间隔最大 90 分钟，1 小时窗口在边界情况下可能漏判。
 	// 同时重置 quota_recover_at = NULL 和 state_reason_code = NULL，避免残留数据影响下次状态判断。
 	tag, err = r.db.Exec(timeoutCtx, `
 		UPDATE credentials
@@ -129,7 +131,7 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		    state_updated_at    = now()
 		WHERE quota_state = 'periodic_exhausted'
 		  AND health_status = 'healthy'
-		  AND health_checked_at > now() - INTERVAL '1 hour'
+		  AND health_checked_at > now() - INTERVAL '2 hours'
 		  AND lifecycle_status = 'active'
 	`)
 	if err != nil {
