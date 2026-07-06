@@ -23,6 +23,20 @@ export default {
     next: '次へ',
     paginationPage: '{current} / {total}',
   },
+  userProfile: {
+    title: 'ユーザープロファイル',
+    ownerUser: 'ユーザー ID',
+    sessionCount: 'セッション数',
+    requestCount: 'リクエスト数',
+    totalCost: '合計コスト',
+    avgCostPerSession: 'セッションあたり平均コスト',
+    endUserCount: 'エンドユーザー数',
+    firstSeenAt: '初回アクティブ',
+    lastSeenAt: '最終アクティブ',
+    actionDetail: '詳細',
+    empty: 'ユーザープロファイルデータがありません',
+  },
+  userProfileSearchPlaceholder: 'ユーザー ID を検索...',
   compare: {
     title: 'セッション比較',
     subtitleWithId: 'セッション: {id} · {model}',
@@ -298,4 +312,17 @@ export default {
     strategyMemora: 'Memora注入',
     compressionTip: '完全な圧縮戦略設定については、「圧縮管理」ページをご覧ください',
   },
+  userProfile: {
+    // [TODO] add nested keys
+  },
+    title: "[TODO: sessions.userProfile.title]",
+  avgHealth: "[TODO: sessions.avgHealth]",
+  costTrend: "[TODO: sessions.costTrend]",
+  recentSessions: "[TODO: sessions.recentSessions]",
+  successRate: "[TODO: sessions.successRate]",
+  topEndUsers: "[TODO: sessions.topEndUsers]",
+  topTasks: "[TODO: sessions.topTasks]",
+  totalCost: "[TODO: sessions.totalCost]",
+  totalSessions: "[TODO: sessions.totalSessions]",
+    detailTitle: "[TODO: sessions.userProfile.detailTitle]",
 }

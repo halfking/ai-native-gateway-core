@@ -125,8 +125,9 @@ export default {
       error: 'エラー',
       time: '時間',
     },
-    connecting: "[TODO: dashboard.liveStream.connecting]",
-    reconnecting: "[TODO: dashboard.liveStream.reconnecting]",
-    unsupported: "[TODO: dashboard.liveStream.unsupported]",
+    connecting: '接続中…',
+    reconnecting: '再接続中…',
+    unsupported: 'このブラウザはリアルタイムストリームに対応していません',
+    empty: 'リアルタイムリクエストがありません',
   },
 }

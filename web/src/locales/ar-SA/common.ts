@@ -107,4 +107,11 @@ export default {
   feeCostCell: {
     costLabel: 'التكلفة',
   },
+  back: 'رجوع',
+  days: 'أيام',
+  hours: 'ساعات',
+  minutes: 'دقائق',
+  save: 'حفظ',
+  saving: 'جارٍ الحفظ…',
+  seconds: 'ثوانٍ',
 }
