@@ -249,14 +249,25 @@ func (s *PGStore) RecordHandoff(ctx context.Context, record *HandoffRecord) erro
 }
 
 // GetSessionTokenCount gets cumulative token count for a session.
+//
+// DEAD-CODE NOTE (2026-07-06): This file is parked under _to-be-deprecated/
+// because the original queries referenced a `sessions` master table that
+// doesn't exist in any branch. Canonical session tracking is via
+// `session_summaries` (PostgreSQL) + Redis (live state).
+//
+// If this hook is revived in the future:
+//   - Replace sessions.id       → session_summaries.session_key
+//   - Replace total_tokens_used → session_summaries.total_tokens
+//   - handoff_count / last_handoff_at columns now live on session_summaries
+//     (migration 354 added them on 2026-07-06).
 func (s *PGStore) GetSessionTokenCount(ctx context.Context, sessionID string) (int, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx, "SELECT COALESCE(total_tokens_used, 0) FROM sessions WHERE id = $1", sessionID).Scan(&count)
+	err := s.db.QueryRowContext(ctx, "SELECT COALESCE(total_tokens, 0) FROM session_summaries WHERE session_key = $1", sessionID).Scan(&count)
 	return count, err
 }
 
 // UpdateSessionHandoffCount increments handoff count.
 func (s *PGStore) UpdateSessionHandoffCount(ctx context.Context, sessionID string) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE sessions SET handoff_count = handoff_count + 1, last_handoff_at = NOW() WHERE id = $1", sessionID)
+	_, err := s.db.ExecContext(ctx, "UPDATE session_summaries SET handoff_count = handoff_count + 1, last_handoff_at = NOW() WHERE session_key = $1", sessionID)
 	return err
 }
