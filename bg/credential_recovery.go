@@ -106,6 +106,39 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		slog.Info("credential quota recovered", "count", tag.RowsAffected())
 	}
 
+	// 2026-07-06 P0 fix: 清除已经健康但卡在 periodic_exhausted 的凭据。
+	//
+	// 根因（双重缺陷）：
+	//  1. probe-v2 对 402 错误 (classifyProbeFailure) 设置 quota_state='periodic_exhausted'
+	//     但不设置 quota_recover_at，导致上面的恢复 SQL（WHERE quota_recover_at IS NOT NULL）
+	//     永远不触发。
+	//  2. 成功探测时 writeHealth 使用 COALESCE($8, quota_state) 保持旧值不变，
+	//     导致即使探测成功也无法清除 periodic_exhausted。
+	//
+	// 运行时路径 (domains/credential/writer.go WriteOnError) 对 KindQuotaPeriodic 会设置
+	// quota_recover_at，但 probe-v2 路径不会。两条路径都可能把凭据推进 periodic_exhausted，
+	// 所以这里不能用 quota_recover_at 判断是否恢复，而应以"健康探测成功"为准。
+	//
+	// 恢复条件：health_status='healthy' 且最近 1 小时内探测过 → 凭据已恢复但 quota_state 未清除。
+	// 同时重置 quota_recover_at = NULL 和 state_reason_code = NULL，避免残留数据影响下次状态判断。
+	tag, err = r.db.Exec(timeoutCtx, `
+		UPDATE credentials
+		SET quota_state         = 'ok',
+		    quota_recover_at    = NULL,
+		    state_reason_code   = NULL,
+		    state_updated_at    = now()
+		WHERE quota_state = 'periodic_exhausted'
+		  AND health_status = 'healthy'
+		  AND health_checked_at > now() - INTERVAL '1 hour'
+		  AND lifecycle_status = 'active'
+	`)
+	if err != nil {
+		slog.Warn("stale periodic_exhausted cleanup failed", "error", err)
+	} else if tag.RowsAffected() > 0 {
+		slog.Info("stale periodic_exhausted cleared (credentials already healthy)",
+			"count", tag.RowsAffected())
+	}
+
 	tag, err = r.db.Exec(timeoutCtx, `
 		UPDATE credentials
 		SET circuit_state = 'closed',
