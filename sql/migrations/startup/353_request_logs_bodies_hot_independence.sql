@@ -1,4 +1,4 @@
--- Migration 351: request_logs_bodies hot table independence
+-- Migration 353: request_logs_bodies hot table independence
 --
 -- Background:
 --   request_logs_bodies stores the request/response bodies for LLM requests.
@@ -140,12 +140,12 @@ BEGIN
     ) INTO func_exists;
     
     IF func_exists THEN
-        RAISE NOTICE 'Migration 351 verification PASSED';
+        RAISE NOTICE 'Migration 353 verification PASSED';
         RAISE NOTICE '  - hot table: % rows (storage: heap)', hot_count;
         RAISE NOTICE '  - view: exists';
         RAISE NOTICE '  - promote function: exists';
     ELSE
-        RAISE EXCEPTION 'Migration 351 verification FAILED: promote function not created';
+        RAISE EXCEPTION 'Migration 353 verification FAILED: promote function not created';
     END IF;
 END $$;
 
