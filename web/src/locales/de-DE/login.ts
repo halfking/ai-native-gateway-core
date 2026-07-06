@@ -16,4 +16,6 @@ export default {
     required: 'Bitte Benutzername und Passwort eingeben',
     failed: 'Anmeldung fehlgeschlagen',
   },
+  changePassword: "[TODO: login.changePassword]",
+  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
 }

@@ -131,4 +131,6 @@ export default {
   testingAll: 'Testing all…',
   loading: 'Loading…',
   loadingDetail: 'Loading detail…',
+  savedOk: "[TODO: workTypes.savedOk]",
+  testFailedShort: "[TODO: workTypes.testFailedShort]",
 }

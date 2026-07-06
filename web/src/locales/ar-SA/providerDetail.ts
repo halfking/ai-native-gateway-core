@@ -520,4 +520,6 @@ export default {
     loadFailed: 'فشل التحميل',
     triggerFailed: 'فشل التشغيل',
   },
+    displayNameHint: "[TODO: providerDetail.settings.displayNameHint]",
+    saveSuccess: "[TODO: providerDetail.settings.saveSuccess]",
 }

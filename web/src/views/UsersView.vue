@@ -360,6 +360,18 @@ onMounted(() => { load(); loadTenants() })
 .modal-card h3 { margin: 0 0 16px; font-size: 16px; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 
+/* 2026-07-07: 过滤器行，select 限制最大宽度避免全屏拉伸 */
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.filters select {
+  width: auto;
+  max-width: 280px;
+}
+
 .password-policy {
   display: grid;
   gap: 6px;
