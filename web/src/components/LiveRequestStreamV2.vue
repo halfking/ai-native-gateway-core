@@ -16,7 +16,6 @@ const emit = defineEmits<{
 }>()
 
 const { 
-  requests: liveRequests, 
   snapshot: liveSnapshot,
   connection, 
   paused, 
@@ -59,9 +58,9 @@ function testConnection() {
   }
 }
 
-// 缓存/窗口统计
+// 缓存/窗口统计 — 驱动自服务端 snapshot
 const bufferCount = computed(() => {
-  return liveRequests.value.filter(r => r.type !== 'idle_marker').length
+  return liveSnapshot.value?.summary?.total ?? 0
 })
 
 const windowCount = computed(() => {
