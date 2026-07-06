@@ -11,7 +11,6 @@ import {
   getUsageByModel,
   getDashboardOverview,
   getHotApiKeys,
-  getModelDiscoveryStatus,
   getHealth,
   getRecentModelFailures,
   getCompressionStats,
@@ -37,13 +36,11 @@ const summary = ref<UsageSummary | null>(null)
 const overview = ref<DashboardOverview | null>(null)
 const models  = ref<ModelUsage[]>([])
 const hotKeys = ref<HotApiKeyEntry[]>([])
-const discoveryStatus = ref<ModelDiscoveryStatusResponse | null>(null)
 const recentModelFailures = ref<{ raw_model_name: string; creds_affected: number; total_failures: number; last_failed_at: string; sample_error_code: string }[]>([])
 const health = ref<HealthResponse | null>(null)
 const compStats = ref<CompressionStats | null>(null)
 const loading = ref(false)
 const error   = ref('')
-let discoveryPollTimer: ReturnType<typeof setInterval> | null = null
 let healthPollTimer: ReturnType<typeof setInterval> | null = null
 let probeFailuresPollTimer: ReturnType<typeof setInterval> | null = null
 let statsRecalibrateTimer: ReturnType<typeof setInterval> | null = null
@@ -132,14 +129,6 @@ function fmtDate(v: string | null | undefined) {
   return new Date(v).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
-async function loadDiscoveryStatus() {
-  try {
-    discoveryStatus.value = await getModelDiscoveryStatus()
-  } catch {
-    /* non-blocking */
-  }
-}
-
 async function loadHealth() {
   try {
     health.value = await getHealth()
@@ -157,13 +146,6 @@ async function loadRecentProbeFailures() {
   }
 }
 
-function scheduleDiscoveryPoll() {
-  if (discoveryPollTimer) clearInterval(discoveryPollTimer)
-  discoveryPollTimer = setInterval(() => {
-    void loadDiscoveryStatus()
-  }, 15000)
-}
-
 function scheduleHealthPoll() {
   if (healthPollTimer) clearInterval(healthPollTimer)
   healthPollTimer = setInterval(() => { void loadHealth() }, 30000)
@@ -171,16 +153,13 @@ function scheduleHealthPoll() {
 
 onMounted(() => {
   void load()
-  void loadDiscoveryStatus()
   void loadHealth()
   void loadRecentProbeFailures()
-  scheduleDiscoveryPoll()
   scheduleHealthPoll()
   scheduleProbeFailuresPoll()
 })
 
 onUnmounted(() => {
-  if (discoveryPollTimer) clearInterval(discoveryPollTimer)
   if (healthPollTimer) clearInterval(healthPollTimer)
   if (probeFailuresPollTimer) clearInterval(probeFailuresPollTimer)
   if (statsRecalibrateTimer) clearInterval(statsRecalibrateTimer)
@@ -205,11 +184,13 @@ const dashboardData = inject<{
   liveRequests: ComputedRef<LiveRequest[]>
   onRequestEvicted: (callback: (id: string) => void) => void
   resetLiveStream: () => void
+  discoveryStatus: Ref<ModelDiscoveryStatusResponse | null>
 }>('dashboardData')
 
 const liveRequests = dashboardData?.liveRequests || computed(() => [] as LiveRequest[])
 const onRequestEvicted = dashboardData?.onRequestEvicted || ((_callback: (id: string) => void) => {})
 const resetLiveStream = dashboardData?.resetLiveStream || (() => {})
+const discoveryStatus = dashboardData?.discoveryStatus || ref(null)
 
 const activeRequestId = ref<string | null>(null)
 function openRequestDetail(id: string) {
