@@ -48,10 +48,16 @@ type LogConfigResponse struct {
 	ArchiveDays int  `json:"archive_days"` // 归档天数
 	DeleteDays  int  `json:"delete_days"`  // 删除天数
 
+	// 文件日志控制
+	FilePath         string `json:"file_path"`          // DB/环境变量 解析后的实际生效路径
+	FilePathOverride string `json:"file_path_override"` // DB 覆盖值（空=未设置）
+	FilePathEnv      string `json:"file_path_env"`      // 环境变量 LLM_GATEWAY_LOG_FILE
+	Enabled          bool   `json:"enabled"`            // 文件日志是否启用
+	EnabledSource    string `json:"enabled_source"`     // "db" | "env" | "default"
+
 	// 运行时状态
 	LogFile       string `json:"log_file"`       // 当前日志文件路径
 	LogDir        string `json:"log_dir"`        // 日志目录
-	Enabled       bool   `json:"enabled"`        // 文件日志是否启用
 	HotReloadable bool   `json:"hot_reloadable"` // 配置是否热加载生效
 	ConfigSource  string `json:"config_source"`  // "db" | "env" | "default"
 }
@@ -129,7 +135,10 @@ func (h *Handler) logConfigGet(w http.ResponseWriter, r *http.Request) {
 		MaxAgeDays:    cur.MaxAgeDays,
 		Compress:      cur.Compress,
 		LogFile:       cur.File,
+		FilePath:      cur.File,
+		FilePathEnv:   os.Getenv("LLM_GATEWAY_LOG_FILE"),
 		Enabled:       cur.File != "",
+		EnabledSource: "env",
 		HotReloadable: cur.File != "",
 		ConfigSource:  "default",
 		ArchiveDays:   7,
@@ -139,7 +148,7 @@ func (h *Handler) logConfigGet(w http.ResponseWriter, r *http.Request) {
 		resp.LogDir = filepath.Dir(cur.File)
 	}
 
-	// 读 settings 覆盖值
+	// 读 settings 覆盖值（轮转参数）
 	if v, src := readIntSetting("log.max_size_mb"); src != "" && v > 0 {
 		resp.MaxSizeMB = v
 		resp.ConfigSource = src
@@ -162,6 +171,17 @@ func (h *Handler) logConfigGet(w http.ResponseWriter, r *http.Request) {
 		resp.DeleteDays = v
 	}
 
+	// 文件日志路径与启用：DB 覆盖 > env
+	override := readStringSetting("log.file_path")
+	resp.FilePathOverride = override
+	if override != "" {
+		resp.FilePath = override
+	}
+	if b, src := readBoolSetting("log.enabled"); src == "db" {
+		resp.Enabled = b
+		resp.EnabledSource = src
+	}
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -173,12 +193,14 @@ func (h *Handler) logConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		MaxSizeMB   *int  `json:"max_size_mb,omitempty"`
-		MaxBackups  *int  `json:"max_backups,omitempty"`
-		MaxAgeDays  *int  `json:"max_age_days,omitempty"`
-		Compress    *bool `json:"compress,omitempty"`
-		ArchiveDays *int  `json:"archive_days,omitempty"`
-		DeleteDays  *int  `json:"archive_delete_days,omitempty"`
+		MaxSizeMB   *int    `json:"max_size_mb,omitempty"`
+		MaxBackups  *int    `json:"max_backups,omitempty"`
+		MaxAgeDays  *int    `json:"max_age_days,omitempty"`
+		Compress    *bool   `json:"compress,omitempty"`
+		ArchiveDays *int    `json:"archive_days,omitempty"`
+		DeleteDays  *int    `json:"archive_delete_days,omitempty"`
+		FilePath    *string `json:"file_path,omitempty"` // 设置后启用文件日志；空串=清空 DB 覆盖
+		Enabled     *bool   `json:"enabled,omitempty"`   // 显式启用/禁用
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -198,7 +220,7 @@ func (h *Handler) logConfigPut(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	setInt("log.max_size_mb", req.MaxSizeMB, 1, 1000)
-	setInt("log.maxBackups", req.MaxBackups, 0, 100)
+	setInt("log.max_backups", req.MaxBackups, 0, 100)
 	setInt("log.max_age_days", req.MaxAgeDays, 0, 365)
 	setInt("log.archive_days", req.ArchiveDays, 1, 365)
 	setInt("log.delete_days", req.DeleteDays, 7, 3650)
@@ -208,8 +230,21 @@ func (h *Handler) logConfigPut(w http.ResponseWriter, r *http.Request) {
 			auditSettingChange(user, role, "log.compress", fmt.Sprintf("%v", *req.Compress))
 		}
 	}
+	if req.FilePath != nil {
+		if _, err := store.Set(settings.ScopePlatform, "log.file_path", *req.FilePath); err == nil {
+			auditSettingChange(user, role, "log.file_path", *req.FilePath)
+		}
+	}
+	if req.Enabled != nil {
+		if _, err := store.Set(settings.ScopePlatform, "log.enabled", *req.Enabled); err == nil {
+			auditSettingChange(user, role, "log.enabled", fmt.Sprintf("%v", *req.Enabled))
+		}
+	}
 
-	// 热加载：把最新 settings 应用到 lumberjack
+	// 决定是否需要 ReInit 重建 logger
+	needReInit := req.FilePath != nil || req.Enabled != nil
+
+	// 通用：组装最新 newCfg（轮转参数）
 	newCfg := logging.ActiveConfig()
 	if v, _ := readIntSetting("log.max_size_mb"); v > 0 {
 		newCfg.MaxSizeMB = v
@@ -220,12 +255,34 @@ func (h *Handler) logConfigPut(w http.ResponseWriter, r *http.Request) {
 	if v, _ := readIntSetting("log.max_age_days"); v >= 0 {
 		newCfg.MaxAgeDays = v
 	}
-	if _, src := readBoolSetting("log.compress"); src == "db" {
-		b, _ := readBoolSetting("log.compress")
-		newCfg.Compress = b
+	if b, _ := readBoolSetting("log.compress"); b {
+		newCfg.Compress = true
+	} else if _, src := readBoolSetting("log.compress"); src == "db" {
+		newCfg.Compress = false
 	}
-	if err := logging.Reconfigure(newCfg); err != nil {
-		slog.Warn("logs: reconfigure failed", "error", err)
+
+	if needReInit {
+		// 重新计算有效 File：
+		//   enabled=false (DB) → 关闭
+		//   enabled=true (DB) + file_path 覆盖 → 用覆盖
+		//   enabled=true (DB) + file_path 空 → 用 env
+		//   enabled 未设置 → 用 env（保持兼容）
+		enabledDB, enabledSrc := readBoolSetting("log.enabled")
+		if enabledDB == false && enabledSrc == "db" {
+			newCfg.File = ""
+		} else if override := readStringSetting("log.file_path"); override != "" {
+			newCfg.File = override
+		} else {
+			newCfg.File = os.Getenv("LLM_GATEWAY_LOG_FILE")
+		}
+		if err := logging.ReInit(newCfg); err != nil {
+			slog.Warn("logs: ReInit failed", "error", err, "file", newCfg.File)
+		}
+	} else {
+		// 仅轮转参数：热加载现有 logger
+		if err := logging.Reconfigure(newCfg); err != nil {
+			slog.Warn("logs: reconfigure failed", "error", err)
+		}
 	}
 
 	// 返回更新后配置
