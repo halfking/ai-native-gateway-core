@@ -175,13 +175,13 @@ function fmtTs(s?: string): string {
 
 function fmtTimeAgo(s?: string): string {
   if (!s) return '—'
-  const t = new Date(s).getTime()
-  if (Number.isNaN(t)) return '—'
-  const diff = Math.floor((Date.now() - t) / 1000)
-  if (diff < 60) return `${diff}秒前`
-  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`
-  return `${Math.floor(diff / 86400)}天前`
+  const ms = new Date(s).getTime()
+  if (Number.isNaN(ms)) return '—'
+  const diff = Math.floor((Date.now() - ms) / 1000)
+  if (diff < 60) return t('agentRegistryView.time.secondsAgo', { n: diff })
+  if (diff < 3600) return t('agentRegistryView.time.minutesAgo', { n: Math.floor(diff / 60) })
+  if (diff < 86400) return t('agentRegistryView.time.hoursAgo', { n: Math.floor(diff / 3600) })
+  return t('agentRegistryView.time.daysAgo', { n: Math.floor(diff / 86400) })
 }
 
 function ellipsize(s: string | null | undefined, max = 36): string {
@@ -301,77 +301,77 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <h2 style="margin:0">Agent Registry</h2>
+      <h2 style="margin:0">{{ t('agentRegistryView.pageTitle') }}</h2>
       <div style="display:flex;gap:8px;align-items:center">
         <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;user-select:none">
           <input type="checkbox" :checked="autoRefresh" @change="onAutoRefreshToggle(($event.target as HTMLInputElement).checked)" style="cursor:pointer" />
-          <span>自动刷新</span>
+          <span>{{ t('agentRegistryView.autoRefresh') }}</span>
         </label>
-        <button class="btn btn-primary btn-sm" :disabled="loading" @click="resetPageAndLoad">刷新</button>
+        <button class="btn btn-primary btn-sm" :disabled="loading" @click="resetPageAndLoad">{{ t('agentRegistryView.refresh') }}</button>
       </div>
     </div>
 
     <div class="compact-filter-bar">
-      <select v-model="kindFilter" class="cf-select cf-kind" title="类型" @change="resetPageAndLoad">
+      <select v-model="kindFilter" class="cf-select cf-kind" :title="t('agentRegistryView.filter.kindTitle')" @change="resetPageAndLoad">
         <option v-for="opt in KIND_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
       </select>
       <select
         v-if="canFilterByTenant"
         v-model="tenantFilter"
         class="cf-select cf-tenant"
-        title="租户"
+        :title="t('agentRegistryView.filter.tenantTitle')"
         @change="resetPageAndLoad"
       >
-        <option value="">默认租户</option>
+        <option value="">{{ t('agentRegistryView.filter.defaultTenant') }}</option>
         <option value="default">default</option>
       </select>
       <input
         v-model="search"
         type="text"
         class="cf-input cf-grow"
-        placeholder="按名称 / owner / team / tenant_id 搜索…"
+        :placeholder="t('agentRegistryView.filter.placeholder')"
         @keyup.enter="resetPageAndLoad"
       />
-      <button class="btn btn-ghost btn-sm" @click="clearFilters">清除</button>
-      <button class="btn btn-primary btn-sm" @click="resetPageAndLoad">查询</button>
-      <span class="cf-meta">共 {{ total }} 个</span>
+      <button class="btn btn-ghost btn-sm" @click="clearFilters">{{ t('agentRegistryView.filter.clear') }}</button>
+      <button class="btn btn-primary btn-sm" @click="resetPageAndLoad">{{ t('agentRegistryView.filter.query') }}</button>
+      <span class="cf-meta">{{ t('agentRegistryView.filter.totalCount', { n: total }) }}</span>
     </div>
 
     <!-- Phase 6: stats overview card -->
     <div v-if="stats || statsError" class="stats-grid">
       <div v-if="stats" class="stats-row">
         <div class="stat-card">
-          <div class="stat-label">总数</div>
+          <div class="stat-label">{{ t('agentRegistryView.stats.total') }}</div>
           <div class="stat-value">{{ stats.total }}</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label">LLM 端点</div>
+          <div class="stat-label">{{ t('agentRegistryView.stats.llm') }}</div>
           <div class="stat-value">{{ stats.by_kind['llm_endpoint'] ?? 0 }}</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label">MCP 服务</div>
+          <div class="stat-label">{{ t('agentRegistryView.stats.mcp') }}</div>
           <div class="stat-value">{{ stats.by_kind['mcp_server'] ?? 0 }}</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label">健康</div>
+          <div class="stat-label">{{ t('agentRegistryView.stats.healthy') }}</div>
           <div class="stat-value stat-healthy">{{ stats.by_health['healthy'] ?? 0 }}</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label">降级/下线</div>
+          <div class="stat-label">{{ t('agentRegistryView.stats.degradedOrDown') }}</div>
           <div class="stat-value stat-down">{{ (stats.by_health['degraded'] ?? 0) + (stats.by_health['down'] ?? 0) }}</div>
         </div>
       </div>
-      <p v-else-if="statsError" style="color:var(--danger);font-size:12px">统计加载失败: {{ statsError }}</p>
+      <p v-else-if="statsError" style="color:var(--danger);font-size:12px">{{ t('agentRegistryView.stats.loadError', { err: statsError }) }}</p>
     </div>
 
     <p v-if="error" style="color:var(--danger);margin-bottom:12px">{{ error }}</p>
 
     <div v-if="!loading && total > 0" class="pagination-bar">
       <div class="pagination-info">
-        <span>共 {{ total }} 个</span>
-        <span v-if="!search.trim()">· 第 {{ page }} / {{ totalPages }} 页</span>
+        <span>{{ t('agentRegistryView.filter.totalCount', { n: total }) }}</span>
+        <span v-if="!search.trim()">{{ t('agentRegistryView.pager.pageInfo', { page, total: totalPages }) }}</span>
         <span class="pagination-divider">·</span>
-        <span class="page-size-label">每页</span>
+        <span class="page-size-label">{{ t('agentRegistryView.pager.perPage') }}</span>
         <select v-model.number="pageSize" :disabled="!!search.trim()" @change="resetPageAndLoad" class="page-size-select">
           <option :value="20">20</option>
           <option :value="50">50</option>
@@ -380,8 +380,8 @@ onBeforeUnmount(() => {
         </select>
       </div>
       <div class="pagination-controls">
-        <button class="btn btn-ghost btn-sm" :disabled="page <= 1 || !!search.trim()" @click="changePage(-1)">上一页</button>
-        <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages || !!search.trim()" @click="changePage(1)">下一页</button>
+        <button class="btn btn-ghost btn-sm" :disabled="page <= 1 || !!search.trim()" @click="changePage(-1)">{{ t('agentRegistryView.pager.prev') }}</button>
+        <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages || !!search.trim()" @click="changePage(1)">{{ t('agentRegistryView.pager.next') }}</button>
       </div>
     </div>
 
@@ -389,20 +389,20 @@ onBeforeUnmount(() => {
       <table class="data-table agent-table" style="width:100%;font-size:12px">
         <thead>
           <tr>
-            <th class="col-id">ID</th>
-            <th class="col-kind">类型</th>
-            <th class="col-name">名称</th>
-            <th class="col-health">健康</th>
-            <th class="col-version">版本</th>
-            <th class="col-tenant">租户</th>
-            <th class="col-owner">Owner</th>
-            <th class="col-seen">最近活跃</th>
-            <th class="col-actions">操作</th>
+            <th class="col-id">{{ t('agentRegistryView.table.id') }}</th>
+            <th class="col-kind">{{ t('agentRegistryView.table.kind') }}</th>
+            <th class="col-name">{{ t('agentRegistryView.table.name') }}</th>
+            <th class="col-health">{{ t('agentRegistryView.table.health') }}</th>
+            <th class="col-version">{{ t('agentRegistryView.table.version') }}</th>
+            <th class="col-tenant">{{ t('agentRegistryView.table.tenant') }}</th>
+            <th class="col-owner">{{ t('agentRegistryView.table.owner') }}</th>
+            <th class="col-seen">{{ t('agentRegistryView.table.lastSeen') }}</th>
+            <th class="col-actions">{{ t('agentRegistryView.table.actions') }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td :colspan="9">加载中…</td></tr>
-          <tr v-else-if="!agents.length"><td :colspan="9">无记录</td></tr>
+          <tr v-if="loading"><td :colspan="9">{{ t('agentRegistryView.loading') }}</td></tr>
+          <tr v-else-if="!agents.length"><td :colspan="9">{{ t('agentRegistryView.empty.noAgents') }}</td></tr>
           <tr
             v-for="a in agents"
             :key="a.kind + ':' + a.ref_id"
@@ -441,9 +441,9 @@ onBeforeUnmount(() => {
               <div class="cell-line2 muted">{{ fmtTs(a.last_seen_at) }}</div>
             </td>
             <td class="col-actions" @click.stop>
-              <button class="btn btn-ghost btn-sm" @click="showDetail(a)">详情</button>
-              <button class="btn btn-ghost btn-sm" @click="openLinkDialog(a)">关联</button>
-              <button class="btn btn-ghost btn-sm" @click="openNeighborsDialog(a)">拓扑</button>
+              <button class="btn btn-ghost btn-sm" @click="showDetail(a)">{{ t('agentRegistryView.table.actions') }}</button>
+              <button class="btn btn-ghost btn-sm" @click="openLinkDialog(a)">{{ t('agentRegistryView.detail.addRelation') }}</button>
+              <button class="btn btn-ghost btn-sm" @click="openNeighborsDialog(a)">{{ t('agentRegistryView.detail.showTopology') }}</button>
             </td>
           </tr>
         </tbody>
@@ -452,12 +452,12 @@ onBeforeUnmount(() => {
 
     <div v-if="!loading && total > 0" class="pagination-bar">
       <div class="pagination-info">
-        <span>共 {{ total }} 个</span>
-        <span v-if="!search.trim()">· 第 {{ page }} / {{ totalPages }} 页</span>
+        <span>{{ t('agentRegistryView.filter.totalCount', { n: total }) }}</span>
+        <span v-if="!search.trim()">{{ t('agentRegistryView.pager.pageInfo', { page, total: totalPages }) }}</span>
       </div>
       <div class="pagination-controls">
-        <button class="btn btn-ghost btn-sm" :disabled="page <= 1 || !!search.trim()" @click="changePage(-1)">上一页</button>
-        <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages || !!search.trim()" @click="changePage(1)">下一页</button>
+        <button class="btn btn-ghost btn-sm" :disabled="page <= 1 || !!search.trim()" @click="changePage(-1)">{{ t('agentRegistryView.pager.prev') }}</button>
+        <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages || !!search.trim()" @click="changePage(1)">{{ t('agentRegistryView.pager.next') }}</button>
       </div>
     </div>
 
@@ -465,28 +465,28 @@ onBeforeUnmount(() => {
     <div v-if="showDetailDialog" class="drawer-backdrop" @click="closeDetail">
       <div class="drawer-panel card drawer-panel-wide" @click.stop>
         <div class="drawer-header">
-          <h3 style="margin:0">Agent 详情</h3>
-          <button class="btn btn-sm" @click="closeDetail">关闭</button>
+          <h3 style="margin:0">{{ t('agentRegistryView.detail.title') }}</h3>
+          <button class="btn btn-sm" @click="closeDetail">{{ t('agentRegistryView.detail.close') }}</button>
         </div>
-        <div v-if="detailLoading" style="text-align:center;padding:40px">加载中…</div>
+        <div v-if="detailLoading" style="text-align:center;padding:40px">{{ t('agentRegistryView.loading') }}</div>
         <template v-else-if="detail">
           <div class="drawer-section">
             <h4 style="margin:0 0 8px">{{ detail.name }}</h4>
             <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-bottom:12px">
-              <span><strong>ID:</strong> {{ detail.kind }}:{{ detail.ref_id }}</span>
-              <span><strong>租户:</strong> {{ detail.tenant_id }}</span>
-              <span><strong>Owner:</strong> {{ detail.owner || '—' }}</span>
-              <span><strong>Team:</strong> {{ detail.team || '—' }}</span>
+              <span><strong>{{ t('agentRegistryView.table.id') }}:</strong> {{ detail.kind }}:{{ detail.ref_id }}</span>
+              <span><strong>{{ t('agentRegistryView.detail.tenant') }}:</strong> {{ detail.tenant_id }}</span>
+              <span><strong>{{ t('agentRegistryView.detail.owner') }}:</strong> {{ detail.owner || '—' }}</span>
+              <span><strong>{{ t('agentRegistryView.detail.team') }}:</strong> {{ detail.team || '—' }}</span>
               <span v-if="detail.cost_center"><strong>Cost Center:</strong> {{ detail.cost_center }}</span>
               <span>
-                <strong>健康:</strong>
+                <strong>{{ t('agentRegistryView.detail.health') }}:</strong>
                 <span class="badge" :class="healthBadgeClass(detail.health_state)">{{ healthLabel(detail.health_state) }}</span>
               </span>
-              <span><strong>版本:</strong> {{ detail.version || '—' }}</span>
+              <span><strong>{{ t('agentRegistryView.detail.version') }}:</strong> {{ detail.version || '—' }}</span>
             </div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-bottom:12px">
-              <span><strong>注册时间:</strong> {{ fmtTs(detail.registered_at) }}</span>
-              <span><strong>最近活跃:</strong> {{ fmtTs(detail.last_seen_at) }}</span>
+              <span><strong>{{ t('agentRegistryView.detail.firstSeen') }}:</strong> {{ fmtTs(detail.registered_at) }}</span>
+              <span><strong>{{ t('agentRegistryView.detail.lastSeen') }}:</strong> {{ fmtTs(detail.last_seen_at) }}</span>
             </div>
             <div v-if="detail.tags && Object.keys(detail.tags).length" style="margin-bottom:12px">
               <strong style="font-size:12px">Tags:</strong>
@@ -500,7 +500,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div v-if="detail.metadata && Object.keys(detail.metadata).length">
-              <strong style="font-size:12px">Metadata:</strong>
+              <strong style="font-size:12px">{{ t('agentRegistryView.detail.metadata') }}:</strong>
               <pre class="metadata-block">{{ JSON.stringify(detail.metadata, null, 2) }}</pre>
             </div>
           </div>
@@ -513,34 +513,34 @@ onBeforeUnmount(() => {
     <div v-if="showLinkDialog" class="drawer-backdrop" @click="closeLinkDialog">
       <div class="drawer-panel card drawer-panel-narrow" @click.stop>
         <div class="drawer-header">
-          <h3 style="margin:0">创建 Agent 关联</h3>
-          <button class="btn btn-sm" @click="closeLinkDialog">关闭</button>
+          <h3 style="margin:0">{{ t('agentRegistryView.link.title') }}</h3>
+          <button class="btn btn-sm" @click="closeLinkDialog">{{ t('agentRegistryView.link.cancel') }}</button>
         </div>
         <div class="drawer-section" v-if="linkSource">
           <p style="margin:0 0 12px;font-size:12px;color:var(--muted)">
-            源 Agent: <strong>{{ linkSource.name }}</strong> ({{ linkSource.kind }}:{{ linkSource.ref_id }})
+            {{ t('agentRegistryView.link.sourceAgent') }}: <strong>{{ linkSource.name }}</strong> ({{ linkSource.kind }}:{{ linkSource.ref_id }})
           </p>
           <div style="margin-bottom:12px">
-            <label style="display:block;font-size:12px;margin-bottom:4px">关联类型</label>
+            <label style="display:block;font-size:12px;margin-bottom:4px">{{ t('agentRegistryView.link.relationType') }}</label>
             <select v-model="linkType" class="cf-select" style="width:100%">
               <option v-for="opt in RELATION_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
             </select>
           </div>
           <div style="margin-bottom:12px">
-            <label style="display:block;font-size:12px;margin-bottom:4px">目标 Agent ID</label>
+            <label style="display:block;font-size:12px;margin-bottom:4px">{{ t('agentRegistryView.link.targetId') }}</label>
             <input
               v-model.number="linkTargetId"
               type="number"
               class="cf-input"
-              placeholder="目标 ref_id"
+              :placeholder="t('agentRegistryView.link.targetIdPlaceholder')"
               min="1"
             />
           </div>
           <p v-if="linkError" style="color:var(--danger);font-size:12px;margin:0 0 8px">{{ linkError }}</p>
           <div style="display:flex;gap:8px;justify-content:flex-end">
-            <button class="btn btn-ghost btn-sm" @click="closeLinkDialog">取消</button>
+            <button class="btn btn-ghost btn-sm" @click="closeLinkDialog">{{ t('agentRegistryView.link.cancel') }}</button>
             <button class="btn btn-primary btn-sm" :disabled="linkSubmitting" @click="submitLink">
-              {{ linkSubmitting ? '创建中…' : t('agentRegistryView.submit') }}
+              {{ linkSubmitting ? t('agentRegistryView.link.creating') : t('agentRegistryView.link.submit') }}
             </button>
           </div>
         </div>
@@ -551,15 +551,15 @@ onBeforeUnmount(() => {
     <div v-if="showNeighborsDialog" class="drawer-backdrop" @click="showNeighborsDialog = false">
       <div class="drawer-panel card drawer-panel-wide" @click.stop>
         <div class="drawer-header">
-          <h3>拓扑 — {{ neighborsSeed?.name }} (#{{ neighborsSeed?.ref_id }})</h3>
-          <button class="btn btn-sm" @click="showNeighborsDialog = false">关闭</button>
+          <h3>{{ t('agentRegistryView.topology.title', { depth: neighbors?.depth }) }} — {{ neighborsSeed?.name }} (#{{ neighborsSeed?.ref_id }})</h3>
+          <button class="btn btn-sm" @click="showNeighborsDialog = false">{{ t('agentRegistryView.detail.close') }}</button>
         </div>
-        <div v-if="neighborsLoading" class="loading-state">加载中…</div>
+        <div v-if="neighborsLoading" class="loading-state">{{ t('agentRegistryView.loading') }}</div>
         <p v-else-if="neighborsError" style="color:var(--danger)">{{ neighborsError }}</p>
         <div v-else-if="neighbors" class="neighbors-body">
-          <p class="neighbors-meta">深度 {{ neighbors.depth }} · 邻居 {{ neighbors.count }} 个</p>
+          <p class="neighbors-meta">{{ t('agentRegistryView.topology.depth') }} {{ neighbors.depth }} · {{ t('agentRegistryView.topology.totalNodes', { n: neighbors.count }) }}</p>
           <div class="neighbors-section">
-            <h4>下游 (downstream) — {{ neighbors.downstream.length }}</h4>
+            <h4>{{ t('agentRegistryView.topology.downstream', { n: neighbors.downstream.length }) }}</h4>
             <ul v-if="neighbors.downstream.length" class="neighbor-list">
               <li v-for="n in neighbors.downstream" :key="`d-${n.kind}-${n.ref_id}`">
                 <span class="kind-tag kind-{{ n.kind }}">{{ n.kind }}</span>
@@ -567,10 +567,10 @@ onBeforeUnmount(() => {
                 <span class="ref-id">#{{ n.ref_id }}</span>
               </li>
             </ul>
-            <p v-else class="empty-note">无下游邻居</p>
+            <p v-else class="empty-note">{{ t('agentRegistryView.detail.noRelations') }}</p>
           </div>
           <div class="neighbors-section">
-            <h4>上游 (upstream) — {{ neighbors.upstream.length }}</h4>
+            <h4>{{ t('agentRegistryView.topology.upstream', { n: neighbors.upstream.length }) }}</h4>
             <ul v-if="neighbors.upstream.length" class="neighbor-list">
               <li v-for="n in neighbors.upstream" :key="`u-${n.kind}-${n.ref_id}`">
                 <span class="kind-tag kind-{{ n.kind }}">{{ n.kind }}</span>
@@ -578,7 +578,7 @@ onBeforeUnmount(() => {
                 <span class="ref-id">#{{ n.ref_id }}</span>
               </li>
             </ul>
-            <p v-else class="empty-note">无上游邻居</p>
+            <p v-else class="empty-note">{{ t('agentRegistryView.detail.noRelations') }}</p>
           </div>
         </div>
       </div>

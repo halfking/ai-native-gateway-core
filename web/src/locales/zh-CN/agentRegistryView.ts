@@ -101,12 +101,14 @@ export default {
 
   link: {
     title: '添加关联',
+    sourceAgent: '源 Agent',
     targetId: '目标 Agent ID',
     targetIdPlaceholder: '输入目标 Agent 的 ref_id',
     relationType: '关联类型',
     cancel: '取消',
     submit: '创建关联',
     submitting: '提交中…',
+    creating: '创建中…',
   },
 
   topology: {
