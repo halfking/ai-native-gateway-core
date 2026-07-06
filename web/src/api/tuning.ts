@@ -677,9 +677,15 @@ export interface LogConfig {
   compress: boolean
   archive_days: number
   delete_days: number
+  // 2026-07-07: 文件日志控制（DB 覆盖 + env 回退）
+  file_path: string             // 解析后生效的日志文件路径（DB 覆盖 > env）
+  file_path_override: string    // DB 覆盖值（空=未设置）
+  file_path_env: string         // 环境变量 LLM_GATEWAY_LOG_FILE
+  enabled: boolean              // 文件日志是否启用
+  enabled_source: string        // "db" | "env"
+  // 运行时状态
   log_file: string
   log_dir: string
-  enabled: boolean
   hot_reloadable: boolean
   config_source: string
 }
@@ -691,6 +697,9 @@ export interface LogConfigUpdate {
   compress?: boolean
   archive_days?: number
   archive_delete_days?: number
+  // 2026-07-07: 文件日志控制（修改后通过 ReInit 热加载）
+  file_path?: string  // 设置后启用文件日志；空串=清空 DB 覆盖
+  enabled?: boolean   // 显式启用/禁用
 }
 
 export interface LogFile {
