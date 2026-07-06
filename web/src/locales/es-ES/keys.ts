@@ -332,4 +332,5 @@ export default {
   tenantTitleFixed: "[TODO: keys.tenantTitleFixed]",
   tenantTitleModifiable: "[TODO: keys.tenantTitleModifiable]",
   unlimited: "[TODO: keys.unlimited]",
+    close: "[TODO: keys.common.close]",
 }

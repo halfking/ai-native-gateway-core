@@ -307,17 +307,16 @@ export default {
     loadFailed: '加载失败',
   },
   common: {
-    // [TODO] add nested keys
-  },
     button: {
-      // [TODO] add nested keys
+      cancel: '取消',
+      save: '保存',
     },
-      cancel: "[TODO: providers.common.button.cancel]",
-      save: "[TODO: providers.common.button.save]",
     table: {
-      // [TODO] add nested keys
+      actions: '操作',
     },
-      actions: "[TODO: providers.common.table.actions]",
-    manualDisabledBadge: "[TODO: providers.list.manualDisabledBadge]",
-    manualDisabledTooltip: "[TODO: providers.list.manualDisabledTooltip]",
+  },
+  list: {
+    manualDisabledBadge: '已禁用',
+    manualDisabledTooltip: '此供应商已被管理员手动禁用，所有路由将跳过',
+  },
 }

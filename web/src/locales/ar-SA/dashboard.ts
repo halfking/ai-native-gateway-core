@@ -125,8 +125,9 @@ export default {
       error: 'خطأ',
       time: 'الوقت',
     },
-    connecting: "[TODO: dashboard.liveStream.connecting]",
-    reconnecting: "[TODO: dashboard.liveStream.reconnecting]",
-    unsupported: "[TODO: dashboard.liveStream.unsupported]",
+    connecting: '...جارٍ الاتصال',
+    reconnecting: '...جارٍ إعادة الاتصال',
+    unsupported: 'البث المباشر غير مدعوم في هذا المتصفح',
+    empty: 'لا توجد طلبات مباشرة',
   },
 }

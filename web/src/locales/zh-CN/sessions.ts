@@ -22,6 +22,20 @@ export default {
     next: '下一页',
     paginationPage: '{current} / {total}',
   },
+  userProfile: {
+    title: '用户画像',
+    ownerUser: '用户标识',
+    sessionCount: '会话数',
+    requestCount: '请求数',
+    totalCost: '总成本',
+    avgCostPerSession: '平均成本',
+    endUserCount: '终端用户数',
+    firstSeenAt: '首次活跃',
+    lastSeenAt: '最近活跃',
+    actionDetail: '详情',
+    empty: '暂无用户画像数据',
+  },
+  userProfileSearchPlaceholder: '搜索用户标识...',
   compare: {
     title: '会话对比',
     subtitleWithId: '会话: {id} · {model}',
@@ -297,4 +311,17 @@ export default {
     strategyMemora: 'Memora注入',
     compressionTip: '完整的压缩策略配置请前往"压缩管理"页面',
   },
+  userProfile: {
+    // [TODO] add nested keys
+  },
+    title: "[TODO: sessions.userProfile.title]",
+  avgHealth: "[TODO: sessions.avgHealth]",
+  costTrend: "[TODO: sessions.costTrend]",
+  recentSessions: "[TODO: sessions.recentSessions]",
+  successRate: "[TODO: sessions.successRate]",
+  topEndUsers: "[TODO: sessions.topEndUsers]",
+  topTasks: "[TODO: sessions.topTasks]",
+  totalCost: "[TODO: sessions.totalCost]",
+  totalSessions: "[TODO: sessions.totalSessions]",
+    detailTitle: "[TODO: sessions.userProfile.detailTitle]",
 }

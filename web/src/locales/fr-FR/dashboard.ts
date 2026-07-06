@@ -128,8 +128,9 @@ export default {
       error: 'Erreur',
       time: 'Heure',
     },
-    connecting: "[TODO: dashboard.liveStream.connecting]",
-    reconnecting: "[TODO: dashboard.liveStream.reconnecting]",
-    unsupported: "[TODO: dashboard.liveStream.unsupported]",
+    connecting: 'Connexion…',
+    reconnecting: 'Reconnexion…',
+    unsupported: 'Le flux en direct n\'est pas pris en charge dans ce navigateur',
+    empty: 'Aucune requête en temps réel',
   },
 }

@@ -23,6 +23,20 @@ export default {
     next: 'Suivant',
     paginationPage: '{current} / {total}',
   },
+  userProfile: {
+    title: 'Profils utilisateurs',
+    ownerUser: 'Identifiant utilisateur',
+    sessionCount: 'Sessions',
+    requestCount: 'Requêtes',
+    totalCost: 'Coût total',
+    avgCostPerSession: 'Coût moyen / session',
+    endUserCount: 'Utilisateurs finaux',
+    firstSeenAt: 'Première activité',
+    lastSeenAt: 'Dernière activité',
+    actionDetail: 'Détail',
+    empty: 'Aucun profil utilisateur',
+  },
+  userProfileSearchPlaceholder: 'Rechercher un identifiant…',
   compare: {
     title: 'Comparaison de sessions',
     subtitleWithId: 'Session : {id} · {model}',
@@ -298,4 +312,17 @@ Vous pouvez confirmer le résultat précédent et continuer, ou commencer une to
     strategyMemora: 'Injection Memora',
     compressionTip: 'Pour la configuration complète de la stratégie de compression, veuillez consulter la page "Gestion de la compression"',
   },
+  userProfile: {
+    // [TODO] add nested keys
+  },
+    title: "[TODO: sessions.userProfile.title]",
+  avgHealth: "[TODO: sessions.avgHealth]",
+  costTrend: "[TODO: sessions.costTrend]",
+  recentSessions: "[TODO: sessions.recentSessions]",
+  successRate: "[TODO: sessions.successRate]",
+  topEndUsers: "[TODO: sessions.topEndUsers]",
+  topTasks: "[TODO: sessions.topTasks]",
+  totalCost: "[TODO: sessions.totalCost]",
+  totalSessions: "[TODO: sessions.totalSessions]",
+    detailTitle: "[TODO: sessions.userProfile.detailTitle]",
 }
