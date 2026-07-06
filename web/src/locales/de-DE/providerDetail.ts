@@ -521,4 +521,6 @@ export default {
     loadFailed: 'Laden fehlgeschlagen',
     triggerFailed: 'Auslösen fehlgeschlagen',
   },
+    displayNameHint: "[TODO: providerDetail.settings.displayNameHint]",
+    saveSuccess: "[TODO: providerDetail.settings.saveSuccess]",
 }

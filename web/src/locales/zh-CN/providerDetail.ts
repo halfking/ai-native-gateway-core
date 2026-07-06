@@ -526,4 +526,6 @@ export default {
     loadFailed: '加载失败',
     triggerFailed: '触发失败',
   },
+    displayNameHint: "[TODO: providerDetail.settings.displayNameHint]",
+    saveSuccess: "[TODO: providerDetail.settings.saveSuccess]",
 }
