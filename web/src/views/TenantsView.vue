@@ -148,6 +148,8 @@ onMounted(load)
   border-radius: 4px;
   color: var(--text);
   font-size: 13px;
+  width: auto;
+  max-width: 200px;
 }
 .tenants-table .tenant-row {
   cursor: pointer;
