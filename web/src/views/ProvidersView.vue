@@ -1038,7 +1038,7 @@ onUnmounted(() => {
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
           <button class="btn btn-ghost" @click="showEdit = false">{{ pm('common.button.cancel') }}</button>
           <button class="btn btn-primary" @click="submitEdit" :disabled="editSaving">
-            {{ editSaving ? pm('keys.common.loading') : pm('common.button.save') }}
+            {{ editSaving ? t('keys.common.loading') : pm('common.button.save') }}
           </button>
         </div>
       </div>
@@ -1061,11 +1061,11 @@ onUnmounted(() => {
               :disabled="credentialLoading[manageProvider.id]"
             >{{ pm('credential.refresh') }}</button>
             <button class="btn btn-primary btn-sm" @click="openCred(manageProvider)">{{ pm('credential.addBtn') }}</button>
-            <button class="btn btn-ghost btn-sm" @click="closeManageCred">{{ pm('keys.common.close') }}</button>
+            <button class="btn btn-ghost btn-sm" @click="closeManageCred">{{ t('keys.common.close') }}</button>
           </div>
         </div>
         <div v-if="credentialErrors[manageProvider.id]" class="alert alert-danger">{{ credentialErrors[manageProvider.id] }}</div>
-        <div v-if="credentialLoading[manageProvider.id]" class="empty">{{ pm('keys.common.loading') }}</div>
+        <div v-if="credentialLoading[manageProvider.id]" class="empty">{{ t('keys.common.loading') }}</div>
         <div v-else class="credential-scroll">
           <table class="credential-table">
             <thead>
@@ -1135,7 +1135,7 @@ onUnmounted(() => {
                 </td>
                 <td>
                   <button class="btn btn-primary btn-sm" @click="saveCredential(manageProvider, c)" :disabled="credentialSaving[c.id]">
-                    {{ credentialSaving[c.id] ? pm('keys.common.loading') : pm('common.button.save') }}
+                    {{ credentialSaving[c.id] ? t('keys.common.loading') : pm('common.button.save') }}
                   </button>
                   <button
                     class="btn btn-ghost btn-sm"
@@ -1261,7 +1261,7 @@ onUnmounted(() => {
           </table>
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn btn-primary" @click="closeDiagnose">{{ pm('keys.common.close') }}</button>
+          <button class="btn btn-primary" @click="closeDiagnose">{{ t('keys.common.close') }}</button>
         </div>
       </div>
     </div>
