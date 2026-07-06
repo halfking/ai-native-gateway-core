@@ -123,8 +123,9 @@ export default {
       error: '错误',
       time: '时间',
     },
-    connecting: "[TODO: dashboard.liveStream.connecting]",
-    reconnecting: "[TODO: dashboard.liveStream.reconnecting]",
-    unsupported: "[TODO: dashboard.liveStream.unsupported]",
+    empty: '暂无实时请求',
+    connecting: '连接中…',
+    reconnecting: '重新连接中…',
+    unsupported: '当前浏览器不支持实时流',
   },
 }

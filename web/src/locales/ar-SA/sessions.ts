@@ -23,6 +23,20 @@ export default {
     next: 'التالي',
     paginationPage: '{current} / {total}',
   },
+  userProfile: {
+    title: 'ملفات المستخدمين',
+    ownerUser: 'معرف المستخدم',
+    sessionCount: 'الجلسات',
+    requestCount: 'الطلبات',
+    totalCost: 'التكلفة الإجمالية',
+    avgCostPerSession: 'متوسط التكلفة / الجلسة',
+    endUserCount: 'المستخدمون النهائيون',
+    firstSeenAt: 'أول نشاط',
+    lastSeenAt: 'آخر نشاط',
+    actionDetail: 'التفاصيل',
+    empty: 'لا توجد بيانات ملف المستخدم',
+  },
+  userProfileSearchPlaceholder: 'ابحث عن معرف المستخدم...',
   compare: {
     title: 'مقارنة الجلسات',
     subtitleWithId: 'الجلسة: {id} · {model}',
@@ -298,4 +312,17 @@ export default {
     strategyMemora: 'حقن Memora',
     compressionTip: 'للتكوين الكامل لاستراتيجية الضغط، يرجى الانتقال إلى صفحة "إدارة الضغط"',
   },
+  userProfile: {
+    // [TODO] add nested keys
+  },
+    title: "[TODO: sessions.userProfile.title]",
+  avgHealth: "[TODO: sessions.avgHealth]",
+  costTrend: "[TODO: sessions.costTrend]",
+  recentSessions: "[TODO: sessions.recentSessions]",
+  successRate: "[TODO: sessions.successRate]",
+  topEndUsers: "[TODO: sessions.topEndUsers]",
+  topTasks: "[TODO: sessions.topTasks]",
+  totalCost: "[TODO: sessions.totalCost]",
+  totalSessions: "[TODO: sessions.totalSessions]",
+    detailTitle: "[TODO: sessions.userProfile.detailTitle]",
 }

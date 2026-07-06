@@ -108,4 +108,11 @@ export default {
   feeCostCell: {
     costLabel: 'コスト',
   },
+  back: '戻る',
+  days: '日',
+  hours: '時間',
+  minutes: '分',
+  save: '保存',
+  saving: '保存中…',
+  seconds: '秒',
 }

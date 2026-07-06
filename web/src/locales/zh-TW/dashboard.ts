@@ -125,8 +125,9 @@ export default {
       error: '錯誤',
       time: '時間',
     },
-    connecting: "[TODO: dashboard.liveStream.connecting]",
-    reconnecting: "[TODO: dashboard.liveStream.reconnecting]",
-    unsupported: "[TODO: dashboard.liveStream.unsupported]",
+    connecting: '連線中…',
+    reconnecting: '重新連線中…',
+    unsupported: '此瀏覽器不支援即時串流',
+    empty: '暫無即時請求',
   },
 }

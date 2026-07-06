@@ -124,8 +124,9 @@ export default {
       error: 'Error',
       time: 'Hora',
     },
-    connecting: "[TODO: dashboard.liveStream.connecting]",
-    reconnecting: "[TODO: dashboard.liveStream.reconnecting]",
-    unsupported: "[TODO: dashboard.liveStream.unsupported]",
+    connecting: 'Conectando…',
+    reconnecting: 'Reconectando…',
+    unsupported: 'El flujo en vivo no es compatible con este navegador',
+    empty: 'Sin solicitudes en vivo',
   },
 }
