@@ -77,6 +77,13 @@
         </el-col>
       </el-row>
 
+      <!-- 健康面板 -->
+      <HealthPanel 
+        :gw-session-id="gwSessionId" 
+        @jump-to="handleJumpTo"
+        ref="healthPanelRef"
+      />
+
       <!-- 会话总结 -->
       <el-card v-if="panorama.summary.summary" shadow="never" style="margin-top: 16px">
         <template #header>会话总结</template>
@@ -87,7 +94,7 @@
       </el-card>
 
       <!-- 逐步摘要时间线 -->
-      <el-card shadow="never" style="margin-top: 16px">
+      <el-card id="timeline" shadow="never" style="margin-top: 16px">
         <template #header>逐步摘要（{{ panorama.step_summaries.length }} 步）</template>
         <el-timeline>
           <el-timeline-item
@@ -106,8 +113,27 @@
         <el-empty v-if="panorama.step_summaries.length === 0" description="暂无逐步摘要" />
       </el-card>
 
+      <!-- 模型切换可视化 -->
+      <el-card id="model-switches" shadow="never" style="margin-top: 16px" v-if="panorama.analysis?.model_switches?.length">
+        <template #header>模型切换历史（{{ panorama.analysis.model_switches.length }} 次）</template>
+        <el-timeline>
+          <el-timeline-item
+            v-for="(sw, idx) in panorama.analysis.model_switches"
+            :key="idx"
+            :timestamp="sw.reason || '切换'"
+            placement="top"
+          >
+            <div>
+              <el-tag type="info" size="small">{{ sw.from_model }}</el-tag>
+              <el-icon style="margin: 0 8px"><Right /></el-icon>
+              <el-tag type="primary" size="small">{{ sw.to_model }}</el-tag>
+            </div>
+          </el-timeline-item>
+        </el-timeline>
+      </el-card>
+
       <!-- 优化建议 -->
-      <el-card shadow="never" style="margin-top: 16px">
+      <el-card id="suggestions" shadow="never" style="margin-top: 16px">
         <template #header>
           <span>优化建议（{{ panorama.suggestions.length }}）</span>
         </template>
@@ -167,11 +193,12 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Loading } from '@element-plus/icons-vue'
+import { Loading, Right } from '@element-plus/icons-vue'
 import {
   getSessionPanorama, addSessionTag, applySuggestion,
 } from '../api/sessionAnalytics'
 import type { SessionPanorama } from '../api/sessionAnalytics'
+import HealthPanel from '../components/session/HealthPanel.vue'
 
 const route = useRoute()
 const gwSessionId = computed(() => route.params.id as string)
@@ -180,6 +207,7 @@ const panorama = ref<SessionPanorama | null>(null)
 const loading = ref(true)
 const tagDialogVisible = ref(false)
 const newTag = ref({ key: '', value: '' })
+const healthPanelRef = ref<InstanceType<typeof HealthPanel> | null>(null)
 
 const successRate = computed(() => {
   if (!panorama.value || panorama.value.summary.request_count === 0) return 0
@@ -247,6 +275,19 @@ const severityLabel = (s: string) => {
   return m[s] || s
 }
 
+const handleJumpTo = (target: string) => {
+  // 处理健康面板的诊断导航跳转
+  const element = document.querySelector(target)
+  if (element) {
+    element.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    // 高亮目标元素
+    element.classList.add('highlight-pulse')
+    setTimeout(() => {
+      element.classList.remove('highlight-pulse')
+    }, 2000)
+  }
+}
+
 onMounted(loadPanorama)
 </script>
 
@@ -266,4 +307,14 @@ onMounted(loadPanorama)
 .step-req { color: var(--el-color-primary); margin: 4px 0; }
 .step-res { color: var(--el-color-success); margin: 4px 0; }
 .step-tools { color: var(--el-color-warning); margin: 4px 0; font-size: 13px; }
+
+/* 高亮动画 */
+@keyframes highlight-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--el-color-primary-rgb), 0); }
+  50% { box-shadow: 0 0 0 8px rgba(var(--el-color-primary-rgb), 0.3); }
+}
+
+:deep(.highlight-pulse) {
+  animation: highlight-pulse 1s ease-in-out 2;
+}
 </style>
