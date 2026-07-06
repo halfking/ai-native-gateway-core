@@ -8,6 +8,46 @@ import type { UserInfo } from './_core'
 // /api/admin/... resources below). The "tenant" surface also includes
 // the static status enums / label maps / color maps used by the UI.
 
+// ── Dashboard Session Stats (2026-07-07) ──
+
+export interface SessionOverviewResponse {
+  total_sessions: number
+  active_sessions: number
+  health_distribution: {
+    a: number
+    b: number
+    c: number
+    d: number
+    f: number
+  }
+  cost_trend: Array<{
+    date: string
+    cost: number
+    sessions: number
+  }>
+  top_clients: Array<{
+    client_id: string
+    session_count: number
+    total_cost: number
+    avg_health?: number
+  }>
+  top_tasks: Array<{
+    task_id: string
+    session_count: number
+    total_cost: number
+    avg_health?: number
+  }>
+  last_updated: string
+}
+
+export function getSessionOverview(days = 7, tenantId?: string) {
+  const params = new URLSearchParams({ days: String(days) })
+  if (tenantId) params.set('tenant_id', tenantId)
+  return req<SessionOverviewResponse>('GET', `/api/admin/dashboard/session-overview?${params}`)
+}
+
+// ── User Management ──
+
 export interface UserListItem {
   id: number
   tenant_id: string
