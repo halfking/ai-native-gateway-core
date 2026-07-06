@@ -17,7 +17,7 @@
 |------|---------|-----------|-----------|------|------|
 | request_logs | ✅ 25/25 | ✅ 通过 | ✅ 100% | ✅ 正常 | 无 |
 | usage_ledger | ✅ 10/10 | ✅ 通过 | ✅ 100% | ✅ 正常 | 无 |
-| credit_ledger | ⚠️ 0/5 | - | ✅ 完整 | ⚠️ 特殊 | 约束限制 |
+| credit_ledger | ⚠️ 裸 SQL 0/5 | ✅ 已补服务层集成测试入口 | ✅ 完整 | ⚠️ 特殊 | 需真实 PG 环境执行 |
 | tool_usage_stats | ✅ 5/5 | - | ✅ 一致 | ✅ 正常 | 无 |
 | request_wal | ✅ 5/5 | ✅ 通过 | - | ✅ 正常 | 无 |
 | routing_decision_log | ✅ 5/5 | - | - | ✅ 正常 | 无 |
@@ -26,7 +26,7 @@
 
 **总测试**: 8 个表  
 **通过**: 8 个表（其中 1 个经修复后通过）  
-**发现问题**: 2 个表（1 个已修复，1 个需按业务层方式验证）
+**发现问题**: 2 个表（1 个已修复，1 个已补业务层验证入口待执行）
 
 ---
 
@@ -105,9 +105,15 @@ credit_ledger 表有**业务约束**导致直接插入失败。这不是bug，�
    - tenant_id 可能需要外键存在
 
 2. **实际使用方式**:
-   - 通过 `maas/service.go` 的 `AppendLedger()` 方法插入
+   - 通过 `maas/service.go` 的 `GrantCredits` / `AdjustCredits` 等服务方法插入
    - 该方法会自动计算 balance_after
    - 不应该直接 INSERT
+
+3. **已补充验证入口**:
+   - 新增 integration 测试：`tests/integration/credit_ledger_service_test.go`
+   - 覆盖 `GrantCredits` / `AdjustCredits`
+   - 验证钱包余额、ledger entry_type / amount / balance_after / pool 一致性
+   - 按现有约定使用 `LLM_GATEWAY_PG_URL`，避免污染默认测试流程
 
 **验证**:
 ```sql
@@ -115,7 +121,7 @@ SELECT COUNT(*) FROM credit_ledger WHERE tenant_id IS NULL OR entry_type IS NULL
 结果: 0 ✅
 ```
 
-**结论**: credit_ledger 的数据完整性正常，插入需要通过业务层 API。
+**结论**: credit_ledger 的数据完整性正常；裸 SQL 不是正确验证方式，现已补齐服务层集成测试入口，需在真实 PG 环境执行确认。
 
 ---
 
@@ -314,13 +320,15 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 
 ### 仍需关注的问题
 
-#### 问题 2: credit_ledger 直接插入失败
+#### 问题 2: credit_ledger 需要业务层验证
 
-**描述**: 测试时直接 INSERT 失败，可能有业务约束
+**描述**: 直接 INSERT 失败属于预期行为，正确验证路径应走 MaaS 服务层。
 
 **影响**: 
-- 测试受限，但实际业务通过 API 插入
-- 不影响生产使用
+- 裸 SQL 测试受限
+- 生产路径本身不受影响
+
+**当前状态**: ✅ 已补服务层集成测试入口，等待带 `LLM_GATEWAY_PG_URL` 的真实环境执行
 
 **建议**: 
 - 文档化正确的插入方式（通过 maas/service.go）
@@ -362,8 +370,8 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 ### P1 - 短期优化
 
 2. **credit_ledger 测试覆盖**
-   - 添加通过 API 插入的测试
-   - 文档化正确使用方式
+   - 在真实 PG 环境执行 `tests/integration/credit_ledger_service_test.go`
+   - 如有需要，再补 HTTP 层 E2E
 
 ### P2 - 长期改进
 
@@ -455,7 +463,7 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 ### 🔧 后续建议
 
 1. **追查 request_logs_bodies 月分区边界或自动建分区逻辑**
-2. **补充 credit_ledger 业务层/API 级测试**
+2. **执行 credit_ledger 已补充的业务层/API 级测试**
 
 ### 📚 交付物
 
@@ -468,4 +476,4 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 ---
 
 **审计完成时间**: 2026-07-06 01:25  
-**下一步**: 补充 credit_ledger 的服务层测试，并检查 bodies 月分区路由根因
+**下一步**: 在带 `LLM_GATEWAY_PG_URL` 的环境执行 credit_ledger 集成测试，并继续检查 bodies 月分区路由根因
