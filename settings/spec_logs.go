@@ -10,6 +10,30 @@ func LogSpecs() []*Spec {
 	return []*Spec{
 		// ── File rotation (internal/logging) ─────────────────────────
 		{
+			Key:             "log.file_path",
+			Type:            TypeString,
+			Scope:           ScopePlatform,
+			Category:        CategoryLogs,
+			Default:         "",
+			Description:     "日志文件路径（覆盖环境变量 LLM_GATEWAY_LOG_FILE）",
+			DescriptionLong: "设置后启用文件日志轮转；目录不存在会自动创建。留空则使用环境变量 LLM_GATEWAY_LOG_FILE，未设置则文件日志关闭。修改后通过 PUT /api/admin/logs/config 热加载生效（无需重启）。",
+			Unit:            "",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
+			Key:             "log.enabled",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryLogs,
+			Default:         false,
+			Description:     "显式启用/禁用文件日志",
+			DescriptionLong: "通过此开关强制覆盖环境变量：设为 true 强制启用文件日志（需配合 log.file_path 或环境变量 LLM_GATEWAY_LOG_FILE），设为 false 强制关闭。默认 false（跟随环境变量）。",
+			Unit:            "",
+			DangerLevel:     Safe,
+			HotReload:       true,
+		},
+		{
 			Key:             "log.max_size_mb",
 			Type:            TypeInt,
 			Scope:           ScopePlatform,
