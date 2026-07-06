@@ -1,3 +1,13 @@
+-- 2026-07-06: SUPERSEDED by migration 354.
+-- This migration references a 'sessions' master table that does not exist
+-- in any branch of the codebase (sessions are tracked via session_summaries +
+-- Redis). The remaining ALTER TABLE / index statements will fail on apply.
+-- Migration 354 handles the actual safe equivalents:
+--   - adds handoff_count + last_handoff_at columns to session_summaries
+--   - creates handoff_logs table (the only NEW artifact this migration intended)
+-- Leave this file in place so historical version numbers stay stable, but
+-- do NOT apply the broken statements below.
+
 BEGIN;
 
 -- Extend sessions table with handoff and goal tracking.
