@@ -254,7 +254,7 @@ func TestHealthScoreErrorRate(t *testing.T) {
 }
 
 // Benchmark tests
-func BenchmarkComputeHealth(b *testing.B) {
+func BenchmarkComputeHealthAPI(b *testing.B) {
 	summary := AnalyticsSessionSummary{
 		GwSessionID:             "gw_bench",
 		RequestCount:            50,

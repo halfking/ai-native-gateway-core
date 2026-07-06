@@ -137,3 +137,95 @@ export function getKeyUsageTrend(keyId: number, period: UsageTrendPeriod = 'day'
   }
   return req<TrendEntry[]>('GET', `/api/usage/${keyId}/trend?${qs.toString()}`)
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Enhanced Usage API (T1.4) — 用量成本增强端点
+// ──────────────────────────────────────────────────────────────────────────
+
+export interface CostTrendEntry {
+  dimension_value: string
+  request_count: number
+  total_cost_usd: number
+  input_cost_usd: number
+  output_cost_usd: number
+  prompt_tokens: number
+  completion_tokens: number
+  avg_latency_ms: number
+  error_rate: number
+  percentage: number
+}
+
+export interface CostTrendResponse {
+  group_by: string
+  date_from: string
+  date_to: string
+  total_cost: number
+  entries: CostTrendEntry[]
+  other_cost: number
+  other_count: number
+}
+
+export interface PeriodStats {
+  period: string
+  total_cost_usd: number
+  total_requests: number
+  total_tokens: number
+  avg_cost_per_req: number
+  unique_models: number
+  unique_sessions: number
+}
+
+export interface DimChange {
+  dimension_value: string
+  current_cost: number
+  previous_cost: number
+  change_pct: number
+}
+
+export interface PeriodCompareResponse {
+  current: PeriodStats
+  previous: PeriodStats
+  change_pct: number
+  change_abs: number
+  trend: 'up' | 'down' | 'flat'
+  significant: boolean
+  by_dimension: Record<string, DimChange[]>
+}
+
+export interface CacheEconomicsResponse {
+  date_from: string
+  date_to: string
+  total_requests: number
+  cache_read_tokens: number
+  prompt_tokens: number
+  cache_hit_ratio: number
+  dollars_saved: number
+  dollars_spent: number
+  effective_cost_ratio: number
+  compressed_requests: number
+  compression_saved: number
+  total_saved: number
+  savings_rate: number
+}
+
+export type CostTrendGroupBy = 'model' | 'provider' | 'intent' | 'work_type' | 'api_key'
+
+export function getCostTrend(groupBy: CostTrendGroupBy = 'model', opts: { date_from?: string; date_to?: string } = {}) {
+  const qs = new URLSearchParams()
+  qs.set('group_by', groupBy)
+  if (opts.date_from) qs.set('date_from', opts.date_from)
+  if (opts.date_to) qs.set('date_to', opts.date_to)
+  return req<CostTrendResponse>('GET', `/api/admin/usage/cost-trend?${qs.toString()}`)
+}
+
+export function getPeriodCompare(current: string, previous: string) {
+  return req<PeriodCompareResponse>('GET', `/api/admin/usage/period-compare?current=${current}&previous=${previous}`)
+}
+
+export function getCacheEconomics(opts: { date_from?: string; date_to?: string } = {}) {
+  const qs = new URLSearchParams()
+  if (opts.date_from) qs.set('date_from', opts.date_from)
+  if (opts.date_to) qs.set('date_to', opts.date_to)
+  const s = qs.toString()
+  return req<CacheEconomicsResponse>('GET', `/api/admin/usage/cache-economics${s ? '?' + s : ''}`)
+}
