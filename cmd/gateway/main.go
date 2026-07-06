@@ -2674,9 +2674,9 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		totalTokens = &t
 	}
 	providerCode := ""
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
 	if hub != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		defer cancel()
 		// Prefer credential_id resolution (accurate provider even when telemetry provider_id is stale/missing)
 		if entry.CredentialID != nil && *entry.CredentialID > 0 {
 			providerCode = hub.ProviderCodeForCredential(ctx, *entry.CredentialID)
@@ -2685,21 +2685,38 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		if providerCode == "" && entry.ProviderID != nil {
 			providerCode = hub.ProviderCodeFor(ctx, *entry.ProviderID)
 		}
+		return hub.LiveRequestFromTelemetry(
+			ctx,
+			entry.RequestID,
+			time.Now().UTC(),
+			entry.TenantID,
+			clientModel,
+			outboundModel,
+			providerCode,
+			status,
+			entry.Success,
+			entry.ErrorKind,
+			entry.LatencyMs,
+			entry.PromptTokens,
+			entry.CompletionTokens,
+			totalTokens,
+			entry.CostUSD,
+		)
 	}
-	return admin.LiveRequestFromTelemetry(
-		entry.RequestID,
-		time.Now().UTC(),
-		entry.TenantID,
-		clientModel,
-		outboundModel,
-		providerCode,
-		status,
-		entry.Success,
-		entry.ErrorKind,
-		entry.LatencyMs,
-		entry.PromptTokens,
-		entry.CompletionTokens,
-		totalTokens,
-		entry.CostUSD,
-	)
+	// Fallback when hub is nil
+	return admin.LiveRequest{
+		RequestID:        entry.RequestID,
+		Ts:               time.Now().UTC().Format(time.RFC3339),
+		TenantID:         entry.TenantID,
+		Model:            outboundModel,
+		ModelCategory:    "other",
+		ProviderCode:     providerCode,
+		Status:           status,
+		LatencyMs:        entry.LatencyMs,
+		PromptTokens:     entry.PromptTokens,
+		CompletionTokens: entry.CompletionTokens,
+		TotalTokens:      totalTokens,
+		CostUSD:          entry.CostUSD,
+		ErrorKind:        entry.ErrorKind,
+	}
 }
