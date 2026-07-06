@@ -47,6 +47,7 @@ export default {
     sessionAnalytics: 'セッション分析センター',
     sessionClusters: 'セッションクラスタ',
     sessionAudit: 'セッション監査',
+    sessionConfig: 'セッション設定',
     agents: 'エージェントレジストリ',
     examples: '接続例',
     chat: 'チャット',

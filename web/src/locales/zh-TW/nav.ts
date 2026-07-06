@@ -47,6 +47,7 @@ export default {
     sessionAnalytics: '會話分析中心',
     sessionClusters: '會話聚類',
     sessionAudit: '會話稽核',
+    sessionConfig: '會話設定',
     agents: 'Agent Registry',
     examples: '接入範例',
     chat: '對話',

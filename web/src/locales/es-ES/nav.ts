@@ -46,6 +46,7 @@ export default {
     sessionAnalytics: 'Centro de análisis de sesiones',
     sessionClusters: 'Clústeres de sesión',
     sessionAudit: 'Auditoría de sesiones',
+    sessionConfig: 'Configuración de sesión',
     agents: 'Registro de agentes',
     examples: 'Ejemplos',
     chat: 'Chat',
