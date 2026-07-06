@@ -57,6 +57,7 @@ const ModulesView = () => import('./views/ModulesView.vue')
 const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
 const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
+const SessionManagementView = () => import('./views/SessionManagementView.vue')
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -86,7 +87,8 @@ export const router = createRouter({
     { path: '/catalog',            redirect: (to) => ({ path: '/models', query: { ...to.query, tab: 'catalog' } }) },
     { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresSuper: true } },
     { path: '/routing-v2/credentials', component: CredentialMonitorView }, // 2026-07-04: 允许 tenant_admin 访问
-    { path: '/probe-health',       component: ProbeHealthView, meta: { requiresSuper: true } },
+    { path: '/sessions',           component: SessionManagementView, meta: { requiresSuper: true } }, // 2026-07-06: Session State Management
+    { path: '/probe-health',       component: ProbeHealthView,      meta: { requiresSuper: true } },
     { path: '/probe-health/detail', component: ProbeHealthDetailView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types',         component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/settings', component: WorkTypesView, meta: { requiresSuper: true } },
