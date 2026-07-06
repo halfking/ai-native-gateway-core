@@ -173,6 +173,16 @@ func (h *Handler) handleSessionSubrouter(w http.ResponseWriter, r *http.Request)
 		h.serveUpdateAnnotation(w, r, sessionID)
 	case "tags":
 		h.serveUpdateTags(w, r, sessionID)
+	case "health":
+		// GET /api/admin/sessions/<id>/health — 单会话健康详情（含扣分明细）。
+		h.HandleSessionHealth(w, r)
+	case "recompute-health":
+		// POST /api/admin/sessions/<id>/recompute-health — 强制重算。
+		// 写操作，仅 super_admin / admin_key 可执行。
+		if RequireSuperAdminForWrite(w, r) {
+			return
+		}
+		h.HandleRecomputeSessionHealth(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "unknown action: "+action)
 	}
