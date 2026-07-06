@@ -371,10 +371,14 @@ verify_184() {
   ok "Pod Ready=1/1 ($pod)"
   
   # 无 panic / fatal
-  local panic_lines=$(ssh $SSH_184_OPT $SERVER_184 \
-    "kubectl logs -n ${K8S_NS} $pod --tail=300 2>/dev/null | grep -ciE 'panic|fatal'" || echo "0")
+  # 注意: bash $((expr)) 把空字符串当 0, 但 grep -c 可能输出 multi-line
+  # 用 wc -l 计数而非 -c 避免嵌入 \n 引起的算术解析错误
+  local panic_lines
+  panic_lines=$(ssh $SSH_184_OPT $SERVER_184 \
+    "kubectl logs -n ${K8S_NS} $pod --tail=300 2>/dev/null | grep -iE 'panic|fatal' | wc -l" | tr -d ' ')
+  panic_lines=${panic_lines:-0}
   if [[ "$panic_lines" -gt 0 ]]; then
-    err "Pod 日志发现 $panic_lines 处 panic/fatal："
+    err "Pod 日志发现 ${panic_lines} 处 panic/fatal："
     ssh $SSH_184_OPT $SERVER_184 \
       "kubectl logs -n ${K8S_NS} $pod --tail=100 2>/dev/null | grep -A 1 -E 'panic|fatal' | head -20"
     return 1
@@ -434,50 +438,52 @@ run_migrations_184() {
     *) warn "DB host = $db_host (非预期; 请人工确认)" ;;
   esac
   
-  ssh $SSH_184_OPT $SERVER_184 bash <<EOF || { return 1; }
+  # 用单引号 heredoc ('MIGRATION_EOF') 防止本地 set -u 触发 \$VAR 求值
+  # 所有 \$VAR 在远程 bash 解释时求值, 本地只透传字节
+  ssh $SSH_184_OPT $SERVER_184 bash <<'MIGRATION_EOF' || { return 1; }
 set -e
 export PGPASSWORD="$db_pass"
 
 # 已应用版本
-APPLIED=\$(psql -h "$db_host" -p 5432 -U llm_gateway -d llm_gateway -tAc \
+APPLIED=$(psql -h "$db_host" -p 5432 -U llm_gateway -d llm_gateway -tAc \
   "SELECT version FROM schema_migrations;" 2>/dev/null | tr -d ' ')
 
 cd /tmp/migrations_run
 TOTAL=0; APPLIED_C=0; SKIPPED=0; FAILED=0
 for f in *.sql; do
-  TOTAL=\$((TOTAL+1))
-  version=\$(echo "\$f" | grep -oE '^[0-9]+' || echo "0")
-  
+  TOTAL=$((TOTAL+1))
+  version=$(echo "$f" | grep -oE '^[0-9]+' || echo "0")
+
   # F2: auto-skip SUPERSEDED
-  if head -10 "\$f" | grep -qiE "SUPERSEDED|superceded|DEPRECATED"; then
-    echo "  [\$f] ⊘ SKIP (SUPERSEDED)"
-    SKIPPED=\$((SKIPPED+1))
+  if head -10 "$f" | grep -qiE "SUPERSEDED|superceded|DEPRECATED"; then
+    echo "  [$f] ⊘ SKIP (SUPERSEDED)"
+    SKIPPED=$((SKIPPED+1))
     continue
   fi
-  
+
   # 跳过已应用
-  if echo "\$APPLIED" | grep -qFx "\$version"; then
-    echo "  [\$f] ⊘ SKIP (已应用)"
-    SKIPPED=\$((SKIPPED+1))
+  if echo "$APPLIED" | grep -qFx "$version"; then
+    echo "  [$f] ⊘ SKIP (已应用)"
+    SKIPPED=$((SKIPPED+1))
     continue
   fi
-  
+
   # 应用
   if psql -h "$db_host" -p 5432 -U llm_gateway -d llm_gateway \
-      -v ON_ERROR_STOP=1 -f "/tmp/migrations_run/\$f" >/tmp/_mig.log 2>&1; then
-    echo "  [\$f] ✓ OK"
+      -v ON_ERROR_STOP=1 -f "/tmp/migrations_run/$f" >/tmp/_mig.log 2>&1; then
+    echo "  [$f] ✓ OK"
     psql -h "$db_host" -p 5432 -U llm_gateway -d llm_gateway \
-      -c "INSERT INTO schema_migrations (version, applied_at) VALUES ('\$version', NOW());" >/dev/null 2>&1 || true
-    APPLIED_C=\$((APPLIED_C+1))
+      -c "INSERT INTO schema_migrations (version, applied_at) VALUES ('$version', NOW());" >/dev/null 2>&1 || true
+    APPLIED_C=$((APPLIED_C+1))
   elif grep -qE "already exists|duplicate key|relation.*already exists" /tmp/_mig.log 2>/dev/null; then
-    echo "  [\$f] ⊘ SKIP (idempotent: 已存在)"
+    echo "  [$f] ⊘ SKIP (idempotent: 已存在)"
     psql -h "$db_host" -p 5432 -U llm_gateway -d llm_gateway \
-      -c "INSERT INTO schema_migrations (version, applied_at) VALUES ('\$version', NOW());" >/dev/null 2>&1 || true
-    SKIPPED=\$((SKIPPED+1))
+      -c "INSERT INTO schema_migrations (version, applied_at) VALUES ('$version', NOW());" >/dev/null 2>&1 || true
+    SKIPPED=$((SKIPPED+1))
   else
-    echo "  [\$f] ✗ FAIL"
+    echo "  [$f] ✗ FAIL"
     head -3 /tmp/_mig.log | sed 's/^/    /'
-    FAILED=\$((FAILED+1))
+    FAILED=$((FAILED+1))
   fi
 done
 rm -f /tmp/_mig.log /tmp/migrations_run/*.sql
@@ -486,8 +492,8 @@ rmdir /tmp/migrations_run 2>/dev/null || true
 echo ""
 echo "=== DB 迁移汇总 ==="
 echo "  total=$TOTAL  applied=$APPLIED_C  skipped=$SKIPPED  failed=$FAILED"
-[[ \$FAILED -gt 0 ]] && exit 1 || true
-EOF
+[ "$FAILED" -gt 0 ] && exit 1 || true
+MIGRATION_EOF
 }
 
 deploy_184() {
