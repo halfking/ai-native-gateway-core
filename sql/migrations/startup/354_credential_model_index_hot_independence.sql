@@ -1,4 +1,4 @@
--- Migration 352: credential_model_index hot table independence
+-- Migration 354: credential_model_index hot table independence
 --
 -- Background:
 --   credential_model_index stores the health index for credential-model pairs.
@@ -98,7 +98,7 @@ BEGIN
     )
     INSERT INTO credential_model_index
     SELECT * FROM deleted
-    ON CONFLICT DO NOTHING;
+    ON CONFLICT (bucket, credential_id, raw_model) DO NOTHING;
     
     GET DIAGNOSTICS v_moved = ROW_COUNT;
     RETURN v_moved;
@@ -151,12 +151,12 @@ BEGIN
     ) INTO func_exists;
     
     IF func_exists THEN
-        RAISE NOTICE 'Migration 352 verification PASSED';
+        RAISE NOTICE 'Migration 354 verification PASSED';
         RAISE NOTICE '  - hot table: % rows (storage: heap)', hot_count;
         RAISE NOTICE '  - view: exists';
         RAISE NOTICE '  - promote function: exists';
     ELSE
-        RAISE EXCEPTION 'Migration 352 verification FAILED: promote function not created';
+        RAISE EXCEPTION 'Migration 354 verification FAILED: promote function not created';
     END IF;
 END $$;
 
