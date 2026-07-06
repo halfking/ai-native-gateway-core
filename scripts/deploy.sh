@@ -171,8 +171,9 @@ esac
 
 pre_check() {
   phase "预检 1/3: 工作区 + git"
-  if ! git diff --quiet HEAD -- 2>/dev/null; then
-    err "工作区有未提交的改动:"
+  # 检查工作区未提交改动（同时算 staged + unstaged）
+  if ! git diff --quiet HEAD -- 2>/dev/null || ! git diff --cached --quiet HEAD -- 2>/dev/null; then
+    err "工作区有未提交的改动 (unstaged + staged):"
     git status -s
     return 1
   fi
