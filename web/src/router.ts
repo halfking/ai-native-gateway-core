@@ -40,6 +40,9 @@ const SessionContextListView = () => import('./views/session-context/SessionCont
 const SessionContextDetailView = () => import('./views/session-context/SessionContextDetailView.vue')
 const SessionCompareView = () => import('./views/SessionCompareView.vue')
 const SessionListView = () => import('./views/SessionListView.vue')
+const SessionAnalyticsDashboardView = () => import('./views/SessionAnalyticsDashboardView.vue')
+const SessionPanoramaView = () => import('./views/SessionPanoramaView.vue')
+const SessionClustersView = () => import('./views/SessionClustersView.vue')
 const MaaSAccountView = () => import('./views/tenant/MaaSAccountView.vue')
 const MaaSPricingView = () => import('./views/tenant/MaaSPricingView.vue')
 const MaaSUsageView = () => import('./views/tenant/MaaSUsageView.vue')
@@ -136,6 +139,9 @@ export const router = createRouter({
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/session-compare',    component: SessionCompareView },
     { path: '/sessions',           component: SessionListView },
+    { path: '/admin/session-analytics', component: SessionAnalyticsDashboardView },
+    { path: '/admin/session-analytics/:id/panorama', component: SessionPanoramaView },
+    { path: '/admin/session-clusters', component: SessionClustersView },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },

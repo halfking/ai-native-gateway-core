@@ -43,6 +43,8 @@ export default {
     dataLifecycle: '資料生命週期',
     formatAnomalies: '格式異常監控',
     modules: '模組管理',
+    sessionAnalytics: '會話全景分析',
+    sessionClusters: '會話分組',
     agents: 'Agent Registry',
     examples: '接入範例',
     chat: '對話',

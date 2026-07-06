@@ -42,6 +42,8 @@ export default {
     dataLifecycle: '数据生命周期',
     formatAnomalies: '格式异常监控',
     modules: '模块管理',
+    sessionAnalytics: '会话全景分析',
+    sessionClusters: '会话分组',
     agents: 'Agent Registry',
     examples: '接入示例',
     chat: '对话',

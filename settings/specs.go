@@ -16,5 +16,7 @@ func PlatformSpecs() []*Spec {
 
 // TenantSpecs returns all tenant-scoped Specs registered in Phase 1.
 func TenantSpecs() []*Spec {
-	return RateLimitTenantSpecs()
+	out := RateLimitTenantSpecs()
+	out = append(out, SessionAnalyticsSpecs()...)
+	return out
 }

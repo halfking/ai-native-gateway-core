@@ -25,9 +25,18 @@ type SessionSummarizer interface {
 type SessionSummaryWorker struct {
 	logger     *slog.Logger
 	summarizer SessionSummarizer
+	// closeHooks 在总结生成后顺序执行（如优化建议检测）。
+	// 任一失败仅记日志，不影响后续。
+	closeHooks []SessionCloseHook
 
 	processed atomic.Int64
 	failed    atomic.Int64
+}
+
+// SessionCloseHook 在会话关闭、总结生成后执行的扩展钩子。
+// 用于挂载 OptimizationAdviser 等重任务。
+type SessionCloseHook interface {
+	OnSessionClosed(ctx context.Context, tenantID, gwSessionID string) error
 }
 
 // NewSessionSummaryWorker 构造 worker。summarizer 为 nil 时 Handle 直接跳过。
@@ -38,6 +47,13 @@ func NewSessionSummaryWorker(summarizer SessionSummarizer, logger *slog.Logger) 
 	return &SessionSummaryWorker{
 		logger:     logger,
 		summarizer: summarizer,
+	}
+}
+
+// AddCloseHook 追加一个会话关闭扩展钩子（如 OptimizationAdviser）。
+func (w *SessionSummaryWorker) AddCloseHook(h SessionCloseHook) {
+	if h != nil {
+		w.closeHooks = append(w.closeHooks, h)
 	}
 }
 
@@ -85,6 +101,18 @@ func (w *SessionSummaryWorker) Handle(ctx context.Context, evt analysis.Analysis
 		"tenant_id", evt.TenantID,
 		"session_key", sessionKey,
 	)
+
+	// 执行会话关闭扩展钩子（优化建议检测等）。
+	// 任一失败仅记日志，不影响主流程。
+	for _, h := range w.closeHooks {
+		if err := h.OnSessionClosed(ctx, evt.TenantID, sessionKey); err != nil {
+			w.logger.Warn("session_summary_worker: close hook failed",
+				"event_id", evt.EventID,
+				"tenant_id", evt.TenantID,
+				"session_key", sessionKey,
+				"error", err)
+		}
+	}
 	return nil
 }
 
