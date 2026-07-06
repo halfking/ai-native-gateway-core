@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	"github.com/kaixuan/llm-gateway-go/cache/prefix"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -254,6 +255,21 @@ type ChatHandler struct {
 	// (every request forwards the client body as-is, matching v7 behaviour).
 	sessionCompressor *compression.SessionCompressor
 
+	// promptCacheStabilize (rtk borrowing, 2026-07-06) reorders the request
+	// messages by stability class (system → tools → history → tail) so the
+	// upstream provider's KV-prefix-cache hits maximise. Idempotent + always
+	// fail-open (Stabilize returns the original bytes on any unrecognised
+	// shape). Toggle with LLM_GATEWAY_PROMPT_CACHE_STABILIZE=0. Default true.
+	promptCacheStabilize bool
+
+	// cacheInjector (rtk borrowing, 2026-07-06) injects cache_control markers
+	// (Anthropic ephemeral / OpenAI checkpoint) onto the stabilized prefix
+	// boundary when the resolved candidate supports prompt caching. nil or
+	// promptCacheInject=false disables injection. Opt-in via
+	// LLM_GATEWAY_PROMPT_CACHE_INJECT=1; default off (data-accuracy first).
+	cacheInjector  *session.CacheInjector
+	promptCacheInject bool
+
 	// metaToolInterceptor (Phase 2, 2026-06-20) handles meta-tool calls
 
 	// anomalyRecorder (2026-06-28) tracks response format anomalies to detect
@@ -403,6 +419,28 @@ func (h *ChatHandler) SetIdempotentCache(c *IdempotentCache) {
 // proactive sliding-window LLM summary before forwarding to the upstream.
 func (h *ChatHandler) SetSessionCompressor(sc *compression.SessionCompressor) {
 	h.sessionCompressor = sc
+}
+
+// SetPromptCacheStabilize toggles request-body prefix stabilization
+// (cache/prefix.Stabilize). When true (default), each request's messages are
+// reordered by stability class to maximise upstream KV-prefix-cache hits.
+// Read once at startup from LLM_GATEWAY_PROMPT_CACHE_STABILIZE (default "1").
+func (h *ChatHandler) SetPromptCacheStabilize(on bool) {
+	h.promptCacheStabilize = on
+}
+
+// SetCacheInjector wires the prompt-cache-control injector. When set AND
+// promptCacheInject is true, the request body gets cache_control markers
+// placed on the stabilized prefix boundary for candidates that declare
+// SupportsPromptCache. Opt-in only (LLM_GATEWAY_PROMPT_CACHE_INJECT=1).
+func (h *ChatHandler) SetCacheInjector(ci *session.CacheInjector) {
+	h.cacheInjector = ci
+}
+
+// SetPromptCacheInject enables/disables cache_control marker injection.
+// Read once at startup from LLM_GATEWAY_PROMPT_CACHE_INJECT (default "0").
+func (h *ChatHandler) SetPromptCacheInject(on bool) {
+	h.promptCacheInject = on
 }
 
 // SetMetaToolInterceptor wires the Phase 2 meta-tool interceptor.
@@ -1498,6 +1536,7 @@ func (h *ChatHandler) serveWithExecutor(
 					"msg_count":        scResult.MsgCount,
 					"token_est":        scResult.TokenEst,
 					"window_triggered": scResult.WindowTriggered,
+					"lossiness":        scResult.Lossiness,
 				}
 				h.requestLogger.Update(&telemetry.LogUpdate{
 					RequestID:           requestID,
@@ -1507,6 +1546,25 @@ func (h *ChatHandler) serveWithExecutor(
 					CompressionMeta:     meta,
 				})
 			}
+		}
+	}
+
+	// ── Prompt-prefix stabilization (rtk borrowing, 2026-07-06) ──────────────
+	// Reorder messages by stability class (system → tools → history → tail)
+	// so the upstream provider's KV-prefix-cache hits maximise. Idempotent;
+	// Stabilize is fail-open (returns the original bytes on any unrecognised
+	// shape, so this can NEVER break a request).
+	//
+	// NOTE: no never_worse guard here, by design. Stabilize is a REORDER, not
+	// a compression — its value is cache-hit uplift, not byte shrinkage, so
+	// the output is typically the SAME length as the input (a swap, not a
+	// trim). The guard's "processed must be strictly shorter" contract would
+	// wrongly reject a legitimate reorder. The guard IS applied to the
+	// compress and inject stages below, which are genuine shrink/expand ops.
+	if h.promptCacheStabilize && len(bodyBytes) > 0 {
+		if stab, report, serr := prefix.Stabilize(bodyBytes, prefix.Options{TailTurns: 1}); serr == nil && report != nil && report.Changed {
+			bodyBytes = stab
+			w.Header().Set("X-Gw-Prefix-Stabilized", report.Reason)
 		}
 	}
 
@@ -1581,6 +1639,23 @@ func (h *ChatHandler) serveWithExecutor(
 	stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile)
 
 	// ── Armor security check (moved to line 898 — before provider resolution) ──
+
+	// ── Prompt-cache-control injection (rtk borrowing, 2026-07-06) ──────────
+	// When the resolved candidate declares SupportsPromptCache and the
+	// operator has opted in (LLM_GATEWAY_PROMPT_CACHE_INJECT=1), place the
+	// provider-appropriate cache marker (Anthropic ephemeral / checkpoint)
+	// on the stabilized prefix boundary. InjectCacheParams is fail-open
+	// (returns the original body on any error / unknown shape). A never_worse
+	// guard guards against a malformed injection inflating the body.
+	if h.cacheInjector != nil && h.promptCacheInject && len(candidates) > 0 && candidates[0].SupportsPromptCache {
+		cand := candidates[0]
+		if inj, ierr := h.cacheInjector.InjectCacheParams(r.Context(), gwSessionID, bodyBytes, &cand); ierr == nil && len(inj) > 0 {
+			guarded, regressed := compression.NeverWorse(bodyBytes, inj, compression.GuardStageInject)
+			if !regressed {
+				bodyBytes = guarded
+			}
+		}
+	}
 
 	// Phase C (2026-06-22): Pass bodyBytes directly — per-candidate
 	// protocol conversion now lives in the executor (IR path). The
