@@ -3,6 +3,7 @@
 // 2026-07-05: 将原本占用大量空间的表格移到抽屉中
 
 import { ref, computed } from 'vue'
+import { localeRef } from '../i18n'
 import type { HotApiKeyEntry, ModelUsage } from '../api'
 
 const props = defineProps<{
@@ -38,7 +39,7 @@ function fmtCost(v: number | undefined) {
 
 function fmtDate(v: string | null | undefined) {
   if (!v) return '—'
-  return new Date(v).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
+  return new Date(v).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
 defineExpose({ open, close })

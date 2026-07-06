@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { localeRef } from '../i18n'
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getTenantsAdmin, TENANT_STATUSES, TENANT_STATUS_LABELS, TENANT_STATUS_COLORS } from '../api'
@@ -40,7 +41,7 @@ function statusLabel(s: string) {
 
 function fmtTime(s: string) {
   if (!s) return '-'
-  return new Date(s).toLocaleString('zh-CN')
+  return new Date(s).toLocaleString(localeRef.value)
 }
 
 function fmtNum(n?: number) {

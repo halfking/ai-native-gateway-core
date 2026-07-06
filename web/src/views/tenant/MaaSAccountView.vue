@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { localeRef } from '../../i18n'
 import { RouterLink } from 'vue-router'
 import {
   getMaasAccount,
@@ -34,12 +35,12 @@ const usageLink = computed(() =>
 )
 
 function fmtCredits(n: number) {
-  return n.toLocaleString('zh-CN')
+  return n.toLocaleString(localeRef.value)
 }
 
 function fmtTime(s: string) {
   if (!s) return '—'
-  return new Date(s).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
+  return new Date(s).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
 function fmtPrice(cents: number) {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { localeRef } from '../../i18n'
 import {
   logConfigGet, logConfigUpdate, logFilesList, logStats,
   logArchive, logCleanup, logArchiveList,
@@ -130,7 +131,7 @@ async function doCleanup() {
 
 function formatTime(s: string | null): string {
   if (!s) return '-'
-  return new Date(s).toLocaleString('zh-CN')
+  return new Date(s).toLocaleString(localeRef.value)
 }
 
 onMounted(() => {
@@ -138,6 +139,10 @@ onMounted(() => {
 })
 
 defineExpose({ load })
+
+function fmtNum(n: number) {
+  return n.toLocaleString(localeRef.value)
+}
 </script>
 
 <template>
@@ -169,7 +174,7 @@ defineExpose({ load })
           </div>
           <div class="stat-item">
             <div class="stat-label">文件数</div>
-            <div class="stat-value">{{ stats.total_files.toLocaleString('zh-CN') }}</div>
+            <div class="stat-value">{{ stats.total_files && fmtNum(stats.total_files) }}</div>
           </div>
           <div class="stat-item">
             <div class="stat-label">总大小</div>

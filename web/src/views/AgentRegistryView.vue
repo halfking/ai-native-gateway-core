@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { localeRef } from '../i18n'
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import {
   getAgents,
@@ -170,7 +171,7 @@ function kindLabel(k: string): string {
 
 function fmtTs(s?: string): string {
   if (!s) return '—'
-  return new Date(s).toLocaleString('zh-CN', { hour12: false })
+  return new Date(s).toLocaleString(localeRef.value, { hour12: false })
 }
 
 function fmtTimeAgo(s?: string): string {

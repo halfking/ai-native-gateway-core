@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { localeRef } from '../i18n'
 import { useRouter, useRoute } from 'vue-router'
 import { getApprovalDetail, approveApproval, rejectApproval, type ApprovalDetail } from '../api/approval'
 import PageBackLink from '../components/PageBackLink.vue'
@@ -71,7 +72,7 @@ function getStatusLabel(status: string): string {
 
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr)
-  return date.toLocaleString('zh-CN', {
+  return date.toLocaleString(localeRef.value, {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
