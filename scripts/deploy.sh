@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# scripts/deploy.sh — 统一部署入口（184 K8s + 71 systemd）
+# scripts/deploy.sh — 统一部署入口（按目标别名，SSH 证书鉴权）
 #
 # 用法:
 #   ./scripts/deploy.sh 184                    # 仅部署到 184
@@ -20,15 +20,18 @@
 #   -h, --help            显示帮助
 #
 # 环境变量（覆盖默认）:
-#   SSHPASS=<密码>          71 部署必需
-#   SSH_KEY_184, SSH_KEY_71  SSH 私钥（默认 ~/.ssh/{56,71}_id_rsa）
+#   SSH_KEY_184              184 SSH 私钥（默认 ~/.ssh/56_id_rsa）
+#   SSH_KEY_71               71  SSH 私钥（默认 ~/.ssh/71_id_rsa）
+#   SSH_PORT                 SSH 端口（默认 25022）
 #   BUILD_SEQ_TARGET=<seq>   使用指定 build_seq 而非 +1
 #   REGISTRY_INT=<host>      内部 registry（默认 registry.kxpms.cn）
 #   REGISTRY_LOCAL=<host>    184 本地 registry（默认 127.0.0.1:5000）
 #
-# 与 env-injector 集成:
-#   部署前通过 `env-injector inject huoshan-core-184` / `huoshan-infra-71`
-#   注入凭据。脚本自动探测已 export 的 SSH_KEY_* / SSHPASS。
+# 鉴权:
+#   本脚本 100% SSH 公私钥鉴权（BatchMode=yes），不依赖 sshpass / 密码。
+#   部署前用 ssh-add 加载私钥，或让本用户运行 env-injector 的
+#   `inject huoshan-core-184` / `inject huoshan-infra-71`（会写入
+#   ~/.ssh/config 而非注入密码）。
 #
 # 退出码:
 #   0 = 成功
@@ -99,7 +102,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Servers & keys
+# ── 服务器与 SSH 证书（key-only，不使用密码） ────────────────────
 SERVER_184="root@14.103.112.184"
 SERVER_184_HOST="14.103.112.184"
 SERVER_71="root@14.103.174.71"
@@ -107,10 +110,11 @@ SERVER_71_HOST="14.103.174.71"
 SSH_PORT="${SSH_PORT:-25022}"
 SSH_KEY_184="${SSH_KEY_184:-$HOME/.ssh/56_id_rsa}"
 SSH_KEY_71="${SSH_KEY_71:-$HOME/.ssh/71_id_rsa}"
-SSH_184_OPT="-p $SSH_PORT -i $SSH_KEY_184 -o StrictHostKeyChecking=no -o BatchMode=yes"
-SSH_71_OPT="-p $SSH_PORT -i $SSH_KEY_71 -o StrictHostKeyChecking=no -o BatchMode=yes"
-SCP_184_OPT="-P $SSH_PORT -i $SSH_KEY_184 -o StrictHostKeyChecking=no"
-SCP_71_OPT="-P $SSH_PORT -i $SSH_KEY_71 -o StrictHostKeyChecking=no"
+# -o BatchMode=yes: 禁用交互式密码提示（强制 cert-only）
+SSH_184_OPT="-p $SSH_PORT -i $SSH_KEY_184 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_71_OPT="-p $SSH_PORT -i $SSH_KEY_71 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SCP_184_OPT="-P $SSH_PORT -i $SSH_KEY_184 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+SCP_71_OPT="-P $SSH_PORT -i $SSH_KEY_71 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
 
 # Image / registry
 IMAGE_NAME="kx-llm-gateway-go"
@@ -132,21 +136,41 @@ target: 184 | 71 | both | build | migrate | verify | rollback
 EOF
 }
 
-# ── 早期验证 target ─────────────────────────────────────────────────
+# ── 早期验证 target + SSH 证书 ─────────────────────────────────────
+verify_ssh_key() {
+  local alias="$1" key="$2" target="$3"
+  if [[ ! -f "$key" ]]; then
+    err "[$alias] SSH 私钥不存在: $key"
+    err "    修复:"
+    err "      ssh-add $key                       # 临时加载"
+    err "      或 env-injector inject $target     # 写入 ~/.ssh/config"
+    exit 1
+  fi
+  if [[ ! -r "$key" ]]; then
+    err "[$alias] SSH 私钥不可读: $key (chmod 600)"
+    exit 1
+  fi
+  local perms
+  perms=$(stat -f '%Lp' "$key" 2>/dev/null || stat -c '%a' "$key" 2>/dev/null)
+  if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
+    warn "[$alias] 私钥权限 $perms（建议 chmod 600）: $key"
+  fi
+}
+
 case "$TARGET" in
   184|71|both|build|migrate|verify|rollback)
     if [[ "$TARGET" == "184" || "$TARGET" == "both" ]]; then
-      [[ -f "$SSH_KEY_184" ]] || { err "找不到 SSH 私钥: $SSH_KEY_184 (设置 SSH_KEY_184 或放入 ~/.ssh/56_id_rsa)"; exit 1; }
+      verify_ssh_key "184" "$SSH_KEY_184" "huoshan-core-184"
     fi
     if [[ "$TARGET" == "71" || "$TARGET" == "both" ]]; then
-      [[ -f "$SSH_KEY_71" ]] || { err "找不到 SSH 私钥: $SSH_KEY_71"; exit 1; }
+      verify_ssh_key "71" "$SSH_KEY_71" "huoshan-infra-71"
     fi
     ;;
   *) usage_short; exit 64 ;;
 esac
 
 pre_check() {
-  phase "预检 1/2: 工作区 + git"
+  phase "预检 1/3: 工作区 + git"
   if ! git diff --quiet HEAD -- 2>/dev/null; then
     err "工作区有未提交的改动:"
     git status -s
@@ -154,7 +178,26 @@ pre_check() {
   fi
   ok "工作区干净"
 
-  phase "预检 2/2: go build + vet (F3: 捕获 panic-class bugs)"
+  phase "预检 2/3: SSH 证书可达性"
+  if [[ "$TARGET" == "184" || "$TARGET" == "both" ]]; then
+    info "ssh -i $SSH_KEY_184 root@$SERVER_184_HOST"
+    if ! ssh $SSH_184_OPT $SERVER_184 'echo OK' >/dev/null 2>&1; then
+      err "184 SSH 不可达 (key=$SSH_KEY_184, host=$SERVER_184_HOST:$SSH_PORT)"
+      err "请确认私钥已加载或已通过 ssh-add / env-injector 注入"
+      return 1
+    fi
+    ok "184 SSH OK"
+  fi
+  if [[ "$TARGET" == "71" || "$TARGET" == "both" ]]; then
+    info "ssh -i $SSH_KEY_71 root@$SERVER_71_HOST"
+    if ! ssh $SSH_71_OPT $SERVER_71 'echo OK' >/dev/null 2>&1; then
+      err "71 SSH 不可达 (key=$SSH_KEY_71, host=$SERVER_71_HOST:$SSH_PORT)"
+      return 1
+    fi
+    ok "71 SSH OK"
+  fi
+
+  phase "预检 3/3: go build + vet (F3: 捕获 panic-class bugs)"
   if [[ "$SKIP_TESTS" == "true" ]]; then
     warn "已 --skip-tests，跳过 go build/vet"
     return 0
