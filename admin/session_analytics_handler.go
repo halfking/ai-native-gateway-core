@@ -663,6 +663,10 @@ func (h *Handler) RouteSessionAnalytics(w http.ResponseWriter, r *http.Request) 
 		h.HandleSessionShape(w, r)
 	case parts[0] == "health-distribution" && len(parts) == 1:
 		h.HandleHealthDistribution(w, r)
+	case parts[0] == "top-sessions" && len(parts) == 1:
+		h.HandleTopSessions(w, r)
+	case parts[0] == "filter-options" && len(parts) == 1:
+		h.HandleFilterOptions(w, r)
 	case len(parts) == 1:
 		// /<gw_session_id>
 		h.HandleSessionAnalyticsDetail(w, r)

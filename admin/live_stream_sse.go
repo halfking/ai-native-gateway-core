@@ -339,8 +339,9 @@ func (h *LiveStreamSSEHub) ProviderCodeForCredential(ctx context.Context, creden
 // ModelVendorFor resolves a model name to its vendor via models_canonical.family → model_families.vendor.
 // Falls back to pattern matching when DB lookup fails.
 func (h *LiveStreamSSEHub) ModelVendorFor(ctx context.Context, model string) string {
+	model = strings.TrimSpace(model)
 	if model == "" {
-		return classifyModelCategoryFallback(model)
+		return "other" // Don't cache empty strings
 	}
 	if h == nil || h.db == nil {
 		return classifyModelCategoryFallback(model)

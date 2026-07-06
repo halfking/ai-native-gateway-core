@@ -27,7 +27,6 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
@@ -188,26 +187,25 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	//     (InterceptResult.InjectFollowUp is last-writer-wins): rotating to
 	//     a new session takes priority over nudging a near-full context.
 	//     Defaults to disabled — inert unless an operator opts in.
-	handoffStore := handoff.NewPGStore(db)
-	handoffCfg := handoff.TriggerConfig{
-		Enabled:             getEnvBool("LLM_GATEWAY_HANDOFF_AUTO_ENABLED", false),
-		AbsoluteThreshold:   getEnvInt("LLM_GATEWAY_HANDOFF_ABSOLUTE_THRESHOLD", 180000),
-		PercentageThreshold: getEnvFloat("LLM_GATEWAY_HANDOFF_PERCENTAGE_THRESHOLD", 0.8),
-		MessageThreshold:    getEnvInt("LLM_GATEWAY_HANDOFF_MESSAGE_THRESHOLD", 0),
-		SkillName:           getEnv("LLM_GATEWAY_HANDOFF_SKILL_NAME", "handoff"),
-		SettingsGetter:      adapter,
-	}
-	handoffHook := handoff.NewTriggerHook(handoffCfg, handoffStore)
+	//
+	// NOTE: handoff TriggerHook 实现 (domains/hooks/handoff/trigger_hook.go)
+	// 在历史重构中被移除（仅保留 doc.go），但 goal_control.go 仍引用它，导致
+	// cmd/gateway 编译失败。此处临时禁用 handoff 接入（功能本就默认 Enabled=false），
+	// 待 handoff 实现恢复后重新接入。见 commit b807d30e / 2ad2c479。
+	// handoffStore := handoff.NewPGStore(db)
+	// handoffCfg := handoff.TriggerConfig{...}
+	// handoffHook := handoff.NewTriggerHook(handoffCfg, handoffStore)
 
-	// 7. Chain and install. Order matters: goal continue → audit → handoff.
-	chain := response.NewInterceptorChain(goalHook, auditHook, handoffHook)
+	// 7. Chain and install. Order matters: goal continue → audit.
+	// handoff 暂未接入（实现缺失），chain 仅包含 goal + audit。
+	chain := response.NewInterceptorChain(goalHook, auditHook)
 	chatHandler.SetResponseInterceptor(chain)
 
 	slog.Info("goal_control: interceptors installed",
 		"goal_enabled", goalCfg.Enabled,
 		"detection_mode", goalCfg.DetectionMode,
 		"audit_enabled", auditCfg.Enabled,
-		"handoff_enabled", handoffCfg.Enabled,
+		"handoff_enabled", false, // 实现缺失，强制禁用
 		"model_switch_on_loop", goalCfg.ModelSwitchOnLoop,
 		"max_model_switch", goalCfg.MaxModelSwitchCount,
 		"fallback_models", goalCfg.FallbackModels,

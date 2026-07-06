@@ -206,6 +206,11 @@ func gradeFromScore(score int) string {
 }
 
 // classifyOutcome 结果分类
+// 判定顺序（与文档 session-management-analytics-plan.md 4.4.3 一致）：
+//  1. error_rate > 50%            → error（错误主导）
+//  2. request_count ≤ 1           → abandoned（单轮即止）
+//  3. error_rate ≤ 50% 且 ≥2 请求 → completed（含少量错误但未主导）
+//  4. 其他                        → unknown
 func classifyOutcome(summary AnalyticsSessionSummary) (string, string) {
 	if summary.RequestCount == 0 {
 		return "unknown", "no requests"
@@ -221,11 +226,10 @@ func classifyOutcome(summary AnalyticsSessionSummary) (string, string) {
 		return "abandoned", "single request, user left"
 	}
 
-	if summary.ErrorCount == 0 && summary.RequestCount >= 2 {
-		return "completed", fmt.Sprintf("completed normally: %d requests, 0 errors", summary.RequestCount)
-	}
-
-	return "unknown", "cannot classify"
+	// 错误率 ≤ 50% 且至少 2 个请求：视为完成（含部分错误）。
+	// 注意 50% 边界：errorRate == 0.5 走到这里（> 0.5 才算 error），
+	// 因此 10 请求 5 错误 = completed。
+	return "completed", fmt.Sprintf("completed: %d requests, %d errors", summary.RequestCount, summary.ErrorCount)
 }
 
 func min(a, b int) int {
