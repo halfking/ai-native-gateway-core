@@ -95,21 +95,23 @@ function healthGradeColor(grade?: string): string {
   <div class="user-profile-detail">
     <div class="page-header">
       <el-button text @click="router.back()">← {{ t('common.back') }}</el-button>
-      <h2>{{ t('sessions.userProfile.detailTitle') || '用户画像' }}: {{ owner }}</h2>
-      <el-radio-group v-model="days" size="small">
-        <el-radio-button :value="7">7天</el-radio-button>
-        <el-radio-button :value="30">30天</el-radio-button>
-        <el-radio-button :value="90">90天</el-radio-button>
+      <h2>{{ t('sessions.userProfile.detailTitle') }}: {{ owner }}</h2>
+      <el-radio-group v-model="days" size="small" @change="load">
+        <el-radio-button :value="7">7{{ t('common.days') }}</el-radio-button>
+        <el-radio-button :value="30">30{{ t('common.days') }}</el-radio-button>
+        <el-radio-button :value="90">90{{ t('common.days') }}</el-radio-button>
       </el-radio-group>
     </div>
 
     <div v-loading="loading">
+      <div v-if="!loading && !data" class="empty">{{ t('sessions.userProfile.empty') }}</div>
+
       <!-- Stat cards -->
-      <el-row :gutter="16" class="stat-row">
+      <el-row v-if="data" :gutter="16" class="stat-row">
         <el-col :span="6">
           <el-card shadow="hover">
             <div class="stat-card">
-              <div class="stat-label">{{ t('sessions.totalSessions') || '总会话' }}</div>
+              <div class="stat-label">{{ t('sessions.userProfile.sessionCount') }}</div>
               <div class="stat-value">{{ data?.session_count ?? '-' }}</div>
             </div>
           </el-card>
@@ -117,7 +119,7 @@ function healthGradeColor(grade?: string): string {
         <el-col :span="6">
           <el-card shadow="hover">
             <div class="stat-card">
-              <div class="stat-label">{{ t('sessions.totalCost') || '总成本' }}</div>
+              <div class="stat-label">{{ t('sessions.userProfile.totalCost') }}</div>
               <div class="stat-value">${{ (data?.total_cost_usd ?? 0).toFixed(4) }}</div>
             </div>
           </el-card>
@@ -125,7 +127,7 @@ function healthGradeColor(grade?: string): string {
         <el-col :span="6">
           <el-card shadow="hover">
             <div class="stat-card">
-              <div class="stat-label">{{ t('sessions.avgHealth') || '平均健康分' }}</div>
+              <div class="stat-label">{{ t('sessions.userProfile.avgHealth') }}</div>
               <div class="stat-value">{{ data?.avg_health_score ?? '-' }}</div>
             </div>
           </el-card>
@@ -133,7 +135,7 @@ function healthGradeColor(grade?: string): string {
         <el-col :span="6">
           <el-card shadow="hover">
             <div class="stat-card">
-              <div class="stat-label">{{ t('sessions.successRate') || '成功率' }}</div>
+              <div class="stat-label">{{ t('sessions.userProfile.successRate') }}</div>
               <div class="stat-value">
                 {{
                   data && (data.total_success + data.total_errors) > 0
@@ -148,59 +150,59 @@ function healthGradeColor(grade?: string): string {
 
       <!-- Cost trend chart -->
       <el-card class="chart-card">
-        <template #header>{{ t('sessions.costTrend') || '成本趋势' }}</template>
-        <div ref="costChartRef" class="chart-container" style="height: 300px" />
+        <template #header>{{ t('sessions.userProfile.costTrend') }}</template>
+        <div class="chart-container" style="height: 300px" />
       </el-card>
 
       <!-- Top tasks -->
       <el-card class="section-card">
-        <template #header>{{ t('sessions.topTasks') || 'Top Tasks' }}</template>
+        <template #header>{{ t('sessions.userProfile.topTasks') }}</template>
         <el-table :data="data?.top_tasks ?? []" stripe size="small">
-          <el-table-column prop="task_id" label="task_id" min-width="200" />
-          <el-table-column prop="session_count" label="会话数" width="90" align="right" />
-          <el-table-column prop="total_cost" label="成本" width="120" align="right">
+          <el-table-column prop="task_id" :label="t('sessions.userProfile.taskId')" min-width="200" />
+          <el-table-column prop="session_count" :label="t('sessions.userProfile.sessionCount')" width="90" align="right" />
+          <el-table-column prop="total_cost" :label="t('sessions.userProfile.totalCost')" width="120" align="right">
             <template #default="{ row }">${{ row.total_cost.toFixed(4) }}</template>
           </el-table-column>
-          <el-table-column prop="avg_health" label="健康分" width="80" align="right" />
+          <el-table-column prop="avg_health" :label="t('sessions.userProfile.avgHealth')" width="80" align="right" />
         </el-table>
       </el-card>
 
       <!-- Top end users -->
       <el-card class="section-card">
-        <template #header>{{ t('sessions.topEndUsers') || 'Top 终端用户' }}</template>
+        <template #header>{{ t('sessions.userProfile.topEndUsers') }}</template>
         <el-table :data="data?.top_end_users ?? []" stripe size="small">
-          <el-table-column prop="end_user_id" label="end_user_id" min-width="200" />
-          <el-table-column prop="session_count" label="会话数" width="90" align="right" />
-          <el-table-column prop="total_cost_usd" label="成本" width="120" align="right">
+          <el-table-column prop="end_user_id" :label="t('sessions.userProfile.endUserId')" min-width="200" />
+          <el-table-column prop="session_count" :label="t('sessions.userProfile.sessionCount')" width="90" align="right" />
+          <el-table-column prop="total_cost_usd" :label="t('sessions.userProfile.totalCost')" width="120" align="right">
             <template #default="{ row }">${{ row.total_cost_usd.toFixed(4) }}</template>
           </el-table-column>
-          <el-table-column prop="last_activity" label="最近活跃" width="170" />
+          <el-table-column prop="last_activity" :label="t('sessions.userProfile.lastSeenAt')" width="170" />
         </el-table>
       </el-card>
 
       <!-- Recent sessions -->
       <el-card class="section-card">
-        <template #header>{{ t('sessions.recentSessions') || '最近会话' }}</template>
+        <template #header>{{ t('sessions.userProfile.recentSessions') }}</template>
         <el-table :data="data?.recent_sessions ?? []" stripe size="small">
-          <el-table-column prop="session_id" label="session_id" min-width="200">
+          <el-table-column prop="session_id" :label="t('sessions.userProfile.sessionId')" min-width="200">
             <template #default="{ row }">
               <router-link :to="`/admin/session-analytics/${row.session_id}/panorama`" class="session-link">
                 {{ row.session_id.slice(0, 16) }}...
               </router-link>
             </template>
           </el-table-column>
-          <el-table-column prop="request_count" label="请求数" width="80" align="right" />
-          <el-table-column prop="cost_usd" label="成本" width="100" align="right">
+          <el-table-column prop="request_count" :label="t('sessions.userProfile.requestCount')" width="80" align="right" />
+          <el-table-column prop="cost_usd" :label="t('sessions.userProfile.totalCost')" width="100" align="right">
             <template #default="{ row }">${{ row.cost_usd.toFixed(4) }}</template>
           </el-table-column>
-          <el-table-column prop="health_grade" label="健康" width="80" align="center">
+          <el-table-column prop="health_grade" :label="t('sessions.userProfile.avgHealthGrade')" width="80" align="center">
             <template #default="{ row }">
               <el-tag v-if="row.health_grade" :type="healthGradeColor(row.health_grade)" size="small">
                 {{ row.health_grade }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="created_at" label="创建时间" width="170" />
+          <el-table-column prop="created_at" :label="t('sessions.userProfile.createdAt')" width="170" />
         </el-table>
       </el-card>
     </div>

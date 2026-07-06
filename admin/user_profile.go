@@ -272,9 +272,10 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 	}
 	var modelsUsed []string
 	_ = h.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT array_agg(DISTINCT m) FROM session_summaries ss,
-		LATERAL unnest(ss.models_used) AS m
+		SELECT array_agg(DISTINCT m)
+		FROM session_summaries ss
 		INNER JOIN session_dim sd ON sd.gw_session_id = ss.session_key
+		CROSS JOIN LATERAL unnest(ss.models_used) AS m
 		WHERE %s
 	`, modelsWhere), modelsArgs...).Scan(&modelsUsed)
 	resp.ModelsUsed = modelsUsed
