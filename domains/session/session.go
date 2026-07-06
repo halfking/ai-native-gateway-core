@@ -32,18 +32,41 @@ type CacheInfo struct {
 }
 
 type Session struct {
-	SessionID        string    `json:"session_id"`
-	SessionKey       string    `json:"session_key"`
-	APIKeyID         int       `json:"api_key_id"`
-	TenantID         string    `json:"tenant_id"`
-	TaskID           string    `json:"task_id"`
-	Namespace        string    `json:"namespace"`
-	Devices          []Device  `json:"devices"`
-	ProviderCache    CacheInfo `json:"provider_cache_info"`
-	CreatedAt        time.Time `json:"created_at"`
-	LastActive       time.Time `json:"last_active"`
-	ExpiresAt        time.Time `json:"expires_at"`
-	LastCredentialID string    `json:"last_credential_id,omitempty"`
+	SessionID             string    `json:"session_id"`
+	SessionKey            string    `json:"session_key"`
+	APIKeyID              int       `json:"api_key_id"`
+	TenantID              string    `json:"tenant_id"`
+	TaskID                string    `json:"task_id"`
+	Namespace             string    `json:"namespace"`
+	Devices               []Device  `json:"devices"`
+	ProviderCache         CacheInfo `json:"provider_cache_info"`
+	CreatedAt             time.Time `json:"created_at"`
+	LastActive            time.Time `json:"last_active"`
+	ExpiresAt             time.Time `json:"expires_at"`
+	LastCredentialID      string    `json:"last_credential_id,omitempty"`
+	Status                string    `json:"status,omitempty"`
+	StoppedAt             time.Time `json:"stopped_at,omitempty"`
+	StopReason            string    `json:"stop_reason,omitempty"`
+	RecoveredAt           time.Time `json:"recovered_at,omitempty"`
+	ClientIP              string    `json:"client_ip,omitempty"`
+	ClientFP              string    `json:"client_fp,omitempty"`
+	CurrentCredentialID   int       `json:"current_credential_id,omitempty"`
+	CurrentModel          string    `json:"current_model,omitempty"`
+	CurrentProvider       string    `json:"current_provider,omitempty"`
+	TotalTurns            int64     `json:"total_turns,omitempty"`
+	FirstRequestAt        time.Time `json:"first_request_at,omitempty"`
+	LastRequestAt         time.Time `json:"last_request_at,omitempty"`
+	TotalPromptTokens     int64     `json:"total_prompt_tokens,omitempty"`
+	TotalCompletionTokens int64     `json:"total_completion_tokens,omitempty"`
+	TotalCostUSDCents     int64     `json:"total_cost_usd_cents,omitempty"`
+	CurrentCredTurns      int64     `json:"current_cred_turns,omitempty"`
+	CurrentCredStartAt    time.Time `json:"current_cred_start_at,omitempty"`
+	CurrentCredStartTurn  int64     `json:"current_cred_start_turn,omitempty"`
+	Title                 string    `json:"title,omitempty"`
+	Annotation            string    `json:"annotation,omitempty"`
+	Tags                  string    `json:"tags,omitempty"`
+	FPSlotIndex           int       `json:"fp_slot_index,omitempty"`
+	FPSlotCredentialID    int       `json:"fp_slot_credential_id,omitempty"`
 }
 
 func (s *Session) GetAPIKeyID() int {
@@ -239,6 +262,38 @@ func (sm *Manager) Get(ctx context.Context, sessionID string) (*Session, error) 
 		CreatedAt:     createdAt,
 		LastActive:    lastActive,
 		ExpiresAt:     expiresAt,
+		Status:        data["status"],
+		StoppedAt:     mustParseTime(data["stopped_at"]),
+		StopReason:    data["stop_reason"],
+		RecoveredAt:   mustParseTime(data["recovered_at"]),
+		ClientIP:      data["client_ip"],
+		ClientFP:      data["client_fp"],
+		CurrentCredentialID: func() int {
+			v, _ := strconv.Atoi(data["current_credential_id"])
+			return v
+		}(),
+		CurrentModel:          data["current_model"],
+		CurrentProvider:       data["current_provider"],
+		TotalTurns:            parseInt64(data["total_turns"]),
+		FirstRequestAt:        mustParseTime(data["first_request_at"]),
+		LastRequestAt:         mustParseTime(data["last_request_at"]),
+		TotalPromptTokens:     parseInt64(data["total_prompt_tokens"]),
+		TotalCompletionTokens: parseInt64(data["total_completion_tokens"]),
+		TotalCostUSDCents:     parseInt64(data["total_cost_usd_cents"]),
+		CurrentCredTurns:      parseInt64(data["current_cred_turns"]),
+		CurrentCredStartAt:    mustParseTime(data["current_cred_start_at"]),
+		CurrentCredStartTurn:  parseInt64(data["current_cred_start_turn"]),
+		Title:                 data["title"],
+		Annotation:            data["annotation"],
+		Tags:                  data["tags"],
+		FPSlotIndex: func() int {
+			v, _ := strconv.Atoi(data["fp_slot_index"])
+			return v
+		}(),
+		FPSlotCredentialID: func() int {
+			v, _ := strconv.Atoi(data["fp_slot_credential_id"])
+			return v
+		}(),
 	}, nil
 }
 
@@ -352,4 +407,9 @@ func parseTime(s string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 	return time.Parse(time.RFC3339, s)
+}
+
+func mustParseTime(s string) time.Time {
+	t, _ := parseTime(s)
+	return t
 }
