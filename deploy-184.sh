@@ -17,6 +17,18 @@
 
 set -euo pipefail
 
+# 忽略 SIGPIPE 防止被管道早退的读者误杀（2026-07-06 审计修复）
+#
+# `set -o pipefail` 会把管道中任意一段失败当作整体失败。当用户
+# 习惯用 `./deploy-184.sh ... | tail -N` 截取日志时，tail 读完 N 行
+# 即关闭管道，下游的 `docker build` / `docker push` 写入端会收到
+# SIGPIPE → 在 pipefail 下脚本被 kill，退出码 141。
+#
+# `trap '' PIPE` 让脚本自身忽略 SIGPIPE：写端收到信号后只得到 EPIPE
+# 错误码，但脚本不退出。这是 CI / 后台重定向（> log 2>&1 &）场景下
+# 的稳健行为。
+trap '' PIPE
+
 # ==================== 配置区 ====================
 # 所有敏感值优先从环境变量读取，fallback 到默认值。
 # 环境变量由 scripts/load-env.sh 统一加载。
