@@ -1712,6 +1712,11 @@ func main() {
 				slog.Error("session state init failed", "error", ssErr)
 			} else if sessionState != nil {
 				defer sessionState.Shutdown()
+				// 将 RotationHook 注入到 ChatHandler，使请求链路自动检测凭据轮换
+				if sessionState.RotationHook != nil {
+					chatHandler.SetRotationHook(sessionState.RotationHook)
+					slog.Info("session rotation hook wired into chat handler")
+				}
 				slog.Info("session state management initialized")
 			}
 		}
