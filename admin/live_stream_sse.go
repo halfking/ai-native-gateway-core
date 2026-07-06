@@ -920,8 +920,9 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 			continue
 		}
 		r.Ts = ts.UTC().Format(time.RFC3339)
-		
-		// Apply ModelCategory fallback: from Model → from Provider → from Model pattern
+
+		// Apply ModelCategory fallback: DB family.vendor → provider-code 映射 → 固化 model pattern → model 名本身
+		// 老板要求："没有就用固化的标准，再没有就直接用模型名称，不要用未知或其它来标记。"
 		if r.Model != "" {
 			r.ModelCategory = h.ModelVendorFor(cctx, r.Model)
 		}
@@ -931,7 +932,18 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		if r.ModelCategory == "" && r.Model != "" {
 			r.ModelCategory = InferVendorFromModel(r.Model)
 		}
-		
+		// 最终兜底：把 model 名字本身当作"原厂"显示，前端泳道名称会显示出来，
+		// 不会出现"未知"字样。
+		if r.ModelCategory == "" {
+			if r.Model != "" {
+				r.ModelCategory = r.Model
+			} else if r.CanonicalName != "" {
+				r.ModelCategory = r.CanonicalName
+			} else {
+				r.ModelCategory = "其他"
+			}
+		}
+
 		out = append(out, r)
 	}
 	return out, nil
@@ -1068,11 +1080,17 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 				"request_id", requestID, "model", out.Model, "category", out.ModelCategory)
 		}
 	}
-
-	// Log when model category is still missing after all fallbacks
+	// 最终兜底：把 model 名字本身当作"原厂"显示。老板原话：
+	//   "原厂"泳道没有正确从模型数据获取到原厂信息时，应该用固化的标准，
+	//   再没有就直接用模型名称，不要用未知或其它来标记。
 	if out.ModelCategory == "" {
-		slog.Debug("live request from telemetry: missing model_category after fallback",
-			"request_id", requestID, "model", out.Model, "provider", providerCode, "tenant_id", tenantID)
+		if out.Model != "" {
+			out.ModelCategory = out.Model
+		} else if out.CanonicalName != "" {
+			out.ModelCategory = out.CanonicalName
+		} else {
+			out.ModelCategory = "其他"
+		}
 	}
 	
 	if status == "" {
