@@ -46,9 +46,9 @@ import (
 // LiveStreamEnvelope wraps every SSE payload. The Type field
 // lets the frontend switch on the variant without sniffing the shape.
 //
-//	"initial_data" — first message after connect; carries []LiveRequest
-//	"request"      — a new request completed (or transitioned to in-progress)
-//	"idle_marker"  — 1 minute of silence; visual gap for the swim lane
+//	"initial_data" — first message after connect; carries []LiveRequest + full snapshot
+//	"request"      — a new request completed (or transitioned to in-progress); carries delta
+//	"idle_marker"  — 1 minute of silence; carries delta
 //	"ping"         — keepalive; the EventSource ignores these
 type LiveStreamEnvelope struct {
 	Type      string              `json:"type"`
@@ -56,6 +56,7 @@ type LiveStreamEnvelope struct {
 	Request   *LiveRequest        `json:"request,omitempty"`
 	Requests  []LiveRequest       `json:"requests,omitempty"`
 	Snapshot  *LiveStreamSnapshot `json:"snapshot,omitempty"`
+	Delta     *LiveStreamDelta    `json:"delta,omitempty"`
 }
 
 // LiveRequest is the minimal projection the dashboard swim lane needs.
@@ -148,6 +149,10 @@ type LiveStreamSSEHub struct {
 
 	stopCh chan struct{}
 
+	// cachedSnapshot holds the last-known snapshot so broadcast can
+	// compute a delta instead of sending the full snapshot every time.
+	cachedSnapshot *LiveStreamSnapshot
+
 	// Metrics (added 2026-07-03 for monitoring)
 	totalConnections    int64 // 累计连接数
 	totalDisconnections int64 // 累计断开数
@@ -207,11 +212,13 @@ func (h *LiveStreamSSEHub) Run() {
 				snapshot, _ = h.store.Snapshot(ctx, req.TenantID, false, h.cfg.InitialReplayLimit)
 				cancel()
 			}
+			delta := ComputeDelta(h.cachedSnapshot, snapshot)
+			h.cachedSnapshot = snapshot
 			h.fanOut(LiveStreamEnvelope{
 				Type:      "request",
 				Timestamp: time.Now().UTC(),
 				Request:   &req,
-				Snapshot:  snapshot,
+				Delta:     delta,
 			})
 		case <-idleTicker.C:
 			h.maybeEmitIdleMarker()
@@ -310,9 +317,19 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 			slog.Debug("live stream redis idle marker failed", "err", err.Error())
 		}
 	}
+	var delta *LiveStreamDelta
+	if h.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		if snapshot, _ := h.store.Snapshot(ctx, "", true, h.cfg.InitialReplayLimit); snapshot != nil {
+			delta = ComputeDelta(h.cachedSnapshot, snapshot)
+			h.cachedSnapshot = snapshot
+		}
+		cancel()
+	}
 	h.fanOut(LiveStreamEnvelope{
 		Type:      "idle_marker",
 		Timestamp: now,
+		Delta:     delta,
 	})
 	h.lastActivityMu.Lock()
 	h.lastActivity = time.Now()
