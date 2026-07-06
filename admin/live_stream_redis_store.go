@@ -87,6 +87,7 @@ type liveRequestRedisPayload struct {
 	TenantID         string   `json:"tenant_id,omitempty"`
 	GwSessionID      string   `json:"gw_session_id,omitempty"`
 	Model            string   `json:"model,omitempty"`
+	CanonicalName    string   `json:"canonical_name,omitempty"`
 	ModelCategory    string   `json:"model_category,omitempty"`
 	ProviderCode     string   `json:"provider_code,omitempty"`
 	Status           string   `json:"status,omitempty"`
@@ -296,6 +297,7 @@ func marshalLiveRequestRedisPayload(req LiveRequest) (string, error) {
 		TenantID:         req.TenantID,
 		GwSessionID:      req.GwSessionID,
 		Model:            req.Model,
+		CanonicalName:    req.CanonicalName,
 		ModelCategory:    req.ModelCategory,
 		ProviderCode:     req.ProviderCode,
 		Status:           req.Status,
@@ -325,6 +327,7 @@ func unmarshalLiveRequestRedisPayload(data string) (LiveRequest, error) {
 		TenantID:         p.TenantID,
 		GwSessionID:      p.GwSessionID,
 		Model:            p.Model,
+		CanonicalName:    p.CanonicalName,
 		ModelCategory:    p.ModelCategory,
 		ProviderCode:     p.ProviderCode,
 		Status:           p.Status,
@@ -483,6 +486,12 @@ func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 		}
 		return req.ProviderCode
 	case "model":
+		// Use CanonicalName for aggregation so the same model from different
+		// credentials (with different outbound names) aggregates into one lane.
+		// Fallback to Model for backward compatibility when CanonicalName is empty.
+		if req.CanonicalName != "" {
+			return req.CanonicalName
+		}
 		if req.Model == "" {
 			return "" // Skip this dimension if no value
 		}
@@ -778,8 +787,10 @@ func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time)
 		// Provider lane idle: only ProviderCode is set.
 		marker.ProviderCode = key
 	case "model":
-		// Model lane idle: only Model is set.
+		// Model lane idle: set both Model (for display) and CanonicalName
+		// (for aggregation, matching the logic in liveStreamDimensionKey).
 		marker.Model = key
+		marker.CanonicalName = key
 	default:
 		// Main-queue (global) idle: leave all dimension fields empty so it
 		// does not appear in any per-dimension lane; it is still rendered
