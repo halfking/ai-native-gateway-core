@@ -522,4 +522,6 @@ export default {
     loadFailed: 'Load failed',
     triggerFailed: 'Trigger failed',
   },
+    displayNameHint: "[TODO: providerDetail.settings.displayNameHint]",
+    saveSuccess: "[TODO: providerDetail.settings.saveSuccess]",
 }

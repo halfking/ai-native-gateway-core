@@ -119,7 +119,7 @@ function openChangePassword() {
 function handleChangePasswordSuccess() {
   clearMustChangePasswordFlag()
   showChangePassword.value = false
-  passwordSuccessMessage.value = t('password.changeSuccess')
+  passwordSuccessMessage.value = t('login.passwordChangeSuccess')
 }
 </script>
 
@@ -235,8 +235,8 @@ function handleChangePasswordSuccess() {
             </template>
           </div>
           <LanguageSelector />
-          <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('changePassword') }}</button>
-          <button class="btn btn-ghost btn-sm" @click="logout">{{ t('logout') }}</button>
+          <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('login.changePassword') }}</button>
+          <button class="btn btn-ghost btn-sm" @click="logout">{{ t('app.logout') }}</button>
         </div>
       </header>
       <section class="main-body">
@@ -265,7 +265,7 @@ function handleChangePasswordSuccess() {
       </div>
       <div class="guest-header-right">
         <LanguageSelector />
-        <button type="button" class="btn btn-primary btn-sm guest-login-btn" @click="openLogin">{{ t('login') }}</button>
+        <button type="button" class="btn btn-primary btn-sm guest-login-btn" @click="openLogin">{{ t('login.submit') }}</button>
       </div>
     </header>
     <main class="guest-main">

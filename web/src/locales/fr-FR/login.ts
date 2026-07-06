@@ -16,4 +16,6 @@ export default {
     required: 'Veuillez saisir le nom d\'utilisateur et le mot de passe',
     failed: 'Échec de la connexion',
   },
+  changePassword: "[TODO: login.changePassword]",
+  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
 }

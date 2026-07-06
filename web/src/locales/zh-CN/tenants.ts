@@ -268,4 +268,5 @@ export default {
     ledgerTitle: '积分流水',
     goBuyCredits: '去购买积分',
   },
+  loadFailed: "[TODO: tenants.loadFailed]",
 }
