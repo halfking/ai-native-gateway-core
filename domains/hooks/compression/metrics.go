@@ -49,12 +49,6 @@ type metrics struct {
 	latency   *prometheus.HistogramVec
 	ratio     *prometheus.GaugeVec
 
-	// lossiness (rtk borrowing, 2026-07-06): how many compressions dropped
-	// recoverable tail content (tail) vs irrecoverable summary-replaced
-	// history (whole) vs nothing at all (none). Borrowed from rtk's
-	// Lossiness enum (src/core/toml_filter.rs:503).
-	lossiness *prometheus.CounterVec
-
 	mu sync.Mutex
 }
 
@@ -62,6 +56,8 @@ var defaultMetrics = newMetrics()
 
 // lossinessCounter is a package-level counter so RecordLossiness can be
 // called without going through defaultMetrics (keeps the call site terse).
+// It's registered separately in init() alongside the defaultMetrics collectors.
+// (rtk borrowing, 2026-07-06: classifies compressions by recoverability)
 var lossinessCounter = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "compression_lossiness_total",

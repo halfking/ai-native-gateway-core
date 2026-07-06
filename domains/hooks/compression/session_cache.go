@@ -167,10 +167,10 @@ type LastOutboundRow struct {
 // list.Element in the LRU ordering, AND its elem pointer lets the LRU
 // promote an entry to the front in O(1) on access.
 type l1Entry struct {
-	key       string // tenantID + ":" + gwSessionID (back-reference for eviction)
-	state     *SessionState
-	body      []byte // last outbound body bytes (nil if evicted from L1 to save RAM)
-	elem      *list.Element
+	key   string // tenantID + ":" + gwSessionID (back-reference for eviction)
+	state *SessionState
+	body  []byte // last outbound body bytes (nil if evicted from L1 to save RAM)
+	elem  *list.Element
 }
 
 // SessionCache provides three-tier session state caching.
