@@ -19,7 +19,12 @@ import (
 // handoff or goal continue, which would otherwise amplify cost/load
 // indefinitely. The effective value can be raised/lowered at runtime via
 // SetFollowUpLimits (e.g. from goal.max_follow_up_depth).
-const MaxFollowUpDepth = 5
+//
+// 15 accommodates the default goal loop budget (max_auto_continue_count=3 ×
+// (max_model_switch_count+1=4) = 12, plus audit margin) without truncating
+// budget-exhaustion model switching. A smaller value would silently cut off
+// the goal continue chain before the continue budget is spent.
+const MaxFollowUpDepth = 15
 
 // MaxFollowUpsPerSession is the default hard ceiling on total follow-up
 // invocations for a single session, regardless of depth. Defense in depth
