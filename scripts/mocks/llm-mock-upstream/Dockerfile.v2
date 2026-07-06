@@ -1,0 +1,18 @@
+# OpenAI-compatible mock upstream v2 for loadtest
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies
+RUN pip install --no-cache-dir aiohttp==3.9.1
+
+# Copy server
+COPY server-v2.py /app/server.py
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/healthz').read()" || exit 1
+
+# Run
+EXPOSE 18080
+CMD ["python3", "/app/server.py"]

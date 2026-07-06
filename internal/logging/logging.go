@@ -251,6 +251,29 @@ func ActiveConfig() Config {
 	return activeConfig
 }
 
+// currentLevel 记录 slog 当前生效的日志级别。ReInit 时复用，避免
+// 调用方需要单独跟踪 level 状态。
+var (
+	currentLevelMu sync.RWMutex
+	currentLevel   = slog.LevelInfo
+)
+
+// SetLevel 设置当前 slog 级别。仅由 main.go 在启动时调用。
+// 运行期修改 level 不在 ReInit 的支持范围（避免和 library 用户的
+// 自定义 handler 冲突）。
+func SetLevel(level slog.Level) {
+	currentLevelMu.Lock()
+	currentLevel = level
+	currentLevelMu.Unlock()
+}
+
+// Level 返回启动时设置的 slog 级别（默认 Info）。
+func Level() slog.Level {
+	currentLevelMu.RLock()
+	defer currentLevelMu.RUnlock()
+	return currentLevel
+}
+
 // Reconfigure 在运行时修改 lumberjack 的轮转参数（MaxSize/MaxBackups/
 // MaxAge/Compress），立即生效，无需重启服务进程。
 //
@@ -285,6 +308,69 @@ func Reconfigure(cfg Config) error {
 		"max_backups", cfg.MaxBackups,
 		"max_age_days", cfg.MaxAgeDays,
 		"compress", cfg.Compress)
+	return nil
+}
+
+// ReInit 重建 file logger 状态，支持启用、停用、修改日志文件路径三种切换。
+//
+// 与 Init 的区别：
+//   - Init 是启动期调用，假定 activeLogger == nil
+//   - ReInit 是运行期调用，会先 Shutdown 旧的 logger，再用新 cfg 重新创建
+//   - cfg.File == "" 表示停用文件日志（slog 退回 stderr-only 行为）
+//
+// 线程安全：调用期间持有 loggerMu，期间 Init/Init-with-empty/ReInit 不会
+// 并发执行。Shutdown 是 sync 的，最后一刻会 Sync+Close 旧文件。
+//
+// 用途：让 /api/admin/logs/config PUT 支持"启用/停用文件日志"和
+// "切换日志目录"两种运维操作，避免每次都改环境变量重启。
+func ReInit(cfg Config) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	level := Level()
+	loggerMu.Lock()
+	defer loggerMu.Unlock()
+
+	// 1) 停用旧 logger（如有）
+	if activeLogger != nil {
+		_ = activeLogger.Close()
+		activeLogger = nil
+		effectiveLogWriter = nil
+	}
+	activeConfig = Config{}
+
+	// 2) cfg.File == ""：停用
+	if cfg.File == "" {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+		slog.Info("logging: file rotation disabled (via ReInit)")
+		return nil
+	}
+
+	// 3) 创建新 logger
+	if err := os.MkdirAll(filepath.Dir(cfg.File), 0o755); err != nil {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+		return fmt.Errorf("logging: create log dir: %w", err)
+	}
+	lj := &lumberjack.Logger{
+		Filename:   cfg.File,
+		MaxSize:    cfg.MaxSizeMB,
+		MaxBackups: cfg.MaxBackups,
+		MaxAge:     cfg.MaxAgeDays,
+		Compress:   cfg.Compress,
+		LocalTime:  cfg.LocalTime,
+	}
+	mw := io.MultiWriter(lj, os.Stderr)
+	effectiveLogWriter = lj
+	activeLogger = lj
+	activeConfig = cfg
+	slog.SetDefault(slog.New(slog.NewJSONHandler(mw, &slog.HandlerOptions{Level: level})))
+	slog.Info("logging: file rotation (re)enabled via ReInit",
+		"file", cfg.File,
+		"max_size_mb", cfg.MaxSizeMB,
+		"max_backups", cfg.MaxBackups,
+		"max_age_days", cfg.MaxAgeDays,
+		"compress", cfg.Compress,
+	)
 	return nil
 }
 

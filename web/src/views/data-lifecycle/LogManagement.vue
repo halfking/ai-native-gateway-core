@@ -26,6 +26,12 @@ const form = ref({
   delete_days: 30,
 })
 
+// 2026-07-07: 文件日志控制（启用/路径）
+const enabledForm = ref({
+  enabled: true,
+  file_path: '',
+})
+
 // 操作表单
 const archiveForm = ref({ older_than_days: 7, dry_run: true })
 const cleanupForm = ref({ older_than_days: 30, dry_run: true, scope: 'all' })
@@ -61,10 +67,39 @@ async function load() {
       archive_days: cfg.archive_days,
       delete_days: cfg.delete_days,
     }
+    enabledForm.value = {
+      enabled: cfg.enabled,
+      file_path: cfg.file_path_override || cfg.file_path || '',
+    }
   } catch (e: any) {
     error.value = e.message || '加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function saveEnabled() {
+  saving.value = true
+  saveMsg.value = null
+  try {
+    const cfg = await logConfigUpdate({
+      file_path: enabledForm.value.file_path,
+      enabled: enabledForm.value.enabled,
+    })
+    config.value = cfg
+    enabledForm.value = {
+      enabled: cfg.enabled,
+      file_path: cfg.file_path_override || cfg.file_path || '',
+    }
+    saveMsg.value = cfg.enabled
+      ? '✅ 已启用文件日志，写入 ' + (cfg.log_dir || 'stderr')
+      : '✅ 已停用文件日志（输出回到 stderr）'
+    // 重新拉取 stats / files（启用后才有内容）
+    await load()
+  } catch (e: any) {
+    saveMsg.value = '❌ 保存失败：' + (e.message || '未知错误')
+  } finally {
+    saving.value = false
   }
 }
 
@@ -155,6 +190,38 @@ function fmtNum(n: number) {
     </div>
 
     <div v-if="error" class="error-box">{{ error }}</div>
+
+    <!-- 区块0：文件日志启用与目录设置（2026-07-07 新增） -->
+    <div v-if="config" class="card">
+      <h3 class="card-title">
+        文件日志设置
+        <span v-if="config.enabled" class="badge ok">已启用</span>
+        <span v-else class="badge warn">未启用</span>
+        <span v-if="config.enabled_source === 'db'" class="badge muted">DB 覆盖</span>
+        <span v-else-if="config.file_path_env" class="badge muted">环境变量</span>
+      </h3>
+      <div class="form-group switch-group">
+        <label class="switch-label">
+          <input type="checkbox" v-model="enabledForm.enabled" />
+          <span>启用文件日志（取消则输出回到 stderr）</span>
+        </label>
+      </div>
+      <div class="form-group">
+        <label class="form-label">日志目录 / 文件路径</label>
+        <input v-model="enabledForm.file_path" class="form-input mono" placeholder="例如 /var/log/llm-gateway/gateway.log" />
+        <div class="meta-hint">
+          <span v-if="config.file_path_override">DB 覆盖：<code class="mono">{{ config.file_path_override }}</code></span>
+          <span v-else-if="config.file_path_env">使用环境变量 LLM_GATEWAY_LOG_FILE：<code class="mono">{{ config.file_path_env }}</code></span>
+          <span v-else>未设置；保存后默认写到 <code class="mono">./data/logs/gateway.log</code></span>
+          <div class="meta-hint danger">⚠️ 切换目录会立即重建 file logger（无需重启）；磁盘权限不足会保存失败</div>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button @click="saveEnabled" :disabled="saving" class="btn-primary">
+          {{ saving ? '保存中...' : '保存并生效' }}
+        </button>
+      </div>
+    </div>
 
     <!-- 区块1：日志目录占用 -->
     <div v-if="stats" class="card">
@@ -376,6 +443,9 @@ function fmtNum(n: number) {
 .form-input:disabled { background: #161b22; color: var(--muted, #8b949e); opacity: .5; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
 .switch-group { display: flex; align-items: flex-end; }
+.meta-hint { font-size: 12px; color: var(--muted, #8b949e); margin-top: 4px; word-break: break-all; }
+.meta-hint code { font-family: 'SF Mono', Consolas, monospace; padding: 1px 6px; background: #0f1117; border-radius: 3px; color: var(--accent-h, #818cf8); }
+.meta-hint.danger { color: var(--warning, #d29922); }
 .switch-label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; color: var(--text, #e6edf3); }
 .switch-label input { width: 15px; height: 15px; accent-color: var(--accent, #6366f1); }
 .form-actions { margin-top: 12px; }
