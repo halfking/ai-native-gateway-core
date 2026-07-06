@@ -2,10 +2,19 @@
 import { useI18n } from 'vue-i18n'
 import { ref, onMounted, computed } from 'vue'
 import { req } from '../api/_core'
+import { getLocale } from '../store'
 
-const { t } = useI18n({ useScope: 'global' })
+const { t, te } = useI18n({ useScope: 'global' })
 
-// 审计记录类型
+// 审计记录类型（与后端 admin/session_audit.go + domains/sessionaudit/types.go 对齐）
+// 注意：后端分数均为 0-10，Threat.severity 是 int，Threat 字段为 evidence 而非 description。
+type Threat = {
+  type: string
+  severity: number // 0-10
+  evidence: string
+  detected_at: string
+}
+
 type SessionAuditRecord = {
   id: number
   session_id: string
@@ -14,9 +23,12 @@ type SessionAuditRecord = {
     ip: string
     user_agent: string
     model: string
+    agent: string
+    device_seed: string
   }
   summary?: {
     title: string
+    key_points?: string[]
     content_hash: string
   }
   intent?: {
@@ -25,15 +37,16 @@ type SessionAuditRecord = {
     reason: string
   }
   scores: {
-    security: number
-    danger: number
-    trust: number
-    sensitive: number
+    security: number  // 0-10
+    danger: number    // 0-10
+    trust: number     // 0-10
+    sensitive: number // 0-10
   }
   detect_result?: {
-    score: number
+    score: number // 0-10
     decision: string
-    threats?: Array<{ type: string; severity: string; description: string }>
+    reason?: string
+    threats?: Threat[]
     sensitive_words?: string[]
   }
   status: string
@@ -63,6 +76,7 @@ const page = ref(1)
 const size = ref(50)
 const loading = ref(false)
 const statsLoading = ref(false)
+const statsError = ref('')
 const error = ref('')
 
 const filterTenantID = ref('')
@@ -77,6 +91,7 @@ const offset = computed(() => (page.value - 1) * size.value)
 
 async function loadStats() {
   statsLoading.value = true
+  statsError.value = ''
   try {
     const params = new URLSearchParams()
     if (filterTenantID.value) params.append('tenant_id', filterTenantID.value)
@@ -84,7 +99,8 @@ async function loadStats() {
     const data = await req<SessionAuditStats>('GET', url)
     stats.value = data
   } catch (e: unknown) {
-    console.error('加载统计失败:', e)
+    statsError.value = e instanceof Error ? e.message : String(e)
+    console.error('加载审计统计失败:', e)
   } finally {
     statsLoading.value = false
   }
@@ -106,7 +122,7 @@ async function load() {
     records.value = data.records || []
     total.value = data.total || 0
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载审计记录失败'
+    error.value = e instanceof Error ? e.message : t('sessions.audit.loadFailed')
     records.value = []
     total.value = 0
   } finally {
@@ -144,35 +160,68 @@ function closeDetail() {
   detailRecord.value = null
 }
 
+// 用显式 Map 代替动态键拼接，彻底避免 vue-i18n key 转换 bug
+// （此前 `status${status.replace('_','')}` 会把 need_approval 转成
+//  statusNeedapproval，而 locale 里是 statusNeedApproval，大小写不匹配）。
+const STATUS_BADGE_CLASS: Record<string, string> = {
+  pass: 'badge-green',
+  warn: 'badge-yellow',
+  blocked: 'badge-red',
+  need_approval: 'badge-blue',
+}
+const STATUS_I18N_KEY: Record<string, string> = {
+  pass: 'sessions.audit.statusPass',
+  warn: 'sessions.audit.statusWarn',
+  blocked: 'sessions.audit.statusBlocked',
+  need_approval: 'sessions.audit.statusNeedApproval',
+}
+const APPROVAL_BADGE_CLASS: Record<string, string> = {
+  pending: 'badge-blue',
+  approved: 'badge-green',
+  rejected: 'badge-red',
+  timeout: 'badge-gray',
+}
+const APPROVAL_I18N_KEY: Record<string, string> = {
+  pending: 'sessions.audit.approvalPending',
+  approved: 'sessions.audit.approvalApproved',
+  rejected: 'sessions.audit.approvalRejected',
+  timeout: 'sessions.audit.approvalTimeout',
+}
+
 function statusBadgeClass(status: string): string {
-  const map: Record<string, string> = {
-    pass: 'badge-green',
-    warn: 'badge-yellow',
-    blocked: 'badge-red',
-    need_approval: 'badge-blue',
-  }
-  return map[status] || 'badge-gray'
+  return STATUS_BADGE_CLASS[status] || 'badge-gray'
 }
-
 function statusLabel(status: string): string {
-  const key = `sessions.audit.status${status.charAt(0).toUpperCase() + status.slice(1).replace('_', '')}`
-  return t(key, status)
+  const key = STATUS_I18N_KEY[status]
+  // te() 检查键是否存在；不存在则回退到原始状态字符串（而非渲染 key 路径）
+  return key && te(key) ? t(key) : status
 }
-
+function approvalBadgeClass(status: string): string {
+  return APPROVAL_BADGE_CLASS[status] || 'badge-gray'
+}
 function approvalLabel(status: string): string {
-  const key = `sessions.audit.approval${status.charAt(0).toUpperCase() + status.slice(1)}`
-  return t(key, status)
+  const key = APPROVAL_I18N_KEY[status]
+  return key && te(key) ? t(key) : status || '-'
 }
 
-function scoreColor(score: number): string {
-  if (score >= 80) return '#10b981'
-  if (score >= 60) return '#f59e0b'
+// 后端分数范围统一为 0-10（见 domains/sessionaudit/types.go 注释）。
+// 阈值按 10 分制：>=8 绿、6-7 黄、<6 红。
+function scoreColor(score: number, invert = false): string {
+  const v = invert ? 10 - score : score
+  if (v >= 8) return '#10b981'
+  if (v >= 6) return '#f59e0b'
   return '#ef4444'
 }
 
 function fmtDate(s: string) {
   if (!s) return '-'
-  return new Date(s).toLocaleString('zh-CN')
+  // 跟随当前 i18n 语言区域，而非硬编码 zh-CN
+  const locale = getLocale() || 'zh-CN'
+  try {
+    return new Date(s).toLocaleString(locale)
+  } catch {
+    return new Date(s).toLocaleString('zh-CN')
+  }
 }
 
 onMounted(() => {
@@ -189,30 +238,32 @@ onMounted(() => {
     </div>
 
     <!-- 统计卡片 -->
-    <div v-if="stats" class="stats-grid">
+    <div v-if="statsLoading" class="stats-loading">{{ t('sessions.audit.statsLoading') }}</div>
+    <div v-else-if="statsError" class="error-banner">{{ statsError }}</div>
+    <div v-else-if="stats" class="stats-grid">
       <div class="stat-card">
         <div class="stat-label">{{ t('sessions.audit.totalAudits') }}</div>
         <div class="stat-value">{{ stats.total }}</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">{{ t('sessions.audit.averageScore') }}</div>
-        <div class="stat-value" :style="{ color: scoreColor(stats.avg_score) }">
-          {{ stats.avg_score.toFixed(1) }}
+        <div class="stat-value" :style="{ color: scoreColor(stats.avg_score || 0) }">
+          {{ (stats.avg_score || 0).toFixed(1) }}
         </div>
       </div>
       <div class="stat-card">
         <div class="stat-label">{{ t('sessions.audit.statusDistribution') }}</div>
         <div class="stat-breakdown">
-          <span v-for="(count, status) in stats.by_status" :key="status" :class="statusBadgeClass(status)">
-            {{ statusLabel(status) }}: {{ count }}
+          <span v-for="(count, status) in stats.by_status" :key="status" :class="statusBadgeClass(String(status))">
+            {{ statusLabel(String(status)) }}: {{ count }}
           </span>
         </div>
       </div>
       <div class="stat-card">
         <div class="stat-label">{{ t('sessions.audit.approvalStatus') }}</div>
         <div class="stat-breakdown">
-          <span v-for="(count, status) in stats.by_approval" :key="status" :class="approvalBadgeClass(status)">
-            {{ approvalLabel(status) }}: {{ count }}
+          <span v-for="(count, status) in stats.by_approval" :key="status" :class="approvalBadgeClass(String(status))">
+            {{ approvalLabel(String(status)) }}: {{ count }}
           </span>
         </div>
       </div>
@@ -293,9 +344,9 @@ onMounted(() => {
               <span v-else>-</span>
             </td>
             <td :style="{ color: scoreColor(rec.scores.security) }">{{ rec.scores.security }}</td>
-            <td :style="{ color: scoreColor(100 - rec.scores.danger) }">{{ rec.scores.danger }}</td>
+            <td :style="{ color: scoreColor(rec.scores.danger, true) }">{{ rec.scores.danger }}</td>
             <td :style="{ color: scoreColor(rec.scores.trust) }">{{ rec.scores.trust }}</td>
-            <td :style="{ color: scoreColor(100 - rec.scores.sensitive) }">{{ rec.scores.sensitive }}</td>
+            <td :style="{ color: scoreColor(rec.scores.sensitive, true) }">{{ rec.scores.sensitive }}</td>
             <td v-if="rec.detect_result" :style="{ color: scoreColor(rec.detect_result.score) }">
               {{ rec.detect_result.score }}
             </td>
@@ -355,6 +406,8 @@ onMounted(() => {
               <div><strong>{{ t('sessions.audit.detail.ip') }}:</strong> {{ detailRecord.client_info.ip || '-' }}</div>
               <div><strong>{{ t('sessions.audit.detail.model') }}:</strong> {{ detailRecord.client_info.model || '-' }}</div>
               <div><strong>{{ t('sessions.audit.detail.userAgent') }}:</strong> {{ detailRecord.client_info.user_agent || '-' }}</div>
+              <div><strong>{{ t('sessions.audit.detail.agent') }}:</strong> {{ detailRecord.client_info.agent || '-' }}</div>
+              <div><strong>{{ t('sessions.audit.detail.deviceSeed') }}:</strong> <code>{{ detailRecord.client_info.device_seed || '-' }}</code></div>
             </div>
           </div>
 
@@ -384,7 +437,7 @@ onMounted(() => {
               </div>
               <div class="score-item">
                 <div class="score-label">{{ t('sessions.audit.detail.danger') }}</div>
-                <div class="score-value" :style="{ color: scoreColor(100 - detailRecord.scores.danger) }">
+                <div class="score-value" :style="{ color: scoreColor(detailRecord.scores.danger, true) }">
                   {{ detailRecord.scores.danger }}
                 </div>
               </div>
@@ -396,7 +449,7 @@ onMounted(() => {
               </div>
               <div class="score-item">
                 <div class="score-label">{{ t('sessions.audit.detail.sensitive') }}</div>
-                <div class="score-value" :style="{ color: scoreColor(100 - detailRecord.scores.sensitive) }">
+                <div class="score-value" :style="{ color: scoreColor(detailRecord.scores.sensitive, true) }">
                   {{ detailRecord.scores.sensitive }}
                 </div>
               </div>
@@ -414,8 +467,8 @@ onMounted(() => {
               <ul class="threat-list">
                 <li v-for="(threat, idx) in detailRecord.detect_result.threats" :key="idx">
                   <span class="badge-red">{{ threat.type }}</span>
-                  <span class="badge-gray">{{ threat.severity }}</span>
-                  {{ threat.description }}
+                  <span class="badge-gray">{{ t('sessions.audit.detail.severity') }}: {{ threat.severity }}/10</span>
+                  <span v-if="threat.evidence" class="threat-evidence">{{ threat.evidence }}</span>
                 </li>
               </ul>
             </div>

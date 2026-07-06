@@ -60,6 +60,8 @@ const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
 const SessionManagementView = () => import('./views/SessionManagementView.vue')
 const SessionAuditView = () => import('./views/SessionAuditView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
+const ClientAnalyticsView = () => import('./views/ClientAnalyticsView.vue')
+const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -147,6 +149,8 @@ export const router = createRouter({
     { path: '/admin/session-analytics/:id/panorama', component: SessionPanoramaView, meta: { requiresSuper: true } },
     { path: '/admin/session-clusters', component: SessionClustersView, meta: { requiresSuper: true } },
     { path: '/admin/session-audit', component: SessionAuditView, meta: { requiresSuper: true } },
+    { path: '/session-analytics/clients/:id', component: ClientAnalyticsView },
+    { path: '/session-analytics/tasks/:id', component: TaskAnalyticsView },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },

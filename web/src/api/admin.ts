@@ -46,6 +46,153 @@ export function getSessionOverview(days = 7, tenantId?: string) {
   return req<SessionOverviewResponse>('GET', `/api/admin/dashboard/session-overview?${params}`)
 }
 
+// ── Session Analytics - Client/Task Dimension (P2, 2026-07-07) ──
+
+export interface ClientAnalyticsSummary {
+  client_id: string
+  session_count: number
+  active_sessions_24h: number
+  total_requests: number
+  total_cost_usd: number
+  avg_cost_per_session: number
+  avg_health_score?: number
+  health_distribution: {
+    a: number
+    b: number
+    c: number
+    d: number
+    f: number
+  }
+  total_success: number
+  total_errors: number
+  avg_latency_ms?: number
+  first_seen_at: string
+  last_seen_at: string
+  models_used: string[]
+}
+
+export interface ClientAnalyticsDetail extends ClientAnalyticsSummary {
+  related_tasks: Array<{
+    task_id: string
+    session_count: number
+    total_cost_usd: number
+    avg_health?: number
+    last_activity: string
+  }>
+  daily_cost_trend: Array<{
+    date: string
+    cost: number
+    sessions: number
+  }>
+  recent_sessions: Array<{
+    session_id: string
+    request_count: number
+    cost_usd: number
+    health_score?: number
+    health_grade?: string
+    created_at: string
+  }>
+}
+
+export interface TaskAnalyticsSummary {
+  task_id: string
+  session_count: number
+  active_sessions_24h: number
+  total_requests: number
+  total_cost_usd: number
+  avg_cost_per_session: number
+  avg_health_score?: number
+  health_distribution: {
+    a: number
+    b: number
+    c: number
+    d: number
+    f: number
+  }
+  total_success: number
+  total_errors: number
+  avg_latency_ms?: number
+  first_seen_at: string
+  last_seen_at: string
+  models_used: string[]
+  clients_used: string[]
+}
+
+export interface TaskAnalyticsDetail extends TaskAnalyticsSummary {
+  related_clients: Array<{
+    client_id: string
+    session_count: number
+    total_cost_usd: number
+    avg_health?: number
+    last_activity: string
+  }>
+  daily_cost_trend: Array<{
+    date: string
+    cost: number
+    sessions: number
+  }>
+  recent_sessions: Array<{
+    session_id: string
+    request_count: number
+    cost_usd: number
+    health_score?: number
+    health_grade?: string
+    created_at: string
+  }>
+}
+
+export function getClientAnalyticsList(params?: {
+  limit?: number
+  offset?: number
+  order_by?: 'cost' | 'sessions' | 'health'
+  tenant_id?: string
+}) {
+  const q = new URLSearchParams()
+  if (params?.limit) q.set('limit', String(params.limit))
+  if (params?.offset) q.set('offset', String(params.offset))
+  if (params?.order_by) q.set('order_by', params.order_by)
+  if (params?.tenant_id) q.set('tenant_id', params.tenant_id)
+  return req<{
+    clients: ClientAnalyticsSummary[]
+    total: number
+    limit: number
+    offset: number
+    refreshed_at: string
+  }>('GET', `/api/admin/session-analytics/clients?${q}`)
+}
+
+export function getClientAnalyticsDetail(clientId: string, days = 30, tenantId?: string) {
+  const params = new URLSearchParams({ days: String(days) })
+  if (tenantId) params.set('tenant_id', tenantId)
+  return req<ClientAnalyticsDetail>('GET', `/api/admin/session-analytics/clients/${clientId}?${params}`)
+}
+
+export function getTaskAnalyticsList(params?: {
+  limit?: number
+  offset?: number
+  order_by?: 'cost' | 'sessions' | 'health'
+  tenant_id?: string
+}) {
+  const q = new URLSearchParams()
+  if (params?.limit) q.set('limit', String(params.limit))
+  if (params?.offset) q.set('offset', String(params.offset))
+  if (params?.order_by) q.set('order_by', params.order_by)
+  if (params?.tenant_id) q.set('tenant_id', params.tenant_id)
+  return req<{
+    tasks: TaskAnalyticsSummary[]
+    total: number
+    limit: number
+    offset: number
+    refreshed_at: string
+  }>('GET', `/api/admin/session-analytics/tasks?${q}`)
+}
+
+export function getTaskAnalyticsDetail(taskId: string, days = 30, tenantId?: string) {
+  const params = new URLSearchParams({ days: String(days) })
+  if (tenantId) params.set('tenant_id', tenantId)
+  return req<TaskAnalyticsDetail>('GET', `/api/admin/session-analytics/tasks/${taskId}?${params}`)
+}
+
 // ── User Management ──
 
 export interface UserListItem {
