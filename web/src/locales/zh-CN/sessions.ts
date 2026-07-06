@@ -1,5 +1,5 @@
-// sessions.ts — SessionListView / SessionCompareView / SessionAuditView 文案。
-// 命名空间：list / compare / audit。
+// sessions.ts — SessionListView / SessionCompareView / SessionAuditView / SessionManagementView 文案。
+// 命名空间：list / compare / audit / management / config。
 export default {
   list: {
     title: '会话列表',
@@ -323,17 +323,79 @@ export default {
     strategyMemora: 'Memora注入',
     compressionTip: '完整的压缩策略配置请前往"压缩管理"页面',
   },
-  userProfile: {
-    // [TODO] add nested keys
+  management: {
+    title: '会话管理',
+    refresh: '刷新',
+    columns: {
+      status: '状态',
+      title: '标题',
+      sessionId: 'Session ID',
+      tenant: '租户',
+      turns: '轮次',
+      cost: '费用',
+      tokens: 'Tokens',
+      model: '当前模型',
+      healthGrade: '健康等级',
+      lastActive: '最后活跃',
+      actions: '操作',
+    },
+    detail: {
+      title: '会话详情',
+      status: '状态',
+      healthGrade: '健康等级',
+      tenant: '租户',
+      apiKeyId: 'API Key ID',
+      totalTurns: '总轮次',
+      promptTokens: 'Prompt Tokens',
+      completionTokens: 'Completion Tokens',
+      totalCost: '总费用',
+      currentCredential: '当前凭据',
+      currentModel: '当前模型',
+      titleLabel: '标题',
+      annotation: '标注',
+      tags: '标签',
+      rotationHistory: '凭据轮换历史（{count}）',
+      ongoing: '进行中',
+    },
+    actions: {
+      detail: '详情',
+      stop: '停止',
+      recover: '恢复',
+      close: '关闭',
+    },
+    states: {
+      active: '运行中',
+      stopped: '已停止',
+      recovered: '已恢复',
+      waiting: '等待中',
+      error: '异常',
+      expired: '已过期',
+      zombie: '⚠ 僵尸',
+    },
+    healthGrades: {
+      A: '优秀',
+      B: '良好',
+      C: '一般',
+      D: '较差',
+      F: '异常',
+    },
+    confirm: {
+      stopTitle: '停止会话',
+      stopMessage: '确定要停止此会话吗？',
+    },
+    errors: {
+      loadFailed: '加载会话列表失败：{msg}',
+      stopFailed: '停止会话失败：{msg}',
+      recoverFailed: '恢复会话失败：{msg}',
+      sseParseFailed: 'SSE 事件解析失败',
+    },
+    empty: '暂无会话',
+    relativeTime: {
+      justNow: '刚刚',
+      minutesAgo: '{n} 分钟前',
+      hoursAgo: '{n} 小时前',
+      daysAgo: '{n} 天前',
+    },
+    unset: '（未命名）',
   },
-    title: "[TODO: sessions.userProfile.title]",
-  avgHealth: "[TODO: sessions.avgHealth]",
-  costTrend: "[TODO: sessions.costTrend]",
-  recentSessions: "[TODO: sessions.recentSessions]",
-  successRate: "[TODO: sessions.successRate]",
-  topEndUsers: "[TODO: sessions.topEndUsers]",
-  topTasks: "[TODO: sessions.topTasks]",
-  totalCost: "[TODO: sessions.totalCost]",
-  totalSessions: "[TODO: sessions.totalSessions]",
-    detailTitle: "[TODO: sessions.userProfile.detailTitle]",
 }
