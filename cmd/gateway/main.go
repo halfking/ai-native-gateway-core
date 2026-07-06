@@ -864,17 +864,29 @@ func main() {
 	var scCache *compression.SessionCache // 2026-07-03: outer-scope for approval integration
 	if redisClientForCache != nil && dbConn != nil && dbConn.Enabled() && telemetryClient.Enabled() && !compressorSessionDisabled() {
 		scCache = compression.NewSessionCache(redisBackendFromClient(redisClientForCache), dbBackendFromPool(dbConn))
+		// Shared LLM-compaction dependencies: used by both the proactive
+		// SessionCompressor and the reactive RecoveryCoordinator so both
+		// paths run the same lossless summary. Built once here to avoid
+		// constructing two adapter chains.
+		compactionDeps := NewDependenciesFromExecutor(routingExec)
 		scDeps := compression.SessionCompressorDeps{
 			Cache:          scCache,
-			CompactionDeps: NewDependenciesFromExecutor(routingExec),
+			CompactionDeps: compactionDeps,
 		}
 		chatHandler.SetSessionCompressor(compression.NewSessionCompressor(scDeps))
 		slog.Info("v3 session-level compressor wired (L1 in-mem + L2 Redis + L3 PG)")
 
 		// v5 (2026-06-25) session-aware smart recovery coordinator.
+		// Summarizer is wired so the reactive (4xx context_length_exceeded)
+		// path produces a structured LLM summary (preserving original goal,
+		// progress, and plan) instead of degrading to mechanical trim.
+		// When compactionDeps has no Provider/Memora, NewSummaryFunc returns
+		// a func that always reports ok=false → falls back to mechanical trim,
+		// so deployments without an LLM endpoint keep existing behaviour.
 		rcDeps := compression.RecoveryDeps{
 			Cache:      scCache,
 			MaxRetries: 2,
+			Summarizer: compression.NewSummaryFunc(compactionDeps),
 		}
 		routingExec.RecoveryCoord = compression.NewRecoveryCoordinator(rcDeps)
 		slog.Info("v5 smart recovery coordinator wired (session-aware incremental compression)")
