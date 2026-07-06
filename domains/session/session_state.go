@@ -154,7 +154,11 @@ end
 return 'OK'
 `
 
-	_, err := sm.redis.client.Eval(ctx, luaScript,
+	client := sm.redis.Client()
+	if client == nil {
+		return fmt.Errorf("redis client not available")
+	}
+	_, err := client.Eval(ctx, luaScript,
 		[]string{"session:" + sessionID},
 		1, u.PromptTokens, u.CompletionTokens, costCents,
 		nowRFC3339, u.Model, u.Provider, u.CredentialID,
@@ -208,7 +212,12 @@ func (sm *Manager) StartCredRotation(ctx context.Context, sessionID string, cred
 	// 获取总轮次作为起始轮次
 	totalTurns := parseInt64(getFieldFromRedis(ctx, sm, "session:"+sessionID, FieldTotalTurns))
 
-	pipe := sm.redis.client.Pipeline()
+	client := sm.redis.Client()
+	if client == nil {
+		return fmt.Errorf("redis client not available")
+	}
+
+	pipe := client.Pipeline()
 	pipe.LPush(ctx, credRotationsKey(sessionID), entryJSON)
 	pipe.HSet(ctx, "session:"+sessionID, map[string]any{
 		FieldCurrentCredentialID:  credID,
@@ -228,8 +237,13 @@ func (sm *Manager) EndCredRotation(ctx context.Context, sessionID string) error 
 		return nil
 	}
 
+	client := sm.redis.Client()
+	if client == nil {
+		return fmt.Errorf("redis client not available")
+	}
+
 	rotationsKey := credRotationsKey(sessionID)
-	lastJSON, err := sm.redis.client.LIndex(ctx, rotationsKey, 0).Result()
+	lastJSON, err := client.LIndex(ctx, rotationsKey, 0).Result()
 	if err == redis.Nil {
 		return nil // 没有轮换记录
 	}
@@ -256,7 +270,7 @@ func (sm *Manager) EndCredRotation(ctx context.Context, sessionID string) error 
 	entry.CostUSDCents = parseInt64(data[FieldTotalCostUSDCents])
 
 	updatedJSON, _ := json.Marshal(entry)
-	sm.redis.client.LSet(ctx, rotationsKey, 0, updatedJSON)
+	client.LSet(ctx, rotationsKey, 0, updatedJSON)
 	return nil
 }
 
@@ -269,7 +283,12 @@ func (sm *Manager) GetCredRotations(ctx context.Context, sessionID string, limit
 		limit = 100
 	}
 
-	results, err := sm.redis.client.LRange(ctx, credRotationsKey(sessionID), 0, int64(limit-1)).Result()
+	client := sm.redis.Client()
+	if client == nil {
+		return nil, fmt.Errorf("redis client not available")
+	}
+
+	results, err := client.LRange(ctx, credRotationsKey(sessionID), 0, int64(limit-1)).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -289,13 +308,17 @@ func (sm *Manager) TrimCredRotations(ctx context.Context, sessionID string, max 
 	if sm == nil || sm.redis == nil || max <= 0 {
 		return nil
 	}
-	length, err := sm.redis.client.LLen(ctx, credRotationsKey(sessionID)).Result()
+	client := sm.redis.Client()
+	if client == nil {
+		return fmt.Errorf("redis client not available")
+	}
+	length, err := client.LLen(ctx, credRotationsKey(sessionID)).Result()
 	if err != nil {
 		return err
 	}
 	if length > int64(max+10) {
 		// 只在超出较多时 trim，避免频繁操作
-		return sm.redis.client.LTrim(ctx, credRotationsKey(sessionID), 0, int64(max-1)).Err()
+		return client.LTrim(ctx, credRotationsKey(sessionID), 0, int64(max-1)).Err()
 	}
 	return nil
 }
@@ -326,7 +349,12 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 		// 记录日志但不阻止
 	}
 
-	pipe := sm.redis.client.Pipeline()
+	client := sm.redis.Client()
+	if client == nil {
+		return fmt.Errorf("redis client not available")
+	}
+
+	pipe := client.Pipeline()
 	pipe.HSet(ctx, "session:"+sessionID, map[string]any{
 		FieldStatus:     StatusStopped,
 		FieldStoppedAt:  now.Format(time.RFC3339),
@@ -368,7 +396,12 @@ func (sm *Manager) RecoverSession(ctx context.Context, sessionID string) error {
 	apiKeyID := parseInt64(data[FieldAPIKeyID])
 	tenantID := data[FieldTenantID]
 
-	pipe := sm.redis.client.Pipeline()
+	client := sm.redis.Client()
+	if client == nil {
+		return fmt.Errorf("redis client not available")
+	}
+
+	pipe := client.Pipeline()
 	pipe.HSet(ctx, "session:"+sessionID, map[string]any{
 		FieldStatus:      StatusRecovered,
 		FieldRecoveredAt: now.Format(time.RFC3339),
@@ -393,7 +426,11 @@ func (sm *Manager) SetTitle(ctx context.Context, sessionID, title string) error 
 	if err := sm.redis.HSet(ctx, "session:"+sessionID, map[string]any{FieldTitle: title}); err != nil {
 		return err
 	}
-	return sm.redis.client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
+	client := sm.redis.Client()
+	if client != nil {
+		return client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
+	}
+	return nil
 }
 
 // SetAnnotation 设置会话标注
@@ -407,7 +444,11 @@ func (sm *Manager) SetAnnotation(ctx context.Context, sessionID, annotation stri
 	if err := sm.redis.HSet(ctx, "session:"+sessionID, map[string]any{FieldAnnotation: annotation}); err != nil {
 		return err
 	}
-	return sm.redis.client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
+	client := sm.redis.Client()
+	if client != nil {
+		return client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
+	}
+	return nil
 }
 
 // SetTags 设置会话标签（逗号分隔）
@@ -419,7 +460,11 @@ func (sm *Manager) SetTags(ctx context.Context, sessionID string, tags []string)
 	if err := sm.redis.HSet(ctx, "session:"+sessionID, map[string]any{FieldTags: tagsStr}); err != nil {
 		return err
 	}
-	return sm.redis.client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
+	client := sm.redis.Client()
+	if client != nil {
+		return client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
+	}
+	return nil
 }
 
 // SetClientInfo 设置客户端信息
@@ -443,7 +488,11 @@ func (sm *Manager) SetClientInfo(ctx context.Context, sessionID, ip, fp string) 
 	if err := sm.redis.HSet(ctx, "session:"+sessionID, fields); err != nil {
 		return err
 	}
-	return sm.redis.client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
+	client := sm.redis.Client()
+	if client != nil {
+		return client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
+	}
+	return nil
 }
 
 // SetFPSlot 设置 fingerprint slot 快照
@@ -457,7 +506,11 @@ func (sm *Manager) SetFPSlot(ctx context.Context, sessionID string, slotIndex, c
 	}); err != nil {
 		return err
 	}
-	return sm.redis.client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
+	client := sm.redis.Client()
+	if client != nil {
+		return client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
+	}
+	return nil
 }
 
 // ListActiveSessions 列出活跃会话
@@ -468,7 +521,11 @@ func (sm *Manager) ListActiveSessions(ctx context.Context, apiKeyID int64, limit
 	if limit <= 0 {
 		limit = 100
 	}
-	return sm.redis.client.SRandMemberN(ctx, fmt.Sprintf("session:apiKey:%d:active", apiKeyID), int64(limit)).Result()
+	client := sm.redis.Client()
+	if client == nil {
+		return nil, fmt.Errorf("redis client not available")
+	}
+	return client.SRandMemberN(ctx, fmt.Sprintf("session:apiKey:%d:active", apiKeyID), int64(limit)).Result()
 }
 
 // ListStoppedSessions 列出已停止会话
@@ -479,7 +536,11 @@ func (sm *Manager) ListStoppedSessions(ctx context.Context, tenantID string, lim
 	if limit <= 0 {
 		limit = 100
 	}
-	return sm.redis.client.SRandMemberN(ctx, fmt.Sprintf("session:stopped:%s", tenantID), int64(limit)).Result()
+	client := sm.redis.Client()
+	if client == nil {
+		return nil, fmt.Errorf("redis client not available")
+	}
+	return client.SRandMemberN(ctx, fmt.Sprintf("session:stopped:%s", tenantID), int64(limit)).Result()
 }
 
 // GetEnrichedSession 读取完整的会话详情（含统计与轮换历史）
@@ -509,7 +570,11 @@ func getFieldFromRedis(ctx context.Context, sm *Manager, key, field string) stri
 	if sm == nil || sm.redis == nil {
 		return ""
 	}
-	val, _ := sm.redis.client.HGet(ctx, key, field).Result()
+	client := sm.redis.Client()
+	if client == nil {
+		return ""
+	}
+	val, _ := client.HGet(ctx, key, field).Result()
 	return val
 }
 
