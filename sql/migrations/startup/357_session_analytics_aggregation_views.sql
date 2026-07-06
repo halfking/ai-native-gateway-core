@@ -77,7 +77,7 @@ SELECT
     array_agg(DISTINCT ss.client_models[1]) FILTER (WHERE ss.client_models[1] IS NOT NULL) as clients_used,
     NOW() as refreshed_at
 FROM session_summaries ss
-LEFT JOIN session_dim sd ON ss.session_key = sd.session_id AND ss.tenant_id = sd.tenant_id
+LEFT JOIN session_dim sd ON ss.session_key = sd.gw_session_id AND ss.tenant_id = sd.tenant_id
 GROUP BY ss.tenant_id, sd.task_id;
 
 -- 创建索引
@@ -108,9 +108,12 @@ SELECT
     MAX(ss.last_request_at) as last_activity_at,
     NOW() as refreshed_at
 FROM session_summaries ss
-LEFT JOIN session_dim sd ON ss.session_key = sd.session_id AND ss.tenant_id = sd.tenant_id
+LEFT JOIN session_dim sd ON ss.session_key = sd.gw_session_id AND ss.tenant_id = sd.tenant_id
 GROUP BY ss.tenant_id, ss.client_models[1], sd.task_id;
 
+-- 唯一索引：REFRESH MATERIALIZED VIEW CONCURRENTLY 要求物化视图有唯一索引
+CREATE UNIQUE INDEX idx_session_client_task_matrix_uq
+    ON session_client_task_matrix(tenant_id, client_id, task_id);
 CREATE INDEX idx_session_client_task_matrix_client 
     ON session_client_task_matrix(tenant_id, client_id, total_cost_usd DESC);
 CREATE INDEX idx_session_client_task_matrix_task 
