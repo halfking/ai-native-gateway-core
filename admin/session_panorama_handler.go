@@ -112,10 +112,10 @@ func (h *Handler) HandleSessionPanorama(w http.ResponseWriter, r *http.Request) 
 		Summary:       detail.Summary,
 		Timeline:      detail.Timeline,
 		Analysis:      detail.Analysis,
-		StepSummaries: h.loadStepSummaries(ctx, gwSessionID),
-		Tags:          h.loadTags(ctx, gwSessionID),
-		Suggestions:   h.loadSuggestions(ctx, gwSessionID),
-		Cluster:       h.loadClusterMembership(ctx, gwSessionID),
+		StepSummaries: h.loadStepSummaries(ctx, gwSessionID, tenantID),
+		Tags:          h.loadTags(ctx, gwSessionID, tenantID),
+		Suggestions:   h.loadSuggestions(ctx, gwSessionID, tenantID),
+		Cluster:       h.loadClusterMembership(ctx, gwSessionID, tenantID),
 		ModuleEnabled: true, // 路由可达即说明模块已启用（前端另有 /modules 检测）
 	}
 	writeJSON(w, http.StatusOK, panorama)
@@ -187,7 +187,7 @@ func (h *Handler) HandleSessionTags(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"tags": h.loadTags(ctx, gwSessionID)})
+		writeJSON(w, http.StatusOK, map[string]any{"tags": h.loadTags(ctx, gwSessionID, tenantID)})
 	case http.MethodPost:
 		if RequireSuperAdminForWrite(w, r) {
 			return
@@ -258,9 +258,10 @@ func (h *Handler) HandleSessionSuggestions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	gwSessionID := pathSegment(r.URL.Path, "/api/admin/session-analytics/", 0)
+	tenantID := EffectiveTenantIDAll(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	writeJSON(w, http.StatusOK, map[string]any{"suggestions": h.loadSuggestions(ctx, gwSessionID)})
+	writeJSON(w, http.StatusOK, map[string]any{"suggestions": h.loadSuggestions(ctx, gwSessionID, tenantID)})
 }
 
 // HandleSessionSuggestionApply POST /api/admin/session-analytics/<id>/suggestions/<sid>/apply
@@ -292,11 +293,18 @@ func (h *Handler) HandleSessionSuggestionApply(w http.ResponseWriter, r *http.Re
 
 // ── Cluster load helpers ──────────────────────────────────────────────
 
-func (h *Handler) loadStepSummaries(ctx context.Context, gwSessionID string) []SessionStepSummary {
-	rows, err := h.db.Query(ctx, `
+func (h *Handler) loadStepSummaries(ctx context.Context, gwSessionID string, tenantID string) []SessionStepSummary {
+	query := `
 		SELECT step_index, request_id, request_summary, response_summary,
 		       is_llm_generated, tool_calls_summary
-		FROM session_request_summaries WHERE gw_session_id=$1 ORDER BY step_index`, gwSessionID)
+		FROM session_request_summaries WHERE gw_session_id=$1`
+	args := []any{gwSessionID}
+	if tenantID != "" {
+		query += " AND tenant_id=$2"
+		args = append(args, tenantID)
+	}
+	query += " ORDER BY step_index"
+	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		return []SessionStepSummary{}
 	}
@@ -312,10 +320,17 @@ func (h *Handler) loadStepSummaries(ctx context.Context, gwSessionID string) []S
 	return out
 }
 
-func (h *Handler) loadTags(ctx context.Context, gwSessionID string) []SessionTag {
-	rows, err := h.db.Query(ctx, `
+func (h *Handler) loadTags(ctx context.Context, gwSessionID string, tenantID string) []SessionTag {
+	query := `
 		SELECT id, tag_key, tag_value, tag_source, confidence, created_by, created_at
-		FROM session_tags WHERE gw_session_id=$1 ORDER BY created_at`, gwSessionID)
+		FROM session_tags WHERE gw_session_id=$1`
+	args := []any{gwSessionID}
+	if tenantID != "" {
+		query += " AND tenant_id=$2"
+		args = append(args, tenantID)
+	}
+	query += " ORDER BY created_at"
+	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		return []SessionTag{}
 	}
@@ -330,11 +345,18 @@ func (h *Handler) loadTags(ctx context.Context, gwSessionID string) []SessionTag
 	return out
 }
 
-func (h *Handler) loadSuggestions(ctx context.Context, gwSessionID string) []SessionOptimizationSugg {
-	rows, err := h.db.Query(ctx, `
+func (h *Handler) loadSuggestions(ctx context.Context, gwSessionID string, tenantID string) []SessionOptimizationSugg {
+	query := `
 		SELECT id, category, severity, title, description,
 		       potential_savings_tokens, potential_savings_cost, applied, dismissed, created_at
-		FROM session_optimization_suggestions WHERE gw_session_id=$1 ORDER BY created_at DESC`, gwSessionID)
+		FROM session_optimization_suggestions WHERE gw_session_id=$1`
+	args := []any{gwSessionID}
+	if tenantID != "" {
+		query += " AND tenant_id=$2"
+		args = append(args, tenantID)
+	}
+	query += " ORDER BY created_at DESC"
+	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		return []SessionOptimizationSugg{}
 	}
@@ -350,14 +372,21 @@ func (h *Handler) loadSuggestions(ctx context.Context, gwSessionID string) []Ses
 	return out
 }
 
-func (h *Handler) loadClusterMembership(ctx context.Context, gwSessionID string) *SessionClusterMembership {
+func (h *Handler) loadClusterMembership(ctx context.Context, gwSessionID string, tenantID string) *SessionClusterMembership {
 	var m SessionClusterMembership
 	var label *string
-	err := h.db.QueryRow(ctx, `
+	query := `
 		SELECT m.cluster_id, c.label, m.score
 		FROM session_cluster_members m
 		LEFT JOIN session_clusters c ON c.cluster_id = m.cluster_id
-		WHERE m.gw_session_id=$1 ORDER BY m.score DESC LIMIT 1`, gwSessionID).Scan(&m.ClusterID, &label, &m.Score)
+		WHERE m.gw_session_id=$1`
+	args := []any{gwSessionID}
+	if tenantID != "" {
+		query += " AND m.tenant_id=$2"
+		args = append(args, tenantID)
+	}
+	query += " ORDER BY m.score DESC LIMIT 1"
+	err := h.db.QueryRow(ctx, query, args...).Scan(&m.ClusterID, &label, &m.Score)
 	if err != nil {
 		return nil
 	}
