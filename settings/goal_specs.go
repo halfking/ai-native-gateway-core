@@ -68,12 +68,18 @@ func GoalSpecs() []Spec {
 			DangerLevel:     Safe,
 		},
 		{
-			Key:             "goal.max_auto_continue_count",
-			EnvName:         "LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE",
-			Type:            TypeInt,
-			Scope:           ScopeTenant,
-			Category:        CategorySession,
-			Default:         10,
+			Key:      "goal.max_auto_continue_count",
+			EnvName:  "LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE",
+			Type:     TypeInt,
+			Scope:    ScopeTenant,
+			Category: CategorySession,
+			// Default 3 (not a larger value): the per-model continue budget must
+			// fit within goal.max_follow_up_depth's worst-case chain
+			// (max_auto_continue_count × (max_model_switch_count+1) + audit).
+			// With defaults 3×4=12 ≤ depth 15. A larger default would be silently
+			// truncated by the follow-up depth guard, defeating budget-exhaustion
+			// model switching.
+			Default:         3,
 			Min:             floatPtr(1),
 			Max:             floatPtr(50),
 			Description:     "最大自动继续次数",
@@ -254,14 +260,19 @@ func GoalSpecs() []Spec {
 			DangerLevel:     Safe,
 		},
 		{
-			Key:             "goal.max_follow_up_depth",
-			EnvName:         "LLM_GATEWAY_GOAL_MAX_FOLLOW_UP_DEPTH",
-			Type:            TypeInt,
-			Scope:           ScopeTenant,
-			Category:        CategorySession,
-			Default:         5,
+			Key:      "goal.max_follow_up_depth",
+			EnvName:  "LLM_GATEWAY_GOAL_MAX_FOLLOW_UP_DEPTH",
+			Type:     TypeInt,
+			Scope:    ScopeTenant,
+			Category: CategorySession,
+			// Default 15: must exceed the worst-case goal loop depth
+			// (max_auto_continue_count × (max_model_switch_count+1) + audit margin).
+			// With defaults 3×4=12 + audit ≈ 14 ≤ 15. A smaller default would
+			// truncate the loop before the continue budget is exhausted, silently
+			// disabling budget-exhaustion model switching.
+			Default:         15,
 			Min:             floatPtr(1),
-			Max:             floatPtr(20),
+			Max:             floatPtr(50),
 			Description:     "续跑递归最大深度",
 			DescriptionLong: "单个请求链路（含模型切换）的最大递归 follow-up 深度，防止放大成本。0 表示用系统默认值",
 			Unit:            "层",

@@ -27,6 +27,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
@@ -141,7 +142,7 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		AutoSelectRecommended: getEnvBool("LLM_GATEWAY_GOAL_AUTO_SELECT", true),
 		AutoContinueOnPause:   getEnvBool("LLM_GATEWAY_GOAL_AUTO_CONTINUE", true),
 		MaxRetryCount:         getEnvInt("LLM_GATEWAY_GOAL_MAX_RETRY", 3),
-		MaxAutoContinueCount:  getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", 10),
+		MaxAutoContinueCount:  getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", 3),
 		UseAutorouteForAudit:  getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", true),
 		UseAutorouteForIntent: getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_INTENT", true),
 		FallbackAuditModel:    getEnv("LLM_GATEWAY_GOAL_FALLBACK_AUDIT_MODEL", "auto"),
@@ -157,7 +158,7 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		RepeatThreshold:        getEnvInt("LLM_GATEWAY_GOAL_REPEAT_THRESHOLD", 3),
 		RepeatResetOnProgress:  true,
 		CompletionConfidence:   getEnvFloat("LLM_GATEWAY_GOAL_COMPLETION_CONFIDENCE", goal.DefaultCompletionConfidence),
-		MaxFollowUpDepth:       getEnvInt("LLM_GATEWAY_GOAL_MAX_FOLLOW_UP_DEPTH", 5),
+		MaxFollowUpDepth:       getEnvInt("LLM_GATEWAY_GOAL_MAX_FOLLOW_UP_DEPTH", 15),
 		MaxFollowUpsPerSession: getEnvInt("LLM_GATEWAY_GOAL_MAX_FOLLOW_UPS_PER_SESSION", 50),
 	}
 
@@ -180,14 +181,33 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	}
 	auditHook := goal.NewAuditHookWithHistory(goalStore, caller, auditCfg, goalHook.History())
 
-	// 7. Chain and install.
-	chain := response.NewInterceptorChain(goalHook, auditHook)
+	// 6b. Handoff hook: triggers when a session approaches its context
+	//     window, injecting a handoff skill invocation to start a fresh
+	//     context. Placed LAST in the chain below so that when both it and
+	//     goal mode fire on the same response, the handoff follow-up wins
+	//     (InterceptResult.InjectFollowUp is last-writer-wins): rotating to
+	//     a new session takes priority over nudging a near-full context.
+	//     Defaults to disabled — inert unless an operator opts in.
+	handoffStore := handoff.NewPGStore(db)
+	handoffCfg := handoff.TriggerConfig{
+		Enabled:             getEnvBool("LLM_GATEWAY_HANDOFF_AUTO_ENABLED", false),
+		AbsoluteThreshold:   getEnvInt("LLM_GATEWAY_HANDOFF_ABSOLUTE_THRESHOLD", 180000),
+		PercentageThreshold: getEnvFloat("LLM_GATEWAY_HANDOFF_PERCENTAGE_THRESHOLD", 0.8),
+		MessageThreshold:    getEnvInt("LLM_GATEWAY_HANDOFF_MESSAGE_THRESHOLD", 0),
+		SkillName:           getEnv("LLM_GATEWAY_HANDOFF_SKILL_NAME", "handoff"),
+		SettingsGetter:      adapter,
+	}
+	handoffHook := handoff.NewTriggerHook(handoffCfg, handoffStore)
+
+	// 7. Chain and install. Order matters: goal continue → audit → handoff.
+	chain := response.NewInterceptorChain(goalHook, auditHook, handoffHook)
 	chatHandler.SetResponseInterceptor(chain)
 
 	slog.Info("goal_control: interceptors installed",
 		"goal_enabled", goalCfg.Enabled,
 		"detection_mode", goalCfg.DetectionMode,
 		"audit_enabled", auditCfg.Enabled,
+		"handoff_enabled", handoffCfg.Enabled,
 		"model_switch_on_loop", goalCfg.ModelSwitchOnLoop,
 		"max_model_switch", goalCfg.MaxModelSwitchCount,
 		"fallback_models", goalCfg.FallbackModels,
