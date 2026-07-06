@@ -65,6 +65,41 @@ type LiveStreamEnvelope struct {
 	superDelta *LiveStreamDelta    `json:"-"` // attached to Delta during fanOut for super clients; not serialised directly
 }
 
+// providerCodeForSQL resolves providers.id → display name with a sensible fallback chain.
+//
+// IMPORTANT (2026-07-07): must reference providers.display_name (not providers.name).
+// providers.name does not exist in sql/schema/01-schema.sql — pgx returns
+// ERROR: column "name" does not exist (SQLSTATE 42703), which the caller
+// silently treats as an empty result and the live stream dashboard then
+// renders as "未知" / "未知供应商". The static regression test in
+// live_stream_sse_test.go prevents accidental reverts of this column.
+const providerCodeForSQL = `
+		SELECT COALESCE(NULLIF(display_name, ''), NULLIF(catalog_code, ''), NULLIF(code, ''), '')
+		FROM providers
+		WHERE id = $1
+	`
+
+// providerCodeForCredentialSQL resolves credentials.id → provider display
+// name via credentials → providers JOIN.
+//
+// IMPORTANT (2026-07-07): same constraint as providerCodeForSQL — must
+// reference p.display_name, not p.name. See providerCodeForSQL doc.
+const providerCodeForCredentialSQL = `
+		SELECT COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), '')
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		WHERE c.id = $1
+	`
+
+// providerCodeForSQLBody / providerCodeForCredentialSQLBody are plain
+// copies used only by regression tests; the live code path uses the
+// unindented constants above. The test asserts the SQL still references
+// display_name so a future careless rename can't silently regress.
+var (
+	providerCodeForSQLBody            = providerCodeForSQL
+	providerCodeForCredentialSQLBody = providerCodeForCredentialSQL
+)
+
 // LiveRequest is the minimal projection the dashboard swim lane needs.
 // Fields are nullable to match the database shape — clients render "—"
 // when a value is missing.
@@ -357,11 +392,7 @@ func (h *LiveStreamSSEHub) ProviderCodeFor(ctx context.Context, providerID int) 
 		return cached.(string)
 	}
 	var display string
-	row := h.db.QueryRow(ctx, `
-		SELECT COALESCE(NULLIF(name, ''), NULLIF(catalog_code, ''), NULLIF(code, ''), '')
-		FROM providers
-		WHERE id = $1
-	`, providerID)
+	row := h.db.QueryRow(ctx, providerCodeForSQL, providerID)
 	if err := row.Scan(&display); err != nil {
 		slog.Debug("live stream provider lookup failed", "provider_id", providerID, "err", err.Error())
 		h.providerCache.Store(providerID, "")
@@ -391,12 +422,7 @@ func (h *LiveStreamSSEHub) ProviderCodeForCredential(ctx context.Context, creden
 		return cached.(string)
 	}
 	var display string
-	row := h.db.QueryRow(ctx, `
-		SELECT COALESCE(NULLIF(p.name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), '')
-		FROM credentials c
-		JOIN providers p ON p.id = c.provider_id
-		WHERE c.id = $1
-	`, credentialID)
+	row := h.db.QueryRow(ctx, providerCodeForCredentialSQL, credentialID)
 	if err := row.Scan(&display); err != nil {
 		slog.Debug("live stream credential provider lookup failed", "credential_id", credentialID, "err", err.Error())
 		h.providerCache.Store(cacheKey, "")
