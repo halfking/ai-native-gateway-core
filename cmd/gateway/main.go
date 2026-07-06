@@ -880,6 +880,28 @@ func main() {
 		slog.Info("v3 session-level compressor disabled (no Redis / no DB / env flag off)")
 	}
 
+	// ── Prompt-cache optimization (rtk borrowing, 2026-07-06) ───────────────
+	// (a) prefix.Stabilize: reorders messages by stability class to maximise
+	//     upstream KV-prefix-cache hits. Default ON; the transform is
+	//     idempotent + fail-open so it can never break a request. Disable
+	//     with LLM_GATEWAY_PROMPT_CACHE_STABILIZE=0.
+	// (b) CacheInjector: places cache_control markers on the stabilized
+	//     boundary for candidates that declare SupportsPromptCache. Default
+	//     OFF (opt-in via LLM_GATEWAY_PROMPT_CACHE_INJECT=1) because it
+	//     depends on candidate.CacheMode data accuracy.
+	stabilizeOn := envBool("LLM_GATEWAY_PROMPT_CACHE_STABILIZE", true)
+	chatHandler.SetPromptCacheStabilize(stabilizeOn)
+	if stabilizeOn {
+		slog.Info("prompt-cache prefix stabilization enabled (cache/prefix.Stabilize)")
+	}
+	if sessionMgr != nil {
+		chatHandler.SetCacheInjector(session.NewCacheInjector(sessionMgr))
+		if envBool("LLM_GATEWAY_PROMPT_CACHE_INJECT", false) {
+			chatHandler.SetPromptCacheInject(true)
+			slog.Info("prompt-cache-control injection enabled (session.CacheInjector) — opt-in")
+		}
+	}
+
 	// ── Phase 2: Meta-tools handler ─────────────────────────────────────
 	if dbConn != nil && dbConn.Enabled() {
 		metaHandler := metatools.NewHandler(dbConn.Pool())
