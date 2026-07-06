@@ -161,7 +161,7 @@ build_docker_image() {
         -t ${IMAGE_NAME}:latest \
         .
     log_success "镜像构建完成"
-    docker images | grep ${IMAGE_NAME} | head -3
+    docker images | grep ${IMAGE_NAME} | head -3 || true
 }
 
 push_docker_image() {
