@@ -153,23 +153,25 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	pipe.SAdd(ctx, liveStreamTenantSet, tenantID)
 	pipe.Expire(ctx, liveStreamTenantSet, liveStreamTTL)
 
-	// Track last activity time for each dimension queue
-	nowUnix := time.Now().Unix()
+	// Track last activity time for each dimension queue. Use the request
+	// timestamp (not current time) so replayed historical data updates
+	// activity correctly.
+	activityUnix := ts.Unix()
 	if req.ModelCategory != "" {
-		pipe.Set(ctx, liveStreamActivityKey("", "vendor", req.ModelCategory), nowUnix, liveStreamTTL)
-		pipe.Set(ctx, liveStreamActivityKey(tenantID, "vendor", req.ModelCategory), nowUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey("", "vendor", req.ModelCategory), activityUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "vendor", req.ModelCategory), activityUnix, liveStreamTTL)
 	}
 	if req.ProviderCode != "" {
-		pipe.Set(ctx, liveStreamActivityKey("", "provider", req.ProviderCode), nowUnix, liveStreamTTL)
-		pipe.Set(ctx, liveStreamActivityKey(tenantID, "provider", req.ProviderCode), nowUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey("", "provider", req.ProviderCode), activityUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "provider", req.ProviderCode), activityUnix, liveStreamTTL)
 	}
 	if req.Model != "" {
-		pipe.Set(ctx, liveStreamActivityKey("", "model", req.Model), nowUnix, liveStreamTTL)
-		pipe.Set(ctx, liveStreamActivityKey(tenantID, "model", req.Model), nowUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey("", "model", req.Model), activityUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "model", req.Model), activityUnix, liveStreamTTL)
 	}
 	// Track main queue activity
-	pipe.Set(ctx, liveStreamActivityKey("", "main", ""), nowUnix, liveStreamTTL)
-	pipe.Set(ctx, liveStreamActivityKey(tenantID, "main", ""), nowUnix, liveStreamTTL)
+	pipe.Set(ctx, liveStreamActivityKey("", "main", ""), activityUnix, liveStreamTTL)
+	pipe.Set(ctx, liveStreamActivityKey(tenantID, "main", ""), activityUnix, liveStreamTTL)
 
 	for _, key := range liveRequestQueueKeys(tenantID, req) {
 		pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: req.RequestID})
@@ -670,11 +672,11 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 
 		// Detail lookups: store under the global key always, and the
 		// tenant key when scoped, so Replay can resolve the marker.
+		// Note: marker.TenantID is already normalized from parseActivityKey.
 		writePipe.Set(ctx, liveStreamGlobalRequestDetailKey(marker.RequestID), data, liveStreamTTL)
-		tenantID := normalizeLiveStreamTenant(marker.TenantID)
-		writePipe.Set(ctx, liveStreamRequestDetailKey(tenantID, marker.RequestID), data, liveStreamTTL)
+		writePipe.Set(ctx, liveStreamRequestDetailKey(marker.TenantID, marker.RequestID), data, liveStreamTTL)
 
-		for _, qkey := range idleMarkerQueueKeys(tenantID, p.info.dimension, p.info.dimensionKey) {
+		for _, qkey := range idleMarkerQueueKeys(marker.TenantID, p.info.dimension, p.info.dimensionKey) {
 			writePipe.ZAdd(ctx, qkey, redis.Z{Score: score, Member: marker.RequestID})
 			writePipe.Expire(ctx, qkey, liveStreamTTL)
 		}
@@ -714,9 +716,13 @@ func idleMarkerQueueKeys(tenantID, dimension, dimensionKey string) []string {
 }
 
 func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time) LiveRequest {
-	// requestID must be unique per (scope, dimension, key, tick); the ts
-	// suffix guarantees uniqueness across ticks.
-	requestID := fmt.Sprintf("idle-%s-%d", dimension, ts.UnixNano())
+	// requestID must be unique per (scope, dimension, key, tick); include
+	// the scope to prevent collision between global and tenant-scoped markers.
+	scope := "global"
+	if tenantID != "" {
+		scope = "t-" + tenantID
+	}
+	requestID := fmt.Sprintf("idle-%s-%s-%d", scope, dimension, ts.UnixNano())
 
 	marker := LiveRequest{
 		Type:      "idle_marker",
