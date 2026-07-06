@@ -448,6 +448,14 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			return 0
 		}(),
+		// 2026-07-07: Multi-level sticky routing (L1 session+model, L2 client+model, L3 client).
+		// Without SessionID/Model here, /v1/responses requests would fall back to L3-only
+		// sticky, routing all concurrent sessions to the same credential.
+		SessionID: gwSessionID,
+		Model:     clientModel,
+		TenantID:  tenant(keyInfo),
+		AppID:     appID(keyInfo),
+		ApiKeyID:  apiKeyIDPtr(keyInfo),
 	})
 
 	if execErr != nil {
