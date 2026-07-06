@@ -1,0 +1,222 @@
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
+import { getUserProfile, type UserProfileDetail } from '../api/admin'
+import * as echarts from 'echarts'
+import type { EChartsOption } from 'echarts'
+
+const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
+
+const owner = computed(() => route.params.owner as string)
+const loading = ref(false)
+const data = ref<UserProfileDetail | null>(null)
+const days = ref(30)
+
+const costChartRef = ref<HTMLElement>()
+let costChart: echarts.ECharts | null = null
+
+onMounted(() => void load())
+
+watch(days, () => void load())
+
+onUnmounted(() => {
+  costChart?.dispose()
+})
+
+async function load() {
+  loading.value = true
+  try {
+    data.value = await getUserProfile(owner.value, days.value)
+    await nextTick()
+    renderCostChart()
+  } catch {
+    data.value = null
+  } finally {
+    loading.value = false
+  }
+}
+
+function renderCostChart() {
+  if (!costChartRef.value || !data.value?.daily_cost_trend?.length) return
+  if (!costChart) {
+    costChart = echarts.init(costChartRef.value)
+  }
+  const trend = data.value.daily_cost_trend
+  const dates = trend.map(d => d.date)
+  const costs = trend.map(d => d.cost)
+  const sessions = trend.map(d => d.sessions)
+
+  const option: EChartsOption = {
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['Cost', 'Sessions'] },
+    xAxis: { type: 'category', data: dates },
+    yAxis: [
+      { type: 'value', name: 'Cost ($)' },
+      { type: 'value', name: 'Sessions' },
+    ],
+    series: [
+      {
+        name: 'Cost',
+        type: 'line',
+        data: costs,
+        smooth: true,
+        yAxisIndex: 0,
+        itemStyle: { color: '#409EFF' },
+      },
+      {
+        name: 'Sessions',
+        type: 'bar',
+        data: sessions,
+        yAxisIndex: 1,
+        itemStyle: { color: '#67C23A' },
+      },
+    ],
+  }
+  costChart.setOption(option, true)
+}
+
+function healthGradeColor(grade?: string): string {
+  if (!grade) return ''
+  switch (grade) {
+    case 'A': return 'success'
+    case 'B': return 'primary'
+    case 'C': return 'warning'
+    case 'D': return 'info'
+    case 'F': return 'danger'
+    default: return ''
+  }
+}
+</script>
+
+<template>
+  <div class="user-profile-detail">
+    <div class="page-header">
+      <el-button text @click="router.back()">← {{ t('common.back') }}</el-button>
+      <h2>{{ t('sessions.userProfile.detailTitle') || '用户画像' }}: {{ owner }}</h2>
+      <el-radio-group v-model="days" size="small">
+        <el-radio-button :value="7">7天</el-radio-button>
+        <el-radio-button :value="30">30天</el-radio-button>
+        <el-radio-button :value="90">90天</el-radio-button>
+      </el-radio-group>
+    </div>
+
+    <div v-loading="loading">
+      <!-- Stat cards -->
+      <el-row :gutter="16" class="stat-row">
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-label">{{ t('sessions.totalSessions') || '总会话' }}</div>
+              <div class="stat-value">{{ data?.session_count ?? '-' }}</div>
+            </div>
+          </el-card>
+        </el-col>
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-label">{{ t('sessions.totalCost') || '总成本' }}</div>
+              <div class="stat-value">${{ (data?.total_cost_usd ?? 0).toFixed(4) }}</div>
+            </div>
+          </el-card>
+        </el-col>
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-label">{{ t('sessions.avgHealth') || '平均健康分' }}</div>
+              <div class="stat-value">{{ data?.avg_health_score ?? '-' }}</div>
+            </div>
+          </el-card>
+        </el-col>
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-label">{{ t('sessions.successRate') || '成功率' }}</div>
+              <div class="stat-value">
+                {{
+                  data && (data.total_success + data.total_errors) > 0
+                    ? ((data.total_success / (data.total_success + data.total_errors)) * 100).toFixed(1) + '%'
+                    : '-'
+                }}
+              </div>
+            </div>
+          </el-card>
+        </el-col>
+      </el-row>
+
+      <!-- Cost trend chart -->
+      <el-card class="chart-card">
+        <template #header>{{ t('sessions.costTrend') || '成本趋势' }}</template>
+        <div ref="costChartRef" class="chart-container" style="height: 300px" />
+      </el-card>
+
+      <!-- Top tasks -->
+      <el-card class="section-card">
+        <template #header>{{ t('sessions.topTasks') || 'Top Tasks' }}</template>
+        <el-table :data="data?.top_tasks ?? []" stripe size="small">
+          <el-table-column prop="task_id" label="task_id" min-width="200" />
+          <el-table-column prop="session_count" label="会话数" width="90" align="right" />
+          <el-table-column prop="total_cost" label="成本" width="120" align="right">
+            <template #default="{ row }">${{ row.total_cost.toFixed(4) }}</template>
+          </el-table-column>
+          <el-table-column prop="avg_health" label="健康分" width="80" align="right" />
+        </el-table>
+      </el-card>
+
+      <!-- Top end users -->
+      <el-card class="section-card">
+        <template #header>{{ t('sessions.topEndUsers') || 'Top 终端用户' }}</template>
+        <el-table :data="data?.top_end_users ?? []" stripe size="small">
+          <el-table-column prop="end_user_id" label="end_user_id" min-width="200" />
+          <el-table-column prop="session_count" label="会话数" width="90" align="right" />
+          <el-table-column prop="total_cost_usd" label="成本" width="120" align="right">
+            <template #default="{ row }">${{ row.total_cost_usd.toFixed(4) }}</template>
+          </el-table-column>
+          <el-table-column prop="last_activity" label="最近活跃" width="170" />
+        </el-table>
+      </el-card>
+
+      <!-- Recent sessions -->
+      <el-card class="section-card">
+        <template #header>{{ t('sessions.recentSessions') || '最近会话' }}</template>
+        <el-table :data="data?.recent_sessions ?? []" stripe size="small">
+          <el-table-column prop="session_id" label="session_id" min-width="200">
+            <template #default="{ row }">
+              <router-link :to="`/admin/session-analytics/${row.session_id}/panorama`" class="session-link">
+                {{ row.session_id.slice(0, 16) }}...
+              </router-link>
+            </template>
+          </el-table-column>
+          <el-table-column prop="request_count" label="请求数" width="80" align="right" />
+          <el-table-column prop="cost_usd" label="成本" width="100" align="right">
+            <template #default="{ row }">${{ row.cost_usd.toFixed(4) }}</template>
+          </el-table-column>
+          <el-table-column prop="health_grade" label="健康" width="80" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.health_grade" :type="healthGradeColor(row.health_grade)" size="small">
+                {{ row.health_grade }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="created_at" label="创建时间" width="170" />
+        </el-table>
+      </el-card>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.user-profile-detail { padding: 20px; }
+.page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.stat-row { margin-bottom: 16px; }
+.stat-card { text-align: center; }
+.stat-label { font-size: 13px; color: #999; margin-bottom: 4px; }
+.stat-value { font-size: 24px; font-weight: 700; }
+.chart-card { margin-bottom: 16px; }
+.section-card { margin-bottom: 16px; }
+.chart-container { width: 100%; }
+.session-link { color: var(--el-color-primary); text-decoration: none; }
+.session-link:hover { text-decoration: underline; }
+</style>

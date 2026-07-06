@@ -197,6 +197,44 @@ export function getTaskAnalyticsDetail(taskId: string, days = 30, tenantId?: str
   return req<TaskAnalyticsDetail>('GET', `/api/admin/session-analytics/tasks/${taskId}?${params}`)
 }
 
+// ── User Profile / 用户画像 (2026-07-07) ──
+
+export interface UserProfileSummary {
+  owner_user: string
+  session_count: number
+  total_requests: number
+  total_cost_usd: number
+  avg_cost_per_session: number
+  avg_health_score?: number
+  total_success: number
+  total_errors: number
+  first_seen_at: string
+  last_seen_at: string
+  end_user_count: number
+  models_used?: string[]
+}
+
+export interface UserProfileDetail extends UserProfileSummary {
+  daily_cost_trend: Array<{ date: string; cost: number; sessions: number }>
+  top_tasks: Array<{ task_id: string; session_count: number; total_cost: number; avg_health?: number }>
+  top_end_users: Array<{ end_user_id: string; session_count: number; total_cost_usd: number; avg_health?: number; last_activity: string }>
+  recent_sessions: Array<{ session_id: string; request_count: number; cost_usd: number; health_score?: number; health_grade?: string; created_at: string }>
+  health_distribution: { a: number; b: number; c: number; d: number; f: number }
+}
+
+export function getUserProfileList(params?: { limit?: number; offset?: number; search?: string }) {
+  const q = new URLSearchParams()
+  if (params?.limit) q.set('limit', String(params.limit))
+  if (params?.offset) q.set('offset', String(params.offset))
+  if (params?.search) q.set('search', params.search)
+  return req<{ users: UserProfileSummary[]; total: number; limit: number; offset: number }>('GET', `/api/admin/session-analytics/users?${q}`)
+}
+
+export function getUserProfile(owner: string, days = 30) {
+  const params = new URLSearchParams({ days: String(days) })
+  return req<UserProfileDetail>('GET', `/api/admin/session-analytics/users/${owner}?${params}`)
+}
+
 // ── User Management ──
 
 export interface UserListItem {

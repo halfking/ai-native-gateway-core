@@ -119,7 +119,7 @@ function handleClientClick(clientId: string) {
 }
 
 function handleSessionClick(sessionId: string) {
-  router.push(`/admin/session-analytics/${sessionId}`)
+  router.push(`/admin/session-analytics/${sessionId}/panorama`)
 }
 
 function goBack() {

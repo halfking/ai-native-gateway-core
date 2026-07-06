@@ -62,6 +62,8 @@ const SessionAuditView = () => import('./views/SessionAuditView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
 const ClientAnalyticsView = () => import('./views/ClientAnalyticsView.vue')
 const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
+const UserProfileListView = () => import('./views/UserProfileListView.vue')
+const UserProfileView = () => import('./views/UserProfileView.vue')
 const SessionConfigView = () => import('./views/SessionConfigView.vue')
 
 function isAuthed(): boolean {
@@ -156,6 +158,9 @@ export const router = createRouter({
     { path: '/admin/session-audit', component: SessionAuditView, meta: { requiresSuper: true } },
     { path: '/admin/session-analytics/clients/:id', component: ClientAnalyticsView, meta: { requiresSuper: true } },
     { path: '/admin/session-analytics/tasks/:id', component: TaskAnalyticsView, meta: { requiresSuper: true } },
+    // 2026-07-07: 用户画像（后端角色裁剪，meta 仅 requiresAuth 不设 requiresSuper）
+    { path: '/admin/session-analytics/users', component: UserProfileListView, meta: { requiresAuth: true } },
+    { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
     { path: '/admin/session-config', component: SessionConfigView, meta: { requiresSuper: true } },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
