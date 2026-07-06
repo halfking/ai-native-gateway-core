@@ -110,7 +110,6 @@ const (
 	LossinessWhole = "whole"
 )
 
-
 // SessionCompressor orchestrates v3 session-level compression.
 type SessionCompressor struct {
 	deps SessionCompressorDeps
@@ -358,7 +357,6 @@ func classifyLossiness(strategy, summaryMarker string) string {
 		return LossinessTail
 	}
 }
-
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Internal helpers

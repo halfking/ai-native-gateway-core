@@ -1,4 +1,4 @@
-// Package streaming - prefix_guard_integration_test.go (rtk borrowing, 2026-07-06)
+// Package compression - prefix_integration_test.go (rtk borrowing, 2026-07-06)
 //
 // Integration test proving the two new hot-path transforms compose safely:
 // prefix.Stabilize reorders messages for KV-cache hits, then the never_worse
@@ -6,14 +6,13 @@
 // exact sequence handler.go now runs between session compression and the
 // request WAL (see handler.go "Prompt-prefix stabilization" block).
 
-package streaming
+package compression
 
 import (
 	"encoding/json"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/cache/prefix"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 )
 
 // TestStabilize_ThenInject_ReordersAndKeepsSystemFirst verifies the canonical
@@ -78,7 +77,7 @@ func TestInject_NeverWorseGuarded(t *testing.T) {
 	injected := append([]byte{}, raw...)
 	injected = append(injected, []byte("//padded-to-force-regression-padded-padded-padded")...)
 
-	out, regressed := compression.NeverWorse(raw, injected, compression.GuardStageInject)
+	out, regressed := NeverWorse(raw, injected, GuardStageInject)
 	if !regressed {
 		t.Fatalf("inject that grew the body must be reverted; got regressed=false")
 	}
