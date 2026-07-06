@@ -1,0 +1,75 @@
+# docker-compose for local mock LLM testing
+# Usage: cd scripts/mocks && docker-compose up
+
+version: '3.8'
+
+services:
+  mock-a:
+    build:
+      context: llm-mock-upstream
+      dockerfile: Dockerfile.v2
+    ports:
+      - "19080:18080"
+    environment:
+      - MOCK_PORT=18080
+      - MOCK_TOKEN=mock-A
+      - MOCK_STATE_FILE=/tmp/mock-state-A.json
+    volumes:
+      - ./data:/tmp
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  mock-b:
+    build:
+      context: llm-mock-upstream
+      dockerfile: Dockerfile.v2
+    ports:
+      - "19081:18080"
+    environment:
+      - MOCK_PORT=18080
+      - MOCK_TOKEN=mock-B
+      - MOCK_STATE_FILE=/tmp/mock-state-B.json
+    volumes:
+      - ./data:/tmp
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"]
+      interval: 5s
+
+  mock-c:
+    build:
+      context: llm-mock-upstream
+      dockerfile: Dockerfile.v2
+    ports:
+      - "19082:18080"
+    environment:
+      - MOCK_PORT=18080
+      - MOCK_TOKEN=mock-C
+      - MOCK_STATE_FILE=/tmp/mock-state-C.json
+    volumes:
+      - ./data:/tmp
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"]
+      interval: 5s
+
+  mock-d:
+    build:
+      context: llm-mock-upstream
+      dockerfile: Dockerfile.v2
+    ports:
+      - "19083:18080"
+    environment:
+      - MOCK_PORT=18080
+      - MOCK_TOKEN=mock-D
+      - MOCK_STATE_FILE=/tmp/mock-state-D.json
+    volumes:
+      - ./data:/tmp
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"]
+      interval: 5s
+
+networks:
+  default:
+    name: llm-mock-net
