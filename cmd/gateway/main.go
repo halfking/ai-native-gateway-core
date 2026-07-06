@@ -2716,28 +2716,36 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		if providerCode == "" && hasProv {
 			providerCode = hub.ProviderCodeFor(ctx, *entry.ProviderID)
 		}
-		if providerCode == "" && (hasCred || hasProv) {
-			slog.Debug("live stream: provider resolution returned empty",
-				"request_id", entry.RequestID, "credential_id", entry.CredentialID,
-				"provider_id", entry.ProviderID, "tenant_id", entry.TenantID)
-		}
-		return hub.LiveRequestFromTelemetry(
-			ctx,
-			entry.RequestID,
-			time.Now().UTC(),
-			entry.TenantID,
-			clientModel,
-			outboundModel,
-			providerCode,
-			status,
-			entry.Success,
-			entry.ErrorKind,
-			entry.LatencyMs,
-			entry.PromptTokens,
-			entry.CompletionTokens,
-			totalTokens,
-			entry.CostUSD,
-		)
+	if providerCode == "" && (hasCred || hasProv) {
+		slog.Debug("live stream: provider resolution returned empty",
+			"request_id", entry.RequestID, "credential_id", entry.CredentialID,
+			"provider_id", entry.ProviderID, "tenant_id", entry.TenantID)
+	}
+	
+	// Extract canonical_id for model name resolution and aggregation
+	canonicalID := 0
+	if entry.CanonicalID != nil && *entry.CanonicalID > 0 {
+		canonicalID = *entry.CanonicalID
+	}
+	
+	return hub.LiveRequestFromTelemetry(
+		ctx,
+		entry.RequestID,
+		time.Now().UTC(),
+		entry.TenantID,
+		clientModel,
+		outboundModel,
+		canonicalID,
+		providerCode,
+		status,
+		entry.Success,
+		entry.ErrorKind,
+		entry.LatencyMs,
+		entry.PromptTokens,
+		entry.CompletionTokens,
+		totalTokens,
+		entry.CostUSD,
+	)
 	}
 	// Fallback when hub is nil
 	return admin.LiveRequest{

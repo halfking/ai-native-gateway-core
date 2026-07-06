@@ -77,7 +77,8 @@ type LiveRequest struct {
 	// if the request was sent through a session. Empty when the request
 	// is one-off (e.g. a /v1/chat/completions call without a session).
 	GwSessionID      string   `json:"gw_session_id,omitempty"`
-	Model            string   `json:"model"`
+	Model            string   `json:"model"`             // Display name (for backward compat, may be outbound or canonical)
+	CanonicalName    string   `json:"canonical_name"`    // Standard model name for aggregation
 	ModelCategory    string   `json:"model_category"`
 	ProviderCode     string   `json:"provider_code"`
 	Status           string   `json:"status"`
@@ -157,6 +158,14 @@ type LiveStreamSSEHub struct {
 	// Populated lazily by ModelVendorFor() to resolve model vendor from
 	// models_canonical.family → model_families.vendor.
 	modelFamilyCache sync.Map
+
+	// canonicalCache is a sync.Map of canonical_id → canonical_name.
+	// Populated lazily by CanonicalNameFor() so live stream can display
+	// model names by their standard/canonical identity rather than the
+	// credential-level outbound name, enabling proper aggregation in the
+	// model dimension view (same canonical model from different credentials
+	// should appear in one lane, not scattered across multiple lanes).
+	canonicalCache sync.Map
 
 	stopCh chan struct{}
 
@@ -444,6 +453,91 @@ func (h *LiveStreamSSEHub) ModelVendorFor(ctx context.Context, model string) str
 	vendor = strings.ToLower(strings.TrimSpace(vendor))
 	h.modelFamilyCache.Store(model, vendor)
 	return vendor
+}
+
+// CanonicalNameFor resolves a canonical_id to its canonical_name from
+// models_canonical. This enables the live stream to display models by their
+// standard identity rather than credential-level outbound names, so the same
+// model from different credentials aggregates into one lane instead of being
+// scattered. Returns empty string when the ID is zero, invalid, or lookup fails.
+func (h *LiveStreamSSEHub) CanonicalNameFor(ctx context.Context, canonicalID int) string {
+	if canonicalID == 0 {
+		return ""
+	}
+	if h == nil || h.db == nil {
+		return ""
+	}
+
+	// Check cache first
+	if cached, ok := h.canonicalCache.Load(canonicalID); ok {
+		return cached.(string)
+	}
+
+	// Query database: canonical_id → canonical_name
+	var canonicalName string
+	row := h.db.QueryRow(ctx, `
+		SELECT canonical_name
+		FROM models_canonical
+		WHERE id = $1
+		  AND COALESCE(status, 'active') = 'active'
+		LIMIT 1
+	`, canonicalID)
+
+	if err := row.Scan(&canonicalName); err != nil {
+		slog.Debug("canonical name lookup failed", "canonical_id", canonicalID, "err", err.Error())
+		h.canonicalCache.Store(canonicalID, "")
+		return ""
+	}
+
+	canonicalName = strings.TrimSpace(canonicalName)
+	h.canonicalCache.Store(canonicalID, canonicalName)
+	return canonicalName
+}
+
+// VendorFromProvider attempts to infer the model vendor (category) from the
+// provider code when the model name itself is unknown/empty. Many providers
+// have a 1:1 mapping with a vendor (e.g., "openai" provider → "openai" vendor).
+// Returns empty string if no mapping exists or provider is unrecognized.
+func VendorFromProvider(providerCode string) string {
+	// Normalize to lowercase for comparison
+	p := strings.ToLower(strings.TrimSpace(providerCode))
+	
+	// Direct provider → vendor mappings (providers that exclusively serve one vendor)
+	knownMappings := map[string]string{
+		"openai":     "openai",
+		"anthropic":  "anthropic",
+		"google":     "google",
+		"alibaba":    "alibaba",
+		"qwen":       "alibaba",
+		"zhipu":      "zhipu",
+		"deepseek":   "deepseek",
+		"bytedance":  "bytedance",
+		"doubao":     "bytedance",
+		"baidu":      "baidu",
+		"moonshot":   "moonshot",
+		"01ai":       "01ai",
+		"baichuan":   "baichuan",
+		"meta":       "meta",
+		"mistral":    "mistral",
+		"xiaomi":     "xiaomi",
+		"microsoft":  "microsoft",
+		"xai":        "xai",
+		"stepfun":    "stepfun",
+		"minimax":    "minimax",
+	}
+	
+	if vendor, ok := knownMappings[p]; ok {
+		return vendor
+	}
+	
+	// Partial match for composite provider codes (e.g., "openai-azure" → "openai")
+	for providerKey, vendor := range knownMappings {
+		if strings.Contains(p, providerKey) {
+			return vendor
+		}
+	}
+	
+	return ""
 }
 
 func (h *LiveStreamSSEHub) closeAll() {
@@ -789,6 +883,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		       COALESCE(NULLIF(rl.tenant_id, ''), 'default') AS tenant_id,
 		       COALESCE(NULLIF(rl.gw_session_id, ''), '') AS gw_session_id,
 		       COALESCE(NULLIF(rl.outbound_model, ''), rl.client_model, '') AS model,
+		       COALESCE(mc.canonical_name, '') AS canonical_name,
 		       COALESCE(NULLIF(p.name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), '') AS provider_code,
 		       COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status,
 		       rl.latency_ms,
@@ -800,6 +895,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		FROM request_logs_with_current_month rl
 		LEFT JOIN credentials c ON c.id = rl.credential_id
 		LEFT JOIN providers p ON p.id = COALESCE(c.provider_id, rl.provider_id)
+		LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
 		WHERE rl.ts >= NOW() - INTERVAL '1 hour'
 		  ` + tenantClause + `
 		ORDER BY rl.ts ASC
@@ -818,13 +914,21 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		var ts time.Time
 		if err := rows.Scan(
 			&r.RequestID, &ts, &r.TenantID, &r.GwSessionID, &r.Model,
-			&r.ProviderCode, &r.Status, &r.LatencyMs, &r.PromptTokens,
+			&r.CanonicalName, &r.ProviderCode, &r.Status, &r.LatencyMs, &r.PromptTokens,
 			&r.CompletionTokens, &r.TotalTokens, &r.CostUSD, &r.ErrorKind,
 		); err != nil {
 			continue
 		}
 		r.Ts = ts.UTC().Format(time.RFC3339)
-		r.ModelCategory = h.ModelVendorFor(cctx, r.Model)
+		
+		// Apply ModelCategory fallback: from Model → from Provider
+		if r.Model != "" {
+			r.ModelCategory = h.ModelVendorFor(cctx, r.Model)
+		}
+		if r.ModelCategory == "" && r.ProviderCode != "" {
+			r.ModelCategory = VendorFromProvider(r.ProviderCode)
+		}
+		
 		out = append(out, r)
 	}
 	return out, nil
@@ -877,7 +981,28 @@ func classifyModelCategoryFallback(model string) string {
 
 // LiveRequestFromTelemetry adapts a raw RequestLogEntry into a
 // LiveRequest. This is a method on Hub to enable database-backed model vendor lookup.
-func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(ctx context.Context, requestID string, ts time.Time, tenantID, clientModel, outboundModel, providerCode, status string, success bool, errorKind *string, latencyMs, promptTokens, completionTokens *int, totalTokens *int, costUSD *float64) LiveRequest {
+// Implements fallback chains for all three key dimensions:
+//   - Model: outboundModel → clientModel → canonical_name (from canonicalID)
+//   - ModelCategory: from Model → from Provider (when model is empty)
+//   - ProviderCode: already resolved by caller (credential → provider)
+func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
+	ctx context.Context,
+	requestID string,
+	ts time.Time,
+	tenantID string,
+	clientModel string,
+	outboundModel string,
+	canonicalID int,
+	providerCode string,
+	status string,
+	success bool,
+	errorKind *string,
+	latencyMs *int,
+	promptTokens *int,
+	completionTokens *int,
+	totalTokens *int,
+	costUSD *float64,
+) LiveRequest {
 	out := LiveRequest{
 		RequestID:        requestID,
 		Ts:               ts.UTC().Format(time.RFC3339),
@@ -890,22 +1015,53 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(ctx context.Context, request
 		CostUSD:          costUSD,
 		ErrorKind:        errorKind,
 	}
+	
+	// Model fallback chain: outbound → client → canonical_name
 	if outboundModel != "" {
 		out.Model = outboundModel
-	} else {
+	} else if clientModel != "" {
 		out.Model = clientModel
+	} else if canonicalID > 0 {
+		canonicalName := h.CanonicalNameFor(ctx, canonicalID)
+		if canonicalName != "" {
+			out.Model = canonicalName
+			slog.Debug("live stream: using canonical_name as model fallback",
+				"request_id", requestID, "canonical_id", canonicalID, "canonical_name", canonicalName)
+		}
+	}
+	
+	// Set CanonicalName for model dimension aggregation (always use canonical if available)
+	if canonicalID > 0 {
+		out.CanonicalName = h.CanonicalNameFor(ctx, canonicalID)
+	}
+	// Fallback: if no canonicalID but we have a model, use that as canonical (best effort)
+	if out.CanonicalName == "" && out.Model != "" {
+		out.CanonicalName = out.Model
 	}
 	
 	// Log when provider is missing to help diagnose the issue
 	if providerCode == "" {
-		slog.Debug("live request from telemetry: missing provider_code", "request_id", requestID, "model", out.Model, "tenant_id", tenantID)
+		slog.Debug("live request from telemetry: missing provider_code",
+			"request_id", requestID, "model", out.Model, "tenant_id", tenantID)
 	}
 	
-	out.ModelCategory = h.ModelVendorFor(ctx, out.Model)
+	// ModelCategory fallback chain: from Model → from Provider
+	if out.Model != "" {
+		out.ModelCategory = h.ModelVendorFor(ctx, out.Model)
+	}
+	if out.ModelCategory == "" && providerCode != "" {
+		// Try inferring vendor from provider (e.g., "openai" provider → "openai" vendor)
+		out.ModelCategory = VendorFromProvider(providerCode)
+		if out.ModelCategory != "" {
+			slog.Debug("live stream: inferred model_category from provider",
+				"request_id", requestID, "provider", providerCode, "category", out.ModelCategory)
+		}
+	}
 	
-	// Log when model category is missing to help diagnose
+	// Log when model category is still missing after all fallbacks
 	if out.ModelCategory == "" {
-		slog.Debug("live request from telemetry: missing model_category", "request_id", requestID, "model", out.Model, "provider", providerCode, "tenant_id", tenantID)
+		slog.Debug("live request from telemetry: missing model_category after fallback",
+			"request_id", requestID, "model", out.Model, "provider", providerCode, "tenant_id", tenantID)
 	}
 	
 	if status == "" {
