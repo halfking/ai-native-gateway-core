@@ -3,9 +3,7 @@
 package admin
 
 import (
-	"context"
 	"testing"
-	"time"
 )
 
 func TestComputeAndPersistHealth(t *testing.T) {
@@ -186,7 +184,8 @@ func TestOutcomeClassification(t *testing.T) {
 				RequestCount: tt.requestCount,
 				ErrorCount:   tt.errorCount,
 			}
-			_, outcome := classifyOutcome(summary)
+			// classifyOutcome 返回 (outcome, reason)；此处校验 outcome（第一个返回值）。
+			outcome, _ := classifyOutcome(summary)
 			if outcome != tt.expected {
 				t.Errorf("outcome = %s, want %s", outcome, tt.expected)
 			}
