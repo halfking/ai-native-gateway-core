@@ -502,6 +502,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Tenant endpoints require super_admin (enforced inside the handler).
 	h.registerSettingsRoutes(mux)
 
+	// 2026-07-06: session state management endpoints.
+	mux.HandleFunc("/api/admin/sessions", admin(h.handleListSessions))
+	mux.HandleFunc("/api/admin/sessions/", admin(h.handleSessionSubrouter))
+
 	// Module management — enterprise feature module listing, toggling, and
 	// integration configuration (Feishu bot, webhook, etc.).
 	h.registerModuleRoutes(mux)
