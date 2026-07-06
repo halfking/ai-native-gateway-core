@@ -62,6 +62,7 @@ const SessionAuditView = () => import('./views/SessionAuditView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
 const ClientAnalyticsView = () => import('./views/ClientAnalyticsView.vue')
 const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
+const SessionConfigView = () => import('./views/SessionConfigView.vue')
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -91,7 +92,11 @@ export const router = createRouter({
     { path: '/catalog',            redirect: (to) => ({ path: '/models', query: { ...to.query, tab: 'catalog' } }) },
     { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresSuper: true } },
     { path: '/routing-v2/credentials', component: CredentialMonitorView }, // 2026-07-04: 允许 tenant_admin 访问
-    { path: '/sessions',           component: SessionManagementView, meta: { requiresSuper: true } }, // 2026-07-06: Session State Management
+    // SessionManagementView（会话管理 v2.1，super-only）原占用 /sessions，
+    // 与下方 SessionListView（会话列表，所有登录用户可用）冲突——Vue Router
+    // 只匹配第一条，导致 SessionListView 成为死代码、且菜单「会话列表」对非
+    // super 用户显示却跳 /forbidden。现拆分：管理功能走 /admin/sessions。
+    { path: '/admin/sessions',     component: SessionManagementView, meta: { requiresSuper: true } },
     { path: '/probe-health',       component: ProbeHealthView,      meta: { requiresSuper: true } },
     { path: '/probe-health/detail', component: ProbeHealthDetailView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types',         component: WorkTypesView, meta: { requiresSuper: true } },
@@ -139,9 +144,9 @@ export const router = createRouter({
     { path: '/routing-overview',   component: RoutingOverviewView, meta: { requiresPlatformOps: true } },
     { path: '/routing-decisions',  component: DecisionsView, meta: { requiresPlatformOps: true } },
     { path: '/correlations',       component: CorrelationsView, meta: { requiresSuper: true } },
-    { path: '/routing/overrides',  component: RoutingOverrideView, meta: { requiresSuperAdmin: true } },
-    { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuperAdmin: true } },
-    { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuperAdmin: true } },
+    { path: '/routing/overrides',  component: RoutingOverrideView, meta: { requiresSuper: true } },
+    { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuper: true } },
+    { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuper: true } },
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/session-compare',    component: SessionCompareView },
     { path: '/sessions',           component: SessionListView },
@@ -149,8 +154,9 @@ export const router = createRouter({
     { path: '/admin/session-analytics/:id/panorama', component: SessionPanoramaView, meta: { requiresSuper: true } },
     { path: '/admin/session-clusters', component: SessionClustersView, meta: { requiresSuper: true } },
     { path: '/admin/session-audit', component: SessionAuditView, meta: { requiresSuper: true } },
-    { path: '/session-analytics/clients/:id', component: ClientAnalyticsView },
-    { path: '/session-analytics/tasks/:id', component: TaskAnalyticsView },
+    { path: '/session-analytics/clients/:id', component: ClientAnalyticsView, meta: { requiresSuper: true } },
+    { path: '/session-analytics/tasks/:id', component: TaskAnalyticsView, meta: { requiresSuper: true } },
+    { path: '/session-config', component: SessionConfigView, meta: { requiresSuper: true } },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },

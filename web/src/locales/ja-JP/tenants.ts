@@ -269,4 +269,5 @@ export default {
     ledgerTitle: 'クレジット台帳',
     goBuyCredits: 'クレジットを購入',
   },
+  loadFailed: "[TODO: tenants.loadFailed]",
 }

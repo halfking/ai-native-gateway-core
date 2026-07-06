@@ -120,4 +120,13 @@ export default {
     expired: 'Abgelaufene Daten (>90 T.)',
     tooltipSuffix: '{label}: {n} Zeilen ({pct}%)',
   },
+  coldData: "[TODO: dataLifecycle.coldData]",
+  executeNotImpl: "[TODO: dataLifecycle.executeNotImpl]",
+  expiredData: "[TODO: dataLifecycle.expiredData]",
+  hotData: "[TODO: dataLifecycle.hotData]",
+  missingDate: "[TODO: dataLifecycle.missingDate]",
+  needPreview: "[TODO: dataLifecycle.needPreview]",
+  preview: "[TODO: dataLifecycle.preview]",
+  previewFailed: "[TODO: dataLifecycle.previewFailed]",
+  warmData: "[TODO: dataLifecycle.warmData]",
 }

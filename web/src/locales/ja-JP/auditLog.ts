@@ -68,4 +68,8 @@ export default {
   errors: {
     loadFailed: '読み込み失敗',
   },
+  dash: "[TODO: auditLog.dash]",
+  loadFailed: "[TODO: auditLog.loadFailed]",
+  refresh: "[TODO: auditLog.refresh]",
+  refreshing: "[TODO: auditLog.refreshing]",
 }
