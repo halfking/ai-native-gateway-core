@@ -56,15 +56,15 @@ export interface ApprovalConfig {
 }
 
 export function getApprovalConfig() {
-  return req<ApprovalConfig>('GET', '/api/admin/approval-config')
+  return req<ApprovalConfig>('GET', '/api/admin/tenant-approval-config/default/approval-config')
 }
 
 export function updateApprovalConfig(config: ApprovalConfig) {
-  return req<ApprovalConfig>('PUT', '/api/admin/approval-config', config)
+  return req<ApprovalConfig>('PUT', '/api/admin/tenant-approval-config/default/approval-config', config)
 }
 
 export function testNotificationChannel(channel: NotificationChannel) {
-  return req<{ status: string; message?: string }>('POST', '/api/admin/approval-config/test-notification', channel)
+  return req<{ status: string; message?: string }>('POST', '/api/admin/tenant-approval-config/default/test-notification', channel)
 }
 
 // Approval request management
