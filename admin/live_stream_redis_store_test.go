@@ -585,3 +585,31 @@ func TestLiveStreamRedisStore_TenantScopedReplay(t *testing.T) {
 		t.Fatalf("tenant-b snapshot should be isolated, got %#v", ss)
 	}
 }
+
+func TestLiveStreamSSEHub_EvictStaleCachedSnapshots(t *testing.T) {
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{})
+	hub.cachedSnapshotTTL = 50 * time.Millisecond
+
+	// Seed two tenants with fresh and stale entries.
+	hub.cachedSnapshotMu.Lock()
+	hub.cachedSnapshot["tenant-fresh"] = &cachedSnapshotEntry{
+		snapshot:     &LiveStreamSnapshot{},
+		lastAccessed: time.Now(),
+	}
+	hub.cachedSnapshot["tenant-stale"] = &cachedSnapshotEntry{
+		snapshot:     &LiveStreamSnapshot{},
+		lastAccessed: time.Now().Add(-1 * time.Hour),
+	}
+	hub.cachedSnapshotMu.Unlock()
+
+	hub.evictStaleCachedSnapshots()
+
+	hub.cachedSnapshotMu.RLock()
+	defer hub.cachedSnapshotMu.RUnlock()
+	if _, ok := hub.cachedSnapshot["tenant-fresh"]; !ok {
+		t.Fatal("fresh entry should not be evicted")
+	}
+	if _, ok := hub.cachedSnapshot["tenant-stale"]; ok {
+		t.Fatal("stale entry should be evicted")
+	}
+}
