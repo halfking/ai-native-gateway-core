@@ -178,11 +178,18 @@ func (t *SessionTagger) saveTags(ctx context.Context, tenantID, gwSessionID stri
 		INSERT INTO session_tags (gw_session_id, tenant_id, tag_key, tag_value, tag_source, confidence)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (gw_session_id, tag_key, tag_value) DO NOTHING`
+	
+	var errors []error
 	for _, tag := range tags {
 		if _, err := t.db.Exec(ctx, upsertSQL, gwSessionID, tenantID, tag.Key, tag.Value, tag.Source, tag.Confidence); err != nil {
 			t.logger.Warn("tagger: failed to save tag",
 				"gw_session_id", gwSessionID, "tag_key", tag.Key, "error", err)
+			errors = append(errors, err)
 		}
+	}
+	
+	if len(errors) > 0 {
+		return fmt.Errorf("failed to save %d/%d tags", len(errors), len(tags))
 	}
 	return nil
 }
