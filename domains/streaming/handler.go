@@ -1763,6 +1763,21 @@ func (h *ChatHandler) serveWithExecutor(
 			}
 			return ""
 		}(),
+		// 2026-07-07: Multi-level sticky routing (L1: session+model, L2: client+model, L3: client).
+		SessionID: gwSessionID,
+		Model:     clientModel,
+		AppID: func() *int {
+			if keyInfo != nil {
+				return &keyInfo.ApplicationID
+			}
+			return nil
+		}(),
+		ApiKeyID: func() *int {
+			if keyInfo != nil {
+				return &keyInfo.ID
+			}
+			return nil
+		}(),
 	})
 
 	if execErr != nil {
