@@ -33,3 +33,31 @@ func TestMnfCoolingRecoveryMinutes(t *testing.T) {
 		t.Fatalf("mnfCoolingRecoveryMinutes invalid = %d, want 2", got)
 	}
 }
+
+// TestStalePeriodicExhaustedCleanupSQLGuards 验证兜底恢复 SQL 包含所有
+// 必需的安全条件（2026-07-06 P0 fix 审计）。
+//
+// 这个 SQL 解决凭据卡在 quota_state='periodic_exhausted' 无法自动恢复的问题。
+// 关键不变量：
+//  1. 只恢复 healthy 状态的凭据（避免误恢复正在失败中的凭据）
+//  2. health_checked_at 必须在 2 小时内（确保探测数据是新鲜的）
+//  3. 必须重置 quota_recover_at 和 state_reason_code（防止状态不一致）
+//  4. 必须排除非 active 凭据（避免恢复 lifecycle 异常的凭据）
+func TestStalePeriodicExhaustedCleanupSQLGuards(t *testing.T) {
+	sql := stalePeriodicExhaustedCleanupSQL()
+	mustContain := []string{
+		// 必含的不变量
+		"quota_state         = 'ok'",
+		"quota_recover_at    = NULL",
+		"state_reason_code   = NULL",
+		"quota_state = 'periodic_exhausted'",
+		"health_status = 'healthy'",
+		"health_checked_at > now() - INTERVAL '2 hours'",
+		"lifecycle_status = 'active'",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("stalePeriodicExhaustedCleanupSQL missing %q in:\n%s", want, sql)
+		}
+	}
+}
