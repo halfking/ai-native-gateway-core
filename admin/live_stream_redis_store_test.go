@@ -368,7 +368,7 @@ func TestLiveStreamRedisStore_StatusTransitionReplacesRequestID(t *testing.T) {
 	}
 }
 
-func TestLiveStreamRedisStore_IdleMarkerWritesTenantDimensionQueues(t *testing.T) {
+func TestLiveStreamRedisStore_IdleMarkerWritesMainQueue(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 
@@ -390,7 +390,7 @@ func TestLiveStreamRedisStore_IdleMarkerWritesTenantDimensionQueues(t *testing.T
 		t.Fatalf("Record: %v", err)
 	}
 
-	// Force activity keys stale so the vendor/provider/model lanes emit idle markers.
+	// Force activity keys stale so the vendor/provider/model/main lanes emit idle markers.
 	staleUnix := seedTs.Unix() - idleThresholdSeconds - 5
 	for _, k := range mr.Keys() {
 		if strings.HasPrefix(k, liveStreamActivityPrefix) {
@@ -402,32 +402,22 @@ func TestLiveStreamRedisStore_IdleMarkerWritesTenantDimensionQueues(t *testing.T
 		t.Fatalf("ScanAndRecordIdleMarkers: %v", err)
 	}
 
-	// Each dimension lane (tenant-scoped) should now hold BOTH the real
-	// request (req-1) and the idle marker emitted by the scan.
-	for _, key := range []string{
-		tenantLiveStreamKey("tenant-a", "dim:vendor:openai"),
-		tenantLiveStreamKey("tenant-a", "dim:provider:openai"),
-		tenantLiveStreamKey("tenant-a", "dim:model:gpt-4o"),
-	} {
-		members, err := rdb.ZRange(ctx, key, 0, -1).Result()
-		if err != nil {
-			t.Fatalf("ZRange %s: %v", key, err)
-		}
-		// req-1 + 1 idle marker == 2 entries.
-		if len(members) != 2 {
-			t.Fatalf("expected lane %s to contain req-1 + 1 idle marker, got %d: %#v", key, len(members), members)
-		}
+	// Idle markers MUST land in the main queue (the only queue Replay reads),
+	// otherwise they were invisible dead data. Verify the tenant-scoped main
+	// queue now holds req-1 plus the idle markers.
+	tenantMain := tenantLiveStreamKey("tenant-a", "main")
+	members, err := rdb.ZRange(ctx, tenantMain, 0, -1).Result()
+	if err != nil {
+		t.Fatalf("ZRange tenant main: %v", err)
+	}
+	// req-1 + one idle marker per idle dimension (vendor, provider, model, main).
+	if len(members) < 2 {
+		t.Fatalf("expected tenant main queue to contain req-1 + idle markers, got %d: %#v", len(members), members)
 	}
 
-	// The vendor idle marker is written only to the vendor lane (not the
-	// main queue), so verify it via the lane's ZSET + detail store rather
-	// than Replay (which reads the main queue).
-	vendorLaneKey := tenantLiveStreamKey("tenant-a", "dim:vendor:openai")
-	members, err := rdb.ZRange(ctx, vendorLaneKey, 0, -1).Result()
-	if err != nil {
-		t.Fatalf("ZRange vendor lane: %v", err)
-	}
-	var vendorIdle *LiveRequest
+	// Resolve every idle marker from the tenant main queue and assert each
+	// carries ONLY its own dimension's identity.
+	var vendorIdle, providerIdle, modelIdle *LiveRequest
 	for _, m := range members {
 		if m == "req-1" {
 			continue
@@ -440,17 +430,26 @@ func TestLiveStreamRedisStore_IdleMarkerWritesTenantDimensionQueues(t *testing.T
 		if uErr != nil {
 			continue
 		}
-		if req.Type == "idle_marker" {
+		if req.Type != "idle_marker" {
+			continue
+		}
+		switch {
+		case req.ModelCategory == "openai" && req.ProviderCode == "" && req.Model == "":
 			vendorIdle = &req
-			break
+		case req.ProviderCode == "openai" && req.ModelCategory == "" && req.Model == "":
+			providerIdle = &req
+		case req.Model == "gpt-4o" && req.ModelCategory == "" && req.ProviderCode == "":
+			modelIdle = &req
 		}
 	}
 	if vendorIdle == nil {
-		t.Fatalf("expected a vendor-scoped idle marker in lane %s, got members %#v", vendorLaneKey, members)
+		t.Fatalf("expected a vendor-scoped idle marker (ModelCategory=openai only), got members %#v", members)
 	}
-	// Vendor idle marker keeps the real vendor identity but blanks model/provider.
-	if vendorIdle.ModelCategory != "openai" || vendorIdle.ProviderCode != "系统心跳" || vendorIdle.Model != "空闲" {
-		t.Fatalf("vendor idle marker should carry openai vendor with blank model/provider, got %#v", vendorIdle)
+	if providerIdle == nil {
+		t.Fatalf("expected a provider-scoped idle marker (ProviderCode=openai only), got members %#v", members)
+	}
+	if modelIdle == nil {
+		t.Fatalf("expected a model-scoped idle marker (Model=gpt-4o only), got members %#v", members)
 	}
 }
 
