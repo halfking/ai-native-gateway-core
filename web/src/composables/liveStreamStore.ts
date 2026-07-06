@@ -32,17 +32,63 @@ export interface LiveRequest {
   error_kind?: string | null
 }
 
+export interface LiveStreamStats {
+  total: number
+  success: number
+  failure: number
+  in_progress?: number
+}
+
+export interface LiveStreamTile {
+  request_id: string
+  timestamp: string
+  model: string
+  vendor: string
+  provider: string
+  status: string
+  error_kind?: string | null
+  latency_ms?: number | null
+  cost_usd?: number | null
+  prompt_tokens?: number | null
+  completion_tokens?: number | null
+}
+
+export interface LiveStreamLane {
+  id: string
+  name: string
+  dimension: 'vendor' | 'provider' | 'model'
+  requests: LiveStreamTile[]
+  stats: LiveStreamStats
+  isOthers: boolean
+}
+
+export interface LiveStreamLegendItem {
+  key: string
+  name: string
+  count: number
+}
+
+export interface LiveStreamSnapshot {
+  summary: LiveStreamStats
+  detail_dimensions: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimensions: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimension_legends: Record<'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
+  status_legends: LiveStreamLegendItem[]
+}
+
 export interface LiveStreamEnvelope {
   type: 'initial_data' | 'request' | 'idle_marker'
   ts: string
   request?: LiveRequest
   requests?: LiveRequest[]
+  snapshot?: LiveStreamSnapshot
 }
 
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' | 'unsupported'
 
 export const liveStreamState = reactive({
   requests: [] as LiveRequest[],
+  snapshot: null as LiveStreamSnapshot | null,
   connection: 'idle' as ConnectionState,
   paused: false,
   lastEventAt: 0,
@@ -56,6 +102,7 @@ export const liveStreamState = reactive({
 // need to know whether the underlying state is a ref or a
 // reactive object property.
 export const requestsRef: ComputedRef<LiveRequest[]> = computed(() => liveStreamState.requests)
+export const snapshotRef: ComputedRef<LiveStreamSnapshot | null> = computed(() => liveStreamState.snapshot)
 export const connectionRef: ComputedRef<ConnectionState> = computed(() => liveStreamState.connection)
 export const pausedRef: ComputedRef<boolean> = computed(() => liveStreamState.paused)
 export const lastEventAtRef: ComputedRef<number> = computed(() => liveStreamState.lastEventAt)
@@ -145,6 +192,9 @@ function applyInitialData(items: LiveRequest[]) {
 
 function handleEnvelope(env: LiveStreamEnvelope) {
   liveStreamState.lastEventAt = Date.now()
+  if (env.snapshot) {
+    liveStreamState.snapshot = env.snapshot
+  }
   if (env.type === 'initial_data' && Array.isArray(env.requests)) {
     applyInitialData(env.requests)
     return
@@ -247,6 +297,7 @@ export function togglePause() {
 }
 export function resetStream() {
   liveStreamState.requests = []
+  liveStreamState.snapshot = null
   idIndex.clear()
   pending.length = 0
 }

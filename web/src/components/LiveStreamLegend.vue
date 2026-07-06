@@ -4,19 +4,22 @@
 // 2026-07-05 v2: 将状态图例移到同一行右侧
 
 import { computed } from 'vue'
+import type { LiveStreamLegendItem } from '../composables/liveStreamStore'
+import { VENDOR_COLORS, STATUS_BORDER_COLORS } from '../types/swimlane'
 
-interface LegendItem {
-  key: string
-  name: string
-  color: string
-  count?: number
+function dimensionColor(key: string): string {
+  return VENDOR_COLORS[key] || '#6b7280'
+}
+
+function statusColor(key: string): string {
+  return STATUS_BORDER_COLORS[key] || STATUS_BORDER_COLORS['__default__'] || '#6b7280'
 }
 
 const props = defineProps<{
-  dimensionItems: LegendItem[]      // 维度图例（原厂/供应商/模型 Top5）
-  statusItems: LegendItem[]          // 状态图例
-  selectedLegends: Set<string>       // 已选中的图例
-  dimensionLabel: string             // 维度标签（原厂/供应商/模型）
+  dimensionItems: LiveStreamLegendItem[]
+  statusItems: LiveStreamLegendItem[]
+  selectedLegends: Set<string>
+  dimensionLabel: string
 }>()
 
 const emit = defineEmits<{
@@ -54,7 +57,7 @@ function handleClick(key: string) {
           @click="handleClick(item.key)"
           :title="`${item.name} (${item.count || 0}个请求) - 点击${isSelected(item.key) ? '取消' : ''}高亮`"
         >
-          <span class="legend-swatch" :style="{ backgroundColor: item.color }" />
+          <span class="legend-swatch" :style="{ backgroundColor: dimensionColor(item.key) }" />
           <span class="legend-label">{{ item.name }}</span>
           <span v-if="item.count != null" class="legend-count">({{ item.count }})</span>
         </button>
@@ -69,7 +72,7 @@ function handleClick(key: string) {
           class="legend-item legend-item--status"
           :title="item.name"
         >
-          <span class="legend-swatch legend-swatch--border" :style="{ borderColor: item.color }" />
+          <span class="legend-swatch legend-swatch--border" :style="{ borderColor: statusColor(item.key) }" />
           <span class="legend-label">{{ item.name }}</span>
         </span>
       </div>

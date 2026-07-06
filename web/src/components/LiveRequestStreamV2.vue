@@ -3,14 +3,13 @@
 // 2026-07-05: 支持按原厂/供应商/模型分组的多泳道可视化
 // 2026-07-05 v2: 添加管理员连接详情弹窗、空闲块机制
 
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
+import { ref, computed } from 'vue'
 import { useLiveStream } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
 import { isSuperAdmin } from '../store'
 import SwimLane from './SwimLane.vue'
 import LiveStreamLegend from './LiveStreamLegend.vue'
 import type { GroupByDimension } from '../types/swimlane'
-import { createIdleTile } from '../types/swimlane'
 
 const emit = defineEmits<{
   openDetail: [requestId: string]
@@ -18,6 +17,7 @@ const emit = defineEmits<{
 
 const { 
   requests: liveRequests, 
+  snapshot: liveSnapshot,
   connection, 
   paused, 
   togglePause 
@@ -29,26 +29,18 @@ const {
   selectedLegends,
   legendItems,
   statusLegendItems,
-  initializeLanes,
-  queueRequest,
   setGroupBy,
   toggleLegend,
   clearLegendSelection,
-} = useSwimLane()
+} = useSwimLane(liveSnapshot)
 
 // 管理员连接详情弹窗
 const showConnectionDetail = ref(false)
 const isAdmin = computed(() => isSuperAdmin())
 
-// 空闲块定时器
-let idleCheckTimer: number | null = null
-let lastRequestTime = Date.now()
-
-// WebSocket地址
-const wsUrl = computed(() => {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const host = window.location.host
-  return `${protocol}//${host}/api/admin/live-stream`
+// SSE endpoint address
+const streamUrl = computed(() => {
+  return `${window.location.origin}/api/admin/live-stream`
 })
 
 // 切换连接详情弹窗
@@ -58,47 +50,14 @@ function toggleConnectionDetail() {
   }
 }
 
-// 测试WebSocket连接
+// 测试 SSE 连接
 function testConnection() {
   if (connection.value === 'open') {
-    alert('WebSocket连接正常！\n状态: 已连接\n地址: ' + wsUrl.value)
+    alert('SSE连接正常！\n状态: 已连接\n地址: ' + streamUrl.value)
   } else {
-    alert('WebSocket未连接\n状态: ' + connection.value + '\n地址: ' + wsUrl.value)
+    alert('SSE未连接\n状态: ' + connection.value + '\n地址: ' + streamUrl.value)
   }
 }
-
-// 启动空闲块检测定时器
-function startIdleTimer() {
-  if (idleCheckTimer) return
-  
-  idleCheckTimer = window.setInterval(() => {
-    const now = Date.now()
-    const elapsed = now - lastRequestTime
-    
-    // 超过60秒无请求，插入空闲块
-    if (elapsed >= 60000) {
-      const idleTile = createIdleTile()
-      queueRequest(idleTile as any)
-      lastRequestTime = now // 重置时间，避免连续插入
-    }
-  }, 30000) // 每30秒检查一次
-}
-
-// 停止空闲块检测定时器
-function stopIdleTimer() {
-  if (idleCheckTimer) {
-    clearInterval(idleCheckTimer)
-    idleCheckTimer = null
-  }
-}
-
-// WebSocket地址显示（仅管理员）
-const showWsAddress = ref(false)
-const wsAddress = computed(() => {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const host = window.location.host
-  return `${protocol}//${host}/api/admin/live-stream`
-})
 
 // 缓存/窗口统计
 const bufferCount = computed(() => {
@@ -128,31 +87,6 @@ const dimensionLabel = computed(() => {
   if (groupBy.value === 'provider') return '供应商'
   return '模型'
 })
-
-// 初始化
-onMounted(() => {
-  // 用现有的liveRequests初始化泳道
-  initializeLanes(liveRequests.value)
-  // 启动空闲块检测
-  startIdleTimer()
-})
-
-// 清理
-onUnmounted(() => {
-  stopIdleTimer()
-})
-
-// 监听新请求
-watch(liveRequests, (newRequests, oldRequests) => {
-  // 增量处理（找出新增的请求）
-  const oldIds = new Set(oldRequests.map(r => r.request_id).filter(Boolean))
-  const newItems = newRequests.filter(r => r.request_id && !oldIds.has(r.request_id))
-  
-  for (const req of newItems) {
-    queueRequest(req)
-    lastRequestTime = Date.now() // 更新最后请求时间
-  }
-}, { deep: true })
 
 function handleGroupByChange(dimension: GroupByDimension) {
   setGroupBy(dimension)
@@ -221,7 +155,7 @@ function handleToggleLegend(key: string) {
         <!-- 连接详情弹窗（仅管理员） -->
         <div v-if="showConnectionDetail && isAdmin" class="connection-detail-popup">
           <div class="popup-header">
-            <h4>WebSocket 连接详情</h4>
+            <h4>SSE 连接详情</h4>
             <button type="button" class="popup-close" @click="showConnectionDetail = false">✕</button>
           </div>
           <div class="popup-body">
@@ -230,8 +164,8 @@ function handleToggleLegend(key: string) {
               <span class="detail-value" :class="connectionClass">{{ connectionLabel }}</span>
             </div>
             <div class="detail-row">
-              <span class="detail-label">WebSocket地址:</span>
-              <code class="detail-value">{{ wsUrl }}</code>
+              <span class="detail-label">SSE地址:</span>
+              <code class="detail-value">{{ streamUrl }}</code>
             </div>
             <div class="popup-actions">
               <button type="button" class="test-btn" @click="testConnection">测试连接</button>
