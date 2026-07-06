@@ -2044,11 +2044,16 @@ func main() {
 		// Phase 4: Session Analytics API (会话全景分析)
 		// 350 迁移修复 session_summaries 聚合链路后启用。
 		if adminHandler != nil {
-			mux.HandleFunc("/api/admin/session-analytics", wrapAdmin(adminHandler.HandleSessionAnalyticsList))
-			mux.HandleFunc("/api/admin/session-analytics/", wrapAdmin(adminHandler.RouteSessionAnalytics))
-			mux.HandleFunc("/api/admin/session-clusters", wrapAdmin(adminHandler.HandleSessionClustersList))
-			mux.HandleFunc("/api/admin/session-clusters/", wrapAdmin(adminHandler.RouteSessionClusters))
-			slog.Info("Phase 4 session analytics API enabled (/api/admin/session-analytics)")
+		mux.HandleFunc("/api/admin/session-analytics", wrapAdmin(adminHandler.HandleSessionAnalyticsList))
+		mux.HandleFunc("/api/admin/session-analytics/", wrapAdmin(adminHandler.RouteSessionAnalytics))
+		mux.HandleFunc("/api/admin/session-clusters", wrapAdmin(adminHandler.HandleSessionClustersList))
+		mux.HandleFunc("/api/admin/session-clusters/", wrapAdmin(adminHandler.RouteSessionClusters))
+		// Task T1.1: 时间序列分析端点 (2026-07-06)
+		mux.HandleFunc("/api/admin/session-analytics/activity", wrapAdmin(adminHandler.HandleActivityTrend))
+		mux.HandleFunc("/api/admin/session-analytics/cost-trend", wrapAdmin(adminHandler.HandleCostTrend))
+		mux.HandleFunc("/api/admin/session-analytics/latency-trend", wrapAdmin(adminHandler.HandleLatencyTrend))
+		mux.HandleFunc("/api/admin/session-analytics/health-trend", wrapAdmin(adminHandler.HandleHealthTrend))
+		slog.Info("Phase 4 session analytics API enabled (/api/admin/session-analytics)")
 		}
 
 		// Phase 3.6: Credential Success Rate Management (2026-06-23)
