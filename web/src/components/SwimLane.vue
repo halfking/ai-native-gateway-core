@@ -16,13 +16,10 @@ const emit = defineEmits<{
   tileClick: [requestId: string]
 }>()
 
-// 泳道名称显示
+// 泳道名称显示（不截断，允许折行）
 const displayName = computed(() => {
   const name = props.lane.name
   const count = props.lane.stats.total
-  if (name.length > 10) {
-    return `${name.slice(0, 10)}... (${count})`
-  }
   return `${name} (${count})`
 })
 
