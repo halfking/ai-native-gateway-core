@@ -216,16 +216,21 @@ EOF
 # falls back to SSH-in-184 pull+retag+push.
 push_to_local_registry() {
   phase "推送到 184 本地 registry ${REGISTRY_LOCAL} (smart)"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    info "[DRY-RUN] 跳过 127.0.0.1:5000 推送"
+    return 0
+  fi
   local img="${IMAGE_NAME}:${IMAGE_TAG}"
   local remote_img="${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG}"
-  
+
   info "尝试本地直推: $remote_img"
   if docker push "$remote_img" 2>/tmp/.push.err; then
     ok "本地直推成功"
     return 0
   fi
-  
-  local err_msg=$(cat /tmp/.push.err)
+
+  local err_msg
+  err_msg=$(cat /tmp/.push.err 2>/dev/null || echo "")
   if echo "$err_msg" | grep -qE "connection refused|connection reset|i/o timeout|no such host" ; then
     warn "本地直推受阻（疑似 Docker daemon HTTP_PROXY 拦截 $REGISTRY_LOCAL）："
     echo "  $err_msg" | head -3
