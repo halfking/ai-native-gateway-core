@@ -79,6 +79,7 @@ export interface LiveStreamSnapshot {
 export interface LiveStreamDelta {
   summary: LiveStreamStats
   changed_lanes: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimension_legends: Record<'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
   status_legends: LiveStreamLegendItem[]
 }
 
@@ -224,7 +225,7 @@ function mergeDelta(delta: LiveStreamDelta) {
       summary: delta.summary,
       detail_dimensions: { vendor: [], provider: [], model: [] },
       dimensions: { vendor: [], provider: [], model: [] },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: delta.dimension_legends || { vendor: [], provider: [], model: [] },
       status_legends: delta.status_legends,
     }
     return
@@ -235,6 +236,9 @@ function mergeDelta(delta: LiveStreamDelta) {
   for (const dim of ['vendor', 'provider', 'model'] as const) {
     if (delta.changed_lanes[dim]) {
       s.dimensions[dim] = delta.changed_lanes[dim]
+    }
+    if (delta.dimension_legends && delta.dimension_legends[dim]) {
+      s.dimension_legends[dim] = delta.dimension_legends[dim]
     }
   }
 }
