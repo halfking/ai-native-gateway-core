@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
-const { t } = useI18n()
+const { t, tm } = useI18n()
 
 interface Session {
   session_id: string
@@ -51,23 +52,42 @@ const errorHighlightedSessions = ref<Set<string>>(new Set())
 // SSE EventSource
 let eventSource: EventSource | null = null
 
-// 状态颜色映射（6 个对外状态）
-const statusConfig: Record<string, { color: string; label: string; icon: string }> = {
-  active: { color: 'badge-success', label: '运行中', icon: '🟢' },
-  stopped: { color: 'badge-neutral', label: '已停止', icon: '⚫' },
-  recovered: { color: 'badge-info', label: '已恢复', icon: '🔵' },
-  waiting: { color: 'badge-warning', label: '等待中', icon: '🟡' },
-  error: { color: 'badge-error', label: '异常', icon: '🔴' },
-  expired: { color: 'badge-ghost', label: '已过期', icon: '⚪' }
+// 状态颜色映射（6 个对外状态）—— label 从 i18n 读
+function statusLabel(s: string): string {
+  const key = `sessions.management.states.${s}`
+  return tm(key) ? t(key) : s
+}
+const statusColor: Record<string, string> = {
+  active: 'badge-success',
+  stopped: 'badge-neutral',
+  recovered: 'badge-info',
+  waiting: 'badge-warning',
+  error: 'badge-error',
+  expired: 'badge-ghost',
+}
+const statusIcon: Record<string, string> = {
+  active: '🟢', stopped: '⚫', recovered: '🔵',
+  waiting: '🟡', error: '🔴', expired: '⚪',
+}
+function statusConf(s: string) {
+  return {
+    color: statusColor[s] || 'badge-ghost',
+    icon: statusIcon[s] || '⚪',
+    label: statusLabel(s),
+  }
 }
 
-// 健康等级颜色映射（A-F）
-const healthGradeConfig: Record<string, { color: string; label: string }> = {
-  A: { color: 'badge-success', label: '优秀' },
-  B: { color: 'badge-primary', label: '良好' },
-  C: { color: 'badge-warning', label: '一般' },
-  D: { color: 'badge-warning', label: '较差' },
-  F: { color: 'badge-error', label: '异常' }
+// 健康等级颜色映射（A-F）—— label 从 i18n 读
+function healthGradeLabel(g: string): string {
+  const key = `sessions.management.healthGrades.${g}`
+  return tm(key) ? t(key) : g
+}
+const healthColor: Record<string, string> = {
+  A: 'badge-success', B: 'badge-primary',
+  C: 'badge-warning', D: 'badge-warning', F: 'badge-error',
+}
+function healthGradeConf(g: string) {
+  return { color: healthColor[g] || 'badge-ghost', label: healthGradeLabel(g) }
 }
 
 // 判断是否为僵尸会话（>1h 无活动且仍在运行）
@@ -75,26 +95,26 @@ function isZombieSession(session: Session): boolean {
   if (session.status !== 'active') return false
   const lastActive = session.last_request_at || session.last_active
   if (!lastActive) return false
-  
+
   const lastActiveTime = new Date(lastActive).getTime()
   const now = Date.now()
   const hourInMs = 60 * 60 * 1000
-  
+
   return (now - lastActiveTime) > hourInMs
 }
 
 // 计算排序后的会话列表（异常 > 等待 > 运行中按成本降序 > 已停止/恢复）
 const sortedSessions = computed(() => {
   const priorityOrder = { error: 1, waiting: 2, active: 3, recovered: 4, stopped: 5, expired: 6 }
-  
+
   return [...sessions.value].sort((a, b) => {
     const priorityA = priorityOrder[a.status as keyof typeof priorityOrder] || 99
     const priorityB = priorityOrder[b.status as keyof typeof priorityOrder] || 99
-    
+
     if (priorityA !== priorityB) {
       return priorityA - priorityB
     }
-    
+
     // 同优先级按成本降序
     return (b.total_cost_usd_cents || 0) - (a.total_cost_usd_cents || 0)
   })
@@ -113,7 +133,8 @@ async function loadSessions() {
     const data = await resp.json()
     sessions.value = data.sessions || []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : 'Failed to load sessions'
+    error.value = e instanceof Error ? e.message : t('sessions.management.errors.loadFailed', { msg: String(e) })
+    ElMessage.error(error.value)
   } finally {
     loading.value = false
   }
@@ -126,10 +147,10 @@ async function refreshSessionRow(sessionId: string) {
       credentials: 'include'
     })
     if (!resp.ok) return
-    
+
     const data = await resp.json()
     const session = data.session
-    
+
     // 更新现有会话或添加新会话
     const index = sessions.value.findIndex(s => s.session_id === sessionId)
     if (index !== -1) {
@@ -138,14 +159,15 @@ async function refreshSessionRow(sessionId: string) {
       sessions.value.push(session)
     }
   } catch (e) {
-    console.error('Failed to refresh session row:', e)
+    // 静默失败，符合"单行刷新用户无感知"语义，但留日志便于排查
+    console.warn('Failed to refresh session row:', sessionId, e)
   }
 }
 
 // 高亮异常会话
 function highlightSessionError(sessionId: string) {
   errorHighlightedSessions.value.add(sessionId)
-  
+
   // 3秒后移除高亮
   setTimeout(() => {
     errorHighlightedSessions.value.delete(sessionId)
@@ -157,15 +179,15 @@ function initSSE() {
   if (eventSource) {
     eventSource.close()
   }
-  
+
   eventSource = new EventSource('/api/admin/live-stream')
-  
+
   eventSource.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data)
-      
+
       if (!data.gw_session_id) return
-      
+
       // 处理不同类型的 SSE 事件
       switch (data.type) {
         case 'session.error':
@@ -178,17 +200,16 @@ function initSSE() {
           // 所有事件都触发局部刷新
           break
       }
-      
+
       // 局部刷新该会话
-      refreshSessionRow(data.gw_session_id)
+      void refreshSessionRow(data.gw_session_id)
     } catch (e) {
-      console.error('Failed to parse SSE event:', e)
+      console.warn('Failed to parse SSE event:', e)
     }
   }
-  
-  eventSource.onerror = (e) => {
-    console.error('SSE connection error:', e)
-    // EventSource 会自动重连
+
+  eventSource.onerror = () => {
+    // EventSource 自动重连，无需 UI 提示，避免与"无 SSE"场景混淆
   }
 }
 
@@ -203,7 +224,7 @@ function closeSSE() {
 async function viewDetail(session: Session) {
   selectedSession.value = session
   showDetail.value = true
-  
+
   // 加载凭据轮换历史
   try {
     const resp = await fetch(`/api/admin/sessions/${session.session_id}/cred-rotations`, {
@@ -214,13 +235,21 @@ async function viewDetail(session: Session) {
       rotations.value = data.rotations || []
     }
   } catch (e) {
-    console.error('Failed to load rotations:', e)
+    console.warn('Failed to load rotations:', e)
   }
 }
 
 async function stopSession(sessionId: string, reason: string = 'admin_stop') {
-  if (!confirm('确定要停止此会话吗？')) return
-  
+  try {
+    await ElMessageBox.confirm(
+      t('sessions.management.confirm.stopMessage'),
+      t('sessions.management.confirm.stopTitle'),
+      { type: 'warning' }
+    )
+  } catch {
+    return // 用户取消
+  }
+
   try {
     const resp = await fetch(`/api/admin/sessions/${sessionId}/stop?reason=${reason}`, {
       method: 'POST',
@@ -231,7 +260,7 @@ async function stopSession(sessionId: string, reason: string = 'admin_stop') {
     }
     // SSE 会自动推送更新，不需要手动重载
   } catch (e: unknown) {
-    alert('停止会话失败: ' + (e instanceof Error ? e.message : 'Unknown error'))
+    ElMessage.error(t('sessions.management.errors.stopFailed', { msg: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -246,7 +275,7 @@ async function recoverSession(sessionId: string) {
     }
     // SSE 会自动推送更新，不需要手动重载
   } catch (e: unknown) {
-    alert('恢复会话失败: ' + (e instanceof Error ? e.message : 'Unknown error'))
+    ElMessage.error(t('sessions.management.errors.recoverFailed', { msg: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -255,17 +284,15 @@ function formatTime(ts: string) {
   const date = new Date(ts)
   const now = Date.now()
   const diff = now - date.getTime()
-  
-  // 相对时间显示
   const minutes = Math.floor(diff / 60000)
   const hours = Math.floor(minutes / 60)
   const days = Math.floor(hours / 24)
-  
-  if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes}分钟前`
-  if (hours < 24) return `${hours}小时前`
-  if (days < 7) return `${days}天前`
-  
+
+  if (minutes < 1) return t('sessions.management.relativeTime.justNow')
+  if (minutes < 60) return t('sessions.management.relativeTime.minutesAgo', { n: minutes })
+  if (hours < 24) return t('sessions.management.relativeTime.hoursAgo', { n: hours })
+  if (days < 7) return t('sessions.management.relativeTime.daysAgo', { n: days })
+
   return date.toLocaleString()
 }
 
@@ -292,13 +319,13 @@ onUnmounted(() => {
 <template>
   <div class="p-6">
     <div class="flex justify-between items-center mb-6">
-      <h1 class="text-2xl font-bold">会话管理</h1>
+      <h1 class="text-2xl font-bold">{{ t('sessions.management.title') }}</h1>
       <button @click="loadSessions" class="btn btn-primary">
-        刷新
+        {{ t('sessions.management.refresh') }}
       </button>
     </div>
 
-    <div v-if="error" class="alert alert-error mb-4">
+    <div v-if="error" class="alert alert-error mb-4" role="alert">
       {{ error }}
     </div>
 
@@ -310,22 +337,22 @@ onUnmounted(() => {
       <table class="table table-zebra w-full">
         <thead>
           <tr>
-            <th>状态</th>
-            <th>标题</th>
-            <th>Session ID</th>
-            <th>租户</th>
-            <th>轮次</th>
-            <th>费用</th>
-            <th>Tokens</th>
-            <th>当前模型</th>
-            <th>健康等级</th>
-            <th>最后活跃</th>
-            <th>操作</th>
+            <th>{{ t('sessions.management.columns.status') }}</th>
+            <th>{{ t('sessions.management.columns.title') }}</th>
+            <th>{{ t('sessions.management.columns.sessionId') }}</th>
+            <th>{{ t('sessions.management.columns.tenant') }}</th>
+            <th>{{ t('sessions.management.columns.turns') }}</th>
+            <th>{{ t('sessions.management.columns.cost') }}</th>
+            <th>{{ t('sessions.management.columns.tokens') }}</th>
+            <th>{{ t('sessions.management.columns.model') }}</th>
+            <th>{{ t('sessions.management.columns.healthGrade') }}</th>
+            <th>{{ t('sessions.management.columns.lastActive') }}</th>
+            <th>{{ t('sessions.management.columns.actions') }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr 
-            v-for="s in sortedSessions" 
+          <tr
+            v-for="s in sortedSessions"
             :key="s.session_id"
             :class="{
               'bg-error bg-opacity-20': errorHighlightedSessions.has(s.session_id),
@@ -334,21 +361,21 @@ onUnmounted(() => {
           >
             <td>
               <div class="flex items-center gap-2">
-                <span 
-                  :class="['badge', statusConfig[s.status]?.color || 'badge-ghost']"
-                  :title="statusConfig[s.status]?.label"
+                <span
+                  :class="['badge', statusConf(s.status).color]"
+                  :title="statusConf(s.status).label"
                 >
-                  {{ statusConfig[s.status]?.icon || '⚪' }}
-                  {{ statusConfig[s.status]?.label || s.status }}
+                  {{ statusConf(s.status).icon }}
+                  {{ statusConf(s.status).label }}
                 </span>
                 <span v-if="isZombieSession(s)" class="badge badge-warning badge-sm">
-                  ⚠ 僵尸
+                  {{ t('sessions.management.states.zombie') }}
                 </span>
               </div>
             </td>
             <td>
               <div class="max-w-xs truncate" :title="s.title">
-                {{ s.title || '（未命名）' }}
+                {{ s.title || t('sessions.management.unset') }}
               </div>
             </td>
             <td>
@@ -362,10 +389,10 @@ onUnmounted(() => {
             </td>
             <td class="text-xs">{{ s.current_model }}</td>
             <td>
-              <span 
+              <span
                 v-if="s.health_grade"
-                :class="['badge', healthGradeConfig[s.health_grade]?.color || 'badge-ghost']"
-                :title="`健康分: ${s.health_score || 'N/A'} - ${healthGradeConfig[s.health_grade]?.label || ''}`"
+                :class="['badge', healthGradeConf(s.health_grade).color]"
+                :title="`${t('sessions.management.detail.healthGrade')}: ${healthGradeConf(s.health_grade).label}${s.health_score !== undefined ? ' / ' + s.health_score : ''}`"
               >
                 {{ s.health_grade }}
               </span>
@@ -377,21 +404,21 @@ onUnmounted(() => {
             <td>
               <div class="flex gap-1">
                 <button @click="viewDetail(s)" class="btn btn-xs btn-info">
-                  详情
+                  {{ t('sessions.management.actions.detail') }}
                 </button>
-                <button 
-                  v-if="s.status === 'active'" 
-                  @click="stopSession(s.session_id)" 
+                <button
+                  v-if="s.status === 'active'"
+                  @click="stopSession(s.session_id)"
                   class="btn btn-xs btn-warning"
                 >
-                  停止
+                  {{ t('sessions.management.actions.stop') }}
                 </button>
-                <button 
-                  v-if="s.status === 'stopped' || s.status === 'error'" 
-                  @click="recoverSession(s.session_id)" 
+                <button
+                  v-if="s.status === 'stopped' || s.status === 'error'"
+                  @click="recoverSession(s.session_id)"
                   class="btn btn-xs btn-success"
                 >
-                  恢复
+                  {{ t('sessions.management.actions.recover') }}
                 </button>
               </div>
             </td>
@@ -400,7 +427,7 @@ onUnmounted(() => {
       </table>
 
       <div v-if="sortedSessions.length === 0" class="text-center py-8 text-gray-500">
-        暂无会话
+        {{ t('sessions.management.empty') }}
       </div>
     </div>
 
@@ -408,77 +435,77 @@ onUnmounted(() => {
     <dialog :open="showDetail" class="modal">
       <div class="modal-box w-11/12 max-w-5xl">
         <h3 class="font-bold text-lg mb-4">
-          会话详情: {{ selectedSession?.session_id }}
+          {{ t('sessions.management.detail.title') }}: {{ selectedSession?.session_id }}
         </h3>
 
         <div v-if="selectedSession" class="space-y-4">
           <!-- 基础信息 -->
           <div class="grid grid-cols-2 gap-4">
             <div>
-              <label class="label font-bold">状态</label>
-              <span :class="['badge', statusConfig[selectedSession.status]?.color]">
-                {{ statusConfig[selectedSession.status]?.icon }}
-                {{ statusConfig[selectedSession.status]?.label || selectedSession.status }}
+              <label class="label font-bold">{{ t('sessions.management.detail.status') }}</label>
+              <span :class="['badge', statusConf(selectedSession.status).color]">
+                {{ statusConf(selectedSession.status).icon }}
+                {{ statusConf(selectedSession.status).label }}
               </span>
             </div>
             <div>
-              <label class="label font-bold">健康等级</label>
-              <span 
+              <label class="label font-bold">{{ t('sessions.management.detail.healthGrade') }}</label>
+              <span
                 v-if="selectedSession.health_grade"
-                :class="['badge', healthGradeConfig[selectedSession.health_grade]?.color]"
+                :class="['badge', healthGradeConf(selectedSession.health_grade).color]"
               >
-                {{ selectedSession.health_grade }} - {{ healthGradeConfig[selectedSession.health_grade]?.label }}
-                <span v-if="selectedSession.health_score" class="ml-1">
+                {{ selectedSession.health_grade }} - {{ healthGradeConf(selectedSession.health_grade).label }}
+                <span v-if="selectedSession.health_score !== undefined" class="ml-1">
                   ({{ selectedSession.health_score }}/100)
                 </span>
               </span>
               <span v-else>-</span>
             </div>
             <div>
-              <label class="label font-bold">租户</label>
+              <label class="label font-bold">{{ t('sessions.management.detail.tenant') }}</label>
               <p>{{ selectedSession.tenant_id }}</p>
             </div>
             <div>
-              <label class="label font-bold">API Key ID</label>
+              <label class="label font-bold">{{ t('sessions.management.detail.apiKeyId') }}</label>
               <p>{{ selectedSession.api_key_id }}</p>
             </div>
             <div>
-              <label class="label font-bold">总轮次</label>
+              <label class="label font-bold">{{ t('sessions.management.detail.totalTurns') }}</label>
               <p>{{ selectedSession.total_turns }}</p>
             </div>
             <div>
-              <label class="label font-bold">Prompt Tokens</label>
+              <label class="label font-bold">{{ t('sessions.management.detail.promptTokens') }}</label>
               <p>{{ selectedSession.total_prompt_tokens }}</p>
             </div>
             <div>
-              <label class="label font-bold">Completion Tokens</label>
+              <label class="label font-bold">{{ t('sessions.management.detail.completionTokens') }}</label>
               <p>{{ selectedSession.total_completion_tokens }}</p>
             </div>
             <div>
-              <label class="label font-bold">总费用</label>
+              <label class="label font-bold">{{ t('sessions.management.detail.totalCost') }}</label>
               <p>{{ formatCost(selectedSession.total_cost_usd_cents) }}</p>
             </div>
             <div>
-              <label class="label font-bold">当前凭据</label>
+              <label class="label font-bold">{{ t('sessions.management.detail.currentCredential') }}</label>
               <p>{{ selectedSession.current_credential_id }}</p>
             </div>
             <div>
-              <label class="label font-bold">当前模型</label>
+              <label class="label font-bold">{{ t('sessions.management.detail.currentModel') }}</label>
               <p>{{ selectedSession.current_model }}</p>
             </div>
           </div>
 
           <!-- 标题和标注 -->
           <div v-if="selectedSession.title">
-            <label class="label font-bold">标题</label>
+            <label class="label font-bold">{{ t('sessions.management.detail.titleLabel') }}</label>
             <p>{{ selectedSession.title }}</p>
           </div>
           <div v-if="selectedSession.annotation">
-            <label class="label font-bold">标注</label>
+            <label class="label font-bold">{{ t('sessions.management.detail.annotation') }}</label>
             <p>{{ selectedSession.annotation }}</p>
           </div>
           <div v-if="selectedSession.tags && selectedSession.tags.length">
-            <label class="label font-bold">标签</label>
+            <label class="label font-bold">{{ t('sessions.management.detail.tags') }}</label>
             <div class="flex gap-2">
               <span v-for="tag in selectedSession.tags" :key="tag" class="badge badge-outline">
                 {{ tag }}
@@ -488,25 +515,25 @@ onUnmounted(() => {
 
           <!-- 凭据轮换历史 -->
           <div>
-            <label class="label font-bold">凭据轮换历史 ({{ rotations.length }})</label>
+            <label class="label font-bold">{{ t('sessions.management.detail.rotationHistory', { count: rotations.length }) }}</label>
             <div class="overflow-x-auto">
               <table class="table table-sm">
                 <thead>
                   <tr>
-                    <th>凭据ID</th>
-                    <th>模型</th>
-                    <th>供应商</th>
-                    <th>开始时间</th>
-                    <th>结束时间</th>
-                    <th>轮次</th>
-                    <th>Tokens</th>
-                    <th>费用</th>
-                    <th>切换原因</th>
+                    <th>{{ t('sessions.management.detail.apiKeyId') }}</th>
+                    <th>{{ t('sessions.management.detail.currentModel') }}</th>
+                    <th>{{ t('sessions.management.detail.tenant') }}</th>
+                    <th>{{ t('sessions.management.columns.lastActive') }}</th>
+                    <th>{{ t('sessions.management.detail.ongoing') }}</th>
+                    <th>{{ t('sessions.management.detail.totalTurns') }}</th>
+                    <th>{{ t('sessions.management.columns.tokens') }}</th>
+                    <th>{{ t('sessions.management.columns.cost') }}</th>
+                    <th>switch_reason</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr 
-                    v-for="(r, idx) in rotations" 
+                  <tr
+                    v-for="(r, idx) in rotations"
                     :key="idx"
                     :class="{
                       'bg-error bg-opacity-20': r.turns === 0 && r.switch_reason.includes('failure')
@@ -516,12 +543,12 @@ onUnmounted(() => {
                     <td class="text-xs">{{ r.model }}</td>
                     <td>{{ r.provider }}</td>
                     <td class="text-xs">{{ formatTime(r.started_at) }}</td>
-                    <td class="text-xs">{{ r.ended_at ? formatTime(r.ended_at) : '进行中' }}</td>
+                    <td class="text-xs">{{ r.ended_at ? formatTime(r.ended_at) : t('sessions.management.detail.ongoing') }}</td>
                     <td>{{ r.turns }}</td>
                     <td class="text-xs">{{ r.prompt_tokens }}/{{ r.completion_tokens }}</td>
                     <td>{{ formatCost(r.cost_usd_cents) }}</td>
                     <td>
-                      <span 
+                      <span
                         class="badge badge-sm"
                         :class="{
                           'badge-error': r.switch_reason.includes('failure'),
@@ -540,7 +567,7 @@ onUnmounted(() => {
         </div>
 
         <div class="modal-action">
-          <button @click="closeDetail" class="btn">关闭</button>
+          <button @click="closeDetail" class="btn">{{ t('sessions.management.actions.close') }}</button>
         </div>
       </div>
       <form method="dialog" class="modal-backdrop">
