@@ -164,3 +164,4 @@ reports/
 _to-be-deprecated/
 Dockerfile.web-fix
 web-dist.tar.gz
+llm-gateway-go.v321.linux.amd64
