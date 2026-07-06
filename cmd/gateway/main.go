@@ -2693,10 +2693,17 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		t := *entry.PromptTokens + *entry.CompletionTokens
 		totalTokens = &t
 	}
-	providerCode := ""
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
+
+	// Determine model display name: outbound → client (shared by both paths)
+	displayModel := outboundModel
+	if displayModel == "" {
+		displayModel = clientModel
+	}
+
 	if hub != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
 		// Diagnose why provider info is sometimes missing. Both IDs being
 		// empty means the request never reached credential selection
 		// (e.g. auth/routing failure), which is expected for some flows;
@@ -2708,7 +2715,9 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			slog.Debug("live stream: request has no credential_id/provider_id",
 				"request_id", entry.RequestID, "status", status, "tenant_id", entry.TenantID)
 		}
+
 		// Prefer credential_id resolution (accurate provider even when telemetry provider_id is stale/missing)
+		providerCode := ""
 		if hasCred {
 			providerCode = hub.ProviderCodeForCredential(ctx, *entry.CredentialID)
 		}
@@ -2716,50 +2725,53 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		if providerCode == "" && hasProv {
 			providerCode = hub.ProviderCodeFor(ctx, *entry.ProviderID)
 		}
-	if providerCode == "" && (hasCred || hasProv) {
-		slog.Debug("live stream: provider resolution returned empty",
-			"request_id", entry.RequestID, "credential_id", entry.CredentialID,
-			"provider_id", entry.ProviderID, "tenant_id", entry.TenantID)
+		if providerCode == "" && (hasCred || hasProv) {
+			slog.Debug("live stream: provider resolution returned empty",
+				"request_id", entry.RequestID, "credential_id", entry.CredentialID,
+				"provider_id", entry.ProviderID, "tenant_id", entry.TenantID)
+		}
+
+		// Extract canonical_id for model name resolution and aggregation
+		canonicalID := 0
+		if entry.CanonicalID != nil && *entry.CanonicalID > 0 {
+			canonicalID = *entry.CanonicalID
+		}
+
+		return hub.LiveRequestFromTelemetry(
+			ctx,
+			entry.RequestID,
+			time.Now().UTC(),
+			entry.TenantID,
+			clientModel,
+			outboundModel,
+			canonicalID,
+			providerCode,
+			status,
+			entry.Success,
+			entry.ErrorKind,
+			entry.LatencyMs,
+			entry.PromptTokens,
+			entry.CompletionTokens,
+			totalTokens,
+			entry.CostUSD,
+		)
 	}
-	
-	// Extract canonical_id for model name resolution and aggregation
-	canonicalID := 0
-	if entry.CanonicalID != nil && *entry.CanonicalID > 0 {
-		canonicalID = *entry.CanonicalID
-	}
-	
-	return hub.LiveRequestFromTelemetry(
-		ctx,
-		entry.RequestID,
-		time.Now().UTC(),
-		entry.TenantID,
-		clientModel,
-		outboundModel,
-		canonicalID,
-		providerCode,
-		status,
-		entry.Success,
-		entry.ErrorKind,
-		entry.LatencyMs,
-		entry.PromptTokens,
-		entry.CompletionTokens,
-		totalTokens,
-		entry.CostUSD,
-	)
-	}
-	// Fallback when hub is nil
+	// Fallback when hub is nil (defensive; unreachable in normal operation
+	// because SetOnRequestLogEmitted is only wired when hub != nil).
 	return admin.LiveRequest{
-		RequestID:     entry.RequestID,
-		Ts:            time.Now().UTC().Format(time.RFC3339),
-		TenantID:      entry.TenantID,
-		Model:         outboundModel,
-		ProviderCode:  providerCode,
-		Status:        status,
-		LatencyMs:     entry.LatencyMs,
-		PromptTokens:  entry.PromptTokens,
+		RequestID:        entry.RequestID,
+		Ts:               time.Now().UTC().Format(time.RFC3339),
+		TenantID:         entry.TenantID,
+		Model:            displayModel,
+		CanonicalName:    displayModel, // best-effort: use display name as canonical
+		ModelCategory:    "",           // cannot resolve without hub
+		ProviderCode:     "",           // cannot resolve without hub
+		Status:           status,
+		LatencyMs:        entry.LatencyMs,
+		PromptTokens:     entry.PromptTokens,
 		CompletionTokens: entry.CompletionTokens,
-		TotalTokens:   totalTokens,
-		CostUSD:       entry.CostUSD,
-		ErrorKind:     entry.ErrorKind,
+		TotalTokens:      totalTokens,
+		CostUSD:          entry.CostUSD,
+		ErrorKind:        entry.ErrorKind,
 	}
 }
