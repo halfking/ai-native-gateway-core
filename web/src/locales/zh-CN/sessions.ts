@@ -132,6 +132,7 @@ export default {
     sessionId: '会话ID',
     requests: '请求数',
     health: '健康度',
+    loadError: '加载客户端分析失败',
   },
   taskAnalytics: {
     title: '任务分析',
@@ -147,6 +148,7 @@ export default {
     sessionId: '会话ID',
     requests: '请求数',
     health: '健康度',
+    loadError: '加载任务分析失败',
   },
   audit: {
     title: '会话审计',
