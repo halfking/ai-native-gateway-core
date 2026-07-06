@@ -2067,9 +2067,8 @@ func main() {
 			}
 		}
 
-		// Task T1.4: Usage Cost Enhanced API (2026-07-06)
-		mux.HandleFunc("/api/admin/usage/", wrapAdmin(adminHandler.HandleUsageAdmin))
-		slog.Info("Task T1.4 usage cost enhanced API enabled (/api/admin/usage/cost-trend, period-compare, cache-economics)")
+		// Task T1.4: Usage Cost Enhanced API 注册已在 admin/handler.go:572 完成
+		// (避免与 admin 包的双重注册 panic, 与 33d9d4fe fix 同型)
 
 		// Phase 3.6: Credential Success Rate Management (2026-06-23)
 		mux.HandleFunc("/api/admin/credential-success-rates", wrapAdmin(admin.HandleCredentialSuccessRates(dbConn.Pool())))
