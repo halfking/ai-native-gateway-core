@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 // LiveStreamEnvelope wraps every SSE payload. The Type field
@@ -50,16 +51,18 @@ import (
 //	"idle_marker"  — 1 minute of silence; visual gap for the swim lane
 //	"ping"         — keepalive; the EventSource ignores these
 type LiveStreamEnvelope struct {
-	Type      string        `json:"type"`
-	Timestamp time.Time     `json:"ts"`
-	Request   *LiveRequest  `json:"request,omitempty"`
-	Requests  []LiveRequest `json:"requests,omitempty"`
+	Type      string              `json:"type"`
+	Timestamp time.Time           `json:"ts"`
+	Request   *LiveRequest        `json:"request,omitempty"`
+	Requests  []LiveRequest       `json:"requests,omitempty"`
+	Snapshot  *LiveStreamSnapshot `json:"snapshot,omitempty"`
 }
 
 // LiveRequest is the minimal projection the dashboard swim lane needs.
 // Fields are nullable to match the database shape — clients render "—"
 // when a value is missing.
 type LiveRequest struct {
+	Type      string `json:"type,omitempty"` // "request" | "idle_marker"
 	RequestID string `json:"request_id"`
 	Ts        string `json:"ts"`
 	TenantID  string `json:"tenant_id"`
@@ -87,6 +90,7 @@ type LiveStreamConfig struct {
 	IdleThreshold      time.Duration
 	IdleTickInterval   time.Duration
 	KeepaliveInterval  time.Duration
+	RedisClient        *redis.Client // optional: enables 1-hour Redis cache
 }
 
 func (c *LiveStreamConfig) defaults() {
@@ -123,8 +127,9 @@ type liveStreamClient struct {
 // startup, call Run() in a goroutine, and call HandleLiveStream on
 // the admin mux. Producers call Publish() to fan a new request out.
 type LiveStreamSSEHub struct {
-	db  *pgxpool.Pool
-	cfg LiveStreamConfig
+	db    *pgxpool.Pool
+	cfg   LiveStreamConfig
+	store *LiveStreamRedisStore
 
 	register   chan *liveStreamClient
 	unregister chan *liveStreamClient
@@ -157,6 +162,7 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 	return &LiveStreamSSEHub{
 		db:           db,
 		cfg:          cfg,
+		store:        NewLiveStreamRedisStore(cfg.RedisClient),
 		register:     make(chan *liveStreamClient, 16),
 		unregister:   make(chan *liveStreamClient, 16),
 		broadcast:    make(chan LiveRequest, cfg.BroadcastQueueSize),
@@ -195,10 +201,17 @@ func (h *LiveStreamSSEHub) Run() {
 			h.lastActivity = time.Now()
 			h.lastActivityMu.Unlock()
 			atomic.AddInt64(&h.broadcastCount, 1)
+			var snapshot *LiveStreamSnapshot
+			if h.store != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				snapshot, _ = h.store.Snapshot(ctx, req.TenantID, false, h.cfg.InitialReplayLimit)
+				cancel()
+			}
 			h.fanOut(LiveStreamEnvelope{
 				Type:      "request",
 				Timestamp: time.Now().UTC(),
 				Request:   &req,
+				Snapshot:  snapshot,
 			})
 		case <-idleTicker.C:
 			h.maybeEmitIdleMarker()
@@ -217,8 +230,8 @@ func (h *LiveStreamSSEHub) Stop() {
 	}
 }
 
-// ProviderCodeFor resolves a providers.id to its catalog_code or name (fallback to code), with
-// a one-shot per-id DB lookup cached in memory.
+// ProviderCodeFor resolves a providers.id to its display name, falling
+// back to catalog_code/code when the provider has no name.
 func (h *LiveStreamSSEHub) ProviderCodeFor(ctx context.Context, providerID int) string {
 	if providerID == 0 {
 		return ""
@@ -229,19 +242,44 @@ func (h *LiveStreamSSEHub) ProviderCodeFor(ctx context.Context, providerID int) 
 	if cached, ok := h.providerCache.Load(providerID); ok {
 		return cached.(string)
 	}
-	var code, name string
-	row := h.db.QueryRow(ctx, "SELECT COALESCE(NULLIF(catalog_code, ''), ''), COALESCE(NULLIF(name, ''), '') FROM providers WHERE id = $1", providerID)
-	if err := row.Scan(&code, &name); err != nil {
+	var display string
+	row := h.db.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(name, ''), NULLIF(catalog_code, ''), NULLIF(code, ''), '')
+		FROM providers
+		WHERE id = $1
+	`, providerID)
+	if err := row.Scan(&display); err != nil {
 		h.providerCache.Store(providerID, "")
 		return ""
 	}
-	// 优先使用name，如果name为空则使用code
-	result := name
-	if result == "" {
-		result = code
+	h.providerCache.Store(providerID, display)
+	return display
+}
+
+// ProviderCodeForCredential resolves the provider through the credential
+// actually used by the request. This avoids displaying a stale or missing
+// provider_id from the telemetry envelope.
+func (h *LiveStreamSSEHub) ProviderCodeForCredential(ctx context.Context, credentialID int) string {
+	if credentialID == 0 || h == nil || h.db == nil {
+		return ""
 	}
-	h.providerCache.Store(providerID, result)
-	return result
+	cacheKey := fmt.Sprintf("cred:%d", credentialID)
+	if cached, ok := h.providerCache.Load(cacheKey); ok {
+		return cached.(string)
+	}
+	var display string
+	row := h.db.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(p.name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), '')
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		WHERE c.id = $1
+	`, credentialID)
+	if err := row.Scan(&display); err != nil {
+		h.providerCache.Store(cacheKey, "")
+		return ""
+	}
+	h.providerCache.Store(cacheKey, display)
+	return display
 }
 
 func (h *LiveStreamSSEHub) closeAll() {
@@ -266,9 +304,15 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 	if time.Since(last) < h.cfg.IdleThreshold {
 		return
 	}
+	now := time.Now().UTC()
+	if h.store != nil {
+		if err := h.store.RecordIdleMarker(context.Background(), now); err != nil {
+			slog.Debug("live stream redis idle marker failed", "err", err.Error())
+		}
+	}
 	h.fanOut(LiveStreamEnvelope{
 		Type:      "idle_marker",
-		Timestamp: time.Now().UTC(),
+		Timestamp: now,
 	})
 	h.lastActivityMu.Lock()
 	h.lastActivity = time.Now()
@@ -386,6 +430,13 @@ func (h *LiveStreamSSEHub) evict(c *liveStreamClient) {
 // Publish enqueues a new request for fan-out. Drops if the broadcast
 // queue is full so a stuck consumer can never block the producer.
 func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
+	if h.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		if err := h.store.Record(ctx, req); err != nil {
+			slog.Debug("live stream redis record failed", "request_id", req.RequestID, "err", err.Error())
+		}
+		cancel()
+	}
 	select {
 	case h.broadcast <- req:
 	default:
@@ -469,10 +520,17 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 	if items, err := h.replay(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit); err != nil {
 		slog.Warn("live stream initial replay failed", "err", err.Error())
 	} else if len(items) > 0 {
+		snapshot := BuildLiveStreamSnapshot(items)
+		if h.store != nil {
+			if ss, ssErr := h.store.Snapshot(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit); ssErr == nil && ss != nil && ss.Summary.Total > 0 {
+				snapshot = ss
+			}
+		}
 		data, mErr := json.Marshal(LiveStreamEnvelope{
 			Type:      "initial_data",
 			Timestamp: time.Now().UTC(),
 			Requests:  items,
+			Snapshot:  snapshot,
 		})
 		if mErr == nil {
 			h.writeEvent(client, data)
@@ -486,6 +544,15 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 // replay loads the most recent N requests. ASC order so the client
 // renders them left-to-right.
 func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper bool, limit int) ([]LiveRequest, error) {
+	if h.store != nil {
+		items, err := h.store.Replay(ctx, tenantID, isSuper, limit)
+		if err == nil && len(items) > 0 {
+			return items, nil
+		}
+		if err != nil {
+			slog.Debug("live stream redis replay failed", "err", err.Error())
+		}
+	}
 	if h.db == nil {
 		return nil, nil
 	}
@@ -508,7 +575,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		       COALESCE(NULLIF(rl.tenant_id, ''), 'default') AS tenant_id,
 		       COALESCE(NULLIF(rl.gw_session_id, ''), '') AS gw_session_id,
 		       COALESCE(NULLIF(rl.outbound_model, ''), rl.client_model, '') AS model,
-		       COALESCE(NULLIF(p.catalog_code, ''), '') AS provider_code,
+		       COALESCE(NULLIF(p.name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), '') AS provider_code,
 		       COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status,
 		       rl.latency_ms,
 		       rl.prompt_tokens,
@@ -517,8 +584,9 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		       rl.cost_usd::float8,
 		       rl.error_kind
 		FROM request_logs_with_current_month rl
-		LEFT JOIN providers p ON p.id = rl.provider_id
-		WHERE rl.ts >= NOW() - INTERVAL '24 hours'
+		LEFT JOIN credentials c ON c.id = rl.credential_id
+		LEFT JOIN providers p ON p.id = COALESCE(c.provider_id, rl.provider_id)
+		WHERE rl.ts >= NOW() - INTERVAL '1 hour'
 		  ` + tenantClause + `
 		ORDER BY rl.ts ASC
 		LIMIT $1

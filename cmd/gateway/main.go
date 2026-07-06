@@ -810,6 +810,7 @@ func main() {
 	// we have access to the database pool and the telemetry client.
 	// Without a DB the hub still relays live broadcasts from
 	// telemetry — only the initial replay is empty.
+	// 2026-07-06: RedisClient wired for 1-hour persistent cache.
 	var liveStreamHub *admin.LiveStreamSSEHub
 	if dbConn != nil && dbConn.Enabled() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
@@ -818,6 +819,7 @@ func main() {
 			IdleThreshold:      60 * time.Second,
 			IdleTickInterval:   10 * time.Second,
 			KeepaliveInterval:  25 * time.Second,
+			RedisClient:        fpSlotRedis, // reuse the existing Redis connection
 		})
 		go liveStreamHub.Run()
 
@@ -2597,6 +2599,7 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 // Called on the telemetry worker goroutine, so the implementation
 // MUST be cheap — the only I/O is the provider_id → catalog_code
 // sync.Map lookup (with a 200ms-timeout DB fallback on miss).
+// 2026-07-06: now resolves provider through credential_id when available.
 func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.LiveStreamSSEHub) admin.LiveRequest {
 	clientModel := ""
 	if entry.ClientModel != nil {
@@ -2616,10 +2619,17 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		totalTokens = &t
 	}
 	providerCode := ""
-	if entry.ProviderID != nil && hub != nil {
+	if hub != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		providerCode = hub.ProviderCodeFor(ctx, *entry.ProviderID)
-		cancel()
+		defer cancel()
+		// Prefer credential_id resolution (accurate provider even when telemetry provider_id is stale/missing)
+		if entry.CredentialID != nil && *entry.CredentialID > 0 {
+			providerCode = hub.ProviderCodeForCredential(ctx, *entry.CredentialID)
+		}
+		// Fallback to provider_id
+		if providerCode == "" && entry.ProviderID != nil {
+			providerCode = hub.ProviderCodeFor(ctx, *entry.ProviderID)
+		}
 	}
 	return admin.LiveRequestFromTelemetry(
 		entry.RequestID,
