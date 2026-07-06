@@ -291,10 +291,27 @@ VALUES ('final-test-123', NOW(), '{"success": true}'::jsonb);
 -- 查询成功返回 1 行
 ```
 
+**根因复盘**:
+
+- 不是分区边界算错。
+- 真正的问题是 `request_logs_bodies_2026_07` / `2026_08` 曾被 detach，后续没有 re-attach 回父表。
+- `ensure_request_logs_bodies_partition()` 只按“同名表是否存在”判断，孤儿表已存在时不会重新 `ATTACH PARTITION`。
+- 因而父表最初无法路由到 2026_07 月分区。
+
+**修复后验证**:
+
+```sql
+INSERT INTO request_logs_bodies (request_id, ts, request_body)
+VALUES ('reattach-parent-2', NOW(), '{"ok":true}'::jsonb);
+
+SELECT count(*) FROM request_logs_bodies_2026_07;
+-- 返回 1，说明父表写入已成功路由到 2026_07
+```
+
 **剩余风险**:
 
-- 当前修复提供了 default 分区兜底，保障写入恢复。
-- 仍建议后续追查月分区边界或分区自动创建逻辑，避免 default 分区长期承接应落到月分区的数据。
+- 当前月分区路由已经恢复。
+- 仍建议把 `ensure_request_logs_bodies_partition()` 加强为“表存在但未 attached 时自动 re-attach”，这样才能彻底防止同类问题再次出现。
 
 ---
 
@@ -474,7 +491,7 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 
 ### 🔧 后续建议
 
-1. **追查 request_logs_bodies 月分区边界或自动建分区逻辑**
+1. **增强 request_logs_bodies 的 ensure 逻辑：发现孤儿同名表时自动 ATTACH**
 2. **如需要，继续补 credit_ledger HTTP 层 E2E**
 
 ### 📚 交付物
@@ -488,4 +505,4 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 ---
 
 **审计完成时间**: 2026-07-06 01:25  
-**下一步**: 继续检查 request_logs_bodies 月分区路由根因，并视需要补 credit_ledger HTTP 层 E2E
+**下一步**: 将 request_logs_bodies 的 ensure 逻辑做成自动 re-attach，避免再出现孤儿分区
