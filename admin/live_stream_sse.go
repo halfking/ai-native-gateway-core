@@ -217,8 +217,11 @@ func (h *LiveStreamSSEHub) Run() {
 			tenantID := normalizeLiveStreamTenant(req.TenantID)
 			h.cachedSnapshotMu.Lock()
 			cachedForTenant := h.cachedSnapshot[tenantID]
-			delta := ComputeDelta(cachedForTenant, snapshot)
-			h.cachedSnapshot[tenantID] = snapshot
+			var delta *LiveStreamDelta
+			if snapshot != nil {
+				delta = ComputeDelta(cachedForTenant, snapshot)
+				h.cachedSnapshot[tenantID] = snapshot
+			}
 			h.cachedSnapshotMu.Unlock()
 			h.fanOut(LiveStreamEnvelope{
 				Type:      "request",
@@ -323,22 +326,13 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 			slog.Debug("live stream redis idle marker failed", "err", err.Error())
 		}
 	}
-	var delta *LiveStreamDelta
-	if h.store != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		if snapshot, _ := h.store.Snapshot(ctx, "", true, h.cfg.InitialReplayLimit); snapshot != nil {
-			h.cachedSnapshotMu.Lock()
-			cachedGlobal := h.cachedSnapshot[""]
-			delta = ComputeDelta(cachedGlobal, snapshot)
-			h.cachedSnapshot[""] = snapshot
-			h.cachedSnapshotMu.Unlock()
-		}
-		cancel()
-	}
+	// Idle marker is a visual gap indicator only. We intentionally do NOT
+	// attach a delta because the idle snapshot is global (isSuper=true)
+	// while per-client snapshots are tenant-scoped. Merging a global delta
+	// into a tenant-scoped snapshot would corrupt the client's lane data.
 	h.fanOut(LiveStreamEnvelope{
 		Type:      "idle_marker",
 		Timestamp: now,
-		Delta:     delta,
 	})
 	h.lastActivityMu.Lock()
 	h.lastActivity = time.Now()
