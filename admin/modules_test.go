@@ -13,8 +13,8 @@ import (
 func TestAllModuleDefinitions(t *testing.T) {
 	defs := allModuleDefinitions()
 
-	if len(defs) != 15 {
-		t.Errorf("expected 15 modules, got %d", len(defs))
+	if len(defs) != 16 {
+		t.Errorf("expected 16 modules, got %d", len(defs))
 	}
 
 	// Check required fields for each module
@@ -88,8 +88,8 @@ func TestHandleModulesList(t *testing.T) {
 		t.Fatalf("response missing items array")
 	}
 
-	if len(items) != 15 {
-		t.Errorf("expected 15 modules in response, got %d", len(items))
+	if len(items) != 16 {
+		t.Errorf("expected 16 modules in response, got %d", len(items))
 	}
 }
 
