@@ -655,6 +655,14 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		    availability_state = $6,
 		    availability_recover_at = $7,
 		    quota_state = COALESCE($8, quota_state),
+		    -- 审计修正 (2026-07-06): 探测成功且 quota_state 被重置为 'ok' 时，
+		    -- 同步清除残留的 quota_recover_at，避免状态不一致
+		    -- (quota_state='ok' 但 quota_recover_at 指向未来时间)。
+		    -- 失败分支不传 $8，COALESCE 保持旧值，这里的 CASE 也不会触发。
+		    quota_recover_at = CASE 
+		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL 
+		        ELSE quota_recover_at 
+		    END,
 		    state_reason_code = $9,
 		    state_updated_at = NOW()
 		WHERE id = $10
