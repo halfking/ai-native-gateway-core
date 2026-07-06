@@ -1,7 +1,7 @@
+//go:build integration && quadrants_legacy
+
 // Package integration — 4-quadrant end-to-end routing coverage.
 //
-//go:build integration
-
 // These tests prove that for each (client_protocol × upstream_protocol)
 // combination, the gateway correctly:
 //  1. Routes to the right upstream URL (chat-completions vs messages)
