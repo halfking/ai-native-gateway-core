@@ -133,7 +133,7 @@ function handleTaskClick(taskId: string) {
   <div class="session-stats-panel">
     <div v-if="error" class="alert alert-danger" role="alert">
       <span>{{ error }}</span>
-      <button class="btn btn-sm" @click="load" :aria-label="t('common.retry')">{{ t('common.retry') }}</button>
+      <button class="btn btn-sm" @click="load">{{ t('sessions.stats.loadFailed') }}</button>
     </div>
     <div v-loading="loading" :class="{ 'session-stats-panel--has-error': error }">
     <!-- 统计卡片 -->
