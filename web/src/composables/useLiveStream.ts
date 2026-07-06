@@ -11,6 +11,7 @@ import {
   reconnectStream,
   setOnRequestEvicted,
   requestsRef,
+  snapshotRef,
   connectionRef,
   pausedRef,
   lastEventAtRef,
@@ -35,6 +36,7 @@ export function useLiveStream() {
 
   return {
     requests: requestsRef,
+    snapshot: snapshotRef,
     connection: connectionRef,
     paused: pausedRef,
     lastEventAt: lastEventAtRef,
