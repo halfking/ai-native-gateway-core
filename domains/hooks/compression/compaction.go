@@ -521,6 +521,68 @@ func tryLLMContextCompaction(ctx context.Context, deps *Dependencies, clientProf
 	return body, false
 }
 
+// SummarizeConversation produces a structured LLM summary of the conversation
+// in `body` WITHOUT splicing it back into the body — it returns just the
+// summary text. This is the "first half" of tryLLMContextCompaction: extract
+// conversation text → pick candidate models → invoke the summarizer. The
+// caller (e.g. RecoveryCoordinator) performs its own splice via SmartCompress.
+//
+// Returns (summary, true) on success, or ("", false) when compaction is
+// disabled, deps is nil, the body has no extractable conversation, or every
+// candidate failed. A false result lets the caller fall back to mechanical
+// extraction (extractSummaryText).
+func SummarizeConversation(ctx context.Context, deps *Dependencies, protocol string, body []byte) (string, bool) {
+	if compactionDisabled() || deps == nil {
+		return "", false
+	}
+
+	conversation, err := extractConversationText(body, protocol)
+	if err != nil || strings.TrimSpace(conversation) == "" {
+		slog.Warn("summarize_conversation: extract failed", "error", err)
+		return "", false
+	}
+	// Keep summarize input under ~900k tokens (heuristic) so 1M models fit,
+	// mirroring tryLLMContextCompaction.
+	conversation = trimTextToTokenBudget(conversation, 900_000)
+
+	candidates := pickCompactionCandidates(ctx, deps, "")
+	if len(candidates) == 0 {
+		slog.Warn("summarize_conversation: no candidate",
+			"configured_models", compactionModelsFromEnv())
+		return "", false
+	}
+
+	for i := range candidates {
+		cand := candidates[i]
+		summary, sErr := invokeCompactionSummarize(ctx, deps, &cand, conversation)
+		if sErr != nil {
+			slog.Warn("summarize_conversation: call failed, trying next",
+				"attempt", i+1, "of", len(candidates),
+				"compact_model", cand.RawModel, "error", sErr)
+			continue
+		}
+		summary = strings.TrimSpace(summary)
+		if summary != "" {
+			return summary, true
+		}
+	}
+	return "", false
+}
+
+// NewSummaryFunc wraps SummarizeConversation into a SummaryFunc suitable for
+// injection into RecoveryDeps.Summarizer. This is the bridge that lets the
+// reactive 4xx-recovery path use the same lossless LLM summary as the
+// proactive SessionCompressor path.
+//
+// When deps is nil the returned func always reports ok=false, so callers
+// without a configured LLM endpoint keep their existing mechanical-trim
+// behaviour unchanged.
+func NewSummaryFunc(deps *Dependencies) SummaryFunc {
+	return func(ctx context.Context, body []byte, protocol string) (string, bool) {
+		return SummarizeConversation(ctx, deps, protocol, body)
+	}
+}
+
 // invokeCompactionSummarize dispatches to the per-protocol summarizer
 // (OpenAI or Anthropic) based on the candidate's Protocol.
 func invokeCompactionSummarize(ctx context.Context, deps *Dependencies, cand *ProviderCandidate, conversation string) (string, error) {
