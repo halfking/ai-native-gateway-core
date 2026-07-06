@@ -40,6 +40,26 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HandleUsageAdmin 处理 /api/admin/usage/* 路由（T1.4 增强端点）
+func (h *Handler) HandleUsageAdmin(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
+	remaining := r.URL.Path[len("/api/admin/usage/"):]
+	switch remaining {
+	case "cost-trend":
+		h.usageCostTrend(w, r)
+	case "period-compare":
+		h.usagePeriodCompare(w, r)
+	case "cache-economics":
+		h.usageCacheEconomics(w, r)
+	default:
+		writeError(w, http.StatusNotFound, "endpoint not found")
+	}
+}
+
 func (h *Handler) handleUsageSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

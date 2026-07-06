@@ -568,6 +568,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/client-configs/audit", admin(h.handleClientConfigAudit))
 	mux.HandleFunc("/api/usage", admin(h.handleUsageSummary))
 	mux.HandleFunc("/api/usage/", admin(h.handleUsage))
+	// T1.4 用量成本增强端点 (2026-07-06)
+	mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))
 	mux.HandleFunc("/api/logs", admin(h.handleLogsRoot))
 	mux.HandleFunc("/api/logs/", admin(h.handleLogs))
 	// 2026-07-01 (migration 325): attachment file download.

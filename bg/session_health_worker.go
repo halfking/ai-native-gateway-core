@@ -383,7 +383,7 @@ func classifyOutcome(requestCount, errorCount int) string {
 		return "abandoned"
 	}
 
-	if errorCount == 0 && requestCount >= 2 {
+	if requestCount >= 2 {
 		return "completed"
 	}
 

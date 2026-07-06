@@ -2056,6 +2056,10 @@ func main() {
 		slog.Info("Phase 4 session analytics API enabled (/api/admin/session-analytics)")
 		}
 
+		// Task T1.4: Usage Cost Enhanced API (2026-07-06)
+		mux.HandleFunc("/api/admin/usage/", wrapAdmin(adminHandler.HandleUsageAdmin))
+		slog.Info("Task T1.4 usage cost enhanced API enabled (/api/admin/usage/cost-trend, period-compare, cache-economics)")
+
 		// Phase 3.6: Credential Success Rate Management (2026-06-23)
 		mux.HandleFunc("/api/admin/credential-success-rates", wrapAdmin(admin.HandleCredentialSuccessRates(dbConn.Pool())))
 		mux.HandleFunc("/api/admin/credential-success-rates/reset", wrapAdmin(admin.HandleResetCredentialSuccessRate(dbConn.Pool())))

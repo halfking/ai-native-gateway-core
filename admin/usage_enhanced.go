@@ -1,9 +1,10 @@
 // Package admin — Usage Enhanced API (T1.4)
 //
 // 用量成本增强端点：
-//   GET /api/admin/usage/cost-trend?group_by=model|provider|intent|work_type|api_key
-//   GET /api/admin/usage/period-compare?current=2026-07&previous=2026-06
-//   GET /api/admin/usage/cache-economics?date_from=&date_to=
+//
+//	GET /api/admin/usage/cost-trend?group_by=model|provider|intent|work_type|api_key
+//	GET /api/admin/usage/period-compare?current=2026-07&previous=2026-06
+//	GET /api/admin/usage/cache-economics?date_from=&date_to=
 //
 // 参考文档：docs/session-management-analytics-plan.md 第 4.6 节
 package admin
@@ -12,7 +13,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 )
 
@@ -36,13 +36,13 @@ type CostTrendEntry struct {
 
 // CostTrendResponse 成本趋势响应
 type CostTrendResponse struct {
-	GroupBy     string            `json:"group_by"`      // 分组维度
-	DateFrom    string            `json:"date_from"`     // 开始日期
-	DateTo      string            `json:"date_to"`       // 结束日期
-	TotalCost   float64           `json:"total_cost"`    // 总成本
-	Entries     []CostTrendEntry  `json:"entries"`       // 分组条目
-	OtherCost   float64           `json:"other_cost"`    // 其他（占比<2%合并）
-	OtherCount  int               `json:"other_count"`   // 其他条目数量
+	GroupBy    string           `json:"group_by"`    // 分组维度
+	DateFrom   string           `json:"date_from"`   // 开始日期
+	DateTo     string           `json:"date_to"`     // 结束日期
+	TotalCost  float64          `json:"total_cost"`  // 总成本
+	Entries    []CostTrendEntry `json:"entries"`     // 分组条目
+	OtherCost  float64          `json:"other_cost"`  // 其他（占比<2%合并）
+	OtherCount int              `json:"other_count"` // 其他条目数量
 }
 
 func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +56,7 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 	if groupBy == "" {
 		groupBy = "model" // 默认按模型分组
 	}
-	
+
 	// 验证 group_by 参数
 	validGroupBy := map[string]string{
 		"model":     "ul.raw_model_name",
@@ -65,7 +65,7 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 		"work_type": "ul.work_type",
 		"api_key":   "ak.key_prefix",
 	}
-	
+
 	groupColumn, ok := validGroupBy[groupBy]
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid group_by parameter, must be one of: model, provider, intent, work_type, api_key")
@@ -91,10 +91,10 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 
 	// 根据 group_by 构建不同的查询
 	selectClause := fmt.Sprintf("COALESCE(%s, 'unknown') AS dimension_value", groupColumn)
-	
+
 	// 基础 FROM 子句
 	fromClause := "FROM usage_ledger_with_current_month ul"
-	
+
 	// 根据 group_by 添加必要的 JOIN
 	switch groupBy {
 	case "provider":
@@ -205,24 +205,24 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 
 // PeriodStats 周期统计
 type PeriodStats struct {
-	Period           string  `json:"period"`            // 周期标识（如 "2026-07"）
-	TotalCostUSD     float64 `json:"total_cost_usd"`    // 总成本
-	TotalRequests    int64   `json:"total_requests"`    // 总请求数
-	TotalTokens      int64   `json:"total_tokens"`      // 总 token 数
-	AvgCostPerReq    float64 `json:"avg_cost_per_req"`  // 平均每请求成本
-	UniqueModels     int     `json:"unique_models"`     // 使用的模型数
-	UniqueSessions   int     `json:"unique_sessions"`   // 会话数
+	Period         string  `json:"period"`           // 周期标识（如 "2026-07"）
+	TotalCostUSD   float64 `json:"total_cost_usd"`   // 总成本
+	TotalRequests  int64   `json:"total_requests"`   // 总请求数
+	TotalTokens    int64   `json:"total_tokens"`     // 总 token 数
+	AvgCostPerReq  float64 `json:"avg_cost_per_req"` // 平均每请求成本
+	UniqueModels   int     `json:"unique_models"`    // 使用的模型数
+	UniqueSessions int     `json:"unique_sessions"`  // 会话数
 }
 
 // PeriodCompareResponse 同比环比响应
 type PeriodCompareResponse struct {
-	Current       PeriodStats            `json:"current"`        // 当前周期
-	Previous      PeriodStats            `json:"previous"`       // 对比周期
-	ChangePct     float64                `json:"change_pct"`     // 变化百分比
-	ChangeAbs     float64                `json:"change_abs"`     // 变化绝对值
-	Trend         string                 `json:"trend"`          // up | down | flat
-	Significant   bool                   `json:"significant"`    // 是否显著（|变化| > 20%）
-	ByDimension   map[string][]DimChange `json:"by_dimension"`   // 按维度细分变化
+	Current     PeriodStats            `json:"current"`      // 当前周期
+	Previous    PeriodStats            `json:"previous"`     // 对比周期
+	ChangePct   float64                `json:"change_pct"`   // 变化百分比
+	ChangeAbs   float64                `json:"change_abs"`   // 变化绝对值
+	Trend       string                 `json:"trend"`        // up | down | flat
+	Significant bool                   `json:"significant"`  // 是否显著（|变化| > 20%）
+	ByDimension map[string][]DimChange `json:"by_dimension"` // 按维度细分变化
 }
 
 // DimChange 维度变化
@@ -337,7 +337,7 @@ func (h *Handler) queryPeriodStats(ctx context.Context, tenantID string, start, 
 
 	whereClause := "WHERE ul.ts >= $1 AND ul.ts < $2"
 	args := []any{start, end}
-	
+
 	if tenantID != "" {
 		whereClause += " AND ul.tenant_id = $3"
 		args = append(args, tenantID)
@@ -375,12 +375,12 @@ func (h *Handler) queryPeriodStats(ctx context.Context, tenantID string, start, 
 }
 
 // queryDimensionChanges 查询维度变化（按模型）
-func (h *Handler) queryDimensionChanges(ctx context.Context, tenantID string, 
+func (h *Handler) queryDimensionChanges(ctx context.Context, tenantID string,
 	currentStart, currentEnd, previousStart, previousEnd time.Time, dimension string) ([]DimChange, error) {
-	
+
 	whereClause := ""
 	args := []any{currentStart, currentEnd, previousStart, previousEnd}
-	
+
 	if tenantID != "" {
 		whereClause = "AND ul.tenant_id = $5"
 		args = append(args, tenantID)
@@ -443,19 +443,19 @@ func (h *Handler) queryDimensionChanges(ctx context.Context, tenantID string,
 
 // CacheEconomicsResponse 缓存经济学响应
 type CacheEconomicsResponse struct {
-	DateFrom             string  `json:"date_from"`               // 开始日期
-	DateTo               string  `json:"date_to"`                 // 结束日期
-	TotalRequests        int64   `json:"total_requests"`          // 总请求数
-	CacheReadTokens      int64   `json:"cache_read_tokens"`       // 缓存读取 tokens
-	PromptTokens         int64   `json:"prompt_tokens"`           // 正常 prompt tokens
-	CacheHitRatio        float64 `json:"cache_hit_ratio"`         // 缓存命中率
-	DollarsSaved         float64 `json:"dollars_saved"`           // 节省金额（缓存）
-	DollarsSpent         float64 `json:"dollars_spent"`           // 实际花费
-	EffectiveCostRatio   float64 `json:"effective_cost_ratio"`    // 实际成本占比
-	CompressedRequests   int     `json:"compressed_requests"`     // 压缩请求数
-	CompressionSaved     float64 `json:"compression_saved"`       // 压缩节省（估算）
-	TotalSaved           float64 `json:"total_saved"`             // 总节省
-	SavingsRate          float64 `json:"savings_rate"`            // 综合节省率
+	DateFrom           string  `json:"date_from"`            // 开始日期
+	DateTo             string  `json:"date_to"`              // 结束日期
+	TotalRequests      int64   `json:"total_requests"`       // 总请求数
+	CacheReadTokens    int64   `json:"cache_read_tokens"`    // 缓存读取 tokens
+	PromptTokens       int64   `json:"prompt_tokens"`        // 正常 prompt tokens
+	CacheHitRatio      float64 `json:"cache_hit_ratio"`      // 缓存命中率
+	DollarsSaved       float64 `json:"dollars_saved"`        // 节省金额（缓存）
+	DollarsSpent       float64 `json:"dollars_spent"`        // 实际花费
+	EffectiveCostRatio float64 `json:"effective_cost_ratio"` // 实际成本占比
+	CompressedRequests int     `json:"compressed_requests"`  // 压缩请求数
+	CompressionSaved   float64 `json:"compression_saved"`    // 压缩节省（估算）
+	TotalSaved         float64 `json:"total_saved"`          // 总节省
+	SavingsRate        float64 `json:"savings_rate"`         // 综合节省率
 }
 
 func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
@@ -478,7 +478,7 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 
 	whereClause := "WHERE ul.ts >= $1 AND ul.ts < $2"
 	args := []any{startTime, endTime}
-	
+
 	if tid != "" {
 		whereClause += " AND ul.tenant_id = $3"
 		args = append(args, tid)
@@ -530,7 +530,7 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 	if totalCacheableTokens > 0 {
 		avgPricePerToken = dollarsSpent / float64(totalCacheableTokens)
 	}
-	
+
 	// 缓存读取成本约为正常输入的 10%
 	dollarsSaved := float64(cacheReadTokens) * avgPricePerToken * 0.9
 
