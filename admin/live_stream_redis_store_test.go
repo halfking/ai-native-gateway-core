@@ -391,6 +391,55 @@ func TestLiveStreamRedisStore_IdleMarkerWritesTenantDimensionQueues(t *testing.T
 	}
 }
 
+func TestComputeDelta_ReturnsAllLanesWhenOldIsNil(t *testing.T) {
+	snapshot := &LiveStreamSnapshot{
+		Summary:       LiveStreamStats{Total: 5, Success: 3, Failure: 2},
+		Dimensions:    map[string][]LiveStreamLane{"vendor": {{ID: "openai"}}, "provider": {}, "model": {}},
+		StatusLegends: []LiveStreamLegendItem{{Key: "success", Name: "success", Count: 3}},
+	}
+	delta := ComputeDelta(nil, snapshot)
+	if delta.Summary != snapshot.Summary {
+		t.Fatalf("expected full summary, got %#v", delta.Summary)
+	}
+	if len(delta.ChangedLanes["vendor"]) != 1 {
+		t.Fatalf("expected all vendor lanes, got %#v", delta.ChangedLanes)
+	}
+}
+
+func TestComputeDelta_OmitsUnchangedDimensions(t *testing.T) {
+	lane := []LiveStreamLane{{ID: "openai", Stats: LiveStreamStats{Total: 3, Success: 2, Failure: 1}}}
+	old := &LiveStreamSnapshot{
+		Summary:    LiveStreamStats{Total: 3},
+		Dimensions: map[string][]LiveStreamLane{"vendor": lane, "provider": nil, "model": nil},
+	}
+	unchanged := &LiveStreamSnapshot{
+		Summary:    LiveStreamStats{Total: 4},
+		Dimensions: map[string][]LiveStreamLane{"vendor": lane, "provider": nil, "model": nil},
+	}
+	delta := ComputeDelta(old, unchanged)
+	if delta.Summary.Total != 4 {
+		t.Fatalf("expected updated summary, got %#v", delta.Summary)
+	}
+	if _, ok := delta.ChangedLanes["vendor"]; ok {
+		t.Fatalf("expected vendor to be omitted when unchanged, got %#v", delta.ChangedLanes)
+	}
+}
+
+func TestComputeDelta_IncludesChangedDimension(t *testing.T) {
+	old := &LiveStreamSnapshot{
+		Summary:    LiveStreamStats{Total: 3},
+		Dimensions: map[string][]LiveStreamLane{"vendor": {{ID: "openai", Stats: LiveStreamStats{Total: 3}}}, "provider": nil, "model": nil},
+	}
+	updated := &LiveStreamSnapshot{
+		Summary:    LiveStreamStats{Total: 4},
+		Dimensions: map[string][]LiveStreamLane{"vendor": {{ID: "openai", Stats: LiveStreamStats{Total: 4}}}, "provider": nil, "model": nil},
+	}
+	delta := ComputeDelta(old, updated)
+	if _, ok := delta.ChangedLanes["vendor"]; !ok {
+		t.Fatalf("expected vendor to be included when changed, got %#v", delta.ChangedLanes)
+	}
+}
+
 func TestBuildLiveStreamSnapshot_ServerSideAggregation(t *testing.T) {
 	items := []LiveRequest{
 		{RequestID: "1", Ts: "2026-07-06T00:00:01Z", TenantID: "t1", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},

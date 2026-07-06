@@ -24,6 +24,7 @@ export {
   type LiveStatus,
   type LiveModelCategory,
   type LiveStreamEnvelope,
+  type LiveStreamDelta,
   type ConnectionState,
 } from './liveStreamStore'
 

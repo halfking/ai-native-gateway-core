@@ -76,12 +76,19 @@ export interface LiveStreamSnapshot {
   status_legends: LiveStreamLegendItem[]
 }
 
+export interface LiveStreamDelta {
+  summary: LiveStreamStats
+  changed_lanes: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  status_legends: LiveStreamLegendItem[]
+}
+
 export interface LiveStreamEnvelope {
   type: 'initial_data' | 'request' | 'idle_marker'
   ts: string
   request?: LiveRequest
   requests?: LiveRequest[]
   snapshot?: LiveStreamSnapshot
+  delta?: LiveStreamDelta
 }
 
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' | 'unsupported'
@@ -194,6 +201,8 @@ function handleEnvelope(env: LiveStreamEnvelope) {
   liveStreamState.lastEventAt = Date.now()
   if (env.snapshot) {
     liveStreamState.snapshot = env.snapshot
+  } else if (env.delta) {
+    mergeDelta(env.delta)
   }
   if (env.type === 'initial_data' && Array.isArray(env.requests)) {
     applyInitialData(env.requests)
@@ -206,6 +215,27 @@ function handleEnvelope(env: LiveStreamEnvelope) {
   if (env.type === 'idle_marker') {
     pushOrQueue({ type: 'idle_marker', ts: env.ts })
     return
+  }
+}
+
+function mergeDelta(delta: LiveStreamDelta) {
+  if (!liveStreamState.snapshot) {
+    liveStreamState.snapshot = {
+      summary: delta.summary,
+      detail_dimensions: { vendor: [], provider: [], model: [] },
+      dimensions: { vendor: [], provider: [], model: [] },
+      dimension_legends: { vendor: [], provider: [], model: [] },
+      status_legends: delta.status_legends,
+    }
+    return
+  }
+  const s = liveStreamState.snapshot
+  s.summary = delta.summary
+  s.status_legends = delta.status_legends
+  for (const dim of ['vendor', 'provider', 'model'] as const) {
+    if (delta.changed_lanes[dim]) {
+      s.dimensions[dim] = delta.changed_lanes[dim]
+    }
   }
 }
 
@@ -316,6 +346,7 @@ export const __testing = {
   pushOrQueue,
   handleEnvelope,
   applyInitialData,
+  mergeDelta,
   resetStream,
   refCount: () => refCount,
   es: () => es,
