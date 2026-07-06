@@ -1,0 +1,181 @@
+package settings
+
+// SessionAnalyticsSpecs returns the configuration specs for the session
+// analytics module (会话全景分析插件).
+//
+// 该模块通过 post_response hook 接入请求管道，提供准实时的会话总结、
+// 标题生成、多维标签、逐步摘要、相似会话聚类与优化建议能力。
+//
+// 模型选择策略（每个阶段可独立配置）：
+//   - 指定模型名（如 "gpt-4o-mini"）：固定使用该模型
+//   - "auto"：由后台 autoroute 根据任务类型自动选择模型
+//   - 空/默认值：使用该阶段的内置默认模型
+func SessionAnalyticsSpecs() []*Spec {
+	return []*Spec{
+		// ── 模块总开关 ───────────────────────────────────────────────
+		{
+			Key:             "session_analytics.enabled",
+			EnvName:         "LLM_GATEWAY_SESSION_ANALYTICS_ENABLED",
+			Type:            TypeBool,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         false,
+			Description:     "启用会话全景分析",
+			DescriptionLong: "启用后通过 post_response hook 接入请求管道，准实时生成会话总结/标题/标签/摘要/聚类/优化建议。关闭后完全跳过分析，前端全景页隐藏。",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		// ── 触发时机 ─────────────────────────────────────────────────
+		{
+			Key:             "session_analytics.title_on_first_request",
+			EnvName:         "LLM_GATEWAY_SA_TITLE_ON_FIRST",
+			Type:            TypeBool,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         true,
+			Description:     "首请求即生成标题",
+			DescriptionLong: "会话首条请求完成后即生成粗标题（快速可见）；会话关闭时再精炼。",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		{
+			Key:             "session_analytics.request_summary_mode",
+			EnvName:         "LLM_GATEWAY_SA_REQ_SUMMARY_MODE",
+			Type:            TypeEnum,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         "rule",
+			Options:         []string{"rule", "llm", "hybrid"},
+			Description:     "逐步摘要模式",
+			DescriptionLong: "rule=规则截取(零LLM成本)，llm=每步LLM摘要，hybrid=规则默认+长会话可选LLM精炼",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		{
+			Key:             "session_analytics.summary_strategy",
+			EnvName:         "LLM_GATEWAY_SA_SUMMARY_STRATEGY",
+			Type:            TypeEnum,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         "rolling",
+			Options:         []string{"full", "rolling", "map_reduce"},
+			Description:     "会话总结策略",
+			DescriptionLong: "full=全量重算，rolling=增量滚动(推荐)，map_reduce=分段摘要再合并(适合超长会话)",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		// ── 聚类配置 ─────────────────────────────────────────────────
+		{
+			Key:             "session_analytics.cluster_mode",
+			EnvName:         "LLM_GATEWAY_SA_CLUSTER_MODE",
+			Type:            TypeEnum,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         "hybrid",
+			Options:         []string{"off", "rule", "vector", "hybrid"},
+			Description:     "相似会话聚类模式",
+			DescriptionLong: "off=关闭，rule=标签维度分组，vector=embedding聚类，hybrid=先标签粗分再向量细分(推荐)",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		{
+			Key:             "session_analytics.cluster_schedule",
+			EnvName:         "LLM_GATEWAY_SA_CLUSTER_SCHEDULE",
+			Type:            TypeString,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         "1h",
+			Description:     "聚类运行周期",
+			DescriptionLong: "聚类批量执行周期（如 1h/6h/24h），或 manual 仅手动触发",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		{
+			Key:             "session_analytics.optimization_enabled",
+			EnvName:         "LLM_GATEWAY_SA_OPT_ENABLED",
+			Type:            TypeBool,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         true,
+			Description:     "启用优化建议",
+			DescriptionLong: "会话关闭时检测可优化空间（上下文冗余/模型过剩/缓存利用率等）并量化潜在节省",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+
+		// ── 各阶段 LLM 模型配置 ──────────────────────────────────────
+		// 每个 key 对应一个分析阶段；值为 "auto" 时由后台 autoroute 自动选择。
+		{
+			Key:             "session_analytics.model.title",
+			EnvName:         "LLM_GATEWAY_SA_MODEL_TITLE",
+			Type:            TypeString,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         "auto",
+			Description:     "标题生成模型",
+			DescriptionLong: "生成会话标题的 LLM 模型。auto=后台自动判定（通常选轻量快速模型）",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		{
+			Key:             "session_analytics.model.summary",
+			EnvName:         "LLM_GATEWAY_SA_MODEL_SUMMARY",
+			Type:            TypeString,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         "auto",
+			Description:     "会话总结模型",
+			DescriptionLong: "生成会话总结的 LLM 模型。auto=后台根据会话长度/语言自动选择",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		{
+			Key:             "session_analytics.model.tags",
+			EnvName:         "LLM_GATEWAY_SA_MODEL_TAGS",
+			Type:            TypeString,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         "auto",
+			Description:     "标签生成模型",
+			DescriptionLong: "生成多维标签(主题/意图/质量)的 LLM 模型。auto=后台自动选择",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		{
+			Key:             "session_analytics.model.request_summary",
+			EnvName:         "LLM_GATEWAY_SA_MODEL_REQ_SUMMARY",
+			Type:            TypeString,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         "auto",
+			Description:     "逐步摘要模型",
+			DescriptionLong: "每步请求/回复摘要的 LLM 模型（仅在 llm/hybrid 模式触发）。auto=后台自动选择",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		{
+			Key:             "session_analytics.model.embedding",
+			EnvName:         "LLM_GATEWAY_SA_MODEL_EMBEDDING",
+			Type:            TypeString,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         "auto",
+			Description:     "向量化模型",
+			DescriptionLong: "聚类用 embedding 模型。auto=后台自动选择；需支持 embedding 的模型",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		{
+			Key:             "session_analytics.model.cluster_label",
+			EnvName:         "LLM_GATEWAY_SA_MODEL_CLUSTER_LABEL",
+			Type:            TypeString,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         "auto",
+			Description:     "聚类标签模型",
+			DescriptionLong: "为相似会话聚类生成语义标签的 LLM 模型。auto=后台自动选择",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+	}
+}

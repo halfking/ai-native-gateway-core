@@ -34,6 +34,12 @@ type InterceptResult struct {
 }
 
 // StreamMeta contains metadata for stream chunk interception.
+//
+// ResponseBody and FinishReason are populated at stream end (InterceptStreamEnd)
+// by reassembling the streamed chunks into a single non-streaming-style
+// response body. This lets stream-end interceptors run the same completion
+// detection and audit logic as the non-streaming path. Empty when the caller
+// has not reassembled the body.
 type StreamMeta struct {
 	SessionID     string
 	RequestID     string
@@ -43,6 +49,8 @@ type StreamMeta struct {
 	MessageCount  int
 	TokensUsed    int
 	ChunkIndex    int
+	ResponseBody  []byte
+	FinishReason  string
 }
 
 // ChunkResult contains the outcome of stream chunk interception.

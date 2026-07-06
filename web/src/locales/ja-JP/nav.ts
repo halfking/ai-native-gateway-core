@@ -43,6 +43,8 @@ export default {
     dataLifecycle: 'データライフサイクル',
     formatAnomalies: 'フォーマット異常モニター',
     modules: 'モジュール管理',
+    sessionAnalytics: 'セッションパノラマ',
+    sessionClusters: 'セショングループ',
     agents: 'エージェントレジストリ',
     examples: '接続例',
     chat: 'チャット',

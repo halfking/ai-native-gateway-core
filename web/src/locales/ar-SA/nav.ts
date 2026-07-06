@@ -43,6 +43,8 @@ export default {
     dataLifecycle: 'دورة حياة البيانات',
     formatAnomalies: 'مراقبة شذوذ التنسيق',
     modules: 'إدارة الوحدات',
+    sessionAnalytics: 'بانوراما الجلسة',
+    sessionClusters: 'مجموعات الجلسة',
     agents: 'سجل الوكلاء',
     examples: 'أمثلة التكامل',
     chat: 'محادثة',

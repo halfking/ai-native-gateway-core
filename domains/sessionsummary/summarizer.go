@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -206,6 +207,156 @@ func (s *Summarizer) buildSummaryPrompt(messages []SessionMessage) string {
 	return sb.String()
 }
 
+// buildRollingPrompt 构建增量滚动摘要 Prompt。
+//
+// 与全量 buildSummaryPrompt 不同：传入「上一次摘要」+「新增消息」，
+// LLM 只需融合新信息更新摘要，避免每次全量重算（省 token）。
+// 适用 summary_strategy=rolling（默认推荐）。
+func (s *Summarizer) buildRollingPrompt(prevSummary string, newMessages []SessionMessage) string {
+	var sb strings.Builder
+	sb.WriteString("请基于已有摘要和新增对话，更新会话总结。按 JSON 格式返回：\n")
+	sb.WriteString("{\n")
+	sb.WriteString("  \"title\": \"会话标题（20字以内）\",\n")
+	sb.WriteString("  \"summary\": \"更新后的会话摘要（100-200字）\",\n")
+	sb.WriteString("  \"key_topics\": [\"主题1\", \"主题2\", \"主题3\"],\n")
+	sb.WriteString("  \"user_intent\": \"chat|code|tool_use|data_analysis|creative|unknown\"\n")
+	sb.WriteString("}\n\n")
+
+	sb.WriteString("已有摘要：\n")
+	if prevSummary == "" {
+		sb.WriteString("（无，这是首次总结）\n")
+	} else {
+		sb.WriteString(prevSummary + "\n")
+	}
+	sb.WriteString("\n新增对话：\n---\n")
+
+	// 最多包含最新 10 条消息
+	maxMessages := 10
+	if len(newMessages) > maxMessages {
+		newMessages = newMessages[len(newMessages)-maxMessages:]
+	}
+	for i, msg := range newMessages {
+		role := "用户"
+		if msg.Role == "assistant" {
+			role = "助手"
+		}
+		content := msg.Content
+		if len(content) > 300 {
+			content = content[:300] + "..."
+		}
+		fmt.Fprintf(&sb, "\n[消息 %d - %s]:\n%s\n", i+1, role, content)
+	}
+	sb.WriteString("---\n")
+	return sb.String()
+}
+
+// GenerateRollingSummary 增量滚动摘要。
+//
+// 读取上次摘要 + 自上次以来的新消息 → LLM 融合更新。
+// 失败时降级为全量 GenerateSummary。
+func (s *Summarizer) GenerateRollingSummary(ctx context.Context, tenantID, sessionKey string) (*SessionSummary, error) {
+	if s.llmClient == nil {
+		// 无 LLM，降级全量（全量内部也会因无 LLM 失败）
+		return s.GenerateSummary(ctx, tenantID, sessionKey)
+	}
+
+	// 读取上次摘要
+	prevSummary, lastSummarizedAt, err := s.getPrevSummary(ctx, tenantID, sessionKey)
+	if err != nil {
+		// 读取失败 → 全量
+		return s.GenerateSummary(ctx, tenantID, sessionKey)
+	}
+
+	// 读取自上次摘要以来的新消息（无上次则取最近 20 条）
+	messages, err := s.getMessagesSince(ctx, tenantID, sessionKey, lastSummarizedAt)
+	if err != nil || len(messages) == 0 {
+		// 无新消息或出错 → 复用缓存/全量
+		return s.GenerateSummary(ctx, tenantID, sessionKey)
+	}
+
+	prompt := s.buildRollingPrompt(prevSummary, messages)
+	response, err := s.llmClient.Complete(ctx, prompt,
+		WithModel("gpt-4o-mini"),
+		WithMaxTokens(500),
+		WithTemperature(0.3),
+		WithSystemPrompt("你是一个专业的会话分析助手，擅长增量更新会话总结。"),
+	)
+	if err != nil {
+		return s.GenerateSummary(ctx, tenantID, sessionKey)
+	}
+
+	summary, err := s.parseSummaryResponse(response, sessionKey)
+	if err != nil {
+		return s.GenerateSummary(ctx, tenantID, sessionKey)
+	}
+
+	if err := s.saveSummaryToDB(ctx, tenantID, summary); err != nil {
+		return nil, fmt.Errorf("failed to save rolling summary: %w", err)
+	}
+	if err := s.cacheSummary(ctx, summary, 24*time.Hour); err != nil {
+		fmt.Printf("warn: failed to cache summary: %v\n", err)
+	}
+	return summary, nil
+}
+
+// getPrevSummary 读取上次摘要文本与时间。
+func (s *Summarizer) getPrevSummary(ctx context.Context, tenantID, sessionKey string) (summary string, summarizedAt time.Time, err error) {
+	query := `SELECT COALESCE(summary,''), last_summarized_at
+		FROM session_summaries WHERE session_key = $1`
+	args := []any{sessionKey}
+	if tenantID != "" {
+		query += " AND tenant_id = $2"
+		args = append(args, tenantID)
+	}
+	var lastAt sql.NullTime
+	err = s.db.QueryRowContext(ctx, query, args...).Scan(&summary, &lastAt)
+	if lastAt.Valid {
+		summarizedAt = lastAt.Time
+	}
+	return
+}
+
+// getMessagesSince 读取自指定时间以来的新消息（rolling 用）。
+// since 为零值时返回最近 20 条（首次总结）。
+func (s *Summarizer) getMessagesSince(ctx context.Context, tenantID, sessionKey string, since time.Time) ([]SessionMessage, error) {
+	query := `
+		SELECT request_id,
+		       COALESCE(request_body->>'role', 'user') as role,
+		       COALESCE(request_body->'messages'->-1->>'content', '') as content,
+		       outbound_model, ts
+		FROM request_logs
+		WHERE gw_session_id = $1`
+	args := []any{sessionKey}
+	argN := 2
+	if tenantID != "" {
+		query += " AND tenant_id = $" + strconv.Itoa(argN)
+		args = append(args, tenantID)
+		argN++
+	}
+	if !since.IsZero() {
+		query += " AND ts > $" + strconv.Itoa(argN)
+		args = append(args, since)
+		argN++
+	}
+	query += " ORDER BY ts ASC LIMIT 20"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var messages []SessionMessage
+	for rows.Next() {
+		var msg SessionMessage
+		if err := rows.Scan(&msg.RequestID, &msg.Role, &msg.Content, &msg.Model, &msg.Timestamp); err != nil {
+			return nil, err
+		}
+		messages = append(messages, msg)
+	}
+	return messages, rows.Err()
+}
+
 // parseSummaryResponse 解析 LLM 响应
 func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*SessionSummary, error) {
 	jsonStr := extractJSON(response)
@@ -242,18 +393,19 @@ func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*Session
 	}, nil
 }
 
-// getSessionMessages 从数据库获取会话消息
+// getSessionMessages 从数据库获取会话消息。
+// 注意：request_logs 使用 gw_session_id（350 迁移修正）。
 func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKey string) ([]SessionMessage, error) {
 	query := `
-		SELECT 
+		SELECT
 			request_id,
 			COALESCE(request_body->>'role', 'user') as role,
 			COALESCE(request_body->'messages'->-1->>'content', '') as content,
-			upstream_model,
-			created_at
+			outbound_model,
+			ts
 		FROM request_logs
-		WHERE tenant_id = $1 AND session_key = $2
-		ORDER BY created_at ASC
+		WHERE tenant_id = $1 AND gw_session_id = $2
+		ORDER BY ts ASC
 		LIMIT 20
 	`
 

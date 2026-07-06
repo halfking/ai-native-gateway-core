@@ -8,6 +8,24 @@
       </el-button>
     </div>
 
+    <!-- 模块未启用提示 -->
+    <el-alert
+      v-if="moduleChecked && !moduleEnabled"
+      title="会话全景分析模块未启用"
+      type="warning"
+      :closable="false"
+      show-icon
+      style="margin-bottom: 16px"
+    >
+      <template #default>
+        请在
+        <router-link to="/admin/modules">模块管理</router-link>
+        中启用「会话全景分析」模块后，本页才会展示数据分析。启用后系统将通过 hook 插件准实时分析会话。
+      </template>
+    </el-alert>
+
+    <template v-if="moduleEnabled">
+
     <!-- 统计卡片 -->
     <el-row :gutter="20" class="stats-row">
       <el-col :span="6">
@@ -159,12 +177,15 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="180" fixed="right">
           <template #default="scope">
+            <el-button size="small" text @click.stop="viewPanorama(scope.row)">
+              全景图
+            </el-button>
             <el-button size="small" text @click.stop="viewSessionDetail(scope.row)">
               详情
             </el-button>
-            <el-button size="small" text @click.stop="exportSession(scope.row.session_key)">
+            <el-button size="small" text @click.stop="exportSession(scope.row.gw_session_id || scope.row.session_key)">
               导出
             </el-button>
           </template>
@@ -353,17 +374,29 @@
         <span>加载中...</span>
       </div>
     </el-drawer>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { localeRef } from '../i18n'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   Refresh, ChatDotRound, Search, Right, Loading
 } from '@element-plus/icons-vue'
-import api from '@/api'
+import {
+  listSessions, getSessionStats, getSessionDetail, detectSessionAnalyticsModule,
+  useSessionAnalyticsEnabled,
+} from '../api/sessionAnalytics'
+import api from '../api'
+
+const router = useRouter()
+
+// 模块启用检测：未开启时显示引导提示而非数据
+const moduleEnabled = useSessionAnalyticsEnabled()
+const moduleChecked = ref(false)
 
 const stats = reactive({
   total_sessions: 0,
@@ -402,8 +435,8 @@ const loading = ref(false)
 
 const loadStats = async () => {
   try {
-    const res = await api.get('/admin/sessions/stats')
-    Object.assign(stats, res.data)
+    const data = await getSessionStats()
+    Object.assign(stats, data)
   } catch (error: any) {
     ElMessage.error('加载统计失败: ' + error.message)
   }
@@ -419,9 +452,9 @@ const loadSessions = async () => {
       ...filters,
     }
 
-    const res = await api.get('/admin/sessions', { params })
-    sessions.value = res.data.sessions
-    pagination.total = res.data.total
+    const data = await listSessions(params)
+    sessions.value = data.sessions
+    pagination.total = data.total
   } catch (error: any) {
     ElMessage.error('加载会话列表失败: ' + error.message)
   } finally {
@@ -435,16 +468,23 @@ const viewSessionDetail = async (session: any) => {
   sessionDetail.value = null
 
   try {
-    const res = await api.get(`/admin/sessions/${session.session_key}`)
-    sessionDetail.value = res.data
+    // 优先跳转全景图；详情抽屉作为后备
+    const data = await getSessionDetail(session.gw_session_id || session.session_key)
+    sessionDetail.value = data
   } catch (error: any) {
     ElMessage.error('加载会话详情失败: ' + error.message)
   }
 }
 
+// 打开会话全景图（新页面）
+const viewPanorama = (session: any) => {
+  const id = session.gw_session_id || session.session_key
+  router.push(`/admin/session-analytics/${id}/panorama`)
+}
+
 const exportSession = async (sessionKey: string) => {
   try {
-    const res = await api.get(`/admin/sessions/${sessionKey}/export`, {
+    const res = await api.get(`/admin/session-analytics/${sessionKey}/export`, {
       responseType: 'blob',
     })
 
@@ -549,13 +589,18 @@ const getSeverityTag = (severity: number) => {
   return 'info'
 }
 
-onMounted(() => {
-  loadStats()
-  loadSessions()
+onMounted(async () => {
+  // 模块启用检测：未开启时仅显示引导，不加载业务数据
+  const enabled = await detectSessionAnalyticsModule()
+  moduleChecked.value = true
+  if (enabled) {
+    loadStats()
+    loadSessions()
+  }
 })
 </script>
 
-<style scoped lang="scss">
+<style scoped>
 .session-analytics-dashboard {
   padding: 20px;
 }

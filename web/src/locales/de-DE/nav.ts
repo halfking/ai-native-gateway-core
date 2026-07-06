@@ -42,6 +42,8 @@ export default {
     dataLifecycle: 'Datenlebenszyklus',
     formatAnomalies: 'Formatanomalie-Überwachung',
     modules: 'Modulverwaltung',
+    sessionAnalytics: 'Sitzungs-Panorama',
+    sessionClusters: 'Sitzungsgruppen',
     agents: 'Agent-Registry',
     examples: 'Beispiele',
     chat: 'Chat',

@@ -92,6 +92,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/admin/data-lifecycle', label: '数据生命周期', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },
       { path: '/format-anomalies', label: '格式异常监控', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true },
       { path: '/admin/modules', label: '模块管理', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true },
+      { path: '/admin/session-analytics', label: '会话全景分析', labelKey: 'nav.item.sessionAnalytics', icon: '📊', super: true, hideForTenant: true },
+      { path: '/admin/session-clusters', label: '会话分组', labelKey: 'nav.item.sessionClusters', icon: '🗂️', super: true, hideForTenant: true },
       { path: '/admin/agents', label: 'Agent Registry', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true },
     ],
   },
