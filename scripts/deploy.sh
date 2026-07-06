@@ -216,43 +216,41 @@ pre_check() {
   ok "go build + vet 通过"
 }
 
+# get_version: 委托给 scripts/bump-version.sh (single source of truth)
+# bump-version.sh 同步更新 4 个版本文件 lockstep:
+#   VERSION / version.json / web/public/version.json / web/dist/version.json
+# 之后从 version.json 读回 (因为 dry-run 时 bump-version 不写文件)
 get_version() {
-  phase "版本信息"
-  GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v2.4.1")
-  GIT_SHA=$(git rev-parse --short=8 HEAD)
-  BUILD_DATE=$(date +%Y%m%d)
-  CURRENT_SEQ=$(cat build_seq 2>/dev/null || echo 0)
+  phase "版本信息 (via bump-version.sh — 4 文件 lockstep)"
+  local bump_args=()
+  [[ "$DRY_RUN" == "true" ]] && bump_args=(--dry-run)
+  [[ -n "$BUILD_SEQ_TARGET" ]] && bump_args+=(--seq "$BUILD_SEQ_TARGET")
 
-  if [[ -n "$BUILD_SEQ_TARGET" ]]; then
-    NEW_BUILD_SEQ="$BUILD_SEQ_TARGET"
+  bash "$REPO_ROOT/scripts/bump-version.sh" "${bump_args[@]}" || true
+
+  # 读最新版 (无论 dry-run 模式; dry-run 后看的就是 N+1 的预览)
+  local seq_after
+  seq_after=$(cat build_seq 2>/dev/null || echo 0)
+  if [[ -f version.json ]]; then
+    GIT_TAG=$(python3 -c "import json; print(json.load(open('version.json'))['git_tag'])" 2>/dev/null || echo "")
+    GIT_SHA=$(python3 -c "import json; print(json.load(open('version.json'))['git_sha'])" 2>/dev/null || echo "")
+    BUILD_DATE=$(python3 -c "import json; print(json.load(open('version.json'))['build_date'])" 2>/dev/null || echo "")
+    NEW_BUILD_SEQ=$(python3 -c "import json; print(json.load(open('version.json'))['build_seq'])" 2>/dev/null || echo "$seq_after")
   else
-    NEW_BUILD_SEQ=$((CURRENT_SEQ + 1))
+    NEW_BUILD_SEQ="$seq_after"
   fi
 
   IMAGE_TAG="${GIT_TAG}-${GIT_SHA}-${BUILD_DATE}-${NEW_BUILD_SEQ}"
   VERSION_STRING="${GIT_TAG}-${GIT_SHA}-${BUILD_DATE}-${NEW_BUILD_SEQ}"
 
-  info "Git Tag: $GIT_TAG"
-  info "Git SHA: $GIT_SHA"
-  info "Build Seq: $CURRENT_SEQ → $NEW_BUILD_SEQ"
-  info "Image Tag: $IMAGE_TAG"
+  info "Git Tag:     $GIT_TAG"
+  info "Git SHA:     $GIT_SHA"
+  info "Build Seq:   $NEW_BUILD_SEQ"
+  info "Image Tag:   $IMAGE_TAG"
 
   if [[ "$DRY_RUN" == "true" ]]; then
-    info "[DRY-RUN] 跳过写 build_seq/version.json"
-    return 0
+    info "[DRY-RUN] bump-version.sh 已 dry-run 不写文件，但下面部署动作仍照常"
   fi
-
-  echo "$NEW_BUILD_SEQ" > build_seq
-  cat > version.json <<EOF
-{
-  "version": "${GIT_TAG}",
-  "git_tag": "${GIT_TAG}",
-  "git_sha": "${GIT_SHA}",
-  "build_seq": ${NEW_BUILD_SEQ},
-  "build_date": "${BUILD_DATE}",
-  "module": "llm-gateway-go"
-}
-EOF
 }
 
 # F1: Smart push to 184 local registry.
