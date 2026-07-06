@@ -149,9 +149,10 @@ type LiveStreamSSEHub struct {
 
 	stopCh chan struct{}
 
-	// cachedSnapshot holds the last-known snapshot so broadcast can
-	// compute a delta instead of sending the full snapshot every time.
-	cachedSnapshot *LiveStreamSnapshot
+	// cachedSnapshot holds the last-known snapshot per tenant so broadcast
+	// can compute a delta instead of sending the full snapshot every time.
+	cachedSnapshotMu sync.RWMutex
+	cachedSnapshot   map[string]*LiveStreamSnapshot // key = tenantID
 
 	// Metrics (added 2026-07-03 for monitoring)
 	totalConnections    int64 // 累计连接数
@@ -165,15 +166,16 @@ type LiveStreamSSEHub struct {
 func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEHub {
 	cfg.defaults()
 	return &LiveStreamSSEHub{
-		db:           db,
-		cfg:          cfg,
-		store:        NewLiveStreamRedisStore(cfg.RedisClient),
-		register:     make(chan *liveStreamClient, 16),
-		unregister:   make(chan *liveStreamClient, 16),
-		broadcast:    make(chan LiveRequest, cfg.BroadcastQueueSize),
-		clients:      make(map[*liveStreamClient]struct{}),
-		lastActivity: time.Now(),
-		stopCh:       make(chan struct{}),
+		db:             db,
+		cfg:            cfg,
+		store:          NewLiveStreamRedisStore(cfg.RedisClient),
+		register:       make(chan *liveStreamClient, 16),
+		unregister:     make(chan *liveStreamClient, 16),
+		broadcast:      make(chan LiveRequest, cfg.BroadcastQueueSize),
+		clients:        make(map[*liveStreamClient]struct{}),
+		lastActivity:   time.Now(),
+		stopCh:         make(chan struct{}),
+		cachedSnapshot: make(map[string]*LiveStreamSnapshot),
 	}
 }
 
@@ -212,8 +214,12 @@ func (h *LiveStreamSSEHub) Run() {
 				snapshot, _ = h.store.Snapshot(ctx, req.TenantID, false, h.cfg.InitialReplayLimit)
 				cancel()
 			}
-			delta := ComputeDelta(h.cachedSnapshot, snapshot)
-			h.cachedSnapshot = snapshot
+			tenantID := normalizeLiveStreamTenant(req.TenantID)
+			h.cachedSnapshotMu.Lock()
+			cachedForTenant := h.cachedSnapshot[tenantID]
+			delta := ComputeDelta(cachedForTenant, snapshot)
+			h.cachedSnapshot[tenantID] = snapshot
+			h.cachedSnapshotMu.Unlock()
 			h.fanOut(LiveStreamEnvelope{
 				Type:      "request",
 				Timestamp: time.Now().UTC(),
@@ -321,8 +327,11 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 	if h.store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		if snapshot, _ := h.store.Snapshot(ctx, "", true, h.cfg.InitialReplayLimit); snapshot != nil {
-			delta = ComputeDelta(h.cachedSnapshot, snapshot)
-			h.cachedSnapshot = snapshot
+			h.cachedSnapshotMu.Lock()
+			cachedGlobal := h.cachedSnapshot[""]
+			delta = ComputeDelta(cachedGlobal, snapshot)
+			h.cachedSnapshot[""] = snapshot
+			h.cachedSnapshotMu.Unlock()
 		}
 		cancel()
 	}
