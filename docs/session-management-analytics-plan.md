@@ -1,731 +1,2484 @@
-# 会话管理与分析产品视图 — 技术审计与方案文档
+# 会话管理模块 — 产品规划与设计文档
 
-> 基于 agentsview 代码库学习与 llm-gateway-go 现状交叉分析
-
----
-
-## 一、审计概述
-
-### 1.1 审计目标
-
-对 llm-gateway-go 现有会话管理模块（domains/session/ + admin/session_analytics_* + admin/session_panorama_*）进行全面审计，以 agentsview 为行业参考基准（成熟的开源 AI 代理会话管理与分析产品），识别能力差距、架构短板与产品缺失，输出完整的改进方案。
-
-### 1.2 审计方法
-
-| 方法 | 说明 |
-|------|------|
-| 代码逆向分析 | 通读 agentsview 完整代码库（Go 后端 + Svelte 前端），提取所有会话管理、分析、健康信号相关的特性 |
-| 现状映射 | 逐项对照 llm-gateway-go 现有功能，标记已有/缺失/不完整 |
-| 差距量化 | 对每个缺失项评估实现成本、影响范围和优先级 |
-| 方案设计 | 将 agentsview 的核心设计理念适配到我们的多租户 SaaS 网关架构 |
-
-### 1.3 被审计代码库
-
-| 代码库 | 路径 | 角色 |
-|--------|------|------|
-| agentsview | `/Users/xutaohuang/workspace/ai/agentsview` | 行业参考基准 |
-| llm-gateway-go | `/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go` | 被审计目标 |
+> 统一的「会话管理」产品视图，整合实时会话状态、会话分析、全景图、会话健康智能、合规审批、用量成本与运营操作。
+>
+> 基于 agentsview 代码库（成熟 AI 代理会话管理与分析产品）特性学习，结合 llm-gateway-go 现有能力差距分析形成。
 
 ---
 
-## 二、agentsview 核心特性对照表
+## 0. 文档说明
 
-### 2.1 会话管理 (Session Management)
+| 项 | 值 |
+|----|----|
+| 文档版本 | v2.1（功能规格细化版） |
+| 编制日期 | 2026-07-06 |
+| 适用版本 | llm-gateway-go main |
+| 参考基准 | agentsview (kenn-io)，Go + Svelte 5 + SQLite/PG/DuckDB 三后端 |
+| 文档定位 | 产品规划 + 设计 + 详细功能规格 |
 
-| 特性 | agentsview | 我们现有 | 差距 |
-|------|-----------|---------|------|
-| 会话创建/获取/删除 | ✅ Redis CRUD | ✅ Manager 完整实现 | 无差距 |
-| 会话状态机 | ❌（无显式状态机） | ✅ 14 状态状态机 | 我们更强 |
-| 会话存储 | SQLite + PostgreSQL + DuckDB | Redis（热）+ PostgreSQL（温） | 架构不同但功能等价 |
-| 会话过滤 | 项目/代理/机器/日期/消息数/终止/健康 | 合规状态/意图/成本/搜索 | 我们的过滤器维度少 |
-| 会话列表分页 | ✅ 游标分页 + 虚拟滚动 | ✅ page/offset 分页 | 功能等价 |
-| 会话语义搜索 | ✅ 全文/正则/模糊搜索 | ❌ 仅 ID 搜索 | **严重差距** |
-| 会话批量操作 | ✅ 多选 + 批量删除/恢复 | ❌ 不支持 | 差距 |
-| 侧边栏会话分组 | ✅ 按状态(working/waiting/idle/stale) 分组 | ❌ 无分组 | 差距 |
-| 会话实时更新 | ✅ SSE 推送 | ❌ 前端未消费 SSE | 差距 |
-| 会话软删除（回收站） | ✅ 回收站 + 10s 撤销 | ❌ 直接删除 | 差距 |
-| 会话分层展示 | ✅ 瘦行 + 懒加载水合 | ✅ 一次性加载 | 体验差距 |
-
-### 2.2 会话健康与智能 (Session Health & Intelligence)
-
-| 特性 | agentsview | 我们现有 | 差距 |
-|------|-----------|---------|------|
-| 健康评分 (0-100) | ✅ 基于多信号 | ❌ | **严重差距** |
-| 健康等级 (A-F) | ✅ Grade 映射 | ❌ | **严重差距** |
-| 结果分类 (outcome) | ✅ complete/abandon/error/unknown | ❌ | **严重差距** |
-| 工具失败检测 | ✅ tool_failure_signal_count | ❌ | **严重差距** |
-| 上下文压力监控 | ✅ context_pressure_max | ❌ | **严重差距** |
-| 编辑改动率 | ✅ edit_churn_count | ❌ | **严重差距**（但我们没有编辑器上下文） |
-| 质量信号 | ✅ 短提示/未结构化开始/重复提示/无代码上下文 | ❌ | **严重差距** |
-| 秘密泄露检测 | ✅ secret_leak_count | ✅ （output_compliance 模块） | 功能等价，数据模型不同 |
-| 合规状态 | ❌ | ✅ compliant/warning/violation | 我们更强 |
-
-### 2.3 分析与仪表板 (Analytics & Dashboard)
-
-| 特性 | agentsview | 我们现有 | 差距 |
-|------|-----------|---------|------|
-| 摘要统计卡片 | ✅ 6 张（会话/消息/项目/天数/均值/集中度） | ✅ 4 张（总数/活跃/成本/合规率） | 基本等价 |
-| 活动时间线 | ✅ 柱状图（日/周/月粒度） | ❌ | **严重差距** |
-| 日历热力图 | ✅ GitHub 风格 | ❌ | **严重差距** |
-| 项目分解 | ✅ 按项目多维统计 | ❌ | 差距（我们场景不同） |
-| 星期几/小时热力图 | ✅ 24x7 网格 | ❌ | **严重差距** |
-| 会话形态分布 | ✅ 时长/消息数直方图 | ❌ | **严重差距** |
-| 速度指标 | ✅ 轮次周期/首响应/每分钟指标 | ❌ | **严重差距** |
-| 工具使用统计 | ✅ 按类别/代理/趋势 | ❌ | **严重差距** |
-| 技能使用统计 | ✅ 按技能名/调用次数/趋势 | ❌ | 差距（我们无技能系统） |
-| 热门会话排名 | ✅ 按消息/时长/输出 token | ❌ | **严重差距** |
-| 成本分解 | ✅ 按模型/提供商表格 | ✅ 按模型的文本列表 | 部分实现，缺乏可视化 |
-| 缓存节省分析 | ✅ cache_read_tokens + 按模型估算 | ✅ panaroma 中有 basic | 基本覆盖 |
-| 压缩节省分析 | ✅ 压缩请求数 + token 估算 | ✅ panaroma 中有 basic | 基本覆盖 |
-| 模型切换可视化 | ❌ | ✅ 时间线 | 我们更强 |
-| 合规问题详情 | ❌ | ✅ 表格 + 类型/严重度 | 我们更强 |
-
-### 2.4 会话详情与全景 (Session Detail & Panorama)
-
-| 特性 | agentsview | 我们现有 | 差距 |
-|------|-----------|---------|------|
-| 会话元数据概览 | ✅ 基本信息 + 统计 | ✅ AnalyticsSessionSummary | 基本等价 |
-| 消息列表 | ✅ 分页加载 | ✅ 通过 request_logs | 功能等价 |
-| 工具调用展示 | ✅ 专用工具调用列表 | ❌ 仅在消息 preview 中有 | 差距 |
-| 逐步摘要 | ✅ 请求/回复摘要 | ✅ session_request_summaries | 功能等价 |
-| 标签系统 | ❌ | ✅ session_tags | 我们更强 |
-| 优化建议 | ❌ | ✅ session_optimization_suggestions | 我们更强 |
-| 聚类/分组 | ❌ | ✅ session_clusters | 我们更强 |
-| 会话对比 | ❌ | ✅ SessionCompareView | 我们更强 |
-| Handoff | ❌ | ✅ 上下文超限交接 | 我们更强 |
-
-### 2.5 使用与成本 (Usage & Cost)
-
-| 特性 | agentsview | 我们现有 | 差距 |
-|------|-----------|---------|------|
-| 总成本统计 | ✅ 随时间变化 | ✅ 基础聚合 | 基本等价 |
-| 按模型成本 | ✅ 堆叠面积/柱状/折线 | ✅ 文本列表 | 可视化差距 |
-| 按提供商成本 | ✅ 归属视图 | ❌ | 差距 |
-| 同比/环比对比 | ✅ | ❌ | 差距 |
-| 成对比较 | ✅ 两种配置并排 | ❌ | 差距 |
-| 成本预测/趋势 | ❌ | ❌ | 差距（P3） |
+**版本演进**：
+- **v1.0**：技术审计报告，聚焦 `session-analytics/Panorama` 子集。
+- **v2.0**：升级为「产品规划文档」，覆盖完整的统一会话管理模块（含实时状态、合规审批），引入 agentsview 的健康智能/会话形态/活动并发等更高阶分析维度，给出端到端的产品信息架构、功能规格、数据模型、API 与路线图。
+- **v2.1**（本次）：在 v2.0 基础上新增第三章「产品主线」与第十一章「详细功能规格」；并对第四章全部 7 个模块（A 实时会话 / B 分析中心 / C 全景图 / D 健康智能 / E 合规审批 / F 用量成本 / G 运营操作）逐一深化，每个模块都明确产品价值（主线锚定）、运营解读心智模型、数据口径、交互规则、空异常态处理，使功能特性细节达到开发与测试可直接依据的粒度。
 
 ---
 
-## 三、现状架构分析
+## 执行摘要
 
-### 3.1 现有架构优势
+### 核心定位
+会话管理模块是 llm-gateway-go 的**核心运营中枢**，统一管理每一次 AI 对话会话（由 `gw_session_id` 标识）的全生命周期——从产生、监控、分析到治理。它整合了**实时会话状态**（运营态）、**会话分析**（历史态）、**健康智能**（质量评估）、**合规审批**（安全治理）、**用量成本**（财务对账）五大核心能力，服务于 SRE（守夜人）、租户管理员（合规守门人）、产品/算法（体验优化者）三类角色。
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   现有架构优势                        │
-├─────────────────────────────────────────────────────┤
-│ 1. 双存储架构：Redis 热层 + PostgreSQL 持久化        │
-│    - Redis：实时会话状态、毫秒级 CRUD                 │
-│    - PostgreSQL：历史数据、复杂分析查询               │
-│ 2. 完整的会话状态机（14 状态，Lua 原子更新）          │
-│ 3. 凭证轮换追踪（CredRotationEntry）                  │
-│ 4. 异步写入器确保 Redis 不丢数据                      │
-│ 5. 模块化设计（admin/modules.go 16 个功能模块）        │
-│ 6. 多租户隔离（tenant_id 贯穿所有查询）               │
-│ 7. 全景图数据聚合层（一次性返回所有信息）              │
-│ 8. SessionContext 丰富的请求级上下文（30+ 字段）      │
-└─────────────────────────────────────────────────────┘
-```
+### 关键创新（相对 v1.0）
+1. **统一双态视图**：打通"实时运营态"（Redis 热层）与"历史分析态"（PG 冷层），通过 `gw_session_id` 贯穿，消除割裂
+2. **健康智能体系**（借鉴 agentsview）：100 分起扣的 penalty 模型 + A-F 等级 + outcome 分类 + 扣分明细可解释，让 SRE 从"逐个翻看"升级为"按分排序聚焦异常"
+3. **产品主线驱动**：不是功能堆砌，而是围绕"三类角色 × 五个端到端场景"构建，每个模块都回答明确的业务问题
+4. **诊断闭环设计**：健康面板扣分项可点击跳转到全景图对应面板，"看到→点开→诊断"零跳转
+5. **网关特有能力**：凭证轮换诊断（agentsview 无）、模型切换可视化、审批工作流、缓存经济学
 
-### 3.2 现有架构短板
+### 主要差距与建设方向
+| 现状 | 差距 | v2.1 规划 |
+|------|------|----------|
+| ✅ 实时会话状态（14 状态机）| SSE 未消费、健康列缺失 | P1：前端消费 SSE + 健康列 |
+| ⚠️ 分析中心（仅今日 KPI） | **缺时间序列、分布、归因** | P0：6 时间序列 + 6 分布图 |
+| ✅ 全景图（9 面板） | 健康面板缺失、成本流向简单 | P1：健康诊断导航 + 成本拆解 |
+| ❌ 健康智能 | **完全缺失** | P1：penalty 模型 + 写入 + API |
+| ✅ 合规审批（工作流完整） | 合规趋势、SLA 监控缺失 | P2：趋势分析 + SLA 告警 |
+| ⚠️ 用量成本（基础聚合） | 缺会话维度归因、同比环比 | P1：多维归因 + period-compare |
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   现有架构短板                        │
-├─────────────────────────────────────────────────────┤
-│ 1. 缺乏统一的分析过滤系统                            │
-│    - session_analytics 列表过滤器独立于全景图         │
-│    - 无跨视图过滤器同步机制                          │
-│    - 无持久化过滤器状态                              │
-│ 2. 分析维度不足                                      │
-│    - 仅有聚合统计和列表                              │
-│    - 无时间序列趋势                                  │
-│    - 无分布/分解分析                                 │
-│ 3. 会话健康体系缺失                                  │
-│    - 无健康评分/等级                                 │
-│    - 无质量信号追踪                                  │
-│    - 无结果分类                                      │
-│ 4. 前端可视化能力弱                                  │
-│    - 仅有 Element Plus 统计卡片 + 表格               │
-│    - 无 Chart.js 图表使用（依赖已在但未用）           │
-│    - 仪表板布局简单                                  │
-│ 5. 数据管道待完善                                    │
-│    - request_logs 索引不完整                         │
-│    - 缺少定时聚合任务                                │
-│    - 会话清理时引用完整性待确认                      │
-│ 6. 实时能力未释放                                    │
-│    - 后端有 SSE broadcaster                          │
-│    - 前端未消费实时事件                              │
-└─────────────────────────────────────────────────────┘
-```
+### 4 周实施路线图
+- **M1（第 1 周）**：数据管道（索引/定时聚合）+ 4 个核心分析端点（activity/cost/latency/breakdown）→ 后端可查时间序列
+- **M2（第 2 周）**：分析中心仪表板上线（KPI + 图表网格）→ 用户可见可视化
+- **M3（第 3 周）**：健康评分 + 健康图表 + 全景增强 → 健康智能可用
+- **M4（第 4 周）**：实时 SSE + 用量成本增强 → 端到端体验闭环
+
+### 投资回报
+- **运营效率**：异常发现到处置时长从"30 分钟手动排查"降至"3 分钟点开全景图诊断"
+- **成本可控**：成本异常识别覆盖率从 0%（人工巡检）提升至 95%（健康分 + 趋势告警）
+- **合规保障**：审批 SLA 从无监控到可量化（积压/超时率/等待时长），拦截率可追溯
 
 ---
 
-## 四、改进方案
+## 目录
 
-### 4.1 阶段一：分析后端 API 增强
+### 战略与架构层
+- [一、产品定位与目标](#一产品定位与目标)
+  - 1.1 产品定位 / 1.2 一个「会话」是什么 / 1.3 产品目标
+- [二、信息架构（产品视图）](#二信息架构产品视图)
+  - 2.1 导航结构 / 2.2 角色权限矩阵 / 2.3 跨视图联动设计
+- [三、产品主线（谁·为什么·怎么用）](#三产品主线谁为什么怎么用) ★
+  - 3.1 三类角色的一天 / 3.2 五个端到端典型场景 / 3.3 会话生命周期信息流 / 3.4 从 agentsview 提炼的 5 条产品原则 / 3.5 模块价值锚定表
 
-#### 4.1.1 新增分析端点
+### 核心产品层
+- [四、功能规格（按子模块）](#四功能规格按子模块) ★
+  - **4.1 模块 A：实时会话**（状态机可视化 / 凭证轮换诊断 / SSE 推送 / 远程操作）
+  - **4.2 模块 B：分析中心**（KPI 卡片 / 6 时间序列 / 6 分布归因 / 热门排名 / 过滤器）
+  - **4.3 模块 C：会话全景**（9 面板：摘要/健康/时间线/逐步摘要/模型切换/成本流向/标签建议/凭证轮换/导出）
+  - **4.4 模块 D：健康智能**（penalty 模型 / A-F 等级 / outcome / 健康闭环）
+  - **4.5 模块 E：合规审批**（治理闭环 / 多维评分 / 审批 SLA）
+  - **4.6 模块 F：用量成本**（5 维归因 / 同比环比 / 缓存经济学）
+  - **4.7 模块 G：运营操作**（12 项操作权限矩阵 / 统一闭环 / 危险防护）
 
-**端点 1：活动时间线**
-```http
-GET /api/admin/session-analytics/activity?date_from=&date_to=&granularity=day|week|month&model=&provider=
-```
-```json
-{
-  "series": [
-    {"date": "2026-07-01", "request_count": 42, "success_count": 40, "error_count": 2, "total_cost_usd": 1.23, "total_tokens": 15000},
-    ...
-  ]
-}
-```
-- 数据源：`request_logs` 按 `ts` 日期聚合
-- 用途：活动趋势柱状图
+### 工程实现层
+- [五、统一数据模型](#五统一数据模型)
+  - 5.1 核心表与关系 / 5.2 关键表 schema 摘要 / 5.3 数据管道
+- [六、API 规格](#六api-规格)
+  - 6.1 现有 API / 6.2 v2.0 新增 API（14 端点）/ 6.3 通用约定
+- [七、前端架构](#七前端架构)
+  - 7.1 路由整合 / 7.2 组件架构 / 7.3 图表技术选型 / 7.4 实时能力
 
-**端点 2：模型/提供商分解**
-```http
-GET /api/admin/session-analytics/model-breakdown?date_from=&date_to=
-```
-```json
-{
-  "by_model": [
-    {"model": "gpt-4o", "request_count": 100, "total_cost_usd": 5.0, "total_tokens": 50000, "avg_latency_ms": 1200},
-    ...
-  ],
-  "by_provider": [
-    {"provider": "openai", "request_count": 150, "total_cost_usd": 8.0, ...},
-    ...
-  ]
-}
-```
-- 数据源：`request_logs` 按 `outbound_model` / `provider` 分组
-- 用途：模型/提供商饼图/环形图
+### 执行与参考层
+- [八、路线图](#八路线图)
+  - 8.1 优先级与工作量（P0-P3）/ 8.2 里程碑（M1-M4）/ 8.3 实施顺序依赖
+- [九、关键设计决策与风险](#九关键设计决策与风险)
+  - 9.1 设计决策 / 9.2 风险与缓解 / 9.3 待解决的技术债
+- [十、附录](#十附录)
+  - agentsview 参考端点清单 / 术语对照表 / 健康评分架构差异说明 / 索引参考 / v1.0 审计结论摘要
+- [十一、详细功能规格（v2.1 扩展）](#十一详细功能规格v21-扩展) ★
 
-**端点 3：成本趋势**
-```http
-GET /api/admin/session-analytics/cost-trend?date_from=&date_to=&group_by=day|week|model|provider
-```
-```json
-{
-  "series": [
-    {"period": "2026-07-01", "total_cost_usd": 12.5, "input_cost_usd": 5.0, "output_cost_usd": 7.5},
-    ...
-  ]
-}
-```
-- 数据源：`request_logs` + `session_summaries`
-- 用途：折线图/堆叠面积图
-
-**端点 4：会话健康分布**
-```http
-GET /api/admin/session-analytics/health-distribution?date_from=&date_to=
-```
-```json
-{
-  "compliance_distribution": {"compliant": 80, "warning": 15, "violation": 5},
-  "quality_distribution": {"90-100": 20, "80-89": 35, "70-79": 25, "60-69": 15, "<60": 5},
-  "latency_distribution": {"<1s": 30, "1-3s": 40, "3-5s": 20, "5-10s": 8, ">10s": 2},
-  "error_rate_distribution": {"0%": 50, "1-10%": 30, "10-25%": 15, ">25%": 5}
-}
-```
-- 数据源：`session_summaries`（聚合质量/合规/延迟/错误率）
-- 用途：健康柱状图
-
-**端点 5：热门会话排名**
-```http
-GET /api/admin/session-analytics/top-sessions?metric=cost|tokens|latency|duration&limit=10&date_from=&date_to=
-```
-- 数据源：`session_summaries`
-- 用途：热门会话表格，可跳转到全景图
-
-**端点 6：会话形态分布**
-```http
-GET /api/admin/session-analytics/session-shape?date_from=&date_to=
-```
-```json
-{
-  "request_count_buckets": [
-    {"range": "1-5", "count": 100},
-    {"range": "6-20", "count": 80},
-    {"range": "21-50", "count": 40},
-    {"range": "51-100", "count": 20},
-    {"range": ">100", "count": 10}
-  ],
-  "duration_buckets": [
-    {"range": "<1min", "count": 50},
-    {"range": "1-5min", "count": 100},
-    {"range": "5-30min", "count": 80},
-    {"range": "30-60min", "count": 30},
-    {"range": ">1h", "count": 10}
-  ]
-}
-```
-- 数据源：`session_summaries`
-- 用途：会话形态直方图
-
-#### 4.1.2 增强现有列表 API
-
-在 `HandleSessionAnalyticsList` 中增加过滤参数：
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `model` | string | 模型名（逗号分隔多选） |
-| `provider` | string | 提供商 |
-| `date_from` | string | 开始日期范围 |
-| `date_to` | string | 结束日期范围 |
-| `latency_min` | int | 最小延迟 (ms) |
-| `latency_max` | int | 最大延迟 (ms) |
-| `token_min` | int | 最小总 token |
-| `token_max` | int | 最大总 token |
-| `request_count_min` | int | 最少请求数 |
-
-#### 4.1.3 会话健康评分逻辑
-
-```go
-// admin/session_health.go
-
-type HealthGrade string
-const (
-    GradeA HealthGrade = "A"
-    GradeB HealthGrade = "B"
-    GradeC HealthGrade = "C"
-    GradeD HealthGrade = "D"
-    GradeF HealthGrade = "F"
-)
-
-type SessionHealth struct {
-    HealthScore     int          `json:"health_score"`     // 0-100
-    HealthGrade     HealthGrade  `json:"health_grade"`     // A-F
-    Outcome         string       `json:"outcome"`          // completed / error / abandoned / unknown
-    ErrorRate       float64      `json:"error_rate"`       // 错误请求占比
-    AvgLatency      int          `json:"avg_latency_ms"`
-    ModelStability  float64      `json:"model_stability"`  // 模型切换频率逆指标
-    CostEfficiency  float64      `json:"cost_efficiency"`  // tokens per dollar
-}
-
-// 计算逻辑
-func computeSessionHealth(summary *AnalyticsSessionSummary, timeline []RequestEvent) SessionHealth {
-    // 基础分 = 100
-    score := 100
-
-    // 扣分项
-    if summary.ErrorCount > 0 {
-        ratio := float64(summary.ErrorCount) / float64(summary.RequestCount)
-        score -= int(ratio * 50) // 错误率最多扣 50 分
-    }
-    if summary.ComplianceIssuesCount > 0 {
-        score -= summary.ComplianceIssuesCount * 10 // 每个合规问题扣 10 分
-    }
-    if summary.AvgLatencyMs > 5000 {
-        score -= 15 // 高延迟扣 15 分
-    }
-    if summary.ModelSwitchCount > 3 {
-        score -= 10 // 频繁模型切换扣 10 分
-    }
-
-    // 扣分封顶
-    if score < 0 { score = 0 }
-
-    // 等级映射
-    grade := GradeF
-    switch {
-    case score >= 90: grade = GradeA
-    case score >= 75: grade = GradeB
-    case score >= 60: grade = GradeC
-    case score >= 40: grade = GradeD
-    }
-
-    // 结果推断
-    outcome := "unknown"
-    if summary.ErrorCount == 0 && summary.RequestCount >= 2 {
-        outcome = "completed"
-    } else if float64(summary.ErrorCount) / float64(summary.RequestCount) > 0.5 {
-        outcome = "error"
-    } else if summary.RequestCount <= 1 {
-        outcome = "abandoned"
-    }
-
-    return SessionHealth{
-        HealthScore:    score,
-        HealthGrade:    grade,
-        Outcome:        outcome,
-        ErrorRate:      float64(summary.ErrorCount) / float64(summary.RequestCount),
-        AvgLatency:     summary.AvgLatencyMs,
-        ModelStability: 1.0 - float64(summary.ModelSwitchCount) / float64(summary.RequestCount),
-        CostEfficiency: float64(summary.TotalTokens) / summary.TotalCostUSD,
-    }
-}
-```
-
-#### 4.1.4 新增文件
-
-| 文件 | 说明 |
-|------|------|
-| `admin/session_health.go` | 会话健康评分逻辑 |
-| `admin/session_analytics_activity.go` | 活动时间线端点 |
-| `admin/session_analytics_breakdown.go` | 模型/提供商分解端点 |
-| `admin/session_analytics_trends.go` | 成本/健康趋势端点 |
-| `admin/session_analytics_shape.go` | 会话形态分布端点 |
-| `admin/session_analytics_top.go` | 热门会话排名端点 |
+**★ 标记章节为 v2.1 核心新增/深化内容**
 
 ---
 
-### 4.2 阶段二：前端分析仪表板重构
+## 一、产品定位与目标
 
-#### 4.2.1 组件架构
+### 1.1 产品定位
+
+**会话管理**（Session Management）是 llm-gateway-go 的核心运营模块，负责对**每一次 AI 对话会话**（一个 `gw_session_id` 串起的一连串 LLM 请求）进行全生命周期管理、监控、分析与治理。
+
+它服务于三类角色：
+
+| 角色 | 核心诉求 | 在本模块的诉求 |
+|------|---------|---------------|
+| **平台运营 / SRE** | 系统稳定、成本可控、故障可定位 | 实时会话状态监控、健康评分、成本分析、异常告警 |
+| **租户管理员** | 安全合规、用量透明、审计可追溯 | 合规审批、用量成本归因、会话审计、租户隔离 |
+| **产品 / 算法** | 理解用户行为、优化路由策略、提升体验 | 会话形态分布、用户意图、模型切换分析、优化建议 |
+
+### 1.2 一个「会话」是什么
+
+在网关语境下，一个会话 = **同一身份（identity_hash / api_key + 设备指纹）在 5 分钟窗口内连续发起、共享上下文的一组 LLM 请求**，由 `gw_session_id`（`gw_<uuid>` 格式）唯一标识。
+
+> ⚠️ **关键澄清（重要！）**：代码库中存在两个并行的「会话」概念，本模块统一定义如下，避免混淆：
+>
+> | 概念 | 标识 | 存储 | 关注点 |
+> |------|------|------|--------|
+> | **会话状态实例**（live） | `gw_session_id` | Redis 热层 + `session_state_snapshots` | 实时状态机、凭证轮换、是否在运行 |
+> | **会话分析记录**（history） | `gw_session_id`（= `session_summaries.session_key`） | `session_summaries` + `request_logs` | 历史聚合、成本、合规、质量 |
+>
+> 二者通过 **同一个 `gw_session_id`** 关联。本模块将其整合为「一个会话」的两种视角：**运营态（实时）** 与 **分析态（历史）**。
+
+### 1.3 产品目标（本年度）
+
+1. **统一入口**：一个「会话管理」导航项，下挂实时状态、分析中心、全景详情、合规审批四个子视图，消除当前 `/sessions` 与 `/admin/session-analytics` 两个入口割裂。
+2. **会话健康度**：建立 0–100 健康评分 + A–F 等级 + 结果分类（completed / error / abandoned / unknown），让运营一眼识别异常会话。
+3. **时间序列分析**：从「今日快照」升级为「可下钻时间序列」——活动趋势、成本趋势、延迟趋势、健康分布。
+4. **成本归因**：按模型 / 提供商 / 用户意图 / 工作类型的成本分解，支持同比环比。
+5. **合规治理闭环**：会话审计 → 审批队列 → 处置 → 复盘，全链路可追溯。
+6. **实时运营能力**：SSE 推送活跃会话变化，支持远程停止 / 恢复 / 标注。
+
+---
+
+## 二、信息架构（产品视图）
+
+### 2.1 导航结构
 
 ```
-SessionAnalyticsDashboardView.vue
-├── DashboardModuleGate.vue          # 模块启用检测
-├── DashboardStatsRow.vue             # 统计卡片行（7 张卡片）
-├── DashboardFilterBar.vue            # 统一过滤器栏
-│   ├── DateRangePicker
-│   ├── ModelSelect
-│   ├── ProviderSelect
-│   ├── ComplianceSelect
-│   ├── IntentSelect
-│   └── SearchInput
-├── DashboardGrid.vue                 # 2 列图表网格
-│   ├── DashboardActivityTimeline.vue # 活动时间线（柱状图）
-│   ├── DashboardModelBreakdown.vue   # 模型分解（环形图）
-│   ├── DashboardCostTrend.vue        # 成本趋势（折线图）
-│   ├── DashboardLatencyTrend.vue     # 延迟趋势（折线图）
-│   ├── DashboardHealthDistribution.vue # 健康分布（柱状图）
-│   ├── DashboardSessionShape.vue     # 会话形态（直方图）
-│   └── DashboardTopSessions.vue      # 热门会话（表格）
-└── SessionListTable.vue             # 增强会话列表
+会话管理（Session Management）
+│
+├── 📊 分析中心 (Analytics Center)            ← /admin/session-analytics
+│     统计卡片 · 时间序列 · 健康分布 · 会话形态 · 成本归因 · 热门会话
+│
+├── 🟢 实时会话 (Live Sessions)               ← /sessions  (运营态)
+│     运行中会话列表 · 状态机 · 凭证轮换 · 远程停止/恢复
+│
+├── 🔍 会话全景 (Session Panorama)            ← /admin/session-analytics/:id/panorama
+│     单会话详情：摘要·时间线·逐步摘要·标签·建议·健康·成本流向
+│
+├── 🛡️ 合规审批 (Compliance & Approval)       ← /admin/session-approvals
+│     审计记录 · 审批队列 · 检测配置 · 处置历史
+│
+└── 💰 用量成本 (Usage & Cost)                ← /admin/usage
+      成本总览 · 模型/提供商归因 · 缓存节省 · 同比环比
 ```
 
-#### 4.2.2 布局设计
+### 2.2 角色权限矩阵
+
+| 视图 | super_admin | tenant_admin | 普通运营 |
+|------|:-----------:|:------------:|:--------:|
+| 分析中心 | ✅ 全租户 | ✅ 本租户 | ✅ 本租户（只读） |
+| 实时会话 | ✅ 全租户 + 远程停止/恢复 | ✅ 本租户 + 远程停止/恢复 | ❌ 只读 |
+| 会话全景 | ✅ | ✅ | ✅ |
+| 合规审批 | ✅ 全租户 + 审批 | ✅ 本租户 + 审批 | ❌ |
+| 用量成本 | ✅ 全租户 | ✅ 本租户 | ❌ |
+
+> 实现依据：`admin/auth.go` 的 `h.superAdmin` / `h.admin` 中间件；`EffectiveTenantIDAll`（super_admin → 空 = 查全租户）；所有表均启 RLS（`app.current_tenant` GUC）。
+
+### 2.3 跨视图联动设计（核心产品决策）
+
+**统一过滤器 + 会话 ID 贯穿**：分析中心、实时会话、用量成本共享同一套过滤器（日期范围 / 模型 / 提供商 / 合规状态 / 意图），并通过 `gw_session_id` 实现下钻联动——点击任意图表元素 / 列表行 → 打开该会话的全景图。这是 v2.0 相对 v1.0 最重要的体验升级。
+
+---
+
+## 三、产品主线（谁·为什么·怎么用）
+
+> 功能规格（第四章）回答「是什么」，本章回答「为什么」和「怎么用」。会话管理不是一个功能清单，而是三类角色围绕「会话」这一核心实体开展的日常工作流。本章先立主线，后续每个模块的细化都挂在这条主线上。
+
+### 3.1 三类角色的一天
+
+#### 角色 1：平台运营 / SRE —「守夜人」
+
+> 核心诉求：**系统稳定、成本可控、异常可定位**。
 
 ```
-┌──────────────────────────────────────────────────┐
-│ DashboardHeader: "会话分析 Dashboard" [刷新]     │
-├──────────────────────────────────────────────────┤
-│ [模块启用检测] 未启用时显示引导提示                 │
-├──────────────────────────────────────────────────┤
-│ StatsRow: 7 张指标卡片                            │
-│ 会话总数 | 活跃会话 | 总成本 | 合规率 | 健康分    │
-│ 平均延迟 | 总请求数                               │
-├──────────────────────────────────────────────────┤
-│ FilterBar: 日期 | 模型 | 提供商 | 合规 | 意图     │
-│          成本范围 | 搜索 [查询] [重置]             │
-├──────────────────┬───────────────────────────────┤
-│ 活动时间线        │   模型分解                      │
-│ (Chart.js 柱状图) │   (Chart.js 环形图)            │
-├──────────────────┼───────────────────────────────┤
-│ 成本趋势          │   延迟趋势                      │
-│ (Chart.js 折线图) │   (Chart.js 折线图)            │
-├──────────────────┴───────────────────────────────┤
-│ 健康分布（柱状图：合规/质量/延迟等级）              │
-├──────────────────┬───────────────────────────────┤
-│ 会话形态分布      │   热门会话列表                  │
-│ (直方图)          │   (可排序表格)                  │
-├──────────────────┴───────────────────────────────┤
-│ 会话列表（增强版，含健康指标列）                   │
-│ 标题 | 开始时间 | 时长 | 成本 | 健康 | 合规 | 操作 │
-│ 分页 + 排序 + 过滤                                 │
-└──────────────────────────────────────────────────┘
+一个 SRE 的典型一天
+├── 早晨巡检（09:00）
+│   ├── 打开「分析中心」看昨日全局：会话量、成本、健康分布
+│   ├── KPI 卡片若异常（成本飙升 / 健康均值低）→ 立即下钻
+│   └── 扫一眼「待审批」角标，确保无积压
+│
+├── 异常处置（随时，告警驱动）
+│   ├── 收到告警：某会话健康分 F / 成本异常高
+│   ├── 打开「实时会话」找到该会话 → 看状态机 + 凭证轮换
+│   ├── 若在运行且异常 → 打开「全景图」诊断 → 必要时「远程停止」
+│   └── 停止后记录标注（"高延迟，疑似死循环"）
+│
+├── 成本巡检（午后）
+│   ├── 打开「用量成本」看模型/提供商归因
+│   ├── 发现某模型成本占比异常 → 下钻到该模型的会话列表
+│   └── 标记优化建议，转给产品/算法
+│
+└── 复盘（下班前）
+    └── 导出当日异常会话报告（全景图 → Markdown 导出）
 ```
 
-#### 4.2.3 Chart.js 使用规范
+**这个角色需要的关键能力**：实时会话监控 + 远程停止/恢复、健康评分快速识别异常、成本归因下钻、全景图诊断、导出复盘。
 
-创建统一的 Chart.js Vue 3 composable：
+#### 角色 2：租户管理员 —「合规守门人」
 
+> 核心诉求：**安全合规、用量透明、审计可追溯**。
+
+```
+一个租户管理员的典型一天
+├── 审批值守（早晨）
+│   ├── 打开「合规审批」看待审批队列
+│   ├── 逐条审查：意图、危险分、威胁类型、内容摘要
+│   ├── 批准 / 拒绝（拒绝需填理由）→ 关注超时项
+│   └── 处置完清空队列
+│
+├── 合规复盘（午后）
+│   ├── 打开「分析中心」合规过滤 → 看违规会话分布
+│   ├── 下钻到全景图，看具体哪条请求触发违规
+│   └── 调整「审批规则」阈值（如降低危险分触发线）
+│
+└── 用量对账（月底）
+    ├── 打开「用量成本」按 API Key / 提供商对账
+    └── 同比/环比对比，向业务方汇报
+```
+
+**这个角色需要的关键能力**：审批工作流（批准/拒绝/超时）、合规事件分析、审批规则配置、用量对账、租户内数据隔离。
+
+#### 角色 3：产品 / 算法 —「体验优化者」
+
+> 核心诉求：**理解用户行为、优化路由策略、提升体验**。
+
+```
+一个产品/算法的典型工作流
+├── 用户行为分析（每周）
+│   ├── 打开「分析中心」看会话形态分布（quick/standard/deep/marathon）
+│   ├── 看用户意图分布 → 判断主要使用场景
+│   └── 发现 marathon 会话占比高 → 调研是否上下文管理有问题
+│
+├── 路由策略优化
+│   ├── 打开「全景图」看模型切换可视化
+│   ├── 频繁切换的会话 → 评估是否路由策略不稳
+│   └── 查看「优化建议」面板，采纳批量建议
+│
+└── 质量评估
+    ├── 看健康分布与趋势 → 评估整体质量走向
+    └── 按意图/模型分组对比健康分 → 定位短板
+```
+
+**这个角色需要的关键能力**：会话形态/意图分析、模型切换可视化、优化建议采纳、按维度分组对比、聚类洞察。
+
+### 3.2 五个端到端典型场景
+
+> 这些场景是产品验收的最高标准——每个场景必须能"走通"，不依赖某单一功能，而是模块间联动。
+
+#### 场景 1：发现并处置一个高成本异常会话（SRE 主线）
+
+```
+触发：分析中心「成本趋势」图表显示今日成本突增
+  │
+  ├─ [分析中心] 点击图表异常点 → 下钻到当日会话列表（按成本排序）
+  ├─ [会话列表] 看到会话 gw_abc 成本 $8.92，远超均值，健康 C
+  ├─ [全景图] 打开 gw_abc 全景图：
+  │    ├─ 健康面板：扣分项"频繁模型切换"（5次）+ "高延迟"
+  │    ├─ 时间线：发现 30 条请求集中在 10 分钟内，token 累积 12 万
+  │    └─ 模型切换：gpt-4o → claude → gpt-4o 反复横跳
+  ├─ [诊断] 判定为路由震荡 + 上下文膨胀
+  ├─ [实时会话] 该会话仍在运行 → 远程停止
+  └─ [标注] 标记"路由震荡，待优化"，转交算法团队
+```
+**贯穿模块**：分析中心 → 列表 → 全景图 → 实时会话 → 标注。依赖：成本趋势、健康面板、模型切换可视化、远程停止。
+
+#### 场景 2：合规违规会话的发现与复盘（租户管理员主线）
+
+```
+触发：合规审批队列出现一条待审批，threats=["prompt_injection"]
+  │
+  ├─ [合规审批] 查看详情：危险分 72，内容摘要显示注入尝试
+  ├─ [审批] 拒绝（理由："检测到系统提示泄露尝试"）
+  ├─ [全景图] 打开该会话全景图：
+  │    └─ 合规面板：高亮命中的请求 + threats 明细
+  ├─ [分析中心] 切换合规过滤为 violation → 看同租户是否还有类似
+  ├─ [配置] 调整审批规则：降低 prompt_injection 触发阈值
+  └─ [审计] 操作已记入审计日志（approval.reject）
+```
+**贯穿模块**：合规审批 → 全景图 → 分析中心 → 审批配置 → 审计日志。
+
+#### 场景 3：基于优化建议的成本优化闭环（产品/算法主线）
+
+```
+触发：打开某会话全景图，发现「优化建议」面板有 3 条建议
+  │
+  ├─ [全景图-建议] 建议1："降级到 gpt-4o-mini 可节省 40% 成本"
+  │                 建议2："合并连续工具调用可减少 2 次往返"
+  │                 建议3："精简系统提示可节省 8000 token"
+  ├─ [评估] 点击建议详情看 evidence（证据：哪些请求可优化）
+  ├─ [采纳] 采纳建议1 → 标记 applied，记入审计
+  ├─ [验证] 一周后回分析中心，对比该类会话的成本趋势
+  └─ [聚类] 若多个会话有相同建议 → 聚类视图看影响面
+```
+**贯穿模块**：全景图-建议 → 审计 → 分析中心 → 聚类。
+
+#### 场景 4：实时会话监控与远程干预（SRE 主线）
+
+```
+触发：实时会话列表 SSE 推送，某会话状态变为 error
+  │
+  ├─ [实时会话] 列表红色高亮 gw_def，角标告警
+  ├─ [详情] 展开看凭证轮换：最后一段凭证连续 8 次失败
+  ├─ [全景图] 时间线末尾连续错误请求 → 上游 5xx
+  ├─ [决策] 判定为上游凭证失效
+  ├─ [操作] 远程停止该会话（super_admin）→ 恢复（换有效凭证）
+  └─ [结果] 状态 recovered，SSE 推送状态变化，列表更新
+```
+**贯穿模块**：实时会话(SSE) → 详情 → 全景图 → 远程停止/恢复。
+
+#### 场景 5：用量成本对账与同比环比（租户管理员月底主线）
+
+```
+触发：月底需要对账
+  │
+  ├─ [用量成本] 看本月总成本，按 API Key 分解
+  ├─ [归因] 切换 group_by=provider → 看各提供商占比
+  ├─ [对比] 同比：本月 vs 上月；环比：本周 vs 上周
+  ├─ [下钻] 某提供商成本上涨 → 下钻到该提供商的会话列表
+  ├─ [缓存] 看缓存经济学：cache_hit_ratio + 节省金额
+  └─ [导出] 导出对账报告（CSV）
+```
+**贯穿模块**：用量成本 → 会话列表 → 全景图 → 导出。
+
+### 3.3 会话生命周期信息流
+
+> 一个会话从产生到归档，数据如何流转、各角色何时介入。
+
+```
+阶段 1：会话产生
+  请求进入网关 → 5min 窗口内首次出现 → 分配 gw_session_id
+  │
+  ├─ 数据产生：request_logs_hot（实时）
+  ├─ 模块介入：[实时会话] 该会话出现在运行中列表（SRE 可见）
+  └─ 合规介入：SessionAuditHook 检测 → session_audit_records
+                  └─ 若 need_approval → approval_queue（管理员介入）
+
+阶段 2：会话进行中
+  持续有请求 → 触发器更新 session_summaries（累积成本/token/延迟）
+  │
+  ├─ 异步分析：RequestSummarizer 生成 session_request_summaries
+  ├─ 事件总线：analysis_events → workers（intent/summary/tagger/optimizer）
+  ├─ 模块介入：[分析中心] 该会话被纳入实时聚合（SRE/产品可见）
+  └─ 实时推送：LiveStreamSSE → 前端刷新
+
+阶段 3：会话结束
+  停止（主动/超时/错误）→ 写 session_state_snapshots + session_credential_rotations
+  │
+  ├─ 健康计算：计算终态 health_score → 回写 session_summaries
+  ├─ 模块介入：[全景图] 可查完整历史；[分析中心] 纳入健康分布
+  └─ 后台：聚类 worker 可能将其归入某 cluster
+
+阶段 4：复盘与治理
+  历史会话被查阅、标注、对比、优化
+  │
+  ├─ 模块介入：[全景图] 诊断 / [会话对比] 横向比较
+  ├─ 治理：[优化建议] 被采纳 → 影响未来路由策略
+  └─ 归档：request_logs >90天清理，session_summaries 永久保留
+```
+
+### 3.4 从 agentsview 提炼的 5 条产品原则
+
+> 学习 agentsview 不只学功能，更要学其背后的产品理念。以下原则贯穿本模块设计：
+
+| 原则 | 来源 | 在本模块的体现 |
+|------|------|---------------|
+| **① 信号可解释** | agentsview 健康分有完整 penalty 明细，不只是一个数字 | 健康面板必须展示扣分明细（reason + deduction + detail），让运营理解"为什么是这个分" |
+| **② 会话有"形态"** | agentsview 用 archetype（quick/standard/deep/marathon）刻画会话深度 | 会话形态分布不只是按请求数直方图，而是赋予业务语义，帮产品理解用户深度 |
+| **③ 活动有"并发"** | agentsview 关注 peak concurrency（峰值同时在线） | 我们虽无并发检测，但活动时间线 + 活跃会话数可近似，是容量规划依据 |
+| **④ 时间是第一维度** | agentsview 所有分析默认带时间范围 + 多粒度 | 我们从"今日快照"升级到"任意时间范围 + day/week/month 粒度"，时间是所有分析的默认轴 |
+| **⑤ 下钻即诊断** | agentsview 从排名/分布一键到会话详情 | 所有图表元素可点击下钻到全景图，"看到 → 点开 → 诊断"零跳转 |
+
+### 3.5 模块价值锚定表
+
+> 每个模块为谁解决什么问题——避免功能堆砌，确保每个模块有明确的服务对象与价值。
+
+| 模块 | 主要服务角色 | 解决的核心问题 | 价值指标 |
+|------|------------|---------------|---------|
+| A 实时会话 | SRE | "现在系统里在跑什么？有没有出问题？" | 异常发现到处置时长 |
+| B 分析中心 | SRE / 产品 | "整体趋势如何？哪里需要关注？" | 趋势洞察的获取成本（从手动查SQL到点开即见） |
+| C 全景图 | 所有角色 | "这个会话到底发生了什么？" | 单会话诊断耗时 |
+| D 健康智能 | SRE / 产品 | "哪些会话有问题？严重程度？" | 异常会话的识别覆盖率 |
+| E 合规审批 | 租户管理员 | "有没有安全风险？要不要放行？" | 审批 SLA / 违规拦截率 |
+| F 用量成本 | 租户管理员 / SRE | "钱花在哪了？能不能省？" | 成本可归因比例 |
+| G 运营操作 | SRE / 管理员 | "出问题了怎么干预？" | 远程处置成功率 |
+
+---
+
+## 四、功能规格（按子模块）
+
+### 4.1 模块 A：实时会话（Live Sessions）
+
+> **现状**：✅ 已完整实现。`domains/session/` 提供 14 状态状态机 + Lua 原子更新 + 异步 DB Writer；`/api/admin/sessions` 提供列表/详情/停止/恢复/标注/标签。
+>
+> **主线锚定**：实时会话是**场景 4（实时监控与远程干预）** 的主战场；服务于 SRE（守夜人）。它回答运营最焦虑的问题——"**现在系统里在跑什么？有没有出问题？**"。与分析中心（看历史趋势）互补：分析中心是"事后复盘"，实时会话是"事中干预"。两者通过 `gw_session_id` 贯通：分析中心发现可疑会话 → 切到实时会话确认是否在运行 → 必要时远程停止。
+>
+> **运营解读心智模型**：实时会话页 = 一个"会话 ICU 监护屏"。SRE 扫三件事——① **状态**（绿/黄/红，谁在跑谁卡住）→ ② **规模**（哪个会话成本/轮次在飙升）→ ③ **凭证健康**（凭证轮换是否正常，有没有连续失败）。发现异常 → 详情 → 全景图诊断 → 远程干预。
+
+#### 4.1.1 功能清单
+
+| 功能 | 状态 | 说明 |
+|------|:----:|------|
+| 运行中会话列表 | ✅ | 按 active/stopped/all 过滤，租户隔离，limit≤200 |
+| 会话详情（状态 + 统计 + 凭证轮换） | ✅ | `sessionDetailResponse`：Session + SessionStats + CredRotationEntry[] |
+| 远程停止（super_admin） | ✅ | POST `/api/admin/sessions/<id>/stop`，写 `stopped_at`/`stop_reason` |
+| 远程恢复（super_admin） | ✅ | POST `/api/admin/sessions/<id>/recover`，写 `recovered_at` |
+| 标注 / 标签 | ✅ | PUT `<id>/annotation`、`<id>/tags` |
+| 凭证轮换历史 | ✅ | `session_credential_rotations` 表，UNIQUE(session_id, seq) |
+| 状态快照（停止时落盘） | ✅ | `session_state_snapshots`，含 raw_snapshot JSONB |
+| Redis 热层 + 异步持久化 | ✅ | `RedisClient` + `DBWriter.FlushSession` |
+
+#### 4.1.2 状态机可视化 —「状态怎么读」
+
+> **产品价值**：14 个内部状态对运营过于技术化，需映射为 6 个对外可读状态 + 徽标颜色，让 SRE 一眼判断"是否需要介入"。
+
+**状态徽标映射**（内部状态 → 对外展示）：
+
+| 对外状态 | 徽标 | 含义 | SRE 动作 |
+|---------|------|------|---------|
+| 🟢 运行中 | 绿点 | active，正常处理请求 | 观察 |
+| 🟡 等待中 | 黄点 | waiting（等待审批/资源） | 查审批队列 |
+| 🔴 异常 | 红点 | error（异常终止） | **立即介入**（场景4触发点） |
+| ⚫ 已停止 | 灰点 | stopped（主动停止/超时） | 复盘 |
+| 🔵 已恢复 | 蓝点 | recovered（异常后恢复） | 持续观察 |
+| ⚪ 已过期 | 空心点 | expired | 清理 |
+
+**列表默认排序**：异常(红) > 等待(黄) > 运行中(绿，按成本降序) > 已停止/恢复。即"最需要关注的在最上面"。
+
+**状态变化追踪**：每条会话行显示"上一状态 → 当前状态"和变化时间（如"运行中 → 异常，2分钟前"），帮助 SRE 理解刚发生了什么。
+
+#### 4.1.3 凭证轮换诊断 —「凭证健康怎么读」
+
+> **产品价值**：凭证轮换是网关特有的诊断维度（agentsview 没有）。凭证连续失败是上游失效的强信号，是场景 4 判定"上游凭证失效"的依据。这是我们的差异化优势。
+
+**凭证轮换时间轴**（详情视图）：
+```
+会话 gw_def 凭证轮换历史
+├── seq 0  凭证 #101  gpt-4o    08:00-08:15  12轮  $1.20  [initial]
+├── seq 1  凭证 #102  gpt-4o    08:15-08:20   3轮  $0.30  [rotation: quota]
+├── seq 2  凭证 #103  gpt-4o    08:20-08:22   0轮  $0.00  ❌ 连续5次失败 [failure: 5xx]
+└── seq 3  凭证 #104  gpt-4o    08:22-现在    8轮  $0.80  [recovery]
+```
+
+**诊断规则**（前端自动标注）：
+| 模式 | 标注 | 运营解读 |
+|------|------|---------|
+| 某段 turns=0 + switch_reason 含 failure | ❌ 红色 | 凭证失效，已自动轮换 |
+| 连续多段 turns=0 | ⚠️ 橙色 | 批量凭证失效，可能上游故障 |
+| 频繁轮换（短时间内 seq 多） | ℹ️ 蓝色 | 配额耗尽或限流，考虑扩容凭证池 |
+| switch_reason = quota | ℹ️ 灰色 | 正常配额轮换 |
+
+**轮换原因枚举**（switch_reason 字段）：`initial` / `rotation:quota`（配额轮换）/ `rotation:schedule`（定时）/ `failure:5xx`（上游错误）/ `failure:429`（限流）/ `failure:auth`（鉴权失败）/ `manual`（手动）/ `recovery`（恢复）。
+
+#### 4.1.4 实时 SSE 推送 —「实时性怎么实现」
+
+> **产品价值**：会话状态变化（尤其异常）必须秒级可见，不能靠手动刷新。后端 `live_stream_sse.go` 已实现，前端需消费。对应场景 4 的"实时监控"。
+
+**SSE 事件 → 前端动作映射**：
+
+| SSE 事件 | 触发 | 前端动作 |
+|---------|------|---------|
+| `request.completed` | 请求落盘 | 局部刷新该会话统计列（轮次/成本/token） |
+| `session.stopped` | 会话停止 | 该行移至"已停止"分组，状态徽标变灰 |
+| `session.recovered` | 会话恢复 | 移回"运行中"，徽标变蓝 |
+| `session.error` | 异常终止 | **红色高亮 + 顶部告警角标**（场景4触发） |
+| `session.waiting` | 进入等待 | 徽标变黄，提示"等待审批" |
+
+**前端实现**（SessionManagementView.vue）：
 ```typescript
-// web/src/composables/useChart.ts
-import { ref, onMounted, onUnmounted, type Ref } from 'vue'
-import { Chart, registerables } from 'chart.js'
-Chart.register(...registerables)
-
-export function useChart(
-  canvasRef: Ref<HTMLCanvasElement | null>,
-  config: () => ChartConfiguration
-) {
-  let chart: Chart | null = null
-
-  const render = () => {
-    if (chart) chart.destroy()
-    if (!canvasRef.value) return
-    chart = new Chart(canvasRef.value, config())
+const es = new EventSource('/api/admin/live-stream')
+es.onmessage = (event) => {
+  const data = JSON.parse(event.data)
+  if (data.gw_session_id) {
+    refreshSessionRow(data.gw_session_id)  // 局部刷新，不全量重载
   }
-
-  onMounted(render)
-  onUnmounted(() => { if (chart) chart.destroy() })
-
-  return { render }
+  if (data.type === 'session.error') {
+    raiseAlert(data)  // 顶部告警
+  }
 }
+// 断线自动重连（EventSource 原生支持）；离开页面 es.close()
 ```
 
-图表类型选择：
+**性能约束**：局部刷新单行 <200ms；不全量重载列表（避免抖动）。SSE 连接租户隔离（只推本租户事件）。
 
-| 数据特性 | 推荐图表 | Chart.js 类型 |
-|---------|---------|---------------|
-| 时间序列趋势 | 折线图/面积图 | `line` |
-| 分类占比 | 环形图/饼图 | `doughnut`/`pie` |
-| 活动分布 | 柱状图 | `bar` |
-| 多分类对比 | 分组柱状图 | `bar` (grouped) |
-| 分布直方图 | 柱状图 | `bar` |
+#### 4.1.5 远程操作闭环 —「怎么干预」
 
-#### 4.2.4 统一过滤器系统
+> **产品价值**：远程停止/恢复是 SRE 的"紧急制动"。必须有清晰的操作闭环和审计，防止误操作。
+
+**操作权限与流程**：
+
+| 操作 | 权限 | 二次确认 | 审计 |
+|------|:----:|:--------:|:----:|
+| 远程停止 | super_admin / tenant_admin | ✅ 弹窗确认 + 填停止原因 | `session.stop` |
+| 远程恢复 | super_admin | ✅ 弹窗确认 | `session.recover` |
+| 批量停止(P2) | super_admin | ✅ 列出将停止的 N 个会话 | 每个独立审计 |
+
+**停止操作交互**：
+```
+点击 [停止] → 弹窗：
+┌─────────────────────────────────────┐
+│ ⚠️ 确认停止会话 gw_def？             │
+│ 该操作会立即终止会话，不可撤销。      │
+│ 标题：调试数据库连接问题             │
+│ 当前状态：运行中（12轮，$1.20）       │
+│                                     │
+│ 停止原因：[ 高成本 / 异常 / 其他 ]   │
+│ 备注（可选）：[________________]     │
+│                                     │
+│       [取消]    [确认停止]          │
+└─────────────────────────────────────┘
+```
+
+**停止后行为**：
+- 状态 → stopped，写 `stopped_at` + `stop_reason`
+- 触发 `session_state_snapshots` 落盘（终态快照）
+- 异步计算终态健康分，回写 session_summaries
+- SSE 推送 `session.stopped`，前端列表更新
+- 审计日志记录操作人/时间/原因
+
+**恢复操作**：仅当会话因 error 停止时才有意义；恢复后换有效凭证继续。恢复 ≠ 继续，是"重新激活会话上下文"。
+
+#### 4.1.6 v2.0 增强（缺口）
+
+| 增强项 | 优先级 | 说明 |
+|--------|:------:|------|
+| 实时 SSE 推送活跃会话变化 | P1 | 4.1.4，前端消费后端已有 SSE |
+| 按健康分排序 / 过滤 | P1 | 依赖模块 D 健康评分，列表增加健康列 |
+| 凭证轮换诊断标注 | P1 | 4.1.3，前端自动标注异常轮换模式 |
+| 批量停止 / 恢复 | P2 | 4.1.5，表格多选 + 批量操作栏 |
+| 会话软删除（回收站 + 撤销） | P2 | 当前停止即终态，无回收站；借鉴 agentsview 回收站 + 10s 撤销 |
+
+#### 4.1.7 列表列定义（增强后）
+
+| 列 | 字段 | 排序 | 说明 |
+|----|------|:----:|------|
+| 状态 | status | ✅ | 徽标（4.1.2），默认排序第一优先级 |
+| 标题 | title | ✅ | 截断，hover 全显 |
+| 租户 | tenant_id | ✅ | 仅 super_admin 可见 |
+| 轮次 | total_turns | ✅ | — |
+| 成本 | total_cost_usd | ✅ | 实时累积 |
+| Token | total_tokens | ✅ | prompt+completion |
+| 模型 | current_model | ❌ | — |
+| 凭证 | current_credential_id | ❌ | 异常时红色（4.1.3） |
+| 健康等级 | health_grade | ✅ | A-F 徽标（P1，依赖模块D） |
+| 开始时间 | created_at | ✅ | 相对时间 |
+| 最后活跃 | last_request_at | ✅ | 超过 1h 灰显（疑似僵尸） |
+| 操作 | — | ❌ | 详情 · 停止 · 标注 |
+
+**僵尸会话识别**：`last_request_at` 超过 1h 但状态仍 active → 灰显 + "⚠ 僵尸"标签，提示 SRE 清理。
+
+---
+
+### 4.2 模块 B：分析中心（Analytics Center）
+
+> **现状**：⚠️ 仅有「今日快照」KPI + 列表，**缺时间序列、分布、归因可视化**。这是当前最大能力缺口。
+>
+> **主线锚定**：分析中心是**场景 1（高成本异常处置）、场景 2（合规复盘）、场景 5（成本对账）** 的起点；服务于 SRE（巡检/异常发现）、产品/算法（行为分析）、租户管理员（合规复盘）。它是"全局态势感知"的入口——所有"下钻到单个会话"的诊断动作都从这里发起（呼应主线原则⑤「下钻即诊断」）。
+>
+> **运营解读心智模型**：分析中心回答四个递进问题——① **有多少**（KPI 卡片）→ ② **随时间怎么变**（时间序列）→ ③ **结构如何**（分布归因）→ ④ **谁最突出**（热门排名）。运营从上往下扫一遍，就能形成"哪里需要关注"的判断。
+
+#### 4.2.1 统计卡片行（KPI Bar）—「有多少」
+
+> **产品价值**：3 秒内给出全局态势。每张卡片支持环比对比，让"异常"一眼可见（不只是数字，还有"比昨天/上周如何"）。对应场景 1 SRE 早晨巡检的第一眼。
+
+**布局**：单行 7 张卡片，响应式（窄屏 2 列）。
+
+| 卡片 | 主指标 | 副指标（环比） | 数据口径（SQL） | 异常态 |
+|------|--------|:-------------:|----------------|--------|
+| 会话总数 | COUNT(*) | vs 上一同周期 | `SELECT COUNT(*) FROM session_summaries WHERE tenant+date范围` | 环比涨跌 >50% 高亮 |
+| 活跃会话 | COUNT | 实时 | `last_request_at > now()-1h` | 与总数比值异常低→系统冷清 |
+| 总成本 | SUM(total_cost_usd) USD | vs 上一周期 | `SUM(total_cost_usd)` | 环比涨 >30% 红色高亮（场景1触发点） |
+| 合规率 | compliant/total % | vs 上一周期 | `compliance_status='compliant'占比` | <95% 黄色；<90% 红色 |
+| 平均健康分 | AVG(health_score) | vs 上一周期 | `AVG(health_score)` | <70 黄；<60 红 |
+| 平均延迟 | AVG(avg_latency_ms) | vs 上一周期 | `AVG(avg_latency_ms)` | >3s 黄；>5s 红 |
+| 总请求数 | SUM(request_count) | vs 上一周期 | `SUM(request_count)` | — |
+
+**环比计算规则**：
+- 选取与当前 `date_from~date_to` **等长**的上一周期（如当前 7 天，对比前 7 天）
+- 副指标显示：`↑15.3%`（绿色，涨）或 `↓8.2%`（红色，跌，对成本/延迟为"好"则反转颜色语义）
+- 缺上一周期数据 → 显示"—"，不强行计算
+
+**空数据/异常态**：
+- 当前范围内 0 会话 → 卡片显示"暂无数据"，不显示环比
+- 健康分列未回填（P0 阶段 health_score 全 NULL）→ 平均健康分卡片显示"建设中"灰态，不参与环比
+
+**实现要点**：扩展现有 `AnalyticsSessionStats`，增加 `date_from/date_to` 参数与 `previous_*` 环比字段。单次查询用窗口函数同时算出当前与上一周期。
+
+#### 4.2.2 时间序列分析 —「随时间怎么变」
+
+> **产品价值**：把"今日快照"升级为"趋势"。趋势是发现**渐变问题**（成本缓慢上涨、延迟逐渐恶化）和**突变问题**（某日激增）的唯一手段。对应主线原则④「时间是第一维度」。
+
+**① 活动趋势（柱状图）**
+- **运营解读**：看流量节奏——工作日 vs 周末、是否有突发峰值。峰值日是重点排查对象。
+- **口径**：`request_logs` 按 `date_trunc(granularity, ts)` 分组，`COUNT(DISTINCT gw_session_id)` 为会话数、`COUNT(*)` 为请求数。
+- **呈现**：双轴柱状图（左轴会话数、右轴请求数），hover 显示当日 success/error 拆分。
+- **下钻**：点击某日柱 → 跳转会话列表，预填该日日期范围。
+- **缺日补零**：时间序列必须连续，无数据日补 0（避免图表断档误导）。
+
+**② 成本趋势（堆叠面积图）**— 场景 1 核心
+- **运营解读**：成本是涨是跌？涨的部分是输入还是输出？输入涨可能提示词膨胀，输出涨可能模型啰嗦。
+- **口径**：`SUM(input_cost_usd)`、`SUM(output_cost_usd)` 按 `date_trunc` 分组。
+- **呈现**：堆叠面积（输入在下、输出在上），支持切换为折线。图例可切换显隐。
+- **趋势判定**：`summary.cost_trend` = 对比前 50% 与后 50% 均值，变化 <5% 为 `flat`。
+- **下钻**：点击某日 → 该日按模型分组的成本明细（联动 ③ 的 group_by=model）。
+
+**③ 延迟趋势（折线图）**
+- **运营解读**：看延迟是否稳定。p50 平但 p90 飙升 = 长尾问题（少数请求极慢）；整体抬升 = 系统性问题。
+- **口径**：`percentile_cont(0.5/0.9/0.99) WITHIN GROUP (ORDER BY latency_ms)`，外加 `stream_first_chunk_ms` 的 p50（首 token 延迟，体感关键）。
+- **呈现**：3 条折线（p50/p90/p99），y 轴 ms，可切对数轴（防止长尾压扁主线）。
+- **告警提示**：p99 持续 >10s 时图表标注红色虚线阈值。
+
+**④ 健康趋势（折线图）**— P1
+- **运营解读**：整体质量走向。下行趋势提示系统性退化（如某模型更新后质量下降）。
+- **口径**：`AVG(health_score)`、各等级占比按日。
+- **呈现**：主折线为平均分；可切换为"等级堆叠面积"（A/B/C/D/F 每日占比）。
+
+**⑤ 日历热力图（GitHub 风格）**— P2
+- **运营解读**：长期活动规律，发现季节性（如月底用量高）。
+- **口径**：`session_summaries` 按 `first_request_at::date` 聚合每日会话数。
+- **呈现**：日历格，颜色深浅=会话数；hover 显示明细。
+- **色阶**：5 档（0 / 低 / 中 / 高 / 峰值），阈值按该租户历史分位动态计算。
+
+**⑥ 星期×小时热力图（24×7）**— P2
+- **运营解读**：用户活跃时段，容量规划依据（呼应主线原则③「活动有并发」）。
+- **口径**：`request_logs` 按 `EXTRACT(dow FROM ts)` × `EXTRACT(hour FROM ts)` 聚合。
+- **呈现**：7 行（周一~周日）× 24 列（0~23 时）网格，颜色=请求密度。
+
+**时间序列通用规则**：
+- **粒度自动选择**：跨度 ≤30 天用 day，≤180 天用 week，否则 month；用户可手动覆盖。
+- **空数据态**：无数据时显示"所选范围内无会话"占位图，不渲染空坐标轴。
+- **性能**：90 天 day 粒度 ≤90 个数据点，强制索引 + 缓存 5 分钟。
+
+#### 4.2.3 分布与归因分析 —「结构如何」
+
+> **产品价值**：回答"成本/请求/异常集中在哪"。归因是优化的前提——不知道钱花在哪个模型，就无法优化。对应场景 1（成本归因）、场景 5（对账）。
+
+**① 模型/提供商分解（环形图）**
+- **运营解读**：哪个模型/提供商占大头？占比异常（如某昂贵模型占比突增）是成本失控主因。
+- **口径**：`request_logs` 按 `outbound_model` / `provider_id` 分组，聚合 request_count / total_cost / total_tokens / avg_latency / error_rate。
+- **呈现**：双环形（外环模型、内环提供商），可切换度量（请求数/成本/token）。中心显示总量。
+- **下钻**：点击某模型扇区 → 会话列表预填该模型过滤。
+- **长尾处理**：占比 <2% 的合并为"其他"，避免图例爆炸。
+
+**② 会话形态分布（直方图）**— 主线原则②
+- **运营解读**：用户用得深还是浅？marathon 占比高提示上下文管理问题（长会话成本爆炸）；quick 占比高说明多是轻量问答，可考虑路由到便宜模型。
+- **口径**：`session_summaries.request_count` 分桶 + `duration_seconds` 分桶。
+- **分桶标准**（赋予业务语义，非任意分桶）：
+
+| 桶 | 请求数 | 标签 | 业务含义 | 运营动作 |
+|----|:------:|------|---------|---------|
+| quick | 1–5 | 快速问答 | 轻量交互 | 评估降级到便宜模型 |
+| standard | 6–20 | 标准对话 | 常规多轮 | 正常 |
+| deep | 21–50 | 深度对话 | 复杂任务 | 关注上下文压缩 |
+| marathon | >50 | 马拉松 | 长任务/潜在异常 | 重点排查（成本/健康） |
+
+- **呈现**：双直方图（请求数分桶 + 时长分桶），每桶标注 count 与占比。
+
+**③ 健康分布（分组柱状图）**— P1，依赖模块 D
+- **运营解读**：整体健康结构。F 占比高 = 系统性问题；某等级突增 = 关注。
+- **口径**：`session_summaries` 按 `health_grade`（A-F）、`outcome`、`compliance_status` 分组 + 延迟分桶。
+- **呈现**：3 个子图——等级分布柱状、结果分类环形、延迟分桶直方。
+- **下钻**：点击某等级 → 该等级会话列表。
+
+**④ 用户意图分布（环形图）**
+- **运营解读**：用户主要拿来干嘛？意图结构变化提示产品定位演变。对应产品/算法角色。
+- **口径**：`session_summaries.user_intent` 分组（见数据字典 11.1.3）。
+- **呈现**：环形图，未知意图（unknown）单独标注，提示分类器覆盖率。
+
+**⑤ 工作类型分布（环形图）**
+- **运营解读**：路由决策的工作类型分布，用于评估路由策略是否合理。
+- **口径**：`session_summaries.work_types` 数组展开分组。
+
+**归因通用规则**：
+- 所有分布图支持切换度量维度（请求数/成本/token/会话数）。
+- 空数据态：显示"无可用数据"，不渲染空环。
+- unknown/未分类项必须显式展示（不隐藏数据质量问题）。
+
+#### 4.2.4 热门会话排名 —「谁最突出」
+
+> **产品价值**：直接定位"最值得关注"的会话，是场景 1（高成本异常）的下钻入口。呼应主线原则⑤「下钻即诊断」。
+
+**排名维度**（可切换）：
+
+| metric | 排序字段 | 运营用途 |
+|--------|---------|---------|
+| cost | total_cost_usd DESC | 找成本最高会话（场景1） |
+| tokens | total_tokens DESC | 找 token 消耗最大 |
+| latency | avg_latency_ms DESC | 找最慢会话 |
+| duration | duration_seconds DESC | 找最长会话 |
+
+**表格列**：会话标题 · 租户(super_admin可见) · 请求数 · 成本 · token · 时长 · 健康等级徽标 · 主模型 · 操作(全景图)。
+
+**规则**：
+- 默认 limit=10，可扩到 100（受 11.7.4 限制）。
+- 每行点击 → 跳转 `/admin/session-analytics/<id>/panorama`。
+- 健康等级徽标带颜色（A 绿~F 红），让"高成本且健康差"的会话一眼可见。
+- 空数据态：显示"所选范围内无会话"。
+
+#### 4.2.5 统一过滤器系统 — 贯穿全模块
+
+> **产品价值**：过滤器是分析中心的"控制台"，所有图表随它联动。持久化保证用户切换页面回来不丢失上下文。对应主线 2.3「跨视图联动」。
+
+**过滤器字段**（前端 sessionStorage 持久化）：
 
 ```typescript
-// web/src/composables/useAnalyticsFilters.ts
-export interface AnalyticsFilters {
-  dateFrom: string        // ISO date string
-  dateTo: string
-  model: string[]         // 多选模型
-  provider: string[]      // 多选提供商
-  complianceStatus: string // compliant / warning / violation
-  userIntent: string      // chat / code / tool_use / ...
+interface AnalyticsFilters {
+  dateFrom: string          // ISO date，默认 now-7d
+  dateTo: string            // 默认 now
+  model: string[]           // 多选模型
+  provider: string[]        // 多选提供商
+  complianceStatus: string  // compliant | warning | violation
+  userIntent: string        // 见数据字典 11.1.3
+  workType: string
+  healthGrade: string       // A | B | C | D | F
   minCost: number | null
   maxCost: number | null
-  search: string
   latencyMin: number | null
   latencyMax: number | null
   tokenMin: number | null
-  tokenMax: number | null
   requestCountMin: number | null
-}
-
-export function useAnalyticsFilters() {
-  // 从 sessionStorage 恢复
-  const filters = reactive<AnalyticsFilters>(loadFilters())
-
-  // 持久化到 sessionStorage
-  watchEffect(() => saveFilters(filters))
-
-  // 构建 API 请求参数
-  const apiParams = computed(() => buildApiParams(filters))
-
-  // 重置到默认值
-  const reset = () => { ... }
-
-  return { filters, apiParams, reset }
+  search: string            // 标题/摘要/会话 ID
 }
 ```
 
-#### 4.2.5 文件清单
+**交互规则**：
+- 任一过滤项变更 → 防抖 500ms → 重新请求所有图表（并行）。
+- 日期快捷预设：今天 / 7天 / 30天 / 90天 按钮。
+- 「重置」恢复默认（7 天，无模型/提供商过滤）。
+- 过滤器状态持久化到 sessionStorage，刷新不丢失。
+- 选项列表（model/provider）从 `/api/admin/session-analytics/filter-options` 动态拉取（列出该租户实际用过的值）。
 
-| 文件 | 说明 |
-|------|------|
-| `web/src/components/dashboard/DashboardStatsRow.vue` | 统计卡片行 |
-| `web/src/components/dashboard/DashboardFilterBar.vue` | 统一过滤器栏 |
-| `web/src/components/dashboard/DashboardActivityTimeline.vue` | 活动时间线柱状图 |
-| `web/src/components/dashboard/DashboardModelBreakdown.vue` | 模型分解环形图 |
-| `web/src/components/dashboard/DashboardCostTrend.vue` | 成本趋势折线图 |
-| `web/src/components/dashboard/DashboardLatencyTrend.vue` | 延迟趋势折线图 |
-| `web/src/components/dashboard/DashboardHealthDistribution.vue` | 健康分布柱状图 |
-| `web/src/components/dashboard/DashboardSessionShape.vue` | 会话形态直方图 |
-| `web/src/components/dashboard/DashboardTopSessions.vue` | 热门会话排名 |
-| `web/src/composables/useAnalyticsFilters.ts` | 过滤器 composable |
-| `web/src/composables/useChart.ts` | Chart.js 封装 |
+**校验**（呼应 11.2.1）：
+- `date_from > date_to` → 400 `invalid_date_range`
+- 跨度 > 90 天 → 400，提示"最大 90 天，请缩小范围或切换粒度"
+- tenant_admin 传他租户 tenant_id → 403 `forbidden`
+
+**空结果态**：过滤后无数据 → 图表区统一显示"当前过滤条件下无会话，请调整过滤器"，并给出「重置过滤器」按钮。
 
 ---
 
-### 4.3 阶段三：会话全景图增强
+### 4.3 模块 C：会话全景（Session Panorama）
 
-#### 4.3.1 增强的 Panorama API 返回
+> **现状**：✅ 已有 `SessionPanorama` 聚合 payload（summary + timeline + step_summaries + tags + suggestions + cluster + analysis）。v2.0 增加健康面板与成本流向。
+>
+> **主线锚定**：全景图是**所有下钻诊断的终点**——场景 1/2/3/4 的诊断动作都汇聚于此。它服务于**所有三类角色**（SRE 诊断异常、管理员查合规、产品看行为）。呼应主线原则⑤「下钻即诊断」——从分析中心/实时会话/热门排名点进来，零跳转开始诊断。
+>
+> **运营解读心智模型**：全景图回答"**这个会话到底发生了什么**"。诊断按"从宏观到微观"的顺序看：① **结论先行**（健康面板告诉你这个会话好不好）→ ② **全貌**（摘要头给关键数字）→ ③ **过程**（时间线看每一步）→ ④ **细节**（逐步摘要/工具调用看具体内容）→ ⑤ **结构**（成本流向/模型切换看资源怎么用）→ ⑥ **行动**（标签/建议看能优化什么）。运营不需要全看，健康面板的扣分明细会告诉 ta 该跳到哪个面板。
 
-在 `SessionPanorama` 中增加健康数据和可视化数据：
+#### 4.3.1 全景视图组成（9 个面板）
+
+```
+会话全景（SessionPanorama）
+├── ① 摘要头（Summary Header）             — 全貌
+├── ② 健康面板（Health Panel）★            — 结论先行（诊断入口）
+├── ③ 请求时间线（Timeline）                — 过程
+├── ④ 逐步摘要（Step Summaries）            — 过程细节
+├── ⑤ 模型切换可视化（Model Switches）      — 结构
+├── ⑥ 成本流向（Cost Flow）★               — 结构
+├── ⑦ 标签与建议（Tags & Suggestions）      — 行动
+├── ⑧ 凭证轮换历史（Cred Rotations）        — 结构（网关特有）
+└── ⑨ 导出（Export）                        — 复盘
+★ = v2.0 新增/重点增强
+```
+
+#### 4.3.2 ① 摘要头（Summary Header）— 全貌
+
+> **产品价值**：进入全景图的第一屏，2 秒内给出会话身份与关键数字。
+
+**布局**：
+```
+┌───────────────────────────────────────────────────────────┐
+│ 调试数据库连接问题                          🟡C  🟢合规     │
+│ gw_abc123 · 租户 tnt_xxx · [标签: code, debug]            │
+│ ─────────────────────────────────────────────────────     │
+│ 08:00-09:00 (1h) │ 45请求 │ $8.92 │ 120k tokens │ gpt-4o  │
+│ [← 返回列表]  [📋 导出]  [⏹ 停止(若运行中)]  [✏ 标注]    │
+└───────────────────────────────────────────────────────────┘
+```
+
+**字段**：标题 · 健康徽标 · 合规徽标 · 标签 · 时间范围(时长) · 请求数 · 成本 · token · 主模型 · 操作按钮。
+
+**规则**：
+- 标题缺失（LLM 未生成）→ 显示 first_request 的 request_preview 前 30 字 + "（未命名）"。
+- 会话仍在运行 → 显示 [⏹ 停止] 按钮（权限见 4.1.5）；已停止 → 显示 [▶ 恢复]（仅 super_admin）。
+- 健康徽标/合规徽标颜色见数据字典 11.1。
+
+#### 4.3.3 ② 健康面板（Health Panel）★ — 结论先行（诊断入口）
+
+> **产品价值**：全景图的"诊断导航"。不只给一个分，而是通过扣分明细告诉 SRE"该去看哪个面板"。对应主线原则①「信号可解释」。
+
+**布局**：
+```
+┌───────────────────────────────────────────┐
+│  健康评分                  等级 C          │
+│      72/100                🟡 一般         │
+│  ─────────────────────────────────────    │
+│  结果：✅ 正常完成（45 请求，0 错误）       │
+│  ─────────────────────────────────────    │
+│  扣分明细（点击跳转到对应面板）：           │
+│    ⚠ 高延迟       -15  → 跳转③时间线      │
+│         avg_latency_ms=6200 > 5000        │
+│    ⚠ 频繁模型切换 -10  → 跳转⑤模型切换    │
+│         model_switch_count=5 > 3          │
+│    ⚠ 合规问题     -3   → 跳转合规面板     │
+│         compliance_issues_count=1         │
+└───────────────────────────────────────────┘
+```
+
+**诊断导航逻辑**（扣分项 → 跳转目标）：
+| 扣分项 | 跳转面板 | 诊断目的 |
+|--------|---------|---------|
+| 高延迟 | ③时间线 | 找具体哪个请求慢 |
+| 频繁模型切换 | ⑤模型切换 | 看切换是否合理 |
+| 合规问题 | 合规面板（⑦扩展） | 看哪条请求违规 |
+| 错误请求 | ③时间线 | 看失败请求详情 |
+| PII/毒性/注入 | 合规面板 | 看命中内容 |
+
+**空数据态**：健康分未计算（NULL）→ 显示"健康评分建设中"，不显示扣分明细。
+
+#### 4.3.4 ③ 请求时间线（Timeline）— 过程
+
+> **产品价值**：会话的"心电图"。每一步请求是一行，按时间排列，让 SRE 看到完整执行过程，定位问题请求。
+
+**列定义**：
+
+| 列 | 字段 | 说明 |
+|----|------|------|
+| # | 序号 | 1, 2, 3... |
+| 时间 | ts | 绝对时间 + 距上次间隔（如 "+12s"） |
+| 状态 | success | ✅/❌，失败红色高亮 |
+| 模型 | outbound_model | — |
+| 延迟 | latency_ms | >5s 黄，>10s 红（对应健康扣分阈值） |
+| 成本 | cost_usd | — |
+| Token | prompt/completion | — |
+| 缓存 | cache_read_tokens | 命中显示，未命中隐藏 |
+| 压缩 | compression_strategy | 有压缩显示策略标签 |
+| 预览 | request_preview | 截断，点击展开 |
+
+**诊断辅助**：
+- 失败请求行红色背景 + 错误信息 tooltip。
+- 延迟异常（>p90）行黄色标注。
+- 连续失败（≥3）行用红色边框分组，提示"连续失败"。
+- 点击某行 → 展开该请求的逐步摘要（联动 ④）。
+
+**规则**：默认显示最近 100 条（与后端 LIMIT 100 一致）；超 100 条显示"加载更多"。
+
+#### 4.3.5 ④ 逐步摘要（Step Summaries）— 过程细节
+
+> **产品价值**：时间线是"骨架"，逐步摘要是"血肉"。每步的请求/响应摘要让运营理解"这步在做什么"，无需翻看原始正文。
+
+**展示**：与时间线联动，点击某请求展开：
+```
+步骤 #5  (req_xyz)
+├── 请求摘要：用户询问如何配置数据库连接池参数
+├── 响应摘要：提供了 HikariCP 的配置示例，含最大连接数、超时设置
+├── 工具调用：search("hikari config") → 5条结果；execute("test") → ❌超时
+└── LLM生成：✅（is_llm_generated=true）
+```
+
+**空数据态**：某步无摘要（LLM 未生成）→ 显示该步的 request_preview/response_preview 前 100 字作为"基础摘要"，标注"（规则生成，非 LLM）"。
+
+#### 4.3.6 ⑤ 模型切换可视化（Model Switches）— 结构
+
+> **产品价值**：模型切换频繁 = 路由策略不稳，是成本和延迟的隐性来源（场景 1 诊断"路由震荡"的依据）。这是我们的差异化能力（agentsview 无此视角）。
+
+**可视化**（时间轴）：
+```
+模型切换历史（5次）
+gpt-4o ──┬──> claude-3 ──┬──> gpt-4o ──┬──> gpt-4o-mini ──┬──> gpt-4o
+  req#3      req#8            req#12        req#20             req#25
+  [降级]     [限流]            [恢复]        [降级]             [恢复]
+```
+
+**诊断规则**：
+| 模式 | 标注 | 运营解读 |
+|------|------|---------|
+| 同两模型反复横跳（A→B→A→B） | ⚠ 路由震荡 | 路由策略不稳，应固定（场景1典型） |
+| 频繁降级到便宜模型 | ℹ️ 成本优化 | 路由降级生效中 |
+| 频繁因限流切换 | ⚠ 容量不足 | 凭证/配额不足 |
+
+**数据源**：`Analysis.ModelSwitches`（现有），from_model/to_model/reason/timestamp。
+
+#### 4.3.7 ⑥ 成本流向（Cost Flow）★ — 结构
+
+> **产品价值**：把"总成本 $8.92"拆解成可理解的流向——哪个模型、哪个提供商、输入还是输出花的钱。是场景 1/5 成本诊断的核心。
+
+**可视化**（水平堆叠柱 + 明细表）：
+```
+总成本 $8.92
+├─ 按类型：输入 $3.20 (36%) │ 输出 $5.72 (64%)
+├─ 按模型：gpt-4o $6.70 (75%) │ claude $2.22 (25%)
+└─ 按提供商：openai $6.70 │ anthropic $2.22
+
+明细表：
+| 模型          | 请求数 | 输入成本 | 输出成本 | 合计   | Token  |
+| gpt-4o        | 35     | $2.50    | $4.20    | $6.70  | 90k    |
+| claude-3-5    | 10     | $0.70    | $1.52    | $2.22  | 30k    |
+```
+
+**运营解读**：输出成本占比高 = 模型输出冗长，可评估加 max_tokens 或压缩；某模型单位 token 成本异常 = 计费错误或用错档位。
+
+**缓存节省子面板**（从 Analysis.CacheSavings）：
+```
+缓存节省：cache_read 80k tokens，约省 $2.40（vs 无缓存）
+压缩节省：3次压缩，约省 15k tokens，约省 $0.80
+```
+
+#### 4.3.8 ⑦ 标签与建议（Tags & Suggestions）— 行动
+
+> **产品价值**：从"诊断"到"行动"的桥梁。标签便于分类检索，建议直接给出可执行的优化项。这是场景 3（优化闭环）的核心面板。
+
+**标签区**（现有 `Tags`）：
+```
+标签：[code] [debug] [topic:数据库] [quality:中等]  [+ 添加标签]
+       auto     auto     llm              auto
+```
+- 每个 tag 显示来源（auto/llm/manual）+ confidence。
+- [+ 添加] → 手动打 custom 标签。
+- 点击标签 → 跳转分析中心，按该标签过滤。
+
+**优化建议区**（现有 `Suggestions`，场景 3 核心）：
+```
+优化建议（3条）
+┌─────────────────────────────────────────────────┐
+│ 💡 模型降级可节省 40% 成本          [模型] 高     │
+│ 降级到 gpt-4o-mini，预计省 $3.50                  │
+│ 证据：20 条请求均为简单问答，无需 gpt-4o          │
+│                          [查看证据] [✅ 采纳] [❌ 忽略] │
+├─────────────────────────────────────────────────┤
+│ 💡 合并连续工具调用可减 2 次往返    [工具] 中     │
+│ ...                                              │
+└─────────────────────────────────────────────────┘
+```
+
+**采纳流程**：点击 [✅ 采纳] → POST `/suggestions/<sid>/apply` → 标记 applied + 审计日志 → 该建议置灰显示"已采纳"。忽略则 dismissed。
+
+#### 4.3.9 ⑧ 凭证轮换历史（Cred Rotations）— 结构（网关特有）
+
+> **产品价值**：与 4.1.3 一致，全景图内展示该会话的凭证轮换全过程，是网关特有的诊断维度。复用模块 A 的诊断规则。
+
+**展示**：复用 4.1.3 的凭证轮换时间轴 + 诊断标注。
+
+#### 4.3.10 ⑨ 导出（Export）— 复盘
+
+> **产品价值**：场景 1/2 复盘需要把会话详情导出分享。支持 3 种格式。
+
+| 格式 | 用途 | 内容 |
+|------|------|------|
+| JSON | 技术存档/二次分析 | 完整 SessionPanorama payload |
+| CSV | 表格分析（Excel） | 时间线表格（每请求一行） |
+| Markdown | 复盘报告/分享 | 摘要 + 时间线 + 健康面板的人类可读文档 |
+
+**导出权限**：与查看权限一致（租户隔离）；导出操作记审计日志。
+
+#### 4.3.11 v2.0 增强字段（struct 增补）
+
+在 `SessionPanorama` struct 增补：
 
 ```go
 type SessionPanorama struct {
-    // 现有字段
-    Summary       AnalyticsSessionSummary     `json:"summary"`
-    Timeline      []RequestEvent              `json:"timeline"`
-    StepSummaries []SessionStepSummary        `json:"step_summaries"`
-    Tags          []SessionTag                `json:"tags"`
-    Suggestions   []SessionOptimizationSugg   `json:"suggestions"`
-    Cluster       *SessionClusterMembership   `json:"cluster,omitempty"`
-    Analysis      SessionAnalysis             `json:"analysis"`
-    ModuleEnabled bool                        `json:"module_enabled"`
+    // 现有字段（保持）
+    Summary       AnalyticsSessionSummary
+    Timeline      []RequestEvent
+    StepSummaries []SessionStepSummary
+    Tags          []SessionTag
+    Suggestions   []SessionOptimizationSugg
+    Cluster       *SessionClusterMembership
+    Analysis      SessionAnalysis
+    ModuleEnabled bool
 
-    // 新增字段
-    Health        SessionHealth               `json:"health"`          // 健康评分
-    CostFlow      []CostFlowNode              `json:"cost_flow"`       // 成本流向图数据
-    QualitySignals []QualitySignal            `json:"quality_signals"` // 质量信号
+    // v2.0 新增
+    Health        SessionHealth        `json:"health"`          // 见模块 D，②健康面板
+    CostFlow      []CostFlowNode       `json:"cost_flow"`       // ⑥成本流向
+    ToolCallList  []SessionToolCall    `json:"tool_call_list"`  // 工具调用列表（从 request_logs.tool_calls JSONB 展开）
+    ComplianceEvents []ComplianceEvent `json:"compliance_events,omitempty"` // 合规事件（②诊断导航跳转目标）
 }
 ```
 
-#### 4.3.2 前端 Panorama 增强
-
-在现有 `SessionPanoramaView.vue` 中增加：
-
-- **健康评分面板**：显示健康分 + 等级（A-F 带颜色）+ 结果标签
-- **质量信号面板**：列出每次请求的质量指标
-- **成本流向可视化**：基于 Chart.js 的成本分解图
-- **增强摘要**：如果 LLM 摘要缺失，显示规则生成的基础摘要
-- **导出增强**：新增 CSV 导出按钮
+**加载性能**：全景图为单次聚合请求（`GET /<id>/panorama`），15s 超时。各面板前端并行渲染，先有数据先显示（骨架屏）。
 
 ---
 
-### 4.4 阶段四：会话列表增强
+### 4.4 模块 D：会话健康智能（Session Health & Intelligence）
 
-#### 4.4.1 增强 SessionListView
+> **现状**：❌ 完全缺失。这是 v2.0 相对 v1.0 新增的核心能力，借鉴 agentsview 的「penalty-based health score」模型。
+>
+> **主线锚定**：健康智能是整个模块的**"分诊台"**——它给每个会话打分定级，让 SRE 从"逐个翻看会话"升级为"按分排序，聚焦异常"。它服务于 SRE（异常分诊）、产品/算法（质量评估），是**场景 1（异常处置）的识别入口**。健康分贯穿所有模块：分析中心按健康分布聚合、实时会话按健康排序、全景图用健康面板做诊断导航。
+>
+> **运营解读心智模型**：健康智能回答两个递进问题——① **这个会话有多健康**（0-100 分 + A-F 等级，一眼定优先级）→ ② **为什么不健康**（penalty 扣分明细，定位到具体信号）。呼应主线原则①「信号可解释」——不是一个黑盒分数，而是"100 分起扣，每一分扣在哪里都看得见"。
 
-| 增强项 | 说明 |
-|--------|------|
-| 状态标签 | active（绿色）/ stopped（灰色）/ recovered（蓝色） |
-| 健康指标列 | 健康等级（A-F 带颜色）+ 评分数字 |
-| 实时状态 | 活跃会话显示 "正在运行" 标签 |
-| 富过滤器 | 模型、提供商、延迟、token、请求数范围 |
-| 排序增强 | 按健康评分、成本效率、延迟排序 |
-| 批量操作 | 批量停止/恢复 |
-| 会话分组 | 按状态分组（活跃/已停止/已恢复） |
+#### 4.4.1 健康评分模型（penalty 模型，借鉴 agentsview）
 
----
+基础分 100，按扣分项递减，下限 0：
 
-### 4.5 阶段五：数据管道增强
+| 扣分项 | 信号来源 | 扣分 | 封顶 | 运营解读 |
+|--------|---------|:----:|:----:|---------|
+| 会话以错误结束 | error_count > 0 且占比 > 50% | -30 | — | 上游或业务错误主导 |
+| 会话被放弃 | request_count ≤ 1 | -15 | — | 用户单轮即走，可能体验差 |
+| 错误请求 | 每个错误请求 | -3 × n | -30 | 错误越多越严重 |
+| 合规问题 | 每个合规问题 | -10 × n | -30 | 安全风险 |
+| 高延迟 | avg_latency_ms > 5000 | -15 | — | 性能问题 |
+| 频繁模型切换 | model_switch_count > 3 | -10 | — | 路由策略不稳 |
+| 提示注入检测 | prompt_injection_detected | -20 | — | 安全攻击 |
+| PII / 毒性输出 | pii_detected / toxic_output_detected | -15 × n | -30 | 合规违规 |
 
-#### 4.5.1 request_logs 索引
+**扣分设计原则**：
+- **封顶（cap）防止单项倾覆**：如 10 个合规问题最多扣 30 分（而非 100），避免"一个维度问题就判死刑"。
+- **严重事件一次性重扣**：提示注入 -20（安全攻击必须严重标记），不设累积。
+- **阈值可配置**：所有阈值（如 5000ms、3 次切换）通过 `HealthScoreConfig` 热更新，便于灰度调参（见 11.4.1）。
 
-```sql
-CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_id ON request_logs(gw_session_id);
-CREATE INDEX IF NOT EXISTS idx_request_logs_ts ON request_logs(ts);
-CREATE INDEX IF NOT EXISTS idx_request_logs_tenant_ts ON request_logs(tenant_id, ts);
-```
+> ⚠️ **架构差异说明**：agentsview 的扣分项包含 `tool_failure / edit_churn / context_pressure / compaction`，这些信号来自 AI 编码代理的编辑器上下文，**我们的网关不持有这些信号**。我们的扣分项基于网关持有的信号（错误率、延迟、合规、模型切换），更贴合代理网关场景。详见附录 A.3。
 
-#### 4.5.2 定时聚合任务
+#### 4.4.2 等级映射 —「分数怎么读」
 
-新增后台 Worker（`bg/session_analytics_agg.go`），定期执行：
+| 等级 | 分数区间 | 颜色 | 含义 | 运营动作 |
+|------|---------|------|------|---------|
+| A | 90–100 | 🟢 绿 | 优秀 | 无需关注 |
+| B | 75–89 | 🔵 蓝 | 良好 | 常规观察 |
+| C | 60–74 | 🟡 黄 | 一般 | 关注扣分项 |
+| D | 40–59 | 🟠 橙 | 较差 | **需介入**（查全景图） |
+| F | 0–39 | 🔴 红 | 异常 | **立即介入**（停止/恢复） |
 
-```
-每 5 分钟：
-  从 request_logs 聚合最近数据到 session_summaries
+**等级的运营语义**：等级不只是颜色，对应明确的运营动作。D/F 会话在列表自动置顶（4.1.2 默认排序）。
 
-每小时：
-  更新会话健康评分
-  清理过期 session_optimization_suggestions
+#### 4.4.3 结果分类（outcome）—「会话结局」
 
-每天：
-  清理 >90 天的 request_logs 原始数据
-  更新 session_clusters（如果启用自动聚类）
-```
+| outcome | 判定条件 | 含义 | 业务解读 |
+|---------|---------|------|---------|
+| `completed` | error_count=0 且 request_count≥2 | 正常完成 | 健康的多轮对话 |
+| `error` | error_count/request_count > 0.5 | 错误主导 | 需排查错误原因 |
+| `abandoned` | request_count ≤ 1 | 被放弃 | 单轮即止，可能体验问题 |
+| `unknown` | 其他 | 无法判定 | 数据不足 |
 
-#### 4.5.3 session_db_writer 增强
+**outcome 与 health_score 的关系**：outcome 是"定性"，score 是"定量"。一个 outcome=error 的会话通常 score 较低（因 -30 error_ended），但 score 低不一定是 error（可能因多个小扣分累积）。两者配合使用：先看 score 排序，再看 outcome 分类。
 
-在 `WriteSnapshot` 方法中增加健康评分写入：
+#### 4.4.4 健康度数据结构
 
 ```go
-func (w *DBWriter) WriteSnapshot(ctx context.Context, sessionID string, session *Session, health *SessionHealth) error {
-    // 现有逻辑
-    // 新增：写入健康评分到 session_summaries 的相关列
+type SessionHealth struct {
+    HealthScore    int     `json:"health_score"`    // 0-100
+    HealthGrade    string  `json:"health_grade"`    // A-F
+    Outcome        string  `json:"outcome"`         // completed|error|abandoned|unknown
+    OutcomeReason  string  `json:"outcome_reason"`  // 人类可读原因，如 "0 errors across 45 requests"
+    ErrorRate      float64 `json:"error_rate"`
+    AvgLatencyMs   int     `json:"avg_latency_ms"`
+    Penalties      []PenaltyItem `json:"penalties"`  // 扣分明细（可解释性，诊断导航）
+}
+
+type PenaltyItem struct {
+    Reason    string `json:"reason"`    // 如 "high_latency"
+    Deduction int    `json:"deduction"` // 如 15
+    Detail    string `json:"detail"`    // 如 "avg_latency_ms=6200 > 5000"
 }
 ```
 
+**penalties 的双重作用**：① 可解释性（全景图健康面板展示，让运营理解"为什么这个分"）；② 诊断导航（每条 penalty 可点击跳转到对应面板，见 4.3.3）。
+
+#### 4.4.5 健康分写入时机与生命周期
+
+| 时机 | 触发 | 计算内容 | 写入位置 |
+|------|------|---------|---------|
+| 实时（请求级） | request_logs INSERT 触发器 | 累积 error_count/cost/latency（已有） | session_summaries |
+| 会话停止 | session_state_snapshots 写入 | **终态健康分**（完整计算） | session_summaries.health_score/grade/outcome |
+| 定时刷新 | 后台 worker（每小时） | 重算"未停止但 >1h 无活动"的会话 | 同上 |
+| 手动重算 | POST `/<id>/recompute-health` | 管理员强制重算（调参后验证） | 同上 |
+
+**健康分的"版本"概念**：因扣分阈值可能调整（HealthScoreConfig 变更），`last_health_at` 记录计算时间。批量调参后可按 last_health_at < 调参时间 批量重算。
+
+> 建议在 `session_summaries` 增列：`health_score INT, health_grade CHAR(1), outcome VARCHAR(20), last_health_at TIMESTAMPTZ`。migration 见 11.5.2。
+
+#### 4.4.6 健康智能的产品闭环
+
+健康分不只是展示，驱动三个闭环：
+
+| 闭环 | 输入 | 动作 |
+|------|------|------|
+| **分诊闭环** | 健康分 D/F | 列表置顶 + 告警 → SRE 介入（场景4） |
+| **诊断闭环** | penalty 扣分明细 | 跳转全景图对应面板定位（4.3.3） |
+| **优化闭环** | 长期健康趋势下行 | 产品/算法评估系统性问题（场景3） |
+
 ---
 
-## 五、优先级与路线图
+### 4.5 模块 E：合规审批（Compliance & Approval）
 
-### 5.1 优先级矩阵
+> **现状**：✅ 已完整实现。`session_audit_records`（每请求一行审计）+ `approval_queue`（待审批）+ 检测器 + 审批工作流。
+>
+> **主线锚定**：合规审批是**场景 2（合规违规复盘）** 的主战场；服务于租户管理员（合规守门人）。它回答"**有没有安全风险？要不要放行？**"。与实时会话互补：实时会话管"运行态"，合规审批管"内容态"。两者通过 gw_session_id 贯通：审批事件 → 全景图合规面板汇聚。
+>
+> **运营解读心智模型**：合规审批是一个"**检测 → 决策 → 处置 → 复盘**"的治理闭环。管理员的工作流是：看队列（有什么待处理）→ 审查（多维评分+内容摘要判断风险）→ 处置（批准/拒绝）→ 复盘（全景图看会话级合规全貌）→ 调参（优化检测规则）。
 
-| 阶段 | 内容 | 优先级 | 工作量估计 | 业务价值 |
-|------|------|--------|-----------|---------|
-| 一 | 分析后端 API 增强 | P0 | 5-7 人日 | 高 |
-| 二 | 前端分析仪表板 | P0 | 8-10 人日 | 高 |
-| 三 | 会话全景图增强 | P1 | 3-5 人日 | 中 |
-| 四 | 会话列表增强 | P1 | 3-5 人日 | 中 |
-| 五 | 数据管道增强 | P2 | 3-5 人日 | 低（前置依赖） |
-
-### 5.2 推荐实施顺序
+#### 4.5.1 治理闭环四阶段
 
 ```
-第一阶段 ──→ 第二阶段 ──→ 第三阶段 ──→ 第四阶段 ──→ 第五阶段
-(后端 API)    (前端仪表板)  (全景图)    (列表)      (管道)
-
-备注：
-- 阶段一和五有数据依赖，建议阶段五先于或并行于阶段一
-- 阶段二的 UI 组件可复用至阶段三和四
+① 检测（实时，系统自动）
+  每个请求 → SessionAuditHook → 多维评分 → detect_decision
+  │
+  ├─ pass / warn → 放行（记录审计）
+  ├─ blocked → 拦截（记录审计）
+  └─ need_approval → 进入 approval_queue（等待人工）
+  │
+② 决策（人工，管理员）
+  管理员审查 approval_queue → 批准 / 拒绝（填理由）
+  │                                    │
+  │                              超过 expires_at → timeout
+  │
+③ 处置（系统）
+  批准 → 放行请求；拒绝 → 拦截；timeout → 按策略放行或拦截
+  │
+④ 复盘（事后）
+  全景图合规面板汇聚同会话审计记录 → 分析中心合规趋势 → 调整审批规则
 ```
 
-### 5.3 里程碑
+#### 4.5.2 功能清单
 
-| 里程碑 | 交付物 | 目标时间 |
-|--------|--------|---------|
-| M1 | 后端 6 个新分析端点 + 健康评分逻辑 | Day 5 |
-| M2 | 前端仪表板全部面板可渲染 | Day 12 |
-| M3 | Panorama 视图增强 + 健康面板 | Day 15 |
-| M4 | 会话列表增强 + 数据管道 | Day 18 |
+| 功能 | 状态 | 数据源 | 阶段 |
+|------|:----:|--------|:----:|
+| 逐请求审计记录 | ✅ | `session_audit_records`（content/intent/security/danger/trust/sensitive 多维评分） | ① |
+| 检测决策 | ✅ | detect_decision: pass / warn / blocked / need_approval | ① |
+| 审批队列 | ✅ | `approval_queue`：pending / approved / rejected / timeout | ②③ |
+| 审批处置 | ✅ | POST `/api/admin/session-approvals/<id>/approve\|reject` | ② |
+| 审批配置 | ✅ | `/api/admin/tenants/{tenant_id}/approval-config` + `/approvers` + `/approval-rules` | ④ |
+| 公共审批轮询 | ✅ | `/v1/approvals/<id>`（客户端侧） | ②③ |
+| 超时清理 | ✅ | 后台 worker 扫描 `expires_at` | ③ |
+
+#### 4.5.3 审计维度（多维评分体系）—「风险怎么读」
+
+> **产品价值**：6 个维度评分让管理员从不同角度判断风险，而非单一"危险分"。每个维度回答一个具体问题。
+
+| 维度 | 字段 | 回答的问题 | 评分范围 |
+|------|------|-----------|---------|
+| 内容 | content_summary/title/hash | 这请求在说什么？ | — (LLM 摘要) |
+| 意图 | intent_type/score/reason | 用户想干什么？ | 0-100 |
+| 安全 | security_score | 整体安全程度？ | 0-100 |
+| 危险 | danger_score | 有多危险？ | 0-100 |
+| 信任 | trust_score | 是否可信？ | 0-100 |
+| 敏感 | sensitive_score | 含多敏感信息？ | 0-100 |
+| 检测 | detect_score + threats[]/sensitive_words[] | 命中哪些规则？ | 0-100 |
+
+**审批决策辅助**（前端展示）：
+```
+┌─────────────────────────────────────────────────────┐
+│ ⏰ 2分钟前  会话 gw_abc  请求 req_xyz                │
+│ 意图：tool_use (score: 85)  危险分：72/100          │
+│ 威胁命中：["prompt_injection"]                       │
+│ 敏感词：["password", "secret"]                       │
+│ 摘要：用户尝试通过 prompt 注入获取系统提示...        │
+│ [📋 查看详情]  [✅ 批准]  [❌ 拒绝]                  │
+└─────────────────────────────────────────────────────┘
+```
+
+**管理员判断逻辑**：
+- danger_score 高 + threats 含 injection → 倾向拒绝
+- sensitive_score 高但 intent 正常 → 可能误报，倾向批准+标注
+- intent 异常（如 unknown）→ 谨慎，查看内容摘要再定
+
+#### 4.5.4 审批操作规格
+
+| 操作 | 权限 | 二次确认 | 审计 action | 超时处理 |
+|------|:----:|:--------:|------------|---------|
+| 批准 | tenant_admin+ | ❌ | `approval.approve` | 超过 expires_at 自动 timeout |
+| 拒绝 | tenant_admin+ | ✅ 需填理由 | `approval.reject` | 同上 |
+| 批量批准 | tenant_admin+ | ✅ 列出 N 条 | 每条独立审计 | — |
+| 批量拒绝 | tenant_admin+ | ✅ 列出+统一理由 | 每条独立审计 | — |
+
+**审批 SLA（P2 增强）**：
+| 指标 | 计算 | 告警阈值 |
+|------|------|---------|
+| 待审批积压 | COUNT(pending) | >50 warning |
+| 平均等待时长 | AVG(approved_at - created_at) | >30min warning |
+| 超时率 | timeout / total | >20% warning |
+
+#### 4.5.5 v2.0 增强
+
+| 增强项 | 优先级 | 说明 | 主线场景 |
+|--------|:------:|------|---------|
+| 合规面板全景图汇聚 | P1 | 同会话审计记录在全景图「合规面板」聚合 | 场景2复盘 |
+| 合规趋势分析 | P2 | 分析中心按日/类型的合规事件趋势 | 场景2复盘 |
+| 审批 SLA 监控 | P2 | 等待时长分布、超时率、积压告警 | 运营效率 |
+| 审批规则调参效果追踪 | P2 | 调参前后违规拦截率/误报率对比 | 治理优化 |
 
 ---
 
-## 六、技术风险评估
+### 4.6 模块 F：用量成本（Usage & Cost）
 
-| 风险 | 概率 | 影响 | 缓解措施 |
-|------|------|------|---------|
-| request_logs 数据量大导致查询慢 | 中 | 高 | 确保索引、LIMIT 约束、时间范围强制 |
-| session_summaries 数据不完整 | 低 | 高 | 增加数据完整性检查、后台补数据任务 |
-| Chart.js 与 Element Plus 样式冲突 | 低 | 中 | 使用 scoped CSS + 统一主题变量 |
-| 新增 API 增加后端负载 | 中 | 中 | 分析端点设置 15s 超时、增加缓存 |
-| 多租户数据隔离漏洞 | 低 | 高 | tenant_id 参数化查询、审计所有新增 SQL |
+> **现状**：⚠️ 有 `/api/usage` 基础聚合（按 tenant/api_key/provider），但**缺会话维度归因、同比环比、缓存节省可视化**。
+>
+> **主线锚定**：用量成本是**场景 5（成本对账）** 的主战场，也服务于场景 1（成本异常）。服务于租户管理员（月底对账）、SRE（成本巡检）。它回答"**钱花在哪了？能不能省？**"。与分析中心互补：分析中心看"会话维度成本趋势"，用量成本看"租户/API Key/提供商维度的成本归因与对账"。
+>
+> **运营解读心智模型**：用量成本回答四个递进问题——① **花了多少**（总览）→ ② **花在哪**（按模型/提供商/API Key 归因）→ ③ **比以前多还是少**（同比环比）→ ④ **省了多少/能省多少**（缓存节省 + 优化空间）。
+
+#### 4.6.1 功能规格
+
+| 功能 | 状态 | 说明 | 主线问题 |
+|------|:----:|------|---------|
+| 成本总览（按租户/API Key/提供商） | ✅ | `admin/usage.go` | 花了多少 |
+| 按模型成本分解 | ⚠️ 部分 | Panorama 内有 CostBreakdown.ByModel，无独立趋势 | 花在哪 |
+| 按提供商成本归因 | ❌ 缺失 | — | 花在哪 |
+| 按意图/工作类型归因 | ❌ 缺失 | — | 花在哪 |
+| 缓存节省分析 | ⚠️ 部分 | Panorama 内有 CacheSavings，无独立视图 | 省了多少 |
+| 压缩节省分析 | ⚠️ 部分 | Panorama 内有 CompressionSavings | 省了多少 |
+| 同比 / 环比对比 | ❌ 缺失 | — | 比以前如何 |
+| 成本预测 | ❌ 缺失 | — | P3 远期 |
+
+#### 4.6.2 成本归因维度 —「花在哪」
+
+> **产品价值**：成本失控的第一步是"知道钱花在哪"。多维度归因让管理员从不同切面定位成本来源。
+
+| 归因维度 | 切面 | 典型发现 | 端点 |
+|---------|------|---------|------|
+| 按模型 | outbound_model | 某昂贵模型占比异常高 | cost-trend?group_by=model |
+| 按提供商 | provider_id | 某提供商单价偏高 | cost-trend?group_by=provider |
+| 按 API Key | api_key_id | 某应用/客户端消耗过大 | 复用现有 /api/usage |
+| 按意图 | user_intent | code 意图成本占比高（编程场景多） | cost-trend?group_by=intent |
+| 按工作类型 | work_types | 某类任务成本集中 | cost-trend?group_by=work_type |
+
+**归因下钻链**：总成本 → 点某模型 → 该模型成本按提供商拆 → 点某提供商 → 该组合的会话列表 → 全景图。呼应主线原则⑤「下钻即诊断」。
+
+#### 4.6.3 v2.0 规划端点
+
+```
+GET /api/admin/usage/cost-trend?date_from=&date_to=&group_by=day|model|provider|intent|work_type
+GET /api/admin/usage/cache-economics?date_from=&date_to=    # 缓存命中率 + 节省金额
+GET /api/admin/usage/period-compare?current=&previous=      # 同比/环比
+GET /api/admin/usage/breakdown?date_from=&date_to=&dimension=model|provider|intent|api_key
+```
+
+**`period-compare` 同比环比口径**：
+- **环比（MoM/WoW）**：本期 vs 紧邻上一等长周期（如本月 vs 上月、本周 vs 上周）
+- **同比（YoY）**：本期 vs 去年同期（需历史数据≥1年，否则返回"数据不足"）
+- 返回：current_total / previous_total / change_pct / change_abs / 显著性标注（>|20%| 高亮）
+
+**响应示例**（period-compare）：
+```json
+{
+  "current": {"period": "2026-07", "total_cost_usd": 1250.50},
+  "previous": {"period": "2026-06", "total_cost_usd": 980.20},
+  "change_pct": 27.6,
+  "change_abs": 270.30,
+  "trend": "up",
+  "significant": true,
+  "by_dimension": {
+    "model": [
+      {"model": "gpt-4o", "current": 800, "previous": 500, "change_pct": 60.0}
+    ]
+  }
+}
+```
+
+#### 4.6.4 缓存经济学（借鉴 agentsview）—「省了多少」
+
+> **产品价值**：量化缓存/压缩的实际价值，证明优化的 ROI，推动投入。
+
+| 指标 | 计算 | 运营解读 |
+|------|------|---------|
+| cache_hit_ratio | cache_read_tokens / (cache_read_tokens + prompt_tokens) | 缓存命中率，越高越好；<30% 提示缓存策略未生效 |
+| dollars_saved (缓存) | cache_read_tokens × output_price × 0.1 | 相对无缓存的节省（缓存读成本约为正常输入 10%）|
+| dollars_saved (压缩) | compressed_requests × avg_saved_tokens × price | 压缩节省 |
+| effective_cost_ratio | dollars_spent / (dollars_spent + dollars_saved) | 实际成本占"无优化成本"的比例 |
+
+**展示**：
+```
+缓存经济学（本月）
+├─ 缓存命中率：68% (↑5% vs 上月)
+├─ 缓存节省：$320 (cache_read 4M tokens)
+├─ 压缩节省：$85 (1200次压缩)
+└─ 综合节省率：23%（若无优化，成本将高 23%）
+```
+
+#### 4.6.5 成本异常检测（辅助）
+
+> 自动标注成本异常，辅助场景 1。非独立功能，融入趋势图。
+
+| 检测 | 触发 | 标注 |
+|------|------|------|
+| 单日成本突增 | 日成本 > 近 7 日均值 × 2 | 红色标注 + tooltip |
+| 某模型成本占比突增 | 占比变化 > 20% | 模型分解图高亮 |
+| 单会话成本极高 | 会话成本 > p99 | 热门排名置顶 |
 
 ---
 
-## 七、与 agentsview 的关键架构差异说明
+### 4.7 模块 G：运营操作（Operations）
 
-| 维度 | agentsview | 我们 | 设计理由 |
-|------|-----------|------|---------|
-| **数据来源** | 本地文件解析 + 静态分析 | 网关请求日志 + 实时 Redis | 我们是代理间网关，天然有请求日志流 |
-| **健康评分** | 基于解析器信号（tool_failure, compaction 等） | 基于网关信号（错误率、延迟、合规、模型切换） | 我们的数据源不包含编辑器工具信号 |
-| **会话分组** | 按 project/agent/machine 自然分组 | 按 tenant_id 多租户隔离 | SaaS 架构要求租户隔离 |
-| **实时性** | 文件 watch + EventSource | Redis → 异步写入 → 轮询查询 | 我们的写路径有异步层，轮询更可靠 |
-| **会话 ID** | 文件路径哈希 | gw_xxx 格式 | UUID 更适合分布式系统 |
-| **标签系统** | 无 | 手动 + 自动标签 | 运营管理需要 |
-| **聚类** | 无 | 基于标签/向量聚类 | 企业级平台需要 |
-| **优化建议** | 无 | session_optimization_suggestions | 运营优化需要 |
+> **主线锚定**：运营操作不是独立视图，而是**贯穿所有模块的操作能力集合**——远程停止（模块A）、采纳建议（模块C）、审批处置（模块E）、触发聚类（模块C）、导出（模块C）。它是 SRE/管理员"动手干预"的手段。服务于场景 1/3/4。
+>
+> **设计原则**：所有运营操作必须① **权限受控**（角色矩阵）② **二次确认**（防误操作）③ **审计可追溯**（谁/何时/做了什么）④ **结果反馈**（成功/失败 + SSE 推送）。
+
+#### 4.7.1 操作清单与权限矩阵
+
+| 操作 | 触发方 | 权限 | 现状 | 二次确认 | 审计 action |
+|------|--------|:----:|:----:|:--------:|------------|
+| 远程停止会话 | SRE/管理员 | super/tenant_admin | ✅ | ✅+原因 | `session.stop` |
+| 远程恢复会话 | SRE | super_admin | ✅ | ✅ | `session.recover` |
+| 批量停止/恢复 | SRE | super_admin | ❌ P2 | ✅(列N条) | 每条独立 |
+| 会话标注/标签 | 管理员 | admin | ✅ | ❌ | `session.annotation.update` |
+| 会话软删除/回收站 | 管理员 | admin | ❌ P2 | ✅+撤销窗 | `session.delete` |
+| 采纳优化建议 | 管理员 | admin | ✅ | ❌ | `suggestion.apply` |
+| 忽略优化建议 | 管理员 | admin | ✅ | ❌ | `suggestion.dismiss` |
+| 触发聚类重算 | 管理员 | admin | ✅ | ✅(耗时提示) | `cluster.run` |
+| 导出会话 | 所有角色 | 查看权限 | ✅ | ❌ | `session.export` |
+| 调整审批规则 | 管理员 | tenant_admin+ | ✅ | ✅(影响提示) | `approval.rule.update` |
+| 重算健康分 | 管理员 | admin | ❌ P1 | ❌ | `session.health.recompute` |
+| 会话交接(系统) | 系统(自动) | — | ✅ | — | `session.handoff` |
+
+#### 4.7.2 操作闭环统一规范
+
+所有运营操作遵循统一闭环：
+
+```
+① 权限校验 → ② 二次确认 → ③ 执行 → ④ 审计记录 → ⑤ 结果反馈(SSE/UI) → ⑥ 后续联动
+```
+
+**③ 执行的原子性**：关键操作（停止/恢复/审批）用 Lua 原子更新或 DB 事务，防止并发冲突。
+
+**⑤ 结果反馈**：
+- 成功 → UI toast "操作成功" + SSE 推送状态变化（其他客户端同步）
+- 失败 → UI toast 错误原因 + 不改变状态
+
+**⑥ 后续联动示例**：
+- 停止会话 → 触发终态快照 → 计算健康分 → SSE 推送 → 列表更新
+- 采纳建议 → 标记 applied → 审计 → （可选）影响路由策略
+
+#### 4.7.3 危险操作防护
+
+| 防护 | 适用操作 | 机制 |
+|------|---------|------|
+| 二次确认 | 停止/恢复/批量/规则调整 | 弹窗 + 填写原因/确认 |
+| 撤销窗口 | 软删除(P2) | 删除后 10s 显示"撤销"（借鉴 agentsview） |
+| 频率限制 | 重算健康分/聚类 | 每租户每小时限 N 次 |
+| 影响范围预览 | 批量操作/规则调整 | 执行前列出将影响的会话数 |
 
 ---
 
-## 八、附录
+## 五、统一数据模型
 
-### 8.1 agentsview 参考端点清单
+### 5.1 核心表与关系
 
-| agentsview 端点 | 用途 | 是否映射到我们的方案 |
-|----------------|------|-------------------|
-| `/api/v1/analytics/summary` | 聚合指标 | ✅ 已有 stats 等价 |
-| `/api/v1/analytics/activity` | 活动时间线 | ✅ 方案 4.1.1 |
-| `/api/v1/analytics/heatmap` | 日历热力图 | ⏳ 阶段二增强项 |
-| `/api/v1/analytics/projects` | 项目分解 | ❌ 不适用（无项目概念） |
-| `/api/v1/analytics/hour-of-week` | 小时热力图 | ⏳ 阶段二增强项 |
-| `/api/v1/analytics/sessions` | 会话形态分布 | ✅ 方案 4.1.1 |
-| `/api/v1/analytics/velocity` | 速度指标 | ⏳ 阶段二增强项 |
-| `/api/v1/analytics/tools` | 工具使用 | ❌ 不适用（无工具概念） |
+```
+request_logs (请求级，月分区 RANGE(ts), 列式压缩归档)
+  │ gw_session_id
+  │ tenant_id
+  ▼
+session_summaries (会话级聚合，触发器实时维护)
+  │ session_key = gw_session_id
+  ├── session_dim (映射表：gw_session_id ↔ task_id/status)
+  ├── session_request_summaries (逐步摘要，LLM 生成)
+  ├── session_tags (标签：task|client|llm|topic|intent|quality|custom)
+  ├── session_optimization_suggestions (优化建议)
+  ├── session_clusters + session_cluster_members (聚类)
+  ├── session_embeddings (向量，pgvector 可选)
+  └── session_audit_records (逐请求审计) ── approval_queue (审批)
+
+session_state_snapshots (会话停止时落盘的终态快照)
+  └── session_credential_rotations (凭证轮换审计，UNIQUE(session_id, seq))
+
+request_logs_hot (热堆表) ── promote ──> request_logs (月分区)
+```
+
+### 5.2 关键表 schema 摘要
+
+#### session_summaries（migration 310 + 350 修复后）
+- **主键**：`session_key`（= `gw_session_id`）
+- **统计**：request_count / success_count / error_count
+- **成本**：total_cost_usd / input_cost_usd / output_cost_usd
+- **Token**：total_prompt_tokens / total_completion_tokens / total_tokens（generated）
+- **延迟**：avg / min / max_latency_ms
+- **模型**：models_used[] / primary_model / model_switch_count
+- **分析**：title / summary / key_topics[] / user_intent / quality_score(0-10)
+- **合规**：compliance_status / compliance_issues_count / prompt_injection_detected / pii_detected / toxic_output_detected
+- **元数据**：work_types[] / providers[] / client_models[]
+- **v2.0 待增列**：`health_score INT, health_grade CHAR(1), outcome VARCHAR(20), last_health_at TIMESTAMPTZ`
+
+#### session_state_snapshots（migration 331）
+- 终态字段：status / stopped_at / stop_reason / recovered_at
+- 终态统计：total_turns / total_duration_sec / total_prompt_tokens / total_completion_tokens / total_cost_usd
+- 终态凭证：final_credential_id / final_model / final_provider
+- 标注：title / summary / annotation / tags[]
+- raw_snapshot JSONB（完整快照）
+
+#### session_audit_records（migration 120）
+- 多维评分：security_score / danger_score / trust_score / sensitive_score
+- 检测：detect_score / detect_decision / threats[] / sensitive_words[]
+- 状态：status（pass/warn/blocked/need_approval）/ approval_status
+
+### 5.3 数据管道
+
+```
+请求进入网关
+  │
+  ├─ RequestLogger.CreateInitial ──> request_logs_hot (heap, 实时)
+  │                                    │
+  │                                    └─ partition_manager ──> request_logs (月分区, 列式)
+  │                                            │
+  │                                            └─ 触发器 update_session_summary()
+  │                                                    │
+  │                                                    └─> session_summaries (UPSERT)
+  │
+  ├─ SessionAuditHook ──> session_audit_records (检测评分)
+  │                         └─ need_approval ──> approval_queue
+  │
+  ├─ RequestSummarizer (PhasePostResponse) ──> session_request_summaries
+  │
+  ├─ analysis_events (事件总线) ──> workers (intent/summary/tagger/optimizer/clusterer)
+  │
+  └─ LiveStreamSSE ──> 前端实时推送
+```
+
+---
+
+## 六、API 规格
+
+### 6.1 现有 API（已实现，保留）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/admin/sessions` | 实时会话列表（status: active/stopped/all） |
+| GET | `/api/admin/sessions/<id>` | 会话详情（state + stats + rotations） |
+| POST | `/api/admin/sessions/<id>/stop` | 远程停止（super_admin） |
+| POST | `/api/admin/sessions/<id>/recover` | 远程恢复（super_admin） |
+| PUT | `/api/admin/sessions/<id>/annotation` | 更新标注 |
+| PUT | `/api/admin/sessions/<id>/tags` | 更新标签 |
+| GET | `/api/admin/session-analytics` | 会话分析列表 |
+| GET | `/api/admin/session-analytics/stats` | 今日 KPI |
+| GET | `/api/admin/session-analytics/<id>` | 会话分析详情 |
+| GET | `/api/admin/session-analytics/<id>/export` | 导出 |
+| GET | `/api/admin/session-analytics/<id>/panorama` | 全景聚合 |
+| GET/POST/DELETE | `/api/admin/session-analytics/<id>/tags[/<tag_id>]` | 标签 CRUD |
+| GET | `/api/admin/session-analytics/<id>/suggestions` | 优化建议 |
+| POST | `/api/admin/session-analytics/<id>/suggestions/<sid>/apply` | 采纳建议 |
+| GET | `/api/admin/session-clusters[/<id>]` | 聚类列表/详情 |
+| POST | `/api/admin/session-clusters/run` | 触发聚类 |
+| GET | `/api/admin/session-compare` | 会话对比 |
+| GET | `/api/admin/session-audit[/stats]` | 审计记录/统计 |
+| * | `/api/admin/session-approvals/*` | 审批工作流 |
+| GET | `/api/usage[/summary]` | 用量成本 |
+| GET | `/api/admin/live-stream` | 实时 SSE 推送 |
+
+### 6.2 v2.0 新增 API（规划）
+
+所有新端点统一前缀 `/api/admin/session-analytics/`，统一接受过滤器参数（date_from / date_to / model / provider / tenant_id 等）。
+
+| 方法 | 路径 | 说明 | 阶段 |
+|------|------|------|:----:|
+| GET | `/api/admin/session-analytics/activity` | 活动时间序列 | P0 |
+| GET | `/api/admin/session-analytics/cost-trend` | 成本趋势 | P0 |
+| GET | `/api/admin/session-analytics/latency-trend` | 延迟趋势（p50/p90） | P0 |
+| GET | `/api/admin/session-analytics/model-breakdown` | 模型/提供商分解 | P0 |
+| GET | `/api/admin/session-analytics/health-distribution` | 健康分布 | P1 |
+| GET | `/api/admin/session-analytics/session-shape` | 会话形态分布 | P1 |
+| GET | `/api/admin/session-analytics/top-sessions` | 热门会话排名 | P1 |
+| GET | `/api/admin/session-analytics/heatmap` | 日历热力图 | P2 |
+| GET | `/api/admin/session-analytics/hour-of-week` | 24×7 热力图 | P2 |
+| GET | `/api/admin/session-analytics/health-trend` | 健康分趋势 | P1 |
+| GET | `/api/admin/sessions/<id>/health` | 单会话健康详情 | P1 |
+| GET | `/api/admin/usage/cost-trend` | 用量成本趋势 | P1 |
+| GET | `/api/admin/usage/cache-economics` | 缓存经济学 | P2 |
+| GET | `/api/admin/usage/period-compare` | 同比环比 | P2 |
+
+### 6.3 通用约定
+
+- **租户隔离**：所有查询带 `tenant_id`（super_admin 可省略以查全租户）；DB 层 RLS 强制。
+- **时间范围强制**：时间序列端点必须带 `date_from/date_to`，默认最近 7 天，最大跨度 90 天（防全表扫描）。
+- **超时**：分析端点 15s 超时（与现有 Panorama 一致）。
+- **分页**：列表用 page/offset；时间序列用粒度参数。
+- **排序**：支持 `?sort=cost|latency|tokens|duration|health|ts`。
+
+---
+
+## 七、前端架构
+
+### 7.1 路由整合（关键决策）
+
+**当前问题**：`SessionManagementView.vue` 与 `SessionListView.vue` 都映射到 `/sessions`，存在路由冲突；session-analytics 独立在 `/admin/session-analytics`。
+
+**v2.0 整合**：
+
+| 路由 | 视图 | 说明 |
+|------|------|------|
+| `/sessions` | SessionManagementView | 实时会话（运营态，整合现有两个 view） |
+| `/admin/session-analytics` | SessionAnalyticsDashboardView | 分析中心 |
+| `/admin/session-analytics/:id/panorama` | SessionPanoramaView | 全景详情 |
+| `/admin/session-approvals` | ApprovalListView | 合规审批 |
+| `/admin/usage` | UsageView | 用量成本 |
+
+### 7.2 组件架构（分析中心）
+
+```
+SessionAnalyticsDashboardView.vue
+├── DashboardModuleGate.vue              # 模块启用检测（session_analytics）
+├── DashboardStatsRow.vue                # 7 张 KPI 卡片
+├── DashboardFilterBar.vue               # 统一过滤器（持久化）
+├── DashboardGrid.vue                    # 图表网格
+│   ├── ActivityTimelineChart.vue        # 活动柱状图
+│   ├── CostTrendChart.vue               # 成本堆叠面积
+│   ├── LatencyTrendChart.vue            # 延迟折线
+│   ├── ModelBreakdownChart.vue          # 模型环形图
+│   ├── HealthDistributionChart.vue      # 健康分布柱状
+│   ├── SessionShapeChart.vue            # 形态直方图
+│   ├── HeatmapCalendar.vue              # 日历热力图（P2）
+│   └── TopSessionsTable.vue             # 热门会话（可跳转全景）
+└── SessionListTable.vue                 # 增强会话列表（含健康列）
+```
+
+### 7.3 图表技术选型
+
+| 数据特性 | 推荐 | 库 |
+|---------|------|----|
+| 时间序列趋势 | 折线/面积 | Chart.js (line) |
+| 分类占比 | 环形 | Chart.js (doughnut) |
+| 活动分布 | 柱状 | Chart.js (bar) |
+| 多维对比 | 分组柱状 | Chart.js (bar grouped) |
+| 分布直方图 | 柱状 | Chart.js (bar) |
+| 日历热力图 | 自绘 | cal-heatmap / 自研 |
+
+> 项目已有 Chart.js 依赖但未用；建议创建 `web/src/composables/useChart.ts` 统一封装。
+
+### 7.4 实时能力
+
+- **后端**：`live_stream_sse.go` 已实现 SSE，每条 `request_logs` 落盘后推送。
+- **前端 v2.0**：SessionManagementView 消费 SSE，活跃会话实时刷新（无需轮询）。
+
+---
+
+## 八、路线图
+
+### 8.1 优先级与工作量
+
+| 阶段 | 内容 | 优先级 | 工作量 | 依赖 |
+|------|------|:------:|:------:|------|
+| **P0-a** | 数据管道增强（索引 + 定时聚合 worker） | P0 | 2 人日 | 无（前置） |
+| **P0-b** | 分析后端 API（activity/cost-trend/latency-trend/model-breakdown） | P0 | 4 人日 | P0-a |
+| **P0-c** | 前端分析中心仪表板（KPI + 4 图表 + 过滤器） | P0 | 6 人日 | P0-b |
+| **P1-a** | 会话健康评分（penalty 模型 + 写入 + API） | P1 | 3 人日 | P0-a |
+| **P1-b** | 健康分布 / 形态 / 热门 / 趋势图表 | P1 | 3 人日 | P1-a |
+| **P1-c** | 全景图增强（健康面板 + 成本流向 + 工具调用） | P1 | 3 人日 | P1-a |
+| **P1-d** | 实时会话 SSE 消费 + 健康列 | P1 | 2 人日 | P1-a |
+| **P2-a** | 用量成本增强（归因 + 缓存经济学 + 同比环比） | P2 | 4 人日 | P0-b |
+| **P2-b** | 日历热力图 / 24×7 热力图 | P2 | 3 人日 | P0-b |
+| **P2-c** | 批量操作 / 软删除回收站 | P2 | 3 人日 | 无 |
+| **P3** | 成本预测 / 审批 SLA / 合规趋势 | P3 | 待评估 | — |
+
+### 8.2 里程碑
+
+| 里程碑 | 交付物 | 目标 |
+|--------|--------|------|
+| M1（第 1 周） | 数据管道 + 4 个核心分析端点 | 后端可查时间序列 |
+| M2（第 2 周） | 分析中心仪表板上线 | 用户可见可视化 |
+| M3（第 3 周） | 健康评分 + 健康相关图表 + 全景增强 | 健康智能可用 |
+| M4（第 4 周） | 实时 SSE + 用量成本增强 | 端到端体验闭环 |
+
+### 8.3 实施顺序依赖
+
+```
+P0-a (管道) ─┬─> P0-b (分析 API) ─> P0-c (仪表板) [M2]
+             └─> P1-a (健康) ─┬─> P1-b (健康图表) [M3]
+                              ├─> P1-c (全景增强) [M3]
+                              └─> P1-d (实时 SSE) [M4]
+P0-b ──────────────────────────┼─> P2-a (用量增强) [M4]
+                               └─> P2-b (热力图)
+P2-c (批量/回收站) 独立
+```
+
+---
+
+## 九、关键设计决策与风险
+
+### 9.1 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 实时 vs 分析存储 | Redis 热 + PG 温（保持） | 实时毫秒级 CRUD + 历史复杂查询 |
+| 健康评分模型 | penalty（100 起扣） | 可解释、可审计，借鉴 agentsview |
+| 时间序列实现 | 实时聚合 + 可选预聚合 | 数据量未到必须预聚合的规模 |
+| 前端图表库 | Chart.js（依赖已在） | 零新增依赖，足够覆盖需求 |
+| 会话 ID 贯穿 | gw_session_id 统一 | 消除两个 session 概念割裂 |
+| 路由整合 | /sessions 归实时，/admin/session-analytics 归分析 | 职责清晰 |
+
+### 9.2 风险与缓解
+
+| 风险 | 概率 | 影响 | 缓解 |
+|------|:----:|:----:|------|
+| request_logs 数据量大查询慢 | 中 | 高 | 强制时间范围 + 索引 + 限制跨度 90 天 |
+| session_summaries 数据不完整 | 低 | 高 | 触发器完整性检查 + 后台补数据 |
+| 健康评分模型偏差 | 中 | 中 | 扣分项可配置 + 灰度观察 + 可调权重 |
+| 新增 API 增加后端负载 | 中 | 中 | 15s 超时 + 结果缓存（5 分钟） |
+| 多租户隔离漏洞 | 低 | 高 | RLS 强制 + 审计所有新增 SQL + EffectiveTenantIDAll |
+| Chart.js 与 Element Plus 样式冲突 | 低 | 中 | scoped CSS + 统一主题变量 |
+| 两个并行 session 概念导致数据不一致 | 中 | 高 | v2.0 明确以 gw_session_id 统一关联 |
+
+### 9.3 待解决的技术债
+
+1. **路由重复**：`/api/admin/sessions` 在 `admin/handler.go`（状态管理）和 `cmd/gateway/main.go`（NewSessionListAPI）各注册一次 → 需统一。
+2. **两套状态机包**：`domains/session` 与 `domains/sessionstate` 并行 → 评估合并。
+3. **migration 310 触发器**：原始 `update_session_summary()` 引用了不存在的列（session_key），已被 migration 350 修复，但 310 的 `.sql` 仍是旧版本 → 文档标注，避免误导。
+
+---
+
+## 十、附录
+
+### A.1 agentsview 参考端点清单
+
+| agentsview 端点 | 用途 | 映射到本方案 |
+|----------------|------|-------------|
+| `/api/v1/analytics/summary` | 聚合指标 | ✅ stats（已扩展为过滤器范围） |
+| `/api/v1/analytics/activity` | 活动时间线 | ✅ 5.2 activity |
+| `/api/v1/analytics/heatmap` | 日历热力图 | ✅ 5.2 heatmap（P2） |
+| `/api/v1/analytics/projects` | 项目分解 | ❌ 不适用（我们用 tenant_id） |
+| `/api/v1/analytics/hour-of-week` | 小时热力图 | ✅ 5.2 hour-of-week（P2） |
+| `/api/v1/analytics/sessions` | 会话形态分布 | ✅ 5.2 session-shape |
+| `/api/v1/analytics/velocity` | 速度指标（轮次周期/首响应） | ⏳ 可用 stream_first_chunk_ms 近似（P3） |
+| `/api/v1/analytics/tools` | 工具使用 | ⏥ 我们有 tool_usage_stats 表，可扩展（P3） |
 | `/api/v1/analytics/skills` | 技能使用 | ❌ 不适用（无技能系统） |
-| `/api/v1/analytics/top-sessions` | 热门会话 | ✅ 方案 4.1.1 |
-| `/api/v1/analytics/signals` | 会话健康 | ✅ 方案 4.1.3 |
-| `/api/v1/analytics/signal-sessions` | 信号示例 | ⏳ 阶段三增强项 |
+| `/api/v1/analytics/top-sessions` | 热门会话 | ✅ 5.2 top-sessions |
+| `/api/v1/analytics/signals` | 会话健康 | ✅ 模块 D 健康智能 |
+| `/api/v1/analytics/signal-sessions` | 信号示例 | ✅ 模块 D penalty 明细 |
+| `/api/v1/activity/report` | 活动并发报告 | ⏳ 可用并发指标扩展（P3） |
 
-### 8.2 现有数据库表结构参考
-
-| 表 | 用途 | 阶段使用 |
-|---|------|---------|
-| `session_summaries` | 会话级聚合摘要 | 所有阶段 |
-| `request_logs` | 请求级日志 | 阶段一、二 |
-| `session_tags` | 会话标签 | 阶段三 |
-| `session_optimization_suggestions` | 优化建议 | 阶段三 |
-| `session_clusters` | 聚类组 | 阶段三 |
-| `session_cluster_members` | 聚类成员 | 阶段三 |
-| `session_request_summaries` | 逐步摘要 | 阶段三 |
-| `prompt_injection_detections` | 提示注入检测 | 阶段二（合规面板） |
-| `output_compliance_audit` | 输出合规审计 | 阶段二（合规面板） |
-| `session_credential_rotations` | 凭证轮换历史 | 阶段三（切换可视化） |
-
-### 8.3 术语对照表
+### A.2 术语对照表
 
 | agentsview 术语 | 我们的术语 | 说明 |
 |----------------|-----------|------|
 | project | tenant_id | 租户隔离 |
 | agent | provider | LLM 提供商 |
-| health_score | health_score (新建) | 健康评分 |
-| outcome | outcome (新建) | 结果分类 |
-| tool_failure | request_logs.error | 请求错误 |
+| health_score | health_score（新增） | 健康评分 |
+| health_grade (A-F) | health_grade（新增） | 等级 |
+| outcome | outcome（新增） | 结果分类 |
+| tool_failure_signal | request_logs.error | 工具失败≈请求错误 |
 | compaction | compression_strategy | 压缩策略 |
-| context_pressure | avg_latency_ms | 上下文压力近似指标 |
+| context_pressure | avg_latency_ms | 上下文压力近似 |
+| edit_churn | — | 不适用（无编辑器上下文） |
+| archetype | 会话形态桶 | quick/standard/deep/marathon |
+| cache_economics | cache_read_tokens | 缓存经济学 |
+
+### A.3 健康评分架构差异说明
+
+agentsview 的健康评分扣分项（penalty table）包含大量来自 AI 编码代理编辑器上下文的信号：
+
+- `tool_failure_signal_count`（工具调用失败）
+- `tool_retry_count`（工具重试）
+- `edit_churn_count`（代码编辑反复修改）
+- `consecutive_failure_max`（连续失败）
+- `context_pressure_max`（上下文窗口压力）
+- `mid_task_compaction_count`（任务中压缩）
+- `short_prompt_count` / `unstructured_start` / `duplicate_prompt_count`（质量信号）
+
+**这些信号我们的代理网关不持有**——网关只看到 HTTP 请求/响应，看不到客户端编辑器内部状态。因此本方案的扣分项基于网关持有的信号（错误率、延迟、合规、模型切换、PII/注入检测），是 agentsview 模型在网关场景的适配版本。这是两类产品（编码代理归档 vs LLM 网关）的本质差异。
+
+### A.4 现有数据库表索引参考
+
+| 表 | 关键索引 |
+|---|---------|
+| session_summaries | (tenant_id, last_request_at DESC)、GIN(models_used)、GIN(key_topics)、(compliance_status)、(quality_score) |
+| request_logs | 月分区 RANGE(ts)；需新增 (gw_session_id)、(tenant_id, ts) |
+| session_state_snapshots | (tenant_id, stopped_at DESC)、(api_key_id, stopped_at)、(status) |
+| session_credential_rotations | UNIQUE(session_id, seq)、(credential_id, started_at) |
+| session_audit_records | (tenant_id, created_at DESC)、(session_id, created_at)、(status) WHERE need_approval |
+| approval_queue | (tenant_id, created_at) WHERE pending、(expires_at) WHERE pending |
+
+### A.5 v1.0 审计结论摘要（保留）
+
+v1.0 文档的核心审计结论（已融入本 v2.0）：
+
+1. **我们的优势**：双存储架构、14 状态状态机、凭证轮换追踪、多租户隔离、标签/聚类/优化建议/会话对比/handoff（这些 agentsview 没有）。
+2. **严重差距**：会话健康体系（已规划模块 D）、时间序列分析（已规划 5.2）、前端可视化（已规划 6.2）、实时 SSE 消费。
+3. **架构差异根源**：agentsview 是「文件解析 + 本地归档」，我们是「网关请求日志 + 实时 Redis」，数据源不同决定了健康信号维度不同。
 
 ---
 
-*文档版本：v1.0*
+## 十一、详细功能规格（v2.1 扩展）
+
+> 本章对第四章的功能规格进行细化，明确每个特性的交互流程、字段定义、枚举值、边界条件、错误处理与验收标准，作为开发与测试的直接依据。
+
+### 11.1 数据字典（统一枚举与字段约束）
+
+#### 11.1.1 会话状态枚举（session.Status / session_state_snapshots.status）
+
+| 状态值 | 含义 | 可见徽标 | 允许的转移 |
+|--------|------|---------|-----------|
+| `active` | 运行中 | 🟢 绿点 "运行中" | → stopped / waiting / error |
+| `stopped` | 已停止（运营主动停止） | ⚫ 灰点 "已停止" | → recovered |
+| `recovered` | 已恢复 | 🔵 蓝点 "已恢复" | → stopped |
+| `waiting` | 等待审批 | 🟡 黄点 "等待中" | → active / stopped |
+| `error` | 异常终止 | 🔴 红点 "异常" | → recovered |
+| `expired` | 已过期 | ⚪ 空心点 "已过期" | （终态） |
+
+> 完整 14 状态由 `domains/session/state_machine.go` 定义；上表为运营视图常用的 6 个对外状态。前端按 `status` 字段映射徽标颜色与文案。
+
+#### 11.1.2 合规状态枚举（session_summaries.compliance_status）
+
+| 值 | 触发条件 | 徽标 |
+|----|---------|------|
+| `compliant` | compliance_issues_count = 0 且无检测命中 | 🟢 合规 |
+| `warning` | compliance_issues_count ≥ 1 或 detect_decision = warn | 🟡 警告 |
+| `violation` | prompt_injection_detected / pii_detected / toxic_output_detected 或 detect_decision = blocked | 🔴 违规 |
+
+#### 11.1.3 用户意图枚举（session_summaries.user_intent）
+
+| 值 | 业务含义 | 典型场景 |
+|----|---------|---------|
+| `chat` | 通用对话 | 闲聊、问答 |
+| `code` | 代码生成/调试 | 编程辅助 |
+| `tool_use` | 工具调用 | function calling |
+| `data_analysis` | 数据分析 | 报表、推理 |
+| `creative` | 创意写作 | 文案、故事 |
+| `unknown` | 未识别 | 意图分类器置信度低 |
+
+#### 11.1.4 检测决策枚举（session_audit_records.detect_decision / status）
+
+| detect_decision | status | 含义 | 后续动作 |
+|-----------------|--------|------|---------|
+| `pass` | pass | 通过 | 正常放行 |
+| `warn` | warn | 警告 | 放行 + 记录 |
+| `blocked` | blocked | 拦截 | 拒绝请求 |
+| `need_approval` | need_approval | 需审批 | 进入 approval_queue |
+
+#### 11.1.5 审批状态枚举（approval_queue.status）
+
+| 值 | 含义 | 触发 |
+|----|------|------|
+| `pending` | 待审批 | 检测决策为 need_approval |
+| `approved` | 已批准 | 管理员批准 |
+| `rejected` | 已拒绝 | 管理员拒绝 |
+| `timeout` | 已超时 | 超过 expires_at 未处置 |
+
+#### 11.1.6 标签键枚举（session_tags.tag_key）
+
+| tag_key | 来源 | 说明 |
+|---------|------|------|
+| `task` | auto/llm | 任务类型标签 |
+| `client` | auto | 客户端标识 |
+| `llm` | llm | LLM 自动生成 |
+| `topic` | auto/llm | 主题标签 |
+| `intent` | auto | 意图标签 |
+| `quality` | auto | 质量标签 |
+| `custom` | manual | 用户手动标签 |
+
+#### 11.1.7 优化建议分类（session_optimization_suggestions.category）
+
+| category | 含义 | 典型建议 |
+|----------|------|---------|
+| `prompt` | 提示词优化 | "精简系统提示可节省 X token" |
+| `tool` | 工具调用优化 | "合并连续工具调用" |
+| `model` | 模型选择优化 | "降级到更便宜模型" |
+| `policy` | 策略优化 | "调整路由策略" |
+| `session` | 会话结构优化 | "拆分长会话" |
+
+### 11.2 API 详细规格
+
+#### 11.2.1 通用：过滤器参数规范
+
+所有分析端点共享以下查询参数（除特别说明）：
+
+| 参数 | 类型 | 必填 | 默认 | 校验规则 |
+|------|------|:----:|------|---------|
+| `date_from` | ISO date | 否 | now-7d | `date_to - date_from ≤ 90 天` |
+| `date_to` | ISO date | 否 | now | `≤ now` |
+| `tenant_id` | string | 否 | 当前租户 | 仅 super_admin 可传空（查全租户） |
+| `model` | string | 否 | — | 逗号分隔多选，如 `gpt-4o,claude-3` |
+| `provider` | string | 否 | — | 逗号分隔多选 |
+| `compliance_status` | enum | 否 | — | compliant/warning/violation |
+| `user_intent` | enum | 否 | — | 见 11.1.3 |
+| `granularity` | enum | 否 | auto | day/week/month；auto 按跨度选择（<30d=day, <180d=week, else month） |
+
+**通用错误响应**：
+
+| HTTP | code | 触发 |
+|------|------|------|
+| 400 | `invalid_date_range` | date_from > date_to 或跨度 > 90 天 |
+| 400 | `invalid_granularity` | granularity 不在枚举内 |
+| 403 | `forbidden` | tenant_admin 越权访问其他租户 |
+| 504 | `query_timeout` | 超过 15s |
+
+响应体统一格式：
+```json
+{ "error": "invalid_date_range", "message": "date_from must be <= date_to" }
+```
+
+#### 11.2.2 活动时间线 `GET /api/admin/session-analytics/activity`
+
+**请求**：
+```
+GET /api/admin/session-analytics/activity?date_from=2026-06-01&date_to=2026-07-06&granularity=day&model=gpt-4o
+```
+
+**响应**：
+```json
+{
+  "granularity": "day",
+  "series": [
+    {
+      "date": "2026-07-01",
+      "session_count": 42,
+      "request_count": 318,
+      "success_count": 305,
+      "error_count": 13,
+      "total_cost_usd": 12.45,
+      "total_tokens": 145000,
+      "distinct_users": 28
+    },
+    { "date": "2026-07-02", "session_count": 38, "..." : "..." }
+  ],
+  "summary": {
+    "total_sessions": 280,
+    "total_requests": 2100,
+    "avg_daily_sessions": 40,
+    "peak_date": "2026-07-01",
+    "peak_sessions": 42
+  }
+}
+```
+
+**实现要点**：
+- 数据源：`request_logs` 按 `date_trunc(granularity, ts)` 分组
+- `distinct_users` = `COUNT(DISTINCT end_user_id)`
+- 结果按 date 升序
+- 缺失日期补零（保证时间序列连续）
+
+#### 11.2.3 成本趋势 `GET /api/admin/session-analytics/cost-trend`
+
+**响应**：
+```json
+{
+  "granularity": "day",
+  "series": [
+    {
+      "date": "2026-07-01",
+      "input_cost_usd": 5.20,
+      "output_cost_usd": 7.25,
+      "total_cost_usd": 12.45,
+      "cache_read_tokens": 80000,
+      "cache_write_tokens": 12000
+    }
+  ],
+  "summary": {
+    "total_cost_usd": 87.15,
+    "avg_daily_cost": 12.45,
+    "cost_trend": "up",
+    "trend_pct": 15.3
+  }
+}
+```
+
+**业务规则**：
+- `cost_trend`：对比前 50% 与后 50% 的均值，`up`/`down`/`flat`（变化 <5% 为 flat）
+- 支持按 `group_by=model` 返回多 series（用于堆叠面积图）
+
+#### 11.2.4 延迟趋势 `GET /api/admin/session-analytics/latency-trend`
+
+**响应**：
+```json
+{
+  "granularity": "day",
+  "series": [
+    {
+      "date": "2026-07-01",
+      "p50_latency_ms": 1200,
+      "p90_latency_ms": 3500,
+      "p99_latency_ms": 8200,
+      "max_latency_ms": 12000,
+      "avg_latency_ms": 1800,
+      "stream_first_chunk_p50_ms": 450
+    }
+  ]
+}
+```
+
+**实现要点**：
+- 百分位用 `percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)`（PG 原生）
+- `stream_first_chunk_ms` 来自 request_logs，反映首 token 延迟
+
+#### 11.2.5 模型/提供商分解 `GET /api/admin/session-analytics/model-breakdown`
+
+**响应**：
+```json
+{
+  "by_model": [
+    { "model": "gpt-4o", "request_count": 150, "session_count": 80, "total_cost_usd": 45.2, "total_tokens": 1200000, "avg_latency_ms": 1500, "error_rate": 0.05 },
+    { "model": "claude-3-5-sonnet", "request_count": 90, "..." : "..." }
+  ],
+  "by_provider": [
+    { "provider": "openai", "request_count": 150, "total_cost_usd": 45.2, "..." : "..." },
+    { "provider": "anthropic", "request_count": 90, "..." : "..." }
+  ]
+}
+```
+
+#### 11.2.6 健康分布 `GET /api/admin/session-analytics/health-distribution`
+
+**响应**：
+```json
+{
+  "grade_distribution": { "A": 120, "B": 85, "C": 45, "D": 20, "F": 10 },
+  "outcome_distribution": { "completed": 200, "error": 30, "abandoned": 40, "unknown": 10 },
+  "compliance_distribution": { "compliant": 240, "warning": 30, "violation": 10 },
+  "latency_buckets": [
+    { "range": "<1s", "count": 150 },
+    { "range": "1-3s", "count": 80 },
+    { "range": "3-5s", "count": 30 },
+    { "range": "5-10s", "count": 15 },
+    { "range": ">10s", "count": 5 }
+  ],
+  "avg_health_score": 78.5
+}
+```
+
+#### 11.2.7 会话形态分布 `GET /api/admin/session-analytics/session-shape`
+
+**响应**：
+```json
+{
+  "request_count_buckets": [
+    { "range": "1-5", "label": "quick", "count": 150 },
+    { "range": "6-20", "label": "standard", "count": 80 },
+    { "range": "21-50", "label": "deep", "count": 35 },
+    { "range": ">50", "label": "marathon", "count": 15 }
+  ],
+  "duration_buckets": [
+    { "range": "<1min", "count": 50 },
+    { "range": "1-5min", "count": 100 },
+    { "range": "5-30min", "count": 80 },
+    { "range": "30-60min", "count": 30 },
+    { "range": ">1h", "count": 20 }
+  ]
+}
+```
+
+#### 11.2.8 热门会话 `GET /api/admin/session-analytics/top-sessions`
+
+**请求**：`?metric=cost&limit=10&date_from=&date_to=`
+
+**响应**：
+```json
+{
+  "metric": "cost",
+  "sessions": [
+    {
+      "gw_session_id": "gw_abc123",
+      "title": "调试数据库连接问题",
+      "tenant_id": "tnt_xxx",
+      "request_count": 45,
+      "total_cost_usd": 8.92,
+      "total_tokens": 120000,
+      "duration_seconds": 3600,
+      "health_grade": "B",
+      "primary_model": "gpt-4o",
+      "panorama_url": "/admin/session-analytics/gw_abc123/panorama"
+    }
+  ]
+}
+```
+
+#### 11.2.9 单会话健康详情 `GET /api/admin/sessions/<id>/health`
+
+**响应**：
+```json
+{
+  "gw_session_id": "gw_abc123",
+  "health_score": 72,
+  "health_grade": "C",
+  "outcome": "completed",
+  "outcome_reason": "0 errors across 45 requests",
+  "error_rate": 0.0,
+  "avg_latency_ms": 1800,
+  "computed_at": "2026-07-06T10:30:00Z",
+  "penalties": [
+    { "reason": "high_latency", "deduction": 15, "detail": "avg_latency_ms=6200 > 5000" },
+    { "reason": "frequent_model_switch", "deduction": 10, "detail": "model_switch_count=5 > 3" },
+    { "reason": "compliance_issue", "deduction": 3, "detail": "compliance_issues_count=1, capped at -3 (1 of 3)" }
+  ]
+}
+```
+
+### 11.3 UI/UX 交互规格
+
+#### 11.3.1 分析中心仪表板交互
+
+**页面加载流程**：
+```
+1. 进入 /admin/session-analytics
+2. DashboardModuleGate 检查 /api/admin/modules 是否启用 session_analytics
+   ├─ 未启用 → 显示引导卡片（"请联系管理员启用会话分析模块"）
+   └─ 已启用 → 继续
+3. 从 sessionStorage 恢复上一次过滤器（首次访问用默认：最近 7 天）
+4. 并行请求：stats / activity / cost-trend / latency-trend / model-breakdown
+5. 渲染 KPI 卡片行 + 图表网格
+6. 请求完成前各图表显示 skeleton loading
+```
+
+**过滤器交互**：
+| 操作 | 行为 |
+|------|------|
+| 修改任一过滤项 | 防抖 500ms 后重新请求所有图表 |
+| 点击「重置」 | 恢复默认（最近 7 天，无模型/提供商过滤） |
+| 切换日期范围预设 | 今天/7天/30天/90天 快捷按钮 |
+| 过滤器变更 | 持久化到 sessionStorage（刷新不丢失） |
+
+**图表交互**：
+| 图表 | 交互 |
+|------|------|
+| 活动柱状图 | hover 显示当日明细 tooltip；点击某日 → 下钻该日会话列表 |
+| 成本堆叠面积 | hover 显示输入/输出明细；图例可切换显隐 |
+| 模型环形图 | 点击某模型扇区 → 过滤会话列表为该模型 |
+| 热门会话表格 | 行点击 → 跳转全景图 `/admin/session-analytics/<id>/panorama` |
+
+#### 11.3.2 会话列表增强交互
+
+**列定义**（增强后）：
+
+| 列 | 字段 | 排序 | 说明 |
+|----|------|:----:|------|
+| 标题 | title | ✅ | 截断显示，hover 全显 |
+| 租户 | tenant_id | ✅ | 仅 super_admin 可见 |
+| 开始时间 | first_request_at | ✅ | 相对时间（"3小时前"） |
+| 时长 | duration_seconds | ✅ | 格式化（"1h 23m"） |
+| 请求数 | request_count | ✅ | — |
+| 成本 | total_cost_usd | ✅ | 保留 4 位小数 |
+| 模型 | primary_model | ❌ | 多模型显示 "+N" |
+| 健康等级 | health_grade | ✅ | A-F 徽标带颜色 |
+| 合规 | compliance_status | ❌ | 徽标 |
+| 状态 | status | ❌ | 运行/停止/恢复 徽标 |
+| 操作 | — | ❌ | 全景图 · 停止 · 标注 |
+
+**批量操作**：
+```
+1. 表格首列 checkbox，支持全选当前页
+2. 选中 ≥1 行时，顶部出现批量操作栏：
+   [批量停止] [批量恢复] [批量标注] [导出选中]
+3. 批量停止：二次确认弹窗 → POST /api/admin/sessions/batch-stop {ids: [...]}
+```
+
+#### 11.3.3 全景图交互
+
+**健康面板**：
+```
+┌───────────────────────────────────────────┐
+│  健康评分                  等级 C          │
+│      72                    🟡 一般         │
+│  ─────────────────────────────────────    │
+│  结果：✅ 正常完成（45 请求，0 错误）       │
+│  ─────────────────────────────────────    │
+│  扣分明细（可展开）：                       │
+│    ⚠ 高延迟      -15  (avg 6200ms)        │
+│    ⚠ 频繁模型切换 -10  (5次)              │
+│    ⚠ 合规问题    -3   (1个问题)            │
+└───────────────────────────────────────────┘
+```
+
+**成本流向图（Cost Flow）**：使用 Chart.js 水平柱状图或 Sankey：
+```
+总成本 $8.92
+├── 输入 $3.20 (36%) ──→ gpt-4o: $2.50 | claude: $0.70
+└── 输出 $5.72 (64%) ──→ gpt-4o: $4.20 | claude: $1.52
+```
+
+**工具调用列表**（从 `request_logs.tool_calls` JSONB 展开）：
+```
+| 步骤 | 工具名 | 类别 | 结果 | 耗时 |
+|------|--------|------|------|------|
+| 3    | search | retrieval | ✅ 5条结果 | 320ms |
+| 5    | execute| action    | ❌ 超时    | 5000ms |
+```
+
+#### 11.3.4 实时会话 SSE 消费
+
+**前端 EventSource 流程**：
+```typescript
+// SessionManagementView.vue
+const es = new EventSource('/api/admin/live-stream')
+es.onmessage = (event) => {
+  const data = JSON.parse(event.data)
+  // data.type: 'request.completed' | 'session.stopped' | ...
+  if (data.gw_session_id) {
+    refreshSession(data.gw_session_id)  // 局部刷新该行
+  }
+}
+onUnmounted(() => es.close())
+```
+
+**SSE 事件类型**：
+| type | 触发 | 前端动作 |
+|------|------|---------|
+| `request.completed` | 请求落盘 | 刷新该会话的统计列 |
+| `session.stopped` | 会话停止 | 移至"已停止"分组 |
+| `session.recovered` | 会话恢复 | 移回"运行中"分组 |
+| `session.error` | 异常 | 红色高亮 + 告警角标 |
+
+#### 11.3.5 合规审批交互
+
+**审批队列视图**：
+```
+待审批（5）
+┌────────────────────────────────────────────────┐
+│ ⏰ 2分钟前  会话 gw_abc  请求 req_xyz           │
+│ 意图：tool_use  危险分：72/100                   │
+│ 威胁：["prompt_injection"]                      │
+│ 摘要：用户尝试通过 prompt 注入获取系统提示...     │
+│ [📋 查看详情]  [✅ 批准]  [❌ 拒绝]              │
+├────────────────────────────────────────────────┤
+│ ⏰ 5分钟前  会话 gw_def  请求 req_uvw           │
+│ ...                                            │
+└────────────────────────────────────────────────┘
+```
+
+**审批操作**：
+| 操作 | 接口 | 二次确认 | 超时处理 |
+|------|------|:--------:|---------|
+| 批准 | POST `/approve` | ❌ | 超过 expires_at 自动 timeout |
+| 拒绝 | POST `/reject` | ✅ 需填拒绝理由 | 同上 |
+| 批量批准 | POST `/batch-approve` | ❌ | — |
+
+### 11.4 健康评分详细规格
+
+#### 11.4.1 扣分项详细规则
+
+```go
+// admin/session_health.go（规划）
+
+// 健康评分配置（可热更新，便于灰度调参）
+type HealthScoreConfig struct {
+    ErrorEndedPenalty        int  `json:"error_ended_penalty"`         // 30
+    AbandonedPenalty         int  `json:"abandoned_penalty"`           // 15
+    PerErrorPenalty          int  `json:"per_error_penalty"`           // 3
+    PerErrorCap              int  `json:"per_error_cap"`               // 30
+    PerCompliancePenalty     int  `json:"per_compliance_penalty"`      // 10
+    PerComplianceCap         int  `json:"per_compliance_cap"`          // 30
+    HighLatencyThresholdMs   int  `json:"high_latency_threshold_ms"`   // 5000
+    HighLatencyPenalty       int  `json:"high_latency_penalty"`        // 15
+    ModelSwitchThreshold     int  `json:"model_switch_threshold"`      // 3
+    ModelSwitchPenalty       int  `json:"model_switch_penalty"`        // 10
+    PromptInjectionPenalty   int  `json:"prompt_injection_penalty"`    // 20
+    PIIPenalty               int  `json:"pii_penalty"`                 // 15
+    ToxicOutputPenalty       int  `json:"toxic_output_penalty"`        // 15
+    CompliancePenaltyCap     int  `json:"compliance_penalty_cap"`      // 30
+}
+```
+
+#### 11.4.2 计算流程（伪代码）
+
+```
+func computeHealth(summary, config) SessionHealth:
+    score = 100
+    penalties = []
+
+    # 1. 错误结束（最高优先级）
+    if summary.error_count > 0 and summary.error_count / summary.request_count > 0.5:
+        score -= 30; penalties.append("error_ended", -30)
+
+    # 2. 放弃
+    if summary.request_count <= 1:
+        score -= 15; penalties.append("abandoned", -15)
+
+    # 3. 每错误扣分（封顶）
+    errorDeduction = min(summary.error_count * 3, 30)
+    if errorDeduction > 0:
+        score -= errorDeduction; penalties.append("per_error", -errorDeduction)
+
+    # 4. 合规问题（封顶）
+    complianceDeduction = min(summary.compliance_issues_count * 10, 30)
+    if complianceDeduction > 0:
+        score -= complianceDeduction; penalties.append("compliance", -complianceDeduction)
+
+    # 5. 高延迟
+    if summary.avg_latency_ms > 5000:
+        score -= 15; penalties.append("high_latency", -15, "avg=${summary.avg_latency_ms}")
+
+    # 6. 频繁模型切换
+    if summary.model_switch_count > 3:
+        score -= 10; penalties.append("model_switch", -10, "count=${summary.model_switch_count}")
+
+    # 7. 提示注入
+    if summary.prompt_injection_detected:
+        score -= 20; penalties.append("prompt_injection", -20)
+
+    # 8. PII / 毒性（封顶）
+    sensitiveDeduction = 0
+    if summary.pii_detected: sensitiveDeduction += 15
+    if summary.toxic_output_detected: sensitiveDeduction += 15
+    sensitiveDeduction = min(sensitiveDeduction, 30)
+    if sensitiveDeduction > 0:
+        score -= sensitiveDeduction; penalties.append("sensitive", -sensitiveDeduction)
+
+    score = max(0, score)  # 下限 0
+
+    # 等级
+    grade = gradeFromScore(score)  # A≥90 B≥75 C≥60 D≥40 else F
+
+    # 结果分类（见 11.4.3）
+    outcome = classifyOutcome(summary)
+
+    return {score, grade, outcome, penalties}
+```
+
+#### 11.4.3 结果分类判定逻辑
+
+```
+func classifyOutcome(summary) string:
+    ratio = summary.error_count / max(summary.request_count, 1)
+    if ratio > 0.5: return "error"
+    if summary.request_count <= 1: return "abandoned"
+    if summary.error_count == 0 and summary.request_count >= 2: return "completed"
+    return "unknown"
+```
+
+**边界情况**：
+| 情况 | outcome | 说明 |
+|------|---------|------|
+| request_count = 0 | `unknown` | 无请求的空会话 |
+| request_count = 1 且成功 | `abandoned` | 单轮即止 |
+| request_count = 1 且失败 | `error` | 错误率 100% > 50% |
+| request_count = 5，4 成功 1 失败 | `completed` | 错误率 20% < 50% |
+| request_count = 5，3 失败 | `error` | 错误率 60% > 50% |
+
+#### 11.4.4 健康分写入与刷新策略
+
+| 场景 | 触发时机 | 实现 |
+|------|---------|------|
+| 实时增量 | 每次 request_logs INSERT | 触发器更新 session_summaries 累积字段（已有） |
+| 停止时终态 | session_state_snapshots 写入 | Go 代码计算 health，UPDATE session_summaries |
+| 定时刷新 | 后台 worker 每小时 | 扫描 `last_request_at < now - 1h AND health_score IS NULL` 的会话，计算并写入 |
+| 手动重算 | POST `/api/admin/session-analytics/<id>/recompute-health` | 管理员手动触发 |
+
+### 11.5 数据管道增强详细规格
+
+#### 11.5.1 新增索引（migration）
+
+```sql
+-- 355_session_analytics_indexes.sql
+CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_id
+    ON request_logs (gw_session_id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_tenant_ts
+    ON request_logs (tenant_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_request_logs_ts_day
+    ON request_logs (date_trunc('day', ts));
+CREATE INDEX IF NOT EXISTS idx_session_summaries_health
+    ON session_summaries (health_grade) WHERE health_grade IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_session_summaries_outcome
+    ON session_summaries (outcome) WHERE outcome IS NOT NULL;
+```
+
+#### 11.5.2 session_summaries 增列（migration）
+
+```sql
+-- 356_session_health_columns.sql
+ALTER TABLE session_summaries
+    ADD COLUMN IF NOT EXISTS health_score INT,
+    ADD COLUMN IF NOT EXISTS health_grade CHAR(1),
+    ADD COLUMN IF NOT EXISTS outcome VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS last_health_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_session_summaries_health_score
+    ON session_summaries (health_score DESC) WHERE health_score IS NOT NULL;
+```
+
+#### 11.5.3 定时聚合 Worker（bg/session_analytics_agg.go）
+
+```go
+// 后台 worker 调度
+type SessionAnalyticsAggWorker struct {
+    db       *db.DB
+    interval time.Duration  // 5min / 1h / 24h 三档
+}
+
+func (w *SessionAnalyticsAggWorker) Run(ctx context.Context):
+    ticker := time.NewTicker(w.interval)
+    for {
+        select {
+        case <-ticker.C:
+            w.aggregateHealthScores(ctx)      // 每小时
+            w.cleanupOldSuggestions(ctx)       // 每小时
+            w.purgeOldRequestLogs(ctx)         // 每天
+        case <-ctx.Done():
+            return
+        }
+    }
+```
+
+**任务清单**：
+
+| 任务 | 频率 | 操作 |
+|------|------|------|
+| 健康分刷新 | 每小时 | 重算长时间无活动会话的 health_score |
+| 建议清理 | 每小时 | 删除已 dismissed 且 >30 天的 suggestions |
+| 原始日志清理 | 每天 | 删除 >90 天的 request_logs（保留 summaries） |
+| 聚类更新 | 每天 | 如启用自动聚类，重算 session_clusters |
+
+#### 11.5.4 结果缓存策略
+
+为避免高频分析查询打满 DB，对聚合端点增加 5 分钟缓存：
+
+| 端点类型 | 缓存键 | TTL | 失效 |
+|---------|--------|:---:|------|
+| 时间序列（activity/cost/latency） | `agg:{endpoint}:{tenant}:{filters_hash}` | 5min | 新请求落盘自动失效该租户该日 |
+| 分布（breakdown/shape） | 同上 | 5min | 同上 |
+| 单会话详情/全景 | 不缓存 | — | 需实时 |
+| KPI stats | `stats:{tenant}:{filters_hash}` | 1min | 同上 |
+
+实现：内存 LRU + 可选 Redis。缓存 miss 时加锁防击穿。
+
+### 11.6 性能与 SLA 规格
+
+#### 11.6.1 查询性能目标
+
+| 端点类型 | P50 目标 | P90 目标 | P99 目标 | 数据量假设 |
+|---------|:--------:|:--------:|:--------:|-----------|
+| KPI stats | <200ms | <500ms | <1s | 10万会话/租户 |
+| 时间序列（7天） | <500ms | <1.5s | <3s | 1000万请求/月 |
+| 时间序列（90天） | <2s | <5s | <10s | 同上 |
+| 分布分析 | <800ms | <2s | <4s | — |
+| 单会话全景 | <300ms | <800ms | <1.5s | 单会话 <500 请求 |
+
+**达标手段**：
+1. 强制时间范围（防全表扫描）
+2. 索引覆盖（10.5.1）
+3. 结果缓存（10.5.4）
+4. 对超大时间跨度降级粒度（90 天自动用 week/month）
+
+#### 11.6.2 容量假设
+
+| 维度 | 假设值 | 说明 |
+|------|--------|------|
+| 租户数 | 100 | 中型 SaaS |
+| 会话/租户/月 | 10万 | — |
+| 请求/会话 | 平均 10 | — |
+| request_logs 保留 | 90 天 | 约 10亿行/租户（大租户） |
+| session_summaries 保留 | 永久 | 体量小（10万/月） |
+
+#### 11.6.3 前端性能目标
+
+| 指标 | 目标 |
+|------|------|
+| 分析中心首屏 | <2s（含图表渲染） |
+| 图表交互响应 | <100ms |
+| 全景图加载 | <1.5s |
+| 实时会话列表刷新（SSE） | 局部更新 <200ms |
+
+### 11.7 安全与合规详细规格
+
+#### 11.7.1 租户隔离三重防线
+
+| 层级 | 机制 | 实现 |
+|------|------|------|
+| 1. 应用层 | handler 显式带 `tenant_id` 过滤 | `EffectiveTenantIDAll(r)` |
+| 2. 连接层 | 每连接设置 GUC `app.current_tenant` | `admin/tenant_ctx.go::withTenantTx` |
+| 3. 数据库层 | RLS 策略强制 | 所有表 `ENABLE ROW LEVEL SECURITY` |
+
+**super_admin bypass**：`app.current_role = 'super_admin'` 或 `app.bypass_rls = 'true'`。
+
+#### 11.7.2 敏感数据保护
+
+| 数据 | 保护措施 |
+|------|---------|
+| 请求/响应正文（request_logs_bodies） | 仅管理员可查；审计日志记录访问 |
+| 客户端 IP（client_ip） | 展示时脱敏（保留前 3 段） |
+| PII 检测命中内容 | 审计记录中敏感词数组，不存原文 |
+| 标注/标签 | 不含敏感数据（由管理员控制） |
+
+#### 11.7.3 审计日志
+
+所有运营操作写入审计日志（`audit_log`）：
+
+| 操作 | action | entityType |
+|------|--------|-----------|
+| 远程停止会话 | `session.stop` | session |
+| 远程恢复会话 | `session.recover` | session |
+| 更新标注 | `session.annotation.update` | session |
+| 审批批准 | `approval.approve` | approval |
+| 审批拒绝 | `approval.reject` | approval |
+| 采纳建议 | `suggestion.apply` | suggestion |
+| 触发聚类 | `cluster.run` | cluster |
+
+#### 11.7.4 分析端点防护
+
+| 防护 | 措施 |
+|------|------|
+| 时间范围强制 | 拒绝无 date_from 的请求（或默认 7 天） |
+| 跨度限制 | 最大 90 天 |
+| 超时 | 15s 强制取消查询 |
+| 限流 | 每租户每端点 10 req/min（可配） |
+| 结果行数限制 | top-sessions limit ≤ 100 |
+
+### 11.8 可观测性规格
+
+#### 11.8.1 监控指标（Prometheus）
+
+| 指标 | 类型 | 标签 | 用途 |
+|------|------|------|------|
+| `session_analytics_request_duration_seconds` | histogram | endpoint, tenant | 端点延迟监控 |
+| `session_analytics_request_total` | counter | endpoint, status | 请求量/错误率 |
+| `session_analytics_cache_hit_total` | counter | endpoint | 缓存命中率 |
+| `session_health_score_distribution` | histogram | grade | 健康分分布 |
+| `session_compliance_violation_total` | counter | type | 合规违规数 |
+| `approval_queue_pending` | gauge | tenant | 待审批积压 |
+| `approval_queue_timeout_total` | counter | tenant | 审批超时数 |
+
+#### 11.8.2 告警规则
+
+| 告警 | 条件 | 严重度 |
+|------|------|:------:|
+| 分析端点 P99 > 10s | `histogram_quantile(0.99, ...) > 10` | warning |
+| 健康分均值 < 60 | `avg(health_score) < 60` over 1h | warning |
+| 合规违规激增 | `rate(compliance_violation[5m]) > 10x baseline` | critical |
+| 审批积压 | `approval_queue_pending > 50` | warning |
+| 审批超时率高 | `rate(timeout)/rate(total) > 0.2` | warning |
+
+#### 11.8.3 结构化日志
+
+所有分析端点记录结构化日志（JSON）：
+
+```json
+{
+  "level": "info",
+  "msg": "session-analytics query",
+  "endpoint": "/api/admin/session-analytics/activity",
+  "tenant_id": "tnt_xxx",
+  "filters": {"date_from":"2026-07-01","model":"gpt-4o"},
+  "duration_ms": 850,
+  "rows": 30,
+  "cache_hit": false
+}
+```
+
+### 11.9 验收标准（按功能）
+
+#### 11.9.1 分析中心验收
+
+| 验收项 | 标准 |
+|--------|------|
+| KPI 卡片 | 7 张卡片正确显示当前过滤器范围的聚合值 |
+| 活动柱状图 | 数据按日期连续无缺日；hover 显示明细 |
+| 成本趋势 | 输入+输出堆叠正确；趋势方向（up/down/flat）正确 |
+| 过滤器联动 | 修改任一过滤项后所有图表同步刷新 |
+| 过滤器持久化 | 刷新页面后过滤器状态保留 |
+| 性能 | 7 天范围 P90 < 1.5s |
+
+#### 11.9.2 健康评分验收
+
+| 验收项 | 标准 |
+|--------|------|
+| 评分正确性 | 给定 summary 输入，health_score 与手工计算一致 |
+| 等级映射 | A≥90, B≥75, C≥60, D≥40, F<40 |
+| 扣分明细 | penalties 数组完整列出所有触发的扣分项 |
+| 边界 | 空会话（0 请求）score=100, outcome=unknown |
+| 写入 | 停止会话后 session_summaries.health_score 已更新 |
+
+#### 11.9.3 合规审批验收
+
+| 验收项 | 标准 |
+|--------|------|
+| 审批队列 | pending 状态的 approval 正确展示 |
+| 批准/拒绝 | 操作后状态正确流转；审计日志已写 |
+| 超时 | 超过 expires_at 自动转 timeout |
+| 租户隔离 | tenant_admin 只见本租户审批 |
+| 公共轮询 | /v1/approvals/<id> 返回正确状态 |
+
+#### 11.9.4 实时 SSE 验收
+
+| 验收项 | 标准 |
+|--------|------|
+| 连接 | 前端 EventSource 成功连接 |
+| 推送 | 新请求落盘后 ≤2s 内前端收到事件 |
+| 局部刷新 | 收到事件后仅刷新对应会话行，不全量重载 |
+| 断线重连 | 连接断开后自动重连 |
+
+---
+
+*文档版本：v2.1（功能规格细化版）*
 *编制日期：2026-07-06*
-*基于 agentsview (kenn-io) 代码审计*
+*基于 agentsview (kenn-io) 代码库特性学习与 llm-gateway-go 现状交叉分析*
+*v2.1：新增第三章「产品主线」与第十一章「详细功能规格」，并深化第四章全部 7 个模块*
