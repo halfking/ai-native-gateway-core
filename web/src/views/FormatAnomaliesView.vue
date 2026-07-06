@@ -187,51 +187,51 @@ onMounted(async () => {
   <div class="page">
     <div class="page-header">
       <div>
-        <h1>格式异常监控</h1>
-        <p>快速查看供应商响应格式变化、Token 提取失败和兼容性问题。</p>
+        <h1>{{ t('formatAnomaliesView.pageTitle') }}</h1>
+        <p>{{ t('formatAnomaliesView.pageSubtitle') }}</p>
       </div>
-      <button class="btn" @click="refreshAll" :disabled="loading || summaryLoading">刷新</button>
+      <button class="btn" @click="refreshAll" :disabled="loading || summaryLoading">{{ t('formatAnomaliesView.filter.refresh') }}</button>
     </div>
 
     <div v-if="!summaryLoading" class="stats">
       <div class="stat-card">
-        <div class="stat-label">总异常数</div>
+        <div class="stat-label">{{ t('formatAnomaliesView.stats.total') }}</div>
         <div class="stat-value">{{ totalAnomalies }}</div>
       </div>
       <div class="stat-card warning">
-        <div class="stat-label">未解决</div>
+        <div class="stat-label">{{ t('formatAnomaliesView.stats.unresolved') }}</div>
         <div class="stat-value">{{ unresolvedAnomalies }}</div>
       </div>
       <div class="stat-card danger">
-        <div class="stat-label">严重异常</div>
+        <div class="stat-label">{{ t('formatAnomaliesView.stats.critical') }}</div>
         <div class="stat-value">{{ criticalAnomalies }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">统计窗口</div>
+        <div class="stat-label">{{ t('formatAnomaliesView.stats.window') }}</div>
         <div class="stat-value">{{ summaryHours }}h</div>
       </div>
     </div>
 
     <div class="filters">
       <div class="filter-field filter-field-provider">
-        <label for="provider-filter">Provider</label>
-        <ProviderPicker v-model="providerFilter" title="选择供应商" placeholder="选择供应商…" />
+        <label for="provider-filter">{{ t('formatAnomaliesView.filter.provider') }}</label>
+        <ProviderPicker v-model="providerFilter" :title="t('formatAnomaliesView.filter.provider')" :placeholder="t('formatAnomaliesView.filter.providerPlaceholder')" />
       </div>
       <div class="filter-field filter-field-model">
-        <label for="model-filter">模型</label>
-        <ModelPicker v-model="modelFilter" title="选择模型" placeholder="选择模型…" />
+        <label for="model-filter">{{ t('formatAnomaliesView.filter.model') }}</label>
+        <ModelPicker v-model="modelFilter" :title="t('formatAnomaliesView.filter.model')" :placeholder="t('formatAnomaliesView.filter.modelPlaceholder')" />
       </div>
       <div class="filter-field filter-field-type">
-        <label for="type-filter">异常类型</label>
-        <AnomalyTypePicker v-model="anomalyTypeFilter" :options="anomalyTypeOptions" title="选择异常类型" placeholder="选择异常类型…" />
+        <label for="type-filter">{{ t('formatAnomaliesView.filter.anomalyType') }}</label>
+        <AnomalyTypePicker v-model="anomalyTypeFilter" :options="anomalyTypeOptions" :title="t('formatAnomaliesView.filter.anomalyType')" :placeholder="t('formatAnomaliesView.filter.anomalyTypePlaceholder')" />
       </div>
       <label class="checkbox checkbox-inline">
         <input v-model="unresolvedOnly" type="checkbox" />
-        <span>仅未解决</span>
+        <span>{{ t('formatAnomaliesView.filter.unresolvedOnly') }}</span>
       </label>
       <div class="filter-actions">
-        <button class="btn btn-primary" @click="applyFilters" :disabled="loading">查询</button>
-        <button class="btn" @click="refreshAll" :disabled="loading || summaryLoading">刷新</button>
+        <button class="btn btn-primary" @click="applyFilters" :disabled="loading">{{ t('formatAnomaliesView.filter.query') }}</button>
+        <button class="btn" @click="refreshAll" :disabled="loading || summaryLoading">{{ t('formatAnomaliesView.filter.refresh') }}</button>
       </div>
     </div>
 
@@ -241,22 +241,22 @@ onMounted(async () => {
       <table class="table">
         <thead>
           <tr>
-            <th>检测时间</th>
-            <th>级别</th>
-            <th>异常类型</th>
-            <th>Provider / 模型</th>
-            <th>Request ID</th>
-            <th>Token 信息</th>
-            <th>状态</th>
+            <th>{{ t('formatAnomaliesView.table.detectedAt') }}</th>
+            <th>{{ t('formatAnomaliesView.table.severity') }}</th>
+            <th>{{ t('formatAnomaliesView.table.anomalyType') }}</th>
+            <th>{{ t('formatAnomaliesView.table.providerModel') }}</th>
+            <th>{{ t('formatAnomaliesView.table.requestId') }}</th>
+            <th>{{ t('formatAnomaliesView.table.tokenInfo') }}</th>
+            <th>{{ t('formatAnomaliesView.table.status') }}</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="8" class="empty">加载中...</td>
+            <td colspan="8" class="empty">{{ t('formatAnomaliesView.table.loading') }}</td>
           </tr>
           <tr v-else-if="anomalies.length === 0">
-            <td colspan="8" class="empty">没有找到异常记录</td>
+            <td colspan="8" class="empty">{{ t('formatAnomaliesView.table.noData') }}</td>
           </tr>
           <tr v-for="item in anomalies" :key="item.id">
             <td>{{ fmtTime(item.detected_at) }}</td>
@@ -271,8 +271,8 @@ onMounted(async () => {
             <td><code>{{ truncate(item.request_id, 18) }}</code></td>
             <td>
               <div class="stacked">
-                <span>预期: {{ item.expected_tokens ?? '—' }}</span>
-                <span class="muted">实际: {{ item.actual_tokens ?? '—' }}</span>
+                <span>{{ t('formatAnomaliesView.table.expectedTokens', { count: item.expected_tokens ?? '—' }) }}</span>
+                <span class="muted">{{ t('formatAnomaliesView.table.actualTokens', { count: item.actual_tokens ?? '—' }) }}</span>
               </div>
             </td>
             <td>
@@ -280,53 +280,53 @@ onMounted(async () => {
                 {{ item.resolved ? t('formatAnomaliesView.resolved') : t('formatAnomaliesView.unresolved') }}
               </span>
             </td>
-            <td><button class="btn btn-link" @click="openDetail(item)">详情</button></td>
+            <td><button class="btn btn-link" @click="openDetail(item)">{{ t('formatAnomaliesView.table.viewDetail') }}</button></td>
           </tr>
         </tbody>
       </table>
     </div>
 
     <div class="pager">
-      <button class="btn" @click="prevPage" :disabled="page <= 1 || loading">上一页</button>
-      <span>第 {{ page }} / {{ totalPages }} 页，共 {{ total }} 条</span>
-      <button class="btn" @click="nextPage" :disabled="page >= totalPages || loading">下一页</button>
+      <button class="btn" @click="prevPage" :disabled="page <= 1 || loading">{{ t('formatAnomaliesView.pagination.prev') }}</button>
+      <span>{{ t('formatAnomaliesView.pagination.summary', { page, totalPages, total }) }}</span>
+      <button class="btn" @click="nextPage" :disabled="page >= totalPages || loading">{{ t('formatAnomaliesView.pagination.next') }}</button>
     </div>
 
     <div v-if="selected" class="modal-mask" @click="closeDetail">
       <div class="modal" @click.stop>
         <div class="modal-header">
-          <h2>异常详情</h2>
-          <button class="btn" @click="closeDetail">关闭</button>
+          <h2>{{ t('formatAnomaliesView.detail.title') }}</h2>
+          <button class="btn" @click="closeDetail">{{ t('formatAnomaliesView.detail.close') }}</button>
         </div>
         <div class="detail-grid">
-          <div><strong>Request ID</strong><div><code>{{ selected.request_id }}</code></div></div>
-          <div><strong>检测时间</strong><div>{{ fmtTime(selected.detected_at) }}</div></div>
-          <div><strong>Provider</strong><div>{{ selected.provider_code || '—' }}</div></div>
-          <div><strong>模型</strong><div>{{ selected.client_model || '—' }}</div></div>
-          <div><strong>出站模型</strong><div>{{ selected.outbound_model || '—' }}</div></div>
-          <div><strong>Usage Source</strong><div>{{ selected.usage_source || '—' }}</div></div>
+          <div><strong>{{ t('formatAnomaliesView.detail.requestId') }}</strong><div><code>{{ selected.request_id }}</code></div></div>
+          <div><strong>{{ t('formatAnomaliesView.detail.detectedAt') }}</strong><div>{{ fmtTime(selected.detected_at) }}</div></div>
+          <div><strong>{{ t('formatAnomaliesView.detail.provider') }}</strong><div>{{ selected.provider_code || '—' }}</div></div>
+          <div><strong>{{ t('formatAnomaliesView.detail.model') }}</strong><div>{{ selected.client_model || '—' }}</div></div>
+          <div><strong>{{ t('formatAnomaliesView.detail.outboundModel') }}</strong><div>{{ selected.outbound_model || '—' }}</div></div>
+          <div><strong>{{ t('formatAnomaliesView.detail.usageSource') }}</strong><div>{{ selected.usage_source || '—' }}</div></div>
         </div>
         <div class="detail-block">
-          <strong>响应结构</strong>
+          <strong>{{ t('formatAnomaliesView.detail.responseStructure') }}</strong>
           <pre>{{ JSON.stringify(selected.response_structure || {}, null, 2) }}</pre>
         </div>
         <div class="detail-block">
-          <strong>响应样本</strong>
+          <strong>{{ t('formatAnomaliesView.detail.responseSample') }}</strong>
           <pre>{{ selected.response_sample || '—' }}</pre>
         </div>
         <div v-if="!selected.resolved" class="detail-block">
-          <strong>解决说明</strong>
-          <textarea v-model="resolutionNotes" rows="4" placeholder="记录修复说明，方便后续追踪" />
+          <strong>{{ t('formatAnomaliesView.detail.resolutionNotes') }}</strong>
+          <textarea v-model="resolutionNotes" rows="4" :placeholder="t('formatAnomaliesView.detail.resolutionNotesPlaceholder')" />
           <div class="detail-actions">
             <button class="btn btn-primary" @click="markResolved" :disabled="resolving">
-              {{ resolving ? t('formatAnomaliesView.processing') : t('formatAnomaliesView.markResolved') }}
+              {{ resolving ? t('formatAnomaliesView.detail.processing') : t('formatAnomaliesView.detail.markResolved') }}
             </button>
           </div>
         </div>
         <div v-else class="detail-block">
-          <strong>解决信息</strong>
+          <strong>{{ t('formatAnomaliesView.detail.resolutionInfo') }}</strong>
           <div>{{ fmtTime(selected.resolved_at) }}</div>
-          <div class="muted">{{ selected.resolution_notes || t('formatAnomaliesView.noNotes') }}</div>
+          <div class="muted">{{ selected.resolution_notes || t('formatAnomaliesView.detail.noNotes') }}</div>
         </div>
       </div>
     </div>

@@ -64,7 +64,7 @@ async function load() {
       users.value = users.value.filter(u => u.tenant_id === filterTenant.value)
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('users.error.loadFailed')
   } finally {
     loading.value = false
   }
@@ -72,15 +72,15 @@ async function load() {
 
 async function handleCreate() {
   if (!form.value.username || !form.value.password) {
-    error.value = t('users.usernamePasswordRequired')
+    error.value = t('users.error.usernamePasswordRequired')
     return
   }
   if (!passwordsMatch(form.value.password, createConfirmPwd.value)) {
-    error.value = '新用户两次输入的密码不一致'
+    error.value = t('users.error.passwordMismatch')
     return
   }
   if (!createPasswordPolicy.value.valid) {
-    error.value = '新用户密码不符合复杂度要求'
+    error.value = t('users.error.passwordComplexity')
     return
   }
   try {
@@ -89,7 +89,7 @@ async function handleCreate() {
     form.value = { username: '', password: '', tenant_id: 'default', display_name: '', email: '', role: 'tenant_admin' }
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('users.createFailed')
+    error.value = e instanceof Error ? e.message : t('users.error.createFailed')
   }
 }
 
@@ -98,27 +98,27 @@ async function handleToggle(u: User) {
     await updateUser(u.id, { enabled: !u.enabled })
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '操作失败'
+    error.value = e instanceof Error ? e.message : t('users.error.toggleFailed')
   }
 }
 
 async function handleDelete(u: User) {
-  if (!confirm(`确认删除用户 ${u.username}？`)) return
+  if (!confirm(t('users.confirmDelete', { name: u.username }))) return
   try {
     await deleteUser(u.id)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '删除失败'
+    error.value = e instanceof Error ? e.message : t('users.error.deleteFailed')
   }
 }
 
 async function handleResetPwd() {
   if (!resetPwdUser.value || !resetPasswordPolicy.value.valid) {
-    error.value = '密码不符合复杂度要求'
+    error.value = t('users.error.resetPasswordComplexity')
     return
   }
   if (!passwordsMatch(newPwd.value, resetConfirmPwd.value)) {
-    error.value = '两次输入的新密码不一致'
+    error.value = t('users.error.resetPasswordMismatch')
     return
   }
   try {
@@ -126,12 +126,12 @@ async function handleResetPwd() {
     resetPwdUser.value = null
     newPwd.value = ''
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('users.resetFailed')
+    error.value = e instanceof Error ? e.message : t('users.error.resetFailed')
   }
 }
 
 function roleLabel(r: string) {
-  return r === 'super_admin' ? t('users.super_admin') : t('users.tenant_admin')
+  return r === 'super_admin' ? t('users.role.super_admin') : t('users.role.tenant_admin')
 }
 
 function fmtDate(s: string | null) {
@@ -162,18 +162,18 @@ onMounted(() => { load(); loadTenants() })
 <template>
   <div class="users-page">
     <div class="page-header">
-      <h1>👤 用户管理</h1>
-      <button v-if="canCreateUsers" class="btn btn-primary" @click="showCreate = true">+ 新建用户</button>
+      <h1>👤 {{ t('users.title') }}</h1>
+      <button v-if="canCreateUsers" class="btn btn-primary" @click="showCreate = true">+ {{ t('users.create') }}</button>
     </div>
 
     <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
-      📖 您是租户管理员，当前仅开放查看和重置本租户用户密码；创建、编辑、删除仍禁用。
+      {{ t('users.readOnlyNotice') }}
     </div>
 
     <div class="filters">
-      <label>按租户过滤:</label>
+      <label>{{ t('users.filter.byTenant') }}</label>
       <select v-model="filterTenant" @change="load">
-        <option value="">全部租户</option>
+        <option value="">{{ t('users.filter.allTenants') }}</option>
         <option v-for="t in allTenants" :key="t.code" :value="t.code">
           {{ t.name }} ({{ t.code }})
         </option>
@@ -182,21 +182,21 @@ onMounted(() => { load(); loadTenants() })
 
     <div v-if="error" class="alert alert-danger" style="margin-bottom:12px">{{ error }}</div>
 
-    <div v-if="loading" class="loading">加载中…</div>
+    <div v-if="loading" class="loading">{{ t('users.loading') }}</div>
 
     <table v-else class="table" style="width:100%">
       <thead>
         <tr>
-          <th>ID</th>
-          <th>用户名</th>
-          <th>显示名</th>
-          <th>邮箱</th>
-          <th>租户</th>
-          <th>角色</th>
-          <th>首次改密</th>
-          <th>状态</th>
-          <th>最后登录</th>
-          <th>操作</th>
+          <th>{{ t('users.table.id') }}</th>
+          <th>{{ t('users.table.username') }}</th>
+          <th>{{ t('users.table.displayName') }}</th>
+          <th>{{ t('users.table.email') }}</th>
+          <th>{{ t('users.table.tenant') }}</th>
+          <th>{{ t('users.table.role') }}</th>
+          <th>{{ t('users.table.mustChangePassword') }}</th>
+          <th>{{ t('users.table.status') }}</th>
+          <th>{{ t('users.table.lastLogin') }}</th>
+          <th>{{ t('users.table.actions') }}</th>
         </tr>
       </thead>
       <tbody>
@@ -209,21 +209,21 @@ onMounted(() => { load(); loadTenants() })
           <td><span class="badge" :class="u.role === 'super_admin' ? 'badge-purple' : 'badge-blue'">{{ roleLabel(u.role) }}</span></td>
           <td>
             <span class="badge" :class="u.must_change_password ? 'badge-yellow' : 'badge-green'">
-              {{ u.must_change_password ? '待改密' : '已完成' }}
+              {{ u.must_change_password ? t('users.mustChangePassword.pending') : t('users.mustChangePassword.completed') }}
             </span>
           </td>
           <td>
             <span v-if="!readOnly" class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'" style="cursor:pointer" @click="handleToggle(u)">
-              {{ u.enabled ? '启用' : '禁用' }}
+              {{ u.enabled ? t('users.status.enabled') : t('users.status.disabled') }}
             </span>
             <span v-else class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'">
-              {{ u.enabled ? '启用' : '禁用' }}
+              {{ u.enabled ? t('users.status.enabled') : t('users.status.disabled') }}
             </span>
           </td>
           <td>{{ fmtDate(u.last_login_at) }}</td>
           <td>
-            <button v-if="canResetPasswords" class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''; resetConfirmPwd = ''">重置密码</button>
-            <button v-if="canDeleteUsers && u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">删除</button>
+            <button v-if="canResetPasswords" class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''; resetConfirmPwd = ''">{{ t('users.action.resetPassword') }}</button>
+            <button v-if="canDeleteUsers && u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">{{ t('users.action.delete') }}</button>
             <span v-else-if="readOnly" class="text-muted" style="font-size:12px;color:var(--muted)">—</span>
           </td>
         </tr>
@@ -233,14 +233,14 @@ onMounted(() => { load(); loadTenants() })
     <!-- Create Modal -->
     <div v-if="showCreate" class="modal-backdrop" @click.self="closeCreateModal">
       <div class="modal-card">
-        <h3>新建用户</h3>
+        <h3>{{ t('users.modal.create.title') }}</h3>
         <div class="form-group">
-          <label>用户名 *</label>
-          <input v-model="form.username" placeholder="username" />
+          <label>{{ t('users.modal.create.username') }} *</label>
+          <input v-model="form.username" :placeholder="t('users.modal.create.usernamePlaceholder')" />
         </div>
         <div class="form-group">
-          <label>密码 *</label>
-          <input v-model="form.password" type="password" placeholder="至少8位" />
+          <label>{{ t('users.modal.create.password') }} *</label>
+          <input v-model="form.password" type="password" :placeholder="t('users.modal.create.passwordPlaceholder')" />
           <div class="password-policy">
             <div
               v-for="item in createPasswordPolicy.requirements"
@@ -253,22 +253,22 @@ onMounted(() => { load(); loadTenants() })
           </div>
         </div>
         <div class="form-group">
-          <label>确认密码 *</label>
-          <input v-model="createConfirmPwd" type="password" placeholder="再次输入密码" />
+          <label>{{ t('users.modal.create.confirmPassword') }} *</label>
+          <input v-model="createConfirmPwd" type="password" :placeholder="t('users.modal.create.confirmPasswordPlaceholder')" />
           <div v-if="createConfirmPwd" class="password-confirm" :class="createPasswordsMatch ? 'is-pass' : 'is-error'">
-            {{ createPasswordsMatch ? '✓ 两次输入一致' : '✕ 两次输入的密码不一致' }}
+            {{ createPasswordsMatch ? t('users.passwordMatch.matched') : t('users.passwordMatch.mismatch') }}
           </div>
         </div>
         <div class="form-group">
-          <label>显示名</label>
+          <label>{{ t('users.modal.create.displayName') }}</label>
           <input v-model="form.display_name" />
         </div>
         <div class="form-group">
-          <label>邮箱</label>
+          <label>{{ t('users.modal.create.email') }}</label>
           <input v-model="form.email" type="email" />
         </div>
         <div class="form-group">
-          <label>租户 *</label>
+          <label>{{ t('users.modal.create.tenant') }} *</label>
           <select v-model="form.tenant_id" required>
             <option v-for="t in allTenants" :key="t.code" :value="t.code">
               {{ t.name }} ({{ t.code }}) - {{ t.status }}
@@ -276,15 +276,15 @@ onMounted(() => { load(); loadTenants() })
           </select>
         </div>
         <div class="form-group">
-          <label>角色</label>
+          <label>{{ t('users.modal.create.role') }}</label>
           <select v-model="form.role">
-            <option value="tenant_admin">租户管理员</option>
-            <option value="super_admin">超级管理员</option>
+            <option value="tenant_admin">{{ t('users.role.tenant_admin') }}</option>
+            <option value="super_admin">{{ t('users.role.super_admin') }}</option>
           </select>
         </div>
         <div class="modal-actions">
-          <button class="btn btn-primary" :disabled="!form.username || !createPasswordPolicy.valid || !passwordsMatch(form.password, createConfirmPwd)" @click="handleCreate">创建</button>
-          <button class="btn btn-ghost" @click="closeCreateModal">取消</button>
+          <button class="btn btn-primary" :disabled="!form.username || !createPasswordPolicy.valid || !passwordsMatch(form.password, createConfirmPwd)" @click="handleCreate">{{ t('users.modal.create.submit') }}</button>
+          <button class="btn btn-ghost" @click="closeCreateModal">{{ t('users.modal.create.cancel') }}</button>
         </div>
       </div>
     </div>
@@ -292,10 +292,10 @@ onMounted(() => { load(); loadTenants() })
     <!-- Reset Password Modal -->
     <div v-if="resetPwdUser" class="modal-backdrop" @click.self="closeResetModal">
       <div class="modal-card">
-        <h3>重置密码 — {{ resetPwdUser.username }}</h3>
+        <h3>{{ t('users.modal.reset.title', { name: resetPwdUser.username }) }}</h3>
         <div class="form-group">
-          <label>新密码</label>
-          <input v-model="newPwd" type="password" placeholder="至少8位" />
+          <label>{{ t('users.modal.reset.newPassword') }}</label>
+          <input v-model="newPwd" type="password" :placeholder="t('users.modal.reset.passwordPlaceholder')" />
           <div class="password-policy">
             <div
               v-for="item in resetPasswordPolicy.requirements"
@@ -308,15 +308,15 @@ onMounted(() => { load(); loadTenants() })
           </div>
         </div>
         <div class="form-group">
-          <label>确认新密码</label>
-          <input v-model="resetConfirmPwd" type="password" placeholder="再次输入新密码" />
+          <label>{{ t('users.modal.reset.confirmPassword') }}</label>
+          <input v-model="resetConfirmPwd" type="password" :placeholder="t('users.modal.reset.confirmPasswordPlaceholder')" />
           <div v-if="resetConfirmPwd" class="password-confirm" :class="resetPasswordsMatch ? 'is-pass' : 'is-error'">
-            {{ resetPasswordsMatch ? '✓ 两次输入一致' : '✕ 两次输入的新密码不一致' }}
+            {{ resetPasswordsMatch ? t('users.passwordMatch.matched') : t('users.passwordMatch.resetMismatch') }}
           </div>
         </div>
         <div class="modal-actions">
-          <button class="btn btn-primary" :disabled="!resetPasswordPolicy.valid || !passwordsMatch(newPwd, resetConfirmPwd)" @click="handleResetPwd">确认</button>
-          <button class="btn btn-ghost" @click="closeResetModal">取消</button>
+          <button class="btn btn-primary" :disabled="!resetPasswordPolicy.valid || !passwordsMatch(newPwd, resetConfirmPwd)" @click="handleResetPwd">{{ t('users.modal.reset.submit') }}</button>
+          <button class="btn btn-ghost" @click="closeResetModal">{{ t('users.modal.reset.cancel') }}</button>
         </div>
       </div>
     </div>

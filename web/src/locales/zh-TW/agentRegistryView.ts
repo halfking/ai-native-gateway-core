@@ -97,16 +97,19 @@ export default {
     downstream: 'Downstream',
     addRelation: 'Add relation',
     showTopology: 'Show topology',
+    close: 'Close',
   },
 
   link: {
     title: 'Add relation',
+    sourceAgent: 'Source Agent',
     targetId: 'Target Agent ID',
     targetIdPlaceholder: 'Enter target Agent ref_id',
     relationType: 'Relation type',
     cancel: 'Cancel',
     submit: 'Create relation',
     submitting: 'Submitting…',
+    creating: 'Creating…',
   },
 
   topology: {
@@ -114,7 +117,7 @@ export default {
     upstream: 'Upstream ({n})',
     downstream: 'Downstream ({n})',
     depth: 'Depth',
-    totalNodes: '{n} nodes total',
+    totalNodes: '{n} nodes',
   },
 
   empty: {
