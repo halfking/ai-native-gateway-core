@@ -101,6 +101,23 @@ export default {
 The previous session has run Handoff and its context has been compressed.
 Either confirm the prior result and continue, or start a brand-new task.`,
   },
+  stats: {
+    totalSessions: 'Total Sessions',
+    activeSessions: 'Active Sessions',
+    healthDistribution: 'Health Distribution',
+    costTrend: 'Cost Trend',
+    trendChart: 'Cost & Session Trend',
+    last7Days: 'Last 7 Days',
+    last30Days: 'Last 30 Days',
+    cost: 'Cost',
+    sessionCount: 'Session Count',
+    topClients: 'Top 5 Clients (by cost)',
+    topTasks: 'Top 5 Tasks (by sessions)',
+    clientId: 'Client ID',
+    taskId: 'Task ID',
+    totalCost: 'Total Cost',
+    avgHealth: 'Avg Health',
+  },
   audit: {
     title: 'Session Audit',
     subtitle: 'View session security audit records and compliance detection results',

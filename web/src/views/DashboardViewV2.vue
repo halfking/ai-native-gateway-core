@@ -10,6 +10,7 @@ import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import StatsDrawer from '../components/StatsDrawer.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
+import SessionStatsPanel from '../components/SessionStatsPanel.vue'
 import type {
   UsageSummary,
   ModelUsage,
@@ -257,6 +258,9 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
         <div class="stat-mini stat-mini--skeleton" v-for="i in 9" :key="i"></div>
       </div>
     </div>
+
+    <!-- 会话统计面板 -->
+    <SessionStatsPanel style="margin-bottom: 20px;" />
 
     <!-- 实时请求流V2（带重新初始化key） -->
     <LiveRequestStreamV2 
