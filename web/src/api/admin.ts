@@ -55,6 +55,7 @@ export interface ClientAnalyticsSummary {
   total_requests: number
   total_cost_usd: number
   avg_cost_per_session: number
+  /** Average health score (0-100 integer range, nullable) */
   avg_health_score?: number
   health_distribution: {
     a: number
@@ -76,6 +77,7 @@ export interface ClientAnalyticsDetail extends ClientAnalyticsSummary {
     task_id: string
     session_count: number
     total_cost_usd: number
+    /** Average health score (0-100 integer range, nullable) */
     avg_health?: number
     last_activity: string
   }>
@@ -101,6 +103,7 @@ export interface TaskAnalyticsSummary {
   total_requests: number
   total_cost_usd: number
   avg_cost_per_session: number
+  /** Average health score (0-100 integer range, nullable) */
   avg_health_score?: number
   health_distribution: {
     a: number
@@ -123,6 +126,7 @@ export interface TaskAnalyticsDetail extends TaskAnalyticsSummary {
     client_id: string
     session_count: number
     total_cost_usd: number
+    /** Average health score (0-100 integer range, nullable) */
     avg_health?: number
     last_activity: string
   }>
