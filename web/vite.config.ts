@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import path from 'path'
 
 // vite.config.ts — extended with vitest `test` field (v6.0 audit T11, 2026-06-22)
 // Vitest 1.x auto-detects a `test` field in vite.config.ts, so we keep
@@ -8,6 +9,11 @@ import vue from '@vitejs/plugin-vue'
 // share the same plugin list (vue), avoiding drift.
 export default defineConfig({
   plugins: [vue()],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
   define: {
     // 2026-07-03: Enable vue-i18n JIT compilation in production
     // DO NOT set __INTLIFY_DROP_MESSAGE_COMPILER__ to true when using JIT mode
