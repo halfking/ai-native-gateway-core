@@ -1948,7 +1948,13 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 
 		if isStream {
-			// For streaming, call InterceptStreamEnd
+			// For streaming, call InterceptStreamEnd.
+			//
+			// Reassemble the streamed text + finish_reason from the stream
+			// capture so stream-end interceptors (goal completion detection /
+			// audit) see the same full response body the non-stream path
+			// gets. When no capture is available the fields stay empty and
+			// the goal hook falls back to its legacy length-based behaviour.
 			interceptMeta := &ResponseStreamMeta{
 				SessionID:     gwSessionID,
 				RequestID:     requestID,
@@ -1957,6 +1963,8 @@ func (h *ChatHandler) serveWithExecutor(
 				ContextWindow: interceptReq.ContextWindow,
 				MessageCount:  msgCount,
 				TokensUsed:    interceptReq.TokensUsed,
+				ResponseBody:  reassembleStreamBody(streamCapture),
+				FinishReason:  reassembleFinishReason(streamCapture),
 			}
 
 			if endResult, err := h.responseInterceptor.InterceptStreamEnd(r.Context(), interceptMeta); err != nil {

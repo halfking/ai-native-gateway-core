@@ -15,6 +15,7 @@ type AuditHook struct {
 	db        GoalStore
 	llmCaller LLMCaller
 	config    AuditConfig
+	history   HistoryStore
 }
 
 // AuditConfig contains audit hook configuration.
@@ -52,15 +53,26 @@ type AuditSuggestion struct {
 	AutoFixable bool   `json:"auto_fixable"`
 }
 
-// NewAuditHook creates a new audit hook with configuration.
+// NewAuditHook creates a new audit hook with configuration. history may be nil;
+// when nil the hook audits only the last assistant reply (legacy behaviour).
 func NewAuditHook(db GoalStore, llmCaller LLMCaller, config AuditConfig) *AuditHook {
+	return NewAuditHookWithHistory(db, llmCaller, config, nil)
+}
+
+// NewAuditHookWithHistory wires a HistoryStore so the audit can reason over the
+// full conversation transcript reconstructed from request_logs.
+func NewAuditHookWithHistory(db GoalStore, llmCaller LLMCaller, config AuditConfig, history HistoryStore) *AuditHook {
 	if config.MinConfidence == 0 {
 		config.MinConfidence = 0.7 // Default confidence threshold
+	}
+	if history == nil {
+		history = NoopHistoryStore()
 	}
 	return &AuditHook{
 		db:        db,
 		llmCaller: llmCaller,
 		config:    config,
+		history:   history,
 	}
 }
 
@@ -139,13 +151,32 @@ func (a *AuditHook) InterceptNonStream(ctx context.Context, req *response.Interc
 }
 
 // performAudit executes the actual audit using LLM.
+//
+// When a HistoryStore is wired, the audit is based on the full conversation
+// transcript (reconstructed from request_logs by gw_session_id) so the auditor
+// can judge the complete task execution, not just the final reply. Without a
+// store it falls back to auditing only the last response body.
 func (a *AuditHook) performAudit(ctx context.Context, req *response.InterceptRequest, session *Session) (*AuditResult, error) {
+	// Build the transcript block. Prefer the full conversation history; fall
+	// back to the last response body when no history is available.
+	transcript := string(req.ResponseBody)
+	if a.history != nil {
+		if msgs, hErr := a.history.FetchBySession(ctx, req.SessionID, req.TenantID, defaultHistoryLimit); hErr != nil {
+			slog.Warn("audit_history_fetch_failed", "session_id", req.SessionID, "error", hErr)
+		} else if len(msgs) > 0 {
+			transcript = FormatHistoryForPrompt(msgs)
+			slog.Debug("audit_with_history",
+				"session_id", req.SessionID,
+				"messages", len(msgs))
+		}
+	}
+
 	// Build audit prompt
 	auditPrompt := fmt.Sprintf(`You are a code auditor. Review the following completed task and provide a structured audit.
 
 Original Goal: %s
 
-Response to audit:
+Conversation transcript to audit:
 %s
 
 Provide your audit in JSON format:
@@ -155,7 +186,7 @@ Provide your audit in JSON format:
   "issues": [{"severity": "high", "category": "security", "description": "...", "location": "..."}],
   "suggestions": [{"title": "...", "description": "...", "auto_fixable": true/false}],
   "summary": "Brief summary of audit findings"
-}`, session.OriginalGoal, string(req.ResponseBody))
+}`, session.OriginalGoal, transcript)
 
 	// Call LLM for audit
 	model := a.config.FallbackModel
