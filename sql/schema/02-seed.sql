@@ -733,7 +733,7 @@ INSERT INTO public.model_aliases VALUES (245, 106, 'deepseek/deepseek-chat', NUL
 INSERT INTO public.model_aliases VALUES (246, 354, 'claude-opus-4.8', NULL, NULL, 'active', NULL, '2026-06-20 06:35:04.63467+00', '2026-06-20 06:35:04.63467+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.model_aliases VALUES (248, 5704, 'MiniMax-M3', NULL, NULL, 'active', NULL, '2026-06-23 09:17:39.926948+00', '2026-06-23 09:17:39.926948+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.model_aliases VALUES (249, 5704, 'minimax-m3', NULL, NULL, 'active', NULL, '2026-06-23 09:17:52.50636+00', '2026-06-23 09:17:52.50636+00', NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.model_families VALUES ('xiaomi-mimo', 'Xiaomi Mimo', NULL, 'active', 'derived', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00') ON CONFLICT DO NOTHING;
+INSERT INTO public.model_families VALUES ('xiaomi-mimo', 'Xiaomi Mimo', 'Xiaomi', 'active', 'derived', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.model_families VALUES ('xai', 'Xai', NULL, 'active', 'derived', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.model_families VALUES ('openai-gpt', 'Openai Gpt', 'OpenAI', 'active', 'derived', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.model_families VALUES ('anthropic-claude', 'Anthropic Claude', 'Anthropic', 'active', 'derived', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00') ON CONFLICT DO NOTHING;
