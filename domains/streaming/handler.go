@@ -267,7 +267,7 @@ type ChatHandler struct {
 	// boundary when the resolved candidate supports prompt caching. nil or
 	// promptCacheInject=false disables injection. Opt-in via
 	// LLM_GATEWAY_PROMPT_CACHE_INJECT=1; default off (data-accuracy first).
-	cacheInjector  *session.CacheInjector
+	cacheInjector     *session.CacheInjector
 	promptCacheInject bool
 
 	// metaToolInterceptor (Phase 2, 2026-06-20) handles meta-tool calls
