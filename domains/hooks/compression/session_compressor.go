@@ -82,7 +82,33 @@ type PrepareResult struct {
 	// Degraded is true when the mutual-exclusion window was active and
 	// mechanical trim was used instead of LLM summary.
 	Degraded bool
+
+	// Lossiness (rtk borrowing, 2026-07-06) classifies how much information
+	// the compression sacrificed, mirroring rtk's Lossiness enum
+	// (src/core/toml_filter.rs). Values:
+	//
+	//	LossinessNone   — no rewrite happened (delta-only or no-op)
+	//	LossinessTail   — only the tail was trimmed; the dropped middle is
+	//	                  recoverable from the SessionCache / request_logs
+	//	                  (mechanical strip / sliding-window trim)
+	//	LossinessWhole  — the history was replaced by an LLM summary; the
+	//	                  exact wording of dropped turns is NOT recoverable
+	//	                  (LLM summary / compaction)
+	//
+	// Operators use this to decide whether to surface a "context was
+	// summarized" notice. It is recorded in the compression_meta JSONB and
+	// in the compression_lossiness_total{lossiness} Prometheus counter.
+	Lossiness string
 }
+
+// Lossiness classification values. Kept as string constants (not a typed
+// enum) so they marshal straight into JSON / Prometheus labels without a
+// custom Stringer, matching how CompressionStrategy is handled above.
+const (
+	LossinessNone  = "none"
+	LossinessTail  = "tail"
+	LossinessWhole = "whole"
+)
 
 // SessionCompressor orchestrates v3 session-level compression.
 type SessionCompressor struct {
@@ -284,11 +310,52 @@ func (sc *SessionCompressor) Prepare(
 		res.CompressionStrategy = "delta_append"
 	}
 
+	// ── Lossiness classification (rtk borrowing, 2026-07-06) ───────────────
+	// Map the strategy that fired to a recoverability class so operators can
+	// tell from metrics whether compression dropped recoverable tail content
+	// or irrecoverable summary-replaced history. See PrepareResult.Lossiness.
+	res.Lossiness = classifyLossiness(res.CompressionStrategy, res.SummaryMarker)
+	if res.CompressionStrategy != "" {
+		RecordLossiness(res.Lossiness)
+	}
+
 	// ── Persist updated cache state ──────────────────────────────────────
 	didCompress := winResult.ShouldTrigger && !winResult.Degraded && res.SummaryMarker != ""
 	sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, didCompress)
 
 	return res
+}
+
+// classifyLossiness maps a compression strategy to a recoverability class.
+//
+//   - delta_append / strip / "" → none: no information was lost (delta-append
+//     only adds turns; strip removes tool/thinking blocks that are redundant
+//     with the tool registry and are recoverable from the session cache).
+//   - mechanical_trim → tail: the middle of the conversation was dropped but
+//     remains recoverable from the SessionCache L1/L2/L3 tiers.
+//   - sliding_window_* WITH a summary_marker → whole: the history was replaced
+//     by an LLM summary; the exact wording of dropped turns is NOT recoverable.
+func classifyLossiness(strategy, summaryMarker string) string {
+	switch {
+	case strategy == "":
+		return LossinessNone
+	case strategy == "delta_append":
+		return LossinessNone
+	case strategy == "mechanical_trim":
+		return LossinessTail
+	case strings.HasPrefix(strategy, "sliding_window_"):
+		if summaryMarker != "" {
+			return LossinessWhole
+		}
+		return LossinessTail
+	default:
+		// Unknown strategy (e.g. a future rebuilder) — be conservative:
+		// assume recoverable tail unless a summary marker says otherwise.
+		if summaryMarker != "" {
+			return LossinessWhole
+		}
+		return LossinessTail
+	}
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

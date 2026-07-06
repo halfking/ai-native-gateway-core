@@ -54,6 +54,18 @@ type metrics struct {
 
 var defaultMetrics = newMetrics()
 
+// lossinessCounter is a package-level counter so RecordLossiness can be
+// called without going through defaultMetrics (keeps the call site terse).
+// It's registered separately in init() alongside the defaultMetrics collectors.
+// (rtk borrowing, 2026-07-06: classifies compressions by recoverability)
+var lossinessCounter = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "compression_lossiness_total",
+		Help: "Compressions classified by recoverability: none (delta/strip, nothing lost), tail (mechanical trim, middle recoverable from cache), whole (LLM summary, history wording NOT recoverable).",
+	},
+	[]string{"lossiness"},
+)
+
 func newMetrics() *metrics {
 	return &metrics{
 		triggered: prometheus.NewCounterVec(
@@ -95,6 +107,7 @@ func init() {
 		defaultMetrics.triggered,
 		defaultMetrics.latency,
 		defaultMetrics.ratio,
+		lossinessCounter,
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
@@ -105,6 +118,30 @@ func init() {
 			// already registered (by legacy compressor/); silently skip
 		}
 	}
+}
+
+// RecordLossiness emits one compression_lossiness_total{lossiness} sample.
+// Called by SessionCompressor.Prepare for every request that triggered a
+// non-empty strategy. lossiness must be one of the Lossiness* constants
+// (none|tail|whole); unknown values are recorded verbatim (they still
+// aggregate, just under a separate label series).
+func RecordLossiness(lossiness string) {
+	lossinessCounter.WithLabelValues(lossiness).Inc()
+}
+
+// LossinessCount is a test helper returning the current counter value for a
+// lossiness class. Production callers should scrape the Prometheus endpoint.
+func LossinessCount(lossiness string) float64 {
+	m, err := lossinessCounter.GetMetricWithLabelValues(lossiness)
+	if err != nil || m == nil {
+		return 0
+	}
+	pb := &dto.Metric{}
+	_ = m.(prometheus.Metric).Write(pb)
+	if pb.Counter != nil && pb.Counter.Value != nil {
+		return *pb.Counter.Value
+	}
+	return 0
 }
 
 // RecordOutcome emits one triggered + one latency + one ratio sample for
@@ -145,6 +182,7 @@ func ResetMetrics() {
 	defaultMetrics.triggered.Reset()
 	defaultMetrics.latency.Reset()
 	defaultMetrics.ratio.Reset()
+	lossinessCounter.Reset()
 }
 
 // TriggeredCount returns the current value of compression_triggered_total

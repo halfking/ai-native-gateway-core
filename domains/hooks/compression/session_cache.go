@@ -31,6 +31,7 @@
 package compression
 
 import (
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -52,9 +53,13 @@ const (
 	redisKeyTTL = 30 * time.Minute
 
 	// l1MaxSessions is the maximum number of sessions held in the in-process
-	// sync.Map. Once this is exceeded, L1 entries are evicted on the next
-	// Set call (simple first-seen-first-evicted heuristic — the Map is not
-	// a proper LRU but the bounded size prevents unbounded memory growth).
+	// L1. The L1 is a true O(1) LRU (container/list doubly-linked list +
+	// map), so when this capacity is exceeded the LEAST-RECENTLY-USED entry
+	// is evicted on the next access. This keeps hot sessions resident while
+	// bounding memory. (Previously a sync.Map with first-seen-first-evicted
+	// heuristic — replaced 2026-07-06 after borrowing rtk's emphasis on
+	// deterministic, recoverable state; the old heuristic could evict an
+	// active session and force an L2/L3 round-trip on its next turn.)
 	l1MaxSessions = 1024
 
 	// compactionMarkerPrefix is the content prefix used to identify summary
@@ -158,18 +163,26 @@ type LastOutboundRow struct {
 	CompressionMeta   json.RawMessage // may contain summary_marker
 }
 
-// l1Entry is the in-process cache entry.
+// l1Entry is the in-process cache entry. It is stored as the Value of a
+// list.Element in the LRU ordering, AND its elem pointer lets the LRU
+// promote an entry to the front in O(1) on access.
 type l1Entry struct {
-	state     *SessionState
-	body      []byte // last outbound body bytes (nil if evicted from L1 to save RAM)
-	touchedAt time.Time
+	key   string // tenantID + ":" + gwSessionID (back-reference for eviction)
+	state *SessionState
+	body  []byte // last outbound body bytes (nil if evicted from L1 to save RAM)
+	elem  *list.Element
 }
 
 // SessionCache provides three-tier session state caching.
+//
+// L1 is a true O(1) LRU: ll (a doubly-linked list via container/list) orders
+// entries from most-recently-used (front) to least-recently-used (back), and
+// l1 maps the key to its list.Element for O(1) lookup + promotion. An access
+// moves the element to the front; eviction pops the back element.
 type SessionCache struct {
-	mu   sync.Mutex
-	l1   map[string]*l1Entry // key = tenantID+":"+gwSessionID
-	l1sz int                 //nolint:unused
+	mu sync.Mutex
+	ll *list.List          // front = MRU, back = LRU; O(1) promote/evict
+	l1 map[string]*l1Entry // key = tenantID+":"+gwSessionID → entry (entry.elem is the list node)
 
 	redis SessionCacheBackend // nil = L2 disabled (tests / no Redis)
 	db    SessionCacheDB      // nil = L3 disabled (tests / no DB)
@@ -178,6 +191,7 @@ type SessionCache struct {
 // NewSessionCache creates a SessionCache. redis and db are optional.
 func NewSessionCache(redis SessionCacheBackend, db SessionCacheDB) *SessionCache {
 	return &SessionCache{
+		ll:    list.New(),
 		l1:    make(map[string]*l1Entry, 64),
 		redis: redis,
 		db:    db,
@@ -205,8 +219,8 @@ func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID stri
 	// L1 hit.
 	c.mu.Lock()
 	if e, ok := c.l1[key]; ok {
-		e.touchedAt = time.Now()
-		st := *e.state // copy
+		c.ll.MoveToFront(e.elem) // O(1) LRU promote.
+		st := *e.state           // copy
 		body := e.body
 		c.mu.Unlock()
 		return &st, body, nil
@@ -266,7 +280,10 @@ func (c *SessionCache) Set(ctx context.Context, tenantID, gwSessionID string, st
 func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID string) {
 	key := l1Key(tenantID, gwSessionID)
 	c.mu.Lock()
-	delete(c.l1, key)
+	if e, ok := c.l1[key]; ok {
+		c.ll.Remove(e.elem)
+		delete(c.l1, key)
+	}
 	c.mu.Unlock()
 	if c.redis != nil {
 		if err := c.redis.Del(ctx, redisKey(tenantID, gwSessionID)); err != nil {
@@ -282,20 +299,31 @@ func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID str
 func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Evict oldest entry if over capacity.
-	if len(c.l1) >= l1MaxSessions {
-		var oldest string
-		var oldestTime time.Time
-		for k, v := range c.l1 {
-			if oldest == "" || v.touchedAt.Before(oldestTime) {
-				oldest = k
-				oldestTime = v.touchedAt
-			}
-		}
-		delete(c.l1, oldest)
-	}
 	st := *state // copy
-	c.l1[key] = &l1Entry{state: &st, body: body, touchedAt: time.Now()}
+	// Update-in-place + promote to front if the key already exists.
+	if existing, ok := c.l1[key]; ok {
+		existing.state = &st
+		existing.body = body
+		c.ll.MoveToFront(existing.elem)
+		return
+	}
+	// New entry: push to front, evict the LRU (back) if over capacity.
+	entry := &l1Entry{key: key, state: &st, body: body}
+	entry.elem = c.ll.PushFront(entry)
+	c.l1[key] = entry
+	for c.ll.Len() > l1MaxSessions {
+		// Evict least-recently-used (back of the list).
+		if back := c.ll.Back(); back != nil {
+			if ev, ok := back.Value.(*l1Entry); ok {
+				c.ll.Remove(back)
+				delete(c.l1, ev.key)
+			} else {
+				break // defensive: should never happen
+			}
+		} else {
+			break
+		}
+	}
 }
 
 func (c *SessionCache) loadFromRedis(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
