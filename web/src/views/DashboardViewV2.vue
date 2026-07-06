@@ -5,6 +5,7 @@
 
 import { ref, computed, inject, type Ref } from 'vue'
 import { RouterLink } from 'vue-router'
+import { localeRef } from '../i18n'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import StatsDrawer from '../components/StatsDrawer.vue'
@@ -15,6 +16,7 @@ import type {
   DashboardOverview,
   HotApiKeyEntry,
   CompressionStats,
+  ModelDiscoveryStatusResponse,
 } from '../api'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
@@ -28,6 +30,7 @@ const dashboardData = inject<{
   models: Ref<ModelUsage[]>
   hotKeys: Ref<HotApiKeyEntry[]>
   compStats: Ref<CompressionStats | null>
+  discoveryStatus: Ref<ModelDiscoveryStatusResponse | null>
   load: () => Promise<void>
 }>('dashboardData')!
 
@@ -52,6 +55,7 @@ const overview = dashboardData.overview
 const models = dashboardData.models
 const hotKeys = dashboardData.hotKeys
 const compStats = dashboardData.compStats
+const discoveryStatus = dashboardData.discoveryStatus
 const load = dashboardData.load
 
 // 版本切换
@@ -88,6 +92,11 @@ function fmtCost(v: number | undefined) {
 function fmtPct(v: number | undefined) {
   if (v === undefined || v === null) return '—'
   return (Number(v) * 100).toFixed(1) + '%'
+}
+
+function fmtDate(v: string | null | undefined) {
+  if (!v) return '—'
+  return new Date(v).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
 
@@ -179,6 +188,27 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
+
+    <!-- 后台任务横幅 -->
+    <div
+      v-if="discoveryStatus?.running"
+      class="background-tasks-banner background-tasks-banner--active"
+    >
+      <strong>后台任务进行中</strong>
+      <span>模型发现（{{ discoveryStatus.running.trigger }}）</span>
+      <span>开始 {{ fmtDate(discoveryStatus.running.started_at) }}</span>
+      <span>心跳 {{ fmtDate(discoveryStatus.running.heartbeat_at) }}</span>
+      <span class="background-tasks-hint">管理页可能变慢</span>
+      <RouterLink to="/models">查看详情</RouterLink>
+    </div>
+    <div
+      v-else-if="discoveryStatus?.latest"
+      class="background-tasks-banner"
+    >
+      <span>最近模型发现：{{ discoveryStatus.latest.status }}</span>
+      <span>{{ fmtDate(discoveryStatus.latest.finished_at || discoveryStatus.latest.started_at) }}</span>
+      <RouterLink to="/models">模型页</RouterLink>
+    </div>
 
     <!-- 紧凑统计行 -->
     <div class="stats-section">
@@ -404,6 +434,46 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
 .btn-refresh:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.background-tasks-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border-radius: var(--radius, 6px);
+  font-size: 13px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.30);
+  color: var(--text, #e6edf3);
+}
+
+.background-tasks-banner--active {
+  background: rgba(251, 191, 36, 0.10);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+}
+
+.background-tasks-banner strong {
+  color: var(--warning, #fbbf24);
+  font-weight: 600;
+}
+
+.background-tasks-banner a {
+  color: var(--accent, #6366f1);
+  text-decoration: underline;
+  font-size: 12px;
+}
+
+.background-tasks-banner a:hover {
+  color: var(--accent-hover, #818cf8);
+}
+
+.background-tasks-hint {
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+  font-style: italic;
 }
 
 .stats-section {
