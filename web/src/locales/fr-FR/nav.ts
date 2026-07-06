@@ -46,6 +46,7 @@ export default {
     sessionAnalytics: "Centre d'analyse des sessions",
     sessionClusters: 'Clusters de sessions',
     sessionAudit: 'Audit des sessions',
+    sessionConfig: 'Configuration des sessions',
     agents: 'Registre des agents',
     examples: 'Exemples',
     chat: 'Chat',

@@ -46,6 +46,7 @@ export default {
     sessionAnalytics: 'Sitzungsanalyse-Zentrum',
     sessionClusters: 'Sitzungs-Cluster',
     sessionAudit: 'Sitzungs-Audit',
+    sessionConfig: 'Sitzungskonfiguration',
     agents: 'Agent-Registry',
     examples: 'Beispiele',
     chat: 'Chat',
