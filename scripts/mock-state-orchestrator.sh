@@ -30,24 +30,44 @@ set_state() {
   local mode=$2
   local ttl=${3:-0}
   
-  curl -sS -X POST "$url/admin/state" \
+  local resp
+  resp=$(curl -sS --max-time 3 -X POST "$url/admin/state" \
     -H 'Content-Type: application/json' \
-    -d "{\"mode\":\"$mode\",\"ttl_seconds\":$ttl}" | jq -c '{status, mode: .new_state.mode}'
+    -d "{\"mode\":\"$mode\",\"ttl_seconds\":$ttl}" 2>&1) || {
+    echo "FAIL (connection error)"
+    return 1
+  }
+  echo "$resp" | jq -c '{status, mode: .new_state.mode}' 2>/dev/null || echo "FAIL (invalid response)"
 }
 
 reset_mock() {
   local url=$1
-  curl -sS -X POST "$url/admin/reset" | jq -c '{status, message}'
+  local resp
+  resp=$(curl -sS --max-time 3 -X POST "$url/admin/reset" 2>&1) || {
+    echo "FAIL (connection error)"
+    return 1
+  }
+  echo "$resp" | jq -c '{status, message}' 2>/dev/null || echo "FAIL (invalid response)"
 }
 
 get_state() {
   local url=$1
-  curl -sS "$url/admin/state" | jq -c '{mode, since, counters}'
+  local resp
+  resp=$(curl -sS --max-time 3 "$url/admin/state" 2>&1) || {
+    echo "FAIL (connection error)"
+    return 1
+  }
+  echo "$resp" | jq -c '{mode, since, counters}' 2>/dev/null || echo "FAIL (invalid response)"
 }
 
 get_metrics() {
   local url=$1
-  curl -sS "$url/admin/metrics" | jq -c '{token, mode, counters}'
+  local resp
+  resp=$(curl -sS --max-time 3 "$url/admin/metrics" 2>&1) || {
+    echo "FAIL (connection error)"
+    return 1
+  }
+  echo "$resp" | jq -c '{token, mode, counters}' 2>/dev/null || echo "FAIL (invalid response)"
 }
 
 set_all() {

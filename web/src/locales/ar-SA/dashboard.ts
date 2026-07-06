@@ -125,5 +125,8 @@ export default {
       error: 'خطأ',
       time: 'الوقت',
     },
+    connecting: "[TODO: dashboard.liveStream.connecting]",
+    reconnecting: "[TODO: dashboard.liveStream.reconnecting]",
+    unsupported: "[TODO: dashboard.liveStream.unsupported]",
   },
 }
