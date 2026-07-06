@@ -16,4 +16,6 @@ export default {
     required: 'يرجى إدخال اسم المستخدم وكلمة المرور',
     failed: 'فشل تسجيل الدخول',
   },
+  changePassword: "[TODO: login.changePassword]",
+  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
 }

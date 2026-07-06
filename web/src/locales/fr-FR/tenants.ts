@@ -269,4 +269,5 @@ export default {
     ledgerTitle: 'Journal des crédits',
     goBuyCredits: 'Acheter des crédits',
   },
+  loadFailed: "[TODO: tenants.loadFailed]",
 }

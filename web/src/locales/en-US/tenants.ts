@@ -269,4 +269,5 @@ export default {
     ledgerTitle: 'Credit Ledger',
     goBuyCredits: 'Buy Credits',
   },
+  loadFailed: "[TODO: tenants.loadFailed]",
 }

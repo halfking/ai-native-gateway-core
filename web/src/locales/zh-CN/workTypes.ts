@@ -120,4 +120,6 @@ export default {
   },
   loading: '加载…',
   loadingDetail: '加载详情…',
+  savedOk: "[TODO: workTypes.savedOk]",
+  testFailedShort: "[TODO: workTypes.testFailedShort]",
 }

@@ -120,4 +120,13 @@ export default {
     expired: '期限切れデータ (>90日)',
     tooltipSuffix: '{label}: {n} 行 ({pct}%)',
   },
+  coldData: "[TODO: dataLifecycle.coldData]",
+  executeNotImpl: "[TODO: dataLifecycle.executeNotImpl]",
+  expiredData: "[TODO: dataLifecycle.expiredData]",
+  hotData: "[TODO: dataLifecycle.hotData]",
+  missingDate: "[TODO: dataLifecycle.missingDate]",
+  needPreview: "[TODO: dataLifecycle.needPreview]",
+  preview: "[TODO: dataLifecycle.preview]",
+  previewFailed: "[TODO: dataLifecycle.previewFailed]",
+  warmData: "[TODO: dataLifecycle.warmData]",
 }

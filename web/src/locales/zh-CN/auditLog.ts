@@ -67,4 +67,8 @@ export default {
   errors: {
     loadFailed: '加载失败',
   },
+  dash: "[TODO: auditLog.dash]",
+  loadFailed: "[TODO: auditLog.loadFailed]",
+  refresh: "[TODO: auditLog.refresh]",
+  refreshing: "[TODO: auditLog.refreshing]",
 }
