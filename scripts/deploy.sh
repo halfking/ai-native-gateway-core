@@ -117,7 +117,9 @@ SCP_184_OPT="-P $SSH_PORT -i $SSH_KEY_184 -o StrictHostKeyChecking=accept-new -o
 SCP_71_OPT="-P $SSH_PORT -i $SSH_KEY_71 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
 
 # Image / registry
+# 注意: IMAGE_NAME = docker 镜像名 (含 kx- 前缀); K8S_CONTAINER = K8s pod 容器名 (无前缀)
 IMAGE_NAME="kx-llm-gateway-go"
+K8S_CONTAINER="llm-gateway-go"
 REGISTRY_INT="${REGISTRY_INT:-registry.kxpms.cn}"
 REGISTRY_LOCAL="${REGISTRY_LOCAL:-127.0.0.1:5000}"
 K8S_NS="pms-test"
@@ -341,7 +343,7 @@ update_k8s_deployment() {
   phase "184: kubectl set image → rollout status"
   if [[ "$DRY_RUN" == "true" ]]; then return 0; fi
   ssh $SSH_184_OPT $SERVER_184 \
-    "kubectl set image deployment/${K8S_DEP} ${IMAGE_NAME}=${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG} -n ${K8S_NS}"
+    "kubectl set image deployment/${K8S_DEP} ${K8S_CONTAINER}=${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG} -n ${K8S_NS}"
   ssh $SSH_184_OPT $SERVER_184 \
     "kubectl rollout status deployment/${K8S_DEP} -n ${K8S_NS} --timeout=5m"
   ok "K8s 滚动更新完成"
