@@ -58,6 +58,7 @@ const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
 const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
 const SessionManagementView = () => import('./views/SessionManagementView.vue')
+const SessionAuditView = () => import('./views/SessionAuditView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
 
 function isAuthed(): boolean {
@@ -142,9 +143,10 @@ export const router = createRouter({
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/session-compare',    component: SessionCompareView },
     { path: '/sessions',           component: SessionListView },
-    { path: '/admin/session-analytics', component: SessionAnalyticsDashboardView },
-    { path: '/admin/session-analytics/:id/panorama', component: SessionPanoramaView },
-    { path: '/admin/session-clusters', component: SessionClustersView },
+    { path: '/admin/session-analytics', component: SessionAnalyticsDashboardView, meta: { requiresSuper: true } },
+    { path: '/admin/session-analytics/:id/panorama', component: SessionPanoramaView, meta: { requiresSuper: true } },
+    { path: '/admin/session-clusters', component: SessionClustersView, meta: { requiresSuper: true } },
+    { path: '/admin/session-audit', component: SessionAuditView, meta: { requiresSuper: true } },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },
