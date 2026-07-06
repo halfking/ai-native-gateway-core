@@ -79,6 +79,8 @@ export default {
     enabledBadge: 'Enabled',
     disabledBadge: 'Disabled',
     empty: 'No providers configured yet',
+    manualDisabledBadge: 'Disabled',
+    manualDisabledTooltip: 'This provider has been manually disabled by admin',
   },
   create: {
     title: 'Add provider',
@@ -307,17 +309,12 @@ export default {
     loadFailed: 'Failed to load',
   },
   common: {
-    // [TODO] add nested keys
-  },
     button: {
-      // [TODO] add nested keys
+      cancel: "Cancel",
+      save: "Save",
     },
-      cancel: "[TODO: providers.common.button.cancel]",
-      save: "[TODO: providers.common.button.save]",
     table: {
-      // [TODO] add nested keys
+      actions: "Actions",
     },
-      actions: "[TODO: providers.common.table.actions]",
-    manualDisabledBadge: "[TODO: providers.list.manualDisabledBadge]",
-    manualDisabledTooltip: "[TODO: providers.list.manualDisabledTooltip]",
+  },
 }

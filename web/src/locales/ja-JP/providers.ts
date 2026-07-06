@@ -77,6 +77,8 @@ export default {
     enabledBadge: '有効',
     disabledBadge: '無効',
     empty: 'プロバイダーがまだ設定されていません',
+    manualDisabledBadge: '無効',
+    manualDisabledTooltip: 'このプロバイダーは管理者によって手動で無効化されています',
   },
   create: {
     title: 'プロバイダーを追加',
@@ -305,17 +307,12 @@ export default {
     loadFailed: '読み込み失敗',
   },
   common: {
-    // [TODO] add nested keys
-  },
     button: {
-      // [TODO] add nested keys
+      cancel: 'Cancel',
+      save: 'Save',
     },
-      cancel: "[TODO: providers.common.button.cancel]",
-      save: "[TODO: providers.common.button.save]",
     table: {
-      // [TODO] add nested keys
+      actions: 'Actions',
     },
-      actions: "[TODO: providers.common.table.actions]",
-    manualDisabledBadge: "[TODO: providers.list.manualDisabledBadge]",
-    manualDisabledTooltip: "[TODO: providers.list.manualDisabledTooltip]",
+  },
 }

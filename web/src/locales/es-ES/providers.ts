@@ -75,6 +75,8 @@ export default {
     enabledBadge: 'Activado',
     disabledBadge: 'Desactivado',
     empty: 'Aún no hay proveedores configurados',
+    manualDisabledBadge: 'Desactivado',
+    manualDisabledTooltip: 'Este proveedor ha sido desactivado manualmente por el administrador',
   },
   create: {
     title: 'Añadir proveedor',
@@ -303,17 +305,12 @@ export default {
     loadFailed: 'Error al cargar',
   },
   common: {
-    // [TODO] add nested keys
-  },
     button: {
-      // [TODO] add nested keys
+      cancel: 'Cancel',
+      save: 'Save',
     },
-      cancel: "[TODO: providers.common.button.cancel]",
-      save: "[TODO: providers.common.button.save]",
     table: {
-      // [TODO] add nested keys
+      actions: 'Actions',
     },
-      actions: "[TODO: providers.common.table.actions]",
-    manualDisabledBadge: "[TODO: providers.list.manualDisabledBadge]",
-    manualDisabledTooltip: "[TODO: providers.list.manualDisabledTooltip]",
+  },
 }
