@@ -57,6 +57,9 @@ const (
 	SwitchReasonManual      = "manual"
 	SwitchReasonSlotExhaust = "slot_exhaust"
 	SwitchReasonProbeFail   = "probe_fail"
+	SwitchReasonAutoRoute   = "auto_route"
+	SwitchReasonRetry       = "retry"
+	SwitchReasonHealthCheck = "health_check"
 )
 
 // SessionStats 会话统计
