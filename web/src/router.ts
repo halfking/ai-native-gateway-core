@@ -61,7 +61,7 @@ const SessionManagementView = () => import('./views/SessionManagementView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
 
 function isAuthed(): boolean {
-  return !!(store.jwtToken || store.apiKey)
+  return !!(store.jwtToken || store.apiKey || store.userInfo)
 }
 
 function isSuperAdmin(): boolean {
