@@ -606,9 +606,17 @@ func TestApprovalConfigHandler_ExtractTenantID(t *testing.T) {
 		path     string
 		expected string
 	}{
+		// Legacy /api/admin/tenants/{id}/... paths
 		{"/api/admin/tenants/tenant1/approval-config", "tenant1"},
 		{"/api/admin/tenants/my-tenant/approvers", "my-tenant"},
 		{"/api/admin/tenants/abc123/approval-rules", "abc123"},
+		// New /api/admin/tenant-approval-config/{id}/... paths (post-2026-07-03)
+		{"/api/admin/tenant-approval-config/default/approval-config", "default"},
+		{"/api/admin/tenant-approval-config/tenant42/approvers", "tenant42"},
+		{"/api/admin/tenant-approval-config/abc/approval-rules", "abc"},
+		{"/api/admin/tenant-approval-config/abc/approval-rules/rule1", "abc"},
+		{"/api/admin/tenant-approval-config/abc/approvers/user1", "abc"},
+		{"/api/admin/tenant-approval-config/abc/approval-config/stats", "abc"},
 		{"/invalid/path", ""},
 	}
 
