@@ -404,11 +404,17 @@ func (h *ApprovalConfigHandler) GetConfigStats(w http.ResponseWriter, r *http.Re
 
 // Helper methods
 
-// extractTenantID extracts tenant_id from URL path
-// Supports paths like: /api/admin/tenants/{tenant_id}/approval-config
+// extractTenantID extracts tenant_id from URL path.
+// Supports two path layouts (legacy + post-2026-07-03):
+//   - /api/admin/tenants/{tenant_id}/...               (legacy prefix)
+//   - /api/admin/tenant-approval-config/{tenant_id}/... (new prefix,
+//     avoids ServeMux conflict with /api/admin/tenants/ handle in handler.go)
 func (h *ApprovalConfigHandler) extractTenantID(path string) string {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	for i, part := range parts {
+		if part == "tenant-approval-config" && i+1 < len(parts) {
+			return parts[i+1]
+		}
 		if part == "tenants" && i+1 < len(parts) {
 			return parts[i+1]
 		}
