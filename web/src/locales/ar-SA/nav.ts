@@ -47,6 +47,7 @@ export default {
     sessionAnalytics: 'مركز تحليل الجلسات',
     sessionClusters: 'تجميع الجلسات',
     sessionAudit: 'تدقيق الجلسات',
+    sessionConfig: 'إعدادات الجلسة',
     agents: 'سجل الوكلاء',
     examples: 'أمثلة التكامل',
     chat: 'محادثة',
