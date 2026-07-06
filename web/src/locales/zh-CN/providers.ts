@@ -79,6 +79,8 @@ export default {
     enabledBadge: '已启用',
     disabledBadge: '已禁用',
     empty: '尚未配置任何提供商',
+    manualDisabledBadge: '已禁用',
+    manualDisabledTooltip: '此供应商已被管理员手动禁用，所有路由将跳过',
   },
   create: {
     title: '添加供应商',
@@ -314,9 +316,5 @@ export default {
     table: {
       actions: '操作',
     },
-  },
-  list: {
-    manualDisabledBadge: '已禁用',
-    manualDisabledTooltip: '此供应商已被管理员手动禁用，所有路由将跳过',
   },
 }
