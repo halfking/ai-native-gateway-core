@@ -11,6 +11,7 @@
 // 作为从 Session 上下文跳转请求详情的入口。
 
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { localeRef } from '../i18n'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestLogDetail,
@@ -153,7 +154,7 @@ onBeforeUnmount(() => {
 
 function fmtTs(v: string | null | undefined) {
   if (!v) return '—'
-  return new Date(v).toLocaleString('zh-CN')
+  return new Date(v).toLocaleString(localeRef.value)
 }
 
 function formatJson(obj: unknown): string {

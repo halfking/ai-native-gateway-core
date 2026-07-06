@@ -191,6 +191,7 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { localeRef } from '../i18n'
 import { ref, onMounted, nextTick, reactive } from 'vue'
 import { Chart, ChartConfiguration, registerables } from 'chart.js'
 import {
@@ -234,7 +235,7 @@ const storageConfigRef = ref<any>(null)
 const logMgmtRef = ref<any>(null)
 let chartInstance: Chart | null = null
 
-function formatNumber(n: number): string { return n.toLocaleString('zh-CN') }
+function formatNumber(n: number): string { return n.toLocaleString(localeRef.value) }
 function getTenantPercent(rows: number): number {
   if (!stats.value || stats.value.total_rows === 0) return 0
   return (rows / stats.value.total_rows) * 100

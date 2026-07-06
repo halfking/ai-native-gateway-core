@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { localeRef } from '../../i18n'
 import { getMaasModels } from '../../api'
 import type { MaasModel } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
@@ -68,7 +69,7 @@ const rateCols = [
 ] as const
 
 function fmtCredits(n: number) {
-  return n.toLocaleString('zh-CN')
+  return n.toLocaleString(localeRef.value)
 }
 
 function modalityLabel(modality: string) {

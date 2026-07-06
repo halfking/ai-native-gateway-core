@@ -358,6 +358,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
+import { localeRef } from '../i18n'
 import { ElMessage } from 'element-plus'
 import {
   Refresh, ChatDotRound, Search, Right, Loading
@@ -478,7 +479,7 @@ const resetFilters = () => {
 }
 
 const formatDateTime = (dateStr: string) => {
-  return new Date(dateStr).toLocaleString('zh-CN')
+  return new Date(dateStr).toLocaleString(localeRef.value)
 }
 
 const formatDuration = (seconds: number) => {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { localeRef } from '../i18n'
 import { ref, computed, onMounted } from 'vue'
 import {
   getAdminMaasModelRates,
@@ -88,7 +89,7 @@ function manualCount(m: AdminMaasModelRate) {
 }
 
 function fmtCredits(n: number) {
-  return n.toLocaleString('zh-CN')
+  return n.toLocaleString(localeRef.value)
 }
 
 function pricePer1M(credits: number) {

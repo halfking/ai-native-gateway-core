@@ -15,6 +15,7 @@
 //   - Audit log is shown inline below the table.
 
 import { ref, onMounted } from 'vue'
+import { localeRef } from '../i18n'
 import {
   listTenantModelPolicies,
   createTenantModelPolicy,
@@ -117,7 +118,7 @@ async function restore(p: TenantModelPolicy) {
 
 function fmtTime(s: string | null) {
   if (!s) return '-'
-  return new Date(s).toLocaleString('zh-CN')
+  return new Date(s).toLocaleString(localeRef.value)
 }
 
 function actionLabel(a: string) {

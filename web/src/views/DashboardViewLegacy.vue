@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, inject, type Ref, type ComputedRef } from 'vue'
+import { localeRef } from '../i18n'
 import { RouterLink } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStream from '../components/LiveRequestStream.vue'
@@ -128,7 +129,7 @@ function fmtPct(v: number | undefined) {
 
 function fmtDate(v: string | null | undefined) {
   if (!v) return '—'
-  return new Date(v).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
+  return new Date(v).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
 async function loadDiscoveryStatus() {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
+import { localeRef } from '../i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { getKeyDetail, updateKeyLimits, type ApiKey, type UpdateKeyLimitsRequest } from '../api'
 import {
@@ -374,7 +375,7 @@ const trendLineColor = computed(() =>
 // ── Helpers ────────────────────────────────────────────────────────────────
 function fmtDate(s: string | null | undefined) {
   if (!s) return '—'
-  return new Date(s).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
+  return new Date(s).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
 function fmtDateShort(s: string | null | undefined) {
@@ -411,7 +412,7 @@ function fmtTrendPeriod(s: string, period: PeriodType) {
 
 function fmtNum(n: number | string | null | undefined, decimals = 0): string {
   if (n == null) return '0'
-  return Number(n).toLocaleString('zh-CN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+  return Number(n).toLocaleString(localeRef.value, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
 
 function formatRpmLimit(v: number | null | undefined): string {

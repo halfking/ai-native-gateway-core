@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import { localeRef } from '../i18n'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
+
 withDefaults(
   defineProps<{
     credits?: number | null
@@ -16,7 +21,7 @@ withDefaults(
 
 function fmtCredits(n?: number | null) {
   if (n == null) return '—'
-  return n.toLocaleString('zh-CN') + ' 积分'
+  return n.toLocaleString(localeRef.value) + ' ' + t('common.unit.credits')
 }
 
 function fmtCost(n?: number | null) {

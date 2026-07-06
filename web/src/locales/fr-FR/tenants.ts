@@ -254,4 +254,19 @@ export default {
     loadFailed: 'Échec du chargement',
     detailLoadFailed: 'Échec du chargement du détail',
   },
+
+  maasUsageView: {
+    consumeLabel: 'Crédits consommés',
+    ledgerTotalLabel: 'Résumé de la consommation',
+    ledgerTotalHint: '{limit} dernières entrées · {count} éléments',
+    trendTitle: 'Tendance d\'utilisation',
+    trendHint: 'Crédits et requêtes',
+    emptyTrend: 'Aucun enregistrement sur les {days} derniers jours.',
+    buyCredits: 'Acheter des crédits',
+    rechargeHint: 'Vous pouvez recharger ce locataire sur la page de tarification.',
+    trendBarTitle: '{date}: {credits} {unit}',
+    modelRankTitle: 'Par modèle',
+    ledgerTitle: 'Journal des crédits',
+    goBuyCredits: 'Acheter des crédits',
+  },
 }

@@ -254,4 +254,19 @@ export default {
     loadFailed: '読み込み失敗',
     detailLoadFailed: '詳細読み込み失敗',
   },
+
+  maasUsageView: {
+    consumeLabel: '消費クレジット',
+    ledgerTotalLabel: '消費サマリー',
+    ledgerTotalHint: '直近 {limit} 件の消費 · {count} 件',
+    trendTitle: '利用推移',
+    trendHint: 'クレジットとリクエスト数',
+    emptyTrend: '直近 {days} 日間に消費記録がありません。',
+    buyCredits: 'クレジットを購入',
+    rechargeHint: '料金ページでこのテナントをチャージできます。',
+    trendBarTitle: '{date}: {credits} {unit}',
+    modelRankTitle: 'モデル別',
+    ledgerTitle: 'クレジット台帳',
+    goBuyCredits: 'クレジットを購入',
+  },
 }

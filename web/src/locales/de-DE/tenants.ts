@@ -254,4 +254,19 @@ export default {
     loadFailed: 'Laden fehlgeschlagen',
     detailLoadFailed: 'Details konnten nicht geladen werden',
   },
+
+  maasUsageView: {
+    consumeLabel: 'Credits verbraucht',
+    ledgerTotalLabel: 'Verbrauchszusammenfassung',
+    ledgerTotalHint: 'Letzte {limit} Verbrauchseinträge · {count} Einträge',
+    trendTitle: 'Nutzungsverlauf',
+    trendHint: 'Credits & Anfragen',
+    emptyTrend: 'Keine Verbrauchseinträge in den letzten {days} Tagen.',
+    buyCredits: 'Credits kaufen',
+    rechargeHint: 'Sie können diesen Mandanten auf der Preisseite aufladen.',
+    trendBarTitle: '{date}: {credits} {unit}',
+    modelRankTitle: 'Nach Modell',
+    ledgerTitle: 'Credit-Logbuch',
+    goBuyCredits: 'Credits kaufen',
+  },
 }

@@ -103,6 +103,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { localeRef } from '../../i18n'
 import {
   dataLifecycleBlobTop,
   dataLifecycleBlobCleanupPreview,
@@ -173,7 +174,7 @@ function humanBytes(n: number): string {
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
   return `${v.toFixed(1)} ${units[i]}`
 }
-function formatNumber(n: number): string { return n.toLocaleString('zh-CN') }
+function formatNumber(n: number): string { return n.toLocaleString(localeRef.value) }
 function secondsBetween(a: string, b: string): string {
   const ms = new Date(b).getTime() - new Date(a).getTime()
   return (ms / 1000).toFixed(1)

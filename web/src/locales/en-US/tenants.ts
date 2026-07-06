@@ -254,4 +254,19 @@ export default {
     loadFailed: 'Load failed',
     detailLoadFailed: 'Failed to load detail',
   },
+
+  maasUsageView: {
+    consumeLabel: 'Credits Consumed',
+    ledgerTotalLabel: 'Consumption Summary',
+    ledgerTotalHint: 'Latest {limit} consumption records · {count} items',
+    trendTitle: 'Usage Trend',
+    trendHint: 'Credits & Requests',
+    emptyTrend: 'No consumption records in the past {days} days.',
+    buyCredits: 'Buy Credits',
+    rechargeHint: 'You can recharge this tenant on the pricing page.',
+    trendBarTitle: '{date}: {credits} {unit}',
+    modelRankTitle: 'By Model',
+    ledgerTitle: 'Credit Ledger',
+    goBuyCredits: 'Buy Credits',
+  },
 }

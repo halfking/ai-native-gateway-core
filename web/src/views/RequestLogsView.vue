@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
+import { localeRef } from '../i18n'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -624,7 +625,7 @@ function resetPageAndLoad() {
 }
 
 function fmtTs(ts: string) {
-  return new Date(ts).toLocaleString('zh-CN', { hour12: false })
+  return new Date(ts).toLocaleString(localeRef.value, { hour12: false })
 }
 
 function fmtDate(ts: string) {

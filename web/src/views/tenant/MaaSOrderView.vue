@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { localeRef } from '../../i18n'
 import { useRoute } from 'vue-router'
 import {
   getMaasOrder,
@@ -24,12 +25,12 @@ function fmtPrice(cents: number) {
 }
 
 function fmtCredits(n: number) {
-  return n.toLocaleString('zh-CN')
+  return n.toLocaleString(localeRef.value)
 }
 
 function fmtTime(s: string) {
   if (!s) return '—'
-  return new Date(s).toLocaleString('zh-CN')
+  return new Date(s).toLocaleString(localeRef.value)
 }
 
 function statusLabel(s: string) {

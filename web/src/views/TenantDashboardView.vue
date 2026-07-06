@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { localeRef } from '../i18n'
 import { RouterLink } from 'vue-router'
 import {
   getMaasUsageSummary,
@@ -56,17 +57,17 @@ const maxTrendRequests = computed(() => {
 
 function fmtNum(n: number | undefined) {
   if (n === undefined || n === null) return '—'
-  return n.toLocaleString('zh-CN')
+  return n.toLocaleString(localeRef.value)
 }
 
 function fmtTime(s: string) {
   if (!s) return '—'
-  return new Date(s).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
+  return new Date(s).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
 function creditsDisplay(v: number | null | undefined) {
   if (v == null) return '—'
-  return v.toLocaleString('zh-CN')
+  return v.toLocaleString(localeRef.value)
 }
 
 async function load() {

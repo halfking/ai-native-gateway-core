@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { localeRef } from '../i18n'
 import { RouterLink } from 'vue-router'
 import {
   getMemoraStatus,
@@ -94,7 +95,7 @@ async function handleReconnect() {
 
 function fmtDate(v: string | null | undefined) {
   if (!v) return '—'
-  return new Date(v).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
+  return new Date(v).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
 onMounted(() => {

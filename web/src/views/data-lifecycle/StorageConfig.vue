@@ -232,6 +232,11 @@ onUnmounted(() => {
 })
 
 defineExpose({ load })
+
+function fmtNum(n?: number) {
+  if (!n) return '—'
+  return n.toLocaleString(localeRef.value)
+}
 </script>
 
 <template>
@@ -261,7 +266,7 @@ defineExpose({ load })
         </div>
         <div class="stat-item">
           <div class="stat-label">附件文件数</div>
-          <div class="stat-value">{{ fsStats?.total_files?.toLocaleString('zh-CN') || '—' }}</div>
+          <div class="stat-value">{{ fmtNum(fsStats?.total_files) || '—' }}</div>
         </div>
         <div class="stat-item">
           <div class="stat-label">附件占用</div>

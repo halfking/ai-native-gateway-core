@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
+import { localeRef } from '../i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/_core'
 import { resolveRouting } from '../api/routing'
@@ -363,7 +364,7 @@ function getPriorityBadge(priority: string): string {
 function formatTime(ts?: string): string {
   if (!ts) return '—'
   try {
-    return new Date(ts).toLocaleString('zh-CN', {
+    return new Date(ts).toLocaleString(localeRef.value, {
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
@@ -393,7 +394,7 @@ function formatPrice(p: number | string | null | undefined, currency: string | n
 }
 
 function formatTimestamp(ts: number): string {
-  return new Date(ts).toLocaleString('zh-CN')
+  return new Date(ts).toLocaleString(localeRef.value)
 }
 
 onMounted(() => {

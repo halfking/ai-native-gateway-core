@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { localeRef } from '../../i18n'
 import { attachmentFilesystemStats, attachmentFilesystemCleanup } from '../../api'
 
 interface FilesystemStats {
@@ -126,7 +127,7 @@ function formatBytes(bytes: number): string {
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleString('zh-CN')
+  return new Date(dateStr).toLocaleString(localeRef.value)
 }
 
 onMounted(() => {

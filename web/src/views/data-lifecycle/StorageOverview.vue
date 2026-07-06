@@ -125,7 +125,7 @@
         </div>
         <div class="metric-row">
           <span>文件数</span>
-          <span class="metric-val">{{ data.local_logs.files.toLocaleString('zh-CN') }}</span>
+          <span class="metric-val">{{ fmtNum(data.local_logs.files) }}</span>
         </div>
         <div class="metric-row">
           <span>大小</span>
@@ -201,6 +201,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { localeRef } from '../../i18n'
 import { dataLifecycleStorage, dataLifecycleTableSizes, type StorageOverview, type TableSizeInfo } from '../../api'
 
 const data = ref<StorageOverview | null>(null)
@@ -269,7 +270,7 @@ function humanBytes(n: number | undefined | null): string {
 }
 
 function formatNumber(n: number): string {
-  return n.toLocaleString('zh-CN')
+  return n.toLocaleString(localeRef.value)
 }
 
 function formatTime(unix: number): string {
@@ -282,6 +283,10 @@ onMounted(() => {
   load()
   loadTables()
 })
+
+function fmtNum(n: number) {
+  return n.toLocaleString(localeRef.value)
+}
 </script>
 
 <style scoped>

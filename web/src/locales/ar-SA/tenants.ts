@@ -254,4 +254,19 @@ export default {
     loadFailed: 'فشل التحميل',
     detailLoadFailed: 'فشل تحميل التفاصيل',
   },
+
+  maasUsageView: {
+    consumeLabel: 'الأرصدة المستهلكة',
+    ledgerTotalLabel: 'ملخص الاستهلاك',
+    ledgerTotalHint: 'آخر {limit} سجل استهلاك · {count} عنصر',
+    trendTitle: 'اتجاه الاستخدام',
+    trendHint: 'الأرصدة والطلبات',
+    emptyTrend: 'لا توجد سجلات استهلاك في آخر {days} يوم.',
+    buyCredits: 'شراء الأرصدة',
+    rechargeHint: 'يمكنك إعادة شحن هذا المستأجر في صفحة التسعير.',
+    trendBarTitle: '{date}: {credits} {unit}',
+    modelRankTitle: 'حسب النموذج',
+    ledgerTitle: 'دفتر الأرصدة',
+    goBuyCredits: 'شراء الأرصدة',
+  },
 }

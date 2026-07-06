@@ -179,6 +179,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
+import { localeRef } from '../../i18n'
 import {
   attachmentList,
   attachmentStats,
@@ -270,7 +271,7 @@ function humanBytes(n: number): string {
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
   return `${v.toFixed(1)} ${units[i]}`
 }
-function formatNumber(n: number): string { return n.toLocaleString('zh-CN') }
+function formatNumber(n: number): string { return n.toLocaleString(localeRef.value) }
 function formatDate(s: string): string {
   if (!s) return '—'
   return s.slice(0, 19).replace('T', ' ')

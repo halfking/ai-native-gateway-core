@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { localeRef } from '../i18n'
 import { ref, onMounted, computed } from 'vue'
 import { getAuditLogs, type AuditLogEntry } from '../api'
 
@@ -102,7 +103,7 @@ function fmtTime(s: string) {
 
 function fmtTs(s: string) {
   if (!s) return t('auditLog.dash')
-  return new Date(s).toLocaleString('zh-CN', { hour12: false })
+  return new Date(s).toLocaleString(localeRef.value, { hour12: false })
 }
 
 function fmtJson(v: unknown): string {

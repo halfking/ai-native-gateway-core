@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { localeRef } from '../../i18n'
 import { useRouter } from 'vue-router'
 import {
   getMaasPlans,
@@ -32,7 +33,7 @@ function fmtPrice(cents: number) {
 }
 
 function fmtCredits(n: number) {
-  return n.toLocaleString('zh-CN')
+  return n.toLocaleString(localeRef.value)
 }
 
 async function load() {

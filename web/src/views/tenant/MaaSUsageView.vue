@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { localeRef } from '../../i18n'
 import { RouterLink } from 'vue-router'
 import {
   getMaasLedger,
@@ -12,6 +14,8 @@ import type { MaasLedgerEntry, MaasUsageSummary } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 import PageBackLink from '../../components/PageBackLink.vue'
 import FeeCostCell from '../../components/FeeCostCell.vue'
+
+const { t } = useI18n()
 
 const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
 const pageTitle = computed(() =>
@@ -59,17 +63,17 @@ const pricingLink = computed(() =>
 
 function fmtCredits(n: number) {
   const sign = n > 0 ? '+' : ''
-  return sign + n.toLocaleString('zh-CN')
+  return sign + n.toLocaleString(localeRef.value)
 }
 
 function fmtNum(n: number | undefined) {
   if (n === undefined || n === null) return '—'
-  return n.toLocaleString('zh-CN')
+  return n.toLocaleString(localeRef.value)
 }
 
 function fmtTime(s: string) {
   if (!s) return '—'
-  return new Date(s).toLocaleString('zh-CN')
+  return new Date(s).toLocaleString(localeRef.value)
 }
 
 function typeLabel(t: string) {
@@ -151,18 +155,18 @@ onMounted(load)
         <div class="stat-hint">近 {{ days }} 天 · {{ fmtNum(summary.total_requests) }} 次请求</div>
       </div>
       <div class="stat-card card">
-        <div class="stat-label">流水消耗汇总</div>
-        <div class="stat-value">{{ consumeTotal.toLocaleString('zh-CN') }} <span class="unit">积分</span></div>
-        <div class="stat-hint">最近 {{ limit }} 条 consume 记录 · {{ recentConsumeCount }} 笔</div>
+        <div class="stat-label">{{ t('tenants.maasUsageView.ledgerTotalLabel') }}</div>
+        <div class="stat-value">{{ fmtNum(consumeTotal) }} <span class="unit">{{ t('common.unit.credits') }}</span></div>
+        <div class="stat-hint">{{ t('tenants.maasUsageView.ledgerTotalHint', { limit, count: recentConsumeCount }) }}</div>
       </div>
     </div>
 
     <div v-if="summary" class="card chart-card">
-      <div class="card-title">使用趋势 <span class="hint">积分与请求次数</span></div>
+      <div class="card-title">使用趋势 <span class="hint">t('tenants.maasUsageView.trendHint')</span></div>
       <div v-if="!summary.trend.length" class="empty">
-        近 {{ days }} 天暂无消耗记录。
-        <RouterLink v-if="!isAdminTenantView" :to="pricingLink">购买积分</RouterLink>
-        <span v-else>可在套餐页为该租户充值。</span>
+        t('tenants.maasUsageView.emptyTrend', { days })
+        <RouterLink v-if="!isAdminTenantView" :to="pricingLink">t('tenants.maasUsageView.buyCredits')</RouterLink>
+        <span v-else>t('tenants.maasUsageView.rechargeHint')</span>
       </div>
       <div v-else class="trend-grid">
         <div class="trend-section">
@@ -249,7 +253,7 @@ onMounted(load)
             <td class="num" :class="{ 'amount-neg': e.amount < 0, 'amount-pos': e.amount > 0 }">
               {{ fmtCredits(e.amount) }}
             </td>
-            <td class="num">{{ e.balance_after.toLocaleString('zh-CN') }}</td>
+            <td class="num">{{ fmtNum(e.balance_after) }}</td>
             <td class="mono ref-cell">
               <span v-if="e.ref_type">{{ e.ref_type }}</span>
               <span v-if="e.ref_id" class="ref-id">{{ e.ref_id }}</span>
@@ -260,7 +264,7 @@ onMounted(load)
           <tr v-if="!loading && ledger.length === 0">
             <td colspan="6" class="empty">
               暂无流水记录。
-              <RouterLink v-if="!isAdminTenantView" :to="pricingLink">去购买积分</RouterLink>
+              <RouterLink v-if="!isAdminTenantView" :to="pricingLink">去t('tenants.maasUsageView.buyCredits')</RouterLink>
             </td>
           </tr>
         </tbody>
