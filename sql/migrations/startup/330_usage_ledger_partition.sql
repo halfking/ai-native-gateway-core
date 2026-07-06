@@ -222,7 +222,7 @@ END $$;
 
 -- Step 13: Drop old table immediately (data already migrated and verified)
 DROP TABLE IF EXISTS public.usage_ledger_old;
-RAISE NOTICE '✓ Dropped old table: usage_ledger_old';
+DO $$ BEGIN RAISE NOTICE '✓ Dropped old table: usage_ledger_old'; END $$;
 
 COMMIT;
 
