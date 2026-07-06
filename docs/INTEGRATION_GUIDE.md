@@ -155,7 +155,7 @@ func main() {
         AutoSelectRecommended:  getEnvBool("LLM_GATEWAY_GOAL_AUTO_SELECT", true),
         AutoContinueOnPause:    getEnvBool("LLM_GATEWAY_GOAL_AUTO_CONTINUE", true),
         MaxRetryCount:          getEnvInt("LLM_GATEWAY_GOAL_MAX_RETRY", 3),
-        MaxAutoContinueCount:   getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", 10),
+        MaxAutoContinueCount:   getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", 3),
         UseAutorouteForAudit:   getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", true),
         UseAutorouteForIntent:  getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_INTENT", true),
         FallbackAuditModel:     getEnv("LLM_GATEWAY_GOAL_FALLBACK_AUDIT_MODEL", "auto"),
@@ -222,7 +222,7 @@ export LLM_GATEWAY_GOAL_DETECTION_MODE=hybrid
 export LLM_GATEWAY_GOAL_AUTO_SELECT=true
 export LLM_GATEWAY_GOAL_AUTO_CONTINUE=true
 export LLM_GATEWAY_GOAL_MAX_RETRY=3
-export LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE=10
+export LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE=3
 export LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT=true
 export LLM_GATEWAY_GOAL_USE_AUTOROUTE_INTENT=true
 export LLM_GATEWAY_GOAL_FALLBACK_AUDIT_MODEL=auto
