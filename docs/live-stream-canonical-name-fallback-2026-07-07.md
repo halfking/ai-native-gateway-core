@@ -158,7 +158,27 @@ return req.Model  // Fallback 保证向后兼容
 | 数据一致性 | 低 | 已有请求的 Redis payload 不含 `canonical_name` 字段，反序列化时为空字符串，fallback 逻辑自动处理 |
 | Provider→Vendor 映射准确性 | 中 | `VendorFromProvider` 覆盖主流 provider；新 provider 需手动添加映射 |
 
-## 九、后续优化建议
+## 九、审计发现的额外问题（第三轮修复）
+
+### 9.1 main.go 缩进混乱 + hub==nil fallback 缺失字段
+
+`adminLiveRequestFromEntry` 函数中 `if hub != nil` 块内代码有 1 tab 缩进（应为 2 tabs），极具误导性。hub==nil fallback 路径缺少 `CanonicalName` 和 `ModelCategory` 字段。重写整个函数修复。
+
+### 9.2 model 维度 activity key / queue key 使用 outbound model
+
+`Record()` 中 model 维度的 activity key 使用 `req.Model`（outbound 名称），而聚合使用 `CanonicalName`。当不同凭据的同一模型有不同 outbound 名称时，idle marker 会在错误的 lane 中出现。
+
+修复：activity key 和 `liveRequestQueueKeys` 的 model 维度 key 都改为 `emptyAs(req.CanonicalName, req.Model)`，与 `liveStreamDimensionKey` 保持一致。
+
+### 9.3 审计结论（不改动项）
+
+| 项目 | 结论 | 理由 |
+|------|------|------|
+| canonicalCache 无 TTL | 不改 | 与 providerCache/modelFamilyCache 一致设计；live stream 短生命周期 |
+| computeScopeDelta Total==0 guard | 不改 | idle marker 与真实请求共享 TTL（8h），纯 idle 窗口很窄 |
+| replay SQL LEFT JOIN 无 status 过滤 | 不改 | 历史回放场景中保留已废弃模型名是正确行为 |
+
+## 十、后续优化建议
 
 1. **Provider→Vendor 映射维护**：将静态映射表改为从 DB 查询（providers 表新增 `vendor` 字段）
 2. **前端展示优化**：在 model tile 的 tooltip 中同时显示 `canonical_name` 和 `outbound_model`，便于用户区分
