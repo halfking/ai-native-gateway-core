@@ -101,6 +101,23 @@ export default {
 前一会话已执行 Handoff，上下文已压缩。
 可以确认上一步结果后继续，或开始全新任务。`,
   },
+  stats: {
+    totalSessions: '总会话数',
+    activeSessions: '活跃会话',
+    healthDistribution: '健康度分布',
+    costTrend: '成本趋势',
+    trendChart: '成本与会话趋势',
+    last7Days: '最近7天',
+    last30Days: '最近30天',
+    cost: '成本',
+    sessionCount: '会话数',
+    topClients: 'Top 5 客户端（按成本）',
+    topTasks: 'Top 5 任务（按会话数）',
+    clientId: '客户端ID',
+    taskId: '任务ID',
+    totalCost: '总成本',
+    avgHealth: '平均健康度',
+  },
   audit: {
     title: '会话审计',
     subtitle: '查看会话安全审计记录与合规检测结果',

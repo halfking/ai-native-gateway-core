@@ -484,6 +484,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-07-05: 泳道初始化数据接口（从request_logs查询最近N小时的请求）
 	mux.HandleFunc("/api/admin/dashboard/swim-lane-init", admin(h.HandleSwimLaneInit))
 
+	// 2026-07-07: 首页会话统计概览接口
+	mux.HandleFunc("/api/admin/dashboard/session-overview", admin(h.handleDashboardSessionOverview))
+
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
 	mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))
 	mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath))
