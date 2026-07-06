@@ -18,7 +18,7 @@ import (
 // Usage:
 //
 //	err := withTenantTx(ctx, pool, tenantID, func(tx pgx.Tx) error {
-//	    rows, err := tx.Query(ctx, "SELECT ... FROM request_logs WHERE tenant_id = $1 AND ...")
+//	    rows, err := tx.Query(ctx, "SELECT ... FROM request_logs_with_current_month WHERE tenant_id = $1 AND ...")
 //	    // process rows
 //	    return err
 //	})

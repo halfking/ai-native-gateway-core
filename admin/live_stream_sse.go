@@ -516,7 +516,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		       rl.total_tokens,
 		       rl.cost_usd::float8,
 		       rl.error_kind
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		LEFT JOIN providers p ON p.id = rl.provider_id
 		WHERE rl.ts >= NOW() - INTERVAL '24 hours'
 		  ` + tenantClause + `

@@ -214,7 +214,7 @@ func buildFlowL23Query() string {
 		       %s AS src,
 		       COALESCE(p.display_name, 'unknown') AS dst,
 		       COUNT(*)::float8 AS val
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		LEFT JOIN providers p ON p.id = COALESCE(rl.provider_id, (
 		    SELECT cr.provider_id FROM credentials cr WHERE cr.id = rl.credential_id LIMIT 1
 		))

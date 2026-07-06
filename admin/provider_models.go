@@ -369,7 +369,7 @@ func (h *Handler) providerLogs(w http.ResponseWriter, r *http.Request, providerI
 		       rl.success, rl.error_kind,
 		       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens,
 		       rl.cost_usd::float8, rl.latency_ms
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		WHERE %s
 		ORDER BY rl.ts DESC
 		LIMIT $%d OFFSET $%d

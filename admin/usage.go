@@ -85,7 +85,7 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 				SUM(CASE WHEN success THEN 1 ELSE 0 END)::FLOAT
 				/ NULLIF(COUNT(*), 0), 1.0
 			)                                               AS success_rate
-		FROM usage_ledger
+		FROM usage_ledger_with_current_month
 		WHERE `+whereClause,
 		args...)
 	if err := row.Scan(
@@ -138,7 +138,7 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 		query = `
 			WITH usage_window AS (
 				SELECT *
-				  FROM usage_ledger
+				  FROM usage_ledger_with_current_month
 				 WHERE tenant_id = $2
 				   AND ts >= now() - ($1 * INTERVAL '1 day')
 			),
@@ -169,7 +169,7 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 		query = `
 			WITH usage_window AS (
 				SELECT *
-				  FROM usage_ledger
+				  FROM usage_ledger_with_current_month
 				 WHERE ts >= now() - ($1 * INTERVAL '1 day')
 			),
 			active_key_window AS (
@@ -251,7 +251,7 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 				COALESCE(SUM(ul.total_tokens), 0)                AS total_tokens,
 				COALESCE(SUM(ul.cost_usd), 0.0)                  AS total_cost_usd,
 				MAX(ul.ts)                                       AS last_used_at
-			FROM usage_ledger ul
+			FROM usage_ledger_with_current_month ul
 			LEFT JOIN api_keys ak ON ak.id = ul.api_key_id
 			LEFT JOIN applications app ON app.id = ak.application_id
 			WHERE ul.tenant_id = $3
@@ -272,7 +272,7 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 				COALESCE(SUM(ul.total_tokens), 0)                AS total_tokens,
 				COALESCE(SUM(ul.cost_usd), 0.0)                  AS total_cost_usd,
 				MAX(ul.ts)                                       AS last_used_at
-			FROM usage_ledger ul
+			FROM usage_ledger_with_current_month ul
 			LEFT JOIN api_keys ak ON ak.id = ul.api_key_id
 			LEFT JOIN applications app ON app.id = ak.application_id
 			WHERE ul.ts >= now() - ($1 * INTERVAL '1 day')
@@ -355,7 +355,7 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 				COALESCE(SUM(u.completion_tokens), 0)                                        AS completion_tokens,
 				COALESCE(SUM(u.cost_usd), 0.0)                                               AS total_cost_usd,
 				COALESCE(AVG(CASE WHEN u.success THEN 1 ELSE 0 END), 0.0)                    AS success_rate
-			FROM usage_ledger u
+			FROM usage_ledger_with_current_month u
 			JOIN credentials c ON c.id = u.credential_id
 			JOIN providers p ON p.id = c.provider_id
 			WHERE u.tenant_id = $3
@@ -375,7 +375,7 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 				COALESCE(SUM(u.completion_tokens), 0)                                        AS completion_tokens,
 				COALESCE(SUM(u.cost_usd), 0.0)                                               AS total_cost_usd,
 				COALESCE(AVG(CASE WHEN u.success THEN 1 ELSE 0 END), 0.0)                    AS success_rate
-			FROM usage_ledger u
+			FROM usage_ledger_with_current_month u
 			JOIN credentials c ON c.id = u.credential_id
 			JOIN providers p ON p.id = c.provider_id
 			WHERE u.ts >= now() - ($1 * INTERVAL '1 day')
@@ -451,7 +451,7 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 				         SUM(ul.prompt_tokens) + SUM(ul.completion_tokens), 0) AS total_tokens,
 				COALESCE(SUM(ul.cost_usd), 0.0)                                AS total_cost_usd,
 				COALESCE(AVG(ul.latency_ms), 0.0)                              AS avg_latency_ms
-			FROM usage_ledger ul
+			FROM usage_ledger_with_current_month ul
 			LEFT JOIN providers p ON p.id = ul.provider_id
 			WHERE ul.tenant_id = $3
 			  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
@@ -469,7 +469,7 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 				         SUM(ul.prompt_tokens) + SUM(ul.completion_tokens), 0) AS total_tokens,
 				COALESCE(SUM(ul.cost_usd), 0.0)                                AS total_cost_usd,
 				COALESCE(AVG(ul.latency_ms), 0.0)                              AS avg_latency_ms
-			FROM usage_ledger ul
+			FROM usage_ledger_with_current_month ul
 			LEFT JOIN providers p ON p.id = ul.provider_id
 			WHERE ul.ts >= now() - ($1 * INTERVAL '1 day')
 			GROUP BY ul.raw_model_name, p.code
@@ -544,7 +544,7 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 				COALESCE(SUM(ul.cost_usd), 0.0)                AS cost_usd,
 				COALESCE(SUM(ul.prompt_tokens), 0)             AS prompt_tokens,
 				COALESCE(SUM(ul.completion_tokens), 0)         AS completion_tokens
-			FROM usage_ledger ul
+			FROM usage_ledger_with_current_month ul
 			LEFT JOIN api_keys ak ON ak.id = ul.api_key_id
 			WHERE ul.tenant_id = $3
 			  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
@@ -561,7 +561,7 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 				COALESCE(SUM(ul.cost_usd), 0.0)                AS cost_usd,
 				COALESCE(SUM(ul.prompt_tokens), 0)             AS prompt_tokens,
 				COALESCE(SUM(ul.completion_tokens), 0)         AS completion_tokens
-			FROM usage_ledger ul
+			FROM usage_ledger_with_current_month ul
 			LEFT JOIN api_keys ak ON ak.id = ul.api_key_id
 			WHERE ul.ts >= now() - ($1 * INTERVAL '1 day')
 			GROUP BY ul.api_key_id, ak.key_prefix
@@ -665,7 +665,7 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*),0), 1.0),
 		       COUNT(DISTINCT raw_model_name),
 		       MIN(ts), MAX(ts)
-		FROM usage_ledger WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
+		FROM usage_ledger_with_current_month WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
 	`, keyID, startTime, endTime).Scan(&totalReqs, &promptTok, &compTok, &totalTok, &cost, &avgLatency, &successRate, &uniqueModels, &firstAt, &lastAt); err != nil {
 		slog.Warn("usageKeyDetail scan failed", "key_id", keyID, "error", err)
 	}
@@ -754,7 +754,7 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 		       COALESCE(AVG(latency_ms),0)::float8,
 		       COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*),0), 1.0),
 		       MIN(ts), MAX(ts)
-		FROM usage_ledger WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
+		FROM usage_ledger_with_current_month WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
 		GROUP BY raw_model_name ORDER BY SUM(cost_usd) DESC NULLS LAST LIMIT $4
 	`, keyID, startTime, endTime, limit)
 	if err != nil {
@@ -897,13 +897,13 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 		agg AS (
 			SELECT DATE_TRUNC($1, ts) AS bucket,
 			       COUNT(*)::int AS requests,
-			       COALESCE(SUM(prompt_tokens), 0)::int AS prompt_tokens,
-			       COALESCE(SUM(completion_tokens), 0)::int AS completion_tokens,
-			       COALESCE(SUM(total_tokens), 0)::int AS total_tokens,
-			       COALESCE(SUM(cost_usd), 0)::float8 AS cost_usd
-			FROM usage_ledger
-			WHERE api_key_id = $2 AND ts >= $4 AND ts < $5
-			GROUP BY 1
+		       COALESCE(SUM(prompt_tokens), 0)::int AS prompt_tokens,
+		       COALESCE(SUM(completion_tokens), 0)::int AS completion_tokens,
+		       COALESCE(SUM(total_tokens), 0)::int AS total_tokens,
+		       COALESCE(SUM(cost_usd), 0)::float8 AS cost_usd
+		FROM usage_ledger_with_current_month
+		WHERE api_key_id = $2 AND ts >= $4 AND ts < $5
+		GROUP BY 1
 		)
 		SELECT TO_CHAR(b.bucket, $3) AS period,
 		       COALESCE(a.requests, 0),
@@ -1033,7 +1033,7 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 			COALESCE(SUM(ul.completion_tokens), 0) AS completion_tokens,
 			COUNT(DISTINCT ul.api_key_id) AS unique_keys,
 			COUNT(DISTINCT ul.canonical_id) AS unique_models
-		FROM usage_ledger ul
+		FROM usage_ledger_with_current_month ul
 		LEFT JOIN applications app ON app.id = ul.application_id
 		WHERE ul.tenant_id = $2
 		  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
@@ -1090,7 +1090,7 @@ func (h *Handler) usageKeyRemaining(w http.ResponseWriter, r *http.Request, keyI
 	tid := EffectiveTenantID(r)
 	if err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(cost_usd), 0.0)
-		FROM usage_ledger
+		FROM usage_ledger_with_current_month
 		WHERE tenant_id = $3
 		  AND api_key_id = $1
 		  AND ts >= now() - ($2 * INTERVAL '1 day')
@@ -1159,7 +1159,7 @@ func (h *Handler) usageByTenant(w http.ResponseWriter, r *http.Request) {
 			COUNT(DISTINCT ul.api_key_id),
 			COUNT(DISTINCT ul.canonical_id),
 			COUNT(DISTINCT ul.application_id)
-		FROM usage_ledger ul
+		FROM usage_ledger_with_current_month ul
 		WHERE ul.tenant_id = $1
 		  AND ul.ts >= now() - ($2 * INTERVAL '1 day')
 	`, tenantID, days).Scan(

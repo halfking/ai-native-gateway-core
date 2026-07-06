@@ -43,7 +43,7 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 			rsr.samples AS recent_samples,
 			v.is_routable,
 			(rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < 0.5) AS below_threshold,
-			(SELECT MIN(ts) FROM request_logs rl
+			(SELECT MIN(ts) FROM request_logs_with_current_month rl
 			 WHERE rl.credential_id = c.id
 			   AND lower(COALESCE(rl.outbound_model, rl.client_model)) = lower(mo.raw_model_name)
 			   AND rl.ts > NOW() - INTERVAL '3 hours'

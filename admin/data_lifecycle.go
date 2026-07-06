@@ -75,7 +75,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 			COUNT(*) AS total_rows,
 			pg_total_relation_size('request_logs') AS total_size,
 			pg_size_pretty(pg_total_relation_size('request_logs')) AS total_size_human
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE 1=1` + tenantFilter
 	err := h.db.QueryRow(ctx, query).Scan(&stats.TotalRows, &totalSize, &totalSizeStr)
 	if err != nil {
@@ -96,7 +96,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 
 	segmentQuery := `
 		WITH total AS (
-			SELECT COUNT(*) AS total_count FROM request_logs WHERE 1=1` + tenantFilter + `
+			SELECT COUNT(*) AS total_count FROM request_logs_with_current_month WHERE 1=1` + tenantFilter + `
 		),
 		segments AS (
 			SELECT 
@@ -104,7 +104,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				COUNT(*) AS rows,
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint AS size_bytes,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint) AS size_human
-			FROM request_logs
+			FROM request_logs_with_current_month
 			WHERE ts > NOW() - INTERVAL '7 days'` + tenantFilter + `
 			UNION ALL
 			SELECT 
@@ -112,7 +112,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				COUNT(*),
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
-			FROM request_logs
+			FROM request_logs_with_current_month
 			WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days'` + tenantFilter + `
 			UNION ALL
 			SELECT 
@@ -120,7 +120,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				COUNT(*),
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
-			FROM request_logs
+			FROM request_logs_with_current_month
 			WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days'` + tenantFilter + `
 			UNION ALL
 			SELECT 
@@ -128,7 +128,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				COUNT(*),
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
-			FROM request_logs
+			FROM request_logs_with_current_month
 			WHERE ts < NOW() - INTERVAL '90 days'` + tenantFilter + `
 		)
 		SELECT segment, rows, size_bytes, size_human FROM segments
@@ -180,9 +180,9 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 		SELECT 
 			COALESCE(tenant_id, 'default') AS tenant,
 			COUNT(*) AS rows,
-			(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs WHERE 1=1` + tenantFilter + `), 0))::bigint AS size_bytes,
-			pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs WHERE 1=1` + tenantFilter + `), 0))::bigint) AS size_human
-		FROM request_logs
+			(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs_with_current_month WHERE 1=1` + tenantFilter + `), 0))::bigint AS size_bytes,
+			pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs_with_current_month WHERE 1=1` + tenantFilter + `), 0))::bigint) AS size_human
+		FROM request_logs_with_current_month
 		WHERE 1=1` + tenantFilter + `
 		GROUP BY tenant_id
 		ORDER BY rows DESC
@@ -209,7 +209,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 			DATE(ts) AS day,
 			COUNT(*) AS requests,
 			COUNT(*) FILTER (WHERE outbound_body IS NOT NULL) AS compressed
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE ts > NOW() - INTERVAL '7 days'` + tenantFilter + `
 		GROUP BY DATE(ts)
 		ORDER BY day DESC
@@ -303,7 +303,7 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 			COUNT(*) AS affected_rows,
 			(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs), 0))::bigint AS freed_bytes,
 			pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs), 0))::bigint) AS freed_human
-		FROM request_logs
+		FROM request_logs_with_current_month
 		`+whereClause, args...).Scan(&resp.AffectedRows, &resp.EstimatedFreedBytes, &resp.EstimatedFreedHuman)
 
 	if err != nil {

@@ -139,7 +139,7 @@ func (h *Handler) handleNoTopicSessionMessages(w http.ResponseWriter, r *http.Re
 			prompt_tokens, completion_tokens, latency_ms,
 			cost_usd, request_status, error_kind,
 			work_type, request_mode, gw_session_id
-		FROM request_logs
+		FROM request_logs_with_current_month
 		`+where+`
 		ORDER BY ts ASC
 		LIMIT `+limitArg+`
@@ -299,7 +299,7 @@ func (h *Handler) loadNoTopicTaskLogsForTitle(ctx context.Context, prefix string
 		       rl.request_body::text, rl.response_body::text,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		`+where+`
 		ORDER BY ts ASC
 		LIMIT `+limitArg+`
@@ -502,7 +502,7 @@ func (h *Handler) noTopicAPIKeyAndTenant(ctx context.Context, prefix string, hou
 	var tenantIDPtr *string
 	where, args := noTopicLogsWhere(prefix, hours, r)
 	err = h.db.QueryRow(ctx, `
-		SELECT api_key_id, tenant_id FROM request_logs
+		SELECT api_key_id, tenant_id FROM request_logs_with_current_month
 		`+where+` AND api_key_id IS NOT NULL
 		ORDER BY ts DESC LIMIT 1
 	`, args...).Scan(&apiKeyIDPtr, &tenantIDPtr)
@@ -525,7 +525,7 @@ func (h *Handler) loadNoTopicPreviewTurns(ctx context.Context, prefix string, ho
 
 	rows, err := h.db.Query(ctx, `
 		SELECT request_preview, response_preview, work_type, request_mode
-		FROM request_logs
+		FROM request_logs_with_current_month
 		`+where+`
 		ORDER BY ts ASC
 		LIMIT `+limitArg+`
