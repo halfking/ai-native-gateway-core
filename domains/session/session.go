@@ -129,6 +129,14 @@ func NewManager(redisClient *RedisClient, ttl time.Duration) *Manager {
 	return &Manager{redis: redisClient, ttl: ttl}
 }
 
+// GetRedisClient 返回底层 RedisClient，供其他模块复用连接。
+func (sm *Manager) GetRedisClient() *RedisClient {
+	if sm == nil {
+		return nil
+	}
+	return sm.redis
+}
+
 func generateSessionKey(apiKeyID int, tenantID string) string {
 	raw := fmt.Sprintf("%d:%s:%d:%s", apiKeyID, tenantID, time.Now().UnixNano(), uuid.New().String())
 	hash := sha256.Sum256([]byte(raw))
@@ -172,6 +180,7 @@ func (sm *Manager) Create(ctx context.Context, apiKeyID int, tenantID string, de
 		"devices":             string(devicesJSON),
 		"provider_cache_info": string(cacheInfoJSON),
 	})
+	pipe.Expire(ctx, "session:"+sessionID, sm.ttl)
 	pipe.Set(ctx, sessionKeyRedis, sessionID, sm.ttl)
 	pipe.SAdd(ctx, activeKeyRedis, sessionID)
 	pipe.Expire(ctx, activeKeyRedis, sm.ttl)
@@ -281,14 +290,19 @@ func (sm *Manager) Migrate(ctx context.Context, sessionID string, newDeviceSeed 
 		"devices":     string(devicesJSON),
 		"last_active": session.LastActive.Format(time.RFC3339),
 	})
+	//nolint:errcheck // best-effort TTL refresh
+	sm.redis.client.Expire(ctx, "session:"+sessionID, sm.ttl)
 
 	return session, nil
 }
 
 func (sm *Manager) Touch(ctx context.Context, sessionID string) error {
-	return sm.redis.HSet(ctx, "session:"+sessionID, map[string]any{
+	if err := sm.redis.HSet(ctx, "session:"+sessionID, map[string]any{
 		"last_active": time.Now().Format(time.RFC3339),
-	})
+	}); err != nil {
+		return err
+	}
+	return sm.redis.client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
 }
 
 // BindAPIKey claims an orphan session (api_key_id=0) created before auth was wired.
@@ -308,6 +322,7 @@ func (sm *Manager) BindAPIKey(ctx context.Context, sessionID string, apiKeyID in
 		"api_key_id": strconv.Itoa(apiKeyID),
 		"tenant_id":  tenantID,
 	})
+	pipe.Expire(ctx, "session:"+sessionID, sm.ttl)
 	pipe.SAdd(ctx, activeKeyRedis, sessionID)
 	pipe.Expire(ctx, activeKeyRedis, sm.ttl)
 	_, err = pipe.Exec(ctx)
@@ -316,9 +331,12 @@ func (sm *Manager) BindAPIKey(ctx context.Context, sessionID string, apiKeyID in
 
 func (sm *Manager) UpdateCacheInfo(ctx context.Context, sessionID string, cacheInfo CacheInfo) error {
 	cacheInfoJSON, _ := json.Marshal(cacheInfo)
-	return sm.redis.HSet(ctx, "session:"+sessionID, map[string]any{
+	if err := sm.redis.HSet(ctx, "session:"+sessionID, map[string]any{
 		"provider_cache_info": string(cacheInfoJSON),
-	})
+	}); err != nil {
+		return err
+	}
+	return sm.redis.client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
 }
 
 func (sm *Manager) GetBySessionKey(ctx context.Context, sessionKey string) (*Session, error) {
