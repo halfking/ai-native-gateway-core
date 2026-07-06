@@ -25,20 +25,20 @@ const editBuffer = ref<string>('') // JSON text editor
 const filterCategory = ref<string>('')
 const tagInput = ref('')
 
-const categories = [
-  { key: '',                   label: t('settings.all'),  icon: '📋' },
-  { key: 'compression',        label: t('settings.compression'),  icon: '🗜'  },
-  { key: 'rate_limit',         label: t('settings.rateLimit'),  icon: '🚦'  },
-  { key: 'timeout',            label: t('settings.timeout'),  icon: '⏱'  },
-  { key: 'routing',            label: t('settings.routing'),  icon: '🔀'  },
-  { key: 'session',            label: t('settings.session'),  icon: '💬'  },
-  { key: 'security',           label: t('settings.security'),  icon: '🔐'  },
-  { key: 'circuit_breaker',    label: t('settings.circuitBreaker'),  icon: '⚡'  },
-  { key: 'general',            label: t('settings.general'),  icon: '⚙️' },
-]
+const categories = computed(() => [
+  { key: '',                   label: t('settings.category.all'),  icon: '📋' },
+  { key: 'compression',        label: t('settings.category.compression'),  icon: '🗜'  },
+  { key: 'rate_limit',         label: t('settings.category.rateLimit'),  icon: '🚦'  },
+  { key: 'timeout',            label: t('settings.category.timeout'),  icon: '⏱'  },
+  { key: 'routing',            label: t('settings.category.routing'),  icon: '🔀'  },
+  { key: 'session',            label: t('settings.category.session'),  icon: '💬'  },
+  { key: 'security',           label: t('settings.category.security'),  icon: '🔐'  },
+  { key: 'circuit_breaker',    label: t('settings.category.circuitBreaker'),  icon: '⚡'  },
+  { key: 'general',            label: t('settings.category.general'),  icon: '⚙️' },
+])
 
 function dangerLabel(level: number): string {
-  return ['', t('settings.note'), t('settings.warn'), t('settings.danger')][level] || ''
+  return ['', t('settings.dangerLevel.note'), t('settings.dangerLevel.warn'), t('settings.dangerLevel.danger')][level] || ''
 }
 
 async function loadList() {
@@ -48,7 +48,7 @@ async function loadList() {
     const r = await listSettings({ category: filterCategory.value || undefined })
     items.value = r.items
   } catch (e: any) {
-    error.value = e.message || t('settings.loadListFailed')
+    error.value = e.message || t('settings.detail.errors.loadListFailed')
   } finally {
     loading.value = false
   }
@@ -72,7 +72,7 @@ async function selectKey(key: string) {
     }
     tagInput.value = ''
   } catch (e: any) {
-    error.value = e.message || t('settings.loadDetailFailed')
+    error.value = e.message || t('settings.detail.errors.loadDetailFailed')
   }
 }
 
@@ -148,7 +148,7 @@ async function save() {
     } else if (selected.value.type === 'int' || selected.value.type === 'float') {
       parsed = Number(editBuffer.value)
       if (isNaN(parsed)) {
-        throw new Error(t('settings.invalidNumber'))
+        throw new Error(t('settings.detail.errors.invalidNumber'))
       }
     } else if (selected.value.type === 'string') {
       parsed = String(editBuffer.value)
@@ -161,7 +161,7 @@ async function save() {
     await loadList()
     await selectKey(selectedKey.value)
   } catch (e: any) {
-    error.value = e.message || t('settings.saveFailed')
+    error.value = e.message || t('settings.detail.errors.saveFailed')
   } finally {
     saving.value = false
   }
@@ -176,9 +176,9 @@ function getEnumLabel(key: string, value: any): string {
       '2': '2 - 4xx时压缩 (on_4xx)',
     },
     'compression.strategy': {
-      'naive': t('settings.naive'),
-      'smart': t('settings.smart'),
-      'adaptive': t('settings.adaptive'),
+      'naive': t('settings.compression.strategyEnum.naive'),
+      'smart': t('settings.compression.strategyEnum.smart'),
+      'adaptive': t('settings.compression.strategyEnum.adaptive'),
     },
   }
   return labels[key]?.[String(value)] || String(value)
@@ -188,9 +188,9 @@ function getEnumLabel(key: string, value: any): string {
 function getEnumDescription(key: string, value: string): string {
   const descriptions: Record<string, Record<string, string>> = {
     'compression.mode': {
-      '0': t('settings.off'),
-      '1': t('settings.auto'),
-      '2': '收到4xx错误（如context_length_exceeded）时触发压缩',
+      '0': t('settings.compression.enumDescriptions.off'),
+      '1': t('settings.compression.enumDescriptions.auto'),
+      '2': t('settings.compression.enumDescriptions.on4xx'),
     },
   }
   return descriptions[key]?.[value] || ''
@@ -200,53 +200,24 @@ function getEnumDescription(key: string, value: string): string {
 function getSettingDocs(key: string): { title: string; content: string } | null {
   const docs: Record<string, { title: string; content: string }> = {
     'compression.mode': {
-      title: t('settings.compressionModeTitle'),
-      content: `<p><strong>压缩模式</strong>控制系统如何处理超长对话上下文：</p>
-<ul>
-  <li><code>0 (off)</code> - 关闭压缩，当上下文超限时直接返回错误</li>
-  <li><code>1 (auto_threshold)</code> - 预判模式，当消息长度接近模型的context window时主动压缩</li>
-  <li><code>2 (on_4xx)</code> - 响应式模式，收到4xx错误后压缩并重试【推荐】</li>
-</ul>
-<p class="docs-note">💡 <strong>推荐使用模式2</strong>：仅在必要时压缩，避免不必要的性能开销</p>`
+      title: t('settings.docs.compressionModeTitle'),
+      content: t('settings.docs.compressionModeContent'),
     },
     'cache.enabled': {
-      title: t('settings.cacheEnabledTitle'),
-      content: `<p><strong>会话缓存</strong>控制是否启用L1/L2/L3三级缓存：</p>
-<ul>
-  <li><strong>L1</strong> - 内存缓存（最快）</li>
-  <li><strong>L2</strong> - Redis缓存（中等）</li>
-  <li><strong>L3</strong> - 数据库缓存（最慢）</li>
-</ul>
-<p class="docs-note">⚠️ 关闭后所有会话状态将不被保存，影响上下文连续性</p>`
+      title: t('settings.docs.cacheEnabledTitle'),
+      content: t('settings.docs.cacheEnabledContent'),
     },
     'format_conversion.enabled': {
-      title: t('settings.formatConversionTitle'),
-      content: `<p><strong>格式转换</strong>允许不同协议之间的请求格式自动转换：</p>
-<ul>
-  <li><strong>Q2路径</strong>：Anthropic格式 → OpenAI模型</li>
-  <li><strong>Q3路径</strong>：OpenAI格式 → Anthropic模型</li>
-</ul>
-<p class="docs-note">💡 支持Provider级别覆盖，可针对特定供应商禁用转换</p>`
+      title: t('settings.docs.formatConversionTitle'),
+      content: t('settings.docs.formatConversionContent'),
     },
     'rate_limit_rpm': {
-      title: t('settings.rateLimitRpmTitle'),
-      content: `<p><strong>RPM (Requests Per Minute)</strong> 限制每个租户每分钟的请求次数：</p>
-<ul>
-  <li>适用于粗粒度的流量控制</li>
-  <li>基于滑动窗口算法，精确到秒级</li>
-  <li>超限后返回429状态码</li>
-</ul>
-<p class="docs-note">⚠️ <strong>租户级配置</strong>：此设置需要指定tenant_id，在租户管理页面设置</p>`
+      title: t('settings.docs.rateLimitRpmTitle'),
+      content: t('settings.docs.rateLimitRpmContent'),
     },
     'rate_limit_concurrent': {
-      title: t('settings.rateLimitConcurrentTitle'),
-      content: `<p><strong>并发限流</strong>限制每个租户同时处理的请求数量：</p>
-<ul>
-  <li>适用于保护系统资源，防止单个租户占用过多连接</li>
-  <li>基于计数器实现，响应速度快</li>
-  <li>超限后排队或返回429</li>
-</ul>
-<p class="docs-note">⚠️ <strong>租户级配置</strong>：此设置需要指定tenant_id，在租户管理页面设置</p>`
+      title: t('settings.docs.rateLimitConcurrentTitle'),
+      content: t('settings.docs.rateLimitConcurrentContent'),
     },
   }
   return docs[key] || null
@@ -260,7 +231,7 @@ async function rollback() {
     await loadList()
     await selectKey(selectedKey.value)
   } catch (e: any) {
-    error.value = e.message || t('settings.rollbackFailed')
+    error.value = e.message || t('settings.detail.errors.rollbackFailed')
   }
 }
 
@@ -389,7 +360,7 @@ onMounted(() => {
                 class="switch-input"
               />
               <span class="switch-track"></span>
-              <span class="switch-text">{{ editBuffer === 'true' ? t('settings.enabledText') : t('settings.disabledText') }}</span>
+              <span class="switch-text">{{ editBuffer === 'true' ? t('settings.editor.enabledText') : t('settings.editor.disabledText') }}</span>
             </label>
           </div>
           
@@ -470,7 +441,7 @@ onMounted(() => {
           
           <div class="editor-actions">
             <button class="btn btn-primary" :disabled="saving" @click="save">
-              {{ saving ? t('settings.saving') : t('settings.save') }}
+              {{ saving ? t('settings.editor.saving') : t('settings.editor.save') }}
             </button>
             <button class="btn btn-ghost" @click="rollback">回滚</button>
           </div>
