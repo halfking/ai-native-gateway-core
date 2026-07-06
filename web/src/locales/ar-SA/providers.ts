@@ -77,6 +77,8 @@ export default {
     enabledBadge: 'مفعّل',
     disabledBadge: 'معطّل',
     empty: 'لم يتم تكوين أي مزود بعد',
+    manualDisabledBadge: 'معطّل',
+    manualDisabledTooltip: 'تم تعطيل هذا المزود يدويًا بواسطة المسؤول',
   },
   create: {
     title: 'إضافة مزود',
@@ -305,17 +307,12 @@ export default {
     loadFailed: 'فشل التحميل',
   },
   common: {
-    // [TODO] add nested keys
-  },
     button: {
-      // [TODO] add nested keys
+      cancel: 'Cancel',
+      save: 'Save',
     },
-      cancel: "[TODO: providers.common.button.cancel]",
-      save: "[TODO: providers.common.button.save]",
     table: {
-      // [TODO] add nested keys
+      actions: 'Actions',
     },
-      actions: "[TODO: providers.common.table.actions]",
-    manualDisabledBadge: "[TODO: providers.list.manualDisabledBadge]",
-    manualDisabledTooltip: "[TODO: providers.list.manualDisabledTooltip]",
+  },
 }
