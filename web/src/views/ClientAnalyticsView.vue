@@ -13,6 +13,7 @@ const router = useRouter()
 const clientId = computed(() => route.params.id as string)
 const loading = ref(false)
 const data = ref<ClientAnalyticsDetail | null>(null)
+const errorMessage = ref<string | null>(null)
 const days = ref(30)
 
 const chartRef = ref<HTMLElement>()
@@ -24,11 +25,13 @@ onMounted(() => {
 
 async function load() {
   loading.value = true
+  errorMessage.value = null
   try {
     data.value = await getClientAnalyticsDetail(clientId.value, days.value)
     renderChart()
-  } catch (e) {
+  } catch (e: any) {
     console.error('Failed to load client analytics:', e)
+    errorMessage.value = e.message || t('sessions.clientAnalytics.loadError')
   } finally {
     loading.value = false
   }
@@ -138,6 +141,10 @@ function goBack() {
       </div>
     </div>
 
+    <el-alert v-if="errorMessage" type="error" :closable="false" style="margin-bottom: 20px;">
+      {{ errorMessage }}
+    </el-alert>
+
     <div v-if="data">
       <!-- 统计卡片 -->
       <el-row :gutter="16" style="margin-bottom: 20px;">
@@ -161,7 +168,7 @@ function goBack() {
           <el-card shadow="hover">
             <div class="stat-item">
               <div class="stat-label">{{ t('sessions.clientAnalytics.avgHealth') }}</div>
-              <div class="stat-value">{{ data.avg_health_score || '—' }}</div>
+              <div class="stat-value">{{ data.avg_health_score ?? '—' }}</div>
             </div>
           </el-card>
         </el-col>
@@ -170,7 +177,9 @@ function goBack() {
             <div class="stat-item">
               <div class="stat-label">{{ t('sessions.clientAnalytics.successRate') }}</div>
               <div class="stat-value">
-                {{ ((data.total_success / (data.total_success + data.total_errors)) * 100).toFixed(1) }}%
+                {{ data.total_success + data.total_errors > 0 
+                   ? ((data.total_success / (data.total_success + data.total_errors)) * 100).toFixed(1) 
+                   : '0.0' }}%
               </div>
             </div>
           </el-card>
