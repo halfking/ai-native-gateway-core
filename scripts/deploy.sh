@@ -274,8 +274,8 @@ push_to_local_registry() {
   local err_msg
   err_msg=$(cat /tmp/.push.err 2>/dev/null || echo "")
   if echo "$err_msg" | grep -qE "connection refused|connection reset|i/o timeout|no such host" ; then
-    warn "本地直推受阻（疑似 Docker daemon HTTP_PROXY 拦截 $REGISTRY_LOCAL）："
-    echo "  $err_msg" | head -3
+    warn "本地直推受阻（疑似 Docker daemon HTTP_PROXY 拦截 ${REGISTRY_LOCAL}）："
+    echo "  ${err_msg}" | head -3
   else
     err "推送失败（非代理问题）:"
     cat /tmp/.push.err
