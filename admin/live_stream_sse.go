@@ -151,8 +151,11 @@ type LiveStreamSSEHub struct {
 
 	// cachedSnapshot holds the last-known snapshot per tenant so broadcast
 	// can compute a delta instead of sending the full snapshot every time.
-	cachedSnapshotMu sync.RWMutex
-	cachedSnapshot   map[string]*LiveStreamSnapshot // key = tenantID
+	// Each entry carries a lastAccessed timestamp for periodic cleanup of
+	// stale tenants (prevents unbounded memory growth).
+	cachedSnapshotMu  sync.RWMutex
+	cachedSnapshot    map[string]*cachedSnapshotEntry // key = tenantID
+	cachedSnapshotTTL time.Duration                   // entries older than this are evicted
 
 	// Metrics (added 2026-07-03 for monitoring)
 	totalConnections    int64 // 累计连接数
@@ -161,21 +164,27 @@ type LiveStreamSSEHub struct {
 	broadcastCount      int64 // 广播消息数
 }
 
+type cachedSnapshotEntry struct {
+	snapshot     *LiveStreamSnapshot
+	lastAccessed time.Time
+}
+
 // NewLiveStreamSSEHub constructs a hub. The caller MUST call Run()
 // once in its own goroutine before the hub accepts traffic.
 func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEHub {
 	cfg.defaults()
 	return &LiveStreamSSEHub{
-		db:             db,
-		cfg:            cfg,
-		store:          NewLiveStreamRedisStore(cfg.RedisClient),
-		register:       make(chan *liveStreamClient, 16),
-		unregister:     make(chan *liveStreamClient, 16),
-		broadcast:      make(chan LiveRequest, cfg.BroadcastQueueSize),
-		clients:        make(map[*liveStreamClient]struct{}),
-		lastActivity:   time.Now(),
-		stopCh:         make(chan struct{}),
-		cachedSnapshot: make(map[string]*LiveStreamSnapshot),
+		db:                db,
+		cfg:               cfg,
+		store:             NewLiveStreamRedisStore(cfg.RedisClient),
+		register:          make(chan *liveStreamClient, 16),
+		unregister:        make(chan *liveStreamClient, 16),
+		broadcast:         make(chan LiveRequest, cfg.BroadcastQueueSize),
+		clients:           make(map[*liveStreamClient]struct{}),
+		lastActivity:      time.Now(),
+		stopCh:            make(chan struct{}),
+		cachedSnapshot:    make(map[string]*cachedSnapshotEntry),
+		cachedSnapshotTTL: 10 * time.Minute, // evict entries idle for >10min
 	}
 }
 
@@ -183,8 +192,10 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 func (h *LiveStreamSSEHub) Run() {
 	idleTicker := time.NewTicker(h.cfg.IdleTickInterval)
 	keepaliveTicker := time.NewTicker(h.cfg.KeepaliveInterval)
+	cacheCleanupTicker := time.NewTicker(h.cachedSnapshotTTL)
 	defer idleTicker.Stop()
 	defer keepaliveTicker.Stop()
+	defer cacheCleanupTicker.Stop()
 
 	for {
 		select {
@@ -216,11 +227,17 @@ func (h *LiveStreamSSEHub) Run() {
 			}
 			tenantID := normalizeLiveStreamTenant(req.TenantID)
 			h.cachedSnapshotMu.Lock()
-			cachedForTenant := h.cachedSnapshot[tenantID]
+			var cachedSnapshot *LiveStreamSnapshot
+			if entry := h.cachedSnapshot[tenantID]; entry != nil {
+				cachedSnapshot = entry.snapshot
+			}
 			var delta *LiveStreamDelta
 			if snapshot != nil {
-				delta = ComputeDelta(cachedForTenant, snapshot)
-				h.cachedSnapshot[tenantID] = snapshot
+				delta = ComputeDelta(cachedSnapshot, snapshot)
+				h.cachedSnapshot[tenantID] = &cachedSnapshotEntry{
+					snapshot:     snapshot,
+					lastAccessed: time.Now(),
+				}
 			}
 			h.cachedSnapshotMu.Unlock()
 			h.fanOut(LiveStreamEnvelope{
@@ -233,6 +250,22 @@ func (h *LiveStreamSSEHub) Run() {
 			h.maybeEmitIdleMarker()
 		case <-keepaliveTicker.C:
 			h.fanOutKeepalive()
+		case <-cacheCleanupTicker.C:
+			h.evictStaleCachedSnapshots()
+		}
+	}
+}
+
+// evictStaleCachedSnapshots removes tenant cached snapshots that have
+// not been touched within cachedSnapshotTTL. Prevents unbounded memory
+// growth from tenants that send a single request then go silent.
+func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
+	now := time.Now()
+	h.cachedSnapshotMu.Lock()
+	defer h.cachedSnapshotMu.Unlock()
+	for tenantID, entry := range h.cachedSnapshot {
+		if now.Sub(entry.lastAccessed) > h.cachedSnapshotTTL {
+			delete(h.cachedSnapshot, tenantID)
 		}
 	}
 }
