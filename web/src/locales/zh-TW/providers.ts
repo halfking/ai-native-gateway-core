@@ -78,6 +78,8 @@ export default {
     enabledBadge: '已啟用',
     disabledBadge: '已停用',
     empty: '尚未設定任何提供商',
+    manualDisabledBadge: '已停用',
+    manualDisabledTooltip: '此供應商已被管理員手動停用，所有路由將跳過',
   },
   create: {
     title: '新增供應商',
@@ -306,17 +308,12 @@ export default {
     loadFailed: '載入失敗',
   },
   common: {
-    // [TODO] add nested keys
-  },
     button: {
-      // [TODO] add nested keys
+      cancel: '取消',
+      save: '儲存',
     },
-      cancel: "[TODO: providers.common.button.cancel]",
-      save: "[TODO: providers.common.button.save]",
     table: {
-      // [TODO] add nested keys
+      actions: '操作',
     },
-      actions: "[TODO: providers.common.table.actions]",
-    manualDisabledBadge: "[TODO: providers.list.manualDisabledBadge]",
-    manualDisabledTooltip: "[TODO: providers.list.manualDisabledTooltip]",
+  },
 }

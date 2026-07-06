@@ -625,8 +625,6 @@ export default {
     standardName: "[TODO: providerDetail.table.standardName]",
     successRate: "[TODO: providerDetail.table.successRate]",
   tableCol: {
-    // [TODO] add nested keys
-  },
     category: "[TODO: providerDetail.tableCol.category]",
     credential: "[TODO: providerDetail.tableCol.credential]",
     error: "[TODO: providerDetail.tableCol.error]",
@@ -634,6 +632,7 @@ export default {
     latency: "[TODO: providerDetail.tableCol.latency]",
     model: "[TODO: providerDetail.tableCol.model]",
     status: "[TODO: providerDetail.tableCol.status]",
+  },
   tableEmpty: "[TODO: providerDetail.tableEmpty]",
   tableLoading: "[TODO: providerDetail.tableLoading]",
   title: "[TODO: providerDetail.title]",
