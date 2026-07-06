@@ -2697,13 +2697,29 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	if hub != nil {
+		// Diagnose why provider info is sometimes missing. Both IDs being
+		// empty means the request never reached credential selection
+		// (e.g. auth/routing failure), which is expected for some flows;
+		// one ID present but resolution returning empty points at a stale
+		// cache entry or a missing providers/credentials row.
+		hasCred := entry.CredentialID != nil && *entry.CredentialID > 0
+		hasProv := entry.ProviderID != nil && *entry.ProviderID > 0
+		if !hasCred && !hasProv {
+			slog.Debug("live stream: request has no credential_id/provider_id",
+				"request_id", entry.RequestID, "status", status, "tenant_id", entry.TenantID)
+		}
 		// Prefer credential_id resolution (accurate provider even when telemetry provider_id is stale/missing)
-		if entry.CredentialID != nil && *entry.CredentialID > 0 {
+		if hasCred {
 			providerCode = hub.ProviderCodeForCredential(ctx, *entry.CredentialID)
 		}
 		// Fallback to provider_id
-		if providerCode == "" && entry.ProviderID != nil {
+		if providerCode == "" && hasProv {
 			providerCode = hub.ProviderCodeFor(ctx, *entry.ProviderID)
+		}
+		if providerCode == "" && (hasCred || hasProv) {
+			slog.Debug("live stream: provider resolution returned empty",
+				"request_id", entry.RequestID, "credential_id", entry.CredentialID,
+				"provider_id", entry.ProviderID, "tenant_id", entry.TenantID)
 		}
 		return hub.LiveRequestFromTelemetry(
 			ctx,
@@ -2725,18 +2741,17 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 	}
 	// Fallback when hub is nil
 	return admin.LiveRequest{
-		RequestID:        entry.RequestID,
-		Ts:               time.Now().UTC().Format(time.RFC3339),
-		TenantID:         entry.TenantID,
-		Model:            outboundModel,
-		ModelCategory:    "other",
-		ProviderCode:     providerCode,
-		Status:           status,
-		LatencyMs:        entry.LatencyMs,
-		PromptTokens:     entry.PromptTokens,
+		RequestID:     entry.RequestID,
+		Ts:            time.Now().UTC().Format(time.RFC3339),
+		TenantID:      entry.TenantID,
+		Model:         outboundModel,
+		ProviderCode:  providerCode,
+		Status:        status,
+		LatencyMs:     entry.LatencyMs,
+		PromptTokens:  entry.PromptTokens,
 		CompletionTokens: entry.CompletionTokens,
-		TotalTokens:      totalTokens,
-		CostUSD:          entry.CostUSD,
-		ErrorKind:        entry.ErrorKind,
+		TotalTokens:   totalTokens,
+		CostUSD:       entry.CostUSD,
+		ErrorKind:     entry.ErrorKind,
 	}
 }
