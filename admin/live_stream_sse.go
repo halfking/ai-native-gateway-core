@@ -50,13 +50,19 @@ import (
 //	"request"      — a new request completed (or transitioned to in-progress); carries delta
 //	"idle_marker"  — 1 minute of silence; carries delta
 //	"ping"         — keepalive; the EventSource ignores these
+//
+// Delta is the tenant-scoped delta (for tenant-admin clients). superDelta
+// is the global/super-admin-scoped delta (for super-admin clients). The
+// hub's shouldDeliver picks the right one per client so a super-admin's
+// lane view is never overwritten by an individual tenant's snapshot.
 type LiveStreamEnvelope struct {
-	Type      string              `json:"type"`
-	Timestamp time.Time           `json:"ts"`
-	Request   *LiveRequest        `json:"request,omitempty"`
-	Requests  []LiveRequest       `json:"requests,omitempty"`
-	Snapshot  *LiveStreamSnapshot `json:"snapshot,omitempty"`
-	Delta     *LiveStreamDelta    `json:"delta,omitempty"`
+	Type       string              `json:"type"`
+	Timestamp  time.Time           `json:"ts"`
+	Request    *LiveRequest        `json:"request,omitempty"`
+	Requests   []LiveRequest       `json:"requests,omitempty"`
+	Snapshot   *LiveStreamSnapshot `json:"snapshot,omitempty"`
+	Delta      *LiveStreamDelta    `json:"delta,omitempty"`
+	superDelta *LiveStreamDelta    `json:"-"` // attached to Delta during fanOut for super clients; not serialised directly
 }
 
 // LiveRequest is the minimal projection the dashboard swim lane needs.
@@ -224,32 +230,31 @@ func (h *LiveStreamSSEHub) Run() {
 			h.lastActivity = time.Now()
 			h.lastActivityMu.Unlock()
 			atomic.AddInt64(&h.broadcastCount, 1)
-			var snapshot *LiveStreamSnapshot
+			// Compute BOTH scopes so super-admin and tenant-admin clients each
+			// receive a delta consistent with their own view. Previously a
+			// single tenant-scoped snapshot was fanned out to everyone, which
+			// caused super-admin lanes to flicker/disappear as different
+			// tenants' requests alternately overwrote the shared cache.
+			// The super-scope delta is only computed when at least one
+			// super-admin client is connected (avoids 2x Redis reads when no
+			// super admin is watching).
+			tenantID := normalizeLiveStreamTenant(req.TenantID)
+			hasSuperClient := h.hasSuperClient()
+			var tenantDelta, superDelta *LiveStreamDelta
 			if h.store != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-				snapshot, _ = h.store.Snapshot(ctx, req.TenantID, false, h.cfg.InitialReplayLimit)
+				tenantDelta = h.computeScopeDelta(ctx, tenantID, false)
+				if hasSuperClient {
+					superDelta = h.computeScopeDelta(ctx, "", true)
+				}
 				cancel()
 			}
-			tenantID := normalizeLiveStreamTenant(req.TenantID)
-			h.cachedSnapshotMu.Lock()
-			var cachedSnapshot *LiveStreamSnapshot
-			if entry := h.cachedSnapshot[tenantID]; entry != nil {
-				cachedSnapshot = entry.snapshot
-			}
-			var delta *LiveStreamDelta
-			if snapshot != nil {
-				delta = ComputeDelta(cachedSnapshot, snapshot)
-				h.cachedSnapshot[tenantID] = &cachedSnapshotEntry{
-					snapshot:     snapshot,
-					lastAccessed: time.Now(),
-				}
-			}
-			h.cachedSnapshotMu.Unlock()
 			h.fanOut(LiveStreamEnvelope{
 				Type:      "request",
 				Timestamp: time.Now().UTC(),
 				Request:   &req,
-				Delta:     delta,
+				Delta:     tenantDelta,
+				superDelta: superDelta,
 			})
 		case <-idleTicker.C:
 			h.maybeEmitIdleMarker()
@@ -259,6 +264,50 @@ func (h *LiveStreamSSEHub) Run() {
 			h.evictStaleCachedSnapshots()
 		}
 	}
+}
+
+// computeScopeDelta reads a fresh snapshot for the given scope
+// (tenantID="" + isSuper=true for the global view, or tenantID+false
+// for a tenant view) and returns the delta against the cached snapshot
+// for that scope. It NEVER overwrites the cache with an empty snapshot:
+// when Redis is momentarily empty we keep the last good snapshot so a
+// transient Redis hiccup cannot blank out every client's lanes (the
+// root cause of the "queues disappear, come back on refresh" bug).
+func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID string, isSuper bool) *LiveStreamDelta {
+	if h.store == nil {
+		return nil
+	}
+	snapshot, err := h.store.Snapshot(ctx, tenantID, isSuper, h.cfg.InitialReplayLimit)
+	if err != nil {
+		slog.Debug("live stream scope snapshot failed",
+			"scope_tenant", tenantID, "is_super", isSuper, "err", err.Error())
+		return nil
+	}
+	// Scope cache key: super scope uses a dedicated sentinel so it never
+	// collides with a tenant literally named "default"/etc.
+	cacheKey := tenantID
+	if isSuper {
+		cacheKey = "__super__"
+	}
+	h.cachedSnapshotMu.Lock()
+	defer h.cachedSnapshotMu.Unlock()
+	var cached *LiveStreamSnapshot
+	if entry := h.cachedSnapshot[cacheKey]; entry != nil {
+		cached = entry.snapshot
+	}
+	// Guard: do not let an empty snapshot overwrite a populated cache.
+	// An empty read from Redis is treated as "no change" (return the
+	// last delta is pointless; better to simply skip). This is what
+	// stops a 200ms Redis stall from clearing every dashboard.
+	if snapshot == nil || snapshot.Summary.Total == 0 {
+		return nil
+	}
+	delta := ComputeDelta(cached, snapshot)
+	h.cachedSnapshot[cacheKey] = &cachedSnapshotEntry{
+		snapshot:     snapshot,
+		lastAccessed: time.Now(),
+	}
+	return delta
 }
 
 // evictStaleCachedSnapshots removes tenant cached snapshots that have
@@ -288,9 +337,11 @@ func (h *LiveStreamSSEHub) Stop() {
 // back to catalog_code/code when the provider has no name.
 func (h *LiveStreamSSEHub) ProviderCodeFor(ctx context.Context, providerID int) string {
 	if providerID == 0 {
+		slog.Debug("live stream provider lookup: zero provider_id")
 		return ""
 	}
 	if h.db == nil {
+		slog.Debug("live stream provider lookup: no database connection")
 		return ""
 	}
 	if cached, ok := h.providerCache.Load(providerID); ok {
@@ -303,8 +354,12 @@ func (h *LiveStreamSSEHub) ProviderCodeFor(ctx context.Context, providerID int) 
 		WHERE id = $1
 	`, providerID)
 	if err := row.Scan(&display); err != nil {
+		slog.Debug("live stream provider lookup failed", "provider_id", providerID, "err", err.Error())
 		h.providerCache.Store(providerID, "")
 		return ""
+	}
+	if display == "" {
+		slog.Debug("live stream provider lookup: empty result", "provider_id", providerID)
 	}
 	h.providerCache.Store(providerID, display)
 	return display
@@ -315,6 +370,11 @@ func (h *LiveStreamSSEHub) ProviderCodeFor(ctx context.Context, providerID int) 
 // provider_id from the telemetry envelope.
 func (h *LiveStreamSSEHub) ProviderCodeForCredential(ctx context.Context, credentialID int) string {
 	if credentialID == 0 || h == nil || h.db == nil {
+		if credentialID == 0 {
+			slog.Debug("live stream credential provider lookup: zero credential_id")
+		} else if h.db == nil {
+			slog.Debug("live stream credential provider lookup: no database connection")
+		}
 		return ""
 	}
 	cacheKey := fmt.Sprintf("cred:%d", credentialID)
@@ -329,8 +389,12 @@ func (h *LiveStreamSSEHub) ProviderCodeForCredential(ctx context.Context, creden
 		WHERE c.id = $1
 	`, credentialID)
 	if err := row.Scan(&display); err != nil {
+		slog.Debug("live stream credential provider lookup failed", "credential_id", credentialID, "err", err.Error())
 		h.providerCache.Store(cacheKey, "")
 		return ""
+	}
+	if display == "" {
+		slog.Debug("live stream credential provider lookup: empty result", "credential_id", credentialID)
 	}
 	h.providerCache.Store(cacheKey, display)
 	return display
@@ -341,10 +405,14 @@ func (h *LiveStreamSSEHub) ProviderCodeForCredential(ctx context.Context, creden
 func (h *LiveStreamSSEHub) ModelVendorFor(ctx context.Context, model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return "other" // Don't cache empty strings
+		return "" // Don't cache empty strings, return empty to skip this dimension
 	}
 	if h == nil || h.db == nil {
-		return classifyModelCategoryFallback(model)
+		vendor := classifyModelCategoryFallback(model)
+		if vendor == "" {
+			slog.Debug("model vendor classification failed (no db, no pattern match)", "model", model)
+		}
+		return vendor
 	}
 
 	// Check cache first
@@ -365,10 +433,15 @@ func (h *LiveStreamSSEHub) ModelVendorFor(ctx context.Context, model string) str
 	if err := row.Scan(&vendor); err != nil || vendor == "" {
 		// Fallback to pattern matching
 		vendor = classifyModelCategoryFallback(model)
+		if vendor == "" {
+			slog.Debug("model vendor not found in db or pattern", "model", model, "db_error", err)
+		}
 		h.modelFamilyCache.Store(model, vendor)
 		return vendor
 	}
 
+	// Normalize vendor name to lowercase for consistency
+	vendor = strings.ToLower(strings.TrimSpace(vendor))
 	h.modelFamilyCache.Store(model, vendor)
 	return vendor
 }
@@ -397,18 +470,27 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 	}
 	now := time.Now().UTC()
 	if h.store != nil {
-		// Use new method that scans and records idle markers for all dimension queues
 		if err := h.store.ScanAndRecordIdleMarkers(context.Background(), now); err != nil {
 			slog.Debug("live stream scan and record idle markers failed", "err", err.Error(), "timestamp", now.Format(time.RFC3339))
 		}
 	}
-	// Idle marker is a visual gap indicator only. We intentionally do NOT
-	// attach a delta because the idle snapshot is global (isSuper=true)
-	// while per-client snapshots are tenant-scoped. Merging a global delta
-	// into a tenant-scoped snapshot would corrupt the client's lane data.
+	// Idle markers were just persisted to the main queues. Push the global
+	// (super) delta so super-admin dashboards refresh immediately. Tenant
+	// clients do not receive a delta here: idle markers are per-tenant and
+	// recomputing every tenant would be expensive; each tenant's lanes will
+	// refresh naturally the next time one of its requests arrives (or on
+	// reconnect via initial_data). Attaching only superDelta is safe because
+	// computeScopeDelta never overwrites the cache with an empty snapshot.
+	var superDelta *LiveStreamDelta
+	if h.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		superDelta = h.computeScopeDelta(ctx, "", true)
+		cancel()
+	}
 	h.fanOut(LiveStreamEnvelope{
-		Type:      "idle_marker",
-		Timestamp: now,
+		Type:       "idle_marker",
+		Timestamp:  now,
+		superDelta: superDelta,
 	})
 	h.lastActivityMu.Lock()
 	h.lastActivity = time.Now()
@@ -432,7 +514,11 @@ func (h *LiveStreamSSEHub) fanOutKeepalive() {
 	}
 }
 
-// fanOut serialises a payload to every eligible client.
+// fanOut serialises a payload to every eligible client. When the
+// envelope carries a super-scope delta (superDelta) in addition to the
+// tenant-scope delta, super-admin clients are serialised with the
+// super delta so their lane view reflects the global snapshot rather
+// than whichever tenant happened to produce the latest request.
 func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 	h.mu.RLock()
 	clients := make([]*liveStreamClient, 0, len(h.clients))
@@ -441,17 +527,35 @@ func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 	}
 	h.mu.RUnlock()
 
-	data, err := json.Marshal(env)
-	if err != nil {
-		slog.Warn("live stream marshal failed", "err", err.Error())
+	// Pre-serialise the two variants at most once.
+	var tenantData, superData []byte
+	var marshalErr error
+	tenantEnv := env
+	tenantEnv.Delta = env.Delta
+	if tenantData, marshalErr = json.Marshal(tenantEnv); marshalErr != nil {
+		slog.Warn("live stream marshal failed (tenant)", "err", marshalErr.Error())
 		return
+	}
+	if env.superDelta != nil {
+		superEnv := env
+		superEnv.Delta = env.superDelta
+		if superData, marshalErr = json.Marshal(superEnv); marshalErr != nil {
+			slog.Warn("live stream marshal failed (super)", "err", marshalErr.Error())
+			// Fall back to tenant payload for everyone rather than dropping.
+			superData = nil
+		}
 	}
 
 	for _, c := range clients {
 		if !h.shouldDeliver(c, env) {
 			continue
 		}
-		if !h.writeEvent(c, data) {
+		// Super-admin clients get the global-scoped delta when available.
+		payload := tenantData
+		if c.isSuper && superData != nil {
+			payload = superData
+		}
+		if !h.writeEvent(c, payload) {
 			h.evict(c)
 		}
 	}
@@ -465,6 +569,20 @@ func (h *LiveStreamSSEHub) shouldDeliver(c *liveStreamClient, env LiveStreamEnve
 		return env.Request.TenantID == c.tenantID
 	}
 	return true
+}
+
+// hasSuperClient reports whether any connected client is a super admin.
+// Used to skip the (relatively expensive) global-scope snapshot read on
+// the hot broadcast path when nobody is watching the super-admin view.
+func (h *LiveStreamSSEHub) hasSuperClient() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		if c.isSuper {
+			return true
+		}
+	}
+	return false
 }
 
 // writeEvent serialises one envelope to one client.
@@ -751,7 +869,9 @@ func classifyModelCategoryFallback(model string) string {
 	case strings.Contains(m, "gemma"):
 		return "google"
 	default:
-		return "other"
+		// Return empty string instead of "other" to avoid creating an "other" queue
+		// The caller should handle empty vendor appropriately
+		return ""
 	}
 }
 
@@ -775,7 +895,19 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(ctx context.Context, request
 	} else {
 		out.Model = clientModel
 	}
+	
+	// Log when provider is missing to help diagnose the issue
+	if providerCode == "" {
+		slog.Debug("live request from telemetry: missing provider_code", "request_id", requestID, "model", out.Model, "tenant_id", tenantID)
+	}
+	
 	out.ModelCategory = h.ModelVendorFor(ctx, out.Model)
+	
+	// Log when model category is missing to help diagnose
+	if out.ModelCategory == "" {
+		slog.Debug("live request from telemetry: missing model_category", "request_id", requestID, "model", out.Model, "provider", providerCode, "tenant_id", tenantID)
+	}
+	
 	if status == "" {
 		switch {
 		case success:

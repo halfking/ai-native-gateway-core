@@ -125,19 +125,32 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 		req.RequestID = fmt.Sprintf("request-%d", time.Now().UnixNano())
 	}
 	tenantID := normalizeLiveStreamTenant(req.TenantID)
+	
+	// Enhanced logging for debugging missing dimension values
+	if req.ModelCategory == "" {
+		slog.Debug("live stream record: missing model_category", "request_id", req.RequestID, "model", req.Model, "tenant_id", tenantID)
+	}
+	if req.ProviderCode == "" {
+		slog.Debug("live stream record: missing provider_code", "request_id", req.RequestID, "model", req.Model, "tenant_id", tenantID)
+	}
+	if req.Model == "" {
+		slog.Debug("live stream record: missing model", "request_id", req.RequestID, "tenant_id", tenantID)
+	}
+	
 	var oldData string
 	if v, err := s.rdb.Get(ctx, liveStreamRequestDetailKey(tenantID, req.RequestID)).Result(); err == nil {
 		oldData = v
 	} else if err != redis.Nil {
-		return err
+		return fmt.Errorf("failed to fetch old request data: request_id=%s tenant_id=%s: %w", req.RequestID, tenantID, err)
 	}
 	data, err := marshalLiveRequestRedisPayload(req)
 	if err != nil {
-		return fmt.Errorf("marshal live request failed: request_id=%s tenant_id=%s model=%s: %w", req.RequestID, tenantID, req.Model, err)
+		return fmt.Errorf("marshal live request failed: request_id=%s tenant_id=%s model=%s provider=%s category=%s: %w", req.RequestID, tenantID, req.Model, req.ProviderCode, req.ModelCategory, err)
 	}
 
 	ts, err := time.Parse(time.RFC3339, req.Ts)
 	if err != nil {
+		slog.Warn("live stream record: invalid timestamp, using now", "request_id", req.RequestID, "ts", req.Ts, "err", err.Error())
 		ts = time.Now().UTC()
 	}
 	score := float64(ts.UnixMilli())
@@ -147,6 +160,8 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 		var oldReq LiveRequest
 		if oldReq, err = unmarshalLiveRequestRedisPayload(oldData); err == nil {
 			removeLiveRequestFromQueues(ctx, pipe, normalizeLiveStreamTenant(oldReq.TenantID), oldReq)
+		} else {
+			slog.Warn("live stream record: failed to unmarshal old request", "request_id", req.RequestID, "err", err.Error())
 		}
 	}
 
@@ -173,7 +188,10 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	pipe.Set(ctx, liveStreamActivityKey("", "main", ""), activityUnix, liveStreamTTL)
 	pipe.Set(ctx, liveStreamActivityKey(tenantID, "main", ""), activityUnix, liveStreamTTL)
 
-	for _, key := range liveRequestQueueKeys(tenantID, req) {
+	queueKeys := liveRequestQueueKeys(tenantID, req)
+	slog.Debug("live stream record: adding to queues", "request_id", req.RequestID, "tenant_id", tenantID, "model", req.Model, "provider", req.ProviderCode, "category", req.ModelCategory, "queue_count", len(queueKeys))
+	
+	for _, key := range queueKeys {
 		pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: req.RequestID})
 		pipe.Expire(ctx, key, liveStreamTTL)
 	}
@@ -182,7 +200,7 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 
 	_, err = pipe.Exec(ctx)
 	if err != nil {
-		return fmt.Errorf("redis pipeline exec failed: request_id=%s tenant_id=%s: %w", req.RequestID, tenantID, err)
+		return fmt.Errorf("redis pipeline exec failed: request_id=%s tenant_id=%s model=%s provider=%s category=%s queue_count=%d: %w", req.RequestID, tenantID, req.Model, req.ProviderCode, req.ModelCategory, len(queueKeys), err)
 	}
 	return nil
 }
@@ -201,19 +219,20 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 		liveStreamStatPrefix + emptyAs(req.Status, "in_progress"),
 		tenantLiveStreamKey(tenantID, "status:"+emptyAs(req.Status, "in_progress")),
 	}
-	if req.ModelCategory != "" {
+	// Only add dimension keys when the dimension value is present and valid
+	if req.ModelCategory != "" && req.ModelCategory != "__unknown__" && req.ModelCategory != "other" {
 		keys = append(keys,
 			liveStreamDimPrefix+"vendor:"+req.ModelCategory,
 			tenantLiveStreamKey(tenantID, "dim:vendor:"+req.ModelCategory),
 		)
 	}
-	if req.ProviderCode != "" {
+	if req.ProviderCode != "" && req.ProviderCode != "unknown" {
 		keys = append(keys,
 			liveStreamDimPrefix+"provider:"+req.ProviderCode,
 			tenantLiveStreamKey(tenantID, "dim:provider:"+req.ProviderCode),
 		)
 	}
-	if req.Model != "" {
+	if req.Model != "" && req.Model != "unknown" {
 		keys = append(keys,
 			liveStreamDimPrefix+"model:"+req.Model,
 			tenantLiveStreamKey(tenantID, "dim:model:"+req.Model),
@@ -377,9 +396,22 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 
 	for _, req := range items {
 		key := liveStreamDimensionKey(dimension, req)
-		st := stats[key]
-		countStatus(&st, req.Status)
-		stats[key] = st
+		// Skip requests without valid dimension values (empty keys)
+		if key == "" {
+			continue
+		}
+		// Idle markers are displayed as tiles inside the lane but do NOT
+		// inflate the lane's business stats (success/failure/in_progress),
+		// keeping lane.Stats consistent with the global Summary.
+		if req.Type != "idle_marker" {
+			st := stats[key]
+			countStatus(&st, req.Status)
+			stats[key] = st
+		} else if _, ok := stats[key]; !ok {
+			// Ensure an idle-only lane still gets an (empty) stats entry so
+			// it appears in the legend.
+			stats[key] = LiveStreamStats{}
+		}
 		grouped[key] = append(grouped[key], liveRequestTile(req))
 	}
 
@@ -395,10 +427,15 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 	})
 
 	// Build lanes - no more top N or others aggregation, return all lanes
+	// Skip empty keys and unknown/other categories
 	lanes := make([]LiveStreamLane, 0, len(keys))
 	legends := make([]LiveStreamLegendItem, 0, len(keys))
 
 	for _, key := range keys {
+		// Filter out unwanted categories
+		if key == "" || key == "unknown" || key == "__unknown__" || key == "other" || key == "__idle__" {
+			continue
+		}
 		lanes = append(lanes, LiveStreamLane{
 			ID:        key,
 			Name:      key,
@@ -432,45 +469,36 @@ func buildStatusLegends(items []LiveRequest) []LiveStreamLegendItem {
 }
 
 func liveStreamDimensionKey(dimension string, req LiveRequest) string {
-	if req.Type == "idle_marker" {
-		switch dimension {
-		case "vendor":
-			return "__idle__"
-		case "provider":
-			return "系统心跳"
-		case "model":
-			return "空闲"
-		}
-	}
+	// For idle markers, use the actual dimension value (already set correctly in createIdleMarkerForDimension)
+	// This ensures idle markers inherit the queue's identity rather than creating separate idle lanes
 	switch dimension {
 	case "vendor":
-		return emptyAs(req.ModelCategory, "__unknown__")
+		if req.ModelCategory == "" {
+			return "" // Skip this dimension if no value
+		}
+		return req.ModelCategory
 	case "provider":
-		return emptyAs(req.ProviderCode, "unknown")
+		if req.ProviderCode == "" {
+			return "" // Skip this dimension if no value
+		}
+		return req.ProviderCode
 	case "model":
-		return emptyAs(req.Model, "unknown")
+		if req.Model == "" {
+			return "" // Skip this dimension if no value
+		}
+		return req.Model
 	default:
-		return "unknown"
+		return ""
 	}
 }
 
 func liveRequestTile(req LiveRequest) LiveStreamTile {
-	if req.Type == "idle_marker" {
-		return LiveStreamTile{
-			RequestID: req.RequestID,
-			Timestamp: req.Ts,
-			Model:     "空闲",
-			Vendor:    "__idle__",
-			Provider:  "系统心跳",
-			Status:    "idle",
-		}
-	}
-	return LiveStreamTile{
+	tile := LiveStreamTile{
 		RequestID:        req.RequestID,
 		Timestamp:        req.Ts,
-		Model:            emptyAs(req.Model, "unknown"),
-		Vendor:           emptyAs(req.ModelCategory, "__unknown__"),
-		Provider:         emptyAs(req.ProviderCode, "unknown"),
+		Model:            req.Model,
+		Vendor:           req.ModelCategory,
+		Provider:         req.ProviderCode,
 		Status:           emptyAs(req.Status, "in_progress"),
 		ErrorKind:        req.ErrorKind,
 		LatencyMs:        req.LatencyMs,
@@ -478,6 +506,23 @@ func liveRequestTile(req LiveRequest) LiveStreamTile {
 		PromptTokens:     req.PromptTokens,
 		CompletionTokens: req.CompletionTokens,
 	}
+	// Idle markers carry only their own dimension's identity. Surface a
+	// human-readable "[空闲]" label on whichever field is empty so the
+	// tile is never blank, while preserving the real value on the field
+	// that identifies the lane.
+	if req.Type == "idle_marker" {
+		tile.Status = "idle"
+		if tile.Model == "" {
+			tile.Model = "[空闲]"
+		}
+		if tile.Vendor == "" {
+			tile.Vendor = "[空闲]"
+		}
+		if tile.Provider == "" {
+			tile.Provider = "[空闲]"
+		}
+	}
+	return tile
 }
 
 func countStatus(stats *LiveStreamStats, status string) {
@@ -691,28 +736,17 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 	return nil
 }
 
-// idleMarkerQueueKeys returns the Redis ZSET keys an idle marker for the
-// given dimension should land in: the global lane and the tenant-scoped
-// lane. Crucially it does NOT include the main queue or status queues,
-// so a per-lane idle marker stays inside its own lane.
+// idleMarkerQueueKeys returns the Redis ZSET keys an idle marker should
+// land in. Because Replay()/Snapshot() only ever read the main queue and
+// rebuild lanes in memory from it, an idle marker MUST be written to the
+// main queue (plus its tenant-scoped twin) to be visible at all. The old
+// implementation wrote only to per-dimension ZSETs that nothing reads,
+// making every idle marker invisible dead data.
 func idleMarkerQueueKeys(tenantID, dimension, dimensionKey string) []string {
 	tenantID = normalizeLiveStreamTenant(tenantID)
-	switch dimension {
-	case "vendor":
-		k := liveStreamDimPrefix + "vendor:" + dimensionKey
-		return []string{k, tenantLiveStreamKey(tenantID, "dim:vendor:"+dimensionKey)}
-	case "provider":
-		k := liveStreamDimPrefix + "provider:" + dimensionKey
-		return []string{k, tenantLiveStreamKey(tenantID, "dim:provider:"+dimensionKey)}
-	case "model":
-		k := liveStreamDimPrefix + "model:" + dimensionKey
-		return []string{k, tenantLiveStreamKey(tenantID, "dim:model:"+dimensionKey)}
-	case "main":
-		// Main-queue idle markers DO belong on the main lane.
-		return []string{liveStreamMainKey, tenantLiveStreamKey(tenantID, "main")}
-	default:
-		return nil
-	}
+	// All idle markers go to main so they are replayed and rendered inside
+	// the lane that matches their carried dimension value.
+	return []string{liveStreamMainKey, tenantLiveStreamKey(tenantID, "main")}
 }
 
 func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time) LiveRequest {
@@ -722,7 +756,7 @@ func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time)
 	if tenantID != "" {
 		scope = "t-" + tenantID
 	}
-	requestID := fmt.Sprintf("idle-%s-%s-%d", scope, dimension, ts.UnixNano())
+	requestID := fmt.Sprintf("idle-%s-%s-%s-%d", scope, dimension, key, ts.UnixNano())
 
 	marker := LiveRequest{
 		Type:      "idle_marker",
@@ -732,28 +766,24 @@ func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time)
 		Status:    "idle",
 	}
 
+	// Each idle marker carries ONLY the identity of the lane it represents,
+	// so it shows up in exactly one dimension view and never leaks into
+	// others (e.g. a vendor-idle marker must not spawn a phantom lane in
+	// the model view). The carried value doubles as the display label.
 	switch dimension {
 	case "vendor":
-		// Vendor lane idle: carry the vendor as ModelCategory so the
-		// lane keeps showing its real identity.
+		// Vendor lane idle: only ModelCategory is set.
 		marker.ModelCategory = key
-		marker.Model = "空闲"
-		marker.ProviderCode = "系统心跳"
 	case "provider":
-		// Provider lane idle: carry the provider as ProviderCode.
+		// Provider lane idle: only ProviderCode is set.
 		marker.ProviderCode = key
-		marker.Model = "空闲"
-		marker.ModelCategory = "__idle__"
 	case "model":
-		// Model lane idle: carry the model name.
+		// Model lane idle: only Model is set.
 		marker.Model = key
-		marker.ModelCategory = "__idle__"
-		marker.ProviderCode = "系统心跳"
 	default:
-		// Main queue idle: generic heartbeat.
-		marker.Model = "空闲"
-		marker.ModelCategory = "__idle__"
-		marker.ProviderCode = "系统心跳"
+		// Main-queue (global) idle: leave all dimension fields empty so it
+		// does not appear in any per-dimension lane; it is still rendered
+		// as a heartbeat in the flat request list.
 	}
 
 	return marker
