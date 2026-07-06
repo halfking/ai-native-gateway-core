@@ -2036,10 +2036,10 @@ func main() {
 		slog.Info("Phase 3.5 session compare & handoff API enabled (/api/admin/session-compare, /session-handoff)")
 
 		// Phase 3.5: Session List & Detail API
-		sessionListAPI := admin.NewSessionListAPI(dbConn.Pool())
-		mux.HandleFunc("/api/admin/sessions", wrapAdmin(sessionListAPI.HandleList))
-		mux.HandleFunc("/api/admin/sessions/", wrapAdmin(sessionListAPI.HandleDetail))
-		slog.Info("Phase 3.5 session list API enabled (/api/admin/sessions)")
+		// NOTE (2026-07-06): removed duplicate registration here. admin/handler.go
+		// already registers /api/admin/sessions via handleListSessions + handleSessionSubrouter
+		// (which is a strict superset including detail, cred-rotations, stop, recover,
+		// annotation, etc.). Keeping both caused ServeMux panic at startup.
 
 		// Phase 4: Session Analytics API (会话全景分析)
 		// 350 迁移修复 session_summaries 聚合链路后启用。
