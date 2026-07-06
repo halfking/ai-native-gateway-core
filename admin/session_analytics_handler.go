@@ -62,6 +62,11 @@ type AnalyticsSessionSummary struct {
 	LastSummarizedAt       *time.Time `json:"last_summarized_at"`
 	CreatedAt              time.Time  `json:"created_at"`
 	UpdatedAt              time.Time  `json:"updated_at"`
+	// 健康评分字段（T1.5）
+	HealthScore            *int       `json:"health_score,omitempty"`
+	HealthGrade            *string    `json:"health_grade,omitempty"`
+	Outcome                *string    `json:"outcome,omitempty"`
+	LastHealthAt           *time.Time `json:"last_health_at,omitempty"`
 }
 
 // AnalyticsSessionStats 会话统计（今日）
@@ -178,7 +183,8 @@ const sessionSummarySelectCols = `ss.session_key, ss.tenant_id, sd.task_id, sd.s
 	ss.compliance_status, ss.compliance_issues_count,
 	ss.prompt_injection_detected, ss.pii_detected, ss.toxic_output_detected,
 	ss.work_types, ss.providers, ss.client_models,
-	ss.last_summarized_at, ss.created_at, ss.updated_at`
+	ss.last_summarized_at, ss.created_at, ss.updated_at,
+	ss.health_score, ss.health_grade, ss.outcome, ss.last_health_at`
 
 // scanSessionSummary scans one row into AnalyticsSessionSummary.
 func scanSessionSummary(row pgx.Row) (AnalyticsSessionSummary, error) {
@@ -196,6 +202,7 @@ func scanSessionSummary(row pgx.Row) (AnalyticsSessionSummary, error) {
 		&s.PromptInjectionDetected, &s.PIIDetected, &s.ToxicOutputDetected,
 		&s.WorkTypes, &s.Providers, &s.ClientModels,
 		&s.LastSummarizedAt, &s.CreatedAt, &s.UpdatedAt,
+		&s.HealthScore, &s.HealthGrade, &s.Outcome, &s.LastHealthAt,
 	)
 	return s, err
 }
@@ -629,6 +636,9 @@ func (h *Handler) buildSessionAnalysis(ctx context.Context, tenantID, gwSessionI
 // RouteSessionAnalytics dispatches sub-routes under /api/admin/session-analytics/.
 //
 //	/stats                      → HandleSessionAnalyticsStats
+//	/model-breakdown            → HandleModelBreakdown (Task T1.2)
+//	/session-shape              → HandleSessionShape (Task T1.2)
+//	/health-distribution        → HandleHealthDistribution (Task T1.2)
 //	/<gw_session_id>            → HandleSessionAnalyticsDetail
 //	/<gw_session_id>/export     → HandleSessionAnalyticsExport
 //	/<gw_session_id>/panorama   → HandleSessionPanorama
@@ -647,6 +657,12 @@ func (h *Handler) RouteSessionAnalytics(w http.ResponseWriter, r *http.Request) 
 	switch {
 	case parts[0] == "stats" && len(parts) == 1:
 		h.HandleSessionAnalyticsStats(w, r)
+	case parts[0] == "model-breakdown" && len(parts) == 1:
+		h.HandleModelBreakdown(w, r)
+	case parts[0] == "session-shape" && len(parts) == 1:
+		h.HandleSessionShape(w, r)
+	case parts[0] == "health-distribution" && len(parts) == 1:
+		h.HandleHealthDistribution(w, r)
 	case len(parts) == 1:
 		// /<gw_session_id>
 		h.HandleSessionAnalyticsDetail(w, r)

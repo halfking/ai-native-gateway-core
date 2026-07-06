@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +30,10 @@ type sessionListItem struct {
 	LastActive            time.Time  `json:"last_active"`
 	LastRequestAt         time.Time  `json:"last_request_at"`
 	StoppedAt             *time.Time `json:"stopped_at,omitempty"`
+	// 健康评分字段（T1.5）
+	HealthScore           *int       `json:"health_score,omitempty"`
+	HealthGrade           *string    `json:"health_grade,omitempty"`
+	Outcome               *string    `json:"outcome,omitempty"`
 }
 
 type sessionListResponse struct {
@@ -61,20 +66,21 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		tenantID = GetTenantID(r)
 	}
 
+	// T1.5: 解析排序和健康过滤参数
+	sortBy := r.URL.Query().Get("sort")
+	healthGradeFilter := r.URL.Query().Get("health_grade") // e.g., "D,F"
+
 	var sessionIDs []string
 	switch statusFilter {
 	case session.StatusStopped:
-		ids, _ := h.sessionManager.ListStoppedSessions(ctxFn(r), tenantID, limit)
+		ids, _ := h.sessionManager.ListStoppedSessions(ctxFn(r), tenantID, limit*2) // 多获取一些，用于过滤后仍有足够数据
 		sessionIDs = ids
 	case "all":
-		active := h.listActiveSessions(ctxFn(r), tenantID, limit)
-		stopped, _ := h.sessionManager.ListStoppedSessions(ctxFn(r), tenantID, limit)
+		active := h.listActiveSessions(ctxFn(r), tenantID, limit*2)
+		stopped, _ := h.sessionManager.ListStoppedSessions(ctxFn(r), tenantID, limit*2)
 		sessionIDs = append(active, stopped...)
-		if len(sessionIDs) > limit {
-			sessionIDs = sessionIDs[:limit]
-		}
 	default:
-		sessionIDs = h.listActiveSessions(ctxFn(r), tenantID, limit)
+		sessionIDs = h.listActiveSessions(ctxFn(r), tenantID, limit*2)
 	}
 
 	items := make([]sessionListItem, 0, len(sessionIDs))
@@ -117,6 +123,24 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		items = append(items, item)
+	}
+
+	// T1.5: 批量查询健康数据（从 session_summaries）
+	if h.db != nil && len(items) > 0 {
+		h.enrichHealthData(ctxFn(r), items)
+	}
+
+	// T1.5: 健康等级过滤
+	if healthGradeFilter != "" {
+		items = h.filterByHealthGrade(items, healthGradeFilter)
+	}
+
+	// T1.5: 排序
+	h.sortSessionList(items, sortBy)
+
+	// 限制结果数量
+	if len(items) > limit {
+		items = items[:limit]
 	}
 
 	writeJSON(w, http.StatusOK, sessionListResponse{Sessions: items, Total: len(items)})
@@ -329,4 +353,177 @@ func defaultString(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// T1.5: enrichHealthData 批量查询 session_summaries 补充健康数据
+func (h *Handler) enrichHealthData(ctx context.Context, items []sessionListItem) {
+	if len(items) == 0 {
+		return
+	}
+
+	// 构建 session_id 列表
+	sessionIDs := make([]string, len(items))
+	for i, item := range items {
+		sessionIDs[i] = item.SessionID
+	}
+
+	// 批量查询健康数据
+	query := `SELECT session_key, health_score, health_grade, outcome
+		FROM session_summaries
+		WHERE session_key = ANY($1)`
+
+	rows, err := h.db.Query(ctx, query, sessionIDs)
+	if err != nil {
+		// 查询失败不阻塞，只是健康列为空
+		return
+	}
+	defer rows.Close()
+
+	// 构建 session_id -> health 的映射
+	healthMap := make(map[string]struct {
+		score   *int
+		grade   *string
+		outcome *string
+	})
+
+	for rows.Next() {
+		var sessionKey string
+		var score *int
+		var grade *string
+		var outcome *string
+		if err := rows.Scan(&sessionKey, &score, &grade, &outcome); err != nil {
+			continue
+		}
+		healthMap[sessionKey] = struct {
+			score   *int
+			grade   *string
+			outcome *string
+		}{score, grade, outcome}
+	}
+
+	// 将健康数据填充到 items
+	for i := range items {
+		if health, ok := healthMap[items[i].SessionID]; ok {
+			items[i].HealthScore = health.score
+			items[i].HealthGrade = health.grade
+			items[i].Outcome = health.outcome
+		}
+	}
+}
+
+// T1.5: filterByHealthGrade 按健康等级过滤
+func (h *Handler) filterByHealthGrade(items []sessionListItem, gradeFilter string) []sessionListItem {
+	if gradeFilter == "" {
+		return items
+	}
+
+	// 解析过滤等级（逗号分隔）
+	grades := strings.Split(gradeFilter, ",")
+	gradeSet := make(map[string]bool)
+	for _, g := range grades {
+		gradeSet[strings.TrimSpace(strings.ToUpper(g))] = true
+	}
+
+	filtered := make([]sessionListItem, 0, len(items))
+	for _, item := range items {
+		if item.HealthGrade == nil {
+			// 未计算健康分的会话，根据是否包含 "unknown" 决定是否保留
+			// 这里选择保留（因为可能是新会话）
+			filtered = append(filtered, item)
+			continue
+		}
+		if gradeSet[*item.HealthGrade] {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+// T1.5: sortSessionList 排序会话列表
+func (h *Handler) sortSessionList(items []sessionListItem, sortBy string) {
+	// 定义状态优先级（error > waiting > active > stopped > recovered）
+	statusPriority := func(status string) int {
+		switch status {
+		case "error":
+			return 1
+		case "waiting":
+			return 2
+		case session.StatusActive:
+			return 3
+		case session.StatusStopped:
+			return 4
+		case "recovered":
+			return 5
+		default:
+			return 6
+		}
+	}
+
+	// 根据 sortBy 参数决定排序逻辑
+	switch sortBy {
+	case "health":
+		// 按健康分降序（分数高的在前）
+		sort.Slice(items, func(i, j int) bool {
+			// 优先按状态排序
+			if statusPriority(items[i].Status) != statusPriority(items[j].Status) {
+				return statusPriority(items[i].Status) < statusPriority(items[j].Status)
+			}
+			// 然后按健康分降序
+			scoreI := 0
+			if items[i].HealthScore != nil {
+				scoreI = *items[i].HealthScore
+			}
+			scoreJ := 0
+			if items[j].HealthScore != nil {
+				scoreJ = *items[j].HealthScore
+			}
+			return scoreI > scoreJ // 降序：分高的在前
+		})
+	case "cost":
+		// 按成本降序
+		sort.Slice(items, func(i, j int) bool {
+			if statusPriority(items[i].Status) != statusPriority(items[j].Status) {
+				return statusPriority(items[i].Status) < statusPriority(items[j].Status)
+			}
+			return items[i].TotalCostUSD > items[j].TotalCostUSD
+		})
+	case "tokens":
+		// 按 token 降序
+		sort.Slice(items, func(i, j int) bool {
+			if statusPriority(items[i].Status) != statusPriority(items[j].Status) {
+				return statusPriority(items[i].Status) < statusPriority(items[j].Status)
+			}
+			return (items[i].TotalPromptTokens + items[i].TotalCompletionTokens) >
+				(items[j].TotalPromptTokens + items[j].TotalCompletionTokens)
+		})
+	case "created_at":
+		// 按创建时间降序（新的在前）
+		sort.Slice(items, func(i, j int) bool {
+			if statusPriority(items[i].Status) != statusPriority(items[j].Status) {
+				return statusPriority(items[i].Status) < statusPriority(items[j].Status)
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+	default:
+		// 默认排序：status(error>waiting>active) + health_score DESC
+		sort.Slice(items, func(i, j int) bool {
+			// 优先按状态优先级排序
+			if statusPriority(items[i].Status) != statusPriority(items[j].Status) {
+				return statusPriority(items[i].Status) < statusPriority(items[j].Status)
+			}
+			// 然后按健康分降序（分数低的会话需要更多关注，但这里按文档是降序，即分高的在前）
+			// 实际上文档说"D/F 会话在列表自动置顶"，所以应该是升序（分低的在前）
+			// 让我重新理解：默认排序是"最需要关注的在最上面"
+			// 所以应该是健康分升序（F=0-39 在最前，A=90-100 在最后）
+			scoreI := 100 // 默认值（未计算时视为健康）
+			if items[i].HealthScore != nil {
+				scoreI = *items[i].HealthScore
+			}
+			scoreJ := 100
+			if items[j].HealthScore != nil {
+				scoreJ = *items[j].HealthScore
+			}
+			return scoreI < scoreJ // 升序：分低的在前（需要关注）
+		})
+	}
 }
