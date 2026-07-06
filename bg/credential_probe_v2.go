@@ -232,6 +232,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 				HealthLatencyMs:   int(time.Since(probeStart).Milliseconds()),
 				HealthSource:      "probe",
 				AvailabilityState: "ready",
+				QuotaState:        "ok", // 探测成功时主动清除 periodic_exhausted
 			}
 			healthy++
 		} else {
@@ -780,6 +781,7 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 			HealthLatencyMs:   int(time.Since(probeStart).Milliseconds()),
 			HealthSource:      "probe_now",
 			AvailabilityState: "ready",
+			QuotaState:        "ok", // 探测成功时主动清除 periodic_exhausted
 		}
 		slog.Info("credential probe v2: ProbeNow ok",
 			"credential_id", credID,

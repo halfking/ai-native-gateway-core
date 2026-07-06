@@ -106,6 +106,27 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		slog.Info("credential quota recovered", "count", tag.RowsAffected())
 	}
 
+	// 2026-07-06 P0 fix: 清除已经健康但卡在 periodic_exhausted 的凭据。
+	// 根因：probe-v2 对 402 错误设置 quota_state='periodic_exhausted' 但不设置
+	// quota_recover_at，导致上面的恢复 SQL（WHERE quota_recover_at IS NOT NULL）
+	// 无法触发。成功探测时 COALESCE($8, quota_state) 又保持旧值不变。
+	// 恢复条件：health_status='healthy' 且最近 1 小时内探测过 → 凭据已恢复但状态未清除。
+	tag, err = r.db.Exec(timeoutCtx, `
+		UPDATE credentials
+		SET quota_state = 'ok',
+		    state_updated_at = now()
+		WHERE quota_state = 'periodic_exhausted'
+		  AND health_status = 'healthy'
+		  AND health_checked_at > now() - INTERVAL '1 hour'
+		  AND lifecycle_status = 'active'
+	`)
+	if err != nil {
+		slog.Warn("stale periodic_exhausted cleanup failed", "error", err)
+	} else if tag.RowsAffected() > 0 {
+		slog.Info("stale periodic_exhausted cleared (credentials already healthy)",
+			"count", tag.RowsAffected())
+	}
+
 	tag, err = r.db.Exec(timeoutCtx, `
 		UPDATE credentials
 		SET circuit_state = 'closed',
