@@ -85,9 +85,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin"                                                //nolint:depguard // Phase 4 SetClusterRunner 注入
 	"github.com/kaixuan/llm-gateway-go/domain"                                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domain/analysis"                                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"               //nolint:depguard
+	sessionanalytics "github.com/kaixuan/llm-gateway-go/domains/analysis"                    //nolint:depguard // Phase 4 会话全景分析引擎
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/workers"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -100,6 +102,7 @@ import (
 	outputcompliancehooks "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance" //nolint:depguard
 	promptinjectionhooks "github.com/kaixuan/llm-gateway-go/domains/hooks/promptinjection"   //nolint:depguard
 	legacysec "github.com/kaixuan/llm-gateway-go/domains/hooks/security"                     //nolint:depguard
+	sessionanalysis "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionanalysis"        //nolint:depguard
 	sessioninspector "github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector"     //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/tools"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -241,6 +244,13 @@ type v2DispatchDeps struct {
 	PromptInjectionDetector promptinjectionhooks.Detector
 	OutputComplianceChecker outputcompliancehooks.Checker
 	SessionSummarizer       workers.SessionSummarizer
+
+	// ── Phase 4: Session Analytics Hook (会话全景分析插件) ───────
+	// SessionAnalysisEngines 为 nil 时分析 Hook 不注册（Enabled=false）。
+	// 由 main.go 在 session_analytics.enabled 且 dbConn 可用时注入。
+	// 通过 PhasePostResponse Hook 接入请求管道，准实时生成逐步摘要/标签/标题。
+	SessionAnalysisEngines *sessionanalysis.Engines
+	SessionAnalysisConfig  *sessionanalytics.LLMStageConfig
 }
 
 // buildV2DispatchPipeline assembles the Hook Pipeline used by the v2
@@ -448,6 +458,18 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "metrics", Phase: pipeline.PhasePostResponse, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{observability.NewMetricsHook(deps.Metrics)},
+		})
+	}
+
+	// === Phase: Session Analytics (PostResponse, 准实时分析插件) ===
+	// 由 settings.session_analytics.enabled 控制；engines 为 nil 时跳过。
+	// 在 metrics 之后执行（priority 250），异步不阻塞响应。
+	if deps.SessionAnalysisEngines != nil {
+		p.AddStage(&pipeline.PipelineStage{
+			Name: "session_analytics", Phase: pipeline.PhasePostResponse, Mode: pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{
+				sessionanalysis.NewAnalysisHook(deps.SessionAnalysisEngines, deps.SessionAnalysisConfig, slog.Default()),
+			},
 		})
 	}
 
@@ -971,5 +993,22 @@ func SetV2DispatchAnalysisResources(
 	}
 	if summarizer != nil {
 		deps.SessionSummarizer = summarizer
+	}
+
+	// Phase 4: 会话全景分析引擎注入。
+	// 仅当 session_analytics.enabled 且 pool 可用时构建引擎。
+	// 通过 PhasePostResponse hook 接入请求管道，准实时分析。
+	if pool != nil && sessionanalytics.NewLLMStageConfig(nil).Enabled() {
+		cfg := sessionanalytics.NewLLMStageConfig(nil)
+		analyticsDB := sessionanalytics.NewPoolDB(pool)
+		engines := &sessionanalysis.Engines{
+			RequestSummarizer: sessionanalytics.NewRequestSummarizer(analyticsDB, cfg, nil, slog.Default()),
+			Tagger:            sessionanalytics.NewSessionTagger(analyticsDB, cfg, slog.Default()),
+		}
+		deps.SessionAnalysisEngines = engines
+		deps.SessionAnalysisConfig = cfg
+
+		// 注入 ClusterRunner（手动触发聚类用）
+		admin.SetClusterRunner(sessionanalytics.NewSessionClusterer(analyticsDB, cfg, nil, slog.Default()))
 	}
 }

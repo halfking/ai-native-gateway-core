@@ -1542,6 +1542,15 @@ func main() {
 			autoroute.SetTuningStore(tuningStore)
 			chatHandler.SetAutoRoute(decider)
 
+			// ── Goal-mode auto control (2026-07-06) ───────────────────────
+			// Wire the goal/audit response interceptors. Safe-by-default:
+			// disabled unless LLM_GATEWAY_GOAL_ENABLED / goal.enabled is set,
+			// and the whole chain is a no-op until SetResponseInterceptor is
+			// called. Runs after autoroute so the audit follow-up can reuse
+			// the autoroute model selection. The goal stores use database/sql,
+			// so bridge the app's pgxpool via dbConn.Stdlib().
+			initGoalControl(dbConn.Stdlib(), chatHandler)
+
 			autoIndexRefresher = bg.NewAutoIndexRefresher(dbConn.Pool(), autoIdx)
 			autoIndexRefresher.Start(context.Background())
 
@@ -1995,6 +2004,16 @@ func main() {
 		mux.HandleFunc("/api/admin/sessions", wrapAdmin(sessionListAPI.HandleList))
 		mux.HandleFunc("/api/admin/sessions/", wrapAdmin(sessionListAPI.HandleDetail))
 		slog.Info("Phase 3.5 session list API enabled (/api/admin/sessions)")
+
+		// Phase 4: Session Analytics API (会话全景分析)
+		// 350 迁移修复 session_summaries 聚合链路后启用。
+		if adminHandler != nil {
+			mux.HandleFunc("/api/admin/session-analytics", wrapAdmin(adminHandler.HandleSessionAnalyticsList))
+			mux.HandleFunc("/api/admin/session-analytics/", wrapAdmin(adminHandler.RouteSessionAnalytics))
+			mux.HandleFunc("/api/admin/session-clusters", wrapAdmin(adminHandler.HandleSessionClustersList))
+			mux.HandleFunc("/api/admin/session-clusters/", wrapAdmin(adminHandler.RouteSessionClusters))
+			slog.Info("Phase 4 session analytics API enabled (/api/admin/session-analytics)")
+		}
 
 		// Phase 3.6: Credential Success Rate Management (2026-06-23)
 		mux.HandleFunc("/api/admin/credential-success-rates", wrapAdmin(admin.HandleCredentialSuccessRates(dbConn.Pool())))

@@ -1,5 +1,7 @@
 package settings
 
+import "encoding/json"
+
 // CategoryModules groups all module-level settings together
 const CategoryModules Category = "modules"
 
@@ -153,4 +155,27 @@ func ModuleSpecs() []*Spec {
 			HotReload:       true,
 		},
 	}
+}
+
+// IsSessionAnalyticsEnabled reads the session_analytics.enabled setting
+// (platform fallback) to decide whether the analysis hook plugin is active.
+// Mirrors resolveModuleEnabled in admin/modules.go but usable from the
+// pipeline/hook layer without an HTTP request.
+func IsSessionAnalyticsEnabled() bool {
+	if Global == nil {
+		return false
+	}
+	sp := Global.Spec("session_analytics.enabled")
+	if sp == nil {
+		return false
+	}
+	raw, _, err := Global.EffectiveValue(sp.Scope, sp.Key, "")
+	if err != nil || raw == nil {
+		return false
+	}
+	var v bool
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false
+	}
+	return v
 }

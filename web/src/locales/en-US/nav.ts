@@ -41,6 +41,8 @@ export default {
     dataLifecycle: 'Data Lifecycle',
     formatAnomalies: 'Format Anomalies',
     modules: 'Module Management',
+    sessionAnalytics: 'Session Panorama',
+    sessionClusters: 'Session Groups',
     agents: 'Agent Registry',
     examples: 'Examples',
     chat: 'Chat',

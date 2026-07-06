@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // attachment download/list routes live in the admin mux
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
@@ -111,6 +112,9 @@ type Handler struct {
 	availabilityBackfill   *bg.AvailabilityCacheBackfill // 2026-06-29 on-demand DB→Redis cache rebuild
 	availabilityKeyCounter *bg.AvailabilityKeyCounter    // 2026-06-29 on-demand SCAN-based key count
 	autoTitleGen           *AutoTitleGenerator           // Auto session title generator (2026-06-22)
+	sessionManager         *session.Manager              // 2026-07-06 会话状态管理 (state, cred rotation, lifecycle)
+	sessionDBWriter        *session.DBWriter             // 2026-07-06 批量异步写 DB worker
+	sessionCleanupWorker   *session.CleanupWorker        // 2026-07-06 清理过期 stopped session
 
 	// identityPool is the legacy Layer 0 cap on total distinct end-user fingerprints.
 	// nil when the global cap feature is disabled.
@@ -229,6 +233,22 @@ func (h *Handler) SetKeyring(kr *secret.Keyring) {
 // telemetry to connected dashboards. Pass nil to disable.
 func (h *Handler) SetLiveStreamSSE(hub *LiveStreamSSEHub) {
 	h.liveStreamHub = hub
+}
+
+// SetSessionManager (2026-07-06) wires the session.Manager for the
+// /api/admin/sessions/* endpoints. Pass nil to disable.
+func (h *Handler) SetSessionManager(m *session.Manager) {
+	h.sessionManager = m
+}
+
+// SetSessionDBWriter (2026-07-06) wires the batch DB writer.
+func (h *Handler) SetSessionDBWriter(w *session.DBWriter) {
+	h.sessionDBWriter = w
+}
+
+// SetSessionCleanupWorker (2026-07-06) wires the cleanup worker.
+func (h *Handler) SetSessionCleanupWorker(c *session.CleanupWorker) {
+	h.sessionCleanupWorker = c
 }
 
 // encryptCred encrypts a plaintext credential using AES-256-GCM (if keyring is
