@@ -227,10 +227,12 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 		tenantLiveStreamKey(tenantID, "status:"+emptyAs(req.Status, "in_progress")),
 	}
 	// Only add dimension keys when the dimension value is present and valid
-	if req.ModelCategory != "" && req.ModelCategory != "__unknown__" && req.ModelCategory != "other" {
+	// Use resolveVendorForRequest to get the resolved vendor through the full fallback chain
+	vendor := resolveVendorForRequest(req)
+	if vendor != "" && vendor != "__unknown__" && vendor != "other" {
 		keys = append(keys,
-			liveStreamDimPrefix+"vendor:"+req.ModelCategory,
-			tenantLiveStreamKey(tenantID, "dim:vendor:"+req.ModelCategory),
+			liveStreamDimPrefix+"vendor:"+vendor,
+			tenantLiveStreamKey(tenantID, "dim:vendor:"+vendor),
 		)
 	}
 	if req.ProviderCode != "" && req.ProviderCode != "unknown" {
@@ -446,8 +448,9 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 	legends := make([]LiveStreamLegendItem, 0, len(keys))
 
 	for _, key := range keys {
-		// Filter out unwanted categories
-		if key == "" || key == "unknown" || key == "__unknown__" || key == "other" || key == "__idle__" {
+		// 过滤历史脏数据：仅过滤真正的"未知"标记。我们用"其他"作为最终兜底，
+		// 因此不再把 literal "other" 视为污染（"其他"是合法的兜底显示）。
+		if key == "" || key == "unknown" || key == "__unknown__" || key == "__idle__" {
 			continue
 		}
 		lanes = append(lanes, LiveStreamLane{
@@ -487,19 +490,42 @@ func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 	// This ensures idle markers inherit the queue's identity rather than creating separate idle lanes
 	switch dimension {
 	case "vendor":
-		if req.ModelCategory == "" {
-			return "" // Skip this dimension if no value
+		// 返回 model name / "其他" 也算合法 key —— 不能在这里返回 ""，
+		// 否则 resolveVendorForRequest 的最后兜底"用模型名称"会被丢弃，
+		// 反而出现"原厂"泳道被过滤消失。
+		key := resolveVendorForRequest(req)
+		// idle marker 永远不进入 vendor / provider / model 维度
+		if req.Type == "idle_marker" {
+			return ""
 		}
-		return req.ModelCategory
+		return key
 	case "provider":
-		if req.ProviderCode == "" {
-			return "" // Skip this dimension if no value
+		// 用户原话：每个请求有凭据节点，credential → provider 一定查得到。
+		// 就算供应商没有名称（display_name 为空），也应该用 code，不能为未知。
+		if req.Type == "idle_marker" {
+			return ""
 		}
-		return req.ProviderCode
+		// 1) ProviderCode 来自 replay SQL：COALESCE(p.name, p.catalog_code, p.code)
+		//    一定非空（除非整条 request_logs 没找到对应的 providers 行）。
+		// 2) 异常兜底：当 provider_code 为 "" / "unknown" 时，用 canonical name 或 model。
+		pc := strings.TrimSpace(req.ProviderCode)
+		if pc == "" || pc == "unknown" || pc == "__unknown__" {
+			if req.CanonicalName != "" {
+				return req.CanonicalName
+			}
+			if req.Model != "" {
+				return req.Model
+			}
+			return "其他"
+		}
+		return pc
 	case "model":
 		// Use CanonicalName for aggregation so the same model from different
 		// credentials (with different outbound names) aggregates into one lane.
 		// Fallback to Model for backward compatibility when CanonicalName is empty.
+		if req.Type == "idle_marker" {
+			return ""
+		}
 		if req.CanonicalName != "" {
 			return req.CanonicalName
 		}
@@ -512,12 +538,87 @@ func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 	}
 }
 
+// resolveVendorForRequest resolves the vendor for a request using the full fallback chain:
+// 1. ModelCategory (from DB lookup)
+// 2. VendorFromProvider (provider → vendor mapping)
+// 3. InferVendorFromModel (固化标准 model → vendor)
+// 4. Model name itself (最后兜底，绝对不返回空、绝不出现"未知"字样)
+func resolveVendorForRequest(req LiveRequest) string {
+	if req.ModelCategory != "" && req.ModelCategory != "__unknown__" && req.ModelCategory != "unknown" && req.ModelCategory != "other" {
+		return req.ModelCategory
+	}
+	if req.ProviderCode != "" {
+		if vendor := VendorFromProvider(req.ProviderCode); vendor != "" {
+			return vendor
+		}
+	}
+	if req.Model != "" {
+		if vendor := InferVendorFromModel(req.Model); vendor != "" {
+			return vendor
+		}
+		// 最后兜底：直接用 model 名作为泳道 key；前端会把它显示为原厂名称。
+		// 老板要求"再没有就直接用模型名称，不要用未知或其它来标记"。
+		return req.Model
+	}
+	// 没有任何可识别字段时仍要返回非空串，避免被 lanes 过滤成空。
+	// 用 canonical_name → model → 用一个固定的 no-idle 默认值兜底。
+	if req.CanonicalName != "" {
+		return req.CanonicalName
+	}
+	return "其他"
+}
+
+// InferVendorFromModel infers the vendor from model name patterns.
+// This is the last-resort fallback when neither DB lookup nor provider mapping works.
+func InferVendorFromModel(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return ""
+	}
+	switch {
+	case strings.Contains(m, "gpt"), strings.Contains(m, "o1"), strings.Contains(m, "o3"), strings.Contains(m, "o4"):
+		return "openai"
+	case strings.Contains(m, "claude"):
+		return "anthropic"
+	case strings.Contains(m, "gemini"), strings.Contains(m, "palm"):
+		return "google"
+	case strings.Contains(m, "qwen"):
+		return "alibaba"
+	case strings.Contains(m, "glm"):
+		return "zhipu"
+	case strings.Contains(m, "deepseek"):
+		return "deepseek"
+	case strings.Contains(m, "doubao"):
+		return "bytedance"
+	case strings.Contains(m, "ernie"):
+		return "baidu"
+	case strings.Contains(m, "moonshot"):
+		return "moonshot"
+	case strings.Contains(m, "yi-"):
+		return "01ai"
+	case strings.Contains(m, "baichuan"):
+		return "baichuan"
+	case strings.Contains(m, "llama"):
+		return "meta"
+	case strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"):
+		return "mistral"
+	case strings.Contains(m, "mimo"):
+		return "xiaomi"
+	case strings.Contains(m, "phi"):
+		return "microsoft"
+	case strings.Contains(m, "gemma"):
+		return "google"
+	default:
+		return ""
+	}
+}
+
 func liveRequestTile(req LiveRequest) LiveStreamTile {
 	tile := LiveStreamTile{
 		RequestID:        req.RequestID,
 		Timestamp:        req.Ts,
 		Model:            req.Model,
-		Vendor:           req.ModelCategory,
+		Vendor:           resolveVendorForRequest(req),
 		Provider:         req.ProviderCode,
 		Status:           emptyAs(req.Status, "in_progress"),
 		ErrorKind:        req.ErrorKind,

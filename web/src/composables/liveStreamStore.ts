@@ -118,6 +118,51 @@ export const lastEventAtRef: ComputedRef<number> = computed(() => liveStreamStat
 export const MAX_VISIBLE = 60
 export const ENDPOINT = '/api/admin/live-stream'
 
+// localStorage 中允许管理员写入一个自定义 SSE endpoint（reverse proxy / 隧道）
+// 读取时若为空字符串 / 不可达 / 同源默认则走 ENDPOINT。
+function readCustomEndpoint(): string {
+  try {
+    const v = localStorage.getItem('llmgw_sse_endpoint')
+    return (v || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+function buildUrl(endpoint: string): string {
+  let url = endpoint
+  try {
+    const apiKey = localStorage.getItem('llmgw_api_key')
+    if (apiKey && !apiKey.startsWith('cookie')) {
+      const sep = url.includes('?') ? '&' : '?'
+      url = `${url}${sep}token=${encodeURIComponent(apiKey)}`
+    }
+  } catch {
+    /* SSR or storage disabled — fall back to cookie auth */
+  }
+  return url
+}
+
+// 用户层想要使用的最终 URL（可能被管理员通过弹窗覆盖）
+let customEndpoint = readCustomEndpoint()
+
+export function setCustomEndpoint(url: string) {
+  customEndpoint = (url || '').trim()
+  try {
+    if (customEndpoint) localStorage.setItem('llmgw_sse_endpoint', customEndpoint)
+    else localStorage.removeItem('llmgw_sse_endpoint')
+  } catch {
+    /* ignore */
+  }
+}
+
+export function getCustomEndpoint(): string {
+  if (!customEndpoint) {
+    customEndpoint = readCustomEndpoint()
+  }
+  return customEndpoint
+}
+
 const idIndex = new Set<string>()
 const pending: LiveRequest[] = []
 const PENDING_CAP = MAX_VISIBLE * 4
@@ -260,15 +305,7 @@ function openConnection() {
   // The backend (admin/live_stream_sse.go) accepts this only as a
   // fallback when neither the Bearer header nor the cookie is set,
   // so the security profile is unchanged.
-  let url = ENDPOINT
-  try {
-    const apiKey = localStorage.getItem('llmgw_api_key')
-    if (apiKey && !apiKey.startsWith('cookie')) {
-      url = `${ENDPOINT}?token=${encodeURIComponent(apiKey)}`
-    }
-  } catch {
-    /* SSR or storage disabled — fall back to cookie auth */
-  }
+  let url = buildUrl(getCustomEndpoint() || ENDPOINT)
   try {
     es = new EventSource(url, { withCredentials: true })
   } catch (err) {

@@ -921,12 +921,15 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		}
 		r.Ts = ts.UTC().Format(time.RFC3339)
 		
-		// Apply ModelCategory fallback: from Model → from Provider
+		// Apply ModelCategory fallback: from Model → from Provider → from Model pattern
 		if r.Model != "" {
 			r.ModelCategory = h.ModelVendorFor(cctx, r.Model)
 		}
 		if r.ModelCategory == "" && r.ProviderCode != "" {
 			r.ModelCategory = VendorFromProvider(r.ProviderCode)
+		}
+		if r.ModelCategory == "" && r.Model != "" {
+			r.ModelCategory = InferVendorFromModel(r.Model)
 		}
 		
 		out = append(out, r)
@@ -1045,7 +1048,7 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 			"request_id", requestID, "model", out.Model, "tenant_id", tenantID)
 	}
 	
-	// ModelCategory fallback chain: from Model → from Provider
+	// ModelCategory fallback chain: from Model → from Provider → from Model pattern
 	if out.Model != "" {
 		out.ModelCategory = h.ModelVendorFor(ctx, out.Model)
 	}
@@ -1057,7 +1060,15 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 				"request_id", requestID, "provider", providerCode, "category", out.ModelCategory)
 		}
 	}
-	
+	if out.ModelCategory == "" && out.Model != "" {
+		// Last resort: infer from model name patterns
+		out.ModelCategory = InferVendorFromModel(out.Model)
+		if out.ModelCategory != "" {
+			slog.Debug("live stream: inferred model_category from model name pattern",
+				"request_id", requestID, "model", out.Model, "category", out.ModelCategory)
+		}
+	}
+
 	// Log when model category is still missing after all fallbacks
 	if out.ModelCategory == "" {
 		slog.Debug("live request from telemetry: missing model_category after fallback",
