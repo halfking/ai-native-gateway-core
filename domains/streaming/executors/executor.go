@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -575,6 +576,12 @@ type ExecParams struct {
 	// mode (legacy "default" tenant); the Memora user_id falls back to the
 	// pre-v7 "k:<api_key_id>:<task_id>" format so existing tests stay green.
 	TenantID string
+	// AppID is the application ID from keyInfo.ApplicationID.
+	// 2026-07-07: Used by multi-level sticky routing (L1/L2/L3).
+	AppID *int
+	// ApiKeyID is the API key ID from keyInfo.ID (same as KeyID but as pointer).
+	// 2026-07-07: Used by multi-level sticky routing (L1/L2/L3).
+	ApiKeyID *int
 }
 
 type ExecuteResult struct {
@@ -702,9 +709,50 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// credentialfpslot.Lease so BuildEgressIdentity can read it.
 	_ = globalIdentity // suppress unused warning until wired into credentialfpslot
 
+	// 2026-07-07: Use multi-level sticky lookup (L1: session+model, L2: client+model, L3: client)
+	// instead of the old single-level lookup (L3 only). This ensures different session IDs
+	// get different credentials, fixing the load balancing issue.
+	var stickyCredID *int
+	if params.SessionID != "" && params.Model != "" {
+		// Multi-level lookup available
+		stickyCredID = e.stickyCredentialIDMultiLevel(
+			params.TenantID,
+			params.AppID,
+			params.ApiKeyID,
+			params.ClientID.Fingerprint.ClientProfile,
+			params.SessionID,
+			params.Model,
+		)
+		if os.Getenv("STICKY_MULTILEVEL_DEBUG") == "1" {
+			slog.Info("STICKY_MULTILEVEL",
+				"session_id", params.SessionID,
+				"model", params.Model,
+				"tenant", params.TenantID,
+				"found", stickyCredID != nil,
+				"cred_id", func() int {
+					if stickyCredID != nil {
+						return *stickyCredID
+					}
+					return 0
+				}(),
+			)
+		}
+	} else {
+		// Fallback to L3-only lookup
+		stickyCredID = e.stickyCredentialID(params.StickyKey)
+		if os.Getenv("STICKY_MULTILEVEL_DEBUG") == "1" {
+			slog.Info("STICKY_L3_FALLBACK",
+				"session_id", params.SessionID,
+				"model", params.Model,
+				"sticky_key", params.StickyKey,
+				"found", stickyCredID != nil,
+			)
+		}
+	}
+
 	candidates := e.Router.PlanCandidates(
 		params.Candidates,
-		e.stickyCredentialID(params.StickyKey),
+		stickyCredID,
 		params.Policy,
 		egressPref(params.Transform),
 	)
@@ -1924,7 +1972,9 @@ func (e *Executor) stickyCredentialID(stickyKey string) *int {
 // stickyCredentialID (L3 only) is kept for backward compatibility with
 // any external callers and is used when the multi-level inputs are
 // unavailable (e.g., model is empty).
-func (e *Executor) stickyCredentialIDMultiLevel( //nolint:unused
+//
+// 2026-07-07: Now actively used by Execute() when SessionID and Model are available.
+func (e *Executor) stickyCredentialIDMultiLevel(
 	tenantID string,
 	appID, apiKeyID *int,
 	clientProfile string,
@@ -1942,7 +1992,26 @@ func (e *Executor) stickyCredentialIDMultiLevel( //nolint:unused
 }
 
 func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
-	if e.Router == nil || e.Router.Sticky == nil || params == nil || params.StickyKey == "" || params.Policy == nil {
+	if e.Router == nil || e.Router.Sticky == nil || params == nil {
+		return
+	}
+
+	// 2026-07-07: Use multi-level recording when SessionID and Model are available
+	if params.SessionID != "" && params.Model != "" {
+		e.Router.Sticky.RecordSuccessMultiLevel(
+			params.TenantID,
+			params.AppID,
+			params.ApiKeyID,
+			params.ClientID.Fingerprint.ClientProfile,
+			params.SessionID,
+			params.Model,
+			credentialID,
+		)
+		return
+	}
+
+	// Fallback to L3-only recording
+	if params.StickyKey == "" || params.Policy == nil {
 		return
 	}
 	// Policy.StickyTTLSeconds is in seconds (DB column `sticky_ttl_seconds`).
