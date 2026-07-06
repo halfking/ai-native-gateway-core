@@ -4,20 +4,59 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"strings"
+	"sync/atomic"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // CompletionDetector detects task completion using multiple strategies.
+// A single detector is shared across all goal-mode requests (it lives on
+// ModeHook, a singleton on ChatHandler). minConfidenceBits holds the
+// configured LLM-verdict threshold as its IEEE-754 bit pattern in an
+// atomic.Uint64 so SetMinConfidence (per-tenant writes) and checkWithLLM
+// (reads) are race-free under concurrent interception.
 type CompletionDetector struct {
-	db        GoalStore
-	llmCaller LLMCaller
+	db                GoalStore
+	llmCaller         LLMCaller
+	minConfidenceBits atomic.Uint64
 }
 
-// NewCompletionDetector creates a new completion detector.
+// DefaultCompletionConfidence is the threshold used when a caller hasn't
+// configured one. Matches the historical hard-coded value.
+const DefaultCompletionConfidence = 0.8
+
+// NewCompletionDetector creates a new completion detector. When minConfidence
+// is 0, DefaultCompletionConfidence (0.8) is used.
 func NewCompletionDetector(db GoalStore, llmCaller LLMCaller) *CompletionDetector {
-	return &CompletionDetector{db: db, llmCaller: llmCaller}
+	return NewCompletionDetectorWithConfidence(db, llmCaller, DefaultCompletionConfidence)
+}
+
+// NewCompletionDetectorWithConfidence lets the caller inject a per-tenant
+// confidence threshold (read from settings by ModeHook).
+func NewCompletionDetectorWithConfidence(db GoalStore, llmCaller LLMCaller, minConfidence float64) *CompletionDetector {
+	if minConfidence <= 0 {
+		minConfidence = DefaultCompletionConfidence
+	}
+	d := &CompletionDetector{db: db, llmCaller: llmCaller}
+	d.minConfidenceBits.Store(math.Float64bits(minConfidence))
+	return d
+}
+
+// SetMinConfidence updates the LLM-verdict confidence threshold. ModeHook calls
+// this per interception with the tenant's configured value so the threshold is
+// hot-reloadable. Values <= 0 reset to DefaultCompletionConfidence.
+func (d *CompletionDetector) SetMinConfidence(min float64) {
+	if min <= 0 {
+		min = DefaultCompletionConfidence
+	}
+	d.minConfidenceBits.Store(math.Float64bits(min))
+}
+
+// minConfidence returns the currently-effective threshold (race-free read).
+func (d *CompletionDetector) minConfidence() float64 {
+	return math.Float64frombits(d.minConfidenceBits.Load())
 }
 
 // IsCompleted checks if the task is completed using hybrid detection.
@@ -148,7 +187,7 @@ LLM响应: ` + extractAssistantContent(req.ResponseBody)
 		return false, 0.0, ""
 	}
 
-	if result.Completed && result.Confidence >= 0.8 {
+	if result.Completed && result.Confidence >= d.minConfidence() {
 		return true, result.Confidence, result.Reason
 	}
 	return false, 0.0, ""

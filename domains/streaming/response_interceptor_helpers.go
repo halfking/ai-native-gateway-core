@@ -14,15 +14,45 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation
 )
 
-// MaxFollowUpDepth is the maximum recursion depth for follow-up requests.
-// This prevents infinite loops where a follow-up triggers another handoff
-// or goal continue, which would otherwise amplify cost/load indefinitely.
+// MaxFollowUpDepth is the default maximum recursion depth for follow-up
+// requests. This prevents infinite loops where a follow-up triggers another
+// handoff or goal continue, which would otherwise amplify cost/load
+// indefinitely. The effective value can be raised/lowered at runtime via
+// SetFollowUpLimits (e.g. from goal.max_follow_up_depth).
 const MaxFollowUpDepth = 5
 
-// MaxFollowUpsPerSession is the hard ceiling on total follow-up invocations
-// for a single session, regardless of depth. Defense in depth against runaway
-// cost amplification.
+// MaxFollowUpsPerSession is the default hard ceiling on total follow-up
+// invocations for a single session, regardless of depth. Defense in depth
+// against runaway cost amplification. Overridable via SetFollowUpLimits.
 const MaxFollowUpsPerSession = 50
+
+// effectiveMaxFollowUpDepth / effectiveMaxFollowUpsPerSession hold the
+// currently-active limits. They start at the constants above and are updated
+// atomically by SetFollowUpLimits so hot-reloaded settings take effect without
+// a restart. Reads use atomic load to stay lock-free on the hot path.
+var (
+	effectiveMaxFollowUpDepth       atomic.Int64
+	effectiveMaxFollowUpsPerSession atomic.Int64
+)
+
+func init() {
+	effectiveMaxFollowUpDepth.Store(MaxFollowUpDepth)
+	effectiveMaxFollowUpsPerSession.Store(MaxFollowUpsPerSession)
+}
+
+// SetFollowUpLimits overrides the follow-up engine's hard limits. Pass 0 to
+// keep the built-in default for that limit. Called by the goal control wiring
+// (cmd/gateway/goal_control.go) from the goal.max_follow_up_depth /
+// goal.max_follow_ups_per_session settings so operators can tune the loop
+// guardrails without a redeploy.
+func SetFollowUpLimits(maxDepth, maxPerSession int) {
+	if maxDepth > 0 {
+		effectiveMaxFollowUpDepth.Store(int64(maxDepth))
+	}
+	if maxPerSession > 0 {
+		effectiveMaxFollowUpsPerSession.Store(int64(maxPerSession))
+	}
+}
 
 // followUpDepthKey is the context key for follow-up depth tracking.
 type followUpDepthKey struct{}
@@ -45,14 +75,15 @@ func FollowUpDepthFromContext(ctx context.Context) int {
 var sessionFollowUpCounts sync.Map // map[string]*atomic.Int64
 
 // recordSessionFollowUp atomically increments the per-session counter.
-// Returns true if the new count is within MaxFollowUpsPerSession.
+// Returns true if the new count is within the effective per-session limit.
 //
 // Race-free: LoadOrStore guarantees the same *atomic.Int64 pointer for a
 // given sessionID, and atomic.Int64.Add is a single atomic RMW.
 func recordSessionFollowUp(sessionID string) bool {
 	actual, _ := sessionFollowUpCounts.LoadOrStore(sessionID, new(atomic.Int64))
 	counter := actual.(*atomic.Int64)
-	return counter.Add(1) <= int64(MaxFollowUpsPerSession)
+	limit := effectiveMaxFollowUpsPerSession.Load()
+	return counter.Add(1) <= limit
 }
 
 // cleanupSessionFollowUps removes the counter for a session, freeing memory.
@@ -79,10 +110,11 @@ func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID strin
 
 	// 1. Depth check: prevent recursive loops.
 	depth := FollowUpDepthFromContext(ctx)
-	if depth >= MaxFollowUpDepth {
+	if depth >= int(effectiveMaxFollowUpDepth.Load()) {
 		slog.Warn("follow_up_max_depth_exceeded",
 			"session_id", sessionID,
 			"depth", depth,
+			"max_depth", effectiveMaxFollowUpDepth.Load(),
 			"action", action,
 		)
 		return
@@ -201,4 +233,58 @@ func extractFinishReason(body []byte) string {
 		return resp.Choices[0].FinishReason
 	}
 	return ""
+}
+
+// reassembleStreamBody rebuilds a minimal OpenAI-style chat completion
+// response body from a stream capture so that stream-end response interceptors
+// (goal completion detection, audit) can run the same JSON inspection logic as
+// the non-streaming path.
+//
+// It embeds the accumulated assistant text (stream_text_content), the upstream
+// finish_reason, and any structured tool_calls the capture observed. Returns
+// nil when there is no capture or no content, leaving the caller to fall back
+// to length-based continuation.
+func reassembleStreamBody(capture *audit.StreamCapture) []byte {
+	if capture == nil {
+		return nil
+	}
+	m := capture.SummaryAsMap()
+	text, _ := m["stream_text_content"].(string)
+	finish, _ := m["upstream_finish_reason"].(string)
+	tools := capture.ToolCalls
+	if text == "" && len(tools) == 0 {
+		return nil
+	}
+
+	msg := map[string]any{
+		"role":    "assistant",
+		"content": text,
+	}
+	if len(tools) > 0 {
+		msg["tool_calls"] = tools
+	}
+	body := map[string]any{
+		"choices": []map[string]any{
+			{
+				"index":         0,
+				"message":       msg,
+				"finish_reason": finish,
+			},
+		},
+	}
+	out, err := json.Marshal(body)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// reassembleFinishReason returns the upstream finish_reason recorded by the
+// stream capture, or "" when no capture / no finish was observed.
+func reassembleFinishReason(capture *audit.StreamCapture) string {
+	if capture == nil {
+		return ""
+	}
+	finish, _ := capture.SummaryAsMap()["upstream_finish_reason"].(string)
+	return finish
 }
