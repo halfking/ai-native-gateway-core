@@ -304,4 +304,18 @@ export default {
   error: {
     loadFailed: '読み込み失敗',
   },
+  common: {
+    // [TODO] add nested keys
+  },
+    button: {
+      // [TODO] add nested keys
+    },
+      cancel: "[TODO: providers.common.button.cancel]",
+      save: "[TODO: providers.common.button.save]",
+    table: {
+      // [TODO] add nested keys
+    },
+      actions: "[TODO: providers.common.table.actions]",
+    manualDisabledBadge: "[TODO: providers.list.manualDisabledBadge]",
+    manualDisabledTooltip: "[TODO: providers.list.manualDisabledTooltip]",
 }

@@ -16,4 +16,6 @@ export default {
     required: 'ユーザー名とパスワードを入力してください',
     failed: 'ログイン失敗',
   },
+  changePassword: "[TODO: login.changePassword]",
+  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
 }

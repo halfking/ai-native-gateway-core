@@ -5,7 +5,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "i18n:check": "node scripts/i18n-audit.mjs",
+    "i18n:check:strict": "I18N_STRICT=1 vitest run src/i18n/keys_referenced.test.ts",
+    "i18n:check:json": "node scripts/i18n-audit.mjs --json --out=reports/i18n-audit.json",
+    "i18n:fix:dry": "node scripts/i18n-fix.mjs --dry-run",
+    "i18n:fix": "node scripts/i18n-fix.mjs --apply --yes"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

@@ -517,4 +517,6 @@ export default {
     loadFailed: 'Error al cargar',
     triggerFailed: 'Disparo fallido',
   },
+    displayNameHint: "[TODO: providerDetail.settings.displayNameHint]",
+    saveSuccess: "[TODO: providerDetail.settings.saveSuccess]",
 }
