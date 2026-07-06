@@ -178,16 +178,26 @@ get_version() {
   GIT_SHA=$(git rev-parse --short=8 HEAD)
   BUILD_DATE=$(date +%Y%m%d)
   CURRENT_SEQ=$(cat build_seq 2>/dev/null || echo 0)
-  
+
   if [[ -n "$BUILD_SEQ_TARGET" ]]; then
     NEW_BUILD_SEQ="$BUILD_SEQ_TARGET"
   else
     NEW_BUILD_SEQ=$((CURRENT_SEQ + 1))
   fi
-  
+
   IMAGE_TAG="${GIT_TAG}-${GIT_SHA}-${BUILD_DATE}-${NEW_BUILD_SEQ}"
   VERSION_STRING="${GIT_TAG}-${GIT_SHA}-${BUILD_DATE}-${NEW_BUILD_SEQ}"
-  
+
+  info "Git Tag: $GIT_TAG"
+  info "Git SHA: $GIT_SHA"
+  info "Build Seq: $CURRENT_SEQ → $NEW_BUILD_SEQ"
+  info "Image Tag: $IMAGE_TAG"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    info "[DRY-RUN] 跳过写 build_seq/version.json"
+    return 0
+  fi
+
   echo "$NEW_BUILD_SEQ" > build_seq
   cat > version.json <<EOF
 {
@@ -199,15 +209,6 @@ get_version() {
   "module": "llm-gateway-go"
 }
 EOF
-  
-  info "Git Tag: $GIT_TAG"
-  info "Git SHA: $GIT_SHA"
-  info "Build Seq: $CURRENT_SEQ → $NEW_BUILD_SEQ"
-  info "Image Tag: $IMAGE_TAG"
-  
-  if [[ "$DRY_RUN" == "true" ]]; then
-    info "[DRY-RUN] 已更新 build_seq / version.json，未提交"
-  fi
 }
 
 # F1: Smart push to 184 local registry.
@@ -263,8 +264,8 @@ commit_build_seq() {
 
 build_image() {
   phase "184: 构建镜像"
-  if [[ "$SKIP_BUILD" == "true" ]]; then
-    info "已 --skip-build，跳过 docker build"
+  if [[ "$DRY_RUN" == "true" || "$SKIP_BUILD" == "true" ]]; then
+    info "${DRY_RUN:+(DRY-RUN) }${SKIP_BUILD:+(skip-build) }跳过 docker build"
     return 0
   fi
   docker build \
@@ -280,7 +281,10 @@ build_image() {
 
 push_to_public_registry() {
   phase "184: 推送到 ${REGISTRY_INT}"
-  if [[ "$DRY_RUN" == "true" ]]; then return 0; fi
+  if [[ "$DRY_RUN" == "true" ]]; then
+    info "[DRY-RUN] 跳过 docker push"
+    return 0
+  fi
   docker tag "${IMAGE_NAME}:${IMAGE_TAG}" "${REGISTRY_INT}/${IMAGE_NAME}:${IMAGE_TAG}"
   docker push "${REGISTRY_INT}/${IMAGE_NAME}:${IMAGE_TAG}" 2>&1 | tail -5
   ok "已推送"
@@ -467,8 +471,8 @@ deploy_184() {
 
 cross_compile() {
   phase "71: 交叉编译 linux/amd64"
-  if [[ "$SKIP_BUILD" == "true" ]]; then
-    info "已 --skip-build"
+  if [[ "$DRY_RUN" == "true" || "$SKIP_BUILD" == "true" ]]; then
+    info "${DRY_RUN:+(DRY-RUN) }${SKIP_BUILD:+(skip-build) }跳过交叉编译"
     return 0
   fi
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
