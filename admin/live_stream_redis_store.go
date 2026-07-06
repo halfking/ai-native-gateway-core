@@ -181,9 +181,15 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 		pipe.Set(ctx, liveStreamActivityKey("", "provider", req.ProviderCode), activityUnix, liveStreamTTL)
 		pipe.Set(ctx, liveStreamActivityKey(tenantID, "provider", req.ProviderCode), activityUnix, liveStreamTTL)
 	}
-	if req.Model != "" {
-		pipe.Set(ctx, liveStreamActivityKey("", "model", req.Model), activityUnix, liveStreamTTL)
-		pipe.Set(ctx, liveStreamActivityKey(tenantID, "model", req.Model), activityUnix, liveStreamTTL)
+	// Use CanonicalName for model dimension activity keys when available.
+	// This ensures idle markers generated from these keys use the standard
+	// model name, matching the aggregation logic in liveStreamDimensionKey.
+	// Without this, idle markers for the same canonical model from different
+	// credentials (with different outbound names) would land in separate lanes.
+	modelActivityKey := emptyAs(req.CanonicalName, req.Model)
+	if modelActivityKey != "" {
+		pipe.Set(ctx, liveStreamActivityKey("", "model", modelActivityKey), activityUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "model", modelActivityKey), activityUnix, liveStreamTTL)
 	}
 	// Track main queue activity
 	pipe.Set(ctx, liveStreamActivityKey("", "main", ""), activityUnix, liveStreamTTL)
@@ -233,10 +239,15 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 			tenantLiveStreamKey(tenantID, "dim:provider:"+req.ProviderCode),
 		)
 	}
-	if req.Model != "" && req.Model != "unknown" {
+	// Use CanonicalName for model dimension queue keys when available,
+	// matching the aggregation logic in liveStreamDimensionKey. This ensures
+	// a request is placed in the same queue it will be grouped into during
+	// lane building, preventing requests from appearing in wrong lanes.
+	modelKey := emptyAs(req.CanonicalName, req.Model)
+	if modelKey != "" && modelKey != "unknown" {
 		keys = append(keys,
-			liveStreamDimPrefix+"model:"+req.Model,
-			tenantLiveStreamKey(tenantID, "dim:model:"+req.Model),
+			liveStreamDimPrefix+"model:"+modelKey,
+			tenantLiveStreamKey(tenantID, "dim:model:"+modelKey),
 		)
 	}
 	return keys
