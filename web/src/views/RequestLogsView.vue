@@ -213,14 +213,14 @@ const FAILURE_DETAIL_LABELS: Record<string, string> = {
 // 2026-06-19 T-NEW-7: labels for the SOLE home of the upstream
 // finish_reason (stop, tool_calls, length, end_turn, …). These are NOT
 // failures; the UI surfaces them as informational metadata in the
-// request detail panel, not as a "失败详情" pill.
+// request detail panel, not as a t('requests.failureDetail') pill.
 const UPSTREAM_FINISH_REASON_LABELS: Record<string, string> = {
-  stop: '正常完成',
-  tool_calls: '工具调用',
-  function_call: '函数调用',
-  length: '达到长度上限',
-  end_turn: '轮次结束',
-  max_tokens: '达到 max_tokens',
+  stop: t('requests.stop'),
+  tool_calls: t('requests.tool_calls'),
+  function_call: t('requests.function_call'),
+  length: t('requests.length'),
+  end_turn: t('requests.end_turn'),
+  max_tokens: t('requests.max_tokens'),
 }
 
 function upstreamFinishReasonLabel(v: string | null | undefined): string {
@@ -229,8 +229,8 @@ function upstreamFinishReasonLabel(v: string | null | undefined): string {
 }
 
 function statusLabel(row: RequestLogRow): string {
-  if (row.request_status === 'in_progress') return '请求中'
-  if (row.request_status === 'success' || row.success) return '成功'
+  if (row.request_status === 'in_progress') return t('requests.resultInProgress')
+  if (row.request_status === 'success' || row.success) return t('requests.resultSuccess')
   // 2026-06-19 T-NEW-7: failure_detail_code now contains ONLY real failure
   // codes. upstream_finish_reason is informational and should never be
   // read as a failure label.
@@ -239,7 +239,7 @@ function statusLabel(row: RequestLogRow): string {
   const kind = row.error_kind || ''
   if (ERROR_KIND_LABELS[kind]) return ERROR_KIND_LABELS[kind]
   if (detail.startsWith('gw_')) return `网关:${detail.slice(3)}`
-  return kind || detail || '失败'
+  return kind || detail || t('requests.resultFailure')
 }
 
 function statusTitle(row: RequestLogRow): string {
@@ -290,23 +290,23 @@ function compressionLabel(row: RequestLogRow): { reason: string; strategy: strin
   // compression_strategy means something fired.
   if (!row.compression_reason && !row.compression_strategy) return null
   const reasonMap: Record<string, string> = {
-    'mode_1_auto_threshold': '自动阈值',
-    'mode_2_on_4xx': '4xx 重试',
-    'sliding_window_token': '滑动窗口·token',
-    'sliding_window_count': '滑动窗口·消息数',
-    'sliding_window_idle': '滑动窗口·空闲',
-    'sliding_window_mechanical_trim': '滑动窗口·机械',
+    'mode_1_auto_threshold': t('requests.mode_1_auto_threshold'),
+    'mode_2_on_4xx': t('requests.mode_2_on_4xx'),
+    'sliding_window_token': t('requests.sliding_window_token'),
+    'sliding_window_count': t('requests.sliding_window_count'),
+    'sliding_window_idle': t('requests.sliding_window_idle'),
+    'sliding_window_mechanical_trim': t('requests.sliding_window_mechanical_trim'),
   }
   const strategyMap: Record<string, string> = {
-    'mechanical_trim': '机械裁剪',
-    'memora_l1_inject': 'Memora 注入',
-    'llm_summary': 'LLM 摘要',
-    'noop': '未压缩',
+    'mechanical_trim': t('requests.mechanical_trim'),
+    'memora_l1_inject': t('requests.memora_l1_inject'),
+    'llm_summary': t('requests.llm_summary'),
+    'noop': t('requests.noop'),
     // v3 (2026-06-19) session-level strategies
-    'delta_append': '增量拼接',
-    'sliding_window_token': '滑动·token',
-    'sliding_window_count': '滑动·消息数',
-    'sliding_window_idle': '滑动·空闲',
+    'delta_append': t('requests.delta_append'),
+    'sliding_window_token': t('requests.sliding_window_token'),
+    'sliding_window_count': t('requests.sliding_window_count'),
+    'sliding_window_idle': t('requests.sliding_window_idle'),
   }
   // For v3 sliding-window triggered entries, the "reason" label is the
   // window trigger (stored in compression_strategy) and the v7 reason
@@ -314,9 +314,9 @@ function compressionLabel(row: RequestLogRow): { reason: string; strategy: strin
   let reason = reasonMap[row.compression_reason || ''] || row.compression_reason || ''
   let strategy = strategyMap[row.compression_strategy || ''] || (row.compression_strategy || '?')
   // Special case: v3 delta_append has compression_reason empty + strategy = 'delta_append'.
-  // Treat as '增量拼接' strategy with reason '同会话增量'.
+  // Treat as t('requests.delta_append') strategy with reason t('requests.same_session_delta').
   if (row.compression_strategy === 'delta_append' && !row.compression_reason) {
-    reason = '同会话增量'
+    reason = t('requests.same_session_delta')
   }
   // Build a tooltip with byte/token deltas from compression_meta when present.
   let tip = `原因: ${reason}\n策略: ${strategy}`
@@ -442,18 +442,18 @@ async function generateSessionSummary() {
 
 function summaryExportContent(data: SessionSummaryResponse): string {
   const lines: string[] = []
-  lines.push('# 会话总结')
+  lines.push(t('requests.title'))
   lines.push('')
   lines.push(`- Session ID: ${data.meta.session_id}`)
   lines.push(`- 时间范围: ${fmtTs(data.meta.data_from)} ~ ${fmtTs(data.meta.data_to)}`)
   lines.push(`- 日志条数: ${data.meta.log_count}`)
   lines.push(`- 生成时间: ${fmtTs(data.meta.generated_at)}`)
   lines.push('')
-  lines.push('## 摘要')
+  lines.push(t('requests.summaryHeading'))
   lines.push(data.summary)
   if (data.key_points && data.key_points.length) {
     lines.push('')
-    lines.push('## 关键要点')
+    lines.push(t('requests.keyPointsHeading'))
     for (const p of data.key_points) lines.push(`- ${p}`)
   }
   return lines.join('\n')
@@ -497,12 +497,12 @@ function routeProviderLine(r: RequestLogRow): string {
   else if (r.provider_code) parts.push(r.provider_code)
   if (r.credential_label) parts.push(r.credential_label)
   if (parts.length) return parts.join(' · ')
-  if (r.error_kind === 'missing_key' || r.error_kind === 'invalid_key') return '—'
-  return '—'
+  if (r.error_kind === 'missing_key' || r.error_kind === 'invalid_key') return t('requests.none')
+  return t('requests.none')
 }
 
 function routeModelLine(r: RequestLogRow): string {
-  const requestModel = r.canonical_name || r.client_model || '—'
+  const requestModel = r.canonical_name || r.client_model || t('requests.none')
   const providerModel = (r.provider_model || r.outbound_model || '').trim()
   if (!providerModel || providerModel.toLowerCase() === requestModel.toLowerCase()) {
     return requestModel
@@ -511,7 +511,7 @@ function routeModelLine(r: RequestLogRow): string {
 }
 
 function routeModelTitle(r: RequestLogRow): string {
-  const requestModel = r.canonical_name || r.client_model || '—'
+  const requestModel = r.canonical_name || r.client_model || t('requests.none')
   const providerModel = (r.provider_model || r.outbound_model || '').trim()
   if (!providerModel || providerModel.toLowerCase() === requestModel.toLowerCase()) {
     return `请求模型: ${requestModel}`
@@ -520,9 +520,9 @@ function routeModelTitle(r: RequestLogRow): string {
 }
 
 function outboundModelDisplay(r: Pick<RequestLogRow, 'provider_model' | 'outbound_model'> | null | undefined): string {
-  if (!r) return '—'
+  if (!r) return t('requests.none')
   const v = (r.provider_model || r.outbound_model || '').trim()
-  return v || '—'
+  return v || t('requests.none')
 }
 
 function outboundModelTitle(r: Pick<RequestLogRow, 'provider_model' | 'outbound_model'> | null | undefined): string {
@@ -537,7 +537,7 @@ function outboundModelTitle(r: Pick<RequestLogRow, 'provider_model' | 'outbound_
 
 function ellipsize(value: string | null | undefined, max = 28): string {
   const s = (value ?? '').trim()
-  if (!s) return '—'
+  if (!s) return t('requests.none')
   if (s.length <= max) return s
   return s.slice(0, Math.max(1, max - 1)) + '…'
 }
@@ -546,7 +546,7 @@ function callerUserLine(r: RequestLogRow): string {
   if (r.api_key_owner_user) return r.api_key_owner_user
   if (r.end_user_id) return r.end_user_id
   if (r.application_code) return r.application_code
-  return '—'
+  return t('requests.none')
 }
 
 function callerUserTitle(r: RequestLogRow): string {
@@ -554,11 +554,11 @@ function callerUserTitle(r: RequestLogRow): string {
   if (r.api_key_owner_user) parts.push(`用户: ${r.api_key_owner_user}`)
   if (r.end_user_id) parts.push(`终端用户: ${r.end_user_id}`)
   if (r.application_code) parts.push(`应用: ${r.application_code}`)
-  return parts.join(' · ') || '—'
+  return parts.join(' · ') || t('requests.none')
 }
 
 function callerKeyLine(r: RequestLogRow): string {
-  const key = r.api_key_prefix ?? (r.api_key_id != null ? `key#${r.api_key_id}` : '无key')
+  const key = r.api_key_prefix ?? (r.api_key_id != null ? `key#${r.api_key_id}` : t('requests.noKey'))
   if (r.application_code && r.api_key_owner_user) return `${key} · ${r.application_code}`
   if (r.application_code) return `${key} · ${r.application_code}`
   return key
@@ -568,7 +568,7 @@ function callerKeyTitle(r: RequestLogRow): string {
   const parts: string[] = []
   if (r.api_key_prefix) parts.push(`Key: ${r.api_key_prefix}`)
   else if (r.api_key_id != null) parts.push(`Key ID: ${r.api_key_id}`)
-  else parts.push('Key: 无')
+  else parts.push(t('requests.noKeyDetail'))
   if (r.application_code) parts.push(`应用: ${r.application_code}`)
   return parts.join(' · ')
 }
@@ -636,7 +636,7 @@ function fmtTime(ts: string) {
 }
 
 function token(v: number | null | undefined, usageSource?: 'llm' | 'estimated' | null) {
-  if (v == null) return '—'
+  if (v == null) return t('requests.none')
   const formatted = v.toLocaleString()
   // Mark estimated values with a tilde prefix + tooltip to distinguish from
   // upstream-reported counts. Estimated values come from local text heuristics
@@ -648,24 +648,24 @@ function token(v: number | null | undefined, usageSource?: 'llm' | 'estimated' |
 }
 
 function tokenTitle(usageSource?: 'llm' | 'estimated' | null): string {
-  if (usageSource === 'estimated') return '估算值（上游未返回 usage，本地按字符/单词启发式估算）'
-  if (usageSource === 'llm') return 'LLM 返回值'
+  if (usageSource === 'estimated') return t('requests.estimatedNote')
+  if (usageSource === 'llm') return t('requests.llmReported')
   return ''
 }
 
 function costDisplay(v: number | string | null | undefined, currency: string | null | undefined) {
-  if (v == null) return currency ? `待定价(${currency})` : '待定价'
+  if (v == null) return currency ? `待定价(${currency})` : t('requests.pendingPricingNoCurrency')
   const amount = Number(v).toFixed(6)
   return currency ? `${amount} ${currency}` : amount
 }
 
 function creditsDisplay(v: number | null | undefined): string {
-  if (v == null || v <= 0) return '—'
+  if (v == null || v <= 0) return t('requests.none')
   return v.toLocaleString()
 }
 
 function shortHash(v: string | null | undefined) {
-  return v ? `${v.slice(0, 12)}…` : '—'
+  return v ? `${v.slice(0, 12)}…` : t('requests.none')
 }
 
 async function showDetail(requestId: string) {
@@ -702,7 +702,7 @@ function isImageAttachment(a: AttachmentInfo): boolean {
 
 // formatBytes 把字节数格式化为人类可读（KB/MB）。
 function formatBytes(n: number | undefined): string {
-  if (!n || n <= 0) return '—'
+  if (!n || n <= 0) return t('requests.none')
   if (n < 1024) return n + ' B'
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
   return (n / (1024 * 1024)).toFixed(2) + ' MB'
@@ -758,7 +758,7 @@ function downloadAttachment(a: AttachmentInfo) {
 }
 
 function formatJson(obj: any): string {
-  if (obj == null) return '(无数据)'
+  if (obj == null) return t('requests.noData')
   try {
     return JSON.stringify(obj, null, 2)
   } catch {
@@ -882,23 +882,23 @@ function compressExplainText(row: any): string {
   const meta = row.compression_meta as Record<string, any> | null
   switch (strat) {
     case 'delta_append':
-      return '该请求处于已有会话中，网关只转发了新增的消息（已压缩的历史保留在缓存中），无需重新发送完整历史。'
+      return t('requests.same_session_no_retransmit')
     case 'sliding_window_token':
     case 'sliding_window_count':
     case 'sliding_window_idle':
       return [
-        `会话消息过多，触发了${strat === 'sliding_window_token' ? 'Token 阈值' : strat === 'sliding_window_idle' ? '空闲超时' : '消息数阈值'}`,
-        meta?.summary_marker ? '，已由 LLM 生成无损摘要保留关键信息。' : '，已触发滑动窗口压缩。',
+        `会话消息过多，触发了${strat === 'sliding_window_token' ? t('requests.strategy_token') : strat === 'sliding_window_idle' ? t('requests.strategy_idle') : t('requests.strategy_count')}`,
+        meta?.summary_marker ? t('requests.with_llm_summary') : t('requests.with_sliding_compress'),
       ].join('')
     case 'mechanical_trim':
-      if (reason === 'mode_2_on_4xx') return '上游供应商返回 context_length 错误（上下文超限），网关对历史消息进行了机械裁剪以适配上游窗口限制。'
-      return 'LLM 摘要压缩失败后降级，采用机械裁剪方式保留 system + 首条 user + 最近 N 对消息。'
+      if (reason === 'mode_2_on_4xx') return t('requests.mechanical_4xx')
+      return t('requests.mechanical_fallback')
     case 'memora_l1_inject':
       return '上下文超出窗口，网关从 Memora 检索了该用户的 L1 事实作为"动态上下文"注入到请求中。'
     case 'llm_summary':
-      return '上下文超出窗口，已由 LLM 生成结构化摘要（User Intent / Completed Work / …），压缩后替换了旧消息。'
+      return t('requests.llm_summary_done')
     case 'noop':
-      return '压缩被跳过（模式配置为 off，或 warmup 阶段事实不足）。'
+      return t('requests.skipped')
     default:
       return strat ? `压缩策略: ${strat}` : ''
   }
@@ -983,7 +983,7 @@ onMounted(async () => {
             <template v-if="compressionStats.slidingCount"> · 滑动窗口 {{ compressionStats.slidingCount }}</template>
           </span>
         </span>
-        <span style="color:var(--text-secondary,#6b7280);font-size:11px">{{ showCompressionGuide ? '收起 ▲' : '展开 ▼' }}</span>
+        <span style="color:var(--text-secondary,#6b7280);font-size:11px">{{ showCompressionGuide ? t('requests.collapse') : t('requests.expand') }}</span>
       </div>
       <div v-if="showCompressionGuide" style="padding:8px 12px 12px;border-top:1px solid var(--border,#333);line-height:1.7">
         <p style="margin:0 0 6px"><strong>会话缓存机制</strong>：网关按 <code>X-Gw-Session-Id</code> 维度缓存会话历史。
@@ -1125,7 +1125,7 @@ onMounted(async () => {
         <strong>会话总结</strong>
         <span style="color:var(--muted);font-size:12px">仅在会话 ID 筛选下可用</span>
         <button class="btn btn-primary btn-sm" :disabled="summaryLoading" @click="generateSessionSummary">
-          {{ summaryLoading ? '总结中…' : '生成总结' }}
+          {{ summaryLoading ? t('requests.generating') : t('requests.generate') }}
         </button>
         <button
           v-if="summaryResult"
@@ -1141,7 +1141,7 @@ onMounted(async () => {
           class="btn btn-ghost btn-sm"
           :disabled="memoraLoading"
           @click="writeSummaryToMemora"
-        >{{ memoraLoading ? '写入中…' : '写入 Memora' }}</button>
+        >{{ memoraLoading ? t('requests.writingMemora') : t('requests.writeMemora') }}</button>
       </div>
       <p v-if="summaryError" style="margin:8px 0 0;color:var(--danger)">{{ summaryError }}</p>
       <p v-if="memoraError" style="margin:8px 0 0;color:var(--danger)">Memora: {{ memoraError }}</p>
@@ -1206,7 +1206,7 @@ onMounted(async () => {
             @click="showDetail(r.request_id)"
           >
             <td v-if="traceMode" class="col-seq">
-              <span class="cell-line1">{{ r.trace_seq ?? '—' }}</span>
+              <span class="cell-line1">{{ r.trace_seq ?? t('requests.none') }}</span>
             </td>
             <td class="col-time" :title="`${r.request_id} · ${fmtTs(r.ts)}`">
               <div class="cell-line1">{{ fmtDate(r.ts) }}</div>
@@ -1246,7 +1246,7 @@ onMounted(async () => {
               <div class="cell-line1">{{ creditsDisplay(r.credits_charged) }}</div>
             </td>
             <td class="col-lat">
-              <div class="cell-line1">{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</div>
+              <div class="cell-line1">{{ r.latency_ms != null ? r.latency_ms + 'ms' : t('requests.none') }}</div>
               <div v-if="r.request_mode" class="cell-line2">{{ r.request_mode }}</div>
             </td>
             <td class="col-compress">
@@ -1326,16 +1326,16 @@ onMounted(async () => {
           <div class="drawer-section">
             <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:12px">
               <span><strong>请求ID:</strong> {{ detail.request_id }}</span>
-              <span><strong>会话:</strong> {{ detail.gw_session_id ?? '—' }}</span>
-              <span><strong>任务:</strong> {{ detail.gw_task_id ?? '—' }}</span>
-              <span><strong>Key:</strong> {{ detail.api_key_prefix ?? (detail.api_key_id != null ? '#' + detail.api_key_id : '无key') }}</span>
+              <span><strong>会话:</strong> {{ detail.gw_session_id ?? t('requests.none') }}</span>
+              <span><strong>任务:</strong> {{ detail.gw_task_id ?? t('requests.none') }}</span>
+              <span><strong>Key:</strong> {{ detail.api_key_prefix ?? (detail.api_key_id != null ? t('requests.apiKeyIdPrefix') + detail.api_key_id : t('requests.noKey')) }}</span>
               <span v-if="detail.api_key_owner_user"><strong>Key用户:</strong> {{ detail.api_key_owner_user }}</span>
               <span v-if="detail.application_code"><strong>应用:</strong> {{ detail.application_code }}</span>
               <span><strong>时间:</strong> {{ fmtTs(detail.ts) }}</span>
-              <span><strong>客户端模型:</strong> {{ detail.client_model ?? '—' }}</span>
+              <span><strong>客户端模型:</strong> {{ detail.client_model ?? t('requests.none') }}</span>
               <span :title="outboundModelTitle(detail)"><strong>出站模型:</strong> {{ outboundModelDisplay(detail) }}</span>
-              <span><strong>供应商:</strong> {{ detail.provider_name ?? '—' }}</span>
-              <span><strong>状态:</strong> <span :style="{ color: detail.success ? 'var(--success)' : 'var(--danger)' }">{{ detail.success ? '成功' : statusLabel(detail) }}</span></span>
+              <span><strong>供应商:</strong> {{ detail.provider_name ?? t('requests.none') }}</span>
+              <span><strong>状态:</strong> <span :style="{ color: detail.success ? 'var(--success)' : 'var(--danger)' }">{{ detail.success ? t('requests.resultSuccess') : statusLabel(detail) }}</span></span>
               <span v-if="detail.failure_stage"><strong>失败阶段:</strong> {{ detail.failure_stage }}</span>
               <span v-if="detail.failure_detail_code">
                 <strong>失败详情:</strong>
@@ -1344,11 +1344,11 @@ onMounted(async () => {
               <!-- 2026-06-19 T-NEW-7: surface the upstream finish_reason
                    separately from failure_detail_code so a successful
                    `tool_calls` response stops looking like a failure. -->
-              <span v-if="detail.upstream_finish_reason" :title="`上游 finish_reason（不等于失败）`">
+              <span v-if="detail.upstream_finish_reason" :title="t('requests.finishReasonTitle')">
                 <strong>结束原因:</strong>
                 {{ upstreamFinishReasonLabel(detail.upstream_finish_reason) }}
               </span>
-              <span><strong>延迟:</strong> {{ detail.latency_ms ?? '—' }}ms</span>
+              <span><strong>延迟:</strong> {{ detail.latency_ms ?? t('requests.none') }}ms</span>
               <span><strong>Token:</strong> {{ token(detail.prompt_tokens) }} / {{ token(detail.completion_tokens) }}</span>
               <span v-if="!isDefaultTenant()"><strong>积分消耗:</strong> {{ creditsDisplay(detail.credits_charged) }}</span>
               <!-- v3 (2026-06-19) session-level outbound metadata.
@@ -1356,8 +1356,8 @@ onMounted(async () => {
                    in {delta_append, sliding_window_*, mechanical_trim}). -->
               <template v-if="hasOutboundBody(detail)">
                 <div style="display:flex;flex-wrap:wrap;gap:8px;padding:6px 10px;background:var(--surface-primary,#16213e);border-radius:6px;margin-top:4px;font-size:12px">
-                  <span><strong>转发消息数:</strong> {{ detail.outbound_msg_count ?? '—' }}</span>
-                  <span><strong>转发 token 估算:</strong> {{ detail.outbound_token_est ?? '—' }}</span>
+                  <span><strong>转发消息数:</strong> {{ detail.outbound_msg_count ?? t('requests.none') }}</span>
+                  <span><strong>转发 token 估算:</strong> {{ detail.outbound_token_est ?? t('requests.none') }}</span>
                   <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--success,#22c55e);font-weight:600">
                     节约: {{ calcSavingDetail(detail).savingStr }}
                   </span>
@@ -1385,7 +1385,7 @@ onMounted(async () => {
               <button v-if="hasOutboundBody(detail)" class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'outbound' }" @click="detailTab = 'outbound'">
                 转发消息
                 <span class="outbound-diff-badge" :class="{ unchanged: outboundEqualsRequest(detail) }">
-                  {{ outboundEqualsRequest(detail) ? '= 请求' : `Δ${outboundMsgDelta(detail)}` }}
+                  {{ outboundEqualsRequest(detail) ? t('requests.equalsRequest') : `Δ${outboundMsgDelta(detail)}` }}
                 </span>
               </button>
               <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'response' }" @click="detailTab = 'response'">响应内容</button>

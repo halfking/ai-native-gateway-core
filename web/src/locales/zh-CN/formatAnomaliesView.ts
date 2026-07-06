@@ -54,9 +54,12 @@ export default {
     requestId: 'Request ID',
     tokenInfo: 'Token 信息',
     status: '状态',
-    detail: '详情',
+    actions: '操作',
     loading: '加载中...',
-    empty: '没有找到异常记录',
+    noData: '没有找到异常记录',
+    viewDetail: '详情',
+    expectedTokens: '预期: {count}',
+    actualTokens: '实际: {count}',
   },
 
   token: {

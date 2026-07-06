@@ -108,44 +108,44 @@ onUnmounted(() => {
 <template>
   <div>
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <h2 style="margin:0">路由决策日志</h2>
+      <h2 style="margin:0">{{ t('decisionsView.title') }}</h2>
       <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none">
         <input type="checkbox" v-model="autoRefresh" style="cursor:pointer;margin:0">
-        <span>每 5 秒自动刷新</span>
+        <span>{{ t('decisionsView.autoRefresh') }}</span>
       </label>
     </div>
 
     <div class="compact-filter-bar compact-filter-bar--stacked">
       <div class="cf-row">
-        <select v-model="filterSuccess" class="cf-select cf-status" title="状态" @change="resetAndLoad">
-          <option value="">全部</option>
-          <option value="true">成功</option>
-          <option value="false">失败</option>
+        <select v-model="filterSuccess" class="cf-select cf-status" :title="t('decisionsView.filter.status')" @change="resetAndLoad">
+          <option value="">{{ t('decisionsView.filter.statusAll') }}</option>
+          <option value="true">{{ t('decisionsView.filter.statusSuccess') }}</option>
+          <option value="false">{{ t('decisionsView.filter.statusFailed') }}</option>
         </select>
-        <select v-model="sinceMinutes" class="cf-select cf-hours" title="时间范围" @change="resetAndLoad">
-          <option :value="10">10分钟</option>
-          <option :value="30">30分钟</option>
-          <option :value="60">1小时</option>
-          <option :value="360">6小时</option>
-          <option :value="1440">24小时</option>
+        <select v-model="sinceMinutes" class="cf-select cf-hours" :title="t('decisionsView.filter.timeRange')" @change="resetAndLoad">
+          <option :value="10">{{ t('decisionsView.filter.time10m') }}</option>
+          <option :value="30">{{ t('decisionsView.filter.time30m') }}</option>
+          <option :value="60">{{ t('decisionsView.filter.time1h') }}</option>
+          <option :value="360">{{ t('decisionsView.filter.time6h') }}</option>
+          <option :value="1440">{{ t('decisionsView.filter.time24h') }}</option>
         </select>
-        <select v-model="limit" class="cf-select" style="width:72px" title="条数" @change="resetAndLoad">
-          <option :value="20">20条</option>
-          <option :value="50">50条</option>
-          <option :value="100">100条</option>
-          <option :value="200">200条</option>
+        <select v-model="limit" class="cf-select" style="width:72px" :title="t('decisionsView.filter.limit')" @change="resetAndLoad">
+          <option :value="20">{{ t('decisionsView.filter.limit20') }}</option>
+          <option :value="50">{{ t('decisionsView.filter.limit50') }}</option>
+          <option :value="100">{{ t('decisionsView.filter.limit100') }}</option>
+          <option :value="200">{{ t('decisionsView.filter.limit200') }}</option>
         </select>
-        <button class="btn btn-ghost btn-sm" @click="load">刷新</button>
-        <span class="cf-meta">共 {{ total }} 条</span>
+        <button class="btn btn-ghost btn-sm" @click="load">{{ t('decisionsView.filter.refresh') }}</button>
+        <span class="cf-meta">{{ t('decisionsView.filter.totalCount', { n: total }) }}</span>
       </div>
       <div class="cf-row cf-row--secondary">
         <div class="cf-field cf-field--grow">
-          <span class="cf-label">模型（可选）</span>
+          <span class="cf-label">{{ t('decisionsView.filter.modelLabel') }}</span>
           <div class="decisions-model-picker">
             <ModelPicker
               v-model="filterModel"
-              placeholder="选择模型…"
-              title="筛选路由决策模型"
+              :placeholder="t('decisionsView.filter.modelPlaceholder')"
+              :title="t('decisionsView.filter.modelTitle')"
               @update:model-value="resetAndLoad"
             />
           </div>
@@ -157,12 +157,11 @@ onUnmounted(() => {
 
     <!-- Top Pagination -->
     <div v-if="total > 0" class="card" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;font-size:13px">
-      <div style="color:var(--muted)">
-        共 <strong>{{ total }}</strong> 条，当前 {{ offset + 1 }} - {{ Math.min(offset + limit, total) }}
+      <div style="color:var(--muted)" v-html="t('decisionsView.pagination.summary', { total, start: offset + 1, end: Math.min(offset + limit, total) })">
       </div>
       <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn-ghost btn-sm" :disabled="offset === 0" @click="offset = Math.max(0, offset - limit); load()">← 上一页</button>
-        <button class="btn btn-ghost btn-sm" :disabled="offset + limit >= total" @click="offset = offset + limit; load()">下一页 →</button>
+        <button class="btn btn-ghost btn-sm" :disabled="offset === 0" @click="offset = Math.max(0, offset - limit); load()">{{ t('decisionsView.pagination.prev') }}</button>
+        <button class="btn btn-ghost btn-sm" :disabled="offset + limit >= total" @click="offset = offset + limit; load()">{{ t('decisionsView.pagination.next') }}</button>
       </div>
     </div>
 
@@ -170,26 +169,26 @@ onUnmounted(() => {
       <table class="data-table" style="min-width:1500px">
         <thead>
           <tr>
-            <th>时间</th>
-            <th>状态</th>
-            <th>模型</th>
-            <th>解析</th>
+            <th>{{ t('decisionsView.table.time') }}</th>
+            <th>{{ t('decisionsView.table.status') }}</th>
+            <th>{{ t('decisionsView.table.model') }}</th>
+            <th>{{ t('decisionsView.table.interpretation') }}</th>
             <th>Tier</th>
-            <th>延迟</th>
-            <th>供应商</th>
-            <th>出站模型</th>
+            <th>{{ t('decisionsView.table.latency') }}</th>
+            <th>{{ t('decisionsView.table.provider') }}</th>
+            <th>{{ t('decisionsView.table.outboundModel') }}</th>
             <th>prompt_t</th>
             <th>comp_t</th>
-            <th>费用</th>
-            <th>候选链</th>
-            <th>拦截原因</th>
-            <th>错误</th>
+            <th>{{ t('decisionsView.table.cost') }}</th>
+            <th>{{ t('decisionsView.table.candidateChain') }}</th>
+            <th>{{ t('decisionsView.table.blockReason') }}</th>
+            <th>{{ t('decisionsView.table.error') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!rows.length && !loading">
             <td colspan="13" style="text-align:center;padding:32px;color:var(--muted)">
-              暂无决策记录
+              {{ t('decisionsView.table.noData') }}
             </td>
           </tr>
           <tr v-for="r in rows" :key="r.request_id + r.ts" :class="{ 'row-fail': !r.success }" class="row-clickable" @click="openDetail(r)">
@@ -226,16 +225,15 @@ onUnmounted(() => {
         </tbody>
       </table>
     </div>
-    <div v-if="loading" style="text-align:center;padding:8px;font-size:12px;color:var(--muted)">加载中…</div>
+    <div v-if="loading" style="text-align:center;padding:8px;font-size:12px;color:var(--muted)">{{ t('decisionsView.loading') }}</div>
 
     <!-- Pagination -->
     <div v-if="total > 0" class="card" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;font-size:13px">
-      <div style="color:var(--muted)">
-        共 <strong>{{ total }}</strong> 条，当前 {{ offset + 1 }} - {{ Math.min(offset + limit, total) }}
+      <div style="color:var(--muted)" v-html="t('decisionsView.pagination.summary', { total, start: offset + 1, end: Math.min(offset + limit, total) })">
       </div>
       <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn-ghost btn-sm" :disabled="offset === 0" @click="offset = Math.max(0, offset - limit); load()">← 上一页</button>
-        <button class="btn btn-ghost btn-sm" :disabled="offset + limit >= total" @click="offset = offset + limit; load()">下一页 →</button>
+        <button class="btn btn-ghost btn-sm" :disabled="offset === 0" @click="offset = Math.max(0, offset - limit); load()">{{ t('decisionsView.pagination.prev') }}</button>
+        <button class="btn btn-ghost btn-sm" :disabled="offset + limit >= total" @click="offset = offset + limit; load()">{{ t('decisionsView.pagination.next') }}</button>
       </div>
     </div>
 
@@ -244,37 +242,37 @@ onUnmounted(() => {
       <div v-if="selectedRow" class="drawer-backdrop" @click="closeDetail">
         <div class="drawer-panel card" @click.stop>
           <div class="drawer-header">
-            <span style="font-size:14px;font-weight:600">决策详情</span>
-            <button class="btn btn-ghost btn-sm" @click="closeDetail">✕ 关闭</button>
+            <span style="font-size:14px;font-weight:600">{{ t('decisionsView.detail.title') }}</span>
+            <button class="btn btn-ghost btn-sm" @click="closeDetail">{{ t('decisionsView.detail.close') }}</button>
           </div>
           <div class="detail-body">
 
             <!-- Basic -->
             <div class="drawer-section">
-              <div class="drawer-section-title">基本信息</div>
+              <div class="drawer-section-title">{{ t('decisionsView.detail.basicInfo') }}</div>
               <div class="detail-grid">
-                <span class="dk">时间</span><span class="dv">{{ selectedRow.ts }}</span>
+                <span class="dk">{{ t('decisionsView.detail.time') }}</span><span class="dv">{{ selectedRow.ts }}</span>
                 <span class="dk">Request ID</span><span class="dv mono">{{ selectedRow.request_id }}</span>
                 <span class="dk">Idempotency Key</span><span class="dv mono">{{ selectedRow.idempotency_key ?? t('decisions.dash') }}</span>
                 <span class="dk">Tenant</span><span class="dv mono">{{ selectedRow.tenant_id }}</span>
-                <span class="dk">状态</span>
+                <span class="dk">{{ t('decisionsView.detail.status') }}</span>
                 <span class="dv">
                   <span :class="selectedRow.success ? 'badge-ok' : 'badge-err'">
                     {{ selectedRow.success ? t('decisions.successOk') : t('decisions.successFail') }}
                   </span>
                 </span>
-                <span class="dk">延迟</span><span class="dv">{{ selectedRow.latency_ms != null ? selectedRow.latency_ms + t('decisions.latencyUnit') : t('decisions.dash') }}</span>
-                <span class="dk">客户端模型</span><span class="dv mono">{{ selectedRow.client_model ?? selectedRow.model }}</span>
-                <span class="dk">出站模型</span><span class="dv mono">{{ selectedRow.outbound_model ?? t('decisions.dash') }}</span>
+                <span class="dk">{{ t('decisionsView.detail.latency') }}</span><span class="dv">{{ selectedRow.latency_ms != null ? selectedRow.latency_ms + t('decisions.latencyUnit') : t('decisions.dash') }}</span>
+                <span class="dk">{{ t('decisionsView.detail.clientModel') }}</span><span class="dv mono">{{ selectedRow.client_model ?? selectedRow.model }}</span>
+                <span class="dk">{{ t('decisionsView.detail.outboundModel') }}</span><span class="dv mono">{{ selectedRow.outbound_model ?? t('decisions.dash') }}</span>
                 <span class="dk">Request Mode</span><span class="dv">{{ selectedRow.request_mode ?? t('decisions.dash') }}</span>
-                <span class="dk">协议</span><span class="dv">{{ selectedRow.egress_protocol ?? t('decisions.dash') }}</span>
+                <span class="dk">{{ t('decisionsView.detail.protocol') }}</span><span class="dv">{{ selectedRow.egress_protocol ?? t('decisions.dash') }}</span>
                 <span class="dk">Sticky Hit</span><span class="dv">{{ selectedRow.sticky_hit ? t('decisions.stickyHitOk') : t('decisions.stickyHitNo') }}</span>
               </div>
             </div>
 
             <!-- Resolution -->
             <div class="drawer-section">
-              <div class="drawer-section-title">模型解析</div>
+              <div class="drawer-section-title">{{ t('decisionsView.detail.modelResolution') }}</div>
               <div class="detail-grid">
                 <span class="dk">Resolution Path</span><span class="dv mono">{{ selectedRow.resolution_path ?? t('decisions.dash') }}</span>
                 <span class="dk">Canonical Model</span><span class="dv mono">{{ selectedRow.canonical_model ?? t('decisions.dash') }}</span>
@@ -287,31 +285,31 @@ onUnmounted(() => {
 
             <!-- Routing -->
             <div class="drawer-section">
-              <div class="drawer-section-title">路由决策</div>
+              <div class="drawer-section-title">{{ t('decisionsView.detail.routingDecision') }}</div>
               <div class="detail-grid">
-                <span class="dk">供应商 ID</span><span class="dv">{{ selectedRow.chosen_provider_id ?? t('decisions.dash') }}</span>
-                <span class="dk">凭据 ID</span><span class="dv">{{ selectedRow.chosen_credential_id ?? t('decisions.dash') }}</span>
+                <span class="dk">{{ t('decisionsView.detail.providerId') }}</span><span class="dv">{{ selectedRow.chosen_provider_id ?? t('decisions.dash') }}</span>
+                <span class="dk">{{ t('decisionsView.detail.credentialId') }}</span><span class="dv">{{ selectedRow.chosen_credential_id ?? t('decisions.dash') }}</span>
                 <span class="dk">Tier</span><span class="dv">{{ selectedRow.tier ?? t('decisions.dash') }}</span>
-                <span class="dk">候选数</span><span class="dv">{{ selectedRow.candidates_tried }}</span>
+                <span class="dk">{{ t('decisionsView.detail.candidatesCount') }}</span><span class="dv">{{ selectedRow.candidates_tried }}</span>
               </div>
             </div>
 
             <!-- Tokens & Cost -->
             <div class="drawer-section">
-              <div class="drawer-section-title">Token 与费用</div>
+              <div class="drawer-section-title">{{ t('decisionsView.detail.usage') }}</div>
               <div class="detail-grid">
                 <span class="dk">Prompt Tokens</span><span class="dv">{{ selectedRow.prompt_tokens ?? t('decisions.dash') }}</span>
                 <span class="dk">Completion Tokens</span><span class="dv">{{ selectedRow.completion_tokens ?? t('decisions.dash') }}</span>
-                <span class="dk">费用 (USD)</span>
+                <span class="dk">{{ t('decisionsView.detail.costCalc') }}</span>
                 <span class="dv">{{ selectedRow.cost_usd != null ? t('decisions.costUnit') + Number(selectedRow.cost_usd).toFixed(6) : t('decisions.dash') }}</span>
-                <span class="dk">请求体积</span><span class="dv">{{ selectedRow.request_bytes != null ? selectedRow.request_bytes + t('decisions.bytesUnit') : t('decisions.dash') }}</span>
-                <span class="dk">响应体积</span><span class="dv">{{ selectedRow.response_bytes != null ? selectedRow.response_bytes + t('decisions.bytesUnit') : t('decisions.dash') }}</span>
+                <span class="dk">Request Size</span><span class="dv">{{ selectedRow.request_bytes != null ? selectedRow.request_bytes + t('decisions.bytesUnit') : t('decisions.dash') }}</span>
+                <span class="dk">Response Size</span><span class="dv">{{ selectedRow.response_bytes != null ? selectedRow.response_bytes + t('decisions.bytesUnit') : t('decisions.dash') }}</span>
               </div>
             </div>
 
             <!-- Error -->
             <div v-if="!selectedRow.success" class="drawer-section">
-              <div class="drawer-section-title" style="color:var(--danger)">错误信息</div>
+              <div class="drawer-section-title" style="color:var(--danger)">{{ t('decisionsView.detail.errorInfo') }}</div>
               <div class="detail-grid">
                 <span class="dk">Error Class</span><span class="dv" style="color:var(--danger)">{{ selectedRow.error_class ?? t('decisions.dash') }}</span>
                 <span class="dk">Failure Stage</span><span class="dv">{{ selectedRow.failure_stage ?? t('decisions.dash') }}</span>
@@ -321,7 +319,7 @@ onUnmounted(() => {
 
             <!-- Decision Trace -->
             <div class="drawer-section">
-              <div class="drawer-section-title">Decision Trace</div>
+              <div class="drawer-section-title">{{ t('decisionsView.detail.trace') }}</div>
               <pre class="trace-json">{{ JSON.stringify(selectedRow.decision_trace, null, 2) }}</pre>
             </div>
 

@@ -108,7 +108,7 @@ const selectedCanonical = ref('')
 
 const statuses: ModelStatus[] = ['active', 'disabled', 'deprecated', 'hidden']
 const modalities = ['text', 'vision', 'audio', 'multimodal', 'embedding']
-const singleSelectNamespaces = new Set(['family', 'generation', 'modality', 'series', 'variant', 'version'])
+const singleSelectNamespaces = new Set([t('models.colFamily'), 'generation', t('models.colModality'), 'series', 'variant', 'version'])
 
 const modelStatusOptions = [
   { value: 'active', label: 'active' },
@@ -455,7 +455,7 @@ async function submitCreate() {
     const row = models.value.find((m) => m.id === created.id)
     if (row) await openDetail(row)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '新增失败'
+    error.value = e instanceof Error ? e.message : t('models.createFailed')
   } finally {
     creating.value = false
   }
@@ -470,10 +470,10 @@ async function runDiscovery() {
     const started = await discoverModels({ use_manifest_fallback: true, force: true })
     discoverRun.value = started.run
     showDiscoveryCard.value = true
-    discoverMessage.value = started.reason === 'already_running' ? '已有扫描正在运行，继续等待结果' : '扫描任务已启动'
+    discoverMessage.value = started.reason === 'already_running' ? t('models.alreadyRunning') : t('models.started')
     await pollDiscovery(started.run.id)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '发现模型失败'
+    error.value = e instanceof Error ? e.message : t('models.discoverFailed')
   } finally {
     discovering.value = false
   }
@@ -563,7 +563,7 @@ async function openFeaturedDrawer() {
     const r = await getFeatured()
     featuredArray.value = (r.featured_models || []).slice()
   } catch (e: unknown) {
-    featuredError.value = e instanceof Error ? e.message : '加载特色模型失败'
+    featuredError.value = e instanceof Error ? e.message : t('models.loadFeaturedFailed')
     featuredArray.value = []
   } finally {
     featuredLoading.value = false
@@ -588,7 +588,7 @@ async function saveFeatured() {
     featuredArray.value = (r.featured_models || []).slice()
     featuredMessage.value = `特色模型已更新（${list.length}）`
   } catch (e: unknown) {
-    featuredError.value = e instanceof Error ? e.message : '保存失败'
+    featuredError.value = e instanceof Error ? e.message : t('models.saveFailed')
   } finally {
     featuredSaving.value = false
   }
@@ -602,13 +602,13 @@ async function previewRecommendedFeatured() {
     const list: FeaturedModel[] = (r.models ?? []).filter((m) => m.name)
     featuredRecommendPreview.value = list
     if (list.length === 0) {
-      featuredRecommendMessage.value = '无可推荐模型：最近 7 天无成功请求，或 featured_models 与 popular 均空'
+      featuredRecommendMessage.value = t('models.noRecommend')
     } else {
       const tagged = list.map((m) => `${m.name}${m.count > 0 ? ` (${m.count})` : ''}`)
       featuredRecommendMessage.value = `已加载 ${list.length} 个推荐：${tagged.slice(0, 5).join('、')}${list.length > 5 ? '…' : ''}`
     }
   } catch (e: unknown) {
-    featuredRecommendMessage.value = e instanceof Error ? e.message : '加载推荐失败'
+    featuredRecommendMessage.value = e instanceof Error ? e.message : t('models.recommendLoadFailed')
     featuredRecommendPreview.value = []
   } finally {
     featuredRecommendLoading.value = false
@@ -649,10 +649,10 @@ function healthBadgeClass(status: string | null | undefined): string {
 }
 
 function healthLabel(status: string | null | undefined): string {
-  if (status === 'healthy') return '正常'
-  if (status === 'warning') return '警示'
-  if (status === 'unreachable') return '不可达'
-  return '未探测'
+  if (status === 'healthy') return t('models.healthy')
+  if (status === 'warning') return t('models.warning')
+  if (status === 'unreachable') return t('models.unreachable')
+  return t('models.unknown')
 }
 
 onMounted(async () => {
@@ -674,7 +674,7 @@ onMounted(async () => {
           新增模型
         </button>
         <button v-if="!readOnly" class="btn btn-ghost btn-sm" :disabled="discovering" @click="runDiscovery">
-          {{ discovering ? '扫描中…' : '扫描供应商模型' }}
+          {{ discovering ? t('models.discovering') : t('models.discover') }}
         </button>
       </div>
     </div>
@@ -714,9 +714,9 @@ onMounted(async () => {
           <span
             class="badge"
             :class="discoverRun.status === 'succeeded' ? 'badge-green' : discoverRun.status === 'failed' ? 'badge-red' : (discovering ? 'badge-blue' : 'badge-gray')"
-          >{{ discovering ? discoverRun.status : (discoverRun.status === 'running' ? '空闲' : discoverRun.status) }}</span>
+          >{{ discovering ? discoverRun.status : (discoverRun.status === 'running' ? t('models.idle') : discoverRun.status) }}</span>
           <span class="badge badge-gray">{{ discoverRun.trigger }}</span>
-          <span class="muted small">#{{ discoverRun.id }} · {{ discoverMessage || (discovering ? '扫描进行中' : '最近一次扫描') }}</span>
+          <span class="muted small">#{{ discoverRun.id }} · {{ discoverMessage || (discovering ? t('models.running') : t('models.latest')) }}</span>
         </div>
         <div class="summary-row">
           <span class="badge badge-blue">凭据 {{ discoverResult?.credentials_succeeded ?? 0 }}/{{ discoverResult?.credentials_scanned ?? 0 }}</span>
@@ -748,7 +748,7 @@ onMounted(async () => {
             class="btn btn-ghost btn-sm"
             @click="showNamespaceFilters = !showNamespaceFilters"
           >
-            {{ showNamespaceFilters ? '收起高级筛选' : '展开高级筛选' }}
+            {{ showNamespaceFilters ? t('models.collapse') : t('models.expand') }}
           </button>
           <button v-if="activeTags.length || statusFilter || selectedVendor || pickedModel.trim() || textSearch.trim()" class="btn btn-ghost btn-sm" @click="clearFilters">清空</button>
         </div>
@@ -779,7 +779,7 @@ onMounted(async () => {
             type="button"
             class="family-chip"
             :class="{ active: selectedFamily === family.id }"
-            :title="`${family.vendor || '未知厂商'} · ${family.id}`"
+            :title="`${family.vendor || t('models.familyVendorUnknown')} · ${family.id}`"
             @click="setFamilyFilter(family.id)"
           >
             <span>{{ family.vendor || family.display_name }}</span>
@@ -798,16 +798,16 @@ onMounted(async () => {
             </div>
             <div class="tag-list">
               <button
-                v-for="t in g.tags"
-                :key="t.tag"
+                v-for="tag in g.tags"
+                :key="tag.tag"
                 type="button"
                 class="tag-chip"
-                :class="{ active: activeTags.includes(t.tag), disabled: t.disabled, [tagBadgeClass(t.tag)]: true }"
-                @click="toggleTag(t.tag)"
-                :disabled="t.disabled"
-                :title="t.disabled ? '当前其他条件下无可匹配结果' : `${t.count} 个模型`"
+                :class="{ active: activeTags.includes(tag.tag), disabled: tag.disabled, [tagBadgeClass(tag.tag)]: true }"
+                @click="toggleTag(tag.tag)"
+                :disabled="tag.disabled"
+                :title="tag.disabled ? t('models.tagNoMatch') : `${tag.count} 个模型`"
               >
-                {{ t.tag }} <span class="cnt">{{ t.count }}</span>
+                {{ tag.tag }} <span class="cnt">{{ tag.count }}</span>
               </button>
             </div>
           </div>
@@ -851,7 +851,7 @@ onMounted(async () => {
               <td>{{ m.alias_count ?? 0 }} / {{ m.offer_count ?? 0 }}</td>
               <td style="white-space:nowrap">
                 <button class="btn btn-primary btn-sm" @click="openDetail(m)">查看详情</button>
-                <button class="btn btn-ghost btn-sm" @click="toggleModelStatus(m)">{{ m.status === 'active' ? '禁用' : '启用' }}</button>
+                <button class="btn btn-ghost btn-sm" @click="toggleModelStatus(m)">{{ m.status === 'active' ? t('models.disable') : t('models.enable') }}</button>
               </td>
             </tr>
           </tbody>
@@ -878,7 +878,7 @@ onMounted(async () => {
           <template v-else>
             <div class="featured-recommend-bar">
               <button class="btn btn-sm btn-ghost" :disabled="featuredRecommendLoading" @click="previewRecommendedFeatured">
-                {{ featuredRecommendLoading ? '加载中…' : '⚡ 自动推荐（7d 热门 + 当前策略）' }}
+                {{ featuredRecommendLoading ? t('models.loading') : t('models.recommendBtn') }}
               </button>
               <button
                 v-if="featuredRecommendPreview.length"
@@ -900,7 +900,7 @@ onMounted(async () => {
 
             <div class="drawer-actions">
               <button class="btn btn-primary" @click="saveFeatured" :disabled="featuredSaving">
-                {{ featuredSaving ? '保存中…' : '保存特色模型' }}
+                {{ featuredSaving ? t('models.savingFeatured') : t('models.saveFeatured') }}
               </button>
               <button class="btn btn-ghost" @click="closeFeaturedDrawer">关闭</button>
             </div>
@@ -1018,7 +1018,7 @@ onMounted(async () => {
                   <td>{{ a.notes || '-' }}</td>
                   <td>
                     <button class="btn btn-ghost btn-sm" @click="setAliasStatus(a.id, a.status === 'active' ? 'disabled' : 'active')">
-                      {{ a.status === 'active' ? '禁用' : '启用' }}
+                      {{ a.status === 'active' ? t('models.disable') : t('models.enable') }}
                     </button>
                   </td>
                 </tr>
@@ -1074,7 +1074,7 @@ onMounted(async () => {
                     <td><span class="badge" :class="healthBadgeClass(offer.health_status)">{{ healthLabel(offer.health_status) }}</span></td>
                     <td>
                       <span class="badge" :class="offer.available ? 'badge-green' : 'badge-red'">
-                        {{ offer.available ? '可用' : '不可用' }}
+                        {{ offer.available ? t('models.available') : t('models.unavailable') }}
                       </span>
                     </td>
                   </tr>
@@ -1146,7 +1146,7 @@ onMounted(async () => {
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showCreateModal = false">取消</button>
             <button class="btn btn-primary" :disabled="creating || !createForm.canonical_name" @click="submitCreate">
-              {{ creating ? '创建中...' : '创建模型' }}
+              {{ creating ? t('models.submitting') : t('models.submit') }}
             </button>
           </div>
         </div>
