@@ -1,9 +1,8 @@
 <template>
   <div class="session-analytics-dashboard">
-    <!-- 页面标题 -->
     <div class="page-header">
-      <h2 class="page-title">会话分析中心</h2>
-      <p class="page-description">实时监控会话活动、成本趋势和健康状况</p>
+      <h2 class="page-title">{{ t('sessions.dashboard.title') }}</h2>
+      <p class="page-description">{{ t('sessions.dashboard.subtitle') }}</p>
     </div>
 
     <!-- 统一过滤器 -->
@@ -90,6 +89,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import DashboardFilterBar, { type AnalyticsFilters } from '@/components/analytics/DashboardFilterBar.vue'
 import DashboardStatsRow, { type DashboardStats } from '@/components/analytics/DashboardStatsRow.vue'
@@ -103,6 +103,8 @@ import HealthDistributionChart, { type HealthDistributionData } from '@/componen
 import TopSessionsTable, { type TopSession } from '@/components/analytics/TopSessionsTable.vue'
 import { store } from '@/store'
 import api from '@/api'
+
+const { t } = useI18n()
 
 const router = useRouter()
 
@@ -255,7 +257,7 @@ const loadStats = async () => {
     }
   } catch (error: any) {
     console.error('Failed to load stats:', error)
-    ElMessage.error(error.response?.data?.message || '加载统计数据失败')
+    ElMessage.error(error.response?.data?.message || t('sessions.stats.loadFailed'))
   } finally {
     statsLoading.value = false
   }

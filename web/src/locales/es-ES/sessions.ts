@@ -117,6 +117,11 @@ Puede confirmar el resultado previo y continuar, o iniciar una tarea nueva.`,
     taskId: 'ID de tarea',
     totalCost: 'Costo total',
     avgHealth: 'Salud promedio',
+    loadFailed: 'Error al cargar estadísticas',
+  },
+  dashboard: {
+    title: 'Centro de análisis de sesiones',
+    subtitle: 'Monitoreo en tiempo real de actividad de sesiones, tendencias de costos y estado de salud',
   },
   clientAnalytics: {
     title: 'Análisis de cliente',

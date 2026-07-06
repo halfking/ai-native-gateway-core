@@ -112,7 +112,7 @@ LEFT JOIN session_dim sd ON ss.session_key = sd.gw_session_id AND ss.tenant_id =
 GROUP BY ss.tenant_id, ss.client_models[1], sd.task_id;
 
 -- 唯一索引：REFRESH MATERIALIZED VIEW CONCURRENTLY 要求物化视图有唯一索引
-CREATE UNIQUE INDEX idx_session_client_task_matrix_uq
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_client_task_matrix_uq
     ON session_client_task_matrix(tenant_id, client_id, task_id);
 CREATE INDEX idx_session_client_task_matrix_client 
     ON session_client_task_matrix(tenant_id, client_id, total_cost_usd DESC);
