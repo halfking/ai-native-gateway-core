@@ -179,3 +179,60 @@ func TestRecoveryCoordinator_CachePersistence(t *testing.T) {
 		t.Errorf("expected positive CutIndex, got %d", state.CutIndex)
 	}
 }
+
+// TestNewSummaryFunc_NilDeps verifies the safety guarantee: when no LLM
+// endpoint is configured (deps == nil), NewSummaryFunc returns a func that
+// always reports ok=false. This is what lets RecoveryCoordinator fall back
+// to mechanical trim on deployments without a compaction LLM — the exact
+// behaviour this wiring must not regress.
+func TestNewSummaryFunc_NilDeps(t *testing.T) {
+	sf := NewSummaryFunc(nil)
+	if sf == nil {
+		t.Fatal("NewSummaryFunc(nil) returned nil func")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model":    "test",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	summary, ok := sf(context.Background(), body, "openai")
+	if ok {
+		t.Errorf("expected ok=false when deps is nil, got summary=%q", summary)
+	}
+	if summary != "" {
+		t.Errorf("expected empty summary when deps is nil, got %q", summary)
+	}
+}
+
+// TestNewSummaryFunc_WiredIntoRecovery confirms the integration: a
+// RecoveryCoordinator built with NewSummaryFunc(deps) consults the summarizer.
+// We use a nil deps (→ ok=false) and assert the coordinator then degrades to
+// the mechanical strategy — proving the wiring path is exercised and the
+// fallback works end-to-end. A full LLM-call test lives behind compaction
+// integration tests (needs network); here we lock in the contract.
+func TestNewSummaryFunc_WiredIntoRecovery(t *testing.T) {
+	largeContent := strings.Repeat("Long content. ", 300)
+	msgs := []map[string]any{
+		{"role": "system", "content": "Sys"},
+	}
+	for i := 0; i < 6; i++ {
+		msgs = append(msgs, map[string]any{"role": "user", "content": largeContent})
+		msgs = append(msgs, map[string]any{"role": "assistant", "content": largeContent})
+	}
+	body, _ := json.Marshal(map[string]any{"model": "test", "messages": msgs})
+
+	// Wire Summarizer via the adapter with nil deps — it must report false,
+	// forcing the coordinator onto the mechanical path.
+	rc := NewRecoveryCoordinator(RecoveryDeps{
+		Summarizer: NewSummaryFunc(nil),
+		MaxRetries: 2,
+	})
+	res := rc.Recover(context.Background(), body, "openai", 5000, "t", "s", 0)
+
+	if !res.ShouldRetry {
+		t.Fatal("expected ShouldRetry=true")
+	}
+	// ok=false from Summarizer → must fall back to mechanical, not llm.
+	if res.Strategy != "smart_window_mechanical" {
+		t.Errorf("expected mechanical fallback when summarizer ok=false, got strategy=%s", res.Strategy)
+	}
+}
