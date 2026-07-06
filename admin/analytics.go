@@ -144,7 +144,7 @@ func buildMatrixQuery(rowDim, metric string) (string, error) {
 		SELECT %s AS row_key,
 		       %s AS col_key,
 		       %s AS val
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE ts >= NOW() - $1::interval
 		  AND %s
 		  AND %s IS NOT NULL
@@ -187,7 +187,7 @@ func buildFlowL12Query() string {
 		SELECT %s AS src,
 		       %s AS dst,
 		       COUNT(*)::float8 AS val
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE ts >= NOW() - $1::interval
 		  AND %s IS NOT NULL
 		  AND (
