@@ -3,6 +3,8 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,31 +93,55 @@ func TestLiveStreamRedisStore_IdleMarker(t *testing.T) {
 	store := NewLiveStreamRedisStore(rdb)
 	ctx := context.Background()
 
-	now := time.Now().UTC()
-	if err := store.RecordIdleMarker(ctx, now); err != nil {
-		t.Fatalf("RecordIdleMarker: %v", err)
+	// Seed a real request so the main + vendor lanes register activity.
+	seedTs := time.Now().UTC()
+	if err := store.Record(ctx, LiveRequest{
+		RequestID:     "req-seed",
+		Ts:            seedTs.Format(time.RFC3339),
+		TenantID:      "default",
+		Model:         "gpt-4o",
+		ModelCategory: "openai",
+		ProviderCode:  "openai",
+		Status:        "success",
+	}); err != nil {
+		t.Fatalf("Record seed: %v", err)
 	}
 
+	// Force every activity key into the past so lanes are considered idle.
+	staleUnix := seedTs.Unix() - idleThresholdSeconds - 5
+	for _, k := range mr.Keys() {
+		if strings.HasPrefix(k, liveStreamActivityPrefix) {
+			mr.Set(k, fmt.Sprintf("%d", staleUnix))
+		}
+	}
+
+	emitTs := time.Now().UTC()
+	if err := store.ScanAndRecordIdleMarkers(ctx, emitTs); err != nil {
+		t.Fatalf("ScanAndRecordIdleMarkers: %v", err)
+	}
+
+	// The vendor lane should now carry an idle marker that reuses the
+	// vendor identity (openai), NOT a synthetic __idle__ lane.
 	items, err := store.Replay(ctx, "", true, 50)
 	if err != nil {
 		t.Fatalf("Replay: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("expected 1 idle marker, got %d items", len(items))
+	foundIdle := false
+	for _, it := range items {
+		if it.Type == "idle_marker" {
+			foundIdle = true
+			if it.RequestID == "" {
+				t.Fatal("idle marker should have a stable request_id for frontend keys")
+			}
+		}
 	}
-	if items[0].Type != "idle_marker" {
-		t.Errorf("expected idle_marker type, got %s", items[0].Type)
-	}
-	if items[0].RequestID == "" {
-		t.Fatal("idle marker should have a stable request_id for frontend keys")
+	if !foundIdle {
+		t.Fatalf("expected at least one idle marker after idle threshold, got %#v", items)
 	}
 
 	s := BuildLiveStreamSnapshot(items)
-	if len(s.Dimensions["vendor"]) != 1 || s.Dimensions["vendor"][0].ID != "__idle__" {
-		t.Fatalf("idle marker should be represented in vendor dimensions, got %#v", s.Dimensions["vendor"])
-	}
-	if s.Summary.Total != 0 {
-		t.Fatalf("idle marker should not count as a real request summary, got %#v", s.Summary)
+	if s.Summary.Total != 1 {
+		t.Fatalf("idle markers should not count as real request summary, got %#v (items=%#v)", s.Summary, items)
 	}
 }
 
@@ -127,8 +153,8 @@ func TestLiveStreamRedisStore_NilClient(t *testing.T) {
 	if err := store.Record(ctx, LiveRequest{RequestID: "test"}); err != nil {
 		t.Errorf("Record with nil client should return nil, got %v", err)
 	}
-	if err := store.RecordIdleMarker(ctx, time.Now()); err != nil {
-		t.Errorf("RecordIdleMarker with nil client should return nil, got %v", err)
+	if err := store.ScanAndRecordIdleMarkers(ctx, time.Now()); err != nil {
+		t.Errorf("ScanAndRecordIdleMarkers with nil client should return nil, got %v", err)
 	}
 	items, err := store.Replay(ctx, "", true, 50)
 	if err != nil {
@@ -351,9 +377,10 @@ func TestLiveStreamRedisStore_IdleMarkerWritesTenantDimensionQueues(t *testing.T
 
 	store := NewLiveStreamRedisStore(rdb)
 	ctx := context.Background()
+	seedTs := time.Now().UTC()
 	if err := store.Record(ctx, LiveRequest{
 		RequestID:     "req-1",
-		Ts:            time.Now().UTC().Format(time.RFC3339),
+		Ts:            seedTs.Format(time.RFC3339),
 		TenantID:      "tenant-a",
 		Model:         "gpt-4o",
 		ModelCategory: "openai",
@@ -362,32 +389,68 @@ func TestLiveStreamRedisStore_IdleMarkerWritesTenantDimensionQueues(t *testing.T
 	}); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
-	if err := store.RecordIdleMarker(ctx, time.Now().UTC().Add(time.Minute)); err != nil {
-		t.Fatalf("RecordIdleMarker: %v", err)
+
+	// Force activity keys stale so the vendor/provider/model lanes emit idle markers.
+	staleUnix := seedTs.Unix() - idleThresholdSeconds - 5
+	for _, k := range mr.Keys() {
+		if strings.HasPrefix(k, liveStreamActivityPrefix) {
+			mr.Set(k, fmt.Sprintf("%d", staleUnix))
+		}
 	}
 
+	if err := store.ScanAndRecordIdleMarkers(ctx, time.Now().UTC()); err != nil {
+		t.Fatalf("ScanAndRecordIdleMarkers: %v", err)
+	}
+
+	// Each dimension lane (tenant-scoped) should now hold BOTH the real
+	// request (req-1) and the idle marker emitted by the scan.
 	for _, key := range []string{
-		tenantLiveStreamKey("tenant-a", "status:idle"),
-		tenantLiveStreamKey("tenant-a", "dim:vendor:__idle__"),
-		tenantLiveStreamKey("tenant-a", "dim:provider:系统心跳"),
-		tenantLiveStreamKey("tenant-a", "dim:model:空闲"),
+		tenantLiveStreamKey("tenant-a", "dim:vendor:openai"),
+		tenantLiveStreamKey("tenant-a", "dim:provider:openai"),
+		tenantLiveStreamKey("tenant-a", "dim:model:gpt-4o"),
 	} {
-		count, err := rdb.ZCard(ctx, key).Result()
+		members, err := rdb.ZRange(ctx, key, 0, -1).Result()
 		if err != nil {
-			t.Fatalf("ZCard %s: %v", key, err)
+			t.Fatalf("ZRange %s: %v", key, err)
 		}
-		if count != 1 {
-			t.Fatalf("expected idle queue %s to contain 1 marker, got %d", key, count)
+		// req-1 + 1 idle marker == 2 entries.
+		if len(members) != 2 {
+			t.Fatalf("expected lane %s to contain req-1 + 1 idle marker, got %d: %#v", key, len(members), members)
 		}
 	}
 
-	items, err := store.Replay(ctx, "tenant-a", false, 10)
+	// The vendor idle marker is written only to the vendor lane (not the
+	// main queue), so verify it via the lane's ZSET + detail store rather
+	// than Replay (which reads the main queue).
+	vendorLaneKey := tenantLiveStreamKey("tenant-a", "dim:vendor:openai")
+	members, err := rdb.ZRange(ctx, vendorLaneKey, 0, -1).Result()
 	if err != nil {
-		t.Fatalf("Replay: %v", err)
+		t.Fatalf("ZRange vendor lane: %v", err)
 	}
-	ss := BuildLiveStreamSnapshot(items)
-	if len(ss.DetailDimensions["vendor"]) != 2 {
-		t.Fatalf("detail dimensions should include request vendor and idle vendor, got %#v", ss.DetailDimensions["vendor"])
+	var vendorIdle *LiveRequest
+	for _, m := range members {
+		if m == "req-1" {
+			continue
+		}
+		detail, gErr := rdb.Get(ctx, liveStreamRequestDetailKey("tenant-a", m)).Result()
+		if gErr != nil {
+			continue
+		}
+		req, uErr := unmarshalLiveRequestRedisPayload(detail)
+		if uErr != nil {
+			continue
+		}
+		if req.Type == "idle_marker" {
+			vendorIdle = &req
+			break
+		}
+	}
+	if vendorIdle == nil {
+		t.Fatalf("expected a vendor-scoped idle marker in lane %s, got members %#v", vendorLaneKey, members)
+	}
+	// Vendor idle marker keeps the real vendor identity but blanks model/provider.
+	if vendorIdle.ModelCategory != "openai" || vendorIdle.ProviderCode != "系统心跳" || vendorIdle.Model != "空闲" {
+		t.Fatalf("vendor idle marker should carry openai vendor with blank model/provider, got %#v", vendorIdle)
 	}
 }
 
@@ -505,12 +568,15 @@ func TestBuildLiveStreamSnapshot_TopNOthers(t *testing.T) {
 
 	s := BuildLiveStreamSnapshot(items)
 	lanes := s.Dimensions["vendor"]
-	if len(lanes) != 6 {
-		t.Fatalf("expected 5 top lanes + others, got %d", len(lanes))
+	// After removing Others aggregation, all 7 vendors should be returned
+	if len(lanes) != 7 {
+		t.Fatalf("expected all 7 vendor lanes (no Others aggregation), got %d", len(lanes))
 	}
-	last := lanes[len(lanes)-1]
-	if last.ID != "__others__" || !last.IsOthers || last.Stats.Total != 2 {
-		t.Fatalf("unexpected others lane: %#v", last)
+	// Verify no synthetic others lane exists
+	for _, lane := range lanes {
+		if lane.ID == "__others__" || lane.IsOthers {
+			t.Fatalf("should not have synthetic others lane after removing aggregation: %#v", lane)
+		}
 	}
 	if len(s.DetailDimensions["vendor"]) != 7 {
 		t.Fatalf("detail dimensions must retain all 7 vendors, got %d", len(s.DetailDimensions["vendor"]))
@@ -611,5 +677,42 @@ func TestLiveStreamSSEHub_EvictStaleCachedSnapshots(t *testing.T) {
 	}
 	if _, ok := hub.cachedSnapshot["tenant-stale"]; ok {
 		t.Fatal("stale entry should be evicted")
+	}
+}
+
+// TestParseActivityKey is a regression test for the scope-parsing bug
+// where a tenant-scoped activity key was mis-decoded (the "tenant:"
+// prefix check was applied to a segment that never carried the prefix,
+// dropping the tenantID and emitting idle markers into the wrong scope).
+func TestParseActivityKey(t *testing.T) {
+	cases := []struct {
+		name     string
+		key      string
+		wantTenant string
+		wantDim  string
+		wantDimKey string
+	}{
+		{"global vendor", liveStreamActivityKey("", "vendor", "openai"), "", "vendor", "openai"},
+		{"tenant vendor", liveStreamActivityKey("tenant-a", "vendor", "openai"), "tenant-a", "vendor", "openai"},
+		{"global main", liveStreamActivityKey("", "main", ""), "", "main", ""},
+		{"tenant main", liveStreamActivityKey("tenant-a", "main", ""), "tenant-a", "main", ""},
+		{"tenant dim key with colon", liveStreamActivityKey("tenant-a", "provider", "acme:co"), "tenant-a", "provider", "acme:co"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			info, ok := parseActivityKey(c.key)
+			if !ok {
+				t.Fatalf("parseActivityKey(%q) returned ok=false", c.key)
+			}
+			if info.tenantID != c.wantTenant {
+				t.Errorf("tenantID = %q, want %q", info.tenantID, c.wantTenant)
+			}
+			if info.dimension != c.wantDim {
+				t.Errorf("dimension = %q, want %q", info.dimension, c.wantDim)
+			}
+			if info.dimensionKey != c.wantDimKey {
+				t.Errorf("dimensionKey = %q, want %q", info.dimensionKey, c.wantDimKey)
+			}
+		})
 	}
 }
