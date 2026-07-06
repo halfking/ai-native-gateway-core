@@ -152,6 +152,15 @@ func NewManager(redisClient *RedisClient, ttl time.Duration) *Manager {
 	return &Manager{redis: redisClient, ttl: ttl}
 }
 
+// NewRedisClientFromClient creates a RedisClient wrapping an existing *redis.Client.
+// This avoids re-creating connections from Options() and reuses the provided client.
+func NewRedisClientFromClient(rc *redis.Client) *RedisClient {
+	if rc == nil {
+		return nil
+	}
+	return &RedisClient{client: rc}
+}
+
 // GetRedisClient 返回底层 RedisClient，供其他模块复用连接。
 func (sm *Manager) GetRedisClient() *RedisClient {
 	if sm == nil {
