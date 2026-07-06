@@ -94,7 +94,7 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 			COUNT(rl.outbound_body)::bigint AS with_outbound,
 			SUM(COALESCE(rl.outbound_token_est, 0))::bigint AS total_tok_after,
 			SUM(CASE WHEN rl.outbound_body IS NOT NULL THEN COALESCE(rl.outbound_token_est, 0) ELSE 0 END)::bigint AS compressed_tok
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY strategy
@@ -133,7 +133,7 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 	var estimatedOrig int64
 	err = h.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(CEIL(LENGTH(COALESCE(rl.request_body, ''))::numeric / 4.0)), 0)::bigint
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 	`, aggArgs...).Scan(&estimatedOrig)
@@ -160,7 +160,7 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		SELECT `+bucketExpr+` AS bucket,
 			COUNT(*) AS total,
 			COUNT(rl.outbound_body)::int AS compressed
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY bucket

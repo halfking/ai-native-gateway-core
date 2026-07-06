@@ -130,7 +130,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		SELECT ts, request_id, api_key_id, task_type, auto_profile,
 		       auto_confidence, client_model, outbound_model,
 		       credential_id, auto_decision, success, latency_ms, work_type
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE is_auto_request = TRUE
 		  AND ts >= NOW() - INTERVAL '7 days'
 	`
@@ -464,7 +464,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		  COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0),
 		  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
 		  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) THEN 1 ELSE 0 END), 0)
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE ts >= NOW() - INTERVAL '7 days'
 		  AND (
 		    is_auto_request = TRUE
@@ -491,7 +491,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s AS task_type, COUNT(*)
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE ts >= NOW() - INTERVAL '7 days'
 		  AND (
 		    is_auto_request = TRUE
@@ -517,7 +517,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	profileDist := map[string]int{}
 	rows, err = h.db.Query(ctx, `
 		SELECT COALESCE(auto_profile, 'unknown') AS p, COUNT(*)
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE is_auto_request = TRUE
 		  AND ts >= NOW() - INTERVAL '7 days'`+auditTenantFrag+`
 		GROUP BY p
@@ -540,7 +540,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	// which explicit models are consuming volume.
 	rows, err = h.db.Query(ctx, `
 		SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS m, COUNT(*) AS c
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE ts >= NOW() - INTERVAL '7 days'
 		  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
 		  AND (
