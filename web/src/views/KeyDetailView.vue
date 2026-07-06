@@ -1045,10 +1045,10 @@ watch(keyId, async () => {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: thin;
+  /* 2026-07-07: nowrap → wrap, 移除 overflow-x: auto
+     趋势按钮组在窄屏时自动折行，不再横向滚动 */
 }
 
 .trend-divider {

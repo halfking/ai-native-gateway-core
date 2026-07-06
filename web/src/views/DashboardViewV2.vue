@@ -487,23 +487,11 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
 .stats-row {
   display: flex;
   gap: 8px;
-  overflow-x: auto;
+  flex-wrap: wrap;
   padding: 4px 0;
   margin-bottom: 12px;
-}
-
-.stats-row::-webkit-scrollbar {
-  height: 6px;
-}
-
-.stats-row::-webkit-scrollbar-track {
-  background: var(--bg-subtle, #161b22);
-  border-radius: 3px;
-}
-
-.stats-row::-webkit-scrollbar-thumb {
-  background: var(--border, #30363d);
-  border-radius: 3px;
+  /* 2026-07-07: 补上 flex-wrap: wrap, 移除 overflow-x: auto
+     统计卡片行在窄屏时自动折行 */
 }
 
 .stat-mini {

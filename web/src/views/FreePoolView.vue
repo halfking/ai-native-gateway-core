@@ -1042,9 +1042,10 @@ onMounted(load)
 
 .stat-row {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 10px;
-  overflow-x: auto;
+  /* 2026-07-07: nowrap → wrap, 移除 overflow-x: auto
+     4张统计卡在窄屏时自动折行，不再横向滚动 */
 }
 .stat-inline {
   display: flex;
