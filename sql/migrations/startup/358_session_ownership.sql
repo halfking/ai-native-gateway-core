@@ -332,4 +332,67 @@ DO NOTHING;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_session_client_task_matrix_uq
     ON session_client_task_matrix(tenant_id, client_id, task_id);
 
+-- ============================================================
+-- 6. 用户维度物化视图 + 刷新函数扩展
+-- ============================================================
+
+-- 6.1 用户维度聚合视图
+-- 目的：按 owner_user 聚合会话统计，支撑用户画像列表/详情页快速查询
+CREATE MATERIALIZED VIEW IF NOT EXISTS session_owner_stats AS
+SELECT
+    so.owner_user,
+    so.tenant_id,
+    COUNT(DISTINCT so.gw_session_id) AS session_count,
+    COUNT(DISTINCT so.gw_session_id) FILTER (WHERE so.last_seen_at >= NOW() - INTERVAL '24 hours') AS active_sessions_24h,
+    SUM(so.request_count) AS total_requests,
+    SUM(so.total_cost_usd) AS total_cost_usd,
+    CASE WHEN COUNT(DISTINCT so.gw_session_id) > 0
+         THEN SUM(so.total_cost_usd) / COUNT(DISTINCT so.gw_session_id)
+         ELSE 0 END AS avg_cost_per_session,
+    AVG(ss.health_score)::INT AS avg_health_score,
+    COUNT(*) FILTER (WHERE ss.health_grade = 'A') AS health_grade_a_count,
+    COUNT(*) FILTER (WHERE ss.health_grade = 'B') AS health_grade_b_count,
+    COUNT(*) FILTER (WHERE ss.health_grade = 'C') AS health_grade_c_count,
+    COUNT(*) FILTER (WHERE ss.health_grade = 'D') AS health_grade_d_count,
+    COUNT(*) FILTER (WHERE ss.health_grade = 'F') AS health_grade_f_count,
+    SUM(so.success_count) AS total_success,
+    SUM(so.error_count) AS total_errors,
+    COUNT(DISTINCT so.end_user_id) FILTER (WHERE so.end_user_id IS NOT NULL AND so.end_user_id <> '') AS end_user_count,
+    MIN(so.first_seen_at) AS first_seen_at,
+    MAX(so.last_seen_at) AS last_seen_at,
+    array_agg(DISTINCT ss.primary_model) FILTER (WHERE ss.primary_model IS NOT NULL) AS models_used,
+    NOW() AS refreshed_at
+FROM session_owners so
+LEFT JOIN session_summaries ss ON ss.session_key = so.gw_session_id
+GROUP BY so.owner_user, so.tenant_id;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_owner_stats_pk
+    ON session_owner_stats(tenant_id, owner_user);
+CREATE INDEX IF NOT EXISTS idx_session_owner_stats_cost
+    ON session_owner_stats(tenant_id, total_cost_usd DESC);
+CREATE INDEX IF NOT EXISTS idx_session_owner_stats_sessions
+    ON session_owner_stats(tenant_id, session_count DESC);
+CREATE INDEX IF NOT EXISTS idx_session_owner_stats_health
+    ON session_owner_stats(tenant_id, avg_health_score DESC NULLS LAST);
+
+COMMENT ON MATERIALIZED VIEW session_owner_stats IS
+'用户维度会话聚合统计（物化视图，需定期刷新）';
+
+-- 6.2 扩展 357 的 refresh 函数，加入 session_owner_stats
+CREATE OR REPLACE FUNCTION refresh_session_analytics_views()
+RETURNS void AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW CONCURRENTLY session_client_stats;
+    REFRESH MATERIALIZED VIEW CONCURRENTLY session_task_stats;
+    REFRESH MATERIALIZED VIEW CONCURRENTLY session_client_task_matrix;
+    REFRESH MATERIALIZED VIEW CONCURRENTLY session_owner_stats;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION refresh_session_analytics_views() IS
+'刷新会话分析物化视图（client/task/owner 维度，建议每小时或每日执行）';
+
+-- 6.3 初始刷新（首次创建后立即填充数据）
+SELECT refresh_session_analytics_views();
+
 COMMIT;

@@ -127,16 +127,16 @@ func (h *Handler) HandleActivityTrend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	tenantID := EffectiveTenantIDAll(r)
-
-	// 构建查询
-	query := `
-		SELECT 
-			date_trunc($1, ts)::date AS date,
-			COUNT(DISTINCT gw_session_id) AS session_count,
-			COUNT(*) AS request_count,
-			SUM(CASE WHEN success THEN 1 ELSE 0 END) AS success_count,
-			SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS error_count,
+		tenantID := effectiveScopeTenant(r)
+	
+		// 构建查询
+		query := `
+			SELECT 
+				date_trunc($1, ts)::date AS date,
+				COUNT(DISTINCT gw_session_id) AS session_count,
+				COUNT(*) AS request_count,
+				SUM(CASE WHEN success THEN 1 ELSE 0 END) AS success_count,
+				SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS error_count,
 			SUM(COALESCE(cost_usd, 0)) AS total_cost_usd,
 			SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)) AS total_tokens,
 			COUNT(DISTINCT end_user_id) AS distinct_users
@@ -217,14 +217,14 @@ func (h *Handler) HandleCostTrend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
+		defer cancel()
 
-	tenantID := EffectiveTenantIDAll(r)
+		tenantID := effectiveScopeTenant(r)
 
-	query := `
-		SELECT 
-			date_trunc($1, ts)::date AS date,
-			SUM(COALESCE(input_cost_usd, 0)) AS input_cost_usd,
+		query := `
+			SELECT 
+				date_trunc($1, ts)::date AS date,
+				SUM(COALESCE(input_cost_usd, 0)) AS input_cost_usd,
 			SUM(COALESCE(output_cost_usd, 0)) AS output_cost_usd,
 			SUM(COALESCE(cost_usd, 0)) AS total_cost_usd,
 			SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens,
@@ -308,12 +308,12 @@ func (h *Handler) HandleLatencyTrend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	tenantID := EffectiveTenantIDAll(r)
+		tenantID := effectiveScopeTenant(r)
 
-	query := `
-		SELECT 
-			date_trunc($1, ts)::date AS date,
-			percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)::int AS p50_latency_ms,
+		query := `
+			SELECT 
+				date_trunc($1, ts)::date AS date,
+				percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)::int AS p50_latency_ms,
 			percentile_cont(0.9) WITHIN GROUP (ORDER BY latency_ms)::int AS p90_latency_ms,
 			percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::int AS p99_latency_ms,
 			MAX(latency_ms) AS max_latency_ms,
@@ -394,11 +394,11 @@ func (h *Handler) HandleHealthTrend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	tenantID := EffectiveTenantIDAll(r)
+		tenantID := effectiveScopeTenant(r)
 
-	query := `
-		SELECT 
-			date_trunc($1, first_request_at)::date AS date,
+		query := `
+			SELECT 
+				date_trunc($1, first_request_at)::date AS date,
 			AVG(health_score) AS avg_health_score,
 			COUNT(*) FILTER (WHERE health_grade = 'A') AS grade_a,
 			COUNT(*) FILTER (WHERE health_grade = 'B') AS grade_b,
