@@ -312,6 +312,9 @@ type ChatHandler struct {
 	lastSystemSession *session.LastSystemSessionIndex
 	// sessionPref tracks session -> credential preference for model switch handling.
 	sessionPref *session.SessionPreference
+	// rotationHook (2026-07-06) detects credential rotation and updates
+	// session state (turns, tokens, cost, cred-history). nil disables.
+	rotationHook *session.RotationHook
 	// sessionReuseWindow (2026-06-26) is the look-back window for
 	// FindRecentGatewaySession. Defaults to 5 * time.Minute; can be
 	// overridden via LLM_GATEWAY_SESSION_REUSE_WINDOW env. 0 means
@@ -372,6 +375,11 @@ func (h *ChatHandler) SetExecutor(exec *executors.Executor, prov providerResolve
 func (h *ChatHandler) SetSessionRouting(lastSystemSession *session.LastSystemSessionIndex, sessionPref *session.SessionPreference) {
 	h.lastSystemSession = lastSystemSession
 	h.sessionPref = sessionPref
+}
+
+// SetRotationHook (2026-07-06) wires the session rotation hook.
+func (h *ChatHandler) SetRotationHook(hook *session.RotationHook) {
+	h.rotationHook = hook
 }
 
 // SetSessionReuseWindow configures the look-back window used by
@@ -1593,6 +1601,32 @@ func (h *ChatHandler) serveWithExecutor(
 		gwSessionID, gwTaskID,
 		logCtx,
 	)
+
+	// ── Session Rotation Hook (2026-07-06) ────────────────────────────────
+	// Detect credential rotation and update session state.
+	if h.rotationHook != nil && gwSessionID != "" && logCtx.CredentialID != nil {
+		providerName := ""
+		if logCtx.ProviderID != nil {
+			// Provider name will be resolved by the hook if needed
+		}
+		rotCtx := &session.RotationContext{
+			SessionID: gwSessionID,
+			TenantID: func() string {
+				if keyInfo != nil {
+					return keyInfo.TenantID
+				}
+				return "default"
+			}(),
+			OldCredentialID: 0, // Hook reads from session_pref
+			NewCredentialID: *logCtx.CredentialID,
+			Model:           clientModel,
+			Provider:        providerName,
+			SwitchReason:    session.SwitchReasonAutoRoute,
+		}
+		if err := h.rotationHook.OnRequestComplete(r.Context(), rotCtx); err != nil {
+			slog.Warn("rotation_hook: OnRequestComplete failed", "session_id", gwSessionID, "error", err)
+		}
+	}
 
 	var sessionKey string
 	if sessionInfo != nil {

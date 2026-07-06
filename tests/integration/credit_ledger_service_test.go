@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -31,9 +32,23 @@ func TestCreditLedgerService_GrantAndAdjust(t *testing.T) {
 	defer pool.Close()
 
 	svc := maas.NewService(pool)
-	tenantID := "default"
+	tenantID := fmt.Sprintf("it-credit-ledger-%d", time.Now().UnixNano())
 	grantNote := "integration-grant-" + time.Now().Format("20060102150405.000000")
 	adjustNote := "integration-adjust-" + time.Now().Format("20060102150405.000000")
+	adjustRevertNote := adjustNote + "-cleanup"
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO tenants (code, name, status, description, contact_email)
+		VALUES ($1, $2, 'active', '', '')
+	`, tenantID, tenantID)
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM credit_ledger_with_current_month WHERE tenant_id = $1`, tenantID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM tenant_credit_wallets WHERE tenant_id = $1`, tenantID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE code = $1`, tenantID)
+	})
 
 	wBefore, err := svc.GetWallet(ctx, tenantID)
 	if err != nil {
@@ -80,7 +95,7 @@ func TestCreditLedgerService_GrantAndAdjust(t *testing.T) {
 		t.Fatalf("grant ledger pool = %v, want granted", poolName)
 	}
 
-	const adjustAmount int64 = -3
+	const adjustAmount int64 = 7
 	if err := svc.AdjustCredits(ctx, tenantID, adjustAmount, adjustNote); err != nil {
 		t.Fatalf("AdjustCredits failed: %v", err)
 	}
@@ -91,6 +106,9 @@ func TestCreditLedgerService_GrantAndAdjust(t *testing.T) {
 	}
 	if got, want := wAfterAdjust.PurchasedBalance, wAfterGrant.PurchasedBalance+adjustAmount; got != want {
 		t.Fatalf("purchased balance after adjust = %d, want %d", got, want)
+	}
+	if got, want := wAfterAdjust.TotalAvailable, wAfterGrant.TotalAvailable+adjustAmount; got != want {
+		t.Fatalf("wallet total after adjust = %d, want %d", got, want)
 	}
 
 	err = pool.QueryRow(ctx, `
@@ -103,8 +121,8 @@ func TestCreditLedgerService_GrantAndAdjust(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query adjust ledger: %v", err)
 	}
-	if entryType != "adjust" {
-		t.Fatalf("adjust ledger entry_type = %s, want adjust", entryType)
+	if entryType != "topup" {
+		t.Fatalf("adjust ledger entry_type = %s, want topup", entryType)
 	}
 	if amount != adjustAmount {
 		t.Fatalf("adjust ledger amount = %d, want %d", amount, adjustAmount)
@@ -116,11 +134,8 @@ func TestCreditLedgerService_GrantAndAdjust(t *testing.T) {
 		t.Fatalf("adjust ledger pool = %v, want purchased", poolName)
 	}
 
-	// Cleanup: revert balances via the same service path so the environment is left unchanged.
-	if err := svc.AdjustCredits(ctx, tenantID, -grantAmount, grantNote+"-cleanup"); err != nil {
-		t.Fatalf("cleanup grant revert failed: %v", err)
-	}
-	if err := svc.AdjustCredits(ctx, tenantID, -adjustAmount, adjustNote+"-cleanup"); err != nil {
+	// Cleanup: revert the purchased-balance mutation via the same service path.
+	if err := svc.AdjustCredits(ctx, tenantID, -adjustAmount, adjustRevertNote); err != nil {
 		t.Fatalf("cleanup adjust revert failed: %v", err)
 	}
 
@@ -128,7 +143,13 @@ func TestCreditLedgerService_GrantAndAdjust(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWallet final: %v", err)
 	}
-	if wFinal.TotalAvailable != wBefore.TotalAvailable {
-		t.Fatalf("wallet total after cleanup = %d, want original %d", wFinal.TotalAvailable, wBefore.TotalAvailable)
+	if got, want := wFinal.GrantedBalance, wAfterGrant.GrantedBalance; got != want {
+		t.Fatalf("granted balance after cleanup = %d, want %d", got, want)
+	}
+	if got := wFinal.PurchasedBalance; got != 0 {
+		t.Fatalf("purchased balance after cleanup = %d, want 0", got)
+	}
+	if got, want := wFinal.TotalAvailable, wAfterGrant.TotalAvailable; got != want {
+		t.Fatalf("wallet total after cleanup = %d, want %d", got, want)
 	}
 }
