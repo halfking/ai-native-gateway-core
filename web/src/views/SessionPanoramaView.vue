@@ -64,6 +64,7 @@
                 v-for="tag in panorama.tags" :key="tag.id"
                 :type="tagSourceColor(tag.tag_source)" size="small"
                 style="margin: 2px"
+                :aria-label="`${tag.tag_key}: ${tag.tag_value}`"
               >
                 {{ tag.tag_key }}: {{ tag.tag_value }}
               </el-tag>
