@@ -60,7 +60,7 @@ BEGIN
   SELECT request_id, tenant_id INTO test_req_id, test_tenant FROM test_ids;
   
   INSERT INTO request_logs_hot (
-    request_id, tenant_id, ts, success, model
+    request_id, tenant_id, ts, success, client_model
   ) VALUES (
     test_req_id, test_tenant, now(), true, 'test-model'
   );
@@ -86,7 +86,7 @@ BEGIN
   SELECT request_id INTO test_req_id FROM test_ids;
   
   UPDATE request_logs_hot 
-  SET success = false, error_class = 'test_error'
+  SET success = false, error_kind = 'test_error'
   WHERE request_id = test_req_id;
   
   SELECT success INTO updated_success 
@@ -162,7 +162,7 @@ BEGIN
   SELECT request_id, tenant_id INTO test_req_id, test_tenant FROM test_ids;
   
   INSERT INTO usage_ledger_hot (
-    request_id, tenant_id, ts, model, prompt_tokens, completion_tokens, cost_usd
+    request_id, tenant_id, ts, raw_model_name, prompt_tokens, completion_tokens, cost_usd
   ) VALUES (
     test_req_id, test_tenant, now(), 'test-model', 100, 50, 0.001
   );
