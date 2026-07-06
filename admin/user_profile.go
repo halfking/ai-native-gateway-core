@@ -379,7 +379,8 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		for taskRows.Next() {
 			var item TaskRankItem
 			var avgHealth sql.NullInt64
-			if err := taskRows.Scan(&item.TaskID, &item.SessionCount, &item.TotalCost, &avgHealth); err == nil {
+			var lastActivity time.Time
+			if err := taskRows.Scan(&item.TaskID, &item.SessionCount, &item.TotalCost, &avgHealth, &lastActivity); err == nil {
 				if avgHealth.Valid {
 					val := int(avgHealth.Int64)
 					item.AvgHealth = &val

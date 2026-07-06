@@ -97,6 +97,7 @@ export default {
     downstream: '下游被调用',
     addRelation: '添加关联',
     showTopology: '查看拓扑',
+    close: '关闭',
   },
 
   link: {
