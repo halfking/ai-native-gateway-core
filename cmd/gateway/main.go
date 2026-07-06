@@ -2054,6 +2054,16 @@ func main() {
 		mux.HandleFunc("/api/admin/session-analytics/latency-trend", wrapAdmin(adminHandler.HandleLatencyTrend))
 		mux.HandleFunc("/api/admin/session-analytics/health-trend", wrapAdmin(adminHandler.HandleHealthTrend))
 		slog.Info("Phase 4 session analytics API enabled (/api/admin/session-analytics)")
+
+		// Task T1.3: 会话健康评分后台 worker (2026-07-06)
+		// 每小时扫描 last_request_at < now-1h 且 health_score IS NULL 的会话，
+		// 批量计算并写入 session_summaries.health_score/grade/outcome。
+		// 缺失此 worker 则未主动停止的会话永远不会有健康分。
+		if dbConn != nil {
+			healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
+			healthWorker.Start(context.Background())
+			slog.Info("session health worker started (hourly)")
+		}
 		}
 
 		// Task T1.4: Usage Cost Enhanced API (2026-07-06)
