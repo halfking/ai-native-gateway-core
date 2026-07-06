@@ -73,9 +73,10 @@ type LiveStreamSnapshot struct {
 }
 
 type LiveStreamDelta struct {
-	Summary       LiveStreamStats             `json:"summary"`
-	ChangedLanes  map[string][]LiveStreamLane `json:"changed_lanes"`
-	StatusLegends []LiveStreamLegendItem      `json:"status_legends"`
+	Summary          LiveStreamStats                   `json:"summary"`
+	ChangedLanes     map[string][]LiveStreamLane       `json:"changed_lanes"`
+	DimensionLegends map[string][]LiveStreamLegendItem `json:"dimension_legends"`
+	StatusLegends    []LiveStreamLegendItem            `json:"status_legends"`
 }
 
 type liveRequestRedisPayload struct {
@@ -603,21 +604,24 @@ func (s *LiveStreamRedisStore) Stats(ctx context.Context) map[string]int64 {
 func ComputeDelta(old, new *LiveStreamSnapshot) *LiveStreamDelta {
 	if old == nil {
 		return &LiveStreamDelta{
-			Summary:       new.Summary,
-			ChangedLanes:  new.Dimensions,
-			StatusLegends: new.StatusLegends,
+			Summary:          new.Summary,
+			ChangedLanes:     new.Dimensions,
+			DimensionLegends: new.DimensionLegends,
+			StatusLegends:    new.StatusLegends,
 		}
 	}
 	delta := &LiveStreamDelta{
-		Summary:       new.Summary,
-		ChangedLanes:  map[string][]LiveStreamLane{},
-		StatusLegends: new.StatusLegends,
+		Summary:          new.Summary,
+		ChangedLanes:     map[string][]LiveStreamLane{},
+		DimensionLegends: map[string][]LiveStreamLegendItem{},
+		StatusLegends:    new.StatusLegends,
 	}
 	for _, dim := range []string{"vendor", "provider", "model"} {
 		oldLanes := old.Dimensions[dim]
 		newLanes := new.Dimensions[dim]
 		if lanesChanged(oldLanes, newLanes) {
 			delta.ChangedLanes[dim] = newLanes
+			delta.DimensionLegends[dim] = new.DimensionLegends[dim]
 		}
 	}
 	return delta

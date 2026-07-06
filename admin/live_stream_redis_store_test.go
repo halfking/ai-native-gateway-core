@@ -440,6 +440,30 @@ func TestComputeDelta_IncludesChangedDimension(t *testing.T) {
 	}
 }
 
+func TestComputeDelta_TenantIsolation(t *testing.T) {
+	tenantA := &LiveStreamSnapshot{
+		Summary:    LiveStreamStats{Total: 3, Success: 2, Failure: 1},
+		Dimensions: map[string][]LiveStreamLane{"vendor": {{ID: "openai", Stats: LiveStreamStats{Total: 3}}}, "provider": nil, "model": nil},
+	}
+	tenantB := &LiveStreamSnapshot{
+		Summary:    LiveStreamStats{Total: 5, Success: 4, Failure: 1},
+		Dimensions: map[string][]LiveStreamLane{"vendor": {{ID: "anthropic", Stats: LiveStreamStats{Total: 5}}}, "provider": nil, "model": nil},
+	}
+	// Delta from nil (first time) should return full tenantA
+	deltaA := ComputeDelta(nil, tenantA)
+	if deltaA.Summary.Total != 3 {
+		t.Fatalf("expected tenantA summary, got %#v", deltaA.Summary)
+	}
+	// Delta from tenantA to tenantB should return full tenantB (different tenants)
+	deltaB := ComputeDelta(tenantA, tenantB)
+	if deltaB.Summary.Total != 5 {
+		t.Fatalf("expected tenantB summary, got %#v", deltaB.Summary)
+	}
+	if len(deltaB.ChangedLanes["vendor"]) != 1 || deltaB.ChangedLanes["vendor"][0].ID != "anthropic" {
+		t.Fatalf("expected anthropic vendor, got %#v", deltaB.ChangedLanes)
+	}
+}
+
 func TestBuildLiveStreamSnapshot_ServerSideAggregation(t *testing.T) {
 	items := []LiveRequest{
 		{RequestID: "1", Ts: "2026-07-06T00:00:01Z", TenantID: "t1", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
