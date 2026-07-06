@@ -125,6 +125,31 @@ func (r *Router) PlanCandidates(
 		ordered = append(ordered, r.planByTier(round2, policy)...)
 	}
 
+	// 2026-07-07: Session-aware load balancing fix
+	// When stickyCredentialID is nil (new session) and multiple candidates exist,
+	// use round-robin rotation to ensure even distribution across credentials.
+	// This prevents all new sessions from being assigned to the same credential
+	// when loadScore values are identical (e.g., when FpSlots.Stats returns
+	// saturated values for all credentials).
+	//
+	// Background: P2C degrades to random selection when all scores are equal,
+	// but random + sticky cache = traffic concentration. By rotating the candidate
+	// list before executor tries them, we achieve deterministic load spreading.
+	slog.Info("PLAN_CANDIDATES_DEBUG",
+		"sticky_id_nil", stickyCredentialID == nil,
+		"ordered_count", len(ordered),
+	)
+	if stickyCredentialID == nil && len(ordered) > 1 {
+		// Use round-robin counter to rotate candidate list for new sessions
+		offset := int(r.rrCounter.Add(1) % uint64(len(ordered)))
+		ordered = rotateCandidates(ordered, offset)
+		slog.Info("new_session_load_balancing",
+			"offset", offset,
+			"candidate_count", len(ordered),
+			"first_credential", ordered[0].CredentialID,
+		)
+	}
+
 	if stickyCredentialID != nil {
 		ordered = prioritizeSticky(ordered, *stickyCredentialID)
 	}
@@ -295,6 +320,7 @@ func (r *Router) planByTier(candidates []provider.Candidate, policy *provider.Po
 		// This prevents always selecting the first candidate when scores are equal
 		if len(sorted) > 1 {
 			offset := int(r.rrCounter.Add(1) % uint64(len(sorted)))
+			slog.Info("ROUND_ROBIN_DEBUG", "counter", r.rrCounter.Load(), "offset", offset, "bucket_size", len(sorted))
 			sorted = rotateCandidates(sorted, offset)
 		}
 
@@ -546,7 +572,24 @@ func loadScore(c provider.Candidate, r *Router, ctx context.Context) float64 {
 	// Weighted score: higher pressure → higher score → less likely to be chosen
 	// Legacy inFlight is kept for backward compat (per-identity fairness)
 	// New pressure term dominates when fpUsed >> inFlight
-	return (float64(inFlight) + pressure*float64(fpLimit)) * latencyPenalty / (float64(w) * quality)
+	score := (float64(inFlight) + pressure*float64(fpLimit)) * latencyPenalty / (float64(w) * quality)
+
+	// DEBUG: Log score calculation for load balancing analysis
+	if rand.Float64() < 0.1 { // Sample 10% to reduce log spam
+		slog.Info("LOAD_SCORE_DEBUG",
+			"credential_id", c.CredentialID,
+			"fpUsed", fpUsed,
+			"fpLimit", fpLimit,
+			"pressure", pressure,
+			"inFlight", inFlight,
+			"weight", w,
+			"quality", quality,
+			"latency", latencyPenalty,
+			"score", score,
+		)
+	}
+
+	return score
 }
 
 func randomPair(pool []provider.Candidate) (provider.Candidate, provider.Candidate) {

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { store, clearAll, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from './store'
+import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, setJwtToken, setUserInfo } from './store'
 import { logout as apiLogout } from './api/auth'
+import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
@@ -21,10 +22,22 @@ const showChangePassword = ref(false)
 const passwordSuccessMessage = ref('')
 const mustChangePassword = computed(() => !!store.jwtToken && !!store.userInfo?.must_change_password)
 
-const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey))
+const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey || store.userInfo))
 const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
 const isTenantPortal = computed(() => !isPlatformOps.value)
+
+onMounted(async () => {
+  if (store.userInfo && !store.jwtToken && !store.apiKey) {
+    try {
+      const me = await getAuthMe()
+      setUserInfo(me)
+      setJwtToken('cookie')
+    } catch {
+      clearJwt()
+    }
+  }
+})
 
 const navPrimaryItems = computed(() =>
   visibleNavItems(NAV_PRIMARY_ITEMS, {

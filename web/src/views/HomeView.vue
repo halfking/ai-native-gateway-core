@@ -4,7 +4,7 @@ import { store } from '../store'
 import DashboardView from './DashboardView.vue'
 import LandingView from './LandingView.vue'
 
-const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey))
+const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey || store.userInfo))
 </script>
 
 <template>
