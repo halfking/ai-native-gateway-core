@@ -113,13 +113,15 @@ const healthTotal = computed(() => {
 })
 
 function handleClientClick(clientId: string) {
-  // P2实现客户端详情页后，跳转到对应页面
+  // 跳转到客户端详情页
   console.log('Navigate to client:', clientId)
+  window.location.href = `/session-analytics/clients/${clientId}`
 }
 
 function handleTaskClick(taskId: string) {
-  // P2实现任务详情页后，跳转到对应页面
+  // 跳转到任务详情页
   console.log('Navigate to task:', taskId)
+  window.location.href = `/session-analytics/tasks/${taskId}`
 }
 </script>
 
