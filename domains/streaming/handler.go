@@ -1495,7 +1495,12 @@ func (h *ChatHandler) serveWithExecutor(
 			false, // not streaming yet at this point
 		)
 		if scResult != nil && len(scResult.OutboundBody) > 0 {
-			bodyBytes = scResult.OutboundBody
+			// NeverWorse guard: the compressor must never inflate the request
+			// body. If the "compressed" output is >= the raw body length the
+			// transform regressed — discard it and keep the original.
+			if guarded, regressed := compression.NeverWorse(bodyBytes, scResult.OutboundBody, compression.GuardStageCompress); !regressed {
+				bodyBytes = guarded
+			}
 
 			// ── Tools restoration (Phase 1 optimization) ──────────────────
 			// If compressor cached tools (marked with "_tools_cached": true),
