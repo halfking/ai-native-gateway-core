@@ -136,6 +136,15 @@
       </el-card>
     </template>
 
+    <div v-else class="error-box">
+      <el-result icon="error" title="加载失败" sub-title="无法加载会话全景数据，请稍后重试">
+        <template #extra>
+          <el-button type="primary" @click="loadPanorama">重新加载</el-button>
+          <el-button @click="$router.push('/admin/session-analytics')">返回列表</el-button>
+        </template>
+      </el-result>
+    </div>
+
     <!-- 添加标签对话框 -->
     <el-dialog v-model="tagDialogVisible" title="添加标签" width="400px">
       <el-form label-width="80px">
@@ -245,6 +254,7 @@ onMounted(loadPanorama)
 .session-panorama { padding: 16px; }
 .pano-title { font-weight: 600; font-size: 16px; }
 .loading-box { text-align: center; padding: 60px; color: var(--el-text-color-secondary); }
+.error-box { padding: 40px 0; }
 .metric-row .el-card { text-align: center; }
 .savings-box { margin-top: 12px; padding: 8px; background: var(--el-color-success-light-9); border-radius: 4px; }
 .savings-box h4 { margin: 0 0 4px; color: var(--el-color-success); }
