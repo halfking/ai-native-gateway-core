@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from 'vue'
+import { localeRef } from '../../i18n'
 import {
   storageConfigGet, storageConfigUpdate, storageConfigTestPath,
   attachmentFilesystemStats,
