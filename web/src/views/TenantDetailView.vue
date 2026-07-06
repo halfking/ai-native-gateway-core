@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { localeRef } from '../i18n'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import {
   getTenant, getTenantUsers, getTenantKeys, getTenantStats, updateUser,
@@ -172,7 +173,7 @@ function fmtPrice(cents: number) {
 
 function fmtCredits(n: number) {
   const sign = n > 0 ? '+' : ''
-  return sign + n.toLocaleString('zh-CN')
+  return sign + n.toLocaleString(localeRef.value)
 }
 
 function ledgerTypeLabel(t: string) {
@@ -212,7 +213,7 @@ function statusLabel(s: string) {
 
 function fmtTime(s: string) {
   if (!s) return '-'
-  return new Date(s).toLocaleString('zh-CN')
+  return new Date(s).toLocaleString(localeRef.value)
 }
 
 function fmtNum(n?: number) {
@@ -490,19 +491,19 @@ watch(() => route.params.tenantId, loadTenant)
         <div v-if="maasWallet" class="stat-cards">
           <div class="stat-card">
             <div class="stat-label">订阅额度</div>
-            <div class="stat-value">{{ maasWallet.quota_remaining.toLocaleString('zh-CN') }}</div>
+            <div class="stat-value">{{ fmtNum(maasWallet.quota_remaining) }}</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">信用积分</div>
-            <div class="stat-value">{{ maasWallet.granted_balance.toLocaleString('zh-CN') }}</div>
+            <div class="stat-value">{{ fmtNum(maasWallet.granted_balance) }}</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">充值积分</div>
-            <div class="stat-value">{{ maasWallet.purchased_balance.toLocaleString('zh-CN') }}</div>
+            <div class="stat-value">{{ fmtNum(maasWallet.purchased_balance) }}</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">可用总额</div>
-            <div class="stat-value">{{ maasWallet.total_available.toLocaleString('zh-CN') }}</div>
+            <div class="stat-value">{{ fmtNum(maasWallet.total_available) }}</div>
           </div>
         </div>
 
@@ -556,7 +557,7 @@ watch(() => route.params.tenantId, loadTenant)
               <td class="mono">{{ o.order_no }}</td>
               <td>{{ o.order_type === 'subscribe' ? '订阅' : '加油包' }}</td>
               <td>¥{{ fmtPrice(o.amount_cents) }}</td>
-              <td>{{ o.credits.toLocaleString('zh-CN') }}</td>
+              <td>{{ fmtNum(o.credits) }}</td>
               <td>{{ orderStatusLabel(o.status) }}</td>
               <td class="mono">{{ fmtTime(o.created_at) }}</td>
               <td>
@@ -598,7 +599,7 @@ watch(() => route.params.tenantId, loadTenant)
               <td>{{ ledgerTypeLabel(e.entry_type) }}</td>
               <td>{{ poolLabel(e.pool) }}</td>
               <td class="mono" style="text-align:right">{{ fmtCredits(e.amount) }}</td>
-              <td class="mono" style="text-align:right">{{ e.balance_after.toLocaleString('zh-CN') }}</td>
+              <td class="mono" style="text-align:right">{{ fmtNum(e.balance_after) }}</td>
               <td class="mono">{{ e.ref_type || '—' }} {{ e.ref_id || '' }}</td>
               <td>{{ e.note || '—' }}</td>
             </tr>

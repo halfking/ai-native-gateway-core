@@ -254,4 +254,19 @@ export default {
     loadFailed: '載入失敗',
     detailLoadFailed: '明細載入失敗',
   },
+
+  maasUsageView: {
+    consumeLabel: '積分消耗',
+    ledgerTotalLabel: '流水消耗彙總',
+    ledgerTotalHint: '最近 {limit} 條 consume 記錄 · {count} 筆',
+    trendTitle: '使用趨勢',
+    trendHint: '積分與請求次數',
+    emptyTrend: '近 {days} 天暫無消耗記錄。',
+    buyCredits: '購買積分',
+    rechargeHint: '可在套餐頁為該租戶儲值。',
+    trendBarTitle: '{date}: {credits} {unit}',
+    modelRankTitle: '按模型排行',
+    ledgerTitle: '積分流水',
+    goBuyCredits: '去購買積分',
+  },
 }

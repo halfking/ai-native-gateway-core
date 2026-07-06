@@ -253,4 +253,19 @@ export default {
     loadFailed: '加载失败',
     detailLoadFailed: '明细加载失败',
   },
+
+  maasUsageView: {
+    consumeLabel: '积分消耗',
+    ledgerTotalLabel: '流水消耗汇总',
+    ledgerTotalHint: '最近 {limit} 条 consume 记录 · {count} 笔',
+    trendTitle: '使用趋势',
+    trendHint: '积分与请求次数',
+    emptyTrend: '近 {days} 天暂无消耗记录。',
+    buyCredits: '购买积分',
+    rechargeHint: '可在套餐页为该租户充值。',
+    trendBarTitle: '{date}: {credits} {unit}',
+    modelRankTitle: '按模型排行',
+    ledgerTitle: '积分流水',
+    goBuyCredits: '去购买积分',
+  },
 }
