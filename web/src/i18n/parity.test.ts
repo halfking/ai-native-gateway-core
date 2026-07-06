@@ -32,7 +32,11 @@ import vm from 'vm'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
-const LOCALES_DIR = join(__dirname, 'locales')
+// 此文件位于 src/i18n/parity.test.ts，而 locales 目录位于 src/locales，
+// 因此需要向上一级。此前写成 join(__dirname, 'locales') 指向了不存在的
+// src/i18n/locales，导致整个 parity 测试 ENOENT 失败、从未真正守护 i18n
+// 一致性（6 种语言的 audit 命名空间缺失就是因此漏过）。
+const LOCALES_DIR = join(__dirname, '..', 'locales')
 const SOURCE_LOCALE = 'zh-CN'
 const LOCALES = ['ar-SA', 'de-DE', 'en-US', 'es-ES', 'fr-FR', 'ja-JP', 'zh-CN', 'zh-TW']
 
