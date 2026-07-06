@@ -78,6 +78,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '📋' },
       { path: '/sessions', label: '会话列表', labelKey: 'nav.item.sessions', icon: '💬' },
+      { path: '/admin/sessions', label: '会话管理', labelKey: 'nav.item.sessionManagement', icon: '🎛️', super: true, hideForTenant: true },
       { path: '/session-compare', label: '会话对比', labelKey: 'nav.item.sessionCompare', icon: '🔍' },
       { path: '/session-context', label: '会话上下文', labelKey: 'nav.item.sessionContext', icon: '💭' },
       { path: '/admin/session-analytics', label: '会话分析中心', labelKey: 'nav.item.sessionAnalytics', icon: '📊', super: true, hideForTenant: true },
@@ -91,6 +92,7 @@ export const NAV_GROUPS: NavGroup[] = [
     labelKey: 'nav.group.dataOps',
     items: [
       { path: '/admin/settings', label: '系统设置', labelKey: 'nav.item.settings', icon: '⚙️', super: true, hideForTenant: true },
+      { path: '/session-config', label: '会话配置', labelKey: 'nav.item.sessionConfig', icon: '🔧', super: true, hideForTenant: true },
       { path: '/admin/data-lifecycle', label: '数据生命周期', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },
       { path: '/format-anomalies', label: '格式异常监控', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true },
       { path: '/admin/modules', label: '模块管理', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true },

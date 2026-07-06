@@ -520,4 +520,6 @@ export default {
     loadFailed: '載入失敗',
     triggerFailed: '觸發失敗',
   },
+    displayNameHint: "[TODO: providerDetail.settings.displayNameHint]",
+    saveSuccess: "[TODO: providerDetail.settings.saveSuccess]",
 }

@@ -18,6 +18,7 @@ import forbidden from './forbidden'
 import settings from './settings'
 import workTypes from './workTypes'
 import decisions from './decisions'
+import decisionsView from './decisionsView'
 import auditLog from './auditLog'
 import freePool from './freePool'
 import models from './models'
@@ -68,6 +69,7 @@ export default {
   settings,
   workTypes,
   decisions,
+  decisionsView,
   auditLog,
   freePool,
   models,

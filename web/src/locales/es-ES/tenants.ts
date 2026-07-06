@@ -267,4 +267,5 @@ export default {
     ledgerTitle: 'Libro de créditos',
     goBuyCredits: 'Comprar créditos',
   },
+  loadFailed: "[TODO: tenants.loadFailed]",
 }

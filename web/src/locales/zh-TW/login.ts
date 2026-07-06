@@ -16,4 +16,6 @@ export default {
     required: '請輸入使用者名稱和密碼',
     failed: '登入失敗',
   },
+  changePassword: "[TODO: login.changePassword]",
+  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
 }

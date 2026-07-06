@@ -18,9 +18,12 @@ draw_bar() {
   local max=$2
   local width=${3:-50}
   
+  # Guard against division by zero
+  [[ $max -le 0 ]] && max=1
+  [[ $value -lt 0 ]] && value=0
+  
   local filled=$(( value * width / max ))
   [[ $filled -gt $width ]] && filled=$width
-  [[ $filled -lt 0 ]] && filled=0
   
   printf "["
   for ((i=0; i<filled; i++)); do printf "█"; done
@@ -36,6 +39,7 @@ get_metrics() {
 
 # 主循环
 declare -A PREV_TOTAL PREV_SUCCESS PREV_ERROR
+FIRST_RUN=true
 
 while true; do
   clear_screen
@@ -65,14 +69,21 @@ while true; do
     SUCCESS=$(echo "$METRICS" | jq -r '.counters.requests_success // 0')
     ERROR=$(echo "$METRICS" | jq -r '.counters.requests_error // 0')
     
-    # 计算 RPS (自上次检查)
-    PREV_T=${PREV_TOTAL[$PORT]:-0}
-    PREV_S=${PREV_SUCCESS[$PORT]:-0}
-    PREV_E=${PREV_ERROR[$PORT]:-0}
-    
-    RPS=$(( (TOTAL - PREV_T) / INTERVAL ))
-    RPS_SUCCESS=$(( (SUCCESS - PREV_S) / INTERVAL ))
-    RPS_ERROR=$(( (ERROR - PREV_E) / INTERVAL ))
+    if $FIRST_RUN; then
+      # First run: initialize prev values, show 0 RPS
+      RPS=0
+      RPS_SUCCESS=0
+      RPS_ERROR=0
+    else
+      # 计算 RPS (自上次检查)
+      PREV_T=${PREV_TOTAL[$PORT]:-0}
+      PREV_S=${PREV_SUCCESS[$PORT]:-0}
+      PREV_E=${PREV_ERROR[$PORT]:-0}
+      
+      RPS=$(( (TOTAL - PREV_T) / INTERVAL ))
+      RPS_SUCCESS=$(( (SUCCESS - PREV_S) / INTERVAL ))
+      RPS_ERROR=$(( (ERROR - PREV_E) / INTERVAL ))
+    fi
     
     [[ $RPS -gt $MAX_RPS ]] && MAX_RPS=$RPS
     
@@ -94,6 +105,8 @@ while true; do
     PREV_SUCCESS[$PORT]=$SUCCESS
     PREV_ERROR[$PORT]=$ERROR
   done
+  
+  FIRST_RUN=false
   
   echo ""
   echo "─────────────────────────────────────────────────────────────"

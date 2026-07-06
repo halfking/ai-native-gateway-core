@@ -521,4 +521,6 @@ export default {
     loadFailed: 'Échec du chargement',
     triggerFailed: 'Échec du déclenchement',
   },
+    displayNameHint: "[TODO: providerDetail.settings.displayNameHint]",
+    saveSuccess: "[TODO: providerDetail.settings.saveSuccess]",
 }
