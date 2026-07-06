@@ -141,7 +141,7 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		AutoSelectRecommended: getEnvBool("LLM_GATEWAY_GOAL_AUTO_SELECT", true),
 		AutoContinueOnPause:   getEnvBool("LLM_GATEWAY_GOAL_AUTO_CONTINUE", true),
 		MaxRetryCount:         getEnvInt("LLM_GATEWAY_GOAL_MAX_RETRY", 3),
-		MaxAutoContinueCount:  getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", 10),
+		MaxAutoContinueCount:  getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", 3),
 		UseAutorouteForAudit:  getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", true),
 		UseAutorouteForIntent: getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_INTENT", true),
 		FallbackAuditModel:    getEnv("LLM_GATEWAY_GOAL_FALLBACK_AUDIT_MODEL", "auto"),
@@ -157,7 +157,7 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		RepeatThreshold:        getEnvInt("LLM_GATEWAY_GOAL_REPEAT_THRESHOLD", 3),
 		RepeatResetOnProgress:  true,
 		CompletionConfidence:   getEnvFloat("LLM_GATEWAY_GOAL_COMPLETION_CONFIDENCE", goal.DefaultCompletionConfidence),
-		MaxFollowUpDepth:       getEnvInt("LLM_GATEWAY_GOAL_MAX_FOLLOW_UP_DEPTH", 5),
+		MaxFollowUpDepth:       getEnvInt("LLM_GATEWAY_GOAL_MAX_FOLLOW_UP_DEPTH", 15),
 		MaxFollowUpsPerSession: getEnvInt("LLM_GATEWAY_GOAL_MAX_FOLLOW_UPS_PER_SESSION", 50),
 	}
 
