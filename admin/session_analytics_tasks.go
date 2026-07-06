@@ -73,6 +73,12 @@ func (h *Handler) handleTaskAnalyticsList(w http.ResponseWriter, r *http.Request
 		orderBy = "sessions"
 	}
 
+	// 普通用户暂不可见
+	if IsRegularUser(r) {
+		writeError(w, http.StatusForbidden, "task analytics requires admin access")
+		return
+	}
+
 	tenantID := queryString(r, "tenant_id")
 	callerTenant := GetTenantID(r)
 	isSuper := IsSuperAdminOrLegacy(r)
@@ -206,6 +212,12 @@ func (h *Handler) handleTaskAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 	days := queryInt(r, "days", 30)
 	if days < 1 || days > 90 {
 		days = 30
+	}
+
+	// 普通用户暂不可见
+	if IsRegularUser(r) {
+		writeError(w, http.StatusForbidden, "task analytics requires admin access")
+		return
 	}
 
 	tenantID := queryString(r, "tenant_id")

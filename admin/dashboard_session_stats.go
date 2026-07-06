@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -55,55 +56,64 @@ type TaskRankItem struct {
 //
 // GET /api/admin/dashboard/session-overview?days=7
 //
-// 租户隔离：tenant_admin 只能看自己租户，super_admin 可看全局或指定租户
+// 三层隔离：
+//   super_admin/admin_key → 跨租户全部（或指定 tenant_id 参数）
+//   tenant_admin          → 本租户全部
+//   普通用户              → 本租户 + 仅自己名下 owner
 func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	// 解析参数
 	days := queryInt(r, "days", 7)
 	if days < 1 || days > 90 {
 		days = 7
 	}
 
-	tenantID := queryString(r, "tenant_id")
-	callerTenant := GetTenantID(r)
-	isSuper := IsSuperAdminOrLegacy(r)
-
-	// 租户访问控制
-	if !isSuper && tenantID != "" && tenantID != callerTenant {
-		writeError(w, http.StatusForbidden, "cross-tenant access denied")
-		return
-	}
-	if !isSuper && tenantID == "" {
-		tenantID = callerTenant
+	tenantID := effectiveScopeTenant(r)
+	if IsSuperAdminOrLegacy(r) {
+		if q := queryString(r, "tenant_id"); q != "" {
+			tenantID = q
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	resp := &SessionOverviewResponse{
-		LastUpdated: time.Now(),
-	}
+	resp := &SessionOverviewResponse{LastUpdated: time.Now()}
 
-	// 构造 WHERE 子句
-	whereClause := ""
-	args := []interface{}{}
+	// --- 统一基础片段：FROM session_summaries ss JOIN session_dim sd + WHERE ---
+	// 所有子查询共用这个模式，只在 select/group by 上不同
+	baseFrom := "FROM session_summaries ss LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key"
+	var baseWhere string
+	var baseArgs []interface{}
+
 	if tenantID != "" {
-		whereClause = "WHERE ss.tenant_id = $1"
-		args = append(args, tenantID)
+		baseWhere = "WHERE ss.tenant_id = $1"
+		baseArgs = append(baseArgs, tenantID)
 	}
 
-	// 1. 查询总会话数和活跃会话数
+	// 普通用户 owner 过滤（ownerScopeClause 检查角色）
+	if IsRegularUser(r) {
+		owner := GetAuthContext(r).Username
+		paramIdx := len(baseArgs) + 1
+		if baseWhere == "" {
+			baseWhere = "WHERE sd.owner_user = $" + strconv.Itoa(paramIdx)
+		} else {
+			baseWhere += " AND sd.owner_user = $" + strconv.Itoa(paramIdx)
+		}
+		baseArgs = append(baseArgs, owner)
+	}
+
+	// 1. 总会话数 + 活跃会话数
+	totalArgs := make([]interface{}, len(baseArgs))
+	copy(totalArgs, baseArgs)
 	err := h.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT 
-			COUNT(*) as total,
-			COUNT(*) FILTER (WHERE last_request_at >= NOW() - INTERVAL '24 hours') as active
-		FROM session_summaries ss
-		%s
-	`, whereClause), args...).Scan(&resp.TotalSessions, &resp.ActiveSessions)
+		SELECT COUNT(*),
+		       COUNT(*) FILTER (WHERE ss.last_request_at >= NOW() - INTERVAL '24 hours')
+		%s %s
+	`, baseFrom, baseWhere), totalArgs...).Scan(&resp.TotalSessions, &resp.ActiveSessions)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query total failed: %v", err))
 		return
@@ -111,18 +121,18 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 
 	// 2. 查询健康度分布
 	healthDist := &resp.HealthDistribution
+	healthArgs := make([]interface{}, len(baseArgs))
+	copy(healthArgs, baseArgs)
 	err = h.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT 
-			COUNT(*) FILTER (WHERE health_grade = 'A') as a,
-			COUNT(*) FILTER (WHERE health_grade = 'B') as b,
-			COUNT(*) FILTER (WHERE health_grade = 'C') as c,
-			COUNT(*) FILTER (WHERE health_grade = 'D') as d,
-			COUNT(*) FILTER (WHERE health_grade = 'F') as f
-		FROM session_summaries ss
-		%s
-	`, whereClause), args...).Scan(&healthDist.A, &healthDist.B, &healthDist.C, &healthDist.D, &healthDist.F)
+		SELECT
+			COUNT(*) FILTER (WHERE ss.health_grade = 'A') as a,
+			COUNT(*) FILTER (WHERE ss.health_grade = 'B') as b,
+			COUNT(*) FILTER (WHERE ss.health_grade = 'C') as c,
+			COUNT(*) FILTER (WHERE ss.health_grade = 'D') as d,
+			COUNT(*) FILTER (WHERE ss.health_grade = 'F') as f
+		%s %s
+	`, baseFrom, baseWhere), healthArgs...).Scan(&healthDist.A, &healthDist.B, &healthDist.C, &healthDist.D, &healthDist.F)
 	if err != nil {
-		// 非阻塞错误，继续
 		healthDist.A = 0
 		healthDist.B = 0
 		healthDist.C = 0
@@ -130,31 +140,29 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 		healthDist.F = 0
 	}
 
-	// 3. 查询成本趋势（最近N天）
-	trendArgs := make([]interface{}, len(args)+1)
-	copy(trendArgs, args)
-	trendArgs[len(trendArgs)-1] = days
-	trendWhereClause := whereClause
-	trendParamIdx := len(args) + 1
-	if whereClause == "" {
-		trendWhereClause = fmt.Sprintf("WHERE DATE(ss.first_request_at) >= CURRENT_DATE - INTERVAL '%d days'", days)
+	// 3. 成本趋势（最近N天）
+	trendWhere := baseWhere
+	trendArgs := make([]interface{}, len(baseArgs))
+	copy(trendArgs, baseArgs)
+	trendParamIdx := len(baseArgs) + 1
+	if trendWhere == "" {
+		trendWhere = fmt.Sprintf("WHERE DATE(ss.first_request_at) >= CURRENT_DATE - INTERVAL '%d days'", days)
 		trendArgs = []interface{}{days}
 		trendParamIdx = 1
 	} else {
-		trendWhereClause = fmt.Sprintf("%s AND DATE(ss.first_request_at) >= CURRENT_DATE - $%d::INT", whereClause, trendParamIdx)
+		trendWhere += fmt.Sprintf(" AND DATE(ss.first_request_at) >= CURRENT_DATE - $%d::INT", trendParamIdx)
+		trendArgs = append(trendArgs, days)
 	}
 
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT 
-			DATE(ss.first_request_at) as date,
-			SUM(ss.total_cost_usd) as cost,
-			COUNT(*) as sessions
-		FROM session_summaries ss
-		%s
+		SELECT DATE(ss.first_request_at) as date,
+		       SUM(ss.total_cost_usd) as cost,
+		       COUNT(*) as sessions
+		%s %s
 		GROUP BY DATE(ss.first_request_at)
 		ORDER BY date DESC
 		LIMIT $%d
-	`, trendWhereClause, trendParamIdx+1), append(trendArgs, days)...)
+	`, baseFrom, trendWhere, trendParamIdx+1), append(trendArgs, days)...)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -166,7 +174,6 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 			}
 		}
 	}
-	// 反转趋势数据（从旧到新）
 	for i, j := 0, len(resp.CostTrend)-1; i < j; i, j = i+1, j-1 {
 		resp.CostTrend[i], resp.CostTrend[j] = resp.CostTrend[j], resp.CostTrend[i]
 	}
@@ -174,21 +181,19 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 		resp.CostTrend = []CostTrendPoint{}
 	}
 
-	// 4. 查询Top5客户端（按成本）
-	// 使用 session_summaries 的 client_models 字段（TEXT[] 类型）
-	// 注意：client_models 可能为空或包含多个值，这里取第一个作为 client_id
+	// 4. Top5 客户端（按成本，取 sd.client_id 替代 client_models[1] 启发式）
+	clientArgs := make([]interface{}, len(baseArgs))
+	copy(clientArgs, baseArgs)
 	clientRows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT 
-			COALESCE(client_models[1], 'unknown') as client_id,
-			COUNT(*) as session_count,
-			SUM(total_cost_usd) as total_cost,
-			AVG(health_score)::INT as avg_health
-		FROM session_summaries ss
-		%s
-		GROUP BY client_models[1]
+		SELECT COALESCE(sd.client_id, 'unknown') as client_id,
+		       COUNT(*) as session_count,
+		       SUM(ss.total_cost_usd) as total_cost,
+		       AVG(ss.health_score)::INT as avg_health
+		%s %s
+		GROUP BY sd.client_id
 		ORDER BY total_cost DESC
 		LIMIT 5
-	`, whereClause), args...)
+	`, baseFrom, baseWhere), clientArgs...)
 	if err == nil {
 		defer clientRows.Close()
 		for clientRows.Next() {
@@ -207,32 +212,19 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 		resp.TopClients = []ClientRankItem{}
 	}
 
-	// 5. 查询Top5任务（按会话数）
-	// 需要关联 session_dim 表获取 task_id
-	taskJoin := ""
-	if tenantID != "" {
-		taskJoin = `
-		LEFT JOIN session_dim sd ON ss.session_key = sd.session_id AND sd.tenant_id = $1
-		`
-	} else {
-		taskJoin = `
-		LEFT JOIN session_dim sd ON ss.session_key = sd.session_id
-		`
-	}
-
+	// 5. Top5 任务（按会话数）
+	taskArgs := make([]interface{}, len(baseArgs))
+	copy(taskArgs, baseArgs)
 	taskRows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT 
-			COALESCE(sd.task_id, 'unknown') as task_id,
-			COUNT(*) as session_count,
-			SUM(ss.total_cost_usd) as total_cost,
-			AVG(ss.health_score)::INT as avg_health
-		FROM session_summaries ss
-		%s
-		%s
+		SELECT COALESCE(sd.task_id, 'unknown') as task_id,
+		       COUNT(*) as session_count,
+		       SUM(ss.total_cost_usd) as total_cost,
+		       AVG(ss.health_score)::INT as avg_health
+		%s %s
 		GROUP BY sd.task_id
 		ORDER BY session_count DESC
 		LIMIT 5
-	`, taskJoin, whereClause), args...)
+	`, baseFrom, baseWhere), taskArgs...)
 	if err == nil {
 		defer taskRows.Close()
 		for taskRows.Next() {

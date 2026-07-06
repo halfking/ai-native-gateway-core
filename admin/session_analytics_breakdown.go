@@ -696,7 +696,7 @@ func buildSessionSummariesWhereClause(r *http.Request, filters *analyticsFilters
 
 // tenantSummariesClause 生成 session_summaries 租户隔离子句
 func tenantSummariesClause(r *http.Request, startIdx int) (string, []interface{}, int) {
-	tenantID := EffectiveTenantIDAll(r)
+	tenantID := effectiveScopeTenant(r)
 	if tenantID == "" {
 		// super_admin 查全租户
 		return "", nil, startIdx

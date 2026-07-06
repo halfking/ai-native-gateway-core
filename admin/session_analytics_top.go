@@ -105,11 +105,11 @@ func (h *Handler) HandleTopSessions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	tenantID := EffectiveTenantIDAll(r)
+		tenantID := effectiveScopeTenant(r)
 
-	query := `
-		SELECT session_key, tenant_id, title, request_count,
-		       total_cost_usd, total_tokens, duration_seconds,
+		query := `
+			SELECT session_key, tenant_id, title, request_count,
+			       total_cost_usd, total_tokens, duration_seconds,
 		       avg_latency_ms, health_grade, primary_model
 		FROM session_summaries
 		WHERE first_request_at >= $1 AND first_request_at < $2`
@@ -184,7 +184,7 @@ func (h *Handler) HandleFilterOptions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	tenantID := EffectiveTenantIDAll(r)
+		tenantID := effectiveScopeTenant(r)
 
 	// 模型列表（从近 30 天数据聚合，避免全表扫描）
 	modelQuery := `

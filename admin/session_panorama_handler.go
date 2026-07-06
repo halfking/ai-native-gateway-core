@@ -93,9 +93,14 @@ func (h *Handler) HandleSessionPanorama(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "gw_session_id is required")
 		return
 	}
-	tenantID := EffectiveTenantIDAll(r)
+	tenantID := effectiveScopeTenant(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
+
+	// 普通用户 owner 访问检查
+	if !requireSessionOwnerAccess(w, r, ctx, h.db, gwSessionID) {
+		return
+	}
 
 	// 复用 detail 逻辑获取 summary + timeline + analysis
 	detail, err := h.loadSessionDetailData(ctx, tenantID, gwSessionID)
@@ -181,7 +186,7 @@ func (h *Handler) HandleSessionTags(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "gw_session_id is required")
 		return
 	}
-	tenantID := EffectiveTenantIDAll(r)
+	tenantID := effectiveScopeTenant(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -257,11 +262,14 @@ func (h *Handler) HandleSessionSuggestions(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	gwSessionID := pathSegment(r.URL.Path, "/api/admin/session-analytics/", 0)
-	tenantID := EffectiveTenantIDAll(r)
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	writeJSON(w, http.StatusOK, map[string]any{"suggestions": h.loadSuggestions(ctx, gwSessionID, tenantID)})
+		gwSessionID := pathSegment(r.URL.Path, "/api/admin/session-analytics/", 0)
+		tenantID := effectiveScopeTenant(r)
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if !requireSessionOwnerAccess(w, r, ctx, h.db, gwSessionID) {
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"suggestions": h.loadSuggestions(ctx, gwSessionID, tenantID)})
 }
 
 // HandleSessionSuggestionApply POST /api/admin/session-analytics/<id>/suggestions/<sid>/apply

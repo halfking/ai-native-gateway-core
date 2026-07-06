@@ -89,6 +89,12 @@ func (h *Handler) handleClientAnalyticsList(w http.ResponseWriter, r *http.Reque
 		orderBy = "cost"
 	}
 
+	// 普通用户暂不可见（物化视图无 owner_user 列，Stage 7 修复）
+	if IsRegularUser(r) {
+		writeError(w, http.StatusForbidden, "client analytics requires admin access")
+		return
+	}
+
 	tenantID := queryString(r, "tenant_id")
 	callerTenant := GetTenantID(r)
 	isSuper := IsSuperAdminOrLegacy(r)
@@ -215,14 +221,20 @@ func (h *Handler) handleClientAnalyticsDetail(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	days := queryInt(r, "days", 30)
-	if days < 1 || days > 90 {
-		days = 30
-	}
+		days := queryInt(r, "days", 30)
+		if days < 1 || days > 90 {
+			days = 30
+		}
 
-	tenantID := queryString(r, "tenant_id")
-	callerTenant := GetTenantID(r)
-	isSuper := IsSuperAdminOrLegacy(r)
+		// 普通用户暂不可见
+		if IsRegularUser(r) {
+			writeError(w, http.StatusForbidden, "client analytics requires admin access")
+			return
+		}
+
+		tenantID := queryString(r, "tenant_id")
+		callerTenant := GetTenantID(r)
+		isSuper := IsSuperAdminOrLegacy(r)
 
 	if !isSuper && tenantID != "" && tenantID != callerTenant {
 		writeError(w, http.StatusForbidden, "cross-tenant access denied")

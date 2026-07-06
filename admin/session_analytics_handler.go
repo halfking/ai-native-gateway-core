@@ -348,27 +348,34 @@ func (h *Handler) HandleSessionAnalyticsStats(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusServiceUnavailable, "db not available")
 		return
 	}
-	tenantID := EffectiveTenantIDAll(r)
+	tenantID := effectiveScopeTenant(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	query := `
 		SELECT
 			COALESCE(COUNT(*), 0),
-			COALESCE(COUNT(*) FILTER (WHERE last_request_at > NOW() - INTERVAL '1 hour'), 0),
-			COALESCE(SUM(request_count), 0),
-			COALESCE(SUM(total_cost_usd), 0),
-			COALESCE(AVG(total_cost_usd), 0),
-			COALESCE(AVG(total_tokens), 0)::BIGINT,
-			COALESCE(AVG(avg_latency_ms), 0)::INT,
-			COALESCE(COUNT(*) FILTER (WHERE compliance_status = 'compliant') * 100.0 / NULLIF(COUNT(*), 0), 0),
-			COALESCE(COUNT(*) FILTER (WHERE quality_score >= 8) * 100.0 / NULLIF(COUNT(*) FILTER (WHERE quality_score IS NOT NULL), 0), 0)
-		FROM session_summaries
-		WHERE first_request_at >= CURRENT_DATE`
+			COALESCE(COUNT(*) FILTER (WHERE ss.last_request_at > NOW() - INTERVAL '1 hour'), 0),
+			COALESCE(SUM(ss.request_count), 0),
+			COALESCE(SUM(ss.total_cost_usd), 0),
+			COALESCE(AVG(ss.total_cost_usd), 0),
+			COALESCE(AVG(ss.total_tokens), 0)::BIGINT,
+			COALESCE(AVG(ss.avg_latency_ms), 0)::INT,
+			COALESCE(COUNT(*) FILTER (WHERE ss.compliance_status = 'compliant') * 100.0 / NULLIF(COUNT(*), 0), 0),
+			COALESCE(COUNT(*) FILTER (WHERE ss.quality_score >= 8) * 100.0 / NULLIF(COUNT(*) FILTER (WHERE ss.quality_score IS NOT NULL), 0), 0)
+		FROM session_summaries ss
+		LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key
+		WHERE ss.first_request_at >= CURRENT_DATE`
 	args := []any{}
 	if tenantID != "" {
-		query += " AND tenant_id = $1"
+		query += " AND ss.tenant_id = $1"
 		args = append(args, tenantID)
+	}
+	// 普通用户 owner 过滤
+	ownerFrag, ownerArgs, _ := ownerScopeClause(r, "sd.owner_user", len(args)+1)
+	if ownerFrag != "" {
+		query += ownerFrag
+		args = append(args, ownerArgs...)
 	}
 
 	var stats AnalyticsSessionStats
@@ -406,9 +413,14 @@ func (h *Handler) HandleSessionAnalyticsDetail(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "gw_session_id is required")
 		return
 	}
-	tenantID := EffectiveTenantIDAll(r)
+	tenantID := effectiveScopeTenant(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
+
+	// 普通用户 owner 访问检查
+	if !requireSessionOwnerAccess(w, r, ctx, h.db, gwSessionID) {
+		return
+	}
 
 	// 摘要
 	query := "SELECT " + sessionSummarySelectCols +
@@ -496,9 +508,13 @@ func (h *Handler) HandleSessionAnalyticsExport(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "gw_session_id is required")
 		return
 	}
-	tenantID := EffectiveTenantIDAll(r)
+	tenantID := effectiveScopeTenant(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
+
+	if !requireSessionOwnerAccess(w, r, ctx, h.db, gwSessionID) {
+		return
+	}
 
 	query := `SELECT row_to_json(t) FROM (
 		SELECT ss.*, sd.task_id, sd.status AS session_status

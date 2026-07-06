@@ -487,11 +487,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-07-07: 首页会话统计概览接口
 	mux.HandleFunc("/api/admin/dashboard/session-overview", admin(h.handleDashboardSessionOverview))
 
-	// 2026-07-07: P2会话分析 - 客户端/任务维度分析
-	mux.HandleFunc("/api/admin/session-analytics/clients", admin(h.handleClientAnalyticsList))
-	mux.HandleFunc("/api/admin/session-analytics/clients/", admin(h.handleClientAnalyticsDetail))
-	mux.HandleFunc("/api/admin/session-analytics/tasks", admin(h.handleTaskAnalyticsList))
-	mux.HandleFunc("/api/admin/session-analytics/tasks/", admin(h.handleTaskAnalyticsDetail))
+		// 2026-07-07: P2会话分析 - 客户端/任务维度分析
+		mux.HandleFunc("/api/admin/session-analytics/clients", admin(h.handleClientAnalyticsList))
+		mux.HandleFunc("/api/admin/session-analytics/clients/", admin(h.handleClientAnalyticsDetail))
+		mux.HandleFunc("/api/admin/session-analytics/tasks", admin(h.handleTaskAnalyticsList))
+		mux.HandleFunc("/api/admin/session-analytics/tasks/", admin(h.handleTaskAnalyticsDetail))
+
+		// 2026-07-07: P2会话分析 - 用户画像（三层隔离：super_admin/tenant_admin/user）
+		mux.HandleFunc("/api/admin/session-analytics/users", admin(h.handleUserAnalyticsList))
+		mux.HandleFunc("/api/admin/session-analytics/users/", admin(h.handleUserAnalyticsDetail))
 
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
 	mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))
