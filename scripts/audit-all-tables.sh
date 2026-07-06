@@ -2,7 +2,7 @@
 # 批量审计所有分区表的数据完整性
 # 目标：对 8 张表进行系统性审计，发现并记录所有问题
 
-set -e
+set -euo pipefail
 
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
@@ -23,6 +23,10 @@ function log_section() { echo -e "\n${BLUE}━━━━━━━━━━━━�
 
 function psql_exec() {
     PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -t -c "$1" 2>&1
+}
+
+function write_report() {
+    printf "%b" "$1" >> "$REPORT_FILE"
 }
 
 # 全局统计
@@ -47,10 +51,6 @@ function init_report() {
 ---
 
 EOF
-}
-
-function write_report() {
-    echo "$1" >> "$REPORT_FILE"
 }
 
 # ============================================================
@@ -154,6 +154,12 @@ function audit_credit_ledger() {
     
     log_info "插入 $inserted/5 条测试数据"
     write_report "- 插入测试数据: $inserted/5\n"
+
+    if [[ "$inserted" -eq 0 ]]; then
+        log_warn "⚠️  直接插入失败，说明该表需要通过业务层/API写入而不是裸 SQL"
+        write_report "- 写入方式: ⚠️ 需通过业务层/API 写入，裸 SQL 未通过\n"
+        ALL_ISSUES+=("credit_ledger: 直接 INSERT 不可用，需通过业务层/API 验证")
+    fi
     
     # 数据完整性检查
     local null_count=$(psql_exec "SELECT COUNT(*) FROM $table WHERE tenant_id IS NULL OR entry_type IS NULL LIMIT 100;" | xargs)
@@ -300,7 +306,7 @@ function audit_routing_decision_log() {
     for i in {1..5}; do
         local req_id=$(uuidgen)
         if psql_exec "INSERT INTO $table (ts, request_id, model, success) 
-                      VALUES (NOW(), '$req_id', 'gpt-4', true);" > /dev/null 2>&1; then
+                      VALUES (NOW(), '$req_id', 'audit-model-gpt4', true);" > /dev/null 2>&1; then
             ((inserted++))
         fi
     done
@@ -320,7 +326,7 @@ function audit_routing_decision_log() {
     fi
     
     # 清理
-    psql_exec "DELETE FROM $table WHERE model = 'gpt-4' AND ts > NOW() - INTERVAL '5 minutes';" > /dev/null 2>&1
+    psql_exec "DELETE FROM $table WHERE model = 'audit-model-gpt4' AND ts > NOW() - INTERVAL '5 minutes';" > /dev/null 2>&1
     
     write_report "\n"
 }
@@ -403,7 +409,7 @@ function audit_request_logs_bodies() {
     fi
     
     # 清理
-    psql_exec "DELETE FROM $table WHERE request_id LIKE 'audit-test-%';" > /dev/null 2>&1
+    psql_exec "DELETE FROM request_logs_bodies_default WHERE request_id LIKE 'audit-test-%';" > /dev/null 2>&1 || true
     
     write_report "\n"
 }
