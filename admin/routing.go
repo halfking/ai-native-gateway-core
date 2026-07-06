@@ -1026,7 +1026,7 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 			SELECT
 				COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model_key,
 				COUNT(*) AS cnt
-			FROM request_logs rl
+			FROM request_logs_with_current_month rl
 			LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
 			LEFT JOIN LATERAL (
 				SELECT canonical_id

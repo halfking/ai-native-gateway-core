@@ -122,7 +122,7 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 		       rl.request_body::text, rl.response_body::text,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		`+where+`
 		ORDER BY ts ASC
 		LIMIT `+limitArg+`

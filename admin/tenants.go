@@ -270,7 +270,7 @@ func (h *Handler) attachTenantUsage7d(ctx context.Context, tenants []tenantInfo)
 		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE tenant_id = ANY($1)
 		  AND ts >= now() - INTERVAL '7 days'
 		GROUP BY tenant_id
@@ -434,7 +434,7 @@ func (h *Handler) getTenant(w http.ResponseWriter, r *http.Request, code string)
 		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE tenant_id = $1 AND ts >= now() - INTERVAL '7 days'
 	`, code).Scan(&t.Requests7d, &t.Tokens7d, &t.Credits7d, &t.Cost7d)
 	_ = h.db.QueryRow(ctx, `
@@ -709,7 +709,7 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
 		GROUP BY 1
 		ORDER BY SUM(COALESCE(credits_charged, 0)) DESC, SUM(COALESCE(cost_usd, 0)) DESC
@@ -734,7 +734,7 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		       COALESCE(SUM(COALESCE(rl.prompt_tokens, 0) + COALESCE(rl.completion_tokens, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(rl.credits_charged, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(rl.cost_usd, 0)), 0)::float8
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		LEFT JOIN applications app ON app.id = rl.application_id
 		WHERE rl.tenant_id = $1 AND rl.ts >= now() - ($2 * INTERVAL '1 day')
 		GROUP BY app.code

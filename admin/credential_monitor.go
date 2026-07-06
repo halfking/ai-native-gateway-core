@@ -328,7 +328,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 						SELECT
 							percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::int AS p95_live,
 							AVG(latency_ms)::int AS avg_live
-						FROM request_logs
+						FROM request_logs_with_current_month
 						WHERE credential_id = c.id
 						  AND lower(COALESCE(outbound_model, client_model)) = lower(mo.raw_model_name)
 						  AND ts > NOW() - INTERVAL '3 hours'
@@ -525,7 +525,7 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 	rows, err := m.h.db.Query(ctx, `
 		SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,
 		       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE credential_id = $1
 		  -- case-insensitive: request_logs.outbound_model can differ in case
 		  -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3"),

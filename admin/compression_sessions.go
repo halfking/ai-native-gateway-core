@@ -133,7 +133,7 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 				MAX(rl.outbound_msg_count) AS outbound_msg_count,
 				MAX(rl.outbound_token_est) AS outbound_token_est,
 				MAX(rl.request_id) AS sample_request_id
-			FROM request_logs rl
+			FROM request_logs_with_current_month rl
 			WHERE ` + whereClause + `
 			GROUP BY rl.gw_session_id
 		) s

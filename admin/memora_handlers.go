@@ -442,7 +442,7 @@ func buildMemoraSessionsSQL(r *http.Request, hours, noTopicWindow, limit int) (s
 				COALESCE(NULLIF(TRIM(api_key_prefix), ''), NULL) AS api_key_prefix,
 				COALESCE(NULLIF(TRIM(api_key_owner_user), ''), NULL) AS api_key_owner_user,
 				COALESCE(NULLIF(TRIM(application_code), ''), NULL) AS application_code
-			FROM request_logs
+			FROM request_logs_with_current_month
 			%s
 		),
 		topic_sessions AS (
@@ -707,7 +707,7 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 			work_type,
 			request_mode,
 			gw_session_id
-		FROM request_logs
+		FROM request_logs_with_current_month
 		`+where+`
 		ORDER BY ts ASC
 		LIMIT `+limitArg+`
