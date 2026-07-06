@@ -295,6 +295,7 @@ func (r *Router) planByTier(candidates []provider.Candidate, policy *provider.Po
 		// This prevents always selecting the first candidate when scores are equal
 		if len(sorted) > 1 {
 			offset := int(r.rrCounter.Add(1) % uint64(len(sorted)))
+			slog.Info("ROUND_ROBIN_DEBUG", "counter", r.rrCounter.Load(), "offset", offset, "bucket_size", len(sorted))
 			sorted = rotateCandidates(sorted, offset)
 		}
 
@@ -546,7 +547,24 @@ func loadScore(c provider.Candidate, r *Router, ctx context.Context) float64 {
 	// Weighted score: higher pressure → higher score → less likely to be chosen
 	// Legacy inFlight is kept for backward compat (per-identity fairness)
 	// New pressure term dominates when fpUsed >> inFlight
-	return (float64(inFlight) + pressure*float64(fpLimit)) * latencyPenalty / (float64(w) * quality)
+	score := (float64(inFlight) + pressure*float64(fpLimit)) * latencyPenalty / (float64(w) * quality)
+
+	// DEBUG: Log score calculation for load balancing analysis
+	if rand.Float64() < 0.1 { // Sample 10% to reduce log spam
+		slog.Info("LOAD_SCORE_DEBUG",
+			"credential_id", c.CredentialID,
+			"fpUsed", fpUsed,
+			"fpLimit", fpLimit,
+			"pressure", pressure,
+			"inFlight", inFlight,
+			"weight", w,
+			"quality", quality,
+			"latency", latencyPenalty,
+			"score", score,
+		)
+	}
+
+	return score
 }
 
 func randomPair(pool []provider.Candidate) (provider.Candidate, provider.Candidate) {
