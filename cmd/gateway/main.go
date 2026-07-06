@@ -1697,6 +1697,25 @@ func main() {
 			}
 			slog.Info("CHECKPOINT: after SetRedisClient")
 		}
+
+		// 2026-07-06: Session State Management runtime wiring
+		// 初始化会话状态管理组件（Manager, DBWriter, CleanupWorker, RotationHook）
+		// 并注入到 adminHandler，使 /api/admin/sessions* 端点可用。
+		if fpSlotRedis != nil && adminHandler != nil && dbConn != nil && dbConn.Enabled() {
+			sessionState, ssErr := InitializeSessionState(
+				context.Background(),
+				dbConn.Pool(),
+				fpSlotRedis,
+				adminHandler,
+			)
+			if ssErr != nil {
+				slog.Error("session state init failed", "error", ssErr)
+			} else if sessionState != nil {
+				defer sessionState.Shutdown()
+				slog.Info("session state management initialized")
+			}
+		}
+
 		slog.Info("CHECKPOINT: before memoraClient check")
 		if memorySvc != nil {
 			adminHandler.SetMemoraServices(memorySvc.AdminClient(), memorySvc.AdminSink())

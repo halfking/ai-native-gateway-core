@@ -21,23 +21,25 @@ BEGIN
     END IF;
 END $$;
 
--- 验证修复（只插入不删除，避免 columnar 的 DELETE 限制）
+-- 验证修复：插入到父表，确认路由落到 default 分区，并只从 heap default 分区清理
 DO $$
 DECLARE
     test_result INTEGER;
+    test_request_id TEXT := 'fix-verification-' || extract(epoch from NOW())::TEXT;
 BEGIN
     -- 尝试插入测试数据
     INSERT INTO request_logs_bodies (request_id, ts, request_body)
-    VALUES ('fix-verification-' || extract(epoch from NOW())::TEXT, NOW(), '{"test": true}'::jsonb);
+    VALUES (test_request_id, NOW(), '{"test": true}'::jsonb);
     
     -- 验证插入成功
     SELECT COUNT(*) INTO test_result 
-    FROM request_logs_bodies 
-    WHERE request_id LIKE 'fix-verification-%' 
-    AND ts > NOW() - INTERVAL '10 seconds';
+    FROM request_logs_bodies_default
+    WHERE request_id = test_request_id;
     
     IF test_result > 0 THEN
         RAISE NOTICE 'Insert test PASSED: % rows inserted successfully', test_result;
+        DELETE FROM request_logs_bodies_default WHERE request_id = test_request_id;
+        RAISE NOTICE 'Verification row cleaned up from request_logs_bodies_default';
     ELSE
         RAISE WARNING 'Insert test FAILED';
     END IF;
