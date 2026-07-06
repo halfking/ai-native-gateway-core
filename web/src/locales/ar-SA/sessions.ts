@@ -118,6 +118,11 @@ export default {
     taskId: 'معرّف المهمة',
     totalCost: 'التكلفة الإجمالية',
     avgHealth: 'متوسط الصحة',
+    loadFailed: 'فشل تحميل الإحصائيات',
+  },
+  dashboard: {
+    title: 'مركز تحليلات الجلسات',
+    subtitle: 'مراقبة فورية لنشاط الجلسات واتجاهات التكاليف والحالة الصحية',
   },
   clientAnalytics: {
     title: 'تحليل العميل',

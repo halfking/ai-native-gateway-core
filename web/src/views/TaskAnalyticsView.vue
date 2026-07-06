@@ -115,11 +115,11 @@ const healthGradeColor = (grade?: string) => {
 }
 
 function handleClientClick(clientId: string) {
-  router.push(`/session-analytics/clients/${clientId}`)
+  router.push(`/admin/session-analytics/clients/${clientId}`)
 }
 
 function handleSessionClick(sessionId: string) {
-  router.push(`/session-analytics/${sessionId}`)
+  router.push(`/admin/session-analytics/${sessionId}`)
 }
 
 function goBack() {

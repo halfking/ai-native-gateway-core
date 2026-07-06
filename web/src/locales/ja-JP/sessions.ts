@@ -118,6 +118,11 @@ export default {
     taskId: 'タスクID',
     totalCost: '総コスト',
     avgHealth: '平均健康度',
+    loadFailed: '統計データの読み込みに失敗しました',
+  },
+  dashboard: {
+    title: 'セッション分析センター',
+    subtitle: 'セッションアクティビティ、コスト動向、健全性ステータスのリアルタイム監視',
   },
   clientAnalytics: {
     title: 'クライアント分析',

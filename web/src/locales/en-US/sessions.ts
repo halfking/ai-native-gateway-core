@@ -117,6 +117,11 @@ Either confirm the prior result and continue, or start a brand-new task.`,
     taskId: 'Task ID',
     totalCost: 'Total Cost',
     avgHealth: 'Avg Health',
+    loadFailed: 'Failed to load stats',
+  },
+  dashboard: {
+    title: 'Session Analytics Center',
+    subtitle: 'Real-time monitoring of session activity, cost trends, and health status',
   },
   clientAnalytics: {
     title: 'Client Analytics',

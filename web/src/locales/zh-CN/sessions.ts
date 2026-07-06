@@ -117,6 +117,11 @@ export default {
     taskId: '任务ID',
     totalCost: '总成本',
     avgHealth: '平均健康度',
+    loadFailed: '加载统计数据失败',
+  },
+  dashboard: {
+    title: '会话分析中心',
+    subtitle: '实时监控会话活动、成本趋势和健康状况',
   },
   clientAnalytics: {
     title: '客户端分析',

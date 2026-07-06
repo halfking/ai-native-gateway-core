@@ -118,6 +118,11 @@ export default {
     taskId: '任務ID',
     totalCost: '總成本',
     avgHealth: '平均健康度',
+    loadFailed: '載入統計資料失敗',
+  },
+  dashboard: {
+    title: '會話分析中心',
+    subtitle: '即時監控會話活動、成本趨勢和健康狀況',
   },
   clientAnalytics: {
     title: '客戶端分析',

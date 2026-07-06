@@ -2,8 +2,8 @@
   <div class="page-layout">
     <div class="page-header">
       <div>
-        <h2>会话列表</h2>
-        <p class="text-muted">从请求日志自动聚合，按 {{ hours }}h 时间窗口展示</p>
+        <h2>{{ t('sessions.list.title') }}</h2>
+        <p class="text-muted">{{ t('sessions.list.description', { hours }) }}</p>
       </div>
       <div class="header-actions">
         <select v-model="hours" class="cf-select" @change="loadData">
@@ -12,19 +12,19 @@
           <option :value="168">7d</option>
           <option :value="720">30d</option>
         </select>
-        <input v-model="searchQ" class="cf-input" placeholder="搜索会话 ID..." @keyup.enter="loadData" />
-        <button class="btn btn-primary btn-sm" @click="loadData">刷新</button>
+        <input v-model="searchQ" class="cf-input" :placeholder="t('sessions.list.searchPlaceholder')" @keyup.enter="loadData" />
+        <button class="btn btn-primary btn-sm" @click="loadData">{{ t('sessions.list.refresh') }}</button>
       </div>
     </div>
 
-    <div v-if="loading" class="empty" style="padding: 60px;">加载中...</div>
+    <div v-if="loading" class="empty" style="padding: 60px;">{{ t('sessions.list.loading') }}</div>
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
     <!-- Stats -->
     <div v-if="data" class="card" style="margin-bottom: 12px; display: flex; gap: 24px; flex-wrap: wrap;">
-      <div><span class="text-muted" style="font-size:12px;">会话总数</span><div style="font-size:20px;font-weight:600;">{{ data.total }}</div></div>
-      <div><span class="text-muted" style="font-size:12px;">已压缩</span><div style="font-size:20px;font-weight:600;color:var(--accent)">{{ compressedCount }}</div></div>
-      <div><span class="text-muted" style="font-size:12px;">当前页</span><div style="font-size:20px;font-weight:600;">{{ data.sessions.length }}</div></div>
+      <div><span class="text-muted" style="font-size:12px;">{{ t('sessions.list.totalSessions') }}</span><div style="font-size:20px;font-weight:600;">{{ data.total }}</div></div>
+      <div><span class="text-muted" style="font-size:12px;">{{ t('sessions.list.compressed') }}</span><div style="font-size:20px;font-weight:600;color:var(--accent)">{{ compressedCount }}</div></div>
+      <div><span class="text-muted" style="font-size:12px;">{{ t('sessions.list.currentPage') }}</span><div style="font-size:20px;font-weight:600;">{{ data.sessions.length }}</div></div>
     </div>
 
     <!-- Session Table -->
@@ -32,14 +32,7 @@
       <table class="data-table">
         <thead>
           <tr>
-            <th>会话 ID</th>
-            <th>请求数</th>
-            <th>模型</th>
-            <th>时间</th>
-            <th>时长</th>
-            <th>压缩</th>
-            <th>成功率</th>
-            <th>操作</th>
+            <th v-for="(h, i) in t('sessions.list.tableHeaders')" :key="i">{{ h }}</th>
           </tr>
         </thead>
         <tbody>
@@ -53,8 +46,8 @@
             </td>
             <td><span class="badge badge-gray">{{ s.duration }}</span></td>
             <td>
-              <span v-if="s.is_compressed" class="badge badge-blue">已压缩</span>
-              <span v-else class="badge badge-gray">未压缩</span>
+              <span v-if="s.is_compressed" class="badge badge-blue">{{ t('sessions.list.compressedBadge') }}</span>
+              <span v-else class="badge badge-gray">{{ t('sessions.list.notCompressedBadge') }}</span>
             </td>
             <td>
               <span :class="s.success_rate >= 90 ? 'badge badge-green' : s.success_rate >= 50 ? 'badge badge-yellow' : 'badge badge-red'">
@@ -62,25 +55,25 @@
               </span>
             </td>
             <td>
-              <a :href="'/session-compare?session_id=' + encodeURIComponent(s.session_id)" class="trace-link" style="margin-right:8px;">对比</a>
-              <a :href="'/request-logs?gw_session_id=' + encodeURIComponent(s.session_id)" class="trace-link">日志</a>
+              <a :href="'/session-compare?session_id=' + encodeURIComponent(s.session_id)" class="trace-link" style="margin-right:8px;">{{ t('sessions.list.actionCompare') }}</a>
+              <a :href="'/request-logs?gw_session_id=' + encodeURIComponent(s.session_id)" class="trace-link">{{ t('sessions.list.actionLogs') }}</a>
             </td>
           </tr>
         </tbody>
       </table>
     </div>
     <div v-else-if="data && !data.sessions.length" class="empty" style="padding: 60px;">
-      <p>暂无会话数据</p>
-      <p class="text-muted">会话在请求日志产生 <code>gw_session_id</code> 后自动聚合显示</p>
+      <p>{{ t('sessions.list.empty') }}</p>
+      <p class="text-muted">{{ t('sessions.list.emptyHint') }}</p>
     </div>
 
     <!-- Pagination -->
     <div v-if="data && data.pages > 1" class="pagination-bar">
-      <div class="text-muted" style="font-size:12px;">共 {{ data.total }} 条，{{ data.pages }} 页</div>
+      <div class="text-muted" style="font-size:12px;">{{ t('sessions.list.paginationTotal', { n: data.total, pages: data.pages }) }}</div>
       <div style="display:flex;gap:8px;">
-        <button class="btn btn-sm" :disabled="page <= 1" @click="page--; loadData()">上一页</button>
-        <span style="display:flex;align-items:center;font-size:12px;">{{ page }} / {{ data.pages }}</span>
-        <button class="btn btn-sm" :disabled="page >= data.pages" @click="page++; loadData()">下一页</button>
+        <button class="btn btn-sm" :disabled="page <= 1" @click="page--; loadData()">{{ t('sessions.list.previous') }}</button>
+        <span style="display:flex;align-items:center;font-size:12px;">{{ t('sessions.list.paginationPage', { current: page, total: data.pages }) }}</span>
+        <button class="btn btn-sm" :disabled="page >= data.pages" @click="page++; loadData()">{{ t('sessions.list.next') }}</button>
       </div>
     </div>
   </div>
@@ -88,8 +81,11 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { getSessionList } from '../api'
 import type { SessionListResponse } from '../api'
+
+const { t } = useI18n()
 
 const loading = ref(false)
 const error = ref('')
@@ -110,8 +106,8 @@ async function loadData() {
       hours: hours.value,
       q: searchQ.value.trim() || undefined,
     })
-  } catch (e: any) {
-    error.value = e?.message || '加载失败'
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
