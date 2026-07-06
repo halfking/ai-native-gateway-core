@@ -118,6 +118,11 @@ Sie können das vorherige Ergebnis bestätigen und fortfahren oder eine völlig 
     taskId: 'Aufgaben-ID',
     totalCost: 'Gesamtkosten',
     avgHealth: 'Durchschn. Gesundheit',
+    loadFailed: 'Statistiken konnten nicht geladen werden',
+  },
+  dashboard: {
+    title: 'Sitzungsanalyse-Center',
+    subtitle: 'Echtzeit-Überwachung von Sitzungsaktivitäten, Kostentrends und Gesundheitsstatus',
   },
   clientAnalytics: {
     title: 'Client-Analyse',

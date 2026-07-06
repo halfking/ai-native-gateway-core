@@ -118,6 +118,11 @@ Vous pouvez confirmer le résultat précédent et continuer, ou commencer une to
     taskId: 'ID tâche',
     totalCost: 'Coût total',
     avgHealth: 'Santé moyenne',
+    loadFailed: 'Échec du chargement des statistiques',
+  },
+  dashboard: {
+    title: 'Centre d\'analyse des sessions',
+    subtitle: 'Surveillance en temps réel de l\'activité des sessions, des tendances de coûts et de l\'état de santé',
   },
   clientAnalytics: {
     title: 'Analyse client',

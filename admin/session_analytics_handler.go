@@ -220,7 +220,7 @@ func (h *Handler) HandleSessionAnalyticsList(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	tenantID := EffectiveTenantIDAll(r)
+	tenantID := effectiveScopeTenant(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
@@ -264,6 +264,13 @@ func (h *Handler) HandleSessionAnalyticsList(w http.ResponseWriter, r *http.Requ
 		where += " AND ss.tenant_id = $" + strconv.Itoa(argCount)
 		args = append(args, tenantID)
 		argCount++
+	}
+	// 普通用户仅见自己名下的会话（owner_user 过滤走 session_dim join）
+	ownerFrag, ownerArgs, nextArg := ownerScopeClause(r, "sd.owner_user", argCount)
+	if ownerFrag != "" {
+		where += ownerFrag
+		args = append(args, ownerArgs...)
+		argCount = nextArg
 	}
 	if complianceStatus != "" {
 		where += " AND ss.compliance_status = $" + strconv.Itoa(argCount)
@@ -317,8 +324,9 @@ func (h *Handler) HandleSessionAnalyticsList(w http.ResponseWriter, r *http.Requ
 		sessions = append(sessions, s)
 	}
 
-	// 总数
-	countQuery := "SELECT COUNT(*) FROM session_summaries ss" + where
+	// 总数（WHERE 可能引用 sd.owner_user，需带上 session_dim join）
+	countQuery := "SELECT COUNT(*) FROM session_summaries ss" +
+		" LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key" + where
 	var total int
 	_ = h.db.QueryRow(ctx, countQuery, args[:len(args)-2]...).Scan(&total)
 
