@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { getSessionOverview, type SessionOverviewResponse } from '../api/admin'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
 
+const router = useRouter()
 const { t } = useI18n()
 
 const loading = ref(false)
@@ -117,15 +119,11 @@ const healthTotal = computed(() => {
 })
 
 function handleClientClick(clientId: string) {
-  // 跳转到客户端详情页
-  console.log('Navigate to client:', clientId)
-  window.location.href = `/admin/session-analytics/clients/${clientId}`
+  router.push(`/admin/session-analytics/clients/${clientId}`)
 }
 
 function handleTaskClick(taskId: string) {
-  // 跳转到任务详情页
-  console.log('Navigate to task:', taskId)
-  window.location.href = `/admin/session-analytics/tasks/${taskId}`
+  router.push(`/admin/session-analytics/tasks/${taskId}`)
 }
 </script>
 
