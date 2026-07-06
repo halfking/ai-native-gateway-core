@@ -17,7 +17,7 @@
 |------|---------|-----------|-----------|------|------|
 | request_logs | ✅ 25/25 | ✅ 通过 | ✅ 100% | ✅ 正常 | 无 |
 | usage_ledger | ✅ 10/10 | ✅ 通过 | ✅ 100% | ✅ 正常 | 无 |
-| credit_ledger | ⚠️ 裸 SQL 0/5 | ✅ 已补服务层集成测试入口 | ✅ 完整 | ⚠️ 特殊 | 需真实 PG 环境执行 |
+| credit_ledger | ⚠️ 裸 SQL 0/5 | ✅ 服务层集成测试已实跑通过 | ✅ 完整 | ✅ 正常 | 真实语义已确认 |
 | tool_usage_stats | ✅ 5/5 | - | ✅ 一致 | ✅ 正常 | 无 |
 | request_wal | ✅ 5/5 | ✅ 通过 | - | ✅ 正常 | 无 |
 | routing_decision_log | ✅ 5/5 | - | - | ✅ 正常 | 无 |
@@ -26,7 +26,7 @@
 
 **总测试**: 8 个表  
 **通过**: 8 个表（其中 1 个经修复后通过）  
-**发现问题**: 2 个表（1 个已修复，1 个已补业务层验证入口待执行）
+**发现问题**: 2 个表（2 个都已完成修复或验证）
 
 ---
 
@@ -109,18 +109,23 @@ credit_ledger 表有**业务约束**导致直接插入失败。这不是bug，�
    - 该方法会自动计算 balance_after
    - 不应该直接 INSERT
 
-3. **已补充验证入口**:
+3. **服务层验证结果**:
    - 新增 integration 测试：`tests/integration/credit_ledger_service_test.go`
    - 覆盖 `GrantCredits` / `AdjustCredits`
    - 验证钱包余额、ledger entry_type / amount / balance_after / pool 一致性
-   - 按现有约定使用 `LLM_GATEWAY_PG_URL`，避免污染默认测试流程
+   - 已使用 `LLM_GATEWAY_PG_URL=postgres://kxuser:kxpass@127.0.0.1:55432/llm_gateway?sslmode=disable` 实跑通过
    - 同时已将历史坏测试 `tests/integration/quadrants_test.go` 隔离到额外 build tag，避免阻断整个 integration 套件
 
-4. **当前执行阻塞**:
+4. **执行过程中的环境发现**:
    - `tests/integration` 现已可在默认 `-tags=integration` 下编译
-   - `TestCreditLedgerService_GrantAndAdjust` 已能真正启动执行
-   - 当前唯一阻塞点是本地 PostgreSQL 实例与仓库脚本约定不一致：容器环境变量宣称 `POSTGRES_USER=kxuser`，但实际连接返回 `role \"kxuser\" does not exist`
-   - 这属于环境漂移，不是服务层测试逻辑本身的问题
+   - `localhost:5432` 被宿主机原生 PostgreSQL 抢占，不能用于连接 `r112_postgres`
+   - 可用本地 DSN 是 `127.0.0.1:55432`，该端口代理到容器内 `llm_gateway`
+   - 这说明仓库里部分本地脚本/说明默认的 `5432` 假设已经与当前机器环境不一致
+
+5. **真实业务语义发现**:
+   - `GrantCredits(...)` 写入 `credit_ledger.entry_type = adjust`，`pool = granted`
+   - `AdjustCredits(amount > 0, ...)` 写入 `credit_ledger.entry_type = topup`，`pool = purchased`
+   - `AdjustCredits(amount < 0, ...)` 才会写入 `entry_type = adjust`
 
 **验证**:
 ```sql
@@ -128,7 +133,7 @@ SELECT COUNT(*) FROM credit_ledger WHERE tenant_id IS NULL OR entry_type IS NULL
 结果: 0 ✅
 ```
 
-**结论**: credit_ledger 的数据完整性正常；裸 SQL 不是正确验证方式，服务层集成测试入口已补齐且可启动执行，当前剩余阻塞仅为本地 PG 环境漂移。
+**结论**: credit_ledger 的数据完整性正常；裸 SQL 不是正确验证方式，服务层集成测试已经在真实数据库上跑通，当前不再有验证阻塞。
 
 ---
 
@@ -286,10 +291,27 @@ VALUES ('final-test-123', NOW(), '{"success": true}'::jsonb);
 -- 查询成功返回 1 行
 ```
 
+**根因复盘**:
+
+- 不是分区边界算错。
+- 真正的问题是 `request_logs_bodies_2026_07` / `2026_08` 曾被 detach，后续没有 re-attach 回父表。
+- `ensure_request_logs_bodies_partition()` 只按“同名表是否存在”判断，孤儿表已存在时不会重新 `ATTACH PARTITION`。
+- 因而父表最初无法路由到 2026_07 月分区。
+
+**修复后验证**:
+
+```sql
+INSERT INTO request_logs_bodies (request_id, ts, request_body)
+VALUES ('reattach-parent-2', NOW(), '{"ok":true}'::jsonb);
+
+SELECT count(*) FROM request_logs_bodies_2026_07;
+-- 返回 1，说明父表写入已成功路由到 2026_07
+```
+
 **剩余风险**:
 
-- 当前修复提供了 default 分区兜底，保障写入恢复。
-- 仍建议后续追查月分区边界或分区自动创建逻辑，避免 default 分区长期承接应落到月分区的数据。
+- 当前月分区路由已经恢复。
+- 仍建议把 `ensure_request_logs_bodies_partition()` 加强为“表存在但未 attached 时自动 re-attach”，这样才能彻底防止同类问题再次出现。
 
 ---
 
@@ -335,7 +357,7 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 - 裸 SQL 测试受限
 - 生产路径本身不受影响
 
-**当前状态**: ⚠️ 已补服务层集成测试入口，测试链路已打通，但被本地 PG 角色配置漂移阻断
+**当前状态**: ✅ 已在服务层集成测试中验证通过
 
 **建议**: 
 - 文档化正确的插入方式（通过 maas/service.go）
@@ -377,7 +399,7 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 ### P1 - 短期优化
 
 2. **credit_ledger 测试覆盖**
-   - 修正本地 PG 角色/DSN 配置后执行 `tests/integration/credit_ledger_service_test.go`
+   - 当前服务层集成测试已通过
    - 如有需要，再补 HTTP 层 E2E
 
 ### P2 - 长期改进
@@ -469,8 +491,8 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 
 ### 🔧 后续建议
 
-1. **追查 request_logs_bodies 月分区边界或自动建分区逻辑**
-2. **修复本地 PG 环境漂移后执行 credit_ledger 业务层/API 级测试**
+1. **增强 request_logs_bodies 的 ensure 逻辑：发现孤儿同名表时自动 ATTACH**
+2. **如需要，继续补 credit_ledger HTTP 层 E2E**
 
 ### 📚 交付物
 
@@ -483,4 +505,4 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 ---
 
 **审计完成时间**: 2026-07-06 01:25  
-**下一步**: 修正本地 PG 的角色/连接配置后执行 credit_ledger 集成测试，并继续检查 bodies 月分区路由根因
+**下一步**: 将 request_logs_bodies 的 ensure 逻辑做成自动 re-attach，避免再出现孤儿分区
