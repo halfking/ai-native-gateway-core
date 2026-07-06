@@ -67,7 +67,7 @@ const UserProfileView = () => import('./views/UserProfileView.vue')
 const SessionConfigView = () => import('./views/SessionConfigView.vue')
 
 function isAuthed(): boolean {
-  return !!(store.jwtToken || store.apiKey)
+  return !!(store.jwtToken || store.apiKey || store.userInfo)
 }
 
 function isSuperAdmin(): boolean {
