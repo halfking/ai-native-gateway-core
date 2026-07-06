@@ -6,6 +6,19 @@ BEGIN;
 -- 删除 session_owners 表
 DROP TABLE IF EXISTS session_owners;
 
+-- 删除 358 新增的物化视图（在删除 session_owners / session_dim 列之前，先删依赖它们的对象）
+DROP MATERIALIZED VIEW IF EXISTS session_owner_stats;
+
+-- 恢复 357 的 refresh 函数（不加 session_owner_stats）
+CREATE OR REPLACE FUNCTION refresh_session_analytics_views()
+RETURNS void AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW CONCURRENTLY session_client_stats;
+    REFRESH MATERIALIZED VIEW CONCURRENTLY session_task_stats;
+    REFRESH MATERIALIZED VIEW CONCURRENTLY session_client_task_matrix;
+END;
+$$ LANGUAGE plpgsql;
+
 -- 删除 session_dim 新增的 owner 列
 ALTER TABLE session_dim
     DROP COLUMN IF EXISTS client_id,
