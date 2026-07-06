@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { ElMessage } from 'element-plus'
 import { getSessionOverview, type SessionOverviewResponse } from '../api/admin'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
@@ -8,6 +9,7 @@ import type { EChartsOption } from 'echarts'
 const { t } = useI18n()
 
 const loading = ref(false)
+const error = ref<string | null>(null)
 const data = ref<SessionOverviewResponse | null>(null)
 const days = ref(7)
 
@@ -20,11 +22,15 @@ onMounted(() => {
 
 async function load() {
   loading.value = true
+  error.value = null
   try {
     data.value = await getSessionOverview(days.value)
     renderChart()
-  } catch (e) {
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    error.value = msg
     console.error('Failed to load session overview:', e)
+    ElMessage.error(t('sessions.stats.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -95,15 +101,13 @@ function renderChart() {
   chartInstance.setOption(option)
 }
 
-const healthGradeColor = (grade: string) => {
-  switch (grade) {
-    case 'A': return 'success'
-    case 'B': return 'primary'
-    case 'C': return 'warning'
-    case 'D': return ''
-    case 'F': return 'danger'
-    default: return 'info'
-  }
+// 健康度分数统一为 0-10（与 domains/sessionaudit/types.go 一致）。
+// 阈值：>=8 绿、6-7 黄、<6 红。
+function healthScoreColor(score: number | null | undefined): 'success' | 'warning' | 'danger' | 'info' {
+  if (score === null || score === undefined) return 'info'
+  if (score >= 8) return 'success'
+  if (score >= 6) return 'warning'
+  return 'danger'
 }
 
 const healthTotal = computed(() => {
@@ -126,7 +130,12 @@ function handleTaskClick(taskId: string) {
 </script>
 
 <template>
-  <div v-loading="loading" class="session-stats-panel">
+  <div class="session-stats-panel">
+    <div v-if="error" class="alert alert-danger" role="alert">
+      <span>{{ error }}</span>
+      <button class="btn btn-sm" @click="load" :aria-label="t('common.retry')">{{ t('common.retry') }}</button>
+    </div>
+    <div v-loading="loading" :class="{ 'session-stats-panel--has-error': error }">
     <!-- 统计卡片 -->
     <el-row :gutter="16" style="margin-bottom: 20px;">
       <el-col :span="6">
@@ -164,9 +173,10 @@ function handleTaskClick(taskId: string) {
             <div class="stat-content">
               <div class="stat-label">{{ t('sessions.stats.healthDistribution') }}</div>
               <div class="stat-value health-badges">
-                <el-tag :type="healthGradeColor('A')" size="small">A: {{ data?.health_distribution?.a || 0 }}</el-tag>
-                <el-tag :type="healthGradeColor('B')" size="small">B: {{ data?.health_distribution?.b || 0 }}</el-tag>
-                <el-tag :type="healthGradeColor('C')" size="small">C: {{ data?.health_distribution?.c || 0 }}</el-tag>
+                <el-tag v-if="healthTotal > 0" :type="healthScoreColor(10)" size="small">≥8: {{ (data?.health_distribution?.a || 0) }}</el-tag>
+                <el-tag v-if="healthTotal > 0" :type="healthScoreColor(6)" size="small">6-7: {{ (data?.health_distribution?.b || 0) + (data?.health_distribution?.c || 0) }}</el-tag>
+                <el-tag v-if="healthTotal > 0" :type="healthScoreColor(0)" size="small">&lt;6: {{ (data?.health_distribution?.d || 0) + (data?.health_distribution?.f || 0) }}</el-tag>
+                <span v-else>—</span>
               </div>
             </div>
           </div>
@@ -252,9 +262,41 @@ function handleTaskClick(taskId: string) {
                 ${{ row.total_cost.toFixed(2) }}
               </template>
             </el-table-column>
-            <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="80" align="center">
+            <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="90" align="center">
               <template #default="{ row }">
-                <el-tag v-if="row.avg_health" size="small">{{ row.avg_health }}</el-tag>
+                <el-tag v-if="row.avg_health !== null && row.avg_health !== undefined" :type="healthScoreColor(row.avg_health)" size="small">
+                  {{ row.avg_health.toFixed(1) }}/10
+                </el-tag>
+                <span v-else>—</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-col>
+      <el-col :span="12">
+        <el-card shadow="hover">
+          <template #header>
+            <span>{{ t('sessions.stats.topTasks') }}</span>
+          </template>
+          <el-table :data="data?.top_tasks || []" style="width: 100%" max-height="300">
+            <el-table-column prop="task_id" :label="t('sessions.stats.taskId')" min-width="120">
+              <template #default="{ row }">
+                <el-link type="primary" @click="handleTaskClick(row.task_id)">
+                  {{ row.task_id }}
+                </el-link>
+              </template>
+            </el-table-column>
+            <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
+            <el-table-column prop="total_cost" :label="t('sessions.stats.totalCost')" width="100" align="right">
+              <template #default="{ row }">
+                ${{ row.total_cost.toFixed(2) }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="90" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.avg_health !== null && row.avg_health !== undefined" :type="healthScoreColor(row.avg_health)" size="small">
+                  {{ row.avg_health.toFixed(1) }}/10
+                </el-tag>
                 <span v-else>—</span>
               </template>
             </el-table-column>
@@ -262,6 +304,7 @@ function handleTaskClick(taskId: string) {
         </el-card>
       </el-col>
     </el-row>
+    </div>
   </div>
 </template>
 
