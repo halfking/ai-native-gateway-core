@@ -14,11 +14,13 @@ import {
   getDashboardOverview,
   getHotApiKeys,
   getCompressionStats,
+  getModelDiscoveryStatus,
   type UsageSummary,
   type ModelUsage,
   type DashboardOverview,
   type HotApiKeyEntry,
   type CompressionStats,
+  type ModelDiscoveryStatusResponse,
 } from '../api'
 import { useLiveStream } from '../composables/useLiveStream'
 
@@ -44,6 +46,7 @@ const overview = ref<DashboardOverview | null>(null)
 const models = ref<ModelUsage[]>([])
 const hotKeys = ref<HotApiKeyEntry[]>([])
 const compStats = ref<CompressionStats | null>(null)
+const discoveryStatus = ref<ModelDiscoveryStatusResponse | null>(null)
 
 // Live stream（共享）
 const {
@@ -62,7 +65,9 @@ onMounted(() => {
   // 只有默认租户才加载数据
   if (isDefault.value) {
     void load()
+    void loadDiscoveryStatus()
     scheduleStatsRecalibrate()
+    scheduleDiscoveryPoll()
   }
 })
 
@@ -111,8 +116,17 @@ async function loadCompressionStats() {
   }
 }
 
+async function loadDiscoveryStatus() {
+  try {
+    discoveryStatus.value = await getModelDiscoveryStatus()
+  } catch {
+    /* non-blocking */
+  }
+}
+
 // 定时重新校准统计数据（5分钟）
 let statsRecalibrateTimer: number | undefined
+let discoveryPollTimer: number | undefined
 
 function scheduleStatsRecalibrate() {
   statsRecalibrateTimer = window.setInterval(async () => {
@@ -126,8 +140,15 @@ function scheduleStatsRecalibrate() {
   }, 5 * 60 * 1000)
 }
 
+function scheduleDiscoveryPoll() {
+  discoveryPollTimer = window.setInterval(() => {
+    void loadDiscoveryStatus()
+  }, 15000) // 每15秒轮询一次
+}
+
 onUnmounted(() => {
   if (statsRecalibrateTimer) clearInterval(statsRecalibrateTimer)
+  if (discoveryPollTimer) clearInterval(discoveryPollTimer)
 })
 
 // 提供数据给子组件
@@ -140,6 +161,7 @@ provide('dashboardData', {
   models,
   hotKeys,
   compStats,
+  discoveryStatus,
   liveRequests,
   onRequestEvicted,
   resetLiveStream,

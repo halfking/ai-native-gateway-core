@@ -85,10 +85,18 @@ quick_deploy() {
 # ==================== 标准部署步骤 ====================
 check_uncommitted_changes() {
     log_step "步骤 1/10: 检查未提交改动"
-    if ! git diff-index --quiet HEAD --; then
+    # 同时检查 staged + unstaged
+    if ! git diff-index --quiet HEAD -- 2>/dev/null || ! git diff --cached --quiet -- 2>/dev/null; then
         log_warn "检测到未提交的改动:"
         git status --short
         echo ""
+        # 非交互模式 (CI/cron): 直接拒绝
+        if [[ ! -t 0 ]]; then
+            log_error "非交互模式：工作区有未提交改动。请先 git commit 后重试"
+            exit 1
+        fi
+        echo ""
+        echo "推荐: 直接使用 scripts/deploy.sh (统一入口, 内置同样修复)"
         read -p "是否提交这些改动? (y/n): " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -170,9 +178,20 @@ push_docker_image() {
     docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY_INTERNAL}/${IMAGE_NAME}:${IMAGE_TAG}
     docker push ${REGISTRY_INTERNAL}/${IMAGE_NAME}:${IMAGE_TAG}
 
-    log_info "推送到184本地 registry: ${REGISTRY_LOCAL}"
-    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG}
-    docker push ${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG}
+    # F1 (smart push): 本地直推如失败则回退 SSH-in-184 pull+retag+push
+    # 原因: macOS Docker daemon HTTP_PROXY 拦截 127.0.0.1 直连
+    log_info "推送到184本地 registry: ${REGISTRY_LOCAL} (smart push)"
+    if ! docker push ${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG} 2>/tmp/.push.err; then
+        log_warn "本地直推失败，尝试 SSH-in-184 fallback:"
+        cat /tmp/.push.err | head -2
+        ssh -p ${SSH_PORT} ${SERVER} bash <<EOF || { log_error "本地 + 184 fallback 都失败"; exit 1; }
+set -e
+docker pull ${REGISTRY_INTERNAL}/${IMAGE_NAME}:${IMAGE_TAG}
+docker tag ${REGISTRY_INTERNAL}/${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG}
+docker push ${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG}
+EOF
+        log_success "通过 184 fallback 推送成功"
+    fi
 }
 
 show_deploying_page() {
