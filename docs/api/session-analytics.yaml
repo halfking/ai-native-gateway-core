@@ -1,0 +1,1065 @@
+openapi: 3.0.3
+info:
+  title: LLM Gateway - Session Analytics API
+  description: |
+    会话管理与分析 API，提供实时会话监控、历史分析、健康评分、合规审批和用量成本等功能。
+    
+    **核心概念**:
+    - `gw_session_id`: 会话唯一标识（格式: `gw_<uuid>`）
+    - 会话: 同一身份在 5 分钟窗口内连续发起、共享上下文的一组 LLM 请求
+    
+    **版本**: v2.1
+    **适用系统版本**: llm-gateway-go >= 2026-07-06
+  version: 2.1.0
+  contact:
+    name: LLM Gateway Team
+    email: support@example.com
+
+servers:
+  - url: https://api.example.com
+    description: 生产环境
+  - url: https://staging-api.example.com
+    description: 测试环境
+  - url: http://localhost:8080
+    description: 本地开发
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: 实时会话
+    description: 实时会话状态监控与操作
+  - name: 分析中心
+    description: 会话历史分析与统计
+  - name: 时间序列
+    description: 活动、成本、延迟、健康趋势分析
+  - name: 分布归因
+    description: 模型、提供商、会话形态、健康分布
+  - name: 会话详情
+    description: 单会话详情与全景图
+  - name: 健康评分
+    description: 会话健康评分与诊断
+  - name: 合规审批
+    description: 会话合规审批流程
+
+paths:
+  # ========== 分析中心 - 统计概览 ==========
+  /api/admin/session-analytics:
+    get:
+      tags: [分析中心]
+      summary: 获取会话列表
+      description: |
+        分页查询会话摘要列表，支持多维过滤和排序。
+        
+        **权限**: admin / super_admin
+        **限流**: 10 req/min per tenant
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Model'
+        - $ref: '#/components/parameters/Provider'
+        - $ref: '#/components/parameters/ComplianceStatus'
+        - $ref: '#/components/parameters/HealthGrade'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [created_at, total_cost_usd, duration_seconds, health_score]
+            default: created_at
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: 成功返回会话列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SessionSummary'
+                  total:
+                    type: integer
+                    description: 符合条件的总会话数
+                  page:
+                    type: integer
+                  page_size:
+                    type: integer
+              example:
+                sessions:
+                  - gw_session_id: "gw_abc123"
+                    tenant_id: "tnt_001"
+                    first_request_at: "2026-07-06T10:00:00Z"
+                    last_request_at: "2026-07-06T10:05:30Z"
+                    duration_seconds: 330
+                    request_count: 8
+                    success_count: 7
+                    error_count: 1
+                    total_cost_usd: 0.0234
+                    health_score: 85
+                    health_grade: "B"
+                    outcome: "completed"
+                total: 1250
+                page: 1
+                page_size: 20
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '504':
+          $ref: '#/components/responses/Timeout'
+
+  /api/admin/session-analytics/stats:
+    get:
+      tags: [分析中心]
+      summary: 获取会话统计概览
+      description: |
+        返回当前过滤器范围内的 KPI 统计（今日/本周/本月）。
+        
+        **缓存**: 1 分钟 TTL
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Model'
+        - $ref: '#/components/parameters/Provider'
+      responses:
+        '200':
+          description: 统计数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStats'
+              example:
+                total_sessions: 1250
+                active_sessions: 45
+                total_requests: 12500
+                total_cost: 125.50
+                avg_cost_per_session: 0.10
+                avg_tokens_per_session: 2500
+                avg_latency: 850
+                compliance_rate: 0.98
+                high_quality_rate: 0.85
+
+  # ========== 时间序列分析 ==========
+  /api/admin/session-analytics/activity:
+    get:
+      tags: [时间序列]
+      summary: 活动趋势（会话量/请求量）
+      description: |
+        按时间粒度聚合会话和请求活动趋势。
+        
+        **缓存**: 5 分钟 TTL
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Granularity'
+        - $ref: '#/components/parameters/ModelArray'
+        - $ref: '#/components/parameters/ProviderArray'
+      responses:
+        '200':
+          description: 活动趋势数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityResponse'
+              example:
+                granularity: "day"
+                series:
+                  - date: "2026-07-01"
+                    session_count: 120
+                    request_count: 1200
+                    success_count: 1150
+                    error_count: 50
+                    total_cost_usd: 12.50
+                    total_tokens: 250000
+                    distinct_users: 45
+                  - date: "2026-07-02"
+                    session_count: 135
+                    request_count: 1350
+                    success_count: 1300
+                    error_count: 50
+                    total_cost_usd: 14.20
+                    total_tokens: 280000
+                    distinct_users: 52
+                summary:
+                  total_sessions: 1250
+                  total_requests: 12500
+                  avg_daily_sessions: 125
+                  peak_date: "2026-07-06"
+                  peak_sessions: 180
+
+  /api/admin/session-analytics/cost:
+    get:
+      tags: [时间序列]
+      summary: 成本趋势（输入/输出成本）
+      description: |
+        按时间粒度聚合成本趋势，区分输入/输出成本。
+        
+        **缓存**: 5 分钟 TTL
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Granularity'
+        - $ref: '#/components/parameters/ModelArray'
+        - $ref: '#/components/parameters/ProviderArray'
+      responses:
+        '200':
+          description: 成本趋势数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostResponse'
+
+  /api/admin/session-analytics/latency:
+    get:
+      tags: [时间序列]
+      summary: 延迟趋势（P50/P90/P99）
+      description: |
+        按时间粒度聚合延迟分位数趋势。
+        
+        **缓存**: 5 分钟 TTL
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Granularity'
+        - $ref: '#/components/parameters/ModelArray'
+        - $ref: '#/components/parameters/ProviderArray'
+      responses:
+        '200':
+          description: 延迟趋势数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LatencyResponse'
+
+  /api/admin/session-analytics/health:
+    get:
+      tags: [时间序列]
+      summary: 健康趋势（平均分/等级分布）
+      description: |
+        按时间粒度聚合健康评分趋势。
+        
+        **缓存**: 5 分钟 TTL
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Granularity'
+      responses:
+        '200':
+          description: 健康趋势数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  # ========== 分布归因分析 ==========
+  /api/admin/session-analytics/model-breakdown:
+    get:
+      tags: [分布归因]
+      summary: 模型/提供商分解
+      description: |
+        按模型和提供商聚合请求量、成本、token、延迟和错误率。
+        长尾模型（占比<2%）自动合并为"其他"。
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+      responses:
+        '200':
+          description: 模型分解数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelBreakdownResponse'
+
+  /api/admin/session-analytics/session-shape:
+    get:
+      tags: [分布归因]
+      summary: 会话形态分布
+      description: |
+        按请求数和持续时间分桶统计会话形态。
+        
+        **分桶规则**:
+        - 请求数: 1, 2-5, 6-10, 11-20, 21-50, 50+
+        - 持续时间: <1min, 1-5min, 5-15min, 15-60min, 60min+
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+      responses:
+        '200':
+          description: 形态分布数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionShapeResponse'
+
+  /api/admin/session-analytics/health-distribution:
+    get:
+      tags: [分布归因]
+      summary: 健康分布
+      description: |
+        按健康等级、结果类型、合规状态、延迟分桶统计分布。
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+      responses:
+        '200':
+          description: 健康分布数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthDistributionResponse'
+
+  # ========== 会话详情与全景 ==========
+  /api/admin/session-analytics/{gw_session_id}:
+    get:
+      tags: [会话详情]
+      summary: 获取会话详情
+      description: |
+        返回单个会话的完整详情，包括摘要、时间线和分析。
+      parameters:
+        - name: gw_session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^gw_[a-zA-Z0-9_-]+$'
+          example: "gw_abc123"
+      responses:
+        '200':
+          description: 会话详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/admin/session-analytics/{gw_session_id}/panorama:
+    get:
+      tags: [会话详情]
+      summary: 获取会话全景图
+      description: |
+        一次返回会话的所有关联信息（9大面板）：
+        - 摘要 & 时间线
+        - 逐步摘要
+        - 标签
+        - 优化建议
+        - 聚类归属
+        - 健康诊断
+        - 成本流向
+        - 分析
+      parameters:
+        - name: gw_session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 会话全景
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionPanorama'
+
+  /api/admin/session-analytics/{gw_session_id}/export:
+    get:
+      tags: [会话详情]
+      summary: 导出会话数据
+      description: |
+        导出会话完整数据为 JSON 格式（含完整请求/响应正文）。
+        
+        **权限**: super_admin
+      parameters:
+        - name: gw_session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 导出成功
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ========== 健康评分 ==========
+  /api/admin/sessions/{gw_session_id}/health:
+    get:
+      tags: [健康评分]
+      summary: 获取会话健康详情
+      description: |
+        返回会话健康评分、等级、结果和扣分明细。
+        若会话尚未计算健康分，实时计算并写入。
+      parameters:
+        - name: gw_session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 健康详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionHealth'
+              example:
+                gw_session_id: "gw_abc123"
+                health_score: 85
+                health_grade: "B"
+                outcome: "completed"
+                outcome_reason: "all requests succeeded"
+                error_rate: 0.125
+                avg_latency_ms: 850
+                computed_at: "2026-07-06T10:10:00Z"
+                penalties:
+                  - category: "error"
+                    points: 10
+                    reason: "1 error out of 8 requests"
+                  - category: "latency"
+                    points: 5
+                    reason: "avg latency 850ms > 800ms threshold"
+
+  /api/admin/sessions/{gw_session_id}/recompute-health:
+    post:
+      tags: [健康评分]
+      summary: 强制重新计算健康分
+      description: |
+        管理员手动触发重算健康分（调试/修复用）。
+        
+        **权限**: admin / super_admin
+      parameters:
+        - name: gw_session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 重算成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionHealth'
+
+  # ========== 实时会话监控 ==========
+  /api/admin/sessions:
+    get:
+      tags: [实时会话]
+      summary: 获取实时会话列表
+      description: |
+        查询 Redis 热层中的运行中会话列表。
+        
+        **数据源**: Redis + session_state_snapshots
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [running, stopped, all]
+            default: running
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        '200':
+          description: 实时会话列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LiveSession'
+
+  /api/admin/sessions/{gw_session_id}/stop:
+    post:
+      tags: [实时会话]
+      summary: 远程停止会话
+      description: |
+        立即停止运行中的会话（危险操作）。
+        
+        **权限**: admin / super_admin
+        **审计**: 记录到 audit_log
+      parameters:
+        - name: gw_session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: 停止原因（必填）
+              required: [reason]
+      responses:
+        '200':
+          description: 停止成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "stopped"
+                  stopped_at:
+                    type: string
+                    format: date-time
+
+  # ========== 合规审批 ==========
+  /api/admin/session-approvals:
+    get:
+      tags: [合规审批]
+      summary: 获取审批列表
+      description: |
+        查询待审批/已审批的会话列表。
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, all]
+            default: pending
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: 审批列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approvals:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Approval'
+
+  /api/admin/session-approvals/{approval_id}/approve:
+    post:
+      tags: [合规审批]
+      summary: 批准审批
+      description: |
+        批准会话审批，允许继续执行。
+        
+        **权限**: admin / super_admin
+      parameters:
+        - name: approval_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment:
+                  type: string
+      responses:
+        '200':
+          description: 批准成功
+
+  /api/admin/session-approvals/{approval_id}/reject:
+    post:
+      tags: [合规审批]
+      summary: 拒绝审批
+      description: |
+        拒绝会话审批，终止执行。
+        
+        **权限**: admin / super_admin
+      parameters:
+        - name: approval_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: 拒绝原因（必填）
+              required: [reason]
+      responses:
+        '200':
+          description: 拒绝成功
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        使用 API Key 作为 Bearer Token。
+        支持两种传递方式：
+        - Header: `Authorization: Bearer sk-xxx`
+        - Header: `x-api-key: sk-xxx`
+
+  parameters:
+    DateFrom:
+      name: date_from
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date
+        example: "2026-07-01"
+      description: 开始日期（默认 7 天前）
+
+    DateTo:
+      name: date_to
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date
+        example: "2026-07-07"
+      description: 结束日期（默认今天）
+
+    Model:
+      name: model
+      in: query
+      schema:
+        type: string
+        example: "gpt-4o"
+      description: 过滤指定模型
+
+    Provider:
+      name: provider
+      in: query
+      schema:
+        type: string
+        example: "openai"
+      description: 过滤指定提供商
+
+    ModelArray:
+      name: model
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      style: form
+      explode: true
+      description: 过滤多个模型（重复参数）
+
+    ProviderArray:
+      name: provider
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      style: form
+      explode: true
+      description: 过滤多个提供商（重复参数）
+
+    ComplianceStatus:
+      name: compliance_status
+      in: query
+      schema:
+        type: string
+        enum: [compliant, flagged, blocked, unknown]
+      description: 合规状态过滤
+
+    HealthGrade:
+      name: health_grade
+      in: query
+      schema:
+        type: string
+        enum: [A, B, C, D, F]
+      description: 健康等级过滤
+
+    Granularity:
+      name: granularity
+      in: query
+      schema:
+        type: string
+        enum: [hour, day, week, month]
+        default: day
+      description: 时间粒度
+
+  schemas:
+    SessionSummary:
+      type: object
+      properties:
+        gw_session_id:
+          type: string
+          example: "gw_abc123"
+        tenant_id:
+          type: string
+        first_request_at:
+          type: string
+          format: date-time
+        last_request_at:
+          type: string
+          format: date-time
+        duration_seconds:
+          type: integer
+        request_count:
+          type: integer
+        success_count:
+          type: integer
+        error_count:
+          type: integer
+        total_cost_usd:
+          type: number
+          format: double
+        total_tokens:
+          type: integer
+        avg_latency_ms:
+          type: integer
+        models_used:
+          type: array
+          items:
+            type: string
+        primary_model:
+          type: string
+        health_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        health_grade:
+          type: string
+          enum: [A, B, C, D, F]
+        outcome:
+          type: string
+          enum: [completed, error, abandoned, unknown]
+        compliance_status:
+          type: string
+          enum: [compliant, flagged, blocked, unknown]
+
+    SessionStats:
+      type: object
+      properties:
+        total_sessions:
+          type: integer
+        active_sessions:
+          type: integer
+        total_requests:
+          type: integer
+        total_cost:
+          type: number
+        avg_cost_per_session:
+          type: number
+        avg_tokens_per_session:
+          type: integer
+        avg_latency:
+          type: integer
+        compliance_rate:
+          type: number
+        high_quality_rate:
+          type: number
+
+    ActivityResponse:
+      type: object
+      properties:
+        granularity:
+          type: string
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActivityDataPoint'
+        summary:
+          type: object
+
+    ActivityDataPoint:
+      type: object
+      properties:
+        date:
+          type: string
+        session_count:
+          type: integer
+        request_count:
+          type: integer
+        success_count:
+          type: integer
+        error_count:
+          type: integer
+        total_cost_usd:
+          type: number
+        total_tokens:
+          type: integer
+        distinct_users:
+          type: integer
+
+    CostResponse:
+      type: object
+      properties:
+        granularity:
+          type: string
+        series:
+          type: array
+          items:
+            type: object
+        summary:
+          type: object
+
+    LatencyResponse:
+      type: object
+      properties:
+        granularity:
+          type: string
+        series:
+          type: array
+          items:
+            type: object
+
+    HealthResponse:
+      type: object
+      properties:
+        granularity:
+          type: string
+        series:
+          type: array
+          items:
+            type: object
+
+    ModelBreakdownResponse:
+      type: object
+      properties:
+        by_model:
+          type: array
+          items:
+            type: object
+        by_provider:
+          type: array
+          items:
+            type: object
+
+    SessionShapeResponse:
+      type: object
+      properties:
+        request_count_buckets:
+          type: array
+          items:
+            type: object
+        duration_buckets:
+          type: array
+          items:
+            type: object
+
+    HealthDistributionResponse:
+      type: object
+      properties:
+        grade_distribution:
+          type: object
+        outcome_distribution:
+          type: object
+        compliance_distribution:
+          type: object
+        latency_buckets:
+          type: array
+          items:
+            type: object
+        avg_health_score:
+          type: number
+
+    SessionDetail:
+      type: object
+      properties:
+        summary:
+          $ref: '#/components/schemas/SessionSummary'
+        timeline:
+          type: array
+          items:
+            type: object
+        analysis:
+          type: object
+
+    SessionPanorama:
+      type: object
+      properties:
+        summary:
+          $ref: '#/components/schemas/SessionSummary'
+        timeline:
+          type: array
+          items:
+            type: object
+        step_summaries:
+          type: array
+          items:
+            type: object
+        tags:
+          type: array
+          items:
+            type: object
+        suggestions:
+          type: array
+          items:
+            type: object
+        cluster:
+          type: object
+        analysis:
+          type: object
+
+    SessionHealth:
+      type: object
+      properties:
+        gw_session_id:
+          type: string
+        health_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        health_grade:
+          type: string
+          enum: [A, B, C, D, F]
+        outcome:
+          type: string
+        outcome_reason:
+          type: string
+        error_rate:
+          type: number
+        avg_latency_ms:
+          type: integer
+        computed_at:
+          type: string
+          format: date-time
+        penalties:
+          type: array
+          items:
+            type: object
+            properties:
+              category:
+                type: string
+              points:
+                type: integer
+              reason:
+                type: string
+
+    LiveSession:
+      type: object
+      properties:
+        gw_session_id:
+          type: string
+        status:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        last_request_at:
+          type: string
+          format: date-time
+        request_count:
+          type: integer
+
+    Approval:
+      type: object
+      properties:
+        approval_id:
+          type: string
+        gw_session_id:
+          type: string
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        reviewed_at:
+          type: string
+          format: date-time
+        reviewer:
+          type: string
+
+  responses:
+    BadRequest:
+      description: 请求参数错误
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              code:
+                type: string
+          example:
+            error: "date_from is required"
+            code: "INVALID_PARAMETER"
+
+    Forbidden:
+      description: 权限不足
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              code:
+                type: string
+          example:
+            error: "tenant access denied"
+            code: "FORBIDDEN"
+
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              code:
+                type: string
+          example:
+            error: "session not found"
+            code: "NOT_FOUND"
+
+    Timeout:
+      description: 查询超时
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              code:
+                type: string
+          example:
+            error: "query timeout after 15s"
+            code: "TIMEOUT"
