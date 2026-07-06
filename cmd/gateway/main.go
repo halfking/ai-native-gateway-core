@@ -137,6 +137,7 @@ func main() {
 	// env var is empty, logging.Init is a no-op and slog stays on
 	// stderr. See internal/logging for the rotation policy and
 	// config/config.go for the operator-spec defaults.
+	logging.SetLevel(level)
 	logCfg := logging.DefaultConfig()
 	logCfg.File = cfg.LogFile
 	logCfg.MaxSizeMB = cfg.LogMaxSizeMB
@@ -2044,26 +2045,26 @@ func main() {
 		// Phase 4: Session Analytics API (会话全景分析)
 		// 350 迁移修复 session_summaries 聚合链路后启用。
 		if adminHandler != nil {
-		mux.HandleFunc("/api/admin/session-analytics", wrapAdmin(adminHandler.HandleSessionAnalyticsList))
-		mux.HandleFunc("/api/admin/session-analytics/", wrapAdmin(adminHandler.RouteSessionAnalytics))
-		mux.HandleFunc("/api/admin/session-clusters", wrapAdmin(adminHandler.HandleSessionClustersList))
-		mux.HandleFunc("/api/admin/session-clusters/", wrapAdmin(adminHandler.RouteSessionClusters))
-		// Task T1.1: 时间序列分析端点 (2026-07-06)
-		mux.HandleFunc("/api/admin/session-analytics/activity", wrapAdmin(adminHandler.HandleActivityTrend))
-		mux.HandleFunc("/api/admin/session-analytics/cost-trend", wrapAdmin(adminHandler.HandleCostTrend))
-		mux.HandleFunc("/api/admin/session-analytics/latency-trend", wrapAdmin(adminHandler.HandleLatencyTrend))
-		mux.HandleFunc("/api/admin/session-analytics/health-trend", wrapAdmin(adminHandler.HandleHealthTrend))
-		slog.Info("Phase 4 session analytics API enabled (/api/admin/session-analytics)")
+			mux.HandleFunc("/api/admin/session-analytics", wrapAdmin(adminHandler.HandleSessionAnalyticsList))
+			mux.HandleFunc("/api/admin/session-analytics/", wrapAdmin(adminHandler.RouteSessionAnalytics))
+			mux.HandleFunc("/api/admin/session-clusters", wrapAdmin(adminHandler.HandleSessionClustersList))
+			mux.HandleFunc("/api/admin/session-clusters/", wrapAdmin(adminHandler.RouteSessionClusters))
+			// Task T1.1: 时间序列分析端点 (2026-07-06)
+			mux.HandleFunc("/api/admin/session-analytics/activity", wrapAdmin(adminHandler.HandleActivityTrend))
+			mux.HandleFunc("/api/admin/session-analytics/cost-trend", wrapAdmin(adminHandler.HandleCostTrend))
+			mux.HandleFunc("/api/admin/session-analytics/latency-trend", wrapAdmin(adminHandler.HandleLatencyTrend))
+			mux.HandleFunc("/api/admin/session-analytics/health-trend", wrapAdmin(adminHandler.HandleHealthTrend))
+			slog.Info("Phase 4 session analytics API enabled (/api/admin/session-analytics)")
 
-		// Task T1.3: 会话健康评分后台 worker (2026-07-06)
-		// 每小时扫描 last_request_at < now-1h 且 health_score IS NULL 的会话，
-		// 批量计算并写入 session_summaries.health_score/grade/outcome。
-		// 缺失此 worker 则未主动停止的会话永远不会有健康分。
-		if dbConn != nil {
-			healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
-			healthWorker.Start(context.Background())
-			slog.Info("session health worker started (hourly)")
-		}
+			// Task T1.3: 会话健康评分后台 worker (2026-07-06)
+			// 每小时扫描 last_request_at < now-1h 且 health_score IS NULL 的会话，
+			// 批量计算并写入 session_summaries.health_score/grade/outcome。
+			// 缺失此 worker 则未主动停止的会话永远不会有健康分。
+			if dbConn != nil {
+				healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
+				healthWorker.Start(context.Background())
+				slog.Info("session health worker started (hourly)")
+			}
 		}
 
 		// Task T1.4: Usage Cost Enhanced API (2026-07-06)
