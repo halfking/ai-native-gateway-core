@@ -89,6 +89,19 @@ BEGIN
             partition_name, month_start, month_end
         );
         RAISE NOTICE 'ensure_request_logs_bodies_partition: created % as columnar', partition_name;
+    ELSIF NOT EXISTS (
+        SELECT 1
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        WHERE c.relname = partition_name
+          AND p.relname = 'request_logs_bodies'
+    ) THEN
+        EXECUTE format(
+            'ALTER TABLE request_logs_bodies ATTACH PARTITION %I FOR VALUES FROM (%L) TO (%L)',
+            partition_name, month_start, month_end
+        );
+        RAISE NOTICE 'ensure_request_logs_bodies_partition: re-attached orphan %', partition_name;
     END IF;
 END;
 $$;
