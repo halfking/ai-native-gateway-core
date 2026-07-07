@@ -12,6 +12,7 @@ export default {
       revoked: 'ملغى',
       closed: 'ملغى/منتهي',
     },
+    close: 'إغلاق',
     unlimited: 'غير محدود',
     close: 'إغلاق',
     noLimit: 'غير محدود',

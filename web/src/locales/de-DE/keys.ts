@@ -12,6 +12,7 @@ export default {
       revoked: 'Widerrufen',
       closed: 'Widerrufen/Abgelaufen',
     },
+    close: 'Schließen',
     unlimited: 'Unbegrenzt',
     close: 'Schließen',
     noLimit: 'Keine Begrenzung',
