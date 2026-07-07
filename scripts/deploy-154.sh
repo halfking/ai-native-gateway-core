@@ -160,7 +160,12 @@ log "  服务已停止 ✓"
 log "[6/8] scp 上传到 $REMOTE_DIR..."
 $SSH "$SSH_TARGET" "mkdir -p $REMOTE_DIR/web"
 $SCP "$BIN_NAME" "$SSH_TARGET:$REMOTE_DIR/$BIN_NAME"
-[[ -d web/dist ]] && $SCP -r web/dist/. "$SSH_TARGET:$REMOTE_DIR/web/"
+# web/dist 作为目录上传 (scp -r src dst/ 时会创建 dst/src/)
+if [[ -d web/dist ]]; then
+  # 先清掉旧的 web/dist, 避免残留
+  $SSH "$SSH_TARGET" "rm -rf $REMOTE_DIR/web"
+  $SCP -r web/dist "$SSH_TARGET:$REMOTE_DIR/web/"
+fi
 echo "$NEW_VERSION" > /tmp/__deploy-154.version
 echo "$NEW_SEQ"     > /tmp/__deploy-154.seq
 $SCP /tmp/__deploy-154.version "$SSH_TARGET:$REMOTE_DIR/VERSION"
@@ -197,6 +202,7 @@ LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY}
 # Admin
 LLM_GATEWAY_ADMIN_USER=${LLM_GATEWAY_ADMIN_USER:-admin}
 LLM_GATEWAY_ADMIN_PASSWORD=${LLM_GATEWAY_ADMIN_PASSWORD:-}
+LLM_GATEWAY_ADMIN_API_KEY=${LLM_GATEWAY_ADMIN_API_KEY:-$(openssl rand -hex 32 | sed 's/^/sk-/')}
 EOF
 )
 ENV_B64=$(printf '%s' "$ENV_BODY" | base64 | tr -d '\n')
