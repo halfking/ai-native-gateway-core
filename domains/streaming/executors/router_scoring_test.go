@@ -99,7 +99,8 @@ func TestQualityScore_SuccessRate(t *testing.T) {
 				SuccessRate: tt.successRate,
 			}
 			score := calculateQualityScore(candidate)
-			assert.Equal(t, tt.expected, score)
+			// 浮点运算 1.0-0.95 = 0.05000...044，必须用 InDelta 容差比较
+			assert.InDelta(t, tt.expected, score, 1e-9)
 		})
 	}
 }
