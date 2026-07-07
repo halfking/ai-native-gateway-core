@@ -3,6 +3,8 @@ export default {
   title: '压缩概览',
   refresh: '刷新',
   loading: '加载中…',
+  // 2026-07-07: 顶层 custom 别名，适配 CompressionView.vue:221 直接 t('compression.custom') 的旧调用
+  custom: '自定义',
   tabs: {
     h24: '24小时',
     d7: '7天',
