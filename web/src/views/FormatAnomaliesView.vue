@@ -37,27 +37,27 @@ const resolutionNotes = ref('')
 const resolving = ref(false)
 
 const anomalyTypeLabels: Record<string, string> = {
-  missing_usage_block: t('formatAnomaliesView.missing_usage_block'),
-  zero_completion_tokens: t('formatAnomaliesView.zero_completion_tokens'),
-  extraction_failed: t('formatAnomaliesView.extraction_failed'),
-  unexpected_structure: t('formatAnomaliesView.unexpected_structure'),
-  null_usage_values: t('formatAnomaliesView.null_usage_values'),
+  missing_usage_block: t('formatAnomaliesView.anomalyType.missing_usage_block'),
+  zero_completion_tokens: t('formatAnomaliesView.anomalyType.zero_completion_tokens'),
+  extraction_failed: t('formatAnomaliesView.anomalyType.extraction_failed'),
+  unexpected_structure: t('formatAnomaliesView.anomalyType.unexpected_structure'),
+  null_usage_values: t('formatAnomaliesView.anomalyType.null_usage_values'),
 }
 
 const anomalyTypeOptions: AnomalyTypeOption[] = [
-  { value: '', label: t('formatAnomaliesView.all') },
-  { value: 'missing_usage_block', label: t('formatAnomaliesView.missing_usage_block'), description: t('formatAnomaliesView.missing_usage_block') },
-  { value: 'zero_completion_tokens', label: 'Completion Tokens = 0', description: t('formatAnomaliesView.zero_completion_tokens') },
-  { value: 'extraction_failed', label: t('formatAnomaliesView.extraction_failed'), description: t('formatAnomaliesView.extraction_failed') },
-  { value: 'unexpected_structure', label: t('formatAnomaliesView.unexpected_structure'), description: t('formatAnomaliesView.unexpected_structure') },
-  { value: 'null_usage_values', label: t('formatAnomaliesView.null_usage_values'), description: t('formatAnomaliesView.null_usage_values') },
+  { value: '', label: t('formatAnomaliesView.anomalyType.all') },
+  { value: 'missing_usage_block', label: t('formatAnomaliesView.anomalyType.missing_usage_block'), description: t('formatAnomaliesView.anomalyTypeDescription.missing_usage_block') },
+  { value: 'zero_completion_tokens', label: 'Completion Tokens = 0', description: t('formatAnomaliesView.anomalyTypeDescription.zero_completion_tokens') },
+  { value: 'extraction_failed', label: t('formatAnomaliesView.anomalyType.extraction_failed'), description: t('formatAnomaliesView.anomalyTypeDescription.extraction_failed') },
+  { value: 'unexpected_structure', label: t('formatAnomaliesView.anomalyType.unexpected_structure'), description: t('formatAnomaliesView.anomalyTypeDescription.unexpected_structure') },
+  { value: 'null_usage_values', label: t('formatAnomaliesView.anomalyType.null_usage_values'), description: t('formatAnomaliesView.anomalyTypeDescription.null_usage_values') },
 ]
 
 const severityLabels: Record<string, string> = {
-  low: t('formatAnomaliesView.low'),
-  medium: t('formatAnomaliesView.medium'),
-  high: t('formatAnomaliesView.high'),
-  critical: t('formatAnomaliesView.critical'),
+  low: t('formatAnomaliesView.severity.low'),
+  medium: t('formatAnomaliesView.severity.medium'),
+  high: t('formatAnomaliesView.severity.high'),
+  critical: t('formatAnomaliesView.severity.critical'),
 }
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
@@ -111,7 +111,7 @@ async function load() {
     anomalies.value = resp.anomalies
     total.value = resp.count
   } catch (err: any) {
-    error.value = err?.message || t('formatAnomaliesView.loadFailed')
+    error.value = err?.message || t('formatAnomaliesView.error.loadFailed')
   } finally {
     loading.value = false
   }
@@ -123,7 +123,7 @@ async function loadSummary() {
     const resp = await getFormatAnomalySummary(summaryHours.value)
     summaries.value = resp.summaries
   } catch (err: any) {
-    error.value = err?.message || t('formatAnomaliesView.summaryLoadFailed')
+    error.value = err?.message || t('formatAnomaliesView.error.summaryLoadFailed')
   } finally {
     summaryLoading.value = false
   }
@@ -151,7 +151,7 @@ async function markResolved() {
     await Promise.all([load(), loadSummary()])
     closeDetail()
   } catch (err: any) {
-    error.value = err?.message || t('formatAnomaliesView.markFailed')
+    error.value = err?.message || t('formatAnomaliesView.error.markFailed')
   } finally {
     resolving.value = false
   }
@@ -176,7 +176,7 @@ function nextPage() {
 
 onMounted(async () => {
   if (!isSuperAdmin()) {
-    error.value = t('formatAnomaliesView.needSuperAdmin')
+    error.value = t('formatAnomaliesView.error.needSuperAdmin')
     return
   }
   await Promise.all([load(), loadSummary()])
@@ -278,7 +278,7 @@ onMounted(async () => {
             </td>
             <td>
               <span :class="item.resolved ? 'status-ok' : 'status-warn'">
-                {{ item.resolved ? t('formatAnomaliesView.resolved') : t('formatAnomaliesView.unresolved') }}
+                {{ item.resolved ? t('formatAnomaliesView.status.resolved') : t('formatAnomaliesView.status.unresolved') }}
               </span>
             </td>
             <td><button class="btn btn-link" @click="openDetail(item)">{{ t('formatAnomaliesView.table.viewDetail') }}</button></td>
@@ -288,9 +288,9 @@ onMounted(async () => {
     </div>
 
     <div class="pager">
-      <button class="btn" @click="prevPage" :disabled="page <= 1 || loading">{{ t('formatAnomaliesView.pagination.prev') }}</button>
-      <span>{{ t('formatAnomaliesView.pagination.summary', { page, totalPages, total }) }}</span>
-      <button class="btn" @click="nextPage" :disabled="page >= totalPages || loading">{{ t('formatAnomaliesView.pagination.next') }}</button>
+      <button class="btn" @click="prevPage" :disabled="page <= 1 || loading">{{ t('formatAnomaliesView.pager.prev') }}</button>
+      <span>{{ t('formatAnomaliesView.pager.summary', { page, totalPages, total }) }}</span>
+      <button class="btn" @click="nextPage" :disabled="page >= totalPages || loading">{{ t('formatAnomaliesView.pager.next') }}</button>
     </div>
 
     <div v-if="selected" class="modal-mask" @click="closeDetail">
