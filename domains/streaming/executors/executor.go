@@ -484,6 +484,10 @@ type Executor struct {
 	// 自动触发状态更新、探测调度和资源释放。
 	// Nil则保留旧的状态管理逻辑（向后兼容）。
 	URSM *ursm.Manager
+
+	// DegradationTracker (2026-07-07 Phase 1): 追踪 FpSlot 降级模式请求
+	// 用于监控和告警。Nil 时禁用该功能。
+	DegradationTracker *DegradationTracker
 }
 
 func NewExecutor(
@@ -814,9 +818,30 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				"client_model", params.ClientModel,
 			)
 			fpSlotDegraded = true
+
+			// Phase 1: 记录降级模式
+			if e.DegradationTracker != nil {
+				e.DegradationTracker.RecordRequest(params.ClientModel, true)
+
+				// 检查是否超过阈值
+				ratio := e.DegradationTracker.GetDegradationRatio(params.ClientModel)
+				if ratio > 0.10 { // 10% 阈值
+					slog.Error("fp_slot_saturation_critical",
+						"model", params.ClientModel,
+						"degradation_ratio", ratio,
+						"threshold", 0.10,
+					)
+				}
+			}
+
 			// Keep the original candidates slice (do NOT replace with the
 			// empty filtered set).
 		} else {
+			// Phase 1: 记录正常模式
+			if e.DegradationTracker != nil {
+				e.DegradationTracker.RecordRequest(params.ClientModel, false)
+			}
+
 			candidates = filtered
 			if len(candidates) == 0 {
 				return nil, &ExecuteError{LastErr: fmt.Errorf("cred_fp_slot: all saturated"), Tried: 0, Exhausted: true}
