@@ -32,6 +32,7 @@ REMOTE_DIR="${LLM_GATEWAY_154_DIR:-/opt/llm-gateway-go}"
 SERVICE_NAME="${LLM_GATEWAY_154_SERVICE:-llm-gateway-go.service}"
 BIN_NAME="llm-gateway-go.v322.linux.amd64"
 SKIP_FRONTEND=false
+SKIP_BUMP=false
 TARGET_SEQ=""
 DRY_RUN=false
 
@@ -40,6 +41,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --seq)           TARGET_SEQ="$2"; shift 2 ;;
     --no-frontend)   SKIP_FRONTEND=true; shift ;;
+    --no-bump)       SKIP_BUMP=true; shift ;;
     --ssh)           SSH_TARGET="$2"; shift 2 ;;
     --port)          SSH_PORT="$2"; shift 2 ;;
     --dry-run)       DRY_RUN=true; shift ;;
@@ -101,18 +103,25 @@ $SSH "$SSH_TARGET" "echo connected && uname -a" >/dev/null || { err "SSH 不可�
 log "  ssh OK: ✓"
 
 # ── Step 2: bump-version ──────────────────────────────────────
-log "[2/8] bump-version..."
-flags=()
-[[ -n "$TARGET_SEQ" ]] && flags+=(--seq "$TARGET_SEQ")
-bash scripts/bump-version.sh "${flags[@]}"
-# 导出变量 (bump-version.sh 最后一行 export 了)
-source scripts/bump-version.sh >/dev/null 2>&1 || true
-# 但 source 会再执行一遍写文件. 我们重新读 version.json 来拿变量
-NEW_SEQ=$(python3 -c "import json; print(json.load(open('version.json'))['build_seq'])")
-NEW_VERSION=$(python3 -c "import json; print(json.load(open('version.json'))['version'])")
-HEAD_SHA=$(python3 -c "import json; print(json.load(open('version.json'))['git_sha'])")
-HEAD_DATE=$(python3 -c "import json; print(json.load(open('version.json'))['build_date'])")
-log "  new seq=$NEW_SEQ version=$NEW_VERSION"
+if [[ "$SKIP_BUMP" == "true" ]]; then
+  log "[2/8] 跳过 bump-version (--no-bump)"
+  # 从 version.json 读当前 seq/version
+  NEW_SEQ=$(python3 -c "import json; print(json.load(open('version.json'))['build_seq'])")
+  NEW_VERSION=$(python3 -c "import json; print(json.load(open('version.json'))['version'])")
+  HEAD_SHA=$(python3 -c "import json; print(json.load(open('version.json'))['git_sha'])")
+  HEAD_DATE=$(python3 -c "import json; print(json.load(open('version.json'))['build_date'])")
+  log "  current seq=$NEW_SEQ version=$NEW_VERSION"
+else
+  log "[2/8] bump-version..."
+  flags=()
+  [[ -n "$TARGET_SEQ" ]] && flags+=(--seq "$TARGET_SEQ")
+  bash scripts/bump-version.sh "${flags[@]}"
+  NEW_SEQ=$(python3 -c "import json; print(json.load(open('version.json'))['build_seq'])")
+  NEW_VERSION=$(python3 -c "import json; print(json.load(open('version.json'))['version'])")
+  HEAD_SHA=$(python3 -c "import json; print(json.load(open('version.json'))['git_sha'])")
+  HEAD_DATE=$(python3 -c "import json; print(json.load(open('version.json'))['build_date'])")
+  log "  new seq=$NEW_SEQ version=$NEW_VERSION"
+fi
 
 # ── Step 3: 前端构建 ──────────────────────────────────────────
 if [[ "$SKIP_FRONTEND" == "false" ]]; then
