@@ -171,6 +171,8 @@ log "  文件已上传 ✓"
 # ── Step 7: 写入 env-file + start ─────────────────────────────
 log "[7/8] 写入 /etc/llm-gateway-go/env + systemd restart..."
 $SSH "$SSH_TARGET" "mkdir -p /etc/llm-gateway-go /opt/llm-gateway-go/{data,logs,web}"
+# 建 symlink: systemd unit 用 'llm-gateway-go', 实际二进制带版本号
+$SSH "$SSH_TARGET" "ln -sf $REMOTE_DIR/$BIN_NAME $REMOTE_DIR/llm-gateway-go"
 # 注意: env-file 由 ssh 端 heredoc 写入, 敏感值通过 SSHPASS 通道加密
 # 我们用 base64 编码避免 heredoc 特殊字符问题
 ENV_BODY=$(cat <<EOF
