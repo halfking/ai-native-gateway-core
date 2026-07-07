@@ -13,6 +13,7 @@ export default {
       closed: 'Révoqué/Expiré',
     },
     unlimited: 'Illimité',
+    close: 'Fermer',
     noLimit: 'Aucune limite',
     leaveBlankNoLimit: 'Laisser vide pour aucune limite',
     zeroMeansNoLimit: '0 = aucune limite',

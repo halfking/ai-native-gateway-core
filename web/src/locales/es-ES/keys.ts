@@ -11,6 +11,7 @@ export default {
       closed: 'Revocada/Caducada',
     },
     unlimited: 'Ilimitado',
+    close: 'Cerrar',
     noLimit: 'Sin límite',
     leaveBlankNoLimit: 'Dejar en blanco para sin límite',
     zeroMeansNoLimit: '0 = sin límite',

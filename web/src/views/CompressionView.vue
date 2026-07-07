@@ -218,7 +218,7 @@ watch(activeTab, loadAll)
             { id: '24h' as TabId, label: t('compression.h24') },
             { id: '7d' as TabId, label: t('compression.d7') },
             { id: '30d' as TabId, label: t('compression.d30') },
-            { id: 'custom' as TabId, label: t('compression.custom') },
+            { id: 'custom' as TabId, label: t('compression.tabs.custom') },
           ])"
           :key="tab.id"
           class="tab-btn"

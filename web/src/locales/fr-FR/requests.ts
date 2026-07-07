@@ -120,6 +120,7 @@ export default {
       colCompress: 'Compression',
       colStatus: 'Statut',
       attachmentsTitle: 'Pièces jointes',
+      noAttachments: 'Aucune pièce jointe',
       sessionPrefix: 'Session',
       taskPrefix: 'Tâche',
       tokenTooltip: 'entrée {in} / sortie {out}',

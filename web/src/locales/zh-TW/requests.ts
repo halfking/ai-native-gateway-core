@@ -127,6 +127,7 @@ export default {
       colCompress: '壓縮',
       colStatus: '狀態',
       attachmentsTitle: '附件',
+      noAttachments: '無附件',
       sessionPrefix: '會話',
       taskPrefix: '任務',
       tokenTooltip: '讀 {in} / 寫 {out}',
