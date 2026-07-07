@@ -12,6 +12,7 @@ export default {
       revoked: '已作廢',
       closed: '已作廢/過期',
     },
+    close: '關閉',
     unlimited: '無限制',
     close: '關閉',
     noLimit: '不限制',

@@ -1,4 +1,4 @@
-// formatAnomaliesView.ts — Format anomalies monitoring page.
+// formatAnomaliesView.ts — Format anomalies monitoring page (en-US).
 export default {
   pageTitle: 'Format Anomaly Monitor',
   pageSubtitle: 'Quickly view provider response format changes, token extraction failures, and compatibility issues.',
@@ -25,13 +25,24 @@ export default {
   anomalyType: {
     all: 'All Anomaly Types',
     missing_usage_block: 'Missing Usage Block',
+    zero_completion_tokens: 'Zero Completion Tokens',
+    extraction_failed: 'Extraction Failed',
+    unexpected_structure: 'Unexpected Structure',
+    null_usage_values: 'Null Usage Values',
     token_mismatch: 'Token Mismatch',
     missing_provider_tokens: 'Missing Provider Tokens',
     missing_client_tokens: 'Missing Client Tokens',
     json_parse_error: 'JSON Parse Error',
     missing_finish_reason: 'Missing Finish Reason',
     missing_content: 'Missing Content',
-    unexpected_structure: 'Unexpected Structure',
+  },
+
+  anomalyTypeDescription: {
+    missing_usage_block: 'Upstream response missing usage block',
+    zero_completion_tokens: 'Response has content but completion_tokens is 0',
+    extraction_failed: 'Unable to extract usable usage info from response',
+    unexpected_structure: 'Upstream returned structure inconsistent with expected',
+    null_usage_values: 'Usage fields exist but values are null',
   },
 
   severity: {
@@ -41,11 +52,10 @@ export default {
     low: 'Low',
   },
 
-  resolved: 'Resolved',
-  unresolved: 'Unresolved',
-  processing: 'Processing...',
-  markResolved: 'Mark as Resolved',
-  noNotes: 'No resolution notes',
+  status: {
+    resolved: 'Resolved',
+    unresolved: 'Unresolved',
+  },
 
   table: {
     detectedAt: 'Detected At',
@@ -63,7 +73,12 @@ export default {
     actualTokens: 'Actual: {count}',
   },
 
-  pagination: {
+  token: {
+    expected: 'Expected',
+    actual: 'Actual',
+  },
+
+  pager: {
     prev: 'Previous',
     next: 'Next',
     summary: 'Page {page} / {totalPages}, {total} records',
@@ -94,18 +109,4 @@ export default {
     markFailed: 'Failed to mark',
     needSuperAdmin: 'Super admin permission required',
   },
-  all: "[TODO: formatAnomaliesView.all]",
-  critical: "[TODO: formatAnomaliesView.critical]",
-  extraction_failed: "[TODO: formatAnomaliesView.extraction_failed]",
-  high: "[TODO: formatAnomaliesView.high]",
-  loadFailed: "[TODO: formatAnomaliesView.loadFailed]",
-  low: "[TODO: formatAnomaliesView.low]",
-  markFailed: "[TODO: formatAnomaliesView.markFailed]",
-  medium: "[TODO: formatAnomaliesView.medium]",
-  missing_usage_block: "[TODO: formatAnomaliesView.missing_usage_block]",
-  needSuperAdmin: "[TODO: formatAnomaliesView.needSuperAdmin]",
-  null_usage_values: "[TODO: formatAnomaliesView.null_usage_values]",
-  summaryLoadFailed: "[TODO: formatAnomaliesView.summaryLoadFailed]",
-  unexpected_structure: "[TODO: formatAnomaliesView.unexpected_structure]",
-  zero_completion_tokens: "[TODO: formatAnomaliesView.zero_completion_tokens]",
 }

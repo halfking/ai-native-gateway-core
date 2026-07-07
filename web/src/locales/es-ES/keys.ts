@@ -10,6 +10,7 @@ export default {
       revoked: 'Revocada',
       closed: 'Revocada/Caducada',
     },
+    close: 'Cerrar',
     unlimited: 'Ilimitado',
     close: 'Cerrar',
     noLimit: 'Sin límite',

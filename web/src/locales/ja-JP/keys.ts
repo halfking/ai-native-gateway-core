@@ -12,6 +12,7 @@ export default {
       revoked: '無効化済み',
       closed: '無効/期限切れ',
     },
+    close: '閉じる',
     unlimited: '無制限',
     close: '閉じる',
     noLimit: '制限なし',
