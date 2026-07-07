@@ -1404,6 +1404,22 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, kind, execErr)
 			e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
 		}
+
+		// ── Fatal 凭证错误：透明切换到下一个候选人（前端无感知）────────
+		// KindAuth/KindAuthRevoked/KindQuota* 等 fatal 错误表示 provider 侧问题
+		//（如账户被封、配额耗尽），不影响其他候选人的可用性。
+		// 对这些错误添加 continue，让主候选人循环尝试下一个 provider，
+		// 配合 sync retry 循环（1s 间隔重试，最多 3 轮），实现对前端的透明切换。
+		// 注意：流式请求不进入 sync retry 循环，所以这里的 continue 是流式的唯一保障。
+		if errorsx.IsCredentialFatal(kind) {
+			slog.Warn("executor: credential fatal error, trying next candidate",
+				"kind", kind,
+				"credential_id", cand.CredentialID,
+				"provider_id", cand.ProviderID,
+				"err", execErr.Error(),
+			)
+			continue
+		}
 	}
 
 	trace.FailureReason = "all_candidates_failed"
