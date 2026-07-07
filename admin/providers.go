@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 )
@@ -723,9 +725,9 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		LEFT JOIN (SELECT provider_id, COUNT(*) cnt FROM credentials WHERE availability_state='unreachable' GROUP BY provider_id) uc ON uc.provider_id = p.id
 		LEFT JOIN (SELECT c.provider_id, COUNT(*) cnt FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE mo.available=true GROUP BY c.provider_id) am ON am.provider_id = p.id
 		LEFT JOIN (SELECT c.provider_id, COUNT(*) cnt FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE mo.available=false GROUP BY c.provider_id) um ON um.provider_id = p.id
-		// Per 2026-07 partition architecture: 24-hour window query targets
-		// request_logs_hot directly (independent hot table for the last 7 days,
-		// migration 341, 2026-07-05).
+		-- Per 2026-07 partition architecture: 24-hour window query targets
+		-- request_logs_hot directly (independent hot table for the last 7 days,
+		-- migration 341, 2026-07-05).
 		LEFT JOIN (SELECT provider_id, COALESCE(SUM(CASE WHEN NOT success THEN 1 ELSE 0 END)::float8 / NULLIF(COUNT(*),0), 0) rate FROM request_logs_hot WHERE ts >= now() - interval '24 hours' GROUP BY provider_id) er ON er.provider_id = p.id
 		WHERE p.id = $1 AND p.tenant_id = 'default'
 	`, id).Scan(
@@ -741,7 +743,16 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		&p.CreatedAt,
 	)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "provider not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "provider not found")
+			return
+		}
+		// 2026-07-07: distinguish "row not found" from real SQL errors. A
+		// syntax error (e.g. stray `//` in the SQL template) was being
+		// silently returned as 404, hiding the bug from operators.
+		// log and surface as 500 so the failure mode is obvious.
+		slog.Error("getProvider query failed", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error: provider query failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
