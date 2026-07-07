@@ -159,17 +159,28 @@ EOF
 }
 
 build_docker_image() {
-    log_step "步骤 3/10: 构建Docker镜像"
-    docker build \
+    log_step "步骤 3/10: 构建Docker镜像 (platform=linux/amd64)"
+    # 184 服务器是 x86_64，必须强制 amd64（本地是 arm64 Mac）
+    # 优先用 buildx（支持 cross-platform），回退到 docker buildx
+    local BUILDER_NAME="kx-amd64-builder"
+    if ! docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
+        log_info "创建 buildx builder: ${BUILDER_NAME}"
+        docker buildx create --name "${BUILDER_NAME}" --platform linux/amd64 --driver docker-container --use >/dev/null 2>&1 || true
+    fi
+    docker buildx use "${BUILDER_NAME}" 2>/dev/null || true
+
+    docker buildx build \
+        --platform linux/amd64 \
         --build-arg GIT_TAG="${GIT_TAG}" \
         --build-arg GIT_SHA="${GIT_SHA}" \
         --build-arg BUILD_SEQ="${NEW_BUILD_SEQ}" \
         --build-arg BUILD_DATE="${BUILD_DATE}" \
         -t ${IMAGE_NAME}:${IMAGE_TAG} \
         -t ${IMAGE_NAME}:latest \
+        --load \
         .
-    log_success "镜像构建完成"
-    docker images | grep ${IMAGE_NAME} | head -3 || true
+    log_success "镜像构建完成 (linux/amd64)"
+    docker images --format '{{.Repository}}:{{.Tag}} {{.Architecture}}' | grep ${IMAGE_NAME} | head -3 || true
 }
 
 push_docker_image() {
