@@ -742,6 +742,14 @@ func main() {
 			slog.Info("credential state observer enabled (Phase 2.x real request feedback)")
 		}
 
+		// 2026-07-07 Phase 1: wire FpSlot degradation tracker.
+		// Unconditional — it is in-memory only (Prometheus counters + a
+		// 1-minute sliding window) and has no external dependencies, so it
+		// is safe to enable in every environment. When nil the executor
+		// silently skips recording, so this also documents the contract.
+		routingExec.DegradationTracker = executors.NewDegradationTracker()
+		slog.Info("fp_slot_degradation_tracker enabled (Phase 1 monitoring)")
+
 		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
 		chatHandler.SetSessionRouting(lastSystemSession, sessionPref)
 		// 2026-06-26: configurable recent-session reuse window. Default
