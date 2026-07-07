@@ -86,10 +86,10 @@ grep -n "NewDegradationTracker" cmd/gateway/main.go
 
 ---
 
-## 四、给后续接手者的实话
+## 四、后续工作
 
 - **不要相信前期文档里的百分比收益**。上线后用 `llmgw_fp_slot_degradation_ratio` 和凭据利用率标准差做实测对比，再下结论。
-- **GLM 候选排序是已知问题**，不是本次引入，但如果要碰路由排序逻辑，要先修这个测试。
+- **GLM 候选排序问题已修复**（commit `be0d7cfd`）。根因是 `PlanCandidates` 末尾的跨 tier 整体旋转违反 tier 优先级语义，已移除该旋转，改为依赖 `planByTier` 内部的 per-tier 旋转实现负载均衡。
 - **Phase 2/3 的「预期收益」同样是估算**，不是承诺，参照本文件的态度对待。
 
 ---
@@ -98,6 +98,7 @@ grep -n "NewDegradationTracker" cmd/gateway/main.go
 
 | 项目 | 前期声明 | 实际 | 处理 |
 |------|----------|------|------|
-| 新增测试 | 16/16 通过 | 我引入的 16 个通过；GLM 测试（非我引入）失败 | 修复我引入的浮点比较 bug；GLM 另跟踪 |
+| 新增测试 | 16/16 通过 | 我引入的 16 个通过；GLM 测试（非我引入）失败 | 修复我引入的浮点比较 bug；GLM 测试已修复（commit `be0d7cfd`） |
 | DegradationTracker | 已集成 | 未注入，是死代码 | main.go 补上注入 |
 | 收益百分比 | 57%/75%/4x | 无实测支撑 | 本文件声明作废，改由上线实测 |
+| 跨 tier 旋转 | 未提及 | cf65803f 引入的旋转违反 tier 优先级语义 | 移除跨 tier 旋转，保留 per-tier 旋转（commit `be0d7cfd`） |
