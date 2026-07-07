@@ -57,6 +57,10 @@ export default {
         memora_effect: '将历史事实作为"动态上下文"注入请求',
       },
     },
+    // 2026-07-07: 适配 RequestLogsView.vue:1285 直接 t('requests.list.table.noAttachments')
+    table: {
+      noAttachments: '无附件',
+    },
     filter: {
       keyAll: '全部 Key',
       timeTitle: '时间范围',
