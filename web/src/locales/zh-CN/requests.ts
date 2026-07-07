@@ -57,10 +57,6 @@ export default {
         memora_effect: '将历史事实作为"动态上下文"注入请求',
       },
     },
-    // 2026-07-07: 适配 RequestLogsView.vue:1285 直接 t('requests.list.table.noAttachments')
-    table: {
-      noAttachments: '无附件',
-    },
     filter: {
       keyAll: '全部 Key',
       timeTitle: '时间范围',
@@ -138,6 +134,8 @@ export default {
       creditsTitle: '本次请求扣除的积分',
       parentJumpTitle: '跳转到父请求 {id}',
       attachmentCountTitle: '{n} 个附件',
+      // 2026-07-07: 适配 RequestLogsView.vue:1285 直接 t('requests.list.table.noAttachments')
+      noAttachments: '无附件',
     },
     session: {
       same_session_no_retransmit: '该请求处于已有会话中，网关只转发了新增的消息（已压缩的历史保留在缓存中），无需重新发送完整历史。',

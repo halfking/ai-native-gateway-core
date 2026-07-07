@@ -332,6 +332,16 @@ export default {
     refreshSummaryUpserted: '新增/更新 {n}',
     refreshSummaryFailed: '失败 {n}',
     refreshSummaryEmpty: '无变化',
+    // [scanner] pm() in ModelsTab.vue also references keys from other namespaces
+    // (creds.labelFallback, overviewCards.chipAvailable/chipUnavailable).
+    // These aliases keep pm() calls working without path changes in the component.
+    creds: {
+      labelFallback: '凭据 #{id}',
+    },
+    overview: {
+      chipAvailable: '可用',
+      chipUnavailable: '不可用',
+    },
   },
   settings: {
     overrideTitle: '🎛️ 透传模式配置',
