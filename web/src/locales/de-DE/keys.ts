@@ -13,6 +13,7 @@ export default {
       closed: 'Widerrufen/Abgelaufen',
     },
     unlimited: 'Unbegrenzt',
+    close: 'Schließen',
     noLimit: 'Keine Begrenzung',
     leaveBlankNoLimit: 'Leer lassen für keine Begrenzung',
     zeroMeansNoLimit: '0 = keine Begrenzung',
