@@ -393,6 +393,8 @@ export default {
     statusManualDisabled: 'Manuell deaktiviert',
     statusEnabled: 'Aktiviert',
     statusDisabled: 'Deaktiviert',
+    displayNameHint: 'Freundlicher Name für Administratoren',
+    saveSuccess: 'Erfolgreich gespeichert',
   },
   logs: {
     filterTitle: 'Dieser Anbieter',

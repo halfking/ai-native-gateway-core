@@ -389,6 +389,8 @@ export default {
     statusManualDisabled: 'Desactivado manualmente',
     statusEnabled: 'Activado',
     statusDisabled: 'Desactivado',
+    displayNameHint: 'Nombre amigable visible para administradores',
+    saveSuccess: 'Guardado correctamente',
   },
   logs: {
     filterTitle: 'Este proveedor',
