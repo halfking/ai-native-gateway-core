@@ -336,8 +336,12 @@ watch(
         >列表 {{ listExpectedCount }} 条</span>
       </div>
 
-      <div v-if="messagesLoading" class="state-box">加载请求记录…</div>
-      <div v-else-if="messagesError" class="state-box">
+      <div v-if="messagesLoading" class="state-box" role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>加载请求记录…</span>
+      </div>
+      <div v-else-if="messagesError" class="state-box" role="alert">
+        <span class="empty-icon" aria-hidden="true">⚠️</span>
         <p>{{ messagesError }}</p>
         <button class="btn btn-ghost btn-sm" @click="loadMessages">重试</button>
       </div>
@@ -399,8 +403,12 @@ watch(
         <span v-if="readableBlocks.length" class="badge badge-gray">{{ readableBlocks.length }}</span>
       </div>
 
-      <div v-if="contextLoading" class="state-box">加载 Memora 可读内容…</div>
-      <div v-else-if="contextError" class="state-box">
+      <div v-if="contextLoading" class="state-box" role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>加载 Memora 可读内容…</span>
+      </div>
+      <div v-else-if="contextError" class="state-box" role="alert">
+        <span class="empty-icon" aria-hidden="true">⚠️</span>
         <p>{{ contextError }}</p>
         <button class="btn btn-ghost btn-sm" @click="loadContext">重试</button>
       </div>
@@ -539,6 +547,9 @@ watch(
 .status-pill.fail { background: rgba(248, 81, 73, 0.15); color: var(--danger); }
 .status-pill.pending { background: rgba(210, 153, 34, 0.15); color: var(--warning); }
 .fail-text { color: var(--danger); }
-.state-box { padding: 24px; text-align: center; font-size: 12px; color: var(--muted); }
+.state-box { padding: 24px; text-align: center; font-size: 12px; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.state-box .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: ctx-detail-spin 0.8s linear infinite; }
+@keyframes ctx-detail-spin { to { transform: rotate(360deg); } }
+.empty-icon { font-size: 18px; }
 .text-muted { color: var(--muted); font-size: 11px; }
 </style>

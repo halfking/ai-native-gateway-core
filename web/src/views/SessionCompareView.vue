@@ -11,6 +11,7 @@
           v-model="sessionIdInput"
           class="cf-input"
           placeholder="输入会话 ID..."
+          aria-label="会话 ID"
           @keyup.enter="loadByInput"
         />
         <button class="btn btn-primary" @click="loadByInput">查看</button>
@@ -42,9 +43,16 @@
     </div>
 
     <!-- Loading & Error -->
-    <div v-if="loading" class="empty" style="padding: 60px;">加载中...</div>
-    <div v-if="error" class="alert alert-danger" style="margin-bottom: 12px;">{{ error }}</div>
-    <div v-if="!sessionId && !loading" class="empty" style="padding: 60px;">在上方输入会话 ID 查看对比</div>
+    <div v-if="loading" class="loading-state" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>加载中…</span>
+    </div>
+    <div v-if="error && !loading" class="alert alert-danger" role="alert" style="margin-bottom: 12px;">
+      <span class="alert-icon" aria-hidden="true">⚠️</span>
+      <span class="alert-text">{{ error }}</span>
+      <button class="btn btn-sm alert-retry" @click="loadByInput" aria-label="重试">重试</button>
+    </div>
+    <div v-if="!sessionId && !loading && !error" class="empty" style="padding: 60px;">在上方输入会话 ID 查看对比</div>
 
     <!-- Four Panel Comparison -->
     <div class="four-panel" v-if="data">
@@ -301,4 +309,31 @@ onMounted(() => {
 @media (max-width: 700px) {
   .four-panel { grid-template-columns: 1fr; }
 }
+
+/* 加载态：spinner + 居中文案 */
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 60px 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: compare-spin 0.8s linear infinite;
+}
+@keyframes compare-spin { to { transform: rotate(360deg); } }
+
+/* 错误态增强 */
+.alert { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.alert-icon { font-size: 16px; flex-shrink: 0; }
+.alert-text { flex: 1 1 auto; min-width: 0; word-break: break-word; }
+.alert-retry { flex-shrink: 0; margin-left: auto; }
 </style>

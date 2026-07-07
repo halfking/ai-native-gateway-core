@@ -390,6 +390,7 @@ export default {
       sseParseFailed: 'SSE 事件解析失败',
     },
     empty: '暂无会话',
+    emptyHint: '当前时间窗内暂无活跃会话。新会话将在请求日志产生 gw_session_id 后自动聚合显示。',
     relativeTime: {
       justNow: '刚刚',
       minutesAgo: '{n} 分钟前',

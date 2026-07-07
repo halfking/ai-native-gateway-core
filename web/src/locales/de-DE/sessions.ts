@@ -391,6 +391,7 @@ Sie können das vorherige Ergebnis bestätigen und fortfahren oder eine völlig 
       sseParseFailed: 'Failed to parse SSE event',
     },
     empty: 'No sessions',
+    emptyHint: 'Im aktuellen Zeitfenster sind keine aktiven Sitzungen vorhanden. Neue Sitzungen erscheinen automatisch, sobald eine gw_session_id aus Anfrage-Logs generiert wurde.',
     relativeTime: {
       justNow: 'just now',
       minutesAgo: '{n} min ago',
