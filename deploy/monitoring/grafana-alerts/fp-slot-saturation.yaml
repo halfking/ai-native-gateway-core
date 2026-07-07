@@ -1,0 +1,33 @@
+groups:
+  - name: routing_degradation
+    interval: 30s
+    rules:
+      - alert: FpSlotDegradationHigh
+        expr: llmgw_fp_slot_degradation_ratio > 0.10
+        for: 2m
+        labels:
+          severity: critical
+          component: routing
+        annotations:
+          summary: "FpSlot降级率过高: {{ $labels.model }}"
+          description: "模型 {{ $labels.model }} 的FpSlot降级率为 {{ $value | humanizePercentage }}，超过10%阈值"
+          
+      - alert: FpSlotSaturationWarning
+        expr: llmgw_fp_slot_saturation_ratio > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          component: routing
+        annotations:
+          summary: "凭据FpSlot接近饱和: {{ $labels.credential_id }}"
+          description: "凭据 {{ $labels.credential_id }} 的FpSlot使用率为 {{ $value | humanizePercentage }}"
+          
+      - alert: FpSlotSaturationCritical
+        expr: llmgw_fp_slot_saturation_ratio > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          component: routing
+        annotations:
+          summary: "凭据FpSlot严重饱和: {{ $labels.credential_id }}"
+          description: "凭据 {{ $labels.credential_id }} 的FpSlot使用率为 {{ $value | humanizePercentage }}，接近100%"
