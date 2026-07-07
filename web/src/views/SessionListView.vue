@@ -12,13 +12,22 @@
           <option :value="168">7d</option>
           <option :value="720">30d</option>
         </select>
-        <input v-model="searchQ" class="cf-input" :placeholder="t('sessions.list.searchPlaceholder')" @keyup.enter="loadData" />
+        <input v-model="searchQ" class="cf-input" :placeholder="t('sessions.list.searchPlaceholder')" :aria-label="t('sessions.list.searchPlaceholder')" @keyup.enter="loadData" />
         <button class="btn btn-primary btn-sm" @click="loadData">{{ t('sessions.list.refresh') }}</button>
       </div>
     </div>
 
-    <div v-if="loading" class="empty" style="padding: 60px;">{{ t('sessions.list.loading') }}</div>
-    <div v-if="error" class="alert alert-danger">{{ error }}</div>
+    <!-- 加载态：spinner + 文案，避免裸文本 -->
+    <div v-if="loading" class="loading-state" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>{{ t('sessions.list.loading') }}</span>
+    </div>
+    <!-- 错误态：带重试按钮 -->
+    <div v-if="error && !loading" class="alert alert-danger" role="alert">
+      <span class="alert-icon" aria-hidden="true">⚠️</span>
+      <span class="alert-text">{{ error }}</span>
+      <button class="btn btn-sm alert-retry" @click="loadData" aria-label="重新加载">{{ t('sessions.list.refresh') }}</button>
+    </div>
 
     <!-- Stats -->
     <div v-if="data" class="card" style="margin-bottom: 12px; display: flex; gap: 24px; flex-wrap: wrap;">
@@ -131,4 +140,40 @@ onMounted(loadData)
 .badge-yellow { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
 .badge-gray { background: var(--border); color: var(--muted); }
 code { font-size: 12px; background: var(--bg); padding: 1px 4px; border-radius: 3px; }
+
+/* 加载态：spinner + 居中文案 */
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 60px 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 错误态增强：图标 + 文本 + 重试按钮 */
+.alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.alert-icon { font-size: 16px; flex-shrink: 0; }
+.alert-text { flex: 1 1 auto; min-width: 0; word-break: break-word; }
+.alert-retry { flex-shrink: 0; margin-left: auto; }
 </style>

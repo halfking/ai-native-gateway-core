@@ -390,6 +390,7 @@ Either confirm the prior result and continue, or start a brand-new task.`,
       sseParseFailed: 'Failed to parse SSE event',
     },
     empty: 'No sessions',
+    emptyHint: 'No active sessions in the current time window. New sessions appear automatically once a gw_session_id is generated from request logs.',
     relativeTime: {
       justNow: 'just now',
       minutesAgo: '{n} min ago',

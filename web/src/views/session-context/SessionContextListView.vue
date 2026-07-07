@@ -111,8 +111,12 @@ function openSession(s: MemoraSession) {
     </div>
 
     <div class="card compact-card">
-      <div v-if="loading" class="state-box">正在加载会话列表…</div>
-      <div v-else-if="error" class="state-box">
+      <div v-if="loading" class="state-box" role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>正在加载会话列表…</span>
+      </div>
+      <div v-else-if="error" class="state-box" role="alert">
+        <span class="empty-icon" aria-hidden="true">⚠️</span>
         <p>无法加载会话数据</p>
         <p class="text-muted">{{ error }}</p>
         <button class="btn btn-ghost btn-sm" @click="applyFilters">重试</button>
@@ -146,7 +150,12 @@ function openSession(s: MemoraSession) {
               :key="sessionRowKey(s)"
               class="clickable"
               :class="{ 'no-topic-row': s.no_topic }"
+              tabindex="0"
+              role="button"
+              :aria-label="`打开会话：${displayTitle(s)}`"
               @click="openSession(s)"
+              @keydown.enter="openSession(s)"
+              @keydown.space.prevent="openSession(s)"
             >
               <td>
                 <span class="badge" :class="s.no_topic ? 'badge-yellow' : 'badge-blue'">
@@ -202,6 +211,8 @@ function openSession(s: MemoraSession) {
 .dense-table th, .dense-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); text-align: left; }
 .dense-table th { font-size: 10px; color: var(--muted); font-weight: 600; }
 .dense-table tbody tr.clickable { cursor: pointer; }
+.dense-table tbody tr.clickable:hover { background: var(--bg-subtle, #161b22); }
+.dense-table tbody tr.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .dense-table tbody tr:hover { background: var(--bg-subtle); }
 .dense-table tbody tr.no-topic-row { background: rgba(210, 153, 34, 0.06); }
 .col-type { width: 56px; }
@@ -228,8 +239,11 @@ function openSession(s: MemoraSession) {
   padding: 0 6px;
   font-size: 10px;
 }
-.state-box { padding: 28px 12px; text-align: center; font-size: 12px; color: var(--muted); }
+.state-box { padding: 28px 12px; text-align: center; font-size: 12px; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .state-box p { margin: 0 0 6px; }
+.state-box .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: ctx-list-spin 0.8s linear infinite; }
+@keyframes ctx-list-spin { to { transform: rotate(360deg); } }
+.empty-icon { font-size: 18px; }
 .text-muted { color: var(--muted); font-size: 11px; }
 .badge-yellow { background: rgba(210, 153, 34, 0.2); color: var(--warning); }
 </style>
