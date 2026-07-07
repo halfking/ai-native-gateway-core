@@ -132,30 +132,15 @@ func (r *Router) PlanCandidates(
 		ordered = append(ordered, r.planByTier(round2, policy)...)
 	}
 
-	// 2026-07-07: Session-aware load balancing fix
-	// When stickyCredentialID is nil (new session) and multiple candidates exist,
-	// use round-robin rotation to ensure even distribution across credentials.
-	// This prevents all new sessions from being assigned to the same credential
-	// when loadScore values are identical (e.g., when FpSlots.Stats returns
-	// saturated values for all credentials).
-	//
-	// Background: P2C degrades to random selection when all scores are equal,
-	// but random + sticky cache = traffic concentration. By rotating the candidate
-	// list before executor tries them, we achieve deterministic load spreading.
-	slog.Info("PLAN_CANDIDATES_DEBUG",
-		"sticky_id_nil", stickyCredentialID == nil,
-		"ordered_count", len(ordered),
-	)
-	if stickyCredentialID == nil && len(ordered) > 1 {
-		// Use round-robin counter to rotate candidate list for new sessions
-		offset := int(r.rrCounter.Add(1) % uint64(len(ordered)))
-		ordered = rotateCandidates(ordered, offset)
-		slog.Info("new_session_load_balancing",
-			"offset", offset,
-			"candidate_count", len(ordered),
-			"first_credential", ordered[0].CredentialID,
-		)
-	}
+	// Note (2026-07-07 audit): an earlier "session-aware" round-robin rotation
+	// of the full `ordered` slice lived here. It was added in cf65803f to spread
+	// new-session traffic when loadScore values tie, but it rotated ACROSS tiers
+	// — which violates tier priority semantics (a tier-3 candidate could be
+	// tried before a tier-1 candidate). Per-tier load balancing is already
+	// performed inside planByTier (rotateCandidates per tier bucket), so the
+	// cross-tier rotation here was both redundant and harmful. Removed to
+	// restore correct tier ordering; the per-tier rotation in planByTier still
+	// provides even distribution for candidates within the same tier.
 
 	if stickyCredentialID != nil {
 		ordered = prioritizeSticky(ordered, *stickyCredentialID)
