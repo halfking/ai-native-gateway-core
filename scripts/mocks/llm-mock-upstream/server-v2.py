@@ -397,5 +397,6 @@ def build_app() -> web.Application:
 
 
 if __name__ == "__main__":
-    print(f"[{TOKEN}] starting mock v2 on :{PORT}, mode={STATE.mode}")
-    web.run_app(build_app(), host="0.0.0.0", port=PORT)
+    HOST = os.environ.get("MOCK_HOST", "0.0.0.0")
+    print(f"[{TOKEN}] starting mock v2 on {HOST}:{PORT}, mode={STATE.mode}")
+    web.run_app(build_app(), host=HOST, port=PORT)
