@@ -182,11 +182,22 @@ func IsV1Envelope(s string) bool {
 // Returns (plaintext, isLegacy, error).  When isLegacy=true, the caller should
 // re-encrypt and persist the new envelope to complete lazy migration.
 func DecryptAny(ciphertext string, kr *Keyring, fernetKey []byte) ([]byte, bool, error) {
+	// v1:legacy: prefix must be handled as Fernet, not AES-GCM
+	// (IsV1Envelope checks for v1: prefix, which also matches v1:legacy:)
+	if strings.HasPrefix(ciphertext, "v1:legacy:") {
+		if len(fernetKey) == 32 {
+			pt, err := DecryptFernet([]byte(strings.TrimPrefix(ciphertext, "v1:legacy:")), fernetKey)
+			if err == nil {
+				return []byte(pt), true, nil
+			}
+		}
+		return nil, false, errors.New("cannot decrypt: unknown format")
+	}
 	if IsV1Envelope(ciphertext) {
 		pt, err := DecryptAESGCM(ciphertext, kr)
 		return pt, false, err
 	}
-	// Try Fernet legacy
+	// Try Fernet legacy (handles tokens without v1: prefix)
 	if len(fernetKey) == 32 {
 		pt, err := DecryptFernet([]byte(ciphertext), fernetKey)
 		if err == nil {

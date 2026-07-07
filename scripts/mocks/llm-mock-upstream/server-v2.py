@@ -242,6 +242,96 @@ async def handle_chat(request: web.Request) -> web.StreamResponse:
         delay_ms = random.randint(50, 200)
         await asyncio.sleep(delay_ms / 1000.0)
 
+    # ── 新增故障模式（2026-07-07）─────────────────────────────────────
+
+    elif mode == "tool_error":
+        # Simulates OpenAI function_calling error - returns 400 with tool_call error structure.
+        # Gateway classifies as KindUnsupportedFeature (IsClientBug=true) → circuit NOT opened.
+        STATE.counters["requests_error"] += 1
+        return web.json_response(
+            {
+                "error": {
+                    "message": "tool_call_failed",
+                    "type": "invalid_request_error",
+                    "code": "tool_call_error",
+                    "param": "tools[0].function",
+                    "details": "Function calling failed: could not parse arguments for 'get_weather': argument schema mismatch",
+                }
+            },
+            status=400,
+        )
+
+    elif mode == "data_format_error":
+        # Simulates a truncated/malformed streaming response - sends partial JSON then closes.
+        # The client will get a JSON parse error → effectively a retryable error.
+        STATE.counters["requests_error"] += 1
+        if is_stream:
+            response = web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "text/event-stream", "X-Request-Id": request_id},
+            )
+            await response.prepare(request)
+            # Send ONE valid chunk then close connection abruptly
+            partial = make_chunk(model, request_id, "unfin")
+            await response.write(partial.encode())
+            await asyncio.sleep(0.02)
+            # Force close without proper SSE termination
+            if request.transport is not None:
+                request.transport.close()
+            return response
+        else:
+            # Non-stream: return malformed JSON
+            return web.Response(
+                text='{"incomplete": true, "unclosed": "string that never closes, content_length was supposed to be: 512',
+                content_type="application/json",
+                status=200,
+            )
+
+    elif mode == "context_length_exceeded":
+        # Simulates prompt exceeds model's context window.
+        # Gateway classifies as KindContextLength → dedicated path with trim+retry.
+        STATE.counters["requests_error"] += 1
+        return web.json_response(
+            {
+                "error": {
+                    "message": "This model's maximum context length is 8192 tokens.",
+                    "type": "invalid_request_error",
+                    "code": "context_length_exceeded",
+                    "param": "messages",
+                }
+            },
+            status=400,
+        )
+
+    elif mode == "invalid_request":
+        # Simulates generic bad request parameters.
+        # Gateway classifies as KindUnsupportedFeature (IsClientBug=true) → skip to next candidate.
+        STATE.counters["requests_error"] += 1
+        return web.json_response(
+            {
+                "error": {
+                    "message": "Invalid request parameters",
+                    "type": "invalid_request_error",
+                    "code": "invalid_parameter",
+                    "param": "temperature",
+                    "details": "temperature must be between 0 and 2, got 3.5",
+                }
+            },
+            status=400,
+        )
+
+    elif mode == "rate_limit_burst":
+        # Simulates a burst rate limit that resets quickly (Retry-After: 1).
+        # Unlike rate_limited (Retry-After: 30), this is a short burst that recovers fast.
+        STATE.counters["requests_error"] += 1
+        return web.json_response(
+            {"error": {"message": "Rate limit exceeded", "type": "rate_limit_exceeded"}},
+            status=429,
+            headers={"Retry-After": "1"},
+        )
+
+    # ── 新增故障模式结束 ─────────────────────────────────────────────
+
     else:
         delay_ms = random.randint(STATE.latency_min_ms, STATE.latency_max_ms)
         await asyncio.sleep(delay_ms / 1000.0)
@@ -285,18 +375,18 @@ async def handle_models(_request: web.Request) -> web.Response:
         {
             "object": "list",
             "data": [
-                {
-                    "id": "gpt-4o",
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "local-mock",
-                },
-                {
-                    "id": "gpt-4o-mini",
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "local-mock",
-                },
+                {"id": "gpt-4o",           "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+                {"id": "gpt-4o-mini",      "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+                {"id": "claude-3-opus",   "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+                {"id": "claude-3-sonnet", "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+                {"id": "glm-4",           "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+                {"id": "glm-4-flash",     "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+                {"id": "deepseek-chat",   "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+                {"id": "o1-mini",         "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+                {"id": "o1-preview",      "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+                {"id": "qwen-turbo",      "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+                {"id": "qwen-plus",       "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+                {"id": "mixtral-8x7b",    "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
             ],
         }
     )
@@ -328,6 +418,12 @@ async def handle_admin_state_set(request: web.Request) -> web.Response:
         "connection_refused",
         "broken_stream",
         "flaky",
+        # New fault modes for comprehensive load testing (2026-07-07)
+        "tool_error",             # 400 - tool_call failed
+        "data_format_error",       # 200 - incomplete JSON / truncated stream
+        "context_length_exceeded", # 400 - prompt too long
+        "invalid_request",        # 400 - bad request parameters
+        "rate_limit_burst",      # 429 - rapid burst limit with short Retry-After
     ]
 
     if new_mode not in valid_modes:
