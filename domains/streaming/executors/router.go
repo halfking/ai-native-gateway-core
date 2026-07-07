@@ -47,10 +47,17 @@ type Router struct {
 
 	// 新增：URSM统一路由状态管理器
 	URSM *ursm.Manager
+
+	// 新增：路由评分权重配置（Phase 1）
+	LoadScoreWeights LoadScoreWeights
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
-	return &Router{Sticky: sticky, Limiter: lim}
+	return &Router{
+		Sticky:           sticky,
+		Limiter:          lim,
+		LoadScoreWeights: DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
+	}
 }
 
 func (r *Router) PlanCandidates(
@@ -125,30 +132,15 @@ func (r *Router) PlanCandidates(
 		ordered = append(ordered, r.planByTier(round2, policy)...)
 	}
 
-	// 2026-07-07: Session-aware load balancing fix
-	// When stickyCredentialID is nil (new session) and multiple candidates exist,
-	// use round-robin rotation to ensure even distribution across credentials.
-	// This prevents all new sessions from being assigned to the same credential
-	// when loadScore values are identical (e.g., when FpSlots.Stats returns
-	// saturated values for all credentials).
-	//
-	// Background: P2C degrades to random selection when all scores are equal,
-	// but random + sticky cache = traffic concentration. By rotating the candidate
-	// list before executor tries them, we achieve deterministic load spreading.
-	slog.Info("PLAN_CANDIDATES_DEBUG",
-		"sticky_id_nil", stickyCredentialID == nil,
-		"ordered_count", len(ordered),
-	)
-	if stickyCredentialID == nil && len(ordered) > 1 {
-		// Use round-robin counter to rotate candidate list for new sessions
-		offset := int(r.rrCounter.Add(1) % uint64(len(ordered)))
-		ordered = rotateCandidates(ordered, offset)
-		slog.Info("new_session_load_balancing",
-			"offset", offset,
-			"candidate_count", len(ordered),
-			"first_credential", ordered[0].CredentialID,
-		)
-	}
+	// Note (2026-07-07 audit): an earlier "session-aware" round-robin rotation
+	// of the full `ordered` slice lived here. It was added in cf65803f to spread
+	// new-session traffic when loadScore values tie, but it rotated ACROSS tiers
+	// — which violates tier priority semantics (a tier-3 candidate could be
+	// tried before a tier-1 candidate). Per-tier load balancing is already
+	// performed inside planByTier (rotateCandidates per tier bucket), so the
+	// cross-tier rotation here was both redundant and harmful. Removed to
+	// restore correct tier ordering; the per-tier rotation in planByTier still
+	// provides even distribution for candidates within the same tier.
 
 	if stickyCredentialID != nil {
 		ordered = prioritizeSticky(ordered, *stickyCredentialID)
@@ -512,84 +504,8 @@ func cheapestCost(pool []provider.Candidate) float64 {
 }
 
 func loadScore(c provider.Candidate, r *Router, ctx context.Context) float64 {
-	w := c.Weight
-	if w <= 0 {
-		w = 1
-	}
-	quality := c.SuccessRate
-	if quality <= 0 {
-		quality = 0.9
-	}
-	// 2026-06-22 defect (3) soft layer: when we have a live recent-N success
-	// rate from request_logs, prefer it over the static column. Pairs in the
-	// 0.5-0.9 band survived the hard-exclude filter in loadCandidatesDB but
-	// should still sort below genuinely healthy candidates. The < 0.2 floor
-	// below already clamps the damage so a degraded credential can't drive
-	// the score to zero (it's only ever one of several P2C picks). The hard
-	// exclude at rate < 0.5 happens upstream in SQL, so anything reaching
-	// here is at worst in the soft-degraded band.
-	if c.RecentSuccessRate != nil {
-		quality = *c.RecentSuccessRate
-	}
-	if quality < 0.2 {
-		quality = 0.2
-	}
-
-	latencyPenalty := float64(c.P95LatencyMs) / 1000.0
-	if latencyPenalty < 1.0 {
-		latencyPenalty = 1.0
-	}
-
-	// Per-identity in-flight from limiter (legacy)
-	inFlight := 0
-	if r.Limiter != nil {
-		if cred := r.Limiter.Credential(c.ProviderID, c.CredentialID); cred != nil {
-			inFlight = cred.Used()
-		}
-	}
-
-	// Global credential-level concurrency from FpSlots (load-aware routing)
-	// This is the key addition: we now factor in the credential's total
-	// concurrent usage across all identities, not just this request's identity.
-	fpUsed := 0
-	fpLimit := 5 // default
-	if r.FpSlots != nil && r.FpSlots.Enabled() {
-		if limit, used, _ := r.FpSlots.Stats(ctx, c.CredentialID, c.ConcurrencyLimit); used != nil {
-			fpUsed = *used
-			if limit != nil {
-				fpLimit = *limit
-			}
-		}
-	}
-
-	// Pressure ratio: how full is this credential's concurrency pool?
-	// 0.0 = empty, 1.0 = saturated
-	pressure := float64(fpUsed) / float64(fpLimit)
-	if pressure > 1.0 {
-		pressure = 1.0
-	}
-
-	// Weighted score: higher pressure → higher score → less likely to be chosen
-	// Legacy inFlight is kept for backward compat (per-identity fairness)
-	// New pressure term dominates when fpUsed >> inFlight
-	score := (float64(inFlight) + pressure*float64(fpLimit)) * latencyPenalty / (float64(w) * quality)
-
-	// DEBUG: Log score calculation for load balancing analysis
-	if rand.Float64() < 0.1 { // Sample 10% to reduce log spam
-		slog.Info("LOAD_SCORE_DEBUG",
-			"credential_id", c.CredentialID,
-			"fpUsed", fpUsed,
-			"fpLimit", fpLimit,
-			"pressure", pressure,
-			"inFlight", inFlight,
-			"weight", w,
-			"quality", quality,
-			"latency", latencyPenalty,
-			"score", score,
-		)
-	}
-
-	return score
+	// Phase 1 改进：使用新的评分方法
+	return calculateLoadScore(c, r, ctx, r.LoadScoreWeights)
 }
 
 func randomPair(pool []provider.Candidate) (provider.Candidate, provider.Candidate) {
