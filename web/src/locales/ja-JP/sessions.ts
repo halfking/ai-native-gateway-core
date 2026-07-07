@@ -391,6 +391,7 @@ export default {
       sseParseFailed: 'Failed to parse SSE event',
     },
     empty: 'No sessions',
+    emptyHint: '現在の時間枠内にアクティブなセッションはありません。リクエストログから gw_session_id が生成されると、新しいセッションが自動的に集計表示されます。',
     relativeTime: {
       justNow: 'just now',
       minutesAgo: '{n} min ago',

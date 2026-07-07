@@ -426,8 +426,10 @@ onUnmounted(() => {
         </tbody>
       </table>
 
-      <div v-if="sortedSessions.length === 0" class="text-center py-8 text-gray-500">
-        {{ t('sessions.management.empty') }}
+      <div v-if="sortedSessions.length === 0" class="empty-state" role="status">
+        <div class="empty-state__icon" aria-hidden="true">📭</div>
+        <div class="empty-state__title">{{ t('sessions.management.empty') }}</div>
+        <div class="empty-state__hint">{{ t('sessions.management.emptyHint') }}</div>
       </div>
     </div>
 
@@ -594,5 +596,35 @@ onUnmounted(() => {
   50% {
     opacity: 0.7;
   }
+}
+
+/* 空状态（dashboard-v2 风格的统一空态） */
+.empty-state {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--text-secondary, #8b949e);
+  border: 1px dashed var(--border, #30363d);
+  border-radius: var(--radius, 6px);
+  background: var(--bg-subtle, #161b22);
+  margin: 24px 0;
+}
+
+.empty-state__icon {
+  font-size: 36px;
+  margin-bottom: 12px;
+}
+
+.empty-state__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text, #e6edf3);
+  margin-bottom: 6px;
+}
+
+.empty-state__hint {
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 480px;
+  margin: 0 auto;
 }
 </style>

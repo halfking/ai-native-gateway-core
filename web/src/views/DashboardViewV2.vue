@@ -188,7 +188,21 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
       </div>
     </div>
 
-    <div v-if="error" class="alert alert-danger">{{ error }}</div>
+    <!-- 错误态：带重试按钮的友好提示 -->
+    <div v-if="error" class="alert alert-danger" role="alert">
+      <span class="alert-icon" aria-hidden="true">⚠️</span>
+      <span class="alert-text">{{ error }}</span>
+      <button
+        type="button"
+        class="btn btn-sm alert-retry"
+        :disabled="loading"
+        aria-label="重新加载数据"
+        @click="load"
+      >
+        <span v-if="loading">⏳</span>
+        <span v-else>🔄 重试</span>
+      </button>
+    </div>
 
     <!-- 后台任务横幅 -->
     <div
@@ -263,10 +277,23 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
     <SessionStatsPanel style="margin-bottom: 20px;" />
 
     <!-- 实时请求流V2（带重新初始化key） -->
-    <LiveRequestStreamV2 
-      :key="swimLaneReinitKey" 
-      @open-detail="openRequestDetail" 
+    <LiveRequestStreamV2
+      :key="swimLaneReinitKey"
+      @open-detail="openRequestDetail"
     />
+
+    <!-- 空状态：暂无请求数据时引导用户 -->
+    <div
+      v-if="!loading && !error && summary && summary.total_requests === 0"
+      class="empty-state"
+      role="status"
+    >
+      <div class="empty-state__icon" aria-hidden="true">🚀</div>
+      <div class="empty-state__title">暂无请求数据</div>
+      <div class="empty-state__hint">
+        配置好提供商后，通过 <code>/v1/chat/completions</code> 发起调用即可在此查看实时请求流。
+      </div>
+    </div>
 
     <!-- 抽屉组件 -->
     <StatsDrawer
@@ -536,6 +563,68 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
   100% { background-position: -200% 0; }
 }
 
+/* 错误态增强：图标 + 文本 + 重试按钮 */
+.alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.alert-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.alert-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.alert-retry {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* 空状态 */
+.empty-state {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--text-secondary, #8b949e);
+  border: 1px dashed var(--border, #30363d);
+  border-radius: var(--radius, 6px);
+  background: var(--bg-subtle, #161b22);
+  margin-top: 24px;
+}
+
+.empty-state__icon {
+  font-size: 36px;
+  margin-bottom: 12px;
+}
+
+.empty-state__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text, #e6edf3);
+  margin-bottom: 6px;
+}
+
+.empty-state__hint {
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.empty-state__hint code {
+  background: var(--bg, #0f1117);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  border: 1px solid var(--border, #30363d);
+}
+
 @media (max-width: 1024px) {
   .page-header {
     flex-wrap: wrap;
@@ -551,18 +640,27 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
     flex-direction: column;
     align-items: stretch;
   }
-  
+
   .page-header-left,
   .page-header-right {
     width: 100%;
   }
-  
+
   .page-header-right {
     justify-content: space-between;
   }
-  
+
   .stat-mini {
-    min-width: 90px;
+    /* 窄屏允许每张卡占约一半宽度，剩余自然折行 */
+    flex: 1 1 calc(50% - 8px);
+    min-width: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .stat-mini {
+    /* 更窄屏幕：每张卡占满一行 */
+    flex: 1 1 100%;
   }
 }
 </style>
