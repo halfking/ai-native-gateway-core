@@ -11,6 +11,31 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// calculateSessionStickyTTL 根据模型类型计算动态 TTL（Phase 1）
+func calculateSessionStickyTTL(model string) time.Duration {
+	modelLower := strings.ToLower(model)
+
+	// embedding 模型：短期任务
+	if strings.Contains(modelLower, "embedding") || strings.Contains(modelLower, "embed") {
+		return 30 * time.Second
+	}
+
+	// completion 模型：长文本生成（需要在 chat 之前检查，因为有些模型名包含两者）
+	if strings.Contains(modelLower, "completion") || strings.Contains(modelLower, "instruct") || 
+		strings.Contains(modelLower, "davinci") {
+		return 30 * time.Minute
+	}
+
+	// chat 模型：对话上下文
+	if strings.Contains(modelLower, "chat") || strings.Contains(modelLower, "gpt") ||
+		strings.Contains(modelLower, "claude") || strings.Contains(modelLower, "gemini") {
+		return 10 * time.Minute
+	}
+
+	// 默认：15分钟
+	return 15 * time.Minute
+}
+
 // StickyLevel defines the priority hierarchy for sticky session streaming.
 //
 // 2026-06-25: Multi-level sticky strategy to handle the following scenarios:
@@ -187,7 +212,8 @@ func (s *StickyCache) RecordSuccess(key string, credentialID int, ttl time.Durat
 // RecordSuccessMultiLevel records success for all applicable levels.
 // This ensures that future requests benefit from the sticky routing at the appropriate level.
 //
-// 2026-06-25: Records to L1 (1h), L2 (24h), L3 (7d) simultaneously.
+// 2026-07-07 Phase 1: 使用动态 TTL 替代固定 TTL。
+// L1: 10分钟（对话上下文）, L2: 2小时（从24h缩短）, L3: 1天（从7天缩短）
 func (s *StickyCache) RecordSuccessMultiLevel(
 	tenantID string,
 	appID, apiKeyID *int,
@@ -201,30 +227,36 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	s.mu.Lock()
 	now := time.Now()
 
-	// L1: session + model (1 hour TTL)
+	// L1: session + model (动态 TTL，基于模型类型)
 	if l1 != "" {
+		ttl := calculateSessionStickyTTL(model)
 		s.items[l1] = stickyEntry{
 			credentialID: credentialID,
 			failures:     0,
-			expiresAt:    now.Add(1 * time.Hour),
+			expiresAt:    now.Add(ttl),
 		}
+		slog.Debug("sticky L1 recorded",
+			"key", l1,
+			"ttl", ttl,
+			"credential_id", credentialID,
+		)
 	}
 
-	// L2: client + model (24 hour TTL)
+	// L2: client + model (2小时，从24小时缩短)
 	if l2 != "" {
 		s.items[l2] = stickyEntry{
 			credentialID: credentialID,
 			failures:     0,
-			expiresAt:    now.Add(24 * time.Hour),
+			expiresAt:    now.Add(2 * time.Hour),
 		}
 	}
 
-	// L3: client baseline (7 day TTL)
+	// L3: client baseline (1天，从7天缩短)
 	if l3 != "" {
 		s.items[l3] = stickyEntry{
 			credentialID: credentialID,
 			failures:     0,
-			expiresAt:    now.Add(7 * 24 * time.Hour),
+			expiresAt:    now.Add(24 * time.Hour),
 		}
 	}
 	s.mu.Unlock()

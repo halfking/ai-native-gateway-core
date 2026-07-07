@@ -48,15 +48,15 @@ type Router struct {
 	// 新增：URSM统一路由状态管理器
 	URSM *ursm.Manager
 
-	// 新增：路由评分权重配置（Phase 1 改进）
-	ScoringWeights ScoringWeights
+	// 新增：路由评分权重配置（Phase 1）
+	LoadScoreWeights LoadScoreWeights
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
 	return &Router{
-		Sticky:         sticky,
-		Limiter:        lim,
-		ScoringWeights: DefaultScoringWeights(), // Phase 1: 使用默认权重
+		Sticky:           sticky,
+		Limiter:          lim,
+		LoadScoreWeights: DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
 	}
 }
 
@@ -520,7 +520,7 @@ func cheapestCost(pool []provider.Candidate) float64 {
 
 func loadScore(c provider.Candidate, r *Router, ctx context.Context) float64 {
 	// Phase 1 改进：使用新的评分方法
-	return calculateLoadScore(c, r, ctx, r.ScoringWeights)
+	return calculateLoadScore(c, r, ctx, r.LoadScoreWeights)
 }
 
 func randomPair(pool []provider.Candidate) (provider.Candidate, provider.Candidate) {
