@@ -116,14 +116,19 @@ function loadLocale(locale: string, localesDir: string): Record<string, unknown>
   return merged
 }
 
-/** 把嵌套对象扁平化为点路径集合（跳过数组，保留叶子节点） */
+/** 把嵌套对象扁平化为点路径集合。
+ *  数组也被视为叶子节点 — Vue i18n 允许 `t('foo.bar')` 返回整个数组
+ *  供 `v-for` 渲染（如 sessions.list.tableHeaders、modulesView.integration.feishuSteps）。
+ *  若跳过数组，这些引用会被误报为 missing key。 */
 export function collectLeafKeys(obj: unknown, prefix = ''): Set<string> {
   const keys = new Set<string>()
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return keys
   for (const [k, v] of Object.entries(obj)) {
     const path = prefix ? `${prefix}.${k}` : k
-    if (Array.isArray(v)) continue
-    if (typeof v === 'object' && v !== null) {
+    if (Array.isArray(v)) {
+      // 数组作为整体值被引用（t('path') 返回数组），记录其路径为有效 key
+      keys.add(path)
+    } else if (typeof v === 'object' && v !== null) {
       const nested = collectLeafKeys(v, path)
       nested.forEach((nk) => keys.add(nk))
     } else if (v !== null && v !== undefined) {
