@@ -8,17 +8,17 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
-// ScoringWeights 定义路由评分的权重配置
-type ScoringWeights struct {
+// LoadScoreWeights 定义路由评分的权重配置（Phase 1）
+type LoadScoreWeights struct {
 	ConcurrencyWeight float64 // 全局并发压力权重
 	IdentityWeight    float64 // 单 identity 压力权重
 	LatencyWeight     float64 // 响应延迟权重
 	QualityWeight     float64 // 成功率权重
 }
 
-// DefaultScoringWeights 返回默认权重配置
-func DefaultScoringWeights() ScoringWeights {
-	return ScoringWeights{
+// DefaultLoadScoreWeights 返回默认权重配置
+func DefaultLoadScoreWeights() LoadScoreWeights {
+	return LoadScoreWeights{
 		ConcurrencyWeight: 0.4,
 		IdentityWeight:    0.1,
 		LatencyWeight:     0.3,
@@ -28,7 +28,7 @@ func DefaultScoringWeights() ScoringWeights {
 
 // calculateLoadScore 计算凭据的综合负载分数
 // 分数越低越好（越可能被选中）
-func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, weights ScoringWeights) float64 {
+func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, weights LoadScoreWeights) float64 {
 	concurrencyScore := calculateConcurrencyScore(c, r, ctx)
 	identityScore := calculateIdentityScore(c, r)
 	latencyScore := calculateLatencyScore(c)

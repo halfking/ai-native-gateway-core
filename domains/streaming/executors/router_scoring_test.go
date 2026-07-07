@@ -10,7 +10,7 @@ import (
 
 func TestCalculateLoadScore_BalancedWeights(t *testing.T) {
 	router := &Router{
-		ScoringWeights: DefaultScoringWeights(),
+		LoadScoreWeights: DefaultLoadScoreWeights(),
 	}
 
 	candidate := provider.Candidate{
@@ -22,7 +22,7 @@ func TestCalculateLoadScore_BalancedWeights(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	score := calculateLoadScore(candidate, router, ctx, router.ScoringWeights)
+	score := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights)
 
 	// 验证分数在合理范围内
 	assert.GreaterOrEqual(t, score, 0.0)
@@ -56,7 +56,7 @@ func TestConcurrencyScore_Saturation(t *testing.T) {
 
 func TestLatencyScore_SaturationCurve(t *testing.T) {
 	tests := []struct {
-		latencyMs int64
+		latencyMs int
 		expected  float64
 	}{
 		{50, 0.0},    // 极快，无惩罚
@@ -104,8 +104,8 @@ func TestQualityScore_SuccessRate(t *testing.T) {
 	}
 }
 
-func TestDefaultScoringWeights(t *testing.T) {
-	weights := DefaultScoringWeights()
+func TestDefaultLoadScoreWeights(t *testing.T) {
+	weights := DefaultLoadScoreWeights()
 
 	// 验证权重总和为1.0
 	total := weights.ConcurrencyWeight + weights.IdentityWeight +
