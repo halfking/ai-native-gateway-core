@@ -2,7 +2,7 @@
 # Mock State Orchestrator - 控制 mock 状态的统一接口
 set -euo pipefail
 
-MOCK_ENDPOINTS="${MOCK_ENDPOINTS:-http://localhost:19080,http://localhost:19081,http://localhost:19082,http://localhost:19083,http://localhost:19084,http://localhost:19085,http://localhost:19086,http://localhost:19087,http://localhost:19088,http://localhost:19089,http://localhost:19090,http://localhost:19091}"
+MOCK_ENDPOINTS="${MOCK_ENDPOINTS:-http://localhost:19080,http://localhost:19081,http://localhost:19082,http://localhost:19083,http://localhost:19084,http://localhost:19085,http://localhost:19086,http://localhost:19087,http://localhost:19088,http://localhost:19089,http://localhost:19090,http://localhost:19091,http://localhost:19092,http://localhost:19093,http://localhost:19094,http://localhost:19095,http://localhost:19096,http://localhost:19097,http://localhost:19098,http://localhost:19099}"
 
 usage() {
   cat <<EOF
@@ -15,7 +15,7 @@ usage() {
   $0 reset-all                                # 重置所有 mock
   $0 health-all                               # 查看所有 mock 健康
 
-模式: healthy slow rate_limited quota_exceeded auth_error server_error timeout connection_refused broken_stream flaky
+模式: healthy slow rate_limited quota_exceeded auth_error server_error timeout connection_refused broken_stream flaky tool_error data_format_error context_length_exceeded invalid_request rate_limit_burst
 
 示例:
   $0 set http://localhost:19080 slow 30

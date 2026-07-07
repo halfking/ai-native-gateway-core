@@ -17,9 +17,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── 配置 ──
-NUM_MOCK_PROVIDERS=12        # 12 个 mock 供应商
-NUM_CLIENTS=25               # 25 个并发客户端
-NUM_ROUNDS_PER_CLIENT=100    # 每客户端 100 轮请求
+NUM_MOCK_PROVIDERS=20        # 20 个 mock 供应商（ports 19080-19099）
+NUM_CLIENTS=150             # 150 个并发客户端（大规模压测）
+NUM_ROUNDS_PER_CLIENT=80    # 每客户端 80 轮请求
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
