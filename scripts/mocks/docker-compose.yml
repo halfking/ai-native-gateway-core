@@ -1,74 +1,105 @@
 # docker-compose for local mock LLM testing
 # Usage: cd scripts/mocks && docker-compose up
+#
+# 启动 12 个 mock 实例 (mock-a .. mock-l)，端口 19080-19091。
+# 如需调整数量/端口，用环境变量：NUM_MOCKS=8 MOCK_START_PORT=19080 docker-compose up
+#
+# 注意：docker-compose 不支持循环生成 service，这里显式列出 12 个。
+# 若只跑 4 个，用 NUM_MOCKS=4 docker-compose up --scale（但端口映射固定）。
+# 推荐用 scripts/comprehensive-loadtest.sh start-mocks 直接拉起进程（更灵活）。
 
 version: '3.8'
 
+x-mock-base: &mock-base
+  build:
+    context: llm-mock-upstream
+    dockerfile: Dockerfile.v2
+  restart: unless-stopped
+
 services:
   mock-a:
-    build:
-      context: llm-mock-upstream
-      dockerfile: Dockerfile.v2
-    ports:
-      - "19080:18080"
-    environment:
-      - MOCK_PORT=18080
-      - MOCK_TOKEN=mock-A
-      - MOCK_STATE_FILE=/tmp/mock-state-A.json
-    volumes:
-      - ./data:/tmp
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
+    <<: *mock-base
+    ports: ["19080:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-00", MOCK_STATE_FILE: "/tmp/mock-state-A.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s, timeout: 3s, retries: 3}
 
   mock-b:
-    build:
-      context: llm-mock-upstream
-      dockerfile: Dockerfile.v2
-    ports:
-      - "19081:18080"
-    environment:
-      - MOCK_PORT=18080
-      - MOCK_TOKEN=mock-B
-      - MOCK_STATE_FILE=/tmp/mock-state-B.json
-    volumes:
-      - ./data:/tmp
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"]
-      interval: 5s
+    <<: *mock-base
+    ports: ["19081:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-01", MOCK_STATE_FILE: "/tmp/mock-state-B.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s}
 
   mock-c:
-    build:
-      context: llm-mock-upstream
-      dockerfile: Dockerfile.v2
-    ports:
-      - "19082:18080"
-    environment:
-      - MOCK_PORT=18080
-      - MOCK_TOKEN=mock-C
-      - MOCK_STATE_FILE=/tmp/mock-state-C.json
-    volumes:
-      - ./data:/tmp
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"]
-      interval: 5s
+    <<: *mock-base
+    ports: ["19082:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-02", MOCK_STATE_FILE: "/tmp/mock-state-C.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s}
 
   mock-d:
-    build:
-      context: llm-mock-upstream
-      dockerfile: Dockerfile.v2
-    ports:
-      - "19083:18080"
-    environment:
-      - MOCK_PORT=18080
-      - MOCK_TOKEN=mock-D
-      - MOCK_STATE_FILE=/tmp/mock-state-D.json
-    volumes:
-      - ./data:/tmp
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"]
-      interval: 5s
+    <<: *mock-base
+    ports: ["19083:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-03", MOCK_STATE_FILE: "/tmp/mock-state-D.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s}
+
+  mock-e:
+    <<: *mock-base
+    ports: ["19084:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-04", MOCK_STATE_FILE: "/tmp/mock-state-E.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s}
+
+  mock-f:
+    <<: *mock-base
+    ports: ["19085:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-05", MOCK_STATE_FILE: "/tmp/mock-state-F.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s}
+
+  mock-g:
+    <<: *mock-base
+    ports: ["19086:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-06", MOCK_STATE_FILE: "/tmp/mock-state-G.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s}
+
+  mock-h:
+    <<: *mock-base
+    ports: ["19087:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-07", MOCK_STATE_FILE: "/tmp/mock-state-H.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s}
+
+  mock-i:
+    <<: *mock-base
+    ports: ["19088:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-08", MOCK_STATE_FILE: "/tmp/mock-state-I.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s}
+
+  mock-j:
+    <<: *mock-base
+    ports: ["19089:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-09", MOCK_STATE_FILE: "/tmp/mock-state-J.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s}
+
+  mock-k:
+    <<: *mock-base
+    ports: ["19090:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-10", MOCK_STATE_FILE: "/tmp/mock-state-K.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s}
+
+  mock-l:
+    <<: *mock-base
+    ports: ["19091:18080"]
+    environment: {MOCK_PORT: "18080", MOCK_TOKEN: "mock-11", MOCK_STATE_FILE: "/tmp/mock-state-L.json"}
+    volumes: [./data:/tmp]
+    healthcheck: {test: ["CMD", "wget", "-q", "-O-", "http://localhost:18080/healthz"], interval: 5s}
 
 networks:
   default:
