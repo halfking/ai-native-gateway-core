@@ -23,7 +23,7 @@ import {
 
 const { t: td } = useI18n()
 const pm = (k: string, params?: Record<string, unknown>): string =>
-  td(`providerDetail.${k}` as never, params as never)
+  td(`providerDetail.models.${k}` as never, params as never)
 const { fmtDateTime } = useFormat()
 
 const props = defineProps<{
