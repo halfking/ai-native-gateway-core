@@ -165,5 +165,6 @@ _to-be-deprecated/
 Dockerfile.web-fix
 web-dist.tar.gz
 llm-gateway-go.v321.linux.amd64
+llm-gateway-go.v322.linux.amd64
 web/.i18n-audit-tmp.mjs
 web/.i18n-fix-tmp.mjs
