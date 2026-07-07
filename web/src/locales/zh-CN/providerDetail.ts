@@ -398,6 +398,8 @@ export default {
     statusManualDisabled: '手工禁用',
     statusEnabled: '已启用',
     statusDisabled: '已禁用',
+    displayNameHint: '管理员看到的友好名称',
+    saveSuccess: '保存成功',
   },
   logs: {
     filterTitle: '本供应商',
@@ -526,8 +528,6 @@ export default {
     loadFailed: '加载失败',
     triggerFailed: '触发失败',
   },
-    displayNameHint: '管理员看到的友好名称',
-    saveSuccess: '保存成功',
   canonicalEmpty: "[TODO: providerDetail.canonicalEmpty]",
   canonicalLabel: "[TODO: providerDetail.canonicalLabel]",
   checkFailedPrefix: "[TODO: providerDetail.checkFailedPrefix]",

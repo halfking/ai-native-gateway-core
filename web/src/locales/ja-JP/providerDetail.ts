@@ -392,6 +392,8 @@ export default {
     statusManualDisabled: '手動無効',
     statusEnabled: '有効',
     statusDisabled: '無効',
+    displayNameHint: '管理者に表示されるフレンドリー名',
+    saveSuccess: '保存しました',
   },
   logs: {
     filterTitle: 'このプロバイダー',

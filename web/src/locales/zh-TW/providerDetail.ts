@@ -392,6 +392,8 @@ export default {
     statusManualDisabled: '手工停用',
     statusEnabled: '已啟用',
     statusDisabled: '已停用',
+    displayNameHint: '管理員看到的友好名稱',
+    saveSuccess: '儲存成功',
   },
   logs: {
     filterTitle: '本供應商',

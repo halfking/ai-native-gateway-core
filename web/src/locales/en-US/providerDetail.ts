@@ -394,6 +394,8 @@ export default {
     statusManualDisabled: 'Manually disabled',
     statusEnabled: 'Enabled',
     statusDisabled: 'Disabled',
+    displayNameHint: 'Friendly name visible to admins',
+    saveSuccess: 'Saved successfully',
   },
   logs: {
     filterTitle: 'This provider',

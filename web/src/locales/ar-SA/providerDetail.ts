@@ -392,6 +392,8 @@ export default {
     statusManualDisabled: 'معطّل يدويًا',
     statusEnabled: 'مفعّل',
     statusDisabled: 'معطّل',
+    displayNameHint: 'اسم ودود مرئي للمسؤولين',
+    saveSuccess: 'تم الحفظ بنجاح',
   },
   logs: {
     filterTitle: 'هذا المزود',
