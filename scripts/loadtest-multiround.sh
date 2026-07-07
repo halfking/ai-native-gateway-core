@@ -6,6 +6,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECKPOINT_DIR="/tmp/loadtest-checkpoints"
 mkdir -p "$CHECKPOINT_DIR"
 
+# Mock 端口范围可由环境变量覆盖（默认 12 个：19080-19091）。
+MOCK_START_PORT="${MOCK_START_PORT:-19080}"
+NUM_MOCK_PROVIDERS="${NUM_MOCK_PROVIDERS:-12}"
+MOCK_PORTS=()
+for _i in $(seq 0 $((NUM_MOCK_PROVIDERS - 1))); do
+  MOCK_PORTS+=($((MOCK_START_PORT + _i)))
+done
+
 usage() {
   echo "用法: $0 <rounds> <scenario_list>"
   echo "示例: $0 10 S4,S5,S17  # 跑 10 轮, 每轮依次 S4/S5/S17"
@@ -24,11 +32,11 @@ SCENARIOS=$2
 
 inject_random_failure() {
   local round=$1
-  # 随机选一个 mock + 随机选一个故障模式
-  MOCK_PORTS=(19080 19081 19082 19083)
+  # 随机选一个 mock + 随机选一个故障模式（用全局 MOCK_PORTS，支持任意数量）
+  local n=${#MOCK_PORTS[@]}
   MODES=(slow rate_limited server_error flaky)
   
-  RANDOM_MOCK=${MOCK_PORTS[$((RANDOM % 4))]}
+  RANDOM_MOCK=${MOCK_PORTS[$((RANDOM % n))]}
   RANDOM_MODE=${MODES[$((RANDOM % 4))]}
   
   echo "  [随机故障注入] mock-$RANDOM_MOCK → $RANDOM_MODE (Round $round)"
@@ -40,12 +48,12 @@ save_checkpoint() {
   echo "  [Checkpoint Round $round]"
   
   # 保存所有 mock 的 metrics 到文件
-  for port in 19080 19081 19082 19083; do
+  for port in "${MOCK_PORTS[@]}"; do
     curl -sS "http://localhost:$port/admin/metrics" > "$CHECKPOINT_DIR/mock-$port-round-$round.json" 2>/dev/null || true
   done
   
   # 保存 mock 状态
-  for port in 19080 19081 19082 19083; do
+  for port in "${MOCK_PORTS[@]}"; do
     curl -sS "http://localhost:$port/admin/state" > "$CHECKPOINT_DIR/mock-$port-state-round-$round.json" 2>/dev/null || true
   done
   
@@ -57,7 +65,7 @@ restore_checkpoint() {
   echo "  [恢复 Checkpoint Round $round]"
   
   # 从文件恢复 mock 状态 (简化版: 只恢复模式)
-  for port in 19080 19081 19082 19083; do
+  for port in "${MOCK_PORTS[@]}"; do
     if [[ -f "$CHECKPOINT_DIR/mock-$port-state-round-$round.json" ]]; then
       MODE=$(jq -r '.mode' "$CHECKPOINT_DIR/mock-$port-state-round-$round.json" 2>/dev/null || echo "healthy")
       bash "$SCRIPT_DIR/mock-state-orchestrator.sh" set "http://localhost:$port" "$MODE" 0 || true
@@ -120,6 +128,6 @@ echo "════════════════════════�
 # 最终汇总
 echo ""
 echo "=== 最终 Metrics 汇总 ==="
-for port in 19080 19081 19082 19083; do
+for port in "${MOCK_PORTS[@]}"; do
   curl -sS "http://localhost:$port/admin/metrics" | jq -c '{token, counters}'
 done

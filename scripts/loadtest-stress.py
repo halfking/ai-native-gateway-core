@@ -18,6 +18,14 @@ DEFAULT_MOCK_URLS = [
     "http://localhost:19081",
     "http://localhost:19082",
     "http://localhost:19083",
+    "http://localhost:19084",
+    "http://localhost:19085",
+    "http://localhost:19086",
+    "http://localhost:19087",
+    "http://localhost:19088",
+    "http://localhost:19089",
+    "http://localhost:19090",
+    "http://localhost:19091",
 ]
 TEST_MODEL = "loadtest-fake-gpt-4o"
 
@@ -67,13 +75,17 @@ async def session_worker(
     sem,
     session_stats,
     inject_faults=False,
+    max_history=10,
 ):
     timeout = aiohttp.ClientTimeout(total=30, connect=5)
+    # 真正的多轮会话：每个 worker 维护一份累积的对话历史。
+    # 同一个 session_id 的多轮之间有上下文关联，可验证 sticky routing 的一致性。
+    conversation = []
     for r in range(rounds):
         async with sem:
             try:
                 if inject_faults and r > 0 and r % 10 == 0:
-                    port = 19080 + (r % 4)
+                    port = 19080 + (r % len(mock_urls))
                     mode = ["slow", "server_error", "flaky"][r % 3]
                     try:
                         async with aiohttp.ClientSession() as s:
@@ -84,11 +96,13 @@ async def session_worker(
                             )
                     except Exception:
                         pass
+                # 追加本轮新 user 消息；发送时带上完整历史（滑动窗口）。
+                user_msg = {"role": "user", "content": f"round {r} of session {session_id[-6:]}"}
+                conversation.append(user_msg)
+                window = conversation[-max_history * 2:] if max_history > 0 else conversation
                 payload = {
                     "model": model,
-                    "messages": [
-                        {"role": "user", "content": f"r{r}-s{session_id[-6:]}"}
-                    ],
+                    "messages": window,
                 }
                 headers = {
                     "Content-Type": "application/json",
@@ -148,6 +162,14 @@ async def session_worker(
                                 )
                         except Exception:
                             pass
+                # 兜底：直连模式下若 mock 漏带身份标识，用请求目标 URL 的端口推断，
+                # 避免 success 被误判为 False（网关模式下不兜底，保持真实上游身份）。
+                if mock_id is None and not gateway_url:
+                    try:
+                        port = url.split("//")[1].split("/")[0].split(":")[-1]
+                        mock_id = f"port-{port}"
+                    except Exception:
+                        pass
                 result = RequestResult(
                     session_id=session_id,
                     round_num=r,
@@ -157,6 +179,13 @@ async def session_worker(
                     latency_ms=latency,
                     error=None if status < 400 else str(body.get("error", {}))[:100],
                 )
+                # 成功时把 assistant 回复追加进历史，形成真正的多轮上下文。
+                if result.success and isinstance(body, dict):
+                    try:
+                        assistant_content = body["choices"][0]["message"]["content"]
+                        conversation.append({"role": "assistant", "content": assistant_content})
+                    except Exception:
+                        pass
                 session_stats.results.append(result)
                 session_stats.total_latency_ms += latency
                 if session_stats.first_mock is None and mock_id:
@@ -173,12 +202,12 @@ async def session_worker(
 
 
 async def run_stress_test(
-    clients, rounds, mock_urls, model, gateway_url, api_key, inject_faults
+    clients, rounds, mock_urls, model, gateway_url, api_key, inject_faults, max_history=10
 ):
     sem = asyncio.Semaphore(clients)
     sessions = {}
     print(f"\n🚀 {clients} clients × {rounds} rounds = {clients * rounds} requests")
-    print(f"   mode: {'gateway' if gateway_url else 'direct'} | model: {model}")
+    print(f"   mode: {'gateway' if gateway_url else 'direct'} | model: {model} | max_history={max_history}")
     started = time.monotonic()
     tasks = []
     for c in range(clients):
@@ -195,6 +224,7 @@ async def run_stress_test(
                 sem=sem,
                 session_stats=sessions[sid],
                 inject_faults=inject_faults,
+                max_history=max_history,
             )
         )
     await asyncio.gather(*tasks)
@@ -237,6 +267,12 @@ def main():
     p.add_argument("--api-key", default=None)
     p.add_argument("--model", default=TEST_MODEL)
     p.add_argument("--fault-injection", action="store_true")
+    p.add_argument(
+        "--max-history",
+        type=int,
+        default=10,
+        help="多轮会话历史窗口（轮数），0 表示不累积历史",
+    )
     args = p.parse_args()
     mock_urls = [u.strip() for u in args.mocks.split(",") if u.strip()]
     asyncio.run(
@@ -248,6 +284,7 @@ def main():
             gateway_url=args.gateway if args.mode == "gateway" else None,
             api_key=args.api_key,
             inject_faults=args.fault_injection,
+            max_history=args.max_history,
         )
     )
 

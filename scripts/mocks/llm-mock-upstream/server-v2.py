@@ -111,6 +111,9 @@ def make_response(model: str, content: str, request_id: str) -> dict:
             "completion_tokens": len(content.split()),
             "total_tokens": 10 + len(content.split()),
         },
+        # 身份标识：客户端据此判断请求命中了哪个 mock 实例。
+        # 同时放在顶层字段和 content 文本里，兼容两种提取方式。
+        "_mock_identity": TOKEN,
     }
 
 
@@ -243,7 +246,7 @@ async def handle_chat(request: web.Request) -> web.StreamResponse:
         delay_ms = random.randint(STATE.latency_min_ms, STATE.latency_max_ms)
         await asyncio.sleep(delay_ms / 1000.0)
 
-    content = f"echo: {user_last[:80]}"
+    content = f"echo: {user_last[:80]} [mock={TOKEN}]"
 
     if is_stream:
         response = web.StreamResponse(
