@@ -160,17 +160,18 @@ EOF
 
 build_docker_image() {
     log_step "步骤 3/10: 构建Docker镜像 (platform=linux/amd64)"
-    # 184 服务器是 x86_64，必须强制 amd64（本地是 arm64 Mac）
-    # 优先用 buildx（支持 cross-platform），回退到 docker buildx
-    local BUILDER_NAME="kx-amd64-builder"
-    if ! docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
-        log_info "创建 buildx builder: ${BUILDER_NAME}"
-        docker buildx create --name "${BUILDER_NAME}" --platform linux/amd64 --driver docker-container --use >/dev/null 2>&1 || true
+    # 184 服务器是 x86_64，必须强制 amd64（本地 Mac 是 arm64）
+    # 必须用 docker driver（不是 docker-container）才能复用本地 kx-base 镜像缓存
+    # kx-base:go-vue-amd64 不在公网 registry，必须从 184 ssh load 过来
+    if ! docker buildx inspect default >/dev/null 2>&1; then
+        log_error "docker buildx 'default' builder 不存在，请安装 Docker Desktop 或创建 docker driver builder"
+        exit 1
     fi
-    docker buildx use "${BUILDER_NAME}" 2>/dev/null || true
+    docker buildx use default 2>/dev/null || true
 
     docker buildx build \
         --platform linux/amd64 \
+        --build-arg REGISTRY="registry.kxpms.cn/" \
         --build-arg GIT_TAG="${GIT_TAG}" \
         --build-arg GIT_SHA="${GIT_SHA}" \
         --build-arg BUILD_SEQ="${NEW_BUILD_SEQ}" \
