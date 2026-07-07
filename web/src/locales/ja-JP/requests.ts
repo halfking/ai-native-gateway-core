@@ -127,6 +127,7 @@ export default {
       colCompress: '圧縮',
       colStatus: 'ステータス',
       attachmentsTitle: '添付ファイル',
+      noAttachments: '添付ファイルなし',
       sessionPrefix: 'セッション',
       taskPrefix: 'タスク',
       tokenTooltip: '読み込み {in} / 書き込み {out}',

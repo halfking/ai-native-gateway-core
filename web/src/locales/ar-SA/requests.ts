@@ -127,6 +127,7 @@ export default {
       colCompress: 'الضغط',
       colStatus: 'الحالة',
       attachmentsTitle: 'المرفقات',
+      noAttachments: 'لا توجد مرفقات',
       sessionPrefix: 'الجلسة',
       taskPrefix: 'المهمة',
       tokenTooltip: 'قراءة {in} / كتابة {out}',

@@ -13,6 +13,7 @@ export default {
       closed: '無効/期限切れ',
     },
     unlimited: '無制限',
+    close: '閉じる',
     noLimit: '制限なし',
     leaveBlankNoLimit: '空欄で無制限',
     zeroMeansNoLimit: '0=無制限',

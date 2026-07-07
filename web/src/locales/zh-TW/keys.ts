@@ -13,6 +13,7 @@ export default {
       closed: '已作廢/過期',
     },
     unlimited: '無限制',
+    close: '關閉',
     noLimit: '不限制',
     leaveBlankNoLimit: '留空不限制',
     zeroMeansNoLimit: '0=不限制',

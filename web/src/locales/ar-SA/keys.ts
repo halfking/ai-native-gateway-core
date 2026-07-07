@@ -13,6 +13,7 @@ export default {
       closed: 'ملغى/منتهي',
     },
     unlimited: 'غير محدود',
+    close: 'إغلاق',
     noLimit: 'غير محدود',
     leaveBlankNoLimit: 'اتركه فارغًا لعدم التحديد',
     zeroMeansNoLimit: '0=غير محدود',

@@ -119,6 +119,7 @@ export default {
       colCompress: 'Compress',
       colStatus: 'Status',
       attachmentsTitle: 'Attachments',
+      noAttachments: 'No attachments',
       sessionPrefix: 'Session',
       taskPrefix: 'Task',
       tokenTooltip: 'in {in} / out {out}',

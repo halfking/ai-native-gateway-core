@@ -12,6 +12,7 @@ export default {
       closed: 'Revoked/Expired',
     },
     unlimited: 'Unlimited',
+    close: 'Close',
     noLimit: 'No limit',
     leaveBlankNoLimit: 'Leave blank for no limit',
     zeroMeansNoLimit: '0 = no limit',
