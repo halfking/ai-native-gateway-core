@@ -22,10 +22,34 @@
       点击「手动聚类」触发一次相似会话分组。聚类模式可在模块配置中调整（rule/vector/hybrid）。
     </el-alert>
 
-    <!-- 聚类卡片网格 -->
+    <!-- 加载态：spinner 骨架，避免裸文本 -->
+    <div v-if="loading && clusters.length === 0" class="loading-state" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>正在加载聚类…</span>
+    </div>
+
+    <!-- 聚类卡片网格（响应式：>=1200px 三列，>=768px 两列，更窄一列） -->
     <el-row :gutter="16">
-      <el-col v-for="cluster in clusters" :key="cluster.cluster_id" :span="8" style="margin-bottom: 16px">
-        <el-card shadow="hover" class="cluster-card" @click="showDetail(cluster)">
+      <el-col
+        v-for="cluster in clusters"
+        :key="cluster.cluster_id"
+        :xs="24"
+        :sm="12"
+        :md="12"
+        :lg="8"
+        :xl="8"
+        style="margin-bottom: 16px"
+      >
+        <el-card
+          shadow="hover"
+          class="cluster-card"
+          role="button"
+          tabindex="0"
+          :aria-label="`聚类 ${cluster.label || cluster.coarse_key || '未命名'}，${cluster.member_count} 个会话`"
+          @click="showDetail(cluster)"
+          @keydown.enter="showDetail(cluster)"
+          @keydown.space.prevent="showDetail(cluster)"
+        >
           <div class="cluster-header">
             <span class="cluster-label">{{ cluster.label || cluster.coarse_key || '未命名聚类' }}</span>
             <el-tag size="small" type="info">{{ cluster.member_count }} 会话</el-tag>
@@ -125,9 +149,32 @@ onMounted(loadClusters)
 <style scoped>
 .session-clusters { padding: 16px; }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.cluster-card { cursor: pointer; }
+.cluster-card { cursor: pointer; transition: transform 0.15s ease; }
+.cluster-card:hover { transform: translateY(-2px); }
+.cluster-card:focus-visible { outline: 2px solid var(--accent, #6366f1); outline-offset: 2px; }
 .cluster-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .cluster-label { font-weight: 600; }
 .cluster-topics { min-height: 28px; margin-bottom: 8px; }
 .cluster-stats { display: flex; gap: 16px; color: var(--el-text-color-secondary); font-size: 13px; }
+
+/* 加载态 */
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: clusters-spin 0.8s linear infinite;
+}
+@keyframes clusters-spin { to { transform: rotate(360deg); } }
 </style>
