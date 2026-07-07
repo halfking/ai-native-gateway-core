@@ -238,8 +238,14 @@ onMounted(() => {
     </div>
 
     <!-- 统计卡片 -->
-    <div v-if="statsLoading" class="stats-loading">{{ t('sessions.audit.statsLoading') }}</div>
-    <div v-else-if="statsError" class="error-banner">{{ statsError }}</div>
+    <div v-if="statsLoading" class="stats-loading" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>{{ t('sessions.audit.statsLoading') }}</span>
+    </div>
+    <div v-else-if="statsError" class="error-banner" role="alert">
+      <span class="error-icon" aria-hidden="true">⚠️</span>
+      <span>{{ statsError }}</span>
+    </div>
     <div v-else-if="stats" class="stats-grid">
       <div class="stat-card">
         <div class="stat-label">{{ t('sessions.audit.totalAudits') }}</div>
@@ -275,6 +281,7 @@ onMounted(() => {
         v-model="filterTenantID"
         type="text"
         :placeholder="t('sessions.audit.filterTenantID')"
+        :aria-label="t('sessions.audit.filterTenantID')"
         class="filter-input"
         @keyup.enter="resetPageAndLoad"
       />
@@ -282,10 +289,16 @@ onMounted(() => {
         v-model="filterSessionID"
         type="text"
         :placeholder="t('sessions.audit.filterSessionID')"
+        :aria-label="t('sessions.audit.filterSessionID')"
         class="filter-input"
         @keyup.enter="resetPageAndLoad"
       />
-      <select v-model="filterStatus" class="filter-select" @change="resetPageAndLoad">
+      <select
+        v-model="filterStatus"
+        class="filter-select"
+        :aria-label="t('sessions.audit.filterStatus')"
+        @change="resetPageAndLoad"
+      >
         <option value="">{{ t('sessions.audit.allStatus') }}</option>
         <option value="pass">{{ t('sessions.audit.statusPass') }}</option>
         <option value="warn">{{ t('sessions.audit.statusWarn') }}</option>
@@ -297,7 +310,11 @@ onMounted(() => {
     </div>
 
     <!-- 错误提示 -->
-    <div v-if="error" class="error-banner">{{ error }}</div>
+    <div v-if="error" class="error-banner" role="alert">
+      <span class="error-icon" aria-hidden="true">⚠️</span>
+      <span>{{ error }}</span>
+      <button class="error-retry" @click="resetPageAndLoad" aria-label="重新加载">{{ t('sessions.audit.search') }}</button>
+    </div>
 
     <!-- 记录列表 -->
     <div class="table-container">
@@ -321,7 +338,10 @@ onMounted(() => {
         </thead>
         <tbody v-if="loading">
           <tr>
-            <td colspan="13" class="loading-cell">{{ t('sessions.audit.loading') }}</td>
+            <td colspan="13" class="loading-cell" role="status" aria-live="polite">
+              <span class="spinner" aria-hidden="true"></span>
+              <span>{{ t('sessions.audit.loading') }}</span>
+            </td>
           </tr>
         </tbody>
         <tbody v-else-if="records.length === 0">
@@ -380,11 +400,21 @@ onMounted(() => {
     </div>
 
     <!-- 详情弹窗 -->
-    <div v-if="detailVisible" class="modal-overlay" @click.self="closeDetail">
+    <div
+      v-if="detailVisible"
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      :aria-labelledby="`audit-detail-title-${detailRecord?.id ?? ''}`"
+      @click.self="closeDetail"
+      @keydown.esc="closeDetail"
+    >
       <div class="modal-content detail-modal">
         <div class="modal-header">
-          <h3>{{ t('sessions.audit.detail.title', { id: detailRecord?.id }) }}</h3>
-          <button class="close-btn" @click="closeDetail">✕</button>
+          <h3 :id="`audit-detail-title-${detailRecord?.id ?? ''}`">
+            {{ t('sessions.audit.detail.title', { id: detailRecord?.id }) }}
+          </h3>
+          <button class="close-btn" :aria-label="t('sessions.audit.detail.close')" @click="closeDetail">✕</button>
         </div>
         <div v-if="detailRecord" class="modal-body">
           <div class="detail-section">
@@ -570,7 +600,48 @@ onMounted(() => {
   padding: 0.75rem 1rem;
   border-radius: 6px;
   margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
+
+.error-icon { font-size: 16px; flex-shrink: 0; }
+
+.error-retry {
+  margin-left: auto;
+  background: white;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  padding: 0.25rem 0.75rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+}
+
+.error-retry:hover { background: #fee2e2; }
+
+.stats-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1rem;
+  color: #666;
+  font-size: 0.875rem;
+}
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: audit-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes audit-spin { to { transform: rotate(360deg); } }
 
 .table-container {
   background: white;
@@ -623,6 +694,13 @@ onMounted(() => {
   text-align: center;
   padding: 2rem;
   color: #999;
+}
+
+.loading-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
 }
 
 .pagination {

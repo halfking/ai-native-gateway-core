@@ -391,6 +391,7 @@ Vous pouvez confirmer le résultat précédent et continuer, ou commencer une to
       sseParseFailed: 'Failed to parse SSE event',
     },
     empty: 'No sessions',
+    emptyHint: 'Aucune session active dans la fenêtre temporelle actuelle. Les nouvelles sessions apparaissent automatiquement une fois qu\'un gw_session_id est généré depuis les journaux de requêtes.',
     relativeTime: {
       justNow: 'just now',
       minutesAgo: '{n} min ago',
