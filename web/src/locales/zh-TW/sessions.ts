@@ -391,6 +391,7 @@ export default {
       sseParseFailed: 'Failed to parse SSE event',
     },
     empty: 'No sessions',
+    emptyHint: '當前時間窗內暫無活躍會話。新會話將在請求記錄產生 gw_session_id 後自動彙總顯示。',
     relativeTime: {
       justNow: 'just now',
       minutesAgo: '{n} min ago',

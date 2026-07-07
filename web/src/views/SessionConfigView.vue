@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ApprovalConfigPanel from '../components/ApprovalConfigPanel.vue'
 import CompressionConfigPanel from '../components/CompressionConfigPanel.vue'
@@ -14,6 +14,24 @@ const tabs = [
   { key: 'compression', label: t('sessions.config.compressionTab'), icon: '🗜️' },
   { key: 'health', label: t('sessions.config.healthTab'), icon: '💚' },
 ]
+
+/**
+ * ARIA tab pattern: ←/→ 切换 tab 并把焦点移动到新 tab。
+ * W3C ARIA Authoring Practices 建议 tab 之间用方向键切换，
+ * 焦点应跟随激活 tab 移动。
+ */
+function focusAdjacentTab(direction: -1 | 1) {
+  const idx = tabs.findIndex((tab) => tab.key === activeTab.value)
+  if (idx === -1) return
+  const nextIdx = (idx + direction + tabs.length) % tabs.length
+  const nextKey = tabs[nextIdx]!.key
+  activeTab.value = nextKey
+  // 等待 v-if 渲染后聚焦
+  void nextTick(() => {
+    const el = document.getElementById(`session-config-tab-${nextKey}`) as HTMLButtonElement | null
+    el?.focus()
+  })
+}
 </script>
 
 <template>
@@ -26,21 +44,33 @@ const tabs = [
     </div>
 
     <!-- Tab Navigation -->
-    <div class="tab-nav">
+    <div class="tab-nav" role="tablist" aria-label="Session configuration sections">
       <button
         v-for="tab in tabs"
         :key="tab.key"
         class="tab-button"
         :class="{ active: activeTab === tab.key }"
+        role="tab"
+        :id="`session-config-tab-${tab.key}`"
+        :aria-selected="activeTab === tab.key"
+        :aria-controls="`session-config-panel-${tab.key}`"
+        :tabindex="activeTab === tab.key ? 0 : -1"
         @click="activeTab = tab.key"
+        @keydown.left.prevent="focusAdjacentTab(-1)"
+        @keydown.right.prevent="focusAdjacentTab(1)"
       >
-        <span class="tab-icon">{{ tab.icon }}</span>
+        <span class="tab-icon" aria-hidden="true">{{ tab.icon }}</span>
         <span class="tab-label">{{ tab.label }}</span>
       </button>
     </div>
 
     <!-- Tab Content -->
-    <div class="tab-content">
+    <div
+      class="tab-content"
+      role="tabpanel"
+      :id="`session-config-panel-${activeTab}`"
+      :aria-labelledby="`session-config-tab-${activeTab}`"
+    >
       <ApprovalConfigPanel v-if="activeTab === 'approval'" />
       <CompressionConfigPanel v-else-if="activeTab === 'compression'" />
       <HealthScoreConfigPanel v-else-if="activeTab === 'health'" />
@@ -98,6 +128,11 @@ const tabs = [
 .tab-button:hover {
   color: #409eff;
   background: #f5f7fa;
+}
+
+.tab-button:focus-visible {
+  outline: 2px solid #409eff;
+  outline-offset: -2px;
 }
 
 .tab-button.active {

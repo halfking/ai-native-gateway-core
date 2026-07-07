@@ -391,6 +391,7 @@ export default {
       sseParseFailed: 'Failed to parse SSE event',
     },
     empty: 'No sessions',
+    emptyHint: 'لا توجد جلسات نشطة في النافذة الزمنية الحالية. تظهر الجلسات الجديدة تلقائيًا بعد توليد gw_session_id في سجلات الطلبات.',
     relativeTime: {
       justNow: 'just now',
       minutesAgo: '{n} min ago',
