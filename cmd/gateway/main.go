@@ -2063,9 +2063,9 @@ func main() {
 			if dbConn != nil {
 				healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
 				healthWorker.Start(context.Background())
-				slog.Info("session health worker started (hourly)")
-			}
+			slog.Info("session health worker started (hourly)")
 		}
+	}
 
 		// Task T1.4: Usage Cost Enhanced API 注册已在 admin/handler.go:572 完成
 		// (避免与 admin 包的双重注册 panic, 与 33d9d4fe fix 同型)
