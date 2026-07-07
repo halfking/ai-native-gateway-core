@@ -1974,7 +1974,9 @@ func main() {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				//nolint:errcheck // HTTP write error non-recoverable
-				w.Write([]byte(`{"service":"llm-gateway-go","version":"0.3.0"}`))
+				//nolint:errcheck // HTTP write error non-recoverable
+			w.Write([]byte(fmt.Sprintf(`{"service":"llm-gateway-go","version":"%s","git_sha":"%s","build_seq":"%s"}`,
+				Version, GitCommit, BuildNumber)))
 				return
 			}
 			http.NotFound(w, r)
