@@ -2,7 +2,7 @@
 # Mock State Orchestrator - 控制 mock 状态的统一接口
 set -euo pipefail
 
-MOCK_ENDPOINTS="${MOCK_ENDPOINTS:-http://localhost:19080,http://localhost:19081,http://localhost:19082,http://localhost:19083}"
+MOCK_ENDPOINTS="${MOCK_ENDPOINTS:-http://localhost:19080,http://localhost:19081,http://localhost:19082,http://localhost:19083,http://localhost:19084,http://localhost:19085,http://localhost:19086,http://localhost:19087,http://localhost:19088,http://localhost:19089,http://localhost:19090,http://localhost:19091}"
 
 usage() {
   cat <<EOF
