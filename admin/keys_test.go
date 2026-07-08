@@ -362,3 +362,33 @@ func TestIsRevealableKeyCiphertext(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveCreateKeyTenantID(t *testing.T) {
+	t.Run("super admin keeps requested tenant", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/keys", nil)
+		req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default"})
+		if got := resolveCreateKeyTenantID(req, "hansi"); got != "hansi" {
+			t.Fatalf("expected requested tenant for super_admin, got %q", got)
+		}
+	})
+
+	t.Run("super admin defaults to default", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/keys", nil)
+		req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default"})
+		if got := resolveCreateKeyTenantID(req, "   "); got != "default" {
+			t.Fatalf("expected default tenant for blank request, got %q", got)
+		}
+	})
+
+	t.Run("tenant admin always uses own tenant", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/keys", nil)
+		req = SetAuthContext(req, &AuthContext{Role: "tenant_admin", TenantID: "hansi"})
+		if got := resolveCreateKeyTenantID(req, "default"); got != "hansi" {
+			t.Fatalf("expected tenant admin tenant, got %q", got)
+		}
+		if got := resolveCreateKeyTenantID(req, ""); got != "hansi" {
+			t.Fatalf("expected tenant admin tenant on blank request, got %q", got)
+		}
+	})
+}
+

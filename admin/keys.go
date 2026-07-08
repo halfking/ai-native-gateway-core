@@ -349,6 +349,17 @@ func (h *Handler) handleKeysRoot(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func resolveCreateKeyTenantID(r *http.Request, requestedTenantID string) string {
+	requestedTenantID = strings.TrimSpace(requestedTenantID)
+	if IsTenantAdmin(r) {
+		return GetTenantID(r)
+	}
+	if requestedTenantID == "" {
+		return "default"
+	}
+	return requestedTenantID
+}
+
 func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ApplicationCode string   `json:"application_code"`
@@ -366,9 +377,7 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	if req.ApplicationCode == "" {
 		req.ApplicationCode = "default"
 	}
-	if req.TenantID == "" {
-		req.TenantID = "default"
-	}
+	req.TenantID = resolveCreateKeyTenantID(r, req.TenantID)
 	// tenant_admin callers may only create keys for their own tenant.
 	if IsTenantAdmin(r) && req.TenantID != GetTenantID(r) {
 		writeError(w, http.StatusForbidden, "forbidden: cannot create key for another tenant")
