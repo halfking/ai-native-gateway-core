@@ -431,6 +431,11 @@ func allModuleDefinitions() []ModuleDefinition {
 				DangerLevel: settings.Safe,
 			},
 		}
+
+		// Detect circular dependencies at initialization time
+		if err := detectCircularDependencies(moduleDefs); err != nil {
+			panic("Module dependency graph contains cycles: " + err.Error())
+		}
 	})
 	return moduleDefs
 }
@@ -457,6 +462,85 @@ func resolveModuleEnabled(m ModuleDefinition) (enabled bool, source string) {
 		return true, "default"
 	}
 	return v, src
+}
+
+// detectCircularDependencies checks if the module dependency graph contains cycles.
+// Returns an error describing the cycle if found, nil otherwise.
+func detectCircularDependencies(modules []ModuleDefinition) error {
+	// Build adjacency list
+	graph := make(map[string][]string)
+	moduleSet := make(map[string]bool)
+
+	for _, m := range modules {
+		moduleSet[m.Key] = true
+		graph[m.Key] = make([]string, 0, len(m.Dependencies))
+		for _, dep := range m.Dependencies {
+			graph[m.Key] = append(graph[m.Key], dep.Key)
+		}
+	}
+
+	// DFS-based cycle detection with path tracking
+	const (
+		unvisited = 0
+		visiting  = 1
+		visited   = 2
+	)
+
+	state := make(map[string]int)
+	path := make([]string, 0)
+
+	var dfs func(string) error
+	dfs = func(node string) error {
+		if state[node] == visiting {
+			// Found cycle: construct cycle path
+			cycleStart := -1
+			for i, p := range path {
+				if p == node {
+					cycleStart = i
+					break
+				}
+			}
+			if cycleStart >= 0 {
+				cyclePath := append(path[cycleStart:], node)
+				return fmt.Errorf("circular dependency detected: %s", strings.Join(cyclePath, " -> "))
+			}
+			return fmt.Errorf("circular dependency detected involving: %s", node)
+		}
+
+		if state[node] == visited {
+			return nil
+		}
+
+		state[node] = visiting
+		path = append(path, node)
+
+		for _, neighbor := range graph[node] {
+			// Skip dependencies that don't exist in the module set
+			// (they might be external or optional)
+			if !moduleSet[neighbor] {
+				continue
+			}
+
+			if err := dfs(neighbor); err != nil {
+				return err
+			}
+		}
+
+		path = path[:len(path)-1]
+		state[node] = visited
+		return nil
+	}
+
+	// Check all nodes (handles disconnected components)
+	for _, m := range modules {
+		if state[m.Key] == unvisited {
+			if err := dfs(m.Key); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func moduleStatusMap(defs []ModuleDefinition) map[string]ModuleWithStatus {
