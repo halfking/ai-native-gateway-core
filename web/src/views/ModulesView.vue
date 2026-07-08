@@ -59,6 +59,38 @@ const groupedModules = computed(() => {
 const enabledCount = computed(() => modules.value.filter(m => m.enabled).length)
 const totalCount = computed(() => modules.value.length)
 
+// 检查依赖模块的状态
+const dependencyStatus = computed(() => {
+  if (!selectedModule.value?.dependencies) return []
+  return selectedModule.value.dependencies.map(dep => {
+    const mod = modules.value.find(m => m.key === dep.key)
+    return {
+      ...dep,
+      enabled: mod?.enabled ?? false,
+      moduleName: mod?.name ?? dep.name
+    }
+  })
+})
+
+// 检查是否有未满足的必需依赖
+const hasUnmetDependencies = computed(() => {
+  return dependencyStatus.value.some(d => d.required && !d.enabled)
+})
+
+// 按类别分组的配置项
+const securityConfigGroups = computed(() => {
+  if (selectedKey.value !== 'security') return null
+  const settings = moduleSettings.value
+  return {
+    mode: settings.filter(s => s.key.startsWith('security.mode')),
+    llm: settings.filter(s => s.key.startsWith('security.llm.')),
+    intent: settings.filter(s => s.key.startsWith('security.intent.')),
+    threat: settings.filter(s => s.key.startsWith('security.threat.')),
+    response: settings.filter(s => s.key.startsWith('security.response.')),
+    audit: settings.filter(s => s.key.startsWith('security.audit.')),
+  }
+})
+
 async function loadModules() {
   loading.value = true
   error.value = null
@@ -78,19 +110,25 @@ async function loadModules() {
 
 async function selectModule(key: string) {
   selectedKey.value = key
-  // Find the basic info from the list
+  // Find the basic info from the list (used immediately so the detail pane
+  // populates before the network round-trip completes).
   const found = modules.value.find(m => m.key === key)
   if (found) {
     selectedModule.value = found
     selectedEnabled.value = found.enabled
   }
-  // Load config settings
+  // Load config settings. The detail API is the single source of truth for
+  // `enabled` — if it disagrees with the list (e.g. changed by another admin),
+  // we reconcile both so the list and detail pane stay in sync.
   try {
-    // Load from module detail API
     const detail = await getModule(key)
     selectedModule.value = detail.module
     selectedEnabled.value = detail.module.enabled
-    // Load settings related to this module
+    // Reconcile the list entry so the left toggle matches the right pane.
+    const listMod = modules.value.find(m => m.key === key)
+    if (listMod && listMod.enabled !== detail.module.enabled) {
+      listMod.enabled = detail.module.enabled
+    }
     const allSettings = await listSettings()
     if (selectedModule.value) {
       const configKeys = selectedModule.value.config_keys || []
@@ -105,18 +143,30 @@ async function selectModule(key: string) {
 }
 
 async function doToggle(key: string) {
+  const mod = modules.value.find(m => m.key === key)
+  if (!mod) return
   toggling.value = key
   error.value = null
+  const prevEnabled = mod.enabled      // snapshot for rollback
+  const prevSelected = selectedEnabled.value
+  // Optimistic update so the UI feels instant.
+  mod.enabled = !prevEnabled
+  if (selectedKey.value === key) {
+    selectedEnabled.value = !prevSelected
+  }
   try {
-    const mod = modules.value.find(m => m.key === key)
-    if (!mod) return
-    const newState = !mod.enabled
-    const r = await toggleModule(key, newState)
+    const r = await toggleModule(key, !prevEnabled)
+    // Authoritative state from the server.
     mod.enabled = r.enabled
     if (selectedKey.value === key) {
       selectedEnabled.value = r.enabled
     }
   } catch (e: any) {
+    // Rollback on failure so the two panes never disagree.
+    mod.enabled = prevEnabled
+    if (selectedKey.value === key) {
+      selectedEnabled.value = prevSelected
+    }
     error.value = e.message || t('modulesView.error.operationFailed')
   } finally {
     toggling.value = null
@@ -301,14 +351,6 @@ onMounted(() => {
           </div>
 
           <div class="info-section action-section">
-            <button
-              class="btn-action"
-              :class="selectedEnabled ? 'btn-danger' : 'btn-primary'"
-              :disabled="toggling === selectedModule.key"
-              @click="doToggle(selectedModule.key)"
-            >
-              {{ toggling === selectedModule.key ? t('modulesView.status.processing') : selectedEnabled ? t('modulesView.status.enabledAction') : t('modulesView.status.disabledAction') }}
-            </button>
             <button class="btn-ghost" @click="goToSettings(selectedModule.key)">
               {{ t('modulesView.overview.viewAllSettings') }}
             </button>
@@ -320,70 +362,351 @@ onMounted(() => {
           <div class="info-section" v-if="moduleSettings.length === 0">
             <p class="text-muted">{{ t('modulesView.config.noSettings') }}</p>
           </div>
-          <div
-            v-for="setting in moduleSettings"
-            :key="setting.key"
-            class="config-card"
-          >
-            <div class="config-header">
-              <code class="config-key">{{ setting.key }}</code>
-              <span class="src-badge" :class="'src-' + setting.source">
-                {{ setting.source || t('modulesView.config.sourceDefault') }}
-              </span>
+
+          <!-- 模块依赖状态（仅security模块显示） -->
+          <div v-if="selectedKey === 'security' && dependencyStatus.length > 0" class="info-section dependency-section">
+            <h3 class="section-title">模块依赖状态</h3>
+            <div v-if="hasUnmetDependencies" class="warning-banner">
+              ⚠️ 部分必需依赖模块未启用，安全检测引擎可能无法正常工作
             </div>
-            <p class="config-desc">{{ setting.description }}</p>
-            <div class="config-editor">
-              <!-- Boolean -->
-              <div v-if="setting.type === 'bool'" class="config-bool">
-                <label class="switch-label-sm">
-                  <input
-                    type="checkbox"
-                    class="toggle-input"
-                    :checked="setting.value === true"
-                    @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
-                  />
-                  <span class="toggle-track-sm">
-                    <span class="toggle-knob-sm" />
-                  </span>
-                  <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
-                </label>
-              </div>
-              <!-- Number -->
-              <div v-else-if="setting.type === 'int' || setting.type === 'float'" class="config-number">
-                <input
-                  type="number"
-                  class="number-input"
-                  :value="setting.value ?? setting.default"
-                  :step="setting.type === 'float' ? '0.01' : '1'"
-                  @change="saveSetting(setting.key, parseFloat(($event.target as HTMLInputElement).value))"
-                />
-              </div>
-              <!-- String -->
-              <div v-else-if="setting.type === 'string' || setting.type === 'url'" class="config-string">
-                <input
-                  type="text"
-                  class="text-input"
-                  :value="setting.value ?? setting.default"
-                  @change="saveSetting(setting.key, ($event.target as HTMLInputElement).value)"
-                  :placeholder="t('modulesView.config.inputPlaceholder', { description: setting.description })"
-                />
-              </div>
-              <!-- Select (enum) -->
-              <div v-else-if="setting.type === 'enum' && setting.options" class="config-select">
-                <select
-                  class="select-input"
-                  :value="setting.value ?? setting.default"
-                  @change="saveSetting(setting.key, ($event.target as HTMLSelectElement).value)"
-                >
-                  <option
-                    v-for="opt in setting.options"
-                    :key="opt"
-                    :value="opt"
-                  >{{ opt }}</option>
-                </select>
+            <div class="dependency-list">
+              <div
+                v-for="dep in dependencyStatus"
+                :key="dep.key"
+                class="dependency-item"
+                :class="{ 'dep-enabled': dep.enabled, 'dep-disabled': !dep.enabled, 'dep-required': dep.required }"
+              >
+                <span class="dep-status-icon">{{ dep.enabled ? '✅' : (dep.required ? '❌' : '⚠️') }}</span>
+                <div class="dep-info">
+                  <span class="dep-name">{{ dep.moduleName }}</span>
+                  <span class="dep-desc">{{ dep.description }}</span>
+                </div>
+                <span class="dep-badge" :class="dep.required ? 'badge-required' : 'badge-optional'">
+                  {{ dep.required ? '必需' : '可选' }}
+                </span>
               </div>
             </div>
           </div>
+
+          <!-- security模块的分组配置表单 -->
+          <template v-if="selectedKey === 'security' && securityConfigGroups">
+            <!-- 基础配置 -->
+            <div v-if="securityConfigGroups.mode.length > 0" class="config-group">
+              <h3 class="config-group-title">基础配置</h3>
+              <div
+                v-for="setting in securityConfigGroups.mode"
+                :key="setting.key"
+                class="config-card"
+              >
+                <div class="config-header">
+                  <code class="config-key">{{ setting.key }}</code>
+                  <span class="src-badge" :class="'src-' + setting.source">
+                    {{ setting.source || t('modulesView.config.sourceDefault') }}
+                  </span>
+                </div>
+                <p class="config-desc">{{ setting.description }}</p>
+                <div class="config-editor">
+                  <div v-if="setting.type === 'string' && setting.options" class="config-select">
+                    <select
+                      class="select-input"
+                      :value="setting.value ?? setting.default"
+                      @change="saveSetting(setting.key, ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option
+                        v-for="opt in setting.options"
+                        :key="opt"
+                        :value="opt"
+                      >{{ opt === 'observe' ? '观察模式 (observe)' : opt === 'enforce' ? '强制模式 (enforce)' : opt }}</option>
+                    </select>
+                  </div>
+                  <div v-else-if="setting.type === 'bool'" class="config-bool">
+                    <label class="switch-label-sm">
+                      <input
+                        type="checkbox"
+                        class="toggle-input"
+                        :checked="setting.value === true"
+                        @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
+                      />
+                      <span class="toggle-track-sm">
+                        <span class="toggle-knob-sm" />
+                      </span>
+                      <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- LLM模型配置 -->
+            <div v-if="securityConfigGroups.llm.length > 0" class="config-group">
+              <h3 class="config-group-title">LLM模型配置</h3>
+              <div
+                v-for="setting in securityConfigGroups.llm"
+                :key="setting.key"
+                class="config-card"
+              >
+                <div class="config-header">
+                  <code class="config-key">{{ setting.key }}</code>
+                  <span class="src-badge" :class="'src-' + setting.source">
+                    {{ setting.source || t('modulesView.config.sourceDefault') }}
+                  </span>
+                </div>
+                <p class="config-desc">{{ setting.description }}</p>
+                <div class="config-editor">
+                  <div class="config-string">
+                    <input
+                      type="text"
+                      class="text-input"
+                      :value="setting.value ?? setting.default"
+                      @change="saveSetting(setting.key, ($event.target as HTMLInputElement).value)"
+                      :placeholder="t('modulesView.config.inputPlaceholder', { description: setting.description })"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 意图分析配置 -->
+            <div v-if="securityConfigGroups.intent.length > 0" class="config-group">
+              <h3 class="config-group-title">意图分析 (Intent Classification)</h3>
+              <div
+                v-for="setting in securityConfigGroups.intent"
+                :key="setting.key"
+                class="config-card"
+              >
+                <div class="config-header">
+                  <code class="config-key">{{ setting.key }}</code>
+                  <span class="src-badge" :class="'src-' + setting.source">
+                    {{ setting.source || t('modulesView.config.sourceDefault') }}
+                  </span>
+                </div>
+                <p class="config-desc">{{ setting.description }}</p>
+                <div class="config-editor">
+                  <div v-if="setting.type === 'bool'" class="config-bool">
+                    <label class="switch-label-sm">
+                      <input
+                        type="checkbox"
+                        class="toggle-input"
+                        :checked="setting.value === true"
+                        @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
+                      />
+                      <span class="toggle-track-sm">
+                        <span class="toggle-knob-sm" />
+                      </span>
+                      <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
+                    </label>
+                  </div>
+                  <div v-else-if="setting.type === 'float'" class="config-number">
+                    <input
+                      type="number"
+                      class="number-input"
+                      :value="setting.value ?? setting.default"
+                      step="0.1"
+                      min="0"
+                      max="1"
+                      @change="saveSetting(setting.key, parseFloat(($event.target as HTMLInputElement).value))"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 威胁检测配置 -->
+            <div v-if="securityConfigGroups.threat.length > 0" class="config-group">
+              <h3 class="config-group-title">威胁检测 (Threat Detection)</h3>
+              <div
+                v-for="setting in securityConfigGroups.threat"
+                :key="setting.key"
+                class="config-card"
+              >
+                <div class="config-header">
+                  <code class="config-key">{{ setting.key }}</code>
+                  <span class="src-badge" :class="'src-' + setting.source">
+                    {{ setting.source || t('modulesView.config.sourceDefault') }}
+                  </span>
+                  <span v-if="setting.key.includes('prompt_inject')" class="module-ref-badge">← prompt_injection</span>
+                  <span v-else-if="setting.key.includes('data_leak') || setting.key.includes('pii')" class="module-ref-badge">← output_compliance</span>
+                </div>
+                <p class="config-desc">{{ setting.description }}</p>
+                <div class="config-editor">
+                  <div v-if="setting.type === 'bool'" class="config-bool">
+                    <label class="switch-label-sm">
+                      <input
+                        type="checkbox"
+                        class="toggle-input"
+                        :checked="setting.value === true"
+                        @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
+                      />
+                      <span class="toggle-track-sm">
+                        <span class="toggle-knob-sm" />
+                      </span>
+                      <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
+                    </label>
+                  </div>
+                  <div v-else-if="setting.type === 'int'" class="config-number">
+                    <input
+                      type="number"
+                      class="number-input"
+                      :value="setting.value ?? setting.default"
+                      step="1"
+                      min="0"
+                      max="10"
+                      @change="saveSetting(setting.key, parseInt(($event.target as HTMLInputElement).value))"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 响应策略配置 -->
+            <div v-if="securityConfigGroups.response.length > 0" class="config-group">
+              <h3 class="config-group-title">预设响应策略</h3>
+              <div
+                v-for="setting in securityConfigGroups.response"
+                :key="setting.key"
+                class="config-card"
+              >
+                <div class="config-header">
+                  <code class="config-key">{{ setting.key }}</code>
+                  <span class="src-badge" :class="'src-' + setting.source">
+                    {{ setting.source || t('modulesView.config.sourceDefault') }}
+                  </span>
+                  <span v-if="setting.key.includes('high_risk')" class="module-ref-badge">← session_audit</span>
+                </div>
+                <p class="config-desc">{{ setting.description }}</p>
+                <div class="config-editor">
+                  <div v-if="setting.options" class="config-select">
+                    <select
+                      class="select-input"
+                      :value="setting.value ?? setting.default"
+                      @change="saveSetting(setting.key, ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option
+                        v-for="opt in setting.options"
+                        :key="opt"
+                        :value="opt"
+                      >{{ opt === 'log' ? '仅记录 (log)' : opt === 'warn' ? '警告 (warn)' : opt === 'sanitize' ? '清洗 (sanitize)' : opt === 'block' ? '阻断 (block)' : opt === 'approval' ? '人工审批 (approval)' : opt }}</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 审计联动配置 -->
+            <div v-if="securityConfigGroups.audit.length > 0" class="config-group">
+              <h3 class="config-group-title">审计联动</h3>
+              <div
+                v-for="setting in securityConfigGroups.audit"
+                :key="setting.key"
+                class="config-card"
+              >
+                <div class="config-header">
+                  <code class="config-key">{{ setting.key }}</code>
+                  <span class="src-badge" :class="'src-' + setting.source">
+                    {{ setting.source || t('modulesView.config.sourceDefault') }}
+                  </span>
+                  <span v-if="setting.key.includes('audit.enabled')" class="module-ref-badge">← session_audit</span>
+                  <span v-else-if="setting.key.includes('audit.log_all')" class="module-ref-badge">← audit</span>
+                </div>
+                <p class="config-desc">{{ setting.description }}</p>
+                <div class="config-editor">
+                  <div v-if="setting.type === 'bool'" class="config-bool">
+                    <label class="switch-label-sm">
+                      <input
+                        type="checkbox"
+                        class="toggle-input"
+                        :checked="setting.value === true"
+                        @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
+                      />
+                      <span class="toggle-track-sm">
+                        <span class="toggle-knob-sm" />
+                      </span>
+                      <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
+                    </label>
+                  </div>
+                  <div v-else-if="setting.type === 'float'" class="config-number">
+                    <input
+                      type="number"
+                      class="number-input"
+                      :value="setting.value ?? setting.default"
+                      step="0.1"
+                      min="0"
+                      max="1"
+                      @change="saveSetting(setting.key, parseFloat(($event.target as HTMLInputElement).value))"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- 其他模块的通用配置表单 -->
+          <template v-else>
+            <div
+              v-for="setting in moduleSettings"
+              :key="setting.key"
+              class="config-card"
+            >
+              <div class="config-header">
+                <code class="config-key">{{ setting.key }}</code>
+                <span class="src-badge" :class="'src-' + setting.source">
+                  {{ setting.source || t('modulesView.config.sourceDefault') }}
+                </span>
+              </div>
+              <p class="config-desc">{{ setting.description }}</p>
+              <div class="config-editor">
+                <!-- Boolean -->
+                <div v-if="setting.type === 'bool'" class="config-bool">
+                  <label class="switch-label-sm">
+                    <input
+                      type="checkbox"
+                      class="toggle-input"
+                      :checked="setting.value === true"
+                      @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span class="toggle-track-sm">
+                      <span class="toggle-knob-sm" />
+                    </span>
+                    <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
+                  </label>
+                </div>
+                <!-- Number -->
+                <div v-else-if="setting.type === 'int' || setting.type === 'float'" class="config-number">
+                  <input
+                    type="number"
+                    class="number-input"
+                    :value="setting.value ?? setting.default"
+                    :step="setting.type === 'float' ? '0.01' : '1'"
+                    @change="saveSetting(setting.key, parseFloat(($event.target as HTMLInputElement).value))"
+                  />
+                </div>
+                <!-- String -->
+                <div v-else-if="setting.type === 'string' || setting.type === 'url'" class="config-string">
+                  <input
+                    type="text"
+                    class="text-input"
+                    :value="setting.value ?? setting.default"
+                    @change="saveSetting(setting.key, ($event.target as HTMLInputElement).value)"
+                    :placeholder="t('modulesView.config.inputPlaceholder', { description: setting.description })"
+                  />
+                </div>
+                <!-- Select (enum) -->
+                <div v-else-if="setting.type === 'enum' && setting.options" class="config-select">
+                  <select
+                    class="select-input"
+                    :value="setting.value ?? setting.default"
+                    @change="saveSetting(setting.key, ($event.target as HTMLSelectElement).value)"
+                  >
+                    <option
+                      v-for="opt in setting.options"
+                      :key="opt"
+                      :value="opt"
+                    >{{ opt }}</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
 
         <!-- Integration tab -->
@@ -1075,6 +1398,102 @@ onMounted(() => {
 
 .text-green { color: #34d399; }
 .text-muted { color: #6e7681; }
+
+/* ── Dependency Section ── */
+.dependency-section {
+  padding: 16px;
+  background: var(--bg-card, #161b22);
+  border-radius: 8px;
+  border: 1px solid var(--border, #30363d);
+  margin-bottom: 20px;
+}
+.warning-banner {
+  padding: 10px 14px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fbbf24;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.dependency-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dependency-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg, #0f1117);
+  border-radius: 6px;
+  border: 1px solid var(--border, #30363d);
+}
+.dependency-item.dep-enabled {
+  border-color: rgba(52, 211, 153, 0.3);
+}
+.dependency-item.dep-disabled.dep-required {
+  border-color: rgba(248, 113, 113, 0.3);
+}
+.dep-status-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.dep-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dep-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary, #e6edf3);
+}
+.dep-desc {
+  font-size: 11px;
+  color: var(--text-secondary, #8b949e);
+}
+.dep-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+}
+.badge-required {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+}
+.badge-optional {
+  background: rgba(107, 114, 128, 0.15);
+  color: #9ca3af;
+}
+
+/* ── Config Group ── */
+.config-group {
+  margin-bottom: 24px;
+}
+.config-group-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #e6edf3);
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+
+/* ── Module Reference Badge ── */
+.module-ref-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: rgba(99, 102, 241, 0.12);
+  color: #818cf8;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  margin-left: 8px;
+}
 
 /* ── Responsive ── */
 @media (max-width: 960px) {
