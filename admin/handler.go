@@ -133,6 +133,9 @@ type Handler struct {
 		ResumeAfterApproval(ctx context.Context, approvalID, tenantID string) error
 	}
 
+	// configManager (2026-07-08) 审批配置管理器，用于管理租户审批规则
+	configManager ConfigManagerService
+
 	// attachmentHandler (2026-07-01, migration 325) 提供附件下载
 	// (GET /api/attachments/{path...}) 与按请求列出附件元数据
 	// (GET /api/logs/{request_id}/attachments) 的能力。nil 时附件下载
@@ -309,6 +312,12 @@ func (h *Handler) SetApprovalResumeHandler(handler interface {
 	ResumeAfterApproval(ctx context.Context, approvalID, tenantID string) error
 }) {
 	h.approvalResumeHandler = handler
+}
+
+// SetConfigManager (2026-07-08) wires the approval config manager for tenant approval rules.
+// Called from cmd/gateway/main.go after constructing the config manager.
+func (h *Handler) SetConfigManager(cm ConfigManagerService) {
+	h.configManager = cm
 }
 
 func (h *Handler) SetBackgroundServices(credCycler *bg.CredentialCycler, credRecov *bg.CredentialRecovery, envCleaner *bg.EnvelopeCleaner, stickyClean *bg.StickyCleaner, taxSync *bg.TaxonomySync) {

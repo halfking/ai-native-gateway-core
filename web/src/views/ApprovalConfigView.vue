@@ -35,9 +35,17 @@ async function loadConfig() {
   loading.value = true
   error.value = null
   try {
-    config.value = await getApprovalConfig()
+    const loadedConfig = await getApprovalConfig()
+    // Ensure notification_channels is always an object (2026-07-08: fix undefined access)
+    config.value = {
+      ...loadedConfig,
+      notification_channels: loadedConfig.notification_channels || {},
+      rules: loadedConfig.rules || [],
+      approvers: loadedConfig.approvers || [],
+    }
   } catch (e: any) {
     error.value = e.message || '加载配置失败'
+    console.error('Failed to load approval config:', e)
   } finally {
     loading.value = false
   }

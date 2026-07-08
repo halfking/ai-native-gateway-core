@@ -108,7 +108,7 @@ const selectedCanonical = ref('')
 
 const statuses: ModelStatus[] = ['active', 'disabled', 'deprecated', 'hidden']
 const modalities = ['text', 'vision', 'audio', 'multimodal', 'embedding']
-const singleSelectNamespaces = new Set([t('models.colFamily'), 'generation', t('models.colModality'), 'series', 'variant', 'version'])
+const singleSelectNamespaces = computed(() => new Set([t('models.colFamily'), 'generation', t('models.colModality'), 'series', 'variant', 'version']))
 
 const modelStatusOptions = [
   { value: 'active', label: 'active' },
@@ -157,7 +157,7 @@ const {
   getFamily: (model) => model.family ?? null,
   matchesSearch,
   matchesVendor,
-  singleSelectNamespaces,
+  singleSelectNamespaces: singleSelectNamespaces.value,
 })
 
 // 计算厂商列表

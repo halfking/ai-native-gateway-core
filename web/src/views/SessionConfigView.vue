@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { nextTick, ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ApprovalConfigPanel from '../components/ApprovalConfigPanel.vue'
 import CompressionConfigPanel from '../components/CompressionConfigPanel.vue'
@@ -9,11 +9,11 @@ const { t } = useI18n()
 
 const activeTab = ref('approval')
 
-const tabs = [
+const tabs = computed(() => [
   { key: 'approval', label: t('sessions.config.approvalTab'), icon: '✓' },
   { key: 'compression', label: t('sessions.config.compressionTab'), icon: '🗜️' },
   { key: 'health', label: t('sessions.config.healthTab'), icon: '💚' },
-]
+])
 
 /**
  * ARIA tab pattern: ←/→ 切换 tab 并把焦点移动到新 tab。
@@ -21,10 +21,10 @@ const tabs = [
  * 焦点应跟随激活 tab 移动。
  */
 function focusAdjacentTab(direction: -1 | 1) {
-  const idx = tabs.findIndex((tab) => tab.key === activeTab.value)
+  const idx = tabs.value.findIndex((tab) => tab.key === activeTab.value)
   if (idx === -1) return
-  const nextIdx = (idx + direction + tabs.length) % tabs.length
-  const nextKey = tabs[nextIdx]!.key
+  const nextIdx = (idx + direction + tabs.value.length) % tabs.value.length
+  const nextKey = tabs.value[nextIdx]!.key
   activeTab.value = nextKey
   // 等待 v-if 渲染后聚焦
   void nextTick(() => {

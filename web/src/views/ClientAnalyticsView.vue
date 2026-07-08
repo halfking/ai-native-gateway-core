@@ -203,21 +203,21 @@ function goBack() {
             </template>
             <el-table :data="data.related_tasks" style="width: 100%" max-height="400">
               <el-table-column prop="task_id" :label="t('sessions.stats.taskId')" min-width="120">
-                <template #default="{ row }">
-                  <el-link type="primary" @click="handleTaskClick(row.task_id)">
-                    {{ row.task_id }}
+                <template #default="scope">
+                  <el-link v-if="scope?.row" type="primary" @click="handleTaskClick(scope.row.task_id)">
+                    {{ scope.row.task_id }}
                   </el-link>
                 </template>
               </el-table-column>
               <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
               <el-table-column prop="total_cost_usd" :label="t('sessions.stats.totalCost')" width="100" align="right">
-                <template #default="{ row }">
-                  ${{ row.total_cost_usd.toFixed(2) }}
+                <template #default="scope">
+                  <span v-if="scope?.row?.total_cost_usd != null">${{ scope.row.total_cost_usd.toFixed(2) }}</span>
                 </template>
               </el-table-column>
               <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="80" align="center">
-                <template #default="{ row }">
-                  <el-tag v-if="row.avg_health" size="small">{{ row.avg_health }}</el-tag>
+                <template #default="scope">
+                  <el-tag v-if="scope?.row?.avg_health" size="small">{{ scope.row.avg_health }}</el-tag>
                   <span v-else>—</span>
                 </template>
               </el-table-column>
@@ -239,14 +239,14 @@ function goBack() {
               </el-table-column>
               <el-table-column prop="request_count" :label="t('sessions.clientAnalytics.requests')" width="80" align="right" />
               <el-table-column prop="cost_usd" :label="t('sessions.clientAnalytics.cost')" width="100" align="right">
-                <template #default="{ row }">
-                  ${{ row.cost_usd.toFixed(4) }}
+                <template #default="scope">
+                  <span v-if="scope?.row?.cost_usd != null">${{ scope.row.cost_usd.toFixed(4) }}</span>
                 </template>
               </el-table-column>
               <el-table-column prop="health_grade" :label="t('sessions.clientAnalytics.health')" width="80" align="center">
-                <template #default="{ row }">
-                  <el-tag v-if="row.health_grade" :type="healthGradeColor(row.health_grade)" size="small">
-                    {{ row.health_grade }}
+                <template #default="scope">
+                  <el-tag v-if="scope?.row?.health_grade" :type="healthGradeColor(scope.row.health_grade)" size="small">
+                    {{ scope.row.health_grade }}
                   </el-tag>
                   <span v-else>—</span>
                 </template>

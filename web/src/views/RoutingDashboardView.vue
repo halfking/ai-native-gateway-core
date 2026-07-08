@@ -518,8 +518,8 @@ function taskLabel(key: string): string {
   return TASK_TYPES.find(t => t.key === key)?.label ?? key
 }
 
-const L1_STEPS = ['Prompt', '8类分类', t('routing.sixDimScore'), 'Profile', t('routing.chooseModel')]
-const L2_STEPS = [t('routing.modelParse'), t('routing.tierFallback'), '计费轮次', 'P2C得分', '执行/熔断']
+const L1_STEPS = computed(() => ['Prompt', '8类分类', t('routing.sixDimScore'), 'Profile', t('routing.chooseModel')])
+const L2_STEPS = computed(() => [t('routing.modelParse'), t('routing.tierFallback'), '计费轮次', 'P2C得分', '执行/熔断'])
 
 const heroChips = computed(() => {
   if (activeTab.value === 'analytics') {
