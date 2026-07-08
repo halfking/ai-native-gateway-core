@@ -49,6 +49,7 @@ export default {
     sessionAudit: 'تدقيق الجلسات',
     sessionConfig: 'إعدادات الجلسة',
     agents: 'سجل الوكلاء',
+    promptInjection: 'Prompt Injection Detection',
     examples: 'أمثلة التكامل',
     chat: 'محادثة',
   },
