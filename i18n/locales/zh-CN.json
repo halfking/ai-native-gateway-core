@@ -26,6 +26,12 @@
   "blocked": {
     "other": "请求被安全策略拦截：{{.Reason}}"
   },
+  "content_filter": {
+    "other": "您的请求被内容审核系统拦截（原因：{{.Reason}}）。请修改请求内容后重试。"
+  },
+  "content_filter_hint": {
+    "other": "请检查输入是否包含敏感或违禁内容后重试。同一请求在本模型的所有供应商上都会被拒绝。"
+  },
   "no_candidate": {
     "other": "没有可用于模型“{{.Model}}”的供应商"
   },
