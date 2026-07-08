@@ -88,12 +88,60 @@ func (h *SessionAuditHook) Execute(ctx context.Context, env *domain.PipelineRequ
 		return nil
 	}
 
-	// 2. 快速检测（同步，≤5ms）
-	result, err := h.detector.Detect(ctx, content)
-	if err != nil {
-		// 检测器失败降级，不阻断主流程
-		slog.Warn("detector failed, degrading", "error", err, "session_id", env.SessionID)
-		return nil
+	// 2. 检测（根据配置选择单模型或多模型）
+	var result *sessionaudit.DetectResult
+
+	if len(cfg.DetectorModels) > 1 {
+		// 多模型深度检测（异步，不阻塞主流程）
+		// 先快速检测，然后在后台进行深度检测
+		fastResult, err := h.detector.Detect(ctx, content)
+		if err != nil {
+			slog.Warn("detector failed, degrading", "error", err, "session_id", env.SessionID)
+			return nil
+		}
+		result = fastResult
+
+		// 如果快速检测分数较高，启动异步深度检测
+		if result.Score >= 3 {
+			go func() {
+				deepResult, err := h.detector.DetectWithModels(context.Background(), content, cfg.DetectorModels)
+				if err != nil {
+					slog.Warn("multi-model detection failed", "error", err, "session_id", env.SessionID)
+					return
+				}
+				slog.Info("multi-model detection completed",
+					"session_id", env.SessionID,
+					"fast_score", fastResult.Score,
+					"deep_score", deepResult.Score,
+					"models", len(cfg.DetectorModels))
+				// 深度检测结果可以触发额外的审计事件或通知
+				if deepResult.Score > fastResult.Score {
+					// 如果深度检测分数更高，发布额外事件
+					event := &sessionaudit.SessionAuditEvent{
+						SessionID:    env.SessionID,
+						TenantID:     env.TenantID,
+						Content:      content,
+						DetectResult: deepResult,
+						ClientInfo: sessionaudit.ClientInfo{
+							IP:        getClientIP(env),
+							UserAgent: getUserAgent(env),
+							Model:     getClientModel(env),
+						},
+					}
+					if err := h.eventBus.Publish(event); err != nil {
+						slog.Warn("publish deep audit event failed", "error", err)
+					}
+				}
+			}()
+		}
+	} else {
+		// 单模型快速检测
+		fastResult, err := h.detector.Detect(ctx, content)
+		if err != nil {
+			slog.Warn("detector failed, degrading", "error", err, "session_id", env.SessionID)
+			return nil
+		}
+		result = fastResult
 	}
 
 	// 3. 写入元数据（供后续 Hook 使用）
