@@ -570,10 +570,12 @@ func main() {
 			saveCapturedPending(pendingStore, pc, resp)
 			return outcome
 		}
-		routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
-		routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
-		routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
-		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
+			routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
+			routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
+			routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
+			// Write-time 客户端可见脱敏（2026-07-09，增强 1）
+			routingExec.RedactBodyFn = buildRedactBodyFn(dbConn.Stdlib())
+			routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
 		// 2026-06-21: 同步重试超时（全候选失败后保持客户端连接继续重试）
