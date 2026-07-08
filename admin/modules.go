@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -22,16 +23,10 @@ type ModuleDefinition struct {
 	DocsURL      string               `json:"docs_url"`
 	DangerLevel  settings.DangerLevel `json:"danger_level"`
 	Integration  *ModuleIntegration   `json:"integration,omitempty"`
-	Dependencies []ModuleDependency   `json:"dependencies,omitempty"`
-}
-
-// ModuleDependency describes a dependency relationship between modules.
-type ModuleDependency struct {
-	Key         string `json:"key"`
-	Name        string `json:"name"`
-	Icon        string `json:"icon"`
-	Required    bool   `json:"required"` // true=必需，false=推荐
-	Description string `json:"description"`
+	// Requires lists module keys that must be enabled before this module
+	// can be activated. The frontend displays these as prerequisites and
+	// the toggle endpoint validates them before enabling.
+	Requires []string `json:"requires,omitempty"`
 }
 
 // ModuleIntegration describes external integration configuration for a module.
@@ -71,7 +66,7 @@ func allModuleDefinitions() []ModuleDefinition {
 				Icon:        "🗜️",
 				Category:    "compression",
 				SettingKey:  "compression.enabled",
-				ConfigKeys:  []string{"compression.mode", "compression.window_fraction", "compression.llm_model"},
+				ConfigKeys:  []string{"compression.mode", "compression.window_fraction"},
 				DocsURL:     "/admin/compression",
 				DangerLevel: settings.Warning,
 			},
@@ -142,17 +137,12 @@ func allModuleDefinitions() []ModuleDefinition {
 			{
 				Key:         "prompt_injection",
 				Name:        "提示词注入检测",
-				Description: "多层防御体系：规则引擎 + LLM 智能检测 + 向量相似度 + Canary Token，支持 15 种风险类别和 11 种处理动作。",
+				Description: "LLM-as-judge 检测提示词注入攻击、角色劫持、指令泄漏等安全威胁，当前为检测模式（不拦截）。",
 				Capabilities: []string{
-					"多层检测引擎（规则/启发式/LLM/向量/Canary）",
-					"15 种风险类别（角色劫持、指令覆盖、越狱、数据窃取等）",
-					"11 种处理动作（替换/脱敏/拒绝/终止/审批等）",
-					"严重等级处理矩阵（可配置每级动作）",
-					"LLM 智能检测（支持多引擎选择）",
-					"Canary Token 泄漏检测",
-					"向量相似度攻击匹配（pgvector）",
-					"人工审批流程",
-					"Webhook/邮件告警",
+					"LLM-as-judge 检测引擎",
+					"10+ 常见注入模式（角色劫持、指令泄漏等）",
+					"可观测模式（仅检测不拦截）",
+					"支持 Webhook 告警",
 				},
 				Icon:        "🛡️",
 				Category:    "security",
@@ -214,43 +204,10 @@ func allModuleDefinitions() []ModuleDefinition {
 					"预设响应策略",
 					"与审计模块联动",
 				},
-				Icon:       "🔐",
-				Category:   "security",
-				SettingKey: "security.enabled",
-				ConfigKeys: []string{
-					"security.mode",
-					"security.llm.intent_model",
-					"security.llm.threat_model",
-					"security.intent.enabled",
-					"security.intent.confidence_threshold",
-					"security.intent.drift_threshold",
-					"security.threat.enabled",
-					"security.threat.severity_threshold",
-					"security.threat.risk_level.low_threshold",
-					"security.threat.risk_level.medium_threshold",
-					"security.threat.checks.prompt_inject",
-					"security.threat.checks.jailbreak",
-					"security.threat.checks.data_leak",
-					"security.threat.checks.pii",
-					"security.threat.checks.persona_override",
-					"security.response.low_risk",
-					"security.response.medium_risk",
-					"security.response.high_risk",
-					"security.audit.enabled",
-					"security.audit.log_all",
-					"security.audit.sampling_rate",
-				},
-				DocsURL:     "/admin/modules",
+				Icon:        "🔐",
+				Category:    "security",
+				SettingKey:  "security.enabled",
 				DangerLevel: settings.Dangerous,
-				Dependencies: []ModuleDependency{
-					{Key: "prompt_injection", Name: "提示词注入检测", Required: true, Description: "提供提示词注入模式检测能力"},
-					{Key: "output_compliance", Name: "输出合规检测", Required: true, Description: "提供PII和敏感数据检测能力"},
-					{Key: "session_audit", Name: "会话审计与审批", Required: true, Description: "提供高风险操作审批流程"},
-					{Key: "session_inspector", Name: "会话健康检查", Required: false, Description: "提供意图分类和漂移检测能力"},
-					{Key: "audit", Name: "审计日志", Required: false, Description: "记录安全检测审计日志"},
-					{Key: "cache", Name: "会话缓存", Required: false, Description: "提升安全检测性能"},
-					{Key: "compression", Name: "压缩管理", Required: false, Description: "降低安全检测token消耗"},
-				},
 			},
 			{
 				Key:         "rate_limit",
@@ -324,6 +281,44 @@ func allModuleDefinitions() []ModuleDefinition {
 					Label:       "飞书",
 					Description: "对接飞书自定义机器人，使用 Webhook 进行消息推送和交互",
 					DocURL:      "https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot",
+				},
+			},
+			{
+				Key:         "wechat_bot",
+				Name:        "微信机器人",
+				Description: "对接企业微信自定义机器人，实现远程运维通知、风险告警推送、审批操作执行等功能。依赖压缩管理、提示词注入检测、会话缓存、会话审计与审批等模块。",
+				Capabilities: []string{
+					"实时告警推送（注入攻击、高延迟、错误率飙升）",
+					"高风险操作审批通知与微信内操作",
+					"系统状态查询",
+					"企业微信签名验证（SHA1 + AES-CBC 解密）",
+					"用户白名单控制",
+				},
+				Icon:       "💬",
+				Category:   "integration",
+				SettingKey: "wechat_bot.enabled",
+				ConfigKeys: []string{
+					"wechat_bot.webhook_url",
+					"wechat_bot.corp_id",
+					"wechat_bot.agent_id",
+					"wechat_bot.corp_secret",
+					"wechat_bot.encoding_aes_key",
+					"wechat_bot.verify_token",
+					"wechat_bot.notify_on_alert",
+					"wechat_bot.notify_on_approval",
+					"wechat_bot.notify_on_latency",
+					"wechat_bot.notify_on_error_rate",
+					"wechat_bot.latency_threshold_ms",
+					"wechat_bot.error_rate_threshold",
+					"wechat_bot.allowed_users",
+				},
+				DangerLevel: settings.Safe,
+				Requires:    []string{"compression", "prompt_injection", "cache", "session_audit"},
+				Integration: &ModuleIntegration{
+					Type:        "wechat",
+					Label:       "企业微信",
+					Description: "对接企业微信自定义机器人，支持群机器人 Webhook 和应用消息推送，实现告警通知与审批交互",
+					DocURL:      "https://developer.work.weixin.qq.com/document/path/91770",
 				},
 			},
 			{
@@ -515,23 +510,9 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Modules without a SettingKey (e.g. memora) are runtime-driven and have
-	// no on/off toggle to persist. Return 200 with the effective state so the
-	// frontend can update its UI without erroring — previously this returned
-	// 404, which left the optimistic UI in an inconsistent state.
-	if found.SettingKey == "" {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":  "ok",
-			"enabled": true,
-			"module":  found.Key,
-			"message": "该模块无独立开关，状态由运行时决定: " + found.Name,
-		})
-		return
-	}
-
 	sp := settings.Global.Spec(found.SettingKey)
 	if sp == nil {
-		writeError(w, http.StatusNotFound, "module setting spec not registered: "+found.SettingKey)
+		writeError(w, http.StatusNotFound, "module has no setting key")
 		return
 	}
 
@@ -547,6 +528,31 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
+	}
+
+	// When enabling, check that all prerequisite modules are also enabled.
+	if body.Enabled && len(found.Requires) > 0 {
+		allDefs := allModuleDefinitions()
+		defMap := make(map[string]*ModuleDefinition, len(allDefs))
+		for i := range allDefs {
+			defMap[allDefs[i].Key] = &allDefs[i]
+		}
+		var missing []string
+		for _, reqKey := range found.Requires {
+			reqDef, ok := defMap[reqKey]
+			if !ok {
+				missing = append(missing, reqKey)
+				continue
+			}
+			reqEnabled, _ := resolveModuleEnabled(*reqDef)
+			if !reqEnabled {
+				missing = append(missing, reqDef.Name)
+			}
+		}
+		if len(missing) > 0 {
+			writeError(w, http.StatusConflict, fmt.Sprintf("依赖模块未启用: %s", strings.Join(missing, "、")))
+			return
+		}
 	}
 
 	store, ok := h.dbSettingsStore()
