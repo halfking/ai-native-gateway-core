@@ -241,7 +241,7 @@ watch(
   width: 100%;
   min-width: 0;
   /* 最新的请求贴右侧（视觉上像时间轴向右流动） */
-  justify-content: flex-end;
+  justify-content: flex-start;
   flex-wrap: nowrap;
 }
 
