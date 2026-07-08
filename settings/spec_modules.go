@@ -57,17 +57,7 @@ func ModuleSpecs() []*Spec {
 			HotReload:       true,
 			Observability:   "/api/admin/compression/stats",
 		},
-		{
-			Key:             "session_audit.enabled",
-			Type:            TypeBool,
-			Scope:           ScopePlatform,
-			Category:        CategoryModules,
-			Default:         true,
-			Description:     "会话审计与审批",
-			DescriptionLong: "高风险会话自动触发审计审批流程。管理员可以批准/拒绝高风险操作。关闭后所有会话直接放行。",
-			DangerLevel:     Warning,
-			HotReload:       true,
-		},
+		// session_audit.enabled 已在 spec_session_audit.go 中定义，此处不重复注册
 		{
 			Key:             "session_inspector.enabled",
 			Type:            TypeBool,
