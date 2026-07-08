@@ -54,6 +54,63 @@ type SessionCompareData struct {
 	ContextWindow  int           `json:"context_window"`
 	ModelUsed      string        `json:"model_used"`
 	MsgCount       int           `json:"msg_count"`
+
+	// Turns is the per-turn three-stage (original / compressed / secured)
+	// view of the conversation, used by the session detail page to render
+	// each round's send + receive at every pipeline stage. The stages share
+	// the same turn index, so the UI can align them in three columns.
+	// Added 2026-07-08; backward compatible — older clients ignore it.
+	Turns []TurnView `json:"turns,omitempty"`
+
+	// SessionTags 是会话级（非每轮）的多维标签，投影自 SessionState v6
+	// （security/compliance/pii/approval/optimization）与 session_summaries
+	// （task/client/llm/topic/intent/quality）。用于会话详情顶部 chips。
+	// Added 2026-07-09; backward compatible.
+	SessionTags []SessionTagView `json:"session_tags,omitempty"`
+}
+
+// SessionTagView 是 session_tags 表一行的扁平视图（会话级标签）。
+type SessionTagView struct {
+	TagKey     string  `json:"tag_key"`
+	TagValue   string  `json:"tag_value"`
+	TagSource  string  `json:"tag_source"`
+	Confidence float64 `json:"confidence"`
+}
+
+// TurnView captures one request round across the three-stage pipeline.
+//
+// The gateway stores, per request_log row:
+//   - request_body  — what the client sent (original / send)
+//   - outbound_body — what the gateway actually forwarded after compression
+//     (compressed / send); may contain a [smm_v1:...] summary marker
+//   - response_body — the LLM reply (receive, shared across all stages)
+//
+// The "secured" stage is derived from compression_meta tags (PII strip,
+// tool-strip, audit) since there is no dedicated column; when no security
+// transformation was applied, Secured equals Compressed with an empty tag
+// set so the UI can show "no security changes this turn".
+type TurnView struct {
+	Turn          int    `json:"turn"`
+	RequestID     string `json:"request_id"`
+	Ts            string `json:"ts"`
+	Strategy      string `json:"strategy,omitempty"`
+	SummaryMarker string `json:"summary_marker,omitempty"`
+
+	Original   TurnStage `json:"original"`
+	Compressed TurnStage `json:"compressed"`
+	Secured    TurnStage `json:"secured"`
+}
+
+// TurnStage is one direction (send/receive are both carried) of a single
+// pipeline stage for a single turn. Send = the outbound request body that
+// went to the LLM; Receive = the LLM's response.
+type TurnStage struct {
+	Send         string   `json:"send"`          // request/outbound text forwarded to LLM
+	Receive      string   `json:"receive"`       // LLM response text
+	Tokens       int      `json:"tokens"`        // token estimate for Send
+	RangeStart   int      `json:"range_start,omitempty"` // compressed span start turn (1-based)
+	RangeEnd     int      `json:"range_end,omitempty"`   // compressed span end turn (1-based)
+	AppliedTags  []string `json:"applied_tags,omitempty"` // security transforms (pii_strip, strip_tools, ...)
 }
 
 // SessionCompareAPI handles session comparison endpoints.
@@ -148,6 +205,14 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 	var totalOriginalTokens, totalCompressedTokens int
 	originalSeen := make(map[string]bool)
 
+	// Turns: per-request three-stage view. turnCounter is 1-based so the UI
+	// can show "#1, #2, ...". We track the first turn that carried a
+	// summary marker so every subsequent turn's compressed stage can report
+	// the span [compressedSpanStart, currentTurn].
+	turns := make([]TurnView, 0)
+	turnCounter := 0
+	compressedSpanStart := 0 // 0 = no summary has been written yet
+
 	for rows.Next() {
 		var (
 			requestID, clientModel, outboundModel   string
@@ -190,6 +255,13 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 			}
 		}
 
+		// Decode compression_meta once for both the stats block and the
+		// turn-level secured-stage tags below.
+		var compMetaMap map[string]any
+		if compressionMeta != nil && *compressionMeta != "" {
+			_ = json.Unmarshal([]byte(*compressionMeta), &compMetaMap)
+		}
+
 		// Parse compressed outbound messages
 		if outboundBody != nil && *outboundBody != "" {
 			compMsgs := parseMessagesFromBody(*outboundBody, &msgIndex)
@@ -203,13 +275,8 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 				compressionFound = true
 
 				// Parse compression meta for timing
-				if compressionMeta != nil && *compressionMeta != "" {
-					var meta map[string]any
-					if json.Unmarshal([]byte(*compressionMeta), &meta) == nil {
-						if ts, ok := meta["timestamp"].(string); ok {
-							stats.CompressionTimestamp = ts
-						}
-					}
+				if ts, ok := compMetaMap["timestamp"].(string); ok {
+					stats.CompressionTimestamp = ts
 				}
 			}
 		}
@@ -224,6 +291,74 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 		if requestBody != nil {
 			totalOriginalTokens += estimateTokens(*requestBody)
 		}
+
+		// ── Build the per-turn three-stage view ───────────────────────────
+		turnCounter++
+		tv := TurnView{
+			Turn:      turnCounter,
+			RequestID: requestID,
+			Ts:        createdAt.Format(time.RFC3339),
+		}
+		if compressionStrategy != nil {
+			tv.Strategy = *compressionStrategy
+		}
+
+		// Original stage (send = the latest user message in this turn's
+		// client request body, kept compact per spec; receive = the LLM
+		// reply for this turn).
+		tv.Original = TurnStage{
+			Send:    latestUserMessage(requestBody),
+			Receive: firstAssistantFromResponse(responseBody),
+			Tokens:  estimateTokens(latestUserMessage(requestBody)),
+		}
+
+		// Compressed stage (send = full outbound body forwarded to the LLM,
+		// i.e. the "panorama"; receive = same LLM reply).
+		compressedSend := ptrString(outboundBody)
+		tv.Compressed = TurnStage{
+			Send:    compressedSend,
+			Receive: tv.Original.Receive,
+			Tokens:  estimateTokens(compressedSend),
+		}
+		// summary_marker detection: the outbound body carries a [smm_v1:...]
+		// prefix on the first assistant message once a compression summary
+		// has been spliced in. Record the marker + the compressed span.
+		if marker, ok := compMetaMap["summary_marker"].(string); ok && marker != "" {
+			tv.SummaryMarker = marker
+			if compressedSpanStart == 0 {
+				compressedSpanStart = 1 // summary replaces history from turn 1
+			}
+		}
+		if compressedSpanStart > 0 {
+			tv.Compressed.RangeStart = compressedSpanStart
+			tv.Compressed.RangeEnd = turnCounter
+		}
+
+		// Secured stage: derived from compression_meta / audit tags. The
+		// gateway doesn't store a separate "post-security" body column, so
+		// we surface the same compressed text annotated with the transforms
+		// that were applied this turn (pii strip, tool strip, audit score).
+		var tags []string
+		if v, ok := compMetaMap["opt_app"].(string); ok && v != "" {
+			tags = append(tags, v)
+		}
+		if b, ok := compMetaMap["pii_strip"].(bool); ok && b {
+			tags = append(tags, "pii_strip")
+		}
+		if b, ok := compMetaMap["sen_det"].(bool); ok && b {
+			tags = append(tags, "sensitive_detected")
+		}
+		if v, ok := compMetaMap["audit_score"]; ok && v != nil {
+			tags = append(tags, fmt.Sprintf("audit:%v", v))
+		}
+		tv.Secured = TurnStage{
+			Send:        compressedSend,
+			Receive:     tv.Original.Receive,
+			Tokens:      tv.Compressed.Tokens,
+			AppliedTags: tags,
+		}
+
+		turns = append(turns, tv)
 	}
 
 	if len(allOriginal) == 0 && len(allCompressed) == 0 {
@@ -250,6 +385,10 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 		LastRefresh: time.Now().Format(time.RFC3339),
 	}
 
+	// Load session-level tags (security/compliance/pii/approval + OLAP tags).
+	// Best-effort: failure leaves SessionTags empty (UI shows "—").
+	sessionTags := loadSessionTagsForCompare(ctx, q, sessionID, tenantID)
+
 	return &SessionCompareData{
 		SessionID:      sessionID,
 		TenantID:       tenantID,
@@ -263,7 +402,93 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 		ContextWindow:  contextWindow,
 		ModelUsed:      modelUsed,
 		MsgCount:       len(allOriginal),
+		Turns:          turns,
+		SessionTags:    sessionTags,
 	}, nil
+}
+
+// loadSessionTagsForCompare 读取会话级标签（session_tags 表）。
+// 失败返回 nil（best-effort，不阻断 compare 主流程）。
+func loadSessionTagsForCompare(ctx context.Context, q pgx.Tx, sessionID, tenantID string) []SessionTagView {
+	if sessionID == "" {
+		return nil
+	}
+	query := `SELECT tag_key, tag_value, tag_source, confidence
+		FROM session_tags
+		WHERE gw_session_id = $1 AND ($2 = '' OR tenant_id = $2)
+		ORDER BY created_at`
+	rows, err := q.Query(ctx, query, sessionID, tenantID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []SessionTagView
+	for rows.Next() {
+		var t SessionTagView
+		if err := rows.Scan(&t.TagKey, &t.TagValue, &t.TagSource, &t.Confidence); err != nil {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// latestUserMessage returns the content of the last "user" role message in
+// a request body string. Used for the compact "original/send" column of a
+// turn (only the current round's prompt, not the full history). Returns ""
+// when the body is empty or has no user message.
+func latestUserMessage(body *string) string {
+	if body == nil || *body == "" {
+		return ""
+	}
+	var parsed struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(*body), &parsed); err != nil {
+		return ""
+	}
+	for i := len(parsed.Messages) - 1; i >= 0; i-- {
+		if parsed.Messages[i].Role == "user" {
+			return extractTextContent(parsed.Messages[i].Content)
+		}
+	}
+	return ""
+}
+
+// firstAssistantFromResponse extracts the first assistant message text from
+// an OpenAI-format response body. Returns "" when absent or unparseable.
+func firstAssistantFromResponse(body *string) string {
+	if body == nil || *body == "" {
+		return ""
+	}
+	var openaiResp struct {
+		Choices []struct {
+			Message struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(*body), &openaiResp); err != nil {
+		return ""
+	}
+	for _, c := range openaiResp.Choices {
+		if c.Message.Role == "assistant" || c.Message.Role == "" {
+			return extractTextContent(c.Message.Content)
+		}
+	}
+	return ""
+}
+
+// ptrString safely dereferences a *string, returning "" for nil.
+func ptrString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // parseMessagesFromBody extracts messages from a request body.

@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // MemoraClient is the subset of a memory reader that the compaction flow
@@ -291,10 +292,20 @@ func compactionPromptForTaskType(taskType string) string {
 // compactionModelsFromEnv returns ordered compaction model IDs. Lower
 // index = preferred (cost/affinity). Caller walks the slice in order
 // and stops on the first summarization success.
+//
+// Resolution order (highest priority first):
+//  1. settings.Global "compression.llm_model" (DB > env), hot-reloadable.
+//  2. legacy env var LLM_GATEWAY_COMPACTION_MODELS.
+//  3. built-in default ["minimax-text-01", "gemini-2.5-flash"].
 func compactionModelsFromEnv() []string {
+	// 1. Settings registry (operator-editable from the admin UI).
+	if out := compactionModelsFromSettings(); len(out) > 0 {
+		return out
+	}
+	// 2. Legacy env override.
 	raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPACTION_MODELS"))
 	if raw == "" {
-		return []string{"minimax-text-01", "gemini-2.5-flash"}
+		return defaultCompactionModels
 	}
 	parts := strings.Split(raw, ",")
 	out := make([]string, 0, len(parts))
@@ -304,7 +315,46 @@ func compactionModelsFromEnv() []string {
 		}
 	}
 	if len(out) == 0 {
-		return []string{"minimax-text-01", "gemini-2.5-flash"}
+		return defaultCompactionModels
+	}
+	return out
+}
+
+// defaultCompactionModels is the built-in fallback list.
+var defaultCompactionModels = []string{"minimax-text-01", "gemini-2.5-flash"}
+
+// compactionModelsFromSettings reads the "compression.llm_model" platform
+// setting and splits it into an ordered model list. Returns nil when the
+// registry is unavailable or the setting is empty (caller then falls back
+// to the env / built-in defaults).
+func compactionModelsFromSettings() []string {
+	if settings.Global == nil {
+		return nil
+	}
+	sp := settings.Global.Spec("compression.llm_model")
+	if sp == nil {
+		return nil
+	}
+	raw, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	out := make([]string, 0, 4)
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
