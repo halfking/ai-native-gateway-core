@@ -27,15 +27,74 @@ const credentialSaving = ref<Record<number, boolean>>({})
 const credentialErrors = ref<Record<number, string>>({})
 
 // ── Filter & sort state ──────────────────────────────────────────────────────
-const filterSearch = ref('')
+// 2026-07-08: filter selections are persisted to localStorage so each
+// operator lands on the same view they last configured. The credential
+// health dimension defaults to 'healthy' (凭据正常) per the operator
+// request: on first visit the list opens focused on currently-usable
+// credentials, and the active chip survives reloads / new tabs.
+const FILTER_STORAGE_KEY = 'llmgw_providers_filter_v1'
+
+type PersistedFilter = {
+  healthStatus: 'all' | 'healthy' | 'warning' | 'unreachable' | 'unknown'
+  routability:  'all' | 'available' | 'unavailable' | 'no_models' | 'manual_disabled'
+  freeModel:    'all' | 'yes' | 'no'
+  search:       string
+}
+
+const VALID_HEALTH   = ['all', 'healthy', 'warning', 'unreachable', 'unknown'] as const
+const VALID_ROUTE    = ['all', 'available', 'unavailable', 'no_models', 'manual_disabled'] as const
+const VALID_FREEMOD  = ['all', 'yes', 'no'] as const
+
+function readPersistedFilter(): Partial<PersistedFilter> {
+  try {
+    const raw = localStorage.getItem(FILTER_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Partial<PersistedFilter>
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writePersistedFilter(patch: Partial<PersistedFilter>) {
+  try {
+    const current = readPersistedFilter()
+    const next: PersistedFilter = {
+      healthStatus: patch.healthStatus ?? current.healthStatus ?? 'healthy',
+      routability:  patch.routability  ?? current.routability  ?? 'available',
+      freeModel:    patch.freeModel    ?? current.freeModel    ?? 'all',
+      search:       patch.search       ?? current.search       ?? '',
+    }
+    localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(next))
+  } catch {
+    // localStorage unavailable / quota exceeded — non-fatal
+  }
+}
+
+const _persisted = readPersistedFilter()
+const filterSearch = ref<string>(
+  typeof _persisted.search === 'string' ? _persisted.search : '',
+)
 // 2026-07-03 v738: split into two orthogonal filter dimensions. The
 // healthStatus dimension is now scoped to credential probe health
 // only (healthy / warning / unreachable / unknown). Routability is
 // the new dimension that answers "can this provider route traffic
 // right now" and is independent of credential health.
-const filterHealthStatus = ref<'all' | 'healthy' | 'warning' | 'unreachable' | 'unknown'>('all')
-const filterRoutability = ref<'all' | 'available' | 'unavailable' | 'no_models' | 'manual_disabled'>('available')
-const filterFreeModel = ref<'all' | 'yes' | 'no'>('all')
+const filterHealthStatus = ref<'all' | 'healthy' | 'warning' | 'unreachable' | 'unknown'>(
+  VALID_HEALTH.includes(_persisted.healthStatus as typeof VALID_HEALTH[number])
+    ? (_persisted.healthStatus as 'all' | 'healthy' | 'warning' | 'unreachable' | 'unknown')
+    : 'healthy',
+)
+const filterRoutability = ref<'all' | 'available' | 'unavailable' | 'no_models' | 'manual_disabled'>(
+  VALID_ROUTE.includes(_persisted.routability as typeof VALID_ROUTE[number])
+    ? (_persisted.routability as 'all' | 'available' | 'unavailable' | 'no_models' | 'manual_disabled')
+    : 'available',
+)
+const filterFreeModel = ref<'all' | 'yes' | 'no'>(
+  VALID_FREEMOD.includes(_persisted.freeModel as typeof VALID_FREEMOD[number])
+    ? (_persisted.freeModel as 'all' | 'yes' | 'no')
+    : 'all',
+)
 let _searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 // 2026-07-03 v738: visibleProviders is now a no-op (returns providers
@@ -629,22 +688,26 @@ async function load() {
 }
 
 function onSearchInput() {
+  writePersistedFilter({ search: filterSearch.value })
   if (_searchDebounceTimer) clearTimeout(_searchDebounceTimer)
   _searchDebounceTimer = setTimeout(() => load(), 300)
 }
 
 function onHealthStatusChange(status: 'all' | 'healthy' | 'warning' | 'unreachable' | 'unknown') {
   filterHealthStatus.value = status
+  writePersistedFilter({ healthStatus: status })
   load()
 }
 
 function onRoutabilityChange(value: 'all' | 'available' | 'unavailable' | 'no_models' | 'manual_disabled') {
   filterRoutability.value = value
+  writePersistedFilter({ routability: value })
   load()
 }
 
 function onFreeModelChange(value: 'all' | 'yes' | 'no') {
   filterFreeModel.value = value
+  writePersistedFilter({ freeModel: value })
   load()
 }
 
