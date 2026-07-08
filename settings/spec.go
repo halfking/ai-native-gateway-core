@@ -63,6 +63,7 @@ const (
 	CategorySecurity       Category = "security"
 	CategoryCircuitBreaker Category = "circuit_breaker"
 	CategoryGeneral        Category = "general"
+	CategoryIntegration    Category = "integration"
 )
 
 // DangerLevel gates the required role for PUT operations.
