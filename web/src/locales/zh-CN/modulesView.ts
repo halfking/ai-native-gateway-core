@@ -39,11 +39,14 @@ export default {
   overview: {
     sectionDescription: '模块描述',
     sectionCapabilities: '能力清单',
+    sectionDependencies: '依赖模块',
     labelKey: '模块标识',
     labelDanger: '危险级别',
     labelConfigCount: '配置项数',
     labelStatus: '当前状态',
     viewAllSettings: '查看所有系统设置',
+    dependencyDisabled: '此依赖模块未启用',
+    notEnabled: '未启用',
   },
 
   config: {

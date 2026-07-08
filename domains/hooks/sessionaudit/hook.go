@@ -50,7 +50,6 @@ func NewSessionAuditHookV1(detector *sessionaudit.FastDetector, bus *eventbus.Me
 	}
 }
 
-
 // SetNotifier 注入审批通知器。
 // ApprovalNotifier 接口定义在 approval_hook.go（同包）。
 // notification.ApprovalNotifier 实现了此接口，可直接注入。
@@ -76,6 +75,12 @@ func (h *SessionAuditHook) Enabled(ctx context.Context, env *domain.PipelineRequ
 }
 
 func (h *SessionAuditHook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
+	// 加载配置
+	cfg := LoadConfig()
+	if !cfg.Enabled {
+		return nil
+	}
+
 	// 1. 提取用户内容
 	content, err := extractUserContent(env)
 	if err != nil || content == "" {
@@ -116,10 +121,71 @@ func (h *SessionAuditHook) Execute(ctx context.Context, env *domain.PipelineRequ
 		slog.Warn("publish audit event failed", "error", err)
 	}
 
-	// 5. 如果是 Block 级别，直接阻断
+	// 5. 根据 enforcement_level 决策
+	switch cfg.EnforcementLevel {
+	case "strict":
+		return h.handleStrict(ctx, env, result, cfg)
+	case "advisory":
+		return h.handleAdvisory(ctx, env, result, cfg)
+	case "audit_only":
+		return h.handleAuditOnly(ctx, env, result, cfg)
+	default:
+		return h.handleStrict(ctx, env, result, cfg)
+	}
+}
+
+// handleStrict 严格模式：拦截高风险
+func (h *SessionAuditHook) handleStrict(ctx context.Context, env *domain.PipelineRequest, result *sessionaudit.DetectResult, cfg *Config) error {
+	// 自动拒绝（分数 ≥ auto_block_threshold）
+	if cfg.ShouldAutoBlock(result.Score) {
+		env.StatusCode = 403
+		if env.Envelope != nil && env.Envelope.Transport != nil && env.Envelope.Transport.W != nil {
+			w := env.Envelope.Transport.W
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(403)
+			_, _ = fmt.Fprintf(w, `{
+				"error": {
+					"message": "Request blocked by security policy: critical risk detected (score=%d)",
+					"type": "security_violation",
+					"code": "auto_blocked"
+				}
+			}`, result.Score)
+		}
+		return fmt.Errorf("auto-blocked: score=%d >= threshold=%d", result.Score, cfg.AutoBlockThreshold)
+	}
+
+	// 触发审批（分数 ≥ approval_threshold）
+	if cfg.ShouldTriggerApproval(result.Score) {
+		// 仅在 v1 路径（approvalMgr 不为 nil）时创建审批
+		if h.approvalMgr != nil {
+			approvalID, record, err := h.createApprovalV1(ctx, env, result, cfg)
+			if err != nil {
+				slog.Warn("failed to create approval", "error", err, "session_id", env.SessionID)
+				// 创建审批失败，降级为警告
+				slog.Warn("approval creation failed, degrading to warn", "session_id", env.SessionID, "score", result.Score)
+				return nil
+			}
+
+			// 发送通知
+			if h.notifier != nil && cfg.NotifyOnPending && record != nil {
+				if err := h.notifier.NotifyApproval(ctx, record); err != nil {
+					slog.Warn("failed to send approval notification", "error", err, "approval_id", approvalID)
+				}
+			}
+
+			// 设置元数据
+			env.Metadata["approval_required"] = true
+			env.Metadata["approval_id"] = approvalID
+		}
+
+		slog.Info("approval required", "session_id", env.SessionID, "score", result.Score)
+		// 不阻断流程，继续执行（审批在后台处理）
+		return nil
+	}
+
+	// Block 决策（来自检测器）
 	if result.Decision == sessionaudit.DecisionBlock {
 		env.StatusCode = 403
-		// 如果有 http.ResponseWriter 可用，直接写响应
 		if env.Envelope != nil && env.Envelope.Transport != nil && env.Envelope.Transport.W != nil {
 			w := env.Envelope.Transport.W
 			w.Header().Set("Content-Type", "application/json")
@@ -135,7 +201,7 @@ func (h *SessionAuditHook) Execute(ctx context.Context, env *domain.PipelineRequ
 		return fmt.Errorf("request blocked: %s", result.Reason)
 	}
 
-	// 6. Warn 级别：记录日志，继续执行
+	// Warn 级别：记录日志，继续执行
 	if result.Decision == sessionaudit.DecisionWarn {
 		slog.Warn("security warning detected",
 			"session_id", env.SessionID,
@@ -145,6 +211,101 @@ func (h *SessionAuditHook) Execute(ctx context.Context, env *domain.PipelineRequ
 	}
 
 	return nil
+}
+
+// handleAdvisory 建议模式：仅通知不拦截
+func (h *SessionAuditHook) handleAdvisory(ctx context.Context, env *domain.PipelineRequest, result *sessionaudit.DetectResult, cfg *Config) error {
+	// 高风险时发送通知，但不拦截
+	if result.Score >= cfg.ApprovalThreshold {
+		slog.Info("advisory mode: high risk detected but not blocking",
+			"session_id", env.SessionID,
+			"score", result.Score,
+			"reason", result.Reason)
+
+		// 发送通知（如果配置了）
+		if h.notifier != nil && cfg.NotifyOnPending {
+			// 在 advisory 模式下，我们不创建审批，只发送通知
+			// 可以通过 EventBus 发送一个 AdvisoryEvent
+			slog.Info("sending advisory notification", "session_id", env.SessionID, "score", result.Score)
+		}
+	}
+
+	// 继续执行
+	return nil
+}
+
+// handleAuditOnly 仅审计模式：只记录
+func (h *SessionAuditHook) handleAuditOnly(ctx context.Context, env *domain.PipelineRequest, result *sessionaudit.DetectResult, cfg *Config) error {
+	// 仅记录审计（已在 Execute 中发布事件），不做任何拦截或通知
+	if result.Score >= cfg.ApprovalThreshold {
+		slog.Debug("audit_only mode: high risk detected but only logging",
+			"session_id", env.SessionID,
+			"score", result.Score,
+			"reason", result.Reason)
+	}
+
+	// 继续执行
+	return nil
+}
+
+// createApprovalV1 创建审批记录（v1 路径）
+func (h *SessionAuditHook) createApprovalV1(ctx context.Context, env *domain.PipelineRequest, result *sessionaudit.DetectResult, cfg *Config) (string, *sessionaudit.ApprovalRecord, error) {
+	if h.approvalMgr == nil {
+		return "", nil, fmt.Errorf("approvalMgr is nil")
+	}
+
+	// 提取用户内容
+	content, err := extractUserContent(env)
+	if err != nil {
+		content = "" // 降级处理
+	}
+	_ = content // 暂时未使用
+
+	// 生成 requestID（如果 env 没有）
+	requestID := env.SessionID + "-" + time.Now().Format("20060102150405")
+
+	// 构造审批请求
+	req := &sessionaudit.ApprovalRequest{
+		TenantID:     env.TenantID,
+		SessionID:    env.SessionID,
+		RequestID:    requestID,
+		DetectResult: result,
+		Snapshot: &sessionaudit.RequestSnapshot{
+			SessionID:   env.SessionID,
+			TenantID:    env.TenantID,
+			RequestID:   requestID,
+			ClientModel: getClientModel(env),
+			ClientInfo: sessionaudit.ClientInfo{
+				IP:        getClientIP(env),
+				UserAgent: getUserAgent(env),
+				Model:     getClientModel(env),
+			},
+			DetectResult: result,
+			CreatedAt:    time.Now(),
+		},
+		Timeout: cfg.ApprovalTimeout,
+	}
+
+	// 创建审批记录
+	approvalID, err := h.approvalMgr.Create(ctx, req)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create approval: %w", err)
+	}
+
+	// 构造 ApprovalRecord 用于通知
+	record := &sessionaudit.ApprovalRecord{
+		ID:           approvalID,
+		SessionID:    env.SessionID,
+		TenantID:     env.TenantID,
+		RequestID:    requestID,
+		Status:       sessionaudit.ApprovalPending,
+		DetectResult: result,
+		Snapshot:     req.Snapshot,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(cfg.ApprovalTimeout),
+	}
+
+	return approvalID, record, nil
 }
 
 func (h *SessionAuditHook) OnError(ctx context.Context, env *domain.PipelineRequest, err error) error {
