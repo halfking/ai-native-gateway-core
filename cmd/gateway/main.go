@@ -244,7 +244,7 @@ func main() {
 	if len(cfg.SessionIDBodyKeys) > 0 {
 		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}
-	
+
 	// Health handler with database and Redis status checking (2026-07-08)
 	// Pass db and redis connections for health checks (will be updated with redis later)
 	var dbPinger interface{ Ping(context.Context) error }
@@ -253,7 +253,7 @@ func main() {
 		dbPinger = dbConn.Pool()
 	}
 	healthHandler := streaming.NewHealthHandler(cm, lim, upClient.Proxy(), dbPinger, redisPinger)
-	
+
 	modelsHandler := streaming.NewModelsHandler()
 	messagesHandler := streaming.NewMessagesHandler(chatHandler)
 	responsesHandler := streaming.NewResponsesHandler(chatHandler)
@@ -307,7 +307,7 @@ func main() {
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
 			sessionPref = session.NewSessionPreference(redisClient)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
-			
+
 			// Update health handler with Redis connection (2026-07-08)
 			healthHandler.SetRedis(redisClient)
 		} else {
@@ -1078,6 +1078,26 @@ func main() {
 		}
 		if enableSessionAudit == "true" {
 			auditDetector := sessionaudit.NewFastDetector(sessionaudit.DefaultDetectorConfig())
+
+			// 注入 LLM 检测客户端（用于多模型深度检测）
+			// 从环境变量读取配置，如果未配置则使用默认值
+			llmAPIKey := os.Getenv("LLM_DETECTOR_API_KEY")
+			llmBaseURL := os.Getenv("LLM_DETECTOR_BASE_URL")
+			if llmAPIKey == "" {
+				// 尝试使用主 API Key
+				llmAPIKey = os.Getenv("LLM_GATEWAY_API_KEY")
+			}
+			if llmAPIKey != "" {
+				llmClient := sessionaudit.NewOpenAIDetectorClient(llmAPIKey, llmBaseURL)
+				auditDetector.SetLLMClient(llmClient)
+				slog.Info("LLM detector client initialized",
+					"base_url", llmBaseURL,
+					"has_api_key", llmAPIKey != "")
+			} else {
+				slog.Warn("LLM detector client not initialized: missing API key",
+					"hint", "set LLM_DETECTOR_API_KEY or LLM_GATEWAY_API_KEY")
+			}
+
 			auditBus := eventbus.NewMemoryBus(100)
 			auditHook := sessionaudithook.NewSessionAuditHookV1(auditDetector, auditBus, approvalMgr)
 
@@ -1987,8 +2007,8 @@ func main() {
 				w.WriteHeader(http.StatusOK)
 				//nolint:errcheck // HTTP write error non-recoverable
 				//nolint:errcheck // HTTP write error non-recoverable
-			w.Write([]byte(fmt.Sprintf(`{"service":"llm-gateway-go","version":"%s","git_sha":"%s","build_seq":"%s"}`,
-				Version, GitCommit, BuildNumber)))
+				w.Write([]byte(fmt.Sprintf(`{"service":"llm-gateway-go","version":"%s","git_sha":"%s","build_seq":"%s"}`,
+					Version, GitCommit, BuildNumber)))
 				return
 			}
 			http.NotFound(w, r)
@@ -2095,9 +2115,9 @@ func main() {
 			if dbConn != nil {
 				healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
 				healthWorker.Start(context.Background())
-			slog.Info("session health worker started (hourly)")
+				slog.Info("session health worker started (hourly)")
+			}
 		}
-	}
 
 		// Task T1.4: Usage Cost Enhanced API 注册已在 admin/handler.go:572 完成
 		// (避免与 admin 包的双重注册 panic, 与 33d9d4fe fix 同型)
