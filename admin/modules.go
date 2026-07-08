@@ -21,6 +21,7 @@ type ModuleDefinition struct {
 	ConfigKeys   []string             `json:"config_keys"`
 	DocsURL      string               `json:"docs_url"`
 	DangerLevel  settings.DangerLevel `json:"danger_level"`
+	Dependencies []string             `json:"dependencies"`
 	Integration  *ModuleIntegration   `json:"integration,omitempty"`
 }
 
@@ -32,11 +33,19 @@ type ModuleIntegration struct {
 	DocURL      string `json:"doc_url"`
 }
 
+// ModuleDependencyStatus describes whether a required module is enabled.
+type ModuleDependencyStatus struct {
+	Key     string `json:"key"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
 // ModuleWithStatus extends ModuleDefinition with runtime status.
 type ModuleWithStatus struct {
 	ModuleDefinition
-	Enabled bool   `json:"enabled"`
-	Source  string `json:"source"`
+	Enabled            bool                     `json:"enabled"`
+	Source             string                   `json:"source"`
+	DependencyStatuses []ModuleDependencyStatus `json:"dependency_statuses,omitempty"`
 }
 
 var (
@@ -158,11 +167,58 @@ func allModuleDefinitions() []ModuleDefinition {
 					"自动脱敏处理",
 					"实时告警通知",
 					"自定义敏感词库",
+					"按会话聚合合规标签",
+					"身份感知例外放行",
 				},
-				Icon:        "🔒",
-				Category:    "security",
-				SettingKey:  "output_compliance.enabled",
-				DangerLevel: settings.Warning,
+				Icon:       "🔒",
+				Category:   "security",
+				SettingKey: "output_compliance.enabled",
+				ConfigKeys: []string{
+					"output_compliance.enforcement_mode",
+					"output_compliance.check_pii",
+					"output_compliance.check_toxicity",
+					"output_compliance.check_bias",
+					"output_compliance.check_hallucination",
+					"output_compliance.check_secrets",
+					"output_compliance.check_internal_ip",
+					"output_compliance.check_jailbreak_response",
+					"output_compliance.check_instruction_injection_response",
+					"output_compliance.pii_engine",
+					"output_compliance.toxicity_engine",
+					"output_compliance.pii_threshold",
+					"output_compliance.toxicity_threshold",
+					"output_compliance.bias_threshold",
+					"output_compliance.hallucination_threshold",
+					"output_compliance.action_on_pii",
+					"output_compliance.action_on_toxicity",
+					"output_compliance.action_on_bias",
+					"output_compliance.action_on_secrets",
+					"output_compliance.action_on_internal_ip",
+					"output_compliance.action_on_jailbreak_response",
+					"output_compliance.action_on_instruction_injection_response",
+					"output_compliance.redact_email",
+					"output_compliance.redact_phone",
+					"output_compliance.redact_id_card",
+					"output_compliance.redact_credit_card",
+					"output_compliance.redact_bank_card",
+					"output_compliance.redact_jwt",
+					"output_compliance.redact_password",
+					"output_compliance.toxic_replacement",
+					"output_compliance.block_message",
+					"output_compliance.strict_mode",
+					"output_compliance.retention_days",
+					"output_compliance.sampling_rate",
+					"output_compliance.realtime_alert_enabled",
+					"output_compliance.alert_threshold_severity",
+					"output_compliance.alert_aggregation_window_minutes",
+					"output_compliance.auto_review_queue_enabled",
+					"output_compliance.feedback_loop_enabled",
+					"output_compliance.skill_generation_enabled",
+					"output_compliance.auto_threshold_tuning_enabled",
+					"output_compliance.llm_engine_id",
+				},
+				DangerLevel:  settings.Warning,
+				Dependencies: []string{"compression", "cache", "prompt_injection"},
 			},
 			{
 				Key:         "session_audit",
@@ -360,6 +416,45 @@ func resolveModuleEnabled(m ModuleDefinition) (enabled bool, source string) {
 	return v, src
 }
 
+// moduleDefinitionMap returns a map of all module definitions keyed by key.
+func moduleDefinitionMap() map[string]ModuleDefinition {
+	defs := allModuleDefinitions()
+	m := make(map[string]ModuleDefinition, len(defs))
+	for _, d := range defs {
+		m[d.Key] = d
+	}
+	return m
+}
+
+// resolveDependencyStatuses checks each dependency and returns its name and enabled state.
+func resolveDependencyStatuses(deps []string) []ModuleDependencyStatus {
+	if len(deps) == 0 {
+		return nil
+	}
+	defs := moduleDefinitionMap()
+	out := make([]ModuleDependencyStatus, 0, len(deps))
+	for _, key := range deps {
+		d, ok := defs[key]
+		if !ok {
+			out = append(out, ModuleDependencyStatus{Key: key, Name: key, Enabled: false})
+			continue
+		}
+		enabled, _ := resolveModuleEnabled(d)
+		out = append(out, ModuleDependencyStatus{Key: key, Name: d.Name, Enabled: enabled})
+	}
+	return out
+}
+
+// dependenciesSatisfied reports whether all dependency modules are enabled.
+func dependenciesSatisfied(deps []string) bool {
+	for _, s := range resolveDependencyStatuses(deps) {
+		if !s.Enabled {
+			return false
+		}
+	}
+	return true
+}
+
 // handleModulesList returns all modules with their current enabled/disabled status.
 //
 // GET /api/admin/modules
@@ -373,9 +468,10 @@ func (h *Handler) handleModulesList(w http.ResponseWriter, r *http.Request) {
 	for _, m := range defs {
 		enabled, src := resolveModuleEnabled(m)
 		out = append(out, ModuleWithStatus{
-			ModuleDefinition: m,
-			Enabled:          enabled,
-			Source:           src,
+			ModuleDefinition:   m,
+			Enabled:            enabled,
+			Source:             src,
+			DependencyStatuses: resolveDependencyStatuses(m.Dependencies),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
@@ -431,9 +527,10 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"module": ModuleWithStatus{
-			ModuleDefinition: *found,
-			Enabled:          enabled,
-			Source:           src,
+			ModuleDefinition:   *found,
+			Enabled:            enabled,
+			Source:             src,
+			DependencyStatuses: resolveDependencyStatuses(found.Dependencies),
 		},
 		"config": config,
 	})
@@ -489,6 +586,21 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	// Enforce module dependencies: a module cannot be enabled unless all
+	// declared dependencies are currently enabled.
+	if body.Enabled && len(found.Dependencies) > 0 && !dependenciesSatisfied(found.Dependencies) {
+		statuses := resolveDependencyStatuses(found.Dependencies)
+		var missing []string
+		for _, s := range statuses {
+			if !s.Enabled {
+				missing = append(missing, s.Name)
+			}
+		}
+		writeError(w, http.StatusPreconditionFailed,
+			"无法启用 "+found.Name+"，以下依赖模块未开启: "+strings.Join(missing, ", "))
 		return
 	}
 

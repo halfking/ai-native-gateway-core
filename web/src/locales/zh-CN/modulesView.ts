@@ -44,6 +44,8 @@ export default {
     labelConfigCount: '配置项数',
     labelStatus: '当前状态',
     viewAllSettings: '查看所有系统设置',
+    dependenciesTitle: '依赖模块',
+    dependenciesHint: '以下依赖模块未开启，无法启用本模块。请先开启依赖模块。',
   },
 
   config: {

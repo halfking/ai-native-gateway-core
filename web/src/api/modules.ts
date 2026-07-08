@@ -11,6 +11,12 @@ export interface ModuleIntegration {
   doc_url: string
 }
 
+export interface ModuleDependencyStatus {
+  key: string
+  name: string
+  enabled: boolean
+}
+
 export interface ModuleDefinition {
   key: string
   name: string
@@ -22,12 +28,14 @@ export interface ModuleDefinition {
   config_keys: string[]
   docs_url: string
   danger_level: number
+  dependencies: string[]
   integration?: ModuleIntegration
 }
 
 export interface ModuleWithStatus extends ModuleDefinition {
   enabled: boolean
   source: string
+  dependency_statuses: ModuleDependencyStatus[]
 }
 
 export interface ModuleDetail {

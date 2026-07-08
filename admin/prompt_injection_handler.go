@@ -26,38 +26,45 @@ func NewPromptInjectionHandler(pool *pgxpool.Pool, secret string) *PromptInjecti
 	return &PromptInjectionHandler{pool: pool, secret: secret}
 }
 
-// RegisterRoutes 注册路由
+// RegisterRoutes 注册路由。
+// 所有路由统一套用 AdminMiddleware（JWT/管理 Key 认证），
+// 与其他 admin handler 走同一套鉴权链路。
 func (h *PromptInjectionHandler) RegisterRoutes(mux *http.ServeMux) {
+	// wrap：每个 handler 都过 AdminMiddleware，保证 AuthContext 注入。
+	wrap := func(fn http.HandlerFunc) http.HandlerFunc {
+		return AdminMiddleware(fn, h.pool, h.secret)
+	}
+
 	// 策略配置
-	mux.HandleFunc("/api/admin/prompt-injection/policy", h.handlePolicy)
-	mux.HandleFunc("/api/admin/prompt-injection/policy/", h.handlePolicy)
+	mux.HandleFunc("/api/admin/prompt-injection/policy", wrap(h.handlePolicy))
+	mux.HandleFunc("/api/admin/prompt-injection/policy/", wrap(h.handlePolicy))
 
 	// 检测规则
-	mux.HandleFunc("/api/admin/prompt-injection/rules", h.handleRules)
-	mux.HandleFunc("/api/admin/prompt-injection/rules/", h.handleRuleSubrouter)
+	mux.HandleFunc("/api/admin/prompt-injection/rules", wrap(h.handleRules))
+	mux.HandleFunc("/api/admin/prompt-injection/rules/", wrap(h.handleRuleSubrouter))
 
 	// 检测日志
-	mux.HandleFunc("/api/admin/prompt-injection/detections", h.handleDetections)
+	mux.HandleFunc("/api/admin/prompt-injection/detections", wrap(h.handleDetections))
 
 	// 统计
-	mux.HandleFunc("/api/admin/prompt-injection/stats", h.handleStats)
+	mux.HandleFunc("/api/admin/prompt-injection/stats", wrap(h.handleStats))
 
 	// LLM 引擎管理
-	mux.HandleFunc("/api/admin/prompt-injection/engines", h.handleEngines)
-	mux.HandleFunc("/api/admin/prompt-injection/engines/", h.handleEngineSubrouter)
+	mux.HandleFunc("/api/admin/prompt-injection/engines", wrap(h.handleEngines))
+	mux.HandleFunc("/api/admin/prompt-injection/engines/", wrap(h.handleEngineSubrouter))
 
 	// 严重等级矩阵
-	mux.HandleFunc("/api/admin/prompt-injection/severity-matrix", h.handleSeverityMatrix)
+	mux.HandleFunc("/api/admin/prompt-injection/severity-matrix", wrap(h.handleSeverityMatrix))
 
 	// Canary Token 管理
-	mux.HandleFunc("/api/admin/prompt-injection/canary-tokens", h.handleCanaryTokens)
-	mux.HandleFunc("/api/admin/prompt-injection/canary-tokens/", h.handleCanaryTokenSubrouter)
+	mux.HandleFunc("/api/admin/prompt-injection/canary-tokens", wrap(h.handleCanaryTokens))
+	mux.HandleFunc("/api/admin/prompt-injection/canary-tokens/", wrap(h.handleCanaryTokenSubrouter))
 
 	// 审批队列 - 复用现有 /api/admin/session-approvals 系统
 	// 不在此处注册审批相关路由
 
 	// 攻击向量库
-	mux.HandleFunc("/api/admin/prompt-injection/attack-vectors", h.handleAttackVectors)
+	mux.HandleFunc("/api/admin/prompt-injection/attack-vectors", wrap(h.handleAttackVectors))
 }
 
 // ==================== 策略配置 ====================
@@ -106,12 +113,12 @@ func (h *PromptInjectionHandler) handlePolicy(w http.ResponseWriter, r *http.Req
 	case http.MethodPut, http.MethodPost:
 		h.updatePolicy(w, r)
 	default:
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }
 
 func (h *PromptInjectionHandler) getPolicy(w http.ResponseWriter, r *http.Request) {
-	tenantID := getTenantID(r)
+	tenantID := GetTenantID(r)
 
 	query := `SELECT id, tenant_id, enabled, detection_mode,
 		enable_basic_rules, enable_advanced_rules, enable_heuristics, enable_ml_model,
@@ -152,25 +159,25 @@ func (h *PromptInjectionHandler) getPolicy(w http.ResponseWriter, r *http.Reques
 			ActionOnLowRisk: "log", ActionOnMediumRisk: "warn", ActionOnHighRisk: "block",
 			WhitelistPatterns: []string{}, WhitelistUsers: []string{},
 		}
-		writeJSONLocal(w, http.StatusOK, policy)
+		writeJSON(w, http.StatusOK, policy)
 		return
 	}
 
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get policy: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get policy: " + err.Error()})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusOK, policy)
+	writeJSON(w, http.StatusOK, policy)
 }
 
 func (h *PromptInjectionHandler) updatePolicy(w http.ResponseWriter, r *http.Request) {
-	tenantID := getTenantID(r)
-	adminUser := getUserEmail(r)
+	tenantID := GetTenantID(r)
+	adminUser := authEmail(r)
 
 	var req PromptInjectionPolicy
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
 
@@ -179,7 +186,7 @@ func (h *PromptInjectionHandler) updatePolicy(w http.ResponseWriter, r *http.Req
 		req.ScoreThresholdWarn < 0 || req.ScoreThresholdWarn > 10 ||
 		req.ScoreThresholdSanitize < 0 || req.ScoreThresholdSanitize > 10 ||
 		req.ScoreThresholdBlock < 0 || req.ScoreThresholdBlock > 10 {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Score thresholds must be between 0-10"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Score thresholds must be between 0-10"})
 		return
 	}
 
@@ -224,11 +231,11 @@ func (h *PromptInjectionHandler) updatePolicy(w http.ResponseWriter, r *http.Req
 	).Scan(&policyID)
 
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update policy: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update policy: " + err.Error()})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]interface{}{"message": "Policy updated successfully", "policy_id": policyID})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Policy updated successfully", "policy_id": policyID})
 }
 
 // ==================== 检测规则 ====================
@@ -260,7 +267,7 @@ func (h *PromptInjectionHandler) handleRules(w http.ResponseWriter, r *http.Requ
 	case http.MethodPost:
 		h.createRule(w, r)
 	default:
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }
 
@@ -275,7 +282,7 @@ func (h *PromptInjectionHandler) handleRuleSubrouter(w http.ResponseWriter, r *h
 	// 提取 rule ID
 	parts := strings.Split(strings.TrimPrefix(path, "/api/admin/prompt-injection/rules/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Missing rule ID"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Missing rule ID"})
 		return
 	}
 
@@ -285,7 +292,7 @@ func (h *PromptInjectionHandler) handleRuleSubrouter(w http.ResponseWriter, r *h
 	case http.MethodDelete:
 		h.deleteRule(w, r, parts[0])
 	default:
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }
 
@@ -330,7 +337,7 @@ func (h *PromptInjectionHandler) listRules(w http.ResponseWriter, r *http.Reques
 
 	rows, err := h.pool.Query(r.Context(), query, args...)
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list rules: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list rules: " + err.Error()})
 		return
 	}
 	defer func() { rows.Close() }()
@@ -342,24 +349,24 @@ func (h *PromptInjectionHandler) listRules(w http.ResponseWriter, r *http.Reques
 			&rule.Pattern, &rule.Description, &rule.Severity, &rule.Enabled, &rule.CaseSensitive,
 			&rule.IsSystem, &rule.ActionOverride, &rule.Tags, &rule.Examples,
 			&rule.CreatedAt, &rule.UpdatedAt); err != nil {
-			writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan rule: " + err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan rule: " + err.Error()})
 			return
 		}
 		rules = append(rules, rule)
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]interface{}{"rules": rules, "count": len(rules)})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"rules": rules, "count": len(rules)})
 }
 
 func (h *PromptInjectionHandler) createRule(w http.ResponseWriter, r *http.Request) {
 	var req PromptInjectionRule
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
 
 	if req.RuleName == "" || req.Pattern == "" {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "rule_name and pattern are required"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "rule_name and pattern are required"})
 		return
 	}
 
@@ -375,17 +382,17 @@ func (h *PromptInjectionHandler) createRule(w http.ResponseWriter, r *http.Reque
 	).Scan(&ruleID)
 
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create rule: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create rule: " + err.Error()})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusCreated, map[string]interface{}{"message": "Rule created", "rule_id": ruleID})
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": "Rule created", "rule_id": ruleID})
 }
 
 func (h *PromptInjectionHandler) updateRule(w http.ResponseWriter, r *http.Request, ruleID string) {
 	var req PromptInjectionRule
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
 
@@ -400,17 +407,17 @@ func (h *PromptInjectionHandler) updateRule(w http.ResponseWriter, r *http.Reque
 	)
 
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update rule: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update rule: " + err.Error()})
 		return
 	}
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		writeJSONLocal(w, http.StatusNotFound, map[string]string{"error": "Rule not found or is a system rule"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Rule not found or is a system rule"})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]string{"message": "Rule updated"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Rule updated"})
 }
 
 func (h *PromptInjectionHandler) deleteRule(w http.ResponseWriter, r *http.Request, ruleID string) {
@@ -418,22 +425,22 @@ func (h *PromptInjectionHandler) deleteRule(w http.ResponseWriter, r *http.Reque
 		`DELETE FROM prompt_injection_rules WHERE id=$1 AND COALESCE(is_system, true) = false`, ruleID)
 
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to delete rule: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to delete rule: " + err.Error()})
 		return
 	}
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		writeJSONLocal(w, http.StatusNotFound, map[string]string{"error": "Rule not found or is a system rule"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Rule not found or is a system rule"})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]string{"message": "Rule deleted"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Rule deleted"})
 }
 
 func (h *PromptInjectionHandler) toggleRule(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -442,7 +449,7 @@ func (h *PromptInjectionHandler) toggleRule(w http.ResponseWriter, r *http.Reque
 	path = strings.TrimSuffix(path, "/toggle")
 	parts := strings.Split(strings.TrimPrefix(path, "/api/admin/prompt-injection/rules/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Missing rule ID"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Missing rule ID"})
 		return
 	}
 	ruleID := parts[0]
@@ -451,7 +458,7 @@ func (h *PromptInjectionHandler) toggleRule(w http.ResponseWriter, r *http.Reque
 		Enabled bool `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		return
 	}
 
@@ -459,17 +466,17 @@ func (h *PromptInjectionHandler) toggleRule(w http.ResponseWriter, r *http.Reque
 		`UPDATE prompt_injection_rules SET enabled = $1, updated_at = NOW() WHERE id = $2`,
 		req.Enabled, ruleID)
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to toggle rule: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to toggle rule: " + err.Error()})
 		return
 	}
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		writeJSONLocal(w, http.StatusNotFound, map[string]string{"error": "Rule not found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Rule not found"})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]string{"message": "Rule toggled"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Rule toggled"})
 }
 
 // ==================== 检测日志 ====================
@@ -500,11 +507,11 @@ type PromptInjectionDetection struct {
 
 func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
-	tenantID := getTenantID(r)
+	tenantID := GetTenantID(r)
 	q := r.URL.Query()
 
 	page, _ := strconv.Atoi(q.Get("page"))
@@ -562,7 +569,7 @@ func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http
 	countQuery := strings.Replace(query, "SELECT id, tenant_id, request_id, session_key, detected_at, detection_score, risk_level,\n\t\tmatched_rules, matched_rules_count, action_taken, blocked, evidence_text,\n\t\tCOALESCE(categories::text[], '{}'), llm_confidence, COALESCE(llm_reason, ''),\n\t\tCOALESCE(canary_token_leaked, ''), COALESCE(approval_id, ''),\n\t\tCOALESCE(replaced_content, ''), client_ip, user_agent", "SELECT COUNT(*)", 1)
 	var total int
 	if err := h.pool.QueryRow(r.Context(), countQuery, args...).Scan(&total); err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to count detections: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to count detections: " + err.Error()})
 		return
 	}
 
@@ -571,7 +578,7 @@ func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http
 
 	rows, err := h.pool.Query(r.Context(), query, args...)
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list detections: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list detections: " + err.Error()})
 		return
 	}
 	defer func() { rows.Close() }()
@@ -584,13 +591,13 @@ func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http
 			&d.ActionTaken, &d.Blocked, &d.EvidenceText, &d.Categories,
 			&d.LLMConfidence, &d.LLMReason, &d.CanaryTokenLeaked, &d.ApprovalID,
 			&d.ReplacedContent, &d.ClientIP, &d.UserAgent); err != nil {
-			writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan detection: " + err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan detection: " + err.Error()})
 			return
 		}
 		detections = append(detections, d)
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"detections": detections, "page": page, "page_size": pageSize, "total": total,
 	})
 }
@@ -616,11 +623,11 @@ type DetectionStats struct {
 
 func (h *PromptInjectionHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
-	tenantID := getTenantID(r)
+	tenantID := GetTenantID(r)
 
 	stats := &DetectionStats{}
 	err := h.pool.QueryRow(r.Context(),
@@ -639,11 +646,11 @@ func (h *PromptInjectionHandler) handleStats(w http.ResponseWriter, r *http.Requ
 	if err == pgx.ErrNoRows {
 		stats = &DetectionStats{}
 	} else if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get stats: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get stats: " + err.Error()})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusOK, stats)
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // ==================== LLM 引擎管理 ====================
@@ -680,7 +687,7 @@ func (h *PromptInjectionHandler) handleEngines(w http.ResponseWriter, r *http.Re
 	case http.MethodPost:
 		h.createEngine(w, r)
 	default:
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }
 
@@ -689,7 +696,7 @@ func (h *PromptInjectionHandler) handleEngineSubrouter(w http.ResponseWriter, r 
 	parts := strings.Split(path, "/")
 
 	if len(parts) == 0 || parts[0] == "" {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Missing engine ID"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Missing engine ID"})
 		return
 	}
 
@@ -708,12 +715,12 @@ func (h *PromptInjectionHandler) handleEngineSubrouter(w http.ResponseWriter, r 
 	case http.MethodDelete:
 		h.deleteEngine(w, r, engineID)
 	default:
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }
 
 func (h *PromptInjectionHandler) listEngines(w http.ResponseWriter, r *http.Request) {
-	tenantID := getTenantID(r)
+	tenantID := GetTenantID(r)
 
 	rows, err := h.pool.Query(r.Context(),
 		`SELECT e.id, e.tenant_id, e.engine_name, COALESCE(e.description, ''),
@@ -726,7 +733,7 @@ func (h *PromptInjectionHandler) listEngines(w http.ResponseWriter, r *http.Requ
 		LEFT JOIN models_canonical m ON e.model_canonical_id = m.id
 		WHERE e.tenant_id = $1 ORDER BY e.priority DESC, e.engine_name`, tenantID)
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list engines: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list engines: " + err.Error()})
 		return
 	}
 	defer func() { rows.Close() }()
@@ -740,13 +747,13 @@ func (h *PromptInjectionHandler) listEngines(w http.ResponseWriter, r *http.Requ
 			&e.SystemPrompt, &e.DetectionPrompt, &e.Priority, &e.Enabled,
 			&e.TotalCalls, &e.TotalDetections, &e.AvgLatencyMs, &e.ErrorCount,
 			&e.LastCalledAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
-			writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan engine: " + err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan engine: " + err.Error()})
 			return
 		}
 		engines = append(engines, e)
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]interface{}{"engines": engines, "count": len(engines)})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"engines": engines, "count": len(engines)})
 }
 
 func (h *PromptInjectionHandler) getEngine(w http.ResponseWriter, r *http.Request, engineID string) {
@@ -769,29 +776,29 @@ func (h *PromptInjectionHandler) getEngine(w http.ResponseWriter, r *http.Reques
 		&e.LastCalledAt, &e.CreatedAt, &e.UpdatedAt)
 
 	if err == pgx.ErrNoRows {
-		writeJSONLocal(w, http.StatusNotFound, map[string]string{"error": "Engine not found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Engine not found"})
 		return
 	}
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get engine: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get engine: " + err.Error()})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusOK, e)
+	writeJSON(w, http.StatusOK, e)
 }
 
 func (h *PromptInjectionHandler) createEngine(w http.ResponseWriter, r *http.Request) {
-	tenantID := getTenantID(r)
-	adminUser := getUserEmail(r)
+	tenantID := GetTenantID(r)
+	adminUser := authEmail(r)
 
 	var req LLMEngine
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
 
 	if req.EngineName == "" {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "engine_name is required"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "engine_name is required"})
 		return
 	}
 
@@ -809,17 +816,17 @@ func (h *PromptInjectionHandler) createEngine(w http.ResponseWriter, r *http.Req
 	).Scan(&engineID)
 
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create engine: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create engine: " + err.Error()})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusCreated, map[string]interface{}{"message": "Engine created", "engine_id": engineID})
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": "Engine created", "engine_id": engineID})
 }
 
 func (h *PromptInjectionHandler) updateEngine(w http.ResponseWriter, r *http.Request, engineID string) {
 	var req LLMEngine
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
 
@@ -836,17 +843,17 @@ func (h *PromptInjectionHandler) updateEngine(w http.ResponseWriter, r *http.Req
 	)
 
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update engine: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update engine: " + err.Error()})
 		return
 	}
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		writeJSONLocal(w, http.StatusNotFound, map[string]string{"error": "Engine not found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Engine not found"})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]string{"message": "Engine updated"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Engine updated"})
 }
 
 func (h *PromptInjectionHandler) deleteEngine(w http.ResponseWriter, r *http.Request, engineID string) {
@@ -854,22 +861,22 @@ func (h *PromptInjectionHandler) deleteEngine(w http.ResponseWriter, r *http.Req
 		`DELETE FROM prompt_injection_llm_engines WHERE id=$1`, engineID)
 
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to delete engine: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to delete engine: " + err.Error()})
 		return
 	}
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		writeJSONLocal(w, http.StatusNotFound, map[string]string{"error": "Engine not found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Engine not found"})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]string{"message": "Engine deleted"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Engine deleted"})
 }
 
 func (h *PromptInjectionHandler) testEngine(w http.ResponseWriter, r *http.Request, engineID string) {
 	if r.Method != http.MethodPost {
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -877,7 +884,7 @@ func (h *PromptInjectionHandler) testEngine(w http.ResponseWriter, r *http.Reque
 		TestInput string `json:"test_input"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		return
 	}
 
@@ -889,12 +896,12 @@ func (h *PromptInjectionHandler) testEngine(w http.ResponseWriter, r *http.Reque
 	).Scan(&e.ID, &e.EngineName, &e.ModelCanonicalID, &e.SystemPrompt, &e.DetectionPrompt)
 
 	if err == pgx.ErrNoRows {
-		writeJSONLocal(w, http.StatusNotFound, map[string]string{"error": "Engine not found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Engine not found"})
 		return
 	}
 
 	// TODO: 调用 LLM 进行测试
-	writeJSONLocal(w, http.StatusOK, map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"engine_id":   e.ID,
 		"engine_name": e.EngineName,
 		"test_input":  req.TestInput,
@@ -922,7 +929,7 @@ type SeverityAction struct {
 }
 
 func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *http.Request) {
-	tenantID := getTenantID(r)
+	tenantID := GetTenantID(r)
 
 	switch r.Method {
 	case http.MethodGet:
@@ -936,7 +943,7 @@ func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *
 			CASE severity_level WHEN 'low' THEN 1 WHEN 'medium' THEN 2 WHEN 'high' THEN 3 WHEN 'critical' THEN 4 END`,
 			tenantID)
 		if err != nil {
-			writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get matrix: " + err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get matrix: " + err.Error()})
 			return
 		}
 		defer func() { rows.Close() }()
@@ -950,19 +957,19 @@ func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *
 				&s.NotifyOnDetect, &channelsJSON,
 				&s.AffectSessionHealth, &s.SessionHealthPenalty,
 				&s.TerminateOnRepeat, &s.RepeatThreshold); err != nil {
-				writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan: " + err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan: " + err.Error()})
 				return
 			}
 			_ = json.Unmarshal([]byte(channelsJSON), &s.NotifyChannels)
 			matrix = append(matrix, s)
 		}
 
-		writeJSONLocal(w, http.StatusOK, map[string]interface{}{"matrix": matrix})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"matrix": matrix})
 
 	case http.MethodPut:
 		var req []SeverityAction
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 			return
 		}
 
@@ -981,15 +988,15 @@ func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *
 				s.TerminateOnRepeat, s.RepeatThreshold,
 				tenantID, s.SeverityLevel)
 			if err != nil {
-				writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update: " + err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update: " + err.Error()})
 				return
 			}
 		}
 
-		writeJSONLocal(w, http.StatusOK, map[string]string{"message": "Severity matrix updated"})
+		writeJSON(w, http.StatusOK, map[string]string{"message": "Severity matrix updated"})
 
 	default:
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }
 
@@ -1019,7 +1026,7 @@ func (h *PromptInjectionHandler) handleCanaryTokens(w http.ResponseWriter, r *ht
 	case http.MethodPost:
 		h.createCanaryToken(w, r)
 	default:
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }
 
@@ -1028,7 +1035,7 @@ func (h *PromptInjectionHandler) handleCanaryTokenSubrouter(w http.ResponseWrite
 	parts := strings.Split(path, "/")
 
 	if len(parts) == 0 || parts[0] == "" {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Missing token ID"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Missing token ID"})
 		return
 	}
 
@@ -1040,12 +1047,12 @@ func (h *PromptInjectionHandler) handleCanaryTokenSubrouter(w http.ResponseWrite
 	case http.MethodPut:
 		h.updateCanaryToken(w, r, tokenID)
 	default:
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }
 
 func (h *PromptInjectionHandler) listCanaryTokens(w http.ResponseWriter, r *http.Request) {
-	tenantID := getTenantID(r)
+	tenantID := GetTenantID(r)
 
 	rows, err := h.pool.Query(r.Context(),
 		`SELECT id, tenant_id, token_value, token_type, COALESCE(token_name, ''),
@@ -1053,7 +1060,7 @@ func (h *PromptInjectionHandler) listCanaryTokens(w http.ResponseWriter, r *http
 			active, expires_at, times_injected, times_leaked, last_leaked_at, created_at
 		FROM canary_tokens WHERE tenant_id = $1 ORDER BY created_at DESC`, tenantID)
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list tokens: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list tokens: " + err.Error()})
 		return
 	}
 	defer func() { rows.Close() }()
@@ -1064,22 +1071,22 @@ func (h *PromptInjectionHandler) listCanaryTokens(w http.ResponseWriter, r *http
 		if err := rows.Scan(&t.ID, &t.TenantID, &t.TokenValue, &t.TokenType, &t.TokenName,
 			&t.Description, &t.LeakAction, &t.NotifyOnLeak,
 			&t.Active, &t.ExpiresAt, &t.TimesInjected, &t.TimesLeaked, &t.LastLeakedAt, &t.CreatedAt); err != nil {
-			writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan token: " + err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan token: " + err.Error()})
 			return
 		}
 		tokens = append(tokens, t)
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]interface{}{"tokens": tokens, "count": len(tokens)})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"tokens": tokens, "count": len(tokens)})
 }
 
 func (h *PromptInjectionHandler) createCanaryToken(w http.ResponseWriter, r *http.Request) {
-	tenantID := getTenantID(r)
-	adminUser := getUserEmail(r)
+	tenantID := GetTenantID(r)
+	adminUser := authEmail(r)
 
 	var req CanaryToken
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		return
 	}
 
@@ -1099,17 +1106,17 @@ func (h *PromptInjectionHandler) createCanaryToken(w http.ResponseWriter, r *htt
 	).Scan(&tokenID)
 
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create token: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create token: " + err.Error()})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusCreated, map[string]interface{}{"message": "Token created", "token_id": tokenID, "token_value": tokenValue})
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": "Token created", "token_id": tokenID, "token_value": tokenValue})
 }
 
 func (h *PromptInjectionHandler) updateCanaryToken(w http.ResponseWriter, r *http.Request, tokenID string) {
 	var req CanaryToken
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONLocal(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		return
 	}
 
@@ -1118,27 +1125,27 @@ func (h *PromptInjectionHandler) updateCanaryToken(w http.ResponseWriter, r *htt
 		req.TokenName, req.Description, req.LeakAction, req.NotifyOnLeak, req.Active, req.ExpiresAt, tokenID)
 
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update token: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update token: " + err.Error()})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]string{"message": "Token updated"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Token updated"})
 }
 
 func (h *PromptInjectionHandler) deleteCanaryToken(w http.ResponseWriter, r *http.Request, tokenID string) {
 	result, err := h.pool.Exec(r.Context(), `DELETE FROM canary_tokens WHERE id=$1`, tokenID)
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to delete token: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to delete token: " + err.Error()})
 		return
 	}
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		writeJSONLocal(w, http.StatusNotFound, map[string]string{"error": "Token not found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Token not found"})
 		return
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]string{"message": "Token deleted"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Token deleted"})
 }
 
 // 审批相关功能已迁移到现有审批系统 (/api/admin/session-approvals)
@@ -1161,11 +1168,11 @@ type AttackVector struct {
 
 func (h *PromptInjectionHandler) handleAttackVectors(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONLocal(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
-	tenantID := getTenantID(r)
+	tenantID := GetTenantID(r)
 	q := r.URL.Query()
 	page, _ := strconv.Atoi(q.Get("page"))
 	if page < 1 {
@@ -1185,7 +1192,7 @@ func (h *PromptInjectionHandler) handleAttackVectors(w http.ResponseWriter, r *h
 		ORDER BY severity DESC, created_at DESC LIMIT $2 OFFSET $3`,
 		tenantID, pageSize, offset)
 	if err != nil {
-		writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list vectors: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list vectors: " + err.Error()})
 		return
 	}
 	defer func() { rows.Close() }()
@@ -1195,33 +1202,25 @@ func (h *PromptInjectionHandler) handleAttackVectors(w http.ResponseWriter, r *h
 		v := AttackVector{}
 		if err := rows.Scan(&v.ID, &v.TenantID, &v.AttackText, &v.AttackHash,
 			&v.Categories, &v.Severity, &v.Source, &v.RequestID, &v.DetectedAt, &v.CreatedAt); err != nil {
-			writeJSONLocal(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan: " + err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to scan: " + err.Error()})
 			return
 		}
 		vectors = append(vectors, v)
 	}
 
-	writeJSONLocal(w, http.StatusOK, map[string]interface{}{"vectors": vectors, "page": page, "page_size": pageSize})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"vectors": vectors, "page": page, "page_size": pageSize})
 }
 
 // ==================== 辅助函数 ====================
 
-func getTenantID(r *http.Request) string {
-	if tid := r.Header.Get("X-Tenant-ID"); tid != "" {
-		return tid
+// authEmail 返回当前请求的管理员标识（从 AuthContext 提取）。
+// AdminMiddleware 已注入 AuthContext；若不存在则回退到 header / "system"。
+func authEmail(r *http.Request) string {
+	if auth := GetAuthContext(r); auth != nil && auth.Username != "" {
+		return auth.Username
 	}
-	return "default"
-}
-
-func getUserEmail(r *http.Request) string {
 	if u := r.Header.Get("X-User-Email"); u != "" {
 		return u
 	}
 	return "system"
-}
-
-func writeJSONLocal(w http.ResponseWriter, status int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
 }

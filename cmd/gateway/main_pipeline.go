@@ -85,8 +85,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"                                                         //nolint:depguard // pgxpool→sql.DB 桥接
 	"github.com/kaixuan/llm-gateway-go/admin"                                                //nolint:depguard // Phase 4 SetClusterRunner 注入
-	"github.com/kaixuan/llm-gateway-go/autoroute"                                            //nolint:depguard // LLM caller for enhanced PI detection
 	"github.com/kaixuan/llm-gateway-go/domain"                                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domain/analysis"                                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"               //nolint:depguard
@@ -103,8 +103,8 @@ import (
 	outputcompliancehooks "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance" //nolint:depguard
 	promptinjectionhooks "github.com/kaixuan/llm-gateway-go/domains/hooks/promptinjection"   //nolint:depguard
 	legacysec "github.com/kaixuan/llm-gateway-go/domains/hooks/security"                     //nolint:depguard
-	sessionanalysis "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionanalysis"        //nolint:depguard
 	sessioninspector "github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector"     //nolint:depguard
+	sessionanalysis "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionanalysis"        //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/tools"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/interception"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1007,12 +1007,12 @@ func SetV2DispatchAnalysisResources(
 	}
 
 	// 增强版提示词注入检测插件初始化
-	// 当 DB pool 可用时，初始化插件并注入依赖
+	// Plugin 是薄适配层，内部复用核心 promptinjection.Detector。
+	// 这里把 pgxpool 桥接为 *sql.DB，交给核心 Detector。
 	if pool != nil && deps.EnhancedPIPlugin != nil {
-		// 构建 LLM caller（复用 autoroute 模式）
-		llmCaller := buildEnhancedPILMCaller()
-		deps.EnhancedPIPlugin.Init(pool, llmCaller)
-		slog.Info("enhanced prompt injection plugin initialized")
+		sqlDB := stdlib.OpenDB(*pool.Config().ConnConfig)
+		deps.EnhancedPIPlugin.Init(sqlDB)
+		slog.Info("enhanced prompt injection plugin initialized (wraps core Detector)")
 	}
 
 	// Phase 4: 会话全景分析引擎注入。
@@ -1031,37 +1031,4 @@ func SetV2DispatchAnalysisResources(
 		// 注入 ClusterRunner（手动触发聚类用）
 		admin.SetClusterRunner(sessionanalytics.NewSessionClusterer(analyticsDB, cfg, nil, slog.Default()))
 	}
-}
-
-// buildEnhancedPILMCaller 构建增强版 PI 检测的 LLM caller
-// 复用 autoroute 的 HTTPLlmCallerConfig 模式
-func buildEnhancedPILMCaller() securityplugins.LLMCaller {
-	endpoint := strings.TrimSpace(os.Getenv("LLMGatewayAutoLLMEndpoint"))
-	if endpoint == "" {
-		// 未配置 LLM endpoint，返回 nil（LLM 检测将被禁用）
-		return nil
-	}
-
-	cfg := autoroute.HTTPLlmCallerConfig{
-		Endpoint: endpoint,
-		APIKey:   strings.TrimSpace(os.Getenv("LLMGatewayAutoLLMApiKey")),
-		Model:    strings.TrimSpace(os.Getenv("LLMGatewayAutoLLMModel")),
-	}
-	if cfg.Model == "" {
-		cfg.Model = "gpt-4o-mini"
-	}
-	cfg.Timeout = 10 * time.Second
-	cfg.MaxTokens = 512
-
-	caller := autoroute.NewHTTPLlmCaller(cfg)
-	return &llmCallerAdapter{caller: caller}
-}
-
-// llmCallerAdapter 适配 autoroute.LLMCaller 到 securityplugins.LLMCaller
-type llmCallerAdapter struct {
-	caller autoroute.LLMCaller
-}
-
-func (a *llmCallerAdapter) Call(ctx context.Context, prompt string) (string, error) {
-	return a.caller.Call(ctx, prompt)
 }

@@ -59,6 +59,20 @@ const groupedModules = computed(() => {
 const enabledCount = computed(() => modules.value.filter(m => m.enabled).length)
 const totalCount = computed(() => modules.value.length)
 
+const selectedDependencies = computed(() => {
+  const mod = selectedModule.value
+  if (!mod || !mod.dependency_statuses?.length) return []
+  return mod.dependency_statuses
+})
+
+const canToggleSelected = computed(() => {
+  // If the selected module is already enabled, disabling is always allowed.
+  if (selectedEnabled.value) return true
+  const deps = selectedDependencies.value
+  if (!deps.length) return true
+  return deps.every(d => d.enabled)
+})
+
 async function loadModules() {
   loading.value = true
   error.value = null
@@ -300,14 +314,33 @@ onMounted(() => {
             </div>
           </div>
 
+          <div v-if="selectedDependencies.length" class="info-section dependency-section">
+            <h3 class="section-title">{{ t('modulesView.overview.dependenciesTitle') }}</h3>
+            <ul class="dependency-list">
+              <li
+                v-for="dep in selectedDependencies"
+                :key="dep.key"
+                class="dependency-item"
+                :class="dep.enabled ? 'dep-on' : 'dep-off'"
+              >
+                <span class="dep-dot" :class="dep.enabled ? 'dot-on' : 'dot-off'" />
+                <span class="dep-name">{{ dep.name }}</span>
+                <span class="dep-status">{{ dep.enabled ? t('modulesView.status.enabled') : t('modulesView.status.disabled') }}</span>
+              </li>
+            </ul>
+            <p v-if="!canToggleSelected" class="dependency-hint">
+              {{ t('modulesView.overview.dependenciesHint') }}
+            </p>
+          </div>
+
           <div class="info-section action-section">
             <button
               class="btn-action"
               :class="selectedEnabled ? 'btn-danger' : 'btn-primary'"
-              :disabled="toggling === selectedModule.key"
+              :disabled="toggling === selectedModule.key || !canToggleSelected"
               @click="doToggle(selectedModule.key)"
             >
-              {{ toggling === selectedModule.key ? t('modulesView.status.processing') : selectedEnabled ? t('modulesView.status.enabledAction') : t('modulesView.status.disabledAction') }}
+              {{ toggling === selectedModule.key ? t('modulesView.status.processing') : selectedEnabled ? t('modulesView.status.disabledAction') : t('modulesView.status.enabledAction') }}
             </button>
             <button class="btn-ghost" @click="goToSettings(selectedModule.key)">
               {{ t('modulesView.overview.viewAllSettings') }}
@@ -882,6 +915,52 @@ onMounted(() => {
 }
 .btn-ghost:hover {
   background: var(--bg-hover, #21262d);
+}
+
+/* ── Dependencies ── */
+.dependency-section {
+  padding: 14px;
+  background: var(--bg, #0f1117);
+  border-radius: 8px;
+}
+.dependency-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 10px;
+}
+.dependency-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 13px;
+}
+.dependency-item.dep-on {
+  color: var(--text-secondary, #8b949e);
+}
+.dependency-item.dep-off {
+  color: #f87171;
+}
+.dep-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dep-name {
+  flex: 1;
+}
+.dep-status {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-card, #161b22);
+}
+.dependency-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #f87171;
+  line-height: 1.5;
 }
 
 /* ── Config Cards ── */
