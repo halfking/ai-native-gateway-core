@@ -30,6 +30,7 @@ import {
   type useSessionFilters,
 } from '../../composables/useSessionContext'
 import RequestLogDrawer from '../../components/RequestLogDrawer.vue'
+import SessionTurnsPanel from '../../components/SessionTurnsPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -323,6 +324,15 @@ watch(
       <p v-if="titleError" class="extract-err">{{ titleError }}</p>
       <p v-if="extractResult" class="extract-ok">{{ extractResult }}</p>
       <p v-if="extractError" class="extract-err">{{ extractError }}</p>
+    </div>
+
+    <!-- Per-turn three-stage (original / compressed / secured) context view -->
+    <div v-if="sessionScope.session_id" class="card compact-card">
+      <SessionTurnsPanel
+        :session-id="sessionScope.session_id"
+        :title="pageTitle"
+        :summary="messagesData?.title || ''"
+      />
     </div>
 
     <div class="card compact-card">
