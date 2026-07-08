@@ -38,6 +38,7 @@ export default {
     sessionManagement: '会话管理',
     sessionCompare: '会话对比',
     compression: '压缩管理',
+    wechatBot: '微信机器人',
     sessionContext: '会话上下文',
     settings: '系统设置',
     dataLifecycle: '数据生命周期',
