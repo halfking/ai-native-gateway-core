@@ -815,19 +815,19 @@ onMounted(() => {
               </div>
 
               <!-- Prerequisite modules -->
-              <div class="integ-prereq" v-if="selectedModule.requires?.length">
+              <div class="integ-prereq" v-if="selectedModule.dependencies?.length">
                 <h4 class="steps-title">{{ t('modulesView.integration.prerequisitesTitle') }}</h4>
                 <div class="prereq-list">
                   <span
-                    v-for="req in selectedModule.requires"
-                    :key="req"
+                    v-for="dep in dependencyStatus"
+                    :key="dep.key"
                     class="prereq-badge"
-                    :class="isModuleEnabled(req) ? 'prereq-met' : 'prereq-unmet'"
+                    :class="dep.enabled ? 'prereq-met' : 'prereq-unmet'"
                   >
-                    {{ moduleDisplayName(req) }}
+                    {{ dep.icon }} {{ dep.moduleName }}
                   </span>
                 </div>
-                <p class="prereq-hint" v-if="selectedModule.requires.some(r => !isModuleEnabled(r))">
+                <p class="prereq-hint" v-if="hasUnmetDependencies">
                   {{ t('modulesView.integration.prerequisitesHint') }}
                 </p>
               </div>
