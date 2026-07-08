@@ -177,6 +177,7 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 		out.Metadata = map[string]interface{}{
 			"output_compliance_redacted": true,
 			"pii_stripped":               true, // 点亮 cache_update_hook 的悬空契约
+			"pii_stripped_turn":          true, // Per-turn 脱敏标记（增强 3, 2026-07-09）
 			"issue_count":                len(result.Issues),
 			"redaction_mode":             string(mode),
 		}

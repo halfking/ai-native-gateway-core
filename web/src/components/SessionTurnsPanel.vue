@@ -157,6 +157,7 @@ const loadingText = computed(() => {
           :tokens="currentTurn.secured.tokens"
           :tags="currentTurn.secured.applied_tags"
           :no-change-hint="(!currentTurn.secured.applied_tags || currentTurn.secured.applied_tags.length === 0) ? t('sessions.turns.noSecurityChange') : ''"
+          :pii-stripped="currentTurn.pii_stripped_this_turn"
         />
       </div>
 
@@ -187,6 +188,7 @@ const loadingText = computed(() => {
               <div class="history-col">
                 <span class="col-lbl">{{ t('sessions.turns.stageSecured') }}</span>
                 <span class="col-tags">
+                  <span v-if="ht.pii_stripped_this_turn" class="pii-icon" title="此轮响应已脱敏">🔒</span>
                   <span v-if="!ht.secured.applied_tags || !ht.secured.applied_tags.length" class="text-muted">—</span>
                   <span v-for="tag in (ht.secured.applied_tags || [])" :key="tag" class="mini-tag">{{ tagLabel(tag) }}</span>
                 </span>

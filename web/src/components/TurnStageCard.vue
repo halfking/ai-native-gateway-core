@@ -15,6 +15,8 @@ defineProps<{
   strategy?: string
   tags?: string[]
   noChangeHint?: string
+  /** 此轮响应是否被脱敏（增强 3, 2026-07-09） */
+  piiStripped?: boolean
 }>()
 </script>
 
@@ -32,7 +34,10 @@ defineProps<{
       <div class="dir-body send">{{ send }}</div>
     </div>
     <div class="stage-dir">
-      <span class="dir-lbl">{{ receiveLabel }}</span>
+      <span class="dir-lbl">
+        {{ receiveLabel }}
+        <span v-if="piiStripped" class="pii-icon" title="此轮响应已脱敏">🔒</span>
+      </span>
       <div class="dir-body receive">{{ receive }}</div>
     </div>
 
@@ -67,6 +72,12 @@ defineProps<{
 .stage-meta { font-size: 11px; color: var(--text-muted, #6e7681); font-variant-numeric: tabular-nums; }
 .stage-dir { display: flex; flex-direction: column; gap: 3px; }
 .dir-lbl { font-size: 10px; color: var(--text-secondary, #8b949e); text-transform: uppercase; }
+.pii-icon { 
+  margin-left: 4px; 
+  font-size: 10px; 
+  opacity: 0.8; 
+  cursor: help; 
+}
 .dir-body {
   font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
   padding: 6px 8px; border-radius: 4px; background: var(--bg-subtle, rgba(0,0,0,.15));
