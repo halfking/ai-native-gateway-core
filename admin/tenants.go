@@ -589,8 +589,7 @@ func (h *Handler) listTenantKeys(w http.ResponseWriter, r *http.Request, code st
 	rows, err := h.db.Query(ctx, `
 		SELECT ak.id, ak.tenant_id, ak.key_prefix, ak.key_alias, ak.owner_user,
 		       ak.enabled, ak.status, ak.application_id, app.code AS app_code,
-		       ak.total_requests, ak.total_prompt_tokens, ak.total_completion_tokens,
-		       ak.total_cost_usd, ak.expires_at, ak.created_at
+		       ak.total_requests, ak.total_cost_usd, ak.expires_at, ak.created_at
 		FROM api_keys ak
 		LEFT JOIN applications app ON app.id = ak.application_id
 		WHERE ak.tenant_id = $1
@@ -606,12 +605,12 @@ func (h *Handler) listTenantKeys(w http.ResponseWriter, r *http.Request, code st
 		ID        int        `json:"id"`
 		TenantID  string     `json:"tenant_id"`
 		KeyPrefix string     `json:"key_prefix"`
-		KeyAlias  string     `json:"key_alias"`
-		OwnerUser string     `json:"owner_user"`
+		KeyAlias  *string    `json:"key_alias,omitempty"`
+		OwnerUser *string    `json:"owner_user,omitempty"`
 		Enabled   bool       `json:"enabled"`
 		Status    string     `json:"status"`
 		AppID     int        `json:"application_id"`
-		AppCode   string     `json:"application_code"`
+		AppCode   *string    `json:"application_code,omitempty"`
 		TotalReqs int64      `json:"total_requests"`
 		TotalCost float64    `json:"total_cost_usd"`
 		ExpiresAt *time.Time `json:"expires_at,omitempty"`
