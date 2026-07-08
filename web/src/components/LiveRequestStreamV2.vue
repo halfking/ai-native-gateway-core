@@ -8,6 +8,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useLiveStream } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
 import { isSuperAdmin } from '../store'
+import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
 import SwimLane from './SwimLane.vue'
 import LiveStreamLegend from './LiveStreamLegend.vue'
 import type { GroupByDimension } from '../types/swimlane'
@@ -242,16 +243,15 @@ function handleToggleLegend(key: string) {
             class="connection-status"
             :class="connectionClass"
             @click="toggleConnectionDetail"
-            :title="isAdmin ? '点击查看连接详情' : connectionLabel"
-            :disabled="!isAdmin"
+            title="点击查看连接详情"
           >
             <span class="status-dot" />
             {{ connectionLabel }}
           </button>
         </div>
         
-        <!-- 连接详情弹窗（仅管理员） -->
-        <div v-if="showConnectionDetail && isAdmin" class="connection-detail-popup">
+        <!-- 连接详情弹窗（所有用户可查看） -->
+        <div v-if="showConnectionDetail" class="connection-detail-popup">
           <div class="popup-header">
             <h4>SSE 连接详情</h4>
             <button type="button" class="popup-close" @click="showConnectionDetail = false">✕</button>
@@ -266,7 +266,7 @@ function handleToggleLegend(key: string) {
               <div class="detail-value url-edit-group">
                 <template v-if="!isEditingUrl">
                   <code class="url-display">{{ streamUrl }}</code>
-                  <button type="button" class="edit-btn" @click="startEditUrl" title="编辑地址">编辑</button>
+                  <button v-if="isAdmin" type="button" class="edit-btn" @click="startEditUrl" title="编辑地址">编辑</button>
                 </template>
                 <template v-else>
                   <input 
@@ -316,6 +316,12 @@ function handleToggleLegend(key: string) {
       :dimension-label="dimensionLabel"
       @toggle-legend="handleToggleLegend"
     />
+    
+    <!-- Redis 健康警告 -->
+    <div v-if="!redisHealthyRef" class="redis-health-warning">
+      <span class="redis-warning-icon">⚠</span>
+      <span>Redis 不可用：{{ redisErrorRef || '缓存服务连接失败' }}。实时数据降级为数据库查询，可能存在延迟。</span>
+    </div>
     
     <!-- 泳道区域 -->
     <div class="swim-lanes">
@@ -418,14 +424,9 @@ function handleToggleLegend(key: string) {
   white-space: nowrap;
 }
 
-.connection-status:hover:not(:disabled) {
+.connection-status:hover {
   background: var(--bg-subtle, #161b22);
   border-color: var(--accent, #6366f1);
-}
-
-.connection-status:disabled {
-  cursor: default;
-  opacity: 0.8;
 }
 
 .status-dot {
@@ -697,6 +698,26 @@ function handleToggleLegend(key: string) {
   color: var(--text, #e6edf3);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+
+/* Redis 健康警告条 */
+.redis-health-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-top: 8px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 6px;
+  color: #fbbf24;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.redis-warning-icon {
+  font-size: 16px;
+  flex-shrink: 0;
 }
 
 .swim-lanes {
