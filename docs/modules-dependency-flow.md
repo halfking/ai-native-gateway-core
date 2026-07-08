@@ -391,10 +391,16 @@ npm run build  # SUCCESS (安装 sass-embedded 后)
 - 扩展 `ModuleWithStatus`（新增 `CanToggleEnabled`、`BlockedReason`）
 - 新增 `moduleStatusMap()` 函数（依赖状态计算）
 - 新增 `requiredDependencyBlockReason()` 函数（阻塞原因生成）
+- **新增 `detectCircularDependencies()` 函数（循环依赖检测）** ✅
 - 修改 `handleModulesList()`：返回完整状态
 - 修改 `handleModulesGet()`：返回完整状态
 - 修改 `handleModulesToggle()`：启用前验证依赖
 - `session_analytics` 模块声明添加 `Dependencies` 字段
+- **`allModuleDefinitions()` 初始化时自动检测循环** ✅
+
+**文件：admin/modules_circular_test.go** ✅ **新增**
+- 9 个循环依赖检测测试用例
+- 覆盖无循环、简单循环、三节点循环、自循环、钻石图、子图循环等场景
 
 ### 前端（Vue + TypeScript）
 
@@ -441,13 +447,21 @@ npm run build  # SUCCESS (安装 sass-embedded 后)
    - 原因：模块到路由的映射无统一规范
    - 未来优化：在 `ModuleDefinition` 中新增 `settingsRoute` 字段
 
+6. **循环依赖检测在启动时执行** ✅
+   - 原因：依赖图是静态的，启动时一次性检测即可
+   - 失败模式：panic 并报告循环路径，防止启动
+   - 性能：O(V+E) DFS 遍历，模块数量少（<20），开销可忽略
+
 ## 后续优化建议
 
-1. **循环依赖检测**
-   - 在 `allModuleDefinitions()` 初始化时检测依赖图循环
-   - 启动失败时报错并拒绝启动
+1. **循环依赖检测** ✅ **已实现**
+   - 在 `allModuleDefinitions()` 初始化时自动检测依赖图循环
+   - 使用 DFS 算法遍历依赖图，检测 visiting 状态节点
+   - 检测到循环时立即 panic，提供清晰的循环路径（如：`a -> b -> c -> a`）
+   - 启动失败时报错并拒绝启动，防止运行时依赖死锁
+   - 已覆盖 9 个测试场景：无循环、简单循环、三节点循环、自循环、钻石图、子图循环、不存在依赖、空图、单节点
 
-2. **依赖版本约束**
+2. **依赖自动启用**
    - 扩展 `ModuleDependency` 支持版本范围
    - 示例：`{Key: "compression", MinVersion: "1.2.0"}`
 
