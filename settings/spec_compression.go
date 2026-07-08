@@ -113,7 +113,7 @@ func CompressionSpecs() []*Spec {
 			Category:        CategorySecurity,
 			Default:         false,
 			Description:     "启用 UA/TLS 伪装",
-			DescriptionLong: "启用 User-Agent 和 TLS 指纹轮换（参考 docs/legal/disguise-compliance.md）。",
+			DescriptionLong: "启用 User-Agent 和 TLS 指纹轮换（参考 docs/legal/disguise-compliance.md）。在模块管理页面可配置轮换间隔、池大小、平台过滤、TLS 指纹、Slot 并发等详细参数。",
 			Unit:            "",
 			DangerLevel:     Breaking,
 			HotReload:       true,
