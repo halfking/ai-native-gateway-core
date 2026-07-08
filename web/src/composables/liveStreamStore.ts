@@ -30,6 +30,7 @@ export interface LiveRequest {
   total_tokens?: number | null
   cost_usd?: number | null
   error_kind?: string | null
+  failure_stage?: string | null  // "gateway" | "upstream" — failure origin
 }
 
 export interface LiveStreamStats {
@@ -83,13 +84,19 @@ export interface LiveStreamDelta {
   status_legends: LiveStreamLegendItem[]
 }
 
+export interface LiveStreamHealth {
+  redis_connected: boolean
+  redis_error?: string
+}
+
 export interface LiveStreamEnvelope {
-  type: 'initial_data' | 'request' | 'idle_marker'
+  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update'
   ts: string
   request?: LiveRequest
   requests?: LiveRequest[]
   snapshot?: LiveStreamSnapshot
   delta?: LiveStreamDelta
+  health?: LiveStreamHealth
 }
 
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' | 'unsupported'
@@ -100,6 +107,8 @@ export const liveStreamState = reactive({
   connection: 'idle' as ConnectionState,
   paused: false,
   lastEventAt: 0,
+  redisHealthy: true,
+  redisError: '',
 })
 
 // Vue auto-unwraps `ref` and `reactive` proxies in templates.
@@ -114,6 +123,8 @@ export const snapshotRef: ComputedRef<LiveStreamSnapshot | null> = computed(() =
 export const connectionRef: ComputedRef<ConnectionState> = computed(() => liveStreamState.connection)
 export const pausedRef: ComputedRef<boolean> = computed(() => liveStreamState.paused)
 export const lastEventAtRef: ComputedRef<number> = computed(() => liveStreamState.lastEventAt)
+export const redisHealthyRef: ComputedRef<boolean> = computed(() => liveStreamState.redisHealthy)
+export const redisErrorRef: ComputedRef<string> = computed(() => liveStreamState.redisError)
 
 export const MAX_VISIBLE = 60
 export const ENDPOINT = '/api/admin/live-stream'
@@ -245,6 +256,11 @@ function applyInitialData(items: LiveRequest[]) {
 
 function handleEnvelope(env: LiveStreamEnvelope) {
   liveStreamState.lastEventAt = Date.now()
+  // Update Redis health from any envelope that carries it.
+  if (env.health) {
+    liveStreamState.redisHealthy = env.health.redis_connected
+    liveStreamState.redisError = env.health.redis_error || ''
+  }
   if (env.snapshot) {
     liveStreamState.snapshot = env.snapshot
   } else if (env.delta) {
@@ -260,6 +276,10 @@ function handleEnvelope(env: LiveStreamEnvelope) {
   }
   if (env.type === 'idle_marker') {
     pushOrQueue({ type: 'idle_marker', ts: env.ts })
+    return
+  }
+  if (env.type === 'health_update') {
+    // Health-only envelope; state already updated above.
     return
   }
 }

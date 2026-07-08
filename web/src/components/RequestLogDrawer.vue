@@ -200,8 +200,30 @@ function roleColor(role: string): string {
 
 function statusLabel(row: RequestLogDetail): string {
   if (row.request_status === 'in_progress') return '请求中'
-  if (row.request_status === 'failure') return row.error_kind || '失败'
+  if (row.request_status === 'failure') {
+    const ek = row.error_kind || ''
+    if (!ek) return '失败'
+    // 尝试 i18n 翻译：先查 gwErrorKind（带 gw_ 前缀的网关错误），再查 errorKind
+    const gwKey = `requests.gwErrorKind.${ek}`
+    const translated = t(gwKey)
+    if (translated !== gwKey) return translated
+    const ekKey = `requests.errorKind.${ek}`
+    const ekTranslated = t(ekKey)
+    if (ekTranslated !== ekKey) return ekTranslated
+    // fallback: 下划线替换为空格
+    return ek.replace(/_/g, ' ')
+  }
   return row.success ? '成功' : '失败'
+}
+
+// 失败阶段标签
+function failureStageLabel(stage: string | null | undefined): string {
+  if (!stage) return ''
+  switch (stage) {
+    case 'gateway': return '网关'
+    case 'upstream': return '上游'
+    default: return stage
+  }
 }
 
 function outboundModelDisplay(row: RequestLogDetail | null): string {
@@ -232,6 +254,12 @@ function outboundModelDisplay(row: RequestLogDetail | null): string {
               <span :style="{ color: detail.success ? 'var(--success)' : 'var(--danger)' }">
                 {{ detail.success ? '成功' : statusLabel(detail) }}
               </span>
+            </span>
+            <span v-if="!detail.success && detail.failure_stage"><strong>失败阶段:</strong>
+              <span style="color: var(--warning)">{{ failureStageLabel(detail.failure_stage) }}</span>
+            </span>
+            <span v-if="!detail.success && detail.failure_detail_code"><strong>失败代码:</strong>
+              <code>{{ detail.failure_detail_code }}</code>
             </span>
             <span><strong>延迟:</strong> {{ detail.latency_ms ?? '—' }}ms</span>
             <span><strong>Token:</strong> {{ detail.prompt_tokens ?? '—' }} / {{ detail.completion_tokens ?? '—' }}</span>

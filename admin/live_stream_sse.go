@@ -62,7 +62,17 @@ type LiveStreamEnvelope struct {
 	Requests   []LiveRequest       `json:"requests,omitempty"`
 	Snapshot   *LiveStreamSnapshot `json:"snapshot,omitempty"`
 	Delta      *LiveStreamDelta    `json:"delta,omitempty"`
+	Health     *LiveStreamHealth   `json:"health,omitempty"`
 	superDelta *LiveStreamDelta    `json:"-"` // attached to Delta during fanOut for super clients; not serialised directly
+}
+
+// LiveStreamHealth reports backend resource health for the dashboard.
+// Sent as part of periodic keepalive / health_update envelopes so the
+// frontend can warn operators when Redis (or other critical infra) is
+// degraded.
+type LiveStreamHealth struct {
+	RedisConnected bool   `json:"redis_connected"`
+	RedisError     string `json:"redis_error,omitempty"`
 }
 
 // providerCodeForSQL resolves providers.id → display name with a sensible fallback chain.
@@ -123,6 +133,7 @@ type LiveRequest struct {
 	TotalTokens      *int     `json:"total_tokens,omitempty"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	ErrorKind        *string  `json:"error_kind,omitempty"`
+	FailureStage     *string  `json:"failure_stage,omitempty"` // "gateway" | "upstream" — failure origin
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -217,6 +228,11 @@ type LiveStreamSSEHub struct {
 	totalDisconnections int64 // 累计断开数
 	authFailures        int64 // 认证失败次数
 	broadcastCount      int64 // 广播消息数
+
+	// lastHealth tracks the previous Redis health state so we only
+	// broadcast a health_update envelope when the state changes.
+	lastHealthMu sync.RWMutex
+	lastHealth   *LiveStreamHealth
 }
 
 type cachedSnapshotEntry struct {
@@ -248,9 +264,15 @@ func (h *LiveStreamSSEHub) Run() {
 	idleTicker := time.NewTicker(h.cfg.IdleTickInterval)
 	keepaliveTicker := time.NewTicker(h.cfg.KeepaliveInterval)
 	cacheCleanupTicker := time.NewTicker(h.cachedSnapshotTTL)
+	healthTicker := time.NewTicker(30 * time.Second) // Redis health check interval
 	defer idleTicker.Stop()
 	defer keepaliveTicker.Stop()
 	defer cacheCleanupTicker.Stop()
+	defer healthTicker.Stop()
+
+	// Emit initial health status immediately so freshly-connected
+	// clients do not have to wait 30s to learn about Redis state.
+	h.checkAndBroadcastHealth()
 
 	for {
 		select {
@@ -306,6 +328,8 @@ func (h *LiveStreamSSEHub) Run() {
 			h.fanOutKeepalive()
 		case <-cacheCleanupTicker.C:
 			h.evictStaleCachedSnapshots()
+		case <-healthTicker.C:
+			h.checkAndBroadcastHealth()
 		}
 	}
 }
@@ -617,6 +641,47 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 	h.lastActivityMu.Unlock()
 }
 
+// checkAndBroadcastHealth pings Redis and broadcasts a health_update
+// envelope when the health state changes. This lets the frontend show
+// a warning banner when Redis is unavailable.
+func (h *LiveStreamSSEHub) checkAndBroadcastHealth() {
+	health := h.checkRedisHealth()
+
+	h.lastHealthMu.RLock()
+	prev := h.lastHealth
+	h.lastHealthMu.RUnlock()
+
+	// Only broadcast when state changes (or on first check).
+	if prev != nil && prev.RedisConnected == health.RedisConnected &&
+		prev.RedisError == health.RedisError {
+		return
+	}
+
+	h.lastHealthMu.Lock()
+	h.lastHealth = health
+	h.lastHealthMu.Unlock()
+
+	h.fanOut(LiveStreamEnvelope{
+		Type:      "health_update",
+		Timestamp: time.Now().UTC(),
+		Health:    health,
+	})
+}
+
+// checkRedisHealth pings Redis with a short timeout. Returns a
+// healthy status when the store or client is nil (graceful degradation).
+func (h *LiveStreamSSEHub) checkRedisHealth() *LiveStreamHealth {
+	if h.store == nil || h.store.rdb == nil {
+		return &LiveStreamHealth{RedisConnected: false, RedisError: "Redis not configured"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := h.store.rdb.Ping(ctx).Err(); err != nil {
+		return &LiveStreamHealth{RedisConnected: false, RedisError: err.Error()}
+	}
+	return &LiveStreamHealth{RedisConnected: true}
+}
+
 // fanOutKeepalive sends an SSE comment frame to every connected
 // client. Comments (lines starting with ":") are ignored by
 // EventSource but DO reset the read deadline on most reverse
@@ -851,6 +916,8 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 	defer func() { h.unregister <- client }()
 
 	// Initial replay (oldest → newest so client renders left-to-right).
+	// Include current Redis health so the client can show warnings immediately.
+	initialHealth := h.checkRedisHealth()
 	if items, err := h.replay(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit); err != nil {
 		slog.Warn("live stream initial replay failed", "err", err.Error())
 	} else if len(items) > 0 {
@@ -865,6 +932,7 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 			Timestamp: time.Now().UTC(),
 			Requests:  items,
 			Snapshot:  snapshot,
+			Health:    initialHealth,
 		})
 		if mErr == nil {
 			h.writeEvent(client, data)
@@ -1043,6 +1111,7 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	completionTokens *int,
 	totalTokens *int,
 	costUSD *float64,
+	failureStage *string,
 ) LiveRequest {
 	out := LiveRequest{
 		RequestID:        requestID,
@@ -1055,6 +1124,7 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 		TotalTokens:      totalTokens,
 		CostUSD:          costUSD,
 		ErrorKind:        errorKind,
+		FailureStage:     failureStage,
 	}
 	
 	// Model fallback chain: outbound → client → canonical_name

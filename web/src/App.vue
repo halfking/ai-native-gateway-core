@@ -8,6 +8,7 @@ import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
+import SystemStatusIndicator from './components/SystemStatusIndicator.vue'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
 import { useNavAccordion } from './composables/useNavAccordion'
@@ -236,7 +237,7 @@ function handleChangePasswordSuccess() {
             <template v-if="store.userInfo">
               <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
               <span class="meta-sep" aria-hidden="true">·</span>
-              <span class="user-role">{{ store.userInfo.role ? t(`role.${store.userInfo.role}`) : '' }}</span>
+              <span class="user-role">{{ store.userInfo.role ? t(`app.role.${store.userInfo.role}`) : '' }}</span>
             </template>
             <template v-if="versionInfo.version">
               <span v-if="store.userInfo" class="meta-sep" aria-hidden="true">·</span>
@@ -247,6 +248,7 @@ function handleChangePasswordSuccess() {
               </template>
             </template>
           </div>
+          <SystemStatusIndicator />
           <LanguageSelector />
           <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('login.changePassword') }}</button>
           <button class="btn btn-ghost btn-sm" @click="logout">{{ t('app.logout') }}</button>

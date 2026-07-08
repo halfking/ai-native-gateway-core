@@ -97,6 +97,7 @@ type liveRequestRedisPayload struct {
 	TotalTokens      *int     `json:"total_tokens,omitempty"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	ErrorKind        *string  `json:"error_kind,omitempty"`
+	FailureStage     *string  `json:"failure_stage,omitempty"`
 }
 
 const (
@@ -320,6 +321,7 @@ func marshalLiveRequestRedisPayload(req LiveRequest) (string, error) {
 		TotalTokens:      req.TotalTokens,
 		CostUSD:          req.CostUSD,
 		ErrorKind:        req.ErrorKind,
+		FailureStage:     req.FailureStage,
 	}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -350,6 +352,7 @@ func unmarshalLiveRequestRedisPayload(data string) (LiveRequest, error) {
 		TotalTokens:      p.TotalTokens,
 		CostUSD:          p.CostUSD,
 		ErrorKind:        p.ErrorKind,
+		FailureStage:     p.FailureStage,
 	}, nil
 }
 

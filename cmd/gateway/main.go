@@ -244,7 +244,16 @@ func main() {
 	if len(cfg.SessionIDBodyKeys) > 0 {
 		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}
-	healthHandler := streaming.NewHealthHandler(cm, lim, upClient.Proxy())
+	
+	// Health handler with database and Redis status checking (2026-07-08)
+	// Pass db and redis connections for health checks (will be updated with redis later)
+	var dbPinger interface{ Ping(context.Context) error }
+	var redisPinger interface{ Ping(context.Context) error }
+	if dbConn != nil && dbConn.Pool() != nil {
+		dbPinger = dbConn.Pool()
+	}
+	healthHandler := streaming.NewHealthHandler(cm, lim, upClient.Proxy(), dbPinger, redisPinger)
+	
 	modelsHandler := streaming.NewModelsHandler()
 	messagesHandler := streaming.NewMessagesHandler(chatHandler)
 	responsesHandler := streaming.NewResponsesHandler(chatHandler)
@@ -298,6 +307,9 @@ func main() {
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
 			sessionPref = session.NewSessionPreference(redisClient)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
+			
+			// Update health handler with Redis connection (2026-07-08)
+			healthHandler.SetRedis(redisClient)
 		} else {
 			slog.Warn("session manager: redis ping failed", "error", err)
 		}
@@ -2773,6 +2785,7 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			entry.CompletionTokens,
 			totalTokens,
 			entry.CostUSD,
+			entry.FailureStage,
 		)
 	}
 	// Fallback when hub is nil (defensive; unreachable in normal operation

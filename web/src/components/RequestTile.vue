@@ -11,6 +11,7 @@ import {
   calculateFontSize,
   truncateText
 } from '../types/swimlane'
+import { errorKindLabel } from '../composables/liveStreamDisplay'
 
 const props = defineProps<{
   tile: RequestTileType
@@ -69,9 +70,59 @@ const line2Content = computed(() => {
   if (props.tile.status === 'success') return '✓ 成功'
   if (props.tile.status === 'in_progress') return '⋯ 进行中'
   if (props.tile.error_kind) {
-    return props.tile.error_kind.slice(0, 8)
+    // 使用 errorKindLabel 获取可读的错误标签（下划线替换为空格）
+    const label = errorKindLabel(props.tile.error_kind)
+    return truncateText(label, 12)
   }
   return '✗ 失败'
+})
+
+// 完整的 tooltip 信息
+const tooltipText = computed(() => {
+  const lines: string[] = []
+  // 状态/错误信息优先
+  if (props.tile.status === 'failure') {
+    if (props.tile.error_kind) {
+      lines.push(`错误类型: ${errorKindLabel(props.tile.error_kind)}`)
+      lines.push(`原始代码: ${props.tile.error_kind}`)
+    } else {
+      lines.push('状态: 请求失败')
+    }
+  } else if (props.tile.status === 'success') {
+    lines.push('状态: 成功')
+  } else if (props.tile.status === 'in_progress') {
+    lines.push('状态: 处理中')
+  }
+  // 模型信息
+  if (props.tile.model) lines.push(`模型: ${props.tile.model}`)
+  if (props.tile.vendor) lines.push(`原厂: ${props.tile.vendor}`)
+  if (props.tile.provider) lines.push(`供应商: ${props.tile.provider}`)
+  // 延迟
+  if (props.tile.latency_ms != null) {
+    const ms = props.tile.latency_ms
+    lines.push(`延迟: ${ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms'}`)
+  }
+  // Token 信息
+  if (props.tile.prompt_tokens != null || props.tile.completion_tokens != null) {
+    const p = props.tile.prompt_tokens ?? 0
+    const c = props.tile.completion_tokens ?? 0
+    lines.push(`Token: ${p} + ${c}`)
+  }
+  // 费用
+  if (props.tile.cost_usd != null) {
+    lines.push(`费用: $${props.tile.cost_usd.toFixed(4)}`)
+  }
+  // 请求ID
+  if (props.tile.request_id) {
+    lines.push(`ID: ${props.tile.request_id.slice(0, 12)}`)
+  }
+  // 时间
+  if (props.tile.timestamp) {
+    try {
+      lines.push(`时间: ${new Date(props.tile.timestamp).toLocaleString()}`)
+    } catch { /* ignore */ }
+  }
+  return lines.join('\n')
 })
 
 // 第三行内容（根据分组模式）
@@ -103,6 +154,7 @@ function handleClick() {
       '--border-color': borderColor,
       '--model-font-size': modelFontSize + 'px',
     }"
+    :title="tooltipText"
     @click="handleClick"
   >
     <div class="request-tile__time">{{ timeLabel }}</div>
