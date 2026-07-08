@@ -359,6 +359,34 @@ feat(sessionaudit): 实现 LLM 风险检测客户端
 新增代码：+159 行
 ```
 
+### Commit 5: 功能验证文档
+```
+commit 6a0cb9d6
+docs: 会话审计与审批模块优化 - 完整功能验证文档
+
+- 添加 FEATURE_VERIFICATION.md
+- 记录所有已完成功能
+- 提供使用指南、故障排查、最佳实践
+
+变更文件：1 个
+新增代码：+588 行
+```
+
+### Commit 6: main.go 集成
+```
+commit 3f001bc3
+feat(gateway): 在 main.go 中集成 LLM 检测客户端
+
+- 在启动时自动创建并注入 OpenAIDetectorClient
+- 支持环境变量配置（LLM_DETECTOR_API_KEY 等）
+- 降级策略：无 API Key 时跳过注入
+- 日志记录：初始化成功/失败均有日志
+
+变更文件：1 个
+新增代码：+27 行
+删除代码：-7 行
+```
+
 ---
 
 ## 📊 代码统计
@@ -417,6 +445,33 @@ git log --oneline -4
 ---
 
 ## 🚀 使用指南
+
+### 0. 环境变量配置
+
+在启动 gateway 前，配置 LLM 检测客户端：
+
+```bash
+# 方式 1：使用专用 API Key（推荐）
+export LLM_DETECTOR_API_KEY=sk-your-api-key
+export LLM_DETECTOR_BASE_URL=https://api.openai.com/v1  # 可选
+
+# 方式 2：使用主 API Key（兜底）
+export LLM_GATEWAY_API_KEY=sk-your-api-key
+
+# 启动 gateway
+./gateway
+```
+
+**日志验证**：
+```
+INFO LLM detector client initialized base_url=https://api.openai.com/v1 has_api_key=true
+```
+
+**降级模式**：
+```
+WARN LLM detector client not initialized: missing API key hint="set LLM_DETECTOR_API_KEY or LLM_GATEWAY_API_KEY"
+# 此时只使用快速检测，不影响系统运行
+```
 
 ### 1. 基础配置
 ```yaml
@@ -525,10 +580,16 @@ session_audit.escalation_approvers=["ciso","cto"]
 - **延迟**: 数秒级（异步执行）
 - **并行度**: 与模型数量相等
 - **降级策略**: 基准分数 <3 时跳过
+- **容错**: 单模型失败不影响其他模型
 
 ### 通知发送
 - **并行度**: 按渠道并行
 - **容错**: 单渠道失败不影响其他渠道
+
+### 启动时初始化
+- **LLM 客户端**: 在 main.go 启动时自动创建并注入
+- **环境变量**: 支持 LLM_DETECTOR_API_KEY 和 LLM_GATEWAY_API_KEY
+- **降级策略**: 无 API Key 时自动跳过，不影响快速检测
 
 ---
 
@@ -578,11 +639,40 @@ session_audit.escalation_approvers=["ciso","cto"]
 4. **异步深度检测**: 不影响主流程性能
 5. **多渠道通知**: 覆盖飞书、钉钉、企业微信
 6. **前端优化**: 依赖关系可视化
+7. **完整集成**: main.go 自动创建并注入 LLM 客户端
 
 所有高优先级任务已完成并推送到 main 分支，系统已具备生产环境部署条件。
 
+### 部署流程
+
+1. **设置环境变量**:
+   ```bash
+   export LLM_DETECTOR_API_KEY=sk-xxx
+   export LLM_DETECTOR_BASE_URL=https://api.openai.com/v1  # 可选
+   ```
+
+2. **配置多模型检测**:
+   ```yaml
+   session_audit:
+     enabled: true
+     enforcement_level: strict
+     detector_models: ["gpt-4o-mini", "claude-3-haiku"]
+   ```
+
+3. **启动 gateway**:
+   ```bash
+   ./gateway
+   ```
+
+4. **验证日志**:
+   ```
+   INFO LLM detector client initialized
+   INFO session audit chat-time hook wired (v1)
+   ```
+
 ---
 
-**文档版本**: v1.0  
+**文档版本**: v1.1  
 **更新时间**: 2026-07-09  
-**维护者**: official-deploy 团队
+**维护者**: official-deploy 团队  
+**最后更新**: 完成 main.go LLM 客户端集成
