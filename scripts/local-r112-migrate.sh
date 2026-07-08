@@ -132,7 +132,54 @@ mapfile -t MIGRATION_FILES < <(find "$MIGRATIONS_DIR" -maxdepth 1 -name "*.sql" 
 # 本地 R1.12 只跑 schema 迁移，跳过含 demo seed / 外部依赖 / Citus 兼容性问题的迁移。
 # Citus 11.3 (PG 15) 对部分索引谓词的 IMMUTABLE 检查更严, 且缺少某些函数
 # (round(double,int)), 这些 migration 在生产 PG 16+ 上能跑, 本地跳过。
-SKIP_MIGRATIONS_REGEX='^(002_work_types\.sql|004_tuning_signals\.sql|005_tuning_proposals\.sql|021_tool_registry_and_metatools\.sql|029_seed_tool_registry\.sql|031_provider_settings\.sql|033_credential_model_call_history\.sql|036_fp_slot_limit\.sql|302_unified_probe_scheduler\.sql|304_model_health_dashboard\.sql|308_probe_dashboard_state_alignment\.sql|310_session_summaries\.sql|313_probe_dashboard_followup\.sql|315_prompt_injection_detection\.sql|316_output_compliance_monitoring\.sql|317_partition_credential_model_index\.sql|321_cleanup_stale_in_progress\.sql|340_create_partition_query_views\.sql|342_create_other_table_views\.sql|343_fix_routing_decision_log_columnar\.sql|344_usage_ledger_hot_independence\.sql|345_request_wal_hot_independence\.sql|346_routing_decision_log_hot_independence\.sql|347_credential_model_index_hot_independence\.sql|348_tool_usage_stats_hot_independence\.sql|349_credit_ledger_hot_independence\.sql|350_session_analytics_fix\.sql|351_session_analytics_tables\.sql|353_request_logs_bodies_hot_independence\.sql|354_credential_model_index_hot_independence\.sql|355_session_analytics_indexes\.sql|356_session_health_columns\.sql|357_session_analytics_aggregation_views\.sql|358_session_ownership\.sql)$'
+SKIP_MIGRATIONS=(
+  "002_work_types.sql"
+  "004_tuning_signals.sql"
+  "005_tuning_proposals.sql"
+  "021_tool_registry_and_metatools.sql"
+  "029_seed_tool_registry.sql"
+  "031_provider_settings.sql"
+  "033_credential_model_call_history.sql"
+  "036_fp_slot_limit.sql"
+  "302_unified_probe_scheduler.sql"
+  "304_model_health_dashboard.sql"
+  "308_probe_dashboard_state_alignment.sql"
+  "310_session_summaries.sql"
+  "313_probe_dashboard_followup.sql"
+  "315_prompt_injection_detection.sql"
+  "316_output_compliance_monitoring.sql"
+  "317_partition_credential_model_index.sql"
+  "321_cleanup_stale_in_progress.sql"
+  "340_create_partition_query_views.sql"
+  "342_create_other_table_views.sql"
+  "343_fix_routing_decision_log_columnar.sql"
+  "344_usage_ledger_hot_independence.sql"
+  "345_request_wal_hot_independence.sql"
+  "346_routing_decision_log_hot_independence.sql"
+  "347_credential_model_index_hot_independence.sql"
+  "348_tool_usage_stats_hot_independence.sql"
+  "349_credit_ledger_hot_independence.sql"
+  "350_session_analytics_fix.sql"
+  "351_session_analytics_tables.sql"
+  "353_request_logs_bodies_hot_independence.sql"
+  "354_credential_model_index_hot_independence.sql"
+  "355_session_analytics_indexes.sql"
+  "356_session_health_columns.sql"
+  "357_session_analytics_aggregation_views.sql"
+  "358_session_ownership.sql"
+  "364_prompt_injection_enhanced.sql"
+)
+
+should_skip_migration() {
+  local name="$1"
+  local skip
+  for skip in "${SKIP_MIGRATIONS[@]}"; do
+    if [[ "$name" == "$skip" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 if [ "${#MIGRATION_FILES[@]}" -eq 0 ]; then
   err "未找到 .sql 迁移文件"
@@ -147,7 +194,7 @@ FAILED=0
 for MIG_FILE in "${MIGRATION_FILES[@]}"; do
   MIG_NAME="$(basename "$MIG_FILE")"
 
-  if [[ "$MIG_NAME" =~ $SKIP_MIGRATIONS_REGEX ]]; then
+  if should_skip_migration "$MIG_NAME"; then
     printf "  [%3d/%d] %s ... %s\n" "$((APPLIED+SKIPPED+FAILED+1))" "$TOTAL" "$MIG_NAME" "${YELLOW}SKIP${NC}"
     SKIPPED=$((SKIPPED+1))
     continue
