@@ -32,6 +32,7 @@ LATENCY_MIN = int(os.environ.get("MOCK_LATENCY_MS_MIN", "200"))
 LATENCY_MAX = int(os.environ.get("MOCK_LATENCY_MS_MAX", "500"))
 PORT = int(os.environ.get("MOCK_PORT", "18080"))
 TOKEN = os.environ.get("MOCK_TOKEN", f"mock-{PORT}")
+FAILURE_RATE = float(os.environ.get("MOCK_FAILURE_RATE", "0.0"))
 STATE_FILE = Path(os.environ.get("MOCK_STATE_FILE", f"/tmp/mock-state-{PORT}.json"))
 
 
