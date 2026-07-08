@@ -439,6 +439,13 @@ func registerV2PipelineRoutes(parent *http.ServeMux) {
 	deps := newV2PipelineDeps(cfg)
 	deps.Pipeline = buildV2Pipeline(deps)
 
+	// 2026-07-09: 飞书机器人模块 late-binding。
+	// 与 main.go 同一函数 InitFeishubotPlugin；v2 pipeline 无 LarkChannel 注入，
+	// 因此仅在 gLarkCh 非空时生效。失败仅记日志（best-effort）。
+	if _, ferr := InitFeishubotPlugin(deps.EventBus, gLarkCh, gApprovalMgr, parent); ferr != nil {
+		slog.Warn("v2 pipeline: feishubot init failed (best-effort)", "error", ferr)
+	}
+
 	// Register the v2 sub-mux under /v2/. This is independent of the v1
 	// routes; the v1 mux's /v1/chat/completions, /v1/messages, etc. are
 	// unaffected. A misconfigured nginx upstream cannot reach /v2/* on
