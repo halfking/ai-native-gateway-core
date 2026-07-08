@@ -157,6 +157,32 @@ func TestHandleModulesToggle(t *testing.T) {
 	}
 }
 
+func TestDependenciesSatisfied(t *testing.T) {
+	settings.Global = settings.NewRegistry()
+
+	// All dependency modules default to enabled (no setting key => true)
+	oc := ModuleDefinition{Key: "output_compliance", Dependencies: []string{"compression", "cache", "prompt_injection"}}
+	if !dependenciesSatisfied(oc.Dependencies) {
+		t.Errorf("expected dependencies satisfied when all default-enabled")
+	}
+
+	statuses := resolveDependencyStatuses(oc.Dependencies)
+	if len(statuses) != 3 {
+		t.Fatalf("expected 3 dependency statuses, got %d", len(statuses))
+	}
+	for _, s := range statuses {
+		if !s.Enabled {
+			t.Errorf("expected dependency %s enabled", s.Key)
+		}
+	}
+
+	// Unknown dependency should report disabled
+	unknown := ModuleDefinition{Key: "x", Dependencies: []string{"nonexistent"}}
+	if dependenciesSatisfied(unknown.Dependencies) {
+		t.Errorf("expected dependencies not satisfied for unknown module")
+	}
+}
+
 func TestHandleModulesRouter(t *testing.T) {
 	settings.Global = settings.NewRegistry()
 
