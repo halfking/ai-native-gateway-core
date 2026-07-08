@@ -45,29 +45,66 @@ type ToxicKeyword struct {
 
 // Policy 输出合规策略
 type Policy struct {
-	TenantID               string
-	Enabled                bool
-	EnforcementMode        string
-	CheckPII               bool
-	CheckToxicity          bool
-	CheckBias              bool
-	CheckHallucination     bool
-	PIIThreshold           float64
-	ToxicityThreshold      float64
-	BiasThreshold          float64
-	HallucinationThreshold float64
-	ActionOnPII            string
-	ActionOnToxicity       string
-	ActionOnBias           string
-	ActionOnHallucination  string
-	AutoRedact             bool
-	RedactEmail            bool
-	RedactPhone            bool
-	RedactIDCard           bool
-	RedactCreditCard       bool
-	StrictMode             bool
-	LogAllOutputs          bool
-	WhitelistPatterns      []string
+	TenantID                             string
+	Enabled                              bool
+	EnforcementMode                      string
+	PIIEngine                            string
+	ToxicityEngine                       string
+	LLMEngineID                          *int
+	CheckPII                             bool
+	CheckToxicity                        bool
+	CheckBias                            bool
+	CheckHallucination                   bool
+	CheckSecrets                         bool
+	CheckInternalIP                      bool
+	CheckJailbreakResponse               bool
+	CheckInstructionInjectionResponse    bool
+	PIIThreshold                         float64
+	ToxicityThreshold                    float64
+	BiasThreshold                        float64
+	HallucinationThreshold               float64
+	SecretsThreshold                     float64
+	InternalIPThreshold                  float64
+	ActionOnPII                          string
+	ActionOnToxicity                     string
+	ActionOnBias                         string
+	ActionOnHallucination                string
+	ActionOnSecrets                      string
+	ActionOnInternalIP                   string
+	ActionOnJailbreakResponse            string
+	ActionOnInstructionInjectionResponse string
+	AutoRedact                           bool
+	RedactEmail                          bool
+	RedactPhone                          bool
+	RedactIDCard                         bool
+	RedactCreditCard                     bool
+	RedactBankCard                       bool
+	RedactJWT                            bool
+	RedactPassword                       bool
+	ToxicReplacement                     string
+	BlockMessage                         string
+	StrictMode                           bool
+	LogAllOutputs                        bool
+	WhitelistKeywords                    []string
+	ExceptionRules                       []ExceptionRule
+	SamplingRate                         float64
+	RealtimeAlertEnabled                 bool
+	AlertThresholdSeverity               int
+	AlertAggregationWindowMinutes        int
+	AutoReviewQueueEnabled               bool
+	FeedbackLoopEnabled                  bool
+	SkillGenerationEnabled               bool
+	AutoThresholdTuningEnabled           bool
+	RetentionDays                        int
+}
+
+// ExceptionRule 身份感知例外规则。
+type ExceptionRule struct {
+	Scope      string   `json:"scope"`       // owner_user / role / application_code
+	Values     []string `json:"values"`      // 允许的取值列表
+	CheckTypes []string `json:"check_types"` // 生效的检测类型，空表示全部
+	Actions    []string `json:"actions"`     // 豁免的动作，如 skip_redact / skip_block
+	Reason     string   `json:"reason"`
 }
 
 // ComplianceResult 合规检查结果
@@ -88,6 +125,8 @@ type ComplianceIssue struct {
 	Score       float64 `json:"score"`
 	Redacted    bool    `json:"redacted"`
 	Description string  `json:"description"`
+	// ExceptionMatched 为 true 表示命中身份感知例外规则（不会被脱敏/阻断）。
+	ExceptionMatched bool `json:"exception_matched,omitempty"`
 }
 
 // NewChecker 创建检查器
@@ -132,6 +171,18 @@ func (c *Checker) Check(ctx context.Context, tenantID, output string) (*Complian
 	if policy.CheckPII {
 		piiIssues := c.detectPII(output, policy)
 		result.Issues = append(result.Issues, piiIssues...)
+	}
+
+	// 密钥/凭据检测
+	if policy.CheckSecrets {
+		secretIssues := c.detectSecrets(output, policy)
+		result.Issues = append(result.Issues, secretIssues...)
+	}
+
+	// 内网 IP 检测
+	if policy.CheckInternalIP {
+		ipIssues := c.detectInternalIP(output, policy)
+		result.Issues = append(result.Issues, ipIssues...)
 	}
 
 	// 毒性检测
@@ -403,33 +454,123 @@ func (c *Checker) getPolicy(ctx context.Context, tenantID string) (*Policy, erro
 	)
 
 	if err == sql.ErrNoRows {
-		return &Policy{
-			TenantID:               tenantID,
-			Enabled:                true,
-			EnforcementMode:        "observe",
-			CheckPII:               true,
-			CheckToxicity:          true,
-			CheckBias:              false,
-			CheckHallucination:     false,
-			PIIThreshold:           0.7,
-			ToxicityThreshold:      0.7,
-			BiasThreshold:          0.6,
-			HallucinationThreshold: 0.7,
-			ActionOnPII:            "redact",
-			ActionOnToxicity:       "warn",
-			ActionOnBias:           "log",
-			ActionOnHallucination:  "log",
-			AutoRedact:             true,
-			RedactEmail:            true,
-			RedactPhone:            true,
-			RedactIDCard:           true,
-			RedactCreditCard:       true,
-			StrictMode:             false,
-			LogAllOutputs:          false,
-		}, nil
+		return defaultPolicy(tenantID), nil
 	}
 
 	return policy, err
+}
+
+func defaultPolicy(tenantID string) *Policy {
+	return &Policy{
+		TenantID:                             tenantID,
+		Enabled:                              true,
+		EnforcementMode:                      "observe",
+		PIIEngine:                            "regex",
+		ToxicityEngine:                       "keyword",
+		CheckPII:                             true,
+		CheckToxicity:                        true,
+		CheckBias:                            false,
+		CheckHallucination:                   false,
+		CheckSecrets:                         true,
+		CheckInternalIP:                      true,
+		CheckJailbreakResponse:               false,
+		CheckInstructionInjectionResponse:    false,
+		PIIThreshold:                         0.7,
+		ToxicityThreshold:                    0.7,
+		BiasThreshold:                        0.6,
+		HallucinationThreshold:               0.7,
+		SecretsThreshold:                     0.7,
+		InternalIPThreshold:                  0.7,
+		ActionOnPII:                          "redact",
+		ActionOnToxicity:                     "warn",
+		ActionOnBias:                         "log",
+		ActionOnHallucination:                "log",
+		ActionOnSecrets:                      "redact",
+		ActionOnInternalIP:                   "redact",
+		ActionOnJailbreakResponse:            "block",
+		ActionOnInstructionInjectionResponse: "block",
+		AutoRedact:                           true,
+		RedactEmail:                          true,
+		RedactPhone:                          true,
+		RedactIDCard:                         true,
+		RedactCreditCard:                     true,
+		RedactBankCard:                       false,
+		RedactJWT:                            true,
+		RedactPassword:                       true,
+		ToxicReplacement:                     "[内容已过滤]",
+		BlockMessage:                         "响应因合规策略被阻断",
+		StrictMode:                           false,
+		LogAllOutputs:                        false,
+		SamplingRate:                         1.0,
+		AlertThresholdSeverity:               7,
+		AlertAggregationWindowMinutes:        5,
+		RetentionDays:                        90,
+	}
+}
+
+// detectSecrets 检测密钥/凭据泄漏（API key / 私钥 / JWT / 密码）。
+func (c *Checker) detectSecrets(output string, policy *Policy) []ComplianceIssue {
+	issues := []ComplianceIssue{}
+
+	secretPatterns := []struct {
+		patternType string
+		regex       string
+		severity    int
+		desc        string
+	}{
+		{"api_key", `(sk|ak)-[a-zA-Z0-9]{16,}`, 8, "检测到 API Key"},
+		{"jwt", `eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*`, 7, "检测到 JWT Token"},
+		{"password", `(?i)(password|passwd|pwd)\s*[:=]\s*\S+`, 7, "检测到密码/凭证"},
+		{"private_key", `-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`, 9, "检测到私钥"},
+	}
+
+	for _, p := range secretPatterns {
+		re, err := regexp.Compile(p.regex)
+		if err != nil {
+			continue
+		}
+		matches := re.FindAllStringIndex(output, -1)
+		for _, match := range matches {
+			start, end := match[0], match[1]
+			content := output[start:end]
+			issues = append(issues, ComplianceIssue{
+				Type:        "secret",
+				Subtype:     p.patternType,
+				Severity:    p.severity,
+				Location:    fmt.Sprintf("char:%d-%d", start, end),
+				Content:     strings.Repeat("*", len(content)),
+				Score:       1.0,
+				Redacted:    policy.ActionOnSecrets == "redact",
+				Description: p.desc,
+			})
+		}
+	}
+
+	return issues
+}
+
+// detectInternalIP 检测 RFC1918 私有 IP 地址。
+func (c *Checker) detectInternalIP(output string, policy *Policy) []ComplianceIssue {
+	issues := []ComplianceIssue{}
+
+	re := regexp.MustCompile(`\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b`)
+	matches := re.FindAllStringIndex(output, -1)
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		content := output[start:end]
+		issues = append(issues, ComplianceIssue{
+			Type:        "internal_ip",
+			Subtype:     "rfc1918",
+			Severity:    6,
+			Location:    fmt.Sprintf("char:%d-%d", start, end),
+			Content:     strings.Repeat("*", len(content)),
+			Score:       1.0,
+			Redacted:    policy.ActionOnInternalIP == "redact",
+			Description: "检测到内网 IP",
+		})
+	}
+
+	return issues
 }
 
 // shouldCheckPIIType 判断是否检查某类 PII
@@ -443,6 +584,10 @@ func (c *Checker) shouldCheckPIIType(piiType string, policy *Policy) bool {
 		return policy.RedactIDCard
 	case "credit_card":
 		return policy.RedactCreditCard
+	case "bank_card":
+		return policy.RedactBankCard
+	case "jwt":
+		return policy.RedactJWT
 	default:
 		return true
 	}
@@ -484,6 +629,12 @@ func (c *Checker) maskPII(content, piiType string) string {
 		}
 		return "****-****-****-****"
 
+	case "bank_card":
+		if len(content) >= 16 {
+			return "****-****-****-" + content[len(content)-4:]
+		}
+		return "****-****-****-****"
+
 	default:
 		return strings.Repeat("*", len(content))
 	}
@@ -496,21 +647,32 @@ func (c *Checker) maskPII(content, piiType string) string {
 // 因此 ReplaceAll 永不命中，脱敏静默失效。改用 issue.Location（"char:start-end"）
 // 做位置精确拼接：从原始 output 取出未脱敏片段，替换为 mask 值。按 start 降序
 // 处理避免偏移漂移。
+//
+// 扩展：secret/internal_ip 命中时，若 policy 动作不是 redact，则不写入 RedactedOutput；
+// 命中 exception 规则的 issue 会被跳过。
 func (c *Checker) redactOutput(output string, issues []ComplianceIssue, policy *Policy) string {
 	// 只保留需要脱敏的 issue，并按 start 降序排序（从后往前替换，避免位移）。
 	type redactItem struct {
-		start, end int
+		start, end  int
 		replacement string
 	}
 	items := make([]redactItem, 0, len(issues))
 	for _, issue := range issues {
+		if issue.ExceptionMatched {
+			continue
+		}
+		action := c.actionForIssue(issue, policy)
 		if issue.Type == "pii" && policy.AutoRedact {
 			if s, e, ok := parseCharLocation(issue.Location); ok {
 				items = append(items, redactItem{s, e, issue.Content}) // Content 已是 maskPII 结果
 			}
-		} else if issue.Type == "toxic" && policy.ActionOnToxicity == "redact" {
+		} else if issue.Type == "toxic" && action == "redact" {
 			if s, e, ok := parseCharLocation(issue.Location); ok {
 				items = append(items, redactItem{s, e, issue.Content}) // Content 已是 ****
+			}
+		} else if (issue.Type == "secret" || issue.Type == "internal_ip") && action == "redact" {
+			if s, e, ok := parseCharLocation(issue.Location); ok {
+				items = append(items, redactItem{s, e, issue.Content})
 			}
 		}
 	}
@@ -556,14 +718,38 @@ func parseCharLocation(loc string) (int, int, bool) {
 	return start, end, true
 }
 
+// actionForIssue 根据 issue 类型返回策略配置的响应动作。
+func (c *Checker) actionForIssue(issue ComplianceIssue, policy *Policy) string {
+	switch issue.Type {
+	case "pii":
+		return policy.ActionOnPII
+	case "toxic":
+		return policy.ActionOnToxicity
+	case "bias":
+		return policy.ActionOnBias
+	case "hallucination":
+		return policy.ActionOnHallucination
+	case "secret":
+		return policy.ActionOnSecrets
+	case "internal_ip":
+		return policy.ActionOnInternalIP
+	default:
+		return "log"
+	}
+}
+
 // shouldBlock 判断是否阻断
 func (c *Checker) shouldBlock(issues []ComplianceIssue, policy *Policy) bool {
-	if !policy.StrictMode || policy.EnforcementMode != "enforce" {
+	if policy.EnforcementMode != "enforce" {
 		return false
 	}
 
 	for _, issue := range issues {
-		if issue.Severity >= 9 {
+		if issue.ExceptionMatched {
+			continue
+		}
+		action := c.actionForIssue(issue, policy)
+		if action == "block" || (policy.StrictMode && issue.Severity >= 9) {
 			return true
 		}
 	}
