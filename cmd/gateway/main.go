@@ -38,23 +38,27 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
-	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/approval"                            //nolint:depguard // D1: approval config management
-	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
-	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
-	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"                 //nolint:depguard
-	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/approval"                                     //nolint:depguard // D1: approval config management
+	"github.com/kaixuan/llm-gateway-go/domains/assets"                                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/credential"                                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	outputcompliancehooks "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance" //nolint:depguard
+	promptinjectionhooks "github.com/kaixuan/llm-gateway-go/domains/hooks/promptinjection"   //nolint:depguard
+	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"          //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/notification"                                 //nolint:depguard // 审批通知器
+	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"                             //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/promptinjection"                              //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/session"                                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"                          //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
@@ -244,7 +248,7 @@ func main() {
 	if len(cfg.SessionIDBodyKeys) > 0 {
 		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}
-	
+
 	// Health handler with database and Redis status checking (2026-07-08)
 	// Pass db and redis connections for health checks (will be updated with redis later)
 	var dbPinger interface{ Ping(context.Context) error }
@@ -253,7 +257,7 @@ func main() {
 		dbPinger = dbConn.Pool()
 	}
 	healthHandler := streaming.NewHealthHandler(cm, lim, upClient.Proxy(), dbPinger, redisPinger)
-	
+
 	modelsHandler := streaming.NewModelsHandler()
 	messagesHandler := streaming.NewMessagesHandler(chatHandler)
 	responsesHandler := streaming.NewResponsesHandler(chatHandler)
@@ -307,7 +311,7 @@ func main() {
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
 			sessionPref = session.NewSessionPreference(redisClient)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
-			
+
 			// Update health handler with Redis connection (2026-07-08)
 			healthHandler.SetRedis(redisClient)
 		} else {
@@ -1908,9 +1912,16 @@ func main() {
 				pool := dbConn.Pool()
 				pub := bus.NewPGPublisher(pool, slog.Default())
 				intentStore := assets.NewPGIntentAggregateStore(pool, slog.Default())
-				// PR-V4-11: detector / checker / summarizer 当前传 nil；
-				// 它们需要 *sql.DB（不是 pgxpool），后续 PR 再桥接。
-				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, nil, nil, nil)
+				// PR-V4-11: 通过 dbConn.Stdlib() 把 pgxpool 桥接为 *sql.DB，
+				// 注入 prompt injection detector 与 output compliance checker。
+				piDetector, ocChecker := initPipelineDetectors(dbConn)
+				if piDetector != nil {
+					slog.Info("v2 pipeline: prompt injection detector initialized")
+				}
+				if ocChecker != nil {
+					slog.Info("v2 pipeline: output compliance checker initialized")
+				}
+				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, piDetector, ocChecker, nil)
 			}
 			StartV2DispatchAnalysisLoop(v2Deps)
 			defer v2ShutdownPipeline(v2Deps)
@@ -1987,8 +1998,8 @@ func main() {
 				w.WriteHeader(http.StatusOK)
 				//nolint:errcheck // HTTP write error non-recoverable
 				//nolint:errcheck // HTTP write error non-recoverable
-			w.Write([]byte(fmt.Sprintf(`{"service":"llm-gateway-go","version":"%s","git_sha":"%s","build_seq":"%s"}`,
-				Version, GitCommit, BuildNumber)))
+				w.Write([]byte(fmt.Sprintf(`{"service":"llm-gateway-go","version":"%s","git_sha":"%s","build_seq":"%s"}`,
+					Version, GitCommit, BuildNumber)))
 				return
 			}
 			http.NotFound(w, r)
@@ -2068,6 +2079,11 @@ func main() {
 		mux.HandleFunc("/api/admin/session-export/pack", wrapAdmin(exportAPI.ServeHTTP))
 		slog.Info("session migration API enabled (/api/admin/session-export{,/import,/pack})")
 
+		// 2026-07-09: Output Compliance 管理 API（策略/自定义敏感词/复核队列/反馈）
+		ocHandler := admin.NewOutputComplianceHandler(dbConn.Pool())
+		ocHandler.RegisterRoutes(mux)
+		slog.Info("output compliance admin API enabled (/api/admin/output-compliance/*)")
+
 		// Phase 3.5: Session List & Detail API
 		// NOTE (2026-07-06): removed duplicate registration here. admin/handler.go
 		// already registers /api/admin/sessions via handleListSessions + handleSessionSubrouter
@@ -2095,9 +2111,9 @@ func main() {
 			if dbConn != nil {
 				healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
 				healthWorker.Start(context.Background())
-			slog.Info("session health worker started (hourly)")
+				slog.Info("session health worker started (hourly)")
+			}
 		}
-	}
 
 		// Task T1.4: Usage Cost Enhanced API 注册已在 admin/handler.go:572 完成
 		// (避免与 admin 包的双重注册 panic, 与 33d9d4fe fix 同型)
@@ -2632,6 +2648,93 @@ func parseBoolSetting(raw json.RawMessage) (bool, bool) {
 		return false, true
 	}
 	return false, false
+}
+
+// initPipelineDetectors 用 dbConn.Stdlib() 初始化 prompt injection detector
+// 和 output compliance checker；失败时降级为 nil 并记录 warning，不阻塞启动。
+func initPipelineDetectors(dbConn *db.DB) (promptinjectionhooks.Detector, outputcompliancehooks.Checker) {
+	sqlDB := dbConn.Stdlib()
+	if sqlDB == nil {
+		slog.Warn("v2 pipeline: cannot init detectors: Stdlib() unavailable")
+		return nil, nil
+	}
+
+	var piDetector promptinjectionhooks.Detector
+	if d, derr := promptinjection.NewDetector(sqlDB); derr == nil {
+		piDetector = &promptInjectionDetectorAdapter{inner: d}
+	} else {
+		slog.Warn("v2 pipeline: prompt injection detector init failed", "error", derr)
+	}
+
+	var ocChecker outputcompliancehooks.Checker
+	if c, cerr := outputcompliance.NewChecker(sqlDB); cerr == nil {
+		ocChecker = &outputComplianceCheckerAdapter{inner: c}
+	} else {
+		slog.Warn("v2 pipeline: output compliance checker init failed", "error", cerr)
+	}
+
+	return piDetector, ocChecker
+}
+
+// promptInjectionDetectorAdapter 把核心 promptinjection.Detector 的返回类型
+// 转换为 hook 包期望的精简镜像，避免修改核心 Detector 的公开签名。
+type promptInjectionDetectorAdapter struct {
+	inner *promptinjection.Detector
+}
+
+func (a *promptInjectionDetectorAdapter) Detect(ctx context.Context, tenantID, input string) (*promptinjectionhooks.DetectionResult, error) {
+	r, err := a.inner.Detect(ctx, tenantID, input)
+	if err != nil || r == nil {
+		return nil, err
+	}
+	return &promptinjectionhooks.DetectionResult{
+		Score:              r.Score,
+		RiskLevel:          r.RiskLevel,
+		Categories:         r.Categories,
+		ActionTaken:        r.ActionTaken,
+		Blocked:            r.Blocked,
+		RequireApproval:    r.RequireApproval,
+		ApprovalTimeoutMin: r.ApprovalTimeoutMin,
+		Evidence:           r.Evidence,
+		ReplacedContent:    r.ReplacedContent,
+		CanaryTokenLeaked:  r.CanaryTokenLeaked,
+		LLMConfidence:      r.LLMConfidence,
+		LLMReason:          r.LLMReason,
+		SessionHealthDelta: r.SessionHealthDelta,
+		TerminateSession:   r.TerminateSession,
+	}, nil
+}
+
+// outputComplianceCheckerAdapter 把核心 outputcompliance.Checker 的返回类型
+// 转换为 hook 包期望的精简镜像。
+type outputComplianceCheckerAdapter struct {
+	inner *outputcompliance.Checker
+}
+
+func (a *outputComplianceCheckerAdapter) Check(ctx context.Context, tenantID, output string) (*outputcompliancehooks.ComplianceResult, error) {
+	r, err := a.inner.Check(ctx, tenantID, output)
+	if err != nil || r == nil {
+		return nil, err
+	}
+	issues := make([]outputcompliancehooks.ComplianceIssue, len(r.Issues))
+	for i, iss := range r.Issues {
+		issues[i] = outputcompliancehooks.ComplianceIssue{
+			Type:        iss.Type,
+			Subtype:     iss.Subtype,
+			Severity:    iss.Severity,
+			Location:    iss.Location,
+			Content:     iss.Content,
+			Score:       iss.Score,
+			Redacted:    iss.Redacted,
+			Description: iss.Description,
+		}
+	}
+	return &outputcompliancehooks.ComplianceResult{
+		Compliant:      r.Compliant,
+		Issues:         issues,
+		RedactedOutput: r.RedactedOutput,
+		Blocked:        r.Blocked,
+	}, nil
 }
 
 // initApprovalNotifier 初始化审批通知器（从 DB 加载路由规则 + 创建 IM 渠道）。
