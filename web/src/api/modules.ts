@@ -14,8 +14,10 @@ export interface ModuleIntegration {
 export interface ModuleDependency {
   key: string
   name: string
+  icon: string
   required: boolean
   description: string
+  enabled?: boolean
 }
 
 export interface ModuleDefinition {
@@ -36,6 +38,8 @@ export interface ModuleDefinition {
 export interface ModuleWithStatus extends ModuleDefinition {
   enabled: boolean
   source: string
+  can_toggle_enabled: boolean
+  blocked_reason?: string
 }
 
 export interface ModuleDetail {
