@@ -130,10 +130,14 @@ function handleTaskClick(taskId: string) {
 <template>
   <div class="session-stats-panel">
     <div v-if="error" class="alert alert-danger" role="alert">
-      <span>{{ error }}</span>
-      <button class="btn btn-sm" @click="load">{{ t('sessions.stats.loadFailed') }}</button>
+      <span class="alert-icon">⚠️</span>
+      <span class="alert-text">{{ error }}</span>
+      <button class="btn btn-sm alert-retry" @click="load">
+        <span v-if="loading">⏳</span>
+        <span v-else>🔄 {{ t('sessions.stats.retry') || '重试' }}</span>
+      </button>
     </div>
-    <div v-loading="loading" :class="{ 'session-stats-panel--has-error': error }">
+    <div v-loading="loading" :class="{ 'session-stats-panel--has-error': error }" v-else>
     <!-- 统计卡片 -->
     <el-row :gutter="16" style="margin-bottom: 20px;">
       <el-col :span="6">
@@ -279,6 +283,56 @@ function handleTaskClick(taskId: string) {
 <style scoped>
 .session-stats-panel {
   padding: 20px;
+}
+
+.session-stats-panel--has-error {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #dc2626;
+}
+
+.alert-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.alert-text {
+  flex: 1;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.alert-retry {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 4px;
+  background: white;
+  color: #dc2626;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.alert-retry:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.05);
+  border-color: #dc2626;
+}
+
+.alert-retry:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .stat-card {
