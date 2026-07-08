@@ -10,6 +10,31 @@ import { onMounted, onUnmounted, ref, Ref } from 'vue'
 // 注册 Chart.js 所有组件
 Chart.register(...registerables)
 
+/**
+ * 读取 CSS 变量的当前值（用于让 Chart.js 的固定颜色与暗色主题保持一致）。
+ * 在 SSR 或变量缺失时回退到给定的默认值。
+ */
+function getCssVar(name: string, fallback = ''): string {
+  if (typeof window === 'undefined' || !window.getComputedStyle) return fallback
+  const value = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
+}
+
+/**
+ * Chart.js 默认颜色：与全局暗色主题（style.css :root）对齐。
+ * 这些常量被各图表配置生成器引用，避免在暗色背景上出现白色边框/网格/文字。
+ */
+export const chartTheme = {
+  text: '#e6edf3',
+  muted: '#8b949e',
+  grid: 'rgba(255, 255, 255, 0.06)',
+  cardBorder: '#1c2128'
+}
+
+// 设置 Chart.js 全局默认值，确保所有图表的文字/网格在暗色下可读
+Chart.defaults.color = chartTheme.muted
+Chart.defaults.borderColor = chartTheme.grid
+
 export interface ChartOptions {
   responsive?: boolean
   maintainAspectRatio?: boolean
@@ -151,7 +176,7 @@ export function createTimeSeriesConfig(
         y: {
           beginAtZero: true,
           grid: {
-            color: 'rgba(0, 0, 0, 0.05)'
+            color: 'rgba(255, 255, 255, 0.06)'
           }
         }
       },
@@ -178,7 +203,7 @@ export function createDoughnutConfig(
           data,
           backgroundColor: colors,
           borderWidth: 2,
-          borderColor: '#fff'
+          borderColor: getCssVar('--card')
         }
       ]
     },
@@ -262,7 +287,7 @@ export function createStackedAreaConfig(
           stacked: true,
           beginAtZero: true,
           grid: {
-            color: 'rgba(0, 0, 0, 0.05)'
+            color: 'rgba(255, 255, 255, 0.06)'
           }
         }
       },
@@ -313,7 +338,7 @@ export function createHistogramConfig(
         y: {
           beginAtZero: true,
           grid: {
-            color: 'rgba(0, 0, 0, 0.05)'
+            color: 'rgba(255, 255, 255, 0.06)'
           }
         }
       },

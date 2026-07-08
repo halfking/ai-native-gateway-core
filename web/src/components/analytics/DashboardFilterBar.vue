@@ -136,7 +136,7 @@
       <el-collapse v-model="advancedOpen" style="margin-top: 12px">
         <el-collapse-item name="advanced">
           <template #title>
-            <span style="font-size: 13px; color: #606266">高级筛选</span>
+            <span style="font-size: 13px; color: var(--muted)">高级筛选</span>
           </template>
           <div class="advanced-filters">
             <div class="filter-group">
@@ -424,6 +424,13 @@ onMounted(() => {
   margin-bottom: 20px;
 }
 
+/* 暗色系：el-card 默认是白色背景，需与全局卡片色对齐 */
+:deep(.el-card) {
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
+}
+
 .filter-row {
   display: flex;
   align-items: center;
@@ -439,7 +446,7 @@ onMounted(() => {
 
 .filter-label {
   font-size: 13px;
-  color: #606266;
+  color: var(--muted);
   white-space: nowrap;
   font-weight: 500;
 }

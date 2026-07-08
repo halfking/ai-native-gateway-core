@@ -5,8 +5,8 @@
       <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="3">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
-            <div class="stat-icon" style="background: #ecf5ff">
-              <el-icon :size="24" color="#409eff">
+            <div class="stat-icon icon-accent">
+              <el-icon :size="24" color="var(--accent-h)">
                 <ChatDotRound />
               </el-icon>
             </div>
@@ -26,8 +26,8 @@
       <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="3">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
-            <div class="stat-icon" style="background: #f0f9ff">
-              <el-icon :size="24" color="#67c23a">
+            <div class="stat-icon icon-success">
+              <el-icon :size="24" color="var(--success)">
                 <Connection />
               </el-icon>
             </div>
@@ -44,8 +44,8 @@
       <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="3">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
-            <div class="stat-icon" style="background: #fef0f0">
-              <el-icon :size="24" color="#f56c6c">
+            <div class="stat-icon icon-danger">
+              <el-icon :size="24" color="var(--danger)">
                 <Money />
               </el-icon>
             </div>
@@ -65,8 +65,8 @@
       <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="3">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
-            <div class="stat-icon" style="background: #f0f9ff">
-              <el-icon :size="24" color="#67c23a">
+            <div class="stat-icon icon-success">
+              <el-icon :size="24" color="var(--success)">
                 <CircleCheck />
               </el-icon>
             </div>
@@ -86,8 +86,8 @@
       <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="3">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
-            <div class="stat-icon" style="background: #f4f4f5">
-              <el-icon :size="24" color="#e6a23c">
+            <div class="stat-icon icon-warning">
+              <el-icon :size="24" color="var(--warning)">
                 <Odometer />
               </el-icon>
             </div>
@@ -108,8 +108,8 @@
       <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="3">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
-            <div class="stat-icon" style="background: #fdf6ec">
-              <el-icon :size="24" color="#e6a23c">
+            <div class="stat-icon icon-warning">
+              <el-icon :size="24" color="var(--warning)">
                 <Timer />
               </el-icon>
             </div>
@@ -129,8 +129,8 @@
       <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="3">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
-            <div class="stat-icon" style="background: #f4f4f5">
-              <el-icon :size="24" color="#909399">
+            <div class="stat-icon icon-muted">
+              <el-icon :size="24" color="var(--muted)">
                 <DocumentCopy />
               </el-icon>
             </div>
@@ -150,8 +150,8 @@
       <el-col :xs="24" :sm="12" :md="8" :lg="6" :xl="3">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-content">
-            <div class="stat-icon" style="background: #f0f9ff">
-              <el-icon :size="24" color="#409eff">
+            <div class="stat-icon icon-accent">
+              <el-icon :size="24" color="var(--accent-h)">
                 <Coin />
               </el-icon>
             </div>
@@ -261,10 +261,17 @@ const changeClass = (change: number, isNegative: boolean) => {
   height: 100%;
   cursor: default;
   transition: all 0.3s;
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
 }
 
 .stat-card:hover {
   transform: translateY(-4px);
+}
+
+:deep(.stat-card .el-card__body) {
+  padding: 16px;
 }
 
 .stat-content {
@@ -283,6 +290,13 @@ const changeClass = (change: number, isNegative: boolean) => {
   flex-shrink: 0;
 }
 
+/* 暗色系下的图标背景：使用对应语义色的低透明度叠加，避免浅色块 */
+.icon-accent  { background: rgba(99, 102, 241, 0.16); }
+.icon-success { background: rgba(63, 185, 80, 0.16); }
+.icon-danger  { background: rgba(248, 81, 73, 0.16); }
+.icon-warning { background: rgba(210, 153, 34, 0.16); }
+.icon-muted   { background: rgba(139, 148, 158, 0.16); }
+
 .stat-info {
   flex: 1;
   min-width: 0;
@@ -290,7 +304,7 @@ const changeClass = (change: number, isNegative: boolean) => {
 
 .stat-label {
   font-size: 13px;
-  color: #909399;
+  color: var(--muted);
   margin-bottom: 4px;
   white-space: nowrap;
   overflow: hidden;
@@ -300,7 +314,7 @@ const changeClass = (change: number, isNegative: boolean) => {
 .stat-value {
   font-size: 24px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text);
   line-height: 1.2;
   margin-bottom: 2px;
 }
@@ -313,20 +327,20 @@ const changeClass = (change: number, isNegative: boolean) => {
 }
 
 .stat-change-good {
-  color: #67c23a;
+  color: var(--success);
 }
 
 .stat-change-bad {
-  color: #f56c6c;
+  color: var(--danger);
 }
 
 .stat-change-neutral {
-  color: #909399;
+  color: var(--muted);
 }
 
 .stat-subtext {
   font-size: 12px;
-  color: #c0c4cc;
+  color: var(--muted);
 }
 
 :deep(.el-card__body) {

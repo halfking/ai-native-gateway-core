@@ -59,26 +59,26 @@ const hasData = computed(() => {
 
 const avgHealthScore = computed(() => props.data.avgHealthScore)
 
-// 颜色方案
+// 颜色方案（与全局暗色语义色对齐）
 const gradeColors: Record<string, string> = {
-  A: '#67c23a',
-  B: '#409eff',
-  C: '#e6a23c',
-  D: '#f56c6c',
-  F: '#909399'
+  A: '#3fb950',
+  B: '#6366f1',
+  C: '#d29922',
+  D: '#f85149',
+  F: '#8b949e'
 }
 
 const outcomeColors: Record<string, string> = {
-  completed: '#67c23a',
-  error: '#f56c6c',
-  abandoned: '#e6a23c',
-  unknown: '#909399'
+  completed: '#3fb950',
+  error: '#f85149',
+  abandoned: '#d29922',
+  unknown: '#8b949e'
 }
 
 const complianceColors: Record<string, string> = {
-  compliant: '#67c23a',
-  warning: '#e6a23c',
-  violation: '#f56c6c'
+  compliant: '#3fb950',
+  warning: '#d29922',
+  violation: '#f85149'
 }
 
 // Chart 配置
@@ -103,7 +103,7 @@ const chartConfig = computed(() => {
     }
     labels = Object.keys(dist).filter(k => dist[k] > 0).map(k => outcomeLabels[k] || k)
     data = Object.keys(dist).filter(k => dist[k] > 0).map(k => dist[k])
-    colors = Object.keys(dist).filter(k => dist[k] > 0).map(k => outcomeColors[k] || '#909399')
+    colors = Object.keys(dist).filter(k => dist[k] > 0).map(k => outcomeColors[k] || '#8b949e')
   } else {
     const dist = props.data.complianceDistribution
     const complianceLabels: Record<string, string> = {
@@ -113,7 +113,7 @@ const chartConfig = computed(() => {
     }
     labels = Object.keys(dist).filter(k => dist[k] > 0).map(k => complianceLabels[k] || k)
     data = Object.keys(dist).filter(k => dist[k] > 0).map(k => dist[k])
-    colors = Object.keys(dist).filter(k => dist[k] > 0).map(k => complianceColors[k] || '#909399')
+    colors = Object.keys(dist).filter(k => dist[k] > 0).map(k => complianceColors[k] || '#8b949e')
   }
 
   return createDoughnutConfig(labels, data, colors, {
@@ -180,7 +180,7 @@ watch(
 .chart-summary {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--border);
   text-align: center;
 }
 
@@ -189,12 +189,25 @@ watch(
   text-align: center;
 }
 
+/* 暗色系：el-card / el-statistic 默认白底，与全局卡片色对齐 */
+:deep(.el-card) {
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
+}
+
 :deep(.el-statistic__head) {
   font-size: 13px;
+  color: var(--muted);
 }
 
 :deep(.el-statistic__content) {
   font-size: 28px;
   font-weight: 600;
+  color: var(--text);
+}
+
+:deep(.el-empty__description p) {
+  color: var(--muted);
 }
 </style>
