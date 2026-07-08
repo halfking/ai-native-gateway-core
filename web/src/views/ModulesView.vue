@@ -176,6 +176,10 @@ async function selectModule(key: string) {
 async function doToggle(key: string) {
   const mod = modules.value.find(m => m.key === key)
   if (!mod) return
+  if (!mod.enabled && mod.can_toggle_enabled === false) {
+    error.value = mod.blocked_reason || t('modulesView.error.operationFailed')
+    return
+  }
   toggling.value = key
   error.value = null
   const prevEnabled = mod.enabled      // snapshot for rollback
@@ -189,8 +193,9 @@ async function doToggle(key: string) {
     const r = await toggleModule(key, !prevEnabled)
     // Authoritative state from the server.
     mod.enabled = r.enabled
+    await loadModules()
     if (selectedKey.value === key) {
-      selectedEnabled.value = r.enabled
+      await selectModule(key)
     }
   } catch (e: any) {
     // Rollback on failure so the two panes never disagree.
@@ -225,6 +230,18 @@ function dangerLevelLabel(level: number): { label: string; cls: string } {
 }
 
 function goToSettings(key: string) {
+  if (key === 'compression' || key === 'cache') {
+    router.push('/admin/compression')
+    return
+  }
+  if (key === 'prompt_injection') {
+    router.push('/admin/prompt-injection')
+    return
+  }
+  if (key === 'session_analytics') {
+    router.push('/admin/session-analytics')
+    return
+  }
   router.push('/admin/settings')
 }
 
