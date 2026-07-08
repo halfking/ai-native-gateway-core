@@ -48,6 +48,13 @@ const securityTags = computed(() =>
     ['security', 'compliance', 'pii', 'approval', 'optimization', 'risk_action'].includes(t.tag_key)
   )
 )
+// OLAP tags (task/llm/topic/intent/quality/client) shown in second row (增强 2, 2026-07-09).
+const olapTags = computed(() =>
+  sessionTags.value.filter(t => {
+    const prefix = t.tag_key.split(':')[0]
+    return ['task', 'llm', 'topic', 'intent', 'quality', 'client'].includes(prefix)
+  })
+)
 function tagChipClass(key: string, value: string): string {
   if (key === 'pii' && value === 'stripped') return 'chip-pii'
   if (key === 'approval' && value === 'pending') return 'chip-warn'
@@ -91,6 +98,15 @@ const loadingText = computed(() => {
       <span v-for="tag in securityTags" :key="tag.tag_key + tag.tag_value"
         class="stag" :class="tagChipClass(tag.tag_key, tag.tag_value)"
         :title="`${tag.tag_key}: ${tag.tag_value} (${tag.tag_source})`">
+        {{ tag.tag_key }}: {{ tag.tag_value }}
+      </span>
+    </div>
+
+    <!-- OLAP tags (task/llm/topic/...) in second row (增强 2, 2026-07-09) -->
+    <div v-if="olapTags.length" class="tag-bar tag-bar-olap">
+      <span v-for="tag in olapTags" :key="tag.tag_key + tag.tag_value"
+        class="stag stag-olap"
+        :title="`${tag.tag_key}: ${tag.tag_value} (${tag.tag_source}, conf: ${tag.confidence})`">
         {{ tag.tag_key }}: {{ tag.tag_value }}
       </span>
     </div>
@@ -194,6 +210,7 @@ const loadingText = computed(() => {
 .turns-session-title { font-size: 12px; color: var(--text-secondary, #8b949e); }
 
 .tag-bar { display: flex; flex-wrap: wrap; gap: 5px; }
+.tag-bar-olap { margin-top: 8px; opacity: 0.8; }
 .stag {
   display: inline-block; padding: 1px 8px; border-radius: 999px;
   font-size: 10px; font-weight: 500; border: 1px solid var(--border, #30363d);
@@ -202,6 +219,11 @@ const loadingText = computed(() => {
 .chip-pii { background: rgba(52,211,153,.12); color: #34d399; border-color: rgba(52,211,153,.3); }
 .chip-warn { background: rgba(251,191,36,.12); color: #fbbf24; border-color: rgba(251,191,36,.3); }
 .chip-danger { background: rgba(248,113,113,.12); color: #f87171; border-color: rgba(248,113,113,.3); }
+.stag-olap { 
+  background: var(--bg-tertiary, #f3f4f6); 
+  color: var(--text-muted, #6b7280); 
+  border-color: var(--border-subtle, #d1d5db); 
+}
 
 .summary-row {
   display: flex;
