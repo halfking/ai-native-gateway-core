@@ -161,4 +161,11 @@ watch(
   height: 300px;
   position: relative;
 }
+
+/* 暗色系：el-card 默认白底，与全局卡片色对齐 */
+:deep(.el-card) {
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
+}
 </style>

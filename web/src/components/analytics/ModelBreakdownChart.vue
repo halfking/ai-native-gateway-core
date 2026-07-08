@@ -201,4 +201,15 @@ watch(
   padding: 40px 20px;
   text-align: center;
 }
+
+/* 暗色系：el-card 默认白底，与全局卡片色对齐 */
+:deep(.el-card) {
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+:deep(.el-empty__description p) {
+  color: var(--muted);
+}
 </style>
