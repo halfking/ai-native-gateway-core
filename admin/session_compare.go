@@ -99,6 +99,10 @@ type TurnView struct {
 	Original   TurnStage `json:"original"`
 	Compressed TurnStage `json:"compressed"`
 	Secured    TurnStage `json:"secured"`
+
+	// PIIStrippedThisTurn (增强 3, 2026-07-09) 标记此轮对话的响应是否被脱敏。
+	// 从 compression_meta["pii_strip_turn"] 读取（由 OutputComplianceInterceptor 写入）。
+	PIIStrippedThisTurn bool `json:"pii_stripped_this_turn"`
 }
 
 // TurnStage is one direction (send/receive are both carried) of a single
@@ -356,6 +360,11 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 			Receive:     tv.Original.Receive,
 			Tokens:      tv.Compressed.Tokens,
 			AppliedTags: tags,
+		}
+
+		// Per-turn 脱敏标记（增强 3, 2026-07-09）
+		if b, ok := compMetaMap["pii_strip_turn"].(bool); ok && b {
+			tv.PIIStrippedThisTurn = true
 		}
 
 		turns = append(turns, tv)

@@ -88,6 +88,9 @@ export interface TurnView {
   original: TurnStage
   compressed: TurnStage
   secured: TurnStage
+  /** 此轮响应是否被脱敏（增强 3, 2026-07-09）。
+   *  从 compression_meta["pii_strip_turn"] 读取。 */
+  pii_stripped_this_turn?: boolean
 }
 
 export interface HandoffRequest {
