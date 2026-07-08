@@ -391,6 +391,7 @@ func TestIsRetryable(t *testing.T) {
 		{KindRateLimit, false},
 		{KindAuth, false},
 		{KindQuota, false},
+		{KindContentFilter, false}, // content-determined, not retryable
 		{ErrorKind(""), false},
 	}
 	for _, tt := range tests {
@@ -416,7 +417,17 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		{"415_unsupported_media_type", 415, `unsupported media type`, KindUnsupportedFeature},
 		{"409_conflict", 409, `conflict`, KindUnsupportedFeature},
 		{"410_gone", 410, `gone`, KindUnsupportedFeature},
-		{"422_unprocessable", 422, `unprocessable entity`, KindUnsupportedFeature},
+		// 2026-07-08: 422 removed from protocol-4xx switch. A bare
+		// "unprocessable entity" body does not match any known pattern
+		// (modelNotFoundRe, unsupportedFeatureRe, contentFilterRe,
+		// contextLengthRe), so it falls through to ClassifyResponseStatus
+		// → default KindTransient.
+		{"422_unprocessable_generic_now_transient", 422, `unprocessable entity`, KindTransient},
+		// 422 with a content-filter body is KindContentFilter (not
+		// KindUnsupportedFeature) — the body pattern takes priority.
+		{"422_content_filter_new_sensitive", 422, `{"type":"error","error":{"type":"unprocessable_entity_error","message":"input new_sensitive (1026)","http_code":"422"}}`, KindContentFilter},
+		// 422 with unsupported-feature body still KindUnsupportedFeature.
+		{"422_unsupported_tools_body", 422, `{"error":{"message":"This model does not support tools","type":"invalid_request_error"}}`, KindUnsupportedFeature},
 		{"408_request_timeout_still_timeout", 408, `request timeout`, KindTimeout},
 		{"401_unauthorized_still_auth", 401, `unauthorized`, KindAuth},
 		// 429 with overload-shaped body intentionally upgrades to
@@ -553,5 +564,125 @@ func TestClassifyErrorWithBody_GenericWeb404(t *testing.T) {
 	kind = ClassifyErrorWithBody(400, []byte(`{"code": 1002, "message": "no such model: glm-5.1"}`))
 	if kind != KindModelNotFound {
 		t.Errorf("provider 'no such model' should be KindModelNotFound, got %q", kind)
+	}
+}
+
+// 2026-07-08: content-moderation / safety-policy rejections must be
+// classified as KindContentFilter — not KindUnsupportedFeature (which
+// would be retried across all candidates) and not KindTransient (which
+// is also retryable). The credential is healthy; the content is the
+// problem.
+func TestClassifyErrorWithBody_ContentFilter(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{
+			"minimax-422-new-sensitive",
+			422,
+			`{"type":"error","error":{"type":"unprocessable_entity_error","message":"input new_sensitive (1026)","http_code":"422"},"request_id":"069d1dd94707745c39dc52c1898000ac"}`,
+		},
+		{
+			// MiniMax content-moderation code 1027 (another new_sensitive code).
+			// Note: code 2013 overlaps with toolCallIdMismatchRe (which
+			// runs first) and is a genuine tool-call error, NOT content
+			// moderation — so we don't use 2013 here.
+			"minimax-422-sensitive-code",
+			422,
+			`{"type":"error","error":{"type":"unprocessable_entity_error","message":"new_sensitive (1027)","http_code":"422"}}`,
+		},
+		{
+			"openai-400-content-filter",
+			400,
+			`{"error":{"message":"This request has been blocked by our content filter","type":"content_filter"}}`,
+		},
+		{
+			"openai-400-content-policy",
+			400,
+			`{"error":{"message":"Your request was rejected due to content policy","type":"invalid_request_error"}}`,
+		},
+		{
+			"anthropic-403-content-moderation",
+			403,
+			`{"type":"error","error":{"type":"content_moderation_error","message":"Request was rejected by content moderation"}}`,
+		},
+		{
+			"generic-400-policy-violation",
+			400,
+			`{"error":"policy_violation: prohibited content detected"}`,
+		},
+		{
+			"cjk-422-content-sensitive",
+			422,
+			`{"error":"包含敏感词，请修改后重试"}`,
+		},
+		{
+			"cjk-422-content-illegal",
+			422,
+			`{"error":"内容违规，无法处理"}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kind := ClassifyErrorWithBody(tc.status, []byte(tc.body))
+			if kind != KindContentFilter {
+				t.Errorf("ClassifyErrorWithBody(%d, ...) = %q, want %q",
+					tc.status, kind, KindContentFilter)
+			}
+			// Content filter is NOT retryable — same content will
+			// be rejected on every candidate.
+			if IsRetryable(kind) {
+				t.Errorf("IsRetryable(%q) = true, want false", kind)
+			}
+			// Content filter is NOT a client bug — it retries next
+			// candidate (same content, same rejection), which is
+			// wasteful. Content filter uses its own short-circuit.
+			if IsClientBug(kind) {
+				t.Errorf("IsClientBug(%q) = true, want false — content_filter must NOT be IsClientBug", kind)
+			}
+		})
+	}
+}
+
+// Negative tests: bodies that should NOT be classified as content filter.
+func TestClassifyErrorWithBody_ContentFilter_Negative(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		// "case-sensitive" in a normal error should NOT match
+		{"case-sensitive-phrase", 400, `{"error":"comparison must be case sensitive"}`},
+		// "sensitive" alone (no code, no new_sensitive) should NOT match
+		{"sensitive-alone", 400, `{"error":"this is a sensitive topic"}`},
+		// 200 body with "sensitive" (status not in 400/403/422/451 gate)
+		{"200-sensitive-ignored", 200, `{"result":"input new_sensitive (1026)"}`},
+		// Bare "filter" should NOT match (no "content" prefix)
+		{"filter-alone", 400, `{"error":"filter function not found"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kind := ClassifyErrorWithBody(tc.status, []byte(tc.body))
+			if kind == KindContentFilter {
+				t.Errorf("ClassifyErrorWithBody(%d, %q) = KindContentFilter, want something else — false positive",
+					tc.status, tc.body)
+			}
+		})
+	}
+}
+
+func TestIsContentFilter(t *testing.T) {
+	if !IsContentFilter(KindContentFilter) {
+		t.Error("IsContentFilter(KindContentFilter) = false, want true")
+	}
+	if IsContentFilter(KindUnsupportedFeature) {
+		t.Error("IsContentFilter(KindUnsupportedFeature) = true, want false")
+	}
+	if IsContentFilter(KindTransient) {
+		t.Error("IsContentFilter(KindTransient) = true, want false")
+	}
+	if IsContentFilter(ErrorKind("")) {
+		t.Error("IsContentFilter('') = true, want false")
 	}
 }

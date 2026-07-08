@@ -16,6 +16,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/session"             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 )
@@ -527,6 +529,16 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, upstreamBody, keyInfo, r)
 		*attemptLogged = true
 		if execErr, ok := execErr.(*executors.ExecuteError); ok && execErr.Exhausted {
+			// Content moderation: render 400 with upstream reason + hint.
+			if execErr.LastKind == errorsx.KindContentFilter {
+				reason := extractUpstreamReason(execErr)
+				msg := i18n.T(r.Context(), i18n.MsgContentFilter,
+					map[string]any{"Reason": reason})
+				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
+					attemptProviderID, attemptCredentialID, "content_filter", msg, latency, upstreamBody, keyInfo, r)
+				writeAnthropicError(w, http.StatusBadRequest, "content_filter", msg)
+				return
+			}
 			writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "All providers unavailable")
 			return
 		}

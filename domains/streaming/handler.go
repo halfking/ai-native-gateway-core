@@ -1858,6 +1858,37 @@ func (h *ChatHandler) serveWithExecutor(
 
 		errCode := "provider_error"
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok && execErrTyped.Exhausted {
+			// Content moderation rejection: render a 400 with the upstream
+			// reason + actionable hint. NOT a provider/credential problem —
+			// do NOT return 503 model_not_found (which misleads the client).
+			if execErrTyped.LastKind == errorsx.KindContentFilter {
+				reason := extractUpstreamReason(execErr)
+				msg := i18n.T(r.Context(), i18n.MsgContentFilter,
+					map[string]any{"Reason": reason})
+				logCtx.SetOutboundModel(explicitOutbound)
+				logCtx.failAndMark("content_filter", execErr.Error(),
+					providerID, credentialID)
+				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID,
+					tried, modelResolution, txResult, "content_filter", failTrace,
+					int(time.Since(startTime).Milliseconds()))
+				markLogged()
+				w.Header().Set("X-Gateway-Last-Kind", "content_filter")
+				if preStreamPrepared {
+					writePrewarmedStreamError(w, msg, "content_filter", "content_filter")
+					return
+				}
+				writeErrorJSONWithKind(w, http.StatusBadRequest, requestID,
+					msg, "content_filter", "content_filter", "content_filter",
+					map[string]any{
+						"stage":     "execution",
+						"kind":      "content_filter",
+						"tried":     execErrTyped.Tried,
+						"reason":    reason,
+						"hint":      i18n.T(r.Context(), i18n.MsgContentFilterHint),
+						"retryable": false,
+					})
+				return
+			}
 			// Step 6 (2026-06-18): preserve backward-compat error.code
 			// = "model_not_found" but surface the REAL underlying
 			// kind in error.kind + X-Gateway-Last-Kind header. Many
@@ -3610,6 +3641,49 @@ func extractUpstreamError(err error) (*upstreampkg.Error, bool) {
 		}
 	}
 	return nil, false
+}
+
+// extractUpstreamReason returns the human-readable upstream rejection
+// message from an executor error. It first tries to parse the JSON body
+// of a wrapped *upstreampkg.Error (looking for error.message,
+// error.error.message, or message), then falls back to the raw error
+// string. The result is capped at 200 characters.
+func extractUpstreamReason(err error) string {
+	if ue, ok := extractUpstreamError(err); ok && len(ue.Body) > 0 {
+		var parsed struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(ue.Body, &parsed) == nil {
+			if parsed.Error != nil && parsed.Error.Message != "" {
+				msg := parsed.Error.Message
+				if len(msg) > 200 {
+					msg = msg[:200]
+				}
+				return msg
+			}
+			if parsed.Message != "" {
+				msg := parsed.Message
+				if len(msg) > 200 {
+					msg = msg[:200]
+				}
+				return msg
+			}
+		}
+		// JSON parse failed — return raw body preview.
+		raw := string(ue.Body)
+		if len(raw) > 200 {
+			raw = raw[:200]
+		}
+		return raw
+	}
+	msg := err.Error()
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
 }
 
 // captureAttemptBody reads the request body (capped at 1MB) into bodyOut

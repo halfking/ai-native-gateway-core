@@ -26,6 +26,12 @@
   "blocked": {
     "other": "Anforderung durch Sicherheitsrichtlinie blockiert: {{.Reason}}"
   },
+  "content_filter": {
+    "other": "Ihre Anfrage wurde vom Inhaltsmoderationssystem abgelehnt (Grund: {{.Reason}}). Bitte ändern Sie Ihre Eingabe und versuchen Sie es erneut."
+  },
+  "content_filter_hint": {
+    "other": "Überprüfen Sie Ihre Eingabe auf sensible oder verbotene Inhalte und versuchen Sie es erneut. Dieselbe Anfrage wird von allen Anbietern dieses Modells abgelehnt."
+  },
   "no_candidate": {
     "other": "Kein verfügbarer Anbieter für Modell „{{.Model}}“"
   },

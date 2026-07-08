@@ -26,6 +26,12 @@
   "blocked": {
     "other": "Request blocked by security policy: {{.Reason}}"
   },
+  "content_filter": {
+    "other": "Your request was rejected by the content moderation system (reason: {{.Reason}}). Please rephrase your input and retry."
+  },
+  "content_filter_hint": {
+    "other": "Check your input for sensitive or prohibited content and try again. The same request will be rejected by all providers of this model."
+  },
   "no_candidate": {
     "other": "No available provider for model '{{.Model}}'"
   },

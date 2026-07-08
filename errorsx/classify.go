@@ -48,6 +48,15 @@ const (
 	// trim was applied.
 	KindContextLength      ErrorKind = "context_length_exceeded"
 	KindUnsupportedFeature ErrorKind = "unsupported_feature"
+	// KindContentFilter: upstream rejected the request based on content
+	// moderation / safety policy (e.g. MiniMax 422 "new_sensitive (1026)",
+	// OpenAI "content_filter", Anthropic content policy). This is
+	// content-determined: the same prompt is rejected on every sibling
+	// credential of the same provider, so the executor short-circuits
+	// (does NOT retry other candidates) and the handler returns a 400 to
+	// the client with the upstream reason + an actionable hint. The
+	// credential is healthy — no cooling / circuit / state write.
+	KindContentFilter ErrorKind = "content_filter"
 )
 
 // contextLengthRe matches upstream error bodies that signal "prompt too
@@ -162,6 +171,25 @@ var eofWithoutDoneRe = regexp.MustCompile(
 // the exact noun so it can flag both vendors without future edits.
 var toolCallIdMismatchRe = regexp.MustCompile(
 	`(?i)(tool[_ ]?(call[_ ]?id|use[_ ]?id|result.*tool[_ ]?id).{0,40}(not found|not exist|invalid|unknown|unknown id|does not exist|unrecogn)|2013)`,
+)
+
+// contentFilterRe matches upstream error bodies that signal a
+// content-moderation / safety-policy rejection. Scoped to avoid false
+// positives on legitimate "sensitive" tokens (e.g. "case-sensitive"):
+//   - new_sensitive: MiniMax-specific moderation code token.
+//   - content_filter / content_policy / content_moderation: OpenAI + others.
+//   - policy_violation: generic policy term.
+//   - sensitive followed by a 2-5 digit code in optional parens: the
+//     MiniMax body shape "input new_sensitive (1026)" / "sensitive (2013)".
+//   - prohibited/forbidden content/input/material: generic phrasing.
+//   - CJK equivalents for domestic providers.
+var contentFilterRe = regexp.MustCompile(
+	`(?i)(new_sensitive|` +
+		`content[_ -]?(filter|policy|moderation)|` +
+		`policy[_ -]?violation|` +
+		`sensitive[_ ]?\(?\d{2,5}\)?|` +
+		`(prohibited|forbidden).{0,30}(content|input|material)|` +
+		`安全(审查|策略)|内容(违规|敏感|不合规)|包含敏感)`,
 )
 
 func ClassifyError(err error, resp *http.Response) ErrorKind {
@@ -314,6 +342,14 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if toolCallIdMismatchRe.Match(body) {
 			return KindToolCallIdMismatch
 		}
+		// Content-moderation / safety-policy rejection (MiniMax 422
+		// "new_sensitive (1026)", OpenAI "content_filter", etc). Gate on
+		// the typical moderation status codes so a 200 body that happens
+		// to contain "sensitive" (e.g. a benign word) is not mis-flagged.
+		if (status == 400 || status == 403 || status == 422 || status == 451) &&
+			contentFilterRe.Match(body) {
+			return KindContentFilter
+		}
 		if (status == 400 || status == 413 || status == 422) &&
 			(contextLengthRe.Match(body) || contextLengthCJKRe.Match(body)) {
 			return KindContextLength
@@ -323,13 +359,26 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 	// 406 Not Acceptable, 415 Unsupported Media Type) are NOT transient —
 	// retrying the same payload on a different credential would just
 	// bounce off the same upstream rule. Map them to KindUnsupportedFeature
-	// so IsClientBug returns true, the executor skips cross-credential
+	// so IsClientBug returns true, the executor skips cross-redential
 	// retry, and the credential is NOT cooled. 408 (Request Timeout) is
 	// mapped to KindTimeout so the network-retry path still fires.
+	//
+	// 2026-07-08: REMOVED 422 from this list. 422 "Unprocessable Entity"
+	// has far broader semantics than the protocol-shape codes above — it
+	// is how MiniMax surfaces content-moderation rejections
+	// ("new_sensitive (1026)"), how some providers surface context-length
+	// errors, and how clients surface malformed-tool bodies. Each of those
+	// is classified above via a body-pattern match (contentFilterRe,
+	// contextLengthRe, unsupportedFeatureRe). A 422 that matches none of
+	// those patterns is ambiguous and should fall through to
+	// ClassifyResponseStatus (KindTransient by default) rather than being
+	// force-cast to KindUnsupportedFeature, which previously caused
+	// content-filter rejections to masquerade as "unsupported_feature"
+	// and be retried across every credential.
 	switch status {
 	case 408:
 		return KindTimeout
-	case 405, 406, 409, 410, 411, 412, 415, 416, 417, 418, 421, 422, 423, 424, 425, 426, 428, 431:
+	case 405, 406, 409, 410, 411, 412, 415, 416, 417, 418, 421, 423, 424, 425, 426, 428, 431:
 		return KindUnsupportedFeature
 	}
 	return ClassifyResponseStatus(&http.Response{StatusCode: status})
@@ -363,6 +412,10 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		}
 		if toolCallIdMismatchRe.Match(body) {
 			return KindToolCallIdMismatch
+		}
+		if (status == 400 || status == 403 || status == 422 || status == 451) &&
+			contentFilterRe.Match(body) {
+			return KindContentFilter
 		}
 		if contextLengthRe.Match(body) || contextLengthCJKRe.Match(body) {
 			return KindContextLength
@@ -409,6 +462,17 @@ func IsRetryable(kind ErrorKind) bool {
 // client-side trim before bubbling the 4xx up.
 func IsContextLength(kind ErrorKind) bool {
 	return kind == KindContextLength
+}
+
+// IsContentFilter returns true if the kind signals an upstream content-
+// moderation / safety-policy rejection. The executor uses this to
+// short-circuit the candidate loop (the same content is rejected on
+// every sibling credential) and the handler uses it to render a 400
+// with the upstream reason + actionable hint. Intentionally NOT in
+// IsClientBug (which retries the next candidate), NOT in IsRetryable,
+// and NOT in shouldWriteCredentialState (the credential is healthy).
+func IsContentFilter(kind ErrorKind) bool {
+	return kind == KindContentFilter
 }
 
 func IsCredentialFatal(kind ErrorKind) bool {
