@@ -25,11 +25,12 @@ type ModuleDefinition struct {
 	Dependencies []ModuleDependency   `json:"dependencies,omitempty"`
 }
 
-// ModuleDependency describes a dependency on another module.
+// ModuleDependency describes a dependency relationship between modules.
 type ModuleDependency struct {
 	Key         string `json:"key"`
 	Name        string `json:"name"`
-	Required    bool   `json:"required"`
+	Icon        string `json:"icon"`
+	Required    bool   `json:"required"` // true=必需，false=推荐
 	Description string `json:"description"`
 }
 
