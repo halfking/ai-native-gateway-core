@@ -505,8 +505,9 @@ onMounted(async () => {
 <style scoped>
 .session-analytics-dashboard {
   padding: 20px;
-  background: #f5f7fa;
+  background: transparent;
   min-height: calc(100vh - 60px);
+  color: var(--text);
 }
 
 .page-header {
@@ -516,13 +517,13 @@ onMounted(async () => {
 .page-title {
   font-size: 24px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text);
   margin: 0 0 8px 0;
 }
 
 .page-description {
   font-size: 14px;
-  color: #909399;
+  color: var(--muted);
   margin: 0;
 }
 

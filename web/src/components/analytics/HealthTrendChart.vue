@@ -110,13 +110,13 @@ const chartConfig = computed(() => {
       }
     )
   } else {
-    // 等级堆叠面积图
+    // 等级堆叠面积图（颜色与全局暗色语义色对齐）
     const gradeColors = {
-      A: '#67c23a',
-      B: '#409eff',
-      C: '#e6a23c',
-      D: '#f56c6c',
-      F: '#909399'
+      A: '#3fb950',
+      B: '#6366f1',
+      C: '#d29922',
+      D: '#f85149',
+      F: '#8b949e'
     }
 
     return createStackedAreaConfig(
@@ -214,5 +214,16 @@ watch(
 .chart-empty {
   padding: 40px 20px;
   text-align: center;
+}
+
+/* 暗色系：el-card 默认白底，与全局卡片色对齐 */
+:deep(.el-card) {
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+:deep(.el-empty__description p) {
+  color: var(--muted);
 }
 </style>

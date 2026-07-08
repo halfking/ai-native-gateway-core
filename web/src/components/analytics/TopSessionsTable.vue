@@ -240,7 +240,7 @@ const handleViewPanorama = (sessionId: string) => {
 
 .session-title {
   cursor: pointer;
-  color: #409eff;
+  color: var(--accent-h);
 }
 
 .session-title:hover {
@@ -249,11 +249,11 @@ const handleViewPanorama = (sessionId: string) => {
 
 .highlight-value {
   font-weight: 600;
-  color: #409eff;
+  color: var(--accent-h);
 }
 
 .text-muted {
-  color: #c0c4cc;
+  color: var(--muted);
 }
 
 .table-empty {
@@ -261,11 +261,38 @@ const handleViewPanorama = (sessionId: string) => {
   text-align: center;
 }
 
+/* 暗色系：让 el-card / el-table 与全局深色面板保持一致 */
+:deep(.el-card) {
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+:deep(.el-table) {
+  background: transparent;
+  color: var(--text);
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: var(--bg-subtle);
+  --el-table-border-color: var(--border);
+  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.04);
+  --el-table-text-color: var(--text);
+  --el-table-header-text-color: var(--muted);
+}
+
 :deep(.el-table__row) {
   cursor: pointer;
 }
 
 :deep(.el-table__row:hover) {
-  background-color: #f5f7fa;
+  background-color: rgba(255, 255, 255, 0.04) !important;
+}
+
+:deep(.el-table__cell) {
+  border-bottom-color: var(--border);
+}
+
+:deep(.el-empty__description p) {
+  color: var(--muted);
 }
 </style>

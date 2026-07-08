@@ -168,9 +168,16 @@ watch(
 .shape-legend {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--border);
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* 暗色系：el-card 默认白底，与全局卡片色对齐 */
+:deep(.el-card) {
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
 }
 </style>
