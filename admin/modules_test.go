@@ -160,25 +160,23 @@ func TestHandleModulesToggle(t *testing.T) {
 func TestDependenciesSatisfied(t *testing.T) {
 	settings.Global = settings.NewRegistry()
 
-	// All dependency modules default to enabled (no setting key => true)
-	oc := ModuleDefinition{Key: "output_compliance", Dependencies: []string{"compression", "cache", "prompt_injection"}}
-	if !dependenciesSatisfied(oc.Dependencies) {
-		t.Errorf("expected dependencies satisfied when all default-enabled")
+	ocDeps := []ModuleDependency{
+		{Key: "compression", Name: "会话压缩", Required: true},
+		{Key: "cache", Name: "会话缓存", Required: true},
+		{Key: "prompt_injection", Name: "提示词注入检测", Required: true},
 	}
 
-	statuses := resolveDependencyStatuses(oc.Dependencies)
-	if len(statuses) != 3 {
-		t.Fatalf("expected 3 dependency statuses, got %d", len(statuses))
-	}
-	for _, s := range statuses {
-		if !s.Enabled {
-			t.Errorf("expected dependency %s enabled", s.Key)
+	statuses := moduleStatusMap(allModuleDefinitions())
+	for _, dep := range ocDeps {
+		if s, ok := statuses[dep.Key]; !ok || !s.Enabled {
+			t.Errorf("expected dependency %s enabled by default, got enabled=%v", dep.Key, s.Enabled)
 		}
 	}
 
-	// Unknown dependency should report disabled
-	unknown := ModuleDefinition{Key: "x", Dependencies: []string{"nonexistent"}}
-	if dependenciesSatisfied(unknown.Dependencies) {
+	// Unknown/required dependency should block
+	unknownDeps := []ModuleDependency{{Key: "nonexistent", Name: "未知", Required: true}}
+	reason := requiredDependencyBlockReason(statuses, ModuleDefinition{Dependencies: unknownDeps})
+	if reason == "" {
 		t.Errorf("expected dependencies not satisfied for unknown module")
 	}
 }
