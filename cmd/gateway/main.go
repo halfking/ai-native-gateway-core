@@ -837,8 +837,8 @@ func main() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
 			BroadcastQueueSize: 2048,
 			InitialReplayLimit: 50,
-			IdleThreshold:      60 * time.Second,
-			IdleTickInterval:   10 * time.Second,
+			IdleThreshold:      120 * time.Second, // 2 minutes: emit idle markers when no activity for 2+ minutes
+			IdleTickInterval:   15 * time.Second,
 			KeepaliveInterval:  25 * time.Second,
 			RedisClient:        fpSlotRedis, // reuse the existing Redis connection
 		})
