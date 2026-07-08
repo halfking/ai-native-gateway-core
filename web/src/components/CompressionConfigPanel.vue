@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
 
 // 压缩策略配置（示例，复用现有CompressionView逻辑）
-const strategies = ref([
+// 使用 computed 确保 i18n 完全初始化后再访问
+const strategies = computed(() => [
   { name: 'sliding_window_token', enabled: true, description: t('sessions.config.strategyToken') },
   { name: 'llm_summary', enabled: false, description: t('sessions.config.strategySummary') },
   { name: 'memora_l1_inject', enabled: true, description: t('sessions.config.strategyMemora') },

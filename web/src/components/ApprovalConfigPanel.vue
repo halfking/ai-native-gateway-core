@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getApprovalConfig, updateApprovalConfig, type ApprovalConfig } from '../api/approval'
 import ApproverManager from './ApproverManager.vue'
@@ -23,16 +23,17 @@ const config = ref<ApprovalConfig>({
   rules: [],
 })
 
-const modeOptions = [
+// 使用 computed 确保 i18n 完全初始化后再访问
+const modeOptions = computed(() => [
   { value: 'disabled', label: t('sessions.config.modeDisabled'), description: t('sessions.config.modeDisabledDesc') },
   { value: 'automatic', label: t('sessions.config.modeAutomatic'), description: t('sessions.config.modeAutomaticDesc') },
   { value: 'manual', label: t('sessions.config.modeManual'), description: t('sessions.config.modeManualDesc') },
-]
+])
 
-const timeoutActionOptions = [
+const timeoutActionOptions = computed(() => [
   { value: 'approve', label: t('sessions.config.timeoutApprove'), description: t('sessions.config.timeoutApproveDesc') },
   { value: 'reject', label: t('sessions.config.timeoutReject'), description: t('sessions.config.timeoutRejectDesc') },
-]
+])
 
 async function loadConfig() {
   loading.value = true
