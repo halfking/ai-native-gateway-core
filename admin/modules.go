@@ -21,8 +21,18 @@ type ModuleDefinition struct {
 	ConfigKeys   []string             `json:"config_keys"`
 	DocsURL      string               `json:"docs_url"`
 	DangerLevel  settings.DangerLevel `json:"danger_level"`
-	Dependencies []string             `json:"dependencies"`
 	Integration  *ModuleIntegration   `json:"integration,omitempty"`
+	Dependencies []ModuleDependency   `json:"dependencies,omitempty"`
+}
+
+// ModuleDependency describes a dependency relationship between modules.
+type ModuleDependency struct {
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Icon        string `json:"icon"`
+	Required    bool   `json:"required"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled,omitempty"`
 }
 
 // ModuleIntegration describes external integration configuration for a module.
@@ -33,19 +43,13 @@ type ModuleIntegration struct {
 	DocURL      string `json:"doc_url"`
 }
 
-// ModuleDependencyStatus describes whether a required module is enabled.
-type ModuleDependencyStatus struct {
-	Key     string `json:"key"`
-	Name    string `json:"name"`
-	Enabled bool   `json:"enabled"`
-}
-
 // ModuleWithStatus extends ModuleDefinition with runtime status.
 type ModuleWithStatus struct {
 	ModuleDefinition
-	Enabled            bool                     `json:"enabled"`
-	Source             string                   `json:"source"`
-	DependencyStatuses []ModuleDependencyStatus `json:"dependency_statuses,omitempty"`
+	Enabled          bool   `json:"enabled"`
+	Source           string `json:"source"`
+	CanToggleEnabled bool   `json:"can_toggle_enabled"`
+	BlockedReason    string `json:"blocked_reason,omitempty"`
 }
 
 var (
@@ -141,17 +145,12 @@ func allModuleDefinitions() []ModuleDefinition {
 			{
 				Key:         "prompt_injection",
 				Name:        "提示词注入检测",
-				Description: "多层防御体系：规则引擎 + LLM 智能检测 + 向量相似度 + Canary Token，支持 15 种风险类别和 11 种处理动作。",
+				Description: "LLM-as-judge 检测提示词注入攻击、角色劫持、指令泄漏等安全威胁，当前为检测模式（不拦截）。",
 				Capabilities: []string{
-					"多层检测引擎（规则/启发式/LLM/向量/Canary）",
-					"15 种风险类别（角色劫持、指令覆盖、越狱、数据窃取等）",
-					"11 种处理动作（替换/脱敏/拒绝/终止/审批等）",
-					"严重等级处理矩阵（可配置每级动作）",
-					"LLM 智能检测（支持多引擎选择）",
-					"Canary Token 泄漏检测",
-					"向量相似度攻击匹配（pgvector）",
-					"人工审批流程",
-					"Webhook/邮件告警",
+					"LLM-as-judge 检测引擎",
+					"10+ 常见注入模式（角色劫持、指令泄漏等）",
+					"可观测模式（仅检测不拦截）",
+					"支持 Webhook 告警",
 				},
 				Icon:        "🛡️",
 				Category:    "security",
@@ -167,58 +166,11 @@ func allModuleDefinitions() []ModuleDefinition {
 					"自动脱敏处理",
 					"实时告警通知",
 					"自定义敏感词库",
-					"按会话聚合合规标签",
-					"身份感知例外放行",
 				},
-				Icon:       "🔒",
-				Category:   "security",
-				SettingKey: "output_compliance.enabled",
-				ConfigKeys: []string{
-					"output_compliance.enforcement_mode",
-					"output_compliance.check_pii",
-					"output_compliance.check_toxicity",
-					"output_compliance.check_bias",
-					"output_compliance.check_hallucination",
-					"output_compliance.check_secrets",
-					"output_compliance.check_internal_ip",
-					"output_compliance.check_jailbreak_response",
-					"output_compliance.check_instruction_injection_response",
-					"output_compliance.pii_engine",
-					"output_compliance.toxicity_engine",
-					"output_compliance.pii_threshold",
-					"output_compliance.toxicity_threshold",
-					"output_compliance.bias_threshold",
-					"output_compliance.hallucination_threshold",
-					"output_compliance.action_on_pii",
-					"output_compliance.action_on_toxicity",
-					"output_compliance.action_on_bias",
-					"output_compliance.action_on_secrets",
-					"output_compliance.action_on_internal_ip",
-					"output_compliance.action_on_jailbreak_response",
-					"output_compliance.action_on_instruction_injection_response",
-					"output_compliance.redact_email",
-					"output_compliance.redact_phone",
-					"output_compliance.redact_id_card",
-					"output_compliance.redact_credit_card",
-					"output_compliance.redact_bank_card",
-					"output_compliance.redact_jwt",
-					"output_compliance.redact_password",
-					"output_compliance.toxic_replacement",
-					"output_compliance.block_message",
-					"output_compliance.strict_mode",
-					"output_compliance.retention_days",
-					"output_compliance.sampling_rate",
-					"output_compliance.realtime_alert_enabled",
-					"output_compliance.alert_threshold_severity",
-					"output_compliance.alert_aggregation_window_minutes",
-					"output_compliance.auto_review_queue_enabled",
-					"output_compliance.feedback_loop_enabled",
-					"output_compliance.skill_generation_enabled",
-					"output_compliance.auto_threshold_tuning_enabled",
-					"output_compliance.llm_engine_id",
-				},
-				DangerLevel:  settings.Warning,
-				Dependencies: []string{"compression", "cache", "prompt_injection"},
+				Icon:        "🔒",
+				Category:    "security",
+				SettingKey:  "output_compliance.enabled",
+				DangerLevel: settings.Warning,
 			},
 			{
 				Key:         "session_audit",
@@ -299,16 +251,34 @@ func allModuleDefinitions() []ModuleDefinition {
 			{
 				Key:         "disguise",
 				Name:        "UA/TLS 伪装",
-				Description: "启用 User-Agent 和 TLS 指纹轮换，避免被上游提供商检测到非标准客户端。",
+				Description: "启用 User-Agent 和 TLS 指纹轮换，避免被上游提供商检测到非标准客户端。支持客户端指纹建档、凭据级 Slot 绑定和并发控制。",
 				Capabilities: []string{
 					"User-Agent 轮换",
 					"TLS 指纹轮换",
+					"客户端指纹建档",
+					"凭据级 Slot 绑定",
 					"合规参考文档",
+					"Slot 并发控制",
 				},
 				Icon:        "🎭",
 				Category:    "security",
 				SettingKey:  "enable_disguise",
+				ConfigKeys: []string{
+					"disguise.rotation_interval",
+					"disguise.ua_pool_size",
+					"disguise.lang_pool_size",
+					"disguise.platform_filter",
+					"disguise.enable_tls_fingerprint",
+					"disguise.fp_slot_concurrency",
+					"disguise.active_gate_seconds",
+				},
+				DocsURL:     "/docs/legal/disguise-compliance.md",
 				DangerLevel: settings.Breaking,
+				Dependencies: []ModuleDependency{
+					{Key: "compression", Name: "会话压缩", Icon: "📦", Required: true, Description: "压缩会话携带一致的指纹元数据"},
+					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: true, Description: "缓存保留跨请求的 Slot 绑定"},
+					{Key: "prompt_injection", Name: "提示词注入检测", Icon: "🛡️", Required: true, Description: "安全管线受益于稳定客户端身份"},
+				},
 			},
 			{
 				Key:         "feishu_bot",
@@ -337,6 +307,49 @@ func allModuleDefinitions() []ModuleDefinition {
 					Label:       "飞书",
 					Description: "对接飞书自定义机器人，使用 Webhook 进行消息推送和交互",
 					DocURL:      "https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot",
+				},
+			},
+			{
+				Key:         "wechat_bot",
+				Name:        "微信机器人",
+				Description: "对接企业微信自定义机器人，实现远程运维通知、风险告警推送、审批操作执行等功能。依赖压缩管理、提示词注入检测、会话缓存、会话审计与审批等模块。",
+				Capabilities: []string{
+					"实时告警推送（注入攻击、高延迟、错误率飙升）",
+					"高风险操作审批通知与微信内操作",
+					"系统状态查询",
+					"企业微信签名验证（SHA1 + AES-CBC 解密）",
+					"用户白名单控制",
+				},
+				Icon:       "💬",
+				Category:   "integration",
+				SettingKey: "wechat_bot.enabled",
+				ConfigKeys: []string{
+					"wechat_bot.webhook_url",
+					"wechat_bot.corp_id",
+					"wechat_bot.agent_id",
+					"wechat_bot.corp_secret",
+					"wechat_bot.encoding_aes_key",
+					"wechat_bot.verify_token",
+					"wechat_bot.notify_on_alert",
+					"wechat_bot.notify_on_approval",
+					"wechat_bot.notify_on_latency",
+					"wechat_bot.notify_on_error_rate",
+					"wechat_bot.latency_threshold_ms",
+					"wechat_bot.error_rate_threshold",
+					"wechat_bot.allowed_users",
+				},
+				DangerLevel: settings.Safe,
+				Integration: &ModuleIntegration{
+					Type:        "wechat",
+					Label:       "企业微信",
+					Description: "对接企业微信自定义机器人，支持群机器人 Webhook 和应用消息推送，实现告警通知与审批交互",
+					DocURL:      "https://developer.work.weixin.qq.com/document/path/91770",
+				},
+				Dependencies: []ModuleDependency{
+					{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: true, Description: "上下文压缩，支持摘要推送"},
+					{Key: "prompt_injection", Name: "提示词注入检测", Icon: "🛡️", Required: true, Description: "注入攻击告警来源"},
+					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: true, Description: "审批流程查询上下文"},
+					{Key: "session_audit", Name: "会话审计", Icon: "📋", Required: true, Description: "高风险会话审批通知来源"},
 				},
 			},
 			{
@@ -371,6 +384,12 @@ func allModuleDefinitions() []ModuleDefinition {
 				},
 				DocsURL:     "/admin/session-analytics",
 				DangerLevel: settings.Safe,
+				Dependencies: []ModuleDependency{
+					{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: true, Description: "提供增量摘要、上下文裁剪和压缩节省量分析"},
+					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: true, Description: "提供会话复用、缓存命中和节省量分析"},
+					{Key: "prompt_injection", Name: "提示词注入检测", Icon: "🛡️", Required: true, Description: "提供风险识别、意图辅助和安全标签"},
+					{Key: "output_compliance", Name: "输出合规检测", Icon: "🔒", Required: true, Description: "提供合规状态、脱敏结果和风险流向"},
+				},
 			},
 			{
 				Key:         "memora",
@@ -416,43 +435,48 @@ func resolveModuleEnabled(m ModuleDefinition) (enabled bool, source string) {
 	return v, src
 }
 
-// moduleDefinitionMap returns a map of all module definitions keyed by key.
-func moduleDefinitionMap() map[string]ModuleDefinition {
-	defs := allModuleDefinitions()
-	m := make(map[string]ModuleDefinition, len(defs))
-	for _, d := range defs {
-		m[d.Key] = d
+func moduleStatusMap(defs []ModuleDefinition) map[string]ModuleWithStatus {
+	statuses := make(map[string]ModuleWithStatus, len(defs))
+	for _, m := range defs {
+		enabled, src := resolveModuleEnabled(m)
+		statuses[m.Key] = ModuleWithStatus{
+			ModuleDefinition: m,
+			Enabled:          enabled,
+			Source:           src,
+			CanToggleEnabled: true,
+		}
 	}
-	return m
+	for key, status := range statuses {
+		blocked := requiredDependencyBlockReason(statuses, status.ModuleDefinition)
+		status.BlockedReason = blocked
+		status.CanToggleEnabled = blocked == ""
+		if len(status.Dependencies) > 0 {
+			deps := make([]ModuleDependency, 0, len(status.Dependencies))
+			for _, dep := range status.Dependencies {
+				dep.Enabled = statuses[dep.Key].Enabled
+				deps = append(deps, dep)
+			}
+			status.Dependencies = deps
+		}
+		statuses[key] = status
+	}
+	return statuses
 }
 
-// resolveDependencyStatuses checks each dependency and returns its name and enabled state.
-func resolveDependencyStatuses(deps []string) []ModuleDependencyStatus {
-	if len(deps) == 0 {
-		return nil
-	}
-	defs := moduleDefinitionMap()
-	out := make([]ModuleDependencyStatus, 0, len(deps))
-	for _, key := range deps {
-		d, ok := defs[key]
-		if !ok {
-			out = append(out, ModuleDependencyStatus{Key: key, Name: key, Enabled: false})
+func requiredDependencyBlockReason(statuses map[string]ModuleWithStatus, mod ModuleDefinition) string {
+	missing := make([]string, 0, len(mod.Dependencies))
+	for _, dep := range mod.Dependencies {
+		if !dep.Required {
 			continue
 		}
-		enabled, _ := resolveModuleEnabled(d)
-		out = append(out, ModuleDependencyStatus{Key: key, Name: d.Name, Enabled: enabled})
-	}
-	return out
-}
-
-// dependenciesSatisfied reports whether all dependency modules are enabled.
-func dependenciesSatisfied(deps []string) bool {
-	for _, s := range resolveDependencyStatuses(deps) {
-		if !s.Enabled {
-			return false
+		if depStatus, ok := statuses[dep.Key]; !ok || !depStatus.Enabled {
+			missing = append(missing, dep.Name)
 		}
 	}
-	return true
+	if len(missing) == 0 {
+		return ""
+	}
+	return "需先启用依赖模块: " + strings.Join(missing, "、")
 }
 
 // handleModulesList returns all modules with their current enabled/disabled status.
@@ -464,15 +488,10 @@ func (h *Handler) handleModulesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defs := allModuleDefinitions()
+	statusMap := moduleStatusMap(defs)
 	out := make([]ModuleWithStatus, 0, len(defs))
 	for _, m := range defs {
-		enabled, src := resolveModuleEnabled(m)
-		out = append(out, ModuleWithStatus{
-			ModuleDefinition:   m,
-			Enabled:            enabled,
-			Source:             src,
-			DependencyStatuses: resolveDependencyStatuses(m.Dependencies),
-		})
+		out = append(out, statusMap[m.Key])
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
@@ -501,7 +520,7 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	enabled, src := resolveModuleEnabled(*found)
+	statusMap := moduleStatusMap(defs)
 
 	// Collect config values for each config key
 	config := make(map[string]any)
@@ -526,12 +545,7 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"module": ModuleWithStatus{
-			ModuleDefinition:   *found,
-			Enabled:            enabled,
-			Source:             src,
-			DependencyStatuses: resolveDependencyStatuses(found.Dependencies),
-		},
+		"module": statusMap[found.Key],
 		"config": config,
 	})
 }
@@ -589,19 +603,12 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce module dependencies: a module cannot be enabled unless all
-	// declared dependencies are currently enabled.
-	if body.Enabled && len(found.Dependencies) > 0 && !dependenciesSatisfied(found.Dependencies) {
-		statuses := resolveDependencyStatuses(found.Dependencies)
-		var missing []string
-		for _, s := range statuses {
-			if !s.Enabled {
-				missing = append(missing, s.Name)
-			}
+	if body.Enabled {
+		statusMap := moduleStatusMap(defs)
+		if blockedReason := statusMap[found.Key].BlockedReason; blockedReason != "" {
+			writeError(w, http.StatusConflict, blockedReason)
+			return
 		}
-		writeError(w, http.StatusPreconditionFailed,
-			"无法启用 "+found.Name+"，以下依赖模块未开启: "+strings.Join(missing, ", "))
-		return
 	}
 
 	store, ok := h.dbSettingsStore()

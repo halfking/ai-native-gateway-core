@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -488,19 +489,71 @@ func (c *Checker) maskPII(content, piiType string) string {
 	}
 }
 
-// redactOutput 脱敏输出
+// redactOutput 脱敏输出。
+//
+// 修复（2026-07-09）：旧实现用 strings.ReplaceAll(redacted, issue.Content, ...)，
+// 但 issue.Content 在 detectPII 里已被赋为 maskPII 的结果（脱敏后的值），
+// 因此 ReplaceAll 永不命中，脱敏静默失效。改用 issue.Location（"char:start-end"）
+// 做位置精确拼接：从原始 output 取出未脱敏片段，替换为 mask 值。按 start 降序
+// 处理避免偏移漂移。
 func (c *Checker) redactOutput(output string, issues []ComplianceIssue, policy *Policy) string {
-	redacted := output
-
+	// 只保留需要脱敏的 issue，并按 start 降序排序（从后往前替换，避免位移）。
+	type redactItem struct {
+		start, end int
+		replacement string
+	}
+	items := make([]redactItem, 0, len(issues))
 	for _, issue := range issues {
 		if issue.Type == "pii" && policy.AutoRedact {
-			redacted = strings.ReplaceAll(redacted, issue.Content, "[已脱敏]")
+			if s, e, ok := parseCharLocation(issue.Location); ok {
+				items = append(items, redactItem{s, e, issue.Content}) // Content 已是 maskPII 结果
+			}
 		} else if issue.Type == "toxic" && policy.ActionOnToxicity == "redact" {
-			redacted = strings.ReplaceAll(redacted, issue.Content, "[内容已过滤]")
+			if s, e, ok := parseCharLocation(issue.Location); ok {
+				items = append(items, redactItem{s, e, issue.Content}) // Content 已是 ****
+			}
 		}
 	}
-
+	if len(items) == 0 {
+		return output
+	}
+	// 降序排序（start 大的先替换）
+	for i := 0; i < len(items)-1; i++ {
+		for j := i + 1; j < len(items); j++ {
+			if items[j].start > items[i].start {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
+	// 边界校验后拼接
+	redacted := output
+	for _, it := range items {
+		if it.start < 0 || it.end > len(redacted) || it.start >= it.end {
+			continue
+		}
+		redacted = redacted[:it.start] + it.replacement + redacted[it.end:]
+	}
 	return redacted
+}
+
+// parseCharLocation 解析 "char:start-end" 格式的位置，返回 (start, end, ok)。
+// 越界或格式错误返回 ok=false。
+func parseCharLocation(loc string) (int, int, bool) {
+	const prefix = "char:"
+	if !strings.HasPrefix(loc, prefix) {
+		return 0, 0, false
+	}
+	rest := loc[len(prefix):]
+	dash := strings.IndexByte(rest, '-')
+	if dash < 0 {
+		return 0, 0, false
+	}
+	start, err1 := strconv.Atoi(rest[:dash])
+	end, err2 := strconv.Atoi(rest[dash+1:])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return start, end, true
 }
 
 // shouldBlock 判断是否阻断

@@ -1082,6 +1082,26 @@ func main() {
 		}
 		if enableSessionAudit == "true" {
 			auditDetector := sessionaudit.NewFastDetector(sessionaudit.DefaultDetectorConfig())
+
+			// 注入 LLM 检测客户端（用于多模型深度检测）
+			// 从环境变量读取配置，如果未配置则使用默认值
+			llmAPIKey := os.Getenv("LLM_DETECTOR_API_KEY")
+			llmBaseURL := os.Getenv("LLM_DETECTOR_BASE_URL")
+			if llmAPIKey == "" {
+				// 尝试使用主 API Key
+				llmAPIKey = os.Getenv("LLM_GATEWAY_API_KEY")
+			}
+			if llmAPIKey != "" {
+				llmClient := sessionaudit.NewOpenAIDetectorClient(llmAPIKey, llmBaseURL)
+				auditDetector.SetLLMClient(llmClient)
+				slog.Info("LLM detector client initialized",
+					"base_url", llmBaseURL,
+					"has_api_key", llmAPIKey != "")
+			} else {
+				slog.Warn("LLM detector client not initialized: missing API key",
+					"hint", "set LLM_DETECTOR_API_KEY or LLM_GATEWAY_API_KEY")
+			}
+
 			auditBus := eventbus.NewMemoryBus(100)
 			auditHook := sessionaudithook.NewSessionAuditHookV1(auditDetector, auditBus, approvalMgr)
 
