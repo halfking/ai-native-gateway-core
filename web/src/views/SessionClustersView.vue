@@ -79,13 +79,19 @@
         <el-table :data="currentDetail.members" stripe size="small">
           <el-table-column prop="gw_session_id" label="会话 ID" min-width="200" />
           <el-table-column prop="title" label="标题" min-width="160">
-            <template #default="{ row }">{{ row.title || '—' }}</template>
+            <template #default="scope">{{ scope?.row?.title || '—' }}</template>
           </el-table-column>
           <el-table-column prop="total_cost_usd" label="成本" width="100">
-            <template #default="{ row }">${{ row.total_cost_usd?.toFixed(4) }}</template>
+            <template #default="scope">
+              <span v-if="scope?.row?.total_cost_usd != null">${{ scope.row.total_cost_usd.toFixed(4) }}</span>
+              <span v-else>—</span>
+            </template>
           </el-table-column>
           <el-table-column prop="score" label="相似度" width="100">
-            <template #default="{ row }">{{ (row.score * 100).toFixed(0) }}%</template>
+            <template #default="scope">
+              <span v-if="scope?.row?.score != null">{{ (scope.row.score * 100).toFixed(0) }}%</span>
+              <span v-else>—</span>
+            </template>
           </el-table-column>
         </el-table>
       </div>

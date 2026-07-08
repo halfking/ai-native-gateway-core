@@ -3,13 +3,15 @@ import { ref } from 'vue'
 import type { NotificationChannel } from '../api/approval'
 import { testNotificationChannel } from '../api/approval'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelValue: {
     feishu?: NotificationChannel
     wecom?: NotificationChannel
     dingtalk?: NotificationChannel
   }
-}>()
+}>(), {
+  modelValue: () => ({})
+})
 
 const emit = defineEmits<{
   'update:modelValue': [value: typeof props.modelValue]

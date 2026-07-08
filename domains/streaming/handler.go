@@ -3254,13 +3254,22 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 // Health handler
 //-----------------------------------------------------------------------------
 
+// ResourceStatus represents the connection status of a resource (DB, Redis, etc).
+type ResourceStatus struct {
+	Connected bool   `json:"connected"`
+	Latency   string `json:"latency,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
 // HealthResponse represents the health check response.
 type HealthResponse struct {
-	Status      string         `json:"status"`
-	Version     string         `json:"version"`
-	Circuit     any            `json:"circuit,omitempty"`
-	Concurrency any            `json:"concurrency,omitempty"`
-	Proxy       map[string]any `json:"proxy,omitempty"`
+	Status      string          `json:"status"`
+	Version     string          `json:"version"`
+	Database    *ResourceStatus `json:"database,omitempty"`
+	Redis       *ResourceStatus `json:"redis,omitempty"`
+	Circuit     any             `json:"circuit,omitempty"`
+	Concurrency any             `json:"concurrency,omitempty"`
+	Proxy       map[string]any  `json:"proxy,omitempty"`
 }
 
 // HealthHandler returns health information including circuit breaker and limiter stats.
@@ -3268,11 +3277,29 @@ type HealthHandler struct {
 	circuit *credential.Manager
 	limiter *credential.Limiter
 	proxy   *upstreampkg.ProxyResolver
+	db      dbConnector
+	redis   redisConnector
+}
+
+// dbConnector interface for database ping check
+type dbConnector interface {
+	Ping(ctx context.Context) error
+}
+
+// redisConnector interface for Redis ping check
+type redisConnector interface {
+	Ping(ctx context.Context) error
 }
 
 // NewHealthHandler creates a new health handler.
-func NewHealthHandler(cm *credential.Manager, l *credential.Limiter, proxy *upstreampkg.ProxyResolver) *HealthHandler {
-	return &HealthHandler{circuit: cm, limiter: l, proxy: proxy}
+func NewHealthHandler(cm *credential.Manager, l *credential.Limiter, proxy *upstreampkg.ProxyResolver, db dbConnector, redis redisConnector) *HealthHandler {
+	return &HealthHandler{circuit: cm, limiter: l, proxy: proxy, db: db, redis: redis}
+}
+
+// SetRedis updates the Redis connection for health checks (2026-07-08).
+// Called after Redis is initialized in main.go.
+func (h *HealthHandler) SetRedis(redis redisConnector) {
+	h.redis = redis
 }
 
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -3300,6 +3327,40 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Circuit = h.circuit.Stats()
 		resp.Concurrency = h.limiter.Stats()
+
+		// Check database connection (2026-07-08: add resource status)
+		if h.db != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			start := time.Now()
+			dbErr := h.db.Ping(ctx)
+			latency := time.Since(start)
+			
+			resp.Database = &ResourceStatus{
+				Connected: dbErr == nil,
+				Latency:   latency.String(),
+			}
+			if dbErr != nil {
+				resp.Database.Error = dbErr.Error()
+			}
+		}
+
+		// Check Redis connection (2026-07-08: add resource status)
+		if h.redis != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			start := time.Now()
+			redisErr := h.redis.Ping(ctx)
+			latency := time.Since(start)
+			
+			resp.Redis = &ResourceStatus{
+				Connected: redisErr == nil,
+				Latency:   latency.String(),
+			}
+			if redisErr != nil {
+				resp.Redis.Error = redisErr.Error()
+			}
+		}
 	}
 
 	// NET-007 fix: proxy 字段也属于敏感信息（暴露 internal.example.com 等内网
