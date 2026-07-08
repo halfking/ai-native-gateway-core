@@ -33,7 +33,7 @@ services:
     environment:
       <<: *pg-env
     ports:
-      - "5432:5432"
+      - "15432:5432"
     volumes:
       - r112_pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -174,6 +174,10 @@ services:
       LLM_GATEWAY_ATTACHMENT_DIR: "/tmp/attachments"
       # ── 指向真 mock upstream (仅用于无 credential 命中时的兜底) ──
       LLM_GATEWAY_UPSTREAM: "http://llm-mock-upstream:18080"
+      # ── Seed admin password (本地测试) ──
+      LLM_GATEWAY_SEED_ADMIN_PASSWORD: "<ADMIN_PASSWORD_REDACTED>"
+      # ── Frontend static dir (Docker image 中的路径) ──
+      LLM_GATEWAY_STATIC_DIR: "/opt/llm-gateway-go/web/dist"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:8781/healthz | grep -q ok || exit 1"]
       interval: 5s

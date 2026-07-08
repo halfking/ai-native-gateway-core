@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { getHealth, getBackgroundTasksStatus, type HealthResponse, type BackgroundTasksResponse } from '../api/system'
+import { getHealth, getBackgroundTasksStatus, type HealthResponse, type BackgroundTasksStatus } from '../api/system'
 
 const health = ref<HealthResponse | null>(null)
 const bgTasks = ref<BackgroundTasksResponse | null>(null)
@@ -101,27 +101,6 @@ function formatLatency(latency?: string): string {
   return latency
 }
 
-// Format the gateway version string.
-//
-// The /healthz endpoint returns the version in the shape
-//   <semver>-<git-sha>-<date>-<build-seq>
-// e.g. "2.4.1-9cc007b3-20260708-953". We want the operator to see
-// the semantic version plus the build sequence number, not the date
-// (the date is already in the npm-dist timestamp on the file system).
-// Falls back to the raw string when the format is unrecognised so
-// a future schema change does not blank out the field entirely.
-function formatVersion(raw: string): string {
-  if (!raw) return ''
-  const parts = raw.split('-')
-  const semver = parts[0] ?? ''
-  // The build_seq is the trailing numeric segment; the date segment
-  // before it is always 8 digits (YYYYMMDD), so we can pick the last
-  // numeric-looking segment reliably even if the format grows.
-  const buildSeq = parts.slice().reverse().find((p) => /^\d+$/.test(p)) ?? ''
-  if (!buildSeq) return semver
-  return `${semver} #${buildSeq}`
-}
-
 function updateTimeSinceCheck() {
   if (!lastChecked.value) {
     timeSinceCheck.value = ''
@@ -212,7 +191,10 @@ onUnmounted(() => {
                 <span class="status-dot" :style="{ backgroundColor: statusColor }"></span>
                 <span class="status-name">Gateway</span>
                 <span class="status-value">
-                  v{{ formatVersion(health.version) }}
+                  v{{ health.version.split('-')[0] }}
+                  <template v-if="health.version.split('-').length > 2">
+                    <span class="version-build">#{{ health.version.split('-')[2] }}</span>
+                  </template>
                 </span>
               </div>
 
