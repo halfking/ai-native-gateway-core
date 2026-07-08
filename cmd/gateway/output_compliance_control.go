@@ -25,6 +25,7 @@ import (
 
 	outputcompliancehook "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance"
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 )
 
 // buildOutputComplianceInterceptor constructs the output-compliance checker and
@@ -42,6 +43,22 @@ func buildOutputComplianceInterceptor(db *sql.DB) *outputcompliancehook.OutputCo
 	}
 	ownerFn := makeOwnerLookup(db)
 	return outputcompliancehook.NewOutputComplianceInterceptor(checker, ownerFn)
+}
+
+// buildRedactBodyFn 构造 write-time 客户端可见脱敏函数（2026-07-09，增强 1）。
+// 与 buildOutputComplianceInterceptor 使用同一个 checker，但 ownerFn 需转换类型。
+func buildRedactBodyFn(db *sql.DB) func([]byte, string, string) []byte {
+	if db == nil {
+		return nil
+	}
+	checker, err := outputcompliance.NewChecker(db)
+	if err != nil {
+		slog.Warn("output_compliance_control: buildRedactBodyFn NewChecker failed", "error", err)
+		return nil
+	}
+	// 复用同一个 owner lookup，但签名需匹配 streaming.RedactOwnerContextFunc
+	ownerFn := makeOwnerLookup(db)
+	return streaming.BuildRedactBodyFn(checker, streaming.RedactOwnerContextFunc(ownerFn))
 }
 
 // makeOwnerLookup returns an OwnerContextFunc that resolves (callerOwner, dataOwner)
