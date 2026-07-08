@@ -109,9 +109,17 @@ export function getFeaturedModelsDynamic() {
 
 // ── System health ─────────────────────────────────────────────────────────
 
+export interface ResourceStatus {
+  connected: boolean
+  latency?: string
+  error?: string
+}
+
 export interface HealthResponse {
   status: string
   version: string
+  database?: ResourceStatus
+  redis?: ResourceStatus
   proxy?: {
     proxy: string
     healthy: boolean
