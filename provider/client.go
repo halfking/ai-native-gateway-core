@@ -755,7 +755,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID str
 		-- LIMIT 50 is a 50-row index descent per candidate — not a window
 		-- aggregate over the whole partitioned table.
 		CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
-		WHERE p.tenant_id = $2
+		WHERE (p.tenant_id = $2 OR p.tenant_id = 'default')
 		  AND COALESCE(mc.status, 'active') != 'disabled'
 		  AND COALESCE(c.status, 'active') NOT IN ('disabled')
 		  -- v.is_routable is FALSE for any model with manual disable at any layer
@@ -1031,6 +1031,7 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
 	}
 
 	var cands []Candidate
+	var skippedCount int
 	for _, raw := range rr.Candidates {
 		var cand Candidate
 		if err := json.Unmarshal(raw, &cand); err != nil {
@@ -1042,15 +1043,45 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
 
 		apiKey, err := c.RevealAPIKey(ctx, cand.ProviderID, cand.CredentialID)
 		if err != nil {
-			slog.Warn("failed to reveal api key",
+			// 2026-07-08 P0 fix: 密钥解密失败时不再硬性过滤候选者。
+			// 修复场景：当部分或全部候选者的密钥解密失败时（密钥配置错误、
+			// 加密版本不兼容等），如果硬性过滤会导致路由器收到空列表，
+			// 触发"无可用路由"错误（即使数据库中有可用凭据）。
+			//
+			// 降级策略：
+			// - 保留候选者但标记为不可路由（Routable=false）
+			// - 设置 BlockReason 说明原因
+			// - 记录警告日志供运维排查
+			// - 路由器的 filterAvailable 会过滤掉这些候选者
+			//
+			// 这样做的好处：
+			// 1. 当只有部分密钥解密失败时，其他候选者仍可用
+			// 2. 当全部失败时，路由器会进入降级模式（tryDegradedMode）
+			// 3. 保留候选者元数据，便于 GetCandidates 调用方诊断
+			slog.Warn("enrichWithAPIKeys: reveal failed, marking candidate unavailable",
 				"credential_id", cand.CredentialID,
 				"provider_id", cand.ProviderID,
 				"error", err,
 			)
+			skippedCount++
+			reason := fmt.Sprintf("key_decrypt_failed: %v", err)
+			cand.Routable = false
+			cand.BlockReason = &reason
+			cand.APIKey = "" // 确保没有泄漏部分解密的数据
+			cands = append(cands, cand)
 			continue
 		}
 		cand.APIKey = apiKey
 		cands = append(cands, cand)
+	}
+	
+	// 2026-07-08: 当有候选者因密钥解密失败被降级时，记录汇总日志
+	if skippedCount > 0 {
+		slog.Warn("enrichWithAPIKeys: some candidates marked unavailable due to key decrypt failure",
+			"total_candidates", len(rr.Candidates),
+			"failed_count", skippedCount,
+			"available_count", len(cands)-skippedCount,
+		)
 	}
 
 	planOrder := rr.PlanOrder
