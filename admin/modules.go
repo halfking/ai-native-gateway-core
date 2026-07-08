@@ -2,7 +2,6 @@ package admin
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -23,10 +22,17 @@ type ModuleDefinition struct {
 	DocsURL      string               `json:"docs_url"`
 	DangerLevel  settings.DangerLevel `json:"danger_level"`
 	Integration  *ModuleIntegration   `json:"integration,omitempty"`
-	// Requires lists module keys that must be enabled before this module
-	// can be activated. The frontend displays these as prerequisites and
-	// the toggle endpoint validates them before enabling.
-	Requires []string `json:"requires,omitempty"`
+	Dependencies []ModuleDependency   `json:"dependencies,omitempty"`
+}
+
+// ModuleDependency describes a dependency relationship between modules.
+type ModuleDependency struct {
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Icon        string `json:"icon"`
+	Required    bool   `json:"required"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled,omitempty"`
 }
 
 // ModuleIntegration describes external integration configuration for a module.
@@ -40,8 +46,10 @@ type ModuleIntegration struct {
 // ModuleWithStatus extends ModuleDefinition with runtime status.
 type ModuleWithStatus struct {
 	ModuleDefinition
-	Enabled bool   `json:"enabled"`
-	Source  string `json:"source"`
+	Enabled          bool   `json:"enabled"`
+	Source           string `json:"source"`
+	CanToggleEnabled bool   `json:"can_toggle_enabled"`
+	BlockedReason    string `json:"blocked_reason,omitempty"`
 }
 
 var (
@@ -313,12 +321,17 @@ func allModuleDefinitions() []ModuleDefinition {
 					"wechat_bot.allowed_users",
 				},
 				DangerLevel: settings.Safe,
-				Requires:    []string{"compression", "prompt_injection", "cache", "session_audit"},
 				Integration: &ModuleIntegration{
 					Type:        "wechat",
 					Label:       "企业微信",
 					Description: "对接企业微信自定义机器人，支持群机器人 Webhook 和应用消息推送，实现告警通知与审批交互",
 					DocURL:      "https://developer.work.weixin.qq.com/document/path/91770",
+				},
+				Dependencies: []ModuleDependency{
+					{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: true, Description: "上下文压缩，支持摘要推送"},
+					{Key: "prompt_injection", Name: "提示词注入检测", Icon: "🛡️", Required: true, Description: "注入攻击告警来源"},
+					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: true, Description: "审批流程查询上下文"},
+					{Key: "session_audit", Name: "会话审计", Icon: "📋", Required: true, Description: "高风险会话审批通知来源"},
 				},
 			},
 			{
@@ -353,6 +366,12 @@ func allModuleDefinitions() []ModuleDefinition {
 				},
 				DocsURL:     "/admin/session-analytics",
 				DangerLevel: settings.Safe,
+				Dependencies: []ModuleDependency{
+					{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: true, Description: "提供增量摘要、上下文裁剪和压缩节省量分析"},
+					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: true, Description: "提供会话复用、缓存命中和节省量分析"},
+					{Key: "prompt_injection", Name: "提示词注入检测", Icon: "🛡️", Required: true, Description: "提供风险识别、意图辅助和安全标签"},
+					{Key: "output_compliance", Name: "输出合规检测", Icon: "🔒", Required: true, Description: "提供合规状态、脱敏结果和风险流向"},
+				},
 			},
 			{
 				Key:         "memora",
@@ -398,6 +417,50 @@ func resolveModuleEnabled(m ModuleDefinition) (enabled bool, source string) {
 	return v, src
 }
 
+func moduleStatusMap(defs []ModuleDefinition) map[string]ModuleWithStatus {
+	statuses := make(map[string]ModuleWithStatus, len(defs))
+	for _, m := range defs {
+		enabled, src := resolveModuleEnabled(m)
+		statuses[m.Key] = ModuleWithStatus{
+			ModuleDefinition: m,
+			Enabled:          enabled,
+			Source:           src,
+			CanToggleEnabled: true,
+		}
+	}
+	for key, status := range statuses {
+		blocked := requiredDependencyBlockReason(statuses, status.ModuleDefinition)
+		status.BlockedReason = blocked
+		status.CanToggleEnabled = blocked == ""
+		if len(status.Dependencies) > 0 {
+			deps := make([]ModuleDependency, 0, len(status.Dependencies))
+			for _, dep := range status.Dependencies {
+				dep.Enabled = statuses[dep.Key].Enabled
+				deps = append(deps, dep)
+			}
+			status.Dependencies = deps
+		}
+		statuses[key] = status
+	}
+	return statuses
+}
+
+func requiredDependencyBlockReason(statuses map[string]ModuleWithStatus, mod ModuleDefinition) string {
+	missing := make([]string, 0, len(mod.Dependencies))
+	for _, dep := range mod.Dependencies {
+		if !dep.Required {
+			continue
+		}
+		if depStatus, ok := statuses[dep.Key]; !ok || !depStatus.Enabled {
+			missing = append(missing, dep.Name)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "需先启用依赖模块: " + strings.Join(missing, "、")
+}
+
 // handleModulesList returns all modules with their current enabled/disabled status.
 //
 // GET /api/admin/modules
@@ -407,14 +470,10 @@ func (h *Handler) handleModulesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defs := allModuleDefinitions()
+	statusMap := moduleStatusMap(defs)
 	out := make([]ModuleWithStatus, 0, len(defs))
 	for _, m := range defs {
-		enabled, src := resolveModuleEnabled(m)
-		out = append(out, ModuleWithStatus{
-			ModuleDefinition: m,
-			Enabled:          enabled,
-			Source:           src,
-		})
+		out = append(out, statusMap[m.Key])
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
@@ -443,7 +502,7 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	enabled, src := resolveModuleEnabled(*found)
+	statusMap := moduleStatusMap(defs)
 
 	// Collect config values for each config key
 	config := make(map[string]any)
@@ -468,11 +527,7 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"module": ModuleWithStatus{
-			ModuleDefinition: *found,
-			Enabled:          enabled,
-			Source:           src,
-		},
+		"module": statusMap[found.Key],
 		"config": config,
 	})
 }
@@ -530,27 +585,10 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// When enabling, check that all prerequisite modules are also enabled.
-	if body.Enabled && len(found.Requires) > 0 {
-		allDefs := allModuleDefinitions()
-		defMap := make(map[string]*ModuleDefinition, len(allDefs))
-		for i := range allDefs {
-			defMap[allDefs[i].Key] = &allDefs[i]
-		}
-		var missing []string
-		for _, reqKey := range found.Requires {
-			reqDef, ok := defMap[reqKey]
-			if !ok {
-				missing = append(missing, reqKey)
-				continue
-			}
-			reqEnabled, _ := resolveModuleEnabled(*reqDef)
-			if !reqEnabled {
-				missing = append(missing, reqDef.Name)
-			}
-		}
-		if len(missing) > 0 {
-			writeError(w, http.StatusConflict, fmt.Sprintf("依赖模块未启用: %s", strings.Join(missing, "、")))
+	if body.Enabled {
+		statusMap := moduleStatusMap(defs)
+		if blockedReason := statusMap[found.Key].BlockedReason; blockedReason != "" {
+			writeError(w, http.StatusConflict, blockedReason)
 			return
 		}
 	}
