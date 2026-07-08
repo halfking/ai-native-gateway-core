@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { getHealth, getBackgroundTasksStatus, type HealthResponse, type BackgroundTasksStatus } from '../api/system'
 
 const health = ref<HealthResponse | null>(null)
-const bgTasks = ref<BackgroundTasksResponse | null>(null)
+const bgTasks = ref<BackgroundTasksStatus | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const showPopover = ref(false)
