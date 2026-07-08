@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -107,6 +108,7 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 	}
 
 	// 1. 总会话数 + 活跃会话数
+	// 防御：如果 session_dim 表不存在（350 迁移未执行），仍返回基础统计而非500错误
 	totalArgs := make([]interface{}, len(baseArgs))
 	copy(totalArgs, baseArgs)
 	err := h.db.QueryRow(ctx, fmt.Sprintf(`
@@ -115,11 +117,23 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 		%s %s
 	`, baseFrom, baseWhere), totalArgs...).Scan(&resp.TotalSessions, &resp.ActiveSessions)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query total failed: %v", err))
-		return
+		// session_dim 表不存在时，降级查询 session_summaries
+		baseFromFallback := "FROM session_summaries ss"
+		err2 := h.db.QueryRow(ctx, fmt.Sprintf(`
+			SELECT COUNT(*),
+			       COUNT(*) FILTER (WHERE ss.last_request_at >= NOW() - INTERVAL '24 hours')
+			%s %s
+		`, baseFromFallback, baseWhere), totalArgs...).Scan(&resp.TotalSessions, &resp.ActiveSessions)
+		if err2 != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("query total failed: %v", err))
+			return
+		}
+		// 记录警告：session_dim 表缺失，建议执行350迁移
+		slog.Warn("session_dim table not found, using fallback query", "original_error", err.Error())
 	}
 
 	// 2. 查询健康度分布
+	// 防御：health_grade 在 session_summaries 中存在，但如果 session_dim JOIN 失败则降级
 	healthDist := &resp.HealthDistribution
 	healthArgs := make([]interface{}, len(baseArgs))
 	copy(healthArgs, baseArgs)
@@ -133,14 +147,29 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 		%s %s
 	`, baseFrom, baseWhere), healthArgs...).Scan(&healthDist.A, &healthDist.B, &healthDist.C, &healthDist.D, &healthDist.F)
 	if err != nil {
-		healthDist.A = 0
-		healthDist.B = 0
-		healthDist.C = 0
-		healthDist.D = 0
-		healthDist.F = 0
+		// 降级查询：直接从 session_summaries 读取（不依赖 session_dim）
+		baseFromFallback := "FROM session_summaries ss"
+		err2 := h.db.QueryRow(ctx, fmt.Sprintf(`
+			SELECT
+				COUNT(*) FILTER (WHERE ss.health_grade = 'A') as a,
+				COUNT(*) FILTER (WHERE ss.health_grade = 'B') as b,
+				COUNT(*) FILTER (WHERE ss.health_grade = 'C') as c,
+				COUNT(*) FILTER (WHERE ss.health_grade = 'D') as d,
+				COUNT(*) FILTER (WHERE ss.health_grade = 'F') as f
+			%s %s
+		`, baseFromFallback, baseWhere), healthArgs...).Scan(&healthDist.A, &healthDist.B, &healthDist.C, &healthDist.D, &healthDist.F)
+		if err2 != nil {
+			slog.Debug("health distribution query failed", "error", err2.Error())
+			healthDist.A = 0
+			healthDist.B = 0
+			healthDist.C = 0
+			healthDist.D = 0
+			healthDist.F = 0
+		}
 	}
 
 	// 3. 成本趋势（最近N天）
+	// 防御：如果 session_dim JOIN 失败则降级到 session_summaries
 	trendWhere := baseWhere
 	trendArgs := make([]interface{}, len(baseArgs))
 	copy(trendArgs, baseArgs)
@@ -163,6 +192,20 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 		ORDER BY date DESC
 		LIMIT $%d
 	`, baseFrom, trendWhere, trendParamIdx+1), append(trendArgs, days)...)
+	if err != nil {
+		// 降级查询：直接从 session_summaries 读取
+		slog.Debug("cost trend query with session_dim failed, using fallback", "error", err.Error())
+		baseFromFallback := "FROM session_summaries ss"
+		rows, err = h.db.Query(ctx, fmt.Sprintf(`
+			SELECT DATE(ss.first_request_at) as date,
+			       SUM(ss.total_cost_usd) as cost,
+			       COUNT(*) as sessions
+			%s %s
+			GROUP BY DATE(ss.first_request_at)
+			ORDER BY date DESC
+			LIMIT $%d
+		`, baseFromFallback, trendWhere, trendParamIdx+1), append(trendArgs, days)...)
+	}
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -182,6 +225,7 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 	}
 
 	// 4. Top5 客户端（按成本，取 sd.client_id 替代 client_models[1] 启发式）
+	// 防御：如果 session_dim 不存在，从 client_models 数组提取
 	clientArgs := make([]interface{}, len(baseArgs))
 	copy(clientArgs, baseArgs)
 	clientRows, err := h.db.Query(ctx, fmt.Sprintf(`
@@ -207,12 +251,41 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 				resp.TopClients = append(resp.TopClients, item)
 			}
 		}
+	} else {
+		// 降级查询：从 client_models 数组提取（启发式：取第一个元素）
+		slog.Debug("session_dim client query failed, using fallback", "error", err.Error())
+		clientFallbackRows, err2 := h.db.Query(ctx, fmt.Sprintf(`
+			SELECT COALESCE(NULLIF(ss.client_models[1], ''), 'unknown') as client_id,
+			       COUNT(*) as session_count,
+			       SUM(ss.total_cost_usd) as total_cost,
+			       AVG(ss.health_score)::INT as avg_health
+			FROM session_summaries ss
+			%s
+			GROUP BY ss.client_models[1]
+			ORDER BY total_cost DESC
+			LIMIT 5
+		`, baseWhere), clientArgs...)
+		if err2 == nil {
+			defer clientFallbackRows.Close()
+			for clientFallbackRows.Next() {
+				var item ClientRankItem
+				var avgHealth sql.NullInt64
+				if err := clientFallbackRows.Scan(&item.ClientID, &item.SessionCount, &item.TotalCost, &avgHealth); err == nil {
+					if avgHealth.Valid {
+						val := int(avgHealth.Int64)
+						item.AvgHealth = &val
+					}
+					resp.TopClients = append(resp.TopClients, item)
+				}
+			}
+		}
 	}
 	if resp.TopClients == nil {
 		resp.TopClients = []ClientRankItem{}
 	}
 
 	// 5. Top5 任务（按会话数）
+	// 防御：如果 session_dim 不存在，返回空数组（task_id 在 session_summaries 中不存在）
 	taskArgs := make([]interface{}, len(baseArgs))
 	copy(taskArgs, baseArgs)
 	taskRows, err := h.db.Query(ctx, fmt.Sprintf(`
@@ -238,6 +311,9 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 				resp.TopTasks = append(resp.TopTasks, item)
 			}
 		}
+	} else {
+		// task_id 在 session_summaries 中不存在，无法降级，记录警告
+		slog.Debug("session_dim task query failed, task ranking unavailable", "error", err.Error())
 	}
 	if resp.TopTasks == nil {
 		resp.TopTasks = []TaskRankItem{}
