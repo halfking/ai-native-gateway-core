@@ -49,6 +49,7 @@ export default {
     sessionAudit: '會話稽核',
     sessionConfig: '會話設定',
     agents: 'Agent Registry',
+    promptInjection: '提示詞注入檢測',
     examples: '接入範例',
     chat: '對話',
   },

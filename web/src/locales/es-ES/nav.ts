@@ -48,6 +48,7 @@ export default {
     sessionAudit: 'Auditoría de sesiones',
     sessionConfig: 'Configuración de sesión',
     agents: 'Registro de agentes',
+    promptInjection: 'Prompt Injection Detection',
     examples: 'Ejemplos',
     chat: 'Chat',
   },

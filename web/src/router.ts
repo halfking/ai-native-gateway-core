@@ -54,6 +54,7 @@ const ProbeHealthDetailView = () => import('./views/ProbeHealthDetailView.vue')
 const AgentRegistryView = () => import('./views/AgentRegistryView.vue')
 const FormatAnomaliesView = () => import('./views/FormatAnomaliesView.vue')
 const ModulesView = () => import('./views/ModulesView.vue')
+const PromptInjectionSettingsView = () => import('./views/PromptInjectionSettingsView.vue')
 const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
 const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
@@ -166,6 +167,7 @@ export const router = createRouter({
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },
     { path: '/admin/agents',       component: AgentRegistryView, meta: { requiresSuper: true } },
     { path: '/admin/modules',      component: ModulesView, meta: { requiresSuper: true } },
+    { path: '/admin/prompt-injection', component: PromptInjectionSettingsView, meta: { requiresSuper: true } },
     { path: '/admin/approval-config', component: ApprovalConfigView, meta: { requiresSuper: true } },
     { path: '/admin/approvals',    component: ApprovalListView, meta: { requiresSuper: true } },
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },

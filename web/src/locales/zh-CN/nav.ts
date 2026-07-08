@@ -48,6 +48,7 @@ export default {
     sessionAudit: '会话审计',
     sessionConfig: '会话配置',
     agents: 'Agent Registry',
+    promptInjection: '提示词注入检测',
     examples: '接入示例',
     chat: '对话',
   },
