@@ -196,16 +196,28 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	// handoffCfg := handoff.TriggerConfig{...}
 	// handoffHook := handoff.NewTriggerHook(handoffCfg, handoffStore)
 
-	// 7. Chain and install. Order matters: goal continue → audit.
-	// handoff 暂未接入（实现缺失），chain 仅包含 goal + audit。
-	chain := response.NewInterceptorChain(goalHook, auditHook)
+	// 7. Chain and install. Order matters: goal continue → audit → output_compliance.
+	// handoff 暂未接入（实现缺失），chain 含 goal + audit + output_compliance。
+	interceptors := []response.ResponseInterceptor{goalHook, auditHook}
+
+	// 7b. Output compliance interceptor（输出合规/脱敏，2026-07-09）。
+	// 用同一 *sql.DB 构造 checker；ownerFn 从 session_dim 查询 dataOwner +
+	// 从最新 request_log 的 api_key_owner_user 取 callerOwner。
+	// db 为 nil 时 buildOutputComplianceInterceptor 返回 nil，链自动跳过。
+	if ocHook := buildOutputComplianceInterceptor(db); ocHook != nil {
+		interceptors = append(interceptors, ocHook)
+	}
+
+	chain := response.NewInterceptorChain(interceptors...)
 	chatHandler.SetResponseInterceptor(chain)
 
+	ocEnabled := len(interceptors) > 2
 	slog.Info("goal_control: interceptors installed",
 		"goal_enabled", goalCfg.Enabled,
 		"detection_mode", goalCfg.DetectionMode,
 		"audit_enabled", auditCfg.Enabled,
 		"handoff_enabled", false, // 实现缺失，强制禁用
+		"output_compliance_enabled", ocEnabled,
 		"model_switch_on_loop", goalCfg.ModelSwitchOnLoop,
 		"max_model_switch", goalCfg.MaxModelSwitchCount,
 		"fallback_models", goalCfg.FallbackModels,
