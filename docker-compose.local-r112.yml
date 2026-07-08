@@ -157,6 +157,7 @@ services:
       LLM_GATEWAY_LISTEN: ":8781"
       LLM_GATEWAY_ENV: "local"           # 非 production, 避免 fail-closed panic
       LOG_LEVEL: "info"
+      STICKY_MULTILEVEL_DEBUG: "1"
       # ── 依赖 (compose 内服务名) ──
       LLM_GATEWAY_DATABASE_URL: "postgres://kxuser:kxpass@postgres:5432/llm_gateway?sslmode=disable"
       LLM_GATEWAY_REDIS_ADDR: "redis:6379"
