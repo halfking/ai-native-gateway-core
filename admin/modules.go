@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -22,6 +23,10 @@ type ModuleDefinition struct {
 	DocsURL      string               `json:"docs_url"`
 	DangerLevel  settings.DangerLevel `json:"danger_level"`
 	Integration  *ModuleIntegration   `json:"integration,omitempty"`
+	// Requires lists module keys that must be enabled before this module
+	// can be activated. The frontend displays these as prerequisites and
+	// the toggle endpoint validates them before enabling.
+	Requires []string `json:"requires,omitempty"`
 }
 
 // ModuleIntegration describes external integration configuration for a module.
@@ -279,6 +284,44 @@ func allModuleDefinitions() []ModuleDefinition {
 				},
 			},
 			{
+				Key:         "wechat_bot",
+				Name:        "微信机器人",
+				Description: "对接企业微信自定义机器人，实现远程运维通知、风险告警推送、审批操作执行等功能。依赖压缩管理、提示词注入检测、会话缓存、会话审计与审批等模块。",
+				Capabilities: []string{
+					"实时告警推送（注入攻击、高延迟、错误率飙升）",
+					"高风险操作审批通知与微信内操作",
+					"系统状态查询",
+					"企业微信签名验证（SHA1 + AES-CBC 解密）",
+					"用户白名单控制",
+				},
+				Icon:       "💬",
+				Category:   "integration",
+				SettingKey: "wechat_bot.enabled",
+				ConfigKeys: []string{
+					"wechat_bot.webhook_url",
+					"wechat_bot.corp_id",
+					"wechat_bot.agent_id",
+					"wechat_bot.corp_secret",
+					"wechat_bot.encoding_aes_key",
+					"wechat_bot.verify_token",
+					"wechat_bot.notify_on_alert",
+					"wechat_bot.notify_on_approval",
+					"wechat_bot.notify_on_latency",
+					"wechat_bot.notify_on_error_rate",
+					"wechat_bot.latency_threshold_ms",
+					"wechat_bot.error_rate_threshold",
+					"wechat_bot.allowed_users",
+				},
+				DangerLevel: settings.Safe,
+				Requires:    []string{"compression", "prompt_injection", "cache", "session_audit"},
+				Integration: &ModuleIntegration{
+					Type:        "wechat",
+					Label:       "企业微信",
+					Description: "对接企业微信自定义机器人，支持群机器人 Webhook 和应用消息推送，实现告警通知与审批交互",
+					DocURL:      "https://developer.work.weixin.qq.com/document/path/91770",
+				},
+			},
+			{
 				Key:         "session_analytics",
 				Name:        "会话全景分析",
 				Description: "通过 hook 插件准实时分析会话：自动总结/标题生成、多维标签、逐步摘要、相似会话聚类、优化建议，输出会话全景图（做了什么、做得如何、省了多少、花了多少）。",
@@ -485,6 +528,31 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
+	}
+
+	// When enabling, check that all prerequisite modules are also enabled.
+	if body.Enabled && len(found.Requires) > 0 {
+		allDefs := allModuleDefinitions()
+		defMap := make(map[string]*ModuleDefinition, len(allDefs))
+		for i := range allDefs {
+			defMap[allDefs[i].Key] = &allDefs[i]
+		}
+		var missing []string
+		for _, reqKey := range found.Requires {
+			reqDef, ok := defMap[reqKey]
+			if !ok {
+				missing = append(missing, reqKey)
+				continue
+			}
+			reqEnabled, _ := resolveModuleEnabled(*reqDef)
+			if !reqEnabled {
+				missing = append(missing, reqDef.Name)
+			}
+		}
+		if len(missing) > 0 {
+			writeError(w, http.StatusConflict, fmt.Sprintf("依赖模块未启用: %s", strings.Join(missing, "、")))
+			return
+		}
 	}
 
 	store, ok := h.dbSettingsStore()

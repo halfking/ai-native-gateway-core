@@ -59,6 +59,8 @@ export default {
     stepsTitle: '配置步骤',
     enabledStatus: '集成已启用',
     disabledHint: '集成未启用 — 请先开启此模块',
+    prerequisitesTitle: '前置模块',
+    prerequisitesHint: '请先启用以上前置模块，再开启此模块',
     feishuSteps: [
       '在飞书开放平台创建自定义机器人',
       '复制 Webhook URL 并粘贴到下方配置中',
@@ -66,6 +68,16 @@ export default {
       '开启"飞书机器人集成"开关',
     ],
     feishuBotIntegration: '飞书机器人集成',
+    wechatSteps: [
+      '在企业微信管理后台创建自建应用',
+      '（可选）在「接收消息」中配置回调 URL 和 Token',
+      '复制企业 CorpID、AgentID、Secret 填入下方配置',
+      '（可选）配置群机器人 Webhook URL 以使用群消息推送',
+      '（可选）配置 EncodingAESKey 以启用回调加密',
+      '开启"微信机器人集成"开关',
+      '确保前置模块（压缩管理、注入检测、会话缓存、会话审计）均已启用',
+    ],
+    wechatBotIntegration: '微信机器人集成',
   },
 
   empty: {

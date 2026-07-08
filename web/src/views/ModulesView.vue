@@ -146,6 +146,28 @@ function goToSettings(key: string) {
   router.push('/admin/settings')
 }
 
+function isModuleEnabled(key: string): boolean {
+  const mod = modules.value.find(m => m.key === key)
+  return mod?.enabled ?? false
+}
+
+function moduleDisplayName(key: string): string {
+  const mod = modules.value.find(m => m.key === key)
+  return mod?.name || key
+}
+
+function integrationTitle(moduleKey: string): string {
+  if (moduleKey === 'feishu_bot') return t('modulesView.integration.feishuBotIntegration')
+  if (moduleKey === 'wechat_bot') return t('modulesView.integration.wechatBotIntegration')
+  return selectedModule.value?.integration?.label || moduleKey
+}
+
+function integrationSteps(moduleKey: string): string[] {
+  if (moduleKey === 'feishu_bot') return t('modulesView.integration.feishuSteps') as unknown as string[]
+  if (moduleKey === 'wechat_bot') return t('modulesView.integration.wechatSteps') as unknown as string[]
+  return []
+}
+
 onMounted(() => {
   loadModules()
 })
@@ -391,14 +413,14 @@ onMounted(() => {
           <div class="integration-card" v-if="selectedModule.integration">
             <div class="integ-header">
               <span class="integ-icon">
-                {{ selectedModule.key === 'feishu_bot' ? '📱' : '🔗' }}
+                {{ selectedModule.key === 'feishu_bot' ? '📱' : selectedModule.key === 'wechat_bot' ? '💬' : '🔗' }}
               </span>
               <div class="integ-info">
-<h3 class="integ-title">
-                {{ selectedModule.key === 'feishu_bot' ? t('modulesView.integration.feishuBotIntegration') : selectedModule.integration.label }}
-                {{ t('modulesView.tabs.integration') }}
-              </h3>
-              <p class="integ-desc">{{ selectedModule.integration.description }}</p>
+                <h3 class="integ-title">
+                  {{ integrationTitle(selectedModule.key) }}
+                  {{ t('modulesView.tabs.integration') }}
+                </h3>
+                <p class="integ-desc">{{ selectedModule.integration.description }}</p>
               </div>
             </div>
             <div class="integ-body">
@@ -411,10 +433,29 @@ onMounted(() => {
                   class="integ-link"
                 >{{ selectedModule.integration.doc_url }}</a>
               </div>
+
+              <!-- Prerequisite modules -->
+              <div class="integ-prereq" v-if="selectedModule.requires?.length">
+                <h4 class="steps-title">{{ t('modulesView.integration.prerequisitesTitle') }}</h4>
+                <div class="prereq-list">
+                  <span
+                    v-for="req in selectedModule.requires"
+                    :key="req"
+                    class="prereq-badge"
+                    :class="isModuleEnabled(req) ? 'prereq-met' : 'prereq-unmet'"
+                  >
+                    {{ moduleDisplayName(req) }}
+                  </span>
+                </div>
+                <p class="prereq-hint" v-if="selectedModule.requires.some(r => !isModuleEnabled(r))">
+                  {{ t('modulesView.integration.prerequisitesHint') }}
+                </p>
+              </div>
+
               <div class="integ-steps">
                 <h4 class="steps-title">{{ t('modulesView.integration.stepsTitle') }}</h4>
                 <ol class="steps-list">
-                  <li v-for="(step, i) in t('modulesView.integration.feishuSteps')" :key="i">{{ step }}</li>
+                  <li v-for="(step, i) in integrationSteps(selectedModule.key)" :key="i">{{ step }}</li>
                 </ol>
               </div>
               <div class="integ-status">
@@ -1059,6 +1100,37 @@ onMounted(() => {
   background: var(--bg-card, #161b22);
   border-radius: 6px;
   font-size: 12px;
+}
+.integ-prereq {
+  margin-top: 12px;
+}
+.prereq-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.prereq-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.prereq-badge.prereq-met {
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+.prereq-badge.prereq-unmet {
+  background: rgba(248, 113, 113, 0.12);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+}
+.prereq-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #f87171;
 }
 .status-indicator {
   width: 8px;
