@@ -221,3 +221,54 @@ OutputComplianceInterceptor 脱敏发生时 → 通过 telemetry 或直接 Sessi
 - **未来增强（write-time 脱敏）**：新增一个 `RedactBodyFn func([]byte) []byte` 函数指针，挂在 `ChatExecutor`（与 `StripMinimaxFields` 同点，executor_chat.go:84），在 `w.Write` 前对非流式 body 做位置精确脱敏；流式则挂到 `StreamChatWithCapture` 的 `stripFn`（stream.go:71）。这样客户端才真正收到脱敏后内容。
 
 此限制已在 `handler.go:2076-2087` 的注释中记录，避免后续误以为 post-response 改写能影响客户端。
+
+---
+
+## 8. 审计发现与修正（2026-07-09 后）
+
+### 8.1 无重复实现确认
+自动化审计（46 个文件扫描）确认以下"看似重复"实际为**互补设计**，无需合并：
+
+| 模块对 | 差异 | 判决 |
+|---|---|---|
+| `outputcompliance.Checker` vs `approval.SensitiveDetector` | 输出侧脱敏 vs 输入侧审批门控 | 互补（阶段不同） |
+| `SessionStateProjector` vs `SessionTagger` | 热路径 v6 投影 vs 冷路径 OLAP 聚合 | 互补（触发不同） |
+| `outputcompliance.OwnerAllowsSensitive` vs `session_tenant.requireSessionOwnerAccess` | 脱敏决策（boolean） vs 授权过滤（SQL） | 互补（关注点不同） |
+
+共写同一张 `session_tags` 表（UPSERT ON CONFLICT DO NOTHING），tag_key 词汇表正交：
+- OLAP projector（tagger）：task/client/llm/topic/intent/quality
+- 热路径 projector（state_projector）：security/compliance/pii/approval/optimization
+
+### 8.2 集成点验证 ✅
+- [x] `goal_control.go:207` 已并入 `OutputComplianceInterceptor` 到 `InterceptorChain`（db nil 时自动跳过）
+- [x] `approval_integration.go:132` 已注入 `SessionStateProjector` 到 `CacheUpdateHook`（Pool nil 时禁用）
+- [x] `admin/session_compare.go:390` 已调用 `loadSessionTagsForCompare`（best-effort，失败不阻断）
+- [x] `handler.go:2089` 已应用 `ModifiedBody` 到非流式 `result.ResponseBody`（telemetry/日志/缓存一致性）
+
+### 8.3 已修复的问题
+1. **P2 — `goal_control.go` db nil 注释缺失**：已补充"db 为 nil 时 buildOutputComplianceInterceptor 返回 nil，链自动跳过"。
+2. **P3 — Metadata key 契约文档化**：已在 `domain/request_envelope.go:62-92` 登记全部共享 key（`audit_result`/`pii_stripped`/`output_compliance_*`/`optimization_applied`/`security_verdict`）。
+
+### 8.4 设计正确性确认
+- **write-time vs post-response 限制**已在 §7 记录：非流式响应字节在 `executor.Execute` 内部就已写出，post-response `ResponseInterceptor` 无法回改客户端字节。本轮 `OutputComplianceInterceptor` 专注检测+打标+telemetry 一致性，真正的客户端可见字节级脱敏需走 write-time transform（未来增强）。
+- **owner 规则正确性**：`OwnerAllowsSensitive` 保守策略（空 owner → 脱敏）与 admin 端 `requireSessionOwnerAccess` 的 deny 语义一致（`ownerScopeClause` 要求非空）。
+- **SessionState v6 字段**：`cache_update_hook.go:96-100` 设置的五字段（AuditScore/SecurityScore/SensitiveDetected/PIIStripped/OptimizationApplied）+ approval 三字段（ApprovalStatus/ApprovalID/ApprovalRequestedAt）全部投影到 `session_tags`，无遗漏。
+
+实现阶段 A 时精读 `domains/streaming/executors/executor_chat.go:83-92` 发现：**非流式响应体在 `executor.Execute` 内部就已经 `w.Write(body)` 写给客户端**（流式则在 `StreamChat` 边写边发）。因此 `handler.go:2008` 的 `ResponseInterceptor` 在响应已发出后才运行——**事后无法回改已发给客户端的字节**。
+
+这决定了 OutputComplianceInterceptor 的真实能力边界：
+
+| 能力 | 可行？ | 机制 |
+|---|---|---|
+| 检测 PII/敏感 | ✅ | `Checker.Check`（纯函数，对 captured body） |
+| 点亮 `pii_stripped` 标记 → session_tags | ✅ | interceptor 设 Metadata → handler 写回 `result.ResponseBody`（供 telemetry/日志/缓存用） |
+| 阻断（严重/enforce） | ⚠️ 部分 | `ShouldBlock` 在非流式已晚（字节已发）；流式可在 chunk 间断开连接 |
+| **回改客户端已收到的字节** | ❌ | 需 write-time transform（见下） |
+
+**真正的"客户端可见"字节级脱敏**必须走 **write-time transform**，即 `ChatExecutor.StripMinimaxFields`（executor_chat.go:37，在 `w.Write` 前对 body 做变换的函数指针模式）。这是既有且验证过的字节改写通道（main.go:566 已用 `streaming.StripMinimaxFieldsBody` 接入）。
+
+因此本架构分两层：
+- **A 阶段（本轮，已完成）**：`ResponseInterceptor` 做**检测 + 打标 + 阻断决策 + telemetry/日志/cache 一致性**。这立即点亮 `pii_stripped` 契约、让 session_tags 准确、让 admin 观测到合规结果。
+- **未来增强（write-time 脱敏）**：新增一个 `RedactBodyFn func([]byte) []byte` 函数指针，挂在 `ChatExecutor`（与 `StripMinimaxFields` 同点，executor_chat.go:84），在 `w.Write` 前对非流式 body 做位置精确脱敏；流式则挂到 `StreamChatWithCapture` 的 `stripFn`（stream.go:71）。这样客户端才真正收到脱敏后内容。
+
+此限制已在 `handler.go:2076-2087` 的注释中记录，避免后续误以为 post-response 改写能影响客户端。
