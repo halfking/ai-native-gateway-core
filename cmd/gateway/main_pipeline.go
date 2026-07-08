@@ -86,6 +86,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin"                                                //nolint:depguard // Phase 4 SetClusterRunner 注入
+	"github.com/kaixuan/llm-gateway-go/autoroute"                                            //nolint:depguard // LLM caller for enhanced PI detection
 	"github.com/kaixuan/llm-gateway-go/domain"                                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domain/analysis"                                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"               //nolint:depguard
@@ -245,6 +246,11 @@ type v2DispatchDeps struct {
 	OutputComplianceChecker outputcompliancehooks.Checker
 	SessionSummarizer       workers.SessionSummarizer
 
+	// ── 增强版提示词注入检测插件 ────────────────────────────────
+	// EnhancedPIPlugin 在 buildV2DispatchPipeline 中创建并注册到 secRegistry，
+	// 由 SetV2DispatchAnalysisResources 注入 DB + LLM caller 完成初始化。
+	EnhancedPIPlugin *securityplugins.PromptInjectionEnhancedPlugin
+
 	// ── Phase 4: Session Analytics Hook (会话全景分析插件) ───────
 	// SessionAnalysisEngines 为 nil 时分析 Hook 不注册（Enabled=false）。
 	// 由 main.go 在 session_analytics.enabled 且 dbConn 可用时注入。
@@ -382,6 +388,11 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	secRegistry.MustRegister(securityplugins.NewPolicyComplianceChecker())
 	secRegistry.MustRegister(securityplugins.NewToolRiskChecker())
 	secRegistry.MustRegister(securityplugins.NewDataExfiltrationChecker())
+
+	// 增强版提示词注入检测插件（延迟初始化，依赖 DB + LLM caller）
+	enhancedPIPlugin := securityplugins.NewPromptInjectionEnhancedPlugin()
+	secRegistry.MustRegister(enhancedPIPlugin)
+	deps.EnhancedPIPlugin = enhancedPIPlugin
 
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "governance_security", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
@@ -995,6 +1006,15 @@ func SetV2DispatchAnalysisResources(
 		deps.SessionSummarizer = summarizer
 	}
 
+	// 增强版提示词注入检测插件初始化
+	// 当 DB pool 可用时，初始化插件并注入依赖
+	if pool != nil && deps.EnhancedPIPlugin != nil {
+		// 构建 LLM caller（复用 autoroute 模式）
+		llmCaller := buildEnhancedPILMCaller()
+		deps.EnhancedPIPlugin.Init(pool, llmCaller)
+		slog.Info("enhanced prompt injection plugin initialized")
+	}
+
 	// Phase 4: 会话全景分析引擎注入。
 	// 仅当 session_analytics.enabled 且 pool 可用时构建引擎。
 	// 通过 PhasePostResponse hook 接入请求管道，准实时分析。
@@ -1011,4 +1031,37 @@ func SetV2DispatchAnalysisResources(
 		// 注入 ClusterRunner（手动触发聚类用）
 		admin.SetClusterRunner(sessionanalytics.NewSessionClusterer(analyticsDB, cfg, nil, slog.Default()))
 	}
+}
+
+// buildEnhancedPILMCaller 构建增强版 PI 检测的 LLM caller
+// 复用 autoroute 的 HTTPLlmCallerConfig 模式
+func buildEnhancedPILMCaller() securityplugins.LLMCaller {
+	endpoint := strings.TrimSpace(os.Getenv("LLMGatewayAutoLLMEndpoint"))
+	if endpoint == "" {
+		// 未配置 LLM endpoint，返回 nil（LLM 检测将被禁用）
+		return nil
+	}
+
+	cfg := autoroute.HTTPLlmCallerConfig{
+		Endpoint: endpoint,
+		APIKey:   strings.TrimSpace(os.Getenv("LLMGatewayAutoLLMApiKey")),
+		Model:    strings.TrimSpace(os.Getenv("LLMGatewayAutoLLMModel")),
+	}
+	if cfg.Model == "" {
+		cfg.Model = "gpt-4o-mini"
+	}
+	cfg.Timeout = 10 * time.Second
+	cfg.MaxTokens = 512
+
+	caller := autoroute.NewHTTPLlmCaller(cfg)
+	return &llmCallerAdapter{caller: caller}
+}
+
+// llmCallerAdapter 适配 autoroute.LLMCaller 到 securityplugins.LLMCaller
+type llmCallerAdapter struct {
+	caller autoroute.LLMCaller
+}
+
+func (a *llmCallerAdapter) Call(ctx context.Context, prompt string) (string, error) {
+	return a.caller.Call(ctx, prompt)
 }

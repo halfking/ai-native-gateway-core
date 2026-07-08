@@ -2201,6 +2201,13 @@ func main() {
 		}
 	}
 
+	// Phase 3.11: Prompt Injection Detection Enhanced API routes
+	if dbConn != nil && wrapAdmin != nil {
+		piHandler := admin.NewPromptInjectionHandler(dbConn.Pool(), cfg.SecretKey)
+		piHandler.RegisterRoutes(mux)
+		slog.Info("Phase 3.11 prompt injection enhanced API enabled (/api/admin/prompt-injection/*)")
+	}
+
 	slog.Info("CHECKPOINT: before middleware stack build")
 	// ── Middleware stack (declarative chain) ─────────────────────────────
 	//
