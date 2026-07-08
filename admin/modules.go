@@ -22,6 +22,15 @@ type ModuleDefinition struct {
 	DocsURL      string               `json:"docs_url"`
 	DangerLevel  settings.DangerLevel `json:"danger_level"`
 	Integration  *ModuleIntegration   `json:"integration,omitempty"`
+	Dependencies []ModuleDependency   `json:"dependencies,omitempty"`
+}
+
+// ModuleDependency describes a dependency on another module.
+type ModuleDependency struct {
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Required    bool   `json:"required"`
+	Description string `json:"description"`
 }
 
 // ModuleIntegration describes external integration configuration for a module.
@@ -61,7 +70,7 @@ func allModuleDefinitions() []ModuleDefinition {
 				Icon:        "🗜️",
 				Category:    "compression",
 				SettingKey:  "compression.enabled",
-				ConfigKeys:  []string{"compression.mode", "compression.window_fraction"},
+				ConfigKeys:  []string{"compression.mode", "compression.window_fraction", "compression.llm_model"},
 				DocsURL:     "/admin/compression",
 				DangerLevel: settings.Warning,
 			},
@@ -204,10 +213,40 @@ func allModuleDefinitions() []ModuleDefinition {
 					"预设响应策略",
 					"与审计模块联动",
 				},
-				Icon:        "🔐",
-				Category:    "security",
-				SettingKey:  "security.enabled",
+				Icon:       "🔐",
+				Category:   "security",
+				SettingKey: "security.enabled",
+				ConfigKeys: []string{
+					"security.mode",
+					"security.llm.intent_model",
+					"security.llm.threat_model",
+					"security.intent.enabled",
+					"security.intent.confidence_threshold",
+					"security.intent.drift_threshold",
+					"security.threat.enabled",
+					"security.threat.severity_threshold",
+					"security.threat.checks.prompt_inject",
+					"security.threat.checks.jailbreak",
+					"security.threat.checks.data_leak",
+					"security.threat.checks.pii",
+					"security.threat.checks.persona_override",
+					"security.response.low_risk",
+					"security.response.medium_risk",
+					"security.response.high_risk",
+					"security.audit.enabled",
+					"security.audit.log_all",
+					"security.audit.sampling_rate",
+				},
+				DocsURL:     "/admin/modules",
 				DangerLevel: settings.Dangerous,
+				Dependencies: []ModuleDependency{
+					{Key: "prompt_injection", Name: "提示词注入检测", Required: true, Description: "提供提示词注入模式检测能力"},
+					{Key: "output_compliance", Name: "输出合规检测", Required: true, Description: "提供PII和敏感数据检测能力"},
+					{Key: "session_audit", Name: "会话审计与审批", Required: true, Description: "提供高风险操作审批流程"},
+					{Key: "audit", Name: "审计日志", Required: false, Description: "记录安全检测审计日志"},
+					{Key: "cache", Name: "会话缓存", Required: false, Description: "提升安全检测性能"},
+					{Key: "compression", Name: "压缩管理", Required: false, Description: "降低安全检测token消耗"},
+				},
 			},
 			{
 				Key:         "rate_limit",
@@ -472,9 +511,23 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Modules without a SettingKey (e.g. memora) are runtime-driven and have
+	// no on/off toggle to persist. Return 200 with the effective state so the
+	// frontend can update its UI without erroring — previously this returned
+	// 404, which left the optimistic UI in an inconsistent state.
+	if found.SettingKey == "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "ok",
+			"enabled": true,
+			"module":  found.Key,
+			"message": "该模块无独立开关，状态由运行时决定: " + found.Name,
+		})
+		return
+	}
+
 	sp := settings.Global.Spec(found.SettingKey)
 	if sp == nil {
-		writeError(w, http.StatusNotFound, "module has no setting key")
+		writeError(w, http.StatusNotFound, "module setting spec not registered: "+found.SettingKey)
 		return
 	}
 

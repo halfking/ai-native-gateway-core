@@ -11,6 +11,13 @@ export interface ModuleIntegration {
   doc_url: string
 }
 
+export interface ModuleDependency {
+  key: string
+  name: string
+  required: boolean
+  description: string
+}
+
 export interface ModuleDefinition {
   key: string
   name: string
@@ -23,6 +30,7 @@ export interface ModuleDefinition {
   docs_url: string
   danger_level: number
   integration?: ModuleIntegration
+  dependencies?: ModuleDependency[]
 }
 
 export interface ModuleWithStatus extends ModuleDefinition {
