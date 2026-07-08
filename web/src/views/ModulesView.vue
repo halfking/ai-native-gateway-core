@@ -91,6 +91,37 @@ const securityConfigGroups = computed(() => {
   }
 })
 
+// 检查配置项是否因依赖未满足而应被禁用
+function isCheckDisabled(key: string): boolean {
+  if (key === 'security.threat.checks.prompt_inject') {
+    return !modules.value.find(m => m.key === 'prompt_injection')?.enabled
+  }
+  if (key === 'security.threat.checks.data_leak' || key === 'security.threat.checks.pii') {
+    return !modules.value.find(m => m.key === 'output_compliance')?.enabled
+  }
+  if (key === 'security.response.high_risk') {
+    const val = moduleSettings.value.find(s => s.key === key)?.value
+    if (val === 'approval') {
+      return !modules.value.find(m => m.key === 'session_audit')?.enabled
+    }
+  }
+  return false
+}
+
+// 获取依赖警告信息
+function getDependencyWarning(key: string): string | null {
+  if (key === 'security.threat.checks.prompt_inject' && isCheckDisabled(key)) {
+    return '⚠️ 依赖模块 prompt_injection 未启用，此检测项无法正常工作'
+  }
+  if ((key === 'security.threat.checks.data_leak' || key === 'security.threat.checks.pii') && isCheckDisabled(key)) {
+    return '⚠️ 依赖模块 output_compliance 未启用，此检测项无法正常工作'
+  }
+  if (key === 'security.response.high_risk' && isCheckDisabled(key)) {
+    return '⚠️ 审批动作依赖 session_audit 模块，请先启用'
+  }
+  return null
+}
+
 async function loadModules() {
   loading.value = true
   error.value = null
@@ -176,7 +207,8 @@ async function doToggle(key: string) {
 async function saveSetting(settingKey: string, value: any) {
   try {
     await updateSetting(settingKey, { value })
-    await selectModule(selectedKey.value!)
+    await loadModules()  // 刷新模块列表（更新依赖状态）
+    await selectModule(selectedKey.value!)  // 刷新当前详情
   } catch (e: any) {
     error.value = e.message || t('modulesView.error.saveFailed')
   }
@@ -530,11 +562,12 @@ onMounted(() => {
                 <p class="config-desc">{{ setting.description }}</p>
                 <div class="config-editor">
                   <div v-if="setting.type === 'bool'" class="config-bool">
-                    <label class="switch-label-sm">
+                    <label class="switch-label-sm" :class="{ 'disabled': isCheckDisabled(setting.key) }">
                       <input
                         type="checkbox"
                         class="toggle-input"
                         :checked="setting.value === true"
+                        :disabled="isCheckDisabled(setting.key)"
                         @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
                       />
                       <span class="toggle-track-sm">
@@ -542,6 +575,9 @@ onMounted(() => {
                       </span>
                       <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
                     </label>
+                    <div v-if="getDependencyWarning(setting.key)" class="dependency-warning">
+                      {{ getDependencyWarning(setting.key) }}
+                    </div>
                   </div>
                   <div v-else-if="setting.type === 'int'" class="config-number">
                     <input
@@ -579,6 +615,7 @@ onMounted(() => {
                     <select
                       class="select-input"
                       :value="setting.value ?? setting.default"
+                      :disabled="isCheckDisabled(setting.key)"
                       @change="saveSetting(setting.key, ($event.target as HTMLSelectElement).value)"
                     >
                       <option
@@ -587,6 +624,9 @@ onMounted(() => {
                         :value="opt"
                       >{{ opt === 'log' ? '仅记录 (log)' : opt === 'warn' ? '警告 (warn)' : opt === 'sanitize' ? '清洗 (sanitize)' : opt === 'block' ? '阻断 (block)' : opt === 'approval' ? '人工审批 (approval)' : opt }}</option>
                     </select>
+                    <div v-if="getDependencyWarning(setting.key)" class="dependency-warning">
+                      {{ getDependencyWarning(setting.key) }}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1493,6 +1533,27 @@ onMounted(() => {
   font-size: 10px;
   font-weight: 500;
   margin-left: 8px;
+}
+
+/* ── Dependency Warning ── */
+.dependency-warning {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 4px;
+  color: #fbbf24;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.switch-label-sm.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.switch-label-sm.disabled .toggle-input:disabled {
+  cursor: not-allowed;
 }
 
 /* ── Responsive ── */
