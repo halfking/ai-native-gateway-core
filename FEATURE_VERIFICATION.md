@@ -129,18 +129,13 @@
 - **文件**: `domains/hooks/sessionaudit/hook.go`
 - **逻辑**:
   ```go
-  if len(cfg.DetectorModels) > 1 {
-      // 多模型模式
-      1. 快速检测（同步，≤5ms）
-      2. 如果分数 ≥3，启动异步深度检测
-      3. 深度检测完成后发布额外审计事件
-  } else {
-      // 单模型模式
-      快速检测（保持原有逻辑）
-  }
+  1. 先执行快速检测（同步，≤5ms）
+  2. 当配置了多个模型且快速检测命中可疑阈值时，执行受控超时的同步多模型复核
+  3. 复核成功时，用深度检测结果覆盖当前请求的审批/拦截决策
+  4. 复核失败时，降级回快速检测结果
   ```
-- **异步执行**: 使用 goroutine，不阻塞主流程
-- **独立 context**: 使用 `context.Background()`，避免请求超时影响
+- **受控超时**: 使用 `context.WithTimeout(ctx, 4*time.Second)`，避免深度检测无限阻塞
+- **真实接入链路**: 深度检测结果会直接影响本次请求的审批/拦截结果
 
 #### 2.4 LLM 风险检测客户端 ✓
 - **文件**: `domains/sessionaudit/llm_detector_client.go` (159 行)
@@ -256,13 +251,13 @@ LoadConfig() → 读取 23 个配置项
   ↓
 根据 detector_models 数量选择模式：
   ├─ 单模型 → FastDetector.Detect() (≤5ms)
-  └─ 多模型 → FastDetector.Detect() + 异步 DetectWithModels()
+  └─ 多模型 → FastDetector.Detect() + DetectWithModels()
       ├─ 快速检测（同步）
-      └─ 深度检测（异步，goroutine）
+      └─ 深度检测（同步复核，4s 超时）
           ├─ 并行调用多个 LLM
           ├─ OpenAIDetectorClient.DetectRisk()
           ├─ 收集评分
-          └─ 平均分机制
+          └─ 平均分机制覆盖当前决策
   ↓
 根据 enforcement_level 决策：
   ├─ strict → 拦截/审批
@@ -339,8 +334,8 @@ commit 5fe23dab
 feat(sessionaudit): Hook 集成多模型检测
 
 - 根据配置项自动选择单模型或多模型
-- 异步深度检测不阻塞主流程
-- 日志记录快速检测 vs 深度检测分数
+- 仅对可疑请求执行受控超时的多模型复核
+- 深度检测结果直接参与当前审批/拦截决策
 
 变更文件：2 个
 新增代码：+72 行
@@ -577,9 +572,10 @@ session_audit.escalation_approvers=["ciso","cto"]
 - **无 LLM 调用**: 纯本地计算
 
 ### 多模型深度检测
-- **延迟**: 数秒级（异步执行）
+- **延迟**: 数秒级（仅对可疑请求触发）
 - **并行度**: 与模型数量相等
-- **降级策略**: 基准分数 <3 时跳过
+- **降级策略**: 基准分数 <3 时跳过；复核失败时回退到快速检测结果
+- **超时控制**: 4 秒复核超时，避免阻塞请求过久
 - **容错**: 单模型失败不影响其他模型
 
 ### 通知发送
