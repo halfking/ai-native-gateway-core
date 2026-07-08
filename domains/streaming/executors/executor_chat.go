@@ -35,6 +35,12 @@ type ChatExecutor struct {
 	// (nvext, audio_content, name, etc.) from the chat response body
 	// before it is returned to the client. Wired from main.go.
 	StripMinimaxFields func([]byte) []byte
+	// RedactBodyFn (2026-07-09) write-time 客户端可见脱敏。
+	// 在 w.Write 前调用，让客户端真正收到脱敏后字节（与 post-response
+	// OutputComplianceInterceptor 互补：前者改客户端，后者改 telemetry）。
+	// 签名：func(body []byte, sessionID, tenantID string) []byte
+	// Wired from main.go via streaming.BuildRedactBodyFn.
+	RedactBodyFn func([]byte, string, string) []byte
 	// QualityProcessNonStream runs the per-provider tool_call quality
 	// check (017_quality_fix_mode.sql). Wired from main.go; routing
 	// cannot import relay (relay imports routing), so the processor
@@ -82,6 +88,12 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	}
 	if c.StripMinimaxFields != nil {
 		body = c.StripMinimaxFields(body)
+	}
+	// Write-time 客户端可见脱敏（2026-07-09，增强 1）。
+	// 在 w.Write 前调用，让客户端真正收到脱敏后字节。
+	// sessionID/tenantID 需从上下文传入（当前简化为空，TODO: 从 routing 上下文注入）。
+	if c.RedactBodyFn != nil {
+		body = c.RedactBodyFn(body, "", "")
 	}
 	for k, vs := range resp.Header {
 		for _, v := range vs {

@@ -290,12 +290,17 @@ type Executor struct {
 	SanitizeAnthropicTools SanitizeAnthropicToolsFunc
 	// NormalizeOpenAITools coerces flat/anthropic tool defs to OpenAI-Chat shape.
 	NormalizeOpenAITools NormalizeOpenAIToolsFunc
-	// StripMinimaxFields strips minimax-private top-level fields
-	// (nvext, base_resp, input_sensitive*, output_sensitive*) from
-	// the chat response body before it is returned to the client.
-	// Wired from main.go (relay.StripMinimaxFieldsBody).
-	StripMinimaxFields StripMinimaxFieldsFunc
-	Auditor            audit.Sink
+		// StripMinimaxFields strips minimax-private top-level fields
+		// (nvext, base_resp, input_sensitive*, output_sensitive*) from
+		// the chat response body before it is returned to the client.
+		// Wired from main.go (relay.StripMinimaxFieldsBody).
+		StripMinimaxFields StripMinimaxFieldsFunc
+		// RedactBodyFn (2026-07-09, 增强 1) write-time 客户端可见脱敏。
+		// 在 w.Write 前调用，让客户端真正收到脱敏后字节。
+		// 签名：func(body []byte, sessionID, tenantID string) []byte
+		// Wired from main.go via streaming.BuildRedactBodyFn.
+		RedactBodyFn       func([]byte, string, string) []byte
+		Auditor            audit.Sink
 	State              *credential.Writer
 	// Provider is the credential/candidate resolver. Typed as an interface
 	// (defined in routing) so the compaction fallback tests can inject a
