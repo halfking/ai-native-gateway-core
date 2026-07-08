@@ -231,6 +231,7 @@ function handleChangePasswordSuccess() {
         >
           {{ collapsed ? '»' : '«' }}
         </button>
+        <SystemStatusIndicator />
         <div class="main-header-right">
           <div v-if="passwordSuccessMessage" class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
           <div class="header-meta">
@@ -248,7 +249,6 @@ function handleChangePasswordSuccess() {
               </template>
             </template>
           </div>
-          <SystemStatusIndicator />
           <LanguageSelector />
           <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('login.changePassword') }}</button>
           <button class="btn btn-ghost btn-sm" @click="logout">{{ t('app.logout') }}</button>
@@ -349,6 +349,29 @@ function handleChangePasswordSuccess() {
   flex: 1;
   padding: 8px 8px 12px;
   overflow-y: auto;
+  /* Slim themed scrollbar — the default browser scrollbar is glaringly
+   * wide inside the 64px collapsed sidebar. Firefox uses the longhand
+   * `scrollbar-*` properties; WebKit/Blink need the pseudo-elements. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99, 102, 241, 0.4) transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.4);
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.75);
 }
 
 .nav-primary {
