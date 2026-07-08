@@ -271,36 +271,6 @@ function handleTaskClick(taskId: string) {
           </el-table>
         </el-card>
       </el-col>
-      <el-col :span="12">
-        <el-card shadow="hover">
-          <template #header>
-            <span>{{ t('sessions.stats.topTasks') }}</span>
-          </template>
-          <el-table :data="data?.top_tasks || []" style="width: 100%" max-height="300">
-            <el-table-column prop="task_id" :label="t('sessions.stats.taskId')" min-width="120">
-              <template #default="{ row }">
-                <el-link type="primary" @click="handleTaskClick(row.task_id)">
-                  {{ row.task_id }}
-                </el-link>
-              </template>
-            </el-table-column>
-            <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
-            <el-table-column prop="total_cost" :label="t('sessions.stats.totalCost')" width="100" align="right">
-              <template #default="{ row }">
-                ${{ row.total_cost.toFixed(2) }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="90" align="center">
-              <template #default="{ row }">
-                <el-tag v-if="row.avg_health !== null && row.avg_health !== undefined" :type="healthScoreColor(row.avg_health)" size="small">
-                  {{ row.avg_health.toFixed(1) }}/10
-                </el-tag>
-                <span v-else>—</span>
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-card>
-      </el-col>
     </el-row>
     </div>
   </div>
