@@ -47,6 +47,47 @@ export interface SessionCompareData {
   context_window: number
   model_used: string
   msg_count: number
+  /** Per-turn three-stage (original/compressed/secured) view, each carrying
+   *  send + receive. Added 2026-07-08 for the session detail turns panel. */
+  turns?: TurnView[]
+  /** Session-level (not per-turn) multi-dimensional tags, projected from
+   *  SessionState v6 (security/compliance/pii/approval) + session_summaries
+   *  (task/client/llm/topic/intent/quality). Added 2026-07-09. */
+  session_tags?: SessionTagView[]
+}
+
+/** One row of the session_tags table (session-level tag). */
+export interface SessionTagView {
+  tag_key: string
+  tag_value: string
+  tag_source: string
+  confidence: number
+}
+
+/** One direction (send/receive) of a single pipeline stage for a turn. */
+export interface TurnStage {
+  send: string
+  receive: string
+  tokens: number
+  /** Compressed span start turn (1-based), only on Compressed stage. */
+  range_start?: number
+  /** Compressed span end turn (1-based), only on Compressed stage. */
+  range_end?: number
+  /** Security transforms applied (pii_strip, strip_tools, audit:n, ...). */
+  applied_tags?: string[]
+}
+
+/** One request round across the three-stage pipeline. Stages share the
+ *  same turn index so the UI can align them in three columns. */
+export interface TurnView {
+  turn: number
+  request_id: string
+  ts: string
+  strategy?: string
+  summary_marker?: string
+  original: TurnStage
+  compressed: TurnStage
+  secured: TurnStage
 }
 
 export interface HandoffRequest {

@@ -26,6 +26,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
@@ -82,6 +84,9 @@ type ApprovalIntegrationDeps struct {
 	AuditBus        *eventbus.MemoryBus
 	Notifier        sessionaudithook.ApprovalNotifier
 	ApprovalTimeout time.Duration
+	// Pool 用于构造 SessionStateProjector（把 v6 审计状态投影到 session_tags）。
+	// 可为 nil：投影禁用（默认），不影响审批流程本身。
+	Pool *pgxpool.Pool
 }
 
 // ApprovalIntegrationResult 包含创建的所有审批组件。
@@ -125,6 +130,14 @@ func InitializeApprovalIntegration(deps *ApprovalIntegrationDeps) (*ApprovalInte
 	result := &ApprovalIntegrationResult{}
 
 	result.CacheUpdateHook = sessionaudithook.NewCacheUpdateHook(deps.SessionCache)
+	// 注入 SessionStateProjector（统一打标层）：当 CacheUpdateHook 把 v6 审计
+	// 状态写入 SessionCache 后，顺带投影到 session_tags，让安全/合规/审批结论
+	// 跨模块可读。Pool 为 nil 时禁用（默认）。
+	if deps.Pool != nil {
+		proj := analysis.NewSessionStateProjector(analysis.NewPoolDB(deps.Pool), nil)
+		result.CacheUpdateHook.SetStateProjector(proj)
+		slog.Info("approval integration: CacheUpdateHook state projector wired")
+	}
 	slog.Info("approval integration: CacheUpdateHook created")
 
 	result.ApprovalHook = sessionaudithook.NewApprovalHook(

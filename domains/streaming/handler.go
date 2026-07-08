@@ -2079,6 +2079,23 @@ func (h *ChatHandler) serveWithExecutor(
 					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
 					go h.injectFollowUpRequest(followUpCtx, gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action)
 				}
+				// Apply ModifiedBody (e.g. output-compliance redaction).
+				//
+				// NOTE (2026-07-09): for the historical non-stream path the bytes
+				// are already written to the client inside executor.Execute, so
+				// this rewrite takes effect for downstream telemetry, the request
+				// log, the session-cache, and any buffered/pending-store path —
+				// NOT a retroactive client rewrite. Stream-end redaction is
+				// applied at write-time via the transform pipeline; this metadata
+				// path ensures the persisted/observed body matches what policy
+				// intended (so pii_stripped tagging + session_tags stay accurate).
+				if len(interceptResult.ModifiedBody) > 0 && result != nil {
+					result.ResponseBody = interceptResult.ModifiedBody
+					if interceptResult.Metadata != nil {
+						slog.Info("response_interceptor_modified_body",
+							"session_id", gwSessionID, "action", interceptResult.Action)
+					}
+				}
 			}
 		}
 	}
