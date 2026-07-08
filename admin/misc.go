@@ -332,7 +332,13 @@ func deploySeqFileCandidates() []string {
 }
 
 func parseVersionString(raw string) map[string]any {
-	parts := strings.SplitN(raw, "-", 3)
+	// Version file layout: <semver>-<git-sha>-<date>-<build-seq>
+	//   e.g. "2.4.1-9cc007b3-20260708-953"
+	// SplitN with -1 keeps the trailing segments so the build-seq is
+	// preserved on the date field. Earlier SplitN(_, _, 3) clobbered
+	// the build-seq into build_time, which both corrupted the date
+	// display and made the version parsing brittle.
+	parts := strings.Split(raw, "-")
 	version := parts[0]
 	gitSHA := ""
 	buildDate := ""
@@ -340,7 +346,15 @@ func parseVersionString(raw string) map[string]any {
 		gitSHA = parts[1]
 	}
 	if len(parts) > 2 {
-		buildDate = parts[2]
+		// The date may be 8 digits (YYYYMMDD) or 4-2-2 with dashes
+		// like "2026-07-08". If there are 4+ parts, the build-seq
+		// is the trailing numeric segment and the date is everything
+		// in between.
+		if len(parts) >= 4 {
+			buildDate = strings.Join(parts[2:len(parts)-1], "-")
+		} else {
+			buildDate = parts[2]
+		}
 	}
 	if envSHA := strings.TrimSpace(os.Getenv("GIT_SHA")); envSHA != "" {
 		gitSHA = envSHA
