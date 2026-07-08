@@ -111,6 +111,55 @@ const (
 	idleThresholdSeconds     = 60 // 1 minute
 )
 
+// normalizeModelKey returns a case-insensitive, whitespace-trimmed
+// canonical key for use in Redis dimension queues. Without this, the
+// upstream pipeline may emit the same logical model with mixed
+// casing (e.g. "MiniMax-M3" vs "minimax-m3") and end up split into
+// separate Redis queues, which in turn shows up as duplicate lanes
+// on the live request swim lane.
+//
+// The conversion is intentionally conservative:
+//   - trim leading/trailing whitespace
+//   - collapse internal whitespace runs to a single space
+//   - fold all characters to lower case (ASCII + Unicode via ToLower)
+//   - preserve non-alphanumeric characters so slashes / dashes / dots
+//     in model IDs are still distinguished ("gpt-4o" vs "gpt/4o")
+//
+// The original case is preserved in the rendered lane label; only
+// the Redis key is lower-cased so cross-case requests aggregate.
+func normalizeModelKey(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Collapse internal whitespace runs to a single space (defensive;
+	// upstream callers already strip, but a stray \n would otherwise
+	// create a different queue key).
+	s = collapseWhitespace(s)
+	return strings.ToLower(s)
+}
+
+// collapseWhitespace replaces runs of Unicode whitespace with a
+// single ASCII space. Kept private to this file because it is only
+// meaningful in the context of Redis dimension key normalisation.
+func collapseWhitespace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevSpace := false
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\v' || r == '\f' {
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevSpace = false
+	}
+	return b.String()
+}
+
 // NewLiveStreamRedisStore constructs a store. Safe to pass nil client
 // (the store becomes a no-op).
 func NewLiveStreamRedisStore(rdb *redis.Client) *LiveStreamRedisStore {
@@ -184,10 +233,14 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	}
 	// Use CanonicalName for model dimension activity keys when available.
 	// This ensures idle markers generated from these keys use the standard
-	// model name, matching the aggregation logic in liveStreamDimensionKey.
-	// Without this, idle markers for the same canonical model from different
-	// credentials (with different outbound names) would land in separate lanes.
-	modelActivityKey := emptyAs(req.CanonicalName, req.Model)
+	// Normalise the model name so the activity key and the idle-marker
+	// key are guaranteed to use the same form as the queue / lane key
+	// in liveStreamDimensionKey. Without this, the same model under
+	// mixed casing (e.g. "MiniMax-M3" vs "minimax-m3") would create
+	// two separate activity keys, so the idle scanner would never
+	// recognise them as the same lane and would emit one idle marker
+	// per casing variant.
+	modelActivityKey := normalizeModelKey(emptyAs(req.CanonicalName, req.Model))
 	if modelActivityKey != "" {
 		pipe.Set(ctx, liveStreamActivityKey("", "model", modelActivityKey), activityUnix, liveStreamTTL)
 		pipe.Set(ctx, liveStreamActivityKey(tenantID, "model", modelActivityKey), activityUnix, liveStreamTTL)
@@ -246,7 +299,13 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 	// matching the aggregation logic in liveStreamDimensionKey. This ensures
 	// a request is placed in the same queue it will be grouped into during
 	// lane building, preventing requests from appearing in wrong lanes.
-	modelKey := emptyAs(req.CanonicalName, req.Model)
+	//
+	// Case-insensitive aggregation: upstream callers (probe / replay) can
+	// emit the same logical model with mixed casing (e.g. "MiniMax-M3" and
+	// "minimax-m3"). We normalise to a lower-case trimmed form BEFORE
+	// composing the Redis key so both spellings land in the same ZSET,
+	// while the original casing is preserved in the rendered lane label.
+	modelKey := normalizeModelKey(emptyAs(req.CanonicalName, req.Model))
 	if modelKey != "" && modelKey != "unknown" {
 		keys = append(keys,
 			liveStreamDimPrefix+"model:"+modelKey,
@@ -526,16 +585,23 @@ func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 		// Use CanonicalName for aggregation so the same model from different
 		// credentials (with different outbound names) aggregates into one lane.
 		// Fallback to Model for backward compatibility when CanonicalName is empty.
+		//
+		// Case-insensitive: canonical name and outbound model may differ in
+		// casing across credentials ("MiniMax-M3" vs "minimax-m3"); we fold
+		// to a lower-case trimmed form so both spellings fall into the
+		// same lane. The original case is preserved in the rendered label
+		// because lane display goes through the canonical name field, not
+		// this dimension key.
 		if req.Type == "idle_marker" {
 			return ""
 		}
 		if req.CanonicalName != "" {
-			return req.CanonicalName
+			return normalizeModelKey(req.CanonicalName)
 		}
 		if req.Model == "" {
 			return "" // Skip this dimension if no value
 		}
-		return req.Model
+		return normalizeModelKey(req.Model)
 	default:
 		return ""
 	}
