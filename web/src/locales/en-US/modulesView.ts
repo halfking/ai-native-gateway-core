@@ -59,6 +59,8 @@ export default {
     stepsTitle: 'Setup steps',
     enabledStatus: 'Integration enabled',
     disabledHint: 'Integration disabled — please enable the module first',
+    prerequisitesTitle: 'Prerequisites',
+    prerequisitesHint: 'Please enable the prerequisite modules above before enabling this module',
     feishuSteps: [
       'Create a custom bot in the Feishu open platform',
       'Copy the webhook URL and paste it into the config below',
@@ -66,6 +68,16 @@ export default {
       'Turn on the "Feishu bot integration" switch',
     ],
     feishuBotIntegration: 'Feishu bot integration',
+    wechatSteps: [
+      'Create a self-built app in the WeCom admin console',
+      '(Optional) Configure callback URL and Token under "Receive Messages"',
+      'Copy the CorpID, AgentID, and Secret into the config below',
+      '(Optional) Configure the group robot Webhook URL for group message push',
+      '(Optional) Configure EncodingAESKey to enable callback encryption',
+      'Turn on the "WeChat bot integration" switch',
+      'Ensure prerequisite modules (compression, injection detection, session cache, session audit) are all enabled',
+    ],
+    wechatBotIntegration: 'WeChat bot integration',
   },
 
   empty: {

@@ -55,17 +55,29 @@ export default {
   },
 
   integration: {
-    docsLabel: 'Docs: ',
-    stepsTitle: 'Setup steps',
-    enabledStatus: 'Integration enabled',
-    disabledHint: 'Integration disabled — please enable the module first',
+    docsLabel: 'الوثائق: ',
+    stepsTitle: 'خطوات الإعداد',
+    enabledStatus: ' التكامل مُفعّل',
+    disabledHint: 'التكامل معطّل — يرجى تفعيل الوحدة أولاً',
+    prerequisitesTitle: 'المتطلبات الأساسية',
+    prerequisitesHint: 'يرجى تفعيل الوحدات الأساسية أعلاه قبل تفعيل هذه الوحدة',
     feishuSteps: [
-      'Create a custom bot in the Feishu open platform',
-      'Copy the webhook URL and paste it into the config below',
-      '(Optional) Configure the signature verification token',
-      'Turn on the "Feishu bot integration" switch',
+      'أنشئ روبوتًا مخصصًا في منصة Feishu المفتوحة',
+      'انسخ عنوان URL الخاص بالـ webhook والصقه في الإعدادات',
+      '(اختياري) قم بتكوين رمز التحقق من التوقيع',
+      'قم بتفعيل مفتاح "تكامل روبوت Feishu"',
     ],
-    feishuBotIntegration: 'Feishu bot integration',
+    feishuBotIntegration: 'تكامل روبوت Feishu',
+    wechatSteps: [
+      'أنشئ تطبيقًا في وحدة تحكم إدارة WeCom',
+      '(اختياري) قم بتكوين عنوان URL للاستدعاء والرمز في "استقبال الرسائل"',
+      'انسخ CorpID و AgentID و Secret إلى الإعدادات',
+      '(اختياري) قم بتكوين عنوان URL الخاص بـ webhook لروبوت المجموعة',
+      '(اختياري) قم بتكوين EncodingAESKey لتشفير الاستدعاء',
+      'قم بتفعيل مفتاح "تكامل روبوت WeChat"',
+      'تأكد من تفعيل جميع الوحدات الأساسية',
+    ],
+    wechatBotIntegration: 'تكامل روبوت WeChat',
   },
 
   empty: {
