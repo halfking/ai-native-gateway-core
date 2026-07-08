@@ -26,6 +26,12 @@
   "blocked": {
     "other": "請求被安全策略封鎖：{{.Reason}}"
   },
+  "content_filter": {
+    "other": "您的請求被內容審核系統攔截（原因：{{.Reason}}）。請修改請求內容後重試。"
+  },
+  "content_filter_hint": {
+    "other": "請檢查輸入是否包含敏感或違禁內容後重試。同一請求在本模型的所有供應商上都會被拒絕。"
+  },
   "no_candidate": {
     "other": "沒有可用於模型「{{.Model}}」的供應商"
   },

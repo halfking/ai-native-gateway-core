@@ -1200,6 +1200,36 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			continue
 		}
 
+		// Content moderation / safety-policy rejection (MiniMax 422
+		// "new_sensitive (1026)", OpenAI "content_filter", etc).
+		// Content-determined: the same prompt is rejected on every
+		// sibling credential of the same provider, so short-circuit
+		// the candidate loop — do NOT waste upstream quota retrying.
+		// Skip all side effects (circuit / sticky / state) — the
+		// credential is healthy, the content is the problem. The
+		// handler renders a 400 with the upstream reason + an
+		// actionable hint via KindContentFilter.
+		if kind, ok := classifyContentFilterError(execErr); ok {
+			slog.Info("executor: content_filter rejection, short-circuiting candidate loop",
+				"kind", kind,
+				"credential_id", cand.CredentialID,
+				"provider_id", cand.ProviderID,
+				"raw_model", cand.RawModel,
+				"tried", tried,
+				"err", execErr.Error(),
+			)
+			lastErr = execErr
+			lastKind = kind
+			attempts = append(attempts, AttemptRecord{
+				ProviderID:   cand.ProviderID,
+				CredentialID: cand.CredentialID,
+				RawModel:     cand.RawModel,
+				Kind:         kind,
+				Reason:       execErr.Error(),
+			})
+			break // short-circuit: content determined, no retry helps
+		}
+
 		if sie, ok := execErr.(*streamInterruptedError); ok {
 			kind := sie.kind
 			if kind == "" {
@@ -2743,6 +2773,22 @@ type contextLengthExhaustedError struct {
 
 func (e *contextLengthExhaustedError) Error() string {
 	return fmt.Sprintf("context_length_exhausted: %s (cred=%d, status=%d)", e.rawModel, e.credentialID, e.status)
+}
+
+// classifyContentFilterError derives KindContentFilter from an executor
+// error. Returns (kind, true) when the error is a content-moderation /
+// safety-policy rejection that should short-circuit the candidate loop.
+func classifyContentFilterError(err error) (errorsx.ErrorKind, bool) {
+	var kind errorsx.ErrorKind
+	if ue, ok := err.(*upstreampkg.Error); ok && ue.Kind != "" {
+		kind = ue.Kind
+	} else {
+		kind = errorsx.ClassifyError(err, nil)
+	}
+	if errorsx.IsContentFilter(kind) {
+		return kind, true
+	}
+	return "", false
 }
 
 func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {

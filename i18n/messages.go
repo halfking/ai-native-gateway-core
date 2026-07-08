@@ -32,6 +32,10 @@ const (
 	// Security policy.
 	MsgBlocked = "blocked" // "Request blocked by security policy"
 
+	// Content moderation.
+	MsgContentFilter     = "content_filter"      // "Your request was rejected by the content moderation system (reason: {{.Reason}}). Please rephrase your input and retry."
+	MsgContentFilterHint = "content_filter_hint" // "Check your input for sensitive or prohibited content and try again."
+
 	// Model / provider selection.
 	MsgNoCandidate   = "no_candidate"    // "No available provider for model '{{.Model}}'"
 	MsgMetaToolError = "meta_tool_error" // "Meta-tool processing failed"

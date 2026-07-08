@@ -26,6 +26,12 @@
   "blocked": {
     "other": "Demande bloquée par la politique de sécurité : {{.Reason}}"
   },
+  "content_filter": {
+    "other": "Votre demande a été rejetée par le système de modération de contenu (raison : {{.Reason}}). Veuillez modifier votre entrée et réessayer."
+  },
+  "content_filter_hint": {
+    "other": "Vérifiez votre entrée pour tout contenu sensible ou interdit et réessayez. La même demande sera rejetée par tous les fournisseurs de ce modèle."
+  },
   "no_candidate": {
     "other": "Aucun fournisseur disponible pour le modèle « {{.Model}} »"
   },
