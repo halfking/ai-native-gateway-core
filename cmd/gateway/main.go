@@ -2046,6 +2046,16 @@ func main() {
 		mux.HandleFunc("/api/admin/session-handoff", wrapAdmin(handoffAPI.HandleHandoff))
 		slog.Info("Phase 3.5 session compare & handoff API enabled (/api/admin/session-compare, /session-handoff)")
 
+		// 会话迁移方案：Session Export / Import / Pack API
+		// GET  /api/admin/session-export?id=<gw_session_id>&tenant=<t>      导出迁移包
+		// POST /api/admin/session-export/import?tenant=<t>                  导入迁移包到 staging
+		// GET  /api/admin/session-export/pack?id=<pack_id>&tenant=<t>       拉取已导入的迁移包
+		exportAPI := admin.NewSessionExportAPI(dbConn.Pool())
+		mux.HandleFunc("/api/admin/session-export", wrapAdmin(exportAPI.ServeHTTP))
+		mux.HandleFunc("/api/admin/session-export/import", wrapAdmin(exportAPI.ServeHTTP))
+		mux.HandleFunc("/api/admin/session-export/pack", wrapAdmin(exportAPI.ServeHTTP))
+		slog.Info("session migration API enabled (/api/admin/session-export{,/import,/pack})")
+
 		// Phase 3.5: Session List & Detail API
 		// NOTE (2026-07-06): removed duplicate registration here. admin/handler.go
 		// already registers /api/admin/sessions via handleListSessions + handleSessionSubrouter
