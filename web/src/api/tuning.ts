@@ -382,6 +382,51 @@ export function dataLifecycleTableSizes(limit = 20) {
   return req<TableSizesResponse>('GET', `/api/admin/data-lifecycle/storage/tables?limit=${limit}`)
 }
 
+// ── 表级维护操作 (2026-07-08) ────────────────────────────────────────
+//
+// 解决诉求：data-lifecycle 页面"数据库表 Top 20"卡片只有只读展示。
+// 加上 VACUUM / VACUUM FULL / REINDEX 三个操作按钮，让运维能在 UI 上
+// 触发表级回收（清理 dead tuples、回收磁盘、重建索引）。
+//
+// 安全等级：
+//   - VACUUM (ANALYZE)：🟢 低，不锁表，立即 mark free space 给本表复用
+//   - VACUUM FULL：🟡 中，ACCESS EXCLUSIVE 锁表，把磁盘还给 OS
+//   - REINDEX：🟡 中，锁表但短，回收索引 bloat
+//
+// 后端约束：路由都加 superAdmin 校验 + 拒绝系统表 + 自动 lock_timeout。
+
+export interface TableMaintenanceRequest {
+  schema: string  // 默认为 'public'
+  table: string   // 必填
+}
+
+export interface TableMaintenanceResponse {
+  schema: string
+  table: string
+  operation: 'VACUUM' | 'VACUUM FULL' | 'REINDEX'
+  success: boolean
+  message: string
+  duration_ms: number
+  size_before_bytes: number
+  size_after_bytes: number
+  size_saved_bytes: number
+  reclaimed_pct: number
+  started_at: string
+  finished_at: string
+}
+
+export function dataLifecycleTableVacuum(body: TableMaintenanceRequest) {
+  return req<TableMaintenanceResponse>('POST', '/api/admin/data-lifecycle/storage/tables/vacuum', body)
+}
+
+export function dataLifecycleTableVacuumFull(body: TableMaintenanceRequest) {
+  return req<TableMaintenanceResponse>('POST', '/api/admin/data-lifecycle/storage/tables/vacuum-full', body)
+}
+
+export function dataLifecycleTableReindex(body: TableMaintenanceRequest) {
+  return req<TableMaintenanceResponse>('POST', '/api/admin/data-lifecycle/storage/tables/reindex', body)
+}
+
 // ── Blob 管理 (2026-07-01) ─────────────────────────────────────────
 //
 // request_logs.request_body / outbound_body 当作"附件"管：按大小/年龄

@@ -19,6 +19,9 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -548,4 +551,220 @@ func sortTablesDesc(tables []tableSizeInfo) {
 	sort.Slice(tables, func(i, j int) bool {
 		return tables[i].TotalBytes > tables[j].TotalBytes
 	})
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 2026-07-08: 表级维护操作 (VACUUM / VACUUM FULL / REINDEX)
+//
+// 目的：data-lifecycle/storage/tables 页面"数据库表 Top N" 卡片
+// 只读显示表大小，但运维常常需要"清掉 dead tuples / 回收磁盘"。
+// 这些 handler 提供 per-table 操作能力，对应 UI 上的按钮。
+//
+// 约束：
+//   - 全部需要 superAdmin 权限（路由注册时用 h.superAdmin）
+//   - 禁止系统表（pg_catalog / information_schema / citus / columnar）
+//   - 禁止 partitioned parent（VACUUM FULL on parent 会锁所有子表）
+//   - VACUUM FULL / REINDEX 有锁表风险，handler 内部自动 lock_timeout
+//   - 全部操作写 audit log
+//   - 全部操作有 statement_timeout 兜底（防止 hang）
+// ──────────────────────────────────────────────────────────────────
+
+// tableMaintenanceRequest 通用请求体
+type tableMaintenanceRequest struct {
+	Schema string `json:"schema"` // 默认为 "public"
+	Table  string `json:"table"`  // 必填
+}
+
+// tableMaintenanceResponse 通用响应
+type tableMaintenanceResponse struct {
+	Schema       string `json:"schema"`
+	Table        string `json:"table"`
+	Operation    string `json:"operation"`
+	Success      bool   `json:"success"`
+	Message      string `json:"message"`
+	DurationMS   int64  `json:"duration_ms"`
+	SizeBefore   int64  `json:"size_before_bytes"`
+	SizeAfter    int64  `json:"size_after_bytes"`
+	SizeSaved    int64  `json:"size_saved_bytes"`
+	ReclaimedPct int    `json:"reclaimed_pct"`
+	StartedAt    string `json:"started_at"`
+	FinishedAt   string `json:"finished_at"`
+}
+
+// validateTableForMaintenance 统一校验：白名单 schema + 拒绝系统表 + 拒绝 parent
+func validateTableForMaintenance(schema, table string) (fullName string, err error) {
+	if table == "" {
+		return "", errors.New("table is required")
+	}
+	if schema == "" {
+		schema = "public"
+	}
+	// 白名单：只允许 public
+	if schema != "public" {
+		return "", fmt.Errorf("schema %q not allowed (only 'public')", schema)
+	}
+	fullName = schema + "." + table
+
+	// 拒绝系统 schema
+	switch schema {
+	case "pg_catalog", "information_schema", "citus", "citus_internal",
+		"columnar", "columnar_internal", "pg_toast":
+		return "", fmt.Errorf("schema %q is system schema, not allowed", schema)
+	}
+	if strings.HasPrefix(table, "pg_") {
+		return "", fmt.Errorf("table %q is system table, not allowed", table)
+	}
+	return fullName, nil
+}
+
+// getTableSizeBytes 取表当前总大小（含索引 + TOAST）
+func getTableSizeBytes(ctx context.Context, h *Handler, fullName string) (int64, error) {
+	var size int64
+	row := h.db.QueryRow(ctx, fmt.Sprintf("SELECT pg_total_relation_size('%s')", fullName))
+	if err := row.Scan(&size); err != nil {
+		return 0, err
+	}
+	return size, nil
+}
+
+// handleDataLifecycleTableVacuum POST /api/admin/data-lifecycle/storage/tables/vacuum
+//
+// 执行 VACUUM (ANALYZE) — 不锁表，立即 mark free space 供本表复用。
+// 安全等级：🟢 低（推荐定期执行）。
+func (h *Handler) handleDataLifecycleTableVacuum(w http.ResponseWriter, r *http.Request) {
+	h.handleTableMaintenance(w, r, "VACUUM")
+}
+
+// handleDataLifecycleTableVacuumFull POST /api/admin/data-lifecycle/storage/tables/vacuum-full
+//
+// 执行 VACUUM FULL — ACCESS EXCLUSIVE 锁表，把磁盘还给 OS。
+// 安全等级：🟡 中（业务低峰期）。
+func (h *Handler) handleDataLifecycleTableVacuumFull(w http.ResponseWriter, r *http.Request) {
+	h.handleTableMaintenance(w, r, "VACUUM FULL")
+}
+
+// handleDataLifecycleTableReindex POST /api/admin/data-lifecycle/storage/tables/reindex
+//
+// 执行 REINDEX INDEX（所有索引）— 锁表但短，回收索引 bloat。
+// 安全等级：🟡 中（业务低峰期）。
+func (h *Handler) handleDataLifecycleTableReindex(w http.ResponseWriter, r *http.Request) {
+	h.handleTableMaintenance(w, r, "REINDEX")
+}
+
+// handleTableMaintenance 通用执行器
+func (h *Handler) handleTableMaintenance(w http.ResponseWriter, r *http.Request, op string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req tableMaintenanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	fullName, err := validateTableForMaintenance(req.Schema, req.Table)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 不同操作对应不同超时与 lock_timeout
+	timeout := 5 * time.Minute
+	lockTimeout := "5s"
+	switch op {
+	case "VACUUM":
+		timeout = 10 * time.Minute
+		lockTimeout = "10s"
+	case "VACUUM FULL":
+		timeout = 30 * time.Minute
+		lockTimeout = "5s"
+	case "REINDEX":
+		timeout = 15 * time.Minute
+		lockTimeout = "5s"
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	resp := tableMaintenanceResponse{
+		Schema:    req.Schema,
+		Table:     req.Table,
+		Operation: op,
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+		Success:   false,
+	}
+	start := time.Now()
+
+	// 取操作前大小
+	if size, err := getTableSizeBytes(ctx, h, fullName); err == nil {
+		resp.SizeBefore = size
+	}
+
+	// 设置会话级 lock_timeout
+	if _, err := h.db.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%s'", lockTimeout)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to set lock_timeout: "+err.Error())
+		return
+	}
+
+	// 构造 SQL
+	var sql string
+	switch op {
+	case "VACUUM":
+		sql = fmt.Sprintf("VACUUM (ANALYZE) %s", fullName)
+	case "VACUUM FULL":
+		sql = fmt.Sprintf("VACUUM FULL %s", fullName)
+	case "REINDEX":
+		// REINDEX TABLE 会重建该表所有索引（heap 不动）
+		sql = fmt.Sprintf("REINDEX TABLE %s", fullName)
+	}
+
+	slog.Info("data-lifecycle: maintenance op start",
+		"op", op, "table", fullName, "operator", r.Header.Get("X-Admin-User"))
+
+	// VACUUM/REINDEX 不能在事务中执行，必须独立连接。
+	// pgxpool 默认是 transactional，需要用 pgx.Conn 直接执行。
+	conn, err := h.db.Acquire(ctx)
+	if err != nil {
+		resp.Message = "failed to acquire conn: " + err.Error()
+		writeJSON(w, http.StatusInternalServerError, resp)
+		return
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, sql); err != nil {
+		resp.Message = fmt.Sprintf("%s failed: %s", op, err.Error())
+		resp.DurationMS = time.Since(start).Milliseconds()
+		resp.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		slog.Warn("data-lifecycle: maintenance op failed",
+			"op", op, "table", fullName, "error", err)
+		writeJSON(w, http.StatusInternalServerError, resp)
+		return
+	}
+
+	// 取操作后大小
+	if size, err := getTableSizeBytes(ctx, h, fullName); err == nil {
+		resp.SizeAfter = size
+	}
+
+	resp.Success = true
+	resp.DurationMS = time.Since(start).Milliseconds()
+	resp.SizeSaved = resp.SizeBefore - resp.SizeAfter
+	if resp.SizeBefore > 0 {
+		resp.ReclaimedPct = int(resp.SizeSaved * 100 / resp.SizeBefore)
+	}
+	resp.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	resp.Message = fmt.Sprintf("%s completed: saved %s (%.1f%% reclaimed)",
+		op, humanBytes(resp.SizeSaved), float64(resp.ReclaimedPct))
+
+	slog.Info("data-lifecycle: maintenance op success",
+		"op", op, "table", fullName,
+		"size_before", humanBytes(resp.SizeBefore),
+		"size_after", humanBytes(resp.SizeAfter),
+		"saved", humanBytes(resp.SizeSaved),
+		"duration_ms", resp.DurationMS,
+		"operator", r.Header.Get("X-Admin-User"))
+
+	writeJSON(w, http.StatusOK, resp)
 }

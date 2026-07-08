@@ -155,9 +155,11 @@
     <div class="card tables-card">
       <div class="card-header">
         <h3 class="card-title">数据库表 Top {{ tables.length }}</h3>
-        <button class="btn btn-ghost btn-sm" @click="loadTables" :disabled="loadingTables">
-          {{ loadingTables ? '加载中…' : '刷新' }}
-        </button>
+        <div class="header-actions">
+          <button class="btn btn-ghost btn-sm" @click="loadTables" :disabled="loadingTables">
+            {{ loadingTables ? '加载中…' : '刷新' }}
+          </button>
+        </div>
       </div>
       <div class="tables-table-wrap">
         <table class="data-table">
@@ -170,6 +172,7 @@
               <th>TOAST</th>
               <th>占比</th>
               <th>分区</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -191,22 +194,116 @@
                 <span v-if="t.is_partitioned" class="pill warn">分区</span>
                 <span v-else class="pill dim">—</span>
               </td>
+              <td>
+                <div class="row-actions">
+                  <button
+                    class="btn btn-vacuum btn-xs"
+                    :disabled="busy[t.table] !== undefined"
+                    :title="`VACUUM (ANALYZE) ${t.table} — 不锁表，清理 dead tuples`"
+                    @click="confirmAndRun('VACUUM', t)"
+                  >🧹 VACUUM</button>
+                  <button
+                    class="btn btn-vacuum-full btn-xs"
+                    :disabled="busy[t.table] !== undefined"
+                    :title="`VACUUM FULL ${t.table} — 锁表，回收磁盘给 OS`"
+                    @click="confirmAndRun('VACUUM FULL', t)"
+                  >🗜 FULL</button>
+                  <button
+                    class="btn btn-reindex btn-xs"
+                    :disabled="busy[t.table] !== undefined"
+                    :title="`REINDEX TABLE ${t.table} — 锁表，回收索引 bloat`"
+                    @click="confirmAndRun('REINDEX', t)"
+                  >🔧 REINDEX</button>
+                </div>
+                <div v-if="busy[t.table]" class="row-status">
+                  <span class="spinner"></span>
+                  <span class="status-text">{{ busy[t.table] }}</span>
+                </div>
+                <div v-else-if="lastResult[t.table]" class="row-result" :class="lastResult[t.table]!.success ? 'ok' : 'err'">
+                  <span v-if="lastResult[t.table]!.success">
+                    ✓ {{ lastResult[t.table]!.operation }}: 释放 {{ lastResult[t.table]!.size_saved_human }} ({{ lastResult[t.table]!.reclaimed_pct }}%, {{ lastResult[t.table]!.duration_ms }}ms)
+                  </span>
+                  <span v-else>
+                    ✗ {{ lastResult[t.table]!.operation }} 失败: {{ lastResult[t.table]!.message }}
+                  </span>
+                </div>
+              </td>
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- 风险确认弹窗 -->
+    <div v-if="confirmOp" class="modal-backdrop" @click.self="cancelConfirm">
+      <div class="modal">
+        <h3 class="modal-title">
+          <span v-if="confirmOp.op === 'VACUUM'">🧹 确认执行 VACUUM</span>
+          <span v-else-if="confirmOp.op === 'VACUUM FULL'">🗜 确认执行 VACUUM FULL</span>
+          <span v-else>🔧 确认执行 REINDEX</span>
+        </h3>
+        <div class="modal-body">
+          <p>
+            将对 <code class="tbl-code">{{ confirmOp.t.schema }}.{{ confirmOp.t.table }}</code> 执行
+            <strong>{{ confirmOp.op }}</strong>。
+          </p>
+          <div class="modal-info">
+            <div><strong>当前大小:</strong> {{ confirmOp.t.total_human }}</div>
+            <div><strong>行数:</strong> {{ formatNumber(confirmOp.t.rows) }}</div>
+            <div><strong>分区:</strong> {{ confirmOp.t.is_partitioned ? '是（⚠️ 锁表影响所有子表）' : '否' }}</div>
+          </div>
+          <div class="modal-warn" v-if="confirmOp.op === 'VACUUM FULL'">
+            ⚠️ <strong>VACUUM FULL</strong> 会持有 ACCESS EXCLUSIVE 锁，期间<strong>禁止读写</strong>该表。
+            业务高峰期执行会导致请求堆积。建议在<strong>凌晨低峰期</strong>执行。
+          </div>
+          <div class="modal-warn" v-else-if="confirmOp.op === 'REINDEX'">
+            ⚠️ <strong>REINDEX</strong> 会持有锁表时间 = 索引大小 / 磁盘 IO 速度。
+            索引越大耗时越长。本表索引合计 {{ humanBytes(confirmOp.t.index_bytes) }}，预计数秒至数分钟。
+          </div>
+          <div class="modal-info-2" v-else>
+            ✓ <strong>VACUUM</strong> 不锁表，运行时长 = 表大小。可安全执行。
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" @click="cancelConfirm">取消</button>
+          <button
+            class="btn"
+            :class="confirmOp.op === 'VACUUM' ? 'btn-vacuum' : confirmOp.op === 'VACUUM FULL' ? 'btn-vacuum-full' : 'btn-reindex'"
+            @click="executeOp"
+          >确认执行 {{ confirmOp.op }}</button>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, reactive } from 'vue'
+import { ElMessage } from 'element-plus'
 import { localeRef } from '../../i18n'
-import { dataLifecycleStorage, dataLifecycleTableSizes, type StorageOverview, type TableSizeInfo } from '../../api'
+import {
+  dataLifecycleStorage,
+  dataLifecycleTableSizes,
+  dataLifecycleTableVacuum,
+  dataLifecycleTableVacuumFull,
+  dataLifecycleTableReindex,
+  type StorageOverview,
+  type TableSizeInfo,
+  type TableMaintenanceRequest,
+  type TableMaintenanceResponse,
+} from '../../api'
 
 const data = ref<StorageOverview | null>(null)
 const tables = ref<TableSizeInfo[]>([])
 const loadingTables = ref(false)
+
+// ── 表级维护操作状态 ─────────────────────────────────────
+// busy: 每张表正在执行的操作名（用于 spinner 展示 + 按钮 disable）
+const busy = reactive<Record<string, string>>({})
+// lastResult: 每张表最后一次操作的结果（成功/失败 + 节省空间）
+const lastResult = reactive<Record<string, (TableMaintenanceResponse & { size_saved_human: string }) | null>>({})
+// confirmOp: 风险确认弹窗的当前目标
+const confirmOp = ref<{ op: 'VACUUM' | 'VACUUM FULL' | 'REINDEX'; t: TableSizeInfo } | null>(null)
 
 // 列存占 DB 的比例
 const columnarPctOfDB = computed(() => {
@@ -216,6 +313,61 @@ const columnarPctOfDB = computed(() => {
   if (!db || db <= 0) return 0
   return ((col / db) * 100).toFixed(1)
 })
+
+// ── 表级维护操作 handler ─────────────────────────────────
+function confirmAndRun(op: 'VACUUM' | 'VACUUM FULL' | 'REINDEX', t: TableSizeInfo) {
+  confirmOp.value = { op, t }
+}
+
+function cancelConfirm() {
+  confirmOp.value = null
+}
+
+async function executeOp() {
+  if (!confirmOp.value) return
+  const { op, t } = confirmOp.value
+  confirmOp.value = null
+
+  const body: TableMaintenanceRequest = { schema: t.schema, table: t.table }
+  busy[t.table] = op === 'VACUUM FULL' ? 'VACUUM FULL 中…' : `${op} 中…`
+
+  try {
+    let resp: TableMaintenanceResponse
+    if (op === 'VACUUM') {
+      resp = await dataLifecycleTableVacuum(body)
+    } else if (op === 'VACUUM FULL') {
+      resp = await dataLifecycleTableVacuumFull(body)
+    } else {
+      resp = await dataLifecycleTableReindex(body)
+    }
+    lastResult[t.table] = {
+      ...resp,
+      size_saved_human: humanBytes(resp.size_saved_bytes),
+    }
+    if (resp.success) {
+      ElMessage.success({
+        message: `${op} ${t.table} 完成 — 释放 ${humanBytes(resp.size_saved_bytes)} (${resp.reclaimed_pct}%)`,
+        duration: 5000,
+      })
+      // 刷新表格数据，反映新大小
+      await loadTables()
+    } else {
+      ElMessage.error({ message: `${op} 失败: ${resp.message}`, duration: 8000 })
+    }
+  } catch (e: any) {
+    const msg = e?.response?.data?.message || e?.message || String(e)
+    lastResult[t.table] = {
+      schema: t.schema, table: t.table, operation: op,
+      success: false, message: msg, duration_ms: 0,
+      size_before_bytes: 0, size_after_bytes: 0, size_saved_bytes: 0,
+      reclaimed_pct: 0, started_at: '', finished_at: '',
+      size_saved_human: '0 B',
+    }
+    ElMessage.error({ message: `${op} 失败: ${msg}`, duration: 8000 })
+  } finally {
+    delete busy[t.table]
+  }
+}
 
 async function load() {
   try {
@@ -534,5 +686,145 @@ function fmtNum(n: number) {
 @media (max-width: 800px) {
   .grid-2 { grid-template-columns: 1fr; }
   .local-logs-grid { grid-template-columns: 1fr; }
+}
+
+/* ── 表级维护操作（2026-07-08） ─────────────────────────── */
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+.row-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.btn-xs {
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+.btn-xs:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-vacuum {
+  background: #064e3b;
+  color: #6ee7b7;
+  border-color: #047857;
+}
+.btn-vacuum:hover:not(:disabled) {
+  background: #065f46;
+  border-color: #10b981;
+}
+.btn-vacuum-full {
+  background: #78350f;
+  color: #fcd34d;
+  border-color: #b45309;
+}
+.btn-vacuum-full:hover:not(:disabled) {
+  background: #92400e;
+  border-color: #d97706;
+}
+.btn-reindex {
+  background: #1e3a8a;
+  color: #93c5fd;
+  border-color: #1d4ed8;
+}
+.btn-reindex:hover:not(:disabled) {
+  background: #1e40af;
+  border-color: #2563eb;
+}
+.row-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #fbbf24;
+}
+.row-result {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.row-result.ok { color: #6ee7b7; }
+.row-result.err { color: #fca5a5; }
+.spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #fbbf24;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 风险确认弹窗 ────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 20px;
+}
+.modal {
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 540px;
+  width: 100%;
+  border: 1px solid #334155;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+.modal-title {
+  margin: 0 0 16px 0;
+  color: #e2e8f0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.modal-body p {
+  color: #cbd5e1;
+  margin: 0 0 12px 0;
+  line-height: 1.6;
+}
+.modal-info,
+.modal-info-2 {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 12px 0;
+  color: #cbd5e1;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.modal-info-2 { border-color: #047857; background: #052e23; }
+.modal-warn {
+  background: #451a03;
+  border: 1px solid #b45309;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 12px 0;
+  color: #fde68a;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.modal-warn strong { color: #fbbf24; }
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
 }
 </style>
