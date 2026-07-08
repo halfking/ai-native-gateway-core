@@ -335,20 +335,31 @@ graph TB
 
 ## 八、本地验证清单
 
-- [x] gateway 启动成功（`:8781`，DB + Redis 连接正常）
-- [x] dashboard 启动成功（`:5781`，CORS 配置正确）
-- [x] admin 登录（`admin/<ADMIN_PASSWORD_REDACTED>`）
-- [ ] 创建一个会话，触发敏感检测（待 browse-use 自动化测试）
-- [ ] 查看 session detail，验证顶部显示 `pii: stripped` 绿色 chip
-- [ ] 验证 `session_tags` 表包含投影的 security/pii/approval tags
+- [x] gateway 可单独干净启动（`:8783`，使用 `LLM_GATEWAY_LISTEN=:8783`）
+- [x] `GET /health` 返回 200
+- [x] dashboard dev server 可访问（vite 页面可打开）
+- [ ] admin 登录（`admin / <ADMIN_PASSWORD_REDACTED>`）
+- [ ] 登录后验证设置页与会话详情页
 
-**部署状态**：
-```bash
-# Gateway: http://localhost:8781 ✅
-# Dashboard: http://localhost:5781 ✅
-# DB: postgres@localhost:5432/llm_gateway ✅
-# Redis: localhost:6379 ✅
+### 本地验证阻塞说明（2026-07-09）
+
+在本地干净启动的 gateway 实例上，`/api/auth/token` 返回 **404**：
+
+```text
+POST /api/auth/token -> 404 Not Found
 ```
+
+已确认：
+- `admin/handler.go` 源码中**存在** `mux.HandleFunc("/api/auth/token", h.handleLogin)`
+- 但本地当前运行形态下，该控制面登录路由并未实际暴露出来
+- 因此，浏览器侧无法完成 `admin / <ADMIN_PASSWORD_REDACTED>` 登录，也就无法继续验证登录后页面（设置页、会话详情页）
+
+这不是本轮增强 1-4 引入的回归，而是**本地运行入口/构建形态**与预期控制面装配不一致导致的阻塞项。后续若要完成登录态 UI 验证，需要先修复本地控制面路由装配问题，或使用已知可登录的运行入口。
+
+**已完成的可验证项**：
+- 代码层：Go build / 相关包测试 / 前端类型检查均通过
+- 页面层：登录页可打开，增强 2/4 的前端代码已编译通过
+- 后端层：增强 1-4 的路由、类型、投影、write-time 接点均已落地
 
 ---
 
