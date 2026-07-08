@@ -55,17 +55,29 @@ export default {
   },
 
   integration: {
-    docsLabel: 'Docs: ',
-    stepsTitle: 'Setup steps',
-    enabledStatus: 'Integration enabled',
-    disabledHint: 'Integration disabled — please enable the module first',
+    docsLabel: '對接文件：',
+    stepsTitle: '配置步驟',
+    enabledStatus: '整合已啟用',
+    disabledHint: '整合未啟用 — 請先開啟此模組',
+    prerequisitesTitle: '前置模組',
+    prerequisitesHint: '請先啟用以上前置模組，再開啟此模組',
     feishuSteps: [
-      'Create a custom bot in the Feishu open platform',
-      'Copy the webhook URL and paste it into the config below',
-      '(Optional) Configure the signature verification token',
-      'Turn on the "Feishu bot integration" switch',
+      '在飛書開放平台建立自訂機器人',
+      '複製 Webhook URL 並貼上到下方設定中',
+      '（選填）設定簽章驗證權杖',
+      '開啟「飛書機器人整合」開關',
     ],
-    feishuBotIntegration: 'Feishu bot integration',
+    feishuBotIntegration: '飛書機器人整合',
+    wechatSteps: [
+      '在企業微信管理後台建立自建應用',
+      '（選填）在「接收訊息」中設定回呼 URL 和 Token',
+      '複製企業 CorpID、AgentID、Secret 填入下方設定',
+      '（選填）設定群機器人 Webhook URL 以使用群組訊息推送',
+      '（選填）設定 EncodingAESKey 以啟用回呼加密',
+      '開啟「微信機器人整合」開關',
+      '確保前置模組（壓縮管理、注入檢測、會話快取、會話稽核）均已啟用',
+    ],
+    wechatBotIntegration: '微信機器人整合',
   },
 
   empty: {

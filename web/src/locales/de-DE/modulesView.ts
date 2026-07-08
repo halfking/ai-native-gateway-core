@@ -55,17 +55,29 @@ export default {
   },
 
   integration: {
-    docsLabel: 'Docs: ',
-    stepsTitle: 'Setup steps',
-    enabledStatus: 'Integration enabled',
-    disabledHint: 'Integration disabled — please enable the module first',
+    docsLabel: 'Dokumentation: ',
+    stepsTitle: 'Einrichtungsschritte',
+    enabledStatus: 'Integration aktiviert',
+    disabledHint: 'Integration deaktiviert — bitte aktivieren Sie das Modul',
+    prerequisitesTitle: 'Voraussetzungen',
+    prerequisitesHint: 'Bitte aktivieren Sie die oben genannten Voraussetzungs-Module, bevor Sie dieses Modul aktivieren',
     feishuSteps: [
-      'Create a custom bot in the Feishu open platform',
-      'Copy the webhook URL and paste it into the config below',
-      '(Optional) Configure the signature verification token',
-      'Turn on the "Feishu bot integration" switch',
+      'Erstellen Sie einen benutzerdefinierten Bot in der Feishu-Plattform',
+      'Kopieren Sie die Webhook-URL und fügen Sie sie in die Konfiguration ein',
+      '(Optional) Konfigurieren Sie das Signatur-Verifizierungs-Token',
+      'Aktivieren Sie den "Feishu-Bot-Integration"-Schalter',
     ],
-    feishuBotIntegration: 'Feishu bot integration',
+    feishuBotIntegration: 'Feishu-Bot-Integration',
+    wechatSteps: [
+      'Erstellen Sie eine Eigenentwicklung im WeCom-Administrationsbereich',
+      '(Optional) Konfigurieren Sie Callback-URL und Token unter "Nachrichten empfangen"',
+      'Kopieren Sie CorpID, AgentID und Secret in die Konfiguration',
+      '(Optional) Konfigurieren Sie die Webhook-URL des Gruppen-Bots',
+      '(Optional) Konfigurieren Sie EncodingAESKey für Callback-Verschlüsselung',
+      'Aktivieren Sie den "WeChat-Bot-Integration"-Schalter',
+      'Stellen Sie sicher, dass alle Voraussetzungs-Module aktiviert sind',
+    ],
+    wechatBotIntegration: 'WeChat-Bot-Integration',
   },
 
   empty: {
