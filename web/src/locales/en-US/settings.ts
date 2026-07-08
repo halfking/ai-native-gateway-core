@@ -9,6 +9,7 @@ export default {
     routing: 'Routing',
     session: 'Session',
     security: 'Security',
+    outputCompliance: 'Output Compliance',
     circuitBreaker: 'Circuit Breaker',
     general: 'Other',
   },
