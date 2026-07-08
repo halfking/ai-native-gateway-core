@@ -333,7 +333,7 @@ onMounted(() => {
                   type="checkbox"
                   class="toggle-input"
                   :checked="mod.enabled"
-                  :disabled="toggling === mod.key"
+                  :disabled="toggling === mod.key || (!mod.enabled && mod.can_toggle_enabled === false)"
                   @change="doToggle(mod.key)"
                 />
                 <span class="toggle-track">
@@ -421,7 +421,40 @@ onMounted(() => {
             </div>
           </div>
 
+          <div v-if="dependencyStatus.length > 0" class="info-section dependency-section">
+            <h3 class="section-title">{{ t('modulesView.overview.dependenciesTitle') }}</h3>
+            <p v-if="selectedModule.blocked_reason" class="warning-banner">{{ selectedModule.blocked_reason }}</p>
+            <div class="dependency-list">
+              <div
+                v-for="dep in dependencyStatus"
+                :key="dep.key"
+                class="dependency-item"
+                :class="{ 'dep-enabled': dep.enabled, 'dep-disabled': !dep.enabled, 'dep-required': dep.required }"
+              >
+                <span class="dep-status-icon">{{ dep.enabled ? '✅' : (dep.required ? '❌' : '⚠️') }}</span>
+                <div class="dep-info">
+                  <span class="dep-name">{{ dep.moduleName }}</span>
+                  <span class="dep-desc">{{ dep.description }}</span>
+                </div>
+                <div class="dep-actions">
+                  <span class="dep-badge" :class="dep.required ? 'badge-required' : 'badge-optional'">
+                    {{ dep.required ? t('modulesView.overview.required') : t('modulesView.overview.optional') }}
+                  </span>
+                  <button class="btn-link" @click="goToSettings(dep.key)">{{ t('modulesView.overview.openDependency') }}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div class="info-section action-section">
+            <button
+              class="btn-action"
+              :class="selectedEnabled ? 'btn-danger' : 'btn-primary'"
+              :disabled="toggling === selectedModule.key || (!selectedEnabled && selectedModule.can_toggle_enabled === false)"
+              @click="doToggle(selectedModule.key)"
+            >
+              {{ toggling === selectedModule.key ? t('modulesView.status.processing') : selectedEnabled ? t('modulesView.status.enabledAction') : t('modulesView.status.disabledAction') }}
+            </button>
             <button class="btn-ghost" @click="goToSettings(selectedModule.key)">
               {{ t('modulesView.overview.viewAllSettings') }}
             </button>
