@@ -55,17 +55,29 @@ export default {
   },
 
   integration: {
-    docsLabel: 'Docs: ',
-    stepsTitle: 'Setup steps',
-    enabledStatus: 'Integration enabled',
-    disabledHint: 'Integration disabled — please enable the module first',
+    docsLabel: 'ドキュメント：',
+    stepsTitle: '設定手順',
+    enabledStatus: '統合が有効です',
+    disabledHint: '統合が無効です — モジュールを有効にしてください',
+    prerequisitesTitle: '前提モジュール',
+    prerequisitesHint: 'このモジュールを有効にする前に、前提モジュールを有効にしてください',
     feishuSteps: [
-      'Create a custom bot in the Feishu open platform',
-      'Copy the webhook URL and paste it into the config below',
-      '(Optional) Configure the signature verification token',
-      'Turn on the "Feishu bot integration" switch',
+      'Feishuオープンプラットフォームでカスタムボットを作成',
+      'Webhook URLをコピーして下の設定に貼り付け',
+      '（任意）署名検証トークンを設定',
+      '「Feishuボット統合」スイッチをオンにする',
     ],
-    feishuBotIntegration: 'Feishu bot integration',
+    feishuBotIntegration: 'Feishuボット統合',
+    wechatSteps: [
+      'WeCom管理コンソールで自社アプリを作成',
+      '（任意）「メッセージ受信」でコールバックURLとTokenを設定',
+      'CorpID、AgentID、Secretを下の設定にコピー',
+      '（任意）グループボットのWebhook URLを設定',
+      '（任意）コールバック暗号化のEncodingAESKeyを設定',
+      '「WeChatボット統合」スイッチをオンにする',
+      '前提モジュール（圧縮管理、注入検出、セッションキャッシュ、セッション監査）がすべて有効であることを確認',
+    ],
+    wechatBotIntegration: 'WeChatボット統合',
   },
 
   empty: {

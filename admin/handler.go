@@ -678,16 +678,17 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)
 
 		// Credential monitor (2026-06-22): sliding window + manual promote/demote.
-		// Requires redis for sliding window access; recorder is optional.
+		// Redis is optional: monitor-summary works from DB alone; sliding window
+		// degrades to request_logs fallback when Redis is unavailable.
 		// 2026-07-04: 改用 h.admin 中间件，允许 tenant_admin 访问凭据监控页面
+		var rc *redis.Client
 		if h.redisClient != nil {
-			var rc *redis.Client
 			if r, ok := h.redisClient.(*redis.Client); ok {
 				rc = r
 			}
-			monitorH := NewCredentialMonitorHandlers(h, nil, rc)
-			monitorH.RegisterMonitorRoutes(mux, h.admin)
 		}
+		monitorH := NewCredentialMonitorHandlers(h, nil, rc)
+		monitorH.RegisterMonitorRoutes(mux, h.admin)
 
 		// Credential state management (2026-06-30): manual probe + live state query.
 		// Routes are guarded by superAdmin (same as monitor routes).
