@@ -144,8 +144,7 @@ export default {
     close: 'Close',
     csvImportResult: 'Bulk import result',
     csvImportSuccess: '{imported} imported, {skipped} skipped',
-    csvErrorRow: 'Row {row}: {error}',
-  },
+    csvErrorRow: 'Row {row}: {error}',  },
 
   empty: {
     selectModule: 'Select a module to view details and configuration',

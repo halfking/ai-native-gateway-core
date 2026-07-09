@@ -355,6 +355,25 @@ function isFeishuSelected(): boolean {
   return selectedModule.value?.key === 'feishu_bot'
 }
 
+function moduleDisplayName(key: string): string {
+  const mod = modules.value.find(m => m.key === key)
+  return mod?.name || key
+}
+
+function integrationTitle(moduleKey: string): string {
+  if (moduleKey === 'feishu_bot') return t('modulesView.integration.feishuBotIntegration')
+  if (moduleKey === 'wechat_bot') return t('modulesView.integration.wechatBotIntegration')
+  if (moduleKey === 'dingtalk_bot') return t('modulesView.integration.dingtalkBotIntegration')
+  return selectedModule.value?.integration?.label || moduleKey
+}
+
+function integrationSteps(moduleKey: string): string[] {
+  if (moduleKey === 'feishu_bot') return t('modulesView.integration.feishuSteps') as unknown as string[]
+  if (moduleKey === 'wechat_bot') return t('modulesView.integration.wechatSteps') as unknown as string[]
+  if (moduleKey === 'dingtalk_bot') return t('modulesView.integration.dingtalkSteps') as unknown as string[]
+  return []
+}
+
 onMounted(() => {
   loadModules()
 })
@@ -1014,7 +1033,7 @@ onMounted(() => {
           <div class="integration-card" v-if="selectedModule.integration">
             <div class="integ-header">
               <span class="integ-icon">
-                {{ selectedModule.key === 'feishu_bot' ? '📱' : '🔗' }}
+                {{ selectedModule.key === 'feishu_bot' ? '📱' : selectedModule.key === 'wechat_bot' ? '💬' : selectedModule.key === 'dingtalk_bot' ? '🤖' : '🔗' }}
               </span>
               <div class="integ-info">
                 <h3 class="integ-title">
