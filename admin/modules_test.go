@@ -13,8 +13,8 @@ import (
 func TestAllModuleDefinitions(t *testing.T) {
 	defs := allModuleDefinitions()
 
-	if len(defs) != 17 {
-		t.Errorf("expected 17 modules, got %d", len(defs))
+	if len(defs) != 18 {
+		t.Errorf("expected 18 modules, got %d", len(defs))
 	}
 
 	// Check required fields for each module
@@ -43,7 +43,7 @@ func TestAllModuleDefinitions(t *testing.T) {
 		"compression", "cache", "handoff", "goal", "audit",
 		"prompt_injection", "output_compliance", "session_audit",
 		"session_inspector", "security", "rate_limit",
-		"format_conversion", "disguise", "feishu_bot", "wechat_bot",
+		"format_conversion", "disguise", "feishu_bot", "wechat_bot", "dingtalk_bot",
 		"session_analytics", "memora",
 	}
 
@@ -76,7 +76,6 @@ func TestFeishuBotDependencies(t *testing.T) {
 		}
 	}
 }
-
 
 func TestResolveModuleEnabled(t *testing.T) {
 	// Test module without setting key
@@ -113,8 +112,8 @@ func TestHandleModulesList(t *testing.T) {
 		t.Fatalf("response missing items array")
 	}
 
-	if len(items) != 17 {
-		t.Errorf("expected 17 modules in response, got %d", len(items))
+	if len(items) != 18 {
+		t.Errorf("expected 18 modules in response, got %d", len(items))
 	}
 }
 
