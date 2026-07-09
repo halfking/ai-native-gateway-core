@@ -250,3 +250,60 @@ func TestFeishuBotConfigSummary(t *testing.T) {
 		t.Errorf("alert_severity_min default = %v, want 'high'", resp["alert_severity_min"])
 	}
 }
+
+// TestHandoffModule_LocksDownContract (2026-07-09, post-merge-audit)
+// Regression guard: feat(modules) cascade PR briefly reverted the handoff
+// module definition to its pre-expansion 3-config-key form, breaking the
+// 19-spec / 4-dependency contract that drives the ModulesView UI groups.
+// This test re-asserts the contract after every change to admin/modules.go.
+func TestHandoffModule_LocksDownContract(t *testing.T) {
+	defs := allModuleDefinitions()
+	var h *ModuleDefinition
+	for i, m := range defs {
+		if m.Key == "handoff" {
+			h = &defs[i]
+			break
+		}
+	}
+	if h == nil {
+		t.Fatal("handoff module not found")
+	}
+
+	// Spec surface must match settings/handoff_specs.go (19 keys).
+	if got, want := len(h.ConfigKeys), 19; got != want {
+		t.Errorf("ConfigKeys = %d, want %d (handoff_specs.go drifted from module definition)", got, want)
+	}
+
+	// Capability surface — keep hand-curated content fresh.
+	if got := len(h.Capabilities); got < 8 {
+		t.Errorf("Capabilities = %d, want >= 8 (handoff is a multi-capability module)", got)
+	}
+
+	// Dependency surface: 2 required (compression, cache) + optional goal/session_inspector.
+	wantDeps := map[string]bool{
+		"compression":       true,
+		"cache":             true,
+		"goal":              false,
+		"session_inspector": false,
+	}
+	if got, want := len(h.Dependencies), len(wantDeps); got != want {
+		t.Errorf("Dependencies = %d, want %d", got, want)
+	}
+	for _, d := range h.Dependencies {
+		expected, known := wantDeps[d.Key]
+		if !known {
+			t.Errorf("Dependencies has unexpected key %q", d.Key)
+			continue
+		}
+		if d.Required != expected {
+			t.Errorf("Dependencies[%s].Required = %v, want %v", d.Key, d.Required, expected)
+		}
+		if d.Required && d.Key == "compression" {
+			// compression is also used by feishu/wechat/dingtalk/disguise/session_inspector —
+			// a safe canonical anchor for the cascade. Verify we use it consistently.
+			if d.Icon == "" || d.Description == "" {
+				t.Errorf("compression dep missing Icon/Description: %+v", d)
+			}
+		}
+	}
+}
