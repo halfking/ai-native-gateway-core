@@ -39,6 +39,7 @@ export default {
     sessionManagement: 'إدارة الجلسات',
     sessionCompare: 'مقارنة الجلسات',
     compression: 'إدارة الضغط',
+    wechatBot: 'بوت WeChat',
     sessionContext: 'سياق الجلسة',
     settings: 'إعدادات النظام',
     dataLifecycle: 'دورة حياة البيانات',

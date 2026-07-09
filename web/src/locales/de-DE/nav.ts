@@ -38,6 +38,7 @@ export default {
     sessionManagement: 'Sitzungsverwaltung',
     sessionCompare: 'Sitzungsvergleich',
     compression: 'Komprimierungsverwaltung',
+    wechatBot: 'WeChat Bot',
     sessionContext: 'Sitzungskontext',
     settings: 'Systemeinstellungen',
     dataLifecycle: 'Datenlebenszyklus',

@@ -150,5 +150,5 @@ export default {
   linkFailed: 'Échec de la création de relation',
   statsFailed: 'Échec du chargement des statistiques',
   topologyFailed: 'Échec du chargement de la topologie',
-  invalidTargetId: 'Veuillez saisir un ID d'agent cible valide',
+  invalidTargetId: "Veuillez saisir un ID d'agent cible valide",
 }
