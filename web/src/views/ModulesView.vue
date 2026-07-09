@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { ElMessage } from 'element-plus'
 import {
   listModules,
   getModule,
@@ -18,7 +19,9 @@ const router = useRouter()
 const modules = ref<ModuleWithStatus[]>([])
 const loading = ref(false)
 const toggling = ref<string | null>(null)
+const cascading = ref<string | null>(null)
 const error = ref<string | null>(null)
+const cascadeLog = ref<string[]>([])
 const selectedKey = ref<string | null>(null)
 const selectedModule = ref<ModuleWithStatus | null>(null)
 const moduleSettings = ref<SettingItem[]>([])
@@ -64,6 +67,20 @@ const groupedModules = computed(() => {
 
 const enabledCount = computed(() => modules.value.filter(m => m.enabled).length)
 const totalCount = computed(() => modules.value.length)
+
+// 当前选中模块的依赖区是否展示
+const dependencySection = computed(() => {
+  const m = selectedModule.value
+  if (!m) return false
+  return Array.isArray(m.dependencies) && m.dependencies.length > 0
+})
+
+// 未启用的必需依赖集合，用于显示“一键启用”按钮 + 计数
+const missingRequiredDeps = computed(() => {
+  const m = selectedModule.value
+  if (!m || !Array.isArray(m.dependencies)) return []
+  return m.dependencies.filter(d => d.required && !d.enabled)
+})
 
 // 配置项分组（按 settings key 前缀）
 const groupedSettings = computed(() => {
@@ -219,10 +236,56 @@ async function doToggle(key: string) {
     if (selectedKey.value === key && selectedModule.value) {
       selectedModule.value.enabled = r.enabled
     }
+    if (r.cascaded && r.cascaded.length > 0) {
+      ElMessage.success(t('modulesView.overview.cascadeSuccess', {
+        count: r.cascaded.length,
+        names: r.cascaded.join('、'),
+      }))
+    }
+    await loadModules()
+    if (selectedKey.value === key) await selectModule(key)
   } catch (e: any) {
     error.value = e.message || t('modulesView.error.operationFailed')
   } finally {
     toggling.value = null
+  }
+}
+
+// 显式“一键启用所有必需依赖”：通过 cascade=true 让后端级联开启必需依赖，
+// 然后再调用 toggle 真正启用主模块。
+async function doEnableAllDependencies(key: string) {
+  cascading.value = key
+  error.value = null
+  cascadeLog.value = []
+  try {
+    const mod = modules.value.find(m => m.key === key)
+    if (!mod) return
+    if (mod.enabled) {
+      ElMessage.info(t('modulesView.overview.cascadeAlreadyEnabled'))
+      return
+    }
+    const r = await toggleModule(key, true, { cascade: true })
+    mod.enabled = r.enabled
+    if (selectedKey.value === key && selectedModule.value) {
+      selectedModule.value.enabled = r.enabled
+    }
+    cascadeLog.value = r.cascaded || []
+    if (cascadeLog.value.length > 0) {
+      ElMessage.success(t('modulesView.overview.cascadeSuccess', {
+        count: cascadeLog.value.length,
+        names: cascadeLog.value.join('、'),
+      }))
+    } else {
+      ElMessage.success(t('modulesView.overview.cascadeEmpty'))
+    }
+    await loadModules()
+    if (selectedKey.value === key) await selectModule(key)
+  } catch (e: any) {
+    error.value = e.message || t('modulesView.error.operationFailed')
+    // 级联失败时回滚本地乐观状态（如果之前有更新）
+    await loadModules()
+  } finally {
+    cascading.value = null
   }
 }
 
@@ -480,6 +543,59 @@ onMounted(() => {
               <span class="meta-value" :class="selectedModule.enabled ? 'text-green' : 'text-muted'">
                 {{ selectedModule.enabled ? t('modulesView.status.enabled') : t('modulesView.status.disabled') }}
               </span>
+            </div>
+          </div>
+
+          <!-- 依赖区块：必需依赖未满足时，给出警告 + 一键启用按钮 -->
+          <div v-if="dependencySection" class="info-section dependency-section">
+            <h3 class="section-title">
+              <span class="dep-title-icon">🔗</span>
+              {{ t('modulesView.overview.dependenciesTitle') }}
+            </h3>
+            <p v-if="selectedModule.blocked_reason" class="warning-banner">
+              {{ selectedModule.blocked_reason }}
+            </p>
+            <div class="dependency-list">
+              <div
+                v-for="dep in selectedModule.dependencies || []"
+                :key="dep.key"
+                class="dependency-item"
+                :class="{
+                  'dep-enabled': dep.enabled,
+                  'dep-disabled': !dep.enabled,
+                  'dep-required': dep.required,
+                }"
+              >
+                <span class="dep-status-icon">{{ dep.enabled ? '✅' : (dep.required ? '❌' : '⚠️') }}</span>
+                <div class="dep-info">
+                  <span class="dep-name">{{ dep.name }}</span>
+                  <span class="dep-desc">{{ dep.description }}</span>
+                </div>
+                <span class="dep-badge" :class="dep.required ? 'badge-required' : 'badge-optional'">
+                  {{ dep.required ? t('modulesView.overview.required') : t('modulesView.overview.optional') }}
+                </span>
+              </div>
+            </div>
+            <div v-if="missingRequiredDeps.length > 0" class="dependency-actions">
+              <el-button
+                type="primary"
+                :loading="cascading === selectedModule.key"
+                :disabled="selectedModule.enabled"
+                @click="doEnableAllDependencies(selectedModule.key)"
+              >
+                {{ cascading === selectedModule.key
+                   ? t('modulesView.overview.cascading')
+                   : t('modulesView.overview.enableAllDeps', { count: missingRequiredDeps.length }) }}
+              </el-button>
+              <span class="dependency-actions-hint">
+                {{ t('modulesView.overview.enableAllDepsHint') }}
+              </span>
+            </div>
+            <div v-if="cascadeLog.length > 0" class="cascade-log">
+              <strong>{{ t('modulesView.overview.cascadeLogTitle') }}</strong>
+              <ul>
+                <li v-for="k in cascadeLog" :key="k">{{ k }}</li>
+              </ul>
             </div>
           </div>
 
@@ -1746,6 +1862,34 @@ onMounted(() => {
 .badge-optional {
   background: rgba(107, 114, 128, 0.15);
   color: #9ca3af;
+}
+
+.dep-title-icon {
+  margin-right: 6px;
+}
+.dependency-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.dependency-actions-hint {
+  font-size: 11px;
+  color: var(--text-muted, #6e7681);
+}
+.cascade-log {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(52, 211, 153, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #34d399;
+}
+.cascade-log ul {
+  margin: 6px 0 0 16px;
+  padding: 0;
 }
 
 /* ── Config Group ── */

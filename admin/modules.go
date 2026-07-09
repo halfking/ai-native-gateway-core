@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -748,18 +749,39 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if body.Enabled {
-		statusMap := moduleStatusMap(defs)
-		if blockedReason := statusMap[found.Key].BlockedReason; blockedReason != "" {
-			writeError(w, http.StatusConflict, blockedReason)
-			return
-		}
-	}
-
 	store, ok := h.dbSettingsStore()
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "settings store not wired")
 		return
+	}
+
+	if body.Enabled {
+		statusMap := moduleStatusMap(defs)
+		if blockedReason := statusMap[found.Key].BlockedReason; blockedReason != "" {
+			if !r.URL.Query().Has("cascade") {
+				writeError(w, http.StatusConflict, blockedReason)
+				return
+			}
+			cascaded, err := h.cascadeEnableDependencies(defs, statusMap, found.Key)
+			if err != nil {
+				writeError(w, http.StatusConflict, err.Error())
+				return
+			}
+			if _, err := store.Set(sp.Scope, found.SettingKey, true); err != nil {
+				// 主模块启用失败，回滚已经级联开启的依赖，避免留下半开状态。
+				h.rollbackCascadedDependencies(cascaded)
+				writeError(w, http.StatusInternalServerError, "save failed: "+err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":   "ok",
+				"enabled":  true,
+				"module":   found.Key,
+				"message":  "模块已启用（已自动开启 " + strconv.Itoa(len(cascaded)) + " 个依赖）: " + found.Name,
+				"cascaded": cascaded,
+			})
+			return
+		}
 	}
 
 	if _, err := store.Set(sp.Scope, found.SettingKey, body.Enabled); err != nil {
@@ -777,6 +799,132 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 		"module":  found.Key,
 		"message": "模块已" + statusStr + ": " + found.Name,
 	})
+}
+
+// cascadeEnableDependencies 按模块列表稳定顺序开启所有当前未启用的必需依赖。
+// 返回成功开启的依赖 key（module key）列表。任一失败时已开启项回滚，返回 error。
+//
+// 注意：依赖级联只在一次调用内收敛一层（直接必需依赖），不递归。
+// 这样行为可预测、失败面可控；二级依赖未启用时，主模块 toggle 会再次被 blockedReason 拦截。
+func (h *Handler) cascadeEnableDependencies(defs []ModuleDefinition, statuses map[string]ModuleWithStatus, rootKey string) ([]string, error) {
+	store, ok := h.dbSettingsStore()
+	if !ok {
+		return nil, fmt.Errorf("settings store not wired")
+	}
+	return cascadeEnableDepsWithWriter(defs, statuses, rootKey, func(scope settings.Scope, key string, value bool) error {
+		_, err := store.Set(scope, key, value)
+		return err
+	}, func(keys []string) {
+		// 通过 module key 查 defs，转 setting key 再写 false
+		for _, k := range keys {
+			for _, m := range defs {
+				if m.Key == k {
+					if m.SettingKey == "" {
+						continue
+					}
+					sp := settings.Global.Spec(m.SettingKey)
+					if sp == nil {
+						continue
+					}
+					_, _ = store.Set(sp.Scope, m.SettingKey, false)
+					break
+				}
+			}
+		}
+	})
+}
+
+// cascadeEnableDepsWithWriter 是级联启用的核心纯逻辑：仅依赖可注入的 writer，便于单测。
+//
+// cascaded 的元素是 module key（不是 setting key），rollback 接收 module key 列表并写回 false。
+func cascadeEnableDepsWithWriter(
+	defs []ModuleDefinition,
+	statuses map[string]ModuleWithStatus,
+	rootKey string,
+	writer func(scope settings.Scope, key string, value bool) error,
+	rollback func(keys []string),
+) ([]string, error) {
+	statuses = cloneModuleStatusMap(statuses)
+	cascaded := make([]string, 0, 4)
+
+	requiredDeps := make(map[string]struct{})
+	for _, m := range defs {
+		if m.Key != rootKey {
+			continue
+		}
+		for _, d := range m.Dependencies {
+			if d.Required {
+				requiredDeps[d.Key] = struct{}{}
+			}
+		}
+	}
+
+	for _, m := range defs {
+		if m.Key == rootKey {
+			continue
+		}
+		if _, needed := requiredDeps[m.Key]; !needed {
+			continue
+		}
+		status := statuses[m.Key]
+		if status.Enabled || status.SettingKey == "" {
+			continue
+		}
+		sp := settings.Global.Spec(m.SettingKey)
+		if sp == nil {
+			continue
+		}
+		// 危险级及以上不允许后端自动开启：必须由 super_admin 手动操作，避免越权。
+		// 权限隔离比功能完整性更重要，宁可回滚也不自动启用。
+		if sp.DangerLevel >= settings.Dangerous {
+			rollback(cascaded)
+			return nil, fmt.Errorf("依赖模块 %s 危险级别过高，无法自动启用，请手动开启", m.Name)
+		}
+		if err := writer(sp.Scope, m.SettingKey, true); err != nil {
+			rollback(cascaded)
+			return nil, fmt.Errorf("自动启用 %s 失败: %v", m.Name, err)
+		}
+		cascaded = append(cascaded, m.Key)
+	}
+
+	return cascaded, nil
+}
+
+// rollbackCascadedDependencies 把级联开启的依赖逐个关闭（恢复原状）。
+func (h *Handler) rollbackCascadedDependencies(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	store, ok := h.dbSettingsStore()
+	if !ok {
+		return
+	}
+	defs := allModuleDefinitions()
+	for _, k := range keys {
+		var def *ModuleDefinition
+		for i := range defs {
+			if defs[i].Key == k {
+				def = &defs[i]
+				break
+			}
+		}
+		if def == nil || def.SettingKey == "" {
+			continue
+		}
+		sp := settings.Global.Spec(def.SettingKey)
+		if sp == nil {
+			continue
+		}
+		_, _ = store.Set(sp.Scope, def.SettingKey, false)
+	}
+}
+
+func cloneModuleStatusMap(in map[string]ModuleWithStatus) map[string]ModuleWithStatus {
+	out := make(map[string]ModuleWithStatus, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // registerModuleRoutes installs the module management endpoints.
