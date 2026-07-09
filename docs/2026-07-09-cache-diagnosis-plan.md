@@ -2,7 +2,7 @@
 
 **版本**: v1.0  
 **日期**: 2026-07-09  
-**环境**: 本地 r112 + 生产 184  
+**环境**: 本地 r112 + 当前可访问部署环境  
 **诊断目标**: 确认缓存命中率基线  
 **诊断方式**: 被动监控（不改代码）
 
@@ -454,18 +454,13 @@ LIMIT 30;
 ### 步骤 1：环境准备
 
 ```bash
-# 选项 A：生产 184 环境（最优基线）
-# 需要通过 env-injector 注入凭据
-ACC_TOOLKIT_ROOT=/Users/xutaohuang/workspace/acc-toolkit \
-  bash /Users/xutaohuang/.agents/skills/env-injector/scripts/env-injector.sh \
-  inject huoshan-core-184
-
-# 验证凭据
-echo "HOST_184=$HOST_184"
-echo "PG_LLM_GATEWAY_USER=$PG_LLM_GATEWAY_USER"
-
-# 选项 B：本地 r112（仅结构验证，数据为空）
+# 选项 A：本地 r112（结构验证 + 受控流量验证）
 PGPASSWORD='<TEST_DB_PASSWORD_REDACTED>' psql -h localhost -p 15432 -U kxuser -d llm_gateway -f <query>
+
+# 选项 B：真实运行环境
+# 前提：目标机器上已经实际运行 llm-gateway-go，且 request_logs / usage_ledger 有真实流量数据。
+# 如果目标环境当前不承载 llm-gateway-go（例如仅是开发机或 legacy gateway 主机），
+# 则不适合执行本计划中的真实缓存基线采集。
 ```
 
 ### 步骤 2：跑基线 SQL
@@ -474,7 +469,7 @@ PGPASSWORD='<TEST_DB_PASSWORD_REDACTED>' psql -h localhost -p 15432 -U kxuser -d
 # 创建诊断目录
 mkdir -p scripts/cache-baseline/
 # 复制上面 11 个 SQL 文件到该目录
-# 在 184 环境逐个执行
+# 在真实运行环境逐个执行
 
 # 示例
 PGPASSWORD="$PG_LLM_GATEWAY_PASS" psql \
@@ -487,10 +482,10 @@ PGPASSWORD="$PG_LLM_GATEWAY_PASS" psql \
 ### 步骤 3：跑 Admin API 拉数据
 
 ```bash
-# 在 184 环境
+# 在真实运行环境
 export LLM_GATEWAY_ADMIN_API_KEY="..."
 curl -s -H "Authorization: Bearer $LLM_GATEWAY_ADMIN_API_KEY" \
-  "http://$HOST_184:8781/api/admin/usage/cache-economics?days=7" | tee /tmp/cache-economics-7d.json
+  "http://$TARGET_GATEWAY_HOST:8781/api/admin/usage/cache-economics?days=7" | tee /tmp/cache-economics-7d.json
 ```
 
 ### 步骤 4：响应头抽样
@@ -504,7 +499,7 @@ curl -i -X POST \
     {"role":"user","content":"test"},
     {"role":"system","content":"system prompt"}
   ]}' \
-  "http://$HOST_184:8781/v1/chat/completions" | grep -i 'X-Gw-Prefix'
+  "http://$TARGET_GATEWAY_HOST:8781/v1/chat/completions" | grep -i 'X-Gw-Prefix'
 ```
 
 ### 步骤 5：生成诊断报告
@@ -614,4 +609,4 @@ curl -i -X POST \
 
 ---
 
-**诊断方案 v1.0** — 等待用户在 184 环境执行后回填基线数据。
+**诊断方案 v1.0** — 等待用户在真实承载 llm-gateway-go 的环境执行后回填基线数据。

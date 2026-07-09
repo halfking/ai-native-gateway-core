@@ -187,13 +187,13 @@ SELECT metric, value FROM (
 
 ### 5.1 即时行动（无需改代码）
 
-1. **在 184 生产环境启用 C3**（仅需修改环境变量）：
+1. **在真实承载 llm-gateway-go 的目标环境启用 C3**（仅需修改环境变量）：
    ```bash
    LLM_GATEWAY_PROMPT_CACHE_INJECT=true
    ```
    预期影响：cache_control 标记覆盖率从 0% → ~80%
 
-2. **在 184 监控 C2 触发率**：
+2. **在真实 gateway 环境监控 C2 触发率**：
    - 通过访问日志统计 `X-Gw-Prefix-Stabilized` 头出现频率
    - 预期值 5-15%（取决于客户端代码质量）
 
@@ -207,8 +207,8 @@ SELECT metric, value FROM (
    - 文件：`domains/streaming/executors/executor.go`
    - 在 `PlanCandidates()` 中标记 sticky hit
 
-3. **生产环境数据采集**：
-   - 在 184 启用 C3 后，观察 cache_read_tokens 变化
+3. **真实运行环境数据采集**：
+   - 在目标环境启用 C3 后，观察 cache_read_tokens 变化
    - 用 `scripts/cache-baseline/*.sql` 跑基线
 
 ### 5.3 长期行动（架构级）
@@ -267,9 +267,22 @@ llmgw_cache_hit_ratio{provider, model, hit_type="read|write"}
 
 ### 下一步
 
-1. **生产环境启用 C3**（最小改动，最大潜在收益）
+1. **在真实 llm-gateway-go 部署环境启用 C3**（最小改动，最大潜在收益）
 2. **补 affinity_hit / sticky_hit 埋点**（支撑未来诊断）
 3. **基于生产数据重新评估**（不基于本地 mock 数据做架构决策）
+
+### 补充说明
+
+当前可访问环境里：
+
+- 本地 r112 已完成诊断
+- `kaixuan-1` 和 `154` 当前都**没有实际运行中的 llm-gateway-go 服务**
+
+因此，这份报告的结论适用于：
+
+1. 现有代码路径本身已经具备 sticky + prefix 稳定化能力
+2. 下一步应该优先补埋点和启用现成功能，而不是新增一套路由模块
+3. 只有当 `kaixuan-1` 或 `154` 真正承载 llm-gateway-go 后，它们才适合作为真实缓存基线采集环境
 
 ---
 
