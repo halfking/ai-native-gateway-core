@@ -267,6 +267,7 @@ export default {
     },
   },
   config: {
+    loading: "جاري التحميل…",
     title: 'تكوين الجلسات',
     subtitle: 'إدارة موحدة لموافقة الجلسات واستراتيجيات الضغط وقواعد نقاط الصحة',
     approvalTab: 'قواعد الموافقة',
@@ -349,6 +350,7 @@ export default {
     statsLoadError: 'Failed to load stats',
   },
   management: {
+    loading: "جاري التحميل…",
     title: 'Session Management',
     refresh: 'Refresh',
     columns: {

@@ -267,6 +267,7 @@ Sie können das vorherige Ergebnis bestätigen und fortfahren oder eine völlig 
     },
   },
   config: {
+    loading: "Laden…",
     title: 'Sitzungskonfiguration',
     subtitle: 'Einheitliche Verwaltung von Sitzungsgenehmigung, Komprimierungsstrategien und Gesundheitsbewertungsregeln',
     approvalTab: 'Genehmigungsregeln',
@@ -349,6 +350,7 @@ Sie können das vorherige Ergebnis bestätigen und fortfahren oder eine völlig 
     statsLoadError: 'Failed to load stats',
   },
   management: {
+    loading: "Laden…",
     title: 'Session Management',
     refresh: 'Refresh',
     columns: {

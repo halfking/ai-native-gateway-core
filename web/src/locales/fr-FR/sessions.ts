@@ -145,6 +145,7 @@ Vous pouvez confirmer le résultat précédent et continuer, ou commencer une to
     totalCost: 'Coût total',
     avgHealth: 'Santé moyenne',
     loadFailed: 'Échec du chargement des statistiques',
+    retry: 'Réessayer',
   },
   dashboard: {
     title: 'Centre d\'analyse des sessions',
@@ -267,6 +268,7 @@ Vous pouvez confirmer le résultat précédent et continuer, ou commencer une to
     },
   },
   config: {
+    loading: 'Chargement…',
     title: 'Configuration des sessions',
     subtitle: 'Gestion unifiée de l\'approbation des sessions, des stratégies de compression et des règles de score de santé',
     approvalTab: 'Règles d\'approbation',
@@ -351,6 +353,7 @@ Vous pouvez confirmer le résultat précédent et continuer, ou commencer une to
   management: {
     title: 'Session Management',
     refresh: 'Refresh',
+    loading: 'Chargement…',
     columns: {
       status: 'Status',
       title: 'Title',

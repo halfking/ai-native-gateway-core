@@ -267,6 +267,7 @@ export default {
     },
   },
   config: {
+    loading: "読み込み中…",
     title: 'セッション設定',
     subtitle: 'セッション承認、圧縮戦略、健康スコアルールを統合管理',
     approvalTab: '承認ルール',
@@ -349,6 +350,7 @@ export default {
     statsLoadError: 'Failed to load stats',
   },
   management: {
+    loading: "読み込み中…",
     title: 'Session Management',
     refresh: 'Refresh',
     columns: {

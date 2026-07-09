@@ -15,8 +15,8 @@ export default {
     required: '请输入用户名和密码',
     failed: '登录失败',
   },
-  changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
+  changePassword: '修改密码',
+  passwordChangeSuccess: '密码修改成功',
   // 2026-07-09: 首次进入页面时检测 cookie auth 状态的提示文案
   checking: '正在检测登录状态…',
 }

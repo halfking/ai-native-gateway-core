@@ -266,6 +266,7 @@ Puede confirmar el resultado previo y continuar, o iniciar una tarea nueva.`,
     },
   },
   config: {
+    loading: "Cargando…",
     title: 'Configuración de sesiones',
     subtitle: 'Gestión unificada de aprobación de sesiones, estrategias de compresión y reglas de puntuación de salud',
     approvalTab: 'Reglas de aprobación',
@@ -348,6 +349,7 @@ Puede confirmar el resultado previo y continuar, o iniciar una tarea nueva.`,
     statsLoadError: 'Failed to load stats',
   },
   management: {
+    loading: "Cargando…",
     title: 'Session Management',
     refresh: 'Refresh',
     columns: {
