@@ -150,7 +150,7 @@ const TASK_LABELS: Record<string, string> = {
   <div class="sankey-wrap">
     <div v-if="loading" class="sankey-hint">加载流向图…</div>
     <div v-else-if="isEmpty" class="sankey-hint">暂无流向数据 — 任务→模型→供应商链路需 Auto 请求样本</div>
-    <div v-else class="sankey-svg-wrap">
+    <div v-else-if="data && data.links" class="sankey-svg-wrap">
       <div class="sankey-legend">
         <span v-for="(lbl, i) in layerLabels" :key="lbl" class="legend-chip">
           <span class="legend-swatch" :style="{ background: layerColors[i] }" />
@@ -173,13 +173,13 @@ const TASK_LABELS: Record<string, string> = {
 
         <g class="links">
           <path
-            v-for="(l, i) in data!.links"
+            v-for="(l, i) in data.links"
             :key="'l-' + i"
             :d="linkPath(l.source, l.target)"
             class="flow-link"
             :stroke="linkColor(l.task_type)"
             :stroke-width="linkWidth(l.value)"
-            :opacity="0.35 + (l.value / Math.max(...data!.links.map(x => x.value), 1)) * 0.45"
+            :opacity="0.35 + (l.value / Math.max(...data.links.map(x => x.value), 1)) * 0.45"
           />
         </g>
 
