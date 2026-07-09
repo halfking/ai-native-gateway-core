@@ -37,6 +37,17 @@ type Finding struct {
 //
 // 由 InspectorHook 从 PipelineRequest 构造，作为检查器的输入。
 // 不修改 PipelineRequest，避免 hook 间相互影响。
+//
+// 字段说明：
+//   - RequestCount: 当前累计请求数（来自 metadata / DB）
+//   - TokenCount:   当前累计 token 数
+//   - StartedAt:    会话首次活跃时间（用于 absolute_max_lifetime 计算）
+//   - LastActiveAt: 最近一次活跃时间（用于 idle 检测）
+//   - ErrorRate:    会话错误率 0.0~1.0（来自 session_summaries）
+//   - BurstCount:   burst_window_seconds 窗口内的请求数
+//   - ConcurrentCount: 当前并发请求数
+//   - TenantActiveCount: 当前租户 active 态会话数（用于 lifecycle 检查）
+//   - ModelSwitchCount: 累计模型切换次数
 type SessionSnapshot struct {
 	SessionID    string         `json:"session_id"`
 	TenantID     string         `json:"tenant_id"`
@@ -44,6 +55,11 @@ type SessionSnapshot struct {
 	TokenCount   int            `json:"token_count"`
 	StartedAt    time.Time      `json:"started_at"`
 	LastActiveAt time.Time      `json:"last_active_at"`
+	ErrorRate    float64        `json:"error_rate"`
+	BurstCount   int            `json:"burst_count"`
+	ConcurrentCount int         `json:"concurrent_count"`
+	TenantActiveCount int       `json:"tenant_active_count"`
+	ModelSwitchCount int        `json:"model_switch_count"`
 	Metadata     map[string]any `json:"metadata,omitempty"`
 }
 

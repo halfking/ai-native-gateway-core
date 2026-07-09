@@ -1107,6 +1107,22 @@ func main() {
 			gAuditBus = auditBus
 			gApprovalMgr = approvalMgr
 
+			// 2026-07-09: Session Inspector 告警通知器订阅。
+			// 依赖 gLarkCh（来自 initApprovalNotifier），若无则跳过。
+			if gLarkCh != nil {
+				inspectorNotifier, ierr := notification.NewInspectorNotifier(notification.InspectorNotifierConfig{
+					Channels:       map[string]notification.NotificationChannel{"feishu": gLarkCh},
+					DefaultChannel: "feishu",
+				})
+				if ierr != nil {
+					slog.Warn("init inspector notifier failed", "error", ierr)
+				} else {
+					auditBus.Subscribe("session_inspector.finding", inspectorNotifier.HandleFindingEvent)
+					auditBus.Subscribe("session_inspector.recycle", inspectorNotifier.HandleRecycleEvent)
+					slog.Info("inspector notifier subscribed to audit bus (feishu channel)")
+				}
+			}
+
 			chatHandler.SetSessionAuditHook(auditHook)
 			slog.Info("session audit chat-time hook wired (v1)",
 				"approval_timeout", approvalTimeout.String())
@@ -2119,7 +2135,17 @@ func main() {
 				healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
 				healthWorker.Start(context.Background())
 				slog.Info("session health worker started (hourly)")
-			}
+
+			// Task T1.5: 会话生命周期后台 worker (2026-07-09, session_inspector 模块)
+			// 周期性扫描不活跃/超期会话并按 session_inspector.idle.recycle_action 回收。
+			// 默认配置：cleanup_interval=5m, idle_timeout=30m, soft_close。
+			// 注意：bg.LifecycleEventPublisher 接口与 eventbus.MemoryBus 不兼容，
+			// 因为 Publish 签名不同（LifecycleEvent vs eventbus.Event）。
+			// 暂时不注入 EventBus，后续可通过适配器模式桥接。
+			lifecycleWorker := bg.NewSessionLifecycleWorker(dbConn.Pool())
+			lifecycleWorker.Start(context.Background())
+			slog.Info("session lifecycle worker started (5m interval, soft_close default)")
+		}
 		}
 
 		// Task T1.4: Usage Cost Enhanced API 注册已在 admin/handler.go:572 完成

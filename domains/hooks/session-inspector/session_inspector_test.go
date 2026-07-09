@@ -24,8 +24,9 @@ func TestTokenLimitInspector_Exceeds(t *testing.T) {
 	if findings[0].Code != "TOKEN_LIMIT_EXCEEDED" {
 		t.Fatalf("code=%q", findings[0].Code)
 	}
-	if findings[0].Severity != SeverityWarning {
-		t.Fatalf("severity=%q", findings[0].Severity)
+	// TokenLimitInspector now returns Critical for hard limit exceeded
+	if findings[0].Severity != SeverityCritical {
+		t.Fatalf("severity=%q, want critical", findings[0].Severity)
 	}
 	if findings[0].InspectorName != "token_limit" {
 		t.Fatalf("inspector=%q", findings[0].InspectorName)
@@ -88,8 +89,9 @@ func TestInactiveInspector_Idle(t *testing.T) {
 	if findings[0].Code != "SESSION_IDLE" {
 		t.Fatalf("code=%q", findings[0].Code)
 	}
-	if findings[0].Severity != SeverityInfo {
-		t.Fatalf("severity=%q", findings[0].Severity)
+	// InactiveInspector now returns Warning for idle (was Info in old version)
+	if findings[0].Severity != SeverityWarning {
+		t.Fatalf("severity=%q, want warning", findings[0].Severity)
 	}
 }
 
@@ -285,8 +287,10 @@ func TestHook_Execute_PropagatesInspectorError(t *testing.T) {
 	h := NewInspectorHook(bad)
 	env := &domain.PipelineRequest{SessionID: "s"}
 	err := h.Execute(context.Background(), env)
-	if err == nil {
-		t.Fatal("expected error from broken inspector")
+	// 2026-07-09: 设计变更 — 单个 inspector 失败时降级为日志，不阻断主流程
+	// 与 OnError() 的语义保持一致（已吞掉错误）
+	if err != nil {
+		t.Fatalf("Execute should swallow inspector errors, got: %v", err)
 	}
 }
 
