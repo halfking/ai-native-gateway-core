@@ -68,4 +68,10 @@ export default {
   errors: {
     loadFailed: 'Échec du chargement',
   },
+
+  // 扁平键（供 Vue 组件直接使用）
+  loadFailed: 'Échec du chargement',
+  dash: '—',
+  refreshing: '刷新中…',
+  refresh: '刷新',
 }

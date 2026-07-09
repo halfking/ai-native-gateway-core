@@ -74,4 +74,23 @@ export default {
     saveFailed: 'فشل الحفظ',
     resetFailed: 'فشل الاستعادة',
   },
+
+  // 扁平键（供 Vue 组件直接使用）
+  defaultOnly: '仅全局基准',
+  customOnly: '含手工定价',
+  partialOnly: '部分手工',
+  otherVendor: '其他',
+  loadFailed: 'فشل التحميل',
+  saved: '全局基准已保存（仅影响未手工定价的维度）',
+  saveFailed: '保存失败',
+  needOneManual: '请至少勾选一个「手工定价」维度',
+  resetFailed: '恢复失败',
+  input: '输入',
+  output: '输出',
+  cacheRead: '缓存读',
+  cacheWrite: '缓存写',
+  refreshLoading: '加载中…',
+  refresh: '刷新',
+  saving: '保存中…',
+  save: '保存',
 }

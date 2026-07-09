@@ -68,4 +68,10 @@ export default {
   errors: {
     loadFailed: 'Laden fehlgeschlagen',
   },
+
+  // 扁平键（供 Vue 组件直接使用）
+  loadFailed: 'Laden fehlgeschlagen',
+  dash: '—',
+  refreshing: '刷新中…',
+  refresh: '刷新',
 }

@@ -132,4 +132,23 @@ export default {
     topologyFailed: 'Failed to load topology',
     invalidTargetId: 'Please enter a valid target Agent ID',
   },
+
+  // 扁平键（供 Vue 组件直接使用）
+  all: 'الكل',
+  llm_endpoint: 'نقطة نهاية LLM',
+  mcp_server: 'خادم MCP',
+  agent: 'وكيل',
+  depends_on: 'depends_on (تبعية)',
+  calls: 'calls (استدعاء)',
+  similar_to: 'similar_to (بديل)',
+  loadFailed: 'فشل التحميل',
+  healthy: 'صحي',
+  degraded: 'متضرر',
+  down: 'غير متاح',
+  unknown: 'غير معروف',
+  detailFailed: 'فشل تحميل التفاصيل',
+  linkFailed: 'فشل إنشاء العلاقة',
+  statsFailed: 'فشل تحميل الإحصائيات',
+  topologyFailed: 'فشل تحميل الهيكل',
+  invalidTargetId: 'يرجى إدخال معرف Agent هدف صالح',
 }
