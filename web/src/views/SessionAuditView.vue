@@ -3,10 +3,14 @@ import { useI18n } from 'vue-i18n'
 import { ref, onMounted, computed } from 'vue'
 import { req } from '../api/_core'
 import { getLocale } from '../store'
+import { listSettings, updateSetting } from '../api'
 
 const { t, te } = useI18n({ useScope: 'global' })
 
-// 审计记录类型（与后端 admin/session_audit.go + domains/sessionaudit/types.go 对齐）
+// ========== 标签页控制 ==========
+const activeTab = ref<'audit' | 'approval' | 'config'>('audit')
+
+// ========== 审计记录类型（与后端 admin/session_audit.go + domains/sessionaudit/types.go 对齐） ==========
 // 注意：后端分数均为 0-10，Threat.severity 是 int，Threat 字段为 evidence 而非 description。
 type Threat = {
   type: string
