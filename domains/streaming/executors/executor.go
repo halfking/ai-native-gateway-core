@@ -598,6 +598,11 @@ type ExecuteResult struct {
 	Response  *http.Response
 	Candidate provider.Candidate
 	LatencyMs int
+	// StickyHit records whether the chosen credential came from an existing
+	// sticky binding (L1/L2/L3) rather than a fresh routing decision.
+	// It is consumed by telemetry so request_logs / routing_decision_log can
+	// answer whether cache-adjacent affinity was actually used.
+	StickyHit *bool
 	// RequestBody is the body sent to the upstream provider (may be
 	// protocol-converted from the inbound body). Use InboundBody for the
 	// original client request body.
@@ -989,6 +994,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}()
 
 		if execErr == nil {
+			stickyHit := stickyCredID != nil && *stickyCredID == cand.CredentialID
+			result.StickyHit = boolPtrCompat(stickyHit)
 			sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 			defer sideEffectCancel()
 			e.restoreCredentialState(sideEffectCtx, cand.CredentialID, cand.RawModel)
@@ -2091,6 +2098,10 @@ func (e *Executor) stickyCredentialIDMultiLevel(
 		return nil
 	}
 	return &result.CredentialID
+}
+
+func boolPtrCompat(v bool) *bool {
+	return &v
 }
 
 func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
