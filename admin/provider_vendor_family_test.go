@@ -43,6 +43,19 @@ func TestFamilyForProviderRefresh(t *testing.T) {
 		// discovery/normalize.go:36 "unknown tokens fall through").
 		{"kuae-1.0", "kuae", "fallback to bare token"},
 
+		// Google: gemini vs gemma are separate families
+		{"gemini-pro", "google-gemini", "gemini → google-gemini"},
+		{"gemma-2b", "gemma", "gemma stays gemma"},
+
+		// Chinese vendors: doubao (ByteDance), ernie (Baidu), hunyuan (Tencent), spark (iFlytek)
+		{"doubao-pro", "doubao", "doubao → doubao"},
+		{"ernie-bot-4", "ernie", "ernie → ernie"},
+		{"hunyuan-lite", "hunyuan", "hunyuan → hunyuan"},
+		{"spark-max", "spark", "spark → spark"},
+
+		// MiniMax: abab-* with dash separator collapses to minimax
+		{"abab-chat", "minimax", "abab-chat → minimax"},
+
 		// Defensive: empty name still yields "unknown" (mirrors
 		// discovery.InferFamily's behaviour and prevents a NULL family).
 		{"", "unknown", "defensive empty"},
