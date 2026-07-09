@@ -27,6 +27,21 @@ export function headers(method: string): Record<string, string> {
   return h
 }
 
+// 2026-07-10: 401 redirect 现在只针对 admin 端点。
+// /healthz?full=true / /api/system/version 等公共或半公开端点的 401
+// 不应该触发强制重定向，否则会把用户弹到 /login 形成 loop。
+function isAdminProtectedPath(path: string): boolean {
+  return (
+    path.startsWith('/api/admin/') ||
+    path.startsWith('/api/users') ||
+    path.startsWith('/api/keys') ||
+    path.startsWith('/api/auth/logout') ||
+    path.startsWith('/api/auth/change-password') ||
+    path.startsWith('/api/routing/') ||
+    path.startsWith('/api/admin')
+  )
+}
+
 export async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const r = await fetch(BASE + path, {
     method,
@@ -37,14 +52,14 @@ export async function req<T>(method: string, path: string, body?: unknown): Prom
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (r.status === 401) {
-    // Token expired or invalid. Clear credentials and redirect to /login
-    // so the user can re-authenticate instead of seeing a cascade of 401s.
-    // Using window.location to force a full page reset (clears all
-    // in-flight requests that would also 401 with the now-empty store).
-    clearAll()
-    if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-      window.location.href = '/login'
+    if (isAdminProtectedPath(path)) {
+      // 真正的 admin 端点 401：token 失效，clear + redirect 到 /login 让用户重新认证
+      clearAll()
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+        window.location.href = '/login'
+      }
     }
+    // 公共/半公开端点 401（如 /healthz?full=true）只 throw，不强制 redirect，避免 loop
     throw new Error('Unauthorized')
   }
   if (!r.ok) {
