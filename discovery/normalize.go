@@ -52,8 +52,9 @@ var vendorCanonicalFamilies = map[string]string{
 	"llama":  "meta-llama",
 	"llama2": "meta-llama",
 	"llama3": "meta-llama",
-	// Google — bare "gemini" → "google-gemini" (gemma is its own family)
+	// Google — "gemini" → "google-gemini"; "gemma" is its own family
 	"gemini": "google-gemini",
+	"gemma":  "gemma",
 	// Mistral AI — ministral / mistral / mixtral all collapse to "mistral"
 	"mistral":   "mistral",
 	"ministral": "mistral",
@@ -66,6 +67,18 @@ var vendorCanonicalFamilies = map[string]string{
 	// StepFun — bare "step" → "stepfun"
 	"step":    "stepfun",
 	"stepfun": "stepfun",
+	// ByteDance — "doubao" (豆包)
+	"doubao": "doubao",
+	// Baidu — "ernie" (文心)
+	"ernie": "ernie",
+	// Tencent — "hunyuan" (混元)
+	"hunyuan": "hunyuan",
+	// iFlytek — "spark" (星火)
+	"spark": "spark",
+	// MiniMax — legacy "abab" prefix (abab-chat, etc.)
+	// Note: "abab5.5" / "abab6.5s" have no "-" separator, so InferFamily
+	// returns them verbatim as the family (backward compat with existing DB rows).
+	"abab": "minimax",
 }
 
 // CanonicalizeFamilyID takes a raw family id (as it might be stored in
