@@ -49,7 +49,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
-	memclient "github.com/kaixuan/llm-gateway-go/domains/memory/client"             //nolint:depguard // 2026-07-09: DLQ and FallbackCache
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -722,39 +721,9 @@ func main() {
 				"smart_search_url", smartSearchBase,
 			)
 
-			// 2026-07-09: Initialize DLQ and FallbackCache for fault tolerance
-			if dbConn != nil && dbConn.Enabled() {
-				dlq := memclient.NewDeadLetterQueue(memclient.DLQConfig{
-					Enabled:       true,
-					MaxSize:       10000,
-					RetentionDays: 7,
-					DB:            dbConn.Pool(),
-					Logger:        slog.Default(),
-				})
-
-				fallbackCache := memclient.NewFallbackCache(memclient.FallbackCacheConfig{
-					Enabled: true,
-					MaxSize: 1000,
-					TTL:     1 * time.Hour,
-					Client:  memorySvc.Client(),
-					Logger:  slog.Default(),
-				})
-
-				if sink := memorySvc.Sink(); sink != nil {
-					sink.SetDLQ(dlq)
-					sink.SetFallbackCache(fallbackCache)
-					slog.Info("memora DLQ and fallback cache enabled",
-						"dlq_max_size", 10000,
-						"dlq_retention_days", 7,
-						"cache_max_size", 1000,
-						"cache_ttl", "1h",
-					)
-				}
-
-				// Store DLQ for admin handler
-				memorySvc.SetDLQ(dlq)
-				memorySvc.SetFallbackCache(fallbackCache)
-			}
+			// 2026-07-09: DLQ and FallbackCache initialization
+			// TODO: enable when memorySvc.DLQ()/Client()/Sink()/SetDLQ/SetFallbackCache are implemented
+			slog.Debug("memora DLQ/FallbackCache: skipped (not yet implemented)")
 		} else {
 			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
 		}
@@ -1252,11 +1221,9 @@ func main() {
 			adminHandler.SetModelPolicy(modelPolicy)
 		}
 
-		// 2026-07-09: Wire Memora DLQ into admin handler for DLQ management endpoints
-		if memorySvc != nil && memorySvc.DLQ() != nil {
-			adminHandler.SetDLQ(&dlqAdapter{dlq: memorySvc.DLQ()})
-			slog.Info("admin handler DLQ enabled", "dlq_available", true)
-		}
+		// 2026-07-09: Wire Memora DLQ into admin handler
+		// TODO: enable when memorySvc.DLQ() and adminHandler.SetDLQ are implemented
+		slog.Debug("admin handler DLQ: skipped (not yet implemented)")
 
 		slog.Info("CHECKPOINT: before EnsureUsersTable")
 		// Ensure users table exists for multi-tenant admin auth
