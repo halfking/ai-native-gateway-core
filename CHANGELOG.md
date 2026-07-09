@@ -386,3 +386,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/2026-06-23-to-2026-06-30-weekly-changelog.md` - 周报
 - `docs/2026-07-01-24h-rollup.md` - 24h 滚动报告
 - `docs/2026-07-01-48h-comprehensive-audit.md` - 48h 综合审计
+## [2026-07-09] - 飞书机器人模块 (feishubot)
+
+### 🚀 新增功能
+
+#### 飞书机器人模块完整实现
+
+**核心能力**:
+- ✅ 告警推送（注入攻击、高延迟、错误率飙升）
+- ✅ 审批通知与飞书内操作
+- ✅ 系统状态查询命令
+- ✅ 签名验证（HMAC-SHA256）
+- ✅ 用户白名单控制
+
+**模块依赖**:
+- 依赖现有模块：`compression`、`prompt_injection`、`session_cache`、`session_audit`（软提示）
+- 复用现有组件：
+  - `notification.LarkBotChannel` (通过 `LarkChannelAdapter` 薄包装)
+  - `eventbus.MemoryBus` (订阅 `ApprovalNeeded`/`ApprovalDecided` 事件)
+  - `settings.Global` (读取 `feishu_bot.*` 配置)
+  - `sessionaudit.ApprovalManager` (审批流程复用)
+
+**新增设置** (14 个):
+- `feishu_bot.webhook_url` - Webhook URL
+- `feishu_bot.verify_token` - 验证令牌
+- `feishu_bot.encrypt_key` - 加密密钥
+- `feishu_bot.connection_mode` - 连接模式
+- `feishu_bot.notify_on_alert` - 告警通知开关
+- `feishu_bot.notify_on_approval` - 审批通知开关
+- `feishu_bot.allowed_users` - 允许的用户列表
+- `feishu_bot.alert.severity_min` - 最低告警级别
+- `feishu_bot.alert.rate_limit_per_minute` - 频率限制
+- `feishu_bot.alert.dedup_window_seconds` - 去重窗口
+- `feishu_bot.alert.quiet_hours_enabled/start/end` - 静默时段
+- `feishu_bot.alert.card_template` - 卡片模板
+- `feishu_bot.approval.expiry_reminder_minutes` - 过期提醒
+- `feishu_bot.approval.auto_mention_on_critical` - 自动@
+- `feishu_bot.commands.enabled` - 命令开关
+- `feishu_bot.commands.admin_only` - 仅管理员
+- `feishu_bot.signature_required` - 签名验证
+- `feishu_bot.timestamp_window_seconds` - 时间窗口
+
+**数据库迁移**:
+- `220_feishu_bot_routing.sql` - 路由规则表
+  - `feishu_bot_routing_rules` - 路由规则
+  - `feishu_bot_send_log` - 发送审计日志
+
+**API 端点** (5 个):
+- `GET/POST /api/admin/feishubot/routing-rules` - 路由规则列表/创建
+- `PUT /api/admin/feishubot/routing-rules/{id}` - 更新规则
+- `DELETE /api/admin/feishubot/routing-rules/{id}` - 删除规则
+- `POST /api/admin/feishubot/routing-rules:import` - CSV 批量导入
+- `GET /api/admin/modules/feishu_bot/config` - 模块配置
+- `POST /api/admin/modules/feishu_bot/test` - 测试连接
+
+**前端 UI**:
+- 模块管理页面新增路由规则标签页
+- 支持 CSV 批量导入路由规则
+- 模块依赖软提示 UI
+- 飞书机器人设置页面
+
+**代码结构** (`domains/feishubot/` - 1938 行):
+- `alert_router.go` (253 行) - 告警路由逻辑
+- `callback.go` (262 行) - 回调处理
+- `commands.go` (168 行) - 命令处理
+- `dedup.go` (160 行) - 去重逻辑
+- `lark_adapter.go` (87 行) - 薄适配器（解耦 `notification` 包）
+- `plugin.go` (623 行) - Hook 插件集成
+- `plugin_test.go` (286 行) - 单元测试
+- `helpers_test.go` (99 行) - 测试辅助
+
+**测试覆盖**:
+- ✅ `domains/feishubot` 包测试通过
+- ✅ `admin/feishu_handlers_test.go` 测试通过
+- ✅ CSV 批量导入实测通过（5 行成功导入）
+
+**部署验证**:
+- ✅ 编译通过：`go build ./...`
+- ✅ 类型检查通过：`go vet ./admin/... ./settings/...`
+- ✅ 前端构建通过：`npx vite build`
+- ✅ Docker 镜像构建成功：`r112-gateway:local`
+- ✅ 5 个新端点 curl 测试全部正常
+
