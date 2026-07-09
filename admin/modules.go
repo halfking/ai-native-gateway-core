@@ -762,15 +762,32 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusConflict, blockedReason)
 				return
 			}
-			cascaded, err := h.cascadeEnableDependencies(defs, statusMap, found.Key)
+			cascaded, err := applyCascadeEnable(
+				defs, statusMap, found,
+				func(scope settings.Scope, key string, value bool) error {
+					_, e := store.Set(scope, key, value)
+					return e
+				},
+				func(keys []string) {
+					for _, k := range keys {
+						for _, m := range defs {
+							if m.Key == k {
+								if m.SettingKey == "" {
+									break
+								}
+								sp := settings.Global.Spec(m.SettingKey)
+								if sp == nil {
+									break
+								}
+								_, _ = store.Set(sp.Scope, m.SettingKey, false)
+								break
+							}
+						}
+					}
+				},
+			)
 			if err != nil {
 				writeError(w, http.StatusConflict, err.Error())
-				return
-			}
-			if _, err := store.Set(sp.Scope, found.SettingKey, true); err != nil {
-				// 主模块启用失败，回滚已经级联开启的依赖，避免留下半开状态。
-				h.rollbackCascadedDependencies(cascaded)
-				writeError(w, http.StatusInternalServerError, "save failed: "+err.Error())
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -799,6 +816,39 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 		"module":  found.Key,
 		"message": "模块已" + statusStr + ": " + found.Name,
 	})
+}
+
+// applyCascadeEnable 是"级联依赖 + 主模块"一次性启用的纯流程：
+//
+//  1. 复用 cascadeEnableDepsWithWriter 开启必需依赖，依赖失败 → 整体回滚
+//  2. 依赖全部成功后写主模块；主模块写盘失败 → 关闭已经开启的依赖
+//
+// 关键不变量：调用返回时，对外表现要么"全部启用"要么"全部回到原状"。
+// 写盘 + 回滚均通过 writer / rollback 注入，便于纯函数测试。
+func applyCascadeEnable(
+	defs []ModuleDefinition,
+	statuses map[string]ModuleWithStatus,
+	root *ModuleDefinition,
+	writer func(scope settings.Scope, key string, value bool) error,
+	rollback func(keys []string),
+) ([]string, error) {
+	if root == nil {
+		return nil, fmt.Errorf("nil root module")
+	}
+	cascaded, err := cascadeEnableDepsWithWriter(defs, statuses, root.Key, writer, rollback)
+	if err != nil {
+		return nil, err
+	}
+	sp := settings.Global.Spec(root.SettingKey)
+	if sp == nil {
+		rollback(cascaded)
+		return nil, fmt.Errorf("root module setting spec not registered: %s", root.SettingKey)
+	}
+	if err := writer(sp.Scope, root.SettingKey, true); err != nil {
+		rollback(cascaded)
+		return nil, fmt.Errorf("主模块启用失败: %v", err)
+	}
+	return cascaded, nil
 }
 
 // cascadeEnableDependencies 按模块列表稳定顺序开启所有当前未启用的必需依赖。
