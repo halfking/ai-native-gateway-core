@@ -35,6 +35,7 @@ export default {
     config: '配置',
     integration: '集成',
     status: '运行状态',
+    routing: '路由规则',
   },
 
   overview: {
@@ -96,6 +97,33 @@ export default {
       '开启「飞书机器人集成」开关',
     ],
     feishuBotIntegration: '飞书机器人集成',
+  },
+
+  routing: {
+    title: '飞书路由规则',
+    addNew: '新增规则',
+    cancel: '取消',
+    save: '保存',
+    formTitle: '新增飞书 OpenID 规则',
+    openId: '飞书 OpenID',
+    openIdPlaceholder: 'ou_xxxxxxxx',
+    displayName: '显示名',
+    userRole: '用户角色',
+    priority: '优先级',
+    note: '备注',
+    enabled: '启用',
+    riskLevels: '风险级别',
+    actions: '操作',
+    enable: '启用',
+    disable: '停用',
+    delete: '删除',
+    loading: '加载中…',
+    empty: '暂无规则。点击「新增规则」创建第一条。',
+    importCsv: '批量导入 CSV',
+    close: '关闭',
+    csvImportResult: '批量导入结果',
+    csvImportSuccess: '已导入 {imported} 条，跳过 {skipped} 条',
+    csvErrorRow: '第 {row} 行：{error}',
   },
 
   empty: {

@@ -49,6 +49,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
+	memclient "github.com/kaixuan/llm-gateway-go/domains/memory/client"             //nolint:depguard // 2026-07-09: DLQ and FallbackCache
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -705,6 +706,40 @@ func main() {
 				"base_url", memoraBase,
 				"smart_search_url", smartSearchBase,
 			)
+
+			// 2026-07-09: Initialize DLQ and FallbackCache for fault tolerance
+			if dbConn != nil && dbConn.Enabled() {
+				dlq := memclient.NewDeadLetterQueue(memclient.DLQConfig{
+					Enabled:       true,
+					MaxSize:       10000,
+					RetentionDays: 7,
+					DB:            dbConn.Pool(),
+					Logger:        slog.Default(),
+				})
+
+				fallbackCache := memclient.NewFallbackCache(memclient.FallbackCacheConfig{
+					Enabled: true,
+					MaxSize: 1000,
+					TTL:     1 * time.Hour,
+					Client:  memorySvc.Client(),
+					Logger:  slog.Default(),
+				})
+
+				if sink := memorySvc.Sink(); sink != nil {
+					sink.SetDLQ(dlq)
+					sink.SetFallbackCache(fallbackCache)
+					slog.Info("memora DLQ and fallback cache enabled",
+						"dlq_max_size", 10000,
+						"dlq_retention_days", 7,
+						"cache_max_size", 1000,
+						"cache_ttl", "1h",
+					)
+				}
+
+				// Store DLQ for admin handler
+				memorySvc.SetDLQ(dlq)
+				memorySvc.SetFallbackCache(fallbackCache)
+			}
 		} else {
 			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
 		}
@@ -1107,22 +1142,6 @@ func main() {
 			gAuditBus = auditBus
 			gApprovalMgr = approvalMgr
 
-			// 2026-07-09: Session Inspector 告警通知器订阅。
-			// 依赖 gLarkCh（来自 initApprovalNotifier），若无则跳过。
-			if gLarkCh != nil {
-				inspectorNotifier, ierr := notification.NewInspectorNotifier(notification.InspectorNotifierConfig{
-					Channels:       map[string]notification.NotificationChannel{"feishu": gLarkCh},
-					DefaultChannel: "feishu",
-				})
-				if ierr != nil {
-					slog.Warn("init inspector notifier failed", "error", ierr)
-				} else {
-					auditBus.Subscribe("session_inspector.finding", inspectorNotifier.HandleFindingEvent)
-					auditBus.Subscribe("session_inspector.recycle", inspectorNotifier.HandleRecycleEvent)
-					slog.Info("inspector notifier subscribed to audit bus (feishu channel)")
-				}
-			}
-
 			chatHandler.SetSessionAuditHook(auditHook)
 			slog.Info("session audit chat-time hook wired (v1)",
 				"approval_timeout", approvalTimeout.String())
@@ -1192,6 +1211,12 @@ func main() {
 		// per-tenant cache entry immediately (Round 48).
 		if modelPolicy != nil {
 			adminHandler.SetModelPolicy(modelPolicy)
+		}
+
+		// 2026-07-09: Wire Memora DLQ into admin handler for DLQ management endpoints
+		if memorySvc != nil && memorySvc.DLQ() != nil {
+			adminHandler.SetDLQ(&dlqAdapter{dlq: memorySvc.DLQ()})
+			slog.Info("admin handler DLQ enabled", "dlq_available", true)
 		}
 
 		slog.Info("CHECKPOINT: before EnsureUsersTable")
@@ -1880,8 +1905,15 @@ func main() {
 	// 2026-07-09: 飞书机器人模块 late-binding（在 mux 创建后注入 callback 路由）。
 	// 复用 initApprovalNotifier 阶段创建的 LarkBotChannel 与 auditBus；
 	// 装配失败仅记日志，不影响主进程启动（best-effort）。
-	if _, ferr := InitFeishubotPlugin(gAuditBus, gLarkCh, gApprovalMgr, mux); ferr != nil {
-		slog.Warn("feishubot init failed (best-effort)", "error", ferr)
+	if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
+		if _, ferr := InitFeishubotPlugin(gAuditBus, gLarkCh, gApprovalMgr, mux, dbConn.Pool()); ferr != nil {
+			slog.Warn("v2 pipeline: feishubot init failed (best-effort)", "error", ferr)
+		}
+	} else {
+		// 兼容模式：无 db pool，Plugin 走 settings_kv 兜底
+		if _, ferr := InitFeishubotPlugin(gAuditBus, gLarkCh, gApprovalMgr, mux, nil); ferr != nil {
+			slog.Warn("v2 pipeline: feishubot init failed (best-effort)", "error", ferr)
+		}
 	}
 
 	// NET-007 fix: /healthz 拆分两 path：
@@ -2135,17 +2167,7 @@ func main() {
 				healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
 				healthWorker.Start(context.Background())
 				slog.Info("session health worker started (hourly)")
-
-			// Task T1.5: 会话生命周期后台 worker (2026-07-09, session_inspector 模块)
-			// 周期性扫描不活跃/超期会话并按 session_inspector.idle.recycle_action 回收。
-			// 默认配置：cleanup_interval=5m, idle_timeout=30m, soft_close。
-			// 注意：bg.LifecycleEventPublisher 接口与 eventbus.MemoryBus 不兼容，
-			// 因为 Publish 签名不同（LifecycleEvent vs eventbus.Event）。
-			// 暂时不注入 EventBus，后续可通过适配器模式桥接。
-			lifecycleWorker := bg.NewSessionLifecycleWorker(dbConn.Pool())
-			lifecycleWorker.Start(context.Background())
-			slog.Info("session lifecycle worker started (5m interval, soft_close default)")
-		}
+			}
 		}
 
 		// Task T1.4: Usage Cost Enhanced API 注册已在 admin/handler.go:572 完成

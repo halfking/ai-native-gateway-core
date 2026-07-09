@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, setJwtToken, setUserInfo } from './store'
+import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo } from './store'
 import { logout as apiLogout } from './api/auth'
 import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
@@ -23,20 +23,46 @@ const showChangePassword = ref(false)
 const passwordSuccessMessage = ref('')
 const mustChangePassword = computed(() => !!store.jwtToken && !!store.userInfo?.must_change_password)
 
+// 2026-07-09: isHydrating 防止页面在 auth probe 完成前误判为未登录。
+// 与 store.authHydrated 配合：App.vue onMounted 触发 /api/auth/me，settle 后翻为 true。
+const isHydrating = computed(() => !store.authHydrated)
+
 const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey || store.userInfo))
 const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
 const isTenantPortal = computed(() => !isPlatformOps.value)
 
 onMounted(async () => {
-  if (store.userInfo && !store.jwtToken && !store.apiKey) {
-    try {
-      const me = await getAuthMe()
-      setUserInfo(me)
-      setJwtToken('cookie')
-    } catch {
-      clearJwt()
+  // 2026-07-09: 始终探测一次 /api/auth/me（无论 store.userInfo 是否已有）。
+  // 这修复了「页面渲染时 store 为空，router 弹回首页，cookie auth 永远登不上」
+  // 的问题。authHydrated 必须先翻为 true 模板才会切到 app-layout。
+  // 流程：
+  //   1. userInfo 有 + apiKey/jwtToken 都无 → 可能 cookie 登录（async 探一下）
+  //   2. userInfo 无 + apiKey/jwtToken 都无 → 肯定没登录，直接 mark 完
+  //   3. 其他情况（apiKey 或 jwtToken 在）→ 已登录，直接 mark
+  try {
+    if (store.userInfo && !store.jwtToken && !store.apiKey) {
+      // 仅有 userInfo 的情况：探一下 cookie
+      try {
+        const me = await getAuthMe()
+        setUserInfo(me)
+        setJwtToken('cookie')
+      } catch {
+        clearJwt()
+      }
+    } else if (!store.userInfo && !store.jwtToken && !store.apiKey) {
+      // 完全没凭据：探一下看 cookie 是不是还活着
+      try {
+        const me = await getAuthMe()
+        setUserInfo(me)
+        setJwtToken('cookie')
+      } catch {
+        // 401 → 真的没登录，userInfo 保持 null
+      }
     }
+    // else: apiKey 或 jwtToken 至少有一个 → 已知登录
+  } finally {
+    markAuthHydrated()
   }
 })
 
@@ -122,6 +148,7 @@ watch(
 async function logout() {
   try { await apiLogout() } catch { /* ignore */ }
   clearAll()
+  markAuthHydrated() // 2026-07-09: 登出后保持 hydrated=true，下一次 mount 才会重新探测
   router.push('/')
 }
 
@@ -138,7 +165,16 @@ function handleChangePasswordSuccess() {
 </script>
 
 <template>
-  <div class="app-layout" v-if="isLoggedIn" :class="{ 'sidebar-collapsed': collapsed }">
+  <!--
+    2026-07-09: 三态渲染 — hydrating / logged-in / guest.
+    - isHydrating=true 时显示加载中，避免在 /api/auth me 探测完成前误判为未登录
+    - 否则按 isLoggedIn 切 app-layout / guest-layout
+  -->
+  <div v-if="isHydrating" class="auth-loading">
+    <div class="auth-loading-spinner" />
+    <div class="auth-loading-text">{{ t('login.checking') || '正在检测登录状态…' }}</div>
+  </div>
+  <div v-else-if="isLoggedIn" class="app-layout" :class="{ 'sidebar-collapsed': collapsed }">
     <aside class="sidebar">
       <div class="sidebar-logo">
         <svg width="24" height="24" viewBox="0 0 32 32" fill="none" aria-hidden="true">
@@ -292,6 +328,33 @@ function handleChangePasswordSuccess() {
 </template>
 
 <style scoped>
+/* 2026-07-09: 首次进入时的 auth 探测加载中状态 */
+.auth-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: var(--bg-card, #161b22);
+  color: var(--text-secondary, #8b949e);
+  font-size: 13px;
+}
+.auth-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border, #30363d);
+  border-top-color: var(--accent, #6366f1);
+  border-radius: 50%;
+  animation: auth-spin 0.8s linear infinite;
+  margin-bottom: 14px;
+}
+.auth-loading-text {
+  letter-spacing: 0.05em;
+}
+@keyframes auth-spin {
+  to { transform: rotate(360deg); }
+}
+
 .app-layout {
   display: flex;
   height: 100vh;
