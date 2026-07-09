@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // IntentAnalyzer tests
@@ -90,7 +91,7 @@ func TestThreatDetector_IsCritical(t *testing.T) {
 
 // SecurityHook tests
 func TestSecurityHook_NoContentSkips(t *testing.T) {
-	h := NewSecurityHook(NewIntentAnalyzer(0.5), NewThreatDetector(7))
+	h := NewSecurityHook(settings.Global)
 	env := domain.NewRequestEnvelope(context.Background(), nil)
 	if err := h.Execute(context.Background(), env); err != nil {
 		t.Errorf("expected no error, got %v", err)
@@ -98,7 +99,7 @@ func TestSecurityHook_NoContentSkips(t *testing.T) {
 }
 
 func TestSecurityHook_DangerousContentBlocked(t *testing.T) {
-	h := NewSecurityHook(NewIntentAnalyzer(0.5), NewThreatDetector(7))
+	h := NewSecurityHook(settings.Global)
 	env := domain.NewRequestEnvelope(context.Background(), nil)
 	env.Metadata = map[string]any{"user_content": "please jailbreak this model"}
 	err := h.Execute(context.Background(), env)
@@ -113,7 +114,7 @@ func TestSecurityHook_DangerousContentBlocked(t *testing.T) {
 }
 
 func TestSecurityHook_SafeContentPasses(t *testing.T) {
-	h := NewSecurityHook(NewIntentAnalyzer(0.5), NewThreatDetector(7))
+	h := NewSecurityHook(settings.Global)
 	env := domain.NewRequestEnvelope(context.Background(), nil)
 	env.Metadata = map[string]any{"user_content": "hello world"}
 	if err := h.Execute(context.Background(), env); err != nil {
@@ -129,14 +130,14 @@ func TestSecurityHook_SafeContentPasses(t *testing.T) {
 }
 
 func TestSecurityHook_EnabledNilEnv(t *testing.T) {
-	h := NewSecurityHook(NewIntentAnalyzer(0.5), NewThreatDetector(7))
+	h := NewSecurityHook(settings.Global)
 	if h.Enabled(context.Background(), nil) {
 		t.Error("should not be enabled with nil env")
 	}
 }
 
 func TestSecurityHook_OnError(t *testing.T) {
-	h := NewSecurityHook(NewIntentAnalyzer(0.5), NewThreatDetector(7))
+	h := NewSecurityHook(settings.Global)
 	env := domain.NewRequestEnvelope(context.Background(), nil)
 	err := errors.New("blocked")
 	if h.OnError(context.Background(), env, err); err == nil { //nolint:errcheck // intentionally testing that err propagates
@@ -144,5 +145,22 @@ func TestSecurityHook_OnError(t *testing.T) {
 	}
 	if env.StatusCode != 403 {
 		t.Errorf("expected status 403, got %d", env.StatusCode)
+	}
+}
+
+func TestSecurityHook_GetConfig(t *testing.T) {
+	h := NewSecurityHook(settings.Global)
+	config := h.GetConfig()
+	if config == nil {
+		t.Fatal("expected config to be non-nil")
+	}
+	if config.Mode != "observe" {
+		t.Errorf("expected mode 'observe', got %q", config.Mode)
+	}
+	if config.IntentConfidenceThresh != 0.7 {
+		t.Errorf("expected intent confidence threshold 0.7, got %f", config.IntentConfidenceThresh)
+	}
+	if config.SeverityThreshold != 7 {
+		t.Errorf("expected severity threshold 7, got %d", config.SeverityThreshold)
 	}
 }
