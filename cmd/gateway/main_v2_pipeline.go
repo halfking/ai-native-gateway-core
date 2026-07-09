@@ -63,6 +63,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/routing"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // v2PipelineConfig holds the feature-flag-driven configuration for the v2
@@ -185,10 +186,7 @@ func buildV2Pipeline(deps *v2PipelineDeps) *pipeline.RequestPipeline {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "security", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{
-				security.NewSecurityHook(
-					security.NewIntentAnalyzer(0.5),
-					security.NewThreatDetector(7),
-				),
+				security.NewSecurityHook(settings.Global),
 			},
 		})
 	}

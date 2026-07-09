@@ -116,6 +116,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // v2DispatchConfig holds the feature-flag-driven configuration for the
@@ -310,10 +311,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "security", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{
-				legacysec.NewSecurityHook(
-					legacysec.NewIntentAnalyzer(0.5),
-					legacysec.NewThreatDetector(7),
-				),
+				legacysec.NewSecurityHook(settings.Global),
 			},
 		})
 	}
