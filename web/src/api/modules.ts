@@ -11,6 +11,16 @@ export interface ModuleIntegration {
   doc_url: string
 }
 
+export interface ModuleDependency {
+  key: string
+  name: string
+  icon?: string
+  required: boolean
+  description: string
+  /** Runtime status filled by the backend (true when this dependency is currently enabled). */
+  enabled?: boolean
+}
+
 export interface ModuleDefinition {
   key: string
   name: string
@@ -23,17 +33,16 @@ export interface ModuleDefinition {
   docs_url: string
   danger_level: number
   integration?: ModuleIntegration
-  /** Soft-dependency list: other module keys that should be enabled. UI hint only. */
-  requires?: string[]
+  dependencies?: ModuleDependency[]
 }
 
 export interface ModuleWithStatus extends ModuleDefinition {
   enabled: boolean
   source: string
-  /** True when all required modules are enabled. */
-  requirements_met: boolean
-  /** Required module keys that are NOT enabled (empty when requirements_met=true). */
-  missing_requirements?: string[]
+  /** True when all required dependencies are enabled (no blocked dependencies). */
+  can_toggle_enabled: boolean
+  /** Human-readable reason why this module cannot be enabled. */
+  blocked_reason?: string
 }
 
 export interface ModuleDetail {
@@ -55,10 +64,20 @@ export function getModule(key: string) {
   return req<ModuleDetail>('GET', `/api/admin/modules/${key}`)
 }
 
+export interface ToggleModuleResponse {
+  status: string
+  enabled: boolean
+  module: string
+  message: string
+  /** When cascade=true and required deps were auto-enabled, this lists their module keys. */
+  cascaded?: string[]
+}
+
 /** Toggle a module's enabled/disabled state. */
-export function toggleModule(key: string, enabled: boolean) {
-  return req<{ status: string; enabled: boolean; module: string; message: string }>(
-    'PUT', `/api/admin/modules/${key}/toggle`, { enabled })
+export function toggleModule(key: string, enabled: boolean, opts: { cascade?: boolean } = {}) {
+  const qs = opts.cascade ? '?cascade=true' : ''
+  return req<ToggleModuleResponse>(
+    'PUT', `/api/admin/modules/${key}/toggle${qs}`, { enabled })
 }
 
 /** Test the integration (e.g., send a probe message to feishu webhook). */
@@ -77,107 +96,4 @@ export function testModule(key: string) {
 /** Get the lightweight config summary (for module dashboard cards). */
 export function getModuleConfig(key: string) {
   return req<Record<string, any>>('GET', `/api/admin/modules/${key}/config`)
-}
-
-// ── 飞书机器人运营面（routing rules + send log）─────────────
-
-/** 飞书路由规则（按 OpenID 维度） */
-export interface FeishuRouteRule {
-  id: number
-  tenant_id: string
-  open_id: string
-  display_name: string
-  user_role: 'admin' | 'member' | 'auditor'
-  risk_levels: string[]
-  priority: number
-  enabled: boolean
-  note: string
-  created_by?: string
-  created_at: string
-  updated_at: string
-}
-
-export interface FeishuRouteRuleCreate {
-  open_id: string
-  display_name?: string
-  user_role?: 'admin' | 'member' | 'auditor'
-  risk_levels?: string[]
-  priority?: number
-  enabled?: boolean
-  note?: string
-  tenant_id?: string
-}
-
-export function listFeishuRoutingRules(params?: {
-  tenant_id?: string
-  enabled_only?: boolean
-  user_role?: string
-  limit?: number
-}) {
-  const qs = new URLSearchParams()
-  if (params?.tenant_id) qs.set('tenant_id', params.tenant_id)
-  if (params?.enabled_only) qs.set('enabled_only', 'true')
-  if (params?.user_role) qs.set('user_role', params.user_role)
-  if (params?.limit) qs.set('limit', String(params.limit))
-  const s = qs.toString()
-  return req<{ items: FeishuRouteRule[]; count: number; tenant_id: string }>(
-    'GET', `/api/admin/feishubot/routing-rules${s ? '?' + s : ''}`,
-  )
-}
-
-export function createFeishuRoutingRule(body: FeishuRouteRuleCreate) {
-  return req<FeishuRouteRule & { id: number; created_at: string; updated_at: string }>(
-    'POST', '/api/admin/feishubot/routing-rules', body,
-  )
-}
-
-export function updateFeishuRoutingRule(id: number, body: Partial<FeishuRouteRuleCreate> & {
-  display_name?: string
-  priority?: number
-  enabled?: boolean
-  note?: string
-  risk_levels?: string[]
-  user_role?: 'admin' | 'member' | 'auditor'
-}) {
-  return req<{ id: number; updated: boolean }>(
-    'PUT', `/api/admin/feishubot/routing-rules/${id}`, body,
-  )
-}
-
-export function deleteFeishuRoutingRule(id: number) {
-  return req<{ id: number; deleted: boolean }>(
-    'DELETE', `/api/admin/feishubot/routing-rules/${id}`,
-  )
-}
-
-export interface FeishuSendLogEntry {
-  id: number
-  tenant_id: string
-  event_type: 'alert' | 'approval' | 'command'
-  event_id?: string
-  recipients_count: number
-  success: boolean
-  error_code?: number
-  error_message?: string
-  latency_ms?: number
-  deduped: boolean
-  rate_limited: boolean
-  created_at: string
-}
-
-export function listFeishuSendLog(params?: {
-  tenant_id?: string
-  event_type?: 'alert' | 'approval' | 'command'
-  success?: boolean
-  limit?: number
-}) {
-  const qs = new URLSearchParams()
-  if (params?.tenant_id) qs.set('tenant_id', params.tenant_id)
-  if (params?.event_type) qs.set('event_type', params.event_type)
-  if (params?.success !== undefined) qs.set('success', String(params.success))
-  if (params?.limit) qs.set('limit', String(params.limit))
-  const s = qs.toString()
-  return req<{ items: FeishuSendLogEntry[]; count: number; tenant_id: string }>(
-    'GET', `/api/admin/feishubot/send-log${s ? '?' + s : ''}`,
-  )
 }
