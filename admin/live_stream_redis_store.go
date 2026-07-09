@@ -108,6 +108,7 @@ const (
 	liveStreamActivityPrefix = "llmgw:live:activity:"
 	liveStreamTTL            = 28800 * time.Second // 8 hours
 	liveStreamLaneLimit      = 30
+	liveStreamReplayLimit    = 200 // 默认回放请求数：泳道中请求的有效期靠 TTL(8h)保证，数量上限放宽到 200，让请求“直到被挤出去”而非被过小的 replay 上限提前丢弃
 	idleThresholdSeconds     = 60 // 1 minute
 )
 
@@ -323,7 +324,7 @@ func (s *LiveStreamRedisStore) Replay(ctx context.Context, tenantID string, isSu
 		return nil, nil
 	}
 	if limit <= 0 {
-		limit = 50
+		limit = liveStreamReplayLimit
 	}
 
 	key := liveStreamMainKey
@@ -562,23 +563,23 @@ func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 		}
 		return key
 	case "provider":
-		// 用户原话：每个请求有凭据节点，credential → provider 一定查得到。
-		// 就算供应商没有名称（display_name 为空），也应该用 code，不能为未知。
+		// 设计原则（2026-07-09 审计修正）：provider(供应商) 维度只认凭据反查的结果
+		// （telemetry.CredentialID → credentials JOIN providers → display_name）。
+		// 之前当 ProviderCode 为空时用 CanonicalName/Model 兜底，会把模型名
+		// （如 "minimax-m3"）塞进 provider 维度，于是同一个供应商同时出现
+		// "MiniMax"（凭据反查）和 "minimax-m3"（模型名兜底）两个泳道。
+		//
+		// 现在：ProviderCode 为空/未知时返回 ""，该请求不在 provider 维度显示，
+		// 模型名永远只出现在 model 维度。ProviderCode 为空的两种真实场景：
+		//   1) credential_id == 0：请求未到达凭据选择（auth/路由失败/探测记录）；
+		//   2) 凭据已被删除，credential→provider JOIN 查不到。
+		// 这两种情况下"供应商"本身就没有意义，不应凭空造一个模型名泳道。
 		if req.Type == "idle_marker" {
 			return ""
 		}
-		// 1) ProviderCode 来自 replay SQL：COALESCE(p.name, p.catalog_code, p.code)
-		//    一定非空（除非整条 request_logs 没找到对应的 providers 行）。
-		// 2) 异常兜底：当 provider_code 为 "" / "unknown" 时，用 canonical name 或 model。
 		pc := strings.TrimSpace(req.ProviderCode)
 		if pc == "" || pc == "unknown" || pc == "__unknown__" {
-			if req.CanonicalName != "" {
-				return req.CanonicalName
-			}
-			if req.Model != "" {
-				return req.Model
-			}
-			return "其他"
+			return ""
 		}
 		return pc
 	case "model":
@@ -671,6 +672,8 @@ func InferVendorFromModel(model string) string {
 		return "meta"
 	case strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"):
 		return "mistral"
+	case strings.Contains(m, "minimax"):
+		return "minimax"
 	case strings.Contains(m, "mimo"):
 		return "xiaomi"
 	case strings.Contains(m, "phi"):
