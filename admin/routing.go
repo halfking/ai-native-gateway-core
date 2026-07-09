@@ -234,7 +234,10 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			LEFT JOIN model_offers mo ON mo.credential_id = v.credential_id 
 				AND mo.raw_model_name = v.raw_model_name
 			WHERE p.tenant_id = 'default'
-			  AND lower(v.raw_model_name) = ANY($1)
+			  AND (
+			      lower(v.raw_model_name) = ANY($1)
+			      OR lower(COALESCE(mo.standardized_name, v.raw_model_name)) = ANY($1)
+			  )
 			  AND p.enabled IS TRUE
 			  AND (v.is_routable = true OR $2)
 			ORDER BY
