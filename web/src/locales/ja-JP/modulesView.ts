@@ -78,6 +78,15 @@ export default {
       '前提モジュール（圧縮管理、注入検出、セッションキャッシュ、セッション監査）がすべて有効であることを確認',
     ],
     wechatBotIntegration: 'WeChatボット統合',
+    dingtalkSteps: [
+      'DingTalkグループに「カスタムボット」を追加し、セキュリティ「署名」を選択してWebhookをコピー',
+      '下部の設定にWebhook URLを貼り付け、署名Secretを入力',
+      '（任意）開発者コンソールで社内アプリを作成し、AppKey/AppSecret/AgentIDを入力してワーク通知を有効化',
+      '承認コールバックURL（/api/webhooks/dingtalk/approval-callback）をボットのメッセージ受信先に設定',
+      '「DingTalkボット統合」スイッチを有効化',
+      '前提モジュール（圧縮、注入検知、セッションキャッシュ、セッション監査）が有効であることを確認',
+    ],
+    dingtalkBotIntegration: 'DingTalkボット統合',
   },
 
   empty: {
