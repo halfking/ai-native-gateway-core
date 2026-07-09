@@ -35,6 +35,7 @@ export default {
     config: '設定',
     integration: '整合',
     status: '執行狀態',
+    routing: '路由規則',
   },
 
   overview: {
@@ -98,8 +99,35 @@ export default {
     feishuBotIntegration: '飛書機器人整合',
   },
 
+    importCsv: '批次匯入 CSV',
+    close: '關閉',
+    csvImportResult: '批次匯入結果',
+    csvImportSuccess: '已匯入 {imported} 條，跳過 {skipped} 條',
+    csvErrorRow: '第 {row} 行：{error}',
   empty: {
     selectModule: '選擇一個模組以檢視詳細資料與設定',
+  },
+
+  routing: {
+    title: '飛書路由規則',
+    addNew: '新增規則',
+    cancel: '取消',
+    save: '儲存',
+    formTitle: '新增飛書 OpenID 規則',
+    openId: '飛書 OpenID',
+    openIdPlaceholder: 'ou_xxxxxxxx',
+    displayName: '顯示名',
+    userRole: '使用者角色',
+    priority: '優先順序',
+    note: '備註',
+    enabled: '啟用',
+    riskLevels: '風險等級',
+    actions: '操作',
+    enable: '啟用',
+    disable: '停用',
+    delete: '刪除',
+    loading: '載入中…',
+    empty: '尚無規則。點擊「新增規則」建立第一條。',
   },
 
   error: {

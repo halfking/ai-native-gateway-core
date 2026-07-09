@@ -35,6 +35,7 @@ export default {
     config: 'Configuración',
     integration: 'Integración',
     status: 'Ejecución',
+    routing: 'Enrutamiento',
   },
 
   overview: {
@@ -98,8 +99,35 @@ export default {
     feishuBotIntegration: 'Integración del bot Feishu',
   },
 
+    importCsv: 'Importar CSV',
+    close: 'Cerrar',
+    csvImportResult: 'Resultado de la importación',
+    csvImportSuccess: '{imported} importadas, {skipped} omitidas',
+    csvErrorRow: 'Fila {row}: {error}',
   empty: {
     selectModule: 'Seleccione un módulo para ver detalles y configuración',
+  },
+
+  routing: {
+    title: 'Reglas de enrutamiento de Feishu',
+    addNew: 'Añadir',
+    cancel: 'Cancelar',
+    save: 'Guardar',
+    formTitle: 'Nueva regla de Feishu OpenID',
+    openId: 'Feishu OpenID',
+    openIdPlaceholder: 'ou_xxxxxxxx',
+    displayName: 'Nombre mostrado',
+    userRole: 'Rol de usuario',
+    priority: 'Prioridad',
+    note: 'Nota',
+    enabled: 'Habilitado',
+    riskLevels: 'Niveles de riesgo',
+    actions: 'Acciones',
+    enable: 'Habilitar',
+    disable: 'Deshabilitar',
+    delete: 'Eliminar',
+    loading: 'Cargando…',
+    empty: 'No hay reglas. Haz clic en « Añadir » para crear la primera.',
   },
 
   error: {

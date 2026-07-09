@@ -35,6 +35,7 @@ export default {
     config: '設定',
     integration: '連携',
     status: 'ランタイム',
+    routing: 'ルーティング',
   },
 
   overview: {
@@ -98,8 +99,35 @@ export default {
     feishuBotIntegration: 'Feishuボット連携',
   },
 
+    importCsv: 'CSV インポート',
+    close: '閉じる',
+    csvImportResult: 'インポート結果',
+    csvImportSuccess: '{imported} 件をインポート、{skipped} 件をスキップ',
+    csvErrorRow: '行 {row}: {error}',
   empty: {
     selectModule: '詳細と設定を表示するモジュールを選択してください',
+  },
+
+  routing: {
+    title: 'Feishuルーティングルール',
+    addNew: '新規追加',
+    cancel: 'キャンセル',
+    save: '保存',
+    formTitle: 'Feishu OpenID ルールを追加',
+    openId: 'Feishu OpenID',
+    openIdPlaceholder: 'ou_xxxxxxxx',
+    displayName: '表示名',
+    userRole: 'ユーザーロール',
+    priority: '優先度',
+    note: 'メモ',
+    enabled: '有効',
+    riskLevels: 'リスクレベル',
+    actions: '操作',
+    enable: '有効化',
+    disable: '無効化',
+    delete: '削除',
+    loading: '読み込み中…',
+    empty: 'ルールがありません。「新規追加」をクリックして作成してください。',
   },
 
   error: {

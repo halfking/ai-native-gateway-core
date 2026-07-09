@@ -17,4 +17,6 @@ export default {
   },
   changePassword: "[TODO: login.changePassword]",
   passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
+  // 2026-07-09: First-load auth probe message
+  checking: 'Checking login status…',
 }

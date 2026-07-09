@@ -17,5 +17,6 @@ export default {
     failed: 'Anmeldung fehlgeschlagen',
   },
   changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
+  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",  // 2026-07-09: Auth-Probe-Nachricht beim ersten Laden
+  checking: 'Anmeldestatus wird überprüft…',
 }

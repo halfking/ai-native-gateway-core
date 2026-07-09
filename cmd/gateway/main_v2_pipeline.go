@@ -443,7 +443,7 @@ func registerV2PipelineRoutes(parent *http.ServeMux) {
 	// 2026-07-09: 飞书机器人模块 late-binding。
 	// 与 main.go 同一函数 InitFeishubotPlugin；v2 pipeline 无 LarkChannel 注入，
 	// 因此仅在 gLarkCh 非空时生效。失败仅记日志（best-effort）。
-	if _, ferr := InitFeishubotPlugin(deps.EventBus, gLarkCh, gApprovalMgr, parent); ferr != nil {
+	if _, ferr := InitFeishubotPlugin(deps.EventBus, gLarkCh, gApprovalMgr, parent, nil); ferr != nil {
 		slog.Warn("v2 pipeline: feishubot init failed (best-effort)", "error", ferr)
 	}
 

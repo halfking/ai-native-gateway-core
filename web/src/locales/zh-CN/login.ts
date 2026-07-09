@@ -17,4 +17,6 @@ export default {
   },
   changePassword: "[TODO: login.changePassword]",
   passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
+  // 2026-07-09: 首次进入页面时检测 cookie auth 状态的提示文案
+  checking: '正在检测登录状态…',
 }

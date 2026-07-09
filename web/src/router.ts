@@ -180,6 +180,27 @@ export const router = createRouter({
 })
 
 router.beforeEach((to) => {
+  // 2026-07-09: auth probe 还没完成时不要做任何 redirect，否则会在 cookie 登录后
+  // 把用户弹回首页 / login，App.vue 的 hydration 永远没机会切到 app-layout。
+  // 让 /api/auth/me 先 settle（store.authHydrated=true）再评估 auth。
+  if (!store.authHydrated) {
+    // 把目标 path 保存到 query，hydration 完成后会重定向过去
+    if (to.path === '/' && to.query.login) {
+      // Already going to home with login=1, allow
+      return
+    }
+    // 第一次访问：等 hydration 完成
+    return new Promise<void>((resolve) => {
+      const check = () => {
+        if (store.authHydrated) {
+          resolve()
+        } else {
+          setTimeout(check, 30)
+        }
+      }
+      check()
+    })
+  }
   // 1. Auth check — unauthenticated users land on home, not full-page login
   if (!to.meta.public && !isAuthed()) {
     return { path: '/', query: { login: '1', redirect: to.fullPath } }

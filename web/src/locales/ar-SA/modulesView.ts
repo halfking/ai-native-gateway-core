@@ -35,6 +35,7 @@ export default {
     config: 'الإعدادات',
     integration: 'التكامل',
     status: 'وقت التشغيل',
+    routing: 'التوجيه',
   },
 
   overview: {
@@ -98,8 +99,35 @@ export default {
     feishuBotIntegration: 'تكامل بوت Feishu',
   },
 
+    importCsv: 'استيراد CSV',
+    close: 'إغلاق',
+    csvImportResult: 'نتيجة الاستيراد',
+    csvImportSuccess: 'تم استيراد {imported}، تم تخطي {skipped}',
+    csvErrorRow: 'الصف {row}: {error}',
   empty: {
     selectModule: 'اختر وحدة لعرض التفاصيل والإعدادات',
+  },
+
+  routing: {
+    title: 'قواعد توجيه Feishu',
+    addNew: 'إضافة جديدة',
+    cancel: 'إلغاء',
+    save: 'حفظ',
+    formTitle: 'قاعدة Feishu OpenID جديدة',
+    openId: 'Feishu OpenID',
+    openIdPlaceholder: 'ou_xxxxxxxx',
+    displayName: 'اسم العرض',
+    userRole: 'دور المستخدم',
+    priority: 'الأولوية',
+    note: 'ملاحظة',
+    enabled: 'مفعّل',
+    riskLevels: 'مستويات الخطر',
+    actions: 'إجراءات',
+    enable: 'تفعيل',
+    disable: 'تعطيل',
+    delete: 'حذف',
+    loading: 'جارٍ التحميل…',
+    empty: 'لا توجد قواعد. انقر فوق "إضافة جديدة" لإنشاء أول قاعدة.',
   },
 
   error: {

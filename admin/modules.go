@@ -25,17 +25,10 @@ type ModuleDefinition struct {
 	DocsURL      string               `json:"docs_url"`
 	DangerLevel  settings.DangerLevel `json:"danger_level"`
 	Integration  *ModuleIntegration   `json:"integration,omitempty"`
-	Dependencies []ModuleDependency   `json:"dependencies,omitempty"`
-}
 
-// ModuleDependency describes a dependency relationship between modules.
-type ModuleDependency struct {
-	Key         string `json:"key"`
-	Name        string `json:"name"`
-	Icon        string `json:"icon"`
-	Required    bool   `json:"required"`
-	Description string `json:"description"`
-	Enabled     bool   `json:"enabled,omitempty"`
+	// Requires 列出依赖的其他 module.key。依赖未启用时 UI 给出软提示（不阻断 toggle）。
+	// 业务侧通过 EnabledEffective() 自行决定是否启用插件逻辑。
+	Requires []string `json:"requires,omitempty"`
 }
 
 // ModuleIntegration describes external integration configuration for a module.
@@ -49,10 +42,12 @@ type ModuleIntegration struct {
 // ModuleWithStatus extends ModuleDefinition with runtime status.
 type ModuleWithStatus struct {
 	ModuleDefinition
-	Enabled          bool   `json:"enabled"`
-	Source           string `json:"source"`
-	CanToggleEnabled bool   `json:"can_toggle_enabled"`
-	BlockedReason    string `json:"blocked_reason,omitempty"`
+	Enabled bool   `json:"enabled"`
+	Source  string `json:"source"`
+	// RequirementsMet 当 Requires 全部启用时为 true。false 时 UI 应展示软提示。
+	RequirementsMet bool `json:"requirements_met"`
+	// MissingRequirements 列出当前未启用的依赖 key（仅 requirements_met=false 时非空）。
+	MissingRequirements []string `json:"missing_requirements,omitempty"`
 }
 
 var (
@@ -357,6 +352,7 @@ func allModuleDefinitions() []ModuleDefinition {
 					"feishu_bot.timestamp_window_seconds",
 				},
 				DangerLevel: settings.Safe,
+				Requires:    []string{"compression", "cache", "prompt_injection", "session_audit"},
 				Integration: &ModuleIntegration{
 					Type:        "feishu",
 					Label:       "飞书",
@@ -501,127 +497,28 @@ func resolveModuleEnabled(m ModuleDefinition) (enabled bool, source string) {
 	return v, src
 }
 
-// detectCircularDependencies checks if the module dependency graph contains cycles.
-// Returns an error describing the cycle if found, nil otherwise.
-func detectCircularDependencies(modules []ModuleDefinition) error {
-	// Build adjacency list
-	graph := make(map[string][]string)
-	moduleSet := make(map[string]bool)
-
-	for _, m := range modules {
-		moduleSet[m.Key] = true
-		graph[m.Key] = make([]string, 0, len(m.Dependencies))
-		for _, dep := range m.Dependencies {
-			graph[m.Key] = append(graph[m.Key], dep.Key)
+// allDepsEnabled 检查 module 的所有 Requires 是否在 enabledMap 中为 true。
+//
+// 若 module 没有 Requires 一律返回 true。
+// 用途：UI 软提示 / 插件侧 fail-secure 判断。
+func allDepsEnabled(m ModuleDefinition, enabledMap map[string]bool) bool {
+	for _, dep := range m.Requires {
+		if !enabledMap[dep] {
+			return false
 		}
 	}
-
-	// DFS-based cycle detection with path tracking
-	const (
-		unvisited = 0
-		visiting  = 1
-		visited   = 2
-	)
-
-	state := make(map[string]int)
-	path := make([]string, 0)
-
-	var dfs func(string) error
-	dfs = func(node string) error {
-		if state[node] == visiting {
-			// Found cycle: construct cycle path
-			cycleStart := -1
-			for i, p := range path {
-				if p == node {
-					cycleStart = i
-					break
-				}
-			}
-			if cycleStart >= 0 {
-				cyclePath := append(path[cycleStart:], node)
-				return fmt.Errorf("circular dependency detected: %s", strings.Join(cyclePath, " -> "))
-			}
-			return fmt.Errorf("circular dependency detected involving: %s", node)
-		}
-
-		if state[node] == visited {
-			return nil
-		}
-
-		state[node] = visiting
-		path = append(path, node)
-
-		for _, neighbor := range graph[node] {
-			// Skip dependencies that don't exist in the module set
-			// (they might be external or optional)
-			if !moduleSet[neighbor] {
-				continue
-			}
-
-			if err := dfs(neighbor); err != nil {
-				return err
-			}
-		}
-
-		path = path[:len(path)-1]
-		state[node] = visited
-		return nil
-	}
-
-	// Check all nodes (handles disconnected components)
-	for _, m := range modules {
-		if state[m.Key] == unvisited {
-			if err := dfs(m.Key); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
+	return true
 }
 
-func moduleStatusMap(defs []ModuleDefinition) map[string]ModuleWithStatus {
-	statuses := make(map[string]ModuleWithStatus, len(defs))
-	for _, m := range defs {
-		enabled, src := resolveModuleEnabled(m)
-		statuses[m.Key] = ModuleWithStatus{
-			ModuleDefinition: m,
-			Enabled:          enabled,
-			Source:           src,
-			CanToggleEnabled: true,
+// missingDeps 返回 enabledMap 中为 false 的依赖 key 列表（按 Requires 顺序）。
+func missingDeps(m ModuleDefinition, enabledMap map[string]bool) []string {
+	var out []string
+	for _, dep := range m.Requires {
+		if !enabledMap[dep] {
+			out = append(out, dep)
 		}
 	}
-	for key, status := range statuses {
-		blocked := requiredDependencyBlockReason(statuses, status.ModuleDefinition)
-		status.BlockedReason = blocked
-		status.CanToggleEnabled = blocked == ""
-		if len(status.Dependencies) > 0 {
-			deps := make([]ModuleDependency, 0, len(status.Dependencies))
-			for _, dep := range status.Dependencies {
-				dep.Enabled = statuses[dep.Key].Enabled
-				deps = append(deps, dep)
-			}
-			status.Dependencies = deps
-		}
-		statuses[key] = status
-	}
-	return statuses
-}
-
-func requiredDependencyBlockReason(statuses map[string]ModuleWithStatus, mod ModuleDefinition) string {
-	missing := make([]string, 0, len(mod.Dependencies))
-	for _, dep := range mod.Dependencies {
-		if !dep.Required {
-			continue
-		}
-		if depStatus, ok := statuses[dep.Key]; !ok || !depStatus.Enabled {
-			missing = append(missing, dep.Name)
-		}
-	}
-	if len(missing) == 0 {
-		return ""
-	}
-	return "需先启用依赖模块: " + strings.Join(missing, "、")
+	return out
 }
 
 // handleModulesList returns all modules with their current enabled/disabled status.
@@ -633,10 +530,23 @@ func (h *Handler) handleModulesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defs := allModuleDefinitions()
-	statusMap := moduleStatusMap(defs)
+	// 先把所有 (key → enabled) 一次性算好，避免 Requires 计算时重复查 settings。
+	enabledMap := make(map[string]bool, len(defs))
+	srcMap := make(map[string]string, len(defs))
+	for _, m := range defs {
+		en, src := resolveModuleEnabled(m)
+		enabledMap[m.Key] = en
+		srcMap[m.Key] = src
+	}
 	out := make([]ModuleWithStatus, 0, len(defs))
 	for _, m := range defs {
-		out = append(out, statusMap[m.Key])
+		out = append(out, ModuleWithStatus{
+			ModuleDefinition:    m,
+			Enabled:             enabledMap[m.Key],
+			Source:              srcMap[m.Key],
+			RequirementsMet:     allDepsEnabled(m, enabledMap),
+			MissingRequirements: missingDeps(m, enabledMap),
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
@@ -654,9 +564,15 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 
 	defs := allModuleDefinitions()
 	var found *ModuleDefinition
+	// 同步构建 enabledMap，供 requirements 校验与自身 enabled 复用。
+	enabledMap := make(map[string]bool, len(defs))
 	for _, m := range defs {
+		en, _ := resolveModuleEnabled(m)
+		enabledMap[m.Key] = en
+	}
+	for i, m := range defs {
 		if m.Key == key {
-			found = &m
+			found = &defs[i]
 			break
 		}
 	}
@@ -665,7 +581,9 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	statusMap := moduleStatusMap(defs)
+	enabled, src := resolveModuleEnabled(*found)
+	reqsMet := allDepsEnabled(*found, enabledMap)
+	missing := missingDeps(*found, enabledMap)
 
 	// Collect config values for each config key
 	config := make(map[string]any)
@@ -690,7 +608,13 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"module": statusMap[found.Key],
+		"module": ModuleWithStatus{
+			ModuleDefinition:    *found,
+			Enabled:             enabled,
+			Source:              src,
+			RequirementsMet:     reqsMet,
+			MissingRequirements: missing,
+		},
 		"config": config,
 	})
 }
@@ -783,6 +707,51 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) registerModuleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/modules", h.admin(h.handleModulesList))
 	mux.HandleFunc("/api/admin/modules/", h.admin(h.handleModulesRouter))
+
+	// 2026-07-09: 飞书机器人运营面 API
+	// （routing rules CRUD + send log list）见 admin/feishu_handlers.go
+	h.registerFeishuRoutes(mux)
+}
+
+// registerFeishuRoutes 安装飞书机器人运营面路由。
+//
+// 所有端点位于 /api/admin/feishubot/*，admin 鉴权。
+// 设计：routing rules 走 DB 表 feishu_bot_routing_rules，
+// 走完整 CRUD 生命周期（list/create/update/delete）。
+// send-log 是只读查询，最近 200 条。
+func (h *Handler) registerFeishuRoutes(mux *http.ServeMux) {
+	// /api/admin/feishubot/routing-rules
+	// 用 router 子分发区分 GET/POST/PUT/DELETE
+	mux.HandleFunc("/api/admin/feishubot/routing-rules", h.admin(h.feishuRoutingRulesCollection))
+	mux.HandleFunc("/api/admin/feishubot/routing-rules/", h.admin(h.feishuRoutingRulesItem))
+	mux.HandleFunc("/api/admin/feishubot/routing-rules:import", h.admin(h.handleFeishuRoutingRulesImport))
+
+	// /api/admin/feishubot/send-log （只读）
+	mux.HandleFunc("/api/admin/feishubot/send-log", h.admin(h.handleFeishuSendLogList))
+}
+
+// feishuRoutingRulesCollection handles GET (list) and POST (create) on the collection.
+func (h *Handler) feishuRoutingRulesCollection(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleFeishuRoutingList(w, r)
+	case http.MethodPost:
+		h.handleFeishuRoutingCreate(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// feishuRoutingRulesItem handles PUT (update) and DELETE on a single item.
+func (h *Handler) feishuRoutingRulesItem(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPut:
+		h.handleFeishuRoutingUpdate(w, r)
+	case http.MethodDelete:
+		h.handleFeishuRoutingDelete(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 // modulesRouter dispatches /api/admin/modules/{key}[/toggle|/test|/config].
@@ -836,6 +805,13 @@ func (h *Handler) handleModulesTest(w http.ResponseWriter, r *http.Request) {
 }
 
 // testFeishuBotWebhook 向 feishu_bot.webhook_url 发送测试消息。
+//
+// 注意：这是 best-effort 测试，不验证业务签名（飞书 webhook 是单向 POST）。
+// 返回字段：
+//   - reachable: 是否收到 HTTP 200
+//   - status_code: 飞书响应码（0=非 200）
+//   - error: 错误信息
+//   - response_ms: 耗时（毫秒）
 func (h *Handler) testFeishuBotWebhook(w http.ResponseWriter, r *http.Request) {
 	if settings.Global == nil {
 		writeError(w, http.StatusServiceUnavailable, "settings not initialised")
@@ -857,6 +833,7 @@ func (h *Handler) testFeishuBotWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 构造飞书自定义机器人的 test payload（msg_type=text）
 	payload := map[string]any{
 		"msg_type": "text",
 		"content": map[string]any{
@@ -865,6 +842,7 @@ func (h *Handler) testFeishuBotWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := json.Marshal(payload)
 
+	// 通过 http.Client 发送（避免与现有 LarkBotChannel 耦合）
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, strings.NewReader(string(body)))
 	if err != nil {
@@ -938,12 +916,16 @@ func (h *Handler) handleModulesConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // feishuBotConfigSummary 返回 feishu_bot 模块的配置摘要 + 依赖状态。
+//
+// 与 handleModulesGet 不同：本端点不返回所有 config_keys 的 value/spec，
+// 只返回 feishubot.Config.AsJSON() 的聚合字段，便于前端一次性渲染。
 func (h *Handler) feishuBotConfigSummary(w http.ResponseWriter, r *http.Request) {
 	if settings.Global == nil {
 		writeError(w, http.StatusServiceUnavailable, "settings not initialised")
 		return
 	}
 
+	// 读取 feishu_bot.* 配置（不 import domains/feishubot 以避免循环）
 	summary := map[string]any{}
 
 	readString := func(key string) string {
@@ -1006,6 +988,27 @@ func (h *Handler) feishuBotConfigSummary(w http.ResponseWriter, r *http.Request)
 	summary["commands_admin_only"] = readBool("feishu_bot.commands.admin_only")
 	summary["signature_required"] = readBool("feishu_bot.signature_required")
 	summary["timestamp_window_sec"] = readInt("feishu_bot.timestamp_window_seconds")
+
+	// 依赖状态
+	defs := allModuleDefinitions()
+	enabledMap := make(map[string]bool)
+	for _, m := range defs {
+		en, _ := resolveModuleEnabled(m)
+		enabledMap[m.Key] = en
+	}
+	var fb *ModuleDefinition
+	for i, m := range defs {
+		if m.Key == "feishu_bot" {
+			fb = &defs[i]
+			break
+		}
+	}
+	var missing []string
+	if fb != nil {
+		missing = missingDeps(*fb, enabledMap)
+	}
+	summary["requirements_met"] = len(missing) == 0
+	summary["missing_requirements"] = missing
 
 	writeJSON(w, http.StatusOK, summary)
 }

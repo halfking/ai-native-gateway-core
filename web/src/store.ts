@@ -22,6 +22,11 @@ export const store = reactive({
   jwtToken: '', // in-memory only, not persisted
   userInfo: JSON.parse(localStorage.getItem(USER_KEY) ?? 'null') as UserInfo | null,
   locale: localStorage.getItem(LOCALE_KEY) ?? 'zh-CN',
+  // 2026-07-09: authHydrated tracks whether we've probed /api/auth/me.
+  // App.vue 必须等 authHydrated=true 才能决定渲染 app-layout vs guest-layout，
+  // 否则页面首次渲染会基于空 store 错判为未登录，紧接着被 router 弹回首页。
+  // 详见 admin/feishu_handlers.go 同名 PR 描述。
+  authHydrated: false as boolean,
 })
 
 export function setApiKey(k: string) {
@@ -93,6 +98,17 @@ export function clearJwt() {
   store.jwtToken = ''
   store.userInfo = null
   localStorage.removeItem(USER_KEY)
+}
+
+// 2026-07-09: 标记 auth hydration 完成。App.vue 首次进入 onMounted 时调用，
+// 防止页面在 auth probe 完成前误判为未登录。
+export function markAuthHydrated() {
+  store.authHydrated = true
+}
+
+// 登出 / 401 时重置 hydration 标志位，强制下一次进入 / 重渲染时重新探测。
+export function resetAuthHydrated() {
+  store.authHydrated = false
 }
 
 export function clearAll() {

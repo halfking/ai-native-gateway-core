@@ -17,5 +17,6 @@ export default {
     failed: 'Échec de la connexion',
   },
   changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
+  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",  // 2026-07-09: Message de probe d'authentification au premier chargement
+  checking: 'Vérification du statut de connexion…',
 }
