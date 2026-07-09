@@ -269,5 +269,4 @@ export default {
     ledgerTitle: 'دفتر الأرصدة',
     goBuyCredits: 'شراء الأرصدة',
   },
-  loadFailed: "[TODO: tenants.loadFailed]",
 }
