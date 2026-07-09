@@ -182,6 +182,7 @@ $SSH "$SSH_TARGET" "mkdir -p /etc/llm-gateway-go /opt/llm-gateway-go/{data,logs,
 $SSH "$SSH_TARGET" "ln -sf $REMOTE_DIR/$BIN_NAME $REMOTE_DIR/llm-gateway-go"
 # 注意: env-file 由 ssh 端 heredoc 写入, 敏感值通过 SSHPASS 通道加密
 # 我们用 base64 编码避免 heredoc 特殊字符问题
+# V1.2 改: 用 append-only 写入, 不覆盖 deploy-154-secrets.sh 注入的 KEY (避免 clobbering rotated secret)
 ENV_BODY=$(cat <<EOF
 # /etc/llm-gateway-go/env — 154 server (47.97.111.154)
 # 由 deploy-154.sh 自动写入 (mode 600)
@@ -208,7 +209,40 @@ LLM_GATEWAY_ADMIN_API_KEY=${LLM_GATEWAY_ADMIN_API_KEY:-$(openssl rand -hex 32 | 
 EOF
 )
 ENV_B64=$(printf '%s' "$ENV_BODY" | base64 | tr -d '\n')
-$SSH "$SSH_TARGET" "echo '$ENV_B64' | base64 -d > /etc/llm-gateway-go/env && chmod 600 /etc/llm-gateway-go/env && chown root:root /etc/llm-gateway-go/env"
+# 远端执行: 先把 deploy-154.sh 管理的 key 清掉, 再 append 新值, 保留其它 key (secrets.sh 注入的).
+# 用 awk 过滤 deploy-154.sh 管理的 key (这些 key 重新写, 其它 key 保留).
+$SSH "$SSH_TARGET" bash <<REMOTE_EOF
+set -e
+ENV_FILE=/etc/llm-gateway-go/env
+B64="$ENV_B64"
+MANAGED_KEYS='LLM_GATEWAY_PORT LLM_GATEWAY_HOST LLM_GATEWAY_LOG_LEVEL LLM_GATEWAY_LOG_FILE ATTACHMENT_STORAGE_PATH LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_SECRET_KEY LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY LLM_GATEWAY_ADMIN_USER LLM_GATEWAY_ADMIN_PASSWORD LLM_GATEWAY_ADMIN_API_KEY'
+# 1. 备份当前 env-file
+cp "\$ENV_FILE" "\$ENV_FILE.bak.\$(date +%Y%m%d-%H%M%S)"
+# 2. 过滤掉 managed keys (保留 deploy-154-secrets.sh 注入的其它 key)
+KEEP=""
+while IFS= read -r line; do
+    key="\$(echo "\$line" | cut -d= -f1)"
+    if [[ "\$key" =~ ^[[:space:]]*# ]] || [[ -z "\$key" ]]; then
+        KEEP="\$KEEP\$line\n"
+        continue
+    fi
+    skip=0
+    for mk in \$MANAGED_KEYS; do
+        if [[ "\$key" == "\$mk" ]]; then skip=1; break; fi
+    done
+    if [[ \$skip -eq 0 ]]; then
+        KEEP="\$KEEP\$line\n"
+    fi
+done < "\$ENV_FILE"
+# 3. 写新 env-file = 保留 key + deploy-154.sh 管理的 key (base64 解码)
+printf "%b" "\$KEEP" > "\$ENV_FILE"
+echo "\$B64" | base64 -d >> "\$ENV_FILE"
+# 4. chmod 600
+chmod 600 "\$ENV_FILE"
+chown root:root "\$ENV_FILE"
+echo "env-file updated (managed=\$(echo \$MANAGED_KEYS | wc -w) keys, kept other secrets.sh keys)"
+REMOTE_EOF
+log "  env-file 已 append-only 更新 (managed=11 keys, 保留 secrets.sh 注入的其它 key)"
 
 # systemd unit (覆盖式, 幂等)
 UNIT_BODY=$(cat <<EOF

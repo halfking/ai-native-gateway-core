@@ -91,21 +91,16 @@ async function handleLogin() {
       >
         <div class="login-modal__header">
           <div class="login-modal__brand">
-            <svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true">
-              <circle cx="16" cy="16" r="14" fill="#6366f1" />
-              <text
-                x="16"
-                y="21"
-                text-anchor="middle"
-                font-size="16"
-                fill="white"
-                font-family="Arial,sans-serif"
-                font-weight="bold"
-              >G</text>
-            </svg>
+            <img
+              src="/logo-icon.svg"
+              width="40"
+              height="40"
+              alt="开轩启圭 Qigui"
+              class="login-modal__brand-img"
+            />
             <div>
               <h2 id="login-modal-title">登录控制面</h2>
-              <p class="login-modal__subtitle">启圭WM MaaS 管理后台</p>
+              <p class="login-modal__subtitle">AI-Native 超级智能大模型网关 · 开轩启圭</p>
               <p class="login-modal__hint">首次登录或管理员重置密码后，需要先修改密码才能继续使用。</p>
             </div>
           </div>
@@ -171,6 +166,11 @@ async function handleLogin() {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.login-modal__brand-img {
+  flex-shrink: 0;
+  display: block;
 }
 
 .login-modal__brand h2 {
