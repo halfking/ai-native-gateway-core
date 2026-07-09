@@ -3,7 +3,9 @@ package ursm
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -70,10 +72,20 @@ func (m *ConcurrencySlotManager) Release(
 		return ErrInternalError
 	}
 
+	releaseCtx := ctx
+	if releaseCtx == nil {
+		releaseCtx, _ = runctx.BackgroundTimeout(3 * time.Second)
+	}
+	if releaseCtx.Err() != nil {
+		var cancel context.CancelFunc
+		releaseCtx, cancel = runctx.BackgroundTimeout(3 * time.Second)
+		defer cancel()
+	}
+
 	limKey := concSlotKey(credentialID)
 	sessKey := concSessionKey(credentialID, sessionID)
 
-	_, err := releaseConcurrencyScript.Run(ctx, m.redis,
+	_, err := releaseConcurrencyScript.Run(releaseCtx, m.redis,
 		[]string{limKey, sessKey},
 	).Result()
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -97,7 +98,11 @@ func (w *BatchWriter) ApplyUpdates(ctx context.Context, updates []StateUpdate) e
 
 	// 6. 异步失效缓存
 	if w.invalidateCallback != nil {
-		go w.invalidateCallback(ctx, allUpdates)
+		go func() {
+			invalidateCtx, cancel := runctx.DetachedTimeout(ctx, 5*time.Second)
+			defer cancel()
+			w.invalidateCallback(invalidateCtx, allUpdates)
+		}()
 	}
 
 	return nil

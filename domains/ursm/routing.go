@@ -98,7 +98,7 @@ func (m *Manager) GetAvailableNodes(
 
 	var available []RouteNode
 
-	// 2. 逐个检查可用性和资源
+	// 2. 逐个检查可用性
 	for _, node := range allNodes {
 		// 2.1 四层级联可用性检查
 		isAvail, reason := m.IsAvailable(ctx, node.CredentialID, node.RawModel)
@@ -110,44 +110,15 @@ func (m *Manager) GetAvailableNodes(
 			continue
 		}
 
-		// 2.2 检查指纹槽
-		if m.fpSlotMgr != nil {
-			fpSlot, fpAcquired, fpReason := m.fpSlotMgr.CheckAndAcquire(
-				ctx,
-				node.CredentialID,
-				sessionID,
-				node.FpSlotLimit,
-			)
-			if !fpAcquired {
-				slog.Debug("node filtered by fingerprint slot",
-					"credential_id", node.CredentialID,
-					"reason", fpReason)
-				continue
-			}
-			node.FpSlotIndex = fpSlot
-		}
-
-		// 2.3 检查并发槽
-		if m.concSlotMgr != nil {
-			concAcquired, concReason := m.concSlotMgr.CheckAndAcquire(
-				ctx,
-				node.CredentialID,
-				sessionID,
-				node.ConcurrencyLimit,
-			)
-			if !concAcquired {
-				slog.Debug("node filtered by concurrency slot",
-					"credential_id", node.CredentialID,
-					"reason", concReason)
-				// 释放已获取的指纹槽
-				if m.fpSlotMgr != nil && node.FpSlotIndex >= 0 {
-					_ = m.fpSlotMgr.Release(ctx, node.CredentialID, node.FpSlotIndex, sessionID)
-				}
-				continue
-			}
-			node.ConcurrencyHeld = true
-		}
-
+		// 2026-07-09 audit follow-up:
+		// URSM previously did a real FP/concurrency Acquire during route planning.
+		// That made every candidate selection hold resources before the executor
+		// even chose a final credential, and there was no full release lifecycle
+		// for the unchosen nodes. For now URSM stays responsible for state/filter
+		// + ranking, while the actual resource gating remains in the mature
+		// executor path (FpSlots + Limiter), which already has explicit request
+		// end cleanup. This avoids double-accounting and removes the structural
+		// leak where planning itself consumed slots.
 		available = append(available, node)
 	}
 
@@ -155,7 +126,7 @@ func (m *Manager) GetAvailableNodes(
 		return nil, ErrNoAvailableNodes
 	}
 
-	slog.Debug("after resource filtering",
+	slog.Debug("after availability filtering",
 		"model", model,
 		"session_id", sessionID,
 		"available_count", len(available))
