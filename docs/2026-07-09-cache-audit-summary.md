@@ -54,11 +54,11 @@
 ## 3. 当前最值得补的缺口
 
 1. **补充 `affinity_hit` 埋点**
-   - 目标：让 `request_logs` 能直接回答“请求是否命中既有凭据亲和性”
+   - 目标：让 `request_logs` 的成功请求能直接回答“这次是否命中既有凭据亲和性”
    - 价值：能把“粘性是否影响缓存命中率”从推测变成查询结果
 
 2. **补充 `sticky_hit` 埋点**
-   - 目标：让 `routing_decision_log_hot` 能区分本次决策是否来自 L1/L2/L3 sticky
+   - 目标：让 `routing_decision_log_hot` 的成功决策能区分本次是否来自 L1/L2/L3 sticky
    - 价值：能区分“路由选中了同一凭据”与“只是碰巧只有一个凭据可用”
 
 3. **启用并验证 `C3` cache_control 注入**
