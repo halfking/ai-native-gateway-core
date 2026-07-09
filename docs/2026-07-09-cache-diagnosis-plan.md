@@ -350,7 +350,7 @@ ORDER BY cache_read_pct DESC;
 
 ### 6.1 利用 `affinity_hit` 字段
 
-数据库表已有 `affinity_hit boolean` 字段（`request_logs` schema），记录请求是否命中粘性凭据。
+数据库表已有 `affinity_hit boolean` 字段（`request_logs` schema）。当前代码路径优先覆盖**成功请求**，用于记录该请求是否命中粘性凭据。
 
 ```sql
 -- 文件: scripts/cache-baseline/08-affinity-vs-cache.sql
