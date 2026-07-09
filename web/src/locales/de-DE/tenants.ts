@@ -269,5 +269,4 @@ export default {
     ledgerTitle: 'Credit-Logbuch',
     goBuyCredits: 'Credits kaufen',
   },
-  loadFailed: "[TODO: tenants.loadFailed]",
 }

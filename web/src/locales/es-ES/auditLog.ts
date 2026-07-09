@@ -67,8 +67,4 @@ export default {
   errors: {
     loadFailed: 'Error al cargar',
   },
-  dash: "[TODO: auditLog.dash]",
-  loadFailed: "[TODO: auditLog.loadFailed]",
-  refresh: "[TODO: auditLog.refresh]",
-  refreshing: "[TODO: auditLog.refreshing]",
 }
