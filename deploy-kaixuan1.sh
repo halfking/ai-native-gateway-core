@@ -136,8 +136,23 @@ if ! $SKIP_BUILD; then
   sshpass -e ssh -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "
     cd $REMOTE_DIR
     
-    # 设置 Go 环境
+    # 设置 Go 环境（尝试多个可能的路径）
     export PATH=/usr/local/go/bin:/opt/homebrew/bin:\$PATH
+    
+    # 检测 Go 是否可用
+    if ! command -v go &> /dev/null; then
+      echo '✗ go 命令未找到'
+      echo '尝试的路径:'
+      ls -la /usr/local/go/bin/go 2>/dev/null || echo '  /usr/local/go/bin/go 不存在'
+      ls -la /opt/homebrew/bin/go 2>/dev/null || echo '  /opt/homebrew/bin/go 不存在'
+      echo ''
+      echo '解决方案 1: 在 kaixuan-1 上安装 Go'
+      echo '解决方案 2: 使用 --skip-build 并手动上传编译好的二进制'
+      exit 1
+    fi
+    
+    echo \"✓ 找到 Go: \$(which go)\"
+    go version
     
     # 禁用代理，使用国内镜像
     unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
