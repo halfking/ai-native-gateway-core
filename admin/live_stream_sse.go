@@ -154,7 +154,7 @@ func (c *LiveStreamConfig) defaults() {
 		c.BroadcastQueueSize = 1024
 	}
 	if c.InitialReplayLimit <= 0 {
-		c.InitialReplayLimit = 50
+		c.InitialReplayLimit = liveStreamReplayLimit
 	}
 	if c.IdleThreshold <= 0 {
 		c.IdleThreshold = 60 * time.Second
@@ -1120,6 +1120,8 @@ func classifyModelCategoryFallback(model string) string {
 		return "meta"
 	case strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"):
 		return "mistral"
+	case strings.Contains(m, "minimax"):
+		return "minimax"
 	case strings.Contains(m, "mimo"):
 		return "xiaomi"
 	case strings.Contains(m, "phi"):

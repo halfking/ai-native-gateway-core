@@ -20,6 +20,13 @@ func TestCoolingDurationMatchesPythonDefaults(t *testing.T) {
 		// loop, masking the actual provider outage.
 		{errorsx.KindConcurrent, 5 * time.Minute},
 		{errorsx.KindRateLimit, 900 * time.Second},
+		// 2026-07-09 (问题2): KindStreamTimeout now uses 5-minute cooling
+		// (was 30s, shared with Transient/Timeout). Stream-no-feedback
+		// failures (first_byte_timeout / stream_timeout / EOF-without-DONE)
+		// need a longer cooling so the (credential,model) pair stays out of
+		// the routable view long enough to stop the "frontend hangs but
+		// credential still takes traffic" loop.
+		{errorsx.KindStreamTimeout, 5 * time.Minute},
 		{errorsx.KindTransient, 30 * time.Second},
 		{errorsx.KindTimeout, 30 * time.Second},
 		{errorsx.KindUpstreamDown, 60 * time.Second},
