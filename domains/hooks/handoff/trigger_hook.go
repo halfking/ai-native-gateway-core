@@ -49,6 +49,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/autoroute"              //nolint:depguard // reuse LLM endpoint config
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"     //nolint:depguard // reuse ApplyHTTPLlmCallerDefaults
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response" //nolint:depguard // hook base interface
+	"github.com/kaixuan/llm-gateway-go/domains/sessionsummary" //nolint:depguard // canonical session_summaries writer
 )
 
 // ── Public types ────────────────────────────────────────────────────────
@@ -648,6 +649,10 @@ func NewPGStore(db *sql.DB) *PGStore {
 // tracking columns. The two writes are NOT wrapped in a transaction because
 // each is idempotent on retried calls; a partial failure leaves a record in
 // handoff_logs but no bump in session_summaries, which is acceptable.
+//
+// The session_summaries UPDATE is delegated to
+// sessionsummary.UpdateHandoffMetrics so that all writes to that table live
+// in one canonical place (prevents schema drift across modules).
 func (s *PGStore) RecordHandoff(ctx context.Context, r *HandoffRecord) error {
 	if s.db == nil {
 		return nil
@@ -666,17 +671,14 @@ func (s *PGStore) RecordHandoff(ctx context.Context, r *HandoffRecord) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE session_summaries
-		   SET handoff_count = COALESCE(handoff_count, 0) + 1,
-		       last_handoff_at = $2,
-		       tokens_at_trigger = $3,
-		       messages_at_trigger = $4,
-		       last_trigger_reason = $5,
-		       last_trigger_at = $2
-		 WHERE session_key = $1
-	`, r.SessionKey, r.CreatedAt, r.TokensInSession, r.MessagesAtTrigger, r.TriggerReason)
-	return err
+	return sessionsummary.UpdateHandoffMetrics(ctx, s.db, &sessionsummary.HandoffMetricsSummary{
+		SessionKey:        r.SessionKey,
+		LastHandoffAt:     r.CreatedAt,
+		TokensAtTrigger:   r.TokensInSession,
+		MessagesAtTrigger: r.MessagesAtTrigger,
+		LastTriggerReason: r.TriggerReason,
+		LastTriggerAt:     r.CreatedAt,
+	})
 }
 
 // GetSessionTokens returns session_summaries.total_tokens (a generated column
