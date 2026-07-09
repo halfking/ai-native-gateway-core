@@ -203,7 +203,17 @@ sshpass -e ssh -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "
   # 确保日志目录存在
   mkdir -p logs
   
-  # 后台启动
+  # 检查环境配置文件
+  if [ ! -f .env.kaixuan-1 ]; then
+    echo '✗ 缺少 .env.kaixuan-1 配置文件'
+    echo '提示: 需要创建包含 LLM_GATEWAY_CORS_ORIGINS 等必需配置的文件'
+    exit 1
+  fi
+  
+  # 加载环境变量并后台启动
+  set -a
+  source .env.kaixuan-1
+  set +a
   nohup ./bin/$BINARY_NAME > logs/gateway.log 2>&1 &
   sleep 3
   
