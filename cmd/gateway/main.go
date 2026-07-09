@@ -2775,6 +2775,13 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
 		slog.Info("dingtalk channel initialized from module settings",
 			"webhook", dingCfg.WebhookURL != "", "app_mode", dingCfg.AppKey != "")
+	} else if dingWebhook := os.Getenv("DINGTALK_WEBHOOK_URL"); dingWebhook != "" {
+		dingCfg := notification.DingTalkConfig{
+			WebhookURL: dingWebhook,
+			SignSecret: os.Getenv("DINGTALK_SIGN_SECRET"),
+		}
+		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
+		slog.Info("dingtalk channel initialized from env webhook")
 	} else if dingAppKey := os.Getenv("DINGTALK_APP_KEY"); dingAppKey != "" {
 		dingAppSecret := os.Getenv("DINGTALK_APP_SECRET")
 		dingCfg := notification.DingTalkConfig{

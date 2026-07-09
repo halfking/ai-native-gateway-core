@@ -102,3 +102,14 @@ api/dingtalk_callback.go ── RegisterDingTalkRoutes（签名验签 + agree/re
    可见，完整消费将在后续迭代接入（不阻塞核心审批/告警能力）。
 3. **模块开关已真正生效**：`dingTalkConfigFromSettings()` 使 `dingtalk_bot.enabled` 与配置
    实际驱动渠道初始化与回调验签，区别于早期仅声明式的 feishu_bot / wechat_bot 模块。
+
+## 6. 审计修复记录（2026-07-09）
+
+| 问题 | 严重性 | 修复 |
+|------|--------|------|
+| 回调 JSON 解析错误时完整 body 写入日志 | 中 | 改为只记录 `body_size`，避免敏感数据泄露 |
+| 回调无请求体大小限制 | 低 | 添加 `http.MaxBytesReader(1MB)` |
+| `initApprovalNotifier` 仅回退 AppKey 环境变量，未回退 Webhook | 中 | 新增 `DINGTALK_WEBHOOK_URL` 环境变量回退分支 |
+| `modules_test.go` required 列表缺 `session_analytics` | 低 | 补充到断言列表 |
+| 部分 locale 文件未完全翻译 | 中 | 项目范围现有问题，非 dingtalk 特有，标注为已知 |
+| `Dependencies` 中 compression/prompt_injection 偏宽泛 | 低 | 依赖设计基于团队一致，暂不改动
