@@ -357,8 +357,23 @@ func main() {
 		for _, sp := range settings.TenantSpecs() {
 			settings.Global.MustRegisterSpec(sp)
 		}
+		// 2026-07-09: handoff / goal / audit auto-control settings.
+		// These are registered UNCONDITIONALLY (regardless of bgDataPlaneOnly)
+		// so admins can configure handoff.* / goal.* / auto_control.* via
+		// /api/admin/settings + ModulesView even in data-plane-only mode.
+		// The actual response-interceptor chain (initGoalControl) is still
+		// gated on !bgDataPlaneOnly because it consumes request hot-path
+		// CPU; the spec registration here is purely metadata + validation.
+		for _, sp := range settings.AutoControlSpecs() {
+			s := sp // take a stable address
+			if err := settings.Global.RegisterSpec(&s); err != nil {
+				slog.Debug("settings: auto_control spec register skipped",
+					"key", sp.Key, "error", err)
+			}
+		}
 		slog.Info("settings: registry initialised",
-			"platform_specs", len(settings.Global.AllSpecs()))
+			"platform_specs", len(settings.Global.AllSpecs()),
+			"auto_control_specs", len(settings.AutoControlSpecs()))
 
 		// 2026-07-02: 打通 settings_kv ↔ logging。
 		// 启动时 settings 已注册 log.* spec，读取 DB 中的覆盖值并应用到
@@ -2095,7 +2110,14 @@ func main() {
 		mux.HandleFunc("/api/admin/session-compare", wrapAdmin(compareAPI.HandleCompare))
 		handoffAPI := admin.NewHandoffAPI(dbConn.Pool())
 		mux.HandleFunc("/api/admin/session-handoff", wrapAdmin(handoffAPI.HandleHandoff))
+		// Phase 3.6 (2026-07-09): Handoff logs read-only endpoints.
+		// /api/admin/handoff/logs[/{id}] + /api/admin/handoff/stats — supply
+		// operator UI with the trigger history written by the new handoff hook
+		// (domains/hooks/handoff/trigger_hook.go).
+		handoffLogsAPI := admin.NewHandoffLogsHandler(dbConn.Pool())
+		handoffLogsAPI.RegisterRoutes(mux, wrapAdmin)
 		slog.Info("Phase 3.5 session compare & handoff API enabled (/api/admin/session-compare, /session-handoff)")
+		slog.Info("Phase 3.6 handoff logs API enabled (/api/admin/handoff/logs, /stats)")
 
 		// 会话迁移方案：Session Export / Import / Pack API
 		// GET  /api/admin/session-export?id=<gw_session_id>&tenant=<t>      导出迁移包

@@ -83,6 +83,17 @@ export default {
     signatureHelp: '本番環境では必ず有効にしてください。有効時、Feishuコールバックは有効なHMAC-SHA256署名とウィンドウ内のタイムスタンプが必要です。',
   },
 
+  handoff: {
+    groupMaster: 'Master switch',
+    groupMasterHint: 'Master toggle and trigger mode: determine how session handoff is enabled and when it fires',
+    groupTrigger: 'Trigger thresholds',
+    groupTriggerHint: '4 trigger conditions run in parallel — any one of them fires handoff; the strictest wins',
+    groupSummary: 'Summary generation',
+    groupSummaryHint: 'Summary engine and prompt template: how to compress the old session into a new-session-readable context',
+    groupSafety: 'Safety limits and notifications',
+    groupSafetyHint: 'Cooldown, per-session cap, retry on failure, and log/Webhook notifications',
+  },
+
   integration: {
     docsLabel: 'ドキュメント: ',
     stepsTitle: 'セットアップ手順',

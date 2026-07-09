@@ -83,6 +83,17 @@ export default {
     signatureHelp: 'In Produktion immer aktivieren. Aktiviert erfordert Feishu-Callbacks eine gültige HMAC-SHA256-Signatur und einen Zeitstempel im Fenster.',
   },
 
+  handoff: {
+    groupMaster: 'Master switch',
+    groupMasterHint: 'Master toggle and trigger mode: determine how session handoff is enabled and when it fires',
+    groupTrigger: 'Trigger thresholds',
+    groupTriggerHint: '4 trigger conditions run in parallel — any one of them fires handoff; the strictest wins',
+    groupSummary: 'Summary generation',
+    groupSummaryHint: 'Summary engine and prompt template: how to compress the old session into a new-session-readable context',
+    groupSafety: 'Safety limits and notifications',
+    groupSafetyHint: 'Cooldown, per-session cap, retry on failure, and log/Webhook notifications',
+  },
+
   integration: {
     docsLabel: 'Dokumentation: ',
     stepsTitle: 'Konfigurationsschritte',
