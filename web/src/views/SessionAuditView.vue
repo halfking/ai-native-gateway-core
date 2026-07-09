@@ -228,11 +228,144 @@ function fmtDate(s: string) {
   }
 }
 
+// ========== 审批配置相关状态 ==========
+interface ApprovalConfig {
+  enforcement_level: string
+  detector_models: string
+  approval_threshold: number
+  auto_block_threshold: number
+  detect_prompt_injection: boolean
+  detect_pii_leakage: boolean
+  detect_jailbreak: boolean
+  approval_timeout: string
+  timeout_action: string
+  min_approvals: number
+  approver_roles: string
+  escalation_enabled: boolean
+  escalation_after: string
+  escalation_approvers: string
+  notify_channels: string
+  require_intent_analysis: boolean
+  intent_weight: number
+  retention_days: number
+  mask_sensitive_data: boolean
+}
+
+const approvalConfig = ref<ApprovalConfig>({
+  enforcement_level: 'strict',
+  detector_models: '["gpt-4o-mini"]',
+  approval_threshold: 70,
+  auto_block_threshold: 90,
+  detect_prompt_injection: true,
+  detect_pii_leakage: true,
+  detect_jailbreak: true,
+  approval_timeout: '4h',
+  timeout_action: 'deny',
+  min_approvals: 1,
+  approver_roles: '["security_admin"]',
+  escalation_enabled: false,
+  escalation_after: '2h',
+  escalation_approvers: '["ciso","cto"]',
+  notify_channels: '["feishu"]',
+  require_intent_analysis: false,
+  intent_weight: 0.3,
+  retention_days: 90,
+  mask_sensitive_data: true,
+})
+
+const configLoading = ref(false)
+const configSaving = ref(false)
+const configError = ref('')
+const configSuccess = ref('')
+
+async function loadApprovalConfig() {
+  configLoading.value = true
+  configError.value = ''
+  try {
+    const settings = await listSettings()
+    const mapping: Record<keyof ApprovalConfig, string> = {
+      enforcement_level: 'session_audit.enforcement_level',
+      detector_models: 'session_audit.detector_models',
+      approval_threshold: 'session_audit.approval_threshold',
+      auto_block_threshold: 'session_audit.auto_block_threshold',
+      detect_prompt_injection: 'session_audit.detect_prompt_injection',
+      detect_pii_leakage: 'session_audit.detect_pii_leakage',
+      detect_jailbreak: 'session_audit.detect_jailbreak',
+      approval_timeout: 'session_audit.approval_timeout',
+      timeout_action: 'session_audit.timeout_action',
+      min_approvals: 'session_audit.min_approvals',
+      approver_roles: 'session_audit.approver_roles',
+      escalation_enabled: 'session_audit.escalation_enabled',
+      escalation_after: 'session_audit.escalation_after',
+      escalation_approvers: 'session_audit.escalation_approvers',
+      notify_channels: 'session_audit.notify_channels',
+      require_intent_analysis: 'session_audit.require_intent_analysis',
+      intent_weight: 'session_audit.intent_weight',
+      retention_days: 'session_audit.retention_days',
+      mask_sensitive_data: 'session_audit.mask_sensitive_data',
+    }
+    for (const [key, settingKey] of Object.entries(mapping)) {
+      const setting = settings.find(s => s.key === settingKey)
+      if (setting) {
+        const k = key as keyof ApprovalConfig
+        if (typeof approvalConfig.value[k] === 'boolean') {
+          (approvalConfig.value as any)[k] = setting.value === 'true' || setting.value === true
+        } else if (typeof approvalConfig.value[k] === 'number') {
+          (approvalConfig.value as any)[k] = Number(setting.value)
+        } else {
+          (approvalConfig.value as any)[k] = setting.value
+        }
+      }
+    }
+  } catch (e: unknown) {
+    configError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    configLoading.value = false
+  }
+}
+
+async function saveApprovalConfig() {
+  configSaving.value = true
+  configError.value = ''
+  configSuccess.value = ''
+  try {
+    const mapping: Record<keyof ApprovalConfig, string> = {
+      enforcement_level: 'session_audit.enforcement_level',
+      detector_models: 'session_audit.detector_models',
+      approval_threshold: 'session_audit.approval_threshold',
+      auto_block_threshold: 'session_audit.auto_block_threshold',
+      detect_prompt_injection: 'session_audit.detect_prompt_injection',
+      detect_pii_leakage: 'session_audit.detect_pii_leakage',
+      detect_jailbreak: 'session_audit.detect_jailbreak',
+      approval_timeout: 'session_audit.approval_timeout',
+      timeout_action: 'session_audit.timeout_action',
+      min_approvals: 'session_audit.min_approvals',
+      approver_roles: 'session_audit.approver_roles',
+      escalation_enabled: 'session_audit.escalation_enabled',
+      escalation_after: 'session_audit.escalation_after',
+      escalation_approvers: 'session_audit.escalation_approvers',
+      notify_channels: 'session_audit.notify_channels',
+      require_intent_analysis: 'session_audit.require_intent_analysis',
+      intent_weight: 'session_audit.intent_weight',
+      retention_days: 'session_audit.retention_days',
+      mask_sensitive_data: 'session_audit.mask_sensitive_data',
+    }
+    for (const [key, settingKey] of Object.entries(mapping)) {
+      await updateSetting(settingKey, { value: (approvalConfig.value as any)[key] })
+    }
+    configSuccess.value = t('sessions.audit.config.saveSuccess')
+    setTimeout(() => { configSuccess.value = '' }, 3000)
+  } catch (e: unknown) {
+    configError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    configSaving.value = false
+  }
+}
+
 onMounted(() => {
   load()
   loadStats()
 })
-</script>
 
 <template>
   <div class="session-audit-view">
