@@ -858,15 +858,37 @@ func main() {
 	// Without a DB the hub still relays live broadcasts from
 	// telemetry — only the initial replay is empty.
 	// 2026-07-06: RedisClient wired for 1-hour persistent cache.
+	// 2026-07-09: cachedSnapshotTTL 暴露为 env，避免 Redis 短暂空帧
+	// 让"清空再重现"现象重新出现。
+	liveStreamCachedTTL := 10 * time.Minute
+	liveStreamCachedCleanup := liveStreamCachedTTL
+	if v := os.Getenv("LLM_GATEWAY_LIVE_STREAM_CACHED_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			liveStreamCachedTTL = d
+		} else {
+			slog.Warn("invalid LLM_GATEWAY_LIVE_STREAM_CACHED_TTL, using default",
+				"value", v, "default", liveStreamCachedTTL.String())
+		}
+	}
+	if v := os.Getenv("LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			liveStreamCachedCleanup = d
+		} else {
+			slog.Warn("invalid LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL, using default",
+				"value", v, "default", liveStreamCachedCleanup.String())
+		}
+	}
 	var liveStreamHub *admin.LiveStreamSSEHub
 	if dbConn != nil && dbConn.Enabled() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
-			BroadcastQueueSize: 2048,
-			InitialReplayLimit: 50,
-			IdleThreshold:      60 * time.Second,
-			IdleTickInterval:   10 * time.Second,
-			KeepaliveInterval:  25 * time.Second,
-			RedisClient:        fpSlotRedis, // reuse the existing Redis connection
+			BroadcastQueueSize:            2048,
+			InitialReplayLimit:            50,
+			IdleThreshold:                 60 * time.Second,
+			IdleTickInterval:              10 * time.Second,
+			KeepaliveInterval:             25 * time.Second,
+			RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
+			CachedSnapshotTTL:             liveStreamCachedTTL,
+			CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
 		})
 		go liveStreamHub.Run()
 
@@ -886,7 +908,9 @@ func main() {
 			})
 			slog.Info("telemetry onEmitted wired → live stream SSE hub (in-memory pipeline)")
 		}
-		slog.Info("live request stream hub enabled (sse /api/admin/live-stream)")
+		slog.Info("live request stream hub enabled (sse /api/admin/live-stream)",
+			"cached_snapshot_ttl", liveStreamCachedTTL.String(),
+			"cached_snapshot_cleanup_interval", liveStreamCachedCleanup.String())
 	}
 
 	// ── Request WAL (Request Logger) ───────────────────────────────────────
