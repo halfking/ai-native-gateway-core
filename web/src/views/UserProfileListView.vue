@@ -68,21 +68,21 @@ function onSearch() {
         <el-table-column :label="t('sessions.userProfile.sessionCount')" prop="session_count" width="100" align="right" />
         <el-table-column :label="t('sessions.userProfile.requestCount')" prop="total_requests" width="100" align="right" />
         <el-table-column :label="t('sessions.userProfile.totalCost')" prop="total_cost_usd" width="120" align="right">
-          <template #default="{ row }">
-            ${{ row.total_cost_usd.toFixed(4) }}
+          <template #default="scope">
+            ${{ (scope?.row?.total_cost_usd ?? 0).toFixed(4) }}
           </template>
         </el-table-column>
         <el-table-column :label="t('sessions.userProfile.avgCostPerSession')" prop="avg_cost_per_session" width="120" align="right">
-          <template #default="{ row }">
-            ${{ row.avg_cost_per_session.toFixed(4) }}
+          <template #default="scope">
+            ${{ (scope?.row?.avg_cost_per_session ?? 0).toFixed(4) }}
           </template>
         </el-table-column>
         <el-table-column :label="t('sessions.userProfile.endUserCount')" prop="end_user_count" width="110" align="right" />
         <el-table-column :label="t('sessions.userProfile.firstSeenAt')" prop="first_seen_at" width="170" />
         <el-table-column :label="t('sessions.userProfile.lastSeenAt')" prop="last_seen_at" width="170" />
         <el-table-column :label="t('sessions.userProfile.actionDetail')" width="100" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" type="primary" link @click="goProfile(row.owner_user)">
+          <template #default="scope">
+            <el-button size="small" type="primary" link @click="goProfile(scope?.row?.owner_user)">
               {{ t('sessions.userProfile.actionDetail') }}
             </el-button>
           </template>
