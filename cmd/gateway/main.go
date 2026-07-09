@@ -2119,6 +2119,13 @@ func main() {
 				healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
 				healthWorker.Start(context.Background())
 				slog.Info("session health worker started (hourly)")
+
+				// Task T1.5: 会话生命周期后台 worker (2026-07-09, session_inspector 模块)
+				// 周期性扫描不活跃/超期会话并按 session_inspector.idle.recycle_action 回收。
+				// 默认配置：cleanup_interval=5m, idle_timeout=30m, soft_close。
+				lifecycleWorker := bg.NewSessionLifecycleWorker(dbConn.Pool())
+				lifecycleWorker.Start(context.Background())
+				slog.Info("session lifecycle worker started (5m interval, soft_close default)")
 			}
 		}
 

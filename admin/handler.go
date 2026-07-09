@@ -545,6 +545,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/session-audit/stats", admin(h.handleSessionAuditStats))
 	mux.HandleFunc("/api/admin/session-approvals", admin(h.handleApprovalList))
 	mux.HandleFunc("/api/admin/session-approvals/", admin(h.handleApprovalSubrouter))
+
+	// 2026-07-09 Session Inspector stats endpoint (session_inspector module).
+	// Platform-level aggregate stats: active/idle/closed counts, average health score, recycled today.
+	mux.HandleFunc("/api/admin/sessions/inspector-stats", admin(h.HandleSessionInspectorStats))
 	// Public polling endpoint (no auth) — clients poll this to learn whether
 	// their pending approval was approved/rejected/timeout. Cross-tenant
 	// protection via optional X-Tenant-ID header (see handler docstring).
