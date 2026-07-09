@@ -374,7 +374,27 @@ onMounted(() => {
       <p class="view-subtitle">{{ t('sessions.audit.subtitle') }}</p>
     </div>
 
-    <!-- 统计卡片 -->
+    <!-- 标签页切换 -->
+    <div class="tab-bar">
+      <button
+        class="tab-btn"
+        :class="{ active: activeTab === 'audit' }"
+        @click="activeTab = 'audit'"
+      >
+        {{ t('sessions.audit.tabs.audit') }}
+      </button>
+      <button
+        class="tab-btn"
+        :class="{ active: activeTab === 'config' }"
+        @click="activeTab = 'config'; loadApprovalConfig()"
+      >
+        {{ t('sessions.audit.tabs.config') }}
+      </button>
+    </div>
+
+    <!-- 审计记录标签页 -->
+    <div v-if="activeTab === 'audit'">
+      <!-- 统计卡片 -->
     <div v-if="statsLoading" class="stats-loading" role="status" aria-live="polite">
       <span class="spinner" aria-hidden="true"></span>
       <span>{{ t('sessions.audit.statsLoading') }}</span>
