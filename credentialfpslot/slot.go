@@ -282,11 +282,14 @@ func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, hol
 		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder}, true
 	}
 	if m.client == nil {
+		recordAcquireRedisError()
 		return nil, false
 	}
 	if lease, ok := m.acquireRedis(ctx, credentialID, *eff, holder, tenantID); ok {
+		recordAcquireSuccess()
 		return lease, true
 	}
+	recordAcquireSaturated()
 	return nil, false
 }
 
@@ -342,8 +345,10 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 					"slot", lease.SlotIndex,
 				)
 			}
+			recordReleaseSuccess()
 			return
 		}
+
 		lastErr = err
 		// context.Canceled/DeadlineExceeded won't resolve on retry — stop.
 		if ctx.Err() != nil {
@@ -362,6 +367,7 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	// All retries exhausted. The slot key keeps its current TTL and will
 	// self-expire (≤30 min), but surface the failure loudly so monitoring
 	// catches a systemic Redis outage before the leak accumulates.
+	recordReleaseFailure()
 	slog.Error("cred_fp_slot redis release failed after retries",
 		"credential_id", lease.CredentialID,
 		"slot", lease.SlotIndex,
