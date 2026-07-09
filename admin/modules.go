@@ -1009,3 +1009,51 @@ func (h *Handler) feishuBotConfigSummary(w http.ResponseWriter, r *http.Request)
 
 	writeJSON(w, http.StatusOK, summary)
 }
+
+// registerFeishuRoutes installs feishu_bot module admin endpoints.
+func (h *Handler) registerFeishuRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/admin/feishubot/routing-rules", h.admin(h.handleFeishuRoutingList))
+	mux.HandleFunc("/api/admin/feishubot/routing-rules/", h.admin(h.feishuRoutingRulesItem))
+	mux.HandleFunc("/api/admin/feishubot/send-log", h.admin(h.handleFeishuSendLogList))
+}
+
+func (h *Handler) feishuRoutingRulesCollection(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		h.handleFeishuRoutingList(w, r)
+	} else if r.Method == http.MethodPost {
+		h.handleFeishuRoutingCreate(w, r)
+	} else {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handler) feishuRoutingRulesItem(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPut {
+		h.handleFeishuRoutingUpdate(w, r)
+	} else if r.Method == http.MethodDelete {
+		h.handleFeishuRoutingDelete(w, r)
+	} else {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// allDepsEnabled checks if all required dependencies are enabled.
+func allDepsEnabled(m ModuleDefinition, enabledMap map[string]bool) bool {
+	for _, dep := range m.Dependencies {
+		if dep.Required && !enabledMap[dep.Key] {
+			return false
+		}
+	}
+	return true
+}
+
+// missingDeps returns the list of required dependencies that are not enabled.
+func missingDeps(m ModuleDefinition, enabledMap map[string]bool) []string {
+	var missing []string
+	for _, dep := range m.Dependencies {
+		if dep.Required && !enabledMap[dep.Key] {
+			missing = append(missing, dep.Key)
+		}
+	}
+	return missing
+}

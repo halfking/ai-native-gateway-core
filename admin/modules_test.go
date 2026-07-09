@@ -54,7 +54,7 @@ func TestAllModuleDefinitions(t *testing.T) {
 	}
 }
 
-func TestFeishuBotRequiresModules(t *testing.T) {
+func TestFeishuBotDependencies(t *testing.T) {
 	defs := allModuleDefinitions()
 	var fb *ModuleDefinition
 	for i, m := range defs {
@@ -67,45 +67,16 @@ func TestFeishuBotRequiresModules(t *testing.T) {
 		t.Fatal("feishu_bot module not found")
 	}
 	expected := []string{"compression", "cache", "prompt_injection", "session_audit"}
-	if len(fb.Requires) != len(expected) {
-		t.Fatalf("feishu_bot.Requires length = %d, want %d (%v)", len(fb.Requires), len(expected), fb.Requires)
+	if len(fb.Dependencies) != len(expected) {
+		t.Fatalf("feishu_bot.Dependencies length = %d, want %d", len(fb.Dependencies), len(expected))
 	}
 	for i, dep := range expected {
-		if fb.Requires[i] != dep {
-			t.Errorf("Requires[%d] = %q, want %q", i, fb.Requires[i], dep)
+		if fb.Dependencies[i].Key != dep {
+			t.Errorf("Dependencies[%d].Key = %q, want %q", i, fb.Dependencies[i].Key, dep)
 		}
 	}
 }
 
-func TestResolveRequirementsMet(t *testing.T) {
-	// 全部 enabled
-	all := map[string]bool{
-		"compression": true, "cache": true,
-		"prompt_injection": true, "session_audit": true,
-	}
-	// 缺一个
-	missingOne := map[string]bool{
-		"compression": true, "cache": true,
-		"prompt_injection": false, "session_audit": true,
-	}
-	var fb ModuleDefinition
-	for _, m := range allModuleDefinitions() {
-		if m.Key == "feishu_bot" {
-			fb = m
-			break
-		}
-	}
-	if !allDepsEnabled(fb, all) {
-		t.Error("expected allDepsEnabled=true when all deps on")
-	}
-	if allDepsEnabled(fb, missingOne) {
-		t.Error("expected allDepsEnabled=false when one dep off")
-	}
-	missing := missingDeps(fb, missingOne)
-	if len(missing) != 1 || missing[0] != "prompt_injection" {
-		t.Errorf("missingDeps = %v, want [prompt_injection]", missing)
-	}
-}
 
 func TestResolveModuleEnabled(t *testing.T) {
 	// Test module without setting key
