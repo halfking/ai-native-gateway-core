@@ -1,15 +1,23 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
 import {
   listModules,
   getModule,
   toggleModule,
+  testModule,
+  getModuleConfig,
+  listFeishuRoutingRules,
+  createFeishuRoutingRule,
+  updateFeishuRoutingRule,
+  deleteFeishuRoutingRule,
+  type FeishuRouteRule,
+  type FeishuRouteRuleCreate,
   type ModuleDefinition,
   type ModuleWithStatus,
 } from '../api/modules'
-import { listSettings, getSetting, updateSetting, type SettingItem } from '../api'
+import { listSettings, type SettingItem } from '../api'
+import { useRouter } from 'vue-router'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -18,10 +26,125 @@ const loading = ref(false)
 const toggling = ref<string | null>(null)
 const error = ref<string | null>(null)
 const selectedKey = ref<string | null>(null)
-const selectedModule = ref<ModuleDefinition | null>(null)
-const selectedEnabled = ref(false)
+const selectedModule = ref<ModuleWithStatus | null>(null)
 const moduleSettings = ref<SettingItem[]>([])
-const activeTab = ref<'overview' | 'config' | 'integration'>('overview')
+const moduleConfigSummary = ref<Record<string, any> | null>(null)
+const activeTab = ref<'overview' | 'config' | 'integration' | 'status' | 'routing'>('overview')
+
+// 测试连接状态
+const testing = ref(false)
+const testResult = ref<{ ok: boolean; message: string; detail?: string } | null>(null)
+
+// 飞书路由规则（feishu_bot only）
+const routingRules = ref<FeishuRouteRule[]>([])
+const routingRulesLoading = ref(false)
+const showAddRule = ref(false)
+const newRule = ref<FeishuRouteRuleCreate>({
+  open_id: '',
+  display_name: '',
+  user_role: 'member',
+  risk_levels: ['low', 'medium', 'high', 'critical'],
+  priority: 100,
+  enabled: true,
+  note: '',
+})
+
+async function loadRoutingRules() {
+  if (!isFeishuSelected()) return
+  routingRulesLoading.value = true
+  try {
+    const r = await listFeishuRoutingRules({ limit: 100 })
+    routingRules.value = r.items
+  } catch (e: any) {
+    console.error('loadRoutingRules failed:', e)
+    routingRules.value = []
+  } finally {
+    routingRulesLoading.value = false
+  }
+}
+
+async function addRoutingRule() {
+  if (!newRule.value.open_id) return
+  try {
+    await createFeishuRoutingRule(newRule.value)
+    newRule.value = {
+      open_id: '',
+      display_name: '',
+      user_role: 'member',
+      risk_levels: ['low', 'medium', 'high', 'critical'],
+      priority: 100,
+      enabled: true,
+      note: '',
+    }
+    showAddRule.value = false
+    await loadRoutingRules()
+  } catch (e: any) {
+    alert('Failed: ' + (e.message || 'unknown error'))
+  }
+}
+
+async function toggleRoutingRuleEnabled(rule: FeishuRouteRule) {
+  try {
+    await updateFeishuRoutingRule(rule.id, { enabled: !rule.enabled })
+    await loadRoutingRules()
+  } catch (e: any) {
+    alert('Failed: ' + (e.message || 'unknown error'))
+  }
+}
+
+async function removeRoutingRule(rule: FeishuRouteRule) {
+  if (!confirm(`Delete routing rule for ${rule.open_id}?`)) return
+  try {
+    await deleteFeishuRoutingRule(rule.id)
+    await loadRoutingRules()
+  } catch (e: any) {
+    alert('Failed: ' + (e.message || 'unknown error'))
+  }
+}
+
+// CSV 批量导入
+const csvFileInput = ref<HTMLInputElement | null>(null)
+const csvImportResult = ref<{
+  imported: number
+  skipped: number
+  errors: Array<{ row: number; error: string }>
+} | null>(null)
+
+function triggerCsvImport() {
+  csvFileInput.value?.click()
+}
+
+async function onCsvFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    const resp = await fetch('/api/admin/feishubot/routing-rules:import', {
+      method: 'POST',
+      body: form,
+    })
+    if (!resp.ok) {
+      const err = await resp.text()
+      alert('Import failed: ' + err)
+      return
+    }
+    csvImportResult.value = await resp.json()
+    await loadRoutingRules()
+  } catch (e: any) {
+    alert('Import failed: ' + (e.message || 'unknown'))
+  } finally {
+    if (input) input.value = ''  // 重置 input，允许重复选同一文件
+  }
+}
+
+// 监听 tab 切换：进入 routing tab 时加载
+watch(activeTab, (tab) => {
+  if (tab === 'routing' && isFeishuSelected()) {
+    loadRoutingRules()
+  }
+})
 
 const categoryOrder = ['compression', 'session', 'security', 'rate_limit', 'general', 'integration']
 const categoryLabels: Record<string, string> = {
@@ -59,13 +182,36 @@ const groupedModules = computed(() => {
 const enabledCount = computed(() => modules.value.filter(m => m.enabled).length)
 const totalCount = computed(() => modules.value.length)
 
+// 配置项分组（按 settings key 前缀）
+const groupedSettings = computed(() => {
+  const groups: Record<string, SettingItem[]> = {}
+  for (const s of moduleSettings.value) {
+    const section = classifySetting(s.key)
+    if (!groups[section]) groups[section] = []
+    groups[section].push(s)
+  }
+  return groups
+})
+
+function classifySetting(key: string): string {
+  // feishu_bot.alert.* → alerts
+  if (key.startsWith('feishu_bot.alert')) return 'alerts'
+  if (key.startsWith('feishu_bot.approval')) return 'approvals'
+  if (key.startsWith('feishu_bot.commands')) return 'commands'
+  if (key.startsWith('feishu_bot.signature') || key.startsWith('feishu_bot.timestamp')) return 'security'
+  // webhook_url / verify_token / encrypt_key / connection_mode → connection
+  if (key.includes('webhook') || key.includes('token') || key.includes('encrypt') || key.includes('connection_mode')) return 'connection'
+  return 'general'
+}
+
+const sectionOrder = ['connection', 'alerts', 'approvals', 'commands', 'security', 'general']
+
 async function loadModules() {
   loading.value = true
   error.value = null
   try {
     const r = await listModules()
     modules.value = r.items
-    // If a module was selected, refresh its detail
     if (selectedKey.value) {
       await selectModule(selectedKey.value)
     }
@@ -78,30 +224,31 @@ async function loadModules() {
 
 async function selectModule(key: string) {
   selectedKey.value = key
-  // Find the basic info from the list
   const found = modules.value.find(m => m.key === key)
   if (found) {
     selectedModule.value = found
-    selectedEnabled.value = found.enabled
   }
-  // Load config settings
   try {
-    // Load from module detail API
     const detail = await getModule(key)
     selectedModule.value = detail.module
-    selectedEnabled.value = detail.module.enabled
-    // Load settings related to this module
     const allSettings = await listSettings()
     if (selectedModule.value) {
       const configKeys = selectedModule.value.config_keys || []
       const relatedKeys = [selectedModule.value.setting_key, ...configKeys].filter(Boolean)
       moduleSettings.value = allSettings.items.filter(s => relatedKeys.includes(s.key))
     }
+    // 加载配置摘要（轻量聚合字段，仅部分模块实现）
+    try {
+      moduleConfigSummary.value = await getModuleConfig(key)
+    } catch {
+      moduleConfigSummary.value = null
+    }
   } catch (e: any) {
-    // If the detail API fails, keep using list data
     moduleSettings.value = []
+    moduleConfigSummary.value = null
   }
   activeTab.value = 'overview'
+  testResult.value = null
 }
 
 async function doToggle(key: string) {
@@ -113,8 +260,8 @@ async function doToggle(key: string) {
     const newState = !mod.enabled
     const r = await toggleModule(key, newState)
     mod.enabled = r.enabled
-    if (selectedKey.value === key) {
-      selectedEnabled.value = r.enabled
+    if (selectedKey.value === key && selectedModule.value) {
+      selectedModule.value.enabled = r.enabled
     }
   } catch (e: any) {
     error.value = e.message || t('modulesView.error.operationFailed')
@@ -123,8 +270,38 @@ async function doToggle(key: string) {
   }
 }
 
+async function doTestConnection(key: string) {
+  testing.value = true
+  testResult.value = null
+  try {
+    const r = await testModule(key)
+    if (r.reachable && !r.error) {
+      testResult.value = {
+        ok: true,
+        message: t('modulesView.overview.testSuccess'),
+        detail: r.response_ms ? `${r.response_ms} ms` : undefined,
+      }
+    } else {
+      testResult.value = {
+        ok: false,
+        message: t('modulesView.overview.testFailed'),
+        detail: r.error || r.lark_msg || 'unknown',
+      }
+    }
+  } catch (e: any) {
+    testResult.value = {
+      ok: false,
+      message: t('modulesView.overview.testFailed'),
+      detail: e.message || t('modulesView.error.testFailed'),
+    }
+  } finally {
+    testing.value = false
+  }
+}
+
 async function saveSetting(settingKey: string, value: any) {
   try {
+    const { updateSetting } = await import('../api')
     await updateSetting(settingKey, { value })
     await selectModule(selectedKey.value!)
   } catch (e: any) {
@@ -142,8 +319,21 @@ function dangerLevelLabel(level: number): { label: string; cls: string } {
   }
 }
 
-function goToSettings(key: string) {
+function jumpToModule(key: string) {
+  selectModule(key)
+}
+
+function goToAllSettings() {
   router.push('/admin/settings')
+}
+
+function missingModuleName(key: string): string {
+  const m = modules.value.find(x => x.key === key)
+  return m?.name || key
+}
+
+function isFeishuSelected(): boolean {
+  return selectedModule.value?.key === 'feishu_bot'
 }
 
 onMounted(() => {
@@ -192,6 +382,7 @@ onMounted(() => {
               :class="{
                 active: selectedKey === mod.key,
                 disabled: !mod.enabled,
+                'has-missing': mod.requires && mod.requires.length > 0 && !mod.requirements_met,
               }"
               @click="selectModule(mod.key)"
             >
@@ -204,6 +395,11 @@ onMounted(() => {
                     :class="mod.enabled ? 'dot-on' : 'dot-off'"
                     :title="mod.enabled ? t('modulesView.status.enabled') : t('modulesView.status.disabled')"
                   />
+                  <span
+                    v-if="mod.requires && mod.requires.length > 0 && !mod.requirements_met"
+                    class="missing-badge"
+                    :title="`Missing: ${mod.missing_requirements?.join(', ')}`"
+                  >!</span>
                 </div>
                 <div class="card-desc">{{ mod.description }}</div>
               </div>
@@ -232,10 +428,35 @@ onMounted(() => {
             <h2 class="detail-title">{{ selectedModule.name }}</h2>
             <span
               class="status-badge"
-              :class="selectedEnabled ? 'badge-on' : 'badge-off'"
+              :class="selectedModule.enabled ? 'badge-on' : 'badge-off'"
             >
-              {{ selectedEnabled ? t('modulesView.status.enabled') : t('modulesView.status.disabled') }}
+              {{ selectedModule.enabled ? t('modulesView.status.enabled') : t('modulesView.status.disabled') }}
             </span>
+          </div>
+        </div>
+
+        <!-- Dependency warning banner (soft hint) -->
+        <div
+          v-if="selectedModule.requires && selectedModule.requires.length > 0"
+          class="dep-banner"
+          :class="selectedModule.requirements_met ? 'dep-ok' : 'dep-missing'"
+        >
+          <div v-if="selectedModule.requirements_met" class="dep-msg dep-msg-ok">
+            ✓ {{ t('modulesView.overview.requirementsMet') }}
+          </div>
+          <div v-else class="dep-msg">
+            <div class="dep-msg-warn">⚠️ {{ t('modulesView.overview.requirementsMissing') }}</div>
+            <div class="dep-list">
+              <span
+                v-for="dep in selectedModule.missing_requirements"
+                :key="dep"
+                class="dep-chip"
+                @click="jumpToModule(dep)"
+              >
+                {{ missingModuleName(dep) }}
+                <span class="dep-jump">{{ t('modulesView.overview.jumpToModule') }} →</span>
+              </span>
+            </div>
           </div>
         </div>
 
@@ -257,6 +478,18 @@ onMounted(() => {
             :class="{ active: activeTab === 'integration' }"
             @click="activeTab = 'integration'"
           >{{ t('modulesView.tabs.integration') }}</button>
+          <button
+            v-if="moduleConfigSummary && isFeishuSelected()"
+            class="tab-btn"
+            :class="{ active: activeTab === 'status' }"
+            @click="activeTab = 'status'"
+          >{{ t('modulesView.tabs.status') }}</button>
+          <button
+            v-if="isFeishuSelected()"
+            class="tab-btn"
+            :class="{ active: activeTab === 'routing' }"
+            @click="activeTab = 'routing'"
+          >{{ t('modulesView.tabs.routing') }}</button>
         </div>
 
         <!-- Overview tab -->
@@ -294,8 +527,8 @@ onMounted(() => {
             </div>
             <div class="meta-item">
               <span class="meta-label">{{ t('modulesView.overview.labelStatus') }}</span>
-              <span class="meta-value" :class="selectedEnabled ? 'text-green' : 'text-muted'">
-                {{ selectedEnabled ? t('modulesView.status.enabled') : t('modulesView.status.disabled') }}
+              <span class="meta-value" :class="selectedModule.enabled ? 'text-green' : 'text-muted'">
+                {{ selectedModule.enabled ? t('modulesView.status.enabled') : t('modulesView.status.disabled') }}
               </span>
             </div>
           </div>
@@ -303,87 +536,198 @@ onMounted(() => {
           <div class="info-section action-section">
             <button
               class="btn-action"
-              :class="selectedEnabled ? 'btn-danger' : 'btn-primary'"
+              :class="selectedModule.enabled ? 'btn-danger' : 'btn-primary'"
               :disabled="toggling === selectedModule.key"
               @click="doToggle(selectedModule.key)"
             >
-              {{ toggling === selectedModule.key ? t('modulesView.status.processing') : selectedEnabled ? t('modulesView.status.enabledAction') : t('modulesView.status.disabledAction') }}
+              {{ toggling === selectedModule.key ? t('modulesView.status.processing') : selectedModule.enabled ? t('modulesView.status.enabledAction') : t('modulesView.status.disabledAction') }}
             </button>
-            <button class="btn-ghost" @click="goToSettings(selectedModule.key)">
+            <!-- 仅对支持 test endpoint 的模块显示测试按钮 -->
+            <button
+              v-if="selectedModule.key === 'feishu_bot'"
+              class="btn-ghost"
+              :disabled="testing || !selectedModule.enabled"
+              @click="doTestConnection(selectedModule.key)"
+            >
+              {{ testing ? t('modulesView.overview.testInProgress') : t('modulesView.overview.testConnection') }}
+            </button>
+            <button class="btn-ghost" @click="goToAllSettings">
               {{ t('modulesView.overview.viewAllSettings') }}
             </button>
+          </div>
+
+          <!-- 测试结果 -->
+          <div v-if="testResult" class="test-result" :class="testResult.ok ? 'test-ok' : 'test-fail'">
+            <strong>{{ testResult.ok ? '✅' : '❌' }} {{ testResult.message }}</strong>
+            <span v-if="testResult.detail" class="test-detail">{{ testResult.detail }}</span>
           </div>
         </div>
 
         <!-- Config tab -->
         <div v-if="activeTab === 'config'" class="tab-content">
-          <div class="info-section" v-if="moduleSettings.length === 0">
-            <p class="text-muted">{{ t('modulesView.config.noSettings') }}</p>
+          <div v-if="isFeishuSelected()" class="config-hint">
+            {{ t('modulesView.feishu.connectionHint') }}
           </div>
-          <div
-            v-for="setting in moduleSettings"
-            :key="setting.key"
-            class="config-card"
-          >
-            <div class="config-header">
-              <code class="config-key">{{ setting.key }}</code>
-              <span class="src-badge" :class="'src-' + setting.source">
-                {{ setting.source || t('modulesView.config.sourceDefault') }}
-              </span>
+
+          <template v-if="moduleSettings.length === 0">
+            <div class="info-section">
+              <p class="text-muted">{{ t('modulesView.config.noSettings') }}</p>
             </div>
-            <p class="config-desc">{{ setting.description }}</p>
-            <div class="config-editor">
-              <!-- Boolean -->
-              <div v-if="setting.type === 'bool'" class="config-bool">
-                <label class="switch-label-sm">
-                  <input
-                    type="checkbox"
-                    class="toggle-input"
-                    :checked="setting.value === true"
-                    @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
-                  />
-                  <span class="toggle-track-sm">
-                    <span class="toggle-knob-sm" />
+          </template>
+
+          <!-- 分组渲染（仅 feishu_bot 分组；其他模块沿用扁平列表） -->
+          <template v-else-if="isFeishuSelected()">
+            <div
+              v-for="section in sectionOrder"
+              :key="section"
+              v-show="groupedSettings[section] && groupedSettings[section].length > 0"
+              class="config-section"
+            >
+              <h3 class="config-section-title">
+                {{ t(`modulesView.config.sections.${section}`) }}
+              </h3>
+              <div
+                v-for="setting in groupedSettings[section]"
+                :key="setting.key"
+                class="config-card"
+              >
+                <div class="config-header">
+                  <code class="config-key">{{ setting.key }}</code>
+                  <span class="src-badge" :class="'src-' + (setting.source || 'default')">
+                    {{ setting.source === 'db' ? t('modulesView.config.sourceDb') :
+                       setting.source === 'env' ? t('modulesView.config.sourceEnv') :
+                       t('modulesView.config.sourceDefault') }}
                   </span>
-                  <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
-                </label>
-              </div>
-              <!-- Number -->
-              <div v-else-if="setting.type === 'int' || setting.type === 'float'" class="config-number">
-                <input
-                  type="number"
-                  class="number-input"
-                  :value="setting.value ?? setting.default"
-                  :step="setting.type === 'float' ? '0.01' : '1'"
-                  @change="saveSetting(setting.key, parseFloat(($event.target as HTMLInputElement).value))"
-                />
-              </div>
-              <!-- String -->
-              <div v-else-if="setting.type === 'string' || setting.type === 'url'" class="config-string">
-                <input
-                  type="text"
-                  class="text-input"
-                  :value="setting.value ?? setting.default"
-                  @change="saveSetting(setting.key, ($event.target as HTMLInputElement).value)"
-                  :placeholder="t('modulesView.config.inputPlaceholder', { description: setting.description })"
-                />
-              </div>
-              <!-- Select (enum) -->
-              <div v-else-if="setting.type === 'enum' && setting.options" class="config-select">
-                <select
-                  class="select-input"
-                  :value="setting.value ?? setting.default"
-                  @change="saveSetting(setting.key, ($event.target as HTMLSelectElement).value)"
-                >
-                  <option
-                    v-for="opt in setting.options"
-                    :key="opt"
-                    :value="opt"
-                  >{{ opt }}</option>
-                </select>
+                </div>
+                <p class="config-desc">{{ setting.description }}</p>
+                <div class="config-editor">
+                  <!-- Boolean -->
+                  <div v-if="setting.type === 'bool'" class="config-bool">
+                    <label class="switch-label-sm">
+                      <input
+                        type="checkbox"
+                        class="toggle-input"
+                        :checked="setting.value === true"
+                        @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
+                      />
+                      <span class="toggle-track-sm">
+                        <span class="toggle-knob-sm" />
+                      </span>
+                      <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
+                    </label>
+                  </div>
+                  <!-- Number -->
+                  <div v-else-if="setting.type === 'int' || setting.type === 'float'" class="config-number">
+                    <input
+                      type="number"
+                      class="number-input"
+                      :value="setting.value ?? setting.default"
+                      :step="setting.type === 'float' ? '0.01' : '1'"
+                      :min="setting.min"
+                      :max="setting.max"
+                      @change="saveSetting(setting.key, parseFloat(($event.target as HTMLInputElement).value))"
+                    />
+                    <span v-if="setting.min !== undefined || setting.max !== undefined" class="range-hint">
+                      <span v-if="setting.min !== undefined">≥ {{ setting.min }}</span>
+                      <span v-if="setting.max !== undefined"> ≤ {{ setting.max }}</span>
+                    </span>
+                  </div>
+                  <!-- String / URL -->
+                  <div v-else-if="setting.type === 'string' || setting.type === 'url'" class="config-string">
+                    <input
+                      type="text"
+                      class="text-input"
+                      :value="setting.value ?? setting.default"
+                      @change="saveSetting(setting.key, ($event.target as HTMLInputElement).value)"
+                      :placeholder="t('modulesView.config.inputPlaceholder', { description: setting.description })"
+                    />
+                  </div>
+                  <!-- Enum -->
+                  <div v-else-if="setting.type === 'enum' && setting.options" class="config-select">
+                    <select
+                      class="select-input"
+                      :value="setting.value ?? setting.default"
+                      @change="saveSetting(setting.key, ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option
+                        v-for="opt in setting.options"
+                        :key="opt"
+                        :value="opt"
+                      >{{ opt }}</option>
+                    </select>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
+          </template>
+
+          <!-- 非 feishu_bot 模块：扁平渲染 -->
+          <template v-else>
+            <div
+              v-for="setting in moduleSettings"
+              :key="setting.key"
+              class="config-card"
+            >
+              <div class="config-header">
+                <code class="config-key">{{ setting.key }}</code>
+                <span class="src-badge" :class="'src-' + (setting.source || 'default')">
+                  {{ setting.source === 'db' ? t('modulesView.config.sourceDb') :
+                     setting.source === 'env' ? t('modulesView.config.sourceEnv') :
+                     t('modulesView.config.sourceDefault') }}
+                </span>
+              </div>
+              <p class="config-desc">{{ setting.description }}</p>
+              <div class="config-editor">
+                <div v-if="setting.type === 'bool'" class="config-bool">
+                  <label class="switch-label-sm">
+                    <input
+                      type="checkbox"
+                      class="toggle-input"
+                      :checked="setting.value === true"
+                      @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span class="toggle-track-sm">
+                      <span class="toggle-knob-sm" />
+                    </span>
+                    <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
+                  </label>
+                </div>
+                <div v-else-if="setting.type === 'int' || setting.type === 'float'" class="config-number">
+                  <input
+                    type="number"
+                    class="number-input"
+                    :value="setting.value ?? setting.default"
+                    :step="setting.type === 'float' ? '0.01' : '1'"
+                    :min="setting.min"
+                    :max="setting.max"
+                    @change="saveSetting(setting.key, parseFloat(($event.target as HTMLInputElement).value))"
+                  />
+                </div>
+                <div v-else-if="setting.type === 'string' || setting.type === 'url'" class="config-string">
+                  <input
+                    type="text"
+                    class="text-input"
+                    :value="setting.value ?? setting.default"
+                    @change="saveSetting(setting.key, ($event.target as HTMLInputElement).value)"
+                    :placeholder="t('modulesView.config.inputPlaceholder', { description: setting.description })"
+                  />
+                </div>
+                <div v-else-if="setting.type === 'enum' && setting.options" class="config-select">
+                  <select
+                    class="select-input"
+                    :value="setting.value ?? setting.default"
+                    @change="saveSetting(setting.key, ($event.target as HTMLSelectElement).value)"
+                  >
+                    <option
+                      v-for="opt in setting.options"
+                      :key="opt"
+                      :value="opt"
+                    >{{ opt }}</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
 
         <!-- Integration tab -->
@@ -394,11 +738,11 @@ onMounted(() => {
                 {{ selectedModule.key === 'feishu_bot' ? '📱' : '🔗' }}
               </span>
               <div class="integ-info">
-<h3 class="integ-title">
-                {{ selectedModule.key === 'feishu_bot' ? t('modulesView.integration.feishuBotIntegration') : selectedModule.integration.label }}
-                {{ t('modulesView.tabs.integration') }}
-              </h3>
-              <p class="integ-desc">{{ selectedModule.integration.description }}</p>
+                <h3 class="integ-title">
+                  {{ selectedModule.key === 'feishu_bot' ? t('modulesView.integration.feishuBotIntegration') : selectedModule.integration.label }}
+                  {{ t('modulesView.tabs.integration') }}
+                </h3>
+                <p class="integ-desc">{{ selectedModule.integration.description }}</p>
               </div>
             </div>
             <div class="integ-body">
@@ -414,15 +758,192 @@ onMounted(() => {
               <div class="integ-steps">
                 <h4 class="steps-title">{{ t('modulesView.integration.stepsTitle') }}</h4>
                 <ol class="steps-list">
-                  <li v-for="(step, i) in t('modulesView.integration.feishuSteps')" :key="i">{{ step }}</li>
+                  <li v-for="(step, i) in selectedModule.key === 'feishu_bot' ? t('modulesView.integration.feishuSteps') : []" :key="i">{{ step }}</li>
                 </ol>
               </div>
               <div class="integ-status">
-                <span class="status-indicator" :class="selectedEnabled ? 'connected' : 'disconnected'" />
-                <span>{{ selectedEnabled ? t('modulesView.integration.enabledStatus') : t('modulesView.integration.disabledHint') }}</span>
+                <span class="status-indicator" :class="selectedModule.enabled ? 'connected' : 'disconnected'" />
+                <span>{{ selectedModule.enabled ? t('modulesView.integration.enabledStatus') : t('modulesView.integration.disabledHint') }}</span>
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- Status tab (runtime summary) -->
+        <div v-if="activeTab === 'status' && moduleConfigSummary" class="tab-content">
+          <div class="status-grid">
+            <div
+              v-for="(value, key) in moduleConfigSummary"
+              :key="key"
+              class="status-item"
+            >
+              <span class="status-key">{{ key }}</span>
+              <span
+                class="status-value"
+                :class="typeof value === 'boolean' ? (value ? 'text-green' : 'text-muted') : ''"
+              >{{ typeof value === 'boolean' ? (value ? '✓' : '✗') : (Array.isArray(value) ? value.join(', ') : value) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Routing tab (feishu_bot only) — manage OpenID routing rules -->
+        <div v-if="activeTab === 'routing' && isFeishuSelected()" class="tab-content">
+          <div class="routing-toolbar">
+            <h3 class="config-section-title">{{ t('modulesView.routing.title') }}</h3>
+            <div class="routing-toolbar-actions">
+              <input
+                ref="csvFileInput"
+                type="file"
+                accept=".csv,text/csv"
+                style="display:none"
+                @change="onCsvFileSelected"
+              />
+              <button class="btn-ghost-sm" @click="triggerCsvImport">
+                {{ t('modulesView.routing.importCsv') }}
+              </button>
+              <button class="btn-primary-sm" @click="showAddRule = !showAddRule">
+                {{ showAddRule ? t('modulesView.routing.cancel') : t('modulesView.routing.addNew') }}
+              </button>
+            </div>
+          </div>
+
+          <!-- CSV import result banner -->
+          <div v-if="csvImportResult" class="routing-form">
+            <h4 class="config-section-title">{{ t('modulesView.routing.csvImportResult') }}</h4>
+            <p class="text-muted">
+              {{ t('modulesView.routing.csvImportSuccess', { imported: csvImportResult.imported, skipped: csvImportResult.skipped }) }}
+            </p>
+            <div v-if="csvImportResult.errors?.length" class="csv-errors">
+              <div v-for="(err, i) in csvImportResult.errors" :key="i" class="csv-error-row">
+                <span class="csv-error-row-num">#{{ err.row }}</span>
+                <span class="csv-error-row-msg">{{ err.error }}</span>
+              </div>
+            </div>
+            <button class="btn-ghost-sm" @click="csvImportResult = null">
+              {{ t('modulesView.routing.close') }}
+            </button>
+          </div>
+
+          <!-- Add new rule form -->
+          <div v-if="showAddRule" class="routing-form">
+            <h4 class="config-section-title">{{ t('modulesView.routing.formTitle') }}</h4>
+            <div class="form-grid">
+              <label>
+                <span>{{ t('modulesView.routing.openId') }} *</span>
+                <input
+                  v-model="newRule.open_id"
+                  type="text"
+                  class="text-input"
+                  :placeholder="t('modulesView.routing.openIdPlaceholder')"
+                />
+              </label>
+              <label>
+                <span>{{ t('modulesView.routing.displayName') }}</span>
+                <input
+                  v-model="newRule.display_name"
+                  type="text"
+                  class="text-input"
+                />
+              </label>
+              <label>
+                <span>{{ t('modulesView.routing.userRole') }}</span>
+                <select v-model="newRule.user_role" class="select-input">
+                  <option value="admin">admin</option>
+                  <option value="member">member</option>
+                  <option value="auditor">auditor</option>
+                </select>
+              </label>
+              <label>
+                <span>{{ t('modulesView.routing.priority') }}</span>
+                <input
+                  v-model.number="newRule.priority"
+                  type="number"
+                  class="text-input"
+                  min="0"
+                  max="9999"
+                />
+              </label>
+              <label>
+                <span>{{ t('modulesView.routing.note') }}</span>
+                <input
+                  v-model="newRule.note"
+                  type="text"
+                  class="text-input"
+                />
+              </label>
+              <label class="checkbox-line">
+                <input
+                  v-model="newRule.enabled"
+                  type="checkbox"
+                />
+                <span>{{ t('modulesView.routing.enabled') }}</span>
+              </label>
+            </div>
+            <div class="form-actions">
+              <button class="btn-primary-sm" @click="addRoutingRule" :disabled="!newRule.open_id">
+                {{ t('modulesView.routing.save') }}
+              </button>
+              <button class="btn-ghost-sm" @click="showAddRule = false">
+                {{ t('modulesView.routing.cancel') }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Rules table -->
+          <div v-if="routingRulesLoading" class="text-muted text-center">
+            {{ t('modulesView.routing.loading') }}
+          </div>
+          <div v-else-if="routingRules.length === 0" class="text-muted text-center">
+            {{ t('modulesView.routing.empty') }}
+          </div>
+          <table v-else class="routing-table">
+            <thead>
+              <tr>
+                <th>{{ t('modulesView.routing.openId') }}</th>
+                <th>{{ t('modulesView.routing.displayName') }}</th>
+                <th>{{ t('modulesView.routing.userRole') }}</th>
+                <th>{{ t('modulesView.routing.riskLevels') }}</th>
+                <th>{{ t('modulesView.routing.priority') }}</th>
+                <th>{{ t('modulesView.routing.enabled') }}</th>
+                <th>{{ t('modulesView.routing.actions') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="rule in routingRules" :key="rule.id">
+                <td><code class="config-key">{{ rule.open_id }}</code></td>
+                <td>{{ rule.display_name || '—' }}</td>
+                <td><span class="role-badge" :class="'role-' + rule.user_role">{{ rule.user_role }}</span></td>
+                <td class="risk-list">
+                  <span
+                    v-for="level in rule.risk_levels"
+                    :key="level"
+                    class="risk-chip"
+                    :class="'risk-' + level"
+                  >{{ level }}</span>
+                </td>
+                <td>{{ rule.priority }}</td>
+                <td>
+                  <span :class="rule.enabled ? 'text-green' : 'text-muted'">
+                    {{ rule.enabled ? '✓' : '✗' }}
+                  </span>
+                </td>
+                <td>
+                  <button
+                    class="btn-ghost-sm"
+                    @click="toggleRoutingRuleEnabled(rule)"
+                    :title="rule.enabled ? t('modulesView.routing.disable') : t('modulesView.routing.enable')"
+                  >
+                    {{ rule.enabled ? t('modulesView.routing.disable') : t('modulesView.routing.enable') }}
+                  </button>
+                  <button
+                    class="btn-ghost-sm btn-danger-text"
+                    @click="removeRoutingRule(rule)"
+                    :title="t('modulesView.routing.delete')"
+                  >×</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </aside>
 
@@ -455,9 +976,7 @@ onMounted(() => {
   padding-bottom: 16px;
   border-bottom: 1px solid var(--border, #30363d);
 }
-.page-header-left {
-  flex: 1;
-}
+.page-header-left { flex: 1; }
 .page-title {
   font-size: 20px;
   font-weight: 700;
@@ -469,9 +988,7 @@ onMounted(() => {
   color: var(--text-secondary, #8b949e);
   margin: 0;
 }
-.page-header-right {
-  flex-shrink: 0;
-}
+.page-header-right { flex-shrink: 0; }
 .summary-badge {
   display: flex;
   align-items: baseline;
@@ -487,14 +1004,8 @@ onMounted(() => {
   font-weight: 700;
   color: #34d399;
 }
-.summary-sep {
-  color: var(--text-secondary, #8b949e);
-  margin: 0 2px;
-}
-.summary-total {
-  font-size: 18px;
-  color: var(--text-secondary, #8b949e);
-}
+.summary-sep { color: var(--text-secondary, #8b949e); margin: 0 2px; }
+.summary-total { font-size: 18px; color: var(--text-secondary, #8b949e); }
 .summary-label {
   margin-left: 8px;
   color: var(--text-secondary, #8b949e);
@@ -532,9 +1043,7 @@ onMounted(() => {
   color: var(--text-secondary, #8b949e);
 }
 
-.module-group {
-  margin-bottom: 8px;
-}
+.module-group { margin-bottom: 8px; }
 .group-header {
   display: flex;
   align-items: center;
@@ -564,17 +1073,15 @@ onMounted(() => {
   transition: background 0.15s;
   border: 1px solid transparent;
   margin-bottom: 2px;
+  position: relative;
 }
-.module-card:hover {
-  background: var(--bg-hover, #21262d);
-}
+.module-card:hover { background: var(--bg-hover, #21262d); }
 .module-card.active {
   background: rgba(99, 102, 241, 0.08);
   border-color: var(--accent, #6366f1);
 }
-.module-card.disabled {
-  opacity: 0.65;
-}
+.module-card.disabled { opacity: 0.65; }
+.module-card.has-missing { border-left: 3px solid #fbbf24; }
 .card-icon {
   font-size: 22px;
   flex-shrink: 0;
@@ -586,10 +1093,7 @@ onMounted(() => {
   background: var(--bg, #0f1117);
   border-radius: 8px;
 }
-.card-body {
-  flex: 1;
-  min-width: 0;
-}
+.card-body { flex: 1; min-width: 0; }
 .card-title-row {
   display: flex;
   align-items: center;
@@ -608,6 +1112,19 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.missing-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #92400e;
+  background: #fbbf24;
+  border-radius: 50%;
+  margin-left: 2px;
+}
 
 /* ── Status Dot ── */
 .status-dot {
@@ -620,15 +1137,10 @@ onMounted(() => {
   background: #34d399;
   box-shadow: 0 0 4px rgba(52, 211, 153, 0.4);
 }
-.dot-off {
-  background: #6e7681;
-}
+.dot-off { background: #6e7681; }
 
 /* ── Toggle Switch ── */
-.toggle-wrap {
-  flex-shrink: 0;
-  cursor: pointer;
-}
+.toggle-wrap { flex-shrink: 0; cursor: pointer; }
 .toggle-input {
   position: absolute;
   opacity: 0;
@@ -653,16 +1165,9 @@ onMounted(() => {
   border-radius: 50%;
   transition: transform 0.2s;
 }
-.toggle-input:checked + .toggle-track {
-  background: var(--accent, #6366f1);
-}
-.toggle-input:checked + .toggle-track .toggle-knob {
-  transform: translateX(16px);
-}
-.toggle-input:disabled + .toggle-track {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+.toggle-input:checked + .toggle-track { background: var(--accent, #6366f1); }
+.toggle-input:checked + .toggle-track .toggle-knob { transform: translateX(16px); }
+.toggle-input:disabled + .toggle-track { opacity: 0.5; cursor: not-allowed; }
 
 /* ── Detail Pane ── */
 .detail-pane {
@@ -678,10 +1183,7 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
 }
-.empty-state {
-  text-align: center;
-  color: var(--text-secondary, #8b949e);
-}
+.empty-state { text-align: center; color: var(--text-secondary, #8b949e); }
 .empty-icon {
   font-size: 40px;
   display: block;
@@ -696,12 +1198,8 @@ onMounted(() => {
   padding-bottom: 16px;
   border-bottom: 1px solid var(--border, #30363d);
 }
-.detail-icon {
-  font-size: 32px;
-}
-.detail-title-area {
-  flex: 1;
-}
+.detail-icon { font-size: 32px; }
+.detail-title-area { flex: 1; }
 .detail-title {
   margin: 0 0 4px;
   font-size: 18px;
@@ -723,6 +1221,49 @@ onMounted(() => {
   color: #8b949e;
 }
 
+/* ── Dependency Banner (soft hint) ── */
+.dep-banner {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.dep-banner.dep-ok {
+  background: rgba(52, 211, 153, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  color: #34d399;
+}
+.dep-banner.dep-missing {
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fbbf24;
+}
+.dep-msg-ok { font-weight: 500; }
+.dep-msg-warn { margin-bottom: 6px; font-weight: 500; }
+.dep-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.dep-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: rgba(251, 191, 36, 0.18);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+.dep-chip:hover { background: rgba(251, 191, 36, 0.3); }
+.dep-jump {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
 /* ── Tabs ── */
 .tab-bar {
   display: flex;
@@ -742,21 +1283,15 @@ onMounted(() => {
   margin-bottom: -1px;
   transition: color 0.15s, border-color 0.15s;
 }
-.tab-btn:hover {
-  color: var(--text-primary, #e6edf3);
-}
+.tab-btn:hover { color: var(--text-primary, #e6edf3); }
 .tab-btn.active {
   color: var(--accent-h, #818cf8);
   border-bottom-color: var(--accent, #6366f1);
 }
 
 /* ── Tab Content ── */
-.tab-content {
-  font-size: 13px;
-}
-.info-section {
-  margin-bottom: 20px;
-}
+.tab-content { font-size: 13px; }
+.info-section { margin-bottom: 20px; }
 .section-title {
   font-size: 13px;
   font-weight: 600;
@@ -859,10 +1394,7 @@ onMounted(() => {
   cursor: pointer;
   transition: opacity 0.15s;
 }
-.btn-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+.btn-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-primary {
   background: var(--accent, #6366f1);
   color: #fff;
@@ -880,8 +1412,60 @@ onMounted(() => {
   font-size: 13px;
   cursor: pointer;
 }
-.btn-ghost:hover {
-  background: var(--bg-hover, #21262d);
+.btn-ghost:hover { background: var(--bg-hover, #21262d); }
+.btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Test Result Banner ── */
+.test-result {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.test-ok {
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  color: #34d399;
+}
+.test-fail {
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  color: #f87171;
+}
+.test-detail {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+/* ── Config Hint ── */
+.config-hint {
+  padding: 10px 12px;
+  background: rgba(99, 102, 241, 0.06);
+  border-left: 3px solid var(--accent, #6366f1);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-secondary, #8b949e);
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+
+/* ── Config Section (grouped) ── */
+.config-section {
+  margin-bottom: 18px;
+}
+.config-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-h, #818cf8);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border, #30363d);
 }
 
 /* ── Config Cards ── */
@@ -927,11 +1511,16 @@ onMounted(() => {
   outline: none;
   border-color: var(--accent, #6366f1);
 }
+.range-hint {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted, #6e7681);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
 
 /* ── Config Boolean (small toggle) ── */
-.config-bool {
-  padding: 4px 0;
-}
+.config-bool { padding: 4px 0; }
 .switch-label-sm {
   display: inline-flex;
   align-items: center;
@@ -957,12 +1546,8 @@ onMounted(() => {
   border-radius: 50%;
   transition: transform 0.2s;
 }
-.switch-label-sm .toggle-input:checked + .toggle-track-sm {
-  background: var(--accent, #6366f1);
-}
-.switch-label-sm .toggle-input:checked + .toggle-track-sm .toggle-knob-sm {
-  transform: translateX(14px);
-}
+.switch-label-sm .toggle-input:checked + .toggle-track-sm { background: var(--accent, #6366f1); }
+.switch-label-sm .toggle-input:checked + .toggle-track-sm .toggle-knob-sm { transform: translateX(14px); }
 .switch-text-sm {
   font-size: 12px;
   color: var(--text-primary, #e6edf3);
@@ -1004,12 +1589,8 @@ onMounted(() => {
   background: rgba(99, 102, 241, 0.05);
   border-bottom: 1px solid var(--border, #30363d);
 }
-.integ-icon {
-  font-size: 28px;
-}
-.integ-info {
-  flex: 1;
-}
+.integ-icon { font-size: 28px; }
+.integ-info { flex: 1; }
 .integ-title {
   margin: 0 0 2px;
   font-size: 15px;
@@ -1020,24 +1601,18 @@ onMounted(() => {
   font-size: 12px;
   color: var(--text-secondary, #8b949e);
 }
-.integ-body {
-  padding: 16px;
-}
+.integ-body { padding: 16px; }
 .integ-docs {
   margin-bottom: 14px;
   font-size: 12px;
 }
-.integ-docs-label {
-  color: var(--text-secondary, #8b949e);
-}
+.integ-docs-label { color: var(--text-secondary, #8b949e); }
 .integ-link {
   color: var(--accent-h, #818cf8);
   text-decoration: none;
   word-break: break-all;
 }
-.integ-link:hover {
-  text-decoration: underline;
-}
+.integ-link:hover { text-decoration: underline; }
 .steps-title {
   font-size: 13px;
   font-weight: 600;
@@ -1069,21 +1644,201 @@ onMounted(() => {
   background: #34d399;
   box-shadow: 0 0 4px rgba(52, 211, 153, 0.4);
 }
-.status-indicator.disconnected {
-  background: #6e7681;
+.status-indicator.disconnected { background: #6e7681; }
+
+/* ── Status Tab (Runtime Summary) ── */
+.status-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg, #0f1117);
+  border-radius: 8px;
+}
+.status-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.status-key {
+  color: var(--text-muted, #6e7681);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.status-value {
+  color: var(--text-primary, #e6edf3);
+  font-weight: 500;
 }
 
 .text-green { color: #34d399; }
 .text-muted { color: #6e7681; }
 
+/* ── Routing tab (feishu_bot OpenID rules) ── */
+.routing-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.routing-toolbar-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.btn-primary-sm {
+  padding: 6px 12px;
+  background: var(--accent, #6366f1);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn-primary-sm:hover { opacity: 0.9; }
+.btn-primary-sm:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-ghost-sm {
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  color: var(--text-primary, #e6edf3);
+  font-size: 11px;
+  cursor: pointer;
+  margin-right: 4px;
+}
+.btn-ghost-sm:hover { background: var(--bg-hover, #21262d); }
+.btn-ghost-sm.btn-danger-text { color: #f87171; }
+.routing-form {
+  padding: 14px;
+  background: var(--bg, #0f1117);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 10px 0;
+}
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary, #8b949e);
+}
+.form-grid label.checkbox-line {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  margin-top: 20px;
+}
+.form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.routing-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: var(--bg, #0f1117);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.routing-table th {
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--bg-card, #161b22);
+  color: var(--text-secondary, #8b949e);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+.routing-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #30363d);
+  color: var(--text-primary, #e6edf3);
+  vertical-align: middle;
+}
+.routing-table tr:last-child td { border-bottom: none; }
+.routing-table tr:hover { background: var(--bg-hover, #21262d); }
+.routing-table .role-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.routing-table .role-admin {
+  background: rgba(99, 102, 241, 0.18);
+  color: #818cf8;
+}
+.routing-table .role-member {
+  background: rgba(110, 118, 129, 0.15);
+  color: #8b949e;
+}
+.routing-table .role-auditor {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fbbf24;
+}
+.risk-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.risk-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 500;
+}
+.risk-low { background: rgba(110, 118, 129, 0.15); color: #8b949e; }
+.risk-medium { background: rgba(99, 102, 241, 0.15); color: #818cf8; }
+.risk-high { background: rgba(251, 146, 60, 0.18); color: #fb923c; }
+.risk-critical {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+/* CSV import result banner */
+.csv-errors {
+  max-height: 200px;
+  overflow-y: auto;
+  background: rgba(248, 113, 113, 0.05);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin: 8px 0;
+}
+.csv-error-row {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  padding: 2px 0;
+}
+.csv-error-row-num {
+  color: #f87171;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.csv-error-row-msg {
+  color: var(--text-secondary, #8b949e);
+}
+
+.text-center { text-align: center; padding: 24px; }
+
 /* ── Responsive ── */
 @media (max-width: 960px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
+  .layout { grid-template-columns: 1fr; }
   .list-pane,
-  .detail-pane {
-    max-height: none;
-  }
+  .detail-pane { max-height: none; }
+  .meta-grid { grid-template-columns: 1fr; }
+  .status-grid { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
 }
 </style>

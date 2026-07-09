@@ -17,5 +17,6 @@ export default {
     failed: 'فشل تسجيل الدخول',
   },
   changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
+  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",  // 2026-07-09: رسالة فحص المصادقة عند التحميل الأول
+  checking: 'جارٍ التحقق من حالة تسجيل الدخول…',
 }

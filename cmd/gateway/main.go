@@ -49,6 +49,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
+	memclient "github.com/kaixuan/llm-gateway-go/domains/memory/client"             //nolint:depguard // 2026-07-09: DLQ and FallbackCache
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -93,6 +94,15 @@ func sessionAuditApprovalTimeoutFromEnv() time.Duration {
 	}
 	return d
 }
+
+// ── 模块装配后置状态 ──────────────────────────────────────────
+// 2026-07-09: 这些变量由 initApprovalNotifier 写入，由 router 注册阶段读取
+// 以完成 feishubot 模块的 late-binding。包级可见避免传递整条 init 链。
+var (
+	gAuditBus    *eventbus.MemoryBus
+	gLarkCh      *notification.LarkBotChannel
+	gApprovalMgr *sessionaudit.ApprovalManager
+)
 
 func main() {
 	// Round 39 (2026-06-16) — initialize OTel tracer.
@@ -244,7 +254,7 @@ func main() {
 	if len(cfg.SessionIDBodyKeys) > 0 {
 		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}
-	
+
 	// Health handler with database and Redis status checking (2026-07-08)
 	// Pass db and redis connections for health checks (will be updated with redis later)
 	var dbPinger interface{ Ping(context.Context) error }
@@ -253,7 +263,7 @@ func main() {
 		dbPinger = dbConn.Pool()
 	}
 	healthHandler := streaming.NewHealthHandler(cm, lim, upClient.Proxy(), dbPinger, redisPinger)
-	
+
 	modelsHandler := streaming.NewModelsHandler()
 	messagesHandler := streaming.NewMessagesHandler(chatHandler)
 	responsesHandler := streaming.NewResponsesHandler(chatHandler)
@@ -307,7 +317,7 @@ func main() {
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
 			sessionPref = session.NewSessionPreference(redisClient)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
-			
+
 			// Update health handler with Redis connection (2026-07-08)
 			healthHandler.SetRedis(redisClient)
 		} else {
@@ -694,6 +704,40 @@ func main() {
 				"base_url", memoraBase,
 				"smart_search_url", smartSearchBase,
 			)
+
+			// 2026-07-09: Initialize DLQ and FallbackCache for fault tolerance
+			if dbConn != nil && dbConn.Enabled() {
+				dlq := memclient.NewDeadLetterQueue(memclient.DLQConfig{
+					Enabled:       true,
+					MaxSize:       10000,
+					RetentionDays: 7,
+					DB:            dbConn.Pool(),
+					Logger:        slog.Default(),
+				})
+
+				fallbackCache := memclient.NewFallbackCache(memclient.FallbackCacheConfig{
+					Enabled: true,
+					MaxSize: 1000,
+					TTL:     1 * time.Hour,
+					Client:  memorySvc.Client(),
+					Logger:  slog.Default(),
+				})
+
+				if sink := memorySvc.Sink(); sink != nil {
+					sink.SetDLQ(dlq)
+					sink.SetFallbackCache(fallbackCache)
+					slog.Info("memora DLQ and fallback cache enabled",
+						"dlq_max_size", 10000,
+						"dlq_retention_days", 7,
+						"cache_max_size", 1000,
+						"cache_ttl", "1h",
+					)
+				}
+
+				// Store DLQ for admin handler
+				memorySvc.SetDLQ(dlq)
+				memorySvc.SetFallbackCache(fallbackCache)
+			}
 		} else {
 			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
 		}
@@ -1082,14 +1126,19 @@ func main() {
 			auditHook := sessionaudithook.NewSessionAuditHookV1(auditDetector, auditBus, approvalMgr)
 
 			// 初始化审批通知器（从 DB 加载路由规则 + 创建 IM 渠道）
+			// 2026-07-09: 多返回 larkCh 以便 feishubot 模块复用。
 			if dbConn != nil && dbConn.Enabled() {
-				if notifier, nerr := initApprovalNotifier(dbConn.Pool(), approvalMgr); nerr != nil {
+				notifier, lc, nerr := initApprovalNotifier(dbConn.Pool(), approvalMgr)
+				if nerr != nil {
 					slog.Error("init approval notifier failed", "error", nerr)
 				} else if notifier != nil {
 					auditHook.SetNotifier(notifier)
 					slog.Info("approval notifier initialized and injected to audit hook")
+					gLarkCh = lc
 				}
 			}
+			gAuditBus = auditBus
+			gApprovalMgr = approvalMgr
 
 			chatHandler.SetSessionAuditHook(auditHook)
 			slog.Info("session audit chat-time hook wired (v1)",
@@ -1160,6 +1209,12 @@ func main() {
 		// per-tenant cache entry immediately (Round 48).
 		if modelPolicy != nil {
 			adminHandler.SetModelPolicy(modelPolicy)
+		}
+
+		// 2026-07-09: Wire Memora DLQ into admin handler for DLQ management endpoints
+		if memorySvc != nil && memorySvc.DLQ() != nil {
+			adminHandler.SetDLQ(&dlqAdapter{dlq: memorySvc.DLQ()})
+			slog.Info("admin handler DLQ enabled", "dlq_available", true)
 		}
 
 		slog.Info("CHECKPOINT: before EnsureUsersTable")
@@ -1845,6 +1900,20 @@ func main() {
 
 	slog.Info("CHECKPOINT: before healthz registration")
 
+	// 2026-07-09: 飞书机器人模块 late-binding（在 mux 创建后注入 callback 路由）。
+	// 复用 initApprovalNotifier 阶段创建的 LarkBotChannel 与 auditBus；
+	// 装配失败仅记日志，不影响主进程启动（best-effort）。
+	if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
+		if _, ferr := InitFeishubotPlugin(gAuditBus, gLarkCh, gApprovalMgr, mux, dbConn.Pool()); ferr != nil {
+			slog.Warn("v2 pipeline: feishubot init failed (best-effort)", "error", ferr)
+		}
+	} else {
+		// 兼容模式：无 db pool，Plugin 走 settings_kv 兜底
+		if _, ferr := InitFeishubotPlugin(gAuditBus, gLarkCh, gApprovalMgr, mux, nil); ferr != nil {
+			slog.Warn("v2 pipeline: feishubot init failed (best-effort)", "error", ferr)
+		}
+	}
+
 	// NET-007 fix: /healthz 拆分两 path：
 	//   - /healthz            匿名基础探测（K8s liveness 用）
 	//   - /healthz/full       admin token 才能访问的详细状态（替换 ?full=true）
@@ -1987,8 +2056,8 @@ func main() {
 				w.WriteHeader(http.StatusOK)
 				//nolint:errcheck // HTTP write error non-recoverable
 				//nolint:errcheck // HTTP write error non-recoverable
-			w.Write([]byte(fmt.Sprintf(`{"service":"llm-gateway-go","version":"%s","git_sha":"%s","build_seq":"%s"}`,
-				Version, GitCommit, BuildNumber)))
+				w.Write([]byte(fmt.Sprintf(`{"service":"llm-gateway-go","version":"%s","git_sha":"%s","build_seq":"%s"}`,
+					Version, GitCommit, BuildNumber)))
 				return
 			}
 			http.NotFound(w, r)
@@ -2095,9 +2164,9 @@ func main() {
 			if dbConn != nil {
 				healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
 				healthWorker.Start(context.Background())
-			slog.Info("session health worker started (hourly)")
+				slog.Info("session health worker started (hourly)")
+			}
 		}
-	}
 
 		// Task T1.4: Usage Cost Enhanced API 注册已在 admin/handler.go:572 完成
 		// (避免与 admin 包的双重注册 panic, 与 33d9d4fe fix 同型)
@@ -2628,10 +2697,14 @@ func parseBoolSetting(raw json.RawMessage) (bool, bool) {
 }
 
 // initApprovalNotifier 初始化审批通知器（从 DB 加载路由规则 + 创建 IM 渠道）。
-// 返回 nil, nil 表示配置不全（路由表为空）；返回 nil, err 表示初始化失败。
-func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.ApprovalManager) (*notification.ApprovalNotifier, error) {
+//
+// 返回 (notifier, larkChannel, error)：
+//   - notifier：审批通知器，可为 nil（渠道未配置）
+//   - larkChannel：飞书渠道实例，单独返回以便 feishubot 模块复用（2026-07-09）
+//   - error：初始化失败
+func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.ApprovalManager) (*notification.ApprovalNotifier, *notification.LarkBotChannel, error) {
 	if pool == nil || approvalMgr == nil {
-		return nil, fmt.Errorf("init approval notifier: nil pool or approval manager")
+		return nil, nil, fmt.Errorf("init approval notifier: nil pool or approval manager")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2641,11 +2714,12 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 	routingTable := notification.NewEmptyRoutingTable()
 	loader := notification.NewPgxRoutingLoader(pool)
 	if err := routingTable.LoadFromDB(ctx, loader); err != nil {
-		return nil, fmt.Errorf("load routing rules: %w", err)
+		return nil, nil, fmt.Errorf("load routing rules: %w", err)
 	}
 
 	// 2. 创建渠道实例（从环境变量配置）
 	channels := make(map[notification.ChannelType]notification.NotificationChannel)
+	var larkCh *notification.LarkBotChannel // 2026-07-09: 暴露给 feishubot 模块复用
 
 	// 飞书渠道
 	if larkAppID := os.Getenv("LARK_APP_ID"); larkAppID != "" {
@@ -2654,7 +2728,8 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 			AppID:     larkAppID,
 			AppSecret: larkAppSecret,
 		}
-		channels[notification.ChannelLark] = notification.NewLarkBotChannel(larkCfg)
+		larkCh = notification.NewLarkBotChannel(larkCfg)
+		channels[notification.ChannelLark] = larkCh
 		slog.Info("lark channel initialized", "app_id", larkAppID)
 	}
 
@@ -2683,7 +2758,7 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 	// 如果没有配置任何渠道，返回 nil（不报错，只是不发通知）
 	if len(channels) == 0 {
 		slog.Warn("no notification channels configured, approval notifications disabled")
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// 3. 构造 ApprovalNotifier
@@ -2694,10 +2769,10 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 		Timeout:     30 * time.Second,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create approval notifier: %w", err)
+		return nil, larkCh, fmt.Errorf("create approval notifier: %w", err)
 	}
 
-	return notifier, nil
+	return notifier, larkCh, nil
 }
 
 // adminLiveRequestFromEntry adapts a freshly-persisted telemetry

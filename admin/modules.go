@@ -2,9 +2,12 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -22,6 +25,10 @@ type ModuleDefinition struct {
 	DocsURL      string               `json:"docs_url"`
 	DangerLevel  settings.DangerLevel `json:"danger_level"`
 	Integration  *ModuleIntegration   `json:"integration,omitempty"`
+
+	// Requires 列出依赖的其他 module.key。依赖未启用时 UI 给出软提示（不阻断 toggle）。
+	// 业务侧通过 EnabledEffective() 自行决定是否启用插件逻辑。
+	Requires []string `json:"requires,omitempty"`
 }
 
 // ModuleIntegration describes external integration configuration for a module.
@@ -37,6 +44,10 @@ type ModuleWithStatus struct {
 	ModuleDefinition
 	Enabled bool   `json:"enabled"`
 	Source  string `json:"source"`
+	// RequirementsMet 当 Requires 全部启用时为 true。false 时 UI 应展示软提示。
+	RequirementsMet bool `json:"requirements_met"`
+	// MissingRequirements 列出当前未启用的依赖 key（仅 requirements_met=false 时非空）。
+	MissingRequirements []string `json:"missing_requirements,omitempty"`
 }
 
 var (
@@ -266,11 +277,27 @@ func allModuleDefinitions() []ModuleDefinition {
 				ConfigKeys: []string{
 					"feishu_bot.webhook_url",
 					"feishu_bot.verify_token",
+					"feishu_bot.encrypt_key",
+					"feishu_bot.connection_mode",
 					"feishu_bot.notify_on_alert",
 					"feishu_bot.notify_on_approval",
 					"feishu_bot.allowed_users",
+					"feishu_bot.alert.severity_min",
+					"feishu_bot.alert.rate_limit_per_minute",
+					"feishu_bot.alert.dedup_window_seconds",
+					"feishu_bot.alert.quiet_hours_enabled",
+					"feishu_bot.alert.quiet_hours_start",
+					"feishu_bot.alert.quiet_hours_end",
+					"feishu_bot.alert.card_template",
+					"feishu_bot.approval.expiry_reminder_minutes",
+					"feishu_bot.approval.auto_mention_on_critical",
+					"feishu_bot.commands.enabled",
+					"feishu_bot.commands.admin_only",
+					"feishu_bot.signature_required",
+					"feishu_bot.timestamp_window_seconds",
 				},
 				DangerLevel: settings.Safe,
+				Requires:    []string{"compression", "cache", "prompt_injection", "session_audit"},
 				Integration: &ModuleIntegration{
 					Type:        "feishu",
 					Label:       "飞书",
@@ -355,6 +382,30 @@ func resolveModuleEnabled(m ModuleDefinition) (enabled bool, source string) {
 	return v, src
 }
 
+// allDepsEnabled 检查 module 的所有 Requires 是否在 enabledMap 中为 true。
+//
+// 若 module 没有 Requires 一律返回 true。
+// 用途：UI 软提示 / 插件侧 fail-secure 判断。
+func allDepsEnabled(m ModuleDefinition, enabledMap map[string]bool) bool {
+	for _, dep := range m.Requires {
+		if !enabledMap[dep] {
+			return false
+		}
+	}
+	return true
+}
+
+// missingDeps 返回 enabledMap 中为 false 的依赖 key 列表（按 Requires 顺序）。
+func missingDeps(m ModuleDefinition, enabledMap map[string]bool) []string {
+	var out []string
+	for _, dep := range m.Requires {
+		if !enabledMap[dep] {
+			out = append(out, dep)
+		}
+	}
+	return out
+}
+
 // handleModulesList returns all modules with their current enabled/disabled status.
 //
 // GET /api/admin/modules
@@ -364,13 +415,22 @@ func (h *Handler) handleModulesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defs := allModuleDefinitions()
+	// 先把所有 (key → enabled) 一次性算好，避免 Requires 计算时重复查 settings。
+	enabledMap := make(map[string]bool, len(defs))
+	srcMap := make(map[string]string, len(defs))
+	for _, m := range defs {
+		en, src := resolveModuleEnabled(m)
+		enabledMap[m.Key] = en
+		srcMap[m.Key] = src
+	}
 	out := make([]ModuleWithStatus, 0, len(defs))
 	for _, m := range defs {
-		enabled, src := resolveModuleEnabled(m)
 		out = append(out, ModuleWithStatus{
-			ModuleDefinition: m,
-			Enabled:          enabled,
-			Source:           src,
+			ModuleDefinition:    m,
+			Enabled:             enabledMap[m.Key],
+			Source:              srcMap[m.Key],
+			RequirementsMet:     allDepsEnabled(m, enabledMap),
+			MissingRequirements: missingDeps(m, enabledMap),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
@@ -389,9 +449,15 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 
 	defs := allModuleDefinitions()
 	var found *ModuleDefinition
+	// 同步构建 enabledMap，供 requirements 校验与自身 enabled 复用。
+	enabledMap := make(map[string]bool, len(defs))
 	for _, m := range defs {
+		en, _ := resolveModuleEnabled(m)
+		enabledMap[m.Key] = en
+	}
+	for i, m := range defs {
 		if m.Key == key {
-			found = &m
+			found = &defs[i]
 			break
 		}
 	}
@@ -401,6 +467,8 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	enabled, src := resolveModuleEnabled(*found)
+	reqsMet := allDepsEnabled(*found, enabledMap)
+	missing := missingDeps(*found, enabledMap)
 
 	// Collect config values for each config key
 	config := make(map[string]any)
@@ -426,9 +494,11 @@ func (h *Handler) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"module": ModuleWithStatus{
-			ModuleDefinition: *found,
-			Enabled:          enabled,
-			Source:           src,
+			ModuleDefinition:    *found,
+			Enabled:             enabled,
+			Source:              src,
+			RequirementsMet:     reqsMet,
+			MissingRequirements: missing,
 		},
 		"config": config,
 	})
@@ -514,9 +584,54 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) registerModuleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/modules", h.admin(h.handleModulesList))
 	mux.HandleFunc("/api/admin/modules/", h.admin(h.handleModulesRouter))
+
+	// 2026-07-09: 飞书机器人运营面 API
+	// （routing rules CRUD + send log list）见 admin/feishu_handlers.go
+	h.registerFeishuRoutes(mux)
 }
 
-// modulesRouter dispatches /api/admin/modules/{key}[/toggle].
+// registerFeishuRoutes 安装飞书机器人运营面路由。
+//
+// 所有端点位于 /api/admin/feishubot/*，admin 鉴权。
+// 设计：routing rules 走 DB 表 feishu_bot_routing_rules，
+// 走完整 CRUD 生命周期（list/create/update/delete）。
+// send-log 是只读查询，最近 200 条。
+func (h *Handler) registerFeishuRoutes(mux *http.ServeMux) {
+	// /api/admin/feishubot/routing-rules
+	// 用 router 子分发区分 GET/POST/PUT/DELETE
+	mux.HandleFunc("/api/admin/feishubot/routing-rules", h.admin(h.feishuRoutingRulesCollection))
+	mux.HandleFunc("/api/admin/feishubot/routing-rules/", h.admin(h.feishuRoutingRulesItem))
+	mux.HandleFunc("/api/admin/feishubot/routing-rules:import", h.admin(h.handleFeishuRoutingRulesImport))
+
+	// /api/admin/feishubot/send-log （只读）
+	mux.HandleFunc("/api/admin/feishubot/send-log", h.admin(h.handleFeishuSendLogList))
+}
+
+// feishuRoutingRulesCollection handles GET (list) and POST (create) on the collection.
+func (h *Handler) feishuRoutingRulesCollection(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleFeishuRoutingList(w, r)
+	case http.MethodPost:
+		h.handleFeishuRoutingCreate(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// feishuRoutingRulesItem handles PUT (update) and DELETE on a single item.
+func (h *Handler) feishuRoutingRulesItem(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPut:
+		h.handleFeishuRoutingUpdate(w, r)
+	case http.MethodDelete:
+		h.handleFeishuRoutingDelete(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// modulesRouter dispatches /api/admin/modules/{key}[/toggle|/test|/config].
 func (h *Handler) handleModulesRouter(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/admin/modules/")
 	parts := strings.Split(rest, "/")
@@ -532,5 +647,245 @@ func (h *Handler) handleModulesRouter(w http.ResponseWriter, r *http.Request) {
 		h.handleModulesToggle(w, r)
 		return
 	}
+	if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "test" {
+		h.handleModulesTest(w, r)
+		return
+	}
+	if r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "config" {
+		h.handleModulesConfig(w, r)
+		return
+	}
 	writeError(w, http.StatusNotFound, "unknown modules endpoint")
+}
+
+// handleModulesTest 模块连通性测试。
+//
+// 当前实现：
+//   - 对 feishu_bot：发送一条测试消息到 webhook_url，返回成功/失败/错误信息
+//   - 其他模块：返回 501 Not Implemented（保留扩展点）
+//
+// POST /api/admin/modules/{key}/test
+func (h *Handler) handleModulesTest(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/modules/"), "/")
+	if len(parts) < 2 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "missing module key")
+		return
+	}
+	key := parts[0]
+
+	switch key {
+	case "feishu_bot":
+		h.testFeishuBotWebhook(w, r)
+	default:
+		writeError(w, http.StatusNotImplemented, "test endpoint not implemented for module: "+key)
+	}
+}
+
+// testFeishuBotWebhook 向 feishu_bot.webhook_url 发送测试消息。
+//
+// 注意：这是 best-effort 测试，不验证业务签名（飞书 webhook 是单向 POST）。
+// 返回字段：
+//   - reachable: 是否收到 HTTP 200
+//   - status_code: 飞书响应码（0=非 200）
+//   - error: 错误信息
+//   - response_ms: 耗时（毫秒）
+func (h *Handler) testFeishuBotWebhook(w http.ResponseWriter, r *http.Request) {
+	if settings.Global == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings not initialised")
+		return
+	}
+	sp := settings.Global.Spec("feishu_bot.webhook_url")
+	if sp == nil {
+		writeError(w, http.StatusNotFound, "feishu_bot.webhook_url spec not found")
+		return
+	}
+	raw, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+	if err != nil || raw == nil {
+		writeError(w, http.StatusBadRequest, "feishu_bot.webhook_url not configured")
+		return
+	}
+	var url string
+	if err := json.Unmarshal(raw, &url); err != nil || url == "" {
+		writeError(w, http.StatusBadRequest, "feishu_bot.webhook_url is empty")
+		return
+	}
+
+	// 构造飞书自定义机器人的 test payload（msg_type=text）
+	payload := map[string]any{
+		"msg_type": "text",
+		"content": map[string]any{
+			"text": "✅ 飞书机器人连通性测试消息（来自 llm-gateway-go 管理后台）",
+		},
+	}
+	body, _ := json.Marshal(payload)
+
+	// 通过 http.Client 发送（避免与现有 LarkBotChannel 耦合）
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, strings.NewReader(string(body)))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"reachable": false,
+			"error":     "build request failed: " + err.Error(),
+		})
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	elapsed := time.Since(start).Milliseconds()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"reachable":   false,
+			"error":       err.Error(),
+			"response_ms": elapsed,
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	var larkResp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	_ = json.Unmarshal(respBody, &larkResp)
+
+	if resp.StatusCode == http.StatusOK && larkResp.Code == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"reachable":   true,
+			"status_code": resp.StatusCode,
+			"response_ms": elapsed,
+			"message":     "ok",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"reachable":   resp.StatusCode == http.StatusOK,
+		"status_code": resp.StatusCode,
+		"lark_code":   larkResp.Code,
+		"lark_msg":    larkResp.Msg,
+		"response_ms": elapsed,
+		"error":       fmt.Sprintf("feishu returned %d/%d: %s", resp.StatusCode, larkResp.Code, larkResp.Msg),
+	})
+}
+
+// handleModulesConfig 返回模块的运行配置 + 状态聚合。
+//
+// 与 handleModulesGet 的区别：仅返回运营需要的聚合字段（精简版）；
+// 适用于面板下方的「运行状态」卡片，减少前端解析成本。
+//
+// GET /api/admin/modules/{key}/config
+func (h *Handler) handleModulesConfig(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/modules/"), "/")
+	if len(parts) < 2 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "missing module key")
+		return
+	}
+	key := parts[0]
+
+	switch key {
+	case "feishu_bot":
+		h.feishuBotConfigSummary(w, r)
+	default:
+		writeError(w, http.StatusNotImplemented, "config endpoint not implemented for module: "+key)
+	}
+}
+
+// feishuBotConfigSummary 返回 feishu_bot 模块的配置摘要 + 依赖状态。
+//
+// 与 handleModulesGet 不同：本端点不返回所有 config_keys 的 value/spec，
+// 只返回 feishubot.Config.AsJSON() 的聚合字段，便于前端一次性渲染。
+func (h *Handler) feishuBotConfigSummary(w http.ResponseWriter, r *http.Request) {
+	if settings.Global == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings not initialised")
+		return
+	}
+
+	// 读取 feishu_bot.* 配置（不 import domains/feishubot 以避免循环）
+	summary := map[string]any{}
+
+	readString := func(key string) string {
+		sp := settings.Global.Spec(key)
+		if sp == nil {
+			return ""
+		}
+		raw, _, err := settings.Global.EffectiveValue(sp.Scope, key, "")
+		if err != nil || raw == nil {
+			return ""
+		}
+		var v string
+		_ = json.Unmarshal(raw, &v)
+		return v
+	}
+	readBool := func(key string) bool {
+		sp := settings.Global.Spec(key)
+		if sp == nil {
+			return false
+		}
+		raw, _, err := settings.Global.EffectiveValue(sp.Scope, key, "")
+		if err != nil || raw == nil {
+			return false
+		}
+		var v bool
+		_ = json.Unmarshal(raw, &v)
+		return v
+	}
+	readInt := func(key string) int {
+		sp := settings.Global.Spec(key)
+		if sp == nil {
+			return 0
+		}
+		raw, _, err := settings.Global.EffectiveValue(sp.Scope, key, "")
+		if err != nil || raw == nil {
+			return 0
+		}
+		var v int
+		_ = json.Unmarshal(raw, &v)
+		return v
+	}
+
+	summary["enabled"] = readBool("feishu_bot.enabled")
+	summary["webhook_url_set"] = readString("feishu_bot.webhook_url") != ""
+	summary["verify_token_set"] = readString("feishu_bot.verify_token") != ""
+	summary["encrypt_key_set"] = readString("feishu_bot.encrypt_key") != ""
+	summary["connection_mode"] = readString("feishu_bot.connection_mode")
+	summary["notify_on_alert"] = readBool("feishu_bot.notify_on_alert")
+	summary["notify_on_approval"] = readBool("feishu_bot.notify_on_approval")
+	summary["allowed_user_count"] = len(strings.Split(readString("feishu_bot.allowed_users"), ","))
+	summary["alert_severity_min"] = readString("feishu_bot.alert.severity_min")
+	summary["alert_rate_limit_min"] = readInt("feishu_bot.alert.rate_limit_per_minute")
+	summary["alert_dedup_window_sec"] = readInt("feishu_bot.alert.dedup_window_seconds")
+	summary["quiet_hours_enabled"] = readBool("feishu_bot.alert.quiet_hours_enabled")
+	summary["quiet_hours_window"] = readString("feishu_bot.alert.quiet_hours_start") + "–" + readString("feishu_bot.alert.quiet_hours_end")
+	summary["card_template"] = readString("feishu_bot.alert.card_template")
+	summary["approval_expiry_min"] = readInt("feishu_bot.approval.expiry_reminder_minutes")
+	summary["approval_mention_crit"] = readBool("feishu_bot.approval.auto_mention_on_critical")
+	summary["commands_enabled"] = readBool("feishu_bot.commands.enabled")
+	summary["commands_admin_only"] = readBool("feishu_bot.commands.admin_only")
+	summary["signature_required"] = readBool("feishu_bot.signature_required")
+	summary["timestamp_window_sec"] = readInt("feishu_bot.timestamp_window_seconds")
+
+	// 依赖状态
+	defs := allModuleDefinitions()
+	enabledMap := make(map[string]bool)
+	for _, m := range defs {
+		en, _ := resolveModuleEnabled(m)
+		enabledMap[m.Key] = en
+	}
+	var fb *ModuleDefinition
+	for i, m := range defs {
+		if m.Key == "feishu_bot" {
+			fb = &defs[i]
+			break
+		}
+	}
+	var missing []string
+	if fb != nil {
+		missing = missingDeps(*fb, enabledMap)
+	}
+	summary["requirements_met"] = len(missing) == 0
+	summary["missing_requirements"] = missing
+
+	writeJSON(w, http.StatusOK, summary)
 }
