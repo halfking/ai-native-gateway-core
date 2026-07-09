@@ -67,4 +67,10 @@ export default {
   errors: {
     loadFailed: 'Error al cargar',
   },
+
+  // 扁平键（供 Vue 组件直接使用）
+  loadFailed: 'Error al cargar',
+  dash: '—',
+  refreshing: '刷新中…',
+  refresh: '刷新',
 }
