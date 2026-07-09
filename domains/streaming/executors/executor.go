@@ -1851,10 +1851,10 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 	err := e.DB.Pool().QueryRow(ctx, `
 		SELECT count(*) FROM model_probe_runs
 		WHERE credential_id = $1
-		  AND raw_model_name = $2
+		  AND (raw_model_name = $2 OR standardized_name = $2)
 		  AND status = 'http_4xx'
 		  AND error_code = 'model_not_found'
-		  AND created_at > now() - interval '1 minute' * $3
+		  AND created_at > now() - ($3 * interval '1 minute')
 	`, credentialID, rawModel, coolMins).Scan(&recentCount)
 	if err != nil {
 		slog.Debug("cool_binding_mnf: count query failed",
@@ -1877,7 +1877,7 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 		FROM model_offers mo
 		WHERE mo.id = cmb.provider_model_id
 		  AND cmb.credential_id = $1
-		  AND COALESCE(mo.outbound_model_name, mo.raw_model_name) = $2
+		  AND COALESCE(mo.outbound_model_name, mo.standardized_name, mo.raw_model_name) = $2
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
@@ -1942,7 +1942,7 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 
 	tag, err := tx.Exec(ctx,
 		`UPDATE model_offers SET available = FALSE, unavailable_reason = $3, unavailable_at = now()
-		 WHERE credential_id = $1 AND raw_model_name = $2 AND available = TRUE
+		 WHERE credential_id = $1 AND (raw_model_name = $2 OR standardized_name = $2) AND available = TRUE
 		   AND COALESCE(admin_protected, FALSE) = FALSE`,
 		credentialID, rawModel, reason,
 	)
@@ -1966,7 +1966,7 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 		 FROM provider_models pm
 		 WHERE pm.id = cmb.provider_model_id
 		   AND cmb.credential_id = $1
-		   AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
+		   AND COALESCE(pm.outbound_model_name, pm.standardized_name, pm.raw_model_name) = $2
 		   AND cmb.available = TRUE
 		   AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		   AND COALESCE(cmb.admin_protected, FALSE) = FALSE`,
