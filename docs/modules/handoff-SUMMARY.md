@@ -331,3 +331,47 @@ e7ab5222  docs(handoff): 新增 docs/modules/handoff.md           ← 1 文件 +
 **总耗时**: ~3 小时
 **产出**: 可上线的企业级 handoff 模块，含文档 + 单元测试 + 部署脚本
 **待办**: 本地 DB 同步 + 完整 UI 验证（需修复 local-deploy-test 同步流程）
+
+
+---
+
+## 11. 合并后审计（2026-07-09 第二次）
+
+### 触发事件
+本地 `main` 通过 `git pull --rebase origin main` 拉到 `f822f38d`，期间发现
+**远程 main 在合入 `55b6b7dd feat(modules): 模块级联启用与依赖管理增强` 时，把
+`admin/modules.go` 的 handoff 段从 19 specs 回退到了 v1 的 3 specs**。
+
+### 根本原因
+- `55b6b7dd` 在我提交 handoff（`f2d9c150`，13:01）**之后**才创建（17:35），
+  属于独立分支 `opencode/cosmic-mountain`。
+- 该分支基于 `90ebbd0e feat(feishubot)` 的快照，
+  **完全不知道** handoff 已扩到 19 specs + 4 deps。
+- 合并时 Git 3-way merge 用 `HEAD` 侧（merge-side）的 3-key 版本覆盖了我的
+  19-key 版本。
+
+### 修复
+1. 重新应用 handoff 模块定义（保留 `55b6b7dd` 引入的
+   `ModuleDependency` 增强结构 + `Required/Description` 字段）。
+2. 新增 `TestHandoffModule_LocksDownContract` regression test，
+   强制要求 19 ConfigKeys / ≥8 Capabilities / 4 deps（compression+cache REQ,
+   goal+session_inspector OPT）。
+3. 重新跑全量 admin/ + handoff + sessionsummary + settings 测试 — 全过。
+4. verify cascade `applyCascadeEnable` 能正确识别 handoff 的 `Required` deps。
+
+### 学到的事 / 流程改进建议
+
+- **任何修改 `admin/modules.go` 的 PR 都应同时运行
+  `go test ./admin/ -run TestHandoffModule_LocksDownContract`**，作为 CI gate。
+- **依赖敏感文件**应加锁 PR review：「admin/modules.go 改动需 review changes
+  against `internal/cmd/lock/modules_definitions.txt` 强制契约」。
+- 长远做法是把模块定义从手写 `.go` 字面量迁到 YAML/JSON + code-gen，
+  避免人肉合并冲突。
+
+### 审计发现的「重复造轮子」候选（**未在本次修复**，列入 follow-up）
+
+| 项 | 说明 | 建议 |
+|---|---|---|
+| handoff `notify_webhook` 走裸 `http.Post` | `domains/notification/` 已有 `ChannelDingTalk`/`ChannelFeishu`/`ChannelWeChat`/`ChannelLark` 等带签名/加签的 Channel 抽象 | 未来重写 `notify()` 时复用 `notification.Channel` 接口，并让 `Dependencies` 加 dingtalk/wechat（OPT）。提交单独 PR |
+| `feishu_bot` 与 `wechat_bot` 共享 `compression+cache+prompt_injection+session_audit` 4 deps 描述高度雷同 | 三家 IM 的依赖表 80% 相同，仅最后一段不同 | 可抽 `imCommonDeps()` helper，由各 IM 模块复用。本次未做（避免 scope 蔓延） |
+
