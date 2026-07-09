@@ -24,15 +24,15 @@ const emit = defineEmits<{
   click: [requestId: string]
 }>()
 
-// 背景色（原厂色）
+// 背景色（状态色） - 2026-07-09: 交换背景色和边框色显示
 const bgColor = computed(() => {
-  return VENDOR_COLORS[props.tile.vendor] || VENDOR_COLORS['__unknown__']
-})
-
-// 边框色（状态色）
-const borderColor = computed(() => {
   const key = getStatusBorderKey(props.tile.status, props.tile.error_kind)
   return STATUS_BORDER_COLORS[key] || STATUS_BORDER_COLORS['__default__']
+})
+
+// 边框色（原厂色） - 2026-07-09: 交换背景色和边框色显示
+const borderColor = computed(() => {
+  return VENDOR_COLORS[props.tile.vendor] || VENDOR_COLORS['__unknown__']
 })
 
 // 时间显示（HH:mm）

@@ -213,51 +213,63 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			FROM users WHERE username = $1
 		`, req.Username).Scan(&u.ID, &u.TenantID, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword)
 
-		if err == nil && u.Enabled {
-			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) == nil {
-				// Check tenant is not disabled (bypass for 'default' super_admin)
-				if u.TenantID != "default" {
-					var tenantStatus string
-					err := h.db.QueryRow(ctx, `SELECT status FROM tenants WHERE code = $1`, u.TenantID).Scan(&tenantStatus)
-					if err != nil || tenantStatus == "disabled" {
-						h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=tenant_disabled tenant=%s ip=%s", u.TenantID, clientIP))
-						writeError(w, http.StatusForbidden, "tenant is disabled, contact your administrator")
-						return
-					}
-				}
-				// Update last_login_at
-				//nolint:errcheck // best-effort exec, non-critical
-				h.db.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
-
-				token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret, u.MustChangePassword)
-				if signErr != nil {
-					slog.Error("handleLogin: sign jwt failed", "error", signErr)
-					writeError(w, http.StatusInternalServerError, "token generation failed")
-					return
-				}
-
-				h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, r.RemoteAddr))
-				// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token
-				setSessionCookie(w, r, token, expiresAt)
-				writeJSON(w, http.StatusOK, map[string]any{
-					"access_token": token,
-					"token_type":   "Bearer",
-					"expires_at":   expiresAt.Format(time.RFC3339),
-					"user": map[string]any{
-						"id":                   u.ID,
-						"tenant_id":            u.TenantID,
-						"username":             u.Username,
-						"display_name":         u.DisplayName,
-						"email":                u.Email,
-						"role":                 u.Role,
-						"enabled":              u.Enabled,
-						"must_change_password": u.MustChangePassword,
-					},
-				})
+		// 2026-07-09: 如果在users表中找到用户，无论密码是否正确，都不再fallback到legacy admin
+		if err == nil {
+			// 用户存在，检查是否启用
+			if !u.Enabled {
+				h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=user_disabled ip=%s", clientIP))
+				writeError(w, http.StatusForbidden, "User account is disabled")
 				return
 			}
+			// 验证密码
+			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) != nil {
+				// 密码错误
+				h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=invalid_password ip=%s", clientIP))
+				writeError(w, http.StatusUnauthorized, "Invalid credentials")
+				return
+			}
+			// 密码正确，检查租户状态
+			if u.TenantID != "default" {
+				var tenantStatus string
+				err := h.db.QueryRow(ctx, `SELECT status FROM tenants WHERE code = $1`, u.TenantID).Scan(&tenantStatus)
+				if err != nil || tenantStatus == "disabled" {
+					h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=tenant_disabled tenant=%s ip=%s", u.TenantID, clientIP))
+					writeError(w, http.StatusForbidden, "tenant is disabled, contact your administrator")
+					return
+				}
+			}
+			// Update last_login_at
+			//nolint:errcheck // best-effort exec, non-critical
+			h.db.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
+
+			token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret, u.MustChangePassword)
+			if signErr != nil {
+				slog.Error("handleLogin: sign jwt failed", "error", signErr)
+				writeError(w, http.StatusInternalServerError, "token generation failed")
+				return
+			}
+
+			h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, r.RemoteAddr))
+			// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token
+			setSessionCookie(w, r, token, expiresAt)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"access_token": token,
+				"token_type":   "Bearer",
+				"expires_at":   expiresAt.Format(time.RFC3339),
+				"user": map[string]any{
+					"id":                   u.ID,
+					"tenant_id":            u.TenantID,
+					"username":             u.Username,
+					"display_name":         u.DisplayName,
+					"email":                u.Email,
+					"role":                 u.Role,
+					"enabled":              u.Enabled,
+					"must_change_password": u.MustChangePassword,
+				},
+			})
+			return
 		}
-		h.auditLog(req.Username, "authentication.login_failed", "user", 0, fmt.Sprintf("method=jwt ip=%s", r.RemoteAddr))
+		// 用户不存在于users表，继续尝试legacy admin认证
 	}
 
 	// ── Fall back to legacy admin key auth ────────────────────────────
