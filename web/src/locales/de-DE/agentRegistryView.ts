@@ -132,4 +132,23 @@ export default {
     topologyFailed: 'Failed to load topology',
     invalidTargetId: 'Please enter a valid target Agent ID',
   },
+
+  // 扁平键（供 Vue 组件直接使用）
+  all: 'Alle',
+  llm_endpoint: 'LLM-Endpunkt',
+  mcp_server: 'MCP-Server',
+  agent: 'Agent',
+  depends_on: 'depends_on (Abhängigkeit)',
+  calls: 'calls (Aufruf)',
+  similar_to: 'similar_to (Ersatz)',
+  loadFailed: 'Laden fehlgeschlagen',
+  healthy: 'Gesund',
+  degraded: 'Beeinträchtigt',
+  down: 'Nicht verfügbar',
+  unknown: 'Unbekannt',
+  detailFailed: 'Detail laden fehlgeschlagen',
+  linkFailed: 'Beziehung erstellen fehlgeschlagen',
+  statsFailed: 'Statistik laden fehlgeschlagen',
+  topologyFailed: 'Topologie laden fehlgeschlagen',
+  invalidTargetId: 'Bitte geben Sie eine gültige Ziel-Agent-ID ein',
 }

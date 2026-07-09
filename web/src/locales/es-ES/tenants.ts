@@ -267,4 +267,7 @@ export default {
     ledgerTitle: 'Libro de créditos',
     goBuyCredits: 'Comprar créditos',
   },
+
+  // 扁平键（供 Vue 组件直接使用）
+  loadFailed: 'Error al cargar',
 }

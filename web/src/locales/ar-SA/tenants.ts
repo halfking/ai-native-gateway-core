@@ -269,4 +269,7 @@ export default {
     ledgerTitle: 'دفتر الأرصدة',
     goBuyCredits: 'شراء الأرصدة',
   },
+
+  // 扁平键（供 Vue 组件直接使用）
+  loadFailed: 'فشل التحميل',
 }

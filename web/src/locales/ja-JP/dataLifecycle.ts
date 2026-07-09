@@ -120,4 +120,15 @@ export default {
     expired: '期限切れデータ (>90日)',
     tooltipSuffix: '{label}: {n} 行 ({pct}%)',
   },
+
+  // 扁平键（供 Vue 组件直接使用）
+  preview: '预览清理',
+  hotData: '热数据 (0-7天)',
+  warmData: '温数据 (7-30天)',
+  coldData: '冷数据 (30-90天)',
+  expiredData: '过期数据 (>90天)',
+  missingDate: '请选择起始日期和结束日期',
+  previewFailed: '预览失败',
+  needPreview: '请先预览影响',
+  executeNotImpl: '清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。',
 }
