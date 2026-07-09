@@ -77,6 +77,20 @@ const groupedSettings = computed(() => {
 })
 
 function classifySetting(key: string): string {
+  // handoff.* → 按子组归到 master/trigger/summary/safety
+  if (key.startsWith('handoff.')) {
+    if (['handoff.enabled', 'handoff.trigger_mode', 'handoff.skill_name'].includes(key)) return 'master'
+    if (['handoff.absolute_threshold', 'handoff.percentage_threshold',
+         'handoff.message_threshold', 'handoff.idle_minutes',
+         'handoff.min_messages'].includes(key)) return 'trigger'
+    if (['handoff.summary_engine', 'handoff.summary_model',
+         'handoff.summary_keep_recent_n', 'handoff.summary_max_tokens',
+         'handoff.summary_prompt_tpl', 'handoff.summary_extract_facts',
+         'handoff.continue_hint_tpl'].includes(key)) return 'summary'
+    if (['handoff.cooldown_seconds', 'handoff.max_per_session',
+         'handoff.retry_on_failure', 'handoff.notify_level',
+         'handoff.notify_webhook'].includes(key)) return 'safety'
+  }
   // feishu_bot.alert.* → alerts
   if (key.startsWith('feishu_bot.alert')) return 'alerts'
   if (key.startsWith('feishu_bot.approval')) return 'approvals'
@@ -87,7 +101,66 @@ function classifySetting(key: string): string {
   return 'general'
 }
 
+// 按类别分组的配置项
+const securityConfigGroups = computed(() => {
+  if (selectedKey.value !== 'security') return null
+  const settings = moduleSettings.value
+  return {
+    mode: settings.filter(s => s.key.startsWith('security.mode')),
+    llm: settings.filter(s => s.key.startsWith('security.llm.')),
+    intent: settings.filter(s => s.key.startsWith('security.intent.')),
+    threat: settings.filter(s => s.key.startsWith('security.threat.')),
+    response: settings.filter(s => s.key.startsWith('security.response.')),
+    audit: settings.filter(s => s.key.startsWith('security.audit.')),
+  }
+})
+
+// Handoff 模块按功能分组的配置项
+const handoffConfigGroups = computed(() => {
+  if (selectedKey.value !== 'handoff') return null
+  const settings = moduleSettings.value
+  return {
+    master: settings.filter(s => classifySetting(s.key) === 'master'),
+    trigger: settings.filter(s => classifySetting(s.key) === 'trigger'),
+    summary: settings.filter(s => classifySetting(s.key) === 'summary'),
+    safety: settings.filter(s => classifySetting(s.key) === 'safety'),
+  }
+})
+
+// 检查配置项是否因依赖未满足而应被禁用
+function isCheckDisabled(key: string): boolean {
+  if (key === 'security.threat.checks.prompt_inject') {
+    return !modules.value.find(m => m.key === 'prompt_injection')?.enabled
+  }
+  if (key === 'security.threat.checks.data_leak' || key === 'security.threat.checks.pii') {
+    return !modules.value.find(m => m.key === 'output_compliance')?.enabled
+  }
+  if (key === 'security.response.high_risk') {
+    const val = moduleSettings.value.find(s => s.key === key)?.value
+    if (val === 'approval') {
+      return !modules.value.find(m => m.key === 'session_audit')?.enabled
+    }
+  }
+  return false
+}
+
 const sectionOrder = ['connection', 'alerts', 'approvals', 'commands', 'security', 'general']
+
+// handoff 摘要引擎互斥提示：llm 需要 autoroute 端点
+function isHandoffEngineLLM(): boolean {
+  const v = moduleSettings.value.find(s => s.key === 'handoff.summary_engine')?.value
+  return v === 'llm' || v === 'hybrid' || (!v && true) // default = llm
+}
+
+function getHandoffDependencyWarning(key: string): string | null {
+  if ((key === 'handoff.summary_engine' || key === 'handoff.summary_model') && !modules.value.find(m => m.key === 'compression')?.enabled) {
+    return '⚠️ 推荐同时启用会话压缩模块，复用其 LLM 端点可降低摘要成本'
+  }
+  if (key === 'handoff.notify_webhook' && key) {
+    // 占位：未来可对接飞书/Slack 集成时给提示
+  }
+  return null
+}
 
 async function loadModules() {
   loading.value = true
@@ -538,7 +611,220 @@ onMounted(() => {
             </div>
           </template>
 
-          <!-- 非 feishu_bot 模块：扁平渲染 -->
+          <!-- handoff模块的分组配置表单 -->
+          <template v-if="selectedKey === 'handoff' && handoffConfigGroups">
+            <!-- 主开关 + 触发模式 + skill -->
+            <div v-if="handoffConfigGroups.master.length > 0" class="config-group">
+              <h3 class="config-group-title">{{ t('modulesView.handoff.groupMaster') }}</h3>
+              <p class="config-group-hint">{{ t('modulesView.handoff.groupMasterHint') }}</p>
+              <div
+                v-for="setting in handoffConfigGroups.master"
+                :key="setting.key"
+                class="config-card"
+              >
+                <div class="config-header">
+                  <code class="config-key">{{ setting.key }}</code>
+                  <span class="src-badge" :class="'src-' + setting.source">
+                    {{ setting.source || t('modulesView.config.sourceDefault') }}
+                  </span>
+                </div>
+                <p class="config-desc">{{ setting.description }}</p>
+                <div class="config-editor">
+                  <div v-if="setting.type === 'bool'" class="config-bool">
+                    <label class="switch-label-sm">
+                      <input
+                        type="checkbox"
+                        class="toggle-input"
+                        :checked="setting.value === true"
+                        @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
+                      />
+                      <span class="toggle-track-sm">
+                        <span class="toggle-knob-sm" />
+                      </span>
+                      <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
+                    </label>
+                  </div>
+                  <div v-else-if="setting.type === 'enum' && setting.options" class="config-select">
+                    <select
+                      class="select-input"
+                      :value="setting.value ?? setting.default"
+                      @change="saveSetting(setting.key, ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="opt in setting.options" :key="opt" :value="opt">{{ opt }}</option>
+                    </select>
+                  </div>
+                  <div v-else-if="setting.type === 'string' || setting.type === 'url'" class="config-string">
+                    <input
+                      type="text"
+                      class="text-input"
+                      :value="setting.value ?? setting.default"
+                      @change="saveSetting(setting.key, ($event.target as HTMLInputElement).value)"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 触发阈值 -->
+            <div v-if="handoffConfigGroups.trigger.length > 0" class="config-group">
+              <h3 class="config-group-title">{{ t('modulesView.handoff.groupTrigger') }}</h3>
+              <p class="config-group-hint">{{ t('modulesView.handoff.groupTriggerHint') }}</p>
+              <div
+                v-for="setting in handoffConfigGroups.trigger"
+                :key="setting.key"
+                class="config-card"
+              >
+                <div class="config-header">
+                  <code class="config-key">{{ setting.key }}</code>
+                  <span class="src-badge" :class="'src-' + setting.source">
+                    {{ setting.source || t('modulesView.config.sourceDefault') }}
+                  </span>
+                </div>
+                <p class="config-desc">{{ setting.description }}</p>
+                <div class="config-editor">
+                  <div v-if="setting.type === 'int'" class="config-number">
+                    <input
+                      type="number"
+                      class="number-input"
+                      :value="setting.value ?? setting.default"
+                      step="1"
+                      @change="saveSetting(setting.key, parseInt(($event.target as HTMLInputElement).value))"
+                    />
+                  </div>
+                  <div v-else-if="setting.type === 'float'" class="config-number">
+                    <input
+                      type="number"
+                      class="number-input"
+                      :value="setting.value ?? setting.default"
+                      step="0.01"
+                      min="0"
+                      max="1"
+                      @change="saveSetting(setting.key, parseFloat(($event.target as HTMLInputElement).value))"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 摘要生成 -->
+            <div v-if="handoffConfigGroups.summary.length > 0" class="config-group">
+              <h3 class="config-group-title">{{ t('modulesView.handoff.groupSummary') }}</h3>
+              <p class="config-group-hint">{{ t('modulesView.handoff.groupSummaryHint') }}</p>
+              <div
+                v-for="setting in handoffConfigGroups.summary"
+                :key="setting.key"
+                class="config-card"
+              >
+                <div class="config-header">
+                  <code class="config-key">{{ setting.key }}</code>
+                  <span class="src-badge" :class="'src-' + setting.source">
+                    {{ setting.source || t('modulesView.config.sourceDefault') }}
+                  </span>
+                </div>
+                <p class="config-desc">{{ setting.description }}</p>
+                <div v-if="getHandoffDependencyWarning(setting.key)" class="dependency-warning">
+                  {{ getHandoffDependencyWarning(setting.key) }}
+                </div>
+                <div class="config-editor">
+                  <div v-if="setting.type === 'bool'" class="config-bool">
+                    <label class="switch-label-sm">
+                      <input
+                        type="checkbox"
+                        class="toggle-input"
+                        :checked="setting.value === true"
+                        @change="saveSetting(setting.key, ($event.target as HTMLInputElement).checked)"
+                      />
+                      <span class="toggle-track-sm">
+                        <span class="toggle-knob-sm" />
+                      </span>
+                      <span class="switch-text-sm">{{ setting.value === true ? t('modulesView.config.switchOn') : t('modulesView.config.switchOff') }}</span>
+                    </label>
+                  </div>
+                  <div v-else-if="setting.type === 'enum' && setting.options" class="config-select">
+                    <select
+                      class="select-input"
+                      :value="setting.value ?? setting.default"
+                      @change="saveSetting(setting.key, ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="opt in setting.options" :key="opt" :value="opt">
+                        {{ opt === 'llm' ? 'LLM 调用 (llm)' : opt === 'rule' ? '规则抽取 (rule)' : opt === 'hybrid' ? '混合模式 (hybrid)' : opt }}
+                      </option>
+                    </select>
+                  </div>
+                  <div v-else-if="setting.type === 'int'" class="config-number">
+                    <input
+                      type="number"
+                      class="number-input"
+                      :value="setting.value ?? setting.default"
+                      step="1"
+                      @change="saveSetting(setting.key, parseInt(($event.target as HTMLInputElement).value))"
+                    />
+                  </div>
+                  <div v-else class="config-string">
+                    <input
+                      type="text"
+                      class="text-input"
+                      :value="setting.value ?? setting.default"
+                      :placeholder="setting.description"
+                      @change="saveSetting(setting.key, ($event.target as HTMLInputElement).value)"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 安全限制 + 通知 -->
+            <div v-if="handoffConfigGroups.safety.length > 0" class="config-group">
+              <h3 class="config-group-title">{{ t('modulesView.handoff.groupSafety') }}</h3>
+              <p class="config-group-hint">{{ t('modulesView.handoff.groupSafetyHint') }}</p>
+              <div
+                v-for="setting in handoffConfigGroups.safety"
+                :key="setting.key"
+                class="config-card"
+              >
+                <div class="config-header">
+                  <code class="config-key">{{ setting.key }}</code>
+                  <span class="src-badge" :class="'src-' + setting.source">
+                    {{ setting.source || t('modulesView.config.sourceDefault') }}
+                  </span>
+                </div>
+                <p class="config-desc">{{ setting.description }}</p>
+                <div class="config-editor">
+                  <div v-if="setting.type === 'enum' && setting.options" class="config-select">
+                    <select
+                      class="select-input"
+                      :value="setting.value ?? setting.default"
+                      @change="saveSetting(setting.key, ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="opt in setting.options" :key="opt" :value="opt">
+                        {{ opt === 'none' ? '静默 (none)' : opt === 'info' ? '信息 (info)' : opt === 'warn' ? '警告 (warn)' : opt }}
+                      </option>
+                    </select>
+                  </div>
+                  <div v-else-if="setting.type === 'int'" class="config-number">
+                    <input
+                      type="number"
+                      class="number-input"
+                      :value="setting.value ?? setting.default"
+                      step="1"
+                      @change="saveSetting(setting.key, parseInt(($event.target as HTMLInputElement).value))"
+                    />
+                  </div>
+                  <div v-else-if="setting.type === 'string' || setting.type === 'url'" class="config-string">
+                    <input
+                      type="text"
+                      class="text-input"
+                      :value="setting.value ?? setting.default"
+                      :placeholder="setting.type === 'url' ? 'https://...' : ''"
+                      @change="saveSetting(setting.key, ($event.target as HTMLInputElement).value)"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- 其他模块的通用配置表单 -->
           <template v-else>
             <div
               v-for="setting in moduleSettings"
@@ -1390,6 +1676,130 @@ onMounted(() => {
 
 .text-green { color: #34d399; }
 .text-muted { color: #6e7681; }
+
+/* ── Dependency Section ── */
+.dependency-section {
+  padding: 16px;
+  background: var(--bg-card, #161b22);
+  border-radius: 8px;
+  border: 1px solid var(--border, #30363d);
+  margin-bottom: 20px;
+}
+.warning-banner {
+  padding: 10px 14px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fbbf24;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.dependency-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dependency-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg, #0f1117);
+  border-radius: 6px;
+  border: 1px solid var(--border, #30363d);
+}
+.dependency-item.dep-enabled {
+  border-color: rgba(52, 211, 153, 0.3);
+}
+.dependency-item.dep-disabled.dep-required {
+  border-color: rgba(248, 113, 113, 0.3);
+}
+.dep-status-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.dep-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dep-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary, #e6edf3);
+}
+.dep-desc {
+  font-size: 11px;
+  color: var(--text-secondary, #8b949e);
+}
+.dep-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+}
+.badge-required {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+}
+.badge-optional {
+  background: rgba(107, 114, 128, 0.15);
+  color: #9ca3af;
+}
+
+/* ── Config Group ── */
+.config-group {
+  margin-bottom: 24px;
+}
+.config-group-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #e6edf3);
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+.config-group-hint {
+  font-size: 12px;
+  color: var(--text-secondary, #8b949e);
+  margin: -8px 0 12px;
+  padding: 0;
+  line-height: 1.5;
+}
+
+/* ── Module Reference Badge ── */
+.module-ref-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: rgba(99, 102, 241, 0.12);
+  color: #818cf8;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  margin-left: 8px;
+}
+
+/* ── Dependency Warning ── */
+.dependency-warning {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 4px;
+  color: #fbbf24;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.switch-label-sm.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.switch-label-sm.disabled .toggle-input:disabled {
+  cursor: not-allowed;
+}
 
 /* ── Responsive ── */
 @media (max-width: 960px) {
