@@ -2236,6 +2236,19 @@ func main() {
 			mux.HandleFunc("/api/admin/approvals", wrapAdmin(approvalAPI.ListApprovals))
 			mux.HandleFunc("/api/admin/approvals/stats", wrapAdmin(approvalAPI.GetApprovalStats))
 			slog.Info("Phase 3.9 approval query API enabled (/api/v1/approvals/*, /api/admin/approvals/stats)")
+
+			// DingTalk approval callback (钉钉机器人审批回调)
+			// 签名校验使用加签 Secret 优先，回退到应用 AppSecret。
+			dingSignSecret := os.Getenv("DINGTALK_SIGN_SECRET")
+			if dingSignSecret == "" {
+				dingSignSecret = os.Getenv("DINGTALK_APP_SECRET")
+			}
+			if dingSignSecret != "" {
+				api.RegisterDingTalkRoutes(mux, approvalMgr, dingSignSecret)
+				slog.Info("dingtalk approval callback enabled (/api/webhooks/dingtalk/approval-callback)")
+			} else {
+				slog.Warn("DINGTALK_SIGN_SECRET not set, dingtalk approval callback disabled")
+			}
 		}
 
 		// Phase 3.10 (2026-07-03, Task D1): Approval Configuration Management API

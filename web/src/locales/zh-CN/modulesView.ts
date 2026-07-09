@@ -144,8 +144,7 @@ export default {
     close: '关闭',
     csvImportResult: '批量导入结果',
     csvImportSuccess: '已导入 {imported} 条，跳过 {skipped} 条',
-    csvErrorRow: '第 {row} 行：{error}',
-  },
+    csvErrorRow: '第 {row} 行：{error}',  },
 
   empty: {
     selectModule: '选择一个模块查看详情与配置',
