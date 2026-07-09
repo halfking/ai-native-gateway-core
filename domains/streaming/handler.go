@@ -2180,6 +2180,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		RequestMode:        strPtr(requestMode),
 		IdentityHash:       strPtr(evt.IdentityHash),
 		TransformRuleID:    strPtr(evt.TransformRule),
+		StickyHit:          result.StickyHit,
 	}
 	if evt.ResolutionPath != "" {
 		dl.ResolutionPath = strPtr(evt.ResolutionPath)
@@ -2373,6 +2374,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		ProviderID:      intPtr(result.Candidate.ProviderID),
 		ClientProfile:   strPtr(evt.ClientProfile),
 		RequestMode:     strPtr(requestMode),
+		AffinityHit:     result.StickyHit,
 		LatencyMs:       intPtr(result.LatencyMs),
 		Success:         true,
 		RequestStatus:   strPtr(telemetry.RequestStatusSuccess),
@@ -2799,8 +2801,8 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 // real time. Operators could not see WHY a request vanished from the live
 // stream. This synthesizes a first-class RequestLogEntry with a "probe-"
 // prefixed request_id so it:
-//   1. is persisted to request_logs_hot via EmitRequestLogInsert, and
-//   2. is pushed to the live-stream swim lane via the onEmitted hook.
+//  1. is persisted to request_logs_hot via EmitRequestLogInsert, and
+//  2. is pushed to the live-stream swim lane via the onEmitted hook.
 //
 // The record carries the credential_id / provider_id selected for the
 // request (when available), so the lane groups it under the right provider
@@ -2869,16 +2871,16 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 
 	stage := "probe"
 	return &telemetry.RequestLogEntry{
-		RequestID:      probeRequestID,
-		TenantID:       tenantID,
-		ClientModel:    strPtr(clientModel),
-		OutboundModel:  strPtr(outboundModel),
-		ProviderID:     providerID,
-		CredentialID:   credentialID,
-		Success:        false,
-		RequestStatus:  strPtr(telemetry.RequestStatusFailure),
-		ErrorKind:      strPtr(errorKind),
-		FailureStage:   &stage,
+		RequestID:     probeRequestID,
+		TenantID:      tenantID,
+		ClientModel:   strPtr(clientModel),
+		OutboundModel: strPtr(outboundModel),
+		ProviderID:    providerID,
+		CredentialID:  credentialID,
+		Success:       false,
+		RequestStatus: strPtr(telemetry.RequestStatusFailure),
+		ErrorKind:     strPtr(errorKind),
+		FailureStage:  &stage,
 		// Link back to the original request via ClientRequestID so /request-logs
 		// can correlate the probe row with the in_progress row it interrupted.
 		ClientRequestID: strPtr(originalRequestID),
@@ -3454,7 +3456,7 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			dbErr := h.db.Ping(ctx)
 			latency := time.Since(start)
-			
+
 			resp.Database = &ResourceStatus{
 				Connected: dbErr == nil,
 				Latency:   latency.String(),
@@ -3471,7 +3473,7 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			redisErr := h.redis.Ping(ctx)
 			latency := time.Since(start)
-			
+
 			resp.Redis = &ResourceStatus{
 				Connected: redisErr == nil,
 				Latency:   latency.String(),

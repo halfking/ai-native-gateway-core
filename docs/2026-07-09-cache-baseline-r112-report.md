@@ -104,9 +104,9 @@ SELECT metric, value FROM (
 | Total Decisions | 15 |
 | Distinct Requests | 15 |
 | Distinct Chosen Credentials | 1 |
-| sticky_hit 标记 | NULL（字段未埋点） |
+| sticky_hit 标记 | NULL（本次诊断运行时镜像尚未包含新埋点代码） |
 
-**注**：虽然 `sticky_hit` 字段未填值，但 `chosen_credential_id` 全部为 9001，**实际粘性命中率 = 100%**。
+**注**：这次 r112 诊断使用的是补埋点前的运行镜像，所以 `sticky_hit` 仍为空；但 `chosen_credential_id` 全部为 9001，说明**实际粘性命中率 = 100%**。本次任务已把 `sticky_hit` / `affinity_hit` 的代码写入路径补齐，后续只需在新的运行实例中回填验证。
 
 ---
 
@@ -136,8 +136,8 @@ SELECT metric, value FROM (
 | 缺口 | 原因 | 影响 |
 |---|---|---|
 | `cache_read_tokens = 0` | mock 不模拟上游缓存 | 无法在本地验证 C1 命中率 |
-| `affinity_hit` 字段为 NULL | 埋点未实现 | 需要代码改造 |
-| `sticky_hit` 字段为 NULL | 埋点未实现 | 需要代码改造 |
+| `affinity_hit` 字段为 NULL | 本次诊断运行时镜像未带新埋点 | 需要在新实例中回填验证 |
+| `sticky_hit` 字段为 NULL | 本次诊断运行时镜像未带新埋点 | 需要在新实例中回填验证 |
 | C3 `cache_control` 注入未启用 | 默认 env 关闭 | 配置问题 |
 
 ### 3.4 ⚠️ 缺失的诊断能力
@@ -199,11 +199,11 @@ SELECT metric, value FROM (
 
 ### 5.2 中期行动（需要代码改动）
 
-1. **埋点 `affinity_hit` 字段**（用于诊断粘性 vs 缓存关系）：
+1. **验证 `affinity_hit` 字段**（代码路径已补齐，用于诊断粘性 vs 缓存关系）：
    - 文件：`domains/streaming/handler.go` 或 telemetry emitter
    - 在 `pickStickyCredentialID()` 后立即记录结果
 
-2. **埋点 `sticky_hit` 字段**（routing_decision_log_hot）：
+2. **验证 `sticky_hit` 字段**（routing_decision_log_hot，代码路径已补齐）：
    - 文件：`domains/streaming/executors/executor.go`
    - 在 `PlanCandidates()` 中标记 sticky hit
 
@@ -244,7 +244,7 @@ llmgw_cache_hit_ratio{provider, model, hit_type="read|write"}
 | 风险 | 说明 |
 |---|---|
 | 本地 mock 不能模拟缓存 | 真实缓存数据需在生产环境采集 |
-| affinity_hit 未埋点 | 审计核心问题"粘性 vs 缓存"无法在本地回答 |
+| affinity_hit 尚未在新实例回填验证 | 审计核心问题"粘性 vs 缓存"还缺一次真实运行验证 |
 | 单凭据环境 | 无法验证多凭据负载均衡 |
 | 短期 TTL 数据 | sticky_sessions 数据 7 天后过期 |
 
@@ -257,7 +257,7 @@ llmgw_cache_hit_ratio{provider, model, hit_type="read|write"}
 1. ✅ **粘性路由**：无需优化（已 100% 生效）
 2. ✅ **C2 prefix 稳定化**：无需优化（按预期工作）
 3. ⚠️ **C3 cache_control 注入**：建议启用（默认关闭）
-4. ⚠️ **数据埋点缺失**：需要补 affinity_hit / sticky_hit 字段
+4. ⚠️ **数据回填尚未验证**：新代码已补 affinity_hit / sticky_hit 写入路径，但需要在新运行实例中确认落表
 
 ### 不需要的工作
 
@@ -268,7 +268,7 @@ llmgw_cache_hit_ratio{provider, model, hit_type="read|write"}
 ### 下一步
 
 1. **在真实 llm-gateway-go 部署环境启用 C3**（最小改动，最大潜在收益）
-2. **补 affinity_hit / sticky_hit 埋点**（支撑未来诊断）
+2. **在新的运行实例中验证 affinity_hit / sticky_hit 回填**（支撑后续真实诊断）
 3. **基于生产数据重新评估**（不基于本地 mock 数据做架构决策）
 
 ### 补充说明
