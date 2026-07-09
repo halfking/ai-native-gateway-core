@@ -93,6 +93,7 @@ func (w *BatchWriter) ApplyUpdates(ctx context.Context, updates []StateUpdate) e
 
 	// 5. 提交事务
 	if err := tx.Commit(ctx); err != nil {
+		recordStateWriteFailure("transaction_commit")
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 

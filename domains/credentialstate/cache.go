@@ -81,6 +81,7 @@ func (m *Manager) setToRedis(ctx context.Context, key string, state *State) {
 	}
 
 	if err := m.redisClient.Set(ctx, redisKey, data, m.redisCacheTTL).Err(); err != nil {
+		recordRedisWriteFailure()
 		slog.Warn("credstate: redis cache write failed",
 			"key", key,
 			"error", err,
