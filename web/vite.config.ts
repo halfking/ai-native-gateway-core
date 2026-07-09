@@ -37,9 +37,17 @@ export default defineConfig({
   server: {
     port: 5780,
     proxy: {
-      '/api': { target: 'http://localhost:8781', changeOrigin: true },
-      '/v1':  { target: 'http://localhost:8781', changeOrigin: true },
-      '/healthz': { target: 'http://localhost:8781', changeOrigin: true },
+      // 2026-07-09: rewrite cookie Domain so Set-Cookie from `localhost:8781`
+      // is accepted by the browser running on `127.0.0.1:5783` (and vice versa).
+      // Without this, dev-mode SPA can call /api/* but the auth cookie never
+      // sticks, so the browser stays "logged out" even after a successful login.
+      '/api': {
+        target: 'http://localhost:8781',
+        changeOrigin: true,
+        cookieDomainRewrite: { '*': '127.0.0.1' },
+      },
+      '/v1':  { target: 'http://localhost:8781', changeOrigin: true, cookieDomainRewrite: { '*': '127.0.0.1' } },
+      '/healthz': { target: 'http://localhost:8781', changeOrigin: true, cookieDomainRewrite: { '*': '127.0.0.1' } },
     },
   },
   // @ts-ignore - vitest config is valid but not in vite's types

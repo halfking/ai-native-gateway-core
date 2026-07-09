@@ -53,6 +53,59 @@ func TestAllModuleDefinitions(t *testing.T) {
 	}
 }
 
+func TestFeishuBotRequiresModules(t *testing.T) {
+	defs := allModuleDefinitions()
+	var fb *ModuleDefinition
+	for i, m := range defs {
+		if m.Key == "feishu_bot" {
+			fb = &defs[i]
+			break
+		}
+	}
+	if fb == nil {
+		t.Fatal("feishu_bot module not found")
+	}
+	expected := []string{"compression", "cache", "prompt_injection", "session_audit"}
+	if len(fb.Requires) != len(expected) {
+		t.Fatalf("feishu_bot.Requires length = %d, want %d (%v)", len(fb.Requires), len(expected), fb.Requires)
+	}
+	for i, dep := range expected {
+		if fb.Requires[i] != dep {
+			t.Errorf("Requires[%d] = %q, want %q", i, fb.Requires[i], dep)
+		}
+	}
+}
+
+func TestResolveRequirementsMet(t *testing.T) {
+	// 全部 enabled
+	all := map[string]bool{
+		"compression": true, "cache": true,
+		"prompt_injection": true, "session_audit": true,
+	}
+	// 缺一个
+	missingOne := map[string]bool{
+		"compression": true, "cache": true,
+		"prompt_injection": false, "session_audit": true,
+	}
+	var fb ModuleDefinition
+	for _, m := range allModuleDefinitions() {
+		if m.Key == "feishu_bot" {
+			fb = m
+			break
+		}
+	}
+	if !allDepsEnabled(fb, all) {
+		t.Error("expected allDepsEnabled=true when all deps on")
+	}
+	if allDepsEnabled(fb, missingOne) {
+		t.Error("expected allDepsEnabled=false when one dep off")
+	}
+	missing := missingDeps(fb, missingOne)
+	if len(missing) != 1 || missing[0] != "prompt_injection" {
+		t.Errorf("missingDeps = %v, want [prompt_injection]", missing)
+	}
+}
+
 func TestResolveModuleEnabled(t *testing.T) {
 	// Test module without setting key
 	m := ModuleDefinition{Key: "test", SettingKey: ""}
@@ -159,6 +212,10 @@ func TestHandleModulesToggle(t *testing.T) {
 
 func TestHandleModulesRouter(t *testing.T) {
 	settings.Global = settings.NewRegistry()
+	// Register specs so handleModulesTest/Config can find them.
+	for _, sp := range settings.ModuleSpecs() {
+		_ = settings.Global.RegisterSpec(sp)
+	}
 
 	h := &Handler{}
 
@@ -172,6 +229,9 @@ func TestHandleModulesRouter(t *testing.T) {
 		{http.MethodPut, "/api/admin/modules/compression/toggle", http.StatusServiceUnavailable}, // no DB
 		{http.MethodPost, "/api/admin/modules/compression/toggle", http.StatusNotFound},          // wrong method
 		{http.MethodGet, "/api/admin/modules/", http.StatusNotFound},                             // empty key
+		{http.MethodPost, "/api/admin/modules/feishu_bot/test", http.StatusBadRequest},           // webhook_url empty in test
+		{http.MethodGet, "/api/admin/modules/feishu_bot/config", http.StatusOK},                  // summary works without DB
+		{http.MethodPost, "/api/admin/modules/unknown/test", http.StatusNotImplemented},
 	}
 
 	for _, tt := range tests {
@@ -181,7 +241,41 @@ func TestHandleModulesRouter(t *testing.T) {
 		h.handleModulesRouter(w, req)
 
 		if w.Code != tt.status {
-			t.Errorf("%s %s: expected status %d, got %d", tt.method, tt.path, tt.status, w.Code)
+			t.Errorf("%s %s: expected status %d, got %d (body: %s)",
+				tt.method, tt.path, tt.status, w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestFeishuBotConfigSummary(t *testing.T) {
+	settings.Global = settings.NewRegistry()
+	for _, sp := range settings.ModuleSpecs() {
+		_ = settings.Global.RegisterSpec(sp)
+	}
+	h := &Handler{}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/modules/feishu_bot/config", nil)
+	w := httptest.NewRecorder()
+	h.feishuBotConfigSummary(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// 关键字段都应存在
+	for _, key := range []string{"enabled", "webhook_url_set", "card_template", "alert_severity_min"} {
+		if _, ok := resp[key]; !ok {
+			t.Errorf("missing field %q in summary", key)
+		}
+	}
+	// 默认值校验
+	if resp["card_template"] != "standard" {
+		t.Errorf("card_template default = %v, want 'standard'", resp["card_template"])
+	}
+	if resp["alert_severity_min"] != "high" {
+		t.Errorf("alert_severity_min default = %v, want 'high'", resp["alert_severity_min"])
 	}
 }
