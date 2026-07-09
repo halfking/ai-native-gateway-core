@@ -346,11 +346,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "session_inspect", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{
-			sessioninspector.NewInspectorHook(
-				sessioninspector.NewTokenLimitInspector(100000),
-				sessioninspector.NewInactiveInspector(30*time.Minute),
-				sessioninspector.NewHighFrequencyInspector(60),
-			),
+			sessioninspector.NewInspectorHookWithConfig(nil), // nil → LoadConfig()
 		},
 	})
 
