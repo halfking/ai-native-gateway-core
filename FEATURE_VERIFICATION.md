@@ -751,3 +751,17 @@ dingtalk_callback.go (api/) ← 签名验签 + 转交 Approve/Reject
 - **提交记录**: `53e5529c feat(dingtalk_bot): 新增钉钉机器人模块`
 - **合并记录**: `f822f38d Merge branch 'opencode/cosmic-mountain' into main: 钉钉机器人模块`
 
+---
+
+### 第二轮审计修复（2026-07-09 补充）
+
+| 发现问题 | 严重性 | 修复内容 |
+|---------|--------|---------|
+| 回调 JSON 解析错误时完整 body 写入日志（敏感数据泄露） | 中 | 改为只记录 `body_size` |
+| 回调无请求体大小限制 | 低 | 添加 `http.MaxBytesReader(w, r.Body, 1MB)` |
+| `initApprovalNotifier` 回退仅检查 AppKey，遗漏 Webhook-only 场景 | 中 | 新增 `DINGTALK_WEBHOOK_URL` 环境变量回退分支 |
+| `modules_test.go` required 列表缺 `session_analytics` | 低 | 补充到断言列表 |
+| `dingTalkConfigFromSettings()` 无单元测试 | 低 | 标注为已知缺口（main.go 全局依赖难以单测） |
+
+**审计提交**: `a2d936a8 fix(dingtalk_bot): 审计修复 - 安全/测试/回退逻辑`
+
