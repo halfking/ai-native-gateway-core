@@ -198,7 +198,36 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 		}
 
 	} else if isTransient && state.ConsecutiveFails >= 3 {
-		// 临时故障：递增退避探测 (30s → 2m → 5m)
+		// 临时故障（429/503/timeout/stream_timeout）：连续失败 >= 3。
+		//
+		// 2026-07-09 修正（问题2 - NVIDIA NIM 流式无反馈长时间未熔断）：
+		// 之前此处只调度探测，凭据仍保持 Available=true 继续接收请求，
+		// 导致流式无反馈（first_byte_timeout / stream_timeout，归为
+		// KindStreamTimeout）的凭据长时间挂在路由池里，前端持续无响应。
+		//
+		// 现在：连续 3 次临时故障立即把凭据置为 cooling（Available=false，
+		// RecoverAt = now + 5min），并失效候选缓存，让路由在下一次候选
+		// 解析时立即剔除该凭据。探测恢复（UpdateFromProbe）会在凭据真正
+		// 恢复后把 Available 翻回 true。
+		const transientCooling = 5 * time.Minute
+		state.Available = false
+		nextRetry := now.Add(transientCooling)
+		state.RecoverAt = &nextRetry
+
+		slog.Warn("credstate: transient failure threshold reached, credential cooling",
+			"credential_id", credID,
+			"model", model,
+			"error_kind", errKind,
+			"consecutive_fails", state.ConsecutiveFails,
+			"cooling_seconds", int(transientCooling.Seconds()),
+			"recover_at", nextRetry)
+
+		if m.invalidateCandidateCache != nil {
+			m.invalidateCandidateCache()
+		}
+
+		// 递增退避探测 (30s → 2m → 5m)：探测用于在 cooling 期间提前发现
+		// 凭据恢复，探测成功后 UpdateFromProbe 会立即恢复路由。
 		var backoff time.Duration
 		switch {
 		case state.ConsecutiveFails <= 3:

@@ -413,7 +413,16 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 	case errorsx.KindRateLimit:
 		// 15 minutes cooling for rate limit errors (unless upstream provides retry_after)
 		return 900 * time.Second
-	case errorsx.KindTransient, errorsx.KindTimeout, errorsx.KindStreamTimeout:
+	case errorsx.KindStreamTimeout:
+		// 2026-07-09 修正（问题2 - NVIDIA NIM 流式无反馈长时间未熔断）：
+		// 流式无反馈（first_byte_timeout / stream_timeout / EOF-without-DONE）
+		// 归为 KindStreamTimeout。之前与 Transient/Timeout 共用 30s cooling，
+		// 凭据 30s 后即恢复又被选中、再次无反馈，形成"前端长时间无响应但凭据
+		// 一直在线"的循环。提升到 5 分钟，让 cmb/model_offers 的
+		// unavailable_recover_at 跨实例一致地把该 (凭据,模型) 挡在 v_routable
+		// 视图之外足够久，配合 credentialstate 的立即下线，彻底停止接收请求。
+		return 5 * time.Minute
+	case errorsx.KindTransient, errorsx.KindTimeout:
 		return 30 * time.Second
 	case errorsx.KindUpstreamDown:
 		return 60 * time.Second

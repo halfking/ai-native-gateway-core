@@ -884,16 +884,16 @@ func main() {
 	}
 	var liveStreamHub *admin.LiveStreamSSEHub
 	if dbConn != nil && dbConn.Enabled() {
-		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
-			BroadcastQueueSize:            2048,
-			InitialReplayLimit:            50,
-			IdleThreshold:                 60 * time.Second,
-			IdleTickInterval:              10 * time.Second,
-			KeepaliveInterval:             25 * time.Second,
-			RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
-			CachedSnapshotTTL:             liveStreamCachedTTL,
-			CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
-		})
+			liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
+				BroadcastQueueSize:            2048,
+				InitialReplayLimit:            200,
+				IdleThreshold:                 60 * time.Second,
+				IdleTickInterval:              10 * time.Second,
+				KeepaliveInterval:             25 * time.Second,
+				RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
+				CachedSnapshotTTL:             liveStreamCachedTTL,
+				CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
+			})
 		go liveStreamHub.Run()
 
 		// Wire the telemetry persistence hook → SSE hub. The hook
