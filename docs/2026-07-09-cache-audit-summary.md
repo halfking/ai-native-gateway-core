@@ -26,6 +26,11 @@
    - r112 本地诊断中所有有效请求都落在同一 credential 上
    - `sticky_sessions` 也证明 L1/L2/L3 粘性记录都在正常生成
 
+4. **这次真正补齐的“漏项”不是未提交文件，而是未接通的观测链路**
+   - `request_logs_hot.affinity_hit` 列已存在，但之前 telemetry 没有写入
+   - `routing_decision_log_hot.sticky_hit` 字段和 admin 消费链路已存在，但成功路径之前没有赋值
+   - 本次代码修复把这两条预留链路真正接通了
+
 ---
 
 ## 2. 当前确认不该继续做的内容
