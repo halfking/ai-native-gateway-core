@@ -140,22 +140,22 @@
         </template>
         <el-table :data="panorama.suggestions" stripe size="small">
           <el-table-column prop="severity" label="级别" width="110">
-            <template #default="{ row }">
-              <el-tag :type="severityColor(row.severity)" size="small">{{ severityLabel(row.severity) }}</el-tag>
+            <template #default="scope">
+              <el-tag :type="severityColor(scope?.row?.severity)" size="small">{{ severityLabel(scope?.row?.severity) }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="title" label="建议" min-width="200" />
           <el-table-column label="潜在节省" width="160">
-            <template #default="{ row }">
-              <span v-if="row.potential_savings_cost > 0">${{ row.potential_savings_cost.toFixed(4) }}</span>
-              <span v-else-if="row.potential_savings_tokens > 0">{{ row.potential_savings_tokens.toLocaleString() }} tokens</span>
+            <template #default="scope">
+              <span v-if="scope?.row?.potential_savings_cost > 0">${{ scope?.row?.potential_savings_cost.toFixed(4) }}</span>
+              <span v-else-if="scope?.row?.potential_savings_tokens > 0">{{ scope?.row?.potential_savings_tokens.toLocaleString() }} tokens</span>
               <span v-else>—</span>
             </template>
           </el-table-column>
           <el-table-column label="状态" width="100">
-            <template #default="{ row }">
-              <el-button v-if="!row.applied && !row.dismissed" size="small" type="primary" text @click="applySugg(row)">采纳</el-button>
-              <el-tag v-else-if="row.applied" type="success" size="small">已采纳</el-tag>
+            <template #default="scope">
+              <el-button v-if="!scope?.row?.applied && !scope?.row?.dismissed" size="small" type="primary" text @click="applySugg(scope?.row)">采纳</el-button>
+              <el-tag v-else-if="scope?.row?.applied" type="success" size="small">已采纳</el-tag>
             </template>
           </el-table-column>
         </el-table>
