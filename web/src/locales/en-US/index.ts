@@ -48,6 +48,7 @@ import modelPicker from './modelPicker'
 import modulesView from './modulesView'
 import formatAnomaliesView from './formatAnomaliesView'
 import agentRegistryView from './agentRegistryView'
+import outputCompliance from './outputCompliance'
 
 export default {
   common,
@@ -99,4 +100,5 @@ export default {
   modulesView,
   formatAnomaliesView,
   agentRegistryView,
+  outputCompliance,
 }
