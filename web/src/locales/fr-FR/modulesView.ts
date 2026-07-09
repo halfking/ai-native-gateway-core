@@ -78,6 +78,15 @@ export default {
       'Assurez-vous que tous les modules prérequis sont activés',
     ],
     wechatBotIntegration: 'Intégration du bot WeChat',
+    dingtalkSteps: [
+      'Ajoutez un « Robot personnalisé » dans un groupe DingTalk, choisissez la sécurité « Signature » et copiez le Webhook',
+      'Collez l’URL Webhook ci-dessous et renseignez le Secret de signature',
+      '(Optionnel) Créez une application interne dans la console et renseignez AppKey/AppSecret/AgentID pour activer la notification de travail',
+      'Configurez l’URL de rappel d’approbation (/api/webhooks/dingtalk/approval-callback) comme récepteur du robot',
+      'Activez le commutateur « Intégration du bot DingTalk »',
+      'Assurez-vous que les modules requis (compression, détection d’injection, cache de session, audit de session) sont activés',
+    ],
+    dingtalkBotIntegration: 'Intégration du bot DingTalk',
   },
 
   empty: {

@@ -78,6 +78,15 @@ export default {
       'تأكد من تفعيل جميع الوحدات الأساسية',
     ],
     wechatBotIntegration: 'تكامل روبوت WeChat',
+    dingtalkSteps: [
+      'أضف "روبوت مخصص" في مجموعة DingTalk، اختر أمان "التوقيع" وانسخ الـ Webhook',
+      'الصق رابط Webhook أدناه وأدخل سر التوقيع',
+      '(اختياري) أنشئ تطبيقًا داخليًا في الكونسول وأدخل AppKey/AppSecret/AgentID لتمكين إشعارات العمل',
+      'اضبط رابط استدعاء الموافقة (/api/webhooks/dingtalk/approval-callback) كمستقبل رسائل الروبوت',
+      'فعّل مفتاح "تكامل روبوت DingTalk"',
+      'تأكد من تفعيل الوحدات المطلوبة (الضغط، كشف الحقن، تخزين الجلسة، تدقيق الجلسة)',
+    ],
+    dingtalkBotIntegration: 'تكامل روبوت DingTalk',
   },
 
   empty: {

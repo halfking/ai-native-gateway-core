@@ -244,7 +244,7 @@ func main() {
 	if len(cfg.SessionIDBodyKeys) > 0 {
 		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}
-	
+
 	// Health handler with database and Redis status checking (2026-07-08)
 	// Pass db and redis connections for health checks (will be updated with redis later)
 	var dbPinger interface{ Ping(context.Context) error }
@@ -253,7 +253,7 @@ func main() {
 		dbPinger = dbConn.Pool()
 	}
 	healthHandler := streaming.NewHealthHandler(cm, lim, upClient.Proxy(), dbPinger, redisPinger)
-	
+
 	modelsHandler := streaming.NewModelsHandler()
 	messagesHandler := streaming.NewMessagesHandler(chatHandler)
 	responsesHandler := streaming.NewResponsesHandler(chatHandler)
@@ -307,7 +307,7 @@ func main() {
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
 			sessionPref = session.NewSessionPreference(redisClient)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
-			
+
 			// Update health handler with Redis connection (2026-07-08)
 			healthHandler.SetRedis(redisClient)
 		} else {
@@ -1987,8 +1987,8 @@ func main() {
 				w.WriteHeader(http.StatusOK)
 				//nolint:errcheck // HTTP write error non-recoverable
 				//nolint:errcheck // HTTP write error non-recoverable
-			w.Write([]byte(fmt.Sprintf(`{"service":"llm-gateway-go","version":"%s","git_sha":"%s","build_seq":"%s"}`,
-				Version, GitCommit, BuildNumber)))
+				w.Write([]byte(fmt.Sprintf(`{"service":"llm-gateway-go","version":"%s","git_sha":"%s","build_seq":"%s"}`,
+					Version, GitCommit, BuildNumber)))
 				return
 			}
 			http.NotFound(w, r)
@@ -2095,9 +2095,9 @@ func main() {
 			if dbConn != nil {
 				healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
 				healthWorker.Start(context.Background())
-			slog.Info("session health worker started (hourly)")
+				slog.Info("session health worker started (hourly)")
+			}
 		}
-	}
 
 		// Task T1.4: Usage Cost Enhanced API 注册已在 admin/handler.go:572 完成
 		// (避免与 admin 包的双重注册 panic, 与 33d9d4fe fix 同型)
@@ -2152,6 +2152,19 @@ func main() {
 			mux.HandleFunc("/api/admin/approvals", wrapAdmin(approvalAPI.ListApprovals))
 			mux.HandleFunc("/api/admin/approvals/stats", wrapAdmin(approvalAPI.GetApprovalStats))
 			slog.Info("Phase 3.9 approval query API enabled (/api/v1/approvals/*, /api/admin/approvals/stats)")
+
+			// DingTalk approval callback (钉钉机器人审批回调)
+			// 签名校验使用加签 Secret 优先，回退到应用 AppSecret。
+			dingSignSecret := os.Getenv("DINGTALK_SIGN_SECRET")
+			if dingSignSecret == "" {
+				dingSignSecret = os.Getenv("DINGTALK_APP_SECRET")
+			}
+			if dingSignSecret != "" {
+				api.RegisterDingTalkRoutes(mux, approvalMgr, dingSignSecret)
+				slog.Info("dingtalk approval callback enabled (/api/webhooks/dingtalk/approval-callback)")
+			} else {
+				slog.Warn("DINGTALK_SIGN_SECRET not set, dingtalk approval callback disabled")
+			}
 		}
 
 		// Phase 3.10 (2026-07-03, Task D1): Approval Configuration Management API

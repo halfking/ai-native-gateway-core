@@ -78,6 +78,15 @@ export default {
       '確保前置模組（壓縮管理、注入檢測、會話快取、會話稽核）均已啟用',
     ],
     wechatBotIntegration: '微信機器人整合',
+    dingtalkSteps: [
+      '在釘釘群設置中加入「自定義機器人」，安全設置選「加簽」並複製 Webhook',
+      '將 Webhook URL 貼到下方設定，並填入加簽 Secret',
+      '（選用）在開發者後台建立企業內部應用，填入 AppKey/AppSecret/AgentID 啟用工作通知',
+      '將審批回呼地址（/api/webhooks/dingtalk/approval-callback）設定為機器人接收訊息',
+      '開啟「釘釘機器人整合」開關',
+      '確保前置模組（壓縮管理、注入檢測、會話快取、會話審計）均已啟用',
+    ],
+    dingtalkBotIntegration: '釘釘機器人整合',
   },
 
   empty: {

@@ -81,6 +81,15 @@ export default {
       '确保前置模块（压缩管理、注入检测、会话缓存、会话审计）均已启用',
     ],
     wechatBotIntegration: '微信机器人集成',
+    dingtalkSteps: [
+      '在钉钉群设置中添加「自定义机器人」，安全设置选择「加签」并复制 Webhook',
+      '将 Webhook URL 粘贴到下方配置，并填入加签 Secret',
+      '（可选）在开发者后台创建企业内部应用，填入 AppKey/AppSecret/AgentID 启用工作通知',
+      '将审批回调地址（/api/webhooks/dingtalk/approval-callback）配置到机器人接收消息',
+      '开启「钉钉机器人集成」开关',
+      '确保前置模块（压缩管理、注入检测、会话缓存、会话审计）均已启用',
+    ],
+    dingtalkBotIntegration: '钉钉机器人集成',
   },
 
   empty: {
