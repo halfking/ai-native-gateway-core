@@ -78,6 +78,15 @@ export default {
       'Ensure prerequisite modules (compression, injection detection, session cache, session audit) are all enabled',
     ],
     wechatBotIntegration: 'WeChat bot integration',
+    dingtalkSteps: [
+      'Add a "Custom Robot" in a DingTalk group, choose "Sign" security and copy the Webhook',
+      'Paste the Webhook URL below and fill in the Sign Secret',
+      '(Optional) Create an internal app in the dev console and fill AppKey/AppSecret/AgentID to enable work notification',
+      'Configure the approval callback URL (/api/webhooks/dingtalk/approval-callback) as the bot message receiver',
+      'Enable the "DingTalk bot integration" switch',
+      'Ensure prerequisite modules (compression, injection detection, session cache, session audit) are enabled',
+    ],
+    dingtalkBotIntegration: 'DingTalk bot integration',
   },
 
   empty: {
