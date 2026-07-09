@@ -139,12 +139,14 @@ type LiveRequest struct {
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
 // resolve to defaults in NewLiveStreamHub.
 type LiveStreamConfig struct {
-	BroadcastQueueSize int
-	InitialReplayLimit int
-	IdleThreshold      time.Duration
-	IdleTickInterval   time.Duration
-	KeepaliveInterval  time.Duration
-	RedisClient        *redis.Client // optional: enables 1-hour Redis cache
+	BroadcastQueueSize            int
+	InitialReplayLimit            int
+	IdleThreshold                 time.Duration
+	IdleTickInterval              time.Duration
+	KeepaliveInterval             time.Duration
+	RedisClient                   *redis.Client // optional: enables 1-hour Redis cache
+	CachedSnapshotTTL             time.Duration // 淘汰阈值；零值 → 10min。可通过 LLM_GATEWAY_LIVE_STREAM_CACHED_TTL 覆盖
+	CachedSnapshotCleanupInterval time.Duration // evict ticker 周期；零值 → 与 TTL 一致。可通过 LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL 覆盖
 }
 
 func (c *LiveStreamConfig) defaults() {
@@ -162,6 +164,12 @@ func (c *LiveStreamConfig) defaults() {
 	}
 	if c.KeepaliveInterval <= 0 {
 		c.KeepaliveInterval = 25 * time.Second
+	}
+	if c.CachedSnapshotTTL <= 0 {
+		c.CachedSnapshotTTL = 10 * time.Minute
+	}
+	if c.CachedSnapshotCleanupInterval <= 0 {
+		c.CachedSnapshotCleanupInterval = c.CachedSnapshotTTL
 	}
 }
 
@@ -219,15 +227,19 @@ type LiveStreamSSEHub struct {
 	// can compute a delta instead of sending the full snapshot every time.
 	// Each entry carries a lastAccessed timestamp for periodic cleanup of
 	// stale tenants (prevents unbounded memory growth).
-	cachedSnapshotMu  sync.RWMutex
-	cachedSnapshot    map[string]*cachedSnapshotEntry // key = tenantID
-	cachedSnapshotTTL time.Duration                   // entries older than this are evicted
+	cachedSnapshotMu sync.RWMutex
+	cachedSnapshot   map[string]*cachedSnapshotEntry // key = tenantID
+	// 淘汰阈值统一使用 cfg.CachedSnapshotTTL，不再单独维护字段。
 
 	// Metrics (added 2026-07-03 for monitoring)
-	totalConnections    int64 // 累计连接数
-	totalDisconnections int64 // 累计断开数
-	authFailures        int64 // 认证失败次数
-	broadcastCount      int64 // 广播消息数
+	totalConnections        int64 // 累计连接数
+	totalDisconnections     int64 // 累计断开数
+	authFailures            int64 // 认证失败次数
+	broadcastCount          int64 // 广播消息数
+	cachedSnapshotHits       int64 // computeScopeDelta 访问时已有 entry（命中续命）
+	cachedSnapshotMisses     int64 // computeScopeDelta 访问时无 entry（首次订阅或被 evict 后重订阅）
+	cachedSnapshotEmptySkips int64 // 读出空 snapshot 触发早返的次数
+	cachedSnapshotEvictions  int64 // evictStaleCachedSnapshots 累计清掉的 entry 数
 
 	// lastHealth tracks the previous Redis health state so we only
 	// broadcast a health_update envelope when the state changes.
@@ -255,7 +267,6 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 		lastActivity:      time.Now(),
 		stopCh:            make(chan struct{}),
 		cachedSnapshot:    make(map[string]*cachedSnapshotEntry),
-		cachedSnapshotTTL: 10 * time.Minute, // evict entries idle for >10min
 	}
 }
 
@@ -263,7 +274,9 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 func (h *LiveStreamSSEHub) Run() {
 	idleTicker := time.NewTicker(h.cfg.IdleTickInterval)
 	keepaliveTicker := time.NewTicker(h.cfg.KeepaliveInterval)
-	cacheCleanupTicker := time.NewTicker(h.cachedSnapshotTTL)
+	// evict ticker 周期默认跟随 CachedSnapshotTTL，但可被独立放宽——
+	// 拆开避免 TTL > TTL 时 ticker 也被放大导致过期 entry 滞留。
+	cacheCleanupTicker := time.NewTicker(h.cfg.CachedSnapshotCleanupInterval)
 	healthTicker := time.NewTicker(30 * time.Second) // Redis health check interval
 	defer idleTicker.Stop()
 	defer keepaliveTicker.Stop()
@@ -345,30 +358,45 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	if h.store == nil {
 		return nil
 	}
-	snapshot, err := h.store.Snapshot(ctx, tenantID, isSuper, h.cfg.InitialReplayLimit)
-	if err != nil {
-		slog.Debug("live stream scope snapshot failed",
-			"scope_tenant", tenantID, "is_super", isSuper, "err", err.Error())
-		return nil
-	}
 	// Scope cache key: super scope uses a dedicated sentinel so it never
 	// collides with a tenant literally named "default"/etc.
 	cacheKey := tenantID
 	if isSuper {
 		cacheKey = "__super__"
 	}
+
+	// [fix: live-stream-cache-evict-stall] 进入即续命：
+	// 任何一次访问都算激活该 entry 的 lastAccessed，避免 Redis 短暂
+	// 返回空 snapshot 时的早返路径让"仍订阅中"的 cache 被 evict。
+	// 仅刷新已存在的 entry（不创建新的），保持 map 容量可控。
 	h.cachedSnapshotMu.Lock()
-	defer h.cachedSnapshotMu.Unlock()
-	var cached *LiveStreamSnapshot
 	if entry := h.cachedSnapshot[cacheKey]; entry != nil {
-		cached = entry.snapshot
+		entry.lastAccessed = time.Now()
+		atomic.AddInt64(&h.cachedSnapshotHits, 1)
+	} else {
+		atomic.AddInt64(&h.cachedSnapshotMisses, 1)
+	}
+	h.cachedSnapshotMu.Unlock()
+
+	snapshot, err := h.store.Snapshot(ctx, tenantID, isSuper, h.cfg.InitialReplayLimit)
+	if err != nil {
+		slog.Debug("live stream scope snapshot failed",
+			"scope_tenant", tenantID, "is_super", isSuper, "err", err.Error())
+		return nil
 	}
 	// Guard: do not let an empty snapshot overwrite a populated cache.
 	// An empty read from Redis is treated as "no change" (return the
 	// last delta is pointless; better to simply skip). This is what
 	// stops a 200ms Redis stall from clearing every dashboard.
 	if snapshot == nil || snapshot.Summary.Total == 0 {
+		atomic.AddInt64(&h.cachedSnapshotEmptySkips, 1)
 		return nil
+	}
+	h.cachedSnapshotMu.Lock()
+	defer h.cachedSnapshotMu.Unlock()
+	var cached *LiveStreamSnapshot
+	if entry := h.cachedSnapshot[cacheKey]; entry != nil {
+		cached = entry.snapshot
 	}
 	delta := ComputeDelta(cached, snapshot)
 	h.cachedSnapshot[cacheKey] = &cachedSnapshotEntry{
@@ -379,16 +407,33 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 }
 
 // evictStaleCachedSnapshots removes tenant cached snapshots that have
-// not been touched within cachedSnapshotTTL. Prevents unbounded memory
-// growth from tenants that send a single request then go silent.
+// not been touched within CachedSnapshotTTL (cfg). Prevents unbounded
+// memory growth from tenants that send a single request then go silent.
+//
+// [fix: live-stream-cache-evict-stall] 配合 computeScopeDelta 进入即
+// 续命的修复，淘汰判定依然是 lastAccessed vs TTL。日志在每次清理有
+// 真正 evict 时输出 INFO，便于运维观察"清空再重现"是否已消除。
 func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 	now := time.Now()
+	var evicted int64
 	h.cachedSnapshotMu.Lock()
-	defer h.cachedSnapshotMu.Unlock()
-	for tenantID, entry := range h.cachedSnapshot {
-		if now.Sub(entry.lastAccessed) > h.cachedSnapshotTTL {
-			delete(h.cachedSnapshot, tenantID)
+	for k, entry := range h.cachedSnapshot {
+		if now.Sub(entry.lastAccessed) > h.cfg.CachedSnapshotTTL {
+			delete(h.cachedSnapshot, k)
+			evicted++
 		}
+	}
+	remain := int64(len(h.cachedSnapshot))
+	h.cachedSnapshotMu.Unlock()
+
+	atomic.AddInt64(&h.cachedSnapshotEvictions, evicted)
+
+	if evicted > 0 {
+		slog.Info("live stream cached snapshot evicted",
+			"evicted", evicted,
+			"remain", remain,
+			"ttl", h.cfg.CachedSnapshotTTL.String(),
+			"cleanup_interval", h.cfg.CachedSnapshotCleanupInterval.String())
 	}
 }
 
@@ -1214,13 +1259,17 @@ func (h *LiveStreamSSEHub) Stats() map[string]interface{} {
 	lastActivity := h.lastActivity
 	h.lastActivityMu.RUnlock()
 
-	return map[string]interface{}{
-		"active_clients":         activeClients,
-		"total_connections":      atomic.LoadInt64(&h.totalConnections),
-		"total_disconnections":   atomic.LoadInt64(&h.totalDisconnections),
-		"auth_failures":          atomic.LoadInt64(&h.authFailures),
-		"broadcast_count":        atomic.LoadInt64(&h.broadcastCount),
-		"last_activity":          lastActivity.UTC().Format(time.RFC3339),
-		"seconds_since_activity": time.Since(lastActivity).Seconds(),
-	}
+		return map[string]interface{}{
+			"active_clients":              activeClients,
+			"total_connections":           atomic.LoadInt64(&h.totalConnections),
+			"total_disconnections":        atomic.LoadInt64(&h.totalDisconnections),
+			"auth_failures":               atomic.LoadInt64(&h.authFailures),
+			"broadcast_count":             atomic.LoadInt64(&h.broadcastCount),
+			"cached_snapshot_hits":        atomic.LoadInt64(&h.cachedSnapshotHits),
+			"cached_snapshot_misses":      atomic.LoadInt64(&h.cachedSnapshotMisses),
+			"cached_snapshot_empty_skips": atomic.LoadInt64(&h.cachedSnapshotEmptySkips),
+			"cached_snapshot_evictions":   atomic.LoadInt64(&h.cachedSnapshotEvictions),
+			"last_activity":               lastActivity.UTC().Format(time.RFC3339),
+			"seconds_since_activity":      time.Since(lastActivity).Seconds(),
+		}
 }
