@@ -160,6 +160,79 @@ func TestCascadeDeps_DangerousDepsNotAutoEnabled(t *testing.T) {
 	}
 }
 
+// TestApplyCascadeEnable_RollsBackOnRootWriteFailure 覆盖最关键兜底：
+// "依赖都已成功开启 → 主模块写盘失败 → 关闭已开启的依赖"，保证不留半开状态。
+func TestApplyCascadeEnable_RollsBackOnRootWriteFailure(t *testing.T) {
+	settings.Global = settings.NewRegistry()
+	registerCascadeModule(t, "a.enabled", settings.Warning, false)
+	registerCascadeModule(t, "b.enabled", settings.Warning, false)
+	registerCascadeModule(t, "root.enabled", settings.Warning, true)
+
+	defs := []ModuleDefinition{
+		{Key: "root", SettingKey: "root.enabled", Dependencies: []ModuleDependency{
+			{Key: "a", Required: true},
+			{Key: "b", Required: true},
+		}},
+		{Key: "a", SettingKey: "a.enabled"},
+		{Key: "b", SettingKey: "b.enabled"},
+	}
+	statuses := moduleStatusMap(defs)
+	w := newCascadeMemWriter()
+	w.failOn["root.enabled"] = errors.New("disk full")
+	root := &ModuleDefinition{Key: "root", SettingKey: "root.enabled"}
+
+	cascaded, err := applyCascadeEnable(defs, statuses, root, w.write, w.rollback)
+	if err == nil {
+		t.Fatal("expected root write failure to surface")
+	}
+	if cascaded != nil {
+		t.Fatalf("cascaded should be nil on root failure, got %v", cascaded)
+	}
+	if w.written[aSpec] != true {
+		t.Fatalf("a.enabled should have been enabled before root failure, got %+v", w.written)
+	}
+	if w.written[bSpec] != true {
+		t.Fatalf("b.enabled should have been enabled before root failure, got %+v", w.written)
+	}
+	if !w.rolledBack[aKey] || !w.rolledBack[bKey] {
+		t.Fatalf("both deps should be rolled back, got %+v", w.rolledBack)
+	}
+}
+
+// TestApplyCascadeEnable_SuccessReturnsCascaded 验证全成功路径：返回 cascaded 列表，且所有写盘发生。
+func TestApplyCascadeEnable_SuccessReturnsCascaded(t *testing.T) {
+	settings.Global = settings.NewRegistry()
+	registerCascadeModule(t, "a.enabled", settings.Warning, false)
+	registerCascadeModule(t, "root.enabled", settings.Warning, true)
+
+	defs := []ModuleDefinition{
+		{Key: "root", SettingKey: "root.enabled", Dependencies: []ModuleDependency{
+			{Key: "a", Required: true},
+		}},
+		{Key: "a", SettingKey: "a.enabled"},
+	}
+	statuses := moduleStatusMap(defs)
+	w := newCascadeMemWriter()
+	root := &ModuleDefinition{Key: "root", SettingKey: "root.enabled"}
+
+	cascaded, err := applyCascadeEnable(defs, statuses, root, w.write, w.rollback)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cascaded) != 1 || cascaded[0] != aKey {
+		t.Fatalf("expected cascaded=[a], got %v", cascaded)
+	}
+	if w.written[aSpec] != true {
+		t.Fatalf("a.enabled should be enabled, got %+v", w.written)
+	}
+	if w.written["root.enabled"] != true {
+		t.Fatalf("root.enabled should be enabled, got %+v", w.written)
+	}
+	if len(w.rolledBack) != 0 {
+		t.Fatalf("rollback should not be called on success, got %+v", w.rolledBack)
+	}
+}
+
 const (
 	aKey  = "a"
 	bKey  = "b"
