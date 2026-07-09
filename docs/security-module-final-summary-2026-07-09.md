@@ -173,12 +173,19 @@ $ curl -s http://localhost:8781/api/admin/modules -H "Authorization: Bearer $TOK
 
 ## 五、遗留问题
 
-### 5.1 P0问题（待R1.14修复）
+### 5.1 ~~P0问题~~ ✅ 已修复
 
 **问题**: 配置项未接入实际代码  
-**现状**: 配置框架已建立，但运行时仍用硬编码值  
-**影响**: 用户修改配置不生效  
-**跟踪**: `docs/issues/p0-security-config-not-applied.md`
+**现状**: ✅ 已修复（2026-07-09）  
+**修复方案**: 重构SecurityHook构造函数，注入settings.Registry  
+**修复提交**: `99f072cf` (fix(security): 修复P0问题 - 配置项接入运行时)
+
+**修复内容**:
+- ✅ 重构SecurityHook构造函数，注入settings.Registry
+- ✅ 从settings读取配置而不是使用硬编码值
+- ✅ 支持热加载配置（每次Execute时重新读取）
+- ✅ 更新所有调用方使用新的构造函数
+- ✅ 更新测试用例（14个测试全部通过）
 
 ---
 
@@ -258,9 +265,10 @@ $ curl -s http://localhost:8781/api/admin/modules -H "Authorization: Bearer $TOK
 
 ---
 
-**任务状态**: ✅ 核心任务完成  
-**审计评分**: 48/50 (A级 - 优秀)  
-**本地验证**: ✅ 通过  
-**最后提交**: `9273db50` (origin/main)  
-**文档版本**: v1.0  
+**任务状态**: ✅ **所有任务完成**  
+**审计评分**: **48/50 (A级 - 优秀)**  
+**本地验证**: ✅ **通过**  
+**P0修复**: ✅ **已完成**  
+**最后提交**: `a42b20b3` (origin/main)  
+**文档版本**: v1.1  
 **维护者**: Official-Deploy Team
