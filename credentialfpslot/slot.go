@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/identity" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/redis/go-redis/v9"
@@ -302,6 +303,15 @@ func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, hol
 // Call ForceUnpin explicitly when a credential is dead (auth revoked, quota
 // permanent) so the next request doesn't try to re-acquire a slot in a dead
 // credential.
+//
+// FIX (2026-07-09): Enhanced with bounded retry to survive transient Redis
+// errors (network blips, connection pool exhaustion). The previous
+// implementation logged the failure at Debug level and gave up, which let the
+// slot key linger at its full 30-min TTL. Under a burst of client disconnects
+// the leaked slots accumulated until the pool was saturated, producing the
+// "cred_fp_slot saturated" outage. The caller (releaseFpLease in
+// executors/executor.go) now passes an independent background context so a
+// cancelled request context can no longer abort the release.
 func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	if lease == nil || lease.Unlimited {
 		return
@@ -312,22 +322,59 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	key := slotRedisKey(lease.CredentialID, lease.SlotIndex)
 	pinKey := pinRedisKey(lease.Holder, lease.CredentialID)
 
-	// Refresh TTLs: slot for 30 min (reclaimable sooner), pin for 24 h
-	// (stable identity across the longer session).
-	refreshed, err := releaseSlotScript.Run(ctx, m.client,
-		[]string{key, pinKey},
-		lease.Holder,
-		slotTTLSeconds,
-		sessionPinTTLSeconds,
-		lease.SlotIndex,
-	).Bool()
-	if err != nil {
-		slog.Debug("cred_fp_slot redis release failed", "cred", lease.CredentialID, "error", err)
+	var lastErr error
+	for attempt := 1; attempt <= releaseRetryCount; attempt++ {
+		// Refresh TTLs: slot for 30 min (reclaimable sooner), pin for 24 h
+		// (stable identity across the longer session).
+		refreshed, err := releaseSlotScript.Run(ctx, m.client,
+			[]string{key, pinKey},
+			lease.Holder,
+			slotTTLSeconds,
+			sessionPinTTLSeconds,
+			lease.SlotIndex,
+		).Bool()
+		if err == nil {
+			if !refreshed {
+				// Slot was already taken over by another holder (preempted).
+				// Not a leak — nothing to release.
+				slog.Debug("cred_fp_slot redis release: slot not owned",
+					"cred", lease.CredentialID,
+					"slot", lease.SlotIndex,
+				)
+			}
+			return
+		}
+		lastErr = err
+		// context.Canceled/DeadlineExceeded won't resolve on retry — stop.
+		if ctx.Err() != nil {
+			break
+		}
+		if attempt < releaseRetryCount {
+			slog.Warn("cred_fp_slot redis release attempt failed, retrying",
+				"attempt", attempt,
+				"credential_id", lease.CredentialID,
+				"slot", lease.SlotIndex,
+				"error", err,
+			)
+			time.Sleep(time.Duration(50*attempt) * time.Millisecond)
+		}
 	}
-	if !refreshed {
-		slog.Debug("cred_fp_slot redis release: slot not owned", "cred", lease.CredentialID, "slot", lease.SlotIndex)
-	}
+	// All retries exhausted. The slot key keeps its current TTL and will
+	// self-expire (≤30 min), but surface the failure loudly so monitoring
+	// catches a systemic Redis outage before the leak accumulates.
+	slog.Error("cred_fp_slot redis release failed after retries",
+		"credential_id", lease.CredentialID,
+		"slot", lease.SlotIndex,
+		"holder", lease.Holder,
+		"error", lastErr,
+	)
 }
+
+// releaseRetryCount caps the per-call Redis retry attempts on transient
+// errors. Kept as a package constant so it's visible in one place; bumping it
+// trades a little extra latency under Redis instability for fewer leaked
+// slots.
+const releaseRetryCount = 3
 
 // ForceUnpin removes a holder's pin for a credential, regardless of slot state.
 //
