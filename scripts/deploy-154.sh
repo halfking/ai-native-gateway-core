@@ -160,11 +160,13 @@ log "  服务已停止 ✓"
 log "[6/8] scp 上传到 $REMOTE_DIR..."
 $SSH "$SSH_TARGET" "mkdir -p $REMOTE_DIR/web"
 $SCP "$BIN_NAME" "$SSH_TARGET:$REMOTE_DIR/$BIN_NAME"
-# web/dist 作为目录上传 (scp -r src dst/ 时会创建 dst/src/)
+# web/dist 作为目录上传. StaticHandler 期望 web/index.html (不是 web/dist/).
+# 用 tar pipe 传整个目录, 然后在远端把它"展平"成 web/{index.html, assets/...}
 if [[ -d web/dist ]]; then
-  # 先清掉旧的 web/dist, 避免残留
-  $SSH "$SSH_TARGET" "rm -rf $REMOTE_DIR/web"
-  $SCP -r web/dist "$SSH_TARGET:$REMOTE_DIR/web/"
+  # 先清掉旧的 web/, 避免残留
+  $SSH "$SSH_TARGET" "rm -rf $REMOTE_DIR/web && mkdir -p $REMOTE_DIR/web"
+  # 展平方式: 把 dist/ 里的内容放到 web/ 下 (不是 web/dist/)
+  tar czf - -C web dist | $SSH "$SSH_TARGET" "cat | tar xzf - -C $REMOTE_DIR/web --strip-components=1"
 fi
 echo "$NEW_VERSION" > /tmp/__deploy-154.version
 echo "$NEW_SEQ"     > /tmp/__deploy-154.seq
