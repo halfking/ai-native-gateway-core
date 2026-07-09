@@ -169,3 +169,6 @@ llm-gateway-go.v322.linux.amd64
 web/.i18n-audit-tmp.mjs
 web/.i18n-fix-tmp.mjs
 .zcode/plans/
+*.linux.amd64
+*.exe
+bin/
