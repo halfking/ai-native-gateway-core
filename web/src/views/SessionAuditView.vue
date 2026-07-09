@@ -164,6 +164,18 @@ function closeDetail() {
   detailRecord.value = null
 }
 
+// 导出审计记录为CSV
+async function exportAudit() {
+  const params = new URLSearchParams()
+  if (filterTenantID.value) params.append('tenant_id', filterTenantID.value)
+  if (filterSessionID.value) params.append('session_id', filterSessionID.value)
+  if (filterStatus.value) params.append('status', filterStatus.value)
+  params.append('limit', '5000')
+
+  const url = `/api/admin/session-audit/export?${params.toString()}`
+  window.open(url, '_blank')
+}
+
 // 用显式 Map 代替动态键拼接，彻底避免 vue-i18n key 转换 bug
 // （此前 `status${status.replace('_','')}` 会把 need_approval 转成
 //  statusNeedapproval，而 locale 里是 statusNeedApproval，大小写不匹配）。
@@ -366,6 +378,7 @@ onMounted(() => {
   load()
   loadStats()
 })
+</script>
 
 <template>
   <div class="session-audit-view">
@@ -395,10 +408,10 @@ onMounted(() => {
     <!-- 审计记录标签页 -->
     <div v-if="activeTab === 'audit'">
       <!-- 统计卡片 -->
-    <div v-if="statsLoading" class="stats-loading" role="status" aria-live="polite">
-      <span class="spinner" aria-hidden="true"></span>
-      <span>{{ t('sessions.audit.statsLoading') }}</span>
-    </div>
+      <div v-if="statsLoading" class="stats-loading" role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>{{ t('sessions.audit.statsLoading') }}</span>
+      </div>
     <div v-else-if="statsError" class="error-banner" role="alert">
       <span class="error-icon" aria-hidden="true">⚠️</span>
       <span>{{ statsError }}</span>
@@ -464,6 +477,7 @@ onMounted(() => {
       </select>
       <button class="btn-primary" @click="resetPageAndLoad">{{ t('sessions.audit.search') }}</button>
       <button class="btn-secondary" @click="clearFilters">{{ t('sessions.audit.clear') }}</button>
+      <button class="btn-secondary" @click="exportAudit">{{ t('sessions.audit.export') }}</button>
     </div>
 
     <!-- 错误提示 -->
@@ -671,6 +685,161 @@ onMounted(() => {
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" @click="closeDetail">{{ t('sessions.audit.detail.close') }}</button>
+        </div>
+      </div>
+    </div>
+    </div>
+
+    <!-- 审批配置标签页 -->
+    <div v-if="activeTab === 'config'" class="config-panel">
+      <div v-if="configLoading" class="loading-state">
+        <span class="spinner"></span>
+        <span>{{ t('sessions.audit.config.loading') }}</span>
+      </div>
+      <div v-else-if="configError" class="error-banner">
+        <span>⚠️</span> {{ configError }}
+      </div>
+      <div v-else class="config-form">
+        <!-- 成功提示 -->
+        <div v-if="configSuccess" class="success-banner">
+          ✅ {{ configSuccess }}
+        </div>
+
+        <!-- 检测配置 -->
+        <div class="config-section">
+          <h3>{{ t('sessions.audit.config.detection') }}</h3>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.detectorModels') }}</label>
+            <input v-model="approvalConfig.detector_models" type="text" class="form-input" />
+            <span class="form-hint">{{ t('sessions.audit.config.detectorModelsHint') }}</span>
+          </div>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.detectPromptInjection') }}</label>
+            <input v-model="approvalConfig.detect_prompt_injection" type="checkbox" class="form-checkbox" />
+          </div>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.detectPII') }}</label>
+            <input v-model="approvalConfig.detect_pii_leakage" type="checkbox" class="form-checkbox" />
+          </div>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.detectJailbreak') }}</label>
+            <input v-model="approvalConfig.detect_jailbreak" type="checkbox" class="form-checkbox" />
+          </div>
+        </div>
+
+        <!-- 阈值配置 -->
+        <div class="config-section">
+          <h3>{{ t('sessions.audit.config.thresholds') }}</h3>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.enforcementLevel') }}</label>
+            <select v-model="approvalConfig.enforcement_level" class="form-select">
+              <option value="strict">{{ t('sessions.audit.config.enforcementStrict') }}</option>
+              <option value="advisory">{{ t('sessions.audit.config.enforcementAdvisory') }}</option>
+              <option value="audit_only">{{ t('sessions.audit.config.enforcementAudit') }}</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.approvalThreshold') }} ({{ approvalConfig.approval_threshold }})</label>
+            <input v-model.number="approvalConfig.approval_threshold" type="range" min="0" max="100" class="form-range" />
+          </div>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.autoBlockThreshold') }} ({{ approvalConfig.auto_block_threshold }})</label>
+            <input v-model.number="approvalConfig.auto_block_threshold" type="range" min="0" max="100" class="form-range" />
+          </div>
+        </div>
+
+        <!-- 审批流程配置 -->
+        <div class="config-section">
+          <h3>{{ t('sessions.audit.config.approvalFlow') }}</h3>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.approvalTimeout') }}</label>
+            <select v-model="approvalConfig.approval_timeout" class="form-select">
+              <option value="2h">2 {{ t('sessions.audit.config.hours') }}</option>
+              <option value="4h">4 {{ t('sessions.audit.config.hours') }}</option>
+              <option value="8h">8 {{ t('sessions.audit.config.hours') }}</option>
+              <option value="24h">24 {{ t('sessions.audit.config.hours') }}</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.timeoutAction') }}</label>
+            <select v-model="approvalConfig.timeout_action" class="form-select">
+              <option value="deny">{{ t('sessions.audit.config.timeoutDeny') }}</option>
+              <option value="escalate">{{ t('sessions.audit.config.timeoutEscalate') }}</option>
+              <option value="auto_approve">{{ t('sessions.audit.config.timeoutAutoApprove') }}</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.minApprovals') }}</label>
+            <input v-model.number="approvalConfig.min_approvals" type="number" min="1" max="10" class="form-input-small" />
+          </div>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.approverRoles') }}</label>
+            <input v-model="approvalConfig.approver_roles" type="text" class="form-input" />
+            <span class="form-hint">{{ t('sessions.audit.config.approverRolesHint') }}</span>
+          </div>
+        </div>
+
+        <!-- 升级策略配置 -->
+        <div class="config-section">
+          <h3>{{ t('sessions.audit.config.escalation') }}</h3>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.escalationEnabled') }}</label>
+            <input v-model="approvalConfig.escalation_enabled" type="checkbox" class="form-checkbox" />
+          </div>
+          <div v-if="approvalConfig.escalation_enabled" class="form-row">
+            <label>{{ t('sessions.audit.config.escalationAfter') }}</label>
+            <select v-model="approvalConfig.escalation_after" class="form-select">
+              <option value="1h">1 {{ t('sessions.audit.config.hours') }}</option>
+              <option value="2h">2 {{ t('sessions.audit.config.hours') }}</option>
+              <option value="4h">4 {{ t('sessions.audit.config.hours') }}</option>
+            </select>
+          </div>
+          <div v-if="approvalConfig.escalation_enabled" class="form-row">
+            <label>{{ t('sessions.audit.config.escalationApprovers') }}</label>
+            <input v-model="approvalConfig.escalation_approvers" type="text" class="form-input" />
+          </div>
+        </div>
+
+        <!-- 通知配置 -->
+        <div class="config-section">
+          <h3>{{ t('sessions.audit.config.notification') }}</h3>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.notifyChannels') }}</label>
+            <input v-model="approvalConfig.notify_channels" type="text" class="form-input" />
+            <span class="form-hint">{{ t('sessions.audit.config.notifyChannelsHint') }}</span>
+          </div>
+        </div>
+
+        <!-- 意图分析配置 -->
+        <div class="config-section">
+          <h3>{{ t('sessions.audit.config.intentAnalysis') }}</h3>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.requireIntentAnalysis') }}</label>
+            <input v-model="approvalConfig.require_intent_analysis" type="checkbox" class="form-checkbox" />
+          </div>
+          <div v-if="approvalConfig.require_intent_analysis" class="form-row">
+            <label>{{ t('sessions.audit.config.intentWeight') }} ({{ approvalConfig.intent_weight }})</label>
+            <input v-model.number="approvalConfig.intent_weight" type="range" min="0" max="1" step="0.1" class="form-range" />
+          </div>
+        </div>
+
+        <!-- 审计设置 -->
+        <div class="config-section">
+          <h3>{{ t('sessions.audit.config.auditSettings') }}</h3>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.retentionDays') }}</label>
+            <input v-model.number="approvalConfig.retention_days" type="number" min="1" max="365" class="form-input-small" />
+          </div>
+          <div class="form-row">
+            <label>{{ t('sessions.audit.config.maskSensitiveData') }}</label>
+            <input v-model="approvalConfig.mask_sensitive_data" type="checkbox" class="form-checkbox" />
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn-primary" :disabled="configSaving" @click="saveApprovalConfig">
+            {{ configSaving ? t('sessions.audit.config.saving') : t('sessions.audit.config.save') }}
+          </button>
         </div>
       </div>
     </div>
@@ -1106,5 +1275,153 @@ onMounted(() => {
   flex-wrap: wrap;
   gap: 0.5rem;
   margin-top: 0.5rem;
+}
+
+/* 标签页样式 */
+.tab-bar {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.tab-btn {
+  padding: 0.75rem 1.5rem;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-size: 0.9375rem;
+  color: #666;
+  transition: all 0.2s;
+}
+
+.tab-btn:hover {
+  color: #3b82f6;
+}
+
+.tab-btn.active {
+  color: #3b82f6;
+  border-bottom-color: #3b82f6;
+  font-weight: 500;
+}
+
+/* 配置面板样式 */
+.config-panel {
+  background: white;
+  border-radius: 8px;
+  padding: 1.5rem;
+}
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2rem;
+  color: #666;
+}
+
+.success-banner {
+  background: #d1fae5;
+  border: 1px solid #6ee7b7;
+  color: #065f46;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+}
+
+.config-form {
+  max-width: 800px;
+}
+
+.config-section {
+  margin-bottom: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.config-section:last-of-type {
+  border-bottom: none;
+}
+
+.config-section h3 {
+  margin: 0 0 1rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.form-row label {
+  min-width: 180px;
+  font-weight: 500;
+  color: #374151;
+}
+
+.form-input {
+  flex: 1;
+  min-width: 200px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.form-input-small {
+  width: 100px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.form-select {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  min-width: 150px;
+}
+
+.form-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.form-checkbox {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.form-range {
+  flex: 1;
+  min-width: 200px;
+  cursor: pointer;
+}
+
+.form-hint {
+  font-size: 0.75rem;
+  color: #666;
+  width: 100%;
+  margin-left: 180px;
+}
+
+.form-actions {
+  margin-top: 1.5rem;
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

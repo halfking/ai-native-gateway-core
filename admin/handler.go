@@ -543,6 +543,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/session-audit", admin(h.handleSessionAuditList))
 	mux.HandleFunc("/api/admin/session-audit/", admin(h.handleSessionAuditGet))
 	mux.HandleFunc("/api/admin/session-audit/stats", admin(h.handleSessionAuditStats))
+	mux.HandleFunc("/api/admin/session-audit/export", admin(h.handleSessionAuditExport))
 	mux.HandleFunc("/api/admin/session-approvals", admin(h.handleApprovalList))
 	mux.HandleFunc("/api/admin/session-approvals/", admin(h.handleApprovalSubrouter))
 
