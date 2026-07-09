@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -114,7 +115,11 @@ func (m *Manager) UpdateOnSuccess(ctx context.Context, credID int, model string,
 	state.Source = "request"
 
 	m.setToMemCache(key, state)
-	go m.setToRedis(ctx, key, state)
+	go func() {
+		redisCtx, cancel := runctx.DetachedTimeout(ctx, 3*time.Second)
+		defer cancel()
+		m.setToRedis(redisCtx, key, state)
+	}()
 
 	avail := true
 	m.batchWriter.Add(StateUpdate{
@@ -218,7 +223,11 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	}
 
 	m.setToMemCache(key, state)
-	go m.setToRedis(ctx, key, state)
+	go func() {
+		redisCtx, cancel := runctx.DetachedTimeout(ctx, 3*time.Second)
+		defer cancel()
+		m.setToRedis(redisCtx, key, state)
+	}()
 
 	errStr := string(errKind)
 	m.batchWriter.Add(StateUpdate{
@@ -257,7 +266,11 @@ func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
 	}
 
 	m.setToMemCache(key, state)
-	go m.setToRedis(ctx, key, state)
+	go func() {
+		redisCtx, cancel := runctx.DetachedTimeout(ctx, 3*time.Second)
+		defer cancel()
+		m.setToRedis(redisCtx, key, state)
+	}()
 
 	slog.Debug("credstate: probe result updated",
 		"credential_id", state.CredentialID,
@@ -330,7 +343,9 @@ func (m *Manager) GetStaleStates(staleTTL time.Duration) []*State {
 func (m *Manager) TriggerPing(ctx context.Context, credID int, model string) {
 	if m.modelProbeSubmitter != nil {
 		go func() {
-			if err := m.modelProbeSubmitter(ctx, credID, model); err != nil {
+			probeCtx, cancel := runctx.DetachedTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if err := m.modelProbeSubmitter(probeCtx, credID, model); err != nil {
 				slog.Warn("credstate: trigger ping failed",
 					"credential_id", credID,
 					"model", model,

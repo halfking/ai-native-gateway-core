@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -51,14 +52,14 @@ func (m *FingerprintSlotManager) CheckAndAcquire(
 		// 尝试获取pin指向的槽位
 		slotIndex := 0
 		fmt.Sscanf(pinnedSlotStr, "%d", &slotIndex)
-		
+
 		slotKey := fpSlotKey(credentialID, slotIndex)
-		
+
 		res, err := tryPinReuseScript.Run(ctx, m.redis,
 			[]string{pinKey, slotKey},
 			sessionID, int(m.slotTTL.Seconds()), int(m.pinTTL.Seconds()),
 		).Result()
-		
+
 		if err == nil {
 			arr, ok := res.([]interface{})
 			if ok && len(arr) >= 3 {
@@ -75,7 +76,7 @@ func (m *FingerprintSlotManager) CheckAndAcquire(
 
 	// 步骤2: LRU抢占（包含空闲槽扫描）
 	prefix := fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)
-	
+
 	res, err := acquireLRUScript.Run(ctx, m.redis,
 		[]string{prefix},
 		fpSlotLimit,
@@ -124,10 +125,20 @@ func (m *FingerprintSlotManager) Release(
 		return ErrInternalError
 	}
 
+	releaseCtx := ctx
+	if releaseCtx == nil {
+		releaseCtx, _ = runctx.BackgroundTimeout(3 * time.Second)
+	}
+	if releaseCtx.Err() != nil {
+		var cancel context.CancelFunc
+		releaseCtx, cancel = runctx.BackgroundTimeout(3 * time.Second)
+		defer cancel()
+	}
+
 	slotKey := fpSlotKey(credentialID, slotIndex)
 	pinKey := fpPinKey(sessionID, credentialID)
 
-	_, err := releaseSlotScript.Run(ctx, m.redis,
+	_, err := releaseSlotScript.Run(releaseCtx, m.redis,
 		[]string{slotKey, pinKey},
 		sessionID,
 		int(m.slotTTL.Seconds()),
@@ -148,7 +159,7 @@ func (m *FingerprintSlotManager) ForceUnpin(
 	}
 
 	pinKey := fpPinKey(sessionID, credentialID)
-	
+
 	_, err := forceUnpinScript.Run(ctx, m.redis,
 		[]string{pinKey},
 	).Result()
