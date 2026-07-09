@@ -636,7 +636,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		CAST($36 AS jsonb), CAST($37 AS jsonb),
 		$38, $39, $40,
 		$41,
-		$42,
+$42,
 		$43, $44,
 		$45, $46, $47,
 		$48, $49, $50, CAST($51 AS jsonb), $52,
@@ -649,7 +649,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$68,
 		$69, $70, $71, $72, $73,
 		CAST($74 AS jsonb)
-			)
+		)
 				ON CONFLICT (request_id, ts) DO UPDATE SET
 				ts = EXCLUDED.ts,
 			tenant_id = EXCLUDED.tenant_id,
