@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 )
 
 // ProbeSubmitter 探测提交接口（避免循环依赖）
@@ -51,13 +53,16 @@ func (m *Manager) RecordRequest(ctx context.Context, req RecordRequestAPI) error
 		}
 	}
 
-	// 5. 临时故障：连续失败≥3 → 触发探测
 	if errorClass == ErrorClassTransient && !req.Success {
 		nodeState, err := m.getNodeState(ctx, req.CredentialID, req.RawModel)
 		if err == nil && nodeState != nil && nodeState.ConsecutiveFailures >= 2 {
-			// 触发探测
+			// 触发探测。探测提交是后台补偿动作，不应绑在请求 ctx 上。
 			if m.probeSubmitter != nil {
-				go m.probeSubmitter.SubmitModelProbe(ctx, req.CredentialID, req.RawModel)
+				go func() {
+					probeCtx, cancel := runctx.DetachedTimeout(ctx, 10*time.Second)
+					defer cancel()
+					m.probeSubmitter.SubmitModelProbe(probeCtx, req.CredentialID, req.RawModel)
+				}()
 			}
 		}
 	}

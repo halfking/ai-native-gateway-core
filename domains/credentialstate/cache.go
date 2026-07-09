@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -72,10 +73,19 @@ func (m *Manager) setToRedis(ctx context.Context, key string, state *State) {
 	redisKey := "llmgw:credstate:" + key
 	data, err := json.Marshal(state)
 	if err != nil {
+		slog.Warn("credstate: marshal redis cache failed",
+			"key", key,
+			"error", err,
+		)
 		return
 	}
 
-	m.redisClient.Set(ctx, redisKey, data, m.redisCacheTTL)
+	if err := m.redisClient.Set(ctx, redisKey, data, m.redisCacheTTL).Err(); err != nil {
+		slog.Warn("credstate: redis cache write failed",
+			"key", key,
+			"error", err,
+		)
+	}
 }
 
 func (m *Manager) getFromDB(ctx context.Context, credID int, model string) (*State, error) {

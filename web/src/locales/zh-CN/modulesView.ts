@@ -84,6 +84,17 @@ export default {
     signatureHelp: '生产环境务必开启。开启后飞书回调必须携带有效签名（HMAC-SHA256）且时间戳在窗口内。',
   },
 
+  handoff: {
+    groupMaster: '主开关',
+    groupMasterHint: '总开关与触发模式：决定会话交接的启用方式与触发语义',
+    groupTrigger: '触发阈值',
+    groupTriggerHint: '4 种触发条件并行生效，达到任一即触发交接；多阈值同时触发时取最严格的',
+    groupSummary: '摘要生成',
+    groupSummaryHint: '摘要引擎与提示词模板：决定如何把旧会话压缩成新会话可读上下文',
+    groupSafety: '安全限制与通知',
+    groupSafetyHint: '冷却、单会话上限、失败重试与日志/Webhook 通知',
+  },
+
   integration: {
     docsLabel: '对接文档：',
     stepsTitle: '配置步骤',

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -653,7 +654,7 @@ func TestLiveStreamRedisStore_TenantScopedReplay(t *testing.T) {
 
 func TestLiveStreamSSEHub_EvictStaleCachedSnapshots(t *testing.T) {
 	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{})
-	hub.cachedSnapshotTTL = 50 * time.Millisecond
+	hub.cfg.CachedSnapshotTTL = 50 * time.Millisecond
 
 	// Seed two tenants with fresh and stale entries.
 	hub.cachedSnapshotMu.Lock()
@@ -676,6 +677,208 @@ func TestLiveStreamSSEHub_EvictStaleCachedSnapshots(t *testing.T) {
 	}
 	if _, ok := hub.cachedSnapshot["tenant-stale"]; ok {
 		t.Fatal("stale entry should be evicted")
+	}
+}
+
+// TestLiveStreamSSEHub_ConfigDefaults verifies that LiveStreamConfig{}
+// (zero-value) and partial overrides resolve to safe defaults and that
+// cleanup interval follows TTL when not explicitly set.
+//
+// Added 2026-07-09 alongside the live-stream-cache-evict-stall fix
+// (computeScopeDelta enter-and-refresh + tunable TTL via env).
+func TestLiveStreamSSEHub_ConfigDefaults(t *testing.T) {
+	t.Run("zero_value_yields_10min_defaults", func(t *testing.T) {
+		hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{})
+		if hub.cfg.CachedSnapshotTTL != 10*time.Minute {
+			t.Fatalf("expected CachedSnapshotTTL=10m, got %s", hub.cfg.CachedSnapshotTTL)
+		}
+		if hub.cfg.CachedSnapshotCleanupInterval != 10*time.Minute {
+			t.Fatalf("expected CachedSnapshotCleanupInterval=10m when zero, got %s",
+				hub.cfg.CachedSnapshotCleanupInterval)
+		}
+	})
+
+	t.Run("ttl_override_only_follows_cleanup_interval", func(t *testing.T) {
+		hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{
+			CachedSnapshotTTL: 5 * time.Minute,
+		})
+		if hub.cfg.CachedSnapshotTTL != 5*time.Minute {
+			t.Fatalf("expected TTL=5m, got %s", hub.cfg.CachedSnapshotTTL)
+		}
+		// cleanup interval unconfigured → defaults to TTL → 5min, NOT 10min
+		if hub.cfg.CachedSnapshotCleanupInterval != 5*time.Minute {
+			t.Fatalf("cleanup interval should follow TTL=5m, got %s",
+				hub.cfg.CachedSnapshotCleanupInterval)
+		}
+	})
+
+	t.Run("cleanup_interval_independently_overridable", func(t *testing.T) {
+		hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{
+			CachedSnapshotTTL:             30 * time.Minute,
+			CachedSnapshotCleanupInterval: 1 * time.Minute,
+		})
+		if hub.cfg.CachedSnapshotTTL != 30*time.Minute {
+			t.Fatalf("expected TTL=30m, got %s", hub.cfg.CachedSnapshotTTL)
+		}
+		if hub.cfg.CachedSnapshotCleanupInterval != 1*time.Minute {
+			t.Fatalf("expected cleanup=1m, got %s",
+				hub.cfg.CachedSnapshotCleanupInterval)
+		}
+	})
+}
+
+// TestLiveStreamSSEHub_ComputeScopeDelta_RefreshesAccessOnEmpty is the
+// regression test for the live-stream-cache-evict-stall fix.
+//
+// Before the fix, an empty snapshot returned from Redis (Summary.Total==0)
+// caused computeScopeDelta to early-return *without* touching lastAccessed.
+// Over a 10-minute idle window, evictStaleCachedSnapshots would then
+// remove the entry, and the next non-empty replay would "look empty"
+// from the dashboard's perspective → the user-reported
+// "queues disappear, come back on refresh" symptom.
+//
+// After the fix, lastAccessed is refreshed on every entry, regardless of
+// snapshot outcome, so an actively subscribed tenant's cache cannot be
+// starved by transient empty reads.
+func TestLiveStreamSSEHub_ComputeScopeDelta_RefreshesAccessOnEmpty(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{
+		RedisClient: rdb,
+	})
+	hub.cfg.CachedSnapshotTTL = 10 * time.Minute
+
+	// Seed a stale-soon entry: lastAccessed = 9 minutes ago. Without
+	// the fix, one more evict tick (10min) would delete this entry.
+	staleBefore := time.Now().Add(-9 * time.Minute)
+	hub.cachedSnapshotMu.Lock()
+	hub.cachedSnapshot["tenant-active"] = &cachedSnapshotEntry{
+		snapshot:     &LiveStreamSnapshot{},
+		lastAccessed: staleBefore,
+	}
+	hub.cachedSnapshotMu.Unlock()
+
+	beforeHits := atomic.LoadInt64(&hub.cachedSnapshotHits)
+	beforeMisses := atomic.LoadInt64(&hub.cachedSnapshotMisses)
+	beforeEmptySkips := atomic.LoadInt64(&hub.cachedSnapshotEmptySkips)
+	beforeEvictions := atomic.LoadInt64(&hub.cachedSnapshotEvictions)
+
+	// Trigger computeScopeDelta against the tenant. miniredis has no
+	// data → Snapshot returns non-nil with Summary.Total==0 → early
+	// return path exercised.
+	delta := hub.computeScopeDelta(context.Background(), "tenant-active", false)
+	if delta != nil {
+		t.Fatalf("expected nil delta on empty snapshot, got %v", delta)
+	}
+
+	// (1) lastAccessed must be refreshed even though delta is nil.
+	hub.cachedSnapshotMu.RLock()
+	entry := hub.cachedSnapshot["tenant-active"]
+	hub.cachedSnapshotMu.RUnlock()
+	if entry == nil {
+		t.Fatal("entry should still exist after empty snapshot")
+	}
+	if !entry.lastAccessed.After(staleBefore) {
+		t.Fatalf("lastAccessed should be refreshed; was %v now %v",
+			staleBefore, entry.lastAccessed)
+	}
+	if elapsed := time.Since(entry.lastAccessed); elapsed > 2*time.Second {
+		t.Fatalf("lastAccessed not refreshed to recent time (now - lastAccessed = %v)", elapsed)
+	}
+
+	// (2) counter increments match the touched-on-entry semantics.
+	if got := atomic.LoadInt64(&hub.cachedSnapshotHits); got != beforeHits+1 {
+		t.Errorf("expected cachedSnapshotHits++ (was %d, now %d)", beforeHits, got)
+	}
+	if got := atomic.LoadInt64(&hub.cachedSnapshotMisses); got != beforeMisses {
+		t.Errorf("cachedSnapshotMisses should not increment on hit (was %d, now %d)", beforeMisses, got)
+	}
+	if got := atomic.LoadInt64(&hub.cachedSnapshotEmptySkips); got != beforeEmptySkips+1 {
+		t.Errorf("expected cachedSnapshotEmptySkips++ (was %d, now %d)", beforeEmptySkips, got)
+	}
+	if got := atomic.LoadInt64(&hub.cachedSnapshotEvictions); got != beforeEvictions {
+		t.Errorf("evictions should not change in computeScopeDelta (was %d, now %d)",
+			beforeEvictions, got)
+	}
+
+	// (3) Same call on a tenant with NO existing entry → miss counter,
+	//     no entry created (intentional: avoid unbounded growth).
+	delta = hub.computeScopeDelta(context.Background(), "tenant-new", false)
+	if delta != nil {
+		t.Fatalf("expected nil delta for new tenant, got %v", delta)
+	}
+	hub.cachedSnapshotMu.RLock()
+	_, exists := hub.cachedSnapshot["tenant-new"]
+	hub.cachedSnapshotMu.RUnlock()
+	if exists {
+		t.Fatal("computeScopeDelta should NOT create empty entries for unseen tenants")
+	}
+	if got := atomic.LoadInt64(&hub.cachedSnapshotMisses); got != beforeMisses+1 {
+		t.Errorf("expected miss++ (was %d, now %d)", beforeMisses, got)
+	}
+
+	// (4) After multiple computeScopeDelta calls refreshing lastAccessed,
+	//     evictStaleCachedSnapshots must NOT remove the active tenant
+	//     even though it was "about to expire" at seed time.
+	hub.evictStaleCachedSnapshots()
+	hub.cachedSnapshotMu.RLock()
+	_, stillThere := hub.cachedSnapshot["tenant-active"]
+	hub.cachedSnapshotMu.RUnlock()
+	if !stillThere {
+		t.Fatal("active tenant cache should survive evict after refresh-on-enter fix")
+	}
+	if got := atomic.LoadInt64(&hub.cachedSnapshotEvictions); got != beforeEvictions {
+		t.Errorf("evictions should still be unchanged (was %d, now %d)",
+			beforeEvictions, got)
+	}
+}
+
+// TestLiveStreamSSEHub_EvictStaleAfterRefactor verifies the new eviction
+// counter increments by exactly the number of removed entries, and that
+// the fresh entry (refreshed during test) survives.
+//
+// Companion to TestLiveStreamSSEHub_EvictStaleCachedSnapshots; the
+// original assertion (fresh/stale semantics) still holds.
+func TestLiveStreamSSEHub_EvictStaleAfterRefactor(t *testing.T) {
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{})
+	hub.cfg.CachedSnapshotTTL = 50 * time.Millisecond
+
+	hub.cachedSnapshotMu.Lock()
+	hub.cachedSnapshot["fresh"] = &cachedSnapshotEntry{
+		snapshot:     &LiveStreamSnapshot{},
+		lastAccessed: time.Now(),
+	}
+	hub.cachedSnapshot["stale-a"] = &cachedSnapshotEntry{
+		snapshot:     &LiveStreamSnapshot{},
+		lastAccessed: time.Now().Add(-1 * time.Hour),
+	}
+	hub.cachedSnapshot["stale-b"] = &cachedSnapshotEntry{
+		snapshot:     &LiveStreamSnapshot{},
+		lastAccessed: time.Now().Add(-2 * time.Hour),
+	}
+	hub.cachedSnapshotMu.Unlock()
+
+	before := atomic.LoadInt64(&hub.cachedSnapshotEvictions)
+	hub.evictStaleCachedSnapshots()
+	after := atomic.LoadInt64(&hub.cachedSnapshotEvictions)
+
+	if after-before != 2 {
+		t.Fatalf("expected evictions to grow by 2 (was %d, now %d)", before, after)
+	}
+
+	hub.cachedSnapshotMu.RLock()
+	defer hub.cachedSnapshotMu.RUnlock()
+	if _, ok := hub.cachedSnapshot["fresh"]; !ok {
+		t.Fatal("fresh entry should survive")
+	}
+	if _, ok := hub.cachedSnapshot["stale-a"]; ok {
+		t.Fatal("stale-a should be evicted")
+	}
+	if _, ok := hub.cachedSnapshot["stale-b"]; ok {
+		t.Fatal("stale-b should be evicted")
 	}
 }
 

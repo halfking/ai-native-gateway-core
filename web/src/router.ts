@@ -68,13 +68,45 @@ const UserProfileView = () => import('./views/UserProfileView.vue')
 const SessionConfigView = () => import('./views/SessionConfigView.vue')
 
 function isAuthed(): boolean {
-  return !!(store.jwtToken || store.apiKey || store.userInfo)
+  if (store.jwtToken || store.apiKey || store.userInfo) return true
+  // 2026-07-09 (handoff task UI verification): localStorage fallback.
+  // store.userInfo is the in-memory source of truth but it only re-inits
+  // from localStorage at module load. If the user lands on the SPA via deep
+  // link (or after a stale tab), the in-memory store can be empty while
+  // localStorage still has valid credentials. Read it directly without
+  // mutating the store, so we don't trigger reactivity in the guard.
+  try {
+    const raw = typeof localStorage !== 'undefined'
+      ? localStorage.getItem('llmgw_user_info')
+      : null
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && parsed.role && parsed.id) return true
+    }
+  } catch { /* corrupt cache */ }
+  return false
 }
 
 function isSuperAdmin(): boolean {
   // Legacy API key auth: no JWT but has apiKey → super_admin
   if (!store.jwtToken && store.apiKey) return true
-  return store.userInfo?.role === 'super_admin'
+  // 2026-07-09 (handoff task UI verification): read role from
+  // localStorage when the in-memory store hasn't been hydrated yet,
+  // mirroring the localStorage fallback in isAuthed().
+  let role = store.userInfo?.role
+  if (!role) {
+    try {
+      const raw = typeof localStorage !== 'undefined'
+        ? localStorage.getItem('llmgw_user_info')
+        : null
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        role = parsed?.role
+        if (parsed && !store.userInfo) store.userInfo = parsed
+      }
+    } catch { /* corrupt cache */ }
+  }
+  return role === 'super_admin'
 }
 
 function isPlatformOpsView(): boolean {

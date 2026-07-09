@@ -84,6 +84,17 @@ export default {
     signatureHelp: 'Siempre active en producción. Cuando está activado, los callbacks de Feishu deben llevar una firma HMAC-SHA256 válida y una marca temporal dentro de la ventana.',
   },
 
+  handoff: {
+    groupMaster: 'Master switch',
+    groupMasterHint: 'Master toggle and trigger mode: determine how session handoff is enabled and when it fires',
+    groupTrigger: 'Trigger thresholds',
+    groupTriggerHint: '4 trigger conditions run in parallel — any one of them fires handoff; the strictest wins',
+    groupSummary: 'Summary generation',
+    groupSummaryHint: 'Summary engine and prompt template: how to compress the old session into a new-session-readable context',
+    groupSafety: 'Safety limits and notifications',
+    groupSafetyHint: 'Cooldown, per-session cap, retry on failure, and log/Webhook notifications',
+  },
+
   integration: {
     docsLabel: 'Documentación: ',
     stepsTitle: 'Pasos de configuración',

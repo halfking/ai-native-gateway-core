@@ -9,6 +9,13 @@ import (
 )
 
 func (h *Handler) persistResolveProbe(ctx context.Context, model string, candidates []resolveProbeCandidate) {
+	// 添加 panic 恢复，确保不会因为 probe 逻辑阻断主流程
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("persistResolveProbe panic recovered", "model", model, "panic", r)
+		}
+	}()
+
 	if h.db == nil || len(candidates) == 0 {
 		return
 	}
@@ -55,7 +62,11 @@ func (h *Handler) persistResolveProbe(ctx context.Context, model string, candida
 		)
 	`, reqID, model, chosenID, len(candidates), chosenID != nil, string(traceJSON))
 	if err != nil {
-		slog.Warn("resolve probe persist failed", "model", model, "error", err)
+		// 改为 Error 级别并记录详细信息，但不阻断主流程
+		slog.Error("resolve probe persist failed - table may not exist, check migration 346",
+			"model", model,
+			"error", err.Error(),
+			"candidates_count", len(candidates))
 		return
 	}
 	globalFunnelCache.invalidateModel(model)
