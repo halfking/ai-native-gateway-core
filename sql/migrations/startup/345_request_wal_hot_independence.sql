@@ -25,13 +25,29 @@ CREATE TABLE IF NOT EXISTS request_wal_hot (
 DO $$ BEGIN RAISE NOTICE 'Created request_wal_hot table'; END $$;
 
 -- ============================================================
--- 2. 创建索引（与父表一致）
+-- 2. 确保主键存在（LIKE INCLUDING ALL 可能失败）
 -- ============================================================
 
--- 主键（LIKE INCLUDING ALL 已自动复制，这里跳过）
--- request_wal_hot_pkey PRIMARY KEY (request_id, created_at) 已存在
-
-DO $$ BEGIN RAISE NOTICE 'Primary key already created by LIKE INCLUDING ALL'; END $$;
+-- 检查并添加主键（幂等操作）
+DO $$
+DECLARE
+  pk_exists boolean;
+BEGIN
+  SELECT EXISTS (
+    SELECT 1 FROM pg_constraint 
+    WHERE conname = 'request_wal_hot_pkey' 
+    AND conrelid = 'request_wal_hot'::regclass
+  ) INTO pk_exists;
+  
+  IF pk_exists THEN
+    RAISE NOTICE 'Primary key request_wal_hot_pkey already exists';
+  ELSE
+    RAISE NOTICE 'Primary key missing, creating request_wal_hot_pkey...';
+    ALTER TABLE request_wal_hot 
+    ADD CONSTRAINT request_wal_hot_pkey PRIMARY KEY (request_id, created_at);
+    RAISE NOTICE 'Primary key request_wal_hot_pkey created successfully';
+  END IF;
+END $$;
 
 -- ============================================================
 -- 3. 迁移数据：request_wal_default → request_wal_hot
