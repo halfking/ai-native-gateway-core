@@ -83,6 +83,17 @@ export default {
     signatureHelp: '生產環境務必啟用。啟用後飛書回呼必須攜帶有效簽章（HMAC-SHA256）且時間戳記在視窗內。',
   },
 
+  handoff: {
+    groupMaster: '主開關',
+    groupMasterHint: '總開關與觸發模式：決定會話交接的啟用方式與觸發語義',
+    groupTrigger: '觸發閾值',
+    groupTriggerHint: '4 種觸發條件並行生效，達到任一即觸發交接；多閾值同時觸發時取最嚴格的',
+    groupSummary: '摘要產生',
+    groupSummaryHint: '摘要引擎與提示詞範本：決定如何把舊會話壓縮成新會話可讀上下文',
+    groupSafety: '安全限制與通知',
+    groupSafetyHint: '冷卻、單會話上限、失敗重試與日誌/Webhook 通知',
+  },
+
   integration: {
     docsLabel: '對接文件：',
     stepsTitle: '設定步驟',

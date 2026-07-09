@@ -83,6 +83,17 @@ export default {
     signatureHelp: 'Always enable in production. When on, Feishu callbacks must carry a valid HMAC-SHA256 signature and timestamp within window.',
   },
 
+  handoff: {
+    groupMaster: 'Master switch',
+    groupMasterHint: 'Master toggle and trigger mode: determine how session handoff is enabled and when it fires',
+    groupTrigger: 'Trigger thresholds',
+    groupTriggerHint: '4 trigger conditions run in parallel — any one of them fires handoff; the strictest wins',
+    groupSummary: 'Summary generation',
+    groupSummaryHint: 'Summary engine and prompt template: how to compress the old session into a new-session-readable context',
+    groupSafety: 'Safety limits and notifications',
+    groupSafetyHint: 'Cooldown, per-session cap, retry on failure, and log/Webhook notifications',
+  },
+
   integration: {
     docsLabel: 'Docs: ',
     stepsTitle: 'Setup steps',
