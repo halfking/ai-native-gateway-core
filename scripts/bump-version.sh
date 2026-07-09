@@ -117,11 +117,14 @@ PY
 }
 
 write_version_files
-echo "✅ 已更新 4 个版本文件"
+# 5. build_seq 文件 (SSOT for build number, used by Dockerfile .deploy_seq source and local sanity check)
+printf '%s\n' "$NEW_SEQ" > "$PROJECT_ROOT/build_seq"
+echo "✅ 已更新 5 个版本文件"
 echo "   - $VERSION_FILE"
 echo "   - $VERSION_JSON"
 echo "   - $WEB_PUBLIC_VERSION_JSON"
 echo "   - $WEB_DIST_VERSION_JSON"
+echo "   - $PROJECT_ROOT/build_seq"
 
 # ── 导出变量 ────────────────────────────────────────────────────
 BUILD_VERSION="$GIT_TAG_PATCH"
