@@ -1,0 +1,21 @@
+# Build artifacts (regenerated inside the image)
+web/node_modules
+web/dist
+web/.vite
+
+# VCS / IDE
+.git
+.github
+.idea
+.vscode
+*.log
+
+# Local tooling / reports
+reports/
+.zcode/
+_test/
+_to-be-deprecated/
+
+# OS noise
+.DS_Store
+Thumbs.db

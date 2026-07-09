@@ -358,8 +358,23 @@ func main() {
 		for _, sp := range settings.TenantSpecs() {
 			settings.Global.MustRegisterSpec(sp)
 		}
+		// 2026-07-09: handoff / goal / audit auto-control settings.
+		// These are registered UNCONDITIONALLY (regardless of bgDataPlaneOnly)
+		// so admins can configure handoff.* / goal.* / auto_control.* via
+		// /api/admin/settings + ModulesView even in data-plane-only mode.
+		// The actual response-interceptor chain (initGoalControl) is still
+		// gated on !bgDataPlaneOnly because it consumes request hot-path
+		// CPU; the spec registration here is purely metadata + validation.
+		for _, sp := range settings.AutoControlSpecs() {
+			s := sp // take a stable address
+			if err := settings.Global.RegisterSpec(&s); err != nil {
+				slog.Debug("settings: auto_control spec register skipped",
+					"key", sp.Key, "error", err)
+			}
+		}
 		slog.Info("settings: registry initialised",
-			"platform_specs", len(settings.Global.AllSpecs()))
+			"platform_specs", len(settings.Global.AllSpecs()),
+			"auto_control_specs", len(settings.AutoControlSpecs()))
 
 		// 2026-07-02: 打通 settings_kv ↔ logging。
 		// 启动时 settings 已注册 log.* spec，读取 DB 中的覆盖值并应用到
@@ -878,15 +893,37 @@ func main() {
 	// Without a DB the hub still relays live broadcasts from
 	// telemetry — only the initial replay is empty.
 	// 2026-07-06: RedisClient wired for 1-hour persistent cache.
+	// 2026-07-09: cachedSnapshotTTL 暴露为 env，避免 Redis 短暂空帧
+	// 让"清空再重现"现象重新出现。
+	liveStreamCachedTTL := 10 * time.Minute
+	liveStreamCachedCleanup := liveStreamCachedTTL
+	if v := os.Getenv("LLM_GATEWAY_LIVE_STREAM_CACHED_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			liveStreamCachedTTL = d
+		} else {
+			slog.Warn("invalid LLM_GATEWAY_LIVE_STREAM_CACHED_TTL, using default",
+				"value", v, "default", liveStreamCachedTTL.String())
+		}
+	}
+	if v := os.Getenv("LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			liveStreamCachedCleanup = d
+		} else {
+			slog.Warn("invalid LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL, using default",
+				"value", v, "default", liveStreamCachedCleanup.String())
+		}
+	}
 	var liveStreamHub *admin.LiveStreamSSEHub
 	if dbConn != nil && dbConn.Enabled() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
-			BroadcastQueueSize: 2048,
-			InitialReplayLimit: 50,
-			IdleThreshold:      60 * time.Second,
-			IdleTickInterval:   10 * time.Second,
-			KeepaliveInterval:  25 * time.Second,
-			RedisClient:        fpSlotRedis, // reuse the existing Redis connection
+			BroadcastQueueSize:            2048,
+			InitialReplayLimit:            50,
+			IdleThreshold:                 60 * time.Second,
+			IdleTickInterval:              10 * time.Second,
+			KeepaliveInterval:             25 * time.Second,
+			RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
+			CachedSnapshotTTL:             liveStreamCachedTTL,
+			CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
 		})
 		go liveStreamHub.Run()
 
@@ -906,7 +943,9 @@ func main() {
 			})
 			slog.Info("telemetry onEmitted wired → live stream SSE hub (in-memory pipeline)")
 		}
-		slog.Info("live request stream hub enabled (sse /api/admin/live-stream)")
+		slog.Info("live request stream hub enabled (sse /api/admin/live-stream)",
+			"cached_snapshot_ttl", liveStreamCachedTTL.String(),
+			"cached_snapshot_cleanup_interval", liveStreamCachedCleanup.String())
 	}
 
 	// ── Request WAL (Request Logger) ───────────────────────────────────────
@@ -2127,7 +2166,14 @@ func main() {
 		mux.HandleFunc("/api/admin/session-compare", wrapAdmin(compareAPI.HandleCompare))
 		handoffAPI := admin.NewHandoffAPI(dbConn.Pool())
 		mux.HandleFunc("/api/admin/session-handoff", wrapAdmin(handoffAPI.HandleHandoff))
+		// Phase 3.6 (2026-07-09): Handoff logs read-only endpoints.
+		// /api/admin/handoff/logs[/{id}] + /api/admin/handoff/stats — supply
+		// operator UI with the trigger history written by the new handoff hook
+		// (domains/hooks/handoff/trigger_hook.go).
+		handoffLogsAPI := admin.NewHandoffLogsHandler(dbConn.Pool())
+		handoffLogsAPI.RegisterRoutes(mux, wrapAdmin)
 		slog.Info("Phase 3.5 session compare & handoff API enabled (/api/admin/session-compare, /session-handoff)")
+		slog.Info("Phase 3.6 handoff logs API enabled (/api/admin/handoff/logs, /stats)")
 
 		// 会话迁移方案：Session Export / Import / Pack API
 		// GET  /api/admin/session-export?id=<gw_session_id>&tenant=<t>      导出迁移包

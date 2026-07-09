@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -97,7 +98,11 @@ func (w *BatchWriter) ApplyUpdates(ctx context.Context, updates []StateUpdate) e
 
 	// 6. 异步失效缓存
 	if w.invalidateCallback != nil {
-		go w.invalidateCallback(ctx, allUpdates)
+		go func() {
+			invalidateCtx, cancel := runctx.DetachedTimeout(ctx, 5*time.Second)
+			defer cancel()
+			w.invalidateCallback(invalidateCtx, allUpdates)
+		}()
 	}
 
 	return nil
@@ -243,6 +248,8 @@ func (w *BatchWriter) applyNodeUpdate(ctx context.Context, tx pgx.Tx, update Sta
 
 	// 同时写入Redis（异步，允许失败）
 	go func() {
+		redisCtx, cancel := runctx.BackgroundTimeout(3 * time.Second)
+		defer cancel()
 		key := fmt.Sprintf("ursm:node:%d:%s", update.CredentialID, update.Model)
 		data := map[string]interface{}{
 			"updated_at": now.Unix(),
@@ -253,8 +260,8 @@ func (w *BatchWriter) applyNodeUpdate(ctx context.Context, tx pgx.Tx, update Sta
 		if !update.Success {
 			data["last_error"] = lastError
 		}
-		w.redis.HMSet(context.Background(), key, data)
-		w.redis.Expire(context.Background(), key, 10*time.Minute)
+		w.redis.HMSet(redisCtx, key, data)
+		w.redis.Expire(redisCtx, key, 10*time.Minute)
 	}()
 
 	return nil

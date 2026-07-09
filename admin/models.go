@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/catalog"
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 )
 
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -776,7 +777,11 @@ func (h *Handler) triggerDiscover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "discovery service not available")
 		return
 	}
-	go func() { _ = h.discSvc.RunOnce(r.Context(), 0) }()
+	go func() {
+		ctx, cancel := runctx.DetachedTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		_ = h.discSvc.RunOnce(ctx, 0)
+	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
 }
 
