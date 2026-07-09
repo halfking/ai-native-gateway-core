@@ -43,6 +43,18 @@ func (e *SessionInspectorFindingEvent) Timestamp() time.Time {
 	return e.EventTime
 }
 
+// GetSessionID 暴露给 notification 包（避免循环依赖）。
+func (e *SessionInspectorFindingEvent) GetSessionID() string { return e.SessionID }
+
+// GetTenantID 暴露给 notification 包。
+func (e *SessionInspectorFindingEvent) GetTenantID() string { return e.TenantID }
+
+// GetFinding 暴露给 notification 包。
+func (e *SessionInspectorFindingEvent) GetFinding() interface{} { return e.Finding }
+
+// GetSource 暴露给 notification 包。
+func (e *SessionInspectorFindingEvent) GetSource() string { return e.Source }
+
 // SessionInspectorRecycleEvent 会话回收事件（仅用于 idle.recycle_action=notify_only）。
 //
 // 后台 worker 检测到不活跃会话但配置为"仅通知"时发布此事件。
@@ -72,6 +84,21 @@ func (e *SessionInspectorRecycleEvent) Timestamp() time.Time {
 	}
 	return e.EventTime
 }
+
+// GetSessionID 暴露给 notification 包。
+func (e *SessionInspectorRecycleEvent) GetSessionID() string { return e.SessionID }
+
+// GetTenantID 暴露给 notification 包。
+func (e *SessionInspectorRecycleEvent) GetTenantID() string { return e.TenantID }
+
+// GetAction 暴露给 notification 包。
+func (e *SessionInspectorRecycleEvent) GetAction() string { return e.Action }
+
+// GetReason 暴露给 notification 包。
+func (e *SessionInspectorRecycleEvent) GetReason() string { return e.Reason }
+
+// GetIdleFor 暴露给 notification 包。
+func (e *SessionInspectorRecycleEvent) GetIdleFor() string { return e.IdleFor }
 
 // SessionInspectorStatsEvent 平台级统计事件（低频、用于仪表盘同步）。
 //

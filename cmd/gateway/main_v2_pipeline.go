@@ -217,7 +217,14 @@ func buildV2Pipeline(deps *v2PipelineDeps) *pipeline.RequestPipeline {
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "session_inspect", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{
-			sessioninspector.NewInspectorHookWithConfig(nil), // nil → LoadConfig()
+			func() pipeline.Hook {
+				inspectorHook := sessioninspector.NewInspectorHookWithConfig(nil)
+				// 注入 EventBus 以启用告警事件发布（2026-07-09 audit fix）
+				if deps.EventBus != nil {
+					inspectorHook.SetEventBus(deps.EventBus)
+				}
+				return inspectorHook
+			}(),
 		},
 	})
 
