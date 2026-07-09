@@ -679,7 +679,25 @@ func (e *ExecuteError) Error() string {
 	if e.LastErr != nil {
 		return fmt.Sprintf("all %d candidates failed: %v", e.Tried, e.LastErr)
 	}
-	return fmt.Sprintf("all %d candidates failed", e.Tried)
+		return fmt.Sprintf("all %d candidates failed", e.Tried)
+}
+
+// releaseFpLease releases a fingerprint slot lease using an independent
+// background context. This is critical: using params.R.Context() (which is
+// already cancelled when the client disconnects) would cause the Redis
+// release operation to fail with context.Canceled, leaking the slot
+// permanently. The slot leak accumulates until the pool is saturated,
+// producing "cred_fp_slot saturated" errors and blocking all traffic.
+//
+// Fix: 2026-07-09 GLM-5.2 outage — every Release call MUST go through this
+// helper so the context-isolation fix is applied uniformly.
+func releaseFpLease(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) {
+	if lease == nil || m == nil || !m.Enabled() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	m.Release(ctx, lease)
 }
 
 func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
@@ -908,9 +926,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				"provider_id", cand.ProviderID,
 			)
 			lastErr = fmt.Errorf("circuit open for credential %d", cand.CredentialID)
-			if fpLease != nil {
-				e.FpSlots.Release(params.R.Context(), fpLease)
-			}
+			releaseFpLease(e.FpSlots, fpLease)
 			continue
 		}
 
@@ -927,9 +943,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				"credential_id", cand.CredentialID,
 			)
 			lastErr = acquireErr
-			if fpLease != nil {
-				e.FpSlots.Release(params.R.Context(), fpLease)
-			}
+			releaseFpLease(e.FpSlots, fpLease)
 			continue
 		}
 
@@ -961,9 +975,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					e.PeakCollector.Release(int64(cand.CredentialID), cand.RawModel)
 				}
 				release()
-				if fpLease != nil {
-					e.FpSlots.Release(params.R.Context(), fpLease)
-				}
+				releaseFpLease(e.FpSlots, fpLease)
 			}()
 
 			// Execute the actual call
