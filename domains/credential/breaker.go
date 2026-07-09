@@ -68,7 +68,7 @@ var (
 )
 
 const (
-	autoRecoveryFailureThreshold        int32 = 3
+	autoRecoveryFailureThreshold        int32 = 2 // 从 3 降到 2，更激进地降级不稳定凭据（如 NVIDIA NIM）
 	exponentialRecoveryFailureThreshold int32 = 2
 	permanentRecoveryFailureThreshold   int32 = 2
 )
@@ -205,6 +205,16 @@ func (b *Breaker) tryTransitionToHalfOpen() bool {
 	return false
 }
 
+// 瞬时错误族：同族错误共享连续失败计数（2026-07-09 修复 NVIDIA NIM 连续失败不降级问题）
+// NVIDIA NIM 等不稳定凭据可能返回多种瞬时错误（Timeout/Network/Transient），但本质都是"不可用"。
+// 如果每次错误类型切换就重置计数，会导致永远达不到降级阈值。
+var transientFamily = map[ErrorKind]bool{
+	KindTransient:     true,
+	KindTimeout:       true,
+	KindNetwork:       true,
+	KindStreamTimeout: true,
+}
+
 // RecordFailure records a failure and transitions the circuit state.
 func (b *Breaker) RecordFailure(kind ErrorKind) {
 	// 2026-07-03 P0 fix: client bugs (tool_call_id_mismatch, invalid_request_format,
@@ -222,7 +232,10 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 	if !ok {
 		policy = b.coolingPolicy
 	}
-	if b.lastErrorKind != "" && b.lastErrorKind != kind {
+	// 2026-07-09: 同族错误不重置连续失败计数
+	lastIsTransient := transientFamily[b.lastErrorKind]
+	nowIsTransient := transientFamily[kind]
+	if b.lastErrorKind != "" && b.lastErrorKind != kind && !(lastIsTransient && nowIsTransient) {
 		b.consecutive.Store(0)
 		if policy.RecoveryType == RecoveryExponential {
 			b.coolingCycle = 0
