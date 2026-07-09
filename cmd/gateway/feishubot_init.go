@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/feishubot"
 	"github.com/kaixuan/llm-gateway-go/domains/notification"
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
@@ -50,11 +51,13 @@ import (
 //   - feishu_bot.enabled=false → 全部降级为 no-op，立即返回
 //   - larkChannel==nil → 装配失败（无发送通道）
 //   - mux==nil → 跳过 HTTP 路由注册（仅事件订阅生效）
+//   - dbPool==nil → 走 settings_kv 兼容模式（allowed_users 仅从 settings_kv 读）
 func InitFeishubotPlugin(
 	bus *eventbus.MemoryBus,
 	larkChannel *notification.LarkBotChannel,
 	approvalMgr *sessionaudit.ApprovalManager,
 	mux *http.ServeMux,
+	dbPool *pgxpool.Pool,
 ) (*feishubot.Plugin, error) {
 	cfg, err := feishubot.LoadConfig()
 	if err != nil {
@@ -71,6 +74,10 @@ func InitFeishubotPlugin(
 
 	adapter := feishubot.NewLarkChannelAdapter(larkChannel)
 	plugin := feishubot.NewPlugin(adapter)
+	if dbPool != nil {
+		plugin.SetDBPool(dbPool)
+		slog.Info("feishubot: DB pool injected, allowed_users will read from feishu_bot_routing_rules")
+	}
 	if err := plugin.Start(nil); err != nil {
 		return nil, fmt.Errorf("feishubot: start plugin: %w", err)
 	}

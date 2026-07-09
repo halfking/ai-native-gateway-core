@@ -35,6 +35,7 @@ export default {
     config: 'Konfiguration',
     integration: 'Integration',
     status: 'Laufzeit',
+    routing: 'Routing',
   },
 
   overview: {
@@ -98,8 +99,35 @@ export default {
     feishuBotIntegration: 'Feishu-Bot-Integration',
   },
 
+    importCsv: 'CSV importieren',
+    close: 'Schließen',
+    csvImportResult: 'Import-Ergebnis',
+    csvImportSuccess: '{imported} importiert, {skipped} übersprungen',
+    csvErrorRow: 'Zeile {row}: {error}',
   empty: {
     selectModule: 'Wählen Sie ein Modul aus, um Details und Konfiguration anzuzeigen',
+  },
+
+  routing: {
+    title: 'Feishu-Routing-Regeln',
+    addNew: 'Neu hinzufügen',
+    cancel: 'Abbrechen',
+    save: 'Speichern',
+    formTitle: 'Neue Feishu OpenID-Regel',
+    openId: 'Feishu OpenID',
+    openIdPlaceholder: 'ou_xxxxxxxx',
+    displayName: 'Anzeigename',
+    userRole: 'Benutzerrolle',
+    priority: 'Priorität',
+    note: 'Notiz',
+    enabled: 'Aktiviert',
+    riskLevels: 'Risikostufen',
+    actions: 'Aktionen',
+    enable: 'Aktivieren',
+    disable: 'Deaktivieren',
+    delete: 'Löschen',
+    loading: 'Wird geladen…',
+    empty: 'Noch keine Regeln. Klicken Sie auf „Neu hinzufügen", um die erste zu erstellen.',
   },
 
   error: {

@@ -17,5 +17,6 @@ export default {
     failed: 'Error de inicio de sesión',
   },
   changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
+  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",  // 2026-07-09: Mensaje de sondeo de autenticación en la primera carga
+  checking: 'Verificando estado de inicio de sesión…',
 }

@@ -54,7 +54,7 @@ func TestAllModuleDefinitions(t *testing.T) {
 	}
 }
 
-func TestFeishuBotDependencies(t *testing.T) {
+func TestFeishuBotRequiresModules(t *testing.T) {
 	defs := allModuleDefinitions()
 	var fb *ModuleDefinition
 	for i, m := range defs {
@@ -66,21 +66,28 @@ func TestFeishuBotDependencies(t *testing.T) {
 	if fb == nil {
 		t.Fatal("feishu_bot module not found")
 	}
-	expectedKeys := []string{"compression", "cache", "prompt_injection", "session_audit"}
-	if len(fb.Dependencies) != len(expectedKeys) {
-		t.Fatalf("feishu_bot.Dependencies length = %d, want %d", len(fb.Dependencies), len(expectedKeys))
+	expected := []string{"compression", "cache", "prompt_injection", "session_audit"}
+	if len(fb.Requires) != len(expected) {
+		t.Fatalf("feishu_bot.Requires length = %d, want %d (%v)", len(fb.Requires), len(expected), fb.Requires)
 	}
-	for i, key := range expectedKeys {
-		if fb.Dependencies[i].Key != key {
-			t.Errorf("Dependencies[%d].Key = %q, want %q", i, fb.Dependencies[i].Key, key)
-		}
-		if !fb.Dependencies[i].Required {
-			t.Errorf("Dependencies[%d].Required = false, want true", i)
+	for i, dep := range expected {
+		if fb.Requires[i] != dep {
+			t.Errorf("Requires[%d] = %q, want %q", i, fb.Requires[i], dep)
 		}
 	}
 }
 
 func TestResolveRequirementsMet(t *testing.T) {
+	// 全部 enabled
+	all := map[string]bool{
+		"compression": true, "cache": true,
+		"prompt_injection": true, "session_audit": true,
+	}
+	// 缺一个
+	missingOne := map[string]bool{
+		"compression": true, "cache": true,
+		"prompt_injection": false, "session_audit": true,
+	}
 	var fb ModuleDefinition
 	for _, m := range allModuleDefinitions() {
 		if m.Key == "feishu_bot" {
@@ -88,15 +95,15 @@ func TestResolveRequirementsMet(t *testing.T) {
 			break
 		}
 	}
-	// Verify dependencies are defined
-	if len(fb.Dependencies) == 0 {
-		t.Fatal("feishu_bot should have dependencies")
+	if !allDepsEnabled(fb, all) {
+		t.Error("expected allDepsEnabled=true when all deps on")
 	}
-	// All required deps should have Required=true
-	for _, dep := range fb.Dependencies {
-		if dep.Required && dep.Key == "" {
-			t.Error("dependency with Required=true should have a key")
-		}
+	if allDepsEnabled(fb, missingOne) {
+		t.Error("expected allDepsEnabled=false when one dep off")
+	}
+	missing := missingDeps(fb, missingOne)
+	if len(missing) != 1 || missing[0] != "prompt_injection" {
+		t.Errorf("missingDeps = %v, want [prompt_injection]", missing)
 	}
 }
 
@@ -260,22 +267,16 @@ func TestFeishuBotConfigSummary(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	// 关键字段都应存在
-	for _, key := range []string{"enabled", "webhook_url_set"} {
+	for _, key := range []string{"enabled", "webhook_url_set", "card_template", "alert_severity_min"} {
 		if _, ok := resp[key]; !ok {
 			t.Errorf("missing field %q in summary", key)
 		}
 	}
-	// card_template and alert_severity_min depend on specs that may not be
-	// registered yet (parallel feishu_bot refactoring); only check them
-	// if the underlying specs exist.
-	if sp := settings.Global.Spec("feishu_bot.alert.card_template"); sp != nil {
-		if resp["card_template"] != "standard" {
-			t.Errorf("card_template default = %v, want 'standard'", resp["card_template"])
-		}
+	// 默认值校验
+	if resp["card_template"] != "standard" {
+		t.Errorf("card_template default = %v, want 'standard'", resp["card_template"])
 	}
-	if sp := settings.Global.Spec("feishu_bot.alert.severity_min"); sp != nil {
-		if resp["alert_severity_min"] != "high" {
-			t.Errorf("alert_severity_min default = %v, want 'high'", resp["alert_severity_min"])
-		}
+	if resp["alert_severity_min"] != "high" {
+		t.Errorf("alert_severity_min default = %v, want 'high'", resp["alert_severity_min"])
 	}
 }

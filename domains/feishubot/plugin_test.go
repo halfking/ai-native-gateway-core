@@ -3,6 +3,7 @@ package feishubot
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -63,6 +64,89 @@ func TestConfigIsUserAllowed(t *testing.T) {
 			t.Error("expected allow when whitelist empty and admin_only=false")
 		}
 	})
+}
+
+// ── 2026-07-09: dual-source merge 测试（DB + settings_kv）────────
+
+func TestMergeAllowedUsers(t *testing.T) {
+	tests := []struct {
+		name     string
+		fromDB   []string
+		fromSet  []string
+		expected []string
+	}{
+		{
+			name:     "empty_db_empty_settings",
+			fromDB:   nil,
+			fromSet:  nil,
+			expected: nil,
+		},
+		{
+			name:     "only_db",
+			fromDB:   []string{"ou_1", "ou_2"},
+			fromSet:  nil,
+			expected: []string{"ou_1", "ou_2"},
+		},
+		{
+			name:     "only_settings",
+			fromDB:   nil,
+			fromSet:  []string{"ou_1"},
+			expected: []string{"ou_1"},
+		},
+		{
+			name:     "db_priority_wins",
+			fromDB:   []string{"ou_2", "ou_1"}, // priority ASC
+			fromSet:  []string{"ou_3"},
+			expected: []string{"ou_2", "ou_1", "ou_3"},
+		},
+		{
+			name:     "dedup_across_sources",
+			fromDB:   []string{"ou_1", "ou_2"},
+			fromSet:  []string{"ou_2", "ou_3"}, // ou_2 duplicate
+			expected: []string{"ou_1", "ou_2", "ou_3"},
+		},
+		{
+			name:     "empty_strings_filtered",
+			fromDB:   []string{"", "ou_1", ""},
+			fromSet:  nil,
+			expected: []string{"ou_1"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeAllowedUsers(tt.fromDB, tt.fromSet)
+			if !sliceEq(got, tt.expected) {
+				t.Errorf("got %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func sliceEq(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestLoadAllowedUsersFromDB_NilPool(t *testing.T) {
+	_, err := loadAllowedUsersFromDB(context.Background(), nil)
+	if err == nil {
+		t.Error("expected error for nil pool, got nil")
+	}
+}
+
+func TestPluginSetDBPool(t *testing.T) {
+	p := NewPlugin(nil)
+	p.SetDBPool(nil) // 应该不 panic
+	if p.db != nil {
+		t.Error("expected nil db after SetDBPool(nil)")
+	}
 }
 
 func TestConfigIsSeverityPassing(t *testing.T) {
@@ -226,6 +310,75 @@ func TestRateLimiterZeroMaxPassThrough(t *testing.T) {
 		}
 	}
 }
+
+// 2026-07-09: dedup + rate limit 边界用例。
+func TestDeduper_ParallelSafety(t *testing.T) {
+	// 并发 Check 不应 panic 或 data race。
+	d := NewDeduper(50 * time.Millisecond)
+	const N = 100
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			fp := "fp-" + strconv.Itoa(i%5) // 5 个不同的 fingerprint 重复 20 次
+			for j := 0; j < 20; j++ {
+				_, _ = d.Check(fp)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestDeduper_DifferentKeysIndependent(t *testing.T) {
+	// 不同 fingerprint 应独立去重。
+	d := NewDeduper(1 * time.Second)
+	if dup, _ := d.Check("a"); dup {
+		t.Error("first 'a' should not be dup")
+	}
+	if dup, _ := d.Check("b"); dup {
+		t.Error("first 'b' should not be dup")
+	}
+	if dup, _ := d.Check("a"); !dup {
+		t.Error("second 'a' should be dup")
+	}
+	if dup, _ := d.Check("b"); !dup {
+		t.Error("second 'b' should be dup")
+	}
+}
+
+func TestRateLimiter_PeriodReset(t *testing.T) {
+	// 验证 Reset() 后窗口恢复：限额=2，先打满 3 次（1 次被限流），Reset 后第 1 次应放行。
+	r := NewRateLimiter(2)
+	if r.Allow() { // 1st
+		t.Error("1st should be allowed")
+	}
+	if r.Allow() { // 2nd
+		t.Error("2nd should be allowed")
+	}
+	if !r.Allow() { // 3rd — throttled
+		t.Error("3rd should be throttled")
+	}
+	r.Reset()
+	if r.Allow() { // after reset, 1st should be allowed again
+		t.Error("after Reset, 1st should be allowed again")
+	}
+}
+
+func TestFingerprintUniqueness(t *testing.T) {
+	// 相似但不同的输入应产生不同 fingerprint。
+	a := Fingerprint("alert", "session-A", "high", "key1")
+	b := Fingerprint("alert", "session-B", "high", "key1")     // session 不同
+	c := Fingerprint("alert", "session-A", "critical", "key1") // severity 不同
+	if a == b {
+		t.Error("different session should produce different fingerprint")
+	}
+	if a == c {
+		t.Error("different severity should produce different fingerprint")
+	}
+}
+
+// strconvItoa 由 helpers_test.go 提供（避免与 time 包的 strconv 重复）
 
 func TestFingerprintStability(t *testing.T) {
 	a := Fingerprint("prompt_injection", "x", "high", "k")

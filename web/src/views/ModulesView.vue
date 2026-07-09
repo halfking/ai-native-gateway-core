@@ -7,6 +7,12 @@ import {
   toggleModule,
   testModule,
   getModuleConfig,
+  listFeishuRoutingRules,
+  createFeishuRoutingRule,
+  updateFeishuRoutingRule,
+  deleteFeishuRoutingRule,
+  type FeishuRouteRule,
+  type FeishuRouteRuleCreate,
   type ModuleDefinition,
   type ModuleWithStatus,
 } from '../api/modules'
@@ -23,11 +29,122 @@ const selectedKey = ref<string | null>(null)
 const selectedModule = ref<ModuleWithStatus | null>(null)
 const moduleSettings = ref<SettingItem[]>([])
 const moduleConfigSummary = ref<Record<string, any> | null>(null)
-const activeTab = ref<'overview' | 'config' | 'integration' | 'status'>('overview')
+const activeTab = ref<'overview' | 'config' | 'integration' | 'status' | 'routing'>('overview')
 
 // 测试连接状态
 const testing = ref(false)
 const testResult = ref<{ ok: boolean; message: string; detail?: string } | null>(null)
+
+// 飞书路由规则（feishu_bot only）
+const routingRules = ref<FeishuRouteRule[]>([])
+const routingRulesLoading = ref(false)
+const showAddRule = ref(false)
+const newRule = ref<FeishuRouteRuleCreate>({
+  open_id: '',
+  display_name: '',
+  user_role: 'member',
+  risk_levels: ['low', 'medium', 'high', 'critical'],
+  priority: 100,
+  enabled: true,
+  note: '',
+})
+
+async function loadRoutingRules() {
+  if (!isFeishuSelected()) return
+  routingRulesLoading.value = true
+  try {
+    const r = await listFeishuRoutingRules({ limit: 100 })
+    routingRules.value = r.items
+  } catch (e: any) {
+    console.error('loadRoutingRules failed:', e)
+    routingRules.value = []
+  } finally {
+    routingRulesLoading.value = false
+  }
+}
+
+async function addRoutingRule() {
+  if (!newRule.value.open_id) return
+  try {
+    await createFeishuRoutingRule(newRule.value)
+    newRule.value = {
+      open_id: '',
+      display_name: '',
+      user_role: 'member',
+      risk_levels: ['low', 'medium', 'high', 'critical'],
+      priority: 100,
+      enabled: true,
+      note: '',
+    }
+    showAddRule.value = false
+    await loadRoutingRules()
+  } catch (e: any) {
+    alert('Failed: ' + (e.message || 'unknown error'))
+  }
+}
+
+async function toggleRoutingRuleEnabled(rule: FeishuRouteRule) {
+  try {
+    await updateFeishuRoutingRule(rule.id, { enabled: !rule.enabled })
+    await loadRoutingRules()
+  } catch (e: any) {
+    alert('Failed: ' + (e.message || 'unknown error'))
+  }
+}
+
+async function removeRoutingRule(rule: FeishuRouteRule) {
+  if (!confirm(`Delete routing rule for ${rule.open_id}?`)) return
+  try {
+    await deleteFeishuRoutingRule(rule.id)
+    await loadRoutingRules()
+  } catch (e: any) {
+    alert('Failed: ' + (e.message || 'unknown error'))
+  }
+}
+
+// CSV 批量导入
+const csvFileInput = ref<HTMLInputElement | null>(null)
+const csvImportResult = ref<{
+  imported: number
+  skipped: number
+  errors: Array<{ row: number; error: string }>
+} | null>(null)
+
+function triggerCsvImport() {
+  csvFileInput.value?.click()
+}
+
+async function onCsvFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    const resp = await fetch('/api/admin/feishubot/routing-rules:import', {
+      method: 'POST',
+      body: form,
+    })
+    if (!resp.ok) {
+      const err = await resp.text()
+      alert('Import failed: ' + err)
+      return
+    }
+    csvImportResult.value = await resp.json()
+    await loadRoutingRules()
+  } catch (e: any) {
+    alert('Import failed: ' + (e.message || 'unknown'))
+  } finally {
+    if (input) input.value = ''  // 重置 input，允许重复选同一文件
+  }
+}
+
+// 监听 tab 切换：进入 routing tab 时加载
+watch(activeTab, (tab) => {
+  if (tab === 'routing' && isFeishuSelected()) {
+    loadRoutingRules()
+  }
+})
 
 const categoryOrder = ['compression', 'session', 'security', 'rate_limit', 'general', 'integration']
 const categoryLabels: Record<string, string> = {
@@ -367,6 +484,12 @@ onMounted(() => {
             :class="{ active: activeTab === 'status' }"
             @click="activeTab = 'status'"
           >{{ t('modulesView.tabs.status') }}</button>
+          <button
+            v-if="isFeishuSelected()"
+            class="tab-btn"
+            :class="{ active: activeTab === 'routing' }"
+            @click="activeTab = 'routing'"
+          >{{ t('modulesView.tabs.routing') }}</button>
         </div>
 
         <!-- Overview tab -->
@@ -661,6 +784,166 @@ onMounted(() => {
               >{{ typeof value === 'boolean' ? (value ? '✓' : '✗') : (Array.isArray(value) ? value.join(', ') : value) }}</span>
             </div>
           </div>
+        </div>
+
+        <!-- Routing tab (feishu_bot only) — manage OpenID routing rules -->
+        <div v-if="activeTab === 'routing' && isFeishuSelected()" class="tab-content">
+          <div class="routing-toolbar">
+            <h3 class="config-section-title">{{ t('modulesView.routing.title') }}</h3>
+            <div class="routing-toolbar-actions">
+              <input
+                ref="csvFileInput"
+                type="file"
+                accept=".csv,text/csv"
+                style="display:none"
+                @change="onCsvFileSelected"
+              />
+              <button class="btn-ghost-sm" @click="triggerCsvImport">
+                {{ t('modulesView.routing.importCsv') }}
+              </button>
+              <button class="btn-primary-sm" @click="showAddRule = !showAddRule">
+                {{ showAddRule ? t('modulesView.routing.cancel') : t('modulesView.routing.addNew') }}
+              </button>
+            </div>
+          </div>
+
+          <!-- CSV import result banner -->
+          <div v-if="csvImportResult" class="routing-form">
+            <h4 class="config-section-title">{{ t('modulesView.routing.csvImportResult') }}</h4>
+            <p class="text-muted">
+              {{ t('modulesView.routing.csvImportSuccess', { imported: csvImportResult.imported, skipped: csvImportResult.skipped }) }}
+            </p>
+            <div v-if="csvImportResult.errors?.length" class="csv-errors">
+              <div v-for="(err, i) in csvImportResult.errors" :key="i" class="csv-error-row">
+                <span class="csv-error-row-num">#{{ err.row }}</span>
+                <span class="csv-error-row-msg">{{ err.error }}</span>
+              </div>
+            </div>
+            <button class="btn-ghost-sm" @click="csvImportResult = null">
+              {{ t('modulesView.routing.close') }}
+            </button>
+          </div>
+
+          <!-- Add new rule form -->
+          <div v-if="showAddRule" class="routing-form">
+            <h4 class="config-section-title">{{ t('modulesView.routing.formTitle') }}</h4>
+            <div class="form-grid">
+              <label>
+                <span>{{ t('modulesView.routing.openId') }} *</span>
+                <input
+                  v-model="newRule.open_id"
+                  type="text"
+                  class="text-input"
+                  :placeholder="t('modulesView.routing.openIdPlaceholder')"
+                />
+              </label>
+              <label>
+                <span>{{ t('modulesView.routing.displayName') }}</span>
+                <input
+                  v-model="newRule.display_name"
+                  type="text"
+                  class="text-input"
+                />
+              </label>
+              <label>
+                <span>{{ t('modulesView.routing.userRole') }}</span>
+                <select v-model="newRule.user_role" class="select-input">
+                  <option value="admin">admin</option>
+                  <option value="member">member</option>
+                  <option value="auditor">auditor</option>
+                </select>
+              </label>
+              <label>
+                <span>{{ t('modulesView.routing.priority') }}</span>
+                <input
+                  v-model.number="newRule.priority"
+                  type="number"
+                  class="text-input"
+                  min="0"
+                  max="9999"
+                />
+              </label>
+              <label>
+                <span>{{ t('modulesView.routing.note') }}</span>
+                <input
+                  v-model="newRule.note"
+                  type="text"
+                  class="text-input"
+                />
+              </label>
+              <label class="checkbox-line">
+                <input
+                  v-model="newRule.enabled"
+                  type="checkbox"
+                />
+                <span>{{ t('modulesView.routing.enabled') }}</span>
+              </label>
+            </div>
+            <div class="form-actions">
+              <button class="btn-primary-sm" @click="addRoutingRule" :disabled="!newRule.open_id">
+                {{ t('modulesView.routing.save') }}
+              </button>
+              <button class="btn-ghost-sm" @click="showAddRule = false">
+                {{ t('modulesView.routing.cancel') }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Rules table -->
+          <div v-if="routingRulesLoading" class="text-muted text-center">
+            {{ t('modulesView.routing.loading') }}
+          </div>
+          <div v-else-if="routingRules.length === 0" class="text-muted text-center">
+            {{ t('modulesView.routing.empty') }}
+          </div>
+          <table v-else class="routing-table">
+            <thead>
+              <tr>
+                <th>{{ t('modulesView.routing.openId') }}</th>
+                <th>{{ t('modulesView.routing.displayName') }}</th>
+                <th>{{ t('modulesView.routing.userRole') }}</th>
+                <th>{{ t('modulesView.routing.riskLevels') }}</th>
+                <th>{{ t('modulesView.routing.priority') }}</th>
+                <th>{{ t('modulesView.routing.enabled') }}</th>
+                <th>{{ t('modulesView.routing.actions') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="rule in routingRules" :key="rule.id">
+                <td><code class="config-key">{{ rule.open_id }}</code></td>
+                <td>{{ rule.display_name || '—' }}</td>
+                <td><span class="role-badge" :class="'role-' + rule.user_role">{{ rule.user_role }}</span></td>
+                <td class="risk-list">
+                  <span
+                    v-for="level in rule.risk_levels"
+                    :key="level"
+                    class="risk-chip"
+                    :class="'risk-' + level"
+                  >{{ level }}</span>
+                </td>
+                <td>{{ rule.priority }}</td>
+                <td>
+                  <span :class="rule.enabled ? 'text-green' : 'text-muted'">
+                    {{ rule.enabled ? '✓' : '✗' }}
+                  </span>
+                </td>
+                <td>
+                  <button
+                    class="btn-ghost-sm"
+                    @click="toggleRoutingRuleEnabled(rule)"
+                    :title="rule.enabled ? t('modulesView.routing.disable') : t('modulesView.routing.enable')"
+                  >
+                    {{ rule.enabled ? t('modulesView.routing.disable') : t('modulesView.routing.enable') }}
+                  </button>
+                  <button
+                    class="btn-ghost-sm btn-danger-text"
+                    @click="removeRoutingRule(rule)"
+                    :title="t('modulesView.routing.delete')"
+                  >×</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </aside>
 
@@ -1391,6 +1674,164 @@ onMounted(() => {
 .text-green { color: #34d399; }
 .text-muted { color: #6e7681; }
 
+/* ── Routing tab (feishu_bot OpenID rules) ── */
+.routing-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.routing-toolbar-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.btn-primary-sm {
+  padding: 6px 12px;
+  background: var(--accent, #6366f1);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn-primary-sm:hover { opacity: 0.9; }
+.btn-primary-sm:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-ghost-sm {
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  color: var(--text-primary, #e6edf3);
+  font-size: 11px;
+  cursor: pointer;
+  margin-right: 4px;
+}
+.btn-ghost-sm:hover { background: var(--bg-hover, #21262d); }
+.btn-ghost-sm.btn-danger-text { color: #f87171; }
+.routing-form {
+  padding: 14px;
+  background: var(--bg, #0f1117);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 10px 0;
+}
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary, #8b949e);
+}
+.form-grid label.checkbox-line {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  margin-top: 20px;
+}
+.form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.routing-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: var(--bg, #0f1117);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.routing-table th {
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--bg-card, #161b22);
+  color: var(--text-secondary, #8b949e);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+.routing-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #30363d);
+  color: var(--text-primary, #e6edf3);
+  vertical-align: middle;
+}
+.routing-table tr:last-child td { border-bottom: none; }
+.routing-table tr:hover { background: var(--bg-hover, #21262d); }
+.routing-table .role-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.routing-table .role-admin {
+  background: rgba(99, 102, 241, 0.18);
+  color: #818cf8;
+}
+.routing-table .role-member {
+  background: rgba(110, 118, 129, 0.15);
+  color: #8b949e;
+}
+.routing-table .role-auditor {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fbbf24;
+}
+.risk-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.risk-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 500;
+}
+.risk-low { background: rgba(110, 118, 129, 0.15); color: #8b949e; }
+.risk-medium { background: rgba(99, 102, 241, 0.15); color: #818cf8; }
+.risk-high { background: rgba(251, 146, 60, 0.18); color: #fb923c; }
+.risk-critical {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+/* CSV import result banner */
+.csv-errors {
+  max-height: 200px;
+  overflow-y: auto;
+  background: rgba(248, 113, 113, 0.05);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin: 8px 0;
+}
+.csv-error-row {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  padding: 2px 0;
+}
+.csv-error-row-num {
+  color: #f87171;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.csv-error-row-msg {
+  color: var(--text-secondary, #8b949e);
+}
+
+.text-center { text-align: center; padding: 24px; }
+
 /* ── Responsive ── */
 @media (max-width: 960px) {
   .layout { grid-template-columns: 1fr; }
@@ -1398,5 +1839,6 @@ onMounted(() => {
   .detail-pane { max-height: none; }
   .meta-grid { grid-template-columns: 1fr; }
   .status-grid { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
 }
 </style>

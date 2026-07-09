@@ -17,5 +17,6 @@ export default {
     failed: 'ログイン失敗',
   },
   changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
+  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",  // 2026-07-09: 初回ロード時の auth probe メッセージ
+  checking: 'ログイン状態を確認中…',
 }

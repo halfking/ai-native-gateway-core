@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -47,6 +48,20 @@ type Plugin struct {
 
 	// 依赖（注入）
 	channel LarkChannel // 复用 notification.LarkBotChannel
+
+	// 2026-07-09: 可选 DB 连接池。nil → 走 settings_kv 兼容模式。
+	// 注入 DB 后，feishu_bot.allowed_users 优先读 feishu_bot_routing_rules 表。
+	db *pgxpool.Pool
+}
+
+// SetDBPool 注入 DB 连接池（main.go 在 dbConn 可用时调用）。
+//
+// nil 是合法的，Plugin 仍可工作（走 settings_kv）。
+// 设计：DB 池在 Plugin 启动期注入，ReloConfig 期间读取，避免热加载时连接池已关闭。
+func (p *Plugin) SetDBPool(pool *pgxpool.Pool) {
+	p.mu.Lock()
+	p.db = pool
+	p.mu.Unlock()
 }
 
 // LarkChannel 是发送消息的最小接口（便于测试 mock）。
@@ -142,9 +157,15 @@ type Config struct {
 	TimestampWindowSeconds int
 }
 
-// LoadConfig 从 settings.Global 读取 feishu_bot.* 当前生效值。
+// LoadConfig 从 settings.Global + 可选 DB 表读取 feishu_bot.* 当前生效值。
 //
 // 任何读失败都不 panic，返回零值 + 错误；上层决定如何处理。
+//
+// 数据源合并策略（2026-07-09）：
+//   - feishu_bot.allowed_users：DB 表 feishu_bot_routing_rules 优先，settings_kv 兜底
+//   - 其余配置：仅从 settings_kv 读取
+//
+// 合并去重规则：DB 行 + 逗号串中重复的 OpenID 去重（按字符串匹配）。
 func LoadConfig() (Config, error) {
 	cfg := Config{
 		Enabled:                     false,
@@ -261,10 +282,19 @@ func (p *Plugin) EnabledEffective(enabledMap map[string]bool) bool {
 var requiredModules = []string{"compression", "cache", "prompt_injection", "session_audit"}
 
 // ReloadConfig 热加载配置（settings 变更后调用）。
+//
+// 2026-07-09: 同时重读 feishu_bot.allowed_users（DB + settings_kv 合并）。
 func (p *Plugin) ReloadConfig() error {
 	cfg, err := LoadConfig()
 	if err != nil {
 		return err
+	}
+	// ReloadAllowedUsers 走 DB 路径，与 cfg.AllowedUsers 合并
+	if rerr := p.ReloadAllowedUsers(); rerr == nil {
+		// 合并成功：用 DB 合并后的版本覆盖
+		p.mu.RLock()
+		cfg.AllowedUsers = p.cfg.AllowedUsers
+		p.mu.RUnlock()
 	}
 	p.mu.Lock()
 	p.cfg = cfg
@@ -473,3 +503,121 @@ func (c Config) AsJSON() map[string]any {
 
 // avoid unused import linter when hex not directly referenced
 var _ = hex.EncodeToString
+
+// ── AllowedUsers 双源合并（DB + settings_kv）──────────────────────
+
+// loadAllowedUsersFromDB 从 feishu_bot_routing_rules 表读启用中的 open_id 列表。
+//
+// 返回值：去重后的 open_id 列表（保持 priority 升序）。
+// 错误：nil 表 / 列不存在 / 连接失败 都会返回 error，由调用方决定 fallback。
+//
+// 上下文：3 秒超时（plugin 启动期，不阻塞 alert 路径）。
+func loadAllowedUsersFromDB(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
+	if pool == nil {
+		return nil, fmt.Errorf("feishubot: nil db pool")
+	}
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT open_id FROM feishu_bot_routing_rules
+		 WHERE tenant_id = 'default' AND enabled = true
+		 ORDER BY priority ASC, id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("query: %w", err)
+	}
+	defer rows.Close()
+
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 16)
+	for rows.Next() {
+		var oid string
+		if err := rows.Scan(&oid); err != nil {
+			return out, fmt.Errorf("scan: %w", err)
+		}
+		if oid == "" {
+			continue
+		}
+		if _, ok := seen[oid]; ok {
+			continue
+		}
+		seen[oid] = struct{}{}
+		out = append(out, oid)
+	}
+	return out, rows.Err()
+}
+
+// mergeAllowedUsers 合并 DB 表 + settings_kv 兜底列表，去重保持原顺序。
+//
+// 优先级：DB 行优先（按 priority ASC 排），settings_kv 增量追加未出现的 open_id。
+// 设计：settings_kv 仍可作为应急通道，运维可通过 /admin/feishubot/allowed-users
+// API 单条更新 DB 行，或临时回退到 settings_kv 加新用户。
+//
+// 防御：自动跳过空字符串（DB 偶发空列 / settings_kv 残留尾逗号）。
+func mergeAllowedUsers(fromDB, fromSettings []string) []string {
+	if len(fromDB) == 0 && len(fromSettings) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(fromDB)+len(fromSettings))
+	out := make([]string, 0, len(fromDB)+len(fromSettings))
+	for _, oid := range fromDB {
+		if oid == "" {
+			continue
+		}
+		if _, ok := seen[oid]; ok {
+			continue
+		}
+		seen[oid] = struct{}{}
+		out = append(out, oid)
+	}
+	for _, oid := range fromSettings {
+		if oid == "" {
+			continue
+		}
+		if _, ok := seen[oid]; ok {
+			continue
+		}
+		seen[oid] = struct{}{}
+		out = append(out, oid)
+	}
+	return out
+}
+
+// ReloadAllowedUsers 仅刷新 AllowedUsers 字段（不重读其他 settings_kv 配置）。
+//
+// 用途：管理面 POST/DELETE /api/admin/feishubot/routing-rules 后，
+// 通过 main.go 调 Plugin.ReloadAllowedUsers() 让 AlertRouter 立即生效。
+//
+// 与 ReloadConfig 的区别：ReloadConfig 重读全部 settings + DB，代价大；
+// ReloadAllowedUsers 仅重读 DB（O(N)），不涉及 settings_kv 调用。
+func (p *Plugin) ReloadAllowedUsers() error {
+	p.mu.Lock()
+	db := p.db
+	p.mu.Unlock()
+
+	fromDB, err := loadAllowedUsersFromDB(context.Background(), db)
+	if err != nil {
+		slog.Warn("feishubot: ReloadAllowedUsers DB query failed; keeping current list",
+			"error", err)
+		return err
+	}
+
+	// 读 settings_kv 兜底
+	settingsRaw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "feishu_bot.allowed_users", "")
+	var usersRaw string
+	if settingsRaw != nil {
+		_ = json.Unmarshal(settingsRaw, &usersRaw)
+	}
+	fromSettings := parseUserList(usersRaw)
+	merged := mergeAllowedUsers(fromDB, fromSettings)
+
+	p.mu.Lock()
+	p.cfg.AllowedUsers = merged
+	p.mu.Unlock()
+
+	slog.Info("feishubot: AllowedUsers reloaded",
+		"from_db", len(fromDB), "from_settings", len(fromSettings), "merged", len(merged))
+	return nil
+}
