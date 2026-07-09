@@ -1650,12 +1650,14 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, `
 		SELECT c.id, c.provider_id, p.base_url, COALESCE(p.protocol,'openai'),
-		       c.secret_ciphertext, COALESCE(mo.raw_model_name, $1), COALESCE(mo.outbound_model_name, $1)
+		       c.secret_ciphertext,
+		       COALESCE(mo.outbound_model_name, mo.standardized_name, mo.raw_model_name),
+		       COALESCE(mo.outbound_model_name, mo.standardized_name, mo.raw_model_name)
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id AND c.status = 'active'
 		JOIN providers p ON p.id = c.provider_id AND p.enabled = TRUE
 		WHERE mo.available = TRUE
-		  AND lower(mo.raw_model_name) = lower($1)
+		  AND (lower(mo.raw_model_name) = lower($1) OR lower(mo.standardized_name) = lower($1))
 		  AND COALESCE(c.lifecycle_status,'active') = 'active'
 		  AND COALESCE(c.availability_state,'ready') = 'ready'
 		ORDER BY mo.manual_priority NULLS LAST,

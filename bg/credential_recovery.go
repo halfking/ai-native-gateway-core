@@ -75,7 +75,7 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		  AND NOT EXISTS (
 		      SELECT 1
 		      FROM model_probe_state mps
-		      JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
+		      JOIN provider_models pm ON (pm.raw_model_name = mps.raw_model_name OR pm.standardized_name = mps.raw_model_name)
 		      JOIN credential_model_bindings cmb
 		           ON cmb.credential_id = mps.credential_id
 		          AND cmb.provider_model_id = pm.id
