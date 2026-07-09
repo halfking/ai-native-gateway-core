@@ -74,16 +74,29 @@ func (m *Manager) RecordRequest(ctx context.Context, req RecordRequestAPI) error
 	return m.batchWriter.ApplyUpdates(ctx, updates)
 }
 
-// getNodeState 获取节点状态（临时实现，后续从cache读取）
+// getNodeState 获取节点状态
 func (m *Manager) getNodeState(ctx context.Context, credentialID int, model string) (*NodeState, error) {
-	// TODO: 从nodeCache读取
-	// 暂时返回模拟数据
-	return &NodeState{
-		CredentialID:        credentialID,
-		RawModel:            model,
-		ConsecutiveFailures: 0,
-		UpdatedAt:           time.Now(),
-	}, nil
+	if m.nodeCache == nil {
+		return &NodeState{
+			CredentialID:        credentialID,
+			RawModel:            model,
+			ConsecutiveFailures: 0,
+			UpdatedAt:           time.Now(),
+		}, nil
+	}
+
+	key := fmt.Sprintf("%d:%s", credentialID, model)
+	state, err := m.nodeCache.Get(ctx, key)
+	if err != nil {
+		// 未找到或查询失败时返回默认状态
+		return &NodeState{
+			CredentialID:        credentialID,
+			RawModel:            model,
+			ConsecutiveFailures: 0,
+			UpdatedAt:           time.Now(),
+		}, nil
+	}
+	return state, nil
 }
 
 // stringPtr 返回字符串指针
