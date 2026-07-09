@@ -17,5 +17,6 @@ export default {
     failed: '登入失敗',
   },
   changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
+  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",  // 2026-07-09: 首次進入頁面時檢測 cookie auth 狀態的提示文案
+  checking: '正在偵測登入狀態…',
 }
