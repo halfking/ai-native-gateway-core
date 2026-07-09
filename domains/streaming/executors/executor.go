@@ -994,8 +994,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}()
 
 		if execErr == nil {
-			stickyHit := stickyCredID != nil && *stickyCredID == cand.CredentialID
-			result.StickyHit = boolPtrCompat(stickyHit)
+			result.StickyHit = stickyHitForChosen(stickyCredID, cand.CredentialID)
 			sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 			defer sideEffectCancel()
 			e.restoreCredentialState(sideEffectCtx, cand.CredentialID, cand.RawModel)
@@ -2102,6 +2101,13 @@ func (e *Executor) stickyCredentialIDMultiLevel(
 
 func boolPtrCompat(v bool) *bool {
 	return &v
+}
+
+func stickyHitForChosen(stickyCredentialID *int, chosenCredentialID int) *bool {
+	if stickyCredentialID == nil {
+		return nil
+	}
+	return boolPtrCompat(*stickyCredentialID == chosenCredentialID)
 }
 
 func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
