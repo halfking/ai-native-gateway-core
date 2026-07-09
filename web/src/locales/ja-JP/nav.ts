@@ -39,6 +39,7 @@ export default {
     sessionManagement: 'セッション管理',
     sessionCompare: 'セッション比較',
     compression: '圧縮管理',
+    wechatBot: 'WeChatボット',
     sessionContext: 'セッションコンテキスト',
     settings: 'システム設定',
     dataLifecycle: 'データライフサイクル',
