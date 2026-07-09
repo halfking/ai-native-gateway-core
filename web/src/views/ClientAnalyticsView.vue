@@ -231,9 +231,9 @@ function goBack() {
             </template>
             <el-table :data="data.recent_sessions" style="width: 100%" max-height="400">
               <el-table-column prop="session_id" :label="t('sessions.clientAnalytics.sessionId')" min-width="150">
-                <template #default="{ row }">
-                  <el-link type="primary" @click="handleSessionClick(row.session_id)">
-                    {{ row.session_id.substring(0, 16) }}...
+                <template #default="scope">
+                  <el-link type="primary" @click="handleSessionClick(scope?.row?.session_id)">
+                    {{ scope?.row?.session_id?.substring(0, 16) }}...
                   </el-link>
                 </template>
               </el-table-column>
