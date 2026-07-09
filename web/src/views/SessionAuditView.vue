@@ -294,7 +294,8 @@ async function loadApprovalConfig() {
   configLoading.value = true
   configError.value = ''
   try {
-    const settings = await listSettings()
+    const resp = await listSettings()
+    const settings = 'items' in resp ? resp.items : resp
     const mapping: Record<keyof ApprovalConfig, string> = {
       enforcement_level: 'session_audit.enforcement_level',
       detector_models: 'session_audit.detector_models',

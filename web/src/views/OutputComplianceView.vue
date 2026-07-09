@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { ref, onMounted, computed } from 'vue'
-import { listSettings, updateSetting } from '../api/settings'
+import { listSettings, updateSetting, SettingItem } from '../api/settings'
 import { req } from '../api/_core'
 
 const { t } = useI18n({ useScope: 'global' })
@@ -165,7 +165,7 @@ async function loadConfig() {
   configError.value = ''
   try {
     const settings = await listSettings({ category: 'output_compliance' })
-    const items = settings.items || settings as any[]
+    const items = 'items' in settings ? settings.items : (settings as unknown as SettingItem[])
 
     // 映射配置
     const mapping: Record<string, keyof OutputComplianceConfig> = {
