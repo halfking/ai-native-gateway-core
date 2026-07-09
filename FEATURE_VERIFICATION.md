@@ -683,3 +683,71 @@ session_audit.escalation_approvers=["ciso","cto"]
 **更新时间**: 2026-07-09  
 **维护者**: official-deploy 团队  
 **最后更新**: 模块级联启用与工程强化
+
+---
+
+## 📱 钉钉机器人模块（2026-07-09 新增）
+
+### 概述
+在既有架构基础上新增 `dingtalk_bot` 模块，对接钉钉自定义机器人，实现远程运维通知、风险告警推送、审批操作执行。**充分复用**既有 `domains/notification.DingTalkChannel`、`session_audit.ApprovalManager`、`remotecontrol` 指令解析等能力，未重复造轮子。
+
+### 核心改动
+
+#### 1. 设置规格定义（settings/spec_modules.go）
+新增 20 个 `dingtalk_bot.*` 设置项（全部 HotReload），覆盖：
+- 连接方式：群机器人 Webhook（`webhook_url`、`sign_secret` 加签）+ 工作通知（`app_key`/`app_secret`/`agent_id`）
+- 实时告警：`notify_on_alert`、`notify_on_latency`（阈值 `latency_threshold_ms`）、`notify_on_error_rate`（阈值 `error_rate_threshold`）
+- 审批通知：`notify_on_approval`、`callback_url`、`verify_signature`
+- 系统查询：`enable_status_query`（`/status`、`/health` 指令）
+- 安全与体验：`allowed_users` 白名单、`card_type`（actionCard/markdown/text）、`at_all`、`rate_limit_per_min`（默认 18/分钟）
+
+#### 2. 模块注册（admin/modules.go）
+- 注册 `dingtalk_bot` 模块，`Dependencies`：compression / prompt_injection / cache / session_audit
+- 开启前自动校验前置模块已启用（复用既有依赖检查逻辑）
+- 测试断言更新：17 → 18 模块（`admin/modules_test.go`）
+
+#### 3. 配置桥接（cmd/gateway/main.go）
+新增 `dingTalkConfigFromSettings()` 辅助函数：
+- 读取 `dingtalk_bot.*` 设置构造 `notification.DingTalkConfig`
+- 回退到环境变量（`DINGTALK_WEBHOOK_URL` / `DINGTALK_SIGN_SECRET` 等）兼容旧部署
+- **修复核心架构缺陷**：使模块开关 `dingtalk_bot.enabled` 真正驱动渠道初始化与回调验签（区别于早期仅声明式的 feishu_bot / wechat_bot）
+
+#### 4. 回调路由（cmd/gateway/main.go + api/dingtalk_callback.go）
+- `/api/webhooks/dingtalk/approval-callback`：钉钉审批回调入口
+- 签名验签优先读取 `dingtalk_bot.sign_secret`/`app_secret` 设置，回退到环境变量
+- 复用 `ApprovalManager.Approve` / `Reject`，未新建审批逻辑
+
+#### 5. 前端国际化（web/src/*）
+- `ModulesView.vue`：新增 `dingtalk_bot` 集成步骤渲染分支（图标 🤖）
+- 8 语言 locale（zh-CN/zh-TW/en-US/ja-JP/ar-SA/de-DE/fr-FR/es-ES）：`dingtalkSteps` + `dingtalkBotIntegration`
+
+### 验证结果
+- ✅ `go build ./...` 通过
+- ✅ `go test ./admin/... ./settings/... ./api/...` 全绿
+- ✅ `pnpm build` 成功（web 前端）
+- ✅ 模块数断言：18 个（含 dingtalk_bot）
+- ✅ 前端管理页自动显示钉钉机器人（数据驱动，读 `/api/admin/modules`）
+
+### 架构复用关系
+```
+dingtalk_bot.* 设置 (settings/spec_modules.go)
+     ↓ 读取
+dingTalkConfigFromSettings() (cmd/gateway/main.go)
+     ↓ 构造
+DingTalkChannel (domains/notification/dingtalk.go) ← 复用既有实现
+     ↓ 注入
+ApprovalNotifier (domains/notification/approval_notifier.go) ← 复用 session_audit
+     ↑ 审批回调
+dingtalk_callback.go (api/) ← 签名验签 + 转交 Approve/Reject
+```
+
+### 已知事项（审计结论）
+1. **回调处理器两层实现**：`api/dingtalk_callback.go`（独立 HTTP Handler，已接线）与 `domains/notification/callback_handler.go`（统一渠道入口）职责不同，暂不合并避免破坏上线路径；后续可统一到 `notification.CallbackHandler` 降低维护成本。
+2. **部分体验类设置未完全消费**：`card_type` / `at_all` / `rate_limit_per_min` 当前由 `DingTalkChannel` 以推荐默认值（actionCard、按接收人 @）实现，配置项已预留，完整消费在后续迭代接入（不阻塞核心审批/告警能力）。
+3. **模块开关真正生效**：区别于早期仅声明式模块，本次通过 `dingTalkConfigFromSettings()` 使 `dingtalk_bot.enabled` 实际驱动渠道与回调，架构更规范。
+
+### 相关文档
+- **钉钉机器人对接指南**: `docs/dingtalk-bot-guide.md`
+- **提交记录**: `53e5529c feat(dingtalk_bot): 新增钉钉机器人模块`
+- **合并记录**: `f822f38d Merge branch 'opencode/cosmic-mountain' into main: 钉钉机器人模块`
+

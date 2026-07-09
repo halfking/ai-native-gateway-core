@@ -2238,10 +2238,18 @@ func main() {
 			slog.Info("Phase 3.9 approval query API enabled (/api/v1/approvals/*, /api/admin/approvals/stats)")
 
 			// DingTalk approval callback (钉钉机器人审批回调)
-			// 签名校验使用加签 Secret 优先，回退到应用 AppSecret。
+			// 签名校验密钥优先读取 dingtalk_bot.* 模块设置，回退到环境变量，
+			// 保证模块开关与配置真正控制回调验签。
 			dingSignSecret := os.Getenv("DINGTALK_SIGN_SECRET")
 			if dingSignSecret == "" {
 				dingSignSecret = os.Getenv("DINGTALK_APP_SECRET")
+			}
+			if cfg, ok := dingTalkConfigFromSettings(); ok {
+				if cfg.SignSecret != "" {
+					dingSignSecret = cfg.SignSecret
+				} else if cfg.AppSecret != "" {
+					dingSignSecret = cfg.AppSecret
+				}
 			}
 			if dingSignSecret != "" {
 				api.RegisterDingTalkRoutes(mux, approvalMgr, dingSignSecret)
@@ -2762,7 +2770,12 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 	}
 
 	// 钉钉渠道
-	if dingAppKey := os.Getenv("DINGTALK_APP_KEY"); dingAppKey != "" {
+	// 优先读取 dingtalk_bot.* 模块设置（使模块开关真正生效），回退到环境变量以兼容旧部署。
+	if dingCfg, ok := dingTalkConfigFromSettings(); ok {
+		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
+		slog.Info("dingtalk channel initialized from module settings",
+			"webhook", dingCfg.WebhookURL != "", "app_mode", dingCfg.AppKey != "")
+	} else if dingAppKey := os.Getenv("DINGTALK_APP_KEY"); dingAppKey != "" {
 		dingAppSecret := os.Getenv("DINGTALK_APP_SECRET")
 		dingCfg := notification.DingTalkConfig{
 			AppKey:    dingAppKey,
@@ -2801,6 +2814,84 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 	}
 
 	return notifier, larkCh, nil
+}
+
+// dingTalkConfigFromSettings 从 dingtalk_bot.* 模块设置构造钉钉渠道配置。
+//
+// 仅当模块启用（dingtalk_bot.enabled=true）且至少配置了 Webhook 或 App 凭证时返回
+// (config, true)；否则返回 (零值, false)。读取失败时安全回退到环境变量，保证旧部署兼容。
+//
+// 这样钉钉机器人模块的「开关 + 配置」在管理后台真正生效，而非仅依赖环境变量启动参数。
+func dingTalkConfigFromSettings() (notification.DingTalkConfig, bool) {
+	if settings.Global == nil {
+		return notification.DingTalkConfig{}, false
+	}
+	enabled := readBoolSettingValue("dingtalk_bot.enabled")
+	if !enabled {
+		return notification.DingTalkConfig{}, false
+	}
+
+	get := func(key string) string {
+		sp := settings.Global.Spec(key)
+		if sp == nil {
+			return ""
+		}
+		raw, _, err := settings.Global.EffectiveValue(sp.Scope, key, "")
+		if err != nil || len(raw) == 0 {
+			return ""
+		}
+		return strings.Trim(string(raw), `"`)
+	}
+
+	cfg := notification.DingTalkConfig{
+		WebhookURL: get("dingtalk_bot.webhook_url"),
+		SignSecret: get("dingtalk_bot.sign_secret"),
+		AppKey:     get("dingtalk_bot.app_key"),
+		AppSecret:  get("dingtalk_bot.app_secret"),
+		AgentID:    get("dingtalk_bot.agent_id"),
+		BaseURL:    get("dingtalk_bot.base_url"),
+	}
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = "https://oapi.dingtalk.com"
+	}
+
+	// 回退到环境变量（兼容未迁移到模块设置的旧部署）
+	if cfg.WebhookURL == "" && cfg.AppKey == "" {
+		if envWebhook := os.Getenv("DINGTALK_WEBHOOK_URL"); envWebhook != "" {
+			cfg.WebhookURL = envWebhook
+		}
+		if cfg.SignSecret == "" {
+			cfg.SignSecret = os.Getenv("DINGTALK_SIGN_SECRET")
+		}
+		if cfg.AppKey == "" {
+			cfg.AppKey = os.Getenv("DINGTALK_APP_KEY")
+		}
+		if cfg.AppSecret == "" {
+			cfg.AppSecret = os.Getenv("DINGTALK_APP_SECRET")
+		}
+		if cfg.AgentID == "" {
+			cfg.AgentID = os.Getenv("DINGTALK_AGENT_ID")
+		}
+	}
+
+	if cfg.WebhookURL == "" && cfg.AppKey == "" {
+		return notification.DingTalkConfig{}, false
+	}
+	return cfg, true
+}
+
+// readBoolSettingValue 读取平台级 bool 设置项（忽略错误，缺省 false）。
+func readBoolSettingValue(key string) bool {
+	sp := settings.Global.Spec(key)
+	if sp == nil {
+		return false
+	}
+	raw, _, err := settings.Global.EffectiveValue(sp.Scope, key, "")
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	s := strings.Trim(string(raw), `"`)
+	return s == "true" || s == "1"
 }
 
 // adminLiveRequestFromEntry adapts a freshly-persisted telemetry
