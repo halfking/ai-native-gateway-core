@@ -84,8 +84,8 @@ func (a *AdminAPI) ListProjects(c echo.Context) error {
 	status := ProjectStatus(c.QueryParam("status"))
 	offset := 0
 	limit := 50
-	fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
-	fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
+	_, _ = fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
+	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
 
 	projects, total, err := a.projectManager.ListProjects(c.Request().Context(), tenantID, status, offset, limit)
 	if err != nil {
@@ -104,7 +104,7 @@ func (a *AdminAPI) ListProjects(c echo.Context) error {
 // GetProject 获取项目详情
 func (a *AdminAPI) GetProject(c echo.Context) error {
 	var id int64
-	fmt.Sscanf(c.Param("id"), "%d", &id)
+	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
 	project, err := a.projectManager.GetProject(c.Request().Context(), id)
 	if err != nil {
@@ -117,7 +117,7 @@ func (a *AdminAPI) GetProject(c echo.Context) error {
 // UpdateProject 更新项目
 func (a *AdminAPI) UpdateProject(c echo.Context) error {
 	var id int64
-	fmt.Sscanf(c.Param("id"), "%d", &id)
+	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
 	project, err := a.projectManager.GetProject(c.Request().Context(), id)
 	if err != nil {
@@ -167,7 +167,7 @@ func (a *AdminAPI) UpdateProject(c echo.Context) error {
 // ArchiveProject 归档项目
 func (a *AdminAPI) ArchiveProject(c echo.Context) error {
 	var id int64
-	fmt.Sscanf(c.Param("id"), "%d", &id)
+	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
 	if err := a.projectManager.ArchiveProject(c.Request().Context(), id); err != nil {
 		slog.Error("archive project failed", "error", err)
@@ -180,7 +180,7 @@ func (a *AdminAPI) ArchiveProject(c echo.Context) error {
 // DeleteProject 删除项目
 func (a *AdminAPI) DeleteProject(c echo.Context) error {
 	var id int64
-	fmt.Sscanf(c.Param("id"), "%d", &id)
+	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
 	if err := a.projectManager.DeleteProject(c.Request().Context(), id); err != nil {
 		slog.Error("delete project failed", "error", err)
@@ -229,15 +229,15 @@ func (a *AdminAPI) ListSessions(c echo.Context) error {
 	var projectID *int64
 	if pidStr := c.QueryParam("project_id"); pidStr != "" {
 		var pid int64
-		fmt.Sscanf(pidStr, "%d", &pid)
+		_, _ = fmt.Sscanf(pidStr, "%d", &pid)
 		projectID = &pid
 	}
 
 	status := SessionStatus(c.QueryParam("status"))
 	offset := 0
 	limit := 50
-	fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
-	fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
+	_, _ = fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
+	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
 
 	sessions, total, err := a.sessionManager.ListSessions(c.Request().Context(), projectID, status, offset, limit)
 	if err != nil {
@@ -256,7 +256,7 @@ func (a *AdminAPI) ListSessions(c echo.Context) error {
 // GetSession 获取会话详情
 func (a *AdminAPI) GetSession(c echo.Context) error {
 	var id int64
-	fmt.Sscanf(c.Param("id"), "%d", &id)
+	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
 	session, err := a.sessionManager.GetSession(c.Request().Context(), id)
 	if err != nil {
@@ -316,7 +316,7 @@ func (a *AdminAPI) GetSessionStats(c echo.Context) error {
 	var projectID *int64
 	if pidStr := c.QueryParam("project_id"); pidStr != "" {
 		var pid int64
-		fmt.Sscanf(pidStr, "%d", &pid)
+		_, _ = fmt.Sscanf(pidStr, "%d", &pid)
 		projectID = &pid
 	}
 
@@ -360,14 +360,14 @@ func (a *AdminAPI) ListReviews(c echo.Context) error {
 	var sessionID *int64
 	if sidStr := c.QueryParam("session_id"); sidStr != "" {
 		var sid int64
-		fmt.Sscanf(sidStr, "%d", &sid)
+		_, _ = fmt.Sscanf(sidStr, "%d", &sid)
 		sessionID = &sid
 	}
 
 	offset := 0
 	limit := 50
-	fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
-	fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
+	_, _ = fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
+	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
 
 	reviews, total, err := a.reviewManager.ListReviews(c.Request().Context(), sessionID, offset, limit)
 	if err != nil {
@@ -386,7 +386,7 @@ func (a *AdminAPI) ListReviews(c echo.Context) error {
 // GetReview 获取代码审查详情
 func (a *AdminAPI) GetReview(c echo.Context) error {
 	var id int64
-	fmt.Sscanf(c.Param("id"), "%d", &id)
+	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
 	review, err := a.reviewManager.GetReview(c.Request().Context(), id)
 	if err != nil {
@@ -401,7 +401,7 @@ func (a *AdminAPI) GetReviewStats(c echo.Context) error {
 	var sessionID *int64
 	if sidStr := c.QueryParam("session_id"); sidStr != "" {
 		var sid int64
-		fmt.Sscanf(sidStr, "%d", &sid)
+		_, _ = fmt.Sscanf(sidStr, "%d", &sid)
 		sessionID = &sid
 	}
 

@@ -78,7 +78,7 @@ func (d *Downloader) Download(ctx context.Context, url, expectedChecksum string)
 	if err != nil {
 		return nil, fmt.Errorf("download request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return nil, fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
@@ -94,7 +94,7 @@ func (d *Downloader) Download(ctx context.Context, url, expectedChecksum string)
 	if err != nil {
 		return nil, fmt.Errorf("open temp file: %w", err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	// 写入数据
 	if _, err := io.Copy(out, resp.Body); err != nil {
@@ -108,7 +108,7 @@ func (d *Downloader) Download(ctx context.Context, url, expectedChecksum string)
 	}
 
 	if checksum != expectedChecksum {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return nil, fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, checksum)
 	}
 
@@ -132,7 +132,7 @@ func (d *Downloader) calculateChecksum(filePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
@@ -158,7 +158,7 @@ func (d *Downloader) Cleanup(olderThan time.Duration) error {
 
 		if info.ModTime().Before(cutoff) {
 			path := filepath.Join(d.downloadDir, entry.Name())
-			os.Remove(path)
+			_ = os.Remove(path)
 		}
 	}
 
