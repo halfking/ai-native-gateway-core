@@ -850,10 +850,10 @@ onUnmounted(() => stopPoll())
                         </div>
                         <div v-if="layer2Loading === (m.canonical_name || m.raw_model)" class="text-muted">加载…</div>
                         <template v-else-if="layer2Cache[m.canonical_name || m.raw_model]">
-                          <div class="l2-meta mono">{{ layer2Cache[m.canonical_name || m.raw_model]!.resolution_path }}</div>
+                          <div class="l2-meta mono">{{ layer2Cache[m.canonical_name || m.raw_model].resolution_path }}</div>
                           <div class="l2-creds">
                             <div
-                              v-for="(c, ci) in layer2Cache[m.canonical_name || m.raw_model]!.candidates.filter(x => x.routable).slice(0, 4)"
+                              v-for="(c, ci) in layer2Cache[m.canonical_name || m.raw_model].candidates.filter(x => x.routable).slice(0, 4)"
                               :key="c.credential_id"
                               class="l2-cred"
                               :class="{ top: ci === 0 }"

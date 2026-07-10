@@ -636,7 +636,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		CAST($36 AS jsonb), CAST($37 AS jsonb),
 		$38, $39, $40,
 		$41,
-		$42,
+$42,
 		$43, $44,
 		$45, $46, $47,
 		$48, $49, $50, CAST($51 AS jsonb), $52,
@@ -649,7 +649,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$68,
 		$69, $70, $71, $72, $73,
 		CAST($74 AS jsonb)
-			)
+		)
 				ON CONFLICT (request_id, ts) DO UPDATE SET
 				ts = EXCLUDED.ts,
 			tenant_id = EXCLUDED.tenant_id,
@@ -663,7 +663,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			canonical_id = EXCLUDED.canonical_id,
 			client_profile = EXCLUDED.client_profile,
 			request_mode = EXCLUDED.request_mode,
-			affinity_hit = COALESCE(EXCLUDED.affinity_hit, affinity_hit),
+			affinity_hit = COALESCE(EXCLUDED.affinity_hit, request_logs_hot.affinity_hit),
 			prompt_tokens = EXCLUDED.prompt_tokens,
 			completion_tokens = EXCLUDED.completion_tokens,
 			cache_read_tokens = EXCLUDED.cache_read_tokens,
@@ -948,7 +948,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       canonical_id = COALESCE($6, canonical_id),
 		       client_profile = COALESCE($7, client_profile),
 		       request_mode = COALESCE($8, request_mode),
-		       affinity_hit = COALESCE($9, affinity_hit),
+		       affinity_hit = COALESCE($9, request_logs_hot.affinity_hit),
 		       end_user_id = COALESCE($10, end_user_id),
 		       prompt_tokens = COALESCE($11, prompt_tokens),
 		       completion_tokens = COALESCE($12, completion_tokens),

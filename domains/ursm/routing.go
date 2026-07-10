@@ -172,7 +172,7 @@ func (m *Manager) loadNodesByModel(ctx context.Context, model string) ([]RouteNo
 		JOIN provider_models pm ON pm.provider_id = c.provider_id
 		LEFT JOIN model_offers mo ON mo.credential_id = c.id AND mo.raw_model_name = pm.raw_model_name
 		LEFT JOIN node_stats ns ON ns.credential_id = c.id AND ns.raw_model_name = pm.raw_model_name
-		WHERE LOWER(pm.raw_model_name) = LOWER($1)
+		WHERE (LOWER(pm.raw_model_name) = LOWER($1) OR LOWER(pm.standardized_name) = LOWER($1))
 		  AND c.lifecycle_status = 'active'
 		  AND c.status = 'active'
 		ORDER BY c.id

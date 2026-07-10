@@ -11,6 +11,7 @@ export default {
     routing: 'التوجيه',
     session: 'الجلسة',
     security: 'الأمان',
+    outputCompliance: 'التوافق مع المخرجات',
     circuitBreaker: 'قاطع الدائرة',
     general: 'أخرى',
   },
@@ -151,4 +152,7 @@ export default {
 </ul>
 <p class="docs-note">⚠️ <strong>تكوين على مستوى المستأجر</strong>: يتطلب هذا الإعداد تحديد tenant_id، يتم تعيينه في صفحة إدارة المستأجرين</p>`,
   },
+
+  // 同步的扁平键
+  outputCompliance: '输出合规',
 }

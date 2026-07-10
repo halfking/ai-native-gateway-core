@@ -20,9 +20,9 @@
         @row-click="handleRowClick"
       >
         <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }">
+          <template #default="scope">
             <div class="session-title">
-              {{ row.title || '(未命名)' }}
+              {{ scope?.row?.title || '(未命名)' }}
             </div>
           </template>
         </el-table-column>
@@ -36,51 +36,51 @@
         />
 
         <el-table-column prop="requestCount" label="请求数" width="90" align="right">
-          <template #default="{ row }">
-            {{ row.requestCount }}
+          <template #default="scope">
+            {{ scope?.row?.requestCount }}
           </template>
         </el-table-column>
 
         <el-table-column prop="totalCost" label="成本" width="110" align="right" sortable>
-          <template #default="{ row }">
+          <template #default="scope">
             <span :class="{ 'highlight-value': metric === 'cost' }">
-              ${{ row.totalCost.toFixed(4) }}
+              ${{ (scope?.row?.totalCost ?? 0).toFixed(4) }}
             </span>
           </template>
         </el-table-column>
 
         <el-table-column prop="totalTokens" label="Token" width="100" align="right" sortable>
-          <template #default="{ row }">
+          <template #default="scope">
             <span :class="{ 'highlight-value': metric === 'tokens' }">
-              {{ formatNumber(row.totalTokens) }}
+              {{ formatNumber(scope?.row?.totalTokens) }}
             </span>
           </template>
         </el-table-column>
 
         <el-table-column prop="durationSeconds" label="时长" width="100" align="right" sortable>
-          <template #default="{ row }">
+          <template #default="scope">
             <span :class="{ 'highlight-value': metric === 'duration' }">
-              {{ formatDuration(row.durationSeconds) }}
+              {{ formatDuration(scope?.row?.durationSeconds) }}
             </span>
           </template>
         </el-table-column>
 
         <el-table-column prop="avgLatency" label="平均延迟" width="110" align="right" sortable>
-          <template #default="{ row }">
+          <template #default="scope">
             <span :class="{ 'highlight-value': metric === 'latency' }">
-              {{ formatLatency(row.avgLatency) }}
+              {{ formatLatency(scope?.row?.avgLatency) }}
             </span>
           </template>
         </el-table-column>
 
         <el-table-column prop="healthGrade" label="健康" width="80" align="center">
-          <template #default="{ row }">
+          <template #default="scope">
             <el-tag
-              v-if="row.healthGrade"
-              :type="getHealthTagType(row.healthGrade)"
+              v-if="scope?.row?.healthGrade"
+              :type="getHealthTagType(scope?.row?.healthGrade)"
               size="small"
             >
-              {{ row.healthGrade }}
+              {{ scope?.row?.healthGrade }}
             </el-tag>
             <span v-else class="text-muted">-</span>
           </template>
@@ -89,12 +89,12 @@
         <el-table-column prop="primaryModel" label="主模型" width="140" show-overflow-tooltip />
 
         <el-table-column label="操作" width="100" align="center" fixed="right">
-          <template #default="{ row }">
+          <template #default="scope">
             <el-button
               type="primary"
               link
               size="small"
-              @click.stop="handleViewPanorama(row.gwSessionId)"
+              @click.stop="handleViewPanorama(scope?.row?.gwSessionId)"
             >
               全景图
             </el-button>
