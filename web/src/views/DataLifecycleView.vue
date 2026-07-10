@@ -25,6 +25,7 @@
 
     <!-- Tab 内容 -->
     <StorageOverview v-show="activeTab === 'storage'" ref="storageRef" />
+    <HotPartitionManager v-show="activeTab === 'hot-partition'" />
     <StorageConfig v-show="activeTab === 'storage-config'" ref="storageConfigRef" />
     <LogManagement v-show="activeTab === 'logs-mgmt'" ref="logMgmtRef" />
     <BlobManager v-show="activeTab === 'blobs'" />
@@ -200,6 +201,7 @@ import {
   type DataLifecycleStatsResponse,
 } from '../api'
 import StorageOverview from './data-lifecycle/StorageOverview.vue'
+import HotPartitionManager from './data-lifecycle/HotPartitionManager.vue'
 import BlobManager from './data-lifecycle/BlobManager.vue'
 import AttachmentManager from './data-lifecycle/AttachmentManager.vue'
 import FilesystemMaintenance from './data-lifecycle/FilesystemMaintenance.vue'
@@ -211,10 +213,11 @@ const { t } = useI18n()
 
 Chart.register(...registerables)
 
-type TabKey = 'storage' | 'storage-config' | 'logs-mgmt' | 'blobs' | 'attachments' | 'filesystem' | 'logs'
+type TabKey = 'storage' | 'hot-partition' | 'storage-config' | 'logs-mgmt' | 'blobs' | 'attachments' | 'filesystem' | 'logs'
 
 const tabs: { key: TabKey; label: string; badge?: string }[] = [
   { key: 'storage', label: '存储总览' },
+  { key: 'hot-partition', label: 'Hot表迁移 & 分区清理' },
   { key: 'storage-config', label: '存储配置' },
   { key: 'logs-mgmt', label: '日志管理' },
   { key: 'attachments', label: '会话附件' },
