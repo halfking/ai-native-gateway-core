@@ -48,6 +48,7 @@ func (d *Detector) loadRules(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	d.activeRules = make(map[int64]*Rule, len(rules))
 	for i := range rules {
 		d.activeRules[rules[i].ID] = &rules[i]
 	}
