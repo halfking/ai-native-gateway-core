@@ -234,7 +234,7 @@ onMounted(load)
           <el-option :label="t('ops.fault.status.resolving')" value="resolving" />
           <el-option :label="t('ops.fault.status.resolved')" value="resolved" />
         </el-select>
-        <el-select v-model="filterSeverity" :placeholder="t('ops.fault.severity')" style="width: 150px">
+        <el-select v-model="filterSeverity" :placeholder="t('ops.fault.severityLabel')" style="width: 150px">
           <el-option :label="t('common.all')" value="all" />
           <el-option :label="t('ops.fault.severity.critical')" value="critical" />
           <el-option :label="t('ops.fault.severity.warning')" value="warning" />
@@ -250,7 +250,7 @@ onMounted(load)
       </template>
       <el-table v-loading="loading" :data="filteredEvents">
         <el-table-column prop="rule_name" :label="t('ops.fault.ruleName')" width="200" />
-        <el-table-column prop="severity" :label="t('ops.fault.severity')" width="100">
+        <el-table-column prop="severity" :label="t('ops.fault.severityLabel')" width="100">
           <template #default="{ row }">
             <el-tag :type="severityType(row.severity)" size="small">
               {{ t(`ops.fault.severity.${row.severity}`) }}
@@ -296,7 +296,7 @@ onMounted(load)
       <el-table :data="rules" size="small">
         <el-table-column prop="name" :label="t('ops.fault.ruleName')" width="180" />
         <el-table-column prop="description" :label="t('common.description')" min-width="200" />
-        <el-table-column prop="severity" :label="t('ops.fault.severity')" width="100">
+        <el-table-column prop="severity" :label="t('ops.fault.severityLabel')" width="100">
           <template #default="{ row }">
             <el-tag :type="severityType(row.severity)" size="small">
               {{ t(`ops.fault.severity.${row.severity}`) }}
@@ -348,7 +348,7 @@ onMounted(load)
             :placeholder="t('ops.fault.descriptionPlaceholder')"
           />
         </el-form-item>
-        <el-form-item :label="t('ops.fault.severity')" required>
+        <el-form-item :label="t('ops.fault.severityLabel')" required>
           <el-radio-group v-model="ruleForm.severity">
             <el-radio label="critical">{{ t('ops.fault.severity.critical') }}</el-radio>
             <el-radio label="warning">{{ t('ops.fault.severity.warning') }}</el-radio>
