@@ -59,7 +59,12 @@ async function handleCreate() {
 
   loading.value = true
   try {
-    await createLicense(createForm.value)
+    // Element Plus el-date-picker 返回 RFC3339 格式（value-format）
+    await createLicense({
+      customer: createForm.value.customer,
+      max_devices: createForm.value.max_devices,
+      expires_at: createForm.value.expires_at,
+    })
     ElMessage.success(t('ops.license.createSuccess'))
     showCreateDialog.value = false
     createForm.value = { customer: '', max_devices: 5, expires_at: '' }
@@ -79,7 +84,7 @@ async function handleRevoke(license: License) {
       t('common.warning'),
       { type: 'warning' }
     )
-    await revokeLicense(license.id)
+    await revokeLicense(license.license_key)
     ElMessage.success(t('ops.license.revokeSuccess'))
     await load()
   } catch (error) {
@@ -100,7 +105,7 @@ async function handleExpandChange(row: License) {
   expandedRows.value.push(row.id)
   if (!devices.value[row.id]) {
     try {
-      devices.value[row.id] = await getLicenseDevices(row.id)
+      devices.value[row.id] = await getLicenseDevices(row.license_key)
     } catch (error) {
       ElMessage.error(t('ops.license.loadDevicesFailed'))
       console.error(error)
@@ -111,7 +116,7 @@ async function handleExpandChange(row: License) {
 async function handleApproveOffline(request: OfflineActivationRequest) {
   loading.value = true
   try {
-    const result = await approveOfflineActivation(request.id)
+    const result = await approveOfflineActivation(request.request_code)
     ElMessage.success(t('ops.license.approveSuccess'))
     ElMessageBox.alert(
       `${t('ops.license.activationCode')}: ${result.activation_code}`,
@@ -134,7 +139,7 @@ async function handleRejectOffline(request: OfflineActivationRequest) {
       t('ops.license.rejectTitle'),
       { inputType: 'textarea' }
     )
-    await rejectOfflineActivation(request.id, reason)
+    await rejectOfflineActivation(request.request_code, reason)
     ElMessage.success(t('ops.license.rejectSuccess'))
     await loadOfflineRequests()
   } catch (error) {

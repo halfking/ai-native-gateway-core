@@ -233,6 +233,10 @@ export default {
       credentialModelIndex: '凭据模型索引',
       usageLedger: '用量账本',
       routingDecisionLog: '路由决策日志',
+      requestWal: '请求 WAL',
+      requestLogsBodies: '请求日志正文',
+      creditLedger: '额度账本',
+      toolUsageStats: '工具用量统计',
     },
     labels: {
       rows: '行数',

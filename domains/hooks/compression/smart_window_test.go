@@ -2,6 +2,7 @@ package compression
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -103,6 +104,9 @@ func TestFindOptimalCutPoint_LargeConversation(t *testing.T) {
 	if plan.RetainCount == 0 {
 		t.Error("expected non-zero retain count")
 	}
+	if !plan.FirstUserKept {
+		t.Error("expected first user to be preserved by the pinned track")
+	}
 	t.Logf("plan: cutIdx=%d summarise=%d retain=%d estBefore=%d estAfter=%d reason=%s",
 		plan.CutIndex, plan.SummariseCount, plan.RetainCount,
 		plan.EstTokensBefore, plan.EstTokensAfter, plan.Reason)
@@ -170,9 +174,9 @@ func TestSmartCompress_BasicRebuild(t *testing.T) {
 		t.Fatalf("failed to parse rebuilt body: %v", err)
 	}
 
-	// Expected: [system, summary(user), user Q2, assistant A2]
-	if len(result.Messages) != 4 {
-		t.Fatalf("expected 4 messages, got %d", len(result.Messages))
+	// Expected: [system, summary, pinned first user, user Q2, assistant A2].
+	if len(result.Messages) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(result.Messages))
 	}
 	if result.Messages[0].Role != "system" {
 		t.Errorf("expected system at [0], got %s", result.Messages[0].Role)
@@ -180,11 +184,14 @@ func TestSmartCompress_BasicRebuild(t *testing.T) {
 	if result.Messages[1].Role != "user" {
 		t.Errorf("expected user (summary) at [1], got %s", result.Messages[1].Role)
 	}
-	if result.Messages[2].Role != "user" {
-		t.Errorf("expected user at [2], got %s", result.Messages[2].Role)
+	if result.Messages[2].Content != "Question 1" {
+		t.Errorf("expected pinned first user at [2], got %q", result.Messages[2].Content)
 	}
-	if result.Messages[3].Role != "assistant" {
-		t.Errorf("expected assistant at [3], got %s", result.Messages[3].Role)
+	if result.Messages[3].Content != "Question 2" {
+		t.Errorf("expected retained user at [3], got %q", result.Messages[3].Content)
+	}
+	if result.Messages[4].Role != "assistant" {
+		t.Errorf("expected assistant at [4], got %s", result.Messages[4].Role)
 	}
 }
 
@@ -313,9 +320,9 @@ func TestIncrementalBuild_Basic(t *testing.T) {
 		t.Fatalf("failed to parse rebuilt body: %v", err)
 	}
 
-	// Expected: [system, summary(user), new question(user)]
-	if len(result.Messages) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(result.Messages))
+	// Expected: [system, summary, pinned first user, new question].
+	if len(result.Messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(result.Messages))
 	}
 	if result.Messages[0].Role != "system" {
 		t.Errorf("expected system at [0], got %s", result.Messages[0].Role)
@@ -323,8 +330,35 @@ func TestIncrementalBuild_Basic(t *testing.T) {
 	if result.Messages[1].Role != "user" {
 		t.Errorf("expected summary(user) at [1], got %s", result.Messages[1].Role)
 	}
-	if result.Messages[2].Content != "New question" {
-		t.Errorf("expected 'New question' at [2], got %s", result.Messages[2].Content)
+	if result.Messages[2].Content != "Old question 1" {
+		t.Errorf("expected pinned first user at [2], got %s", result.Messages[2].Content)
+	}
+	if result.Messages[3].Content != "New question" {
+		t.Errorf("expected 'New question' at [3], got %s", result.Messages[3].Content)
+	}
+}
+
+func TestSmartCompress_DoesNotDuplicateFirstUserInTail(t *testing.T) {
+	body := makeBodyAny(
+		makeMsg("system", "sys"),
+		makeMsg("user", "first request"),
+		makeMsg("assistant", "answer"),
+	)
+	plan := CutPlan{CutIndex: 0, SystemCount: 1}
+
+	rebuilt, err := SmartCompress(body, plan, "openai", "summary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(rebuilt), "first request"); got != 1 {
+		t.Fatalf("first user duplicated %d times", got)
+	}
+}
+
+func TestSmartCompress_InvalidSystemCount(t *testing.T) {
+	body := makeBodyAny(makeMsg("user", "message"))
+	if _, err := SmartCompress(body, CutPlan{SystemCount: 2}, "openai", "summary"); err == nil {
+		t.Fatal("expected invalid system count to return an error")
 	}
 }
 
@@ -341,6 +375,18 @@ func TestIncrementalBuild_StaleMarker(t *testing.T) {
 	_, ok := IncrementalBuild(body, marker, "openai")
 	if ok {
 		t.Error("expected IncrementalBuild to fail with stale marker")
+	}
+}
+
+func TestIncrementalBuild_InvalidSystemCount(t *testing.T) {
+	body := makeBodyAny(makeMsg("user", "message"))
+	marker := CutMarker{
+		SystemMsgCount: 2,
+		CutIndex:       0,
+		SummaryText:    "Summary",
+	}
+	if _, ok := IncrementalBuild(body, marker, "openai"); ok {
+		t.Error("expected invalid system count to be rejected")
 	}
 }
 

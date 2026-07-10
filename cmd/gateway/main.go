@@ -2242,13 +2242,11 @@ func main() {
 		autoupdateInstaller := autoupdate.NewInstaller("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
 		autoupdateRollback := autoupdate.NewRollback("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
 		autoupdateAPI := autoupdate.NewAdminAPI(autoupdateStore, autoupdateDownloader, autoupdateInstaller, autoupdateRollback)
-		// 前端使用 /api/admin/releases，前端期望不含 /autoupdate 前缀
-		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/releases"))
-		slog.Info("Phase 4: Auto-update API enabled (/api/admin/releases/*)")
-
-		// Autoupdate upgrade-logs 端点（前端使用 path = /api/admin/upgrade-logs 或 /api/admin/releases/upgrade-logs）
-		// 这里单独注册以兼容多种路径
+		// 前端使用 /api/admin/releases/*，handler 内部路径已包含 /releases
+		autoupdateAPI.RegisterRoutes(e.Group("/api/admin"))
+		// 别名：兼容 /api/admin/upgrade-logs
 		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/autoupdate"))
+		slog.Info("Phase 4: Auto-update API enabled (/api/admin/releases/*)")
 
 		// Phase 5: Center Ops (中心运维)
 		centerStore := center.NewPgxStore(pool)
@@ -2426,25 +2424,10 @@ func main() {
 			slog.Info("Phase 3.9 approval query API enabled (/api/v1/approvals/*, /api/admin/approvals/stats)")
 
 			// DingTalk approval callback (钉钉机器人审批回调)
-			// 签名校验密钥优先读取 dingtalk_bot.* 模块设置，回退到环境变量，
-			// 保证模块开关与配置真正控制回调验签。
-			dingSignSecret := os.Getenv("DINGTALK_SIGN_SECRET")
-			if dingSignSecret == "" {
-				dingSignSecret = os.Getenv("DINGTALK_APP_SECRET")
-			}
-			if cfg, ok := dingTalkConfigFromSettings(); ok {
-				if cfg.SignSecret != "" {
-					dingSignSecret = cfg.SignSecret
-				} else if cfg.AppSecret != "" {
-					dingSignSecret = cfg.AppSecret
-				}
-			}
-			if dingSignSecret != "" {
-				api.RegisterDingTalkRoutes(mux, approvalMgr, dingSignSecret)
-				slog.Info("dingtalk approval callback enabled (/api/webhooks/dingtalk/approval-callback)")
-			} else {
-				slog.Warn("DINGTALK_SIGN_SECRET not set, dingtalk approval callback disabled")
-			}
+			// The handler resolves module state on every callback so HotReload can
+			// disable the endpoint, rotate the secret, or update the allowlist.
+			api.RegisterDingTalkRoutes(mux, approvalMgr, dingTalkCallbackSecretFromSettings, dingTalkUserIsAllowed)
+			slog.Info("dingtalk approval callback registered (/api/webhooks/dingtalk/approval-callback); requests require an enabled, configured module")
 		}
 
 		// Phase 3.10 (2026-07-03, Task D1): Approval Configuration Management API
@@ -2963,21 +2946,6 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
 		slog.Info("dingtalk channel initialized from module settings",
 			"webhook", dingCfg.WebhookURL != "", "app_mode", dingCfg.AppKey != "")
-	} else if dingWebhook := os.Getenv("DINGTALK_WEBHOOK_URL"); dingWebhook != "" {
-		dingCfg := notification.DingTalkConfig{
-			WebhookURL: dingWebhook,
-			SignSecret: os.Getenv("DINGTALK_SIGN_SECRET"),
-		}
-		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
-		slog.Info("dingtalk channel initialized from env webhook")
-	} else if dingAppKey := os.Getenv("DINGTALK_APP_KEY"); dingAppKey != "" {
-		dingAppSecret := os.Getenv("DINGTALK_APP_SECRET")
-		dingCfg := notification.DingTalkConfig{
-			AppKey:    dingAppKey,
-			AppSecret: dingAppSecret,
-		}
-		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
-		slog.Info("dingtalk channel initialized", "app_key", dingAppKey)
 	}
 
 	// 企业微信渠道
@@ -3069,10 +3037,65 @@ func dingTalkConfigFromSettings() (notification.DingTalkConfig, bool) {
 		}
 	}
 
-	if cfg.WebhookURL == "" && cfg.AppKey == "" {
+	if cfg.WebhookURL == "" && !hasCompleteDingTalkAppConfig(cfg) {
+		if cfg.AppKey != "" || cfg.AppSecret != "" || cfg.AgentID != "" {
+			slog.Warn("dingtalk app-mode configuration incomplete", "has_app_key", cfg.AppKey != "", "has_app_secret", cfg.AppSecret != "", "has_agent_id", cfg.AgentID != "")
+		}
 		return notification.DingTalkConfig{}, false
 	}
 	return cfg, true
+}
+
+func hasCompleteDingTalkAppConfig(cfg notification.DingTalkConfig) bool {
+	return cfg.AppKey != "" && cfg.AppSecret != "" && cfg.AgentID != ""
+}
+
+func dingTalkAllowedUsersFromSettings() []string {
+	if settings.Global == nil {
+		return nil
+	}
+	sp := settings.Global.Spec("dingtalk_bot.allowed_users")
+	if sp == nil {
+		return nil
+	}
+	raw, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	var users []string
+	for _, userID := range strings.Split(strings.Trim(string(raw), `"`), ",") {
+		if userID = strings.TrimSpace(userID); userID != "" {
+			users = append(users, userID)
+		}
+	}
+	return users
+}
+
+func dingTalkCallbackSecretFromSettings() string {
+	if !readBoolSettingValue("dingtalk_bot.verify_signature") {
+		return ""
+	}
+	cfg, ok := dingTalkConfigFromSettings()
+	if !ok {
+		return ""
+	}
+	if cfg.SignSecret != "" {
+		return cfg.SignSecret
+	}
+	return cfg.AppSecret
+}
+
+func dingTalkUserIsAllowed(userID string) bool {
+	users := dingTalkAllowedUsersFromSettings()
+	if len(users) == 0 {
+		return true
+	}
+	for _, allowedUserID := range users {
+		if userID == allowedUserID {
+			return true
+		}
+	}
+	return false
 }
 
 // readBoolSettingValue 读取平台级 bool 设置项（忽略错误，缺省 false）。

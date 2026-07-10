@@ -21,11 +21,11 @@ func NewThreatDetector(severityThreshold int) *ThreatDetector {
 	// 编译 PII 正则表达式（大小写不敏感，优化性能）
 	piiPatterns := []*regexp.Regexp{
 		// SSN: 支持有无冒号、空格、连字符
-		regexp.MustCompile(`(?i)ssn:?\s*\d{3}[-\s]?\d{2}[-\s]?\d{4}`),
+		regexp.MustCompile(`(?i)ssn(?:\s|[:：=]|is|是|为)*\d{3}[-\s]?\d{2}[-\s]?\d{4}`),
 		// Passport: 支持有无冒号、空格，6-12位字母数字
 		regexp.MustCompile(`(?i)passport:?\s*[A-Z0-9]{6,12}`),
 		// 信用卡：支持中英文、空格、连字符、无分隔符，更宽松匹配
-		regexp.MustCompile(`(?i)(信用卡号?|credit\s*card\s*number?|card\s*number?):?\s*\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}`),
+		regexp.MustCompile(`(?i)(信用卡号?|credit\s*card\s*number?|card\s*number?)(?:\s|[:：=]|is|是|为)*\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}`),
 		// 身份证号（中国）：18位或15位
 		regexp.MustCompile(`(?i)(身份证号?|id\s*card):?\s*\d{15}(\d{2}[0-9Xx])?`),
 		// 电话号码：常见格式
@@ -104,8 +104,12 @@ func containsAnyLower(contentLower string, keywords []string) bool {
 
 // IsCritical 判断是否需要阻断
 func (d *ThreatDetector) IsCritical(threats []*Threat) bool {
+	return isCriticalAt(threats, d.severityThreshold)
+}
+
+func isCriticalAt(threats []*Threat, threshold int) bool {
 	for _, t := range threats {
-		if t.Severity >= d.severityThreshold {
+		if t.Severity >= threshold {
 			return true
 		}
 	}
