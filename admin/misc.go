@@ -6,14 +6,126 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-const llmGatewayVersionFile = "VERSION"
-const llmGatewayDeploySeqFile = ".deploy_seq"
+// llmGatewayVersionJSON 是版本信息的唯一来源 (SSOT - Single Source of Truth)
+// 替代之前分散在 VERSION / .deploy_seq / build_seq / web/public/version.json 等多个文件中的版本信息。
+//
+// 部署流程：
+//  1. bump-version.sh 更新 version.json（唯一写入点）
+//  2. 部署时只需上传一个 version.json 文件
+//  3. 所有版本/编译次数读取都从这一个文件解析
+//
+// 格式示例：
+//
+//	{
+//	  "version":    "2.4.2-f56f3c5e-20260710-965",
+//	  "git_tag":    "2.4.2",
+//	  "git_sha":    "f56f3c5e",
+//	  "build_seq":  965,
+//	  "build_date": "20260710",
+//	  "module":     "llm-gateway-go"
+//	}
+const llmGatewayVersionJSON = "version.json"
+
+var (
+	versionCache   map[string]any
+	versionCacheMu sync.RWMutex
+)
+
+// loadVersionInfo 统一从 version.json 读取版本信息。
+// 优先路径（与生产部署一致）：/opt/llm-gateway-go/version.json
+// 回退路径（开发环境）：当前工作目录及 services/llm-gateway-go/
+// 结果缓存 5 秒，避免每次请求都读文件。
+func loadVersionInfo() map[string]any {
+	// 1) 优先：环境变量注入的原始 JSON（部署脚本可设置）
+	if raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_VERSION_JSON")); raw != "" {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(raw), &m); err == nil {
+			return m
+		}
+	}
+
+	// 2) 从文件读取（带缓存）
+	versionCacheMu.RLock()
+	cached := versionCache
+	versionCacheMu.RUnlock()
+	if cached != nil {
+		return cached
+	}
+
+	versionCacheMu.Lock()
+	defer versionCacheMu.Unlock()
+	if versionCache != nil {
+		return versionCache
+	}
+
+	for _, path := range versionJSONCandidates() {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err == nil {
+			versionCache = m
+			return m
+		}
+	}
+
+	// 3) 完全读取不到时，使用编译期硬编码默认值兜底
+	// （理论上不应发生，因为 version.json 会被部署脚本一起上传）
+	fallbackVersion := "dev"
+	versionCache = map[string]any{
+		"version":    fallbackVersion,
+		"git_tag":    "dev",
+		"git_sha":    "unknown",
+		"build_seq":  0,
+		"build_date": time.Now().UTC().Format("20060102"),
+		"module":     "llm-gateway-go",
+	}
+	return versionCache
+}
+
+// versionJSONCandidates 按优先级返回可能的 version.json 路径。
+func versionJSONCandidates() []string {
+	candidates := []string{
+		"/opt/llm-gateway-go/" + llmGatewayVersionJSON,
+	}
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		candidates = append(candidates,
+			wd+"/"+llmGatewayVersionJSON,
+			wd+"/services/llm-gateway-go/"+llmGatewayVersionJSON,
+		)
+	}
+	return candidates
+}
+
+// parseBuildSeq 从版本字符串末尾提取 build_seq。
+// 版本格式：<semver>-<git_sha>-<date>-<build_seq>
+// 例如 "2.4.2-f56f3c5e-20260710-965" → 965
+func parseBuildSeq(version string) int {
+	parts := strings.Split(version, "-")
+	if len(parts) == 0 {
+		return 0
+	}
+	last := parts[len(parts)-1]
+	if n, err := strconv.Atoi(last); err == nil {
+		return n
+	}
+	return 0
+}
+
+// invalidateVersionCache 清除缓存（供外部在版本更新时调用，目前由环境变量方案支持）。
+// 保留为公开函数以备未来需要（如热重载场景）。
+func invalidateVersionCache() {
+	versionCacheMu.Lock()
+	versionCache = nil
+	versionCacheMu.Unlock()
+}
 
 func (h *Handler) handleTags(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
@@ -253,150 +365,4 @@ func (h *Handler) handleSystemVersion(w http.ResponseWriter, r *http.Request) {
 
 	info := loadVersionInfo()
 	writeJSON(w, http.StatusOK, info)
-}
-
-func loadVersionInfo() map[string]any {
-	if raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_VERSION")); raw != "" {
-		return parseVersionString(raw)
-	}
-	for _, path := range versionFileCandidates() {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		if content := strings.TrimSpace(string(raw)); content != "" {
-			return parseVersionString(content)
-		}
-	}
-
-	sha := strings.TrimSpace(os.Getenv("GIT_SHA"))
-	if sha == "" {
-		sha = "unknown"
-	}
-	now := time.Now().UTC()
-	return map[string]any{
-		"version":    "0.1.0",
-		"git_sha":    sha,
-		"build_time": now.Format("20060102"),
-		"build_date": now.Format("2006-01-02"),
-		"build_seq":  loadDeploySeq(),
-	}
-}
-
-func versionFileCandidates() []string {
-	candidates := []string{
-		"/opt/llm-gateway-go/" + llmGatewayVersionFile,
-		llmGatewayVersionFile,
-		"services/llm-gateway-go/" + llmGatewayVersionFile,
-	}
-	if wd, err := os.Getwd(); err == nil && wd != "" {
-		candidates = append(candidates,
-			wd+"/"+llmGatewayVersionFile,
-			wd+"/services/llm-gateway-go/"+llmGatewayVersionFile,
-		)
-	}
-	return candidates
-}
-
-func loadDeploySeq() int {
-	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_BUILD_SEQ")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	for _, path := range deploySeqFileCandidates() {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		if n, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
-			return n
-		}
-	}
-	return 0
-}
-
-func deploySeqFileCandidates() []string {
-	candidates := []string{
-		"/opt/llm-gateway-go/" + llmGatewayDeploySeqFile,
-		llmGatewayDeploySeqFile,
-		"services/llm-gateway-go/" + llmGatewayDeploySeqFile,
-	}
-	if wd, err := os.Getwd(); err == nil && wd != "" {
-		candidates = append(candidates,
-			wd+"/"+llmGatewayDeploySeqFile,
-			wd+"/services/llm-gateway-go/"+llmGatewayDeploySeqFile,
-		)
-	}
-	return candidates
-}
-
-func parseVersionString(raw string) map[string]any {
-	// Version file layout: <semver>-<git-sha>-<date>-<build-seq>
-	//   e.g. "2.4.1-9cc007b3-20260708-953"
-	// SplitN with -1 keeps the trailing segments so the build-seq is
-	// preserved on the date field. Earlier SplitN(_, _, 3) clobbered
-	// the build-seq into build_time, which both corrupted the date
-	// display and made the version parsing brittle.
-	parts := strings.Split(raw, "-")
-	version := parts[0]
-	gitSHA := ""
-	buildDate := ""
-	if len(parts) > 1 {
-		gitSHA = parts[1]
-	}
-	if len(parts) > 2 {
-		// The date may be 8 digits (YYYYMMDD) or 4-2-2 with dashes
-		// like "2026-07-08". If there are 4+ parts, the build-seq
-		// is the trailing numeric segment and the date is everything
-		// in between.
-		if len(parts) >= 4 {
-			buildDate = strings.Join(parts[2:len(parts)-1], "-")
-		} else {
-			buildDate = parts[2]
-		}
-	}
-	if envSHA := strings.TrimSpace(os.Getenv("GIT_SHA")); envSHA != "" {
-		gitSHA = envSHA
-	}
-	if ok, _ := regexp.MatchString(`^[0-9a-f]{7,40}$`, gitSHA); !ok {
-		if m := regexp.MustCompile(`g([0-9a-f]{7,40})`).FindStringSubmatch(raw); len(m) == 2 {
-			gitSHA = m[1]
-		} else {
-			reSHA := regexp.MustCompile(`^[0-9a-f]{7,40}$`)
-			for _, p := range strings.Split(raw, "-") {
-				if reSHA.MatchString(p) {
-					gitSHA = p
-					break
-				}
-			}
-		}
-	}
-	if ok, _ := regexp.MatchString(`^(\d{8}|\d{4}-\d{2}-\d{2})$`, buildDate); !ok {
-		reDate := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-		for _, p := range strings.Split(raw, "-") {
-			if reDate.MatchString(p) {
-				buildDate = p
-				break
-			}
-		}
-	}
-	if buildDate == "" {
-		if bt := strings.TrimSpace(os.Getenv("BUILD_TIME")); bt != "" {
-			buildDate = bt
-		} else {
-			buildDate = time.Now().UTC().Format("20060102")
-		}
-	}
-	displayDate := buildDate
-	if len(buildDate) == 8 && buildDate[0] >= '0' && buildDate[0] <= '9' {
-		displayDate = buildDate[0:4] + "-" + buildDate[4:6] + "-" + buildDate[6:8]
-	}
-	return map[string]any{
-		"version":    version,
-		"git_sha":    gitSHA,
-		"build_time": buildDate,
-		"build_date": displayDate,
-		"build_seq":  loadDeploySeq(),
-	}
 }

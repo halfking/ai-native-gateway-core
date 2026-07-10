@@ -189,7 +189,7 @@ log "[5/8] stop 154 上的 $SERVICE_NAME..."
 $SSH "$SSH_TARGET" "systemctl is-active --quiet $SERVICE_NAME && systemctl stop $SERVICE_NAME || true; sleep 2; systemctl is-active --quiet $SERVICE_NAME && echo STILL_ACTIVE || echo STOPPED"
 log "  服务已停止 ✓"
 
-# ── Step 6: scp 二进制 + web/dist + VERSION + .deploy_seq ─────
+# ── Step 6: scp 二进制 + web/dist + version.json (SSOT) ──────
 log "[6/8] scp 上传到 $REMOTE_DIR..."
 $SSH "$SSH_TARGET" "mkdir -p $REMOTE_DIR/web"
 $SCP "$BIN_NAME" "$SSH_TARGET:$REMOTE_DIR/$BIN_NAME"
@@ -201,11 +201,13 @@ if [[ -d web/dist ]]; then
   # 展平方式: 把 dist/ 里的内容放到 web/ 下 (不是 web/dist/)
   tar czf - -C web dist | $SSH "$SSH_TARGET" "cat | tar xzf - -C $REMOTE_DIR/web --strip-components=1"
 fi
+# 版本信息统一通过 version.json (SSOT - Single Source of Truth) 传递
+# 替代之前分散的 VERSION / .deploy_seq / build_seq 三个文件
+$SCP version.json "$SSH_TARGET:$REMOTE_DIR/version.json"
+# 兼容性：保留 VERSION 文件供旧 binary 使用（可平滑过渡）
 echo "$NEW_VERSION" > /tmp/__deploy-154.version
-echo "$NEW_SEQ"     > /tmp/__deploy-154.seq
 $SCP /tmp/__deploy-154.version "$SSH_TARGET:$REMOTE_DIR/VERSION"
-$SCP /tmp/__deploy-154.seq     "$SSH_TARGET:$REMOTE_DIR/.deploy_seq"
-rm -f /tmp/__deploy-154.version /tmp/__deploy-154.seq
+rm -f /tmp/__deploy-154.version
 log "  文件已上传 ✓"
 
 # ── Step 7: 写入 env-file + start ─────────────────────────────
