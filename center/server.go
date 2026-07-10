@@ -154,10 +154,10 @@ func (s *Server) GetDashboardStats(ctx context.Context) (*DashboardStats, error)
 
 // DashboardStats 仪表盘统计
 type DashboardStats struct {
-	TotalInstances    int
-	OnlineInstances   int
-	OfflineInstances  int
-	DegradedInstances int
+	TotalInstances    int `json:"total_instances"`
+	OnlineInstances   int `json:"online_count"`
+	OfflineInstances  int `json:"offline_count"`
+	DegradedInstances int `json:"degraded_count"`
 }
 
 // generateCommandID 生成命令ID

@@ -92,7 +92,7 @@ case result.Score >= 3:  // 从 5 改为 3
     result.Decision = DecisionWarn
 ```
 
-### unit_verify.go
+### cmd/audit-unit/main.go
 - 更新测试用例预期结果
 - 添加更多边界测试
 
