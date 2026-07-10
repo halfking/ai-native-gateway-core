@@ -332,14 +332,14 @@ BEGIN
         PERFORM cron.schedule(
             'archive-sme-daily',
             '0 2 * * *',
-            $$SELECT archive_session_module_executions(7)$$
+            'SELECT archive_session_module_executions(7)'
         );
         
         -- 每月 1 号确保下个月分区存在
         PERFORM cron.schedule(
             'ensure-sme-partition-monthly',
             '0 0 1 * *',
-            $$SELECT ensure_session_module_executions_partition()$$
+            'SELECT ensure_session_module_executions_partition()'
         );
     END IF;
 END $$;

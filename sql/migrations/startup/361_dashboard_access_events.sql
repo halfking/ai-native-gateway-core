@@ -306,14 +306,14 @@ BEGIN
         PERFORM cron.schedule(
             'archive-dashboard-events-daily',
             '0 3 * * *',
-            $$SELECT archive_dashboard_events(30)$$
+            'SELECT archive_dashboard_events(30)'
         );
         
         -- 每月 1 号确保下个月分区存在
         PERFORM cron.schedule(
             'ensure-dashboard-partition-monthly',
             '0 0 1 * *',
-            $$SELECT ensure_dashboard_events_partition()$$
+            'SELECT ensure_dashboard_events_partition()'
         );
     END IF;
 END $$;
