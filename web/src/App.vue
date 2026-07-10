@@ -48,7 +48,8 @@ onMounted(async () => {
         if (meAny?.access_token) {
           setJwtToken(meAny.access_token)
         }
-        setUserInfo(me)
+        // 2026-07-12 audit: unwrap {user,...} so store.userInfo keeps the UserInfo shape.
+        setUserInfo(meAny?.user ?? me)
       } catch {
         // 401 → no valid cookie either, user is logged out
         clearJwt()
