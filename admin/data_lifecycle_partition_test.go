@@ -69,7 +69,7 @@ func TestPartitionedTableConfig(t *testing.T) {
 		if config.TableName == "" {
 			t.Errorf("partitionedTable has empty TableName")
 		}
-		if config.ArchiveTableName == "" {
+		if config.HasArchiveFunc && config.ArchiveTableName == "" {
 			t.Errorf("partitionedTable %s has empty ArchiveTableName", config.TableName)
 		}
 		if config.PartitionColumn == "" {
@@ -80,12 +80,11 @@ func TestPartitionedTableConfig(t *testing.T) {
 		}
 	}
 
-	// Migration 331 (2026-07-04) removed archive_request_logs and
-	// archive_request_wal from the admin UI surface. The remaining
-	// (still-archive-managed) tables are routing_decision_log and
-	// credential_model_index. Pin that set so a future onboarding
-	// updates both this test and the live partitionedTables slice.
+	// Admin UI still needs to list the main monthly partitioned tables for
+	// manual cleanup, while only a subset still support archive_* helpers.
 	expected := map[string]string{
+		"request_logs":           "",
+		"usage_ledger":           "",
 		"routing_decision_log":   "routing_decision_log_archive",
 		"credential_model_index": "credential_model_index_archive",
 	}
@@ -94,7 +93,7 @@ func TestPartitionedTableConfig(t *testing.T) {
 		for _, config := range partitionedTables {
 			if config.TableName == tbl {
 				found = true
-				if !config.HasArchiveFunc {
+				if wantArchive != "" && !config.HasArchiveFunc {
 					t.Errorf("%s should have HasArchiveFunc=true", tbl)
 				}
 				if config.ArchiveTableName != wantArchive {
@@ -104,7 +103,7 @@ func TestPartitionedTableConfig(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("%s not found in partitionedTables (removed by migration 331 from the UI, but still archive-managed)", tbl)
+			t.Errorf("%s not found in partitionedTables", tbl)
 		}
 	}
 }
