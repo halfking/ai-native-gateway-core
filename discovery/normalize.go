@@ -41,44 +41,155 @@ func NormalizeModelName(raw string) string {
 // previous hard-coded map. The previous version was an if/else
 // cascade; this is a single map for the same effect.
 var vendorCanonicalFamilies = map[string]string{
-	// Anthropic — all "claude-*" collapse to "anthropic-claude"
+	// ========== 国际厂商 ==========
+
+	// Anthropic (美国) — all "claude-*" collapse to "anthropic-claude"
 	"claude": "anthropic-claude",
-	// OpenAI — gpt-*, o1/o3/o4 collapse to "openai-gpt"
-	"gpt": "openai-gpt",
-	"o1":  "openai-gpt",
-	"o3":  "openai-gpt",
-	"o4":  "openai-gpt",
-	// Meta — llama/llama2/llama3 collapse to "meta-llama"
-	"llama":  "meta-llama",
-	"llama2": "meta-llama",
-	"llama3": "meta-llama",
-	// Google — "gemini" → "google-gemini"; "gemma" is its own family
+
+	// OpenAI (美国) — gpt-*, o1/o3/o4/o5, dall-e, whisper, tts
+	"gpt":  "openai-gpt",
+	"o1":   "openai-gpt",
+	"o3":   "openai-gpt",
+	"o4":   "openai-gpt",
+	"o5":   "openai-gpt",
+	"dall": "openai-image", // dall-e-3 → openai-image
+
+	// Meta (美国) — llama/llama2/llama3/llama4, codellama
+	"llama":     "meta-llama",
+	"llama2":    "meta-llama",
+	"llama3":    "meta-llama",
+	"llama4":    "meta-llama",
+	"codellama": "meta-llama",
+
+	// Google (美国) — gemini vs gemma (独立family), palm, bard
 	"gemini": "google-gemini",
 	"gemma":  "gemma",
-	// Mistral AI — ministral / mistral / mixtral all collapse to "mistral"
+	"palm":   "google-palm",
+	"bard":   "google-gemini",
+
+	// Mistral AI (法国) — mistral / mixtral / ministral / codestral
 	"mistral":   "mistral",
 	"ministral": "mistral",
 	"mixtral":   "mistral",
-	// Zhipu AI — bare "glm" → "zhipu-glm"
-	"glm": "zhipu-glm",
-	// Moonshot AI — kimi is the moonshot family, "moonshot" stays
+	"codestral": "mistral",
+
+	// Cohere (加拿大) — command, embed, rerank
+	"command": "cohere",
+	"embed":   "cohere",
+	"rerank":  "cohere",
+
+	// xAI (美国, Elon Musk) — grok
+	"grok": "xai-grok",
+
+	// Microsoft (美国) — phi
+	"phi": "microsoft-phi",
+
+	// NVIDIA (美国) — nemotron
+	"nemotron": "nvidia-nemotron",
+
+	// Perplexity (美国) — sonar
+	"sonar": "perplexity-sonar",
+
+	// Stability AI (英国) — stable-diffusion, stable-lm
+	"stable": "stability",
+
+	// ========== 中国厂商 - 互联网巨头 ==========
+
+	// 阿里云 / Alibaba — qwen 各版本独立, qwq
+	"qwen":  "qwen",
+	"qwen2": "qwen2",
+	"qwen3": "qwen3",
+	"qwq":   "qwq",
+
+	// 腾讯 / Tencent — hunyuan (混元)
+	"hunyuan": "hunyuan",
+
+	// 字节跳动 / ByteDance — doubao (豆包)
+	"doubao": "doubao",
+
+	// 百度 / Baidu — ernie (文心), wenxin
+	"ernie":  "ernie",
+	"wenxin": "ernie",
+
+	// ========== 中国厂商 - AI 独角兽 ==========
+
+	// 智谱 AI / Zhipu AI — glm, chatglm, codegeex
+	"glm":      "zhipu-glm",
+	"chatglm":  "zhipu-glm",
+	"codegeex": "zhipu-glm",
+
+	// 月之暗面 / Moonshot AI — moonshot, kimi
 	"kimi":     "moonshot",
 	"moonshot": "moonshot",
-	// StepFun — bare "step" → "stepfun"
+
+	// 零一万物 / 01.AI (李开复) — yi
+	"yi": "yi",
+
+	// 稀宇科技 / MiniMax — minimax, abab (旧系列)
+	// Note: "abab5.5" / "abab6.5s" 无"-"分隔符，InferFamily返回原值(向后兼容)
+	"minimax": "minimax",
+	"abab":    "minimax",
+
+	// 深度求索 / DeepSeek — deepseek
+	"deepseek": "deepseek",
+
+	// 阶跃星辰 / StepFun — step, stepfun
 	"step":    "stepfun",
 	"stepfun": "stepfun",
-	// ByteDance — "doubao" (豆包)
-	"doubao": "doubao",
-	// Baidu — "ernie" (文心)
-	"ernie": "ernie",
-	// Tencent — "hunyuan" (混元)
-	"hunyuan": "hunyuan",
-	// iFlytek — "spark" (星火)
-	"spark": "spark",
-	// MiniMax — legacy "abab" prefix (abab-chat, etc.)
-	// Note: "abab5.5" / "abab6.5s" have no "-" separator, so InferFamily
-	// returns them verbatim as the family (backward compat with existing DB rows).
-	"abab": "minimax",
+
+	// 百川智能 / Baichuan — baichuan
+	"baichuan": "baichuan",
+
+	// 光年之外 / LightYear (王慧文) — kuae, skywork
+	"kuae":    "kuae",
+	"skywork": "kuae",
+
+	// 商汤科技 / SenseTime — sensechat, sensenova
+	"sensechat": "sensetime",
+	"sensenova": "sensetime",
+
+	// ========== 中国厂商 - 传统科技公司 ==========
+
+	// 科大讯飞 / iFlytek — spark (星火), xinghuo
+	"spark":   "spark",
+	"xinghuo": "spark",
+
+	// 小米 / Xiaomi — mimo
+	"mimo": "mimo",
+
+	// 华为 / Huawei — pangu (盘古)
+	"pangu": "pangu",
+
+	// 网易 / NetEase — youdao (有道)
+	"youdao": "youdao",
+
+	// ========== 其他地区厂商 ==========
+
+	// NAVER (韩国) — hyperclova
+	"hyperclova": "naver-hyperclova",
+
+	// Rinna (日本) — rinna, japanese-gpt
+	"rinna": "rinna",
+
+	// Inception / TII (阿联酋) — falcon
+	"falcon": "falcon",
+
+	// SDAIA (沙特) — allamoe
+	"allamoe": "allamoe",
+
+	// ========== 开源社区 ==========
+
+	// EleutherAI — gpt-neo, gpt-j, pythia
+	"pythia": "eleutherai",
+
+	// BigScience — bloom
+	"bloom": "bigscience-bloom",
+
+	// Together AI — together
+	"together": "together",
+
+	// Cursor (IDE) — cursor
+	"cursor": "cursor",
 }
 
 // CanonicalizeFamilyID takes a raw family id (as it might be stored in
