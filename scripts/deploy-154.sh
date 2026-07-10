@@ -22,6 +22,35 @@
 # 前置 (硬门禁):
 #   env-injector inject aliyun-gateway-154
 #   ↑ 必须先注入 SSH_KEY_154 / LLM_GATEWAY_SECRET_KEY 等
+#
+# ⚠️  关键经验 (2026-07-10 unified auth 部署踩坑):
+#
+#   1. **永远用 systemd restart, 永远不要 nohup**
+#      systemd unit 通过 EnvironmentFile=/etc/llm-gateway-go/env 加载 env。
+#      nohup 启动会丢失 env, 导致 panic "CORS origins must be explicitly configured"、
+#      pg conn 失败、AdminMiddleware 走 fail-open 等。
+#
+#   2. **改完前端代码立刻 build 验证 dist**
+#      TypeScript 不会对未导入的自由变量报错 (例如把 `authBearer()` 用在
+#      loadVersion 但忘了 import), 浏览器加载新 chunk 时才在运行时炸开。
+#      部署前先本地 build 一次, 确认 dist 里有正确 chunk hash。
+#
+#   3. **加新 handler 路由要 nil-check h.db**
+#      154 上的 binary 在 v326+ 有 pg keepalive 问题, 60s 后 pg 被禁用,
+#      此时 h.db == nil。所有新 handler 都要写 `if h.db == nil { 503 }`。
+#      现有 handler 都有, 但新写的很容易漏。
+#
+#   4. **部署后立即 smoke test**
+#      GET /healthz (200) → 匿名健康
+#      GET /api/auth/me with JWT (200) → admin 认证
+#      GET /api/auth/me with sk-* (401) → sk-* admin 路径已删除
+#      GET /api/models/name-mapping with JWT (200) → admin 数据
+#      如果 502 → systemctl restart llm-gateway-go.service
+#      如果 panic → 立即回滚（见 §5 经验总结）
+#
+#   5. **二进制中的字符串检查**
+#      strings /opt/llm-gateway-go/llm-gateway-go.v$N.linux.amd64 | grep name-mapping
+#      应该能看到 name-mapping 字符串 (新路由已注册)
 # =====================================================================
 set -euo pipefail
 
@@ -299,6 +328,73 @@ echo "  远程 build_seq = $REMOTE_SEQ"
 if [[ "$REMOTE_SEQ" != "$NEW_SEQ" ]]; then
   err "build_seq 不一致! 远程=$REMOTE_SEQ 期望=$NEW_SEQ"
   exit 1
+fi
+
+# ── 增强 smoke-verify (2026-07-10 unified auth 后必备) ──────────
+log "[8/8+1] 增强 auth smoke-verify (unified auth 必检)..."
+
+# 8.1: 验证 binary 包含新路由（unified auth 后必须有 /api/models/name-mapping）
+if $SSH "$SSH_TARGET" "strings $REMOTE_DIR/$BIN_NAME 2>/dev/null | grep -q 'name-mapping'"; then
+  log "  ✓ binary 包含 name-mapping 路由（新版本正确）"
+else
+  err "✗ binary 不包含 name-mapping 路由！可能部署了旧 binary"
+  err "   检查: $REMOTE_DIR/$BIN_NAME"
+  exit 1
+fi
+
+# 8.2: /healthz (匿名 200)
+HEALTH=$($SSH "$SSH_TARGET" "curl -sS -o /dev/null -w '%{http_code}' http://localhost:8781/healthz")
+if [[ "$HEALTH" == "200" ]]; then
+  log "  ✓ /healthz 匿名 = $HEALTH"
+else
+  err "✗ /healthz 返回 $HEALTH (期望 200)"
+  exit 1
+fi
+
+# 8.3: /healthz?full=true 匿名 (401, 因为 healthz?full=true 现在需要 JWT)
+HEALTH_FULL=$($SSH "$SSH_TARGET" "curl -sS -o /dev/null -w '%{http_code}' 'http://localhost:8781/healthz?full=true'")
+if [[ "$HEALTH_FULL" == "401" ]]; then
+  log "  ✓ /healthz?full=true 匿名 = $HEALTH_FULL (期望 401)"
+else
+  warn "! /healthz?full=true 匿名 = $HEALTH_FULL (期望 401, 检查后端是否回退到旧版)"
+fi
+
+# 8.4: /api/auth/me with sk-* (401, 验证旧 admin key 路径已删除)
+SK_ME=$($SSH "$SSH_TARGET" "curl -sS -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer sk-fake-admin-key' http://localhost:8781/api/auth/me")
+if [[ "$SK_ME" == "401" ]]; then
+  log "  ✓ sk-* admin key 已禁用 (期望 401)"
+else
+  err "✗ sk-* admin key 仍可访问 /api/auth/me = $SK_ME (unified auth 没生效!)"
+  exit 1
+fi
+
+# 8.5: 用 admin password 登录, 获取 JWT, 验证 /api/auth/me 返回 access_token
+ADMIN_USER="${LLM_GATEWAY_ADMIN_USER:-admin}"
+ADMIN_PASS="${LLM_GATEWAY_ADMIN_PASSWORD:-}"
+if [[ -n "$ADMIN_PASS" ]]; then
+  LOGIN_RESP=$($SSH "$SSH_TARGET" "curl -sS -X POST -H 'Content-Type: application/json' -d '{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}' http://localhost:8781/api/auth/token")
+  JWT=$(echo "$LOGIN_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || echo "")
+  if [[ -n "$JWT" ]]; then
+    log "  ✓ 登录成功, JWT 长度=${#JWT}"
+    # 验证 /api/auth/me 返回 access_token (说明 handleAuthMe 已签发 JWT)
+    ME_RESP=$($SSH "$SSH_TARGET" "curl -sS -H 'Authorization: Bearer $JWT' http://localhost:8781/api/auth/me")
+    if echo "$ME_RESP" | grep -q 'access_token'; then
+      log "  ✓ /api/auth/me 返回 access_token (新 hydration 路径生效)"
+    else
+      warn "! /api/auth/me 未返回 access_token — SPA hydration 路径会缺 JWT"
+    fi
+    # 验证 /api/models/name-mapping (admin 端点)
+    NAME_MAPPING=$($SSH "$SSH_TARGET" "curl -sS -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer $JWT' 'http://localhost:8781/api/models/name-mapping?page=1&page_size=1'")
+    if [[ "$NAME_MAPPING" == "200" ]]; then
+      log "  ✓ /api/models/name-mapping (admin 端点) = $NAME_MAPPING"
+    else
+      err "✗ /api/models/name-mapping = $NAME_MAPPING (期望 200)"
+    fi
+  else
+    warn "登录失败 (admin 密码可能未注入 env), 跳过 JWT 验证"
+  fi
+else
+  warn "LLM_GATEWAY_ADMIN_PASSWORD 未注入, 跳过 JWT smoke-verify"
 fi
 
 log "✅ 部署完成"
