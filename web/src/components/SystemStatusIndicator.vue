@@ -120,14 +120,23 @@ function updateTimeSinceCheck() {
 async function loadStatus() {
   loading.value = true
   error.value = null
-  
+
   try {
-    // Load health (use public /healthz — the ?full=true variant requires an
-    // admin Bearer header that the SPA cannot supply; see NET-007 backend change
-    // in domains/streaming/handler.go. The basic endpoint still gives us
-    // status/version which is enough for the indicator badge.)
-    health.value = await getHealth()
-    
+    // Load health. 2026-07-10: always use ?full=true so the SPA can render
+    // the database/redis sub-status (the basic /healthz only returns
+    // status/version). The /healthz?full=true endpoint requires an admin JWT,
+    // which the SPA auto-attaches via _core.ts headers() when store.jwtToken
+    // is set (authBearer() returns it). If the user is not logged in
+    // (no JWT, no cookie), the call returns 401 and we fall back to the
+    // public basic healthz for status/version display.
+    try {
+      health.value = await getHealth(true)
+    } catch (e) {
+      // 401 or network error → fall back to public basic /healthz
+      console.warn('full healthz unavailable, falling back to basic', e)
+      health.value = await getHealth()
+    }
+
     // Load background tasks
     try {
       bgTasks.value = await getBackgroundTasksStatus()
