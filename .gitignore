@@ -173,3 +173,4 @@ web/.i18n-fix-tmp.mjs
 *.linux.amd64
 *.exe
 bin/
+backups/
