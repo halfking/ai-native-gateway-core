@@ -6,6 +6,10 @@
 export default {
   title: 'Dashboard',
   refresh: 'Refresh',
+  tabs: {
+    liveStream: 'Live Request Stream',
+    sessionStats: 'Sessions & Statistics',
+  },
   range: {
     today: 'Today',
     last7d: 'Last 7 days',
