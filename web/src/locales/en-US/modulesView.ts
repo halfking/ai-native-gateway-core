@@ -118,6 +118,20 @@ export default {
       'Turn on the "Feishu bot integration" switch',
     ],
     feishuBotIntegration: 'Feishu bot integration',
+    wechatBotIntegration: 'WeChat Work bot integration',
+    dingtalkBotIntegration: 'DingTalk bot integration',
+    wechatSteps: [
+      'Create a custom bot in the WeChat Work admin console',
+      'Copy the webhook URL and paste it into the config below',
+      'Click "Test connection" after configuration',
+      'Turn on the "WeChat Work bot integration" switch',
+    ],
+    dingtalkSteps: [
+      'Create a custom bot in the DingTalk open platform',
+      'Copy the webhook URL and paste it into the config below',
+      'Click "Test connection" after configuration',
+      'Turn on the "DingTalk bot integration" switch',
+    ],
   },
 
   routing: {

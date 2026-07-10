@@ -143,6 +143,7 @@ Either confirm the prior result and continue, or start a brand-new task.`,
     taskId: 'Task ID',
     totalCost: 'Total Cost',
     avgHealth: 'Avg Health',
+    retry: 'Retry',
     loadFailed: 'Failed to load stats',
   },
   dashboard: {
@@ -315,6 +316,7 @@ Either confirm the prior result and continue, or start a brand-new task.`,
   config: {
     title: 'Session Configuration',
     subtitle: 'Unified management of session approval, compression strategies, and health scoring rules',
+    loading: 'Loading…',
     approvalTab: 'Approval Rules',
     compressionTab: 'Compression Strategies',
     healthTab: 'Health Scoring',
@@ -399,6 +401,7 @@ Either confirm the prior result and continue, or start a brand-new task.`,
   management: {
     title: 'Session Management',
     refresh: 'Refresh',
+    loading: 'Loading…',
     columns: {
       status: 'Status',
       title: 'Title',
