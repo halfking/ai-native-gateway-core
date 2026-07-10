@@ -36,16 +36,19 @@ onMounted(async () => {
   // 2026-07-10: Auth hydration — probe /api/auth/me if JWT not already in localStorage.
   // If store.jwtToken is already populated (from localStorage), we're authenticated.
   // Otherwise, check if the HttpOnly cookie is still valid (for users who logged in
-  // before this JWT-persistence change).
+  // before this JWT-persistence change). The server's /api/auth/me now returns a
+  // fresh access_token in the response so we can persist it to localStorage.
   try {
     if (!store.jwtToken && !store.apiKey) {
       // No JWT in localStorage, no API key — check if cookie is still valid
       try {
         const me = await getAuthMe()
+        // Server may return {user, access_token, expires_at} or just user
+        const meAny = me as any
+        if (meAny?.access_token) {
+          setJwtToken(meAny.access_token)
+        }
         setUserInfo(me)
-        // Cookie is valid but we don't have the JWT in localStorage.
-        // User logged in before the unified-auth change; they'll get a fresh JWT
-        // on next login. For now, keep them logged in via cookie.
       } catch {
         // 401 → no valid cookie either, user is logged out
         clearJwt()
