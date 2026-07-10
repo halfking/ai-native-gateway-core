@@ -14,30 +14,30 @@
           <div class="big-label">{{ t('dataLifecycle.storageOverview.summary.databaseSubtitle') }}</div>
         </div>
         <div class="metric-row">
-          <span>Database</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.databaseMetric') }}</span>
           <span class="metric-val">{{ data?.database.database_human || '—' }}</span>
         </div>
         <div class="metric-row">
-          <span>Tables</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.tablesMetric') }}</span>
           <span class="metric-val">{{ humanBytes(data?.database.tables_bytes) }}</span>
         </div>
         <div class="metric-row">
-          <span>Indexes</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.indexesMetric') }}</span>
           <span class="metric-val">{{ humanBytes(data?.database.indexes_bytes) }}</span>
         </div>
         <div class="metric-row">
-          <span>TOAST</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.toastMetric') }}</span>
           <span class="metric-val">{{ humanBytes(data?.database.toast_bytes) }}</span>
         </div>
         <div class="bar-track" v-if="data">
-          <div class="bar-seg tables" :style="{ width: pct(data.database.tables_bytes) + '%' }" title="Tables"></div>
-          <div class="bar-seg indexes" :style="{ width: pct(data.database.indexes_bytes) + '%' }" title="Indexes"></div>
-          <div class="bar-seg toast" :style="{ width: pct(data.database.toast_bytes) + '%' }" title="TOAST"></div>
+          <div class="bar-seg tables" :style="{ width: pct(data.database.tables_bytes) + '%' }" :title="t('dataLifecycle.storageOverview.summary.tablesMetric')"></div>
+          <div class="bar-seg indexes" :style="{ width: pct(data.database.indexes_bytes) + '%' }" :title="t('dataLifecycle.storageOverview.summary.indexesMetric')"></div>
+          <div class="bar-seg toast" :style="{ width: pct(data.database.toast_bytes) + '%' }" :title="t('dataLifecycle.storageOverview.summary.toastMetric')"></div>
         </div>
         <div class="legend">
-          <span><i class="dot tables"></i>Tables</span>
-          <span><i class="dot indexes"></i>Indexes</span>
-          <span><i class="dot toast"></i>TOAST</span>
+          <span><i class="dot tables"></i>{{ t('dataLifecycle.storageOverview.summary.tablesMetric') }}</span>
+          <span><i class="dot indexes"></i>{{ t('dataLifecycle.storageOverview.summary.indexesMetric') }}</span>
+          <span><i class="dot toast"></i>{{ t('dataLifecycle.storageOverview.summary.toastMetric') }}</span>
         </div>
       </div>
 
@@ -393,7 +393,7 @@ async function executeOp() {
   confirmOp.value = null
 
   const body: TableMaintenanceRequest = { schema: tRow.schema, table: tRow.table }
-  busy[tRow.table] = op === 'VACUUM FULL' ? 'VACUUM FULL 中…' : `${op} 中…`
+  busy[tRow.table] = t('dataLifecycle.storageOverview.rowResult.running', { op })
 
   try {
     let resp: TableMaintenanceResponse
