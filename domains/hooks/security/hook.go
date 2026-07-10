@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -39,6 +40,7 @@ type SecurityHook struct {
 	threat   *ThreatDetector
 	config   *SecurityConfig
 	registry *settings.Registry
+	mu       sync.RWMutex
 }
 
 // NewSecurityHook 创建安全检查 Hook（从 settings 读取配置）
@@ -242,7 +244,13 @@ func loadSecurityConfig(reg *settings.Registry) *SecurityConfig {
 
 // GetConfig 获取当前配置（用于测试和调试）
 func (h *SecurityHook) GetConfig() *SecurityConfig {
-	return h.config
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.config == nil {
+		return nil
+	}
+	config := *h.config
+	return &config
 }
 
 // Name 返回 Hook 名称
@@ -263,11 +271,15 @@ func (h *SecurityHook) Enabled(ctx context.Context, env *domain.PipelineRequest)
 // 能与 v4 安全插件 verdicts 一同参与决策。
 func (h *SecurityHook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
 	// 热加载配置（每次执行时重新读取）
+	h.mu.Lock()
+	severityThreshold := h.threat.severityThreshold
 	if h.registry != nil {
 		h.config = loadSecurityConfig(h.registry)
-		h.intent.minScore = h.config.IntentConfidenceThresh
-		h.threat.severityThreshold = h.config.SeverityThreshold
+		severityThreshold = h.config.SeverityThreshold
 	}
+	intent := h.intent
+	threat := h.threat
+	h.mu.Unlock()
 
 	content, _ := env.Metadata["user_content"].(string)
 	if content == "" {
@@ -275,10 +287,10 @@ func (h *SecurityHook) Execute(ctx context.Context, env *domain.PipelineRequest)
 	}
 
 	verdict := &Verdict{Allow: true}
-	verdict.Intent = h.intent.Analyze(content)
-	verdict.Threats = h.threat.Detect(content)
+	verdict.Intent = intent.Analyze(content)
+	verdict.Threats = threat.Detect(content)
 
-	if h.threat.IsCritical(verdict.Threats) {
+	if isCriticalAt(verdict.Threats, severityThreshold) {
 		verdict.Allow = false
 		verdict.Reason = "critical threat detected"
 	}
