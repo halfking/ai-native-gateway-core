@@ -47,6 +47,14 @@ type ModuleIntegration struct {
 	DocURL      string `json:"doc_url"`
 }
 
+// ModuleDependency describes a dependency relationship between modules.
+type ModuleDependency struct {
+	Key      string `json:"key"`
+	Name     string `json:"name"`
+	Icon     string `json:"icon"`
+	Required bool   `json:"required"` // true=必需，false=推荐
+}
+
 // ModuleWithStatus extends ModuleDefinition with runtime status.
 type ModuleWithStatus struct {
 	ModuleDefinition
@@ -218,11 +226,30 @@ func allModuleDefinitions() []ModuleDefinition {
 					"多级审批流程",
 					"审批超时自动处理",
 					"跨租户隔离审批",
+					"多模型联合检测",
+					"与飞书/钉钉/企微联动",
 				},
-				Icon:        "📋",
-				Category:    "security",
-				SettingKey:  "session_audit.enabled",
+				Icon:       "📋",
+				Category:   "security",
+				SettingKey: "session_audit.enabled",
+				ConfigKeys: []string{
+					"session_audit.enforcement_level",
+					"session_audit.detector_models",
+					"session_audit.approval_threshold",
+					"session_audit.auto_block_threshold",
+					"session_audit.approval_timeout",
+					"session_audit.timeout_action",
+					"session_audit.notify_channels",
+					"session_audit.min_approvals",
+				},
 				DangerLevel: settings.Warning,
+				Dependencies: []ModuleDependency{
+					{Key: "prompt_injection", Name: "提示词注入检测", Icon: "🛡️", Required: true},
+					{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: false},
+					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: false},
+					{Key: "security", Name: "安全检测引擎", Icon: "🔐", Required: false},
+					{Key: "feishu_bot", Name: "飞书机器人", Icon: "📱", Required: false},
+				},
 			},
 			{
 				Key:         "session_inspector",

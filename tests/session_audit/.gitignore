@@ -1,0 +1,8 @@
+# 编译产物
+audit_test
+unit_verify
+
+# 测试结果
+extracted_data.json
+results/
+*.log
