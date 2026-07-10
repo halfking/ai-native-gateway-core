@@ -50,7 +50,7 @@ func (s *PgxStore) GetEvent(ctx context.Context, eventID int64) (*Event, error) 
 		return nil, err
 	}
 	if metadataJSON != nil {
-		json.Unmarshal(metadataJSON, &event.Metadata)
+		_ = json.Unmarshal(metadataJSON, &event.Metadata)
 	}
 	return &event, nil
 }
@@ -81,7 +81,7 @@ func (s *PgxStore) GetOpenEventsByRule(ctx context.Context, ruleID int64) ([]Eve
 			return nil, err
 		}
 		if metadataJSON != nil {
-			json.Unmarshal(metadataJSON, &event.Metadata)
+			_ = json.Unmarshal(metadataJSON, &event.Metadata)
 		}
 		events = append(events, event)
 	}
@@ -144,7 +144,7 @@ func (s *PgxStore) ListEvents(ctx context.Context, status EventStatus, offset, l
 			return nil, 0, err
 		}
 		if metadataJSON != nil {
-			json.Unmarshal(metadataJSON, &event.Metadata)
+			_ = json.Unmarshal(metadataJSON, &event.Metadata)
 		}
 		events = append(events, event)
 	}
@@ -189,7 +189,7 @@ func (s *PgxStore) GetRule(ctx context.Context, ruleID int64) (*Rule, error) {
 		return nil, err
 	}
 	if actionConfigJSON != nil {
-		json.Unmarshal(actionConfigJSON, &rule.ActionConfig)
+		_ = json.Unmarshal(actionConfigJSON, &rule.ActionConfig)
 	}
 	return &rule, nil
 }
@@ -271,7 +271,7 @@ func (s *PgxStore) scanRules(rows interface {
 			return nil, err
 		}
 		if actionConfigJSON != nil {
-			json.Unmarshal(actionConfigJSON, &rule.ActionConfig)
+			_ = json.Unmarshal(actionConfigJSON, &rule.ActionConfig)
 		}
 		rules = append(rules, rule)
 	}

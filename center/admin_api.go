@@ -41,8 +41,8 @@ func (a *AdminAPI) ListInstances(c echo.Context) error {
 	status := c.QueryParam("status")
 	offset := 0
 	limit := 50
-	fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
-	fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
+	_, _ = fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
+	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
 
 	instances, total, err := a.server.ListInstances(c.Request().Context(), status, offset, limit)
 	if err != nil {
@@ -117,7 +117,7 @@ func (a *AdminAPI) GetHeartbeats(c echo.Context) error {
 	}
 
 	limit := 100
-	fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
+	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
 
 	heartbeats, err := a.server.GetInstanceMetrics(c.Request().Context(), instanceID, since, limit)
 	if err != nil {

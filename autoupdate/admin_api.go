@@ -95,8 +95,8 @@ func (a *AdminAPI) ListReleases(c echo.Context) error {
 
 	offset := 0
 	limit := 50
-	fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
-	fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
+	_, _ = fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
+	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
 
 	releases, total, err := a.store.ListReleases(c.Request().Context(), channel, offset, limit)
 	if err != nil {
@@ -223,7 +223,7 @@ func (a *AdminAPI) UpdateGrayPhase(c echo.Context) error {
 func (a *AdminAPI) GetUpgradeLogs(c echo.Context) error {
 	instanceID := c.QueryParam("instance_id")
 	limit := 50
-	fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
+	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
 
 	history, err := a.store.GetUpgradeHistory(c.Request().Context(), instanceID, limit)
 	if err != nil {

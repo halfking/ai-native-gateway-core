@@ -3,7 +3,6 @@ package center
 import (
 	"context"
 	"log/slog"
-	"sync"
 	"time"
 )
 
@@ -11,7 +10,6 @@ import (
 type Server struct {
 	store Store
 
-	mu        sync.RWMutex
 	instances map[string]*InstanceInfo
 }
 
