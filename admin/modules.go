@@ -47,14 +47,6 @@ type ModuleIntegration struct {
 	DocURL      string `json:"doc_url"`
 }
 
-// ModuleDependency describes a dependency relationship between modules.
-type ModuleDependency struct {
-	Key      string `json:"key"`
-	Name     string `json:"name"`
-	Icon     string `json:"icon"`
-	Required bool   `json:"required"` // true=必需，false=推荐
-}
-
 // ModuleWithStatus extends ModuleDefinition with runtime status.
 type ModuleWithStatus struct {
 	ModuleDefinition

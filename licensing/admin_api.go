@@ -45,6 +45,7 @@ func (h *AdminHandler) CreateLicense(c echo.Context) error {
 	var req struct {
 		LicenseKey       string   `json:"license_key"`
 		CustomerName     string   `json:"customer_name"`
+		Customer         string   `json:"customer"`
 		CustomerEmail    string   `json:"customer_email"`
 		MaxDevices       int      `json:"max_devices"`
 		SubscriptionTier string   `json:"subscription_tier"`
@@ -55,9 +56,14 @@ func (h *AdminHandler) CreateLicense(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
+	// 兼容前端的 customer 字段
+	if req.CustomerName == "" && req.Customer != "" {
+		req.CustomerName = req.Customer
+	}
+
 	expiresAt, err := time.Parse(time.RFC3339, req.ExpiresAt)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid expires_at format"})
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid expires_at format, expect RFC3339"})
 	}
 
 	lic := &License{
@@ -89,11 +95,53 @@ func (h *AdminHandler) ListLicenses(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
+	// 转换为前端期望的 DTO（包含 customer、active_devices、status 等字段）
+	type LicenseDTO struct {
+		ID               int64     `json:"id"`
+		LicenseKey       string    `json:"license_key"`
+		Customer         string    `json:"customer"`
+		CustomerEmail    string    `json:"customer_email,omitempty"`
+		MaxDevices       int       `json:"max_devices"`
+		ActiveDevices    int       `json:"active_devices"`
+		ExpiresAt        time.Time `json:"expires_at"`
+		Status           string    `json:"status"`
+		CreatedAt        time.Time `json:"created_at"`
+		UpdatedAt        time.Time `json:"updated_at"`
+		SubscriptionTier string    `json:"subscription_tier,omitempty"`
+	}
+
+	dtos := make([]LicenseDTO, 0, len(licenses))
+	now := time.Now()
+	for _, lic := range licenses {
+		// 查询当前活跃设备数
+		active, _ := h.store.CountActiveDevices(c.Request().Context(), lic.LicenseKey)
+		// 推导 status
+		status := "active"
+		if lic.RevokedAt != nil {
+			status = "revoked"
+		} else if !lic.ExpiresAt.IsZero() && lic.ExpiresAt.Before(now) {
+			status = "expired"
+		}
+		dtos = append(dtos, LicenseDTO{
+			ID:               lic.ID,
+			LicenseKey:       lic.LicenseKey,
+			Customer:         lic.CustomerName,
+			CustomerEmail:    lic.CustomerEmail,
+			MaxDevices:       lic.MaxDevices,
+			ActiveDevices:    active,
+			ExpiresAt:        lic.ExpiresAt,
+			Status:           status,
+			CreatedAt:        lic.CreatedAt,
+			UpdatedAt:        lic.CreatedAt, // 后端未维护 updated_at，回退到 created_at
+			SubscriptionTier: lic.SubscriptionTier,
+		})
+	}
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"licenses": licenses,
-		"total":    total,
-		"offset":   offset,
-		"limit":    limit,
+		"items":  dtos,
+		"total":  total,
+		"offset": offset,
+		"limit":  limit,
 	})
 }
 
@@ -128,7 +176,36 @@ func (h *AdminHandler) ListDevices(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	return c.JSON(http.StatusOK, devices)
+	// 转换为前端期望的 DTO
+	type DeviceDTO struct {
+		ID          int64      `json:"id"`
+		LicenseID   int64      `json:"license_id"`
+		DeviceID    string     `json:"device_id"`
+		Hostname    string     `json:"hostname"`
+		ActivatedAt time.Time  `json:"activated_at"`
+		LastSeen    *time.Time `json:"last_seen,omitempty"`
+		Status      string     `json:"status"`
+	}
+
+	dtos := make([]DeviceDTO, 0, len(devices))
+	for _, d := range devices {
+		// device_id = instance_id + ':' + hardware_hash 前 8 位
+		shortHash := d.HardwareHash
+		if len(shortHash) > 8 {
+			shortHash = shortHash[:8]
+		}
+		dtos = append(dtos, DeviceDTO{
+			ID:          d.ID,
+			LicenseID:   d.LicenseID,
+			DeviceID:    d.InstanceID + ":" + shortHash,
+			Hostname:    d.DeviceName,
+			ActivatedAt: d.ActivatedAt,
+			LastSeen:    d.LastHeartbeat,
+			Status:      d.Status,
+		})
+	}
+
+	return c.JSON(http.StatusOK, dtos)
 }
 
 func (h *AdminHandler) DeactivateDevice(c echo.Context) error {
@@ -156,9 +233,42 @@ func (h *AdminHandler) DeactivateDevice(c echo.Context) error {
 }
 
 func (h *AdminHandler) ListOfflineRequests(c echo.Context) error {
-	// TODO: 实现从数据库查询离线激活请求列表
-	// 当前返回空列表
-	return c.JSON(http.StatusOK, []interface{}{})
+	limit, _ := strconv.Atoi(c.QueryParam("limit"))
+	if limit == 0 {
+		limit = 100
+	}
+	rows, err := h.store.ListOfflineRequests(c.Request().Context(), limit)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	// 转换为前端期望的 DTO
+	type OfflineReqDTO struct {
+		ID             int64      `json:"id"`
+		LicenseKey     string     `json:"license_key"`
+		DeviceID       string     `json:"device_id"`
+		RequestCode    string     `json:"request_code"`
+		Status         string     `json:"status"`
+		CreatedAt      time.Time  `json:"created_at"`
+		ApprovedAt     *time.Time `json:"approved_at,omitempty"`
+		ActivationCode string     `json:"activation_code,omitempty"`
+	}
+
+	dtos := make([]OfflineReqDTO, 0, len(rows))
+	for _, r := range rows {
+		dtos = append(dtos, OfflineReqDTO{
+			ID:             r.ID,
+			LicenseKey:     r.LicenseKey,
+			DeviceID:       r.InstanceID,
+			RequestCode:    r.RequestID,
+			Status:         r.Status,
+			CreatedAt:      r.CreatedAt,
+			ApprovedAt:     r.ApprovedAt,
+			ActivationCode: string(r.SignedLicense),
+		})
+	}
+
+	return c.JSON(http.StatusOK, dtos)
 }
 
 func (h *AdminHandler) ApproveOfflineRequest(c echo.Context) error {
@@ -171,9 +281,11 @@ func (h *AdminHandler) ApproveOfflineRequest(c echo.Context) error {
 
 	signedJSON, _ := json.Marshal(signedLicense)
 
+	// 前端期望 { activation_code: string }，返回 base64 编码
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"signed_license": signedLicense,
-		"base64":         string(signedJSON),
+		"activation_code": string(signedJSON),
+		"signed_license":  signedLicense,
+		"base64":          string(signedJSON),
 	})
 }
 
@@ -186,8 +298,10 @@ func (h *AdminHandler) RejectOfflineRequest(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
-	// TODO: 实现拒绝离线激活请求的逻辑
-	// 当前返回成功
+	if err := h.store.RejectOfflineRequest(c.Request().Context(), requestID, req.Reason); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
 	return c.JSON(http.StatusOK, map[string]string{
 		"message":    "offline request rejected",
 		"request_id": requestID,

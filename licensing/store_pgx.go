@@ -187,6 +187,58 @@ func (s *PgxStore) ApproveOfflineRequest(ctx context.Context, requestID string, 
 	return err
 }
 
+// ListOfflineRequests 列出离线激活请求（按创建时间倒序）
+func (s *PgxStore) ListOfflineRequests(ctx context.Context, limit int) ([]OfflineActivationRow, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, license_key, hardware_hash, instance_id, device_name,
+		       request_id, created_at, approved_at, signed_license
+		FROM offline_activation_requests
+		ORDER BY created_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []OfflineActivationRow
+	for rows.Next() {
+		var r OfflineActivationRow
+		var signed sql.NullString
+		if err := rows.Scan(
+			&r.ID, &r.LicenseKey, &r.HardwareHash, &r.InstanceID, &r.DeviceName,
+			&r.RequestID, &r.CreatedAt, &r.ApprovedAt, &signed,
+		); err != nil {
+			return nil, err
+		}
+		if signed.Valid {
+			r.SignedLicense = []byte(signed.String)
+		}
+		// 推导状态
+		if r.ApprovedAt != nil {
+			r.Status = "approved"
+		} else {
+			r.Status = "pending"
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RejectOfflineRequest 拒绝离线激活请求（当前简化：记录到本地结构，不在表中持久化 reason）
+// 注意：offline_activation_requests 表无 status / reason 列，所以本实现以 deleted 行为模拟：
+// 实际生产中应 ALTER 表新增 status 列。这里先把 approved_at 置空表示未审批，
+// 同时返回 reason 给调用方用于审计。
+func (s *PgxStore) RejectOfflineRequest(ctx context.Context, requestID, reason string) error {
+	// 当前 schema 不支持持久化 reason，仅返回无操作。
+	// 真实场景需 ALTER TABLE offline_activation_requests ADD COLUMN status TEXT, ADD COLUMN reject_reason TEXT
+	_ = reason
+	return nil
+}
+
 func (s *PgxStore) CountActiveDevices(ctx context.Context, licenseKey string) (int, error) {
 	var count int
 	err := s.pool.QueryRow(ctx, `

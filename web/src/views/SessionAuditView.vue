@@ -861,7 +861,7 @@ onMounted(() => {
 }
 
 .view-subtitle {
-  color: #666;
+  color: var(--muted);
   margin: 0 0 1.5rem;
 }
 
@@ -873,22 +873,21 @@ onMounted(() => {
 }
 
 .stat-card {
-  background: white;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem;
 }
 
 .stat-label {
   font-size: 0.875rem;
-  color: #666;
+  color: var(--muted);
   margin-bottom: 0.5rem;
 }
 
 .stat-value {
   font-size: 2rem;
   font-weight: 600;
-  color: #111;
+  color: var(--text);
 }
 
 .stat-breakdown {
@@ -908,22 +907,24 @@ onMounted(() => {
 .filter-input,
 .filter-select {
   padding: 0.5rem 0.75rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.875rem;
   min-width: 150px;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .filter-input:focus,
 .filter-select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--accent);
 }
 
 .error-banner {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  color: #dc2626;
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  color: #f85149;
   padding: 0.75rem 1rem;
   border-radius: 6px;
   margin-bottom: 1rem;
@@ -937,7 +938,6 @@ onMounted(() => {
 
 .error-retry {
   margin-left: auto;
-  background: white;
   border: 1px solid #fecaca;
   color: #dc2626;
   padding: 0.25rem 0.75rem;
@@ -946,14 +946,14 @@ onMounted(() => {
   font-size: 0.8125rem;
 }
 
-.error-retry:hover { background: #fee2e2; }
+.error-retry:hover { background: rgba(248, 81, 73, 0.15); }
 
 .stats-loading {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 1rem;
-  color: #666;
+  color: var(--muted);
   font-size: 0.875rem;
 }
 
@@ -961,8 +961,8 @@ onMounted(() => {
   display: inline-block;
   width: 14px;
   height: 14px;
-  border: 2px solid #e5e7eb;
-  border-top-color: #3b82f6;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: audit-spin 0.8s linear infinite;
   flex-shrink: 0;
@@ -971,8 +971,7 @@ onMounted(() => {
 @keyframes audit-spin { to { transform: rotate(360deg); } }
 
 .table-container {
-  background: white;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 8px;
   overflow-x: auto;
   margin-bottom: 1rem;
@@ -985,21 +984,20 @@ onMounted(() => {
 }
 
 .data-table th {
-  background: #f9fafb;
   padding: 0.75rem 1rem;
   text-align: left;
   font-weight: 600;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 
 .data-table td {
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--border);
 }
 
 .data-row:hover {
-  background: #f9fafb;
+  background: var(--bg-subtle);
 }
 
 .session-id {
@@ -1013,14 +1011,14 @@ onMounted(() => {
 .date-cell {
   white-space: nowrap;
   font-size: 0.8rem;
-  color: #666;
+  color: var(--muted);
 }
 
 .loading-cell,
 .empty-cell {
   text-align: center;
   padding: 2rem;
-  color: #999;
+  color: var(--muted);
 }
 
 .loading-cell {
@@ -1039,7 +1037,7 @@ onMounted(() => {
 
 .page-info {
   font-size: 0.875rem;
-  color: #666;
+  color: var(--muted);
 }
 
 /* Badges */
@@ -1056,28 +1054,28 @@ onMounted(() => {
 }
 
 .badge-green {
-  background: #d1fae5;
-  color: #065f46;
+  background: rgba(63, 185, 80, 0.15);
+  color: #3fb950;
 }
 
 .badge-yellow {
-  background: #fef3c7;
-  color: #92400e;
+  background: rgba(210, 153, 34, 0.15);
+  color: #d29922;
 }
 
 .badge-red {
-  background: #fee2e2;
-  color: #991b1b;
+  background: rgba(248, 81, 73, 0.15);
+  color: #f85149;
 }
 
 .badge-blue {
-  background: #dbeafe;
-  color: #1e40af;
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
 }
 
 .badge-gray {
-  background: #f3f4f6;
-  color: #374151;
+  background: rgba(139, 148, 158, 0.15);
+  color: #8b949e;
 }
 
 /* Buttons */
@@ -1103,13 +1101,12 @@ onMounted(() => {
 }
 
 .btn-secondary {
-  background: white;
-  color: #374151;
-  border: 1px solid #d1d5db;
+  color: var(--text);
+  border: 1px solid var(--border);
 }
 
 .btn-secondary:hover {
-  background: #f9fafb;
+  background: var(--bg-subtle);
 }
 
 .btn-secondary:disabled {
@@ -1119,7 +1116,7 @@ onMounted(() => {
 
 .btn-link {
   background: none;
-  color: #3b82f6;
+  color: var(--accent);
   padding: 0.25rem 0.5rem;
 }
 
@@ -1143,7 +1140,7 @@ onMounted(() => {
 }
 
 .modal-content {
-  background: white;
+  background: var(--card);
   border-radius: 12px;
   max-width: 900px;
   width: 100%;
@@ -1171,7 +1168,7 @@ onMounted(() => {
   border: none;
   font-size: 1.5rem;
   cursor: pointer;
-  color: #999;
+  color: var(--muted);
   padding: 0;
   width: 2rem;
   height: 2rem;
@@ -1182,7 +1179,7 @@ onMounted(() => {
 }
 
 .close-btn:hover {
-  background: #f3f4f6;
+  background: var(--bg-subtle);
 }
 
 .modal-body {
@@ -1207,7 +1204,7 @@ onMounted(() => {
   margin: 0 0 1rem;
   font-size: 1rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--text);
 }
 
 .detail-grid {
@@ -1218,12 +1215,12 @@ onMounted(() => {
 }
 
 .detail-grid strong {
-  color: #666;
+  color: var(--muted);
   font-weight: 500;
 }
 
 .detail-grid code {
-  background: #f3f4f6;
+  background: var(--bg-subtle);
   padding: 0.125rem 0.25rem;
   border-radius: 3px;
   font-size: 0.8rem;
@@ -1238,13 +1235,13 @@ onMounted(() => {
 .score-item {
   text-align: center;
   padding: 1rem;
-  background: #f9fafb;
+  background: var(--bg-subtle);
   border-radius: 8px;
 }
 
 .score-label {
   font-size: 0.875rem;
-  color: #666;
+  color: var(--muted);
   margin-bottom: 0.5rem;
 }
 
@@ -1261,7 +1258,7 @@ onMounted(() => {
 
 .threat-list li {
   padding: 0.5rem;
-  background: #fef2f2;
+  background: var(--bg-subtle);
   border-radius: 4px;
   margin-bottom: 0.5rem;
   font-size: 0.875rem;
@@ -1293,23 +1290,22 @@ onMounted(() => {
   border-bottom: 2px solid transparent;
   cursor: pointer;
   font-size: 0.9375rem;
-  color: #666;
+  color: var(--muted);
   transition: all 0.2s;
 }
 
 .tab-btn:hover {
-  color: #3b82f6;
+  color: var(--accent);
 }
 
 .tab-btn.active {
-  color: #3b82f6;
-  border-bottom-color: #3b82f6;
+  color: var(--accent);
+  border-bottom-color: var(--accent);
   font-weight: 500;
 }
 
 /* 配置面板样式 */
 .config-panel {
-  background: white;
   border-radius: 8px;
   padding: 1.5rem;
 }
@@ -1319,13 +1315,13 @@ onMounted(() => {
   align-items: center;
   gap: 10px;
   padding: 2rem;
-  color: #666;
+  color: var(--muted);
 }
 
 .success-banner {
-  background: #d1fae5;
-  border: 1px solid #6ee7b7;
-  color: #065f46;
+  background: rgba(63, 185, 80, 0.1);
+  border: 1px solid rgba(63, 185, 80, 0.4);
+  color: #3fb950;
   padding: 0.75rem 1rem;
   border-radius: 6px;
   margin-bottom: 1rem;
@@ -1338,7 +1334,7 @@ onMounted(() => {
 .config-section {
   margin-bottom: 2rem;
   padding-bottom: 1.5rem;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border);
 }
 
 .config-section:last-of-type {
@@ -1349,7 +1345,7 @@ onMounted(() => {
   margin: 0 0 1rem;
   font-size: 1rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--text);
 }
 
 .form-row {
@@ -1363,42 +1359,48 @@ onMounted(() => {
 .form-row label {
   min-width: 180px;
   font-weight: 500;
-  color: #374151;
+  color: var(--text);
 }
 
 .form-input {
   flex: 1;
   min-width: 200px;
   padding: 0.5rem 0.75rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.875rem;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .form-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--accent);
 }
 
 .form-input-small {
   width: 100px;
   padding: 0.5rem 0.75rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.875rem;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .form-select {
   padding: 0.5rem 0.75rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.875rem;
   min-width: 150px;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .form-select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--accent);
 }
 
 .form-checkbox {
@@ -1415,7 +1417,7 @@ onMounted(() => {
 
 .form-hint {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--muted);
   width: 100%;
   margin-left: 180px;
 }
