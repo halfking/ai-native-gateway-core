@@ -51,7 +51,7 @@ func (s *PgxStore) GetProject(ctx context.Context, id int64) (*Project, error) {
 	}
 
 	if len(settingsJSON) > 0 {
-		json.Unmarshal(settingsJSON, &project.Settings)
+		_ = json.Unmarshal(settingsJSON, &project.Settings)
 	}
 
 	return project, nil
@@ -93,7 +93,7 @@ func (s *PgxStore) ListProjects(ctx context.Context, tenantID string, status Pro
 		}
 
 		if len(settingsJSON) > 0 {
-			json.Unmarshal(settingsJSON, &project.Settings)
+			_ = json.Unmarshal(settingsJSON, &project.Settings)
 		}
 
 		projects = append(projects, project)
@@ -158,10 +158,10 @@ func (s *PgxStore) GetSession(ctx context.Context, id int64) (*Session, error) {
 	}
 
 	if len(messagesJSON) > 0 {
-		json.Unmarshal(messagesJSON, &session.Messages)
+		_ = json.Unmarshal(messagesJSON, &session.Messages)
 	}
 	if len(metadataJSON) > 0 {
-		json.Unmarshal(metadataJSON, &session.Metadata)
+		_ = json.Unmarshal(metadataJSON, &session.Metadata)
 	}
 
 	return session, nil
@@ -186,10 +186,10 @@ func (s *PgxStore) GetSessionBySessionID(ctx context.Context, sessionID string) 
 	}
 
 	if len(messagesJSON) > 0 {
-		json.Unmarshal(messagesJSON, &session.Messages)
+		_ = json.Unmarshal(messagesJSON, &session.Messages)
 	}
 	if len(metadataJSON) > 0 {
-		json.Unmarshal(metadataJSON, &session.Metadata)
+		_ = json.Unmarshal(metadataJSON, &session.Metadata)
 	}
 
 	return session, nil
@@ -234,10 +234,10 @@ func (s *PgxStore) ListSessions(ctx context.Context, projectID *int64, status Se
 		}
 
 		if len(messagesJSON) > 0 {
-			json.Unmarshal(messagesJSON, &session.Messages)
+			_ = json.Unmarshal(messagesJSON, &session.Messages)
 		}
 		if len(metadataJSON) > 0 {
-			json.Unmarshal(metadataJSON, &session.Metadata)
+			_ = json.Unmarshal(metadataJSON, &session.Metadata)
 		}
 
 		sessions = append(sessions, session)
@@ -300,7 +300,7 @@ func (s *PgxStore) GetReview(ctx context.Context, id int64) (*Review, error) {
 	}
 
 	if len(reviewResultJSON) > 0 {
-		json.Unmarshal(reviewResultJSON, &review.ReviewResult)
+		_ = json.Unmarshal(reviewResultJSON, &review.ReviewResult)
 	}
 
 	return review, nil
@@ -341,7 +341,7 @@ func (s *PgxStore) ListReviews(ctx context.Context, sessionID *int64, offset, li
 		}
 
 		if len(reviewResultJSON) > 0 {
-			json.Unmarshal(reviewResultJSON, &review.ReviewResult)
+			_ = json.Unmarshal(reviewResultJSON, &review.ReviewResult)
 		}
 
 		reviews = append(reviews, review)
@@ -376,7 +376,7 @@ func (s *PgxStore) GetReviewsBySession(ctx context.Context, sessionID int64) ([]
 		}
 
 		if len(reviewResultJSON) > 0 {
-			json.Unmarshal(reviewResultJSON, &review.ReviewResult)
+			_ = json.Unmarshal(reviewResultJSON, &review.ReviewResult)
 		}
 
 		reviews = append(reviews, review)

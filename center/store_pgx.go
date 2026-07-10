@@ -199,10 +199,10 @@ func (s *PgxStore) GetCommand(ctx context.Context, commandID string) (*Command, 
 	}
 
 	if len(argsJSON) > 0 {
-		json.Unmarshal(argsJSON, &cmd.Args)
+		_ = json.Unmarshal(argsJSON, &cmd.Args)
 	}
 	if len(resultJSON) > 0 {
-		json.Unmarshal(resultJSON, &cmd.Result)
+		_ = json.Unmarshal(resultJSON, &cmd.Result)
 	}
 
 	return cmd, nil
@@ -233,7 +233,7 @@ func (s *PgxStore) ListPendingCommands(ctx context.Context, instanceID string) (
 			return nil, err
 		}
 		if len(argsJSON) > 0 {
-			json.Unmarshal(argsJSON, &cmd.Args)
+			_ = json.Unmarshal(argsJSON, &cmd.Args)
 		}
 		commands = append(commands, cmd)
 	}
@@ -280,10 +280,10 @@ func (s *PgxStore) GetCommandHistory(ctx context.Context, instanceID string, lim
 			return nil, err
 		}
 		if len(argsJSON) > 0 {
-			json.Unmarshal(argsJSON, &cmd.Args)
+			_ = json.Unmarshal(argsJSON, &cmd.Args)
 		}
 		if len(resultJSON) > 0 {
-			json.Unmarshal(resultJSON, &cmd.Result)
+			_ = json.Unmarshal(resultJSON, &cmd.Result)
 		}
 		commands = append(commands, cmd)
 	}
