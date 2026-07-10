@@ -2,11 +2,15 @@ package sessionaudithook
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain"               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/moduleexec"    // 模块执行记录器
+	"github.com/kaixuan/llm-gateway-go/domains/moduleregistry" // 模块标识注册表
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline"     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
@@ -19,11 +23,15 @@ import (
 //   - 根据评分决策：Pass/Warn/Block/NeedApproval
 //   - 发布审计事件到 EventBus（异步处理）
 //   - NeedApproval 时通过 ApprovalManager 创建审批记录（v1 ChatHandler 路径）
+//
+// 2026-07-10: 集成模块执行器，支持 Check-Execute-Record 模式。
+// 相同内容的检测结果会被缓存（TTL 1小时），避免重复调用检测器。
 type SessionAuditHook struct {
 	detector    *sessionaudit.FastDetector
 	eventBus    *eventbus.MemoryBus
 	approvalMgr *sessionaudit.ApprovalManager // v1 路径使用：NeedApproval 时 Enqueue 审批；v2 demo 传 nil
 	notifier    ApprovalNotifier              // 审批通知器（IM 下发），可为 nil（不发送通知）
+	executor    *moduleexec.Executor          // 模块执行记录器（可选，nil 时降级为直接执行）
 	enabled     bool
 }
 
@@ -62,6 +70,16 @@ func (h *SessionAuditHook) SetNotifier(n ApprovalNotifier) {
 	h.notifier = n
 }
 
+// SetExecutor 注入模块执行器。
+// 启用 Check-Execute-Record 模式，相同内容的检测结果会被缓存。
+// 传 nil 降级为直接执行（不记录、不缓存）。
+func (h *SessionAuditHook) SetExecutor(exec *moduleexec.Executor) {
+	if h == nil {
+		return
+	}
+	h.executor = exec
+}
+
 func (h *SessionAuditHook) Name() string {
 	return "session.audit"
 }
@@ -89,12 +107,13 @@ func (h *SessionAuditHook) Execute(ctx context.Context, env *domain.PipelineRequ
 	}
 
 	// 2. 检测（根据配置选择单模型或多模型）
+	// 2026-07-10: 集成模块执行器，相同内容的检测结果会被缓存（TTL 1h）
 	var result *sessionaudit.DetectResult
 
 	if len(cfg.DetectorModels) > 1 {
 		// 多模型深度检测（异步，不阻塞主流程）
 		// 先快速检测，然后在后台进行深度检测
-		fastResult, err := h.detector.Detect(ctx, content)
+		fastResult, err := h.executeWithCache(ctx, env.SessionID, env.TenantID, content, cfg)
 		if err != nil {
 			slog.Warn("detector failed, degrading", "error", err, "session_id", env.SessionID)
 			return nil
@@ -135,8 +154,8 @@ func (h *SessionAuditHook) Execute(ctx context.Context, env *domain.PipelineRequ
 			}()
 		}
 	} else {
-		// 单模型快速检测
-		fastResult, err := h.detector.Detect(ctx, content)
+		// 单模型快速检测（通过执行器缓存）
+		fastResult, err := h.executeWithCache(ctx, env.SessionID, env.TenantID, content, cfg)
 		if err != nil {
 			slog.Warn("detector failed, degrading", "error", err, "session_id", env.SessionID)
 			return nil
@@ -505,6 +524,162 @@ func (h *SessionAuditHook) CheckV1(ctx context.Context, sessionID, tenantID, mod
 			"reason", result.Reason)
 	}
 	return CheckV1Result{Decision: result.Decision}
+}
+
+// ────────────────────────────────────────────────────────────────
+// 模块执行器集成（Check-Execute-Record）
+// ────────────────────────────────────────────────────────────────
+
+// executeWithCache 通过执行器执行检测，结果会被缓存。
+// 相同内容在 TTL（1小时）内不会重复调用检测器。
+func (h *SessionAuditHook) executeWithCache(
+	ctx context.Context,
+	sessionID, tenantID, content string,
+	cfg *Config,
+) (*sessionaudit.DetectResult, error) {
+	// 无执行器时降级为直接执行
+	if h.executor == nil {
+		return h.detector.Detect(ctx, content)
+	}
+
+	params := map[string]interface{}{
+		"content_hash": contentHash(content),
+	}
+
+	execResult, err := h.executor.CheckAndExecute(
+		ctx, sessionID, tenantID,
+		moduleregistry.ModuleSessionAudit,
+		params, 0, // 使用模块默认 TTL（1小时）
+		func(ctx context.Context) (*moduleexec.ExecuteResult, error) {
+			startTime := time.Now()
+			detectResult, detectErr := h.detector.Detect(ctx, content)
+			durationMs := int(time.Since(startTime).Milliseconds())
+			if detectErr != nil {
+				return nil, detectErr
+			}
+			return &moduleexec.ExecuteResult{
+				ResultSummary: detectResultToMap(detectResult),
+				ResultDetail:  detectDetailToMap(detectResult),
+				DurationMs:    durationMs,
+			}, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// 从缓存结果还原 DetectResult
+	return mapToDetectResult(execResult.ResultSummary, execResult.ResultDetail)
+}
+
+// contentHash 计算内容哈希（用于缓存键）
+func contentHash(content string) string {
+	h := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(h[:])[:16]
+}
+
+// detectResultToMap 将 DetectResult 转换为 summary map
+func detectResultToMap(r *sessionaudit.DetectResult) map[string]interface{} {
+	return map[string]interface{}{
+		"score":          r.Score,
+		"sensitive_words": r.SensitiveWords,
+		"decision":       string(r.Decision),
+		"reason":         r.Reason,
+		"threat_count":   len(r.Threats),
+		"latency_ms":     r.LatencyMs,
+	}
+}
+
+// detectDetailToMap 将 DetectResult 详细信息转换为 detail map
+func detectDetailToMap(r *sessionaudit.DetectResult) map[string]interface{} {
+	threats := make([]map[string]interface{}, 0, len(r.Threats))
+	for _, t := range r.Threats {
+		threats = append(threats, map[string]interface{}{
+			"type":        t.Type,
+			"severity":    t.Severity,
+			"evidence":    t.Evidence,
+			"detected_at": t.DetectedAt,
+		})
+	}
+	return map[string]interface{}{
+		"threats": threats,
+	}
+}
+
+// mapToDetectResult 从 map 还原 DetectResult（带完整错误处理）
+func mapToDetectResult(summary, detail map[string]interface{}) (*sessionaudit.DetectResult, error) {
+	if summary == nil {
+		return nil, fmt.Errorf("summary is nil")
+	}
+	
+	result := &sessionaudit.DetectResult{}
+
+	// 安全的类型转换 + 错误处理
+	if v, ok := summary["score"].(float64); ok {
+		result.Score = int(v)
+	} else if summary["score"] != nil {
+		return nil, fmt.Errorf("invalid score type: %T", summary["score"])
+	}
+	
+	if v, ok := summary["decision"].(string); ok {
+		result.Decision = sessionaudit.Decision(v)
+	} else if summary["decision"] != nil {
+		return nil, fmt.Errorf("invalid decision type: %T", summary["decision"])
+	}
+	
+	if v, ok := summary["reason"].(string); ok {
+		result.Reason = v
+	}
+	
+	if v, ok := summary["latency_ms"].(float64); ok {
+		result.LatencyMs = int(v)
+	}
+
+	// 还原 sensitive_words（带类型检查）
+	if wordsRaw, ok := summary["sensitive_words"]; ok && wordsRaw != nil {
+		if words, ok := wordsRaw.([]interface{}); ok {
+			result.SensitiveWords = make([]string, 0, len(words))
+			for _, w := range words {
+				if s, ok := w.(string); ok {
+					result.SensitiveWords = append(result.SensitiveWords, s)
+				}
+			}
+		} else {
+			return nil, fmt.Errorf("invalid sensitive_words type: %T", wordsRaw)
+		}
+	}
+
+	// 还原 threats（从 detail，带类型检查）
+	if detail != nil {
+		if threatsRaw, ok := detail["threats"]; ok && threatsRaw != nil {
+			threats, ok := threatsRaw.([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("invalid threats type: %T", threatsRaw)
+			}
+			
+			result.Threats = make([]sessionaudit.Threat, 0, len(threats))
+			for i, t := range threats {
+				tm, ok := t.(map[string]interface{})
+				if !ok {
+					return nil, fmt.Errorf("threat[%d] is not a map, got %T", i, t)
+				}
+				
+				threat := sessionaudit.Threat{}
+				if v, ok := tm["type"].(string); ok {
+					threat.Type = v
+				}
+				if v, ok := tm["severity"].(float64); ok {
+					threat.Severity = int(v)
+				}
+				if v, ok := tm["evidence"].(string); ok {
+					threat.Evidence = v
+				}
+				result.Threats = append(result.Threats, threat)
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // 编译期断言
