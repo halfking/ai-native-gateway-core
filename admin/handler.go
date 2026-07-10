@@ -543,6 +543,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/session-audit", admin(h.handleSessionAuditList))
 	mux.HandleFunc("/api/admin/session-audit/", admin(h.handleSessionAuditGet))
 	mux.HandleFunc("/api/admin/session-audit/stats", admin(h.handleSessionAuditStats))
+	mux.HandleFunc("/api/admin/session-audit/export", admin(h.handleSessionAuditExport))
 	mux.HandleFunc("/api/admin/session-approvals", admin(h.handleApprovalList))
 	mux.HandleFunc("/api/admin/session-approvals/", admin(h.handleApprovalSubrouter))
 
@@ -596,6 +597,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/key-applications/", admin(h.handleKeyApplications))
 	mux.HandleFunc("/api/models", admin(h.handleModelsRoot))
 	mux.HandleFunc("/api/models/", admin(h.handleModels))
+	mux.HandleFunc("/api/models/name-mapping", admin(h.handleModelNameMapping))
+	mux.HandleFunc("/api/models/name-mapping/", admin(h.handleModelNameMapping))
 	mux.HandleFunc("/api/client-configs/audit", admin(h.handleClientConfigAudit))
 	mux.HandleFunc("/api/usage", admin(h.handleUsageSummary))
 	mux.HandleFunc("/api/usage/", admin(h.handleUsage))

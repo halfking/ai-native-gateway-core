@@ -16,7 +16,7 @@ export default {
     required: 'Bitte Benutzername und Passwort eingeben',
     failed: 'Anmeldung fehlgeschlagen',
   },
-  changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",  // 2026-07-09: Auth-Probe-Nachricht beim ersten Laden
+  changePassword: 'Passwort ändern',
+  passwordChangeSuccess: 'Passwort erfolgreich geändert',
   checking: 'Anmeldestatus wird überprüft…',
 }
