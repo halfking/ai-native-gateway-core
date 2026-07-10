@@ -41,6 +41,9 @@ export default {
   overview: {
     sectionDescription: 'Description',
     sectionCapabilities: 'Capabilities',
+    sectionDependencies: 'Dependencies',
+    dependencyDisabled: 'Dependency is disabled',
+    notEnabled: 'Not enabled',
     sectionRequirements: 'Dependencies',
     dependenciesTitle: 'Dependencies',
     labelKey: 'Module key',
