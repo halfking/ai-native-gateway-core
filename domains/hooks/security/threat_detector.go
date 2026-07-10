@@ -22,7 +22,8 @@ func NewThreatDetector(severityThreshold int) *ThreatDetector {
 	piiPatterns := []*regexp.Regexp{
 		regexp.MustCompile(`(?i)ssn:?\s*\d{3}[-\s]?\d{2}[-\s]?\d{4}`),
 		regexp.MustCompile(`(?i)passport:?\s*[A-Z0-9]{6,12}`),
-		regexp.MustCompile(`(?i)(信用卡|credit\s*card):?\s*\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}`),
+		// 信用卡：支持空格、连字符或无分隔符
+		regexp.MustCompile(`(?i)(信用卡|credit\s*card):?\s*\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}`),
 	}
 
 	return &ThreatDetector{
