@@ -49,6 +49,7 @@ import modulesView from './modulesView'
 import formatAnomaliesView from './formatAnomaliesView'
 import agentRegistryView from './agentRegistryView'
 import outputCompliance from './outputCompliance'
+import ops from './ops'
 
 export default {
   common,
@@ -101,4 +102,5 @@ export default {
   formatAnomaliesView,
   agentRegistryView,
   outputCompliance,
+  ops,
 }

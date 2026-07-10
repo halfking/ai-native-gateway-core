@@ -103,6 +103,18 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    id: 'opsplatform',
+    label: '运维平台',
+    labelKey: 'nav.group.opsplatform',
+    items: [
+      { path: '/ops/licenses', label: 'License管理', labelKey: 'nav.item.opsLicenses', icon: '🔑', super: true, hideForTenant: true },
+      { path: '/ops/faults', label: '故障管理', labelKey: 'nav.item.opsFaults', icon: '⚠️', super: true, hideForTenant: true },
+      { path: '/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', super: true, hideForTenant: true },
+      { path: '/ops/center', label: '中心运维', labelKey: 'nav.item.opsCenter', icon: '🖥️', super: true, hideForTenant: true },
+      { path: '/ops/vibecoding', label: 'VibeCoding', labelKey: 'nav.item.opsVibeCoding', icon: '💻', super: true, hideForTenant: true },
+    ],
+  },
+  {
     id: 'guide',
     label: '接入指南',
     labelKey: 'nav.group.guide',
