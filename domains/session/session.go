@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -141,15 +142,60 @@ func (r *RedisClient) Expire(ctx context.Context, key string, ttl time.Duration)
 }
 
 type Manager struct {
-	redis *RedisClient
-	ttl   time.Duration
+	redis        *RedisClient
+	ttl          time.Duration
+	dbWriter     *DBWriter
+	fileWriter   FileWriterInterface
+	degradedMode atomic.Bool
+}
+
+// FileWriterInterface 定义文件写入器接口（避免循环依赖）
+type FileWriterInterface interface {
+	WriteSnapshot(ctx context.Context, sess *Session, stats *SessionStats, args SnapshotArgs) error
+	WriteRotation(ctx context.Context, sessionID string, rotation *CredRotationEntry) error
+	Flush() error
+	Close() error
 }
 
 func NewManager(redisClient *RedisClient, ttl time.Duration) *Manager {
 	if ttl == 0 {
 		ttl = 7 * 24 * time.Hour
 	}
-	return &Manager{redis: redisClient, ttl: ttl}
+	m := &Manager{redis: redisClient, ttl: ttl}
+	m.degradedMode.Store(false)
+	return m
+}
+
+// SetDBWriter 设置数据库写入器
+func (sm *Manager) SetDBWriter(writer *DBWriter) {
+	if sm == nil {
+		return
+	}
+	sm.dbWriter = writer
+}
+
+// SetFileWriter 设置文件写入器
+func (sm *Manager) SetFileWriter(writer FileWriterInterface) {
+	if sm == nil {
+		return
+	}
+	sm.fileWriter = writer
+}
+
+// SetDegradedMode 设置降级模式
+func (sm *Manager) SetDegradedMode(enabled bool) {
+	if sm == nil {
+		return
+	}
+	sm.degradedMode.Store(enabled)
+}
+
+// IsDegraded 检查是否处于降级模式
+func (sm *Manager) IsDegraded() bool {
+	if sm == nil {
+		return false
+	}
+	return sm.degradedMode.Load()
 }
 
 // NewRedisClientFromClient creates a RedisClient wrapping an existing *redis.Client.

@@ -45,6 +45,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"                       //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1812,30 +1813,122 @@ func main() {
 			slog.Info("CHECKPOINT: after SetRedisClient")
 		}
 
-		// 2026-07-06: Session State Management runtime wiring
-		// 初始化会话状态管理组件（Manager, DBWriter, CleanupWorker, RotationHook）
-		// 并注入到 adminHandler，使 /api/admin/sessions* 端点可用。
-		if fpSlotRedis != nil && adminHandler != nil && dbConn != nil && dbConn.Enabled() {
-			sessionState, ssErr := InitializeSessionState(
-				context.Background(),
-				dbConn.Pool(),
-				fpSlotRedis,
-				adminHandler,
-			)
-			if ssErr != nil {
-				slog.Error("session state init failed", "error", ssErr)
-			} else if sessionState != nil {
-				defer sessionState.Shutdown()
-				// 将 RotationHook 注入到 ChatHandler，使请求链路自动检测凭据轮换
-				if sessionState.RotationHook != nil {
-					chatHandler.SetRotationHook(sessionState.RotationHook)
-					slog.Info("session rotation hook wired into chat handler")
+			// 2026-07-06: Session State Management runtime wiring
+			// 初始化会话状态管理组件（Manager, DBWriter, CleanupWorker, RotationHook）
+			// 并注入到 adminHandler，使 /api/admin/sessions* 端点可用。
+			if fpSlotRedis != nil && adminHandler != nil && dbConn != nil && dbConn.Enabled() {
+				sessionState, ssErr := InitializeSessionState(
+					context.Background(),
+					dbConn.Pool(),
+					fpSlotRedis,
+					adminHandler,
+				)
+				if ssErr != nil {
+					slog.Error("session state init failed", "error", ssErr)
+				} else if sessionState != nil {
+					defer sessionState.Shutdown()
+					// 将 RotationHook 注入到 ChatHandler，使请求链路自动检测凭据轮换
+					if sessionState.RotationHook != nil {
+						chatHandler.SetRotationHook(sessionState.RotationHook)
+						slog.Info("session rotation hook wired into chat handler")
+					}
+					slog.Info("session state management initialized")
 				}
-				slog.Info("session state management initialized")
 			}
-		}
 
-		slog.Info("CHECKPOINT: before memoraClient check")
+			// 2026-07-10: 数据库降级和备份恢复模块
+			// 当数据库离线时，系统自动切换到降级模式，会话数据备份到文件（gzip 压缩）
+			if dbConn != nil && dbConn.Enabled() && sessionMgr != nil && fpSlotRedis != nil {
+				// 配置备份目录
+				backupDir := os.Getenv("LLM_GATEWAY_BACKUP_DIR")
+				if backupDir == "" {
+					backupDir = "./data/backups"
+				}
+
+				// 1. 初始化数据库监控器
+				dbMonitor := dbdegradation.NewMonitor(dbConn.Pool(), dbdegradation.MonitorConfig{
+					CheckInterval:    10 * time.Second,
+					FailThreshold:    3,
+					RecoverThreshold: 3,
+				})
+
+				// 2. 初始化文件写入器（支持 gzip 压缩）
+				fileWriter := dbdegradation.NewFileWriter(backupDir)
+				defer fileWriter.Close()
+
+				// 3. 初始化文件读取器
+				fileReader := dbdegradation.NewFileReader(backupDir)
+
+				// 4. 初始化数据恢复管理器
+				recovery := dbdegradation.NewRecovery(
+					dbConn.Pool(),
+					fileReader,
+					100, // batch size
+				)
+
+				// 5. 初始化 TTL 管理器
+				sessionRedisClient := session.NewRedisClientFromClient(fpSlotRedis)
+				ttlManager := dbdegradation.NewTTLManager(
+					sessionRedisClient,
+					7*24*time.Hour,  // 正常 TTL
+					30*24*time.Hour, // 降级 TTL
+				)
+
+				// 6. 注册状态变更监听器
+				dbMonitor.AddListener(func(event dbdegradation.StatusChangeEvent) {
+					slog.Info("database status changed",
+						"old_status", event.OldStatus.String(),
+						"new_status", event.NewStatus.String(),
+						"message", event.Message,
+					)
+
+					switch event.NewStatus {
+					case dbdegradation.DBStatusDegraded:
+						// 进入降级模式
+						sessionMgr.SetDegradedMode(true)
+						if err := ttlManager.EnterDegradedMode(context.Background()); err != nil {
+							slog.Error("failed to enter degraded mode", "error", err)
+						}
+						slog.Warn("⚠️  ENTERED DEGRADED MODE - sessions will be backed up to compressed files",
+							"backup_dir", backupDir,
+							"ttl_extended_to", "30 days")
+
+					case dbdegradation.DBStatusAvailable:
+						// 退出降级模式
+						sessionMgr.SetDegradedMode(false)
+						if err := ttlManager.ExitDegradedMode(context.Background()); err != nil {
+							slog.Error("failed to exit degraded mode", "error", err)
+						}
+						slog.Info("✓ EXITED DEGRADED MODE - database available, normal operations resumed")
+					}
+				})
+
+				// 7. 将文件写入器注入到 session manager
+				sessionMgr.SetFileWriter(fileWriter)
+
+				// 8. 启动数据库监控
+				dbMonitor.Start(context.Background())
+				defer dbMonitor.Stop()
+
+				// 9. 注入到管理 Handler
+				if adminHandler != nil {
+					adminHandler.WireDBDegradation(dbMonitor, fileReader, recovery, ttlManager)
+				}
+
+				slog.Info("database degradation module initialized",
+					"backup_dir", backupDir,
+					"check_interval", "10s",
+					"compression", "gzip",
+					"normal_ttl", "7 days",
+					"degraded_ttl", "30 days")
+			} else {
+				slog.Info("database degradation module skipped (missing dependencies)",
+					"db", dbConn != nil && dbConn.Enabled(),
+					"session_mgr", sessionMgr != nil,
+					"redis", fpSlotRedis != nil)
+			}
+
+			slog.Info("CHECKPOINT: before memoraClient check")
 		if memorySvc != nil {
 			adminHandler.SetMemoraServices(memorySvc.AdminClient(), memorySvc.AdminSink())
 		}
