@@ -32,7 +32,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/api"
 	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	"github.com/kaixuan/llm-gateway-go/autoupdate"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/center"
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/db"
@@ -57,10 +59,12 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metatools"
 	"github.com/kaixuan/llm-gateway-go/middleware"
@@ -74,6 +78,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
+	"github.com/kaixuan/llm-gateway-go/vibecoding"
+	"github.com/labstack/echo/v4"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -1101,7 +1107,7 @@ func main() {
 			adminDB = dbConn.Pool()
 		}
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
-		slog.Info("admin handler created (db_enabled=%v)", adminDB != nil)
+		slog.Info("admin handler created", "db_enabled", adminDB != nil)
 	}
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
 	if dbConn != nil && dbConn.Enabled() {
@@ -1813,122 +1819,122 @@ func main() {
 			slog.Info("CHECKPOINT: after SetRedisClient")
 		}
 
-			// 2026-07-06: Session State Management runtime wiring
-			// 初始化会话状态管理组件（Manager, DBWriter, CleanupWorker, RotationHook）
-			// 并注入到 adminHandler，使 /api/admin/sessions* 端点可用。
-			if fpSlotRedis != nil && adminHandler != nil && dbConn != nil && dbConn.Enabled() {
-				sessionState, ssErr := InitializeSessionState(
-					context.Background(),
-					dbConn.Pool(),
-					fpSlotRedis,
-					adminHandler,
-				)
-				if ssErr != nil {
-					slog.Error("session state init failed", "error", ssErr)
-				} else if sessionState != nil {
-					defer sessionState.Shutdown()
-					// 将 RotationHook 注入到 ChatHandler，使请求链路自动检测凭据轮换
-					if sessionState.RotationHook != nil {
-						chatHandler.SetRotationHook(sessionState.RotationHook)
-						slog.Info("session rotation hook wired into chat handler")
-					}
-					slog.Info("session state management initialized")
+		// 2026-07-06: Session State Management runtime wiring
+		// 初始化会话状态管理组件（Manager, DBWriter, CleanupWorker, RotationHook）
+		// 并注入到 adminHandler，使 /api/admin/sessions* 端点可用。
+		if fpSlotRedis != nil && adminHandler != nil && dbConn != nil && dbConn.Enabled() {
+			sessionState, ssErr := InitializeSessionState(
+				context.Background(),
+				dbConn.Pool(),
+				fpSlotRedis,
+				adminHandler,
+			)
+			if ssErr != nil {
+				slog.Error("session state init failed", "error", ssErr)
+			} else if sessionState != nil {
+				defer sessionState.Shutdown()
+				// 将 RotationHook 注入到 ChatHandler，使请求链路自动检测凭据轮换
+				if sessionState.RotationHook != nil {
+					chatHandler.SetRotationHook(sessionState.RotationHook)
+					slog.Info("session rotation hook wired into chat handler")
 				}
+				slog.Info("session state management initialized")
+			}
+		}
+
+		// 2026-07-10: 数据库降级和备份恢复模块
+		// 当数据库离线时，系统自动切换到降级模式，会话数据备份到文件（gzip 压缩）
+		if dbConn != nil && dbConn.Enabled() && sessionMgr != nil && fpSlotRedis != nil {
+			// 配置备份目录
+			backupDir := os.Getenv("LLM_GATEWAY_BACKUP_DIR")
+			if backupDir == "" {
+				backupDir = "./data/backups"
 			}
 
-			// 2026-07-10: 数据库降级和备份恢复模块
-			// 当数据库离线时，系统自动切换到降级模式，会话数据备份到文件（gzip 压缩）
-			if dbConn != nil && dbConn.Enabled() && sessionMgr != nil && fpSlotRedis != nil {
-				// 配置备份目录
-				backupDir := os.Getenv("LLM_GATEWAY_BACKUP_DIR")
-				if backupDir == "" {
-					backupDir = "./data/backups"
-				}
+			// 1. 初始化数据库监控器
+			dbMonitor := dbdegradation.NewMonitor(dbConn.Pool(), dbdegradation.MonitorConfig{
+				CheckInterval:    10 * time.Second,
+				FailThreshold:    3,
+				RecoverThreshold: 3,
+			})
 
-				// 1. 初始化数据库监控器
-				dbMonitor := dbdegradation.NewMonitor(dbConn.Pool(), dbdegradation.MonitorConfig{
-					CheckInterval:    10 * time.Second,
-					FailThreshold:    3,
-					RecoverThreshold: 3,
-				})
+			// 2. 初始化文件写入器（支持 gzip 压缩）
+			fileWriter := dbdegradation.NewFileWriter(backupDir)
+			defer fileWriter.Close()
 
-				// 2. 初始化文件写入器（支持 gzip 压缩）
-				fileWriter := dbdegradation.NewFileWriter(backupDir)
-				defer fileWriter.Close()
+			// 3. 初始化文件读取器
+			fileReader := dbdegradation.NewFileReader(backupDir)
 
-				// 3. 初始化文件读取器
-				fileReader := dbdegradation.NewFileReader(backupDir)
+			// 4. 初始化数据恢复管理器
+			recovery := dbdegradation.NewRecovery(
+				dbConn.Pool(),
+				fileReader,
+				100, // batch size
+			)
 
-				// 4. 初始化数据恢复管理器
-				recovery := dbdegradation.NewRecovery(
-					dbConn.Pool(),
-					fileReader,
-					100, // batch size
+			// 5. 初始化 TTL 管理器
+			sessionRedisClient := session.NewRedisClientFromClient(fpSlotRedis)
+			ttlManager := dbdegradation.NewTTLManager(
+				sessionRedisClient,
+				7*24*time.Hour,  // 正常 TTL
+				30*24*time.Hour, // 降级 TTL
+			)
+
+			// 6. 注册状态变更监听器
+			dbMonitor.AddListener(func(event dbdegradation.StatusChangeEvent) {
+				slog.Info("database status changed",
+					"old_status", event.OldStatus.String(),
+					"new_status", event.NewStatus.String(),
+					"message", event.Message,
 				)
 
-				// 5. 初始化 TTL 管理器
-				sessionRedisClient := session.NewRedisClientFromClient(fpSlotRedis)
-				ttlManager := dbdegradation.NewTTLManager(
-					sessionRedisClient,
-					7*24*time.Hour,  // 正常 TTL
-					30*24*time.Hour, // 降级 TTL
-				)
-
-				// 6. 注册状态变更监听器
-				dbMonitor.AddListener(func(event dbdegradation.StatusChangeEvent) {
-					slog.Info("database status changed",
-						"old_status", event.OldStatus.String(),
-						"new_status", event.NewStatus.String(),
-						"message", event.Message,
-					)
-
-					switch event.NewStatus {
-					case dbdegradation.DBStatusDegraded:
-						// 进入降级模式
-						sessionMgr.SetDegradedMode(true)
-						if err := ttlManager.EnterDegradedMode(context.Background()); err != nil {
-							slog.Error("failed to enter degraded mode", "error", err)
-						}
-						slog.Warn("⚠️  ENTERED DEGRADED MODE - sessions will be backed up to compressed files",
-							"backup_dir", backupDir,
-							"ttl_extended_to", "30 days")
-
-					case dbdegradation.DBStatusAvailable:
-						// 退出降级模式
-						sessionMgr.SetDegradedMode(false)
-						if err := ttlManager.ExitDegradedMode(context.Background()); err != nil {
-							slog.Error("failed to exit degraded mode", "error", err)
-						}
-						slog.Info("✓ EXITED DEGRADED MODE - database available, normal operations resumed")
+				switch event.NewStatus {
+				case dbdegradation.DBStatusDegraded:
+					// 进入降级模式
+					sessionMgr.SetDegradedMode(true)
+					if err := ttlManager.EnterDegradedMode(context.Background()); err != nil {
+						slog.Error("failed to enter degraded mode", "error", err)
 					}
-				})
+					slog.Warn("⚠️  ENTERED DEGRADED MODE - sessions will be backed up to compressed files",
+						"backup_dir", backupDir,
+						"ttl_extended_to", "30 days")
 
-				// 7. 将文件写入器注入到 session manager
-				sessionMgr.SetFileWriter(fileWriter)
-
-				// 8. 启动数据库监控
-				dbMonitor.Start(context.Background())
-				defer dbMonitor.Stop()
-
-				// 9. 注入到管理 Handler
-				if adminHandler != nil {
-					adminHandler.WireDBDegradation(dbMonitor, fileReader, recovery, ttlManager)
+				case dbdegradation.DBStatusAvailable:
+					// 退出降级模式
+					sessionMgr.SetDegradedMode(false)
+					if err := ttlManager.ExitDegradedMode(context.Background()); err != nil {
+						slog.Error("failed to exit degraded mode", "error", err)
+					}
+					slog.Info("✓ EXITED DEGRADED MODE - database available, normal operations resumed")
 				}
+			})
 
-				slog.Info("database degradation module initialized",
-					"backup_dir", backupDir,
-					"check_interval", "10s",
-					"compression", "gzip",
-					"normal_ttl", "7 days",
-					"degraded_ttl", "30 days")
-			} else {
-				slog.Info("database degradation module skipped (missing dependencies)",
-					"db", dbConn != nil && dbConn.Enabled(),
-					"session_mgr", sessionMgr != nil,
-					"redis", fpSlotRedis != nil)
+			// 7. 将文件写入器注入到 session manager
+			sessionMgr.SetFileWriter(fileWriter)
+
+			// 8. 启动数据库监控
+			dbMonitor.Start(context.Background())
+			defer dbMonitor.Stop()
+
+			// 9. 注入到管理 Handler
+			if adminHandler != nil {
+				adminHandler.WireDBDegradation(dbMonitor, fileReader, recovery, ttlManager)
 			}
 
-			slog.Info("CHECKPOINT: before memoraClient check")
+			slog.Info("database degradation module initialized",
+				"backup_dir", backupDir,
+				"check_interval", "10s",
+				"compression", "gzip",
+				"normal_ttl", "7 days",
+				"degraded_ttl", "30 days")
+		} else {
+			slog.Info("database degradation module skipped (missing dependencies)",
+				"db", dbConn != nil && dbConn.Enabled(),
+				"session_mgr", sessionMgr != nil,
+				"redis", fpSlotRedis != nil)
+		}
+
+		slog.Info("CHECKPOINT: before memoraClient check")
 		if memorySvc != nil {
 			adminHandler.SetMemoraServices(memorySvc.AdminClient(), memorySvc.AdminSink())
 		}
@@ -2198,6 +2204,66 @@ func main() {
 			adminHandler.SetCandidateFailureHandlers(candidateFailureMonitor.RecentAlerts)
 		}
 		slog.Info("CHECKPOINT: after admin RegisterRoutes - admin API enabled")
+	}
+
+	// ── 运维平台 API (Phase 1-8) ───────────────────────────────────────
+	// Licensing, Fault Management, Auto-update, Center Ops, VibeCoding
+	if dbConn != nil && dbConn.Enabled() {
+		// 创建 Echo 实例用于运维平台路由
+		e := echo.New()
+		e.HideBanner = true
+		e.HidePort = true
+
+		pool := dbConn.Pool()
+
+		// Phase 2: Licensing (License管理)
+		licensingStore := licensing.NewPgxStore(pool)
+		licensingCrypto := &licensing.CryptoConfig{}
+		licensingValidator := licensing.NewValidator(licensingCrypto, licensingStore)
+		licensingDeviceManager := licensing.NewDeviceManager(licensingStore, licensingValidator)
+		licensingActivator := licensing.NewActivator(licensingCrypto, licensingStore, licensingDeviceManager)
+		licensingOffline := licensing.NewOfflineManager(licensingCrypto, licensingStore)
+		licensingHandler := licensing.NewAdminHandler(licensingStore, licensingCrypto, licensingActivator, licensingOffline, licensingValidator)
+		licensingHandler.RegisterRoutes(e.Group("/api/admin"))
+		slog.Info("Phase 2: Licensing API enabled (/api/admin/licenses)")
+
+		// Phase 3: Fault Management (故障自愈)
+		faultStore := fault.NewPgxStore(pool)
+		faultActionExecutor := fault.NewActionExecutor()
+		faultRuleEngine := fault.NewRuleEngine(faultStore, faultActionExecutor)
+		faultDetector := fault.NewDetector(faultStore, faultRuleEngine)
+		faultHandler := fault.NewAdminHandler(faultStore, faultDetector, faultRuleEngine)
+		faultHandler.RegisterRoutes(e.Group("/api/admin/fault"))
+		slog.Info("Phase 3: Fault Management API enabled (/api/admin/fault/*)")
+
+		// Phase 4: Auto-update (自动升级)
+		autoupdateStore := autoupdate.NewPgxStore(pool)
+		autoupdateDownloader := autoupdate.NewDownloader("/tmp/downloads")
+		autoupdateInstaller := autoupdate.NewInstaller("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
+		autoupdateRollback := autoupdate.NewRollback("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
+		autoupdateAPI := autoupdate.NewAdminAPI(autoupdateStore, autoupdateDownloader, autoupdateInstaller, autoupdateRollback)
+		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/autoupdate"))
+		slog.Info("Phase 4: Auto-update API enabled (/api/admin/autoupdate/*)")
+
+		// Phase 5: Center Ops (中心运维)
+		centerStore := center.NewPgxStore(pool)
+		centerServer := center.NewServer(centerStore)
+		centerAPI := center.NewAdminAPI(centerServer, centerStore)
+		centerAPI.RegisterRoutes(e.Group("/api/admin/center"))
+		slog.Info("Phase 5: Center Ops API enabled (/api/admin/center/*)")
+
+		// Phase 7: VibeCoding
+		vibecodingStore := vibecoding.NewPgxStore(pool)
+		vibecodingProjectManager := vibecoding.NewProjectManager(vibecodingStore)
+		vibecodingSessionManager := vibecoding.NewSessionManager(vibecodingStore)
+		vibecodingReviewManager := vibecoding.NewReviewManager(vibecodingStore)
+		vibecodingAPI := vibecoding.NewAdminAPI(vibecodingProjectManager, vibecodingSessionManager, vibecodingReviewManager)
+		vibecodingAPI.RegisterRoutes(e.Group("/api/admin/vibecoding"))
+		slog.Info("Phase 7: VibeCoding API enabled (/api/admin/vibecoding/*)")
+
+		// 将 Echo 挂载到 http.ServeMux
+		mux.Handle("/api/admin/", e)
+		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
 	}
 
 	slog.Info("CHECKPOINT: before middleware chain")
