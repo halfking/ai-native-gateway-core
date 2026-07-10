@@ -97,7 +97,7 @@ async function handleLogin() {
         <div class="login-modal__header">
           <div class="login-modal__brand">
             <img
-              src="/logo-icon.svg"
+              src="/logo-icon.png"
               width="40"
               height="40"
               alt="开轩启圭 Qigui"
