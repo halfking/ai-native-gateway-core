@@ -34,6 +34,7 @@ func main() {
 	output := flag.String("output", "", "Write results JSON to this path (optional)")
 	skipLLMSummary := flag.Bool("skip-llm-summary", false, "Skip LLM-summary path (test mechanical only)")
 	shareSession := flag.Bool("share-session", false, "Use a single session_id for all rows (simulates a multi-turn conversation)")
+	serialExec := flag.Bool("serial", false, "Execute rows serially (required for share-session delta-append testing)")
 	testMode := flag.String("test-mode", "prepare", "Test mode: 'prepare' (full pipeline) or 'mechanical' (direct trim test)")
 	tempTable := flag.String("temp-table", "compression_bench_results", "Temp results table name")
 	flag.Parse()
@@ -95,35 +96,48 @@ func main() {
 	var (
 		mu          sync.Mutex
 		results     []benchResult
-		parallelism = runtime.GOMAXPROCS(0)
-		sem         = make(chan struct{}, parallelism)
-		wg          sync.WaitGroup
 		totalBytes  int64
 		totalTokens int64
 	)
 
-	workCh := make(chan requestLogRow, len(rows))
-	for _, r := range rows {
-		workCh <- r
-	}
-	close(workCh)
-
-	for row := range workCh {
-		wg.Add(1)
-		go func(row requestLogRow) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
+	if *serialExec {
+		// Serial execution for share-session delta-append testing
+		log.Printf("serial execution mode (for share-session delta testing)")
+		for _, row := range rows {
 			res := processRow(ctx, sc, row, *protocol, *contextWindow, *testMode)
-			mu.Lock()
 			results = append(results, res)
 			totalBytes += int64(res.BytesBefore)
 			totalTokens += int64(res.TokensBefore)
-			mu.Unlock()
-		}(row)
+		}
+	} else {
+		// Parallel execution (default)
+		parallelism := runtime.GOMAXPROCS(0)
+		sem := make(chan struct{}, parallelism)
+		wg := sync.WaitGroup{}
+
+		workCh := make(chan requestLogRow, len(rows))
+		for _, r := range rows {
+			workCh <- r
+		}
+		close(workCh)
+
+		for row := range workCh {
+			wg.Add(1)
+			go func(row requestLogRow) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				res := processRow(ctx, sc, row, *protocol, *contextWindow, *testMode)
+				mu.Lock()
+				results = append(results, res)
+				totalBytes += int64(res.BytesBefore)
+				totalTokens += int64(res.TokensBefore)
+				mu.Unlock()
+			}(row)
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 
 	log.Printf("processed %d rows, inserting into %s", len(results), *tempTable)
 
