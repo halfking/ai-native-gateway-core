@@ -34,7 +34,11 @@ func (h *AdminHandler) RegisterRoutes(g *echo.Group) {
 	g.POST("/licenses/:key/revoke", h.RevokeLicense)
 	g.GET("/licenses/:key/devices", h.ListDevices)
 	g.POST("/licenses/:key/devices/:hash/deactivate", h.DeactivateDevice)
-	g.POST("/offline-requests/:id/approve", h.ApproveOfflineRequest)
+
+	// Offline activation requests (前端期望在 /licenses/ 下)
+	g.GET("/licenses/offline-requests", h.ListOfflineRequests)
+	g.POST("/licenses/offline-requests/:id/approve", h.ApproveOfflineRequest)
+	g.POST("/licenses/offline-requests/:id/reject", h.RejectOfflineRequest)
 }
 
 func (h *AdminHandler) CreateLicense(c echo.Context) error {
@@ -151,6 +155,12 @@ func (h *AdminHandler) DeactivateDevice(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "device deactivated"})
 }
 
+func (h *AdminHandler) ListOfflineRequests(c echo.Context) error {
+	// TODO: 实现从数据库查询离线激活请求列表
+	// 当前返回空列表
+	return c.JSON(http.StatusOK, []interface{}{})
+}
+
 func (h *AdminHandler) ApproveOfflineRequest(c echo.Context) error {
 	requestID := c.Param("id")
 
@@ -164,5 +174,23 @@ func (h *AdminHandler) ApproveOfflineRequest(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"signed_license": signedLicense,
 		"base64":         string(signedJSON),
+	})
+}
+
+func (h *AdminHandler) RejectOfflineRequest(c echo.Context) error {
+	requestID := c.Param("id")
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	// TODO: 实现拒绝离线激活请求的逻辑
+	// 当前返回成功
+	return c.JSON(http.StatusOK, map[string]string{
+		"message":    "offline request rejected",
+		"request_id": requestID,
+		"reason":     req.Reason,
 	})
 }
