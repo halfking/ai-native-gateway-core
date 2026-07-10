@@ -2,6 +2,7 @@
 // DashboardViewV2.vue — 新版仪表盘（紧凑统计 + 泳道系统）
 // 2026-07-05: 单行统计卡片 + 多泳道实时请求流
 // 2026-07-05 v3: 使用父组件提供的共享数据源
+// 2026-07-10 v4: 支持 Tab 切换（stream vs stats）
 
 import { ref, computed, inject, type Ref } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -35,11 +36,11 @@ const dashboardData = inject<{
   load: () => Promise<void>
 }>('dashboardData')!
 
-// 从父组件注入版本切换器
-const versionSwitcher = inject<{
-  version: Ref<'v1' | 'v2'>
-  switchVersion: (v: 'v1' | 'v2') => void
-}>('versionSwitcher')!
+// 从父组件注入 Tab 控制
+const dashboardTab = inject<{
+  activeTab: Ref<'stream' | 'stats'>
+  switchTab: (tab: 'stream' | 'stats') => void
+}>('dashboardTab')!
 
 // 从父组件注入泳道重新初始化key
 const swimLaneReinitKey = inject<Ref<number>>('swimLaneReinitKey')!
@@ -59,9 +60,8 @@ const compStats = dashboardData.compStats
 const discoveryStatus = dashboardData.discoveryStatus
 const load = dashboardData.load
 
-// 版本切换
-const version = versionSwitcher.version
-const switchVersion = versionSwitcher.switchVersion
+// Tab 控制
+const activeTab = dashboardTab.activeTab
 
 // Tenant info
 const tenantLabel = computed(() => {
@@ -116,32 +116,10 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
 
 <template>
   <div class="dashboard-v2">
-    <!-- 紧凑型页面头部 - 单行布局 + 版本切换器 -->
+    <!-- 紧凑型页面头部 - 单行布局 -->
     <div class="page-header">
       <div class="page-header-left">
         <h2>仪表盘</h2>
-        
-        <!-- 版本切换器（集成到标题旁） -->
-        <div class="version-switcher">
-          <button
-            type="button"
-            class="version-btn"
-            :class="{ 'version-btn--active': version === 'v2' }"
-            @click="switchVersion('v2')"
-            title="新版仪表盘（推荐）- 泳道可视化"
-          >
-            V2
-          </button>
-          <button
-            type="button"
-            class="version-btn"
-            :class="{ 'version-btn--active': version === 'v1' }"
-            @click="switchVersion('v1')"
-            title="旧版仪表盘"
-          >
-            V1
-          </button>
-        </div>
         
         <MemoraStatusButton />
       </div>
@@ -273,8 +251,8 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
       </div>
     </div>
 
-    <!-- 会话统计面板 -->
-    <SessionStatsPanel style="margin-bottom: 20px;" />
+    <!-- 会话统计面板（仅在 stats tab 显示） -->
+    <SessionStatsPanel v-if="activeTab === 'stats'" style="margin-bottom: 20px;" />
 
     <!-- 实时请求流V2（带重新初始化key） -->
     <LiveRequestStreamV2
@@ -336,41 +314,6 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
   font-size: 20px;
   font-weight: 600;
   white-space: nowrap;
-}
-
-/* 版本切换器 */
-.version-switcher {
-  display: inline-flex;
-  gap: 3px;
-  padding: 2px;
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--border, #30363d);
-  border-radius: 5px;
-}
-
-.version-btn {
-  padding: 3px 10px;
-  border: 1px solid transparent;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--text-secondary, #8b949e);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  white-space: nowrap;
-  min-width: 36px;
-}
-
-.version-btn:hover {
-  color: var(--text, #e6edf3);
-  background: var(--bg, #0f1117);
-}
-
-.version-btn--active {
-  background: var(--accent, #6366f1);
-  color: white;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 .page-header-right {
