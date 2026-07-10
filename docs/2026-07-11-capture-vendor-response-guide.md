@@ -238,3 +238,162 @@ var doubaoPrivateFields = []string{
 - 分析与更新: 30 分钟
 
 **总计**: 1-2 小时
+
+---
+
+## 实际抓包执行结果（2026-07-11，252 生产）
+
+**环境**: `prod-aliyun-252` (115.29.212.252:25022)，部署 `llm.itestu.cn (llm-gateway-go) + pg17 + redis:6389`  
+**数据库**: `172.16.2.210:5432/llm_gateway`，host: `pg-data-252-pg17` (podman container)  
+**凭据**: `llm_gateway / 4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg`（超级用户，跳过 RLS）  
+**连接方法**: SSH tunnel `ssh -p 25022 root@115.29.212.252 -L 25432:172.16.2.210:5432 -N -f`
+
+### 真实 7 天流量分布（`request_logs_hot ∪ request_logs_2026_07`）
+
+| 厂商 | provider_id | code | total | success | has_body | 备注 |
+|---|---|---|---|---|---|---|
+| MiniMax | 14 | minimax | 16456 | 15970 | 15970 | 主流量，含 thinking mode |
+| (匿名) | 587, 314 | (none) | 7212 | 5186 | 5181 | apiclaude.cc / apigpt.cc 中转 |
+| xiaomi | 1 | xiaomi | 4356 | 4114 | 4114 | 标准 OpenAI 兼容 |
+| nvidia | 18 | nvidia | 980 | 502 | 502 | 偶发高 fail 率 |
+| **zhipu (GLM)** | 32 | zhipu | **560** | **524** | **524** | **本次验证数据来源** |
+| volcano-normal (Doubao OpenAI) | 35 | volcano-normal | 104 | 0 | 0 | 全部失败，仅 embedding 调用 |
+| sensenova | 24 | sensenova | 22 | 0 | 0 | 全部失败 |
+| volcano-tokenplan | 34 | volcano-tokenplan | 8 | 0 | 0 | 全部失败 |
+| **DeepSeek** | - | deepseek | **0** | 0 | 0 | **生产未启用** |
+| **Doubao 原生** | - | doubao | **0** | 0 | 0 | **生产未启用** |
+
+### 真实私有字段（已确认）
+
+#### MiniMax（provider_id=14，~16K 次成功响应）
+
+**顶层字段**（已有 stripper 覆盖 — 验证）：`nvext, audio_content, name, system_fingerprint, base_resp, request_id, ...`
+
+**嵌套私有字段**（**新增到 `strip_minimax_fields.go`**）：
+- `usage.total_characters` — 89 次
+- `usage.cache_read_tokens` — 87 次
+- `usage.prompt_tokens_details.cached_tokens` — 89 次
+- `usage.completion_tokens_details.reasoning_tokens` — 49 次
+- `choices.0.message.reasoning` — 4 次（legacy reasoning surface）
+
+#### Zhipu / GLM（provider_id=32，524 次成功响应，glm-5.x 模型）
+
+**顶层字段**（已加入 stripper）：`system_fingerprint, zhipu_request_id, web_search_results, retrieval_documents, model_version, sensitive_word_check, request_id`
+
+**嵌套私有字段**（**已加入 `strip_zhipu_fields.go`**，本次 mainline 改进）：
+- `usage.prompt_tokens_details.cached_tokens` — Anthropic-style cache hit 计费
+- `usage.completion_tokens_details.reasoning_tokens` — GLM-5 / GLM-5.2 推理 token 计费
+- `choices.0.message.reasoning_content` — GLM-5.x 思考链，与 MiniMax/DeepSeek-R1 同型
+
+**真实样本**（provider_id=32, ts=2026-07-09，glm-5.2）：
+
+```json
+{
+  "id": "202607091302388f6a7ff3cf8c400c",
+  "model": "glm-5.2",
+  "usage": {
+    "total_tokens": 18,
+    "prompt_tokens": 13,
+    "completion_tokens": 5,
+    "prompt_tokens_details": {"cached_tokens": 0},
+    "completion_tokens_details": {"reasoning_tokens": 2}
+  },
+  "choices": [{
+    "message": {
+      "role": "assistant",
+      "reasoning_content": "Let me think about it...",
+      "content": "answer",
+      "tool_calls": [...]
+    },
+    "finish_reason": "tool_calls"
+  }],
+  "system_fingerprint": "fp_glm5_2"
+}
+```
+
+#### 未验证项（生产无数据）
+
+| 厂商 | 现状 | 后续动作 |
+|---|---|---|
+| **Doubao** (OpenAI 兼容模式) | 仅 volcano-normal 走 OpenAI 兼容，0 成功；doubao code 全 0 调用 | 启用实际 chat 调用后回归验证 |
+| **DeepSeek** | 0 调用 | 模型未在 provider_catalog 注册或未分配 key，需先启用再验证 |
+| **Doubao 原生协议** (非 OpenAI 兼容) | 不存在该 protocol | 架构层 P1.2 — Gemini 完整协议时一起评估 |
+| **Gemini** | (代码未启用 Gemini provider) | 同 P1.2 — 完整协议接入时验证 |
+
+### 自动化改进
+
+1. **新增 helper**: `domains/streaming/strip_zhipu_fields.go` 内联 `stripNestedPath()` / `stripPathDescend()` — 支持点路径（如 `usage.prompt_tokens_details`）+ 数组索引（如 `choices.0.message.reasoning_content`）。
+2. **新增测试**: `domains/streaming/strip_vendor_fields_test.go` — `TestStripMinimaxNestedFields` + `TestStripZhipuFieldsBody/strips_GLM-5_nested_*` 共 5 个新场景，全部通过。
+3. **保持向后兼容**: 原 `TestStripMinimaxFieldsBody` 和 `TestStripDoubaoFieldsBody` / `TestStripDeepSeekFieldsBody` 不变。
+
+### 已知遗留风险
+
+- **doubao / deepseek**: 推测字段清单（基于 docs）未经生产验证，需启用流量后回归。
+- **嵌套路径性能**: 每次 stripper 触发会 unmarshal → 处理 → re-marshal 一次。预期 ~0.1ms/响应（路径只针对嵌套字段存在时），可接受。
+- **OpenAI Responses API 协议**（`provider_id=587` 的 4 次响应）: 包含 `output / output[].content[].type / annotations` 等新字段未纳入现有 stripper — 见后续 P1 任务。
+
+### 1785 次调用 vs 524 次成功的统计观察
+
+| 厂商 | fail 比例 | 失败原因典型 |
+|---|---|---|
+| xiaomi | 5.6% | model_not_found |
+| nvidia | 48.7% | 高 transient 失败（疑似供应商问题） |
+| volcano-normal | 100% | 全 embedding 调用失败 |
+| sensenova | 100% | 配置或网络层问题 |
+| zhipu | 6.4% | 主要是 glm-4.7 的 model_not_found |
+
+## 查询参考 SQL
+
+### 全厂商字段 top-level key 频率
+
+```sql
+WITH all_keys AS (
+    SELECT pc.code, ks.key AS top_key
+    FROM request_logs_hot r
+    LEFT JOIN providers p ON p.id = r.provider_id
+    LEFT JOIN provider_catalog pc ON pc.code = p.code
+    CROSS JOIN LATERAL jsonb_object_keys(r.response_body) AS ks(key)
+    WHERE r.ts > now() - interval '7 days'
+      AND r.success AND r.response_body IS NOT NULL
+      AND jsonb_typeof(r.response_body) = 'object'
+)
+SELECT code, top_key, count(*) AS n_occurrences
+FROM all_keys
+GROUP BY 1, 2
+ORDER BY code, n_occurrences DESC;
+```
+
+### usage 子字段频率
+
+```sql
+WITH usage_keys AS (
+    SELECT pc.code, ks.key AS usage_key
+    FROM request_logs_hot r
+    LEFT JOIN providers p ON p.id = r.provider_id
+    LEFT JOIN provider_catalog pc ON pc.code = p.code
+    CROSS JOIN LATERAL jsonb_object_keys(r.response_body->'usage') AS ks(key)
+    WHERE r.ts > now() - interval '7 days'
+      AND r.success AND jsonb_typeof(r.response_body->'usage') = 'object'
+)
+SELECT code, usage_key, count(*) AS n
+FROM usage_keys
+GROUP BY 1, 2 ORDER BY code, n DESC;
+```
+
+### message 子字段频率
+
+```sql
+WITH msg_keys AS (
+    SELECT pc.code, ks.key AS msg_key
+    FROM request_logs_hot r
+    LEFT JOIN providers p ON p.id = r.provider_id
+    LEFT JOIN provider_catalog pc ON pc.code = p.code
+    CROSS JOIN LATERAL jsonb_object_keys(r.response_body->'choices'->0->'message') AS ks(key)
+    WHERE r.ts > now() - interval '7 days'
+      AND r.success AND jsonb_typeof(r.response_body->'choices'->0->'message') = 'object'
+)
+SELECT code, msg_key, count(*) AS n
+FROM msg_keys
+GROUP BY 1, 2 ORDER BY code, n DESC;
+```
+
