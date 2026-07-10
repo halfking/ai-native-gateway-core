@@ -11,6 +11,7 @@ export default {
     routing: 'Routage',
     session: 'Session',
     security: 'Sécurité',
+    outputCompliance: 'Conformité de sortie',
     circuitBreaker: 'Disjoncteur',
     general: 'Autre',
   },
@@ -151,4 +152,7 @@ export default {
 </ul>
 <p class="docs-note">⚠️ <strong>Au niveau locataire</strong> : ce paramètre nécessite un tenant_id ; configurez-le sur la page Gestion des locataires.</p>`,
   },
+
+  // 同步的扁平键
+  outputCompliance: '输出合规',
 }
