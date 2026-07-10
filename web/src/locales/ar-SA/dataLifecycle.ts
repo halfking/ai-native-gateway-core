@@ -126,9 +126,9 @@ export default {
     summary: {
       databaseTitle: 'قاعدة بيانات PostgreSQL',
       databaseSubtitle: 'الحجم الكلي (الجداول + الفهارس + TOAST)',
-      databaseMetric: 'Database',
-      tablesMetric: 'Tables',
-      indexesMetric: 'Indexes',
+      databaseMetric: 'قاعدة البيانات',
+      tablesMetric: 'الجداول',
+      indexesMetric: 'الفهارس',
       toastMetric: 'TOAST',
       diskTitle: 'القرص المحلي',
       diskUsedOf: 'المستخدم / {total}',

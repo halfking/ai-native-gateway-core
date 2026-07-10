@@ -126,9 +126,9 @@ export default {
     summary: {
       databaseTitle: 'Base de datos PostgreSQL',
       databaseSubtitle: 'Huella total (tablas + índices + TOAST)',
-      databaseMetric: 'Database',
-      tablesMetric: 'Tables',
-      indexesMetric: 'Indexes',
+      databaseMetric: 'Base de datos',
+      tablesMetric: 'Tablas',
+      indexesMetric: 'Índices',
       toastMetric: 'TOAST',
       diskTitle: 'Disco local',
       diskUsedOf: 'Usado / {total}',
