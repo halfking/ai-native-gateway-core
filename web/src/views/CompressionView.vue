@@ -9,6 +9,7 @@ import {
   type CompressionStats,
   type CompressionSessionItem,
 } from '../api'
+import { getSetting } from '../api/settings'
 
 const { t } = useI18n()
 
@@ -20,6 +21,16 @@ const stats = ref<CompressionStats | null>(null)
 const sessions = ref<CompressionSessionItem[]>([])
 const sessionsCount = ref(0)
 const sessionsLoading = ref(false)
+
+// Current compression configuration (read-only chips), kept in sync with
+// the editable copy in Session Configuration → Compression.
+const showCurrentConfig = ref(false)
+const currentConfig = ref<{
+  enabled: boolean
+  mode: string
+  window: number
+  model: string
+}>({ enabled: true, mode: 'smart', window: 0.8, model: '' })
 
 type TabId = '24h' | '7d' | '30d' | 'custom'
 const activeTab = ref<TabId>('24h')
@@ -89,6 +100,38 @@ async function loadSessions() {
 
 async function loadAll() {
   await Promise.all([loadStats(), loadSessions()])
+}
+
+// Load the current compression configuration for the read-only chip bar.
+// Failures are non-blocking — the bar simply stays at defaults.
+async function loadCurrentConfig() {
+  try {
+    const [en, mode, win, model] = await Promise.all([
+      getSetting('compression.enabled'),
+      getSetting('compression.mode'),
+      getSetting('compression.window_fraction'),
+      getSetting('compression.llm_model'),
+    ])
+    currentConfig.value = {
+      enabled: (en.value ?? en.spec.default) === true,
+      mode: mode.value ?? mode.spec.default ?? 'smart',
+      window: win.value ?? win.spec.default ?? 0.8,
+      model: model.value ?? model.spec.default ?? '',
+    }
+  } catch {
+    // keep defaults
+  }
+}
+
+function modeChipLabel(m: string): string {
+  const map: Record<string, string> = {
+    off: t('settings.compression.enumLabels.off'),
+    auto_threshold: t('settings.compression.enumLabels.auto'),
+    on_4xx: t('settings.compression.enumLabels.on4xx'),
+    smart: t('settings.compression.enumLabels.smart'),
+    aggressive: t('settings.compression.enumLabels.aggressive'),
+  }
+  return map[m] || m
 }
 
 function switchTab(tab: TabId) {
@@ -204,7 +247,10 @@ function strategyColor(s: string): string {
   return strategyColors[s] || '#6b7280'
 }
 
-onMounted(loadAll)
+onMounted(() => {
+  loadAll()
+  loadCurrentConfig()
+})
 watch(activeTab, loadAll)
 </script>
 
@@ -247,6 +293,31 @@ watch(activeTab, loadAll)
       <button class="btn btn-ghost btn-sm refresh-btn" @click="loadAll" :disabled="loading">
         {{ loading ? t('compression.loading') : t('compression.refresh') }}
       </button>
+    </div>
+
+    <!-- Current configuration chips (read-only; editable in Session Configuration → Compression) -->
+    <div class="current-config-bar">
+      <button class="config-toggle" @click="showCurrentConfig = !showCurrentConfig">
+        <span class="caret" :class="{ open: showCurrentConfig }">▶</span>
+        <span class="config-toggle-label">{{ t('sessions.config.basicSettings') }}</span>
+        <span class="chip" :class="currentConfig.enabled ? 'chip-on' : 'chip-off'">
+          {{ currentConfig.enabled ? t('sessions.config.enabled') : t('sessions.config.disabled') }}
+        </span>
+        <span class="chip">{{ modeChipLabel(currentConfig.mode) }}</span>
+      </button>
+      <div v-if="showCurrentConfig" class="config-chips">
+        <div class="chip-item">
+          <span class="chip-lbl">{{ t('sessions.config.compressionWindowLabel') }}</span>
+          <span class="chip">{{ (currentConfig.window * 100).toFixed(0) }}%</span>
+        </div>
+        <div class="chip-item">
+          <span class="chip-lbl">{{ t('sessions.config.compressionModelLabel') }}</span>
+          <code class="chip code-chip">{{ currentConfig.model || '—' }}</code>
+        </div>
+        <button class="btn btn-ghost btn-sm" @click="router.push('/admin/session-config')">
+          {{ t('sessions.config.viewDetails') }} →
+        </button>
+      </div>
     </div>
 
     <!-- Summary Cards -->
@@ -657,6 +728,57 @@ watch(activeTab, loadAll)
 .text-muted {
   color: var(--text-secondary, #6b7280);
 }
+
+/* Current configuration chip bar */
+.current-config-bar {
+  background: var(--bg-card, #1e1e2e);
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 16px;
+}
+.config-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary, #6b7280);
+  font-size: 13px;
+  padding: 0;
+  width: 100%;
+  text-align: left;
+}
+.config-toggle:hover { color: var(--text-primary, #e5e7eb); }
+.config-toggle-label { font-weight: 600; color: var(--text-primary, #e5e7eb); }
+.caret {
+  font-size: 9px;
+  transition: transform 0.2s;
+  display: inline-block;
+}
+.caret.open { transform: rotate(90deg); }
+.config-chips {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.chip {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--bg-hover, #2a2a3e);
+  color: var(--text-primary, #e5e7eb);
+  border: 1px solid var(--border, #333);
+}
+.chip-on { background: rgba(52,211,153,.15); color: #34d399; border-color: rgba(52,211,153,.3); }
+.chip-off { background: rgba(139,148,158,.15); color: #8b949e; border-color: rgba(139,148,158,.3); }
+.chip-item { display: flex; align-items: center; gap: 6px; }
+.chip-lbl { font-size: 11px; color: var(--text-secondary, #6b7280); }
+.code-chip { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pagination {
   display: flex;

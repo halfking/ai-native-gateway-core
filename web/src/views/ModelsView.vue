@@ -3,13 +3,15 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
-  listModels, listTags, patchModelTags, resetModelTags,
+  listModels, listTags, patchModelTags,
   listModelFamilies, createModel, getModel, updateModel,
   createModelAlias, createModelAliasesBulk, updateModelAlias, discoverModels, getModelDiscoveryStatus,
   getProviders, getFeatured, patchFeatured, getFeaturedModelsDynamic,
   type ModelCanonical, type ModelDetail, type ModelFamily, type TagNamespaceGroup,
   type DiscoverModelsResult, type ModelDiscoveryRun, type Provider,
   type FeaturedModel,
+  listModelNameMappings, createModelNameMapping, deleteModelNameMapping, syncModelNameMappings,
+  type ModelNameMapping,
 } from '../api'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
 import CatalogPanel from '../components/CatalogPanel.vue'
@@ -22,7 +24,7 @@ import { normalizeTags, resolveVendor, matchesModelCatalogSearch } from '../util
 
 const { t } = useI18n()
 
-type PageTab = 'canonical' | 'catalog'
+type PageTab = 'canonical' | 'catalog' | 'name-mapping'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,6 +34,7 @@ const activeTab = ref<PageTab>(isPlatformOps.value ? 'canonical' : 'catalog')
 function tabFromQuery(q: unknown): PageTab | null {
   if (q === 'canonical' || q === 'models') return 'canonical'
   if (q === 'catalog') return 'catalog'
+  if (q === 'name-mapping') return 'name-mapping'
   return null
 }
 
@@ -101,6 +104,20 @@ const featuredRecommendLoading = ref(false)
 const featuredRecommendMessage = ref('')
 const createForm = ref({ canonical_name: '', display_name: '', family: '', modality: 'text', context_window: '', parameters_b: '', aliases: '', notes: '' })
 const showNamespaceFilters = ref(false)
+
+// Model Name Mapping state
+const nameMappings = ref<ModelNameMapping[]>([])
+const nameMappingsTotal = ref(0)
+const nameMappingsPage = ref(1)
+const nameMappingsPageSize = ref(50)
+const nameMappingsLoading = ref(false)
+const nameMappingsError = ref('')
+const nameMappingsSearch = ref('')
+const showNameMappingModal = ref(false)
+const editingNameMapping = ref<ModelNameMapping | null>(null)
+const nameMappingForm = ref({ raw_model_name: '', standardized_name: '', description: '' })
+const nameMappingSaving = ref(false)
+const nameMappingMessage = ref('')
 
 // 新增：厂商和模型选择
 const selectedVendor = ref('')
@@ -234,6 +251,97 @@ async function loadModels() {
     error.value = e instanceof Error ? e.message : t('models.error.loadFailed')
   } finally {
     loading.value = false
+  }
+}
+
+// ── Model Name Mapping ─────────────────────────────────────────────────
+
+async function loadNameMappings() {
+  nameMappingsLoading.value = true
+  nameMappingsError.value = ''
+  try {
+    const r = await listModelNameMappings({
+      page: nameMappingsPage.value,
+      page_size: nameMappingsPageSize.value,
+      search: nameMappingsSearch.value || undefined,
+    })
+    nameMappings.value = r.items
+    nameMappingsTotal.value = r.total
+  } catch (e: unknown) {
+    nameMappingsError.value = e instanceof Error ? e.message : '加载失败'
+  } finally {
+    nameMappingsLoading.value = false
+  }
+}
+
+async function syncNameMappings() {
+  nameMappingsMessage.value = ''
+  try {
+    const r = await syncModelNameMappings()
+    nameMappingsMessage.value = `同步完成：从 provider_models 导入了 ${r.provider_models} 条映射`
+    await loadNameMappings()
+  } catch (e: unknown) {
+    nameMappingsMessage.value = e instanceof Error ? e.message : '同步失败'
+  }
+}
+
+function openNameMappingModal(mapping?: ModelNameMapping) {
+  if (mapping) {
+    editingNameMapping.value = mapping
+    nameMappingForm.value = {
+      raw_model_name: mapping.raw_model_name,
+      standardized_name: mapping.standardized_name,
+      description: mapping.description || '',
+    }
+  } else {
+    editingNameMapping.value = null
+    nameMappingForm.value = { raw_model_name: '', standardized_name: '', description: '' }
+  }
+  showNameMappingModal.value = true
+}
+
+function closeNameMappingModal() {
+  showNameMappingModal.value = false
+  editingNameMapping.value = null
+  nameMappingForm.value = { raw_model_name: '', standardized_name: '', description: '' }
+}
+
+async function saveNameMapping() {
+  if (!nameMappingForm.value.raw_model_name.trim() || !nameMappingForm.value.standardized_name.trim()) {
+    nameMappingsError.value = '原始名称和标准名称都不能为空'
+    return
+  }
+  nameMappingSaving.value = true
+  nameMappingsError.value = ''
+  try {
+    if (editingNameMapping.value) {
+      await updateModelNameMapping(editingNameMapping.value.id, {
+        standardized_name: nameMappingForm.value.standardized_name,
+        description: nameMappingForm.value.description || undefined,
+      })
+    } else {
+      await createModelNameMapping({
+        raw_model_name: nameMappingForm.value.raw_model_name,
+        standardized_name: nameMappingForm.value.standardized_name,
+        description: nameMappingForm.value.description || undefined,
+      })
+    }
+    closeNameMappingModal()
+    await loadNameMappings()
+  } catch (e: unknown) {
+    nameMappingsError.value = e instanceof Error ? e.message : '保存失败'
+  } finally {
+    nameMappingSaving.value = false
+  }
+}
+
+async function removeNameMapping(id: number) {
+  if (!confirm('确定要删除这条映射吗？')) return
+  try {
+    await deleteModelNameMapping(id)
+    await loadNameMappings()
+  } catch (e: unknown) {
+    nameMappingsError.value = e instanceof Error ? e.message : '删除失败'
   }
 }
 
@@ -659,6 +767,12 @@ onMounted(async () => {
   syncTabFromRoute()
   await reloadAll()
 })
+
+watch(activeTab, async (tab) => {
+  if (tab === 'name-mapping' && nameMappings.value.length === 0) {
+    await loadNameMappings()
+  }
+})
 </script>
 
 <template>
@@ -676,6 +790,21 @@ onMounted(async () => {
         <button v-if="!readOnly" class="btn btn-ghost btn-sm" :disabled="discovering" @click="runDiscovery">
           {{ discovering ? t('models.discovering') : t('models.discover') }}
         </button>
+      </div>
+      <div v-if="activeTab === 'name-mapping'" style="display:flex;gap:8px;align-items:center">
+        <button v-if="!readOnly" class="btn btn-primary btn-sm" @click="openNameMappingModal()">
+          新增映射
+        </button>
+        <button v-if="!readOnly" class="btn btn-ghost btn-sm" @click="syncNameMappings">
+          从 provider_models 同步
+        </button>
+        <input
+          v-model="nameMappingsSearch"
+          class="input input-sm"
+          placeholder="搜索原始名称或标准名称..."
+          style="width:220px"
+          @input="() => { nameMappingsPage = 1; loadNameMappings() }"
+        />
       </div>
     </div>
 
@@ -697,9 +826,72 @@ onMounted(async () => {
       >
         提供商目录
       </button>
+      <button
+        v-if="isPlatformOps"
+        type="button"
+        class="tab-btn"
+        :class="{ active: activeTab === 'name-mapping' }"
+        @click="setTab('name-mapping')"
+      >
+        名称映射 <span class="tab-count">{{ nameMappingsTotal }}</span>
+      </button>
     </div>
 
     <CatalogPanel v-if="activeTab === 'catalog'" />
+
+    <!-- Name Mapping Panel -->
+    <div v-else-if="activeTab === 'name-mapping'" class="card">
+      <div class="card-header">
+        <h3>模型名称映射管理</h3>
+      </div>
+      <div class="card-body">
+        <div v-if="nameMappingsLoading" style="text-align:center;padding:32px;color:#888">加载中...</div>
+        <div v-else-if="nameMappingsError" class="alert alert-error" style="margin-bottom:12px">{{ nameMappingsError }}</div>
+        <div v-else-if="nameMappingsMessage" class="alert alert-success" style="margin-bottom:12px">{{ nameMappingsMessage }}</div>
+
+        <table v-if="nameMappings.length > 0" class="table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>原始名称 (raw_model_name)</th>
+              <th>标准名称 (standardized_name)</th>
+              <th>描述</th>
+              <th>自动生成</th>
+              <th>更新时间</th>
+              <th style="width:120px">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="m in nameMappings" :key="m.id">
+              <td>{{ m.id }}</td>
+              <td><code>{{ m.raw_model_name }}</code></td>
+              <td><code>{{ m.standardized_name }}</code></td>
+              <td class="muted">{{ m.description || '-' }}</td>
+              <td>
+                <span :class="m.auto_generated ? 'badge badge-gray' : 'badge badge-green'">
+                  {{ m.auto_generated ? '是' : '否' }}
+                </span>
+              </td>
+              <td class="muted small">{{ m.updated_at ? new Date(m.updated_at).toLocaleString('zh-CN') : '-' }}</td>
+              <td>
+                <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" @click="openNameMappingModal(m)">编辑</button>
+                <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" style="color:#dc3545" @click="removeNameMapping(m.id)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else style="text-align:center;padding:32px;color:#888">
+          暂无映射记录，点击"新增映射"或"从 provider_models 同步"添加
+        </div>
+
+        <!-- Pagination -->
+        <div v-if="nameMappingsTotal > nameMappingsPageSize" style="margin-top:16px;display:flex;gap:8px;align-items:center">
+          <button class="btn btn-ghost btn-sm" :disabled="nameMappingsPage <= 1" @click="nameMappingsPage--; loadNameMappings()">上一页</button>
+          <span>第 {{ nameMappingsPage }} / {{ Math.ceil(nameMappingsTotal / nameMappingsPageSize) }} 页，共 {{ nameMappingsTotal }} 条</span>
+          <button class="btn btn-ghost btn-sm" :disabled="nameMappingsPage >= Math.ceil(nameMappingsTotal / nameMappingsPageSize)" @click="nameMappingsPage++; loadNameMappings()">下一页</button>
+        </div>
+      </div>
+    </div>
 
     <template v-else>
     <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
@@ -1149,6 +1341,48 @@ onMounted(async () => {
               {{ creating ? t('models.submitting') : t('models.submit') }}
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Name Mapping Modal -->
+    <div v-if="showNameMappingModal" class="modal-overlay" @click.self="closeNameMappingModal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>{{ editingNameMapping ? '编辑映射' : '新增映射' }}</h3>
+          <button class="btn btn-ghost btn-sm" @click="closeNameMappingModal">×</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="nameMappingsError" class="alert alert-error" style="margin-bottom:12px">{{ nameMappingsError }}</div>
+          <div class="form-group">
+            <label>原始名称 <span style="color:#dc3545">*</span></label>
+            <input
+              v-model="nameMappingForm.raw_model_name"
+              class="input"
+              placeholder="例如：minimaxai/minimax-m2.7"
+              :disabled="!!editingNameMapping"
+            />
+            <span class="help-text">供应商 API 返回的原始模型名称（如 minimaxai/minimax-m2.7）</span>
+          </div>
+          <div class="form-group">
+            <label>标准名称 <span style="color:#dc3545">*</span></label>
+            <input
+              v-model="nameMappingForm.standardized_name"
+              class="input"
+              placeholder="例如：minimax-m2.7"
+            />
+            <span class="help-text">统一使用的标准模型名称（不带前缀，如 minimax-m2.7）</span>
+          </div>
+          <div class="form-group">
+            <label>描述</label>
+            <input v-model="nameMappingForm.description" class="input" placeholder="可选描述" />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" @click="closeNameMappingModal">取消</button>
+          <button class="btn btn-primary" :disabled="nameMappingSaving || !nameMappingForm.raw_model_name || !nameMappingForm.standardized_name" @click="saveNameMapping">
+            {{ nameMappingSaving ? '保存中...' : '保存' }}
+          </button>
         </div>
       </div>
     </div>

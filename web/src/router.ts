@@ -54,11 +54,13 @@ const ProbeHealthDetailView = () => import('./views/ProbeHealthDetailView.vue')
 const AgentRegistryView = () => import('./views/AgentRegistryView.vue')
 const FormatAnomaliesView = () => import('./views/FormatAnomaliesView.vue')
 const ModulesView = () => import('./views/ModulesView.vue')
+const PromptInjectionSettingsView = () => import('./views/PromptInjectionSettingsView.vue')
 const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
 const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
 const SessionManagementView = () => import('./views/SessionManagementView.vue')
 const SessionAuditView = () => import('./views/SessionAuditView.vue')
+const OutputComplianceView = () => import('./views/OutputComplianceView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
 const ClientAnalyticsView = () => import('./views/ClientAnalyticsView.vue')
 const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
@@ -66,14 +68,53 @@ const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
 const SessionConfigView = () => import('./views/SessionConfigView.vue')
 
+// Operations Platform views (super_admin only)
+const LicenseManagementView = () => import('./views/ops/LicenseManagementView.vue')
+const FaultManagementView = () => import('./views/ops/FaultManagementView.vue')
+const AutoUpdateView = () => import('./views/ops/AutoUpdateView.vue')
+const CenterOpsView = () => import('./views/ops/CenterOpsView.vue')
+const VibeCodingView = () => import('./views/ops/VibeCodingView.vue')
+
 function isAuthed(): boolean {
-  return !!(store.jwtToken || store.apiKey || store.userInfo)
+  if (store.jwtToken || store.apiKey || store.userInfo) return true
+  // 2026-07-09 (handoff task UI verification): localStorage fallback.
+  // store.userInfo is the in-memory source of truth but it only re-inits
+  // from localStorage at module load. If the user lands on the SPA via deep
+  // link (or after a stale tab), the in-memory store can be empty while
+  // localStorage still has valid credentials. Read it directly without
+  // mutating the store, so we don't trigger reactivity in the guard.
+  try {
+    const raw = typeof localStorage !== 'undefined'
+      ? localStorage.getItem('llmgw_user_info')
+      : null
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && parsed.role && parsed.id) return true
+    }
+  } catch { /* corrupt cache */ }
+  return false
 }
 
 function isSuperAdmin(): boolean {
   // Legacy API key auth: no JWT but has apiKey → super_admin
   if (!store.jwtToken && store.apiKey) return true
-  return store.userInfo?.role === 'super_admin'
+  // 2026-07-09 (handoff task UI verification): read role from
+  // localStorage when the in-memory store hasn't been hydrated yet,
+  // mirroring the localStorage fallback in isAuthed().
+  let role = store.userInfo?.role
+  if (!role) {
+    try {
+      const raw = typeof localStorage !== 'undefined'
+        ? localStorage.getItem('llmgw_user_info')
+        : null
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        role = parsed?.role
+        if (parsed && !store.userInfo) store.userInfo = parsed
+      }
+    } catch { /* corrupt cache */ }
+  }
+  return role === 'super_admin'
 }
 
 function isPlatformOpsView(): boolean {
@@ -166,18 +207,48 @@ export const router = createRouter({
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },
     { path: '/admin/agents',       component: AgentRegistryView, meta: { requiresSuper: true } },
     { path: '/admin/modules',      component: ModulesView, meta: { requiresSuper: true } },
+    { path: '/admin/prompt-injection', component: PromptInjectionSettingsView, meta: { requiresSuper: true } },
     { path: '/admin/approval-config', component: ApprovalConfigView, meta: { requiresSuper: true } },
     { path: '/admin/approvals',    component: ApprovalListView, meta: { requiresSuper: true } },
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },
+    { path: '/admin/output-compliance', component: OutputComplianceView, meta: { requiresSuper: true } },
     { path: '/admin/usage',        component: UsageCostView }, // 用量成本视图 (T2.4)
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
+
+    // Operations Platform (super_admin only)
+    { path: '/ops/licenses',       component: LicenseManagementView, meta: { requiresSuper: true } },
+    { path: '/ops/faults',         component: FaultManagementView, meta: { requiresSuper: true } },
+    { path: '/ops/autoupdate',     component: AutoUpdateView, meta: { requiresSuper: true } },
+    { path: '/ops/center',         component: CenterOpsView, meta: { requiresSuper: true } },
+    { path: '/ops/vibecoding',     component: VibeCodingView, meta: { requiresSuper: true } },
 
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
 
 router.beforeEach((to) => {
+  // 2026-07-09: auth probe 还没完成时不要做任何 redirect，否则会在 cookie 登录后
+  // 把用户弹回首页 / login，App.vue 的 hydration 永远没机会切到 app-layout。
+  // 让 /api/auth/me 先 settle（store.authHydrated=true）再评估 auth。
+  if (!store.authHydrated) {
+    // 把目标 path 保存到 query，hydration 完成后会重定向过去
+    if (to.path === '/' && to.query.login) {
+      // Already going to home with login=1, allow
+      return
+    }
+    // 第一次访问：等 hydration 完成
+    return new Promise<void>((resolve) => {
+      const check = () => {
+        if (store.authHydrated) {
+          resolve()
+        } else {
+          setTimeout(check, 30)
+        }
+      }
+      check()
+    })
+  }
   // 1. Auth check — unauthenticated users land on home, not full-page login
   if (!to.meta.public && !isAuthed()) {
     return { path: '/', query: { login: '1', redirect: to.fullPath } }

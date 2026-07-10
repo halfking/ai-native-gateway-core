@@ -218,7 +218,9 @@ func (m *Manager) reclaimIdleSlots(ctx context.Context, cfg reclaimConfig) (int,
 		}
 		if res == 1 {
 			totalReclaimed++
+			recordReclaim()
 		}
+
 	}
 	if err := iter.Err(); err != nil {
 		return totalReclaimed, err

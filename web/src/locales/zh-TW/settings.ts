@@ -11,6 +11,7 @@ export default {
     routing: '路由',
     session: '會話',
     security: '安全',
+    outputCompliance: '輸出合規',
     circuitBreaker: '熔斷',
     general: '其他',
   },
@@ -151,4 +152,7 @@ export default {
 </ul>
 <p class="docs-note">⚠️ <strong>租戶級設定</strong>：此設定需要指定tenant_id，在租戶管理頁面設定</p>`,
   },
+
+  // 同步的扁平键
+  outputCompliance: '输出合规',
 }

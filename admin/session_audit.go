@@ -2,6 +2,7 @@ package admin
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -386,6 +387,155 @@ func (h *Handler) handleSessionAuditStats(w http.ResponseWriter, r *http.Request
 	})
 
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// handleSessionAuditExport 导出审计记录为 CSV
+//
+// GET /api/admin/session-audit/export?tenant_id=&session_id=&status=&limit=5000
+func (h *Handler) handleSessionAuditExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	query := r.URL.Query()
+	req := &SessionAuditListRequest{
+		TenantID:  query.Get("tenant_id"),
+		SessionID: query.Get("session_id"),
+		Status:    query.Get("status"),
+		Limit:     5000, // 导出限制
+		Offset:    0,
+	}
+
+	// 租户访问控制
+	callerTenant := GetTenantID(r)
+	isSuper := IsSuperAdminOrLegacy(r)
+	if !isSuper && req.TenantID != "" && req.TenantID != callerTenant {
+		writeError(w, http.StatusForbidden, "cross-tenant access denied")
+		return
+	}
+	if !isSuper {
+		req.TenantID = callerTenant
+	}
+
+	// 构建查询
+	var rows pgx.Rows
+	var qerr error
+	err := withTenantTx(r.Context(), h.db, req.TenantID, func(tx pgx.Tx) error {
+		sql := `
+			SELECT
+				id, session_id, tenant_id,
+				client_ip, client_user_agent, client_model,
+				content_summary, content_title, content_hash,
+				intent_type, intent_score, intent_reason,
+				security_score, danger_score, trust_score, sensitive_score,
+				detect_score, detect_decision, threats, sensitive_words,
+				status, approval_status,
+				created_at
+			FROM session_audit_records
+			WHERE 1=1`
+		args := []interface{}{}
+		argIdx := 1
+
+		if req.TenantID != "" && !isSuper {
+			sql += fmt.Sprintf(" AND tenant_id = $%d", argIdx)
+			args = append(args, req.TenantID)
+			argIdx++
+		}
+		if req.SessionID != "" {
+			sql += fmt.Sprintf(" AND session_id = $%d", argIdx)
+			args = append(args, req.SessionID)
+			argIdx++
+		}
+		if req.Status != "" {
+			sql += fmt.Sprintf(" AND status = $%d", argIdx)
+			args = append(args, req.Status)
+			argIdx++
+		}
+		sql += " ORDER BY created_at DESC"
+		sql += fmt.Sprintf(" LIMIT $%d", argIdx)
+		args = append(args, req.Limit)
+
+		rows, qerr = tx.Query(r.Context(), sql, args...)
+		return qerr
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
+		return
+	}
+	if rows != nil {
+		defer rows.Close()
+	}
+
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", "attachment; filename=session_audit_export.csv")
+	writer := csv.NewWriter(w)
+
+	// 写入表头
+	header := []string{
+		"ID", "Session ID", "Tenant ID", "Client IP", "User Agent", "Model",
+		"Content Summary", "Content Title", "Content Hash",
+		"Intent Type", "Intent Score", "Intent Reason",
+		"Security Score", "Danger Score", "Trust Score", "Sensitive Score",
+		"Detect Score", "Detect Decision", "Threats", "Sensitive Words",
+		"Status", "Approval Status", "Created At",
+	}
+	writer.Write(header)
+
+	for rows.Next() {
+		var id int64
+		var sessionID, tenantID, clientIP, clientUA, clientModel sql.NullString
+		var contentSummary, contentTitle, contentHash sql.NullString
+		var intentType, intentReason sql.NullString
+		var intentScore sql.NullFloat64
+		var secScore, dangerScore, trustScore, sensitiveScore sql.NullInt64
+		var detectScore sql.NullInt64
+		var detectDecision sql.NullString
+		var threatsJSON, sensitiveWordsJSON []byte
+		var status, approvalStatus sql.NullString
+		var createdAt time.Time
+
+		if err := rows.Scan(
+			&id, &sessionID, &tenantID,
+			&clientIP, &clientUA, &clientModel,
+			&contentSummary, &contentTitle, &contentHash,
+			&intentType, &intentScore, &intentReason,
+			&secScore, &dangerScore, &trustScore, &sensitiveScore,
+			&detectScore, &detectDecision, &threatsJSON, &sensitiveWordsJSON,
+			&status, &approvalStatus,
+			&createdAt,
+		); err != nil {
+			continue
+		}
+
+		row := []string{
+			fmt.Sprintf("%d", id),
+			sessionID.String,
+			tenantID.String,
+			clientIP.String,
+			clientUA.String,
+			clientModel.String,
+			contentSummary.String,
+			contentTitle.String,
+			contentHash.String,
+			intentType.String,
+			fmt.Sprintf("%.2f", intentScore.Float64),
+			intentReason.String,
+			fmt.Sprintf("%d", secScore.Int64),
+			fmt.Sprintf("%d", dangerScore.Int64),
+			fmt.Sprintf("%d", trustScore.Int64),
+			fmt.Sprintf("%d", sensitiveScore.Int64),
+			fmt.Sprintf("%d", detectScore.Int64),
+			detectDecision.String,
+			string(threatsJSON),
+			string(sensitiveWordsJSON),
+			status.String,
+			approvalStatus.String,
+			createdAt.Format(time.RFC3339),
+		}
+		writer.Write(row)
+	}
+	writer.Flush()
 }
 
 // scanSessionAuditRecord 扫描审计记录

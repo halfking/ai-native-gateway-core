@@ -100,7 +100,7 @@ func (h *Handler) pricingTree(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if v := queryString(r, "search"); v != "" {
-		where += fmt.Sprintf(" AND (mc.canonical_name ILIKE '%%' || $%d || '%%' OR mo.raw_model_name ILIKE '%%' || $%d || '%%')", argIdx, argIdx)
+		where += fmt.Sprintf(" AND (mc.canonical_name ILIKE '%%' || $%d || '%%' OR mo.standardized_name ILIKE '%%' || $%d || '%%' OR mo.raw_model_name ILIKE '%%' || $%d || '%%')", argIdx, argIdx, argIdx)
 		args = append(args, v)
 	}
 
@@ -636,7 +636,7 @@ func (h *Handler) pricingTable(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if v := queryString(r, "search"); v != "" {
-		where += fmt.Sprintf(" AND (mc.canonical_name ILIKE '%%' || $%d || '%%' OR mo.raw_model_name ILIKE '%%' || $%d || '%%')", argIdx, argIdx)
+		where += fmt.Sprintf(" AND (mc.canonical_name ILIKE '%%' || $%d || '%%' OR mo.standardized_name ILIKE '%%' || $%d || '%%' OR mo.raw_model_name ILIKE '%%' || $%d || '%%')", argIdx, argIdx, argIdx)
 		args = append(args, v)
 	}
 

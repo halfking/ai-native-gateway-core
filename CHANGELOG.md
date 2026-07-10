@@ -386,3 +386,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/2026-06-23-to-2026-06-30-weekly-changelog.md` - 周报
 - `docs/2026-07-01-24h-rollup.md` - 24h 滚动报告
 - `docs/2026-07-01-48h-comprehensive-audit.md` - 48h 综合审计
+## [2026-07-09] 飞书机器人模块 (feishubot)
+
+### 新增
+- **飞书机器人模块** 完整实现，支持：
+  - 告警推送（注入攻击、高延迟、错误率飙升）
+  - 审批通知与飞书内操作
+  - 系统状态查询
+  - 签名验证（HMAC-SHA256）
+  - 用户白名单控制
+
+### 模块依赖
+- 依赖压缩管理、提示词注入检测、会话缓存、会话审计与审批（软提示）
+
+### 新增设置
+- feishu_bot.webhook_url
+- feishu_bot.verify_token
+- feishu_bot.encrypt_key
+- feishu_bot.connection_mode
+- feishu_bot.notify_on_alert
+- feishu_bot.notify_on_approval
+- feishu_bot.allowed_users
+- feishu_bot.alert.severity_min
+- feishu_bot.alert.rate_limit_per_minute
+- feishu_bot.alert.dedup_window_seconds
+- feishu_bot.alert.quiet_hours_enabled/start/end
+- feishu_bot.alert.card_template
+- feishu_bot.approval.expiry_reminder_minutes
+- feishu_bot.approval.auto_mention_on_critical
+- feishu_bot.commands.enabled
+- feishu_bot.commands.admin_only
+- feishu_bot.signature_required
+- feishu_bot.timestamp_window_seconds
+
+### 数据库迁移
+- feishu_bot_routing_rules 表（路由规则管理）
+- feishu_bot_send_log 表（发送审计）
+
+### API 端点
+- GET/POST /api/admin/feishubot/routing-rules
+- PUT/DELETE /api/admin/feishubot/routing-rules/{id}
+- POST /api/admin/feishubot/routing-rules:import (CSV批量导入)
+- GET /api/admin/modules/feishu_bot/config
+- POST /api/admin/modules/feishu_bot/test
+
+### 前端
+- 模块管理页面新增路由规则标签页
+- 支持CSV批量导入路由规则
+- 模块依赖软提示UI
+- 飞书机器人设置页面

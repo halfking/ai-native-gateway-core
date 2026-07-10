@@ -743,12 +743,15 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID str
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN v_routable_credential_models v
 		       ON v.credential_id = mo.credential_id
-		      AND v.raw_model_name = mo.raw_model_name
+		      AND (v.raw_model_name = mo.raw_model_name OR v.raw_model_name = mo.standardized_name)
 		LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
 		LEFT JOIN model_aliases ma
 		       ON lower(ma.raw_name) = lower(mo.raw_model_name)
 		      AND COALESCE(ma.status, 'active') = 'active'
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		-- LEFT JOIN model_name_mapping for standardized name lookup fallback
+		LEFT JOIN model_name_mapping mnm
+		       ON lower(mnm.raw_model_name) = lower(mo.raw_model_name)
 		-- Last-N success rate over request_logs. LATERAL so each candidate
 		-- row carries its own recent (rate, samples). STABLE function, hits
 		-- idx_request_logs_credential_ts (credential_id, ts DESC) so the
@@ -770,7 +773,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID str
 		  AND NOT EXISTS (
 		      SELECT 1 FROM model_probe_state mps
 		      WHERE mps.credential_id = c.id
-		        AND mps.raw_model_name = mo.raw_model_name
+		        AND (mps.raw_model_name = mo.raw_model_name OR mps.raw_model_name = mo.standardized_name)
 		        AND mps.state = 'broken_confirmed'
 		  )
 		  -- 2026-06-22 defect (3) hard gate: exclude pairs whose real recent
@@ -796,7 +799,9 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID str
 		      -- 2026-06-23 to stop single-candidate outages caused by the
 		      -- taxonomy YAML / alias_sync path being offline.
 		      OR lower(mo.standardized_name) = $1
-		      -- (3) alias match: client_model points to a canonical that this offer belongs to
+		      -- (3) model_name_mapping lookup: centralized raw->standardized mapping
+		      OR lower(mnm.standardized_name) = $1
+		      -- (4) alias match: client_model points to a canonical that this offer belongs to
 		      OR EXISTS (
 		          SELECT 1 FROM model_aliases ma2
 		          WHERE lower(ma2.raw_name) = $1

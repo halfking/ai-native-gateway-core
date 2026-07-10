@@ -1,0 +1,223 @@
+# Prometheus 告警规则 - Dashboard API
+# 用于 LLM Gateway Dashboard API 的监控告警
+
+groups:
+  - name: dashboard_api_alerts
+    interval: 30s
+    rules:
+      # 1. API 错误率过高
+      - alert: DashboardAPIHighErrorRate
+        expr: |
+          (
+            sum(rate(llmgw_dashboard_api_requests_total{status="error"}[5m]))
+            /
+            sum(rate(llmgw_dashboard_api_requests_total[5m]))
+          ) * 100 > 5
+        for: 2m
+        labels:
+          severity: warning
+          component: dashboard-api
+        annotations:
+          summary: "Dashboard API 错误率过高"
+          description: "Dashboard API 错误率达到 {{ $value | humanizePercentage }}，超过 5% 阈值"
+
+      # 2. API 响应延迟过高 (P95 > 5s)
+      - alert: DashboardAPIHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(llmgw_dashboard_api_duration_seconds_bucket[5m])
+          ) > 5
+        for: 3m
+        labels:
+          severity: warning
+          component: dashboard-api
+        annotations:
+          summary: "Dashboard API 响应延迟过高"
+          description: "端点 {{ $labels.endpoint }} 的 P95 延迟为 {{ $value | humanizeDuration }}，超过 5s"
+
+      # 3. 慢查询数量激增
+      - alert: DashboardAPISlowQueriesSpike
+        expr: |
+          sum(rate(llmgw_dashboard_slow_queries_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: dashboard-api
+        annotations:
+          summary: "Dashboard API 慢查询激增"
+          description: "慢查询速率: {{ $value | humanize }} queries/sec"
+
+      # 4. 数据库连接错误
+      - alert: DashboardAPIDatabaseErrors
+        expr: |
+          sum(rate(llmgw_dashboard_api_errors_total{error_type="database"}[5m])) > 0.5
+        for: 2m
+        labels:
+          severity: critical
+          component: dashboard-api
+        annotations:
+          summary: "Dashboard API 数据库错误"
+          description: "数据库错误速率: {{ $value | humanize }} errors/sec，端点: {{ $labels.endpoint }}"
+
+      # 5. API 成功率过低
+      - alert: DashboardAPILowSuccessRate
+        expr: |
+          (
+            sum(rate(llmgw_dashboard_api_requests_total{status="success"}[5m]))
+            /
+            sum(rate(llmgw_dashboard_api_requests_total[5m]))
+          ) * 100 < 95
+        for: 5m
+        labels:
+          severity: critical
+          component: dashboard-api
+        annotations:
+          summary: "Dashboard API 成功率过低"
+          description: "成功率: {{ $value | humanizePercentage }}，低于 95%"
+
+      # 6. 活跃连接数过高
+      - alert: DashboardAPIHighActiveConnections
+        expr: |
+          llmgw_dashboard_active_connections > 500
+        for: 3m
+        labels:
+          severity: warning
+          component: dashboard-api
+        annotations:
+          summary: "Dashboard API 活跃连接数过高"
+          description: "当前活跃连接: {{ $value }}，可能存在连接泄露"
+
+  - name: module_execution_alerts
+    interval: 30s
+    rules:
+      # 7. 模块执行失败率过高
+      - alert: ModuleExecutionHighFailureRate
+        expr: |
+          (
+            sum(rate(llmgw_module_execution_total{status="failed"}[5m])) by (module)
+            /
+            sum(rate(llmgw_module_execution_total[5m])) by (module)
+          ) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: module-executor
+        annotations:
+          summary: "模块执行失败率过高"
+          description: "模块 {{ $labels.module }} 失败率: {{ $value | humanizePercentage }}"
+
+      # 8. 模块缓存命中率过低
+      - alert: ModuleCacheLowHitRate
+        expr: |
+          (
+            sum(rate(llmgw_module_cache_hit_total[5m]))
+            /
+            (sum(rate(llmgw_module_cache_hit_total[5m])) + sum(rate(llmgw_module_cache_miss_total[5m])))
+          ) * 100 < 50
+        for: 10m
+        labels:
+          severity: info
+          component: module-executor
+        annotations:
+          summary: "模块缓存命中率过低"
+          description: "缓存命中率: {{ $value | humanizePercentage }}，建议检查缓存配置"
+
+      # 9. 模块执行延迟异常
+      - alert: ModuleExecutionHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(llmgw_module_execution_duration_seconds_bucket[5m])
+          ) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: module-executor
+        annotations:
+          summary: "模块执行延迟异常"
+          description: "模块 {{ $labels.module }} 的 P95 延迟: {{ $value | humanizeDuration }}"
+
+      # 10. 模块执行完全停止
+      - alert: ModuleExecutionStalled
+        expr: |
+          sum(rate(llmgw_module_execution_total[5m])) == 0
+        for: 10m
+        labels:
+          severity: critical
+          component: module-executor
+        annotations:
+          summary: "模块执行完全停止"
+          description: "过去 10 分钟内没有任何模块执行记录，可能系统故障"
+
+  - name: database_alerts
+    interval: 30s
+    rules:
+      # 11. Dashboard 访问事件表增长过快
+      - alert: DashboardEventsTableGrowthHigh
+        expr: |
+          rate(pg_stat_user_tables_n_tup_ins{relname="dashboard_access_events_hot"}[5m]) > 100
+        for: 10m
+        labels:
+          severity: info
+          component: database
+        annotations:
+          summary: "Dashboard 访问事件表增长过快"
+          description: "插入速率: {{ $value | humanize }} rows/sec，可能需要调整归档策略"
+
+      # 12. 模块执行记录表增长过快
+      - alert: ModuleExecutionTableGrowthHigh
+        expr: |
+          rate(pg_stat_user_tables_n_tup_ins{relname="session_module_executions_hot"}[5m]) > 50
+        for: 10m
+        labels:
+          severity: info
+          component: database
+        annotations:
+          summary: "模块执行记录表增长过快"
+          description: "插入速率: {{ $value | humanize }} rows/sec"
+
+      # 13. 分区表归档失败
+      - alert: PartitionArchiveJobFailed
+        expr: |
+          pg_cron_job_run_details{status="failed", jobname=~"archive-.*"} > 0
+        for: 1h
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "分区表归档任务失败"
+          description: "任务 {{ $labels.jobname }} 在过去 1 小时内失败"
+
+  - name: sla_alerts
+    interval: 1m
+    rules:
+      # 14. Dashboard API SLA 违约 (可用性 < 99.9%)
+      - alert: DashboardAPISLAViolation
+        expr: |
+          (
+            sum(rate(llmgw_dashboard_api_requests_total{status="success"}[1h]))
+            /
+            sum(rate(llmgw_dashboard_api_requests_total[1h]))
+          ) * 100 < 99.9
+        for: 5m
+        labels:
+          severity: critical
+          component: dashboard-api
+          sla: true
+        annotations:
+          summary: "Dashboard API SLA 违约"
+          description: "过去 1 小时可用性: {{ $value | humanizePercentage }}，低于 99.9% SLA"
+
+      # 15. 模块执行 SLA 违约 (P95 延迟 > 3s)
+      - alert: ModuleExecutionSLAViolation
+        expr: |
+          histogram_quantile(0.95,
+            rate(llmgw_module_execution_duration_seconds_bucket[1h])
+          ) > 3
+        for: 10m
+        labels:
+          severity: warning
+          component: module-executor
+          sla: true
+        annotations:
+          summary: "模块执行 SLA 违约"
+          description: "过去 1 小时 P95 延迟: {{ $value | humanizeDuration }}，超过 3s SLA"

@@ -65,8 +65,9 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expi
 	})
 }
 
-// extractBearerOrCookieToken returns the JWT candidate from the request.
-func extractBearerOrCookieToken(r *http.Request) (string, bool) {
+// ExtractBearerOrCookieToken returns the JWT candidate from the request.
+// Exported for use in domains/streaming/handler.go health check.
+func ExtractBearerOrCookieToken(r *http.Request) (string, bool) {
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		const prefix = "Bearer "
 		if len(auth) > len(prefix) && strings.EqualFold(auth[:len(prefix)], prefix) {
@@ -77,4 +78,9 @@ func extractBearerOrCookieToken(r *http.Request) (string, bool) {
 		return c.Value, true
 	}
 	return "", false
+}
+
+// extractBearerOrCookieToken is the internal alias for backward compatibility.
+func extractBearerOrCookieToken(r *http.Request) (string, bool) {
+	return ExtractBearerOrCookieToken(r)
 }

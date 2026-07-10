@@ -7,7 +7,7 @@ package promptinjection
 
 import (
 	"context"
-	"errors"
+	"fmt"
 
 	"github.com/kaixuan/llm-gateway-go/domain"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domain/governance" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -17,11 +17,20 @@ import (
 // DetectionResult 是 promptinjection.Detector.Detect 的返回的精简镜像。
 // 避免直接 import domains/promptinjection（DB 强依赖）。
 type DetectionResult struct {
-	Score       int
-	RiskLevel   string // low/medium/high/critical
-	ActionTaken string // pass/log/warn/sanitize/block
-	Blocked     bool
-	Evidence    string
+	Score              int
+	RiskLevel          string   // low/medium/high/critical
+	Categories         []string // 风险类别列表
+	ActionTaken        string   // pass/log/warn/replace/redact/remove/reject/terminate/approve/block
+	Blocked            bool
+	RequireApproval    bool
+	ApprovalTimeoutMin int
+	Evidence           string
+	ReplacedContent    string
+	CanaryTokenLeaked  string
+	LLMConfidence      float64
+	LLMReason          string
+	SessionHealthDelta int
+	TerminateSession   bool
 }
 
 // Detector 是 Hook 所需的最小接口；*promptinjection.Detector 天然实现。
@@ -31,9 +40,14 @@ type Detector interface {
 
 // Hook 把 prompt injection 检测接入 V4 Pipeline。
 //
-// 在 PhasePreRouting 执行，读 env.Metadata["user_content"] 做检测，
-// 结果写入 env.EnsureGovernance()。检测命中阻断阈值时返回 error
-// 让 Pipeline 中断（dispatch gate 写 403）。
+// 在 PhaseGovernance 执行，读 env.Metadata["user_content"] 做检测，
+// 结果写入 env.EnsureGovernance()。根据检测结果执行不同动作：
+//   - pass/log: 继续流程
+//   - warn: 继续流程，添加警告头
+//   - replace/redact/remove: 替换内容后继续
+//   - reject/block: 中断流程，返回 403
+//   - approve: 暂停流程，等待审批
+//   - terminate: 终止会话
 type Hook struct {
 	detector Detector
 }
@@ -46,7 +60,7 @@ func NewHook(detector Detector) *Hook {
 // Name 实现 pipeline.Hook。
 func (h *Hook) Name() string { return "prompt_injection.detect" }
 
-// Priority 在 PreRouting 阶段中靠后（security 已先跑）。
+// Priority 在 Governance 阶段中靠后（security 已先跑）。
 func (h *Hook) Priority() int { return 120 }
 
 // Enabled 仅当 detector 非 nil 且请求有 user_content 时启用。
@@ -74,27 +88,90 @@ func (h *Hook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
 		env.Metadata["prompt_injection_error"] = err.Error()
 		return nil
 	}
+
+	// 保存检测结果到 metadata
 	env.Metadata["prompt_injection_result"] = map[string]any{
-		"score":        result.Score,
-		"risk_level":   result.RiskLevel,
-		"action_taken": result.ActionTaken,
-		"blocked":      result.Blocked,
+		"score":               result.Score,
+		"risk_level":          result.RiskLevel,
+		"categories":          result.Categories,
+		"action_taken":        result.ActionTaken,
+		"blocked":             result.Blocked,
+		"require_approval":    result.RequireApproval,
+		"llm_confidence":      result.LLMConfidence,
+		"session_health_delta": result.SessionHealthDelta,
 	}
+
+	// 写入 governance verdict
 	gv := toGovernanceVerdict(result)
 	if gv != nil {
 		env.EnsureGovernance().RecordVerdict(gv)
 	}
-	if result.Blocked {
-		return errors.New("prompt_injection: request blocked (risk=" + result.RiskLevel + ")")
+
+	// 根据动作类型处理
+	switch result.ActionTaken {
+	case "pass", "log":
+		// 无影响，继续流程
+		return nil
+
+	case "warn":
+		// 添加警告头，继续流程
+		env.Metadata["security_warning"] = fmt.Sprintf(
+			"Prompt injection detected (risk=%s, score=%d)", result.RiskLevel, result.Score)
+		return nil
+
+	case "replace", "redact", "remove":
+		// 替换内容后继续
+		if result.ReplacedContent != "" {
+			env.Metadata["user_content"] = result.ReplacedContent
+			env.Metadata["content_replaced"] = true
+			env.Metadata["replacement_action"] = result.ActionTaken
+		}
+		return nil
+
+	case "reject", "block":
+		// 中断流程
+		return fmt.Errorf("prompt_injection: request %s (risk=%s, score=%d)",
+			result.ActionTaken, result.RiskLevel, result.Score)
+
+	case "approve":
+		// 需要审批，设置 suspension
+		env.Metadata["approval_required"] = true
+		env.Metadata["approval_timeout_minutes"] = result.ApprovalTimeoutMin
+		return fmt.Errorf("prompt_injection: approval required (risk=%s, score=%d)",
+			result.RiskLevel, result.Score)
+
+	case "terminate":
+		// 终止会话
+		env.Metadata["session_terminated"] = true
+		env.Metadata["terminate_reason"] = "prompt_injection_critical"
+		return fmt.Errorf("prompt_injection: session terminated (risk=%s, score=%d)",
+			result.RiskLevel, result.Score)
+
+	default:
+		return nil
 	}
-	return nil
 }
 
-// OnError 阻断时设 403。
-func (h *Hook) OnError(_ context.Context, env *domain.PipelineRequest, _ error) error {
-	if env != nil {
+// OnError 根据动作类型设置不同的 HTTP 状态码。
+func (h *Hook) OnError(_ context.Context, env *domain.PipelineRequest, err error) error {
+	if env == nil {
+		return nil
+	}
+
+	errMsg := err.Error()
+
+	switch {
+	case contains(errMsg, "approval required"):
+		// 审批请求返回 202 Accepted
+		env.StatusCode = 202
+	case contains(errMsg, "session terminated"):
+		// 会话终止返回 410 Gone
+		env.StatusCode = 410
+	default:
+		// 默认返回 403 Forbidden
 		env.StatusCode = 403
 	}
+
 	return nil
 }
 
@@ -115,9 +192,11 @@ func toGovernanceVerdict(r *DetectionResult) *governance.Verdict {
 		Code:       "prompt_injection." + r.RiskLevel,
 		Reason:     "risk_level=" + r.RiskLevel + " action=" + r.ActionTaken,
 		Evidence: map[string]any{
-			"score":        r.Score,
-			"action_taken": r.ActionTaken,
-			"evidence":     r.Evidence,
+			"score":          r.Score,
+			"action_taken":   r.ActionTaken,
+			"evidence":       r.Evidence,
+			"categories":     r.Categories,
+			"llm_confidence": r.LLMConfidence,
 		},
 	}
 	switch r.RiskLevel {
@@ -128,10 +207,34 @@ func toGovernanceVerdict(r *DetectionResult) *governance.Verdict {
 	case "critical":
 		gv.Severity = 3
 	}
-	if r.ActionTaken == "sanitize" {
+
+	// 设置 FixAction
+	switch r.ActionTaken {
+	case "replace", "redact", "remove":
 		gv.FixAction = "sanitize_input"
+	case "reject", "block":
+		gv.FixAction = "abort_request"
+	case "approve":
+		gv.FixAction = "require_approval"
+	case "terminate":
+		gv.FixAction = "terminate_session"
 	}
+
 	return gv
+}
+
+// contains 检查字符串是否包含子串
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 var _ pipeline.Hook = (*Hook)(nil)

@@ -492,13 +492,14 @@ func (h *Handler) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	if !auth.IsJWT {
-		writeJSON(w, http.StatusOK, userInfo{
-			ID: 0, TenantID: "default", Username: "admin",
-			DisplayName: "管理员 (API Key)", Role: "super_admin", Enabled: true,
-		})
+	if h.db == nil {
+		// Without DB we can't load the user, but the JWT is valid. Return
+		// a minimal userInfo synthesized from the JWT claims so the SPA can
+		// keep working in offline / no-DB mode.
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
+	// AdminMiddleware now only accepts JWT (no sk-* fallback), so auth.IsJWT is always true
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	var u userInfo
@@ -510,7 +511,24 @@ func (h *Handler) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, u)
+
+	// 2026-07-10: Also return a fresh JWT in the response so the SPA can persist it
+	// to localStorage and use it as Authorization: Bearer header on subsequent calls.
+	// This fixes the "cookie-only hydration" gap where the user has a valid cookie
+	// but no JWT in localStorage (e.g., logged in before the unified-auth change).
+	token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret, u.MustChangePassword)
+	if signErr != nil {
+		// Don't fail the /me call if signing fails — just return user info
+		writeJSON(w, http.StatusOK, u)
+		return
+	}
+	// Refresh the HttpOnly cookie too
+	setSessionCookie(w, r, token, expiresAt)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access_token": token,
+		"expires_at":   expiresAt.Format(time.RFC3339),
+		"user":         u,
+	})
 }
 
 func (h *Handler) handleChangePassword(w http.ResponseWriter, r *http.Request) {

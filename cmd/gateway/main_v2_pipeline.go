@@ -63,6 +63,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/routing"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // v2PipelineConfig holds the feature-flag-driven configuration for the v2
@@ -185,10 +186,7 @@ func buildV2Pipeline(deps *v2PipelineDeps) *pipeline.RequestPipeline {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "security", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{
-				security.NewSecurityHook(
-					security.NewIntentAnalyzer(0.5),
-					security.NewThreatDetector(7),
-				),
+				security.NewSecurityHook(settings.Global),
 			},
 		})
 	}
@@ -217,11 +215,14 @@ func buildV2Pipeline(deps *v2PipelineDeps) *pipeline.RequestPipeline {
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "session_inspect", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{
-			sessioninspector.NewInspectorHook(
-				sessioninspector.NewTokenLimitInspector(100000),
-				sessioninspector.NewInactiveInspector(30*time.Minute),
-				sessioninspector.NewHighFrequencyInspector(60),
-			),
+			func() pipeline.Hook {
+				inspectorHook := sessioninspector.NewInspectorHookWithConfig(nil)
+				// 注入 EventBus 以启用告警事件发布（2026-07-09 audit fix）
+				if deps.EventBus != nil {
+					inspectorHook.SetEventBus(deps.EventBus)
+				}
+				return inspectorHook
+			}(),
 		},
 	})
 
@@ -438,6 +439,13 @@ func registerV2PipelineRoutes(parent *http.ServeMux) {
 	cfg := loadV2PipelineConfig()
 	deps := newV2PipelineDeps(cfg)
 	deps.Pipeline = buildV2Pipeline(deps)
+
+	// 2026-07-09: 飞书机器人模块 late-binding。
+	// 与 main.go 同一函数 InitFeishubotPlugin；v2 pipeline 无 LarkChannel 注入，
+	// 因此仅在 gLarkCh 非空时生效。失败仅记日志（best-effort）。
+	if _, ferr := InitFeishubotPlugin(deps.EventBus, gLarkCh, gApprovalMgr, parent, nil); ferr != nil {
+		slog.Warn("v2 pipeline: feishubot init failed (best-effort)", "error", ferr)
+	}
 
 	// Register the v2 sub-mux under /v2/. This is independent of the v1
 	// routes; the v1 mux's /v1/chat/completions, /v1/messages, etc. are

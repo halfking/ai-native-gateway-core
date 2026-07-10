@@ -409,8 +409,11 @@ func (sc *SessionCompressor) updateCache(
 		newState.ToolsHash = prevState.ToolsHash
 		newState.SystemPrompt = prevState.SystemPrompt
 	}
+	// Always track LastCompressedAt so Redis lcat reflects the last cache
+	// update time, even for pure delta-append (no LLM summary). This lets
+	// operators distinguish "session has been touched" from "never visited".
+	newState.LastCompressedAt = now
 	if didCompress {
-		newState.LastCompressedAt = now
 		newState.RecentlyCompressedAt = now
 	}
 	if err := sc.deps.Cache.Set(ctx, tenantID, gwSessionID, newState, outboundBody); err != nil {

@@ -1,0 +1,2614 @@
+openapi: 3.0.3
+info:
+  title: Operations Platform API
+  description: |
+    完整的运维平台后端API规范，包含5个核心模块：
+    - License管理 (15个端点)
+    - 故障管理 (11个端点)
+    - 自动升级 (9个端点)
+    - 中心运维 (9个端点)
+    - VibeCoding (21个端点)
+  version: 1.0.0
+  contact:
+    name: Operations Platform Team
+    email: ops@kxpms.cn
+
+servers:
+  - url: https://ops.kxpms.cn
+    description: Production Server
+  - url: http://localhost:8080
+    description: Local Development
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+tags:
+  - name: License Admin
+    description: License管理后台API (9个端点)
+  - name: License Gateway
+    description: License网关端API (6个端点)
+  - name: Fault Management
+    description: 故障管理API (11个端点)
+  - name: Auto Update
+    description: 自动升级API (9个端点)
+  - name: Center Operations
+    description: 中心运维API (9个端点)
+  - name: VibeCoding Projects
+    description: VibeCoding项目管理 (7个端点)
+  - name: VibeCoding Sessions
+    description: VibeCoding会话管理 (7个端点)
+  - name: VibeCoding Reviews
+    description: VibeCoding代码审查 (4个端点)
+
+paths:
+  # ==================== License Admin API ====================
+  /api/admin/licenses:
+    post:
+      tags: [License Admin]
+      summary: 创建许可证
+      operationId: createLicense
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [license_key, customer_name, customer_email, max_devices, subscription_tier, expires_at]
+              properties:
+                license_key:
+                  type: string
+                  example: "LIC-2026-ABC123"
+                customer_name:
+                  type: string
+                  example: "Acme Corporation"
+                customer_email:
+                  type: string
+                  format: email
+                  example: "admin@acme.com"
+                max_devices:
+                  type: integer
+                  minimum: 1
+                  example: 10
+                subscription_tier:
+                  type: string
+                  enum: [basic, professional, enterprise]
+                  example: "enterprise"
+                features:
+                  type: array
+                  items:
+                    type: string
+                  example: ["api_access", "advanced_analytics", "priority_support"]
+                expires_at:
+                  type: string
+                  format: date-time
+                  example: "2027-12-31T23:59:59Z"
+      responses:
+        '201':
+          description: 许可证创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/License'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    get:
+      tags: [License Admin]
+      summary: 列出所有许可证
+      operationId: listLicenses
+      parameters:
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 许可证列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  licenses:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/License'
+                  total:
+                    type: integer
+                    example: 150
+                  offset:
+                    type: integer
+                    example: 0
+                  limit:
+                    type: integer
+                    example: 20
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/licenses/{key}:
+    get:
+      tags: [License Admin]
+      summary: 获取许可证详情
+      operationId: getLicense
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "LIC-2026-ABC123"
+      responses:
+        '200':
+          description: 许可证详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/License'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/licenses/{key}/revoke:
+    post:
+      tags: [License Admin]
+      summary: 吊销许可证
+      operationId: revokeLicense
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 许可证已吊销
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "license revoked"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/licenses/{key}/devices:
+    get:
+      tags: [License Admin]
+      summary: 列出许可证绑定的设备
+      operationId: listDevices
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 设备列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Device'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/licenses/{key}/devices/{hash}/deactivate:
+    post:
+      tags: [License Admin]
+      summary: 停用设备
+      operationId: deactivateDevice
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 设备硬件哈希
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  example: "设备更换"
+      responses:
+        '200':
+          description: 设备已停用
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "device deactivated"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/offline-requests/{id}/approve:
+    post:
+      tags: [License Admin]
+      summary: 批准离线许可证请求
+      operationId: approveOfflineRequest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 离线请求ID
+      responses:
+        '200':
+          description: 离线许可证已批准
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signed_license:
+                    $ref: '#/components/schemas/SignedLicense'
+                  base64:
+                    type: string
+                    description: Base64编码的签名许可证
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== License Gateway API ====================
+  /api/license/activate:
+    post:
+      tags: [License Gateway]
+      summary: 激活许可证
+      operationId: activateLicense
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivationRequest'
+      responses:
+        '200':
+          description: 激活成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/license/deactivate:
+    post:
+      tags: [License Gateway]
+      summary: 停用许可证
+      operationId: deactivateLicense
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeactivateRequest'
+      responses:
+        '200':
+          description: 停用成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "deactivated"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/license/heartbeat:
+    post:
+      tags: [License Gateway]
+      summary: 发送心跳
+      operationId: licenseHeartbeat
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [license_key, hardware_hash]
+              properties:
+                license_key:
+                  type: string
+                hardware_hash:
+                  type: string
+      responses:
+        '200':
+          description: 心跳成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/license/validate:
+    post:
+      tags: [License Gateway]
+      summary: 验证许可证
+      operationId: validateLicense
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [license_key, hardware_hash]
+              properties:
+                license_key:
+                  type: string
+                hardware_hash:
+                  type: string
+      responses:
+        '200':
+          description: 验证成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    example: true
+                  signed_license:
+                    $ref: '#/components/schemas/SignedLicense'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/license/offline/request:
+    post:
+      tags: [License Gateway]
+      summary: 创建离线许可证请求
+      operationId: createOfflineRequest
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfflineRequest'
+      responses:
+        '200':
+          description: 离线请求已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request_id:
+                    type: string
+                  request_data:
+                    type: string
+                    description: Base64编码的请求数据
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/license/offline/verify:
+    post:
+      tags: [License Gateway]
+      summary: 验证离线许可证
+      operationId: verifyOfflineLicense
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signed_license]
+              properties:
+                signed_license:
+                  type: string
+                  description: 签名的离线许可证
+      responses:
+        '200':
+          description: 验证成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                  license:
+                    $ref: '#/components/schemas/License'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== Fault Management API ====================
+  /api/admin/faults/rules:
+    post:
+      tags: [Fault Management]
+      summary: 创建故障检测规则
+      operationId: createFaultRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FaultRule'
+      responses:
+        '201':
+          description: 规则创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FaultRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    get:
+      tags: [Fault Management]
+      summary: 列出所有规则
+      operationId: listFaultRules
+      parameters:
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 规则列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FaultRule'
+                  total:
+                    type: integer
+                  offset:
+                    type: integer
+                  limit:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/faults/rules/{id}:
+    get:
+      tags: [Fault Management]
+      summary: 获取规则详情
+      operationId: getFaultRule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 规则详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FaultRule'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    put:
+      tags: [Fault Management]
+      summary: 更新规则
+      operationId: updateFaultRule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FaultRule'
+      responses:
+        '200':
+          description: 规则已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FaultRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    delete:
+      tags: [Fault Management]
+      summary: 删除规则
+      operationId: deleteFaultRule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 规则已删除
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "rule deleted"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/faults/events:
+    get:
+      tags: [Fault Management]
+      summary: 列出故障事件
+      operationId: listFaultEvents
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [new, acknowledged, resolving, resolved, ignored]
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 事件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FaultEvent'
+                  total:
+                    type: integer
+                  offset:
+                    type: integer
+                  limit:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/faults/events/{id}:
+    get:
+      tags: [Fault Management]
+      summary: 获取事件详情
+      operationId: getFaultEvent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 事件详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FaultEvent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/faults/events/{id}/acknowledge:
+    post:
+      tags: [Fault Management]
+      summary: 确认事件
+      operationId: acknowledgeFaultEvent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actor]
+              properties:
+                actor:
+                  type: string
+                  example: "admin@example.com"
+      responses:
+        '200':
+          description: 事件已确认
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "event acknowledged"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/faults/events/{id}/resolve:
+    post:
+      tags: [Fault Management]
+      summary: 解决事件
+      operationId: resolveFaultEvent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actor]
+              properties:
+                actor:
+                  type: string
+                  example: "admin@example.com"
+      responses:
+        '200':
+          description: 事件已解决
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "event resolved"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/faults/stats:
+    get:
+      tags: [Fault Management]
+      summary: 获取故障仪表盘统计
+      operationId: getFaultStats
+      responses:
+        '200':
+          description: 统计数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FaultDashboardStats'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/faults/reload:
+    post:
+      tags: [Fault Management]
+      summary: 重新加载规则
+      operationId: reloadFaultRules
+      responses:
+        '200':
+          description: 规则已重新加载
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "rules reloaded"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== Auto Update API ====================
+  /api/admin/releases:
+    post:
+      tags: [Auto Update]
+      summary: 创建发布版本
+      operationId: createRelease
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, build_seq, channel, title, image_tag, created_by]
+              properties:
+                version:
+                  type: string
+                  example: "v1.2.3"
+                build_seq:
+                  type: integer
+                  example: 456
+                channel:
+                  type: string
+                  enum: [stable, beta, canary]
+                  example: "stable"
+                title:
+                  type: string
+                  example: "Production Release v1.2.3"
+                description:
+                  type: string
+                changelog:
+                  type: string
+                image_tag:
+                  type: string
+                  example: "registry.kxpms.cn/ops-platform:v1.2.3"
+                image_digest:
+                  type: string
+                min_version:
+                  type: string
+                  example: "v1.0.0"
+                mandatory:
+                  type: boolean
+                  default: false
+                created_by:
+                  type: string
+                  example: "admin@example.com"
+      responses:
+        '201':
+          description: 版本创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Release'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    get:
+      tags: [Auto Update]
+      summary: 列出发布版本
+      operationId: listReleases
+      parameters:
+        - name: channel
+          in: query
+          schema:
+            type: string
+            enum: [stable, beta, canary]
+            default: stable
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Release'
+                  total:
+                    type: integer
+                  offset:
+                    type: integer
+                  limit:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/releases/{version}:
+    get:
+      tags: [Auto Update]
+      summary: 获取版本详情
+      operationId: getRelease
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 版本详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Release'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/releases/{version}/publish:
+    post:
+      tags: [Auto Update]
+      summary: 发布版本
+      operationId: publishRelease
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 版本已发布
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "release published"
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/releases/{version}/unpublish:
+    post:
+      tags: [Auto Update]
+      summary: 取消发布
+      operationId: unpublishRelease
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 版本已取消发布
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "release unpublished"
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/releases/{version}/gray:
+    post:
+      tags: [Auto Update]
+      summary: 创建灰度发布
+      operationId: createGrayRelease
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phase, percent]
+              properties:
+                phase:
+                  type: string
+                  enum: [canary, batch_1, batch_2, batch_3, full]
+                  example: "canary"
+                percent:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                  example: 10
+                selectors:
+                  type: string
+                  format: byte
+                  description: JSON格式的选择器规则
+      responses:
+        '201':
+          description: 灰度规则创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrayReleaseRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    patch:
+      tags: [Auto Update]
+      summary: 更新灰度阶段
+      operationId: updateGrayPhase
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phase, percent]
+              properties:
+                phase:
+                  type: string
+                  enum: [canary, batch_1, batch_2, batch_3, full]
+                percent:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+      responses:
+        '200':
+          description: 灰度阶段已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "gray phase updated"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/upgrade-logs:
+    get:
+      tags: [Auto Update]
+      summary: 获取升级日志
+      operationId: getUpgradeLogs
+      parameters:
+        - name: instance_id
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: 升级历史
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ReleaseStatus'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/rollback:
+    post:
+      tags: [Auto Update]
+      summary: 回滚版本
+      operationId: rollbackRelease
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_version]
+              properties:
+                target_version:
+                  type: string
+                  example: "v1.2.2"
+      responses:
+        '200':
+          description: 回滚成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  target_version:
+                    type: string
+                  rollback_at:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== Center Operations API ====================
+  /api/admin/center/instances:
+    get:
+      tags: [Center Operations]
+      summary: 列出所有实例
+      operationId: listInstances
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [online, offline, degraded]
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 实例列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/InstanceInfo'
+                  total:
+                    type: integer
+                  offset:
+                    type: integer
+                  limit:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/center/instances/{id}:
+    get:
+      tags: [Center Operations]
+      summary: 获取实例详情
+      operationId: getInstance
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 实例ID
+      responses:
+        '200':
+          description: 实例详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstanceInfo'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    delete:
+      tags: [Center Operations]
+      summary: 删除实例
+      operationId: deleteInstance
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 实例已删除
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "instance deleted"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/center/instances/{id}/command:
+    post:
+      tags: [Center Operations]
+      summary: 下发命令到实例
+      operationId: issueCommand
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [command, issued_by]
+              properties:
+                command:
+                  type: string
+                  example: "restart"
+                args:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  example:
+                    service: "gateway"
+                issued_by:
+                  type: string
+                  example: "admin@example.com"
+      responses:
+        '201':
+          description: 命令已下发
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandPayload'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/center/instances/{id}/heartbeats:
+    get:
+      tags: [Center Operations]
+      summary: 获取实例心跳历史
+      operationId: getHeartbeats
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: 起始时间 (默认24小时前)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: 心跳历史
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HeartbeatPayload'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/center/instances/{id}/status:
+    get:
+      tags: [Center Operations]
+      summary: 获取实例最新状态
+      operationId: getInstanceStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 实例状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusReportPayload'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/center/commands/{id}:
+    get:
+      tags: [Center Operations]
+      summary: 获取命令详情
+      operationId: getCommand
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 命令ID
+      responses:
+        '200':
+          description: 命令详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandPayload'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/center/commands/{id}/status:
+    get:
+      tags: [Center Operations]
+      summary: 获取命令执行状态
+      operationId: getCommandStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 命令执行状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  command_id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [pending, executing, completed, failed]
+                  result:
+                    type: string
+                  executed_at:
+                    type: string
+                    format: date-time
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/center/dashboard/stats:
+    get:
+      tags: [Center Operations]
+      summary: 获取中心运维仪表盘统计
+      operationId: getCenterDashboardStats
+      responses:
+        '200':
+          description: 统计数据
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_instances:
+                    type: integer
+                  online_instances:
+                    type: integer
+                  offline_instances:
+                    type: integer
+                  degraded_instances:
+                    type: integer
+                  avg_cpu_percent:
+                    type: number
+                    format: float
+                  avg_memory_mb:
+                    type: number
+                    format: float
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== VibeCoding Projects API ====================
+  /api/admin/vibecoding/projects:
+    post:
+      tags: [VibeCoding Projects]
+      summary: 创建项目
+      operationId: createVibeProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, name, created_by]
+              properties:
+                tenant_id:
+                  type: string
+                  example: "tenant-001"
+                name:
+                  type: string
+                  example: "E-Commerce Platform"
+                description:
+                  type: string
+                language:
+                  type: string
+                  example: "Go"
+                framework:
+                  type: string
+                  example: "Echo"
+                created_by:
+                  type: string
+                  example: "user@example.com"
+      responses:
+        '201':
+          description: 项目创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VibeProject'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    get:
+      tags: [VibeCoding Projects]
+      summary: 列出项目
+      operationId: listVibeProjects
+      parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, archived, deleted]
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 项目列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VibeProject'
+                  total:
+                    type: integer
+                  offset:
+                    type: integer
+                  limit:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/vibecoding/projects/{id}:
+    get:
+      tags: [VibeCoding Projects]
+      summary: 获取项目详情
+      operationId: getVibeProject
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 项目详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VibeProject'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    put:
+      tags: [VibeCoding Projects]
+      summary: 更新项目
+      operationId: updateVibeProject
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                language:
+                  type: string
+                framework:
+                  type: string
+                status:
+                  type: string
+                  enum: [active, archived, deleted]
+                settings:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: 项目已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VibeProject'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    delete:
+      tags: [VibeCoding Projects]
+      summary: 删除项目
+      operationId: deleteVibeProject
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 项目已删除
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "project deleted"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/vibecoding/projects/{id}/archive:
+    post:
+      tags: [VibeCoding Projects]
+      summary: 归档项目
+      operationId: archiveVibeProject
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 项目已归档
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "project archived"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/vibecoding/projects/stats:
+    get:
+      tags: [VibeCoding Projects]
+      summary: 获取项目统计
+      operationId: getVibeProjectStats
+      parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 项目统计
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_projects:
+                    type: integer
+                  active_projects:
+                    type: integer
+                  archived_projects:
+                    type: integer
+                  total_sessions:
+                    type: integer
+                  avg_sessions_per_project:
+                    type: number
+                    format: float
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== VibeCoding Sessions API ====================
+  /api/admin/vibecoding/sessions:
+    post:
+      tags: [VibeCoding Sessions]
+      summary: 创建会话
+      operationId: createVibeSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, task_type]
+              properties:
+                tenant_id:
+                  type: string
+                  example: "tenant-001"
+                task_type:
+                  type: string
+                  example: "feature_implementation"
+                project_id:
+                  type: integer
+                  format: int64
+                  nullable: true
+      responses:
+        '201':
+          description: 会话创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VibeSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    get:
+      tags: [VibeCoding Sessions]
+      summary: 列出会话
+      operationId: listVibeSessions
+      parameters:
+        - name: project_id
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, completed, failed, cancelled]
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 会话列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VibeSession'
+                  total:
+                    type: integer
+                  offset:
+                    type: integer
+                  limit:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/vibecoding/sessions/{id}:
+    get:
+      tags: [VibeCoding Sessions]
+      summary: 获取会话详情
+      operationId: getVibeSession
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 会话详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VibeSession'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/vibecoding/sessions/{id}/messages:
+    post:
+      tags: [VibeCoding Sessions]
+      summary: 添加会话消息
+      operationId: addVibeMessage
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 会话ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role, content]
+              properties:
+                role:
+                  type: string
+                  enum: [user, assistant, system]
+                  example: "user"
+                content:
+                  type: string
+                  example: "实现用户登录功能"
+      responses:
+        '200':
+          description: 消息已添加
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "message added"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/vibecoding/sessions/{id}/complete:
+    post:
+      tags: [VibeCoding Sessions]
+      summary: 完成会话
+      operationId: completeVibeSession
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 会话已完成
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "session completed"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/vibecoding/sessions/{id}/cancel:
+    post:
+      tags: [VibeCoding Sessions]
+      summary: 取消会话
+      operationId: cancelVibeSession
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 会话已取消
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "session cancelled"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/vibecoding/sessions/stats:
+    get:
+      tags: [VibeCoding Sessions]
+      summary: 获取会话统计
+      operationId: getVibeSessionStats
+      parameters:
+        - name: project_id
+          in: query
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 会话统计
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_sessions:
+                    type: integer
+                  active_sessions:
+                    type: integer
+                  completed_sessions:
+                    type: integer
+                  failed_sessions:
+                    type: integer
+                  avg_duration_mins:
+                    type: number
+                    format: float
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== VibeCoding Reviews API ====================
+  /api/admin/vibecoding/reviews:
+    post:
+      tags: [VibeCoding Reviews]
+      summary: 创建代码审查
+      operationId: createVibeReview
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, language, code]
+              properties:
+                session_id:
+                  type: integer
+                  format: int64
+                  nullable: true
+                tenant_id:
+                  type: string
+                  example: "tenant-001"
+                file_path:
+                  type: string
+                  example: "src/handlers/user.go"
+                language:
+                  type: string
+                  example: "go"
+                code:
+                  type: string
+                  example: "package main\n\nfunc main() {\n\tfmt.Println(\"Hello\")\n}"
+      responses:
+        '201':
+          description: 审查创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VibeReview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    get:
+      tags: [VibeCoding Reviews]
+      summary: 列出代码审查
+      operationId: listVibeReviews
+      parameters:
+        - name: session_id
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 审查列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VibeReview'
+                  total:
+                    type: integer
+                  offset:
+                    type: integer
+                  limit:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/vibecoding/reviews/{id}:
+    get:
+      tags: [VibeCoding Reviews]
+      summary: 获取审查详情
+      operationId: getVibeReview
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 审查详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VibeReview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/vibecoding/reviews/stats:
+    get:
+      tags: [VibeCoding Reviews]
+      summary: 获取审查统计
+      operationId: getVibeReviewStats
+      parameters:
+        - name: session_id
+          in: query
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 审查统计
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_reviews:
+                    type: integer
+                  avg_score:
+                    type: number
+                    format: float
+                  issues_by_severity:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  top_languages:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        language:
+                          type: string
+                        count:
+                          type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT Bearer Token认证
+    
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API Key认证
+
+  parameters:
+    Offset:
+      name: offset
+      in: query
+      description: 分页偏移量
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    
+    Limit:
+      name: limit
+      in: query
+      description: 分页限制
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    BadRequest:
+      description: 请求参数错误
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "invalid request"
+    
+    Unauthorized:
+      description: 未授权
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "unauthorized"
+    
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "not found"
+    
+    InternalError:
+      description: 服务器内部错误
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "internal server error"
+
+  schemas:
+    # ==================== License Schemas ====================
+    License:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        license_key:
+          type: string
+          example: "LIC-2026-ABC123"
+        customer_name:
+          type: string
+          example: "Acme Corporation"
+        customer_email:
+          type: string
+          format: email
+          example: "admin@acme.com"
+        max_devices:
+          type: integer
+          example: 10
+        subscription_tier:
+          type: string
+          enum: [basic, professional, enterprise]
+          example: "enterprise"
+        features:
+          type: array
+          items:
+            type: string
+          example: ["api_access", "advanced_analytics"]
+        expires_at:
+          type: string
+          format: date-time
+          example: "2027-12-31T23:59:59Z"
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+    
+    SignedLicense:
+      type: object
+      properties:
+        data:
+          type: string
+          format: byte
+          description: Base64编码的许可证数据
+        signature:
+          type: string
+          format: byte
+          description: Base64编码的签名
+    
+    Device:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        license_id:
+          type: integer
+          format: int64
+        instance_id:
+          type: string
+        hardware_hash:
+          type: string
+        device_name:
+          type: string
+        activated_at:
+          type: string
+          format: date-time
+        last_heartbeat:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum: [active, inactive, deactivated]
+        deactivated_at:
+          type: string
+          format: date-time
+          nullable: true
+        deactivate_reason:
+          type: string
+    
+    ActivationRequest:
+      type: object
+      required: [license_key, hardware_hash, instance_id, device_name]
+      properties:
+        license_key:
+          type: string
+        hardware_hash:
+          type: string
+        instance_id:
+          type: string
+        device_name:
+          type: string
+        version:
+          type: string
+    
+    ActivationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        signed_license:
+          $ref: '#/components/schemas/SignedLicense'
+        expires_at:
+          type: string
+          format: date-time
+        active_devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Device'
+        message:
+          type: string
+        need_deactivate:
+          type: boolean
+    
+    DeactivateRequest:
+      type: object
+      required: [license_key, hardware_hash]
+      properties:
+        license_key:
+          type: string
+        hardware_hash:
+          type: string
+        reason:
+          type: string
+    
+    OfflineRequest:
+      type: object
+      required: [license_key, hardware_hash, instance_id, device_name, request_id, timestamp]
+      properties:
+        license_key:
+          type: string
+        hardware_hash:
+          type: string
+        instance_id:
+          type: string
+        device_name:
+          type: string
+        request_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    # ==================== Fault Management Schemas ====================
+    FaultRule:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          example: "高CPU使用率告警"
+        description:
+          type: string
+          example: "当CPU使用率超过80%持续5分钟时触发"
+        metric:
+          type: string
+          example: "cpu_percent"
+        operator:
+          type: string
+          enum: [gte, lte, eq, ne]
+          example: "gte"
+        threshold:
+          type: number
+          format: float
+          example: 80.0
+        duration:
+          type: string
+          example: "5m"
+        severity:
+          type: string
+          enum: [info, warning, error, critical]
+          example: "warning"
+        action:
+          type: string
+          enum: [restart, scale_up, notify, failover, auto_recover, run_script]
+          example: "notify"
+        action_config:
+          type: string
+          format: byte
+          description: JSON格式的动作配置
+        enabled:
+          type: boolean
+          default: true
+        cooldown:
+          type: string
+          example: "10m"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    
+    FaultEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        rule_id:
+          type: integer
+          format: int64
+        rule_name:
+          type: string
+        severity:
+          type: string
+          enum: [info, warning, error, critical]
+        title:
+          type: string
+        description:
+          type: string
+        source:
+          type: string
+        status:
+          type: string
+          enum: [new, acknowledged, resolving, resolved, ignored]
+        metadata:
+          type: string
+          format: byte
+        detected_at:
+          type: string
+          format: date-time
+        acked_at:
+          type: string
+          format: date-time
+          nullable: true
+        acked_by:
+          type: string
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+        resolved_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    
+    FaultDashboardStats:
+      type: object
+      properties:
+        total_events:
+          type: integer
+        open_events:
+          type: integer
+        resolved_24h:
+          type: integer
+        by_severity:
+          type: object
+          additionalProperties:
+            type: integer
+        by_source:
+          type: object
+          additionalProperties:
+            type: integer
+        avg_resolve_mins:
+          type: number
+          format: float
+
+    # ==================== Auto Update Schemas ====================
+    Release:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        version:
+          type: string
+          example: "v1.2.3"
+        build_seq:
+          type: integer
+          example: 456
+        channel:
+          type: string
+          enum: [stable, beta, canary]
+          example: "stable"
+        title:
+          type: string
+          example: "Production Release v1.2.3"
+        description:
+          type: string
+        changelog:
+          type: string
+        image_tag:
+          type: string
+          example: "registry.kxpms.cn/ops-platform:v1.2.3"
+        image_digest:
+          type: string
+        min_version:
+          type: string
+        mandatory:
+          type: boolean
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+    
+    GrayReleaseRule:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        release_id:
+          type: integer
+          format: int64
+        phase:
+          type: string
+          enum: [canary, batch_1, batch_2, batch_3, full]
+        percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        selectors:
+          type: string
+          format: byte
+          description: JSON格式的选择器规则
+        status:
+          type: string
+          enum: [active, paused, completed]
+        created_at:
+          type: string
+          format: date-time
+    
+    ReleaseStatus:
+      type: object
+      properties:
+        release_id:
+          type: integer
+          format: int64
+        instance_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, downloading, ready_to_restart, upgrading, success, failed, rolled_back]
+        version:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          type: string
+        retry_count:
+          type: integer
+
+    # ==================== Center Operations Schemas ====================
+    InstanceInfo:
+      type: object
+      properties:
+        instance_id:
+          type: string
+          example: "instance-001"
+        hostname:
+          type: string
+          example: "ops-node-01"
+        ip_address:
+          type: string
+          example: "192.168.1.100"
+        region:
+          type: string
+          example: "cn-north-1"
+        version:
+          type: string
+          example: "v1.2.3"
+        build_seq:
+          type: integer
+          example: 456
+        started_at:
+          type: string
+          format: date-time
+        last_heartbeat:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [online, offline, degraded]
+    
+    CommandPayload:
+      type: object
+      properties:
+        command_id:
+          type: string
+        command:
+          type: string
+          example: "restart"
+        args:
+          type: object
+          additionalProperties:
+            type: string
+        issued_at:
+          type: string
+          format: date-time
+        issued_by:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+    
+    HeartbeatPayload:
+      type: object
+      properties:
+        uptime_secs:
+          type: integer
+          format: int64
+          example: 86400
+        go_version:
+          type: string
+          example: "go1.21.5"
+        num_goroutine:
+          type: integer
+          example: 125
+        alloc_mb:
+          type: number
+          format: float
+          example: 256.5
+        total_alloc_mb:
+          type: number
+          format: float
+          example: 1024.8
+        sys_mb:
+          type: number
+          format: float
+          example: 512.3
+        cpu_cores:
+          type: integer
+          example: 8
+    
+    StatusReportPayload:
+      type: object
+      properties:
+        state:
+          type: string
+          example: "running"
+        active_licenses:
+          type: integer
+        active_devices:
+          type: integer
+        requests_total:
+          type: integer
+          format: int64
+        requests_ok:
+          type: integer
+          format: int64
+        requests_err:
+          type: integer
+          format: int64
+        avg_latency_ms:
+          type: number
+          format: float
+        p99_latency_ms:
+          type: number
+          format: float
+
+    # ==================== VibeCoding Schemas ====================
+    VibeProject:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        tenant_id:
+          type: string
+        name:
+          type: string
+          example: "E-Commerce Platform"
+        description:
+          type: string
+        language:
+          type: string
+          example: "Go"
+        framework:
+          type: string
+          example: "Echo"
+        status:
+          type: string
+          enum: [active, archived, deleted]
+        settings:
+          type: object
+          additionalProperties: true
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    
+    VibeSession:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        project_id:
+          type: integer
+          format: int64
+          nullable: true
+        tenant_id:
+          type: string
+        session_id:
+          type: string
+        task_type:
+          type: string
+          example: "feature_implementation"
+        status:
+          type: string
+          enum: [active, completed, failed, cancelled]
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/VibeMessage'
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+    
+    VibeMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, system]
+        content:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+    
+    VibeReview:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        session_id:
+          type: integer
+          format: int64
+          nullable: true
+        tenant_id:
+          type: string
+        file_path:
+          type: string
+        language:
+          type: string
+        original_code:
+          type: string
+        review_result:
+          type: object
+          additionalProperties: true
+          description: 审查结果JSON对象
+        score:
+          type: number
+          format: float
+          example: 85.5
+        created_at:
+          type: string
+          format: date-time

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/analysis"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline"     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -37,8 +38,9 @@ import (
 // 将最新的审计结果（分数、敏感词、审批状态）写入 SessionState 的 v6 字段。
 // 失败仅记录日志，不阻断主流程。
 type CacheUpdateHook struct {
-	sessionCache *compression.SessionCache
-	now          func() time.Time // 可注入测试时钟
+	sessionCache   *compression.SessionCache
+	now            func() time.Time // 可注入测试时钟
+	stateProjector *analysis.SessionStateProjector // 可选：把 v6 投影到 session_tags
 }
 
 // NewCacheUpdateHook 创建 Hook。sessionCache 可为 nil（Hook 自动禁用）。
@@ -46,6 +48,15 @@ func NewCacheUpdateHook(sc *compression.SessionCache) *CacheUpdateHook {
 	return &CacheUpdateHook{
 		sessionCache: sc,
 		now:          time.Now,
+	}
+}
+
+// SetStateProjector 注入 SessionStateProjector（可选）。设置后，每次审计
+// 结果写入 SessionState 后会顺带投影到 session_tags，让安全/合规/审批结论
+// 跨模块可读（统一打标层）。nil 表示禁用投影（默认）。
+func (h *CacheUpdateHook) SetStateProjector(p *analysis.SessionStateProjector) {
+	if h != nil {
+		h.stateProjector = p
 	}
 }
 
@@ -116,6 +127,24 @@ func (h *CacheUpdateHook) Execute(ctx context.Context, env *domain.PipelineReque
 		slog.Warn("cache_update: save session state failed",
 			"session_id", env.SessionID, "tenant_id", env.TenantID, "error", setErr)
 		return nil
+	}
+
+	// 4. 投影 v6 → session_tags（统一打标层）。best-effort，失败不阻断。
+	if h.stateProjector != nil {
+		proj := analysis.SessionStateProjection{
+			GwSessionID:       env.SessionID,
+			TenantID:          env.TenantID,
+			AuditScore:        state.AuditScore,
+			SecurityScore:     state.SecurityScore,
+			SensitiveDetected: state.SensitiveDetected,
+			PIIStripped:       state.PIIStripped,
+			ApprovalStatus:    state.ApprovalStatus,
+			OptimizationTag:   state.OptimizationApplied,
+		}
+		if perr := h.stateProjector.Project(ctx, proj); perr != nil {
+			slog.Warn("cache_update: state projection partial failure",
+				"session_id", env.SessionID, "error", perr)
+		}
 	}
 
 	slog.Debug("cache_update: stamped audit state",

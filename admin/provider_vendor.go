@@ -43,6 +43,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -346,6 +347,26 @@ func (h *Handler) VerifyAllCredentialModelUpserts(ctx context.Context, providerI
 	return out, nil
 }
 
+// familyForProviderRefresh is the family mapping that
+// discoverAndUpsertForCredential must use when inserting a vendor-API
+// derived name into models_canonical. It is a thin wrapper around
+// discovery.InferFamily so the unit test in
+// provider_vendor_family_test.go can pin the contract without spinning
+// up a DB.
+//
+// History: the previous INSERT hard-coded family='unknown' (regression
+// shipped for the apiclaude claude-sonnet-5 / claude-fable-5 outage on
+// 2026-07-09). discovery is the single source of truth for vendor-prefix
+// collapsing (claude-* → anthropic-claude, gpt-* / o3-* → openai-gpt,
+// etc.); any literal 'unknown' here silently bypasses the /models
+// family-chip filter and the routing_policy.featured_models whitelist.
+//
+// Empty / whitespace input returns "unknown" — same defensive behaviour
+// as discovery.InferFamily, kept so a NULL family never reaches the DB.
+func familyForProviderRefresh(stdName string) string {
+	return discovery.InferFamily(stdName)
+}
+
 // discoverAndUpsertForCredential replicates the vendor-API fetch +
 // upsert logic from discovery.discoverForCredential but stays in the
 // admin package so it can write to a per-provider status record and
@@ -386,12 +407,23 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	for _, m := range models {
 		stdName := modelname.StandardizeName(m)
 		if stdName != "" {
+			// Use discovery.InferFamily so the family column matches the
+			// discovery pipeline (claude-* → anthropic-claude, gpt-* →
+			// openai-gpt, etc). On conflict we repair historical rows
+			// that the legacy 'unknown' literal left behind — admin-edited
+			// families are preserved by the CASE guard. See
+			// provider_vendor_family_test.go for the regression guard.
+			family := familyForProviderRefresh(stdName)
 			//nolint:errcheck // best-effort exec, non-critical
 			h.db.Exec(ctx, `
 				INSERT INTO models_canonical (canonical_name, family, source, status)
-				VALUES ($1, 'unknown', 'provider_refresh', 'active')
-				ON CONFLICT (canonical_name) DO NOTHING
-			`, stdName)
+				VALUES ($1, $2, 'provider_refresh', 'active')
+				ON CONFLICT (canonical_name) DO UPDATE SET
+					family = CASE
+						WHEN models_canonical.family = 'unknown' THEN EXCLUDED.family
+						ELSE models_canonical.family
+					END
+			`, stdName, family)
 		}
 		if uErr := h.upsertModelForProvider(ctx, cred.id, m); uErr != nil {
 			failed++

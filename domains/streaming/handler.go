@@ -690,6 +690,13 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				errors.Is(r.Context().Err(), context.Canceled) {
 				logCtx.SetClientTimeout(true)
 			}
+			// ── 2026-07-09: 问题4 —— 客户端取消/超时探测记录 ──────────────
+			// 在前端取消(context.Canceled)或超时(context.DeadlineExceeded)
+			// 时，额外生成一条 probe 记录写入 request_logs_hot 并推入泳道，
+			// 让运维在"实时请求流"里直接看到取消/超时事件及其凭据归属。
+			// 用专用 probe- 前缀 + 时间戳的 request_id，避免与初始 in_progress
+			// 行的 ON CONFLICT 冲突。携带 credential_id 以便泳道按供应商反查。
+			h.emitClientDisconnectProbe(requestID, r, logCtx)
 			// Use Background context since request context is already canceled
 			update := &telemetry.LogUpdate{
 				RequestID: requestID,
@@ -1531,12 +1538,17 @@ func (h *ChatHandler) serveWithExecutor(
 		if scResult != nil && scResult.Degraded {
 			w.Header().Set("X-Gw-Compression-Degraded", "sliding_window_collision")
 		}
-		if scResult != nil && scResult.CompressionStrategy != "" {
+		// Always populate outbound_msg_count / outbound_token_est from the
+		// session compressor so request_logs.*_hot columns are non-NULL even
+		// when no compression strategy was applied (pure delta-append).
+		if scResult != nil {
 			mc := scResult.MsgCount
 			te := scResult.TokenEst
-			logCtx.OutboundBody = scResult.OutboundBody
 			logCtx.OutboundMsgCount = &mc
 			logCtx.OutboundTokenEst = &te
+		}
+		if scResult != nil && scResult.CompressionStrategy != "" {
+			logCtx.OutboundBody = scResult.OutboundBody
 			logCtx.OutboundMsgHashes = []byte(scResult.MsgHashes)
 			logCtx.OutboundStrategy = scResult.CompressionStrategy
 			logCtx.OutboundSummaryMarker = scResult.SummaryMarker
@@ -2078,6 +2090,23 @@ func (h *ChatHandler) serveWithExecutor(
 					// Carry the follow-up depth from the request context.
 					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
 					go h.injectFollowUpRequest(followUpCtx, gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action)
+				}
+				// Apply ModifiedBody (e.g. output-compliance redaction).
+				//
+				// NOTE (2026-07-09): for the historical non-stream path the bytes
+				// are already written to the client inside executor.Execute, so
+				// this rewrite takes effect for downstream telemetry, the request
+				// log, the session-cache, and any buffered/pending-store path —
+				// NOT a retroactive client rewrite. Stream-end redaction is
+				// applied at write-time via the transform pipeline; this metadata
+				// path ensures the persisted/observed body matches what policy
+				// intended (so pii_stripped tagging + session_tags stay accurate).
+				if len(interceptResult.ModifiedBody) > 0 && result != nil {
+					result.ResponseBody = interceptResult.ModifiedBody
+					if interceptResult.Metadata != nil {
+						slog.Info("response_interceptor_modified_body",
+							"session_id", gwSessionID, "action", interceptResult.Action)
+					}
 				}
 			}
 		}
@@ -2766,6 +2795,101 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 // rest of the row is filled in from the supplied error metadata.
 // The caller is expected to call EmitRequestLog exactly once;
 // recordFailedRequest never duplicates the entry.
+// emitClientDisconnectProbe emits a dedicated probe record when the client
+// disconnects (context.Canceled) or times out (context.DeadlineExceeded)
+// before the request completed.
+//
+// 问题4 (2026-07-09): previously a client cancel/timeout only flipped a
+// WAL flag (logCtx.SetClientTimeout) that no dashboard surface reads in
+// real time. Operators could not see WHY a request vanished from the live
+// stream. This synthesizes a first-class RequestLogEntry with a "probe-"
+// prefixed request_id so it:
+//  1. is persisted to request_logs_hot via EmitRequestLogInsert, and
+//  2. is pushed to the live-stream swim lane via the onEmitted hook.
+//
+// The record carries the credential_id / provider_id selected for the
+// request (when available), so the lane groups it under the right provider
+// via the credential → provider reverse lookup (问题3 fix). When no
+// credential was selected (routing/auth failure before candidate pick),
+// credential_id is nil and the probe still records the client-side event.
+//
+// error_kind: "client_cancel" for context.Canceled, "probe_timeout" for
+// context.DeadlineExceeded. failure_stage is always "probe".
+func (h *ChatHandler) emitClientDisconnectProbe(originalRequestID string, r *http.Request, logCtx *RequestLogContext) {
+	if h == nil || h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
+	}
+	entry, ok := buildClientDisconnectProbeEntry(originalRequestID, r, logCtx)
+	if !ok {
+		return
+	}
+	// Test sink (mirrors the initial-log path at ~handler.go:3075).
+	if h.requestLogHook != nil {
+		h.requestLogHook(entry)
+	}
+	h.telemetryClient.EmitRequestLogInsert(entry)
+}
+
+// buildClientDisconnectProbeEntry constructs the probe RequestLogEntry from
+// the request context error and the in-flight log context. Returns ok=false
+// when there is no context error to report (nothing to probe). Pure / side
+// effect free so it can be unit tested without a telemetry client or DB.
+func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, logCtx *RequestLogContext) (*telemetry.RequestLogEntry, bool) {
+	if r == nil || r.Context() == nil {
+		return nil, false
+	}
+	ctxErr := r.Context().Err()
+	if ctxErr == nil {
+		return nil, false
+	}
+
+	// Distinguish cancel vs timeout so the lane legend can tell them apart.
+	errorKind := "client_cancel"
+	if errors.Is(ctxErr, context.DeadlineExceeded) {
+		errorKind = "probe_timeout"
+	}
+
+	// probe request_id: unique per event, "probe-" prefix so it is visually
+	// distinct from real request rows in the lane. Includes the credential
+	// id (when known) and a unix-nano timestamp.
+	credSegment := "nocred"
+	if logCtx != nil && logCtx.CredentialID != nil && *logCtx.CredentialID > 0 {
+		credSegment = fmt.Sprintf("cred%d", *logCtx.CredentialID)
+	}
+	probeRequestID := fmt.Sprintf("probe-%s-%s-%d", errorKind, credSegment, time.Now().UnixNano())
+
+	tenantID := ""
+	clientModel := ""
+	outboundModel := ""
+	var providerID, credentialID *int
+	if logCtx != nil {
+		clientModel = logCtx.ClientModel
+		outboundModel = logCtx.OutboundModel
+		providerID = logCtx.ProviderID
+		credentialID = logCtx.CredentialID
+		if logCtx.KeyInfo != nil {
+			tenantID = logCtx.KeyInfo.TenantID
+		}
+	}
+
+	stage := "probe"
+	return &telemetry.RequestLogEntry{
+		RequestID:     probeRequestID,
+		TenantID:      tenantID,
+		ClientModel:   strPtr(clientModel),
+		OutboundModel: strPtr(outboundModel),
+		ProviderID:    providerID,
+		CredentialID:  credentialID,
+		Success:       false,
+		RequestStatus: strPtr(telemetry.RequestStatusFailure),
+		ErrorKind:     strPtr(errorKind),
+		FailureStage:  &stage,
+		// Link back to the original request via ClientRequestID so /request-logs
+		// can correlate the probe row with the in_progress row it interrupted.
+		ClientRequestID: strPtr(originalRequestID),
+	}, true
+}
+
 // recordFailedRequestWithKey records a failure via the unified RequestLogContext pipeline.
 func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *authentication.KeyInfo, r *http.Request) {
 	ctx := &RequestLogContext{
@@ -3335,7 +3459,7 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			dbErr := h.db.Ping(ctx)
 			latency := time.Since(start)
-			
+
 			resp.Database = &ResourceStatus{
 				Connected: dbErr == nil,
 				Latency:   latency.String(),
@@ -3352,7 +3476,7 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			redisErr := h.redis.Ping(ctx)
 			latency := time.Since(start)
-			
+
 			resp.Redis = &ResourceStatus{
 				Connected: redisErr == nil,
 				Latency:   latency.String(),

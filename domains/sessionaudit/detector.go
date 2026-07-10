@@ -6,18 +6,21 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
 // FastDetector 实时检测器（同步，目标 ≤5ms）
 //
 // 使用 Trie 树 + 预编译正则实现快速扫描，不调用 LLM。
+// 支持可选的多模型 LLM 深度检测（异步，用于高风险内容的二次确认）。
 type FastDetector struct {
 	sensitiveTrie  *SensitiveWordTrie
 	injectionRules []*regexp.Regexp
 	piiRules       []*regexp.Regexp
 	jailbreakRules []*regexp.Regexp
-	maxContentLen  int // 超长内容截断（防止 DoS）
+	maxContentLen  int               // 超长内容截断（防止 DoS）
+	llmClient      LLMDetectorClient // 可选：用于多模型深度检测
 }
 
 // NewFastDetector 创建检测器
@@ -32,7 +35,19 @@ func NewFastDetector(cfg *DetectorConfig) *FastDetector {
 		piiRules:       compileRegexList(cfg.PIIPatterns),
 		jailbreakRules: compileRegexList(cfg.JailbreakPatterns),
 		maxContentLen:  cfg.MaxContentLen,
+		llmClient:      nil, // 默认为 nil，通过 SetLLMClient 注入
 	}
+}
+
+// SetLLMClient 注入 LLM 客户端（用于多模型深度检测）
+func (d *FastDetector) SetLLMClient(client LLMDetectorClient) {
+	d.llmClient = client
+}
+
+// LLMDetectorClient LLM 检测客户端接口
+type LLMDetectorClient interface {
+	// DetectRisk 使用指定模型检测内容风险，返回 0-100 的风险分数
+	DetectRisk(ctx context.Context, content string, model string) (int, error)
 }
 
 // DetectorConfig 检测器配置
@@ -180,6 +195,107 @@ func (d *FastDetector) Detect(ctx context.Context, content string) (*DetectResul
 
 	result.LatencyMs = int(time.Since(start) / time.Millisecond)
 	return result, nil
+}
+
+// DetectWithModels 使用多模型并行检测（深度检测，较慢）
+//
+// models 参数指定要使用的模型列表，如 []string{"gpt-4o-mini", "claude-3-haiku"}
+// 返回的 Score 是所有模型评分的平均值（0-100）。
+//
+// 使用场景：
+//   - 高风险内容的二次确认
+//   - 需要更准确评估的场景
+//
+// 注意：
+//   - 需要先通过 SetLLMClient 注入 LLM 客户端
+//   - 执行时间较长（数秒级），建议异步调用
+func (d *FastDetector) DetectWithModels(ctx context.Context, content string, models []string) (*DetectResult, error) {
+	// 如果没有注入 LLM 客户端，降级为快速检测
+	if d.llmClient == nil {
+		return d.Detect(ctx, content)
+	}
+
+	// 如果没有指定模型，使用默认单模型
+	if len(models) == 0 {
+		models = []string{"gpt-4o-mini"}
+	}
+
+	start := time.Now()
+
+	// 1. 先执行快速检测（作为基准）
+	baseResult, err := d.Detect(ctx, content)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. 如果基准检测分数很低，可能不需要 LLM 深度检测
+	if baseResult.Score < 3 {
+		baseResult.LatencyMs = int(time.Since(start) / time.Millisecond)
+		return baseResult, nil
+	}
+
+	// 3. 并行调用多个模型
+	type modelResult struct {
+		model string
+		score int
+		err   error
+	}
+
+	resultsChan := make(chan modelResult, len(models))
+	var wg sync.WaitGroup
+
+	for _, model := range models {
+		wg.Add(1)
+		go func(m string) {
+			defer wg.Done()
+			score, err := d.llmClient.DetectRisk(ctx, content, m)
+			resultsChan <- modelResult{model: m, score: score, err: err}
+		}(model)
+	}
+
+	// 等待所有模型完成
+	go func() {
+		wg.Wait()
+		close(resultsChan)
+	}()
+
+	// 4. 收集结果
+	var totalScore int
+	var successCount int
+	for res := range resultsChan {
+		if res.err != nil {
+			// 记录错误但不阻断（降级处理）
+			continue
+		}
+		totalScore += res.score
+		successCount++
+	}
+
+	// 5. 计算平均分
+	if successCount > 0 {
+		avgScore := totalScore / successCount
+		// 将 0-100 的分数映射到 0-10
+		baseResult.Score = avgScore / 10
+		if baseResult.Score > 10 {
+			baseResult.Score = 10
+		}
+
+		// 更新决策
+		switch {
+		case baseResult.Score >= 8:
+			baseResult.Decision = DecisionNeedApproval
+			baseResult.Reason = fmt.Sprintf("high risk (multi-model avg: %d/100, models: %d)", avgScore, successCount)
+		case baseResult.Score >= 5:
+			baseResult.Decision = DecisionWarn
+			baseResult.Reason = fmt.Sprintf("medium risk (multi-model avg: %d/100, models: %d)", avgScore, successCount)
+		default:
+			baseResult.Decision = DecisionPass
+			baseResult.Reason = fmt.Sprintf("low risk (multi-model avg: %d/100, models: %d)", avgScore, successCount)
+		}
+	}
+
+	baseResult.LatencyMs = int(time.Since(start) / time.Millisecond)
+	return baseResult, nil
 }
 
 // SensitiveWordTrie Trie 树实现

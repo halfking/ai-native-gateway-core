@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" role="img" aria-label="Qigui">
+  <defs>
+    <linearGradient id="qigui-bg" x1="4" y1="4" x2="36" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#fffbf7"/>
+      <stop offset="100%" stop-color="#fef2f2"/>
+    </linearGradient>
+  </defs>
+  <rect x="1.5" y="1.5" width="37" height="37" rx="10" fill="url(#qigui-bg)" stroke="#fecaca" stroke-width="1"/>
+  <path d="M8 16V8h9" fill="none" stroke="#b91c1c" stroke-width="2.5" stroke-linecap="square"/>
+  <path d="M32 24v8h-9" fill="none" stroke="#b91c1c" stroke-width="2.5" stroke-linecap="square"/>
+  <path d="M11 13.5V11h5.5" fill="none" stroke="#dc2626" stroke-width="1" stroke-linecap="square" opacity="0.4"/>
+  <path d="M29 27v2.5h-5.5" fill="none" stroke="#dc2626" stroke-width="1" stroke-linecap="square" opacity="0.4"/>
+  <text x="20" y="27" text-anchor="middle" fill="#0f172a" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="20" font-weight="700">Q</text>
+</svg>

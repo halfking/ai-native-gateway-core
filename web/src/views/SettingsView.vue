@@ -33,6 +33,7 @@ const categories = computed(() => [
   { key: 'routing',            label: t('settings.category.routing'),  icon: '🔀'  },
   { key: 'session',            label: t('settings.category.session'),  icon: '💬'  },
   { key: 'security',           label: t('settings.category.security'),  icon: '🔐'  },
+  { key: 'output_compliance',  label: t('settings.category.outputCompliance'),  icon: '🔒'  },
   { key: 'circuit_breaker',    label: t('settings.category.circuitBreaker'),  icon: '⚡'  },
   { key: 'general',            label: t('settings.category.general'),  icon: '⚙️' },
 ])

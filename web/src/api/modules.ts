@@ -11,6 +11,16 @@ export interface ModuleIntegration {
   doc_url: string
 }
 
+export interface ModuleDependency {
+  key: string
+  name: string
+  icon?: string
+  required: boolean
+  description: string
+  /** Runtime status filled by the backend (true when this dependency is currently enabled). */
+  enabled?: boolean
+}
+
 export interface ModuleDefinition {
   key: string
   name: string
@@ -23,11 +33,16 @@ export interface ModuleDefinition {
   docs_url: string
   danger_level: number
   integration?: ModuleIntegration
+  dependencies?: ModuleDependency[]
 }
 
 export interface ModuleWithStatus extends ModuleDefinition {
   enabled: boolean
   source: string
+  /** True when all required dependencies are enabled (no blocked dependencies). */
+  can_toggle_enabled: boolean
+  /** Human-readable reason why this module cannot be enabled. */
+  blocked_reason?: string
 }
 
 export interface ModuleDetail {
@@ -49,8 +64,36 @@ export function getModule(key: string) {
   return req<ModuleDetail>('GET', `/api/admin/modules/${key}`)
 }
 
+export interface ToggleModuleResponse {
+  status: string
+  enabled: boolean
+  module: string
+  message: string
+  /** When cascade=true and required deps were auto-enabled, this lists their module keys. */
+  cascaded?: string[]
+}
+
 /** Toggle a module's enabled/disabled state. */
-export function toggleModule(key: string, enabled: boolean) {
-  return req<{ status: string; enabled: boolean; module: string; message: string }>(
-    'PUT', `/api/admin/modules/${key}/toggle`, { enabled })
+export function toggleModule(key: string, enabled: boolean, opts: { cascade?: boolean } = {}) {
+  const qs = opts.cascade ? '?cascade=true' : ''
+  return req<ToggleModuleResponse>(
+    'PUT', `/api/admin/modules/${key}/toggle${qs}`, { enabled })
+}
+
+/** Test the integration (e.g., send a probe message to feishu webhook). */
+export function testModule(key: string) {
+  return req<{
+    reachable: boolean
+    status_code?: number
+    lark_code?: number
+    lark_msg?: string
+    response_ms?: number
+    message?: string
+    error?: string
+  }>('POST', `/api/admin/modules/${key}/test`)
+}
+
+/** Get the lightweight config summary (for module dashboard cards). */
+export function getModuleConfig(key: string) {
+  return req<Record<string, any>>('GET', `/api/admin/modules/${key}/config`)
 }

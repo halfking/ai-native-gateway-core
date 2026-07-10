@@ -30,6 +30,7 @@ import {
   type useSessionFilters,
 } from '../../composables/useSessionContext'
 import RequestLogDrawer from '../../components/RequestLogDrawer.vue'
+import SessionTurnsPanel from '../../components/SessionTurnsPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -325,6 +326,15 @@ watch(
       <p v-if="extractError" class="extract-err">{{ extractError }}</p>
     </div>
 
+    <!-- Per-turn three-stage (original / compressed / secured) context view -->
+    <div v-if="sessionScope.session_id" class="card compact-card">
+      <SessionTurnsPanel
+        :session-id="sessionScope.session_id"
+        :title="pageTitle"
+        :summary="messagesData?.title || ''"
+      />
+    </div>
+
     <div class="card compact-card">
       <div class="section-head">
         <h4 class="section-title">原始请求记录</h4>
@@ -349,20 +359,20 @@ watch(
         <p>该会话暂无请求记录</p>
         <p v-if="isNoTopic && !noTopicParams.prefix" class="text-muted">请从无主题会话列表点击进入，以携带 Key 前缀与时间桶参数。</p>
       </div>
-      <div v-else>
+      <div v-else-if="messagesData">
         <div class="timeline-summary text-muted">
           <template v-if="listExpectedCount != null">
-            与列表一致 {{ messagesData!.messages.length }}/{{ listExpectedCount }} 条（{{ messagesData!.hours ?? sessionScope.hours }}h 窗）；
+            与列表一致 {{ messagesData.messages.length }}/{{ listExpectedCount }} 条（{{ messagesData.hours ?? sessionScope.hours }}h 窗）；
           </template>
           <template v-else>
-            共 {{ messagesData!.messages.length }} 条请求（{{ messagesData!.hours ?? sessionScope.hours }}h 窗）；
+            共 {{ messagesData.messages.length }} 条请求（{{ messagesData.hours ?? sessionScope.hours }}h 窗）；
           </template>
-          {{ messagesData!.total_prompt_tokens }} prompt tokens，
-          {{ messagesData!.total_completion_tokens }} completion tokens，
-          {{ fmtCost(messagesData!.total_cost_usd) }}
+          {{ messagesData.total_prompt_tokens }} prompt tokens，
+          {{ messagesData.total_completion_tokens }} completion tokens，
+          {{ fmtCost(messagesData.total_cost_usd) }}
         </div>
         <div class="timeline">
-          <div v-for="msg in messagesData!.messages" :key="msg.request_id" class="timeline-row">
+          <div v-for="msg in messagesData.messages" :key="msg.request_id" class="timeline-row">
             <div class="timeline-side">
               <span class="seq">#{{ msg.seq }}</span>
               <span class="text-muted">{{ fmtTime(msg.ts) }}</span>

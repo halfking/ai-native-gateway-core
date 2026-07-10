@@ -158,6 +158,29 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		// pool.Close() removed - handled by defer
 		return nil, err
 	}
+	// Product modules, license modules, and VibeCoding schema (Phase 1).
+	// These are startup-level equivalents of 371-373 migration files.
+	if err := db.ensureProductModulesSchema(migCtx); err != nil {
+		return nil, err
+	}
+	if err := db.ensureLicenseModulesSchema(migCtx); err != nil {
+		return nil, err
+	}
+	if err := db.ensureLicenseDevicesSchema(migCtx); err != nil {
+		return nil, err
+	}
+	if err := db.ensureFaultManagementSchema(migCtx); err != nil {
+		return nil, err
+	}
+	if err := db.ensureAutoUpdateSchema(migCtx); err != nil {
+		return nil, err
+	}
+	if err := db.ensureCenterOpsSchema(migCtx); err != nil {
+		return nil, err
+	}
+	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
+		return nil, err
+	}
 	// Dashboard views are derived data for the admin UI, not critical-path.
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.
@@ -2165,4 +2188,479 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		return
 	}
 	slog.Info("probe health dashboard views ensured (v_model_health_dashboard, v_probe_queue_snapshot, v_model_priority_details, v_probe_system_health, v_model_availability_timeline, get_model_state_summary)")
+}
+
+// ensureProductModulesSchema mirrors sql/migrations/startup/371_product_modules.sql
+// for startup apply. Idempotent. Creates product modules, subscription tiers,
+// and tier-module mapping tables with seed data.
+func (d *DB) ensureProductModulesSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS product_modules (
+			id              SERIAL PRIMARY KEY,
+			key             TEXT NOT NULL UNIQUE,
+			name            TEXT NOT NULL,
+			description     TEXT NOT NULL DEFAULT '',
+			category        TEXT NOT NULL,
+			icon            TEXT,
+			setting_key     TEXT,
+			is_base         BOOLEAN NOT NULL DEFAULT FALSE,
+			sort_order      INT NOT NULL DEFAULT 0,
+			enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_pm_category ON product_modules (category);
+		CREATE INDEX IF NOT EXISTS idx_pm_setting ON product_modules (setting_key);
+
+		CREATE TABLE IF NOT EXISTS product_module_features (
+			id              SERIAL PRIMARY KEY,
+			module_key      TEXT NOT NULL REFERENCES product_modules(key) ON DELETE CASCADE,
+			feature_key     TEXT NOT NULL,
+			feature_name    TEXT NOT NULL,
+			description     TEXT NOT NULL DEFAULT '',
+			setting_key     TEXT,
+			enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE (module_key, feature_key)
+		);
+		CREATE INDEX IF NOT EXISTS idx_pmf_module ON product_module_features (module_key);
+
+		CREATE TABLE IF NOT EXISTS subscription_tiers (
+			id              SERIAL PRIMARY KEY,
+			code            TEXT NOT NULL UNIQUE,
+			name            TEXT NOT NULL,
+			description     TEXT NOT NULL DEFAULT '',
+			price_cents     INT NOT NULL DEFAULT 0,
+			sort_order      INT NOT NULL DEFAULT 0,
+			enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_st_code ON subscription_tiers (code);
+
+		CREATE TABLE IF NOT EXISTS tier_module_map (
+			tier_code       TEXT NOT NULL REFERENCES subscription_tiers(code) ON DELETE CASCADE,
+			module_key      TEXT NOT NULL REFERENCES product_modules(key) ON DELETE CASCADE,
+			max_features    TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (tier_code, module_key)
+		);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("product_modules schema ensured (4 tables)")
+	return nil
+}
+
+// ensureLicenseModulesSchema mirrors sql/migrations/startup/372_license_modules.sql
+// for startup apply. Idempotent. Creates license_modules and license_module_audit tables.
+func (d *DB) ensureLicenseModulesSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS licenses (
+			id               BIGSERIAL PRIMARY KEY,
+			license_key      TEXT NOT NULL UNIQUE,
+			customer_name    TEXT NOT NULL DEFAULT '',
+			customer_email   TEXT NOT NULL DEFAULT '',
+			max_devices      INT NOT NULL DEFAULT 2,
+			subscription_tier TEXT NOT NULL DEFAULT 'starter',
+			features         JSONB NOT NULL DEFAULT '[]'::jsonb,
+			expires_at       TIMESTAMPTZ,
+			revoked_at       TIMESTAMPTZ,
+			created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_licenses_key ON licenses (license_key);
+		CREATE INDEX IF NOT EXISTS idx_licenses_expires ON licenses (expires_at) WHERE expires_at IS NOT NULL;
+
+		CREATE TABLE IF NOT EXISTS license_modules (
+			id              BIGSERIAL PRIMARY KEY,
+			license_id      BIGINT NOT NULL REFERENCES licenses(id) ON DELETE CASCADE,
+			module_key      TEXT NOT NULL REFERENCES product_modules(key),
+			enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+			config          JSONB,
+			expires_at      TIMESTAMPTZ,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE (license_id, module_key)
+		);
+		CREATE INDEX IF NOT EXISTS idx_lm_license ON license_modules (license_id);
+		CREATE INDEX IF NOT EXISTS idx_lm_module ON license_modules (module_key);
+
+		CREATE TABLE IF NOT EXISTS license_module_audit (
+			id              BIGSERIAL PRIMARY KEY,
+			license_key     TEXT NOT NULL,
+			module_key      TEXT NOT NULL,
+			action          TEXT NOT NULL,
+			old_value       JSONB,
+			new_value       JSONB,
+			actor           TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_lma_key ON license_module_audit (license_key, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_lma_module ON license_module_audit (module_key, created_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("license_modules schema ensured (2 tables)")
+	return nil
+}
+
+// ensureVibeCodingSchema mirrors sql/migrations/startup/373_vibecoding.sql
+// for startup apply. Idempotent. Creates VibeCoding projects, sessions,
+// and code reviews tables with RLS policies.
+func (d *DB) ensureVibeCodingSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS vibe_coding_projects (
+			id              BIGSERIAL PRIMARY KEY,
+			tenant_id       TEXT NOT NULL DEFAULT 'default',
+			name            TEXT NOT NULL,
+			description     TEXT,
+			language        TEXT,
+			framework       TEXT,
+			status          TEXT NOT NULL DEFAULT 'active'
+				CHECK (status IN ('active', 'archived', 'deleted')),
+			settings        JSONB NOT NULL DEFAULT '{}'::jsonb,
+			created_by      TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS vcp_tenant ON vibe_coding_projects (tenant_id);
+		CREATE INDEX IF NOT EXISTS vcp_status ON vibe_coding_projects (status);
+		ALTER TABLE vibe_coding_projects ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS tenant_isolation_vcp ON public.vibe_coding_projects;
+		CREATE POLICY tenant_isolation_vcp ON public.vibe_coding_projects
+			USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+		CREATE TABLE IF NOT EXISTS vibe_coding_sessions (
+			id              BIGSERIAL PRIMARY KEY,
+			project_id      BIGINT REFERENCES vibe_coding_projects(id) ON DELETE SET NULL,
+			tenant_id       TEXT NOT NULL DEFAULT 'default',
+			session_id      TEXT NOT NULL,
+			task_type       TEXT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'active'
+				CHECK (status IN ('active', 'completed', 'failed', 'cancelled')),
+			messages        JSONB NOT NULL DEFAULT '[]'::jsonb,
+			metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			completed_at    TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS vcs_project ON vibe_coding_sessions (project_id);
+		CREATE INDEX IF NOT EXISTS vcs_session ON vibe_coding_sessions (session_id);
+		CREATE INDEX IF NOT EXISTS vcs_tenant ON vibe_coding_sessions (tenant_id, created_at DESC);
+		ALTER TABLE vibe_coding_sessions ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS tenant_isolation_vcs ON public.vibe_coding_sessions;
+		CREATE POLICY tenant_isolation_vcs ON public.vibe_coding_sessions
+			USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+		CREATE TABLE IF NOT EXISTS vibe_code_reviews (
+			id              BIGSERIAL PRIMARY KEY,
+			session_id      BIGINT REFERENCES vibe_coding_sessions(id) ON DELETE SET NULL,
+			tenant_id       TEXT NOT NULL DEFAULT 'default',
+			file_path       TEXT,
+			language        TEXT,
+			original_code   TEXT,
+			review_result   JSONB,
+			score           NUMERIC(3,2),
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS vcr_session ON vibe_code_reviews (session_id);
+		CREATE INDEX IF NOT EXISTS vcr_tenant ON vibe_code_reviews (tenant_id, created_at DESC);
+		ALTER TABLE vibe_code_reviews ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS tenant_isolation_vcr ON public.vibe_code_reviews;
+		CREATE POLICY tenant_isolation_vcr ON public.vibe_code_reviews
+			USING ((tenant_id)::text = (public.get_current_tenant())::text);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("vibe_coding schema ensured (3 tables + RLS)")
+	return nil
+}
+
+// ensureLicenseDevicesSchema mirrors sql/migrations/startup/374_license_devices.sql
+// for startup apply. Idempotent. Creates license_devices and offline_activation_requests tables.
+func (d *DB) ensureLicenseDevicesSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS license_devices (
+			id                  BIGSERIAL PRIMARY KEY,
+			license_id          BIGINT NOT NULL REFERENCES licenses(id) ON DELETE CASCADE,
+			instance_id         TEXT NOT NULL,
+			hardware_hash       TEXT NOT NULL,
+			device_name         TEXT NOT NULL,
+			activated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_heartbeat      TIMESTAMPTZ,
+			status              TEXT NOT NULL DEFAULT 'active'
+				CHECK (status IN ('active', 'deactivated')),
+			deactivated_at      TIMESTAMPTZ,
+			deactivate_reason   TEXT,
+			UNIQUE (license_id, hardware_hash)
+		);
+		CREATE INDEX IF NOT EXISTS idx_ld_license ON license_devices (license_id);
+		CREATE INDEX IF NOT EXISTS idx_ld_status ON license_devices (status);
+		CREATE INDEX IF NOT EXISTS idx_ld_hardware ON license_devices (hardware_hash);
+
+		CREATE TABLE IF NOT EXISTS offline_activation_requests (
+			id                  BIGSERIAL PRIMARY KEY,
+			license_key         TEXT NOT NULL,
+			hardware_hash       TEXT NOT NULL,
+			instance_id         TEXT NOT NULL,
+			device_name         TEXT NOT NULL,
+			request_id          TEXT NOT NULL UNIQUE,
+			created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+			approved_at         TIMESTAMPTZ,
+			signed_license      JSONB
+		);
+		CREATE INDEX IF NOT EXISTS idx_oar_request ON offline_activation_requests (request_id);
+		CREATE INDEX IF NOT EXISTS idx_oar_license ON offline_activation_requests (license_key);
+		CREATE INDEX IF NOT EXISTS idx_oar_created ON offline_activation_requests (created_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("license_devices schema ensured (2 tables)")
+	return nil
+}
+
+// ensureFaultManagementSchema mirrors sql/migrations/startup/375_fault_management.sql
+// for startup apply. Idempotent. Creates fault management tables.
+func (d *DB) ensureFaultManagementSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS fault_events (
+			id              BIGSERIAL PRIMARY KEY,
+			rule_id         BIGINT NOT NULL,
+			rule_name       TEXT NOT NULL,
+			severity        TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error', 'critical')),
+			title           TEXT NOT NULL,
+			description     TEXT NOT NULL,
+			source          TEXT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'new'
+				CHECK (status IN ('new', 'acknowledged', 'resolving', 'resolved', 'ignored')),
+			metadata        JSONB,
+			detected_at     TIMESTAMPTZ NOT NULL,
+			acked_at        TIMESTAMPTZ,
+			acked_by        TEXT,
+			resolved_at     TIMESTAMPTZ,
+			resolved_by     TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_fe_rule ON fault_events (rule_id);
+		CREATE INDEX IF NOT EXISTS idx_fe_status ON fault_events (status);
+		CREATE INDEX IF NOT EXISTS idx_fe_severity ON fault_events (severity);
+		CREATE INDEX IF NOT EXISTS idx_fe_detected ON fault_events (detected_at DESC);
+
+		CREATE TABLE IF NOT EXISTS fault_rules (
+			id              SERIAL PRIMARY KEY,
+			name            TEXT NOT NULL UNIQUE,
+			description     TEXT NOT NULL,
+			metric          TEXT NOT NULL,
+			operator        TEXT NOT NULL CHECK (operator IN ('gte', 'lte', 'eq', 'ne')),
+			threshold       DOUBLE PRECISION NOT NULL,
+			duration        TEXT NOT NULL,
+			severity        TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error', 'critical')),
+			action          TEXT NOT NULL,
+			action_config   JSONB,
+			enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+			cooldown        TEXT NOT NULL DEFAULT '5m',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_fr_enabled ON fault_rules (enabled);
+		CREATE INDEX IF NOT EXISTS idx_fr_metric ON fault_rules (metric);
+
+		CREATE TABLE IF NOT EXISTS fault_action_logs (
+			id              BIGSERIAL PRIMARY KEY,
+			event_id        BIGINT NOT NULL REFERENCES fault_events(id) ON DELETE CASCADE,
+			action          TEXT NOT NULL,
+			status          TEXT NOT NULL,
+			result          TEXT,
+			duration_ms     BIGINT NOT NULL DEFAULT 0,
+			triggered_at    TIMESTAMPTZ NOT NULL,
+			completed_at    TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_fal_event ON fault_action_logs (event_id);
+		CREATE INDEX IF NOT EXISTS idx_fal_triggered ON fault_action_logs (triggered_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("fault_management schema ensured (3 tables)")
+	return nil
+}
+
+// ensureAutoUpdateSchema mirrors sql/migrations/startup/376_autoupdate.sql
+// for startup apply. Idempotent. Creates autoupdate tables.
+func (d *DB) ensureAutoUpdateSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS releases (
+			id              BIGSERIAL PRIMARY KEY,
+			version         TEXT NOT NULL UNIQUE,
+			build_seq       INT NOT NULL,
+			channel         TEXT NOT NULL DEFAULT 'stable'
+				CHECK (channel IN ('stable', 'beta', 'canary')),
+			title           TEXT NOT NULL,
+			description     TEXT,
+			changelog       TEXT,
+			image_tag       TEXT NOT NULL,
+			image_digest    TEXT,
+			min_version     TEXT,
+			mandatory       BOOLEAN NOT NULL DEFAULT FALSE,
+			created_by      TEXT NOT NULL,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			published_at    TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_releases_version ON releases (version);
+		CREATE INDEX IF NOT EXISTS idx_releases_channel ON releases (channel, build_seq DESC);
+		CREATE INDEX IF NOT EXISTS idx_releases_published ON releases (published_at DESC)
+			WHERE published_at IS NOT NULL;
+
+		CREATE TABLE IF NOT EXISTS gray_release_rules (
+			id              BIGSERIAL PRIMARY KEY,
+			release_id      BIGINT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+			phase           TEXT NOT NULL
+				CHECK (phase IN ('canary', 'batch_1', 'batch_2', 'batch_3', 'full')),
+			percent         INT NOT NULL CHECK (percent >= 0 AND percent <= 100),
+			selectors       JSONB,
+			status          TEXT NOT NULL DEFAULT 'active'
+				CHECK (status IN ('active', 'paused', 'completed')),
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_gray_rules_release ON gray_release_rules (release_id);
+		CREATE INDEX IF NOT EXISTS idx_gray_rules_status ON gray_release_rules (status, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS upgrade_logs (
+			id              BIGSERIAL PRIMARY KEY,
+			instance_id     TEXT NOT NULL,
+			old_version     TEXT NOT NULL,
+			new_version     TEXT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'pending'
+				CHECK (status IN ('pending', 'downloading', 'ready_to_restart', 'upgrading', 'success', 'failed', 'rolled_back')),
+			started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			completed_at    TIMESTAMPTZ,
+			error_message   TEXT,
+			retry_count     INT NOT NULL DEFAULT 0,
+			duration_ms     INT
+		);
+		CREATE INDEX IF NOT EXISTS idx_upgrade_logs_instance ON upgrade_logs (instance_id, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_upgrade_logs_status ON upgrade_logs (status, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_upgrade_logs_failed ON upgrade_logs (started_at DESC)
+			WHERE status = 'failed';
+
+		CREATE TABLE IF NOT EXISTS instance_release_status (
+			release_id      BIGINT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+			instance_id     TEXT NOT NULL PRIMARY KEY,
+			status          TEXT NOT NULL,
+			version         TEXT NOT NULL,
+			started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			completed_at    TIMESTAMPTZ,
+			error           TEXT,
+			retry_count     INT NOT NULL DEFAULT 0,
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_instance_status_release ON instance_release_status (release_id);
+		CREATE INDEX IF NOT EXISTS idx_instance_status_status ON instance_release_status (status);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("autoupdate schema ensured (4 tables)")
+	return nil
+}
+
+// ensureCenterOpsSchema mirrors sql/migrations/startup/377_center_ops.sql
+// for startup apply. Idempotent. Creates center ops tables.
+func (d *DB) ensureCenterOpsSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS gateway_instances (
+			instance_id     TEXT PRIMARY KEY,
+			hostname        TEXT NOT NULL,
+			ip_address      TEXT NOT NULL,
+			region          TEXT,
+			version         TEXT NOT NULL,
+			build_seq       INT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'online'
+				CHECK (status IN ('online', 'offline', 'degraded')),
+			started_at      TIMESTAMPTZ NOT NULL,
+			last_heartbeat  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			registered_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+			metadata        JSONB NOT NULL DEFAULT '{}'::jsonb
+		);
+		CREATE INDEX IF NOT EXISTS idx_gi_status ON gateway_instances (status);
+		CREATE INDEX IF NOT EXISTS idx_gi_region ON gateway_instances (region);
+		CREATE INDEX IF NOT EXISTS idx_gi_heartbeat ON gateway_instances (last_heartbeat DESC);
+		CREATE INDEX IF NOT EXISTS idx_gi_version ON gateway_instances (version);
+
+		CREATE TABLE IF NOT EXISTS instance_heartbeats (
+			instance_id     TEXT NOT NULL,
+			timestamp       TIMESTAMPTZ NOT NULL DEFAULT now(),
+			uptime_secs     BIGINT NOT NULL,
+			num_goroutine   INT NOT NULL,
+			alloc_mb        DOUBLE PRECISION NOT NULL,
+			status          TEXT NOT NULL,
+			PRIMARY KEY (instance_id, timestamp)
+		);
+		CREATE INDEX IF NOT EXISTS idx_ih_instance ON instance_heartbeats (instance_id, timestamp DESC);
+		CREATE INDEX IF NOT EXISTS idx_ih_timestamp ON instance_heartbeats (timestamp DESC);
+
+		CREATE TABLE IF NOT EXISTS center_commands (
+			id              BIGSERIAL PRIMARY KEY,
+			command_id      TEXT NOT NULL UNIQUE,
+			instance_id     TEXT NOT NULL,
+			command         TEXT NOT NULL,
+			args            JSONB,
+			status          TEXT NOT NULL DEFAULT 'pending'
+				CHECK (status IN ('pending', 'executed', 'failed', 'expired')),
+			issued_at       TIMESTAMPTZ NOT NULL,
+			issued_by       TEXT NOT NULL,
+			expires_at      TIMESTAMPTZ,
+			executed_at     TIMESTAMPTZ,
+			result          JSONB
+		);
+		CREATE INDEX IF NOT EXISTS idx_cc_instance ON center_commands (instance_id, issued_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_cc_status ON center_commands (status, issued_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_cc_command_id ON center_commands (command_id);
+
+		CREATE TABLE IF NOT EXISTS instance_status_reports (
+			instance_id     TEXT NOT NULL,
+			timestamp       TIMESTAMPTZ NOT NULL DEFAULT now(),
+			state           TEXT NOT NULL,
+			active_licenses INT NOT NULL DEFAULT 0,
+			active_devices  INT NOT NULL DEFAULT 0,
+			requests_total  BIGINT NOT NULL DEFAULT 0,
+			requests_ok     BIGINT NOT NULL DEFAULT 0,
+			requests_err    BIGINT NOT NULL DEFAULT 0,
+			avg_latency_ms  DOUBLE PRECISION NOT NULL DEFAULT 0,
+			p99_latency_ms  DOUBLE PRECISION NOT NULL DEFAULT 0,
+			PRIMARY KEY (instance_id, timestamp)
+		);
+		CREATE INDEX IF NOT EXISTS idx_isr_instance ON instance_status_reports (instance_id, timestamp DESC);
+		CREATE INDEX IF NOT EXISTS idx_isr_timestamp ON instance_status_reports (timestamp DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("center_ops schema ensured (4 tables)")
+	return nil
 }

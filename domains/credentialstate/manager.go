@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -114,7 +115,11 @@ func (m *Manager) UpdateOnSuccess(ctx context.Context, credID int, model string,
 	state.Source = "request"
 
 	m.setToMemCache(key, state)
-	go m.setToRedis(ctx, key, state)
+	go func() {
+		redisCtx, cancel := runctx.DetachedTimeout(ctx, 3*time.Second)
+		defer cancel()
+		m.setToRedis(redisCtx, key, state)
+	}()
 
 	avail := true
 	m.batchWriter.Add(StateUpdate{
@@ -193,7 +198,36 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 		}
 
 	} else if isTransient && state.ConsecutiveFails >= 3 {
-		// 临时故障：递增退避探测 (30s → 2m → 5m)
+		// 临时故障（429/503/timeout/stream_timeout）：连续失败 >= 3。
+		//
+		// 2026-07-09 修正（问题2 - NVIDIA NIM 流式无反馈长时间未熔断）：
+		// 之前此处只调度探测，凭据仍保持 Available=true 继续接收请求，
+		// 导致流式无反馈（first_byte_timeout / stream_timeout，归为
+		// KindStreamTimeout）的凭据长时间挂在路由池里，前端持续无响应。
+		//
+		// 现在：连续 3 次临时故障立即把凭据置为 cooling（Available=false，
+		// RecoverAt = now + 5min），并失效候选缓存，让路由在下一次候选
+		// 解析时立即剔除该凭据。探测恢复（UpdateFromProbe）会在凭据真正
+		// 恢复后把 Available 翻回 true。
+		const transientCooling = 5 * time.Minute
+		state.Available = false
+		nextRetry := now.Add(transientCooling)
+		state.RecoverAt = &nextRetry
+
+		slog.Warn("credstate: transient failure threshold reached, credential cooling",
+			"credential_id", credID,
+			"model", model,
+			"error_kind", errKind,
+			"consecutive_fails", state.ConsecutiveFails,
+			"cooling_seconds", int(transientCooling.Seconds()),
+			"recover_at", nextRetry)
+
+		if m.invalidateCandidateCache != nil {
+			m.invalidateCandidateCache()
+		}
+
+		// 递增退避探测 (30s → 2m → 5m)：探测用于在 cooling 期间提前发现
+		// 凭据恢复，探测成功后 UpdateFromProbe 会立即恢复路由。
 		var backoff time.Duration
 		switch {
 		case state.ConsecutiveFails <= 3:
@@ -218,7 +252,11 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	}
 
 	m.setToMemCache(key, state)
-	go m.setToRedis(ctx, key, state)
+	go func() {
+		redisCtx, cancel := runctx.DetachedTimeout(ctx, 3*time.Second)
+		defer cancel()
+		m.setToRedis(redisCtx, key, state)
+	}()
 
 	errStr := string(errKind)
 	m.batchWriter.Add(StateUpdate{
@@ -257,7 +295,11 @@ func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
 	}
 
 	m.setToMemCache(key, state)
-	go m.setToRedis(ctx, key, state)
+	go func() {
+		redisCtx, cancel := runctx.DetachedTimeout(ctx, 3*time.Second)
+		defer cancel()
+		m.setToRedis(redisCtx, key, state)
+	}()
 
 	slog.Debug("credstate: probe result updated",
 		"credential_id", state.CredentialID,
@@ -330,7 +372,9 @@ func (m *Manager) GetStaleStates(staleTTL time.Duration) []*State {
 func (m *Manager) TriggerPing(ctx context.Context, credID int, model string) {
 	if m.modelProbeSubmitter != nil {
 		go func() {
-			if err := m.modelProbeSubmitter(ctx, credID, model); err != nil {
+			probeCtx, cancel := runctx.DetachedTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if err := m.modelProbeSubmitter(probeCtx, credID, model); err != nil {
 				slog.Warn("credstate: trigger ping failed",
 					"credential_id", credID,
 					"model", model,
