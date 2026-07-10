@@ -104,6 +104,7 @@ type tableSizeInfo struct {
 	TotalHuman    string `json:"total_human"`
 	IndexBytes    int64  `json:"index_bytes"`
 	ToastBytes    int64  `json:"toast_bytes"`
+	ToastHuman    string `json:"toast_human"`
 	PercentOfDB   int    `json:"percent_of_db"` // 0-100
 	IsPartitioned bool   `json:"is_partitioned"`
 }
@@ -445,6 +446,7 @@ func queryTableSizes(ctx context.Context, h *Handler, limit int) ([]tableSizeInf
 			continue
 		}
 		t.TotalHuman = humanBytes(t.TotalBytes)
+		t.ToastHuman = humanBytes(t.ToastBytes)
 		totalBytes += t.TotalBytes
 		out = append(out, t)
 	}
