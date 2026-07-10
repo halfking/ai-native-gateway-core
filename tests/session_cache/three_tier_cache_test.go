@@ -8,9 +8,9 @@ package session_cache_test
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,22 +22,13 @@ import (
 // 第一层：原始会话缓存
 // ──────────────────────────────────────────────────────────────────────────────
 
-// RawSessionCache 存储原始会话的完整消息历史
+// RawSessionCache 存储原始会话的完整消息历史（线程安全）
 type RawSessionCache struct {
+	mu       sync.RWMutex
 	sessions map[string]*RawSession // key: sessionID
 }
 
-// RawSession 原始会话状态
-type RawSession struct {
-	SessionID     string    `json:"session_id"`
-	TenantID      string    `json:"tenant_id"`
-	Messages      []Message `json:"messages"`     // 完整消息历史
-	TurnNumber    int       `json:"turn_number"`  // 当前轮次
-	TotalTokens   int       `json:"total_tokens"` // 累计token数
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	MessageHashes []string  `json:"message_hashes"` // 每条消息的hash
-}
+// RawSession 已在 helpers.go 中定义
 
 func NewRawSessionCache() *RawSessionCache {
 	return &RawSessionCache{
@@ -45,18 +36,32 @@ func NewRawSessionCache() *RawSessionCache {
 	}
 }
 
-// AddTurn 添加一轮对话到原始缓存
+// AddTurn 添加一轮对话到原始缓存（线程安全）
 func (c *RawSessionCache) AddTurn(sessionID, tenantID string, userMsg, assistantMsg Message) *RawSession {
+	// 先获取或创建会话（使用读锁检查，写锁创建）
+	c.mu.RLock()
 	session, exists := c.sessions[sessionID]
+	c.mu.RUnlock()
+
 	if !exists {
-		session = &RawSession{
-			SessionID: sessionID,
-			TenantID:  tenantID,
-			Messages:  []Message{},
-			CreatedAt: time.Now(),
+		c.mu.Lock()
+		// 双重检查
+		session, exists = c.sessions[sessionID]
+		if !exists {
+			session = &RawSession{
+				SessionID: sessionID,
+				TenantID:  tenantID,
+				Messages:  []Message{},
+				CreatedAt: time.Now(),
+			}
+			c.sessions[sessionID] = session
 		}
-		c.sessions[sessionID] = session
+		c.mu.Unlock()
 	}
+
+	// 对单个session加锁（写操作）
+	session.mu.Lock()
+	defer session.mu.Unlock()
 
 	// 添加用户消息
 	session.Messages = append(session.Messages, userMsg)
@@ -73,8 +78,10 @@ func (c *RawSessionCache) AddTurn(sessionID, tenantID string, userMsg, assistant
 	return session
 }
 
-// Get 获取原始会话
+// Get 获取原始会话（线程安全）
 func (c *RawSessionCache) Get(sessionID string) (*RawSession, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	session, ok := c.sessions[sessionID]
 	return session, ok
 }
@@ -83,8 +90,9 @@ func (c *RawSessionCache) Get(sessionID string) (*RawSession, bool) {
 // 第二层：压缩会话缓存
 // ──────────────────────────────────────────────────────────────────────────────
 
-// CompressedSessionCache 存储压缩后的会话
+// CompressedSessionCache 存储压缩后的会话（线程安全）
 type CompressedSessionCache struct {
+	mu       sync.RWMutex
 	sessions map[string]*CompressedSession
 }
 
@@ -103,14 +111,7 @@ type CompressedSession struct {
 	UpdatedAt              time.Time       `json:"updated_at"`
 }
 
-// AlignmentInfo 原始位置到压缩位置的对齐信息
-type AlignmentInfo struct {
-	OriginalIndex   int    `json:"original_index"`   // 原始消息索引
-	CompressedIndex int    `json:"compressed_index"` // 压缩后消息索引
-	IsCompressed    bool   `json:"is_compressed"`    // 是否被压缩
-	CompressedInto  int    `json:"compressed_into"`  // 被压缩到哪个索引（如果被压缩）
-	Hash            string `json:"hash"`             // 消息hash
-}
+// AlignmentInfo 已在 helpers.go 中定义
 
 func NewCompressedSessionCache() *CompressedSessionCache {
 	return &CompressedSessionCache{
@@ -118,42 +119,49 @@ func NewCompressedSessionCache() *CompressedSessionCache {
 	}
 }
 
-// Compress 压缩原始会话
+// Compress 压缩原始会话（线程安全）
 func (c *CompressedSessionCache) Compress(ctx context.Context, raw *RawSession) (*CompressedSession, error) {
-	// 模拟压缩策略：
-	// 1. 如果消息数 <= 10，不压缩
-	// 2. 如果消息数 > 10，保留最近10条，前面的压缩成摘要
+	// 安全读取raw的所有字段
+	raw.mu.RLock()
+	messages := make([]Message, len(raw.Messages))
+	copy(messages, raw.Messages)
+	hashes := make([]string, len(raw.MessageHashes))
+	copy(hashes, raw.MessageHashes)
+	totalTokens := raw.TotalTokens
+	sessionID := raw.SessionID
+	tenantID := raw.TenantID
+	raw.mu.RUnlock()
 
 	compressed := &CompressedSession{
-		SessionID:            raw.SessionID,
-		TenantID:             raw.TenantID,
-		OriginalMessageCount: len(raw.Messages),
-		OriginalTokens:       raw.TotalTokens,
-		AlignmentMap:         make([]AlignmentInfo, len(raw.Messages)),
+		SessionID:            sessionID,
+		TenantID:             tenantID,
+		OriginalMessageCount: len(messages),
+		OriginalTokens:       totalTokens,
+		AlignmentMap:         make([]AlignmentInfo, len(messages)),
 		UpdatedAt:            time.Now(),
 	}
 
-	if len(raw.Messages) <= 10 {
+	if len(messages) <= 10 {
 		// 不压缩
-		compressed.CompressedMessages = raw.Messages
+		compressed.CompressedMessages = messages
 		compressed.CompressionStrategy = "none"
-		compressed.CompressedMessageCount = len(raw.Messages)
-		compressed.CompressedTokens = raw.TotalTokens
+		compressed.CompressedMessageCount = len(messages)
+		compressed.CompressedTokens = totalTokens
 		compressed.CompressionRatio = 1.0
 
 		// 1:1 对齐
-		for i := range raw.Messages {
+		for i := range messages {
 			compressed.AlignmentMap[i] = AlignmentInfo{
 				OriginalIndex:   i,
 				CompressedIndex: i,
 				IsCompressed:    false,
-				Hash:            raw.MessageHashes[i],
+				Hash:            hashes[i],
 			}
 		}
 	} else {
 		// 压缩：保留最近10条，前面的生成摘要
-		toCompressCount := len(raw.Messages) - 10
-		toKeepMessages := raw.Messages[toCompressCount:]
+		toCompressCount := len(messages) - 10
+		toKeepMessages := messages[toCompressCount:]
 
 		// 生成摘要
 		summaryContent := fmt.Sprintf("[会话摘要] 前%d条消息已压缩：用户询问了API使用方法，包括认证、请求格式、模型选择等问题。", toCompressCount)
@@ -170,7 +178,7 @@ func (c *CompressedSessionCache) Compress(ctx context.Context, raw *RawSession) 
 		for _, msg := range toKeepMessages {
 			compressed.CompressedTokens += estimateTokens(msg.Content)
 		}
-		compressed.CompressionRatio = float64(compressed.CompressedTokens) / float64(raw.TotalTokens)
+		compressed.CompressionRatio = float64(compressed.CompressedTokens) / float64(totalTokens)
 
 		// 构建对齐映射
 		// 前面的消息都被压缩到索引0（摘要）
@@ -180,36 +188,50 @@ func (c *CompressedSessionCache) Compress(ctx context.Context, raw *RawSession) 
 				CompressedIndex: 0,
 				IsCompressed:    true,
 				CompressedInto:  0,
-				Hash:            raw.MessageHashes[i],
+				Hash:            hashes[i],
 			}
 		}
 		// 后面的消息保持1:1对齐（偏移+1因为有摘要）
-		for i := toCompressCount; i < len(raw.Messages); i++ {
+		for i := toCompressCount; i < len(messages); i++ {
 			compressed.AlignmentMap[i] = AlignmentInfo{
 				OriginalIndex:   i,
 				CompressedIndex: i - toCompressCount + 1,
 				IsCompressed:    false,
-				Hash:            raw.MessageHashes[i],
+				Hash:            hashes[i],
 			}
 		}
 	}
 
-	c.sessions[raw.SessionID] = compressed
+	// 保存到map（线程安全）
+	c.mu.Lock()
+	c.sessions[sessionID] = compressed
+	c.mu.Unlock()
+
 	return compressed, nil
 }
 
-// Get 获取压缩会话
+// Get 获取压缩会话（线程安全）
 func (c *CompressedSessionCache) Get(sessionID string) (*CompressedSession, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	session, ok := c.sessions[sessionID]
 	return session, ok
+}
+
+// Set 设置压缩会话（线程安全）
+func (c *CompressedSessionCache) Set(sessionID string, session *CompressedSession) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sessions[sessionID] = session
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 第三层：安全审计后缓存
 // ──────────────────────────────────────────────────────────────────────────────
 
-// AuditedSessionCache 存储审计后的会话
+// AuditedSessionCache 存储审计后的会话（线程安全）
 type AuditedSessionCache struct {
+	mu       sync.RWMutex
 	sessions map[string]*AuditedSession
 }
 
@@ -298,30 +320,31 @@ func (c *AuditedSessionCache) Audit(ctx context.Context, compressed *CompressedS
 		audited.AuditedTokens += estimateTokens(msg.Content)
 	}
 
+	// 保存到map（线程安全）
+	c.mu.Lock()
 	c.sessions[compressed.SessionID] = audited
+	c.mu.Unlock()
 	return audited, nil
 }
 
-// Get 获取审计后会话
+// Get 获取审计后会话（线程安全）
 func (c *AuditedSessionCache) Get(sessionID string) (*AuditedSession, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	session, ok := c.sessions[sessionID]
 	return session, ok
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// 辅助函数
-// ──────────────────────────────────────────────────────────────────────────────
-
-func hashMessage(msg Message) string {
-	data := fmt.Sprintf("%s:%s", msg.Role, msg.Content)
-	h := sha256.Sum256([]byte(data))
-	return fmt.Sprintf("%x", h[:8])
+// Set 设置审计会话（线程安全）
+func (c *AuditedSessionCache) Set(sessionID string, session *AuditedSession) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sessions[sessionID] = session
 }
 
-func estimateTokens(text string) int {
-	// 简单估算：1 token ≈ 4 字符（英文）或 1.5 字符（中文）
-	return len(text) * 4 / 3
-}
+// ──────────────────────────────────────────────────────────────────────────────
+// 辅助函数（hashMessage, estimateTokens, contains 已在 helpers.go 中定义）
+// ──────────────────────────────────────────────────────────────────────────────
 
 func containsSensitiveWords(text string) bool {
 	// 模拟敏感词检测
@@ -366,9 +389,7 @@ func containsJailbreak(text string) bool {
 	return false
 }
 
-func contains(text, substr string) bool {
-	return len(text) >= len(substr) && (text == substr || len(text) > 0 && (text[:len(substr)] == substr || contains(text[1:], substr)))
-}
+// contains 已在 helpers.go 中定义
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 测试用例

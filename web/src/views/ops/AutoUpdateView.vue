@@ -194,7 +194,7 @@ onMounted(() => {
       </template>
       <el-table v-loading="loading" :data="releases">
         <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="150" />
-        <el-table-column prop="channel" :label="t('ops.autoupdate.channel')" width="100">
+        <el-table-column prop="channel" :label="t('ops.autoupdate.channelLabel')" width="100">
           <template #default="{ row }">
             <el-tag :type="channelType(row.channel)" size="small">
               {{ t(`ops.autoupdate.channel.${row.channel}`) }}
@@ -284,7 +284,7 @@ onMounted(() => {
         <el-form-item :label="t('ops.autoupdate.version')" required>
           <el-input v-model="createForm.version" :placeholder="t('ops.autoupdate.versionPlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('ops.autoupdate.channel')" required>
+        <el-form-item :label="t('ops.autoupdate.channelLabel')" required>
           <el-radio-group v-model="createForm.channel">
             <el-radio label="stable">{{ t('ops.autoupdate.channel.stable') }}</el-radio>
             <el-radio label="beta">{{ t('ops.autoupdate.channel.beta') }}</el-radio>

@@ -125,6 +125,10 @@ export default {
     summary: {
       databaseTitle: 'PostgreSQL 数据库',
       databaseSubtitle: '总占用（表 + 索引 + TOAST 之和）',
+      databaseMetric: '数据库',
+      tablesMetric: '表',
+      indexesMetric: '索引',
+      toastMetric: 'TOAST',
       diskTitle: '本机磁盘',
       diskUsedOf: '已用 / {total}',
       path: '路径',
@@ -194,6 +198,7 @@ export default {
       failed: '{op} 失败：{msg}',
     },
     rowResult: {
+      running: '执行中…',
       success: '{op}: 释放 {size} ({pct}%, {ms}ms)',
       failed: '{op} 失败：{msg}',
     },
