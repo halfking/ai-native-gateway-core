@@ -7,7 +7,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useLiveStream } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
-import { isSuperAdmin } from '../store'
+import { isSuperAdmin, authBearer } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
 import SwimLane from './SwimLane.vue'
 import LiveStreamLegend from './LiveStreamLegend.vue'
@@ -57,18 +57,17 @@ const editUrlValue = ref('')
 function buildFinalUrl(url: string): string {
   const trimmed = url.trim()
   if (!trimmed) return defaultStreamUrl.value
-  // 包含 token 参数：在 admin api_key 模式下浏览器 EventSource 无法设置 Authorization，
-  // 我们把 localStorage 里的 api_key 拼到 ?token=，由后端当 fallback 接受
-  let apiKeySuffix = ''
+  // EventSource 无法设置 Authorization header，我们把 JWT 拼到 ?token=
+  let tokenSuffix = ''
   try {
-    const apiKey = localStorage.getItem('llmgw_api_key')
-    if (apiKey && !apiKey.startsWith('cookie')) {
-      apiKeySuffix = (trimmed.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(apiKey)
+    const token = authBearer()
+    if (token) {
+      tokenSuffix = (trimmed.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)
     }
   } catch {
     /* SSR / storage disabled */
   }
-  return trimmed + apiKeySuffix
+  return trimmed + tokenSuffix
 }
 
 onMounted(() => {

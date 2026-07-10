@@ -3,12 +3,12 @@
 // useLiveStream() share one EventSource; the connection is opened
 // on the first acquire() and closed on the last release().
 //
-// Cookie auth (rule 20 §6.1): the JWT lives in an HttpOnly
-// "llmgw_session" cookie. EventSource does not accept custom
-// headers, but it does honour `credentials: 'include'` for same-
-// origin requests — which is exactly what we want, no token shim.
+// Auth: EventSource does not accept custom headers, so we append
+// ?token=<jwt> to the URL (AdminMiddleware extracts it to Authorization).
+// The HttpOnly cookie is also sent (credentials: 'include').
 
 import { reactive, computed, type ComputedRef } from 'vue'
+import { authBearer } from '../store'
 
 export type LiveStatus = 'in_progress' | 'success' | 'failure'
 
@@ -143,10 +143,10 @@ function readCustomEndpoint(): string {
 function buildUrl(endpoint: string): string {
   let url = endpoint
   try {
-    const apiKey = localStorage.getItem('llmgw_api_key')
-    if (apiKey && !apiKey.startsWith('cookie')) {
+    const token = authBearer()
+    if (token) {
       const sep = url.includes('?') ? '&' : '?'
-      url = `${url}${sep}token=${encodeURIComponent(apiKey)}`
+      url = `${url}${sep}token=${encodeURIComponent(token)}`
     }
   } catch {
     /* SSR or storage disabled — fall back to cookie auth */

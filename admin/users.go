@@ -492,13 +492,7 @@ func (h *Handler) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	if !auth.IsJWT {
-		writeJSON(w, http.StatusOK, userInfo{
-			ID: 0, TenantID: "default", Username: "admin",
-			DisplayName: "管理员 (API Key)", Role: "super_admin", Enabled: true,
-		})
-		return
-	}
+	// AdminMiddleware now only accepts JWT (no sk-* fallback), so auth.IsJWT is always true
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	var u userInfo
