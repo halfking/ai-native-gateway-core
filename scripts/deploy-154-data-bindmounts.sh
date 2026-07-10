@@ -11,7 +11,7 @@
 #   6. systemctl daemon-reload + restart + 健康检查
 #
 # 用法:
-#   export SSHPASS='<SSH_PASSWORD_REDACTED>'
+#   export SSHPASS='<your-password>'
 #   bash scripts/deploy-154-data-bindmounts.sh
 #
 # 注意:
