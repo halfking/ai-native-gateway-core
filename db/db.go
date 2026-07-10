@@ -166,6 +166,9 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	if err := db.ensureLicenseModulesSchema(migCtx); err != nil {
 		return nil, err
 	}
+	if err := db.ensureLicenseDevicesSchema(migCtx); err != nil {
+		return nil, err
+	}
 	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
 		return nil, err
 	}
@@ -2296,6 +2299,53 @@ func (d *DB) ensureLicenseModulesSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("license_modules schema ensured (2 tables)")
+	return nil
+}
+
+// ensureLicenseDevicesSchema mirrors sql/migrations/startup/374_license_devices.sql
+// for startup apply. Idempotent. Creates license_devices and offline_activation_requests tables.
+func (d *DB) ensureLicenseDevicesSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS license_devices (
+			id                  BIGSERIAL PRIMARY KEY,
+			license_id          BIGINT NOT NULL REFERENCES licenses(id) ON DELETE CASCADE,
+			instance_id         TEXT NOT NULL,
+			hardware_hash       TEXT NOT NULL,
+			device_name         TEXT NOT NULL,
+			activated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_heartbeat      TIMESTAMPTZ,
+			status              TEXT NOT NULL DEFAULT 'active'
+				CHECK (status IN ('active', 'deactivated')),
+			deactivated_at      TIMESTAMPTZ,
+			deactivate_reason   TEXT,
+			UNIQUE (license_id, hardware_hash)
+		);
+		CREATE INDEX IF NOT EXISTS idx_ld_license ON license_devices (license_id);
+		CREATE INDEX IF NOT EXISTS idx_ld_status ON license_devices (status);
+		CREATE INDEX IF NOT EXISTS idx_ld_hardware ON license_devices (hardware_hash);
+
+		CREATE TABLE IF NOT EXISTS offline_activation_requests (
+			id                  BIGSERIAL PRIMARY KEY,
+			license_key         TEXT NOT NULL,
+			hardware_hash       TEXT NOT NULL,
+			instance_id         TEXT NOT NULL,
+			device_name         TEXT NOT NULL,
+			request_id          TEXT NOT NULL UNIQUE,
+			created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+			approved_at         TIMESTAMPTZ,
+			signed_license      JSONB
+		);
+		CREATE INDEX IF NOT EXISTS idx_oar_request ON offline_activation_requests (request_id);
+		CREATE INDEX IF NOT EXISTS idx_oar_license ON offline_activation_requests (license_key);
+		CREATE INDEX IF NOT EXISTS idx_oar_created ON offline_activation_requests (created_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("license_devices schema ensured (2 tables)")
 	return nil
 }
 
