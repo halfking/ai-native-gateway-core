@@ -117,7 +117,7 @@ SCP="sshpass -e scp -P $SSH_PORT -o StrictHostKeyChecking=accept-new -o UserKnow
 log "目标服务器:  $SSH_TARGET:$SSH_PORT"
 log "部署目录:    $REMOTE_DIR"
 log "服务名:      $SERVICE_NAME"
-log "二进制:      $BIN_NAME"
+# log "二进制:      $BIN_NAME"  # BIN_NAME 在 step 2 后才定义
 log "skip frontend: $SKIP_FRONTEND"
 echo
 
