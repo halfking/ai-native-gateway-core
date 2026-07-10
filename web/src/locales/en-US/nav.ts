@@ -9,6 +9,7 @@ export default {
     tenantUsers: 'Tenants & Users',
     requestsSessions: 'Requests & Sessions',
     dataOps: 'Data Operations',
+    opsplatform: 'Operations Platform',
     guide: 'Integration Guide',
     chat: 'Chat',
   },
@@ -51,5 +52,10 @@ export default {
     promptInjection: 'Prompt Injection Detection',
     examples: 'Examples',
     chat: 'Chat',
+    opsLicenses: 'License Management',
+    opsFaults: 'Fault Management',
+    opsAutoUpdate: 'Auto Update',
+    opsCenter: 'Center Operations',
+    opsVibeCoding: 'VibeCoding',
   },
 }
