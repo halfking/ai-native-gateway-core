@@ -91,13 +91,13 @@ const isEmpty = computed(() =>
   <div class="heatmap-wrap" :style="minHeight ? { minHeight: minHeight + 'px' } : undefined">
     <div v-if="loading" class="heatmap-hint">加载热力图…</div>
     <div v-else-if="isEmpty" class="heatmap-hint">暂无矩阵数据 — 等待 Auto 路由流量写入 request_logs</div>
-    <div v-else class="table-wrap">
+    <div v-else-if="data && data.rows && data.cols" class="table-wrap">
       <table class="heatmap-table">
         <thead>
           <tr>
             <th class="corner">{{ metricLabel }} \ 模型</th>
             <th
-              v-for="col in data!.cols"
+              v-for="col in data.cols"
               :key="col"
               class="col-head"
               :class="{ 'col-specified': isSpecifiedCol(col) }"
@@ -106,21 +106,21 @@ const isEmpty = computed(() =>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row, ri) in data!.rows" :key="row">
+          <tr v-for="(row, ri) in data.rows" :key="row">
             <th class="row-head" :title="rowTitle(row)">{{ row }}</th>
             <td
-              v-for="(col, ci) in data!.cols"
+              v-for="(col, ci) in data.cols"
               :key="col"
               class="heat-cell"
               :class="{
-                clickable: data!.cells[ri][ci] > 0,
+                clickable: data.cells[ri][ci] > 0,
                 'cell-specified-col': isSpecifiedCol(col),
               }"
-              :style="{ background: cellColor(data!.cells[ri][ci]) }"
-              :title="`${row} × ${displayColLabel(col)}\n${metricLabel}: ${fmtValue(data!.cells[ri][ci]) || '0'}`"
-              @click="data!.cells[ri][ci] > 0 && emit('cellClick', row, col, data!.cells[ri][ci])"
+              :style="{ background: cellColor(data.cells[ri][ci]) }"
+              :title="`${row} × ${displayColLabel(col)}\n${metricLabel}: ${fmtValue(data.cells[ri][ci]) || '0'}`"
+              @click="data.cells[ri][ci] > 0 && emit('cellClick', row, col, data.cells[ri][ci])"
             >
-              {{ fmtValue(data!.cells[ri][ci]) }}
+              {{ fmtValue(data.cells[ri][ci]) }}
             </td>
           </tr>
         </tbody>

@@ -161,7 +161,7 @@ function healthGradeColor(grade?: string): string {
           <el-table-column prop="task_id" :label="t('sessions.userProfile.taskId')" min-width="200" />
           <el-table-column prop="session_count" :label="t('sessions.userProfile.sessionCount')" width="90" align="right" />
           <el-table-column prop="total_cost" :label="t('sessions.userProfile.totalCost')" width="120" align="right">
-            <template #default="{ row }">${{ row.total_cost.toFixed(4) }}</template>
+            <template #default="scope">${{ (scope?.row?.total_cost ?? 0).toFixed(4) }}</template>
           </el-table-column>
           <el-table-column prop="avg_health" :label="t('sessions.userProfile.avgHealth')" width="80" align="right" />
         </el-table>
@@ -174,7 +174,7 @@ function healthGradeColor(grade?: string): string {
           <el-table-column prop="end_user_id" :label="t('sessions.userProfile.endUserId')" min-width="200" />
           <el-table-column prop="session_count" :label="t('sessions.userProfile.sessionCount')" width="90" align="right" />
           <el-table-column prop="total_cost_usd" :label="t('sessions.userProfile.totalCost')" width="120" align="right">
-            <template #default="{ row }">${{ row.total_cost_usd.toFixed(4) }}</template>
+            <template #default="scope">${{ (scope?.row?.total_cost_usd ?? 0).toFixed(4) }}</template>
           </el-table-column>
           <el-table-column prop="last_activity" :label="t('sessions.userProfile.lastSeenAt')" width="170" />
         </el-table>
@@ -185,20 +185,20 @@ function healthGradeColor(grade?: string): string {
         <template #header>{{ t('sessions.userProfile.recentSessions') }}</template>
         <el-table :data="data?.recent_sessions ?? []" stripe size="small">
           <el-table-column prop="session_id" :label="t('sessions.userProfile.sessionId')" min-width="200">
-            <template #default="{ row }">
-              <router-link :to="`/admin/session-analytics/${row.session_id}/panorama`" class="session-link">
-                {{ row.session_id.slice(0, 16) }}...
+            <template #default="scope">
+              <router-link :to="`/admin/session-analytics/${scope?.row?.session_id}/panorama`" class="session-link">
+                {{ scope?.row?.session_id?.slice(0, 16) }}...
               </router-link>
             </template>
           </el-table-column>
           <el-table-column prop="request_count" :label="t('sessions.userProfile.requestCount')" width="80" align="right" />
           <el-table-column prop="cost_usd" :label="t('sessions.userProfile.totalCost')" width="100" align="right">
-            <template #default="{ row }">${{ row.cost_usd.toFixed(4) }}</template>
+            <template #default="scope">${{ (scope?.row?.cost_usd ?? 0).toFixed(4) }}</template>
           </el-table-column>
           <el-table-column prop="health_grade" :label="t('sessions.userProfile.avgHealthGrade')" width="80" align="center">
-            <template #default="{ row }">
-              <el-tag v-if="row.health_grade" :type="healthGradeColor(row.health_grade)" size="small">
-                {{ row.health_grade }}
+            <template #default="scope">
+              <el-tag v-if="scope?.row?.health_grade" :type="healthGradeColor(scope?.row?.health_grade)" size="small">
+                {{ scope?.row?.health_grade }}
               </el-tag>
             </template>
           </el-table-column>

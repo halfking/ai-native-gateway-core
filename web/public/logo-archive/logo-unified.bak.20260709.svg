@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 36" role="img" aria-label="开轩启圭 Qigui">
+  <path d="M6 14V6h20" fill="none" stroke="#b91c1c" stroke-width="2.25" stroke-linecap="square"/>
+  <path d="M122 22v8H102" fill="none" stroke="#b91c1c" stroke-width="2.25" stroke-linecap="square"/>
+  <text x="64" y="25" text-anchor="middle" fill="#0f172a" font-family="ui-sans-serif, system-ui, sans-serif" font-size="21" font-weight="700" letter-spacing="0.02em">Qigui</text>
+</svg>

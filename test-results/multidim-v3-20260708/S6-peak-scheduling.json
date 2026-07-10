@@ -1,0 +1,61 @@
+{
+  "test_config": {
+    "clients": 100,
+    "rounds": 6,
+    "total_requests": 600,
+    "models": [
+      "loadtest-mini-alpha",
+      "loadtest-mini-beta",
+      "loadtest-standard-alpha",
+      "loadtest-standard-beta",
+      "loadtest-pro-alpha"
+    ],
+    "num_api_keys": 3,
+    "prompt_size": "mixed",
+    "stream": false,
+    "max_history": 10,
+    "session_reuse_ratio": 0.0
+  },
+  "summary": {
+    "total": 600,
+    "success": 600,
+    "errors": 0,
+    "success_rate": 1.0,
+    "elapsed_seconds": 7.811568260192871,
+    "throughput_req_s": 76.80916046750204,
+    "p50_ms": 273.3569580013864,
+    "p95_ms": 3026.7294812438163,
+    "p99_ms": 4273.216653330018,
+    "ttfb_p50_ms": 0,
+    "ttfb_p95_ms": 0,
+    "sticky_hits": 0,
+    "sticky_total": 0,
+    "sticky_rate": 0,
+    "stream_incomplete": 0,
+    "unique_mocks": 6
+  },
+  "mock_distribution": {
+    "mock-44": 249,
+    "mock-04": 228,
+    "mock-03": 112,
+    "mock-00": 6,
+    "mock-01": 4,
+    "mock-43": 1
+  },
+  "model_distribution": {
+    "loadtest-mini-beta": 135,
+    "loadtest-mini-alpha": 125,
+    "loadtest-standard-beta": 117,
+    "loadtest-standard-alpha": 112,
+    "loadtest-pro-alpha": 111
+  },
+  "key_distribution": {
+    "0": 200,
+    "1": 200,
+    "2": 200
+  },
+  "group_distribution": {
+    "A": 350,
+    "I": 250
+  }
+}

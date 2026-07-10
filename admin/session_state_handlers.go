@@ -183,6 +183,17 @@ func (h *Handler) handleSessionSubrouter(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		h.HandleRecomputeSessionHealth(w, r)
+	case "inspector-findings":
+		// GET /api/admin/sessions/<id>/inspector-findings — 单会话最新 finding 列表
+		// (2026-07-09 session_inspector 模块增强)
+		h.HandleSessionInspectorFindings(w, r)
+	case "recycle":
+		// POST /api/admin/sessions/<id>/recycle — 手动触发软关闭
+		// 写操作，仅 super_admin 可执行
+		if RequireSuperAdminForWrite(w, r) {
+			return
+		}
+		h.HandleSessionRecycle(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "unknown action: "+action)
 	}

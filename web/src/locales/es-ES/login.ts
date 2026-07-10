@@ -16,6 +16,7 @@ export default {
     required: 'Introduzca usuario y contraseña',
     failed: 'Error de inicio de sesión',
   },
-  changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
+  changePassword: 'Cambiar contraseña',
+  passwordChangeSuccess: 'Contraseña cambiada exitosamente',
+  checking: 'Verificando estado de inicio de sesión…',
 }

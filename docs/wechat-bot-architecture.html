@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>微信机器人模块架构图 | WeChat Bot Module Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+      color: #e2e8f0;
+      padding: 40px 20px;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+    .title {
+      font-size: 32px;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+    }
+    .status-dot {
+      width: 12px;
+      height: 12px;
+      background: #34d399;
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(1.1); }
+    }
+    .subtitle {
+      font-size: 14px;
+      color: #94a3b8;
+      font-weight: 400;
+    }
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid #334155;
+      border-radius: 16px;
+      padding: 30px;
+      margin-bottom: 30px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    }
+    svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 20px;
+      margin-bottom: 30px;
+    }
+    .card {
+      background: rgba(30, 41, 59, 0.6);
+      border: 1px solid #475569;
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .card-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.amber { background: #fbbf24; }
+    .card h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #f1f5f9;
+    }
+    .card ul {
+      list-style: none;
+      font-size: 12px;
+      color: #cbd5e1;
+      line-height: 1.8;
+    }
+    .card li {
+      padding-left: 0;
+    }
+    .footer {
+      text-align: center;
+      font-size: 11px;
+      color: #64748b;
+      padding-top: 20px;
+      border-top: 1px solid #334155;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1 class="title">
+        <span class="status-dot"></span>
+        微信机器人模块架构
+      </h1>
+      <p class="subtitle">WeChat Bot Module Architecture | llm-gateway-go v1.12</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1100 820" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrowhead-emerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#34d399" />
+          </marker>
+          <marker id="arrowhead-rose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185" />
+          </marker>
+        </defs>
+
+        <!-- Background grid -->
+        <rect width="1100" height="820" fill="url(#grid)" />
+
+        <!-- Connection arrows (draw first, behind boxes) -->
+        <!-- User → Frontend -->
+        <path d="M 200,70 L 200,110" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrowhead)" />
+        
+        <!-- Frontend → API -->
+        <path d="M 200,170 L 200,210" stroke="#22d3ee" stroke-width="1.5" fill="none" marker-end="url(#arrowhead)" />
+        <text x="210" y="195" fill="#22d3ee" font-size="8">toggleModule()</text>
+
+        <!-- API → Settings Registry -->
+        <path d="M 200,270 L 200,310" stroke="#34d399" stroke-width="1.5" fill="none" marker-end="url(#arrowhead-emerald)" />
+        <text x="210" y="295" fill="#34d399" font-size="8">resolveModuleEnabled()</text>
+
+        <!-- Settings → WeChat Channel -->
+        <path d="M 290,340 L 380,340" stroke="#34d399" stroke-width="1.5" fill="none" marker-end="url(#arrowhead-emerald)" />
+        <text x="300" y="335" fill="#34d399" font-size="8">corp_id, secret</text>
+
+        <!-- WeChat Channel → Enterprise WeChat -->
+        <path d="M 540,340 L 640,340" stroke="#fbbf24" stroke-width="1.5" fill="none" marker-end="url(#arrowhead)" />
+        <text x="560" y="335" fill="#fbbf24" font-size="8">Send message</text>
+
+        <!-- Enterprise WeChat → Callback Handler -->
+        <path d="M 760,370 L 760,460 L 540,460" stroke="#fb7185" stroke-width="1.5" fill="none" marker-end="url(#arrowhead-rose)" stroke-dasharray="4,4" />
+        <text x="770" y="415" fill="#fb7185" font-size="8">Callback</text>
+
+        <!-- Callback Handler → Approval Manager -->
+        <path d="M 380,460 L 290,460 L 290,520" stroke="#fb7185" stroke-width="1.5" fill="none" marker-end="url(#arrowhead-rose)" />
+
+        <!-- Dependency arrows (right side) -->
+        <path d="M 900,160 L 900,210" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrowhead)" />
+        <path d="M 900,270 L 900,310" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrowhead)" />
+        <path d="M 900,370 L 900,410" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrowhead)" />
+        <path d="M 900,470 L 900,510" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrowhead)" />
+        <text x="910" y="190" fill="#64748b" font-size="8">requires</text>
+        <text x="910" y="290" fill="#64748b" font-size="8">requires</text>
+        <text x="910" y="390" fill="#64748b" font-size="8">requires</text>
+        <text x="910" y="490" fill="#64748b" font-size="8">requires</text>
+
+        <!-- User Layer -->
+        <rect x="100" y="40" width="200" height="30" rx="6" fill="#0f172a"/>
+        <rect x="100" y="40" width="200" height="30" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="200" y="61" fill="white" font-size="11" font-weight="600" text-anchor="middle">👤 Admin User</text>
+
+        <!-- Frontend Layer -->
+        <rect x="100" y="110" width="200" height="60" rx="6" fill="#0f172a"/>
+        <rect x="100" y="110" width="200" height="60" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="200" y="130" fill="white" font-size="11" font-weight="600" text-anchor="middle">ModulesView.vue</text>
+        <text x="200" y="146" fill="#94a3b8" font-size="9" text-anchor="middle">前端模块管理页</text>
+        <text x="200" y="160" fill="#64748b" font-size="8" text-anchor="middle">💬 图标 + 7步配置指引</text>
+
+        <!-- API Layer -->
+        <rect x="100" y="210" width="200" height="60" rx="6" fill="#0f172a"/>
+        <rect x="100" y="210" width="200" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="200" y="230" fill="white" font-size="11" font-weight="600" text-anchor="middle">admin/modules.go</text>
+        <text x="200" y="246" fill="#94a3b8" font-size="9" text-anchor="middle">模块管理 API</text>
+        <text x="200" y="260" fill="#64748b" font-size="8" text-anchor="middle">依赖验证逻辑</text>
+
+        <!-- Settings Registry -->
+        <rect x="100" y="310" width="200" height="60" rx="6" fill="#0f172a"/>
+        <rect x="100" y="310" width="200" height="60" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="200" y="330" fill="white" font-size="11" font-weight="600" text-anchor="middle">settings/spec_modules.go</text>
+        <text x="200" y="346" fill="#94a3b8" font-size="9" text-anchor="middle">设置注册表</text>
+        <text x="200" y="360" fill="#64748b" font-size="8" text-anchor="middle">14个 wechat_bot.* 配置</text>
+
+        <!-- WeChat Channel -->
+        <rect x="380" y="310" width="160" height="60" rx="6" fill="#0f172a"/>
+        <rect x="380" y="310" width="160" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="460" y="330" fill="white" font-size="11" font-weight="600" text-anchor="middle">notification/wechat.go</text>
+        <text x="460" y="346" fill="#94a3b8" font-size="9" text-anchor="middle">企业微信通知渠道</text>
+        <text x="460" y="360" fill="#64748b" font-size="8" text-anchor="middle">AES + SHA1 验证</text>
+
+        <!-- Enterprise WeChat (External) -->
+        <rect x="640" y="310" width="160" height="60" rx="6" fill="#0f172a"/>
+        <rect x="640" y="310" width="160" height="60" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="720" y="330" fill="white" font-size="11" font-weight="600" text-anchor="middle">企业微信服务</text>
+        <text x="720" y="346" fill="#94a3b8" font-size="9" text-anchor="middle">qyapi.weixin.qq.com</text>
+        <text x="720" y="360" fill="#64748b" font-size="8" text-anchor="middle">消息推送 + 回调</text>
+
+        <!-- Callback Handler -->
+        <rect x="380" y="430" width="160" height="60" rx="6" fill="#0f172a"/>
+        <rect x="380" y="430" width="160" height="60" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="460" y="450" fill="white" font-size="11" font-weight="600" text-anchor="middle">webhooks/wechat_callback.go</text>
+        <text x="460" y="466" fill="#94a3b8" font-size="9" text-anchor="middle">回调处理器</text>
+        <text x="460" y="480" fill="#64748b" font-size="8" text-anchor="middle">JSON + XML 解析</text>
+
+        <!-- Approval Manager -->
+        <rect x="100" y="520" width="200" height="60" rx="6" fill="#0f172a"/>
+        <rect x="100" y="520" width="200" height="60" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="200" y="540" fill="white" font-size="11" font-weight="600" text-anchor="middle">approval/manager.go</text>
+        <text x="200" y="556" fill="#94a3b8" font-size="9" text-anchor="middle">审批管理器</text>
+        <text x="200" y="570" fill="#64748b" font-size="8" text-anchor="middle">Approve / Reject</text>
+
+        <!-- Dependency Group (Right Side) -->
+        <rect x="820" y="100" width="160" height="480" rx="12" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.5"/>
+        <text x="900" y="90" fill="#fbbf24" font-size="10" font-weight="600" text-anchor="middle">前置模块</text>
+
+        <!-- Dependency 1: Compression -->
+        <rect x="840" y="120" width="120" height="50" rx="6" fill="#0f172a"/>
+        <rect x="840" y="120" width="120" height="50" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="900" y="140" fill="white" font-size="10" font-weight="600" text-anchor="middle">compression</text>
+        <text x="900" y="156" fill="#94a3b8" font-size="8" text-anchor="middle">会话压缩</text>
+
+        <!-- Dependency 2: Prompt Injection -->
+        <rect x="840" y="220" width="120" height="50" rx="6" fill="#0f172a"/>
+        <rect x="840" y="220" width="120" height="50" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="900" y="240" fill="white" font-size="10" font-weight="600" text-anchor="middle">prompt_injection</text>
+        <text x="900" y="256" fill="#94a3b8" font-size="8" text-anchor="middle">注入检测</text>
+
+        <!-- Dependency 3: Cache -->
+        <rect x="840" y="320" width="120" height="50" rx="6" fill="#0f172a"/>
+        <rect x="840" y="320" width="120" height="50" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="900" y="340" fill="white" font-size="10" font-weight="600" text-anchor="middle">cache</text>
+        <text x="900" y="356" fill="#94a3b8" font-size="8" text-anchor="middle">会话缓存</text>
+
+        <!-- Dependency 4: Session Audit -->
+        <rect x="840" y="420" width="120" height="50" rx="6" fill="#0f172a"/>
+        <rect x="840" y="420" width="120" height="50" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="900" y="440" fill="white" font-size="10" font-weight="600" text-anchor="middle">session_audit</text>
+        <text x="900" y="456" fill="#94a3b8" font-size="8" text-anchor="middle">会话审计</text>
+
+        <!-- wechat_bot module (Main) -->
+        <rect x="840" y="520" width="120" height="50" rx="6" fill="#0f172a"/>
+        <rect x="840" y="520" width="120" height="50" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="900" y="540" fill="white" font-size="11" font-weight="700" text-anchor="middle">wechat_bot</text>
+        <text x="900" y="556" fill="#fbbf24" font-size="8" text-anchor="middle">微信机器人模块</text>
+
+        <!-- Legend -->
+        <rect x="50" y="650" width="1000" height="140" rx="8" fill="rgba(15, 23, 42, 0.8)" stroke="#475569" stroke-width="1"/>
+        <text x="550" y="675" fill="#f1f5f9" font-size="12" font-weight="600" text-anchor="middle">图例 Legend</text>
+        
+        <!-- Legend items -->
+        <rect x="80" y="690" width="40" height="20" rx="3" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="130" y="705" fill="#cbd5e1" font-size="9">前端 Frontend</text>
+
+        <rect x="260" y="690" width="40" height="20" rx="3" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="310" y="705" fill="#cbd5e1" font-size="9">后端 Backend</text>
+
+        <rect x="440" y="690" width="40" height="20" rx="3" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="490" y="705" fill="#cbd5e1" font-size="9">存储 Storage</text>
+
+        <rect x="620" y="690" width="40" height="20" rx="3" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="670" y="705" fill="#cbd5e1" font-size="9">外部 External</text>
+
+        <rect x="800" y="690" width="40" height="20" rx="3" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1"/>
+        <text x="850" y="705" fill="#cbd5e1" font-size="9">安全 Security</text>
+
+        <!-- Flow arrows in legend -->
+        <path d="M 80,740 L 140,740" stroke="#34d399" stroke-width="1.5" fill="none" marker-end="url(#arrowhead-emerald)" />
+        <text x="150" y="745" fill="#cbd5e1" font-size="9">数据流 Data Flow</text>
+
+        <path d="M 320,740 L 380,740" stroke="#fb7185" stroke-width="1.5" fill="none" marker-end="url(#arrowhead-rose)" stroke-dasharray="4,4" />
+        <text x="390" y="745" fill="#cbd5e1" font-size="9">回调流 Callback</text>
+
+        <path d="M 560,740 L 620,740" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arrowhead)" />
+        <text x="630" y="745" fill="#cbd5e1" font-size="9">依赖 Dependency</text>
+
+        <rect x="800" y="730" width="80" height="20" rx="3" fill="none" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="890" y="745" fill="#cbd5e1" font-size="9">模块组 Group</text>
+      </svg>
+    </div>
+
+    <div class="info-grid">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>后端组件</h3>
+        </div>
+        <ul>
+          <li>• admin/modules.go — 模块定义 + 依赖验证</li>
+          <li>• settings/spec_modules.go — 14个配置项</li>
+          <li>• notification/wechat.go — 企业微信通道</li>
+          <li>• webhooks/wechat_callback.go — 回调处理</li>
+          <li>• approval/manager.go — 审批管理器</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot cyan"></div>
+          <h3>前端组件</h3>
+        </div>
+        <ul>
+          <li>• ModulesView.vue — 动态集成 Tab</li>
+          <li>• 前置模块徽章（绿色=已启用，红色=未满足）</li>
+          <li>• 7步配置指引（动态路由）</li>
+          <li>• 8语言国际化支持</li>
+          <li>• appNav.ts — 数据运维组新增入口</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>核心功能</h3>
+        </div>
+        <ul>
+          <li>• 实时告警推送（注入攻击/高延迟/错误率）</li>
+          <li>• 高风险操作审批通知与微信内操作</li>
+          <li>• 系统状态查询</li>
+          <li>• SHA1 + AES-CBC 签名验证</li>
+          <li>• 用户白名单控制</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">
+      llm-gateway-go v1.12 | WeChat Bot Module | Generated: 2026-07-09 | Commit: c134d6c3 → 5196e202
+    </div>
+  </div>
+</body>
+</html>

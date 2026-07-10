@@ -269,5 +269,7 @@ export default {
     ledgerTitle: 'クレジット台帳',
     goBuyCredits: 'クレジットを購入',
   },
-  loadFailed: "[TODO: tenants.loadFailed]",
+
+  // 扁平键（供 Vue 组件直接使用）
+  loadFailed: '読み込み失敗',
 }

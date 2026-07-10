@@ -11,6 +11,7 @@ export default {
     routing: 'ルーティング',
     session: 'セッション',
     security: 'セキュリティ',
+    outputCompliance: '出力コンプライアンス',
     circuitBreaker: 'サーキットブレーカー',
     general: 'その他',
   },
@@ -151,4 +152,7 @@ export default {
 </ul>
 <p class="docs-note">⚠️ <strong>テナントレベル設定</strong>:この設定には tenant_id の指定が必要で、テナント管理ページで設定します</p>`,
   },
+
+  // 同步的扁平键
+  outputCompliance: '输出合规',
 }
