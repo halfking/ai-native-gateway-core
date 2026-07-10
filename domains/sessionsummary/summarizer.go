@@ -427,28 +427,33 @@ func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKe
 	return messages, rows.Err()
 }
 
-// saveSummaryToDB 保存总结到数据库
+// saveSummaryToDB 保存总结到数据库（upsert：首次写入创建行，后续更新）
+// session_summaries 的 PK 是 session_key，因此用 ON CONFLICT (session_key)
+// 实现幂等 upsert。
 func (s *Summarizer) saveSummaryToDB(ctx context.Context, tenantID string, summary *SessionSummary) error {
 	query := `
-		UPDATE session_summaries
-		SET 
-			title = $1,
-			summary = $2,
-			key_topics = $3,
-			user_intent = $4,
-			last_summarized_at = $5,
-			summary_version = summary_version + 1
-		WHERE session_key = $6 AND tenant_id = $7
+		INSERT INTO session_summaries (
+			session_key, tenant_id, title, summary, key_topics,
+			user_intent, last_summarized_at, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+		ON CONFLICT (session_key) DO UPDATE SET
+			title = EXCLUDED.title,
+			summary = EXCLUDED.summary,
+			key_topics = EXCLUDED.key_topics,
+			user_intent = EXCLUDED.user_intent,
+			last_summarized_at = EXCLUDED.last_summarized_at,
+			summary_version = session_summaries.summary_version + 1,
+			updated_at = NOW()
 	`
 
 	_, err := s.db.ExecContext(ctx, query,
+		summary.SessionKey,
+		tenantID,
 		summary.Title,
 		summary.Summary,
 		summary.KeyTopics,
 		summary.UserIntent,
 		summary.GeneratedAt,
-		summary.SessionKey,
-		tenantID,
 	)
 
 	return err

@@ -537,16 +537,21 @@ func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLo
 	if entry == nil || c == nil {
 		return
 	}
+
+	// outbound_msg_count / outbound_token_est are always populated
+	// (even when no compression strategy was applied) so the columns
+	// in request_logs.*_hot are non-NULL for session-scoped requests.
+	entry.OutboundMsgCount = c.OutboundMsgCount
+	entry.OutboundTokenEst = c.OutboundTokenEst
+
 	if c.OutboundStrategy == "" {
-		return // session compressor did not fire
+		return // remaining fields only when compression actually fired
 	}
 
 	// outbound body columns
 	if len(c.OutboundBody) > 0 {
 		entry.OutboundBody = json.RawMessage(c.OutboundBody)
 	}
-	entry.OutboundMsgCount = c.OutboundMsgCount
-	entry.OutboundTokenEst = c.OutboundTokenEst
 	if len(c.OutboundMsgHashes) > 0 {
 		entry.OutboundMsgHashes = json.RawMessage(c.OutboundMsgHashes)
 	}
