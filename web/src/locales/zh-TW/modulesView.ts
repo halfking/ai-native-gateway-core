@@ -41,6 +41,9 @@ export default {
   overview: {
     sectionDescription: '模組描述',
     sectionCapabilities: '能力清單',
+    sectionDependencies: '相依模組',
+    dependencyDisabled: '相依模組未啟用',
+    notEnabled: '未啟用',
     sectionRequirements: '依賴模組',
     labelKey: '模組識別',
     labelDanger: '危險等級',
