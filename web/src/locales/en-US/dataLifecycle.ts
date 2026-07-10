@@ -233,6 +233,10 @@ export default {
       credentialModelIndex: 'Credential model index',
       usageLedger: 'Usage ledger',
       routingDecisionLog: 'Routing decision log',
+      requestWal: 'Request WAL',
+      requestLogsBodies: 'Request log bodies',
+      creditLedger: 'Credit ledger',
+      toolUsageStats: 'Tool usage stats',
     },
     labels: {
       rows: 'Rows',
