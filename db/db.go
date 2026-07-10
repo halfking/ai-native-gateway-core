@@ -158,6 +158,17 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		// pool.Close() removed - handled by defer
 		return nil, err
 	}
+	// Product modules, license modules, and VibeCoding schema (Phase 1).
+	// These are startup-level equivalents of 371-373 migration files.
+	if err := db.ensureProductModulesSchema(migCtx); err != nil {
+		return nil, err
+	}
+	if err := db.ensureLicenseModulesSchema(migCtx); err != nil {
+		return nil, err
+	}
+	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
+		return nil, err
+	}
 	// Dashboard views are derived data for the admin UI, not critical-path.
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.
@@ -2165,4 +2176,200 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		return
 	}
 	slog.Info("probe health dashboard views ensured (v_model_health_dashboard, v_probe_queue_snapshot, v_model_priority_details, v_probe_system_health, v_model_availability_timeline, get_model_state_summary)")
+}
+
+// ensureProductModulesSchema mirrors sql/migrations/startup/371_product_modules.sql
+// for startup apply. Idempotent. Creates product modules, subscription tiers,
+// and tier-module mapping tables with seed data.
+func (d *DB) ensureProductModulesSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS product_modules (
+			id              SERIAL PRIMARY KEY,
+			key             TEXT NOT NULL UNIQUE,
+			name            TEXT NOT NULL,
+			description     TEXT NOT NULL DEFAULT '',
+			category        TEXT NOT NULL,
+			icon            TEXT,
+			setting_key     TEXT,
+			is_base         BOOLEAN NOT NULL DEFAULT FALSE,
+			sort_order      INT NOT NULL DEFAULT 0,
+			enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_pm_category ON product_modules (category);
+		CREATE INDEX IF NOT EXISTS idx_pm_setting ON product_modules (setting_key);
+
+		CREATE TABLE IF NOT EXISTS product_module_features (
+			id              SERIAL PRIMARY KEY,
+			module_key      TEXT NOT NULL REFERENCES product_modules(key) ON DELETE CASCADE,
+			feature_key     TEXT NOT NULL,
+			feature_name    TEXT NOT NULL,
+			description     TEXT NOT NULL DEFAULT '',
+			setting_key     TEXT,
+			enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE (module_key, feature_key)
+		);
+		CREATE INDEX IF NOT EXISTS idx_pmf_module ON product_module_features (module_key);
+
+		CREATE TABLE IF NOT EXISTS subscription_tiers (
+			id              SERIAL PRIMARY KEY,
+			code            TEXT NOT NULL UNIQUE,
+			name            TEXT NOT NULL,
+			description     TEXT NOT NULL DEFAULT '',
+			price_cents     INT NOT NULL DEFAULT 0,
+			sort_order      INT NOT NULL DEFAULT 0,
+			enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_st_code ON subscription_tiers (code);
+
+		CREATE TABLE IF NOT EXISTS tier_module_map (
+			tier_code       TEXT NOT NULL REFERENCES subscription_tiers(code) ON DELETE CASCADE,
+			module_key      TEXT NOT NULL REFERENCES product_modules(key) ON DELETE CASCADE,
+			max_features    TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (tier_code, module_key)
+		);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("product_modules schema ensured (4 tables)")
+	return nil
+}
+
+// ensureLicenseModulesSchema mirrors sql/migrations/startup/372_license_modules.sql
+// for startup apply. Idempotent. Creates license_modules and license_module_audit tables.
+func (d *DB) ensureLicenseModulesSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS licenses (
+			id               BIGSERIAL PRIMARY KEY,
+			license_key      TEXT NOT NULL UNIQUE,
+			customer_name    TEXT NOT NULL DEFAULT '',
+			customer_email   TEXT NOT NULL DEFAULT '',
+			max_devices      INT NOT NULL DEFAULT 2,
+			subscription_tier TEXT NOT NULL DEFAULT 'starter',
+			features         JSONB NOT NULL DEFAULT '[]'::jsonb,
+			expires_at       TIMESTAMPTZ,
+			revoked_at       TIMESTAMPTZ,
+			created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_licenses_key ON licenses (license_key);
+		CREATE INDEX IF NOT EXISTS idx_licenses_expires ON licenses (expires_at) WHERE expires_at IS NOT NULL;
+
+		CREATE TABLE IF NOT EXISTS license_modules (
+			id              BIGSERIAL PRIMARY KEY,
+			license_id      BIGINT NOT NULL REFERENCES licenses(id) ON DELETE CASCADE,
+			module_key      TEXT NOT NULL REFERENCES product_modules(key),
+			enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+			config          JSONB,
+			expires_at      TIMESTAMPTZ,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE (license_id, module_key)
+		);
+		CREATE INDEX IF NOT EXISTS idx_lm_license ON license_modules (license_id);
+		CREATE INDEX IF NOT EXISTS idx_lm_module ON license_modules (module_key);
+
+		CREATE TABLE IF NOT EXISTS license_module_audit (
+			id              BIGSERIAL PRIMARY KEY,
+			license_key     TEXT NOT NULL,
+			module_key      TEXT NOT NULL,
+			action          TEXT NOT NULL,
+			old_value       JSONB,
+			new_value       JSONB,
+			actor           TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_lma_key ON license_module_audit (license_key, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_lma_module ON license_module_audit (module_key, created_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("license_modules schema ensured (2 tables)")
+	return nil
+}
+
+// ensureVibeCodingSchema mirrors sql/migrations/startup/373_vibecoding.sql
+// for startup apply. Idempotent. Creates VibeCoding projects, sessions,
+// and code reviews tables with RLS policies.
+func (d *DB) ensureVibeCodingSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS vibe_coding_projects (
+			id              BIGSERIAL PRIMARY KEY,
+			tenant_id       TEXT NOT NULL DEFAULT 'default',
+			name            TEXT NOT NULL,
+			description     TEXT,
+			language        TEXT,
+			framework       TEXT,
+			status          TEXT NOT NULL DEFAULT 'active'
+				CHECK (status IN ('active', 'archived', 'deleted')),
+			settings        JSONB NOT NULL DEFAULT '{}'::jsonb,
+			created_by      TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS vcp_tenant ON vibe_coding_projects (tenant_id);
+		CREATE INDEX IF NOT EXISTS vcp_status ON vibe_coding_projects (status);
+		ALTER TABLE vibe_coding_projects ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS tenant_isolation_vcp ON public.vibe_coding_projects;
+		CREATE POLICY tenant_isolation_vcp ON public.vibe_coding_projects
+			USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+		CREATE TABLE IF NOT EXISTS vibe_coding_sessions (
+			id              BIGSERIAL PRIMARY KEY,
+			project_id      BIGINT REFERENCES vibe_coding_projects(id) ON DELETE SET NULL,
+			tenant_id       TEXT NOT NULL DEFAULT 'default',
+			session_id      TEXT NOT NULL,
+			task_type       TEXT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'active'
+				CHECK (status IN ('active', 'completed', 'failed', 'cancelled')),
+			messages        JSONB NOT NULL DEFAULT '[]'::jsonb,
+			metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			completed_at    TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS vcs_project ON vibe_coding_sessions (project_id);
+		CREATE INDEX IF NOT EXISTS vcs_session ON vibe_coding_sessions (session_id);
+		CREATE INDEX IF NOT EXISTS vcs_tenant ON vibe_coding_sessions (tenant_id, created_at DESC);
+		ALTER TABLE vibe_coding_sessions ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS tenant_isolation_vcs ON public.vibe_coding_sessions;
+		CREATE POLICY tenant_isolation_vcs ON public.vibe_coding_sessions
+			USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+		CREATE TABLE IF NOT EXISTS vibe_code_reviews (
+			id              BIGSERIAL PRIMARY KEY,
+			session_id      BIGINT REFERENCES vibe_coding_sessions(id) ON DELETE SET NULL,
+			tenant_id       TEXT NOT NULL DEFAULT 'default',
+			file_path       TEXT,
+			language        TEXT,
+			original_code   TEXT,
+			review_result   JSONB,
+			score           NUMERIC(3,2),
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS vcr_session ON vibe_code_reviews (session_id);
+		CREATE INDEX IF NOT EXISTS vcr_tenant ON vibe_code_reviews (tenant_id, created_at DESC);
+		ALTER TABLE vibe_code_reviews ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS tenant_isolation_vcr ON public.vibe_code_reviews;
+		CREATE POLICY tenant_isolation_vcr ON public.vibe_code_reviews
+			USING ((tenant_id)::text = (public.get_current_tenant())::text);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("vibe_coding schema ensured (3 tables + RLS)")
+	return nil
 }
