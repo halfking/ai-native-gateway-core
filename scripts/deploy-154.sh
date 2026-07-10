@@ -30,7 +30,7 @@ SSH_TARGET="${LLM_GATEWAY_154_SSH:-root@47.97.111.154}"
 SSH_PORT="${LLM_GATEWAY_154_PORT:-25022}"
 REMOTE_DIR="${LLM_GATEWAY_154_DIR:-/opt/llm-gateway-go}"
 SERVICE_NAME="${LLM_GATEWAY_154_SERVICE:-llm-gateway-go.service}"
-BIN_NAME="llm-gateway-go.v325.linux.amd64"
+# BIN_NAME 现在在 step 2 之后从 version.json 自动派生（见下面 derive_bin_name）
 SKIP_FRONTEND=false
 SKIP_BUMP=false
 TARGET_SEQ=""
@@ -62,8 +62,8 @@ log()  { echo -e "${GREEN}[deploy-154]${NC} $*"; }
 warn() { echo -e "${YELLOW}[warn]${NC} $*"; }
 err()  { echo -e "${RED}[error]${NC} $*" >&2; }
 
-# ── 硬门禁：env-injector 已注入 ────────────────────────────────
-for v in LLM_GATEWAY_SECRET_KEY LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY LLM_GATEWAY_DATABASE_URL; do
+# ── 硬门禁：env-injector 已注入（4-KEY，与 deploy-full.sh 对齐） ─
+for v in LLM_GATEWAY_SECRET_KEY LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_ADMIN_API_KEY; do
   if [[ -z "${!v:-}" ]]; then
     err "环境变量 $v 未设置"
     err "请先执行: env-injector inject aliyun-gateway-154"
@@ -122,6 +122,10 @@ else
   HEAD_DATE=$(python3 -c "import json; print(json.load(open('version.json'))['build_date'])")
   log "  new seq=$NEW_SEQ version=$NEW_VERSION"
 fi
+
+# BIN_NAME 从 NEW_SEQ 自动派生（替代硬编码 v325）
+BIN_NAME="llm-gateway-go.v${NEW_SEQ}.linux.amd64"
+log "  BIN_NAME 自动派生: $BIN_NAME"
 
 # ── Step 3: 前端构建 ──────────────────────────────────────────
 if [[ "$SKIP_FRONTEND" == "false" ]]; then
@@ -183,6 +187,9 @@ $SSH "$SSH_TARGET" "ln -sf $REMOTE_DIR/$BIN_NAME $REMOTE_DIR/llm-gateway-go"
 # 注意: env-file 由 ssh 端 heredoc 写入, 敏感值通过 SSHPASS 通道加密
 # 我们用 base64 编码避免 heredoc 特殊字符问题
 # V1.2 改: 用 append-only 写入, 不覆盖 deploy-154-secrets.sh 注入的 KEY (避免 clobbering rotated secret)
+# V1.3 改: 4 个核心 KEY 强校验（来自 env-injector），不再 fallback 到 openssl rand
+: "${LLM_GATEWAY_ADMIN_USER:=admin}"
+: "${LLM_GATEWAY_ADMIN_PASSWORD:=}"
 ENV_BODY=$(cat <<EOF
 # /etc/llm-gateway-go/env — 154 server (47.97.111.154)
 # 由 deploy-154.sh 自动写入 (mode 600)
@@ -202,12 +209,20 @@ LLM_GATEWAY_DATABASE_URL=${LLM_GATEWAY_DATABASE_URL}
 LLM_GATEWAY_SECRET_KEY=${LLM_GATEWAY_SECRET_KEY}
 LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY}
 
-# Admin
-LLM_GATEWAY_ADMIN_USER=${LLM_GATEWAY_ADMIN_USER:-admin}
-LLM_GATEWAY_ADMIN_PASSWORD=${LLM_GATEWAY_ADMIN_PASSWORD:-}
-LLM_GATEWAY_ADMIN_API_KEY=${LLM_GATEWAY_ADMIN_API_KEY:-$(openssl rand -hex 32 | sed 's/^/sk-/')}
+# Admin (V1.3: 不再 fallback 到 openssl rand，避免 token 漂移)
+LLM_GATEWAY_ADMIN_USER=${LLM_GATEWAY_ADMIN_USER}
+LLM_GATEWAY_ADMIN_PASSWORD=${LLM_GATEWAY_ADMIN_PASSWORD}
+LLM_GATEWAY_ADMIN_API_KEY=${LLM_GATEWAY_ADMIN_API_KEY}
 EOF
 )
+# V1.3: 写入前再校验一次（防御 env-injector 注入后又被外部 unset 的情况）
+for v in LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_SECRET_KEY LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY LLM_GATEWAY_ADMIN_API_KEY; do
+  if [[ -z "${!v:-}" ]]; then
+    err "4-KEY 强校验失败: $v 为空，拒绝写入 env-file"
+    err "请重新执行: env-injector inject aliyun-gateway-154"
+    exit 3
+  fi
+done
 ENV_B64=$(printf '%s' "$ENV_BODY" | base64 | tr -d '\n')
 # 远端执行: 先把 deploy-154.sh 管理的 key 清掉, 再 append 新值, 保留其它 key (secrets.sh 注入的).
 # 用 awk 过滤 deploy-154.sh 管理的 key (这些 key 重新写, 其它 key 保留).
