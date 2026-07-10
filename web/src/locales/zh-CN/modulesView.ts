@@ -118,6 +118,20 @@ export default {
       '开启「飞书机器人集成」开关',
     ],
     feishuBotIntegration: '飞书机器人集成',
+    wechatBotIntegration: '企业微信机器人集成',
+    dingtalkBotIntegration: '钉钉机器人集成',
+    wechatSteps: [
+      '在企业微信后台创建自定义机器人',
+      '复制 Webhook URL 并粘贴到下方配置中',
+      '配置完成后点击「测试连通性」验证',
+      '开启「企业微信机器人集成」开关',
+    ],
+    dingtalkSteps: [
+      '在钉钉开放平台创建自定义机器人',
+      '复制 Webhook URL 并粘贴到下方配置中',
+      '配置完成后点击「测试连通性」验证',
+      '开启「钉钉机器人集成」开关',
+    ],
   },
 
   routing: {

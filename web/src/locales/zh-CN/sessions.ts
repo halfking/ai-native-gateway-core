@@ -143,6 +143,7 @@ export default {
     taskId: '任务ID',
     totalCost: '总成本',
     avgHealth: '平均健康度',
+    retry: '重试',
     loadFailed: '加载统计数据失败',
   },
   dashboard: {
@@ -315,6 +316,7 @@ export default {
   config: {
     title: '会话配置',
     subtitle: '统一管理会话审批、压缩策略和健康评分规则',
+    loading: '加载中…',
     approvalTab: '审批规则',
     compressionTab: '压缩策略',
     healthTab: '健康评分',
@@ -399,6 +401,7 @@ export default {
   management: {
     title: '会话管理',
     refresh: '刷新',
+    loading: '加载中…',
     columns: {
       status: '状态',
       title: '标题',
