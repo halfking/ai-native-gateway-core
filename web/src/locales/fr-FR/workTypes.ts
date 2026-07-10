@@ -140,4 +140,8 @@ export default {
   testingAll: 'Testing all…',
   loading: 'Loading…',
   loadingDetail: 'Loading detail…',
+
+  // 同步的扁平键
+  savedOk: '已保存',
+  testFailedShort: '测试失败',
 }
