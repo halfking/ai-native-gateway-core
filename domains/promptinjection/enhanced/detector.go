@@ -5,9 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -61,19 +63,17 @@ type DetectionResult struct {
 // EnhancedDetector 增强型检测器
 type EnhancedDetector struct {
 	// 配置
-	enableLLM    bool
-	llmThreshold int // 触发LLM检测的阈值
-	llmAPIKey    string
-	llmEndpoint  string
+	enableLLM     bool
+	llmThreshold  int // 触发LLM检测的阈值
+	maxContentLen int
+	llmAPIKey     string
+	llmEndpoint   string
 
 	// 规则库
 	fastFilters       []*regexp.Regexp
 	heuristicRules    []HeuristicRule
 	encodingDetectors []EncodingDetector
-	semanticAnalyzers []SemanticAnalyzer
-
-	// 缓存
-	resultCache map[string]*DetectionResult
+	client            *http.Client
 
 	// 统计
 	stats *DetectionStats
@@ -114,11 +114,12 @@ func NewEnhancedDetector(enableLLM bool, llmAPIKey string) *EnhancedDetector {
 	detector := &EnhancedDetector{
 		enableLLM:      enableLLM,
 		llmThreshold:   60, // 分数>60触发LLM
+		maxContentLen:  50000,
 		llmAPIKey:      llmAPIKey,
 		llmEndpoint:    "https://api.openai.com/v1/chat/completions",
+		client:         &http.Client{Timeout: 10 * time.Second},
 		fastFilters:    make([]*regexp.Regexp, 0),
 		heuristicRules: make([]HeuristicRule, 0),
-		resultCache:    make(map[string]*DetectionResult),
 		stats:          &DetectionStats{},
 	}
 
@@ -133,7 +134,10 @@ func NewEnhancedDetector(enableLLM bool, llmAPIKey string) *EnhancedDetector {
 // Detect 执行检测
 func (d *EnhancedDetector) Detect(ctx context.Context, content string) (*DetectionResult, error) {
 	startTime := time.Now()
-	d.stats.TotalChecks++
+	if d.maxContentLen > 0 {
+		content = truncate(content, d.maxContentLen)
+	}
+	atomic.AddInt64(&d.stats.TotalChecks, 1)
 
 	result := &DetectionResult{
 		Threats:         make([]Threat, 0),
@@ -146,7 +150,7 @@ func (d *EnhancedDetector) Detect(ctx context.Context, content string) (*Detecti
 	result.TotalScore += fastScore
 	if fastScore > 0 {
 		result.LayersTriggered = append(result.LayersTriggered, LayerFastFilter)
-		d.stats.FastFilterHits++
+		atomic.AddInt64(&d.stats.FastFilterHits, 1)
 	}
 
 	// Layer 2: 启发式检测
@@ -155,7 +159,7 @@ func (d *EnhancedDetector) Detect(ctx context.Context, content string) (*Detecti
 	result.TotalScore += heuristicScore
 	if heuristicScore > 0 {
 		result.LayersTriggered = append(result.LayersTriggered, LayerHeuristic)
-		d.stats.HeuristicHits++
+		atomic.AddInt64(&d.stats.HeuristicHits, 1)
 	}
 
 	// Layer 3: LLM辅助检测（可选）
@@ -166,16 +170,18 @@ func (d *EnhancedDetector) Detect(ctx context.Context, content string) (*Detecti
 			result.TotalScore += llmScore
 			result.LayersTriggered = append(result.LayersTriggered, LayerLLM)
 			result.UsedLLM = true
-			d.stats.LLMCalls++
+			atomic.AddInt64(&d.stats.LLMCalls, 1)
 		}
 	}
 
 	// Layer 4: 决策
-	d.makeDecision(result)
-
 	result.LatencyMs = int(time.Since(startTime).Milliseconds())
-	result.IsInjection = result.TotalScore >= 20 // 降低阈值，20分即判定为注入
 	result.Confidence = d.calculateConfidence(result)
+	if result.TotalScore > 100 {
+		result.TotalScore = 100
+	}
+	result.IsInjection = result.TotalScore >= 20
+	d.makeDecision(result)
 
 	return result, nil
 }
@@ -237,7 +243,7 @@ func (d *EnhancedDetector) initHeuristicRules() {
 			Name:        "semantic_confusion_synonyms",
 			Pattern:     regexp.MustCompile(`(忽略|遗忘|丢弃|抛弃|无视).{0,8}(之前|先前|以前|上面|前面).{0,8}(指示|命令|规则|指令|提示)`),
 			AttackType:  AttackSemanticConfusion,
-			Severity:    8,
+			Severity:    10,
 			Confidence:  0.85,
 			Description: "使用同义词进行语义混淆",
 		},
@@ -285,7 +291,7 @@ func (d *EnhancedDetector) initHeuristicRules() {
 			Name:        "multilingual_mix",
 			Pattern:     regexp.MustCompile(`[a-zA-Z]{3,}[\x{4e00}-\x{9fa5}]{2,}[a-zA-Z]{3,}`),
 			AttackType:  AttackSemanticConfusion,
-			Severity:    6,
+			Severity:    10,
 			Confidence:  0.7,
 			Description: "多语言混合绕过",
 		},
@@ -396,17 +402,20 @@ func (d *EnhancedDetector) llmDetect(ctx context.Context, content string) (int, 
 	// 转换为威胁
 	if llmResult.IsInjection {
 		for _, attackType := range llmResult.AttackTypes {
+			if !isKnownAttackType(attackType) {
+				continue
+			}
 			threat := Threat{
 				Type:       AttackType(attackType),
 				Severity:   severityFromString(llmResult.Severity),
-				Confidence: llmResult.Confidence / 100.0,
+				Confidence: clampConfidence(llmResult.Confidence / 100.0),
 				Evidence:   "LLM检测",
 				Layer:      LayerLLM,
 				Reasoning:  llmResult.Reasoning,
 			}
 			threats = append(threats, threat)
 		}
-		return int(llmResult.Confidence), threats, nil
+		return clampScore(int(llmResult.Confidence)), threats, nil
 	}
 
 	return 0, threats, nil
@@ -418,7 +427,7 @@ func (d *EnhancedDetector) makeDecision(result *DetectionResult) {
 	switch {
 	case result.TotalScore >= 80:
 		result.Decision = "block"
-	case result.TotalScore >= 50:
+	case result.TotalScore >= 20:
 		result.Decision = "warn"
 	default:
 		result.Decision = "pass"
@@ -471,6 +480,9 @@ func (d *EnhancedDetector) statisticalFeatures(content string) int {
 			specialCharCount++
 		}
 	}
+	if len(content) == 0 {
+		return score
+	}
 	specialCharRatio := float64(specialCharCount) / float64(len(content))
 	if specialCharRatio > 0.3 {
 		score += 10
@@ -511,28 +523,33 @@ func (d *EnhancedDetector) callLLMAPI(ctx context.Context, prompt string) (strin
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+d.llmAPIKey)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := d.client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("llm endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var result llmAPIResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 		return "", err
 	}
 
-	// 提取响应内容
-	choices := result["choices"].([]interface{})
-	if len(choices) == 0 {
+	if len(result.Choices) == 0 || result.Choices[0].Message.Content == "" {
 		return "", fmt.Errorf("empty response")
 	}
+	return result.Choices[0].Message.Content, nil
+}
 
-	message := choices[0].(map[string]interface{})["message"].(map[string]interface{})
-	content := message["content"].(string)
-
-	return content, nil
+type llmAPIResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
 }
 
 // === 编码检测器实现 ===
@@ -712,11 +729,43 @@ func severityFromString(s string) int {
 	}
 }
 
+func clampScore(score int) int {
+	if score < 0 {
+		return 0
+	}
+	if score > 100 {
+		return 100
+	}
+	return score
+}
+
+func clampConfidence(confidence float64) float64 {
+	if confidence < 0 {
+		return 0
+	}
+	if confidence > 1 {
+		return 1
+	}
+	return confidence
+}
+
+func isKnownAttackType(value string) bool {
+	switch AttackType(value) {
+	case AttackRoleHijack, AttackPromptLeak, AttackJailbreak,
+		AttackContextOverride, AttackEncodingBypass, AttackSemanticConfusion,
+		AttackMultiRound, AttackFunctionInjection:
+		return true
+	default:
+		return false
+	}
+}
+
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxLen]) + "..."
 }
 
 func isPrintableText(s string) bool {
