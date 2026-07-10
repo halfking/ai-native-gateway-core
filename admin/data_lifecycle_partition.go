@@ -12,7 +12,7 @@ import (
 // partitionedTableConfig defines configuration for a partitioned table
 type partitionedTableConfig struct {
 	TableName        string // e.g., "request_logs", "request_wal"
-	ArchiveTableName string // e.g., "request_logs_archive", "request_wal_archive"
+	ArchiveTableName string // e.g., "request_logs_archive", optional when only drop/inspect is supported
 	PartitionColumn  string // e.g., "ts", "created_at"
 	Description      string // Human-readable description
 	HasArchiveFunc   bool   // Whether archive_<table>() function exists
@@ -25,6 +25,20 @@ type partitionedTableConfig struct {
 // application code queried them. Old partitions are now dropped directly or retained
 // longer in main table if needed.
 var partitionedTables = []partitionedTableConfig{
+	{
+		TableName:        "request_logs",
+		ArchiveTableName: "",
+		PartitionColumn:  "ts",
+		Description:      "请求日志表",
+		HasArchiveFunc:   false,
+	},
+	{
+		TableName:        "usage_ledger",
+		ArchiveTableName: "",
+		PartitionColumn:  "ts",
+		Description:      "用量账本",
+		HasArchiveFunc:   false,
+	},
 	{
 		TableName:        "routing_decision_log",
 		ArchiveTableName: "routing_decision_log_archive",
@@ -61,7 +75,7 @@ type partitionTableStatus struct {
 	Description      string          `json:"description"`
 	TotalPartitions  int             `json:"total_partitions"`
 	ArchivedCount    int             `json:"archived_count"`
-	ArchivableCount  int             `json:"archivable_count"` // Partitions that can be archived
+	ArchivableCount  int             `json:"archivable_count"` // Partitions old enough for follow-up cleanup/archive actions
 	TotalRows        int64           `json:"total_rows"`
 	TotalSizeBytes   int64           `json:"total_size_bytes"`
 	TotalSizeHuman   string          `json:"total_size_human"`
@@ -211,8 +225,9 @@ func (h *Handler) getPartitionTableStatus(ctx context.Context, config partitione
 			pinfo.RowCount = -1 // Indicate unknown
 		}
 
-		// Check if partition can be archived (>= 2 months old and not already archived)
-		pinfo.CanArchive = !pinfo.IsArchived && pinfo.EndDate.Before(twoMonthsAgo) && config.HasArchiveFunc
+		// Old monthly partitions are the ones admins can follow up on manually.
+		// Tables with archive functions can archive them; the rest can still be dropped.
+		pinfo.CanArchive = !pinfo.IsArchived && pinfo.EndDate.Before(twoMonthsAgo)
 
 		status.Partitions = append(status.Partitions, pinfo)
 		status.TotalPartitions++

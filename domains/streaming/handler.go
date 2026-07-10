@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kaixuan/llm-gateway-go/admin"                                           //nolint:depguard // needed for JWT auth in healthHandler
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/cache/prefix"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1539,12 +1538,17 @@ func (h *ChatHandler) serveWithExecutor(
 		if scResult != nil && scResult.Degraded {
 			w.Header().Set("X-Gw-Compression-Degraded", "sliding_window_collision")
 		}
-		if scResult != nil && scResult.CompressionStrategy != "" {
+		// Always populate outbound_msg_count / outbound_token_est from the
+		// session compressor so request_logs.*_hot columns are non-NULL even
+		// when no compression strategy was applied (pure delta-append).
+		if scResult != nil {
 			mc := scResult.MsgCount
 			te := scResult.TokenEst
-			logCtx.OutboundBody = scResult.OutboundBody
 			logCtx.OutboundMsgCount = &mc
 			logCtx.OutboundTokenEst = &te
+		}
+		if scResult != nil && scResult.CompressionStrategy != "" {
+			logCtx.OutboundBody = scResult.OutboundBody
 			logCtx.OutboundMsgHashes = []byte(scResult.MsgHashes)
 			logCtx.OutboundStrategy = scResult.CompressionStrategy
 			logCtx.OutboundSummaryMarker = scResult.SummaryMarker
@@ -2181,7 +2185,6 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		RequestMode:        strPtr(requestMode),
 		IdentityHash:       strPtr(evt.IdentityHash),
 		TransformRuleID:    strPtr(evt.TransformRule),
-		StickyHit:          result.StickyHit,
 	}
 	if evt.ResolutionPath != "" {
 		dl.ResolutionPath = strPtr(evt.ResolutionPath)
@@ -2375,7 +2378,6 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		ProviderID:      intPtr(result.Candidate.ProviderID),
 		ClientProfile:   strPtr(evt.ClientProfile),
 		RequestMode:     strPtr(requestMode),
-		AffinityHit:     result.StickyHit,
 		LatencyMs:       intPtr(result.LatencyMs),
 		Success:         true,
 		RequestStatus:   strPtr(telemetry.RequestStatusSuccess),
@@ -3430,41 +3432,23 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Version: resolveGatewayVersion(),
 	}
 
-	// ?full=true requires JWT authentication (admin user).
-	// We inline the JWT check here instead of wrapping the handler with AdminMiddleware
-	// (which would require refactoring cmd/gateway/main.go route registration).
+	// NET-007 fix: ?full=true 必须 admin token（完整的 LLM_GATEWAY_ADMIN_API_KEY
+	// 校验由外层 AdminTokenMiddleware 完成；这里只拒绝"完全无 token"的情形）。
 	//
-	// 2026-07-10: /healthz/full path is wrapped in AdminTokenMiddleware in
-	// cmd/gateway/main.go, which already authenticated the sk-* admin token
-	// before reaching this handler. So skip the inline JWT check for that
-	// path and go straight to the full db/redis fill.
-	full := r.URL.Query().Get("full") == "true" || r.URL.Path == "/healthz/full"
-	if full && r.URL.Path != "/healthz/full" {
-		tokenStr, ok := admin.ExtractBearerOrCookieToken(r)
-		if !ok {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("WWW-Authenticate", `Bearer realm="admin"`)
-			w.WriteHeader(http.StatusUnauthorized)
-			//nolint:errcheck
-			w.Write([]byte(`{"error":"admin token required for full healthz"}`))
-			return
-		}
-		secretKey := os.Getenv("LLM_GATEWAY_JWT_SECRET")
-		if secretKey == "" {
-			secretKey = os.Getenv("LLM_GATEWAY_SECRET_KEY")
-		}
-		claims, err := admin.VerifyToken(tokenStr, secretKey)
-		if err != nil || claims.UserID == 0 {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("WWW-Authenticate", `Bearer realm="admin"`)
-			w.WriteHeader(http.StatusUnauthorized)
-			//nolint:errcheck
-			w.Write([]byte(`{"error":"admin token required for full healthz"}`))
-			return
-		}
-	}
+	// ?full=true 会暴露 circuit.Stats() / limiter.Stats() / proxy.Status()
+	// （含 18 个内网域名、credential 熔断状态等敏感信息），不应匿名访问。
+	full := r.URL.Query().Get("full") == "true"
 	if full {
-		// JWT verified → return full details
+		const expectedHeader = "Bearer "
+		auth := r.Header.Get("Authorization")
+		if len(auth) <= len(expectedHeader) || auth[:len(expectedHeader)] != expectedHeader {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("WWW-Authenticate", `Bearer realm="admin"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			//nolint:errcheck
+			w.Write([]byte(`{"error":"admin token required for full healthz"}`))
+			return
+		}
 		resp.Circuit = h.circuit.Stats()
 		resp.Concurrency = h.limiter.Stats()
 
