@@ -53,6 +53,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/middleware"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -204,10 +205,7 @@ func buildPipeline(deps *v2Deps) *pipeline.RequestPipeline {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "security", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{
-				security.NewSecurityHook(
-					security.NewIntentAnalyzer(0.5),
-					security.NewThreatDetector(7),
-				),
+				security.NewSecurityHook(settings.Global),
 			},
 		})
 	}
@@ -240,11 +238,7 @@ func buildPipeline(deps *v2Deps) *pipeline.RequestPipeline {
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "session_inspect", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{
-			sessioninspector.NewInspectorHook(
-				sessioninspector.NewTokenLimitInspector(100000),
-				sessioninspector.NewInactiveInspector(30*time.Minute),
-				sessioninspector.NewHighFrequencyInspector(60),
-			),
+			sessioninspector.NewInspectorHookWithConfig(nil), // nil → LoadConfig()
 		},
 	})
 

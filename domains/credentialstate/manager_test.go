@@ -182,6 +182,83 @@ func TestManager_UpdateOnFailure_IgnoresCanceled(t *testing.T) {
 	}
 }
 
+// TestManager_StreamTimeoutCoolingAfterThree verifies the 2026-07-09 fix for
+// 问题2 (NVIDIA NIM stream-no-feedback never trips cooling): after 3
+// consecutive KindStreamTimeout failures the credential binding is marked
+// unavailable with a ~5min RecoverAt so the router stops selecting it.
+//
+// This is a pure in-memory test (no DB / Redis): UpdateOnFailure mutates the
+// memCache directly; batchWriter is never started so its nil-db flush path is
+// never reached; setToRedis is a no-op when redisClient is nil.
+func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
+	ctx := context.Background()
+	// db=nil + redis=nil + NOT started → exercises memCache logic only.
+	m := NewManager(nil, nil)
+
+	cacheInvalidated := false
+	m.SetProbeSubmitter(func(credID int) {}, nil)
+	m.SetInvalidateCandidateCache(func() { cacheInvalidated = true })
+
+	credID, model := 11, "nvidia-test-model"
+
+	// 1st and 2nd stream-timeout failures: below the 3-failure threshold,
+	// no cooling should be scheduled (RecoverAt stays nil, cache not
+	// invalidated). These two alone must NOT trip the new fast-cooling.
+	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-1")
+	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-2")
+	s, _ := m.GetState(ctx, credID, model)
+	if s == nil {
+		t.Fatal("expected state after 2 failures")
+	}
+	if s.ConsecutiveFails != 2 {
+		t.Fatalf("expected consecutive_fails=2, got %d", s.ConsecutiveFails)
+	}
+	if s.RecoverAt != nil {
+		t.Fatalf("RecoverAt must be nil below the 3-failure threshold, got %v", s.RecoverAt)
+	}
+	if cacheInvalidated {
+		t.Fatal("candidate cache must NOT be invalidated below the 3-failure threshold")
+	}
+
+	// 3rd stream-timeout failure: must trip cooling immediately — set a
+	// ~5min RecoverAt and invalidate the candidate cache so the router
+	// drops the credential on its next resolve.
+	before := time.Now()
+	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-3")
+	s, _ = m.GetState(ctx, credID, model)
+	if s == nil {
+		t.Fatal("expected state after 3 failures")
+	}
+	if s.Available {
+		t.Fatal("credential must be unavailable (cooling) after 3 consecutive stream timeouts")
+	}
+	if s.RecoverAt == nil {
+		t.Fatal("expected RecoverAt to be set when cooling starts")
+	}
+	// RecoverAt should be ~5 minutes from now (allow scheduling slack).
+	minRecover := before.Add(4 * time.Minute)
+	maxRecover := time.Now().Add(6 * time.Minute)
+	if s.RecoverAt.Before(minRecover) || s.RecoverAt.After(maxRecover) {
+		t.Fatalf("RecoverAt=%v should be ~5min from now (%v..%v)", s.RecoverAt, minRecover, maxRecover)
+	}
+	if !cacheInvalidated {
+		t.Fatal("candidate cache should be invalidated when a credential trips cooling")
+	}
+
+	// A subsequent success must restore availability (recovery path).
+	m.UpdateOnSuccess(ctx, credID, model, 123, "req-4")
+	s, _ = m.GetState(ctx, credID, model)
+	if s == nil {
+		t.Fatal("expected state after recovery success")
+	}
+	if !s.Available {
+		t.Fatal("credential should be available again after a successful request")
+	}
+	if s.ConsecutiveFails != 0 {
+		t.Fatalf("consecutive_fails should reset to 0 after success, got %d", s.ConsecutiveFails)
+	}
+}
+
 func setupTestDB(t *testing.T) *pgxpool.Pool {
 	// 这里应该连接测试数据库
 	// 为了简化，跳过实际连接

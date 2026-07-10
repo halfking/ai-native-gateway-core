@@ -16,7 +16,7 @@ export default {
     required: '請輸入使用者名稱和密碼',
     failed: '登入失敗',
   },
-  changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",  // 2026-07-09: 首次進入頁面時檢測 cookie auth 狀態的提示文案
+  changePassword: '修改密碼',
+  passwordChangeSuccess: '密碼修改成功',
   checking: '正在偵測登入狀態…',
 }

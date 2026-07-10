@@ -3,8 +3,10 @@ package ursm
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -138,6 +140,26 @@ func (m *Manager) SetProbeSubmitter(submitter ProbeSubmitter) {
 
 // ReleaseResources 释放资源（Task Package 2）
 func (m *Manager) ReleaseResources(ctx context.Context, credentialID int, sessionID string, fpSlotIndex int) error {
-	// TODO: Task 2 - 实现资源释放
-	return nil
+	if m == nil {
+		return nil
+	}
+	releaseCtx := ctx
+	if releaseCtx == nil || releaseCtx.Err() != nil {
+		var cancel context.CancelFunc
+		releaseCtx, cancel = runctx.BackgroundTimeout(3 * time.Second)
+		defer cancel()
+	}
+
+	var firstErr error
+	if m.concSlotMgr != nil {
+		if err := m.concSlotMgr.Release(releaseCtx, credentialID, sessionID); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if m.fpSlotMgr != nil && fpSlotIndex >= 0 {
+		if err := m.fpSlotMgr.Release(releaseCtx, credentialID, fpSlotIndex, sessionID); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

@@ -269,5 +269,7 @@ export default {
     ledgerTitle: 'Journal des crédits',
     goBuyCredits: 'Acheter des crédits',
   },
-  loadFailed: "[TODO: tenants.loadFailed]",
+
+  // 扁平键（供 Vue 组件直接使用）
+  loadFailed: 'Échec du chargement',
 }

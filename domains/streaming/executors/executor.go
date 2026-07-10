@@ -25,6 +25,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -295,8 +296,13 @@ type Executor struct {
 	// the chat response body before it is returned to the client.
 	// Wired from main.go (relay.StripMinimaxFieldsBody).
 	StripMinimaxFields StripMinimaxFieldsFunc
-	Auditor            audit.Sink
-	State              *credential.Writer
+	// RedactBodyFn (2026-07-09, 增强 1) write-time 客户端可见脱敏。
+	// 在 w.Write 前调用，让客户端真正收到脱敏后字节。
+	// 签名：func(body []byte, sessionID, tenantID string) []byte
+	// Wired from main.go via streaming.BuildRedactBodyFn.
+	RedactBodyFn func([]byte, string, string) []byte
+	Auditor      audit.Sink
+	State        *credential.Writer
 	// Provider is the credential/candidate resolver. Typed as an interface
 	// (defined in routing) so the compaction fallback tests can inject a
 	// stub without standing up a real pgx pool. The concrete
@@ -592,6 +598,11 @@ type ExecuteResult struct {
 	Response  *http.Response
 	Candidate provider.Candidate
 	LatencyMs int
+	// StickyHit records whether the chosen credential came from an existing
+	// sticky binding (L1/L2/L3) rather than a fresh routing decision.
+	// It is consumed by telemetry so request_logs / routing_decision_log can
+	// answer whether cache-adjacent affinity was actually used.
+	StickyHit *bool
 	// RequestBody is the body sent to the upstream provider (may be
 	// protocol-converted from the inbound body). Use InboundBody for the
 	// original client request body.
@@ -675,6 +686,24 @@ func (e *ExecuteError) Error() string {
 		return fmt.Sprintf("all %d candidates failed: %v", e.Tried, e.LastErr)
 	}
 	return fmt.Sprintf("all %d candidates failed", e.Tried)
+}
+
+// releaseFpLease releases a fingerprint slot lease using an independent
+// background context. This is critical: using params.R.Context() (which is
+// already cancelled when the client disconnects) would cause the Redis
+// release operation to fail with context.Canceled, leaking the slot
+// permanently. The slot leak accumulates until the pool is saturated,
+// producing "cred_fp_slot saturated" errors and blocking all traffic.
+//
+// Fix: 2026-07-09 GLM-5.2 outage — every Release call MUST go through this
+// helper so the context-isolation fix is applied uniformly.
+func releaseFpLease(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) {
+	if lease == nil || m == nil || !m.Enabled() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	m.Release(ctx, lease)
 }
 
 func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
@@ -856,7 +885,29 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	var attempts []AttemptRecord
 	tried := 0
 
+	// 2026-07-09: 会话级凭据黑名单（修复 NVIDIA NIM 连续失败不降级问题）
+	// 单次会话中，同一凭据失败 2 次后强制跳过，避免 Sync Retry 反复打到同一凭据。
+	sessionBlacklist := make(map[int]int) // credentialID -> consecutive failures in this session
+
 	for _, cand := range candidates {
+		// 2026-07-09: 检查会话黑名单
+		if sessionBlacklist[cand.CredentialID] >= 2 {
+			slog.Warn("executor: credential blacklisted for this session",
+				"credential_id", cand.CredentialID,
+				"provider_id", cand.ProviderID,
+				"session_failures", sessionBlacklist[cand.CredentialID],
+				"client_model", params.ClientModel,
+			)
+			trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
+				ProviderID:   cand.ProviderID,
+				CredentialID: cand.CredentialID,
+				RawModel:     cand.RawModel,
+				Tier:         cand.Tier,
+				Reason:       "session_blacklist:consecutive_failures",
+			})
+			continue // 跳过该凭据
+		}
+
 		tried++
 
 		// Reset the stream capture for this candidate so textContent, chunk
@@ -903,9 +954,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				"provider_id", cand.ProviderID,
 			)
 			lastErr = fmt.Errorf("circuit open for credential %d", cand.CredentialID)
-			if fpLease != nil {
-				e.FpSlots.Release(params.R.Context(), fpLease)
-			}
+			releaseFpLease(e.FpSlots, fpLease)
 			continue
 		}
 
@@ -922,9 +971,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				"credential_id", cand.CredentialID,
 			)
 			lastErr = acquireErr
-			if fpLease != nil {
-				e.FpSlots.Release(params.R.Context(), fpLease)
-			}
+			releaseFpLease(e.FpSlots, fpLease)
 			continue
 		}
 
@@ -956,9 +1003,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					e.PeakCollector.Release(int64(cand.CredentialID), cand.RawModel)
 				}
 				release()
-				if fpLease != nil {
-					e.FpSlots.Release(params.R.Context(), fpLease)
-				}
+				releaseFpLease(e.FpSlots, fpLease)
 			}()
 
 			// Execute the actual call
@@ -971,10 +1016,13 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}()
 
 		if execErr == nil {
-			e.restoreCredentialState(params.R.Context(), cand.CredentialID, cand.RawModel)
+			result.StickyHit = stickyHitForChosen(stickyCredID, cand.CredentialID)
+			sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
+			defer sideEffectCancel()
+			e.restoreCredentialState(sideEffectCtx, cand.CredentialID, cand.RawModel)
 			e.recordStickySuccess(params, cand.CredentialID)
 			if e.Recorder != nil {
-				e.Recorder.RecordSuccess(params.R.Context(), cand.CredentialID, cand.RawModel)
+				e.Recorder.RecordSuccess(sideEffectCtx, cand.CredentialID, cand.RawModel)
 			}
 			// Record success for Bandit scoring (Thompson Sampling)
 			e.recordBanditSuccess(cand.CredentialID, result.LatencyMs)
@@ -997,7 +1045,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					requestID = "async-" + time.Now().Format("20060102T150405.000")
 				}
 				e.HealthTracker.OnSuccess(
-					params.R.Context(),
+					sideEffectCtx,
 					cand.CredentialID,
 					cand.RawModel,
 					result.LatencyMs,
@@ -1010,7 +1058,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// as healthy, reducing false negatives and unnecessary probes.
 			if e.UnifiedProbeScheduler != nil {
 				e.UnifiedProbeScheduler.OnRealRequest(
-					params.R.Context(),
+					sideEffectCtx,
 					int64(cand.CredentialID),
 					cand.RawModel,
 					true, // success
@@ -1026,7 +1074,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					requestID = "async-" + time.Now().Format("20060102T150405.000")
 				}
 				e.StateObserver.UpdateOnSuccess(
-					params.R.Context(),
+					sideEffectCtx,
 					cand.CredentialID,
 					cand.RawModel,
 					result.LatencyMs,
@@ -1079,6 +1127,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}
 
 		if mnf, ok := execErr.(*modelNotFoundError); ok {
+			mnfCtx, mnfCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
+			defer mnfCancel()
 			// Step 5 (2026-06-18): removed the e.disableModelOffer(...) call.
 			//
 			// Why: KindModelNotFound is in the IsClientBug set (errorsx.IsClientBug),
@@ -1096,7 +1146,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			//      is not written. The classifier + targeted probe will
 			//      catch a real "this model is gone" pattern within the
 			//      next 30s-2m-5m-15m backoff window.
-			e.recordModelNotFound(params.R.Context(), mnf.credentialID, mnf.rawModel, mnf.body)
+			e.recordModelNotFound(mnfCtx, mnf.credentialID, mnf.rawModel, mnf.body)
 			// Step 6 (2026-06-18): MnfStreak — client hot-path break
 			// for persistent (not intermittent) model_not_found. The
 			// background probe consensus (bg/model_probe.go) owns
@@ -1111,7 +1161,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// the binding so the router skips it for the next N minutes.
 			// This prevents a 0%-success credential from being
 			// repeatedly selected when it's the only routable candidate.
-			e.coolBindingOnMnfStreak(params.R.Context(), cand.CredentialID, mnf.rawModel)
+			e.coolBindingOnMnfStreak(mnfCtx, cand.CredentialID, mnf.rawModel)
 
 			lastErr = execErr
 			lastKind = errorsx.KindModelNotFound
@@ -1235,9 +1285,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			if kind == "" {
 				kind = errorsx.KindStreamTimeout
 			}
+			failureCtx, failureCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
+			defer failureCancel()
 			e.recordStickyFailure(params, cand.CredentialID, kind)
 			if e.Recorder != nil {
-				e.Recorder.RecordFailure(params.R.Context(), cand.CredentialID, cand.RawModel, kind)
+				e.Recorder.RecordFailure(failureCtx, cand.CredentialID, cand.RawModel, kind)
 			}
 
 			// 2026-07-01 Phase 2.x: Record failure in credential state manager.
@@ -1248,7 +1300,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					requestID = "async-" + time.Now().Format("20060102T150405.000")
 				}
 				e.StateObserver.UpdateOnFailure(
-					params.R.Context(),
+					failureCtx,
 					cand.CredentialID,
 					cand.RawModel,
 					kind,
@@ -1299,12 +1351,13 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 				e.recordBanditFailure(cand.CredentialID, kind)
 				if kind == errorsx.KindConcurrent {
-					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, kind, execErr)
-					e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
+					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
+					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
 				} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
-					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, kind, execErr)
-					e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
+					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
+					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
 				}
+
 				lastErr = execErr
 				lastKind = kind
 				attempts = append(attempts, AttemptRecord{
@@ -1329,9 +1382,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 				e.recordBanditFailure(cand.CredentialID, kind)
 				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
-					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, kind, execErr)
-					e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
+					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
+					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
 				}
+
 				slog.Warn("candidate stream interrupted (non-resumable), returning error",
 					"credential_id", cand.CredentialID,
 					"provider_id", cand.ProviderID,
@@ -1385,6 +1439,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			)
 		}
 
+		failureCtx, failureCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
+		defer failureCancel()
+
 		// Record failed call for health tracking
 		if e.HealthTracker != nil {
 			// PR-4 (T4 P0, 2026-06-23): real X-Request-Id so Redis
@@ -1396,7 +1453,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				requestID = "async-" + time.Now().Format("20060102T150405.000")
 			}
 			e.HealthTracker.OnError(
-				params.R.Context(),
+				failureCtx,
 				cand.CredentialID,
 				cand.RawModel,
 				kind,
@@ -1410,7 +1467,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// Only report credential-level issues (not client bugs).
 		if e.UnifiedProbeScheduler != nil && !errorsx.IsClientBug(kind) {
 			e.UnifiedProbeScheduler.OnRealRequest(
-				params.R.Context(),
+				failureCtx,
 				int64(cand.CredentialID),
 				cand.RawModel,
 				false, // failure
@@ -1426,8 +1483,12 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			Reason:       execErr.Error(),
 		})
 		e.recordStickyFailure(params, cand.CredentialID, kind)
+
+		// 2026-07-09: 更新会话黑名单计数
+		sessionBlacklist[cand.CredentialID]++
+
 		if e.Recorder != nil {
-			e.Recorder.RecordFailure(params.R.Context(), cand.CredentialID, cand.RawModel, kind)
+			e.Recorder.RecordFailure(failureCtx, cand.CredentialID, cand.RawModel, kind)
 		}
 
 		// 2026-07-01 Phase 2.x: Record failure in credential state manager.
@@ -1438,7 +1499,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				requestID = "async-" + time.Now().Format("20060102T150405.000")
 			}
 			e.StateObserver.UpdateOnFailure(
-				params.R.Context(),
+				failureCtx,
 				cand.CredentialID,
 				cand.RawModel,
 				kind,
@@ -1456,8 +1517,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			Reason:       fmt.Sprintf("request_failed:%s", kind),
 		})
 		if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
-			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, kind, execErr)
-			e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
+			e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
+			e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
 		}
 
 		// ── Fatal 凭证错误：透明切换到下一个候选人（前端无感知）────────
@@ -1790,10 +1851,10 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 	err := e.DB.Pool().QueryRow(ctx, `
 		SELECT count(*) FROM model_probe_runs
 		WHERE credential_id = $1
-		  AND raw_model_name = $2
+		  AND (raw_model_name = $2 OR standardized_name = $2)
 		  AND status = 'http_4xx'
 		  AND error_code = 'model_not_found'
-		  AND created_at > now() - interval '1 minute' * $3
+		  AND created_at > now() - ($3 * interval '1 minute')
 	`, credentialID, rawModel, coolMins).Scan(&recentCount)
 	if err != nil {
 		slog.Debug("cool_binding_mnf: count query failed",
@@ -1816,7 +1877,7 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 		FROM model_offers mo
 		WHERE mo.id = cmb.provider_model_id
 		  AND cmb.credential_id = $1
-		  AND COALESCE(mo.outbound_model_name, mo.raw_model_name) = $2
+		  AND COALESCE(mo.outbound_model_name, mo.standardized_name, mo.raw_model_name) = $2
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
@@ -1881,7 +1942,7 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 
 	tag, err := tx.Exec(ctx,
 		`UPDATE model_offers SET available = FALSE, unavailable_reason = $3, unavailable_at = now()
-		 WHERE credential_id = $1 AND raw_model_name = $2 AND available = TRUE
+		 WHERE credential_id = $1 AND (raw_model_name = $2 OR standardized_name = $2) AND available = TRUE
 		   AND COALESCE(admin_protected, FALSE) = FALSE`,
 		credentialID, rawModel, reason,
 	)
@@ -1905,7 +1966,7 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 		 FROM provider_models pm
 		 WHERE pm.id = cmb.provider_model_id
 		   AND cmb.credential_id = $1
-		   AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
+		   AND COALESCE(pm.outbound_model_name, pm.standardized_name, pm.raw_model_name) = $2
 		   AND cmb.available = TRUE
 		   AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		   AND COALESCE(cmb.admin_protected, FALSE) = FALSE`,
@@ -2062,6 +2123,17 @@ func (e *Executor) stickyCredentialIDMultiLevel(
 		return nil
 	}
 	return &result.CredentialID
+}
+
+func boolPtrCompat(v bool) *bool {
+	return &v
+}
+
+func stickyHitForChosen(stickyCredentialID *int, chosenCredentialID int) *bool {
+	if stickyCredentialID == nil {
+		return nil
+	}
+	return boolPtrCompat(*stickyCredentialID == chosenCredentialID)
 }
 
 func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {

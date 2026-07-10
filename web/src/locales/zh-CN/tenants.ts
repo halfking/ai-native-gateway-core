@@ -268,5 +268,7 @@ export default {
     ledgerTitle: '积分流水',
     goBuyCredits: '去购买积分',
   },
-  loadFailed: "[TODO: tenants.loadFailed]",
+
+  // 扁平键（供 Vue 组件直接使用）
+  loadFailed: '加载失败',
 }

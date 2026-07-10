@@ -42,6 +42,7 @@ export default {
     sectionDescription: 'Description',
     sectionCapabilities: 'Capabilities',
     sectionRequirements: 'Dependencies',
+    dependenciesTitle: 'Dependencies',
     labelKey: 'Module key',
     labelDanger: 'Danger level',
     labelConfigCount: 'Config items',
@@ -50,6 +51,15 @@ export default {
     requirementsMet: 'All dependencies enabled',
     requirementsMissing: 'The following dependencies are disabled — related features may be limited:',
     jumpToModule: 'Configure',
+    required: 'Required',
+    optional: 'Optional',
+    enableAllDeps: 'Enable {count} missing required deps',
+    enableAllDepsHint: 'The backend will enable all missing required deps in stable order, then enable this module.',
+    cascading: 'Enabling dependencies…',
+    cascadeSuccess: 'Auto-enabled {count} deps: {names}',
+    cascadeEmpty: 'All dependencies were already enabled; module is now active.',
+    cascadeAlreadyEnabled: 'Module is already enabled, no cascade needed.',
+    cascadeLogTitle: 'Cascade-enabled in this run:',
     testConnection: 'Test connection',
     testSuccess: 'Connection test succeeded',
     testFailed: 'Connection test failed',
@@ -82,6 +92,17 @@ export default {
     quietHoursHelp: 'During quiet hours only critical alerts are pushed (avoids night-time noise). Cross-midnight windows are supported (22:00 → 08:00).',
     commandsHelp: 'When enabled, admins can interact with the system via Feishu commands (/status /help /stats /audit /test).',
     signatureHelp: 'Always enable in production. When on, Feishu callbacks must carry a valid HMAC-SHA256 signature and timestamp within window.',
+  },
+
+  handoff: {
+    groupMaster: 'Master switch',
+    groupMasterHint: 'Master toggle and trigger mode: determine how session handoff is enabled and when it fires',
+    groupTrigger: 'Trigger thresholds',
+    groupTriggerHint: '4 trigger conditions run in parallel — any one of them fires handoff; the strictest wins',
+    groupSummary: 'Summary generation',
+    groupSummaryHint: 'Summary engine and prompt template: how to compress the old session into a new-session-readable context',
+    groupSafety: 'Safety limits and notifications',
+    groupSafetyHint: 'Cooldown, per-session cap, retry on failure, and log/Webhook notifications',
   },
 
   integration: {
@@ -123,8 +144,7 @@ export default {
     close: 'Close',
     csvImportResult: 'Bulk import result',
     csvImportSuccess: '{imported} imported, {skipped} skipped',
-    csvErrorRow: 'Row {row}: {error}',
-  },
+    csvErrorRow: 'Row {row}: {error}',  },
 
   empty: {
     selectModule: 'Select a module to view details and configuration',
