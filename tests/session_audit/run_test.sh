@@ -36,7 +36,11 @@ DB_HOST="172.16.2.210"
 DB_PORT="5432"
 DB_NAME="llm_gateway"
 DB_USER="llm_gateway"
-export PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
+if [ -z "${DB_252_PASSWORD:-}" ]; then
+    echo "DB_252_PASSWORD 未设置，拒绝执行"
+    exit 1
+fi
+export PGPASSWORD="$DB_252_PASSWORD"
 
 if command -v psql &> /dev/null; then
     echo "  正在创建测试表..."
@@ -50,7 +54,7 @@ fi
 echo ""
 echo "[4/5] 编译测试程序..."
 cd ../..
-go build -o tests/session_audit/audit_test tests/session_audit/audit_test_all_in_one.go
+go build -o tests/session_audit/audit_test ./tests/session_audit/cmd/audit-test
 cd tests/session_audit
 echo "✅ 编译完成"
 

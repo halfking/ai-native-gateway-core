@@ -21,7 +21,7 @@ chmod +x run_test.sh
 #### 步骤 1: 初始化数据库表
 
 ```bash
-export PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
+export PGPASSWORD="$DB_252_PASSWORD"
 psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -f schema.sql
 ```
 
@@ -51,7 +51,7 @@ cat 02_sensitive_words_test.yaml | head -50
 
 ```bash
 cd ../..
-go build -o tests/session_audit/audit_test tests/session_audit/audit_test_all_in_one.go
+go build -o tests/session_audit/audit_test ./tests/session_audit/cmd/audit-test
 cd tests/session_audit
 ```
 
@@ -392,7 +392,7 @@ cd /path/to/swift-cabin
 go mod tidy
 
 # 重新编译
-go build -o tests/session_audit/audit_test tests/session_audit/audit_test_all_in_one.go
+go build -o tests/session_audit/audit_test ./tests/session_audit/cmd/audit-test
 ```
 
 ### 问题 4: 配置文件缺失
