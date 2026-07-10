@@ -13,7 +13,7 @@
 #   8. smoke-verify (curl /healthz + /api/system/version)
 #
 # 用法:
-#   export SSHPASS='<SSH_PASSWORD_REDACTED>'
+#   export SSHPASS='<your-password>'
 #   bash scripts/deploy-154.sh                    # 自动 +1 build_seq
 #   bash scripts/deploy-154.sh --seq 950          # 强制设定
 #   bash scripts/deploy-154.sh --no-frontend      # 跳过前端构建
@@ -107,7 +107,7 @@ if ! command -v sshpass >/dev/null 2>&1; then
 fi
 if [[ -z "${SSHPASS:-}" ]]; then
   err "SSHPASS 未 export"
-  err "export SSHPASS='<SSH_PASSWORD_REDACTED>'"
+  err "export SSHPASS='<your-password>'"
   exit 2
 fi
 
