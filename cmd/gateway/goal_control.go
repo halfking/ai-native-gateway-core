@@ -27,9 +27,10 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
-	"github.com/kaixuan/llm-gateway-go/settings"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // settingsAdapter adapts the global settings registry to goal.SettingsGetter.
@@ -97,20 +98,27 @@ func (settingsAdapter) GetString(tenantID, key string, def string) string {
 	return out
 }
 
-// initGoalControl constructs the goal + audit interceptor chain and registers
-// it on the chat handler. It also registers the goal/handoff configuration
-// specs with the global settings registry so the goal.* keys resolve.
+// initGoalControl constructs the goal + audit + handoff interceptor chain and
+// registers it on the chat handler. It also registers the goal/handoff
+// configuration specs with the global settings registry so the goal.* /
+// handoff.* keys resolve.
 //
 // Safe to call when db is nil (no-op). The feature still honours the
 // goal.enabled flag at runtime via settingsAdapter, so even with the chain
 // installed the hooks are inert until enabled.
+//
+// NOTE: This function is only invoked in non-data-plane mode (see
+// cmd/gateway/main.go). The settings specs alone are registered
+// unconditionally via registerAutoControlSettings so admins can configure
+// handoff.* via the UI even in data-plane mode (where the runtime hook is
+// not wired).
 func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	if db == nil {
 		slog.Info("goal_control: disabled (no DB)")
 		return
 	}
 
-	// 1. Register configuration specs so settings.Global knows goal.* keys.
+	// 1. Register configuration specs (idempotent).
 	for _, spec := range settings.AutoControlSpecs() {
 		s := spec // take a stable address
 		if err := settings.Global.RegisterSpec(&s); err != nil {
@@ -186,32 +194,89 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	//     goal mode fire on the same response, the handoff follow-up wins
 	//     (InterceptResult.InjectFollowUp is last-writer-wins): rotating to
 	//     a new session takes priority over nudging a near-full context.
-	//     Defaults to disabled — inert unless an operator opts in.
+	//     Defaults to disabled (LLM_GATEWAY_HANDOFF_ENABLED=false) — inert
+	//     unless an operator opts in.
 	//
-	// NOTE: handoff TriggerHook 实现 (domains/hooks/handoff/trigger_hook.go)
-	// 在历史重构中被移除（仅保留 doc.go），但 goal_control.go 仍引用它，导致
-	// cmd/gateway 编译失败。此处临时禁用 handoff 接入（功能本就默认 Enabled=false），
-	// 待 handoff 实现恢复后重新接入。见 commit b807d30e / 2ad2c479。
-	// handoffStore := handoff.NewPGStore(db)
-	// handoffCfg := handoff.TriggerConfig{...}
-	// handoffHook := handoff.NewTriggerHook(handoffCfg, handoffStore)
+	// Restored 2026-07-09: was parked at _to-be-deprecated/hooks-handoff-20260706/
+	// because the original SQL referenced a non-existent `sessions` master
+	// table. The replacement uses session_summaries + adds 8 new tunable
+	// settings (summary engine, model, cooldown, max_per_session, etc.).
+	handoffStore := handoff.NewPGStore(db)
+	handoffCfg := handoff.TriggerConfig{
+		Enabled:             getEnvBool("LLM_GATEWAY_HANDOFF_ENABLED", false),
+		TriggerMode:         handoff.TriggerMode(getEnv("LLM_GATEWAY_HANDOFF_TRIGGER_MODE", "auto")),
+		AbsoluteThreshold:   getEnvInt("LLM_GATEWAY_HANDOFF_ABSOLUTE_THRESHOLD", 180000),
+		PercentageThreshold: getEnvFloat("LLM_GATEWAY_HANDOFF_PERCENTAGE_THRESHOLD", 0.8),
+		MessageThreshold:    getEnvInt("LLM_GATEWAY_HANDOFF_MESSAGE_THRESHOLD", 0),
+		IdleMinutes:         getEnvInt("LLM_GATEWAY_HANDOFF_IDLE_MINUTES", 0),
+		MinMessages:         getEnvInt("LLM_GATEWAY_HANDOFF_MIN_MESSAGES", 10),
+		SkillName:           getEnv("LLM_GATEWAY_HANDOFF_SKILL_NAME", "handoff"),
+		SummaryEngine:       handoff.SummaryEngine(getEnv("LLM_GATEWAY_HANDOFF_SUMMARY_ENGINE", "llm")),
+		SummaryModel:        getEnv("LLM_GATEWAY_HANDOFF_SUMMARY_MODEL", ""),
+		KeepRecentN:         getEnvInt("LLM_GATEWAY_HANDOFF_SUMMARY_KEEP_RECENT_N", 4),
+		MaxSummaryTokens:    getEnvInt("LLM_GATEWAY_HANDOFF_SUMMARY_MAX_TOKENS", 2000),
+		SummaryPromptTpl:    getEnv("LLM_GATEWAY_HANDOFF_SUMMARY_PROMPT_TPL", ""),
+		ExtractFacts:        getEnvBool("LLM_GATEWAY_HANDOFF_SUMMARY_EXTRACT_FACTS", true),
+		CooldownSeconds:     getEnvInt("LLM_GATEWAY_HANDOFF_COOLDOWN_SECONDS", 60),
+		MaxPerSession:       getEnvInt("LLM_GATEWAY_HANDOFF_MAX_PER_SESSION", 5),
+		RetryOnFailure:      getEnvInt("LLM_GATEWAY_HANDOFF_RETRY_ON_FAILURE", 1),
+		NotifyLevel:         handoff.NotifyLevel(getEnv("LLM_GATEWAY_HANDOFF_NOTIFY_LEVEL", "warn")),
+		NotifyWebhook:       getEnv("LLM_GATEWAY_HANDOFF_NOTIFY_WEBHOOK", ""),
+		ContinueHintTpl:     getEnv("LLM_GATEWAY_HANDOFF_CONTINUE_HINT_TPL", ""),
+		SettingsGetter:      adapter,
+		// LLMCaller shared with goal mode — reuses LLMGatewayAutoLLM* env vars
+		// via the same HTTPLlmCallerConfig. When no endpoint is configured,
+		// the hook auto-degrades to rule-based extraction.
+		LLMCaller: buildHandoffLLMCaller(),
+	}
+	handoffHook := handoff.NewTriggerHook(handoffCfg, handoffStore)
 
-	// 7. Chain and install. Order matters: goal continue → audit.
-	// handoff 暂未接入（实现缺失），chain 仅包含 goal + audit。
-	chain := response.NewInterceptorChain(goalHook, auditHook)
+	// 7. Chain and install. Order matters: goal continue → audit → handoff → output_compliance.
+	// handoff 接入完成（实现恢复 2026-07-09）：handoffHook.LastWriterWins 抢占 goal/audit 的
+	// InjectFollowUp（"rotate to new session > nudge near-full context"）。
+	interceptors := []response.ResponseInterceptor{goalHook, auditHook, handoffHook}
+
+	// 7b. Output compliance interceptor（输出合规/脱敏，2026-07-09）。
+	// 用同一 *sql.DB 构造 checker；ownerFn 从 session_dim 查询 dataOwner +
+	// 从最新 request_log 的 api_key_owner_user 取 callerOwner。
+	// db 为 nil 时 buildOutputComplianceInterceptor 返回 nil，链自动跳过。
+	if ocHook := buildOutputComplianceInterceptor(db); ocHook != nil {
+		interceptors = append(interceptors, ocHook)
+	}
+
+	chain := response.NewInterceptorChain(interceptors...)
 	chatHandler.SetResponseInterceptor(chain)
 
+	handoffEnabled := handoffCfg.Enabled
+	ocEnabled := len(interceptors) > 3
 	slog.Info("goal_control: interceptors installed",
 		"goal_enabled", goalCfg.Enabled,
 		"detection_mode", goalCfg.DetectionMode,
 		"audit_enabled", auditCfg.Enabled,
-		"handoff_enabled", false, // 实现缺失，强制禁用
+		"handoff_enabled", handoffEnabled,
+		"handoff_trigger_mode", string(handoffCfg.TriggerMode),
+		"handoff_summary_engine", string(handoffCfg.SummaryEngine),
+		"output_compliance_enabled", ocEnabled,
 		"model_switch_on_loop", goalCfg.ModelSwitchOnLoop,
 		"max_model_switch", goalCfg.MaxModelSwitchCount,
 		"fallback_models", goalCfg.FallbackModels,
 		"repeat_threshold", goalCfg.RepeatThreshold,
 		"completion_confidence", goalCfg.CompletionConfidence,
-		"llm_caller_configured", llmCallerConfigured())
+		"llm_caller_configured", llmCallerConfigured(),
+	)
+}
+
+// buildHandoffLLMCaller builds the LLMCaller used by the handoff hook's
+// summary step. Reuses the same LLMGatewayAutoLLM* env vars as the goal
+// hook so operators only configure one endpoint. Returns a no-op caller
+// when no endpoint is configured, in which case the handoff hook auto-
+// degrades to rule-based extraction (handoff.summary_engine=rule).
+func buildHandoffLLMCaller() handoff.LLMCaller {
+	cfg, ok := buildGoalLLMConfig()
+	if !ok {
+		return handoff.NoopLLMCaller{}
+	}
+	return handoff.NewChatLLMCallerFromConfig(cfg)
 }
 
 // parseModelList splits a comma-separated model list (e.g. "auto,gpt-4o,claude-3-5-sonnet")

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 )
 
 // 节点生命周期管理
@@ -57,7 +58,11 @@ func (m *Manager) RegisterNode(ctx context.Context, req RegisterNodeRequest) err
 
 	// 4. 触发立即探测（方案 A：立即探测）
 	if req.TriggerProbe && m.modelProbeSubmitter != nil {
-		go func() { _ = m.modelProbeSubmitter(ctx, req.CredentialID, req.RawModelName) }() //nolint:errcheck // fire-and-forget probe submit
+		go func() {
+			probeCtx, cancel := runctx.DetachedTimeout(ctx, 10*time.Second)
+			defer cancel()
+			_ = m.modelProbeSubmitter(probeCtx, req.CredentialID, req.RawModelName)
+		}() //nolint:errcheck // fire-and-forget probe submit
 	}
 
 	slog.Info("credstate: node registered",
@@ -121,8 +126,13 @@ func (m *Manager) EnableNode(ctx context.Context, credID int, model string) erro
 
 		// 触发立即探测验证可用性
 		if m.modelProbeSubmitter != nil {
-			go func() { _ = m.modelProbeSubmitter(ctx, credID, model) }() //nolint:errcheck // fire-and-forget probe submit
+			go func() {
+				probeCtx, cancel := runctx.DetachedTimeout(ctx, 10*time.Second)
+				defer cancel()
+				_ = m.modelProbeSubmitter(probeCtx, credID, model)
+			}() //nolint:errcheck // fire-and-forget probe submit
 		}
+
 	}
 
 	return nil

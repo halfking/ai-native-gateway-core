@@ -140,6 +140,8 @@ export default {
   testingAll: 'Testing all…',
   loading: 'Loading…',
   loadingDetail: 'Loading detail…',
-  savedOk: "[TODO: workTypes.savedOk]",
-  testFailedShort: "[TODO: workTypes.testFailedShort]",
+
+  // 同步的扁平键
+  savedOk: '已保存',
+  testFailedShort: '测试失败',
 }

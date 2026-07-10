@@ -268,10 +268,10 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			FROM model_offers mo
 			LEFT JOIN credential_model_bindings cmb
 				ON cmb.credential_id = mo.credential_id
-			   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE pm.raw_model_name = mo.raw_model_name AND pm.provider_id = c.provider_id LIMIT 1)
+			   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE (pm.raw_model_name = mo.raw_model_name OR pm.standardized_name = mo.standardized_name) AND pm.provider_id = c.provider_id LIMIT 1)
 			LEFT JOIN model_probe_state mps
 				ON mps.credential_id = mo.credential_id
-			   AND mps.raw_model_name = mo.raw_model_name
+			   AND (mps.raw_model_name = mo.raw_model_name OR mps.raw_model_name = mo.standardized_name)
 			CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
 			WHERE mo.credential_id = c.id
 		) ms ON true

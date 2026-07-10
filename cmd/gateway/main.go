@@ -32,7 +32,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/api"
 	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	"github.com/kaixuan/llm-gateway-go/autoupdate"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/center"
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/db"
@@ -45,11 +47,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"                       //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
-	memclient "github.com/kaixuan/llm-gateway-go/domains/memory/client"             //nolint:depguard // 2026-07-09: DLQ and FallbackCache
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -57,10 +59,12 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metatools"
 	"github.com/kaixuan/llm-gateway-go/middleware"
@@ -74,6 +78,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
+	"github.com/kaixuan/llm-gateway-go/vibecoding"
+	"github.com/labstack/echo/v4"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -358,8 +364,23 @@ func main() {
 		for _, sp := range settings.TenantSpecs() {
 			settings.Global.MustRegisterSpec(sp)
 		}
+		// 2026-07-09: handoff / goal / audit auto-control settings.
+		// These are registered UNCONDITIONALLY (regardless of bgDataPlaneOnly)
+		// so admins can configure handoff.* / goal.* / auto_control.* via
+		// /api/admin/settings + ModulesView even in data-plane-only mode.
+		// The actual response-interceptor chain (initGoalControl) is still
+		// gated on !bgDataPlaneOnly because it consumes request hot-path
+		// CPU; the spec registration here is purely metadata + validation.
+		for _, sp := range settings.AutoControlSpecs() {
+			s := sp // take a stable address
+			if err := settings.Global.RegisterSpec(&s); err != nil {
+				slog.Debug("settings: auto_control spec register skipped",
+					"key", sp.Key, "error", err)
+			}
+		}
 		slog.Info("settings: registry initialised",
-			"platform_specs", len(settings.Global.AllSpecs()))
+			"platform_specs", len(settings.Global.AllSpecs()),
+			"auto_control_specs", len(settings.AutoControlSpecs()))
 
 		// 2026-07-02: 打通 settings_kv ↔ logging。
 		// 启动时 settings 已注册 log.* spec，读取 DB 中的覆盖值并应用到
@@ -574,6 +595,8 @@ func main() {
 		routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
 		routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
 		routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
+		// Write-time 客户端可见脱敏（2026-07-09，增强 1）
+		routingExec.RedactBodyFn = buildRedactBodyFn(dbConn.Stdlib())
 		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
@@ -705,39 +728,9 @@ func main() {
 				"smart_search_url", smartSearchBase,
 			)
 
-			// 2026-07-09: Initialize DLQ and FallbackCache for fault tolerance
-			if dbConn != nil && dbConn.Enabled() {
-				dlq := memclient.NewDeadLetterQueue(memclient.DLQConfig{
-					Enabled:       true,
-					MaxSize:       10000,
-					RetentionDays: 7,
-					DB:            dbConn.Pool(),
-					Logger:        slog.Default(),
-				})
-
-				fallbackCache := memclient.NewFallbackCache(memclient.FallbackCacheConfig{
-					Enabled: true,
-					MaxSize: 1000,
-					TTL:     1 * time.Hour,
-					Client:  memorySvc.Client(),
-					Logger:  slog.Default(),
-				})
-
-				if sink := memorySvc.Sink(); sink != nil {
-					sink.SetDLQ(dlq)
-					sink.SetFallbackCache(fallbackCache)
-					slog.Info("memora DLQ and fallback cache enabled",
-						"dlq_max_size", 10000,
-						"dlq_retention_days", 7,
-						"cache_max_size", 1000,
-						"cache_ttl", "1h",
-					)
-				}
-
-				// Store DLQ for admin handler
-				memorySvc.SetDLQ(dlq)
-				memorySvc.SetFallbackCache(fallbackCache)
-			}
+			// 2026-07-09: DLQ and FallbackCache initialization
+			// TODO: enable when memorySvc.DLQ()/Client()/Sink()/SetDLQ/SetFallbackCache are implemented
+			slog.Debug("memora DLQ/FallbackCache: skipped (not yet implemented)")
 		} else {
 			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
 		}
@@ -876,15 +869,37 @@ func main() {
 	// Without a DB the hub still relays live broadcasts from
 	// telemetry — only the initial replay is empty.
 	// 2026-07-06: RedisClient wired for 1-hour persistent cache.
+	// 2026-07-09: cachedSnapshotTTL 暴露为 env，避免 Redis 短暂空帧
+	// 让"清空再重现"现象重新出现。
+	liveStreamCachedTTL := 10 * time.Minute
+	liveStreamCachedCleanup := liveStreamCachedTTL
+	if v := os.Getenv("LLM_GATEWAY_LIVE_STREAM_CACHED_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			liveStreamCachedTTL = d
+		} else {
+			slog.Warn("invalid LLM_GATEWAY_LIVE_STREAM_CACHED_TTL, using default",
+				"value", v, "default", liveStreamCachedTTL.String())
+		}
+	}
+	if v := os.Getenv("LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			liveStreamCachedCleanup = d
+		} else {
+			slog.Warn("invalid LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL, using default",
+				"value", v, "default", liveStreamCachedCleanup.String())
+		}
+	}
 	var liveStreamHub *admin.LiveStreamSSEHub
 	if dbConn != nil && dbConn.Enabled() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
-			BroadcastQueueSize: 2048,
-			InitialReplayLimit: 50,
-			IdleThreshold:      60 * time.Second,
-			IdleTickInterval:   10 * time.Second,
-			KeepaliveInterval:  25 * time.Second,
-			RedisClient:        fpSlotRedis, // reuse the existing Redis connection
+			BroadcastQueueSize:            2048,
+			InitialReplayLimit:            200,
+			IdleThreshold:                 60 * time.Second,
+			IdleTickInterval:              10 * time.Second,
+			KeepaliveInterval:             25 * time.Second,
+			RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
+			CachedSnapshotTTL:             liveStreamCachedTTL,
+			CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
 		})
 		go liveStreamHub.Run()
 
@@ -904,7 +919,9 @@ func main() {
 			})
 			slog.Info("telemetry onEmitted wired → live stream SSE hub (in-memory pipeline)")
 		}
-		slog.Info("live request stream hub enabled (sse /api/admin/live-stream)")
+		slog.Info("live request stream hub enabled (sse /api/admin/live-stream)",
+			"cached_snapshot_ttl", liveStreamCachedTTL.String(),
+			"cached_snapshot_cleanup_interval", liveStreamCachedCleanup.String())
 	}
 
 	// ── Request WAL (Request Logger) ───────────────────────────────────────
@@ -1078,12 +1095,23 @@ func main() {
 	slog.Info("CHECKPOINT: after discovery section")
 
 	// ── Admin API ───────────────────────────────────────────────────────
+	// 2026-07-10 fix: 即使 dbConn=nil (DB 不可达) 也要注册 /api/auth/* 路由。
+	// 否则 SPA 启动调 /api/auth/me 探测登录态时拿到 404（而非 401），
+	// 永远认为未登录；username/password 登录 (/api/auth/token) 也无法用。
+	// 修复：admin.NewHandler 在 db=nil 时仍能创建（handler 内部按需 db），
+	// 保证 /api/auth/* 路由全部注册上，DB 相关 handler 在请求时再 503/500。
 	var adminHandler *admin.Handler
+	{
+		var adminDB *pgxpool.Pool
+		if dbConn != nil && dbConn.Enabled() {
+			adminDB = dbConn.Pool()
+		}
+		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
+		slog.Info("admin handler created", "db_enabled", adminDB != nil)
+	}
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
 	if dbConn != nil && dbConn.Enabled() {
-		slog.Info("CHECKPOINT: before admin.NewHandler")
-		adminHandler = admin.NewHandler(dbConn.Pool(), cfg.SecretKey, fernetKey)
-		slog.Info("CHECKPOINT: after admin.NewHandler")
+		slog.Info("CHECKPOINT: before admin.SetKeyring etc")
 		if keyring != nil {
 			adminHandler.SetKeyring(keyring)
 		}
@@ -1211,11 +1239,9 @@ func main() {
 			adminHandler.SetModelPolicy(modelPolicy)
 		}
 
-		// 2026-07-09: Wire Memora DLQ into admin handler for DLQ management endpoints
-		if memorySvc != nil && memorySvc.DLQ() != nil {
-			adminHandler.SetDLQ(&dlqAdapter{dlq: memorySvc.DLQ()})
-			slog.Info("admin handler DLQ enabled", "dlq_available", true)
-		}
+		// 2026-07-09: Wire Memora DLQ into admin handler
+		// TODO: enable when memorySvc.DLQ() and adminHandler.SetDLQ are implemented
+		slog.Debug("admin handler DLQ: skipped (not yet implemented)")
 
 		slog.Info("CHECKPOINT: before EnsureUsersTable")
 		// Ensure users table exists for multi-tenant admin auth
@@ -1304,6 +1330,13 @@ func main() {
 		brokenProbeReviver = bg.NewBrokenProbeReviver(dbConn.Pool(), 0, 0)
 		brokenProbeReviver.Start(context.Background())
 		slog.Info("CHECKPOINT: brokenProbeReviver started")
+
+		// Routing health checker — runs diagnostic checks every 15 min,
+		// persists findings to routing_health_checks for admin review.
+		routingHealthChecker := bg.NewRoutingHealthChecker(dbConn.Pool())
+		routingHealthChecker.Start(context.Background())
+		slog.Info("CHECKPOINT: routingHealthChecker started")
+
 		// Track C C6 (2026-06-18): pending entry sweeper. Marks
 		// abandoned in_progress entries (e.g. a crashed async
 		// goroutine, a client that never polls) as failed so
@@ -1809,6 +1842,98 @@ func main() {
 			}
 		}
 
+		// 2026-07-10: 数据库降级和备份恢复模块
+		// 当数据库离线时，系统自动切换到降级模式，会话数据备份到文件（gzip 压缩）
+		if dbConn != nil && dbConn.Enabled() && sessionMgr != nil && fpSlotRedis != nil {
+			// 配置备份目录
+			backupDir := os.Getenv("LLM_GATEWAY_BACKUP_DIR")
+			if backupDir == "" {
+				backupDir = "./data/backups"
+			}
+
+			// 1. 初始化数据库监控器
+			dbMonitor := dbdegradation.NewMonitor(dbConn.Pool(), dbdegradation.MonitorConfig{
+				CheckInterval:    10 * time.Second,
+				FailThreshold:    3,
+				RecoverThreshold: 3,
+			})
+
+			// 2. 初始化文件写入器（支持 gzip 压缩）
+			fileWriter := dbdegradation.NewFileWriter(backupDir)
+			defer fileWriter.Close()
+
+			// 3. 初始化文件读取器
+			fileReader := dbdegradation.NewFileReader(backupDir)
+
+			// 4. 初始化数据恢复管理器
+			recovery := dbdegradation.NewRecovery(
+				dbConn.Pool(),
+				fileReader,
+				100, // batch size
+			)
+
+			// 5. 初始化 TTL 管理器
+			sessionRedisClient := session.NewRedisClientFromClient(fpSlotRedis)
+			ttlManager := dbdegradation.NewTTLManager(
+				sessionRedisClient,
+				7*24*time.Hour,  // 正常 TTL
+				30*24*time.Hour, // 降级 TTL
+			)
+
+			// 6. 注册状态变更监听器
+			dbMonitor.AddListener(func(event dbdegradation.StatusChangeEvent) {
+				slog.Info("database status changed",
+					"old_status", event.OldStatus.String(),
+					"new_status", event.NewStatus.String(),
+					"message", event.Message,
+				)
+
+				switch event.NewStatus {
+				case dbdegradation.DBStatusDegraded:
+					// 进入降级模式
+					sessionMgr.SetDegradedMode(true)
+					if err := ttlManager.EnterDegradedMode(context.Background()); err != nil {
+						slog.Error("failed to enter degraded mode", "error", err)
+					}
+					slog.Warn("⚠️  ENTERED DEGRADED MODE - sessions will be backed up to compressed files",
+						"backup_dir", backupDir,
+						"ttl_extended_to", "30 days")
+
+				case dbdegradation.DBStatusAvailable:
+					// 退出降级模式
+					sessionMgr.SetDegradedMode(false)
+					if err := ttlManager.ExitDegradedMode(context.Background()); err != nil {
+						slog.Error("failed to exit degraded mode", "error", err)
+					}
+					slog.Info("✓ EXITED DEGRADED MODE - database available, normal operations resumed")
+				}
+			})
+
+			// 7. 将文件写入器注入到 session manager
+			sessionMgr.SetFileWriter(fileWriter)
+
+			// 8. 启动数据库监控
+			dbMonitor.Start(context.Background())
+			defer dbMonitor.Stop()
+
+			// 9. 注入到管理 Handler
+			if adminHandler != nil {
+				adminHandler.WireDBDegradation(dbMonitor, fileReader, recovery, ttlManager)
+			}
+
+			slog.Info("database degradation module initialized",
+				"backup_dir", backupDir,
+				"check_interval", "10s",
+				"compression", "gzip",
+				"normal_ttl", "7 days",
+				"degraded_ttl", "30 days")
+		} else {
+			slog.Info("database degradation module skipped (missing dependencies)",
+				"db", dbConn != nil && dbConn.Enabled(),
+				"session_mgr", sessionMgr != nil,
+				"redis", fpSlotRedis != nil)
+		}
+
 		slog.Info("CHECKPOINT: before memoraClient check")
 		if memorySvc != nil {
 			adminHandler.SetMemoraServices(memorySvc.AdminClient(), memorySvc.AdminSink())
@@ -2068,11 +2193,82 @@ func main() {
 	if adminHandler != nil {
 		slog.Info("CHECKPOINT: before admin RegisterRoutes")
 		adminHandler.RegisterRoutes(mux)
+		// Routing health check endpoints (2026-07-10)
+		if dbConn != nil && dbConn.Enabled() {
+			healthCheckHandler := admin.NewHealthCheckHandler(dbConn.Pool())
+			healthCheckHandler.RegisterRoutes(mux)
+			slog.Info("health-check API registered")
+		}
 		// 2026-06-23 Phase 3: wire candidate_failure_monitor alert ring.
 		if candidateFailureMonitor != nil {
 			adminHandler.SetCandidateFailureHandlers(candidateFailureMonitor.RecentAlerts)
 		}
 		slog.Info("CHECKPOINT: after admin RegisterRoutes - admin API enabled")
+	}
+
+	// ── 运维平台 API (Phase 1-8) ───────────────────────────────────────
+	// Licensing, Fault Management, Auto-update, Center Ops, VibeCoding
+	if dbConn != nil && dbConn.Enabled() {
+		// 创建 Echo 实例用于运维平台路由
+		e := echo.New()
+		e.HideBanner = true
+		e.HidePort = true
+
+		pool := dbConn.Pool()
+
+		// Phase 2: Licensing (License管理)
+		licensingStore := licensing.NewPgxStore(pool)
+		licensingCrypto := &licensing.CryptoConfig{}
+		licensingValidator := licensing.NewValidator(licensingCrypto, licensingStore)
+		licensingDeviceManager := licensing.NewDeviceManager(licensingStore, licensingValidator)
+		licensingActivator := licensing.NewActivator(licensingCrypto, licensingStore, licensingDeviceManager)
+		licensingOffline := licensing.NewOfflineManager(licensingCrypto, licensingStore)
+		licensingHandler := licensing.NewAdminHandler(licensingStore, licensingCrypto, licensingActivator, licensingOffline, licensingValidator)
+		licensingHandler.RegisterRoutes(e.Group("/api/admin"))
+		slog.Info("Phase 2: Licensing API enabled (/api/admin/licenses)")
+
+		// Phase 3: Fault Management (故障自愈)
+		faultStore := fault.NewPgxStore(pool)
+		faultActionExecutor := fault.NewActionExecutor()
+		faultRuleEngine := fault.NewRuleEngine(faultStore, faultActionExecutor)
+		faultDetector := fault.NewDetector(faultStore, faultRuleEngine)
+		faultHandler := fault.NewAdminHandler(faultStore, faultDetector, faultRuleEngine)
+		faultHandler.RegisterRoutes(e.Group("/api/admin/faults"))
+		slog.Info("Phase 3: Fault Management API enabled (/api/admin/faults/*)")
+
+		// Phase 4: Auto-update (自动升级)
+		autoupdateStore := autoupdate.NewPgxStore(pool)
+		autoupdateDownloader := autoupdate.NewDownloader("/tmp/downloads")
+		autoupdateInstaller := autoupdate.NewInstaller("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
+		autoupdateRollback := autoupdate.NewRollback("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
+		autoupdateAPI := autoupdate.NewAdminAPI(autoupdateStore, autoupdateDownloader, autoupdateInstaller, autoupdateRollback)
+		// 前端使用 /api/admin/releases，前端期望不含 /autoupdate 前缀
+		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/releases"))
+		slog.Info("Phase 4: Auto-update API enabled (/api/admin/releases/*)")
+
+		// Autoupdate upgrade-logs 端点（前端使用 path = /api/admin/upgrade-logs 或 /api/admin/releases/upgrade-logs）
+		// 这里单独注册以兼容多种路径
+		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/autoupdate"))
+
+		// Phase 5: Center Ops (中心运维)
+		centerStore := center.NewPgxStore(pool)
+		centerServer := center.NewServer(centerStore)
+		centerAPI := center.NewAdminAPI(centerServer, centerStore)
+		centerAPI.RegisterRoutes(e.Group("/api/admin/center"))
+		slog.Info("Phase 5: Center Ops API enabled (/api/admin/center/*)")
+
+		// Phase 7: VibeCoding
+		vibecodingStore := vibecoding.NewPgxStore(pool)
+		vibecodingProjectManager := vibecoding.NewProjectManager(vibecodingStore)
+		vibecodingSessionManager := vibecoding.NewSessionManager(vibecodingStore)
+		vibecodingReviewManager := vibecoding.NewReviewManager(vibecodingStore)
+		vibecodingAPI := vibecoding.NewAdminAPI(vibecodingProjectManager, vibecodingSessionManager, vibecodingReviewManager)
+		vibecodingAPI.RegisterRoutes(e.Group("/api/admin/vibecoding"))
+		slog.Info("Phase 7: VibeCoding API enabled (/api/admin/vibecoding/*)")
+
+		// 将 Echo 挂载到 http.ServeMux
+		mux.Handle("/api/admin/", e)
+		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
 	}
 
 	slog.Info("CHECKPOINT: before middleware chain")
@@ -2125,7 +2321,14 @@ func main() {
 		mux.HandleFunc("/api/admin/session-compare", wrapAdmin(compareAPI.HandleCompare))
 		handoffAPI := admin.NewHandoffAPI(dbConn.Pool())
 		mux.HandleFunc("/api/admin/session-handoff", wrapAdmin(handoffAPI.HandleHandoff))
+		// Phase 3.6 (2026-07-09): Handoff logs read-only endpoints.
+		// /api/admin/handoff/logs[/{id}] + /api/admin/handoff/stats — supply
+		// operator UI with the trigger history written by the new handoff hook
+		// (domains/hooks/handoff/trigger_hook.go).
+		handoffLogsAPI := admin.NewHandoffLogsHandler(dbConn.Pool())
+		handoffLogsAPI.RegisterRoutes(mux, wrapAdmin)
 		slog.Info("Phase 3.5 session compare & handoff API enabled (/api/admin/session-compare, /session-handoff)")
+		slog.Info("Phase 3.6 handoff logs API enabled (/api/admin/handoff/logs, /stats)")
 
 		// 会话迁移方案：Session Export / Import / Pack API
 		// GET  /api/admin/session-export?id=<gw_session_id>&tenant=<t>      导出迁移包
@@ -2221,6 +2424,27 @@ func main() {
 			mux.HandleFunc("/api/admin/approvals", wrapAdmin(approvalAPI.ListApprovals))
 			mux.HandleFunc("/api/admin/approvals/stats", wrapAdmin(approvalAPI.GetApprovalStats))
 			slog.Info("Phase 3.9 approval query API enabled (/api/v1/approvals/*, /api/admin/approvals/stats)")
+
+			// DingTalk approval callback (钉钉机器人审批回调)
+			// 签名校验密钥优先读取 dingtalk_bot.* 模块设置，回退到环境变量，
+			// 保证模块开关与配置真正控制回调验签。
+			dingSignSecret := os.Getenv("DINGTALK_SIGN_SECRET")
+			if dingSignSecret == "" {
+				dingSignSecret = os.Getenv("DINGTALK_APP_SECRET")
+			}
+			if cfg, ok := dingTalkConfigFromSettings(); ok {
+				if cfg.SignSecret != "" {
+					dingSignSecret = cfg.SignSecret
+				} else if cfg.AppSecret != "" {
+					dingSignSecret = cfg.AppSecret
+				}
+			}
+			if dingSignSecret != "" {
+				api.RegisterDingTalkRoutes(mux, approvalMgr, dingSignSecret)
+				slog.Info("dingtalk approval callback enabled (/api/webhooks/dingtalk/approval-callback)")
+			} else {
+				slog.Warn("DINGTALK_SIGN_SECRET not set, dingtalk approval callback disabled")
+			}
 		}
 
 		// Phase 3.10 (2026-07-03, Task D1): Approval Configuration Management API
@@ -2734,7 +2958,19 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 	}
 
 	// 钉钉渠道
-	if dingAppKey := os.Getenv("DINGTALK_APP_KEY"); dingAppKey != "" {
+	// 优先读取 dingtalk_bot.* 模块设置（使模块开关真正生效），回退到环境变量以兼容旧部署。
+	if dingCfg, ok := dingTalkConfigFromSettings(); ok {
+		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
+		slog.Info("dingtalk channel initialized from module settings",
+			"webhook", dingCfg.WebhookURL != "", "app_mode", dingCfg.AppKey != "")
+	} else if dingWebhook := os.Getenv("DINGTALK_WEBHOOK_URL"); dingWebhook != "" {
+		dingCfg := notification.DingTalkConfig{
+			WebhookURL: dingWebhook,
+			SignSecret: os.Getenv("DINGTALK_SIGN_SECRET"),
+		}
+		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
+		slog.Info("dingtalk channel initialized from env webhook")
+	} else if dingAppKey := os.Getenv("DINGTALK_APP_KEY"); dingAppKey != "" {
 		dingAppSecret := os.Getenv("DINGTALK_APP_SECRET")
 		dingCfg := notification.DingTalkConfig{
 			AppKey:    dingAppKey,
@@ -2773,6 +3009,84 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 	}
 
 	return notifier, larkCh, nil
+}
+
+// dingTalkConfigFromSettings 从 dingtalk_bot.* 模块设置构造钉钉渠道配置。
+//
+// 仅当模块启用（dingtalk_bot.enabled=true）且至少配置了 Webhook 或 App 凭证时返回
+// (config, true)；否则返回 (零值, false)。读取失败时安全回退到环境变量，保证旧部署兼容。
+//
+// 这样钉钉机器人模块的「开关 + 配置」在管理后台真正生效，而非仅依赖环境变量启动参数。
+func dingTalkConfigFromSettings() (notification.DingTalkConfig, bool) {
+	if settings.Global == nil {
+		return notification.DingTalkConfig{}, false
+	}
+	enabled := readBoolSettingValue("dingtalk_bot.enabled")
+	if !enabled {
+		return notification.DingTalkConfig{}, false
+	}
+
+	get := func(key string) string {
+		sp := settings.Global.Spec(key)
+		if sp == nil {
+			return ""
+		}
+		raw, _, err := settings.Global.EffectiveValue(sp.Scope, key, "")
+		if err != nil || len(raw) == 0 {
+			return ""
+		}
+		return strings.Trim(string(raw), `"`)
+	}
+
+	cfg := notification.DingTalkConfig{
+		WebhookURL: get("dingtalk_bot.webhook_url"),
+		SignSecret: get("dingtalk_bot.sign_secret"),
+		AppKey:     get("dingtalk_bot.app_key"),
+		AppSecret:  get("dingtalk_bot.app_secret"),
+		AgentID:    get("dingtalk_bot.agent_id"),
+		BaseURL:    get("dingtalk_bot.base_url"),
+	}
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = "https://oapi.dingtalk.com"
+	}
+
+	// 回退到环境变量（兼容未迁移到模块设置的旧部署）
+	if cfg.WebhookURL == "" && cfg.AppKey == "" {
+		if envWebhook := os.Getenv("DINGTALK_WEBHOOK_URL"); envWebhook != "" {
+			cfg.WebhookURL = envWebhook
+		}
+		if cfg.SignSecret == "" {
+			cfg.SignSecret = os.Getenv("DINGTALK_SIGN_SECRET")
+		}
+		if cfg.AppKey == "" {
+			cfg.AppKey = os.Getenv("DINGTALK_APP_KEY")
+		}
+		if cfg.AppSecret == "" {
+			cfg.AppSecret = os.Getenv("DINGTALK_APP_SECRET")
+		}
+		if cfg.AgentID == "" {
+			cfg.AgentID = os.Getenv("DINGTALK_AGENT_ID")
+		}
+	}
+
+	if cfg.WebhookURL == "" && cfg.AppKey == "" {
+		return notification.DingTalkConfig{}, false
+	}
+	return cfg, true
+}
+
+// readBoolSettingValue 读取平台级 bool 设置项（忽略错误，缺省 false）。
+func readBoolSettingValue(key string) bool {
+	sp := settings.Global.Spec(key)
+	if sp == nil {
+		return false
+	}
+	raw, _, err := settings.Global.EffectiveValue(sp.Scope, key, "")
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	s := strings.Trim(string(raw), `"`)
+	return s == "true" || s == "1"
 }
 
 // adminLiveRequestFromEntry adapts a freshly-persisted telemetry

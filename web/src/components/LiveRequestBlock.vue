@@ -62,6 +62,12 @@ const { locale } = useI18n()
 const isIdle = computed(() => props.request.type === 'idle_marker')
 const isFailure = computed(() => props.request.status === 'failure' && !!props.request.error_kind)
 
+// Idle markers occupy ~2 tile widths so they read as a heartbeat
+// gap rather than as a real request in the swim lane.
+const idleStyle = computed(() => ({
+  width: props.width ? `${props.width * 2 + 4}px` : '132px',
+}))
+
 const idleLabel = computed(() => {
   if (!isIdle.value) return ''
   const start = Date.parse(props.request.ts)
@@ -161,11 +167,14 @@ function onClick() {
 </script>
 
 <template>
-  <!-- Idle marker: wide dashed pill so 1 minute of silence still
-       reads as "gap" rather than as a request. -->
+  <!-- Idle marker: wide dashed pill (~2 tiles wide) so 2 minutes of
+       silence still reads as a heartbeat indicating "the system is
+       alive but has no traffic" rather than as a real request. The
+       width is supplied by the parent (LiveRequestStream). -->
   <div
     v-if="isIdle"
     class="live-block live-block--idle"
+    :style="idleStyle"
     :title="idleLabel"
     aria-hidden="true"
   >

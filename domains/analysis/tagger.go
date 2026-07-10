@@ -3,7 +3,7 @@
 // 从 session_summaries 已有字段派生自动标签（task/client/llm/topic/intent/quality），
 // 写入 session_tags（tag_source='auto'）。可选 LLM 增强（StageTags）。
 //
-// 标签维度：
+// 标签维度（OLAP 投影，本 tagger 负责）：
 //   - task:     work_types[]（如 code/chat/tool_use）
 //   - client:   client_models[]（客户端模型）
 //   - llm:      primary_model + models_used[]（实际使用的 LLM）
@@ -11,6 +11,11 @@
 //   - intent:   user_intent（用户意图）
 //   - provider: providers[]（提供商）
 //   - quality:  quality_score 映射的等级
+//
+// 热路径投影（SessionStateProjector 负责，见 state_projector.go）：
+//   - security / compliance / pii / approval / optimization
+//   两个 projector 共写同一张 session_tags，tag_key 词汇表正交。
+//   统一打标层设计见 docs/2026-07-09-session-tagging-redaction-architecture.md §2.2。
 package analysis
 
 import (

@@ -108,8 +108,58 @@ const (
 	liveStreamActivityPrefix = "llmgw:live:activity:"
 	liveStreamTTL            = 28800 * time.Second // 8 hours
 	liveStreamLaneLimit      = 30
+	liveStreamReplayLimit    = 200 // 默认回放请求数：泳道中请求的有效期靠 TTL(8h)保证，数量上限放宽到 200，让请求“直到被挤出去”而非被过小的 replay 上限提前丢弃
 	idleThresholdSeconds     = 60 // 1 minute
 )
+
+// normalizeModelKey returns a case-insensitive, whitespace-trimmed
+// canonical key for use in Redis dimension queues. Without this, the
+// upstream pipeline may emit the same logical model with mixed
+// casing (e.g. "MiniMax-M3" vs "minimax-m3") and end up split into
+// separate Redis queues, which in turn shows up as duplicate lanes
+// on the live request swim lane.
+//
+// The conversion is intentionally conservative:
+//   - trim leading/trailing whitespace
+//   - collapse internal whitespace runs to a single space
+//   - fold all characters to lower case (ASCII + Unicode via ToLower)
+//   - preserve non-alphanumeric characters so slashes / dashes / dots
+//     in model IDs are still distinguished ("gpt-4o" vs "gpt/4o")
+//
+// The original case is preserved in the rendered lane label; only
+// the Redis key is lower-cased so cross-case requests aggregate.
+func normalizeModelKey(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Collapse internal whitespace runs to a single space (defensive;
+	// upstream callers already strip, but a stray \n would otherwise
+	// create a different queue key).
+	s = collapseWhitespace(s)
+	return strings.ToLower(s)
+}
+
+// collapseWhitespace replaces runs of Unicode whitespace with a
+// single ASCII space. Kept private to this file because it is only
+// meaningful in the context of Redis dimension key normalisation.
+func collapseWhitespace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevSpace := false
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\v' || r == '\f' {
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevSpace = false
+	}
+	return b.String()
+}
 
 // NewLiveStreamRedisStore constructs a store. Safe to pass nil client
 // (the store becomes a no-op).
@@ -184,10 +234,14 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	}
 	// Use CanonicalName for model dimension activity keys when available.
 	// This ensures idle markers generated from these keys use the standard
-	// model name, matching the aggregation logic in liveStreamDimensionKey.
-	// Without this, idle markers for the same canonical model from different
-	// credentials (with different outbound names) would land in separate lanes.
-	modelActivityKey := emptyAs(req.CanonicalName, req.Model)
+	// Normalise the model name so the activity key and the idle-marker
+	// key are guaranteed to use the same form as the queue / lane key
+	// in liveStreamDimensionKey. Without this, the same model under
+	// mixed casing (e.g. "MiniMax-M3" vs "minimax-m3") would create
+	// two separate activity keys, so the idle scanner would never
+	// recognise them as the same lane and would emit one idle marker
+	// per casing variant.
+	modelActivityKey := normalizeModelKey(emptyAs(req.CanonicalName, req.Model))
 	if modelActivityKey != "" {
 		pipe.Set(ctx, liveStreamActivityKey("", "model", modelActivityKey), activityUnix, liveStreamTTL)
 		pipe.Set(ctx, liveStreamActivityKey(tenantID, "model", modelActivityKey), activityUnix, liveStreamTTL)
@@ -246,7 +300,13 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 	// matching the aggregation logic in liveStreamDimensionKey. This ensures
 	// a request is placed in the same queue it will be grouped into during
 	// lane building, preventing requests from appearing in wrong lanes.
-	modelKey := emptyAs(req.CanonicalName, req.Model)
+	//
+	// Case-insensitive aggregation: upstream callers (probe / replay) can
+	// emit the same logical model with mixed casing (e.g. "MiniMax-M3" and
+	// "minimax-m3"). We normalise to a lower-case trimmed form BEFORE
+	// composing the Redis key so both spellings land in the same ZSET,
+	// while the original casing is preserved in the rendered lane label.
+	modelKey := normalizeModelKey(emptyAs(req.CanonicalName, req.Model))
 	if modelKey != "" && modelKey != "unknown" {
 		keys = append(keys,
 			liveStreamDimPrefix+"model:"+modelKey,
@@ -264,7 +324,7 @@ func (s *LiveStreamRedisStore) Replay(ctx context.Context, tenantID string, isSu
 		return nil, nil
 	}
 	if limit <= 0 {
-		limit = 50
+		limit = liveStreamReplayLimit
 	}
 
 	key := liveStreamMainKey
@@ -503,39 +563,46 @@ func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 		}
 		return key
 	case "provider":
-		// 用户原话：每个请求有凭据节点，credential → provider 一定查得到。
-		// 就算供应商没有名称（display_name 为空），也应该用 code，不能为未知。
+		// 设计原则（2026-07-09 审计修正）：provider(供应商) 维度只认凭据反查的结果
+		// （telemetry.CredentialID → credentials JOIN providers → display_name）。
+		// 之前当 ProviderCode 为空时用 CanonicalName/Model 兜底，会把模型名
+		// （如 "minimax-m3"）塞进 provider 维度，于是同一个供应商同时出现
+		// "MiniMax"（凭据反查）和 "minimax-m3"（模型名兜底）两个泳道。
+		//
+		// 现在：ProviderCode 为空/未知时返回 ""，该请求不在 provider 维度显示，
+		// 模型名永远只出现在 model 维度。ProviderCode 为空的两种真实场景：
+		//   1) credential_id == 0：请求未到达凭据选择（auth/路由失败/探测记录）；
+		//   2) 凭据已被删除，credential→provider JOIN 查不到。
+		// 这两种情况下"供应商"本身就没有意义，不应凭空造一个模型名泳道。
 		if req.Type == "idle_marker" {
 			return ""
 		}
-		// 1) ProviderCode 来自 replay SQL：COALESCE(p.name, p.catalog_code, p.code)
-		//    一定非空（除非整条 request_logs 没找到对应的 providers 行）。
-		// 2) 异常兜底：当 provider_code 为 "" / "unknown" 时，用 canonical name 或 model。
 		pc := strings.TrimSpace(req.ProviderCode)
 		if pc == "" || pc == "unknown" || pc == "__unknown__" {
-			if req.CanonicalName != "" {
-				return req.CanonicalName
-			}
-			if req.Model != "" {
-				return req.Model
-			}
-			return "其他"
+			return ""
 		}
 		return pc
 	case "model":
 		// Use CanonicalName for aggregation so the same model from different
 		// credentials (with different outbound names) aggregates into one lane.
 		// Fallback to Model for backward compatibility when CanonicalName is empty.
+		//
+		// Case-insensitive: canonical name and outbound model may differ in
+		// casing across credentials ("MiniMax-M3" vs "minimax-m3"); we fold
+		// to a lower-case trimmed form so both spellings fall into the
+		// same lane. The original case is preserved in the rendered label
+		// because lane display goes through the canonical name field, not
+		// this dimension key.
 		if req.Type == "idle_marker" {
 			return ""
 		}
 		if req.CanonicalName != "" {
-			return req.CanonicalName
+			return normalizeModelKey(req.CanonicalName)
 		}
 		if req.Model == "" {
 			return "" // Skip this dimension if no value
 		}
-		return req.Model
+		return normalizeModelKey(req.Model)
 	default:
 		return ""
 	}
@@ -605,6 +672,8 @@ func InferVendorFromModel(model string) string {
 		return "meta"
 	case strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"):
 		return "mistral"
+	case strings.Contains(m, "minimax"):
+		return "minimax"
 	case strings.Contains(m, "mimo"):
 		return "xiaomi"
 	case strings.Contains(m, "phi"):

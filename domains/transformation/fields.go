@@ -38,6 +38,13 @@ var standardRequestFields = map[string]bool{
 	"system":         true,
 	"stop_sequences": true,
 	"thinking":       true,
+
+	// Ollama 特有
+	"keep_alive": true, // 模型加载时长
+	"format":     true, // 输出格式 (json)
+	"context":    true, // KV cache 上下文数组
+	"raw":        true, // 跳过模板化
+	"template":   true, // 自定义模板
 }
 
 // isStandardField 报告字段名是否是 IR 已知处理的标准字段。

@@ -43,10 +43,19 @@ type ApprovalDBTX interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+// TimeoutAction 控制审批超时后的自动处理行为。
+type TimeoutAction int
+
+const (
+	TimeoutActionReject  TimeoutAction = iota // 超时自动拒绝（默认，当前行为）
+	TimeoutActionApprove                      // 超时自动批准
+)
+
 // ApprovalManager 审批流程管理器。
 type ApprovalManager struct {
-	pool    ApprovalDBTX
-	timeout time.Duration
+	pool          ApprovalDBTX
+	timeout       time.Duration
+	timeoutAction TimeoutAction
 }
 
 // NewApprovalManager 创建审批管理器（接收 pgxpool.Pool 或 pgxmock）。
@@ -56,6 +65,14 @@ func NewApprovalManager(pool ApprovalDBTX, timeout time.Duration) *ApprovalManag
 		timeout = 15 * time.Minute
 	}
 	return &ApprovalManager{pool: pool, timeout: timeout}
+}
+
+// WithTimeoutAction 设置超时自动处理行为（链式调用）。
+// 默认行为是超时自动拒绝（TimeoutActionReject）。
+// 设为 TimeoutActionApprove 可使未及时处理的高分审批自动放行。
+func (m *ApprovalManager) WithTimeoutAction(action TimeoutAction) *ApprovalManager {
+	m.timeoutAction = action
+	return m
 }
 
 // Create 创建审批记录。
@@ -346,16 +363,38 @@ func (m *ApprovalManager) decide(ctx context.Context, approvalID, callerTenantID
 	return nil
 }
 
-// MarkTimeout 标记超时的审批为 timeout 状态。
+// MarkTimeout 标记超时的审批为 timeout / auto-approved 状态。
+//
+// 行为由 m.timeoutAction 控制：
+//   - TimeoutActionReject (默认): 标记为 timeout（自动拒绝）
+//   - TimeoutActionApprove: 自动批准，approved_by 设为 "system:timeout"
 //
 // 仅由后台 worker 调用，因此不上 RLS（worker 在 superadmin 上下文）。
 func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
-	tag, err := m.pool.Exec(ctx, `
-		UPDATE approval_queue
-		SET status = $1,
-		    reason = 'Auto-rejected: timeout after ' || extract(epoch from (now() - created_at)) || ' seconds'
-		WHERE status = $2 AND expires_at < now()
-	`, ApprovalTimeout, ApprovalPending)
+	var sql string
+	switch m.timeoutAction {
+	case TimeoutActionApprove:
+		sql = `
+			UPDATE approval_queue
+			SET status = $1,
+			    approved_by = 'system:timeout',
+			    approved_at = NOW(),
+			    reason = 'Auto-approved: timeout after ' || extract(epoch from (now() - created_at)) || ' seconds'
+			WHERE status = $2 AND expires_at < now()
+		`
+	default:
+		sql = `
+			UPDATE approval_queue
+			SET status = $1,
+			    reason = 'Auto-rejected: timeout after ' || extract(epoch from (now() - created_at)) || ' seconds'
+			WHERE status = $2 AND expires_at < now()
+		`
+	}
+	target := ApprovalApproved
+	if m.timeoutAction != TimeoutActionApprove {
+		target = ApprovalTimeout
+	}
+	tag, err := m.pool.Exec(ctx, sql, target, ApprovalPending)
 	if err != nil {
 		return 0, fmt.Errorf("mark timeout: %w", err)
 	}

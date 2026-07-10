@@ -96,8 +96,22 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/admin/data-lifecycle', label: '数据生命周期', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },
       { path: '/format-anomalies', label: '格式异常监控', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true },
       { path: '/admin/modules', label: '模块管理', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true },
+      { path: '/admin/prompt-injection', label: '提示词注入检测', labelKey: 'nav.item.promptInjection', icon: '🛡️', super: true, hideForTenant: true },
       { path: '/admin/compression', label: '压缩管理', labelKey: 'nav.item.compression', icon: '📦', platformOps: true, hideForTenant: true },
+      { path: '/admin/modules?module=wechat_bot', label: '微信机器人', labelKey: 'nav.item.wechatBot', icon: '💬', super: true, hideForTenant: true },
       { path: '/admin/agents', label: 'Agent Registry', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true },
+    ],
+  },
+  {
+    id: 'opsplatform',
+    label: '运维平台',
+    labelKey: 'nav.group.opsplatform',
+    items: [
+      { path: '/ops/licenses', label: 'License管理', labelKey: 'nav.item.opsLicenses', icon: '🔑', super: true, hideForTenant: true },
+      { path: '/ops/faults', label: '故障管理', labelKey: 'nav.item.opsFaults', icon: '⚠️', super: true, hideForTenant: true },
+      { path: '/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', super: true, hideForTenant: true },
+      { path: '/ops/center', label: '中心运维', labelKey: 'nav.item.opsCenter', icon: '🖥️', super: true, hideForTenant: true },
+      { path: '/ops/vibecoding', label: 'VibeCoding', labelKey: 'nav.item.opsVibeCoding', icon: '💻', super: true, hideForTenant: true },
     ],
   },
   {

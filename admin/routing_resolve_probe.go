@@ -9,7 +9,18 @@ import (
 )
 
 func (h *Handler) persistResolveProbe(ctx context.Context, model string, candidates []resolveProbeCandidate) {
-	if h.db == nil || len(candidates) == 0 {
+	// 添加 panic 恢复，确保不会因为 probe 逻辑阻断主流程
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("persistResolveProbe panic recovered", "model", model, "panic", r)
+		}
+	}()
+
+	// 2026-07-09: 如果DB为空或无候选，静默返回不报错
+	if h.db == nil {
+		return
+	}
+	if len(candidates) == 0 {
 		return
 	}
 	planned := make([]map[string]interface{}, 0, len(candidates))
@@ -55,10 +66,19 @@ func (h *Handler) persistResolveProbe(ctx context.Context, model string, candida
 		)
 	`, reqID, model, chosenID, len(candidates), chosenID != nil, string(traceJSON))
 	if err != nil {
-		slog.Warn("resolve probe persist failed", "model", model, "error", err)
-		return
+		// 2026-07-09: 降级为 Warn 级别，表不存在或字段不匹配时静默忽略
+		// 不影响主流程的路由解析返回。migration 346 创建了该表，但可能尚未运行。
+		slog.Warn("resolve probe persist failed - likely missing table or schema mismatch",
+			"model", model,
+			"error", err.Error(),
+			"candidates_count", len(candidates),
+			"hint", "check if migration 346 has been applied")
+		// 即使写入失败也尝试刷新缓存（缓存逻辑是独立的）
 	}
-	globalFunnelCache.invalidateModel(model)
+	// 2026-07-09: 无论写入成功与否都刷新缓存，确保缓存失效逻辑始终执行
+	if globalFunnelCache != nil {
+		globalFunnelCache.invalidateModel(model)
+	}
 }
 
 type resolveProbeCandidate struct {

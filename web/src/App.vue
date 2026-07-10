@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo } from './store'
+import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo, authBearer } from './store'
 import { logout as apiLogout } from './api/auth'
 import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
@@ -33,34 +33,28 @@ const isPlatformOps = computed(() => checkPlatformOps())
 const isTenantPortal = computed(() => !isPlatformOps.value)
 
 onMounted(async () => {
-  // 2026-07-09: 始终探测一次 /api/auth/me（无论 store.userInfo 是否已有）。
-  // 这修复了「页面渲染时 store 为空，router 弹回首页，cookie auth 永远登不上」
-  // 的问题。authHydrated 必须先翻为 true 模板才会切到 app-layout。
-  // 流程：
-  //   1. userInfo 有 + apiKey/jwtToken 都无 → 可能 cookie 登录（async 探一下）
-  //   2. userInfo 无 + apiKey/jwtToken 都无 → 肯定没登录，直接 mark 完
-  //   3. 其他情况（apiKey 或 jwtToken 在）→ 已登录，直接 mark
+  // 2026-07-10: Auth hydration — probe /api/auth/me if JWT not already in localStorage.
+  // If store.jwtToken is already populated (from localStorage), we're authenticated.
+  // Otherwise, check if the HttpOnly cookie is still valid (for users who logged in
+  // before this JWT-persistence change). The server's /api/auth/me now returns a
+  // fresh access_token in the response so we can persist it to localStorage.
   try {
-    if (store.userInfo && !store.jwtToken && !store.apiKey) {
-      // 仅有 userInfo 的情况：探一下 cookie
+    if (!store.jwtToken && !store.apiKey) {
+      // No JWT in localStorage, no API key — check if cookie is still valid
       try {
         const me = await getAuthMe()
+        // Server may return {user, access_token, expires_at} or just user
+        const meAny = me as any
+        if (meAny?.access_token) {
+          setJwtToken(meAny.access_token)
+        }
         setUserInfo(me)
-        setJwtToken('cookie')
       } catch {
+        // 401 → no valid cookie either, user is logged out
         clearJwt()
       }
-    } else if (!store.userInfo && !store.jwtToken && !store.apiKey) {
-      // 完全没凭据：探一下看 cookie 是不是还活着
-      try {
-        const me = await getAuthMe()
-        setUserInfo(me)
-        setJwtToken('cookie')
-      } catch {
-        // 401 → 真的没登录，userInfo 保持 null
-      }
     }
-    // else: apiKey 或 jwtToken 至少有一个 → 已知登录
+    // else: store.jwtToken or store.apiKey already present → authenticated
   } finally {
     markAuthHydrated()
   }
@@ -96,10 +90,10 @@ const versionInfo = ref<{
 
 async function loadVersion() {
   if (!isLoggedIn.value) return
-  const token = store.jwtToken || store.apiKey
+  const token = authBearer()
   try {
     const resp = await fetch('/api/system/version', {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
     if (resp.status === 401) {
       clearAll()
@@ -177,20 +171,13 @@ function handleChangePasswordSuccess() {
   <div v-else-if="isLoggedIn" class="app-layout" :class="{ 'sidebar-collapsed': collapsed }">
     <aside class="sidebar">
       <div class="sidebar-logo">
-        <svg width="24" height="24" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-          <circle cx="16" cy="16" r="14" fill="#6366f1" />
-          <text
-            x="16"
-            y="21"
-            text-anchor="middle"
-            font-size="16"
-            fill="white"
-            font-family="Arial,sans-serif"
-            font-weight="bold"
-          >
-            G
-          </text>
-        </svg>
+        <img
+          src="/logo-icon-dark.png"
+          width="36"
+          height="36"
+          alt="开轩启圭"
+          class="sidebar-logo-img"
+        />
         <span v-show="!collapsed" class="sidebar-logo-text">LLM Gateway</span>
       </div>
 
@@ -244,6 +231,15 @@ function handleChangePasswordSuccess() {
       </nav>
 
       <div class="sidebar-footer">
+        <div v-if="store.userInfo" class="sidebar-user-badge">
+          <div class="sidebar-user-avatar" aria-hidden="true">
+            {{ (store.userInfo.display_name || store.userInfo.username || '?').charAt(0).toUpperCase() }}
+          </div>
+          <div v-show="!collapsed" class="sidebar-user-info">
+            <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
+            <span class="user-role">{{ store.userInfo.role ? t(`app.role.${store.userInfo.role}`) : '' }}</span>
+          </div>
+        </div>
         <button
           type="button"
           class="sidebar-toggle"
@@ -267,6 +263,7 @@ function handleChangePasswordSuccess() {
         >
           {{ collapsed ? '»' : '«' }}
         </button>
+        <SystemStatusIndicator />
         <div class="main-header-right">
           <div v-if="passwordSuccessMessage" class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
           <div class="header-meta">
@@ -284,7 +281,6 @@ function handleChangePasswordSuccess() {
               </template>
             </template>
           </div>
-          <SystemStatusIndicator />
           <LanguageSelector />
           <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('login.changePassword') }}</button>
           <button class="btn btn-ghost btn-sm" @click="logout">{{ t('app.logout') }}</button>
@@ -298,21 +294,12 @@ function handleChangePasswordSuccess() {
   <div v-else class="guest-layout">
     <header class="guest-header">
       <div class="guest-brand">
-        <svg width="24" height="24" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-          <circle cx="16" cy="16" r="14" fill="#6366f1" />
-          <text
-            x="16"
-            y="21"
-            text-anchor="middle"
-            font-size="16"
-            fill="white"
-            font-family="Arial,sans-serif"
-            font-weight="bold"
-          >
-            G
-          </text>
-        </svg>
-        <span>LLM Gateway</span>
+        <img
+          src="/logo-icon-dark.png"
+          height="36"
+          alt="开轩启圭 Qigui · AI-Native LLM Gateway"
+          class="guest-brand-img"
+        />
       </div>
       <div class="guest-header-right">
         <LanguageSelector />
@@ -408,10 +395,38 @@ function handleChangePasswordSuccess() {
   overflow: hidden;
 }
 
+.sidebar-logo-img {
+  flex-shrink: 0;
+  display: block;
+}
+
 .sidebar-nav {
   flex: 1;
   padding: 8px 8px 12px;
   overflow-y: auto;
+  /* Slim themed scrollbar — the default browser scrollbar is glaringly
+   * wide inside the 64px collapsed sidebar. Firefox uses the longhand
+   * `scrollbar-*` properties; WebKit/Blink need the pseudo-elements. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99, 102, 241, 0.4) transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.4);
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.75);
 }
 
 .nav-primary {
@@ -559,6 +574,65 @@ function handleChangePasswordSuccess() {
 .sidebar-footer {
   padding: 8px;
   border-top: 1px solid var(--border);
+}
+
+.sidebar-user-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  background: rgba(99, 102, 241, 0.08);
+  min-width: 0;
+}
+
+.app-layout.sidebar-collapsed .sidebar-user-badge {
+  justify-content: center;
+  padding: 8px;
+  gap: 0;
+}
+
+.sidebar-user-avatar {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+}
+
+.sidebar-user-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+  flex: 1;
+}
+
+.sidebar-user-info .user-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.sidebar-user-info .user-role {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
 }
 
 .sidebar-toggle {
@@ -726,6 +800,12 @@ function handleChangePasswordSuccess() {
   font-size: 14px;
   font-weight: 700;
   color: var(--text);
+}
+
+.guest-brand-img {
+  display: block;
+  height: 28px;
+  width: auto;
 }
 
 .guest-header-right {

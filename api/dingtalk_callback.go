@@ -67,7 +67,8 @@ func (h *DingTalkCallbackHandler) HandleApprovalCallback(w http.ResponseWriter, 
 		return
 	}
 
-	// Read request body
+	// Read request body (limit to 1MB)
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.Error("dingtalk callback: read body failed", "error", err)
@@ -78,7 +79,7 @@ func (h *DingTalkCallbackHandler) HandleApprovalCallback(w http.ResponseWriter, 
 	// Parse callback request
 	var req DingTalkCallbackRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		slog.Error("dingtalk callback: parse body failed", "error", err, "body", string(body))
+		slog.Error("dingtalk callback: parse body failed", "error", err, "body_size", len(body))
 		h.sendResponse(w, http.StatusBadRequest, 400, "Invalid request format")
 		return
 	}

@@ -58,7 +58,32 @@ type PipelineRequest struct {
 	StatusCode int
 	// Error 处理过程中的错误
 	Error error
-	// Metadata 跨阶段元数据
+	// Metadata 跨阶段元数据（请求内 hook 间共享总线）。
+	//
+	// 已登记的共享 key 契约（写者 → 读者，2026-07-09 整理）：
+	//
+	//   "audit_result" (*sessionaudit.DetectResult)
+	//     写：sessionaudit.SessionAuditHook.Execute（PreRouting）
+	//     读：approval_gate.go / approval_hook.go / cache_update_hook.go
+	//
+	//   "pii_stripped" (bool)
+	//     写：output_compliance 脱敏步骤（OutputComplianceInterceptor.Metadata）
+	//     读：cache_update_hook.extractPIIStripped → SessionState.PIIStripped
+	//
+	//   "output_compliance_result" (map)、"output_compliance_redacted" (bool)、
+	//   "output_compliance_error" (string)
+	//     写：outputcompliance.Hook.Execute（PostUpstream）
+	//     读：（暂无消费方；供 admin/telemetry 观测）
+	//
+	//   "optimization_applied" (string: strip_tools|compress_thinking|summarize)
+	//     写：compression/strip 阶段
+	//     读：cache_update_hook → SessionState.ApplyOptimization
+	//
+	//   "security_verdict"、"security_checked_at"、"audit_checked_at"
+	//     写：legacy security/sessionaudit hooks（PreRouting）
+	//     读：（治理观测）
+	//
+	// 新增 key 请在此登记写者/读者，避免悬空契约。
 	Metadata map[string]any
 	// CreatedAt 信封创建时间
 	CreatedAt time.Time

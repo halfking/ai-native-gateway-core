@@ -48,6 +48,7 @@ import fpSlotVisualizer from './fpSlotVisualizer'
 import modelPicker from './modelPicker'
 import modulesView from './modulesView'
 import formatAnomaliesView from './formatAnomaliesView'
+import outputCompliance from './outputCompliance'
 import agentRegistryView from './agentRegistryView'
 
 export default {

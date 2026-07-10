@@ -67,8 +67,10 @@ export default {
   errors: {
     loadFailed: 'Failed to load',
   },
-  dash: "[TODO: auditLog.dash]",
-  loadFailed: "[TODO: auditLog.loadFailed]",
-  refresh: "[TODO: auditLog.refresh]",
-  refreshing: "[TODO: auditLog.refreshing]",
+
+  // 扁平键（供 Vue 组件直接使用）
+  loadFailed: 'Load failed',
+  dash: '—',
+  refreshing: '刷新中…',
+  refresh: '刷新',
 }

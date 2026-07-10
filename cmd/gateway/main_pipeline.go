@@ -85,6 +85,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"                                                         //nolint:depguard // pgxpool→sql.DB 桥接
 	"github.com/kaixuan/llm-gateway-go/admin"                                                //nolint:depguard // Phase 4 SetClusterRunner 注入
 	"github.com/kaixuan/llm-gateway-go/domain"                                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domain/analysis"                                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -102,8 +103,8 @@ import (
 	outputcompliancehooks "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance" //nolint:depguard
 	promptinjectionhooks "github.com/kaixuan/llm-gateway-go/domains/hooks/promptinjection"   //nolint:depguard
 	legacysec "github.com/kaixuan/llm-gateway-go/domains/hooks/security"                     //nolint:depguard
-	sessionanalysis "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionanalysis"        //nolint:depguard
 	sessioninspector "github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector"     //nolint:depguard
+	sessionanalysis "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionanalysis"        //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/tools"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/interception"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -115,6 +116,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // v2DispatchConfig holds the feature-flag-driven configuration for the
@@ -245,6 +247,11 @@ type v2DispatchDeps struct {
 	OutputComplianceChecker outputcompliancehooks.Checker
 	SessionSummarizer       workers.SessionSummarizer
 
+	// ── 增强版提示词注入检测插件 ────────────────────────────────
+	// EnhancedPIPlugin 在 buildV2DispatchPipeline 中创建并注册到 secRegistry，
+	// 由 SetV2DispatchAnalysisResources 注入 DB + LLM caller 完成初始化。
+	EnhancedPIPlugin *securityplugins.PromptInjectionEnhancedPlugin
+
 	// ── Phase 4: Session Analytics Hook (会话全景分析插件) ───────
 	// SessionAnalysisEngines 为 nil 时分析 Hook 不注册（Enabled=false）。
 	// 由 main.go 在 session_analytics.enabled 且 dbConn 可用时注入。
@@ -304,10 +311,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "security", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{
-				legacysec.NewSecurityHook(
-					legacysec.NewIntentAnalyzer(0.5),
-					legacysec.NewThreatDetector(7),
-				),
+				legacysec.NewSecurityHook(settings.Global),
 			},
 		})
 	}
@@ -340,11 +344,14 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "session_inspect", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{
-			sessioninspector.NewInspectorHook(
-				sessioninspector.NewTokenLimitInspector(100000),
-				sessioninspector.NewInactiveInspector(30*time.Minute),
-				sessioninspector.NewHighFrequencyInspector(60),
-			),
+			func() pipeline.Hook {
+				inspectorHook := sessioninspector.NewInspectorHookWithConfig(nil)
+				// 注入 EventBus 以启用告警事件发布（2026-07-09 audit fix）
+				if deps.EventBus != nil {
+					inspectorHook.SetEventBus(deps.EventBus)
+				}
+				return inspectorHook
+			}(),
 		},
 	})
 
@@ -382,6 +389,11 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	secRegistry.MustRegister(securityplugins.NewPolicyComplianceChecker())
 	secRegistry.MustRegister(securityplugins.NewToolRiskChecker())
 	secRegistry.MustRegister(securityplugins.NewDataExfiltrationChecker())
+
+	// 增强版提示词注入检测插件（延迟初始化，依赖 DB + LLM caller）
+	enhancedPIPlugin := securityplugins.NewPromptInjectionEnhancedPlugin()
+	secRegistry.MustRegister(enhancedPIPlugin)
+	deps.EnhancedPIPlugin = enhancedPIPlugin
 
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "governance_security", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
@@ -993,6 +1005,15 @@ func SetV2DispatchAnalysisResources(
 	}
 	if summarizer != nil {
 		deps.SessionSummarizer = summarizer
+	}
+
+	// 增强版提示词注入检测插件初始化
+	// Plugin 是薄适配层，内部复用核心 promptinjection.Detector。
+	// 这里把 pgxpool 桥接为 *sql.DB，交给核心 Detector。
+	if pool != nil && deps.EnhancedPIPlugin != nil {
+		sqlDB := stdlib.OpenDB(*pool.Config().ConnConfig)
+		deps.EnhancedPIPlugin.Init(sqlDB)
+		slog.Info("enhanced prompt injection plugin initialized (wraps core Detector)")
 	}
 
 	// Phase 4: 会话全景分析引擎注入。

@@ -5,12 +5,14 @@ package settings
 func PlatformSpecs() []*Spec {
 	out := []*Spec{}
 	out = append(out, CompressionSpecs()...)
+	out = append(out, DisguiseSpecs()...)
 	out = append(out, SessionSpecs()...)
 	out = append(out, RateLimitPlatformSpecs()...)
 	out = append(out, PassthroughSpecs()...)
 	out = append(out, ModuleSpecs()...)
 	out = append(out, LogSpecs()...)
 	out = append(out, StorageSpecs()...)
+	out = append(out, SessionAuditSpecs()...)
 	return out
 }
 

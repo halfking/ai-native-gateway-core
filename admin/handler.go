@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // attachment download/list routes live in the admin mux
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -115,6 +116,12 @@ type Handler struct {
 	sessionManager         *session.Manager              // 2026-07-06 会话状态管理 (state, cred rotation, lifecycle)
 	sessionDBWriter        *session.DBWriter             // 2026-07-06 批量异步写 DB worker
 	sessionCleanupWorker   *session.CleanupWorker        // 2026-07-06 清理过期 stopped session
+
+	// 数据库降级模块 (2026-07-10)
+	dbMonitor   *dbdegradation.Monitor
+	fileReader  *dbdegradation.FileReader
+	recovery    *dbdegradation.Recovery
+	ttlManager  *dbdegradation.TTLManager
 
 	// identityPool is the legacy Layer 0 cap on total distinct end-user fingerprints.
 	// nil when the global cap feature is disabled.
@@ -462,6 +469,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions", admin(h.handleDataLifecyclePartitions))
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/archive", h.superAdmin(h.handleDataLifecycleArchivePartition))
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/archive-batch", h.superAdmin(h.handleDataLifecycleArchiveBatch))
+	// Hot table to partition migration endpoints (2026-07-10)
+	mux.HandleFunc("/api/admin/data-lifecycle/hot/promote", h.superAdmin(h.handleDataLifecyclePromoteHot))
+	mux.HandleFunc("/api/admin/data-lifecycle/partitions/drop", h.superAdmin(h.handleDataLifecycleDropPartition))
 	// Storage overview endpoints (2026-07-01)
 	mux.HandleFunc("/api/admin/data-lifecycle/storage", admin(h.handleDataLifecycleStorage))
 	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables", admin(h.handleDataLifecycleTableSizes))
@@ -501,6 +511,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-07-07: 首页会话统计概览接口
 	mux.HandleFunc("/api/admin/dashboard/session-overview", admin(h.handleDashboardSessionOverview))
 
+	// 2026-07-10: Dashboard API v2 - 6个新接口
+	mux.HandleFunc("/api/admin/dashboard/session-trend", admin(h.handleDashboardSessionTrend))
+	mux.HandleFunc("/api/admin/dashboard/session-health", admin(h.handleDashboardSessionHealth))
+	mux.HandleFunc("/api/admin/dashboard/session-active", admin(h.handleDashboardSessionActive))
+	mux.HandleFunc("/api/admin/dashboard/module-stats", admin(h.handleDashboardModuleStats))
+	mux.HandleFunc("/api/admin/dashboard/errors", admin(h.handleDashboardErrors))
+	mux.HandleFunc("/api/admin/dashboard/performance", admin(h.handleDashboardPerformance))
+
 	// 2026-07-07: P2会话分析 - 客户端/任务维度分析
 	mux.HandleFunc("/api/admin/session-analytics/clients", admin(h.handleClientAnalyticsList))
 	mux.HandleFunc("/api/admin/session-analytics/clients/", admin(h.handleClientAnalyticsDetail))
@@ -533,6 +551,21 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/sessions", admin(h.handleListSessions))
 	mux.HandleFunc("/api/admin/sessions/", admin(h.handleSessionSubrouter))
 
+	// 2026-07-10: 数据库降级和备份恢复端点
+	if h.dbMonitor != nil {
+		mux.HandleFunc("/api/admin/db-status", admin(h.handleDBStatus))
+	}
+	if h.fileReader != nil {
+		mux.HandleFunc("/api/admin/backups", admin(h.handleListBackups))
+		mux.HandleFunc("/api/admin/backups/{filename}", admin(h.handleGetBackupFile))
+		mux.HandleFunc("/api/admin/backups/{filename}/validate", admin(h.handleValidateBackupFile))
+	}
+	if h.recovery != nil {
+		mux.HandleFunc("/api/admin/backups/{filename}/recover", admin(h.handleRecoverBackupFile))
+		mux.HandleFunc("/api/admin/backups/recover-all", admin(h.handleRecoverAllBackups))
+		mux.HandleFunc("/api/admin/recovery-tasks/{task_id}", admin(h.handleGetRecoveryTask))
+	}
+
 	// Module management — enterprise feature module listing, toggling, and
 	// integration configuration (Feishu bot, webhook, etc.).
 	h.registerModuleRoutes(mux)
@@ -543,8 +576,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/session-audit", admin(h.handleSessionAuditList))
 	mux.HandleFunc("/api/admin/session-audit/", admin(h.handleSessionAuditGet))
 	mux.HandleFunc("/api/admin/session-audit/stats", admin(h.handleSessionAuditStats))
+	mux.HandleFunc("/api/admin/session-audit/export", admin(h.handleSessionAuditExport))
 	mux.HandleFunc("/api/admin/session-approvals", admin(h.handleApprovalList))
 	mux.HandleFunc("/api/admin/session-approvals/", admin(h.handleApprovalSubrouter))
+
+	// 2026-07-09 Session Inspector stats endpoint (session_inspector module).
+	// Platform-level aggregate stats: active/idle/closed counts, average health score, recycled today.
+	mux.HandleFunc("/api/admin/sessions/inspector-stats", admin(h.HandleSessionInspectorStats))
 	// Public polling endpoint (no auth) — clients poll this to learn whether
 	// their pending approval was approved/rejected/timeout. Cross-tenant
 	// protection via optional X-Tenant-ID header (see handler docstring).
@@ -592,6 +630,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/key-applications/", admin(h.handleKeyApplications))
 	mux.HandleFunc("/api/models", admin(h.handleModelsRoot))
 	mux.HandleFunc("/api/models/", admin(h.handleModels))
+	mux.HandleFunc("/api/models/name-mapping", admin(h.handleModelNameMapping))
+	mux.HandleFunc("/api/models/name-mapping/", admin(h.handleModelNameMapping))
 	mux.HandleFunc("/api/client-configs/audit", admin(h.handleClientConfigAudit))
 	mux.HandleFunc("/api/usage", admin(h.handleUsageSummary))
 	mux.HandleFunc("/api/usage/", admin(h.handleUsage))
@@ -678,16 +718,17 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)
 
 		// Credential monitor (2026-06-22): sliding window + manual promote/demote.
-		// Requires redis for sliding window access; recorder is optional.
+		// Redis is optional: monitor-summary works from DB alone; sliding window
+		// degrades to request_logs fallback when Redis is unavailable.
 		// 2026-07-04: 改用 h.admin 中间件，允许 tenant_admin 访问凭据监控页面
+		var rc *redis.Client
 		if h.redisClient != nil {
-			var rc *redis.Client
 			if r, ok := h.redisClient.(*redis.Client); ok {
 				rc = r
 			}
-			monitorH := NewCredentialMonitorHandlers(h, nil, rc)
-			monitorH.RegisterMonitorRoutes(mux, h.admin)
 		}
+		monitorH := NewCredentialMonitorHandlers(h, nil, rc)
+		monitorH.RegisterMonitorRoutes(mux, h.admin)
 
 		// Credential state management (2026-06-30): manual probe + live state query.
 		// Routes are guarded by superAdmin (same as monitor routes).

@@ -180,76 +180,80 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		BillingRound          int      `json:"billing_round"`
 	}
 
-	rawModels := append([]string{normalizedModel}, variants[1:]...)
-	// 2026-07-02: 重构使用 v_routable_credential_models 视图
-	// 优点：单一真实来源（SSOT），自动应用所有过滤规则（包括 plan_type 兼容性）
-	rows, err := h.db.Query(ctx, `
-		SELECT
-			p.id AS provider_id,
-			COALESCE(p.display_name, p.code) AS provider_name,
-			COALESCE(p.catalog_code, '') AS catalog_code,
-			COALESCE(p.protocol, 'openai-completions') AS protocol,
-			p.base_url,
-			p.enabled AS provider_enabled,
-			v.credential_id,
-			COALESCE(c.label, '') AS credential_label,
-			v.credential_status,
-			v.credential_lifecycle_status AS lifecycle_status,
-			v.availability_state,
-			v.availability_recover_at::text,
-			v.quota_state,
-			v.quota_recover_at::text,
-			c.concurrency_limit,
-			c.effective_concurrency,
-			c.effective_at::text,
-			c.expires_at::text,
-			(c.effective_at IS NULL OR c.effective_at <= now())
-				AND (c.expires_at IS NULL OR c.expires_at > now()) AS credential_in_effect,
-			c.balance_usd::float8,
-			COALESCE(c.circuit_state, 'closed') AS circuit_state,
-			c.cooling_until::text,
-			v.binding_available AS available,
-			COALESCE(cmb.routing_tier, 2) AS tier,
-			COALESCE(cmb.weight, 100) AS weight,
-			COALESCE(cmb.manual_priority, 99) AS manual_priority,
-			COALESCE(cmb.active_sessions, 0) AS active_sessions,
-			COALESCE(cmb.consecutive_failures, 0) AS consecutive_failures,
-			COALESCE(v.billing_mode, 'token') AS billing_mode,
-			mo.unit_price_in_per_1m,
-			mo.unit_price_out_per_1m,
-			COALESCE(cmb.currency, 'USD') AS currency,
-			COALESCE(cmb.success_rate, 0.9)::float8 AS success_rate,
-			COALESCE(mo.p95_latency_ms, 9999) AS p95_latency_ms,
-			v.raw_model_name AS model_name,
-			COALESCE(mo.standardized_name, v.raw_model_name) AS standardized_name,
-			COALESCE(mo.unit_price_in_per_1m, 0) AS quota_cap_usd,
-			COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd,
-			v.is_routable,
-			v.unavailable_reason
-		FROM v_routable_credential_models v
-		JOIN credentials c ON c.id = v.credential_id
-		JOIN providers p ON p.id = c.provider_id
-		JOIN credential_model_bindings cmb ON cmb.id = v.binding_id
-		LEFT JOIN model_offers mo ON mo.credential_id = v.credential_id 
-			AND mo.raw_model_name = v.raw_model_name
-		WHERE p.tenant_id = 'default'
-		  AND lower(v.raw_model_name) = ANY($1)
-		  AND p.enabled IS TRUE
-		  AND (v.is_routable = true OR $2)
-		ORDER BY
-			CASE COALESCE(v.billing_mode, 'token')
-				WHEN 'free' THEN 1
-				WHEN 'token_plan' THEN 1
-				WHEN 'code_plan' THEN 1
-				WHEN 'agent_plan' THEN 1
-				WHEN 'monthly' THEN 1
-				ELSE 2
-			END,
-			COALESCE(cmb.manual_priority, 99),
-			COALESCE(cmb.routing_tier, 2),
-			COALESCE(cmb.weight, 100) DESC,
-			COALESCE(cmb.success_rate, 0.9) DESC
-	`, rawModels, includeBlocked)
+		rawModels := append([]string{normalizedModel}, variants[1:]...)
+		// 2026-07-09 fix: v_routable_credential_models 视图经 migration 127/332
+		// 重写后不再暴露 credential_status/lifecycle/availability/quota 等列，
+		// 改为从已 JOIN 的 credentials(c) / credential_model_bindings(cmb) 表中获取。
+		rows, err := h.db.Query(ctx, `
+			SELECT
+				p.id AS provider_id,
+				COALESCE(p.display_name, p.code) AS provider_name,
+				COALESCE(p.catalog_code, '') AS catalog_code,
+				COALESCE(p.protocol, 'openai-completions') AS protocol,
+				p.base_url,
+				p.enabled AS provider_enabled,
+				v.credential_id,
+				COALESCE(c.label, '') AS credential_label,
+				c.status AS credential_status,
+				c.lifecycle_status,
+				c.availability_state,
+				c.availability_recover_at::text,
+				c.quota_state,
+				c.quota_recover_at::text,
+				c.concurrency_limit,
+				c.effective_concurrency,
+				c.effective_at::text,
+				c.expires_at::text,
+				(c.effective_at IS NULL OR c.effective_at <= now())
+					AND (c.expires_at IS NULL OR c.expires_at > now()) AS credential_in_effect,
+				c.balance_usd::float8,
+				COALESCE(c.circuit_state, 'closed') AS circuit_state,
+				c.cooling_until::text,
+				cmb.available,
+				COALESCE(cmb.routing_tier, 2) AS tier,
+				COALESCE(cmb.weight, 100) AS weight,
+				COALESCE(cmb.manual_priority, 99) AS manual_priority,
+				COALESCE(cmb.active_sessions, 0) AS active_sessions,
+				COALESCE(cmb.consecutive_failures, 0) AS consecutive_failures,
+				COALESCE(cmb.billing_mode, 'token') AS billing_mode,
+				mo.unit_price_in_per_1m,
+				mo.unit_price_out_per_1m,
+				COALESCE(cmb.currency, 'USD') AS currency,
+				COALESCE(cmb.success_rate, 0.9)::float8 AS success_rate,
+				COALESCE(mo.p95_latency_ms, 9999) AS p95_latency_ms,
+				v.raw_model_name AS model_name,
+				COALESCE(mo.standardized_name, v.raw_model_name) AS standardized_name,
+				COALESCE(mo.unit_price_in_per_1m, 0) AS quota_cap_usd,
+				COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd,
+				v.is_routable,
+				v.unavailable_reason
+			FROM v_routable_credential_models v
+			JOIN credentials c ON c.id = v.credential_id
+			JOIN providers p ON p.id = c.provider_id
+			JOIN credential_model_bindings cmb ON cmb.id = v.binding_id
+			LEFT JOIN model_offers mo ON mo.credential_id = v.credential_id 
+				AND mo.raw_model_name = v.raw_model_name
+			WHERE p.tenant_id = 'default'
+			  AND (
+			      lower(v.raw_model_name) = ANY($1)
+			      OR lower(COALESCE(mo.standardized_name, v.raw_model_name)) = ANY($1)
+			  )
+			  AND p.enabled IS TRUE
+			  AND (v.is_routable = true OR $2)
+			ORDER BY
+				CASE COALESCE(cmb.billing_mode, 'token')
+					WHEN 'free' THEN 1
+					WHEN 'token_plan' THEN 1
+					WHEN 'code_plan' THEN 1
+					WHEN 'agent_plan' THEN 1
+					WHEN 'monthly' THEN 1
+					ELSE 2
+				END,
+				COALESCE(cmb.manual_priority, 99),
+				COALESCE(cmb.routing_tier, 2),
+				COALESCE(cmb.weight, 100) DESC,
+				COALESCE(cmb.success_rate, 0.9) DESC
+		`, rawModels, includeBlocked)
 	if err != nil {
 		slog.Error("routing resolve query failed", "error", err.Error(), "model", model, "rawModels", rawModels, "include_blocked", includeBlocked)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -1646,12 +1650,14 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, `
 		SELECT c.id, c.provider_id, p.base_url, COALESCE(p.protocol,'openai'),
-		       c.secret_ciphertext, COALESCE(mo.raw_model_name, $1), COALESCE(mo.outbound_model_name, $1)
+		       c.secret_ciphertext,
+		       COALESCE(mo.outbound_model_name, mo.standardized_name, mo.raw_model_name),
+		       COALESCE(mo.outbound_model_name, mo.standardized_name, mo.raw_model_name)
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id AND c.status = 'active'
 		JOIN providers p ON p.id = c.provider_id AND p.enabled = TRUE
 		WHERE mo.available = TRUE
-		  AND lower(mo.raw_model_name) = lower($1)
+		  AND (lower(mo.raw_model_name) = lower($1) OR lower(mo.standardized_name) = lower($1))
 		  AND COALESCE(c.lifecycle_status,'active') = 'active'
 		  AND COALESCE(c.availability_state,'ready') = 'ready'
 		ORDER BY mo.manual_priority NULLS LAST,

@@ -7,7 +7,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useLiveStream } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
-import { isSuperAdmin } from '../store'
+import { isSuperAdmin, authBearer } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
 import SwimLane from './SwimLane.vue'
 import LiveStreamLegend from './LiveStreamLegend.vue'
@@ -54,16 +54,16 @@ const isEditingUrl = ref(false)
 const editUrlValue = ref('')
 
 // 把 string → URL 转换成一个 EventSource 可用的最终地址
+// 优先使用 withCredentials 发送 HttpOnly cookie，仅在 cookie 不可用时降级为 ?token=
 function buildFinalUrl(url: string): string {
   const trimmed = url.trim()
   if (!trimmed) return defaultStreamUrl.value
-  // 包含 token 参数：在 admin api_key 模式下浏览器 EventSource 无法设置 Authorization，
-  // 我们把 localStorage 里的 api_key 拼到 ?token=，由后端当 fallback 接受
+  // 仅当 localStorage 的 api_key 明确标记为非 cookie 模式时才用 ?token= 降级
   let apiKeySuffix = ''
   try {
     const apiKey = localStorage.getItem('llmgw_api_key')
-    if (apiKey && !apiKey.startsWith('cookie')) {
-      apiKeySuffix = (trimmed.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(apiKey)
+    if (apiKey && apiKey.startsWith('token:')) {
+      apiKeySuffix = (trimmed.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(apiKey.slice(6))
     }
   } catch {
     /* SSR / storage disabled */
