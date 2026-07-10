@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -355,5 +356,5 @@ func (s *PgxStore) GetDashboardStats(ctx context.Context) (*DashboardStats, erro
 }
 
 func offsetPlaceholder(n int) string {
-	return string(rune('0' + n))
+	return strconv.Itoa(n)
 }
