@@ -27,6 +27,10 @@ export default {
     matrixMeta: '（{ok} 可用 / {fail} 不可用）',
     chipAvailable: '可用',
     chipUnavailable: '不可用',
+    chipAvailable: '可用',
+    chipUnavailable: '不可用',
+    chipAvailable: '可用',
+    chipUnavailable: '不可用',
   },
   overviewCards: {
     basicInfo: '基本資訊',
@@ -210,6 +214,8 @@ export default {
     checkFailed: '偵測失敗',
     lifecycleFailed: '設定失敗',
     planTypeFailed: '設定 plan_type 失敗',
+    labelFallback: '凭据 #{id}',
+    labelFallback: '凭据 #{id}',
   },
   models: {
     title: '模型清單 ({n})',
@@ -524,4 +530,15 @@ export default {
   },
   tableCol: {
   },
+  models_creds_labelFallback: '凭据 #{id}',
+  models_overview_chipAvailable: '可用',
+  models_overview_chipUnavailable: '不可用',
+  models_creds_labelFallback: '凭据 #{id}',
+  models_overview_chipAvailable: '可用',
+  models_overview_chipUnavailable: '不可用',
+
+  // 同步的扁平键
+  models_creds_labelFallback: '凭据 #{id}',
+  models_overview_chipAvailable: '可用',
+  models_overview_chipUnavailable: '不可用',
 }

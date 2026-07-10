@@ -27,6 +27,10 @@ export default {
     matrixMeta: '({ok} متاح / {fail} غير متاح)',
     chipAvailable: 'متاح',
     chipUnavailable: 'غير متاح',
+    chipAvailable: '可用',
+    chipUnavailable: '不可用',
+    chipAvailable: '可用',
+    chipUnavailable: '不可用',
   },
   overviewCards: {
     basicInfo: 'المعلومات الأساسية',
@@ -210,6 +214,8 @@ export default {
     checkFailed: 'فشل الفحص',
     lifecycleFailed: 'فشل الإعداد',
     planTypeFailed: 'فشل تعيين plan_type',
+    labelFallback: '凭据 #{id}',
+    labelFallback: '凭据 #{id}',
   },
   models: {
     title: 'قائمة النماذج ({n})',
@@ -524,4 +530,15 @@ export default {
   },
   tableCol: {
   },
+  models_creds_labelFallback: '凭据 #{id}',
+  models_overview_chipAvailable: '可用',
+  models_overview_chipUnavailable: '不可用',
+  models_creds_labelFallback: '凭据 #{id}',
+  models_overview_chipAvailable: '可用',
+  models_overview_chipUnavailable: '不可用',
+
+  // 同步的扁平键
+  models_creds_labelFallback: '凭据 #{id}',
+  models_overview_chipAvailable: '可用',
+  models_overview_chipUnavailable: '不可用',
 }
