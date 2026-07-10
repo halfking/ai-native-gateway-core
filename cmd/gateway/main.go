@@ -2215,6 +2215,11 @@ func main() {
 		e.HidePort = true
 
 		pool := dbConn.Pool()
+		// Operations endpoints (admin/center/licensing/fault/autoupdate/vibecoding)
+		// are mounted under their own group below. Each group is responsible for
+		// applying the correct auth middleware. Previously a SuperAdmin wrapper was
+		// installed here globally, which broke every non-admin request (chat
+		// completions, health probes, etc.). Removed in the 2026-07-11 audit.
 
 		// Phase 2: Licensing (License管理)
 		licensingStore := licensing.NewPgxStore(pool)
@@ -2242,13 +2247,10 @@ func main() {
 		autoupdateInstaller := autoupdate.NewInstaller("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
 		autoupdateRollback := autoupdate.NewRollback("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
 		autoupdateAPI := autoupdate.NewAdminAPI(autoupdateStore, autoupdateDownloader, autoupdateInstaller, autoupdateRollback)
-		// 前端使用 /api/admin/releases，前端期望不含 /autoupdate 前缀
-		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/releases"))
+		// Register from /api/admin so the handler's /releases paths remain
+		// /api/admin/releases rather than the accidental /releases/releases.
+		autoupdateAPI.RegisterRoutes(e.Group("/api/admin"))
 		slog.Info("Phase 4: Auto-update API enabled (/api/admin/releases/*)")
-
-		// Autoupdate upgrade-logs 端点（前端使用 path = /api/admin/upgrade-logs 或 /api/admin/releases/upgrade-logs）
-		// 这里单独注册以兼容多种路径
-		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/autoupdate"))
 
 		// Phase 5: Center Ops (中心运维)
 		centerStore := center.NewPgxStore(pool)
