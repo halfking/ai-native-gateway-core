@@ -33,34 +33,25 @@ const isPlatformOps = computed(() => checkPlatformOps())
 const isTenantPortal = computed(() => !isPlatformOps.value)
 
 onMounted(async () => {
-  // 2026-07-09: 始终探测一次 /api/auth/me（无论 store.userInfo 是否已有）。
-  // 这修复了「页面渲染时 store 为空，router 弹回首页，cookie auth 永远登不上」
-  // 的问题。authHydrated 必须先翻为 true 模板才会切到 app-layout。
-  // 流程：
-  //   1. userInfo 有 + apiKey/jwtToken 都无 → 可能 cookie 登录（async 探一下）
-  //   2. userInfo 无 + apiKey/jwtToken 都无 → 肯定没登录，直接 mark 完
-  //   3. 其他情况（apiKey 或 jwtToken 在）→ 已登录，直接 mark
+  // 2026-07-10: Auth hydration — probe /api/auth/me if JWT not already in localStorage.
+  // If store.jwtToken is already populated (from localStorage), we're authenticated.
+  // Otherwise, check if the HttpOnly cookie is still valid (for users who logged in
+  // before this JWT-persistence change).
   try {
-    if (store.userInfo && !store.jwtToken && !store.apiKey) {
-      // 仅有 userInfo 的情况：探一下 cookie
+    if (!store.jwtToken && !store.apiKey) {
+      // No JWT in localStorage, no API key — check if cookie is still valid
       try {
         const me = await getAuthMe()
         setUserInfo(me)
-        setJwtToken('cookie')
+        // Cookie is valid but we don't have the JWT in localStorage.
+        // User logged in before the unified-auth change; they'll get a fresh JWT
+        // on next login. For now, keep them logged in via cookie.
       } catch {
+        // 401 → no valid cookie either, user is logged out
         clearJwt()
       }
-    } else if (!store.userInfo && !store.jwtToken && !store.apiKey) {
-      // 完全没凭据：探一下看 cookie 是不是还活着
-      try {
-        const me = await getAuthMe()
-        setUserInfo(me)
-        setJwtToken('cookie')
-      } catch {
-        // 401 → 真的没登录，userInfo 保持 null
-      }
     }
-    // else: apiKey 或 jwtToken 至少有一个 → 已知登录
+    // else: store.jwtToken or store.apiKey already present → authenticated
   } finally {
     markAuthHydrated()
   }
@@ -96,10 +87,10 @@ const versionInfo = ref<{
 
 async function loadVersion() {
   if (!isLoggedIn.value) return
-  const token = store.jwtToken || store.apiKey
+  const token = authBearer()
   try {
     const resp = await fetch('/api/system/version', {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
     if (resp.status === 401) {
       clearAll()

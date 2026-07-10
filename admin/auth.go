@@ -37,36 +37,13 @@ func getAdminPassword() string {
 	return "admin"
 }
 
+// hashAPIKey hashes an API key using HMAC-SHA256 (used in keys.go for sk-* generation).
+// Note: sk-* keys are no longer used for admin authentication (JWT-only since 2026-07-10),
+// but are still generated for data-plane /v1/* API access.
 func hashAPIKey(secretKey, rawKey string) string {
 	mac := hmac.New(sha256.New, []byte(secretKey))
 	mac.Write([]byte(rawKey))
 	return hex.EncodeToString(mac.Sum(nil))
-}
-
-func verifyAdminAuth(r *http.Request, db *pgxpool.Pool, secretKey string) bool {
-	auth := r.Header.Get("Authorization")
-	if len(auth) < 7 || auth[:7] != "Bearer " {
-		return false
-	}
-	rawKey := auth[7:]
-	keyHash := hashAPIKey(secretKey, rawKey)
-
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-
-	var appCode string
-	err := db.QueryRow(ctx, `
-		SELECT app.code
-		FROM api_keys ak
-		JOIN applications app ON app.id = ak.application_id
-		WHERE ak.key_hash = $1 AND ak.enabled = TRUE
-		  AND COALESCE(ak.status, 'active') <> 'revoked'
-		  AND (ak.expires_at IS NULL OR ak.expires_at > now())
-	`, keyHash).Scan(&appCode)
-	if err != nil {
-		return false
-	}
-	return appCode == "admin"
 }
 
 // handleLogout clears the session cookie (rule 20 §6.1).
@@ -92,7 +69,7 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 			}
 		}
 
-		// ── Try JWT auth first (Bearer header or session cookie) ──
+		// ── JWT auth (Bearer header or session cookie) ──
 		if tokenStr, ok := extractBearerOrCookieToken(r); ok {
 			claims, err := VerifyToken(tokenStr, secretKey)
 			if err == nil && claims.UserID > 0 {
@@ -112,27 +89,7 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 			}
 		}
 
-		// ── Fall back to legacy admin API key (DB lookup) ──────
-		// Restored after f88a96aa regression: the previous code returned 401
-		// unconditionally when JWT verification failed, leaving this branch
-		// as dead code. Admin API keys (sk-...) registered in the api_keys
-		// table with application code 'admin' must still authenticate.
-		// ── Fall back to legacy admin API key (DB lookup) ──────
-		// DEPRECATED (rule 20 §10): scheduled for removal on 2026-07-27.
-		if db != nil && verifyAdminAuth(r, db, secretKey) {
-			slog.Warn("admin api key fallback deprecated, migrate to JWT (removal 2026-07-27)",
-				"path", r.URL.Path, "remote", r.RemoteAddr)
-			authReq := SetAuthContext(r, &AuthContext{
-				TenantID: "default",
-				Username: "admin",
-				Role:     "admin_key",
-				IsJWT:    false,
-			})
-			next(w, authReq)
-			return
-		}
-
-		// No valid JWT and no valid API key → 401
+		// No valid JWT → 401
 		writeError(w, http.StatusUnauthorized, "authentication required")
 	}
 }
@@ -344,11 +301,11 @@ func (h *Handler) generateAdminKey(secretKey string) (raw, hash, prefix, ciphert
 	return
 }
 
-// SuperAdminMiddleware wraps admin auth + role check (super_admin or admin_key only).
+// SuperAdminMiddleware wraps admin auth + role check (super_admin only).
 // tenant_admin requests get 403 Forbidden.
 func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Try JWT first (no DB needed) — from Authorization Bearer or llmgw_session cookie
+		// JWT auth (from Authorization Bearer or llmgw_session cookie)
 		tokenStr, ok := extractBearerOrCookieToken(r)
 		if ok {
 			claims, err := VerifyToken(tokenStr, secretKey)
@@ -357,11 +314,6 @@ func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 					writeError(w, http.StatusForbidden, "super_admin role required for this endpoint")
 					return
 				}
-				// 2026-06-30 PR-4: super_admin must also satisfy the password
-				// change requirement (rule 20 §6.2). Previously this was only
-				// checked in AdminMiddleware; SuperAdminMiddleware skipped it,
-				// allowing must_change_password=true super_admins to bypass the
-				// gate via Authorization: Bearer <jwt>.
 				if enforceMustChangePassword(w, r, claims) {
 					return
 				}
@@ -377,24 +329,7 @@ func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 			}
 		}
 
-		// Fall back to legacy admin API key (DB lookup).
-		// Restored after f88a96aa regression.
-		// ── Fall back to legacy admin API key (DB lookup) ──────
-		// DEPRECATED (rule 20 §10): scheduled for removal on 2026-07-27.
-		if db != nil && verifyAdminAuth(r, db, secretKey) {
-			slog.Warn("admin api key fallback deprecated, migrate to JWT (removal 2026-07-27)",
-				"path", r.URL.Path, "remote", r.RemoteAddr)
-			authReq := SetAuthContext(r, &AuthContext{
-				TenantID: "default",
-				Username: "admin",
-				Role:     "admin_key",
-				IsJWT:    false,
-			})
-			next(w, authReq)
-			return
-		}
-
-		// No valid JWT and no valid API key → 401
+		// No valid JWT → 401
 		writeError(w, http.StatusUnauthorized, "authentication required")
 	}
 }
