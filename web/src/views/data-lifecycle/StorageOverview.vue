@@ -154,10 +154,10 @@
     <!-- 表级 Top-N -->
     <div class="card tables-card">
       <div class="card-header">
-        <h3 class="card-title">数据库表 Top {{ tables.length }}</h3>
+        <h3 class="card-title">{{ t('dataLifecycle.storageOverview.tablesTitle', { n: tables.length }) }}</h3>
         <div class="header-actions">
           <button class="btn btn-ghost btn-sm" @click="loadTables" :disabled="loadingTables">
-            {{ loadingTables ? '加载中…' : '刷新' }}
+            {{ loadingTables ? t('dataLifecycle.storageOverview.refreshLoading') : t('dataLifecycle.storageOverview.refresh') }}
           </button>
         </div>
       </div>
@@ -165,66 +165,78 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th>表名</th>
-              <th>行数</th>
-              <th>总大小</th>
-              <th>索引</th>
-              <th>TOAST</th>
-              <th>占比</th>
-              <th>分区</th>
-              <th>操作</th>
+              <th>{{ t('dataLifecycle.storageOverview.columns.tableName') }}</th>
+              <th>{{ t('dataLifecycle.storageOverview.columns.rows') }}</th>
+              <th>{{ t('dataLifecycle.storageOverview.columns.totalSize') }}</th>
+              <th>{{ t('dataLifecycle.storageOverview.columns.indexes') }}</th>
+              <th>{{ t('dataLifecycle.storageOverview.columns.toast') }}</th>
+              <th>{{ t('dataLifecycle.storageOverview.columns.percent') }}</th>
+              <th>{{ t('dataLifecycle.storageOverview.columns.partition') }}</th>
+              <th>{{ t('dataLifecycle.storageOverview.columns.actions') }}</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="t in tables" :key="t.table">
+            <tr v-for="tRow in tables" :key="tRow.table">
               <td>
-                <code class="tbl-code">{{ t.schema }}.{{ t.table }}</code>
+                <code class="tbl-code">{{ tRow.schema }}.{{ tRow.table }}</code>
               </td>
-              <td>{{ formatNumber(t.rows) }}</td>
-              <td class="strong">{{ t.total_human }}</td>
-              <td class="dim">{{ humanBytes(t.index_bytes) }}</td>
-              <td class="dim">{{ humanBytes(t.toast_bytes) }}</td>
+              <td>{{ formatNumber(tRow.rows) }}</td>
+              <td class="strong">{{ tRow.total_human }}</td>
+              <td class="dim">{{ humanBytes(tRow.index_bytes) }}</td>
+              <td class="dim">{{ humanBytes(tRow.toast_bytes) }}</td>
               <td>
                 <div class="pct-track">
-                  <div class="pct-fill" :style="{ width: t.percent_of_db + '%' }"></div>
-                  <span class="pct-text">{{ t.percent_of_db }}%</span>
+                  <div class="pct-fill" :style="{ width: tRow.percent_of_db + '%' }"></div>
+                  <span class="pct-text">{{ tRow.percent_of_db }}%</span>
                 </div>
               </td>
               <td>
-                <span v-if="t.is_partitioned" class="pill warn">分区</span>
-                <span v-else class="pill dim">—</span>
+                <span v-if="tRow.is_partitioned" class="pill warn">{{ t('dataLifecycle.storageOverview.partitionBadge') }}</span>
+                <span v-else class="pill dim">{{ t('dataLifecycle.storageOverview.partitionNone') }}</span>
               </td>
               <td>
                 <div class="row-actions">
                   <button
                     class="btn btn-vacuum btn-xs"
-                    :disabled="busy[t.table] !== undefined"
-                    :title="`VACUUM (ANALYZE) ${t.table} — 不锁表，清理 dead tuples`"
-                    @click="confirmAndRun('VACUUM', t)"
-                  >🧹 VACUUM</button>
+                    :disabled="busy[tRow.table] !== undefined"
+                    :title="t('dataLifecycle.storageOverview.buttons.vacuumTitle', { table: tRow.table })"
+                    @click="confirmAndRun('VACUUM', tRow)"
+                  >{{ t('dataLifecycle.storageOverview.buttons.vacuum') }}</button>
                   <button
                     class="btn btn-vacuum-full btn-xs"
-                    :disabled="busy[t.table] !== undefined"
-                    :title="`VACUUM FULL ${t.table} — 锁表，回收磁盘给 OS`"
-                    @click="confirmAndRun('VACUUM FULL', t)"
-                  >🗜 FULL</button>
+                    :disabled="busy[tRow.table] !== undefined"
+                    :title="t('dataLifecycle.storageOverview.buttons.vacuumFullTitle', { table: tRow.table })"
+                    @click="confirmAndRun('VACUUM FULL', tRow)"
+                  >{{ t('dataLifecycle.storageOverview.buttons.vacuumFull') }}</button>
                   <button
                     class="btn btn-reindex btn-xs"
-                    :disabled="busy[t.table] !== undefined"
-                    :title="`REINDEX TABLE ${t.table} — 锁表，回收索引 bloat`"
-                    @click="confirmAndRun('REINDEX', t)"
-                  >🔧 REINDEX</button>
+                    :disabled="busy[tRow.table] !== undefined"
+                    :title="t('dataLifecycle.storageOverview.buttons.reindexTitle', { table: tRow.table })"
+                    @click="confirmAndRun('REINDEX', tRow)"
+                  >{{ t('dataLifecycle.storageOverview.buttons.reindex') }}</button>
                 </div>
-                <div v-if="busy[t.table]" class="row-status">
+                <div v-if="busy[tRow.table]" class="row-status">
                   <span class="spinner"></span>
-                  <span class="status-text">{{ busy[t.table] }}</span>
+                  <span class="status-text">{{ busy[tRow.table] }}</span>
                 </div>
-                <div v-else-if="lastResult[t.table]" class="row-result" :class="lastResult[t.table]!.success ? 'ok' : 'err'">
-                  <span v-if="lastResult[t.table]!.success">
-                    ✓ {{ lastResult[t.table]!.operation }}: 释放 {{ lastResult[t.table]!.size_saved_human }} ({{ lastResult[t.table]!.reclaimed_pct }}%, {{ lastResult[t.table]!.duration_ms }}ms)
+                <div v-else-if="lastResult[tRow.table]" class="row-result" :class="lastResult[tRow.table]!.success ? 'ok' : 'err'">
+                  <span v-if="lastResult[tRow.table]!.success">
+                    ✓ {{
+                      t('dataLifecycle.storageOverview.rowResult.success', {
+                        op: lastResult[tRow.table]!.operation,
+                        size: lastResult[tRow.table]!.size_saved_human,
+                        pct: lastResult[tRow.table]!.reclaimed_pct,
+                        ms: lastResult[tRow.table]!.duration_ms,
+                      })
+                    }}
                   </span>
                   <span v-else>
-                    ✗ {{ lastResult[t.table]!.operation }} 失败: {{ lastResult[t.table]!.message }}
+                    ✗ {{
+                      t('dataLifecycle.storageOverview.rowResult.failed', {
+                        op: lastResult[tRow.table]!.operation,
+                        msg: lastResult[tRow.table]!.message,
+                      })
+                    }}
                   </span>
                 </div>
               </td>
@@ -236,41 +248,58 @@
 
     <!-- 风险确认弹窗 -->
     <div v-if="confirmOp" class="modal-backdrop" @click.self="cancelConfirm">
-      <div class="modal">
+      <div class="modal modal-wide">
         <h3 class="modal-title">
-          <span v-if="confirmOp.op === 'VACUUM'">🧹 确认执行 VACUUM</span>
-          <span v-else-if="confirmOp.op === 'VACUUM FULL'">🗜 确认执行 VACUUM FULL</span>
-          <span v-else>🔧 确认执行 REINDEX</span>
+          <span v-if="confirmOp.op === 'VACUUM'">{{ t('dataLifecycle.storageOverview.modal.vacuumTitle') }}</span>
+          <span v-else-if="confirmOp.op === 'VACUUM FULL'">{{ t('dataLifecycle.storageOverview.modal.vacuumFullTitle') }}</span>
+          <span v-else>{{ t('dataLifecycle.storageOverview.modal.reindexTitle') }}</span>
         </h3>
         <div class="modal-body">
           <p>
-            将对 <code class="tbl-code">{{ confirmOp.t.schema }}.{{ confirmOp.t.table }}</code> 执行
-            <strong>{{ confirmOp.op }}</strong>。
+            {{
+              t('dataLifecycle.storageOverview.modal.intro', {
+                table: confirmOp.t.schema + '.' + confirmOp.t.table,
+                op: confirmOp.op,
+              })
+            }}
           </p>
           <div class="modal-info">
-            <div><strong>当前大小:</strong> {{ confirmOp.t.total_human }}</div>
-            <div><strong>行数:</strong> {{ formatNumber(confirmOp.t.rows) }}</div>
-            <div><strong>分区:</strong> {{ confirmOp.t.is_partitioned ? '是（⚠️ 锁表影响所有子表）' : '否' }}</div>
+            <div><strong>{{ t('dataLifecycle.storageOverview.modal.currentSize') }}</strong>{{ confirmOp.t.total_human }}</div>
+            <div><strong>{{ t('dataLifecycle.storageOverview.modal.rowCount') }}</strong>{{ formatNumber(confirmOp.t.rows) }}</div>
+            <div>
+              <strong>{{ t('dataLifecycle.storageOverview.modal.partition') }}</strong>
+              <span :class="confirmOp.t.is_partitioned ? 'pill warn' : 'pill dim'">
+                {{ confirmOp.t.is_partitioned ? t('dataLifecycle.storageOverview.modal.partitionYes') : t('dataLifecycle.storageOverview.modal.partitionNo') }}
+              </span>
+            </div>
           </div>
-          <div class="modal-warn" v-if="confirmOp.op === 'VACUUM FULL'">
-            ⚠️ <strong>VACUUM FULL</strong> 会持有 ACCESS EXCLUSIVE 锁，期间<strong>禁止读写</strong>该表。
-            业务高峰期执行会导致请求堆积。建议在<strong>凌晨低峰期</strong>执行。
+
+          <div class="modal-section">
+            <div class="modal-section-title">① {{ t('dataLifecycle.storageOverview.modal.flow') }}</div>
+            <div class="modal-section-body">{{ flowText }}</div>
           </div>
-          <div class="modal-warn" v-else-if="confirmOp.op === 'REINDEX'">
-            ⚠️ <strong>REINDEX</strong> 会持有锁表时间 = 索引大小 / 磁盘 IO 速度。
-            索引越大耗时越长。本表索引合计 {{ humanBytes(confirmOp.t.index_bytes) }}，预计数秒至数分钟。
+          <div class="modal-section" :class="{ 'modal-section-impact': confirmOp.op !== 'VACUUM' }">
+            <div class="modal-section-title">② {{ t('dataLifecycle.storageOverview.modal.impact') }}</div>
+            <div class="modal-section-body">{{ impactText }}</div>
           </div>
-          <div class="modal-info-2" v-else>
-            ✓ <strong>VACUUM</strong> 不锁表，运行时长 = 表大小。可安全执行。
+          <div class="modal-section">
+            <div class="modal-section-title">③ {{ t('dataLifecycle.storageOverview.modal.disk') }}</div>
+            <div class="modal-section-body">{{ diskText }}</div>
+          </div>
+          <div class="modal-section">
+            <div class="modal-section-title">④ {{ t('dataLifecycle.storageOverview.modal.time') }}</div>
+            <div class="modal-section-body">{{ timeText }}</div>
           </div>
         </div>
         <div class="modal-actions">
-          <button class="btn btn-ghost" @click="cancelConfirm">取消</button>
+          <button class="btn btn-ghost" @click="cancelConfirm">
+            {{ t('dataLifecycle.storageOverview.modal.cancel') }}
+          </button>
           <button
             class="btn"
             :class="confirmOp.op === 'VACUUM' ? 'btn-vacuum' : confirmOp.op === 'VACUUM FULL' ? 'btn-vacuum-full' : 'btn-reindex'"
             @click="executeOp"
-          >确认执行 {{ confirmOp.op }}</button>
+          >{{ t('dataLifecycle.storageOverview.modal.confirm', { op: confirmOp.op }) }}</button>
         </div>
       </div>
     </div>
@@ -280,6 +309,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import {
   dataLifecycleStorage,
@@ -292,6 +322,8 @@ import {
   type TableMaintenanceRequest,
   type TableMaintenanceResponse,
 } from '../../api'
+
+const { t } = useI18n()
 
 const data = ref<StorageOverview | null>(null)
 const tables = ref<TableSizeInfo[]>([])
@@ -314,9 +346,41 @@ const columnarPctOfDB = computed(() => {
   return ((col / db) * 100).toFixed(1)
 })
 
+// ── 弹窗：根据当前操作类型拉取 4 段文案 ────────────────────────
+function opKey(op: 'VACUUM' | 'VACUUM FULL' | 'REINDEX' | undefined): 'vacuum' | 'vacuumFull' | 'reindex' | '' {
+  if (op === 'VACUUM') return 'vacuum'
+  if (op === 'VACUUM FULL') return 'vacuumFull'
+  if (op === 'REINDEX') return 'reindex'
+  return ''
+}
+
+const flowText = computed(() => {
+  const k = opKey(confirmOp.value?.op)
+  return k ? t(`dataLifecycle.storageOverview.op.${k}.flow`) : ''
+})
+
+const impactText = computed(() => {
+  const k = opKey(confirmOp.value?.op)
+  return k ? t(`dataLifecycle.storageOverview.op.${k}.impact`) : ''
+})
+
+const diskText = computed(() => {
+  const k = opKey(confirmOp.value?.op)
+  return k ? t(`dataLifecycle.storageOverview.op.${k}.disk`) : ''
+})
+
+const timeText = computed(() => {
+  const k = opKey(confirmOp.value?.op)
+  if (!k) return ''
+  if (k === 'reindex') {
+    return t(`dataLifecycle.storageOverview.op.${k}.time`, { size: humanBytes(confirmOp.value?.t.index_bytes) })
+  }
+  return t(`dataLifecycle.storageOverview.op.${k}.time`)
+})
+
 // ── 表级维护操作 handler ─────────────────────────────────
-function confirmAndRun(op: 'VACUUM' | 'VACUUM FULL' | 'REINDEX', t: TableSizeInfo) {
-  confirmOp.value = { op, t }
+function confirmAndRun(op: 'VACUUM' | 'VACUUM FULL' | 'REINDEX', tRow: TableSizeInfo) {
+  confirmOp.value = { op, t: tRow }
 }
 
 function cancelConfirm() {
@@ -325,11 +389,11 @@ function cancelConfirm() {
 
 async function executeOp() {
   if (!confirmOp.value) return
-  const { op, t } = confirmOp.value
+  const { op, t: tRow } = confirmOp.value
   confirmOp.value = null
 
-  const body: TableMaintenanceRequest = { schema: t.schema, table: t.table }
-  busy[t.table] = op === 'VACUUM FULL' ? 'VACUUM FULL 中…' : `${op} 中…`
+  const body: TableMaintenanceRequest = { schema: tRow.schema, table: tRow.table }
+  busy[tRow.table] = op === 'VACUUM FULL' ? 'VACUUM FULL 中…' : `${op} 中…`
 
   try {
     let resp: TableMaintenanceResponse
@@ -340,32 +404,43 @@ async function executeOp() {
     } else {
       resp = await dataLifecycleTableReindex(body)
     }
-    lastResult[t.table] = {
+    lastResult[tRow.table] = {
       ...resp,
       size_saved_human: humanBytes(resp.size_saved_bytes),
     }
     if (resp.success) {
       ElMessage.success({
-        message: `${op} ${t.table} 完成 — 释放 ${humanBytes(resp.size_saved_bytes)} (${resp.reclaimed_pct}%)`,
+        message: t('dataLifecycle.storageOverview.modal.success', {
+          op,
+          table: tRow.table,
+          size: humanBytes(resp.size_saved_bytes),
+          pct: resp.reclaimed_pct,
+        }),
         duration: 5000,
       })
       // 刷新表格数据，反映新大小
       await loadTables()
     } else {
-      ElMessage.error({ message: `${op} 失败: ${resp.message}`, duration: 8000 })
+      ElMessage.error({
+        message: t('dataLifecycle.storageOverview.modal.failed', { op, msg: resp.message }),
+        duration: 8000,
+      })
     }
   } catch (e: any) {
     const msg = e?.response?.data?.message || e?.message || String(e)
-    lastResult[t.table] = {
-      schema: t.schema, table: t.table, operation: op,
+    lastResult[tRow.table] = {
+      schema: tRow.schema, table: tRow.table, operation: op,
       success: false, message: msg, duration_ms: 0,
       size_before_bytes: 0, size_after_bytes: 0, size_saved_bytes: 0,
       reclaimed_pct: 0, started_at: '', finished_at: '',
       size_saved_human: '0 B',
     }
-    ElMessage.error({ message: `${op} 失败: ${msg}`, duration: 8000 })
+    ElMessage.error({
+      message: t('dataLifecycle.storageOverview.modal.failed', { op, msg }),
+      duration: 8000,
+    })
   } finally {
-    delete busy[t.table]
+    delete busy[tRow.table]
   }
 }
 
@@ -787,6 +862,11 @@ function fmtNum(n: number) {
   border: 1px solid #334155;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
 }
+.modal.modal-wide {
+  max-width: 680px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
 .modal-title {
   margin: 0 0 16px 0;
   color: #e2e8f0;
@@ -798,8 +878,7 @@ function fmtNum(n: number) {
   margin: 0 0 12px 0;
   line-height: 1.6;
 }
-.modal-info,
-.modal-info-2 {
+.modal-info {
   background: #0f172a;
   border: 1px solid #334155;
   border-radius: 4px;
@@ -809,18 +888,42 @@ function fmtNum(n: number) {
   font-size: 13px;
   line-height: 1.8;
 }
-.modal-info-2 { border-color: #047857; background: #052e23; }
-.modal-warn {
-  background: #451a03;
-  border: 1px solid #b45309;
+.modal-info strong {
+  color: #e6edf3;
+  display: inline-block;
+  min-width: 80px;
+  margin-right: 8px;
+}
+.modal-section {
+  background: #0f172a;
+  border: 1px solid #334155;
   border-radius: 4px;
   padding: 10px 12px;
-  margin: 12px 0;
-  color: #fde68a;
+  margin: 10px 0;
+  color: #cbd5e1;
   font-size: 13px;
   line-height: 1.6;
 }
-.modal-warn strong { color: #fbbf24; }
+.modal-section-impact {
+  background: #2a1505;
+  border-color: #b45309;
+  color: #fde68a;
+}
+.modal-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #818cf8;
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
+.modal-section-impact .modal-section-title {
+  color: #fbbf24;
+}
+.modal-section-body {
+  color: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .modal-actions {
   display: flex;
   justify-content: flex-end;
