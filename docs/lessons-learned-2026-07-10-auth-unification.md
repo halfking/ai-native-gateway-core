@@ -171,3 +171,122 @@ deploy-154.sh 必须检查：
 - [ ] systemd unit 存在且 active
 - [ ] env-file 在 `/etc/llm-gateway-go/env` (mode 600)
 - [ ] 部署后立刻 smoke test `/healthz` + `/api/auth/me`
+
+---
+
+## 7. ⚠️ CRITICAL — SPA 前端静态文件部署必做 (2026-07-10 新增)
+
+### 7.1 症状：浏览器打开首页显示 JSON 版本信息而非 SPA
+
+**现象**：
+```json
+{"service":"llm-gateway-go","version":"2.4.2-8eba7cea-20260710-964","git_sha":"f467d54b","build_seq":"964"}
+```
+
+**根因**：
+1. **后端 binary 部署了，但 `web/dist/` 前端文件未部署**
+2. **systemd service 缺少 `LLM_GATEWAY_STATIC_DIR` 环境变量**
+3. `NewStaticHandler(cfg.StaticDir)` 返回 `nil` → 走 fallback JSON 响应
+
+### 7.2 完整部署 Checklist
+
+部署 binary 时**必须同时部署 web 前端**：
+
+```bash
+# 1. 本地构建 SPA
+cd web
+pnpm install
+pnpm build  # 生成 dist/
+
+# 2. 上传 dist/ 到服务器
+scp -r web/dist/* root@SERVER:/opt/llm-gateway-go/web/
+
+# 3. 确认 systemd service 包含 STATIC_DIR
+grep STATIC_DIR /etc/systemd/system/llm-gateway-go.service
+# 应该有：Environment=LLM_GATEWAY_STATIC_DIR=/opt/llm-gateway-go/web
+
+# 4. 如果没有，添加并 reload
+echo 'Environment=LLM_GATEWAY_STATIC_DIR=/opt/llm-gateway-go/web' >> /etc/systemd/system/llm-gateway-go.service
+systemctl daemon-reload
+systemctl restart llm-gateway-go
+
+# 5. 验证
+curl -fsS http://127.0.0.1:8780/ | head -c 200
+# 应该返回 HTML: <!DOCTYPE html>
+```
+
+### 7.3 为什么这个问题反复出现？
+
+**历史原因**：
+- 早期部署时只关注 binary，web SPA 是后来加的
+- 154/252 的 systemd service 是手工创建的，`STATIC_DIR` 未写入模板
+- deploy 脚本只上传 binary，没有 `web/` 部署步骤
+
+**解决方案**：
+- ✅ `scripts/deploy-154.sh` / `deploy-252.sh` 必须包含 web 上传步骤
+- ✅ systemd service 模板统一加 `STATIC_DIR` (参考 `packaging/systemd/llm-gateway-go.service.template`)
+- ✅ smoke test 加上 `curl -I / | grep -q "text/html"` 验证 SPA 可用
+
+### 7.4 日志判断 STATIC_DIR 是否生效
+
+```bash
+journalctl -u llm-gateway-go -n 100 | grep -i "serving Vue SPA"
+```
+
+- ✅ 看到 `serving Vue SPA dir=/opt/llm-gateway-go/web` → 正常
+- ❌ 没有这条日志 → `NewStaticHandler` 返回 nil，检查目录权限和路径
+
+### 7.5 快速修复脚本 (应急)
+
+```bash
+#!/bin/bash
+# 应急修复：给已部署的 252/154 补上 web
+cd /path/to/llm-gateway-go-cursor
+pnpm --prefix web build
+scp -r web/dist/* root@SERVER:/opt/llm-gateway-go/web/
+ssh root@SERVER "grep -q STATIC_DIR /etc/systemd/system/llm-gateway-go.service || \
+  sed -i '/LLM_GATEWAY_CORS_ORIGINS/a Environment=LLM_GATEWAY_STATIC_DIR=/opt/llm-gateway-go/web' \
+  /etc/systemd/system/llm-gateway-go.service && \
+  systemctl daemon-reload && systemctl restart llm-gateway-go"
+```
+
+---
+
+## 8. 经验汇总：完整部署流程 (2026-07-10 最终版)
+
+```bash
+# === Phase 1: 本地构建 ===
+pnpm --prefix web build
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/llm-gateway-go.linux.amd64 ./cmd/gateway
+
+# === Phase 2: 上传 ===
+scp bin/llm-gateway-go.linux.amd64 root@SERVER:/opt/llm-gateway-go/llm-gateway-go.new
+scp -r web/dist/* root@SERVER:/opt/llm-gateway-go/web/
+
+# === Phase 3: 原子切换 ===
+ssh root@SERVER '
+  systemctl stop llm-gateway-go
+  mv /opt/llm-gateway-go/llm-gateway-go /opt/llm-gateway-go/llm-gateway-go.bak-$(date +%Y%m%d_%H%M%S)
+  mv /opt/llm-gateway-go/llm-gateway-go.new /opt/llm-gateway-go/llm-gateway-go
+  chmod +x /opt/llm-gateway-go/llm-gateway-go
+  
+  # 确保 STATIC_DIR 存在
+  grep -q STATIC_DIR /etc/systemd/system/llm-gateway-go.service || \
+    sed -i "/LLM_GATEWAY_CORS_ORIGINS/a Environment=LLM_GATEWAY_STATIC_DIR=/opt/llm-gateway-go/web" \
+    /etc/systemd/system/llm-gateway-go.service
+  
+  systemctl daemon-reload
+  systemctl start llm-gateway-go
+  sleep 5
+  
+  # Smoke test
+  curl -fsS http://127.0.0.1:8780/healthz
+  curl -I http://127.0.0.1:8780/ | grep -q "text/html"
+'
+```
+
+**关键点**：
+1. ✅ **Binary + Web 同时部署**（缺一不可）
+2. ✅ **systemd service 必须有 STATIC_DIR**
+3. ✅ **Smoke test 验证 SPA 返回 HTML**
+4. ✅ **nginx 配置 `location /` proxy_pass 到正确的 gateway 端口**
