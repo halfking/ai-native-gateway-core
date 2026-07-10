@@ -4,7 +4,7 @@
  * 展示错误趋势、错误分布
  */
 
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import * as echarts from 'echarts'
 import type { ErrorStatsData } from '../../api/dashboard'
@@ -17,6 +17,7 @@ const props = defineProps<{
 const { t } = useI18n()
 const chartRef = ref<HTMLDivElement>()
 let chartInstance: echarts.ECharts | null = null
+const isDestroyed = ref(false)
 
 const chartOptions = computed(() => {
   if (!props.data) return {}
@@ -110,23 +111,42 @@ const chartOptions = computed(() => {
 })
 
 function initChart() {
-  if (!chartRef.value) return
+  if (!chartRef.value || isDestroyed.value) return
+  
+  // 清理旧实例
+  if (chartInstance) {
+    chartInstance.dispose()
+    chartInstance = null
+  }
+  
   chartInstance = echarts.init(chartRef.value)
   updateChart()
 }
 
 function updateChart() {
-  if (!chartInstance) return
+  if (!chartInstance || isDestroyed.value) return
   chartInstance.setOption(chartOptions.value, true)
 }
 
 function resizeChart() {
+  if (isDestroyed.value) return
   chartInstance?.resize()
 }
 
-watch(() => props.data, updateChart, { deep: true })
-watch(() => props.loading, (isLoading) => {
+function cleanupChart() {
+  isDestroyed.value = true
+  window.removeEventListener('resize', resizeChart)
   if (chartInstance) {
+    chartInstance.dispose()
+    chartInstance = null
+  }
+}
+
+watch(() => props.data, () => {
+  nextTick(() => updateChart())
+}, { deep: true })
+watch(() => props.loading, (isLoading) => {
+  if (chartInstance && !isDestroyed.value) {
     isLoading ? chartInstance.showLoading() : chartInstance.hideLoading()
   }
 })
@@ -137,8 +157,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', resizeChart)
-  chartInstance?.dispose()
+  cleanupChart()
 })
 </script>
 

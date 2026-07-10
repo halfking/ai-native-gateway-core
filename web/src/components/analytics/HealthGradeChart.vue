@@ -4,7 +4,7 @@
  * ECharts pie/doughnut chart for session health grade distribution.
  * Displays A/B/C/D/F grade breakdown with optional avg score overlay.
  */
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
@@ -27,6 +27,7 @@ const props = defineProps<{
 
 const chartRef = ref<HTMLElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
+const isDestroyed = ref(false)
 
 const gradeColors: Record<string, string> = {
   A: '#3fb950',
@@ -49,13 +50,20 @@ const total = computed(() => {
 })
 
 function initChart() {
-  if (!chartRef.value) return
+  if (!chartRef.value || isDestroyed.value) return
+  
+  // 清理旧实例
+  if (chartInstance) {
+    chartInstance.dispose()
+    chartInstance = null
+  }
+  
   chartInstance = echarts.init(chartRef.value)
   updateChart()
 }
 
 function updateChart() {
-  if (!chartInstance || !props.distribution) return
+  if (!chartInstance || !props.distribution || isDestroyed.value) return
 
   const gradeKeys = ['a', 'b', 'c', 'd', 'f'] as const
   const gradeLabels: Record<string, string> = {
@@ -138,7 +146,17 @@ function updateChart() {
 }
 
 function handleResize() {
+  if (isDestroyed.value) return
   chartInstance?.resize()
+}
+
+function cleanupChart() {
+  isDestroyed.value = true
+  window.removeEventListener('resize', handleResize)
+  if (chartInstance) {
+    chartInstance.dispose()
+    chartInstance = null
+  }
 }
 
 onMounted(() => {
@@ -147,13 +165,15 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
-  chartInstance?.dispose()
-  chartInstance = null
+  cleanupChart()
 })
 
-watch(() => props.distribution, updateChart, { deep: true })
-watch(() => props.avgScore, updateChart)
+watch(() => props.distribution, () => {
+  nextTick(() => updateChart())
+}, { deep: true })
+watch(() => props.avgScore, () => {
+  nextTick(() => updateChart())
+})
 </script>
 
 <template>

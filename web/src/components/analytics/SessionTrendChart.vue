@@ -4,7 +4,7 @@
  * ECharts-based session trend visualization (new sessions / active / closed / cost).
  * Uses the useDashboard composable's trend data.
  */
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
@@ -31,11 +31,19 @@ const emit = defineEmits<{
 
 const chartRef = ref<HTMLElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
+const isDestroyed = ref(false)
 
 const hasData = computed(() => props.data.length > 0)
 
 function initChart() {
-  if (!chartRef.value) return
+  if (!chartRef.value || isDestroyed.value) return
+  
+  // 清理旧实例
+  if (chartInstance) {
+    chartInstance.dispose()
+    chartInstance = null
+  }
+  
   chartInstance = echarts.init(chartRef.value)
   updateChart()
 
@@ -47,7 +55,7 @@ function initChart() {
 }
 
 function updateChart() {
-  if (!chartInstance || !hasData.value) return
+  if (!chartInstance || !hasData.value || isDestroyed.value) return
 
   const dates = props.data.map(d => d.date)
   const newSessions = props.data.map(d => d.new_sessions)
@@ -159,7 +167,17 @@ function updateChart() {
 }
 
 function handleResize() {
+  if (isDestroyed.value) return
   chartInstance?.resize()
+}
+
+function cleanupChart() {
+  isDestroyed.value = true
+  window.removeEventListener('resize', handleResize)
+  if (chartInstance) {
+    chartInstance.dispose()
+    chartInstance = null
+  }
 }
 
 onMounted(() => {
@@ -168,12 +186,12 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
-  chartInstance?.dispose()
-  chartInstance = null
+  cleanupChart()
 })
 
-watch(() => props.data, updateChart, { deep: true })
+watch(() => props.data, () => {
+  nextTick(() => updateChart())
+}, { deep: true })
 </script>
 
 <template>
