@@ -11,6 +11,7 @@ export default {
     routing: 'Routing',
     session: 'Sitzung',
     security: 'Sicherheit',
+    outputCompliance: 'Ausgabekompatibilität',
     circuitBreaker: 'Schutzschalter',
     general: 'Andere',
   },
@@ -151,4 +152,7 @@ export default {
 </ul>
 <p class="docs-note">⚠️ <strong>Mandantenbezogen</strong>: Diese Einstellung erfordert eine tenant_id; konfigurieren Sie sie auf der Mandantenverwaltungsseite.</p>`,
   },
+
+  // 同步的扁平键
+  outputCompliance: '输出合规',
 }

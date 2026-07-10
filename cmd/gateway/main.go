@@ -1088,12 +1088,23 @@ func main() {
 	slog.Info("CHECKPOINT: after discovery section")
 
 	// ── Admin API ───────────────────────────────────────────────────────
+	// 2026-07-10 fix: 即使 dbConn=nil (DB 不可达) 也要注册 /api/auth/* 路由。
+	// 否则 SPA 启动调 /api/auth/me 探测登录态时拿到 404（而非 401），
+	// 永远认为未登录；username/password 登录 (/api/auth/token) 也无法用。
+	// 修复：admin.NewHandler 在 db=nil 时仍能创建（handler 内部按需 db），
+	// 保证 /api/auth/* 路由全部注册上，DB 相关 handler 在请求时再 503/500。
 	var adminHandler *admin.Handler
+	{
+		var adminDB *pgxpool.Pool
+		if dbConn != nil && dbConn.Enabled() {
+			adminDB = dbConn.Pool()
+		}
+		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
+		slog.Info("admin handler created (db_enabled=%v)", adminDB != nil)
+	}
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
 	if dbConn != nil && dbConn.Enabled() {
-		slog.Info("CHECKPOINT: before admin.NewHandler")
-		adminHandler = admin.NewHandler(dbConn.Pool(), cfg.SecretKey, fernetKey)
-		slog.Info("CHECKPOINT: after admin.NewHandler")
+		slog.Info("CHECKPOINT: before admin.SetKeyring etc")
 		if keyring != nil {
 			adminHandler.SetKeyring(keyring)
 		}

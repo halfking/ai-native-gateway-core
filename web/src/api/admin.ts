@@ -282,8 +282,18 @@ export function resetUserPassword(id: number, password: string) {
   return req<{ status: string }>('PUT', `/api/users/${id}/password`, { password })
 }
 
+// AuthMeResponse wraps the user info and optionally includes a fresh access_token.
+// When the server returns access_token, the SPA should persist it to localStorage
+// (this happens during cookie-only hydration: valid HttpOnly cookie but no JWT in
+// localStorage). When access_token is omitted (legacy callers), the SPA falls
+// back to cookie-based auth.
+export interface AuthMeResponse extends UserInfo {
+  access_token?: string
+  expires_at?: string
+}
+
 export function getAuthMe() {
-  return req<UserInfo>('GET', '/api/auth/me')
+  return req<AuthMeResponse | UserInfo>('GET', '/api/auth/me')
 }
 
 export function changeMyPassword(old_password: string, new_password: string) {

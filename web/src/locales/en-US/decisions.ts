@@ -105,13 +105,15 @@ export default {
   value: {
     dash: '—',
   },
-  bytesUnit: "[TODO: decisions.bytesUnit]",
-  costUnit: "[TODO: decisions.costUnit]",
-  dash: "[TODO: decisions.dash]",
-  latencyUnit: "[TODO: decisions.latencyUnit]",
-  msUnit: "[TODO: decisions.msUnit]",
-  stickyHitNo: "[TODO: decisions.stickyHitNo]",
-  stickyHitOk: "[TODO: decisions.stickyHitOk]",
-  successFail: "[TODO: decisions.successFail]",
-  successOk: "[TODO: decisions.successOk]",
+
+  // 扁平键（供 Vue 组件直接使用）
+  dash: '—',
+  stickyHitOk: '✓',
+  stickyHitNo: '✗',
+  msUnit: 'ms',
+  costUnit: '\$',
+  successOk: '✓ 成功',
+  successFail: '✗ 失败',
+  latencyUnit: ' ms',
+  bytesUnit: ' B',
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kaixuan/llm-gateway-go/admin"                                           //nolint:depguard // needed for JWT auth in healthHandler
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/cache/prefix"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -3429,16 +3430,18 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Version: resolveGatewayVersion(),
 	}
 
-	// NET-007 fix: ?full=true 必须 admin token（完整的 LLM_GATEWAY_ADMIN_API_KEY
-	// 校验由外层 AdminTokenMiddleware 完成；这里只拒绝"完全无 token"的情形）。
+	// ?full=true requires JWT authentication (admin user).
+	// We inline the JWT check here instead of wrapping the handler with AdminMiddleware
+	// (which would require refactoring cmd/gateway/main.go route registration).
 	//
-	// ?full=true 会暴露 circuit.Stats() / limiter.Stats() / proxy.Status()
-	// （含 18 个内网域名、credential 熔断状态等敏感信息），不应匿名访问。
-	full := r.URL.Query().Get("full") == "true"
-	if full {
-		const expectedHeader = "Bearer "
-		auth := r.Header.Get("Authorization")
-		if len(auth) <= len(expectedHeader) || auth[:len(expectedHeader)] != expectedHeader {
+	// 2026-07-10: /healthz/full path is wrapped in AdminTokenMiddleware in
+	// cmd/gateway/main.go, which already authenticated the sk-* admin token
+	// before reaching this handler. So skip the inline JWT check for that
+	// path and go straight to the full db/redis fill.
+	full := r.URL.Query().Get("full") == "true" || r.URL.Path == "/healthz/full"
+	if full && r.URL.Path != "/healthz/full" {
+		tokenStr, ok := admin.ExtractBearerOrCookieToken(r)
+		if !ok {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("WWW-Authenticate", `Bearer realm="admin"`)
 			w.WriteHeader(http.StatusUnauthorized)
@@ -3446,6 +3449,22 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"error":"admin token required for full healthz"}`))
 			return
 		}
+		secretKey := os.Getenv("LLM_GATEWAY_JWT_SECRET")
+		if secretKey == "" {
+			secretKey = os.Getenv("LLM_GATEWAY_SECRET_KEY")
+		}
+		claims, err := admin.VerifyToken(tokenStr, secretKey)
+		if err != nil || claims.UserID == 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("WWW-Authenticate", `Bearer realm="admin"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			//nolint:errcheck
+			w.Write([]byte(`{"error":"admin token required for full healthz"}`))
+			return
+		}
+	}
+	if full {
+		// JWT verified → return full details
 		resp.Circuit = h.circuit.Stats()
 		resp.Concurrency = h.limiter.Stats()
 

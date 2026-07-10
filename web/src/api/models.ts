@@ -282,3 +282,64 @@ export function patchModelTags(canonicalId: number, tags: string[]) {
 export function resetModelTags(canonicalId: number) {
   return req<ModelCanonical>('POST', `/api/models/${canonicalId}/tags/reset`)
 }
+
+// ── Model Name Mapping ─────────────────────────────────────────────────
+
+export interface ModelNameMapping {
+  id: number
+  raw_model_name: string
+  standardized_name: string
+  description?: string
+  auto_generated: boolean
+  created_at: string
+  updated_at: string
+  created_by?: string
+}
+
+export interface ModelNameMappingListResponse {
+  items: ModelNameMapping[]
+  total: number
+  page: number
+  page_size: number
+  page_count: number
+}
+
+export interface CreateModelNameMappingRequest {
+  raw_model_name: string
+  standardized_name: string
+  description?: string
+}
+
+export interface UpdateModelNameMappingRequest {
+  raw_model_name?: string
+  standardized_name?: string
+  description?: string
+}
+
+export function listModelNameMappings(params?: { page?: number; page_size?: number; search?: string }) {
+  const qs = new URLSearchParams()
+  if (params?.page) qs.set('page', String(params.page))
+  if (params?.page_size) qs.set('page_size', String(params.page_size))
+  if (params?.search) qs.set('search', params.search)
+  return req<ModelNameMappingListResponse>('GET', `/api/models/name-mapping?${qs}`)
+}
+
+export function getModelNameMapping(id: number) {
+  return req<ModelNameMapping>('GET', `/api/models/name-mapping/${id}`)
+}
+
+export function createModelNameMapping(data: CreateModelNameMappingRequest) {
+  return req<{ id: number; message: string }>('POST', '/api/models/name-mapping', data)
+}
+
+export function updateModelNameMapping(id: number, data: UpdateModelNameMappingRequest) {
+  return req<{ id: number; message: string }>('PATCH', `/api/models/name-mapping/${id}`, data)
+}
+
+export function deleteModelNameMapping(id: number) {
+  return req<{ message: string }>('DELETE', `/api/models/name-mapping/${id}`)
+}
+
+export function syncModelNameMappings() {
+  return req<{ message: string; provider_models: number }>('POST', '/api/models/name-mapping/sync')
+}

@@ -10,6 +10,7 @@ export default {
     routing: 'Enrutamiento',
     session: 'Sesión',
     security: 'Seguridad',
+    outputCompliance: 'Cumplimiento de salida',
     circuitBreaker: 'Disyuntor',
     general: 'Otros',
   },
@@ -150,4 +151,7 @@ export default {
 </ul>
 <p class="docs-note">⚠️ <strong>A nivel de inquilino</strong>: este ajuste requiere un tenant_id; configúrelo en la página de Gestión de inquilinos.</p>`,
   },
+
+  // 同步的扁平键
+  outputCompliance: '输出合规',
 }

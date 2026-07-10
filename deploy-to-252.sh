@@ -24,6 +24,13 @@
 #
 # 重要：默认行为会执行 restart（service 短暂停机 < 5s）。生产环境建议先用
 #       --skip-restart 上传 + 手工 rolling。
+#
+# ⚠️  关键经验 (2026-07-10 unified auth 部署踩坑):
+#   1. **永远用 systemctl restart, 永远不要 nohup** (env 会丢失, panic)
+#   2. **改完前端代码立刻 build 验证 dist** (TS 不会对未导入变量报错)
+#   3. **新 handler 必须 nil-check h.db** (pg keepalive 60s 后会失效)
+#   4. **部署后立即 smoke test** (健康、auth、admin 端点)
+#   完整经验见 docs/lessons-learned-2026-07-10-auth-unification.md
 
 set -euo pipefail
 
@@ -38,7 +45,7 @@ DB_CONTAINER="${DB_CONTAINER:-pg-252-pg17}"
 DB_USER="${DB_USER:-llm_gateway}"
 DB_NAME="${DB_NAME:-llm_gateway}"
 LOCAL_BIN="${LOCAL_BIN:-$REPO_DIR/bin/llm-gateway-go-linux-amd64}"
-MIGRATION_FILE="${MIGRATION_FILE:-$REPO_DIR/db/migrations/356_handoff_enhanced.sql}"
+MIGRATION_FILE="${MIGRATION_FILE:-$REPO_DIR/sql/migrations/startup/366_model_name_mapping.sql}"
 
 # 颜色
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'

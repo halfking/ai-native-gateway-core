@@ -885,7 +885,29 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	var attempts []AttemptRecord
 	tried := 0
 
+	// 2026-07-09: 会话级凭据黑名单（修复 NVIDIA NIM 连续失败不降级问题）
+	// 单次会话中，同一凭据失败 2 次后强制跳过，避免 Sync Retry 反复打到同一凭据。
+	sessionBlacklist := make(map[int]int) // credentialID -> consecutive failures in this session
+
 	for _, cand := range candidates {
+		// 2026-07-09: 检查会话黑名单
+		if sessionBlacklist[cand.CredentialID] >= 2 {
+			slog.Warn("executor: credential blacklisted for this session",
+				"credential_id", cand.CredentialID,
+				"provider_id", cand.ProviderID,
+				"session_failures", sessionBlacklist[cand.CredentialID],
+				"client_model", params.ClientModel,
+			)
+			trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
+				ProviderID:   cand.ProviderID,
+				CredentialID: cand.CredentialID,
+				RawModel:     cand.RawModel,
+				Tier:         cand.Tier,
+				Reason:       "session_blacklist:consecutive_failures",
+			})
+			continue // 跳过该凭据
+		}
+
 		tried++
 
 		// Reset the stream capture for this candidate so textContent, chunk
@@ -1461,6 +1483,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			Reason:       execErr.Error(),
 		})
 		e.recordStickyFailure(params, cand.CredentialID, kind)
+
+		// 2026-07-09: 更新会话黑名单计数
+		sessionBlacklist[cand.CredentialID]++
+
 		if e.Recorder != nil {
 			e.Recorder.RecordFailure(failureCtx, cand.CredentialID, cand.RawModel, kind)
 		}
@@ -1825,10 +1851,10 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 	err := e.DB.Pool().QueryRow(ctx, `
 		SELECT count(*) FROM model_probe_runs
 		WHERE credential_id = $1
-		  AND raw_model_name = $2
+		  AND (raw_model_name = $2 OR standardized_name = $2)
 		  AND status = 'http_4xx'
 		  AND error_code = 'model_not_found'
-		  AND created_at > now() - interval '1 minute' * $3
+		  AND created_at > now() - ($3 * interval '1 minute')
 	`, credentialID, rawModel, coolMins).Scan(&recentCount)
 	if err != nil {
 		slog.Debug("cool_binding_mnf: count query failed",
@@ -1851,7 +1877,7 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 		FROM model_offers mo
 		WHERE mo.id = cmb.provider_model_id
 		  AND cmb.credential_id = $1
-		  AND COALESCE(mo.outbound_model_name, mo.raw_model_name) = $2
+		  AND COALESCE(mo.outbound_model_name, mo.standardized_name, mo.raw_model_name) = $2
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
@@ -1916,7 +1942,7 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 
 	tag, err := tx.Exec(ctx,
 		`UPDATE model_offers SET available = FALSE, unavailable_reason = $3, unavailable_at = now()
-		 WHERE credential_id = $1 AND raw_model_name = $2 AND available = TRUE
+		 WHERE credential_id = $1 AND (raw_model_name = $2 OR standardized_name = $2) AND available = TRUE
 		   AND COALESCE(admin_protected, FALSE) = FALSE`,
 		credentialID, rawModel, reason,
 	)
@@ -1940,7 +1966,7 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 		 FROM provider_models pm
 		 WHERE pm.id = cmb.provider_model_id
 		   AND cmb.credential_id = $1
-		   AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
+		   AND COALESCE(pm.outbound_model_name, pm.standardized_name, pm.raw_model_name) = $2
 		   AND cmb.available = TRUE
 		   AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		   AND COALESCE(cmb.admin_protected, FALSE) = FALSE`,

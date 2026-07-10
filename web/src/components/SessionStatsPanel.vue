@@ -224,21 +224,21 @@ function handleTaskClick(taskId: string) {
           </template>
           <el-table :data="data?.top_clients || []" style="width: 100%" max-height="300">
             <el-table-column prop="client_id" :label="t('sessions.stats.clientId')" min-width="120">
-              <template #default="{ row }">
-                <el-link type="primary" @click="handleClientClick(row.client_id)">
-                  {{ row.client_id }}
+              <template #default="scope">
+                <el-link type="primary" @click="handleClientClick(scope?.row?.client_id)">
+                  {{ scope?.row?.client_id }}
                 </el-link>
               </template>
             </el-table-column>
             <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
             <el-table-column prop="total_cost" :label="t('sessions.stats.totalCost')" width="100" align="right">
-              <template #default="{ row }">
-                ${{ row.total_cost.toFixed(2) }}
+              <template #default="scope">
+                ${{ (scope?.row?.total_cost ?? 0).toFixed(2) }}
               </template>
             </el-table-column>
             <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="80" align="center">
-              <template #default="{ row }">
-                <el-tag v-if="row.avg_health" size="small">{{ row.avg_health }}</el-tag>
+              <template #default="scope">
+                <el-tag v-if="scope?.row?.avg_health" size="small">{{ scope?.row?.avg_health }}</el-tag>
                 <span v-else>—</span>
               </template>
             </el-table-column>
@@ -252,22 +252,22 @@ function handleTaskClick(taskId: string) {
           </template>
           <el-table :data="data?.top_tasks || []" style="width: 100%" max-height="300">
             <el-table-column prop="task_id" :label="t('sessions.stats.taskId')" min-width="120">
-              <template #default="{ row }">
-                <el-link type="primary" @click="handleTaskClick(row.task_id)">
-                  {{ row.task_id }}
+              <template #default="scope">
+                <el-link type="primary" @click="handleTaskClick(scope?.row?.task_id)">
+                  {{ scope?.row?.task_id }}
                 </el-link>
               </template>
             </el-table-column>
             <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
             <el-table-column prop="total_cost" :label="t('sessions.stats.totalCost')" width="100" align="right">
-              <template #default="{ row }">
-                ${{ row.total_cost.toFixed(2) }}
+              <template #default="scope">
+                ${{ (scope?.row?.total_cost ?? 0).toFixed(2) }}
               </template>
             </el-table-column>
             <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="90" align="center">
-              <template #default="{ row }">
-                <el-tag v-if="row.avg_health !== null && row.avg_health !== undefined" :type="healthScoreColor(row.avg_health)" size="small">
-                  {{ row.avg_health.toFixed(1) }}/10
+              <template #default="scope">
+                <el-tag v-if="scope?.row?.avg_health !== null && scope?.row?.avg_health !== undefined" :type="healthScoreColor(scope?.row?.avg_health)" size="small">
+                  {{ scope?.row?.avg_health?.toFixed(1) }}/10
                 </el-tag>
                 <span v-else>—</span>
               </template>

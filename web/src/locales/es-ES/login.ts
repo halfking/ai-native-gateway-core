@@ -16,7 +16,7 @@ export default {
     required: 'Introduzca usuario y contraseña',
     failed: 'Error de inicio de sesión',
   },
-  changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",  // 2026-07-09: Mensaje de sondeo de autenticación en la primera carga
+  changePassword: 'Cambiar contraseña',
+  passwordChangeSuccess: 'Contraseña cambiada exitosamente',
   checking: 'Verificando estado de inicio de sesión…',
 }

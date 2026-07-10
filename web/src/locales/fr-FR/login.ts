@@ -16,7 +16,7 @@ export default {
     required: 'Veuillez saisir le nom d\'utilisateur et le mot de passe',
     failed: 'Échec de la connexion',
   },
-  changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",  // 2026-07-09: Message de probe d'authentification au premier chargement
+  changePassword: 'Changer le mot de passe',
+  passwordChangeSuccess: 'Mot de passe changé avec succès',
   checking: 'Vérification du statut de connexion…',
 }
