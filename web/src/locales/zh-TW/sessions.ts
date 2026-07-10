@@ -144,6 +144,7 @@ export default {
     taskId: '任務ID',
     totalCost: '總成本',
     avgHealth: '平均健康度',
+    retry: '重試',
     loadFailed: '載入統計資料失敗',
   },
   dashboard: {
@@ -272,6 +273,7 @@ export default {
   config: {
     title: '會話配置',
     subtitle: '統一管理會話審批、壓縮策略和健康評分規則',
+    loading: '載入中…',
     approvalTab: '審批規則',
     compressionTab: '壓縮策略',
     healthTab: '健康評分',
@@ -434,6 +436,7 @@ export default {
   management: {
     title: 'Session Management',
     refresh: 'Refresh',
+    loading: '載入中…',
     columns: {
       status: 'Status',
       title: 'Title',
