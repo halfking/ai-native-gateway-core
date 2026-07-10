@@ -180,7 +180,7 @@ function initSSE() {
     eventSource.close()
   }
 
-  eventSource = new EventSource('/api/admin/live-stream')
+  eventSource = new EventSource('/api/admin/live-stream', { withCredentials: true })
 
   eventSource.onmessage = (event) => {
     try {
