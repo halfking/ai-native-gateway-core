@@ -172,7 +172,7 @@ function handleChangePasswordSuccess() {
     <aside class="sidebar">
       <div class="sidebar-logo">
         <img
-          src="/logo-icon.svg"
+          src="/logo-icon.png"
           width="28"
           height="28"
           alt="开轩启圭"
@@ -295,7 +295,7 @@ function handleChangePasswordSuccess() {
     <header class="guest-header">
       <div class="guest-brand">
         <img
-          src="/logo-unified.svg"
+          src="/logo-icon.png"
           height="28"
           alt="开轩启圭 Qigui · AI-Native LLM Gateway"
           class="guest-brand-img"
