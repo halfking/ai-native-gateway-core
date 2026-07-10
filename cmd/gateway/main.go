@@ -585,12 +585,12 @@ func main() {
 			saveCapturedPending(pendingStore, pc, resp)
 			return outcome
 		}
-			routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
-			routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
-			routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
-			// Write-time 客户端可见脱敏（2026-07-09，增强 1）
-			routingExec.RedactBodyFn = buildRedactBodyFn(dbConn.Stdlib())
-			routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
+		routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
+		routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
+		routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
+		// Write-time 客户端可见脱敏（2026-07-09，增强 1）
+		routingExec.RedactBodyFn = buildRedactBodyFn(dbConn.Stdlib())
+		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
 		// 2026-06-21: 同步重试超时（全候选失败后保持客户端连接继续重试）
@@ -884,16 +884,16 @@ func main() {
 	}
 	var liveStreamHub *admin.LiveStreamSSEHub
 	if dbConn != nil && dbConn.Enabled() {
-			liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
-				BroadcastQueueSize:            2048,
-				InitialReplayLimit:            200,
-				IdleThreshold:                 60 * time.Second,
-				IdleTickInterval:              10 * time.Second,
-				KeepaliveInterval:             25 * time.Second,
-				RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
-				CachedSnapshotTTL:             liveStreamCachedTTL,
-				CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
-			})
+		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
+			BroadcastQueueSize:            2048,
+			InitialReplayLimit:            200,
+			IdleThreshold:                 60 * time.Second,
+			IdleTickInterval:              10 * time.Second,
+			KeepaliveInterval:             25 * time.Second,
+			RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
+			CachedSnapshotTTL:             liveStreamCachedTTL,
+			CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
+		})
 		go liveStreamHub.Run()
 
 		// Wire the telemetry persistence hook → SSE hub. The hook
@@ -1323,6 +1323,13 @@ func main() {
 		brokenProbeReviver = bg.NewBrokenProbeReviver(dbConn.Pool(), 0, 0)
 		brokenProbeReviver.Start(context.Background())
 		slog.Info("CHECKPOINT: brokenProbeReviver started")
+
+		// Routing health checker — runs diagnostic checks every 15 min,
+		// persists findings to routing_health_checks for admin review.
+		routingHealthChecker := bg.NewRoutingHealthChecker(dbConn.Pool())
+		routingHealthChecker.Start(context.Background())
+		slog.Info("CHECKPOINT: routingHealthChecker started")
+
 		// Track C C6 (2026-06-18): pending entry sweeper. Marks
 		// abandoned in_progress entries (e.g. a crashed async
 		// goroutine, a client that never polls) as failed so
@@ -2087,6 +2094,12 @@ func main() {
 	if adminHandler != nil {
 		slog.Info("CHECKPOINT: before admin RegisterRoutes")
 		adminHandler.RegisterRoutes(mux)
+		// Routing health check endpoints (2026-07-10)
+		if dbConn != nil && dbConn.Enabled() {
+			healthCheckHandler := admin.NewHealthCheckHandler(dbConn.Pool())
+			healthCheckHandler.RegisterRoutes(mux)
+			slog.Info("health-check API registered")
+		}
 		// 2026-06-23 Phase 3: wire candidate_failure_monitor alert ring.
 		if candidateFailureMonitor != nil {
 			adminHandler.SetCandidateFailureHandlers(candidateFailureMonitor.RecentAlerts)
