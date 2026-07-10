@@ -126,9 +126,9 @@ export default {
     summary: {
       databaseTitle: 'PostgreSQL-Datenbank',
       databaseSubtitle: 'Gesamtbedarf (Tabellen + Indizes + TOAST)',
-      databaseMetric: 'Database',
-      tablesMetric: 'Tables',
-      indexesMetric: 'Indexes',
+      databaseMetric: 'Datenbank',
+      tablesMetric: 'Tabellen',
+      indexesMetric: 'Indizes',
       toastMetric: 'TOAST',
       diskTitle: 'Lokale Festplatte',
       diskUsedOf: 'Belegt / {total}',
