@@ -585,12 +585,12 @@ func main() {
 			saveCapturedPending(pendingStore, pc, resp)
 			return outcome
 		}
-			routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
-			routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
-			routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
-			// Write-time 客户端可见脱敏（2026-07-09，增强 1）
-			routingExec.RedactBodyFn = buildRedactBodyFn(dbConn.Stdlib())
-			routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
+		routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
+		routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
+		routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
+		// Write-time 客户端可见脱敏（2026-07-09，增强 1）
+		routingExec.RedactBodyFn = buildRedactBodyFn(dbConn.Stdlib())
+		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
 		// 2026-06-21: 同步重试超时（全候选失败后保持客户端连接继续重试）
@@ -884,16 +884,16 @@ func main() {
 	}
 	var liveStreamHub *admin.LiveStreamSSEHub
 	if dbConn != nil && dbConn.Enabled() {
-			liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
-				BroadcastQueueSize:            2048,
-				InitialReplayLimit:            200,
-				IdleThreshold:                 60 * time.Second,
-				IdleTickInterval:              10 * time.Second,
-				KeepaliveInterval:             25 * time.Second,
-				RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
-				CachedSnapshotTTL:             liveStreamCachedTTL,
-				CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
-			})
+		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
+			BroadcastQueueSize:            2048,
+			InitialReplayLimit:            200,
+			IdleThreshold:                 60 * time.Second,
+			IdleTickInterval:              10 * time.Second,
+			KeepaliveInterval:             25 * time.Second,
+			RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
+			CachedSnapshotTTL:             liveStreamCachedTTL,
+			CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
+		})
 		go liveStreamHub.Run()
 
 		// Wire the telemetry persistence hook → SSE hub. The hook
@@ -2238,25 +2238,10 @@ func main() {
 			slog.Info("Phase 3.9 approval query API enabled (/api/v1/approvals/*, /api/admin/approvals/stats)")
 
 			// DingTalk approval callback (钉钉机器人审批回调)
-			// 签名校验密钥优先读取 dingtalk_bot.* 模块设置，回退到环境变量，
-			// 保证模块开关与配置真正控制回调验签。
-			dingSignSecret := os.Getenv("DINGTALK_SIGN_SECRET")
-			if dingSignSecret == "" {
-				dingSignSecret = os.Getenv("DINGTALK_APP_SECRET")
-			}
-			if cfg, ok := dingTalkConfigFromSettings(); ok {
-				if cfg.SignSecret != "" {
-					dingSignSecret = cfg.SignSecret
-				} else if cfg.AppSecret != "" {
-					dingSignSecret = cfg.AppSecret
-				}
-			}
-			if dingSignSecret != "" {
-				api.RegisterDingTalkRoutes(mux, approvalMgr, dingSignSecret)
-				slog.Info("dingtalk approval callback enabled (/api/webhooks/dingtalk/approval-callback)")
-			} else {
-				slog.Warn("DINGTALK_SIGN_SECRET not set, dingtalk approval callback disabled")
-			}
+			// The handler resolves module state on every callback so HotReload can
+			// disable the endpoint, rotate the secret, or update the allowlist.
+			api.RegisterDingTalkRoutes(mux, approvalMgr, dingTalkCallbackSecretFromSettings, dingTalkUserIsAllowed)
+			slog.Info("dingtalk approval callback registered (/api/webhooks/dingtalk/approval-callback); requests require an enabled, configured module")
 		}
 
 		// Phase 3.10 (2026-07-03, Task D1): Approval Configuration Management API
@@ -2775,21 +2760,6 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
 		slog.Info("dingtalk channel initialized from module settings",
 			"webhook", dingCfg.WebhookURL != "", "app_mode", dingCfg.AppKey != "")
-	} else if dingWebhook := os.Getenv("DINGTALK_WEBHOOK_URL"); dingWebhook != "" {
-		dingCfg := notification.DingTalkConfig{
-			WebhookURL: dingWebhook,
-			SignSecret: os.Getenv("DINGTALK_SIGN_SECRET"),
-		}
-		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
-		slog.Info("dingtalk channel initialized from env webhook")
-	} else if dingAppKey := os.Getenv("DINGTALK_APP_KEY"); dingAppKey != "" {
-		dingAppSecret := os.Getenv("DINGTALK_APP_SECRET")
-		dingCfg := notification.DingTalkConfig{
-			AppKey:    dingAppKey,
-			AppSecret: dingAppSecret,
-		}
-		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
-		slog.Info("dingtalk channel initialized", "app_key", dingAppKey)
 	}
 
 	// 企业微信渠道
@@ -2881,10 +2851,65 @@ func dingTalkConfigFromSettings() (notification.DingTalkConfig, bool) {
 		}
 	}
 
-	if cfg.WebhookURL == "" && cfg.AppKey == "" {
+	if cfg.WebhookURL == "" && !hasCompleteDingTalkAppConfig(cfg) {
+		if cfg.AppKey != "" || cfg.AppSecret != "" || cfg.AgentID != "" {
+			slog.Warn("dingtalk app-mode configuration incomplete", "has_app_key", cfg.AppKey != "", "has_app_secret", cfg.AppSecret != "", "has_agent_id", cfg.AgentID != "")
+		}
 		return notification.DingTalkConfig{}, false
 	}
 	return cfg, true
+}
+
+func hasCompleteDingTalkAppConfig(cfg notification.DingTalkConfig) bool {
+	return cfg.AppKey != "" && cfg.AppSecret != "" && cfg.AgentID != ""
+}
+
+func dingTalkAllowedUsersFromSettings() []string {
+	if settings.Global == nil {
+		return nil
+	}
+	sp := settings.Global.Spec("dingtalk_bot.allowed_users")
+	if sp == nil {
+		return nil
+	}
+	raw, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	var users []string
+	for _, userID := range strings.Split(strings.Trim(string(raw), `"`), ",") {
+		if userID = strings.TrimSpace(userID); userID != "" {
+			users = append(users, userID)
+		}
+	}
+	return users
+}
+
+func dingTalkCallbackSecretFromSettings() string {
+	if !readBoolSettingValue("dingtalk_bot.verify_signature") {
+		return ""
+	}
+	cfg, ok := dingTalkConfigFromSettings()
+	if !ok {
+		return ""
+	}
+	if cfg.SignSecret != "" {
+		return cfg.SignSecret
+	}
+	return cfg.AppSecret
+}
+
+func dingTalkUserIsAllowed(userID string) bool {
+	users := dingTalkAllowedUsersFromSettings()
+	if len(users) == 0 {
+		return true
+	}
+	for _, allowedUserID := range users {
+		if userID == allowedUserID {
+			return true
+		}
+	}
+	return false
 }
 
 // readBoolSettingValue 读取平台级 bool 设置项（忽略错误，缺省 false）。

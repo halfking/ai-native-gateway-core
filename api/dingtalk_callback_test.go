@@ -53,28 +53,28 @@ func (m *MockApprovalManager) Reject(ctx context.Context, approvalID, tenantID, 
 
 func TestNewDingTalkCallbackHandler(t *testing.T) {
 	manager := &MockApprovalManager{}
-	handler := NewDingTalkCallbackHandler(manager, "test_secret")
+	handler := NewDingTalkCallbackHandler(manager, "test_secret", nil)
 
 	assert.NotNil(t, handler)
-	assert.Equal(t, "test_secret", handler.appSecret)
 	assert.Equal(t, manager, handler.approvalManager)
 }
 
 func TestDingTalkCallbackHandler_VerifySignature(t *testing.T) {
 	appSecret := "test_secret_123"
-	handler := NewDingTalkCallbackHandler(&MockApprovalManager{}, appSecret)
+	handler := NewDingTalkCallbackHandler(&MockApprovalManager{}, appSecret, nil)
 
 	tests := []struct {
-		name      string
-		timestamp string
-		sign      string
-		want      bool
+		name          string
+		timestamp     string
+		sign          string
+		calculateSign bool
+		want          bool
 	}{
 		{
-			name:      "valid signature",
-			timestamp: strconv.FormatInt(time.Now().Unix()*1000, 10),
-			sign:      "", // Will be calculated
-			want:      true,
+			name:          "valid signature",
+			timestamp:     strconv.FormatInt(time.Now().Unix()*1000, 10),
+			calculateSign: true,
+			want:          true,
 		},
 		{
 			name:      "missing timestamp",
@@ -95,10 +95,16 @@ func TestDingTalkCallbackHandler_VerifySignature(t *testing.T) {
 			want:      false,
 		},
 		{
-			name:      "expired timestamp",
-			timestamp: strconv.FormatInt((time.Now().Unix()-7200)*1000, 10),
-			sign:      "", // Will be calculated
-			want:      false,
+			name:          "expired timestamp",
+			timestamp:     strconv.FormatInt((time.Now().Unix()-7200)*1000, 10),
+			calculateSign: true,
+			want:          false,
+		},
+		{
+			name:          "timestamp outside ten minute replay window",
+			timestamp:     strconv.FormatInt(time.Now().Add(-dingTalkCallbackMaxAge-time.Second).UnixMilli(), 10),
+			calculateSign: true,
+			want:          false,
 		},
 	}
 
@@ -108,7 +114,7 @@ func TestDingTalkCallbackHandler_VerifySignature(t *testing.T) {
 			timestamp := tt.timestamp
 			sign := tt.sign
 
-			if tt.want && tt.sign == "" && tt.timestamp != "" {
+			if tt.calculateSign {
 				stringToSign := timestamp + "\n" + appSecret
 				mac := hmac.New(sha256.New, []byte(appSecret))
 				mac.Write([]byte(stringToSign))
@@ -136,7 +142,7 @@ func TestDingTalkCallbackHandler_VerifySignature(t *testing.T) {
 func TestDingTalkCallbackHandler_HandleApprovalCallback_Success(t *testing.T) {
 	appSecret := "test_secret_123"
 	manager := &MockApprovalManager{}
-	handler := NewDingTalkCallbackHandler(manager, appSecret)
+	handler := NewDingTalkCallbackHandler(manager, appSecret, nil)
 
 	tests := []struct {
 		name          string
@@ -215,7 +221,7 @@ func TestDingTalkCallbackHandler_HandleApprovalCallback_Success(t *testing.T) {
 func TestDingTalkCallbackHandler_HandleApprovalCallback_InvalidSignature(t *testing.T) {
 	appSecret := "test_secret_123"
 	manager := &MockApprovalManager{}
-	handler := NewDingTalkCallbackHandler(manager, appSecret)
+	handler := NewDingTalkCallbackHandler(manager, appSecret, nil)
 
 	callbackReq := DingTalkCallbackRequest{
 		EventType:  "approval_result",
@@ -254,7 +260,7 @@ func TestDingTalkCallbackHandler_HandleApprovalCallback_InvalidSignature(t *test
 func TestDingTalkCallbackHandler_HandleApprovalCallback_MissingFields(t *testing.T) {
 	appSecret := "test_secret_123"
 	manager := &MockApprovalManager{}
-	handler := NewDingTalkCallbackHandler(manager, appSecret)
+	handler := NewDingTalkCallbackHandler(manager, appSecret, nil)
 
 	tests := []struct {
 		name        string
@@ -343,7 +349,7 @@ func TestDingTalkCallbackHandler_HandleApprovalCallback_MissingFields(t *testing
 func TestDingTalkCallbackHandler_HandleApprovalCallback_InvalidJSON(t *testing.T) {
 	appSecret := "test_secret_123"
 	manager := &MockApprovalManager{}
-	handler := NewDingTalkCallbackHandler(manager, appSecret)
+	handler := NewDingTalkCallbackHandler(manager, appSecret, nil)
 
 	// Invalid JSON body
 	body := []byte("{invalid json")
@@ -369,9 +375,69 @@ func TestDingTalkCallbackHandler_HandleApprovalCallback_InvalidJSON(t *testing.T
 	assert.Contains(t, resp.ErrMsg, "Invalid request format")
 }
 
+func TestDingTalkCallbackHandler_HandleApprovalCallback_RejectsUserOutsideAllowlist(t *testing.T) {
+	appSecret := "test_secret_123"
+	manager := &MockApprovalManager{}
+	handler := NewDingTalkCallbackHandler(manager, appSecret, []string{"allowed_user"})
+	callbackReq := DingTalkCallbackRequest{
+		TimeStamp:  time.Now().UnixMilli(),
+		ApprovalID: "approval_123",
+		TenantID:   "tenant_1",
+		UserID:     "other_user",
+		Result:     "agree",
+	}
+	body, err := json.Marshal(callbackReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	timestamp := strconv.FormatInt(callbackReq.TimeStamp, 10)
+	mac := hmac.New(sha256.New, []byte(appSecret))
+	mac.Write([]byte(timestamp + "\n" + appSecret))
+	sign := url.QueryEscape(base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/webhooks/dingtalk/approval-callback?timestamp=%s&sign=%s", timestamp, sign), bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	handler.HandleApprovalCallback(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	manager.AssertNotCalled(t, "Approve")
+	manager.AssertNotCalled(t, "Reject")
+}
+
+func TestDingTalkCallbackHandler_HandleApprovalCallback_RejectsOversizedBody(t *testing.T) {
+	appSecret := "test_secret_123"
+	handler := NewDingTalkCallbackHandler(&MockApprovalManager{}, appSecret, nil)
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	mac := hmac.New(sha256.New, []byte(appSecret))
+	mac.Write([]byte(timestamp + "\n" + appSecret))
+	sign := url.QueryEscape(base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/webhooks/dingtalk/approval-callback?timestamp=%s&sign=%s", timestamp, sign), bytes.NewReader(bytes.Repeat([]byte("a"), maxDingTalkCallbackBodyBytes+1)))
+	w := httptest.NewRecorder()
+
+	handler.HandleApprovalCallback(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestDingTalkCallbackHandler_UsesCurrentSecret(t *testing.T) {
+	secret := "first_secret"
+	handler := newDingTalkCallbackHandler(&MockApprovalManager{}, func() string { return secret }, nil)
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp + "\n" + secret))
+	sign := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/callback?timestamp="+timestamp+"&sign="+url.QueryEscape(sign), nil)
+	assert.True(t, handler.verifySignature(req))
+
+	secret = ""
+	assert.False(t, handler.verifySignature(req))
+}
+
 func TestDingTalkCallbackHandler_ProcessApprovalResult_UnknownResult(t *testing.T) {
 	manager := &MockApprovalManager{}
-	handler := NewDingTalkCallbackHandler(manager, "test_secret")
+	handler := NewDingTalkCallbackHandler(manager, "test_secret", nil)
 
 	req := &DingTalkCallbackRequest{
 		ApprovalID: "approval_123",
@@ -391,7 +457,7 @@ func TestRegisterDingTalkRoutes(t *testing.T) {
 	manager := &MockApprovalManager{}
 	appSecret := "test_secret"
 
-	RegisterDingTalkRoutes(mux, manager, appSecret)
+	RegisterDingTalkRoutes(mux, manager, func() string { return appSecret }, nil)
 
 	// Verify route is registered by making a test request
 	callbackReq := DingTalkCallbackRequest{
