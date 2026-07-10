@@ -125,7 +125,7 @@ func (d *FastDetector) Detect(ctx context.Context, content string) (*DetectResul
 	// 2. 敏感词扫描
 	words := d.sensitiveTrie.Scan(content)
 	result.SensitiveWords = words
-	result.Score += len(words) * 2 // 每个敏感词 +2 分
+	result.Score += len(words) * 3 // 每个敏感词 +3 分（2026-07-11优化：从2提升到3）
 
 	// 3. Prompt Injection 检测
 	for _, rule := range d.injectionRules {
@@ -174,7 +174,8 @@ func (d *FastDetector) Detect(ctx context.Context, content string) (*DetectResul
 	// 7. 决策逻辑：
 	//   - 任一 Threat.Severity >= 8 → NeedApproval（防御性升级，覆盖任
 	//     何单次命中都需要人工介入的高危类型）
-	//   - 否则按 Score 阈值：>=8 Approval / >=5 Warn / <5 Pass
+	//   - 否则按 Score 阈值：>=6 Approval / >=3 Warn / <3 Pass
+	//   （2026-07-11优化：降低阈值以提高敏感度，从8/5降到6/3）
 	maxSeverity := 0
 	for _, th := range result.Threats {
 		if th.Severity > maxSeverity {
@@ -182,10 +183,10 @@ func (d *FastDetector) Detect(ctx context.Context, content string) (*DetectResul
 		}
 	}
 	switch {
-	case maxSeverity >= 8 || result.Score >= 8:
+	case maxSeverity >= 8 || result.Score >= 6:
 		result.Decision = DecisionNeedApproval
 		result.Reason = "high risk score or high-severity threat, manual review required"
-	case result.Score >= 5:
+	case result.Score >= 3:
 		result.Decision = DecisionWarn
 		result.Reason = "medium risk, logged for review"
 	default:
