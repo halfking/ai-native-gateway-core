@@ -184,7 +184,7 @@ func (e *CommandExecutor) pollAndExecute(ctx context.Context) {
 				Success: false,
 				Error:   "command expired",
 			}
-			e.client.ReportCommandResult(ctx, cmd.CommandID, result)
+			_ = e.client.ReportCommandResult(ctx, cmd.CommandID, result)
 			continue
 		}
 

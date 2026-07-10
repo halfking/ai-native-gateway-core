@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kaixuan/llm-gateway-go/admin"                                           //nolint:depguard // needed for JWT auth in healthHandler
+	"github.com/kaixuan/llm-gateway-go/admin" //nolint:depguard // needed for JWT auth in healthHandler
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/cache/prefix"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -4084,26 +4084,65 @@ func StreamChunkErrorsFromLogCtxForTest(c *RequestLogContext) int {
 	return streamChunkErrorsFromLogCtx(c)
 }
 
-// resolveGatewayVersion reads the build version from /opt/llm-gateway-go/VERSION
-// (written at image build time by the Dockerfile's RUN echo … > VERSION step).
-// Falls back to GIT_SHA env var, then to "unknown" if neither is available.
+// resolveGatewayVersion reads the build version from /opt/llm-gateway-go/version.json
+// (SSOT - Single Source of Truth for version info, written by bump-version.sh).
+// Returns ONLY the short git tag (e.g. "v2.4.2") for clean /healthz display.
+// Full build info (git_sha, build_seq, build_date) is available via /api/system/version.
+//
+// 兼容回退: 如果 version.json 不存在，从 VERSION 文件读取并截取 tag 部分。
 func resolveGatewayVersion() string {
-	candidates := []string{
-		"/opt/llm-gateway-go/VERSION",
-		"/.VERSION",
-		"VERSION",
-	}
-	for _, path := range candidates {
+	// 1) 优先: 从 version.json 读取 git_tag (SSOT)
+	for _, path := range versionJSONCandidatesForHealth() {
 		if raw, err := os.ReadFile(path); err == nil {
-			if v := strings.TrimSpace(string(raw)); v != "" {
-				return v
+			var m map[string]any
+			if json.Unmarshal(raw, &m) == nil {
+				if gitTag, ok := m["git_tag"].(string); ok && gitTag != "" {
+					if !strings.HasPrefix(gitTag, "v") {
+						return "v" + gitTag
+					}
+					return gitTag
+				}
 			}
 		}
 	}
-	if sha := strings.TrimSpace(os.Getenv("GIT_SHA")); sha != "" {
-		return "1.0.0-" + sha + "-" + time.Now().UTC().Format("2006-01-02")
+
+	// 2) 回退: 从 VERSION 文件读取完整字符串，截取 tag 部分
+	for _, path := range []string{
+		"/opt/llm-gateway-go/VERSION",
+		"/.VERSION",
+		"VERSION",
+	} {
+		if raw, err := os.ReadFile(path); err == nil {
+			v := strings.TrimSpace(string(raw))
+			if v != "" {
+				// "2.4.2-f56f3c5e-20260710-965" → "v2.4.2"
+				parts := strings.SplitN(v, "-", 2)
+				if len(parts) > 0 {
+					if strings.HasPrefix(parts[0], "v") {
+						return parts[0]
+					}
+					return "v" + parts[0]
+				}
+			}
+		}
 	}
-	return "0.2.0-unknown"
+
+	// 3) 最后兜底
+	return "v0.0.0"
+}
+
+// versionJSONCandidatesForHealth 按优先级返回 version.json 路径（用于 /healthz）。
+func versionJSONCandidatesForHealth() []string {
+	candidates := []string{
+		"/opt/llm-gateway-go/version.json",
+	}
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		candidates = append(candidates,
+			wd+"/version.json",
+			wd+"/services/llm-gateway-go/version.json",
+		)
+	}
+	return candidates
 }
 
 // detectEmptyStreamResponse checks if a streaming response is effectively empty.
