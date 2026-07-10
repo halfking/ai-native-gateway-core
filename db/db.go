@@ -169,6 +169,9 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	if err := db.ensureLicenseDevicesSchema(migCtx); err != nil {
 		return nil, err
 	}
+	if err := db.ensureFaultManagementSchema(migCtx); err != nil {
+		return nil, err
+	}
 	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
 		return nil, err
 	}
@@ -2302,53 +2305,6 @@ func (d *DB) ensureLicenseModulesSchema(ctx context.Context) error {
 	return nil
 }
 
-// ensureLicenseDevicesSchema mirrors sql/migrations/startup/374_license_devices.sql
-// for startup apply. Idempotent. Creates license_devices and offline_activation_requests tables.
-func (d *DB) ensureLicenseDevicesSchema(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	_, err := d.pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS license_devices (
-			id                  BIGSERIAL PRIMARY KEY,
-			license_id          BIGINT NOT NULL REFERENCES licenses(id) ON DELETE CASCADE,
-			instance_id         TEXT NOT NULL,
-			hardware_hash       TEXT NOT NULL,
-			device_name         TEXT NOT NULL,
-			activated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-			last_heartbeat      TIMESTAMPTZ,
-			status              TEXT NOT NULL DEFAULT 'active'
-				CHECK (status IN ('active', 'deactivated')),
-			deactivated_at      TIMESTAMPTZ,
-			deactivate_reason   TEXT,
-			UNIQUE (license_id, hardware_hash)
-		);
-		CREATE INDEX IF NOT EXISTS idx_ld_license ON license_devices (license_id);
-		CREATE INDEX IF NOT EXISTS idx_ld_status ON license_devices (status);
-		CREATE INDEX IF NOT EXISTS idx_ld_hardware ON license_devices (hardware_hash);
-
-		CREATE TABLE IF NOT EXISTS offline_activation_requests (
-			id                  BIGSERIAL PRIMARY KEY,
-			license_key         TEXT NOT NULL,
-			hardware_hash       TEXT NOT NULL,
-			instance_id         TEXT NOT NULL,
-			device_name         TEXT NOT NULL,
-			request_id          TEXT NOT NULL UNIQUE,
-			created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-			approved_at         TIMESTAMPTZ,
-			signed_license      JSONB
-		);
-		CREATE INDEX IF NOT EXISTS idx_oar_request ON offline_activation_requests (request_id);
-		CREATE INDEX IF NOT EXISTS idx_oar_license ON offline_activation_requests (license_key);
-		CREATE INDEX IF NOT EXISTS idx_oar_created ON offline_activation_requests (created_at DESC);
-	`)
-	if err != nil {
-		return err
-	}
-	slog.Info("license_devices schema ensured (2 tables)")
-	return nil
-}
-
 // ensureVibeCodingSchema mirrors sql/migrations/startup/373_vibecoding.sql
 // for startup apply. Idempotent. Creates VibeCoding projects, sessions,
 // and code reviews tables with RLS policies.
@@ -2421,5 +2377,122 @@ func (d *DB) ensureVibeCodingSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("vibe_coding schema ensured (3 tables + RLS)")
+	return nil
+}
+
+// ensureLicenseDevicesSchema mirrors sql/migrations/startup/374_license_devices.sql
+// for startup apply. Idempotent. Creates license_devices and offline_activation_requests tables.
+func (d *DB) ensureLicenseDevicesSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS license_devices (
+			id                  BIGSERIAL PRIMARY KEY,
+			license_id          BIGINT NOT NULL REFERENCES licenses(id) ON DELETE CASCADE,
+			instance_id         TEXT NOT NULL,
+			hardware_hash       TEXT NOT NULL,
+			device_name         TEXT NOT NULL,
+			activated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_heartbeat      TIMESTAMPTZ,
+			status              TEXT NOT NULL DEFAULT 'active'
+				CHECK (status IN ('active', 'deactivated')),
+			deactivated_at      TIMESTAMPTZ,
+			deactivate_reason   TEXT,
+			UNIQUE (license_id, hardware_hash)
+		);
+		CREATE INDEX IF NOT EXISTS idx_ld_license ON license_devices (license_id);
+		CREATE INDEX IF NOT EXISTS idx_ld_status ON license_devices (status);
+		CREATE INDEX IF NOT EXISTS idx_ld_hardware ON license_devices (hardware_hash);
+
+		CREATE TABLE IF NOT EXISTS offline_activation_requests (
+			id                  BIGSERIAL PRIMARY KEY,
+			license_key         TEXT NOT NULL,
+			hardware_hash       TEXT NOT NULL,
+			instance_id         TEXT NOT NULL,
+			device_name         TEXT NOT NULL,
+			request_id          TEXT NOT NULL UNIQUE,
+			created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+			approved_at         TIMESTAMPTZ,
+			signed_license      JSONB
+		);
+		CREATE INDEX IF NOT EXISTS idx_oar_request ON offline_activation_requests (request_id);
+		CREATE INDEX IF NOT EXISTS idx_oar_license ON offline_activation_requests (license_key);
+		CREATE INDEX IF NOT EXISTS idx_oar_created ON offline_activation_requests (created_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("license_devices schema ensured (2 tables)")
+	return nil
+}
+
+// ensureFaultManagementSchema mirrors sql/migrations/startup/375_fault_management.sql
+// for startup apply. Idempotent. Creates fault management tables.
+func (d *DB) ensureFaultManagementSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS fault_events (
+			id              BIGSERIAL PRIMARY KEY,
+			rule_id         BIGINT NOT NULL,
+			rule_name       TEXT NOT NULL,
+			severity        TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error', 'critical')),
+			title           TEXT NOT NULL,
+			description     TEXT NOT NULL,
+			source          TEXT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'new'
+				CHECK (status IN ('new', 'acknowledged', 'resolving', 'resolved', 'ignored')),
+			metadata        JSONB,
+			detected_at     TIMESTAMPTZ NOT NULL,
+			acked_at        TIMESTAMPTZ,
+			acked_by        TEXT,
+			resolved_at     TIMESTAMPTZ,
+			resolved_by     TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_fe_rule ON fault_events (rule_id);
+		CREATE INDEX IF NOT EXISTS idx_fe_status ON fault_events (status);
+		CREATE INDEX IF NOT EXISTS idx_fe_severity ON fault_events (severity);
+		CREATE INDEX IF NOT EXISTS idx_fe_detected ON fault_events (detected_at DESC);
+
+		CREATE TABLE IF NOT EXISTS fault_rules (
+			id              SERIAL PRIMARY KEY,
+			name            TEXT NOT NULL UNIQUE,
+			description     TEXT NOT NULL,
+			metric          TEXT NOT NULL,
+			operator        TEXT NOT NULL CHECK (operator IN ('gte', 'lte', 'eq', 'ne')),
+			threshold       DOUBLE PRECISION NOT NULL,
+			duration        TEXT NOT NULL,
+			severity        TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error', 'critical')),
+			action          TEXT NOT NULL,
+			action_config   JSONB,
+			enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+			cooldown        TEXT NOT NULL DEFAULT '5m',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_fr_enabled ON fault_rules (enabled);
+		CREATE INDEX IF NOT EXISTS idx_fr_metric ON fault_rules (metric);
+
+		CREATE TABLE IF NOT EXISTS fault_action_logs (
+			id              BIGSERIAL PRIMARY KEY,
+			event_id        BIGINT NOT NULL REFERENCES fault_events(id) ON DELETE CASCADE,
+			action          TEXT NOT NULL,
+			status          TEXT NOT NULL,
+			result          TEXT,
+			duration_ms     BIGINT NOT NULL DEFAULT 0,
+			triggered_at    TIMESTAMPTZ NOT NULL,
+			completed_at    TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_fal_event ON fault_action_logs (event_id);
+		CREATE INDEX IF NOT EXISTS idx_fal_triggered ON fault_action_logs (triggered_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("fault_management schema ensured (3 tables)")
 	return nil
 }
