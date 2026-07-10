@@ -4,14 +4,14 @@
       <!-- 数据库 -->
       <div class="card storage-card">
         <h3 class="card-title">
-          PostgreSQL 数据库
+          {{ t('dataLifecycle.storageOverview.summary.databaseTitle') }}
           <span class="badge" v-if="data?.database.server_version">
             v{{ data.database.server_version.split(' ')[0] }}
           </span>
         </h3>
         <div class="big-stat">
           <div class="big-value">{{ data?.database.total_human || '—' }}</div>
-          <div class="big-label">总占用（表 + 索引 + TOAST 之和）</div>
+          <div class="big-label">{{ t('dataLifecycle.storageOverview.summary.databaseSubtitle') }}</div>
         </div>
         <div class="metric-row">
           <span>Database</span>
@@ -44,25 +44,25 @@
       <!-- 本机磁盘 -->
       <div class="card storage-card">
         <h3 class="card-title">
-          本机磁盘
+          {{ t('dataLifecycle.storageOverview.summary.diskTitle') }}
           <span class="badge" :class="diskBadge(data?.filesystem.used_percent || 0)">
             {{ data?.filesystem.used_percent || 0 }}%
           </span>
         </h3>
         <div class="big-stat">
           <div class="big-value">{{ data?.filesystem.used_human || '—' }}</div>
-          <div class="big-label">已用 / {{ data?.filesystem.total_human || '—' }}</div>
+          <div class="big-label">{{ t('dataLifecycle.storageOverview.summary.diskUsedOf', { total: data?.filesystem.total_human || '—' }) }}</div>
         </div>
         <div class="metric-row">
-          <span>路径</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.path') }}</span>
           <span class="metric-val mono">{{ data?.filesystem.path || '—' }}</span>
         </div>
         <div class="metric-row">
-          <span>已用</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.used') }}</span>
           <span class="metric-val">{{ data?.filesystem.used_human }}</span>
         </div>
         <div class="metric-row">
-          <span>剩余</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.free') }}</span>
           <span class="metric-val">{{ data?.filesystem.free_human }}</span>
         </div>
         <div class="bar-track">
@@ -78,34 +78,34 @@
     <!-- 列存 (citus_columnar) — 单独一行展示 -->
     <div class="card columnar-card">
       <h3 class="card-title">
-        列存存储（citus_columnar）
-        <span v-if="data?.columnar.available" class="badge ok">已启用</span>
-        <span v-else class="badge warn">未安装</span>
+        {{ t('dataLifecycle.storageOverview.summary.columnarTitle') }}
+        <span v-if="data?.columnar.available" class="badge ok">{{ t('dataLifecycle.storageOverview.summary.enabled') }}</span>
+        <span v-else class="badge warn">{{ t('dataLifecycle.storageOverview.summary.notInstalled') }}</span>
       </h3>
       <div v-if="data?.columnar.available" class="columnar-grid">
         <div class="columnar-stat">
-          <div class="stat-label">表数（含分区）</div>
+          <div class="stat-label">{{ t('dataLifecycle.storageOverview.summary.columnarTableCount') }}</div>
           <div class="stat-value">{{ data.columnar.table_count }}</div>
-          <div class="stat-meta">使用 columnar 访问方法的表</div>
+          <div class="stat-meta">{{ t('dataLifecycle.storageOverview.summary.columnarTableCountMeta') }}</div>
         </div>
         <div class="columnar-stat">
-          <div class="stat-label">字段总数</div>
+          <div class="stat-label">{{ t('dataLifecycle.storageOverview.summary.columnarTotalColumns') }}</div>
           <div class="stat-value">{{ data.columnar.total_columns }}</div>
-          <div class="stat-meta">所有列存表的字段之和</div>
+          <div class="stat-meta">{{ t('dataLifecycle.storageOverview.summary.columnarTotalColumnsMeta') }}</div>
         </div>
         <div class="columnar-stat">
-          <div class="stat-label">列存占用</div>
+          <div class="stat-label">{{ t('dataLifecycle.storageOverview.summary.columnarSize') }}</div>
           <div class="stat-value">{{ data.columnar.total_human || '—' }}</div>
-          <div class="stat-meta">压缩后（含 chunk 元数据）</div>
+          <div class="stat-meta">{{ t('dataLifecycle.storageOverview.summary.columnarSizeMeta') }}</div>
         </div>
         <div class="columnar-stat">
-          <div class="stat-label">DB 占比</div>
+          <div class="stat-label">{{ t('dataLifecycle.storageOverview.summary.columnarDbShare') }}</div>
           <div class="stat-value">{{ columnarPctOfDB }}%</div>
-          <div class="stat-meta">列存 / Database 总和</div>
+          <div class="stat-meta">{{ t('dataLifecycle.storageOverview.summary.columnarDbShareMeta') }}</div>
         </div>
       </div>
       <div v-else class="empty-hint">
-        ⚠️ {{ data?.columnar.note || 'citus_columnar 扩展未安装' }}
+        ⚠️ {{ data?.columnar.note || t('dataLifecycle.storageOverview.summary.columnarNotInstalledFallback') }}
       </div>
       <p v-if="data?.columnar.available && data.columnar.note" class="columnar-note">
         {{ data.columnar.note }}
@@ -115,37 +115,37 @@
     <!-- 本机日志目录 -->
     <div v-if="data?.local_logs" class="card local-logs-card">
       <h3 class="card-title">
-        本机日志目录
-        <span v-if="!data.local_logs.exists" class="badge warn">不存在</span>
+        {{ t('dataLifecycle.storageOverview.summary.localLogsTitle') }}
+        <span v-if="!data.local_logs.exists" class="badge warn">{{ t('dataLifecycle.storageOverview.summary.notFound') }}</span>
       </h3>
       <div v-if="data.local_logs.exists" class="local-logs-grid">
         <div class="metric-row">
-          <span>路径</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.path') }}</span>
           <span class="metric-val mono">{{ data.local_logs.path }}</span>
         </div>
         <div class="metric-row">
-          <span>文件数</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.fileCount') }}</span>
           <span class="metric-val">{{ fmtNum(data.local_logs.files) }}</span>
         </div>
         <div class="metric-row">
-          <span>大小</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.size') }}</span>
           <span class="metric-val">{{ data.local_logs.size_human }}</span>
         </div>
         <div class="metric-row">
-          <span>最旧</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.oldest') }}</span>
           <span class="metric-val">{{ formatTime(data.local_logs.oldest_mtime) }}</span>
         </div>
         <div class="metric-row">
-          <span>最新</span>
+          <span>{{ t('dataLifecycle.storageOverview.summary.newest') }}</span>
           <span class="metric-val">{{ formatTime(data.local_logs.newest_mtime) }}</span>
         </div>
       </div>
-      <div v-else class="empty-hint">未找到日志目录，gzip 备份/轮转不会写入。</div>
+      <div v-else class="empty-hint">{{ t('dataLifecycle.storageOverview.summary.localLogsMissingHint') }}</div>
     </div>
 
     <!-- 警告 -->
     <div v-if="data && data.warnings && data.warnings.length" class="warnings-card">
-      <h3 class="card-title">⚠️ 提示</h3>
+      <h3 class="card-title">⚠️ {{ t('dataLifecycle.storageOverview.summary.warningsTitle') }}</h3>
       <ul class="warnings-list">
         <li v-for="(w, i) in data.warnings" :key="i">{{ w }}</li>
       </ul>

@@ -21,11 +21,11 @@
 
           <div class="table-stats">
             <div class="stat-item">
-              <span class="stat-label">行数</span>
+              <span class="stat-label">{{ t('dataLifecycle.hotPartition.labels.rows') }}</span>
               <span class="stat-value">{{ formatNumber(table.rows) }}</span>
             </div>
             <div class="stat-item">
-              <span class="stat-label">TOAST</span>
+              <span class="stat-label">{{ t('dataLifecycle.hotPartition.labels.toast') }}</span>
               <span class="stat-value">{{ table.toastHuman }}</span>
             </div>
           </div>
@@ -317,7 +317,7 @@ const deleting = ref(false)
 const hotTables = ref<HotTable[]>([
   {
     name: 'request_logs_hot',
-    label: '请求日志',
+    label: t('dataLifecycle.hotPartition.hotTableNames.requestLogs'),
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
@@ -327,7 +327,7 @@ const hotTables = ref<HotTable[]>([
   },
   {
     name: 'credential_model_index_hot',
-    label: '凭据模型索引',
+    label: t('dataLifecycle.hotPartition.hotTableNames.credentialModelIndex'),
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
@@ -337,7 +337,7 @@ const hotTables = ref<HotTable[]>([
   },
   {
     name: 'usage_ledger_hot',
-    label: '用量账本',
+    label: t('dataLifecycle.hotPartition.hotTableNames.usageLedger'),
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
@@ -347,7 +347,7 @@ const hotTables = ref<HotTable[]>([
   },
   {
     name: 'routing_decision_log_hot',
-    label: '路由决策日志',
+    label: t('dataLifecycle.hotPartition.hotTableNames.routingDecisionLog'),
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
@@ -502,7 +502,7 @@ async function promoteTable(table: HotTable) {
   } catch (err: any) {
     table.result = {
       status: 'failed',
-      message: err.response?.data?.error || err.message || '迁移失败',
+      message: err.response?.data?.error || err.message || t('dataLifecycle.hotPartition.migrationFailed'),
     }
   } finally {
     table.migrating = false
