@@ -122,8 +122,11 @@ async function loadStatus() {
   error.value = null
   
   try {
-    // Load health with full details
-    health.value = await getHealth(true)
+    // Load health (use public /healthz — the ?full=true variant requires an
+    // admin Bearer header that the SPA cannot supply; see NET-007 backend change
+    // in domains/streaming/handler.go. The basic endpoint still gives us
+    // status/version which is enough for the indicator badge.)
+    health.value = await getHealth()
     
     // Load background tasks
     try {
