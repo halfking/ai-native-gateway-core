@@ -157,15 +157,13 @@ type Config struct {
 	TimestampWindowSeconds int
 }
 
-// LoadConfig 从 settings.Global + 可选 DB 表读取 feishu_bot.* 当前生效值。
+// LoadConfig 从 settings.Global 读取 feishu_bot.* 当前生效值。
 //
 // 任何读失败都不 panic，返回零值 + 错误；上层决定如何处理。
 //
-// 数据源合并策略（2026-07-09）：
-//   - feishu_bot.allowed_users：DB 表 feishu_bot_routing_rules 优先，settings_kv 兜底
-//   - 其余配置：仅从 settings_kv 读取
-//
-// 合并去重规则：DB 行 + 逗号串中重复的 OpenID 去重（按字符串匹配）。
+// 数据源说明（2026-07-09）：
+//   - 此函数只读 settings_kv
+//   - DB 优先逻辑由 Plugin.ReloadAllowedUsers / ReloadConfig 在拿到 dbPool 后处理
 func LoadConfig() (Config, error) {
 	cfg := Config{
 		Enabled:                     false,
@@ -289,12 +287,14 @@ func (p *Plugin) ReloadConfig() error {
 	if err != nil {
 		return err
 	}
-	// ReloadAllowedUsers 走 DB 路径，与 cfg.AllowedUsers 合并
-	if rerr := p.ReloadAllowedUsers(); rerr == nil {
-		// 合并成功：用 DB 合并后的版本覆盖
-		p.mu.RLock()
-		cfg.AllowedUsers = p.cfg.AllowedUsers
-		p.mu.RUnlock()
+	// ReloadAllowedUsers 走 DB 路径，与 cfg.AllowedUsers 合并。
+	// 这里直接基于 db + settings 重新计算，避免先写 p.cfg 再读回的竞态窗口。
+	p.mu.RLock()
+	db := p.db
+	p.mu.RUnlock()
+	fromSettings := cfg.AllowedUsers
+	if fromDB, rerr := loadAllowedUsersFromDB(context.Background(), db); rerr == nil {
+		cfg.AllowedUsers = mergeAllowedUsers(fromDB, fromSettings)
 	}
 	p.mu.Lock()
 	p.cfg = cfg
