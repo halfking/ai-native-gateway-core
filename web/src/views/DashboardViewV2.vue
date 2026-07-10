@@ -276,8 +276,9 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
     <!-- 会话统计面板（仅在 stats tab 显示） -->
     <SessionStatsPanel v-if="activeTab === 'stats'" style="margin-bottom: 20px;" />
 
-    <!-- 实时请求流V2（带重新初始化key） -->
+    <!-- 实时请求流V2（仅在 stream tab 显示） -->
     <LiveRequestStreamV2
+      v-if="activeTab === 'stream'"
       :key="swimLaneReinitKey"
       @open-detail="openRequestDetail"
     />
