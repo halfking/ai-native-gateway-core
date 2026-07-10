@@ -2242,13 +2242,11 @@ func main() {
 		autoupdateInstaller := autoupdate.NewInstaller("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
 		autoupdateRollback := autoupdate.NewRollback("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
 		autoupdateAPI := autoupdate.NewAdminAPI(autoupdateStore, autoupdateDownloader, autoupdateInstaller, autoupdateRollback)
-		// 前端使用 /api/admin/releases，前端期望不含 /autoupdate 前缀
-		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/releases"))
-		slog.Info("Phase 4: Auto-update API enabled (/api/admin/releases/*)")
-
-		// Autoupdate upgrade-logs 端点（前端使用 path = /api/admin/upgrade-logs 或 /api/admin/releases/upgrade-logs）
-		// 这里单独注册以兼容多种路径
+		// 前端使用 /api/admin/releases/*，handler 内部路径已包含 /releases
+		autoupdateAPI.RegisterRoutes(e.Group("/api/admin"))
+		// 别名：兼容 /api/admin/upgrade-logs
 		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/autoupdate"))
+		slog.Info("Phase 4: Auto-update API enabled (/api/admin/releases/*)")
 
 		// Phase 5: Center Ops (中心运维)
 		centerStore := center.NewPgxStore(pool)
