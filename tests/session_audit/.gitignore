@@ -6,3 +6,4 @@ unit_verify
 extracted_data.json
 results/
 *.log
+audit_test
