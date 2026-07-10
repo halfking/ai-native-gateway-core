@@ -68,7 +68,7 @@ func (i *Installer) Install(ctx context.Context, downloadPath string, release *R
 	// 4. 替换二进制文件
 	if err := i.replaceBinary(downloadPath); err != nil {
 		// 回滚
-		i.copyFile(backupPath, i.binPath)
+		_ = i.copyFile(backupPath, i.binPath)
 		result.Error = fmt.Sprintf("replace binary: %v", err)
 		return result, err
 	}
@@ -136,13 +136,13 @@ func (i *Installer) copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	dstFile, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
+	defer func() { _ = dstFile.Close() }()
 
 	if _, err := srcFile.WriteTo(dstFile); err != nil {
 		return err
@@ -183,7 +183,7 @@ func (i *Installer) CleanupOldBackups(keepCount int) error {
 			break
 		}
 		path := filepath.Join(i.backupDir, entry.Name())
-		os.Remove(path)
+		_ = os.Remove(path)
 	}
 
 	return nil
