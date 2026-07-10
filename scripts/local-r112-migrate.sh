@@ -151,6 +151,7 @@ SKIP_MIGRATIONS=(
   "317_partition_credential_model_index.sql"
   "321_cleanup_stale_in_progress.sql"
   "340_create_partition_query_views.sql"
+  "341_hot_table_independence.fix.sql"
   "342_create_other_table_views.sql"
   "343_fix_routing_decision_log_columnar.sql"
   "344_usage_ledger_hot_independence.sql"
@@ -168,6 +169,7 @@ SKIP_MIGRATIONS=(
   "357_session_analytics_aggregation_views.sql"
   "358_session_ownership.sql"
   "364_prompt_injection_enhanced.sql"
+  "365_output_compliance_policy_enhance.sql"
 )
 
 should_skip_migration() {
