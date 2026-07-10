@@ -504,6 +504,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-07-07: 首页会话统计概览接口
 	mux.HandleFunc("/api/admin/dashboard/session-overview", admin(h.handleDashboardSessionOverview))
 
+	// 2026-07-10: Dashboard API v2 - 6个新接口
+	mux.HandleFunc("/api/admin/dashboard/session-trend", admin(h.handleDashboardSessionTrend))
+	mux.HandleFunc("/api/admin/dashboard/session-health", admin(h.handleDashboardSessionHealth))
+	mux.HandleFunc("/api/admin/dashboard/session-active", admin(h.handleDashboardSessionActive))
+	mux.HandleFunc("/api/admin/dashboard/module-stats", admin(h.handleDashboardModuleStats))
+	mux.HandleFunc("/api/admin/dashboard/errors", admin(h.handleDashboardErrors))
+	mux.HandleFunc("/api/admin/dashboard/performance", admin(h.handleDashboardPerformance))
+
 	// 2026-07-07: P2会话分析 - 客户端/任务维度分析
 	mux.HandleFunc("/api/admin/session-analytics/clients", admin(h.handleClientAnalyticsList))
 	mux.HandleFunc("/api/admin/session-analytics/clients/", admin(h.handleClientAnalyticsDetail))
