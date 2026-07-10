@@ -202,7 +202,7 @@ func (w *SessionHealthWorker) computeWithExecutor(ctx context.Context, s session
 		params, 0, // 使用模块默认 TTL（1小时）
 		func(ctx context.Context) (*moduleexec.ExecuteResult, error) {
 			health := w.doCompute(s)
-			// 写入数据库
+			// 只在首次计算时写入数据库
 			if err := w.updateHealth(ctx, s.sessionKey, health); err != nil {
 				return nil, err
 			}
@@ -219,8 +219,12 @@ func (w *SessionHealthWorker) computeWithExecutor(ctx context.Context, s session
 		return err
 	}
 
-	// 如果是从缓存获取的，不需要再次更新数据库
+	// 缓存命中时，只更新 last_health_at 时间戳（不重新计算和写入健康分）
+	// 选项 A: 什么都不做（缓存期内不更新时间戳）- 当前实现
+	// 选项 B: 只更新 last_health_at 而不重算分数 - 可选
 	if execResult.FromCache {
+		// 可选：更新时间戳但不重新计算健康分
+		// return w.updateLastHealthAt(ctx, s.sessionKey)
 		return nil
 	}
 	return nil
@@ -257,7 +261,7 @@ func (w *SessionHealthWorker) doCompute(s sessionRecord) sessionHealthResult {
 	return computeHealthFromFields(summary, config)
 }
 
-// updateHealth 更新数据库中的健康分
+// updateHealth 更新数据库中的健康分（仅在首次计算时调用）
 func (w *SessionHealthWorker) updateHealth(ctx context.Context, sessionKey string, health sessionHealthResult) error {
 	updateQuery := `
 		UPDATE session_summaries
