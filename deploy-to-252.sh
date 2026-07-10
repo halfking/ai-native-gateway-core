@@ -38,7 +38,7 @@ DB_CONTAINER="${DB_CONTAINER:-pg-252-pg17}"
 DB_USER="${DB_USER:-llm_gateway}"
 DB_NAME="${DB_NAME:-llm_gateway}"
 LOCAL_BIN="${LOCAL_BIN:-$REPO_DIR/bin/llm-gateway-go-linux-amd64}"
-MIGRATION_FILE="${MIGRATION_FILE:-$REPO_DIR/db/migrations/356_handoff_enhanced.sql}"
+MIGRATION_FILE="${MIGRATION_FILE:-$REPO_DIR/sql/migrations/startup/366_model_name_mapping.sql}"
 
 # 颜色
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
