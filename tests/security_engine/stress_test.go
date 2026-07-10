@@ -65,6 +65,8 @@ func TestSecurityEngine_HighPressure(t *testing.T) {
 	metrics.MemoryPeakMB = memoryStartMB
 
 	var wg sync.WaitGroup
+	var monitorWG sync.WaitGroup
+	var metricsMu sync.Mutex
 	var totalLatency int64
 
 	startTime := time.Now()
@@ -97,8 +99,10 @@ func TestSecurityEngine_HighPressure(t *testing.T) {
 	}
 
 	// 监控内存峰值（异步）
-	stopMonitor := make(chan bool)
+	stopMonitor := make(chan struct{})
+	monitorWG.Add(1)
 	go func() {
+		defer monitorWG.Done()
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -107,9 +111,11 @@ func TestSecurityEngine_HighPressure(t *testing.T) {
 				var mem runtime.MemStats
 				runtime.ReadMemStats(&mem)
 				memMB := float64(mem.Alloc) / 1024 / 1024
+				metricsMu.Lock()
 				if memMB > metrics.MemoryPeakMB {
 					metrics.MemoryPeakMB = memMB
 				}
+				metricsMu.Unlock()
 			case <-stopMonitor:
 				return
 			}
@@ -117,7 +123,8 @@ func TestSecurityEngine_HighPressure(t *testing.T) {
 	}()
 
 	wg.Wait()
-	stopMonitor <- true
+	close(stopMonitor)
+	monitorWG.Wait()
 
 	totalDuration := time.Since(startTime)
 	metrics.TotalDurationSec = totalDuration.Seconds()
