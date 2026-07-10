@@ -126,9 +126,9 @@ export default {
     summary: {
       databaseTitle: 'PostgreSQL データベース',
       databaseSubtitle: '総フットプリント（テーブル + インデックス + TOAST）',
-      databaseMetric: 'Database',
-      tablesMetric: 'Tables',
-      indexesMetric: 'Indexes',
+      databaseMetric: 'データベース',
+      tablesMetric: 'テーブル',
+      indexesMetric: 'インデックス',
       toastMetric: 'TOAST',
       diskTitle: 'ローカルディスク',
       diskUsedOf: '使用済み / {total}',

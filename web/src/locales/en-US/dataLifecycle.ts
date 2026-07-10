@@ -125,6 +125,10 @@ export default {
     summary: {
       databaseTitle: 'PostgreSQL database',
       databaseSubtitle: 'Total footprint (tables + indexes + TOAST)',
+      databaseMetric: 'Database',
+      tablesMetric: 'Tables',
+      indexesMetric: 'Indexes',
+      toastMetric: 'TOAST',
       diskTitle: 'Local disk',
       diskUsedOf: 'Used / {total}',
       path: 'Path',
@@ -194,6 +198,7 @@ export default {
       failed: '{op} failed: {msg}',
     },
     rowResult: {
+      running: 'Running…',
       success: '{op}: reclaimed {size} ({pct}%, {ms}ms)',
       failed: '{op} failed: {msg}',
     },

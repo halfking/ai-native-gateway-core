@@ -126,9 +126,9 @@ export default {
     summary: {
       databaseTitle: 'PostgreSQL 資料庫',
       databaseSubtitle: '總占用（表 + 索引 + TOAST 之和）',
-      databaseMetric: 'Database',
-      tablesMetric: 'Tables',
-      indexesMetric: 'Indexes',
+      databaseMetric: '資料庫',
+      tablesMetric: '表',
+      indexesMetric: '索引',
       toastMetric: 'TOAST',
       diskTitle: '本機磁碟',
       diskUsedOf: '已用 / {total}',
