@@ -41,11 +41,15 @@ var (
 // 优先路径（与生产部署一致）：/opt/llm-gateway-go/version.json
 // 回退路径（开发环境）：当前工作目录及 services/llm-gateway-go/
 // 结果缓存 5 秒，避免每次请求都读文件。
+//
+// version 字段只显示 git tag (如 "v2.4.2")，简短易读。
+// 完整的构建信息（git_sha / build_seq / build_date）在独立字段显示。
 func loadVersionInfo() map[string]any {
 	// 1) 优先：环境变量注入的原始 JSON（部署脚本可设置）
 	if raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_VERSION_JSON")); raw != "" {
 		var m map[string]any
 		if err := json.Unmarshal([]byte(raw), &m); err == nil {
+			normalizeVersionField(m)
 			return m
 		}
 	}
@@ -71,23 +75,50 @@ func loadVersionInfo() map[string]any {
 		}
 		var m map[string]any
 		if err := json.Unmarshal(raw, &m); err == nil {
+			normalizeVersionField(m)
 			versionCache = m
 			return m
 		}
 	}
 
-	// 3) 完全读取不到时，使用编译期硬编码默认值兜底
-	// （理论上不应发生，因为 version.json 会被部署脚本一起上传）
-	fallbackVersion := "dev"
+	// 3) 完全读取不到时使用默认值（理论上不应发生）
 	versionCache = map[string]any{
-		"version":    fallbackVersion,
-		"git_tag":    "dev",
+		"version":    "v0.0.0", // 只显示 tag，简短
+		"git_tag":    "v0.0.0",
 		"git_sha":    "unknown",
 		"build_seq":  0,
 		"build_date": time.Now().UTC().Format("20060102"),
 		"module":     "llm-gateway-go",
 	}
 	return versionCache
+}
+
+// normalizeVersionField 将 version 字段规范化为简短格式（只显示 git tag）。
+// version.json 中 version 字段原本是 "2.4.2-f56f3c5e-20260710-965"（完整构建信息），
+// 但前端只显示 tag 部分如 "v2.4.2"，更清晰易读。
+// 完整的构建信息保留在 git_sha / build_seq / build_date 字段。
+func normalizeVersionField(m map[string]any) {
+	// 如果已经有 version 字段（短格式），优先使用 git_tag
+	if gitTag, ok := m["git_tag"].(string); ok && gitTag != "" {
+		// 给 tag 加 v 前缀（如果还没有）
+		if !strings.HasPrefix(gitTag, "v") {
+			gitTag = "v" + gitTag
+		}
+		m["version"] = gitTag
+		m["git_tag"] = gitTag
+		return
+	}
+	// 否则从完整 version 字符串提取 tag 部分
+	if fullVersion, ok := m["version"].(string); ok && fullVersion != "" {
+		// "2.4.2-f56f3c5e-20260710-965" → "v2.4.2"
+		parts := strings.SplitN(fullVersion, "-", 2)
+		tag := "v" + parts[0]
+		if !strings.HasPrefix(parts[0], "v") {
+			tag = "v" + parts[0]
+		}
+		m["version"] = tag
+		m["git_tag"] = tag
+	}
 }
 
 // versionJSONCandidates 按优先级返回可能的 version.json 路径。
