@@ -492,6 +492,13 @@ func (h *Handler) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
+	if h.db == nil {
+		// Without DB we can't load the user, but the JWT is valid. Return
+		// a minimal userInfo synthesized from the JWT claims so the SPA can
+		// keep working in offline / no-DB mode.
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 	// AdminMiddleware now only accepts JWT (no sk-* fallback), so auth.IsJWT is always true
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
