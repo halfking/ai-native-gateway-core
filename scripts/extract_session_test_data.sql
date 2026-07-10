@@ -14,9 +14,9 @@
 \pset tuples_only on
 \pset fieldsep ''
 
--- 选择最近7天内有5轮以上对话的会话（排除单轮会话）
+-- 选择最近30天内有2轮以上对话的会话（排除单轮会话）
 WITH active_sessions AS (
-  SELECT 
+  SELECT
     gw_session_id,
     tenant_id,
     COUNT(*) as turn_count,
@@ -28,21 +28,21 @@ WITH active_sessions AS (
     AND gw_session_id != ''
     AND success = true  -- 只取成功的请求
   GROUP BY gw_session_id, tenant_id
-  HAVING COUNT(*) >= 2 AND COUNT(*) <= 20  -- 2-20轮对话
+  HAVING COUNT(*) >= 2  -- 大会话优先，不人为截断轮数
   ORDER BY COUNT(*) DESC, MAX(ts) DESC
-  LIMIT 10  -- 提取10个会话
+  LIMIT 100  -- 提取最多100个会话
 ),
 session_requests AS (
-  SELECT 
+  SELECT
     r.gw_session_id,
     r.tenant_id,
     r.request_id,
     r.ts,
-  r.request_body,
-  r.outbound_body,
-  r.response_body,
-  r.outbound_msg_count,
-  r.outbound_token_est,
+    r.request_body,
+    r.outbound_body,
+    r.response_body,
+    r.outbound_msg_count,
+    r.outbound_token_est,
     r.compression_strategy,
     r.compression_meta,
     ROW_NUMBER() OVER (PARTITION BY r.gw_session_id ORDER BY r.ts) as turn_number
@@ -61,11 +61,11 @@ SELECT json_build_object(
   'timestamp', ts,
   'request_body', request_body::jsonb,
   'outbound_body', outbound_body::jsonb,
-  'response_body', response_body::jsonb,
+  'response_body', response_body,
   'outbound_msg_count', outbound_msg_count,
   'outbound_token_est', outbound_token_est,
   'compression_strategy', compression_strategy,
-  'compression_meta', compression_meta::jsonb
+  'compression_meta', compression_meta
 )
 FROM session_requests
 ORDER BY gw_session_id, turn_number;
