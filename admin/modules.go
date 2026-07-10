@@ -240,7 +240,6 @@ func allModuleDefinitions() []ModuleDefinition {
 					{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: false},
 					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: false},
 					{Key: "security", Name: "安全检测引擎", Icon: "🔐", Required: false},
-					{Key: "feishu_bot", Name: "飞书机器人", Icon: "📱", Required: false},
 				},
 			},
 			{
