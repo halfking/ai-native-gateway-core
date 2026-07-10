@@ -38,7 +38,7 @@ func (s *PgxStore) GetProject(ctx context.Context, id int64) (*Project, error) {
 	query := `
 		SELECT id, tenant_id, name, description, language, framework, status, settings, created_by, created_at, updated_at
 		FROM vibe_coding_projects
-		WHERE id = $1
+		WHERE id = $1 AND status <> 'deleted'
 	`
 	project := &Project{}
 	var settingsJSON []byte
@@ -63,12 +63,12 @@ func (s *PgxStore) ListProjects(ctx context.Context, tenantID string, status Pro
 	// 查询总数：tenantID 为空时不按 tenant 过滤（admin 视图），否则按 tenant 过滤
 	var total int
 	if tenantID == "" {
-		countQuery := `SELECT COUNT(*) FROM vibe_coding_projects WHERE ($1 = '' OR status = $1)`
+		countQuery := `SELECT COUNT(*) FROM vibe_coding_projects WHERE status <> 'deleted' AND ($1 = '' OR status = $1)`
 		if err := s.db.QueryRow(ctx, countQuery, status).Scan(&total); err != nil {
 			return nil, 0, err
 		}
 	} else {
-		countQuery := `SELECT COUNT(*) FROM vibe_coding_projects WHERE tenant_id = $1 AND ($2 = '' OR status = $2)`
+		countQuery := `SELECT COUNT(*) FROM vibe_coding_projects WHERE tenant_id = $1 AND status <> 'deleted' AND ($2 = '' OR status = $2)`
 		if err := s.db.QueryRow(ctx, countQuery, tenantID, status).Scan(&total); err != nil {
 			return nil, 0, err
 		}
@@ -81,7 +81,7 @@ func (s *PgxStore) ListProjects(ctx context.Context, tenantID string, status Pro
 		query := `
 			SELECT id, tenant_id, name, description, language, framework, status, settings, created_by, created_at, updated_at
 			FROM vibe_coding_projects
-			WHERE ($1 = '' OR status = $1)
+			WHERE status <> 'deleted' AND ($1 = '' OR status = $1)
 			ORDER BY created_at DESC
 			OFFSET $2 LIMIT $3
 		`
@@ -90,7 +90,7 @@ func (s *PgxStore) ListProjects(ctx context.Context, tenantID string, status Pro
 		query := `
 			SELECT id, tenant_id, name, description, language, framework, status, settings, created_by, created_at, updated_at
 			FROM vibe_coding_projects
-			WHERE tenant_id = $1 AND ($2 = '' OR status = $2)
+			WHERE tenant_id = $1 AND status <> 'deleted' AND ($2 = '' OR status = $2)
 			ORDER BY created_at DESC
 			OFFSET $3 LIMIT $4
 		`
