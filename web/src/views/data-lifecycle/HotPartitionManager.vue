@@ -185,7 +185,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { api } from '@/utils/api'
+import { req } from '@/api/_core'
 
 interface HotTable {
   name: string
@@ -280,7 +280,7 @@ onMounted(() => {
 async function loadHotTableStats() {
   try {
     loading.value = true
-    const res = await api.get('/api/admin/data-lifecycle/storage/tables')
+    const res = await req<any>('GET', '/api/admin/data-lifecycle/storage/tables')
     
     for (const table of hotTables.value) {
       const stat = res.tables?.find((t: any) => t.table_name === table.name)
@@ -308,7 +308,7 @@ async function promoteTable(table: HotTable) {
   table.result = undefined
 
   try {
-    const res = await api.post('/api/admin/data-lifecycle/hot/promote', {
+    const res = await req<any>('POST', '/api/admin/data-lifecycle/hot/promote', {
       table_name: table.name,
       retention_hours: table.retentionHours,
       batch_size: 1000,
@@ -345,7 +345,7 @@ async function loadPartitions() {
     loading.value = true
     // 这里需要调用实际的分区列表 API
     // 暂时模拟数据
-    const res = await api.get(`/api/admin/data-lifecycle/partitions?table=${selectedPartitionTable.value}`)
+    const res = await req<any>('GET', `/api/admin/data-lifecycle/partitions?table=${selectedPartitionTable.value}`)
     
     partitions.value = (res.partitions || []).map((p: any) => ({
       name: p.partition_name,
@@ -377,7 +377,7 @@ async function executeDelete() {
   deleting.value = true
 
   try {
-    const res = await api.post('/api/admin/data-lifecycle/partitions/drop', {
+    const res = await req<any>('POST', '/api/admin/data-lifecycle/partitions/drop', {
       partition_name: partition.name,
       confirm: true,
     })
