@@ -152,7 +152,6 @@ SKIP_MIGRATIONS=(
   "321_cleanup_stale_in_progress.sql"
   "340_create_partition_query_views.sql"
   "341_hot_table_independence.fix.sql"
-  "342_create_other_table_views.sql"
   "343_fix_routing_decision_log_columnar.sql"
   "344_usage_ledger_hot_independence.sql"
   "345_request_wal_hot_independence.sql"
