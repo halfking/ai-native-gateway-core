@@ -515,7 +515,8 @@ func main() {
 		if os.Getenv("LLM_GATEWAY_IR_CONVERTER") == "true" {
 			routingExec.IR = &irAdapter{}
 			slog.Info("ir_converter", "enabled", true)
-			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") == "true" {
+			// P0-1 (2026-07-11): transport IR is enabled by default (when unset or != "false"/"0").
+			if transformation.ShouldEnableTransportIR() {
 				routingExec.IR = transformation.NewTransportIRConverter(&irAdapter{})
 				slog.Info("transport_ir", "enabled", true, "features", "extensions-roundtrip,circuit-breaker")
 			}
@@ -594,7 +595,10 @@ func main() {
 		}
 		routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
 		routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
-		routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
+		// P0-3 (2026-07-11): wire the unified vendor field dispatcher.
+		// This replaces the four separate StripXxxFields hooks with a single
+		// dispatcher that routes by catalog_code at runtime.
+		routingExec.DispatchStripVendorFields = streaming.DispatchStripVendorFields
 		// Write-time 客户端可见脱敏（2026-07-09，增强 1）
 		routingExec.RedactBodyFn = buildRedactBodyFn(dbConn.Stdlib())
 		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
@@ -1107,6 +1111,7 @@ func main() {
 			adminDB = dbConn.Pool()
 		}
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
+		adminHandler.SetCircuitResetter(cm)
 		slog.Info("admin handler created", "db_enabled", adminDB != nil)
 	}
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
@@ -1860,7 +1865,7 @@ func main() {
 
 			// 2. 初始化文件写入器（支持 gzip 压缩）
 			fileWriter := dbdegradation.NewFileWriter(backupDir)
-			defer fileWriter.Close()
+			defer func() { _ = fileWriter.Close() }()
 
 			// 3. 初始化文件读取器
 			fileReader := dbdegradation.NewFileReader(backupDir)
@@ -2244,8 +2249,6 @@ func main() {
 		autoupdateAPI := autoupdate.NewAdminAPI(autoupdateStore, autoupdateDownloader, autoupdateInstaller, autoupdateRollback)
 		// 前端使用 /api/admin/releases/*，handler 内部路径已包含 /releases
 		autoupdateAPI.RegisterRoutes(e.Group("/api/admin"))
-		// 别名：兼容 /api/admin/upgrade-logs
-		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/autoupdate"))
 		slog.Info("Phase 4: Auto-update API enabled (/api/admin/releases/*)")
 
 		// Phase 5: Center Ops (中心运维)
@@ -2264,8 +2267,9 @@ func main() {
 		vibecodingAPI.RegisterRoutes(e.Group("/api/admin/vibecoding"))
 		slog.Info("Phase 7: VibeCoding API enabled (/api/admin/vibecoding/*)")
 
-		// 将 Echo 挂载到 http.ServeMux
-		mux.Handle("/api/admin/", e)
+		// Apply the same JWT gate used by standard-library admin routes.
+		opsHandler := admin.AdminMiddleware(e.ServeHTTP, pool, cfg.SecretKey)
+		mux.Handle("/api/admin/", http.HandlerFunc(opsHandler))
 		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
 	}
 

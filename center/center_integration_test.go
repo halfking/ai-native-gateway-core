@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -476,7 +477,7 @@ func TestCenterIntegration(t *testing.T) {
 		executed, err := store.GetCommand(ctx, commandID)
 		require.NoError(t, err)
 		assert.True(t, executed.Result.Success)
-		assert.Contains(t, executed.Result.Output, "Successfully")
+		assert.Contains(t, executed.Result.Output, "successfully")
 		assert.Equal(t, int64(45000), executed.Result.ExecMs)
 
 		// Verify args preserved
@@ -562,7 +563,7 @@ func TestDashboardStats(t *testing.T) {
 		)
 
 		for _, inst := range instances {
-			if inst.InstanceID[:18] != "test-instance-stats" {
+			if !strings.HasPrefix(inst.InstanceID, "test-instance-stats-") {
 				continue
 			}
 
