@@ -3,6 +3,10 @@
 export default {
   title: '仪表盘',
   refresh: '刷新',
+  tabs: {
+    liveStream: '实时请求流',
+    sessionStats: '会话与统计',
+  },
   range: {
     today: '今日',
     last7d: '近 7 天',
