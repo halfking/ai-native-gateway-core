@@ -9,6 +9,7 @@ export default {
     routing: '路由',
     session: '会话',
     security: '安全',
+    outputCompliance: '输出合规',
     circuitBreaker: '熔断',
     general: '其他',
   },

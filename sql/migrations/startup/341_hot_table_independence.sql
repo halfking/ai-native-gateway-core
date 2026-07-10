@@ -64,6 +64,29 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_hot_success_ts
 CREATE INDEX IF NOT EXISTS idx_request_logs_hot_request_id
   ON request_logs_hot (request_id);
 
+-- 2.7 确保主键存在（LIKE INCLUDING CONSTRAINTS 可能不会复制主键）
+-- Bug fix (2026-07-10): LIKE 从分区表复制时，主键约束可能缺失，
+-- 导致 ON CONFLICT 子句失败。此处幂等添加主键。
+DO $$
+DECLARE
+  pk_exists boolean;
+BEGIN
+  SELECT EXISTS (
+    SELECT 1 FROM pg_constraint 
+    WHERE conname = 'request_logs_hot_pkey' 
+    AND conrelid = 'request_logs_hot'::regclass
+  ) INTO pk_exists;
+  
+  IF pk_exists THEN
+    RAISE NOTICE 'Primary key request_logs_hot_pkey already exists';
+  ELSE
+    RAISE NOTICE 'Primary key missing, creating request_logs_hot_pkey...';
+    ALTER TABLE request_logs_hot 
+    ADD CONSTRAINT request_logs_hot_pkey PRIMARY KEY (request_id, ts);
+    RAISE NOTICE 'Primary key request_logs_hot_pkey created successfully';
+  END IF;
+END $$;
+
 -- ============================================================
 -- 3. 数据迁移：_default → _hot
 -- ============================================================

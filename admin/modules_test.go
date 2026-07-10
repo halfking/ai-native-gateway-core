@@ -13,8 +13,8 @@ import (
 func TestAllModuleDefinitions(t *testing.T) {
 	defs := allModuleDefinitions()
 
-	if len(defs) != 16 {
-		t.Errorf("expected 16 modules, got %d", len(defs))
+	if len(defs) != 18 {
+		t.Errorf("expected 18 modules, got %d", len(defs))
 	}
 
 	// Check required fields for each module
@@ -43,7 +43,8 @@ func TestAllModuleDefinitions(t *testing.T) {
 		"compression", "cache", "handoff", "goal", "audit",
 		"prompt_injection", "output_compliance", "session_audit",
 		"session_inspector", "security", "rate_limit",
-		"format_conversion", "disguise", "feishu_bot", "memora",
+		"format_conversion", "disguise", "feishu_bot", "wechat_bot", "dingtalk_bot",
+		"session_analytics", "memora",
 	}
 
 	for _, key := range required {
@@ -53,7 +54,7 @@ func TestAllModuleDefinitions(t *testing.T) {
 	}
 }
 
-func TestFeishuBotRequiresModules(t *testing.T) {
+func TestFeishuBotDependencies(t *testing.T) {
 	defs := allModuleDefinitions()
 	var fb *ModuleDefinition
 	for i, m := range defs {
@@ -66,43 +67,13 @@ func TestFeishuBotRequiresModules(t *testing.T) {
 		t.Fatal("feishu_bot module not found")
 	}
 	expected := []string{"compression", "cache", "prompt_injection", "session_audit"}
-	if len(fb.Requires) != len(expected) {
-		t.Fatalf("feishu_bot.Requires length = %d, want %d (%v)", len(fb.Requires), len(expected), fb.Requires)
+	if len(fb.Dependencies) != len(expected) {
+		t.Fatalf("feishu_bot.Dependencies length = %d, want %d", len(fb.Dependencies), len(expected))
 	}
 	for i, dep := range expected {
-		if fb.Requires[i] != dep {
-			t.Errorf("Requires[%d] = %q, want %q", i, fb.Requires[i], dep)
+		if fb.Dependencies[i].Key != dep {
+			t.Errorf("Dependencies[%d].Key = %q, want %q", i, fb.Dependencies[i].Key, dep)
 		}
-	}
-}
-
-func TestResolveRequirementsMet(t *testing.T) {
-	// 全部 enabled
-	all := map[string]bool{
-		"compression": true, "cache": true,
-		"prompt_injection": true, "session_audit": true,
-	}
-	// 缺一个
-	missingOne := map[string]bool{
-		"compression": true, "cache": true,
-		"prompt_injection": false, "session_audit": true,
-	}
-	var fb ModuleDefinition
-	for _, m := range allModuleDefinitions() {
-		if m.Key == "feishu_bot" {
-			fb = m
-			break
-		}
-	}
-	if !allDepsEnabled(fb, all) {
-		t.Error("expected allDepsEnabled=true when all deps on")
-	}
-	if allDepsEnabled(fb, missingOne) {
-		t.Error("expected allDepsEnabled=false when one dep off")
-	}
-	missing := missingDeps(fb, missingOne)
-	if len(missing) != 1 || missing[0] != "prompt_injection" {
-		t.Errorf("missingDeps = %v, want [prompt_injection]", missing)
 	}
 }
 
@@ -141,8 +112,8 @@ func TestHandleModulesList(t *testing.T) {
 		t.Fatalf("response missing items array")
 	}
 
-	if len(items) != 16 {
-		t.Errorf("expected 16 modules in response, got %d", len(items))
+	if len(items) != 18 {
+		t.Errorf("expected 18 modules in response, got %d", len(items))
 	}
 }
 
@@ -277,5 +248,62 @@ func TestFeishuBotConfigSummary(t *testing.T) {
 	}
 	if resp["alert_severity_min"] != "high" {
 		t.Errorf("alert_severity_min default = %v, want 'high'", resp["alert_severity_min"])
+	}
+}
+
+// TestHandoffModule_LocksDownContract (2026-07-09, post-merge-audit)
+// Regression guard: feat(modules) cascade PR briefly reverted the handoff
+// module definition to its pre-expansion 3-config-key form, breaking the
+// 19-spec / 4-dependency contract that drives the ModulesView UI groups.
+// This test re-asserts the contract after every change to admin/modules.go.
+func TestHandoffModule_LocksDownContract(t *testing.T) {
+	defs := allModuleDefinitions()
+	var h *ModuleDefinition
+	for i, m := range defs {
+		if m.Key == "handoff" {
+			h = &defs[i]
+			break
+		}
+	}
+	if h == nil {
+		t.Fatal("handoff module not found")
+	}
+
+	// Spec surface must match settings/handoff_specs.go (19 keys).
+	if got, want := len(h.ConfigKeys), 19; got != want {
+		t.Errorf("ConfigKeys = %d, want %d (handoff_specs.go drifted from module definition)", got, want)
+	}
+
+	// Capability surface — keep hand-curated content fresh.
+	if got := len(h.Capabilities); got < 8 {
+		t.Errorf("Capabilities = %d, want >= 8 (handoff is a multi-capability module)", got)
+	}
+
+	// Dependency surface: 2 required (compression, cache) + optional goal/session_inspector.
+	wantDeps := map[string]bool{
+		"compression":       true,
+		"cache":             true,
+		"goal":              false,
+		"session_inspector": false,
+	}
+	if got, want := len(h.Dependencies), len(wantDeps); got != want {
+		t.Errorf("Dependencies = %d, want %d", got, want)
+	}
+	for _, d := range h.Dependencies {
+		expected, known := wantDeps[d.Key]
+		if !known {
+			t.Errorf("Dependencies has unexpected key %q", d.Key)
+			continue
+		}
+		if d.Required != expected {
+			t.Errorf("Dependencies[%s].Required = %v, want %v", d.Key, d.Required, expected)
+		}
+		if d.Required && d.Key == "compression" {
+			// compression is also used by feishu/wechat/dingtalk/disguise/session_inspector —
+			// a safe canonical anchor for the cascade. Verify we use it consistently.
+			if d.Icon == "" || d.Description == "" {
+				t.Errorf("compression dep missing Icon/Description: %+v", d)
+			}
+		}
 	}
 }

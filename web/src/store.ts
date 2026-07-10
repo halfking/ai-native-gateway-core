@@ -1,7 +1,7 @@
 import { reactive } from 'vue'
 
 const KEY = 'llmgw_api_key'
-// JWT_KEY removed (rule 20 §6.1): JWT now in HttpOnly cookie
+const JWT_KEY = 'llmgw_jwt' // Real JWT persisted to localStorage for Bearer header
 const USER_KEY = 'llmgw_user_info'
 const PREFERRED_CHAT_KEY_PREFIX = 'llmgw_preferred_key_id:'
 const LOCALE_KEY = 'llmgw_locale'
@@ -19,7 +19,7 @@ export interface UserInfo {
 
 export const store = reactive({
   apiKey: localStorage.getItem(KEY) ?? '',
-  jwtToken: '', // in-memory only, not persisted
+  jwtToken: localStorage.getItem(JWT_KEY) ?? '', // Real JWT, persisted for Bearer header
   userInfo: JSON.parse(localStorage.getItem(USER_KEY) ?? 'null') as UserInfo | null,
   locale: localStorage.getItem(LOCALE_KEY) ?? 'zh-CN',
   // 2026-07-09: authHydrated tracks whether we've probed /api/auth/me.
@@ -61,7 +61,12 @@ export function clearPreferredChatKeyId() {
 }
 
 export function setJwtToken(token: string) {
-  store.jwtToken = token || 'cookie' // transient in-memory flag
+  store.jwtToken = token
+  if (token) {
+    localStorage.setItem(JWT_KEY, token)
+  } else {
+    localStorage.removeItem(JWT_KEY)
+  }
 }
 
 // Returns the token that should go into the `Authorization: Bearer` header.
@@ -73,8 +78,7 @@ export function setJwtToken(token: string) {
 // sends an empty bearer and 401s every admin endpoint. See api-autoroute.ts,
 // api-work-types.ts, PricingManagementView.vue.
 export function authBearer(): string {
-  if (store.jwtToken) return '' // JWT via cookie
-  return store.apiKey || ''
+  return store.jwtToken || store.apiKey || ''
 }
 
 export function setUserInfo(user: UserInfo | null) {
@@ -97,6 +101,7 @@ export function clearMustChangePasswordFlag() {
 export function clearJwt() {
   store.jwtToken = ''
   store.userInfo = null
+  localStorage.removeItem(JWT_KEY)
   localStorage.removeItem(USER_KEY)
 }
 

@@ -15,8 +15,8 @@ export default {
     required: 'Please enter username and password',
     failed: 'Sign-in failed',
   },
-  changePassword: "[TODO: login.changePassword]",
-  passwordChangeSuccess: "[TODO: login.passwordChangeSuccess]",
+  changePassword: 'Change password',
+  passwordChangeSuccess: 'Password changed successfully',
   // 2026-07-09: First-load auth probe message
   checking: 'Checking login status…',
 }

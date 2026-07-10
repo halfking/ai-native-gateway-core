@@ -149,6 +149,45 @@ check_migration_unique() {
   return 0
 }
 
+# ── 3b. Migration必须有对应的 down 脚本 (2026-07-09审计要求) ──────────
+# 新增的SQL migration如果没有 down 脚本，回滚时会非常困难。
+# 此检查扫描新增加（diff中为新增）的 *.sql 文件，确保每个都有 .down.sql 对应。
+check_migration_has_down() {
+  local mig_dirs=("sql/migrations/startup" "sql/migrations/domain")
+  local missing=()
+
+  for mig_dir in "${mig_dirs[@]}"; do
+    if [[ ! -d "$mig_dir" ]]; then
+      continue
+    fi
+    # 只检查新增的migration（git status 中显示为新增的）
+    local new_files
+    new_files=$(git status --porcelain 2>/dev/null \
+                | grep -E '^\?\?.*\.sql$' \
+                | awk '{print $2}' \
+                | grep "^${mig_dir}/" \
+                | grep -v '\.down\.sql$' || true)
+    for f in $new_files; do
+      local down_file="${f%.sql}.down.sql"
+      if [[ ! -f "$down_file" ]]; then
+        missing+=("$f -> $down_file")
+      fi
+    done
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "❌ 新增 migration 缺少 down 脚本:"
+    printf '   - %s\n' "${missing[@]}"
+    echo ""
+    echo "   修复: 为每个新增的 migration 创建对应的 .down.sql 文件"
+    echo "   例: 364_xxx.sql -> 364_xxx.down.sql"
+    echo ""
+    echo "   参考: docs/migrations/migration-status-2026-07-09.md"
+    return 1
+  fi
+  return 0
+}
+
 # ── 4. Vue type-check ──────────────────────────────────────────────────
 check_vue_tsc() {
   if [[ ! -d web ]]; then
@@ -190,6 +229,7 @@ echo "==================================="
 run_check "go vet"                  check_go_vet
 run_check "SQL: no SET+placeholder" check_sql_set_local
 run_check "Migration: unique NNN"   check_migration_unique
+run_check "Migration: has down.sql" check_migration_has_down
 if [[ -d web/node_modules ]]; then
   # vue-tsc is a WARN-only check; failures are reported but do not block.
   run_vue_tsc

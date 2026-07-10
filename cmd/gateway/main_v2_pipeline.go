@@ -63,6 +63,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/routing"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // v2PipelineConfig holds the feature-flag-driven configuration for the v2
@@ -185,10 +186,7 @@ func buildV2Pipeline(deps *v2PipelineDeps) *pipeline.RequestPipeline {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "security", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{
-				security.NewSecurityHook(
-					security.NewIntentAnalyzer(0.5),
-					security.NewThreatDetector(7),
-				),
+				security.NewSecurityHook(settings.Global),
 			},
 		})
 	}
@@ -217,11 +215,14 @@ func buildV2Pipeline(deps *v2PipelineDeps) *pipeline.RequestPipeline {
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "session_inspect", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{
-			sessioninspector.NewInspectorHook(
-				sessioninspector.NewTokenLimitInspector(100000),
-				sessioninspector.NewInactiveInspector(30*time.Minute),
-				sessioninspector.NewHighFrequencyInspector(60),
-			),
+			func() pipeline.Hook {
+				inspectorHook := sessioninspector.NewInspectorHookWithConfig(nil)
+				// 注入 EventBus 以启用告警事件发布（2026-07-09 audit fix）
+				if deps.EventBus != nil {
+					inspectorHook.SetEventBus(deps.EventBus)
+				}
+				return inspectorHook
+			}(),
 		},
 	})
 

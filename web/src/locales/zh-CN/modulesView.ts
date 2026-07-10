@@ -42,6 +42,7 @@ export default {
     sectionDescription: '模块描述',
     sectionCapabilities: '能力清单',
     sectionRequirements: '依赖模块',
+    dependenciesTitle: '依赖模块',
     labelKey: '模块标识',
     labelDanger: '危险级别',
     labelConfigCount: '配置项数',
@@ -50,6 +51,15 @@ export default {
     requirementsMet: '所有依赖模块已启用',
     requirementsMissing: '以下依赖模块未启用，相关功能可能受限：',
     jumpToModule: '前往配置',
+    required: '必需',
+    optional: '可选',
+    enableAllDeps: '一键启用 {count} 个必需依赖',
+    enableAllDepsHint: '后端会按稳定顺序开启所有未启用的必需依赖后再启用本模块',
+    cascading: '正在开启依赖…',
+    cascadeSuccess: '已自动开启 {count} 个依赖：{names}',
+    cascadeEmpty: '所有依赖已启用，模块已正常开启',
+    cascadeAlreadyEnabled: '模块已启用，无需级联',
+    cascadeLogTitle: '本次级联开启的依赖：',
     testConnection: '测试连通性',
     testSuccess: '连通性测试成功',
     testFailed: '连通性测试失败',
@@ -82,6 +92,17 @@ export default {
     quietHoursHelp: '免打扰时段内仅 critical 级别告警会推送，避免夜间打扰。跨夜时段支持（22:00 → 08:00）。',
     commandsHelp: '开启后管理员可在飞书对话中通过命令与系统交互（/status /help /stats /audit /test）。',
     signatureHelp: '生产环境务必开启。开启后飞书回调必须携带有效签名（HMAC-SHA256）且时间戳在窗口内。',
+  },
+
+  handoff: {
+    groupMaster: '主开关',
+    groupMasterHint: '总开关与触发模式：决定会话交接的启用方式与触发语义',
+    groupTrigger: '触发阈值',
+    groupTriggerHint: '4 种触发条件并行生效，达到任一即触发交接；多阈值同时触发时取最严格的',
+    groupSummary: '摘要生成',
+    groupSummaryHint: '摘要引擎与提示词模板：决定如何把旧会话压缩成新会话可读上下文',
+    groupSafety: '安全限制与通知',
+    groupSafetyHint: '冷却、单会话上限、失败重试与日志/Webhook 通知',
   },
 
   integration: {
@@ -123,8 +144,7 @@ export default {
     close: '关闭',
     csvImportResult: '批量导入结果',
     csvImportSuccess: '已导入 {imported} 条，跳过 {skipped} 条',
-    csvErrorRow: '第 {row} 行：{error}',
-  },
+    csvErrorRow: '第 {row} 行：{error}',  },
 
   empty: {
     selectModule: '选择一个模块查看详情与配置',
