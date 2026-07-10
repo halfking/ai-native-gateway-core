@@ -54,20 +54,21 @@ const isEditingUrl = ref(false)
 const editUrlValue = ref('')
 
 // 把 string → URL 转换成一个 EventSource 可用的最终地址
+// 优先使用 withCredentials 发送 HttpOnly cookie，仅在 cookie 不可用时降级为 ?token=
 function buildFinalUrl(url: string): string {
   const trimmed = url.trim()
   if (!trimmed) return defaultStreamUrl.value
-  // EventSource 无法设置 Authorization header，我们把 JWT 拼到 ?token=
-  let tokenSuffix = ''
+  // 仅当 localStorage 的 api_key 明确标记为非 cookie 模式时才用 ?token= 降级
+  let apiKeySuffix = ''
   try {
-    const token = authBearer()
-    if (token) {
-      tokenSuffix = (trimmed.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)
+    const apiKey = localStorage.getItem('llmgw_api_key')
+    if (apiKey && apiKey.startsWith('token:')) {
+      apiKeySuffix = (trimmed.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(apiKey.slice(6))
     }
   } catch {
     /* SSR / storage disabled */
   }
-  return trimmed + tokenSuffix
+  return trimmed + apiKeySuffix
 }
 
 onMounted(() => {

@@ -106,7 +106,7 @@ const providerCodeForCredentialSQL = `
 // unindented constants above. The test asserts the SQL still references
 // display_name so a future careless rename can't silently regress.
 var (
-	providerCodeForSQLBody            = providerCodeForSQL
+	providerCodeForSQLBody           = providerCodeForSQL
 	providerCodeForCredentialSQLBody = providerCodeForCredentialSQL
 )
 
@@ -122,8 +122,8 @@ type LiveRequest struct {
 	// if the request was sent through a session. Empty when the request
 	// is one-off (e.g. a /v1/chat/completions call without a session).
 	GwSessionID      string   `json:"gw_session_id,omitempty"`
-	Model            string   `json:"model"`             // Display name (for backward compat, may be outbound or canonical)
-	CanonicalName    string   `json:"canonical_name"`    // Standard model name for aggregation
+	Model            string   `json:"model"`          // Display name (for backward compat, may be outbound or canonical)
+	CanonicalName    string   `json:"canonical_name"` // Standard model name for aggregation
 	ModelCategory    string   `json:"model_category"`
 	ProviderCode     string   `json:"provider_code"`
 	Status           string   `json:"status"`
@@ -232,10 +232,10 @@ type LiveStreamSSEHub struct {
 	// 淘汰阈值统一使用 cfg.CachedSnapshotTTL，不再单独维护字段。
 
 	// Metrics (added 2026-07-03 for monitoring)
-	totalConnections        int64 // 累计连接数
-	totalDisconnections     int64 // 累计断开数
-	authFailures            int64 // 认证失败次数
-	broadcastCount          int64 // 广播消息数
+	totalConnections         int64 // 累计连接数
+	totalDisconnections      int64 // 累计断开数
+	authFailures             int64 // 认证失败次数
+	broadcastCount           int64 // 广播消息数
 	cachedSnapshotHits       int64 // computeScopeDelta 访问时已有 entry（命中续命）
 	cachedSnapshotMisses     int64 // computeScopeDelta 访问时无 entry（首次订阅或被 evict 后重订阅）
 	cachedSnapshotEmptySkips int64 // 读出空 snapshot 触发早返的次数
@@ -257,16 +257,16 @@ type cachedSnapshotEntry struct {
 func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEHub {
 	cfg.defaults()
 	return &LiveStreamSSEHub{
-		db:                db,
-		cfg:               cfg,
-		store:             NewLiveStreamRedisStore(cfg.RedisClient),
-		register:          make(chan *liveStreamClient, 16),
-		unregister:        make(chan *liveStreamClient, 16),
-		broadcast:         make(chan LiveRequest, cfg.BroadcastQueueSize),
-		clients:           make(map[*liveStreamClient]struct{}),
-		lastActivity:      time.Now(),
-		stopCh:            make(chan struct{}),
-		cachedSnapshot:    make(map[string]*cachedSnapshotEntry),
+		db:             db,
+		cfg:            cfg,
+		store:          NewLiveStreamRedisStore(cfg.RedisClient),
+		register:       make(chan *liveStreamClient, 16),
+		unregister:     make(chan *liveStreamClient, 16),
+		broadcast:      make(chan LiveRequest, cfg.BroadcastQueueSize),
+		clients:        make(map[*liveStreamClient]struct{}),
+		lastActivity:   time.Now(),
+		stopCh:         make(chan struct{}),
+		cachedSnapshot: make(map[string]*cachedSnapshotEntry),
 	}
 }
 
@@ -329,10 +329,10 @@ func (h *LiveStreamSSEHub) Run() {
 				cancel()
 			}
 			h.fanOut(LiveStreamEnvelope{
-				Type:      "request",
-				Timestamp: time.Now().UTC(),
-				Request:   &req,
-				Delta:     tenantDelta,
+				Type:       "request",
+				Timestamp:  time.Now().UTC(),
+				Request:    &req,
+				Delta:      tenantDelta,
 				superDelta: superDelta,
 			})
 		case <-idleTicker.C:
@@ -596,42 +596,42 @@ func (h *LiveStreamSSEHub) CanonicalNameFor(ctx context.Context, canonicalID int
 func VendorFromProvider(providerCode string) string {
 	// Normalize to lowercase for comparison
 	p := strings.ToLower(strings.TrimSpace(providerCode))
-	
+
 	// Direct provider → vendor mappings (providers that exclusively serve one vendor)
 	knownMappings := map[string]string{
-		"openai":     "openai",
-		"anthropic":  "anthropic",
-		"google":     "google",
-		"alibaba":    "alibaba",
-		"qwen":       "alibaba",
-		"zhipu":      "zhipu",
-		"deepseek":   "deepseek",
-		"bytedance":  "bytedance",
-		"doubao":     "bytedance",
-		"baidu":      "baidu",
-		"moonshot":   "moonshot",
-		"01ai":       "01ai",
-		"baichuan":   "baichuan",
-		"meta":       "meta",
-		"mistral":    "mistral",
-		"xiaomi":     "xiaomi",
-		"microsoft":  "microsoft",
-		"xai":        "xai",
-		"stepfun":    "stepfun",
-		"minimax":    "minimax",
+		"openai":    "openai",
+		"anthropic": "anthropic",
+		"google":    "google",
+		"alibaba":   "alibaba",
+		"qwen":      "alibaba",
+		"zhipu":     "zhipu",
+		"deepseek":  "deepseek",
+		"bytedance": "bytedance",
+		"doubao":    "bytedance",
+		"baidu":     "baidu",
+		"moonshot":  "moonshot",
+		"01ai":      "01ai",
+		"baichuan":  "baichuan",
+		"meta":      "meta",
+		"mistral":   "mistral",
+		"xiaomi":    "xiaomi",
+		"microsoft": "microsoft",
+		"xai":       "xai",
+		"stepfun":   "stepfun",
+		"minimax":   "minimax",
 	}
-	
+
 	if vendor, ok := knownMappings[p]; ok {
 		return vendor
 	}
-	
+
 	// Partial match for composite provider codes (e.g., "openai-azure" → "openai")
 	for providerKey, vendor := range knownMappings {
 		if strings.Contains(p, providerKey) {
 			return vendor
 		}
 	}
-	
+
 	return ""
 }
 
@@ -916,7 +916,7 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 	// header or a signed cookie. We do NOT log the token.
 	if r.Header.Get("Authorization") == "" {
 		if t := strings.TrimSpace(r.URL.Query().Get("token")); t != "" {
-			slog.Debug("live stream: promoting ?token= to Authorization header")
+			slog.Warn("live stream: ?token= used as auth fallback — JWT in URL may leak via server logs / Referer header; prefer HttpOnly cookie")
 			r.Header.Set("Authorization", "Bearer "+t)
 		}
 	}
@@ -1173,7 +1173,7 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 		ErrorKind:        errorKind,
 		FailureStage:     failureStage,
 	}
-	
+
 	// Model fallback chain: outbound → client → canonical_name
 	if outboundModel != "" {
 		out.Model = outboundModel
@@ -1187,7 +1187,7 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 				"request_id", requestID, "canonical_id", canonicalID, "canonical_name", canonicalName)
 		}
 	}
-	
+
 	// Set CanonicalName for model dimension aggregation (always use canonical if available)
 	if canonicalID > 0 {
 		out.CanonicalName = h.CanonicalNameFor(ctx, canonicalID)
@@ -1196,13 +1196,13 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	if out.CanonicalName == "" && out.Model != "" {
 		out.CanonicalName = out.Model
 	}
-	
+
 	// Log when provider is missing to help diagnose the issue
 	if providerCode == "" {
 		slog.Debug("live request from telemetry: missing provider_code",
 			"request_id", requestID, "model", out.Model, "tenant_id", tenantID)
 	}
-	
+
 	// ModelCategory fallback chain: from Model → from Provider → from Model pattern
 	if out.Model != "" {
 		out.ModelCategory = h.ModelVendorFor(ctx, out.Model)
@@ -1235,7 +1235,7 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 			out.ModelCategory = "其他"
 		}
 	}
-	
+
 	if status == "" {
 		switch {
 		case success:
@@ -1261,17 +1261,17 @@ func (h *LiveStreamSSEHub) Stats() map[string]interface{} {
 	lastActivity := h.lastActivity
 	h.lastActivityMu.RUnlock()
 
-		return map[string]interface{}{
-			"active_clients":              activeClients,
-			"total_connections":           atomic.LoadInt64(&h.totalConnections),
-			"total_disconnections":        atomic.LoadInt64(&h.totalDisconnections),
-			"auth_failures":               atomic.LoadInt64(&h.authFailures),
-			"broadcast_count":             atomic.LoadInt64(&h.broadcastCount),
-			"cached_snapshot_hits":        atomic.LoadInt64(&h.cachedSnapshotHits),
-			"cached_snapshot_misses":      atomic.LoadInt64(&h.cachedSnapshotMisses),
-			"cached_snapshot_empty_skips": atomic.LoadInt64(&h.cachedSnapshotEmptySkips),
-			"cached_snapshot_evictions":   atomic.LoadInt64(&h.cachedSnapshotEvictions),
-			"last_activity":               lastActivity.UTC().Format(time.RFC3339),
-			"seconds_since_activity":      time.Since(lastActivity).Seconds(),
-		}
+	return map[string]interface{}{
+		"active_clients":              activeClients,
+		"total_connections":           atomic.LoadInt64(&h.totalConnections),
+		"total_disconnections":        atomic.LoadInt64(&h.totalDisconnections),
+		"auth_failures":               atomic.LoadInt64(&h.authFailures),
+		"broadcast_count":             atomic.LoadInt64(&h.broadcastCount),
+		"cached_snapshot_hits":        atomic.LoadInt64(&h.cachedSnapshotHits),
+		"cached_snapshot_misses":      atomic.LoadInt64(&h.cachedSnapshotMisses),
+		"cached_snapshot_empty_skips": atomic.LoadInt64(&h.cachedSnapshotEmptySkips),
+		"cached_snapshot_evictions":   atomic.LoadInt64(&h.cachedSnapshotEvictions),
+		"last_activity":               lastActivity.UTC().Format(time.RFC3339),
+		"seconds_since_activity":      time.Since(lastActivity).Seconds(),
+	}
 }
