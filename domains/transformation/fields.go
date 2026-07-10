@@ -38,6 +38,10 @@ var standardRequestFields = map[string]bool{
 	"system":         true,
 	"stop_sequences": true,
 	"thinking":       true,
+
+	// 注意：Ollama 特有字段（keep_alive, format, context, raw, template）
+	// 当前未在此列表中，因此会被 Extensions 机制捕获并透传。
+	// IR 核心不处理这些字段，依赖 Extensions 往返保留。
 }
 
 // isStandardField 报告字段名是否是 IR 已知处理的标准字段。

@@ -427,28 +427,33 @@ func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKe
 	return messages, rows.Err()
 }
 
-// saveSummaryToDB 保存总结到数据库
+// saveSummaryToDB 保存总结到数据库（upsert：首次写入创建行，后续更新）
+// session_summaries 的 PK 是 session_key，因此用 ON CONFLICT (session_key)
+// 实现幂等 upsert。
 func (s *Summarizer) saveSummaryToDB(ctx context.Context, tenantID string, summary *SessionSummary) error {
 	query := `
-		UPDATE session_summaries
-		SET 
-			title = $1,
-			summary = $2,
-			key_topics = $3,
-			user_intent = $4,
-			last_summarized_at = $5,
-			summary_version = summary_version + 1
-		WHERE session_key = $6 AND tenant_id = $7
+		INSERT INTO session_summaries (
+			session_key, tenant_id, title, summary, key_topics,
+			user_intent, last_summarized_at, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+		ON CONFLICT (session_key) DO UPDATE SET
+			title = EXCLUDED.title,
+			summary = EXCLUDED.summary,
+			key_topics = EXCLUDED.key_topics,
+			user_intent = EXCLUDED.user_intent,
+			last_summarized_at = EXCLUDED.last_summarized_at,
+			summary_version = session_summaries.summary_version + 1,
+			updated_at = NOW()
 	`
 
 	_, err := s.db.ExecContext(ctx, query,
+		summary.SessionKey,
+		tenantID,
 		summary.Title,
 		summary.Summary,
 		summary.KeyTopics,
 		summary.UserIntent,
 		summary.GeneratedAt,
-		summary.SessionKey,
-		tenantID,
 	)
 
 	return err
@@ -554,4 +559,65 @@ func WithSystemPrompt(systemPrompt string) CompletionOption {
 	return func(c *CompletionConfig) {
 		c.SystemPrompt = systemPrompt
 	}
+}
+
+// HandoffMetricsSummary captures the fields handoff writes back into
+// session_summaries after a successful handoff. Kept as a plain struct so
+// callers (currently domains/hooks/handoff) can pass values without pulling
+// in the full Summarizer dependency graph (redis/llmClient).
+type HandoffMetricsSummary struct {
+	SessionKey        string
+	HandoffCount      int // ignored if zero — caller usually passes current+1
+	LastHandoffAt     time.Time
+	TokensAtTrigger   int
+	MessagesAtTrigger int
+	LastTriggerReason string
+	LastTriggerAt     time.Time
+}
+
+// UpdateHandoffMetrics is the canonical writer for the handoff-tracking
+// columns on session_summaries. Other modules (e.g. domains/hooks/handoff)
+// MUST call this instead of hand-rolling their own UPDATE so that schema
+// changes to session_summaries only need to be reflected in one place.
+//
+// The UPDATE is a no-op if the session_key does not exist (0 rows affected);
+// callers that need an upsert should ensure the summary row exists first via
+// the normal summarization flow.
+//
+// This is a package-level helper (not a Summarizer method) deliberately: it
+// avoids forcing every handoff call site to construct a full *Summarizer
+// (which carries redis + llmClient deps) just to update two tracking columns.
+func UpdateHandoffMetrics(ctx context.Context, db *sql.DB, m *HandoffMetricsSummary) error {
+	if db == nil {
+		return nil
+	}
+	if m.HandoffCount > 0 {
+		_, err := db.ExecContext(ctx, `
+			UPDATE session_summaries
+			   SET handoff_count = $2,
+			       last_handoff_at = $3,
+			       tokens_at_trigger = $4,
+			       messages_at_trigger = $5,
+			       last_trigger_reason = $6,
+			       last_trigger_at = $7
+			 WHERE session_key = $1`,
+			m.SessionKey, m.HandoffCount, m.LastHandoffAt,
+			m.TokensAtTrigger, m.MessagesAtTrigger,
+			m.LastTriggerReason, m.LastTriggerAt)
+		return err
+	}
+	// Preserve the increment semantics handoff previously used (COALESCE +1)
+	// when caller does not pass an absolute count.
+	_, err := db.ExecContext(ctx, `
+		UPDATE session_summaries
+		   SET handoff_count = COALESCE(handoff_count, 0) + 1,
+		       last_handoff_at = $2,
+		       tokens_at_trigger = $3,
+		       messages_at_trigger = $4,
+		       last_trigger_reason = $5,
+		       last_trigger_at = $2
+		 WHERE session_key = $1`,
+		m.SessionKey, m.LastHandoffAt,
+		m.TokensAtTrigger, m.MessagesAtTrigger, m.LastTriggerReason)
+	return err
 }

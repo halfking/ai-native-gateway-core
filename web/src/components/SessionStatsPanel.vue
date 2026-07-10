@@ -1,110 +1,36 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+/**
+ * SessionStatsPanel.vue — Session statistics overview panel.
+ *
+ * Refactored (2026-07-10):
+ *   - Switched from direct admin API to useDashboard composable
+ *   - Integrated ECharts-based SessionTrendChart and HealthGradeChart
+ *   - Full i18n support via vue-i18n
+ *   - Vue 3 Composition API + TypeScript
+ */
+
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
-import { getSessionOverview, type SessionOverviewResponse } from '../api/admin'
-import * as echarts from 'echarts'
-import type { EChartsOption } from 'echarts'
+import { useDashboard } from '../composables/useDashboard'
+import SessionTrendChart from './analytics/SessionTrendChart.vue'
+import HealthGradeChart from './analytics/HealthGradeChart.vue'
 
 const router = useRouter()
 const { t } = useI18n()
 
-const loading = ref(false)
-const error = ref<string | null>(null)
-const data = ref<SessionOverviewResponse | null>(null)
-const days = ref(7)
+const {
+  loading,
+  error,
+  overview,
+  trend,
+  healthDistribution,
+  refresh,
+  changeDays,
+  days,
+} = useDashboard()
 
-const chartRef = ref<HTMLElement>()
-let chartInstance: echarts.ECharts | null = null
-
-onMounted(() => {
-  void load()
-})
-
-async function load() {
-  loading.value = true
-  error.value = null
-  try {
-    data.value = await getSessionOverview(days.value)
-    renderChart()
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e)
-    error.value = msg
-    console.error('Failed to load session overview:', e)
-    ElMessage.error(t('sessions.stats.loadFailed'))
-  } finally {
-    loading.value = false
-  }
-}
-
-function renderChart() {
-  if (!data.value || !chartRef.value) return
-  
-  if (!chartInstance) {
-    chartInstance = echarts.init(chartRef.value)
-  }
-
-  const dates = data.value.cost_trend.map(p => p.date)
-  const costs = data.value.cost_trend.map(p => p.cost)
-  const sessions = data.value.cost_trend.map(p => p.sessions)
-
-  const option: EChartsOption = {
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'cross' }
-    },
-    legend: {
-      data: [t('sessions.stats.cost'), t('sessions.stats.sessionCount')]
-    },
-    xAxis: {
-      type: 'category',
-      data: dates,
-      axisLabel: {
-        rotate: 45,
-        formatter: (value: string) => {
-          const date = new Date(value)
-          return `${date.getMonth() + 1}/${date.getDate()}`
-        }
-      }
-    },
-    yAxis: [
-      {
-        type: 'value',
-        name: t('sessions.stats.cost'),
-        position: 'left',
-        axisLabel: { formatter: '${value}' }
-      },
-      {
-        type: 'value',
-        name: t('sessions.stats.sessionCount'),
-        position: 'right'
-      }
-    ],
-    series: [
-      {
-        name: t('sessions.stats.cost'),
-        type: 'line',
-        yAxisIndex: 0,
-        data: costs,
-        smooth: true,
-        itemStyle: { color: '#5470c6' }
-      },
-      {
-        name: t('sessions.stats.sessionCount'),
-        type: 'bar',
-        yAxisIndex: 1,
-        data: sessions,
-        itemStyle: { color: '#91cc75' }
-      }
-    ]
-  }
-
-  chartInstance.setOption(option)
-}
-
-// 健康度分数统一为 0-10（与 domains/sessionaudit/types.go 一致）。
-// 阈值：>=8 绿、6-7 黄、<6 红。
+// Health score color helper (0-10 scale)
 function healthScoreColor(score: number | null | undefined): 'success' | 'warning' | 'danger' | 'info' {
   if (score === null || score === undefined) return 'info'
   if (score >= 8) return 'success'
@@ -112,12 +38,26 @@ function healthScoreColor(score: number | null | undefined): 'success' | 'warnin
   return 'danger'
 }
 
-const healthTotal = computed(() => {
-  if (!data.value) return 0
-  const dist = data.value.health_distribution
-  return dist.a + dist.b + dist.c + dist.d + dist.f
+// Health distribution combined for badges (6-7 = B+C)
+const healthGood = computed(() => overview.value?.health_distribution?.a ?? 0)
+const healthFair = computed(() =>
+  (overview.value?.health_distribution?.b ?? 0) + (overview.value?.health_distribution?.c ?? 0)
+)
+const healthPoor = computed(() =>
+  (overview.value?.health_distribution?.d ?? 0) + (overview.value?.health_distribution?.f ?? 0)
+)
+
+// Latest cost from cost_trend
+const latestCost = computed(() => {
+  const trend = overview.value?.cost_trend
+  if (!trend || trend.length === 0) return 0
+  return trend[trend.length - 1]?.cost ?? 0
 })
 
+// Trend data for SessionTrendChart
+const trendChartData = computed(() => trend.value?.trend ?? [])
+
+// Navigation
 function handleClientClick(clientId: string) {
   router.push(`/admin/session-analytics/clients/${clientId}`)
 }
@@ -129,153 +69,193 @@ function handleTaskClick(taskId: string) {
 
 <template>
   <div class="session-stats-panel">
+    <!-- Error state -->
     <div v-if="error" class="alert alert-danger" role="alert">
-      <span class="alert-icon">⚠️</span>
+      <span class="alert-icon" aria-hidden="true">&#x26A0;&#xFE0F;</span>
       <span class="alert-text">{{ error }}</span>
-      <button class="btn btn-sm alert-retry" @click="load">
-        <span v-if="loading">⏳</span>
-        <span v-else>🔄 {{ t('sessions.stats.retry') || '重试' }}</span>
+      <button
+        type="button"
+        class="btn btn-sm alert-retry"
+        :disabled="loading"
+        @click="refresh"
+      >
+        <span v-if="loading">&#x23F3;</span>
+        <span v-else>{{ t('sessions.stats.retry') || t('dashboard.refresh') }}</span>
       </button>
     </div>
-    <div v-loading="loading" :class="{ 'session-stats-panel--has-error': error }" v-else>
-    <!-- 统计卡片 -->
-    <el-row :gutter="16" style="margin-bottom: 20px;">
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div class="stat-card">
-            <div class="stat-icon total">
-              <el-icon :size="32"><Collection /></el-icon>
-            </div>
-            <div class="stat-content">
-              <div class="stat-label">{{ t('sessions.stats.totalSessions') }}</div>
-              <div class="stat-value">{{ data?.total_sessions?.toLocaleString() || 0 }}</div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div class="stat-card">
-            <div class="stat-icon active">
-              <el-icon :size="32"><Check /></el-icon>
-            </div>
-            <div class="stat-content">
-              <div class="stat-label">{{ t('sessions.stats.activeSessions') }}</div>
-              <div class="stat-value">{{ data?.active_sessions?.toLocaleString() || 0 }}</div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div class="stat-card">
-            <div class="stat-icon health">
-              <el-icon :size="32"><TrendCharts /></el-icon>
-            </div>
-            <div class="stat-content">
-              <div class="stat-label">{{ t('sessions.stats.healthDistribution') }}</div>
-              <div class="stat-value health-badges">
-                <el-tag v-if="healthTotal > 0" :type="healthScoreColor(10)" size="small">≥8: {{ (data?.health_distribution?.a || 0) }}</el-tag>
-                <el-tag v-if="healthTotal > 0" :type="healthScoreColor(6)" size="small">6-7: {{ (data?.health_distribution?.b || 0) + (data?.health_distribution?.c || 0) }}</el-tag>
-                <el-tag v-if="healthTotal > 0" :type="healthScoreColor(0)" size="small">&lt;6: {{ (data?.health_distribution?.d || 0) + (data?.health_distribution?.f || 0) }}</el-tag>
-                <span v-else>—</span>
+
+    <div v-loading="loading" :class="{ 'session-stats-panel--has-error': error }">
+      <!-- Stat cards row -->
+      <el-row :gutter="16" style="margin-bottom: 20px;">
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-icon total">
+                <el-icon :size="32"><Collection /></el-icon>
+              </div>
+              <div class="stat-content">
+                <div class="stat-label">{{ t('sessions.stats.totalSessions') }}</div>
+                <div class="stat-value">{{ overview?.total_sessions?.toLocaleString() || 0 }}</div>
               </div>
             </div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div class="stat-card">
-            <div class="stat-icon cost">
-              <el-icon :size="32"><TrendCharts /></el-icon>
-            </div>
-            <div class="stat-content">
-              <div class="stat-label">{{ t('sessions.stats.costTrend') }}</div>
-              <div class="stat-value">
-                {{ data?.cost_trend?.[data.cost_trend.length - 1]?.cost?.toFixed(2) || '0.00' }} USD
+          </el-card>
+        </el-col>
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-icon active">
+                <el-icon :size="32"><Check /></el-icon>
+              </div>
+              <div class="stat-content">
+                <div class="stat-label">{{ t('sessions.stats.activeSessions') }}</div>
+                <div class="stat-value">{{ overview?.active_sessions?.toLocaleString() || 0 }}</div>
               </div>
             </div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+          </el-card>
+        </el-col>
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-icon health">
+                <el-icon :size="32"><TrendCharts /></el-icon>
+              </div>
+              <div class="stat-content">
+                <div class="stat-label">{{ t('sessions.stats.healthDistribution') }}</div>
+                <div class="stat-value health-badges">
+                  <el-tag
+                    v-if="(healthGood + healthFair + healthPoor) > 0"
+                    :type="healthScoreColor(10)"
+                    size="small"
+                  >
+                    &ge;8: {{ healthGood }}
+                  </el-tag>
+                  <el-tag
+                    v-if="(healthGood + healthFair + healthPoor) > 0"
+                    :type="healthScoreColor(6)"
+                    size="small"
+                  >
+                    6-7: {{ healthFair }}
+                  </el-tag>
+                  <el-tag
+                    v-if="(healthGood + healthFair + healthPoor) > 0"
+                    :type="healthScoreColor(0)"
+                    size="small"
+                  >
+                    &lt;6: {{ healthPoor }}
+                  </el-tag>
+                  <span v-else>&mdash;</span>
+                </div>
+              </div>
+            </div>
+          </el-card>
+        </el-col>
+        <el-col :span="6">
+          <el-card shadow="hover">
+            <div class="stat-card">
+              <div class="stat-icon cost">
+                <el-icon :size="32"><TrendCharts /></el-icon>
+              </div>
+              <div class="stat-content">
+                <div class="stat-label">{{ t('sessions.stats.costTrend') }}</div>
+                <div class="stat-value">
+                  {{ latestCost.toFixed(2) }} {{ t('dashboard.costSuffix') }}
+                </div>
+              </div>
+            </div>
+          </el-card>
+        </el-col>
+      </el-row>
 
-    <!-- 成本趋势图 -->
-    <el-card shadow="hover" style="margin-bottom: 20px;">
-      <template #header>
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span>{{ t('sessions.stats.trendChart') }}</span>
-          <el-radio-group v-model="days" size="small" @change="load">
-            <el-radio-button :label="7">{{ t('sessions.stats.last7Days') }}</el-radio-button>
-            <el-radio-button :label="30">{{ t('sessions.stats.last30Days') }}</el-radio-button>
-          </el-radio-group>
-        </div>
-      </template>
-      <div ref="chartRef" style="width: 100%; height: 300px;"></div>
-    </el-card>
+      <!-- Time range selector -->
+      <div style="display: flex; justify-content: flex-end; margin-bottom: 12px;">
+        <el-radio-group v-model="days" size="small" @change="changeDays">
+          <el-radio-button :value="7">{{ t('sessions.stats.last7Days') }}</el-radio-button>
+          <el-radio-button :value="30">{{ t('sessions.stats.last30Days') }}</el-radio-button>
+        </el-radio-group>
+      </div>
 
-    <!-- Top 5 排行榜 -->
-    <el-row :gutter="16">
-      <el-col :span="12">
-        <el-card shadow="hover">
-          <template #header>
-            <span>{{ t('sessions.stats.topClients') }}</span>
-          </template>
-          <el-table :data="data?.top_clients || []" style="width: 100%" max-height="300">
-            <el-table-column prop="client_id" :label="t('sessions.stats.clientId')" min-width="120">
-              <template #default="{ row }">
-                <el-link type="primary" @click="handleClientClick(row.client_id)">
-                  {{ row.client_id }}
-                </el-link>
-              </template>
-            </el-table-column>
-            <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
-            <el-table-column prop="total_cost" :label="t('sessions.stats.totalCost')" width="100" align="right">
-              <template #default="{ row }">
-                ${{ row.total_cost.toFixed(2) }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="80" align="center">
-              <template #default="{ row }">
-                <el-tag v-if="row.avg_health" size="small">{{ row.avg_health }}</el-tag>
-                <span v-else>—</span>
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-card>
-      </el-col>
-      <el-col :span="12">
-        <el-card shadow="hover">
-          <template #header>
-            <span>{{ t('sessions.stats.topTasks') }}</span>
-          </template>
-          <el-table :data="data?.top_tasks || []" style="width: 100%" max-height="300">
-            <el-table-column prop="task_id" :label="t('sessions.stats.taskId')" min-width="120">
-              <template #default="{ row }">
-                <el-link type="primary" @click="handleTaskClick(row.task_id)">
-                  {{ row.task_id }}
-                </el-link>
-              </template>
-            </el-table-column>
-            <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
-            <el-table-column prop="total_cost" :label="t('sessions.stats.totalCost')" width="100" align="right">
-              <template #default="{ row }">
-                ${{ row.total_cost.toFixed(2) }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="90" align="center">
-              <template #default="{ row }">
-                <el-tag v-if="row.avg_health !== null && row.avg_health !== undefined" :type="healthScoreColor(row.avg_health)" size="small">
-                  {{ row.avg_health.toFixed(1) }}/10
-                </el-tag>
-                <span v-else>—</span>
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-card>
-      </el-col>
-    </el-row>
+      <!-- Charts row: trend + health -->
+      <el-row :gutter="16" style="margin-bottom: 20px;">
+        <el-col :span="16">
+          <SessionTrendChart
+            :data="trendChartData"
+            :loading="loading"
+          />
+        </el-col>
+        <el-col :span="8">
+          <HealthGradeChart
+            :distribution="overview?.health_distribution ?? null"
+            :avg-score="overview?.health_distribution?.avg_score"
+            :loading="loading"
+          />
+        </el-col>
+      </el-row>
+
+      <!-- Top 5 rankings -->
+      <el-row :gutter="16">
+        <el-col :span="12">
+          <el-card shadow="hover">
+            <template #header>
+              <span>{{ t('sessions.stats.topClients') }}</span>
+            </template>
+            <el-table :data="overview?.top_clients || []" style="width: 100%" max-height="300">
+              <el-table-column prop="client_id" :label="t('sessions.stats.clientId')" min-width="120">
+                <template #default="scope">
+                  <el-link type="primary" @click="handleClientClick(scope?.row?.client_id)">
+                    {{ scope?.row?.client_id }}
+                  </el-link>
+                </template>
+              </el-table-column>
+              <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
+              <el-table-column prop="total_cost" :label="t('sessions.stats.totalCost')" width="100" align="right">
+                <template #default="scope">
+                  ${{ (scope?.row?.total_cost ?? 0).toFixed(2) }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="80" align="center">
+                <template #default="scope">
+                  <el-tag v-if="scope?.row?.avg_health" size="small">{{ scope?.row?.avg_health }}</el-tag>
+                  <span v-else>&mdash;</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+        </el-col>
+        <el-col :span="12">
+          <el-card shadow="hover">
+            <template #header>
+              <span>{{ t('sessions.stats.topTasks') }}</span>
+            </template>
+            <el-table :data="overview?.top_tasks || []" style="width: 100%" max-height="300">
+              <el-table-column prop="task_id" :label="t('sessions.stats.taskId')" min-width="120">
+                <template #default="scope">
+                  <el-link type="primary" @click="handleTaskClick(scope?.row?.task_id)">
+                    {{ scope?.row?.task_id }}
+                  </el-link>
+                </template>
+              </el-table-column>
+              <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
+              <el-table-column prop="total_cost" :label="t('sessions.stats.totalCost')" width="100" align="right">
+                <template #default="scope">
+                  ${{ (scope?.row?.total_cost ?? 0).toFixed(2) }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="90" align="center">
+                <template #default="scope">
+                  <el-tag
+                    v-if="scope?.row?.avg_health !== null && scope?.row?.avg_health !== undefined"
+                    :type="healthScoreColor(scope?.row?.avg_health)"
+                    size="small"
+                  >
+                    {{ scope?.row?.avg_health?.toFixed(1) }}/10
+                  </el-tag>
+                  <span v-else>&mdash;</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+        </el-col>
+      </el-row>
     </div>
   </div>
 </template>

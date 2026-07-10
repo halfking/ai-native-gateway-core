@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 )
 
 // ProbeSubmitter 探测提交接口（避免循环依赖）
@@ -51,13 +53,16 @@ func (m *Manager) RecordRequest(ctx context.Context, req RecordRequestAPI) error
 		}
 	}
 
-	// 5. 临时故障：连续失败≥3 → 触发探测
 	if errorClass == ErrorClassTransient && !req.Success {
 		nodeState, err := m.getNodeState(ctx, req.CredentialID, req.RawModel)
 		if err == nil && nodeState != nil && nodeState.ConsecutiveFailures >= 2 {
-			// 触发探测
+			// 触发探测。探测提交是后台补偿动作，不应绑在请求 ctx 上。
 			if m.probeSubmitter != nil {
-				go m.probeSubmitter.SubmitModelProbe(ctx, req.CredentialID, req.RawModel)
+				go func() {
+					probeCtx, cancel := runctx.DetachedTimeout(ctx, 10*time.Second)
+					defer cancel()
+					m.probeSubmitter.SubmitModelProbe(probeCtx, req.CredentialID, req.RawModel)
+				}()
 			}
 		}
 	}
@@ -69,16 +74,29 @@ func (m *Manager) RecordRequest(ctx context.Context, req RecordRequestAPI) error
 	return m.batchWriter.ApplyUpdates(ctx, updates)
 }
 
-// getNodeState 获取节点状态（临时实现，后续从cache读取）
+// getNodeState 获取节点状态
 func (m *Manager) getNodeState(ctx context.Context, credentialID int, model string) (*NodeState, error) {
-	// TODO: 从nodeCache读取
-	// 暂时返回模拟数据
-	return &NodeState{
-		CredentialID:        credentialID,
-		RawModel:            model,
-		ConsecutiveFailures: 0,
-		UpdatedAt:           time.Now(),
-	}, nil
+	if m.nodeCache == nil {
+		return &NodeState{
+			CredentialID:        credentialID,
+			RawModel:            model,
+			ConsecutiveFailures: 0,
+			UpdatedAt:           time.Now(),
+		}, nil
+	}
+
+	key := fmt.Sprintf("%d:%s", credentialID, model)
+	state, err := m.nodeCache.Get(ctx, key)
+	if err != nil {
+		// 未找到或查询失败时返回默认状态
+		return &NodeState{
+			CredentialID:        credentialID,
+			RawModel:            model,
+			ConsecutiveFailures: 0,
+			UpdatedAt:           time.Now(),
+		}, nil
+	}
+	return state, nil
 }
 
 // stringPtr 返回字符串指针
