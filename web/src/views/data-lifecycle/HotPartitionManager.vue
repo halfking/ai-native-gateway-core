@@ -283,12 +283,12 @@ async function loadHotTableStats() {
     const res = await api.get('/api/admin/data-lifecycle/storage/tables')
     
     for (const table of hotTables.value) {
-      const stat = res.tables?.find((t: any) => t.table_name === table.name)
+      const stat = res.tables?.find((t: any) => t.table === table.name)
       if (stat) {
-        table.sizeHuman = stat.total_size_human
-        table.sizeBytes = stat.total_size_bytes
-        table.toastHuman = stat.toast_size_human || '0 B'
-        table.rows = stat.estimated_rows || 0
+        table.sizeHuman = stat.total_human
+        table.sizeBytes = stat.total_bytes
+        table.toastHuman = stat.toast_human || '0 B'
+        table.rows = stat.rows || 0
       }
     }
   } catch (err: any) {
