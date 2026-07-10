@@ -66,7 +66,7 @@ func (s *PgxStore) RevokeLicense(ctx context.Context, licenseKey string) error {
 func (s *PgxStore) GetActiveDevices(ctx context.Context, licenseKey string) ([]Device, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT d.id, d.license_id, d.instance_id, d.hardware_hash, d.device_name,
-		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, d.deactivate_reason
+		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, COALESCE(d.deactivate_reason, '')
 		FROM license_devices d
 		JOIN licenses l ON d.license_id = l.id
 		WHERE l.license_key = $1 AND d.status = 'active'
@@ -95,7 +95,7 @@ func (s *PgxStore) GetDeviceByHardwareHash(ctx context.Context, licenseKey, hard
 	var dev Device
 	err := s.pool.QueryRow(ctx, `
 		SELECT d.id, d.license_id, d.instance_id, d.hardware_hash, d.device_name,
-		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, d.deactivate_reason
+		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, COALESCE(d.deactivate_reason, '')
 		FROM license_devices d
 		JOIN licenses l ON d.license_id = l.id
 		WHERE l.license_key = $1 AND d.hardware_hash = $2
@@ -179,12 +179,18 @@ func (s *PgxStore) ApproveOfflineRequest(ctx context.Context, requestID string, 
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `
+	result, err := s.pool.Exec(ctx, `
 		UPDATE offline_activation_requests
-		SET approved_at = NOW(), signed_license = $2
+		SET approved_at = NOW(), signed_license = $2, status = 'approved', reject_reason = NULL
 		WHERE request_id = $1
 	`, requestID, signedJSON)
-	return err
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return errors.New("offline request not found")
+	}
+	return nil
 }
 
 // ListOfflineRequests 列出离线激活请求（按创建时间倒序）
@@ -194,7 +200,7 @@ func (s *PgxStore) ListOfflineRequests(ctx context.Context, limit int) ([]Offlin
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, license_key, hardware_hash, instance_id, device_name,
-		       request_id, created_at, approved_at, signed_license
+		       request_id, created_at, approved_at, signed_license, status, COALESCE(reject_reason, '')
 		FROM offline_activation_requests
 		ORDER BY created_at DESC
 		LIMIT $1
@@ -210,32 +216,38 @@ func (s *PgxStore) ListOfflineRequests(ctx context.Context, limit int) ([]Offlin
 		var signed sql.NullString
 		if err := rows.Scan(
 			&r.ID, &r.LicenseKey, &r.HardwareHash, &r.InstanceID, &r.DeviceName,
-			&r.RequestID, &r.CreatedAt, &r.ApprovedAt, &signed,
+			&r.RequestID, &r.CreatedAt, &r.ApprovedAt, &signed, &r.Status, &r.RejectReason,
 		); err != nil {
 			return nil, err
 		}
 		if signed.Valid {
 			r.SignedLicense = []byte(signed.String)
 		}
-		// 推导状态
-		if r.ApprovedAt != nil {
+		if r.Status == "" {
 			r.Status = "approved"
-		} else {
-			r.Status = "pending"
+			if r.ApprovedAt == nil {
+				r.Status = "pending"
+			}
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
 }
 
-// RejectOfflineRequest 拒绝离线激活请求（当前简化：记录到本地结构，不在表中持久化 reason）
-// 注意：offline_activation_requests 表无 status / reason 列，所以本实现以 deleted 行为模拟：
-// 实际生产中应 ALTER 表新增 status 列。这里先把 approved_at 置空表示未审批，
-// 同时返回 reason 给调用方用于审计。
 func (s *PgxStore) RejectOfflineRequest(ctx context.Context, requestID, reason string) error {
-	// 当前 schema 不支持持久化 reason，仅返回无操作。
-	// 真实场景需 ALTER TABLE offline_activation_requests ADD COLUMN status TEXT, ADD COLUMN reject_reason TEXT
-	_ = reason
+	result, err := s.pool.Exec(ctx, `
+		UPDATE offline_activation_requests
+		SET status = 'rejected', reject_reason = $2
+		WHERE request_id = $1
+		  AND approved_at IS NULL
+		  AND COALESCE(NULLIF(status, ''), 'pending') = 'pending'
+	`, requestID, reason)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return errors.New("offline request not found or already processed")
+	}
 	return nil
 }
 
@@ -291,7 +303,7 @@ func (s *PgxStore) ListAllLicenses(ctx context.Context, offset, limit int) ([]Li
 func (s *PgxStore) ListAllDevices(ctx context.Context, licenseKey string) ([]Device, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT d.id, d.license_id, d.instance_id, d.hardware_hash, d.device_name,
-		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, d.deactivate_reason
+		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, COALESCE(d.deactivate_reason, '')
 		FROM license_devices d
 		JOIN licenses l ON d.license_id = l.id
 		WHERE l.license_key = $1

@@ -19,12 +19,13 @@ export interface ListResponse<T> {
 
 // 后端某些模块 (fault/center) 用专属 key (rules/events/instances/...)
 // 这个辅助函数从响应中抽取数组，统一接口
-function extractList<T>(data: any): T[] {
+function extractList<T>(data: unknown): T[] {
   if (Array.isArray(data)) return data as T[]
   if (!data || typeof data !== 'object') return []
+  const record = data as Record<string, unknown>
   const candidates = ['items', 'rules', 'events', 'instances', 'projects', 'sessions', 'reviews', 'licenses', 'releases', 'devices']
   for (const k of candidates) {
-    if (Array.isArray(data[k])) return data[k] as T[]
+    if (Array.isArray(record[k])) return record[k] as T[]
   }
   return []
 }
@@ -66,6 +67,7 @@ export interface OfflineActivationRequest {
   created_at: string
   approved_at?: string
   activation_code?: string
+  reject_reason?: string
 }
 
 export async function getLicenses(offset = 0, limit = 100): Promise<License[]> {
@@ -255,12 +257,12 @@ export async function publishRelease(version: string, rolloutPercentage?: number
 }
 
 export async function rollbackRelease(targetVersion: string): Promise<void> {
-  return req<void>('POST', '/api/admin/releases/rollback', { target_version: targetVersion })
+	return req<void>('POST', '/api/admin/releases/rollback', { target_version: targetVersion })
 }
 
 export async function getUpgradeLogs(releaseId?: number): Promise<UpgradeLog[]> {
   // 后端按 instance_id 过滤；releaseId 暂时忽略
-  const data = await req<any>('GET', '/api/admin/releases/upgrade-logs')
+	const data = await req<any>('GET', '/api/admin/releases/upgrade-logs')
   return extractList<UpgradeLog>(data)
 }
 

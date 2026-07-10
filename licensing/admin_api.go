@@ -1,6 +1,8 @@
 package licensing
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -60,6 +62,16 @@ func (h *AdminHandler) CreateLicense(c echo.Context) error {
 	if req.CustomerName == "" && req.Customer != "" {
 		req.CustomerName = req.Customer
 	}
+	if req.LicenseKey == "" {
+		key, err := generateLicenseKey()
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to generate license key"})
+		}
+		req.LicenseKey = key
+	}
+	if req.MaxDevices <= 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "max_devices must be greater than 0"})
+	}
 
 	expiresAt, err := time.Parse(time.RFC3339, req.ExpiresAt)
 	if err != nil {
@@ -81,6 +93,14 @@ func (h *AdminHandler) CreateLicense(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, lic)
+}
+
+func generateLicenseKey() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return "LIC-" + hex.EncodeToString(buf), nil
 }
 
 func (h *AdminHandler) ListLicenses(c echo.Context) error {
@@ -252,10 +272,20 @@ func (h *AdminHandler) ListOfflineRequests(c echo.Context) error {
 		CreatedAt      time.Time  `json:"created_at"`
 		ApprovedAt     *time.Time `json:"approved_at,omitempty"`
 		ActivationCode string     `json:"activation_code,omitempty"`
+		RejectReason   string     `json:"reject_reason,omitempty"`
 	}
 
 	dtos := make([]OfflineReqDTO, 0, len(rows))
 	for _, r := range rows {
+		activationCode := ""
+		if len(r.SignedLicense) > 0 {
+			var signed SignedLicense
+			if err := json.Unmarshal(r.SignedLicense, &signed); err == nil {
+				if encoded, err := MarshalToBase64(&signed); err == nil {
+					activationCode = encoded
+				}
+			}
+		}
 		dtos = append(dtos, OfflineReqDTO{
 			ID:             r.ID,
 			LicenseKey:     r.LicenseKey,
@@ -264,7 +294,8 @@ func (h *AdminHandler) ListOfflineRequests(c echo.Context) error {
 			Status:         r.Status,
 			CreatedAt:      r.CreatedAt,
 			ApprovedAt:     r.ApprovedAt,
-			ActivationCode: string(r.SignedLicense),
+			ActivationCode: activationCode,
+			RejectReason:   r.RejectReason,
 		})
 	}
 
@@ -276,16 +307,23 @@ func (h *AdminHandler) ApproveOfflineRequest(c echo.Context) error {
 
 	signedLicense, err := h.offlineManager.ApproveOfflineRequest(c.Request().Context(), requestID)
 	if err != nil {
+		status := http.StatusInternalServerError
+		if err.Error() == "request not found" || err.Error() == "offline request not found" {
+			status = http.StatusNotFound
+		}
+		return c.JSON(status, map[string]string{"error": err.Error()})
+	}
+
+	encoded, err := MarshalToBase64(signedLicense)
+	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	signedJSON, _ := json.Marshal(signedLicense)
-
 	// 前端期望 { activation_code: string }，返回 base64 编码
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"activation_code": string(signedJSON),
+		"activation_code": encoded,
 		"signed_license":  signedLicense,
-		"base64":          string(signedJSON),
+		"base64":          encoded,
 	})
 }
 
@@ -299,7 +337,11 @@ func (h *AdminHandler) RejectOfflineRequest(c echo.Context) error {
 	}
 
 	if err := h.store.RejectOfflineRequest(c.Request().Context(), requestID, req.Reason); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if err.Error() == "offline request not found or already processed" {
+			status = http.StatusConflict
+		}
+		return c.JSON(status, map[string]string{"error": err.Error()})
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{
