@@ -541,6 +541,30 @@ onMounted(() => {
             </ul>
           </div>
 
+          <div class="info-section" v-if="selectedModule.dependencies && selectedModule.dependencies.length > 0">
+            <h3 class="section-title">{{ t('modulesView.overview.sectionDependencies') }}</h3>
+            <div class="dependency-list">
+              <div
+                v-for="dep in selectedModule.dependencies"
+                :key="dep.key"
+                class="dep-item"
+                :class="{ 'dep-disabled': !isDependencyEnabled(dep.key) }"
+              >
+                <span class="dep-icon">{{ dep.icon }}</span>
+                <div class="dep-info">
+                  <span class="dep-name">{{ dep.name }}</span>
+                  <span class="dep-key">{{ dep.key }}</span>
+                </div>
+                <span v-if="dep.required" class="dep-badge required">必需</span>
+                <span v-else class="dep-badge optional">推荐</span>
+                <span v-if="!isDependencyEnabled(dep.key)" class="dep-status warning" :title="t('modulesView.overview.dependencyDisabled')">
+                  ⚠️ {{ t('modulesView.overview.notEnabled') }}
+                </span>
+                <span v-else class="dep-status ok">✓</span>
+              </div>
+            </div>
+          </div>
+
           <div class="meta-grid">
             <div class="meta-item">
               <span class="meta-label">{{ t('modulesView.overview.labelKey') }}</span>
@@ -1514,6 +1538,78 @@ onMounted(() => {
 .level-breaking {
   background: rgba(239, 68, 68, 0.15);
   color: #ef4444;
+}
+
+/* ── Dependencies ── */
+.dependency-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dep-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg, #0f1117);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+.dep-item:hover {
+  background: var(--bg-hover, #21262d);
+}
+.dep-item.dep-disabled {
+  opacity: 0.7;
+  border-color: rgba(251, 191, 36, 0.3);
+}
+.dep-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.dep-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dep-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #e6edf3);
+}
+.dep-key {
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--text-secondary, #8b949e);
+}
+.dep-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.dep-badge.required {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+}
+.dep-badge.optional {
+  background: rgba(139, 148, 158, 0.12);
+  color: #8b949e;
+}
+.dep-status {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.dep-status.ok {
+  color: #34d399;
+}
+.dep-status.warning {
+  color: #fbbf24;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* ── Action Buttons ── */

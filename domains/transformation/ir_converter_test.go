@@ -366,3 +366,151 @@ func TestTransportIRConverter_NoExtensions_NoSideEffect(t *testing.T) {
 		t.Errorf("output should be unchanged: %s", out)
 	}
 }
+
+// --- 测试：Ollama 特有字段保留 ---
+
+func TestTransportIRConverter_OllamaFields_Preserved(t *testing.T) {
+	inner := &mockIRAdapter{
+		parseOpenAIFunc: func(body []byte) (*ir.InternalRequest, error) {
+			return &ir.InternalRequest{Model: "ollama/llama3", Extensions: nil}, nil
+		},
+		serializeOpenAIFunc: func(req *ir.InternalRequest) ([]byte, error) {
+			return []byte(`{"model":"ollama/llama3","messages":[]}`), nil
+		},
+	}
+	conv := NewTransportIRConverter(inner)
+
+	// 包含 Ollama 特有字段的请求
+	body := []byte(`{"model":"ollama/llama3","messages":[],"keep_alive":"5m","format":"json","context":[1,2,3]}`)
+	req, err := conv.ParseOpenAI(body)
+	if err != nil {
+		t.Fatalf("ParseOpenAI: %v", err)
+	}
+
+	// 验证 Extensions 包含 Ollama 字段
+	if len(req.Extensions) == 0 {
+		t.Fatal("Ollama fields should be extracted to Extensions")
+	}
+	if string(req.Extensions["keep_alive"]) != `"5m"` {
+		t.Errorf("keep_alive = %s, want \"5m\"", req.Extensions["keep_alive"])
+	}
+	if string(req.Extensions["format"]) != `"json"` {
+		t.Errorf("format = %s, want \"json\"", req.Extensions["format"])
+	}
+	if string(req.Extensions["context"]) != `[1,2,3]` {
+		t.Errorf("context = %s, want [1,2,3]", req.Extensions["context"])
+	}
+
+	// Serialize 应还原所有 Ollama 字段
+	out, err := conv.SerializeOpenAI(req)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI: %v", err)
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("output invalid JSON: %v", err)
+	}
+	if string(m["keep_alive"]) != `"5m"` {
+		t.Errorf("keep_alive not restored: %s", out)
+	}
+	if string(m["format"]) != `"json"` {
+		t.Errorf("format not restored: %s", out)
+	}
+	if string(m["context"]) != `[1,2,3]` {
+		t.Errorf("context not restored: %s", out)
+	}
+}
+
+// --- 测试：GLM 扩展字段保留 ---
+
+func TestTransportIRConverter_GLMFields_Preserved(t *testing.T) {
+	inner := &mockIRAdapter{
+		parseOpenAIFunc: func(body []byte) (*ir.InternalRequest, error) {
+			return &ir.InternalRequest{Model: "glm-4-plus", Extensions: nil}, nil
+		},
+		serializeOpenAIFunc: func(req *ir.InternalRequest) ([]byte, error) {
+			return []byte(`{"model":"glm-4-plus","messages":[]}`), nil
+		},
+	}
+	conv := NewTransportIRConverter(inner)
+
+	// 包含 GLM 扩展字段的请求
+	body := []byte(`{"model":"glm-4-plus","messages":[],"web_search":true,"retrieval":{"knowledge_base":"kb_001"}}`)
+	req, err := conv.ParseOpenAI(body)
+	if err != nil {
+		t.Fatalf("ParseOpenAI: %v", err)
+	}
+
+	// 验证 Extensions 包含 GLM 字段
+	if len(req.Extensions) == 0 {
+		t.Fatal("GLM fields should be extracted to Extensions")
+	}
+	if string(req.Extensions["web_search"]) != `true` {
+		t.Errorf("web_search = %s, want true", req.Extensions["web_search"])
+	}
+	if string(req.Extensions["retrieval"]) != `{"knowledge_base":"kb_001"}` {
+		t.Errorf("retrieval = %s, want nested object", req.Extensions["retrieval"])
+	}
+
+	// Serialize 应还原所有 GLM 字段
+	out, err := conv.SerializeOpenAI(req)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI: %v", err)
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("output invalid JSON: %v", err)
+	}
+	if string(m["web_search"]) != `true` {
+		t.Errorf("web_search not restored: %s", out)
+	}
+	if string(m["retrieval"]) != `{"knowledge_base":"kb_001"}` {
+		t.Errorf("retrieval not restored: %s", out)
+	}
+}
+
+// --- 测试：DeepSeek reasoning_tokens 字段保留 ---
+
+func TestTransportIRConverter_DeepSeekFields_Preserved(t *testing.T) {
+	inner := &mockIRAdapter{
+		parseOpenAIResponseFunc: func(body []byte) (*ir.InternalResponse, error) {
+			return &ir.InternalResponse{ID: "chatcmpl-1", Model: "deepseek-chat", Extensions: nil}, nil
+		},
+		serializeOpenAIResponseFunc: func(resp *ir.InternalResponse, clientModel string) ([]byte, error) {
+			return []byte(`{"id":"chatcmpl-1","model":"deepseek-chat"}`), nil
+		},
+	}
+	conv := NewTransportIRConverter(inner)
+
+	// DeepSeek 响应包含 reasoning_tokens
+	body := []byte(`{"id":"chatcmpl-1","model":"deepseek-chat","usage":{"reasoning_tokens":150,"total_tokens":200}}`)
+	resp, err := conv.ParseOpenAIResponse(body)
+	if err != nil {
+		t.Fatalf("ParseOpenAIResponse: %v", err)
+	}
+
+	// 验证 Extensions 包含 reasoning_tokens (嵌套在 usage 中)
+	if len(resp.Extensions) == 0 {
+		t.Fatal("DeepSeek usage fields should be extracted to Extensions")
+	}
+	// usage 对象会被整体提取（因为包含非标字段 reasoning_tokens）
+	if _, ok := resp.Extensions["usage"]; !ok {
+		t.Errorf("usage object should be in Extensions: %v", resp.Extensions)
+	}
+
+	// Serialize 应还原 usage 字段
+	out, err := conv.SerializeOpenAIResponse(resp, "deepseek-chat")
+	if err != nil {
+		t.Fatalf("SerializeOpenAIResponse: %v", err)
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("output invalid JSON: %v", err)
+	}
+	if _, ok := m["usage"]; !ok {
+		t.Errorf("usage not restored: %s", out)
+	}
+}
