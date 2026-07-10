@@ -30,6 +30,8 @@ export function headers(method: string): Record<string, string> {
 // 2026-07-10: 401 redirect 现在只针对 admin 端点。
 // /healthz?full=true / /api/system/version 等公共或半公开端点的 401
 // 不应该触发强制重定向，否则会把用户弹到 /login 形成 loop。
+// /api/auth/me 也包括在内：用于 App.vue hydration 探测 cookie 状态，
+// 401 应当抛错让调用方处理（App.vue 会显式调 clearJwt），而不是全屏跳登录。
 function isAdminProtectedPath(path: string): boolean {
   return (
     path.startsWith('/api/admin/') ||
@@ -38,7 +40,8 @@ function isAdminProtectedPath(path: string): boolean {
     path.startsWith('/api/auth/logout') ||
     path.startsWith('/api/auth/change-password') ||
     path.startsWith('/api/routing/') ||
-    path.startsWith('/api/admin')
+    path.startsWith('/api/admin') ||
+    path.startsWith('/api/auth/me')
   )
 }
 

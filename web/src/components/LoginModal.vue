@@ -55,16 +55,21 @@ async function handleLogin() {
           setUserInfo(me)
         } catch { /* ignore */ }
       }
+      close()
+      const redirect = typeof router.currentRoute.value.query.redirect === 'string'
+        ? router.currentRoute.value.query.redirect
+        : '/'
+      const target = redirect.startsWith('/') ? redirect : '/'
+      if (router.currentRoute.value.path === '/login' || router.currentRoute.value.query.login) {
+        await router.replace(target)
+      }
     } else if (resp.api_key) {
-      setApiKey(resp.api_key)
-    }
-    close()
-    const redirect = typeof router.currentRoute.value.query.redirect === 'string'
-      ? router.currentRoute.value.query.redirect
-      : '/'
-    const target = redirect.startsWith('/') ? redirect : '/'
-    if (router.currentRoute.value.path === '/login' || router.currentRoute.value.query.login) {
-      await router.replace(target)
+      // 2026-07-10: Legacy sk-* admin key path. Admin routes no longer accept
+      // sk-* keys (unified JWT auth). Show an explicit error so the user
+      // knows they need a regular user account.
+      error.value = '此账号不再支持 API key 登录，请使用用户名/密码登录。如需帮助请联系管理员。'
+    } else {
+      error.value = '登录响应格式异常，请重试或联系管理员。'
     }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '登录失败'
