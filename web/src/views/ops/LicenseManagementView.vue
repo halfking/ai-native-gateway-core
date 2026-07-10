@@ -191,26 +191,26 @@ onMounted(() => {
         <el-table-column prop="device_id" :label="t('ops.license.deviceId')" width="150" />
         <el-table-column prop="request_code" :label="t('ops.license.requestCode')" />
         <el-table-column prop="status" :label="t('common.status')" width="100">
-          <template #default="{ row }">
-            <el-tag :type="row.status === 'pending' ? 'warning' : 'success'" size="small">
-              {{ t(`ops.license.status.${row.status}`) }}
+          <template #default="scope">
+            <el-tag v-if="scope?.row" :type="scope.row.status === 'pending' ? 'warning' : 'success'" size="small">
+              {{ t(`ops.license.status.${scope.row.status}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          <template #default="scope">{{ scope?.row ? formatDate(scope.row.created_at) : '—' }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="180" fixed="right">
-          <template #default="{ row }">
-            <template v-if="row.status === 'pending'">
-              <el-button type="success" size="small" @click="handleApproveOffline(row)">
+          <template #default="scope">
+            <template v-if="scope?.row?.status === 'pending'">
+              <el-button type="success" size="small" @click="handleApproveOffline(scope.row)">
                 {{ t('ops.license.approve') }}
               </el-button>
-              <el-button type="danger" size="small" @click="handleRejectOffline(row)">
+              <el-button type="danger" size="small" @click="handleRejectOffline(scope.row)">
                 {{ t('ops.license.reject') }}
               </el-button>
             </template>
-            <el-tag v-else type="info" size="small">{{ t(`ops.license.status.${row.status}`) }}</el-tag>
+            <el-tag v-else-if="scope?.row" type="info" size="small">{{ t(`ops.license.status.${scope.row.status}`) }}</el-tag>
           </template>
         </el-table-column>
       </el-table>
