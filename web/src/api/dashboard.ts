@@ -231,7 +231,8 @@ export interface HealthDistributionData {
     a: number
     b: number
     c: number
-    d: number    f: number
+    d: number
+    f: number
   }
   percentages: {
     a: number
