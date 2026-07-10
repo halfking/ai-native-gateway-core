@@ -41,4 +41,5 @@ type OfflineActivationRow struct {
 	ApprovedAt    *time.Time
 	SignedLicense []byte
 	Status        string
+	RejectReason  string
 }
