@@ -18,12 +18,18 @@ func NewThreatDetector(severityThreshold int) *ThreatDetector {
 		severityThreshold = 7
 	}
 
-	// 编译 PII 正则表达式（大小写不敏感）
+	// 编译 PII 正则表达式（大小写不敏感，优化性能）
 	piiPatterns := []*regexp.Regexp{
+		// SSN: 支持有无冒号、空格、连字符
 		regexp.MustCompile(`(?i)ssn:?\s*\d{3}[-\s]?\d{2}[-\s]?\d{4}`),
+		// Passport: 支持有无冒号、空格，6-12位字母数字
 		regexp.MustCompile(`(?i)passport:?\s*[A-Z0-9]{6,12}`),
-		// 信用卡：支持空格、连字符或无分隔符
-		regexp.MustCompile(`(?i)(信用卡|credit\s*card):?\s*\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}`),
+		// 信用卡：支持中英文、空格、连字符、无分隔符，更宽松匹配
+		regexp.MustCompile(`(?i)(信用卡号?|credit\s*card\s*number?|card\s*number?):?\s*\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}`),
+		// 身份证号（中国）：18位或15位
+		regexp.MustCompile(`(?i)(身份证号?|id\s*card):?\s*\d{15}(\d{2}[0-9Xx])?`),
+		// 电话号码：常见格式
+		regexp.MustCompile(`(?i)(电话|phone|mobile|tel):?\s*[\+\d][\d\s\-\(\)]{8,20}`),
 	}
 
 	return &ThreatDetector{
@@ -49,10 +55,11 @@ func (d *ThreatDetector) Detect(content string) []*Threat {
 		}
 	}
 
-	// 提示注入检测（扩展规则）
+	// 提示注入检测（扩展规则，覆盖更多变体）
 	injectionKeywords := []string{
-		"ignore instructions", "ignore all instructions", "ignore previous",
-		"system:", "<|im_start|>", "disregard all", "disregard previous",
+		"ignore instructions", "ignore all instructions", "ignore previous", "ignore all",
+		"system:", "<|im_start|>", "disregard all", "disregard previous", "disregard instructions",
+		"forget previous", "forget instructions", "override instructions", "new instructions",
 	}
 	if containsAnyLower(contentLower, injectionKeywords) {
 		threats = append(threats, &Threat{
@@ -62,15 +69,16 @@ func (d *ThreatDetector) Detect(content string) []*Threat {
 		})
 	}
 
-	// 越狱检测（扩展英文+中文规则）
+	// 越狱检测（扩展英文+中文规则，覆盖更多攻击模式）
 	jailbreakKeywordsEnglish := []string{
 		"dan", "jailbreak", "no restrictions", "please jailbreak",
 		"bypass all", "ignore all", "unrestricted mode", "do anything now",
-		"remove limitations", "disable safety", "no limits",
+		"remove limitations", "disable safety", "no limits", "without restrictions",
+		"you are now", "you must now", "act as if", "pretend you are",
 	}
 	jailbreakKeywordsChinese := []string{
 		"越狱", "不受限制", "没有任何限制", "可以做任何事情",
-		"解除限制", "忽略", "无视", "绕过",
+		"解除限制", "忽略", "无视", "绕过", "假装你是", "扮演",
 	}
 
 	if containsAnyLower(contentLower, jailbreakKeywordsEnglish) || containsAny(content, jailbreakKeywordsChinese) {
