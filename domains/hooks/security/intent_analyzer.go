@@ -1,5 +1,7 @@
 package security
 
+import "strings"
+
 // IntentAnalyzer 意图分析器
 type IntentAnalyzer struct {
 	minScore float64
@@ -19,19 +21,26 @@ func (a *IntentAnalyzer) Analyze(content string) *Intent {
 	score := 0.0
 	intentType := "unknown"
 	reason := "no specific pattern matched"
+	contentLower := strings.ToLower(content)
 
-	if containsAny(content, []string{"code", "function", "var ", "class "}) {
-		intentType = "code"
-		score = 0.7
-		reason = "code-related keywords detected"
-	} else if containsAny(content, []string{"hello", "hi", "你好"}) {
-		intentType = "chat"
-		score = 0.8
-		reason = "greeting detected"
-	} else if containsAny(content, []string{"bypass", "ignore previous", "disregard"}) {
+	// 优先检测有害意图（优先级最高）
+	harmfulKeywords := []string{"bypass", "ignore previous", "ignore all", "disregard", "jailbreak", "unrestricted"}
+	if containsAnyInLower(contentLower, harmfulKeywords) {
 		intentType = "harmful"
 		score = 0.9
 		reason = "jailbreak attempt keywords"
+		return &Intent{Type: intentType, Score: score, Reason: reason}
+	}
+
+	// 代码相关意图
+	if containsAny(content, []string{"code", "function", "var ", "class ", "def ", "import ", "package "}) {
+		intentType = "code"
+		score = 0.7
+		reason = "code-related keywords detected"
+	} else if containsAny(content, []string{"hello", "hi", "你好", "how are you", "帮我", "请问"}) {
+		intentType = "chat"
+		score = 0.8
+		reason = "greeting detected"
 	}
 
 	return &Intent{
@@ -41,9 +50,20 @@ func (a *IntentAnalyzer) Analyze(content string) *Intent {
 	}
 }
 
+// containsAny 检查字符串是否包含任意关键词（大小写敏感）
 func containsAny(s string, keywords []string) bool {
 	for _, k := range keywords {
 		if contains(s, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAnyInLower 检查小写字符串是否包含任意小写关键词
+func containsAnyInLower(sLower string, keywords []string) bool {
+	for _, k := range keywords {
+		if strings.Contains(sLower, k) {
 			return true
 		}
 	}
