@@ -891,6 +891,24 @@ func startAnalysisLoopIfConfigured(deps *v2DispatchDeps) {
 	// deps.SessionSummarizer 为 nil 时跳过（避免空跑）。
 	if deps.SessionSummarizer != nil {
 		sumWorker := workers.NewSessionSummaryWorker(deps.SessionSummarizer, slog.Default())
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("MEMORA_WRITEBACK_ENABLED")), "true") {
+			memoraBaseURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"))
+			memoraAPIKey := strings.TrimSpace(os.Getenv("LLM_GATEWAY_MEMORA_API_KEY"))
+			if memoraBaseURL == "" || memoraAPIKey == "" {
+				slog.Warn("v2 pipeline: memora writeback requested but URL or API key is missing")
+			} else {
+				sumWorker.AddCloseHook(workers.NewMemoraWritebackHook(
+					sessionanalytics.NewPoolDB(deps.PGDBPool),
+					workers.MemoraWritebackConfig{
+						BaseURL: memoraBaseURL,
+						APIKey:  memoraAPIKey,
+						Timeout: envDuration("MEMORA_WRITEBACK_TIMEOUT", 5*time.Second),
+					},
+					slog.Default(),
+				))
+				slog.Info("v2 pipeline: memora session-summary writeback enabled", "base_url", memoraBaseURL)
+			}
+		}
 		sumPoll := bus.NewPGPollFunc(bus.AsPGDB(deps.PGDBPool), sumWorker.SubscribedTypes(), deps.Config.AnalysisBatchSize)
 		sumMark := bus.NewPGMarkFunc(bus.AsPGDB(deps.PGDBPool), slog.Default())
 		go bus.RunLoop(ctx, sumWorker, sumPoll, sumMark, bus.LoopConfig{
