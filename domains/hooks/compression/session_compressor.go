@@ -409,8 +409,8 @@ func (sc *SessionCompressor) updateCache(
 		newState.ToolsHash = prevState.ToolsHash
 		newState.SystemPrompt = prevState.SystemPrompt
 	}
+	newState.LastCompressedAt = now
 	if didCompress {
-		newState.LastCompressedAt = now
 		newState.RecentlyCompressedAt = now
 	}
 	if err := sc.deps.Cache.Set(ctx, tenantID, gwSessionID, newState, outboundBody); err != nil {

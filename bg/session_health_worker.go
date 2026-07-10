@@ -16,10 +16,15 @@ package bg
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/moduleexec"
+	"github.com/kaixuan/llm-gateway-go/domains/moduleregistry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -50,10 +55,14 @@ var (
 )
 
 // SessionHealthWorker 后台定期计算会话健康分
+//
+// 2026-07-10: 集成模块执行器，相同会话的健康分会被缓存（TTL 1小时），
+// 避免重复计算。
 type SessionHealthWorker struct {
-	db     *pgxpool.Pool
-	cancel context.CancelFunc
-	done   chan struct{}
+	db       *pgxpool.Pool
+	executor *moduleexec.Executor // 模块执行记录器（可选）
+	cancel   context.CancelFunc
+	done     chan struct{}
 }
 
 // NewSessionHealthWorker 构造 worker
@@ -62,6 +71,11 @@ func NewSessionHealthWorker(db *pgxpool.Pool) *SessionHealthWorker {
 		db:   db,
 		done: make(chan struct{}),
 	}
+}
+
+// SetExecutor 注入模块执行器
+func (w *SessionHealthWorker) SetExecutor(exec *moduleexec.Executor) {
+	w.executor = exec
 }
 
 // Start 启动后台 goroutine。Stop 之前不能重复 Start。
@@ -171,7 +185,59 @@ func (w *SessionHealthWorker) sweep(ctx context.Context) {
 }
 
 func (w *SessionHealthWorker) computeAndUpdate(ctx context.Context, s sessionRecord) error {
-	// 构造 AnalyticsSessionSummary（仅需健康计算相关字段）
+	// 2026-07-10: 通过执行器计算健康分，结果会被缓存（TTL 1小时）
+	if w.executor != nil {
+		return w.computeWithExecutor(ctx, s)
+	}
+	return w.computeDirectly(ctx, s)
+}
+
+// computeWithExecutor 通过执行器计算健康分（带缓存）
+func (w *SessionHealthWorker) computeWithExecutor(ctx context.Context, s sessionRecord) error {
+	params := sessionRecordToParams(s)
+
+	execResult, err := w.executor.CheckAndExecute(
+		ctx, s.sessionKey, s.tenantID,
+		moduleregistry.ModuleSessionHealth,
+		params, 0, // 使用模块默认 TTL（1小时）
+		func(ctx context.Context) (*moduleexec.ExecuteResult, error) {
+			health := w.doCompute(s)
+			// 只在首次计算时写入数据库
+			if err := w.updateHealth(ctx, s.sessionKey, health); err != nil {
+				return nil, err
+			}
+			return &moduleexec.ExecuteResult{
+				ResultSummary: map[string]interface{}{
+					"health_score": health.HealthScore,
+					"health_grade": health.HealthGrade,
+					"outcome":      health.Outcome,
+				},
+			}, nil
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	// 缓存命中时，只更新 last_health_at 时间戳（不重新计算和写入健康分）
+	// 选项 A: 什么都不做（缓存期内不更新时间戳）- 当前实现
+	// 选项 B: 只更新 last_health_at 而不重算分数 - 可选
+	if execResult.FromCache {
+		// 可选：更新时间戳但不重新计算健康分
+		// return w.updateLastHealthAt(ctx, s.sessionKey)
+		return nil
+	}
+	return nil
+}
+
+// computeDirectly 直接计算健康分（不经过执行器）
+func (w *SessionHealthWorker) computeDirectly(ctx context.Context, s sessionRecord) error {
+	health := w.doCompute(s)
+	return w.updateHealth(ctx, s.sessionKey, health)
+}
+
+// doCompute 执行健康分计算逻辑
+func (w *SessionHealthWorker) doCompute(s sessionRecord) sessionHealthResult {
 	summary := struct {
 		RequestCount            int
 		ErrorCount              int
@@ -191,12 +257,12 @@ func (w *SessionHealthWorker) computeAndUpdate(ctx context.Context, s sessionRec
 		PIIDetected:             s.piiDetected,
 		ToxicOutputDetected:     s.toxicOutputDetected,
 	}
-
-	// 计算健康分（需要导入 admin 包的类型）
 	config := defaultHealthScoreConfig()
-	health := computeHealthFromFields(summary, config)
+	return computeHealthFromFields(summary, config)
+}
 
-	// 更新数据库
+// updateHealth 更新数据库中的健康分（仅在首次计算时调用）
+func (w *SessionHealthWorker) updateHealth(ctx context.Context, sessionKey string, health sessionHealthResult) error {
 	updateQuery := `
 		UPDATE session_summaries
 		SET health_score = $1,
@@ -210,9 +276,36 @@ func (w *SessionHealthWorker) computeAndUpdate(ctx context.Context, s sessionRec
 		health.HealthScore,
 		health.HealthGrade,
 		health.Outcome,
-		s.sessionKey,
+		sessionKey,
 	)
 	return err
+}
+
+// sessionRecordToParams 将会话记录转换为缓存参数
+func sessionRecordToParams(s sessionRecord) map[string]interface{} {
+	data, _ := json.Marshal(struct {
+		RequestCount            int  `json:"rc"`
+		ErrorCount              int  `json:"ec"`
+		AvgLatencyMs            int  `json:"al"`
+		ModelSwitchCount        int  `json:"ms"`
+		ComplianceIssuesCount   int  `json:"ci"`
+		PromptInjectionDetected bool `json:"pi"`
+		PIIDetected             bool `json:"pii"`
+		ToxicOutputDetected     bool `json:"tox"`
+	}{
+		RequestCount:            s.requestCount,
+		ErrorCount:              s.errorCount,
+		AvgLatencyMs:            s.avgLatencyMs,
+		ModelSwitchCount:        s.modelSwitchCount,
+		ComplianceIssuesCount:   s.complianceIssuesCount,
+		PromptInjectionDetected: s.promptInjectionDetected,
+		PIIDetected:             s.piiDetected,
+		ToxicOutputDetected:     s.toxicOutputDetected,
+	})
+	h := sha256.Sum256(data)
+	return map[string]interface{}{
+		"fields_hash": hex.EncodeToString(h[:])[:16],
+	}
 }
 
 // ── Health Score Logic (duplicated to avoid circular dependency) ──────
