@@ -782,9 +782,9 @@ func (s *PGStore) IsHandoffCooldownActive(ctx context.Context, sessionKey string
 			SELECT 1 FROM session_summaries
 			 WHERE session_key = $1
 			   AND last_handoff_at IS NOT NULL
-			   AND NOW() - last_handoff_at < ($2 || ' seconds')::interval
+			   AND NOW() - last_handoff_at < make_interval(secs => $2::int)
 		)
-	`, sessionKey, fmt.Sprintf("%d", cooldownSeconds)).Scan(&active)
+	`, sessionKey, cooldownSeconds).Scan(&active)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

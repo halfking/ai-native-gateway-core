@@ -36,8 +36,8 @@ llm-gateway-go 的会话压缩采用**智能滑动窗口 + 分段增量**架构�
 
 **为什么分段？**
 - LLM 按前缀匹配 KV 缓存（如 Claude 的 prompt caching）
-- 如果每次发送完整历史 → 缓存命中率低
-- 如果只发送增量 → 缓存命中率高，推理速度提升 3-5 倍
+- 如果每次发送完整历史 → 缓存命中率可能降低
+- 如果只发送增量 → 更容易保持稳定前缀。具体缓存命中和延迟收益必须按上游模型的账单/遥测验证，不能由本工具推断。
 
 **实现方式：**
 ```
@@ -79,7 +79,7 @@ go run ./cmd/compression-bench/ \
   -context-window=128000
 ```
 
-**注意**：`prepare` 模式需要 SessionCache 才能正确工作。如果没有 cache，每条记录都是"新会话"，不会触发压缩。
+**注意**：`prepare` 模式使用进程内 L1 SessionCache，并且按 `ts ASC` 串行回放以保持 turn 顺序。该模式不覆盖 Redis/PG cache 故障恢复或 LLM summary provider 的真实效果。
 
 #### 2. `mechanical` 模式 — 机械 trim 快速验证
 直接调用 `CompressMessagesIfNeededBody`，跳过 cache 和 delta 逻辑：
@@ -121,7 +121,7 @@ go run ./cmd/compression-bench/ \
 
 ## 输出报告解读
 
-### 示例报告
+### 示例报告（格式示例，不是生产基线）
 
 ```
 ============================================================
@@ -170,11 +170,11 @@ Top strategies by bytes saved:
 
 | 指标 | 含义 | 理想值 |
 |------|------|--------|
-| Overall bytes ratio | 压缩后/压缩前字节比 | < 0.6 (节省 40%+) |
-| Strategy Distribution | 各策略触发占比 | sliding_window > 30% |
-| Lossiness: tail | 机械 trim（可恢复） | < 20% |
-| Lossiness: whole | LLM 总结（不可恢复） | 10-30% |
-| Lossiness: none | 无损（delta-only） | 50-70% |
+| Overall bytes ratio | 压缩后/压缩前字节比 | 按协议、模型窗口与数据集建立基线 |
+| Strategy Distribution | 各策略触发占比 | 与真实会话长度分布对比 |
+| Lossiness: tail | 机械 trim（可恢复） | 趋势应受控，不能替代质量审计 |
+| Lossiness: whole | LLM 总结（不可恢复） | 必须抽样核验关键事实保留 |
+| Lossiness: none | 无损（delta-only） | 结合 session cache hit 指标观察 |
 
 ### 优化建议解读
 
@@ -228,7 +228,7 @@ go run ./cmd/compression-bench/ \
   -context-window=32000 \
   -max-samples=500
 ```
-**预期**：3-5% 的大请求被 trim，平均压缩率 60-70%
+**验收**：只对实际触发的样本比较 trim 前后大小；样本覆盖率由历史数据决定。
 
 ### 2. Delta-append 测试
 ```bash
@@ -238,7 +238,7 @@ go run ./cmd/compression-bench/ \
   -context-window=128000 \
   -max-samples=20
 ```
-**预期**：
+**验收**：
 - 第 1 条：新会话，无压缩
 - 第 2-N 条：delta_append 策略，lossiness=none
 - 观察 MsgCount 累积变化
@@ -251,7 +251,7 @@ go run ./cmd/compression-bench/ \
   -context-window=8000 \
   -max-samples=50
 ```
-**预期**：
+**验收**：
 - 当累积消息超过阈值 → sliding_window_count 触发
 - 或累积 token 超过 0.85 × 8000 → sliding_window_token 触发
 - Strategy 应为 `sliding_window_*`
@@ -265,13 +265,14 @@ go run ./cmd/compression-bench/ \
   -context-window=128000 \
   -output=prod_bench.json
 ```
-**预期**：
-- Strategy 分布：delta_append 60%，sliding_window 30%，mechanical 10%
-- Lossiness: none 60-70%，tail 10-20%，whole 10-20%
+**验收**：
+- 按 `request_logs.compression_strategy` 和 `compression_meta` 审计实际策略
+- 对 whole lossiness 抽样验证摘要保留关键 ID、路径、数字和错误信息
+- 以部署前的模型、窗口、协议和会话长度分布建立自己的基线
 
 ## 技术细节
 
-### 为什么默认并行执行无效？
+### 为什么逐条并行回放无效？
 
 ```go
 // 并行执行
@@ -290,8 +291,8 @@ for row := range workCh {
   - delta-append 失效
 
 **解决方案**：
-- 使用 `-serial` 强制串行执行
-- 或为每条 row 生成唯一 session_id（默认行为）
+- benchmark 始终按时间顺序串行回放；仅可通过独立 benchmark 进程做吞吐测试
+- HTTP 压测应采用“会话内串行、会话间并行”的 worker 模型
 
 ### SessionCache 的重要性
 
@@ -307,8 +308,8 @@ SessionCompressor 依赖 SessionCache 记录：
 - 滑动窗口不会触发（state=nil 时跳过）
 
 **benchmark 的简化**：
-- 默认 `Cache: nil`（无状态测试）
-- mechanical 模式完全绕过 cache
+- 默认启用进程内 L1 cache；不覆盖 L2 Redis 和 L3 PostgreSQL 故障恢复
+- mechanical 模式完全绕过 cache，仅验证 trim 行为
 
 ## 已知限制
 
@@ -324,9 +325,9 @@ SessionCompressor 依赖 SessionCache 记录：
    - `CompactionDeps: nil`（跳过 LLM 总结）
    - 只能测试机械 trim 路径
 
-4. **并发安全未完全验证**  
-   - share-session + 并行 = 数据竞争
-   - 必须使用 `-serial` 标志
+4. **并发范围**
+   - 单一会话必须顺序处理；会话间可以并行
+   - `go test -race ./domains/hooks/compression` 用于验证真实 compressor 的并发会话回归测试
 
 ## 下一步改进
 
