@@ -2,7 +2,6 @@ package autoupdate
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -257,41 +256,6 @@ func (s *PgxStore) UpdateInstanceStatus(ctx context.Context, status *ReleaseStat
 		status.StartedAt, status.CompletedAt, status.Error, status.RetryCount,
 	)
 	return err
-}
-
-// ScanRelease 辅助函数：扫描Release行
-func scanRelease(row interface {
-	Scan(dest ...interface{}) error
-}) (*Release, error) {
-	rel := &Release{}
-	err := row.Scan(
-		&rel.ID, &rel.Version, &rel.BuildSeq, &rel.Channel, &rel.Title, &rel.Description, &rel.Changelog,
-		&rel.ImageTag, &rel.ImageDigest, &rel.MinVersion, &rel.Mandatory, &rel.CreatedBy, &rel.CreatedAt, &rel.PublishedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return rel, nil
-}
-
-// marshalSelectors 序列化选择器
-func marshalSelectors(selectors interface{}) ([]byte, error) {
-	if selectors == nil {
-		return nil, nil
-	}
-	return json.Marshal(selectors)
-}
-
-// unmarshalSelectors 反序列化选择器
-func unmarshalSelectors(data []byte) (interface{}, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-	var result interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
 }
 
 // Ensure interface compliance

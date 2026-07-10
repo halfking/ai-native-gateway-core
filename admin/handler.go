@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // attachment download/list routes live in the admin mux
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -115,6 +116,12 @@ type Handler struct {
 	sessionManager         *session.Manager              // 2026-07-06 会话状态管理 (state, cred rotation, lifecycle)
 	sessionDBWriter        *session.DBWriter             // 2026-07-06 批量异步写 DB worker
 	sessionCleanupWorker   *session.CleanupWorker        // 2026-07-06 清理过期 stopped session
+
+	// 数据库降级模块 (2026-07-10)
+	dbMonitor   *dbdegradation.Monitor
+	fileReader  *dbdegradation.FileReader
+	recovery    *dbdegradation.Recovery
+	ttlManager  *dbdegradation.TTLManager
 
 	// identityPool is the legacy Layer 0 cap on total distinct end-user fingerprints.
 	// nil when the global cap feature is disabled.
@@ -543,6 +550,21 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-07-06: session state management endpoints.
 	mux.HandleFunc("/api/admin/sessions", admin(h.handleListSessions))
 	mux.HandleFunc("/api/admin/sessions/", admin(h.handleSessionSubrouter))
+
+	// 2026-07-10: 数据库降级和备份恢复端点
+	if h.dbMonitor != nil {
+		mux.HandleFunc("/api/admin/db-status", admin(h.handleDBStatus))
+	}
+	if h.fileReader != nil {
+		mux.HandleFunc("/api/admin/backups", admin(h.handleListBackups))
+		mux.HandleFunc("/api/admin/backups/{filename}", admin(h.handleGetBackupFile))
+		mux.HandleFunc("/api/admin/backups/{filename}/validate", admin(h.handleValidateBackupFile))
+	}
+	if h.recovery != nil {
+		mux.HandleFunc("/api/admin/backups/{filename}/recover", admin(h.handleRecoverBackupFile))
+		mux.HandleFunc("/api/admin/backups/recover-all", admin(h.handleRecoverAllBackups))
+		mux.HandleFunc("/api/admin/recovery-tasks/{task_id}", admin(h.handleGetRecoveryTask))
+	}
 
 	// Module management — enterprise feature module listing, toggling, and
 	// integration configuration (Feishu bot, webhook, etc.).

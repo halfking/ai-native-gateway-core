@@ -52,7 +52,7 @@ func (h *AdminHandler) CreateRule(c echo.Context) error {
 	}
 
 	if rule.Enabled {
-		h.detector.ReloadRules(c.Request().Context())
+		_ = h.detector.ReloadRules(c.Request().Context())
 	}
 
 	return c.JSON(http.StatusCreated, rule)
@@ -107,7 +107,7 @@ func (h *AdminHandler) UpdateRule(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	h.detector.ReloadRules(c.Request().Context())
+	_ = h.detector.ReloadRules(c.Request().Context())
 
 	return c.JSON(http.StatusOK, rule)
 }
@@ -119,7 +119,7 @@ func (h *AdminHandler) DeleteRule(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	h.detector.ReloadRules(c.Request().Context())
+	_ = h.detector.ReloadRules(c.Request().Context())
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "rule deleted"})
 }

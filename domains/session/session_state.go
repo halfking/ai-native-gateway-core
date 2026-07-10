@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -274,6 +275,16 @@ func (sm *Manager) EndCredRotation(ctx context.Context, sessionID string) error 
 
 	updatedJSON, _ := json.Marshal(entry)
 	client.LSet(ctx, rotationsKey, 0, updatedJSON)
+
+	// 如果在降级模式，写入文件备份
+	if sm.IsDegraded() && sm.fileWriter != nil {
+		if err := sm.fileWriter.WriteRotation(ctx, sessionID, &entry); err != nil {
+			// 记录错误但不阻断流程
+			// 使用 fmt.Printf 因为可能没有 slog
+			fmt.Printf("session: failed to write rotation to file: %v\n", err)
+		}
+	}
+
 	return nil
 }
 
@@ -333,6 +344,7 @@ func (sm *Manager) TrimCredRotations(ctx context.Context, sessionID string, max 
 //  2. 结束当前凭据轮换
 //  3. 维护 stopped 索引
 //  4. 释放 slot
+//  5. 在降级模式下写入文件备份
 func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) error {
 	if sm == nil || sm.redis == nil {
 		return ErrSessionNotFound
@@ -376,7 +388,42 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 	}
 
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// 写入快照（数据库或文件）
+	sess, getErr := sm.Get(ctx, sessionID)
+	if getErr == nil {
+		stats, _ := sm.GetStats(ctx, sessionID)
+		args := SnapshotArgs{
+			StoppedAt:  now,
+			StopReason: reason,
+		}
+
+		// 判断是否在降级模式
+		if sm.IsDegraded() && sm.fileWriter != nil {
+			// 降级模式：写入文件
+			if err := sm.fileWriter.WriteSnapshot(ctx, sess, stats, args); err != nil {
+				slog.Warn("session: failed to write snapshot to file",
+					"session_id", sessionID,
+					"error", err,
+				)
+			} else {
+				slog.Debug("session: snapshot written to file (degraded mode)", "session_id", sessionID)
+			}
+		} else if sm.dbWriter != nil {
+			// 正常模式：写入数据库
+			if err := sm.dbWriter.WriteSnapshot(ctx, sess, stats, args); err != nil {
+				slog.Warn("session: failed to write snapshot to database",
+					"session_id", sessionID,
+					"error", err,
+				)
+			}
+		}
+	}
+
+	return nil
 }
 
 // RecoverSession 恢复已停止的会话
