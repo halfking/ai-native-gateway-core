@@ -2,11 +2,14 @@ package sessioninspector
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domain"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/pipeline" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domain"               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/moduleexec"    // 模块执行记录器
+	"github.com/kaixuan/llm-gateway-go/domains/moduleregistry" // 模块标识注册表
+	"github.com/kaixuan/llm-gateway-go/domains/pipeline"     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -105,10 +108,13 @@ type EventBusPublisher interface {
 //   - OnError: 吞掉错误（检查器失败可降级，不影响主流程）。
 //
 // 适用阶段：PreRouting。
+//
+// 2026-07-10: 集成模块执行器，支持 Check-Execute-Record 模式。
 type InspectorHook struct {
 	inspectors []Inspector
 	config     *Config // 缓存最近一次 LoadConfig 的结果（仅用于 Enabled 同步判断）
 	bus        EventBusPublisher
+	executor   *moduleexec.Executor // 模块执行记录器（可选）
 }
 
 // NewInspectorHook 构造 Hook（兼容旧 API：传入固定 inspector 列表）。
@@ -134,6 +140,15 @@ func (h *InspectorHook) SetEventBus(bus EventBusPublisher) {
 		return
 	}
 	h.bus = bus
+}
+
+// SetExecutor 注入模块执行器。
+// 启用 Check-Execute-Record 模式，相同快照的检查结果会被缓存。
+func (h *InspectorHook) SetExecutor(exec *moduleexec.Executor) {
+	if h == nil {
+		return
+	}
+	h.executor = exec
 }
 
 // Add 追加一个 Inspector（允许运行时注册）。
@@ -209,21 +224,13 @@ func (h *InspectorHook) Execute(ctx context.Context, env *domain.PipelineRequest
 		cfg = DefaultConfig()
 	}
 
-	var all []*Finding
-	for _, ins := range h.inspectors {
-		if ins == nil {
-			continue
-		}
-		findings, err := ins.Inspect(snap)
-		if err != nil {
-			// 单一 inspector 故障不上抛，单独记录后继续
-			slog.Warn("session_inspector: inspector failed",
-				"inspector", ins.Name(),
-				"session_id", env.SessionID,
-				"error", err)
-			continue
-		}
-		all = append(all, findings...)
+	// 2026-07-10: 通过模块执行器执行检查，支持缓存
+	all, err := h.executeInspectorsWithCache(ctx, env.SessionID, env.TenantID, snap)
+	if err != nil {
+		slog.Warn("session_inspector: execute with cache failed, degrading",
+			"session_id", env.SessionID, "error", err)
+		// 降级为直接执行
+		all = h.executeInspectorsDirect(snap, env.SessionID)
 	}
 
 	if env.Metadata == nil {
@@ -320,6 +327,155 @@ func (h *InspectorHook) buildSnapshot(env *domain.PipelineRequest) *SessionSnaps
 // OnError 吞掉错误（检查器失败可降级）。
 func (h *InspectorHook) OnError(ctx context.Context, env *domain.PipelineRequest, err error) error {
 	return nil
+}
+
+// ────────────────────────────────────────────────────────────────
+// 模块执行器集成（Check-Execute-Record）
+// ────────────────────────────────────────────────────────────────
+
+// executeInspectorsWithCache 通过执行器执行检查器，结果会被缓存。
+func (h *InspectorHook) executeInspectorsWithCache(
+	ctx context.Context,
+	sessionID, tenantID string,
+	snap *SessionSnapshot,
+) ([]*Finding, error) {
+	if h.executor == nil {
+		return h.executeInspectorsDirect(snap, sessionID), nil
+	}
+
+	// 构造缓存参数（基于快照关键字段）
+	params := snapshotToParams(snap)
+
+	execResult, err := h.executor.CheckAndExecute(
+		ctx, sessionID, tenantID,
+		moduleregistry.ModuleSessionInspector,
+		params, 0, // 使用模块默认 TTL（5分钟）
+		func(ctx context.Context) (*moduleexec.ExecuteResult, error) {
+			findings := h.executeInspectorsDirect(snap, sessionID)
+			return &moduleexec.ExecuteResult{
+				ResultSummary: findingsToSummaryMap(findings),
+				ResultDetail:  findingsToDetailMap(findings),
+			}, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// 从缓存结果还原 findings
+	return mapToFindings(execResult.ResultSummary, execResult.ResultDetail)
+}
+
+// executeInspectorsDirect 直接执行所有检查器（不经过执行器）。
+func (h *InspectorHook) executeInspectorsDirect(snap *SessionSnapshot, sessionID string) []*Finding {
+	var all []*Finding
+	for _, ins := range h.inspectors {
+		if ins == nil {
+			continue
+		}
+		findings, err := ins.Inspect(snap)
+		if err != nil {
+			slog.Warn("session_inspector: inspector failed",
+				"inspector", ins.Name(),
+				"session_id", sessionID,
+				"error", err)
+			continue
+		}
+		all = append(all, findings...)
+	}
+	return all
+}
+
+// snapshotToParams 将快照转换为缓存参数 map
+func snapshotToParams(snap *SessionSnapshot) map[string]interface{} {
+	return map[string]interface{}{
+		"request_count":      snap.RequestCount,
+		"token_count":        snap.TokenCount,
+		"error_rate":         snap.ErrorRate,
+		"burst_count":        snap.BurstCount,
+		"concurrent_count":   snap.ConcurrentCount,
+		"model_switch_count": snap.ModelSwitchCount,
+	}
+}
+
+// findingsToSummaryMap 将 findings 转换为 summary map
+func findingsToSummaryMap(findings []*Finding) map[string]interface{} {
+	counts := make(map[string]int)
+	for _, f := range findings {
+		counts[f.Code]++
+	}
+	return map[string]interface{}{
+		"total_count": len(findings),
+		"by_code":     counts,
+	}
+}
+
+// findingsToDetailMap 将 findings 转换为 detail map
+func findingsToDetailMap(findings []*Finding) map[string]interface{} {
+	items := make([]map[string]interface{}, 0, len(findings))
+	for _, f := range findings {
+		items = append(items, map[string]interface{}{
+			"code":           f.Code,
+			"severity":       string(f.Severity),
+			"message":        f.Message,
+			"suggestion":     f.Suggestion,
+			"inspector_name": f.InspectorName,
+		})
+	}
+	return map[string]interface{}{"findings": items}
+}
+
+// mapToFindings 从 map 还原 findings（带完整错误处理）
+func mapToFindings(summary, detail map[string]interface{}) ([]*Finding, error) {
+	if detail == nil {
+		return []*Finding{}, nil
+	}
+	
+	findingsRaw, ok := detail["findings"]
+	if !ok || findingsRaw == nil {
+		return []*Finding{}, nil
+	}
+	
+	items, ok := findingsRaw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("findings is not an array, got %T", findingsRaw)
+	}
+	
+	findings := make([]*Finding, 0, len(items))
+	for i, item := range items {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("finding[%d] is not a map, got %T", i, item)
+		}
+		
+		f := &Finding{}
+		
+		// 安全的类型转换
+		if v, ok := m["code"].(string); ok {
+			f.Code = v
+		} else if m["code"] != nil {
+			return nil, fmt.Errorf("finding[%d].code is not string, got %T", i, m["code"])
+		}
+		
+		if v, ok := m["severity"].(string); ok {
+			f.Severity = Severity(v)
+		}
+		
+		if v, ok := m["message"].(string); ok {
+			f.Message = v
+		}
+		
+		if v, ok := m["suggestion"].(string); ok {
+			f.Suggestion = v
+		}
+		
+		if v, ok := m["inspector_name"].(string); ok {
+			f.InspectorName = v
+		}
+		
+		findings = append(findings, f)
+	}
+	return findings, nil
 }
 
 // 编译期断言。

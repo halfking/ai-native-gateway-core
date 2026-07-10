@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# scripts/bump-version.sh — 版本号统一管理（5 文件锁步更新）
+# scripts/bump-version.sh — 版本号统一管理（SSOT: version.json）
 #
 # 用法:
 #   ./scripts/bump-version.sh                  # 自动 +1 build_seq
@@ -8,12 +8,16 @@
 #   ./scripts/bump-version.sh --dry-run        # 只打印，不写
 #   source scripts/bump-version.sh             # 导出环境变量给上游用
 #
-# 维护的 4 个文件（保持 lockstep）:
-#   VERSION                (仓库根, 简版字符串)
-#   version.json           (仓库根, 结构化)
-#   web/public/version.json (前端静态)
-#   web/dist/version.json   (前端 build 产物 — 通常由 web build 重写,
-#                           但这里兜底以确保发布时一致)
+# 维护的 3 个文件（保持 lockstep）:
+#   version.json           (仓库根, 结构化)  **SSOT**
+#   VERSION                (兼容旧 binary)   字符串格式
+#   web/public/version.json (前端静态展示)
+#   web/dist/version.json   (前端 build 产物)
+#
+# 历史:
+#   - 2026-07-10 统一为 version.json 单一来源 (admin/misc.go 重构)
+#     * 废弃：.deploy_seq / build_seq / 分散的环境变量
+#     * 新增：env 变量 LLM_GATEWAY_VERSION_JSON 作为快速注入通道
 #
 # 计算规则:
 #   git tag → <tag>
@@ -50,7 +54,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --seq)     TARGET_SEQ="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
-    -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "bump-version: 未知参数 $1" >&2; exit 1 ;;
   esac
 done
@@ -91,9 +95,9 @@ if [[ "$DRY_RUN" == "true" ]]; then
   return 2>/dev/null || exit 0
 fi
 
-# ── 写 4 个文件 ──────────────────────────────────────────────────
+# ── 写文件 (SSOT: version.json) ──────────────────────────────────
 write_version_files() {
-  # 1. VERSION (简版)
+  # 1. VERSION (兼容旧 binary)
   printf '%s\n' "$NEW_VERSION" > "$VERSION_FILE"
 
   # 2-4. JSON 三个 (结构化)
@@ -117,14 +121,14 @@ PY
 }
 
 write_version_files
-# 5. build_seq 文件 (SSOT for build number, used by Dockerfile .deploy_seq source and local sanity check)
-printf '%s\n' "$NEW_SEQ" > "$PROJECT_ROOT/build_seq"
-echo "✅ 已更新 5 个版本文件"
-echo "   - $VERSION_FILE"
-echo "   - $VERSION_JSON"
-echo "   - $WEB_PUBLIC_VERSION_JSON"
-echo "   - $WEB_DIST_VERSION_JSON"
-echo "   - $PROJECT_ROOT/build_seq"
+echo "✅ 已更新 4 个版本文件 (SSOT: version.json)"
+echo "   - $VERSION_JSON (后端 SSOT)"
+echo "   - $VERSION_FILE (兼容旧 binary)"
+echo "   - $WEB_PUBLIC_VERSION_JSON (前端静态)"
+echo "   - $WEB_DIST_VERSION_JSON (前端构建产物)"
+echo ""
+echo "📦 部署时只需上传 version.json 到服务器即可"
+echo "   scp version.json root@154:/opt/llm-gateway-go/version.json"
 
 # ── 导出变量 ────────────────────────────────────────────────────
 BUILD_VERSION="$GIT_TAG_PATCH"
