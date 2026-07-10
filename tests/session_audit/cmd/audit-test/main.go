@@ -22,11 +22,11 @@ import (
 // 包含：数据提取、审计测试、结果分析
 
 const (
-	DB252Host     = "172.16.2.210"
-	DB252Port     = "5432"
-	DB252Database = "llm_gateway"
-	DB252User     = "llm_gateway"
-	DB252Password = "4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
+	DB252Host        = "172.16.2.210"
+	DB252Port        = "5432"
+	DB252Database    = "llm_gateway"
+	DB252User        = "llm_gateway"
+	DB252PasswordEnv = "DB_252_PASSWORD"
 )
 
 // ExtractedContent 提取的内容
@@ -150,7 +150,7 @@ func extractData() ([]ExtractedContent, error) {
 
 	dbURL := fmt.Sprintf(
 		"postgresql://%s:%s@%s:%s/%s?sslmode=disable&connect_timeout=10",
-		DB252User, DB252Password, DB252Host, DB252Port, DB252Database,
+		DB252User, os.Getenv(DB252PasswordEnv), DB252Host, DB252Port, DB252Database,
 	)
 
 	log.Printf("正在连接数据库: %s:%s/%s", DB252Host, DB252Port, DB252Database)
@@ -386,7 +386,7 @@ func saveResults(testRunID string, config *TestConfig, sensitiveWords []string, 
 	ctx := context.Background()
 	dbURL := fmt.Sprintf(
 		"postgresql://%s:%s@%s:%s/%s?sslmode=disable",
-		DB252User, DB252Password, DB252Host, DB252Port, DB252Database,
+		DB252User, os.Getenv(DB252PasswordEnv), DB252Host, DB252Port, DB252Database,
 	)
 
 	pool, err := pgxpool.New(ctx, dbURL)
