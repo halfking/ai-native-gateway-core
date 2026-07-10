@@ -121,6 +121,28 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
       <div class="page-header-left">
         <h2>仪表盘</h2>
         
+        <!-- Tab 切换器（集成到标题旁） -->
+        <div class="tab-switcher">
+          <button
+            type="button"
+            class="tab-btn"
+            :class="{ 'tab-btn--active': activeTab === 'stream' }"
+            @click="dashboardTab.switchTab('stream')"
+            :title="$t('dashboard.tabs.liveStream')"
+          >
+            {{ $t('dashboard.tabs.liveStream') }}
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            :class="{ 'tab-btn--active': activeTab === 'stats' }"
+            @click="dashboardTab.switchTab('stats')"
+            :title="$t('dashboard.tabs.sessionStats')"
+          >
+            {{ $t('dashboard.tabs.sessionStats') }}
+          </button>
+        </div>
+        
         <MemoraStatusButton />
       </div>
       
@@ -314,6 +336,40 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
   font-size: 20px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+/* Tab 切换器 */
+.tab-switcher {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--bg-subtle, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+}
+
+.tab-btn {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.tab-btn:hover {
+  color: var(--text, #e6edf3);
+  background: var(--bg, #0f1117);
+}
+
+.tab-btn--active {
+  background: var(--accent, #6366f1);
+  color: white;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 .page-header-right {

@@ -183,70 +183,10 @@ provide('swimLaneReinitKey', swimLaneReinitKey)
     <TenantDashboardView v-if="!isDefault" />
     
     <!-- 默认租户仪表盘：Tab 切换实时流 vs 会话统计 -->
-    <div v-else class="dashboard-tabs-container">
-      <div class="dashboard-tabs-header">
-        <button
-          class="tab-btn"
-          :class="{ 'tab-btn--active': activeTab === 'stream' }"
-          @click="switchTab('stream')"
-        >
-          {{ t('dashboard.tabs.liveStream') }}
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ 'tab-btn--active': activeTab === 'stats' }"
-          @click="switchTab('stats')"
-        >
-          {{ t('dashboard.tabs.sessionStats') }}
-        </button>
-      </div>
-      
-      <div class="dashboard-tabs-content">
-        <!-- 传递 activeTab 给 DashboardViewV2，让它控制显示哪些部分 -->
-        <DashboardViewV2 />
-      </div>
-    </div>
+    <DashboardViewV2 v-else />
   </div>
 </template>
 
 <style scoped>
-.dashboard-tabs-container {
-  width: 100%;
-}
-
-.dashboard-tabs-header {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 20px;
-  border-bottom: 2px solid var(--border, #30363d);
-  padding-bottom: 0;
-}
-
-.tab-btn {
-  padding: 10px 20px;
-  border: none;
-  background: transparent;
-  color: var(--text-secondary, #8b949e);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  position: relative;
-}
-
-.tab-btn:hover {
-  color: var(--text, #e6edf3);
-  background: var(--bg-subtle, #161b22);
-}
-
-.tab-btn--active {
-  color: var(--accent, #6366f1);
-  border-bottom-color: var(--accent, #6366f1);
-}
-
-.dashboard-tabs-content {
-  width: 100%;
-}
+/* Styles moved to DashboardViewV2.vue */
 </style>
