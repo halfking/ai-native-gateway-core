@@ -10,6 +10,7 @@ export default {
     tenantUsers: '租户用户',
     requestsSessions: '请求与会话',
     dataOps: '数据运维',
+    opsplatform: '运维平台',
     guide: '接入指南',
     chat: '对话',
   },
@@ -52,5 +53,10 @@ export default {
     promptInjection: '提示词注入检测',
     examples: '接入示例',
     chat: '对话',
+    opsLicenses: 'License管理',
+    opsFaults: '故障管理',
+    opsAutoUpdate: '自动更新',
+    opsCenter: '中心运维',
+    opsVibeCoding: 'VibeCoding',
   },
 }

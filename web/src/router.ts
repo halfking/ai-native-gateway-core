@@ -68,6 +68,13 @@ const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
 const SessionConfigView = () => import('./views/SessionConfigView.vue')
 
+// Operations Platform views (super_admin only)
+const LicenseManagementView = () => import('./views/ops/LicenseManagementView.vue')
+const FaultManagementView = () => import('./views/ops/FaultManagementView.vue')
+const AutoUpdateView = () => import('./views/ops/AutoUpdateView.vue')
+const CenterOpsView = () => import('./views/ops/CenterOpsView.vue')
+const VibeCodingView = () => import('./views/ops/VibeCodingView.vue')
+
 function isAuthed(): boolean {
   if (store.jwtToken || store.apiKey || store.userInfo) return true
   // 2026-07-09 (handoff task UI verification): localStorage fallback.
@@ -208,6 +215,13 @@ export const router = createRouter({
     { path: '/admin/usage',        component: UsageCostView }, // 用量成本视图 (T2.4)
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
+
+    // Operations Platform (super_admin only)
+    { path: '/ops/licenses',       component: LicenseManagementView, meta: { requiresSuper: true } },
+    { path: '/ops/faults',         component: FaultManagementView, meta: { requiresSuper: true } },
+    { path: '/ops/autoupdate',     component: AutoUpdateView, meta: { requiresSuper: true } },
+    { path: '/ops/center',         component: CenterOpsView, meta: { requiresSuper: true } },
+    { path: '/ops/vibecoding',     component: VibeCodingView, meta: { requiresSuper: true } },
 
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
