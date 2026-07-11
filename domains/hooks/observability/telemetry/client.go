@@ -222,7 +222,7 @@ type RequestLogEntry struct {
 	// 附件实体文件已保存到文件系统（按 SHA256 hash 去重），此处仅记录路径、大小、类型等元信息。
 	Attachments json.RawMessage `json:"attachments,omitempty"`
 
-	// 2026-07-11: P1.4 observability metadata integration (migration 357)
+	// 2026-07-11: P1.4 observability metadata integration (startup migration 379)
 	// Authoritative caller/session/routing metadata for production observability.
 	ClientIP           *string `json:"client_ip,omitempty"`
 	ClientForwardedFor *string `json:"client_forwarded_for,omitempty"`
@@ -634,7 +634,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- 存储从请求体提取的 base64/data-URI 附件元数据（路径/类型/大小/hash），
 			-- 附件实体文件已落盘，此处仅记录元信息。
 			attachments,
-			-- 2026-07-11: P1.4 observability metadata (migration 357).
+			-- 2026-07-11: P1.4 observability metadata (startup migration 379).
 			client_ip, client_forwarded_for, agent_name, agent_type, api_key_fingerprint,
 			session_title, task_id,
 			upstream_endpoint, upstream_protocol, protocol_conversion
@@ -755,7 +755,7 @@ $42,
 		-- 2026-07-01: 附件元数据 (migration 325)。仅在目标行尚无附件时
 		-- 写入，避免后续 upsert（如失败补写）覆盖首次提取的完整附件列表。
 		attachments = COALESCE(request_logs_hot.attachments, EXCLUDED.attachments),
-		-- 2026-07-11: P1.4 observability metadata (migration 357).
+		-- 2026-07-11: P1.4 observability metadata (startup migration 379).
 		client_ip = EXCLUDED.client_ip,
 		client_forwarded_for = EXCLUDED.client_forwarded_for,
 		agent_name = EXCLUDED.agent_name,
@@ -857,7 +857,7 @@ $42,
 		streamChunksSentArg(entry.StreamChunksSent),
 		// 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
 		attachmentsArg(entry.Attachments),
-		// 2026-07-11: P1.4 observability metadata (migration 357).
+		// 2026-07-11: P1.4 observability metadata (startup migration 379).
 		entry.ClientIP,
 		entry.ClientForwardedFor,
 		entry.AgentName,
