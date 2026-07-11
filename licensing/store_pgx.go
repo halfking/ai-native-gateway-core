@@ -41,6 +41,30 @@ func (s *PgxStore) GetLicense(ctx context.Context, licenseKey string) (*License,
 	return &lic, nil
 }
 
+func (s *PgxStore) GetLicenseByID(ctx context.Context, id int64) (*License, error) {
+	var lic License
+	var featuresJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, license_key, customer_name, customer_email, max_devices,
+		       subscription_tier, features, expires_at, created_at, revoked_at
+		FROM licenses WHERE id = $1
+	`, id).Scan(
+		&lic.ID, &lic.LicenseKey, &lic.CustomerName, &lic.CustomerEmail,
+		&lic.MaxDevices, &lic.SubscriptionTier, &featuresJSON,
+		&lic.ExpiresAt, &lic.CreatedAt, &lic.RevokedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.New("license not found")
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(featuresJSON, &lic.Features); err != nil {
+		return nil, err
+	}
+	return &lic, nil
+}
+
 func (s *PgxStore) CreateLicense(ctx context.Context, lic *License) error {
 	featuresJSON, err := json.Marshal(lic.Features)
 	if err != nil {
@@ -154,6 +178,49 @@ func (s *PgxStore) CreateOfflineRequest(ctx context.Context, req *OfflineRequest
 		                                         device_name, request_id, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`, req.LicenseKey, req.HardwareHash, req.InstanceID, req.DeviceName, req.RequestID, req.Timestamp)
+	return err
+}
+
+func (s *PgxStore) ListOfflineRequests(ctx context.Context) ([]OfflineRequest, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT license_key, hardware_hash, instance_id, device_name, request_id,
+		       created_at, approved_at, signed_license
+		FROM offline_activation_requests
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var requests []OfflineRequest
+	for rows.Next() {
+		var req OfflineRequest
+		var approvedAt sql.NullTime
+		var signedLicense sql.NullString
+		if err := rows.Scan(
+			&req.LicenseKey, &req.HardwareHash, &req.InstanceID, &req.DeviceName,
+			&req.RequestID, &req.Timestamp, &approvedAt, &signedLicense,
+		); err != nil {
+			return nil, err
+		}
+		if approvedAt.Valid {
+			req.ApprovedAt = &approvedAt.Time
+		}
+		if signedLicense.Valid {
+			req.ActivationCode = signedLicense.String
+		}
+		requests = append(requests, req)
+	}
+	return requests, rows.Err()
+}
+
+func (s *PgxStore) RejectOfflineRequest(ctx context.Context, requestID, reason string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE offline_activation_requests
+		SET status = 'rejected', reject_reason = $2
+		WHERE request_id = $1
+	`, requestID, reason)
 	return err
 }
 
