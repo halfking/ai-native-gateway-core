@@ -3078,9 +3078,6 @@ func hasCompleteDingTalkAppConfig(cfg notification.DingTalkConfig) bool {
 }
 
 func dingTalkAllowedUsersFromSettings() []string {
-	if settings.Global == nil {
-		return nil
-	}
 	sp := settings.Global.Spec("dingtalk_bot.allowed_users")
 	if sp == nil {
 		return nil
