@@ -2,14 +2,18 @@
 # =====================================================================
 # scripts/deploy.sh — 统一部署入口（按目标别名，SSH 证书鉴权）
 #
-# 用法:
-#   ./scripts/deploy.sh 184                    # 仅部署到 184
-#   ./scripts/deploy.sh 71                     # 仅部署到 71
-#   ./scripts/deploy.sh both                   # 184 后 71（推荐顺序）
+# 用法 (2026-07-12 重新规划后):
+#   ./scripts/deploy.sh 252                    # 仅部署到 252 (llm.itestu.cn + pg17)
+#   ./scripts/deploy.sh 154                    # 仅部署到 154 (llm.kxpms.cn 主机模式)
+#   ./scripts/deploy.sh kaixuan-1              # 仅部署到 kaixuan-1 (内网 k3s 控制面)
+#   ./scripts/deploy.sh 245                    # 仅部署到 245 (registry.kxpms.cn)
+#   ./scripts/deploy.sh both                   # 252 后 154（推荐顺序）
 #   ./scripts/deploy.sh build                  # 仅构建（不部署）
-#   ./scripts/deploy.sh migrate <184|71>       # 仅运行 DB 迁移
-#   ./scripts/deploy.sh verify <184|71>        # 仅运行验证
-#   ./scripts/deploy.sh rollback 184           # 回滚
+#   ./scripts/deploy.sh migrate <252|154|kaixuan-1>   # 仅运行 DB 迁移
+#   ./scripts/deploy.sh verify <252|154|kaixuan-1>    # 仅运行验证
+#   ./scripts/deploy.sh rollback 252           # 回滚
+#
+# 旧别名兼容: "184" → 252, "71" → 154
 #
 # 选项:
 #   --with-migration      部署后运行 DB 迁移（184 默认 true）
@@ -20,18 +24,22 @@
 #   -h, --help            显示帮助
 #
 # 环境变量（覆盖默认）:
-#   SSH_KEY_184              184 SSH 私钥（默认 ~/.ssh/56_id_rsa）
-#   SSH_KEY_71               71  SSH 私钥（默认 ~/.ssh/71_id_rsa）
+#   SSH_KEY_154              154 SSH 私钥（默认 ~/.ssh/id_ed25519）
+#   SSH_KEY_252              252 SSH 私钥（默认 ~/.ssh/id_ed25519）
+#   SSH_KEY_245              245 SSH 私钥（默认 ~/.ssh/id_ed25519）
+#   SSH_KEY_KAIXUAN_1        kaixuan-1 SSH 私钥（默认 ~/.ssh/kaixuan1_id_rsa）
 #   SSH_PORT                 SSH 端口（默认 25022）
+#   SSH_USER                 SSH 用户（默认 root；kaixuan-* 用 kaixuan）
 #   BUILD_SEQ_TARGET=<seq>   使用指定 build_seq 而非 +1
-#   REGISTRY_INT=<host>      内部 registry（默认 registry.kxpms.cn）
-#   REGISTRY_LOCAL=<host>    184 本地 registry（默认 127.0.0.1:5000）
+#   REGISTRY_INT=<host>      生产 registry（默认 registry.kxpms.cn = 245）
+#   REGISTRY_DEV=<host>      开发 registry（默认 registry.itestu.cn = kaixuan-1:5000）
 #
 # 鉴权:
 #   本脚本 100% SSH 公私钥鉴权（BatchMode=yes），不依赖 sshpass / 密码。
 #   部署前用 ssh-add 加载私钥，或让本用户运行 env-injector 的
-#   `inject huoshan-core-184` / `inject huoshan-infra-71`（会写入
-#   ~/.ssh/config 而非注入密码）。
+#   `inject deploy-252` / `inject deploy-154` / `inject deploy-kaixuan-1`
+#   （会写入 ~/.ssh/config 而非注入密码）。
+#   sshpass 兼容路径：脚本也支持优先读 SSHPASS 环境变量（fallback to ~/.ssh）。
 #
 # 退出码:
 #   0 = 成功
@@ -103,27 +111,91 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── 服务器与 SSH 证书（key-only，不使用密码） ────────────────────
-# 2026-07-11: 184/71 退役,SERVER_184/SERVER_71 别名重定向到 154 (生产) 与 kaixuan-1 (开发)
-# 保留命名是为了不破坏调用方对 "deploy to 184/71" 语义的心智模型,实际连接走 154
-SERVER_184="root@47.97.111.154"
-SERVER_184_HOST="47.97.111.154"
-SERVER_71="root@47.97.111.154"
-SERVER_71_HOST="47.97.111.154"
+# 2026-07-12 重新规划后的服务器角色：
+#   154    生产网关（公网 47.97.111.154 / 内网 172.16.2.209）— 部署 llm.kxpms.cn（主机模式，非 k3s）
+#   252    阿里云（公网 115.29.212.252 / 内网 172.16.2.210）— 部署 llm.itestu.cn (llm-gateway-go) + nps + vpn + redis:6389 + pg17:5432
+#   245    网关服务器（公网 8.136.114.245 / 内网 172.16.2.241）— registry.kxpms.cn 生产镜像
+#   186    应用服务器（公网 118.31.18.168）— 即将弃用
+#   kaixuan-1  内网 192.168.31.28（tart vm + k3s 控制面；pg17@192.168.31.8:30432 + citus 13.3-1）
+#   kaixuan-2  内网 192.168.31.19（k3s worker；应用服务 trendaradar/crm/geo/doc-tools/...）
+#   kaixuan-3  内网 192.168.31.30（k3s worker；数据服务 pg/memos/...；nexus.kxpms.cn 同内一组）
+#
+# 历史别名重定向（保留调用方语义）：
+#   "184" → 252（公网部署目标；旧 184 退役）
+#   "71"  → 154（旧 71 退役）
 SSH_PORT="${SSH_PORT:-25022}"
-SSH_KEY_184="${SSH_KEY_184:-$HOME/.ssh/56_id_rsa}"
-SSH_KEY_71="${SSH_KEY_71:-$HOME/.ssh/71_id_rsa}"
+SSH_USER="${SSH_USER:-root}"
+
+# 154 / 252 / 245 / 186 — 全部用 root + Kaixuan2026&#*9527，密钥登录优先
+SERVER_154="root@47.97.111.154"
+SERVER_154_HOST="47.97.111.154"
+SERVER_252="root@115.29.212.252"
+SERVER_252_HOST="115.29.212.252"
+SERVER_245="root@8.136.114.245"
+SERVER_245_HOST="8.136.114.245"
+SERVER_186="root@118.31.18.168"
+SERVER_186_HOST="118.31.18.168"
+
+# kaixuan-1/2/3 — 内网 tart VM + k3s，使用不同凭据（kaixuan/kaixuan123）
+SERVER_KAIXUAN_1="kaixuan@192.168.31.28"
+SERVER_KAIXUAN_1_HOST="192.168.31.28"
+SERVER_KAIXUAN_2="kaixuan@192.168.31.19"
+SERVER_KAIXUAN_2_HOST="192.168.31.19"
+SERVER_KAIXUAN_3="kaixuan@192.168.31.30"
+SERVER_KAIXUAN_3_HOST="192.168.31.30"
+
+# 兼容旧别名
+SERVER_184="${SERVER_252}"        # 184 退役 → 重定向 252
+SERVER_184_HOST="${SERVER_252_HOST}"
+SERVER_71="${SERVER_154}"         # 71 退役  → 重定向 154
+SERVER_71_HOST="${SERVER_154_HOST}"
+
+# 私钥路径（全部使用 ed25519；密钥登录）
+SSH_KEY_154="${SSH_KEY_154:-$HOME/.ssh/id_ed25519}"
+SSH_KEY_252="${SSH_KEY_252:-$HOME/.ssh/id_ed25519}"
+SSH_KEY_245="${SSH_KEY_245:-$HOME/.ssh/id_ed25519}"
+SSH_KEY_186="${SSH_KEY_186:-$HOME/.ssh/id_ed25519}"
+SSH_KEY_KAIXUAN_1="${SSH_KEY_KAIXUAN_1:-$HOME/.ssh/kaixuan1_id_rsa}"
+SSH_KEY_KAIXUAN_2="${SSH_KEY_KAIXUAN_2:-$HOME/.ssh/kaixuan2_id_rsa}"
+SSH_KEY_KAIXUAN_3="${SSH_KEY_KAIXUAN_3:-$HOME/.ssh/kaixuan3_id_rsa}"
+
+# 兼容旧别名
+SSH_KEY_184="${SSH_KEY_184:-$SSH_KEY_252}"
+SSH_KEY_71="${SSH_KEY_71:-$SSH_KEY_154}"
+
 # -o BatchMode=yes: 禁用交互式密码提示（强制 cert-only）
-SSH_184_OPT="-p $SSH_PORT -i $SSH_KEY_184 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
-SSH_71_OPT="-p $SSH_PORT -i $SSH_KEY_71 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
-SCP_184_OPT="-P $SSH_PORT -i $SSH_KEY_184 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
-SCP_71_OPT="-P $SSH_PORT -i $SSH_KEY_71 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+SSH_154_OPT="-p $SSH_PORT -i $SSH_KEY_154 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_252_OPT="-p $SSH_PORT -i $SSH_KEY_252 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_245_OPT="-p $SSH_PORT -i $SSH_KEY_245 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_186_OPT="-p $SSH_PORT -i $SSH_KEY_186 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_KAIXUAN_1_OPT="-p $SSH_PORT -i $SSH_KEY_KAIXUAN_1 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_KAIXUAN_2_OPT="-p $SSH_PORT -i $SSH_KEY_KAIXUAN_2 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_KAIXUAN_3_OPT="-p $SSH_PORT -i $SSH_KEY_KAIXUAN_3 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+
+SCP_154_OPT="-P $SSH_PORT -i $SSH_KEY_154 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+SCP_252_OPT="-P $SSH_PORT -i $SSH_KEY_252 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+SCP_245_OPT="-P $SSH_PORT -i $SSH_KEY_245 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+SCP_186_OPT="-P $SSH_PORT -i $SSH_KEY_186 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+
+# 兼容旧别名
+SSH_184_OPT="$SSH_252_OPT"
+SSH_71_OPT="$SSH_154_OPT"
+SCP_184_OPT="$SCP_252_OPT"
+SCP_71_OPT="$SCP_154_OPT"
 
 # Image / registry
 # 注意: IMAGE_NAME = docker 镜像名 (含 kx- 前缀); K8S_CONTAINER = K8s pod 容器名 (无前缀)
 IMAGE_NAME="kx-llm-gateway-go"
 K8S_CONTAINER="llm-gateway-go"
+# registry.kxpms.cn = 245 阿里网关（公网 8.136.114.245），kaixuan/Veritrans&9527（生产）
+# registry.itestu.cn = kaixuan-1 内网（192.168.31.8:5000），开发测试用
 REGISTRY_INT="${REGISTRY_INT:-registry.kxpms.cn}"
-REGISTRY_LOCAL="${REGISTRY_LOCAL:-127.0.0.1:5000}"
+REGISTRY_DEV="${REGISTRY_DEV:-registry.itestu.cn}"
+# 154 主机部署使用 kaixuan-1 内网 registry（与 llm.kxpms.cn 同内一组）
+REGISTRY_154="${REGISTRY_154:-${REGISTRY_DEV}}"
+# 252 阿里云 llm.itestu.cn 部署使用 245 公网 registry
+REGISTRY_252="${REGISTRY_252:-${REGISTRY_INT}}"
+REGISTRY_LOCAL="${REGISTRY_LOCAL:-${REGISTRY_DEV}}"
 K8S_NS="pms-test"
 K8S_DEP="llm-gateway-go-deployment"
 
@@ -135,7 +207,8 @@ BIN_NAME="llm-gateway-go.v321.linux.amd64"
 usage_short() {
   cat <<EOF
 用法: $0 <target> [options]
-target: 184 | 71 | both | build | migrate | verify | rollback
+target: 252 | 154 | 245 | 186 | kaixuan-1 | kaixuan-2 | kaixuan-3 | both | build | migrate | verify | rollback
+   兼容旧别名：184 → 252（公网数据面）, 71 → 154（公网主机部署）
 详细: $0 --help
 EOF
 }
