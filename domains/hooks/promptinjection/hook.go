@@ -91,13 +91,13 @@ func (h *Hook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
 
 	// 保存检测结果到 metadata
 	env.Metadata["prompt_injection_result"] = map[string]any{
-		"score":               result.Score,
-		"risk_level":          result.RiskLevel,
-		"categories":          result.Categories,
-		"action_taken":        result.ActionTaken,
-		"blocked":             result.Blocked,
-		"require_approval":    result.RequireApproval,
-		"llm_confidence":      result.LLMConfidence,
+		"score":                result.Score,
+		"risk_level":           result.RiskLevel,
+		"categories":           result.Categories,
+		"action_taken":         result.ActionTaken,
+		"blocked":              result.Blocked,
+		"require_approval":     result.RequireApproval,
+		"llm_confidence":       result.LLMConfidence,
 		"session_health_delta": result.SessionHealthDelta,
 	}
 
@@ -210,7 +210,7 @@ func toGovernanceVerdict(r *DetectionResult) *governance.Verdict {
 
 	// 设置 FixAction
 	switch r.ActionTaken {
-	case "replace", "redact", "remove":
+	case "sanitize", "replace", "redact", "remove":
 		gv.FixAction = "sanitize_input"
 	case "reject", "block":
 		gv.FixAction = "abort_request"

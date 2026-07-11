@@ -47,8 +47,8 @@ func TestParseQueryParams(t *testing.T) {
 		{
 			name:     "超出范围",
 			url:      "/api/test?days=100&page=0&size=200",
-			wantDays: 90, // max
-			wantPage: 1,  // min
+			wantDays: 90,  // max
+			wantPage: 1,   // min
 			wantSize: 100, // max
 		},
 	}
@@ -56,7 +56,7 @@ func TestParseQueryParams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
-			
+
 			// 测试参数范围验证逻辑
 			days := parseIntParam(req, "days", 7, 1, 90)
 			page := parseIntParam(req, "page", 1, 1, 1000)
@@ -103,7 +103,7 @@ func TestResponseFormat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			w.WriteHeader(tt.statusCode)
-			
+
 			gotOK := w.Code >= 200 && w.Code < 300
 			assert.Equal(t, tt.wantOK, gotOK)
 		})

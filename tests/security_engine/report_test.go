@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -62,9 +63,8 @@ func saveResultsToJSON(t *testing.T, results []TestResult, perf PerformanceMetri
 		DetailedFailures: failures,
 	}
 
-	// 保存到文件
 	filename := fmt.Sprintf("security_engine_test_report_%s.json", time.Now().Format("20060102_150405"))
-	filepath := filename // 直接保存在当前目录
+	reportPath := filepath.Join(t.TempDir(), filename)
 
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -72,12 +72,12 @@ func saveResultsToJSON(t *testing.T, results []TestResult, perf PerformanceMetri
 		return
 	}
 
-	err = os.WriteFile(filepath, data, 0644)
+	err = os.WriteFile(reportPath, data, 0o644)
 	if err != nil {
 		t.Logf("保存报告失败: %v", err)
 		return
 	}
 
-	t.Logf("\n✓ 测试报告已保存到: %s", filepath)
+	t.Logf("\n✓ 测试报告已保存到临时目录: %s", reportPath)
 	t.Logf("✓ 包含 %d 个测试用例，%d 个失败用例详情", len(results), len(failures))
 }

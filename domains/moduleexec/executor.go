@@ -7,11 +7,11 @@
 //   - 批量查询优化
 //
 // 数据流：
-//   1. 调用 CheckAndExecute(sessionID, moduleName, inputParams, ttl, executeFn)
-//   2. 系统计算 cache_key，查询是否有有效缓存
-//   3. 有缓存：直接返回（FromCache=true）
-//   4. 无缓存：执行 executeFn，记录开始（status=running）
-//   5. 执行完成后：记录结果（status=completed/skipped）
+//  1. 调用 CheckAndExecute(sessionID, moduleName, inputParams, ttl, executeFn)
+//  2. 系统计算 cache_key，查询是否有有效缓存
+//  3. 有缓存：直接返回（FromCache=true）
+//  4. 无缓存：执行 executeFn，记录开始（status=running）
+//  5. 执行完成后：记录结果（status=completed/skipped）
 //
 // 使用示例：
 //
@@ -40,6 +40,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/moduleregistry"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/sync/singleflight"
 )
 
 // ExecuteStatus 执行状态
@@ -77,15 +78,16 @@ type Executor struct {
 	memCacheTTL  time.Duration
 	memCacheTime map[string]time.Time
 	memCacheMu   sync.RWMutex
+	inflight     singleflight.Group
 }
 
 // Config 执行器配置
 type Config struct {
-	DB              DBTX
-	Redis           *redis.Client // 可选
-	Logger          *slog.Logger
-	EnableRedis     bool
-	MemCacheTTL     time.Duration // 内存缓存 TTL，默认 30 秒
+	DB          DBTX
+	Redis       *redis.Client // 可选
+	Logger      *slog.Logger
+	EnableRedis bool
+	MemCacheTTL time.Duration // 内存缓存 TTL，默认 30 秒
 }
 
 // NewExecutor 创建执行器
@@ -98,13 +100,13 @@ func NewExecutor(cfg Config) *Executor {
 	}
 
 	return &Executor{
-		db:            cfg.DB,
-		redis:         cfg.Redis,
-		logger:        cfg.Logger,
-		enableRedis:   cfg.EnableRedis && cfg.Redis != nil,
-		memCache:      make(map[string]*ExecuteResult),
-		memCacheTime:  make(map[string]time.Time),
-		memCacheTTL:   cfg.MemCacheTTL,
+		db:           cfg.DB,
+		redis:        cfg.Redis,
+		logger:       cfg.Logger,
+		enableRedis:  cfg.EnableRedis && cfg.Redis != nil,
+		memCache:     make(map[string]*ExecuteResult),
+		memCacheTime: make(map[string]time.Time),
+		memCacheTTL:  cfg.MemCacheTTL,
 	}
 }
 
@@ -152,39 +154,79 @@ func (e *Executor) CheckAndExecute(
 	// 计算 cache_key
 	cacheKey := ComputeCacheKey(moduleName, inputParams)
 
-	// L0: 内存缓存
-	if cached := e.getFromMemCache(sessionID, moduleName, cacheKey); cached != nil {
-		cached.FromCache = true
-		recordCacheHit(moduleName, "L0")
-		recordExecution(moduleName, string(cached.Status), true, 0)
-		return cached, nil
+	if cached := e.getCached(ctx, tenantID, sessionID, moduleName, cacheKey, ttlSeconds); cached != nil {
+		return e.returnCached(moduleName, cached)
 	}
 
-	// L1: Redis 缓存
-	if e.enableRedis {
-		if cached := e.getFromRedis(ctx, sessionID, moduleName, cacheKey); cached != nil {
-			cached.FromCache = true
-			e.setToMemCache(sessionID, moduleName, cacheKey, cached)
-			recordCacheHit(moduleName, "L1")
-			recordExecution(moduleName, string(cached.Status), true, 0)
+	value, err, _ := e.inflight.Do(memCacheKey(tenantID, sessionID, moduleName, cacheKey), func() (interface{}, error) {
+		if cached := e.getCached(ctx, tenantID, sessionID, moduleName, cacheKey, ttlSeconds); cached != nil {
 			return cached, nil
 		}
+
+		recordCacheMiss(moduleName)
+		return e.executeAfterCacheMiss(ctx, sessionID, tenantID, moduleName, cacheKey, ttlSeconds, executeFn)
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	// L2: 数据库查询
-	if cached, err := e.getFromDB(ctx, sessionID, moduleName, cacheKey); err == nil && cached != nil {
-		cached.FromCache = true
-		if e.enableRedis {
-			e.setToRedis(ctx, sessionID, moduleName, cacheKey, cached, ttlSeconds)
+	result, ok := value.(*ExecuteResult)
+	if !ok || result == nil {
+		return nil, fmt.Errorf("module %s returned an invalid execution result", moduleName)
+	}
+	clone, err := cloneExecuteResult(result)
+	if err != nil {
+		return nil, fmt.Errorf("clone module execution result: %w", err)
+	}
+	return clone, nil
+}
+
+func (e *Executor) returnCached(moduleName string, cached *ExecuteResult) (*ExecuteResult, error) {
+	cached.FromCache = true
+	recordCacheHit(moduleName, "cache")
+	recordExecution(moduleName, string(cached.Status), true, 0)
+	return cached, nil
+}
+
+func (e *Executor) getCached(ctx context.Context, tenantID, sessionID, moduleName, cacheKey string, ttlSeconds int) *ExecuteResult {
+	if cached := e.getFromMemCache(tenantID, sessionID, moduleName, cacheKey); cached != nil {
+		return cached
+	}
+
+	if e.enableRedis {
+		if cached := e.getFromRedis(ctx, tenantID, sessionID, moduleName, cacheKey); cached != nil {
+			if err := e.setToMemCache(tenantID, sessionID, moduleName, cacheKey, cached); err != nil {
+				e.logger.Warn("clone Redis module execution cache result failed", "error", err, "module", moduleName)
+			}
+			return cached
 		}
-		e.setToMemCache(sessionID, moduleName, cacheKey, cached)
-		recordCacheHit(moduleName, "L2")
-		recordExecution(moduleName, string(cached.Status), true, 0)
-		return cached, nil
 	}
 
-	// 没有有效缓存
-	recordCacheMiss(moduleName)
+	if e.db == nil {
+		return nil
+	}
+
+	if cached, err := e.getFromDB(ctx, tenantID, sessionID, moduleName, cacheKey); err == nil && cached != nil {
+		if e.enableRedis {
+			e.setToRedis(ctx, tenantID, sessionID, moduleName, cacheKey, cached, ttlSeconds)
+		}
+		if err := e.setToMemCache(tenantID, sessionID, moduleName, cacheKey, cached); err != nil {
+			e.logger.Warn("clone database module execution cache result failed", "error", err, "module", moduleName)
+		}
+		return cached
+	}
+	return nil
+}
+
+func (e *Executor) executeAfterCacheMiss(
+	ctx context.Context,
+	sessionID, tenantID, moduleName, cacheKey string,
+	ttlSeconds int,
+	executeFn func(context.Context) (*ExecuteResult, error),
+) (*ExecuteResult, error) {
+	if e.db == nil {
+		return e.executeDirectly(ctx, sessionID, tenantID, moduleName, executeFn)
+	}
 
 	// 没有有效缓存，记录执行开始并执行
 	execID, err := e.recordExecutionStart(ctx, sessionID, tenantID, moduleName, cacheKey, ttlSeconds)
@@ -202,9 +244,19 @@ func (e *Executor) CheckAndExecute(
 
 	if execErr != nil {
 		// 记录失败
-		_ = e.recordExecutionFailure(ctx, execID, execErr.Error(), durationMs)
+		if err := e.recordExecutionFailure(ctx, execID, execErr.Error(), durationMs); err != nil {
+			e.logger.Warn("record execution failure failed", "error", err, "execution_id", execID)
+		}
 		recordExecution(moduleName, "failed", false, execDuration)
 		return nil, execErr
+	}
+	if result == nil {
+		err := fmt.Errorf("module %s returned a nil result", moduleName)
+		if recordErr := e.recordExecutionFailure(ctx, execID, err.Error(), durationMs); recordErr != nil {
+			e.logger.Warn("record nil execution result failed", "error", recordErr, "execution_id", execID)
+		}
+		recordExecution(moduleName, "failed", false, execDuration)
+		return nil, err
 	}
 
 	// 记录成功
@@ -222,9 +274,11 @@ func (e *Executor) CheckAndExecute(
 
 	// 写入缓存
 	if e.enableRedis {
-		e.setToRedis(ctx, sessionID, moduleName, cacheKey, result, ttlSeconds)
+		e.setToRedis(ctx, tenantID, sessionID, moduleName, cacheKey, result, ttlSeconds)
 	}
-	e.setToMemCache(sessionID, moduleName, cacheKey, result)
+	if err := e.setToMemCache(tenantID, sessionID, moduleName, cacheKey, result); err != nil {
+		e.logger.Warn("clone module execution cache result failed", "error", err, "module", moduleName)
+	}
 
 	return result, nil
 }
@@ -244,6 +298,10 @@ func (e *Executor) executeDirectly(
 		recordExecution(moduleName, "failed", false, execDuration)
 		return nil, err
 	}
+	if result == nil {
+		recordExecution(moduleName, "failed", false, execDuration)
+		return nil, fmt.Errorf("module %s returned a nil result", moduleName)
+	}
 
 	result.DurationMs = durationMs
 	result.Status = StatusCompleted
@@ -255,11 +313,11 @@ func (e *Executor) executeDirectly(
 // L0 内存缓存
 // ────────────────────────────────────────────────────────────────
 
-func (e *Executor) getFromMemCache(sessionID, moduleName, cacheKey string) *ExecuteResult {
+func (e *Executor) getFromMemCache(tenantID, sessionID, moduleName, cacheKey string) *ExecuteResult {
 	e.memCacheMu.RLock()
 	defer e.memCacheMu.RUnlock()
 
-	key := fmt.Sprintf("%s:%s:%s", sessionID, moduleName, cacheKey)
+	key := memCacheKey(tenantID, sessionID, moduleName, cacheKey)
 	cachedTime, exists := e.memCacheTime[key]
 	if !exists {
 		return nil
@@ -267,69 +325,88 @@ func (e *Executor) getFromMemCache(sessionID, moduleName, cacheKey string) *Exec
 	if time.Since(cachedTime) > e.memCacheTTL {
 		return nil
 	}
-	return e.memCache[key]
+	result, err := cloneExecuteResult(e.memCache[key])
+	if err != nil {
+		e.logger.Warn("clone memory module execution cache result failed", "error", err, "module", moduleName)
+		return nil
+	}
+	return result
 }
 
-func (e *Executor) setToMemCache(sessionID, moduleName, cacheKey string, result *ExecuteResult) {
+func (e *Executor) setToMemCache(tenantID, sessionID, moduleName, cacheKey string, result *ExecuteResult) error {
+	clone, err := cloneExecuteResult(result)
+	if err != nil {
+		return err
+	}
+
 	e.memCacheMu.Lock()
 	defer e.memCacheMu.Unlock()
 
-	key := fmt.Sprintf("%s:%s:%s", sessionID, moduleName, cacheKey)
-	e.memCache[key] = result
+	key := memCacheKey(tenantID, sessionID, moduleName, cacheKey)
+	e.memCache[key] = clone
 	e.memCacheTime[key] = time.Now()
+	return nil
 }
 
 // ────────────────────────────────────────────────────────────────
 // L1 Redis 缓存
 // ────────────────────────────────────────────────────────────────
 
-func (e *Executor) redisKey(sessionID, moduleName, cacheKey string) string {
-	return fmt.Sprintf("module:exec:%s:%s:%s", sessionID, moduleName, cacheKey)
+func (e *Executor) redisKey(tenantID, sessionID, moduleName, cacheKey string) string {
+	return "module:exec:" + compositeKey(tenantID, sessionID, moduleName, cacheKey)
 }
 
-func (e *Executor) getFromRedis(ctx context.Context, sessionID, moduleName, cacheKey string) *ExecuteResult {
+func (e *Executor) getFromRedis(ctx context.Context, tenantID, sessionID, moduleName, cacheKey string) *ExecuteResult {
 	if e.redis == nil {
 		return nil
 	}
 
-	data, err := e.redis.Get(ctx, e.redisKey(sessionID, moduleName, cacheKey)).Bytes()
+	data, err := e.redis.Get(ctx, e.redisKey(tenantID, sessionID, moduleName, cacheKey)).Bytes()
 	if err != nil {
+		if err != redis.Nil {
+			e.logger.Warn("read module execution cache failed", "error", err, "tenant_id", tenantID, "session_id", sessionID, "module", moduleName)
+		}
 		return nil
 	}
 
 	var result ExecuteResult
 	if err := json.Unmarshal(data, &result); err != nil {
+		e.logger.Warn("decode module execution cache failed", "error", err, "tenant_id", tenantID, "session_id", sessionID, "module", moduleName)
 		return nil
 	}
 
 	return &result
 }
 
-func (e *Executor) setToRedis(ctx context.Context, sessionID, moduleName, cacheKey string, result *ExecuteResult, ttlSeconds int) {
+func (e *Executor) setToRedis(ctx context.Context, tenantID, sessionID, moduleName, cacheKey string, result *ExecuteResult, ttlSeconds int) {
 	if e.redis == nil {
 		return
 	}
 
 	data, err := json.Marshal(result)
 	if err != nil {
+		e.logger.Warn("encode module execution cache failed", "error", err, "tenant_id", tenantID, "session_id", sessionID, "module", moduleName)
 		return
 	}
 
-	_ = e.redis.Set(ctx, e.redisKey(sessionID, moduleName, cacheKey), data, time.Duration(ttlSeconds)*time.Second).Err()
+	if err := e.redis.Set(ctx, e.redisKey(tenantID, sessionID, moduleName, cacheKey), data, time.Duration(ttlSeconds)*time.Second).Err(); err != nil {
+		e.logger.Warn("persist module execution cache failed", "error", err, "tenant_id", tenantID, "session_id", sessionID, "module", moduleName)
+	}
 }
 
 // ────────────────────────────────────────────────────────────────
 // L2 数据库查询
 // ────────────────────────────────────────────────────────────────
 
-func (e *Executor) getFromDB(ctx context.Context, sessionID, moduleName, cacheKey string) (*ExecuteResult, error) {
+func (e *Executor) getFromDB(ctx context.Context, tenantID, sessionID, moduleName, cacheKey string) (*ExecuteResult, error) {
 	query := `
-		SELECT execution_id, status, result_summary, result_detail, 
-		       duration_ms, expires_at
-		FROM session_module_executions_hot
-		WHERE gw_session_id = $1
-		  AND module_name = $2
-		  AND cache_key = $3
+			SELECT execution_id, status, result_summary, result_detail,
+			       duration_ms, expires_at
+			FROM session_module_executions_hot
+			WHERE gw_session_id = $1
+			  AND tenant_id = $2
+			  AND module_name = $3
+			  AND cache_key = $4
 		  AND status = 'completed'
 		  AND expires_at > NOW()
 		ORDER BY created_at DESC
@@ -345,7 +422,7 @@ func (e *Executor) getFromDB(ctx context.Context, sessionID, moduleName, cacheKe
 		expiresAt   time.Time
 	)
 
-	err := e.db.QueryRow(ctx, query, sessionID, moduleName, cacheKey).
+	err := e.db.QueryRow(ctx, query, sessionID, tenantID, moduleName, cacheKey).
 		Scan(&execID, &status, &summaryJSON, &detailJSON, &durationMs, &expiresAt)
 	if err != nil {
 		return nil, err
@@ -359,10 +436,14 @@ func (e *Executor) getFromDB(ctx context.Context, sessionID, moduleName, cacheKe
 	}
 
 	if len(summaryJSON) > 0 {
-		json.Unmarshal(summaryJSON, &result.ResultSummary)
+		if err := json.Unmarshal(summaryJSON, &result.ResultSummary); err != nil {
+			return nil, fmt.Errorf("decode result summary: %w", err)
+		}
 	}
 	if len(detailJSON) > 0 {
-		json.Unmarshal(detailJSON, &result.ResultDetail)
+		if err := json.Unmarshal(detailJSON, &result.ResultDetail); err != nil {
+			return nil, fmt.Errorf("decode result detail: %w", err)
+		}
 	}
 
 	return result, nil
@@ -433,6 +514,7 @@ func (e *Executor) recordExecutionFailure(ctx context.Context, execID int64, err
 // BatchCheck 批量检查多个模块的执行状态
 func (e *Executor) BatchCheck(
 	ctx context.Context,
+	tenantID string,
 	sessionID string,
 	moduleNames []string,
 ) (map[string]*ExecuteResult, error) {
@@ -443,14 +525,15 @@ func (e *Executor) BatchCheck(
 	query := `
 		SELECT module_name, execution_id, status, result_summary, result_detail, duration_ms, expires_at
 		FROM session_module_executions_hot
-		WHERE gw_session_id = $1
-		  AND module_name = ANY($2)
+			WHERE gw_session_id = $1
+			  AND tenant_id = $2
+			  AND module_name = ANY($3)
 		  AND status = 'completed'
 		  AND expires_at > NOW()
 		ORDER BY created_at DESC
 	`
 
-	rows, err := e.db.Query(ctx, query, sessionID, moduleNames)
+	rows, err := e.db.Query(ctx, query, sessionID, tenantID, moduleNames)
 	if err != nil {
 		return nil, err
 	}
@@ -481,10 +564,14 @@ func (e *Executor) BatchCheck(
 		}
 
 		if len(summaryJSON) > 0 {
-			json.Unmarshal(summaryJSON, &result.ResultSummary)
+			if err := json.Unmarshal(summaryJSON, &result.ResultSummary); err != nil {
+				return nil, fmt.Errorf("decode %s result summary: %w", moduleName, err)
+			}
 		}
 		if len(detailJSON) > 0 {
-			json.Unmarshal(detailJSON, &result.ResultDetail)
+			if err := json.Unmarshal(detailJSON, &result.ResultDetail); err != nil {
+				return nil, fmt.Errorf("decode %s result detail: %w", moduleName, err)
+			}
 		}
 
 		results[moduleName] = result
@@ -493,34 +580,42 @@ func (e *Executor) BatchCheck(
 	return results, nil
 }
 
-// InvalidateCache 使指定会话的指定模块缓存失效
-func (e *Executor) InvalidateCache(ctx context.Context, sessionID, moduleName string) error {
+// InvalidateCache 使指定租户会话的指定模块缓存失效
+func (e *Executor) InvalidateCache(ctx context.Context, tenantID, sessionID, moduleName string) error {
 	query := `
-		UPDATE session_module_executions_hot
-		SET expires_at = NOW(),
-		    updated_at = NOW()
-		WHERE gw_session_id = $1
-		  AND module_name = $2
-		  AND status = 'completed'
-	`
+			UPDATE session_module_executions_hot
+			SET expires_at = NOW(),
+			    updated_at = NOW()
+			WHERE gw_session_id = $1
+			  AND tenant_id = $2
+			  AND module_name = $3
+			  AND status = 'completed'
+		`
 
-	_, err := e.db.Exec(ctx, query, sessionID, moduleName)
+	var err error
+	if e.db != nil {
+		_, err = e.db.Exec(ctx, query, sessionID, tenantID, moduleName)
+	}
 
 	// 清理 Redis 缓存（如果有）
 	if e.enableRedis {
-		pattern := fmt.Sprintf("module:exec:%s:%s:*", sessionID, moduleName)
-		keys, _ := e.redis.Keys(ctx, pattern).Result()
+		pattern := "module:exec:" + compositeKeyPrefix(tenantID, sessionID, moduleName)
+		keys, redisErr := e.redis.Keys(ctx, pattern).Result()
+		if redisErr != nil {
+			e.logger.Warn("list module execution cache keys failed", "error", redisErr, "tenant_id", tenantID, "session_id", sessionID, "module", moduleName)
+		}
 		if len(keys) > 0 {
-			e.redis.Del(ctx, keys...)
+			if redisErr := e.redis.Del(ctx, keys...).Err(); redisErr != nil {
+				e.logger.Warn("invalidate module execution cache failed", "error", redisErr, "tenant_id", tenantID, "session_id", sessionID, "module", moduleName)
+			}
 		}
 	}
 
 	// 清理内存缓存
+	prefix := compositeKeyPrefix(tenantID, sessionID, moduleName)
 	e.memCacheMu.Lock()
 	for key := range e.memCache {
-		if len(key) > len(sessionID)+len(moduleName)+2 &&
-			key[:len(sessionID)] == sessionID &&
-			key[len(sessionID)+1:len(sessionID)+1+len(moduleName)] == moduleName {
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
 			delete(e.memCache, key)
 			delete(e.memCacheTime, key)
 		}
@@ -534,6 +629,58 @@ func (e *Executor) InvalidateCache(ctx context.Context, sessionID, moduleName st
 // 工具函数
 // ────────────────────────────────────────────────────────────────
 
+func memCacheKey(tenantID, sessionID, moduleName, cacheKey string) string {
+	return compositeKey(tenantID, sessionID, moduleName, cacheKey)
+}
+
+func compositeKey(parts ...string) string {
+	key := ""
+	for _, part := range parts {
+		key += fmt.Sprintf("%d:%s", len(part), part)
+	}
+	return key
+}
+
+func compositeKeyPrefix(tenantID, sessionID, moduleName string) string {
+	return compositeKey(tenantID, sessionID, moduleName)
+}
+
+func cloneExecuteResult(result *ExecuteResult) (*ExecuteResult, error) {
+	if result == nil {
+		return nil, nil
+	}
+	clone := *result
+	var err error
+	clone.ResultSummary, err = cloneMap(result.ResultSummary)
+	if err != nil {
+		return nil, fmt.Errorf("clone result summary: %w", err)
+	}
+	clone.ResultDetail, err = cloneMap(result.ResultDetail)
+	if err != nil {
+		return nil, fmt.Errorf("clone result detail: %w", err)
+	}
+	if result.ExpiresAt != nil {
+		expiresAt := *result.ExpiresAt
+		clone.ExpiresAt = &expiresAt
+	}
+	return &clone, nil
+}
+
+func cloneMap(src map[string]interface{}) (map[string]interface{}, error) {
+	if src == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(src)
+	if err != nil {
+		return nil, fmt.Errorf("encode map: %w", err)
+	}
+	var clone map[string]interface{}
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return nil, fmt.Errorf("decode map: %w", err)
+	}
+	return clone, nil
+}
+
 // ComputeCacheKey 计算缓存键
 func ComputeCacheKey(moduleName string, params map[string]interface{}) string {
 	data, _ := json.Marshal(params)
@@ -543,6 +690,9 @@ func ComputeCacheKey(moduleName string, params map[string]interface{}) string {
 
 // RecordSkip 记录跳过（用于已有结果但希望显式记录的情况）
 func (e *Executor) RecordSkip(ctx context.Context, sessionID, tenantID, moduleName, cacheKey string) error {
+	if e.db == nil {
+		return nil
+	}
 	moduleInfo, _ := moduleregistry.GetModuleInfo(moduleName)
 
 	query := `

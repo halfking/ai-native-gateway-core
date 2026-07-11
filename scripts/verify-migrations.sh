@@ -1,116 +1,68 @@
-#!/bin/bash
-# 数据库迁移验证脚本
-# 验证 360_session_module_executions.sql 和 361_dashboard_access_events.sql
+#!/usr/bin/env bash
+# Verify dashboard archive migrations 378 and 379.
+set -euo pipefail
 
-set -e
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'USAGE'
+Usage: DATABASE_URL=... scripts/verify-migrations.sh
 
-echo "=========================================="
-echo "数据库迁移验证脚本"
-echo "=========================================="
+Verifies the session module execution and dashboard access event migration
+objects, pooled-writer RLS compatibility, partitions, and transactional writes.
+USAGE
+  exit 0
+fi
 
-# 数据库连接参数（从环境变量获取，或使用默认值）
-DB_HOST=${DB_HOST:-localhost}
-DB_PORT=${DB_PORT:-5432}
-DB_NAME=${DB_NAME:-llm_gateway}
-DB_USER=${DB_USER:-postgres}
-DB_PASSWORD=${DB_PASSWORD:-postgres}
+if [[ -n "${DATABASE_URL:-}" ]]; then
+  PSQL=(psql "${DATABASE_URL}")
+else
+  required=(DB_HOST DB_PORT DB_NAME DB_USER)
+  for var in "${required[@]}"; do
+    [[ -n "${!var:-}" ]] || { printf 'error: set DATABASE_URL or %s (and the other DB_* variables)\n' "$var" >&2; exit 2; }
+  done
+  PSQL=(psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}")
+fi
+PSQL+=(--no-psqlrc -X -v ON_ERROR_STOP=1 -v VERBOSITY=verbose)
 
-# 构造连接字符串
-PSQL="psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -v ON_ERROR_STOP=1"
+assert_true() {
+  local description=$1 sql=$2
+  local result
+  result=$("${PSQL[@]}" -Atqc "SELECT CASE WHEN (${sql}) THEN 'true' ELSE 'false' END")
+  [[ "$result" == true ]] || { printf 'FAIL: %s\n' "$description" >&2; exit 1; }
+  printf 'PASS: %s\n' "$description"
+}
 
-echo "数据库: $DB_HOST:$DB_PORT/$DB_NAME"
-echo ""
+for relation in session_module_executions_hot session_module_executions dashboard_access_events_hot dashboard_access_events; do
+  assert_true "relation ${relation} exists" "to_regclass('public.${relation}') IS NOT NULL"
+done
+for function_name in ensure_session_module_executions_partition archive_session_module_executions ensure_dashboard_events_partition archive_dashboard_events; do
+  assert_true "function ${function_name} exists" "to_regprocedure('public.${function_name}(integer)') IS NOT NULL OR to_regprocedure('public.${function_name}(date)') IS NOT NULL"
+done
+for relation in session_module_executions_hot session_module_executions dashboard_access_events_hot dashboard_access_events; do
+  assert_true "RLS disabled on pooled-writer table ${relation}" "EXISTS (SELECT 1 FROM pg_class WHERE oid='public.${relation}'::regclass AND NOT relrowsecurity)"
+  assert_true "withdrawn tenant policy absent on ${relation}" "NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='${relation}' AND policyname LIKE 'tenant_isolation_%')"
+done
 
-# 1. 验证表是否存在
-echo "1. 验证表结构..."
-$PSQL -c "\d session_module_executions_hot" > /dev/null 2>&1 && echo "✓ session_module_executions_hot 表存在" || echo "✗ session_module_executions_hot 表不存在"
-$PSQL -c "\d session_module_executions" > /dev/null 2>&1 && echo "✓ session_module_executions 分区表存在" || echo "✗ session_module_executions 分区表不存在"
-$PSQL -c "\d dashboard_access_events_hot" > /dev/null 2>&1 && echo "✓ dashboard_access_events_hot 表存在" || echo "✗ dashboard_access_events_hot 表不存在"
-$PSQL -c "\d dashboard_access_events" > /dev/null 2>&1 && echo "✓ dashboard_access_events 分区表存在" || echo "✗ dashboard_access_events 分区表不存在"
-echo ""
+current_month=$("${PSQL[@]}" -Atqc "SELECT to_char(CURRENT_DATE,'YYYY_MM')")
+next_month=$("${PSQL[@]}" -Atqc "SELECT to_char(CURRENT_DATE+INTERVAL '1 month','YYYY_MM')")
+for prefix in session_module_executions dashboard_access_events; do
+  assert_true "current partition for ${prefix}" "to_regclass('public.${prefix}_${current_month}') IS NOT NULL"
+  assert_true "next partition for ${prefix}" "to_regclass('public.${prefix}_${next_month}') IS NOT NULL"
+done
 
-# 2. 验证索引
-echo "2. 验证索引..."
-$PSQL -c "SELECT indexname FROM pg_indexes WHERE tablename = 'session_module_executions_hot' ORDER BY indexname;" | grep idx_sme_hot_lookup > /dev/null && echo "✓ idx_sme_hot_lookup 索引存在" || echo "✗ idx_sme_hot_lookup 索引不存在"
-$PSQL -c "SELECT indexname FROM pg_indexes WHERE tablename = 'dashboard_access_events_hot' ORDER BY indexname;" | grep idx_dae_hot_timestamp > /dev/null && echo "✓ idx_dae_hot_timestamp 索引存在" || echo "✗ idx_dae_hot_timestamp 索引不存在"
-echo ""
-
-# 3. 验证分区
-echo "3. 验证分区..."
-CURRENT_MONTH=$(date +%Y_%m)
-NEXT_MONTH=$(date -v+1m +%Y_%m 2>/dev/null || date -d "+1 month" +%Y_%m)
-
-$PSQL -c "\d session_module_executions_${CURRENT_MONTH}" > /dev/null 2>&1 && echo "✓ session_module_executions_${CURRENT_MONTH} 分区存在" || echo "✗ session_module_executions_${CURRENT_MONTH} 分区不存在"
-$PSQL -c "\d session_module_executions_${NEXT_MONTH}" > /dev/null 2>&1 && echo "✓ session_module_executions_${NEXT_MONTH} 分区存在" || echo "✗ session_module_executions_${NEXT_MONTH} 分区不存在"
-$PSQL -c "\d dashboard_access_events_${CURRENT_MONTH}" > /dev/null 2>&1 && echo "✓ dashboard_access_events_${CURRENT_MONTH} 分区存在" || echo "✗ dashboard_access_events_${CURRENT_MONTH} 分区不存在"
-$PSQL -c "\d dashboard_access_events_${NEXT_MONTH}" > /dev/null 2>&1 && echo "✓ dashboard_access_events_${NEXT_MONTH} 分区存在" || echo "✗ dashboard_access_events_${NEXT_MONTH} 分区不存在"
-echo ""
-
-# 4. 验证函数
-echo "4. 验证函数..."
-$PSQL -c "SELECT proname FROM pg_proc WHERE proname = 'archive_session_module_executions';" | grep archive_session_module_executions > /dev/null && echo "✓ archive_session_module_executions 函数存在" || echo "✗ archive_session_module_executions 函数不存在"
-$PSQL -c "SELECT proname FROM pg_proc WHERE proname = 'ensure_session_module_executions_partition';" | grep ensure_session_module_executions_partition > /dev/null && echo "✓ ensure_session_module_executions_partition 函数存在" || echo "✗ ensure_session_module_executions_partition 函数不存在"
-$PSQL -c "SELECT proname FROM pg_proc WHERE proname = 'archive_dashboard_events';" | grep archive_dashboard_events > /dev/null && echo "✓ archive_dashboard_events 函数存在" || echo "✗ archive_dashboard_events 函数不存在"
-$PSQL -c "SELECT proname FROM pg_proc WHERE proname = 'ensure_dashboard_events_partition';" | grep ensure_dashboard_events_partition > /dev/null && echo "✓ ensure_dashboard_events_partition 函数存在" || echo "✗ ensure_dashboard_events_partition 函数不存在"
-echo ""
-
-# 5. 验证视图
-echo "5. 验证视图..."
-$PSQL -c "\d v_sme_module_stats" > /dev/null 2>&1 && echo "✓ v_sme_module_stats 视图存在" || echo "✗ v_sme_module_stats 视图不存在"
-$PSQL -c "\d v_sme_cache_hit_rate" > /dev/null 2>&1 && echo "✓ v_sme_cache_hit_rate 视图存在" || echo "✗ v_sme_cache_hit_rate 视图不存在"
-$PSQL -c "\d v_dashboard_access_stats" > /dev/null 2>&1 && echo "✓ v_dashboard_access_stats 视图存在" || echo "✗ v_dashboard_access_stats 视图不存在"
-$PSQL -c "\d v_dashboard_slow_queries" > /dev/null 2>&1 && echo "✓ v_dashboard_slow_queries 视图存在" || echo "✗ v_dashboard_slow_queries 视图不存在"
-echo ""
-
-# 6. 插入测试数据
-echo "6. 插入测试数据..."
-$PSQL <<SQL
--- 测试 session_module_executions_hot 插入
-INSERT INTO session_module_executions_hot (
-    gw_session_id, tenant_id, module_name, cache_key, 
-    status, expires_at, result_summary
-) VALUES (
-    'test_session_001', 'test_tenant', 'session_audit', 'test_key_001',
-    'completed', NOW() + INTERVAL '1 hour', '{"score": 5}'::jsonb
-) ON CONFLICT DO NOTHING;
-
--- 测试 dashboard_access_events_hot 插入
-INSERT INTO dashboard_access_events_hot (
-    event_id, event_type, tenant_id, api_path, api_method, 
-    status_code, response_time_ms
-) VALUES (
-    'test_event_001', 'api_access', 'test_tenant', '/api/admin/dashboard/session-overview', 'GET',
-    200, 150
-) ON CONFLICT DO NOTHING;
+run_id="migration_verify_${$}_$(date +%s)_${RANDOM}"
+"${PSQL[@]}" -v run_id="$run_id" <<'SQL'
+BEGIN;
+-- Deliberately omit app.current_tenant: moduleexec and telemetry write through
+-- asynchronous pooled connections that cannot rely on a transaction-local GUC.
+INSERT INTO public.session_module_executions_hot
+ (gw_session_id,tenant_id,module_name,cache_key,status,expires_at)
+VALUES (:'run_id','migration_verify_tenant','session_audit',:'run_id','completed',now()+INTERVAL '1 hour');
+INSERT INTO public.dashboard_access_events_hot
+ (event_id,event_type,tenant_id,api_path,api_method,status_code,response_time_ms)
+VALUES (:'run_id','api_access','migration_verify_tenant','/migration-verify','GET',200,1);
+SELECT 1 / (count(*) = 1)::int FROM public.session_module_executions_hot WHERE gw_session_id=:'run_id';
+SELECT 1 / (count(*) = 1)::int FROM public.dashboard_access_events_hot WHERE event_id=:'run_id';
+ROLLBACK;
 SQL
-
-echo "✓ 测试数据插入成功"
-echo ""
-
-# 7. 查询测试
-echo "7. 查询测试..."
-COUNT_SME=$($PSQL -t -c "SELECT COUNT(*) FROM session_module_executions_hot WHERE gw_session_id = 'test_session_001';")
-echo "   session_module_executions_hot 记录数: $COUNT_SME"
-
-COUNT_DAE=$($PSQL -t -c "SELECT COUNT(*) FROM dashboard_access_events_hot WHERE event_id = 'test_event_001';")
-echo "   dashboard_access_events_hot 记录数: $COUNT_DAE"
-echo ""
-
-# 8. 清理测试数据
-echo "8. 清理测试数据..."
-$PSQL <<SQL
-DELETE FROM session_module_executions_hot WHERE gw_session_id = 'test_session_001';
-DELETE FROM dashboard_access_events_hot WHERE event_id = 'test_event_001';
-SQL
-echo "✓ 测试数据清理完成"
-echo ""
-
-# 9. 性能测试（可选）
-echo "9. 性能测试..."
-echo "   测试索引查询性能..."
-$PSQL -c "EXPLAIN ANALYZE SELECT * FROM session_module_executions_hot WHERE gw_session_id = 'test' AND module_name = 'test' AND status = 'completed' LIMIT 1;" > /dev/null 2>&1 && echo "✓ 索引查询正常" || echo "✗ 索引查询异常"
-echo ""
-
-echo "=========================================="
-echo "验证完成！"
-echo "=========================================="
+printf 'PASS: transactional insert checks (rolled back)\n'
+printf 'Migration verification passed.\n'

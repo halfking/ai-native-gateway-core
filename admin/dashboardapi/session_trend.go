@@ -31,10 +31,10 @@ type SessionTrendResponse struct {
 
 // TrendSummary 趋势摘要
 type TrendSummary struct {
-	TotalNew     int     `json:"total_new"`
-	TotalActive  int     `json:"total_active"`
-	TotalClosed  int     `json:"total_closed"`
-	AvgDailyNew  float64 `json:"avg_daily_new"`
+	TotalNew      int     `json:"total_new"`
+	TotalActive   int     `json:"total_active"`
+	TotalClosed   int     `json:"total_closed"`
+	AvgDailyNew   float64 `json:"avg_daily_new"`
 	GrowthRatePct float64 `json:"growth_rate_pct"`
 }
 
@@ -57,7 +57,10 @@ func (h *SessionTrendHandler) HandleSessionTrend(w http.ResponseWriter, r *http.
 		recordAPIRequest("session-trend", apiStatus, time.Since(startTime))
 	}()
 
-	params := ParseQueryParams(r)
+	params, _, ok := prepareDashboardRequest(w, r, h.db)
+	if !ok {
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
@@ -110,11 +113,7 @@ func (h *SessionTrendHandler) queryTrend(ctx context.Context, params QueryParams
 	argIdx := 1
 
 	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -152,11 +151,7 @@ func (h *SessionTrendHandler) queryPrevPeriodTrend(ctx context.Context, params Q
 	argIdx := 1
 
 	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days' AND first_request_at < NOW() - INTERVAL '%d days'", params.Days*2, params.Days))
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`

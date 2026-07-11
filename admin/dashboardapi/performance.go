@@ -23,21 +23,21 @@ func NewPerformanceHandler(db *pgxpool.Pool) *PerformanceHandler {
 
 // PerformanceResponse 性能指标响应
 type PerformanceResponse struct {
-	Summary     PerformanceSummary     `json:"summary"`
-	LatencyDist LatencyDistribution    `json:"latency_distribution"`
-	Throughput  []ThroughputPoint      `json:"throughput"`
-	SlowQueries []SlowQueryItem        `json:"slow_queries"`
+	Summary     PerformanceSummary  `json:"summary"`
+	LatencyDist LatencyDistribution `json:"latency_distribution"`
+	Throughput  []ThroughputPoint   `json:"throughput"`
+	SlowQueries []SlowQueryItem     `json:"slow_queries"`
 }
 
 // PerformanceSummary 性能摘要
 type PerformanceSummary struct {
-	AvgLatencyMs    float64 `json:"avg_latency_ms"`
-	P50LatencyMs    float64 `json:"p50_latency_ms"`
-	P95LatencyMs    float64 `json:"p95_latency_ms"`
-	P99LatencyMs    float64 `json:"p99_latency_ms"`
-	MaxLatencyMs    float64 `json:"max_latency_ms"`
-	TotalRequests   int     `json:"total_requests"`
-	AvgThroughput   float64 `json:"avg_throughput_rps"`
+	AvgLatencyMs  float64 `json:"avg_latency_ms"`
+	P50LatencyMs  float64 `json:"p50_latency_ms"`
+	P95LatencyMs  float64 `json:"p95_latency_ms"`
+	P99LatencyMs  float64 `json:"p99_latency_ms"`
+	MaxLatencyMs  float64 `json:"max_latency_ms"`
+	TotalRequests int     `json:"total_requests"`
+	AvgThroughput float64 `json:"avg_throughput_rps"`
 }
 
 // LatencyDistribution 延迟分布
@@ -51,8 +51,8 @@ type LatencyDistribution struct {
 
 // ThroughputPoint 吞吐量点
 type ThroughputPoint struct {
-	Date       string  `json:"date"`
-	RequestCount int   `json:"request_count"`
+	Date         string  `json:"date"`
+	RequestCount int     `json:"request_count"`
 	AvgLatencyMs float64 `json:"avg_latency_ms"`
 }
 
@@ -80,7 +80,10 @@ func (h *PerformanceHandler) HandlePerformance(w http.ResponseWriter, r *http.Re
 		recordAPIRequest("performance", apiStatus, time.Since(startTime))
 	}()
 
-	params := ParseQueryParams(r)
+	params, _, ok := prepareDashboardRequest(w, r, h.db)
+	if !ok {
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
@@ -136,11 +139,7 @@ func (h *PerformanceHandler) queryPerformanceSummary(ctx context.Context, params
 	args := []interface{}{}
 	argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -176,11 +175,7 @@ func (h *PerformanceHandler) queryLatencyDistribution(ctx context.Context, param
 	args := []interface{}{}
 	argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -205,11 +200,7 @@ func (h *PerformanceHandler) queryThroughput(ctx context.Context, params QueryPa
 	args := []interface{}{}
 	argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -237,6 +228,9 @@ func (h *PerformanceHandler) queryThroughput(ctx context.Context, params QueryPa
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -248,11 +242,7 @@ func (h *PerformanceHandler) querySlowQueries(ctx context.Context, params QueryP
 	args := []interface{}{}
 	argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -281,6 +271,9 @@ func (h *PerformanceHandler) querySlowQueries(ctx context.Context, params QueryP
 			return nil, err
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }
