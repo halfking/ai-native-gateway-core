@@ -2119,7 +2119,7 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		    COUNT(DISTINCT mpr.credential_id) as probed_credentials,
 		    COUNT(DISTINCT mpr.credential_id) FILTER (WHERE mpr.status = 'ok') as successful_credentials,
 		    COUNT(DISTINCT mpr.credential_id) FILTER (WHERE mpr.status != 'ok') as failed_credentials
-		FROM model_probe_runs mpr
+		FROM model_probe_runs_with_current_month mpr
 		WHERE mpr.created_at >= NOW() - INTERVAL '24 hours'
 		GROUP BY mpr.raw_model_name, DATE_TRUNC('hour', mpr.created_at)
 		ORDER BY mpr.raw_model_name, hour_bucket DESC;
