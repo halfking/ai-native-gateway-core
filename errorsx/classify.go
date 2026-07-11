@@ -75,6 +75,7 @@ var contextLengthRe = regexp.MustCompile(
 	`(?i)(context[ _-]?length[ _-]?exceeded|` +
 		`maximum context length|` +
 		`context[ _-]?window[ _-]?(exceeded|is)|` +
+		`context[ _-]?window.{0,30}(exceed|limit|maximum)|` +
 		`prompt is too long|` +
 		`input is too long|` +
 		`too many (input )?tokens|` +
@@ -181,7 +182,10 @@ var eofWithoutDoneRe = regexp.MustCompile(
 // would blacklist the credential for 5 minutes while the client
 // retries with the same broken payload.
 var toolCallIdMismatchRe = regexp.MustCompile(
-	`(?i)(tool[_ ]?(call[_ ]?id|use[_ ]?id|result.*tool[_ ]?id).{0,40}(not found|not exist|invalid|unknown|unknown id|does not exist|unrecogn)|2013|item[_ ]?reference.*(matching|each|call[_ ]?id)|previous[_ ]?response[_ ]?id|replayable[_ ]?tool[_ ]?call[_ ]?context)`,
+	`(?i)(tool[_ ]?(call[_ ]?id|use[_ ]?id|result.*tool[_ ]?id).{0,40}(not found|not exist|invalid|unknown|unknown id|does not exist|unrecogn)|` +
+		`(?:code|error[_ ]?code|status)["':= ]{0,8}2013|` +
+		`message["']?\s*:\s*["']2013["']|` +
+		`item[_ ]?reference.*(matching|each|call[_ ]?id)|previous[_ ]?response[_ ]?id|replayable[_ ]?tool[_ ]?call[_ ]?context)`,
 )
 
 // contentFilterRe matches upstream error bodies that signal a
@@ -256,11 +260,11 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		// the wrapped message. The patterns are model-agnostic on
 		// purpose — they match OpenAI, Anthropic, MiniMax, deepseek,
 		// and zhipu bodies alike.
-		if toolCallIdMismatchRe.MatchString(msg) {
-			return KindToolCallIdMismatch
-		}
 		if contextLengthRe.MatchString(msg) || contextLengthCJKRe.MatchString(msg) {
 			return KindContextLength
+		}
+		if toolCallIdMismatchRe.MatchString(msg) {
+			return KindToolCallIdMismatch
 		}
 		return KindTransient
 	}
@@ -350,9 +354,6 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if unsupportedFeatureRe.Match(body) {
 			return KindUnsupportedFeature
 		}
-		if toolCallIdMismatchRe.Match(body) {
-			return KindToolCallIdMismatch
-		}
 		// Content-moderation / safety-policy rejection (MiniMax 422
 		// "new_sensitive (1026)", OpenAI "content_filter", etc). Gate on
 		// the typical moderation status codes so a 200 body that happens
@@ -364,6 +365,9 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if (status == 400 || status == 413 || status == 422) &&
 			(contextLengthRe.Match(body) || contextLengthCJKRe.Match(body)) {
 			return KindContextLength
+		}
+		if toolCallIdMismatchRe.Match(body) {
+			return KindToolCallIdMismatch
 		}
 	}
 	// 2026-06-13: protocol/shape 4xx codes (e.g. 405 Method Not Allowed,
