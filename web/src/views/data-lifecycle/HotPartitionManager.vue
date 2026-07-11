@@ -252,6 +252,7 @@ import { req } from '@/api/_core'
 
 interface HotTable {
   name: string
+  label: string
   sizeHuman: string
   sizeBytes: number
   toastHuman: string
