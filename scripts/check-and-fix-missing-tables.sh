@@ -26,11 +26,12 @@ NC='\033[0m'
 MODE="${1:---check}"
 ENV="${2:-all}"
 
-# 数据库连接配置
+# 数据库连接配置。敏感连接串通过环境变量提供：
+# LLM_GATEWAY_DATABASE_URL_LOCAL / _KAIXUAN_1 / _154。
 declare -A DB_CONFIGS=(
-    ["local"]="postgres://postgres@localhost:5432/llm_gateway?sslmode=disable"
-    ["kaixuan-1"]="postgres://llm_gateway:<password>@<host>:5432/llm_gateway?sslmode=disable"
-    ["154"]="postgres://llm_gateway:<DB_PASSWORD_REDACTED>@172.16.2.210:5432/llm_gateway?sslmode=disable"
+    ["local"]="${LLM_GATEWAY_DATABASE_URL_LOCAL:-}"
+    ["kaixuan-1"]="${LLM_GATEWAY_DATABASE_URL_KAIXUAN_1:-}"
+    ["154"]="${LLM_GATEWAY_DATABASE_URL_154:-}"
 )
 
 # 需要检查的表和视图
@@ -75,6 +76,12 @@ check_environment() {
     
     echo -e "${YELLOW}检查环境: $env${NC}"
     echo ""
+
+    if [ -z "$db_url" ]; then
+        echo -e "${RED}✗ 未配置 $env 的数据库连接串${NC}"
+        echo "  请设置对应的 LLM_GATEWAY_DATABASE_URL_* 环境变量"
+        return 2
+    fi
     
     if [ "$env" = "local" ]; then
         # 检查本地数据库是否运行
@@ -154,7 +161,11 @@ fix_environment() {
         if [ "$env" = "154" ]; then
             # 154需要通过SSH上传并执行
             local remote_file="/tmp/$(basename $migration_file)"
-            sshpass -p '<SSH_PASSWORD_REDACTED>' scp -P 25022 "$file_path" "root@47.97.111.154:$remote_file"
+            if [ -z "${DEPLOY_SSH_PASSWORD:-}" ]; then
+                echo -e "  ${RED}✗ 154 修复需要 DEPLOY_SSH_PASSWORD${NC}"
+                return 1
+            fi
+            sshpass -p "$DEPLOY_SSH_PASSWORD" scp -P 25022 "$file_path" "root@47.97.111.154:$remote_file"
             
             # 尝试通过应用程序执行（如果psql不可用）
             echo "  上传成功，但由于psql版本问题，请手动执行:"
@@ -194,7 +205,7 @@ generate_report() {
         kaixuan-1)
             echo "kaixuan-1 K3s环境修复步骤:"
             echo "  1. 获取数据库连接信息"
-            echo "  2. 更新 DB_CONFIGS 中的连接字符串"
+            echo "  2. 设置 LLM_GATEWAY_DATABASE_URL_KAIXUAN_1"
             echo "  3. 执行修复: ./scripts/check-and-fix-missing-tables.sh --fix kaixuan-1"
             ;;
         154)

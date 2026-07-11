@@ -104,6 +104,74 @@ func (h *Handler) handleMemoraPing(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleMemoraQuery searches facts for a task after deriving its scoped
+// Memora user ID from request_logs. Accepting a caller-supplied user ID here
+// would allow an administrator with a guessed ID to cross tenant boundaries.
+// GET /api/system/memora-query/{task_id}?q=...&top_k=...
+func (h *Handler) handleMemoraQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if h.memoraClient == nil || h.memoraClient.Disabled() {
+		writeError(w, http.StatusServiceUnavailable, "memora not configured")
+		return
+	}
+
+	taskID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/system/memora-query/"))
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if taskID == "" || query == "" {
+		writeError(w, http.StatusBadRequest, "task_id and q are required")
+		return
+	}
+
+	topK := queryInt(r, "top_k", 8)
+	if topK < 1 {
+		topK = 1
+	}
+	if topK > 20 {
+		topK = 20
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if !requireSessionTaskAccess(w, r, ctx, h.db, taskID) {
+		return
+	}
+
+	scope := parseSessionScope(r)
+	apiKeyID, err := h.sessionAPIKeyID(ctx, taskID, scope, r)
+	if err != nil || apiKeyID <= 0 {
+		writeError(w, http.StatusNotFound, "task not found: "+taskID)
+		return
+	}
+	userID := memory.UserID(h.sessionTenantID(ctx, taskID, scope, r), apiKeyID, taskID)
+	facts, err := h.memoraClient.SmartSearch(ctx, userID, query, topK)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "memora search failed")
+		return
+	}
+	responseFacts := make([]map[string]any, 0, len(facts))
+	for _, fact := range facts {
+		responseFacts = append(responseFacts, map[string]any{
+			"id":      fact.ID,
+			"memory":  fact.Text,
+			"tags":    fact.Tags,
+			"score":   fact.Score,
+			"cube_id": fact.CubeID,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id": taskID,
+		"query":   query,
+		"facts":   responseFacts,
+	})
+}
+
 // handleMemoraSinkControl pauses or resumes the async Memora write sink.
 // POST body: {"action":"pause"|"resume"}
 func (h *Handler) handleMemoraSinkControl(w http.ResponseWriter, r *http.Request) {
