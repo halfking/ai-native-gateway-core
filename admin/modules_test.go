@@ -54,6 +54,35 @@ func TestAllModuleDefinitions(t *testing.T) {
 	}
 }
 
+func TestMemoraModuleDocumentsIntegrationAndDependencies(t *testing.T) {
+	defs := allModuleDefinitions()
+	var memora *ModuleDefinition
+	for i := range defs {
+		if defs[i].Key == "memora" {
+			memora = &defs[i]
+			break
+		}
+	}
+	if memora == nil {
+		t.Fatal("memora module not found")
+	}
+	if memora.DocsURL != "/docs/session-to-memora-pipeline.md" {
+		t.Fatalf("Memora DocsURL = %q", memora.DocsURL)
+	}
+	if memora.Integration == nil || memora.Integration.Label == "" {
+		t.Fatal("memora module must describe its kxmemory integration")
+	}
+	deps := make(map[string]bool, len(memora.Dependencies))
+	for _, dep := range memora.Dependencies {
+		deps[dep.Key] = true
+	}
+	for _, key := range []string{"cache", "compression", "session_analytics"} {
+		if !deps[key] {
+			t.Errorf("memora dependency %q missing", key)
+		}
+	}
+}
+
 func TestFeishuBotDependencies(t *testing.T) {
 	defs := allModuleDefinitions()
 	var fb *ModuleDefinition

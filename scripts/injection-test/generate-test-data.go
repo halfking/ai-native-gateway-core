@@ -189,9 +189,7 @@ func main() {
 		dbURL = os.Getenv("DATABASE_URL")
 	}
 	if dbURL == "" {
-		// 使用默认的252数据库连接
-		dbURL = "postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway?sslmode=disable"
-		log.Printf("使用默认数据库连接: %s", dbURL)
+		log.Fatal("LLM_GATEWAY_DATABASE_URL or DATABASE_URL is required")
 	}
 
 	db, err := sql.Open("postgres", dbURL)

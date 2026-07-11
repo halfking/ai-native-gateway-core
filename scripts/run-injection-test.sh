@@ -3,7 +3,7 @@
 # scripts/run-injection-test.sh — 运行会话注入检测测试
 #
 # 用法:
-#   bash scripts/run-injection-test.sh                    # 使用默认252数据库
+#   LLM_GATEWAY_DATABASE_URL=... bash scripts/run-injection-test.sh
 #   bash scripts/run-injection-test.sh --db-url "..."    # 指定数据库URL
 #   bash scripts/run-injection-test.sh --generate-data    # 先生成测试数据
 #   bash scripts/run-injection-test.sh --help             # 显示帮助
@@ -11,8 +11,8 @@
 
 set -euo pipefail
 
-# 默认值
-DB_URL="${LLM_GATEWAY_DATABASE_URL:-postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway?sslmode=disable}"
+# Database credentials must be supplied at runtime, never embedded in this tool.
+DB_URL="${LLM_GATEWAY_DATABASE_URL:-${DATABASE_URL:-}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_DIR="$SCRIPT_DIR/injection-test"
@@ -40,7 +40,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-log "数据库URL: $DB_URL"
+if [[ -z "$DB_URL" ]]; then
+  err "需要 --db-url 或 LLM_GATEWAY_DATABASE_URL / DATABASE_URL"
+  exit 1
+fi
+
+log "数据库URL已配置"
 
 # 检查 Go 环境
 if ! command -v go &>/dev/null; then

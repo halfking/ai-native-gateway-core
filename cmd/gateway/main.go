@@ -1794,7 +1794,6 @@ func main() {
 			if stateManager != nil {
 				adminHandler.SetStateManager(stateManager)
 			}
-			adminHandler.SetCircuitResetter(cm)
 			adminHandler.SetFpSlots(fpSlots)
 			slog.Info("CHECKPOINT: after SetFpSlots")
 			adminHandler.SetPeakCollector(peakCollector)
@@ -2524,6 +2523,21 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+	var pprofSrv *http.Server
+	if pprofAddr := strings.TrimSpace(os.Getenv("LLM_GATEWAY_PPROF_LISTEN")); pprofAddr != "" {
+		var enabled bool
+		pprofSrv, enabled = newPprofServer(pprofAddr)
+		if !enabled {
+			slog.Error("LLM_GATEWAY_PPROF_LISTEN must be a loopback address", "listen", pprofAddr)
+			os.Exit(2)
+		}
+		go func() {
+			slog.Info("pprof diagnostic server listening", "listen", pprofAddr)
+			if err := pprofSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("pprof diagnostic server failed", "error", err)
+			}
+		}()
+	}
 
 	slog.Info("CHECKPOINT: HTTP server configured, about to start", "listen", cfg.Listen)
 
@@ -2547,6 +2561,11 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("gateway shutdown error", "error", err)
+	}
+	if pprofSrv != nil {
+		if err := pprofSrv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("pprof diagnostic server shutdown error", "error", err)
+		}
 	}
 
 	// 2. Stop hub/background producers before closing their dependencies.

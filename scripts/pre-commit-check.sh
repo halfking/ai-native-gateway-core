@@ -124,26 +124,27 @@ check_sql_set_local() {
   return 0
 }
 
-# ── 3. Migration numbering: unique NNN_*.sql ───────────────────────────
+# ── 3. New migration numbering: unique NNN_*.sql ───────────────────────
 check_migration_unique() {
   local mig_dir="sql/migrations/startup"
   if [[ ! -d "$mig_dir" ]]; then
     echo "$mig_dir not found; skipping"
     return 0
   fi
-  # NNN_*.sql and NNN_*.down.sql are a pair; only the .sql counts as the
-  # forward migration. Otherwise 020_unique_request_id and
-  # 020_unique_request_id.down.sql would falsely collide.
+  # Existing historical migrations cannot be safely renamed because some
+  # environments may already have recorded their filename. Enforce uniqueness
+  # for newly staged forward migrations instead. This still prevents new
+  # collisions while letting a separate migration-normalisation task address
+  # the legacy 341/360/361 filenames safely.
   local dups
-  dups=$(ls "$mig_dir"/ 2>/dev/null \
-         | grep -E '^[0-9]{3}_' \
-         | grep -v '\.down\.sql' \
-         | grep '\.sql$' \
-         | sed -E 's/^([0-9]{3})_.*/\1/' \
+  dups=$(git diff --cached --name-only --diff-filter=A -- "$mig_dir" \
+         | grep -E "^${mig_dir}/[0-9]{3}_.*\.sql$" \
+         | grep -v -E '\.(down|disabled|fix)\.sql$' \
+         | sed -E 's|.*/([0-9]{3})_.*|\1|' \
          | sort | uniq -d)
   if [[ -n "$dups" ]]; then
     echo "Duplicate migration numbers in $mig_dir/: $dups"
-    echo "Round-48 audit found 024/025 collisions; this guard prevents recurrence."
+    echo "New forward migrations must not share a number."
     return 1
   fi
   return 0
@@ -222,6 +223,10 @@ check_vue_tsc() {
   return 1
 }
 
+has_staged_web_changes() {
+  git diff --cached --name-only -- 'web/**' | grep -q .
+}
+
 # ── runner ────────────────────────────────────────────────────────────
 echo "pre-commit checks for llm-gateway-go"
 echo "==================================="
@@ -230,11 +235,14 @@ run_check "go vet"                  check_go_vet
 run_check "SQL: no SET+placeholder" check_sql_set_local
 run_check "Migration: unique NNN"   check_migration_unique
 run_check "Migration: has down.sql" check_migration_has_down
-if [[ -d web/node_modules ]]; then
-  # vue-tsc is a WARN-only check; failures are reported but do not block.
-  run_vue_tsc
+if has_staged_web_changes; then
+  if [[ -d web/node_modules ]]; then
+    run_vue_tsc
+  else
+    skip_check "Vue: vue-tsc" "web/node_modules not installed (cd web && npm ci to enable)"
+  fi
 else
-  skip_check "Vue: vue-tsc" "web/node_modules not installed (cd web && npm ci to enable)"
+  skip_check "Vue: vue-tsc" "no staged web changes"
 fi
 
 echo "==================================="

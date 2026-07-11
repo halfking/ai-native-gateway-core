@@ -204,8 +204,9 @@ ssh -p 25022 root@115.29.212.252 -L 25432:172.16.2.210:5432 -N -f
 psql -h 127.0.0.1 -p 25432 -U llm_gateway -d llm_gateway -c "SELECT COUNT(*) FROM request_logs;"
 
 # 3. 运行 benchmark
+export DATABASE_URL='postgres://llm_gateway:<password>@127.0.0.1:25432/llm_gateway?sslmode=disable'
 go run ./cmd/compression-bench/ \
-  -dsn="postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@127.0.0.1:25432/llm_gateway?sslmode=disable"
+  -dsn="$DATABASE_URL"
 ```
 
 ### 连接 184 DB（Kubernetes）
