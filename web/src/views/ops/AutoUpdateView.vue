@@ -17,24 +17,26 @@ const { t } = useI18n()
 const releases = ref<Release[]>([])
 const upgradeLogs = ref<UpgradeLog[]>([])
 const loading = ref(false)
-const selectedReleaseId = ref<number | null>(null)
+const selectedReleaseVersion = ref<string | null>(null)
 
 // Create dialog state
 const showCreateDialog = ref(false)
 const createForm = ref({
   version: '',
-  channel: 'stable' as 'stable' | 'beta' | 'alpha',
-  download_url: '',
-  checksum: '',
-  release_notes: '',
-  rollout_percentage: 0,
+  build_seq: 1,
+  channel: 'stable' as 'stable' | 'beta' | 'canary',
+  title: '',
+  description: '',
+  image_tag: '',
+  image_digest: '',
+  changelog: '',
 })
 
 // Publish dialog state
 const showPublishDialog = ref(false)
 const publishForm = ref({
-  releaseId: 0,
-  rolloutPercentage: 10,
+  version: '',
+  rolloutPercentage: 100,
 })
 
 async function load() {
@@ -49,9 +51,10 @@ async function load() {
   }
 }
 
-async function loadUpgradeLogs(releaseId?: number) {
+async function loadUpgradeLogs(_releaseId?: number) {
   try {
-    upgradeLogs.value = await getUpgradeLogs(releaseId)
+    // 后端按 instance_id 过滤；releaseId 暂时忽略
+    upgradeLogs.value = await getUpgradeLogs()
   } catch (error) {
     ElMessage.error(t('ops.autoupdate.loadLogsFailed'))
     console.error(error)
@@ -59,7 +62,7 @@ async function loadUpgradeLogs(releaseId?: number) {
 }
 
 async function handleCreate() {
-  if (!createForm.value.version || !createForm.value.download_url || !createForm.value.checksum) {
+  if (!createForm.value.version || !createForm.value.image_tag || !createForm.value.title) {
     ElMessage.warning(t('ops.autoupdate.fillRequired'))
     return
   }
@@ -68,22 +71,26 @@ async function handleCreate() {
   try {
     await createRelease({
       version: createForm.value.version,
+      build_seq: createForm.value.build_seq,
       channel: createForm.value.channel,
-      status: 'draft',
-      rollout_percentage: 0,
-      download_url: createForm.value.download_url,
-      checksum: createForm.value.checksum,
-      release_notes: createForm.value.release_notes,
+      title: createForm.value.title,
+      description: createForm.value.description,
+      image_tag: createForm.value.image_tag,
+      image_digest: createForm.value.image_digest,
+      changelog: createForm.value.changelog,
+      created_by: 'admin',
     })
     ElMessage.success(t('ops.autoupdate.createSuccess'))
     showCreateDialog.value = false
     createForm.value = {
       version: '',
+      build_seq: 1,
       channel: 'stable',
-      download_url: '',
-      checksum: '',
-      release_notes: '',
-      rollout_percentage: 0,
+      title: '',
+      description: '',
+      image_tag: '',
+      image_digest: '',
+      changelog: '',
     }
     await load()
   } catch (error) {
@@ -95,15 +102,15 @@ async function handleCreate() {
 }
 
 function openPublishDialog(release: Release) {
-  publishForm.value.releaseId = release.id
-  publishForm.value.rolloutPercentage = release.rollout_percentage || 10
+  publishForm.value.version = release.version
+  publishForm.value.rolloutPercentage = release.rollout_percentage || 100
   showPublishDialog.value = true
 }
 
 async function handlePublish() {
   loading.value = true
   try {
-    await publishRelease(publishForm.value.releaseId, publishForm.value.rolloutPercentage)
+    await publishRelease(publishForm.value.version, publishForm.value.rolloutPercentage)
     ElMessage.success(t('ops.autoupdate.publishSuccess'))
     showPublishDialog.value = false
     await load()
@@ -122,7 +129,7 @@ async function handleRollback(release: Release) {
       t('common.warning'),
       { type: 'warning' }
     )
-    await rollbackRelease(release.id)
+    await rollbackRelease(release.version)
     ElMessage.success(t('ops.autoupdate.rollbackSuccess'))
     await load()
   } catch (error) {
@@ -134,17 +141,25 @@ async function handleRollback(release: Release) {
 }
 
 async function viewLogs(release: Release) {
-  selectedReleaseId.value = release.id
-  await loadUpgradeLogs(release.id)
+  selectedReleaseVersion.value = release.version
+  await loadUpgradeLogs()
 }
 
 function channelType(channel: string) {
+  // 后端是 stable/beta/canary；前端 alpha 兼容
   const map: Record<string, 'success' | 'warning' | 'info'> = {
     stable: 'success',
     beta: 'warning',
-    alpha: 'info',
+    canary: 'info',
+    alpha: 'info', // legacy alias
   }
   return map[channel] || 'info'
+}
+
+function channelLabel(channel: string) {
+  const alias: Record<string, string> = { canary: 'alpha' }
+  const key = `ops.autoupdate.channel.${alias[channel] || channel}`
+  return t(key)
 }
 
 function statusType(status: string) {
@@ -160,9 +175,11 @@ function logStatusType(status: string) {
   const map: Record<string, 'info' | 'warning' | 'success' | 'danger'> = {
     pending: 'info',
     downloading: 'warning',
-    installing: 'warning',
+    ready_to_restart: 'warning',
+    upgrading: 'warning',
     success: 'success',
     failed: 'danger',
+    rolled_back: 'info',
   }
   return map[status] || 'info'
 }
@@ -197,7 +214,7 @@ onMounted(() => {
         <el-table-column prop="channel" :label="t('ops.autoupdate.channelLabel')" width="100">
           <template #default="{ row }">
             <el-tag :type="channelType(row.channel)" size="small">
-              {{ t(`ops.autoupdate.channel.${row.channel}`) }}
+              {{ channelLabel(row.channel) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -248,19 +265,18 @@ onMounted(() => {
       <template #header>
         <div class="card-header">
           <span>{{ t('ops.autoupdate.upgradeLogs') }}</span>
-          <el-button v-if="selectedReleaseId" size="small" @click="selectedReleaseId = null; loadUpgradeLogs()">
+          <el-button v-if="selectedReleaseVersion" size="small" @click="selectedReleaseVersion = null; loadUpgradeLogs()">
             {{ t('ops.autoupdate.showAll') }}
           </el-button>
         </div>
       </template>
       <el-table :data="upgradeLogs" size="small">
         <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="200" />
-        <el-table-column prop="from_version" :label="t('ops.autoupdate.fromVersion')" width="120" />
-        <el-table-column prop="to_version" :label="t('ops.autoupdate.toVersion')" width="120" />
-        <el-table-column prop="status" :label="t('common.status')" width="100">
+        <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="120" />
+        <el-table-column prop="status" :label="t('common.status')" width="120">
           <template #default="{ row }">
             <el-tag :type="logStatusType(row.status)" size="small">
-              {{ t(`ops.autoupdate.logStatus.${row.status}`) }}
+              {{ row.status || '—' }}
             </el-tag>
           </template>
         </el-table-column>
@@ -270,7 +286,9 @@ onMounted(() => {
         <el-table-column prop="completed_at" :label="t('ops.autoupdate.completedAt')" width="160">
           <template #default="{ row }">{{ formatDate(row.completed_at) }}</template>
         </el-table-column>
-        <el-table-column prop="error_message" :label="t('ops.autoupdate.errorMessage')" min-width="200" show-overflow-tooltip />
+        <el-table-column :label="t('ops.autoupdate.errorMessage')" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.error_message || row.error || '—' }}</template>
+        </el-table-column>
       </el-table>
     </el-card>
 
@@ -282,28 +300,32 @@ onMounted(() => {
     >
       <el-form :model="createForm" label-width="140px">
         <el-form-item :label="t('ops.autoupdate.version')" required>
-          <el-input v-model="createForm.version" :placeholder="t('ops.autoupdate.versionPlaceholder')" />
+          <el-input v-model="createForm.version" placeholder="v1.2.3" />
+        </el-form-item>
+        <el-form-item :label="t('ops.autoupdate.buildSeq')" required>
+          <el-input-number v-model="createForm.build_seq" :min="1" style="width: 100%" />
         </el-form-item>
         <el-form-item :label="t('ops.autoupdate.channelLabel')" required>
           <el-radio-group v-model="createForm.channel">
             <el-radio label="stable">{{ t('ops.autoupdate.channel.stable') }}</el-radio>
             <el-radio label="beta">{{ t('ops.autoupdate.channel.beta') }}</el-radio>
-            <el-radio label="alpha">{{ t('ops.autoupdate.channel.alpha') }}</el-radio>
+            <el-radio label="canary">{{ t('ops.autoupdate.channel.alpha') }}</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item :label="t('ops.autoupdate.downloadUrl')" required>
-          <el-input v-model="createForm.download_url" :placeholder="t('ops.autoupdate.downloadUrlPlaceholder')" />
+        <el-form-item :label="t('ops.autoupdate.title')" required>
+          <el-input v-model="createForm.title" placeholder="Release v1.2.3" />
         </el-form-item>
-        <el-form-item :label="t('ops.autoupdate.checksum')" required>
-          <el-input v-model="createForm.checksum" :placeholder="t('ops.autoupdate.checksumPlaceholder')" />
+        <el-form-item :label="t('common.description')">
+          <el-input v-model="createForm.description" type="textarea" :rows="2" />
         </el-form-item>
-        <el-form-item :label="t('ops.autoupdate.releaseNotes')">
-          <el-input
-            v-model="createForm.release_notes"
-            type="textarea"
-            :rows="4"
-            :placeholder="t('ops.autoupdate.releaseNotesPlaceholder')"
-          />
+        <el-form-item :label="t('ops.autoupdate.imageTag')" required>
+          <el-input v-model="createForm.image_tag" placeholder="registry.kxpms.cn/llm-gateway-go:v1.2.3" />
+        </el-form-item>
+        <el-form-item :label="t('ops.autoupdate.imageDigest')">
+          <el-input v-model="createForm.image_digest" placeholder="sha256:..." />
+        </el-form-item>
+        <el-form-item :label="t('ops.autoupdate.changelog')">
+          <el-input v-model="createForm.changelog" type="textarea" :rows="4" />
         </el-form-item>
       </el-form>
       <template #footer>

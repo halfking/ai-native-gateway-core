@@ -41,6 +41,9 @@ export default {
   overview: {
     sectionDescription: 'Description',
     sectionCapabilities: 'Capacités',
+    sectionDependencies: 'Dépendances',
+    dependencyDisabled: 'La dépendance est désactivée',
+    notEnabled: 'Non activé',
     sectionRequirements: 'Dépendances',
     labelKey: 'Clé du module',
     labelDanger: 'Niveau de danger',

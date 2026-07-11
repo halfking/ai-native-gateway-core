@@ -127,6 +127,17 @@ type tableSizesResponse struct {
 	CollectedAt time.Time       `json:"collected_at"`
 }
 
+var hotTableNames = map[string]struct{}{
+	"request_logs_hot":           {},
+	"usage_ledger_hot":           {},
+	"request_wal_hot":            {},
+	"routing_decision_log_hot":   {},
+	"credential_model_index_hot": {},
+	"request_logs_bodies_hot":    {},
+	"credit_ledger_hot":          {},
+	"tool_usage_stats_hot":       {},
+}
+
 // handleDataLifecycleStorage GET /api/admin/data-lifecycle/storage
 func (h *Handler) handleDataLifecycleStorage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -411,6 +422,13 @@ func queryDirectory(path string) directoryInfo {
 // queryTableSizes Top-N 大表（含索引和 TOAST），带 DB 占比
 func queryTableSizes(ctx context.Context, h *Handler, limit int) ([]tableSizeInfo, int64, string, error) {
 	rows, err := h.db.Query(ctx, `
+		WITH ranked_tables AS (
+			SELECT c.oid, row_number() OVER (ORDER BY pg_total_relation_size(c.oid) DESC) AS size_rank
+			FROM pg_class c
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+			  AND c.relkind IN ('r','p')
+		)
 		SELECT
 			c.relname AS table_name,
 			n.nspname AS schema_name,
@@ -423,11 +441,12 @@ func queryTableSizes(ctx context.Context, h *Handler, limit int) ([]tableSizeInf
 			(c.relkind = 'p') AS is_partitioned
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
+		JOIN ranked_tables rt ON rt.oid = c.oid
 		LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
 		WHERE n.nspname NOT IN ('pg_catalog','information_schema')
 		  AND c.relkind IN ('r','p')
+		  AND (rt.size_rank <= $1 OR c.relname IN ('request_logs_hot','usage_ledger_hot','request_wal_hot','routing_decision_log_hot','credential_model_index_hot','request_logs_bodies_hot','credit_ledger_hot','tool_usage_stats_hot'))
 		ORDER BY pg_total_relation_size(c.oid) DESC
-		LIMIT $1
 	`, limit)
 	if err != nil {
 		return nil, 0, "", err
@@ -444,6 +463,13 @@ func queryTableSizes(ctx context.Context, h *Handler, limit int) ([]tableSizeInf
 			&t.IsPartitioned,
 		); err != nil {
 			continue
+		}
+		if _, isHot := hotTableNames[t.Table]; isHot {
+			var exactRows int64
+			if err := h.db.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) FROM public.%s", t.Table)).Scan(&exactRows); err != nil {
+				return nil, 0, "", fmt.Errorf("count hot table %s: %w", t.Table, err)
+			}
+			t.Rows = exactRows
 		}
 		t.TotalHuman = humanBytes(t.TotalBytes)
 		t.ToastHuman = humanBytes(t.ToastBytes)

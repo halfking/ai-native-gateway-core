@@ -174,8 +174,9 @@ func (d *FastDetector) Detect(ctx context.Context, content string) (*DetectResul
 	// 7. 决策逻辑：
 	//   - 任一 Threat.Severity >= 8 → NeedApproval（防御性升级，覆盖任
 	//     何单次命中都需要人工介入的高危类型）
-	//   - 否则按 Score 阈值：>=6 Approval / >=3 Warn / <3 Pass
-	//   （2026-07-11优化：降低阈值以提高敏感度，从8/5降到6/3）
+	//   - 有威胁时按 Score 阈值：>=6 Approval / >=3 Warn / <3 Pass
+	//   - 纯敏感词命中最高只进入 Warn，避免普通敏感词累积升级为审批
+	//   （2026-07-11优化：提高敏感度，同时保持既有敏感词决策契约）
 	maxSeverity := 0
 	for _, th := range result.Threats {
 		if th.Severity > maxSeverity {
@@ -183,7 +184,7 @@ func (d *FastDetector) Detect(ctx context.Context, content string) (*DetectResul
 		}
 	}
 	switch {
-	case maxSeverity >= 8 || result.Score >= 6:
+	case maxSeverity >= 8 || (len(result.Threats) > 0 && result.Score >= 6):
 		result.Decision = DecisionNeedApproval
 		result.Reason = "high risk score or high-severity threat, manual review required"
 	case result.Score >= 3:

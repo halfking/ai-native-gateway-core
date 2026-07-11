@@ -18,7 +18,7 @@ cd tests/session_audit
 ## 测试内容
 
 ✅ **数据来源**: 252 数据库（172.16.2.210）最近 7 天的 10,000+ 条真实 LLM 响应  
-✅ **敏感词**: 156+ 个（政治/色情/暴力/违禁品/诈骗/PII/Injection/Jailbreak）  
+✅ **敏感词**: 73 个（政治/色情/暴力/违禁品/诈骗/PII/Injection/Jailbreak）
 ✅ **检测器**: FastDetector（Trie 树 + 正则表达式）  
 ✅ **存储**: 数据库表 + 统计视图  
 ✅ **分析**: 性能（P50/P95/P99）、准确率、覆盖率  
@@ -37,7 +37,8 @@ cd tests/session_audit
 | 文件 | 用途 |
 |------|------|
 | **run_test.sh** | 一键执行脚本 ⭐ |
-| **audit_test_all_in_one.go** | 测试主程序 |
+| **cmd/audit-test/main.go** | 数据库测试主程序 |
+| **cmd/audit-unit/main.go** | 单元测试主程序 |
 | **02_sensitive_words_test.yaml** | 敏感词配置 |
 | **schema.sql** | 数据库表结构 |
 | **EXECUTION_GUIDE.md** | 详细执行指南 📖 |
@@ -67,7 +68,7 @@ ORDER BY hit_count DESC LIMIT 20;
 ```
 
 ### 3. 人工标注（可选，评估准确率）
-参考 `EXECUTION_GUIDE.md` 的"人工标注指南"章节
+参考 `EXECUTION_GUIDE.md` 的“人工标注指南”章节
 
 ### 4. 实施优化
 参考 `OPTIMIZATION_REPORT_TEMPLATE.md` 的优化方案

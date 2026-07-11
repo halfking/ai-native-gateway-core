@@ -229,10 +229,19 @@ func TestFaultIntegration(t *testing.T) {
 	})
 
 	t.Run("DashboardStats", func(t *testing.T) {
+		rule := &Rule{
+			Name:        "test-rule-stats-" + time.Now().Format("20060102-150405"),
+			Description: "Rule backing dashboard test events", Metric: "test_metric",
+			Operator: OpGte, Threshold: 1, Duration: "1m", Severity: SeverityInfo,
+			Action: ActionNotify, Enabled: true, Cooldown: "1m",
+		}
+		err := store.CreateRule(ctx, rule)
+		require.NoError(t, err)
+
 		// Create test events with different severities and sources
 		testEvents := []Event{
 			{
-				RuleID:      1,
+				RuleID:      rule.ID,
 				RuleName:    "test-rule-stats-1",
 				Severity:    SeverityInfo,
 				Title:       "Info event",
@@ -244,7 +253,7 @@ func TestFaultIntegration(t *testing.T) {
 				UpdatedAt:   time.Now(),
 			},
 			{
-				RuleID:      1,
+				RuleID:      rule.ID,
 				RuleName:    "test-rule-stats-2",
 				Severity:    SeverityWarning,
 				Title:       "Warning event",
@@ -256,7 +265,7 @@ func TestFaultIntegration(t *testing.T) {
 				UpdatedAt:   time.Now(),
 			},
 			{
-				RuleID:      1,
+				RuleID:      rule.ID,
 				RuleName:    "test-rule-stats-3",
 				Severity:    SeverityCritical,
 				Title:       "Critical event",
@@ -338,16 +347,10 @@ func TestFaultIntegration(t *testing.T) {
 			err = store.CreateActionLog(ctx, actionLog)
 			require.NoError(t, err)
 
-			// Simulate async action completion
-			go func(logID int64, action string) {
-				time.Sleep(50 * time.Millisecond)
-				result := "Action " + action + " completed successfully"
-				_ = store.UpdateActionLog(context.Background(), logID, "success", result)
-			}(actionLog.ID, actionType)
+			result := "Action " + actionType + " completed successfully"
+			err = store.UpdateActionLog(ctx, actionLog.ID, "success", result)
+			require.NoError(t, err)
 		}
-
-		// Wait for async actions
-		time.Sleep(200 * time.Millisecond)
 	})
 }
 

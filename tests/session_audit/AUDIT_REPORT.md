@@ -22,8 +22,8 @@
 | 文档 | OPTIMIZATION_REPORT_TEMPLATE.md | ✅ | 优化报告模板，12KB |
 | 配置 | 02_sensitive_words_test.yaml | ✅ | 敏感词配置，73个敏感词 |
 | 数据库 | schema.sql | ✅ | 数据库表结构，2表+5视图 |
-| 代码 | audit_test_all_in_one.go | ✅ | 测试主程序，17KB |
-| 代码 | unit_verify.go | ✅ | 单元测试，~5KB |
+| 代码 | cmd/audit-test/main.go | ✅ | 数据库测试主程序 |
+| 代码 | cmd/audit-unit/main.go | ✅ | 单元测试主程序 |
 | 脚本 | run_test.sh | ✅ | 一键执行脚本 |
 | 脚本 | run_test_quick.sh | ✅ | 快速测试脚本 |
 | 配置 | .gitignore | ✅ | 忽略编译产物 |
@@ -221,7 +221,7 @@
 ```bash
 # 单元测试
 cd tests/session_audit
-go run unit_verify.go
+go run ./tests/session_audit/cmd/audit-unit
 
 # 快速测试（需要数据库）
 ./run_test_quick.sh
@@ -240,11 +240,11 @@ tests/session_audit/
 ├── EXECUTION_GUIDE.md
 ├── OPTIMIZATION_REPORT_TEMPLATE.md
 ├── README.md
-├── audit_test_all_in_one.go
+├── cmd/audit-test/main.go
 ├── run_test.sh
 ├── run_test_quick.sh
 ├── schema.sql
-└── unit_verify.go
+└── cmd/audit-unit/main.go
 ```
 
 ### C. 关键指标

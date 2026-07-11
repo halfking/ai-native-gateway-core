@@ -96,7 +96,12 @@ function openCommandDialog(instance: CenterInstance) {
 async function handleSendCommand() {
   loading.value = true
   try {
-    await sendCommand(commandForm.value.instanceId, commandForm.value.command, commandForm.value.params)
+    // 把 unknown 参数转成 string（后端 IssueCommand 要求 args: map[string]string）
+    const stringParams: Record<string, string> = {}
+    for (const [k, v] of Object.entries(commandForm.value.params)) {
+      stringParams[k] = typeof v === 'string' ? v : JSON.stringify(v)
+    }
+    await sendCommand(commandForm.value.instanceId, commandForm.value.command, stringParams)
     ElMessage.success(t('ops.center.commandSent'))
     showCommandDialog.value = false
   } catch (error) {
@@ -117,10 +122,12 @@ function statusType(status: string) {
 }
 
 function formatDate(date: string) {
+  if (!date || date === 'undefined') return '—'
   return new Date(date).toLocaleString()
 }
 
-function formatUptime(seconds: number) {
+function formatUptime(seconds: number | undefined) {
+  if (!seconds || seconds < 0) return '—'
   const days = Math.floor(seconds / 86400)
   const hours = Math.floor((seconds % 86400) / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
@@ -129,28 +136,37 @@ function formatUptime(seconds: number) {
   return `${minutes}m`
 }
 
+// 从心跳历史中提取最新一条的资源使用率
+function latestMetric(instanceId: string, key: 'cpu_usage' | 'memory_usage' | 'disk_usage'): number {
+  const history = heartbeatData.value[instanceId]
+  if (!history || history.length === 0) return 0
+  const last = history[history.length - 1] as any
+  const v = last[key]
+  return typeof v === 'number' ? Math.round(v) : 0
+}
+
 function getChartData(instanceId: string) {
   const history = heartbeatData.value[instanceId] || []
   return {
     labels: history.map((h) => new Date(h.timestamp).toLocaleTimeString()),
     datasets: [
       {
-        label: 'CPU %',
-        data: history.map((h) => h.cpu_usage),
+        label: 'Goroutines',
+        data: history.map((h) => (h as any).num_goroutine || 0),
         borderColor: 'rgb(75, 192, 192)',
         backgroundColor: 'rgba(75, 192, 192, 0.2)',
         tension: 0.4,
       },
       {
-        label: 'Memory %',
-        data: history.map((h) => h.memory_usage),
+        label: 'Alloc MB',
+        data: history.map((h) => (h as any).alloc_mb || 0),
         borderColor: 'rgb(255, 99, 132)',
         backgroundColor: 'rgba(255, 99, 132, 0.2)',
         tension: 0.4,
       },
       {
-        label: 'Disk %',
-        data: history.map((h) => h.disk_usage),
+        label: 'Uptime (min)',
+        data: history.map((h) => ((h as any).uptime_secs || 0) / 60),
         borderColor: 'rgb(255, 205, 86)',
         backgroundColor: 'rgba(255, 205, 86, 0.2)',
         tension: 0.4,
@@ -224,15 +240,15 @@ onMounted(load)
               <div class="metrics-grid">
                 <div class="metric-item">
                   <span class="metric-label">{{ t('ops.center.cpuUsage') }}:</span>
-                  <el-progress :percentage="row.cpu_usage" :stroke-width="8" />
+                  <el-progress :percentage="latestMetric(row.instance_id, 'cpu_usage')" :stroke-width="8" />
                 </div>
                 <div class="metric-item">
                   <span class="metric-label">{{ t('ops.center.memoryUsage') }}:</span>
-                  <el-progress :percentage="row.memory_usage" :stroke-width="8" :color="row.memory_usage > 80 ? '#F56C6C' : '#67C23A'" />
+                  <el-progress :percentage="latestMetric(row.instance_id, 'memory_usage')" :stroke-width="8" :color="latestMetric(row.instance_id, 'memory_usage') > 80 ? '#F56C6C' : '#67C23A'" />
                 </div>
                 <div class="metric-item">
                   <span class="metric-label">{{ t('ops.center.diskUsage') }}:</span>
-                  <el-progress :percentage="row.disk_usage" :stroke-width="8" :color="row.disk_usage > 80 ? '#F56C6C' : '#67C23A'" />
+                  <el-progress :percentage="latestMetric(row.instance_id, 'disk_usage')" :stroke-width="8" :color="latestMetric(row.instance_id, 'disk_usage') > 80 ? '#F56C6C' : '#67C23A'" />
                 </div>
               </div>
               <div v-if="heartbeatData[row.instance_id]" class="chart-container">
@@ -253,7 +269,7 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="uptime_seconds" :label="t('ops.center.uptime')" width="100">
+        <el-table-column :label="t('ops.center.uptime')" width="100">
           <template #default="{ row }">{{ formatUptime(row.uptime_seconds) }}</template>
         </el-table-column>
         <el-table-column prop="last_heartbeat" :label="t('ops.center.lastHeartbeat')" width="160">

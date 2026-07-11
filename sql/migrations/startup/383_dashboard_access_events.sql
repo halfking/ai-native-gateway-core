@@ -1,4 +1,4 @@
--- 361_dashboard_access_events.sql
+-- 383_dashboard_access_events.sql
 -- Dashboard API 访问事件埋点表（hot + 分区归档）
 --
 -- 目的：
@@ -336,5 +336,27 @@ COMMENT ON COLUMN dashboard_access_events_hot.response_time_ms IS
 
 COMMENT ON TABLE dashboard_access_events IS 
     'Dashboard API 访问事件归档表 - 按月分区，长期保留用于审计和分析';
+
+-- Telemetry writes asynchronously through pooled connections and cannot rely
+-- on a transaction-local app.current_tenant setting.
+DROP POLICY IF EXISTS tenant_isolation_dashboard_access_events_hot
+    ON public.dashboard_access_events_hot;
+DROP POLICY IF EXISTS tenant_isolation_dashboard_access_events
+    ON public.dashboard_access_events;
+ALTER TABLE public.dashboard_access_events_hot DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.dashboard_access_events DISABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.dashboard_access_events_hot
+    DROP CONSTRAINT IF EXISTS chk_dae_hot_event_type;
+ALTER TABLE public.dashboard_access_events_hot
+    ADD CONSTRAINT chk_dae_hot_event_type
+    CHECK (event_type IN ('api_access', 'query', 'export', 'error')) NOT VALID;
+ALTER TABLE public.dashboard_access_events
+    DROP CONSTRAINT IF EXISTS chk_dae_event_type;
+ALTER TABLE public.dashboard_access_events
+    ADD CONSTRAINT chk_dae_event_type
+    CHECK (event_type IN ('api_access', 'query', 'export', 'error')) NOT VALID;
+CREATE INDEX IF NOT EXISTS idx_dae_hot_cleanup
+    ON public.dashboard_access_events_hot (created_at);
 
 COMMIT;

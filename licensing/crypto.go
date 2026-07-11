@@ -27,6 +27,9 @@ type CryptoConfig struct {
 }
 
 func (c *CryptoConfig) SignLicense(lic *License) (*SignedLicense, error) {
+	if c == nil || c.PrivateKey == nil {
+		return nil, errors.New("license signing key is not configured")
+	}
 	data, err := json.Marshal(lic)
 	if err != nil {
 		return nil, err
@@ -45,6 +48,9 @@ func (c *CryptoConfig) SignLicense(lic *License) (*SignedLicense, error) {
 }
 
 func (c *CryptoConfig) VerifyLicense(signed *SignedLicense) (*License, error) {
+	if c == nil || c.PublicKey == nil {
+		return nil, errors.New("license verification key is not configured")
+	}
 	if signed == nil {
 		return nil, errors.New("nil signed license")
 	}
@@ -63,6 +69,9 @@ func (c *CryptoConfig) VerifyLicense(signed *SignedLicense) (*License, error) {
 }
 
 func (c *CryptoConfig) EncryptAES(data []byte) ([]byte, error) {
+	if c == nil || len(c.AESKey) == 0 {
+		return nil, errors.New("license encryption key is not configured")
+	}
 	block, err := aes.NewCipher(c.AESKey)
 	if err != nil {
 		return nil, err
@@ -79,6 +88,9 @@ func (c *CryptoConfig) EncryptAES(data []byte) ([]byte, error) {
 }
 
 func (c *CryptoConfig) DecryptAES(encrypted []byte) ([]byte, error) {
+	if c == nil || len(c.AESKey) == 0 {
+		return nil, errors.New("license encryption key is not configured")
+	}
 	block, err := aes.NewCipher(c.AESKey)
 	if err != nil {
 		return nil, err
@@ -96,6 +108,9 @@ func (c *CryptoConfig) DecryptAES(encrypted []byte) ([]byte, error) {
 }
 
 func (c *CryptoConfig) GenerateJWT(instanceID string, licenseKey string, expiresAt time.Time) (string, error) {
+	if c == nil || len(c.JWTSecret) < 32 {
+		return "", errors.New("license JWT secret is not configured")
+	}
 	claims := jwt.MapClaims{
 		"instance_id": instanceID,
 		"license_key": licenseKey,
@@ -107,6 +122,9 @@ func (c *CryptoConfig) GenerateJWT(instanceID string, licenseKey string, expires
 }
 
 func (c *CryptoConfig) VerifyJWT(tokenStr string) (jwt.MapClaims, error) {
+	if c == nil || len(c.JWTSecret) < 32 {
+		return nil, errors.New("license JWT secret is not configured")
+	}
 	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unexpected signing method")

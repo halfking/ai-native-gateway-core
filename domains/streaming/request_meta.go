@@ -247,3 +247,40 @@ func applyKeyInfoToRequestLog(reqLog *telemetry.RequestLogEntry, keyInfo *authen
 		reqLog.TenantID = keyInfo.TenantID
 	}
 }
+
+// enrichObservabilityMetadata populates P1.4 observability fields from RequestLogContext.
+// Call after enrichRequestLogFromMeta to ensure all metadata is complete.
+func enrichObservabilityMetadata(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
+	if entry == nil || c == nil {
+		return
+	}
+
+	// Populate from ObservabilityContext captured at ingress
+	if c.ObservabilityCtx != nil {
+		telemetry.EnrichRequestLogWithContext(entry, c.ObservabilityCtx)
+	}
+
+	// Enrich API key fingerprint from KeyInfo if available (safer than raw Authorization header)
+	if entry.APIKeyFingerprint == nil && c.KeyInfo != nil && c.KeyInfo.KeyPrefix != "" {
+		fingerprint := telemetry.MaskAPIKeyFingerprint(c.KeyInfo.KeyPrefix)
+		if fingerprint != "" {
+			entry.APIKeyFingerprint = &fingerprint
+		}
+	}
+
+	// Populate session title from Session if available
+	if entry.SessionTitle == nil && c.Session != nil && c.Session.Title != "" {
+		entry.SessionTitle = &c.Session.Title
+	}
+
+	// Populate task_id from Session.TaskID or GwTaskID
+	if entry.TaskID == nil {
+		if c.Session != nil && c.Session.TaskID != "" {
+			entry.TaskID = &c.Session.TaskID
+		} else if c.Request != nil {
+			if taskID := c.Request.Header.Get("X-Gw-Task-Id"); taskID != "" {
+				entry.TaskID = &taskID
+			}
+		}
+	}
+}

@@ -1,281 +1,224 @@
 #!/usr/bin/env python3
-"""
-compression_stress.py - 会话压缩算法高并发压力测试
+"""Exercise gateway session compression with ordered, bounded conversations.
 
-在 154 服务器上对本地 gateway (127.0.0.1:8781) 发起高并发 HTTP 请求，
-触发 SessionCompressor 算法的完整执行流程。
-
-Usage:
-    python3 compression_stress.py --total 10000 --concurrency 200 --turns 10
+Each worker owns one session and submits its turns serially. Workers run in
+parallel, so this preserves the session cache invariant while loading the
+gateway. Compression strategy is intentionally not inferred from HTTP status:
+audit request_logs.compression_strategy after the run using client request IDs.
 """
 
 import argparse
-import sys
-import time
 import json
-import uuid
+import os
+import sys
 import threading
+import time
+import uuid
+from collections import Counter
+
 import requests
-from queue import Queue
-from collections import defaultdict
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Test data: 构建触发压缩的大型会话
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def build_payload(turn_count: int) -> dict:
-    """构造一个 n 轮对话的 chat 请求,触发压缩触发器。"""
-    msgs = [{"role": "system", "content": "You are a helpful assistant. " * 100}]
-
-    for i in range(turn_count):
-        user_content = (
-            f"Turn {i}: "
-            + ("Lorem ipsum dolor sit amet, " * 300)
-            + f" Please analyze this text and provide a detailed response. " * 5
-            + f"Discuss the implications and provide examples."
+def build_payload(turn_count):
+    messages = [{"role": "system", "content": "You are a helpful assistant. " * 100}]
+    for turn in range(turn_count):
+        messages.append(
+            {
+                "role": "user",
+                "content": f"Turn {turn}: " + "Lorem ipsum dolor sit amet, " * 300,
+            }
         )
-        msgs.append({"role": "user", "content": user_content})
-
-        if i > 0:
-            msgs.append(
+        if turn:
+            messages.append(
                 {
                     "role": "assistant",
-                    "content": (
-                        f"Assistant response for turn {i}: "
-                        + ("Based on the analysis, I recommend " * 50)
-                        + f"considering multiple factors. " * 20
-                    ),
+                    "content": f"Answer {turn}: "
+                    + "Analysis remains consistent. " * 80,
                 }
             )
-
     return {
         "model": "gpt-4o",
-        "messages": msgs,
+        "messages": messages,
         "stream": False,
-        "temperature": 0.7,
-        "max_tokens": 100,
+        "temperature": 0.0,
+        "max_tokens": 16,
     }
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Stats collection
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 class Stats:
     def __init__(self):
         self.lock = threading.Lock()
-        self.total_sent = 0
-        self.successful = 0
-        self.failed = 0
-        self.errors = defaultdict(int)
-        self.latencies = []
-        self.start_time = 0.0
-        self.end_time = 0.0
-        self.bytes_sent = 0
-        self.bytes_received = 0
+        self.statuses = Counter()
+        self.latencies_ms = []
+        self.degraded = 0
+        self.errors = Counter()
+        self.client_request_ids = []
 
-    def record(self, status: int, latency_ms: float, sent: int, received: int):
+    def record(self, status, latency_ms, degraded, request_id, error=None):
         with self.lock:
-            self.total_sent += 1
-            self.bytes_sent += sent
-            self.bytes_received += received
-            self.latencies.append(latency_ms)
-            if 200 <= status < 500:
-                self.successful += 1
-            else:
-                self.failed += 1
-                self.errors[status] += 1
+            self.statuses[status] += 1
+            self.latencies_ms.append(latency_ms)
+            self.degraded += int(degraded)
+            if request_id:
+                self.client_request_ids.append(request_id)
+            if error:
+                self.errors[error] += 1
 
-    def percentile(self, p):
-        if not self.latencies:
-            return 0
-        s = sorted(self.latencies)
-        idx = max(0, min(int(len(s) * p / 100), len(s) - 1))
-        return s[idx]
+    def percentile(self, value):
+        if not self.latencies_ms:
+            return 0.0
+        ordered = sorted(self.latencies_ms)
+        index = min(len(ordered) - 1, int(len(ordered) * value / 100))
+        return ordered[index]
 
-    def report(self):
-        if not self.start_time or not self.end_time:
-            return ""
-        duration = self.end_time - self.start_time
-        rps = self.total_sent / duration if duration > 0 else 0
-
+    def report(self, elapsed):
+        total = sum(self.statuses.values())
+        success = sum(
+            count for status, count in self.statuses.items() if 200 <= status < 400
+        )
+        client_errors = sum(
+            count for status, count in self.statuses.items() if 400 <= status < 500
+        )
+        server_errors = total - success - client_errors
+        average = sum(self.latencies_ms) / max(1, len(self.latencies_ms))
         lines = [
-            "",
             "=" * 64,
-            "     COMPRESSION BENCHMARK - STRESS TEST REPORT",
+            " SESSION COMPRESSION TRANSPORT STRESS REPORT",
             "=" * 64,
-            f"Total sent:        {self.total_sent}",
-            f"Duration:          {duration:.1f}s",
-            f"RPS:               {rps:.1f}",
-            f"Successful (2xx-4xx): {self.successful} ({self.successful * 100 / max(1, self.total_sent):.1f}%)",
-            f"Failed (5xx):      {self.failed}",
-            f"Bytes sent:        {self.bytes_sent / 1024 / 1024:.1f} MB",
-            f"Bytes received:    {self.bytes_received / 1024 / 1024:.1f} MB",
+            f"Requests:             {total}",
+            f"Elapsed:              {elapsed:.1f}s",
+            f"RPS:                  {total / max(elapsed, 0.001):.1f}",
+            f"HTTP success (2xx/3xx): {success}",
+            f"Client errors (4xx):   {client_errors}",
+            f"Server/network errors: {server_errors}",
+            f"Degraded header seen:  {self.degraded}",
+            "Status distribution:",
         ]
+        lines.extend(
+            f"  HTTP {status}: {count}"
+            for status, count in sorted(self.statuses.items())
+        )
         if self.errors:
-            lines.append("Status code distribution:")
-            for code, cnt in sorted(self.errors.items()):
-                lines.append(f"  HTTP {code}: {cnt}")
+            lines.append("Transport errors:")
+            lines.extend(
+                f"  {name}: {count}" for name, count in sorted(self.errors.items())
+            )
         lines.extend(
             [
-                "",
                 "Latency (ms):",
-                f"  Min:     {min(self.latencies) if self.latencies else 0:.1f}",
-                f"  Avg:     {sum(self.latencies) / max(1, len(self.latencies)):.1f}",
-                f"  P50:     {self.percentile(50):.1f}",
-                f"  P90:     {self.percentile(90):.1f}",
-                f"  P95:     {self.percentile(95):.1f}",
-                f"  P99:     {self.percentile(99):.1f}",
-                f"  Max:     {max(self.latencies) if self.latencies else 0:.1f}",
+                f"  avg={average:.1f} p50={self.percentile(50):.1f}",
+                f"  p95={self.percentile(95):.1f} p99={self.percentile(99):.1f}",
+                "Compression is NOT proven by this HTTP report alone.",
+                "Query request_logs by the printed client request IDs and require",
+                "compression_strategy in {delta_append, sliding_window_*, mechanical_trim}.",
                 "=" * 64,
             ]
         )
         return "\n".join(lines)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Worker: send a single request
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def worker(url, queue, stats, session_pool, session_pool_size, turns, timeout_s=30):
-    from requests.adapters import HTTPAdapter  # local import for type-checker
+def worker(worker_index, turns, max_turns, url, api_key, stats, timeout):
+    from requests.adapters import HTTPAdapter
 
     session = requests.Session()
     adapter = HTTPAdapter(pool_connections=1, pool_maxsize=1)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
-    while True:
-        idx = queue.get()
-        if idx is None:
-            queue.task_done()
-            break
+    session_id = "gw_" + str(uuid.uuid4())
 
-        sid = session_pool[idx % session_pool_size]
-        payload = build_payload(turns)
-        body_bytes = json.dumps(payload).encode("utf-8")
-
+    for sequence in range(turns):
+        turn = sequence % max_turns + 1
+        if turn == 1 and sequence:
+            session_id = "gw_" + str(uuid.uuid4())
+        client_request_id = "compression-stress-" + uuid.uuid4().hex
         headers = {
+            "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
-            "X-Gw-Session-Id": sid,
-            "Authorization": "Bearer bench-test-token",
+            "X-Gw-Session-Id": session_id,
+            "X-Request-Id": client_request_id,
         }
-
-        t0 = time.monotonic()
+        started = time.monotonic()
         try:
-            r = session.post(url, data=body_bytes, headers=headers, timeout=timeout_s)
-            latency = (time.monotonic() - t0) * 1000
-            stats.record(r.status_code, latency, len(body_bytes), len(r.content))
-        except requests.exceptions.Timeout:
-            stats.record(599, timeout_s * 1000, len(body_bytes), 0)
-        except Exception as e:
-            latency = (time.monotonic() - t0) * 1000
-            stats.record(0, latency, len(body_bytes), 0)
-        finally:
-            queue.task_done()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Main runner
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def run_stress(url, total, concurrency, turns, session_pool_size):
-    print(f"[+] Pre-generating {session_pool_size} session IDs...")
-    session_pool = [f"bench_{uuid.uuid4().hex[:32]}" for _ in range(session_pool_size)]
-
-    print(f"[+] Starting {concurrency} worker threads...")
-    q = Queue()
-    for i in range(total):
-        q.put(i)
-    # add sentinel for each worker
-    for _ in range(concurrency):
-        q.put(None)
-
-    stats = Stats()
-    stats.start_time = time.monotonic()
-
-    threads = []
-    for _ in range(concurrency):
-        t = threading.Thread(
-            target=worker,
-            args=(url, q, stats, session_pool, session_pool_size, turns),
-            daemon=True,
-        )
-        t.start()
-        threads.append(t)
-
-    # progress reporter
-    last_reported = 0
-    while not q.empty() or any(t.is_alive() for t in threads):
-        time.sleep(1)
-        with stats.lock:
-            sent = stats.total_sent
-        if sent > last_reported and sent % 200 == 0:
-            elapsed = time.monotonic() - stats.start_time
-            rps = sent / max(elapsed, 0.01)
-            print(
-                f"  [{sent:>6}/{total}] elapsed={elapsed:.1f}s RPS={rps:.1f}",
-                flush=True,
+            response = session.post(
+                url,
+                data=json.dumps(build_payload(turn)),
+                headers=headers,
+                timeout=timeout,
             )
-            last_reported = sent
-        if sent >= total:
-            break
-
-    for t in threads:
-        t.join(timeout=5)
-
-    stats.end_time = time.monotonic()
-    return stats
+            response.content
+            stats.record(
+                response.status_code,
+                (time.monotonic() - started) * 1000,
+                response.headers.get("X-Gw-Compression-Degraded") != "",
+                client_request_id,
+            )
+        except requests.RequestException as error:
+            stats.record(
+                0,
+                (time.monotonic() - started) * 1000,
+                False,
+                client_request_id,
+                type(error).__name__,
+            )
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--url", default="http://127.0.0.1:8781/v1/chat/completions")
     parser.add_argument(
-        "--url", default="http://127.0.0.1:8781", help="Gateway base URL"
+        "--api-key", default=os.getenv("LLM_GATEWAY_STRESS_API_KEY", "")
     )
     parser.add_argument(
-        "--total", type=int, default=10000, help="Total requests to send"
+        "--concurrency", type=int, default=20, help="independent, ordered sessions"
     )
+    parser.add_argument("--turns-per-session", type=int, default=10)
     parser.add_argument(
-        "--concurrency", type=int, default=200, help="Concurrent workers"
-    )
-    parser.add_argument(
-        "--turns", type=int, default=10, help="Conversation turns per request"
-    )
-    parser.add_argument(
-        "--session-pool",
+        "--max-turns",
         type=int,
-        default=100,
-        help="Unique session_ids for delta-append",
+        default=10,
+        help="reset each session after this many turns",
     )
+    parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument(
-        "--timeout", type=int, default=30, help="Request timeout seconds"
+        "--request-ids-output", default="compression-stress-request-ids.txt"
     )
     args = parser.parse_args()
 
-    print(f"[+] compression_stress starting")
-    print(f"    Target:         {args.url}")
-    print(f"    Total requests: {args.total}")
-    print(f"    Concurrency:    {args.concurrency}")
-    print(f"    Turns/request:  {args.turns}")
-    print(f"    Session pool:   {args.session_pool}")
-    print()
-
-    try:
-        stats = run_stress(
-            args.url,
-            args.total,
-            args.concurrency,
-            args.turns,
-            args.session_pool,
+    if not args.api_key.startswith("sk-"):
+        parser.error(
+            "--api-key or LLM_GATEWAY_STRESS_API_KEY with an sk- prefix is required"
         )
-        print(stats.report())
-    except KeyboardInterrupt:
-        print("\n[!] Interrupted")
+    if args.concurrency < 1 or args.turns_per_session < 1 or args.max_turns < 1:
+        parser.error("concurrency, turns-per-session, and max-turns must be positive")
+
+    stats = Stats()
+    started = time.monotonic()
+    threads = [
+        threading.Thread(
+            target=worker,
+            args=(
+                index,
+                args.turns_per_session,
+                args.max_turns,
+                args.url,
+                args.api_key,
+                stats,
+                args.timeout,
+            ),
+        )
+        for index in range(args.concurrency)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    elapsed = time.monotonic() - started
+
+    with open(args.request_ids_output, "w") as output:
+        output.write("\n".join(stats.client_request_ids) + "\n")
+    print(stats.report(elapsed))
+    print(f"Client request IDs written to {args.request_ids_output}")
+    if any(status >= 500 or status == 0 for status in stats.statuses):
         sys.exit(1)
 
 
