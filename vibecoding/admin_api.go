@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/labstack/echo/v4"
 )
 
@@ -54,21 +55,23 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 // CreateProject 创建项目
 func (a *AdminAPI) CreateProject(c echo.Context) error {
 	var req struct {
-		TenantID    string `json:"tenant_id" validate:"required"`
 		Name        string `json:"name" validate:"required"`
 		Description string `json:"description"`
 		Language    string `json:"language"`
 		Framework   string `json:"framework"`
-		CreatedBy   string `json:"created_by" validate:"required"`
 	}
 
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
+	auth := admin.GetAuthContext(c.Request())
+	if auth == nil || auth.Username == "" {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+	}
 	project, err := a.projectManager.CreateProject(
 		c.Request().Context(),
-		req.TenantID, req.Name, req.Description, req.Language, req.Framework, req.CreatedBy,
+		admin.EffectiveTenantID(c.Request()), req.Name, req.Description, req.Language, req.Framework, auth.Username,
 	)
 	if err != nil {
 		slog.Error("create project failed", "error", err)
@@ -206,7 +209,6 @@ func (a *AdminAPI) GetProjectStats(c echo.Context) error {
 // CreateSession 创建会话
 func (a *AdminAPI) CreateSession(c echo.Context) error {
 	var req struct {
-		TenantID  string `json:"tenant_id" validate:"required"`
 		TaskType  string `json:"task_type" validate:"required"`
 		ProjectID *int64 `json:"project_id"`
 	}
@@ -215,7 +217,10 @@ func (a *AdminAPI) CreateSession(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
-	session, err := a.sessionManager.CreateSession(c.Request().Context(), req.TenantID, req.TaskType, req.ProjectID)
+	if admin.GetAuthContext(c.Request()) == nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+	}
+	session, err := a.sessionManager.CreateSession(c.Request().Context(), admin.EffectiveTenantID(c.Request()), req.TaskType, req.ProjectID)
 	if err != nil {
 		slog.Error("create session failed", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "create session failed"})
