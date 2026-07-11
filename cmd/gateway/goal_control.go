@@ -247,6 +247,9 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	chain := response.NewInterceptorChain(interceptors...)
 	chatHandler.SetResponseInterceptor(chain)
 
+	// 7a. Handoff fallback API key (2026-07-11, handoff self-call fix).
+	chatHandler.SetHandoffFallbackAPIKey(strings.TrimSpace(os.Getenv("LLM_GATEWAY_HANDOFF_FALLBACK_API_KEY")))
+
 	handoffEnabled := handoffCfg.Enabled
 	ocEnabled := len(interceptors) > 3
 	slog.Info("goal_control: interceptors installed",
