@@ -24,11 +24,6 @@ export interface CompressionStats {
   total_outbound_tokens?: number
   estimated_original_tokens?: number
   estimated_tokens_saved?: number
-  snapshot_turns: number
-  snapshot_sessions: number
-  secured_turns: number
-  incomplete_streams: number
-  snapshot_expires_soon: number
   hourly_series: HourBucket[]
 }
 

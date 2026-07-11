@@ -15,7 +15,6 @@ type SettingKey =
   | 'compression.mode'
   | 'compression.window_fraction'
   | 'compression.llm_model'
-  | 'compression.snapshot_ttl_hours'
   | 'handoff.enabled'
   | 'handoff.threshold'
 
@@ -63,7 +62,6 @@ async function loadSettings() {
       'compression.mode',
       'compression.window_fraction',
       'compression.llm_model',
-      'compression.snapshot_ttl_hours',
       'handoff.enabled',
       'handoff.threshold',
     ]
@@ -143,10 +141,6 @@ const compressionWindow = computed({
 const compressionModel = computed({
   get: () => settings.value['compression.llm_model']?.value ?? settings.value['compression.llm_model']?.default ?? '',
   set: (v: string) => { void save('compression.llm_model', v) },
-})
-const snapshotTTLHours = computed({
-  get: () => settings.value['compression.snapshot_ttl_hours']?.value ?? settings.value['compression.snapshot_ttl_hours']?.default ?? 168,
-  set: (v: number) => { void save('compression.snapshot_ttl_hours', v) },
 })
 const handoffEnabled = computed({
   get: () => settings.value['handoff.enabled']?.value === true,
@@ -251,22 +245,6 @@ onMounted(() => {
               {{ t('sessions.config.revertToDefault') }}
             </button>
           </div>
-        </div>
-        <div class="field-row">
-          <div class="field-label">
-            <span>会话快照保留期</span>
-            <span class="hint">原始、压缩和安全处理后的同轮快照按整轮 TTL 清理。</span>
-          </div>
-          <input
-            type="number"
-            class="number"
-            min="1"
-            max="8760"
-            step="1"
-            :value="snapshotTTLHours"
-            @change="snapshotTTLHours = parseInt(($event.target as HTMLInputElement).value, 10)"
-            :disabled="saving === 'compression.snapshot_ttl_hours'"
-          />
         </div>
       </div>
 

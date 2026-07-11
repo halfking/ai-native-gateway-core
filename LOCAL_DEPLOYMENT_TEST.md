@@ -28,8 +28,8 @@
 - 容器: redclaw-postgres (pgvector/pgvector:pg17)
 
 **迁移文件**:
-1. `382_session_module_executions.sql` - ✅ 成功
-2. `383_dashboard_access_events.sql` - ✅ 成功（修复 pg_cron 语法）
+1. `360_session_module_executions.sql` - ✅ 成功
+2. `361_dashboard_access_events.sql` - ✅ 成功（修复 pg_cron 语法）
 
 **创建的数据库对象**:
 

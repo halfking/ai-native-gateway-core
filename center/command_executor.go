@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -130,13 +129,9 @@ func (e *CommandExecutor) executeCollectLogs(ctx context.Context, cmd *Command) 
 	if lines == "" {
 		lines = "100"
 	}
-	lineCount, err := strconv.Atoi(lines)
-	if err != nil || lineCount < 1 || lineCount > 1000 {
-		return &CommandResult{Error: "lines must be an integer between 1 and 1000"}
-	}
 
 	// 收集最近的日志
-	execCmd := exec.CommandContext(ctx, "tail", "-n", strconv.Itoa(lineCount), "/var/log/llm-gateway.log")
+	execCmd := exec.CommandContext(ctx, "tail", "-n", lines, "/var/log/llm-gateway.log")
 	output, err := execCmd.CombinedOutput()
 	if err != nil {
 		result.Error = err.Error()
@@ -146,7 +141,7 @@ func (e *CommandExecutor) executeCollectLogs(ctx context.Context, cmd *Command) 
 	result.Success = true
 	result.Output = string(output)
 
-	slog.Info("collect_logs command executed", "command_id", cmd.CommandID, "lines", lineCount)
+	slog.Info("collect_logs command executed", "command_id", cmd.CommandID, "lines", lines)
 	return result
 }
 

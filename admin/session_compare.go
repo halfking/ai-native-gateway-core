@@ -67,8 +67,6 @@ type SessionCompareData struct {
 	// （task/client/llm/topic/intent/quality）。用于会话详情顶部 chips。
 	// Added 2026-07-09; backward compatible.
 	SessionTags []SessionTagView `json:"session_tags,omitempty"`
-	Title       string           `json:"title,omitempty"`
-	Summary     string           `json:"summary,omitempty"`
 }
 
 // SessionTagView 是 session_tags 表一行的扁平视图（会话级标签）。
@@ -111,12 +109,12 @@ type TurnView struct {
 // pipeline stage for a single turn. Send = the outbound request body that
 // went to the LLM; Receive = the LLM's response.
 type TurnStage struct {
-	Send        string   `json:"send"`                   // request/outbound text forwarded to LLM
-	Receive     string   `json:"receive"`                // LLM response text
-	Tokens      int      `json:"tokens"`                 // token estimate for Send
-	RangeStart  int      `json:"range_start,omitempty"`  // compressed span start turn (1-based)
-	RangeEnd    int      `json:"range_end,omitempty"`    // compressed span end turn (1-based)
-	AppliedTags []string `json:"applied_tags,omitempty"` // security transforms (pii_strip, strip_tools, ...)
+	Send         string   `json:"send"`          // request/outbound text forwarded to LLM
+	Receive      string   `json:"receive"`       // LLM response text
+	Tokens       int      `json:"tokens"`        // token estimate for Send
+	RangeStart   int      `json:"range_start,omitempty"` // compressed span start turn (1-based)
+	RangeEnd     int      `json:"range_end,omitempty"`   // compressed span end turn (1-based)
+	AppliedTags  []string `json:"applied_tags,omitempty"` // security transforms (pii_strip, strip_tools, ...)
 }
 
 // SessionCompareAPI handles session comparison endpoints.
@@ -398,11 +396,7 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 
 	// Load session-level tags (security/compliance/pii/approval + OLAP tags).
 	// Best-effort: failure leaves SessionTags empty (UI shows "—").
-	if snapshotTurns, ok := loadTurnSnapshotsForCompare(ctx, q, sessionID, tenantID); ok {
-		turns = snapshotTurns
-	}
 	sessionTags := loadSessionTagsForCompare(ctx, q, sessionID, tenantID)
-	title, summary := loadSessionSummaryForCompare(ctx, q, sessionID, tenantID)
 
 	return &SessionCompareData{
 		SessionID:      sessionID,
@@ -419,23 +413,7 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 		MsgCount:       len(allOriginal),
 		Turns:          turns,
 		SessionTags:    sessionTags,
-		Title:          title,
-		Summary:        summary,
 	}, nil
-}
-
-func loadSessionSummaryForCompare(ctx context.Context, q pgx.Tx, sessionID, tenantID string) (title, summary string) {
-	if sessionID == "" {
-		return "", ""
-	}
-	if err := q.QueryRow(ctx, `
-		SELECT COALESCE(title, ''), COALESCE(summary, '')
-		FROM session_summaries
-		WHERE session_key = $1 AND tenant_id = $2
-	`, sessionID, tenantID).Scan(&title, &summary); err != nil {
-		return "", ""
-	}
-	return title, summary
 }
 
 // loadSessionTagsForCompare 读取会话级标签（session_tags 表）。

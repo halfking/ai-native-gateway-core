@@ -450,15 +450,6 @@ func (m *Manager) ResetAll() {
 	}
 }
 
-// Reset closes the breaker for one credential after an operator-triggered
-// recovery. Callers must still run a real upstream probe before making the
-// credential routable again.
-func (m *Manager) Reset(providerID, credentialID int) {
-	if b := m.Get(providerID, credentialID); b != nil {
-		b.Reset()
-	}
-}
-
 // RecordFailure records a failure on the appropriate breaker.
 func (m *Manager) RecordFailure(providerID, credentialID int, kind ErrorKind) {
 	b := m.GetOrCreate(providerID, credentialID)

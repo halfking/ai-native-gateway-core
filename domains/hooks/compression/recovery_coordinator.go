@@ -200,7 +200,7 @@ func (rc *RecoveryCoordinator) Recover(
 	// ── Phase 3: Build CutMarker and persist to cache ────────────────────
 	marker := NewCutMarker(
 		plan,
-		messages,
+		len(messages),
 		strategy,
 		BuildSummaryMarker(summaryText),
 		summaryText,

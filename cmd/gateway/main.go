@@ -77,7 +77,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	"github.com/kaixuan/llm-gateway-go/settings"
-	dashboardtelemetry "github.com/kaixuan/llm-gateway-go/telemetry"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/kaixuan/llm-gateway-go/vibecoding"
 	"github.com/labstack/echo/v4"
@@ -952,7 +951,6 @@ func main() {
 			CompactionDeps: compactionDeps,
 		}
 		chatHandler.SetSessionCompressor(compression.NewSessionCompressor(scDeps))
-		chatHandler.SetSessionTurnSnapshotStore(dbConn.Pool())
 		slog.Info("v3 session-level compressor wired (L1 in-mem + L2 Redis + L3 PG)")
 
 		// v5 (2026-06-25) session-aware smart recovery coordinator.
@@ -1104,13 +1102,7 @@ func main() {
 			adminDB = dbConn.Pool()
 		}
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
-		if adminDB != nil {
-			dashboardRecorder := dashboardtelemetry.NewDashboardEventRecorder(adminDB, slog.Default())
-			dashboardRecorder.Start(context.Background())
-			defer dashboardRecorder.Stop()
-			adminHandler.SetDashboardEventRecorder(dashboardRecorder)
-		}
-		adminHandler.SetCircuitResetter(cm)
+
 		slog.Info("admin handler created", "db_enabled", adminDB != nil)
 	}
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
@@ -1397,23 +1389,6 @@ func main() {
 			// the real-time state cache immediately.
 			if stateManager != nil {
 				credProbeV2.SetStateManager(stateManager)
-			}
-			credProbeV2.SetCircuitResetter(cm)
-			credProbeV2.SetInvalidateCandidateCache(provider.InvalidateAllCandidateCache)
-			if liveStreamHub != nil {
-				credProbeV2.SetRecoveryEventEmitter(func(event bg.RecoveryProbeEvent) {
-					nextProbeAt := ""
-					if !event.NextProbeAt.IsZero() {
-						nextProbeAt = event.NextProbeAt.UTC().Format(time.RFC3339)
-					}
-					liveStreamHub.PublishCredentialState(admin.LiveCredentialState{
-						CredentialID: event.CredentialID,
-						State:        event.State,
-						Reason:       event.Reason,
-						NextProbeAt:  nextProbeAt,
-						Source:       event.Source,
-					})
-				})
 			}
 			slog.Info("CHECKPOINT: before credProbeV2.Start")
 			credProbeV2.Start(context.Background())

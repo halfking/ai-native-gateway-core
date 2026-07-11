@@ -150,7 +150,7 @@ func (sc *SessionCompressor) Prepare(
 		return sc.fallbackResult(clientBody, res)
 	}
 
-	mode := LoadMode()
+	mode := sc.resolveCompressionMode()
 
 	// ── Phase 1: Load session state ──────────────────────────────────────
 	var (
@@ -395,16 +395,19 @@ func (sc *SessionCompressor) updateCache(
 		return
 	}
 	now := time.Now().Unix()
-	newState := &SessionState{SchemaVersion: schemaVersion}
-	if prevState != nil {
-		*newState = *prevState
-		newState.SchemaVersion = schemaVersion
+	newState := &SessionState{
+		SchemaVersion:    schemaVersion,
+		LastOutboundHash: sha256Hex(outboundBody),
+		MsgCount:         res.MsgCount,
+		TokenEstimate:    res.TokenEst,
+		SummaryMarker:    res.SummaryMarker,
 	}
-	newState.LastOutboundHash = sha256Hex(outboundBody)
-	newState.MsgCount = res.MsgCount
-	newState.TokenEstimate = res.TokenEst
-	if res.SummaryMarker != "" {
-		newState.SummaryMarker = res.SummaryMarker
+	if prevState != nil {
+		newState.LastCompressedAt = prevState.LastCompressedAt
+		newState.RecentlyCompressedAt = prevState.RecentlyCompressedAt
+		// ── Phase 1 optimization: preserve tools cache fields ──
+		newState.ToolsHash = prevState.ToolsHash
+		newState.SystemPrompt = prevState.SystemPrompt
 	}
 	// Always track LastCompressedAt so Redis lcat reflects the last cache
 	// update time, even for pure delta-append (no LLM summary). This lets

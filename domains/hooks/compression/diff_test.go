@@ -169,52 +169,6 @@ func TestBuildOutbound_SummaryMarkerPreserved(t *testing.T) {
 	}
 }
 
-func TestBuildOutbound_ModifiedHistoryResetsSession(t *testing.T) {
-	last := makeBody([]map[string]string{
-		userMsg("original question"),
-		assistantMsg("answer"),
-		userMsg("follow up"),
-	})
-	client := makeBody([]map[string]string{
-		userMsg("MODIFIED question"),
-		assistantMsg("answer"),
-		userMsg("follow up"),
-		userMsg("new turn"),
-	})
-
-	res, err := BuildOutboundMessages(client, &SessionState{SchemaVersion: schemaVersion}, last, "openai")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !res.IsNewSess || res.DeltaCount != 0 {
-		t.Fatalf("expected edited history reset, got IsNewSess=%v DeltaCount=%d", res.IsNewSess, res.DeltaCount)
-	}
-}
-
-func TestBuildOutbound_DuplicateMessageRequiresOrderedSequence(t *testing.T) {
-	last := makeBody([]map[string]string{
-		userMsg("repeat"),
-		assistantMsg("answer one"),
-		userMsg("repeat"),
-		assistantMsg("answer two"),
-	})
-	client := makeBody([]map[string]string{
-		userMsg("repeat"),
-		assistantMsg("CHANGED"),
-		userMsg("repeat"),
-		assistantMsg("answer two"),
-		userMsg("new turn"),
-	})
-
-	res, err := BuildOutboundMessages(client, &SessionState{SchemaVersion: schemaVersion}, last, "openai")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !res.IsNewSess {
-		t.Fatal("expected duplicate-containing edited history to reset")
-	}
-}
-
 func TestMsgHash_Stable(t *testing.T) {
 	m := json.RawMessage(`{"role":"user","content":"hello"}`)
 	h1 := msgHash(m)

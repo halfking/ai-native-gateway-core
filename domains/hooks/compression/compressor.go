@@ -107,9 +107,6 @@ func envMode() Mode {
 // (early-init paths, unit tests). Kept for hot-path speed: we cache the
 // value in NewCompressor() so each request does NOT hit the registry.
 func LoadMode() Mode {
-	if !compressionEnabled() {
-		return ModeDeltaOnly
-	}
 	if settings.Global != nil {
 		if sp := settings.Global.Spec("compression.mode"); sp != nil {
 			v, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
@@ -135,25 +132,6 @@ func LoadMode() Mode {
 		}
 	}
 	return envMode()
-}
-
-func compressionEnabled() bool {
-	if settings.Global == nil {
-		return true
-	}
-	sp := settings.Global.Spec("compression.enabled")
-	if sp == nil {
-		return true
-	}
-	v, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
-	if err != nil || len(v) == 0 {
-		return true
-	}
-	var enabled bool
-	if err := json.Unmarshal(v, &enabled); err != nil {
-		return true
-	}
-	return enabled
 }
 
 // CompressionReason is the canonical value written to

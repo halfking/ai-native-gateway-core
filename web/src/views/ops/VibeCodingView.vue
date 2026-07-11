@@ -216,7 +216,7 @@ onMounted(load)
         </div>
       </template>
       <el-table :data="filteredSessions" size="small">
-        <el-table-column prop="task_type" :label="t('ops.vibecoding.sessionName')" width="200" />
+        <el-table-column prop="session_name" :label="t('ops.vibecoding.sessionName')" width="200" />
         <el-table-column prop="project_id" :label="t('ops.vibecoding.projectId')" width="100" />
         <el-table-column prop="status" :label="t('common.status')" width="100">
           <template #default="{ row }">
@@ -225,11 +225,14 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" :label="t('ops.vibecoding.startedAt')" width="160">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+        <el-table-column prop="duration_seconds" :label="t('ops.vibecoding.duration')" width="100">
+          <template #default="{ row }">{{ formatDuration(row.duration_seconds) }}</template>
         </el-table-column>
-        <el-table-column prop="completed_at" :label="t('ops.vibecoding.endedAt')" width="160">
-          <template #default="{ row }">{{ row.completed_at ? formatDate(row.completed_at) : '—' }}</template>
+        <el-table-column prop="started_at" :label="t('ops.vibecoding.startedAt')" width="160">
+          <template #default="{ row }">{{ formatDate(row.started_at) }}</template>
+        </el-table-column>
+        <el-table-column prop="ended_at" :label="t('ops.vibecoding.endedAt')" width="160">
+          <template #default="{ row }">{{ row.ended_at ? formatDate(row.ended_at) : '—' }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="140" fixed="right">
           <template #default="{ row }">
@@ -263,16 +266,16 @@ onMounted(load)
         </el-table-column>
         <el-table-column :label="t('ops.vibecoding.issues')" width="100">
           <template #default="{ row }">
-              <el-badge :value="row.review_result?.issues?.length || 0" :type="row.review_result?.issues?.length ? 'danger' : 'success'" />
+            <el-badge :value="row.issues.length" :type="row.issues.length > 0 ? 'danger' : 'success'" />
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.vibecoding.suggestions')" width="100">
           <template #default="{ row }">
-              <el-badge :value="row.review_result?.suggestions?.length || 0" type="info" />
+            <el-badge :value="row.suggestions.length" type="info" />
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" :label="t('ops.vibecoding.reviewedAt')" width="160">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+        <el-table-column prop="reviewed_at" :label="t('ops.vibecoding.reviewedAt')" width="160">
+          <template #default="{ row }">{{ formatDate(row.reviewed_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="100" fixed="right">
           <template #default="{ row }">
@@ -348,14 +351,14 @@ onMounted(load)
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item :label="t('ops.vibecoding.reviewedAt')">
-            {{ formatDate(selectedReview.created_at) }}
+            {{ formatDate(selectedReview.reviewed_at) }}
           </el-descriptions-item>
         </el-descriptions>
 
         <el-divider />
 
         <h4>{{ t('ops.vibecoding.issues') }}</h4>
-        <el-table :data="selectedReview.review_result?.issues || []" size="small" style="margin-bottom: 20px">
+        <el-table :data="selectedReview.issues" size="small" style="margin-bottom: 20px">
           <el-table-column prop="line" :label="t('ops.vibecoding.line')" width="80" />
           <el-table-column prop="severity" :label="t('ops.vibecoding.severity')" width="100">
             <template #default="{ row }">
@@ -369,10 +372,10 @@ onMounted(load)
         </el-table>
 
         <h4>{{ t('ops.vibecoding.suggestions') }}</h4>
-        <el-table :data="selectedReview.review_result?.suggestions || []" size="small">
-          <el-table-column :label="t('ops.vibecoding.message')" min-width="200">
-            <template #default="{ row }">{{ row }}</template>
-          </el-table-column>
+        <el-table :data="selectedReview.suggestions" size="small">
+          <el-table-column prop="line" :label="t('ops.vibecoding.line')" width="80" />
+          <el-table-column prop="message" :label="t('ops.vibecoding.message')" min-width="200" />
+          <el-table-column prop="suggested_code" :label="t('ops.vibecoding.suggestedCode')" min-width="200" show-overflow-tooltip />
         </el-table>
       </div>
       <template #footer>

@@ -4,7 +4,6 @@ package telemetry
 import (
 	"net"
 	"net/http"
-	"os"
 	"strings"
 )
 
@@ -53,99 +52,29 @@ type RequestMetadata struct {
 	VendorMetadata map[string]interface{} // Vendor-specific fields (JSONB)
 }
 
-// ExtractClientIP extracts the real client IP from HTTP request headers.
-// Forwarded headers (X-Real-IP, X-Forwarded-For) are trusted only when the immediate
-// peer (RemoteAddr) is loopback/private or belongs to LLM_GATEWAY_TRUSTED_PROXY_CIDRS.
-// Otherwise, RemoteAddr is used directly to prevent spoofing.
+// ExtractClientIP extracts the real client IP from HTTP request headers
+// Priority: X-Real-IP > X-Forwarded-For (first) > RemoteAddr
 func ExtractClientIP(r *http.Request) string {
-	remoteIP := extractRemoteIP(r.RemoteAddr)
-
-	// Only trust forwarded headers if immediate peer is trusted
-	if !isTrustedProxy(remoteIP) {
-		return remoteIP
-	}
-
-	// Peer is trusted, check X-Real-IP first
+	// X-Real-IP is most reliable if set by trusted proxy
 	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
-		realIP = strings.TrimSpace(realIP)
-		if ip := net.ParseIP(realIP); ip != nil {
-			return realIP
-		}
+		return strings.TrimSpace(realIP)
 	}
 
-	// Fall back to first valid IP in X-Forwarded-For
+	// X-Forwarded-For: first IP is the original client
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		parts := strings.Split(fwd, ",")
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if ip := net.ParseIP(part); ip != nil {
-				return part
-			}
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
 		}
 	}
 
-	// No valid forwarded header, use peer IP
-	return remoteIP
-}
-
-// extractRemoteIP strips port from RemoteAddr
-func extractRemoteIP(remoteAddr string) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		// No port, return as-is
-		return remoteAddr
-	}
+	// Fallback to RemoteAddr (strip port)
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	return host
 }
 
-// isTrustedProxy returns true if the IP is loopback, private, or in custom trusted CIDRs
-func isTrustedProxy(ipStr string) bool {
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return false
-	}
-
-	// Check loopback
-	if ip.IsLoopback() {
-		return true
-	}
-
-	// Check private ranges (RFC 1918, RFC 4193 for IPv6)
-	if ip.IsPrivate() {
-		return true
-	}
-
-	// Check custom trusted CIDRs from env
-	customCIDRs := os.Getenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS")
-	if customCIDRs == "" {
-		return false
-	}
-
-	for _, cidrStr := range strings.Split(customCIDRs, ",") {
-		cidrStr = strings.TrimSpace(cidrStr)
-		if cidrStr == "" {
-			continue
-		}
-		_, cidr, err := net.ParseCIDR(cidrStr)
-		if err != nil {
-			// Invalid CIDR, skip safely
-			continue
-		}
-		if cidr.Contains(ip) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// ExtractForwardedFor extracts the full X-Forwarded-For header chain.
-// Only returns the chain if the immediate peer is a trusted proxy; otherwise empty.
+// ExtractForwardedFor extracts the full X-Forwarded-For header chain
 func ExtractForwardedFor(r *http.Request) string {
-	remoteIP := extractRemoteIP(r.RemoteAddr)
-	if !isTrustedProxy(remoteIP) {
-		return ""
-	}
 	return r.Header.Get("X-Forwarded-For")
 }
 
@@ -230,9 +159,6 @@ func ExtractAgentType(r *http.Request) string {
 	}
 
 	// API clients
-	if strings.Contains(ua, "postman") || strings.Contains(ua, "insomnia") {
-		return "api"
-	}
 	if strings.Contains(ua, "python") ||
 		strings.Contains(ua, "go-http-client") ||
 		strings.Contains(ua, "java") ||

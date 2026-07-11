@@ -720,7 +720,7 @@ groups:
 ## 十一、相关文件
 
 ### 后端
-- `sql/migrations/startup/383_dashboard_access_events.sql` - 埋点表
+- `sql/migrations/startup/361_dashboard_access_events.sql` - 埋点表
 - `admin/dashboardapi/types.go` - 统一响应格式
 - `admin/dashboardapi/session_overview.go` - 会话总览 Handler
 - `telemetry/dashboard_events.go` - 埋点记录器

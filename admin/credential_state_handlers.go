@@ -21,7 +21,7 @@ import (
 	"strconv"
 )
 
-// handleTestCredential fires an immediate real re-probe for one credential.
+// handleTestCredential fires an immediate fast re-probe for one credential.
 // Returns 202 (accepted) — the probe runs asynchronously in the background.
 func (h *Handler) handleTestCredential(w http.ResponseWriter, r *http.Request) {
 	credID, ok := parseCredentialID(w, r)
@@ -34,14 +34,14 @@ func (h *Handler) handleTestCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.probeV2.ProbeNowAsync(credID)
+	h.probeV2.SubmitFastProbe(credID)
 
 	slog.Info("manual probe submitted",
 		"credential_id", credID,
 		"source", "web_api")
 
 	writeAccepted(w, map[string]any{
-		"message":       "immediate probe started",
+		"message":       "probe submitted to fast queue",
 		"credential_id": credID,
 		"status":        "pending",
 	})
