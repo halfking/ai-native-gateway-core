@@ -145,7 +145,8 @@ var concurrentOverloadRe = regexp.MustCompile(
 		`(server|service|upstream) (is )?(overload|under pressure)|` +
 		`(rpm|tpm).{0,20}(limit|exceed|reach|over)|` +
 		`request(ed|s)? too (fast|frequent|many)|` +
-		`slow down|try again later|backoff)`,
+		`slow down|try again later|backoff|` +
+		`available accounts|account (not|un)available|quota exhausted|insufficient credit)`,
 )
 var concurrentOverloadCJKRe = regexp.MustCompile(
 	`并发.{0,15}(超限|过大|过高|达到上限|超过限制)|` +
