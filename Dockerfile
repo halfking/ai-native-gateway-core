@@ -9,7 +9,10 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
 # REGISTRY: pass --build-arg REGISTRY=<your-registry> to override.
 # Default is empty to use local images (kx-base:*) without registry prefix.
-# Production builds pass REGISTRY=registry.internal.example.com via --build-arg.
+# Production builds pass REGISTRY=registry.internal.example.com/ via --build-arg
+# (registry.internal.example.com = 8.136.114.245, kaixuan/<ADMIN_PASSWORD_REDACTED>).
+# Dev/test builds on the 245 server use REGISTRY=registry.itestu.cn/
+# (= 192.168.31.8:5000).
 ARG REGISTRY=""
 FROM --platform=linux/amd64 ${REGISTRY}kx-base:go-vue-amd64 AS builder
 
