@@ -78,6 +78,7 @@ type Handler struct {
 		Disabled() bool
 		Ping(ctx context.Context) error
 		BaseURL() string
+		SmartSearch(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
 	}
 	// memoraSink provides write-path stats for the admin UI.
 	memoraSink interface {
@@ -118,10 +119,10 @@ type Handler struct {
 	sessionCleanupWorker   *session.CleanupWorker        // 2026-07-06 清理过期 stopped session
 
 	// 数据库降级模块 (2026-07-10)
-	dbMonitor   *dbdegradation.Monitor
-	fileReader  *dbdegradation.FileReader
-	recovery    *dbdegradation.Recovery
-	ttlManager  *dbdegradation.TTLManager
+	dbMonitor  *dbdegradation.Monitor
+	fileReader *dbdegradation.FileReader
+	recovery   *dbdegradation.Recovery
+	ttlManager *dbdegradation.TTLManager
 
 	dashboardEventRecorder interface {
 		RecordAccess(tenantID, userID, userRole, sessionID, apiPath, apiMethod string, statusCode int, responseTime time.Duration, cacheHit bool)
@@ -417,6 +418,7 @@ func (h *Handler) SetMemoraServices(client interface {
 	BaseURL() string
 	AddMessage(ctx context.Context, userID string, messages []memory.Message, info map[string]any) error
 	Search(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
+	SmartSearch(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
 }, sink interface {
 	Stats() memory.Stats
 	Pause()
@@ -663,6 +665,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/memora-status", h.admin(h.handleMemoraStatus))
 	mux.HandleFunc("/api/system/memora-ping", h.admin(h.handleMemoraPing))
 	mux.HandleFunc("/api/system/memora-sink", h.admin(h.handleMemoraSinkControl))
+	mux.HandleFunc("/api/system/memora-query/", h.admin(h.handleMemoraQuery))
 	mux.HandleFunc("/api/system/memora-sessions", h.admin(h.handleMemoraSessions))
 	mux.HandleFunc("/api/system/memora-context/", h.admin(h.handleMemoraContext))
 	mux.HandleFunc("/api/system/session-messages/", h.admin(h.handleSessionMessages))

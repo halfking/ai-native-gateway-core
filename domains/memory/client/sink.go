@@ -26,10 +26,11 @@ import (
 // Counters (Enqueued/Dropped/Errored) are exposed via Stats() for the
 // gateway's /healthz, /api/system/memora-status, or metrics endpoint.
 type Sink struct {
-	client  *Client
-	queue   chan WriteOp
-	workers int
-	wg      sync.WaitGroup
+	client    *Client
+	queue     chan WriteOp
+	workers   int
+	wg        sync.WaitGroup
+	lifecycle sync.RWMutex
 
 	enqueued  atomic.Uint64
 	dropped   atomic.Uint64
@@ -40,6 +41,8 @@ type Sink struct {
 	lastError         atomic.Value // string
 	lastErrorAt       atomic.Value // time.Time
 	paused            atomic.Bool
+	started           atomic.Bool
+	stopped           atomic.Bool
 }
 
 // WriteOp is one item of work in the sink. It is a type alias for
@@ -68,6 +71,9 @@ func (s *Sink) Start() {
 	if s == nil || s.client == nil || s.client.Disabled() {
 		return
 	}
+	if !s.started.CompareAndSwap(false, true) {
+		return
+	}
 	for i := 0; i < s.workers; i++ {
 		s.wg.Add(1)
 		go s.worker()
@@ -81,7 +87,12 @@ func (s *Sink) Stop(ctx context.Context) {
 	if s == nil || s.client == nil || s.client.Disabled() {
 		return
 	}
+	if !s.started.Load() || !s.stopped.CompareAndSwap(false, true) {
+		return
+	}
+	s.lifecycle.Lock()
 	close(s.queue)
+	s.lifecycle.Unlock()
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
 	if ctx == nil {
@@ -126,7 +137,17 @@ func (s *Sink) Resume() {
 // Enqueue is the ONLY way callers feed the sink. It is O(1) and never
 // blocks: a full queue causes the op to be dropped and counted.
 func (s *Sink) Enqueue(op WriteOp) {
-	if s == nil || s.client == nil || s.client.Disabled() || op.UserID == "" || s.paused.Load() {
+	if s == nil || s.client == nil || s.client.Disabled() || op.UserID == "" || !s.started.Load() {
+		return
+	}
+	s.lifecycle.RLock()
+	defer s.lifecycle.RUnlock()
+	if s.stopped.Load() {
+		return
+	}
+	if s.paused.Load() {
+		s.dropped.Add(1)
+		slog.Debug("memora.sink dropped op (paused)", "dropped_total", s.dropped.Load())
 		return
 	}
 	select {
