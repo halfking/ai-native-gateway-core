@@ -14,6 +14,7 @@ func PlatformSpecs() []*Spec {
 	out = append(out, StorageSpecs()...)
 	out = append(out, SessionAuditSpecs()...)
 	out = append(out, ProbeSpecs()...)
+	out = append(out, SelfCheckSpecs()...)
 	return out
 }
 
