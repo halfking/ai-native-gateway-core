@@ -34,6 +34,7 @@ import (
 	"container/list"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -44,13 +45,19 @@ import (
 const (
 	// schemaVersion is the current Redis Hash schema. Bump when SessionState
 	// fields change in a backward-incompatible way.
-	schemaVersion = 1
+	schemaVersion = 2
 
 	// redisKeyTTL is how long Redis keeps the session hash after the last
 	// write. 30 minutes covers the typical idle-between-turns gap; the
 	// sliding-window idle trigger fires at 5 minutes anyway, so 30 min is
 	// a generous safety margin.
 	redisKeyTTL = 30 * time.Minute
+
+	// redisMaxOutboundBodyBytes bounds the body kept with a Redis session
+	// state. The body is required to continue delta-append and recover a
+	// cut-marker after an instance switch; oversized bodies remain available
+	// through the PostgreSQL L3 fallback instead of growing Redis unbounded.
+	redisMaxOutboundBodyBytes = 512 << 10
 
 	// l1MaxSessions is the maximum number of sessions held in the in-process
 	// L1. The L1 is a true O(1) LRU (container/list doubly-linked list +
@@ -103,6 +110,8 @@ type SessionState struct {
 	CutStrategy    string `json:"cm_strat,omitempty"`
 	CutBytesBefore int    `json:"cm_bb,omitempty"`
 	CutBytesAfter  int    `json:"cm_ba,omitempty"`
+	CutPrefixHash  string `json:"cm_ph,omitempty"`
+	CutSummaryText string `json:"cm_sum,omitempty"`
 
 	// v6: Audited state (Cache 2 concept).
 	//
@@ -247,7 +256,8 @@ func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID stri
 			c.setL1(key, st, body)
 			// Back-fill L2 so subsequent requests are fast.
 			if c.redis != nil {
-				if werr := c.saveToRedis(ctx, tenantID, gwSessionID, st); werr != nil {
+				if werr := c.saveToRedis(ctx, tenantID, gwSessionID, st, body); werr != nil {
+
 					slog.Warn("session_cache: redis backfill failed", "session", gwSessionID, "error", werr)
 				}
 			}
@@ -268,7 +278,7 @@ func (c *SessionCache) Set(ctx context.Context, tenantID, gwSessionID string, st
 	c.setL1(key, state, outboundBody)
 
 	if c.redis != nil {
-		if err := c.saveToRedis(ctx, tenantID, gwSessionID, state); err != nil {
+		if err := c.saveToRedis(ctx, tenantID, gwSessionID, state, outboundBody); err != nil {
 			slog.Warn("session_cache: redis save error", "session", gwSessionID, "error", err)
 			// Non-fatal: L1 still has fresh data.
 		}
@@ -344,13 +354,33 @@ func (c *SessionCache) loadFromRedis(ctx context.Context, tenantID, gwSessionID 
 		// Schema changed — treat as cache miss.
 		return nil, nil, nil
 	}
-	// Body is not stored in Redis (too large); caller will re-read from L3 if needed.
-	return &st, nil, nil
+	var body []byte
+	if encoded := fields["body"]; encoded != "" {
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decode redis outbound body: %w", err)
+		}
+		body = decoded
+	}
+	// The outbound body is bounded so a Redis hit can continue delta-append
+
+	// across instances. For larger payloads we deliberately fall through to
+	// L3, where the durable request log remains the source of truth.
+	if len(body) == 0 {
+		if c.db != nil {
+			return c.loadFromDB(ctx, tenantID, gwSessionID)
+		}
+		return &st, nil, nil
+	}
+	return &st, body, nil
 }
 
-func (c *SessionCache) saveToRedis(ctx context.Context, tenantID, gwSessionID string, state *SessionState) error {
+func (c *SessionCache) saveToRedis(ctx context.Context, tenantID, gwSessionID string, state *SessionState, outboundBody []byte) error {
 	key := redisKey(tenantID, gwSessionID)
 	fields := encodeSessionStateFields(state)
+	if len(outboundBody) > 0 && len(outboundBody) <= redisMaxOutboundBodyBytes {
+		fields = append(fields, "body", base64.StdEncoding.EncodeToString(outboundBody))
+	}
 	if err := c.redis.HSet(ctx, key, fields...); err != nil {
 		return err
 	}
@@ -446,6 +476,12 @@ func encodeSessionStateFields(st *SessionState) []any {
 		if st.CutBytesAfter > 0 {
 			fields = append(fields, "cm_ba", fmt.Sprintf("%d", st.CutBytesAfter))
 		}
+		if st.CutPrefixHash != "" {
+			fields = append(fields, "cm_ph", st.CutPrefixHash)
+		}
+		if st.CutSummaryText != "" {
+			fields = append(fields, "cm_sum", st.CutSummaryText)
+		}
 	}
 	// v6: Audited state — only emit non-zero values to keep Redis hash small
 	// and to remain backward compatible with older readers that only know
@@ -510,6 +546,8 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	st.CutStrategy = fields["cm_strat"]
 	st.CutBytesBefore = int(parseInt(fields["cm_bb"]))
 	st.CutBytesAfter = int(parseInt(fields["cm_ba"]))
+	st.CutPrefixHash = fields["cm_ph"]
+	st.CutSummaryText = fields["cm_sum"]
 	// v6: Audited state — missing keys decode to zero value, which is the
 	// intended "no audit yet" semantic.
 	st.AuditedAt = parseInt(fields["aud_at"])
@@ -556,6 +594,8 @@ func (s *SessionState) SetCutMarker(cm CutMarker) {
 	s.CutStrategy = cm.Strategy
 	s.CutBytesBefore = cm.BytesBefore
 	s.CutBytesAfter = cm.BytesAfter
+	s.CutPrefixHash = cm.SourcePrefixHash
+	s.CutSummaryText = cm.SummaryText
 	s.SummaryMarker = cm.SummaryMarker
 }
 
@@ -563,20 +603,21 @@ func (s *SessionState) SetCutMarker(cm CutMarker) {
 // SummaryText is NOT available from Redis (only L1) — callers that need
 // the actual summary text should use the L1-cached body instead.
 func (s *SessionState) ToCutMarker(summaryText string) *CutMarker {
-	if s == nil || !s.HasCutMarker {
-		return nil
+	if summaryText == "" {
+		summaryText = s.CutSummaryText
 	}
 	return &CutMarker{
-		Version:        cutMarkerSchemaVersion,
-		CreatedAt:      s.CutCreatedAt,
-		SourceMsgCount: s.CutSourceMsgs,
-		SystemMsgCount: s.CutSystemMsgs,
-		CutIndex:       s.CutIndex,
-		SummaryMarker:  s.SummaryMarker,
-		Strategy:       s.CutStrategy,
-		BytesBefore:    s.CutBytesBefore,
-		BytesAfter:     s.CutBytesAfter,
-		SummaryText:    summaryText,
+		Version:          cutMarkerSchemaVersion,
+		CreatedAt:        s.CutCreatedAt,
+		SourceMsgCount:   s.CutSourceMsgs,
+		SystemMsgCount:   s.CutSystemMsgs,
+		CutIndex:         s.CutIndex,
+		SummaryMarker:    s.SummaryMarker,
+		Strategy:         s.CutStrategy,
+		BytesBefore:      s.CutBytesBefore,
+		BytesAfter:       s.CutBytesAfter,
+		SourcePrefixHash: s.CutPrefixHash,
+		SummaryText:      summaryText,
 	}
 }
 
@@ -590,6 +631,8 @@ func (s *SessionState) ClearCutMarker() {
 	s.CutStrategy = ""
 	s.CutBytesBefore = 0
 	s.CutBytesAfter = 0
+	s.CutPrefixHash = ""
+	s.CutSummaryText = ""
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
