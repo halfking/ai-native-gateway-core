@@ -2268,8 +2268,11 @@ func main() {
 		vibecodingAPI.RegisterRoutes(e.Group("/api/admin/vibecoding"))
 		slog.Info("Phase 7: VibeCoding API enabled (/api/admin/vibecoding/*)")
 
-		// 将 Echo 挂载到 http.ServeMux
-		mux.Handle("/api/admin/", e)
+		// Mount the Echo operations API behind the same admin authentication
+		// wrapper used by the net/http admin handlers. Keep this scoped to the
+		// /api/admin subtree; applying it globally would block chat and health
+		// traffic, while leaving Echo unwrapped would expose operations APIs.
+		mux.Handle("/api/admin/", admin.AdminMiddleware(e.ServeHTTP, pool, cfg.SecretKey))
 		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
 	}
 
