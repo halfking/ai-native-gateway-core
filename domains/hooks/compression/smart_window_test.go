@@ -302,7 +302,14 @@ func TestIncrementalBuild_Basic(t *testing.T) {
 		Version:        cutMarkerSchemaVersion,
 		SystemMsgCount: 1,
 		CutIndex:       4, // First 4 non-system messages summarised
-		SummaryText:    "Summary of old conversation",
+		SourcePrefixHash: messagePrefixHash([]json.RawMessage{
+			json.RawMessage(`{"role":"system","content":"System prompt"}`),
+			json.RawMessage(`{"role":"user","content":"Old question 1"}`),
+			json.RawMessage(`{"role":"assistant","content":"Old answer 1"}`),
+			json.RawMessage(`{"role":"user","content":"Old question 2"}`),
+			json.RawMessage(`{"role":"assistant","content":"Old answer 2"}`),
+		}),
+		SummaryText: "Summary of old conversation",
 	}
 
 	rebuilt, ok := IncrementalBuild(body, marker, "openai")
@@ -367,10 +374,11 @@ func TestIncrementalBuild_StaleMarker(t *testing.T) {
 		makeMsg("user", "Only message"),
 	)
 	marker := CutMarker{
-		Version:        cutMarkerSchemaVersion,
-		SystemMsgCount: 0,
-		CutIndex:       5, // More than available messages
-		SummaryText:    "Summary",
+		Version:          cutMarkerSchemaVersion,
+		SystemMsgCount:   0,
+		CutIndex:         5, // More than available messages
+		SourcePrefixHash: "stale",
+		SummaryText:      "Summary",
 	}
 	_, ok := IncrementalBuild(body, marker, "openai")
 	if ok {

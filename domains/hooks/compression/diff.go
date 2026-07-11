@@ -108,36 +108,21 @@ func BuildOutboundMessages(
 		}, nil
 	}
 
-	// ── Build LCS index from last outbound ───────────────────────────────
-	// Index: hash → bool (present in last outbound, non-summary messages only).
-	// Summary marker messages are excluded from the index so they are never
-	// mistaken for client-sent messages.
-	lastHashSet := make(map[string]bool, len(lastMsgs))
-	for _, m := range lastMsgs {
-		if isSummaryMarkerMsg(m) {
-			continue // preserve as-is, skip from diff
-		}
-		h := msgHash(m)
-		if h != "" {
-			lastHashSet[h] = true
+	// ── Find a verified ordered cached suffix ───────────────────────────────
+	// The client normally resends full original history while the cached body
+	// may begin with a gateway summary. Require every non-summary message from
+	// the cached outbound to occur contiguously and in order in the client
+	// history. This prevents duplicate content from selecting an arbitrary
+	// single-message boundary while preserving summary + tail incremental flow.
+	lastComparable := make([]rawMsg, 0, len(lastMsgs))
+	for _, message := range lastMsgs {
+		if !isSummaryMarkerMsg(message) {
+			lastComparable = append(lastComparable, message)
 		}
 	}
-
-	// ── Find the last client message that exists in last outbound ────────
-	lastSharedIdx := -1
-	for i := len(clientMsgs) - 1; i >= 0; i-- {
-		if isSummaryMarkerMsg(clientMsgs[i]) {
-			continue
-		}
-		h := msgHash(clientMsgs[i])
-		if h != "" && lastHashSet[h] {
-			lastSharedIdx = i
-			break
-		}
-	}
-
-	// ── No shared message: session reset (client sent completely different history) ──
+	lastSharedIdx := contiguousSequenceEnd(clientMsgs, lastComparable)
 	if lastSharedIdx == -1 {
+		// No verified ordered boundary: client history changed or this is a new session.
 		hashes := computeHashes(clientMsgs)
 		return &OutboundResult{
 			Body:      clientBody,
@@ -148,11 +133,10 @@ func BuildOutboundMessages(
 		}, nil
 	}
 
-	// ── Delta tail: client messages after lastSharedIdx ─────────────────
+	// ── Delta tail: verified new client messages after cached suffix ────────
 	deltaTail := clientMsgs[lastSharedIdx+1:]
 
 	if len(deltaTail) == 0 {
-		// Client body is a subset or equal to last outbound — return last.
 		hashes := computeHashes(lastMsgs)
 		return &OutboundResult{
 			Body:      lastOutboundBody,
@@ -206,6 +190,26 @@ func BuildOutboundMessages(
 // ──────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ──────────────────────────────────────────────────────────────────────────────
+
+func contiguousSequenceEnd(clientMsgs, cachedMsgs []rawMsg) int {
+	if len(cachedMsgs) == 0 || len(cachedMsgs) > len(clientMsgs) {
+		return -1
+	}
+	for start := len(clientMsgs) - len(cachedMsgs); start >= 0; start-- {
+		matched := true
+		for offset, cached := range cachedMsgs {
+			cachedHash := msgHash(cached)
+			if cachedHash == "" || cachedHash != msgHash(clientMsgs[start+offset]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return start + len(cachedMsgs) - 1
+		}
+	}
+	return -1
+}
 
 // extractMessages parses the "messages" array from an OpenAI or Anthropic body.
 func extractMessages(body []byte) ([]rawMsg, error) {

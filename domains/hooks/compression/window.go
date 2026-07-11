@@ -123,7 +123,7 @@ func ShouldTriggerWindow(
 	maxMsgCount := envInt("LLM_GATEWAY_WINDOW_MAX_MSG_COUNT", DefaultMaxMsgCount)
 	idleSecs := envInt("LLM_GATEWAY_WINDOW_IDLE_SECONDS", DefaultIdleSeconds)
 	minIdleMsgs := envInt("LLM_GATEWAY_WINDOW_MIN_IDLE_MSG_COUNT", DefaultMinIdleMsgCount)
-	fraction := envFloat("LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION", DefaultWindowFraction)
+	fraction := LoadFraction()
 
 	// ── TOKEN trigger ────────────────────────────────────────────────────
 	var threshold int

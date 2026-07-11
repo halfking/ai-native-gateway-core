@@ -21,6 +21,8 @@
 package compression
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -59,6 +61,11 @@ type CutMarker struct {
 	BytesBefore int `json:"bb"`
 	BytesAfter  int `json:"ba"`
 
+	// SourcePrefixHash fingerprints the exact original prefix that was
+	// summarised. Incremental rebuilds verify it before reusing the summary so
+	// edited history and repeated messages cannot select the wrong boundary.
+	SourcePrefixHash string `json:"ph,omitempty"`
+
 	// SummaryText is the actual LLM-generated or mechanical summary text.
 	// This is what gets prepended on the next request's incremental build.
 	// Only stored in L1 (in-process) to avoid large blobs in Redis.
@@ -69,18 +76,24 @@ type CutMarker struct {
 const cutMarkerSchemaVersion = 1
 
 // NewCutMarker creates a CutMarker from a CutPlan and additional context.
-func NewCutMarker(plan CutPlan, sourceMsgCount int, strategy string, summaryMarker, summaryText string, bytesBefore, bytesAfter int) CutMarker {
+func NewCutMarker(plan CutPlan, source []json.RawMessage, strategy string, summaryMarker, summaryText string, bytesBefore, bytesAfter int) CutMarker {
+	globalCut := plan.SystemCount + plan.CutIndex
+	prefixHash := ""
+	if globalCut > 0 && globalCut <= len(source) {
+		prefixHash = messagePrefixHash(source[:globalCut])
+	}
 	return CutMarker{
-		Version:        cutMarkerSchemaVersion,
-		CreatedAt:      time.Now().Unix(),
-		SourceMsgCount: sourceMsgCount,
-		SystemMsgCount: plan.SystemCount,
-		CutIndex:       plan.CutIndex,
-		SummaryMarker:  summaryMarker,
-		Strategy:       strategy,
-		BytesBefore:    bytesBefore,
-		BytesAfter:     bytesAfter,
-		SummaryText:    summaryText,
+		Version:          cutMarkerSchemaVersion,
+		CreatedAt:        time.Now().Unix(),
+		SourceMsgCount:   len(source),
+		SystemMsgCount:   plan.SystemCount,
+		CutIndex:         plan.CutIndex,
+		SummaryMarker:    summaryMarker,
+		Strategy:         strategy,
+		BytesBefore:      bytesBefore,
+		BytesAfter:       bytesAfter,
+		SourcePrefixHash: prefixHash,
+		SummaryText:      summaryText,
 	}
 }
 
@@ -113,6 +126,7 @@ func (cm CutMarker) MarshalForRedis() map[string]string {
 		"cm_strat": cm.Strategy,
 		"cm_bb":    fmt.Sprintf("%d", cm.BytesBefore),
 		"cm_ba":    fmt.Sprintf("%d", cm.BytesAfter),
+		"cm_ph":    cm.SourcePrefixHash,
 	}
 }
 
@@ -131,6 +145,7 @@ func UnmarshalCutMarkerFromRedis(fields map[string]string) *CutMarker {
 	cm.Strategy = fields["cm_strat"]
 	parseInt(fields["cm_bb"], &cm.BytesBefore)
 	parseInt(fields["cm_ba"], &cm.BytesAfter)
+	cm.SourcePrefixHash = fields["cm_ph"]
 	cm.Version = cutMarkerSchemaVersion
 	return cm
 }
@@ -139,14 +154,15 @@ func UnmarshalCutMarkerFromRedis(fields map[string]string) *CutMarker {
 func (cm CutMarker) MarshalJSON() ([]byte, error) {
 	m := map[string]any{
 		"cut_marker": map[string]any{
-			"version":          cm.Version,
-			"created_at":       cm.CreatedAt,
-			"source_msg_count": cm.SourceMsgCount,
-			"system_msg_count": cm.SystemMsgCount,
-			"cut_index":        cm.CutIndex,
-			"strategy":         cm.Strategy,
-			"bytes_before":     cm.BytesBefore,
-			"bytes_after":      cm.BytesAfter,
+			"version":            cm.Version,
+			"created_at":         cm.CreatedAt,
+			"source_msg_count":   cm.SourceMsgCount,
+			"system_msg_count":   cm.SystemMsgCount,
+			"cut_index":          cm.CutIndex,
+			"strategy":           cm.Strategy,
+			"bytes_before":       cm.BytesBefore,
+			"bytes_after":        cm.BytesAfter,
+			"source_prefix_hash": cm.SourcePrefixHash,
 		},
 	}
 	if cm.SummaryMarker != "" {
@@ -194,6 +210,9 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 		// Incoming body is shorter than the cached cut point — stale marker.
 		return nil, false
 	}
+	if marker.SourcePrefixHash == "" || marker.SourcePrefixHash != messagePrefixHash(req.Messages[:globalCut]) {
+		return nil, false
+	}
 
 	systemMsgs := req.Messages[:marker.SystemMsgCount]
 	nonSystem := req.Messages[marker.SystemMsgCount:]
@@ -224,6 +243,19 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 		return nil, false
 	}
 	return result, true
+}
+
+func messagePrefixHash(messages []json.RawMessage) string {
+	h := sha256.New()
+	for _, message := range messages {
+		fingerprint := msgHash(message)
+		if fingerprint == "" {
+			return ""
+		}
+		_, _ = h.Write([]byte(fingerprint))
+		_, _ = h.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func parseInt64(s string, dst *int64) {
