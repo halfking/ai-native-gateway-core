@@ -3,6 +3,7 @@
 // 2026-07-05: 单行统计卡片 + 多泳道实时请求流
 // 2026-07-05 v3: 使用父组件提供的共享数据源
 // 2026-07-10 v4: 支持 Tab 切换（stream vs stats）
+// 2026-07-12 v5: 新增系统监测 Tab
 
 import { ref, computed, inject, type Ref } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -12,6 +13,7 @@ import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import StatsDrawer from '../components/StatsDrawer.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionStatsPanel from '../components/SessionStatsPanel.vue'
+import SelfCheckPanel from './SelfCheckPanel.vue'
 import type {
   UsageSummary,
   ModelUsage,
@@ -38,8 +40,8 @@ const dashboardData = inject<{
 
 // 从父组件注入 Tab 控制
 const dashboardTab = inject<{
-  activeTab: Ref<'stream' | 'stats'>
-  switchTab: (tab: 'stream' | 'stats') => void
+  activeTab: Ref<'stream' | 'stats' | 'selfcheck'>
+  switchTab: (tab: 'stream' | 'stats' | 'selfcheck') => void
 }>('dashboardTab')!
 
 // 从父组件注入泳道重新初始化key
@@ -140,6 +142,15 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
             :title="$t('dashboard.tabs.sessionStats')"
           >
             {{ $t('dashboard.tabs.sessionStats') }}
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            :class="{ 'tab-btn--active': activeTab === 'selfcheck' }"
+            @click="dashboardTab.switchTab('selfcheck')"
+            title="系统监测"
+          >
+            系统监测
           </button>
         </div>
         
@@ -275,6 +286,9 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
 
     <!-- 会话统计面板（仅在 stats tab 显示） -->
     <SessionStatsPanel v-if="activeTab === 'stats'" style="margin-bottom: 20px;" />
+
+    <!-- 系统监测面板（仅在 selfcheck tab 显示） -->
+    <SelfCheckPanel v-if="activeTab === 'selfcheck'" />
 
     <!-- 实时请求流V2（仅在 stream tab 显示） -->
     <LiveRequestStreamV2
