@@ -31,17 +31,25 @@
           </div>
 
           <div class="migration-controls">
-            <select v-model="table.retentionHours" class="retention-select" :disabled="table.migrating">
-              <option :value="0">{{ t('dataLifecycle.hotPartition.retention.all') }}</option>
-              <option :value="24">{{ t('dataLifecycle.hotPartition.retention.1day') }}</option>
-              <option :value="168">{{ t('dataLifecycle.hotPartition.retention.7day') }}</option>
-              <option :value="720">{{ t('dataLifecycle.hotPartition.retention.30day') }}</option>
-            </select>
+            <el-select
+              v-model="table.retentionHours"
+              class="retention-select"
+              :disabled="table.migrating"
+              :teleported="true"
+              popper-class="hot-retention-popper"
+              :aria-label="hotTableLabel(table.name)"
+            >
+              <el-option :value="0" :label="t('dataLifecycle.hotPartition.retention.all')" />
+              <el-option :value="24" :label="t('dataLifecycle.hotPartition.retention.1day')" />
+              <el-option :value="168" :label="t('dataLifecycle.hotPartition.retention.7day')" />
+              <el-option :value="720" :label="t('dataLifecycle.hotPartition.retention.30day')" />
+            </el-select>
 
             <button
+              type="button"
               class="btn btn-sm btn-primary"
               @click="promoteTable(table)"
-              :disabled="table.migrating || loading"
+              :disabled="table.migrating"
             >
               {{ table.migrating ? t('dataLifecycle.hotPartition.migrating') : t('dataLifecycle.hotPartition.startMigrate') }}
             </button>
@@ -245,7 +253,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElOption, ElSelect } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '@/i18n'
 import { req } from '@/api/_core'
@@ -710,17 +718,21 @@ function formatNumber(num: number): string {
 
 .retention-select {
   flex: 1;
-  padding: 6px 10px;
-  background: #0f1117;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  color: #e6edf3;
-  font-size: 13px;
+  min-width: 0;
 }
 
-.retention-select:focus {
-  outline: none;
-  border-color: #6366f1;
+:global(.hot-retention-popper) {
+  z-index: 3000;
+}
+
+:global(.hot-retention-popper .el-select-dropdown__item) {
+  min-height: 36px;
+  line-height: 36px;
+  padding: 0 14px;
+}
+
+:global(.hot-retention-popper .el-select-dropdown__item.is-selected) {
+  color: #818cf8;
 }
 
 .migration-progress {
