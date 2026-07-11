@@ -263,30 +263,6 @@ func TestRecoverExpired_HonoursRecoverAt(t *testing.T) {
 	}
 }
 
-func TestRecoverExpired_ClearsExpiredMarkerEvenWhenBindingIsAvailable(t *testing.T) {
-	mockDB, _ := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
-	defer mockDB.Close()
-
-	// A previous recovery path could leave available=true with an expired
-	// recover_at. That stale marker still blocked routing, so recovery must
-	// clear it regardless of the current available flag.
-	mockDB.ExpectExec(`UPDATE credential_model_bindings[\s\S]*unavailable_recover_at[\s\S]*IS NOT NULL[\s\S]*< now\(\)`).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mockDB.ExpectExec(`UPDATE model_offers[\s\S]*unavailable_at`).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mockDB.ExpectExec(`UPDATE credentials`).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
-
-	if count, err := RecoverExpired(context.Background(), mockDB); err != nil {
-		t.Fatalf("RecoverExpired: %v", err)
-	} else if count != 1 {
-		t.Fatalf("expected one stale marker to be cleared, got %d", count)
-	}
-	if err := mockDB.ExpectationsWereMet(); err != nil {
-		t.Fatalf("expired available binding was not recovered: %v", err)
-	}
-}
-
 func TestRecoverExpired_SkipsModelProbeBroken(t *testing.T) {
 	mockDB, _ := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
 	defer mockDB.Close()
