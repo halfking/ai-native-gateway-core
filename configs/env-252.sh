@@ -36,5 +36,21 @@ TUNNEL_LOCAL_PORT="15432"
 TUNNEL_REMOTE_TARGET="172.16.2.210:5432"
 
 # ── Image Info ─────────────────────────────────────────────────────────────
-PG_IMAGE="kx-citus-pg17:amd64"
+# 252 server: docker pull kx-citus-pg17:13.3.0 (or platform-specific suffix)
+#   - amd64: registry.kxpms.cn/kx-citus-pg17:13.3.0-amd64
+#   - arm64: registry.kxpms.cn/kx-citus-pg17:13.3.0-arm64
+#   - intel64: registry.kxpms.cn/kx-citus-pg17:13.3.0-intel64
+# Local development uses the arm64 variant (Apple Silicon Mac)
+PG_IMAGE="registry.kxpms.cn/kx-citus-pg17:13.3.0"
 PG_VERSION="17.10 (Debian 17.10-1.pgdg13+1)"
+PG_CONTAINER_NAME="pg-252-pg17"
+
+# ── Local PG 17 container (sync target) ───────────────────────────────────
+# This is where 252's schema syncs into. NOT on 252 server!
+# Bind mount: ~/data/docker/llm-gateway-pg17/data -> /var/lib/postgresql/data
+LOCAL_PG_CONTAINER="llm-gateway-pg"
+LOCAL_PG_PORT="5432"
+LOCAL_PG_USER="llm_gateway"
+LOCAL_PG_PASS="llm_gateway_db_pass_2026_secure"
+LOCAL_PG_DB="llm_gateway"
+LOCAL_PGDATA_BIND="/Users/xutaohuang/data/docker/llm-gateway-pg17/data"
