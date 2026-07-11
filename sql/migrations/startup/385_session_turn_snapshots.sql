@@ -1,4 +1,4 @@
--- 378_session_turn_snapshots.sql
+-- 385_session_turn_snapshots.sql
 -- Per-turn audit snapshots for original, compressed and security-processed
 -- conversation stages. One row always represents one request round so all
 -- six directions remain aligned and can be evicted as a unit.

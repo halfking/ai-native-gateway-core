@@ -28,7 +28,7 @@ ordered numerically within each migration scope and stop at the first failure.
 
 Use --bootstrap only for an empty database; it applies all repository migrations.
 For an existing database with no ledger, use --baseline-through 377 to record the
-known historical baseline, then apply only later migrations (currently 378/379).
+known historical baseline, then apply only later migrations (currently 378+).
 Baseline mode does not execute the versions it records.
 USAGE
       exit 0
