@@ -30,7 +30,7 @@ const { t } = useI18n()
 const STORAGE_KEY_TAB = 'dashboard_active_tab'
 
 // Tab 选择（默认 'stream'）
-const activeTab = ref<'stream' | 'stats'>('stream')
+const activeTab = ref<'stream' | 'stats' | 'selfcheck'>('stream')
 const swimLaneReinitKey = ref(0) // 用于强制重新初始化泳道
 
 // 是否为默认租户
@@ -72,7 +72,7 @@ onMounted(() => {
 })
 
 // 切换 Tab
-function switchTab(tab: 'stream' | 'stats') {
+function switchTab(tab: 'stream' | 'stats' | 'selfcheck') {
   activeTab.value = tab
   localStorage.setItem(STORAGE_KEY_TAB, tab)
   
