@@ -96,7 +96,7 @@ const groupedSettings = computed(() => {
 function classifySetting(key: string): string {
   // handoff.* → 按子组归到 master/trigger/summary/safety
   if (key.startsWith('handoff.')) {
-    if (['handoff.enabled', 'handoff.trigger_mode', 'handoff.skill_name'].includes(key)) return 'master'
+    if (['handoff.enabled', 'handoff.trigger_mode', 'handoff.client_mode', 'handoff.skill_name'].includes(key)) return 'master'
     if (['handoff.absolute_threshold', 'handoff.percentage_threshold',
          'handoff.message_threshold', 'handoff.idle_minutes',
          'handoff.min_messages'].includes(key)) return 'trigger'
@@ -163,18 +163,13 @@ function isCheckDisabled(key: string): boolean {
 
 const sectionOrder = ['connection', 'alerts', 'approvals', 'commands', 'security', 'general']
 
-// handoff 摘要引擎互斥提示：llm 需要 autoroute 端点
-function isHandoffEngineLLM(): boolean {
-  const v = moduleSettings.value.find(s => s.key === 'handoff.summary_engine')?.value
-  return v === 'llm' || v === 'hybrid' || (!v && true) // default = llm
-}
-
+// handoff 摘要引擎依赖提示：没有可用压缩模块时提醒管理员配置系统摘要凭据。
 function getHandoffDependencyWarning(key: string): string | null {
   if ((key === 'handoff.summary_engine' || key === 'handoff.summary_model') && !modules.value.find(m => m.key === 'compression')?.enabled) {
-    return '⚠️ 推荐同时启用会话压缩模块，复用其 LLM 端点可降低摘要成本'
+    return '摘要会安全回退到系统配置的摘要模型；启用会话压缩可复用会话上下文与候选回退。'
   }
-  if (key === 'handoff.notify_webhook' && key) {
-    // 占位：未来可对接飞书/Slack 集成时给提示
+  if (key === 'handoff.client_mode') {
+    return 'transparent 会在网关内创建新会话并继续当前请求；explicit 返回 resume_packet 供客户端续跑。'
   }
   return null
 }
@@ -420,7 +415,7 @@ onMounted(() => {
               :class="{
                 active: selectedKey === mod.key,
                 disabled: !mod.enabled,
-                'has-missing': mod.requires && mod.requires.length > 0 && !mod.requirements_met,
+                'has-missing': mod.dependencies?.some(dep => dep.required && !dep.enabled),
               }"
               @click="selectModule(mod.key)"
             >
@@ -434,9 +429,9 @@ onMounted(() => {
                     :title="mod.enabled ? t('modulesView.status.enabled') : t('modulesView.status.disabled')"
                   />
                   <span
-                    v-if="mod.requires && mod.requires.length > 0 && !mod.requirements_met"
+                    v-if="mod.dependencies?.some(dep => dep.required && !dep.enabled)"
                     class="missing-badge"
-                    :title="`Missing: ${mod.missing_requirements?.join(', ')}`"
+                    :title="mod.blocked_reason || t('modulesView.overview.dependencyDisabled')"
                   >!</span>
                 </div>
                 <div class="card-desc">{{ mod.description }}</div>
@@ -473,30 +468,7 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- Dependency warning banner (soft hint) -->
-        <div
-          v-if="selectedModule.requires && selectedModule.requires.length > 0"
-          class="dep-banner"
-          :class="selectedModule.requirements_met ? 'dep-ok' : 'dep-missing'"
-        >
-          <div v-if="selectedModule.requirements_met" class="dep-msg dep-msg-ok">
-            ✓ {{ t('modulesView.overview.requirementsMet') }}
-          </div>
-          <div v-else class="dep-msg">
-            <div class="dep-msg-warn">⚠️ {{ t('modulesView.overview.requirementsMissing') }}</div>
-            <div class="dep-list">
-              <span
-                v-for="dep in selectedModule.missing_requirements"
-                :key="dep"
-                class="dep-chip"
-                @click="jumpToModule(dep)"
-              >
-                {{ missingModuleName(dep) }}
-                <span class="dep-jump">{{ t('modulesView.overview.jumpToModule') }} →</span>
-              </span>
-            </div>
-          </div>
-        </div>
+        <!-- Legacy dependency banner removed: backend now supplies dependencies + blocked_reason. -->
 
         <!-- Tabs -->
         <div class="tab-bar">
@@ -548,7 +520,7 @@ onMounted(() => {
                 v-for="dep in selectedModule.dependencies"
                 :key="dep.key"
                 class="dep-item"
-                :class="{ 'dep-disabled': !isDependencyEnabled(dep.key) }"
+                :class="{ 'dep-disabled': !dep.enabled }"
               >
                 <span class="dep-icon">{{ dep.icon }}</span>
                 <div class="dep-info">
@@ -557,7 +529,7 @@ onMounted(() => {
                 </div>
                 <span v-if="dep.required" class="dep-badge required">必需</span>
                 <span v-else class="dep-badge optional">推荐</span>
-                <span v-if="!isDependencyEnabled(dep.key)" class="dep-status warning" :title="t('modulesView.overview.dependencyDisabled')">
+                <span v-if="!dep.enabled" class="dep-status warning" :title="t('modulesView.overview.dependencyDisabled')">
                   ⚠️ {{ t('modulesView.overview.notEnabled') }}
                 </span>
                 <span v-else class="dep-status ok">✓</span>
