@@ -12,9 +12,9 @@ if [ -f "$ENV_LOCAL" ]; then
   set -a; . "$ENV_LOCAL"; set +a
 fi
 
-SSH_HOST="${INTERNAL_PUBLIC_IP:-47.97.111.154}"  # 154 替代 184
-SSH_PORT="${SSH_PORT_184:-25022}"
-SSH_KEY="${SSH_KEY_184_PATH:-$HOME/.ssh/56_id_rsa}"
+SSH_HOST="${HOST_252_INTERNAL_IP:-172.16.2.210}"   # 阿里 252 数据库/数据面
+SSH_PORT="${SSH_PORT_252:-25022}"
+SSH_KEY="${SSH_KEY_252:-$HOME/.ssh/id_ed25519}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
 
 echo "=========================================="
