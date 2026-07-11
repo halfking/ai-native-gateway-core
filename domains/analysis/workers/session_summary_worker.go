@@ -70,7 +70,7 @@ func (w *SessionSummaryWorker) SubscribedTypes() []analysis.EventType {
 // 容错策略：
 //   - summarizer 为 nil：返回 nil（worker 仅是占位）
 //   - tenant_id 或 session_key 缺失：返回 nil（无法处理）
-//   - GenerateSummary 失败：返回 nil（worker 不阻塞 Loop，仅计数）
+//   - GenerateSummary 失败：返回错误，由事件总线记录 attempts 并重试
 func (w *SessionSummaryWorker) Handle(ctx context.Context, evt analysis.AnalysisEvent) error {
 	if evt.Type != analysis.EventSessionClosed {
 		return nil
@@ -93,8 +93,7 @@ func (w *SessionSummaryWorker) Handle(ctx context.Context, evt analysis.Analysis
 			"tenant_id", evt.TenantID,
 			"session_key", sessionKey,
 			"error", err)
-		// 不返回 err：避免阻塞 Loop（session.closed 是异步任务，失败可重试或忽略）
-		return nil
+		return err
 	}
 	w.logger.Info("session_summary_worker: summary generated",
 		"event_id", evt.EventID,

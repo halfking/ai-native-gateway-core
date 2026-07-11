@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -46,14 +47,14 @@ func TestEmbeddingsHandlerProxiesBatchRequest(t *testing.T) {
 	defer upstreamServer.Close()
 
 	resolver := &embeddingResolverStub{candidates: []provider.Candidate{{
-		BaseURL:          upstreamServer.URL,
-		Protocol:         "openai-completions",
-		RawModel:         "vendor-embed",
-		APIKey:           "upstream-key",
-		Routable:         true,
-		LifecycleStatus:  "active",
+		BaseURL:           upstreamServer.URL,
+		Protocol:          "openai-completions",
+		RawModel:          "vendor-embed",
+		APIKey:            "upstream-key",
+		Routable:          true,
+		LifecycleStatus:   "active",
 		AvailabilityState: "ready",
-		QuotaState:       "ok",
+		QuotaState:        "ok",
 	}}}
 	handler := NewEmbeddingsHandler(resolver, upstream.New())
 
@@ -106,6 +107,31 @@ func TestEmbeddingsHandlerFailsOverOnServerError(t *testing.T) {
 	mu.Unlock()
 	if calls == 0 {
 		t.Fatal("primary candidate was not attempted")
+	}
+}
+
+func TestEmbeddingsHandlerFailsOverOnCredentialError(t *testing.T) {
+	unauthorizedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "credential rejected", http.StatusUnauthorized)
+	}))
+	defer unauthorizedServer.Close()
+
+	healthyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[],"model":"backup","usage":{"prompt_tokens":1,"total_tokens":1}}`))
+	}))
+	defer healthyServer.Close()
+
+	resolver := &embeddingResolverStub{candidates: []provider.Candidate{
+		embeddingCandidate(unauthorizedServer.URL, "primary"),
+		embeddingCandidate(healthyServer.URL, "backup"),
+	}}
+	handler := NewEmbeddingsHandler(resolver, upstream.New())
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/embeddings", stringsReader(`{"model":"embedding-fast","input":"hello"}`)))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 
