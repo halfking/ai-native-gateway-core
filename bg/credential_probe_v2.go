@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,28 +32,47 @@ import (
 //
 // Spec: docs/superpowers/specs/2026-06-12-credential-availability-audit-design.md §5
 type CredentialProbeV2 struct {
-	db               *pgxpool.Pool
-	encKey           []byte
-	keyring          *secret.Keyring
-	cache            *ModelAvailabilityCache
-	interval         time.Duration
-	fastReprobeDelay time.Duration
-	fastReprobeQueue chan int // credential IDs
-	cancel           context.CancelFunc
-	done             chan struct{}
+	db                *pgxpool.Pool
+	encKey            []byte
+	keyring           *secret.Keyring
+	cache             *ModelAvailabilityCache
+	interval          time.Duration
+	fastReprobeDelay  time.Duration
+	fastReprobeQueue  chan int // credential IDs
+	recoveryMu        sync.Mutex
+	recoveryAttempts  map[int]int
+	recoveryScheduled map[int]bool
+	cancel            context.CancelFunc
+	done              chan struct{}
 
 	// 新增：状态管理器引用
-	stateManager credentialstate.StateObserver
+	stateManager             credentialstate.StateObserver
+	invalidateCandidateCache func()
+	emitRecoveryEvent        func(RecoveryProbeEvent)
+	circuitResetter          interface {
+		Reset(providerID, credentialID int)
+	}
+}
+
+// RecoveryProbeEvent is a sanitized state transition for operator telemetry.
+type RecoveryProbeEvent struct {
+	CredentialID int
+	State        string
+	Reason       string
+	NextProbeAt  time.Time
+	Source       string
 }
 
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 	return &CredentialProbeV2{
-		db:               db,
-		encKey:           encKey,
-		interval:         1 * time.Hour,
-		fastReprobeDelay: 5 * time.Minute,
-		fastReprobeQueue: make(chan int, 64),
-		done:             make(chan struct{}),
+		db:                db,
+		encKey:            encKey,
+		interval:          1 * time.Hour,
+		fastReprobeDelay:  5 * time.Minute,
+		fastReprobeQueue:  make(chan int, 64),
+		recoveryAttempts:  make(map[int]int),
+		recoveryScheduled: make(map[int]bool),
+		done:              make(chan struct{}),
 	}
 }
 
@@ -69,8 +89,131 @@ func (c *CredentialProbeV2) SetStateManager(sm credentialstate.StateObserver) {
 	c.stateManager = sm
 }
 
-// SubmitFastProbe 提交到快速探测队列（新增公共方法）
+// SetCircuitResetter makes a successful recovery probe authoritative for the
+// process-local breaker as well as the persisted routing state.
+func (c *CredentialProbeV2) SetCircuitResetter(r interface {
+	Reset(providerID, credentialID int)
+}) {
+	c.circuitResetter = r
+}
+
+func (c *CredentialProbeV2) SetInvalidateCandidateCache(fn func()) {
+	c.invalidateCandidateCache = fn
+}
+
+func (c *CredentialProbeV2) SetRecoveryEventEmitter(fn func(RecoveryProbeEvent)) {
+	c.emitRecoveryEvent = fn
+}
+
+// SubmitFastProbe schedules recovery verification. Active credentials use the
+// short staged schedule; inactive recoverable quota states use a 6-hour probe.
 func (c *CredentialProbeV2) SubmitFastProbe(credID int) {
+	c.scheduleRecoveryProbe(credID)
+}
+
+// ProbeNowAsync starts an immediate real probe. It is used after an operator
+// confirms remediation (for example, topping up a provider account).
+func (c *CredentialProbeV2) ProbeNowAsync(credID int) {
+	go func() {
+		if !c.probeNow(context.Background(), credID) {
+			c.scheduleRecoveryProbe(credID)
+		}
+	}()
+}
+
+func (c *CredentialProbeV2) scheduleRecoveryProbe(credID int) {
+	if credID <= 0 {
+		return
+	}
+	c.recoveryMu.Lock()
+	if c.recoveryScheduled[credID] {
+		c.recoveryMu.Unlock()
+		return
+	}
+	attempt := c.recoveryAttempts[credID]
+	c.recoveryScheduled[credID] = true
+	c.recoveryMu.Unlock()
+
+	active, recoverable := c.recoveryProbeEligibility(credID)
+	if !active && !recoverable {
+		c.recoveryMu.Lock()
+		delete(c.recoveryScheduled, credID)
+		c.recoveryMu.Unlock()
+		slog.Info("credential probe v2: recovery probe skipped for inactive non-recoverable credential", "credential_id", credID)
+		return
+	}
+	delay := RecoveryProbeDelay(active, attempt)
+	c.emitRecovery(RecoveryProbeEvent{
+		CredentialID: credID,
+		State:        "probe_scheduled",
+		Reason:       recoveryReason(active),
+		NextProbeAt:  time.Now().Add(delay),
+		Source:       "automatic_recovery",
+	})
+	slog.Info("credential probe v2: recovery probe scheduled",
+		"credential_id", credID,
+		"active_last_3d", active,
+		"attempt", attempt,
+		"delay", delay)
+	go func() {
+		time.Sleep(delay)
+		ok := c.probeNow(context.Background(), credID)
+		c.recoveryMu.Lock()
+		delete(c.recoveryScheduled, credID)
+		if ok {
+			delete(c.recoveryAttempts, credID)
+		} else {
+			c.recoveryAttempts[credID] = attempt + 1
+		}
+		c.recoveryMu.Unlock()
+		if !ok {
+			c.emitRecovery(RecoveryProbeEvent{
+				CredentialID: credID,
+				State:        "probe_failed",
+				Reason:       "recovery_probe_failed",
+				Source:       "automatic_recovery",
+			})
+			c.scheduleRecoveryProbe(credID)
+		}
+	}()
+}
+
+func recoveryReason(active bool) string {
+	if active {
+		return "active_last_3d"
+	}
+	return "inactive_recoverable"
+}
+
+func (c *CredentialProbeV2) emitRecovery(event RecoveryProbeEvent) {
+	if c.emitRecoveryEvent != nil {
+		c.emitRecoveryEvent(event)
+	}
+}
+
+func (c *CredentialProbeV2) recoveryProbeEligibility(credID int) (active, recoverable bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := c.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM request_logs
+			WHERE credential_id = $1 AND success = TRUE
+			  AND ts >= NOW() - INTERVAL '3 days'
+		), EXISTS (
+			SELECT 1 FROM credentials
+			WHERE id = $1
+			  AND quota_state IN ('periodic_exhausted', 'balance_exhausted')
+		)`, credID).Scan(&active, &recoverable)
+	if err != nil {
+		slog.Warn("credential probe v2: recovery eligibility query failed", "credential_id", credID, "error", err)
+		return false, false
+	}
+	return active, recoverable
+}
+
+// SubmitDelayedFastProbe is retained for callers that explicitly need the
+// legacy fixed-delay queue. New recovery callers should use SubmitFastProbe.
+func (c *CredentialProbeV2) SubmitDelayedFastProbe(credID int) {
 	select {
 	case c.fastReprobeQueue <- credID:
 		slog.Debug("credential probe v2: fast probe submitted", "credential_id", credID)
@@ -272,11 +415,8 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		}
 
 		// P2: fast reprobe after auth_failed or unreachable.
-		if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
-			select {
-			case c.fastReprobeQueue <- s.ID:
-			default:
-			}
+		if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" || pr.QuotaState == "periodic_exhausted" {
+			c.SubmitFastProbe(s.ID)
 		}
 	}
 
@@ -582,6 +722,15 @@ func (c *CredentialProbeV2) miniAnthropic(ctx context.Context, httpClient *http.
 func classifyProbeFailure(errMsg string) probeResult {
 	pr := probeResult{HealthSource: "probe"}
 	switch {
+	case isBalanceFailure(errMsg):
+		// Several OpenAI-compatible vendors encode account depletion as HTTP
+		// 403. Keep the credential eligible for scheduled verification rather
+		// than classifying a valid, topped-up key as permanently broken.
+		pr.HealthStatus = "warning"
+		pr.AvailabilityState = "ready"
+		pr.QuotaState = "periodic_exhausted"
+		pr.HealthError = errMsg
+		pr.StateReasonCode = "balance_low"
 	case strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403"):
 		pr.HealthStatus = "auth_failed"
 		pr.AvailabilityState = "auth_failed"
@@ -594,7 +743,7 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.AvailabilityRecoverAt = &recover
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "rate_limited"
-	case strings.Contains(errMsg, "402") || strings.Contains(errMsg, "balance"):
+	case strings.Contains(errMsg, "402"):
 		pr.HealthStatus = "warning"
 		pr.AvailabilityState = "ready"
 		pr.QuotaState = "periodic_exhausted"
@@ -622,6 +771,14 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.StateReasonCode = "network_error"
 	}
 	return pr
+}
+
+func isBalanceFailure(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	return strings.Contains(lower, "insufficient balance") ||
+		strings.Contains(lower, "billing_error") ||
+		strings.Contains(lower, "balance exhausted") ||
+		strings.Contains(lower, "quota exceeded")
 }
 
 // writeHealth persists probe results with manual-disable guard.
@@ -668,7 +825,10 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		WHERE id = $10
 		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
-		  AND quota_state NOT IN ('permanently_exhausted', 'balance_exhausted')
+		  -- A successful real probe is authoritative for a topped-up balance.
+		  -- Permanent plan exhaustion remains operator-controlled.
+		  AND quota_state <> 'permanently_exhausted'
+		  AND (quota_state <> 'balance_exhausted' OR $8 = 'ok')
 	`, pr.HealthStatus, pr.HealthError, pr.HealthLatencyMs, pr.HealthProbeModel,
 		pr.HealthSource, pr.AvailabilityState, recoverAt,
 		quotaState, stateReason, credID); err != nil {
@@ -743,6 +903,10 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 // "fast reprobe after auth_failed" from "admin manual trigger" without
 // cross-referencing logs.
 func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
+	c.probeNow(ctx, credID)
+}
+
+func (c *CredentialProbeV2) probeNow(ctx context.Context, credID int) bool {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -771,13 +935,13 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 	if err != nil {
 		slog.Debug("credential probe v2: ProbeNow skipped (credential not active or missing)",
 			"credential_id", credID, "error", err)
-		return
+		return false
 	}
 	apiKey, decErr := decryptCiphertext(ciphertext, c.keyring, c.encKey)
 	if decErr != nil {
 		slog.Warn("credential probe v2: ProbeNow decrypt failed",
 			"credential_id", credID, "error", decErr)
-		return
+		return false
 	}
 	s.APIKey = apiKey
 	probeStart := time.Now()
@@ -791,6 +955,7 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 			AvailabilityState: "ready",
 			QuotaState:        "ok", // 探测成功时主动清除 periodic_exhausted
 		}
+		c.resetCircuit(credID)
 		slog.Info("credential probe v2: ProbeNow ok",
 			"credential_id", credID,
 			"latency_ms", pr.HealthLatencyMs)
@@ -805,6 +970,32 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 	}
 	pr.HealthProbeModel = s.DefaultProbeModel
 	c.writeHealth(timeoutCtx, credID, pr)
+	if ok && c.invalidateCandidateCache != nil {
+		c.invalidateCandidateCache()
+	}
+	if ok {
+		c.emitRecovery(RecoveryProbeEvent{
+			CredentialID: credID,
+			State:        "recovered",
+			Reason:       "probe_success",
+			Source:       "probe_now",
+		})
+	}
+	return ok
+}
+
+func (c *CredentialProbeV2) resetCircuit(credID int) {
+	if c.circuitResetter == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var providerID int
+	if err := c.db.QueryRow(ctx, `SELECT provider_id FROM credentials WHERE id = $1`, credID).Scan(&providerID); err != nil {
+		slog.Warn("credential probe v2: provider lookup for circuit reset failed", "credential_id", credID, "error", err)
+		return
+	}
+	c.circuitResetter.Reset(providerID, credID)
 }
 
 // probeOne is kept as a private alias for the internal fast-reprobe path
