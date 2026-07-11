@@ -90,3 +90,18 @@ func TestRouterPlanCandidates_FailsOpenWhenAllRouteNodesDisabled(t *testing.T) {
 	require.Len(t, planned, 2)
 	assert.ElementsMatch(t, []int{100, 200}, []int{planned[0].CredentialID, planned[1].CredentialID})
 }
+
+func TestRouterPlanCandidates_DeduplicatesSameCredentialModel(t *testing.T) {
+	router := NewRouter(NewStickyCache(), nil)
+	policy := provider.DefaultPolicy()
+	candidates := []provider.Candidate{
+		{CredentialID: 21, ProviderID: 14, RawModel: "MiniMax-M3", Tier: 1, Routable: true},
+		{CredentialID: 21, ProviderID: 14, RawModel: "MiniMax-M3", Tier: 1, Routable: true},
+		{CredentialID: 23, ProviderID: 18, RawModel: "minimaxai/minimax-m3", Tier: 1, Routable: true},
+	}
+
+	planned := router.PlanCandidates(candidates, nil, policy, nil)
+	require.Len(t, planned, 2)
+	assert.Equal(t, int64(21), int64(planned[0].CredentialID))
+	assert.Equal(t, int64(23), int64(planned[1].CredentialID))
+}
