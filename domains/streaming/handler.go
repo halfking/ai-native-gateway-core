@@ -637,6 +637,8 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logCtx.ClientRequestID = clientRequestID
 	// 2026-06-30: 记录客户端请求端点 (migration 320)
 	logCtx.SetClientEndpoint(r.URL.Path)
+	// 2026-07-11: P1.4 observability metadata extraction at ingress
+	logCtx.ObservabilityCtx = telemetry.ExtractObservabilityContext(r)
 	if wt := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); wt != "" {
 		logCtx.SetWorkType(wt)
 	}
@@ -2760,6 +2762,26 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	applyKeyInfoToRequestLog(reqLog, keyInfo)
 	// v3: merge session compressor outbound fields into the log entry.
 	applySessionCompressorFields(reqLog, logCtx)
+	// 2026-07-11: P1.4 observability metadata enrichment (success path)
+	enrichObservabilityMetadata(reqLog, logCtx)
+	// 2026-07-11: Populate upstream routing metadata from chosen Candidate
+	if result != nil {
+		if result.Candidate.BaseURL != "" {
+			reqLog.UpstreamEndpoint = &result.Candidate.BaseURL
+		}
+		if result.Candidate.Protocol != "" {
+			reqLog.UpstreamProtocol = &result.Candidate.Protocol
+		}
+		// Detect protocol conversion: client sent OpenAI format, upstream uses different protocol
+		if evt.ClientModel != "" && result.Candidate.Protocol != "" {
+			clientProto := "openai" // default assumption for /v1/chat/completions
+			if strings.Contains(evt.ClientModel, "claude") {
+				clientProto = "anthropic"
+			}
+			conversion := clientProto != result.Candidate.Protocol
+			reqLog.ProtocolConversion = &conversion
+		}
+	}
 	h.telemetryClient.EmitRequestLogUpdate(reqLog)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
