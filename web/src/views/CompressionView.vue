@@ -340,6 +340,18 @@ watch(activeTab, loadAll)
           {{ stats.estimated_tokens_saved != null ? fmtNum(stats.estimated_tokens_saved) : '—' }}
         </div>
       </div>
+      <div class="stat-card">
+        <div class="stat-label">会话快照轮次</div>
+        <div class="stat-value">{{ fmtNum(stats.snapshot_turns) }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">安全处理轮次</div>
+        <div class="stat-value" style="color:var(--success,#22c55e)">{{ fmtNum(stats.secured_turns) }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">未完成流</div>
+        <div class="stat-value" :style="{ color: stats.incomplete_streams ? 'var(--warning,#f59e0b)' : 'inherit' }">{{ fmtNum(stats.incomplete_streams) }}</div>
+      </div>
     </div>
 
     <!-- Strategy Distribution + Time Series -->
