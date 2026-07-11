@@ -19,13 +19,13 @@ migration is not recorded.
 - **Existing repository ledger:** run `DATABASE_URL=... scripts/run-migrations-strict.sh`.
   Changed content for an applied migration is rejected rather than silently run.
 
-## 360/361 compatibility and RLS
+## 382/383 compatibility and RLS
 
-Migrations `360_session_module_executions.sql` and
-`361_dashboard_access_events.sql` are published history and must never be deleted,
-renamed, or rewritten. Migrations 378 and 379 are additive compatibility migrations
-for databases where 360/361 already exist; they do not recreate those tables,
-functions, views, partitions, or cron jobs.
+Migrations `382_session_module_executions.sql` and
+`383_dashboard_access_events.sql` create the operational hot/archive tables. Their
+content must not be changed after it has been applied; issue a new forward migration
+for any correction. Migration `384_hot_table_independence_fix.sql` is an additive
+follow-up for the related hot-table schema.
 
 `session_module_executions[_hot]` and `dashboard_access_events[_hot]` deliberately
 do not enforce a policy based on `app.current_tenant`. Module execution and telemetry
@@ -38,9 +38,8 @@ that compatibility requirement.
 
 ## Rollback
 
-`378_session_module_executions.down.sql` and
-`379_dashboard_access_events.down.sql` intentionally stop with an error. They have
-no automatic rollback because restoring the unsafe RLS configuration requires a
-reviewed application release, while table drops or `CASCADE` could permanently delete
+`382_session_module_executions.down.sql` and
+`383_dashboard_access_events.down.sql` intentionally stop with an error. They have
+no automatic rollback because table drops or `CASCADE` could permanently delete
 operational/audit data or unrelated dependencies. Use a reviewed database restore or
 a forward corrective migration instead.
