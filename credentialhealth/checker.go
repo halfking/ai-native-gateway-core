@@ -226,11 +226,10 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 		    updated_at             = now()
 		FROM provider_models pm
 		WHERE pm.id = cmb.provider_model_id
+		  AND cmb.available = FALSE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND cmb.unavailable_reason <> 'model_probe_broken'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-		  AND COALESCE(cmb.unavailable_recover_at,
-		               cmb.unavailable_at + INTERVAL '30 seconds') IS NOT NULL
 		  AND COALESCE(cmb.unavailable_recover_at,
 		               cmb.unavailable_at + INTERVAL '30 seconds') < now()
 	`)
