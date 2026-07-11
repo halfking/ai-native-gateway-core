@@ -89,7 +89,8 @@ type Handler struct {
 	// the /api/credentials/{id}/test + /state endpoints and feeds the
 	// router with real-time availability decisions. nil disables the
 	// state-management feature; routing falls back to DB-based health.
-	stateManager credentialstate.StateProvider
+	stateManager       credentialstate.StateProvider
+	stateCacheResetter credentialstate.StateCacheResetter
 	// circuitResetter clears a process-local breaker after an operator has
 	// remediated a credential. The subsequent real probe remains authoritative.
 	circuitResetter interface {
@@ -353,7 +354,12 @@ func (h *Handler) SetModelProbeRunner(r *bg.ModelProbeRunner) { h.modelProbe = r
 
 // SetStateManager wires the credential-state manager for /api/credentials/*/state
 // and /api/credentials/*/test endpoints. Pass nil to disable.
-func (h *Handler) SetStateManager(sm credentialstate.StateProvider) { h.stateManager = sm }
+func (h *Handler) SetStateManager(sm credentialstate.StateProvider) {
+	h.stateManager = sm
+	if resetter, ok := sm.(credentialstate.StateCacheResetter); ok {
+		h.stateCacheResetter = resetter
+	}
+}
 
 func (h *Handler) SetCircuitResetter(r interface {
 	Reset(providerID, credentialID int)

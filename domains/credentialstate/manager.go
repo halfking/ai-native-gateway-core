@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -177,8 +178,16 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 		errKind == errorsx.KindAuthRevoked ||
 		errKind == errorsx.KindModelNotFound ||
 		errKind == errorsx.KindQuotaPermanent
+	isRecoverableQuota := errKind == errorsx.KindQuota || errKind == errorsx.KindQuotaBalance || errKind == errorsx.KindQuotaPeriodic
 
-	if isPermanent && state.ConsecutiveFails >= 2 {
+	if isRecoverableQuota {
+		// A balance/plan failure can recover after a top-up or plan reset.
+		// Submit the credential to the staged probe scheduler immediately;
+		// it chooses 10s..1h for recently used credentials and 6h otherwise.
+		if m.credProbeV2Submitter != nil {
+			m.credProbeV2Submitter(credID)
+		}
+	} else if isPermanent && state.ConsecutiveFails >= 2 {
 		// 永久故障：快速标记为 broken，降低探测频率（15分钟）
 		state.Available = false
 		nextRetry := now.Add(15 * time.Minute)
@@ -350,6 +359,42 @@ func (m *Manager) IsAvailable(ctx context.Context, credID int, model string) (bo
 		return false, state.LastError
 	}
 	return true, ""
+}
+
+// ClearCredentialCache removes live per-model state after an operator starts
+// recovery. The following real probe remains the authority; this only prevents
+// a stale failed model state from vetoing a newly recovered credential.
+func (m *Manager) ClearCredentialCache(ctx context.Context, credID int) {
+	if m == nil || credID <= 0 {
+		return
+	}
+	prefix := fmt.Sprintf("%d:", credID)
+	m.memCache.Range(func(key, _ any) bool {
+		if keyString, ok := key.(string); ok && strings.HasPrefix(keyString, prefix) {
+			m.memCache.Delete(key)
+		}
+		return true
+	})
+	if m.redisClient == nil {
+		return
+	}
+	for cursor := uint64(0); ; {
+		keys, next, err := m.redisClient.Scan(ctx, cursor, "llmgw:credstate:"+prefix+"*", 100).Result()
+		if err != nil {
+			slog.Warn("credstate: clear redis cache scan failed", "credential_id", credID, "error", err)
+			return
+		}
+		if len(keys) > 0 {
+			if err := m.redisClient.Del(ctx, keys...).Err(); err != nil {
+				slog.Warn("credstate: clear redis cache delete failed", "credential_id", credID, "error", err)
+				return
+			}
+		}
+		if next == 0 {
+			return
+		}
+		cursor = next
+	}
 }
 
 // GetStaleStates 获取过期状态（用于触发自动 ping）

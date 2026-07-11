@@ -65,3 +65,9 @@ type StateProvider interface {
 	// Enabled reports whether the manager is wired and ready.
 	Enabled() bool
 }
+
+// StateCacheResetter is used by an operator-triggered recovery before an
+// authoritative probe verifies the credential again.
+type StateCacheResetter interface {
+	ClearCredentialCache(ctx context.Context, credID int)
+}

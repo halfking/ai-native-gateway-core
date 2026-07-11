@@ -1399,6 +1399,23 @@ func main() {
 			if stateManager != nil {
 				credProbeV2.SetStateManager(stateManager)
 			}
+			credProbeV2.SetCircuitResetter(cm)
+			credProbeV2.SetInvalidateCandidateCache(provider.InvalidateAllCandidateCache)
+			if liveStreamHub != nil {
+				credProbeV2.SetRecoveryEventEmitter(func(event bg.RecoveryProbeEvent) {
+					nextProbeAt := ""
+					if !event.NextProbeAt.IsZero() {
+						nextProbeAt = event.NextProbeAt.UTC().Format(time.RFC3339)
+					}
+					liveStreamHub.PublishCredentialState(admin.LiveCredentialState{
+						CredentialID: event.CredentialID,
+						State:        event.State,
+						Reason:       event.Reason,
+						NextProbeAt:  nextProbeAt,
+						Source:       event.Source,
+					})
+				})
+			}
 			slog.Info("CHECKPOINT: before credProbeV2.Start")
 			credProbeV2.Start(context.Background())
 			slog.Info("CHECKPOINT: after credProbeV2.Start")
