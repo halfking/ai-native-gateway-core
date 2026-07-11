@@ -2,53 +2,122 @@ package telemetry
 
 import (
 	"net/http/httptest"
+	"os"
 	"testing"
 )
 
 func TestExtractClientIP(t *testing.T) {
 	tests := []struct {
-		name       string
-		headers    map[string]string
-		remoteAddr string
-		expectedIP string
+		name         string
+		headers      map[string]string
+		remoteAddr   string
+		trustedCIDRs string
+		expectedIP   string
 	}{
 		{
-			name:       "X-Real-IP present",
+			name:       "Loopback proxy trusts X-Real-IP",
 			headers:    map[string]string{"X-Real-IP": "203.0.113.5"},
-			remoteAddr: "10.0.0.1:12345",
+			remoteAddr: "127.0.0.1:12345",
 			expectedIP: "203.0.113.5",
 		},
 		{
-			name:       "X-Forwarded-For with single IP",
+			name:       "Private proxy trusts X-Forwarded-For",
 			headers:    map[string]string{"X-Forwarded-For": "203.0.113.10"},
 			remoteAddr: "10.0.0.1:12345",
 			expectedIP: "203.0.113.10",
 		},
 		{
-			name:       "X-Forwarded-For with chain",
-			headers:    map[string]string{"X-Forwarded-For": "203.0.113.20, 10.0.0.5, 192.168.1.1"},
-			remoteAddr: "10.0.0.1:12345",
-			expectedIP: "203.0.113.20",
-		},
-		{
-			name: "X-Real-IP takes precedence over X-Forwarded-For",
+			name: "X-Real-IP precedence over X-Forwarded-For",
 			headers: map[string]string{
 				"X-Real-IP":       "203.0.113.30",
 				"X-Forwarded-For": "203.0.113.40",
 			},
-			remoteAddr: "10.0.0.1:12345",
+			remoteAddr: "192.168.1.1:12345",
 			expectedIP: "203.0.113.30",
 		},
 		{
-			name:       "Fallback to RemoteAddr",
-			headers:    map[string]string{},
+			name:       "Public peer rejects spoofed X-Real-IP",
+			headers:    map[string]string{"X-Real-IP": "1.2.3.4"},
+			remoteAddr: "203.0.113.100:54321",
+			expectedIP: "203.0.113.100",
+		},
+		{
+			name:       "Public peer rejects spoofed X-Forwarded-For",
+			headers:    map[string]string{"X-Forwarded-For": "1.2.3.4, 5.6.7.8"},
+			remoteAddr: "203.0.113.200:54321",
+			expectedIP: "203.0.113.200",
+		},
+		{
+			name:         "Custom CIDR trusts proxy",
+			headers:      map[string]string{"X-Real-IP": "8.8.8.8"},
+			remoteAddr:   "100.64.0.5:12345",
+			trustedCIDRs: "100.64.0.0/10",
+			expectedIP:   "8.8.8.8",
+		},
+		{
+			name: "Invalid X-Real-IP falls back to X-Forwarded-For",
+			headers: map[string]string{
+				"X-Real-IP":       "not-an-ip",
+				"X-Forwarded-For": "203.0.113.50",
+			},
+			remoteAddr: "127.0.0.1:12345",
+			expectedIP: "203.0.113.50",
+		},
+		{
+			name:       "Invalid X-Forwarded-For entry skipped",
+			headers:    map[string]string{"X-Forwarded-For": "invalid, 203.0.113.60"},
+			remoteAddr: "10.0.0.2:12345",
+			expectedIP: "203.0.113.60",
+		},
+		{
+			name: "All headers invalid, use RemoteAddr",
+			headers: map[string]string{
+				"X-Real-IP":       "bad",
+				"X-Forwarded-For": "also-bad",
+			},
 			remoteAddr: "192.168.1.100:54321",
 			expectedIP: "192.168.1.100",
+		},
+		{
+			name:       "No headers, loopback RemoteAddr",
+			headers:    map[string]string{},
+			remoteAddr: "127.0.0.1:54321",
+			expectedIP: "127.0.0.1",
+		},
+		{
+			name:       "IPv6 loopback trusts headers",
+			headers:    map[string]string{"X-Real-IP": "2001:db8::1"},
+			remoteAddr: "[::1]:12345",
+			expectedIP: "2001:db8::1",
+		},
+		{
+			name:       "IPv6 public peer rejects spoofed headers",
+			headers:    map[string]string{"X-Real-IP": "1.2.3.4"},
+			remoteAddr: "[2001:db8::100]:12345",
+			expectedIP: "2001:db8::100",
+		},
+		{
+			name:         "Invalid CIDR ignored safely",
+			headers:      map[string]string{"X-Real-IP": "1.2.3.4"},
+			remoteAddr:   "203.0.113.50:12345",
+			trustedCIDRs: "not-a-cidr, 100.64.0.0/10",
+			expectedIP:   "203.0.113.50",
+		},
+		{
+			name:       "X-Forwarded-For with chain extracts first valid",
+			headers:    map[string]string{"X-Forwarded-For": "203.0.113.20, 10.0.0.5, 192.168.1.1"},
+			remoteAddr: "10.0.0.1:12345",
+			expectedIP: "203.0.113.20",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.trustedCIDRs != "" {
+				os.Setenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS", tt.trustedCIDRs)
+				defer os.Unsetenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS")
+			}
+
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.RemoteAddr = tt.remoteAddr
 			for k, v := range tt.headers {
@@ -263,14 +332,139 @@ func TestNewRequestMetadata(t *testing.T) {
 	}
 }
 
+func TestIsTrustedProxy(t *testing.T) {
+	tests := []struct {
+		name         string
+		ip           string
+		trustedCIDRs string
+		expected     bool
+	}{
+		{
+			name:     "Loopback IPv4",
+			ip:       "127.0.0.1",
+			expected: true,
+		},
+		{
+			name:     "Loopback IPv6",
+			ip:       "::1",
+			expected: true,
+		},
+		{
+			name:     "Private RFC1918 10.x",
+			ip:       "10.0.0.1",
+			expected: true,
+		},
+		{
+			name:     "Private RFC1918 172.16.x",
+			ip:       "172.16.5.10",
+			expected: true,
+		},
+		{
+			name:     "Private RFC1918 192.168.x",
+			ip:       "192.168.1.1",
+			expected: true,
+		},
+		{
+			name:     "Public IPv4",
+			ip:       "8.8.8.8",
+			expected: false,
+		},
+		{
+			name:     "Public IPv6",
+			ip:       "2001:4860:4860::8888",
+			expected: false,
+		},
+		{
+			name:         "Custom CIDR match",
+			ip:           "100.64.0.5",
+			trustedCIDRs: "100.64.0.0/10",
+			expected:     true,
+		},
+		{
+			name:         "Custom CIDR no match",
+			ip:           "100.64.0.5",
+			trustedCIDRs: "100.65.0.0/16",
+			expected:     false,
+		},
+		{
+			name:         "Multiple CIDRs second matches",
+			ip:           "198.51.100.5",
+			trustedCIDRs: "192.0.2.0/24, 198.51.100.0/24",
+			expected:     true,
+		},
+		{
+			name:         "Invalid CIDR ignored",
+			ip:           "8.8.8.8",
+			trustedCIDRs: "not-a-cidr, 100.64.0.0/10",
+			expected:     false,
+		},
+		{
+			name:     "Invalid IP",
+			ip:       "not-an-ip",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.trustedCIDRs != "" {
+				os.Setenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS", tt.trustedCIDRs)
+				defer os.Unsetenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS")
+			}
+
+			got := isTrustedProxy(tt.ip)
+			if got != tt.expected {
+				t.Errorf("isTrustedProxy(%q) = %v, want %v", tt.ip, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestExtractForwardedFor(t *testing.T) {
-	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("X-Forwarded-For", "203.0.113.1, 10.0.0.1, 192.168.1.1")
+	tests := []struct {
+		name       string
+		headers    map[string]string
+		remoteAddr string
+		expected   string
+	}{
+		{
+			name:       "Trusted proxy returns chain",
+			headers:    map[string]string{"X-Forwarded-For": "203.0.113.1, 10.0.0.1, 192.168.1.1"},
+			remoteAddr: "127.0.0.1:12345",
+			expected:   "203.0.113.1, 10.0.0.1, 192.168.1.1",
+		},
+		{
+			name:       "Untrusted proxy returns empty",
+			headers:    map[string]string{"X-Forwarded-For": "203.0.113.1, 10.0.0.1"},
+			remoteAddr: "203.0.113.100:54321",
+			expected:   "",
+		},
+		{
+			name:       "Private proxy returns chain",
+			headers:    map[string]string{"X-Forwarded-For": "8.8.8.8, 1.1.1.1"},
+			remoteAddr: "192.168.1.5:12345",
+			expected:   "8.8.8.8, 1.1.1.1",
+		},
+		{
+			name:       "No header, trusted proxy returns empty",
+			headers:    map[string]string{},
+			remoteAddr: "127.0.0.1:12345",
+			expected:   "",
+		},
+	}
 
-	got := ExtractForwardedFor(req)
-	expected := "203.0.113.1, 10.0.0.1, 192.168.1.1"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/test", nil)
+			req.RemoteAddr = tt.remoteAddr
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
 
-	if got != expected {
-		t.Errorf("ExtractForwardedFor() = %v, want %v", got, expected)
+			got := ExtractForwardedFor(req)
+			if got != tt.expected {
+				t.Errorf("ExtractForwardedFor() = %v, want %v", got, tt.expected)
+			}
+		})
 	}
 }
