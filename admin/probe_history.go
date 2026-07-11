@@ -74,7 +74,7 @@ func (h *Handler) handleProviderProbeHistory(w http.ResponseWriter, r *http.Requ
 		       mpr.http_status, COALESCE(mpr.error_code, ''), COALESCE(mpr.error_message, ''),
 		       mpr.latency_ms, COALESCE(mpr.state_change, 'unchanged'), mpr.state_applied,
 		       mpr.triggered_by, mpr.created_at
-		FROM model_probe_runs mpr
+		FROM model_probe_runs_with_current_month mpr
 		JOIN credentials c ON c.id = mpr.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		WHERE p.id = $1`+statusClause+`
@@ -122,7 +122,7 @@ func (h *Handler) handleProviderProbeHistoryRecentFailures(w http.ResponseWriter
 		       COUNT(*) AS failed_count,
 		       MAX(created_at) AS last_failed_at,
 		       MIN(error_code) AS sample_error_code
-		FROM model_probe_runs
+		FROM model_probe_runs_with_current_month
 		WHERE credential_id IN (
 		    SELECT id FROM credentials WHERE provider_id = $1
 		)
@@ -298,7 +298,7 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 			       COUNT(*) AS total_failures,
 			       MAX(created_at) AS last_failed_at,
 			       MIN(error_code) AS sample_error_code
-			FROM model_probe_runs
+			FROM model_probe_runs_with_current_month
 			WHERE status NOT IN ('ok', 'skipped')
 			  AND created_at > NOW() - INTERVAL '6 hours'
 			GROUP BY raw_model_name

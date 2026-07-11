@@ -100,6 +100,7 @@ func (h *Handler) handleDataLifecyclePromoteHot(w http.ResponseWriter, r *http.R
 		"request_logs_bodies_hot":    "promote_request_logs_bodies_hot_to_partition",
 		"credit_ledger_hot":          "promote_credit_ledger_hot_to_partition",
 		"tool_usage_stats_hot":       "promote_tool_usage_stats_hot_to_partition",
+		"model_probe_runs_hot":       "promote_model_probe_runs_hot_to_partition", // Migration 385
 	}
 
 	fnName, ok := validTables[req.TableName]

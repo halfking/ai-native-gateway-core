@@ -1727,7 +1727,7 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 	}
 	httpStatus := 404
 	_, err := e.DB.Pool().Exec(ctx, `
-		INSERT INTO model_probe_runs
+		INSERT INTO model_probe_runs_hot
 		    (tenant_id, credential_id, raw_model_name, status,
 		     http_status, error_code, error_message, latency_ms,
 		     state_change, state_applied, triggered_by)
@@ -1850,7 +1850,7 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 
 	var recentCount int
 	err := e.DB.Pool().QueryRow(ctx, `
-		SELECT count(*) FROM model_probe_runs
+		SELECT count(*) FROM model_probe_runs_with_current_month
 		WHERE credential_id = $1
 		  AND (raw_model_name = $2 OR standardized_name = $2)
 		  AND status = 'http_4xx'

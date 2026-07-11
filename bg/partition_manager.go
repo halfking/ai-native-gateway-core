@@ -6,7 +6,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
+
+// settingsGetPlatformInt is a thin wrapper around settings.GetPlatformInt
+// so call sites stay short and consistent with the rest of this file.
+func settingsGetPlatformInt(key string, fallback int) int {
+	return settings.GetPlatformInt(key, fallback)
+}
 
 // DefaultPromoteInterval is how often the migrate-default-to-partition
 // scheduler runs. 7-day *_default retention requires relatively
@@ -24,10 +31,30 @@ const DefaultPromoteInterval = 1 * time.Hour
 // initial INSERT, so 7 days comfortably covers any in-flight mutation.
 // If this constant is changed, also re-evaluate whether application-layer
 // writes still fit inside the window.
+//
+// Per-table retention windows can be overridden via settings_kv:
+//   - probe.hot_retention_hours (default 24)
+//
+// The PartitionManager reads these on every promote cycle so changes
+// take effect on the next tick (no restart required, true hot reload).
 const DefaultRetentionWindow = 7 * 24 * time.Hour
+
+// defaultProbeHotRetention is the default retention for model_probe_runs_hot
+// when settings.Global is nil or the key is missing. Mirrors the value in
+// settings/spec_probe.go (probe.hot_retention_hours Default=24).
+const defaultProbeHotRetention = 24 * time.Hour
+
+// defaultProbeBatchSize mirrors settings/spec_probe.go (probe.promote_batch_size Default=5000).
+const defaultProbeBatchSize = 5000
+
+// defaultProbePartitionRetention mirrors settings/spec_probe.go (probe.partition_retention_days Default=90).
+const defaultProbePartitionRetention = 90 * 24 * time.Hour
 
 // promoteBatchSize is the per-call LIMIT inside each promote_xxx_batch
 // CTE. Keeps per-tx memory bounded so a backlog cannot OOM the gateway.
+//
+// Per-table promote batch sizes can be overridden via settings_kv:
+//   - probe.promote_batch_size (default 5000)
 const promoteBatchSize = 5000
 
 // PartitionManager automatically creates next month's partition,
@@ -159,22 +186,63 @@ func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 // archiveOldPartitionsIfNeeded archives 2-months-old partition to columnar
 // for the table scheduled for today (day-of-month in 1..3).
 // Outside that window this is a no-op.
+//
+// Also drops old model_probe_runs partitions every tick (hot reload
+// retention via probe.partition_retention_days). Separate from the
+// archiveSpecs day-of-month gate because probe retention is typically
+// much shorter (90 days) and dropping is O(1) (no row migration needed).
 func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	now := time.Now()
-	if now.Day() > 3 {
+
+	// 1. Monthly archive (day 1..3 only)
+	if now.Day() <= 3 {
+		twoMonthsAgo := now.AddDate(0, -2, 0)
+		today := now.Day()
+
+		for _, s := range archiveSpecs() {
+			if s.day != today {
+				continue
+			}
+
+			pm.runArchive(ctx, s, twoMonthsAgo)
+		}
+	}
+
+	// 2. model_probe_runs partition cleanup (every tick, hot-reloadable retention)
+	pm.dropOldModelProbeRunsPartitions(ctx)
+}
+
+// dropOldModelProbeRunsPartitions drops monthly partitions of
+// model_probe_runs older than the configured retention. Retention is
+// read fresh from settings.Global on every call (probe.partition_retention_days,
+// default 90), so changes take effect on the next partition_manager tick.
+func (pm *PartitionManager) dropOldModelProbeRunsPartitions(ctx context.Context) {
+	if !settings.GetPlatformBool("probe.partition_cleanup_enabled", true) {
 		return
 	}
 
-	twoMonthsAgo := now.AddDate(0, -2, 0)
-	today := now.Day()
-
-	for _, s := range archiveSpecs() {
-		if s.day != today {
-			continue
-		}
-
-		pm.runArchive(ctx, s, twoMonthsAgo)
+	retentionDays := settings.GetPlatformInt("probe.partition_retention_days", int(defaultProbePartitionRetention.Hours()/24))
+	if retentionDays < 7 {
+		retentionDays = 7 // safety floor
 	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	// Use a simpler form: call the function and let it RAISE NOTICE on each drop.
+	// The function returns TABLE(dropped_partition text, rows_dropped bigint).
+	_, err := pm.db.Exec(timeoutCtx,
+		"SELECT * FROM drop_old_model_probe_runs_partitions($1)",
+		retentionDays,
+	)
+	if err != nil {
+		slog.Error("partition_manager: model_probe_runs cleanup failed",
+			"retention_days", retentionDays, "error", err)
+		return
+	}
+
+	slog.Info("partition_manager: model_probe_runs cleanup ran",
+		"retention_days", retentionDays)
 }
 
 func (pm *PartitionManager) runArchive(ctx context.Context, s archiveSpec, twoMonthsAgo time.Time) {
@@ -238,7 +306,8 @@ func ensureSpecs() []archiveSpec {
 		{fnName: "ensure_request_wal_partition", label: "request_wal"},
 		{fnName: "ensure_routing_decision_log_partition", label: "routing_decision_log"},
 		{fnName: "ensure_credential_model_index_partition", label: "credential_model_index"},
-		{fnName: "ensure_usage_ledger_partition", label: "usage_ledger"}, // Migration 330
+		{fnName: "ensure_usage_ledger_partition", label: "usage_ledger"},         // Migration 330
+		{fnName: "ensure_model_probe_runs_partition", label: "model_probe_runs"}, // Migration 385
 	}
 }
 
@@ -280,6 +349,7 @@ func promoteSpecs() []archiveSpec {
 		{fnName: "promote_request_logs_bodies_hot_to_partition", label: "request_logs_bodies"},
 		{fnName: "promote_credit_ledger_hot_to_partition", label: "credit_ledger"},
 		{fnName: "promote_tool_usage_stats_hot_to_partition", label: "tool_usage_stats"},
+		{fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
 	}
 }
 
@@ -288,6 +358,14 @@ func promoteSpecs() []archiveSpec {
 // partition by repeatedly calling promote_<table>_hot_to_partition with
 // DefaultRetentionWindow and promoteBatchSize. Each iteration is one
 // single-statement CTE inside PostgreSQL — atomic per batch.
+//
+// Retention and batch size come from settings.Global (hot-reloadable):
+//   - probe.hot_retention_hours (default 24h)
+//   - probe.promote_batch_size (default 5000)
+//
+// All other tables use DefaultRetentionWindow (7d) and promoteBatchSize
+// (5000) constants. Settings changes take effect on the next tick — no
+// restart required.
 //
 // The function always terminates: each batch either moves
 // `promoteBatchSize` rows (caller loops) or 0 rows (caller breaks
@@ -299,6 +377,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 		return
 	}
 	for _, s := range promoteSpecs() {
+		retention, batchSize := resolvePromoteConfig(s.label)
 		for {
 			if ctx.Err() != nil {
 				return
@@ -307,21 +386,55 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 			var n int64
 			err := pm.db.QueryRow(timeoutCtx,
 				"SELECT "+s.fnName+"($1::interval, $2::int)",
-				DefaultRetentionWindow, promoteBatchSize,
+				retention, batchSize,
 			).Scan(&n)
 			cancel()
 			if err != nil {
 				slog.Error("partition_manager: promote failed",
-					"fn", s.fnName, "label", s.label, "error", err)
+					"fn", s.fnName, "label", s.label,
+					"retention", retention, "batch_size", batchSize,
+					"error", err)
 				break // move on to the next table
 			}
 			if n == 0 {
 				slog.Debug("partition_manager: promote done",
-					"label", s.label)
+					"label", s.label,
+					"retention", retention)
 				break
 			}
 			slog.Info("partition_manager: promote batch",
 				"label", s.label, "rows", n)
 		}
+	}
+}
+
+// resolvePromoteConfig returns the retention interval and batch size for
+// a given hot table. Reads from settings.Global with hot-reload support
+// (every call reads the latest value from settings_kv). Falls back to
+// DefaultRetentionWindow / promoteBatchSize for tables without a
+// per-table setting, and to type-specific defaults for model_probe_runs.
+//
+// This function is called on every promote tick — there is no caching
+// layer to invalidate. Updated settings take effect within one tick
+// (DefaultPromoteInterval = 1h).
+func resolvePromoteConfig(label string) (time.Duration, int) {
+	switch label {
+	case "model_probe_runs_hot":
+		// Per-table setting: probe.hot_retention_hours
+		hours := settingsGetPlatformInt("probe.hot_retention_hours", int(defaultProbeHotRetention.Hours()))
+		retention := time.Duration(hours) * time.Hour
+		if retention < time.Hour {
+			retention = time.Hour // safety floor
+		}
+		batchSize := settingsGetPlatformInt("probe.promote_batch_size", defaultProbeBatchSize)
+		if batchSize < 100 {
+			batchSize = 100
+		}
+		if batchSize > 50000 {
+			batchSize = 50000
+		}
+		return retention, batchSize
+	default:
+		return DefaultRetentionWindow, promoteBatchSize
 	}
 }

@@ -1030,7 +1030,7 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 				mpr.error_message   AS error_message,
 				NULL::text          AS actor,
 				NULL::text          AS reason
-			FROM model_probe_runs mpr
+			FROM model_probe_runs_with_current_month mpr
 			WHERE mpr.credential_id = $1
 			  AND mpr.raw_model_name = $2
 			  AND mpr.state_change IN ('recovered', 'broke')

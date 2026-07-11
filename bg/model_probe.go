@@ -592,7 +592,7 @@ func (r *ModelProbeRunner) applyResult(
 		VALUES ($1, $2, $3, $4, $5, 1, NOW(), ` + nextRetryExpr + `, $6,
 		        CASE WHEN $7 IN ('recovered','broke') THEN NOW() ELSE NULL END,
 		        CASE WHEN $7 IN ('recovered','broke') THEN
-		            (SELECT id FROM model_probe_runs
+		    (SELECT id FROM model_probe_runs_with_current_month
 		             WHERE credential_id = $1 AND raw_model_name = $2
 		             ORDER BY id DESC LIMIT 1)
 		        ELSE NULL END)
@@ -719,7 +719,7 @@ func (r *ModelProbeRunner) recordRun(
 	defer cancel()
 
 	_, err := r.db.Exec(writeCtx, `
-		INSERT INTO model_probe_runs
+		INSERT INTO model_probe_runs_hot
 		    (tenant_id, credential_id, raw_model_name, status,
 		     http_status, error_code, error_message, latency_ms,
 		     state_change, state_applied, triggered_by)
