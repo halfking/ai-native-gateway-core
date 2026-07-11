@@ -328,7 +328,7 @@ CREATE INDEX CONCURRENTLY idx_cmb_provider_model_id ON credential_model_bindings
 1. 在部署记录中标记完成时间
 2. 通知相关团队部署成功
 3. 持续监控 24 小时
-4. 如果一切正常，准备生产部署（184 环境）
+4. 如果一切正常，准备生产部署（252 阿里云 llm.itestu.cn / 154 主机 llm.kxpms.cn）
 
 ---
 
