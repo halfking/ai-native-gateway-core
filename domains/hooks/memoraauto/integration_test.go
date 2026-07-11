@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -133,9 +134,9 @@ func TestMemoraAutoHook_Execute_NotIdle(t *testing.T) {
 // TestMemoraAutoHook_Execute_Idle 测试空闲触发
 func TestMemoraAutoHook_Execute_Idle(t *testing.T) {
 	// 创建测试服务器
-	ingestCalled := false
+	var ingestCalled atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ingestCalled = true
+		ingestCalled.Store(true)
 		resp := SessionIngestResponse{
 			Success: true,
 			Message: "OK",
@@ -178,7 +179,7 @@ func TestMemoraAutoHook_Execute_Idle(t *testing.T) {
 	// 等待异步调用完成
 	time.Sleep(300 * time.Millisecond)
 
-	if !ingestCalled {
+	if !ingestCalled.Load() {
 		t.Error("Expected ingest to be called")
 	}
 }
@@ -301,9 +302,9 @@ func TestConfig_DefaultConfig(t *testing.T) {
 // TestMemoraAutoHook_Integration 集成测试
 func TestMemoraAutoHook_Integration(t *testing.T) {
 	// 创建模拟 kxmemory 服务器
-	requestsReceived := 0
+	var requestsReceived atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestsReceived++
+		requestsReceived.Add(1)
 
 		// 解析请求
 		var req SessionIngestRequest
@@ -371,7 +372,7 @@ func TestMemoraAutoHook_Integration(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// 验证请求已发送
-	if requestsReceived == 0 {
+	if requestsReceived.Load() == 0 {
 		t.Error("Expected at least one request to kxmemory")
 	}
 
