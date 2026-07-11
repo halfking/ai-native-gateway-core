@@ -12,7 +12,7 @@ if [ -f "$ENV_LOCAL" ]; then
   set -a; . "$ENV_LOCAL"; set +a
 fi
 
-SSH_HOST="${INTERNAL_PUBLIC_IP:-14.103.112.184}"
+SSH_HOST="${INTERNAL_PUBLIC_IP:-47.97.111.154}"  # 154 替代 184
 SSH_PORT="${SSH_PORT_184:-25022}"
 SSH_KEY="${SSH_KEY_184_PATH:-$HOME/.ssh/56_id_rsa}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"

@@ -23,6 +23,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"                       //nolint:depguard // request-side session handoff hook
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
@@ -322,10 +323,13 @@ type ChatHandler struct {
 	sessionReuseWindow time.Duration
 
 	// responseInterceptor (2026-06-29, auto-control feature) intercepts
-	// LLM responses before forwarding to clients. Enables automatic handoff
-	// when context limits are reached and goal-mode continuous execution.
-	// nil disables response interception (default).
+	// LLM responses before forwarding to clients. Goal and output-compliance
+	// use this path; handoff executes before provider dispatch via handoffHook.
 	responseInterceptor ResponseInterceptor
+
+	// handoffHook prepares a trusted resume packet and rotates the gateway
+	// session before the provider receives a near-limit request.
+	handoffHook *handoff.TriggerHook
 
 	// attachmentExtractor (2026-07-01) extracts base64/data-URI attachments
 	// from incoming requests and saves them to the filesystem before forwarding.
@@ -440,6 +444,13 @@ func (h *ChatHandler) SetIdempotentCache(c *IdempotentCache) {
 // proactive sliding-window LLM summary before forwarding to the upstream.
 func (h *ChatHandler) SetSessionCompressor(sc *compression.SessionCompressor) {
 	h.sessionCompressor = sc
+}
+
+// SetHandoffHook wires the request-side handoff hook. The hook is evaluated
+// after candidate resolution (when the model context window is known) and
+// before session compression sends the request upstream.
+func (h *ChatHandler) SetHandoffHook(hook *handoff.TriggerHook) {
+	h.handoffHook = hook
 }
 
 // SetPromptCacheStabilize toggles request-body prefix stabilization
@@ -1494,6 +1505,62 @@ func (h *ChatHandler) serveWithExecutor(
 			// Meta-tools replaced with full tool set; continue with the
 			// expanded body.
 			bodyBytes = modified
+		}
+	}
+
+	// ── Request-side session handoff ─────────────────────────────────────
+	// The handoff runs after routing resolves the real context window and
+	// before compression. It therefore rewrites the exact body compression
+	// will cache and forward, instead of scheduling a second hidden request.
+	if h.handoffHook != nil && gwSessionID != "" {
+		contextWindow := 0
+		if len(candidates) > 0 && candidates[0].ContextWindow != nil {
+			contextWindow = *candidates[0].ContextWindow
+		}
+		tenantForHandoff := "default"
+		if keyInfo != nil && keyInfo.TenantID != "" {
+			tenantForHandoff = keyInfo.TenantID
+		}
+		explicitHandoff := strings.EqualFold(r.Header.Get("X-Gw-Handoff-Mode"), "explicit") ||
+			h.handoffHook.DefaultExplicit(tenantForHandoff)
+		handoffResult, handoffErr := h.handoffHook.PrepareRequest(ctx, &handoff.Request{
+			SessionID: gwSessionID, TenantID: tenantForHandoff, ClientModel: clientModel,
+			Body: bodyBytes, Protocol: protocolForHandoff(r.URL.Path), ContextWindow: contextWindow,
+			TokenEstimate: estimateRequestTokens(bodyBytes), MessageCount: extractMessageCount(bodyBytes), Explicit: explicitHandoff,
+			UpstreamAPIKey: trustedHandoffUpstreamAPIKey(h.keyVerifier != nil, r),
+		})
+		if handoffErr != nil {
+			slog.Warn("handoff_prepare_failed", "session_id", gwSessionID, "error", handoffErr)
+		} else if handoffResult != nil && handoffResult.Triggered {
+			if handoffResult.Explicit {
+				h.handoffHook.CommitRequest(ctx, handoffResult, "")
+				w.Header().Set("X-Gw-Handoff", "explicit")
+				w.Header().Set("X-Gw-Handoff-Reason", handoffResult.Reason)
+				writeJSON(w, http.StatusAccepted, map[string]any{
+					"status": "handoff_required", "resume_packet": handoffResult.ResumePacket,
+				})
+				return
+			}
+			if keyInfo == nil || h.sessionGetter == nil {
+				slog.Warn("handoff_session_rotation_skipped", "session_id", gwSessionID, "reason", "session_owner_unavailable")
+			} else if newSession, err := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, handoffDeviceSeed(r), r.Header.Get("X-Gw-Task-Id")); err != nil {
+				slog.Warn("handoff_session_rotation_failed", "session_id", gwSessionID, "error", err)
+			} else {
+				bodyBytes = handoffResult.Body
+				previousSessionID := gwSessionID
+				gwSessionID = newSession.SessionID
+				sessionInfo = newSession
+				ctx = session.SessionFromContextWith(ctx, newSession)
+				r = r.WithContext(ctx)
+				r.Header.Set("X-Gw-Session-Id", gwSessionID)
+				logCtx.SetSession(newSession)
+				w.Header().Set("X-Gw-Handoff", "transparent")
+				w.Header().Set("X-Gw-Handoff-Reason", handoffResult.Reason)
+				w.Header().Set("X-Gw-Handoff-From", previousSessionID)
+				w.Header().Set("X-Gw-Handoff-To", gwSessionID)
+				w.Header().Set("X-Gw-Session-Id-Resume", gwSessionID)
+				h.handoffHook.CommitRequest(ctx, handoffResult, gwSessionID)
+			}
 		}
 	}
 
