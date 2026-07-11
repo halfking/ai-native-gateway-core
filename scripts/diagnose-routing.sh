@@ -4,7 +4,7 @@
 
 set -e
 
-SERVER="${SERVER:-__HOST_71_IP__}"
+SERVER="${SERVER:-${HOST_252_INTERNAL_IP:-172.16.2.210}}"  # 阿里 252 (替代 71)
 PORT="${PORT:-25022}"
 USER="${USER:-root}"
 # SSHPASS must be set in the environment before running this script.
