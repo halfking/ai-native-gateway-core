@@ -333,6 +333,16 @@ type ChatHandler struct {
 	// from incoming requests and saves them to the filesystem before forwarding.
 	// nil disables attachment extraction (attachments remain inline in request body).
 	attachmentExtractor *attachments.Extractor
+
+	// handoffFallbackAuth (2026-07-11, handoff self-call fix)
+	handoffFallbackAuth string
+
+	// dispatchFollowUpRequest (2026-07-11) is the inner dispatch seam used
+	// by injectFollowUpRequest to send a synthetic /v1/chat/completions
+	// request. nil falls back to defaultDispatchFollowUp, which loops the
+	// request through h.ServeHTTP. Tests can overwrite the field to stub
+	// out the network/auth path without spinning up the full pipeline.
+	dispatchFollowUpRequest dispatchFollowUpFunc
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -354,6 +364,9 @@ type ResponseInterceptResult = response.InterceptResult
 
 // ResponseStreamMeta is an alias to response.StreamMeta.
 type ResponseStreamMeta = response.StreamMeta
+
+// dispatchFollowUpFunc (2026-07-11) is the seam used by injectFollowUpRequest
+type dispatchFollowUpFunc func(h *ChatHandler, ctx context.Context, sessionID string, body []byte, action string, authHeader string, attempt int) (status int, bodySnippet string)
 
 // ResponseChunkResult is an alias to response.ChunkResult.
 type ResponseChunkResult = response.ChunkResult
@@ -570,6 +583,11 @@ func (h *ChatHandler) SetRequestLogHook(hook func(*telemetry.RequestLogEntry)) {
 // cmd/gateway-v2/main.go, the demo binary).
 func (h *ChatHandler) SetSessionAuditHook(hook *sessionaudithook.SessionAuditHook) {
 	h.sessionAuditHook = hook
+}
+
+// SetHandoffFallbackAPIKey (2026-07-11, handoff self-call fix)
+func (h *ChatHandler) SetHandoffFallbackAPIKey(apiKey string) {
+	h.handoffFallbackAuth = strings.TrimSpace(apiKey)
 }
 
 // SetResponseInterceptor wires the response interceptor for automatic
@@ -2104,7 +2122,8 @@ func (h *ChatHandler) serveWithExecutor(
 				// Detach from r.Context() (Background) since the response
 				// is already complete and r.Context() may be canceled.
 				followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
-				go h.injectFollowUpRequest(followUpCtx, gwSessionID, endResult.InjectFollowUp, endResult.Action)
+				parentAuthHeader := h.buildHandoffAuthHeader(r)
+				go h.injectFollowUpRequest(followUpCtx, gwSessionID, endResult.InjectFollowUp, endResult.Action, parentAuthHeader)
 			}
 		} else {
 			// For non-streaming, call InterceptNonStream
@@ -2120,7 +2139,8 @@ func (h *ChatHandler) serveWithExecutor(
 					// Inject follow-up request asynchronously.
 					// Carry the follow-up depth from the request context.
 					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
-					go h.injectFollowUpRequest(followUpCtx, gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action)
+					parentAuthHeader := h.buildHandoffAuthHeader(r)
+					go h.injectFollowUpRequest(followUpCtx, gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action, parentAuthHeader)
 				}
 				// Apply ModifiedBody (e.g. output-compliance redaction).
 				//
@@ -4010,6 +4030,30 @@ func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 // Only called for auto-route requests (model="auto"). All scoring is
 // done in-process (no DB lookup on the hot path) to keep latency <1ms.
 // The DB insert happens asynchronously in the tuning writer goroutine.
+
+// buildHandoffAuthHeader constructs the Authorization header for the
+// handoff follow-up request, preferring the caller's header and falling
+// back to the system key when the request had no usable Authorization
+// header (e.g. browser session that streamed without an API key, or when
+// the Authorization header was rejected by the auth layer). Returns ""
+// only when no auth source is available, which downstream treat as
+// "no auth" and they will surface a 401 missing_key error in the log.
+func (h *ChatHandler) buildHandoffAuthHeader(r *http.Request) string {
+	if r == nil {
+		return h.handoffFallbackAuth
+	}
+	if v := strings.TrimSpace(r.Header.Get("Authorization")); v != "" {
+		return v
+	}
+	if h.handoffFallbackAuth != "" {
+		return h.handoffFallbackAuth
+	}
+	if sk := os.Getenv("LLM_GATEWAY_ADMIN_API_KEY"); sk != "" {
+		return "Bearer " + sk
+	}
+	return ""
+}
+
 func (h *ChatHandler) emitTuningSignal(reqLog *telemetry.RequestLogEntry, success bool, latencyMs int) {
 	if h == nil || h.telemetryClient == nil {
 		return
