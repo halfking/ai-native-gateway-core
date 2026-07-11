@@ -47,6 +47,14 @@ type ModuleIntegration struct {
 	DocURL      string `json:"doc_url"`
 }
 
+// ModuleDependency describes a dependency relationship between modules.
+type ModuleDependency struct {
+	Key      string `json:"key"`
+	Name     string `json:"name"`
+	Icon     string `json:"icon"`
+	Required bool   `json:"required"` // true=必需，false=推荐
+}
+
 // ModuleWithStatus extends ModuleDefinition with runtime status.
 type ModuleWithStatus struct {
 	ModuleDefinition
@@ -240,6 +248,7 @@ func allModuleDefinitions() []ModuleDefinition {
 					{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: false},
 					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: false},
 					{Key: "security", Name: "安全检测引擎", Icon: "🔐", Required: false},
+					{Key: "feishu_bot", Name: "飞书机器人", Icon: "📱", Required: false},
 				},
 			},
 			{

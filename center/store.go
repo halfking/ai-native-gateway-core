@@ -33,15 +33,12 @@ type Store interface {
 
 // HeartbeatRecord 心跳记录
 type HeartbeatRecord struct {
-	InstanceID   string    `json:"instance_id"`
-	Timestamp    time.Time `json:"timestamp"`
-	UptimeSecs   int64     `json:"uptime_secs"`
-	NumGoroutine int       `json:"num_goroutine"`
-	AllocMB      float64   `json:"alloc_mb"`
-	Status       string    `json:"status"`
-	CPUUsage     float64   `json:"cpu_usage,omitempty"`
-	MemoryUsage  float64   `json:"memory_usage,omitempty"`
-	DiskUsage    float64   `json:"disk_usage,omitempty"`
+	InstanceID   string
+	Timestamp    time.Time
+	UptimeSecs   int64
+	NumGoroutine int
+	AllocMB      float64
+	Status       string
 }
 
 // Command 命令定义

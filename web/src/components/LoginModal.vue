@@ -52,9 +52,7 @@ async function handleLogin() {
       } else {
         try {
           const me = await getAuthMe()
-          // 2026-07-12 audit: unwrap {user,...} before persisting.
-          const meAny = me as any
-          setUserInfo(meAny?.user ?? me)
+          setUserInfo(me)
         } catch { /* ignore */ }
       }
       close()
