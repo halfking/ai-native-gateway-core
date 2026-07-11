@@ -80,6 +80,30 @@ die()   { err "$@"; exit "${2:-1}"; }
 # ── 默认配置 ───────────────────────────────────────────────────────
 TARGET_DEFAULT="both"
 TARGET="${1:-$TARGET_DEFAULT}"
+
+# ── 部署模式检测 (2026-07-12) ───────────────────────────────────
+# 根据目标服务器自动选择部署模式：
+#   - host-mode: 154 / 186 / 245（systemd 主机部署，scp 二进制 + systemctl restart）
+#   - k3s-mode:  252 / kaixuan-1/2/3（k3s 集群，kubectl rollout）
+#   - legacy:    184 / 71（重定向到 252 / 154；按别名解析后的目标决定）
+case "$TARGET" in
+  154|186|245)        DEPLOY_MODE="host" ;;
+  252|kaixuan-1|kaixuan-2|kaixuan-3) DEPLOY_MODE="k3s" ;;
+  184)                DEPLOY_MODE="k3s";  TARGET="252" ;;  # legacy 重定向
+  71)                 DEPLOY_MODE="host"; TARGET="154" ;;  # legacy 重定向
+  build|migrate|verify|rollback)
+                       DEPLOY_MODE="-" ;;  # 命令模式，不需要
+  both)
+                       # both 模式：第一个部署 252（k3s），再部署 154（host）
+                       DEPLOY_MODE="both" ;;
+  *) DEPLOY_MODE="?" ;;
+esac
+if [[ "$DEPLOY_MODE" == "?" ]]; then
+  err "未知 target: $TARGET"
+  usage_short
+  exit 64
+fi
+info "部署模式: $DEPLOY_MODE → target=$TARGET"
 shift 2>/dev/null || true
 
 # Parse flags
@@ -235,12 +259,27 @@ verify_ssh_key() {
 }
 
 case "$TARGET" in
-  184|71|both|build|migrate|verify|rollback)
-    if [[ "$TARGET" == "184" || "$TARGET" == "both" ]]; then
-      verify_ssh_key "184" "$SSH_KEY_184" "huoshan-core-184"
+  184|71|252|154|245|186|kaixuan-1|kaixuan-2|kaixuan-3|both|build|migrate|verify|rollback)
+    if [[ "$TARGET" == "184" || "$TARGET" == "252" || "$TARGET" == "both" ]]; then
+      verify_ssh_key "252" "$SSH_KEY_252" "deploy-252"
     fi
-    if [[ "$TARGET" == "71" || "$TARGET" == "both" ]]; then
-      verify_ssh_key "71" "$SSH_KEY_71" "huoshan-infra-71"
+    if [[ "$TARGET" == "71" || "$TARGET" == "154" || "$TARGET" == "both" ]]; then
+      verify_ssh_key "154" "$SSH_KEY_154" "deploy-154"
+    fi
+    if [[ "$TARGET" == "245" ]]; then
+      verify_ssh_key "245" "$SSH_KEY_245" "deploy-245"
+    fi
+    if [[ "$TARGET" == "186" ]]; then
+      verify_ssh_key "186" "$SSH_KEY_186" "deploy-186"
+    fi
+    if [[ "$TARGET" == "kaixuan-1" ]]; then
+      verify_ssh_key "kaixuan-1" "$SSH_KEY_KAIXUAN_1" "deploy-kaixuan-1"
+    fi
+    if [[ "$TARGET" == "kaixuan-2" ]]; then
+      verify_ssh_key "kaixuan-2" "$SSH_KEY_KAIXUAN_2" "deploy-kaixuan-2"
+    fi
+    if [[ "$TARGET" == "kaixuan-3" ]]; then
+      verify_ssh_key "kaixuan-3" "$SSH_KEY_KAIXUAN_3" "deploy-kaixuan-3"
     fi
     ;;
   *) usage_short; exit 64 ;;
@@ -764,29 +803,134 @@ deploy_71() {
   ok "71 部署完成"
 }
 
+# ── 通用 host-mode 部署函数 (2026-07-12) ──────────────────────────────
+# 154 / 186 / 245 等 systemd 主机部署共用此函数
+# 调用方式: deploy_host <target_var> <ssh_opt> <ssh_user@host>
+# 例如: deploy_host 154 "$SSH_154_OPT" "$SERVER_154"
+deploy_host() {
+  local target="$1" ssh_opt="$2" ssh_target="$3"
+  phase "════════════ $target systemd 主机部署 ════════════"
+
+  # 选择对应的 SSH_OPT 和 SERVER（根据 target 名称）
+  case "$target" in
+    154) ssh_opt="$SSH_154_OPT"; ssh_target="$SERVER_154"; bin_dir="/opt/llm-gateway-go" ;;
+    186) ssh_opt="$SSH_186_OPT"; ssh_target="$SERVER_186"; bin_dir="/opt/llm-gateway-go" ;;
+    245) ssh_opt="$SSH_245_OPT"; ssh_target="$SERVER_245"; bin_dir="/opt/llm-gateway-go" ;;
+    *) err "deploy_host 不支持 target: $target"; return 1 ;;
+  esac
+
+  # 1) 编译二进制
+  cross_compile
+
+  # 2) 上传到服务器
+  local bin_name="llm-gateway-go.v${NEW_SEQ}.linux.amd64"
+  info "scp $bin_name → $ssh_target:$bin_dir/"
+  ssh $ssh_opt "$ssh_target" "mkdir -p $bin_dir/{data,logs,web}"
+  scp $ssh_opt "$bin_name" "$ssh_target:$bin_dir/$bin_name"
+
+  # 3) 上传 version.json
+  scp $ssh_opt "version.json" "$ssh_target:$bin_dir/version.json"
+
+  # 4) 上传 web/dist（如有）
+  if [[ -d web/dist ]]; then
+    info "rsync web/dist → $ssh_target:$bin_dir/web/"
+    ssh $ssh_opt "$ssh_target" "rm -rf $bin_dir/web && mkdir -p $bin_dir/web"
+    tar czf - -C web dist | ssh $ssh_opt "$ssh_target" "cat | tar xzf - -C $bin_dir/web --strip-components=1"
+  fi
+
+  # 5) 切换 symlink + 重启服务
+  info "重启 $target 上的 llm-gateway-go.service..."
+  ssh $ssh_opt "$ssh_target" \
+    "ln -sf $bin_dir/$bin_name $bin_dir/llm-gateway-go \
+     && systemctl restart llm-gateway-go.service \
+     && sleep 3 \
+     && systemctl is-active --quiet llm-gateway-go.service && echo ACTIVE || echo INACTIVE"
+
+  ok "$target 部署完成（注意：env-file 未变，保留原 prod secrets）"
+}
+
+verify_host() {
+  local target="$1"
+  case "$target" in
+    154) local ssh_opt="$SSH_154_OPT" ssh_target="$SERVER_154" port=8781 ;;
+    186) local ssh_opt="$SSH_186_OPT" ssh_target="$SERVER_186" port=8781 ;;
+    245) local ssh_opt="$SSH_245_OPT" ssh_target="$SERVER_245" port=8781 ;;
+    *) err "verify_host 不支持 target: $target"; return 1 ;;
+  esac
+
+  phase "════════════ $target 验证 ════════════"
+  # 检查 systemd 状态
+  if ! ssh $ssh_opt "$ssh_target" "systemctl is-active --quiet llm-gateway-go.service"; then
+    err "$target: 服务未运行"
+    return 1
+  fi
+
+  # 检查健康端点
+  info "curl http://$ssh_target:$port/health"
+  if ! ssh $ssh_opt "$ssh_target" "curl -sf --max-time 5 http://localhost:$port/health" >/dev/null; then
+    err "$target: /health 端点返回非 200"
+    return 1
+  fi
+
+  ok "$target 验证通过"
+}
+
+rollback_host() {
+  local target="$1"
+  case "$target" in
+    154) local ssh_opt="$SSH_154_OPT" ssh_target="$SERVER_154" bin_dir="/opt/llm-gateway-go" ;;
+    186) local ssh_opt="$SSH_186_OPT" ssh_target="$SERVER_186" bin_dir="/opt/llm-gateway-go" ;;
+    245) local ssh_opt="$SSH_245_OPT" ssh_target="$SERVER_245" bin_dir="/opt/llm-gateway-go" ;;
+    *) err "rollback_host 不支持 target: $target"; return 1 ;;
+  esac
+
+  phase "════════════ $target 回滚 ════════════"
+  ssh $ssh_opt "$ssh_target" bash <<EOF
+cd $bin_dir
+LATEST_BAK=\$(ls -t *.bak* 2>/dev/null | head -1)
+if [[ -z "\\$LATEST_BAK" ]]; then echo "  无备份可回滚"; exit 1; fi
+echo "  回滚到: \\$LATEST_BAK"
+cp "\\$LATEST_BAK" "llm-gateway-go.v${NEW_SEQ:-UNKNOWN}.linux.amd64"
+ln -sf "llm-gateway-go.v${NEW_SEQ:-UNKNOWN}.linux.amd64" llm-gateway-go
+systemctl restart llm-gateway-go.service
+sleep 5
+echo "  当前版本: \$(cat $bin_dir/VERSION)"
+EOF
+}
+
 # ── 入口 ────────────────────────────────────────────────────────────
 
 main() {
   case "$TARGET" in
-    184)
+    184|252|kaixuan-1|kaixuan-2|kaixuan-3)
+      # K3s 模式（185 实际是 252，kaixuan-* 是 k3s worker）
       pre_check || die "预检失败" 1
       get_version
-      deploy_184
+      if [[ "$TARGET" == "184" ]]; then
+        deploy_184  # legacy 别名，使用旧 K8s 函数
+      else
+        err "TARGET=$TARGET (k3s-mode) 尚未实现 deploy_k3s；请用 ./scripts/deploy.sh 252"
+        exit 64
+      fi
       commit_build_seq
       ;;
-    71)
+    71|154|186|245)
+      # Host-mode（systemd）
       pre_check || die "预检失败" 1
       get_version
-      deploy_71
+      if [[ "$TARGET" == "71" ]]; then
+        deploy_71  # legacy 别名（71 退役但保留兼容）
+      else
+        deploy_host "$TARGET"
+      fi
       commit_build_seq
       ;;
     both)
       pre_check || die "预检失败" 1
       get_version
-      deploy_184 || die "184 部署失败 (71 未开始)" 4
-      echo
-      deploy_71
-      commit_build_seq
+      # both 模式：先 252 (k3s) 后 154 (host)
+      err "both 模式（252+154）尚未实现 deploy_k3s；请分别运行 deploy.sh 252 和 deploy.sh 154"
+      exit 64
       ;;
     build)
       pre_check || die "预检失败" 1
@@ -796,19 +940,24 @@ main() {
       [[ "$DRY_RUN" != "true" ]] && commit_build_seq
       ;;
     migrate)
-      [[ -z "${2:-}" ]] && die "用法: $0 migrate <184|71>" 64
-      [[ "$2" == "184" ]] && run_migrations_184
+      [[ -z "${2:-}" ]] && die "用法: $0 migrate <184|71|252|154|kaixuan-1>" 64
+      if [[ "$2" == "184" ]]; then run_migrations_184
+      else err "migrate for $2 尚未实现"; exit 64; fi
       ;;
     verify)
-      [[ -z "${2:-}" ]] && die "用法: $0 verify <184|71>" 64
+      [[ -z "${2:-}" ]] && die "用法: $0 verify <184|71|154|186|245|kaixuan-1>" 64
       get_version
-      [[ "$2" == "184" ]] && verify_184
-      [[ "$2" == "71"  ]] && verify_71
+      if [[ "$2" == "184" ]]; then verify_184
+      elif [[ "$2" == "71"  ]]; then verify_71
+      elif [[ "$2" == "154" || "$2" == "186" || "$2" == "245" ]]; then verify_host "$2"
+      else err "verify for $2 尚未实现"; exit 64; fi
       ;;
     rollback)
-      [[ -z "${2:-}" ]] && die "用法: $0 rollback <184|71>" 64
-      [[ "$2" == "184" ]] && rollback_184
-      [[ "$2" == "71"  ]] && rollback_71
+      [[ -z "${2:-}" ]] && die "用法: $0 rollback <184|71|154|186|245|kaixuan-1>" 64
+      if [[ "$2" == "184" ]]; then rollback_184
+      elif [[ "$2" == "71"  ]]; then rollback_71
+      elif [[ "$2" == "154" || "$2" == "186" || "$2" == "245" ]]; then rollback_host "$2"
+      else err "rollback for $2 尚未实现"; exit 64; fi
       ;;
     *)
       usage_short; exit 64
