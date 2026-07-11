@@ -178,7 +178,7 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	}
 	tenantID := normalizeLiveStreamTenant(req.TenantID)
 	req.TenantID = tenantID
-	
+
 	// Enhanced logging for debugging missing dimension values
 	if req.ModelCategory == "" {
 		slog.Debug("live stream record: missing model_category", "request_id", req.RequestID, "model", req.Model, "tenant_id", tenantID)
