@@ -1336,13 +1336,28 @@ func main() {
 		// Self-check worker — runs periodic ping + tool-call smoke tests
 		// against key models to verify gateway availability (2026-07-12).
 		slog.Info("CHECKPOINT: before self-check worker init")
-		selfCheckAPIKey, err := bg.EnsureSystemAPIKey(context.Background(), dbConn.Pool(), fernetKey, keyring)
-		if err != nil {
-			slog.Warn("self-check worker disabled: cannot get system API key", "error", err)
-		} else {
-			selfCheckWorker := bg.NewSelfCheckWorker(dbConn.Pool(), selfCheckAPIKey, "https://llm.kxpms.cn/v1", keyring)
+
+		// Try env var first, then generate system key
+		selfCheckAPIKey := os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY")
+		if selfCheckAPIKey == "" {
+			var err error
+			selfCheckAPIKey, err = bg.EnsureSystemAPIKey(context.Background(), dbConn.Pool(), fernetKey, keyring)
+			if err != nil {
+				slog.Warn("self-check worker disabled: cannot get system API key", "error", err)
+				selfCheckAPIKey = ""
+			}
+		}
+
+		if selfCheckAPIKey != "" {
+			// Use empty baseURL to trigger env var / default detection in NewSelfCheckWorker
+			selfCheckWorker := bg.NewSelfCheckWorker(dbConn.Pool(), selfCheckAPIKey, "", keyring)
 			selfCheckWorker.Start(context.Background())
-			slog.Info("CHECKPOINT: selfCheckWorker started", "base_url", "https://llm.kxpms.cn/v1")
+			slog.Info("CHECKPOINT: selfCheckWorker started", "api_key_source", func() string {
+				if os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY") != "" {
+					return "env_var"
+				}
+				return "generated"
+			}())
 		}
 
 		// Track C C6 (2026-06-18): pending entry sweeper. Marks
