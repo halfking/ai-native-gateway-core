@@ -61,9 +61,11 @@ REMOTE_DIR="${LLM_GATEWAY_154_DIR:-/opt/llm-gateway-go}"
 SERVICE_NAME="${LLM_GATEWAY_154_SERVICE:-llm-gateway-go.service}"
 # BIN_NAME 现在在 step 2 之后从 version.json 自动派生（见下面 derive_bin_name）
 SKIP_FRONTEND=false
+SSH_USE_KEY="${SSH_USE_KEY:-false}"
 SKIP_BUMP=false
 TARGET_SEQ=""
 DRY_RUN=false
+FORCE_DEPLOY="${FORCE_DEPLOY:-false}"
 
 # ── 参数解析 ────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -71,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --seq)           TARGET_SEQ="$2"; shift 2 ;;
     --no-frontend)   SKIP_FRONTEND=true; shift ;;
     --no-bump)       SKIP_BUMP=true; shift ;;
+    --force)         FORCE_DEPLOY=true; shift ;;
     --ssh)           SSH_TARGET="$2"; shift 2 ;;
     --port)          SSH_PORT="$2"; shift 2 ;;
     --dry-run)       DRY_RUN=true; shift ;;
@@ -91,28 +94,91 @@ log()  { echo -e "${GREEN}[deploy-154]${NC} $*"; }
 warn() { echo -e "${YELLOW}[warn]${NC} $*"; }
 err()  { echo -e "${RED}[error]${NC} $*" >&2; }
 
-# ── 硬门禁：env-injector 已注入（4-KEY，与 deploy-full.sh 对齐） ─
-for v in LLM_GATEWAY_SECRET_KEY LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_ADMIN_API_KEY; do
-  if [[ -z "${!v:-}" ]]; then
-    err "环境变量 $v 未设置"
-    err "请先执行: env-injector inject aliyun-gateway-154"
+# ── SSH 鉴权策略（2026-07-12 智能切换） ───────────────────────
+# 优先级：
+#   1) ssh-key（默认；优先 ~/.ssh/id_ed25519, ~/.ssh/56_id_rsa, ~/.ssh/71_id_rsa）
+#   2) sshpass + SSHPASS（向后兼容旧调用；需 brew install sshpass）
+
+SSH_KEY_FILE="${SSH_KEY_154:-}"
+if [[ -z "$SSH_KEY_FILE" ]]; then
+  for k in ~/.ssh/id_ed25519 ~/.ssh/56_id_rsa ~/.ssh/71_id_rsa; do
+    if [[ -f "$k" ]]; then
+      SSH_KEY_FILE="$k"
+      break
+    fi
+  done
+fi
+
+# 显式 opt-in 到 sshpass：必须显式 DEPLOY_154_USE_SSHPASS=1 + SSHPASS 已 export
+#   - 避免误用全局 SSHPASS（用户可能在其他工具设置了）
+#   - 强制要求 opt-in 让 key-auth 路径成为默认
+if [[ "${DEPLOY_154_USE_SSHPASS:-0}" == "1" ]]; then
+  if ! command -v sshpass >/dev/null 2>&1; then
+    err "sshpass 未安装 (brew install sshpass)"
     exit 2
   fi
-done
-
-# sshpass
-if ! command -v sshpass >/dev/null 2>&1; then
-  err "sshpass 未安装 (brew install sshpass)"
-  exit 2
+  if [[ -z "${SSHPASS:-}" ]]; then
+    err "DEPLOY_154_USE_SSHPASS=1 但 SSHPASS 未 export"
+    err "export SSHPASS='<your-password>'"
+    exit 2
+  fi
+  SSH="sshpass -e ssh -p $SSH_PORT -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts_154"
+  SCP="sshpass -e scp -P $SSH_PORT -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts_154"
+  log "鉴权模式:    sshpass (legacy)"
+  SSH_USE_KEY=false
+else
+  if [[ -z "$SSH_KEY_FILE" ]] || [[ ! -f "$SSH_KEY_FILE" ]]; then
+    err "未找到 SSH 私钥（尝试 ~/.ssh/id_ed25519, 56_id_rsa, 71_id_rsa 失败）"
+    err "请设置 SSH_KEY_154 环境变量，或 export DEPLOY_154_USE_SSHPASS=1 + SSHPASS 走密码路径"
+    exit 2
+  fi
+  SSH="ssh -i $SSH_KEY_FILE -p $SSH_PORT -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_154"
+  SCP="scp -i $SSH_KEY_FILE -P $SSH_PORT -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_154"
+  SSH_USE_KEY=true
+  log "鉴权模式:    ssh-key ($SSH_KEY_FILE)"
 fi
-if [[ -z "${SSHPASS:-}" ]]; then
-  err "SSHPASS 未 export"
-  err "export SSHPASS='<your-password>'"
-  exit 2
-fi
 
-SSH="sshpass -e ssh -p $SSH_PORT -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts_154"
-SCP="sshpass -e scp -P $SSH_PORT -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts_154"
+# ── 4-KEY 校验（key-auth 模式可从远端 env-file 自动读取） ─────
+# 优先级：
+#   - key-auth + SSHPASS 未设置 → 从 154 /etc/llm-gateway-go/env 读取 4 个核心 KEY
+#   - sshpass + SSHPASS 已设置 → 必须本地 export 4-KEY（保持向后兼容）
+#
+# 这样：CI 用 sshpass 时强制本地注入；开发者用 key-auth 时无需 inject
+
+if [[ "$SSH_USE_KEY" == "true" ]]; then
+  log "key-auth 模式：从远端 env-file 自动读取 4-KEY..."
+  REMOTE_ENV=/tmp/154_env.$$
+  if ! $SSH "$SSH_TARGET" "cat /etc/llm-gateway-go/env" > "$REMOTE_ENV" 2>/dev/null; then
+    err "无法从 154 读取 /etc/llm-gateway-go/env（SSH 链路失败）"
+    rm -f "$REMOTE_ENV"
+    exit 2
+  fi
+  for v in LLM_GATEWAY_SECRET_KEY LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_ADMIN_API_KEY; do
+    local_val=$(grep -E "^${v}=" "$REMOTE_ENV" 2>/dev/null | head -1 | cut -d= -f2-)
+    if [[ -n "$local_val" ]]; then
+      export "$v"="$local_val"
+    fi
+  done
+  rm -f "$REMOTE_ENV"
+  # 此时 4-KEY 必有值（154 上必有）；如仍缺则视为生产 env-file 损坏
+  for v in LLM_GATEWAY_SECRET_KEY LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_ADMIN_API_KEY; do
+    if [[ -z "${!v:-}" ]]; then
+      err "key-auth 自动读取失败：$v 为空（远端 /etc/llm-gateway-go/env 可能损坏）"
+      exit 2
+    fi
+  done
+  log "  ✓ 4-KEY 已从远端同步"
+else
+  # sshpass 模式：要求本地 export（向后兼容 deploy-full.sh 协议）
+  for v in LLM_GATEWAY_SECRET_KEY LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_ADMIN_API_KEY; do
+    if [[ -z "${!v:-}" ]]; then
+      err "sshpass 模式：环境变量 $v 未设置"
+      err "请先执行: env-injector inject aliyun-gateway-154"
+      exit 2
+    fi
+  done
+  log "  sshpass 模式：4-KEY 已通过 env-injector 注入"
+fi
 
 log "目标服务器:  $SSH_TARGET:$SSH_PORT"
 log "部署目录:    $REMOTE_DIR"
@@ -124,7 +190,12 @@ echo
 # ── Step 1: 预检 ───────────────────────────────────────────────
 log "[1/8] 预检..."
 [[ -f go.mod ]] || { err "go.mod 不存在"; exit 1; }
-git diff --quiet HEAD 2>/dev/null || { err "工作区有未提交改动"; exit 1; }
+if [[ "${FORCE_DEPLOY:-false}" != "true" ]]; then
+  git diff --quiet HEAD 2>/dev/null || { err "工作区有未提交改动（用 --force 跳过此检查）"; exit 1; }
+  git diff --cached --quiet HEAD 2>/dev/null || { err "有 staged 但未提交改动（用 --force 跳过此检查）"; exit 1; }
+else
+  warn "FORCE_DEPLOY=true: 跳过 git dirty 检查（生产部署不建议）"
+fi
 git diff --cached --quiet HEAD 2>/dev/null || { err "有 staged 但未提交改动"; exit 1; }
 log "  git clean: ✓"
 
