@@ -47,14 +47,6 @@ type ModuleIntegration struct {
 	DocURL      string `json:"doc_url"`
 }
 
-// ModuleDependency describes a dependency relationship between modules.
-type ModuleDependency struct {
-	Key      string `json:"key"`
-	Name     string `json:"name"`
-	Icon     string `json:"icon"`
-	Required bool   `json:"required"` // true=必需，false=推荐
-}
-
 // ModuleWithStatus extends ModuleDefinition with runtime status.
 type ModuleWithStatus struct {
 	ModuleDefinition
@@ -424,12 +416,11 @@ func allModuleDefinitions() []ModuleDefinition {
 					Description: "对接飞书自定义机器人，使用 Webhook 进行消息推送和交互",
 					DocURL:      "https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot",
 				},
-				Dependencies: []ModuleDependency{
-					{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: true, Description: "压缩管理提供上下文审计元数据"},
-					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: true, Description: "缓存提供审批决策复用"},
-					{Key: "prompt_injection", Name: "提示词注入检测", Icon: "🛡️", Required: true, Description: "注入检测触发风险告警"},
-					{Key: "session_audit", Name: "会话审计与审批", Icon: "📋", Required: true, Description: "审批流程提供回调目标"},
-				},
+					Dependencies: []ModuleDependency{
+						{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: true, Description: "压缩管理提供上下文审计元数据"},
+						{Key: "cache", Name: "会话缓存", Icon: "💾", Required: true, Description: "缓存提供审批决策复用"},
+						{Key: "prompt_injection", Name: "提示词注入检测", Icon: "🛡️", Required: true, Description: "注入检测触发风险告警"},
+					},
 			},
 			{
 				Key:         "wechat_bot",

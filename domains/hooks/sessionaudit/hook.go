@@ -4,15 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domain"               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/moduleexec"    // 模块执行记录器
+	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/moduleexec"     // 模块执行记录器
 	"github.com/kaixuan/llm-gateway-go/domains/moduleregistry" // 模块标识注册表
-	"github.com/kaixuan/llm-gateway-go/domains/pipeline"     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/pipeline"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 )
 
@@ -89,15 +90,19 @@ func (h *SessionAuditHook) Priority() int {
 }
 
 func (h *SessionAuditHook) Enabled(ctx context.Context, env *domain.PipelineRequest) bool {
-	return h.enabled && env != nil
+	return h.sessionAuditEnabled() && env != nil
+}
+
+func (h *SessionAuditHook) sessionAuditEnabled() bool {
+	return h != nil && h.enabled && loadConfig().Enabled
 }
 
 func (h *SessionAuditHook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
-	// 加载配置
-	cfg := LoadConfig()
-	if !cfg.Enabled {
+	if !h.Enabled(ctx, env) {
 		return nil
 	}
+	// 加载配置
+	cfg := loadConfig()
 
 	// 1. 提取用户内容
 	content, err := extractUserContent(env)
@@ -398,6 +403,11 @@ type CheckV1Result struct {
 //   - Execute 需要 env.Envelope.Transport.BodyBytes（v2 路径）
 //   - CheckV1 直接接受 content string（v1 路径，ChatHandler 自己解析 body）
 func (h *SessionAuditHook) CheckV1(ctx context.Context, sessionID, tenantID, model, content, ua, ip string) CheckV1Result {
+	// Keep the v1 path behind the same runtime switch as the v2 pipeline.
+	if !h.sessionAuditEnabled() {
+		return CheckV1Result{Decision: sessionaudit.DecisionPass}
+	}
+
 	// 1. 空内容 → pass
 	if content == "" {
 		return CheckV1Result{Decision: sessionaudit.DecisionPass}
@@ -581,12 +591,12 @@ func contentHash(content string) string {
 // detectResultToMap 将 DetectResult 转换为 summary map
 func detectResultToMap(r *sessionaudit.DetectResult) map[string]interface{} {
 	return map[string]interface{}{
-		"score":          r.Score,
+		"score":           r.Score,
 		"sensitive_words": r.SensitiveWords,
-		"decision":       string(r.Decision),
-		"reason":         r.Reason,
-		"threat_count":   len(r.Threats),
-		"latency_ms":     r.LatencyMs,
+		"decision":        string(r.Decision),
+		"reason":          r.Reason,
+		"threat_count":    len(r.Threats),
+		"latency_ms":      r.LatencyMs,
 	}
 }
 
@@ -606,80 +616,31 @@ func detectDetailToMap(r *sessionaudit.DetectResult) map[string]interface{} {
 	}
 }
 
-// mapToDetectResult 从 map 还原 DetectResult（带完整错误处理）
+// mapToDetectResult 从 map 还原 DetectResult（兼容原生 Go map 和 JSON 解码结果）
 func mapToDetectResult(summary, detail map[string]interface{}) (*sessionaudit.DetectResult, error) {
 	if summary == nil {
 		return nil, fmt.Errorf("summary is nil")
 	}
-	
-	result := &sessionaudit.DetectResult{}
 
-	// 安全的类型转换 + 错误处理
-	if v, ok := summary["score"].(float64); ok {
-		result.Score = int(v)
-	} else if summary["score"] != nil {
-		return nil, fmt.Errorf("invalid score type: %T", summary["score"])
+	payload := map[string]interface{}{}
+	for key, value := range summary {
+		payload[key] = value
 	}
-	
-	if v, ok := summary["decision"].(string); ok {
-		result.Decision = sessionaudit.Decision(v)
-	} else if summary["decision"] != nil {
-		return nil, fmt.Errorf("invalid decision type: %T", summary["decision"])
-	}
-	
-	if v, ok := summary["reason"].(string); ok {
-		result.Reason = v
-	}
-	
-	if v, ok := summary["latency_ms"].(float64); ok {
-		result.LatencyMs = int(v)
-	}
-
-	// 还原 sensitive_words（带类型检查）
-	if wordsRaw, ok := summary["sensitive_words"]; ok && wordsRaw != nil {
-		if words, ok := wordsRaw.([]interface{}); ok {
-			result.SensitiveWords = make([]string, 0, len(words))
-			for _, w := range words {
-				if s, ok := w.(string); ok {
-					result.SensitiveWords = append(result.SensitiveWords, s)
-				}
-			}
-		} else {
-			return nil, fmt.Errorf("invalid sensitive_words type: %T", wordsRaw)
-		}
-	}
-
-	// 还原 threats（从 detail，带类型检查）
 	if detail != nil {
-		if threatsRaw, ok := detail["threats"]; ok && threatsRaw != nil {
-			threats, ok := threatsRaw.([]interface{})
-			if !ok {
-				return nil, fmt.Errorf("invalid threats type: %T", threatsRaw)
-			}
-			
-			result.Threats = make([]sessionaudit.Threat, 0, len(threats))
-			for i, t := range threats {
-				tm, ok := t.(map[string]interface{})
-				if !ok {
-					return nil, fmt.Errorf("threat[%d] is not a map, got %T", i, t)
-				}
-				
-				threat := sessionaudit.Threat{}
-				if v, ok := tm["type"].(string); ok {
-					threat.Type = v
-				}
-				if v, ok := tm["severity"].(float64); ok {
-					threat.Severity = int(v)
-				}
-				if v, ok := tm["evidence"].(string); ok {
-					threat.Evidence = v
-				}
-				result.Threats = append(result.Threats, threat)
-			}
+		if threats, ok := detail["threats"]; ok {
+			payload["threats"] = threats
 		}
 	}
 
-	return result, nil
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal detect result: %w", err)
+	}
+	var result sessionaudit.DetectResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("decode detect result: %w", err)
+	}
+	return &result, nil
 }
 
 // 编译期断言

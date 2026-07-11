@@ -2,10 +2,10 @@
 // 首页 Dashboard 数据访问埋点系统
 //
 // 目的：
-//   1. 记录 API 访问情况（PV/UV/响应时间）
-//   2. 追踪数据查询模式（哪些指标最常访问）
-//   3. 性能监控（慢查询、错误率）
-//   4. 用户行为分析（用于优化 API 设计）
+//  1. 记录 API 访问情况（PV/UV/响应时间）
+//  2. 追踪数据查询模式（哪些指标最常访问）
+//  3. 性能监控（慢查询、错误率）
+//  4. 用户行为分析（用于优化 API 设计）
 //
 // 设计原则：
 //   - 异步写入，不影响主流程
@@ -22,57 +22,66 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // DashboardEvent Dashboard 访问事件
 type DashboardEvent struct {
 	// 基础信息
-	EventID    string    `json:"event_id"`
-	EventType  string    `json:"event_type"`  // api_access, query, export, error
-	Timestamp  time.Time `json:"timestamp"`
+	EventID   string    `json:"event_id"`
+	EventType string    `json:"event_type"` // api_access, query, export, error
+	Timestamp time.Time `json:"timestamp"`
 
 	// 用户信息
-	TenantID   string    `json:"tenant_id"`
-	UserID     string    `json:"user_id,omitempty"`
-	UserRole   string    `json:"user_role,omitempty"` // super_admin / tenant_admin / user
-	SessionID  string    `json:"session_id,omitempty"` // 用户会话 ID（不是 gw_session_id）
+	TenantID  string `json:"tenant_id"`
+	UserID    string `json:"user_id,omitempty"`
+	UserRole  string `json:"user_role,omitempty"`  // super_admin / tenant_admin / user
+	SessionID string `json:"session_id,omitempty"` // 用户会话 ID（不是 gw_session_id）
 
 	// API 信息
-	APIPath    string    `json:"api_path"`
-	APIMethod  string    `json:"api_method"`
-	APIVersion string    `json:"api_version,omitempty"`
+	APIPath    string `json:"api_path"`
+	APIMethod  string `json:"api_method"`
+	APIVersion string `json:"api_version,omitempty"`
 
 	// 请求参数（脱敏）
 	QueryParams map[string]interface{} `json:"query_params,omitempty"`
 
 	// 响应信息
-	StatusCode  int           `json:"status_code"`
-	ResponseTime int64        `json:"response_time_ms"` // 毫秒
-	CacheHit    bool          `json:"cache_hit"`
-	DataSize    int           `json:"data_size,omitempty"` // 返回数据大小（字节）
-	ErrorCode   string        `json:"error_code,omitempty"`
-	ErrorMessage string       `json:"error_message,omitempty"`
+	StatusCode   int    `json:"status_code"`
+	ResponseTime int64  `json:"response_time_ms"` // 毫秒
+	CacheHit     bool   `json:"cache_hit"`
+	DataSize     int    `json:"data_size,omitempty"` // 返回数据大小（字节）
+	ErrorCode    string `json:"error_code,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 
 	// 客户端信息
-	ClientIP    string `json:"client_ip,omitempty"`
-	UserAgent   string `json:"user_agent,omitempty"`
-	Referer     string `json:"referer,omitempty"`
+	ClientIP  string `json:"client_ip,omitempty"`
+	UserAgent string `json:"user_agent,omitempty"`
+	Referer   string `json:"referer,omitempty"`
 
 	// 性能指标
 	DBQueryTime    int64 `json:"db_query_time_ms,omitempty"`
 	CacheQueryTime int64 `json:"cache_query_time_ms,omitempty"`
 }
 
+// dashboardDB is the subset of pgxpool.Pool required by DashboardEventRecorder.
+type dashboardDB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 // DashboardEventRecorder Dashboard 事件记录器
 type DashboardEventRecorder struct {
-	db     *pgxpool.Pool
+	db     dashboardDB
 	logger *slog.Logger
 
 	// 批量写入
-	buffer    []*DashboardEvent
-	bufferMu  sync.Mutex
-	flushSize int
+	buffer        []*DashboardEvent
+	bufferMu      sync.Mutex
+	flushSize     int
 	flushInterval time.Duration
 
 	stopCh chan struct{}
@@ -81,6 +90,10 @@ type DashboardEventRecorder struct {
 
 // NewDashboardEventRecorder 创建事件记录器
 func NewDashboardEventRecorder(db *pgxpool.Pool, logger *slog.Logger) *DashboardEventRecorder {
+	return newDashboardEventRecorder(db, logger)
+}
+
+func newDashboardEventRecorder(db dashboardDB, logger *slog.Logger) *DashboardEventRecorder {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -147,16 +160,16 @@ func (r *DashboardEventRecorder) RecordAccess(
 	cacheHit bool,
 ) {
 	r.Record(&DashboardEvent{
-		EventType:   "api_access",
-		TenantID:    tenantID,
-		UserID:      userID,
-		UserRole:    userRole,
-		SessionID:   sessionID,
-		APIPath:     apiPath,
-		APIMethod:   apiMethod,
-		StatusCode:  statusCode,
+		EventType:    "api_access",
+		TenantID:     tenantID,
+		UserID:       userID,
+		UserRole:     userRole,
+		SessionID:    sessionID,
+		APIPath:      apiPath,
+		APIMethod:    apiMethod,
+		StatusCode:   statusCode,
 		ResponseTime: responseTime.Milliseconds(),
-		CacheHit:    cacheHit,
+		CacheHit:     cacheHit,
 	})
 }
 
@@ -249,7 +262,8 @@ func (r *DashboardEventRecorder) insertEvent(ctx context.Context, event *Dashboa
 	queryParamsJSON, _ := json.Marshal(event.QueryParams)
 
 	query := `
-		INSERT INTO dashboard_access_events (
+			INSERT INTO dashboard_access_events_hot (
+
 			event_id, event_type, timestamp,
 			tenant_id, user_id, user_role, session_id,
 			api_path, api_method, api_version,
@@ -281,26 +295,26 @@ func (r *DashboardEventRecorder) insertEvent(ctx context.Context, event *Dashboa
 
 // AccessStats 访问统计
 type AccessStats struct {
-	TotalRequests   int64   `json:"total_requests"`
-	UniqueUsers     int64   `json:"unique_users"`
-	UniqueTenants   int64   `json:"unique_tenants"`
-	AvgResponseMs   float64 `json:"avg_response_ms"`
-	P95ResponseMs   float64 `json:"p95_response_ms"`
-	P99ResponseMs   float64 `json:"p99_response_ms"`
-	CacheHitRate    float64 `json:"cache_hit_rate"`
-	ErrorRate       float64 `json:"error_rate"`
+	TotalRequests int64   `json:"total_requests"`
+	UniqueUsers   int64   `json:"unique_users"`
+	UniqueTenants int64   `json:"unique_tenants"`
+	AvgResponseMs float64 `json:"avg_response_ms"`
+	P95ResponseMs float64 `json:"p95_response_ms"`
+	P99ResponseMs float64 `json:"p99_response_ms"`
+	CacheHitRate  float64 `json:"cache_hit_rate"`
+	ErrorRate     float64 `json:"error_rate"`
 
 	// 按 API 分组
-	TopAPIs         []APIAccessStats `json:"top_apis"`
+	TopAPIs []APIAccessStats `json:"top_apis"`
 }
 
 // APIAccessStats API 访问统计
 type APIAccessStats struct {
-	APIPath        string  `json:"api_path"`
-	RequestCount   int64   `json:"request_count"`
-	AvgResponseMs  float64 `json:"avg_response_ms"`
-	ErrorRate      float64 `json:"error_rate"`
-	CacheHitRate   float64 `json:"cache_hit_rate"`
+	APIPath       string  `json:"api_path"`
+	RequestCount  int64   `json:"request_count"`
+	AvgResponseMs float64 `json:"avg_response_ms"`
+	ErrorRate     float64 `json:"error_rate"`
+	CacheHitRate  float64 `json:"cache_hit_rate"`
 }
 
 // GetAccessStats 获取访问统计
@@ -311,8 +325,23 @@ func (r *DashboardEventRecorder) GetAccessStats(ctx context.Context, hours int) 
 
 	stats := &AccessStats{}
 
-	// 总览统计
+	// 总览统计。hot 表保存实时事件；archive 表包含已归档事件。排除已经
+	// 位于 hot 的 archive 行，兼容归档迁移期间可能短暂存在的重复数据。
 	overviewQuery := fmt.Sprintf(`
+		WITH access_events AS (
+			SELECT event_id, user_id, tenant_id, response_time_ms, cache_hit, status_code
+			FROM dashboard_access_events_hot
+			WHERE timestamp > NOW() - INTERVAL '%d hours'
+			  AND event_type = 'api_access'
+			UNION ALL
+			SELECT archived.event_id, archived.user_id, archived.tenant_id, archived.response_time_ms, archived.cache_hit, archived.status_code
+			FROM dashboard_access_events archived
+			WHERE archived.timestamp > NOW() - INTERVAL '%d hours'
+			  AND archived.event_type = 'api_access'
+			  AND NOT EXISTS (
+				SELECT 1 FROM dashboard_access_events_hot hot WHERE hot.event_id = archived.event_id
+			  )
+		)
 		SELECT
 			COUNT(*) as total,
 			COUNT(DISTINCT user_id) as unique_users,
@@ -322,10 +351,8 @@ func (r *DashboardEventRecorder) GetAccessStats(ctx context.Context, hours int) 
 			PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY response_time_ms)::FLOAT as p99,
 			COUNT(*) FILTER (WHERE cache_hit = true) * 100.0 / NULLIF(COUNT(*), 0) as cache_hit_rate,
 			COUNT(*) FILTER (WHERE status_code >= 400) * 100.0 / NULLIF(COUNT(*), 0) as error_rate
-		FROM dashboard_access_events
-		WHERE timestamp > NOW() - INTERVAL '%d hours'
-		  AND event_type = 'api_access'
-	`, hours)
+		FROM access_events
+	`, hours, hours)
 
 	err := r.db.QueryRow(ctx, overviewQuery).Scan(
 		&stats.TotalRequests,
@@ -343,19 +370,31 @@ func (r *DashboardEventRecorder) GetAccessStats(ctx context.Context, hours int) 
 
 	// Top APIs
 	topQuery := fmt.Sprintf(`
+		WITH access_events AS (
+			SELECT event_id, api_path, response_time_ms, status_code, cache_hit
+			FROM dashboard_access_events_hot
+			WHERE timestamp > NOW() - INTERVAL '%d hours'
+			  AND event_type = 'api_access'
+			UNION ALL
+			SELECT archived.event_id, archived.api_path, archived.response_time_ms, archived.status_code, archived.cache_hit
+			FROM dashboard_access_events archived
+			WHERE archived.timestamp > NOW() - INTERVAL '%d hours'
+			  AND archived.event_type = 'api_access'
+			  AND NOT EXISTS (
+				SELECT 1 FROM dashboard_access_events_hot hot WHERE hot.event_id = archived.event_id
+			  )
+		)
 		SELECT
 			api_path,
 			COUNT(*) as request_count,
 			AVG(response_time_ms)::FLOAT as avg_response,
 			COUNT(*) FILTER (WHERE status_code >= 400) * 100.0 / NULLIF(COUNT(*), 0) as error_rate,
 			COUNT(*) FILTER (WHERE cache_hit = true) * 100.0 / NULLIF(COUNT(*), 0) as cache_hit_rate
-		FROM dashboard_access_events
-		WHERE timestamp > NOW() - INTERVAL '%d hours'
-		  AND event_type = 'api_access'
+		FROM access_events
 		GROUP BY api_path
 		ORDER BY request_count DESC
 		LIMIT 10
-	`, hours)
+	`, hours, hours)
 
 	rows, err := r.db.Query(ctx, topQuery)
 	if err != nil {

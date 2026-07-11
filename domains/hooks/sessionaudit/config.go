@@ -45,6 +45,9 @@ type Config struct {
 	MaskSensitiveData bool
 }
 
+// loadConfig is replaceable in tests so hook gating does not depend on global settings.
+var loadConfig = LoadConfig
+
 // LoadConfig reads session audit configuration from settings.
 func LoadConfig() *Config {
 	cfg := &Config{

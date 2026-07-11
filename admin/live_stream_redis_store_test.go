@@ -754,15 +754,16 @@ func TestLiveStreamSSEHub_ComputeScopeDelta_RefreshesAccessOnEmpty(t *testing.T)
 	// Seed a stale-soon entry: lastAccessed = 9 minutes ago. Without
 	// the fix, one more evict tick (10min) would delete this entry.
 	staleBefore := time.Now().Add(-9 * time.Minute)
+	scope := newLiveStreamScope("tenant-active", false)
 	hub.cachedSnapshotMu.Lock()
-	hub.cachedSnapshot["tenant-active"] = &cachedSnapshotEntry{
+	hub.cachedSnapshot[scope.cacheKey] = &cachedSnapshotEntry{
 		snapshot:     &LiveStreamSnapshot{},
 		lastAccessed: staleBefore,
 	}
 	hub.cachedSnapshotMu.Unlock()
 
-	beforeHits := atomic.LoadInt64(&hub.cachedSnapshotHits)
-	beforeMisses := atomic.LoadInt64(&hub.cachedSnapshotMisses)
+	beforeHits := atomic.LoadInt64(&hub.cachedSnapshotBaselinePresent)
+	beforeMisses := atomic.LoadInt64(&hub.cachedSnapshotBaselineAbsent)
 	beforeEmptySkips := atomic.LoadInt64(&hub.cachedSnapshotEmptySkips)
 	beforeEvictions := atomic.LoadInt64(&hub.cachedSnapshotEvictions)
 
@@ -776,7 +777,7 @@ func TestLiveStreamSSEHub_ComputeScopeDelta_RefreshesAccessOnEmpty(t *testing.T)
 
 	// (1) lastAccessed must be refreshed even though delta is nil.
 	hub.cachedSnapshotMu.RLock()
-	entry := hub.cachedSnapshot["tenant-active"]
+	entry := hub.cachedSnapshot[scope.cacheKey]
 	hub.cachedSnapshotMu.RUnlock()
 	if entry == nil {
 		t.Fatal("entry should still exist after empty snapshot")
@@ -790,11 +791,11 @@ func TestLiveStreamSSEHub_ComputeScopeDelta_RefreshesAccessOnEmpty(t *testing.T)
 	}
 
 	// (2) counter increments match the touched-on-entry semantics.
-	if got := atomic.LoadInt64(&hub.cachedSnapshotHits); got != beforeHits+1 {
-		t.Errorf("expected cachedSnapshotHits++ (was %d, now %d)", beforeHits, got)
+	if got := atomic.LoadInt64(&hub.cachedSnapshotBaselinePresent); got != beforeHits+1 {
+		t.Errorf("expected cachedSnapshotBaselinePresent++ (was %d, now %d)", beforeHits, got)
 	}
-	if got := atomic.LoadInt64(&hub.cachedSnapshotMisses); got != beforeMisses {
-		t.Errorf("cachedSnapshotMisses should not increment on hit (was %d, now %d)", beforeMisses, got)
+	if got := atomic.LoadInt64(&hub.cachedSnapshotBaselineAbsent); got != beforeMisses {
+		t.Errorf("cachedSnapshotBaselineAbsent should not increment when baseline exists (was %d, now %d)", beforeMisses, got)
 	}
 	if got := atomic.LoadInt64(&hub.cachedSnapshotEmptySkips); got != beforeEmptySkips+1 {
 		t.Errorf("expected cachedSnapshotEmptySkips++ (was %d, now %d)", beforeEmptySkips, got)
@@ -811,12 +812,13 @@ func TestLiveStreamSSEHub_ComputeScopeDelta_RefreshesAccessOnEmpty(t *testing.T)
 		t.Fatalf("expected nil delta for new tenant, got %v", delta)
 	}
 	hub.cachedSnapshotMu.RLock()
-	_, exists := hub.cachedSnapshot["tenant-new"]
+	newScope := newLiveStreamScope("tenant-new", false)
+	_, exists := hub.cachedSnapshot[newScope.cacheKey]
 	hub.cachedSnapshotMu.RUnlock()
 	if exists {
 		t.Fatal("computeScopeDelta should NOT create empty entries for unseen tenants")
 	}
-	if got := atomic.LoadInt64(&hub.cachedSnapshotMisses); got != beforeMisses+1 {
+	if got := atomic.LoadInt64(&hub.cachedSnapshotBaselineAbsent); got != beforeMisses+1 {
 		t.Errorf("expected miss++ (was %d, now %d)", beforeMisses, got)
 	}
 
@@ -825,7 +827,7 @@ func TestLiveStreamSSEHub_ComputeScopeDelta_RefreshesAccessOnEmpty(t *testing.T)
 	//     even though it was "about to expire" at seed time.
 	hub.evictStaleCachedSnapshots()
 	hub.cachedSnapshotMu.RLock()
-	_, stillThere := hub.cachedSnapshot["tenant-active"]
+	_, stillThere := hub.cachedSnapshot[scope.cacheKey]
 	hub.cachedSnapshotMu.RUnlock()
 	if !stillThere {
 		t.Fatal("active tenant cache should survive evict after refresh-on-enter fix")
@@ -888,10 +890,10 @@ func TestLiveStreamSSEHub_EvictStaleAfterRefactor(t *testing.T) {
 // dropping the tenantID and emitting idle markers into the wrong scope).
 func TestParseActivityKey(t *testing.T) {
 	cases := []struct {
-		name     string
-		key      string
+		name       string
+		key        string
 		wantTenant string
-		wantDim  string
+		wantDim    string
 		wantDimKey string
 	}{
 		{"global vendor", liveStreamActivityKey("", "vendor", "openai"), "", "vendor", "openai"},

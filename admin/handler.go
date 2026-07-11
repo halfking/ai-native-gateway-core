@@ -118,10 +118,14 @@ type Handler struct {
 	sessionCleanupWorker   *session.CleanupWorker        // 2026-07-06 清理过期 stopped session
 
 	// 数据库降级模块 (2026-07-10)
-	dbMonitor   *dbdegradation.Monitor
-	fileReader  *dbdegradation.FileReader
-	recovery    *dbdegradation.Recovery
-	ttlManager  *dbdegradation.TTLManager
+	dbMonitor  *dbdegradation.Monitor
+	fileReader *dbdegradation.FileReader
+	recovery   *dbdegradation.Recovery
+	ttlManager *dbdegradation.TTLManager
+
+	dashboardEventRecorder interface {
+		RecordAccess(tenantID, userID, userRole, sessionID, apiPath, apiMethod string, statusCode int, responseTime time.Duration, cacheHit bool)
+	}
 
 	// identityPool is the legacy Layer 0 cap on total distinct end-user fingerprints.
 	// nil when the global cap feature is disabled.
@@ -303,6 +307,12 @@ func (h *Handler) decryptCred(ciphertext string) (string, bool, error) {
 func (h *Handler) decryptCredStr(ciphertext string) (string, error) {
 	pt, _, err := h.decryptCred(ciphertext)
 	return pt, err
+}
+
+func (h *Handler) SetDashboardEventRecorder(recorder interface {
+	RecordAccess(tenantID, userID, userRole, sessionID, apiPath, apiMethod string, statusCode int, responseTime time.Duration, cacheHit bool)
+}) {
+	h.dashboardEventRecorder = recorder
 }
 
 func (h *Handler) SetDiscoveryService(svc *discovery.Service) {
@@ -509,7 +519,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/swim-lane-init", admin(h.HandleSwimLaneInit))
 
 	// 2026-07-07: 首页会话统计概览接口
-	mux.HandleFunc("/api/admin/dashboard/session-overview", admin(h.handleDashboardSessionOverview))
+	mux.HandleFunc("/api/admin/dashboard/session-overview", admin(h.handleDashboardSessionOverviewAudited))
 
 	// 2026-07-10: Dashboard API v2 - 6个新接口
 	mux.HandleFunc("/api/admin/dashboard/session-trend", admin(h.handleDashboardSessionTrend))

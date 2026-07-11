@@ -59,7 +59,10 @@ func (h *SessionHealthHandler) HandleSessionHealth(w http.ResponseWriter, r *htt
 		recordAPIRequest("session-health", apiStatus, time.Since(startTime))
 	}()
 
-	params := ParseQueryParams(r)
+	params, _, ok := prepareDashboardRequest(w, r, h.db)
+	if !ok {
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
@@ -106,11 +109,7 @@ func (h *SessionHealthHandler) queryDistribution(ctx context.Context, params Que
 	args := []interface{}{}
 	argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := ""
 	if len(where) > 0 {
 		whereClause = "WHERE " + joinStrings(where, " AND ")
@@ -153,11 +152,7 @@ func (h *SessionHealthHandler) queryHealthTrend(ctx context.Context, params Quer
 
 	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 	where = append(where, "health_score IS NOT NULL")
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -195,11 +190,7 @@ func (h *SessionHealthHandler) queryTopIssues(ctx context.Context, params QueryP
 	argIdx := 1
 
 	where = append(where, "health_score < 60")
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -242,13 +233,13 @@ func (h *SessionHealthHandler) queryTopIssues(ctx context.Context, params QueryP
 
 func issueDescription(issue string) string {
 	descriptions := map[string]string{
-		"high_error_rate":   "会话错误率过高",
-		"high_latency":      "平均延迟超过5秒",
-		"prompt_injection":  "检测到提示注入攻击",
-		"pii_detected":      "检测到个人信息泄露",
-		"toxic_output":      "检测到有害输出",
-		"model_switching":   "频繁切换模型",
-		"low_engagement":    "低参与度会话",
+		"high_error_rate":  "会话错误率过高",
+		"high_latency":     "平均延迟超过5秒",
+		"prompt_injection": "检测到提示注入攻击",
+		"pii_detected":     "检测到个人信息泄露",
+		"toxic_output":     "检测到有害输出",
+		"model_switching":  "频繁切换模型",
+		"low_engagement":   "低参与度会话",
 	}
 	if desc, ok := descriptions[issue]; ok {
 		return desc

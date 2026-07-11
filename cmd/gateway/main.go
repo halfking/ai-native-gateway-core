@@ -77,28 +77,41 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	dashboardtelemetry "github.com/kaixuan/llm-gateway-go/telemetry"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/kaixuan/llm-gateway-go/vibecoding"
 	"github.com/labstack/echo/v4"
 	"github.com/redis/go-redis/v9"
 )
 
+// positiveDurationEnv parses a positive Go duration from key. Missing, zero,
+// negative, and malformed values fall back to the supplied default.
+func positiveDurationEnv(key string, fallback time.Duration) time.Duration {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		slog.Warn("invalid positive duration env, using default",
+			"key", key, "value", value, "default", fallback.String())
+		return fallback
+	}
+	return duration
+}
+
+func liveStreamCachedDurationsFromEnv() (time.Duration, time.Duration) {
+	ttl := positiveDurationEnv("LLM_GATEWAY_LIVE_STREAM_CACHED_TTL", 10*time.Minute)
+	cleanup := positiveDurationEnv("LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL", ttl)
+	return ttl, cleanup
+}
+
 // sessionAuditApprovalTimeoutFromEnv 读取 SESSION_AUDIT_APPROVAL_TIMEOUT
 // 环境变量并解析为 time.Duration。支持 "30s" / "15m" / "1h" 格式。
 // 无效输入或缺失时退化为 15m。2026-06-27 audit fix。
 func sessionAuditApprovalTimeoutFromEnv() time.Duration {
-	const def = 15 * time.Minute
-	v := os.Getenv("SESSION_AUDIT_APPROVAL_TIMEOUT")
-	if v == "" {
-		return def
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil || d <= 0 {
-		slog.Warn("invalid SESSION_AUDIT_APPROVAL_TIMEOUT, using default",
-			"value", v, "default", def.String())
-		return def
-	}
-	return d
+	return positiveDurationEnv("SESSION_AUDIT_APPROVAL_TIMEOUT", 15*time.Minute)
 }
 
 // ── 模块装配后置状态 ──────────────────────────────────────────
@@ -869,26 +882,9 @@ func main() {
 	// Without a DB the hub still relays live broadcasts from
 	// telemetry — only the initial replay is empty.
 	// 2026-07-06: RedisClient wired for 1-hour persistent cache.
-	// 2026-07-09: cachedSnapshotTTL 暴露为 env，避免 Redis 短暂空帧
-	// 让"清空再重现"现象重新出现。
-	liveStreamCachedTTL := 10 * time.Minute
-	liveStreamCachedCleanup := liveStreamCachedTTL
-	if v := os.Getenv("LLM_GATEWAY_LIVE_STREAM_CACHED_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			liveStreamCachedTTL = d
-		} else {
-			slog.Warn("invalid LLM_GATEWAY_LIVE_STREAM_CACHED_TTL, using default",
-				"value", v, "default", liveStreamCachedTTL.String())
-		}
-	}
-	if v := os.Getenv("LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			liveStreamCachedCleanup = d
-		} else {
-			slog.Warn("invalid LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL, using default",
-				"value", v, "default", liveStreamCachedCleanup.String())
-		}
-	}
+	// 2026-07-09: cached snapshot TTL/cleanup interval are configurable.
+	// Cleanup follows TTL unless explicitly overridden.
+	liveStreamCachedTTL, liveStreamCachedCleanup := liveStreamCachedDurationsFromEnv()
 	var liveStreamHub *admin.LiveStreamSSEHub
 	if dbConn != nil && dbConn.Enabled() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
@@ -1107,6 +1103,12 @@ func main() {
 			adminDB = dbConn.Pool()
 		}
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
+		if adminDB != nil {
+			dashboardRecorder := dashboardtelemetry.NewDashboardEventRecorder(adminDB, slog.Default())
+			dashboardRecorder.Start(context.Background())
+			defer dashboardRecorder.Stop()
+			adminHandler.SetDashboardEventRecorder(dashboardRecorder)
+		}
 		slog.Info("admin handler created", "db_enabled", adminDB != nil)
 	}
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
@@ -2552,7 +2554,10 @@ func main() {
 		slog.Error("gateway shutdown error", "error", err)
 	}
 
-	// 2. Close connection pools after all HTTP handlers have completed
+	// 2. Stop hub/background producers before closing their dependencies.
+	if liveStreamHub != nil {
+		liveStreamHub.Stop()
+	}
 	telemetryClient.Stop()
 	lim.Stop()
 	pools.Stop()

@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/kaixuan/llm-gateway-go/domains/moduleregistry"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -60,16 +63,16 @@ func TestExecutorMemoryCache(t *testing.T) {
 	}
 
 	// 第一次查询应该返回 nil
-	cached := executor.getFromMemCache(sessionID, moduleName, cacheKey)
+	cached := executor.getFromMemCache("tenant", sessionID, moduleName, cacheKey)
 	if cached != nil {
 		t.Error("expected nil for empty cache")
 	}
 
 	// 写入缓存
-	executor.setToMemCache(sessionID, moduleName, cacheKey, result)
+	executor.setToMemCache("tenant", sessionID, moduleName, cacheKey, result)
 
 	// 第二次查询应该返回缓存
-	cached = executor.getFromMemCache(sessionID, moduleName, cacheKey)
+	cached = executor.getFromMemCache("tenant", sessionID, moduleName, cacheKey)
 	if cached == nil {
 		t.Error("expected cached result")
 	}
@@ -81,7 +84,7 @@ func TestExecutorMemoryCache(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 
 	// 过期后应该返回 nil
-	cached = executor.getFromMemCache(sessionID, moduleName, cacheKey)
+	cached = executor.getFromMemCache("tenant", sessionID, moduleName, cacheKey)
 	if cached != nil {
 		t.Error("expected nil for expired cache")
 	}
@@ -109,12 +112,12 @@ func TestExecutorMemoryCacheConcurrent(t *testing.T) {
 			cacheKey := "key"
 
 			// 写
-			executor.setToMemCache(sessionID, moduleName, cacheKey, &ExecuteResult{
+			executor.setToMemCache("tenant", sessionID, moduleName, cacheKey, &ExecuteResult{
 				ExecutionID: int64(idx),
 			})
 
 			// 读
-			cached := executor.getFromMemCache(sessionID, moduleName, cacheKey)
+			cached := executor.getFromMemCache("tenant", sessionID, moduleName, cacheKey)
 			if cached != nil {
 				atomic.AddInt64(&hits, 1)
 			}
@@ -191,6 +194,148 @@ func TestModuleRegistryConsistency(t *testing.T) {
 	t.Skip("需要导入 moduleregistry 包进行测试")
 }
 
+func TestExecutorNilDBExecutesDirectly(t *testing.T) {
+	executor := NewExecutor(Config{})
+	var calls int
+	for i := 0; i < 2; i++ {
+		result, err := executor.CheckAndExecute(context.Background(), "session", "tenant", moduleregistry.ModuleSessionAudit, nil, 60,
+			func(context.Context) (*ExecuteResult, error) {
+				calls++
+				return &ExecuteResult{ResultSummary: map[string]interface{}{"call": calls}}, nil
+			})
+		if err != nil {
+			t.Fatalf("CheckAndExecute: %v", err)
+		}
+		if result.FromCache {
+			t.Fatal("nil DB direct execution must not report a cache hit")
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("execute calls = %d, want 2", calls)
+	}
+}
+
+func TestExecutorMemoryCacheCompositeKeyPreventsCollisionAndIsolatesInvalidation(t *testing.T) {
+	executor := newTestExecutor(t)
+	first := []string{"tenant:one", "session", "module", "key"}
+	second := []string{"tenant", "one:session", "module", "key"}
+
+	if memCacheKey(first[0], first[1], first[2], first[3]) == memCacheKey(second[0], second[1], second[2], second[3]) {
+		t.Fatal("structured cache keys collided for delimiter-containing values")
+	}
+	if executor.redisKey(first[0], first[1], first[2], first[3]) == executor.redisKey(second[0], second[1], second[2], second[3]) {
+		t.Fatal("structured Redis keys collided for delimiter-containing values")
+	}
+
+	if err := executor.setToMemCache(first[0], first[1], first[2], first[3], &ExecuteResult{ExecutionID: 1}); err != nil {
+		t.Fatalf("set first cache result: %v", err)
+	}
+	if err := executor.setToMemCache(second[0], second[1], second[2], second[3], &ExecuteResult{ExecutionID: 2}); err != nil {
+		t.Fatalf("set second cache result: %v", err)
+	}
+
+	if err := executor.InvalidateCache(context.Background(), first[0], first[1], first[2]); err != nil {
+		t.Fatalf("invalidate first cache key: %v", err)
+	}
+	if got := executor.getFromMemCache(first[0], first[1], first[2], first[3]); got != nil {
+		t.Fatalf("invalidated cache result = %+v, want nil", got)
+	}
+	if got := executor.getFromMemCache(second[0], second[1], second[2], second[3]); got == nil || got.ExecutionID != 2 {
+		t.Fatalf("unrelated delimiter-containing cache result = %+v, want execution ID 2", got)
+	}
+}
+
+func TestCloneMapReturnsErrorForUnsupportedValues(t *testing.T) {
+	if _, err := cloneMap(map[string]interface{}{"unsupported": func() {}}); err == nil {
+		t.Fatal("cloneMap accepted unsupported value")
+	}
+}
+
+func TestExecutorCheckAndExecuteCoalescesConcurrentRequests(t *testing.T) {
+	executor := NewExecutor(Config{})
+	const workers = 20
+
+	start := make(chan struct{})
+	var calls atomic.Int64
+	results := make(chan *ExecuteResult, workers)
+	errors := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			result, err := executor.CheckAndExecute(context.Background(), "session", "tenant", moduleregistry.ModuleSessionAudit, map[string]interface{}{"request": "same"}, 60,
+				func(context.Context) (*ExecuteResult, error) {
+					calls.Add(1)
+					time.Sleep(25 * time.Millisecond)
+					return &ExecuteResult{ResultSummary: map[string]interface{}{"nested": map[string]interface{}{"value": "result"}}}, nil
+				})
+			if err != nil {
+				errors <- err
+				return
+			}
+			results <- result
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errors)
+	close(results)
+
+	for err := range errors {
+		t.Fatalf("CheckAndExecute: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("execute function calls = %d, want 1", got)
+	}
+	for result := range results {
+		if result == nil || result.Status != StatusCompleted {
+			t.Fatalf("result = %+v, want completed", result)
+		}
+	}
+}
+
+func TestExecutorMemoryCacheClonesResults(t *testing.T) {
+	executor := newTestExecutor(t)
+	original := &ExecuteResult{ResultSummary: map[string]interface{}{"nested": map[string]interface{}{"value": "original"}}}
+	executor.setToMemCache("tenant", "session", "module", "key", original)
+	original.ResultSummary["nested"].(map[string]interface{})["value"] = "mutated"
+
+	first := executor.getFromMemCache("tenant", "session", "module", "key")
+	first.ResultSummary["nested"].(map[string]interface{})["value"] = "reader mutation"
+	second := executor.getFromMemCache("tenant", "session", "module", "key")
+	if got := second.ResultSummary["nested"].(map[string]interface{})["value"]; got != "original" {
+		t.Fatalf("cached nested value = %v, want original", got)
+	}
+}
+
+func TestExecutorMemoryCacheConcurrentResultMutation(t *testing.T) {
+	executor := newTestExecutor(t)
+	executor.setToMemCache("tenant", "session", "module", "key", &ExecuteResult{ResultSummary: map[string]interface{}{"value": 1}})
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(value int) {
+			defer wg.Done()
+			result := executor.getFromMemCache("tenant", "session", "module", "key")
+			result.ResultSummary["value"] = value
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestExecutorCorruptRedisCacheIsMiss(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	executor := NewExecutor(Config{Redis: client, EnableRedis: true})
+	key := executor.redisKey("tenant", "session", "module", "key")
+	server.Set(key, "not-json")
+	if got := executor.getFromRedis(context.Background(), "tenant", "session", "module", "key"); got != nil {
+		t.Fatalf("corrupt cache returned %+v", got)
+	}
+}
+
 // BenchmarkComputeCacheKey 性能测试
 func BenchmarkComputeCacheKey(b *testing.B) {
 	params := map[string]interface{}{
@@ -214,13 +359,13 @@ func BenchmarkMemoryCacheGet(b *testing.B) {
 		memCacheTTL:  1 * time.Hour,
 	}
 
-	executor.setToMemCache("session", "module", "key", &ExecuteResult{
+	executor.setToMemCache("tenant", "session", "module", "key", &ExecuteResult{
 		ExecutionID: 1,
 	})
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		executor.getFromMemCache("session", "module", "key")
+		executor.getFromMemCache("tenant", "session", "module", "key")
 	}
 }
 

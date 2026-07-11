@@ -1,11 +1,11 @@
 // Package dashboardapi 提供首页 Dashboard 的标准 API
 //
 // 设计原则：
-//   1. RESTful 设计，清晰的资源路径
-//   2. 统一的响应格式（success/error/code/message）
-//   3. 完整的分页、排序、筛选支持
-//   4. 权限控制（三层隔离）
-//   5. 缓存友好（支持 ETag/Last-Modified）
+//  1. RESTful 设计，清晰的资源路径
+//  2. 统一的响应格式（success/error/code/message）
+//  3. 完整的分页、排序、筛选支持
+//  4. 权限控制（三层隔离）
+//  5. 缓存友好（支持 ETag/Last-Modified）
 //
 // API 列表：
 //   - GET  /api/admin/dashboard/session-overview         会话总览
@@ -96,6 +96,7 @@ type QueryParams struct {
 	SortDir  string `json:"sort_dir,omitempty"`
 	Search   string `json:"search,omitempty"`
 	Refresh  bool   `json:"refresh,omitempty"`
+	auth     AuthInfo
 }
 
 // AuthInfo 认证信息，由上层 admin 包注入
@@ -263,16 +264,50 @@ func buildTenantWhere(tenantID string, args *[]interface{}, argIdx *int) string 
 	return clause
 }
 
+func appendDashboardScope(where *[]string, params QueryParams, args *[]interface{}, argIdx *int, tableAlias string, filterOwner bool) {
+	if params.TenantID != "" {
+		column := "tenant_id"
+		if tableAlias != "" {
+			column = tableAlias + ".tenant_id"
+		}
+		*where = append(*where, fmt.Sprintf("%s = $%d", column, *argIdx))
+		*args = append(*args, params.TenantID)
+		*argIdx++
+	}
+	if filterOwner {
+		if clause := buildOwnerWhere(params.auth, args, argIdx, tableAlias); clause != "" {
+			*where = append(*where, clause)
+		}
+	}
+}
+
+func appendExecutionScope(where *[]string, params QueryParams, args *[]interface{}, argIdx *int, executionAlias string) {
+	appendDashboardScope(where, params, args, argIdx, executionAlias, false)
+	if params.auth.UserRole != "user" || !params.auth.IsJWT || params.auth.Username == "" {
+		return
+	}
+	prefix := ""
+	if executionAlias != "" {
+		prefix = executionAlias + "."
+	}
+	*where = append(*where, fmt.Sprintf(
+		"EXISTS (SELECT 1 FROM session_summaries s WHERE s.session_key = %sgw_session_id AND s.owner_user = $%d)",
+		prefix, *argIdx,
+	))
+	*args = append(*args, params.auth.Username)
+	*argIdx++
+}
+
 // buildOwnerWhere 为普通用户构建 owner_user 过滤条件
 func buildOwnerWhere(auth AuthInfo, args *[]interface{}, argIdx *int, tableAlias string) string {
-	if auth.UserRole != "user" || !auth.IsJWT {
+	if auth.UserRole != "user" || !auth.IsJWT || auth.Username == "" {
 		return ""
 	}
 	col := "owner_user"
 	if tableAlias != "" {
 		col = tableAlias + ".owner_user"
 	}
-	clause := fmt.Sprintf(" AND %s = $%d", col, *argIdx)
+	clause := fmt.Sprintf("%s = $%d", col, *argIdx)
 	*args = append(*args, auth.Username)
 	*argIdx++
 	return clause

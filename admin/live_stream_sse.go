@@ -232,14 +232,14 @@ type LiveStreamSSEHub struct {
 	// 淘汰阈值统一使用 cfg.CachedSnapshotTTL，不再单独维护字段。
 
 	// Metrics (added 2026-07-03 for monitoring)
-	totalConnections         int64 // 累计连接数
-	totalDisconnections      int64 // 累计断开数
-	authFailures             int64 // 认证失败次数
-	broadcastCount           int64 // 广播消息数
-	cachedSnapshotHits       int64 // computeScopeDelta 访问时已有 entry（命中续命）
-	cachedSnapshotMisses     int64 // computeScopeDelta 访问时无 entry（首次订阅或被 evict 后重订阅）
-	cachedSnapshotEmptySkips int64 // 读出空 snapshot 触发早返的次数
-	cachedSnapshotEvictions  int64 // evictStaleCachedSnapshots 累计清掉的 entry 数
+	totalConnections              int64 // 累计连接数
+	totalDisconnections           int64 // 累计断开数
+	authFailures                  int64 // 认证失败次数
+	broadcastCount                int64 // 广播消息数
+	cachedSnapshotBaselinePresent int64 // computeScopeDelta 时已有 delta baseline
+	cachedSnapshotBaselineAbsent  int64 // computeScopeDelta 时尚无 delta baseline
+	cachedSnapshotEmptySkips      int64 // 读出空 snapshot 触发早返的次数
+	cachedSnapshotEvictions       int64 // evictStaleCachedSnapshots 累计清掉的 entry 数
 
 	// lastHealth tracks the previous Redis health state so we only
 	// broadcast a health_update envelope when the state changes.
@@ -347,6 +347,30 @@ func (h *LiveStreamSSEHub) Run() {
 	}
 }
 
+// liveStreamScope identifies one cache/subscription scope. The tenant is
+// normalized once so Redis reads and in-memory baselines cannot diverge for
+// "" and "default".
+type liveStreamScope struct {
+	cacheKey string
+	tenantID string
+	isSuper  bool
+}
+
+func newLiveStreamScope(tenantID string, isSuper bool) liveStreamScope {
+	if isSuper {
+		return liveStreamScope{
+			cacheKey: "scope:super",
+			isSuper:  true,
+		}
+	}
+
+	tenantID = normalizeLiveStreamTenant(tenantID)
+	return liveStreamScope{
+		cacheKey: "scope:tenant:" + tenantID,
+		tenantID: tenantID,
+	}
+}
+
 // computeScopeDelta reads a fresh snapshot for the given scope
 // (tenantID="" + isSuper=true for the global view, or tenantID+false
 // for a tenant view) and returns the delta against the cached snapshot
@@ -358,30 +382,24 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	if h.store == nil {
 		return nil
 	}
-	// Scope cache key: super scope uses a dedicated sentinel so it never
-	// collides with a tenant literally named "default"/etc.
-	cacheKey := tenantID
-	if isSuper {
-		cacheKey = "__super__"
-	}
+	scope := newLiveStreamScope(tenantID, isSuper)
 
-	// [fix: live-stream-cache-evict-stall] 进入即续命：
-	// 任何一次访问都算激活该 entry 的 lastAccessed，避免 Redis 短暂
-	// 返回空 snapshot 时的早返路径让"仍订阅中"的 cache 被 evict。
-	// 仅刷新已存在的 entry（不创建新的），保持 map 容量可控。
+	// Entering the scope refreshes an existing baseline before any Redis I/O.
+	// This preserves the last known snapshot across a transient empty/error
+	// read without creating entries for scopes that never produced a snapshot.
 	h.cachedSnapshotMu.Lock()
-	if entry := h.cachedSnapshot[cacheKey]; entry != nil {
+	if entry := h.cachedSnapshot[scope.cacheKey]; entry != nil {
 		entry.lastAccessed = time.Now()
-		atomic.AddInt64(&h.cachedSnapshotHits, 1)
+		atomic.AddInt64(&h.cachedSnapshotBaselinePresent, 1)
 	} else {
-		atomic.AddInt64(&h.cachedSnapshotMisses, 1)
+		atomic.AddInt64(&h.cachedSnapshotBaselineAbsent, 1)
 	}
 	h.cachedSnapshotMu.Unlock()
 
-	snapshot, err := h.store.Snapshot(ctx, tenantID, isSuper, h.cfg.InitialReplayLimit)
+	snapshot, err := h.store.Snapshot(ctx, scope.tenantID, scope.isSuper, h.cfg.InitialReplayLimit)
 	if err != nil {
 		slog.Debug("live stream scope snapshot failed",
-			"scope_tenant", tenantID, "is_super", isSuper, "err", err.Error())
+			"scope_tenant", scope.tenantID, "is_super", scope.isSuper, "err", err.Error())
 		return nil
 	}
 	// Guard: do not let an empty snapshot overwrite a populated cache.
@@ -395,31 +413,32 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	h.cachedSnapshotMu.Lock()
 	defer h.cachedSnapshotMu.Unlock()
 	var cached *LiveStreamSnapshot
-	if entry := h.cachedSnapshot[cacheKey]; entry != nil {
+	if entry := h.cachedSnapshot[scope.cacheKey]; entry != nil {
 		cached = entry.snapshot
 	}
 	delta := ComputeDelta(cached, snapshot)
-	h.cachedSnapshot[cacheKey] = &cachedSnapshotEntry{
+	h.cachedSnapshot[scope.cacheKey] = &cachedSnapshotEntry{
 		snapshot:     snapshot,
 		lastAccessed: time.Now(),
 	}
 	return delta
 }
 
-// evictStaleCachedSnapshots removes tenant cached snapshots that have
-// not been touched within CachedSnapshotTTL (cfg). Prevents unbounded
-// memory growth from tenants that send a single request then go silent.
-//
-// [fix: live-stream-cache-evict-stall] 配合 computeScopeDelta 进入即
-// 续命的修复，淘汰判定依然是 lastAccessed vs TTL。日志在每次清理有
-// 真正 evict 时输出 INFO，便于运维观察"清空再重现"是否已消除。
+// evictStaleCachedSnapshots removes cached snapshots for scopes that are both
+// inactive and older than CachedSnapshotTTL. Connected SSE clients retain
+// their scope baseline so their next request continues as a delta rather than
+// restarting from a full snapshot.
 func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 	now := time.Now()
+	activeScopes := h.activeScopes()
 	var evicted int64
 	h.cachedSnapshotMu.Lock()
-	for k, entry := range h.cachedSnapshot {
+	for key, entry := range h.cachedSnapshot {
+		if _, active := activeScopes[key]; active {
+			continue
+		}
 		if now.Sub(entry.lastAccessed) > h.cfg.CachedSnapshotTTL {
-			delete(h.cachedSnapshot, k)
+			delete(h.cachedSnapshot, key)
 			evicted++
 		}
 	}
@@ -432,6 +451,7 @@ func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 		slog.Info("live stream cached snapshot evicted",
 			"evicted", evicted,
 			"remain", remain,
+			"active_scopes", len(activeScopes),
 			"ttl", h.cfg.CachedSnapshotTTL.String(),
 			"cleanup_interval", h.cfg.CachedSnapshotCleanupInterval.String())
 	}
@@ -801,6 +821,21 @@ func (h *LiveStreamSSEHub) shouldDeliver(c *liveStreamClient, env LiveStreamEnve
 	return true
 }
 
+// activeScopes returns the currently subscribed cache scopes. It derives the
+// set from the authoritative client registry, so register/unregister and
+// shutdown need no parallel subscription bookkeeping.
+func (h *LiveStreamSSEHub) activeScopes() map[string]struct{} {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	scopes := make(map[string]struct{}, len(h.clients))
+	for client := range h.clients {
+		scope := newLiveStreamScope(client.tenantID, client.isSuper)
+		scopes[scope.cacheKey] = struct{}{}
+	}
+	return scopes
+}
+
 // hasSuperClient reports whether any connected client is a super admin.
 // Used to skip the (relatively expensive) global-scope snapshot read on
 // the hot broadcast path when nobody is watching the super-admin view.
@@ -896,29 +931,13 @@ func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
 // runs it inside h.admin() / h.superAdmin()). The auth check has
 // already passed by the time we get here.
 //
-// Browser EventSource cannot set Authorization headers, so when
-// the request comes in without a cookie (i.e. the dashboard is
-// authenticating via a legacy admin api key, not the JWT login
-// path) the browser's only option is to fail. To support that
-// case we ALSO accept the api_key via the `?token=` query string
-// — same shape as the v2 WebSocket path. The token is consumed
-// only when the JWT-cookie path failed; the legacy Bearer header
-// path stays untouched.
+// Browser EventSource uses the same-origin HttpOnly session cookie. Clients
+// without that cookie must authenticate through the standard Authorization
+// header; credentials are never accepted in a query string.
 func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
-	}
-
-	// Promote ?token=… into Authorization when no Bearer header is
-	// set. This is the only place we accept the query-string token;
-	// every other admin route still requires a proper Authorization
-	// header or a signed cookie. We do NOT log the token.
-	if r.Header.Get("Authorization") == "" {
-		if t := strings.TrimSpace(r.URL.Query().Get("token")); t != "" {
-			slog.Warn("live stream: ?token= used as auth fallback — JWT in URL may leak via server logs / Referer header; prefer HttpOnly cookie")
-			r.Header.Set("Authorization", "Bearer "+t)
-		}
 	}
 
 	tenantID := ""
@@ -1255,23 +1274,34 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 func (h *LiveStreamSSEHub) Stats() map[string]interface{} {
 	h.mu.RLock()
 	activeClients := len(h.clients)
+	activeScopes := make(map[string]struct{}, activeClients)
+	for client := range h.clients {
+		scope := newLiveStreamScope(client.tenantID, client.isSuper)
+		activeScopes[scope.cacheKey] = struct{}{}
+	}
 	h.mu.RUnlock()
+
+	h.cachedSnapshotMu.RLock()
+	cachedSnapshotEntries := len(h.cachedSnapshot)
+	h.cachedSnapshotMu.RUnlock()
 
 	h.lastActivityMu.RLock()
 	lastActivity := h.lastActivity
 	h.lastActivityMu.RUnlock()
 
 	return map[string]interface{}{
-		"active_clients":              activeClients,
-		"total_connections":           atomic.LoadInt64(&h.totalConnections),
-		"total_disconnections":        atomic.LoadInt64(&h.totalDisconnections),
-		"auth_failures":               atomic.LoadInt64(&h.authFailures),
-		"broadcast_count":             atomic.LoadInt64(&h.broadcastCount),
-		"cached_snapshot_hits":        atomic.LoadInt64(&h.cachedSnapshotHits),
-		"cached_snapshot_misses":      atomic.LoadInt64(&h.cachedSnapshotMisses),
-		"cached_snapshot_empty_skips": atomic.LoadInt64(&h.cachedSnapshotEmptySkips),
-		"cached_snapshot_evictions":   atomic.LoadInt64(&h.cachedSnapshotEvictions),
-		"last_activity":               lastActivity.UTC().Format(time.RFC3339),
-		"seconds_since_activity":      time.Since(lastActivity).Seconds(),
+		"active_clients":                   activeClients,
+		"active_scope_subscriptions":       len(activeScopes),
+		"total_connections":                atomic.LoadInt64(&h.totalConnections),
+		"total_disconnections":             atomic.LoadInt64(&h.totalDisconnections),
+		"auth_failures":                    atomic.LoadInt64(&h.authFailures),
+		"broadcast_count":                  atomic.LoadInt64(&h.broadcastCount),
+		"cached_snapshot_baseline_present": atomic.LoadInt64(&h.cachedSnapshotBaselinePresent),
+		"cached_snapshot_baseline_absent":  atomic.LoadInt64(&h.cachedSnapshotBaselineAbsent),
+		"cached_snapshot_empty_skips":      atomic.LoadInt64(&h.cachedSnapshotEmptySkips),
+		"cached_snapshot_evictions":        atomic.LoadInt64(&h.cachedSnapshotEvictions),
+		"cached_snapshot_entries":          cachedSnapshotEntries,
+		"last_activity":                    lastActivity.UTC().Format(time.RFC3339),
+		"seconds_since_activity":           time.Since(lastActivity).Seconds(),
 	}
 }

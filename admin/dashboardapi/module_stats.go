@@ -3,6 +3,7 @@
 package dashboardapi
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -21,22 +22,22 @@ func NewModuleStatsHandler(db *pgxpool.Pool) *ModuleStatsHandler {
 
 // ModuleStatsItem 模块统计项
 type ModuleStatsItem struct {
-	ModuleName        string  `json:"module_name"`
-	ModuleVersion     string  `json:"module_version"`
-	TotalExecutions   int     `json:"total_executions"`
-	SuccessCount      int     `json:"success_count"`
-	FailedCount       int     `json:"failed_count"`
-	SkippedCount      int     `json:"skipped_count"`
-	AvgDurationMs     float64 `json:"avg_duration_ms"`
-	P95DurationMs     float64 `json:"p95_duration_ms"`
-	CacheHitRate      float64 `json:"cache_hit_rate"`
-	UniqueSessions    int     `json:"unique_sessions"`
-	LastExecutedAt    *time.Time `json:"last_executed_at,omitempty"`
+	ModuleName      string     `json:"module_name"`
+	ModuleVersion   string     `json:"module_version"`
+	TotalExecutions int        `json:"total_executions"`
+	SuccessCount    int        `json:"success_count"`
+	FailedCount     int        `json:"failed_count"`
+	SkippedCount    int        `json:"skipped_count"`
+	AvgDurationMs   float64    `json:"avg_duration_ms"`
+	P95DurationMs   float64    `json:"p95_duration_ms"`
+	CacheHitRate    float64    `json:"cache_hit_rate"`
+	UniqueSessions  int        `json:"unique_sessions"`
+	LastExecutedAt  *time.Time `json:"last_executed_at,omitempty"`
 }
 
 // ModuleStatsResponse 模块统计响应
 type ModuleStatsResponse struct {
-	Modules     []ModuleStatsItem `json:"modules"`
+	Modules     []ModuleStatsItem  `json:"modules"`
 	Summary     ModuleStatsSummary `json:"summary"`
 	PeriodStart time.Time          `json:"period_start"`
 	PeriodEnd   time.Time          `json:"period_end"`
@@ -44,10 +45,10 @@ type ModuleStatsResponse struct {
 
 // ModuleStatsSummary 模块统计摘要
 type ModuleStatsSummary struct {
-	TotalModules     int     `json:"total_modules"`
-	TotalExecutions  int     `json:"total_executions"`
-	AvgCacheHitRate  float64 `json:"avg_cache_hit_rate"`
-	AvgDurationMs    float64 `json:"avg_duration_ms"`
+	TotalModules    int     `json:"total_modules"`
+	TotalExecutions int     `json:"total_executions"`
+	AvgCacheHitRate float64 `json:"avg_cache_hit_rate"`
+	AvgDurationMs   float64 `json:"avg_duration_ms"`
 }
 
 // HandleModuleStats 处理模块执行统计请求
@@ -65,11 +66,19 @@ func (h *ModuleStatsHandler) HandleModuleStats(w http.ResponseWriter, r *http.Re
 		recordAPIRequest("module-stats", apiStatus, time.Since(startTime))
 	}()
 
+	params, _, ok := prepareDashboardRequest(w, r, h.db)
+	if !ok {
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
-	// 查询模块统计（从 session_module_executions_hot 表）
-	query := `
+	where := []string{"created_at >= NOW() - INTERVAL '7 days'"}
+	args := []interface{}{}
+	argIdx := 1
+	appendExecutionScope(&where, params, &args, &argIdx, "")
+
+	query := fmt.Sprintf(`
 		SELECT
 			module_name,
 			MAX(module_version) as module_version,
@@ -81,13 +90,13 @@ func (h *ModuleStatsHandler) HandleModuleStats(w http.ResponseWriter, r *http.Re
 			COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms) FILTER (WHERE status = 'completed'), 0) as p95_duration_ms,
 			COUNT(DISTINCT gw_session_id) as unique_sessions,
 			MAX(completed_at) as last_executed_at
-		FROM session_module_executions_hot
-		WHERE created_at >= NOW() - INTERVAL '7 days'
-		GROUP BY module_name
-		ORDER BY total_executions DESC
-	`
+			FROM session_module_executions_hot
+			WHERE %s
+			GROUP BY module_name
+			ORDER BY total_executions DESC
+		`, joinStrings(where, " AND "))
 
-	rows, err := h.db.Query(ctx, query)
+	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query module stats", err.Error())

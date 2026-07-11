@@ -1,74 +1,39 @@
-#!/bin/bash
-# 极简本地部署脚本 - 跳过所有schema检查，直接启动服务
-# 用途：用于Dashboard前端开发测试，不依赖完整数据库
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ENV_FILE="${LLM_GATEWAY_ENV_FILE:-/tmp/llm-gateway-minimal.env}"
+LOG_FILE="${LLM_GATEWAY_LOG_FILE:-/tmp/llm-gateway-minimal.log}"
+PID_FILE="${LLM_GATEWAY_PID_FILE:-/tmp/llm-gateway-minimal.pid}"
+SERVICE_PORT="${SERVICE_PORT:-8781}"
+: "${LLM_GATEWAY_SECRET_KEY:?LLM_GATEWAY_SECRET_KEY must be explicitly set}"
+: "${LLM_GATEWAY_ADMIN_API_KEY:?LLM_GATEWAY_ADMIN_API_KEY must be explicitly set}"
 
-PROJ_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$PROJ_ROOT"
+command -v go >/dev/null || { printf 'error: go is required\n' >&2; exit 1; }
+command -v npm >/dev/null || { printf 'error: npm is required\n' >&2; exit 1; }
+(cd "$ROOT_DIR" && go build -o llm-gateway ./cmd/gateway)
+(cd "$ROOT_DIR/web" && npm run build)
 
-echo "========================================"
-echo "LLM Gateway 极简部署（无数据库模式）"
-echo "========================================"
-echo ""
-
-# 停止旧服务
-if [ -f /tmp/llm-gateway.pid ]; then
-    kill $(cat /tmp/llm-gateway.pid) 2>/dev/null || true
-    rm -f /tmp/llm-gateway.pid
-    sleep 2
-    echo "✓ 已停止旧服务"
-fi
-
-# 生成配置（不配置数据库）
-cat > /tmp/llm-gateway-minimal.env << 'EOF'
-# 极简配置 - 无数据库模式
-export LLM_GATEWAY_DATABASE_URL=""
-export LLM_GATEWAY_REDIS_ADDR=""
-export LLM_GATEWAY_LISTEN=":8781"
-export LLM_GATEWAY_SECRET_KEY="minimal-test-secret-key-12345678901234567890"
-export LLM_GATEWAY_ADMIN_PASSWORD="<ADMIN_PASSWORD_REDACTED>"
-export LLM_GATEWAY_CORS_ORIGINS="*"
-export LLM_GATEWAY_ENV="development"
-export LLM_GATEWAY_LOG_LEVEL="info"
-EOF
-
-echo "✓ 配置已生成（无数据库模式）"
-
-# 编译
-echo ""
-echo "编译服务..."
-if go build -o llm-gateway ./cmd/gateway; then
-    echo "✓ 编译成功"
-else
-    echo "✗ 编译失败"
-    exit 1
-fi
-
-# 启动
-echo ""
-echo "启动服务..."
-source /tmp/llm-gateway-minimal.env
-nohup ./llm-gateway > /tmp/llm-gateway-minimal.log 2>&1 &
-echo $! > /tmp/llm-gateway.pid
-sleep 5
-
-# 验证
-if curl -s http://localhost:8781/healthz | grep -q "ok"; then
-    echo "✓ 服务启动成功"
-    echo ""
-    echo "========================================"
-    echo "部署完成"
-    echo "========================================"
-    echo ""
-    echo "访问: http://localhost:8781/"
-    echo "日志: tail -f /tmp/llm-gateway-minimal.log"
-    echo ""
-    echo "注意: 此模式下数据库功能不可用"
-    echo "      仅用于前端开发和基础功能测试"
-    echo ""
-else
-    echo "✗ 服务启动失败"
-    echo "查看日志: tail -f /tmp/llm-gateway-minimal.log"
-    exit 1
-fi
+umask 077
+{
+  printf 'export LLM_GATEWAY_DATABASE_URL=%q\n' ''
+  printf 'export LLM_GATEWAY_REDIS_ADDR=%q\n' ''
+  printf 'export LLM_GATEWAY_LISTEN=%q\n' ":$SERVICE_PORT"
+  printf 'export LLM_GATEWAY_SECRET_KEY=%q\n' "$LLM_GATEWAY_SECRET_KEY"
+  printf 'export LLM_GATEWAY_ADMIN_API_KEY=%q\n' "$LLM_GATEWAY_ADMIN_API_KEY"
+  printf 'export LLM_GATEWAY_CORS_ORIGINS=%q\n' "${LLM_GATEWAY_CORS_ORIGINS:-http://127.0.0.1:${SERVICE_PORT}}"
+  printf 'export LLM_GATEWAY_ENV=%q\n' development
+} >"$ENV_FILE"
+chmod 0600 "$ENV_FILE"
+if [[ -f "$PID_FILE" ]] && kill -0 "$(<"$PID_FILE")" 2>/dev/null; then kill "$(<"$PID_FILE")"; fi
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+nohup "$ROOT_DIR/llm-gateway" >"$LOG_FILE" 2>&1 &
+printf '%s\n' "$!" >"$PID_FILE"; chmod 0600 "$PID_FILE"
+for _ in {1..30}; do curl -fsS "http://127.0.0.1:${SERVICE_PORT}/healthz" >/dev/null && break; sleep 1; done
+curl -fsS "http://127.0.0.1:${SERVICE_PORT}/healthz" >/dev/null
+code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST \
+  --data '{"username":"unavailable","password":"unavailable"}' "http://127.0.0.1:${SERVICE_PORT}/api/auth/token")"
+[[ "$code" != 2* ]] || { printf 'error: no-DB mode unexpectedly allowed login\n' >&2; exit 1; }
+printf 'No-DB mode is running at http://127.0.0.1:%s. Login and database-backed dashboard features are unavailable.\n' "$SERVICE_PORT"

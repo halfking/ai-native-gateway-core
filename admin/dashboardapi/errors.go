@@ -23,24 +23,24 @@ func NewErrorsHandler(db *pgxpool.Pool) *ErrorsHandler {
 
 // ErrorStatsResponse 错误统计响应
 type ErrorStatsResponse struct {
-	Summary     ErrorSummary     `json:"summary"`
-	Distribution []ErrorDistItem `json:"distribution"`
-	Trend       []ErrorTrendItem `json:"recent_errors"`
-	TopErrors   []ErrorDetail    `json:"top_errors"`
+	Summary      ErrorSummary     `json:"summary"`
+	Distribution []ErrorDistItem  `json:"distribution"`
+	Trend        []ErrorTrendItem `json:"recent_errors"`
+	TopErrors    []ErrorDetail    `json:"top_errors"`
 }
 
 // ErrorSummary 错误摘要
 type ErrorSummary struct {
-	TotalErrors    int     `json:"total_errors"`
-	ErrorRate      float64 `json:"error_rate"`
-	TotalRequests  int     `json:"total_requests"`
+	TotalErrors     int     `json:"total_errors"`
+	ErrorRate       float64 `json:"error_rate"`
+	TotalRequests   int     `json:"total_requests"`
 	AvgErrorLatency float64 `json:"avg_error_latency_ms"`
 }
 
 // ErrorDistItem 错误分布项
 type ErrorDistItem struct {
-	ErrorType string `json:"error_type"`
-	Count     int    `json:"count"`
+	ErrorType  string  `json:"error_type"`
+	Count      int     `json:"count"`
 	Percentage float64 `json:"percentage"`
 }
 
@@ -74,7 +74,10 @@ func (h *ErrorsHandler) HandleErrors(w http.ResponseWriter, r *http.Request) {
 		recordAPIRequest("errors", apiStatus, time.Since(startTime))
 	}()
 
-	params := ParseQueryParams(r)
+	params, _, ok := prepareDashboardRequest(w, r, h.db)
+	if !ok {
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
@@ -130,11 +133,7 @@ func (h *ErrorsHandler) queryErrorSummary(ctx context.Context, params QueryParam
 	args := []interface{}{}
 	argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -166,11 +165,7 @@ func (h *ErrorsHandler) queryErrorDistribution(ctx context.Context, params Query
 	args := []interface{}{}
 	argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -199,6 +194,9 @@ func (h *ErrorsHandler) queryErrorDistribution(ctx context.Context, params Query
 		items = append(items, item)
 		total += item.Count
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	// 计算百分比
 	for i := range items {
 		if total > 0 {
@@ -213,11 +211,7 @@ func (h *ErrorsHandler) queryRecentErrors(ctx context.Context, params QueryParam
 	args := []interface{}{}
 	argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -245,6 +239,9 @@ func (h *ErrorsHandler) queryRecentErrors(ctx context.Context, params QueryParam
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -257,11 +254,7 @@ func (h *ErrorsHandler) queryTopErrors(ctx context.Context, params QueryParams) 
 	args := []interface{}{}
 	argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	query := fmt.Sprintf(`
@@ -290,6 +283,9 @@ func (h *ErrorsHandler) queryTopErrors(ctx context.Context, params QueryParams) 
 			return nil, err
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }

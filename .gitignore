@@ -37,6 +37,7 @@ Dockerfile.local
 .cache/
 .runtime/
 .playwright-mcp/
+.zcode/plans/
 
 # 编译产物 / 构建输出
 node_modules/

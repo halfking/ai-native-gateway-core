@@ -35,7 +35,7 @@
 
 | 文件 | 用途 |
 |------|------|
-| `sql/migrations/startup/360_session_module_executions.sql` | 数据库表结构 + 索引 + 清理函数 |
+| `sql/migrations/startup/378_session_module_executions.sql` | 数据库表结构 + 索引 + 清理函数 |
 | `domains/moduleregistry/registry.go` | 模块标识常量 + 元信息 |
 | `domains/moduleexec/executor.go` | 执行器核心逻辑（Check-Execute-Record） |
 | `domains/moduleexec/admin.go` | 管理员接口（统计、清理、查询） |
@@ -155,7 +155,7 @@ SELECT * FROM v_sme_failures;
 ## 七、实施步骤
 
 ### Phase 1: 基础设施（已完成）
-- [x] 创建数据库表结构（360 迁移）
+- [x] 创建数据库表结构（378 迁移）
 - [x] 定义模块标识体系
 - [x] 实现执行器核心逻辑
 - [x] 实现管理员接口
@@ -210,7 +210,7 @@ SELECT * FROM v_sme_failures;
 
 ## 九、相关文档
 
-- [SQL 迁移文件](../sql/migrations/startup/360_session_module_executions.sql)
+- [SQL 迁移文件](../sql/migrations/startup/378_session_module_executions.sql)
 - [模块注册表](../domains/moduleregistry/registry.go)
 - [执行器核心](../domains/moduleexec/executor.go)
 - [管理员接口](../domains/moduleexec/admin.go)
