@@ -105,6 +105,8 @@ func (m *Manager) UpdateOnSuccess(ctx context.Context, credID int, model string,
 	state.LastSuccessAt = &now
 	state.LastUpdatedAt = now
 	state.ConsecutiveFails = 0
+	state.RecoverAt = nil
+	state.LastError = ""
 
 	// 移动平均延迟
 	if state.AvgLatencyMs == 0 {
@@ -129,6 +131,7 @@ func (m *Manager) UpdateOnSuccess(ctx context.Context, credID int, model string,
 		Available:     &avail,
 		LatencyMs:     &latencyMs,
 		LastSuccessAt: &now,
+		ClearRecovery: true,
 		UpdatedAt:     now,
 	})
 
@@ -268,13 +271,22 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	}()
 
 	errStr := string(errKind)
-	m.batchWriter.Add(StateUpdate{
+	update := StateUpdate{
 		CredentialID:  credID,
 		Model:         model,
 		LastFailureAt: &now,
 		LastError:     &errStr,
 		UpdatedAt:     now,
-	})
+	}
+	// Persist cooling/broken transitions as well as the error metadata.
+	// Without these fields a process restart or another gateway instance
+	// reading credential_state_log can incorrectly re-admit the credential.
+	if !state.Available && state.RecoverAt != nil {
+		available := false
+		update.Available = &available
+		update.RecoverAt = state.RecoverAt
+	}
+	m.batchWriter.Add(update)
 
 	slog.Debug("credstate: failure updated",
 		"credential_id", credID,

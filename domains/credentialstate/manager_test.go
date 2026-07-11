@@ -244,6 +244,15 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 	if !cacheInvalidated {
 		t.Fatal("candidate cache should be invalidated when a credential trips cooling")
 	}
+	m.batchWriter.bufferMu.Lock()
+	coolingUpdate := m.batchWriter.buffer[len(m.batchWriter.buffer)-1]
+	m.batchWriter.bufferMu.Unlock()
+	if coolingUpdate.Available == nil || *coolingUpdate.Available {
+		t.Fatal("cooling update must persist available=false")
+	}
+	if coolingUpdate.RecoverAt == nil {
+		t.Fatal("cooling update must persist recover_at")
+	}
 
 	// A subsequent success must restore availability (recovery path).
 	m.UpdateOnSuccess(ctx, credID, model, 123, "req-4")
@@ -256,6 +265,15 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 	}
 	if s.ConsecutiveFails != 0 {
 		t.Fatalf("consecutive_fails should reset to 0 after success, got %d", s.ConsecutiveFails)
+	}
+	if s.RecoverAt != nil || s.LastError != "" {
+		t.Fatalf("success should clear recovery state, got recover_at=%v last_error=%q", s.RecoverAt, s.LastError)
+	}
+	m.batchWriter.bufferMu.Lock()
+	recoveryUpdate := m.batchWriter.buffer[len(m.batchWriter.buffer)-1]
+	m.batchWriter.bufferMu.Unlock()
+	if !recoveryUpdate.ClearRecovery {
+		t.Fatal("success update must request persisted recovery-state cleanup")
 	}
 }
 
