@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -42,9 +43,9 @@ func TestVibecodingIntegration(t *testing.T) {
 
 	// Clean up test data
 	defer func() {
-		_, _ = pool.Exec(ctx, "DELETE FROM vibecoding_reviews WHERE session_id IN (SELECT id FROM vibecoding_sessions WHERE tenant_id LIKE 'test-tenant-%')")
-		_, _ = pool.Exec(ctx, "DELETE FROM vibecoding_sessions WHERE tenant_id LIKE 'test-tenant-%'")
-		_, _ = pool.Exec(ctx, "DELETE FROM vibecoding_projects WHERE tenant_id LIKE 'test-tenant-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM vibe_code_reviews WHERE tenant_id LIKE 'test-tenant-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM vibe_coding_sessions WHERE tenant_id LIKE 'test-tenant-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM vibe_coding_projects WHERE tenant_id LIKE 'test-tenant-%'")
 	}()
 
 	t.Run("CompleteWorkflow", func(t *testing.T) {
@@ -345,7 +346,7 @@ func CosineSimilarity(a, b []float64) float64 {
 			session := &Session{
 				ProjectID: &project.ID,
 				TenantID:  tenantID,
-				SessionID: "session-" + time.Now().Format("150405") + "-" + string(rune('0'+i)),
+				SessionID: "session-" + time.Now().Format("150405") + "-" + strconv.Itoa(i),
 				TaskType:  "test_task",
 				Status:    status,
 				Messages:  []Message{},
@@ -412,11 +413,11 @@ func CosineSimilarity(a, b []float64) float64 {
 			review := &Review{
 				SessionID:    &session.ID,
 				TenantID:     tenantID,
-				FilePath:     "file" + string(rune('0'+i)) + ".go",
+				FilePath:     "file" + strconv.Itoa(i) + ".go",
 				Language:     "go",
 				OriginalCode: "package main",
 				ReviewResult: map[string]interface{}{
-					"summary": "Test review " + string(rune('0'+i)),
+					"summary": "Test review " + strconv.Itoa(i),
 				},
 				Score:     score,
 				CreatedAt: time.Now(),
