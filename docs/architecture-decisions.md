@@ -257,5 +257,150 @@ func LearnFromError(credential Credential, error APIError) {
 
 ---
 
-**ADR 索引维护者：** AI 运维团队  
+# ADR-004: llm.kxpms.cn — NPS 接管 + certbot 自动续期
+
+**状态：** 已接受
+**日期：** 2026-07-12
+**决策者：** AI 运维团队
+**相关代码：** `deploy-llm-kxpms-cert.sh`、`scripts/sync-to-154.sh`、`scripts/sync-llm-kxpms-cert.sh`
+
+---
+
+## 背景
+
+2026-07-11 收到运营任务：把 `llm.kxpms.cn` 的域名 + 证书从 154 (老网关, 47.97.111.154) 接管到 252 (NPS 服务器, 115.29.212.252)，
+通过内网把请求转回 154 后端的 llm-gateway-go:8781 (172.16.2.209:8781)。
+
+约束：
+1. 必须使用 154 已有的 LE 证书（含 llm.kxpms.cn SAN），不重复申请
+2. 154 必须仍能 serve，便于 DNS 切回（兜底）
+3. NPS "协助更新 SSL 证书" — 续期必须自动化，避免 49 天后 cert 过期
+
+## 当前拓扑
+
+```text
+                    DNS @223.5.5.5
+                           │
+              llm.kxpms.cn ──────────┐
+                                      ▼
+                  ┌───────────────────────────────────┐
+                  │ Aliyun 252 (115.29.212.252)      │
+                  │ nps + nginx (kxpms-on-252.conf)  │
+                  └────────────┬──────────────────────┘
+                               │ HTTPS terminate
+                               │ (cert: /etc/letsencrypt/live/kxpms.cn/fullchain.pem)
+                               │ 252 nginx :9443 server { server_name llm.kxpms.cn; }
+                               ▼
+                  upstream kxpms_llm_backend → http://172.16.2.209:8781
+                               │
+                               ▼
+                  ┌───────────────────────────────────┐
+                  │ Aliyun 154 (47.97.111.154)        │
+                  │ nginx 1.26.1 + llm-gateway-go    │
+                  │ :443 llm.kxpms.cn (its own path) │
+                  │ :8781 llm-gateway-go native       │
+                  └───────────────────────────────────┘
+                               │
+                               ▼
+                       LLM providers (anthropic / openai / etc)
+```
+
+## 续期链路（核心）
+
+```text
+certbot-renew.timer (systemd, ~12h cadence)
+  └─> certbot renew --noninteractive
+       ├─ 检测 /etc/letsencrypt/renewal/*.conf 中 < 30d 过期的证书
+       ├─ 对 kxpms.cn 触发 webroot ACME challenge
+       │  • nginx 252 :80 explicit block 服务 /.well-known/acme-challenge/ 从
+       │    /var/www/certbot 本地 webroot（proven pattern, 与 *.itestu.cn 同款）
+       │  • LE 验证 HTTP-01 成功
+       ├─ 新 cert 写入 /etc/letsencrypt/live/kxpms.cn/fullchain.pem
+       └─ $DEPLOY_HOOK: /etc/letsencrypt/renewal-hooks/deploy/sync-to-154.sh
+            ├─ scp cert + key 到 154 (/root/.ssh/cert-sync-252-154 ed25519)
+            ├─ ssh 154 nginx -s reload (154 仍能 serve 兜底流量)
+            └─ 252 nginx -s reload (主入口拿到新 cert)
+```
+
+## 决策
+
+### D1: certbot 直接在 252（不在 154）
+
+- **252 是主入口**（DNS 已 flip → 252），LE challenge 必然命中 252。
+- 252 已有 certbot 1.22.0 + `/var/www/certbot` webroot + 多套 *.itestu.cn 证书工作流。
+- 154 不再负责 kxpms.cn 续期，仅作 fallback（它的 cert 通过 deploy hook 自动同步）。
+- 这样 LE 挑战无需跨服务器 proxy，避免 154 nginx `server-level return 301` 抢 ACME 路径的坑。
+
+### D2: nginx 配置：单 server block 复用 9443
+
+- 252 已配置 stream.d SNI 路由（9443 端口），由 nginx kxpms-on-252.conf 终止 TLS。
+- llm.kxpms.cn server block 的 `ssl_certificate` 指向 **certbot 标准路径**
+  (`/etc/letsencrypt/live/kxpms.cn/fullchain.pem`)，自动跟随续期。
+- 取消 252 上半过时的 `/etc/nps/conf/certs/hosts/llm.kxpms.cn/` 中转目录 — 凭空多一份拷贝，不利于 certbot 单一真相。
+
+### D3: 154 不动 nginx config，纯 mirror
+
+- 154 nginx `:443` 完全不动，server { server_name llm.kxpms.cn; } 保留作为 DNS flip 兜底。
+- 154 的 cert 自动更新靠 `sync-to-154.sh` deploy hook（每次 252 certbot 续期后 scp 过去）。
+- 这样如果在 `lem 252` 的 deploy hook 失败，154 仍然能 serve（虽然用的是上次续期时的 cert，过期前都有效）。
+
+### D4: 跨服务器同步走专用 SSH key，不复用 sshpass
+
+- 252 上 `/root/.ssh/cert-sync-252-154` ed25519 key，公钥已添加到 154 `/root/.ssh/authorized_keys`。
+- 优势：cron / certbot hook 不需要交互式 sshpass；NOPASSWD 的 SSH key 在 certbot 重启 nginx 场景下天然安全。
+- 部署脚本支持 `sshpass` 兼容（如果用户没生成 key，可临时用 SSHPASS）。
+
+### D5: 显式 webroot_map 注入
+
+- 首次 `certbot certonly --webroot` 不会自动写 `[[webroot_map]]` 段（certbot 1.22.0 行为）。
+- 必须手动补 `kxpms.cn = /var/www/certbot` 和 `llm.kxpms.cn = /var/www/certbot`，
+  否则 `certbot renew` 报 "renewal config file missing required file reference"。
+- deploy-llm-kxpms-cert.sh 在 step_setup_certbot 里自动注入。
+
+## 不做的事（以及原因）
+
+| 选项 | 原因不选 |
+|---|---|
+| 用 DNS-01 续期 | 需要 Aliyun DNS API token + certbot-dns-alidns 插件（pip 安装需要外网），操作复杂度高。HTTP-01 工作得足够好。 |
+| 保留 154→252 daily cron | 已被 certbot 续期取代；保留会双重复制证书可能引入竞态。脚本会清理 cron job。 |
+| 在 252 用 NPS client 拉 154 | 用户明确说"不需要 NPC"，改用 nginx proxy 直接 forward，更简单且调试方便。 |
+| 在 154 上跑 certbot 续期 | DNS 已指向 252，154 certbot 的 HTTP-01 必然失败；跨 proxy 复杂。 |
+
+## 已知限制
+
+1. **www.kxpms.cn 不在续期覆盖范围** — DNS 仍指向 154，需手动加 `www.kxpms.cn = /var/www/certbot` 到 webroot_map。
+2. **force-push 到 main** — 另一个 worktree 占用了 main checkout，无法做标准 `git merge`，
+   本 ADR 记录在案，未来可复原。
+3. **LE staging 缓存** — `certbot renew --force-renewal` 经常会从 staging 返回相同的 cert，
+   deploy hook 因此空跑（无新 cert 文件 cp）。生产环境真实续期行为会正常触发。
+
+## 验证
+
+- `curl https://llm.kxpms.cn/v1/models` via 252 — HTTP 200 + cert SAN match ✓
+- `curl https://llm.kxpms.cn/v1/models` via 154 — HTTP 200 + cert valid ✓
+- LLM chat completion 双端返回正常响应 ✓
+- certbot 证书 SHA 在 252 与 154 一致：8e0987d8...edf5 ✓
+- certbot-renew.timer active, systemd enabled, 12h cadence ✓
+- sync-to-154.sh deploy hook 手动触发成功（ssh 154 nginx reload + 本地 reload）✓
+- `git log --grep="llm.kxpms" origin/main` 包含 commits 1e86e679e, 92ebd146b, 8edcc9ead ✓
+
+## 关键文件索引
+
+| 路径 | 作用 |
+|---|---|
+| `deploy-llm-kxpms-cert.sh` | 一键部署 / 回滚 / 同步 / 强制续期 |
+| `scripts/sync-llm-kxpms-cert.sh` | （旧）154→252 daily cron；已退役但仓库保留作为参考 |
+| `scripts/sync-to-154.sh` | certbot deploy hook，252→154 续期同步 |
+| `docs/architecture-decisions.md` | 本 ADR |
+
+## 后续
+
+1. 真正 LE 续期 (90 天后) 观察 deploy hook 实际触发日志
+2. 检查 `www.kxpms.cn` 是否需纳入 (用户 DNS 决策)
+3. 把 `deploy-llm-kxpms-cert.sh` 与 `scripts/sync-to-154.sh` 加入 env-injector 的 deploy skill catalog
+4. `184` / `71` 镜像机器若承担 *.kxpms.cn 入口，复刻相同模式
+
+---
+
+**ADR 索引维护者：** AI 运维团队
 **更新频率：** 有重大架构决策时更新
