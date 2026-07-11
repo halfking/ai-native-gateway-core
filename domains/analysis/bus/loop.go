@@ -18,7 +18,7 @@ type PollFunc func(ctx context.Context, batchSize int) ([]analysis.AnalysisEvent
 //
 // err == nil  → processed_at = NOW(), attempts += 0
 // err != nil  → attempts += 1, last_error = err.Error()
-type MarkFunc func(ctx context.Context, eventID, workerName string, err error) error
+type MarkFunc func(ctx context.Context, eventID, claimID, workerName string, err error) error
 
 // LoopConfig Loop 行为配置。
 type LoopConfig struct {
@@ -74,13 +74,13 @@ func RunLoop(ctx context.Context, w analysis.Worker, poll PollFunc, mark MarkFun
 				if err := w.Handle(ctx, evt); err != nil {
 					cfg.Logger.Warn("analysis.RunLoop: handle failed",
 						"worker", w.Name(), "event_id", evt.EventID, "error", err)
-					if mErr := mark(ctx, evt.EventID, w.Name(), err); mErr != nil {
+					if mErr := mark(ctx, evt.EventID, evt.ClaimID, w.Name(), err); mErr != nil {
 						cfg.Logger.Warn("analysis.RunLoop: mark failed",
 							"worker", w.Name(), "event_id", evt.EventID, "error", mErr)
 					}
 					continue
 				}
-				if mErr := mark(ctx, evt.EventID, w.Name(), nil); mErr != nil {
+				if mErr := mark(ctx, evt.EventID, evt.ClaimID, w.Name(), nil); mErr != nil {
 					cfg.Logger.Warn("analysis.RunLoop: mark-processed failed",
 						"worker", w.Name(), "event_id", evt.EventID, "error", mErr)
 				}

@@ -19,7 +19,7 @@ DB_PORT="5432"
 DB_USER="llm_gateway"
 DB_NAME="llm_gateway"
 DB_PASSWORD="<DB_PASSWORD_REDACTED>"
-SSH_HOST="root@14.103.112.184"
+SSH_HOST="root@47.97.111.154"  # 154 替代 184
 SSH_PORT="25022"
 
 # 日志函数

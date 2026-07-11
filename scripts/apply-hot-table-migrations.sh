@@ -34,7 +34,7 @@ case "$ENV" in
     PSQL() { eval "$PSQL_BASE $*"; }
     ;;
   184)
-    REMOTE_HOST="${REMOTE_HOST:-root@14.103.112.184}"
+    REMOTE_HOST="${REMOTE_HOST:-root@47.97.111.154}"  # 154 替代 184 (2026-07-11 退役)
     REMOTE_PORT="${REMOTE_PORT:-25022}"
     DB_HOST="${REMOTE_DB_HOST:-10.0.0.184}"
     DB_PORT="${REMOTE_DB_PORT:-5432}"

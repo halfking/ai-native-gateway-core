@@ -30,6 +30,7 @@ type AnalysisEvent struct {
 	RequestID  string
 	OccurredAt time.Time
 	Payload    any
+	ClaimID    string
 }
 
 // Worker 异步 worker 接口。

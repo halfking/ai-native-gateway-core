@@ -20,7 +20,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_LOCAL="$ROOT_DIR/.env.local"
 if [ -f "$ENV_LOCAL" ]; then set -a; . "$ENV_LOCAL"; set +a; fi
 
-REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@${INTERNAL_PUBLIC_IP:-14.103.112.184}}"
+REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@${INTERNAL_PUBLIC_IP:-47.97.111.154}}"  # 154 替代 184
 REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-${SSH_PORT_184:-25022}}"
 REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-${SSH_KEY_184_PATH:-$HOME/.ssh/56_id_rsa}}"
 REMOTE_SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=15 -o IdentitiesOnly=yes -o BatchMode=yes"

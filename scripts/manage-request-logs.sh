@@ -177,7 +177,7 @@ check_archive_sizes() {
 
   case "$target" in
     184)
-      local ssh_host="root@14.103.112.184" ssh_port="25022"
+      local ssh_host="root@47.97.111.154" ssh_port="25022"  # 154 替代 184
       local ns="pms-test" deploy="llm-gateway-pg"
       local sql="
         SELECT relname, pg_size_pretty(pg_total_relation_size(oid)) AS size

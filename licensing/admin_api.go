@@ -1,7 +1,9 @@
 package licensing
 
 import (
-	"encoding/json"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -30,10 +32,10 @@ func NewAdminHandler(store Store, crypto *CryptoConfig, activator *Activator, of
 func (h *AdminHandler) RegisterRoutes(g *echo.Group) {
 	g.POST("/licenses", h.CreateLicense)
 	g.GET("/licenses", h.ListLicenses)
-	g.GET("/licenses/:key", h.GetLicense)
-	g.POST("/licenses/:key/revoke", h.RevokeLicense)
-	g.GET("/licenses/:key/devices", h.ListDevices)
-	g.POST("/licenses/:key/devices/:hash/deactivate", h.DeactivateDevice)
+	g.GET("/licenses/:id", h.GetLicense)
+	g.POST("/licenses/:id/revoke", h.RevokeLicense)
+	g.GET("/licenses/:id/devices", h.ListDevices)
+	g.POST("/licenses/:id/devices/:hash/deactivate", h.DeactivateDevice)
 
 	// Offline activation requests (前端期望在 /licenses/ 下)
 	g.GET("/licenses/offline-requests", h.ListOfflineRequests)
@@ -41,15 +43,17 @@ func (h *AdminHandler) RegisterRoutes(g *echo.Group) {
 	g.POST("/licenses/offline-requests/:id/reject", h.RejectOfflineRequest)
 }
 
+func generateLicenseKey() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return fmt.Sprintf("LIC-%s", hex.EncodeToString(b))
+}
+
 func (h *AdminHandler) CreateLicense(c echo.Context) error {
 	var req struct {
-		LicenseKey       string   `json:"license_key"`
-		CustomerName     string   `json:"customer_name"`
-		CustomerEmail    string   `json:"customer_email"`
-		MaxDevices       int      `json:"max_devices"`
-		SubscriptionTier string   `json:"subscription_tier"`
-		Features         []string `json:"features"`
-		ExpiresAt        string   `json:"expires_at"`
+		Customer   string `json:"customer"`
+		MaxDevices int    `json:"max_devices"`
+		ExpiresAt  string `json:"expires_at"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -61,13 +65,10 @@ func (h *AdminHandler) CreateLicense(c echo.Context) error {
 	}
 
 	lic := &License{
-		LicenseKey:       req.LicenseKey,
-		CustomerName:     req.CustomerName,
-		CustomerEmail:    req.CustomerEmail,
-		MaxDevices:       req.MaxDevices,
-		SubscriptionTier: req.SubscriptionTier,
-		Features:         req.Features,
-		ExpiresAt:        expiresAt,
+		LicenseKey:   generateLicenseKey(),
+		CustomerName: req.Customer,
+		MaxDevices:   req.MaxDevices,
+		ExpiresAt:    expiresAt,
 	}
 
 	if err := h.store.CreateLicense(c.Request().Context(), lic); err != nil {
@@ -89,6 +90,10 @@ func (h *AdminHandler) ListLicenses(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
+	if licenses == nil {
+		licenses = []License{}
+	}
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"licenses": licenses,
 		"total":    total,
@@ -98,9 +103,12 @@ func (h *AdminHandler) ListLicenses(c echo.Context) error {
 }
 
 func (h *AdminHandler) GetLicense(c echo.Context) error {
-	licenseKey := c.Param("key")
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
+	}
 
-	lic, err := h.store.GetLicense(c.Request().Context(), licenseKey)
+	lic, err := h.store.GetLicenseByID(c.Request().Context(), id)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
 	}
@@ -109,31 +117,59 @@ func (h *AdminHandler) GetLicense(c echo.Context) error {
 }
 
 func (h *AdminHandler) RevokeLicense(c echo.Context) error {
-	licenseKey := c.Param("key")
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
+	}
 
-	if err := h.store.RevokeLicense(c.Request().Context(), licenseKey); err != nil {
+	lic, err := h.store.GetLicenseByID(c.Request().Context(), id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "license not found"})
+	}
+
+	if err := h.store.RevokeLicense(c.Request().Context(), lic.LicenseKey); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	h.validator.InvalidateCache(licenseKey)
+	h.validator.InvalidateCache(lic.LicenseKey)
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "license revoked"})
 }
 
 func (h *AdminHandler) ListDevices(c echo.Context) error {
-	licenseKey := c.Param("key")
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
+	}
 
-	devices, err := h.store.ListAllDevices(c.Request().Context(), licenseKey)
+	lic, err := h.store.GetLicenseByID(c.Request().Context(), id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "license not found"})
+	}
+
+	devices, err := h.store.ListAllDevices(c.Request().Context(), lic.LicenseKey)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	if devices == nil {
+		devices = []Device{}
 	}
 
 	return c.JSON(http.StatusOK, devices)
 }
 
 func (h *AdminHandler) DeactivateDevice(c echo.Context) error {
-	licenseKey := c.Param("key")
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
+	}
 	hardwareHash := c.Param("hash")
+
+	lic, err := h.store.GetLicenseByID(c.Request().Context(), id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "license not found"})
+	}
 
 	var req struct {
 		Reason string `json:"reason"`
@@ -143,7 +179,7 @@ func (h *AdminHandler) DeactivateDevice(c echo.Context) error {
 	}
 
 	deactivateReq := &DeactivateRequest{
-		LicenseKey:   licenseKey,
+		LicenseKey:   lic.LicenseKey,
 		HardwareHash: hardwareHash,
 		Reason:       req.Reason,
 	}
@@ -156,9 +192,14 @@ func (h *AdminHandler) DeactivateDevice(c echo.Context) error {
 }
 
 func (h *AdminHandler) ListOfflineRequests(c echo.Context) error {
-	// TODO: 实现从数据库查询离线激活请求列表
-	// 当前返回空列表
-	return c.JSON(http.StatusOK, []interface{}{})
+	requests, err := h.store.ListOfflineRequests(c.Request().Context())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if requests == nil {
+		requests = []OfflineRequest{}
+	}
+	return c.JSON(http.StatusOK, requests)
 }
 
 func (h *AdminHandler) ApproveOfflineRequest(c echo.Context) error {
@@ -169,11 +210,12 @@ func (h *AdminHandler) ApproveOfflineRequest(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	signedJSON, _ := json.Marshal(signedLicense)
+	// Generate a human-readable activation code from the signed license data
+	activationCode := hex.EncodeToString(signedLicense.Data[:8])
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"signed_license": signedLicense,
-		"base64":         string(signedJSON),
+		"activation_code": activationCode,
+		"signed_license":  signedLicense,
 	})
 }
 
@@ -186,8 +228,10 @@ func (h *AdminHandler) RejectOfflineRequest(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
-	// TODO: 实现拒绝离线激活请求的逻辑
-	// 当前返回成功
+	if err := h.store.RejectOfflineRequest(c.Request().Context(), requestID, req.Reason); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
 	return c.JSON(http.StatusOK, map[string]string{
 		"message":    "offline request rejected",
 		"request_id": requestID,

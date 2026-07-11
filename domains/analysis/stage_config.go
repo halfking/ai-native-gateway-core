@@ -38,17 +38,14 @@ func (s Stage) settingKey() string {
 // 选择轻量、快速、低成本的模型作为分析默认。
 func (s Stage) defaultModel() string {
 	switch s {
-	case StageTitle, StageTags, StageClusterLabel:
-		// 短文本生成，用轻量模型
-		return "gpt-4o-mini"
-	case StageSummary, StageRequestSummary:
-		// 中等理解任务
-		return "gpt-4o-mini"
 	case StageEmbedding:
-		// 需 embedding 能力
-		return "text-embedding-3-small"
+		return "embedding-fast"
+	case StageSummary, StageRequestSummary, StageTitle:
+		return "summary-fast"
+	case StageTags, StageClusterLabel:
+		return "intent-fast"
 	default:
-		return "gpt-4o-mini"
+		return "summary-fast"
 	}
 }
 

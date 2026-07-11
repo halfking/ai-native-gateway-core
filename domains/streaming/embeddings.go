@@ -131,8 +131,8 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			lastErr = readErr.Error()
 			continue
 		}
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
-			lastErr = strings.TrimSpace(string(responseBody))
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+			lastErr = fmt.Sprintf("upstream HTTP %d", resp.StatusCode)
 			continue
 		}
 		copyEmbeddingResponseHeaders(w.Header(), resp.Header)

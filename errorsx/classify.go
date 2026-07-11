@@ -169,8 +169,18 @@ var eofWithoutDoneRe = regexp.MustCompile(
 // "tool_result's tool id". Anthropic's equivalent would be a
 // 4xx with "tool_use_id" — the regex below is permissive about
 // the exact noun so it can flag both vendors without future edits.
+//
+// 2026-07-11 expansion: also matches the OpenAI Responses API
+// continuation-mismatch error "function_call_output requires
+// item_reference ids matching each call_id" / "continuation
+// requires previous_response_id or replayable tool-call context".
+// These are the same class of client bug — the upstream has no
+// context to associate the echoed tool output back to a prior
+// call — and must NOT trip the transient-then-cooling path that
+// would blacklist the credential for 5 minutes while the client
+// retries with the same broken payload.
 var toolCallIdMismatchRe = regexp.MustCompile(
-	`(?i)(tool[_ ]?(call[_ ]?id|use[_ ]?id|result.*tool[_ ]?id).{0,40}(not found|not exist|invalid|unknown|unknown id|does not exist|unrecogn)|2013)`,
+	`(?i)(tool[_ ]?(call[_ ]?id|use[_ ]?id|result.*tool[_ ]?id).{0,40}(not found|not exist|invalid|unknown|unknown id|does not exist|unrecogn)|2013|item[_ ]?reference.*(matching|each|call[_ ]?id)|previous[_ ]?response[_ ]?id|replayable[_ ]?tool[_ ]?call[_ ]?context)`,
 )
 
 // contentFilterRe matches upstream error bodies that signal a

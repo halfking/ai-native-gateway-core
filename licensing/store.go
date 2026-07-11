@@ -6,6 +6,7 @@ import (
 
 type Store interface {
 	GetLicense(ctx context.Context, licenseKey string) (*License, error)
+	GetLicenseByID(ctx context.Context, id int64) (*License, error)
 	CreateLicense(ctx context.Context, lic *License) error
 	RevokeLicense(ctx context.Context, licenseKey string) error
 
@@ -18,6 +19,8 @@ type Store interface {
 	CreateOfflineRequest(ctx context.Context, req *OfflineRequest) error
 	GetOfflineRequest(ctx context.Context, requestID string) (*OfflineRequest, error)
 	ApproveOfflineRequest(ctx context.Context, requestID string, signedLicense *SignedLicense) error
+	ListOfflineRequests(ctx context.Context) ([]OfflineRequest, error)
+	RejectOfflineRequest(ctx context.Context, requestID, reason string) error
 
 	CountActiveDevices(ctx context.Context, licenseKey string) (int, error)
 	ListAllLicenses(ctx context.Context, offset, limit int) ([]License, int, error)

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/google/uuid"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -25,6 +27,7 @@ func NewPGPollFunc(db PGDB, subscribed []analysis.EventType, defaultBatchSize in
 	if defaultBatchSize <= 0 {
 		defaultBatchSize = 10
 	}
+	claimant := "analysis-" + uuid.NewString()
 	return func(ctx context.Context, requestedBatchSize int) ([]analysis.AnalysisEvent, error) {
 		if db == nil || len(subscribed) == 0 {
 			return nil, nil
@@ -38,13 +41,24 @@ func NewPGPollFunc(db PGDB, subscribed []analysis.EventType, defaultBatchSize in
 			types = append(types, string(typ))
 		}
 		rows, err := db.Query(ctx, `
-			SELECT event_id, type, tenant_id, session_id, request_id, payload, occurred_at
-			FROM analysis_events
-			WHERE processed_at IS NULL
-			  AND type = ANY($1)
-			ORDER BY occurred_at
-			LIMIT $2
-		`, types, batch)
+			WITH claimable AS (
+				SELECT id
+				FROM analysis_events
+				WHERE processed_at IS NULL
+				  AND type = ANY($1)
+				  AND attempts < 5
+				  AND (claimed_at IS NULL OR claimed_at < NOW() - INTERVAL '10 minutes')
+				ORDER BY occurred_at
+				FOR UPDATE SKIP LOCKED
+				LIMIT $2
+			)
+			UPDATE analysis_events AS event
+			SET claimed_at = NOW(), claimed_by = $3
+			FROM claimable
+			WHERE event.id = claimable.id
+			RETURNING event.event_id, event.type, event.tenant_id, event.session_id,
+			          event.request_id, event.payload, event.occurred_at
+		`, types, batch, claimant)
 		if err != nil {
 			return nil, fmt.Errorf("analysis: poll events: %w", err)
 		}
@@ -73,6 +87,7 @@ func NewPGPollFunc(db PGDB, subscribed []analysis.EventType, defaultBatchSize in
 					return nil, fmt.Errorf("analysis: decode payload: %w", err)
 				}
 			}
+			evt.ClaimID = claimant
 			events = append(events, evt)
 		}
 		if err := rows.Err(); err != nil {
@@ -87,23 +102,28 @@ func NewPGMarkFunc(db PGDB, logger *slog.Logger) MarkFunc {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return func(ctx context.Context, eventID, workerName string, handleErr error) error {
+	return func(ctx context.Context, eventID, claimID, workerName string, handleErr error) error {
 		if db == nil || eventID == "" {
 			return nil
 		}
 		if handleErr == nil {
 			_, err := db.Exec(ctx, `
 				UPDATE analysis_events
-				SET processed_at = NOW(), worker = $2
-				WHERE event_id = $1
-			`, eventID, workerName)
+				SET processed_at = NOW(), worker = $2, claimed_at = NULL, claimed_by = NULL
+				WHERE event_id = $1 AND ($3 = '' OR claimed_by = $3)
+			`, eventID, workerName, claimID)
 			return err
 		}
 		_, err := db.Exec(ctx, `
 			UPDATE analysis_events
-			SET attempts = attempts + 1, last_error = $2, worker = $3
-			WHERE event_id = $1
-		`, eventID, truncateErr(handleErr.Error(), 1000), workerName)
+			SET attempts = attempts + 1,
+			    last_error = $2,
+			    worker = $3,
+			    processed_at = CASE WHEN attempts + 1 >= 5 THEN NOW() ELSE processed_at END,
+			    claimed_at = NULL,
+			    claimed_by = NULL
+			WHERE event_id = $1 AND ($4 = '' OR claimed_by = $4)
+		`, eventID, truncateErr(handleErr.Error(), 1000), workerName, claimID)
 		if err != nil {
 			logger.Warn("analysis: mark failed", "event_id", eventID, "worker", workerName, "error", err)
 		}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -30,6 +30,25 @@ const createForm = ref({
   max_devices: 5,
   expires_at: '',
 })
+
+function licenseStatus(lic: License): string {
+  if (lic.revoked_at) return 'revoked'
+  if (new Date(lic.expires_at) < new Date()) return 'expired'
+  return 'active'
+}
+
+function statusType(status: string) {
+  const map: Record<string, 'success' | 'warning' | 'danger' | 'info'> = {
+    active: 'success',
+    expired: 'warning',
+    revoked: 'danger',
+  }
+  return map[status] || 'info'
+}
+
+function formatDate(date: string) {
+  return new Date(date).toLocaleString()
+}
 
 async function load() {
   loading.value = true
@@ -75,7 +94,7 @@ async function handleCreate() {
 async function handleRevoke(license: License) {
   try {
     await ElMessageBox.confirm(
-      t('ops.license.revokeConfirm', { customer: license.customer }),
+      t('ops.license.revokeConfirm', { customer: license.customer_name }),
       t('common.warning'),
       { type: 'warning' }
     )
@@ -111,7 +130,7 @@ async function handleExpandChange(row: License) {
 async function handleApproveOffline(request: OfflineActivationRequest) {
   loading.value = true
   try {
-    const result = await approveOfflineActivation(request.id)
+    const result = await approveOfflineActivation(request.request_id)
     ElMessage.success(t('ops.license.approveSuccess'))
     ElMessageBox.alert(
       `${t('ops.license.activationCode')}: ${result.activation_code}`,
@@ -134,7 +153,7 @@ async function handleRejectOffline(request: OfflineActivationRequest) {
       t('ops.license.rejectTitle'),
       { inputType: 'textarea' }
     )
-    await rejectOfflineActivation(request.id, reason)
+    await rejectOfflineActivation(request.request_id, reason)
     ElMessage.success(t('ops.license.rejectSuccess'))
     await loadOfflineRequests()
   } catch (error) {
@@ -143,19 +162,6 @@ async function handleRejectOffline(request: OfflineActivationRequest) {
       console.error(error)
     }
   }
-}
-
-function statusType(status: string) {
-  const map: Record<string, 'success' | 'warning' | 'danger' | 'info'> = {
-    active: 'success',
-    expired: 'warning',
-    revoked: 'danger',
-  }
-  return map[status] || 'info'
-}
-
-function formatDate(date: string) {
-  return new Date(date).toLocaleString()
 }
 
 onMounted(() => {
@@ -183,17 +189,17 @@ onMounted(() => {
       </template>
       <el-table :data="offlineRequests" size="small">
         <el-table-column prop="license_key" :label="t('ops.license.licenseKey')" width="200" />
-        <el-table-column prop="device_id" :label="t('ops.license.deviceId')" width="150" />
-        <el-table-column prop="request_code" :label="t('ops.license.requestCode')" />
+        <el-table-column prop="instance_id" :label="t('ops.license.deviceId')" width="150" />
+        <el-table-column prop="request_id" :label="t('ops.license.requestCode')" />
         <el-table-column prop="status" :label="t('common.status')" width="100">
           <template #default="{ row }">
             <el-tag :type="row.status === 'pending' ? 'warning' : 'success'" size="small">
-              {{ t(`ops.license.status.${row.status}`) }}
+              {{ t(`ops.license.offlineStatus.${row.status}`) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+        <el-table-column prop="timestamp" :label="t('common.createdAt')" width="160">
+          <template #default="{ row }">{{ formatDate(row.timestamp) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="180" fixed="right">
           <template #default="{ row }">
@@ -205,7 +211,7 @@ onMounted(() => {
                 {{ t('ops.license.reject') }}
               </el-button>
             </template>
-            <el-tag v-else type="info" size="small">{{ t(`ops.license.status.${row.status}`) }}</el-tag>
+            <el-tag v-else type="info" size="small">{{ t(`ops.license.offlineStatus.${row.status}`) }}</el-tag>
           </template>
         </el-table-column>
       </el-table>
@@ -225,13 +231,13 @@ onMounted(() => {
             <div class="expanded-content">
               <h4>{{ t('ops.license.devices') }}</h4>
               <el-table v-if="devices[row.id]" :data="devices[row.id]" size="small">
-                <el-table-column prop="device_id" :label="t('ops.license.deviceId')" />
-                <el-table-column prop="hostname" :label="t('ops.license.hostname')" />
+                <el-table-column prop="instance_id" :label="t('ops.license.deviceId')" />
+                <el-table-column prop="device_name" :label="t('ops.license.hostname')" />
                 <el-table-column prop="activated_at" :label="t('ops.license.activatedAt')">
                   <template #default="{ row: device }">{{ formatDate(device.activated_at) }}</template>
                 </el-table-column>
-                <el-table-column prop="last_seen" :label="t('ops.license.lastSeen')">
-                  <template #default="{ row: device }">{{ formatDate(device.last_seen) }}</template>
+                <el-table-column prop="last_heartbeat" :label="t('ops.license.lastSeen')">
+                  <template #default="{ row: device }">{{ formatDate(device.last_heartbeat || '') }}</template>
                 </el-table-column>
               </el-table>
               <div v-else class="loading-devices">{{ t('common.loading') }}</div>
@@ -239,19 +245,19 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="license_key" :label="t('ops.license.licenseKey')" width="200" />
-        <el-table-column prop="customer" :label="t('ops.license.customer')" width="150" />
+        <el-table-column prop="customer_name" :label="t('ops.license.customer')" width="150" />
         <el-table-column :label="t('ops.license.devices')" width="120">
           <template #default="{ row }">
-            {{ row.active_devices }} / {{ row.max_devices }}
+            {{ (devices[row.id] || []).filter((d: LicenseDevice) => d.status === 'active').length }} / {{ row.max_devices }}
           </template>
         </el-table-column>
         <el-table-column prop="expires_at" :label="t('ops.license.expiresAt')" width="160">
           <template #default="{ row }">{{ formatDate(row.expires_at) }}</template>
         </el-table-column>
-        <el-table-column prop="status" :label="t('common.status')" width="100">
+        <el-table-column :label="t('common.status')" width="100">
           <template #default="{ row }">
-            <el-tag :type="statusType(row.status)" size="small">
-              {{ t(`ops.license.status.${row.status}`) }}
+            <el-tag :type="statusType(licenseStatus(row))" size="small">
+              {{ t(`ops.license.status.${licenseStatus(row)}`) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -261,7 +267,7 @@ onMounted(() => {
         <el-table-column :label="t('common.actions')" width="120" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="row.status === 'active'"
+              v-if="licenseStatus(row) === 'active'"
               type="danger"
               size="small"
               @click="handleRevoke(row)"

@@ -22,9 +22,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── 配置 ──
 LOCAL_GW="${LOCAL_GW:-http://localhost:8782}"
 LOCAL_GW_V1="${LOCAL_GW_V1:-http://localhost:8781}"
-SERVER_184="root@14.103.112.184"
+SERVER_184="root@47.97.111.154"  # 184 退役,改指 154 (2026-07-11)
 SSH_PORT_184="25022"
-HEALTH_184="http://14.103.112.184:30080/health"
+HEALTH_184="http://47.97.111.154:30080/health"  # 154
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}✓ $*${NC}"; }

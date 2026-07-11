@@ -283,7 +283,7 @@ func TestFeishuBotConfigSummary(t *testing.T) {
 // TestHandoffModule_LocksDownContract (2026-07-09, post-merge-audit)
 // Regression guard: feat(modules) cascade PR briefly reverted the handoff
 // module definition to its pre-expansion 3-config-key form, breaking the
-// 19-spec / 4-dependency contract that drives the ModulesView UI groups.
+// 20-spec / 4-dependency contract that drives the ModulesView UI groups.
 // This test re-asserts the contract after every change to admin/modules.go.
 func TestHandoffModule_LocksDownContract(t *testing.T) {
 	defs := allModuleDefinitions()
@@ -298,8 +298,8 @@ func TestHandoffModule_LocksDownContract(t *testing.T) {
 		t.Fatal("handoff module not found")
 	}
 
-	// Spec surface must match settings/handoff_specs.go (19 keys).
-	if got, want := len(h.ConfigKeys), 19; got != want {
+	// Spec surface must match settings/handoff_specs.go (20 keys).
+	if got, want := len(h.ConfigKeys), 20; got != want {
 		t.Errorf("ConfigKeys = %d, want %d (handoff_specs.go drifted from module definition)", got, want)
 	}
 

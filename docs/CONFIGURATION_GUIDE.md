@@ -73,6 +73,27 @@ source scripts/load-env.sh
 # 脚本自动检测并加载 .env.local
 ```
 
+## 2.4 免费会话分析模型
+
+会话分析默认使用三个稳定模型别名：
+
+- `embedding-fast`：1024 维 embedding，用于会话聚类与低成本意图分析。
+- `summary-fast`：短输出中文总结和 rolling session summary。
+- `intent-fast`：低置信度意图分类与标签生成。
+
+仅当以下两个环境变量同时存在时，网关才启用外部分析模型：
+
+```bash
+LLM_GATEWAY_ANALYSIS_BASE_URL=https://analysis-provider.example/v1
+LLM_GATEWAY_ANALYSIS_API_KEY=__ANALYSIS_API_KEY_1__
+```
+
+该 endpoint 必须同时兼容 OpenAI `/v1/chat/completions` 与 `/v1/embeddings`，生产环境只允许公网 HTTPS 且不跟随重定向。本地 loopback HTTP 测试必须显式设置 `LLM_GATEWAY_ANALYSIS_ALLOW_INSECURE_LOCAL=true`。未配置时，请求级摘要保持规则模式，向量聚类退化为规则粗聚类，不产生模型费用。
+
+推荐路由顺序：Cloudflare Workers AI 或 SiliconFlow embedding 作为 `embedding-fast`，智谱 `GLM-4.7-Flash` 作为 `summary-fast`/`intent-fast`，Groq `llama-3.1-8b-instant` 作为显式开启的低价故障兜底。免费模型和额度会变化，生产绑定前必须用账号实测 `/models`、批量上限、RPM/TPM、429 行为和每日额度。
+
+100–1000 QPS 下任何公开免费 API 都无法保证全量生成式处理。系统应保持“规则与缓存 → 批量 embedding → 低置信度生成模型”的漏斗；免费额度耗尽时降级到规则结果，而不是无限重试。不得通过创建多个账号规避厂商免费限额。
+
 ## 3. 文档占位符管理
 
 ### 3.1 映射文件
