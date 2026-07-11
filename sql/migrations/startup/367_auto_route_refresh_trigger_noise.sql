@@ -24,8 +24,7 @@ WHEN (
     OLD.weight IS DISTINCT FROM NEW.weight OR
     OLD.manual_priority IS DISTINCT FROM NEW.manual_priority OR
     OLD.active_sessions IS DISTINCT FROM NEW.active_sessions OR
-    OLD.consecutive_failures IS DISTINCT FROM NEW.consecutive_failures OR
-    OLD.concurrency_limit IS DISTINCT FROM NEW.concurrency_limit
+    OLD.consecutive_failures IS DISTINCT FROM NEW.consecutive_failures
 )
 EXECUTE FUNCTION notify_auto_route_refresh();
 
