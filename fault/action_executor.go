@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -76,6 +79,21 @@ func (ae *ActionExecutor) handleRunScript(ctx context.Context, config map[string
 	scriptPath, ok := config["script"].(string)
 	if !ok || scriptPath == "" {
 		return "", errors.New("script path not provided")
+	}
+	allowedDir := strings.TrimSpace(os.Getenv("LLM_GATEWAY_FAULT_SCRIPT_DIR"))
+	if allowedDir == "" {
+		return "", errors.New("script execution is disabled")
+	}
+	allowedDir, err := filepath.Abs(allowedDir)
+	if err != nil {
+		return "", errors.New("invalid script directory")
+	}
+	scriptPath, err = filepath.Abs(scriptPath)
+	if err != nil {
+		return "", errors.New("invalid script path")
+	}
+	if scriptPath == allowedDir || !strings.HasPrefix(scriptPath, allowedDir+string(filepath.Separator)) {
+		return "", errors.New("script path is outside the allowed directory")
 	}
 
 	args, _ := config["args"].([]string)

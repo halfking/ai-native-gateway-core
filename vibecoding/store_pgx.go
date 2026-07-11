@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -37,7 +38,7 @@ func (s *PgxStore) GetProject(ctx context.Context, id int64) (*Project, error) {
 	query := `
 		SELECT id, tenant_id, name, description, language, framework, status, settings, created_by, created_at, updated_at
 		FROM vibe_coding_projects
-		WHERE id = $1
+		WHERE id = $1 AND status <> 'deleted'
 	`
 	project := &Project{}
 	var settingsJSON []byte
@@ -59,22 +60,42 @@ func (s *PgxStore) GetProject(ctx context.Context, id int64) (*Project, error) {
 
 // ListProjects 列出项目
 func (s *PgxStore) ListProjects(ctx context.Context, tenantID string, status ProjectStatus, offset, limit int) ([]Project, int, error) {
-	// 查询总数
+	// 查询总数：tenantID 为空时不按 tenant 过滤（admin 视图），否则按 tenant 过滤
 	var total int
-	countQuery := `SELECT COUNT(*) FROM vibe_coding_projects WHERE tenant_id = $1 AND ($2 = '' OR status = $2)`
-	if err := s.db.QueryRow(ctx, countQuery, tenantID, status).Scan(&total); err != nil {
-		return nil, 0, err
+	if tenantID == "" {
+		countQuery := `SELECT COUNT(*) FROM vibe_coding_projects WHERE status <> 'deleted' AND ($1 = '' OR status = $1)`
+		if err := s.db.QueryRow(ctx, countQuery, status).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	} else {
+		countQuery := `SELECT COUNT(*) FROM vibe_coding_projects WHERE tenant_id = $1 AND status <> 'deleted' AND ($2 = '' OR status = $2)`
+		if err := s.db.QueryRow(ctx, countQuery, tenantID, status).Scan(&total); err != nil {
+			return nil, 0, err
+		}
 	}
 
 	// 查询列表
-	query := `
-		SELECT id, tenant_id, name, description, language, framework, status, settings, created_by, created_at, updated_at
-		FROM vibe_coding_projects
-		WHERE tenant_id = $1 AND ($2 = '' OR status = $2)
-		ORDER BY created_at DESC
-		OFFSET $3 LIMIT $4
-	`
-	rows, err := s.db.Query(ctx, query, tenantID, status, offset, limit)
+	var rows pgx.Rows
+	var err error
+	if tenantID == "" {
+		query := `
+			SELECT id, tenant_id, name, description, language, framework, status, settings, created_by, created_at, updated_at
+			FROM vibe_coding_projects
+			WHERE status <> 'deleted' AND ($1 = '' OR status = $1)
+			ORDER BY created_at DESC
+			OFFSET $2 LIMIT $3
+		`
+		rows, err = s.db.Query(ctx, query, status, offset, limit)
+	} else {
+		query := `
+			SELECT id, tenant_id, name, description, language, framework, status, settings, created_by, created_at, updated_at
+			FROM vibe_coding_projects
+			WHERE tenant_id = $1 AND status <> 'deleted' AND ($2 = '' OR status = $2)
+			ORDER BY created_at DESC
+			OFFSET $3 LIMIT $4
+		`
+		rows, err = s.db.Query(ctx, query, tenantID, status, offset, limit)
+	}
 	if err != nil {
 		return nil, 0, err
 	}

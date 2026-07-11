@@ -6,7 +6,8 @@ monitor_resources.py - 监控 gateway 进程的资源使用情况
 - VmRSS (resident memory)
 - VmSize (virtual memory)
 - File descriptor count
-- Thread count
+- OS thread count
+- Optional Go goroutine count from an explicitly enabled pprof endpoint
 - RSS delta (是否内存泄漏)
 
 Usage:
@@ -19,6 +20,8 @@ import os
 import sys
 import time
 from datetime import datetime
+
+import requests
 
 
 def read_proc_status(pid):
@@ -73,11 +76,26 @@ def read_io(pid):
         return {}
 
 
-def monitor(pid, duration_s, interval_s, output_path):
+def read_goroutines(pprof_url):
+    """Return the goroutine count only when the endpoint is explicitly exposed."""
+    if not pprof_url:
+        return None
+    try:
+        response = requests.get(pprof_url, params={"debug": "1"}, timeout=2)
+        if response.status_code != 200:
+            return None
+        first_line = response.text.splitlines()[0]
+        if "goroutine profile:" not in first_line:
+            return None
+        return int(first_line.split()[-1])
+    except (requests.RequestException, IndexError, ValueError):
+        return None
+
+
+def monitor(pid, duration_s, interval_s, output_path, pprof_url):
     """主循环: 每 interval_s 秒采样一次。"""
     start = time.monotonic()
     samples = []
-    initial_io = read_io(pid)
     fields = [
         "ts",
         "elapsed_s",
@@ -85,6 +103,7 @@ def monitor(pid, duration_s, interval_s, output_path):
         "vm_size_kb",
         "fd_count",
         "thread_count",
+        "goroutine_count",
         "rchar_bytes",
         "wchar_bytes",
         "syscr",
@@ -93,7 +112,9 @@ def monitor(pid, duration_s, interval_s, output_path):
     print(f"[+] Monitoring PID {pid} for {duration_s}s, interval={interval_s}s")
     print(f"    Output: {output_path}")
     print()
-    print(" " * 4 + "elapsed | vm_rss(MB) | fd_count | threads | rchar(MB) | wchar(MB)")
+    print(
+        " " * 4 + "elapsed | vm_rss(MB) | fd_count | threads | goroutines | rchar(MB)"
+    )
     print(" " * 4 + "-" * 72)
 
     try:
@@ -117,6 +138,7 @@ def monitor(pid, duration_s, interval_s, output_path):
                 threads = count_threads(pid)
                 fds = count_fds(pid)
                 io = read_io(pid)
+                goroutines = read_goroutines(pprof_url)
 
                 sample = {
                     "ts": datetime.now().isoformat(),
@@ -125,6 +147,7 @@ def monitor(pid, duration_s, interval_s, output_path):
                     "vm_size_kb": vm_size,
                     "fd_count": fds,
                     "thread_count": threads,
+                    "goroutine_count": goroutines if goroutines is not None else "",
                     "rchar_bytes": io.get("rchar", 0),
                     "wchar_bytes": io.get("wchar", 0),
                     "syscr": io.get("syscr", 0),
@@ -137,7 +160,8 @@ def monitor(pid, duration_s, interval_s, output_path):
                 if int(elapsed) % 5 == int(elapsed) or len(samples) <= 3:
                     print(
                         f"  {elapsed:6.1f}s |  {vm_rss / 1024:8.1f} |  {fds:>6}  |  {threads:>6}  | "
-                        f"{io.get('rchar', 0) / 1024 / 1024:8.1f} | {io.get('wchar', 0) / 1024 / 1024:8.1f}",
+                        f"{str(goroutines if goroutines is not None else 'n/a'):>10} | "
+                        f"{io.get('rchar', 0) / 1024 / 1024:8.1f}",
                         flush=True,
                     )
 
@@ -166,6 +190,9 @@ def analyze(samples, pid):
     threads_start = samples[0]["thread_count"]
     threads_end = samples[-1]["thread_count"]
     threads_max = max(s["thread_count"] for s in samples)
+    goroutine_samples = [
+        s["goroutine_count"] for s in samples if s["goroutine_count"] != ""
+    ]
 
     print()
     print("=" * 64)
@@ -177,30 +204,33 @@ def analyze(samples, pid):
     print(f"  End:      {rss_end / 1024:.1f} MB")
     print(f"  Peak:     {rss_max / 1024:.1f} MB")
     print(f"  Delta:    {(rss_end - rss_start) / 1024:+.1f} MB ({rss_delta_pct:+.1f}%)")
-    if rss_delta_pct > 10:
-        print("  ⚠️  WARNING: >10% RSS growth — possible memory leak")
-    elif rss_delta_pct < 2:
-        print("  ✅  OK: <2% growth — no obvious leak")
+    print(
+        "  Interpretation: compare this post-load value after a cooldown/GC window; RSS alone is not proof of a leak."
+    )
     print()
     print("File descriptors:")
     print(f"  Start:    {fd_start}")
     print(f"  End:      {fd_end}")
     print(f"  Peak:     {fd_max}")
     print(f"  Delta:    {fd_end - fd_start:+d}")
-    if fd_end > fd_start + 100:
-        print("  ⚠️  WARNING: fd count grew >100 — possible fd leak")
-    elif fd_end <= fd_start + 10:
-        print("  ✅  OK: fd count stable — no fd leak")
+    print(
+        "  Interpretation: persistent growth after load drains is suspicious; peak concurrency alone is not a leak."
+    )
     print()
     print("Threads:")
     print(f"  Start:    {threads_start}")
     print(f"  End:      {threads_end}")
     print(f"  Peak:     {threads_max}")
     print(f"  Delta:    {threads_end - threads_start:+d}")
-    if threads_end > threads_start + 10:
-        print("  ⚠️  WARNING: thread count grew >10 — possible goroutine/thread leak")
-    elif threads_end <= threads_start + 5:
-        print("  ✅  OK: thread count stable — no thread leak")
+    print("  Note: OS threads are not Go goroutines.")
+    if goroutine_samples:
+        print()
+        print("Go goroutines (pprof):")
+        print(f"  Start:    {goroutine_samples[0]}")
+        print(f"  End:      {goroutine_samples[-1]}")
+        print(f"  Peak:     {max(goroutine_samples)}")
+    else:
+        print("  Go goroutines: not observed (pprof endpoint disabled or unavailable)")
     print()
     print("=" * 64)
 
@@ -215,9 +245,14 @@ def main():
         "--interval", type=float, default=0.5, help="Sampling interval (s)"
     )
     parser.add_argument("--output", default="monitor.csv", help="CSV output path")
+    parser.add_argument(
+        "--pprof-url", default="", help="Optional /debug/pprof/goroutine endpoint"
+    )
     args = parser.parse_args()
 
-    samples = monitor(args.pid, args.duration, args.interval, args.output)
+    samples = monitor(
+        args.pid, args.duration, args.interval, args.output, args.pprof_url
+    )
     analyze(samples, args.pid)
     print(f"\n[+] Results saved to {args.output}")
 

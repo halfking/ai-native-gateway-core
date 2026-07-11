@@ -12,13 +12,10 @@ import (
 	"log"
 	"math"
 	"os"
-	"runtime"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -33,14 +30,21 @@ func main() {
 	contextWindow := flag.Int("context-window", 128000, "Model context window in tokens")
 	output := flag.String("output", "", "Write results JSON to this path (optional)")
 	skipLLMSummary := flag.Bool("skip-llm-summary", false, "Skip LLM-summary path (test mechanical only)")
-	shareSession := flag.Bool("share-session", false, "Use a single session_id for all rows (simulates a multi-turn conversation)")
-	serialExec := flag.Bool("serial", false, "Execute rows serially (required for share-session delta-append testing)")
+	shareSession := flag.Bool("share-session", false, "Use one session ID for all rows; requires --serial")
+	serialExec := flag.Bool("serial", false, "Execute rows serially to preserve each session's turn ordering")
 	testMode := flag.String("test-mode", "prepare", "Test mode: 'prepare' (full pipeline) or 'mechanical' (direct trim test)")
-	tempTable := flag.String("temp-table", "compression_bench_results", "Temp results table name")
+	tempTable := flag.String("temp-table", fmt.Sprintf("compression_bench_results_%d", time.Now().Unix()), "Results table name")
+	keepResults := flag.Bool("keep-results", false, "Keep the results table after reporting")
 	flag.Parse()
 
 	if *dsn == "" {
 		log.Fatal("-dsn or $DATABASE_URL is required")
+	}
+	if *shareSession && !*serialExec {
+		log.Fatal("--share-session requires --serial to preserve turn ordering")
+	}
+	if *testMode != "prepare" && *testMode != "mechanical" {
+		log.Fatal("--test-mode must be prepare or mechanical")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -56,9 +60,10 @@ func main() {
 		log.Fatalf("ping database: %v", err)
 	}
 
-	// Build the session compressor
+	// The production cache starts with the same L1 tier. L2/L3 are intentionally
+	// disabled for an isolated replay, but state must persist between turns.
 	deps := compression.SessionCompressorDeps{
-		Cache:    nil,
+		Cache:    compression.NewSessionCache(nil, nil),
 		Disabled: false,
 	}
 	if *skipLLMSummary {
@@ -91,52 +96,24 @@ func main() {
 	if err := createTempTable(ctx, pool, *tempTable); err != nil {
 		log.Fatalf("create temp table: %v", err)
 	}
+	if !*keepResults {
+		defer dropResultsTable(ctx, pool, *tempTable)
+	}
 
 	// Process each row
-	var (
-		mu          sync.Mutex
-		results     []benchResult
-		totalBytes  int64
-		totalTokens int64
-	)
-
-	if *serialExec {
-		// Serial execution for share-session delta-append testing
-		log.Printf("serial execution mode (for share-session delta testing)")
-		for _, row := range rows {
-			res := processRow(ctx, sc, row, *protocol, *contextWindow, *testMode)
-			results = append(results, res)
-			totalBytes += int64(res.BytesBefore)
-			totalTokens += int64(res.TokensBefore)
-		}
-	} else {
-		// Parallel execution (default)
-		parallelism := runtime.GOMAXPROCS(0)
-		sem := make(chan struct{}, parallelism)
-		wg := sync.WaitGroup{}
-
-		workCh := make(chan requestLogRow, len(rows))
-		for _, r := range rows {
-			workCh <- r
-		}
-		close(workCh)
-
-		for row := range workCh {
-			wg.Add(1)
-			go func(row requestLogRow) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-
-				res := processRow(ctx, sc, row, *protocol, *contextWindow, *testMode)
-				mu.Lock()
-				results = append(results, res)
-				totalBytes += int64(res.BytesBefore)
-				totalTokens += int64(res.TokensBefore)
-				mu.Unlock()
-			}(row)
-		}
-		wg.Wait()
+	// A historical replay must preserve turn order. Parallelizing individual
+	// records can make a later turn observe stale session state and invalidates
+	// delta-append measurements. Use independent process runs for throughput.
+	if !*serialExec {
+		log.Printf("serial execution enforced for valid session replay")
+	}
+	results := make([]benchResult, 0, len(rows))
+	var totalBytes, totalTokens int64
+	for _, row := range rows {
+		res := processRow(ctx, sc, row, *protocol, *contextWindow, *testMode)
+		results = append(results, res)
+		totalBytes += int64(res.BytesBefore)
+		totalTokens += int64(res.TokensBefore)
 	}
 
 	log.Printf("processed %d rows, inserting into %s", len(results), *tempTable)
@@ -198,7 +175,7 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 		FROM request_logs
 		WHERE ts >= NOW() - INTERVAL '1 day' * $1
 		  AND (outbound_body IS NOT NULL OR request_body IS NOT NULL)
-		ORDER BY ts DESC
+		ORDER BY ts ASC
 		%s
 	`, limitClause)
 
@@ -218,15 +195,8 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 		); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
-		// Generate valid session_id (>=32 hex chars) for rows without one
-		if r.GwSessionID == "" || len(r.GwSessionID) < 32 {
-			b := make([]byte, 16)
-			rand.Read(b)
-			r.GwSessionID = hex.EncodeToString(b)
-		}
-		// Also assign tenant_id if missing
-		if r.TenantID == "" {
-			r.TenantID = "bench-" + uuid.New().String()[:8]
+		if r.GwSessionID == "" {
+			continue // SessionCompressor intentionally has no state without a session ID.
 		}
 		out = append(out, r)
 	}
@@ -280,6 +250,12 @@ func processRow(ctx context.Context, sc *compression.SessionCompressor, row requ
 		MsgsBefore:     row.MsgCount,
 		ProtocolBefore: protocol,
 		ProtocolAfter:  protocol,
+	}
+	if res.TokensBefore == 0 {
+		res.TokensBefore = trimmedTokenEst(row.OutboundBody)
+	}
+	if res.MsgsBefore == 0 {
+		res.MsgsBefore = trimmedMsgCount(row.OutboundBody)
 	}
 
 	if len(row.OutboundBody) == 0 {
@@ -356,7 +332,7 @@ func trimmedMsgCount(body []byte) int {
 
 func createTempTable(ctx context.Context, pool *pgxpool.Pool, tableName string) error {
 	q := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
+		CREATE TABLE %s (
 			id              BIGSERIAL PRIMARY KEY,
 			row_id          BIGINT,
 			request_id      TEXT,
@@ -383,9 +359,15 @@ func createTempTable(ctx context.Context, pool *pgxpool.Pool, tableName string) 
 			protocol        TEXT,
 			created_at      TIMESTAMPTZ DEFAULT NOW()
 		)
-	`, tableName)
+	`, pgx.Identifier{tableName}.Sanitize())
 	_, err := pool.Exec(ctx, q)
 	return err
+}
+
+func dropResultsTable(ctx context.Context, pool *pgxpool.Pool, tableName string) {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS "+pgx.Identifier{tableName}.Sanitize()); err != nil {
+		log.Printf("drop results table %q: %v", tableName, err)
+	}
 }
 
 func insertResults(ctx context.Context, pool *pgxpool.Pool, tableName string, results []benchResult) error {
@@ -573,6 +555,8 @@ func computeSummary(results []benchResult, totalBytes, totalTokens int64) summar
 		totalBytesAfter += int64(r.BytesAfter)
 		totalTokensAfter += int64(r.TokensAfter)
 	}
+	s.TotalBytesAfter = totalBytesAfter
+	s.TotalTokensAfter = totalTokensAfter
 
 	if totalBytes > 0 {
 		s.OverallBytesRatio = float64(totalBytesAfter) / float64(totalBytes)

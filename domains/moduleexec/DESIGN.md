@@ -472,7 +472,7 @@ SELECT * FROM v_sme_failures;
 
 ## 十一、相关文档
 
-- [SQL 迁移文件](../sql/migrations/startup/378_session_module_executions.sql)
+- [SQL 迁移文件](../sql/migrations/startup/382_session_module_executions.sql)
 - [模块注册表](../domains/moduleregistry/registry.go)
 - [执行器核心](../domains/moduleexec/executor.go)
 - [管理员接口](../domains/moduleexec/admin.go)

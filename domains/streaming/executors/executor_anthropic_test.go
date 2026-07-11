@@ -369,7 +369,7 @@ func TestAnthropicExecutor_Q3QualityFix_RenamesEmptyToolName(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(bytes.NewReader([]byte(`{"content":[{"type":"text","text":"hi"}]}`))),
 	}
-	if _, err := ae.WriteNonStreamResponse(rec, resp, "client-model", "fix", nil); err != nil {
+	if _, err := ae.WriteNonStreamResponse(rec, resp, "", "client-model", "fix", nil); err != nil {
 		t.Fatalf("WriteNonStreamResponse: %v", err)
 	}
 	out := rec.Body.String()
@@ -402,7 +402,7 @@ func TestAnthropicExecutor_Q3QualityOffModePassesThrough(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
 	}
-	if _, err := ae.WriteNonStreamResponse(rec, resp, "client-model", "off", nil); err != nil {
+	if _, err := ae.WriteNonStreamResponse(rec, resp, "", "client-model", "off", nil); err != nil {
 		t.Fatalf("WriteNonStreamResponse: %v", err)
 	}
 	if rec.Body.String() != string(convertedBody) {
@@ -469,7 +469,7 @@ func TestAnthropicExecutor_Q3QualitySignalsReturnedViaOutParam(t *testing.T) {
 		Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
 	}
 	var sig QualitySignals
-	if _, err := ae.WriteNonStreamResponse(rec, resp, "client-model", "fix", &sig); err != nil {
+	if _, err := ae.WriteNonStreamResponse(rec, resp, "", "client-model", "fix", &sig); err != nil {
 		t.Fatalf("WriteNonStreamResponse: %v", err)
 	}
 	if len(sig.Flags) == 0 || sig.Flags[0] != "empty_tool_name" {
@@ -506,7 +506,7 @@ func TestAnthropicExecutor_Q4PassthroughSkipsQualityHook(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(bytes.NewReader(anthropicBody)),
 	}
-	if _, err := ae.WriteNonStreamResponse(rec, resp, "claude-opus-4-8", "fix", nil); err != nil {
+	if _, err := ae.WriteNonStreamResponse(rec, resp, "", "claude-opus-4-8", "fix", nil); err != nil {
 		t.Fatalf("WriteNonStreamResponse: %v", err)
 	}
 	if hookCalled {

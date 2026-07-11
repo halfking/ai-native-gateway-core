@@ -344,19 +344,15 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// 2026-07-03 fix: Bug #14 - force-recover should also clear suspended/auth_failed state
-	// When admin manually recovers a credential (e.g., after fixing revoked keys),
-	// we need to reset availability_state to 'ready' so the background recovery
-	// worker can pick it up (bg/credential_recovery.go skips suspended/auth_failed).
+	// Keep the credential out of routing until the immediate real probe succeeds.
+	// Writing ready here would create an unverified window after a top-up/key fix.
+	var providerID int
 	tag, err := h.db.Exec(ctx, `
 		UPDATE credentials
-		SET availability_state = CASE
-		        WHEN availability_state IN ('suspended', 'auth_failed') THEN 'ready'
-		        ELSE availability_state
-		    END,
-		    availability_recover_at = now() - INTERVAL '1 second',
+		SET availability_state = 'unreachable',
+		    availability_recover_at = NULL,
 		    state_reason_code = NULL,
-		    state_reason_detail = 'admin force-recover',
+		    state_reason_detail = 'admin recovery probe pending',
 		    state_updated_at = now()
 		WHERE id = $1 AND lifecycle_status = 'active'
 	`, credID)
@@ -368,10 +364,25 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "credential not found or not active")
 		return
 	}
+	if err := h.db.QueryRow(ctx, `SELECT provider_id FROM credentials WHERE id = $1`, credID).Scan(&providerID); err != nil {
+		writeError(w, http.StatusInternalServerError, "provider lookup failed")
+		return
+	}
+	invalidateRoutingCaches(r.Context(), h.db, "credentials", credID)
+	if h.stateCacheResetter != nil {
+		h.stateCacheResetter.ClearCredentialCache(r.Context(), credID)
+	}
+	if h.circuitResetter != nil {
+		h.circuitResetter.Reset(providerID, credID)
+	}
+	if h.probeV2 != nil {
+		h.probeV2.ProbeNowAsync(credID)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"triggered":     true,
 		"credential_id": credID,
+		"probe":         "running",
 	})
 }
 

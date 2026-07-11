@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify dashboard archive migrations 378 and 379.
+# Verify session module and dashboard migrations 382 and 383.
 set -euo pipefail
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
