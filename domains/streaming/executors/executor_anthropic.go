@@ -104,7 +104,7 @@ func (a *AnthropicExecutor) BuildRequest(cand provider.Candidate, body []byte, i
 	return req, nil
 }
 
-func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) ([]byte, error) {
+func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, catalogCode, clientModel, qualityFixMode string, qualitySignals *QualitySignals) ([]byte, error) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
@@ -941,7 +941,7 @@ func (e *Executor) executeAnthropicOnce(
 	}
 
 	var qualitySignals QualitySignals
-	responseBody, err := ae.WriteNonStreamResponse(params.W, resp, params.ClientModel, cand.QualityFixMode, &qualitySignals)
+	responseBody, err := ae.WriteNonStreamResponse(params.W, resp, cand.CatalogCode, params.ClientModel, cand.QualityFixMode, &qualitySignals)
 	if err != nil {
 		return nil, err
 	}

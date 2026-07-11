@@ -240,7 +240,6 @@ func allModuleDefinitions() []ModuleDefinition {
 					{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: false},
 					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: false},
 					{Key: "security", Name: "安全检测引擎", Icon: "🔐", Required: false},
-					{Key: "feishu_bot", Name: "飞书机器人", Icon: "📱", Required: false},
 				},
 			},
 			{
@@ -416,11 +415,11 @@ func allModuleDefinitions() []ModuleDefinition {
 					Description: "对接飞书自定义机器人，使用 Webhook 进行消息推送和交互",
 					DocURL:      "https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot",
 				},
-					Dependencies: []ModuleDependency{
-						{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: true, Description: "压缩管理提供上下文审计元数据"},
-						{Key: "cache", Name: "会话缓存", Icon: "💾", Required: true, Description: "缓存提供审批决策复用"},
-						{Key: "prompt_injection", Name: "提示词注入检测", Icon: "🛡️", Required: true, Description: "注入检测触发风险告警"},
-					},
+				Dependencies: []ModuleDependency{
+					{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: true, Description: "压缩管理提供上下文审计元数据"},
+					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: true, Description: "缓存提供审批决策复用"},
+					{Key: "prompt_injection", Name: "提示词注入检测", Icon: "🛡️", Required: true, Description: "注入检测触发风险告警"},
+				},
 			},
 			{
 				Key:         "wechat_bot",

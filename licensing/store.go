@@ -2,6 +2,7 @@ package licensing
 
 import (
 	"context"
+	"time"
 )
 
 type Store interface {
@@ -17,6 +18,8 @@ type Store interface {
 
 	CreateOfflineRequest(ctx context.Context, req *OfflineRequest) error
 	GetOfflineRequest(ctx context.Context, requestID string) (*OfflineRequest, error)
+	ListOfflineRequests(ctx context.Context, limit int) ([]OfflineActivationRow, error)
+	RejectOfflineRequest(ctx context.Context, requestID, reason string) error
 	ApproveOfflineRequest(ctx context.Context, requestID string, signedLicense *SignedLicense) error
 
 	CountActiveDevices(ctx context.Context, licenseKey string) (int, error)
@@ -24,4 +27,19 @@ type Store interface {
 	ListAllDevices(ctx context.Context, licenseKey string) ([]Device, error)
 
 	GetLicenseModules(ctx context.Context, licenseKey string) (map[string]*LicenseModule, error)
+}
+
+// OfflineActivationRow 用于 admin 列表展示的离线激活请求行
+type OfflineActivationRow struct {
+	ID            int64
+	LicenseKey    string
+	HardwareHash  string
+	InstanceID    string
+	DeviceName    string
+	RequestID     string
+	CreatedAt     time.Time
+	ApprovedAt    *time.Time
+	SignedLicense []byte
+	Status        string
+	RejectReason  string
 }

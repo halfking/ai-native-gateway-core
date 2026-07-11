@@ -1,4 +1,4 @@
--- 360_session_module_executions.sql
+-- 382_session_module_executions.sql
 -- 会话模块执行记录系统（hot 表 + 分区表）
 -- 目的：避免重复执行相同的模块检测/分析任务，提升性能，降低 LLM/DB 压力
 --
@@ -343,5 +343,27 @@ BEGIN
         );
     END IF;
 END $$;
+
+-- The module executor writes asynchronously through pooled connections and
+-- cannot rely on a transaction-local app.current_tenant setting.
+DROP POLICY IF EXISTS tenant_isolation_session_module_executions_hot
+    ON public.session_module_executions_hot;
+DROP POLICY IF EXISTS tenant_isolation_session_module_executions
+    ON public.session_module_executions;
+ALTER TABLE public.session_module_executions_hot DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.session_module_executions DISABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.session_module_executions_hot
+    DROP CONSTRAINT IF EXISTS chk_sme_hot_status;
+ALTER TABLE public.session_module_executions_hot
+    ADD CONSTRAINT chk_sme_hot_status
+    CHECK (status IN ('pending', 'running', 'completed', 'failed', 'skipped')) NOT VALID;
+ALTER TABLE public.session_module_executions
+    DROP CONSTRAINT IF EXISTS chk_sme_status;
+ALTER TABLE public.session_module_executions
+    ADD CONSTRAINT chk_sme_status
+    CHECK (status IN ('pending', 'running', 'completed', 'failed', 'skipped')) NOT VALID;
+CREATE INDEX IF NOT EXISTS idx_sme_hot_cleanup
+    ON public.session_module_executions_hot (created_at);
 
 COMMIT;

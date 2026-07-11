@@ -41,6 +41,9 @@ export default {
   overview: {
     sectionDescription: '説明',
     sectionCapabilities: '機能一覧',
+    sectionDependencies: '依存モジュール',
+    dependencyDisabled: '依存モジュールが無効です',
+    notEnabled: '未有効',
     sectionRequirements: '依存モジュール',
     labelKey: 'モジュールキー',
     labelDanger: '危険度',

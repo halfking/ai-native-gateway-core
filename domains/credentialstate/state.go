@@ -33,6 +33,7 @@ type StateUpdate struct {
 	LastFailureAt *time.Time
 	LastError     *string
 	RecoverAt     *time.Time
+	ClearRecovery bool
 	UpdatedAt     time.Time
 }
 

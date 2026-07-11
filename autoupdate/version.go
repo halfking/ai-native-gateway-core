@@ -1,73 +1,138 @@
 package autoupdate
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 )
 
-// CompareVersions 比较两个语义化版本号
-// 返回: -1 (v1 < v2), 0 (v1 == v2), 1 (v1 > v2)
-func CompareVersions(v1, v2 string) int {
-	parts1 := parseVersion(v1)
-	parts2 := parseVersion(v2)
-
-	for i := 0; i < 3; i++ {
-		if parts1[i] < parts2[i] {
-			return -1
-		}
-		if parts1[i] > parts2[i] {
-			return 1
-		}
-	}
-	return 0
+type Version struct {
+	Major      int
+	Minor      int
+	Patch      int
+	Prerelease string
+	Build      string
+	Raw        string
 }
 
-// parseVersion 解析版本号为 [major, minor, patch]
-func parseVersion(v string) [3]int {
-	v = strings.TrimPrefix(v, "v")
-	parts := strings.Split(v, ".")
-	result := [3]int{0, 0, 0}
-
-	for i := 0; i < len(parts) && i < 3; i++ {
-		num, err := strconv.Atoi(strings.TrimSpace(parts[i]))
-		if err == nil {
-			result[i] = num
-		}
-	}
-	return result
-}
-
-// IsNewer 判断 newer 是否比 current 新
-func IsNewer(current, newer string) bool {
-	return CompareVersions(current, newer) < 0
-}
-
-// IsCompatible 判断当前版本是否满足最低版本要求
-func IsCompatible(current, minRequired string) bool {
-	if minRequired == "" {
-		return true
-	}
-	return CompareVersions(current, minRequired) >= 0
-}
-
-// ValidateVersion 验证版本号格式（语义化版本）
-func ValidateVersion(v string) error {
-	v = strings.TrimPrefix(v, "v")
-	parts := strings.Split(v, ".")
-	if len(parts) != 3 {
-		return fmt.Errorf("invalid version format: %s (expected major.minor.patch)", v)
-	}
-
-	for i, part := range parts {
-		if _, err := strconv.Atoi(strings.TrimSpace(part)); err != nil {
-			return fmt.Errorf("invalid version part[%d]: %s", i, part)
-		}
+// ValidateVersion checks that s is a non-empty SemVer 2.0 string (with an
+// optional leading "v"). It is the entry point used by the admin API.
+func ValidateVersion(s string) error {
+	if _, err := ParseVersion(s); err != nil {
+		return err
 	}
 	return nil
 }
 
-// FormatVersion 规范化版本号（去除 v 前缀）
-func FormatVersion(v string) string {
-	return strings.TrimPrefix(v, "v")
+func ParseVersion(s string) (*Version, error) {
+	if s == "" {
+		return nil, errors.New("empty version string")
+	}
+
+	v := &Version{Raw: s}
+	core := s
+	if strings.HasPrefix(core, "v") || strings.HasPrefix(core, "V") {
+		core = core[1:]
+	}
+
+	if idx := strings.Index(core, "+"); idx >= 0 {
+		v.Build = core[idx+1:]
+		core = core[:idx]
+	}
+
+	if idx := strings.Index(core, "-"); idx >= 0 {
+		v.Prerelease = core[idx+1:]
+		core = core[:idx]
+	}
+
+	parts := strings.Split(core, ".")
+	if len(parts) < 1 || len(parts) > 3 {
+		return nil, fmt.Errorf("invalid semver format: %s", s)
+	}
+
+	ints := make([]int, 3)
+	for i := 0; i < 3; i++ {
+		if i < len(parts) {
+			n, err := strconv.Atoi(parts[i])
+			if err != nil || n < 0 {
+				return nil, fmt.Errorf("invalid semver segment: %s", parts[i])
+			}
+			ints[i] = n
+		}
+	}
+
+	v.Major = ints[0]
+	v.Minor = ints[1]
+	v.Patch = ints[2]
+	return v, nil
+}
+
+func (v *Version) Compare(other *Version) int {
+	if v.Major != other.Major {
+		if v.Major < other.Major {
+			return -1
+		}
+		return 1
+	}
+	if v.Minor != other.Minor {
+		if v.Minor < other.Minor {
+			return -1
+		}
+		return 1
+	}
+	if v.Patch != other.Patch {
+		if v.Patch < other.Patch {
+			return -1
+		}
+		return 1
+	}
+	if v.Prerelease == "" && other.Prerelease != "" {
+		return 1
+	}
+	if v.Prerelease != "" && other.Prerelease == "" {
+		return -1
+	}
+	if v.Prerelease != other.Prerelease {
+		if v.Prerelease < other.Prerelease {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+func (v *Version) String() string {
+	out := strconv.Itoa(v.Major) + "." + strconv.Itoa(v.Minor) + "." + strconv.Itoa(v.Patch)
+	if v.Prerelease != "" {
+		out += "-" + v.Prerelease
+	}
+	if v.Build != "" {
+		out += "+" + v.Build
+	}
+	return out
+}
+
+func (v *Version) IsNewerThan(other *Version) bool {
+	return v.Compare(other) > 0
+}
+
+func (v *Version) IsOlderThan(other *Version) bool {
+	return v.Compare(other) < 0
+}
+
+func (v *Version) IsCompatibleWith(other *Version) bool {
+	return v.Major == other.Major
+}
+
+func IsCompatible(current, target string) (bool, error) {
+	cv, err := ParseVersion(current)
+	if err != nil {
+		return false, err
+	}
+	tv, err := ParseVersion(target)
+	if err != nil {
+		return false, err
+	}
+	return cv.IsCompatibleWith(tv), nil
 }
