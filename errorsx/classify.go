@@ -316,10 +316,11 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// Some upstreams report account balance exhaustion as HTTP 403 instead
 		// of 402. Classifying it as auth would quarantine a valid credential
 		// until an operator intervenes, even after the account is topped up.
-		if strings.Contains(bodyLower, "insufficient balance") ||
-			strings.Contains(bodyLower, "billing_error") ||
-			strings.Contains(bodyLower, "balance exhausted") ||
-			strings.Contains(bodyLower, "quota exceeded") {
+		if (status == 402 || status == 403) &&
+			(strings.Contains(bodyLower, "insufficient balance") ||
+				strings.Contains(bodyLower, "billing_error") ||
+				strings.Contains(bodyLower, "balance exhausted") ||
+				strings.Contains(bodyLower, "quota exceeded")) {
 			return KindQuota
 		}
 		isGenericWebError := strings.Contains(bodyLower, "404 not found") ||
