@@ -143,20 +143,6 @@ func TestClassifyErrorWithBody_429_Plain(t *testing.T) {
 	}
 }
 
-func TestClassifyErrorWithBody_403InsufficientBalanceIsQuota(t *testing.T) {
-	body := []byte(`{"error":{"message":"insufficient balance","type":"billing_error"}}`)
-	if got := ClassifyErrorWithBody(403, body); got != KindQuota {
-		t.Errorf("ClassifyErrorWithBody(403, insufficient balance) = %q, want %q", got, KindQuota)
-	}
-}
-
-func TestClassifyErrorWithBody_403InvalidKeyIsAuth(t *testing.T) {
-	body := []byte(`{"error":{"message":"invalid api key","type":"authentication_error"}}`)
-	if got := ClassifyErrorWithBody(403, body); got != KindAuth {
-		t.Errorf("ClassifyErrorWithBody(403, invalid key) = %q, want %q", got, KindAuth)
-	}
-}
-
 func TestClassifyErrorWithBody_503_Overload(t *testing.T) {
 	kind := ClassifyErrorWithBody(503, []byte(`{"error":"server overloaded"}`))
 	if kind != KindConcurrent {

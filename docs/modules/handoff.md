@@ -115,7 +115,7 @@ handoff (本模块)
 | `handoff.max_per_session` | int | 5 | 单会话最大交接次数 |
 | `handoff.retry_on_failure` | int | 1 | 失败重试次数 |
 | `handoff.notify_level` | enum | warn | none / info / warn |
-| `handoff.notify_webhook` | url | "" | 通知 webhook（底层复用 `domains/notification.WebhookChannel`，支持重试/超时/HMAC 签名） |
+| `handoff.notify_webhook` | url | "" | 通知 webhook |
 
 > platform scope 在全局生效；tenant scope 可按租户覆盖。
 
@@ -189,7 +189,6 @@ flowchart TD
 |--------|--------------|----------|
 | LLM 端点配置 | 复用 `autoroute.HTTPLlmCallerConfig` + `goal.ApplyHTTPLlmCallerDefaults` | ✅ 复用 |
 | `session_summaries` 写入 | 委托 `sessionsummary.UpdateHandoffMetrics`（SSOT） | ✅ 复用 |
-| Webhook 通知 | 复用 `domains/notification.WebhookChannel`（SendCard + metadata） | ✅ 复用 |
 | Token 计数 | 读 `session_summaries.total_tokens` 聚合列 | ✅ 复用 |
 | 触发阈值评估 | 自有 4 阈值逻辑（compression 只看单请求体积，关注点不同） | ⚠️ 独立 |
 | InterceptorChain 集成 | 第 3 个 hook（goal → audit → handoff → output_compliance） | ✅ 复用 |

@@ -348,19 +348,13 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 	// When admin manually recovers a credential (e.g., after fixing revoked keys),
 	// we need to reset availability_state to 'ready' so the background recovery
 	// worker can pick it up (bg/credential_recovery.go skips suspended/auth_failed).
-	var providerID int
 	tag, err := h.db.Exec(ctx, `
 		UPDATE credentials
 		SET availability_state = CASE
 		        WHEN availability_state IN ('suspended', 'auth_failed') THEN 'ready'
 		        ELSE availability_state
 		    END,
-		    availability_recover_at = NULL,
-		    quota_state = CASE
-		        WHEN quota_state IN ('periodic_exhausted', 'balance_exhausted') THEN 'ok'
-		        ELSE quota_state
-		    END,
-		    quota_recover_at = NULL,
+		    availability_recover_at = now() - INTERVAL '1 second',
 		    state_reason_code = NULL,
 		    state_reason_detail = 'admin force-recover',
 		    state_updated_at = now()
@@ -374,22 +368,10 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "credential not found or not active")
 		return
 	}
-	if err := h.db.QueryRow(ctx, `SELECT provider_id FROM credentials WHERE id = $1`, credID).Scan(&providerID); err != nil {
-		writeError(w, http.StatusInternalServerError, "provider lookup failed")
-		return
-	}
-	invalidateRoutingCaches(r.Context(), h.db, "credentials", credID)
-	if h.circuitResetter != nil {
-		h.circuitResetter.Reset(providerID, credID)
-	}
-	if h.probeV2 != nil {
-		h.probeV2.ProbeNowAsync(credID)
-	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"triggered":     true,
 		"credential_id": credID,
-		"probe":         "running",
 	})
 }
 

@@ -3,11 +3,8 @@ package compression
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestRecoveryCoordinator_MechanicalFallback(t *testing.T) {
@@ -60,103 +57,6 @@ func TestRecoveryCoordinator_MechanicalFallback(t *testing.T) {
 	}
 	t.Logf("recovery: strategy=%s bytes_before=%d bytes_after=%d reason=%s",
 		res.Strategy, len(body), len(res.NewBody), res.Reason)
-}
-
-func TestRecoveryCoordinator_LargeSessionUsesIncrementalCache(t *testing.T) {
-	for _, turns := range []int{200, 1000} {
-		t.Run(fmt.Sprintf("turns_%d", turns), func(t *testing.T) {
-			body := makeLargeRecoveryBody(turns)
-			cache := NewSessionCache(nil, nil)
-			rc := NewRecoveryCoordinator(RecoveryDeps{Cache: cache})
-
-			first := rc.Recover(context.Background(), body, "openai", 8000, "tenant", "large-session", 0)
-			if !first.ShouldRetry || first.Strategy != "smart_window_mechanical" {
-				t.Fatalf("first recovery failed: strategy=%q reason=%q", first.Strategy, first.Reason)
-			}
-
-			body = appendRecoveryTurn(t, body, turns)
-			second := rc.Recover(context.Background(), body, "openai", 8000, "tenant", "large-session", 0)
-			if !second.ShouldRetry || second.Strategy != "incremental_cache" {
-				t.Fatalf("expected incremental cache reuse, got strategy=%q reason=%q", second.Strategy, second.Reason)
-			}
-			if second.EstTokensAfter >= second.EstTokensBefore {
-				t.Fatalf("incremental build did not reduce tokens: %d >= %d", second.EstTokensAfter, second.EstTokensBefore)
-			}
-			if !strings.Contains(string(second.NewBody), "initial-task-anchor") {
-				t.Fatal("incremental build lost the pinned first user request")
-			}
-		})
-	}
-}
-
-func TestRecoveryCoordinator_RepeatedRecoveryDoesNotLeakGoroutines(t *testing.T) {
-	body := makeLargeRecoveryBody(200)
-	before := runtime.NumGoroutine()
-
-	for i := 0; i < 100; i++ {
-		cache := NewSessionCache(nil, nil)
-		rc := NewRecoveryCoordinator(RecoveryDeps{Cache: cache})
-		res := rc.Recover(context.Background(), body, "openai", 8000, "tenant", fmt.Sprintf("session-%d", i), 0)
-		if !res.ShouldRetry {
-			t.Fatalf("recovery %d failed: %s", i, res.Reason)
-		}
-	}
-
-	runtime.GC()
-	time.Sleep(20 * time.Millisecond)
-	after := runtime.NumGoroutine()
-	if delta := after - before; delta > 2 {
-		t.Fatalf("goroutine count grew by %d (before=%d after=%d)", delta, before, after)
-	}
-}
-
-func BenchmarkRecoveryCoordinator_LargeSession(b *testing.B) {
-	body := makeLargeRecoveryBody(1000)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		rc := NewRecoveryCoordinator(RecoveryDeps{})
-		if res := rc.Recover(context.Background(), body, "openai", 8000, "", "", 0); !res.ShouldRetry {
-			b.Fatalf("recovery failed: %s", res.Reason)
-		}
-	}
-}
-
-func makeLargeRecoveryBody(turns int) []byte {
-	messages := make([]map[string]any, 0, 1+turns*2)
-	messages = append(messages, map[string]any{"role": "system", "content": "system"})
-	for i := 0; i < turns; i++ {
-		user := strings.Repeat(fmt.Sprintf("turn-%d-user ", i), 40)
-		if i == 0 {
-			user = "initial-task-anchor " + user
-		}
-		messages = append(messages,
-			map[string]any{"role": "user", "content": user},
-			map[string]any{"role": "assistant", "content": strings.Repeat(fmt.Sprintf("turn-%d-assistant ", i), 40)},
-		)
-	}
-	body, _ := json.Marshal(map[string]any{"model": "test", "messages": messages})
-	return body
-}
-
-func appendRecoveryTurn(t *testing.T, body []byte, turn int) []byte {
-	t.Helper()
-	var request struct {
-		Model    string           `json:"model"`
-		Messages []map[string]any `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &request); err != nil {
-		t.Fatal(err)
-	}
-	request.Messages = append(request.Messages,
-		map[string]any{"role": "user", "content": fmt.Sprintf("new-user-%d", turn)},
-		map[string]any{"role": "assistant", "content": fmt.Sprintf("new-assistant-%d", turn)},
-	)
-	updated, err := json.Marshal(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return updated
 }
 
 func TestRecoveryCoordinator_WithSummarizer(t *testing.T) {

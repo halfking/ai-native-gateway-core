@@ -49,7 +49,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/autoroute"              //nolint:depguard // reuse LLM endpoint config
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"     //nolint:depguard // reuse ApplyHTTPLlmCallerDefaults
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response" //nolint:depguard // hook base interface
-	"github.com/kaixuan/llm-gateway-go/domains/notification"   //nolint:depguard // reuse notification channels
 	"github.com/kaixuan/llm-gateway-go/domains/sessionsummary" //nolint:depguard // canonical session_summaries writer
 )
 
@@ -557,14 +556,7 @@ func (h *TriggerHook) buildFollowUpPrompt(req *response.InterceptRequest, summar
 	return body
 }
 
-// notify emits a log line at the configured level and sends the handoff event
-// through the shared notification.WebhookChannel if a webhook is configured.
-//
-// Why reuse notification.WebhookChannel instead of hand-rolled http.Client?
-//   - retry / timeout / HMAC signing already exist there
-//   - future handoff→dingtalk / handoff→wechat integration can converge on the
-//     same channel abstraction instead of maintaining a second transport path
-//   - keeps webhook payload semantics stable via card.Metadata
+// notify emits a log line at the configured level and POSTs to webhook if set.
 func (h *TriggerHook) notify(ctx context.Context, level NotifyLevel, r *HandoffRecord) {
 	attrs := []any{
 		"session_id", r.SessionKey,
@@ -589,45 +581,26 @@ func (h *TriggerHook) notify(ctx context.Context, level NotifyLevel, r *HandoffR
 	if webhook == "" {
 		return
 	}
-	ch := notification.NewWebhookChannel(notification.WebhookConfig{URL: webhook})
-	card := &notification.InteractiveCard{
-		Header: notification.CardHeader{
-			Title:    "会话交接触发",
-			Template: pickNotifyTemplate(level),
-		},
-		Elements: []notification.CardElement{
-			{Type: notification.ElementTypeField, Fields: []notification.CardField{
-				{Key: "会话ID", Value: r.SessionKey, Short: true},
-				{Key: "触发原因", Value: r.TriggerReason, Short: true},
-			}},
-			{Type: notification.ElementTypeText, Text: truncateRunes(r.SummaryText, 280)},
-		},
-		Metadata: map[string]any{
-			"event":          "handoff_triggered",
-			"session_id":     r.SessionKey,
-			"tenant_id":      r.TenantID,
-			"trigger_reason": r.TriggerReason,
-			"summary":        r.SummaryText,
-			"new_session_id": r.NewSessionID,
-			"created_at":     r.CreatedAt.UTC().Format(time.RFC3339),
-			"summary_engine": r.SummaryEngine,
-			"tokens":         r.TokensInSession,
-		},
+	body, _ := json.Marshal(map[string]interface{}{
+		"event":          "handoff_triggered",
+		"session_id":     r.SessionKey,
+		"tenant_id":      r.TenantID,
+		"trigger_reason": r.TriggerReason,
+		"summary":        r.SummaryText,
+		"new_session_id": r.NewSessionID,
+		"created_at":     r.CreatedAt.UTC().Format(time.RFC3339),
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook, bytes.NewReader(body))
+	if err != nil {
+		return
 	}
-	if err := ch.SendCard(ctx, card); err != nil {
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.config.HTTPClient.Do(req)
+	if err != nil {
 		slog.Warn("handoff_webhook_failed", "url", webhook, "error", err)
+		return
 	}
-}
-
-func pickNotifyTemplate(level NotifyLevel) string {
-	switch level {
-	case NotifyInfo:
-		return "blue"
-	case NotifyWarn:
-		fallthrough
-	default:
-		return "orange"
-	}
+	defer resp.Body.Close()
 }
 
 // ── Settings adapter ────────────────────────────────────────────────────
@@ -809,9 +782,9 @@ func (s *PGStore) IsHandoffCooldownActive(ctx context.Context, sessionKey string
 			SELECT 1 FROM session_summaries
 			 WHERE session_key = $1
 			   AND last_handoff_at IS NOT NULL
-			   AND NOW() - last_handoff_at < make_interval(secs => $2::int)
+			   AND NOW() - last_handoff_at < ($2 || ' seconds')::interval
 		)
-	`, sessionKey, cooldownSeconds).Scan(&active)
+	`, sessionKey, fmt.Sprintf("%d", cooldownSeconds)).Scan(&active)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

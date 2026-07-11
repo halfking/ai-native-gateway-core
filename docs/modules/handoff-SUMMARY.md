@@ -368,9 +368,10 @@ e7ab5222  docs(handoff): 新增 docs/modules/handoff.md           ← 1 文件 +
 - 长远做法是把模块定义从手写 `.go` 字面量迁到 YAML/JSON + code-gen，
   避免人肉合并冲突。
 
-### 审计发现的「重复造轮子」候选
+### 审计发现的「重复造轮子」候选（**未在本次修复**，列入 follow-up）
 
 | 项 | 说明 | 建议 |
 |---|---|---|
-| handoff `notify_webhook` 走裸 `http.Post` | `domains/notification/` 已有 `ChannelDingTalk`/`ChannelFeishu`/`ChannelWeChat`/`ChannelLark` 等带签名/加签的 Channel 抽象 | **已修复**：handoff 现改为复用 `notification.WebhookChannel`（SendCard + metadata），不再维护第二套 HTTP 重试/签名逻辑 |
+| handoff `notify_webhook` 走裸 `http.Post` | `domains/notification/` 已有 `ChannelDingTalk`/`ChannelFeishu`/`ChannelWeChat`/`ChannelLark` 等带签名/加签的 Channel 抽象 | 未来重写 `notify()` 时复用 `notification.Channel` 接口，并让 `Dependencies` 加 dingtalk/wechat（OPT）。提交单独 PR |
 | `feishu_bot` 与 `wechat_bot` 共享 `compression+cache+prompt_injection+session_audit` 4 deps 描述高度雷同 | 三家 IM 的依赖表 80% 相同，仅最后一段不同 | 可抽 `imCommonDeps()` helper，由各 IM 模块复用。本次未做（避免 scope 蔓延） |
+

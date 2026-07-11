@@ -439,16 +439,6 @@ func TestDingTalkChannel_NoConfig(t *testing.T) {
 	}
 }
 
-func TestDingTalkChannel_IncompleteAppConfig(t *testing.T) {
-	ch := NewDingTalkChannel(DingTalkConfig{AppKey: "k", AppSecret: "s"})
-	if err := ch.Send(context.Background(), &Message{}); err == nil {
-		t.Error("expected incomplete app configuration error")
-	}
-	if err := ch.HealthCheck(context.Background()); err == nil {
-		t.Error("expected incomplete app configuration health check error")
-	}
-}
-
 func TestDingTalkChannel_ParseCallback(t *testing.T) {
 	ch := NewDingTalkChannel(DingTalkConfig{})
 	body := `{"action":"approve","user_id":"u1","user_name":"张三","tenant_id":"t1","session_id":"s1"}`

@@ -291,12 +291,11 @@ type Executor struct {
 	SanitizeAnthropicTools SanitizeAnthropicToolsFunc
 	// NormalizeOpenAITools coerces flat/anthropic tool defs to OpenAI-Chat shape.
 	NormalizeOpenAITools NormalizeOpenAIToolsFunc
-	// DispatchStripVendorFields (P0-3, 2026-07-11) conditionally strips
-	// vendor-specific private fields based on catalog_code. Wired from main.go
-	// (streaming.DispatchStripVendorFields). Replaces the four separate
-	// StripMinimaxFields/StripZhipuFields/StripDeepSeekFields/StripDoubaoFields
-	// hooks with a single dispatcher.
-	DispatchStripVendorFields func(body []byte, catalogCode string) []byte
+	// StripMinimaxFields strips minimax-private top-level fields
+	// (nvext, base_resp, input_sensitive*, output_sensitive*) from
+	// the chat response body before it is returned to the client.
+	// Wired from main.go (relay.StripMinimaxFieldsBody).
+	StripMinimaxFields StripMinimaxFieldsFunc
 	// RedactBodyFn (2026-07-09, 增强 1) write-time 客户端可见脱敏。
 	// 在 w.Write 前调用，让客户端真正收到脱敏后字节。
 	// 签名：func(body []byte, sessionID, tenantID string) []byte
