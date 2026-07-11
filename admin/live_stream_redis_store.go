@@ -109,7 +109,7 @@ const (
 	liveStreamTTL            = 28800 * time.Second // 8 hours
 	liveStreamLaneLimit      = 30
 	liveStreamReplayLimit    = 200 // 默认回放请求数：泳道中请求的有效期靠 TTL(8h)保证，数量上限放宽到 200，让请求“直到被挤出去”而非被过小的 replay 上限提前丢弃
-	idleThresholdSeconds     = 60 // 1 minute
+	idleThresholdSeconds     = 60  // 1 minute
 )
 
 // normalizeModelKey returns a case-insensitive, whitespace-trimmed
@@ -177,6 +177,7 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 		req.RequestID = fmt.Sprintf("request-%d", time.Now().UnixNano())
 	}
 	tenantID := normalizeLiveStreamTenant(req.TenantID)
+	req.TenantID = tenantID
 	
 	// Enhanced logging for debugging missing dimension values
 	if req.ModelCategory == "" {
@@ -188,7 +189,7 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	if req.Model == "" {
 		slog.Debug("live stream record: missing model", "request_id", req.RequestID, "tenant_id", tenantID)
 	}
-	
+
 	var oldData string
 	if v, err := s.rdb.Get(ctx, liveStreamRequestDetailKey(tenantID, req.RequestID)).Result(); err == nil {
 		oldData = v
@@ -252,7 +253,7 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 
 	queueKeys := liveRequestQueueKeys(tenantID, req)
 	slog.Debug("live stream record: adding to queues", "request_id", req.RequestID, "tenant_id", tenantID, "model", req.Model, "provider", req.ProviderCode, "category", req.ModelCategory, "queue_count", len(queueKeys))
-	
+
 	for _, key := range queueKeys {
 		pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: req.RequestID})
 		pipe.Expire(ctx, key, liveStreamTTL)
@@ -786,8 +787,8 @@ func liveStreamActivityKey(tenantID, dimension, key string) string {
 // consumed first (it never contains ":" outside the "tenant:<id>" form),
 // so the remainder is split into dimension + dimensionKey unambiguously.
 type activityKeyInfo struct {
-	tenantID    string
-	dimension   string
+	tenantID     string
+	dimension    string
 	dimensionKey string
 }
 
@@ -861,8 +862,8 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 	}
 
 	type pending struct {
-		info    activityKeyInfo
-		key     string
+		info activityKeyInfo
+		key  string
 	}
 	var idle []pending
 	refreshPipe := s.rdb.Pipeline()

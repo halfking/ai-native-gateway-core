@@ -22,16 +22,16 @@ func NewSessionActiveHandler(db *pgxpool.Pool) *SessionActiveHandler {
 
 // ActiveSessionItem 活跃会话项
 type ActiveSessionItem struct {
-	SessionKey    string    `json:"session_key"`
-	TenantID      string    `json:"tenant_id"`
-	ClientID      string    `json:"client_id"`
-	Model         string    `json:"model"`
-	RequestCount  int       `json:"request_count"`
-	TotalCost     float64   `json:"total_cost"`
-	HealthScore   *int      `json:"health_score,omitempty"`
-	HealthGrade   string    `json:"health_grade"`
-	LastActiveAt  time.Time `json:"last_active_at"`
-	CreatedAt     time.Time `json:"created_at"`
+	SessionKey   string    `json:"session_key"`
+	TenantID     string    `json:"tenant_id"`
+	ClientID     string    `json:"client_id"`
+	Model        string    `json:"model"`
+	RequestCount int       `json:"request_count"`
+	TotalCost    float64   `json:"total_cost"`
+	HealthScore  *int      `json:"health_score,omitempty"`
+	HealthGrade  string    `json:"health_grade"`
+	LastActiveAt time.Time `json:"last_active_at"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // SessionActiveResponse 活跃会话响应
@@ -57,7 +57,10 @@ func (h *SessionActiveHandler) HandleSessionActive(w http.ResponseWriter, r *htt
 		recordAPIRequest("session-active", apiStatus, time.Since(startTime))
 	}()
 
-	params := ParseQueryParams(r)
+	params, _, ok := prepareDashboardRequest(w, r, h.db)
+	if !ok {
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
@@ -66,11 +69,7 @@ func (h *SessionActiveHandler) HandleSessionActive(w http.ResponseWriter, r *htt
 	args := []interface{}{}
 	argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
 	// 总数查询

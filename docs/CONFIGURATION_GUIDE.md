@@ -188,6 +188,23 @@ LLM_GATEWAY_API_KEY=sk-...
 LLM_GATEWAY_ADMIN_API_KEY=sk-...
 ```
 
+### 4.4 实时请求流缓存
+
+管理端 `GET /api/admin/live-stream` 为每个作用域维护 delta baseline。活跃 SSE
+订阅会保留其 baseline；无订阅作用域会在超时后释放以限制内存使用。
+
+```bash
+# 使用 Go duration 格式（30s / 10m / 1h）。
+LLM_GATEWAY_LIVE_STREAM_CACHED_TTL=10m
+
+# 可选；未设置时自动跟随 CACHED_TTL。
+LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL=10m
+```
+
+运行时可通过 live stream stats 观察 `cached_snapshot_entries`、
+`active_scope_subscriptions`、`cached_snapshot_empty_skips` 与
+`cached_snapshot_evictions`，用于排查 Redis 空读或 baseline 回收。
+
 ## 5. 故障恢复
 
 ### 5.1 映射文件丢失

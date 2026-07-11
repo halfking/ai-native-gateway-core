@@ -66,7 +66,7 @@ func TestFeishuBotDependencies(t *testing.T) {
 	if fb == nil {
 		t.Fatal("feishu_bot module not found")
 	}
-	expected := []string{"compression", "cache", "prompt_injection", "session_audit"}
+	expected := []string{"compression", "cache", "prompt_injection"}
 	if len(fb.Dependencies) != len(expected) {
 		t.Fatalf("feishu_bot.Dependencies length = %d, want %d", len(fb.Dependencies), len(expected))
 	}
