@@ -14,12 +14,12 @@ set -euo pipefail
 TARGET="${1:-184}"
 case "$TARGET" in
   184)
-    SSH_HOST="14.103.112.184"
+    SSH_HOST="47.97.111.154"  # 154 替代 184
     SSH_PORT=25022
     NS="pms-test"
     ;;
   71)
-    SSH_HOST="14.103.174.71"
+    SSH_HOST="47.97.111.154"  # 154 替代 71 (docker 栈迁回)
     SSH_PORT=25022
     NS="pms-test"
     ;;

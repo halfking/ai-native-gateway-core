@@ -107,7 +107,7 @@ generate_readme() {
 - [ ] Go 编译环境就绪
 - [ ] Docker 运行中
 - [ ] 本地 PG/Redis 可访问（仅本地部署）
-- [ ] SSH 到 184 (14.103.112.184:25022) 就绪（仅 184 部署）
+- [ ] SSH 到 154 (47.97.111.154:25022) 就绪（仅 154 部署,184 退役）
 - [ ] K8s context 正确
 
 ## 变更摘要
@@ -147,7 +147,7 @@ $(git -C "$ROOT_DIR" log --oneline -5 2>/dev/null || echo "(git log 不可用)")
 
 \`\`\`bash
 # 184 回滚
-ssh -p 25022 root@14.103.112.184 "kubectl rollout undo deployment/llm-gateway-go-deployment -n pms-test"
+ssh -p 25022 root@47.97.111.154 "kubectl rollout undo deployment/llm-gateway-go-deployment -n pms-test"  # 154 替代 184 K8s
 
 # 本地回滚
 git checkout HEAD~1
@@ -181,7 +181,7 @@ generate_plan() {
 |---|------|------|
 | 8 | 标准部署 | \`./deploy-184.sh\` |
 | 9 | DB migration | \`./deploy-184.sh -m\` |
-| 10 | 健康检查 | \`curl http://14.103.112.184:30080/health\` |
+| 10 | 健康检查 | `curl http://47.97.111.154:30080/health` |  # 154 替代 184 |
 | 11 | 部署后验证 | \`./deploy/verify.sh --env 184\` |
 
 ### Phase 3: 验证确认

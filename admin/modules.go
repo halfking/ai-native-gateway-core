@@ -101,11 +101,11 @@ func allModuleDefinitions() []ModuleDefinition {
 			{
 				Key:         "handoff",
 				Name:        "会话交接",
-				Description: "当会话上下文接近窗口上限时，自动执行 Handoff：生成结构化摘要、写入交接记录、提示新会话继续，防止上下文超限和单轮成本膨胀。支持 LLM / 规则 / 混合摘要引擎，与压缩管理、任务模式、会话健康检查深度联动。",
+				Description: "当会话上下文接近窗口上限时，网关在当前请求转发前执行 Handoff：生成结构化摘要、创建真实新会话并注入恢复包，防止上下文超限。支持透明续跑与显式交接，和压缩、任务模式、会话健康检查协同。",
 				Capabilities: []string{
 					"自动检测上下文使用率触发交接（绝对 token / 百分比 / 消息数 / 静默时长 四种阈值）",
-					"自定义 Skill 名称（默认 /handoff，可对接 /session-resume 等）",
-					"上下文摘要生成（LLM / 规则 / 混合三种引擎，可选 cheap model 降本）",
+					"透明续跑或显式 resume packet：网关端执行 /handoff，自定义 Skill 不要求客户端安装",
+					"上下文摘要生成（LLM / 规则 / 混合三种引擎，当前会话原文参与摘要）",
 					"摘要保留最近 N 条 + 关键事实抽取（决策/约定/路径）",
 					"单会话最大交接次数 + 冷却时间，防止死循环放大成本",
 					"通知级别（none/info/warn）与 Webhook 推送（飞书/Slack/钉钉自定义机器人）",
@@ -119,6 +119,7 @@ func allModuleDefinitions() []ModuleDefinition {
 				SettingKey: "handoff.enabled",
 				ConfigKeys: []string{
 					"handoff.trigger_mode",
+					"handoff.client_mode",
 					"handoff.absolute_threshold",
 					"handoff.percentage_threshold",
 					"handoff.message_threshold",

@@ -103,10 +103,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── 服务器与 SSH 证书（key-only，不使用密码） ────────────────────
-SERVER_184="root@14.103.112.184"
-SERVER_184_HOST="14.103.112.184"
-SERVER_71="root@14.103.174.71"
-SERVER_71_HOST="14.103.174.71"
+# 2026-07-11: 184/71 退役,SERVER_184/SERVER_71 别名重定向到 154 (生产) 与 kaixuan-1 (开发)
+# 保留命名是为了不破坏调用方对 "deploy to 184/71" 语义的心智模型,实际连接走 154
+SERVER_184="root@47.97.111.154"
+SERVER_184_HOST="47.97.111.154"
+SERVER_71="root@47.97.111.154"
+SERVER_71_HOST="47.97.111.154"
 SSH_PORT="${SSH_PORT:-25022}"
 SSH_KEY_184="${SSH_KEY_184:-$HOME/.ssh/56_id_rsa}"
 SSH_KEY_71="${SSH_KEY_71:-$HOME/.ssh/71_id_rsa}"

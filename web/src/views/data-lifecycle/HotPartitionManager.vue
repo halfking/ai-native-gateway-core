@@ -13,7 +13,7 @@
           :class="{ migrating: table.migrating }"
         >
           <div class="table-header">
-            <h4 class="table-name">{{ table.label }}</h4>
+            <h4 class="table-name">{{ hotTableLabel(table.name) }}</h4>
             <span class="table-size" :class="getSizeClass(table.sizeBytes)">
               {{ table.sizeHuman }}
             </span>
@@ -252,7 +252,6 @@ import { req } from '@/api/_core'
 
 interface HotTable {
   name: string
-  label: string
   sizeHuman: string
   sizeBytes: number
   toastHuman: string
@@ -317,7 +316,6 @@ const deleting = ref(false)
 const hotTables = ref<HotTable[]>([
   {
     name: 'request_logs_hot',
-    label: t('dataLifecycle.hotPartition.hotTableNames.requestLogs'),
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
@@ -327,7 +325,6 @@ const hotTables = ref<HotTable[]>([
   },
   {
     name: 'credential_model_index_hot',
-    label: t('dataLifecycle.hotPartition.hotTableNames.credentialModelIndex'),
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
@@ -337,7 +334,6 @@ const hotTables = ref<HotTable[]>([
   },
   {
     name: 'usage_ledger_hot',
-    label: t('dataLifecycle.hotPartition.hotTableNames.usageLedger'),
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
@@ -347,7 +343,6 @@ const hotTables = ref<HotTable[]>([
   },
   {
     name: 'routing_decision_log_hot',
-    label: t('dataLifecycle.hotPartition.hotTableNames.routingDecisionLog'),
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
@@ -464,7 +459,7 @@ async function promoteTable(table: HotTable) {
       : t('dataLifecycle.hotPartition.hours', { n: table.retentionHours })
   try {
     await ElMessageBox.confirm(
-      t('dataLifecycle.hotPartition.promoteConfirm', { label: table.label, hours: hoursLabel }),
+      t('dataLifecycle.hotPartition.promoteConfirm', { label: hotTableLabel(table.name), hours: hoursLabel }),
       t('dataLifecycle.hotPartition.hotTableTitle'),
       { type: 'warning', confirmButtonText: t('dataLifecycle.hotPartition.startMigrate'), cancelButtonText: t('dataLifecycle.hotPartition.deleteModal.cancel') },
     )
@@ -507,6 +502,16 @@ async function promoteTable(table: HotTable) {
   } finally {
     table.migrating = false
   }
+}
+
+function hotTableLabel(tableName: string): string {
+  const labels: Record<string, string> = {
+    request_logs_hot: 'requestLogs',
+    credential_model_index_hot: 'credentialModelIndex',
+    usage_ledger_hot: 'usageLedger',
+    routing_decision_log_hot: 'routingDecisionLog',
+  }
+  return t(`dataLifecycle.hotPartition.hotTableNames.${labels[tableName] || tableName}`)
 }
 
 function showDeleteConfirm(partition: Partition) {

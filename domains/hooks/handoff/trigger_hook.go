@@ -134,6 +134,14 @@ type LLMCaller interface {
 	CallLLM(ctx context.Context, model string, messages []map[string]string) (string, error)
 }
 
+// KeyedLLMCaller is implemented by callers that can use a trusted client
+// upstream credential for a single summary request. Gateway authentication
+// keys must never be passed through this interface.
+type KeyedLLMCaller interface {
+	LLMCaller
+	CallLLMWithAPIKey(ctx context.Context, model string, messages []map[string]string, apiKey string) (string, error)
+}
+
 // NoopLLMCaller returns an empty string. Used when no autoroute endpoint is
 // configured — the hook will then degrade to rule-based extraction.
 type NoopLLMCaller struct{}
@@ -811,6 +819,16 @@ func NewChatLLMCallerFromConfig(cfg autoroute.HTTPLlmCallerConfig) *ChatLLMCalle
 // HTTP-backed caller. We re-import goal.LLMCaller behavior here to avoid
 // a circular import (goal already imports response, but not handoff).
 func (c *ChatLLMCaller) CallLLM(ctx context.Context, model string, messages []map[string]string) (string, error) {
+	return c.call(ctx, model, messages, "")
+}
+
+// CallLLMWithAPIKey uses a trusted direct-provider credential for this one
+// summary request. It is intentionally not used for gateway authentication.
+func (c *ChatLLMCaller) CallLLMWithAPIKey(ctx context.Context, model string, messages []map[string]string, apiKey string) (string, error) {
+	return c.call(ctx, model, messages, apiKey)
+}
+
+func (c *ChatLLMCaller) call(ctx context.Context, model string, messages []map[string]string, apiKey string) (string, error) {
 	// goal package exposes an HTTP caller; we reuse it indirectly via
 	// its ApplyHTTPLlmCallerDefaults helper and a fresh request per call.
 	// To avoid pulling the entire goal package surface (which would force
@@ -819,6 +837,9 @@ func (c *ChatLLMCaller) CallLLM(ctx context.Context, model string, messages []ma
 	cfg := c.cfg
 	if model != "" {
 		cfg.Model = model
+	}
+	if apiKey != "" {
+		cfg.APIKey = apiKey
 	}
 	goal.ApplyHTTPLlmCallerDefaults(&cfg)
 	body, err := json.Marshal(map[string]interface{}{

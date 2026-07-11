@@ -32,11 +32,11 @@ load_config() {
 IFS=$'\037' read -r L_HOST L_PORT L_USER L_PASS L_DB < <(load_config "$LEFT_CONFIG")
 IFS=$'\037' read -r R_HOST R_PORT R_USER R_PASS R_DB < <(load_config "$RIGHT_CONFIG")
 
-read -r -d '' CATALOG_SQL <<'SQL' || true
+read -r -d '' CATALOG_SQL <<SQL || true
 WITH tables AS (
   SELECT c.oid, n.nspname, c.relname
   FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-  WHERE n.nspname = :'schema' AND c.relkind IN ('r','p')
+  WHERE n.nspname = '$SCHEMA' AND c.relkind IN ('r','p')
 ), records AS (
   SELECT 'TABLE' AS kind, t.relname AS object_name, '' AS sub_name, '' AS definition FROM tables t
   UNION ALL
