@@ -1,6 +1,6 @@
 #!/bin/bash
 # 数据库迁移验证脚本
-# 验证 360_session_module_executions.sql 和 361_dashboard_access_events.sql
+# 验证 382_session_module_executions.sql 和 383_dashboard_access_events.sql
 
 set -e
 
