@@ -2537,14 +2537,15 @@ func (d *DB) ensureAutoUpdateSchema(ctx context.Context) error {
 			release_id      BIGINT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
 			phase           TEXT NOT NULL
 				CHECK (phase IN ('canary', 'batch_1', 'batch_2', 'batch_3', 'full')),
-			percent         INT NOT NULL CHECK (percent > 0 AND percent <= 100),
+			percent         INT NOT NULL CHECK (percent >= 0 AND percent <= 100),
 			selectors       JSONB,
 			status          TEXT NOT NULL DEFAULT 'active'
-				CHECK (status IN ('active', 'scheduled', 'completed', 'cancelled')),
-			created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+				CHECK (status IN ('active', 'paused', 'completed')),
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 		);
 		CREATE INDEX IF NOT EXISTS idx_gray_rules_release ON gray_release_rules (release_id);
-		CREATE INDEX IF NOT EXISTS idx_gray_rules_status ON gray_release_rules (status);
+		CREATE INDEX IF NOT EXISTS idx_gray_rules_status ON gray_release_rules (status, created_at DESC);
 
 		CREATE TABLE IF NOT EXISTS upgrade_logs (
 			id              BIGSERIAL PRIMARY KEY,

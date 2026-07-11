@@ -362,7 +362,7 @@ func (p providerClientAdapter) GetCandidates(ctx context.Context, model, profile
 			BaseURL:       raw[i].BaseURL,
 			APIKey:        raw[i].APIKey,
 			Protocol:      raw[i].Protocol,
-			ContextWindow: raw[i].ContextWindow,
+			ContextWindow: nil, // provider.Candidate does not carry context window; compression falls back to default heuristic
 			Available:     raw[i].Routable,
 		})
 	}

@@ -89,25 +89,14 @@ export interface LiveStreamHealth {
   redis_error?: string
 }
 
-export interface LiveCredentialState {
-  credential_id: number
-  provider_id?: number
-  model?: string
-  state: string
-  reason?: string
-  next_probe_at?: string
-  source: string
-}
-
 export interface LiveStreamEnvelope {
-  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update' | 'credential_state'
+  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update'
   ts: string
   request?: LiveRequest
   requests?: LiveRequest[]
   snapshot?: LiveStreamSnapshot
   delta?: LiveStreamDelta
   health?: LiveStreamHealth
-  credential_state?: LiveCredentialState
 }
 
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' | 'unsupported'
@@ -120,7 +109,6 @@ export const liveStreamState = reactive({
   lastEventAt: 0,
   redisHealthy: true,
   redisError: '',
-  credentialEvents: [] as LiveCredentialState[],
 })
 
 // Vue auto-unwraps `ref` and `reactive` proxies in templates.
@@ -137,7 +125,6 @@ export const pausedRef: ComputedRef<boolean> = computed(() => liveStreamState.pa
 export const lastEventAtRef: ComputedRef<number> = computed(() => liveStreamState.lastEventAt)
 export const redisHealthyRef: ComputedRef<boolean> = computed(() => liveStreamState.redisHealthy)
 export const redisErrorRef: ComputedRef<string> = computed(() => liveStreamState.redisError)
-export const credentialEventsRef: ComputedRef<LiveCredentialState[]> = computed(() => liveStreamState.credentialEvents)
 
 export const MAX_VISIBLE = 60
 export const ENDPOINT = '/api/admin/live-stream'
@@ -294,10 +281,6 @@ function handleEnvelope(env: LiveStreamEnvelope) {
   if (env.type === 'health_update') {
     // Health-only envelope; state already updated above.
     return
-  }
-  if (env.type === 'credential_state' && env.credential_state) {
-    liveStreamState.credentialEvents.unshift(env.credential_state)
-    liveStreamState.credentialEvents = liveStreamState.credentialEvents.slice(0, 5)
   }
 }
 

@@ -112,8 +112,8 @@ func (bw *BatchWriter) flush() {
 				latency_ms = COALESCE(EXCLUDED.latency_ms, credential_state_log.latency_ms),
 				last_success_at = COALESCE(EXCLUDED.last_success_at, credential_state_log.last_success_at),
 				last_failure_at = COALESCE(EXCLUDED.last_failure_at, credential_state_log.last_failure_at),
-				recover_at = CASE WHEN $11 THEN NULL ELSE COALESCE(EXCLUDED.recover_at, credential_state_log.recover_at) END,
-				last_error = CASE WHEN $11 THEN NULL ELSE COALESCE(EXCLUDED.last_error, credential_state_log.last_error) END,
+				last_error = COALESCE(EXCLUDED.last_error, credential_state_log.last_error),
+				recover_at = COALESCE(EXCLUDED.recover_at, credential_state_log.recover_at),
 				updated_at = EXCLUDED.updated_at
 		`,
 			update.CredentialID,
@@ -126,7 +126,6 @@ func (bw *BatchWriter) flush() {
 			update.LastError,
 			update.RecoverAt,
 			update.UpdatedAt,
-			update.ClearRecovery,
 		)
 
 		if err != nil {

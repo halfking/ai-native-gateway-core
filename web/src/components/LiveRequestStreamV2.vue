@@ -22,7 +22,6 @@ const {
   snapshot: liveSnapshot,
   connection, 
   paused, 
-  credentialEvents,
   togglePause,
   reconnect: reconnectStream,
 } = useLiveStream()
@@ -308,11 +307,6 @@ function handleToggleLegend(key: string) {
         </div>
       </div>
     </div>
-    <div v-if="credentialEvents.length" class="credential-events" aria-live="polite">
-      <span v-for="event in credentialEvents" :key="`${event.credential_id}-${event.state}-${event.next_probe_at || ''}`" class="credential-event">
-        凭据 {{ event.credential_id }}: {{ event.state }}<template v-if="event.reason"> ({{ event.reason }})</template><template v-if="event.next_probe_at">，下次探测 {{ new Date(event.next_probe_at).toLocaleTimeString() }}</template>
-      </span>
-    </div>
     
     <!-- 图例行 -->
     <LiveStreamLegend
@@ -357,22 +351,6 @@ function handleToggleLegend(key: string) {
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
-}
-
-.credential-events {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding: 6px 0;
-  font-size: 12px;
-}
-
-.credential-event {
-  flex: 0 0 auto;
-  border-left: 2px solid var(--el-color-warning, #d97706);
-  color: var(--el-text-color-secondary, #64748b);
-  padding-left: 6px;
-  white-space: nowrap;
 }
 
 .stream-header {
