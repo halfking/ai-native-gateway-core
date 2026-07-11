@@ -145,14 +145,22 @@ func (h *Handler) handleMemoraQuery(w http.ResponseWriter, r *http.Request) {
 
 	scope := parseSessionScope(r)
 	apiKeyID, err := h.sessionAPIKeyID(ctx, taskID, scope, r)
-	if err != nil || apiKeyID <= 0 {
+	if err != nil {
+		slog.ErrorContext(ctx, "memora_query: derive api_key failed",
+			"task_id", taskID, "error", err)
+		writeError(w, http.StatusNotFound, fmt.Sprintf("task not found: %s", taskID))
+		return
+	}
+	if apiKeyID <= 0 {
 		writeError(w, http.StatusNotFound, "task not found: "+taskID)
 		return
 	}
 	userID := memory.UserID(h.sessionTenantID(ctx, taskID, scope, r), apiKeyID, taskID)
 	facts, err := h.memoraClient.SmartSearch(ctx, userID, query, topK)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "memora search failed")
+		slog.ErrorContext(ctx, "memora_query: smart_search failed",
+			"task_id", taskID, "user_id", userID, "error", err)
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("memora search failed: %v", err))
 		return
 	}
 	responseFacts := make([]map[string]any, 0, len(facts))
@@ -604,7 +612,13 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 			(SELECT client_model FROM request_logs `+where+` ORDER BY ts DESC LIMIT 1)
 		FROM request_logs `+where+`
 	`, whereArgs...).Scan(&requestCount, &latestModel)
-	if err != nil || requestCount == 0 {
+	if err != nil {
+		slog.ErrorContext(ctx, "memora_context: query request_logs failed",
+			"task_id", taskID, "error", err)
+		writeError(w, http.StatusNotFound, fmt.Sprintf("task not found: %s", taskID))
+		return
+	}
+	if requestCount == 0 {
 		writeError(w, http.StatusNotFound, "task not found: "+taskID)
 		return
 	}

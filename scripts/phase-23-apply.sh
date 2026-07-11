@@ -18,12 +18,12 @@ set -euo pipefail
 TARGET="${1:-184}"
 case "$TARGET" in
   184)
-    SSH_HOST="__INTERNAL_PUBLIC_IP__"
+    SSH_HOST="47.97.111.154"  # 154 替代 184
     SSH_PORT=25022
     NS="pms-test"
     ;;
   71)
-    SSH_HOST="__HOST_71_IP__"
+    SSH_HOST="47.97.111.154"  # 154 替代 71
     SSH_PORT=25022
     NS="pms-test"
     ;;

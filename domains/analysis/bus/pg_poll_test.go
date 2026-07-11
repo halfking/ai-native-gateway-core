@@ -21,7 +21,7 @@ func TestNewPGPollFunc_NilDBReturnsEmpty(t *testing.T) {
 
 func TestNewPGMarkFunc_NilDBNoop(t *testing.T) {
 	mark := NewPGMarkFunc(nil, nil)
-	if err := mark(context.Background(), "evt-1", "intent_worker", nil); err != nil {
+	if err := mark(context.Background(), "evt-1", "", "intent_worker", nil); err != nil {
 		t.Fatalf("nil db mark err = %v", err)
 	}
 }
@@ -31,8 +31,8 @@ func TestNewPGPollFunc_LoadsEvents(t *testing.T) {
 	defer mock.Close()
 	rows := pgxmock.NewRows([]string{"event_id", "type", "tenant_id", "session_id", "request_id", "payload", "occurred_at"}).
 		AddRow("ev-1", string(analysis.EventRequestCompleted), "t1", "s1", "r1", []byte(`{"user_content":"hi"}`), time.Now())
-	mock.ExpectQuery("SELECT event_id, type, tenant_id").
-		WithArgs([]string{string(analysis.EventRequestCompleted)}, 5).
+	mock.ExpectQuery("WITH claimable AS").
+		WithArgs([]string{string(analysis.EventRequestCompleted)}, 5, pgxmock.AnyArg()).
 		WillReturnRows(rows)
 
 	poll := NewPGPollFunc(mock, []analysis.EventType{analysis.EventRequestCompleted}, 10)
@@ -52,10 +52,10 @@ func TestNewPGMarkFunc_FailurePath(t *testing.T) {
 	mock, _ := pgxmock.NewPool()
 	defer mock.Close()
 	mock.ExpectExec("UPDATE analysis_events").
-		WithArgs("ev-1", "boom", "intent_worker").
+		WithArgs("ev-1", "boom", "intent_worker", "claim-1").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mark := NewPGMarkFunc(mock, nil)
-	if err := mark(context.Background(), "ev-1", "intent_worker", errors.New("boom")); err != nil {
+	if err := mark(context.Background(), "ev-1", "claim-1", "intent_worker", errors.New("boom")); err != nil {
 		t.Fatalf("mark err = %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

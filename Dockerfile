@@ -28,7 +28,9 @@ ARG GOTOOLCHAIN=auto
 ARG GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
 ARG NPM_REGISTRY=https://registry.npmmirror.com/
 ENV GOPROXY=${GOPROXY}
-RUN GOTOOLCHAIN=auto GOPROXY=${GOPROXY} go mod download
+# vendor/ 目录存在时跳过 go mod download，使用 -mod=vendor
+COPY vendor/ /src/vendor/
+RUN if [ -d vendor ]; then echo "vendor dir found, skipping go mod download"; else GOTOOLCHAIN=auto GOPROXY=${GOPROXY} go mod download; fi
 
 # Build the Vue SPA first so we know web/dist/ is always fresh.
 COPY web/package.json web/package-lock.json* web/
@@ -46,7 +48,7 @@ ARG BUILD_DATE=""
 ARG BUILD_SEQ="0"
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=auto \
-    go build -a -ldflags="-s -w" -o /llm-gateway-go ./cmd/gateway
+    go build $(if [ -d vendor ]; then echo -mod=vendor; fi) -a -ldflags="-s -w" -o /llm-gateway-go ./cmd/gateway
 
 # ── Runtime stage ───────────────────────────────────────────────────────────
 # 2026-06-22 T14: switched from kx-base:go-vue-amd64 (1.09GB Debian) to
