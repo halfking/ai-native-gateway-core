@@ -2,17 +2,6 @@
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Line } from 'vue-chartjs'
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-} from 'chart.js'
 import {
   getCenterInstances,
   getCenterStats,
@@ -22,8 +11,6 @@ import {
   type CenterStats,
   type HeartbeatHistory,
 } from '../../api/ops'
-
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
 
 const { t } = useI18n()
 
@@ -38,15 +25,15 @@ const showCommandDialog = ref(false)
 const commandForm = ref({
   instanceId: '',
   command: 'restart',
-  params: {} as Record<string, unknown>,
+  params: '{}',
 })
 
 const commandOptions = [
   { value: 'restart', label: 'Restart Service' },
-  { value: 'reload', label: 'Reload Config' },
-  { value: 'update', label: 'Update Version' },
-  { value: 'clear_cache', label: 'Clear Cache' },
+  { value: 'upgrade', label: 'Update Version' },
+  { value: 'config_update', label: 'Update Config' },
   { value: 'health_check', label: 'Health Check' },
+  { value: 'collect_logs', label: 'Collect Logs' },
 ]
 
 async function load() {
@@ -76,7 +63,7 @@ async function handleExpandChange(row: CenterInstance) {
   expandedRows.value.push(row.instance_id)
   if (!heartbeatData.value[row.instance_id]) {
     try {
-      heartbeatData.value[row.instance_id] = await getHeartbeatHistory(row.instance_id, 24)
+      heartbeatData.value[row.instance_id] = await getHeartbeatHistory(row.instance_id)
     } catch (error) {
       ElMessage.error(t('ops.center.loadHeartbeatFailed'))
       console.error(error)
@@ -88,7 +75,7 @@ function openCommandDialog(instance: CenterInstance) {
   commandForm.value = {
     instanceId: instance.instance_id,
     command: 'restart',
-    params: {},
+    params: '{}',
   }
   showCommandDialog.value = true
 }
@@ -96,7 +83,10 @@ function openCommandDialog(instance: CenterInstance) {
 async function handleSendCommand() {
   loading.value = true
   try {
-    await sendCommand(commandForm.value.instanceId, commandForm.value.command, commandForm.value.params)
+    const args = commandForm.value.params.trim()
+      ? JSON.parse(commandForm.value.params) as Record<string, string>
+      : {}
+    await sendCommand(commandForm.value.instanceId, commandForm.value.command, args)
     ElMessage.success(t('ops.center.commandSent'))
     showCommandDialog.value = false
   } catch (error) {
@@ -108,7 +98,7 @@ async function handleSendCommand() {
 }
 
 function statusType(status: string) {
-  const map: Record<string, 'success' | 'warning' | 'danger'> = {
+  const map: Record<string, 'success' | 'warning' | 'danger' | 'info'> = {
     online: 'success',
     degraded: 'warning',
     offline: 'danger',
@@ -129,52 +119,6 @@ function formatUptime(seconds: number) {
   return `${minutes}m`
 }
 
-function getChartData(instanceId: string) {
-  const history = heartbeatData.value[instanceId] || []
-  return {
-    labels: history.map((h) => new Date(h.timestamp).toLocaleTimeString()),
-    datasets: [
-      {
-        label: 'CPU %',
-        data: history.map((h) => h.cpu_usage),
-        borderColor: 'rgb(75, 192, 192)',
-        backgroundColor: 'rgba(75, 192, 192, 0.2)',
-        tension: 0.4,
-      },
-      {
-        label: 'Memory %',
-        data: history.map((h) => h.memory_usage),
-        borderColor: 'rgb(255, 99, 132)',
-        backgroundColor: 'rgba(255, 99, 132, 0.2)',
-        tension: 0.4,
-      },
-      {
-        label: 'Disk %',
-        data: history.map((h) => h.disk_usage),
-        borderColor: 'rgb(255, 205, 86)',
-        backgroundColor: 'rgba(255, 205, 86, 0.2)',
-        tension: 0.4,
-      },
-    ],
-  }
-}
-
-const chartOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: {
-    legend: {
-      position: 'top' as const,
-    },
-  },
-  scales: {
-    y: {
-      beginAtZero: true,
-      max: 100,
-    },
-  },
-}
-
 onMounted(load)
 </script>
 
@@ -191,19 +135,19 @@ onMounted(load)
     <div v-if="stats" class="stats-grid">
       <el-card shadow="hover">
         <div class="stat-item">
-          <div class="stat-value stat-success">{{ stats.online_count }}</div>
+          <div class="stat-value stat-success">{{ stats.online_instances }}</div>
           <div class="stat-label">{{ t('ops.center.onlineInstances') }}</div>
         </div>
       </el-card>
       <el-card shadow="hover">
         <div class="stat-item">
-          <div class="stat-value stat-warning">{{ stats.degraded_count }}</div>
+          <div class="stat-value stat-warning">{{ stats.degraded_instances }}</div>
           <div class="stat-label">{{ t('ops.center.degradedInstances') }}</div>
         </div>
       </el-card>
       <el-card shadow="hover">
         <div class="stat-item">
-          <div class="stat-value stat-danger">{{ stats.offline_count }}</div>
+          <div class="stat-value stat-danger">{{ stats.offline_instances }}</div>
           <div class="stat-label">{{ t('ops.center.offlineInstances') }}</div>
         </div>
       </el-card>
@@ -223,21 +167,30 @@ onMounted(load)
             <div class="expanded-content">
               <div class="metrics-grid">
                 <div class="metric-item">
-                  <span class="metric-label">{{ t('ops.center.cpuUsage') }}:</span>
-                  <el-progress :percentage="row.cpu_usage" :stroke-width="8" />
+                  <span class="metric-label">{{ t('ops.center.uptime') }}:</span>
+                  <span>{{ formatUptime(row.uptime_seconds) }}</span>
                 </div>
                 <div class="metric-item">
-                  <span class="metric-label">{{ t('ops.center.memoryUsage') }}:</span>
-                  <el-progress :percentage="row.memory_usage" :stroke-width="8" :color="row.memory_usage > 80 ? '#F56C6C' : '#67C23A'" />
+                  <span class="metric-label">{{ t('ops.center.version') }}:</span>
+                  <span>{{ row.version }}</span>
                 </div>
                 <div class="metric-item">
-                  <span class="metric-label">{{ t('ops.center.diskUsage') }}:</span>
-                  <el-progress :percentage="row.disk_usage" :stroke-width="8" :color="row.disk_usage > 80 ? '#F56C6C' : '#67C23A'" />
+                  <span class="metric-label">{{ t('ops.center.lastHeartbeat') }}:</span>
+                  <span>{{ formatDate(row.last_heartbeat) }}</span>
                 </div>
               </div>
               <div v-if="heartbeatData[row.instance_id]" class="chart-container">
-                <h4>{{ t('ops.center.heartbeatHistory') }}</h4>
-                <Line :data="getChartData(row.instance_id)" :options="chartOptions" />
+                <h2>{{ t('ops.center.heartbeatHistory') }}</h2>
+                <el-table :data="heartbeatData[row.instance_id]" size="small">
+                  <el-table-column prop="timestamp" :label="t('ops.center.lastHeartbeat')">
+                    <template #default="{ row: heartbeat }">{{ formatDate(heartbeat.timestamp) }}</template>
+                  </el-table-column>
+                  <el-table-column prop="uptime_secs" :label="t('ops.center.uptime')">
+                    <template #default="{ row: heartbeat }">{{ formatUptime(heartbeat.uptime_secs) }}</template>
+                  </el-table-column>
+                  <el-table-column prop="alloc_mb" label="Alloc MB" />
+                  <el-table-column prop="num_goroutine" label="Goroutines" />
+                </el-table>
               </div>
               <div v-else class="loading-chart">{{ t('common.loading') }}</div>
             </div>
@@ -393,7 +346,7 @@ onMounted(load)
   margin-top: 20px;
 }
 
-.chart-container h4 {
+.chart-container h2 {
   margin: 0 0 12px 0;
   font-size: 14px;
   font-weight: 600;

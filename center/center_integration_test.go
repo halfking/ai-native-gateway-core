@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -43,9 +44,9 @@ func TestCenterIntegration(t *testing.T) {
 	// Clean up test data
 	defer func() {
 		_, _ = pool.Exec(ctx, "DELETE FROM center_commands WHERE instance_id LIKE 'test-instance-%'")
-		_, _ = pool.Exec(ctx, "DELETE FROM center_heartbeats WHERE instance_id LIKE 'test-instance-%'")
-		_, _ = pool.Exec(ctx, "DELETE FROM center_status_reports WHERE instance_id LIKE 'test-instance-%'")
-		_, _ = pool.Exec(ctx, "DELETE FROM center_instances WHERE instance_id LIKE 'test-instance-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM instance_heartbeats WHERE instance_id LIKE 'test-instance-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM instance_status_reports WHERE instance_id LIKE 'test-instance-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM gateway_instances WHERE instance_id LIKE 'test-instance-%'")
 	}()
 
 	t.Run("CompleteLifecycle", func(t *testing.T) {
@@ -509,9 +510,9 @@ func TestDashboardStats(t *testing.T) {
 		// Register multiple instances
 		for i := 1; i <= 3; i++ {
 			instance := &InstanceInfo{
-				InstanceID: "test-instance-stats-" + timestamp + "-" + string(rune('0'+i)),
-				Hostname:   "stats-host-" + string(rune('0'+i)) + ".example.com",
-				IPAddress:  "192.168.1." + string(rune('0'+i)),
+				InstanceID: "test-instance-stats-" + timestamp + "-" + strconv.Itoa(i),
+				Hostname:   "stats-host-" + strconv.Itoa(i) + ".example.com",
+				IPAddress:  "192.168.1." + strconv.Itoa(i),
 				Version:    "v1.5.0",
 				BuildSeq:   15000,
 				StartedAt:  time.Now(),

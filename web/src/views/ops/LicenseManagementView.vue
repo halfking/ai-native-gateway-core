@@ -18,7 +18,7 @@ import {
 const { t } = useI18n()
 
 const licenses = ref<License[]>([])
-const devices = ref<Record<number, LicenseDevice[]>>({})
+const devices = ref<Record<string, LicenseDevice[]>>({})
 const offlineRequests = ref<OfflineActivationRequest[]>([])
 const loading = ref(false)
 const expandedRows = ref<number[]>([])
@@ -27,6 +27,8 @@ const expandedRows = ref<number[]>([])
 const showCreateDialog = ref(false)
 const createForm = ref({
   customer: '',
+  email: '',
+  licenseKey: '',
   max_devices: 5,
   expires_at: '',
 })
@@ -52,17 +54,23 @@ async function loadOfflineRequests() {
 }
 
 async function handleCreate() {
-  if (!createForm.value.customer || !createForm.value.expires_at) {
+  if (!createForm.value.customer || !createForm.value.email || !createForm.value.licenseKey || !createForm.value.expires_at) {
     ElMessage.warning(t('ops.license.fillRequired'))
     return
   }
 
   loading.value = true
   try {
-    await createLicense(createForm.value)
+    await createLicense({
+      license_key: createForm.value.licenseKey,
+      customer_name: createForm.value.customer,
+      customer_email: createForm.value.email,
+      max_devices: createForm.value.max_devices,
+      expires_at: createForm.value.expires_at,
+    })
     ElMessage.success(t('ops.license.createSuccess'))
     showCreateDialog.value = false
-    createForm.value = { customer: '', max_devices: 5, expires_at: '' }
+    createForm.value = { customer: '', email: '', licenseKey: '', max_devices: 5, expires_at: '' }
     await load()
   } catch (error) {
     ElMessage.error(t('ops.license.createFailed'))
@@ -75,11 +83,11 @@ async function handleCreate() {
 async function handleRevoke(license: License) {
   try {
     await ElMessageBox.confirm(
-      t('ops.license.revokeConfirm', { customer: license.customer }),
+      t('ops.license.revokeConfirm', { customer: license.customer_name }),
       t('common.warning'),
       { type: 'warning' }
     )
-    await revokeLicense(license.id)
+    await revokeLicense(license.license_key)
     ElMessage.success(t('ops.license.revokeSuccess'))
     await load()
   } catch (error) {
@@ -98,9 +106,9 @@ async function handleExpandChange(row: License) {
   }
 
   expandedRows.value.push(row.id)
-  if (!devices.value[row.id]) {
+  if (!devices.value[row.license_key]) {
     try {
-      devices.value[row.id] = await getLicenseDevices(row.id)
+      devices.value[row.license_key] = await getLicenseDevices(row.license_key)
     } catch (error) {
       ElMessage.error(t('ops.license.loadDevicesFailed'))
       console.error(error)
@@ -145,12 +153,13 @@ async function handleRejectOffline(request: OfflineActivationRequest) {
   }
 }
 
+function licenseStatus(license: License) {
+  if (license.revoked_at) return 'revoked'
+  return new Date(license.expires_at) < new Date() ? 'expired' : 'active'
+}
+
 function statusType(status: string) {
-  const map: Record<string, 'success' | 'warning' | 'danger' | 'info'> = {
-    active: 'success',
-    expired: 'warning',
-    revoked: 'danger',
-  }
+  const map: Record<string, 'success' | 'warning' | 'danger' | 'info'> = { active: 'success', expired: 'warning', revoked: 'danger' }
   return map[status] || 'info'
 }
 
@@ -216,7 +225,7 @@ onMounted(() => {
       <el-table
         v-loading="loading"
         :data="licenses"
-        :row-key="(row: License) => row.id"
+        :row-key="(row: License) => row.license_key"
         :expand-row-keys="expandedRows"
         @expand-change="handleExpandChange"
       >
@@ -224,9 +233,9 @@ onMounted(() => {
           <template #default="{ row }">
             <div class="expanded-content">
               <h4>{{ t('ops.license.devices') }}</h4>
-              <el-table v-if="devices[row.id]" :data="devices[row.id]" size="small">
-                <el-table-column prop="device_id" :label="t('ops.license.deviceId')" />
-                <el-table-column prop="hostname" :label="t('ops.license.hostname')" />
+              <el-table v-if="devices[row.license_key]" :data="devices[row.license_key]" size="small">
+                <el-table-column prop="instance_id" :label="t('ops.license.deviceId')" />
+                <el-table-column prop="device_name" :label="t('ops.license.hostname')" />
                 <el-table-column prop="activated_at" :label="t('ops.license.activatedAt')">
                   <template #default="{ row: device }">{{ formatDate(device.activated_at) }}</template>
                 </el-table-column>
@@ -239,19 +248,15 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="license_key" :label="t('ops.license.licenseKey')" width="200" />
-        <el-table-column prop="customer" :label="t('ops.license.customer')" width="150" />
-        <el-table-column :label="t('ops.license.devices')" width="120">
-          <template #default="{ row }">
-            {{ row.active_devices }} / {{ row.max_devices }}
-          </template>
-        </el-table-column>
+        <el-table-column prop="customer_name" :label="t('ops.license.customer')" width="150" />
+        <el-table-column prop="max_devices" :label="t('ops.license.maxDevices')" width="120" />
         <el-table-column prop="expires_at" :label="t('ops.license.expiresAt')" width="160">
           <template #default="{ row }">{{ formatDate(row.expires_at) }}</template>
         </el-table-column>
         <el-table-column prop="status" :label="t('common.status')" width="100">
           <template #default="{ row }">
-            <el-tag :type="statusType(row.status)" size="small">
-              {{ t(`ops.license.status.${row.status}`) }}
+            <el-tag :type="statusType(licenseStatus(row))" size="small">
+              {{ t(`ops.license.status.${licenseStatus(row)}`) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -261,7 +266,7 @@ onMounted(() => {
         <el-table-column :label="t('common.actions')" width="120" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="row.status === 'active'"
+              v-if="licenseStatus(row) === 'active'"
               type="danger"
               size="small"
               @click="handleRevoke(row)"
@@ -283,8 +288,14 @@ onMounted(() => {
         <el-form-item :label="t('ops.license.customer')" required>
           <el-input v-model="createForm.customer" :placeholder="t('ops.license.customerPlaceholder')" />
         </el-form-item>
+        <el-form-item :label="t('ops.license.licenseKey')" required>
+          <el-input v-model="createForm.licenseKey" />
+        </el-form-item>
+        <el-form-item label="Email" required>
+          <el-input v-model="createForm.email" type="email" />
+        </el-form-item>
         <el-form-item :label="t('ops.license.maxDevices')" required>
-          <el-input-number v-model="createForm.max_devices" :min="1" :max="100" />
+          <el-input-number v-model="createForm.max_devices" :min="1" :max="100" :aria-label="t('ops.license.maxDevices')" />
         </el-form-item>
         <el-form-item :label="t('ops.license.expiresAt')" required>
           <el-date-picker

@@ -41,9 +41,10 @@ func TestAutoUpdateIntegration(t *testing.T) {
 
 	// Clean up test data
 	defer func() {
-		_, _ = pool.Exec(ctx, "DELETE FROM autoupdate_upgrade_logs WHERE release_id IN (SELECT id FROM autoupdate_releases WHERE version LIKE 'v0.0.0-test-%')")
-		_, _ = pool.Exec(ctx, "DELETE FROM autoupdate_gray_rules WHERE release_id IN (SELECT id FROM autoupdate_releases WHERE version LIKE 'v0.0.0-test-%')")
-		_, _ = pool.Exec(ctx, "DELETE FROM autoupdate_releases WHERE version LIKE 'v0.0.0-test-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM upgrade_logs WHERE new_version LIKE 'v0.0.0-test-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM instance_release_status WHERE version LIKE 'v0.0.0-test-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM gray_release_rules WHERE release_id IN (SELECT id FROM releases WHERE version LIKE 'v0.0.0-test-%')")
+		_, _ = pool.Exec(ctx, "DELETE FROM releases WHERE version LIKE 'v0.0.0-test-%'")
 	}()
 
 	t.Run("CompleteReleaseFlow", func(t *testing.T) {
@@ -407,6 +408,13 @@ func TestUpgradeRetry(t *testing.T) {
 	t.Run("RetryMechanism", func(t *testing.T) {
 		version := "v0.0.0-test-retry-" + time.Now().Format("20060102-150405")
 		instanceID := "retry-instance-" + time.Now().Format("150405")
+		release := &Release{
+			Version: version, BuildSeq: 55555, Channel: ChannelBeta,
+			Title: "Retry Test Release", ImageTag: "registry.example.com/app:" + version,
+			CreatedBy: "integration-test",
+		}
+		err := store.CreateRelease(ctx, release)
+		require.NoError(t, err)
 
 		// Create upgrade log with retries
 		logID, err := store.CreateUpgradeLog(ctx, instanceID, "v1.0.0", version)
@@ -416,7 +424,7 @@ func TestUpgradeRetry(t *testing.T) {
 		maxRetries := 3
 		for retry := 1; retry <= maxRetries; retry++ {
 			status := &ReleaseStatus{
-				ReleaseID:  1, // Dummy release ID
+				ReleaseID:  release.ID,
 				InstanceID: instanceID,
 				Status:     StatusFailed,
 				Version:    version,
@@ -432,7 +440,7 @@ func TestUpgradeRetry(t *testing.T) {
 
 		// Final successful attempt
 		successStatus := &ReleaseStatus{
-			ReleaseID:  1,
+			ReleaseID:  release.ID,
 			InstanceID: instanceID,
 			Status:     StatusSuccess,
 			Version:    version,
@@ -457,6 +465,8 @@ func TestUpgradeRetry(t *testing.T) {
 		assert.Equal(t, maxRetries+1, finalStatus.RetryCount)
 
 		// Clean up
-		_, _ = pool.Exec(ctx, "DELETE FROM autoupdate_upgrade_logs WHERE id = $1", logID)
+		_, _ = pool.Exec(ctx, "DELETE FROM upgrade_logs WHERE id = $1", logID)
+		_, _ = pool.Exec(ctx, "DELETE FROM instance_release_status WHERE instance_id = $1", instanceID)
+		_, _ = pool.Exec(ctx, "DELETE FROM releases WHERE id = $1", release.ID)
 	})
 }

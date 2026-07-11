@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -77,12 +78,17 @@ func (ae *ActionExecutor) handleRunScript(ctx context.Context, config map[string
 	if !ok || scriptPath == "" {
 		return "", errors.New("script path not provided")
 	}
+	cleanPath := filepath.Clean(scriptPath)
+	const scriptsDir = "/opt/llm-gateway/scripts"
+	if filepath.Dir(cleanPath) != scriptsDir {
+		return "", errors.New("script must be located in " + scriptsDir)
+	}
 
 	args, _ := config["args"].([]string)
 
 	slog.Info("executing script", "script", scriptPath, "args", args)
 
-	cmd := exec.CommandContext(ctx, scriptPath, args...)
+	cmd := exec.CommandContext(ctx, cleanPath, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", errors.New("script execution failed: " + err.Error() + ", output: " + string(output))

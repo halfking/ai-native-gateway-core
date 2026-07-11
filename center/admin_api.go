@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/labstack/echo/v4"
 )
 
@@ -87,16 +88,20 @@ func (a *AdminAPI) IssueCommand(c echo.Context) error {
 	instanceID := c.Param("id")
 
 	var req struct {
-		Command  string            `json:"command" validate:"required"`
-		Args     map[string]string `json:"args"`
-		IssuedBy string            `json:"issued_by" validate:"required"`
+		Command string            `json:"command" validate:"required"`
+		Args    map[string]string `json:"args"`
 	}
 
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
-	cmd, err := a.server.IssueCommand(c.Request().Context(), instanceID, req.Command, req.Args, req.IssuedBy)
+	auth := admin.GetAuthContext(c.Request())
+	if auth == nil || auth.Username == "" {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+	}
+
+	cmd, err := a.server.IssueCommand(c.Request().Context(), instanceID, req.Command, req.Args, auth.Username)
 	if err != nil {
 		slog.Error("issue command failed", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "issue command failed"})
