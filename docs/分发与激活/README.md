@@ -19,6 +19,7 @@
 | [10-多租户与计费架构](./10-多租户与计费架构.md) | 未来按月+用户 / 按 token 用量计费预留 | ✅ |
 | [11-实施路线图](./11-实施路线图.md) | 5 个里程碑 | ✅ |
 | [12-执行计划与并发任务](./12-执行计划与并发任务.md) | 并发任务拆解与依赖 | ✅ |
+| [13-双版本构建与分发策略](./13-双版本构建与分发策略.md) | Master/Customer 双版本物理隔离 | ✅ |
 | [附录 A-deploy.yml 完整 Schema](./appendices/A-deploy.yml完整Schema.md) | 部署配置文件 | ✅ |
 | [附录 B-API 端点清单](./appendices/B-API端点清单.md) | 所有 REST API | ✅ |
 | [附录 C-数据库 Schema](./appendices/C-数据库Schema.md) | 关键表结构 | ✅ |
@@ -31,9 +32,9 @@
 | License 算法 | RSA-2048 + SHA-256 | 现有实现稳定；签名验证快 |
 | 数据加密 | AES-256-GCM | AEAD，自带认证 |
 | 机器指纹 | machineid + CPU + HostID + MAC + Disk Serial + BIOS UUID | 多维度防克隆 |
-| 默认 License Key 编码 | `KXGW-XXXX-XXXX-XXXX` | 易手输、易语音 |
+| 默认 License Key 编码 | `LIC-<32位hex>`（37 字符） | 代码 `admin_api.go:generateLicenseKey()` |
 | 免费试用时长 | 15 天 | 用户指定 |
-| 免费版租户限制 | 2 个租户 | 用户指定 |
+| 免费版租户限制 | 2 个租户（`MaxDevices` 字段控制设备数，租户上限按 tier 硬编码） | 用户指定 |
 | 部署模式数 | 5 种（单机离线/单机在线/K8s/Docker/DB 独立） | 覆盖主流场景 |
 | 升级方式 | 蓝绿部署 + 守护进程 | 零停机、可回退 |
 | License 验证时机 | 启动时 + 每 24h + 关键操作前 | 平衡安全与性能 |
@@ -54,9 +55,9 @@
 | 激活器（在线） | `licensing/activator.go` |
 | 离线激活 | `licensing/offline.go` |
 | 设备管理 | `licensing/device_manager.go` |
-| License 数据库表 | `sql/migrations/startup/372_license_modules.sql` + `374_license_devices.sql` |
-| 管理 API | `licensing/admin_api.go` + `/api/admin/licenses*` |
-| Center API（用户侧） | `licensing/center_api.go` + `/api/center/*` |
+| License 数据库表 | `sql/migrations/startup/372+374+375` |
+| 管理 API（主控端） | `licensing/admin_api.go` → `/api/admin/licenses*` |
+| Center API（客户端暴露） | `licensing/center_api.go` → `/api/center/*` |
 | 离线激活请求审批 UI | `web/src/views/ops/LicenseManagementView.vue` |
 | 自动升级（Downloader/Installer/Rollback） | `autoupdate/*.go` |
 | 自动升级管理 UI | `web/src/views/ops/AutoUpdateView.vue` |

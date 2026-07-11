@@ -21,7 +21,7 @@ type License struct {
     CustomerName     string     `json:"customer_name"`
     CustomerEmail    string     `json:"customer_email"`
     MaxDevices       int        `json:"max_devices"`
-    SubscriptionTier string     `json:"subscription_tier"`  // community/trial/standard/professional/enterprise
+    SubscriptionTier string     `json:"subscription_tier"`  // starter/community/trial/standard/professional/enterprise
     Features         []string   `json:"features"`
     ExpiresAt        time.Time  `json:"expires_at"`
     CreatedAt        time.Time  `json:"created_at"`
@@ -35,6 +35,26 @@ type SignedLicense struct {
 ```
 
 ## 三、License Key 编码
+
+> **⚠️ 与代码对齐**：当前代码 `admin_api.go:generateLicenseKey()` 生成 `LIC-<32位hex>`（37 字符）。
+> 下文描述的 `KXGW-XXXX-XXXX-XXXX` 格式为**未来优化方案**（更易手输），尚未实现。
+
+### 3.1 当前实现（代码）
+
+```go
+// licensing/admin_api.go:46-50
+func generateLicenseKey() string {
+    b := make([]byte, 16)
+    rand.Read(b)
+    return fmt.Sprintf("LIC-%s", hex.EncodeToString(b))
+}
+```
+
+格式：`LIC-<32位十六进制>`（共 37 字符）
+
+示例：`LIC-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6`
+
+### 3.2 未来优化方案（待实现）
 
 格式：`KXGW-XXXX-XXXX-XXXX`（25 字符）
 

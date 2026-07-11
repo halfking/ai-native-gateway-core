@@ -1,21 +1,26 @@
 # 附录 B — API 端点清单
 
 > 所有 REST API 端点，按用途分组。详细签名见各章。
+>
+> **状态标记**：`[已实现]` = 代码中存在路由注册，`[待实现]` = 仅文档设计，代码不存在。
 
 ## 一、主控端 API（仅 master 二进制）
 
-### 1.1 License 管理（已实现）
+### 1.1 License 管理 [已实现]
+
+> 路由注册：`licensing/admin_api.go:RegisterRoutes()`，Group 前缀由调用方决定。
+> 完整路径示例：`POST /api/admin/licenses`
 
 ```
-POST   /api/admin/licenses                  # 创建 License
-GET    /api/admin/licenses                  # 列出所有
-GET    /api/admin/licenses/:key             # 查询单个
-POST   /api/admin/licenses/:key/revoke      # 撤销
-GET    /api/admin/licenses/:key/devices     # 列出设备
-POST   /api/admin/licenses/:key/devices/:hash/deactivate   # 停用设备
-GET    /api/admin/licenses/offline-requests                # 待审批请求
-POST   /api/admin/licenses/offline-requests/:id/approve   # 批准
-POST   /api/admin/licenses/offline-requests/:id/reject    # 拒绝
+POST   /licenses                              # 创建 License [已实现]
+GET    /licenses                              # 列出所有 [已实现]
+GET    /licenses/:id                          # 查询单个 [已实现]
+POST   /licenses/:id/revoke                   # 撤销 [已实现]
+GET    /licenses/:id/devices                  # 列出设备 [已实现]
+POST   /licenses/:id/devices/:hash/deactivate # 停用设备 [已实现]
+GET    /licenses/offline-requests             # 待审批请求 [已实现]
+POST   /licenses/offline-requests/:id/approve # 批准 [已实现]
+POST   /licenses/offline-requests/:id/reject  # 拒绝 [已实现]
 ```
 
 ### 1.2 Release 管理（已实现）
@@ -63,22 +68,25 @@ POST   /api/admin/vibecoding/sessions
 GET    /api/admin/vibecoding/reviews
 ```
 
-### 1.6 License Authority（主控端独立服务，待建）
+### 1.6 License Authority（主控端独立服务）[全部待实现]
+
+> ⚠️ 整个 `license-authority/` 目录不存在，以下端点均为设计目标。
+> 当前客户端通过 `Center API`（2.1 节）与主控端通信。
 
 ```
-POST   /api/v1/license/activate             # 在线激活
-POST   /api/v1/license/trial                # 自动试用
-POST   /api/v1/license/refresh              # 24h 心跳刷新
-POST   /api/v1/license/validate             # 验证
-POST   /api/v1/license/deactivate           # 停用
-GET    /api/v1/license/crl?since=...        # 撤销列表
-POST   /api/v1/license/offline/request      # 客户端生成离线请求
-POST   /api/v1/license/offline/verify       # 客户端导入离线响应
-POST   /api/v1/license/offline-approve      # 主控端管理员审批
-POST   /api/v1/collect/runtime              # 采集器上报
-POST   /api/v1/updates/check                # 升级检查
-GET    /api/v1/updates/latest               # 最新版本
-GET    /api/v1/updates/manifest             # release manifest
+POST   /api/v1/license/activate             # 在线激活 [待实现]
+POST   /api/v1/license/trial                # 自动试用 [待实现]
+POST   /api/v1/license/refresh              # 24h 心跳刷新 [待实现]
+POST   /api/v1/license/validate             # 验证 [待实现]
+POST   /api/v1/license/deactivate           # 停用 [待实现]
+GET    /api/v1/license/crl?since=...        # 撤销列表 [待实现]
+POST   /api/v1/license/offline/request      # 客户端生成离线请求 [待实现]
+POST   /api/v1/license/offline/verify       # 客户端导入离线响应 [待实现]
+POST   /api/v1/license/offline-approve      # 主控端管理员审批 [待实现]
+POST   /api/v1/collect/runtime              # 采集器上报 [待实现]
+POST   /api/v1/updates/check                # 升级检查 [待实现]
+GET    /api/v1/updates/latest               # 最新版本 [待实现]
+GET    /api/v1/updates/manifest             # release manifest [待实现]
 ```
 
 ### 1.7 Billing（v2.x 预留）
@@ -100,41 +108,48 @@ DELETE /api/admin/billing/payment_methods/:id
 
 ## 二、客户端 API（customer 二进制含）
 
-### 2.1 已实现：Center API（已存在）
+### 2.1 Center API [已实现]
+
+> 路由注册：`licensing/center_api.go:RegisterRoutes()`，Group 前缀由调用方决定。
+> 这些是**客户端暴露的端点**，供主控端远程调用（在线场景）或客户端自身调用（离线场景）。
 
 ```
-POST   /api/center/activate                 # 激活（对主控端）
-POST   /api/center/deactivate
-POST   /api/center/heartbeat                # 心跳
-POST   /api/center/validate                 # 验证
-POST   /api/center/offline/request
-POST   /api/center/offline/verify
+POST   /api/center/activate                 # 激活 [已实现]
+POST   /api/center/deactivate               # 停用 [已实现]
+POST   /api/center/heartbeat                # 心跳 [已实现]
+POST   /api/center/validate                 # 验证 [已实现]
+POST   /api/center/offline/request          # 生成离线请求 [已实现]
+POST   /api/center/offline/verify           # 导入离线响应 [已实现]
 ```
 
-**注意**：这些 endpoint 在 客户端二进制 中是 **server side endpoint**，供主控端调用。
+**调用方向**：
+- **在线场景**：主控端 → 客户端（主控端主动调用客户端的 Center API）
+- **离线场景**：客户端自身（用户在客户端 UI 操作，调用本地 Center API）
 
-### 2.2 用户侧 API（新建，待实现）
+### 2.2 用户侧 API [全部待实现]
+
+> ⚠️ 以下端点均为设计目标，代码中不存在。`gateway/internal/api/` 目录下无对应 handler。
 
 ```
-# === License 激活 ===
+# === License 激活 [待实现] ===
 POST   /api/system/license/trial            # 试用激活
 POST   /api/system/license/activate         # License Key 激活
 POST   /api/system/license/offline/request  # 生成离线请求
 POST   /api/system/license/offline/import   # 导入离线响应
 GET    /api/system/license/status           # 查询状态
 
-# === 升级控制 ===
+# === 升级控制 [待实现] ===
 POST   /api/system/upgrade/check            # 检查更新
 POST   /api/system/upgrade/start            # 开始升级
 GET    /api/system/upgrade/stream?job_id=   # SSE 进度
 GET    /api/system/upgrade/status           # 升级状态
 POST   /api/system/upgrade/rollback         # 紧急回退
 
-# === 采集控制 ===
+# === 采集控制 [待实现] ===
 GET    /api/system/telemetry/pref           # 获取授权偏好
 PUT    /api/system/telemetry/pref           # 更新授权偏好
 
-# === 设置 ===
+# === 设置 [待实现] ===
 GET    /api/system/info                     # 系统信息（版本、license 类型）
 POST   /api/system/restart                  # 软重启
 ```

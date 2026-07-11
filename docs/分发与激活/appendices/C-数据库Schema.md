@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS license_devices (
 
 ### 1.3 offline_activation_requests（离线激活请求，已存在）
 
+来源：`sql/migrations/startup/374_license_devices.sql` + `375_offline_requests_status.sql`
+
 ```sql
 CREATE TABLE IF NOT EXISTS offline_activation_requests (
     id                  BIGSERIAL PRIMARY KEY,
@@ -87,7 +89,9 @@ CREATE TABLE IF NOT EXISTS offline_activation_requests (
     request_id          TEXT NOT NULL UNIQUE,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     approved_at         TIMESTAMPTZ,
-    signed_license      JSONB
+    signed_license      JSONB,
+    status              TEXT NOT NULL DEFAULT 'pending',  -- 375 迁移补充
+    reject_reason       TEXT                              -- 375 迁移补充
 );
 ```
 
