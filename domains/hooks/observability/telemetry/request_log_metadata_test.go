@@ -2,59 +2,90 @@ package telemetry
 
 import (
 	"net/http"
+	"os"
 	"testing"
 )
 
 // Test P1.4 observability metadata extraction from HTTP request
 func TestExtractObservabilityMetadata(t *testing.T) {
 	tests := []struct {
-		name     string
-		headers  map[string]string
-		wantIP   string
-		wantFwd  string
-		wantName string
-		wantType string
+		name         string
+		headers      map[string]string
+		remoteAddr   string
+		trustedCIDRs string
+		wantIP       string
+		wantFwd      string
+		wantName     string
+		wantType     string
 	}{
 		{
-			name: "X-Real-IP takes precedence",
+			name: "Loopback proxy trusts X-Real-IP",
 			headers: map[string]string{
 				"X-Real-IP":       "1.2.3.4",
 				"X-Forwarded-For": "5.6.7.8, 9.10.11.12",
 			},
-			wantIP:   "1.2.3.4",
-			wantFwd:  "5.6.7.8, 9.10.11.12",
-			wantName: "unknown",
-			wantType: "unknown",
+			remoteAddr: "127.0.0.1:12345",
+			wantIP:     "1.2.3.4",
+			wantFwd:    "5.6.7.8, 9.10.11.12",
+			wantName:   "unknown",
+			wantType:   "unknown",
 		},
 		{
-			name: "X-Forwarded-For first IP when no X-Real-IP",
+			name: "Private proxy trusts X-Forwarded-For first IP",
 			headers: map[string]string{
 				"X-Forwarded-For": "1.2.3.4, 5.6.7.8",
 			},
-			wantIP:   "1.2.3.4",
-			wantFwd:  "1.2.3.4, 5.6.7.8",
-			wantName: "unknown",
-			wantType: "unknown",
+			remoteAddr: "10.0.0.1:12345",
+			wantIP:     "1.2.3.4",
+			wantFwd:    "1.2.3.4, 5.6.7.8",
+			wantName:   "unknown",
+			wantType:   "unknown",
+		},
+		{
+			name: "Public peer rejects spoofed headers",
+			headers: map[string]string{
+				"X-Real-IP":       "1.2.3.4",
+				"X-Forwarded-For": "5.6.7.8",
+			},
+			remoteAddr: "203.0.113.100:54321",
+			wantIP:     "203.0.113.100",
+			wantFwd:    "",
+			wantName:   "unknown",
+			wantType:   "unknown",
+		},
+		{
+			name: "Custom CIDR trusts proxy",
+			headers: map[string]string{
+				"X-Real-IP": "8.8.8.8",
+			},
+			remoteAddr:   "100.64.0.5:12345",
+			trustedCIDRs: "100.64.0.0/10",
+			wantIP:       "8.8.8.8",
+			wantFwd:      "",
+			wantName:     "unknown",
+			wantType:     "unknown",
 		},
 		{
 			name: "claude-code agent detection",
 			headers: map[string]string{
 				"User-Agent": "claude-code/1.0",
 			},
-			wantIP:   "127.0.0.1",
-			wantFwd:  "",
-			wantName: "claude-code",
-			wantType: "cli",
+			remoteAddr: "127.0.0.1:12345",
+			wantIP:     "127.0.0.1",
+			wantFwd:    "",
+			wantName:   "claude-code",
+			wantType:   "cli",
 		},
 		{
 			name: "opencode agent detection",
 			headers: map[string]string{
 				"User-Agent": "opencode/2.3.4",
 			},
-			wantIP:   "127.0.0.1",
-			wantFwd:  "",
-			wantName: "opencode",
-			wantType: "cli",
+			remoteAddr: "192.168.1.5:12345",
+			wantIP:     "192.168.1.5",
+			wantFwd:    "",
+			wantName:   "opencode",
+			wantType:   "cli",
 		},
 		{
 			name: "X-Agent-Name header precedence",
@@ -62,10 +93,11 @@ func TestExtractObservabilityMetadata(t *testing.T) {
 				"X-Agent-Name": "custom-bot",
 				"User-Agent":   "curl/7.68.0",
 			},
-			wantIP:   "127.0.0.1",
-			wantFwd:  "",
-			wantName: "custom-bot",
-			wantType: "cli",
+			remoteAddr: "127.0.0.1:12345",
+			wantIP:     "127.0.0.1",
+			wantFwd:    "",
+			wantName:   "custom-bot",
+			wantType:   "cli",
 		},
 		{
 			name: "X-Agent-Type header precedence",
@@ -73,17 +105,47 @@ func TestExtractObservabilityMetadata(t *testing.T) {
 				"X-Agent-Type": "api",
 				"User-Agent":   "Mozilla/5.0",
 			},
-			wantIP:   "127.0.0.1",
-			wantFwd:  "",
-			wantName: "unknown",
-			wantType: "api",
+			remoteAddr: "127.0.0.1:12345",
+			wantIP:     "127.0.0.1",
+			wantFwd:    "",
+			wantName:   "unknown",
+			wantType:   "api",
+		},
+		{
+			name: "IPv6 loopback trusts headers",
+			headers: map[string]string{
+				"X-Real-IP":       "2001:db8::1",
+				"X-Forwarded-For": "2001:db8::2",
+			},
+			remoteAddr: "[::1]:12345",
+			wantIP:     "2001:db8::1",
+			wantFwd:    "2001:db8::2",
+			wantName:   "unknown",
+			wantType:   "unknown",
+		},
+		{
+			name: "Invalid header falls back to RemoteAddr",
+			headers: map[string]string{
+				"X-Real-IP":       "not-an-ip",
+				"X-Forwarded-For": "also-bad",
+			},
+			remoteAddr: "192.168.1.100:54321",
+			wantIP:     "192.168.1.100",
+			wantFwd:    "also-bad",
+			wantName:   "unknown",
+			wantType:   "unknown",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.trustedCIDRs != "" {
+				os.Setenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS", tt.trustedCIDRs)
+				defer os.Unsetenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS")
+			}
+
 			req, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
-			req.RemoteAddr = "127.0.0.1:12345"
+			req.RemoteAddr = tt.remoteAddr
 			for k, v := range tt.headers {
 				req.Header.Set(k, v)
 			}
