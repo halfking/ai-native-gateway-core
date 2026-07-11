@@ -16,12 +16,18 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 // EmbeddingClient 生成文本向量（对接外部 embedding 模型）。
 type EmbeddingClient interface {
 	Embed(ctx context.Context, model, text string) ([]float32, error)
+}
+
+// BatchEmbeddingClient 可在一次请求中生成多个文本向量。
+type BatchEmbeddingClient interface {
+	EmbedBatch(ctx context.Context, model string, texts []string) ([][]float32, error)
 }
 
 // SessionClusterer 混合聚类器。
@@ -132,21 +138,40 @@ func (c *SessionClusterer) vectorCluster(ctx context.Context, members []sessionF
 		return [][]sessionForCluster{members}
 	}
 	model := c.config.ModelFor(StageEmbedding)
-
-	// 生成 embedding 并持久化
-	embeds := make([][]float32, len(members))
-	for i, s := range members {
-		text := ptrStr(s.Summary, s.GwSessionID)
-		vec, err := c.embedClient.Embed(ctx, model, text)
-		if err != nil {
-			c.logger.Debug("clusterer: embed failed, fallback to single", "id", s.GwSessionID, "error", err)
-			return [][]sessionForCluster{members}
-		}
-		embeds[i] = vec
-		_ = c.saveEmbedding(ctx, s, vec, model)
+	if !c.embeddingStorageAvailable(ctx) {
+		return [][]sessionForCluster{members}
 	}
 
-	// 简单层次合并（贪心）
+	embeds := make([][]float32, len(members))
+	missingIndexes := make([]int, 0, len(members))
+	missingTexts := make([]string, 0, len(members))
+	for index, session := range members {
+		text := ptrStr(session.Summary, session.GwSessionID)
+		vector, found := c.loadCachedEmbedding(ctx, session, text, model)
+		if found {
+			embeds[index] = vector
+			continue
+		}
+		missingIndexes = append(missingIndexes, index)
+		missingTexts = append(missingTexts, text)
+	}
+
+	if len(missingTexts) > 0 {
+		vectors, err := c.embedMissing(ctx, model, missingTexts)
+		if err != nil {
+			c.logger.Debug("clusterer: batch embed failed, using rule clusters", "error", err)
+			return [][]sessionForCluster{members}
+		}
+		for index, vector := range vectors {
+			if len(vector) == 0 {
+				continue
+			}
+			memberIndex := missingIndexes[index]
+			embeds[memberIndex] = vector
+			_ = c.saveEmbedding(ctx, members[memberIndex], vector, model)
+		}
+	}
+
 	const threshold = 0.85
 	assigned := make([]int, len(members))
 	for i := range assigned {
@@ -158,9 +183,11 @@ func (c *SessionClusterer) vectorCluster(ctx context.Context, members []sessionF
 			continue
 		}
 		assigned[i] = clusterID
-		for j := i + 1; j < len(members); j++ {
-			if assigned[j] == -1 && cosineSim(embeds[i], embeds[j]) >= threshold {
-				assigned[j] = clusterID
+		if len(embeds[i]) > 0 {
+			for j := i + 1; j < len(members); j++ {
+				if assigned[j] == -1 && len(embeds[j]) > 0 && cosineSim(embeds[i], embeds[j]) >= threshold {
+					assigned[j] = clusterID
+				}
 			}
 		}
 		clusterID++
@@ -171,6 +198,48 @@ func (c *SessionClusterer) vectorCluster(ctx context.Context, members []sessionF
 		result[cid] = append(result[cid], members[i])
 	}
 	return result
+}
+
+func (c *SessionClusterer) embeddingStorageAvailable(ctx context.Context) bool {
+	var available bool
+	err := c.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema = current_schema()
+			  AND table_name = 'session_embeddings'
+			  AND column_name = 'embedding_v2'
+		)`).Scan(&available)
+	return err == nil && available
+}
+
+func (c *SessionClusterer) embedMissing(ctx context.Context, model string, texts []string) ([][]float32, error) {
+	batchClient, ok := c.embedClient.(BatchEmbeddingClient)
+	if !ok {
+		return nil, fmt.Errorf("batch embedding unavailable")
+	}
+	vectors, err := batchClient.EmbedBatch(ctx, model, texts)
+	if err != nil {
+		return nil, err
+	}
+	if len(vectors) != len(texts) {
+		return nil, fmt.Errorf("embedding count %d does not match input count %d", len(vectors), len(texts))
+	}
+	return vectors, nil
+}
+
+func (c *SessionClusterer) loadCachedEmbedding(ctx context.Context, session sessionForCluster, text, model string) ([]float32, bool) {
+	var vectorText string
+	err := c.db.QueryRow(ctx, `
+		SELECT embedding_v2::text
+		FROM session_embeddings
+		WHERE gw_session_id=$1 AND tenant_id=$2 AND content_hash=$3 AND model=$4`,
+		session.GwSessionID, session.TenantID, hashContent(text), model).Scan(&vectorText)
+	if err != nil {
+		return nil, false
+	}
+	vector, err := parseVectorText(vectorText)
+	return vector, err == nil && len(vector) > 0
 }
 
 // persistCluster 持久化一个聚类及其成员。
@@ -235,12 +304,12 @@ func (c *SessionClusterer) persistCluster(ctx context.Context, coarseKey string,
 // saveEmbedding 持久化会话向量。
 func (c *SessionClusterer) saveEmbedding(ctx context.Context, s sessionForCluster, vec []float32, model string) error {
 	hash := hashContent(ptrStr(s.Summary, s.GwSessionID))
-	// embedding 列是 vector(1536)；pgvector 不可用时此 INSERT 会失败，忽略
+	// embedding_v2 列是 vector(1024)；pgvector 不可用时聚类会提前降级
 	_, err := c.db.Exec(ctx, `
-		INSERT INTO session_embeddings (gw_session_id, tenant_id, embedding, content_hash, model)
+		INSERT INTO session_embeddings (gw_session_id, tenant_id, embedding_v2, content_hash, model)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (gw_session_id) DO UPDATE SET
-			embedding = EXCLUDED.embedding,
+			embedding_v2 = EXCLUDED.embedding_v2,
 			content_hash = EXCLUDED.content_hash,
 			model = EXCLUDED.model,
 			generated_at = NOW()`,
@@ -383,4 +452,25 @@ func vecToText(vec []float32) string {
 	}
 	sb.WriteByte(']')
 	return sb.String()
+}
+
+func parseVectorText(value string) ([]float32, error) {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 || value[0] != '[' || value[len(value)-1] != ']' {
+		return nil, fmt.Errorf("invalid vector format")
+	}
+	value = strings.TrimSpace(value[1 : len(value)-1])
+	if value == "" {
+		return nil, nil
+	}
+	parts := strings.Split(value, ",")
+	vector := make([]float32, len(parts))
+	for index, part := range parts {
+		number, err := strconv.ParseFloat(strings.TrimSpace(part), 32)
+		if err != nil {
+			return nil, err
+		}
+		vector[index] = float32(number)
+	}
+	return vector, nil
 }

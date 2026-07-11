@@ -50,7 +50,7 @@ func TestRunLoop_PollsAndDispatches(t *testing.T) {
 		return out, nil
 	}
 	marked := sync.Map{}
-	mark := func(_ context.Context, eventID, workerName string, err error) error {
+	mark := func(_ context.Context, eventID, _, workerName string, err error) error {
 		marked.Store(eventID, markRecord{worker: workerName, err: err})
 		return nil
 	}
@@ -110,7 +110,7 @@ func TestRunLoop_HandleFailureMarksError(t *testing.T) {
 		return out, nil
 	}
 	marked := sync.Map{}
-	mark := func(_ context.Context, eventID, workerName string, err error) error {
+	mark := func(_ context.Context, eventID, _, workerName string, err error) error {
 		marked.Store(eventID, markRecord{worker: workerName, err: err})
 		return nil
 	}
@@ -154,7 +154,7 @@ func TestRunLoop_PollErrorContinues(t *testing.T) {
 		}
 		return nil, nil
 	}
-	mark := func(_ context.Context, _, _ string, _ error) error { return nil }
+	mark := func(_ context.Context, _, _, _ string, _ error) error { return nil }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
