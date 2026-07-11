@@ -5,6 +5,7 @@ package licensing
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -41,8 +42,9 @@ func TestLicensingIntegration(t *testing.T) {
 
 	// Clean up test data
 	defer func() {
-		_, _ = pool.Exec(ctx, "DELETE FROM licensing_devices WHERE license_id IN (SELECT id FROM licensing_licenses WHERE customer_email LIKE 'test-integration-%')")
-		_, _ = pool.Exec(ctx, "DELETE FROM licensing_licenses WHERE customer_email LIKE 'test-integration-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM license_devices WHERE license_id IN (SELECT id FROM licenses WHERE customer_email LIKE 'test-integration-%')")
+		_, _ = pool.Exec(ctx, "DELETE FROM offline_activation_requests WHERE request_id LIKE 'offline-req-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM licenses WHERE customer_email LIKE 'test-integration-%'")
 	}()
 
 	t.Run("CompleteLifecycle", func(t *testing.T) {
@@ -195,7 +197,7 @@ func TestLicensingIntegration(t *testing.T) {
 				LicenseID:    license.ID,
 				InstanceID:   time.Now().Format("20060102150405.000000"),
 				HardwareHash: time.Now().Format("20060102150405.000000"),
-				DeviceName:   "Device " + string(rune('0'+i)),
+				DeviceName:   "Device " + strconv.Itoa(i),
 				ActivatedAt:  time.Now(),
 				Status:       "active",
 			}
@@ -283,6 +285,7 @@ func TestLicenseModules(t *testing.T) {
 		assert.NotNil(t, modules, "Modules map should not be nil")
 
 		// Clean up
-		_, _ = pool.Exec(ctx, "DELETE FROM licensing_licenses WHERE license_key = $1", licenseKey)
+		_, _ = pool.Exec(ctx, "DELETE FROM license_devices WHERE license_id = $1", license.ID)
+		_, _ = pool.Exec(ctx, "DELETE FROM licenses WHERE license_key = $1", licenseKey)
 	})
 }
