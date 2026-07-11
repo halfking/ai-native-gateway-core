@@ -382,7 +382,6 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"triggered":     true,
 		"credential_id": credID,
-		"probe":         "running",
 	})
 }
 

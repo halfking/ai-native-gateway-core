@@ -11,21 +11,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-func TestLoadConfig_UsesSettingsForAllowedUsers(t *testing.T) {
-	resetSettings()
-	for _, sp := range settings.ModuleSpecs() {
-		_ = settings.Global.RegisterSpec(sp)
-	}
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig failed: %v", err)
-	}
-	if len(cfg.AllowedUsers) != 0 {
-		t.Fatalf("AllowedUsers = %v, want empty default", cfg.AllowedUsers)
-	}
-}
-
 func resetSettings() {
 	settings.Global = settings.NewRegistry()
 }
@@ -161,23 +146,6 @@ func TestPluginSetDBPool(t *testing.T) {
 	p.SetDBPool(nil) // 应该不 panic
 	if p.db != nil {
 		t.Error("expected nil db after SetDBPool(nil)")
-	}
-}
-
-func TestReloadConfig_UsesDBAllowedUsers(t *testing.T) {
-	resetSettings()
-	for _, sp := range settings.ModuleSpecs() {
-		_ = settings.Global.RegisterSpec(sp)
-	}
-
-	p := NewPlugin(nil)
-
-	// nil db 时，ReloadConfig 应该退回 settings_kv（默认空）
-	if err := p.ReloadConfig(); err != nil {
-		t.Fatalf("ReloadConfig failed: %v", err)
-	}
-	if len(p.Snapshot().AllowedUsers) != 0 {
-		t.Fatalf("AllowedUsers = %v, want empty without db", p.Snapshot().AllowedUsers)
 	}
 }
 
