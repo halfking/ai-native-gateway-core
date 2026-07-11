@@ -133,17 +133,17 @@ run_migrations() {
     info "执行 382_session_module_executions.sql..."
     if PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
         -f "$migration_dir/382_session_module_executions.sql" &> /tmp/migration_382.log; then
-        success "360 迁移完成"
+        success "382 迁移完成"
     else
-        warning "360 迁移可能已执行或失败，查看日志: /tmp/migration_360.log"
+        warning "382 迁移可能已执行或失败，查看日志: /tmp/migration_382.log"
     fi
     
     info "执行 383_dashboard_access_events.sql..."
     if PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
         -f "$migration_dir/383_dashboard_access_events.sql" &> /tmp/migration_383.log; then
-        success "361 迁移完成"
+        success "383 迁移完成"
     else
-        warning "361 迁移可能已执行或失败，查看日志: /tmp/migration_361.log"
+        warning "383 迁移可能已执行或失败，查看日志: /tmp/migration_383.log"
     fi
     
     # 验证表创建
