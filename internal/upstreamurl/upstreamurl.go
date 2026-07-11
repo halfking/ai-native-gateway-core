@@ -49,6 +49,8 @@ const (
 	EpMessages Endpoint = "messages"
 	// EpResponses is POST /v1/responses (OpenAI Responses API).
 	EpResponses Endpoint = "responses"
+	// EpEmbeddings is POST /v1/embeddings (OpenAI Embeddings API).
+	EpEmbeddings Endpoint = "embeddings"
 )
 
 // versionTrailing matches an optional trailing version segment "/v1"
@@ -63,11 +65,13 @@ var completionSuffixes = []string{
 	"/v1/chat/completions",
 	"/v1/completions",
 	"/v1/responses",
+	"/v1/embeddings",
 	"/v1/messages",
 	"/v1/models",
 	"/chat/completions",
 	"/completions",
 	"/responses",
+	"/embeddings",
 	"/messages",
 	"/models",
 }
@@ -100,6 +104,8 @@ func pathAfterVersion(ep Endpoint) string {
 		return "/messages"
 	case EpResponses:
 		return "/responses"
+	case EpEmbeddings:
+		return "/embeddings"
 	}
 	return ""
 }
@@ -118,6 +124,8 @@ func PathFor(ep Endpoint) string {
 		return "/v1/messages"
 	case EpResponses:
 		return "/v1/responses"
+	case EpEmbeddings:
+		return "/v1/embeddings"
 	}
 	return ""
 }
@@ -174,6 +182,11 @@ func MessagesURL(baseURL string) string {
 // ResponsesURL is shorthand for Build(baseURL, EpResponses).
 func ResponsesURL(baseURL string) string {
 	return Build(baseURL, EpResponses)
+}
+
+// EmbeddingsURL is shorthand for Build(baseURL, EpEmbeddings).
+func EmbeddingsURL(baseURL string) string {
+	return Build(baseURL, EpEmbeddings)
 }
 
 // ModelsURLCandidates returns the candidate models-endpoint URLs to try

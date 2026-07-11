@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -89,7 +90,7 @@ func (r *Rollback) findBackup(version string) (string, error) {
 
 		// 检查文件名是否包含目标版本
 		name := entry.Name()
-		if !contains(name, version) {
+		if !strings.Contains(name, version) {
 			continue
 		}
 
@@ -207,18 +208,4 @@ type BackupInfo struct {
 	Name    string
 	Size    int64
 	ModTime time.Time
-}
-
-// contains 检查字符串是否包含子串
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && findSubstring(s, substr))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

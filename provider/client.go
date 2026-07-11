@@ -346,6 +346,16 @@ func (c *Client) SetAvailabilityRedis(redisClient *redis.Client) {
 // tenantID: the tenant ID from the request context. Empty string falls back
 // to "default" tenant (see loadCandidatesDB) for backward compatibility.
 func (c *Client) GetCandidates(ctx context.Context, model, profile, tenantID string) ([]Candidate, *Policy, error) {
+	return c.getCandidates(ctx, model, profile, tenantID, "")
+}
+
+// GetCandidatesByModality returns routable candidates whose canonical model
+// matches the requested modality.
+func (c *Client) GetCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]Candidate, *Policy, error) {
+	return c.getCandidates(ctx, model, profile, tenantID, strings.TrimSpace(strings.ToLower(modality)))
+}
+
+func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, modality string) ([]Candidate, *Policy, error) {
 	if !c.Enabled() {
 		return nil, DefaultPolicy(), fmt.Errorf("provider client not configured")
 	}
@@ -359,6 +369,9 @@ func (c *Client) GetCandidates(ctx context.Context, model, profile, tenantID str
 	if tenantID != "" {
 		key = key + "|" + tenantID
 	}
+	if modality != "" {
+		key = key + "|modality:" + modality
+	}
 
 	c.mu.RLock()
 	if entry, ok := c.candCache[key]; ok && time.Now().Before(entry.expires) {
@@ -370,7 +383,7 @@ func (c *Client) GetCandidates(ctx context.Context, model, profile, tenantID str
 	c.mu.RUnlock()
 
 	v, err, _ := c.sf.Do("cand:"+key, func() (any, error) {
-		resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile, tenantID)
+		resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile, tenantID, modality)
 		if fetchErr != nil {
 			return nil, fetchErr
 		}
@@ -427,7 +440,7 @@ func (c *Client) getPolicyCached(ctx context.Context) (*Policy, error) {
 	return v.(*Policy), nil
 }
 
-func (c *Client) fetchCandidatesDB(ctx context.Context, model, profile, tenantID string) (*resolveResponse, error) {
+func (c *Client) fetchCandidatesDB(ctx context.Context, model, profile, tenantID, modality string) (*resolveResponse, error) {
 	if c.dbPool == nil {
 		return nil, fmt.Errorf("routing DB not configured")
 	}
@@ -435,7 +448,7 @@ func (c *Client) fetchCandidatesDB(ctx context.Context, model, profile, tenantID
 	if err != nil {
 		return nil, err
 	}
-	cands, err := c.loadCandidatesDB(ctx, res.ClientModel, tenantID)
+	cands, err := c.loadCandidatesByModalityDB(ctx, res.ClientModel, tenantID, modality)
 	if err != nil {
 		return nil, err
 	}
@@ -675,6 +688,10 @@ func (c *Client) aliasRawNamesDB(ctx context.Context, canonicalID int, profile s
 // inserted there, not by adding more family-specific normalization rules
 // here.
 func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID string) ([]Candidate, error) {
+	return c.loadCandidatesByModalityDB(ctx, clientModel, tenantID, "")
+}
+
+func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, tenantID, modality string) ([]Candidate, error) {
 	if c.dbPool == nil {
 		return nil, nil
 	}
@@ -758,8 +775,9 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID str
 		-- LIMIT 50 is a 50-row index descent per candidate — not a window
 		-- aggregate over the whole partitioned table.
 		CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
-		WHERE (p.tenant_id = $2 OR p.tenant_id = 'default')
-		  AND COALESCE(mc.status, 'active') != 'disabled'
+			WHERE (p.tenant_id = $2 OR p.tenant_id = 'default')
+			  AND ($3 = '' OR COALESCE(mc.modality, 'text') = $3)
+			  AND COALESCE(mc.status, 'active') != 'disabled'
 		  AND COALESCE(c.status, 'active') NOT IN ('disabled')
 		  -- v.is_routable is FALSE for any model with manual disable at any layer
 		  -- (provider.manual_disabled, credentials.manual_disabled, or cmb.unavailable_reason='manual')
@@ -828,7 +846,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID str
 			-- (often default 0.9) column. This makes healthy credentials sort
 			-- above soft-degraded ones even when the static column is equal.
 			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
-	`, clientModelLower, tenantID)
+		`, clientModelLower, tenantID, modality)
 	if err != nil {
 		return nil, err
 	}
@@ -1079,7 +1097,7 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
 		cand.APIKey = apiKey
 		cands = append(cands, cand)
 	}
-	
+
 	// 2026-07-08: 当有候选者因密钥解密失败被降级时，记录汇总日志
 	if skippedCount > 0 {
 		slog.Warn("enrichWithAPIKeys: some candidates marked unavailable due to key decrypt failure",

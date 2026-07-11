@@ -256,8 +256,8 @@ echo ""
 # 3. 执行Dashboard迁移
 echo -e "${YELLOW}[3/5] 执行 Dashboard 迁移...${NC}"
 cd "$(dirname "$0")/.."
-PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f sql/migrations/startup/360_session_module_executions.sql > /dev/null 2>&1 || echo "  注意: 360迁移可能已执行"
-PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f sql/migrations/startup/361_dashboard_access_events.sql > /dev/null 2>&1 || echo "  注意: 361迁移可能已执行"
+PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f sql/migrations/startup/382_session_module_executions.sql > /dev/null 2>&1 || echo "  注意: 382迁移可能已执行"
+PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f sql/migrations/startup/383_dashboard_access_events.sql > /dev/null 2>&1 || echo "  注意: 383迁移可能已执行"
 echo -e "${GREEN}✓ Dashboard 表已创建${NC}"
 echo ""
 

@@ -56,14 +56,27 @@ import (
 // hub's shouldDeliver picks the right one per client so a super-admin's
 // lane view is never overwritten by an individual tenant's snapshot.
 type LiveStreamEnvelope struct {
-	Type       string              `json:"type"`
-	Timestamp  time.Time           `json:"ts"`
-	Request    *LiveRequest        `json:"request,omitempty"`
-	Requests   []LiveRequest       `json:"requests,omitempty"`
-	Snapshot   *LiveStreamSnapshot `json:"snapshot,omitempty"`
-	Delta      *LiveStreamDelta    `json:"delta,omitempty"`
-	Health     *LiveStreamHealth   `json:"health,omitempty"`
-	superDelta *LiveStreamDelta    `json:"-"` // attached to Delta during fanOut for super clients; not serialised directly
+	Type            string               `json:"type"`
+	Timestamp       time.Time            `json:"ts"`
+	Request         *LiveRequest         `json:"request,omitempty"`
+	Requests        []LiveRequest        `json:"requests,omitempty"`
+	Snapshot        *LiveStreamSnapshot  `json:"snapshot,omitempty"`
+	Delta           *LiveStreamDelta     `json:"delta,omitempty"`
+	Health          *LiveStreamHealth    `json:"health,omitempty"`
+	CredentialState *LiveCredentialState `json:"credential_state,omitempty"`
+	superDelta      *LiveStreamDelta     `json:"-"` // attached to Delta during fanOut for super clients; not serialised directly
+}
+
+// LiveCredentialState is an operator-facing lifecycle event. It deliberately
+// contains no request body, API key, or raw upstream response.
+type LiveCredentialState struct {
+	CredentialID int    `json:"credential_id"`
+	ProviderID   int    `json:"provider_id"`
+	Model        string `json:"model,omitempty"`
+	State        string `json:"state"`
+	Reason       string `json:"reason,omitempty"`
+	NextProbeAt  string `json:"next_probe_at,omitempty"`
+	Source       string `json:"source"`
 }
 
 // LiveStreamHealth reports backend resource health for the dashboard.
@@ -193,9 +206,10 @@ type LiveStreamSSEHub struct {
 	cfg   LiveStreamConfig
 	store *LiveStreamRedisStore
 
-	register   chan *liveStreamClient
-	unregister chan *liveStreamClient
-	broadcast  chan LiveRequest
+	register       chan *liveStreamClient
+	unregister     chan *liveStreamClient
+	broadcast      chan LiveRequest
+	stateBroadcast chan LiveCredentialState
 
 	mu      sync.RWMutex
 	clients map[*liveStreamClient]struct{}
@@ -263,6 +277,7 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 		register:       make(chan *liveStreamClient, 16),
 		unregister:     make(chan *liveStreamClient, 16),
 		broadcast:      make(chan LiveRequest, cfg.BroadcastQueueSize),
+		stateBroadcast: make(chan LiveCredentialState, cfg.BroadcastQueueSize),
 		clients:        make(map[*liveStreamClient]struct{}),
 		lastActivity:   time.Now(),
 		stopCh:         make(chan struct{}),
@@ -334,6 +349,12 @@ func (h *LiveStreamSSEHub) Run() {
 				Request:    &req,
 				Delta:      tenantDelta,
 				superDelta: superDelta,
+			})
+		case state := <-h.stateBroadcast:
+			h.fanOut(LiveStreamEnvelope{
+				Type:            "credential_state",
+				Timestamp:       time.Now().UTC(),
+				CredentialState: &state,
 			})
 		case <-idleTicker.C:
 			h.maybeEmitIdleMarker()
@@ -885,6 +906,16 @@ func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
 	case h.broadcast <- req:
 	default:
 		slog.Debug("live stream broadcast queue full, dropping request", "request_id", req.RequestID)
+	}
+}
+
+// PublishCredentialState broadcasts a probe/recovery lifecycle transition to
+// dashboard clients. It is non-blocking for request and probe paths.
+func (h *LiveStreamSSEHub) PublishCredentialState(state LiveCredentialState) {
+	select {
+	case h.stateBroadcast <- state:
+	default:
+		slog.Debug("live stream state broadcast queue full, dropping event", "credential_id", state.CredentialID, "state", state.State)
 	}
 }
 

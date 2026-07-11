@@ -22,8 +22,8 @@ echo ""
 MIGRATIONS=(
     "001_users_table.sql"
     "006_tenants_table.sql"
-    "360_session_module_executions.sql"
-    "361_dashboard_access_events.sql"
+    "382_session_module_executions.sql"
+    "383_dashboard_access_events.sql"
 )
 
 cd "$PROJECT_ROOT/sql/migrations/startup"

@@ -41,6 +41,13 @@ func TestClassifyProbeFailure_AuthFailed(t *testing.T) {
 	}
 }
 
+func TestClassifyProbeFailure_403BillingErrorIsRecoverableQuota(t *testing.T) {
+	pr := classifyProbeFailure(`401/403: {"error":{"message":"insufficient balance","type":"billing_error"}}`)
+	if pr.HealthStatus != "warning" || pr.AvailabilityState != "ready" || pr.QuotaState != "periodic_exhausted" || pr.StateReasonCode != "balance_low" {
+		t.Errorf("403 billing classification wrong: %+v", pr)
+	}
+}
+
 func TestClassifyProbeFailure_RateLimited(t *testing.T) {
 	pr := classifyProbeFailure("429 rate limited")
 	if pr.HealthStatus != "warning" || pr.AvailabilityState != "rate_limited" || pr.StateReasonCode != "rate_limited" {
