@@ -14,42 +14,21 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
-)
-
-const (
-	maxDingTalkCallbackBodyBytes = 1 << 20
-	dingTalkCallbackMaxAge       = 10 * time.Minute
 )
 
 // DingTalkCallbackHandler handles DingTalk approval callbacks.
 type DingTalkCallbackHandler struct {
 	approvalManager ApprovalManager
-	secret          func() string
-	allowUser       func(string) bool
+	appSecret       string
 }
 
 // NewDingTalkCallbackHandler creates a new DingTalk callback handler.
-// An empty allowedUsers list permits every signed callback for backward compatibility.
-func NewDingTalkCallbackHandler(manager ApprovalManager, appSecret string, allowedUsers []string) *DingTalkCallbackHandler {
-	allowed := make(map[string]struct{}, len(allowedUsers))
-	for _, userID := range allowedUsers {
-		if userID = strings.TrimSpace(userID); userID != "" {
-			allowed[userID] = struct{}{}
-		}
+func NewDingTalkCallbackHandler(manager ApprovalManager, appSecret string) *DingTalkCallbackHandler {
+	return &DingTalkCallbackHandler{
+		approvalManager: manager,
+		appSecret:       appSecret,
 	}
-	return newDingTalkCallbackHandler(manager, func() string { return appSecret }, func(userID string) bool {
-		if len(allowed) == 0 {
-			return true
-		}
-		_, ok := allowed[userID]
-		return ok
-	})
-}
-
-func newDingTalkCallbackHandler(manager ApprovalManager, secret func() string, allowUser func(string) bool) *DingTalkCallbackHandler {
-	return &DingTalkCallbackHandler{approvalManager: manager, secret: secret, allowUser: allowUser}
 }
 
 // DingTalkCallbackRequest represents the callback request from DingTalk.
@@ -89,7 +68,7 @@ func (h *DingTalkCallbackHandler) HandleApprovalCallback(w http.ResponseWriter, 
 	}
 
 	// Read request body (limit to 1MB)
-	r.Body = http.MaxBytesReader(w, r.Body, maxDingTalkCallbackBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.Error("dingtalk callback: read body failed", "error", err)
@@ -112,11 +91,6 @@ func (h *DingTalkCallbackHandler) HandleApprovalCallback(w http.ResponseWriter, 
 			"tenant_id", req.TenantID,
 			"user_id", req.UserID)
 		h.sendResponse(w, http.StatusBadRequest, 400, "Missing required fields")
-		return
-	}
-	if !h.isAllowed(req.UserID) {
-		slog.Warn("dingtalk callback: user rejected by allowlist", "user_id", req.UserID)
-		h.sendResponse(w, http.StatusForbidden, http.StatusForbidden, "User is not allowed")
 		return
 	}
 
@@ -151,15 +125,14 @@ func (h *DingTalkCallbackHandler) verifySignature(r *http.Request) bool {
 		return false
 	}
 
-	// Verify timestamp within the replay-protection window.
+	// Verify timestamp (within 1 hour)
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
 		return false
 	}
 
 	now := time.Now().Unix() * 1000 // DingTalk uses milliseconds
-	maxAgeMillis := dingTalkCallbackMaxAge.Milliseconds()
-	if now-ts > maxAgeMillis || ts-now > maxAgeMillis {
+	if now-ts > 3600000 || ts-now > 3600000 {
 		slog.Warn("dingtalk callback: timestamp out of range",
 			"timestamp", ts,
 			"now", now,
@@ -169,25 +142,14 @@ func (h *DingTalkCallbackHandler) verifySignature(r *http.Request) bool {
 
 	// Calculate expected signature
 	// DingTalk signature: HMAC-SHA256(timestamp + "\n" + app_secret)
-	secret := h.secret()
-	if secret == "" {
-		return false
-	}
-	stringToSign := timestamp + "\n" + secret
-	mac := hmac.New(sha256.New, []byte(secret))
+	stringToSign := timestamp + "\n" + h.appSecret
+	mac := hmac.New(sha256.New, []byte(h.appSecret))
 	mac.Write([]byte(stringToSign))
 	expectedSign := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	// Note: query parameters are automatically URL-decoded by Go's HTTP server,
 	// so we compare the base64-encoded signature directly without URL encoding.
-	return hmac.Equal([]byte(sign), []byte(expectedSign))
-}
-
-func (h *DingTalkCallbackHandler) isAllowed(userID string) bool {
-	if h.allowUser == nil {
-		return true
-	}
-	return h.allowUser(userID)
+	return sign == expectedSign
 }
 
 // processApprovalResult processes the approval result from DingTalk.
@@ -231,7 +193,7 @@ func (h *DingTalkCallbackHandler) sendResponse(w http.ResponseWriter, httpStatus
 }
 
 // RegisterDingTalkRoutes registers DingTalk callback routes.
-func RegisterDingTalkRoutes(mux *http.ServeMux, manager ApprovalManager, secret func() string, isAllowed func(string) bool) {
-	handler := newDingTalkCallbackHandler(manager, secret, isAllowed)
+func RegisterDingTalkRoutes(mux *http.ServeMux, manager ApprovalManager, appSecret string) {
+	handler := NewDingTalkCallbackHandler(manager, appSecret)
 	mux.HandleFunc("POST /api/webhooks/dingtalk/approval-callback", handler.HandleApprovalCallback)
 }

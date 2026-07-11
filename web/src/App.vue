@@ -48,8 +48,7 @@ onMounted(async () => {
         if (meAny?.access_token) {
           setJwtToken(meAny.access_token)
         }
-        // 2026-07-12 audit: unwrap {user,...} so store.userInfo keeps the UserInfo shape.
-        setUserInfo(meAny?.user ?? me)
+        setUserInfo(me)
       } catch {
         // 401 → no valid cookie either, user is logged out
         clearJwt()
@@ -174,8 +173,8 @@ function handleChangePasswordSuccess() {
       <div class="sidebar-logo">
         <img
           src="/logo-icon-dark.png"
-          width="50"
-          height="50"
+          width="36"
+          height="36"
           alt="开轩启圭"
           class="sidebar-logo-img"
         />
@@ -297,7 +296,7 @@ function handleChangePasswordSuccess() {
       <div class="guest-brand">
         <img
           src="/logo-icon-dark.png"
-          height="50"
+          height="36"
           alt="开轩启圭 Qigui · AI-Native LLM Gateway"
           class="guest-brand-img"
         />
