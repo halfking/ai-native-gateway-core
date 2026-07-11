@@ -1333,6 +1333,18 @@ func main() {
 		routingHealthChecker.Start(context.Background())
 		slog.Info("CHECKPOINT: routingHealthChecker started")
 
+		// Self-check worker — runs periodic ping + tool-call smoke tests
+		// against key models to verify gateway availability (2026-07-12).
+		slog.Info("CHECKPOINT: before self-check worker init")
+		selfCheckAPIKey, err := bg.EnsureSystemAPIKey(context.Background(), dbConn.Pool(), fernetKey, keyring)
+		if err != nil {
+			slog.Warn("self-check worker disabled: cannot get system API key", "error", err)
+		} else {
+			selfCheckWorker := bg.NewSelfCheckWorker(dbConn.Pool(), selfCheckAPIKey, "https://llm.kxpms.cn/v1", keyring)
+			selfCheckWorker.Start(context.Background())
+			slog.Info("CHECKPOINT: selfCheckWorker started", "base_url", "https://llm.kxpms.cn/v1")
+		}
+
 		// Track C C6 (2026-06-18): pending entry sweeper. Marks
 		// abandoned in_progress entries (e.g. a crashed async
 		// goroutine, a client that never polls) as failed so
@@ -2194,6 +2206,17 @@ func main() {
 			healthCheckHandler := admin.NewHealthCheckHandler(dbConn.Pool())
 			healthCheckHandler.RegisterRoutes(mux)
 			slog.Info("health-check API registered")
+
+			// Self-check admin endpoints (2026-07-12)
+			selfCheckHandler := admin.NewSelfCheckHandler(dbConn.Pool())
+			adminMw := func(fn http.HandlerFunc) http.HandlerFunc {
+				return admin.AdminMiddleware(fn, dbConn.Pool(), cfg.SecretKey)
+			}
+			superAdminMw := func(fn http.HandlerFunc) http.HandlerFunc {
+				return admin.SuperAdminMiddleware(fn, dbConn.Pool(), cfg.SecretKey)
+			}
+			selfCheckHandler.RegisterRoutes(mux, adminMw, superAdminMw)
+			slog.Info("self-check API registered")
 		}
 		// 2026-06-23 Phase 3: wire candidate_failure_monitor alert ring.
 		if candidateFailureMonitor != nil {
