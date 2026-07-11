@@ -557,17 +557,30 @@ func allModuleDefinitions() []ModuleDefinition {
 			{
 				Key:         "memora",
 				Name:        "Memora 记忆服务",
-				Description: "长期记忆服务，跨越会话边界保留用户事实和偏好，实现上下文持久化与智能恢复。",
+				Description: "长期记忆服务：跨会话保存可复用事实、会话提炼结果和偏好，并在上下文压缩时按租户隔离检索 L1 事实。",
 				Capabilities: []string{
 					"跨会话记忆持久化",
 					"智能事实检索（L1 注入）",
 					"记忆写入/暂停/恢复控制",
 					"健康度监控与 Ping 检测",
+					"会话提炼与事实查询（按任务和租户隔离）",
 				},
 				Icon:        "🧠",
 				Category:    "general",
 				SettingKey:  "", // no single toggle; status is runtime
+				DocsURL:     "/docs/session-to-memora-pipeline.md",
 				DangerLevel: settings.Safe,
+				Integration: &ModuleIntegration{
+					Type:        "http",
+					Label:       "kxmemory / Memora",
+					Description: "配置 LLM_GATEWAY_MEMORA_BASE_URL 后启用；SmartSearch 可选指向 kxmemory Dashboard。",
+					DocURL:      "/docs/session-to-memora-pipeline.md",
+				},
+				Dependencies: []ModuleDependency{
+					{Key: "cache", Name: "会话缓存", Icon: "💾", Required: true, Description: "提供跨请求会话状态与上下文恢复基础。"},
+					{Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: true, Description: "在上下文压缩恢复时注入 L1 事实。"},
+					{Key: "session_analytics", Name: "会话全景分析", Icon: "📊", Required: false, Description: "提供会话总结、标签和意图分析的上游数据。"},
+				},
 			},
 		}
 

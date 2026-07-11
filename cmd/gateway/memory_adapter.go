@@ -54,6 +54,7 @@ func (s *legacyMemoryServices) AdminClient() interface {
 	BaseURL() string
 	AddMessage(ctx context.Context, userID string, messages []memory.Message, info map[string]any) error
 	Search(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
+	SmartSearch(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
 } {
 	if s == nil || s.client == nil {
 		return nil
