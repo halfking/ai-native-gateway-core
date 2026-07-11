@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -108,7 +110,7 @@ func cleanupSessionFollowUps(sessionID string) {
 //  3. Panic recovery so a single misbehaving follow-up doesn't kill the worker
 //
 // The 100ms sleep at the start is a cheap per-call rate limit.
-func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID string, followUpBody []byte, action string) {
+func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID string, followUpBody []byte, action string, parentAuthHeader string) {
 	if len(followUpBody) == 0 {
 		return
 	}
@@ -141,51 +143,135 @@ func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID strin
 		"body_size", len(followUpBody),
 	)
 
-	// Light rate limit.
-	time.Sleep(100 * time.Millisecond)
-
-	// Create a synthetic HTTP request with incremented depth.
-	childCtx := withFollowUpDepth(ctx, depth+1)
-	req, err := http.NewRequestWithContext(childCtx, "POST", "/v1/chat/completions", bytes.NewReader(followUpBody))
-	if err != nil {
-		slog.Error("follow_up_request_create_failed", "error", err, "session_id", sessionID)
-		return
+	// 2026-07-11 handoff self-call fix: dispatch via the seam so tests can
+	// stub it without spinning up the full ChatHandler pipeline.
+	dispatch := h.dispatchFollowUpRequest
+	if dispatch == nil {
+		dispatch = defaultDispatchFollowUp
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Gw-Session-Id", sessionID)
-	req.Header.Set("X-Gw-Follow-Up-Action", action)
-	req.Header.Set("X-Gw-Follow-Up-Depth", "1")
-
-	// Response recorder captures the result for logging.
-	rr := httptest.NewRecorder()
-
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("follow_up_request_panic", "error", r, "session_id", sessionID)
-		}
-	}()
-
-	h.ServeHTTP(rr, req)
-
-	// Log outcome with status and body snippet (truncated to 256 bytes).
-	if rr.Code >= 400 {
-		bodySnippet := rr.Body.String()
+	status, bodySnippet := dispatch(h, ctx, sessionID, followUpBody, action, parentAuthHeader, 1)
+	if status >= 400 {
 		if len(bodySnippet) > 256 {
 			bodySnippet = bodySnippet[:256] + "..."
 		}
 		slog.Warn("follow_up_request_failed",
 			"session_id", sessionID,
 			"action", action,
-			"status_code", rr.Code,
+			"status_code", status,
 			"body", bodySnippet,
 		)
 	} else {
 		slog.Info("follow_up_request_completed",
 			"session_id", sessionID,
 			"action", action,
-			"status_code", rr.Code,
+			"status_code", status,
 		)
+	}
+}
+
+// defaultDispatchFollowUp is the production dispatch seam: it builds a
+// synthetic /v1/chat/completions request with the supplied Authorization
+// header and loops it back through ChatHandler.ServeHTTP (the same path a
+// normal client request hits, including auth + routing + upstream).
+//
+// Returns (statusCode, bodySnippet). Body is truncated to 256 bytes so log
+// lines stay bounded on bad upstream payloads.
+func defaultDispatchFollowUp(
+	h *ChatHandler,
+	ctx context.Context,
+	sessionID string,
+	body []byte,
+	action string,
+	authHeader string,
+	attempt int,
+) (int, string) {
+	time.Sleep(100 * time.Millisecond)
+
+	childCtx := withFollowUpDepth(ctx, FollowUpDepthFromContext(ctx)+1)
+	req, err := http.NewRequestWithContext(childCtx, http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		slog.Error("follow_up_request_create_failed", "error", err, "session_id", sessionID)
+		return 0, ""
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gw-Session-Id", sessionID)
+	req.Header.Set("X-Gw-Follow-Up-Action", action)
+	req.Header.Set("X-Gw-Follow-Up-Depth", "1")
+	req.Header.Set("X-Gw-Follow-Up-Attempt", strconv.Itoa(attempt))
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+
+	rr := httptest.NewRecorder()
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("follow_up_request_panic", "error", r, "session_id", sessionID)
+		}
+	}()
+	h.ServeHTTP(rr, req)
+
+	snippet := rr.Body.String()
+	if len(snippet) > 256 {
+		snippet = snippet[:256] + "..."
+	}
+	return rr.Code, snippet
+}
+
+// isFollowUpAuthFailure reports whether a synthetic follow-up response
+// indicates the dispatched Authorization header was rejected by the gateway's
+// auth layer. We deliberately do NOT retry on 5xx or auth_unavailable.
+func isFollowUpAuthFailure(status int, body string) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	lower := strings.ToLower(body)
+	for _, code := range []string{
+		"missing_key",
+		"invalid_key",
+		"key_throttled",
+		"budget_exhausted",
+	} {
+		if strings.Contains(lower, code) {
+			return true
+		}
+	}
+	return false
+}
+
+// followUpAuthCandidates returns the ordered list of Authorization header
+// values the follow-up engine should try. Order matters: parent first, then
+// system fallback. The fallback is omitted when unset, blank, or identical
+// to the parent.
+func followUpAuthCandidates(parent, fallback string) []string {
+	parent = strings.TrimSpace(parent)
+	fallback = strings.TrimSpace(fallback)
+	out := make([]string, 0, 2)
+	if parent != "" {
+		out = append(out, parent)
+	}
+	if fallback != "" && fallback != parent {
+		out = append(out, fallback)
+	}
+	return out
+}
+
+// authKindLabel returns a stable label for the auth header in use so logs
+// can distinguish "parent" vs "fallback" vs "none".
+func authKindLabel(parent, fallback, header string) string {
+	parent = strings.TrimSpace(parent)
+	fallback = strings.TrimSpace(fallback)
+	header = strings.TrimSpace(header)
+	switch header {
+	case parent:
+		if header == "" {
+			return "none"
+		}
+		return "parent"
+	case fallback:
+		return "fallback"
+	default:
+		return "other"
 	}
 }
 

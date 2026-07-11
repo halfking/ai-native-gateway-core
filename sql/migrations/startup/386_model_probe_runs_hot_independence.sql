@@ -1,4 +1,4 @@
--- Migration 385: model_probe_runs 热表独立化 + 分区架构
+-- Migration 386: model_probe_runs 热表独立化 + 分区架构
 --
 -- 背景：
 --   model_probe_runs 是记录每次模型探测结果的审计表。252 上当前有：
@@ -199,7 +199,7 @@ COMMENT ON VIEW model_probe_runs_with_current_month IS
 - model_probe_runs_hot: independent hot table (default 24h retention, configurable)
 - model_probe_runs: parent table (auto-aggregates all ATTACHED monthly partitions, columnar storage)
 PostgreSQL partition pruning applies to parent table queries.
-Created by migration 385 (2026-07-11).';
+Created by migration 386 (2026-07-11).';
 
 -- ============================================================
 -- 7. 创建 promote 函数（hot → 月度分区）
@@ -272,7 +272,7 @@ COMMENT ON FUNCTION promote_model_probe_runs_hot_to_partition(interval, int) IS
 to monthly partitions. Data is inserted into parent table and PostgreSQL
 automatically routes to correct partition. Returns number of rows moved.
 Loop until 0 to drain all cold data.
-Created by migration 385 (2026-07-11).';
+Created by migration 386 (2026-07-11).';
 
 -- ============================================================
 -- 8. 创建 drop_old_partitions 函数（保留 N 天内的分区）
@@ -320,7 +320,7 @@ $$;
 COMMENT ON FUNCTION drop_old_model_probe_runs_partitions(int) IS
 'Drop monthly partitions of model_probe_runs older than p_retention_days (default 90).
 Used by bg.PartitionManager to enforce data retention policy.
-Returns list of dropped partitions. Created by migration 385 (2026-07-11).';
+Returns list of dropped partitions. Created by migration 386 (2026-07-11).';
 
 -- ============================================================
 -- 9. 验证

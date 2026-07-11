@@ -1,4 +1,4 @@
--- Migration 385 down: 回滚 model_probe_runs 热表独立化
+-- Migration 386 down: 回滚 model_probe_runs 热表独立化
 --
 -- 操作：
 --   1. 删除 promote / drop_old_partitions 函数
