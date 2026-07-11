@@ -72,8 +72,8 @@ func TestEnrichObservabilityMetadata_FailureEntry(t *testing.T) {
 	}
 
 	// Verify API key fingerprint from KeyInfo
-	if entry.APIKeyFingerprint == nil || *entry.APIKeyFingerprint != "sk-test-" {
-		t.Errorf("APIKeyFingerprint = %v, want sk-test-", entry.APIKeyFingerprint)
+	if entry.APIKeyFingerprint == nil || *entry.APIKeyFingerprint != "sk-test-***" {
+		t.Errorf("APIKeyFingerprint = %v, want sk-test-***", entry.APIKeyFingerprint)
 	}
 
 	// Verify session title
@@ -97,7 +97,7 @@ func TestEnrichObservabilityMetadata_APIKeyFingerprint(t *testing.T) {
 		{
 			name:       "standard openai key",
 			keyPrefix:  "sk-1234abcd5678efgh",
-			wantPrefix: "sk-1234a",
+			wantPrefix: "sk-1234a***",
 		},
 		{
 			name:       "short key",

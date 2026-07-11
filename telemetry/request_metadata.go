@@ -159,6 +159,9 @@ func ExtractAgentType(r *http.Request) string {
 	}
 
 	// API clients
+	if strings.Contains(ua, "postman") || strings.Contains(ua, "insomnia") {
+		return "api"
+	}
 	if strings.Contains(ua, "python") ||
 		strings.Contains(ua, "go-http-client") ||
 		strings.Contains(ua, "java") ||
