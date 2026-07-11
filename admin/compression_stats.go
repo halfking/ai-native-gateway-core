@@ -72,6 +72,11 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		TotalOutboundTokens  *int64         `json:"total_outbound_tokens,omitempty"`
 		EstimatedOrigTokens  *int64         `json:"estimated_original_tokens,omitempty"`
 		EstimatedTokensSaved *int64         `json:"estimated_tokens_saved,omitempty"`
+		SnapshotTurns        int            `json:"snapshot_turns"`
+		SnapshotSessions     int            `json:"snapshot_sessions"`
+		SecuredTurns         int            `json:"secured_turns"`
+		IncompleteStreams    int            `json:"incomplete_streams"`
+		SnapshotExpiresSoon  int            `json:"snapshot_expires_soon"`
 		HourlySeries         []hourBucket   `json:"hourly_series"`
 	}{
 		StrategyDistribution: make(map[string]int),
@@ -143,6 +148,30 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 			saved := estimatedOrig - totalToksAfter
 			result.EstimatedTokensSaved = &saved
 		}
+	}
+
+	var snapshotStats struct {
+		Turns, Sessions, Secured, Incomplete, ExpiresSoon int
+	}
+	snapshotWhere := "WHERE expires_at > NOW()"
+	snapshotArgs := []any{}
+	if IsTenantAdmin(r) {
+		snapshotWhere += " AND tenant_id = $1"
+		snapshotArgs = append(snapshotArgs, EffectiveTenantID(r))
+	}
+	if err := h.db.QueryRow(ctx, `
+		SELECT COUNT(*)::int,
+			COUNT(DISTINCT gw_session_id)::int,
+			COUNT(*) FILTER (WHERE cardinality(security_tags) > 0)::int,
+			COUNT(*) FILTER (WHERE NOT stream_completed)::int,
+			COUNT(*) FILTER (WHERE expires_at <= NOW() + INTERVAL '24 hours')::int
+		FROM session_turn_snapshots `+snapshotWhere,
+		snapshotArgs...).Scan(&snapshotStats.Turns, &snapshotStats.Sessions, &snapshotStats.Secured, &snapshotStats.Incomplete, &snapshotStats.ExpiresSoon); err == nil {
+		result.SnapshotTurns = snapshotStats.Turns
+		result.SnapshotSessions = snapshotStats.Sessions
+		result.SecuredTurns = snapshotStats.Secured
+		result.IncompleteStreams = snapshotStats.Incomplete
+		result.SnapshotExpiresSoon = snapshotStats.ExpiresSoon
 	}
 
 	rangeHours := to.Sub(from).Hours()
