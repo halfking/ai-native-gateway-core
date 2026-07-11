@@ -21,6 +21,7 @@ type Summarizer struct {
 	db          *sql.DB
 	redisClient *redis.Client
 	llmClient   LLMClient
+	model       string
 }
 
 // LLMClient 定义 LLM 客户端接口（便于测试和替换）
@@ -66,13 +67,21 @@ func NewSummarizer(db *sql.DB, redisClient *redis.Client, llmClient LLMClient) *
 		db:          db,
 		redisClient: redisClient,
 		llmClient:   llmClient,
+		model:       "summary-fast",
+	}
+}
+
+// SetModel 设置总结使用的稳定模型别名。
+func (s *Summarizer) SetModel(model string) {
+	if model = strings.TrimSpace(model); model != "" {
+		s.model = model
 	}
 }
 
 // GenerateSummary 生成完整的会话总结（异步调用）
 func (s *Summarizer) GenerateSummary(ctx context.Context, tenantID, sessionKey string) (*SessionSummary, error) {
 	// 1. 检查缓存
-	cached, err := s.getCachedSummary(ctx, sessionKey)
+	cached, err := s.getCachedSummary(ctx, tenantID, sessionKey)
 	if err == nil && cached != nil {
 		return cached, nil
 	}
@@ -92,7 +101,7 @@ func (s *Summarizer) GenerateSummary(ctx context.Context, tenantID, sessionKey s
 
 	// 4. 调用 LLM 生成总结
 	response, err := s.llmClient.Complete(ctx, prompt,
-		WithModel("gpt-4o-mini"),
+		WithModel(s.model),
 		WithMaxTokens(500),
 		WithTemperature(0.3),
 		WithSystemPrompt("你是一个专业的会话分析助手，擅长提取会话的核心信息并生成简洁的标题和摘要。"),
@@ -113,7 +122,7 @@ func (s *Summarizer) GenerateSummary(ctx context.Context, tenantID, sessionKey s
 	}
 
 	// 7. 缓存结果（24小时）
-	if err := s.cacheSummary(ctx, summary, 24*time.Hour); err != nil {
+	if err := s.cacheSummary(ctx, tenantID, summary, 24*time.Hour); err != nil {
 		// 缓存失败不影响主流程
 		fmt.Printf("warn: failed to cache summary: %v\n", err)
 	}
@@ -124,10 +133,12 @@ func (s *Summarizer) GenerateSummary(ctx context.Context, tenantID, sessionKey s
 // GenerateTitle 快速生成标题（仅基于首条消息）
 func (s *Summarizer) GenerateTitle(ctx context.Context, tenantID, sessionKey, firstMessage string) (string, error) {
 	// 1. 检查缓存
-	cacheKey := fmt.Sprintf("session:title:%s", sessionKey)
-	cached, err := s.redisClient.Get(ctx, cacheKey).Result()
-	if err == nil && cached != "" {
-		return cached, nil
+	if s.redisClient != nil {
+		cacheKey := fmt.Sprintf("session:title:%s:%s", tenantID, sessionKey)
+		cached, err := s.redisClient.Get(ctx, cacheKey).Result()
+		if err == nil && cached != "" {
+			return cached, nil
+		}
 	}
 
 	// 2. 提取前 200 字符（避免 Prompt 过长）
@@ -143,7 +154,7 @@ func (s *Summarizer) GenerateTitle(ctx context.Context, tenantID, sessionKey, fi
 
 	// 4. 调用 LLM
 	title, err := s.llmClient.Complete(ctx, prompt,
-		WithModel("gpt-4o-mini"),
+		WithModel(s.model),
 		WithMaxTokens(30),
 		WithTemperature(0.5),
 	)
@@ -166,7 +177,10 @@ func (s *Summarizer) GenerateTitle(ctx context.Context, tenantID, sessionKey, fi
 	}
 
 	// 6. 缓存（7天）
-	s.redisClient.Set(ctx, cacheKey, title, 7*24*time.Hour)
+	if s.redisClient != nil {
+		cacheKey := fmt.Sprintf("session:title:%s:%s", tenantID, sessionKey)
+		_ = s.redisClient.Set(ctx, cacheKey, title, 7*24*time.Hour).Err()
+	}
 
 	return title, nil
 }
@@ -253,7 +267,6 @@ func (s *Summarizer) buildRollingPrompt(prevSummary string, newMessages []Sessio
 // GenerateRollingSummary 增量滚动摘要。
 //
 // 读取上次摘要 + 自上次以来的新消息 → LLM 融合更新。
-// 失败时降级为全量 GenerateSummary。
 func (s *Summarizer) GenerateRollingSummary(ctx context.Context, tenantID, sessionKey string) (*SessionSummary, error) {
 	if s.llmClient == nil {
 		// 无 LLM，降级全量（全量内部也会因无 LLM 失败）
@@ -276,24 +289,24 @@ func (s *Summarizer) GenerateRollingSummary(ctx context.Context, tenantID, sessi
 
 	prompt := s.buildRollingPrompt(prevSummary, messages)
 	response, err := s.llmClient.Complete(ctx, prompt,
-		WithModel("gpt-4o-mini"),
+		WithModel(s.model),
 		WithMaxTokens(500),
 		WithTemperature(0.3),
 		WithSystemPrompt("你是一个专业的会话分析助手，擅长增量更新会话总结。"),
 	)
 	if err != nil {
-		return s.GenerateSummary(ctx, tenantID, sessionKey)
+		return nil, fmt.Errorf("failed to generate rolling summary: %w", err)
 	}
 
 	summary, err := s.parseSummaryResponse(response, sessionKey)
 	if err != nil {
-		return s.GenerateSummary(ctx, tenantID, sessionKey)
+		return nil, fmt.Errorf("failed to parse rolling summary: %w", err)
 	}
 
 	if err := s.saveSummaryToDB(ctx, tenantID, summary); err != nil {
 		return nil, fmt.Errorf("failed to save rolling summary: %w", err)
 	}
-	if err := s.cacheSummary(ctx, summary, 24*time.Hour); err != nil {
+	if err := s.cacheSummary(ctx, tenantID, summary, 24*time.Hour); err != nil {
 		fmt.Printf("warn: failed to cache summary: %v\n", err)
 	}
 	return summary, nil
@@ -472,8 +485,11 @@ func (s *Summarizer) updateSessionTitle(ctx context.Context, tenantID, sessionKe
 }
 
 // getCachedSummary 从缓存获取总结
-func (s *Summarizer) getCachedSummary(ctx context.Context, sessionKey string) (*SessionSummary, error) {
-	cacheKey := fmt.Sprintf("session:summary:%s", sessionKey)
+func (s *Summarizer) getCachedSummary(ctx context.Context, tenantID, sessionKey string) (*SessionSummary, error) {
+	if s.redisClient == nil {
+		return nil, redis.Nil
+	}
+	cacheKey := fmt.Sprintf("session:summary:%s:%s", tenantID, sessionKey)
 	data, err := s.redisClient.Get(ctx, cacheKey).Result()
 	if err != nil {
 		return nil, err
@@ -488,8 +504,11 @@ func (s *Summarizer) getCachedSummary(ctx context.Context, sessionKey string) (*
 }
 
 // cacheSummary 缓存总结
-func (s *Summarizer) cacheSummary(ctx context.Context, summary *SessionSummary, ttl time.Duration) error {
-	cacheKey := fmt.Sprintf("session:summary:%s", summary.SessionKey)
+func (s *Summarizer) cacheSummary(ctx context.Context, tenantID string, summary *SessionSummary, ttl time.Duration) error {
+	if s.redisClient == nil {
+		return nil
+	}
+	cacheKey := fmt.Sprintf("session:summary:%s:%s", tenantID, summary.SessionKey)
 	data, err := json.Marshal(summary)
 	if err != nil {
 		return err

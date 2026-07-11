@@ -2100,7 +2100,7 @@ func main() {
 				intentStore := assets.NewPGIntentAggregateStore(pool, slog.Default())
 				// PR-V4-11: detector / checker / summarizer 当前传 nil；
 				// 它们需要 *sql.DB（不是 pgxpool），后续 PR 再桥接。
-				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, nil, nil, nil)
+				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, nil, nil, nil, fpSlotRedis)
 			}
 			StartV2DispatchAnalysisLoop(v2Deps)
 			defer v2ShutdownPipeline(v2Deps)

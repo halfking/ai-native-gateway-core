@@ -75,11 +75,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -114,9 +117,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/security"                                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	securityplugins "github.com/kaixuan/llm-gateway-go/domains/security/plugins"             //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/sessionsummary"                               //nolint:depguard // session summary worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/redis/go-redis/v9"
 )
 
 // v2DispatchConfig holds the feature-flag-driven configuration for the
@@ -258,6 +263,7 @@ type v2DispatchDeps struct {
 	// 通过 PhasePostResponse Hook 接入请求管道，准实时生成逐步摘要/标签/标题。
 	SessionAnalysisEngines *sessionanalysis.Engines
 	SessionAnalysisConfig  *sessionanalytics.LLMStageConfig
+	AnalysisSQLDBs         []*sql.DB
 }
 
 // buildV2DispatchPipeline assembles the Hook Pipeline used by the v2
@@ -737,7 +743,7 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		// PR-V4-10: 异步发布 request.completed 事件 → analysis_events。
 		// 只在 deps.Publisher 非 nil 时执行（即 EnableAnalysis=true 且
 		// 注入了 DB pool）。失败仅记录日志，不影响主流程。
-		if deps.Publisher != nil && env.TenantID != "" {
+		if deps.Publisher != nil && env.TenantID != "" && r.Header.Get("X-Gateway-Internal-Purpose") != "session-analysis" {
 			evt := analysis.AnalysisEvent{
 				EventID:    "evt-" + requestID,
 				Type:       analysis.EventRequestCompleted,
@@ -953,6 +959,12 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 	if deps.Publisher != nil {
 		_ = deps.Publisher.Close()
 	}
+	for _, sqlDB := range deps.AnalysisSQLDBs {
+		if sqlDB != nil {
+			_ = sqlDB.Close()
+		}
+	}
+	deps.AnalysisSQLDBs = nil
 	if deps.AuditWriter == nil {
 		return
 	}
@@ -960,6 +972,58 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 	defer cancel()
 	_ = ctx
 	_ = deps.AuditWriter.Close()
+}
+
+func validateAnalysisEndpoint(rawURL string, allowInsecureLocal bool) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Hostname() == "" {
+		return "", fmt.Errorf("invalid analysis endpoint")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("analysis endpoint must not contain credentials, query, or fragment")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if allowInsecureLocal && parsed.Scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
+		return strings.TrimRight(parsed.String(), "/"), nil
+	}
+	if parsed.Scheme != "https" {
+		return "", fmt.Errorf("analysis endpoint must use https")
+	}
+	addresses, err := net.LookupIP(host)
+	if err != nil || len(addresses) == 0 {
+		return "", fmt.Errorf("analysis endpoint hostname cannot be resolved")
+	}
+	for _, address := range addresses {
+		if address.IsLoopback() || address.IsPrivate() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() || address.IsUnspecified() {
+			return "", fmt.Errorf("analysis endpoint resolves to a non-public address")
+		}
+	}
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+type sessionSummaryLLMAdapter struct {
+	client *sessionanalytics.OpenAIClient
+}
+
+func (a sessionSummaryLLMAdapter) Complete(ctx context.Context, prompt string, opts ...sessionsummary.CompletionOption) (string, error) {
+	config := sessionsummary.CompletionConfig{Model: "summary-fast"}
+	for _, option := range opts {
+		option(&config)
+	}
+	return a.client.CompleteWithConfig(ctx, prompt, sessionanalytics.CompletionRequest{
+		Model:        config.Model,
+		MaxTokens:    config.MaxTokens,
+		Temperature:  config.Temperature,
+		SystemPrompt: config.SystemPrompt,
+	})
+}
+
+type sessionSummaryWorkerAdapter struct {
+	summarizer *sessionsummary.Summarizer
+}
+
+func (a sessionSummaryWorkerAdapter) GenerateSummary(ctx context.Context, tenantID, sessionKey string) (any, error) {
+	return a.summarizer.GenerateRollingSummary(ctx, tenantID, sessionKey)
 }
 
 // SetV2DispatchAnalysisResources (PR-V4-09 / PR-V4-10 / PR-V4-11) 把 main.go 持有的
@@ -981,6 +1045,7 @@ func SetV2DispatchAnalysisResources(
 	detector promptinjectionhooks.Detector,
 	checker outputcompliancehooks.Checker,
 	summarizer workers.SessionSummarizer,
+	redisClient *redis.Client,
 ) {
 	if deps == nil {
 		return
@@ -1012,6 +1077,7 @@ func SetV2DispatchAnalysisResources(
 	// 这里把 pgxpool 桥接为 *sql.DB，交给核心 Detector。
 	if pool != nil && deps.EnhancedPIPlugin != nil {
 		sqlDB := stdlib.OpenDB(*pool.Config().ConnConfig)
+		deps.AnalysisSQLDBs = append(deps.AnalysisSQLDBs, sqlDB)
 		deps.EnhancedPIPlugin.Init(sqlDB)
 		slog.Info("enhanced prompt injection plugin initialized (wraps core Detector)")
 	}
@@ -1022,14 +1088,34 @@ func SetV2DispatchAnalysisResources(
 	if pool != nil && sessionanalytics.NewLLMStageConfig(nil).Enabled() {
 		cfg := sessionanalytics.NewLLMStageConfig(nil)
 		analyticsDB := sessionanalytics.NewPoolDB(pool)
+		var analysisClient *sessionanalytics.OpenAIClient
+		analysisBaseURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ANALYSIS_BASE_URL"))
+		analysisAPIKey := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ANALYSIS_API_KEY"))
+		allowInsecureLocal := os.Getenv("LLM_GATEWAY_ANALYSIS_ALLOW_INSECURE_LOCAL") == "true"
+		if analysisBaseURL != "" && analysisAPIKey != "" {
+			validatedURL, validateErr := validateAnalysisEndpoint(analysisBaseURL, allowInsecureLocal)
+			if validateErr != nil {
+				slog.Error("session analytics model client disabled", "error", validateErr)
+			} else {
+				analysisClient = sessionanalytics.NewOpenAIClientWithNetworkPolicy(validatedURL, analysisAPIKey, 30*time.Second, allowInsecureLocal)
+				slog.Info("session analytics model client enabled", "base_url", validatedURL)
+				if deps.SessionSummarizer == nil {
+					sqlDB := stdlib.OpenDB(*pool.Config().ConnConfig)
+					deps.AnalysisSQLDBs = append(deps.AnalysisSQLDBs, sqlDB)
+					summaryService := sessionsummary.NewSummarizer(sqlDB, redisClient, sessionSummaryLLMAdapter{client: analysisClient})
+					summaryService.SetModel(cfg.ModelFor(sessionanalytics.StageSummary))
+					deps.SessionSummarizer = sessionSummaryWorkerAdapter{summarizer: summaryService}
+				}
+			}
+		}
 		engines := &sessionanalysis.Engines{
-			RequestSummarizer: sessionanalytics.NewRequestSummarizer(analyticsDB, cfg, nil, slog.Default()),
+			RequestSummarizer: sessionanalytics.NewRequestSummarizer(analyticsDB, cfg, analysisClient, slog.Default()),
 			Tagger:            sessionanalytics.NewSessionTagger(analyticsDB, cfg, slog.Default()),
 		}
 		deps.SessionAnalysisEngines = engines
 		deps.SessionAnalysisConfig = cfg
 
 		// 注入 ClusterRunner（手动触发聚类用）
-		admin.SetClusterRunner(sessionanalytics.NewSessionClusterer(analyticsDB, cfg, nil, slog.Default()))
+		admin.SetClusterRunner(sessionanalytics.NewSessionClusterer(analyticsDB, cfg, analysisClient, slog.Default()))
 	}
 }
