@@ -116,7 +116,7 @@ func TestAPIKeyFingerprint(t *testing.T) {
 		{
 			name: "standard API key",
 			key:  "sk-1234abcd5678efgh",
-			want: "sk-1234a",
+			want: "sk-1234a***",
 		},
 		{
 			name: "short key",
@@ -131,12 +131,12 @@ func TestAPIKeyFingerprint(t *testing.T) {
 		{
 			name: "exact 8 chars",
 			key:  "12345678",
-			want: "12345678",
+			want: "***",
 		},
 		{
 			name: "9 chars",
 			key:  "123456789",
-			want: "12345678",
+			want: "12345678***",
 		},
 	}
 

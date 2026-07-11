@@ -1,5 +1,22 @@
 # Ops Platform Audit: 2026-07-11
 
+## Follow-up Audit: Recovery And Observability Integration
+
+The follow-up audit was performed after the ops-platform fixes landed on
+`origin/main` and before pushing the recovery/observability integration.
+
+- Recovery uses the existing `credentialstate.StateCacheResetter`, breaker
+  resetter, and `CredentialProbeV2`; no second credential-state authority was
+  introduced.
+- Request-log metadata now reuses `telemetry.ExtractClientIP`,
+  `ExtractForwardedFor`, `ExtractAgentName`, `ExtractAgentType`, and
+  `MaskAPIKey`. The observability hook only owns persistence mapping and the
+  512-byte forwarded-chain bound.
+- Vendor request-field stripping remains centralized through the existing
+  vendor-specific helpers and the dispatcher; callers do not duplicate JSON
+  mutation logic.
+- Auto-update keeps `/api/admin/releases/*` as the single canonical route.
+
 ## Scope
 
 Audited the Phase 1-8 operations platform after merging the branch
@@ -33,6 +50,16 @@ data, and reports were excluded from the commit.
   inside that directory.
 - Medium: Auto-update routing no longer registers the same handler under
   multiple prefixes. The canonical admin route is `/api/admin/releases/*`.
+- Medium: The first recovery/observability implementation duplicated request
+  metadata extraction already provided by `telemetry/request_metadata.go`.
+  The follow-up audit removed that duplication and delegates to the shared
+  package.
+- Medium: Recovery state transitions are now ordered as cache reset, breaker
+  reset, then authoritative real probe; the credential is kept out of routing
+  until the probe succeeds.
+- Medium: Shared agent classification was missing Postman/Insomnia as API
+  clients. The canonical `telemetry.ExtractAgentType` helper now covers both;
+  observability callers continue to delegate to it.
 
 ## Verification
 
@@ -58,8 +85,12 @@ so a second `npm run build` there failed before Vite startup with
   the integration suites without connecting to a database.
 - Browser-level verification remains pending because no running authenticated
   web/API environment was available in the isolated sync worktree.
+- The local recovery UI smoke evidence was produced in a separate worktree and
+  is intentionally not committed as source code or test data.
 
 ## Commits
 
 - Feature branch fix: `cc1e50899`
 - Main merge: `bf77da226`
+- Follow-up recovery/observability integration: rebased on latest
+  `origin/main` before push.
