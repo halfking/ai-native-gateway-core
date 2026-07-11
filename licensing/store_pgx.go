@@ -66,7 +66,7 @@ func (s *PgxStore) RevokeLicense(ctx context.Context, licenseKey string) error {
 func (s *PgxStore) GetActiveDevices(ctx context.Context, licenseKey string) ([]Device, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT d.id, d.license_id, d.instance_id, d.hardware_hash, d.device_name,
-		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, COALESCE(d.deactivate_reason, '')
+		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, d.deactivate_reason
 		FROM license_devices d
 		JOIN licenses l ON d.license_id = l.id
 		WHERE l.license_key = $1 AND d.status = 'active'
@@ -95,7 +95,7 @@ func (s *PgxStore) GetDeviceByHardwareHash(ctx context.Context, licenseKey, hard
 	var dev Device
 	err := s.pool.QueryRow(ctx, `
 		SELECT d.id, d.license_id, d.instance_id, d.hardware_hash, d.device_name,
-		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, COALESCE(d.deactivate_reason, '')
+		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, d.deactivate_reason
 		FROM license_devices d
 		JOIN licenses l ON d.license_id = l.id
 		WHERE l.license_key = $1 AND d.hardware_hash = $2
@@ -179,76 +179,12 @@ func (s *PgxStore) ApproveOfflineRequest(ctx context.Context, requestID string, 
 	if err != nil {
 		return err
 	}
-	result, err := s.pool.Exec(ctx, `
+	_, err = s.pool.Exec(ctx, `
 		UPDATE offline_activation_requests
-		SET approved_at = NOW(), signed_license = $2, status = 'approved', reject_reason = NULL
+		SET approved_at = NOW(), signed_license = $2
 		WHERE request_id = $1
 	`, requestID, signedJSON)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return errors.New("offline request not found")
-	}
-	return nil
-}
-
-// ListOfflineRequests 列出离线激活请求（按创建时间倒序）
-func (s *PgxStore) ListOfflineRequests(ctx context.Context, limit int) ([]OfflineActivationRow, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, license_key, hardware_hash, instance_id, device_name,
-		       request_id, created_at, approved_at, signed_license, status, COALESCE(reject_reason, '')
-		FROM offline_activation_requests
-		ORDER BY created_at DESC
-		LIMIT $1
-	`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []OfflineActivationRow
-	for rows.Next() {
-		var r OfflineActivationRow
-		var signed sql.NullString
-		if err := rows.Scan(
-			&r.ID, &r.LicenseKey, &r.HardwareHash, &r.InstanceID, &r.DeviceName,
-			&r.RequestID, &r.CreatedAt, &r.ApprovedAt, &signed, &r.Status, &r.RejectReason,
-		); err != nil {
-			return nil, err
-		}
-		if signed.Valid {
-			r.SignedLicense = []byte(signed.String)
-		}
-		if r.Status == "" {
-			r.Status = "approved"
-			if r.ApprovedAt == nil {
-				r.Status = "pending"
-			}
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-func (s *PgxStore) RejectOfflineRequest(ctx context.Context, requestID, reason string) error {
-	result, err := s.pool.Exec(ctx, `
-		UPDATE offline_activation_requests
-		SET status = 'rejected', reject_reason = $2
-		WHERE request_id = $1
-		  AND approved_at IS NULL
-		  AND COALESCE(NULLIF(status, ''), 'pending') = 'pending'
-	`, requestID, reason)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return errors.New("offline request not found or already processed")
-	}
-	return nil
+	return err
 }
 
 func (s *PgxStore) CountActiveDevices(ctx context.Context, licenseKey string) (int, error) {
@@ -303,7 +239,7 @@ func (s *PgxStore) ListAllLicenses(ctx context.Context, offset, limit int) ([]Li
 func (s *PgxStore) ListAllDevices(ctx context.Context, licenseKey string) ([]Device, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT d.id, d.license_id, d.instance_id, d.hardware_hash, d.device_name,
-		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, COALESCE(d.deactivate_reason, '')
+		       d.activated_at, d.last_heartbeat, d.status, d.deactivated_at, d.deactivate_reason
 		FROM license_devices d
 		JOIN licenses l ON d.license_id = l.id
 		WHERE l.license_key = $1

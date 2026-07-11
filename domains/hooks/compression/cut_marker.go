@@ -174,7 +174,7 @@ func (cm CutMarker) MarshalJSON() ([]byte, error) {
 // IncrementalBuild reconstructs the outbound body for the next request using
 // a cached CutMarker. The result is:
 //
-//	[system messages] + [summary message] + [first user] + [messages from cut onwards]
+//	[system messages] + [summary message] + [messages from cut onwards]
 //
 // This is called when the session cache has a valid (non-expired) CutMarker
 // and the incoming request is for the same session.
@@ -203,9 +203,6 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 	}
 
 	globalCut := marker.GlobalCutIndex()
-	if marker.SystemMsgCount < 0 || marker.SystemMsgCount > len(req.Messages) {
-		return nil, false
-	}
 	if globalCut >= len(req.Messages) {
 		// Incoming body is shorter than the cached cut point — stale marker.
 		return nil, false
@@ -215,9 +212,7 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 	}
 
 	systemMsgs := req.Messages[:marker.SystemMsgCount]
-	nonSystem := req.Messages[marker.SystemMsgCount:]
 	tailMsgs := req.Messages[globalCut:]
-	pinnedFirstUser := firstUserBeforeCut(nonSystem, marker.CutIndex)
 
 	summaryContent := smartWindowSummaryPrefix + marker.SummaryText
 	summaryMsg, _ := json.Marshal(map[string]string{
@@ -225,12 +220,9 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 		"content": summaryContent,
 	})
 
-	out := make([]json.RawMessage, 0, len(systemMsgs)+2+len(tailMsgs))
+	out := make([]json.RawMessage, 0, len(systemMsgs)+1+len(tailMsgs))
 	out = append(out, systemMsgs...)
 	out = append(out, summaryMsg)
-	if pinnedFirstUser != nil {
-		out = append(out, pinnedFirstUser)
-	}
 	out = append(out, tailMsgs...)
 
 	raw, err := json.Marshal(out)

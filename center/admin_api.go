@@ -30,14 +30,10 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 	g.DELETE("/instances/:id", a.DeleteInstance)
 	g.POST("/instances/:id/command", a.IssueCommand)
 	g.GET("/instances/:id/heartbeats", a.GetHeartbeats)
-	// 别名：前端期望单数路径
-	g.GET("/instances/:id/heartbeat", a.GetHeartbeats)
 	g.GET("/instances/:id/status", a.GetStatus)
 	g.GET("/commands/:id", a.GetCommand)
 	g.GET("/commands/:id/status", a.GetCommandStatus)
 	g.GET("/dashboard/stats", a.GetDashboardStats)
-	// 别名：前端期望 /stats
-	g.GET("/stats", a.GetDashboardStats)
 }
 
 // ListInstances 列出实例
@@ -93,20 +89,11 @@ func (a *AdminAPI) IssueCommand(c echo.Context) error {
 	var req struct {
 		Command  string            `json:"command" validate:"required"`
 		Args     map[string]string `json:"args"`
-		Params   map[string]string `json:"params"`
-		IssuedBy string            `json:"issued_by"`
+		IssuedBy string            `json:"issued_by" validate:"required"`
 	}
 
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
-	}
-
-	// 兼容前端 params 字段，映射到 args
-	if req.Args == nil && req.Params != nil {
-		req.Args = req.Params
-	}
-	if req.IssuedBy == "" {
-		req.IssuedBy = "admin"
 	}
 
 	cmd, err := a.server.IssueCommand(c.Request().Context(), instanceID, req.Command, req.Args, req.IssuedBy)

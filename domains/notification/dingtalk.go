@@ -73,7 +73,7 @@ func (c *DingTalkChannel) Send(ctx context.Context, msg *Message) error {
 	if c.config.WebhookURL != "" {
 		return c.sendWebhook(ctx, msg)
 	}
-	if c.hasAppConfig() {
+	if c.config.AgentID != "" {
 		return c.sendWorkNotification(ctx, msg)
 	}
 	return fmt.Errorf("notification: dingtalk missing webhook or agent config")
@@ -84,7 +84,7 @@ func (c *DingTalkChannel) SendCard(ctx context.Context, card *InteractiveCard) e
 	if c.config.WebhookURL != "" {
 		return c.sendWebhookCard(ctx, card)
 	}
-	if c.hasAppConfig() {
+	if c.config.AgentID != "" {
 		// App 模式降级为工作通知 Markdown（ActionCard 交互仅群机器人支持）
 		return c.sendWorkNotificationFromCard(ctx, card)
 	}
@@ -138,7 +138,7 @@ func (c *DingTalkChannel) HealthCheck(ctx context.Context) error {
 		}
 		return nil
 	}
-	if c.hasAppConfig() {
+	if c.config.AgentID != "" {
 		_, err := c.getAppAccessToken(ctx)
 		if err != nil {
 			return fmt.Errorf("notification: dingtalk health: %w", err)
@@ -146,10 +146,6 @@ func (c *DingTalkChannel) HealthCheck(ctx context.Context) error {
 		return nil
 	}
 	return fmt.Errorf("notification: dingtalk no config to check")
-}
-
-func (c *DingTalkChannel) hasAppConfig() bool {
-	return c.config.AppKey != "" && c.config.AppSecret != "" && c.config.AgentID != ""
 }
 
 // sendWebhook 通过群机器人 Webhook 发送文本。

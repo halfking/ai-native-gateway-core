@@ -9,8 +9,7 @@ import {
   updateFaultRule,
   deleteFaultRule,
   getFaultStats,
-  acknowledgeFaultEvent,
-  resolveFaultEvent,
+  triggerManualFix,
   type FaultEvent,
   type FaultRule,
   type FaultStats,
@@ -29,34 +28,20 @@ const editingRule = ref<FaultRule | null>(null)
 const ruleForm = ref({
   name: '',
   description: '',
-  severity: 'warning' as 'critical' | 'warning' | 'info' | 'error',
+  severity: 'warning' as 'critical' | 'warning' | 'info',
   enabled: true,
-  metric: '',
-  operator: 'gte' as 'gte' | 'lte' | 'eq' | 'ne',
-  threshold: 0,
-  duration: '5m',
-  action: 'notify' as 'restart' | 'scale_up' | 'notify' | 'failover' | 'auto_recover' | 'run_script',
+  condition: '',
+  auto_fix: false,
 })
 
 // Filter state
 const filterStatus = ref<string>('all')
 const filterSeverity = ref<string>('all')
 
-// 后端状态: 'new' | 'acknowledged' | 'resolving' | 'resolved' | 'ignored'
-// 前端 UI 期望: 'open' | 'resolving' | 'resolved' (其中 'open' = 'new' | 'acknowledged')
-const STATUS_ALIAS: Record<string, string> = {
-  new: 'open',
-  acknowledged: 'open',
-  resolving: 'resolving',
-  resolved: 'resolved',
-  ignored: 'resolved',
-}
-
 const filteredEvents = computed(() => {
   return events.value.filter((event) => {
-    if (filterStatus.value !== 'all') {
-      const eventAlias = STATUS_ALIAS[event.status] || event.status
-      if (eventAlias !== filterStatus.value) return false
+    if (filterStatus.value !== 'all' && event.status !== filterStatus.value) {
+      return false
     }
     if (filterSeverity.value !== 'all' && event.severity !== filterSeverity.value) {
       return false
@@ -91,11 +76,8 @@ function openCreateDialog() {
     description: '',
     severity: 'warning',
     enabled: true,
-    metric: '',
-    operator: 'gte',
-    threshold: 0,
-    duration: '5m',
-    action: 'notify',
+    condition: '',
+    auto_fix: false,
   }
   showRuleDialog.value = true
 }
@@ -107,17 +89,14 @@ function openEditDialog(rule: FaultRule) {
     description: rule.description,
     severity: rule.severity,
     enabled: rule.enabled,
-    metric: rule.metric,
-    operator: rule.operator,
-    threshold: rule.threshold,
-    duration: rule.duration,
-    action: rule.action,
+    condition: rule.condition,
+    auto_fix: rule.auto_fix,
   }
   showRuleDialog.value = true
 }
 
 async function handleSaveRule() {
-  if (!ruleForm.value.name || !ruleForm.value.metric) {
+  if (!ruleForm.value.name || !ruleForm.value.condition) {
     ElMessage.warning(t('ops.fault.fillRequired'))
     return
   }
@@ -159,32 +138,27 @@ async function handleDeleteRule(rule: FaultRule) {
   }
 }
 
-async function handleAcknowledge(event: FaultEvent) {
+async function handleManualFix(event: FaultEvent) {
   try {
-    await acknowledgeFaultEvent(event.id, 'admin')
-    ElMessage.success(t('ops.fault.acknowledgeSuccess'))
+    await ElMessageBox.confirm(
+      t('ops.fault.fixConfirm'),
+      t('common.confirm'),
+      { type: 'info' }
+    )
+    await triggerManualFix(event.id)
+    ElMessage.success(t('ops.fault.fixTriggered'))
     await load()
   } catch (error) {
-    ElMessage.error(t('ops.fault.fixFailed'))
-    console.error(error)
-  }
-}
-
-async function handleResolve(event: FaultEvent) {
-  try {
-    await resolveFaultEvent(event.id, 'admin')
-    ElMessage.success(t('ops.fault.resolveSuccess'))
-    await load()
-  } catch (error) {
-    ElMessage.error(t('ops.fault.fixFailed'))
-    console.error(error)
+    if (error !== 'cancel') {
+      ElMessage.error(t('ops.fault.fixFailed'))
+      console.error(error)
+    }
   }
 }
 
 function severityType(severity: string) {
   const map: Record<string, 'danger' | 'warning' | 'info'> = {
     critical: 'danger',
-    error: 'danger',
     warning: 'warning',
     info: 'info',
   }
@@ -192,29 +166,19 @@ function severityType(severity: string) {
 }
 
 function statusType(status: string) {
-  const map: Record<string, 'danger' | 'warning' | 'success' | 'info'> = {
-    new: 'danger',
-    acknowledged: 'warning',
+  const map: Record<string, 'danger' | 'warning' | 'success'> = {
+    open: 'danger',
     resolving: 'warning',
     resolved: 'success',
-    ignored: 'info',
   }
   return map[status] || 'info'
 }
 
-function statusLabel(status: string) {
-  const alias = STATUS_ALIAS[status] || status
-  const key = `ops.fault.status.${alias}`
-  return t(key)
-}
-
 function formatDate(date: string) {
-  if (!date) return '—'
   return new Date(date).toLocaleString()
 }
 
 function formatDuration(minutes: number) {
-  if (!minutes || minutes < 0) return '—'
   if (minutes < 60) return `${Math.round(minutes)}m`
   const hours = Math.floor(minutes / 60)
   const mins = Math.round(minutes % 60)
@@ -293,19 +257,14 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="status" :label="t('common.status')" width="120">
+        <el-table-column prop="status" :label="t('common.status')" width="100">
           <template #default="{ row }">
             <el-tag :type="statusType(row.status)" size="small">
-              {{ statusLabel(row.status) }}
+              {{ t(`ops.fault.status.${row.status}`) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column :label="t('ops.fault.message')" min-width="200">
-          <template #default="{ row }">
-            <div>{{ row.title }}</div>
-            <div class="event-desc">{{ row.description }}</div>
-          </template>
-        </el-table-column>
+        <el-table-column prop="message" :label="t('ops.fault.message')" min-width="200" />
         <el-table-column prop="detected_at" :label="t('ops.fault.detectedAt')" width="160">
           <template #default="{ row }">{{ formatDate(row.detected_at) }}</template>
         </el-table-column>
@@ -314,23 +273,15 @@ onMounted(load)
             {{ row.resolved_at ? formatDate(row.resolved_at) : '—' }}
           </template>
         </el-table-column>
-        <el-table-column :label="t('common.actions')" width="200" fixed="right">
+        <el-table-column :label="t('common.actions')" width="120" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="row.status === 'new' || row.status === 'acknowledged'"
-              type="warning"
-              size="small"
-              @click="handleAcknowledge(row)"
-            >
-              {{ t('ops.fault.acknowledge') }}
-            </el-button>
-            <el-button
-              v-if="row.status !== 'resolved' && row.status !== 'ignored'"
+              v-if="row.status === 'open'"
               type="primary"
               size="small"
-              @click="handleResolve(row)"
+              @click="handleManualFix(row)"
             >
-              {{ t('ops.fault.resolve') }}
+              {{ t('ops.fault.fix') }}
             </el-button>
           </template>
         </el-table-column>
@@ -359,10 +310,10 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column :label="t('ops.fault.action')" width="140">
+        <el-table-column prop="auto_fix" :label="t('ops.fault.autoFix')" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.action === 'auto_recover' ? 'success' : 'info'" size="small">
-              {{ row.action || '—' }}
+            <el-tag :type="row.auto_fix ? 'success' : 'info'" size="small">
+              {{ row.auto_fix ? t('common.yes') : t('common.no') }}
             </el-tag>
           </template>
         </el-table-column>
@@ -404,35 +355,19 @@ onMounted(load)
             <el-radio label="info">{{ t('ops.fault.severity.info') }}</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item :label="t('ops.fault.metric')" required>
-          <el-input v-model="ruleForm.metric" placeholder="cpu_usage / error_rate / latency_ms" />
-        </el-form-item>
-        <el-form-item :label="t('ops.fault.operator')" required>
-          <el-select v-model="ruleForm.operator" style="width: 100%">
-            <el-option label=">= (gte)" value="gte" />
-            <el-option label="<= (lte)" value="lte" />
-            <el-option label="== (eq)" value="eq" />
-            <el-option label="!= (ne)" value="ne" />
-          </el-select>
-        </el-form-item>
-        <el-form-item :label="t('ops.fault.threshold')" required>
-          <el-input-number v-model="ruleForm.threshold" :precision="2" :step="0.1" style="width: 100%" />
-        </el-form-item>
-        <el-form-item :label="t('ops.fault.duration')">
-          <el-input v-model="ruleForm.duration" placeholder="5m / 1h" />
-        </el-form-item>
-        <el-form-item :label="t('ops.fault.action')" required>
-          <el-select v-model="ruleForm.action" style="width: 100%">
-            <el-option label="notify" value="notify" />
-            <el-option label="restart" value="restart" />
-            <el-option label="scale_up" value="scale_up" />
-            <el-option label="failover" value="failover" />
-            <el-option label="auto_recover" value="auto_recover" />
-            <el-option label="run_script" value="run_script" />
-          </el-select>
+        <el-form-item :label="t('ops.fault.condition')" required>
+          <el-input
+            v-model="ruleForm.condition"
+            type="textarea"
+            :rows="3"
+            :placeholder="t('ops.fault.conditionPlaceholder')"
+          />
         </el-form-item>
         <el-form-item :label="t('common.enabled')">
           <el-switch v-model="ruleForm.enabled" />
+        </el-form-item>
+        <el-form-item :label="t('ops.fault.autoFix')">
+          <el-switch v-model="ruleForm.auto_fix" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -504,11 +439,5 @@ onMounted(load)
 
 .rules-card {
   margin-top: 20px;
-}
-
-.event-desc {
-  font-size: 12px;
-  color: var(--muted);
-  margin-top: 4px;
 }
 </style>

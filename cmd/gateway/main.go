@@ -528,8 +528,7 @@ func main() {
 		if os.Getenv("LLM_GATEWAY_IR_CONVERTER") == "true" {
 			routingExec.IR = &irAdapter{}
 			slog.Info("ir_converter", "enabled", true)
-			// P0-1 (2026-07-11): transport IR is enabled by default (when unset or != "false"/"0").
-			if transformation.ShouldEnableTransportIR() {
+			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") == "true" {
 				routingExec.IR = transformation.NewTransportIRConverter(&irAdapter{})
 				slog.Info("transport_ir", "enabled", true, "features", "extensions-roundtrip,circuit-breaker")
 			}
@@ -608,10 +607,7 @@ func main() {
 		}
 		routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
 		routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
-		// P0-3 (2026-07-11): wire the unified vendor field dispatcher.
-		// This replaces the four separate StripXxxFields hooks with a single
-		// dispatcher that routes by catalog_code at runtime.
-		routingExec.DispatchStripVendorFields = streaming.DispatchStripVendorFields
+		routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
 		// Write-time 客户端可见脱敏（2026-07-09，增强 1）
 		routingExec.RedactBodyFn = buildRedactBodyFn(dbConn.Stdlib())
 		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
@@ -1823,6 +1819,7 @@ func main() {
 			if stateManager != nil {
 				adminHandler.SetStateManager(stateManager)
 			}
+			adminHandler.SetCircuitResetter(cm)
 			adminHandler.SetFpSlots(fpSlots)
 			slog.Info("CHECKPOINT: after SetFpSlots")
 			adminHandler.SetPeakCollector(peakCollector)
@@ -1885,7 +1882,7 @@ func main() {
 
 			// 2. 初始化文件写入器（支持 gzip 压缩）
 			fileWriter := dbdegradation.NewFileWriter(backupDir)
-			defer func() { _ = fileWriter.Close() }()
+			defer fileWriter.Close()
 
 			// 3. 初始化文件读取器
 			fileReader := dbdegradation.NewFileReader(backupDir)
@@ -2267,9 +2264,13 @@ func main() {
 		autoupdateInstaller := autoupdate.NewInstaller("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
 		autoupdateRollback := autoupdate.NewRollback("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
 		autoupdateAPI := autoupdate.NewAdminAPI(autoupdateStore, autoupdateDownloader, autoupdateInstaller, autoupdateRollback)
-		// 前端使用 /api/admin/releases/*，handler 内部路径已包含 /releases
-		autoupdateAPI.RegisterRoutes(e.Group("/api/admin"))
+		// 前端使用 /api/admin/releases，前端期望不含 /autoupdate 前缀
+		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/releases"))
 		slog.Info("Phase 4: Auto-update API enabled (/api/admin/releases/*)")
+
+		// Autoupdate upgrade-logs 端点（前端使用 path = /api/admin/upgrade-logs 或 /api/admin/releases/upgrade-logs）
+		// 这里单独注册以兼容多种路径
+		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/autoupdate"))
 
 		// Phase 5: Center Ops (中心运维)
 		centerStore := center.NewPgxStore(pool)
@@ -2287,9 +2288,8 @@ func main() {
 		vibecodingAPI.RegisterRoutes(e.Group("/api/admin/vibecoding"))
 		slog.Info("Phase 7: VibeCoding API enabled (/api/admin/vibecoding/*)")
 
-		// Apply the same JWT gate used by standard-library admin routes.
-		opsHandler := admin.AdminMiddleware(e.ServeHTTP, pool, cfg.SecretKey)
-		mux.Handle("/api/admin/", http.HandlerFunc(opsHandler))
+		// 将 Echo 挂载到 http.ServeMux
+		mux.Handle("/api/admin/", e)
 		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
 	}
 
@@ -2448,10 +2448,25 @@ func main() {
 			slog.Info("Phase 3.9 approval query API enabled (/api/v1/approvals/*, /api/admin/approvals/stats)")
 
 			// DingTalk approval callback (钉钉机器人审批回调)
-			// The handler resolves module state on every callback so HotReload can
-			// disable the endpoint, rotate the secret, or update the allowlist.
-			api.RegisterDingTalkRoutes(mux, approvalMgr, dingTalkCallbackSecretFromSettings, dingTalkUserIsAllowed)
-			slog.Info("dingtalk approval callback registered (/api/webhooks/dingtalk/approval-callback); requests require an enabled, configured module")
+			// 签名校验密钥优先读取 dingtalk_bot.* 模块设置，回退到环境变量，
+			// 保证模块开关与配置真正控制回调验签。
+			dingSignSecret := os.Getenv("DINGTALK_SIGN_SECRET")
+			if dingSignSecret == "" {
+				dingSignSecret = os.Getenv("DINGTALK_APP_SECRET")
+			}
+			if cfg, ok := dingTalkConfigFromSettings(); ok {
+				if cfg.SignSecret != "" {
+					dingSignSecret = cfg.SignSecret
+				} else if cfg.AppSecret != "" {
+					dingSignSecret = cfg.AppSecret
+				}
+			}
+			if dingSignSecret != "" {
+				api.RegisterDingTalkRoutes(mux, approvalMgr, dingSignSecret)
+				slog.Info("dingtalk approval callback enabled (/api/webhooks/dingtalk/approval-callback)")
+			} else {
+				slog.Warn("DINGTALK_SIGN_SECRET not set, dingtalk approval callback disabled")
+			}
 		}
 
 		// Phase 3.10 (2026-07-03, Task D1): Approval Configuration Management API
@@ -2973,6 +2988,21 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
 		slog.Info("dingtalk channel initialized from module settings",
 			"webhook", dingCfg.WebhookURL != "", "app_mode", dingCfg.AppKey != "")
+	} else if dingWebhook := os.Getenv("DINGTALK_WEBHOOK_URL"); dingWebhook != "" {
+		dingCfg := notification.DingTalkConfig{
+			WebhookURL: dingWebhook,
+			SignSecret: os.Getenv("DINGTALK_SIGN_SECRET"),
+		}
+		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
+		slog.Info("dingtalk channel initialized from env webhook")
+	} else if dingAppKey := os.Getenv("DINGTALK_APP_KEY"); dingAppKey != "" {
+		dingAppSecret := os.Getenv("DINGTALK_APP_SECRET")
+		dingCfg := notification.DingTalkConfig{
+			AppKey:    dingAppKey,
+			AppSecret: dingAppSecret,
+		}
+		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
+		slog.Info("dingtalk channel initialized", "app_key", dingAppKey)
 	}
 
 	// 企业微信渠道
@@ -3064,10 +3094,7 @@ func dingTalkConfigFromSettings() (notification.DingTalkConfig, bool) {
 		}
 	}
 
-	if cfg.WebhookURL == "" && !hasCompleteDingTalkAppConfig(cfg) {
-		if cfg.AppKey != "" || cfg.AppSecret != "" || cfg.AgentID != "" {
-			slog.Warn("dingtalk app-mode configuration incomplete", "has_app_key", cfg.AppKey != "", "has_app_secret", cfg.AppSecret != "", "has_agent_id", cfg.AgentID != "")
-		}
+	if cfg.WebhookURL == "" && cfg.AppKey == "" {
 		return notification.DingTalkConfig{}, false
 	}
 	return cfg, true

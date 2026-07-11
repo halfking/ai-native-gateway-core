@@ -37,12 +37,6 @@ type ProtocolHandler interface {
 	// the client. It is called only when the request was non-stream
 	// and the upstream responded 2xx with a parseable body.
 	//
-	// catalogCode (P0-3, 2026-07-11) is the provider's catalog_code from
-	// the candidate (e.g. "minimax", "zhipu", "openai"). Implementations
-	// use this to conditionally strip vendor-specific private fields.
-	// Empty string means unknown provider — implementations MUST preserve
-	// all fields unchanged.
-	//
 	// qualityFixMode is the per-provider tool_call quality mode loaded
 	// from cand.QualityFixMode (017_quality_fix_mode.sql). Empty
 	// string means "off" — implementations MUST skip the quality
@@ -57,7 +51,7 @@ type ProtocolHandler interface {
 	// ExecuteResult for emitTelemetry. Implementations that do not
 	// run a quality hook MUST leave *qualitySignals untouched; the
 	// caller treats nil as "no signals".
-	WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, catalogCode, clientModel, qualityFixMode string, qualitySignals *QualitySignals) ([]byte, error)
+	WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) ([]byte, error)
 
 	// StreamResponse reads an upstream streaming response and writes
 	// it to the client. Returns StreamOutcome describing whether
