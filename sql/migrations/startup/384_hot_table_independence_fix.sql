@@ -1,4 +1,4 @@
--- Migration 341-fix: 修复 request_logs_hot 缺失列
+-- Migration 384: 修复 request_logs_hot 缺失列
 -- Created: 2026-07-08
 -- Purpose: 如果 request_logs_hot 在 migration 054/320/325 之前创建，
 --          需要补充这些缺失的列。

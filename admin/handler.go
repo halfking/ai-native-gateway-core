@@ -89,7 +89,13 @@ type Handler struct {
 	// the /api/credentials/{id}/test + /state endpoints and feeds the
 	// router with real-time availability decisions. nil disables the
 	// state-management feature; routing falls back to DB-based health.
-	stateManager credentialstate.StateProvider
+	stateManager       credentialstate.StateProvider
+	stateCacheResetter credentialstate.StateCacheResetter
+	// circuitResetter clears a process-local breaker after an operator has
+	// remediated a credential. The subsequent real probe remains authoritative.
+	circuitResetter interface {
+		Reset(providerID, credentialID int)
+	}
 	// modelPolicy (Round 48, 2026-06-21) is the tenant-scoped model
 	// denylist cache.  admin handlers call Invalidate after every
 	// write so the next chat request sees the change without waiting
@@ -118,10 +124,10 @@ type Handler struct {
 	sessionCleanupWorker   *session.CleanupWorker        // 2026-07-06 清理过期 stopped session
 
 	// 数据库降级模块 (2026-07-10)
-	dbMonitor   *dbdegradation.Monitor
-	fileReader  *dbdegradation.FileReader
-	recovery    *dbdegradation.Recovery
-	ttlManager  *dbdegradation.TTLManager
+	dbMonitor  *dbdegradation.Monitor
+	fileReader *dbdegradation.FileReader
+	recovery   *dbdegradation.Recovery
+	ttlManager *dbdegradation.TTLManager
 
 	// identityPool is the legacy Layer 0 cap on total distinct end-user fingerprints.
 	// nil when the global cap feature is disabled.
@@ -348,7 +354,18 @@ func (h *Handler) SetModelProbeRunner(r *bg.ModelProbeRunner) { h.modelProbe = r
 
 // SetStateManager wires the credential-state manager for /api/credentials/*/state
 // and /api/credentials/*/test endpoints. Pass nil to disable.
-func (h *Handler) SetStateManager(sm credentialstate.StateProvider) { h.stateManager = sm }
+func (h *Handler) SetStateManager(sm credentialstate.StateProvider) {
+	h.stateManager = sm
+	if resetter, ok := sm.(credentialstate.StateCacheResetter); ok {
+		h.stateCacheResetter = resetter
+	}
+}
+
+func (h *Handler) SetCircuitResetter(r interface {
+	Reset(providerID, credentialID int)
+}) {
+	h.circuitResetter = r
+}
 
 func (h *Handler) SetFpSlots(m *credentialfpslot.Manager) {
 	h.fpSlots = m

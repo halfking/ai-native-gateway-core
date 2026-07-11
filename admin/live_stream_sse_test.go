@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -39,5 +40,25 @@ func TestProviderCodeLookupUsesDisplayNameColumn(t *testing.T) {
 				t.Fatalf("%s SQL lost its reference to providers? body=\n%s", c.name, c.body)
 			}
 		})
+	}
+}
+
+func TestLiveCredentialStateJSON(t *testing.T) {
+	envelope := LiveStreamEnvelope{
+		Type: "credential_state",
+		CredentialState: &LiveCredentialState{
+			CredentialID: 2,
+			ProviderID:   314,
+			State:        "probe_scheduled",
+			Reason:       "active_last_3d",
+			Source:       "automatic_recovery",
+		},
+	}
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	if !strings.Contains(string(data), `"credential_state"`) || !strings.Contains(string(data), `"credential_id":2`) {
+		t.Fatalf("credential state missing from JSON: %s", data)
 	}
 }
