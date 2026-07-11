@@ -92,14 +92,14 @@ func TestSessionSummaryWorker_ExtractsSessionKeyFromPayload(t *testing.T) {
 	}
 }
 
-func TestSessionSummaryWorker_ErrorDoesNotPropagate(t *testing.T) {
+func TestSessionSummaryWorker_ErrorPropagatesForRetry(t *testing.T) {
 	summ := &fakeSummarizer{err: errors.New("llm unavailable")}
 	w := NewSessionSummaryWorker(summ, nil)
 	if err := w.Handle(context.Background(), analysis.AnalysisEvent{
 		Type:      analysis.EventSessionClosed,
 		SessionID: "s1", TenantID: "t1",
-	}); err != nil {
-		t.Fatalf("error should not propagate: %v", err)
+	}); err == nil {
+		t.Fatal("error should propagate for event retry")
 	}
 	p, f := w.Stats()
 	if p != 1 {

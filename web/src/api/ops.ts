@@ -10,37 +10,39 @@ import { req } from './_core'
 export interface License {
   id: number
   license_key: string
-  customer: string
+  customer_name: string
   max_devices: number
-  active_devices: number
   expires_at: string
-  status: 'active' | 'expired' | 'revoked'
   created_at: string
-  updated_at: string
+  revoked_at?: string
 }
 
 export interface LicenseDevice {
   id: number
   license_id: number
-  device_id: string
-  hostname: string
+  instance_id: string
+  hardware_hash: string
+  device_name: string
   activated_at: string
-  last_seen: string
+  last_heartbeat?: string
+  status: string
 }
 
 export interface OfflineActivationRequest {
-  id: number
   license_key: string
-  device_id: string
-  request_code: string
-  status: 'pending' | 'approved' | 'rejected'
-  created_at: string
+  hardware_hash: string
+  instance_id: string
+  device_name: string
+  request_id: string
+  timestamp: string
   approved_at?: string
   activation_code?: string
+  status: string
 }
 
 export async function getLicenses(): Promise<License[]> {
-  return req<License[]>('GET', '/api/admin/licenses')
+  const res = await req<{ licenses: License[]; total: number }>('GET', '/api/admin/licenses')
+  return res.licenses || []
 }
 
 export async function createLicense(data: {
@@ -63,11 +65,11 @@ export async function getOfflineActivationRequests(): Promise<OfflineActivationR
   return req<OfflineActivationRequest[]>('GET', '/api/admin/licenses/offline-requests')
 }
 
-export async function approveOfflineActivation(id: number): Promise<{ activation_code: string }> {
+export async function approveOfflineActivation(id: string): Promise<{ activation_code: string }> {
   return req<{ activation_code: string }>('POST', `/api/admin/licenses/offline-requests/${id}/approve`)
 }
 
-export async function rejectOfflineActivation(id: number, reason: string): Promise<void> {
+export async function rejectOfflineActivation(id: string, reason: string): Promise<void> {
   return req<void>('POST', `/api/admin/licenses/offline-requests/${id}/reject`, { reason })
 }
 

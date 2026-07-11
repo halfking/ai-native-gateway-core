@@ -534,6 +534,43 @@ func TestClassifyError_ProductionIncident_MinimaxM3_ToolCallIdMismatch(t *testin
 	}
 }
 
+// 2026-07-11: gpt-5.6-* multi-turn tool-call error must classify as
+// KindToolCallIdMismatch (a client bug), NOT KindTransient. Classifying
+// as transient causes the credential to be cooled for 5 minutes after
+// 3 failures, blocking all subsequent requests with "unknown" reason.
+func TestClassifyError_GPT56FunctionCallOutputMismatch(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			"openai-400-item_reference",
+			`{"error":{"message":"function_call_output requires item_reference ids matching each call_id on HTTP requests; continuation requires previous_response_id or replayable tool-call context","type":"invalid_request_error"}}`,
+		},
+		{
+			"openai-continuation-required",
+			`{"error":{"message":"continuation requires previous_response_id or replayable tool-call context","type":"invalid_request_error"}}`,
+		},
+		{
+			"wrapped-fmt-errorf",
+			`function_call_output requires item_reference ids matching each call_id`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Body path
+			if got := ClassifyErrorWithBody(400, []byte(tc.body)); got != KindToolCallIdMismatch {
+				t.Errorf("ClassifyErrorWithBody(400, %q) = %q, want %q", tc.body[:min(60, len(tc.body))], got, KindToolCallIdMismatch)
+			}
+			// Wrapped path (executor re-wraps via fmt.Errorf)
+			wrapped := fmt.Errorf("upstream 400: %s", tc.body)
+			if got := ClassifyError(wrapped, nil); got != KindToolCallIdMismatch {
+				t.Errorf("ClassifyError(wrapped %q) = %q, want %q", tc.body[:min(60, len(tc.body))], got, KindToolCallIdMismatch)
+			}
+		})
+	}
+}
+
 // 2026-07-04 V20: test generic web-server 404 exclusion.
 func TestClassifyErrorWithBody_GenericWeb404(t *testing.T) {
 	// Generic Nginx 404

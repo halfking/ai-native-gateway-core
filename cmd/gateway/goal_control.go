@@ -38,11 +38,18 @@ import (
 // provided default when unset or unparseable.
 type settingsAdapter struct{}
 
-func (settingsAdapter) GetBool(tenantID, key string, def bool) bool {
+func (settingsAdapter) settingScope(key string) settings.Scope {
+	if spec := settings.Global.Spec(key); spec != nil {
+		return spec.Scope
+	}
+	return settings.ScopeTenant
+}
+
+func (a settingsAdapter) GetBool(tenantID, key string, def bool) bool {
 	if settings.Global == nil {
 		return def
 	}
-	val, _, err := settings.Global.EffectiveValue(settings.ScopeTenant, key, tenantID)
+	val, _, err := settings.Global.EffectiveValue(a.settingScope(key), key, tenantID)
 	if err != nil || len(val) == 0 {
 		return def
 	}
@@ -53,11 +60,11 @@ func (settingsAdapter) GetBool(tenantID, key string, def bool) bool {
 	return out
 }
 
-func (settingsAdapter) GetInt(tenantID, key string, def int) int {
+func (a settingsAdapter) GetInt(tenantID, key string, def int) int {
 	if settings.Global == nil {
 		return def
 	}
-	val, _, err := settings.Global.EffectiveValue(settings.ScopeTenant, key, tenantID)
+	val, _, err := settings.Global.EffectiveValue(a.settingScope(key), key, tenantID)
 	if err != nil || len(val) == 0 {
 		return def
 	}
@@ -68,11 +75,11 @@ func (settingsAdapter) GetInt(tenantID, key string, def int) int {
 	return out
 }
 
-func (settingsAdapter) GetFloat(tenantID, key string, def float64) float64 {
+func (a settingsAdapter) GetFloat(tenantID, key string, def float64) float64 {
 	if settings.Global == nil {
 		return def
 	}
-	val, _, err := settings.Global.EffectiveValue(settings.ScopeTenant, key, tenantID)
+	val, _, err := settings.Global.EffectiveValue(a.settingScope(key), key, tenantID)
 	if err != nil || len(val) == 0 {
 		return def
 	}
@@ -83,11 +90,11 @@ func (settingsAdapter) GetFloat(tenantID, key string, def float64) float64 {
 	return out
 }
 
-func (settingsAdapter) GetString(tenantID, key string, def string) string {
+func (a settingsAdapter) GetString(tenantID, key string, def string) string {
 	if settings.Global == nil {
 		return def
 	}
-	val, _, err := settings.Global.EffectiveValue(settings.ScopeTenant, key, tenantID)
+	val, _, err := settings.Global.EffectiveValue(a.settingScope(key), key, tenantID)
 	if err != nil || len(val) == 0 {
 		return def
 	}
@@ -231,10 +238,12 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	}
 	handoffHook := handoff.NewTriggerHook(handoffCfg, handoffStore)
 
-	// 7. Chain and install. Order matters: goal continue → audit → handoff → output_compliance.
-	// handoff 接入完成（实现恢复 2026-07-09）：handoffHook.LastWriterWins 抢占 goal/audit 的
-	// InjectFollowUp（"rotate to new session > nudge near-full context"）。
-	interceptors := []response.ResponseInterceptor{goalHook, auditHook, handoffHook}
+	// 7. Handoff runs before provider dispatch so a threshold hit rewrites the
+	// current request and rotates the real gateway session. Keep it out of the
+	// response chain: response-side follow-ups duplicate an already completed
+	// turn and cannot change the client-visible session.
+	chatHandler.SetHandoffHook(handoffHook)
+	interceptors := []response.ResponseInterceptor{goalHook, auditHook}
 
 	// 7b. Output compliance interceptor（输出合规/脱敏，2026-07-09）。
 	// 用同一 *sql.DB 构造 checker；ownerFn 从 session_dim 查询 dataOwner +
@@ -246,6 +255,9 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 
 	chain := response.NewInterceptorChain(interceptors...)
 	chatHandler.SetResponseInterceptor(chain)
+
+	// 7a. Handoff fallback API key (2026-07-11, handoff self-call fix).
+	chatHandler.SetHandoffFallbackAPIKey(strings.TrimSpace(os.Getenv("LLM_GATEWAY_HANDOFF_FALLBACK_API_KEY")))
 
 	handoffEnabled := handoffCfg.Enabled
 	ocEnabled := len(interceptors) > 3
