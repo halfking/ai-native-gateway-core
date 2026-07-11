@@ -333,9 +333,6 @@ func archiveSpecs() []archiveSpec {
 // Migrations 341, 343-347 (2026-07-05) unified all tables to hot table architecture.
 // All promote functions now use *_hot_to_partition pattern.
 //
-// Migration 382/383 (2026-07-11) use archive_* functions instead of promote_*;
-// they are invoked manually or via cron, not by this background loop.
-//
 // Each function signature is promote_<table>_hot_to_partition(p_retention interval,
 // p_batch_size int) RETURNS bigint; the caller loops until the function
 // returns 0 (no more eligible cold rows for this table).

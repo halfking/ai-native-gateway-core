@@ -151,7 +151,7 @@ SKIP_MIGRATIONS=(
   "317_partition_credential_model_index.sql"
   "321_cleanup_stale_in_progress.sql"
   "340_create_partition_query_views.sql"
-  "384_hot_table_independence_fix.sql"
+  "341_hot_table_independence.fix.sql"
   "343_fix_routing_decision_log_columnar.sql"
   "344_usage_ledger_hot_independence.sql"
   "345_request_wal_hot_independence.sql"

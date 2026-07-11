@@ -98,9 +98,8 @@ func TestWindow_NilState(t *testing.T) {
 
 // trigger-7: boundary — exactly at token threshold → should NOT trigger
 func TestWindow_TokenThresholdExact(t *testing.T) {
-	// LoadFraction resolves the effective settings value (default 0.8).
-	threshold := int(float64(1000) * LoadFraction() * 3.5)
-	body := make([]byte, threshold)
+	// threshold = 1000 * 0.85 * 3.5 = 2975
+	body := make([]byte, 2975)
 	state := makeState(5, 850, 0, 0)
 	res := ShouldTriggerWindow(body, state, 1000, false, time.Now())
 	if res.Reason == "sliding_window_token" {

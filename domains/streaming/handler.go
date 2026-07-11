@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/cache/prefix"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -254,8 +253,7 @@ type ChatHandler struct {
 	// message-level LCS delta-append + optional proactive sliding-window
 	// LLM summary before forwarding to the upstream. nil disables v3
 	// (every request forwards the client body as-is, matching v7 behaviour).
-	sessionCompressor    *compression.SessionCompressor
-	sessionTurnSnapshots *sessionTurnSnapshotWriter
+	sessionCompressor *compression.SessionCompressor
 
 	// promptCacheStabilize (rtk borrowing, 2026-07-06) reorders the request
 	// messages by stability class (system → tools → history → tail) so the
@@ -442,10 +440,6 @@ func (h *ChatHandler) SetIdempotentCache(c *IdempotentCache) {
 // proactive sliding-window LLM summary before forwarding to the upstream.
 func (h *ChatHandler) SetSessionCompressor(sc *compression.SessionCompressor) {
 	h.sessionCompressor = sc
-}
-
-func (h *ChatHandler) SetSessionTurnSnapshotStore(db *pgxpool.Pool) {
-	h.sessionTurnSnapshots = newSessionTurnSnapshotWriter(db)
 }
 
 // SetPromptCacheStabilize toggles request-body prefix stabilization
@@ -661,8 +655,6 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logCtx.ClientRequestID = clientRequestID
 	// 2026-06-30: 记录客户端请求端点 (migration 320)
 	logCtx.SetClientEndpoint(r.URL.Path)
-	// 2026-07-11: P1.4 observability metadata extraction at ingress
-	logCtx.ObservabilityCtx = telemetry.ExtractObservabilityContext(r)
 	if wt := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); wt != "" {
 		logCtx.SetWorkType(wt)
 	}
@@ -1506,16 +1498,6 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 
 	// ── v3 Session-level intelligent compression ────────────────────────
-	// Keep immutable stage snapshots. The original is the client request after
-	// protocol/meta-tool normalization; compressed is the session compressor
-	// output; secured is the final body that actually crosses the provider
-	// boundary after subsequent request safety transforms.
-	originalSessionBody := append([]byte(nil), bodyBytes...)
-	compressedSessionBody := append([]byte(nil), bodyBytes...)
-	compressionStrategy := ""
-	summaryMarker := ""
-	compressionRangeStart := 0
-	compressionRangeEnd := 0
 	// Runs AFTER candidate resolution so we know the target model's context
 	// window (B1 fix: previously passed 0, which disabled the TOKEN trigger
 	// and the mechanical-trim fallback). The session compressor delta-appends
@@ -1571,16 +1553,7 @@ func (h *ChatHandler) serveWithExecutor(
 				}
 			}
 		}
-		if scResult != nil {
-			compressionStrategy = scResult.CompressionStrategy
-			summaryMarker = scResult.SummaryMarker
-			if summaryMarker != "" {
-				compressionRangeStart = 1
-			}
-			compressedSessionBody = append([]byte(nil), bodyBytes...)
-		}
 		if scResult != nil && scResult.Degraded {
-
 			w.Header().Set("X-Gw-Compression-Degraded", "sliding_window_collision")
 		}
 		// Always populate outbound_msg_count / outbound_token_est from the
@@ -2059,10 +2032,6 @@ func (h *ChatHandler) serveWithExecutor(
 	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
 
 	// ── Response Interceptor (2026-06-29, auto-control feature) ─────────
-	// Keep the upstream response separately so the secured stage can record an
-	// actual post-compliance value rather than reusing the compressed stage.
-	upstreamResponseBody := append([]byte(nil), result.ResponseBody...)
-	securityTags := make([]string, 0, 2)
 	// Call interceptor after successful execution but before final metrics.
 	// This enables automatic handoff when context limits are reached and
 	// goal-mode continuous execution.
@@ -2154,10 +2123,6 @@ func (h *ChatHandler) serveWithExecutor(
 				// intended (so pii_stripped tagging + session_tags stay accurate).
 				if len(interceptResult.ModifiedBody) > 0 && result != nil {
 					result.ResponseBody = interceptResult.ModifiedBody
-					if interceptResult.Action != "" {
-						securityTags = append(securityTags, interceptResult.Action)
-					}
-
 					if interceptResult.Metadata != nil {
 						slog.Info("response_interceptor_modified_body",
 							"session_id", gwSessionID, "action", interceptResult.Action)
@@ -2165,36 +2130,6 @@ func (h *ChatHandler) serveWithExecutor(
 				}
 			}
 		}
-	}
-
-	if h.sessionTurnSnapshots != nil && gwSessionID != "" && result != nil {
-		tenantID := "default"
-		if keyInfo != nil && keyInfo.TenantID != "" {
-			tenantID = keyInfo.TenantID
-		}
-		if summaryMarker != "" {
-			compressionRangeStart = 1
-		}
-		h.sessionTurnSnapshots.write(r.Context(), sessionTurnSnapshot{
-			TenantID:            tenantID,
-			SessionID:           gwSessionID,
-			RequestID:           requestID,
-			OriginalSend:        originalSessionBody,
-			OriginalReceive:     upstreamResponseBody,
-			CompressedSend:      compressedSessionBody,
-			CompressedReceive:   upstreamResponseBody,
-			SecuredSend:         upstreamBody,
-			SecuredReceive:      result.ResponseBody,
-			CompressionStrategy: compressionStrategy,
-			SecurityTags:        securityTags,
-			RangeStart:          compressionRangeStart,
-			RangeEnd:            compressionRangeEnd,
-			SummaryMarker:       summaryMarker,
-			OriginalTokens:      snapshotTokenEstimate(originalSessionBody),
-			CompressedTokens:    snapshotTokenEstimate(compressedSessionBody),
-			SecuredTokens:       snapshotTokenEstimate(upstreamBody),
-			StreamCompleted:     !isStream,
-		})
 	}
 
 	// ── Request WAL: async update on execution success ─────────────
@@ -2845,26 +2780,6 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	applyKeyInfoToRequestLog(reqLog, keyInfo)
 	// v3: merge session compressor outbound fields into the log entry.
 	applySessionCompressorFields(reqLog, logCtx)
-	// 2026-07-11: P1.4 observability metadata enrichment (success path)
-	enrichObservabilityMetadata(reqLog, logCtx)
-	// 2026-07-11: Populate upstream routing metadata from chosen Candidate
-	if result != nil {
-		if result.Candidate.BaseURL != "" {
-			reqLog.UpstreamEndpoint = &result.Candidate.BaseURL
-		}
-		if result.Candidate.Protocol != "" {
-			reqLog.UpstreamProtocol = &result.Candidate.Protocol
-		}
-		// Detect protocol conversion: client sent OpenAI format, upstream uses different protocol
-		if evt.ClientModel != "" && result.Candidate.Protocol != "" {
-			clientProto := "openai" // default assumption for /v1/chat/completions
-			if strings.Contains(evt.ClientModel, "claude") {
-				clientProto = "anthropic"
-			}
-			conversion := clientProto != result.Candidate.Protocol
-			reqLog.ProtocolConversion = &conversion
-		}
-	}
 	h.telemetryClient.EmitRequestLogUpdate(reqLog)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)

@@ -88,10 +88,6 @@ type RequestLogContext struct {
 	// 存储从请求体中提取的 base64/data-URI 附件元数据，写入 request_logs.attachments JSONB。
 	Attachments []attachments.AttachmentMetadata
 
-	// 2026-07-11: P1.4 observability metadata (startup migration 379)
-	// Populated at ingress from HTTP request, enriched during routing, preserved through lifecycle.
-	ObservabilityCtx *telemetry.ObservabilityContext
-
 	meta   requestAttemptMeta
 	logged bool
 }
@@ -502,8 +498,6 @@ func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, provid
 	}
 	enrichRequestLogFromMeta(reqLog, c.KeyInfo, &c.meta)
 	applyAutoRouteFields(reqLog, c)
-	// 2026-07-11: P1.4 observability metadata enrichment
-	enrichObservabilityMetadata(reqLog, c)
 	return reqLog
 }
 
