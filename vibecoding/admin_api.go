@@ -338,7 +338,6 @@ func (a *AdminAPI) GetSessionStats(c echo.Context) error {
 func (a *AdminAPI) CreateReview(c echo.Context) error {
 	var req struct {
 		SessionID *int64 `json:"session_id"`
-		TenantID  string `json:"tenant_id" validate:"required"`
 		FilePath  string `json:"file_path"`
 		Language  string `json:"language" validate:"required"`
 		Code      string `json:"code" validate:"required"`
@@ -347,10 +346,13 @@ func (a *AdminAPI) CreateReview(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
+	if admin.GetAuthContext(c.Request()) == nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+	}
 
 	review, err := a.reviewManager.CreateReview(
 		c.Request().Context(),
-		req.SessionID, req.TenantID, req.FilePath, req.Language, req.Code,
+		req.SessionID, admin.EffectiveTenantID(c.Request()), req.FilePath, req.Language, req.Code,
 	)
 	if err != nil {
 		slog.Error("create review failed", "error", err)
