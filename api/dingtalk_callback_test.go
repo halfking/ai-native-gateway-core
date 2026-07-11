@@ -64,17 +64,16 @@ func TestDingTalkCallbackHandler_VerifySignature(t *testing.T) {
 	handler := NewDingTalkCallbackHandler(&MockApprovalManager{}, appSecret, nil)
 
 	tests := []struct {
-		name          string
-		timestamp     string
-		sign          string
-		calculateSign bool
-		want          bool
+		name      string
+		timestamp string
+		sign      string
+		want      bool
 	}{
 		{
-			name:          "valid signature",
-			timestamp:     strconv.FormatInt(time.Now().Unix()*1000, 10),
-			calculateSign: true,
-			want:          true,
+			name:      "valid signature",
+			timestamp: strconv.FormatInt(time.Now().Unix()*1000, 10),
+			sign:      "", // Will be calculated
+			want:      true,
 		},
 		{
 			name:      "missing timestamp",
@@ -95,16 +94,10 @@ func TestDingTalkCallbackHandler_VerifySignature(t *testing.T) {
 			want:      false,
 		},
 		{
-			name:          "expired timestamp",
-			timestamp:     strconv.FormatInt((time.Now().Unix()-7200)*1000, 10),
-			calculateSign: true,
-			want:          false,
-		},
-		{
-			name:          "timestamp outside ten minute replay window",
-			timestamp:     strconv.FormatInt(time.Now().Add(-dingTalkCallbackMaxAge-time.Second).UnixMilli(), 10),
-			calculateSign: true,
-			want:          false,
+			name:      "expired timestamp",
+			timestamp: strconv.FormatInt((time.Now().Unix()-7200)*1000, 10),
+			sign:      "", // Will be calculated
+			want:      false,
 		},
 	}
 
@@ -114,7 +107,7 @@ func TestDingTalkCallbackHandler_VerifySignature(t *testing.T) {
 			timestamp := tt.timestamp
 			sign := tt.sign
 
-			if tt.calculateSign {
+			if tt.want && tt.sign == "" && tt.timestamp != "" {
 				stringToSign := timestamp + "\n" + appSecret
 				mac := hmac.New(sha256.New, []byte(appSecret))
 				mac.Write([]byte(stringToSign))

@@ -765,16 +765,3 @@ dingtalk_callback.go (api/) ← 签名验签 + 转交 Approve/Reject
 
 **审计提交**: `a2d936a8 fix(dingtalk_bot): 审计修复 - 安全/测试/回退逻辑`
 
-### 第三轮安全审计修复（2026-07-11）
-
-| 发现问题 | 严重性 | 修复内容 |
-|---------|--------|---------|
-| 签名比较可能泄露前缀匹配时序 | 中 | 使用 `hmac.Equal` 做常量时间比较 |
-| 1 小时时间戳窗口扩大回调重放风险 | 高 | 收紧为 10 分钟 |
-| HotReload 后旧密钥/白名单仍被回调 handler 使用 | 高 | 每次回调动态读取模块状态、密钥与白名单 |
-| 模块停用后已注册的回调路由仍可处理请求 | 高 | 动态密钥为空时统一拒绝验签 |
-| `allowed_users` 仅显示在设置中，未约束审批动作 | 高 | 在回调处理前实施白名单授权 |
-| App 模式允许缺失 `app_secret` 或 `agent_id` | 中 | 只接受完整 App 凭证，并输出不含敏感值的诊断日志 |
-| `verify_signature=false` 可能被误解为允许无签名回调 | 中 | 明确为停用审批回调，保留强制验签策略 |
-
-**本轮验证**: `go test ./api ./domains/notification ./cmd/gateway -count=1`、`go vet ./api ./domains/notification ./cmd/gateway` 通过。
