@@ -35,7 +35,7 @@ func (s *PgxStore) GetEvent(ctx context.Context, eventID int64) (*Event, error) 
 	var metadataJSON []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, rule_id, rule_name, severity, title, description, source, status, metadata,
-		       detected_at, acked_at, COALESCE(acked_by, ''), resolved_at, COALESCE(resolved_by, ''), created_at, updated_at
+		       detected_at, acked_at, acked_by, resolved_at, resolved_by, created_at, updated_at
 		FROM fault_events WHERE id = $1
 	`, eventID).Scan(
 		&event.ID, &event.RuleID, &event.RuleName, &event.Severity, &event.Title,
@@ -58,7 +58,7 @@ func (s *PgxStore) GetEvent(ctx context.Context, eventID int64) (*Event, error) 
 func (s *PgxStore) GetOpenEventsByRule(ctx context.Context, ruleID int64) ([]Event, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, rule_id, rule_name, severity, title, description, source, status, metadata,
-		       detected_at, acked_at, COALESCE(acked_by, ''), resolved_at, COALESCE(resolved_by, ''), created_at, updated_at
+		       detected_at, acked_at, acked_by, resolved_at, resolved_by, created_at, updated_at
 		FROM fault_events
 		WHERE rule_id = $1 AND status IN ('new', 'acknowledged', 'resolving')
 		ORDER BY detected_at DESC
@@ -118,7 +118,7 @@ func (s *PgxStore) ListEvents(ctx context.Context, status EventStatus, offset, l
 	}
 
 	query := `SELECT id, rule_id, rule_name, severity, title, description, source, status, metadata,
-	                 detected_at, acked_at, COALESCE(acked_by, ''), resolved_at, COALESCE(resolved_by, ''), created_at, updated_at
+	                 detected_at, acked_at, acked_by, resolved_at, resolved_by, created_at, updated_at
 	          FROM fault_events ` + whereClause + `
 	          ORDER BY detected_at DESC
 	          LIMIT $` + offsetPlaceholder(len(args)+1) + ` OFFSET $` + offsetPlaceholder(len(args)+2)

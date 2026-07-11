@@ -24,7 +24,6 @@ package compression
 
 import (
 	"encoding/json"
-	"fmt"
 	"math"
 	"strings"
 )
@@ -39,9 +38,8 @@ type CutPlan struct {
 	// SystemCount is the number of leading system messages (always retained).
 	SystemCount int `json:"system_count"`
 
-	// FirstUserKept is true when the rebuilt output preserves the first
-	// non-system user message verbatim, either in the retained tail or as the
-	// pinned first-user track.
+	// FirstUserKept is true when the first non-system user message is in the
+	// retained tail (not summarised). This preserves task intent.
 	FirstUserKept bool `json:"first_user_kept"`
 
 	// SummariseCount is how many messages will be collapsed into a summary.
@@ -267,7 +265,7 @@ func FindOptimalCutPoint(
 			break
 		}
 	}
-	firstUserKept := true
+	firstUserKept := firstUserIdx < 0 || firstUserIdx >= retainFromIdx
 
 	// Calculate final counts.
 	summariseCount := retainFromIdx
@@ -275,9 +273,6 @@ func FindOptimalCutPoint(
 
 	// Estimate post-compression tokens.
 	tokensAfter := smartWindowSummaryTokenBudget + accumulatedTokens
-	if firstUserIdx >= 0 && firstUserIdx < retainFromIdx {
-		tokensAfter += nonSystem[firstUserIdx].EstToken
-	}
 
 	reason := buildCutReason(retainFromIdx, summariseCount, retainCount, firstUserKept)
 
@@ -294,7 +289,7 @@ func FindOptimalCutPoint(
 }
 
 // SmartCompress applies a CutPlan to a message body and returns the rebuilt
-// body with [system + summary_placeholder + pinned_first_user + retained_tail].
+// body with [system + summary_placeholder + retained_tail].
 //
 // The summaryPlaceholder is injected as a user message so the model knows prior
 // context was collapsed. The actual LLM-generated summary text should be
@@ -310,9 +305,6 @@ func SmartCompress(body []byte, plan CutPlan, protocol string, summaryText strin
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
-	if plan.SystemCount < 0 || plan.SystemCount > len(req.Messages) {
-		return nil, fmt.Errorf("invalid system message count: %d", plan.SystemCount)
-	}
 
 	systemMsgs := req.Messages[:plan.SystemCount]
 	nonSystem := req.Messages[plan.SystemCount:]
@@ -324,7 +316,6 @@ func SmartCompress(body []byte, plan CutPlan, protocol string, summaryText strin
 	} else {
 		tail = nonSystem
 	}
-	pinnedFirstUser := firstUserBeforeCut(nonSystem, plan.CutIndex)
 
 	// Build summary message.
 	summaryContent := smartWindowSummaryPrefix + summaryText
@@ -341,15 +332,10 @@ func SmartCompress(body []byte, plan CutPlan, protocol string, summaryText strin
 		})
 	}
 
-	// Assemble: [system...] + [summary] + [first user, when cut] + [tail...].
-	// Keeping the initial request verbatim prevents lossy summaries from
-	// changing the task intent while still allowing old turns to be dropped.
-	out := make([]json.RawMessage, 0, len(systemMsgs)+2+len(tail))
+	// Assemble: [system...] + [summary] + [tail...]
+	out := make([]json.RawMessage, 0, len(systemMsgs)+1+len(tail))
 	out = append(out, systemMsgs...)
 	out = append(out, summaryMsg)
-	if pinnedFirstUser != nil {
-		out = append(out, pinnedFirstUser)
-	}
 	out = append(out, tail...)
 
 	raw, err := json.Marshal(out)
@@ -358,21 +344,6 @@ func SmartCompress(body []byte, plan CutPlan, protocol string, summaryText strin
 	}
 	generic["messages"] = raw
 	return json.Marshal(generic)
-}
-
-func firstUserBeforeCut(messages []json.RawMessage, cutIndex int) json.RawMessage {
-	if cutIndex <= 0 || cutIndex > len(messages) {
-		return nil
-	}
-	for _, raw := range messages[:cutIndex] {
-		var probe struct {
-			Role string `json:"role"`
-		}
-		if json.Unmarshal(raw, &probe) == nil && probe.Role == "user" {
-			return raw
-		}
-	}
-	return nil
 }
 
 // adjustForToolIntegrity moves the cut boundary backward if it would split

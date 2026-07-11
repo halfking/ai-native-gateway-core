@@ -41,9 +41,6 @@ export default {
   overview: {
     sectionDescription: '模块描述',
     sectionCapabilities: '能力清单',
-    sectionDependencies: '依赖模块',
-    dependencyDisabled: '依赖模块未启用',
-    notEnabled: '未启用',
     sectionRequirements: '依赖模块',
     dependenciesTitle: '依赖模块',
     labelKey: '模块标识',

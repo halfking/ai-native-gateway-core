@@ -41,7 +41,7 @@
 - `callback_url`：审批回调公网地址
   `https://<your-domain>/api/webhooks/dingtalk/approval-callback`，需在钉钉机器人
   「接收消息 / 事件订阅」中配置。
-- `verify_signature`：启用审批回调并强制做 HMAC-SHA256 验签（timestamp + secret）。关闭会停用审批回调，不会允许无签名请求。
+- `verify_signature`：对回调做 HMAC-SHA256 验签（timestamp + secret），防伪造审批。
 
 ### 2.4 系统状态查询
 - `enable_status_query`：允许白名单用户在钉钉中执行 `/status`、`/health` 等指令查询网关状态。
@@ -113,11 +113,3 @@ api/dingtalk_callback.go ── RegisterDingTalkRoutes（签名验签 + agree/re
 | `modules_test.go` required 列表缺 `session_analytics` | 低 | 补充到断言列表 |
 | 部分 locale 文件未完全翻译 | 中 | 项目范围现有问题，非 dingtalk 特有，标注为已知 |
 | `Dependencies` 中 compression/prompt_injection 偏宽泛 | 低 | 依赖设计基于团队一致，暂不改动
-
-## 7. 审计加固（2026-07-11）
-
-- 回调签名改用常量时间比较，重放窗口从 1 小时收紧到 10 分钟。
-- 回调处理器按请求读取当前模块状态、签名密钥和白名单；热更新停用模块、轮换密钥或修改白名单后立即生效。
-- `allowed_users` 现在实际限制审批操作；空名单保持兼容语义，允许所有已通过签名校验的用户。
-- App 模式仅接受同时具备 `app_key`、`app_secret` 与 `agent_id` 的完整配置；不完整配置会记录不含秘密的诊断日志并拒绝初始化。
-- `verify_signature=false` 会停用审批回调，系统不会提供无签名回调降级路径。

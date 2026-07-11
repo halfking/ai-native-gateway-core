@@ -12,7 +12,7 @@ import (
 // promoteHotRequest 手动触发 hot 表迁移请求
 type promoteHotRequest struct {
 	TableName      string `json:"table_name"`      // "request_logs_hot", "usage_ledger_hot" 等
-	RetentionHours *int   `json:"retention_hours"` // 迁移超过 N 小时的数据，默认 168 (7天); 0 表示全部迁移
+	RetentionHours int    `json:"retention_hours"` // 迁移超过 N 小时的数据，默认 168 (7天)
 	BatchSize      int    `json:"batch_size"`      // 每批次迁移行数，默认 1000
 	MaxBatches     int    `json:"max_batches"`     // 最多执行几批，0=不限制
 }
@@ -67,27 +67,15 @@ func (h *Handler) handleDataLifecyclePromoteHot(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	retentionHours := 168
-	if req.RetentionHours != nil {
-		retentionHours = *req.RetentionHours
-	}
-	if retentionHours < 0 {
-		writeError(w, http.StatusBadRequest, "retention_hours must be non-negative")
-		return
+	// 默认值
+	if req.RetentionHours == 0 {
+		req.RetentionHours = 168 // 7 天
 	}
 	if req.BatchSize == 0 {
 		req.BatchSize = 1000
 	}
-	if req.BatchSize < 0 {
-		writeError(w, http.StatusBadRequest, "batch_size must be positive")
-		return
-	}
 	if req.BatchSize > 10000 {
 		req.BatchSize = 10000 // 限制最大批次
-	}
-	if req.MaxBatches < 0 {
-		writeError(w, http.StatusBadRequest, "max_batches must be non-negative")
-		return
 	}
 
 	// 验证表名
@@ -121,14 +109,14 @@ func (h *Handler) handleDataLifecyclePromoteHot(w http.ResponseWriter, r *http.R
 
 	slog.Info("data-lifecycle: manual promote hot table start",
 		"table", req.TableName,
-		"retention_hours", retentionHours,
+		"retention_hours", req.RetentionHours,
 		"batch_size", req.BatchSize,
 		"max_batches", req.MaxBatches)
 
 	// 循环执行迁移，直到没有更多数据或达到批次限制
 	totalMigrated := int64(0)
 	batchCount := 0
-	retentionInterval := fmt.Sprintf("%d hours", retentionHours)
+	retentionInterval := fmt.Sprintf("%d hours", req.RetentionHours)
 
 	for {
 		if ctx.Err() != nil {

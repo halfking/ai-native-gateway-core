@@ -41,9 +41,6 @@ export default {
   overview: {
     sectionDescription: 'الوصف',
     sectionCapabilities: 'الإمكانيات',
-    sectionDependencies: 'التبعيات',
-    dependencyDisabled: 'التبعية معطلة',
-    notEnabled: 'غير مفعّل',
     sectionRequirements: 'التبعيات',
     labelKey: 'مفتاح الوحدة',
     labelDanger: 'مستوى الخطر',
