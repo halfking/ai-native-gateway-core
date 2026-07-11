@@ -10,22 +10,22 @@ import { req } from './_core'
 export interface License {
   id: number
   license_key: string
-  customer: string
+  customer_name: string
+  customer_email: string
   max_devices: number
-  active_devices: number
   expires_at: string
-  status: 'active' | 'expired' | 'revoked'
   created_at: string
-  updated_at: string
+  revoked_at?: string
 }
 
 export interface LicenseDevice {
   id: number
   license_id: number
-  device_id: string
-  hostname: string
+  instance_id: string
+  hardware_hash: string
+  device_name: string
   activated_at: string
-  last_seen: string
+  last_heartbeat?: string
 }
 
 export interface OfflineActivationRequest {
@@ -40,23 +40,26 @@ export interface OfflineActivationRequest {
 }
 
 export async function getLicenses(): Promise<License[]> {
-  return req<License[]>('GET', '/api/admin/licenses')
+  const response = await req<{ licenses: License[] }>('GET', '/api/admin/licenses')
+  return response.licenses
 }
 
 export async function createLicense(data: {
-  customer: string
+  license_key: string
+  customer_name: string
+  customer_email: string
   max_devices: number
   expires_at: string
 }): Promise<License> {
   return req<License>('POST', '/api/admin/licenses', data)
 }
 
-export async function revokeLicense(id: number): Promise<void> {
-  return req<void>('POST', `/api/admin/licenses/${id}/revoke`)
+export async function revokeLicense(licenseKey: string): Promise<void> {
+  return req<void>('POST', `/api/admin/licenses/${encodeURIComponent(licenseKey)}/revoke`)
 }
 
-export async function getLicenseDevices(licenseId: number): Promise<LicenseDevice[]> {
-  return req<LicenseDevice[]>('GET', `/api/admin/licenses/${licenseId}/devices`)
+export async function getLicenseDevices(licenseKey: string): Promise<LicenseDevice[]> {
+  return req<LicenseDevice[]>('GET', `/api/admin/licenses/${encodeURIComponent(licenseKey)}/devices`)
 }
 
 export async function getOfflineActivationRequests(): Promise<OfflineActivationRequest[]> {
@@ -106,11 +109,13 @@ export interface FaultStats {
 }
 
 export async function getFaultEvents(): Promise<FaultEvent[]> {
-  return req<FaultEvent[]>('GET', '/api/admin/faults/events')
+  const response = await req<{ events: FaultEvent[] }>('GET', '/api/admin/faults/events')
+  return response.events
 }
 
 export async function getFaultRules(): Promise<FaultRule[]> {
-  return req<FaultRule[]>('GET', '/api/admin/faults/rules')
+  const response = await req<{ rules: FaultRule[] }>('GET', '/api/admin/faults/rules')
+  return response.rules
 }
 
 export async function createFaultRule(data: Omit<FaultRule, 'id' | 'created_at'>): Promise<FaultRule> {
@@ -130,7 +135,7 @@ export async function getFaultStats(): Promise<FaultStats> {
 }
 
 export async function triggerManualFix(eventId: number): Promise<void> {
-  return req<void>('POST', `/api/admin/faults/events/${eventId}/fix`)
+  return req<void>('POST', `/api/admin/faults/events/${eventId}/resolve`, { actor: 'super_admin' })
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -140,13 +145,17 @@ export async function triggerManualFix(eventId: number): Promise<void> {
 export interface Release {
   id: number
   version: string
-  channel: 'stable' | 'beta' | 'alpha'
-  status: 'draft' | 'published' | 'archived'
+  channel: 'stable' | 'beta' | 'canary'
+  build_seq: number
+  title: string
+  description: string
+  changelog: string
+  image_tag: string
+  image_digest?: string
+  min_version?: string
+  mandatory: boolean
+  created_by: string
   published_at?: string
-  rollout_percentage: number
-  download_url: string
-  checksum: string
-  release_notes: string
   created_at: string
 }
 
@@ -162,24 +171,25 @@ export interface UpgradeLog {
 }
 
 export async function getReleases(): Promise<Release[]> {
-  return req<Release[]>('GET', '/api/admin/releases')
+  const response = await req<{ items: Release[] }>('GET', '/api/admin/releases')
+  return response.items
 }
 
 export async function createRelease(data: Omit<Release, 'id' | 'created_at' | 'published_at'>): Promise<Release> {
   return req<Release>('POST', '/api/admin/releases', data)
 }
 
-export async function publishRelease(id: number, rolloutPercentage: number): Promise<Release> {
-  return req<Release>('POST', `/api/admin/releases/${id}/publish`, { rollout_percentage: rolloutPercentage })
+export async function publishRelease(version: string): Promise<void> {
+  return req<void>('POST', `/api/admin/releases/${encodeURIComponent(version)}/publish`)
 }
 
-export async function rollbackRelease(id: number): Promise<void> {
-  return req<void>('POST', `/api/admin/releases/${id}/rollback`)
+export async function rollbackRelease(targetVersion: string): Promise<void> {
+  return req<void>('POST', '/api/admin/rollback', { target_version: targetVersion })
 }
 
-export async function getUpgradeLogs(releaseId?: number): Promise<UpgradeLog[]> {
-  const path = releaseId ? `/api/admin/releases/${releaseId}/logs` : '/api/admin/releases/logs'
-  return req<UpgradeLog[]>('GET', path)
+export async function getUpgradeLogs(instanceId?: string): Promise<UpgradeLog[]> {
+  const suffix = instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : ''
+  return req<UpgradeLog[]>('GET', `/api/admin/upgrade-logs${suffix}`)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -187,46 +197,46 @@ export async function getUpgradeLogs(releaseId?: number): Promise<UpgradeLog[]> 
 // ────────────────────────────────────────────────────────────────────────────
 
 export interface CenterInstance {
-  id: number
   instance_id: string
   hostname: string
+  ip_address: string
+  region?: string
   version: string
+  build_seq: number
   status: 'online' | 'offline' | 'degraded'
   last_heartbeat: string
-  cpu_usage: number
-  memory_usage: number
-  disk_usage: number
-  uptime_seconds: number
-  created_at: string
+  started_at: string
 }
 
 export interface HeartbeatHistory {
   timestamp: string
-  cpu_usage: number
-  memory_usage: number
-  disk_usage: number
+  uptime_secs: number
+  num_goroutine: number
+  alloc_mb: number
 }
 
 export interface CenterStats {
-  online_count: number
-  offline_count: number
-  degraded_count: number
+  total_instances: number
+  online_instances: number
+  offline_instances: number
+  degraded_instances: number
 }
 
 export async function getCenterInstances(): Promise<CenterInstance[]> {
-  return req<CenterInstance[]>('GET', '/api/admin/center/instances')
+  const response = await req<{ items: CenterInstance[] }>('GET', '/api/admin/center/instances')
+  return response.items
 }
 
 export async function getCenterStats(): Promise<CenterStats> {
-  return req<CenterStats>('GET', '/api/admin/center/stats')
+  return req<CenterStats>('GET', '/api/admin/center/dashboard/stats')
 }
 
-export async function getHeartbeatHistory(instanceId: string, hours: number = 24): Promise<HeartbeatHistory[]> {
-  return req<HeartbeatHistory[]>('GET', `/api/admin/center/instances/${instanceId}/heartbeat?hours=${hours}`)
+export async function getHeartbeatHistory(instanceId: string): Promise<HeartbeatHistory[]> {
+  return req<HeartbeatHistory[]>('GET', `/api/admin/center/instances/${encodeURIComponent(instanceId)}/heartbeats`)
 }
 
-export async function sendCommand(instanceId: string, command: string, params: Record<string, unknown>): Promise<void> {
-  return req<void>('POST', `/api/admin/center/instances/${instanceId}/command`, { command, params })
+export async function sendCommand(instanceId: string, command: string, args: Record<string, string>): Promise<void> {
+  return req<void>('POST', `/api/admin/center/instances/${encodeURIComponent(instanceId)}/command`, { command, args })
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -235,33 +245,35 @@ export async function sendCommand(instanceId: string, command: string, params: R
 
 export interface VibeCodingProject {
   id: number
+  tenant_id: string
   name: string
+  description: string
   language: string
   framework: string
-  status: 'active' | 'archived'
+  status: 'active' | 'archived' | 'deleted'
   created_at: string
   updated_at: string
 }
 
 export interface VibeCodingSession {
   id: number
-  project_id: number
-  session_name: string
-  started_at: string
-  ended_at?: string
-  duration_seconds: number
-  status: 'active' | 'completed'
+  project_id?: number
+  session_id: string
+  task_type: string
+  created_at: string
+  completed_at?: string
+  status: 'active' | 'completed' | 'failed' | 'cancelled'
 }
 
 export interface CodeReview {
   id: number
-  session_id: number
+  session_id?: number
+  tenant_id: string
   language: string
   file_path: string
   score: number
-  issues: CodeIssue[]
-  suggestions: CodeSuggestion[]
-  reviewed_at: string
+  review_result: { issues?: CodeIssue[]; suggestions?: string[] }
+  created_at: string
 }
 
 export interface CodeIssue {
@@ -278,7 +290,8 @@ export interface CodeSuggestion {
 }
 
 export async function getVibeCodingProjects(): Promise<VibeCodingProject[]> {
-  return req<VibeCodingProject[]>('GET', '/api/admin/vibecoding/projects')
+  const response = await req<{ items: VibeCodingProject[] }>('GET', '/api/admin/vibecoding/projects')
+  return response.items
 }
 
 export async function createVibeCodingProject(data: {
@@ -290,19 +303,17 @@ export async function createVibeCodingProject(data: {
 }
 
 export async function getVibeCodingSessions(projectId?: number): Promise<VibeCodingSession[]> {
-  const path = projectId 
-    ? `/api/admin/vibecoding/projects/${projectId}/sessions`
-    : '/api/admin/vibecoding/sessions'
-  return req<VibeCodingSession[]>('GET', path)
+  const suffix = projectId ? `?project_id=${projectId}` : ''
+  const response = await req<{ items: VibeCodingSession[] }>('GET', `/api/admin/vibecoding/sessions${suffix}`)
+  return response.items
 }
 
-export async function createVibeCodingSession(projectId: number, sessionName: string): Promise<VibeCodingSession> {
-  return req<VibeCodingSession>('POST', `/api/admin/vibecoding/projects/${projectId}/sessions`, { session_name: sessionName })
+export async function createVibeCodingSession(projectId: number, taskType: string): Promise<VibeCodingSession> {
+  return req<VibeCodingSession>('POST', '/api/admin/vibecoding/sessions', { project_id: projectId, task_type: taskType })
 }
 
 export async function getCodeReviews(sessionId?: number): Promise<CodeReview[]> {
-  const path = sessionId
-    ? `/api/admin/vibecoding/sessions/${sessionId}/reviews`
-    : '/api/admin/vibecoding/reviews'
-  return req<CodeReview[]>('GET', path)
+  const suffix = sessionId ? `?session_id=${sessionId}` : ''
+  const response = await req<{ items: CodeReview[] }>('GET', `/api/admin/vibecoding/reviews${suffix}`)
+  return response.items
 }
