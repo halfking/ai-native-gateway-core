@@ -1,4 +1,4 @@
--- 360_session_module_executions.sql
+-- 382_session_module_executions.sql
 -- 会话模块执行记录系统（hot 表 + 分区表）
 -- 目的：避免重复执行相同的模块检测/分析任务，提升性能，降低 LLM/DB 压力
 --

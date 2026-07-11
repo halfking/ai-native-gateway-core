@@ -1,4 +1,4 @@
--- 361_dashboard_access_events.sql
+-- 383_dashboard_access_events.sql
 -- Dashboard API 访问事件埋点表（hot + 分区归档）
 --
 -- 目的：
