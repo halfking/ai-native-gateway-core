@@ -81,7 +81,7 @@ func TestDetect_PureContent_PassScoreZero(t *testing.T) {
 	}
 }
 
-// TestDetect_SensitiveWordsHit 命中 3 个敏感词 → 得分 +9 → Decision Warn。
+// TestDetect_SensitiveWordsHit 命中 3 个敏感词 → 得分 +9 → 需要审批。
 func TestDetect_SensitiveWordsHit(t *testing.T) {
 	cfg := DefaultDetectorConfig()
 	cfg.InjectionPatterns = nil
