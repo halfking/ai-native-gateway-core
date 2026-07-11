@@ -960,6 +960,7 @@ func main() {
 			CompactionDeps: compactionDeps,
 		}
 		chatHandler.SetSessionCompressor(compression.NewSessionCompressor(scDeps))
+		chatHandler.SetSessionTurnSnapshotStore(dbConn.Pool())
 		slog.Info("v3 session-level compressor wired (L1 in-mem + L2 Redis + L3 PG)")
 
 		// v5 (2026-06-25) session-aware smart recovery coordinator.

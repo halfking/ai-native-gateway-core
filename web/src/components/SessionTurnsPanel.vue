@@ -38,6 +38,8 @@ watch(() => props.sessionId, load)
 
 const turns = computed<TurnView[]>(() => data.value?.turns ?? [])
 const currentTurn = computed<TurnView | null>(() => turns.value.length ? turns.value[turns.value.length - 1] : null)
+const sessionTitle = computed(() => data.value?.title || props.title || '')
+const sessionSummary = computed(() => data.value?.summary || props.summary || '')
 const historyTurns = computed<TurnView[]>(() => turns.value.length > 1 ? turns.value.slice(0, -1) : [])
 
 // Session-level tags (security/compliance/pii/approval/optimization + OLAP).
@@ -90,7 +92,7 @@ const loadingText = computed(() => {
   <div class="turns-panel">
     <div class="turns-head">
       <h4 class="turns-title">{{ t('sessions.turns.title') }}</h4>
-      <span v-if="title" class="turns-session-title">{{ title }}</span>
+      <span v-if="sessionTitle" class="turns-session-title">{{ sessionTitle }}</span>
     </div>
 
     <!-- Session-level security/compliance/pii chips -->
@@ -114,7 +116,7 @@ const loadingText = computed(() => {
     <!-- Up-to-now summary -->
     <div class="summary-row">
       <span class="summary-label">{{ t('sessions.turns.summaryLabel') }}</span>
-      <span v-if="summary" class="summary-text">{{ summary }}</span>
+      <span v-if="sessionSummary" class="summary-text">{{ sessionSummary }}</span>
       <span v-else class="summary-empty">{{ t('sessions.turns.summaryEmpty') }}</span>
     </div>
 
