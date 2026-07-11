@@ -57,12 +57,16 @@ type DeactivateRequest struct {
 }
 
 type OfflineRequest struct {
-	LicenseKey   string    `json:"license_key"`
-	HardwareHash string    `json:"hardware_hash"`
-	InstanceID   string    `json:"instance_id"`
-	DeviceName   string    `json:"device_name"`
-	RequestID    string    `json:"request_id"`
-	Timestamp    time.Time `json:"timestamp"`
+	LicenseKey     string     `json:"license_key"`
+	HardwareHash   string     `json:"hardware_hash"`
+	InstanceID     string     `json:"instance_id"`
+	DeviceName     string     `json:"device_name"`
+	RequestID      string     `json:"request_id"`
+	Timestamp      time.Time  `json:"timestamp"`
+	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
+	ActivationCode string     `json:"activation_code,omitempty"`
+	Status         string     `json:"status"`
+	RejectReason   string     `json:"reject_reason,omitempty"`
 }
 
 type LicenseModule struct {
