@@ -35,6 +35,11 @@ const borderColor = computed(() => {
   return STATUS_BORDER_COLORS[key] || STATUS_BORDER_COLORS['__default__']
 })
 
+// 文字颜色（原厂色） - 2026-07-13: 使用模型的代表色（vendor color）
+const textColor = computed(() => {
+  return VENDOR_COLORS[props.tile.vendor] || VENDOR_COLORS['__unknown__']
+})
+
 // 时间显示（HH:mm）
 const timeLabel = computed(() => {
   const date = new Date(props.tile.timestamp)
@@ -171,6 +176,7 @@ function handleClick() {
     :style="{
       '--bg-color': bgColor,
       '--border-color': borderColor,
+      '--text-color': textColor,
       '--model-font-size': modelFontSize + 'px',
     }"
     :title="tooltipText"
@@ -244,7 +250,7 @@ function handleClick() {
   font-size: 10px;
   text-align: center;
   line-height: 1.2;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--text-color, rgba(255, 255, 255, 0.9));
   font-weight: 500;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
@@ -254,7 +260,7 @@ function handleClick() {
   text-align: center;
   line-height: 1.2;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.95);
+  color: var(--text-color, rgba(255, 255, 255, 0.95));
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -268,7 +274,7 @@ function handleClick() {
   font-size: 9px;
   text-align: center;
   line-height: 1.2;
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--text-color, rgba(255, 255, 255, 0.8));
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   white-space: nowrap;
   overflow: hidden;
@@ -280,7 +286,7 @@ function handleClick() {
   text-align: center;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--text-color, rgba(255, 255, 255, 0.85));
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   font-weight: 500;
 }
