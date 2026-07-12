@@ -204,7 +204,7 @@ func (c *TransportIRConverter) restoreExtensions(body []byte, ext map[string]jso
 // restoreRequestExtensions conditionally restores request extensions based on
 // SourceProtocol and catalog code hints.
 func (c *TransportIRConverter) restoreRequestExtensions(body []byte, req *ir.InternalRequest, targetProtocol string) []byte {
-	if req == nil || req.SourceProtocol != targetProtocol {
+	if req == nil || (req.SourceProtocol != "" && req.SourceProtocol != targetProtocol) {
 		return body
 	}
 	// Check catalog code hint if available
