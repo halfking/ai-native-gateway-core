@@ -10,7 +10,7 @@
 # REGISTRY: pass --build-arg REGISTRY=<your-registry> to override.
 # Default is empty to use local images (kx-base:*) without registry prefix.
 # Production builds pass REGISTRY=registry.kxpms.cn/ via --build-arg
-# (registry.kxpms.cn = 8.136.114.245, kaixuan/<ADMIN_PASSWORD_REDACTED>).
+# (registry.kxpms.cn = 8.136.114.245, kaixuan/<ADMIN_PASSWORD>).
 # Dev/test builds on the 245 server use REGISTRY=registry.itestu.cn/
 # (= 192.168.31.8:5000).
 ARG REGISTRY=""

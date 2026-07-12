@@ -10,7 +10,7 @@
 #   ./scripts/local-up.sh --no-v1     # 不启动 v1 (只起 v2)
 #
 # 启动后:
-#   PG:       localhost:5432  (kxuser/<TEST_DB_PASSWORD_REDACTED>, db=llm_gateway)
+#   PG:       localhost:5432  (kxuser/<TEST_DB_PASSWORD>, db=llm_gateway)
 #   Redis:    localhost:6379
 #   Mock:     http://localhost:18080  (真 OpenAI 兼容)
 #   v1 GW:    http://localhost:8781   (cmd/gateway 生产入口)
@@ -97,7 +97,7 @@ if [ "$DEPS_ONLY" = "1" ]; then
   echo "    v1: $COMPOSE_CMD -f $COMPOSE_FILE up -d gateway"
   echo "    v2: $COMPOSE_CMD -f $COMPOSE_FILE up -d gateway-v2"
   echo "  或直接 go run:"
-  echo "    LLM_GATEWAY_DATABASE_URL=postgres://kxuser:<TEST_DB_PASSWORD_REDACTED>@localhost:5432/llm_gateway?sslmode=disable \\"
+  echo "    LLM_GATEWAY_DATABASE_URL=postgres://kxuser:<TEST_DB_PASSWORD>@localhost:5432/llm_gateway?sslmode=disable \\"
   echo "    LLM_GATEWAY_REDIS_ADDR=localhost:6379 LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw \\"
   echo "    go run ./cmd/gateway"
   exit 0
@@ -149,7 +149,7 @@ fi
 echo
 ok "本地环境就绪"
 echo
-echo "  PG:       localhost:5432  (kxuser/<TEST_DB_PASSWORD_REDACTED>, db=llm_gateway)"
+echo "  PG:       localhost:5432  (kxuser/<TEST_DB_PASSWORD>, db=llm_gateway)"
 echo "  Redis:    localhost:6379"
 echo "  Mock:     http://localhost:18080  (真 OpenAI 兼容)"
 echo "  v1 GW:    http://localhost:8781   (cmd/gateway 生产入口)"

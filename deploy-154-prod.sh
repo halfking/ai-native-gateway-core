@@ -11,11 +11,19 @@
 
 set -euo pipefail
 
+# ── 前置 (HARD-GATE): DEPLOY_SSH_PASS 必须从 env 注入，不再硬编码 ─────────
+if [ -z "${DEPLOY_SSH_PASS:-}" ]; then
+  err "必须设置 DEPLOY_SSH_PASS 环境变量（密码已不再硬编码）"
+  echo "  示例: export DEPLOY_SSH_PASS='<your-password>'"
+  echo "  推荐: 使用 ~/.ssh/id_ed25519 密钥登录"
+  exit 1
+fi
+
 # ── 配置 ──────────────────────────────────────────────────────
 SSH_HOST="47.97.111.154"
 SSH_PORT="25022"
 SSH_USER="root"
-SSH_PASS="<SSH_PASSWORD_REDACTED>"
+SSH_PASS="${DEPLOY_SSH_PASS}"
 REMOTE_DIR="/opt/llm-gateway-go"
 BINARY_NAME="llm-gateway-go"
 
