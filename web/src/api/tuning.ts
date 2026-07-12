@@ -993,3 +993,111 @@ export function triggerTuningAnalyze() {
   // TuningView.vue catch handler will show the error to the user.
   return req<TriggerTuningAnalyzeResponse>('POST', '/api/admin/auto-route/tuning/analyze')
 }
+// ── Data Lifecycle Async Jobs (2026-07-13) ──────────────────────────
+// 长耗时操作统一走 async job registry：POST 后返回 run_id，立即可关浏览器，
+// 前端通过轮询 `/jobs/:run_id` 拿到实时进度与 ETA。
+// 涵盖：hot/promote、vacuum、reindex、drop partition。
+
+export type JobType =
+  | 'promote_hot'
+  | 'drop_partition'
+  | 'vacuum'
+  | 'vacuum_full'
+  | 'reindex'
+  | 'blob_cleanup'
+  | 'attachment_cleanup'
+
+export type JobStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+
+export interface JobProgress {
+  done: number
+  total: number
+  percent: number
+  batches: number
+  bytes_done?: number
+  bytes_total?: number
+  message?: string
+}
+
+export interface JobRun {
+  run_id: string
+  op: JobType
+  status: JobStatus
+  params?: Record<string, any>
+  progress?: JobProgress
+  result?: Record<string, any>
+  error?: string
+  message?: string
+  started_at?: string
+  heartbeat_at?: string
+  finished_at?: string
+  duration_ms: number
+  operator?: string
+}
+
+export interface JobListResponse {
+  running: JobRun[]
+  history: JobRun[]
+}
+
+export interface PromoteHotResponse {
+  run_id: string
+  table_name: string
+  status: string
+  async: boolean
+  polling_url: string
+  started_at: string
+  message: string
+}
+
+export interface DropPartitionResponse {
+  run_id: string
+  status: string
+  async: boolean
+  polling_url: string
+  message: string
+}
+
+export function promoteHotTable(body: {
+  table_name: string
+  retention_hours?: number
+  batch_size?: number
+  max_batches?: number
+}) {
+  return req<PromoteHotResponse>('POST', '/api/admin/data-lifecycle/hot/promote', body)
+}
+
+export function dropPartition(body: { partition_name: string; confirm: boolean }) {
+  return req<DropPartitionResponse>('POST', '/api/admin/data-lifecycle/partitions/drop', body)
+}
+
+export function listLifecycleJobs(limit = 20) {
+  return req<JobListResponse>('GET', `/api/admin/data-lifecycle/jobs?limit=${limit}`)
+}
+
+export function getLifecycleJob(runId: string) {
+  return req<JobRun>('GET', `/api/admin/data-lifecycle/jobs/${runId}`)
+}
+
+export function tableVacuum(table: string, schema = 'public') {
+  return req<{ run_id: string; async: boolean; polling_url: string }>(
+    'POST', '/api/admin/data-lifecycle/storage/tables/vacuum', { schema, table }
+  )
+}
+
+export function tableVacuumFull(table: string, schema = 'public') {
+  return req<{ run_id: string; async: boolean; polling_url: string }>(
+    'POST', '/api/admin/data-lifecycle/storage/tables/vacuum-full', { schema, table }
+  )
+}
+
+export function tableReindex(table: string, schema = 'public') {
+  return req<{ run_id: string; async: boolean; polling_url: string }>(
+    'POST', '/api/admin/data-lifecycle/storage/tables/reindex', { schema, table }
+  )
+}
