@@ -18,6 +18,9 @@ const emit = defineEmits<{
   openDetail: [requestId: string]
 }>()
 
+// 2026-07-13: 探测过滤器状态（全部 / 仅探测）
+const probeFilter = ref<'all' | 'probe_only'>('all')
+
 // 解构出 reconnect —— 保存新 URL 后立即用新地址重连，不再只是 localStorage 默默记住
 const { 
   snapshot: liveSnapshot,
@@ -222,6 +225,17 @@ function handleTileClick(requestId: string) {
 function handleToggleLegend(key: string) {
   toggleLegend(key)
 }
+
+// 2026-07-13: 过滤泳道（"仅探测"过滤器）
+const filteredLanes = computed(() => {
+  if (probeFilter.value === 'all') return lanes.value
+  return lanes.value
+    .map(lane => ({
+      ...lane,
+      requests: lane.requests.filter(r => r.is_probe === true),
+    }))
+    .filter(lane => lane.requests.length > 0)
+})
 </script>
 
 <template>
@@ -256,6 +270,28 @@ function handleToggleLegend(key: string) {
             @click="handleGroupByChange('model')"
           >
             按模型
+          </button>
+        </div>
+
+        <!-- 2026-07-13: 探测过滤器 (仅探测/全部) -->
+        <div class="control-group">
+          <button
+            type="button"
+            class="control-btn"
+            :class="{ 'control-btn--active': probeFilter === 'all' }"
+            @click="probeFilter = 'all'"
+            title="显示所有请求（默认）"
+          >
+            全部
+          </button>
+          <button
+            type="button"
+            class="control-btn control-btn--probe"
+            :class="{ 'control-btn--active': probeFilter === 'probe_only' }"
+            @click="probeFilter = 'probe_only'"
+            title="仅显示主动探测请求"
+          >
+            🛡️ 仅探测
           </button>
         </div>
         
@@ -349,7 +385,7 @@ function handleToggleLegend(key: string) {
     <!-- 泳道区域 -->
     <div class="swim-lanes">
       <SwimLane
-        v-for="lane in lanes"
+        v-for="lane in filteredLanes"
         :key="lane.id"
         :lane="lane"
         :group-by="groupBy"
@@ -357,8 +393,13 @@ function handleToggleLegend(key: string) {
         @tile-click="handleTileClick"
         @emergency-diagnose="handleEmergencyDiagnose"
       />
-      <div v-if="lanes.length === 0" class="swim-lanes__empty">
-        暂无请求数据
+      <div v-if="filteredLanes.length === 0" class="swim-lanes__empty">
+        <template v-if="probeFilter === 'probe_only'">
+          暂无探测请求（连续失败 ≥2 次会触发主动探测）
+        </template>
+        <template v-else>
+          暂无请求数据
+        </template>
       </div>
     </div>
 
@@ -440,6 +481,16 @@ function handleToggleLegend(key: string) {
   background: rgba(99, 102, 241, 0.15);
   border-color: var(--accent, #6366f1);
   color: var(--accent, #6366f1);
+}
+
+/* 2026-07-13: 探测过滤器按钮专用样式 */
+.control-btn--probe {
+  border-color: rgba(64, 158, 255, 0.4);
+}
+.control-btn--probe.control-btn--active {
+  background: rgba(64, 158, 255, 0.18);
+  border-color: #1890ff;
+  color: #1890ff;
 }
 
 .connection-status {

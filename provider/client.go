@@ -771,7 +771,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(mo.active_sessions, 0)::int AS active_sessions,
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
 			COALESCE(mo.currency, 'USD') AS currency,
-			COALESCE(mo.billing_mode, 'token') AS billing_mode,
+			COALESCE(mo.billing_mode, 'per_token') AS billing_mode,
 			mo.raw_model_name,
 			mc.context_window,
 			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
@@ -865,7 +865,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		      )
 		  )
 		ORDER BY
-			CASE COALESCE(mo.billing_mode, 'token')
+			CASE COALESCE(mo.billing_mode, 'per_token')
 				WHEN 'free' THEN 1
 				WHEN 'token_plan' THEN 1
 				WHEN 'code_plan' THEN 1

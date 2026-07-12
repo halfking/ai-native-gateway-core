@@ -60,6 +60,14 @@ const modelFontSize = computed(() => {
 
 // 第二行内容（根据分组模式）
 const line2Content = computed(() => {
+  // 2026-07-13: 探测请求优先显示 🛡️ 标识
+  if (props.tile.is_probe) {
+    const origin = props.tile.probe_origin === 'gateway' ? 'GW' : 
+                   props.tile.probe_origin === 'scheduled' ? 'SCHED' : 'DIRECT'
+    const attempt = props.tile.probe_attempt ? `#${props.tile.probe_attempt}` : ''
+    return `🛡️ ${origin}${attempt}`
+  }
+  
   if (props.groupBy === 'vendor') {
     return truncateText(props.tile.model, 12)
   }
@@ -80,6 +88,16 @@ const line2Content = computed(() => {
 // 完整的 tooltip 信息
 const tooltipText = computed(() => {
   const lines: string[] = []
+  // 2026-07-13: 探测请求优先显示探测元数据
+  if (props.tile.is_probe) {
+    lines.push('🛡️ 探测请求')
+    const originLabel = props.tile.probe_origin === 'gateway' ? '网关路径' :
+                        props.tile.probe_origin === 'scheduled' ? '定时探测' : '直连上游'
+    lines.push(`来源: ${originLabel}`)
+    if (props.tile.probe_attempt) {
+      lines.push(`轮次: 第 ${props.tile.probe_attempt} 轮`)
+    }
+  }
   // 状态/错误信息优先
   if (props.tile.status === 'failure') {
     if (props.tile.error_kind) {

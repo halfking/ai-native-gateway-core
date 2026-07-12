@@ -34,7 +34,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1286,45 +1285,12 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 		out.Status = status
 	}
 
-	// 2026-07-13: 主动探测 pill — entry.TaskType=='probe_triggered'
-	// 触发 IsProbe=true，origin/attempt 从 entry.TaskTypeChosen 和
-	// entry.AutoDecision JSONB 解析。详见 admin/probe_request_info.go
-	// 注释（probe_request_info.go 的 extractProbeInfo 是为该函数准备的
-	// 辅助函数；本文件未 import 该 symbol 是为了避免循环依赖）。
-	if entry != nil && entry.TaskType != nil && *entry.TaskType == "probe_triggered" {
-		out.IsProbe = true
-		origin := "direct"
-		if entry.TaskTypeChosen != nil {
-			switch *entry.TaskTypeChosen {
-			case "probe_direct":
-				origin = "direct"
-			case "probe_gateway":
-				origin = "gateway"
-			case "probe_scheduled":
-				origin = "scheduled"
-			}
-		}
-		out.ProbeOrigin = origin
-		if entry.AutoDecision != nil && *entry.AutoDecision != "" {
-			var meta map[string]any
-			if err := json.Unmarshal([]byte(*entry.AutoDecision), &meta); err == nil {
-				if v, ok := meta["probe_attempt"].(float64); ok {
-					out.ProbeAttempt = int(v)
-				} else if v, ok := meta["probe_attempt"].(int); ok {
-					out.ProbeAttempt = v
-				}
-			}
-		}
-		if out.ProbeAttempt == 0 && entry.QualityFlags != nil {
-			for _, f := range entry.QualityFlags {
-				if len(f) > 8 && f[:8] == "attempt_" {
-					if n, err := strconv.Atoi(f[8:]); err == nil && n > out.ProbeAttempt {
-						out.ProbeAttempt = n
-					}
-				}
-			}
-		}
-	}
+	// 2026-07-13: 主动探测 pill — 见 admin/probe_request_info.go 的 extractProbeInfo
+	// （admin 包内直接调用，无需 import；同一文件内定义保持内聚）。
+	probe := extractProbeInfo(entry)
+	out.IsProbe = probe.IsProbe
+	out.ProbeOrigin = probe.ProbeOrigin
+	out.ProbeAttempt = probe.ProbeAttempt
 
 	return out
 }
