@@ -1,23 +1,12 @@
 #!/usr/bin/env bash
 # deploy-154-quick.sh — Fast deploy: rebuild Go binary + web dist and upload both.
 # Use this when both Go and frontend changed (or just for safety).
-#
-# 前置 (HARD-GATE):
-#   export DEPLOY_SSH_PASS='<your-password>'   # 密码已不再硬编码
 set -euo pipefail
-
-# ── 前置 (HARD-GATE): DEPLOY_SSH_PASS 必须从 env 注入 ─────────
-if [ -z "${DEPLOY_SSH_PASS:-}" ]; then
-  echo "✗ 必须设置 DEPLOY_SSH_PASS 环境变量（密码已不再硬编码）" >&2
-  echo "  示例: export DEPLOY_SSH_PASS='<your-password>'" >&2
-  echo "  推荐: 使用 ~/.ssh/id_ed25519 密钥登录" >&2
-  exit 1
-fi
 
 SSH_HOST="47.97.111.154"
 SSH_PORT="25022"
 SSH_USER="root"
-SSH_PASS="${DEPLOY_SSH_PASS}"
+SSH_PASS='Kaixuan2026&#*9527'
 REMOTE_DIR="/opt/llm-gateway-go"
 BINARY_NAME="llm-gateway-go"
 export SSHPASS="$SSH_PASS"
