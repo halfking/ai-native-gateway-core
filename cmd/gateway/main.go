@@ -260,7 +260,12 @@ func main() {
 		audit.NewJSONSink(10000),
 	)
 
-	upClient := upstream.New()
+	// OPT-4 (2026-07-12): use 0 internal retries so retry decisions are
+	// owned entirely by the routing executor (which can switch credentials,
+	// skip client-bug kinds, and update health state). The previous default
+	// of 2 inner retries × N candidate retries could amplify a single
+	// failure to 6×N upstream dials.
+	upClient := upstream.NewWithRetries(0)
 	slog.Info("upstream proxy resolver initialised",
 		"proxy_configured", upClient.ProxyStatus()["proxy"] != "",
 		"domestic_hosts", len(upClient.ProxyStatus()["domestic"].([]string)),
@@ -394,11 +399,14 @@ func main() {
 			"platform_specs", len(settings.Global.AllSpecs()),
 			"auto_control_specs", len(settings.AutoControlSpecs()))
 
-		// 2026-07-02: 打通 settings_kv ↔ logging。
-		// 启动时 settings 已注册 log.* spec，读取 DB 中的覆盖值并应用到
-		// 已初始化的 lumberjack writer（热加载，无需重启）。
-		// 这样运维在 UI 改 log.max_size_mb 等配置后，重启即生效；
-		// 运行时改则通过 /api/admin/logs/config 的 Reconfigure 即时生效。
+		// AUDIT-2 / AUDIT-3 (2026-07-12): 启动时同步 rate_limit.enabled 到
+		// ratelimit 包内的 atomic.Bool 缓存，热路径不再读 settings KV。
+		// 后续通过 admin /api/settings 更新后，由对应的 onChange 回调触发
+		// ratelimit.SetRateLimitEnabled(v) 更新缓存。
+		syncRateLimitGateFromSettings()
+
+		// 2026-07-02: apply persisted log.* settings after the registry is
+		// initialized. Keep this independent from the rate-limit gate sync.
 		applyLogSettingsToLogging()
 
 		// Phase 3.2: Provider-level settings resolver
@@ -2978,6 +2986,41 @@ func (a *irAdapter) SerializeResponses(chunk *ir.StreamChunk, itemID string) str
 
 func (a *irAdapter) SerializeResponsesResponse(irResp *ir.InternalResponse, clientModel string) ([]byte, error) {
 	return ir.SerializeResponsesResponse(irResp, clientModel)
+}
+
+// syncRateLimitGateFromSettings reads the current rate_limit.enabled setting
+// from settings.Global and applies it to ratelimit's atomic.Bool cache. The
+// cache is checked on every request hot-path (Limiter / FpSlot / RPM /
+// Executor sticky override) so we never hit the settings backend during a
+// request.
+//
+// Called once at startup. Runtime changes go through the admin /api/settings
+// endpoint which invalidates the registry; the registry's onChange hook
+// should also call ratelimit.SetRateLimitEnabled(v) (see
+// admin/modules.go:236 / settings/spec_modules.go:793).
+//
+// Errors are intentionally non-fatal: if the registry / spec is missing,
+// we keep the default (enabled=true) which matches settings/spec_modules.go.
+func syncRateLimitGateFromSettings() {
+	if settings.Global == nil {
+		return
+	}
+	sp := settings.Global.Spec(ratelimit.RateLimitGateKey)
+	if sp == nil {
+		// Spec not yet registered — keep the package default (enabled).
+		return
+	}
+	v, _, err := settings.Global.EffectiveValue(sp.Scope, ratelimit.RateLimitGateKey, "")
+	if err != nil || len(v) == 0 {
+		return
+	}
+	var b bool
+	if err := json.Unmarshal(v, &b); err != nil {
+		slog.Debug("rate_limit.enabled: failed to unmarshal", "raw", string(v))
+		return
+	}
+	ratelimit.SetRateLimitEnabled(b)
+	slog.Info("rate_limit.enabled initialised", "enabled", b)
 }
 
 // applyLogSettingsToLogging 从 settings_kv 读取 log.* 配置并应用到已初始化的

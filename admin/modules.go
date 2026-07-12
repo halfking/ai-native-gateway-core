@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -905,6 +906,9 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusConflict, err.Error())
 				return
 			}
+			if found.SettingKey == ratelimit.RateLimitGateKey {
+				ratelimit.SetRateLimitEnabled(true)
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":   "ok",
 				"enabled":  true,
@@ -919,6 +923,9 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 	if _, err := store.Set(sp.Scope, found.SettingKey, body.Enabled); err != nil {
 		writeError(w, http.StatusInternalServerError, "save failed: "+err.Error())
 		return
+	}
+	if found.SettingKey == ratelimit.RateLimitGateKey {
+		ratelimit.SetRateLimitEnabled(body.Enabled)
 	}
 
 	statusStr := "禁用"
