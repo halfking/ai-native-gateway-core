@@ -281,7 +281,7 @@ describe('PromptInjectionConfigPanel', () => {
     await new Promise((r) => setTimeout(r, 700))
     await flushPromises()
     expect(updatePolicyMock).toHaveBeenCalled()
-    const sent = (updatePolicyMock.mock.calls as any[])[(updatePolicyMock.mock.calls as any[]).length - 1][0]
+    const sent = updatePolicyMock.mock.calls.at(-1)![0]
     expect(sent.enabled).toBe(false)
     expect(sent.detection_mode).toBe('enforce')
   })

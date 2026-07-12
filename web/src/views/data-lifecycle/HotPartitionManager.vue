@@ -406,18 +406,16 @@ const cronStats = ref<{
 // Hot 表数据
 const hotTables = ref<HotTable[]>([
   {
-    label: 'request_logs_hot',
     name: 'request_logs_hot',
     label: 'requestLogs',
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
     rows: 0,
-    retentionHours: 24, // 2026-07-13: 默认改为 1 天
+    retentionHours: 24,
     migrating: false,
   },
   {
-    label: 'credential_model_index_hot',
     name: 'credential_model_index_hot',
     label: 'credentialModelIndex',
     sizeHuman: '—',
@@ -428,7 +426,6 @@ const hotTables = ref<HotTable[]>([
     migrating: false,
   },
   {
-    label: 'usage_ledger_hot',
     name: 'usage_ledger_hot',
     label: 'usageLedger',
     sizeHuman: '—',
@@ -439,7 +436,6 @@ const hotTables = ref<HotTable[]>([
     migrating: false,
   },
   {
-    label: 'routing_decision_log_hot',
     name: 'routing_decision_log_hot',
     label: 'routingDecisionLog',
     sizeHuman: '—',
@@ -748,24 +744,41 @@ async function executeDelete() {
   deleting.value = true
 
   try {
-    const res = await req<any>('POST', '/api/admin/data-lifecycle/partitions/drop', {
+    // 2026-07-13: 改用异步 drop partition 接口 + 轮询
+    const startRes = await req<any>('POST', '/api/admin/data-lifecycle/partitions/drop-async', {
       partition_name: partition.name,
       confirm: true,
     })
+    const jobId = startRes.job_id
 
-    ElMessage.success({
-      message: t('dataLifecycle.hotPartition.deleteModal.success', {
-        message: res.message,
-        size: res.space_freed_human,
-      }),
-      duration: 6000,
-    })
-
-    // 从列表中移除
-    partitions.value = partitions.value.filter((p) => p.name !== partition.name)
-    // 刷新分区表统计（archivable_count、total_partitions）
-    await loadPartitionTables()
-    deleteConfirm.value = null
+    // 每 2 秒轮询一次直到终态
+    let finished = false
+    let lastError = ''
+    while (!finished) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const job = await req<any>('GET', `/api/admin/data-lifecycle/jobs/${jobId}`)
+      if (['success', 'failed', 'cancelled'].includes(job.status)) {
+        finished = true
+        if (job.status === 'success') {
+          const spaceFreed = job.result?.space_freed_human || ''
+          ElMessage.success({
+            message: t('dataLifecycle.hotPartition.deleteModal.success', {
+              message: job.message,
+              size: spaceFreed,
+            }),
+            duration: 6000,
+          })
+          partitions.value = partitions.value.filter((p) => p.name !== partition.name)
+          await loadPartitionTables()
+          deleteConfirm.value = null
+        } else {
+          lastError = job.error || job.message || 'unknown error'
+        }
+      }
+    }
+    if (lastError) {
+      throw new Error(lastError)
+    }
   } catch (err: any) {
     const msg = err.response?.data?.error || err.message || ''
     ElMessage.error({

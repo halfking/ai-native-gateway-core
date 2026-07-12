@@ -342,8 +342,12 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		if isMissingRelationError(err) {
-			reportMissingRelation(slog.Default(), "usageHotKeys", err)
+			view := reportMissingRelation(slog.Default(), "usageHotKeys", err)
 			writeJSON(w, http.StatusOK, []any{})
+			slog.Warn("dashboard hot-keys query degraded: missing optional view",
+				"relation", view,
+				"hint", missingRelationHint(view),
+			)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "hot-keys query failed: "+err.Error())
@@ -449,8 +453,12 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		if isMissingRelationError(err) {
-			reportMissingRelation(slog.Default(), "usageByProvider", err)
+			view := reportMissingRelation(slog.Default(), "usageByProvider", err)
 			writeJSON(w, http.StatusOK, []any{})
+			slog.Warn("dashboard by-provider query degraded: missing optional view",
+				"relation", view,
+				"hint", missingRelationHint(view),
+			)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "by-provider query failed: "+err.Error())
@@ -547,8 +555,12 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		if isMissingRelationError(err) {
-			reportMissingRelation(slog.Default(), "usageByModel", err)
+			view := reportMissingRelation(slog.Default(), "usageByModel", err)
 			writeJSON(w, http.StatusOK, []any{})
+			slog.Warn("dashboard by-model query degraded: missing optional view",
+				"relation", view,
+				"hint", missingRelationHint(view),
+			)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "by-model query failed: "+err.Error())
@@ -641,6 +653,13 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 		`
 	}
 
+	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "by-key query failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
 	type keyUsage struct {
 		APIKeyID         *int    `json:"api_key_id"`
 		KeyPrefix        *string `json:"key_prefix"`
@@ -649,19 +668,6 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 		PromptTokens     int     `json:"prompt_tokens"`
 		CompletionTokens int     `json:"completion_tokens"`
 	}
-
-	rows, err := h.db.Query(ctx, query, args...)
-	if err != nil {
-		if isMissingRelationError(err) {
-			reportMissingRelation(slog.Default(), "usageByKey", err)
-			writeJSON(w, http.StatusOK, []keyUsage{})
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "by-key query failed: "+err.Error())
-		return
-	}
-	defer rows.Close()
-
 	usage := make([]keyUsage, 0)
 	for rows.Next() {
 		var u keyUsage
@@ -963,14 +969,6 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 
 	// generate_series fills buckets with zero rows so the trend chart
 	// never skips empty days/weeks/months (avoids misleading line segments).
-	type trendEntry struct {
-		Period           string  `json:"period"`
-		Requests         int     `json:"requests"`
-		PromptTokens     int     `json:"prompt_tokens"`
-		CompletionTokens int     `json:"completion_tokens"`
-		TotalTokens      int     `json:"total_tokens"`
-		CostUSD          float64 `json:"cost_usd"`
-	}
 	rows, err := h.db.Query(ctx, `
 		WITH buckets AS (
 			SELECT generate_series(
@@ -1001,16 +999,19 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 		ORDER BY b.bucket
 	`, period, keyID, dateFormat, startTime, endTime)
 	if err != nil {
-		if isMissingRelationError(err) {
-			reportMissingRelation(slog.Default(), "usageKeyTrend", err)
-			writeJSON(w, http.StatusOK, []trendEntry{})
-			return
-		}
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	defer rows.Close()
 
+	type trendEntry struct {
+		Period           string  `json:"period"`
+		Requests         int     `json:"requests"`
+		PromptTokens     int     `json:"prompt_tokens"`
+		CompletionTokens int     `json:"completion_tokens"`
+		TotalTokens      int     `json:"total_tokens"`
+		CostUSD          float64 `json:"cost_usd"`
+	}
 	trends := make([]trendEntry, 0)
 	for rows.Next() {
 		var t trendEntry
@@ -1105,17 +1106,6 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	tid := EffectiveTenantID(r)
 
-	type appUsage struct {
-		ApplicationCode  string  `json:"application_code"`
-		RequestCount     int     `json:"request_count"`
-		TotalCostUSD     float64 `json:"total_cost_usd"`
-		TotalTokens      int     `json:"total_tokens"`
-		PromptTokens     int     `json:"prompt_tokens"`
-		CompletionTokens int     `json:"completion_tokens"`
-		UniqueKeys       int     `json:"unique_keys"`
-		UniqueModels     int     `json:"unique_models"`
-	}
-
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			COALESCE(app.code, 'unknown') AS application_code,
@@ -1134,16 +1124,21 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 		ORDER BY total_cost_usd DESC
 	`, days, tid)
 	if err != nil {
-		if isMissingRelationError(err) {
-			reportMissingRelation(slog.Default(), "usageByApplication", err)
-			writeJSON(w, http.StatusOK, []appUsage{})
-			return
-		}
 		writeError(w, http.StatusInternalServerError, "by-application query failed: "+err.Error())
 		return
 	}
 	defer rows.Close()
 
+	type appUsage struct {
+		ApplicationCode  string  `json:"application_code"`
+		RequestCount     int     `json:"request_count"`
+		TotalCostUSD     float64 `json:"total_cost_usd"`
+		TotalTokens      int     `json:"total_tokens"`
+		PromptTokens     int     `json:"prompt_tokens"`
+		CompletionTokens int     `json:"completion_tokens"`
+		UniqueKeys       int     `json:"unique_keys"`
+		UniqueModels     int     `json:"unique_models"`
+	}
 	usage := make([]appUsage, 0)
 	for rows.Next() {
 		var u appUsage
@@ -1255,25 +1250,6 @@ func (h *Handler) usageByTenant(w http.ResponseWriter, r *http.Request) {
 		&u.TotalCostUSD, &u.UniqueKeys, &u.UniqueModels, &u.UniqueApps,
 	)
 	if err != nil {
-		if isMissingRelationError(err) {
-			view := reportMissingRelation(slog.Default(), "usageTenantUsage", err)
-			writeJSON(w, http.StatusOK, map[string]any{
-				"tenant_id":               tenantID,
-				"days":                    days,
-				"total_requests":          0,
-				"total_prompt_tokens":     0,
-				"total_completion_tokens": 0,
-				"total_cost_usd":          0.0,
-				"unique_keys":             0,
-				"unique_models":           0,
-				"unique_applications":     0,
-				"degraded":                true,
-				"missing_view":            view,
-				"error_code":              "VIEW_MISSING",
-				"hint":                    missingRelationHint(view),
-			})
-			return
-		}
 		writeError(w, http.StatusInternalServerError, "tenant usage query failed: "+err.Error())
 		return
 	}

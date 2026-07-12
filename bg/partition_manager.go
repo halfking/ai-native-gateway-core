@@ -27,17 +27,17 @@ const DefaultPromoteInterval = 1 * time.Hour
 // are eligible to be migrated to the matching monthly partition by the
 // promote_*_default_batch functions installed in migration 336.
 //
-// Application-layer UPDATE/DELETE happens within seconds/minutes of the
-// initial INSERT, so 7 days comfortably covers any in-flight mutation.
-// If this constant is changed, also re-evaluate whether application-layer
-// writes still fit inside the window.
+// Changed from 7d to 24h on 2026-07-13 per product adjustment: hot tables
+// now only keep 1 day of data. Application-layer UPDATE/DELETE typically
+// completes within seconds/minutes, so 24h still comfortably covers
+// in-flight mutations.
 //
 // Per-table retention windows can be overridden via settings_kv:
 //   - probe.hot_retention_hours (default 24)
 //
 // The PartitionManager reads these on every promote cycle so changes
 // take effect on the next tick (no restart required, true hot reload).
-const DefaultRetentionWindow = 7 * 24 * time.Hour
+const DefaultRetentionWindow = 24 * time.Hour
 
 // defaultProbeHotRetention is the default retention for model_probe_runs_hot
 // when settings.Global is nil or the key is missing. Mirrors the value in
@@ -360,7 +360,7 @@ func promoteSpecs() []archiveSpec {
 //   - probe.hot_retention_hours (default 24h)
 //   - probe.promote_batch_size (default 5000)
 //
-// All other tables use DefaultRetentionWindow (7d) and promoteBatchSize
+// All other tables use DefaultRetentionWindow (24h) and promoteBatchSize
 // (5000) constants. Settings changes take effect on the next tick — no
 // restart required.
 //
