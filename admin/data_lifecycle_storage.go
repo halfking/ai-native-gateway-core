@@ -779,18 +779,9 @@ func (h *Handler) runTableMaintenanceJob(ctx context.Context, run *JobRun, schem
 		"duration_seconds":  int64(duration.Seconds()),
 	}, "已完成")
 
-	registry := h.getJobRegistry()
-	registry.mu.Lock()
-	run.Status = JobStatusSucceeded
-	run.Message = fmt.Sprintf("%s 完成", op)
-	registry.mu.Unlock()
+	h.succeedJob(run, fmt.Sprintf("%s 完成", op))
 
 	h.UpdateProgress(run, sizeSaved, sizeBefore, 1, "完成")
-}
-
-// handleTableMaintenance 保留同步入口以便兼容
-func (h *Handler) handleTableMaintenance(w http.ResponseWriter, r *http.Request, op string) {
-	h.handleTableMaintenanceDispatch(w, r, op, opToJobType(op))
 }
 
 // opToJobType 把字符串 op 映射到对应的 JobType 枚举

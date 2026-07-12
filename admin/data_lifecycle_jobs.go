@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -38,22 +37,20 @@ const (
 )
 
 type JobRun struct {
-	RunID       string         `json:"run_id"`
-	Op          JobType        `json:"op"`
-	Status      JobStatus      `json:"status"`
-	Params      map[string]any `json:"params,omitempty"`
-	Progress    *JobProgress   `json:"progress,omitempty"`
-	Result      map[string]any `json:"result,omitempty"`
-	Error       string         `json:"error,omitempty"`
-	Message     string         `json:"message,omitempty"`
-	StartedAt   *time.Time     `json:"started_at,omitempty"`
-	HeartbeatAt *time.Time     `json:"heartbeat_at,omitempty"`
-	FinishedAt  *time.Time     `json:"finished_at,omitempty"`
-	DurationMS  int64          `json:"duration_ms"`
-	Operator    string         `json:"operator,omitempty"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	ID          string         `json:"id"`
-	cancelFn    context.CancelFunc
+	RunID       string             `json:"run_id"`
+	Op          JobType            `json:"op"`
+	Status      JobStatus          `json:"status"`
+	Params      map[string]any     `json:"params,omitempty"`
+	Progress    *JobProgress       `json:"progress,omitempty"`
+	Result      map[string]any     `json:"result,omitempty"`
+	Error       string             `json:"error,omitempty"`
+	Message     string             `json:"message,omitempty"`
+	StartedAt   *time.Time         `json:"started_at,omitempty"`
+	HeartbeatAt *time.Time         `json:"heartbeat_at,omitempty"`
+	FinishedAt  *time.Time         `json:"finished_at,omitempty"`
+	DurationMS  int64              `json:"duration_ms"`
+	Operator    string             `json:"operator,omitempty"`
+	cancelFn    context.CancelFunc `json:"-"`
 }
 
 type JobProgress struct {
@@ -92,6 +89,7 @@ func (h *Handler) StartJob(op JobType, params map[string]any, operator string, f
 	registry.running[run.RunID] = run
 	registry.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	run.cancelFn = cancel
 	go func() {
 		defer cancel()
 		defer func() {
@@ -171,6 +169,19 @@ func (h *Handler) failJob(run *JobRun, errMsg string) {
 	run.Status = JobStatusFailed
 	run.Error = errMsg
 	run.Message = "failed: " + errMsg
+}
+
+func (h *Handler) succeedJob(run *JobRun, msg string) {
+	if run == nil {
+		return
+	}
+	registry := h.getJobRegistry()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	run.Status = JobStatusSucceeded
+	if msg != "" {
+		run.Message = msg
+	}
 }
 
 func (h *Handler) finalizeJob(run *JobRun) {
@@ -265,35 +276,6 @@ func cloneAnyMap(in map[string]any) map[string]any {
 	return out
 }
 
-func (r *jobRegistry) add(job *JobRun) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.running[job.RunID] = job
-}
-
-func (r *jobRegistry) get(id string) (*JobRun, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	j, ok := r.running[id]
-	return j, ok
-}
-
-func (r *jobRegistry) list() []*JobRun {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]*JobRun, 0, len(r.running))
-	for _, j := range r.running {
-		out = append(out, j)
-	}
-	sort.Slice(out, func(i, k int) bool {
-		if out[i].StartedAt == nil || out[k].StartedAt == nil {
-			return false
-		}
-		return out[i].StartedAt.After(*out[k].StartedAt)
-	})
-	return out
-}
-
 func (r *jobRegistry) cancel(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -306,22 +288,14 @@ func (r *jobRegistry) cancel(id string) bool {
 	}
 	if j.cancelFn != nil {
 		j.cancelFn()
-		j.Status = JobStatusFailed
-		now := time.Now().UTC()
-		j.FinishedAt = &now
+	}
+	j.Status = JobStatusCancelled
+	now := time.Now().UTC()
+	j.FinishedAt = &now
+	if j.StartedAt != nil {
+		j.DurationMS = now.Sub(*j.StartedAt).Milliseconds()
 	}
 	return true
-}
-
-func newJobRun(jobType JobType, target string) *JobRun {
-	now := time.Now().UTC()
-	return &JobRun{
-		RunID:     fmt.Sprintf("%s-%d", string(jobType), now.UnixNano()),
-		Op:        jobType,
-		Status:    JobStatusQueued,
-		StartedAt: &now,
-		Result:    make(map[string]any),
-	}
 }
 
 // handleLifecycleJobs GET /api/admin/data-lifecycle/jobs
@@ -379,12 +353,4 @@ func (h *Handler) handleLifecycleJobByID(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(job)
-}
-
-// logRunningJobs 是生命周期任务的定时状态记录（用于指标/调试），每 30 秒记录一次仍然 running 的任务
-func (h *Handler) logRunningJobs() {
-	running, _ := h.listJobs(0)
-	for _, j := range running {
-		slog.Info("lifecycle-job-running", "job_id", j.RunID, "op", j.Op, "status", j.Status)
-	}
 }
