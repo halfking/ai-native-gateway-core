@@ -1,42 +1,43 @@
-# SI-LLM-Gateway（超级智能大模型网关）
+# LLM Gateway Go — 企业级 LLM 网关
 
-> **让企业安全、合规、低成本地使用全球各类大模型与 AI 工具** —— 一套网关，统一管控、智能整合。
+> **让企业安全、合规、低成本地使用全球各类大模型与 AI 工具** —— 一套网关，统一管控、智能整合、自动升级。
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Report](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org)
 [![Multi-Tenant](https://img.shields.io/badge/Multi--Tenant-RLS%20enabled-brightgreen.svg)]()
+[![Version](https://img.shields.io/badge/Version-v2.4.2-green.svg)](VERSION)
 
 ---
 
-## ✨ 四大核心价值
+## ✨ 核心功能
 
-| 价值 | 客户感知 |
-|------|---------|
-| **安全** | AI Guardrails · DLP · Inline Interception · Vibe Coding 治理 |
-| **稳定** | Multi-cloud Orchestration · Circuit Breaker · 99.9% SLA |
-| **低成本** | Semantic Cache · Auto-routing · Token Metering |
-| **企业资源整合** | MCP 工具网关 · API Hub 资产中心 · 全链路审计 |
+### License 管理与分发
+- **在线激活**：通过主控端 `llm.kxpms.cn` 实时激活
+- **离线激活**：支持完全断网环境的 license 授权
+- **试用模式**：7 天免费试用（1 租户 / 基础 API）
+- **设备绑定**：基于硬件指纹的设备管理
+
+### 实例注册与心跳
+- **自动注册**：实例启动时自动向主控端注册
+- **实时心跳**：60s 心跳上报 + 状态监控（online/degraded/offline）
+- **健康检查**：自动探测实例健康状态，支持 30s/2min 离线判定
+- **Token 续期**：24h JWT 自动续期
+
+### 自动升级与回滚
+- **在线升级**：自动检查更新 + 一键升级（6h 检查周期）
+- **离线升级**：U 盘携带升级包 + 本地安装
+- **备份保护**：升级前自动备份 + 失败自动回退
+- **健康验证**：升级后 5s 健康检查，失败自动回退
+
+### 四种部署模式
+- **M1 单机部署**：二进制 + systemd（离线模式）
+- **M2 单机 Docker**：docker-compose 快速部署
+- **M3 K8s Sidecar**：kustomize 模板 + sidecar 心跳
+- **M4 K8s Operator**：CRD + 声明式管理（规划中）
 
 ---
 
-## 🏗️ 三大产品支柱
-
-```
-┌────────────────────────┬────────────────────────┬────────────────────────┐
-│   Control（管控）       │   Govern（治理）        │   Secure（安全）         │
-├────────────────────────┼────────────────────────┼────────────────────────┤
-│ ✅ Token 用量追踪        │ 🔨 API Hub 资产中心     │ 🔨 Model Armor          │
-│ ✅ 智能路由 + 粘性会话   │ 🔨 自动发现             │ 🔨 敏感数据脱敏 (SDP)   │
-│ ✅ 语义缓存 + Funnel    │ 🔨 SpecBoost 智能富集   │ 🔨 对抗性提示词防护     │
-│ ✅ 全链路审计 + OTel    │ ✅ 多租户 RLS (L1=0)    │ ✅ SIEM/SOAR 对接       │
-│ ✅ MaaS 计费            │                        │                        │
-└────────────────────────┴────────────────────────┴────────────────────────┘
-✅ = 已上线   🔨 = 路线图中
-```
-
----
-
-## 🎯 当前能力
+## 🎯 核心能力
 
 | 能力维度 | 实现 |
 |----------|------|
@@ -45,10 +46,92 @@
 | **多租户** | 身份隧道（virtual IP/MAC/ClientID）+ 凭据池 + 38+ 表 RLS |
 | **流量治理** | Token 限流 + 语义缓存 + 提示词压缩 + 滑窗算法 |
 | **审计** | 全链路审计 + DLQ + 磁盘回退 + OTel + Prometheus |
-| **凭据** | 多凭据 + 指纹池 + 自适应探测 + 手动 disable |
-| **部署** | 双实例（71 host docker + 184 k3s NodePort），共享 PG schema |
+| **License** | 在线/离线激活 + 设备管理 + CRL 撤销 + 过期续期 |
+| **升级** | 在线/离线升级 + 自动回滚 + 版本检查 + 健康验证 |
+| **部署** | M1-M4 四种模式 + systemd + Docker + K8s |
 
-详细架构见 [`ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md)。
+详细架构见 [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md)。
+
+---
+
+## 🚦 快速开始
+
+### 编译
+
+```bash
+# 克隆仓库
+git clone https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git
+cd llm-gateway-go
+
+# 编译网关
+go build -o gateway ./cmd/gateway
+
+# 编译安装器
+cd installer
+go build -o llm-gw-installer ./cmd/llm-gw-installer
+cd ..
+```
+
+### 激活
+
+```bash
+# 方式 1: 试用模式（7 天免费）
+./installer/llm-gw-installer activate --mode trial --email your@email.com
+
+# 方式 2: License Key 激活
+./installer/llm-gw-installer activate --mode online --license-key LIC-xxx
+
+# 方式 3: 离线激活（完全断网）
+./installer/llm-gw-installer activate --mode offline --request-file activation.req
+# ... 拷贝 activation.req 到联网电脑，上传到 llm.kxpms.cn/offline，获取 license.dat
+./installer/llm-gw-installer activate --mode offline --import-file license.dat
+```
+
+### 启动
+
+```bash
+# 启动网关（默认监听 :8781）
+./gateway --listen :8781
+
+# 健康检查
+curl http://localhost:8781/healthz
+# 返回: {"status":"ok","version":"v2.4.2"}
+```
+
+### 升级
+
+```bash
+# 检查更新
+./installer/llm-gw-installer upgrade check
+
+# 在线升级
+./installer/llm-gw-installer upgrade apply --to v2.5.0
+
+# 回滚
+./installer/llm-gw-installer upgrade rollback --to v2.4.2
+```
+
+---
+
+## 🏛️ 架构简图
+
+```
+┌─────────────────────── 客户机器 ───────────────────────┐
+│  ~/llm-gateway/                                         │
+│   ├── gateway                    (主进程，:8781)        │
+│   ├── llm-gw-installer           (CLI 工具)            │
+│   ├── license.dat                (RSA 签名的 License)   │
+│   ├── VERSION                    (当前版本)            │
+│   └── compose.yml / systemd      (部署配置)            │
+└──────────────────────┬─────────────────────────────────┘
+                       │ HTTPS (TLS 1.3, Ed25519 签名)
+┌──────────────────────▼─────────────────────────────────┐
+│  主控端 llm.kxpms.cn:8443                               │
+│   ├─ /api/v1/license/*   (激活/续期/CRL)                │
+│   ├─ /api/v1/instances/* (注册/心跳/状态)               │
+│   └─ /api/v1/updates/*   (检查/下载/上报)               │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -118,39 +201,17 @@ git push github       # → github（自动严格扫描，命中即阻断）
 
 ---
 
-## 🚦 快速开始
-
-```bash
-# 1. 克隆
-git clone https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git
-cd llm-gateway-go
-
-# 2. 安装钩子
-./scripts/install-githooks.sh --pre-commit  # pre-commit: go vet + SQL lint + migration 编号
-./scripts/install-githooks.sh          # pre-push: github 推送敏感信息扫描
-
-# 3. 构建
-go build -o gateway ./cmd/gateway
-
-# 4. 启动
-./gateway --config=configs/local.yaml
-```
-
-健康检查：`curl http://localhost:8781/healthz` → `200 OK`
-
----
-
 ## 📚 文档索引
 
 | 类别 | 文档 |
 |------|------|
-| **架构** | [`ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) — V3 架构方案 |
+| **部署** | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — M1-M4 四种部署模式 |
+| **API** | [`docs/API.md`](docs/API.md) — 主控端 8 个 API 端点 |
+| **升级** | [`docs/UPGRADE.md`](docs/UPGRADE.md) — 在线/离线升级流程 |
+| **架构** | [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) — V3 架构方案 |
 | **双仓库** | [`docs/REPO-MIRROR-POLICY.md`](docs/REPO-MIRROR-POLICY.md) — codeup ⇄ github 工作流 |
 | **安全** | [`SECURITY.md`](SECURITY.md) — 漏洞报告 + 扫描器用法 |
 | **贡献** | [`CONTRIBUTING.md`](CONTRIBUTING.md) — 开发规范 + 提交规范 |
-| **法务** | [`docs/legal/disguise-compliance.md`](docs/legal/disguise-compliance.md) — 请求伪装合规白名单 |
-| **A2A** | [`docs/a2a-spec-2027.md`](docs/a2a-spec-2027.md) — Agent 间通信协议调研 |
-| **Armor** | [`docs/armor-sdp-feasibility.md`](docs/armor-sdp-feasibility.md) — 提示词注入 + SDP 可行性 |
 
 ---
 
