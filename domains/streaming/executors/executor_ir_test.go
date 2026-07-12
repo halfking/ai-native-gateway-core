@@ -3,6 +3,7 @@ package executors
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -452,9 +453,20 @@ func TestIRConverter_LegacyPath(t *testing.T) {
 		t.Fatalf("finalizeOpenAIUpstreamBody failed: %v", err)
 	}
 
-	// Result should be the original body (no conversion needed)
-	if string(result) != openAIBody {
-		t.Errorf("legacy path should return original body, got: %s", string(result))
+	// Result must be JSON-equivalent to the original (semantic comparison). The
+	// legacy path runs applyInlineValidation which re-serialises via
+	// ir.SerializeOpenAI — that canonicalises field order and strips
+	// whitespace, so byte-equality is no longer meaningful. The semantic
+	// contract (parsed JSON content) is preserved.
+	var origObj, gotObj map[string]any
+	if err := json.Unmarshal([]byte(openAIBody), &origObj); err != nil {
+		t.Fatalf("orig unmarshal: %v", err)
+	}
+	if err := json.Unmarshal(result, &gotObj); err != nil {
+		t.Fatalf("result unmarshal: %v (body=%s)", err, string(result))
+	}
+	if !reflect.DeepEqual(origObj, gotObj) {
+		t.Errorf("legacy path must preserve JSON semantics\nwant: %s\ngot:  %s", openAIBody, string(result))
 	}
 }
 
