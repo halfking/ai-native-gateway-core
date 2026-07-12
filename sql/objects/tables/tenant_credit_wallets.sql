@@ -3,7 +3,7 @@
 --
 
 CREATE TABLE public.tenant_credit_wallets (
-    tenant_id character varying(64) NOT NULL,
+    tenant_id character varying(64) PRIMARY KEY,
     balance_credits bigint DEFAULT 0 NOT NULL,
     locked_credits bigint DEFAULT 0 NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
