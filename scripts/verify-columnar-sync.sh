@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# 对比 184 和本地的 columnar 配置一致性
+# 对比 252 (阿里云 llm.itestu.cn 数据面) 和本地的 columnar 配置一致性
 #
 # 检查项:
 #   1. 扩展列表 (citus_columnar 版本)
@@ -20,9 +20,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_LOCAL="$ROOT_DIR/.env.local"
 if [ -f "$ENV_LOCAL" ]; then set -a; . "$ENV_LOCAL"; set +a; fi
 
-REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@${INTERNAL_PUBLIC_IP:-47.97.111.154}}"  # 154 替代 184
-REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-${SSH_PORT_184:-25022}}"
-REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-${SSH_KEY_184_PATH:-$HOME/.ssh/56_id_rsa}}"
+REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@${HOST_252_IP:-115.29.212.252}}"  # 阿里 252 数据面
+REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-${SSH_PORT_252:-25022}}"
+REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-${SSH_KEY_252:-$HOME/.ssh/id_ed25519}}"
 REMOTE_SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=15 -o IdentitiesOnly=yes -o BatchMode=yes"
 REMOTE_NAMESPACE="${REMOTE_NAMESPACE:-pms-test}"
 REMOTE_DEPLOYMENT="${REMOTE_DEPLOYMENT:-deployment/llm-gateway-pg}"
@@ -56,7 +56,7 @@ check() {
     echo -e "  ${GREEN}✓${NC} $name  (两者一致: $remote)"
     PASS=$((PASS+1))
   else
-    echo -e "  ${RED}✗${NC} $name  (184=$remote  本地=$local_val)"
+    echo -e "  ${RED}✗${NC} $name  (252=$remote  本地=$local_val)"
     FAIL=$((FAIL+1))
   fi
 }

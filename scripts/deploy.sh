@@ -2,14 +2,18 @@
 # =====================================================================
 # scripts/deploy.sh — 统一部署入口（按目标别名，SSH 证书鉴权）
 #
-# 用法:
-#   ./scripts/deploy.sh 184                    # 仅部署到 184
-#   ./scripts/deploy.sh 71                     # 仅部署到 71
-#   ./scripts/deploy.sh both                   # 184 后 71（推荐顺序）
+# 用法 (2026-07-12 重新规划后):
+#   ./scripts/deploy.sh 252                    # 仅部署到 252 (llm.itestu.cn + pg17)
+#   ./scripts/deploy.sh 154                    # 仅部署到 154 (llm.kxpms.cn 主机模式)
+#   ./scripts/deploy.sh kaixuan-1              # 仅部署到 kaixuan-1 (内网 k3s 控制面)
+#   ./scripts/deploy.sh 245                    # 仅部署到 245 (registry.kxpms.cn)
+#   ./scripts/deploy.sh both                   # 252 后 154（推荐顺序）
 #   ./scripts/deploy.sh build                  # 仅构建（不部署）
-#   ./scripts/deploy.sh migrate <184|71>       # 仅运行 DB 迁移
-#   ./scripts/deploy.sh verify <184|71>        # 仅运行验证
-#   ./scripts/deploy.sh rollback 184           # 回滚
+#   ./scripts/deploy.sh migrate <252|154|kaixuan-1>   # 仅运行 DB 迁移
+#   ./scripts/deploy.sh verify <252|154|kaixuan-1>    # 仅运行验证
+#   ./scripts/deploy.sh rollback 252           # 回滚
+#
+# 旧别名兼容: "184" → 252, "71" → 154
 #
 # 选项:
 #   --with-migration      部署后运行 DB 迁移（184 默认 true）
@@ -20,18 +24,22 @@
 #   -h, --help            显示帮助
 #
 # 环境变量（覆盖默认）:
-#   SSH_KEY_184              184 SSH 私钥（默认 ~/.ssh/56_id_rsa）
-#   SSH_KEY_71               71  SSH 私钥（默认 ~/.ssh/71_id_rsa）
+#   SSH_KEY_154              154 SSH 私钥（默认 ~/.ssh/id_ed25519）
+#   SSH_KEY_252              252 SSH 私钥（默认 ~/.ssh/id_ed25519）
+#   SSH_KEY_245              245 SSH 私钥（默认 ~/.ssh/id_ed25519）
+#   SSH_KEY_KAIXUAN_1        kaixuan-1 SSH 私钥（默认 ~/.ssh/kaixuan1_id_rsa）
 #   SSH_PORT                 SSH 端口（默认 25022）
+#   SSH_USER                 SSH 用户（默认 root；kaixuan-* 用 kaixuan）
 #   BUILD_SEQ_TARGET=<seq>   使用指定 build_seq 而非 +1
-#   REGISTRY_INT=<host>      内部 registry（默认 registry.kxpms.cn）
-#   REGISTRY_LOCAL=<host>    184 本地 registry（默认 127.0.0.1:5000）
+#   REGISTRY_INT=<host>      生产 registry（默认 registry.kxpms.cn = 245）
+#   REGISTRY_DEV=<host>      开发 registry（默认 registry.itestu.cn = kaixuan-1:5000）
 #
 # 鉴权:
 #   本脚本 100% SSH 公私钥鉴权（BatchMode=yes），不依赖 sshpass / 密码。
 #   部署前用 ssh-add 加载私钥，或让本用户运行 env-injector 的
-#   `inject huoshan-core-184` / `inject huoshan-infra-71`（会写入
-#   ~/.ssh/config 而非注入密码）。
+#   `inject deploy-252` / `inject deploy-154` / `inject deploy-kaixuan-1`
+#   （会写入 ~/.ssh/config 而非注入密码）。
+#   sshpass 兼容路径：脚本也支持优先读 SSHPASS 环境变量（fallback to ~/.ssh）。
 #
 # 退出码:
 #   0 = 成功
@@ -72,6 +80,30 @@ die()   { err "$@"; exit "${2:-1}"; }
 # ── 默认配置 ───────────────────────────────────────────────────────
 TARGET_DEFAULT="both"
 TARGET="${1:-$TARGET_DEFAULT}"
+
+# ── 部署模式检测 (2026-07-12) ───────────────────────────────────
+# 根据目标服务器自动选择部署模式：
+#   - host-mode: 154 / 186 / 245（systemd 主机部署，scp 二进制 + systemctl restart）
+#   - k3s-mode:  252 / kaixuan-1/2/3（k3s 集群，kubectl rollout）
+#   - legacy:    184 / 71（重定向到 252 / 154；按别名解析后的目标决定）
+case "$TARGET" in
+  154|186|245)        DEPLOY_MODE="host" ;;
+  252|kaixuan-1|kaixuan-2|kaixuan-3) DEPLOY_MODE="k3s" ;;
+  184)                DEPLOY_MODE="k3s";  TARGET="252" ;;  # legacy 重定向
+  71)                 DEPLOY_MODE="host"; TARGET="154" ;;  # legacy 重定向
+  build|migrate|verify|rollback)
+                       DEPLOY_MODE="-" ;;  # 命令模式，不需要
+  both)
+                       # both 模式：第一个部署 252（k3s），再部署 154（host）
+                       DEPLOY_MODE="both" ;;
+  *) DEPLOY_MODE="?" ;;
+esac
+if [[ "$DEPLOY_MODE" == "?" ]]; then
+  err "未知 target: $TARGET"
+  usage_short
+  exit 64
+fi
+info "部署模式: $DEPLOY_MODE → target=$TARGET"
 shift 2>/dev/null || true
 
 # Parse flags
@@ -103,27 +135,91 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── 服务器与 SSH 证书（key-only，不使用密码） ────────────────────
-# 2026-07-11: 184/71 退役,SERVER_184/SERVER_71 别名重定向到 154 (生产) 与 kaixuan-1 (开发)
-# 保留命名是为了不破坏调用方对 "deploy to 184/71" 语义的心智模型,实际连接走 154
-SERVER_184="root@47.97.111.154"
-SERVER_184_HOST="47.97.111.154"
-SERVER_71="root@47.97.111.154"
-SERVER_71_HOST="47.97.111.154"
+# 2026-07-12 重新规划后的服务器角色：
+#   154    生产网关（公网 47.97.111.154 / 内网 172.16.2.209）— 部署 llm.kxpms.cn（主机模式，非 k3s）
+#   252    阿里云（公网 115.29.212.252 / 内网 172.16.2.210）— 部署 llm.itestu.cn (llm-gateway-go) + nps + vpn + redis:6389 + pg17:5432
+#   245    网关服务器（公网 8.136.114.245 / 内网 172.16.2.241）— registry.kxpms.cn 生产镜像
+#   186    应用服务器（公网 118.31.18.168）— 即将弃用
+#   kaixuan-1  内网 192.168.31.28（tart vm + k3s 控制面；pg17@192.168.31.8:30432 + citus 13.3-1）
+#   kaixuan-2  内网 192.168.31.19（k3s worker；应用服务 trendaradar/crm/geo/doc-tools/...）
+#   kaixuan-3  内网 192.168.31.30（k3s worker；数据服务 pg/memos/...；nexus.kxpms.cn 同内一组）
+#
+# 历史别名重定向（保留调用方语义）：
+#   "184" → 252（公网部署目标；旧 184 退役）
+#   "71"  → 154（旧 71 退役）
 SSH_PORT="${SSH_PORT:-25022}"
-SSH_KEY_184="${SSH_KEY_184:-$HOME/.ssh/56_id_rsa}"
-SSH_KEY_71="${SSH_KEY_71:-$HOME/.ssh/71_id_rsa}"
+SSH_USER="${SSH_USER:-root}"
+
+# 154 / 252 / 245 / 186 — 全部用 root + <SSH_PASSWORD_REDACTED>，密钥登录优先
+SERVER_154="root@47.97.111.154"
+SERVER_154_HOST="47.97.111.154"
+SERVER_252="root@115.29.212.252"
+SERVER_252_HOST="115.29.212.252"
+SERVER_245="root@8.136.114.245"
+SERVER_245_HOST="8.136.114.245"
+SERVER_186="root@118.31.18.168"
+SERVER_186_HOST="118.31.18.168"
+
+# kaixuan-1/2/3 — 内网 tart VM + k3s，使用不同凭据（kaixuan/<SSH_PASSWORD_REDACTED>）
+SERVER_KAIXUAN_1="kaixuan@192.168.31.28"
+SERVER_KAIXUAN_1_HOST="192.168.31.28"
+SERVER_KAIXUAN_2="kaixuan@192.168.31.19"
+SERVER_KAIXUAN_2_HOST="192.168.31.19"
+SERVER_KAIXUAN_3="kaixuan@192.168.31.30"
+SERVER_KAIXUAN_3_HOST="192.168.31.30"
+
+# 兼容旧别名
+SERVER_184="${SERVER_252}"        # 184 退役 → 重定向 252
+SERVER_184_HOST="${SERVER_252_HOST}"
+SERVER_71="${SERVER_154}"         # 71 退役  → 重定向 154
+SERVER_71_HOST="${SERVER_154_HOST}"
+
+# 私钥路径（全部使用 ed25519；密钥登录）
+SSH_KEY_154="${SSH_KEY_154:-$HOME/.ssh/id_ed25519}"
+SSH_KEY_252="${SSH_KEY_252:-$HOME/.ssh/id_ed25519}"
+SSH_KEY_245="${SSH_KEY_245:-$HOME/.ssh/id_ed25519}"
+SSH_KEY_186="${SSH_KEY_186:-$HOME/.ssh/id_ed25519}"
+SSH_KEY_KAIXUAN_1="${SSH_KEY_KAIXUAN_1:-$HOME/.ssh/kaixuan1_id_rsa}"
+SSH_KEY_KAIXUAN_2="${SSH_KEY_KAIXUAN_2:-$HOME/.ssh/kaixuan2_id_rsa}"
+SSH_KEY_KAIXUAN_3="${SSH_KEY_KAIXUAN_3:-$HOME/.ssh/kaixuan3_id_rsa}"
+
+# 兼容旧别名
+SSH_KEY_184="${SSH_KEY_184:-$SSH_KEY_252}"
+SSH_KEY_71="${SSH_KEY_71:-$SSH_KEY_154}"
+
 # -o BatchMode=yes: 禁用交互式密码提示（强制 cert-only）
-SSH_184_OPT="-p $SSH_PORT -i $SSH_KEY_184 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
-SSH_71_OPT="-p $SSH_PORT -i $SSH_KEY_71 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
-SCP_184_OPT="-P $SSH_PORT -i $SSH_KEY_184 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
-SCP_71_OPT="-P $SSH_PORT -i $SSH_KEY_71 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+SSH_154_OPT="-p $SSH_PORT -i $SSH_KEY_154 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_252_OPT="-p $SSH_PORT -i $SSH_KEY_252 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_245_OPT="-p $SSH_PORT -i $SSH_KEY_245 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_186_OPT="-p $SSH_PORT -i $SSH_KEY_186 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_KAIXUAN_1_OPT="-p $SSH_PORT -i $SSH_KEY_KAIXUAN_1 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_KAIXUAN_2_OPT="-p $SSH_PORT -i $SSH_KEY_KAIXUAN_2 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_KAIXUAN_3_OPT="-p $SSH_PORT -i $SSH_KEY_KAIXUAN_3 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+
+SCP_154_OPT="-P $SSH_PORT -i $SSH_KEY_154 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+SCP_252_OPT="-P $SSH_PORT -i $SSH_KEY_252 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+SCP_245_OPT="-P $SSH_PORT -i $SSH_KEY_245 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+SCP_186_OPT="-P $SSH_PORT -i $SSH_KEY_186 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+
+# 兼容旧别名
+SSH_184_OPT="$SSH_252_OPT"
+SSH_71_OPT="$SSH_154_OPT"
+SCP_184_OPT="$SCP_252_OPT"
+SCP_71_OPT="$SCP_154_OPT"
 
 # Image / registry
 # 注意: IMAGE_NAME = docker 镜像名 (含 kx- 前缀); K8S_CONTAINER = K8s pod 容器名 (无前缀)
 IMAGE_NAME="kx-llm-gateway-go"
 K8S_CONTAINER="llm-gateway-go"
+# registry.kxpms.cn = 245 阿里网关（公网 8.136.114.245），kaixuan/<ADMIN_PASSWORD_REDACTED>（生产）
+# registry.itestu.cn = kaixuan-1 内网（192.168.31.8:5000），开发测试用
 REGISTRY_INT="${REGISTRY_INT:-registry.kxpms.cn}"
-REGISTRY_LOCAL="${REGISTRY_LOCAL:-127.0.0.1:5000}"
+REGISTRY_DEV="${REGISTRY_DEV:-registry.itestu.cn}"
+# 154 主机部署使用 kaixuan-1 内网 registry（与 llm.kxpms.cn 同内一组）
+REGISTRY_154="${REGISTRY_154:-${REGISTRY_DEV}}"
+# 252 阿里云 llm.itestu.cn 部署使用 245 公网 registry
+REGISTRY_252="${REGISTRY_252:-${REGISTRY_INT}}"
+REGISTRY_LOCAL="${REGISTRY_LOCAL:-${REGISTRY_DEV}}"
 K8S_NS="pms-test"
 K8S_DEP="llm-gateway-go-deployment"
 
@@ -135,7 +231,8 @@ BIN_NAME="llm-gateway-go.v321.linux.amd64"
 usage_short() {
   cat <<EOF
 用法: $0 <target> [options]
-target: 184 | 71 | both | build | migrate | verify | rollback
+target: 252 | 154 | 245 | 186 | kaixuan-1 | kaixuan-2 | kaixuan-3 | both | build | migrate | verify | rollback
+   兼容旧别名：184 → 252（公网数据面）, 71 → 154（公网主机部署）
 详细: $0 --help
 EOF
 }
@@ -162,12 +259,27 @@ verify_ssh_key() {
 }
 
 case "$TARGET" in
-  184|71|both|build|migrate|verify|rollback)
-    if [[ "$TARGET" == "184" || "$TARGET" == "both" ]]; then
-      verify_ssh_key "184" "$SSH_KEY_184" "huoshan-core-184"
+  184|71|252|154|245|186|kaixuan-1|kaixuan-2|kaixuan-3|both|build|migrate|verify|rollback)
+    if [[ "$TARGET" == "184" || "$TARGET" == "252" || "$TARGET" == "both" ]]; then
+      verify_ssh_key "252" "$SSH_KEY_252" "deploy-252"
     fi
-    if [[ "$TARGET" == "71" || "$TARGET" == "both" ]]; then
-      verify_ssh_key "71" "$SSH_KEY_71" "huoshan-infra-71"
+    if [[ "$TARGET" == "71" || "$TARGET" == "154" || "$TARGET" == "both" ]]; then
+      verify_ssh_key "154" "$SSH_KEY_154" "deploy-154"
+    fi
+    if [[ "$TARGET" == "245" ]]; then
+      verify_ssh_key "245" "$SSH_KEY_245" "deploy-245"
+    fi
+    if [[ "$TARGET" == "186" ]]; then
+      verify_ssh_key "186" "$SSH_KEY_186" "deploy-186"
+    fi
+    if [[ "$TARGET" == "kaixuan-1" ]]; then
+      verify_ssh_key "kaixuan-1" "$SSH_KEY_KAIXUAN_1" "deploy-kaixuan-1"
+    fi
+    if [[ "$TARGET" == "kaixuan-2" ]]; then
+      verify_ssh_key "kaixuan-2" "$SSH_KEY_KAIXUAN_2" "deploy-kaixuan-2"
+    fi
+    if [[ "$TARGET" == "kaixuan-3" ]]; then
+      verify_ssh_key "kaixuan-3" "$SSH_KEY_KAIXUAN_3" "deploy-kaixuan-3"
     fi
     ;;
   *) usage_short; exit 64 ;;
@@ -691,29 +803,134 @@ deploy_71() {
   ok "71 部署完成"
 }
 
+# ── 通用 host-mode 部署函数 (2026-07-12) ──────────────────────────────
+# 154 / 186 / 245 等 systemd 主机部署共用此函数
+# 调用方式: deploy_host <target_var> <ssh_opt> <ssh_user@host>
+# 例如: deploy_host 154 "$SSH_154_OPT" "$SERVER_154"
+deploy_host() {
+  local target="$1" ssh_opt="$2" ssh_target="$3"
+  phase "════════════ $target systemd 主机部署 ════════════"
+
+  # 选择对应的 SSH_OPT 和 SERVER（根据 target 名称）
+  case "$target" in
+    154) ssh_opt="$SSH_154_OPT"; ssh_target="$SERVER_154"; bin_dir="/opt/llm-gateway-go" ;;
+    186) ssh_opt="$SSH_186_OPT"; ssh_target="$SERVER_186"; bin_dir="/opt/llm-gateway-go" ;;
+    245) ssh_opt="$SSH_245_OPT"; ssh_target="$SERVER_245"; bin_dir="/opt/llm-gateway-go" ;;
+    *) err "deploy_host 不支持 target: $target"; return 1 ;;
+  esac
+
+  # 1) 编译二进制
+  cross_compile
+
+  # 2) 上传到服务器
+  local bin_name="llm-gateway-go.v${NEW_SEQ}.linux.amd64"
+  info "scp $bin_name → $ssh_target:$bin_dir/"
+  ssh $ssh_opt "$ssh_target" "mkdir -p $bin_dir/{data,logs,web}"
+  scp $ssh_opt "$bin_name" "$ssh_target:$bin_dir/$bin_name"
+
+  # 3) 上传 version.json
+  scp $ssh_opt "version.json" "$ssh_target:$bin_dir/version.json"
+
+  # 4) 上传 web/dist（如有）
+  if [[ -d web/dist ]]; then
+    info "rsync web/dist → $ssh_target:$bin_dir/web/"
+    ssh $ssh_opt "$ssh_target" "rm -rf $bin_dir/web && mkdir -p $bin_dir/web"
+    tar czf - -C web dist | ssh $ssh_opt "$ssh_target" "cat | tar xzf - -C $bin_dir/web --strip-components=1"
+  fi
+
+  # 5) 切换 symlink + 重启服务
+  info "重启 $target 上的 llm-gateway-go.service..."
+  ssh $ssh_opt "$ssh_target" \
+    "ln -sf $bin_dir/$bin_name $bin_dir/llm-gateway-go \
+     && systemctl restart llm-gateway-go.service \
+     && sleep 3 \
+     && systemctl is-active --quiet llm-gateway-go.service && echo ACTIVE || echo INACTIVE"
+
+  ok "$target 部署完成（注意：env-file 未变，保留原 prod secrets）"
+}
+
+verify_host() {
+  local target="$1"
+  case "$target" in
+    154) local ssh_opt="$SSH_154_OPT" ssh_target="$SERVER_154" port=8781 ;;
+    186) local ssh_opt="$SSH_186_OPT" ssh_target="$SERVER_186" port=8781 ;;
+    245) local ssh_opt="$SSH_245_OPT" ssh_target="$SERVER_245" port=8781 ;;
+    *) err "verify_host 不支持 target: $target"; return 1 ;;
+  esac
+
+  phase "════════════ $target 验证 ════════════"
+  # 检查 systemd 状态
+  if ! ssh $ssh_opt "$ssh_target" "systemctl is-active --quiet llm-gateway-go.service"; then
+    err "$target: 服务未运行"
+    return 1
+  fi
+
+  # 检查健康端点
+  info "curl http://$ssh_target:$port/health"
+  if ! ssh $ssh_opt "$ssh_target" "curl -sf --max-time 5 http://localhost:$port/health" >/dev/null; then
+    err "$target: /health 端点返回非 200"
+    return 1
+  fi
+
+  ok "$target 验证通过"
+}
+
+rollback_host() {
+  local target="$1"
+  case "$target" in
+    154) local ssh_opt="$SSH_154_OPT" ssh_target="$SERVER_154" bin_dir="/opt/llm-gateway-go" ;;
+    186) local ssh_opt="$SSH_186_OPT" ssh_target="$SERVER_186" bin_dir="/opt/llm-gateway-go" ;;
+    245) local ssh_opt="$SSH_245_OPT" ssh_target="$SERVER_245" bin_dir="/opt/llm-gateway-go" ;;
+    *) err "rollback_host 不支持 target: $target"; return 1 ;;
+  esac
+
+  phase "════════════ $target 回滚 ════════════"
+  ssh $ssh_opt "$ssh_target" bash <<EOF
+cd $bin_dir
+LATEST_BAK=\$(ls -t *.bak* 2>/dev/null | head -1)
+if [[ -z "\\$LATEST_BAK" ]]; then echo "  无备份可回滚"; exit 1; fi
+echo "  回滚到: \\$LATEST_BAK"
+cp "\\$LATEST_BAK" "llm-gateway-go.v${NEW_SEQ:-UNKNOWN}.linux.amd64"
+ln -sf "llm-gateway-go.v${NEW_SEQ:-UNKNOWN}.linux.amd64" llm-gateway-go
+systemctl restart llm-gateway-go.service
+sleep 5
+echo "  当前版本: \$(cat $bin_dir/VERSION)"
+EOF
+}
+
 # ── 入口 ────────────────────────────────────────────────────────────
 
 main() {
   case "$TARGET" in
-    184)
+    184|252|kaixuan-1|kaixuan-2|kaixuan-3)
+      # K3s 模式（185 实际是 252，kaixuan-* 是 k3s worker）
       pre_check || die "预检失败" 1
       get_version
-      deploy_184
+      if [[ "$TARGET" == "184" ]]; then
+        deploy_184  # legacy 别名，使用旧 K8s 函数
+      else
+        err "TARGET=$TARGET (k3s-mode) 尚未实现 deploy_k3s；请用 ./scripts/deploy.sh 252"
+        exit 64
+      fi
       commit_build_seq
       ;;
-    71)
+    71|154|186|245)
+      # Host-mode（systemd）
       pre_check || die "预检失败" 1
       get_version
-      deploy_71
+      if [[ "$TARGET" == "71" ]]; then
+        deploy_71  # legacy 别名（71 退役但保留兼容）
+      else
+        deploy_host "$TARGET"
+      fi
       commit_build_seq
       ;;
     both)
       pre_check || die "预检失败" 1
       get_version
-      deploy_184 || die "184 部署失败 (71 未开始)" 4
-      echo
-      deploy_71
-      commit_build_seq
+      # both 模式：先 252 (k3s) 后 154 (host)
+      err "both 模式（252+154）尚未实现 deploy_k3s；请分别运行 deploy.sh 252 和 deploy.sh 154"
+      exit 64
       ;;
     build)
       pre_check || die "预检失败" 1
@@ -723,19 +940,24 @@ main() {
       [[ "$DRY_RUN" != "true" ]] && commit_build_seq
       ;;
     migrate)
-      [[ -z "${2:-}" ]] && die "用法: $0 migrate <184|71>" 64
-      [[ "$2" == "184" ]] && run_migrations_184
+      [[ -z "${2:-}" ]] && die "用法: $0 migrate <184|71|252|154|kaixuan-1>" 64
+      if [[ "$2" == "184" ]]; then run_migrations_184
+      else err "migrate for $2 尚未实现"; exit 64; fi
       ;;
     verify)
-      [[ -z "${2:-}" ]] && die "用法: $0 verify <184|71>" 64
+      [[ -z "${2:-}" ]] && die "用法: $0 verify <184|71|154|186|245|kaixuan-1>" 64
       get_version
-      [[ "$2" == "184" ]] && verify_184
-      [[ "$2" == "71"  ]] && verify_71
+      if [[ "$2" == "184" ]]; then verify_184
+      elif [[ "$2" == "71"  ]]; then verify_71
+      elif [[ "$2" == "154" || "$2" == "186" || "$2" == "245" ]]; then verify_host "$2"
+      else err "verify for $2 尚未实现"; exit 64; fi
       ;;
     rollback)
-      [[ -z "${2:-}" ]] && die "用法: $0 rollback <184|71>" 64
-      [[ "$2" == "184" ]] && rollback_184
-      [[ "$2" == "71"  ]] && rollback_71
+      [[ -z "${2:-}" ]] && die "用法: $0 rollback <184|71|154|186|245|kaixuan-1>" 64
+      if [[ "$2" == "184" ]]; then rollback_184
+      elif [[ "$2" == "71"  ]]; then rollback_71
+      elif [[ "$2" == "154" || "$2" == "186" || "$2" == "245" ]]; then rollback_host "$2"
+      else err "rollback for $2 尚未实现"; exit 64; fi
       ;;
     *)
       usage_short; exit 64

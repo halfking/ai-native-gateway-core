@@ -1,6 +1,7 @@
 package dbdegradation
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/session"
@@ -39,13 +40,15 @@ type StatusChangeListener func(event StatusChangeEvent)
 
 // BackupRecord 备份记录（写入文件的格式）
 type BackupRecord struct {
-	Type      string                     `json:"type"`       // "snapshot" | "rotation"
-	Timestamp time.Time                  `json:"timestamp"`  // 记录时间
-	SessionID string                     `json:"session_id"` // 会话ID
+	Type      string                     `json:"type"`                 // "snapshot" | "rotation" | "request_log" | "request_wal"
+	Timestamp time.Time                  `json:"timestamp"`            // 记录时间
+	SessionID string                     `json:"session_id,omitempty"` // 会话ID
 	Session   *session.Session           `json:"session,omitempty"`
 	Stats     *session.SessionStats      `json:"stats,omitempty"`
 	Rotation  *session.CredRotationEntry `json:"rotation,omitempty"`
 	StopArgs  *session.SnapshotArgs      `json:"stop_args,omitempty"` // 停止参数
+	RecordKey string                     `json:"record_key,omitempty"`
+	Payload   json.RawMessage            `json:"payload,omitempty"`
 }
 
 // BackupFile 备份文件信息
@@ -74,7 +77,7 @@ type BackupSummary struct {
 type RecoveryTask struct {
 	ID               string    `json:"id"`
 	Filename         string    `json:"filename"`
-	Status           string    `json:"status"` // "pending"|"running"|"completed"|"failed"
+	Status           string    `json:"status"` // "pending"|"running"|"completed"|"completed_with_errors"|"failed"
 	TotalRecords     int       `json:"total_records"`
 	ProcessedRecords int       `json:"processed_records"`
 	SuccessCount     int       `json:"success_count"`

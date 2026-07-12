@@ -4,7 +4,7 @@
 # 编排流程:
 #   Phase 0:  初始化部署记录目录 (init-deploy-record.sh)
 #   Phase 1:  本地部署 + 完整测试 (local-up + smoke + TC + verify)
-#   Phase 2:  184 部署 + migration + 验证 (deploy-184.sh --record)
+#   Phase 2:  252 部署 + migration + 验证 (scripts/deploy.sh 252)
 #   Phase 3:  部署后验证 (verify.sh) + 记录归档
 #
 # 用法:
@@ -131,7 +131,7 @@ phase2_184() {
   ok "184 SSH 可达"
 
   info "执行 184 部署（含 migration + 验证）..."
-  bash "$ROOT_DIR/deploy-184.sh" --record 2>&1 | tee "$RECORD_DIR/verify/deploy-184.log" || {
+  bash "$ROOT_DIR/scripts/deploy.sh" 252 2>&1 | tee "$RECORD_DIR/verify/deploy-252.log" || {
     overall_fail "184 部署失败"
   }
   ok "184 部署完成"
