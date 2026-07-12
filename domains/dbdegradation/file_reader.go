@@ -306,6 +306,29 @@ func (fr *FileReader) ValidateFile(ctx context.Context, filename string) error {
 	return nil
 }
 
+func (fr *FileReader) ArchiveFile(filename string) error {
+	if err := validateBackupFilename(filename); err != nil {
+		return err
+	}
+	backupDir := filepath.Join(fr.baseDir, "backups")
+	archiveDir := filepath.Join(fr.baseDir, "archive")
+	if err := os.MkdirAll(archiveDir, 0700); err != nil {
+		return fmt.Errorf("create archive dir: %w", err)
+	}
+	if err := os.Rename(filepath.Join(backupDir, filename), filepath.Join(archiveDir, filename)); err != nil {
+		return fmt.Errorf("move to archive: %w", err)
+	}
+	fr.InvalidateCache()
+	return nil
+}
+
+func validateBackupFilename(filename string) error {
+	if filename == "" || strings.Contains(filename, "..") || strings.ContainsAny(filename, `/\\`) || !strings.HasPrefix(filename, "sessions-") || !strings.HasSuffix(filename, ".jsonl.gz") {
+		return fmt.Errorf("invalid backup filename")
+	}
+	return nil
+}
+
 // InvalidateCache 清除缓存
 func (fr *FileReader) InvalidateCache() {
 	fr.cacheMu.Lock()
