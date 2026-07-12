@@ -1,0 +1,11 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 64,
+  "openai_provider_only": true,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Describe the image."
+    }
+  ]
+}

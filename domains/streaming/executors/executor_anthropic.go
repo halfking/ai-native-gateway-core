@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -389,6 +390,16 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
 				return nil, fmt.Errorf("format conversion disabled for provider %d (openai→anthropic)", cand.ProviderID)
 			}
+		}
+		// Inject catalog code context for same-provider extension restoration
+		if converter, ok := e.IR.(interface {
+			SetContext(*domain.TransportContext)
+		}); ok {
+			ctx := &domain.TransportContext{
+				UpstreamCatalogCode: cand.CatalogCode,
+				// ClientCatalogCode remains empty until routing layer tracks it
+			}
+			converter.SetContext(ctx)
 		}
 		// Parse OpenAI body → IR → Serialize Anthropic
 		irReq, err := e.IR.ParseOpenAI(sourceBody)
