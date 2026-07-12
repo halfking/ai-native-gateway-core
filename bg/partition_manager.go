@@ -37,7 +37,7 @@ const DefaultPromoteInterval = 1 * time.Hour
 //
 // The PartitionManager reads these on every promote cycle so changes
 // take effect on the next tick (no restart required, true hot reload).
-const DefaultRetentionWindow = 7 * 24 * time.Hour
+const DefaultRetentionWindow = 24 * time.Hour
 
 // defaultProbeHotRetention is the default retention for model_probe_runs_hot
 // when settings.Global is nil or the key is missing. Mirrors the value in
@@ -432,6 +432,12 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 		}
 		return retention, batchSize
 	default:
-		return DefaultRetentionWindow, promoteBatchSize
+		hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
+		retention := time.Duration(hours) * time.Hour
+		if retention < time.Hour { retention = time.Hour }
+		batchSize := settingsGetPlatformInt("lifecycle.promote_batch_size", promoteBatchSize)
+		if batchSize < 100 { batchSize = 100 }
+		if batchSize > 50000 { batchSize = 50000 }
+		return retention, batchSize
 	}
 }

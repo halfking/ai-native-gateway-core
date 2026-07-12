@@ -1,16 +1,36 @@
 <template>
   <div class="hot-partition-manager">
-    <div class="card">
-      <h3 class="card-title">{{ t('dataLifecycle.hotPartition.hotTableTitle') }}</h3>
-      <p class="card-desc">{{ t('dataLifecycle.hotPartition.hotTableDesc') }}</p>
+    <div v-if="globalError" class="alert alert-error">
+      <span class="alert-icon">⚠️</span>
+      {{ globalError }}
+    </div>
 
-      <!-- Hot 表列表 -->
+    <!-- ── Hot 表迁移卡片网格 ────────────────────────────────── -->
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3 class="card-title">{{ t('dataLifecycle.hotPartition.hotTableTitle') }}</h3>
+          <p class="card-desc">{{ t('dataLifecycle.hotPartition.hotTableDesc') }}</p>
+        </div>
+        <div class="head-actions">
+          <span class="retention-hint">
+            默认保留
+            <strong>{{ formatHours(defaultRetentionHours) }}</strong>
+            ，后台每小时自动迁移
+          </span>
+          <button class="btn btn-sm btn-ghost" :disabled="loading" @click="loadAll">
+            <span :class="['reload-icon', { spinning: loading }]">↻</span>
+            刷新
+          </button>
+        </div>
+      </div>
+
       <div class="hot-tables-grid">
         <div
           v-for="table in hotTables"
           :key="table.name"
           class="hot-table-card"
-          :class="{ migrating: table.migrating }"
+          :class="{ migrating: table.runningJobId !== null }"
         >
           <div class="table-header">
             <h4 class="table-name">{{ hotTableLabel(table.name) }}</h4>
@@ -34,56 +54,156 @@
             <el-select
               v-model="table.retentionHours"
               class="retention-select"
-              :disabled="table.migrating"
+              :disabled="table.runningJobId !== null"
               :teleported="true"
               popper-class="hot-retention-popper"
               :aria-label="hotTableLabel(table.name)"
             >
+              <el-option :value="1" :label="t('dataLifecycle.hotPartition.retention.1day')" />
+              <el-option :value="3" label="保留 3 天" />
+              <el-option :value="7" :label="t('dataLifecycle.hotPartition.retention.7day')" />
+              <el-option :value="30" :label="t('dataLifecycle.hotPartition.retention.30day')" />
               <el-option :value="0" :label="t('dataLifecycle.hotPartition.retention.all')" />
-              <el-option :value="24" :label="t('dataLifecycle.hotPartition.retention.1day')" />
-              <el-option :value="168" :label="t('dataLifecycle.hotPartition.retention.7day')" />
-              <el-option :value="720" :label="t('dataLifecycle.hotPartition.retention.30day')" />
             </el-select>
 
             <button
               type="button"
               class="btn btn-sm btn-primary"
               @click="promoteTable(table)"
-              :disabled="table.migrating"
+              :disabled="table.runningJobId !== null"
             >
-              {{ table.migrating ? t('dataLifecycle.hotPartition.migrating') : t('dataLifecycle.hotPartition.startMigrate') }}
+              <span v-if="table.runningJobId !== null" class="dot-pulse" />
+              {{
+                table.runningJobId !== null
+                  ? t('dataLifecycle.hotPartition.migrating')
+                  : t('dataLifecycle.hotPartition.startMigrate')
+              }}
             </button>
           </div>
 
-          <!-- 迁移进度 -->
-          <div v-if="table.progress" class="migration-progress">
+          <div
+            v-if="table.runningJobId !== null && table.currentJob"
+            class="migration-progress"
+          >
             <div class="progress-bar">
-              <div class="progress-fill" :style="{ width: table.progress.percent + '%' }"></div>
+              <div
+                class="progress-fill"
+                :style="{ width: progressPercent(table.currentJob) + '%' }"
+              ></div>
             </div>
             <div class="progress-text">
-              {{ t('dataLifecycle.hotPartition.migrationProgress', {
-                migrated: formatNumber(table.progress.migrated),
-                batches: table.progress.batches,
-                duration: table.progress.duration,
-              }) }}
+              <span class="progress-message">
+                {{
+                  table.currentJob.progress?.message ||
+                  t('dataLifecycle.hotPartition.migrationProgress', {
+                    migrated: formatNumber(table.currentJob.progress?.done || 0),
+                    batches: table.currentJob.progress?.batches || 0,
+                    duration: Math.floor((table.currentJob.duration_ms || 0) / 1000),
+                  })
+                }}
+              </span>
+              <span class="progress-percent">{{ progressPercent(table.currentJob).toFixed(0) }}%</span>
+            </div>
+            <div class="progress-hint">
+              <span class="live-tag">
+                <span class="dot-pulse" />
+                实时
+              </span>
+              每 2 秒刷新 · 关闭浏览器不影响后端执行
             </div>
           </div>
 
-          <!-- 迁移结果 -->
-          <div v-if="table.result" class="migration-result" :class="table.result.status">
+          <div
+            v-else-if="table.lastResult && !table.runningJobId"
+            class="migration-result"
+            :class="table.lastResult.status"
+          >
             <div class="result-icon">
-              {{ table.result.status === 'success' ? '✓' : table.result.status === 'partial' ? '⚠' : '✗' }}
+              {{
+                table.lastResult.status === 'succeeded'
+                  ? '✓'
+                  : table.lastResult.status === 'failed'
+                  ? '✗'
+                  : '⚠'
+              }}
             </div>
             <div class="result-content">
-              <div class="result-message">{{ table.result.message }}</div>
-              <div v-if="table.result.warning" class="result-warning">⚠️ {{ table.result.warning }}</div>
+              <div class="result-message">{{ table.lastResult.message }}</div>
+              <div v-if="table.lastResult.warning" class="result-warning">
+                ⚠️ {{ table.lastResult.warning }}
+              </div>
+              <div v-if="table.lastResult.migrated !== undefined" class="result-stats">
+                迁移 <strong>{{ formatNumber(table.lastResult.migrated) }}</strong> 行 ·
+                {{ table.lastResult.batches }} 批 ·
+                {{ table.lastResult.duration }}s
+              </div>
             </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- 分区管理 -->
+    <div v-if="recentJobs.length > 0" class="card">
+      <div class="card-head">
+        <h3 class="card-title">
+          <span v-if="hasRunning" class="dot-pulse" />
+          任务历史
+        </h3>
+        <span class="dim" style="font-size: 12px;">最近 {{ recentJobs.length }} 条</span>
+      </div>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>任务 ID</th>
+            <th>类型</th>
+            <th>目标</th>
+            <th>状态</th>
+            <th>进度</th>
+            <th>耗时</th>
+            <th>开始时间</th>
+            <th>操作人</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="job in recentJobs"
+            :key="job.run_id"
+            :class="{ running: job.status === 'running' || job.status === 'queued' }"
+          >
+            <td>
+              <code class="tbl-code">{{ shortId(job.run_id) }}</code>
+            </td>
+            <td>
+              <span class="pill" :class="opPillClass(job.op)">{{ opLabel(job.op) }}</span>
+            </td>
+            <td class="dim">
+              {{ job.params?.table_name || job.params?.partition_name || job.params?.table || '—' }}
+            </td>
+            <td>
+              <span class="status-pill" :class="`status-${job.status}`">
+                <span v-if="job.status === 'running'" class="dot-pulse" />
+                {{ statusLabel(job.status) }}
+              </span>
+            </td>
+            <td class="progress-cell">
+              <div v-if="job.progress" class="mini-progress">
+                <div
+                  class="mini-progress-fill"
+                  :style="{ width: (job.progress.percent || 0) + '%' }"
+                ></div>
+              </div>
+              <span v-if="job.progress" class="dim">{{ job.progress.percent?.toFixed(0) }}%</span>
+              <span v-else class="dim">—</span>
+            </td>
+            <td>{{ formatDuration(job.duration_ms) }}</td>
+            <td class="dim">{{ job.started_at ? formatTime(job.started_at) : '—' }}</td>
+            <td class="dim">{{ job.operator || '—' }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
     <div class="card">
       <h3 class="card-title">{{ t('dataLifecycle.hotPartition.partitionTitle') }}</h3>
       <p class="card-desc">
@@ -91,7 +211,6 @@
         <strong>{{ t('dataLifecycle.hotPartition.partitionWarning') }}</strong>
       </p>
 
-      <!-- 分区表列表 -->
       <div class="tables-header">
         <h4 class="section-title">{{ t('dataLifecycle.hotPartition.tables.title') }}</h4>
         <button class="btn btn-sm btn-ghost" @click="loadPartitionTables" :disabled="loading">
@@ -117,9 +236,7 @@
               :key="pTable.table_name"
               :class="{ active: selectedTable === pTable.table_name }"
             >
-              <td>
-                <code class="tbl-code">{{ pTable.table_name }}</code>
-              </td>
+              <td><code class="tbl-code">{{ pTable.table_name }}</code></td>
               <td class="dim">{{ pTable.description }}</td>
               <td class="strong">{{ pTable.total_size_human }}</td>
               <td>{{ formatNumber(pTable.total_rows) }}</td>
@@ -149,7 +266,6 @@
         </table>
       </div>
 
-      <!-- 当前选中表的分区列表 -->
       <div v-if="selectedTable" class="partition-list-section">
         <h4 class="section-title">
           {{ t('dataLifecycle.hotPartition.partitionList.title', { table: selectedTable }) }}
@@ -167,10 +283,12 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="partition in partitions" :key="partition.name" :class="{ deleting: partition.deleting }">
-                <td>
-                  <code class="tbl-code">{{ partition.name }}</code>
-                </td>
+              <tr
+                v-for="partition in partitions"
+                :key="partition.name"
+                :class="{ deleting: partition.runningJobId !== null }"
+              >
+                <td><code class="tbl-code">{{ partition.name }}</code></td>
                 <td>
                   <span class="storage-badge" :class="partition.storage">
                     {{ partition.storageLabel }}
@@ -187,11 +305,13 @@
                   <button
                     class="btn btn-sm btn-danger"
                     @click="showDeleteConfirm(partition)"
-                    :disabled="partition.deleting || deleting"
+                    :disabled="partition.runningJobId !== null || deleting"
                   >
-                    {{ partition.deleting
-                      ? t('dataLifecycle.hotPartition.partitionList.deleting')
-                      : t('dataLifecycle.hotPartition.partitionList.delete') }}
+                    {{
+                      partition.runningJobId !== null
+                        ? t('dataLifecycle.hotPartition.partitionList.deleting')
+                        : t('dataLifecycle.hotPartition.partitionList.delete')
+                    }}
                   </button>
                 </td>
               </tr>
@@ -204,7 +324,6 @@
       </div>
     </div>
 
-    <!-- 删除确认弹窗 -->
     <div v-if="deleteConfirm" class="modal-overlay" @click="deleteConfirm = null">
       <div class="modal-dialog" @click.stop>
         <div class="modal-header">
@@ -239,11 +358,13 @@
           <button
             class="btn btn-danger"
             @click="executeDelete"
-            :disabled="deleteConfirmInput !== deleteConfirm.name || deleting"
+            :disabled="deleteConfirmInput !== deleteConfirm.name || deleteConfirm.runningJobId !== null"
           >
-            {{ deleting
-              ? t('dataLifecycle.hotPartition.deleteModal.deleting')
-              : t('dataLifecycle.hotPartition.deleteModal.confirm') }}
+            {{
+              deleteConfirm.runningJobId !== null
+                ? t('dataLifecycle.hotPartition.deleteModal.deleting')
+                : t('dataLifecycle.hotPartition.deleteModal.confirm')
+            }}
           </button>
         </div>
       </div>
@@ -252,11 +373,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { ElMessage, ElMessageBox, ElOption, ElSelect } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '@/i18n'
 import { req } from '@/api/_core'
+import {
+  promoteHotTable, dropPartition, listLifecycleJobs, getLifecycleJob,
+  type JobRun, type JobStatus,
+} from '@/api/tuning'
 
 interface HotTable {
   name: string
@@ -266,18 +391,17 @@ interface HotTable {
   toastHuman: string
   rows: number
   retentionHours: number
-  migrating: boolean
-  progress?: {
-    migrated: number
-    batches: number
-    duration: number
-    percent: number
-  }
-  result?: {
-    status: 'success' | 'partial' | 'failed'
+  runningJobId: string | null
+  currentJob: JobRun | null
+  lastResult: {
+    status: 'succeeded' | 'failed' | 'partial'
     message: string
     warning?: string
-  }
+    migrated?: number
+    batches?: number
+    duration?: number
+    finishedAt?: number
+  } | null
 }
 
 interface Partition {
@@ -288,7 +412,7 @@ interface Partition {
   sizeBytes: number
   rows: number
   month: string
-  deleting: boolean
+  runningJobId: string | null
 }
 
 interface PartitionTable {
@@ -320,70 +444,53 @@ const { t } = useI18n()
 
 const loading = ref(false)
 const deleting = ref(false)
+const globalError = ref<string | null>(null)
+const defaultRetentionHours = ref(24)
 
-// Hot 表数据
 const hotTables = ref<HotTable[]>([
-  {
-    label: 'request_logs_hot',
-    name: 'request_logs_hot',
-    sizeHuman: '—',
-    sizeBytes: 0,
-    toastHuman: '—',
-    rows: 0,
-    retentionHours: 168,
-    migrating: false,
-  },
-  {
-    label: 'credential_model_index_hot',
-    name: 'credential_model_index_hot',
-    sizeHuman: '—',
-    sizeBytes: 0,
-    toastHuman: '—',
-    rows: 0,
-    retentionHours: 168,
-    migrating: false,
-  },
-  {
-    label: 'usage_ledger_hot',
-    name: 'usage_ledger_hot',
-    sizeHuman: '—',
-    sizeBytes: 0,
-    toastHuman: '—',
-    rows: 0,
-    retentionHours: 168,
-    migrating: false,
-  },
-  {
-    label: 'routing_decision_log_hot',
-    name: 'routing_decision_log_hot',
-    sizeHuman: '—',
-    sizeBytes: 0,
-    toastHuman: '—',
-    rows: 0,
-    retentionHours: 168,
-    migrating: false,
-  },
+  { name: 'request_logs_hot', label: 'request_logs_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionHours: 24, runningJobId: null, currentJob: null, lastResult: null },
+  { name: 'credential_model_index_hot', label: 'credential_model_index_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionHours: 24, runningJobId: null, currentJob: null, lastResult: null },
+  { name: 'usage_ledger_hot', label: 'usage_ledger_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionHours: 24, runningJobId: null, currentJob: null, lastResult: null },
+  { name: 'routing_decision_log_hot', label: 'routing_decision_log_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionHours: 24, runningJobId: null, currentJob: null, lastResult: null },
 ])
 
-// 分区表数据
 const partitionTables = ref<PartitionTable[]>([])
 const selectedTable = ref<string>('')
 const partitions = ref<Partition[]>([])
 const deleteConfirm = ref<Partition | null>(null)
 const deleteConfirmInput = ref('')
 
-onMounted(() => {
-  loadHotTableStats()
-  loadPartitionTables()
+const recentJobs = ref<JobRun[]>([])
+const hasRunning = computed(() =>
+  hotTables.value.some((t2) => t2.runningJobId !== null) ||
+  partitions.value.some((p) => p.runningJobId !== null) ||
+  recentJobs.value.some((j) => j.status === 'running' || j.status === 'queued')
+)
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+onMounted(async () => {
+  await loadAll()
+  startPolling()
 })
+
+onUnmounted(() => {
+  stopPolling()
+})
+
+async function loadAll() {
+  await Promise.all([
+    loadHotTableStats(),
+    loadPartitionTables(),
+    loadJobHistory(),
+  ])
+}
 
 async function loadHotTableStats() {
   try {
     loading.value = true
     const res = await req<any>('GET', '/api/admin/data-lifecycle/storage/tables')
-
     for (const table of hotTables.value) {
-      const stat = res.tables?.find((t: any) => t.table === table.name)
+      const stat = res.tables?.find((t2: any) => t2.table === table.name)
       if (stat) {
         table.sizeHuman = stat.total_human
         table.sizeBytes = stat.total_bytes
@@ -393,6 +500,7 @@ async function loadHotTableStats() {
     }
   } catch (err: any) {
     console.error('加载 hot 表统计失败:', err)
+    globalError.value = '加载 hot 表统计失败：' + (err.response?.data?.error || err.message)
   } finally {
     loading.value = false
   }
@@ -403,16 +511,13 @@ async function loadPartitionTables() {
     loading.value = true
     const res = await req<PartitionTable[]>('GET', '/api/admin/data-lifecycle/partitions')
     partitionTables.value = res || []
-    // 如果当前选中的表不在新列表里，重置选择
-    if (selectedTable.value && !partitionTables.value.find(t2 => t2.table_name === selectedTable.value)) {
+    if (selectedTable.value && !partitionTables.value.find((t2) => t2.table_name === selectedTable.value)) {
       selectedTable.value = ''
       partitions.value = []
     }
-    // 如果有表但还没选，默认选第一个
     if (!selectedTable.value && partitionTables.value.length > 0) {
       selectTable(partitionTables.value[0].table_name)
     } else if (selectedTable.value) {
-      // 刷新当前选中表的分区数据
       loadPartitions()
     }
   } catch (err: any) {
@@ -435,28 +540,24 @@ async function loadPartitions() {
   }
   try {
     loading.value = true
-    const t2 = partitionTables.value.find(t3 => t3.table_name === selectedTable.value)
+    const t2 = partitionTables.value.find((t3) => t3.table_name === selectedTable.value)
     if (!t2) {
       partitions.value = []
       return
     }
-    partitions.value = (t2.partitions || []).map((p: any) => {
-      const storage = p.is_columnar ? 'columnar' : (p.is_archived ? 'archive' : 'heap')
-      const storageLabel =
-        storage === 'columnar' ? t('dataLifecycle.hotPartition.partitionList.storage.columnar')
-        : storage === 'archive' ? t('dataLifecycle.hotPartition.partitionList.storage.archive')
-        : t('dataLifecycle.hotPartition.partitionList.storage.heap')
-      return {
-        name: p.partition_name,
-        storage,
-        storageLabel,
-        sizeHuman: p.size_human,
-        sizeBytes: p.size_bytes,
-        rows: p.row_count || 0,
-        month: extractMonth(p.partition_name),
-        deleting: false,
-      }
-    })
+    partitions.value = (t2.partitions || []).map((p: any) => ({
+      name: p.partition_name,
+      storage: p.is_columnar ? 'columnar' : p.is_archived ? 'archive' : 'heap',
+      storageLabel:
+        p.is_columnar ? t('dataLifecycle.hotPartition.partitionList.storage.columnar')
+        : p.is_archived ? t('dataLifecycle.hotPartition.partitionList.storage.archive')
+        : t('dataLifecycle.hotPartition.partitionList.storage.heap'),
+      sizeHuman: p.size_human,
+      sizeBytes: p.size_bytes,
+      rows: p.row_count || 0,
+      month: extractMonth(p.partition_name),
+      runningJobId: null,
+    }))
   } catch (err: any) {
     console.error('加载分区列表失败:', err)
     partitions.value = []
@@ -474,46 +575,149 @@ async function promoteTable(table: HotTable) {
     await ElMessageBox.confirm(
       t('dataLifecycle.hotPartition.promoteConfirm', { label: hotTableLabel(table.name), hours: hoursLabel }),
       t('dataLifecycle.hotPartition.hotTableTitle'),
-      { type: 'warning', confirmButtonText: t('dataLifecycle.hotPartition.startMigrate'), cancelButtonText: t('dataLifecycle.hotPartition.deleteModal.cancel') },
+      {
+        type: 'warning',
+        confirmButtonText: t('dataLifecycle.hotPartition.startMigrate'),
+        cancelButtonText: t('dataLifecycle.hotPartition.deleteModal.cancel'),
+      }
     )
   } catch {
-    return // 用户取消
+    return
   }
 
-  table.migrating = true
-  table.progress = { migrated: 0, batches: 0, duration: 0, percent: 0 }
-  table.result = undefined
-
   try {
-    const res = await req<any>('POST', '/api/admin/data-lifecycle/hot/promote', {
+    const resp = await promoteHotTable({
       table_name: table.name,
       retention_hours: table.retentionHours,
-      batch_size: 1000,
-      max_batches: 0,
+      batch_size: 5000,
     })
-
-    table.result = {
-      status: res.status,
-      message: res.message,
-      warning: res.warning,
+    table.runningJobId = resp.run_id
+    table.currentJob = {
+      run_id: resp.run_id,
+      op: 'promote_hot',
+      status: 'queued',
+      started_at: resp.started_at,
+      duration_ms: 0,
+      message: '已入队，等待开始…',
     }
-
-    table.progress = {
-      migrated: res.total_migrated,
-      batches: res.batches_executed,
-      duration: res.duration_seconds,
-      percent: 100,
-    }
-
-    // 刷新统计
-    await loadHotTableStats()
+    await loadJobHistory()
+    if (pollTimer === null) startPolling()
   } catch (err: any) {
-    table.result = {
-      status: 'failed',
-      message: err.response?.data?.error || err.message || t('dataLifecycle.hotPartition.migrationFailed'),
+    ElMessage.error('启动迁移任务失败：' + (err.response?.data?.error || err.message))
+  }
+}
+
+async function showDeleteConfirm(partition: Partition) {
+  deleteConfirm.value = partition
+  deleteConfirmInput.value = ''
+}
+
+async function executeDelete() {
+  if (!deleteConfirm.value) return
+  const partition = deleteConfirm.value
+  if (partition.runningJobId !== null) return
+  try {
+    const resp = await dropPartition({
+      partition_name: partition.name,
+      confirm: true,
+    })
+    partition.runningJobId = resp.run_id
+    ElMessage.info({
+      message: `已调度删除任务 ${partition.name}`,
+      duration: 4000,
+    })
+    deleteConfirm.value = null
+  } catch (err: any) {
+    const msg = err.response?.data?.error || err.message || ''
+    ElMessage.error({ message: '提交删除任务失败：' + msg, duration: 8000 })
+  }
+}
+
+async function loadJobHistory() {
+  try {
+    const res = await listLifecycleJobs(20)
+    const allJobs = [...(res.running || []), ...(res.history || [])]
+    recentJobs.value = allJobs
+    syncJobToTableView(allJobs)
+    syncJobToPartitionView(allJobs)
+  } catch (err: any) {
+    console.warn('loadJobHistory failed:', err)
+  }
+}
+
+function syncJobToTableView(jobs: JobRun[]) {
+  for (const table of hotTables.value) {
+    const related = jobs.filter(
+      (j) => j.op === 'promote_hot' && j.params?.table_name === table.name
+    )
+    if (related.length === 0) {
+      if (table.runningJobId !== null) {
+        table.runningJobId = null
+        table.currentJob = null
+      }
+      continue
     }
-  } finally {
-    table.migrating = false
+    const running = related.find((j) => j.status === 'running' || j.status === 'queued')
+    const latest = related[0]
+    if (running) {
+      table.runningJobId = running.run_id
+      table.currentJob = running
+      table.lastResult = null
+    } else {
+      table.runningJobId = null
+      table.currentJob = null
+      if (latest && (latest.status === 'succeeded' || latest.status === 'failed')) {
+        const r = latest.result || {}
+        const flagStatus =
+          latest.status === 'succeeded'
+            ? 'succeeded'
+            : (r.total_migrated > 0 ? 'partial' : 'failed')
+        table.lastResult = {
+          status: flagStatus as any,
+          message: latest.message || '',
+          warning: r.warning,
+          migrated: r.total_migrated,
+          batches: r.batches_executed,
+          duration: r.duration_seconds,
+          finishedAt: latest.finished_at ? new Date(latest.finished_at).getTime() : Date.now(),
+        }
+      }
+    }
+  }
+}
+
+function syncJobToPartitionView(jobs: JobRun[]) {
+  for (const partition of partitions.value) {
+    const related = jobs.filter(
+      (j) => j.op === 'drop_partition' && j.params?.partition_name === partition.name
+    )
+    if (related.length === 0) {
+      partition.runningJobId = null
+      continue
+    }
+    const running = related.find((j) => j.status === 'running' || j.status === 'queued')
+    if (running) {
+      partition.runningJobId = running.run_id
+    } else {
+      partition.runningJobId = null
+    }
+  }
+}
+
+function startPolling() {
+  if (pollTimer) return
+  pollTimer = setInterval(async () => {
+    await loadJobHistory()
+    if (!hasRunning.value) {
+      await loadHotTableStats()
+    }
+  }, 2000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
   }
 }
 
@@ -527,47 +731,63 @@ function hotTableLabel(tableName: string): string {
   return t(`dataLifecycle.hotPartition.hotTableNames.${labels[tableName] || tableName}`)
 }
 
-function showDeleteConfirm(partition: Partition) {
-  deleteConfirm.value = partition
-  deleteConfirmInput.value = ''
+function shortId(id: string): string {
+  return id.length > 22 ? id.slice(0, 18) + '…' : id
 }
 
-async function executeDelete() {
-  if (!deleteConfirm.value) return
-
-  const partition = deleteConfirm.value
-  partition.deleting = true
-  deleting.value = true
-
-  try {
-    const res = await req<any>('POST', '/api/admin/data-lifecycle/partitions/drop', {
-      partition_name: partition.name,
-      confirm: true,
-    })
-
-    ElMessage.success({
-      message: t('dataLifecycle.hotPartition.deleteModal.success', {
-        message: res.message,
-        size: res.space_freed_human,
-      }),
-      duration: 6000,
-    })
-
-    // 从列表中移除
-    partitions.value = partitions.value.filter((p) => p.name !== partition.name)
-    // 刷新分区表统计（archivable_count、total_partitions）
-    await loadPartitionTables()
-    deleteConfirm.value = null
-  } catch (err: any) {
-    const msg = err.response?.data?.error || err.message || ''
-    ElMessage.error({
-      message: t('dataLifecycle.hotPartition.deleteModal.failed', { msg }),
-      duration: 8000,
-    })
-    partition.deleting = false
-  } finally {
-    deleting.value = false
+function opLabel(op: string): string {
+  const map: Record<string, string> = {
+    promote_hot: 'hot 迁移',
+    drop_partition: '删除分区',
+    vacuum: 'VACUUM',
+    vacuum_full: 'VACUUM FULL',
+    reindex: 'REINDEX',
   }
+  return map[op] || op
+}
+
+function opPillClass(op: string): string {
+  if (op === 'promote_hot') return 'pill-info'
+  if (op === 'drop_partition') return 'pill-warn'
+  return 'pill-dim'
+}
+
+function statusLabel(status: JobStatus): string {
+  const map: Record<JobStatus, string> = {
+    queued: '排队中',
+    running: '运行中',
+    succeeded: '成功',
+    failed: '失败',
+    cancelled: '已取消',
+  }
+  return map[status] || status
+}
+
+function formatDuration(ms: number): string {
+  if (!ms || ms < 1000) return `${ms || 0}ms`
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  const rs = s % 60
+  return `${m}m ${rs}s`
+}
+
+function formatTime(iso: string): string {
+  return new Date(iso).toLocaleString(localeRef.value, {
+    month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  })
+}
+
+function formatHours(h: number): string {
+  if (h === 0) return '立即迁移全部'
+  if (h < 24) return `${h} 小时`
+  return `${(h / 24).toFixed(0)} 天`
+}
+
+function progressPercent(job: JobRun | null): number {
+  if (!job) return 0
+  if (job.progress?.percent) return Math.min(100, job.progress.percent)
+  return job.status === 'running' ? 5 : 0
 }
 
 function extractMonth(partitionName: string): string {
@@ -590,14 +810,13 @@ function getMonthClass(month: string): string {
   const currentDate = new Date(current + '-01')
   if (isNaN(monthDate.getTime())) return ''
   const diffMonths = (currentDate.getTime() - monthDate.getTime()) / (1000 * 60 * 60 * 24 * 30)
-
   if (diffMonths > 3) return 'month-old'
   if (diffMonths > 1) return 'month-medium'
   return 'month-recent'
 }
 
 function formatNumber(num: number): string {
-  return num.toLocaleString(localeRef.value)
+  return (num || 0).toLocaleString(localeRef.value)
 }
 </script>
 
@@ -606,7 +825,26 @@ function formatNumber(num: number): string {
   padding: 20px;
 }
 
-/* 通用卡片 (与父视图风格一致) */
+.alert {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.alert-error {
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  color: #f87171;
+}
+
+.alert-icon {
+  font-size: 16px;
+}
+
 .card {
   background: #161b22;
   border: 1px solid #30363d;
@@ -615,16 +853,65 @@ function formatNumber(num: number): string {
   margin-bottom: 24px;
 }
 
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.card-head > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.retention-hint {
+  font-size: 12px;
+  color: #8b949e;
+  background: #0d1117;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid #30363d;
+}
+
+.retention-hint strong {
+  color: #fbbf24;
+  margin: 0 4px;
+}
+
+.reload-icon {
+  display: inline-block;
+  font-size: 14px;
+  transition: transform 0.2s;
+}
+
+.reload-icon.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .card-title {
   font-size: 16px;
   font-weight: 600;
-  margin: 0 0 8px 0;
+  margin: 0 0 6px 0;
   color: #e6edf3;
 }
 
 .card-desc {
   color: #8b949e;
-  margin: 0 0 20px 0;
+  margin: 0 0 16px 0;
   font-size: 13px;
   line-height: 1.6;
 }
@@ -633,10 +920,9 @@ function formatNumber(num: number): string {
   color: #fbbf24;
 }
 
-/* Hot 表卡片网格 */
 .hot-tables-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: 16px;
 }
 
@@ -649,8 +935,9 @@ function formatNumber(num: number): string {
 }
 
 .hot-table-card.migrating {
-  background: rgba(251, 191, 36, 0.08);
+  background: rgba(251, 191, 36, 0.06);
   border-color: rgba(251, 191, 36, 0.4);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.2);
 }
 
 .table-header {
@@ -741,6 +1028,10 @@ function formatNumber(num: number): string {
 
 .migration-progress {
   margin-top: 12px;
+  padding: 10px;
+  background: #0d1117;
+  border-radius: 6px;
+  border: 1px solid #30363d;
 }
 
 .progress-bar {
@@ -754,12 +1045,66 @@ function formatNumber(num: number): string {
 .progress-fill {
   height: 100%;
   background: linear-gradient(90deg, #6366f1, #818cf8);
-  transition: width 0.3s;
+  transition: width 0.3s ease;
 }
 
 .progress-text {
   font-size: 12px;
-  color: #8b949e;
+  color: #cbd5e1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-message {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-percent {
+  flex-shrink: 0;
+  color: #818cf8;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-hint {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 10px;
+}
+
+.dot-pulse {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
 .migration-result {
@@ -771,7 +1116,7 @@ function formatNumber(num: number): string {
   border: 1px solid transparent;
 }
 
-.migration-result.success {
+.migration-result.succeeded {
   background: rgba(52, 211, 153, 0.1);
   border-color: rgba(52, 211, 153, 0.3);
 }
@@ -789,15 +1134,15 @@ function formatNumber(num: number): string {
 .result-icon {
   font-size: 16px;
   font-weight: bold;
-  color: inherit;
 }
 
-.migration-result.success .result-icon { color: #34d399; }
+.migration-result.succeeded .result-icon { color: #34d399; }
 .migration-result.partial .result-icon { color: #fbbf24; }
 .migration-result.failed .result-icon { color: #f87171; }
 
 .result-content {
   flex: 1;
+  min-width: 0;
 }
 
 .result-message {
@@ -816,7 +1161,18 @@ function formatNumber(num: number): string {
   border: 1px solid rgba(251, 191, 36, 0.2);
 }
 
-/* ── 分区表列表 ── */
+.result-stats {
+  font-size: 11px;
+  color: #8b949e;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.result-stats strong {
+  color: #e6edf3;
+  font-weight: 600;
+}
+
 .tables-header {
   display: flex;
   justify-content: space-between;
@@ -870,7 +1226,11 @@ function formatNumber(num: number): string {
 }
 
 .data-table tr.deleting {
-  opacity: 0.5;
+  opacity: 0.6;
+}
+
+.data-table tr.running td {
+  background: rgba(99, 102, 241, 0.04);
 }
 
 .data-table .empty-row {
@@ -899,12 +1259,77 @@ function formatNumber(num: number): string {
   font-weight: 500;
 }
 
-.pill.warn {
+.pill-info {
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+}
+
+.pill-warn {
   background: rgba(251, 191, 36, 0.15);
   color: #fbbf24;
 }
 
-.pill.dim { color: #6b7280; }
+.pill-dim {
+  background: #21262d;
+  color: #6b7280;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.status-queued {
+  background: #21262d;
+  color: #8b949e;
+}
+
+.status-running {
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+}
+
+.status-running .dot-pulse { background: #818cf8; }
+
+.status-succeeded {
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+}
+
+.status-failed {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+}
+
+.status-cancelled {
+  background: #21262d;
+  color: #8b949e;
+}
+
+.progress-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mini-progress {
+  width: 80px;
+  height: 4px;
+  background: #21262d;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.mini-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #818cf8);
+  transition: width 0.3s ease;
+}
 
 .storage-badge {
   padding: 2px 8px;
@@ -957,7 +1382,6 @@ function formatNumber(num: number): string {
   margin-top: 8px;
 }
 
-/* 按钮 */
 .btn {
   padding: 6px 14px;
   border: 1px solid transparent;
@@ -968,6 +1392,9 @@ function formatNumber(num: number): string {
   transition: all 0.15s;
   background: transparent;
   color: #e6edf3;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .btn-sm {
@@ -1014,7 +1441,6 @@ function formatNumber(num: number): string {
   cursor: not-allowed;
 }
 
-/* 删除确认弹窗 */
 .modal-overlay {
   position: fixed;
   inset: 0;
