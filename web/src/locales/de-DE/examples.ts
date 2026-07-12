@@ -125,7 +125,6 @@ export default {
   // 2026-07-07: top-level key aliases (ExamplesView.vue direct references)
   name: 'Client-Integrationsleitfaden',
   copy: 'Kopieren',
-  copied: 'Kopiert!',
   test: 'Testen',
   testing: 'Teste...',
   titleCurl: 'cURL Chat Test',
