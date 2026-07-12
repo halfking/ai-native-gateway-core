@@ -65,8 +65,8 @@ function orderStatusLabel(s: string) {
   return MAAS_ORDER_STATUS_LABELS[s] || s
 }
 
-function orderTypeLabel(t: string) {
-  return t === 'subscribe' ? t('tenants.account.orderTypeSubscribe') : t('tenants.account.orderTypeTopup')
+function orderTypeLabel(orderType: string) {
+  return orderType === 'subscribe' ? t('tenants.account.orderTypeSubscribe') : t('tenants.account.orderTypeTopup')
 }
 
 function orderStatusClass(s: string) {

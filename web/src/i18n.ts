@@ -34,6 +34,27 @@ const LAZY_LOADERS: Record<string, () => Promise<{ default: Record<string, unkno
 const loaded = new Set<string>(Object.keys(STATIC_LOCALES))
 
 /**
+ * Load a locale's messages if not already loaded. Used both by `setLocale()`
+ * (interactive UI selection) and by `detectInitialLocale()` restoration on
+ * initial page load.
+ */
+async function ensureLocaleLoaded(code: string): Promise<void> {
+  if (loaded.has(code)) return
+  const loader = LAZY_LOADERS[code]
+  if (!loader) return
+  try {
+    const mod = await loader()
+    i18n.global.setLocaleMessage(code, mod.default as never)
+    loaded.add(code)
+  } catch (err) {
+    console.warn(`[i18n] failed to lazy-load locale "${code}":`, err)
+  }
+}
+
+// Expose for non-component callers (e.g. App.vue init flow).
+export { ensureLocaleLoaded }
+
+/**
  * Pick the initial locale: localStorage → browser → 'zh-CN'.
  * Runs once at module load (before app mount).
  */
@@ -90,14 +111,7 @@ export function applyDocumentLocale(code: string): void {
  * Also updates localStorage and <html lang/dir>.
  */
 export async function setLocale(code: string): Promise<void> {
-  if (!loaded.has(code)) {
-    const loader = LAZY_LOADERS[code]
-    if (loader) {
-      const mod = await loader()
-      i18n.global.setLocaleMessage(code, mod.default as never)
-      loaded.add(code)
-    }
-  }
+  await ensureLocaleLoaded(code)
   ;(i18n.global.locale as unknown as { value: string }).value = code
   localStorage.setItem('llmgw_locale', code)
   applyDocumentLocale(code)
@@ -120,3 +134,11 @@ export const localeRef = i18n.global.locale as unknown as Ref<string>
 
 // Apply <html lang/dir> immediately so first paint (incl. login) is correct
 applyDocumentLocale(detectInitialLocale())
+
+// Kick off lazy-load of the initial locale if it isn't in the bundled
+// STATIC_LOCALES. We don't await — translations will populate as soon as the
+// chunk lands, and `fallbackLocale: 'en'` keeps the UI readable meanwhile.
+const initial = detectInitialLocale()
+if (!Object.prototype.hasOwnProperty.call(STATIC_LOCALES, initial)) {
+  void ensureLocaleLoaded(initial)
+}
