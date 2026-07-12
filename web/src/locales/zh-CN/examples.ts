@@ -123,7 +123,6 @@ export default {
   // 2026-07-07: 顶层 key 别名（ExamplesView.vue 直接引用）
   name: '客户端接入指南',
   copy: '复制',
-  copied: '已复制!',
   test: '测试',
   testing: '测试中...',
   titleCurl: 'cURL Chat 测试',
