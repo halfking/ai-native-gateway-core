@@ -826,105 +826,78 @@ func (h *Handler) handleDataLifecycleDropPartitionAsync(w http.ResponseWriter, r
 		return
 	}
 
-	job := newJobRun(JobTypeDropPartition, req.PartitionName)
-	h.lifecycleJobs.add(job)
-
-	jobCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	job.cancelFn = cancel
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				now := time.Now().UTC()
-				job.Status = JobStatusFailed
-				job.Error = fmt.Sprintf("panic: %v", r)
-				job.FinishedAt = &now
-				job.UpdatedAt = now
-				job.DurationMS = time.Since(job.StartedAt).Milliseconds()
-				slog.Error("data-lifecycle: drop partition job panic", "job_id", job.ID, "partition", req.PartitionName, "panic", r)
-			}
-		}()
-
-		job.Status = JobStatusRunning
-		job.UpdatedAt = time.Now().UTC()
-
-		start := time.Now()
-
-		var parentTable string
-		var sizeBytes int64
-		var sizeHuman string
-		var rowCount int64
-		checkQuery := `
-			SELECT
-				p.relname AS parent_table,
-				pg_total_relation_size(c.oid) AS size_bytes,
-				pg_size_pretty(pg_total_relation_size(c.oid)) AS size_human,
-				c.reltuples::bigint AS row_count
-			FROM pg_class c
-			JOIN pg_inherits i ON c.oid = i.inhrelid
-			JOIN pg_class p ON i.inhparent = p.oid
-			WHERE c.relname = $1
-				AND c.relkind = 'r'
-		`
-		err := h.db.QueryRow(jobCtx, checkQuery, req.PartitionName).Scan(
-			&parentTable, &sizeBytes, &sizeHuman, &rowCount,
-		)
-		if err != nil {
-			job.Status = JobStatusFailed
-			job.Error = fmt.Sprintf("partition not found: %v", err)
-			now := time.Now().UTC()
-			job.FinishedAt = &now
-			job.UpdatedAt = now
-			job.DurationMS = time.Since(start).Milliseconds()
-			slog.Error("data-lifecycle: drop partition check failed", "job_id", job.ID, "partition", req.PartitionName, "error", err)
-			return
-		}
-
-		if jobCtx.Err() != nil {
-			job.Status = JobStatusCancelled
-			now := time.Now().UTC()
-			job.FinishedAt = &now
-			job.UpdatedAt = now
-			job.DurationMS = time.Since(start).Milliseconds()
-			return
-		}
-
-		dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", req.PartitionName)
-		if _, err := h.db.Exec(jobCtx, dropSQL); err != nil {
-			job.Status = JobStatusFailed
-			job.Error = fmt.Sprintf("drop failed: %v", err)
-			now := time.Now().UTC()
-			job.FinishedAt = &now
-			job.UpdatedAt = now
-			job.DurationMS = time.Since(start).Milliseconds()
-			slog.Error("data-lifecycle: drop partition job failed", "job_id", job.ID, "partition", req.PartitionName, "error", err)
-			return
-		}
-
-		job.Status = JobStatusSuccess
-		job.Message = fmt.Sprintf("successfully dropped partition %s from %s", req.PartitionName, parentTable)
-		job.Result["partition_name"] = req.PartitionName
-		job.Result["rows_deleted"] = rowCount
-		job.Result["space_freed_bytes"] = sizeBytes
-		job.Result["space_freed_human"] = sizeHuman
-		now := time.Now().UTC()
-		job.FinishedAt = &now
-		job.UpdatedAt = now
-		job.DurationMS = time.Since(start).Milliseconds()
-
-		slog.Warn("data-lifecycle: drop partition job done",
-			"job_id", job.ID, "partition", req.PartitionName,
-			"parent_table", parentTable,
-			"rows_deleted", rowCount, "space_freed", sizeHuman,
-			"duration_ms", job.DurationMS)
-	}()
+	params := map[string]any{
+		"partition_name": req.PartitionName,
+		"confirm":        req.Confirm,
+	}
+	operator := r.Header.Get("X-Admin-User")
+	run := h.StartJob(JobTypeDropPartition, params, operator, func(ctx context.Context, run *JobRun) {
+		h.runDropPartitionJob(ctx, run, req.PartitionName)
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"job_id":   job.ID,
-		"status":   string(job.Status),
-		"target":   job.Target,
-		"poll_url": "/api/admin/data-lifecycle/jobs/" + job.ID,
+		"job_id":   run.RunID,
+		"status":   string(run.Status),
+		"target":   req.PartitionName,
+		"poll_url": "/api/admin/data-lifecycle/jobs/" + run.RunID,
 	})
+}
+
+// runDropPartitionJob 后台异步执行 DROP TABLE
+func (h *Handler) runDropPartitionJob(ctx context.Context, run *JobRun, partitionName string) {
+	h.TouchHeartbeat(run, "正在检查分区信息")
+
+	var parentTable string
+	var sizeBytes int64
+	var sizeHuman string
+	var rowCount int64
+	checkQuery := `
+		SELECT
+			p.relname AS parent_table,
+			pg_total_relation_size(c.oid) AS size_bytes,
+			pg_size_pretty(pg_total_relation_size(c.oid)) AS size_human,
+			c.reltuples::bigint AS row_count
+		FROM pg_class c
+		JOIN pg_inherits i ON c.oid = i.inhrelid
+		JOIN pg_class p ON i.inhparent = p.oid
+		WHERE c.relname = $1
+			AND c.relkind = 'r'
+	`
+	err := h.db.QueryRow(ctx, checkQuery, partitionName).Scan(
+		&parentTable, &sizeBytes, &sizeHuman, &rowCount,
+	)
+	if err != nil {
+		h.failJob(run, fmt.Sprintf("partition not found: %v", err))
+		slog.Error("data-lifecycle: drop partition check failed", "job_id", run.RunID, "partition", partitionName, "error", err)
+		return
+	}
+
+	if ctx.Err() != nil {
+		h.failJob(run, "cancelled")
+		return
+	}
+
+	h.TouchHeartbeat(run, "执行 DROP TABLE")
+
+	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", partitionName)
+	if _, err := h.db.Exec(ctx, dropSQL); err != nil {
+		h.failJob(run, fmt.Sprintf("drop failed: %v", err))
+		slog.Error("data-lifecycle: drop partition job failed", "job_id", run.RunID, "partition", partitionName, "error", err)
+		return
+	}
+
+	h.SetResult(run, map[string]any{
+		"partition_name": partitionName,
+		"rows_deleted":   rowCount,
+		"space_freed":    sizeHuman,
+		"space_freed_b":  sizeBytes,
+		"parent_table":   parentTable,
+	}, fmt.Sprintf("成功删除分区 %s (释放 %s, %d 行)", partitionName, sizeHuman, rowCount))
+
+	slog.Warn("data-lifecycle: drop partition job done",
+		"job_id", run.RunID, "partition", partitionName,
+		"parent_table", parentTable,
+		"rows_deleted", rowCount, "space_freed", sizeHuman)
 }

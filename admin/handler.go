@@ -179,6 +179,11 @@ type Handler struct {
 	// hotCron 是 hot 表夜间自动迁移调度器；StartHotCron() 启动 goroutine。
 	// nil 表示未启用（DB 不可用 / 测试模式）。
 	hotCron *HotCronScheduler
+
+	// jobRegistry 是通用异步任务注册表（drop partition / vacuum / reindex）；
+	// 详见 data_lifecycle_jobs.go。在 NewHandler 中初始化，永不为 nil。
+	jobRegistry   *jobRegistry
+	jobRegistryMu sync.Mutex
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -188,7 +193,7 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	// 2026-07-13: hot 表异步迁移任务注册表（内存）；异步任务状态由前端轮询查询
 	h.hotJobMgr = newHotJobManager()
 	// 2026-07-13: 通用异步任务注册表，管理 drop partition / vacuum / reindex 等任务
-	h.lifecycleJobs = newJobRegistry()
+	// lazy init via getJobRegistry()
 	return h
 }
 
@@ -521,9 +526,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/vacuum-full", h.superAdmin(h.handleDataLifecycleTableVacuumFull))
 	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/reindex", h.superAdmin(h.handleDataLifecycleTableReindex))
 	// Async per-table maintenance (2026-07-13): VACUUM / VACUUM FULL / REINDEX
-	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/vacuum-async", h.superAdmin(h.handleDataLifecycleTableVacuumAsync))
-	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/vacuum-full-async", h.superAdmin(h.handleDataLifecycleTableVacuumFullAsync))
-	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/reindex-async", h.superAdmin(h.handleDataLifecycleTableReindexAsync))
+	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/vacuum-async", h.superAdmin(h.handleDataLifecycleTableVacuum))
+	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/vacuum-full-async", h.superAdmin(h.handleDataLifecycleTableVacuumFull))
+	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/reindex-async", h.superAdmin(h.handleDataLifecycleTableReindex))
 	// Blob management endpoints (2026-07-01)
 	mux.HandleFunc("/api/admin/data-lifecycle/blobs/top", admin(h.handleDataLifecycleBlobTop))
 	mux.HandleFunc("/api/admin/data-lifecycle/blobs/cleanup/preview", admin(h.handleDataLifecycleBlobCleanupPreview))
