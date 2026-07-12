@@ -21,8 +21,8 @@
 服务器信息:
   SSH地址: __INTERNAL_PUBLIC_IP__:25022
   默认用户: admin
-  默认密码: <ADMIN_PASSWORD>
-  Root密码: <SSH_PASSWORD>
+  默认密码: __REDACTED_ADMIN_PASSWORD__
+  Root密码: __REDACTED_SSH_PASSWORD__
   
 数据库配置:
   类型: PostgreSQL
@@ -218,7 +218,7 @@ ssh -p 25022 admin@__INTERNAL_PUBLIC_IP__
 
 # 切换到root
 sudo su -
-# 密码: <SSH_PASSWORD>
+# 密码: __REDACTED_SSH_PASSWORD__
 
 # 查看服务状态
 systemctl status llm-gateway

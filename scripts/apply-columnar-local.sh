@@ -23,7 +23,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOCAL_CONTAINER="${LOCAL_CONTAINER:-r112_postgres}"
 LOCAL_DB="${LOCAL_DB:-llm_gateway}"
 LOCAL_DB_USER="${LOCAL_DB_USER:-kxuser}"
-LOCAL_DB_PASS="${LOCAL_DB_PASS:?LOCAL_DB_PASS must be set}"
+LOCAL_DB_PASS="${LOCAL_DB_PASS:-kxpass}"
 
 PHASE22_DIR="$ROOT_DIR/sql/scripts/phase-22-extension-and-role-sync"
 PHASE23_DIR="$ROOT_DIR/sql/scripts/phase-23-columnar-invariant"

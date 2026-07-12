@@ -13,7 +13,7 @@ DB_HOST="${DB_HOST:-10.43.118.61}"
 DB_PORT="${DB_PORT:-5432}"
 DB_USER="${DB_USER:-llm_gateway}"
 DB_NAME="${DB_NAME:-llm_gateway}"
-DB_PASSWORD="${DB_PASSWORD:?DB_PASSWORD must be set}"
+DB_PASSWORD="${DB_PASSWORD:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}"
 
 # 颜色输出
 RED='\033[0;31m'

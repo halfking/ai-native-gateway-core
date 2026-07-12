@@ -42,20 +42,11 @@ p("api_key", "sk-test")
 p("api_key", "834a588e-dcfe-4daf-90c0-e65435c6e6ba")
 
 # Passwords
-# SECURITY: real production passwords removed from source.
-# Pass real values via env vars before running, e.g.:
-#   REDACT_SSH_PWD='<ssh>' REDACT_ADMIN_PWD='<admin>' \
-#   REDACT_DB_PWD='<db>' python3 scripts/redact-docs.py
-import os as _os
-
-if _os.environ.get("REDACT_SSH_PWD"):
-    p("ssh_pwd", _os.environ["REDACT_SSH_PWD"])
-if _os.environ.get("REDACT_ADMIN_PWD"):
-    p("admin_pwd", _os.environ["REDACT_ADMIN_PWD"])
-if _os.environ.get("REDACT_DB_PWD"):
-    p("db_pwd", _os.environ["REDACT_DB_PWD"])
-# Note: previous hardcoded values (<SSH_PASSWORD_REDACTED>, <ADMIN_PASSWORD_REDACTED>, <DB_PASSWORD_REDACTED>,
-# llm_gateway_2024, <TEST_DB_PASSWORD_REDACTED>) intentionally removed; git history will be rewritten via filter-repo.
+p("ssh_pwd", "__REDACTED_SSH_PASSWORD__")
+p("admin_pwd", "__REDACTED_ADMIN_PASSWORD__")
+p("db_pwd", "4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg")
+p("db_pwd", "llm_gateway_2024")
+p("db_pwd", "kxpass")
 
 # Public IPs
 p("pub_ip", "__INTERNAL_PUBLIC_IP__")

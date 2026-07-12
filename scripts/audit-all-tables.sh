@@ -8,7 +8,7 @@ DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
 DB_USER="${DB_USER:-kxuser}"
 DB_NAME="${DB_NAME:-llm_gateway}"
-DB_PASSWORD="${DB_PASSWORD:?DB_PASSWORD must be set}"
+DB_PASSWORD="${DB_PASSWORD:-kxpass}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
