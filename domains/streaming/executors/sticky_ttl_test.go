@@ -66,6 +66,61 @@ func TestStickyCache_TTLExpiry(t *testing.T) {
 	assert.False(t, found)
 }
 
+func TestStickyCache_RecordFailure_ReroutesAfterTwoConsecutiveFailures(t *testing.T) {
+	cache := NewStickyCache()
+	cache.Set("route", 123, time.Minute)
+
+	if reroute := cache.RecordFailure("route", 2); reroute {
+		t.Fatal("first failure must retain the sticky route")
+	}
+	if reroute := cache.RecordFailure("route", 2); !reroute {
+		t.Fatal("second consecutive failure must remove the sticky route")
+	}
+	if _, found := cache.Get("route"); found {
+		t.Fatal("sticky route must be absent after the reroute threshold")
+	}
+}
+
+func TestStickyCache_RecordFailure_ResetsAfterTenSecondWindow(t *testing.T) {
+	cache := NewStickyCache()
+	cache.Set("route", 123, time.Minute)
+
+	if reroute := cache.RecordFailure("route", 2); reroute {
+		t.Fatal("first failure must retain the sticky route")
+	}
+
+	cache.mu.Lock()
+	entry := cache.items["route"]
+	entry.lastFailureAt = time.Now().Add(-11 * time.Second)
+	cache.items["route"] = entry
+	cache.mu.Unlock()
+
+	if reroute := cache.RecordFailure("route", 2); reroute {
+		t.Fatal("failure after the ten-second window must start a new streak")
+	}
+	if _, found := cache.Get("route"); !found {
+		t.Fatal("route must remain after a reset first failure")
+	}
+}
+
+func TestStickyCache_RecordFailureMultiLevel_RemovesAllMatchingLevels(t *testing.T) {
+	cache := NewStickyCache()
+	appID, apiKeyID := 1, 2
+	cache.RecordSuccessMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4", 123)
+
+	if reroute := cache.RecordFailureMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4", 123, 2); reroute {
+		t.Fatal("first multi-level failure must retain sticky entries")
+	}
+	if reroute := cache.RecordFailureMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4", 123, 2); !reroute {
+		t.Fatal("second multi-level failure must trigger reroute")
+	}
+
+	lookup := cache.GetMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4")
+	if lookup.Found {
+		t.Fatal("all matching sticky levels must be removed after reroute")
+	}
+}
+
 func TestStickyCache_RecordSuccessMultiLevel_DynamicTTL(t *testing.T) {
 	cache := NewStickyCache()
 

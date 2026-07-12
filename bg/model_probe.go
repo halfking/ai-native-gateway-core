@@ -52,8 +52,11 @@ const (
 	// of failures can't hammer the upstream all at once.
 	MaxBatchPerCycle = 20
 
-	// ProbeInterval is how often the cycle ticker fires.
-	ProbeInterval = 10 * time.Minute
+	// ProbeInterval is the scheduler wake-up interval. Targets are still
+	// gated by model_probe_state.next_retry_at, so healthy models keep their
+	// longer watchdog interval while failed active models can be retried at
+	// 10s/30s/60s/... after a passive failure boost.
+	ProbeInterval = 10 * time.Second
 )
 
 // ModelProbeRunner is the v2 (consensus + backoff) implementation.
