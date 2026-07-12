@@ -26,26 +26,18 @@ const displayName = computed(() => {
   return `${name} (${count})`
 })
 
-// 连续失败检测（最近 10 个请求中连续失败数）
-const consecutiveFailures = computed(() => {
-  const requests = props.lane.requests
-  if (requests.length === 0) return 0
+// 2026-07-13: 可见区域错误率检测（可见请求中错误占比 >= 1/3 时显示诊断按钮）
+const visibleErrorRate = computed(() => {
+  const visible = visibleRequests.value
+  if (visible.length === 0) return 0
   
-  let count = 0
-  // 从最新的请求开始往前数
-  for (let i = requests.length - 1; i >= Math.max(0, requests.length - 10); i--) {
-    if (!requests[i].success) {
-      count++
-    } else {
-      break // 遇到成功请求就停止
-    }
-  }
-  return count
+  const errorCount = visible.filter(r => !r.success).length
+  return errorCount / visible.length
 })
 
-// 是否显示应急诊断按钮（≥3 次连续失败 且 用户是 super_admin）
+// 是否显示应急诊断按钮（可见区域 >= 1/3 请求错误）
 const showEmergencyButton = computed(() => {
-  return consecutiveFailures.value >= 3
+  return visibleErrorRate.value >= 1/3
 })
 
 function handleEmergencyDiagnose() {
@@ -171,12 +163,12 @@ watch(
           ✗{{ lane.stats.failure }}
         </span>
       </div>
-      <!-- 应急诊断按钮 -->
+      <!-- 应急诊断按钮 - 2026-07-13: 可见区域错误率 >= 1/3 时显示 -->
       <button
         v-if="showEmergencyButton"
         class="swim-lane__emergency-btn"
         @click.stop="handleEmergencyDiagnose"
-        title="连续失败，点击诊断"
+        :title="`可见区域错误率: ${(visibleErrorRate * 100).toFixed(0)}%，点击诊断`"
       >
         ⚠️ 诊断
       </button>
