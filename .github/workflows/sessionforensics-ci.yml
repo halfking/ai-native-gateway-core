@@ -1,0 +1,72 @@
+# GitHub Actions CI workflow for llm-gateway-go
+#
+# 关键步骤：
+#   1. 全量单元测试 (make test)
+#   2. sessionforensics 专项测试（含真实会话数据回放，确保 Makefile 入口可重现）
+#   3. cmd/sessionforensics CLI 编译并能跑
+#
+# 触发条件：push / pull_request 到 main
+
+name: llm-gateway-go-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    name: Build + Unit + SessionForensics
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Show Go env
+        run: |
+          go version
+          go env GOFLAGS GOPATH GOMODCACHE
+
+      - name: Build
+        run: make build-only
+
+      - name: Run unit tests (short mode)
+        run: make test-short
+
+      - name: Run sessionforensics tests
+        run: make test-sessionforensics
+        env:
+          ABS_SESSIONS_DIR: ${{ github.workspace }}/tests/session_replay/sessions
+
+      - name: Build sessionforensics CLI
+        run: make sessionforensics-build
+
+      - name: Smoke-test sessionforensics CLI
+        run: |
+          ./bin/sessionforensics help
+          ./bin/sessionforensics summarize \
+            --in=${{ github.workspace }}/tests/session_replay/sessions/session_7c9f06ab-7520-4ad0-a9c7-863c7152878c.json \
+            | head -10
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.0
+          args: --timeout=5m
