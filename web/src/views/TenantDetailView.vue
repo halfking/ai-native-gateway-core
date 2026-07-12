@@ -45,9 +45,20 @@ const grantSaving = ref(false)
 const confirmSaving = ref<number | null>(null)
 const showCost = isPlatformOpsView()
 
+function resetTenantScopedState() {
+  users.value = []
+  keys.value = []
+  stats.value = null
+  maasWallet.value = null
+  maasLedger.value = []
+  maasOrders.value = []
+  billing.value = null
+}
+
 async function loadTenant() {
   loading.value = true
   error.value = ''
+  resetTenantScopedState()
   try {
     tenant.value = await getTenant(tenantCode.value)
     if (activeTab.value === 'users') await loadUsers()
@@ -205,6 +216,10 @@ async function switchTab(t: 'overview' | 'users' | 'keys' | 'stats' | 'billing' 
   if (t === 'wallet' && !maasWallet.value) await loadWallet()
   if (t === 'ledger' && maasLedger.value.length === 0) await loadLedger()
   if (t === 'orders' && maasOrders.value.length === 0) await loadOrders()
+}
+
+function onBillingFilterChange() {
+  if (activeTab.value === 'billing') void loadBilling()
 }
 
 async function toggleUserEnabled(u: TenantUser) {
@@ -513,7 +528,7 @@ watch(() => route.params.tenantId, loadTenant)
       <div v-if="activeTab === 'billing'" class="tab-content">
         <div class="stats-toolbar billing-toolbar">
           <label>时间窗口:</label>
-          <select v-model.number="billingDays" @change="loadBilling">
+          <select v-model.number="billingDays" @change="onBillingFilterChange">
             <option :value="1">近 1 天</option>
             <option :value="7">近 7 天</option>
             <option :value="30">近 30 天</option>

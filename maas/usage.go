@@ -60,11 +60,13 @@ func ClampUsageLimit(limit int) int {
 // requestLogsSource keeps usage queries working during upgrades where the
 // optional union view has not been created yet. request_logs_hot is an
 // independent seven-day table; request_logs contains the archived partitions.
-func requestLogsSource(days int) string {
+// The subquery MUST be aliased because PostgreSQL requires every FROM
+// subquery to have a name. The returned tuple is (FROM clause, alias).
+func requestLogsSource(days int) (string, string) {
 	if days <= 7 {
-		return "request_logs_hot"
+		return "request_logs_hot AS r", "r"
 	}
-	return "(SELECT * FROM request_logs_hot UNION ALL SELECT * FROM request_logs)"
+	return "(SELECT * FROM request_logs_hot UNION ALL SELECT * FROM request_logs) AS r", "r"
 }
 
 // QueryUsageSummary reads credits_charged + request counts for one tenant (tenant-facing; no upstream cost).
@@ -97,7 +99,7 @@ func (s *Service) queryUsageSummary(ctx context.Context, tenantID string, days, 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	logsTable := requestLogsSource(days)
+	logsTable, alias := requestLogsSource(days)
 
 	if includeCost {
 		if err := s.pool.QueryRow(ctx, `
@@ -105,8 +107,8 @@ func (s *Service) queryUsageSummary(ctx context.Context, tenantID string, days, 
 			       COALESCE(SUM(COALESCE(credits_charged, 0)), 0),
 			       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8
 			FROM `+logsTable+`
-			WHERE tenant_id = $1
-			  AND ts >= now() - ($2 * INTERVAL '1 day')
+			WHERE `+alias+`.tenant_id = $1
+			  AND `+alias+`.ts >= now() - ($2 * INTERVAL '1 day')
 		`, tenantID, days).Scan(&out.TotalRequests, &out.TotalCredits, &out.TotalCostUSD); err != nil {
 			return UsageSummary{}, err
 		}
@@ -114,26 +116,26 @@ func (s *Service) queryUsageSummary(ctx context.Context, tenantID string, days, 
 		SELECT COUNT(*),
 		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)
 		FROM `+logsTable+`
-		WHERE tenant_id = $1
-		  AND ts >= now() - ($2 * INTERVAL '1 day')
+		WHERE `+alias+`.tenant_id = $1
+		  AND `+alias+`.ts >= now() - ($2 * INTERVAL '1 day')
 	`, tenantID, days).Scan(&out.TotalRequests, &out.TotalCredits); err != nil {
 		return UsageSummary{}, err
 	}
 
 	modelSQL := `
-		SELECT COALESCE(NULLIF(TRIM(outbound_model), ''), NULLIF(TRIM(client_model), ''), 'unknown') AS model,
+		SELECT COALESCE(NULLIF(TRIM(r.outbound_model), ''), NULLIF(TRIM(r.client_model), ''), 'unknown') AS model,
 		       COUNT(*)::bigint,
-		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint`
+		       COALESCE(SUM(COALESCE(r.credits_charged, 0)), 0)::bigint`
 	if includeCost {
 		modelSQL += `,
-		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8`
+		       COALESCE(SUM(COALESCE(r.cost_usd, 0)), 0)::float8`
 	}
 	modelSQL += `
 		FROM ` + logsTable + `
-		WHERE tenant_id = $1
-		  AND ts >= now() - ($2 * INTERVAL '1 day')
+		WHERE r.tenant_id = $1
+		  AND r.ts >= now() - ($2 * INTERVAL '1 day')
 		GROUP BY 1
-		ORDER BY COUNT(*) DESC, SUM(COALESCE(credits_charged, 0)) DESC
+		ORDER BY COUNT(*) DESC, SUM(COALESCE(r.credits_charged, 0)) DESC
 		LIMIT $3`
 
 	rows, err := s.pool.Query(ctx, modelSQL, tenantID, days, limit)
@@ -157,19 +159,19 @@ func (s *Service) queryUsageSummary(ctx context.Context, tenantID string, days, 
 	}
 
 	trendSQL := `
-		SELECT TO_CHAR(DATE(ts AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+		SELECT TO_CHAR(DATE(r.ts AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
 		       COUNT(*)::bigint,
-		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint`
+		       COALESCE(SUM(COALESCE(r.credits_charged, 0)), 0)::bigint`
 	if includeCost {
 		trendSQL += `,
-		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8`
+		       COALESCE(SUM(COALESCE(r.cost_usd, 0)), 0)::float8`
 	}
 	trendSQL += `
 		FROM ` + logsTable + `
-		WHERE tenant_id = $1
-		  AND ts >= now() - ($2 * INTERVAL '1 day')
-		GROUP BY DATE(ts AT TIME ZONE 'UTC')
-		ORDER BY DATE(ts AT TIME ZONE 'UTC')`
+		WHERE r.tenant_id = $1
+		  AND r.ts >= now() - ($2 * INTERVAL '1 day')
+		GROUP BY DATE(r.ts AT TIME ZONE 'UTC')
+		ORDER BY DATE(r.ts AT TIME ZONE 'UTC')`
 
 	trendRows, err := s.pool.Query(ctx, trendSQL, tenantID, days)
 	if err != nil {
