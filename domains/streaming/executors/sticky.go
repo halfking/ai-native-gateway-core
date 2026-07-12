@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
 // calculateSessionStickyTTL 根据模型类型计算动态 TTL（Phase 1）
@@ -90,7 +92,25 @@ type stickyEntry struct {
 }
 
 func NewStickyCache() *StickyCache {
-	return &StickyCache{items: make(map[string]stickyEntry)}
+	c := &StickyCache{items: make(map[string]stickyEntry)}
+	// Clear all bindings when the rate-limit gate transitions to disabled.
+	// This avoids stale sticky entries from before the gate-off interval
+	// affecting routing once the gate is re-enabled.
+	ratelimit.RegisterTransitionHandler(func(enabled bool) {
+		if !enabled {
+			c.Clear()
+		}
+	})
+	return c
+}
+
+// Clear removes every sticky binding from the cache.
+func (s *StickyCache) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k := range s.items {
+		delete(s.items, k)
+	}
 }
 
 func (s *StickyCache) SetDB(pool *pgxpool.Pool) {
@@ -467,18 +487,19 @@ func (s *StickyCache) DeleteMultiLevel(
 	clientProfile string,
 	sessionID string,
 	model string,
+	credentialID int,
 ) {
 	l1, l2, l3 := buildStickyKeys(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if l1 != "" {
-		delete(s.items, l1)
-	}
-	if l2 != "" {
-		delete(s.items, l2)
-	}
-	if l3 != "" {
-		delete(s.items, l3)
+	for _, key := range []string{l1, l2, l3} {
+		if key == "" {
+			continue
+		}
+		entry, ok := s.items[key]
+		if ok && entry.credentialID == credentialID {
+			delete(s.items, key)
+		}
 	}
 }
 

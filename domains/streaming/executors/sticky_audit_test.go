@@ -3,6 +3,8 @@ package executors
 import (
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
 // TestStickyCache_DeleteMultiLevel verifies that credential-fatal errors
@@ -21,12 +23,27 @@ func TestStickyCache_DeleteMultiLevel(t *testing.T) {
 	}
 
 	// Delete all levels
-	cache.DeleteMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4")
+	cache.DeleteMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4", 123)
 
 	// Verify all levels are gone
 	lookup = cache.GetMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4")
 	if lookup.Found {
 		t.Fatal("all sticky levels should be removed after DeleteMultiLevel")
+	}
+}
+
+func TestStickyCache_DeleteMultiLevel_DoesNotDeleteReboundCredential(t *testing.T) {
+	cache := NewStickyCache()
+	appID, apiKeyID := 1, 2
+
+	cache.RecordSuccessMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4", 123)
+	// Simulate a concurrent successful reroute rebinding the same keys.
+	cache.RecordSuccessMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4", 456)
+
+	cache.DeleteMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4", 123)
+	lookup := cache.GetMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4")
+	if !lookup.Found || lookup.CredentialID != 456 {
+		t.Fatalf("rebound credential must remain bound, got %+v", lookup)
 	}
 }
 
@@ -97,5 +114,23 @@ func TestStickyCache_RecordFailureMultiLevel_StateUpdates(t *testing.T) {
 	lookup := cache.GetMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4")
 	if lookup.Found {
 		t.Fatal("entry should be deleted after reaching threshold")
+	}
+}
+
+// TestStickyCache_ClearsOnGateTransition verifies that disabling the
+// rate-limit gate wipes all sticky bindings, so the next request does not
+// inherit stale credentials from before the gate-off interval.
+func TestStickyCache_ClearsOnGateTransition(t *testing.T) {
+	cache := NewStickyCache()
+	appID, apiKeyID := 1, 2
+	cache.RecordSuccessMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4", 123)
+
+	ratelimit.EnableRateLimit()
+	ratelimit.SetRateLimitEnabled(false)
+	t.Cleanup(func() { ratelimit.EnableRateLimit() })
+
+	lookup := cache.GetMultiLevel("tenant", &appID, &apiKeyID, "profile", "session", "gpt-4")
+	if lookup.Found {
+		t.Fatal("sticky bindings should be cleared on gate-off")
 	}
 }
