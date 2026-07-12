@@ -128,9 +128,14 @@ type Config struct {
 	WeChatCorpID     string `yaml:"wechat_corp_id" env:"LLM_GATEWAY_WECHAT_CORP_ID"`
 	WeChatCorpSecret string `yaml:"wechat_corp_secret" env:"LLM_GATEWAY_WECHAT_CORP_SECRET"`
 	WeChatAgentID    int    `yaml:"wechat_agent_id" env:"LLM_GATEWAY_WECHAT_AGENT_ID"`
-	WeChatToken      string `yaml:"wechat_token" env:"LLM_GATEWAY_WECHAT_TOKEN"`           // Callback verification token
-	WeChatAESKey     string `yaml:"wechat_aes_key" env:"LLM_GATEWAY_WECHAT_AES_KEY"`       // Callback encryption key (optional)
-	WeChatBaseURL    string `yaml:"wechat_base_url" env:"LLM_GATEWAY_WECHAT_BASE_URL"`     // Frontend base URL for approval links
+	WeChatToken      string `yaml:"wechat_token" env:"LLM_GATEWAY_WECHAT_TOKEN"`       // Callback verification token
+	WeChatAESKey     string `yaml:"wechat_aes_key" env:"LLM_GATEWAY_WECHAT_AES_KEY"`   // Callback encryption key (optional)
+	WeChatBaseURL    string `yaml:"wechat_base_url" env:"LLM_GATEWAY_WECHAT_BASE_URL"` // Frontend base URL for approval links
+
+	// License crypto keys (RSA 4096 key pair + AES-256 key for offline activation)
+	LicensePrivateKey string `yaml:"license_private_key" env:"LLM_GATEWAY_LICENSE_PRIVATE_KEY"`
+	LicensePublicKey  string `yaml:"license_public_key" env:"LLM_GATEWAY_LICENSE_PUBLIC_KEY"`
+	LicenseAESKey     string `yaml:"license_aes_key" env:"LLM_GATEWAY_LICENSE_AES_KEY"`
 
 	// Config file path (internal, not serialized)
 	configPath string `yaml:"-"`

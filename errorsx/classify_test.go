@@ -518,6 +518,17 @@ func TestClassifyError_BodyDrivenKindsFromWrappedString(t *testing.T) {
 	}
 }
 
+func TestClassifyError_Code2013ContextWindowIsNotToolMismatch(t *testing.T) {
+	body := `{"type":"error","error":{"type":"bad_request_error","message":"invalid params, context window exceeds limit (2013)","http_code":"400"}}`
+	got := ClassifyError(fmt.Errorf("upstream 400: %s", body), nil)
+	if got != KindContextLength {
+		t.Fatalf("ClassifyError(context-window code 2013) = %q, want %q", got, KindContextLength)
+	}
+	if IsClientBug(got) {
+		t.Fatal("context-window exhaustion must not be treated as a client tool-call bug")
+	}
+}
+
 // 2026-07-03: explicit pin for the production incident. The exact body
 // from the 184 production logs (326/325 cases) must classify correctly
 // even when wrapped via fmt.Errorf.

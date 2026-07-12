@@ -54,21 +54,26 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 // CreateProject 创建项目
 func (a *AdminAPI) CreateProject(c echo.Context) error {
 	var req struct {
-		TenantID    string `json:"tenant_id" validate:"required"`
 		Name        string `json:"name" validate:"required"`
 		Description string `json:"description"`
 		Language    string `json:"language"`
 		Framework   string `json:"framework"`
-		CreatedBy   string `json:"created_by" validate:"required"`
 	}
 
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
+	tenantID, _ := c.Get("tenant_id").(string)
+	userID, _ := c.Get("user_id").(string)
+	createdBy, _ := c.Get("username").(string)
+	if createdBy == "" {
+		createdBy = userID
+	}
+
 	project, err := a.projectManager.CreateProject(
 		c.Request().Context(),
-		req.TenantID, req.Name, req.Description, req.Language, req.Framework, req.CreatedBy,
+		tenantID, req.Name, req.Description, req.Language, req.Framework, createdBy,
 	)
 	if err != nil {
 		slog.Error("create project failed", "error", err)
@@ -80,7 +85,7 @@ func (a *AdminAPI) CreateProject(c echo.Context) error {
 
 // ListProjects 列出项目
 func (a *AdminAPI) ListProjects(c echo.Context) error {
-	tenantID := c.QueryParam("tenant_id")
+	tenantID, _ := c.Get("tenant_id").(string)
 	status := ProjectStatus(c.QueryParam("status"))
 	offset := 0
 	limit := 50
@@ -192,7 +197,7 @@ func (a *AdminAPI) DeleteProject(c echo.Context) error {
 
 // GetProjectStats 获取项目统计
 func (a *AdminAPI) GetProjectStats(c echo.Context) error {
-	tenantID := c.QueryParam("tenant_id")
+	tenantID, _ := c.Get("tenant_id").(string)
 
 	stats, err := a.projectManager.GetProjectStats(c.Request().Context(), tenantID)
 	if err != nil {
@@ -206,7 +211,6 @@ func (a *AdminAPI) GetProjectStats(c echo.Context) error {
 // CreateSession 创建会话
 func (a *AdminAPI) CreateSession(c echo.Context) error {
 	var req struct {
-		TenantID  string `json:"tenant_id" validate:"required"`
 		TaskType  string `json:"task_type" validate:"required"`
 		ProjectID *int64 `json:"project_id"`
 	}
@@ -215,7 +219,8 @@ func (a *AdminAPI) CreateSession(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
-	session, err := a.sessionManager.CreateSession(c.Request().Context(), req.TenantID, req.TaskType, req.ProjectID)
+	tenantID, _ := c.Get("tenant_id").(string)
+	session, err := a.sessionManager.CreateSession(c.Request().Context(), tenantID, req.TaskType, req.ProjectID)
 	if err != nil {
 		slog.Error("create session failed", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "create session failed"})
@@ -333,7 +338,6 @@ func (a *AdminAPI) GetSessionStats(c echo.Context) error {
 func (a *AdminAPI) CreateReview(c echo.Context) error {
 	var req struct {
 		SessionID *int64 `json:"session_id"`
-		TenantID  string `json:"tenant_id" validate:"required"`
 		FilePath  string `json:"file_path"`
 		Language  string `json:"language" validate:"required"`
 		Code      string `json:"code" validate:"required"`
@@ -343,9 +347,10 @@ func (a *AdminAPI) CreateReview(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
+	tenantID, _ := c.Get("tenant_id").(string)
 	review, err := a.reviewManager.CreateReview(
 		c.Request().Context(),
-		req.SessionID, req.TenantID, req.FilePath, req.Language, req.Code,
+		req.SessionID, tenantID, req.FilePath, req.Language, req.Code,
 	)
 	if err != nil {
 		slog.Error("create review failed", "error", err)

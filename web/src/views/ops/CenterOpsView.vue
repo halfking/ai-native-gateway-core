@@ -38,8 +38,8 @@ const showCommandDialog = ref(false)
 const commandForm = ref({
   instanceId: '',
   command: 'restart',
-  params: {} as Record<string, unknown>,
 })
+const commandParamsText = ref('{}')
 
 const commandOptions = [
   { value: 'restart', label: 'Restart Service' },
@@ -88,15 +88,31 @@ function openCommandDialog(instance: CenterInstance) {
   commandForm.value = {
     instanceId: instance.instance_id,
     command: 'restart',
-    params: {},
   }
+  commandParamsText.value = '{}'
   showCommandDialog.value = true
 }
 
 async function handleSendCommand() {
+  let args: Record<string, string> = {}
+  try {
+    args = JSON.parse(commandParamsText.value)
+    if (typeof args !== 'object' || args === null || Array.isArray(args)) {
+      throw new Error('params must be a JSON object')
+    }
+  } catch (e) {
+    ElMessage.warning(t('ops.center.paramsInvalidJSON'))
+    return
+  }
+
   loading.value = true
   try {
-    await sendCommand(commandForm.value.instanceId, commandForm.value.command, commandForm.value.params)
+    await sendCommand(
+      commandForm.value.instanceId,
+      commandForm.value.command,
+      args,
+      'admin'
+    )
     ElMessage.success(t('ops.center.commandSent'))
     showCommandDialog.value = false
   } catch (error) {
@@ -291,7 +307,7 @@ onMounted(load)
         </el-form-item>
         <el-form-item :label="t('ops.center.parameters')">
           <el-input
-            v-model="commandForm.params"
+            v-model="commandParamsText"
             type="textarea"
             :rows="3"
             :placeholder="t('ops.center.parametersPlaceholder')"

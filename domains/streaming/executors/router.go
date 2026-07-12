@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -66,6 +67,11 @@ func (r *Router) PlanCandidates(
 	policy *provider.Policy,
 	egressPreference []string,
 ) []provider.Candidate {
+	candidates = deduplicateCandidates(candidates)
+	if len(candidates) == 0 {
+		return nil
+	}
+
 	// 新增：优先使用URSM路由（如果可用）
 	if r.URSM != nil && r.URSM.Enabled() {
 		return r.planWithURSM(candidates, stickyCredentialID, policy, egressPreference)
@@ -151,6 +157,23 @@ func (r *Router) PlanCandidates(
 	}
 
 	return ordered
+}
+
+// deduplicateCandidates keeps one route slot per provider/credential/model.
+// Repeated binding rows must not amplify one upstream failure into multiple
+// attempts against the same credential or consume its slots repeatedly.
+func deduplicateCandidates(candidates []provider.Candidate) []provider.Candidate {
+	seen := make(map[string]struct{}, len(candidates))
+	result := make([]provider.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		key := fmt.Sprintf("%d:%d:%s", candidate.ProviderID, candidate.CredentialID, strings.ToLower(candidate.RawModel))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, candidate)
+	}
+	return result
 }
 
 // planWithURSM 使用URSM路由（新增）
@@ -311,7 +334,11 @@ func (r *Router) planByTier(candidates []provider.Candidate, policy *provider.Po
 		// Apply round-robin rotation when multiple candidates exist
 		// This prevents always selecting the first candidate when scores are equal
 		if len(sorted) > 1 {
-			offset := int(r.rrCounter.Add(1) % uint64(len(sorted)))
+			// Keep the first plan in score order. Subsequent plans rotate
+			// across the bucket so the initial routing decision remains
+			// deterministic while repeated requests are balanced.
+			counter := r.rrCounter.Add(1) - 1
+			offset := int(counter % uint64(len(sorted)))
 			slog.Info("ROUND_ROBIN_DEBUG", "counter", r.rrCounter.Load(), "offset", offset, "bucket_size", len(sorted))
 			sorted = rotateCandidates(sorted, offset)
 		}
