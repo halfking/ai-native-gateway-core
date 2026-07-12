@@ -28,7 +28,9 @@ stop_suppliers() {
 }
 
 start_suppliers() {
-    cd "$(dirname "$0")"
+    # 用 BASH_SOURCE 拿绝对路径，避免从 run_all.sh 调用时 $0 是相对路径
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+    cd "$SCRIPT_DIR"
     echo "[start] launching 60 suppliers (12 groups × 5 instances)..."
     for g in "${GROUP_NAMES[@]}"; do
         for inst in "${INSTANCES[@]}"; do
@@ -48,7 +50,7 @@ start_suppliers() {
     done
     sleep 2
     echo "[start] verifying health..."
-    cd "$(dirname "$0")"
+    cd "$SCRIPT_DIR"
     python3 mock_orchestrator.py health-matrix
     echo "[start] done. logs: $PIDS_DIR/*.log"
 }
