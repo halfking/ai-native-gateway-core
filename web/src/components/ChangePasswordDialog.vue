@@ -10,7 +10,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
-  success: []
+  success: [data: { oldPassword: string; newPassword: string }]
 }>()
 
 const oldPassword = ref('')
@@ -59,7 +59,10 @@ async function submit() {
   loading.value = true
   try {
     await changeMyPassword(oldPassword.value, newPassword.value)
-    emit('success')
+    emit('success', {
+      oldPassword: oldPassword.value,
+      newPassword: newPassword.value,
+    })
     close()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '修改密码失败'

@@ -1,5 +1,8 @@
 <script setup lang="ts">
+// MaaSAccountView.vue — /tenant/account 页面（我的账户 / 管理员只读账户视图）。
+// 2026-07-12: 文案全面接入 i18n。
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import { RouterLink } from 'vue-router'
 import {
@@ -13,9 +16,11 @@ import {
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 import PageBackLink from '../../components/PageBackLink.vue'
 
+const { t } = useI18n()
+
 const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
 const pageTitle = computed(() =>
-  ctxPageTitle(isAdminTenantView.value ? '账户' : '我的账户'),
+  ctxPageTitle(isAdminTenantView.value ? t('tenants.account.adminTitle') : t('tenants.account.title')),
 )
 const backLink = computed(() => maasBackLink('account'))
 
@@ -60,6 +65,10 @@ function orderStatusLabel(s: string) {
   return MAAS_ORDER_STATUS_LABELS[s] || s
 }
 
+function orderTypeLabel(t: string) {
+  return t === 'subscribe' ? t('tenants.account.orderTypeSubscribe') : t('tenants.account.orderTypeTopup')
+}
+
 function orderStatusClass(s: string) {
   const map: Record<string, string> = {
     pending: 'badge-yellow',
@@ -84,7 +93,7 @@ async function load() {
     }
   } catch (e: unknown) {
     account.value = null
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('tenants.account.loadFailed')
   } finally {
     loading.value = false
   }
@@ -100,91 +109,97 @@ onMounted(load)
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span class="tenant-badge">{{ tenantLabel }}</span>
-        <RouterLink v-if="!isAdminTenantView" to="/tenant/pricing" class="btn btn-primary btn-sm">购买积分</RouterLink>
+        <RouterLink v-if="!isAdminTenantView" to="/tenant/pricing" class="btn btn-primary btn-sm">
+          {{ t('tenants.account.buyCredits') }}
+        </RouterLink>
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-          {{ loading ? '加载中…' : '刷新' }}
+          {{ loading ? t('tenants.account.loading') : t('tenants.account.refresh') }}
         </button>
       </div>
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
-    <div v-else-if="loading && !account" class="empty">加载中…</div>
+    <div v-else-if="loading && !account" class="empty">{{ t('tenants.account.loading') }}</div>
 
     <div v-if="account" class="wallet-grid">
       <div class="wallet-card card">
-        <div class="pool-label">订阅额度</div>
+        <div class="pool-label">{{ t('tenants.account.walletQuotaRemaining') }}</div>
         <div class="pool-value">{{ fmtCredits(account.wallet.quota_remaining) }}</div>
-        <div class="pool-hint">月包周期内，到期清零</div>
+        <div class="pool-hint">{{ t('tenants.account.walletQuotaHint') }}</div>
         <div v-if="account.wallet.subscription" class="sub-info">
-          {{ account.wallet.subscription.plan_name }}
-          · 至 {{ fmtTime(account.wallet.subscription.period_end) }}
+          {{ t('tenants.account.subscriptionInfo', {
+            plan: account.wallet.subscription.plan_name,
+            date: fmtTime(account.wallet.subscription.period_end),
+          }) }}
         </div>
       </div>
       <div class="wallet-card card">
-        <div class="pool-label">信用积分</div>
+        <div class="pool-label">{{ t('tenants.account.walletGrantedBalance') }}</div>
         <div class="pool-value">{{ fmtCredits(account.wallet.granted_balance) }}</div>
-        <div class="pool-hint">平台赠送 / 授信</div>
+        <div class="pool-hint">{{ t('tenants.account.walletGrantedHint') }}</div>
       </div>
       <div class="wallet-card card">
-        <div class="pool-label">充值积分</div>
+        <div class="pool-label">{{ t('tenants.account.walletPurchasedBalance') }}</div>
         <div class="pool-value">{{ fmtCredits(account.wallet.purchased_balance) }}</div>
-        <div class="pool-hint">付费购买</div>
+        <div class="pool-hint">{{ t('tenants.account.walletPurchasedHint') }}</div>
       </div>
       <div class="wallet-card card highlight">
-        <div class="pool-label">可用总额</div>
+        <div class="pool-label">{{ t('tenants.account.walletTotalAvailable') }}</div>
         <div class="pool-value">{{ fmtCredits(account.wallet.total_available) }}</div>
-        <div class="pool-hint">扣费顺序：订阅 → 信用 → 充值</div>
+        <div class="pool-hint">{{ t('tenants.account.walletTotalHint') }}</div>
       </div>
     </div>
 
     <div v-if="account" class="section card">
       <div class="section-header">
-        <h3>最近订单</h3>
-        <RouterLink v-if="!isAdminTenantView" :to="pricingLink" class="link-sm">去购买</RouterLink>
+        <h3>{{ t('tenants.account.recentOrders') }}</h3>
+        <RouterLink v-if="!isAdminTenantView" :to="pricingLink" class="link-sm">{{ t('tenants.account.goBuy') }}</RouterLink>
       </div>
       <table v-if="account.recent_orders.length" class="table">
         <thead>
           <tr>
-            <th>订单号</th>
-            <th>类型</th>
-            <th>金额</th>
-            <th>积分</th>
-            <th>状态</th>
-            <th>时间</th>
+            <th>{{ t('tenants.account.orderNo') }}</th>
+            <th>{{ t('tenants.account.orderType') }}</th>
+            <th>{{ t('tenants.account.orderAmount') }}</th>
+            <th>{{ t('tenants.account.orderCredits') }}</th>
+            <th>{{ t('tenants.account.orderStatus') }}</th>
+            <th>{{ t('tenants.account.orderTime') }}</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="o in account.recent_orders" :key="o.id">
             <td class="mono">{{ o.order_no }}</td>
-            <td>{{ o.order_type === 'subscribe' ? '订阅' : '加油包' }}</td>
+            <td>{{ orderTypeLabel(o.order_type) }}</td>
             <td>¥{{ fmtPrice(o.amount_cents) }}</td>
             <td>{{ fmtCredits(o.credits) }}</td>
             <td><span class="badge" :class="orderStatusClass(o.status)">{{ orderStatusLabel(o.status) }}</span></td>
             <td class="mono">{{ fmtTime(o.created_at) }}</td>
             <td>
-              <RouterLink v-if="o.status === 'pending'" :to="`/tenant/orders/${o.id}`" class="link-sm">去支付</RouterLink>
+              <RouterLink v-if="o.status === 'pending'" :to="`/tenant/orders/${o.id}`" class="link-sm">
+                {{ t('tenants.account.orderPayLink') }}
+              </RouterLink>
             </td>
           </tr>
         </tbody>
       </table>
-      <div v-else class="empty">暂无订单</div>
+      <div v-else class="empty">{{ t('tenants.account.emptyOrders') }}</div>
     </div>
 
     <div v-if="account" class="section card">
       <div class="section-header">
-        <h3>最近流水</h3>
-        <RouterLink :to="usageLink" class="link-sm">消耗统计</RouterLink>
+        <h3>{{ t('tenants.account.recentLedger') }}</h3>
+        <RouterLink :to="usageLink" class="link-sm">{{ t('tenants.account.consumptionStats') }}</RouterLink>
       </div>
       <table v-if="account.recent_ledger.length" class="table">
         <thead>
           <tr>
-            <th>时间</th>
-            <th>类型</th>
-            <th>池</th>
-            <th style="text-align:right">变动</th>
-            <th style="text-align:right">余额</th>
-            <th>备注</th>
+            <th>{{ t('tenants.account.ledgerTime') }}</th>
+            <th>{{ t('tenants.account.ledgerType') }}</th>
+            <th>{{ t('tenants.account.ledgerPool') }}</th>
+            <th style="text-align:right">{{ t('tenants.account.ledgerDelta') }}</th>
+            <th style="text-align:right">{{ t('tenants.account.ledgerBalance') }}</th>
+            <th>{{ t('tenants.account.ledgerNote') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -198,11 +213,11 @@ onMounted(load)
           </tr>
         </tbody>
       </table>
-      <div v-else class="empty">暂无流水</div>
+      <div v-else class="empty">{{ t('tenants.account.emptyLedger') }}</div>
     </div>
 
     <div v-else-if="!loading && !error" class="section card empty">
-      暂无账户数据，请稍后刷新或联系管理员。
+      {{ t('tenants.account.emptyAccount') }}
     </div>
   </div>
 </template>

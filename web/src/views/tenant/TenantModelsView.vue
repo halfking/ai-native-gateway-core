@@ -1,91 +1,69 @@
 <script setup lang="ts">
+// TenantModelsView.vue — 租户视角的标准模型目录。
+// 2026-07-12 v2:
+//   - 不再按供应商分组，避免暴露供应商信息给租户管理员
+//   - 列保持「标准模型 / 上下文 / 多模态 / 计费模式 / 4 个积分单价」
+//   - 顶部提供模型搜索 + 多模态 / 计费模式筛选
+//   - 所有文案走 i18n
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import { getMaasModels } from '../../api'
 import type { MaasModel } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 import PageBackLink from '../../components/PageBackLink.vue'
-import ModelCatalogFilterBar from '../../components/ModelCatalogFilterBar.vue'
-import { useModelCatalogFilters } from '../../composables/useModelCatalogFilters'
-import { vendorLabelZh } from '../../utils/modelCatalog'
 
+const { t } = useI18n()
 const { tenantLabel, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
-const pageTitle = computed(() => ctxPageTitle('标准模型'))
+const pageTitle = computed(() => ctxPageTitle(t('tenantModels.page.title')))
 const backLink = computed(() => maasBackLink('models'))
 
 const models = ref<MaasModel[]>([])
 const loading = ref(false)
 const error = ref('')
+const search = ref('')
+const filterMultimodal = ref<'all' | 'yes' | 'no'>('all')
 
-const {
-  pickedModel,
-  filterVendor,
-  filtered,
-  vendorOptions,
-  clearFilters,
-} = useModelCatalogFilters<MaasModel>({
-  items: models,
-  getVendor: (m) => m.vendor?.trim() || '其他',
-  getCanonicalName: (m) => m.canonical_name,
-  getDisplayName: (m) => m.display_name,
-  getSearchExtras: (m) => [
-    m.family_display_name ?? '',
-    m.family ?? '',
-    m.modality,
-    vendorLabelZh(m.vendor?.trim() || '其他'),
-  ],
+const filtered = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  return models.value.filter((m) => {
+    if (filterMultimodal.value !== 'all') {
+      const isMulti = supportsMultimodal(m.modality)
+      if (filterMultimodal.value === 'yes' && !isMulti) return false
+      if (filterMultimodal.value === 'no' && isMulti) return false
+    }
+    if (!q) return true
+    const hay = [
+      m.canonical_name,
+      m.display_name,
+      m.family_display_name ?? '',
+      m.family ?? '',
+      m.modality,
+    ]
+      .join(' ')
+      .toLowerCase()
+    return hay.includes(q)
+  })
 })
-
-const vendorGroups = computed(() => {
-  const map = new Map<string, MaasModel[]>()
-  for (const m of filtered.value) {
-    const vendor = m.vendor?.trim() || '其他'
-    const list = map.get(vendor) ?? []
-    list.push(m)
-    map.set(vendor, list)
-  }
-  return [...map.entries()]
-    .sort(([a], [b]) => vendorLabelZh(a).localeCompare(vendorLabelZh(b), 'zh-CN'))
-    .map(([vendor, items]) => ({ vendor, vendorLabel: vendorLabelZh(vendor), items }))
-})
-
-const MODALITY_LABELS: Record<string, string> = {
-  text: '文本',
-  vision: '视觉',
-  audio: '音频',
-  multimodal: '多模态',
-  embedding: '向量',
-}
-
-const BILLING_LABELS: Record<string, string> = {
-  token: '按 Token 积分',
-}
-
-const rateCols = [
-  { key: 'in', label: '输入/1M' },
-  { key: 'out', label: '输出/1M' },
-  { key: 'cache_in', label: '缓存读/1M' },
-  { key: 'cache_out', label: '缓存写/1M' },
-] as const
-
-function fmtCredits(n: number) {
-  return n.toLocaleString(localeRef.value)
-}
 
 function modalityLabel(modality: string) {
-  return MODALITY_LABELS[modality] ?? modality
+  return t(`tenantModels.modalities.${modality}`, modality)
 }
 
 function billingLabel(mode: string) {
-  return BILLING_LABELS[mode] ?? mode
+  return t(`tenantModels.billing.${mode}`, mode)
 }
 
 function supportsMultimodal(modality: string) {
   return modality === 'multimodal' || modality === 'vision' || modality === 'audio'
 }
 
+function fmtCredits(n: number) {
+  return n.toLocaleString(localeRef.value)
+}
+
 function fmtContext(ctx: number | null | undefined) {
-  if (ctx == null || ctx <= 0) return '—'
+  if (ctx == null || ctx <= 0) return t('tenantModels.context.notSet')
   if (ctx >= 1_000_000) return `${(ctx / 1_000_000).toFixed(ctx % 1_000_000 === 0 ? 0 : 1)}M`
   if (ctx >= 1000) return `${Math.round(ctx / 1000)}K`
   return String(ctx)
@@ -98,10 +76,15 @@ async function load() {
     const res = await getMaasModels()
     models.value = res.items ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('tenantModels.page.loadFailed')
   } finally {
     loading.value = false
   }
+}
+
+function clearFilters() {
+  search.value = ''
+  filterMultimodal.value = 'all'
 }
 
 onMounted(load)
@@ -115,51 +98,75 @@ onMounted(load)
       <div class="page-header-actions">
         <span class="tenant-badge">{{ tenantLabel }}</span>
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-          {{ loading ? '加载中…' : '刷新' }}
+          {{ loading ? t('tenantModels.page.loading') : t('tenantModels.page.refresh') }}
         </button>
       </div>
     </div>
 
-    <ModelCatalogFilterBar
-      v-model:picked-model="pickedModel"
-      v-model:filter-vendor="filterVendor"
-      :vendor-options="vendorOptions"
-      :count="filtered.length"
-      picker-title="标准模型 · 筛选"
-      picker-placeholder="选择标准模型…"
-      @clear="clearFilters"
-    />
+    <div class="filter-bar">
+      <div class="filter-bar__group">
+        <label class="filter-bar__label">{{ t('models.filter.textSearchPlaceholder') }}</label>
+        <input
+          v-model="search"
+          class="filter-bar__input"
+          type="search"
+          :placeholder="t('tenantModels.page.filterPlaceholder')"
+        />
+      </div>
+      <div class="filter-bar__group">
+        <label class="filter-bar__label">{{ t('tenantModels.columns.multimodal') }}</label>
+        <select v-model="filterMultimodal" class="filter-bar__select">
+          <option value="all">{{ t('common.all') }}</option>
+          <option value="yes">{{ t('tenantModels.multimodal.yes') }}</option>
+          <option value="no">{{ t('tenantModels.multimodal.no') }}</option>
+        </select>
+      </div>
+      <div class="filter-bar__count">
+        {{ t('tenantModels.filterBar.count', { n: filtered.length, m: models.length }) }}
+        <button
+          v-if="search || filterMultimodal !== 'all'"
+          type="button"
+          class="link-btn"
+          @click="clearFilters"
+        >
+          {{ t('common.button.clear') }}
+        </button>
+      </div>
+    </div>
 
-    <p class="page-desc">
-      平台标准模型目录，按模型原厂分组。计费含输入 / 输出 / 缓存读 / 缓存写，均按每百万 Token 扣积分。
-    </p>
+    <p class="page-desc">{{ t('tenantModels.page.desc') }}</p>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
-    <div v-else-if="loading && !models.length" class="empty">加载中…</div>
-    <div v-else-if="!vendorGroups.length" class="empty card">暂无可用模型</div>
+    <div v-else-if="loading && !models.length" class="empty">{{ t('tenantModels.page.loading') }}</div>
+    <div v-else-if="!filtered.length" class="empty card">{{ t('tenantModels.page.empty') }}</div>
 
-    <div v-for="group in vendorGroups" :key="group.vendor" class="vendor-section card">
-      <div class="vendor-header">
-        <h3>{{ group.vendorLabel }}</h3>
-        <span class="vendor-count">{{ group.items.length }} 个模型</span>
+    <div v-else class="card model-card">
+      <div class="card-title">
+        {{ t('tenantModels.page.vendorSectionTitle') }}
+        <span class="hint">{{ t('tenantModels.page.modelCount', { n: filtered.length }) }}</span>
       </div>
       <div class="table-wrap">
         <table class="table">
           <thead>
             <tr>
-              <th>标准模型</th>
-              <th>上下文</th>
-              <th>多模态</th>
-              <th>计费模式</th>
-            <th v-for="col in rateCols" :key="col.key" class="num-col">{{ col.label }}</th>
+              <th>{{ t('tenantModels.columns.model') }}</th>
+              <th>{{ t('tenantModels.columns.contextWindow') }}</th>
+              <th>{{ t('tenantModels.columns.multimodal') }}</th>
+              <th>{{ t('tenantModels.columns.billingMode') }}</th>
+              <th class="num-col">{{ t('tenantModels.columns.inPrice') }}</th>
+              <th class="num-col">{{ t('tenantModels.columns.outPrice') }}</th>
+              <th class="num-col">{{ t('tenantModels.columns.cacheIn') }}</th>
+              <th class="num-col">{{ t('tenantModels.columns.cacheOut') }}</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="m in group.items" :key="m.canonical_name">
+            <tr v-for="m in filtered" :key="m.canonical_name">
               <td>
                 <div class="model-name">{{ m.display_name }}</div>
                 <code class="model-code">{{ m.canonical_name }}</code>
-                <div v-if="m.family_display_name" class="model-family">{{ m.family_display_name }}</div>
+                <div v-if="m.family_display_name" class="model-family">
+                  {{ m.family_display_name }}
+                </div>
               </td>
               <td>{{ fmtContext(m.context_window) }}</td>
               <td>
@@ -167,7 +174,7 @@ onMounted(load)
                   class="badge"
                   :class="supportsMultimodal(m.modality) ? 'badge-yes' : 'badge-no'"
                 >
-                  {{ supportsMultimodal(m.modality) ? '支持' : '仅文本' }}
+                  {{ supportsMultimodal(m.modality) ? t('tenantModels.multimodal.yes') : t('tenantModels.multimodal.no') }}
                 </span>
                 <span class="modality-tag">{{ modalityLabel(m.modality) }}</span>
               </td>
@@ -196,14 +203,56 @@ onMounted(load)
   color: var(--muted);
   margin: -8px 0 16px;
 }
-.search-input {
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.filter-bar__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+}
+.filter-bar__label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.filter-bar__input,
+.filter-bar__select {
   padding: 6px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
   font-size: 13px;
-  width: 200px;
+}
+.filter-bar__count {
+  margin-inline-start: auto;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent-h);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+.link-btn:hover {
+  text-decoration: underline;
 }
 .card {
   background: var(--card);
@@ -212,26 +261,21 @@ onMounted(load)
   margin-bottom: 16px;
   overflow: hidden;
 }
-.vendor-section {
+.model-card {
   padding: 0;
 }
-.vendor-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+.card-title {
   padding: 14px 16px 10px;
   border-bottom: 1px solid var(--border);
   background: rgba(99, 102, 241, 0.04);
-}
-.vendor-header h3 {
-  margin: 0;
   font-size: 15px;
   font-weight: 600;
 }
-.vendor-count {
+.card-title .hint {
+  font-weight: 400;
   font-size: 12px;
   color: var(--muted);
+  margin-inline-start: 8px;
 }
 .table-wrap {
   overflow-x: auto;
