@@ -22,6 +22,33 @@ func TestLocalizerLoadsAllLocales(t *testing.T) {
 	}
 }
 
+// TestLocalizerLoadsAllLocales_UpstreamCredentialKeys extends the
+// invariant from TestLocalizerLoadsAllLocales to the 2026-07-12 upstream
+// credential error codes. These codes are emitted to clients whenever
+// the upstream provider rejects our stored credential; if a locale
+// falls back to the raw key the user only sees
+// "upstream_credential_invalid" instead of a localised explanation,
+// which defeats the whole point of the 2026-07-12 fix.
+func TestLocalizerLoadsAllLocales_UpstreamCredentialKeys(t *testing.T) {
+	keys := []string{
+		MsgUpstreamCredentialInvalid,
+		MsgUpstreamCredentialRevoked,
+		MsgUpstreamQuotaPermanent,
+	}
+	for _, loc := range Supported() {
+		ctx := WithLocale(context.Background(), loc)
+		for _, key := range keys {
+			got := T(ctx, key)
+			if got == "" {
+				t.Errorf("locale %s: %s resolved empty", loc, key)
+			}
+			if got == key {
+				t.Errorf("locale %s: %s fell back to raw key (translation missing)", loc, key)
+			}
+		}
+	}
+}
+
 func TestTFallback(t *testing.T) {
 	ctx := WithLocale(context.Background(), Ja)
 	// Unknown key → fallback to English, then to raw key.
