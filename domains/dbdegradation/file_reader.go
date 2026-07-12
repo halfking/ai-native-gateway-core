@@ -9,28 +9,92 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
+var backupFilenamePattern = regexp.MustCompile(`^sessions-(\d{4})-(\d{2})-(\d{2})(?:-\d{2})?\.jsonl\.gz$`)
+
+// cachedBackupFile 缓存的备份文件信息
+type cachedBackupFile struct {
+	file     *BackupFile
+	cachedAt time.Time
+}
+
 // FileReader 文件备份读取器（支持 gzip 解压）
 type FileReader struct {
-	baseDir   string
-	cacheMu   sync.RWMutex
-	cache     map[string]*BackupFile // 文件元数据缓存
-	cacheTTL  time.Duration
-	cacheTime time.Time
+	baseDir  string
+	cacheMu  sync.RWMutex
+	cache    map[string]*cachedBackupFile // 每文件独立缓存时间
+	cacheTTL time.Duration
 }
 
 // NewFileReader 创建文件读取器
 func NewFileReader(baseDir string) *FileReader {
 	return &FileReader{
 		baseDir:  baseDir,
-		cache:    make(map[string]*BackupFile),
+		cache:    make(map[string]*cachedBackupFile),
 		cacheTTL: 5 * time.Minute,
 	}
+}
+
+// validateBackupFilename 验证备份文件名格式并检查日期有效性
+func validateBackupFilename(filename string) error {
+	if filename == "" {
+		return fmt.Errorf("filename cannot be empty")
+	}
+
+	// 检查路径遍历字符
+	if strings.Contains(filename, "..") || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
+		return fmt.Errorf("filename contains invalid characters")
+	}
+
+	// 验证格式并提取日期
+	matches := backupFilenamePattern.FindStringSubmatch(filename)
+	if matches == nil {
+		return fmt.Errorf("filename must match format: sessions-YYYY-MM-DD.jsonl.gz or sessions-YYYY-MM-DD-NN.jsonl.gz")
+	}
+
+	// 验证月份范围 01-12
+	month, _ := strconv.Atoi(matches[2])
+	if month < 1 || month > 12 {
+		return fmt.Errorf("invalid month: must be 01-12")
+	}
+
+	// 验证日期范围 01-31
+	day, _ := strconv.Atoi(matches[3])
+	if day < 1 || day > 31 {
+		return fmt.Errorf("invalid day: must be 01-31")
+	}
+
+	return nil
+}
+
+// backupPath 返回备份文件的完整路径，并验证文件类型
+func (fr *FileReader) backupPath(filename string) (string, error) {
+	if err := validateBackupFilename(filename); err != nil {
+		return "", err
+	}
+
+	backupDir := filepath.Join(fr.baseDir, "backups")
+	path := filepath.Join(backupDir, filename)
+
+	// 使用 Lstat 检查文件类型（不跟随符号链接）
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("stat file: %w", err)
+	}
+
+	// 拒绝符号链接和非常规文件
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("not a regular file")
+	}
+
+	return path, nil
 }
 
 // ListBackupFiles 列出所有备份文件
@@ -57,6 +121,12 @@ func (fr *FileReader) ListBackupFiles(ctx context.Context) ([]BackupFile, error)
 		// 只处理 sessions-*.jsonl.gz 文件（支持带序号的文件）
 		name := entry.Name()
 		if !strings.HasPrefix(name, "sessions-") || !strings.HasSuffix(name, ".jsonl.gz") {
+			continue
+		}
+
+		// 验证文件名格式
+		if err := validateBackupFilename(name); err != nil {
+			slog.Warn("file reader: invalid backup filename", "filename", name, "error", err)
 			continue
 		}
 
@@ -96,15 +166,18 @@ func (fr *FileReader) GetFileSummary(ctx context.Context, filename string) (*Bac
 	// 检查缓存
 	fr.cacheMu.RLock()
 	if cached, ok := fr.cache[filename]; ok {
-		if time.Since(fr.cacheTime) < fr.cacheTTL {
+		if time.Since(cached.cachedAt) < fr.cacheTTL {
 			fr.cacheMu.RUnlock()
-			return cached, nil
+			return cached.file, nil
 		}
 	}
 	fr.cacheMu.RUnlock()
 
-	backupDir := filepath.Join(fr.baseDir, "backups")
-	path := filepath.Join(backupDir, filename)
+	// 验证并获取路径
+	path, err := fr.backupPath(filename)
+	if err != nil {
+		return nil, err
+	}
 
 	// 获取文件信息
 	info, err := os.Stat(path)
@@ -145,8 +218,10 @@ func (fr *FileReader) GetFileSummary(ctx context.Context, filename string) (*Bac
 
 	// 更新缓存
 	fr.cacheMu.Lock()
-	fr.cache[filename] = file
-	fr.cacheTime = time.Now()
+	fr.cache[filename] = &cachedBackupFile{
+		file:     file,
+		cachedAt: time.Now(),
+	}
 	fr.cacheMu.Unlock()
 
 	return file, nil
@@ -205,8 +280,11 @@ func (fr *FileReader) GetBackupSummary(ctx context.Context) (*BackupSummary, err
 
 // ReadRecords 流式读取记录并回调处理
 func (fr *FileReader) ReadRecords(ctx context.Context, filename string, callback func(BackupRecord) error) error {
-	backupDir := filepath.Join(fr.baseDir, "backups")
-	path := filepath.Join(backupDir, filename)
+	// 验证并获取路径
+	path, err := fr.backupPath(filename)
+	if err != nil {
+		return err
+	}
 
 	// 打开文件
 	file, err := os.Open(path)
@@ -247,12 +325,7 @@ func (fr *FileReader) ReadRecords(ctx context.Context, filename string, callback
 
 		var record BackupRecord
 		if err := json.Unmarshal(line, &record); err != nil {
-			slog.Warn("file reader: failed to unmarshal record",
-				"filename", filename,
-				"line", lineNum,
-				"error", err,
-			)
-			continue // 跳过损坏的记录
+			return fmt.Errorf("unmarshal record at line %d: %w", lineNum, err)
 		}
 
 		if err := callback(record); err != nil {
@@ -322,16 +395,9 @@ func (fr *FileReader) ArchiveFile(filename string) error {
 	return nil
 }
 
-func validateBackupFilename(filename string) error {
-	if filename == "" || strings.Contains(filename, "..") || strings.ContainsAny(filename, `/\\`) || !strings.HasPrefix(filename, "sessions-") || !strings.HasSuffix(filename, ".jsonl.gz") {
-		return fmt.Errorf("invalid backup filename")
-	}
-	return nil
-}
-
 // InvalidateCache 清除缓存
 func (fr *FileReader) InvalidateCache() {
 	fr.cacheMu.Lock()
 	defer fr.cacheMu.Unlock()
-	fr.cache = make(map[string]*BackupFile)
+	fr.cache = make(map[string]*cachedBackupFile)
 }

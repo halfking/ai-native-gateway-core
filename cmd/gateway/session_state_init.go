@@ -31,6 +31,7 @@ type SessionStateComponents struct {
 //   - pgPool: PostgreSQL 连接池
 //   - redisClient: Redis 客户端（复用已有连接，不新建）
 //   - adminHandler: Admin Handler（注入 Manager/DBWriter/CleanupWorker）
+//   - manager: 已初始化的 session.Manager（复用，不新建）
 //
 // 返回：
 //   - *SessionStateComponents: 组件集合（需在 main 函数末尾 defer Shutdown）
@@ -40,8 +41,9 @@ func InitializeSessionState(
 	pgPool *pgxpool.Pool,
 	redisClient *redis.Client,
 	adminHandler *admin.Handler,
+	manager *session.Manager,
 ) (*SessionStateComponents, error) {
-	if pgPool == nil || redisClient == nil {
+	if pgPool == nil || redisClient == nil || manager == nil {
 		slog.Warn("session state init skipped: missing dependencies")
 		return nil, nil
 	}
@@ -49,9 +51,9 @@ func InitializeSessionState(
 	// 1. 复用已有 Redis 连接（不新建）
 	sessionRedis := session.NewRedisClientFromClient(redisClient)
 
-	// 2. 创建 Manager
-	sessionManager := session.NewManager(sessionRedis, 7*24*time.Hour)
-	slog.Info("session manager created")
+	// 2. 复用传入的 Manager
+	sessionManager := manager
+	slog.Info("session manager reused from caller")
 
 	// 3. 创建 SessionPreference（凭据偏好缓存）
 	sessionPref := session.NewSessionPreference(sessionRedis)

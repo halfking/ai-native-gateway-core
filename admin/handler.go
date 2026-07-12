@@ -574,8 +574,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/backups/{filename}/validate", admin(h.handleValidateBackupFile))
 	}
 	if h.recovery != nil {
-		mux.HandleFunc("/api/admin/backups/{filename}/recover", admin(h.handleRecoverBackupFile))
-		mux.HandleFunc("/api/admin/backups/recover-all", admin(h.handleRecoverAllBackups))
+		mux.HandleFunc("/api/admin/backups/{filename}/recover", h.superAdmin(h.handleRecoverBackupFile))
+		mux.HandleFunc("/api/admin/backups/recover-all", h.superAdmin(h.handleRecoverAllBackups))
 		mux.HandleFunc("/api/admin/recovery-tasks/{task_id}", admin(h.handleGetRecoveryTask))
 	}
 	if h.degradation != nil {

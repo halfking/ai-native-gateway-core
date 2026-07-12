@@ -1950,6 +1950,7 @@ func main() {
 				dbConn.Pool(),
 				fpSlotRedis,
 				adminHandler,
+				sessionMgr, // 传入已初始化的 sessionMgr
 			)
 			if ssErr != nil {
 				slog.Error("session state init failed", "error", ssErr)
@@ -2010,6 +2011,13 @@ func main() {
 				7*24*time.Hour,  // 正常 TTL
 				30*24*time.Hour, // 降级 TTL
 			)
+			defer func() {
+				stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := ttlManager.Stop(stopCtx); err != nil {
+					slog.Warn("failed to stop TTL manager", "error", err)
+				}
+			}()
 
 			// 6. 注册状态变更监听器
 			dbMonitor.AddListener(func(event dbdegradation.StatusChangeEvent) {

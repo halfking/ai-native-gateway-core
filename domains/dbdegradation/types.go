@@ -2,6 +2,7 @@ package dbdegradation
 
 import (
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/session"
@@ -75,17 +76,18 @@ type BackupSummary struct {
 
 // RecoveryTask 恢复任务
 type RecoveryTask struct {
-	ID               string    `json:"id"`
-	Filename         string    `json:"filename"`
-	Status           string    `json:"status"` // "pending"|"running"|"completed"|"completed_with_errors"|"failed"
-	TotalRecords     int       `json:"total_records"`
-	ProcessedRecords int       `json:"processed_records"`
-	SuccessCount     int       `json:"success_count"`
-	FailureCount     int       `json:"failure_count"`
-	StartedAt        time.Time `json:"started_at,omitempty"`
-	CompletedAt      time.Time `json:"completed_at,omitempty"`
-	Error            string    `json:"error,omitempty"`
-	Progress         float64   `json:"progress"` // 0-100
+	mu               sync.RWMutex `json:"-"`
+	ID               string       `json:"id"`
+	Filename         string       `json:"filename"`
+	Status           string       `json:"status"` // "pending"|"running"|"completed"|"completed_with_errors"|"failed"
+	TotalRecords     int          `json:"total_records"`
+	ProcessedRecords int          `json:"processed_records"`
+	SuccessCount     int          `json:"success_count"`
+	FailureCount     int          `json:"failure_count"`
+	StartedAt        time.Time    `json:"started_at,omitempty"`
+	CompletedAt      time.Time    `json:"completed_at,omitempty"`
+	Error            string       `json:"error,omitempty"`
+	Progress         float64      `json:"progress"` // 0-100
 }
 
 // Stats 文件写入统计

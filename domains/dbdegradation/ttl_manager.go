@@ -3,6 +3,7 @@ package dbdegradation
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,6 +18,9 @@ type TTLManager struct {
 	degradedTTL    time.Duration
 	extendInterval time.Duration
 	mode           atomic.Value // string: "normal" | "degraded"
+	mu             sync.Mutex   // 保护生命周期状态
+	running        bool         // 是否已启动
+	closed         bool         // 是否已关闭
 	stopCh         chan struct{}
 	doneCh         chan struct{}
 }
@@ -49,16 +53,29 @@ func (tm *TTLManager) EnterDegradedMode(ctx context.Context) error {
 	}
 
 	slog.Info("ttl_manager: entering degraded mode")
-	tm.mode.Store("degraded")
+
+	// 先启动定期延长循环
+	tm.mu.Lock()
+	if !tm.running && !tm.closed {
+		tm.running = true
+		go tm.runExtendLoop()
+	}
+	tm.mu.Unlock()
 
 	// 立即延长所有会话 TTL
-	if err := tm.extendAllSessionTTLs(ctx); err != nil {
-		slog.Warn("ttl_manager: failed to extend TTLs", "error", err)
+	if err := tm.extendAllSessionTTLs(ctx, tm.degradedTTL); err != nil {
+		slog.Warn("ttl_manager: failed to extend TTLs on enter", "error", err)
+		// 失败时回滚 mode
+		tm.mu.Lock()
+		if tm.running {
+			close(tm.stopCh)
+			tm.running = false
+		}
+		tm.mu.Unlock()
+		return err
 	}
 
-	// 启动定期延长循环
-	go tm.runExtendLoop()
-
+	tm.mode.Store("degraded")
 	return nil
 }
 
@@ -71,15 +88,18 @@ func (tm *TTLManager) ExitDegradedMode(ctx context.Context) error {
 	slog.Info("ttl_manager: exiting degraded mode")
 
 	// 停止延长循环
-	close(tm.stopCh)
+	tm.mu.Lock()
+	if tm.running {
+		close(tm.stopCh)
+		tm.running = false
+	}
+	tm.mu.Unlock()
+
+	// 等待循环退出
 	<-tm.doneCh
 
-	// 恢复正常 TTL
+	// 恢复正常 TTL（可选：不主动缩短 TTL，让 Redis 自然过期）
 	tm.mode.Store("normal")
-
-	// 重置 channel（为下次使用）
-	tm.stopCh = make(chan struct{})
-	tm.doneCh = make(chan struct{})
 
 	slog.Info("ttl_manager: returned to normal mode")
 	return nil
@@ -88,6 +108,34 @@ func (tm *TTLManager) ExitDegradedMode(ctx context.Context) error {
 // GetMode 获取当前模式
 func (tm *TTLManager) GetMode() string {
 	return tm.mode.Load().(string)
+}
+
+// Stop 停止 TTL 管理器
+func (tm *TTLManager) Stop(ctx context.Context) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if tm.closed {
+		return nil // 已经关闭
+	}
+
+	if tm.running {
+		close(tm.stopCh)
+		tm.running = false
+	}
+
+	tm.closed = true
+
+	// 等待 goroutine 退出（带超时）
+	select {
+	case <-tm.doneCh:
+		slog.Info("ttl_manager: stopped gracefully")
+	case <-ctx.Done():
+		slog.Warn("ttl_manager: stop timeout", "error", ctx.Err())
+		return ctx.Err()
+	}
+
+	return nil
 }
 
 // runExtendLoop 运行定期延长循环
@@ -102,7 +150,7 @@ func (tm *TTLManager) runExtendLoop() {
 			slog.Info("ttl_manager: extend loop stopped")
 			return
 		case <-ticker.C:
-			if err := tm.extendAllSessionTTLs(context.Background()); err != nil {
+			if err := tm.extendAllSessionTTLs(context.Background(), tm.degradedTTL); err != nil {
 				slog.Warn("ttl_manager: failed to extend TTLs", "error", err)
 			}
 		}
@@ -110,7 +158,7 @@ func (tm *TTLManager) runExtendLoop() {
 }
 
 // extendAllSessionTTLs 延长所有会话的 TTL
-func (tm *TTLManager) extendAllSessionTTLs(ctx context.Context) error {
+func (tm *TTLManager) extendAllSessionTTLs(ctx context.Context, ttl time.Duration) error {
 	client := tm.redis.Client()
 	if client == nil {
 		return nil
@@ -127,7 +175,7 @@ func (tm *TTLManager) extendAllSessionTTLs(ctx context.Context) error {
 	totalExtended := 0
 
 	for _, pattern := range patterns {
-		extended, err := tm.extendKeysByPattern(ctx, client, pattern)
+		extended, err := tm.extendKeysByPattern(ctx, client, pattern, ttl)
 		if err != nil {
 			slog.Warn("ttl_manager: failed to extend keys",
 				"pattern", pattern,
@@ -140,14 +188,14 @@ func (tm *TTLManager) extendAllSessionTTLs(ctx context.Context) error {
 
 	slog.Info("ttl_manager: extended TTLs",
 		"count", totalExtended,
-		"ttl", tm.degradedTTL.String(),
+		"ttl", ttl.String(),
 	)
 
 	return nil
 }
 
 // extendKeysByPattern 按模式延长键的 TTL
-func (tm *TTLManager) extendKeysByPattern(ctx context.Context, client *redis.Client, pattern string) (int, error) {
+func (tm *TTLManager) extendKeysByPattern(ctx context.Context, client *redis.Client, pattern string, ttl time.Duration) (int, error) {
 	var cursor uint64
 	count := 0
 	batchSize := 100
@@ -163,11 +211,12 @@ func (tm *TTLManager) extendKeysByPattern(ctx context.Context, client *redis.Cli
 			// 使用 Pipeline 批量设置 TTL
 			pipe := client.Pipeline()
 			for _, key := range keys {
-				pipe.Expire(ctx, key, tm.degradedTTL)
+				pipe.Expire(ctx, key, ttl)
 			}
 
 			if _, err := pipe.Exec(ctx); err != nil {
 				slog.Warn("ttl_manager: pipeline exec failed", "error", err)
+				return count, err
 			} else {
 				count += len(keys)
 			}
