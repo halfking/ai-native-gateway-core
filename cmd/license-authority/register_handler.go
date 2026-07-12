@@ -55,30 +55,40 @@ func (h *RegisterHandler) HandleRegister(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing required fields"})
 	}
 
-	// P0-3: Look up license by hardware_hash first (client sends license_key_hash which is SHA256[:16])
-	// The actual license_key is needed for subsequent queries
-	existingDevice, _ := h.licenseStore.GetDeviceByHardwareHash(c.Request().Context(), req.LicenseKeyHash, req.HardwareHash)
-	var licenseKey string
-	if existingDevice != nil {
-		// Device exists, get license_key from the existing device's license_id
-		lic, licErr := h.licenseStore.GetLicenseByID(c.Request().Context(), existingDevice.LicenseID)
-		if licErr != nil {
-			slog.Error("get license by ID failed", "error", licErr, "license_id", existingDevice.LicenseID)
+	// 解析 license_key：
+	//   - 已有设备：根据 hardware_hash 找到对应 license（绕过 client 仅传 LicenseKeyHash 的限制）
+	//   - 新设备：必须显式接收 license_key（不允许把 LicenseKeyHash 当 key 用）
+	var license *licensing.License
+	var existingDevice *licensing.Device
+	if lic, licErr := h.licenseStore.GetLicenseByHardwareHash(c.Request().Context(), req.HardwareHash); licErr != nil {
+		slog.Error("get license by hardware_hash failed", "error", licErr)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	} else if lic != nil {
+		// 已通过 hardware_hash 找到 license（最常见于重新注册同一台设备）
+		license = lic
+		dev, devErr := h.licenseStore.GetDeviceByHardwareHash(c.Request().Context(), lic.LicenseKey, req.HardwareHash)
+		if devErr != nil {
+			slog.Error("get device by hardware_hash failed", "error", devErr)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		}
-		licenseKey = lic.LicenseKey
+		existingDevice = dev
 	} else {
-		// New device: try to interpret license_key_hash as full license_key
-		// (Fallback for testing; production should use proper lookup)
-		licenseKey = req.LicenseKeyHash
+		// 未通过 hardware_hash 找到 license。新设备注册要求 license_key 不能为空。
+		if req.LicenseKeyHash == "" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "license_key_hash is required for new device registration"})
+		}
+		// 新设备：尝试把 LicenseKeyHash 当成完整 license_key 查找（兼容旧版安装器
+		// 把完整 license_key 直接放到 license_key_hash 字段的情况）。
+		// 找不到时返回 404，不再 fallback 把 hash 当成 key 写入设备表。
+		lic, licErr := h.licenseStore.GetLicense(c.Request().Context(), req.LicenseKeyHash)
+		if licErr != nil {
+			slog.Info("license not found for new device", "license_key_hash", req.LicenseKeyHash)
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "license not found"})
+		}
+		license = lic
 	}
 
-	// 验证 license 是否存在
-	license, err := h.licenseStore.GetLicense(c.Request().Context(), licenseKey)
-	if err != nil {
-		slog.Error("get license failed", "error", err, "license_key", licenseKey)
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "license not found"})
-	}
+	licenseKey := license.LicenseKey
 
 	// 检查设备数限制
 	activeDevices, err := h.licenseStore.CountActiveDevices(c.Request().Context(), licenseKey)

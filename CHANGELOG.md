@@ -12,6 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added JWT issuer/audience validation, refresh-token rotation, stable license binding, request body limits, and replay nonce scoping.
 - Hardened offline upgrade manifests against empty inventories, invalid checksums, path traversal, symlink escapes, and partial `psql` execution.
 - Fixed migration discovery for nested `up/` directories and made integration-test failures visible instead of silently skipped.
+- **P0 部署脚本凭据修复**：`deploy-154.sh` / `deploy-kaixuan1.sh` 移除硬编码 SSH 密码，
+  改为 `DEPLOY_SSH_PASS` 环境变量注入；未设置时脚本直接退出并提示使用 SSH 密钥登录。
+- **P0 License 硬件指纹验证修复**：`licensing/verify_local.go::verifyFingerprint` 之前将
+  `license.HardwareHash` 复制到每个 Fingerprint 字段，导致 `MatchScore` 形同虚设。
+  改为先做 `subtle.ConstantTimeCompare` 哈希匹配，未命中再 fallback 到 fuzzy 匹配。
+- **P0 register_handler license_key fallback 修复**：原代码在新设备场景下把
+  `LicenseKeyHash` 当成 `license_key` 写入数据库，新增 `licensing.Store.GetLicenseByHardwareHash`
+  后改为：通过 hardware_hash 找到对应 license，找不到时返回 404。
+- **P1 心跳签名占位符修复**：`installer/internal/enrollment/heartbeat.go` 之前
+  设置 `X-Signature: "placeholder-signature"`。改为基于 instance_token 派生的
+  HMAC-SHA256(timestamp + nonce + body)，并补齐 `X-Timestamp` + `X-Nonce` 头，
+  与服务端 `middleware/sigverify.go` 格式对齐，方便后续启用服务端校验。
 
 ### Fixed
 - Completed SessionForensics replay evidence preservation, six-scenario audit
