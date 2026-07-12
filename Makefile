@@ -43,6 +43,10 @@ test-short: ## 短模式，跳过 -short=false 的测试
 test-sessionforensics: ## sessionforensics 全套（含真实数据回放）
 	ABS_SESSIONS_DIR="$(ABS_SESSIONS_DIR)" $(GO) test ./domains/sessionforensics/... ./tests/session_replay/... -count=1 -v
 
+.PHONY: audit-sessionforensics
+audit-sessionforensics: ## 会话回放与六类场景审计（合成数据 + 本地导出数据）
+	ABS_SESSIONS_DIR="$(ABS_SESSIONS_DIR)" $(GO) test ./domains/sessionforensics/... ./domains/hooks/outputcompliance/... ./domains/security/plugins/... ./domains/analysis/... ./admin/... ./bg/... ./tests/session_replay/... -count=1 -v
+
 .PHONY: test-replay
 test-replay: ## tests/session_replay 数据回放（依赖 ABS_SESSIONS_DIR）
 	ABS_SESSIONS_DIR="$(ABS_SESSIONS_DIR)" $(GO) test ./tests/session_replay/... -count=1 -v

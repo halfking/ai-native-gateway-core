@@ -194,7 +194,7 @@ func runList(ctx context.Context, args []string) {
 		fmt.Fprintln(os.Stderr, "list failed:", err)
 		os.Exit(1)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		fmt.Fprintf(os.Stderr, "list status=%d body=%s\n", resp.StatusCode, string(body)[:min200(len(body))])

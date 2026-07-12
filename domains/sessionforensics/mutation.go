@@ -47,9 +47,14 @@ func Mutate(pack *SessionPack, m Mutation) error {
 	if pack == nil {
 		return fmt.Errorf("sessionforensics: nil pack")
 	}
-	if m.AtTurn > len(pack.Messages) {
+	if m.AtTurn < 0 || m.AtTurn > len(pack.Messages) {
 		return fmt.Errorf("sessionforensics: turn %d out of range (max %d)",
 			m.AtTurn, len(pack.Messages))
+	}
+	if m.AtTurn == 0 {
+		// Global mutations start from the first turn. Mutators that inherently
+		// operate on every turn (such as M6) keep their existing behavior.
+		m.AtTurn = 1
 	}
 	switch m.Kind {
 	case MKindModelSwap:
@@ -114,7 +119,11 @@ func mutateCutAndAppend(pack *SessionPack, m Mutation) error {
 		m.Extra = "请总结前面对话并给我下一步建议"
 	}
 	head := pack.Messages[:m.AtTurn-1]
-	tail := pack.Messages[m.AtTurn-1+cutN:]
+	cutEnd := m.AtTurn - 1 + cutN
+	if cutEnd > len(pack.Messages) {
+		cutEnd = len(pack.Messages)
+	}
+	tail := pack.Messages[cutEnd:]
 
 	if len(head) == 0 {
 		pack.Messages = append(head, tail...)

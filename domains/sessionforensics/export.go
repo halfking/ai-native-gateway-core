@@ -255,7 +255,7 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	seenAtt := map[string]struct{}{}
 	for rows.Next() {
@@ -303,9 +303,6 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 					pack.Attachments = append(pack.Attachments, a)
 				}
 			}
-		}
-		if msg.Role == "system" && pack.SessionMeta.TaskID == "" {
-			// attempt to capture task id from headers meta would be better; skip here
 		}
 		if clientModel != nil && pack.SessionMeta.Instance == "" {
 			pack.SessionMeta.Instance = *clientModel
@@ -378,7 +375,7 @@ func (e *Exporter) ListRecentSessions(ctx context.Context, tenantID string, limi
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]SessionAudit, 0, limit)
 	now := time.Now().UTC()
