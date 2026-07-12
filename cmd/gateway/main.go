@@ -249,16 +249,86 @@ func main() {
 
 	// ── License enforcement (2026-07-12) ─────────────────────────────
 	// Verify license at startup. Failure enters restricted mode (warn only).
-	// TODO: wire RestrictedModeMiddleware when restricted mode is needed.
-	if err := licensing.EnforceAtStartup(
-		"/var/lib/kx-gateway/license.dat",
-		"/var/lib/kx-gateway/server.pub",
-		"/var/lib/kx-gateway",
-	); err != nil {
-		slog.Warn("license enforcement failed, entering restricted mode", "error", err)
-		// TODO: enable restricted mode middleware (留给后续任务)
+	//
+	// LICENSE_MODE controls offline vs online verification:
+	//   - "offline" (M1): runs OfflineVerificationDaemon (6h cron), no heartbeat
+	//   - "online" (default): runs StartTokenRefreshDaemon for token refresh
+	licenseMode := os.Getenv("LICENSE_MODE")
+	if licenseMode == "" {
+		licenseMode = "online"
+	}
+
+	if licenseMode == "offline" {
+		// M1 offline mode: verify license.dat locally, no network calls
+		slog.Info("license mode: offline (M1)", "interval", "6h", "heartbeat", "disabled")
+
+		// Initial verification at startup
+		if err := licensing.EnforceAtStartup(
+			"/var/lib/kx-gateway/license.dat",
+			"/var/lib/kx-gateway/server.pub",
+			"/var/lib/kx-gateway",
+		); err != nil {
+			slog.Warn("license verification failed, entering community mode", "error", err)
+			if enterErr := licensing.EnterCommunityMode(); enterErr != nil {
+				slog.Error("failed to enter community mode", "error", enterErr)
+			}
+		} else {
+			slog.Info("license verification successful")
+		}
+
+		// Start offline verification daemon (6h interval)
+		go licensing.OfflineVerificationDaemon(
+			context.Background(),
+			licensing.DefaultOfflineVerificationInterval,
+			"/var/lib/kx-gateway/license.dat",
+			"/var/lib/kx-gateway/server.pub",
+			"/var/lib/kx-gateway",
+		)
+		slog.Info("offline verification daemon started", "interval", "6h")
 	} else {
-		slog.Info("license verification successful")
+		// Online mode: verify and start token refresh daemon
+		if err := licensing.EnforceAtStartup(
+			"/var/lib/kx-gateway/license.dat",
+			"/var/lib/kx-gateway/server.pub",
+			"/var/lib/kx-gateway",
+		); err != nil {
+			slog.Warn("license enforcement failed, entering restricted mode", "error", err)
+			// TODO: enable restricted mode middleware (留给后续任务)
+		} else {
+			slog.Info("license verification successful")
+		}
+
+		// Token refresh daemon (online mode only)
+		if masterURL := os.Getenv("LICENSE_AUTHORITY_URL"); masterURL != "" {
+			homeDir, _ := os.UserHomeDir()
+			tokenDir := filepath.Join(homeDir, ".kx-gateway")
+			_ = tokenDir // TODO: use tokenDir when StartTokenRefreshDaemon is implemented
+
+			// 后台启动守护进程（首次延迟 1 小时，之后每 6 天执行一次）
+			// TODO: implement StartTokenRefreshDaemon in licensing package
+			// go licensing.StartTokenRefreshDaemon(
+			// 	context.Background(),
+			// 	masterURL,
+			// 	refreshTokenPath,
+			// 	instanceTokenPath,
+			// 	6*24*time.Hour, // 518400 秒
+			// )
+			slog.Info("token refresh daemon configuration",
+				"master_url", masterURL,
+				"interval", "6d",
+				"initial_delay", "1h",
+				"status", "pending_implementation")
+		} else {
+			slog.Info("token refresh daemon disabled (LICENSE_AUTHORITY_URL not set)")
+		}
+	}
+
+	// Check if community mode is active
+	if licensing.IsCommunityMode() {
+		slog.Warn("running in community mode",
+			"max_tenants", licensing.MaxCommunityTenants,
+			"features", "basic_api_only")
+		// TODO: wire community mode restrictions into middleware (留给后续任务)
 	}
 
 	cm := credential.NewManager()
