@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -78,6 +79,22 @@ func (s *PgxStore) CreateLicense(ctx context.Context, lic *License) error {
 	`, lic.LicenseKey, lic.CustomerName, lic.CustomerEmail, lic.MaxDevices,
 		lic.SubscriptionTier, featuresJSON, lic.ExpiresAt,
 	).Scan(&lic.ID, &lic.CreatedAt)
+}
+
+func (s *PgxStore) UpdateLicense(ctx context.Context, lic *License) error {
+	featuresJSON, err := json.Marshal(lic.Features)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		UPDATE licenses SET
+			customer_name = $1, customer_email = $2, max_devices = $3,
+			subscription_tier = $4, features = $5, expires_at = $6,
+			updated_at = NOW()
+		WHERE id = $7
+	`, lic.CustomerName, lic.CustomerEmail, lic.MaxDevices,
+		lic.SubscriptionTier, featuresJSON, lic.ExpiresAt, lic.ID)
+	return err
 }
 
 func (s *PgxStore) RevokeLicense(ctx context.Context, licenseKey string) error {
@@ -265,14 +282,44 @@ func (s *PgxStore) CountActiveDevices(ctx context.Context, licenseKey string) (i
 	return count, err
 }
 
-func (s *PgxStore) ListAllLicenses(ctx context.Context, offset, limit int) ([]License, int, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, license_key, customer_name, customer_email, max_devices,
-		       subscription_tier, features, expires_at, created_at, revoked_at
-		FROM licenses
-		ORDER BY created_at DESC
-		LIMIT $1 OFFSET $2
-	`, limit, offset)
+func (s *PgxStore) ListAllLicenses(ctx context.Context, offset, limit int, query, statusFilter string) ([]License, int, error) {
+	where := "WHERE 1=1"
+	args := []interface{}{}
+	argIdx := 1
+
+	if query != "" {
+		where += " AND (customer_name ILIKE $" + strconv.Itoa(argIdx) +
+			" OR customer_email ILIKE $" + strconv.Itoa(argIdx) +
+			" OR license_key ILIKE $" + strconv.Itoa(argIdx) + ")"
+		args = append(args, "%"+query+"%")
+		argIdx++
+	}
+
+	switch statusFilter {
+	case "active":
+		where += " AND revoked_at IS NULL AND expires_at > NOW()"
+	case "expired":
+		where += " AND revoked_at IS NULL AND expires_at <= NOW()"
+	case "revoked":
+		where += " AND revoked_at IS NOT NULL"
+	}
+
+	// Count
+	countSQL := "SELECT COUNT(*) FROM licenses " + where
+	var total int
+	if err := s.pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// Data query
+	dataSQL := "SELECT id, license_key, customer_name, customer_email, max_devices, " +
+		"subscription_tier, features, expires_at, created_at, revoked_at " +
+		"FROM licenses " + where +
+		" ORDER BY created_at DESC" +
+		" LIMIT $" + strconv.Itoa(argIdx) + " OFFSET $" + strconv.Itoa(argIdx+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.pool.Query(ctx, dataSQL, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -293,11 +340,6 @@ func (s *PgxStore) ListAllLicenses(ctx context.Context, offset, limit int) ([]Li
 			return nil, 0, err
 		}
 		licenses = append(licenses, lic)
-	}
-
-	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM licenses`).Scan(&total); err != nil {
-		return nil, 0, err
 	}
 
 	return licenses, total, rows.Err()
@@ -329,6 +371,141 @@ func (s *PgxStore) ListAllDevices(ctx context.Context, licenseKey string) ([]Dev
 		devices = append(devices, dev)
 	}
 	return devices, rows.Err()
+}
+
+func (s *PgxStore) ListProductModules(ctx context.Context) ([]ProductModule, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, key, name, description, category, icon, setting_key,
+		       is_base, sort_order, enabled, created_at, updated_at
+		FROM product_modules
+		ORDER BY sort_order, name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var modules []ProductModule
+	for rows.Next() {
+		var m ProductModule
+		if err := rows.Scan(
+			&m.ID, &m.Key, &m.Name, &m.Description, &m.Category,
+			&m.Icon, &m.SettingKey, &m.IsBase, &m.SortOrder,
+			&m.Enabled, &m.CreatedAt, &m.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		modules = append(modules, m)
+	}
+	return modules, rows.Err()
+}
+
+func (s *PgxStore) ListProductModuleFeatures(ctx context.Context) ([]ProductModuleFeature, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, module_key, feature_key, feature_name, description, setting_key, enabled, created_at
+		FROM product_module_features
+		ORDER BY module_key, feature_key
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var features []ProductModuleFeature
+	for rows.Next() {
+		var f ProductModuleFeature
+		if err := rows.Scan(
+			&f.ID, &f.ModuleKey, &f.FeatureKey, &f.FeatureName,
+			&f.Description, &f.SettingKey, &f.Enabled, &f.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		features = append(features, f)
+	}
+	return features, rows.Err()
+}
+
+func (s *PgxStore) ListSubscriptionTiers(ctx context.Context) ([]SubscriptionTier, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT code, name, description, price_cents, sort_order
+		FROM subscription_tiers
+		ORDER BY sort_order
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tiers []SubscriptionTier
+	for rows.Next() {
+		var t SubscriptionTier
+		if err := rows.Scan(&t.Code, &t.Name, &t.Description, &t.PriceCents, &t.SortOrder); err != nil {
+			return nil, err
+		}
+		tiers = append(tiers, t)
+	}
+	return tiers, rows.Err()
+}
+
+func (s *PgxStore) ListTierModuleMaps(ctx context.Context) ([]TierModuleMap, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT tier_code, module_key, COALESCE(max_features, '')
+		FROM tier_module_map
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var maps []TierModuleMap
+	for rows.Next() {
+		var m TierModuleMap
+		if err := rows.Scan(&m.TierCode, &m.ModuleKey, &m.MaxFeatures); err != nil {
+			return nil, err
+		}
+		maps = append(maps, m)
+	}
+	return maps, rows.Err()
+}
+
+func (s *PgxStore) ListLicenseModulesByID(ctx context.Context, licenseID int64) ([]LicenseModule, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT license_id, module_key, enabled, config, expires_at
+		FROM license_modules
+		WHERE license_id = $1
+		ORDER BY module_key
+	`, licenseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var mods []LicenseModule
+	for rows.Next() {
+		var m LicenseModule
+		if err := rows.Scan(&m.LicenseID, &m.ModuleKey, &m.Enabled, &m.Config, &m.ExpiresAt); err != nil {
+			return nil, err
+		}
+		mods = append(mods, m)
+	}
+	return mods, rows.Err()
+}
+
+func (s *PgxStore) UpsertLicenseModule(ctx context.Context, lm *LicenseModule) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO license_modules (license_id, module_key, enabled, config, expires_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (license_id, module_key)
+		DO UPDATE SET enabled = EXCLUDED.enabled, config = EXCLUDED.config, expires_at = EXCLUDED.expires_at
+	`, lm.LicenseID, lm.ModuleKey, lm.Enabled, lm.Config, lm.ExpiresAt)
+	return err
+}
+
+func (s *PgxStore) DeleteLicenseModule(ctx context.Context, licenseID int64, moduleKey string) error {
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM license_modules WHERE license_id = $1 AND module_key = $2
+	`, licenseID, moduleKey)
+	return err
 }
 
 func (s *PgxStore) GetLicenseModules(ctx context.Context, licenseKey string) (map[string]*LicenseModule, error) {

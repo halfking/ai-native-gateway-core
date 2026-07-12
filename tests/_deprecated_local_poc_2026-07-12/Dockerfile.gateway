@@ -1,0 +1,31 @@
+# tests/local/Dockerfile.gateway — 本地构建 gateway 镜像
+#
+# 此 Dockerfile 仅在 tests/local/ 跑 docker-compose 时使用。
+# 与部署到 154/252 的 deploy-* 完全独立。
+
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+
+# 仅复制 go.mod / go.sum 先下载 vendor（Docker 缓存）
+COPY go.mod go.sum ./
+RUN go mod download
+
+# 复制源码（含 vendor 目录）
+COPY . .
+
+# 编译 entry — 仅起 main pipeline，无 admin / kxmemory
+RUN CGO_ENABLED=0 go build -tags=nokxmemo,noaudit -o /out/llm-gateway-go ./cmd/gateway
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata curl
+
+COPY --from=build /out/llm-gateway-go /usr/local/bin/llm-gateway-go
+
+ENV ENV=local
+ENV LLM_GATEWAY_LISTEN_ADDR=0.0.0.0:8781
+
+EXPOSE 8781
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8781/healthz || exit 1
+
+ENTRYPOINT ["/usr/local/bin/llm-gateway-go"]

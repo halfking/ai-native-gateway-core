@@ -5,6 +5,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domain"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // MetaKeyNeedsCompression 启用压缩的 metadata 标记。
@@ -59,7 +60,16 @@ func (h *CompressionHook) Name() string { return "compression.apply" }
 func (h *CompressionHook) Priority() int { return 100 }
 
 // Enabled 报告 Hook 是否启用。
+//
+// KILL-SWITCH (2026-07-12 incident): when
+// settings.IsEnabled("session_compression") is false (env
+// KILL_SESSION_COMPRESSION=1), the hook reports disabled and the
+// pipeline skips it. This isolates compression as a noisy neighbour
+// during incident response.
 func (h *CompressionHook) Enabled(ctx context.Context, env *domain.PipelineRequest) bool {
+	if !settings.IsEnabled("session_compression") {
+		return false
+	}
 	if env == nil || env.Metadata == nil {
 		return false
 	}

@@ -634,9 +634,10 @@ func UpdateHandoffMetrics(ctx context.Context, db *sql.DB, m *HandoffMetricsSumm
 		       tokens_at_trigger = $3,
 		       messages_at_trigger = $4,
 		       last_trigger_reason = $5,
-		       last_trigger_at = $2
+		       last_trigger_at = $6
 		 WHERE session_key = $1`,
 		m.SessionKey, m.LastHandoffAt,
-		m.TokensAtTrigger, m.MessagesAtTrigger, m.LastTriggerReason)
+		m.TokensAtTrigger, m.MessagesAtTrigger, m.LastTriggerReason,
+		m.LastTriggerAt)
 	return err
 }

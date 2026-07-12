@@ -39,6 +39,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 const (
@@ -210,8 +212,16 @@ func redisKey(tenantID, gwSessionID string) string {
 // or (nil, nil, nil) when the session is new / unknown.
 // Tier priority: L1 → L2 → L3. A cache-miss at one tier is back-filled
 // from the next tier before returning.
+//
+// KILL-SWITCH (2026-07-12 incident): when settings.IsEnabled("session_cache")
+// is false (env KILL_SESSION_CACHE=1), the entire cache subsystem is bypassed
+// and we behave as if every session is brand-new. This isolates compression
+// issues from request hot-paths during incident response.
 func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID string) (state *SessionState, lastOutboundBody []byte, err error) {
 	if gwSessionID == "" {
+		return nil, nil, nil
+	}
+	if !settings.IsEnabled("session_cache") {
 		return nil, nil, nil
 	}
 	key := l1Key(tenantID, gwSessionID)
@@ -260,8 +270,14 @@ func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID stri
 
 // Set persists updated session state to L1 and L2 after a request completes.
 // outboundBody is stored in L1 only (not Redis) to avoid large blobs in Redis.
+//
+// KILL-SWITCH (2026-07-12 incident): see GetOrLoad. When session_cache is
+// disabled, Set is a no-op.
 func (c *SessionCache) Set(ctx context.Context, tenantID, gwSessionID string, state *SessionState, outboundBody []byte) error {
 	if gwSessionID == "" || state == nil {
+		return nil
+	}
+	if !settings.IsEnabled("session_cache") {
 		return nil
 	}
 	key := l1Key(tenantID, gwSessionID)
@@ -277,7 +293,13 @@ func (c *SessionCache) Set(ctx context.Context, tenantID, gwSessionID string, st
 }
 
 // Invalidate removes a session from all tiers (e.g., on session destruction).
+//
+// KILL-SWITCH (2026-07-12 incident): when session_cache is disabled,
+// Invalidate is a no-op.
 func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID string) {
+	if !settings.IsEnabled("session_cache") {
+		return
+	}
 	key := l1Key(tenantID, gwSessionID)
 	c.mu.Lock()
 	if e, ok := c.l1[key]; ok {
