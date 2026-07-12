@@ -65,6 +65,26 @@ const load = dashboardData.load
 // Tab 控制
 const activeTab = dashboardTab.activeTab
 
+// Degraded-mode hint: when the backend reports that an aggregation view
+// is missing, we still render the dashboard with zeroed metrics but
+// surface a non-blocking info banner so the operator knows the data
+// pipeline hasn't been migrated yet. This keeps the layout intact while
+// explaining why numbers may look low.
+const degradedHint = computed(() => {
+  const summaryHint = summary.value?.hint
+  const overviewHint = overview.value?.hint
+  const summaryView = summary.value?.missing_view
+  const overviewView = overview.value?.missing_view
+  const summaryDegraded = summary.value?.degraded
+  const overviewDegraded = overview.value?.degraded
+  if (!summaryDegraded && !overviewDegraded) {
+    return null
+  }
+  const view = summaryView || overviewView || 'data view'
+  return summaryHint || overviewHint || `数据视图 ${view} 尚未初始化，请先执行数据聚合迁移`
+})
+const degradedView = computed(() => summary.value?.missing_view || overview.value?.missing_view || '')
+
 // Tenant info
 const tenantLabel = computed(() => {
   const tenantId = getCurrentTenantId()
@@ -197,6 +217,18 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
           <span v-else>🔄</span>
         </button>
       </div>
+    </div>
+
+    <!-- 数据视图降级提示：不阻塞布局，仅展示一条温和提示 -->
+    <div
+      v-if="degradedHint"
+      class="alert alert-info"
+      role="status"
+      data-testid="dashboard-degraded-hint"
+    >
+      <span class="alert-icon" aria-hidden="true">ℹ️</span>
+      <span class="alert-text">{{ degradedHint }}</span>
+      <span v-if="degradedView" class="alert-meta">视图：{{ degradedView }}</span>
     </div>
 
     <!-- 错误态：带重试按钮的友好提示 -->
