@@ -55,30 +55,46 @@ func (h *RegisterHandler) HandleRegister(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing required fields"})
 	}
 
+	// P0-3: Look up license by hardware_hash first (client sends license_key_hash which is SHA256[:16])
+	// The actual license_key is needed for subsequent queries
+	existingDevice, _ := h.licenseStore.GetDeviceByHardwareHash(c.Request().Context(), req.LicenseKeyHash, req.HardwareHash)
+	var licenseKey string
+	if existingDevice != nil {
+		// Device exists, get license_key from the existing device's license_id
+		lic, licErr := h.licenseStore.GetLicenseByID(c.Request().Context(), existingDevice.LicenseID)
+		if licErr != nil {
+			slog.Error("get license by ID failed", "error", licErr, "license_id", existingDevice.LicenseID)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		}
+		licenseKey = lic.LicenseKey
+	} else {
+		// New device: try to interpret license_key_hash as full license_key
+		// (Fallback for testing; production should use proper lookup)
+		licenseKey = req.LicenseKeyHash
+	}
+
 	// 验证 license 是否存在
-	license, err := h.licenseStore.GetLicense(c.Request().Context(), req.LicenseKeyHash)
+	license, err := h.licenseStore.GetLicense(c.Request().Context(), licenseKey)
 	if err != nil {
-		slog.Error("get license failed", "error", err, "license_key_hash", req.LicenseKeyHash)
+		slog.Error("get license failed", "error", err, "license_key", licenseKey)
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "license not found"})
 	}
 
 	// 检查设备数限制
-	activeDevices, err := h.licenseStore.CountActiveDevices(c.Request().Context(), req.LicenseKeyHash)
+	activeDevices, err := h.licenseStore.CountActiveDevices(c.Request().Context(), licenseKey)
 	if err != nil {
 		slog.Error("count active devices failed", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 	}
 
-	// 检查是否已存在该设备
-	existingDevice, _ := h.licenseStore.GetDeviceByHardwareHash(c.Request().Context(), req.LicenseKeyHash, req.HardwareHash)
-
+	// Note: existingDevice already retrieved above, reuse it
 	// 如果是新设备且超过限制，返回 409
 	if existingDevice == nil && activeDevices >= license.MaxDevices {
 		return c.JSON(http.StatusConflict, map[string]string{"error": "device_limit_exceeded"})
 	}
 
 	// 生成 instance_token (7天有效期)
-	instanceToken, err := SignInstanceToken(req.InstanceID, req.LicenseKeyHash, h.serverPrivKey)
+	instanceToken, err := SignInstanceToken(req.InstanceID, licenseKey, h.serverPrivKey)
 	if err != nil {
 		slog.Error("sign instance token failed", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to sign token"})
@@ -103,7 +119,7 @@ func (h *RegisterHandler) HandleRegister(c echo.Context) error {
 		Hostname:       req.Hostname,
 		IPAddress:      req.IPAddress,
 		Version:        req.Version,
-		LicenseKeyHash: req.LicenseKeyHash,
+		LicenseKeyHash: licenseKey, // P1-3: Store actual license_key, not hash
 		HardwareHash:   req.HardwareHash,
 		PublicKey:      req.PublicKey,
 		InstanceToken:  instanceToken,

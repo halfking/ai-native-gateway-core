@@ -2,6 +2,9 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
+	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
@@ -15,13 +18,45 @@ import (
 func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.PrivateKey) {
 	serverPubKey := serverPrivKey.Public().(ed25519.PublicKey)
 
+	// ── RSA Keys for Licensing CryptoConfig ───────────────────────────────
+	dataDir := getEnv("LICENSE_AUTHORITY_DATA_DIR", "./data")
+	rsaPrivKey, rsaPubKey, err := LoadOrCreateRSAKeys(dataDir)
+	if err != nil {
+		slog.Error("failed to load/create RSA keys for licensing", "error", err)
+		panic(fmt.Sprintf("RSA key initialization failed: %v", err))
+	}
+
 	// ── Licensing routes (/api/v1/license/*) ──────────────────────────────
-	// AdminHandler requires Store, CryptoConfig, Activator, OfflineManager, Validator
-	// For now, we instantiate minimal dependencies (nil placeholders for non-Store deps)
 	licenseStore := licensing.NewPgxStore(pool)
-	// TODO: Initialize CryptoConfig, Activator, OfflineManager, Validator properly
-	// Leaving as nil for skeleton - will be implemented by Agent-B
-	licenseHandler := licensing.NewAdminHandler(licenseStore, nil, nil, nil, nil)
+
+	// Initialize CryptoConfig with RSA keys + AES key + JWT secret
+	aesKey := make([]byte, 32)
+	if _, err := rand.Read(aesKey); err != nil {
+		panic(fmt.Sprintf("failed to generate AES key: %v", err))
+	}
+	jwtSecret := []byte(getEnv("LICENSE_JWT_SECRET", "change-me-in-production"))
+
+	cryptoConfig := &licensing.CryptoConfig{
+		PrivateKey: rsaPrivKey,
+		PublicKey:  rsaPubKey,
+		AESKey:     aesKey,
+		JWTSecret:  jwtSecret,
+	}
+
+	// Initialize Validator
+	validator := licensing.NewValidator(cryptoConfig, licenseStore)
+
+	// Initialize DeviceManager
+	deviceManager := licensing.NewDeviceManager(licenseStore, validator)
+
+	// Initialize Activator
+	activator := licensing.NewActivator(cryptoConfig, licenseStore, deviceManager)
+
+	// Initialize OfflineManager
+	offlineManager := licensing.NewOfflineManager(cryptoConfig, licenseStore)
+
+	// Initialize AdminHandler with all dependencies
+	licenseHandler := licensing.NewAdminHandler(licenseStore, cryptoConfig, activator, offlineManager, validator)
 	licenseGroup := api.Group("/license")
 	licenseHandler.RegisterRoutes(licenseGroup)
 
@@ -58,4 +93,12 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 	// ── Update report endpoint ────────────────────────────────────────────
 	updateReportHandler := NewUpdateReportHandler(updateStore)
 	updateReportHandler.RegisterRoutes(updatesGroup)
+
+	// ── Manifest endpoint ─────────────────────────────────────────────────
+	manifestHandler := NewManifestHandler(updateStore)
+	manifestHandler.RegisterRoutes(updatesGroup)
+
+	// ── Rollback endpoint ─────────────────────────────────────────────────
+	rollbackHandler := NewRollbackHandler(updateStore)
+	rollbackHandler.RegisterRoutes(updatesGroup)
 }

@@ -63,6 +63,10 @@ func main() {
 
 	// ── Load or generate Ed25519 keys ─────────────────────────────────────
 	dataDir := getEnv("LICENSE_AUTHORITY_DATA_DIR", "./data")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		slog.Error("failed to create data directory", "error", err)
+		os.Exit(1)
+	}
 	serverPrivKey, serverPubKey, err := LoadOrGenerateServerKeys(dataDir)
 	if err != nil {
 		slog.Error("failed to load/generate server keys", "error", err)
