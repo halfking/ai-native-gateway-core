@@ -247,6 +247,20 @@ func main() {
 		_, _ = bg.ColumnarInvariantCheck(context.Background(), dbConn.Pool())
 	}
 
+	// ── License enforcement (2026-07-12) ─────────────────────────────
+	// Verify license at startup. Failure enters restricted mode (warn only).
+	// TODO: wire RestrictedModeMiddleware when restricted mode is needed.
+	if err := licensing.EnforceAtStartup(
+		"/var/lib/kx-gateway/license.dat",
+		"/var/lib/kx-gateway/server.pub",
+		"/var/lib/kx-gateway",
+	); err != nil {
+		slog.Warn("license enforcement failed, entering restricted mode", "error", err)
+		// TODO: enable restricted mode middleware (留给后续任务)
+	} else {
+		slog.Info("license verification successful")
+	}
+
 	cm := credential.NewManager()
 	lim := credential.NewLimiter()
 

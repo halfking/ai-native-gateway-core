@@ -69,11 +69,40 @@ func main() {
 	root.AddCommand(installCmd())
 	root.AddCommand(uninstallCmd())
 	root.AddCommand(versionCmd())
+	root.AddCommand(activateCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// ── activate 子命令 ─────────────────────────────────────────────
+
+func activateCmd() *cobra.Command {
+	var (
+		mode        string
+		email       string
+		licenseKey  string
+		licensePath string
+		masterURL   string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "activate",
+		Short: "License 激活管理",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runActivate(mode, email, licenseKey, licensePath, masterURL)
+		},
+	}
+
+	cmd.Flags().StringVar(&mode, "mode", "", "激活模式: trial | key | offline-request | offline-import")
+	cmd.Flags().StringVar(&email, "email", "", "邮箱地址（trial 模式）")
+	cmd.Flags().StringVar(&licenseKey, "license-key", "", "License Key（key / offline-request 模式）")
+	cmd.Flags().StringVar(&licensePath, "license-path", "license.dat", "离线 license 文件路径（offline-import 模式）")
+	cmd.Flags().StringVar(&masterURL, "master-url", "https://llm.kxpms.cn", "主控端 URL")
+
+	return cmd
 }
 
 // ── doctor 子命令 ──────────────────────────────────────────────
@@ -131,10 +160,10 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 func installCmd() *cobra.Command {
 	var (
-		skipDoctor   bool
-		skipPrompt   bool
-		installDir   string
-		configFile   string
+		skipDoctor bool
+		skipPrompt bool
+		installDir string
+		configFile string
 	)
 
 	cmd := &cobra.Command{
@@ -437,10 +466,10 @@ func runUninstall(purge bool) error {
 		logWarn("⚠️  --purge 模式：删除所有持久化数据")
 		// 按新的目录结构（bind-mount 到容器外的实际路径）
 		purgeDirs := []string{
-			"db/data",      // PostgreSQL 数据
-			"redis/data",   // Redis 数据
-			"attachments",  // 应用附件
-			"app/logs",     // 应用日志
+			"db/data",     // PostgreSQL 数据
+			"redis/data",  // Redis 数据
+			"attachments", // 应用附件
+			"app/logs",    // 应用日志
 		}
 		for _, dir := range purgeDirs {
 			full := filepath.Join(installDir, dir)
@@ -606,16 +635,16 @@ func (l DirectoryLayout) GenerateReadme() string {
 
 | 目录 | 用途 | 容器内路径 |
 |------|------|------------|
-| `+"`./bin/`"+` | installer 副本（自更新用） | - |
-| `+"`./config/`"+` | 静态配置（MANIFEST/env 模板） | - |
-| `+"`./app/`"+` | 应用版本文件 | - |
-| `+"`./app/logs/`"+` | ⭐ 应用日志 | /var/log/llm-gateway |
-| `+"`./db/data/`"+` | ⭐ PostgreSQL 数据 | /var/lib/postgresql/data |
-| `+"`./db/init/`"+` | SQL 初始化文件备份 | - |
-| `+"`./redis/data/`"+` | ⭐ Redis 数据 | /data |
-| `+"`./attachments/`"+` | ⭐ 应用附件 | /opt/llm-gateway-go/data/attachments |
-| `+"`./backups/`"+` | 全栈备份（pg_dump 等） | - |
-| `+"`./reports/`"+` | 部署报告 | - |
+| ` + "`./bin/`" + ` | installer 副本（自更新用） | - |
+| ` + "`./config/`" + ` | 静态配置（MANIFEST/env 模板） | - |
+| ` + "`./app/`" + ` | 应用版本文件 | - |
+| ` + "`./app/logs/`" + ` | ⭐ 应用日志 | /var/log/llm-gateway |
+| ` + "`./db/data/`" + ` | ⭐ PostgreSQL 数据 | /var/lib/postgresql/data |
+| ` + "`./db/init/`" + ` | SQL 初始化文件备份 | - |
+| ` + "`./redis/data/`" + ` | ⭐ Redis 数据 | /data |
+| ` + "`./attachments/`" + ` | ⭐ 应用附件 | /opt/llm-gateway-go/data/attachments |
+| ` + "`./backups/`" + ` | 全栈备份（pg_dump 等） | - |
+| ` + "`./reports/`" + ` | 部署报告 | - |
 
 ⭐ = bind-mount，容器重启数据不丢失
 
@@ -631,12 +660,12 @@ func (l DirectoryLayout) GenerateReadme() string {
 ## 备份建议
 
 定期备份以下目录：
-- `+"`./db/data/`"+` （最关键，包含全部业务数据）
-- `+"`./redis/data/`"+` （缓存数据）
-- `+"`./attachments/`"+` （用户上传文件）
-- `+"`./.env`"+` （所有 secrets）
+- ` + "`./db/data/`" + ` （最关键，包含全部业务数据）
+- ` + "`./redis/data/`" + ` （缓存数据）
+- ` + "`./attachments/`" + ` （用户上传文件）
+- ` + "`./.env`" + ` （所有 secrets）
 
-或者运行 `+"`./bin/llm-gw-installer backup`"+`（如已实现）。
+或者运行 ` + "`./bin/llm-gw-installer backup`" + `（如已实现）。
 `)
 }
 
@@ -721,15 +750,15 @@ func copyManifest(root string) error {
 // envEntries 构造 .env 条目
 func envEntries(cfg *prompt.InstallConfig) map[string]string {
 	return map[string]string{
-		"APP_IMAGE_TAG":                       cfg.AppImageTag,
-		"PG_PORT":                             strconvItoa(cfg.PGPort),
-		"POSTGRES_PASSWORD":                   cfg.PGPassword,
-		"REDIS_PORT":                          strconvItoa(cfg.RedisPort),
-		"REDIS_PASSWORD":                      cfg.RedisPassword,
-		"APP_PORT":                            strconvItoa(cfg.AppPort),
-		"LLM_GATEWAY_API_KEY":                 cfg.APIKey,
-		"LLM_GATEWAY_ADMIN_API_KEY":           cfg.AdminAPIKey,
-		"LLM_GATEWAY_JWT_SECRET":              cfg.JWTSecret,
+		"APP_IMAGE_TAG":                         cfg.AppImageTag,
+		"PG_PORT":                               strconvItoa(cfg.PGPort),
+		"POSTGRES_PASSWORD":                     cfg.PGPassword,
+		"REDIS_PORT":                            strconvItoa(cfg.RedisPort),
+		"REDIS_PASSWORD":                        cfg.RedisPassword,
+		"APP_PORT":                              strconvItoa(cfg.AppPort),
+		"LLM_GATEWAY_API_KEY":                   cfg.APIKey,
+		"LLM_GATEWAY_ADMIN_API_KEY":             cfg.AdminAPIKey,
+		"LLM_GATEWAY_JWT_SECRET":                cfg.JWTSecret,
 		"LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY": cfg.CredEncryptKey,
 	}
 }
