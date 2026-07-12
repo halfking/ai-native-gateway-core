@@ -116,3 +116,14 @@ func TestHook_CheckerErrorDoesNotBlock(t *testing.T) {
 		t.Fatal("error should be logged in metadata")
 	}
 }
+
+func TestHook_NilCheckerResultDoesNotBlock(t *testing.T) {
+	h := NewHook(&fakeChecker{})
+	env := &domain.PipelineRequest{TenantID: "t1", FinalResponse: []byte("response")}
+	if err := h.Execute(context.Background(), env); err != nil {
+		t.Fatalf("nil result should degrade safely: %v", err)
+	}
+	if got := env.Metadata["output_compliance_error"]; got != "checker returned no result" {
+		t.Fatalf("error metadata = %#v", got)
+	}
+}
