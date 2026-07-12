@@ -10,7 +10,7 @@ import {
   type ModelCanonical, type ModelDetail, type ModelFamily, type TagNamespaceGroup,
   type DiscoverModelsResult, type ModelDiscoveryRun, type Provider,
   type FeaturedModel,
-  listModelNameMappings, createModelNameMapping, deleteModelNameMapping, syncModelNameMappings,
+  listModelNameMappings, createModelNameMapping, updateModelNameMapping, deleteModelNameMapping, syncModelNameMappings, resetModelTags,
   type ModelNameMapping,
 } from '../api'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
@@ -113,6 +113,7 @@ const nameMappingsPageSize = ref(50)
 const nameMappingsLoading = ref(false)
 const nameMappingsError = ref('')
 const nameMappingsSearch = ref('')
+const nameMappingsMessage = ref('')
 const showNameMappingModal = ref(false)
 const editingNameMapping = ref<ModelNameMapping | null>(null)
 const nameMappingForm = ref({ raw_model_name: '', standardized_name: '', description: '' })

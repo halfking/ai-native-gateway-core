@@ -256,7 +256,7 @@ function categoryDisplay(raw: string) {
   // (or missing translations) render a sensible Chinese label instead of the
   // raw dotted key path.
   return {
-    label: t(`sessions.config.${meta.i18nKey}`, undefined, { default: meta.zhFallback || safeRaw }),
+    label: (t(`sessions.config.${meta.i18nKey}` as any, undefined as any, { default: meta.zhFallback || safeRaw }) as string),
     tagType: meta.tagType,
   }
 }

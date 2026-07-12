@@ -35,18 +35,36 @@ export const chartTheme = {
 Chart.defaults.color = chartTheme.muted
 Chart.defaults.borderColor = chartTheme.grid
 
+export interface ChartDataset {
+  label: string
+  data: number[]
+  borderColor?: string
+  backgroundColor?: string
+  fill?: boolean
+  yAxisID?: string
+  borderWidth?: number
+  tension?: number
+}
+
+export interface ChartDataset {
+  label: string
+  data: number[]
+  borderColor?: string
+  backgroundColor?: string
+  fill?: boolean
+  yAxisID?: string
+  borderWidth?: number
+  tension?: number
+}
+
 export interface ChartOptions {
   responsive?: boolean
   maintainAspectRatio?: boolean
-  plugins?: {
-    legend?: {
-      display?: boolean
-      position?: 'top' | 'bottom' | 'left' | 'right'
-    }
-    tooltip?: {
-      enabled?: boolean
-    }
-  }
+  // chart.js additional options (kept loose to avoid type churn with
+  // chart.js minor version bumps). Properties include onClick,
+  // scales, plugins.legend, plugins.tooltip (with callbacks),
+  // plugins.annotation.annotations, interaction.{mode,intersect}.
+  [key: string]: unknown
 }
 
 /**
@@ -91,11 +109,11 @@ export function useChart<
     if (!chartInstance.value) return
 
     if (newData && chartInstance.value.data.datasets[0]) {
-      chartInstance.value.data.datasets[0].data = newData
+      ;(chartInstance.value.data.datasets[0] as { data: unknown }).data = newData as unknown
     }
 
     if (newLabels) {
-      chartInstance.value.data.labels = newLabels
+      ;(chartInstance.value.data as { labels: unknown }).labels = newLabels as unknown
     }
 
     chartInstance.value.update()
@@ -132,13 +150,7 @@ export function useChart<
 export function createTimeSeriesConfig(
   type: 'line' | 'bar',
   labels: string[],
-  datasets: Array<{
-    label: string
-    data: number[]
-    borderColor?: string
-    backgroundColor?: string
-    fill?: boolean
-  }>,
+  datasets: ChartDataset[],
   options?: ChartOptions
 ): ChartConfiguration {
   return {

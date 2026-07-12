@@ -324,6 +324,7 @@ const deleting = ref(false)
 // Hot 表数据
 const hotTables = ref<HotTable[]>([
   {
+    label: 'request_logs_hot',
     name: 'request_logs_hot',
     sizeHuman: '—',
     sizeBytes: 0,
@@ -333,6 +334,7 @@ const hotTables = ref<HotTable[]>([
     migrating: false,
   },
   {
+    label: 'credential_model_index_hot',
     name: 'credential_model_index_hot',
     sizeHuman: '—',
     sizeBytes: 0,
@@ -342,6 +344,7 @@ const hotTables = ref<HotTable[]>([
     migrating: false,
   },
   {
+    label: 'usage_ledger_hot',
     name: 'usage_ledger_hot',
     sizeHuman: '—',
     sizeBytes: 0,
@@ -351,6 +354,7 @@ const hotTables = ref<HotTable[]>([
     migrating: false,
   },
   {
+    label: 'routing_decision_log_hot',
     name: 'routing_decision_log_hot',
     sizeHuman: '—',
     sizeBytes: 0,

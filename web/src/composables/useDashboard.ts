@@ -130,7 +130,7 @@ export function useDashboard(options: UseDashboardOptions = {}) {
       }
 
       if (activeResult.status === 'fulfilled') {
-        const response = await activeResult.value
+        const response: any = await activeResult.value
         activeSessions.value = response.data.sessions
       }
 

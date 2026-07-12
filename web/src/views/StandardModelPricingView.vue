@@ -511,7 +511,7 @@ onMounted(load)
               <span>{{ f.label }}</span>
             </label>
             <input
-              v-model.number="batchForm[f.formKey]"
+              v-model.number="(batchForm as any)[f.formKey]"
               type="number"
               min="1"
               class="input compact"
