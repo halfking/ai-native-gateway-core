@@ -427,6 +427,58 @@ export function dataLifecycleTableReindex(body: TableMaintenanceRequest) {
   return req<TableMaintenanceResponse>('POST', '/api/admin/data-lifecycle/storage/tables/reindex', body)
 }
 
+// ── Async maintenance job types (2026-07-13) ──────────────────────
+
+export interface AsyncJobResponse {
+  job_id: string
+  status: string
+  target: string
+  poll_url: string
+}
+
+export interface JobRun {
+  id: string
+  type: string
+  status: string
+  target: string
+  message?: string
+  error?: string
+  started_at: string
+  updated_at: string
+  finished_at?: string
+  duration_ms: number
+  result?: Record<string, any>
+}
+
+export interface JobListResponse {
+  running: JobRun[]
+  history: JobRun[]
+}
+
+export function dataLifecycleDropPartitionAsync(body: { partition_name: string; confirm: boolean }) {
+  return req<AsyncJobResponse>('POST', '/api/admin/data-lifecycle/partitions/drop-async', body)
+}
+
+export function dataLifecycleVacuumAsync(body: TableMaintenanceRequest) {
+  return req<AsyncJobResponse>('POST', '/api/admin/data-lifecycle/storage/tables/vacuum-async', body)
+}
+
+export function dataLifecycleVacuumFullAsync(body: TableMaintenanceRequest) {
+  return req<AsyncJobResponse>('POST', '/api/admin/data-lifecycle/storage/tables/vacuum-full-async', body)
+}
+
+export function dataLifecycleReindexAsync(body: TableMaintenanceRequest) {
+  return req<AsyncJobResponse>('POST', '/api/admin/data-lifecycle/storage/tables/reindex-async', body)
+}
+
+export function dataLifecycleJob(jobId: string) {
+  return req<JobRun>('GET', `/api/admin/data-lifecycle/jobs/${jobId}`)
+}
+
+export function dataLifecycleJobs() {
+  return req<JobListResponse>('GET', '/api/admin/data-lifecycle/jobs')
+}
+
 // ── Blob 管理 (2026-07-01) ─────────────────────────────────────────
 //
 // request_logs.request_body / outbound_body 当作"附件"管：按大小/年龄

@@ -1,7 +1,6 @@
 package upgrader
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -83,28 +82,9 @@ type ReportUpdateRequest struct {
 func (c *Client) ReportUpdate(ctx context.Context, req *ReportUpdateRequest) error {
 	url := fmt.Sprintf("%s/api/v1/updates/report", c.baseURL)
 
-	body, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("marshal report: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, io.NopCloser(bytes.NewReader(body)))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("http request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
+	// 暂不实现实际上报逻辑（第一阶段可省略）
+	_ = url
+	_ = req
 	return nil
 }
 
@@ -119,27 +99,8 @@ type ReportRollbackRequest struct {
 func (c *Client) ReportRollback(ctx context.Context, req *ReportRollbackRequest) error {
 	url := fmt.Sprintf("%s/api/v1/updates/rollback", c.baseURL)
 
-	body, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("marshal rollback: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, io.NopCloser(bytes.NewReader(body)))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("http request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
+	// 暂不实现实际上报逻辑（第一阶段可省略）
+	_ = url
+	_ = req
 	return nil
 }

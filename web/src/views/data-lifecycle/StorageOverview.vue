@@ -317,6 +317,10 @@ import {
   dataLifecycleTableVacuum,
   dataLifecycleTableVacuumFull,
   dataLifecycleTableReindex,
+  dataLifecycleVacuumAsync,
+  dataLifecycleVacuumFullAsync,
+  dataLifecycleReindexAsync,
+  dataLifecycleJob,
   type StorageOverview,
   type TableSizeInfo,
   type TableMaintenanceRequest,
@@ -396,33 +400,92 @@ async function executeOp() {
   busy[tRow.table] = t('dataLifecycle.storageOverview.rowResult.running', { op })
 
   try {
-    let resp: TableMaintenanceResponse
-    if (op === 'VACUUM') {
-      resp = await dataLifecycleTableVacuum(body)
-    } else if (op === 'VACUUM FULL') {
-      resp = await dataLifecycleTableVacuumFull(body)
-    } else {
-      resp = await dataLifecycleTableReindex(body)
+    // 2026-07-13: 优先调用异步接口 + 轮询；失败时回退到同步接口
+    let startRes: any
+    try {
+      if (op === 'VACUUM') {
+        startRes = await dataLifecycleVacuumAsync(body)
+      } else if (op === 'VACUUM FULL') {
+        startRes = await dataLifecycleVacuumFullAsync(body)
+      } else {
+        startRes = await dataLifecycleReindexAsync(body)
+      }
+    } catch {
+      // Fallback to sync API
+      let resp: TableMaintenanceResponse
+      if (op === 'VACUUM') {
+        resp = await dataLifecycleTableVacuum(body)
+      } else if (op === 'VACUUM FULL') {
+        resp = await dataLifecycleTableVacuumFull(body)
+      } else {
+        resp = await dataLifecycleTableReindex(body)
+      }
+      lastResult[tRow.table] = {
+        ...resp,
+        size_saved_human: humanBytes(resp.size_saved_bytes),
+      }
+      if (resp.success) {
+        ElMessage.success({
+          message: t('dataLifecycle.storageOverview.modal.success', {
+            op, table: tRow.table, size: humanBytes(resp.size_saved_bytes), pct: resp.reclaimed_pct,
+          }),
+          duration: 5000,
+        })
+        await loadTables()
+      } else {
+        ElMessage.error({
+          message: t('dataLifecycle.storageOverview.modal.failed', { op, msg: resp.message }),
+          duration: 8000,
+        })
+      }
+      return
     }
-    lastResult[tRow.table] = {
-      ...resp,
-      size_saved_human: humanBytes(resp.size_saved_bytes),
+
+    // Async polling path
+    const jobId = startRes.job_id
+    let finished = false
+    let job: any = null
+    while (!finished) {
+      await new Promise((r) => setTimeout(r, 2000))
+      job = await dataLifecycleJob(jobId)
+      if (['success', 'failed', 'cancelled'].includes(job.status)) {
+        finished = true
+      } else {
+        busy[tRow.table] = t('dataLifecycle.storageOverview.rowResult.running', { op })
+      }
     }
-    if (resp.success) {
+
+    if (job.status === 'success') {
+      const result = job.result || {}
+      lastResult[tRow.table] = {
+        schema: tRow.schema, table: tRow.table, operation: op,
+        success: true, message: job.message, duration_ms: job.duration_ms,
+        size_before_bytes: result.size_before_bytes || 0,
+        size_after_bytes: result.size_after_bytes || 0,
+        size_saved_bytes: result.size_saved_bytes || 0,
+        reclaimed_pct: result.reclaimed_pct || 0,
+        started_at: job.started_at, finished_at: job.finished_at || '',
+        size_saved_human: result.size_saved_human || '0 B',
+      }
       ElMessage.success({
         message: t('dataLifecycle.storageOverview.modal.success', {
-          op,
-          table: tRow.table,
-          size: humanBytes(resp.size_saved_bytes),
-          pct: resp.reclaimed_pct,
+          op, table: tRow.table,
+          size: result.size_saved_human || '0 B',
+          pct: result.reclaimed_pct || 0,
         }),
         duration: 5000,
       })
-      // 刷新表格数据，反映新大小
       await loadTables()
     } else {
+      lastResult[tRow.table] = {
+        schema: tRow.schema, table: tRow.table, operation: op,
+        success: false, message: job.error || job.message || 'unknown', duration_ms: job.duration_ms,
+        size_before_bytes: 0, size_after_bytes: 0, size_saved_bytes: 0,
+        reclaimed_pct: 0, started_at: job.started_at, finished_at: job.finished_at || '',
+        size_saved_human: '0 B',
+      }
       ElMessage.error({
-        message: t('dataLifecycle.storageOverview.modal.failed', { op, msg: resp.message }),
+        message: t('dataLifecycle.storageOverview.modal.failed', { op, msg: job.error || job.message }),
         duration: 8000,
       })
     }

@@ -115,6 +115,10 @@ export interface RequestLogDetail extends RequestLogRow {
   response_body: any | null
   // 2026-07-01: 完整附件元数据数组。仅详情接口返回；为空/undefined 表示无附件。
   attachments?: AttachmentInfo[] | null
+  // 2026-07-13: 错误触发的主动探测元数据
+  task_type?: string
+  auto_decision?: Record<string, unknown> | null
+  quality_flags?: string[]
 }
 
 export interface RequestLogsResponse {

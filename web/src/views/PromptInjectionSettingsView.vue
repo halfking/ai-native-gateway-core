@@ -44,7 +44,7 @@
           <el-table v-else :data="engines" style="width: 100%" stripe>
             <el-table-column prop="engine_name" :label="t('promptInjectionFull.colName')" width="180" />
             <el-table-column :label="t('promptInjectionFull.colModel')" width="220">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-tag size="small">{{ row.model_name || t('promptInjectionFull.notConfigured') }}</el-tag>
               </template>
             </el-table-column>
@@ -54,17 +54,17 @@
             <el-table-column prop="total_calls" :label="t('promptInjectionFull.colCalls')" width="100" />
             <el-table-column prop="total_detections" :label="t('promptInjectionFull.colDetections')" width="110" />
             <el-table-column :label="t('promptInjectionFull.colAvgLatency')" width="120">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 {{ row.avg_latency_ms ? row.avg_latency_ms.toFixed(0) + 'ms' : '-' }}
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colEnabled')" width="80">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-switch v-model="row.enabled" @change="updateEngine(row)" />
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colActions')" width="180" fixed="right">
-              <template #default="{ row, $index }" v-if="hasRow(row)">
+              <template #default="{ row, $index }">
                 <el-button size="small" @click="editEngine(row)">{{ t('promptInjectionFull.edit') }}</el-button>
                 <el-button size="small" type="danger" @click="deleteEngine(row)">{{ t('promptInjectionFull.delete') }}</el-button>
               </template>
@@ -142,7 +142,7 @@
           <div v-else-if="severityMatrixLoading" class="state">{{ t('promptInjectionFull.loading') }}</div>
           <el-table v-else :data="severityMatrix" style="width: 100%" stripe border>
             <el-table-column :label="t('promptInjectionFull.colSeverityLevel')" width="120">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-tag :type="getSeverityTagType(row.severity_level) as any" size="large">
                   {{ getSeverityLabel(row.severity_level) }}
                 </el-tag>
@@ -150,7 +150,7 @@
             </el-table-column>
 
             <el-table-column :label="t('promptInjectionFull.colObserveAction')" width="160">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-select v-model="row.observe_action" size="small">
                   <el-option :label="t('promptInjectionFull.actionLog')" value="log" />
                   <el-option :label="t('promptInjectionFull.actionWarn')" value="warn" />
@@ -159,7 +159,7 @@
             </el-table-column>
 
             <el-table-column :label="t('promptInjectionFull.colEnforceAction')" width="180">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-select v-model="row.enforce_action" size="small">
                   <el-option :label="t('promptInjectionFull.actionLog')" value="log" />
                   <el-option :label="t('promptInjectionFull.actionWarn')" value="warn" />
@@ -175,32 +175,32 @@
             </el-table-column>
 
             <el-table-column :label="t('promptInjectionFull.colRequireApproval')" width="120">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-switch v-model="row.require_approval" />
               </template>
             </el-table-column>
 
             <el-table-column :label="t('promptInjectionFull.colApprovalTimeout')" width="180">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-input-number v-model="row.approval_timeout_minutes" :min="0" :max="1440" size="small" :disabled="!row.require_approval" />
                 <div class="help-text-small">{{ t('promptInjectionFull.timeoutZeroHint') }}</div>
               </template>
             </el-table-column>
 
             <el-table-column :label="t('promptInjectionFull.colNotify')" width="80">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-switch v-model="row.notify_on_detect" />
               </template>
             </el-table-column>
 
             <el-table-column :label="t('promptInjectionFull.colHealthPenalty')" width="140">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-input-number v-model="row.session_health_penalty" :min="0" :max="100" size="small" />
               </template>
             </el-table-column>
 
             <el-table-column :label="t('promptInjectionFull.colRepeatTerminate')" width="180">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-switch v-model="row.terminate_session_on_repeat" />
                 <div v-if="row.terminate_session_on_repeat" class="help-text-small">
                   {{ t('promptInjectionFull.repeatThresholdLabel') }}
@@ -278,7 +278,7 @@
           <el-table v-else :data="rules" style="width: 100%" stripe>
             <el-table-column prop="rule_name" :label="t('promptInjectionFull.colRuleName')" width="220" show-overflow-tooltip />
             <el-table-column :label="t('promptInjectionFull.colCategory')" width="150">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-tag
                   :type="getCategoryType(row.category_new || row.category) as any"
                   size="small"
@@ -288,7 +288,7 @@
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colSeverity')" width="100">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-tag :type="getSeverityTagType(row.severity) as any" size="small">
                   {{ row.severity }}/10
                 </el-tag>
@@ -296,19 +296,19 @@
             </el-table-column>
             <el-table-column prop="description" :label="t('promptInjectionFull.colDescription')" show-overflow-tooltip />
             <el-table-column :label="t('promptInjectionFull.colType')" width="80">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-tag :type="row.is_system ? 'info' : 'success'" size="small">
                   {{ row.is_system ? t('promptInjectionFull.systemRule') : t('promptInjectionFull.customRule') }}
                 </el-tag>
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colEnabled')" width="80">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-switch v-model="row.enabled" @change="toggleRule(row)" />
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colActions')" width="120" fixed="right">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-button v-if="!row.is_system" size="small" type="danger" @click="deleteRule(row)">{{ t('promptInjectionFull.delete') }}</el-button>
                 <span v-else class="meta">{{ t('promptInjectionFull.lockedHint') }}</span>
               </template>
@@ -346,17 +346,17 @@
           <el-table v-else :data="canaryTokens" style="width: 100%" stripe>
             <el-table-column prop="token_name" :label="t('promptInjectionFull.colName')" width="150" />
             <el-table-column :label="t('promptInjectionFull.colTokenValue')" width="320">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-text truncated>{{ row.token_value }}</el-text>
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colType')" width="80">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-tag size="small">{{ row.token_type }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colLeakAction')" width="140">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-tag :type="getActionType(row.leak_action) as any" size="small">
                   {{ getActionLabel(row.leak_action) }}
                 </el-tag>
@@ -364,19 +364,19 @@
             </el-table-column>
             <el-table-column prop="times_injected" :label="t('promptInjectionFull.colInjected')" width="110" />
             <el-table-column :label="t('promptInjectionFull.colLeaked')" width="110">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-tag :type="row.times_leaked > 0 ? 'danger' : 'success'" size="small">
                   {{ row.times_leaked }}
                 </el-tag>
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colEnabled')" width="80">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-switch v-model="row.active" @change="updateCanaryToken(row)" />
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colActions')" width="120" fixed="right">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-button size="small" type="danger" @click="deleteCanaryToken(row)">{{ t('promptInjectionFull.delete') }}</el-button>
               </template>
             </el-table-column>
@@ -543,21 +543,21 @@
             <el-table-column prop="detected_at" :label="t('promptInjectionFull.colTime')" width="180" />
             <el-table-column prop="request_id" :label="t('promptInjectionFull.colRequestId')" width="180" show-overflow-tooltip />
             <el-table-column :label="t('promptInjectionFull.colScore')" width="80">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-tag :type="getSeverityTagType(row.detection_score) as any" size="small">
                   {{ row.detection_score }}
                 </el-tag>
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colRiskLevel')" width="100">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-tag :type="getRiskLevelType(row.risk_level) as any" size="small">
                   {{ getRiskLevelLabel(row.risk_level) }}
                 </el-tag>
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colCategory')" width="200">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <template v-for="cat in (row.categories || [])" :key="cat">
                   <el-tag size="small" style="margin-right: 4px">{{ getCategoryLabel(cat) }}</el-tag>
                 </template>
@@ -565,14 +565,14 @@
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colEnforceAction')" width="100">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 <el-tag :type="getActionType(row.action_taken) as any" size="small">
                   {{ getActionLabel(row.action_taken) }}
                 </el-tag>
               </template>
             </el-table-column>
             <el-table-column :label="t('promptInjectionFull.colLLMConf')" width="110">
-              <template #default="{ row }" v-if="hasRow(row)">
+              <template #default="{ row }">
                 {{ row.llm_confidence ? (row.llm_confidence * 100).toFixed(0) + '%' : '-' }}
               </template>
             </el-table-column>
@@ -705,7 +705,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -716,10 +716,10 @@ import {
 } from '@element-plus/icons-vue'
 import {
   CATEGORIES, getCategoryMeta, getSeverityTagType,
-  getPolicy, listRules, toggleRule, updatePolicy, updateRule,
-  listEngines, getEngine, createEngine, updateEngine as apiUpdateEngine,
-  deleteEngine, listCanaryTokens, createCanaryToken,
-  updateCanaryToken as apiUpdateCanaryToken, deleteCanaryToken,
+  getPolicy, listRules, toggleRule as apiToggleRule, updatePolicy, updateRule,
+  listEngines, getEngine, createEngine as apiCreateEngine, updateEngine as apiUpdateEngine,
+  removeEngine, listCanaryTokens, createCanaryToken as apiCreateCanaryToken,
+  updateCanaryToken as apiUpdateCanaryToken, removeCanaryToken,
   getSeverityMatrix, updateSeverityMatrix,
   listStats, listDetections,
   type PromptInjectionRule,
@@ -766,8 +766,8 @@ function getRiskLevelType(level: string): 'danger' | 'warning' | 'info' {
 function getRiskLevelLabel(level: string): string {
   return ({ critical: t('promptInjectionFull.critical'), high: t('promptInjectionFull.high'), medium: t('promptInjectionFull.medium'), low: t('promptInjectionFull.low') } as Record<string, string>)[level] || level
 }
-function getActionType(action: string): 'danger' | 'warning' | 'success' {
-  const types: Record<string, 'danger' | 'warning' | 'success'> = {
+function getActionType(action: string): 'danger' | 'warning' | 'success' | 'info' {
+  const types: Record<string, 'danger' | 'warning' | 'success' | 'info'> = {
     block: 'danger', reject: 'danger', terminate: 'danger', approve: 'warning',
     replace: 'warning', redact: 'warning', remove: 'warning', sanitize: 'warning',
     warn: 'info', log: 'success', pass: 'success',
@@ -849,7 +849,7 @@ const loadAvailableModels = async () => {
 import { req } from '../api/_core'
 const createEngine = async () => {
   try {
-    await createEngine(newEngine as any)
+    await apiCreateEngine(newEngine as any)
     ElMessage.success(t('promptInjectionFull.engineCreated'))
     showAddEngine.value = false
     Object.assign(newEngine, { engine_name: '', description: '', model_canonical_id: null, temperature: 0.1, max_tokens: 512, timeout_ms: 3000, priority: 0, enabled: true })
@@ -884,7 +884,7 @@ const deleteEngine = async (engine: any) => {
     if (e !== 'cancel') ElMessage.error(t('promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
   }
 }
-async function deleteEngineApi(id: number | string) { return deleteEngine(id) }
+async function deleteEngineApi(id: number | string) { return removeEngine(id) }
 watch(selectedEngine, async () => {
   // Persist system_prompt / detection_prompt on change. These fields map 1:1 to LLMEngine.
   if (!selectedEngine.id) return
@@ -952,7 +952,7 @@ const loadRules = async () => {
 }
 const toggleRule = async (rule: any) => {
   try {
-    await toggleRule(rule.id, rule.enabled)
+    await apiToggleRule(rule.id, rule.enabled)
     ElMessage.success(t('promptInjectionFull.ruleUpdated'))
   } catch (e: any) {
     ElMessage.error(t('promptInjectionFull.updateFailed', { msg: e?.message || '' }))
@@ -1008,7 +1008,7 @@ const createCanaryToken = async () => {
     loadCanaryTokens()
   } catch (e: any) { ElMessage.error(t('promptInjectionFull.createFailed', { msg: e?.message || '' })) }
 }
-async function createCanaryApi(payload: any) { return createCanaryToken(payload) }
+async function createCanaryApi(payload: any) { return apiCreateCanaryToken(payload) }
 const updateCanaryToken = async (token: any) => {
   try {
     await apiUpdateCanaryToken(token.id, token)
@@ -1028,7 +1028,7 @@ const deleteCanaryToken = async (token: any) => {
     if (e !== 'cancel') ElMessage.error(t('promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
   }
 }
-async function deleteCanaryApi(id: number | string) { return deleteCanaryToken(id) }
+async function deleteCanaryApi(id: number | string) { return removeCanaryToken(id) }
 
 // ───── Stats + detections ─────
 const stats = reactive({

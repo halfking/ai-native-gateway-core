@@ -6,7 +6,7 @@
 
 ## 文档目标
 
-本目录是 llm-gateway-go 的 IR 协议与多模态优化方案 SSOT。方案覆盖 OpenAI、Anthropic、Gemini、DeepSeek、GLM、Qwen、MiniMax、Ollama，并将请求转换、流式事件、模型能力、usage、供应商成本和租户计费作为独立问题处理。
+本目录是 llm-gateway-go 的 IR 协议与多模态优化方案 SSOT。方案覆盖 OpenAI、Anthropic、Gemini、DeepSeek、GLM、Qwen、MiniMax、Ollama、Doubao，并将请求转换、流式事件、模型能力、usage、供应商成本和租户计费作为独立问题处理。
 
 ## 文档导航
 
@@ -18,6 +18,7 @@
 | [04-协议与验证矩阵.md](./04-协议与验证矩阵.md) | 各协议支持范围、测试矩阵、原厂资料索引 |
 | [05-Phase-A-Extensions实施结果.md](./05-Phase-A-Extensions实施结果.md) | 方向隔离方案 A/B 的代码改动与测试证据 |
 | [06-Provider-Profile审计与收敛.md](./06-Provider-Profile审计与收敛.md) | 供应商字段审计、P0 误删修复与 profile 前置条件 |
+| [10-Provider-IR-Multimodal-Audit-2026-07-13.md](./10-Provider-IR-Multimodal-Audit-2026-07-13.md) | 9 厂商 IR 多模态、usage、计费和 Doubao/火山方舟 provider family 审计 |
 
 ## 核心决策
 

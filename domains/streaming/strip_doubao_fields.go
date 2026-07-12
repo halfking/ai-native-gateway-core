@@ -3,6 +3,7 @@ package streaming
 import (
 	"encoding/json"
 	"log/slog"
+	"strings"
 )
 
 // TODO(AUDIT-2026-07-11): 以下字段清单为推测，需要根据生产环境抓包结果验证和补充。
@@ -22,6 +23,13 @@ var doubaoPrivateFields = []string{
 	"volc_request_id",        // 火山引擎请求ID（可能的别名）
 	"internal_model_version", // 内部模型版本号
 	"sensitive_check",        // 敏感词检查结果
+}
+
+// IsDoubaoCatalog reports whether a candidate is the official Doubao
+// provider. Aggregated Volcengine Coding credentials must not use this
+// policy because they can return GLM, DeepSeek, MiniMax, or other payloads.
+func IsDoubaoCatalog(catalogCode string) bool {
+	return strings.EqualFold(strings.TrimSpace(catalogCode), "doubao")
 }
 
 func StripDoubaoFieldsBody(body []byte) []byte {

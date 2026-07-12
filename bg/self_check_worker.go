@@ -43,6 +43,11 @@ type SelfCheckWorker struct {
 // Returns error if the trigger channel is full.
 func (w *SelfCheckWorker) TriggerManualRun(model string) error {
 	select {
+	case <-w.stopCh:
+		return fmt.Errorf("self-check worker is stopped")
+	default:
+	}
+	select {
 	case w.triggerCh <- model:
 		return nil
 	default:
@@ -111,7 +116,20 @@ func (w *SelfCheckWorker) Start(ctx context.Context) {
 					slog.Error("self_check_worker: manual trigger: load settings failed", "error", err)
 					continue
 				}
-				w.runModel(ctx, model, s.MaxTokens)
+				if model != "" {
+					w.runModel(ctx, model, s.MaxTokens)
+					continue
+				}
+				if !s.Enabled {
+					slog.Info("self_check_worker: manual trigger ignored because self-check is disabled")
+					continue
+				}
+				models, err := w.selectModels(ctx, s)
+				if err != nil {
+					slog.Error("self_check_worker: manual trigger: select models failed", "error", err)
+					continue
+				}
+				w.runModels(ctx, models, s.MaxTokens)
 			case <-ticker.C:
 				w.runOnce(ctx)
 			}
@@ -184,6 +202,12 @@ func (w *SelfCheckWorker) ensureDefaultSettings(ctx context.Context) error {
 // --------------------------------------------------------------------------
 
 func (w *SelfCheckWorker) runOnce(ctx context.Context) {
+	w.cleanupCounter++
+	if w.cleanupCounter >= 60 {
+		w.cleanupCounter = 0
+		w.cleanupOldRecords(ctx)
+	}
+
 	s, err := w.loadSettings(ctx)
 	if err != nil {
 		slog.Error("self_check_worker: load settings failed", "error", err)
@@ -223,25 +247,22 @@ func (w *SelfCheckWorker) runOnce(ctx context.Context) {
 		return
 	}
 
+	w.runModels(ctx, toTest, s.MaxTokens)
+}
+
+func (w *SelfCheckWorker) runModels(ctx context.Context, models []string, maxTokens int) {
 	sem := make(chan struct{}, 5)
 	var wg sync.WaitGroup
-	for _, model := range toTest {
+	for _, model := range models {
 		wg.Add(1)
 		go func(m string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			w.runModel(ctx, m, s.MaxTokens)
+			w.runModel(ctx, m, maxTokens)
 		}(model)
 	}
 	wg.Wait()
-
-	// Data retention: cleanup records older than 30 days (run hourly)
-	w.cleanupCounter++
-	if w.cleanupCounter >= 60 {
-		w.cleanupCounter = 0
-		w.cleanupOldRecords(ctx)
-	}
 }
 
 func (w *SelfCheckWorker) cleanupOldRecords(ctx context.Context) {
@@ -270,10 +291,11 @@ func (w *SelfCheckWorker) selectModels(ctx context.Context, s *scSettings) ([]st
 	}
 	if s.ModelSource == "top10" || s.ModelSource == "both" {
 		top, err := w.topNModels(ctx, s.MaxModels)
-		if err == nil {
-			for _, m := range top {
-				modelSet[m] = struct{}{}
-			}
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range top {
+			modelSet[m] = struct{}{}
 		}
 	}
 	if len(modelSet) > s.MaxModels {
@@ -500,7 +522,7 @@ func (w *SelfCheckWorker) doConversationRound(ctx context.Context, model string,
 	body := map[string]any{
 		"model":      model,
 		"messages":   messages,
-		"max_tokens": 100,
+		"max_tokens": maxTokens,
 		"tools":      []map[string]any{selfCheckToolDef},
 	}
 	reqBody, _ := json.Marshal(body)
