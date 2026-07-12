@@ -71,6 +71,27 @@ func (s *PgxStore) GetLatestRelease(ctx context.Context, channel Channel) (*Rele
 	return rel, nil
 }
 
+// GetLatestReleaseAfter 获取比指定 build_seq 更新的发布版本
+func (s *PgxStore) GetLatestReleaseAfter(ctx context.Context, channel Channel, currentBuildSeq int) (*Release, error) {
+	query := `
+		SELECT id, version, build_seq, channel, title, description, changelog,
+		       image_tag, image_digest, min_version, mandatory, created_by, created_at, published_at
+		FROM releases
+		WHERE channel = $1 AND published_at IS NOT NULL AND build_seq > $2
+		ORDER BY build_seq DESC, created_at DESC
+		LIMIT 1
+	`
+	rel := &Release{}
+	err := s.db.QueryRow(ctx, query, channel, currentBuildSeq).Scan(
+		&rel.ID, &rel.Version, &rel.BuildSeq, &rel.Channel, &rel.Title, &rel.Description, &rel.Changelog,
+		&rel.ImageTag, &rel.ImageDigest, &rel.MinVersion, &rel.Mandatory, &rel.CreatedBy, &rel.CreatedAt, &rel.PublishedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return rel, nil
+}
+
 // ListReleases 列出发布版本
 func (s *PgxStore) ListReleases(ctx context.Context, channel Channel, offset, limit int) ([]Release, int, error) {
 	// 查询总数
@@ -256,6 +277,99 @@ func (s *PgxStore) UpdateInstanceStatus(ctx context.Context, status *ReleaseStat
 		status.StartedAt, status.CompletedAt, status.Error, status.RetryCount,
 	)
 	return err
+}
+
+// RecordUpdateReport 记录升级结果上报
+func (s *PgxStore) RecordUpdateReport(ctx context.Context, report *UpdateReportData) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. 查找 release_id（通过 to_version）
+	var releaseID int64
+	releaseQuery := `SELECT id FROM releases WHERE version = $1`
+	if err := tx.QueryRow(ctx, releaseQuery, report.ToVersion).Scan(&releaseID); err != nil {
+		// 如果找不到 release，使用 0（允许主控端先上报，release 记录稍后创建）
+		releaseID = 0
+	}
+
+	// 2. 写入 instance_release_status
+	now := time.Now()
+	var completedAt *time.Time
+	if report.Status == StatusSuccess || report.Status == StatusFailed || report.Status == StatusRollback {
+		completedAt = &now
+	}
+
+	statusQuery := `
+		INSERT INTO instance_release_status (
+			release_id, instance_id, status, version, started_at, completed_at, error, retry_count, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 0, now())
+		ON CONFLICT (instance_id) DO UPDATE SET
+			release_id = EXCLUDED.release_id,
+			status = EXCLUDED.status,
+			version = EXCLUDED.version,
+			completed_at = EXCLUDED.completed_at,
+			error = EXCLUDED.error,
+			updated_at = now()
+	`
+	_, err = tx.Exec(ctx, statusQuery,
+		releaseID, report.InstanceID, report.Status, report.ToVersion,
+		now, completedAt, report.Error,
+	)
+	if err != nil {
+		return err
+	}
+
+	// 3. 写入 upgrade_logs
+	logQuery := `
+		INSERT INTO upgrade_logs (
+			instance_id, old_version, new_version, status, started_at, completed_at, error_message, duration_ms
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`
+	_, err = tx.Exec(ctx, logQuery,
+		report.InstanceID, report.FromVersion, report.ToVersion, report.Status,
+		now, completedAt, report.Error, report.DurationMS,
+	)
+	if err != nil {
+		return err
+	}
+
+	// 4. 如果成功，更新 gateway_instances.current_version 和 build_seq
+	if report.Status == StatusSuccess {
+		// 从 version 提取 build_seq（假设格式为 v1.2.3-build456）
+		// 简化处理：先查询 releases 表获取 build_seq，如果没有则不更新
+		var buildSeq int
+		buildQuery := `SELECT build_seq FROM releases WHERE version = $1`
+		if err := tx.QueryRow(ctx, buildQuery, report.ToVersion).Scan(&buildSeq); err == nil {
+			updateInstanceQuery := `
+				UPDATE gateway_instances
+				SET current_version = $1, build_seq = $2
+				WHERE instance_id = $3
+			`
+			_, err = tx.Exec(ctx, updateInstanceQuery, report.ToVersion, buildSeq, report.InstanceID)
+			if err != nil {
+				return err
+			}
+		}
+		// 如果找不到 build_seq，只更新 version
+		if buildSeq == 0 {
+			updateInstanceQuery := `
+				UPDATE gateway_instances
+				SET current_version = $1
+				WHERE instance_id = $2
+			`
+			_, err = tx.Exec(ctx, updateInstanceQuery, report.ToVersion, report.InstanceID)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 // Ensure interface compliance
