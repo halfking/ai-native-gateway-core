@@ -13,6 +13,7 @@ type License struct {
 	ExpiresAt        time.Time  `json:"expires_at"`
 	CreatedAt        time.Time  `json:"created_at"`
 	RevokedAt        *time.Time `json:"revoked_at,omitempty"`
+	HardwareHash     string     `json:"hardware_hash,omitempty"`
 }
 
 type SignedLicense struct {

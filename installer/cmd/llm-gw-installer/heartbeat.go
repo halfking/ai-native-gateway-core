@@ -74,7 +74,7 @@ func (s *HeartbeatSender) SendHeartbeat(ctx context.Context) error {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 
-	url := s.masterURL + "/api/v1/instances/" + s.instanceID + "/heartbeat"
+	url := s.masterURL + "/api/v1/instances/heartbeat"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)

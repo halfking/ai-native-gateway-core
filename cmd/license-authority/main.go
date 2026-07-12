@@ -25,6 +25,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/center"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/labstack/echo/v4"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -74,13 +75,35 @@ func main() {
 	}
 	slog.Info("server keys loaded", "data_dir", dataDir, "public_key_size", len(serverPubKey))
 
+	// ── Initialize Redis client (optional for nonce storage) ──────────────
+	var redisClient *redis.Client
+	redisURL := getEnv("LICENSE_AUTHORITY_REDIS_URL", "")
+	if redisURL != "" {
+		opt, err := redis.ParseURL(redisURL)
+		if err != nil {
+			slog.Warn("invalid REDIS_URL, falling back to in-memory nonce store", "error", err)
+		} else {
+			redisClient = redis.NewClient(opt)
+			// Ping test
+			pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
+			if err := redisClient.Ping(pingCtx).Err(); err != nil {
+				slog.Warn("redis ping failed, falling back to in-memory nonce store", "error", err)
+				redisClient = nil
+			}
+			pingCancel()
+		}
+	}
+	if redisClient == nil {
+		slog.Info("using in-memory nonce store (single instance only)")
+	}
+
 	// ── Echo ──────────────────────────────────────────────────────────────
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
 
 	// ── Routes ────────────────────────────────────────────────────────────
-	registerRoutes(e, dbConn.Pool(), serverPrivKey)
+	registerRoutes(e, dbConn.Pool(), serverPrivKey, redisClient)
 
 	// ── Start MonitorInstances goroutine ──────────────────────────────────
 	centerStore := center.NewPgxStore(dbConn.Pool())
@@ -116,7 +139,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-func registerRoutes(e *echo.Echo, pool *pgxpool.Pool, serverPrivKey ed25519.PrivateKey) {
+func registerRoutes(e *echo.Echo, pool *pgxpool.Pool, serverPrivKey ed25519.PrivateKey, redisClient *redis.Client) {
 	// Health check
 	e.GET("/api/v1/healthz", func(c echo.Context) error {
 		return c.JSON(200, map[string]string{"status": "ok"})
@@ -124,5 +147,5 @@ func registerRoutes(e *echo.Echo, pool *pgxpool.Pool, serverPrivKey ed25519.Priv
 
 	// API v1 routes - delegated to routes.go
 	api := e.Group("/api/v1")
-	setupAPIRoutes(api, pool, serverPrivKey)
+	setupAPIRoutes(api, pool, serverPrivKey, redisClient)
 }
