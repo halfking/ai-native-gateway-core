@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -47,7 +45,7 @@ func (r *Recovery) RecoverFile(ctx context.Context, filename string, deleteAfter
 
 	// 使用带超时的 context（30 分钟）
 	taskCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	
+
 	// 异步执行恢复
 	go func() {
 		defer cancel()
@@ -150,15 +148,15 @@ func (r *Recovery) executeRecovery(ctx context.Context, task *RecoveryTask, dele
 				slog.Warn("recovery: failed to archive file", "filename", task.Filename, "error", err)
 			}
 		}
-		} else {
-			task.Status = "completed_with_errors"
-			task.Error = fmt.Sprintf("recovered %d sessions, %d failed", task.SuccessCount, task.FailureCount)
-			slog.Warn("recovery: completed with errors",
-				"task_id", task.ID,
-				"success", task.SuccessCount,
-				"failure", task.FailureCount,
-			)
-		}
+	} else {
+		task.Status = "completed_with_errors"
+		task.Error = fmt.Sprintf("recovered %d sessions, %d failed", task.SuccessCount, task.FailureCount)
+		slog.Warn("recovery: completed with errors",
+			"task_id", task.ID,
+			"success", task.SuccessCount,
+			"failure", task.FailureCount,
+		)
+	}
 }
 
 // executeRecoveryAll 执行所有文件的恢复
@@ -251,11 +249,11 @@ func (r *Recovery) recoverSession(ctx context.Context, sessionID string, records
 func (r *Recovery) writeSnapshot(ctx context.Context, tx pgx.Tx, snap *BackupRecord) error {
 	sess := snap.Session
 	stats := snap.Stats
-	
+
 	var costUSD float64
 	var firstReq, lastReq any
 	var totalTurns, promptTokens, completionTokens int64
-	
+
 	if stats != nil {
 		costUSD = stats.TotalCostUSD
 		totalTurns = stats.TotalTurns
@@ -268,7 +266,7 @@ func (r *Recovery) writeSnapshot(ctx context.Context, tx pgx.Tx, snap *BackupRec
 			lastReq = stats.LastRequestAt
 		}
 	}
-	
+
 	var stoppedAt any
 	stopReason := ""
 	if snap.StopArgs != nil {
@@ -277,12 +275,12 @@ func (r *Recovery) writeSnapshot(ctx context.Context, tx pgx.Tx, snap *BackupRec
 		}
 		stopReason = snap.StopArgs.StopReason
 	}
-	
+
 	durationSec := 0
 	if stats != nil && !stats.FirstRequestAt.IsZero() && !stats.LastRequestAt.IsZero() {
 		durationSec = int(stats.LastRequestAt.Sub(stats.FirstRequestAt).Seconds())
 	}
-	
+
 	// 序列化完整快照
 	raw, err := session.MarshalSnapshot(sess, stats)
 	if err != nil {
@@ -330,8 +328,8 @@ func (r *Recovery) writeRotations(ctx context.Context, tx pgx.Tx, sessionID stri
 
 	// 获取当前最大序列号
 	var maxSeq int
-	if err := tx.QueryRow(ctx, 
-		`SELECT COALESCE(MAX(seq), 0) FROM session_credential_rotations WHERE session_id = $1`, 
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(seq), 0) FROM session_credential_rotations WHERE session_id = $1`,
 		sessionID,
 	).Scan(&maxSeq); err != nil {
 		return fmt.Errorf("query max seq: %w", err)
@@ -342,21 +340,21 @@ func (r *Recovery) writeRotations(ctx context.Context, tx pgx.Tx, sessionID stri
 		if record.Rotation == nil {
 			continue
 		}
-		
+
 		rotation := record.Rotation
 		seq := maxSeq + i + 1
 		costUSD := float64(rotation.CostUSDCents) / 10000.0
-		
+
 		var endedAt any
 		if rotation.EndedAt != nil {
 			endedAt = *rotation.EndedAt
 		}
-		
+
 		durationSec := 0
 		if rotation.EndedAt != nil {
 			durationSec = int(rotation.EndedAt.Sub(rotation.StartedAt).Seconds())
 		}
-		
+
 		_, err := tx.Exec(ctx, `
 			INSERT INTO session_credential_rotations (
 				session_id, tenant_id, seq,
@@ -372,7 +370,7 @@ func (r *Recovery) writeRotations(ctx context.Context, tx pgx.Tx, sessionID stri
 			rotation.PromptTokens, rotation.CompletionTokens, costUSD,
 			rotation.SwitchReason, rotation.FPSlotIndex,
 		)
-		
+
 		if err != nil {
 			return fmt.Errorf("insert rotation %d: %w", seq, err)
 		}
@@ -381,25 +379,13 @@ func (r *Recovery) writeRotations(ctx context.Context, tx pgx.Tx, sessionID stri
 	return nil
 }
 
+func (r *Recovery) ArchiveFile(filename string) error {
+	return r.fileReader.ArchiveFile(filename)
+}
+
 // archiveFile 归档或删除文件
 func (r *Recovery) archiveFile(filename string) error {
-	backupDir := filepath.Join(r.fileReader.baseDir, "backups")
-	path := filepath.Join(backupDir, filename)
-
-	// 创建归档目录
-	archiveDir := filepath.Join(r.fileReader.baseDir, "archive")
-	if err := os.MkdirAll(archiveDir, 0755); err != nil {
-		return fmt.Errorf("create archive dir: %w", err)
-	}
-
-	// 移动文件到归档目录
-	archivePath := filepath.Join(archiveDir, filename)
-	if err := os.Rename(path, archivePath); err != nil {
-		return fmt.Errorf("move to archive: %w", err)
-	}
-
-	slog.Info("recovery: file archived", "filename", filename, "archive_path", archivePath)
-	return nil
+	return r.fileReader.ArchiveFile(filename)
 }
 
 func defaultString(s, fallback string) string {
