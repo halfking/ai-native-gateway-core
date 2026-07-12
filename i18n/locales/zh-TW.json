@@ -41,6 +41,15 @@
   "provider_error": {
     "other": "上游請求失敗"
   },
+  "upstream_credential_invalid": {
+    "other": "上游供應商 API 金鑰無效（供應商拒絕了我們的金鑰）。這是供應商憑證設定問題，不是用戶端金鑰問題——請聯絡閘道管理員刷新上游供應商憑證。"
+  },
+  "upstream_credential_revoked": {
+    "other": "上游供應商 API 金鑰已被撤銷（供應商回報該金鑰不再有效）。這是供應商憑證設定問題——請聯絡閘道管理員輪換上游供應商憑證。"
+  },
+  "upstream_quota_permanent": {
+    "other": "上游供應商額度已永久耗盡（供應商回傳 402 / quota_exceeded）。這是供應商憑證設定問題——請向上游帳戶儲值或輪換憑證。"
+  },
   "internal_error": {
     "other": "內部伺服器錯誤"
   },
