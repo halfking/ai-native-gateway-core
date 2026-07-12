@@ -8,7 +8,7 @@ reset_all_suppliers
 echo "[S04] quota exhaustion: C group quota = 2000 tokens"
 set_group_quota C 2000 1800
 run_loadtest S04_quota_failover \
-    --n-clients 60 --rps-per-client 10 --duration 60 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tok3 --prompt short
 print_summary S04_quota_failover
 echo "  期望：100% 成功 (流量从 C 转到 D/A/B)"

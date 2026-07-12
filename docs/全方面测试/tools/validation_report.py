@@ -61,6 +61,17 @@ GATES = {
         "p99_ms": 2500,
         "label": "配额快速恢复 (后)",
     },
+    # wave1/wave2 双 wave 形式 (实际 run 输出)
+    "S16_precharge_w1": {
+        "succ_pct": 99,
+        "p99_ms": 2500,
+        "label": "S16 wave1 (pre-charge)",
+    },
+    "S16_recovery_w2": {
+        "succ_pct": 99,
+        "p99_ms": 2500,
+        "label": "S16 wave2 (recovery)",
+    },
 }
 
 

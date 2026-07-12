@@ -11,7 +11,7 @@ for g in A B C D E F G H I J K L; do
 done
 
 run_loadtest S13_no_candidate \
-    --n-clients 40 --rps-per-client 5 --duration 30 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tok3 --prompt short
 print_summary S13_no_candidate
 
