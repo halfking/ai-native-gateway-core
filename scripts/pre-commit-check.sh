@@ -169,7 +169,13 @@ check_migration_has_down() {
                 | grep "^${mig_dir}/" \
                 | grep -v '\.down\.sql$' || true)
     for f in $new_files; do
-      local down_file="${f%.sql}.down.sql"
+      local down_file
+      if [[ "$f" == */up/*.sql ]]; then
+        down_file="${f/\/up\//\/down\/}"
+        down_file="${down_file%.sql}.down.sql"
+      else
+        down_file="${f%.sql}.down.sql"
+      fi
       if [[ ! -f "$down_file" ]]; then
         missing+=("$f -> $down_file")
       fi
