@@ -2286,17 +2286,27 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 }
 
 func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kind errorsx.ErrorKind) {
-	if e.Router == nil || e.Router.Sticky == nil || params == nil || params.StickyKey == "" {
+	if e.Router == nil || e.Router.Sticky == nil || params == nil {
 		return
 	}
-	boundID, _, ok := e.Router.Sticky.GetEntry(params.StickyKey)
-	if !ok || boundID != credentialID {
-		return
-	}
+
+	// AUDIT-2: For credential-fatal errors, delete all sticky levels immediately
 	if errorsx.IsCredentialFatal(kind) {
-		e.Router.Sticky.Delete(params.StickyKey)
+		if params.SessionID != "" && params.Model != "" {
+			e.Router.Sticky.DeleteMultiLevel(
+				params.TenantID,
+				params.AppID,
+				params.ApiKeyID,
+				params.ClientID.Fingerprint.ClientProfile,
+				params.SessionID,
+				params.Model,
+			)
+		} else if params.StickyKey != "" {
+			e.Router.Sticky.Delete(params.StickyKey)
+		}
 		return
 	}
+
 	// Client cancellation, malformed/unsupported request shapes, and
 	// context overflow are not node failures and must not trigger a
 	// reroute. Network, timeout, upstream-down, rate-limit, concurrent,
@@ -2307,9 +2317,15 @@ func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kin
 		errorsx.IsClientBug(kind) {
 		return
 	}
+
 	// AUDIT-1 (2026-07-12): 默认阈值 2，对应"连续 2 次失败触发路由重选"。
 	// 之前硬编码 5，与用户语义不符：用户期望"使用当前节点出错 10s 后
 	// 再次出错即重走路由"，是 2 次而非 5 次。
+	//
+	// AUDIT-2 (2026-07-12): 移除了 GetEntry 前置检查。之前的检查逻辑使用
+	// params.StickyKey (L3)，导致当 L1 存在但 L3 不存在时跳过失败记录。
+	// RecordFailureMultiLevel 内部会检查每个级别是否指向当前 credentialID，
+	// 不需要外部预检。
 	if params.SessionID != "" && params.Model != "" {
 		e.Router.Sticky.RecordFailureMultiLevel(
 			params.TenantID,
@@ -2323,7 +2339,15 @@ func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kin
 		)
 		return
 	}
-	e.Router.Sticky.RecordFailure(params.StickyKey, 2)
+
+	// Fallback to L3-only when SessionID/Model unavailable
+	if params.StickyKey != "" {
+		// Verify this L3 entry still points to the failed credential
+		boundID, _, ok := e.Router.Sticky.GetEntry(params.StickyKey)
+		if ok && boundID == credentialID {
+			e.Router.Sticky.RecordFailure(params.StickyKey, 2)
+		}
+	}
 }
 
 // recordBanditSuccess records a successful request in the Bandit scorer.
