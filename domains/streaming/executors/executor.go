@@ -30,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/resolve"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -815,8 +816,15 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// pool saturated. In that mode the Acquire loop below tolerates a failed
 	// Acquire and runs the request without a fingerprint slot rather than
 	// rejecting it. See the 2026-06-23 minimax-m3 outage post-mortem.
+	//
+	// KILL-SWITCH (2026-07-12 incident): when settings.IsEnabled("fp_slot")
+	// is false (env KILL_FP_SLOT=1), we skip the fingerprint prefilter
+	// entirely so the full candidate set is always tried. This isolates
+	// the 2026-07-12 minimax-m3 outage where every candidate got dropped
+	// for failing health-probe.
 	fpSlotDegraded := false
-	if e.FpSlots != nil && e.FpSlots.Enabled() {
+	fpSlotKilled := !settings.IsEnabled("fp_slot")
+	if e.FpSlots != nil && e.FpSlots.Enabled() && !fpSlotKilled {
 		filtered := make([]provider.Candidate, 0, len(candidates))
 		for _, cand := range candidates {
 			if e.FpSlots.RoutingEligible(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder) {
@@ -948,14 +956,30 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			}
 		}
 
-		if !e.Circuit.Allow(cand.ProviderID, cand.CredentialID) {
-			slog.Debug("executor: circuit open, skipping candidate",
-				"credential_id", cand.CredentialID,
-				"provider_id", cand.ProviderID,
-			)
-			lastErr = fmt.Errorf("circuit open for credential %d", cand.CredentialID)
-			releaseFpLease(e.FpSlots, fpLease)
-			continue
+		if !settings.IsEnabled("circuit_degradation") && false {
+			// unreachable: short-circuit the kill-switch into Allow's path
+			// for readability; the real bypass lives in Circuit.Allow.
+		}
+		// KILL-SWITCH (2026-07-12 incident): when circuit_degradation is
+		// disabled (KILL_CIRCUIT_DEGRADATION=1), bypass the circuit
+		// breaker entirely and always try the candidate. The DB-side
+		// `credential_model_bindings.unavailable_recover_at` and
+		// `v_routable_credential_models.is_routable` already provide
+		// safety net — the kill-switch is for emergencies only.
+		circuitOpen := !settings.IsEnabled("circuit_degradation") ||
+			!e.Circuit.Allow(cand.ProviderID, cand.CredentialID)
+		if circuitOpen {
+			if settings.IsEnabled("circuit_degradation") {
+				slog.Debug("executor: circuit open, skipping candidate",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+				)
+				lastErr = fmt.Errorf("circuit open for credential %d", cand.CredentialID)
+				releaseFpLease(e.FpSlots, fpLease)
+				continue
+			}
+			// kill-switch path: skip circuit, fall through to Limiter.AcquireAll
+			lastErr = nil
 		}
 
 		release, acquireErr := e.Limiter.AcquireAll(
