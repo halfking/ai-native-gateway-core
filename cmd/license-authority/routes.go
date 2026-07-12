@@ -1,12 +1,11 @@
 package main
 
 import (
-	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
@@ -33,12 +32,15 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 	// ── Licensing routes (/api/v1/license/*) ──────────────────────────────
 	licenseStore := licensing.NewPgxStore(pool)
 
-	// Initialize CryptoConfig with RSA keys + AES key + JWT secret
-	aesKey := make([]byte, 32)
-	if _, err := rand.Read(aesKey); err != nil {
-		panic(fmt.Sprintf("failed to generate AES key: %v", err))
+	// Secrets must be stable across restarts and must never use a public default.
+	aesKey, err := loadSecretKey("LICENSE_AES_KEY", 32)
+	if err != nil {
+		panic(fmt.Sprintf("LICENSE_AES_KEY initialization failed: %v", err))
 	}
-	jwtSecret := []byte(getEnv("LICENSE_JWT_SECRET", "change-me-in-production"))
+	jwtSecret := []byte(getEnv("LICENSE_JWT_SECRET", ""))
+	if len(jwtSecret) < 32 {
+		panic("LICENSE_JWT_SECRET must be set to at least 32 bytes")
+	}
 
 	cryptoConfig := &licensing.CryptoConfig{
 		PrivateKey: rsaPrivKey,
@@ -61,43 +63,28 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 
 	// Initialize AdminHandler with all dependencies
 	licenseHandler := licensing.NewAdminHandler(licenseStore, cryptoConfig, activator, offlineManager, validator)
-	licenseGroup := api.Group("/license")
+	licenseGroup := adminGroup(api, "license")
 	licenseHandler.RegisterRoutes(licenseGroup)
 
 	// ── Center routes (/api/v1/instances/*) ───────────────────────────────
 	centerStore := center.NewPgxStore(pool)
 	centerServer := center.NewServer(centerStore)
 	centerAPI := center.NewAdminAPI(centerServer, centerStore)
-	instancesGroup := api.Group("/instances")
+	instancesGroup := adminGroup(api, "")
+	instanceClientGroup := api.Group("/instances")
 	centerAPI.RegisterRoutes(instancesGroup)
 
 	// ── Register endpoint ─────────────────────────────────────────────────
 	registerHandler := NewRegisterHandler(licenseStore, centerStore, serverPrivKey)
-	registerHandler.RegisterRoutes(instancesGroup)
+	registerHandler.RegisterRoutes(instanceClientGroup)
 
 	// ── Refresh token endpoint ────────────────────────────────────────────
 	refreshHandler := NewRefreshHandler(centerStore, serverPrivKey)
-	instancesGroup.POST("/refresh", refreshHandler.HandleRefresh)
+	instanceClientGroup.POST("/refresh", refreshHandler.HandleRefresh)
 
 	// ── Heartbeat endpoint ────────────────────────────────────────────────
 	heartbeatHandler := NewHeartbeatHandler(centerStore, serverPubKey)
-	heartbeatHandler.RegisterRoutes(instancesGroup)
-
-	// ── Signature verification middleware on /api/v1/instances/* ─────────
-	// Mounts Redis-backed signature verifier (or in-memory if redisClient is nil)
-	clientPubKeyLookup := func(instanceID string) (ed25519.PublicKey, error) {
-		instance, err := centerStore.GetInstance(ctxFromContext(api), instanceID)
-		if err != nil {
-			return nil, err
-		}
-		// Decode base64 public key
-		return parsePublicKey(instance.PublicKey)
-	}
-	if redisClient != nil {
-		instancesGroup.Use(mw.SignatureVerifierWithRedis(clientPubKeyLookup, redisClient))
-		slog.Info("Redis-backed signature verifier attached to /api/v1/instances/*")
-	}
-	// /heartbeat uses JWT, not Ed25519; skip middleware for that path
+	heartbeatHandler.RegisterRoutes(instanceClientGroup)
 
 	// ── Autoupdate routes (/api/v1/updates/*) ─────────────────────────────
 	updateStore := autoupdate.NewPgxStore(pool)
@@ -106,36 +93,102 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 	rollback := autoupdate.NewRollback("/var/lib/kx-gateway/kx-gateway", "/var/lib/kx-gateway/backups", "/var/lib/kx-gateway")
 	updateAPI := autoupdate.NewAdminAPI(updateStore, downloader, installer, rollback)
 	updatesGroup := api.Group("/updates")
-	updateAPI.RegisterRoutes(updatesGroup)
+	updateAdminGroup := adminGroup(api, "updates")
+	clientUpdatesGroup := instanceTokenGroup(updatesGroup, serverPubKey)
+	updateAPI.RegisterRoutes(updateAdminGroup)
 
 	// ── Update check endpoint ─────────────────────────────────────────────
 	updateHandler := NewUpdateHandler(updateStore, serverPubKey)
-	updateHandler.RegisterRoutes(updatesGroup)
+	updateHandler.RegisterRoutes(clientUpdatesGroup)
 
 	// ── Update report endpoint ────────────────────────────────────────────
 	updateReportHandler := NewUpdateReportHandler(updateStore)
-	updateReportHandler.RegisterRoutes(updatesGroup)
+	updateReportHandler.RegisterRoutes(clientUpdatesGroup)
 
 	// ── Manifest endpoint ─────────────────────────────────────────────────
 	manifestHandler := NewManifestHandler(updateStore)
-	manifestHandler.RegisterRoutes(updatesGroup)
+	manifestHandler.RegisterRoutes(clientUpdatesGroup)
 
 	// ── Rollback endpoint ─────────────────────────────────────────────────
 	rollbackHandler := NewRollbackHandler(updateStore)
-	rollbackHandler.RegisterRoutes(updatesGroup)
+	rollbackHandler.RegisterRoutes(updateAdminGroup)
 
-	// Signature verifier for /api/v1/updates/* (uses instance_token in JWT)
+}
+
+func signedGroup(parent *echo.Group, lookup mw.ClientPublicKeyLookup, redisClient *redis.Client) *echo.Group {
+	group := parent.Group("")
 	if redisClient != nil {
-		updatesGroup.Use(mw.SignatureVerifierWithRedis(clientPubKeyLookup, redisClient))
-		slog.Info("Redis-backed signature verifier attached to /api/v1/updates/*")
+		group.Use(mw.SignatureVerifierWithRedis(lookup, redisClient))
+	} else {
+		group.Use(mw.SignatureVerifier(lookup))
+	}
+	return group
+}
+
+func instanceTokenGroup(parent *echo.Group, serverPubKey ed25519.PublicKey) *echo.Group {
+	group := parent.Group("")
+	group.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			auth := c.Request().Header.Get("Authorization")
+			if len(auth) <= len("Bearer ") || auth[:len("Bearer ")] != "Bearer " {
+				return echo.NewHTTPError(401, "unauthorized")
+			}
+			claims, err := VerifyInstanceToken(auth[len("Bearer "):], serverPubKey)
+			if err != nil {
+				return echo.NewHTTPError(401, "unauthorized")
+			}
+			c.Set("instance_id", claims.Subject)
+			return next(c)
+		}
+	})
+	return group
+}
+
+func adminGroup(api *echo.Group, path string) *echo.Group {
+	token := os.Getenv("LICENSE_AUTHORITY_ADMIN_TOKEN")
+	if len(token) < 32 {
+		panic("LICENSE_AUTHORITY_ADMIN_TOKEN must be set to at least 32 bytes")
+	}
+	if path == "" {
+		return api.Group("", adminTokenMiddleware(token))
+	}
+	return api.Group("/"+path, adminTokenMiddleware(token))
+}
+
+func adminTokenMiddleware(expected string) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			const prefix = "Bearer "
+			auth := c.Request().Header.Get("Authorization")
+			if len(auth) <= len(prefix) || auth[:len(prefix)] != prefix || !equalSecret(auth[len(prefix):], expected) {
+				return echo.NewHTTPError(401, "unauthorized")
+			}
+			return next(c)
+		}
 	}
 }
 
-// ctxFromContext extracts a context from echo.Group's request scope.
-// echo.Group itself doesn't carry a context, so we use context.Background() here;
-// the middleware will use the per-request context via c.Request().Context().
-func ctxFromContext(_ *echo.Group) context.Context {
-	return context.Background()
+func equalSecret(got, want string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	var diff byte
+	for i := range got {
+		diff |= got[i] ^ want[i]
+	}
+	return diff == 0
+}
+
+func loadSecretKey(name string, size int) ([]byte, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return nil, fmt.Errorf("%s is required", name)
+	}
+	decoded, err := base64.RawStdEncoding.DecodeString(value)
+	if err != nil || len(decoded) != size {
+		return nil, fmt.Errorf("%s must be base64 and decode to %d bytes", name, size)
+	}
+	return decoded, nil
 }
 
 func parsePublicKey(b64 string) (ed25519.PublicKey, error) {
