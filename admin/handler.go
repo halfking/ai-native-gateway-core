@@ -754,6 +754,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// Routes are guarded by superAdmin (same as monitor routes).
 		h.registerStateRoutes(mux)
 
+		// 2026-07-12: 应急诊断接口 — 连续异常时管理员手动恢复
+		mux.HandleFunc("/api/admin/diagnostics/credential", h.superAdmin(h.handleCredentialDiagnostic))
+		mux.HandleFunc("/api/admin/diagnostics/credential/force-recover", h.superAdmin(h.handleForceRecoverSingle))
+
 		h.registerMaasRoutes(mux)
 	}
 }
