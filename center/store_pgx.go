@@ -18,11 +18,15 @@ func NewPgxStore(db *pgxpool.Pool) *PgxStore {
 	return &PgxStore{db: db}
 }
 
-// RegisterInstance 注册实例
+// RegisterInstance 注册实例（新增字段支持）
 func (s *PgxStore) RegisterInstance(ctx context.Context, instance *InstanceInfo) error {
 	query := `
-		INSERT INTO gateway_instances (instance_id, hostname, ip_address, region, version, build_seq, status, started_at, last_heartbeat)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+		INSERT INTO gateway_instances (
+			instance_id, hostname, ip_address, region, version, build_seq, status, started_at, last_heartbeat,
+			instance_type, deployment_id, replica_count, license_key_hash, hardware_hash, public_key,
+			instance_token, refresh_token, refresh_token_issued_at, refresh_token_expires_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, $10, $11, $12, $13, $14, $15, $16, now(), now() + interval '30 days')
 		ON CONFLICT (instance_id) DO UPDATE SET
 			hostname = EXCLUDED.hostname,
 			ip_address = EXCLUDED.ip_address,
@@ -30,11 +34,24 @@ func (s *PgxStore) RegisterInstance(ctx context.Context, instance *InstanceInfo)
 			version = EXCLUDED.version,
 			build_seq = EXCLUDED.build_seq,
 			started_at = EXCLUDED.started_at,
-			last_heartbeat = now()
+			last_heartbeat = now(),
+			instance_type = EXCLUDED.instance_type,
+			deployment_id = EXCLUDED.deployment_id,
+			replica_count = EXCLUDED.replica_count,
+			license_key_hash = EXCLUDED.license_key_hash,
+			hardware_hash = EXCLUDED.hardware_hash,
+			public_key = EXCLUDED.public_key,
+			instance_token = EXCLUDED.instance_token,
+			refresh_token = EXCLUDED.refresh_token,
+			refresh_token_issued_at = now(),
+			refresh_token_expires_at = now() + interval '30 days'
 	`
 	_, err := s.db.Exec(ctx, query,
 		instance.InstanceID, instance.Hostname, instance.IPAddress, instance.Region,
 		instance.Version, instance.BuildSeq, instance.Status, instance.StartedAt,
+		instance.InstanceType, instance.DeploymentID, instance.ReplicaCount,
+		instance.LicenseKeyHash, instance.HardwareHash, instance.PublicKey,
+		instance.InstanceToken, instance.RefreshToken,
 	)
 	return err
 }
