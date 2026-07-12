@@ -166,13 +166,23 @@ function fmtRelative(s: string | undefined): string {
   return Math.round(ms / 86400_000) + 'd 前'
 }
 
+// 柔和、低饱和度的语义色板，避免大面积亮色块造成视觉不协调
+// good=沉稳青绿 / warn=沉稳琥珀 / danger=沉稳砖红 / neutral=石板灰
+const COLOR = {
+  good: '#5b9b7f',
+  warn: '#c2925a',
+  danger: '#c77a7a',
+  neutral: '#94a3b8',
+  accent: '#64748b',
+}
+
 function statusColor(status: string): string {
   switch (status) {
-    case 'success': return '#22c55e'
-    case 'partial': return '#f59e0b'
-    case 'failed': return '#ef4444'
-    case 'running': return '#3b82f6'
-    default: return '#94a3b8'
+    case 'success': return COLOR.good
+    case 'partial': return COLOR.warn
+    case 'failed': return COLOR.danger
+    case 'running': return '#5b7fb8'
+    default: return COLOR.neutral
   }
 }
 
@@ -198,21 +208,21 @@ const featuredModelInput = computed({
 })
 
 const errorColor = (t: string): string => {
-  if (t.startsWith('http_000') || t === 'timeout') return '#ef4444'
-  if (t.startsWith('http_5')) return '#f97316'
-  if (t === 'none') return '#22c55e'
-  return '#94a3b8'
+  if (t.startsWith('http_000') || t === 'timeout') return COLOR.danger
+  if (t.startsWith('http_5')) return COLOR.warn
+  if (t === 'none') return COLOR.good
+  return COLOR.neutral
 }
 
 const summaryCards = computed(() => {
   if (!stats.value) return []
   const s = stats.value.summary
   return [
-    { label: '总运行数', value: s.total_runs, color: '#3b82f6' },
-    { label: '成功率', value: fmtPct(s.success_rate), color: s.success_rate >= 0.9 ? '#22c55e' : s.success_rate >= 0.7 ? '#f59e0b' : '#ef4444' },
-    { label: '成功', value: s.success_runs, color: '#22c55e' },
-    { label: '部分', value: s.partial_runs, color: '#f59e0b' },
-    { label: '失败', value: s.failed_runs, color: '#ef4444' },
+    { label: '总运行数', value: s.total_runs, color: COLOR.accent },
+    { label: '成功率', value: fmtPct(s.success_rate), color: s.success_rate >= 0.9 ? COLOR.good : s.success_rate >= 0.7 ? COLOR.warn : COLOR.danger },
+    { label: '成功', value: s.success_runs, color: COLOR.good },
+    { label: '部分', value: s.partial_runs, color: COLOR.warn },
+    { label: '失败', value: s.failed_runs, color: COLOR.danger },
   ]
 })
 
@@ -223,6 +233,13 @@ const modelsByHealth = computed(() => {
     return aRate - bRate
   })
 })
+
+// 根据成功率返回柔和的语义色
+function healthColor(rate: number): string {
+  if (rate >= 0.9) return COLOR.good
+  if (rate >= 0.7) return COLOR.warn
+  return COLOR.danger
+}
 </script>
 
 <template>
@@ -275,7 +292,7 @@ const modelsByHealth = computed(() => {
         <div class="model-stats">
           <div class="stat-row">
             <span class="stat-label">成功率</span>
-            <span class="stat-value" :style="{ color: m.total === 0 ? '#94a3b8' : m.success / m.total >= 0.9 ? '#22c55e' : m.success / m.total >= 0.7 ? '#f59e0b' : '#ef4444' }">
+            <span class="stat-value" :style="{ color: m.total === 0 ? COLOR.neutral : healthColor(m.success / m.total) }">
               {{ m.total === 0 ? '—' : fmtPct(m.success / m.total) }}
             </span>
           </div>
@@ -324,7 +341,7 @@ const modelsByHealth = computed(() => {
           <div class="trend-bar"
                :style="{
                  height: Math.max(p.success_rate * 100, 5) + '%',
-                 backgroundColor: p.success_rate >= 0.9 ? '#22c55e' : p.success_rate >= 0.7 ? '#f59e0b' : '#ef4444'
+                 backgroundColor: healthColor(p.success_rate)
                }"
                :title="`${p.timestamp}: ${fmtPct(p.success_rate)} (${p.total} 次)`"
           ></div>
@@ -360,7 +377,7 @@ const modelsByHealth = computed(() => {
         <div v-if="expandedRunId === r.id && runDetail" class="runs-detail">
           <div v-if="r.upstream_tested" class="upstream-info">
             <strong>上游隔离测试:</strong>
-            <span :style="{ color: r.upstream_result === 'success' ? '#22c55e' : '#ef4444' }">
+            <span :style="{ color: r.upstream_result === 'success' ? COLOR.good : COLOR.danger }">
               {{ r.upstream_result }} ({{ fmtMs(r.upstream_latency_ms || 0) }})
             </span>
             <div v-if="r.upstream_error" class="upstream-error">{{ r.upstream_error }}</div>
@@ -380,7 +397,7 @@ const modelsByHealth = computed(() => {
                 <td>{{ rd.round_index }}</td>
                 <td>{{ rd.is_ping ? 'ping' : rd.is_tool_call ? 'tool' : 'chat' }}</td>
                 <td>{{ fmtMs(rd.latency_ms) }}</td>
-                <td :style="{ color: rd.success ? '#22c55e' : '#ef4444' }">{{ rd.success ? '✅' : '❌' }}</td>
+                <td :style="{ color: rd.success ? COLOR.good : COLOR.danger }">{{ rd.success ? '✅' : '❌' }}</td>
                 <td>{{ rd.http_code || '—' }}</td>
                 <td>{{ rd.total_tokens }}</td>
                 <td class="error-cell">{{ rd.error_message || '—' }}</td>
@@ -447,14 +464,16 @@ const modelsByHealth = computed(() => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 16px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
+  overflow-x: auto;
 }
 
 .header-left {
   display: flex;
   align-items: center;
   gap: 12px;
+  white-space: nowrap;
 }
 
 .header-left h3 {
@@ -467,16 +486,19 @@ const modelsByHealth = computed(() => {
   border-radius: 4px;
   font-size: 12px;
   font-weight: 500;
+  border: 1px solid transparent;
 }
 
 .status-badge.enabled {
-  background: #dcfce7;
-  color: #166534;
+  background: #ecfdf3;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
 }
 
 .status-badge.disabled {
-  background: #fee2e2;
-  color: #991b1b;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
 }
 
 .interval-info {
@@ -489,15 +511,18 @@ const modelsByHealth = computed(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .btn {
-  padding: 6px 12px;
+  padding: 6px 16px;
   border-radius: 4px;
   border: 1px solid #cbd5e1;
   background: white;
   cursor: pointer;
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .btn:hover {
@@ -529,10 +554,12 @@ const modelsByHealth = computed(() => {
 }
 
 .range-select {
-  padding: 4px 8px;
+  padding: 5px 12px;
   border-radius: 4px;
   border: 1px solid #cbd5e1;
   background: white;
+  white-space: nowrap;
+  font-size: 13px;
 }
 
 .alert {
@@ -545,8 +572,9 @@ const modelsByHealth = computed(() => {
 }
 
 .alert-danger {
-  background: #fee2e2;
-  color: #991b1b;
+  background: #fef6f6;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
 }
 
 .btn-close {
@@ -567,8 +595,8 @@ const modelsByHealth = computed(() => {
 .summary-card {
   padding: 12px 16px;
   border-radius: 6px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: #fbfcfd;
+  border: 1px solid #e6ebf2;
 }
 
 .card-label {
@@ -578,7 +606,7 @@ const modelsByHealth = computed(() => {
 }
 
 .card-value {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 600;
 }
 
@@ -737,7 +765,7 @@ const modelsByHealth = computed(() => {
 }
 
 .runs-row.expanded .runs-summary {
-  background: #eff6ff;
+  background: #f5f9ff;
 }
 
 .col-action {
@@ -768,11 +796,12 @@ const modelsByHealth = computed(() => {
 .upstream-error {
   margin-top: 4px;
   padding: 4px 8px;
-  background: #fef2f2;
+  background: #fef6f6;
+  border: 1px solid #fde0e0;
   border-radius: 3px;
   font-family: monospace;
   font-size: 11px;
-  color: #991b1b;
+  color: #b91c1c;
 }
 
 .rounds-table {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -163,10 +165,36 @@ func (w *SelfCheckWorker) loadSettings(ctx context.Context) (*scSettings, error)
 	).Scan(&s.Enabled, &s.NormalInterval, &s.FaultInterval,
 		&s.ModelSource, &s.MaxModels, &s.MaxTokens, &rawModels)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Seed the single settings row with defaults so the worker can run
+			// even before the admin panel has been opened (migration seed may
+			// not have run). Retry the query once after seeding.
+			if seedErr := w.ensureDefaultSettings(ctx); seedErr != nil {
+				return nil, seedErr
+			}
+			err = w.db.QueryRow(ctx, `
+				SELECT enabled, normal_interval_seconds, fault_interval_seconds,
+				       model_source, max_models, max_tokens_per_run, featured_model_ids
+				FROM self_check_settings WHERE id=1`,
+			).Scan(&s.Enabled, &s.NormalInterval, &s.FaultInterval,
+				&s.ModelSource, &s.MaxModels, &s.MaxTokens, &rawModels)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	json.Unmarshal(rawModels, &s.FeaturedModels)
 	return s, nil
+}
+
+// ensureDefaultSettings inserts the default single-row settings if missing.
+func (w *SelfCheckWorker) ensureDefaultSettings(ctx context.Context) error {
+	_, err := w.db.Exec(ctx, `
+		INSERT INTO self_check_settings (id, featured_model_ids)
+		VALUES (1, $1::jsonb)
+		ON CONFLICT (id) DO NOTHING`,
+		`["minimax-m2.7","glm-5.2","mimo-v2.5","claude-sonnet-5","gpt-5.4","gpt-5.6-luna","deepseek-v4-pro"]`)
+	return err
 }
 
 // --------------------------------------------------------------------------
