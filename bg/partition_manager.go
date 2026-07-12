@@ -432,6 +432,12 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 		}
 		return retention, batchSize
 	default:
-		return DefaultRetentionWindow, promoteBatchSize
+		hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
+		retention := time.Duration(hours) * time.Hour
+		if retention < time.Hour { retention = time.Hour }
+		batchSize := settingsGetPlatformInt("lifecycle.promote_batch_size", promoteBatchSize)
+		if batchSize < 100 { batchSize = 100 }
+		if batchSize > 50000 { batchSize = 50000 }
+		return retention, batchSize
 	}
 }

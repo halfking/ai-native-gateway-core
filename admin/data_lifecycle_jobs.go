@@ -1,21 +1,22 @@
+// Package admin — data_lifecycle_jobs.go
+//
+// 2026-07-13: data lifecycle async job registry.
+
 package admin
 
 import (
 	"context"
-	"encoding/json"
-	"log/slog"
-	"net/http"
+	"fmt"
 	"sort"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type JobType string
 
 const (
+	JobTypePromoteHot    JobType = "promote_hot"
 	JobTypeDropPartition JobType = "drop_partition"
 	JobTypeVacuum        JobType = "vacuum"
 	JobTypeVacuumFull    JobType = "vacuum_full"
@@ -25,182 +26,168 @@ const (
 type JobStatus string
 
 const (
-	JobStatusPending   JobStatus = "pending"
+	JobStatusQueued    JobStatus = "queued"
 	JobStatusRunning   JobStatus = "running"
-	JobStatusSuccess   JobStatus = "success"
+	JobStatusSucceeded JobStatus = "succeeded"
 	JobStatusFailed    JobStatus = "failed"
-	JobStatusCancelled JobStatus = "cancelled"
 )
 
 type JobRun struct {
-	ID         string             `json:"id"`
-	Type       JobType            `json:"type"`
-	Status     JobStatus          `json:"status"`
-	Target     string             `json:"target"`
-	Message    string             `json:"message,omitempty"`
-	Error      string             `json:"error,omitempty"`
-	StartedAt  time.Time          `json:"started_at"`
-	UpdatedAt  time.Time          `json:"updated_at"`
-	FinishedAt *time.Time         `json:"finished_at,omitempty"`
-	DurationMS int64              `json:"duration_ms"`
-	Result     map[string]any     `json:"result,omitempty"`
-	cancelFn   context.CancelFunc `json:"-"`
+	RunID       string         `json:"run_id"`
+	Op          JobType        `json:"op"`
+	Status      JobStatus      `json:"status"`
+	Params      map[string]any `json:"params,omitempty"`
+	Progress    *JobProgress   `json:"progress,omitempty"`
+	Result      map[string]any `json:"result,omitempty"`
+	Error       string         `json:"error,omitempty"`
+	Message     string         `json:"message,omitempty"`
+	StartedAt   *time.Time     `json:"started_at,omitempty"`
+	HeartbeatAt *time.Time     `json:"heartbeat_at,omitempty"`
+	FinishedAt  *time.Time     `json:"finished_at,omitempty"`
+	DurationMS  int64          `json:"duration_ms"`
+	Operator    string         `json:"operator,omitempty"`
+}
+
+type JobProgress struct {
+	Done    int64   `json:"done"`
+	Total   int64   `json:"total"`
+	Percent float64 `json:"percent"`
+	Batches int     `json:"batches"`
+	Message string  `json:"message,omitempty"`
 }
 
 type jobRegistry struct {
-	mu   sync.RWMutex
-	jobs map[string]*JobRun
+	mu      sync.Mutex
+	running map[string]*JobRun
+	history []*JobRun
+	nextID  atomic.Int64
+	maxKeep int
 }
 
-func newJobRegistry() *jobRegistry {
-	return &jobRegistry{
-		jobs: make(map[string]*JobRun),
+const defaultJobHistoryKeep = 50
+
+func (h *Handler) getJobRegistry() *jobRegistry {
+	h.jobRegistryMu.Lock()
+	defer h.jobRegistryMu.Unlock()
+	if h.jobRegistry == nil {
+		h.jobRegistry = &jobRegistry{running: map[string]*JobRun{}, history: []*JobRun{}, maxKeep: 50}
+	}
+	return h.jobRegistry
+}
+
+func (h *Handler) StartJob(op JobType, params map[string]any, operator string, fn func(ctx context.Context, run *JobRun)) *JobRun {
+	now := time.Now()
+	registry := h.getJobRegistry()
+	seq := registry.nextID.Add(1)
+	run := &JobRun{RunID: fmt.Sprintf("job-%s-%d-%d", string(op), now.Unix(), seq), Op: op, Status: JobStatusQueued, Params: params, Message: "queued", StartedAt: &now, Operator: operator}
+	registry.mu.Lock()
+	registry.running[run.RunID] = run
+	registry.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	go func() {
+		defer cancel()
+		defer func() {
+			if r := recover(); r != nil {
+				h.failJob(run, fmt.Sprintf("panic: %v", r))
+			}
+			h.finalizeJob(run)
+		}()
+		run.Status = JobStatusRunning
+		hb := time.Now(); run.HeartbeatAt = &hb; run.Message = "running"
+		fn(ctx, run)
+	}()
+	return run
+}
+
+func (h *Handler) UpdateProgress(run *JobRun, done, total int64, batches int, msg string) {
+	if run == nil { return }
+	registry := h.getJobRegistry()
+	registry.mu.Lock(); defer registry.mu.Unlock()
+	if _, ok := registry.running[run.RunID]; !ok { return }
+	pct := 0.0
+	if total > 0 { pct = float64(done) / float64(total) * 100.0 }
+	run.Progress = &JobProgress{Done: done, Total: total, Percent: pct, Batches: batches, Message: msg}
+	hb := time.Now(); run.HeartbeatAt = &hb
+	if msg != "" { run.Message = msg }
+}
+
+func (h *Handler) TouchHeartbeat(run *JobRun, msg string) {
+	if run == nil { return }
+	registry := h.getJobRegistry()
+	registry.mu.Lock(); defer registry.mu.Unlock()
+	if _, ok := registry.running[run.RunID]; !ok { return }
+	hb := time.Now(); run.HeartbeatAt = &hb
+	if msg != "" { run.Message = msg }
+}
+
+func (h *Handler) SetResult(run *JobRun, result map[string]any, msg string) {
+	if run == nil { return }
+	registry := h.getJobRegistry()
+	registry.mu.Lock(); defer registry.mu.Unlock()
+	run.Result = result
+	if msg != "" { run.Message = msg }
+}
+
+func (h *Handler) failJob(run *JobRun, errMsg string) {
+	if run == nil { return }
+	registry := h.getJobRegistry()
+	registry.mu.Lock(); defer registry.mu.Unlock()
+	run.Status = JobStatusFailed
+	run.Error = errMsg
+	run.Message = "failed: " + errMsg
+}
+
+func (h *Handler) finalizeJob(run *JobRun) {
+	registry := h.getJobRegistry()
+	registry.mu.Lock(); defer registry.mu.Unlock()
+	if _, ok := registry.running[run.RunID]; !ok { return }
+	fin := time.Now()
+	run.FinishedAt = &fin
+	if run.StartedAt != nil { run.DurationMS = fin.Sub(*run.StartedAt).Milliseconds() }
+	delete(registry.running, run.RunID)
+	histCopy := *run
+	registry.history = append(registry.history, &histCopy)
+	if len(registry.history) > registry.maxKeep {
+		sort.Slice(registry.history, func(i, j int) bool { return registry.history[i].FinishedAt.Before(*registry.history[j].FinishedAt) })
+		drop := len(registry.history) - registry.maxKeep
+		registry.history = registry.history[drop:]
 	}
 }
 
-func (r *jobRegistry) add(job *JobRun) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.jobs[job.ID] = job
+func (h *Handler) getJob(runID string) *JobRun {
+	registry := h.getJobRegistry()
+	registry.mu.Lock(); defer registry.mu.Unlock()
+	if r, ok := registry.running[runID]; ok { return cloneJobRun(r) }
+	for _, r := range registry.history { if r.RunID == runID { return cloneJobRun(r) } }
+	return nil
 }
 
-func (r *jobRegistry) get(id string) (*JobRun, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	j, ok := r.jobs[id]
-	return j, ok
+func (h *Handler) listJobs(limit int) (running []*JobRun, history []*JobRun) {
+	registry := h.getJobRegistry()
+	registry.mu.Lock(); defer registry.mu.Unlock()
+	for _, r := range registry.running { running = append(running, cloneJobRun(r)) }
+	if limit <= 0 || limit > registry.maxKeep { limit = registry.maxKeep }
+	hs := make([]*JobRun, 0, len(registry.history))
+	for _, r := range registry.history { hs = append(hs, cloneJobRun(r)) }
+	sort.Slice(hs, func(i, j int) bool { return hs[i].FinishedAt.After(*hs[j].FinishedAt) })
+	if len(hs) > limit { hs = hs[:limit] }
+	return running, hs
 }
 
-func (r *jobRegistry) list() []*JobRun {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]*JobRun, 0, len(r.jobs))
-	for _, j := range r.jobs {
-		out = append(out, j)
-	}
-	sort.Slice(out, func(i, k int) bool {
-		return out[i].StartedAt.After(out[k].StartedAt)
-	})
+func cloneJobRun(r *JobRun) *JobRun {
+	copy := *r
+	if r.Progress != nil { pcopy := *r.Progress; copy.Progress = &pcopy }
+	copy.Params = cloneAnyMap(r.Params)
+	copy.Result = cloneAnyMap(r.Result)
+	if r.StartedAt != nil { t := *r.StartedAt; copy.StartedAt = &t }
+	if r.HeartbeatAt != nil { t := *r.HeartbeatAt; copy.HeartbeatAt = &t }
+	if r.FinishedAt != nil { t := *r.FinishedAt; copy.FinishedAt = &t }
+	return &copy
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil { return nil }
+	out := make(map[string]any, len(in))
+	for k, v := range in { out[k] = v }
 	return out
-}
-
-func (r *jobRegistry) cancel(id string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	j, ok := r.jobs[id]
-	if !ok {
-		return false
-	}
-	if j.Status != JobStatusPending && j.Status != JobStatusRunning {
-		return false
-	}
-	if j.cancelFn != nil {
-		j.cancelFn()
-		j.Status = JobStatusCancelled
-		now := time.Now().UTC()
-		j.FinishedAt = &now
-		j.UpdatedAt = now
-	}
-	return true
-}
-
-func newJobRun(jobType JobType, target string) *JobRun {
-	return &JobRun{
-		ID:        uuid.NewString(),
-		Type:      jobType,
-		Status:    JobStatusPending,
-		Target:    target,
-		StartedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
-		Result:    make(map[string]any),
-	}
-}
-
-// handleLifecycleJobs GET /api/admin/data-lifecycle/jobs
-//
-// 列出所有通用异步任务（按 StartedAt DESC），以及当前 running 任务。
-func (h *Handler) handleLifecycleJobs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	all := h.lifecycleJobs.list()
-	running := make([]*JobRun, 0)
-	history := make([]*JobRun, 0)
-	for _, j := range all {
-		if j.Status == JobStatusPending || j.Status == JobStatusRunning {
-			running = append(running, j)
-		} else {
-			history = append(history, j)
-		}
-	}
-	// 清理 cancelFn（不序列化）
-	sanitize := func(jobs []*JobRun) []*JobRun {
-		out := make([]*JobRun, len(jobs))
-		for i, j := range jobs {
-			c := *j
-			c.cancelFn = nil
-			out[i] = &c
-		}
-		return out
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"running": sanitize(running),
-		"history": sanitize(history),
-	})
-}
-
-// handleLifecycleJobByID GET/POST /api/admin/data-lifecycle/jobs/{id}
-//
-// GET: 查询单个任务状态
-// POST: 取消任务（需要 /cancel 路径后缀）
-func (h *Handler) handleLifecycleJobByID(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/admin/data-lifecycle/jobs/")
-	id = strings.TrimSpace(id)
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "job id is required")
-		return
-	}
-
-	// POST 到 /jobs/{id}/cancel → 取消任务
-	if r.Method == http.MethodPost && strings.HasSuffix(id, "/cancel") {
-		id = strings.TrimSuffix(id, "/cancel")
-		ok := h.lifecycleJobs.cancel(id)
-		if !ok {
-			writeError(w, http.StatusNotFound, "job not found or already in terminal state")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"job_id": id,
-			"status": "cancellation_requested",
-		})
-		return
-	}
-
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	job, ok := h.lifecycleJobs.get(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "job not found")
-		return
-	}
-	c := *job
-	c.cancelFn = nil
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(c)
-}
-
-// logRunningJobs 是生命周期任务的定时状态记录（用于指标/调试），每 30 秒记录一次仍然 running 的任务
-func (h *Handler) logRunningJobs() {
-	all := h.lifecycleJobs.list()
-	for _, j := range all {
-		if j.Status == JobStatusRunning || j.Status == JobStatusPending {
-			slog.Info("lifecycle-job-running", "job_id", j.ID, "type", j.Type, "target", j.Target, "status", j.Status)
-		}
-	}
 }
