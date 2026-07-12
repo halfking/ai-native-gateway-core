@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getTenantLicenseStatus, type License } from '../../api/ops'
 
-const route = useRoute()
 const loading = ref(true)
 const tenantID = ref('')
 const licenses = ref<License[]>([])
@@ -18,7 +16,7 @@ function status(license: License) {
 async function load() {
   loading.value = true
   try {
-    const data = await getTenantLicenseStatus(typeof route.query.tenant === 'string' ? route.query.tenant : undefined)
+    const data = await getTenantLicenseStatus()
     tenantID.value = data.tenant_id
     licenses.value = data.licenses || []
   } catch (error) {
@@ -43,7 +41,7 @@ onMounted(load)
         <el-table-column prop="subscription_tier" label="套餐" width="140" />
         <el-table-column prop="max_devices" label="设备上限" width="110" />
         <el-table-column prop="expires_at" label="到期时间" width="190" />
-        <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="status(row) === '有效' ? 'success' : 'warning'">{{ status(row) }}</el-tag></template></el-table-column>
+        <el-table-column label="状态" width="110"><template #default="{ row = {} } = {}"><el-tag :type="status(row) === '有效' ? 'success' : 'warning'">{{ status(row) }}</el-tag></template></el-table-column>
         <el-table-column prop="features" label="功能" min-width="240" />
       </el-table>
     </el-card>

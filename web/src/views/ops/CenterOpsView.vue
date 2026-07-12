@@ -257,7 +257,7 @@ onMounted(load)
         @expand-change="handleExpandChange"
       >
         <el-table-column type="expand">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <div class="expanded-content">
               <div v-if="heartbeatData[row.instance_id]?.length" class="metrics-grid">
                 <div class="metric-item">
@@ -288,26 +288,26 @@ onMounted(load)
         <el-table-column prop="version" :label="t('ops.center.version')" width="120" />
         <el-table-column prop="build_seq" :label="t('ops.center.buildSeq')" width="80" />
         <el-table-column prop="status" :label="t('common.status')" width="100">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <el-tag :type="statusType(row.status)" size="small">
               {{ t(`ops.center.status.${row.status}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.center.uptime')" width="100">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <span v-if="heartbeatData[row.instance_id]?.length">{{ formatUptime(heartbeatData[row.instance_id][0].uptime_secs) }}</span>
             <span v-else>-</span>
           </template>
         </el-table-column>
         <el-table-column prop="last_heartbeat" :label="t('ops.center.lastHeartbeat')" width="160">
-          <template #default="{ row }">{{ formatDate(row.last_heartbeat) }}</template>
+          <template #default="{ row = {} } = {}">{{ formatDate(row.last_heartbeat) }}</template>
         </el-table-column>
         <el-table-column prop="started_at" :label="t('ops.center.startedAt')" width="160">
-          <template #default="{ row }">{{ formatDate(row.started_at) }}</template>
+          <template #default="{ row = {} } = {}">{{ formatDate(row.started_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="200" fixed="right">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <el-button type="primary" size="small" @click="openCommandDialog(row)">
               {{ t('ops.center.sendCommand') }}
             </el-button>
