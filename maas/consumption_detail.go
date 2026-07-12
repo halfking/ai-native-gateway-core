@@ -49,7 +49,7 @@ func (s *Service) QueryConsumptionDetail(ctx context.Context, tenantID, ownerUse
 	}
 	days = ClampUsageDays(days)
 	ownerUser = strings.TrimSpace(ownerUser)
-	logsTable := requestLogsSource(days)
+	logsTable, alias := requestLogsSource(days)
 
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -59,43 +59,43 @@ func (s *Service) QueryConsumptionDetail(ctx context.Context, tenantID, ownerUse
 	}
 
 	query := `
-		SELECT rl.tenant_id,
-		       COALESCE(rl.api_key_owner_user, ''),
-		       rl.provider_id,
+		SELECT ` + alias + `.tenant_id,
+		       COALESCE(` + alias + `.api_key_owner_user, ''),
+		       ` + alias + `.provider_id,
 		       COALESCE(p.display_name, ''),
-		       rl.credential_id,
+		       ` + alias + `.credential_id,
 		       COALESCE(c.label, ''),
-		       rl.canonical_id,
-		       COALESCE(mc.canonical_name, NULLIF(rl.outbound_model, ''), NULLIF(rl.client_model, ''), 'unknown'),
+		       ` + alias + `.canonical_id,
+		       COALESCE(mc.canonical_name, NULLIF(` + alias + `.outbound_model, ''), NULLIF(` + alias + `.client_model, ''), 'unknown'),
 		       COUNT(*)::bigint,
-		       COALESCE(SUM(rl.prompt_tokens), 0)::bigint,
-		       COALESCE(SUM(rl.completion_tokens), 0)::bigint,
-		       COALESCE(SUM(rl.cache_read_tokens), 0)::bigint,
-		       COALESCE(SUM(rl.cache_write_tokens), 0)::bigint,
-		       COALESCE(SUM(rl.credits_charged), 0)::bigint,
-		       COALESCE(SUM(rl.cost_usd), 0)::float8,
-		       COUNT(*) FILTER (WHERE COALESCE(rl.credits_charged, 0) > 0
-		                          AND COALESCE(rl.stream_interrupted, false)
-		                          AND lower(COALESCE(rl.failure_detail_code, rl.error_kind, ''))
+		       COALESCE(SUM(` + alias + `.prompt_tokens), 0)::bigint,
+		       COALESCE(SUM(` + alias + `.completion_tokens), 0)::bigint,
+		       COALESCE(SUM(` + alias + `.cache_read_tokens), 0)::bigint,
+		       COALESCE(SUM(` + alias + `.cache_write_tokens), 0)::bigint,
+		       COALESCE(SUM(` + alias + `.credits_charged), 0)::bigint,
+		       COALESCE(SUM(` + alias + `.cost_usd), 0)::float8,
+		       COUNT(*) FILTER (WHERE COALESCE(` + alias + `.credits_charged, 0) > 0
+		                          AND COALESCE(` + alias + `.stream_interrupted, false)
+		                          AND lower(COALESCE(` + alias + `.failure_detail_code, ` + alias + `.error_kind, ''))
 		                              IN ('client_cancel', 'client_disconnected'))::bigint
-		FROM ` + logsTable + ` rl
-		LEFT JOIN providers p ON p.id = rl.provider_id
-		LEFT JOIN credentials c ON c.id = rl.credential_id
-		LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
-		WHERE rl.tenant_id = $1
-		  AND rl.ts >= now() - ($2 * INTERVAL '1 day')
-		  AND rl.credits_charged IS NOT NULL
+		FROM ` + logsTable + `
+		LEFT JOIN providers p ON p.id = ` + alias + `.provider_id
+		LEFT JOIN credentials c ON c.id = ` + alias + `.credential_id
+		LEFT JOIN models_canonical mc ON mc.id = ` + alias + `.canonical_id
+		WHERE ` + alias + `.tenant_id = $1
+		  AND ` + alias + `.ts >= now() - ($2 * INTERVAL '1 day')
+		  AND ` + alias + `.credits_charged IS NOT NULL
 	`
 	args := []any{tenantID, days}
 	if ownerUser != "" {
-		query += " AND rl.api_key_owner_user = $3\n"
+		query += " AND " + alias + ".api_key_owner_user = $3\n"
 		args = append(args, ownerUser)
 	}
 	query += `
-		GROUP BY rl.tenant_id, rl.api_key_owner_user, rl.provider_id, p.display_name,
-		         rl.credential_id, c.label, rl.canonical_id, mc.canonical_name,
-		         rl.outbound_model, rl.client_model
-		ORDER BY SUM(rl.credits_charged) DESC, COUNT(*) DESC`
+		GROUP BY ` + alias + `.tenant_id, ` + alias + `.api_key_owner_user, ` + alias + `.provider_id, p.display_name,
+		         ` + alias + `.credential_id, c.label, ` + alias + `.canonical_id, mc.canonical_name,
+		         ` + alias + `.outbound_model, ` + alias + `.client_model
+		ORDER BY SUM(` + alias + `.credits_charged) DESC, COUNT(*) DESC`
 
 	rows, err := s.pool.Query(queryCtx, query, args...)
 	if err != nil {
