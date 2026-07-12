@@ -28,13 +28,13 @@ func NewAdminAPI(store Store, downloader *Downloader, installer *Installer, roll
 
 // RegisterRoutes 注册路由
 func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
-	g.POST("/releases", a.CreateRelease)
-	g.GET("/releases", a.ListReleases)
-	g.GET("/releases/:version", a.GetRelease)
-	g.POST("/releases/:version/publish", a.PublishRelease)
-	g.POST("/releases/:version/unpublish", a.UnpublishRelease)
-	g.POST("/releases/:version/gray", a.CreateGrayRelease)
-	g.PATCH("/releases/:version/gray", a.UpdateGrayPhase)
+	g.POST("", a.CreateRelease)
+	g.GET("", a.ListReleases)
+	g.GET("/:version", a.GetRelease)
+	g.POST("/:version/publish", a.PublishRelease)
+	g.POST("/:version/unpublish", a.UnpublishRelease)
+	g.POST("/:version/gray", a.CreateGrayRelease)
+	g.PATCH("/:version/gray", a.UpdateGrayPhase)
 	g.GET("/upgrade-logs", a.GetUpgradeLogs)
 	g.POST("/rollback", a.RollbackRelease)
 }

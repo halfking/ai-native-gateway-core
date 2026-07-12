@@ -187,41 +187,65 @@ export interface FaultEvent {
   id: number
   rule_id: number
   rule_name: string
-  severity: 'critical' | 'warning' | 'info'
-  status: 'open' | 'resolving' | 'resolved'
+  severity: 'critical' | 'error' | 'warning' | 'info'
+  status: 'new' | 'acknowledged' | 'resolving' | 'resolved' | 'ignored'
+  title: string
+  description: string
+  source: string
+  metadata?: string
   detected_at: string
+  acked_at?: string
+  acked_by?: string
   resolved_at?: string
-  message: string
-  context: Record<string, unknown>
+  resolved_by?: string
+  created_at: string
+  updated_at: string
 }
 
 export interface FaultRule {
   id: number
   name: string
   description: string
-  severity: 'critical' | 'warning' | 'info'
+  severity: 'critical' | 'error' | 'warning' | 'info'
+  metric: string
+  operator: 'gte' | 'lte' | 'eq' | 'ne'
+  threshold: number
+  duration: string
+  action: 'restart' | 'scale_up' | 'notify' | 'failover' | 'auto_recover' | 'run_script'
+  action_config?: string
   enabled: boolean
-  condition: string
-  auto_fix: boolean
+  cooldown: string
   created_at: string
+  updated_at: string
 }
 
 export interface FaultStats {
   total_events: number
   open_events: number
-  resolved_events: number
-  avg_resolution_time_minutes: number
+  resolved_24h: number
+  by_severity: Record<string, number>
+  by_source: Record<string, number>
+  avg_resolve_mins: number
 }
 
-export async function getFaultEvents(): Promise<FaultEvent[]> {
-  return req<FaultEvent[]>('GET', '/api/admin/faults/events')
+export async function getFaultEvents(params?: { status?: string; offset?: number; limit?: number }): Promise<{ events: FaultEvent[]; total: number }> {
+  const q = new URLSearchParams()
+  if (params?.status) q.set('status', params.status)
+  if (params?.offset !== undefined) q.set('offset', String(params.offset))
+  if (params?.limit !== undefined) q.set('limit', String(params.limit))
+  const qs = q.toString()
+  return req<{ events: FaultEvent[]; total: number }>('GET', '/api/admin/faults/events' + (qs ? '?' + qs : ''))
 }
 
-export async function getFaultRules(): Promise<FaultRule[]> {
-  return req<FaultRule[]>('GET', '/api/admin/faults/rules')
+export async function getFaultRules(params?: { offset?: number; limit?: number }): Promise<{ rules: FaultRule[]; total: number }> {
+  const q = new URLSearchParams()
+  if (params?.offset !== undefined) q.set('offset', String(params.offset))
+  if (params?.limit !== undefined) q.set('limit', String(params.limit))
+  const qs = q.toString()
+  return req<{ rules: FaultRule[]; total: number }>('GET', '/api/admin/faults/rules' + (qs ? '?' + qs : ''))
 }
 
-export async function createFaultRule(data: Omit<FaultRule, 'id' | 'created_at'>): Promise<FaultRule> {
+export async function createFaultRule(data: Omit<FaultRule, 'id' | 'created_at' | 'updated_at'>): Promise<FaultRule> {
   return req<FaultRule>('POST', '/api/admin/faults/rules', data)
 }
 
@@ -237,8 +261,12 @@ export async function getFaultStats(): Promise<FaultStats> {
   return req<FaultStats>('GET', '/api/admin/faults/stats')
 }
 
-export async function triggerManualFix(eventId: number): Promise<void> {
-  return req<void>('POST', `/api/admin/faults/events/${eventId}/fix`)
+export async function acknowledgeFaultEvent(eventId: number, actor: string = 'admin'): Promise<void> {
+  return req<void>('POST', `/api/admin/faults/events/${eventId}/acknowledge`, { actor })
+}
+
+export async function resolveFaultEvent(eventId: number, actor: string = 'admin'): Promise<void> {
+  return req<void>('POST', `/api/admin/faults/events/${eventId}/resolve`, { actor })
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -321,12 +349,12 @@ export async function updateGrayPhase(version: string, data: { phase: string; pe
 }
 
 export async function rollbackRelease(targetVersion: string): Promise<void> {
-  return req<void>('POST', '/api/admin/rollback', { target_version: targetVersion })
+  return req<void>('POST', '/api/admin/releases/rollback', { target_version: targetVersion })
 }
 
 export async function getUpgradeLogs(instanceID?: string): Promise<UpgradeLog[]> {
   const query = instanceID ? `?instance_id=${instanceID}` : ''
-  return req<UpgradeLog[]>('GET', `/api/admin/upgrade-logs${query}`)
+  return req<UpgradeLog[]>('GET', `/api/admin/releases/upgrade-logs${query}`)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -334,42 +362,45 @@ export async function getUpgradeLogs(instanceID?: string): Promise<UpgradeLog[]>
 // ────────────────────────────────────────────────────────────────────────────
 
 export interface CenterInstance {
-  id: number
   instance_id: string
   hostname: string
   version: string
   status: 'online' | 'offline' | 'degraded'
+  ip_address?: string
+  region?: string
+  build_seq: number
+  started_at: string
   last_heartbeat: string
-  cpu_usage: number
-  memory_usage: number
-  disk_usage: number
-  uptime_seconds: number
-  created_at: string
 }
 
-export interface HeartbeatHistory {
+export interface HeartbeatRecord {
+  instance_id: string
   timestamp: string
-  cpu_usage: number
-  memory_usage: number
-  disk_usage: number
+  uptime_secs: number
+  num_goroutine: number
+  alloc_mb: number
+  status: string
 }
 
 export interface CenterStats {
-  online_count: number
-  offline_count: number
-  degraded_count: number
+  total_instances: number
+  online_instances: number
+  offline_instances: number
+  degraded_instances: number
 }
 
 export async function getCenterInstances(): Promise<CenterInstance[]> {
-  return req<CenterInstance[]>('GET', '/api/admin/center/instances')
+  const res = await req<{ items: CenterInstance[]; total: number }>('GET', '/api/admin/center/instances')
+  return res.items
 }
 
 export async function getCenterStats(): Promise<CenterStats> {
-  return req<CenterStats>('GET', '/api/admin/center/stats')
+  return req<CenterStats>('GET', '/api/admin/center/dashboard/stats')
 }
 
-export async function getHeartbeatHistory(instanceId: string, hours: number = 24): Promise<HeartbeatHistory[]> {
-  return req<HeartbeatHistory[]>('GET', `/api/admin/center/instances/${instanceId}/heartbeat?hours=${hours}`)
+export async function getHeartbeatHistory(instanceId: string, hours: number = 24): Promise<HeartbeatRecord[]> {
+  const since = new Date(Date.now() - hours * 3600_000).toISOString()
+  return req<HeartbeatRecord[]>('GET', `/api/admin/center/instances/${instanceId}/heartbeats?since=${encodeURIComponent(since)}&limit=100`)
 }
 
 export async function sendCommand(instanceId: string, command: string, args: Record<string, string>, issuedBy: string): Promise<void> {
