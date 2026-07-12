@@ -814,9 +814,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// this delivers the user semantic: "较均衡地将请求分发到所有综合最优
 	// 的可用节点中" — no fingerprint pinning, no concurrency cap, no RPM
 	// cap, and no session pinning; the router picks by score + rotation only.
-	stickyCredID := e.pickStickyCredentialID(params)
-	if !ratelimit.IsRateLimitEnabled() {
-		stickyCredID = nil
+	//
+	// AUDIT-3.1 (2026-07-12): also skip pickStickyCredentialID entirely
+	// when the gate is off to avoid wasted L1→L2→L3 lookups whose result
+	// would be discarded. This also prevents stale entries from before a
+	// gate-off interval from influencing the routing decision.
+	var stickyCredID *int
+	if ratelimit.IsRateLimitEnabled() {
+		stickyCredID = e.pickStickyCredentialID(params)
 	}
 	if os.Getenv("STICKY_MULTILEVEL_DEBUG") == "1" {
 		slog.Info("STICKY_PICK",
@@ -2255,6 +2260,12 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 	if e.Router == nil || e.Router.Sticky == nil || params == nil {
 		return
 	}
+	// When the rate-limit module is disabled, sticky routing is disabled too.
+	// Do not create bindings during that interval that could affect routing
+	// after the module is enabled again.
+	if !ratelimit.IsRateLimitEnabled() {
+		return
+	}
 
 	// 2026-07-07: Use multi-level recording when SessionID and Model are available
 	if params.SessionID != "" && params.Model != "" {
@@ -2289,6 +2300,9 @@ func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kin
 	if e.Router == nil || e.Router.Sticky == nil || params == nil {
 		return
 	}
+	if !ratelimit.IsRateLimitEnabled() {
+		return
+	}
 
 	// AUDIT-2: For credential-fatal errors, delete all sticky levels immediately
 	if errorsx.IsCredentialFatal(kind) {
@@ -2300,6 +2314,7 @@ func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kin
 				params.ClientID.Fingerprint.ClientProfile,
 				params.SessionID,
 				params.Model,
+				credentialID,
 			)
 		} else if params.StickyKey != "" {
 			e.Router.Sticky.Delete(params.StickyKey)
