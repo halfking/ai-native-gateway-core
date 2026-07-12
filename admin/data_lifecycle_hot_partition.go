@@ -323,3 +323,49 @@ func (h *Handler) handleDataLifecycleDropPartition(w http.ResponseWriter, r *htt
 	//nolint:errcheck
 	json.NewEncoder(w).Encode(resp)
 }
+
+
+// ─── Async Job Endpoints ─────────────────────────────────────
+
+func (h *Handler) handleDataLifecycleJobs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		var n int
+		for _, c := range v {
+			if c < '0' || c > '9' { break }
+			n = n*10 + int(c-'0')
+		}
+		if n > 0 && n <= 100 { limit = n }
+	}
+	running, history := h.listJobs(limit)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"running": running, "history": history})
+}
+
+func (h *Handler) handleDataLifecycleJobDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const prefix = "/api/admin/data-lifecycle/jobs/"
+	if len(r.URL.Path) <= len(prefix) {
+		http.Error(w, "run_id is required", http.StatusBadRequest)
+		return
+	}
+	runID := r.URL.Path[len(prefix):]
+	if runID == "" {
+		http.Error(w, "run_id is required", http.StatusBadRequest)
+		return
+	}
+	run := h.getJob(runID)
+	if run == nil {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(run)
+}

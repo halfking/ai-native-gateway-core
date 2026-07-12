@@ -167,6 +167,8 @@ type Handler struct {
 	// 置位，供随后的 GET-assemble 响应带上 migration_run_id。atomic.Value
 	// 避免与并发 GET 竞争。每次 PUT 末尾复位为 ""。
 	pendingMigrationRunID atomic.Value // string
+	jobRegistry   *jobRegistry
+	jobRegistryMu sync.Mutex
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -484,6 +486,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/archive-batch", h.superAdmin(h.handleDataLifecycleArchiveBatch))
 	// Hot table to partition migration endpoints (2026-07-10)
 	mux.HandleFunc("/api/admin/data-lifecycle/hot/promote", h.superAdmin(h.handleDataLifecyclePromoteHot))
+	mux.HandleFunc("/api/admin/data-lifecycle/jobs", h.superAdmin(h.handleDataLifecycleJobs))
+	mux.HandleFunc("/api/admin/data-lifecycle/jobs/", h.superAdmin(h.handleDataLifecycleJobDetail))
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/drop", h.superAdmin(h.handleDataLifecycleDropPartition))
 	// Storage overview endpoints (2026-07-01)
 	mux.HandleFunc("/api/admin/data-lifecycle/storage", admin(h.handleDataLifecycleStorage))
