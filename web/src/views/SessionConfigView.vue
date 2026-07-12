@@ -1,166 +1,126 @@
 <script setup lang="ts">
-import { nextTick, ref, computed } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ApprovalConfigPanel from '../components/ApprovalConfigPanel.vue'
 import CompressionConfigPanel from '../components/CompressionConfigPanel.vue'
 import HealthScoreConfigPanel from '../components/HealthScoreConfigPanel.vue'
+import { getModuleEnabled } from '../api/modules'
 
 const { t } = useI18n()
+type TabKey = 'approval' | 'compression' | 'health'
 
-const activeTab = ref('approval')
+const activeTab = ref<TabKey>('approval')
+const healthEnabled = ref(false)
+const moduleLoading = ref(true)
 
-const tabs = computed(() => [
-  { key: 'approval', label: t('sessions.config.approvalTab'), icon: '✓' },
-  { key: 'compression', label: t('sessions.config.compressionTab'), icon: '🗜️' },
-  { key: 'health', label: t('sessions.config.healthTab'), icon: '💚' },
-])
+const tabs = computed<{ key: TabKey; label: string }[]>(() => {
+  const items: { key: TabKey; label: string }[] = [
+    { key: 'approval', label: t('sessions.config.approvalTab') },
+    { key: 'compression', label: t('sessions.config.compressionTab') },
+  ]
+  if (healthEnabled.value) items.push({ key: 'health', label: t('sessions.config.healthTab') })
+  return items
+})
 
-/**
- * ARIA tab pattern: ←/→ 切换 tab 并把焦点移动到新 tab。
- * W3C ARIA Authoring Practices 建议 tab 之间用方向键切换，
- * 焦点应跟随激活 tab 移动。
- */
-function focusAdjacentTab(direction: -1 | 1) {
-  const idx = tabs.value.findIndex((tab) => tab.key === activeTab.value)
-  if (idx === -1) return
-  const nextIdx = (idx + direction + tabs.value.length) % tabs.value.length
-  const nextKey = tabs.value[nextIdx]!.key
-  activeTab.value = nextKey
-  // 等待 v-if 渲染后聚焦
-  void nextTick(() => {
-    const el = document.getElementById(`session-config-tab-${nextKey}`) as HTMLButtonElement | null
-    el?.focus()
-  })
+function setActive(key: TabKey) {
+  if (!tabs.value.some((tab) => tab.key === key)) return
+  activeTab.value = key
 }
+
+function focusTab(direction: -1 | 1) {
+  const current = tabs.value.findIndex((tab) => tab.key === activeTab.value)
+  if (current < 0) return
+  const key = tabs.value[(current + direction + tabs.value.length) % tabs.value.length]!.key
+  setActive(key)
+  void nextTick(() => document.getElementById(`session-config-tab-${key}`)?.focus())
+}
+
+function handleTabKey(event: KeyboardEvent) {
+  if (event.key === 'ArrowLeft') { event.preventDefault(); focusTab(-1) }
+  if (event.key === 'ArrowRight') { event.preventDefault(); focusTab(1) }
+  if (event.key === 'Home') { event.preventDefault(); setActive(tabs.value[0]!.key) }
+  if (event.key === 'End') { event.preventDefault(); setActive(tabs.value[tabs.value.length - 1]!.key) }
+}
+
+onMounted(async () => {
+  try {
+    healthEnabled.value = await getModuleEnabled('session_inspector')
+  } catch {
+    healthEnabled.value = false
+  } finally {
+    moduleLoading.value = false
+    if (!healthEnabled.value && activeTab.value === 'health') activeTab.value = 'approval'
+  }
+})
 </script>
 
 <template>
-  <div class="session-config-view">
-    <div class="page-header">
+  <main class="session-config-view" :aria-busy="moduleLoading">
+    <header class="page-header">
       <div>
-        <h1>{{ t('sessions.config.title') }}</h1>
-        <p class="page-description">{{ t('sessions.config.subtitle') }}</p>
+        <div class="eyebrow">{{ t('sessions.config.title') }}</div>
+        <h1>{{ t('sessions.config.subtitle') }}</h1>
       </div>
-    </div>
+      <span class="scope-badge">{{ t('sessions.config.platformScope') }}</span>
+    </header>
 
-    <!-- Tab Navigation -->
-    <div class="tab-nav" role="tablist" aria-label="Session configuration sections">
+    <div class="tab-nav" role="tablist" :aria-label="t('sessions.config.tabsLabel')">
       <button
         v-for="tab in tabs"
+        :id="`session-config-tab-${tab.key}`"
         :key="tab.key"
+        type="button"
         class="tab-button"
         :class="{ active: activeTab === tab.key }"
         role="tab"
-        :id="`session-config-tab-${tab.key}`"
         :aria-selected="activeTab === tab.key"
         :aria-controls="`session-config-panel-${tab.key}`"
         :tabindex="activeTab === tab.key ? 0 : -1"
-        @click="activeTab = tab.key"
-        @keydown.left.prevent="focusAdjacentTab(-1)"
-        @keydown.right.prevent="focusAdjacentTab(1)"
+        @click="setActive(tab.key)"
+        @keydown="handleTabKey"
       >
-        <span class="tab-icon" aria-hidden="true">{{ tab.icon }}</span>
-        <span class="tab-label">{{ tab.label }}</span>
+        {{ tab.label }}
       </button>
     </div>
 
-    <!-- Tab Content -->
-    <div
+    <section
+      :id="`session-config-panel-${activeTab}`"
       class="tab-content"
       role="tabpanel"
-      :id="`session-config-panel-${activeTab}`"
       :aria-labelledby="`session-config-tab-${activeTab}`"
     >
       <ApprovalConfigPanel v-if="activeTab === 'approval'" />
       <CompressionConfigPanel v-else-if="activeTab === 'compression'" />
-      <HealthScoreConfigPanel v-else-if="activeTab === 'health'" />
-    </div>
-  </div>
+      <HealthScoreConfigPanel v-else-if="healthEnabled" />
+    </section>
+  </main>
 </template>
 
 <style scoped>
 .session-config-view {
-  padding: 20px;
-  max-width: 1400px;
+  width: min(100%, 1180px);
   margin: 0 auto;
+  padding: 16px 20px 32px;
+  color: var(--text);
 }
-
 .page-header {
-  margin-bottom: 24px;
-}
-
-.page-header h1 {
-  margin: 0;
-  font-size: 28px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.page-description {
-  margin: 8px 0 0;
-  font-size: 14px;
-  color: #909399;
-}
-
-.tab-nav {
   display: flex;
-  gap: 8px;
-  border-bottom: 2px solid #e4e7ed;
-  margin-bottom: 24px;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
 }
-
-.tab-button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 24px;
-  background: transparent;
-  border: none;
-  border-bottom: 3px solid transparent;
-  cursor: pointer;
-  font-size: 15px;
-  font-weight: 500;
-  color: #606266;
-  transition: all 0.2s;
-  margin-bottom: -2px;
-}
-
-.tab-button:hover {
-  color: #409eff;
-  background: #f5f7fa;
-}
-
-.tab-button:focus-visible {
-  outline: 2px solid #409eff;
-  outline-offset: -2px;
-}
-
-.tab-button.active {
-  color: #409eff;
-  border-bottom-color: #409eff;
-  background: transparent;
-}
-
-.tab-icon {
-  font-size: 18px;
-}
-
-.tab-label {
-  white-space: nowrap;
-}
-
-.tab-content {
-  animation: fadeIn 0.3s ease;
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.eyebrow { color: var(--muted); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+.page-header h1 { margin: 4px 0 0; font-size: 19px; font-weight: 650; color: var(--text); }
+.scope-badge { border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 11px; padding: 4px 9px; white-space: nowrap; }
+.tab-nav { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; overflow-x: auto; }
+.tab-button { appearance: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; cursor: pointer; font: inherit; font-size: 13px; padding: 8px 12px; white-space: nowrap; }
+.tab-button:hover { color: var(--text); background: rgba(99,102,241,.08); }
+.tab-button.active { border-bottom-color: var(--accent); color: var(--text); }
+.tab-button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tab-content { min-width: 0; }
+@media (max-width: 640px) {
+  .session-config-view { padding: 12px 12px 24px; }
+  .page-header { align-items: start; flex-direction: column; gap: 8px; }
 }
 </style>

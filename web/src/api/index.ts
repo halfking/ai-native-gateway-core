@@ -12,6 +12,7 @@ export * from './providers'
 export * from './provider-probe'
 export * from './provider-settings'
 export * from './settings'
+export * from './modules'
 export {
   BASE,
   headers,
