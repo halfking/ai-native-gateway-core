@@ -57,6 +57,9 @@ onMounted(async () => {
     // else: store.jwtToken or store.apiKey already present → authenticated
   } finally {
     markAuthHydrated()
+    if (!isLoggedIn.value && !route.meta.public) {
+      router.replace({ path: '/', query: { login: '1', redirect: route.fullPath } })
+    }
   }
 })
 

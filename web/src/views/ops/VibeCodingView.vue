@@ -11,6 +11,7 @@ import {
   type VibeCodingProject,
   type VibeCodingSession,
   type CodeReview,
+  type CodeIssue,
 } from '../../api/ops'
 
 const { t } = useI18n()

@@ -1,0 +1,2 @@
+ALTER TABLE licenses DROP COLUMN IF EXISTS tenant_id;
+ALTER TABLE releases DROP COLUMN IF EXISTS tenant_id;

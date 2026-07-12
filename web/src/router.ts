@@ -67,13 +67,16 @@ const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
 const SessionConfigView = () => import('./views/SessionConfigView.vue')
-
-// Operations Platform views (super_admin only)
 const LicenseManagementView = () => import('./views/ops/LicenseManagementView.vue')
 const FaultManagementView = () => import('./views/ops/FaultManagementView.vue')
 const AutoUpdateView = () => import('./views/ops/AutoUpdateView.vue')
 const CenterOpsView = () => import('./views/ops/CenterOpsView.vue')
 const VibeCodingView = () => import('./views/ops/VibeCodingView.vue')
+const TenantLicenseView = () => import('./views/tenant/TenantLicenseView.vue')
+const TenantAutoUpdateView = () => import('./views/tenant/TenantAutoUpdateView.vue')
+
+// Operations Platform views. Platform management remains super-admin only;
+// tenant routes below expose read-only, tenant-scoped status views.
 
 function isAuthed(): boolean {
   if (store.jwtToken || store.apiKey || store.userInfo) return true
@@ -216,12 +219,17 @@ export const router = createRouter({
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 
-    // Operations Platform (super_admin only)
+    // Operations Platform (platform management, super_admin only)
     { path: '/ops/licenses',       component: LicenseManagementView, meta: { requiresSuper: true } },
     { path: '/ops/faults',         component: FaultManagementView, meta: { requiresSuper: true } },
     { path: '/ops/autoupdate',     component: AutoUpdateView, meta: { requiresSuper: true } },
     { path: '/ops/center',         component: CenterOpsView, meta: { requiresSuper: true } },
     { path: '/ops/vibecoding',     component: VibeCodingView, meta: { requiresSuper: true } },
+
+    // Tenant operations: visible to authenticated tenant admins, scoped by
+    // the current tenant. These intentionally do not reuse platform CRUD views.
+    { path: '/tenant/license',     component: TenantLicenseView, meta: { requiresAuth: true, tenantOps: true } },
+    { path: '/tenant/autoupdate',  component: TenantAutoUpdateView, meta: { requiresAuth: true, tenantOps: true } },
 
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
@@ -232,22 +240,12 @@ router.beforeEach((to) => {
   // 把用户弹回首页 / login，App.vue 的 hydration 永远没机会切到 app-layout。
   // 让 /api/auth/me 先 settle（store.authHydrated=true）再评估 auth。
   if (!store.authHydrated) {
-    // 把目标 path 保存到 query，hydration 完成后会重定向过去
-    if (to.path === '/' && to.query.login) {
-      // Already going to home with login=1, allow
-      return
-    }
-    // 第一次访问：等 hydration 完成
-    return new Promise<void>((resolve) => {
-      const check = () => {
-        if (store.authHydrated) {
-          resolve()
-        } else {
-          setTimeout(check, 30)
-        }
-      }
-      check()
-    })
+    // App.vue performs the cookie probe from onMounted. A guard promise here
+    // would block that mount and leave RouterView as an empty comment node.
+    // Evaluate the currently persisted credentials and let App.vue settle the
+    // final layout once hydration completes. App.vue redirects an unauthenticated
+    // user after the probe settles.
+    return
   }
   // 1. Auth check — unauthenticated users land on home, not full-page login
   if (!to.meta.public && !isAuthed()) {
@@ -264,6 +262,9 @@ router.beforeEach((to) => {
   // 4. Platform ops (super_admin on default tenant) for运维向页面
   if (to.meta.requiresPlatformOps && !isPlatformOpsView()) {
     return { path: '/' }
+  }
+  if (to.meta.tenantOps && isPlatformOpsView() && typeof to.query.tenant !== 'string') {
+    return { path: '/', query: { tenant: 'required' } }
   }
   // 5. Default-tenant ops must not browse tenant portal without ?tenant= context
   if (

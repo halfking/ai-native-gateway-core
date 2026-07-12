@@ -60,6 +60,11 @@ export async function getLicenses(params?: {
   return req<{ licenses: License[]; total: number }>('GET', '/api/admin/licenses' + (qs ? '?' + qs : ''))
 }
 
+export async function getTenantLicenseStatus(tenant?: string): Promise<{ tenant_id: string; licenses: License[] }> {
+  const query = tenant ? `?tenant=${encodeURIComponent(tenant)}` : ''
+  return req<{ tenant_id: string; licenses: License[] }>('GET', `/api/tenant/license/status${query}`)
+}
+
 export async function createLicense(data: {
   customer: string
   customer_email?: string
@@ -314,6 +319,11 @@ export interface UpgradeLog {
 export async function getReleases(channel?: string): Promise<{ items: Release[]; total: number }> {
   const query = channel ? `?channel=${channel}` : ''
   return req<{ items: Release[]; total: number }>('GET', `/api/admin/releases${query}`)
+}
+
+export async function getTenantUpdates(tenant?: string): Promise<{ tenant_id: string; current_version: string; items: Release[] }> {
+  const query = tenant ? `?tenant=${encodeURIComponent(tenant)}` : ''
+  return req<{ tenant_id: string; current_version: string; items: Release[] }>('GET', `/api/tenant/autoupdate/check${query}`)
 }
 
 export async function createRelease(data: {
