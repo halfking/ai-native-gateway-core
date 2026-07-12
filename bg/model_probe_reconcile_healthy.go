@@ -6,7 +6,8 @@ import (
 )
 
 // reconcileHealthyConfirmedBindings 是 reconcileBrokenConfirmedBindings 的反向操作。
-// 当 model_probe_state.state = 'healthy_confirmed' 时，恢复 binding.available = TRUE。
+// 当 model_probe_state.state = 'healthy_confirmed' 且连续两次探测成功时，
+// 恢复 binding.available = TRUE，并清理遗留冷却标记。
 //
 // 2026-06-29 fix: 解决"常用模型报无可用凭据"问题的关键修复。
 // 原有 reconcileBrokenConfirmedBindings 只处理 broken → unavailable 方向，
@@ -18,16 +19,19 @@ func (r *ModelProbeRunner) reconcileHealthyConfirmedBindings(ctx context.Context
 		UPDATE credential_model_bindings cmb
 		SET available          = TRUE,
 		    unavailable_reason = NULL,
-		    unavailable_at     = NULL
+		    unavailable_at     = NULL,
+		    unavailable_recover_at = NULL,
+		    updated_at          = now()
 		FROM provider_models pm
 		WHERE cmb.provider_model_id = pm.id
-		  AND cmb.available = FALSE
-		  AND cmb.unavailable_reason = 'model_probe_broken'
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		  AND EXISTS (
 		      SELECT 1 FROM model_probe_state mps
 		      WHERE mps.credential_id = cmb.credential_id
 		        AND mps.raw_model_name = pm.raw_model_name
 		        AND mps.state = 'healthy_confirmed'
+		        AND mps.consecutive_successes >= 2
 		  )
 	`)
 	if err != nil {
