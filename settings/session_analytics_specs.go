@@ -1,7 +1,8 @@
 package settings
 
-// SessionAnalyticsSpecs returns the configuration specs for the session
-// analytics module (会话全景分析插件).
+// SessionAnalyticsSpecs returns the platform-scoped master toggle for the
+// session analytics module (会话全景分析插件). Per-tenant tuning keys
+// (model.title, cluster_mode, etc.) live in SessionAnalyticsTenantSpecs.
 //
 // 该模块通过 post_response hook 接入请求管道，提供准实时的会话总结、
 // 标题生成、多维标签、逐步摘要、相似会话聚类与优化建议能力。
@@ -12,19 +13,29 @@ package settings
 //   - 空/默认值：使用该阶段的内置默认模型
 func SessionAnalyticsSpecs() []*Spec {
 	return []*Spec{
-		// ── 模块总开关 ───────────────────────────────────────────────
+		// ── 模块总开关（platform 范围）────────────────────────────────
+		// 由 admin/modules 页面统一管理；其余配置项按租户粒度配置。
 		{
 			Key:             "session_analytics.enabled",
 			EnvName:         "LLM_GATEWAY_SESSION_ANALYTICS_ENABLED",
 			Type:            TypeBool,
-			Scope:           ScopeTenant,
+			Scope:           ScopePlatform,
 			Category:        CategorySession,
 			Default:         false,
 			Description:     "启用会话全景分析",
-			DescriptionLong: "启用后通过 post_response hook 接入请求管道，准实时生成会话总结/标题/标签/摘要/聚类/优化建议。关闭后完全跳过分析，前端全景页隐藏。",
+			DescriptionLong: "启用后通过 post_response hook 接入请求管道，准实时生成会话总结/标题/标签/摘要/聚类/优化建议。关闭后完全跳过分析，前端全景页隐藏。模块级主开关，由 admin/modules 页面统一管理；具体策略（model.title、cluster_mode 等）仍按租户粒度配置。",
 			HotReload:       true,
 			DangerLevel:     Safe,
 		},
+	}
+}
+
+// SessionAnalyticsTenantSpecs returns the per-tenant tuning specs for the
+// session analytics module.  Registered alongside SessionAnalyticsSpecs() so
+// admins can override model/strategy choices for specific tenants via
+// /api/admin/tenant-settings/{tid}/{key}.
+func SessionAnalyticsTenantSpecs() []*Spec {
+	return []*Spec{
 		// ── 触发时机 ─────────────────────────────────────────────────
 		{
 			Key:             "session_analytics.title_on_first_request",
