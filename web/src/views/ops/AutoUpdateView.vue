@@ -6,9 +6,13 @@ import {
   getReleases,
   createRelease,
   publishRelease,
+  unpublishRelease,
+  createGrayRelease,
+  updateGrayPhase,
   rollbackRelease,
   getUpgradeLogs,
   type Release,
+  type GrayReleaseRule,
   type UpgradeLog,
 } from '../../api/ops'
 
@@ -17,30 +21,40 @@ const { t } = useI18n()
 const releases = ref<Release[]>([])
 const upgradeLogs = ref<UpgradeLog[]>([])
 const loading = ref(false)
-const selectedReleaseId = ref<number | null>(null)
 
 // Create dialog state
 const showCreateDialog = ref(false)
 const createForm = ref({
   version: '',
-  channel: 'stable' as 'stable' | 'beta' | 'alpha',
-  download_url: '',
-  checksum: '',
-  release_notes: '',
-  rollout_percentage: 0,
+  build_seq: 0,
+  channel: 'stable' as 'stable' | 'beta' | 'canary',
+  title: '',
+  image_tag: '',
+  created_by: '',
+  description: '',
+  changelog: '',
+  image_digest: '',
+  min_version: '',
+  mandatory: false,
 })
 
-// Publish dialog state
-const showPublishDialog = ref(false)
-const publishForm = ref({
-  releaseId: 0,
-  rolloutPercentage: 10,
+// Gray release dialog state
+const showGrayDialog = ref(false)
+const grayForm = ref({
+  version: '',
+  phase: 'canary' as string,
+  percent: 10,
 })
+
+// Rollback dialog state
+const showRollbackDialog = ref(false)
+const rollbackTarget = ref('')
 
 async function load() {
   loading.value = true
   try {
-    releases.value = await getReleases()
+    const res = await getReleases()
+    releases.value = res.items || []
   } catch (error) {
     ElMessage.error(t('ops.autoupdate.loadFailed'))
     console.error(error)
@@ -49,17 +63,16 @@ async function load() {
   }
 }
 
-async function loadUpgradeLogs(releaseId?: number) {
+async function loadUpgradeLogs() {
   try {
-    upgradeLogs.value = await getUpgradeLogs(releaseId)
+    upgradeLogs.value = await getUpgradeLogs()
   } catch (error) {
-    ElMessage.error(t('ops.autoupdate.loadLogsFailed'))
-    console.error(error)
+    console.error('Failed to load upgrade logs:', error)
   }
 }
 
 async function handleCreate() {
-  if (!createForm.value.version || !createForm.value.download_url || !createForm.value.checksum) {
+  if (!createForm.value.version || !createForm.value.title || !createForm.value.image_tag || !createForm.value.created_by) {
     ElMessage.warning(t('ops.autoupdate.fillRequired'))
     return
   }
@@ -68,22 +81,23 @@ async function handleCreate() {
   try {
     await createRelease({
       version: createForm.value.version,
+      build_seq: createForm.value.build_seq,
       channel: createForm.value.channel,
-      status: 'draft',
-      rollout_percentage: 0,
-      download_url: createForm.value.download_url,
-      checksum: createForm.value.checksum,
-      release_notes: createForm.value.release_notes,
+      title: createForm.value.title,
+      image_tag: createForm.value.image_tag,
+      created_by: createForm.value.created_by,
+      description: createForm.value.description || undefined,
+      changelog: createForm.value.changelog || undefined,
+      image_digest: createForm.value.image_digest || undefined,
+      min_version: createForm.value.min_version || undefined,
+      mandatory: createForm.value.mandatory,
     })
     ElMessage.success(t('ops.autoupdate.createSuccess'))
     showCreateDialog.value = false
     createForm.value = {
-      version: '',
-      channel: 'stable',
-      download_url: '',
-      checksum: '',
-      release_notes: '',
-      rollout_percentage: 0,
+      version: '', build_seq: 0, channel: 'stable', title: '',
+      image_tag: '', created_by: '', description: '', changelog: '',
+      image_digest: '', min_version: '', mandatory: false,
     }
     await load()
   } catch (error) {
@@ -94,36 +108,84 @@ async function handleCreate() {
   }
 }
 
-function openPublishDialog(release: Release) {
-  publishForm.value.releaseId = release.id
-  publishForm.value.rolloutPercentage = release.rollout_percentage || 10
-  showPublishDialog.value = true
-}
-
-async function handlePublish() {
-  loading.value = true
+async function handlePublish(release: Release) {
   try {
-    await publishRelease(publishForm.value.releaseId, publishForm.value.rolloutPercentage)
+    await ElMessageBox.confirm(
+      t('ops.autoupdate.publishConfirm', { version: release.version }),
+      t('common.confirm'),
+      { type: 'info' }
+    )
+    await publishRelease(release.version)
     ElMessage.success(t('ops.autoupdate.publishSuccess'))
-    showPublishDialog.value = false
     await load()
   } catch (error) {
-    ElMessage.error(t('ops.autoupdate.publishFailed'))
+    if (error !== 'cancel') {
+      ElMessage.error(t('ops.autoupdate.publishFailed'))
+      console.error(error)
+    }
+  }
+}
+
+async function handleUnpublish(release: Release) {
+  try {
+    await ElMessageBox.confirm(
+      t('ops.autoupdate.unpublishConfirm', { version: release.version }),
+      t('common.warning'),
+      { type: 'warning' }
+    )
+    await unpublishRelease(release.version)
+    ElMessage.success(t('ops.autoupdate.unpublishSuccess'))
+    await load()
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error(t('ops.autoupdate.unpublishFailed'))
+      console.error(error)
+    }
+  }
+}
+
+function openGrayDialog(release: Release) {
+  grayForm.value = { version: release.version, phase: 'canary', percent: 10 }
+  showGrayDialog.value = true
+}
+
+async function handleCreateGray() {
+  loading.value = true
+  try {
+    await createGrayRelease(grayForm.value.version, {
+      phase: grayForm.value.phase,
+      percent: grayForm.value.percent,
+    })
+    ElMessage.success(t('ops.autoupdate.grayCreateSuccess'))
+    showGrayDialog.value = false
+  } catch (error) {
+    ElMessage.error(t('ops.autoupdate.grayCreateFailed'))
     console.error(error)
   } finally {
     loading.value = false
   }
 }
 
-async function handleRollback(release: Release) {
+function openRollbackDialog() {
+  rollbackTarget.value = ''
+  showRollbackDialog.value = true
+}
+
+async function handleRollback() {
+  if (!rollbackTarget.value) {
+    ElMessage.warning(t('ops.autoupdate.fillRequired'))
+    return
+  }
+
   try {
     await ElMessageBox.confirm(
-      t('ops.autoupdate.rollbackConfirm', { version: release.version }),
+      t('ops.autoupdate.rollbackConfirm', { version: rollbackTarget.value }),
       t('common.warning'),
       { type: 'warning' }
     )
-    await rollbackRelease(release.id)
+    await rollbackRelease(rollbackTarget.value)
     ElMessage.success(t('ops.autoupdate.rollbackSuccess'))
+    showRollbackDialog.value = false
     await load()
   } catch (error) {
     if (error !== 'cancel') {
@@ -133,36 +195,24 @@ async function handleRollback(release: Release) {
   }
 }
 
-async function viewLogs(release: Release) {
-  selectedReleaseId.value = release.id
-  await loadUpgradeLogs(release.id)
-}
-
 function channelType(channel: string) {
   const map: Record<string, 'success' | 'warning' | 'info'> = {
     stable: 'success',
     beta: 'warning',
-    alpha: 'info',
+    canary: 'info',
   }
   return map[channel] || 'info'
-}
-
-function statusType(status: string) {
-  const map: Record<string, 'info' | 'success' | 'warning'> = {
-    draft: 'info',
-    published: 'success',
-    archived: 'warning',
-  }
-  return map[status] || 'info'
 }
 
 function logStatusType(status: string) {
   const map: Record<string, 'info' | 'warning' | 'success' | 'danger'> = {
     pending: 'info',
     downloading: 'warning',
-    installing: 'warning',
+    ready_to_restart: 'warning',
+    upgrading: 'warning',
     success: 'success',
     failed: 'danger',
+    rolled_back: 'info',
   }
   return map[status] || 'info'
 }
@@ -182,9 +232,14 @@ onMounted(() => {
   <div class="autoupdate-view">
     <div class="page-header">
       <h1>🚀 {{ t('ops.autoupdate.title') }}</h1>
-      <el-button type="primary" @click="showCreateDialog = true">
-        + {{ t('ops.autoupdate.createRelease') }}
-      </el-button>
+      <div class="header-actions">
+        <el-button @click="openRollbackDialog">
+          {{ t('ops.autoupdate.rollback') }}
+        </el-button>
+        <el-button type="primary" @click="showCreateDialog = true">
+          + {{ t('ops.autoupdate.createRelease') }}
+        </el-button>
+      </div>
     </div>
 
     <!-- Releases Table -->
@@ -193,50 +248,48 @@ onMounted(() => {
         <span>{{ t('ops.autoupdate.releases') }}</span>
       </template>
       <el-table v-loading="loading" :data="releases">
-        <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="150" />
-        <el-table-column prop="channel" :label="t('ops.autoupdate.channelLabel')" width="100">
+        <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="120" />
+        <el-table-column prop="build_seq" :label="t('ops.autoupdate.buildSeq')" width="80" />
+        <el-table-column prop="channel" :label="t('ops.autoupdate.channelLabel')" width="90">
           <template #default="{ row }">
             <el-tag :type="channelType(row.channel)" size="small">
-              {{ t(`ops.autoupdate.channel.${row.channel}`) }}
+              {{ row.channel }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="status" :label="t('common.status')" width="100">
+        <el-table-column prop="title" :label="t('ops.autoupdate.releaseTitle')" min-width="150" />
+        <el-table-column prop="image_tag" :label="t('ops.autoupdate.imageTag')" width="180" show-overflow-tooltip />
+        <el-table-column prop="created_by" :label="t('ops.autoupdate.createdBy')" width="120" />
+        <el-table-column prop="mandatory" :label="t('ops.autoupdate.mandatory')" width="80">
           <template #default="{ row }">
-            <el-tag :type="statusType(row.status)" size="small">
-              {{ t(`ops.autoupdate.status.${row.status}`) }}
+            <el-tag :type="row.mandatory ? 'danger' : 'info'" size="small">
+              {{ row.mandatory ? t('common.yes') : t('common.no') }}
             </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="rollout_percentage" :label="t('ops.autoupdate.rolloutPercentage')" width="120">
-          <template #default="{ row }">
-            <el-progress :percentage="row.rollout_percentage" :stroke-width="8" />
           </template>
         </el-table-column>
         <el-table-column prop="published_at" :label="t('ops.autoupdate.publishedAt')" width="160">
           <template #default="{ row }">{{ formatDate(row.published_at) }}</template>
         </el-table-column>
-        <el-table-column prop="release_notes" :label="t('ops.autoupdate.releaseNotes')" min-width="200" show-overflow-tooltip />
-        <el-table-column :label="t('common.actions')" width="280" fixed="right">
+        <el-table-column :label="t('common.actions')" width="260" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="row.status === 'draft'"
+              v-if="!row.published_at"
               type="success"
               size="small"
-              @click="openPublishDialog(row)"
+              @click="handlePublish(row)"
             >
               {{ t('ops.autoupdate.publish') }}
             </el-button>
             <el-button
-              v-if="row.status === 'published'"
+              v-if="row.published_at"
               type="warning"
               size="small"
-              @click="handleRollback(row)"
+              @click="handleUnpublish(row)"
             >
-              {{ t('ops.autoupdate.rollback') }}
+              {{ t('ops.autoupdate.unpublish') }}
             </el-button>
-            <el-button type="primary" size="small" @click="viewLogs(row)">
-              {{ t('ops.autoupdate.viewLogs') }}
+            <el-button size="small" @click="openGrayDialog(row)">
+              {{ t('ops.autoupdate.gray') }}
             </el-button>
           </template>
         </el-table-column>
@@ -246,21 +299,15 @@ onMounted(() => {
     <!-- Upgrade Logs -->
     <el-card class="logs-card" shadow="never">
       <template #header>
-        <div class="card-header">
-          <span>{{ t('ops.autoupdate.upgradeLogs') }}</span>
-          <el-button v-if="selectedReleaseId" size="small" @click="selectedReleaseId = null; loadUpgradeLogs()">
-            {{ t('ops.autoupdate.showAll') }}
-          </el-button>
-        </div>
+        <span>{{ t('ops.autoupdate.upgradeLogs') }}</span>
       </template>
       <el-table :data="upgradeLogs" size="small">
         <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="200" />
-        <el-table-column prop="from_version" :label="t('ops.autoupdate.fromVersion')" width="120" />
-        <el-table-column prop="to_version" :label="t('ops.autoupdate.toVersion')" width="120" />
-        <el-table-column prop="status" :label="t('common.status')" width="100">
+        <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="120" />
+        <el-table-column prop="status" :label="t('common.status')" width="120">
           <template #default="{ row }">
             <el-tag :type="logStatusType(row.status)" size="small">
-              {{ t(`ops.autoupdate.logStatus.${row.status}`) }}
+              {{ row.status }}
             </el-tag>
           </template>
         </el-table-column>
@@ -270,7 +317,8 @@ onMounted(() => {
         <el-table-column prop="completed_at" :label="t('ops.autoupdate.completedAt')" width="160">
           <template #default="{ row }">{{ formatDate(row.completed_at) }}</template>
         </el-table-column>
-        <el-table-column prop="error_message" :label="t('ops.autoupdate.errorMessage')" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="error" :label="t('ops.autoupdate.errorMessage')" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="retry_count" :label="t('ops.autoupdate.retryCount')" width="90" />
       </el-table>
     </el-card>
 
@@ -284,26 +332,39 @@ onMounted(() => {
         <el-form-item :label="t('ops.autoupdate.version')" required>
           <el-input v-model="createForm.version" :placeholder="t('ops.autoupdate.versionPlaceholder')" />
         </el-form-item>
+        <el-form-item :label="t('ops.autoupdate.buildSeq')" required>
+          <el-input-number v-model="createForm.build_seq" :min="1" />
+        </el-form-item>
         <el-form-item :label="t('ops.autoupdate.channelLabel')" required>
           <el-radio-group v-model="createForm.channel">
-            <el-radio label="stable">{{ t('ops.autoupdate.channel.stable') }}</el-radio>
-            <el-radio label="beta">{{ t('ops.autoupdate.channel.beta') }}</el-radio>
-            <el-radio label="alpha">{{ t('ops.autoupdate.channel.alpha') }}</el-radio>
+            <el-radio label="stable">Stable</el-radio>
+            <el-radio label="beta">Beta</el-radio>
+            <el-radio label="canary">Canary</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item :label="t('ops.autoupdate.downloadUrl')" required>
-          <el-input v-model="createForm.download_url" :placeholder="t('ops.autoupdate.downloadUrlPlaceholder')" />
+        <el-form-item :label="t('ops.autoupdate.releaseTitle')" required>
+          <el-input v-model="createForm.title" :placeholder="t('ops.autoupdate.releaseTitlePlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('ops.autoupdate.checksum')" required>
-          <el-input v-model="createForm.checksum" :placeholder="t('ops.autoupdate.checksumPlaceholder')" />
+        <el-form-item :label="t('ops.autoupdate.imageTag')" required>
+          <el-input v-model="createForm.image_tag" :placeholder="t('ops.autoupdate.imageTagPlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('ops.autoupdate.releaseNotes')">
-          <el-input
-            v-model="createForm.release_notes"
-            type="textarea"
-            :rows="4"
-            :placeholder="t('ops.autoupdate.releaseNotesPlaceholder')"
-          />
+        <el-form-item :label="t('ops.autoupdate.createdBy')" required>
+          <el-input v-model="createForm.created_by" :placeholder="t('ops.autoupdate.createdByPlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="t('ops.autoupdate.description')">
+          <el-input v-model="createForm.description" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item :label="t('ops.autoupdate.changelog')">
+          <el-input v-model="createForm.changelog" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item :label="t('ops.autoupdate.imageDigest')">
+          <el-input v-model="createForm.image_digest" />
+        </el-form-item>
+        <el-form-item :label="t('ops.autoupdate.minVersion')">
+          <el-input v-model="createForm.min_version" />
+        </el-form-item>
+        <el-form-item :label="t('ops.autoupdate.mandatory')">
+          <el-switch v-model="createForm.mandatory" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -314,34 +375,64 @@ onMounted(() => {
       </template>
     </el-dialog>
 
-    <!-- Publish Release Dialog -->
+    <!-- Gray Release Dialog -->
     <el-dialog
-      v-model="showPublishDialog"
-      :title="t('ops.autoupdate.publishReleaseTitle')"
+      v-model="showGrayDialog"
+      :title="t('ops.autoupdate.grayTitle')"
       width="500px"
     >
-      <el-form :model="publishForm" label-width="140px">
+      <el-form :model="grayForm" label-width="140px">
+        <el-form-item :label="t('ops.autoupdate.version')">
+          <el-input :model-value="grayForm.version" disabled />
+        </el-form-item>
+        <el-form-item :label="t('ops.autoupdate.grayPhase')" required>
+          <el-select v-model="grayForm.phase" style="width: 100%">
+            <el-option label="Canary (金丝雀)" value="canary" />
+            <el-option label="Batch 1 (第一批)" value="batch_1" />
+            <el-option label="Batch 2 (第二批)" value="batch_2" />
+            <el-option label="Batch 3 (第三批)" value="batch_3" />
+            <el-option label="Full (全量)" value="full" />
+          </el-select>
+        </el-form-item>
         <el-form-item :label="t('ops.autoupdate.rolloutPercentage')" required>
           <el-slider
-            v-model="publishForm.rolloutPercentage"
+            v-model="grayForm.percent"
             :min="0"
             :max="100"
-            :step="10"
-            :marks="{ 0: '0%', 10: '10%', 50: '50%', 100: '100%' }"
+            :step="5"
             show-stops
           />
         </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showGrayDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="loading" @click="handleCreateGray">
+          {{ t('ops.autoupdate.grayCreate') }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Rollback Dialog -->
+    <el-dialog
+      v-model="showRollbackDialog"
+      :title="t('ops.autoupdate.rollbackTitle')"
+      width="500px"
+    >
+      <el-form label-width="140px">
+        <el-form-item :label="t('ops.autoupdate.targetVersion')" required>
+          <el-input v-model="rollbackTarget" :placeholder="t('ops.autoupdate.targetVersionPlaceholder')" />
+        </el-form-item>
         <el-alert
-          :title="t('ops.autoupdate.gradualRolloutInfo')"
-          type="info"
+          :title="t('ops.autoupdate.rollbackWarning')"
+          type="warning"
           :closable="false"
-          style="margin-top: 12px"
+          show-icon
         />
       </el-form>
       <template #footer>
-        <el-button @click="showPublishDialog = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="loading" @click="handlePublish">
-          {{ t('ops.autoupdate.publish') }}
+        <el-button @click="showRollbackDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="danger" :loading="loading" @click="handleRollback">
+          {{ t('ops.autoupdate.rollback') }}
         </el-button>
       </template>
     </el-dialog>
@@ -363,6 +454,11 @@ onMounted(() => {
 .page-header h1 {
   font-size: 24px;
   margin: 0;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .main-card {

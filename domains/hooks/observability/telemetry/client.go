@@ -7,10 +7,12 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 )
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
@@ -36,6 +38,8 @@ type Client struct {
 	// on the caller's goroutine and MUST be non-blocking (use select
 	// with default for channel sends). May be nil.
 	onEmitted func(entry *RequestLogEntry)
+	fallback  dbdegradation.BackupWriter
+	degraded  atomic.Bool
 }
 
 type DecisionLogEntry struct {
@@ -279,6 +283,24 @@ func (c *Client) SetDB(pool *pgxpool.Pool) {
 	c.dbPool = pool
 }
 
+func (c *Client) SetDegraded(enabled bool) { c.degraded.Store(enabled) }
+
+func (c *Client) SetFallbackWriter(writer dbdegradation.BackupWriter) {
+	c.fallback = writer
+}
+
+func (c *Client) ReplayFallback(ctx context.Context, record dbdegradation.BackupRecord) error {
+	var entry RequestLogEntry
+	if err := json.Unmarshal(record.Payload, &entry); err != nil {
+		return err
+	}
+	normalizeRequestStatus(&entry)
+	if entry.Op == RequestLogUpdate {
+		return c.updateRequestLog(&entry)
+	}
+	return c.insertRequestLog(&entry)
+}
+
 // SetOnRequestLogPersisted registers a hook invoked after each
 // successful INSERT/UPDATE of a request_logs row. The hook runs on
 // the telemetry worker goroutine — it must be cheap and non-blocking.
@@ -337,7 +359,13 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 	default:
 		// Request logs power /request-logs — never silently drop on backpressure.
 		if err := c.persistRequestLog(entry); err != nil {
-			slog.Warn("telemetry request sync persist failed", "request_id", entry.RequestID, "op", entry.Op, "error", err)
+			if c.fallback != nil {
+				if fallbackErr := c.fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry); fallbackErr != nil {
+					slog.Warn("telemetry request sync fallback failed", "request_id", entry.RequestID, "error", fallbackErr)
+				}
+			} else {
+				slog.Warn("telemetry request sync persist failed", "request_id", entry.RequestID, "op", entry.Op, "error", err)
+			}
 		}
 	}
 }
@@ -397,7 +425,13 @@ func (c *Client) flush(batch []any) {
 			}
 		case *RequestLogEntry:
 			if err := c.persistRequestLog(v); err != nil {
-				slog.Warn("telemetry request db persist failed", "request_id", v.RequestID, "op", v.Op, "error", err)
+				if c.fallback != nil {
+					if fallbackErr := c.fallback.WriteRequestLog(context.Background(), v.RequestID+":"+string(v.Op), v); fallbackErr != nil {
+						slog.Warn("telemetry request fallback failed", "request_id", v.RequestID, "error", fallbackErr)
+					}
+				} else {
+					slog.Warn("telemetry request db persist failed", "request_id", v.RequestID, "op", v.Op, "error", err)
+				}
 			}
 		}
 	}
@@ -481,6 +515,12 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 
 func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 	normalizeRequestStatus(entry)
+	if c.degraded.Load() {
+		if c.fallback == nil {
+			return errNoTelemetryDB
+		}
+		return c.fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry)
+	}
 	var err error
 	if entry.Op == RequestLogUpdate {
 		err = c.updateRequestLog(entry)
