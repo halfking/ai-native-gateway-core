@@ -436,20 +436,6 @@ export interface AsyncJobResponse {
   poll_url: string
 }
 
-export interface JobRun {
-  id: string
-  type: string
-  status: string
-  target: string
-  message?: string
-  error?: string
-  started_at: string
-  updated_at: string
-  finished_at?: string
-  duration_ms: number
-  result?: Record<string, any>
-}
-
 export interface JobListResponse {
   running: JobRun[]
   history: JobRun[]
@@ -1038,11 +1024,6 @@ export interface JobRun {
   finished_at?: string
   duration_ms: number
   operator?: string
-}
-
-export interface JobListResponse {
-  running: JobRun[]
-  history: JobRun[]
 }
 
 export interface PromoteHotResponse {
