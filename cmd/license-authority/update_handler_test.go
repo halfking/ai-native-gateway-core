@@ -194,7 +194,8 @@ func generateTestUpdateTokenWithKey(t *testing.T, instanceID string, privKey ed2
 		Subject:   "instance:" + instanceID,
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
-		Issuer:    "license-authority",
+		Issuer:    "llm.kxpms.cn",
+		Audience:  jwt.ClaimStrings{"license-authority-instance-api"},
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
