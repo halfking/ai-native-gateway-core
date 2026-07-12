@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
 	"github.com/labstack/echo/v4"
@@ -40,6 +41,15 @@ func (h *UpdateReportHandler) HandleReport(c echo.Context) error {
 	// 验证必填字段
 	if report.InstanceID == "" || report.ToVersion == "" || report.Status == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "missing required fields")
+	}
+	if subject, ok := c.Get("instance_id").(string); ok && subject != "" {
+		const prefix = "instance:"
+		if strings.HasPrefix(subject, prefix) {
+			subject = strings.TrimPrefix(subject, prefix)
+		}
+		if report.InstanceID != subject {
+			return echo.NewHTTPError(http.StatusForbidden, "instance identity mismatch")
+		}
 	}
 
 	// 验证 status 枚举值

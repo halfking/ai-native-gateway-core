@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased] - 2026-07-12
+
+### Security and Reliability
+- Protected License Authority administration endpoints with an explicit bearer token and separated them from instance client routes.
+- Added JWT issuer/audience validation, refresh-token rotation, stable license binding, request body limits, and replay nonce scoping.
+- Hardened offline upgrade manifests against empty inventories, invalid checksums, path traversal, symlink escapes, and partial `psql` execution.
+- Fixed migration discovery for nested `up/` directories and made integration-test failures visible instead of silently skipped.
+
 ## [v1.14.0] - 2026-07-12 (License + Upgrade)
 
 ### 🚀 新增功能 (Features)

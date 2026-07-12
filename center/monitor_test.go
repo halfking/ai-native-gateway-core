@@ -17,6 +17,9 @@ func TestMonitorInstances(t *testing.T) {
 	pool, err := pgxpool.New(ctx, dbURL)
 	require.NoError(t, err)
 	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Skipf("integration database unavailable: %v", err)
+	}
 
 	store := NewPgxStore(pool)
 

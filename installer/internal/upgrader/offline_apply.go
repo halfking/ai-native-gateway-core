@@ -79,7 +79,9 @@ func (a *OfflineApplier) ApplyOfflinePackage(tarPath, dataDir string) error {
 	var rollbackNeeded bool
 	defer func() {
 		if rollbackNeeded {
-			_ = a.rollbackFromBackup(backupPath)
+			if err := a.rollbackFromBackup(backupPath); err != nil {
+				fmt.Printf("rollback failed after upgrade error: %v\n", err)
+			}
 		}
 	}()
 
@@ -302,7 +304,7 @@ func (a *OfflineApplier) executeMigrations(ctx context.Context, migrationsDir st
 func (a *OfflineApplier) executeSQLFile(ctx context.Context, sqlPath string) error {
 	// 使用 docker exec 在容器内执行
 	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", a.containerName,
-		"psql", "-U", "kxuser", "-d", "llm_gateway", "-f", "-")
+		"psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "kxuser", "-d", "llm_gateway", "-f", "-")
 
 	sqlContent, err := os.ReadFile(sqlPath)
 	if err != nil {

@@ -23,7 +23,8 @@ const (
 	NonceCleanupInterval = 1 * time.Minute
 
 	// NonceTTL is how long we keep nonces in the replay prevention map
-	NonceTTL = 5 * time.Minute
+	NonceTTL          = 5 * time.Minute
+	MaxSignedBodySize = 4 << 20
 )
 
 // nonceEntry tracks when a nonce was seen
@@ -93,7 +94,7 @@ func SignatureVerifier(clientPublicKeyLookup ClientPublicKeyLookup) echo.Middlew
 		return func(c echo.Context) error {
 			// Extract required headers
 			instanceID := c.Request().Header.Get("X-Instance-ID")
-			if instanceID == "" {
+			if instanceID == "" || len(instanceID) > 256 {
 				return echo.NewHTTPError(http.StatusUnauthorized, "missing X-Instance-ID header")
 			}
 
@@ -103,7 +104,7 @@ func SignatureVerifier(clientPublicKeyLookup ClientPublicKeyLookup) echo.Middlew
 			}
 
 			nonce := c.Request().Header.Get("X-Nonce")
-			if nonce == "" {
+			if nonce == "" || len(nonce) > 256 {
 				return echo.NewHTTPError(http.StatusUnauthorized, "missing X-Nonce header")
 			}
 
@@ -128,15 +129,13 @@ func SignatureVerifier(clientPublicKeyLookup ClientPublicKeyLookup) echo.Middlew
 				return echo.NewHTTPError(http.StatusUnauthorized, "timestamp outside acceptable range")
 			}
 
-			// Check nonce for replay attacks
-			if !store.check(nonce) {
-				return echo.NewHTTPError(http.StatusUnauthorized, "nonce already used")
-			}
-
 			// Read request body
-			body, err := io.ReadAll(c.Request().Body)
+			body, err := io.ReadAll(io.LimitReader(c.Request().Body, MaxSignedBodySize+1))
 			if err != nil {
 				return echo.NewHTTPError(http.StatusBadRequest, "failed to read request body")
+			}
+			if len(body) > MaxSignedBodySize {
+				return echo.NewHTTPError(http.StatusRequestEntityTooLarge, "request body too large")
 			}
 			// Restore body for downstream handlers
 			c.Request().Body = io.NopCloser(bytes.NewReader(body))
@@ -159,6 +158,9 @@ func SignatureVerifier(clientPublicKeyLookup ClientPublicKeyLookup) echo.Middlew
 			// Verify signature
 			if !ed25519.Verify(publicKey, []byte(message), signature) {
 				return echo.NewHTTPError(http.StatusUnauthorized, "signature verification failed")
+			}
+			if !store.check(instanceID + ":" + nonce) {
+				return echo.NewHTTPError(http.StatusUnauthorized, "nonce already used")
 			}
 
 			// Signature valid, proceed
@@ -176,7 +178,7 @@ func SignatureVerifierWithRedis(clientPublicKeyLookup ClientPublicKeyLookup, red
 		return func(c echo.Context) error {
 			// Extract required headers
 			instanceID := c.Request().Header.Get("X-Instance-ID")
-			if instanceID == "" {
+			if instanceID == "" || len(instanceID) > 256 {
 				return echo.NewHTTPError(http.StatusUnauthorized, "missing X-Instance-ID header")
 			}
 
@@ -186,7 +188,7 @@ func SignatureVerifierWithRedis(clientPublicKeyLookup ClientPublicKeyLookup, red
 			}
 
 			nonce := c.Request().Header.Get("X-Nonce")
-			if nonce == "" {
+			if nonce == "" || len(nonce) > 256 {
 				return echo.NewHTTPError(http.StatusUnauthorized, "missing X-Nonce header")
 			}
 
@@ -211,19 +213,13 @@ func SignatureVerifierWithRedis(clientPublicKeyLookup ClientPublicKeyLookup, red
 				return echo.NewHTTPError(http.StatusUnauthorized, "timestamp outside acceptable range")
 			}
 
-			// Check nonce for replay attacks using Redis
-			ok, err := store.check(c.Request().Context(), nonce)
-			if err != nil {
-				return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("nonce check failed: %v", err))
-			}
-			if !ok {
-				return echo.NewHTTPError(http.StatusForbidden, "replay attack detected: nonce already used")
-			}
-
 			// Read request body
-			body, err := io.ReadAll(c.Request().Body)
+			body, err := io.ReadAll(io.LimitReader(c.Request().Body, MaxSignedBodySize+1))
 			if err != nil {
 				return echo.NewHTTPError(http.StatusBadRequest, "failed to read request body")
+			}
+			if len(body) > MaxSignedBodySize {
+				return echo.NewHTTPError(http.StatusRequestEntityTooLarge, "request body too large")
 			}
 			// Restore body for downstream handlers
 			c.Request().Body = io.NopCloser(bytes.NewReader(body))
@@ -246,6 +242,13 @@ func SignatureVerifierWithRedis(clientPublicKeyLookup ClientPublicKeyLookup, red
 			// Verify signature
 			if !ed25519.Verify(publicKey, []byte(message), signature) {
 				return echo.NewHTTPError(http.StatusUnauthorized, "signature verification failed")
+			}
+			ok, err := store.check(c.Request().Context(), instanceID+":"+nonce)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "nonce check failed")
+			}
+			if !ok {
+				return echo.NewHTTPError(http.StatusForbidden, "replay attack detected: nonce already used")
 			}
 
 			// Signature valid, proceed
