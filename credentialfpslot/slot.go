@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/identity" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/ratelimit"        // AUDIT-2: 限流总开关
 	"github.com/redis/go-redis/v9"
 )
 
@@ -258,6 +259,9 @@ func pinRedisKey(holder string, credentialID int) string {
 
 // RoutingEligible reports whether holder can acquire a slot (prefilter).
 func (m *Manager) RoutingEligible(ctx context.Context, credentialID int, limit *int, holder string) bool {
+	if !ratelimit.IsRateLimitEnabled() {
+		return true
+	}
 	if !m.Enabled() {
 		return true
 	}
@@ -273,7 +277,16 @@ func (m *Manager) RoutingEligible(ctx context.Context, credentialID int, limit *
 }
 
 // Acquire tries to take one slot. ok=false means unavailable.
+//
+// AUDIT-2 (2026-07-12): when rate_limit.enabled is OFF, return an
+// unlimited lease (matches the user semantic "限流降级模块关闭时不限制
+// 指纹"). The downstream egress-identity builder is unaffected — slot
+// index 0 is used for the virtual fingerprint, which is fine when the
+// "spread distinct identities" optimization is disabled.
 func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, holder, tenantID string) (*Lease, bool) {
+	if !ratelimit.IsRateLimitEnabled() {
+		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder}, true
+	}
 	if !m.Enabled() {
 		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder}, true
 	}

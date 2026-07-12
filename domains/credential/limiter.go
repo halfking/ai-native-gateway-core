@@ -21,6 +21,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/ratelimit" // AUDIT-2: 限流总开关
 )
 
 // ---------------------------------------------------------------------------
@@ -38,6 +40,16 @@ const (
 	shrinkRecoveryInterval = 5 * time.Minute
 	shrinkRecoveryFactor   = 0.5 // recover 50% of shrink every interval
 	fullRecoveryCycles     = 3   // 3 intervals = 15 min for full recovery
+
+	// OPT-2 (2026-07-12): bounded wait for the blocking semaphore layers.
+	// The previous implementation blocked until ctx.Done(); with no
+	// upstream-cancel path, an unbounded semaphore wait could pin the
+	// request for the entire upstream timeout (120s) and starve every
+	// other request on the same executor goroutine. 5s is well below the
+	// shortest sync-retry interval (1s) so a saturated layer trips well
+	// before the executor times out, allowing failover to the next
+	// candidate within one sync-retry round.
+	acquireWaitTimeout = 5 * time.Second
 )
 
 // ---------------------------------------------------------------------------
@@ -307,22 +319,48 @@ func (l *Limiter) Key(keyID int, limit int) *Semaphore {
 // The 5th layer (per-key) is non-blocking: if the key's concurrent limit is
 // reached, the request bypasses this check and continues. This matches the
 // identity-layer behaviour (soft cap).
+//
+// AUDIT-2 (2026-07-12): if rate_limit.enabled is OFF (per settings.Global
+// + ratelimit/gate.go), AcquireAll returns a no-op ReleaseFunc and the
+// request proceeds without any concurrency check. This matches the user
+// semantic: "限流降级模块关闭时不限制并发". The release is still safe to
+// call (returns immediately on no-op state).
+//
+// OPT-2 (2026-07-12): each blocking layer (global / pool / credential) is
+// bounded by an independent wait timeout so that a single saturated layer
+// does not pin the request thread for the entire lifetime of the upstream
+// call. The previous implementation blocked until ctx.Done(), which meant
+// CLI / internal callers with no deadline would wait indefinitely. The
+// bounded timeout matches the executor's expectation: when a layer is
+// saturated beyond the budget, return an error so the executor can move
+// on to the next candidate.
 func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, identityHash string, keyID int, keyConcurrentLimit int) (ReleaseFunc, error) {
-	// Acquire global (blocking with context)
-	if err := l.global.Acquire(ctx); err != nil {
+	// AUDIT-2: 限流总开关关闭 → 直接放行，返回 no-op release。
+	if !ratelimit.IsRateLimitEnabled() {
+		return func() {}, nil
+	}
+
+	// OPT-2: cap the blocking wait per layer. ctx may have no deadline
+	// (CLI, internal call), so derive a child context that fires after
+	// acquireWaitTimeout. The original ctx still wins on early cancel.
+	waitCtx, waitCancel := context.WithTimeout(ctx, acquireWaitTimeout)
+	defer waitCancel()
+
+	// Acquire global (blocking with context, OPT-2 bounded)
+	if err := l.global.Acquire(waitCtx); err != nil {
 		return nil, fmt.Errorf("global limit: %w", err)
 	}
 
-	// Acquire pool (blocking with context)
+	// Acquire pool (blocking with context, OPT-2 bounded)
 	pool := l.Pool(providerID)
-	if err := pool.Acquire(ctx); err != nil {
+	if err := pool.Acquire(waitCtx); err != nil {
 		l.global.Release()
 		return nil, fmt.Errorf("pool limit: %w", err)
 	}
 
-	// Acquire credential (blocking with context)
+	// Acquire credential (blocking with context, OPT-2 bounded)
 	cred := l.Credential(providerID, credentialID)
-	if err := cred.Acquire(ctx); err != nil {
+	if err := cred.Acquire(waitCtx); err != nil {
 		pool.Release()
 		l.global.Release()
 		return nil, fmt.Errorf("credential limit: %w", err)
