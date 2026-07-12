@@ -110,7 +110,7 @@ func TestValidateToolCallIntegrity_GoCodeConstructed(t *testing.T) {
 	messages := []map[string]any{
 		{"role": "user", "content": "Test"},
 		{
-			"role": "assistant",
+			"role":    "assistant",
 			"content": "Using tool",
 			"tool_calls": []map[string]any{
 				{"id": "call_go", "type": "function"},
@@ -130,7 +130,7 @@ func TestValidateToolCallIntegrity_GoCodeOrphaned(t *testing.T) {
 	messages := []map[string]any{
 		{"role": "user", "content": "Test"},
 		{
-			"role": "assistant",
+			"role":    "assistant",
 			"content": "Using tool",
 			"tool_calls": []map[string]any{
 				{"id": "call_go", "type": "function"},
