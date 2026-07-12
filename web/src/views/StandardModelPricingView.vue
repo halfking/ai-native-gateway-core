@@ -8,6 +8,7 @@ import {
   upsertAdminMaasModelRate,
   deleteAdminMaasModelRate,
   resetAdminMaasModelRateFields,
+  batchUpsertAdminMaasModelRates,
   type AdminMaasModelRate,
   type MaasAdminSettings,
   type MaasModelRateUpsert,
@@ -56,6 +57,18 @@ const {
     return true
   },
 })
+
+const selectedRows = ref<Set<number>>(new Set())
+const clipboard = ref<{ in: number; out: number; cache_in: number; cache_out: number } | null>(null)
+const showBatchModal = ref(false)
+const batchForm = ref({
+  credits_per_1m_in: 0,
+  credits_per_1m_out: 0,
+  credits_per_1m_cache_in: 0,
+  credits_per_1m_cache_out: 0,
+})
+const savingBatch = ref(false)
+const batchMsg = ref('')
 
 const editRow = ref<AdminMaasModelRate | null>(null)
 const editForm = ref<MaasModelRateUpsert>(emptyEditForm())
@@ -237,6 +250,122 @@ const rateFields: { key: RateField; label: string; formKey: keyof MaasModelRateU
   { key: 'cache_out', label: t('standardModelPricing.cacheWrite'), formKey: 'credits_per_1m_cache_out', manualKey: 'manual_cache_out', valueKey: 'credits_per_1m_cache_out', manualFlag: 'manual_cache_out' },
 ]
 
+const allSelected = computed(() => {
+  return filtered.value.length > 0 && filtered.value.every(row => selectedRows.value.has(row.canonical_id))
+})
+
+function toggleRow(canonicalId: number) {
+  if (selectedRows.value.has(canonicalId)) {
+    selectedRows.value.delete(canonicalId)
+  } else {
+    selectedRows.value.add(canonicalId)
+  }
+}
+
+function toggleSelectAll(e: Event) {
+  const checked = (e.target as HTMLInputElement).checked
+  if (checked) {
+    filtered.value.forEach(row => selectedRows.value.add(row.canonical_id))
+  } else {
+    selectedRows.value.clear()
+  }
+}
+
+function copyRow(row: AdminMaasModelRate) {
+  clipboard.value = {
+    in: row.credits_per_1m_in,
+    out: row.credits_per_1m_out,
+    cache_in: row.credits_per_1m_cache_in,
+    cache_out: row.credits_per_1m_cache_out,
+  }
+}
+
+function copyEditForm() {
+  clipboard.value = {
+    in: editForm.value.credits_per_1m_in,
+    out: editForm.value.credits_per_1m_out,
+    cache_in: editForm.value.credits_per_1m_cache_in,
+    cache_out: editForm.value.credits_per_1m_cache_out,
+  }
+}
+
+function pasteEditForm() {
+  if (!clipboard.value) return
+  editForm.value.credits_per_1m_in = clipboard.value.in
+  editForm.value.credits_per_1m_out = clipboard.value.out
+  editForm.value.credits_per_1m_cache_in = clipboard.value.cache_in
+  editForm.value.credits_per_1m_cache_out = clipboard.value.cache_out
+  editForm.value.manual_in = true
+  editForm.value.manual_out = true
+  editForm.value.manual_cache_in = true
+  editForm.value.manual_cache_out = true
+}
+
+async function pasteToSelected() {
+  if (!clipboard.value || selectedRows.value.size === 0) return
+  savingBatch.value = true
+  batchMsg.value = ''
+  try {
+    const updates = Array.from(selectedRows.value).map(canonical_id => ({
+      canonical_id,
+      credits_per_1m_in: clipboard.value!.in,
+      credits_per_1m_out: clipboard.value!.out,
+      credits_per_1m_cache_in: clipboard.value!.cache_in,
+      credits_per_1m_cache_out: clipboard.value!.cache_out,
+      manual_in: true,
+      manual_out: true,
+      manual_cache_in: true,
+      manual_cache_out: true,
+    }))
+    const res = await batchUpsertAdminMaasModelRates(updates)
+    batchMsg.value = `已更新 ${res.updated} 个模型`
+    selectedRows.value.clear()
+    await load()
+  } catch (e: unknown) {
+    batchMsg.value = '批量更新失败'
+  } finally {
+    savingBatch.value = false
+  }
+}
+
+function openBatchModal() {
+  batchForm.value = {
+    credits_per_1m_in: 0,
+    credits_per_1m_out: 0,
+    credits_per_1m_cache_in: 0,
+    credits_per_1m_cache_out: 0,
+  }
+  showBatchModal.value = true
+}
+
+async function applyBatch() {
+  if (selectedRows.value.size === 0) return
+  savingBatch.value = true
+  batchMsg.value = ''
+  try {
+    const updates = Array.from(selectedRows.value).map(canonical_id => ({
+      canonical_id,
+      credits_per_1m_in: batchForm.value.credits_per_1m_in,
+      credits_per_1m_out: batchForm.value.credits_per_1m_out,
+      credits_per_1m_cache_in: batchForm.value.credits_per_1m_cache_in,
+      credits_per_1m_cache_out: batchForm.value.credits_per_1m_cache_out,
+      manual_in: true,
+      manual_out: true,
+      manual_cache_in: true,
+      manual_cache_out: true,
+    }))
+    const res = await batchUpsertAdminMaasModelRates(updates)
+    batchMsg.value = `已更新 ${res.updated} 个模型`
+    showBatchModal.value = false
+    selectedRows.value.clear()
+    await load()
+  } catch (e: unknown) {
+    batchMsg.value = '批量更新失败'
+  } finally {
+    savingBatch.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -327,6 +456,7 @@ onMounted(load)
       <table class="data-table pricing-table">
         <thead>
           <tr>
+            <th><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /></th>
             <th>标准模型</th>
             <th>厂家</th>
             <th v-for="f in rateFields" :key="f.key" class="num">{{ f.label }}</th>
@@ -336,9 +466,10 @@ onMounted(load)
         </thead>
         <tbody>
           <tr v-if="!loading && filtered.length === 0">
-            <td :colspan="4 + rateFields.length" class="empty-cell">暂无模型</td>
+            <td :colspan="5 + rateFields.length" class="empty-cell">暂无模型</td>
           </tr>
-          <tr v-for="row in filtered" :key="row.canonical_id">
+          <tr v-for="row in filtered" :key="row.canonical_id" :class="{ selected: selectedRows.has(row.canonical_id) }">
+            <td><input type="checkbox" :checked="selectedRows.has(row.canonical_id)" @change="toggleRow(row.canonical_id)" /></td>
             <td>
               <div class="model-name">{{ row.display_name }}</div>
               <code class="mono-sm">{{ row.canonical_name }}</code>
@@ -355,11 +486,45 @@ onMounted(load)
             </td>
             <td class="actions">
               <button class="btn btn-ghost btn-sm" @click="openEdit(row)">定价</button>
+              <button class="btn btn-ghost btn-sm" @click="copyRow(row)">复制</button>
               <button v-if="row.is_custom" class="btn btn-ghost btn-sm" @click="resetAll(row)">恢复</button>
             </td>
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div v-if="selectedRows.size > 0" class="bulk-bar">
+      <span>已选 {{ selectedRows.size }} 项</span>
+      <button class="btn btn-ghost btn-sm" :disabled="!clipboard" @click="pasteToSelected">粘贴到所选</button>
+      <button class="btn btn-primary btn-sm" @click="openBatchModal">批量定价</button>
+      <span v-if="batchMsg" class="batch-msg">{{ batchMsg }}</span>
+    </div>
+
+    <div v-if="showBatchModal" class="modal-backdrop" @click.self="showBatchModal = false">
+      <div class="modal card">
+        <h3 class="section-title">批量定价 · {{ selectedRows.size }} 个模型</h3>
+        <p class="modal-hint">统一设置以下积分值，所有勾选模型的手工标记将全部开启。</p>
+        <div class="edit-grid">
+          <div v-for="f in rateFields" :key="f.key" class="edit-field">
+            <label class="edit-head">
+              <span>{{ f.label }}</span>
+            </label>
+            <input
+              v-model.number="batchForm[f.formKey]"
+              type="number"
+              min="1"
+              class="input compact"
+            />
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary btn-sm" :disabled="savingBatch" @click="applyBatch">
+            {{ savingBatch ? '保存中…' : '应用到所选' }}
+          </button>
+          <button class="btn btn-ghost btn-sm" @click="showBatchModal = false">取消</button>
+        </div>
+      </div>
     </div>
 
     <div v-if="editRow" class="modal-backdrop" @click.self="closeEdit">
@@ -393,6 +558,8 @@ onMounted(load)
           <button class="btn btn-primary btn-sm" :disabled="savingRow" @click="saveEdit">
             {{ savingRow ? t('standardModelPricing.saving') : t('standardModelPricing.save') }}
           </button>
+          <button class="btn btn-ghost btn-sm" type="button" @click="copyEditForm">复制价格</button>
+          <button class="btn btn-ghost btn-sm" type="button" :disabled="!clipboard" @click="pasteEditForm">粘贴</button>
           <button class="btn btn-ghost btn-sm" type="button" @click="fillGlobalToEdit">填入当前全局</button>
           <button class="btn btn-ghost btn-sm" type="button" @click="closeEdit">取消</button>
         </div>
@@ -454,4 +621,11 @@ onMounted(load)
 .edit-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .link-sm { font-size: 11px; margin-left: auto; background: none; border: none; color: var(--accent-h, #6366f1); cursor: pointer; }
 .modal-actions { display: flex; gap: 8px; margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); }
+.bulk-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; background: #2a2a3e; border-radius: 8px;
+  margin-top: 12px; font-size: 13px;
+}
+.batch-msg { font-size: 12px; color: #a6e3a1; }
+tr.selected { background: #3a3a5e; }
 </style>

@@ -68,7 +68,26 @@ type Client struct {
 // behaviour is controlled by a ProxyResolver that decides per-host whether
 // to use HTTP_PROXY or go direct (see NewProxyResolver).
 func New() *Client {
+	return NewWithRetries(maxRetries)
+}
+
+// NewWithRetries creates an upstream client with the given number of
+// internal retries. The chat / anthropic path (via Executor) should pass
+// 0 here so retries are owned by the routing layer (which can switch
+// credentials, update health state, and skip client-bug kinds); other
+// callers (e.g. embeddings) can keep the old default of 2 retries.
+//
+// OPT-4 (2026-07-12): previously all callers shared maxRetries=2,
+// resulting in 2 (upstream) × N (per-credential) × M (candidates) up to
+// 6N×M upstream dials for a single failed request. With internal retries
+// = 0 the routing executor's candidate loop owns retry decisions
+// entirely, which keeps the worst case at N×M (still bounded by the
+// number of candidates, not by retry amplification).
+func NewWithRetries(maxRetries int) *Client {
 	proxy := NewProxyResolver()
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
 	return &Client{
 		hc: &http.Client{
 			Timeout: defaultTimeout,
