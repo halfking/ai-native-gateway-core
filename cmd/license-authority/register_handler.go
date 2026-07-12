@@ -15,13 +15,13 @@ import (
 // RegisterHandler handles instance registration
 type RegisterHandler struct {
 	licenseStore  licensing.Store
-	centerStore   *center.PgxStore
+	centerStore   center.Store
 	serverPrivKey ed25519.PrivateKey
 	serverPubKey  ed25519.PublicKey
 }
 
 // NewRegisterHandler creates a new registration handler
-func NewRegisterHandler(licenseStore licensing.Store, centerStore *center.PgxStore, serverPrivKey ed25519.PrivateKey) *RegisterHandler {
+func NewRegisterHandler(licenseStore licensing.Store, centerStore center.Store, serverPrivKey ed25519.PrivateKey) *RegisterHandler {
 	serverPubKey := serverPrivKey.Public().(ed25519.PublicKey)
 	return &RegisterHandler{
 		licenseStore:  licenseStore,
