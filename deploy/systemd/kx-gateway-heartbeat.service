@@ -1,0 +1,32 @@
+[Unit]
+Description=KX Gateway Heartbeat Service
+Documentation=https://docs.kxpms.cn/gateway/heartbeat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/llm-gw-installer heartbeat --daemon --interval 60s --master-url https://llm.kxpms.cn
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# 环境变量
+Environment="HOME=/root"
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/root/.kx-gateway
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
