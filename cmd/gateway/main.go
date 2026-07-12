@@ -3537,6 +3537,7 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			totalTokens,
 			entry.CostUSD,
 			entry.FailureStage,
+			entry,
 		)
 	}
 	// Fallback when hub is nil (defensive; unreachable in normal operation
