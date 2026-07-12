@@ -27,7 +27,7 @@ func TestSessionExportAPI_HandleExport_NoData(t *testing.T) {
 // 验证 SessionMeta / ResumeBrief / ExportMessage / ExportAttachment 是
 // sessionforensics 类型的别名（合并后保持兼容）。
 func TestSessionExport_Aliases(t *testing.T) {
-	var meta SessionExportMeta = sessionforensics.SessionMeta{
+	meta := sessionforensics.SessionMeta{
 		ID:         "gw_xxx",
 		Title:      "Test",
 		TenantID:   "default",
