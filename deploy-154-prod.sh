@@ -70,20 +70,27 @@ info "tar + scp dist..."
 tar -czf /tmp/llmgo-154-dist.tar.gz -C web dist
 sshpass -e scp -P "$SSH_PORT" -o StrictHostKeyChecking=no \
   /tmp/llmgo-154-dist.tar.gz "$SSH_USER@$SSH_HOST:/tmp/"
+# 生产配置 (LLM_GATEWAY_STATIC_DIR=/opt/llm-gateway-go/web) 要求 assets/ 和
+# index.html 直接放在 web/ 根下,不是 web/dist/。所以部署时把 dist/ 内的内容
+# 平铺到 web/。同时保留 dist/ 目录(给 nginx try_files 之类的备援)以便回滚。
 sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "
+set -e
 cd ${REMOTE_DIR}/web
-# 备份当前 web（dist 子目录名可能是软链接 / 实际目录都尝试）
-if [ -d dist.bak ] || [ -L dist ]; then
-  BACKUP_NAME=dist.bak.\$(date +%Y%m%d-%H%M%S)
-  mv dist \$BACKUP_NAME 2>/dev/null || true
+# 备份当前真正被服务的目录(root)
+if [ -d assets ] || [ -f index.html ]; then
+  TS=\$(date +%Y%m%d-%H%M%S)
+  if [ -d assets ]; then mv assets assets.bak.\$TS; fi
+  if [ -f index.html ]; then mv index.html index.html.bak.\$TS; fi
 fi
-rm -rf dist
-tar -xzf /tmp/llmgo-154-dist.tar.gz
-rm -f /tmp/llmgo-154-dist.tar.gz
-# cleanup macOS xattr cruft
-find dist -name '._*' -delete 2>/dev/null
-chown -R root:root dist
-ls dist/ | head -5
+# 平铺 dist 内容到 web 根
+rm -rf assets index.html
+cp -a dist/. .
+chown -R root:root assets index.html favicon.png 2>/dev/null || true
+find . -name '._*' -delete 2>/dev/null
+echo '--- web/ root ---'
+ls -la | head -15
+echo '--- 备份 ---'
+ls -dt assets.bak.* index.html.bak.* 2>/dev/null | head -6
 "
 ok "dist 已部署"
 
