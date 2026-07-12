@@ -398,7 +398,6 @@ certbot-renew.timer (systemd, ~12h cadence)
 1. 真正 LE 续期 (90 天后) 观察 deploy hook 实际触发日志
 2. 检查 `www.kxpms.cn` 是否需纳入 (用户 DNS 决策)
 3. 把 `deploy-llm-kxpms-cert.sh` 与 `scripts/sync-to-154.sh` 加入 env-injector 的 deploy skill catalog
-4. `184` / `71` 镜像机器若承担 *.kxpms.cn 入口，复刻相同模式
 
 ---
 
