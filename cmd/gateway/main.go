@@ -584,12 +584,19 @@ func main() {
 		routingExec = executors.NewExecutor(
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
-			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc executors.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) executors.StreamOutcome {
+			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, normFunc executors.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) executors.StreamOutcome {
 				var pc *streaming.PendingCapturer
 				if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
 					pc = streaming.NewPendingCapturer(0)
 				}
-				outcome := streaming.StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, streaming.StripMinimaxFieldsBody, pc)
+				var stripFn func([]byte) []byte
+				switch catalogCode {
+				case "doubao":
+					stripFn = streaming.StripDoubaoFieldsBody
+				case "minimax":
+					stripFn = streaming.StripMinimaxFieldsBody
+				}
+				outcome := streaming.StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc)
 				saveCapturedPending(pendingStore, pc, resp)
 				return outcome
 			},

@@ -70,7 +70,7 @@ func TestExecuteOpenAI_StreamPreStreamStopOrdering(t *testing.T) {
 		pool.NewPoolManager(nil),
 		nil,
 		func(chunk []byte, isStream bool) []byte { return chunk },
-		func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome {
+		func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome {
 			// This is the production StreamChat injection point. It is
 			// called AFTER OnStreamReady has already been fired. We
 			// verify the order and forward the body verbatim.

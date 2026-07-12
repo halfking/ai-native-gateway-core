@@ -41,6 +41,35 @@ func TestChatExecutor_CheckSoftMismatch_NotImplemented(t *testing.T) {
 	}
 }
 
+func TestExecutorStripVendorFieldsUsesCandidateCatalog(t *testing.T) {
+	strip := func(body []byte) []byte {
+		return append(body, []byte("-stripped")...)
+	}
+	e := &Executor{
+		StripDoubaoFields:   strip,
+		StripDeepSeekFields: strip,
+		StripMinimaxFields:  strip,
+		StripZhipuFields:    strip,
+	}
+
+	for _, tc := range []struct {
+		name    string
+		catalog string
+		want    string
+	}{
+		{name: "doubao", catalog: "doubao", want: "body-stripped"},
+		{name: "aggregate is not doubao", catalog: "volcengine-coding", want: "body"},
+		{name: "unknown is not doubao", catalog: "", want: "body"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(e.stripVendorFields([]byte("body"), tc.catalog))
+			if got != tc.want {
+				t.Fatalf("stripVendorFields(%q) = %q, want %q", tc.catalog, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestPrepareRequestBody_InjectsStreamOptionsForOpenAI pins the OpenAI
 // behaviour: when params.IsStream=true and the upstream is openai-completions,
 // prepareRequestBody MUST inject "stream_options":{"include_usage":true} so

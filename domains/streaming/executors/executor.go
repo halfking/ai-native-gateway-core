@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,7 +61,7 @@ type StreamOutcome = struct {
 	ChunkCount  int  // Number of chunks sent before interruption
 }
 
-type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome
+type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome
 
 type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
 
@@ -607,6 +608,29 @@ type ExecParams struct {
 	// ApiKeyID is the API key ID from keyInfo.ID (same as KeyID but as pointer).
 	// 2026-07-07: Used by multi-level sticky routing (L1/L2/L3).
 	ApiKeyID *int
+}
+
+func (e *Executor) stripVendorFields(body []byte, catalogCode string) []byte {
+	code := strings.ToLower(strings.TrimSpace(catalogCode))
+	switch code {
+	case "minimax":
+		if e.StripMinimaxFields != nil {
+			return e.StripMinimaxFields(body)
+		}
+	case "zhipu":
+		if e.StripZhipuFields != nil {
+			return e.StripZhipuFields(body)
+		}
+	case "deepseek":
+		if e.StripDeepSeekFields != nil {
+			return e.StripDeepSeekFields(body)
+		}
+	case "doubao":
+		if e.StripDoubaoFields != nil {
+			return e.StripDoubaoFields(body)
+		}
+	}
+	return body
 }
 
 type ExecuteResult struct {

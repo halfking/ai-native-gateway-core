@@ -6,8 +6,12 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +34,7 @@ const (
 	JobStatusRunning   JobStatus = "running"
 	JobStatusSucceeded JobStatus = "succeeded"
 	JobStatusFailed    JobStatus = "failed"
+	JobStatusCancelled JobStatus = "cancelled"
 )
 
 type JobRun struct {
@@ -46,6 +51,9 @@ type JobRun struct {
 	FinishedAt  *time.Time     `json:"finished_at,omitempty"`
 	DurationMS  int64          `json:"duration_ms"`
 	Operator    string         `json:"operator,omitempty"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	ID          string         `json:"id"`
+	cancelFn    context.CancelFunc
 }
 
 type JobProgress struct {
@@ -93,45 +101,73 @@ func (h *Handler) StartJob(op JobType, params map[string]any, operator string, f
 			h.finalizeJob(run)
 		}()
 		run.Status = JobStatusRunning
-		hb := time.Now(); run.HeartbeatAt = &hb; run.Message = "running"
+		hb := time.Now()
+		run.HeartbeatAt = &hb
+		run.Message = "running"
 		fn(ctx, run)
 	}()
 	return run
 }
 
 func (h *Handler) UpdateProgress(run *JobRun, done, total int64, batches int, msg string) {
-	if run == nil { return }
+	if run == nil {
+		return
+	}
 	registry := h.getJobRegistry()
-	registry.mu.Lock(); defer registry.mu.Unlock()
-	if _, ok := registry.running[run.RunID]; !ok { return }
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if _, ok := registry.running[run.RunID]; !ok {
+		return
+	}
 	pct := 0.0
-	if total > 0 { pct = float64(done) / float64(total) * 100.0 }
+	if total > 0 {
+		pct = float64(done) / float64(total) * 100.0
+	}
 	run.Progress = &JobProgress{Done: done, Total: total, Percent: pct, Batches: batches, Message: msg}
-	hb := time.Now(); run.HeartbeatAt = &hb
-	if msg != "" { run.Message = msg }
+	hb := time.Now()
+	run.HeartbeatAt = &hb
+	if msg != "" {
+		run.Message = msg
+	}
 }
 
 func (h *Handler) TouchHeartbeat(run *JobRun, msg string) {
-	if run == nil { return }
+	if run == nil {
+		return
+	}
 	registry := h.getJobRegistry()
-	registry.mu.Lock(); defer registry.mu.Unlock()
-	if _, ok := registry.running[run.RunID]; !ok { return }
-	hb := time.Now(); run.HeartbeatAt = &hb
-	if msg != "" { run.Message = msg }
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if _, ok := registry.running[run.RunID]; !ok {
+		return
+	}
+	hb := time.Now()
+	run.HeartbeatAt = &hb
+	if msg != "" {
+		run.Message = msg
+	}
 }
 
 func (h *Handler) SetResult(run *JobRun, result map[string]any, msg string) {
-	if run == nil { return }
+	if run == nil {
+		return
+	}
 	registry := h.getJobRegistry()
-	registry.mu.Lock(); defer registry.mu.Unlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
 	run.Result = result
-	if msg != "" { run.Message = msg }
+	if msg != "" {
+		run.Message = msg
+	}
 }
 
 func (h *Handler) failJob(run *JobRun, errMsg string) {
-	if run == nil { return }
+	if run == nil {
+		return
+	}
 	registry := h.getJobRegistry()
-	registry.mu.Lock(); defer registry.mu.Unlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
 	run.Status = JobStatusFailed
 	run.Error = errMsg
 	run.Message = "failed: " + errMsg
@@ -139,11 +175,16 @@ func (h *Handler) failJob(run *JobRun, errMsg string) {
 
 func (h *Handler) finalizeJob(run *JobRun) {
 	registry := h.getJobRegistry()
-	registry.mu.Lock(); defer registry.mu.Unlock()
-	if _, ok := registry.running[run.RunID]; !ok { return }
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if _, ok := registry.running[run.RunID]; !ok {
+		return
+	}
 	fin := time.Now()
 	run.FinishedAt = &fin
-	if run.StartedAt != nil { run.DurationMS = fin.Sub(*run.StartedAt).Milliseconds() }
+	if run.StartedAt != nil {
+		run.DurationMS = fin.Sub(*run.StartedAt).Milliseconds()
+	}
 	delete(registry.running, run.RunID)
 	histCopy := *run
 	registry.history = append(registry.history, &histCopy)
@@ -156,38 +197,194 @@ func (h *Handler) finalizeJob(run *JobRun) {
 
 func (h *Handler) getJob(runID string) *JobRun {
 	registry := h.getJobRegistry()
-	registry.mu.Lock(); defer registry.mu.Unlock()
-	if r, ok := registry.running[runID]; ok { return cloneJobRun(r) }
-	for _, r := range registry.history { if r.RunID == runID { return cloneJobRun(r) } }
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if r, ok := registry.running[runID]; ok {
+		return cloneJobRun(r)
+	}
+	for _, r := range registry.history {
+		if r.RunID == runID {
+			return cloneJobRun(r)
+		}
+	}
 	return nil
 }
 
 func (h *Handler) listJobs(limit int) (running []*JobRun, history []*JobRun) {
 	registry := h.getJobRegistry()
-	registry.mu.Lock(); defer registry.mu.Unlock()
-	for _, r := range registry.running { running = append(running, cloneJobRun(r)) }
-	if limit <= 0 || limit > registry.maxKeep { limit = registry.maxKeep }
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	for _, r := range registry.running {
+		running = append(running, cloneJobRun(r))
+	}
+	if limit <= 0 || limit > registry.maxKeep {
+		limit = registry.maxKeep
+	}
 	hs := make([]*JobRun, 0, len(registry.history))
-	for _, r := range registry.history { hs = append(hs, cloneJobRun(r)) }
+	for _, r := range registry.history {
+		hs = append(hs, cloneJobRun(r))
+	}
 	sort.Slice(hs, func(i, j int) bool { return hs[i].FinishedAt.After(*hs[j].FinishedAt) })
-	if len(hs) > limit { hs = hs[:limit] }
+	if len(hs) > limit {
+		hs = hs[:limit]
+	}
 	return running, hs
 }
 
 func cloneJobRun(r *JobRun) *JobRun {
 	copy := *r
-	if r.Progress != nil { pcopy := *r.Progress; copy.Progress = &pcopy }
+	if r.Progress != nil {
+		pcopy := *r.Progress
+		copy.Progress = &pcopy
+	}
 	copy.Params = cloneAnyMap(r.Params)
 	copy.Result = cloneAnyMap(r.Result)
-	if r.StartedAt != nil { t := *r.StartedAt; copy.StartedAt = &t }
-	if r.HeartbeatAt != nil { t := *r.HeartbeatAt; copy.HeartbeatAt = &t }
-	if r.FinishedAt != nil { t := *r.FinishedAt; copy.FinishedAt = &t }
+	if r.StartedAt != nil {
+		t := *r.StartedAt
+		copy.StartedAt = &t
+	}
+	if r.HeartbeatAt != nil {
+		t := *r.HeartbeatAt
+		copy.HeartbeatAt = &t
+	}
+	if r.FinishedAt != nil {
+		t := *r.FinishedAt
+		copy.FinishedAt = &t
+	}
 	return &copy
 }
 
 func cloneAnyMap(in map[string]any) map[string]any {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := make(map[string]any, len(in))
-	for k, v := range in { out[k] = v }
+	for k, v := range in {
+		out[k] = v
+	}
 	return out
+}
+
+func (r *jobRegistry) add(job *JobRun) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.running[job.RunID] = job
+}
+
+func (r *jobRegistry) get(id string) (*JobRun, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	j, ok := r.running[id]
+	return j, ok
+}
+
+func (r *jobRegistry) list() []*JobRun {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*JobRun, 0, len(r.running))
+	for _, j := range r.running {
+		out = append(out, j)
+	}
+	sort.Slice(out, func(i, k int) bool {
+		if out[i].StartedAt == nil || out[k].StartedAt == nil {
+			return false
+		}
+		return out[i].StartedAt.After(*out[k].StartedAt)
+	})
+	return out
+}
+
+func (r *jobRegistry) cancel(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	j, ok := r.running[id]
+	if !ok {
+		return false
+	}
+	if j.Status != JobStatusQueued && j.Status != JobStatusRunning {
+		return false
+	}
+	if j.cancelFn != nil {
+		j.cancelFn()
+		j.Status = JobStatusFailed
+		now := time.Now().UTC()
+		j.FinishedAt = &now
+	}
+	return true
+}
+
+func newJobRun(jobType JobType, target string) *JobRun {
+	now := time.Now().UTC()
+	return &JobRun{
+		RunID:     fmt.Sprintf("%s-%d", string(jobType), now.UnixNano()),
+		Op:        jobType,
+		Status:    JobStatusQueued,
+		StartedAt: &now,
+		Result:    make(map[string]any),
+	}
+}
+
+// handleLifecycleJobs GET /api/admin/data-lifecycle/jobs
+//
+// 列出所有通用异步任务（running + history）。
+func (h *Handler) handleLifecycleJobs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	running, history := h.listJobs(50)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"running": running,
+		"history": history,
+	})
+}
+
+// handleLifecycleJobByID GET /api/admin/data-lifecycle/jobs/{id}
+//
+// 查询单个任务状态。支持 /jobs/{id}/cancel → 取消任务。
+func (h *Handler) handleLifecycleJobByID(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/admin/data-lifecycle/jobs/")
+	id = strings.TrimSpace(id)
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "job id is required")
+		return
+	}
+
+	if r.Method == http.MethodPost && strings.HasSuffix(id, "/cancel") {
+		id = strings.TrimSuffix(id, "/cancel")
+		registry := h.getJobRegistry()
+		ok := registry.cancel(id)
+		if !ok {
+			writeError(w, http.StatusNotFound, "job not found or already in terminal state")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_id": id,
+			"status": "cancellation_requested",
+		})
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	job := h.getJob(id)
+	if job == nil {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+// logRunningJobs 是生命周期任务的定时状态记录（用于指标/调试），每 30 秒记录一次仍然 running 的任务
+func (h *Handler) logRunningJobs() {
+	running, _ := h.listJobs(0)
+	for _, j := range running {
+		slog.Info("lifecycle-job-running", "job_id", j.RunID, "op", j.Op, "status", j.Status)
+	}
 }

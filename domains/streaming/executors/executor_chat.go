@@ -597,7 +597,7 @@ func (e *Executor) executeOpenAI(
 				if params.StreamWrapper != nil {
 					streamOutcome = params.StreamWrapper(params.W, resp, e.Normalize, params.Capture)
 				} else if e.StreamChat != nil {
-					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture, params.ToolsRequested)
+					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
 				}
 				// Q2 streaming response (anthropic client ← openai upstream):
 				// if the standard StreamChat hook did not emit any chunks
