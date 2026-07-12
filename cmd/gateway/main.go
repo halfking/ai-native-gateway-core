@@ -77,6 +77,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/kaixuan/llm-gateway-go/tenantops"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/kaixuan/llm-gateway-go/vibecoding"
 	"github.com/labstack/echo/v4"
@@ -2516,10 +2517,12 @@ func main() {
 		vibecodingReviewManager := vibecoding.NewReviewManager(vibecodingStore)
 		vibecodingAPI := vibecoding.NewAdminAPI(vibecodingProjectManager, vibecodingSessionManager, vibecodingReviewManager)
 		vibecodingAPI.RegisterRoutes(e.Group("/api/admin/vibecoding"))
+		tenantops.NewHandler(pool).RegisterRoutes(e.Group("/api/tenant"))
 		slog.Info("Phase 7: VibeCoding API enabled (/api/admin/vibecoding/*)")
 
 		// 将 Echo 挂载到 http.ServeMux
 		mux.Handle("/api/admin/", e)
+		mux.Handle("/api/tenant/", e)
 		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
 	}
 
