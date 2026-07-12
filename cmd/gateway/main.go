@@ -1406,6 +1406,7 @@ func main() {
 	var modelAvailabilityBackfill *bg.AvailabilityCacheBackfill
 	var modelAvailabilityKeyCounter *bg.AvailabilityKeyCounter
 	var passiveProbe *bg.PassiveProbeListener
+	var activeProbe *bg.ActiveProbeWorker // 2026-07-13: 错误触发的主动探测
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
 	var settingsAuditCleaner *bg.SettingsAuditCleaner
@@ -1587,6 +1588,50 @@ func main() {
 		}
 		slog.Info("CHECKPOINT: after probe workers block")
 
+		// 2026-07-13: 错误触发的主动探测 (active_probe)。
+		// 连续失败 ≥2 次 → 立即直连上游探测，按 5s → 30s → 2m → 5m → 15m backoff
+		// 多轮执行，每轮结果写 request_logs（task_type='probe_triggered'），
+		// 自动出现在实时请求流中。
+		if !bgDataPlaneOnly && dbConn != nil && dbConn.Enabled() {
+			slog.Info("CHECKPOINT: before NewActiveProbeWorker")
+			epEnabled := true
+			epThreshold := 2
+			epMaxAttempts := 5
+			epTimeoutMs := 10000
+			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_ENABLED"); envStr == "false" || envStr == "0" {
+				epEnabled = false
+			}
+			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_CONSECUTIVE_THRESHOLD"); envStr != "" {
+				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
+					epThreshold = n
+				}
+			}
+			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_MAX_ATTEMPTS"); envStr != "" {
+				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
+					epMaxAttempts = n
+				}
+			}
+			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_TIMEOUT_MS"); envStr != "" {
+				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
+					epTimeoutMs = n
+				}
+			}
+			activeProbe = bg.NewActiveProbeWorker(bg.ActiveProbeWorkerConfig{
+				DB:                   dbConn.Pool(),
+				Keyring:              keyring,
+				EncKey:               fernetKey,
+				Telemetry:            telemetryClient,
+				StateManager:         nil, // wired below once stateManager is constructed
+				Enabled:              epEnabled,
+				ConsecutiveThreshold: epThreshold,
+				MaxAttempts:          epMaxAttempts,
+				TimeoutMs:            epTimeoutMs,
+			})
+			slog.Info("CHECKPOINT: before activeProbe.Start")
+			activeProbe.Start(context.Background())
+			slog.Info("CHECKPOINT: after activeProbe.Start")
+		}
+
 		// 2026-06-30: Start the credential-state manager AFTER probe
 		// services have been wired. The manager watches for state changes
 		// from probes, requests, and admin actions, and triggers fast
@@ -1607,6 +1652,20 @@ func main() {
 			}
 			// 2026-07-03: Bug #8 fix - wire candidate cache invalidation
 			stateManager.SetInvalidateCandidateCache(provider.InvalidateAllCandidateCache)
+			// 2026-07-13: wire active_probe submitter so consecutive_fails >= threshold
+			// immediately triggers a direct-to-provider probe (instead of waiting
+			// for credProbeV2's 5-min delayed reprobe).
+			if activeProbe != nil {
+				activeProbeThresh := 2
+				if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_CONSECUTIVE_THRESHOLD"); envStr != "" {
+					if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
+						activeProbeThresh = n
+					}
+				}
+				stateManager.SetActiveProbeSubmitter(activeProbe.Submit, activeProbeThresh)
+				slog.Info("credstate: active_probe submitter wired",
+					"consecutive_threshold", activeProbeThresh)
+			}
 			stateManager.Start(context.Background())
 			slog.Info("credential state manager started")
 		}
