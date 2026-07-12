@@ -159,18 +159,20 @@ fix_environment() {
         echo -e "执行迁移: $(basename $migration_file)..."
         
         if [ "$env" = "154" ]; then
-            # 154需要通过SSH上传并执行
+            # 154 (47.97.111.154，部署 llm.kxpms.cn) 通过 SSH 上传并执行
             local remote_file="/tmp/$(basename $migration_file)"
-            if [ -z "${DEPLOY_SSH_PASSWORD:-}" ]; then
-                echo -e "  ${RED}✗ 154 修复需要 DEPLOY_SSH_PASSWORD${NC}"
+            # sshpass 优先读 SSHPASS 环境变量（保持兼容旧 DEPLOY_SSH_PASSWORD）
+            local ssh_password="${SSHPASS:-${DEPLOY_SSH_PASSWORD:-}}"
+            if [ -z "$ssh_password" ]; then
+                echo -e "  ${RED}✗ 154 修复需要 SSHPASS 或 DEPLOY_SSH_PASSWORD（密钥登录应配置 ~/.ssh/id_ed25519）${NC}"
                 return 1
             fi
-            sshpass -p "$DEPLOY_SSH_PASSWORD" scp -P 25022 "$file_path" "root@47.97.111.154:$remote_file"
-            
+            sshpass -p "$ssh_password" scp -P 25022 "$file_path" "root@47.97.111.154:$remote_file"
+
             # 尝试通过应用程序执行（如果psql不可用）
             echo "  上传成功，但由于psql版本问题，请手动执行:"
             echo "  ssh -p 25022 root@47.97.111.154"
-            echo "  # 在252数据库服务器上执行迁移"
+            echo "  # 数据库: 172.16.2.210:5432 (阿里 252 上的 pg17)"
         else
             # 本地或可直接连接的环境
             if psql "$db_url" -f "$file_path" &>/dev/null; then

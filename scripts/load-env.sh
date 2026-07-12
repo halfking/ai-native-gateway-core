@@ -3,14 +3,16 @@
 #
 # 用法:
 #   source scripts/load-env.sh              # 自动检测环境并加载
-#   source scripts/load-env.sh --server 184  # 强制 184 生产环境
+#   source scripts/load-env.sh --server 252  # 强制 252 (阿里云 llm.itestu.cn) 生产环境
+#   source scripts/load-env.sh --server 154  # 154 (llm.kxpms.cn 主机部署)
+#   source scripts/load-env.sh --server kaixuan-1  # 内网 k3s 控制面
 #   source scripts/load-env.sh --server 71   # 强制 71 生产环境
 #   source scripts/load-env.sh --server local # 强制本地开发环境
 #
 # 搜索顺序（高→低）:
 #   1. 已存在的环境变量（不覆盖）
 #   2. /etc/llm-gateway-go/env（生产服务器）
-#   3. .env.184.enc / .env.71.enc（SOPS 解密，用于部署脚本）
+#   3. .env.252.enc / .env.154.enc / .env.kaixuan-1.enc（SOPS 解密，用于部署脚本）
 #   4. .env.local（本地开发）
 #
 # 注意: 此脚本设计为 source 执行（设置当前 shell 环境变量）。
@@ -83,13 +85,17 @@ case "$TARGET" in
     local)
         load_env_file "$PROJECT_DIR/.env.local" ".env.local"
         ;;
-    184)
+    252)
         load_env_file "/etc/llm-gateway-go/env" "/etc/llm-gateway-go/env" || true
-        load_sops_env "$PROJECT_DIR/.env.184.enc" ".env.184.enc" || true
+        load_sops_env "$PROJECT_DIR/.env.252.enc" ".env.252.enc" || true
         ;;
-    71)
+    154)
         load_env_file "/etc/llm-gateway-go/env" "/etc/llm-gateway-go/env" || true
-        load_sops_env "$PROJECT_DIR/.env.71.enc" ".env.71.enc" || true
+        load_sops_env "$PROJECT_DIR/.env.154.enc" ".env.154.enc" || true
+        ;;
+    kaixuan-1)
+        load_env_file "/etc/llm-gateway-go/env" "/etc/llm-gateway-go/env" || true
+        load_sops_env "$PROJECT_DIR/.env.kaixuan-1.enc" ".env.kaixuan-1.enc" || true
         ;;
     auto|*)
         ENV=$(detect_env)
@@ -98,8 +104,8 @@ case "$TARGET" in
         case "$ENV" in
             production)
                 load_env_file "/etc/llm-gateway-go/env" "/etc/llm-gateway-go/env" || true
-                load_sops_env "$PROJECT_DIR/.env.184.enc" ".env.184.enc" || true
-                load_sops_env "$PROJECT_DIR/.env.71.enc" ".env.71.enc" || true
+                load_sops_env "$PROJECT_DIR/.env.252.enc" ".env.252.enc" || true
+                load_sops_env "$PROJECT_DIR/.env.154.enc" ".env.154.enc" || true
                 ;;
             local)
                 load_env_file "$PROJECT_DIR/.env.local" ".env.local" || true
@@ -109,9 +115,10 @@ case "$TARGET" in
 esac
 
 # 导出关键变量（标准化命名）
-export LLM_GATEWAY_184_HOST="${LLM_GATEWAY_184_HOST:-${INTERNAL_PUBLIC_IP:-}}"
-export LLM_GATEWAY_71_HOST="${LLM_GATEWAY_71_HOST:-${HOST_71_IP:-}}"
-export LLM_GATEWAY_184_SSH_PORT="${LLM_GATEWAY_184_SSH_PORT:-25022}"
+export LLM_GATEWAY_252_HOST="${LLM_GATEWAY_252_HOST:-${HOST_252_INTERNAL_IP:-172.16.2.210}}"
+export LLM_GATEWAY_154_HOST="${LLM_GATEWAY_154_HOST:-${HOST_154_INTERNAL_IP:-172.16.2.209}}"
+export LLM_GATEWAY_KAIXUAN_1_HOST="${LLM_GATEWAY_KAIXUAN_1_HOST:-${KAIXUAN_1_IP:-192.168.31.28}}"
+export LLM_GATEWAY_252_SSH_PORT="${LLM_GATEWAY_252_SSH_PORT:-25022}"
 export LLM_GATEWAY_71_SSH_PORT="${LLM_GATEWAY_71_SSH_PORT:-25022}"
 
 # ------ 打印已加载的变量（仅 source 模式） ------
@@ -120,7 +127,7 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
     echo "[load-env] 📋 已设置的关键变量:" >&2
     for var in LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_API_KEY LLM_GATEWAY_ADMIN_API_KEY \
                LLM_GATEWAY_REDIS_ADDR LLM_GATEWAY_LISTEN LLM_GATEWAY_ENV \
-               LLM_GATEWAY_184_HOST LLM_GATEWAY_71_HOST; do
+               LLM_GATEWAY_252_HOST LLM_GATEWAY_154_HOST LLM_GATEWAY_KAIXUAN_1_HOST; do
         if [ -n "${!var:-}" ]; then
             echo "   ${var}=${!var:0:20}..." >&2
         fi

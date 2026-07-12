@@ -175,14 +175,23 @@ generate_plan() {
 | 6 | 分区验证 | \`./scripts/verify_partition_architecture.sh\` |
 | 7 | 列存验证 | \`./scripts/verify-columnar-sync.sh\` |
 
-### Phase 2: 184 部署
+### Phase 2: 252 部署（llm.itestu.cn 数据面，公网部署）
 
 | # | 步骤 | 命令 |
 |---|------|------|
-| 8 | 标准部署 | \`./deploy-184.sh\` |
-| 9 | DB migration | \`./deploy-184.sh -m\` |
-| 10 | 健康检查 | `curl http://47.97.111.154:30080/health` |  # 154 替代 184 |
-| 11 | 部署后验证 | \`./deploy/verify.sh --env 184\` |
+| 8 | 标准部署 | \`./scripts/deploy.sh 252\` |
+| 9 | DB migration | \`./scripts/deploy.sh migrate 252\` |
+| 10 | 健康检查 | `curl http://115.29.212.252:30080/health` |
+| 11 | 部署后验证 | \`./deploy/verify.sh --env 252\` |
+
+### Phase 2b: 154 部署（llm.kxpms.cn 主机模式）
+
+| # | 步骤 | 命令 |
+|---|------|------|
+| 8b | 主机部署 | \`./scripts/deploy.sh 154\` |
+| 9b | DB migration | \`./scripts/deploy.sh migrate 154\` |
+| 10b | 健康检查 | `curl http://47.97.111.154:8080/health` |
+| 11b | 部署后验证 | \`./deploy/verify.sh --env 154\` |
 
 ### Phase 3: 验证确认
 
