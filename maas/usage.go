@@ -57,6 +57,16 @@ func ClampUsageLimit(limit int) int {
 	return limit
 }
 
+// requestLogsSource keeps usage queries working during upgrades where the
+// optional union view has not been created yet. request_logs_hot is an
+// independent seven-day table; request_logs contains the archived partitions.
+func requestLogsSource(days int) string {
+	if days <= 7 {
+		return "request_logs_hot"
+	}
+	return "(SELECT * FROM request_logs_hot UNION ALL SELECT * FROM request_logs)"
+}
+
 // QueryUsageSummary reads credits_charged + request counts for one tenant (tenant-facing; no upstream cost).
 func (s *Service) QueryUsageSummary(ctx context.Context, tenantID string, days, limit int) (UsageSummary, error) {
 	return s.queryUsageSummary(ctx, tenantID, days, limit, false)
@@ -87,13 +97,7 @@ func (s *Service) queryUsageSummary(ctx context.Context, tenantID string, days, 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// 2026-07-05 migration 341: 当 days <= 7 时查询 request_logs_hot（heap 热数据，
-	// 性能最优），当 days > 7 时查询 request_logs_with_current_month 视图
-	// （聚合热表 + 月度分区）。符合 docs/partition/partition-standards.md 查询规范。
-	logsTable := "request_logs_with_current_month"
-	if days <= 7 {
-		logsTable = "request_logs_hot"
-	}
+	logsTable := requestLogsSource(days)
 
 	if includeCost {
 		if err := s.pool.QueryRow(ctx, `
