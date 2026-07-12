@@ -24,10 +24,6 @@ export default {
     matrixMeta: '({ok} disponibles / {fail} no disponibles)',
     chipAvailable: 'Disponible',
     chipUnavailable: 'No disponible',
-    chipAvailable: '可用',
-    chipUnavailable: '不可用',
-    chipAvailable: '可用',
-    chipUnavailable: '不可用',
   },
   overviewCards: {
     basicInfo: 'Información básica',
@@ -211,8 +207,6 @@ export default {
     checkFailed: 'Comprobación fallida',
     lifecycleFailed: 'Operación fallida',
     planTypeFailed: 'Error al establecer plan_type',
-    labelFallback: '凭据 #{id}',
-    labelFallback: '凭据 #{id}',
   },
   models: {
     title: 'Modelos ({n})',
@@ -530,12 +524,6 @@ export default {
   models_creds_labelFallback: '凭据 #{id}',
   models_overview_chipAvailable: '可用',
   models_overview_chipUnavailable: '不可用',
-  models_creds_labelFallback: '凭据 #{id}',
-  models_overview_chipAvailable: '可用',
-  models_overview_chipUnavailable: '不可用',
 
   // 同步的扁平键
-  models_creds_labelFallback: '凭据 #{id}',
-  models_overview_chipAvailable: '可用',
-  models_overview_chipUnavailable: '不可用',
 }
