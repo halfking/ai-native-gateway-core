@@ -16,9 +16,13 @@
 | 单元子查询 + alias 修复（`cf69b0bd2`） | ✓ 通过：`days > 7` 不再依赖可选视图 |
 | 仪表盘降级（`f7a46e161`） | ✓ 通过：5 端点改为 HTTP 200 + `degraded:true` |
 | 仪表盘前端提示 | ✓ 通过：`alert-info` 横幅 + `data-testid="dashboard-degraded-hint"` |
-| **本会话补：** admin/usage_enhanced.go 三端点降级 | **✓ 完成** `usageCostTrend` / `usagePeriodCompare` / `usageCacheEconomics` |
-| **本会话补：** auth 关键路径降级 | **✓ 完成** `verifier.go` 失败安全（spent=0） |
-| **本会话补：** `entries: null` 退化时序列化为 `[]` | **✓ 完成** |
+| **第一轮补：** admin/usage_enhanced.go 三端点降级 | **✓ 完成** `usageCostTrend` / `usagePeriodCompare` / `usageCacheEconomics` |
+| **第一轮补：** auth 关键路径降级 | **✓ 完成** `verifier.go` 失败安全（spent=0） |
+| **第一轮补：** `entries: null` 退化时序列化为 `[]` | **✓ 完成** |
+| **第二轮补：** `usage.go` 剩余端点降级 | **✓ 完成** `usageByKey` / `usageByApplication` / `usageByTenant` / `usageKeyTrend` |
+| **第二轮补：** 删除 dashboard_degrade.go 死代码 | **✓ 完成** 移除 `missingRelationPayload` struct + `writeMissingRelationPayload` / `writeMissingRelationOrError`（未引用） |
+| **第二轮补：** `MaasUsageSummary` 类型补 degraded 标记 | **✓ 完成** |
+| **第二轮补：** `TenantDashboardView` 渲染 ℹ️ 提示 | **✓ 完成** 与 `DashboardViewV2.vue` 一致的非阻塞横幅 |
 
 ---
 
@@ -49,19 +53,31 @@ rebase 后工作区出现了与新提交方向冲突的 phantom 改动。已通�
 
 接力文档 §4.1 B 项提到该文件需要降级处理，但阅读后发现 line 229 实际查询的是 `response_format_anomalies`，与 `usage_ledger_*` 无关。是接力文档的描述误差，已排除。
 
----
+### 2.6 第二轮审计发现
 
-## 3. 验证结果
+#### 2.6.1 `dashboard_degrade.go` 残留死代码
+
+第一轮审计中新增了 `writeMissingRelationPayload` 和 `writeMissingRelationOrError` 两个辅助函数，但在实际端点实现里**始终未使用**（所有端点都直接用 `isMissingRelationError` + `reportMissingRelation` 组合）。同样 `missingRelationPayload` 结构体也是早期设计遗留，没有引用者。
+
+修复：删除 `writeMissingRelationPayload` / `writeMissingRelationOrError` 函数及 `missingRelationPayload` struct，减少误用面。同时移除 `net/http` 未使用的 import。
+
+#### 2.6.2 `usage.go` 中退化路径覆盖不全
+
+第一轮只在 dashboard 四个核心端点做了退化处理。审计中发现 `usageByKey` / `usageByApplication` / `usageByTenant` / `usageKeyTrend` 四个端点仍以 `writeError` 500 报告 42P01。修复：补齐退化路径，统一通过 `reportMissingRelation` 记录日志、通过 HTTP 200 + 空数组或 zero stats 响应。
+
+#### 2.6.3 重复 `slog.Warn` 日志
+
+第一轮为每个退化分支手动添加了 `slog.Warn(...)`，但 `reportMissingRelation` 内部已调用 `logger.Warn(...)`，导致**每个缺失视图请求产生两条相同的 WARN 日志**。修复：删除冗余的 `slog.Warn`，让 `reportMissingRelation` 集中负责日志记录。
+
+#### 2.6.4 `MaasUsageSummary` 类型缺少 degraded 字段
+
+`TenantDashboardView.vue` 通过 `getMaasUsageSummary` 调用 `/api/usage/summary`。后端已在响应中返回 `degraded: true` 等字段，但前端 TypeScript 类型 `MaasUsageSummary` 没有声明这些可选字段。修复：补充 `degraded?: boolean` / `missing_view?: string` / `error_code?: string` / `hint?: string`，并在前端页面新增 `degradedHint` 计算属性 + 非阻塞 `alert-info` 横幅（与 `DashboardViewV2.vue` 一致）。
+
+#### 2.6.5 类型声明在 `defer rows.Close()` 之后
+
+Go 不允许 `type` 声明在语句块中位于 defer 之后（defer 不算语句块边界，但语义上让 `[]keyUsage{}` 这种退化响应引用了未声明的类型）。修复：把所有退化路径上新增的 `type xxx struct {...}` 声明移到 `rows, err := ...` 之前。
 
 ### 3.1 测试
-
-```
-$ go test ./admin ./domains/authentication ./maas ./domains/streaming
-ok  	github.com/kaixuan/llm-gateway-go/admin                       1.194s
-ok  	github.com/kaixuan/llm-gateway-go/domains/authentication       (cached)
-ok  	github.com/kaixuan/llm-gateway-go/maas                         (cached)
-ok  	github.com/kaixuan/llm-gateway-go/domains/streaming            (cached)
-```
 
 新增单测：
 - `dashboard_degrade_test.go::TestIsMissingRelationError/...`（5 用例 + wrapped）
@@ -77,10 +93,14 @@ ok  	github.com/kaixuan/llm-gateway-go/domains/streaming            (cached)
 | `GET /api/usage/by-model` | 200 + `[]` | 200 + 真实数据 |
 | `GET /api/usage/by-provider` | 200 + `[]` | 200 + 真实数据 |
 | `GET /api/usage/hot-keys` | 200 + `[]` | 200 + 真实数据 |
-| `GET /api/admin/usage/cost-trend` | **200 + `entries:[]`**（本次补） | 200 + 真实数据 |
-| `GET /api/admin/usage/period-compare` | **200 + zero periods**（本次补） | 200 + 真实数据 |
-| `GET /api/admin/usage/cache-economics` | **200 + zero economics**（本次补） | 200 + 真实数据 |
-| 鉴权扣预算 | **不报错，spent=0**（本次补） | 真实预算 |
+| `GET /api/usage/by-key` | **200 + `[]`**（第二轮补） | 200 + 真实数据 |
+| `GET /api/usage/by-application` | **200 + `[]`**（第二轮补） | 200 + 真实数据 |
+| `GET /api/usage/by-tenant` | **200 + zero + `degraded:true`**（第二轮补） | 200 + 真实数据 |
+| `GET /api/usage/{keyID}/trend` | **200 + `[]`**（第二轮补） | 200 + 真实数据 |
+| `GET /api/admin/usage/cost-trend` | 200 + `entries:[]`（第一轮补） | 200 + 真实数据 |
+| `GET /api/admin/usage/period-compare` | 200 + zero periods（第一轮补） | 200 + 真实数据 |
+| `GET /api/admin/usage/cache-economics` | 200 + zero economics（第一轮补） | 200 + 真实数据 |
+| 鉴权扣预算 | 不报错，`spent=0`（第一轮补） | 真实预算 |
 
 后端日志中以下警告一次性打印：
 ```
@@ -116,17 +136,29 @@ WARN key verifier: usage_ledger_with_current_month view missing; budget enforcem
 
 ## 4. 提交清单
 
-本次审计会话最终落地：
+本次审计会话分两轮落地：
 
 | SHA | 内容 |
 | --- | --- |
-| `5eaa18a5f` | **本次合并** fix(billing): extend usage view degradation to enhanced usage + auth paths |
+| `5eaa18a5f` | 第一轮 fix(billing): extend usage view degradation to enhanced usage + auth paths |
+| *(本会话)* | 第二轮 fix(billing): clean up degradation paths and surface hints to non-default tenants |
 
 包含文件：
 - `admin/usage_enhanced.go`（cost-trend / period-compare / cache-economics 三处降级 + entries 非 nil 修复）
 - `domains/authentication/verifier.go`（关键路径 fail-safe）
 - `domains/authentication/verifier_test.go`（5 用例新增）
 - `docs/screenshots/ui-verify-dashboard-*.png`（截图证据）
+
+**本会话第二轮：**
+
+包含文件：
+- `admin/dashboard_degrade.go`（移除 `missingRelationPayload` struct / `writeMissingRelationPayload` / `writeMissingRelationOrError` 死代码与未使用的 `net/http` import）
+- `admin/usage.go`（补齐 `usageByKey` / `usageByApplication` / `usageByTenant` / `usageKeyTrend` 四个端点的退化路径；删除冗余 `slog.Warn`；修正类型声明顺序）
+- `admin/usage_enhanced.go`（同上）
+- `web/src/api/maas.ts`（`MaasUsageSummary` 类型补 `degraded?` / `missing_view?` / `error_code?` / `hint?`）
+- `web/src/views/TenantDashboardView.vue`（新增 `degradedHint` 计算属性 + `alert-info` 非阻塞横幅）
+- `web/src/views/TenantDashboardView.test.ts`（4 用例新增契约测试）
+- `docs/2026-07-12-billing-audit-final.md`（本文件）
 
 继承自此前会话：
 
@@ -144,11 +176,12 @@ WARN key verifier: usage_ledger_with_current_month view missing; budget enforcem
 
 | 项 | 备注 |
 | --- | --- |
-| `admin/usage.go` 中 `by-key` / `by-application` / `tenant usage` 端点 | 仍以 500 报告 42P01。**未在本次范围**修改，以保持任务边界 |
 | 迁移 344 `usage_ledger_with_current_month` 创建 | 文件存在 (sql/migrations/startup/344_usage_ledger_hot_independence.sql)，但本地库与 `342_create_other_table_views.sql` 似乎都未应用，运维需在生产执行 |
 | `usage_ledger_with_current_month` 推荐创建语法 | `CREATE OR REPLACE VIEW usage_ledger_with_current_month AS SELECT * FROM usage_ledger_hot UNION ALL SELECT * FROM usage_ledger;` |
-| 工作树存在未追踪的 `docs/IR形式优化/` 与 `docs/2026-07-12-ir-multimodal-audit.md` | 与本任务无关，不应提交 |
+| 工作树存在未追踪的 `docs/IR格式优化/` 与 `docs/2026-07-12-ir-multimodal-audit.md` | 与本任务无关，不应提交 |
 | 远端 `840cb6211 feat(ir)` 引入的全局类型检查 baseline | 与本任务**正交** |
+| `domains/streaming/strip_*` 测试失败（vendor field strippers） | 由上游 `096ecde24 fix(classify)` 引入，与本任务正交 |
+| `web/src/composables/liveStreamDisplay.test.ts` 失败 | pre-existing label mapping drift，IR 任务领域 |
 
 ---
 

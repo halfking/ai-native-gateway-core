@@ -281,6 +281,14 @@ export interface MaasUsageSummary {
   total_cost_usd?: number
   by_model: MaasUsageModelRow[]
   trend: MaasUsageTrendRow[]
+  // Optional degradation markers. When usage_ledger_with_current_month (or
+  // other analytic views) is missing, the backend returns zeroed metrics
+  // together with these flags. The UI uses them to show a non-blocking
+  // hint instead of an empty-data page.
+  degraded?: boolean
+  missing_view?: string
+  error_code?: string
+  hint?: string
 }
 
 export interface MaasConsumptionDetailRow {
