@@ -41,6 +41,15 @@
   "provider_error": {
     "other": "échec de la requête en amont"
   },
+  "upstream_credential_invalid": {
+    "other": "Clé API d'identifiant en amont invalide (le fournisseur a rejeté notre clé). Il s'agit d'un problème de configuration des identifiants, pas d'un problème de clé client — contactez l'administrateur de la passerelle pour actualiser l'identifiant en amont."
+  },
+  "upstream_credential_revoked": {
+    "other": "Clé API d'identifiant en amont révoquée (le fournisseur signale que la clé n'est plus active). Il s'agit d'un problème de configuration des identifiants — contactez l'administrateur de la passerelle pour faire pivoter l'identifiant en amont."
+  },
+  "upstream_quota_permanent": {
+    "other": "Quota d'identifiant en amont définitivement épuisé (le fournisseur a renvoyé 402 / quota_exceeded). Il s'agit d'un problème de configuration — rechargez le compte en amont ou faites pivoter l'identifiant."
+  },
   "internal_error": {
     "other": "Erreur interne du serveur"
   },
