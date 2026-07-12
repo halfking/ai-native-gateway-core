@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo, authBearer } from './store'
-import { logout as apiLogout } from './api/auth'
+import { logout as apiLogout, login } from './api/auth'
 import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
@@ -151,7 +151,45 @@ function openChangePassword() {
   showChangePassword.value = true
 }
 
-function handleChangePasswordSuccess() {
+async function handleChangePasswordSuccess(payload?: { oldPassword: string; newPassword: string }) {
+  if (mustChangePassword.value) {
+    // 强制修改密码（首次登录）流程：注销当前会话 → 重新登录 → 刷新页面。
+    // 这是必须的，因为改密后服务端会撤销旧会话 / 旧 token 的有效性，
+    // 也避免用户带着一个挂着旧身份的页面继续操作。
+    const newPassword = payload?.newPassword ?? ''
+    try {
+      await apiLogout()
+    } catch {
+      /* ignore — server may have already invalidated the session */
+    }
+    clearAll()
+    markAuthHydrated()
+    // 重新登录以触发 store.jwtToken / store.userInfo.must_change_password=false 重新拉取
+    if (newPassword && store.userInfo?.username) {
+      try {
+        const resp = await login(store.userInfo.username, newPassword)
+        const respAny = resp as any
+        if (respAny?.access_token) {
+          setJwtToken(respAny.access_token)
+        }
+        if (respAny?.user) {
+          setUserInfo(respAny.user)
+        }
+      } catch {
+        // 自动登录失败 → 用户需要手动登录
+        passwordSuccessMessage.value = t('login.passwordChangedReLogin')
+        router.push('/')
+        return
+      }
+    }
+    passwordSuccessMessage.value = t('login.passwordChangedReloading')
+    // 强制刷新整个页面，确保所有 store / i18n / 数据视图都按新身份重建
+    window.setTimeout(() => {
+      window.location.reload()
+    }, 600)
+    return
+  }
+  // 非强制改密：仅清除标志，留在当前页继续使用
   clearMustChangePasswordFlag()
   showChangePassword.value = false
   passwordSuccessMessage.value = t('login.passwordChangeSuccess')

@@ -154,19 +154,14 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.approval-config-panel {
-  position: relative;
-}
-
-.panel-actions {
-  position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 10;
-}
-
-:deep(.el-card__header) {
-  padding: 12px 20px;
-  font-weight: 500;
-}
+.approval-config-panel { display:grid; gap:12px; position:relative; color:var(--text); }
+.panel-actions { display:flex; justify-content:flex-end; margin-bottom:0; }
+:deep(.el-card) { --el-card-bg-color: var(--card); --el-card-border-color: var(--border); --el-border-color-light: var(--border); color:var(--text); background:var(--card); border-radius:var(--radius); }
+:deep(.el-card__header) { padding:10px 14px; color:var(--text); border-bottom-color:var(--border); font-size:13px; font-weight:600; }
+:deep(.el-card__body) { padding:12px 14px; }
+:deep(.el-form-item__label), :deep(.el-form-item__content) { color:var(--text); font-size:12px; }
+:deep(.el-input-number), :deep(.el-select) { width:clamp(160px, 35vw, 260px) !important; }
+:deep(.el-input__wrapper), :deep(.el-select__wrapper) { background:var(--bg); box-shadow:0 0 0 1px var(--border) inset; }
+:deep(.el-input__inner), :deep(.el-select__selected-item) { color:var(--text); }
+:deep(.el-form-item) { margin-bottom:12px; }
 </style>

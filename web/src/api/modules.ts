@@ -97,3 +97,7 @@ export function testModule(key: string) {
 export function getModuleConfig(key: string) {
   return req<Record<string, any>>('GET', `/api/admin/modules/${key}/config`)
 }
+
+export function getModuleEnabled(key: string) {
+  return listModules().then(({ items }) => Boolean(items.find((item) => item.key === key)?.enabled))
+}
