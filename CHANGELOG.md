@@ -5,8 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
----
-
 ## [Unreleased] - 2026-07-12
 
 ### Security and Reliability
@@ -14,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added JWT issuer/audience validation, refresh-token rotation, stable license binding, request body limits, and replay nonce scoping.
 - Hardened offline upgrade manifests against empty inventories, invalid checksums, path traversal, symlink escapes, and partial `psql` execution.
 - Fixed migration discovery for nested `up/` directories and made integration-test failures visible instead of silently skipped.
+
+### Fixed
+- Completed SessionForensics replay evidence preservation, six-scenario audit
+  contracts, mutation safety checks, and output-compliance nil-result handling.
+- Corrected the domain dependency lint scope and prevented output redaction
+  from modifying non-assistant response choices.
 
 ## [v1.14.0] - 2026-07-12 (License + Upgrade)
 
@@ -129,8 +133,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 修复 `center/store_pgx.go` 字段缺失问题
 - 修复 `autoupdate/types.go` 状态枚举不完整
 - 修复 License 过期后无法启动问题（降级模式）
-
----
 
 ## [2026-07-05] - Script 合并 (deploy-scripts-merge)
 
