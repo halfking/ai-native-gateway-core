@@ -9,7 +9,7 @@ DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
 DB_USER="${DB_USER:-kxuser}"
 DB_NAME="${DB_NAME:-llm_gateway}"
-DB_PASSWORD="${DB_PASSWORD:-<TEST_DB_PASSWORD_REDACTED>}"
+DB_PASSWORD="${DB_PASSWORD:?DB_PASSWORD must be set}"
 
 # 颜色
 GREEN='\033[0;32m'

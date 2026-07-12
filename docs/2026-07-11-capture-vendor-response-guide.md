@@ -245,7 +245,7 @@ var doubaoPrivateFields = []string{
 
 **环境**: `prod-aliyun-252` (115.29.212.252:25022)，部署 `llm.itestu.cn (llm-gateway-go) + pg17 + redis:6389`  
 **数据库**: `172.16.2.210:5432/llm_gateway`，host: `pg-data-252-pg17` (podman container)  
-**凭据**: `llm_gateway / <DB_PASSWORD_REDACTED>`（超级用户，跳过 RLS）  
+**凭据**: `llm_gateway / <DB_PASSWORD>`（超级用户，跳过 RLS）  
 **连接方法**: SSH tunnel `ssh -p 25022 root@115.29.212.252 -L 25432:172.16.2.210:5432 -N -f`
 
 ### 真实 7 天流量分布（`request_logs_hot ∪ request_logs_2026_07`）

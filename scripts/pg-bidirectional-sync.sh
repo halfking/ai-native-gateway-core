@@ -22,6 +22,15 @@ REMOTE_CONTAINER="pg-252-pg17"
 REMOTE_USER="llm_gateway"
 REMOTE_DB="llm_gateway"
 
+# ── 前置 (HARD-GATE): SSHPASS 必须从 env 注入，不再硬编码 ─────────
+if [ -z "${SSHPASS:-}" ]; then
+  echo -e "${RED}✗ 必须设置 SSHPASS 环境变量（密码已不再硬编码）${NC}" >&2
+  echo -e "${RED}  示例: export SSHPASS='<your-password>'${NC}" >&2
+  echo -e "${RED}  推荐: 使用 ~/.ssh/id_ed25519 密钥登录${NC}" >&2
+  exit 1
+fi
+export SSHPASS
+
 # 检查参数
 if [ $# -lt 1 ]; then
     echo "用法: $0 <direction> [table_name]"
@@ -40,7 +49,6 @@ local_cmd() {
 
 # 函数：执行远程命令
 remote_cmd() {
-    export SSHPASS='<SSH_PASSWORD_REDACTED>'
     sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOST" \
         "docker exec $REMOTE_CONTAINER psql -U $REMOTE_USER -d $REMOTE_DB -t -A -c \"$1\""
 }
@@ -86,25 +94,23 @@ sync_table() {
     if [ "$direction" = "local-to-remote" ]; then
         # 本地 → 252
         docker exec "$LOCAL_CONTAINER" pg_dump -U "$LOCAL_USER" -d "$LOCAL_DB" -t "$table" --schema-only --no-owner --no-privileges > /tmp/sync_table.sql
-        
-        export SSHPASS='<SSH_PASSWORD_REDACTED>'
+
         sshpass -e scp -o StrictHostKeyChecking=no -p "$REMOTE_PORT" /tmp/sync_table.sql root@"$REMOTE_HOST":/tmp/
-        
+
         sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOST" \
             "docker exec -i $REMOTE_CONTAINER psql -U $REMOTE_USER -d $REMOTE_DB < /tmp/sync_table.sql"
-        
+
         echo -e "${GREEN}✓ 已同步 $table 到 252${NC}"
-        
+
     elif [ "$direction" = "remote-to-local" ]; then
         # 252 → 本地
-        export SSHPASS='<SSH_PASSWORD_REDACTED>'
         sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOST" \
             "docker exec $REMOTE_CONTAINER pg_dump -U $REMOTE_USER -d $REMOTE_DB -t $table --schema-only --no-owner --no-privileges > /tmp/sync_table.sql"
-        
+
         sshpass -e scp -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOST":/tmp/sync_table.sql /tmp/
-        
+
         docker exec -i "$LOCAL_CONTAINER" psql -U "$LOCAL_USER" -d "$LOCAL_DB" < /tmp/sync_table.sql
-        
+
         echo -e "${GREEN}✓ 已同步 $table 到本地${NC}"
     fi
 }

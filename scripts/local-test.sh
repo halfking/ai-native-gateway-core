@@ -132,7 +132,7 @@ if [ "$RUN_INTEGRATION" = "1" ]; then
     record "request lifecycle test" SKIP "go 未安装"
   else
     info "go test -tags=integration TestRequestLifecycle"
-    export LLM_GATEWAY_PG_URL="postgres://kxuser:<TEST_DB_PASSWORD_REDACTED>@localhost:5432/llm_gateway?sslmode=disable"
+    export LLM_GATEWAY_PG_URL="postgres://kxuser:<TEST_DB_PASSWORD>@localhost:5432/llm_gateway?sslmode=disable"
     if go test -tags=integration -timeout 60s ./tests/integration/ -run TestRequestLifecycle 2>&1 | tail -5; then
       record "request lifecycle test" PASS
     else

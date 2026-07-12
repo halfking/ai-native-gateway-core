@@ -8,7 +8,12 @@
 SSH_HOST="192.168.31.28"
 SSH_PORT="22"
 SSH_USER="kaixuan"
-SSH_PASS="<SSH_PASSWORD_REDACTED>"
+# SSH 密码已不再硬编码：必须从 env 注入 DEPLOY_SSH_PASS（推荐使用 SSH 密钥登录）
+if [ -z "${DEPLOY_SSH_PASS:-}" ]; then
+  echo "必须设置 DEPLOY_SSH_PASS 环境变量" >&2
+  return 1 2>/dev/null || exit 1
+fi
+SSH_PASS="${DEPLOY_SSH_PASS}"
 
 # ── Docker ─────────────────────────────────────────────────────────────────
 DOCKER_HOST="local"              # k3s, no docker
@@ -18,7 +23,12 @@ DOCKER_PG_CONTAINER=""           # k3s pod, not a docker container
 PG_HOST="192.168.31.8"          # k3s server (Tart VM)
 PG_PORT="30432"                  # k3s NodePort
 PG_USER="llm_gateway"
-PG_PASS="<DB_PASSWORD_REDACTED>"
+# PG 密码已不再硬编码：必须从 env 注入 PG_PASS（推荐使用 SOPS/Kubernetes Secret）
+if [ -z "${PG_PASS:-}" ]; then
+  echo "必须设置 PG_PASS 环境变量（DB 密码已不再硬编码）" >&2
+  return 1 2>/dev/null || exit 1
+fi
+PG_PASS="${PG_PASS}"
 PG_DB="llm_gateway"
 
 # External access via nps tunnel
@@ -35,7 +45,7 @@ K3S_VERSION="v1.30.4"
 LLM_GATEWAY_URL="https://llm.itestu.cn"
 REGISTRY_URL="http://192.168.31.8:5000"
 REGISTRY_USER="kaixuan"
-REGISTRY_PASS="<ADMIN_PASSWORD_REDACTED>"
+REGISTRY_PASS="${REGISTRY_PASS:?REGISTRY_PASS must be set}"
 
 # ── Image Info ─────────────────────────────────────────────────────────────
 PG_IMAGE="PG 17 + pgvector + columnar"

@@ -61,7 +61,7 @@ go run test-prompt-injection-detection.go
 - **端口**: 5432
 - **数据库**: llm_gateway
 - **用户**: llm_gateway
-- **密码**: <DB_PASSWORD_REDACTED>
+- **密码**: <DB_PASSWORD>
 
 可以通过环境变量 `LLM_GATEWAY_DATABASE_URL` 或 `DATABASE_URL` 覆盖。
 

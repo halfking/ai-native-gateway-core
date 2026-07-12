@@ -5,7 +5,7 @@
 # 
 # 前置条件：
 #   1. web/dist 已 build (pnpm run build)
-#   2. export SSHPASS='<SSH_PASSWORD_REDACTED>'
+#   2. export SSHPASS='<SSH_PASSWORD>'    # 密码已不再硬编码，env 注入
 #   3. 154 SSH 端口 25022 可达
 
 set -euo pipefail
@@ -19,7 +19,7 @@ SERVICE_NAME="llm-gateway-go.service"
 echo "=== [1/5] 检查前置条件 ==="
 if [ -z "${SSHPASS:-}" ]; then
   echo "❌ SSHPASS 未设置"
-  echo "   export SSHPASS='<SSH_PASSWORD_REDACTED>'"
+  echo "   export SSHPASS='<SSH_PASSWORD>'   # 密码已不再硬编码，env 注入"
   exit 1
 fi
 

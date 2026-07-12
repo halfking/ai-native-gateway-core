@@ -44,7 +44,7 @@ if [[ -f "$ENC_FILE" ]]; then
     export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
     [[ -f "$SOPS_AGE_KEY_FILE" ]] || warn "No SOPS key — using known password"
 fi
-DB_PASSWORD="<DB_PASSWORD_REDACTED>"
+DB_PASSWORD="${DB_PASSWORD:?DB_PASSWORD must be set}"
 DB_USER="llm_gateway"
 DB_NAME="llm_gateway"
 

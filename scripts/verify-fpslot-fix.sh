@@ -136,7 +136,7 @@ fi
 
 # ── PG helper ──
 run_pg() {
-  docker exec -e PGPASSWORD=<TEST_DB_PASSWORD_REDACTED> r112_postgres psql -U kxuser -d llm_gateway \
+  docker exec -e PGPASSWORD=<TEST_DB_PASSWORD> r112_postgres psql -U kxuser -d llm_gateway \
     -v ON_ERROR_STOP=1 -tAc "$1"
 }
 
@@ -157,7 +157,7 @@ cleanup() {
     kill -9 "$GW_PID" 2>/dev/null || true
   fi
   if [ -f "$PROVIDER_SNAP" ]; then
-    if PGPASSWORD=<TEST_DB_PASSWORD_REDACTED> docker exec -i -e PGPASSWORD=<TEST_DB_PASSWORD_REDACTED> r112_postgres \
+    if PGPASSWORD=<TEST_DB_PASSWORD> docker exec -i -e PGPASSWORD=<TEST_DB_PASSWORD> r112_postgres \
          psql -U kxuser -d llm_gateway -v ON_ERROR_STOP=1 \
          < "$PROVIDER_SNAP" >/tmp/fpslot-verify-restore-$$.log 2>&1; then
       ok "provider.base_url restored from snapshot"
@@ -167,7 +167,7 @@ cleanup() {
     fi
   fi
   if [ -f "$CREDENTIAL_SNAP" ]; then
-    if PGPASSWORD=<TEST_DB_PASSWORD_REDACTED> docker exec -i -e PGPASSWORD=<TEST_DB_PASSWORD_REDACTED> r112_postgres \
+    if PGPASSWORD=<TEST_DB_PASSWORD> docker exec -i -e PGPASSWORD=<TEST_DB_PASSWORD> r112_postgres \
          psql -U kxuser -d llm_gateway -v ON_ERROR_STOP=1 \
          < "$CREDENTIAL_SNAP" >>/tmp/fpslot-verify-restore-$$.log 2>&1; then
       ok "credentials.secret_ciphertext restored from snapshot"
@@ -281,7 +281,7 @@ hdr "STEP 7 — Start gateway (port $GW_PORT)"
 RUN_API_KEY="fpverify-api-$$-$(head -c 8 /dev/urandom | xxd -p 2>/dev/null || echo random$$)"
 RUN_ADMIN_KEY="fpverify-admin-$$-$(head -c 8 /dev/urandom | xxd -p 2>/dev/null || echo random$$)"
 export LLM_GATEWAY_LISTEN=":$GW_PORT"
-export LLM_GATEWAY_DATABASE_URL="postgres://kxuser:<TEST_DB_PASSWORD_REDACTED>@127.0.0.1:5433/llm_gateway?sslmode=disable"
+export LLM_GATEWAY_DATABASE_URL="postgres://kxuser:<TEST_DB_PASSWORD>@127.0.0.1:5433/llm_gateway?sslmode=disable"
 export LLM_GATEWAY_REDIS_ADDR="127.0.0.1:6379"
 export LLM_GATEWAY_ENABLE_CREDENTIAL_FP_SLOTS="true"
 export LLM_GATEWAY_DEFAULT_CREDENTIAL_CONCURRENCY="25"

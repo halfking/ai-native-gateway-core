@@ -32,7 +32,7 @@ REMOTE_DB_USER="${REMOTE_DB_USER:-llm_gateway}"
 LOCAL_CONTAINER="${LOCAL_CONTAINER:-r112_postgres}"
 LOCAL_DB="${LOCAL_DB:-llm_gateway}"
 LOCAL_DB_USER="${LOCAL_DB_USER:-kxuser}"
-LOCAL_DB_PASS="${LOCAL_DB_PASS:-<TEST_DB_PASSWORD_REDACTED>}"
+LOCAL_DB_PASS="${LOCAL_DB_PASS:?LOCAL_DB_PASS must be set}"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 err()  { printf "${RED}✗ %s${NC}\n" "$*" >&2; }

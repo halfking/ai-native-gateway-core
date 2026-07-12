@@ -29,7 +29,7 @@
 #   bash scripts/recover-empty-response-misclassification.sh \
 #     --since "2026-06-20" --until "2026-06-30" \
 #     --pg-container r112_postgres \
-#     --pg-user kxuser --pg-pass <TEST_DB_PASSWORD_REDACTED> \
+#     --pg-user kxuser --pg-pass <TEST_DB_PASSWORD> \
 #     --pg-db llm_gateway \
 #     --dry-run
 #
@@ -53,7 +53,7 @@ set -euo pipefail
 # ── Defaults ──
 PG_CONTAINER="${PG_CONTAINER:-r112_postgres}"
 PG_USER="${PG_USER:-kxuser}"
-PG_PASS="${PG_PASS:-<TEST_DB_PASSWORD_REDACTED>}"
+PG_PASS="${PG_PASS:?PG_PASS must be set}"
 PG_DB="${PG_DB:-llm_gateway}"
 SINCE_DEFAULT="NOW() - INTERVAL '7 days'"
 UNTIL_DEFAULT="NOW() + INTERVAL '1 day'"

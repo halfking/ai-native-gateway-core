@@ -19,10 +19,18 @@
 #
 # 前置 (HARD-GATE):
 #   env-injector inject kaixuan-1
-#   export SSHPASS='<SSH_PASSWORD_REDACTED>'
+#   export SSHPASS='<your-password>'   # 密码已不再硬编码，env 注入
 # =====================================================================
 
 set -euo pipefail
+
+# ── 前置 (HARD-GATE): SSHPASS 必须从 env 注入，不再硬编码 ─────────
+if [ -z "${SSHPASS:-}" ]; then
+  err "必须设置 SSHPASS 环境变量（密码已不再硬编码）"
+  echo "  示例: export SSHPASS='<your-password>'"
+  echo "  推荐: 使用 ~/.ssh/id_ed25519 密钥登录"
+  exit 1
+fi
 
 # ── 颜色 ──────────────────────────────────────────────────────────
 G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[0;34m'; N='\033[0m'
@@ -36,7 +44,7 @@ phase() { echo -e "\n${B}═══════ $* ═══════${N}"; }
 SSH_HOST="192.168.31.28"
 SSH_PORT="22"
 SSH_USER="kaixuan"
-SSH_PASS="${SSHPASS:-<SSH_PASSWORD_REDACTED>}"
+SSH_PASS="${SSHPASS}"
 REMOTE_DIR="~/workspace/official-deploy/services/llm-gateway-go"
 REMOTE_ABS="/Users/kaixuan/workspace/official-deploy/services/llm-gateway-go"
 LISTEN_PORT="${LLM_GATEWAY_PORT:-8080}"
