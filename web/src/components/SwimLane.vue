@@ -27,11 +27,12 @@ const displayName = computed(() => {
 })
 
 // 2026-07-13: 可见区域错误率检测（可见请求中错误占比 >= 1/3 时显示诊断按钮）
+// 2026-07-13 v2: 修正 — 后端 LiveStreamTile 没有 success 字段，按 status 判断
 const visibleErrorRate = computed(() => {
   const visible = visibleRequests.value
   if (visible.length === 0) return 0
   
-  const errorCount = visible.filter(r => !r.success).length
+  const errorCount = visible.filter(r => r.status !== 'success').length
   return errorCount / visible.length
 })
 
@@ -41,18 +42,17 @@ const showEmergencyButton = computed(() => {
 })
 
 function handleEmergencyDiagnose() {
-  // 从 lane 中提取 credential_id（如果 groupBy='credential'，name 就是 credential label）
-  // 这里简化处理：通过最近一个失败请求的 credential_id
+  // 找到最近一个失败请求作为诊断目标
   const recentFailure = props.lane.requests
     .slice()
     .reverse()
-    .find(r => !r.success)
+    .find(r => r.status !== 'success')
   
   if (!recentFailure) return
   
   emit('emergencyDiagnose', {
-    credentialId: recentFailure.credential_id || 0,
-    model: recentFailure.client_model || props.lane.name,
+    credentialId: (recentFailure as any).credential_id || 0,
+    model: (recentFailure as any).client_model || props.lane.name,
     laneName: props.lane.name
   })
 }
@@ -257,36 +257,24 @@ watch(
 
 .swim-lane__emergency-btn {
   margin-top: 6px;
-  padding: 4px 8px;
+  padding: 2px 6px;
   font-size: 10px;
   font-weight: 600;
-  color: #ffffff;
-  background: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
-  border: none;
+  color: var(--danger, #f85149);
+  background: transparent;
+  border: 1px solid var(--danger, #f85149);
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow: 0 0 8px rgba(255, 107, 53, 0.4);
-  animation: pulse-glow 2s ease-in-out infinite;
+  transition: all 0.2s ease;
+  align-self: flex-start;
 }
 
 .swim-lane__emergency-btn:hover {
-  background: linear-gradient(135deg, #ff8555 0%, #ffa03e 100%);
-  box-shadow: 0 0 12px rgba(255, 107, 53, 0.6);
-  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--danger, #f85149) 15%, transparent);
 }
 
 .swim-lane__emergency-btn:active {
-  transform: translateY(0);
-}
-
-@keyframes pulse-glow {
-  0%, 100% {
-    box-shadow: 0 0 8px rgba(255, 107, 53, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 16px rgba(255, 107, 53, 0.7);
-  }
+  transform: scale(0.97);
 }
 
 
