@@ -327,5 +327,34 @@ func (s *PgxStore) GetLatestStatus(ctx context.Context, instanceID string) (*Sta
 	return status, nil
 }
 
+// GetInstanceByRefreshToken retrieves instance by refresh_token
+func (s *PgxStore) GetInstanceByRefreshToken(ctx context.Context, refreshToken string) (*InstanceInfo, error) {
+	query := `
+		SELECT instance_id, hostname, ip_address, region, version, build_seq, status, started_at, last_heartbeat
+		FROM gateway_instances
+		WHERE refresh_token = $1 AND refresh_token_expires_at > now()
+	`
+	instance := &InstanceInfo{}
+	err := s.db.QueryRow(ctx, query, refreshToken).Scan(
+		&instance.InstanceID, &instance.Hostname, &instance.IPAddress, &instance.Region,
+		&instance.Version, &instance.BuildSeq, &instance.Status, &instance.StartedAt, &instance.LastHeartbeat,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return instance, nil
+}
+
+// UpdateRefreshToken updates the refresh_token and expiry for an instance
+func (s *PgxStore) UpdateRefreshToken(ctx context.Context, instanceID, refreshToken string, expiresAt time.Time) error {
+	query := `
+		UPDATE gateway_instances
+		SET refresh_token = $2, refresh_token_issued_at = now(), refresh_token_expires_at = $3
+		WHERE instance_id = $1
+	`
+	_, err := s.db.Exec(ctx, query, instanceID, refreshToken, expiresAt)
+	return err
+}
+
 // Ensure interface compliance
 var _ Store = (*PgxStore)(nil)
