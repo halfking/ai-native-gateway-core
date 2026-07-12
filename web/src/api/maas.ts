@@ -283,6 +283,36 @@ export interface MaasUsageSummary {
   trend: MaasUsageTrendRow[]
 }
 
+export interface MaasConsumptionDetailRow {
+  tenant_id: string
+  owner_user?: string
+  provider_id?: number | null
+  provider_name: string
+  credential_id?: number | null
+  credential_label: string
+  canonical_id?: number | null
+  model: string
+  requests: number
+  prompt_tokens: number
+  completion_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  credits_charged: number
+  upstream_cost_usd: number
+  tenant_revenue_usd: number
+  gross_margin_usd: number
+  gross_margin_rate: number
+  cancelled_billed_requests: number
+}
+
+export interface MaasConsumptionDetail {
+  tenant_id: string
+  owner_user?: string
+  days: number
+  cents_per_credit: number
+  rows: MaasConsumptionDetailRow[]
+}
+
 export function getMaasUsageSummary(days = 7, limit = 10) {
   const q = new URLSearchParams()
   q.set('days', String(days))
@@ -308,6 +338,15 @@ export function getAdminMaasUsageSummary(tenantCode: string, days = 7, limit = 1
   return req<MaasUsageSummary>(
     'GET',
     `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/usage/summary?${q.toString()}`,
+  )
+}
+
+export function getAdminMaasConsumptionDetail(tenantCode: string, days = 7, ownerUser = '') {
+  const q = new URLSearchParams({ days: String(days) })
+  if (ownerUser.trim()) q.set('owner_user', ownerUser.trim())
+  return req<MaasConsumptionDetail>(
+    'GET',
+    `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/usage/detail?${q.toString()}`,
   )
 }
 
