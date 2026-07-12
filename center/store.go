@@ -29,6 +29,10 @@ type Store interface {
 	// Status Reports
 	RecordStatusReport(ctx context.Context, instanceID string, payload *StatusReportPayload) error
 	GetLatestStatus(ctx context.Context, instanceID string) (*StatusReportPayload, error)
+
+	// Refresh Token
+	GetInstanceByRefreshToken(ctx context.Context, refreshToken string) (*InstanceInfo, error)
+	UpdateRefreshToken(ctx context.Context, instanceID, refreshToken string, expiresAt time.Time) error
 }
 
 // HeartbeatRecord 心跳记录
