@@ -2210,11 +2210,76 @@ func main() {
 		e.HideBanner = true
 		e.HidePort = true
 
+		// Echo JWT 认证中间件 — 确保所有运维平台 API 必须附带有效的 JWT
+		// 与 admin.AdminMiddleware 使用相同的 VerifyToken + jwtSecret 逻辑
+		jwtSecret := func() string {
+			if s := os.Getenv("LLM_GATEWAY_JWT_SECRET"); s != "" {
+				return s
+			}
+			return cfg.SecretKey
+		}()
+		if jwtSecret != "" {
+			e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+				return func(c echo.Context) error {
+					auth := c.Request().Header.Get("Authorization")
+					if len(auth) < 7 || auth[:7] != "Bearer " {
+						return c.JSON(http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+					}
+					tokenStr := auth[7:]
+					claims, err := admin.VerifyToken(tokenStr, jwtSecret)
+					if err != nil || claims.UserID <= 0 {
+						return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+					}
+					// 将用户信息注入 Echo context
+					c.Set("user_id", claims.UserID)
+					c.Set("tenant_id", claims.TenantID)
+					c.Set("username", claims.Username)
+					c.Set("role", claims.Role)
+					return next(c)
+				}
+			})
+		} else {
+			slog.Warn("JWT secret not configured — Echo bridge auth middleware DISABLED (insecure!)")
+		}
+
 		pool := dbConn.Pool()
 
 		// Phase 2: Licensing (License管理)
 		licensingStore := licensing.NewPgxStore(pool)
-		licensingCrypto := &licensing.CryptoConfig{}
+
+		// 从配置加载 License 加密密钥
+		licensingCrypto := &licensing.CryptoConfig{
+			JWTSecret:     []byte(jwtSecret),
+			DefaultExpiry: 24 * time.Hour,
+		}
+		if cfg.LicensePrivateKey != "" {
+			key, err := licensing.LoadPrivateKeyFromPEM(cfg.LicensePrivateKey)
+			if err != nil {
+				slog.Error("failed to load license RSA private key", "error", err)
+			} else {
+				licensingCrypto.PrivateKey = key
+				slog.Info("license RSA private key loaded")
+			}
+		} else {
+			slog.Warn("LLM_GATEWAY_LICENSE_PRIVATE_KEY not set — license signing disabled")
+		}
+		if cfg.LicensePublicKey != "" {
+			key, err := licensing.LoadPublicKeyFromPEM(cfg.LicensePublicKey)
+			if err != nil {
+				slog.Error("failed to load license RSA public key", "error", err)
+			} else {
+				licensingCrypto.PublicKey = key
+				slog.Info("license RSA public key loaded")
+			}
+		} else {
+			slog.Warn("LLM_GATEWAY_LICENSE_PUBLIC_KEY not set — license verification disabled")
+		}
+		if cfg.LicenseAESKey != "" {
+			licensingCrypto.AESKey = []byte(cfg.LicenseAESKey)
+			slog.Info("license AES key loaded")
+		} else {
+			slog.Warn("LLM_GATEWAY_LICENSE_AES_KEY not set — offline activation encryption disabled")
+		}
 		licensingValidator := licensing.NewValidator(licensingCrypto, licensingStore)
 		licensingDeviceManager := licensing.NewDeviceManager(licensingStore, licensingValidator)
 		licensingActivator := licensing.NewActivator(licensingCrypto, licensingStore, licensingDeviceManager)

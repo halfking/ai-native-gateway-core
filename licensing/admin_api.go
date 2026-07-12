@@ -51,9 +51,12 @@ func generateLicenseKey() string {
 
 func (h *AdminHandler) CreateLicense(c echo.Context) error {
 	var req struct {
-		Customer   string `json:"customer"`
-		MaxDevices int    `json:"max_devices"`
-		ExpiresAt  string `json:"expires_at"`
+		Customer         string   `json:"customer"`
+		CustomerEmail    string   `json:"customer_email"`
+		MaxDevices       int      `json:"max_devices"`
+		SubscriptionTier string   `json:"subscription_tier"`
+		Features         []string `json:"features"`
+		ExpiresAt        string   `json:"expires_at"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -64,11 +67,18 @@ func (h *AdminHandler) CreateLicense(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid expires_at format"})
 	}
 
+	if req.Features == nil {
+		req.Features = []string{}
+	}
+
 	lic := &License{
-		LicenseKey:   generateLicenseKey(),
-		CustomerName: req.Customer,
-		MaxDevices:   req.MaxDevices,
-		ExpiresAt:    expiresAt,
+		LicenseKey:       generateLicenseKey(),
+		CustomerName:     req.Customer,
+		CustomerEmail:    req.CustomerEmail,
+		MaxDevices:       req.MaxDevices,
+		SubscriptionTier: req.SubscriptionTier,
+		Features:         req.Features,
+		ExpiresAt:        expiresAt,
 	}
 
 	if err := h.store.CreateLicense(c.Request().Context(), lic); err != nil {
@@ -84,8 +94,10 @@ func (h *AdminHandler) ListLicenses(c echo.Context) error {
 	if limit == 0 {
 		limit = 20
 	}
+	query := c.QueryParam("query")
+	statusFilter := c.QueryParam("status")
 
-	licenses, total, err := h.store.ListAllLicenses(c.Request().Context(), offset, limit)
+	licenses, total, err := h.store.ListAllLicenses(c.Request().Context(), offset, limit, query, statusFilter)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
