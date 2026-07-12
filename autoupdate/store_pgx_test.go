@@ -24,6 +24,10 @@ func setupTestStore(t *testing.T) (*PgxStore, context.Context, func()) {
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	require.NoError(t, err, "failed to connect to test database")
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		t.Skipf("integration database unavailable: %v", err)
+	}
 
 	store := NewPgxStore(pool)
 

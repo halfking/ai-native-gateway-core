@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -12,7 +13,7 @@ import (
 // TestHeartbeatSender_StartStop 测试启动和停止
 func TestHeartbeatSender_StartStop(t *testing.T) {
 	// 准备 mock HTTP server（成功响应）
-	callCount := 0
+	var callCount atomic.Int64
 	server := testHTTPServerForHeartbeat(t, &callCount)
 	defer server.Close()
 
@@ -44,15 +45,15 @@ func TestHeartbeatSender_StartStop(t *testing.T) {
 	sender.Stop()
 
 	// 验证至少调用了 1 次
-	if callCount < 1 {
-		t.Errorf("Expected at least 1 call, got %d", callCount)
+	if callCount.Load() < 1 {
+		t.Errorf("Expected at least 1 call, got %d", callCount.Load())
 	}
 }
 
 // testHTTPServerForHeartbeat 创建测试用的 HTTP server
-func testHTTPServerForHeartbeat(t *testing.T, callCount *int) *httptest.Server {
+func testHTTPServerForHeartbeat(t *testing.T, callCount *atomic.Int64) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*callCount++
+		callCount.Add(1)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	}))
@@ -77,7 +78,7 @@ func setupTestToken(t *testing.T) {
 
 // TestHeartbeatSender_ContextCancel 测试 context 取消
 func TestHeartbeatSender_ContextCancel(t *testing.T) {
-	callCount := 0
+	var callCount atomic.Int64
 	server := testHTTPServerForHeartbeat(t, &callCount)
 	defer server.Close()
 
@@ -112,7 +113,7 @@ func TestHeartbeatSender_ContextCancel(t *testing.T) {
 
 // TestHeartbeatSender_MultipleStart 测试重复启动
 func TestHeartbeatSender_MultipleStart(t *testing.T) {
-	callCount := 0
+	var callCount atomic.Int64
 	server := testHTTPServerForHeartbeat(t, &callCount)
 	defer server.Close()
 
@@ -141,7 +142,7 @@ func TestHeartbeatSender_MultipleStart(t *testing.T) {
 
 // TestHeartbeatSender_MultipleStop 测试重复停止
 func TestHeartbeatSender_MultipleStop(t *testing.T) {
-	callCount := 0
+	var callCount atomic.Int64
 	server := testHTTPServerForHeartbeat(t, &callCount)
 	defer server.Close()
 

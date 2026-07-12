@@ -16,8 +16,8 @@ func TestLoadManifest(t *testing.T) {
   "build_seq": 800,
   "sha256": "abc123",
   "files": [
-    {"path": "kx-gateway", "sha256": "def456"},
-    {"path": "VERSION", "sha256": "ghi789"}
+    {"path": "kx-gateway", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"path": "VERSION", "sha256": "1111111111111111111111111111111111111111111111111111111111111111"}
   ]
 }`
 		if err := os.WriteFile(manifestPath, []byte(content), 0644); err != nil {
@@ -58,6 +58,29 @@ func TestLoadManifest(t *testing.T) {
 		_, err := LoadManifest(manifestPath)
 		if err == nil {
 			t.Error("expected error for invalid JSON")
+		}
+	})
+
+	t.Run("rejects empty files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestPath := filepath.Join(tmpDir, "manifest.json")
+		if err := os.WriteFile(manifestPath, []byte(`{"version":"v1.0.0","files":[]}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadManifest(manifestPath); err == nil {
+			t.Fatal("expected empty files to be rejected")
+		}
+	})
+
+	t.Run("rejects invalid checksum", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestPath := filepath.Join(tmpDir, "manifest.json")
+		content := `{"version":"v1.0.0","files":[{"path":"test.txt","sha256":"wrong"}]}`
+		if err := os.WriteFile(manifestPath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadManifest(manifestPath); err == nil {
+			t.Fatal("expected invalid checksum to be rejected")
 		}
 	})
 }
@@ -122,6 +145,14 @@ func TestVerifyManifest(t *testing.T) {
 		err := VerifyManifest(manifest, tmpDir)
 		if err == nil {
 			t.Error("expected error for missing file")
+		}
+	})
+
+	t.Run("rejects traversal path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifest := &Manifest{Version: "v1.0.0", Files: []FileChecksum{{Path: "../secret", SHA256: "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"}}}
+		if err := VerifyManifest(manifest, tmpDir); err == nil {
+			t.Fatal("expected traversal path to be rejected")
 		}
 	})
 }
