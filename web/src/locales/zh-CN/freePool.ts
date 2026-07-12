@@ -223,14 +223,6 @@ export default {
   templateNoKey: '无需 Key',
 
   // 扁平键（供 Vue 组件直接使用）
-  disabled: '已禁用',
-  rateLimited: '限流',
-  cooling: '冷却',
-  unreachable: '不可达',
-  quotaExhausted: '配额用尽',
-  availableUnit: '可用',
-  modelClosed: '已关闭',
-  notRoutable: '不可路由',
   acquisition: {
     signup: '注册 Key',
     env: '环境变量',

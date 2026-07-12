@@ -124,7 +124,6 @@ export default {
   // 2026-07-07: top-level key aliases (ExamplesView.vue direct references)
   name: '用戶端接入指南',
   copy: '複製',
-  copied: '已複製!',
   test: '測試',
   testing: '測試中...',
   titleCurl: 'cURL Chat 測試',

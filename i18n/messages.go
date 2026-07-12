@@ -41,6 +41,18 @@ const (
 	MsgMetaToolError = "meta_tool_error" // "Meta-tool processing failed"
 	MsgProviderError = "provider_error"  // "upstream request failed"
 
+	// Upstream credential errors — the gateway's stored credential for an
+	// upstream provider was rejected by that provider (HTTP 401/403/402).
+	// These are distinct from the client-side invalid_key / missing_key
+	// errors above: the client's request was authenticated fine, but the
+	// gateway's outbound credential is broken. Surfacing them with
+	// dedicated codes lets ops dashboards filter "is the *upstream*
+	// credential broken?" without grepping the upstream error body, and
+	// tells the client "this is an ops problem, not your key".
+	MsgUpstreamCredentialInvalid = "upstream_credential_invalid" // "Upstream credential API key invalid"
+	MsgUpstreamCredentialRevoked = "upstream_credential_revoked" // "Upstream credential API key revoked"
+	MsgUpstreamQuotaPermanent    = "upstream_quota_permanent"    // "Upstream credential quota permanently exhausted"
+
 	// Generic.
 	MsgInternalError = "internal_error"
 )
