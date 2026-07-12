@@ -86,17 +86,22 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 	if req.ToolChoice != nil {
 		out["tool_choice"] = serializeOpenAIToolChoice(req.ToolChoice)
 	}
+	if req.ParallelToolCalls != nil {
+		out["parallel_tool_calls"] = *req.ParallelToolCalls
+	}
 
 	// P0 fix (2026-07-13): Restore Extensions (vendor-specific unknown fields)
 	// Extensions contains fields like reasoning_effort (DeepSeek), web_search (GLM),
 	// bot_setting (MiniMax), etc. that were preserved during ParseOpenAI.
 	// Restore them to output for lossless passthrough to upstream providers.
-	for key, val := range req.Extensions {
-		// Only restore if key doesn't conflict with known fields
-		if _, exists := out[key]; !exists {
-			var v any
-			if err := json.Unmarshal(val, &v); err == nil {
-				out[key] = v
+	if req.SourceProtocol == "" || req.SourceProtocol == ProtocolOpenAIChat {
+		for key, val := range req.Extensions {
+			// Only restore if key doesn't conflict with known fields
+			if _, exists := out[key]; !exists {
+				var v any
+				if err := json.Unmarshal(val, &v); err == nil {
+					out[key] = v
+				}
 			}
 		}
 	}
@@ -310,6 +315,13 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 						"type": "text",
 						"text": text,
 					})
+				}
+			}
+		default:
+			if raw, ok := block.RawContent.(string); ok && raw != "" {
+				var original map[string]any
+				if err := json.Unmarshal([]byte(raw), &original); err == nil {
+					result = append(result, original)
 				}
 			}
 		}

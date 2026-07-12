@@ -38,6 +38,7 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		ResponseFormat      json.RawMessage `json:"response_format,omitempty"`
 		N                   *int            `json:"n,omitempty"`
 		User                string          `json:"user,omitempty"`
+		ParallelToolCalls   *bool           `json:"parallel_tool_calls,omitempty"`
 	}
 
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -50,7 +51,7 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		"temperature": true, "top_p": true, "stop": true, "stream": true,
 		"tools": true, "tool_choice": true, "frequency_penalty": true, "presence_penalty": true,
 		"logprobs": true, "top_logprobs": true, "seed": true, "response_format": true,
-		"n": true, "user": true,
+		"n": true, "user": true, "parallel_tool_calls": true,
 	}
 
 	extensions := make(map[string]json.RawMessage)
@@ -61,16 +62,17 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 	}
 
 	ir := &InternalRequest{
-		Model:            src.Model,
-		SourceProtocol:   ProtocolOpenAIChat,
-		FrequencyPenalty: src.FrequencyPenalty,
-		PresencePenalty:  src.PresencePenalty,
-		Logprobs:         src.LogProbs,
-		TopLogprobs:      src.TopLogProbs,
-		Seed:             src.Seed,
-		N:                derefInt(src.N),
-		User:             src.User,
-		Extensions:       extensions, // P0 fix: preserve unknown fields
+		Model:             src.Model,
+		SourceProtocol:    ProtocolOpenAIChat,
+		FrequencyPenalty:  src.FrequencyPenalty,
+		PresencePenalty:   src.PresencePenalty,
+		Logprobs:          src.LogProbs,
+		TopLogprobs:       src.TopLogProbs,
+		Seed:              src.Seed,
+		N:                 derefInt(src.N),
+		User:              src.User,
+		ParallelToolCalls: src.ParallelToolCalls,
+		Extensions:        extensions, // P0 fix: preserve unknown fields
 	}
 
 	if src.MaxTokens != nil {
@@ -230,6 +232,9 @@ func parseOpenAIContentBlocks(blocks []any) ([]ContentBlock, error) {
 			img := parseOpenAIImageBlock(blockMap)
 			irBlock.Image = img
 			irBlock.Type = "image" // Normalize to our type
+		default:
+			raw, _ := json.Marshal(blockMap)
+			irBlock.RawContent = string(raw)
 		}
 		result = append(result, irBlock)
 	}

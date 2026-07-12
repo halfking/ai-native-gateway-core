@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   与服务端 `middleware/sigverify.go` 格式对齐，方便后续启用服务端校验。
 
 ### Fixed
+- Preserved Anthropic unknown request fields and unknown multimodal content blocks
+  during same-protocol IR round trips; added OpenAI `parallel_tool_calls` coverage.
 - Restored same-protocol request extensions when an IR request has no recorded
   source protocol, preserving Ollama and GLM vendor fields during round-trip.
 - Removed inactive FpSlot degradation code and an unobserved saturation metric

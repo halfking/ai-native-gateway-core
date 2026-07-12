@@ -7,6 +7,11 @@ import (
 
 // ParseAnthropic parses an Anthropic Messages API request body into InternalRequest.
 func ParseAnthropic(body []byte) (*InternalRequest, error) {
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(body, &rawMap); err != nil {
+		return nil, fmt.Errorf("unmarshal anthropic body to map: %w", err)
+	}
+
 	var src struct {
 		Model         string             `json:"model"`
 		Messages      json.RawMessage    `json:"messages"`
@@ -29,10 +34,24 @@ func ParseAnthropic(body []byte) (*InternalRequest, error) {
 		return nil, fmt.Errorf("unmarshal anthropic body: %w", err)
 	}
 
+	knownFields := map[string]bool{
+		"model": true, "messages": true, "max_tokens": true, "system": true,
+		"stream": true, "temperature": true, "top_p": true, "top_k": true,
+		"stop_sequences": true, "tools": true, "tool_choice": true,
+		"metadata": true, "thinking": true, "cache_control": true, "documents": true,
+	}
+	extensions := make(map[string]json.RawMessage)
+	for key, value := range rawMap {
+		if !knownFields[key] && len(value) > 0 && string(value) != "null" {
+			extensions[key] = value
+		}
+	}
+
 	ir := &InternalRequest{
 		Model:          src.Model,
 		MaxTokens:      src.MaxTokens,
 		SourceProtocol: ProtocolAnthropicMessages,
+		Extensions:     extensions,
 	}
 
 	if src.Temperature != nil {
@@ -313,6 +332,10 @@ func parseAnthropicContentBlocks(blocks []any) ([]ContentBlock, error) {
 			img := parseAnthropicImageBlock(blockMap)
 			irBlock.Image = img
 
+		case "document":
+			raw, _ := json.Marshal(blockMap)
+			irBlock.RawContent = string(raw)
+
 		case "thinking":
 			thinking, _ := blockMap["thinking"].(string)
 			sig, _ := blockMap["signature"].(string)
@@ -388,6 +411,9 @@ func parseAnthropicContentBlock(blockMap map[string]any) *ContentBlock {
 		irBlock.ToolResult = &ToolResult{ToolUseID: toolUseID, Content: contentBlocks, IsError: isError}
 	case "image":
 		irBlock.Image = parseAnthropicImageBlock(blockMap)
+	case "document":
+		raw, _ := json.Marshal(blockMap)
+		irBlock.RawContent = string(raw)
 	case "thinking":
 		if thinking, ok := blockMap["thinking"].(string); ok {
 			sig, _ := blockMap["signature"].(string)
