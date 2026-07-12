@@ -1,0 +1,48 @@
+{
+  "source": "252-prod (115.29.212.252:25022)",
+  "source_db": "llm_gateway@pg-252-pg17:5432",
+  "table": "request_logs_hot",
+  "exported_at": "2026-07-12T10:10:15.443324Z",
+  "session_files": [
+    {
+      "session_id": "gw_7c9f06ab-7520-4ad0-a9c7-863c7152878c",
+      "label": "10轮累积多轮会话(gpt-4o)最终20条消息108KB",
+      "file": "/tmp/session_export/sessions/session_7c9f06ab-7520-4ad0-a9c7-863c7152878c.json",
+      "turns": 10,
+      "total_request_bytes": 601045,
+      "size_kb": 599.3
+    },
+    {
+      "session_id": "gw_d5e36aec-0e8a-4b0d-861f-bac7c9d1bdfc",
+      "label": "10轮累积多轮会话(gpt-4o)另一个会话",
+      "file": "/tmp/session_export/sessions/session_d5e36aec-0e8a-4b0d-861f-bac7c9d1bdfc.json",
+      "turns": 10,
+      "total_request_bytes": 601045,
+      "size_kb": 599.3
+    },
+    {
+      "session_id": "gw_13ba410d-3b82-4c33-b5ca-82b4774624e0",
+      "label": "超长单请求(71万tokens_gpt-5.6-terra)",
+      "file": "/tmp/session_export/sessions/session_13ba410d-3b82-4c33-b5ca-82b4774624e0.json",
+      "turns": 2,
+      "total_request_bytes": 2688740,
+      "size_kb": 3002.1
+    },
+    {
+      "session_id": "gw_86750cd0-aebf-4973-8ad4-90a36f0518ab",
+      "label": "超长单请求(58万tokens_gpt-5.4)",
+      "file": "/tmp/session_export/sessions/session_86750cd0-aebf-4973-8ad4-90a36f0518ab.json",
+      "turns": 2,
+      "total_request_bytes": 2142063,
+      "size_kb": 2234.3
+    },
+    {
+      "session_id": "gw_777ff60c-ca77-4090-941f-5866a29c938c",
+      "label": "超长单请求(55万tokens_gpt-5.6-terra)",
+      "file": "/tmp/session_export/sessions/session_777ff60c-ca77-4090-941f-5866a29c938c.json",
+      "turns": 2,
+      "total_request_bytes": 1985235,
+      "size_kb": 2128.3
+    }
+  ]
+}
