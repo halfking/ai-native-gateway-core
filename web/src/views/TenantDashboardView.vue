@@ -60,6 +60,15 @@ const avgLatencyMs = computed(() => {
 
 const activeModels = computed(() => summary.value?.by_model?.length ?? 0)
 
+const degradedHint = computed(() => {
+  if (summary.value?.degraded) {
+    const view = summary.value.missing_view || 'data view'
+    return summary.value.hint || `数据视图 ${view} 尚未初始化，请先执行数据聚合迁移`
+  }
+  return null
+})
+const degradedView = computed(() => summary.value?.missing_view || '')
+
 function fmtDate(s: string | undefined) {
   if (!s) return '—'
   return new Date(s).toLocaleDateString(localeRef.value, { year: 'numeric', month: 'short', day: 'numeric' })
@@ -264,6 +273,18 @@ onUnmounted(() => {
           <span v-else>🔄</span>
         </button>
       </div>
+    </div>
+
+    <!-- 数据视图降级提示：与 TenantDetailView 计费审计同款蓝色 ℹ️ 横幅 -->
+    <div
+      v-if="degradedHint"
+      class="alert alert-info"
+      role="status"
+      data-testid="tenant-dashboard-degraded-hint"
+    >
+      <span class="alert-icon" aria-hidden="true">ℹ️</span>
+      <span class="alert-text">{{ degradedHint }}</span>
+      <span v-if="degradedView" class="alert-meta">视图：{{ degradedView }}</span>
     </div>
 
     <!-- 错误态：带重试按钮的友好提示 -->
