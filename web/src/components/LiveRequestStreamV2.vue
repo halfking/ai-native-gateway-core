@@ -11,6 +11,7 @@ import { isSuperAdmin, authBearer } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
 import SwimLane from './SwimLane.vue'
 import LiveStreamLegend from './LiveStreamLegend.vue'
+import EmergencyDiagnosticModal from './EmergencyDiagnosticModal.vue'
 import type { GroupByDimension } from '../types/swimlane'
 
 const emit = defineEmits<{
@@ -40,6 +41,28 @@ const {
 // 管理员连接详情弹窗
 const showConnectionDetail = ref(false)
 const isAdmin = computed(() => isSuperAdmin())
+
+// 应急诊断弹窗
+const showEmergencyDiagnostic = ref(false)
+const emergencyCredentialId = ref(0)
+const emergencyModel = ref('')
+const emergencyLaneName = ref('')
+
+function handleEmergencyDiagnose(data: { credentialId: number; model: string; laneName: string }) {
+  emergencyCredentialId.value = data.credentialId
+  emergencyModel.value = data.model
+  emergencyLaneName.value = data.laneName
+  showEmergencyDiagnostic.value = true
+}
+
+function handleEmergencyClose() {
+  showEmergencyDiagnostic.value = false
+}
+
+function handleEmergencyRecovered() {
+  // 恢复成功后，可以选择刷新泳道或显示通知
+  console.log('Credential recovered successfully')
+}
 
 // SSE endpoint address - 可编辑
 // 行为：
@@ -332,11 +355,22 @@ function handleToggleLegend(key: string) {
         :group-by="groupBy"
         :selected-legends="selectedLegends"
         @tile-click="handleTileClick"
+        @emergency-diagnose="handleEmergencyDiagnose"
       />
       <div v-if="lanes.length === 0" class="swim-lanes__empty">
         暂无请求数据
       </div>
     </div>
+
+    <!-- 应急诊断弹窗 -->
+    <EmergencyDiagnosticModal
+      :visible="showEmergencyDiagnostic"
+      :credential-id="emergencyCredentialId"
+      :model="emergencyModel"
+      :lane-name="emergencyLaneName"
+      @close="handleEmergencyClose"
+      @recovered="handleEmergencyRecovered"
+    />
   </div>
 </template>
 

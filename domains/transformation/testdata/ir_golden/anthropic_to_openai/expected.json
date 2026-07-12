@@ -1,0 +1,14 @@
+{
+  "model": "gpt-4o",
+  "max_tokens": 64,
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are concise."
+    },
+    {
+      "role": "user",
+      "content": "Summarize this."
+    }
+  ]
+}
