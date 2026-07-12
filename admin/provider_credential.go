@@ -117,7 +117,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		       COALESCE(c.trust_level,'standard'), c.concurrency_limit,
 		       COALESCE(c.fp_slot_limit, 20) AS fp_slot_limit,  -- 2026-06-24: 5→20
 		       c.balance_usd::float8,
-		       COALESCE(c.plan_type,'token') AS plan_type,
+		       COALESCE(c.plan_type,'per_token') AS plan_type,
 		       COALESCE(c.circuit_state,'closed'),
 		       c.circuit_opened_at,
 		       COALESCE(c.consecutive_failures, 0),
