@@ -19,6 +19,15 @@ func TestClampUsageDays(t *testing.T) {
 	}
 }
 
+func TestRequestLogsSource(t *testing.T) {
+	if got := requestLogsSource(7); got != "request_logs_hot" {
+		t.Fatalf("requestLogsSource(7) = %q", got)
+	}
+	if got := requestLogsSource(30); got != "(SELECT * FROM request_logs_hot UNION ALL SELECT * FROM request_logs)" {
+		t.Fatalf("requestLogsSource(30) = %q", got)
+	}
+}
+
 func TestClampUsageLimit(t *testing.T) {
 	tests := []struct {
 		in, want int

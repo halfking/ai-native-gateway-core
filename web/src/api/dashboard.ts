@@ -8,7 +8,10 @@
 //   - 请求埋点（自动调用 telemetry）
 
 import { req } from './_core'
-import type { AxiosError } from 'axios'
+
+type DashboardHttpError = Error & {
+  response?: { data?: ApiResponse<unknown> }
+}
 
 // ════════════════════════════════════════════════════════════════
 // 统一响应格式
@@ -555,14 +558,14 @@ export function handleApiError(error: unknown): never {
   if (error instanceof Error) {
     // Axios 错误
     if ('response' in error) {
-      const axiosError = error as AxiosError<ApiResponse<any>>
-      const responseData = axiosError.response?.data
+      const httpError = error as DashboardHttpError
+      const responseData = httpError.response?.data
       if (responseData?.error) {
         throw new DashboardApiError(responseData.error)
       }
       throw new DashboardApiError({
         code: ErrorCode.INTERNAL_ERROR,
-        message: axiosError.message,
+        message: httpError.message,
       })
     }
     throw new DashboardApiError({

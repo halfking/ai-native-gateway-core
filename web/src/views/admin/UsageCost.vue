@@ -263,7 +263,8 @@ const renderTrendChart = () => {
         tooltip: {
           callbacks: {
             label: (context) => {
-              return `${context.dataset.label}: $${context.parsed.y.toFixed(2)}`
+              const value = typeof context.parsed.y === 'number' ? context.parsed.y : 0
+              return `${context.dataset.label}: $${value.toFixed(2)}`
             },
           },
         },
