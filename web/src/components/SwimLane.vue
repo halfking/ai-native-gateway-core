@@ -26,64 +26,26 @@ const displayName = computed(() => {
   return `${name} (${count})`
 })
 
-// 连续失败检测与诊断按钮显示逻辑（2026-07-13 优化）
-// 规则：
-//   - 显示条件：最近窗口内（最多 30 个请求）失败比例 > 1/3
-//   - 隐藏条件：连续 4 次成功后隐藏
-const diagnosticButtonState = computed(() => {
-  const requests = props.lane.requests
-  if (requests.length === 0) return { show: false, consecutiveFailures: 0 }
-  
-  // 1. 检查最近是否有连续 4 次成功 → 立即隐藏按钮
-  let consecutiveSuccess = 0
-  for (let i = requests.length - 1; i >= 0 && i >= requests.length - 4; i--) {
-    if (requests[i].success) {
-      consecutiveSuccess++
-    } else {
-      break
-    }
-  }
-  if (consecutiveSuccess >= 4) {
-    return { show: false, consecutiveFailures: 0 }
-  }
-  
-  // 2. 检查失败比例：窗口大小 = min(30, requests.length)
-  const windowSize = Math.min(30, requests.length)
-  const windowStart = requests.length - windowSize
-  const windowRequests = requests.slice(windowStart)
-  
-  const failureCount = windowRequests.filter(r => !r.success).length
-  const failureRate = failureCount / windowSize
-  
-  // 3. 失败比例 > 1/3 才显示按钮
-  const shouldShow = failureRate > 1 / 3
-  
-  // 4. 统计连续失败数（用于前端显示）
-  let consecutiveFailures = 0
-  for (let i = requests.length - 1; i >= 0; i--) {
-    if (!requests[i].success) {
-      consecutiveFailures++
-    } else {
-      break
-    }
-  }
-  
-  return {
-    show: shouldShow,
-    consecutiveFailures,
-    failureRate: Math.round(failureRate * 100),
-    windowSize
-  }
-})
-
-// 是否显示应急诊断按钮
-const showEmergencyButton = computed(() => {
-  return diagnosticButtonState.value.show
-})
-
-// 连续失败数（保留兼容性，供模板使用）
+// 连续失败检测（最近 10 个请求中连续失败数）
 const consecutiveFailures = computed(() => {
-  return diagnosticButtonState.value.consecutiveFailures
+  const requests = props.lane.requests
+  if (requests.length === 0) return 0
+  
+  let count = 0
+  // 从最新的请求开始往前数
+  for (let i = requests.length - 1; i >= Math.max(0, requests.length - 10); i--) {
+    if (!requests[i].success) {
+      count++
+    } else {
+      break // 遇到成功请求就停止
+    }
+  }
+  return count
+})
+
+// 是否显示应急诊断按钮（≥3 次连续失败 且 用户是 super_admin）
+const showEmergencyButton = computed(() => {
+  return consecutiveFailures.value >= 3
 })
 
 function handleEmergencyDiagnose() {

@@ -813,18 +813,8 @@ func (e *Executor) executeOpenAI(
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
 			}
-			// Strip vendor-specific private fields (audit-09 fix: 2026-07-12)
 			if e.StripMinimaxFields != nil {
 				respBody = e.StripMinimaxFields(respBody)
-			}
-			if e.StripZhipuFields != nil {
-				respBody = e.StripZhipuFields(respBody)
-			}
-			if e.StripDeepSeekFields != nil {
-				respBody = e.StripDeepSeekFields(respBody)
-			}
-			if e.StripDoubaoFields != nil {
-				respBody = e.StripDoubaoFields(respBody)
 			}
 			// Q2 non-stream response (anthropic client ← openai upstream):
 			// the upstream body is still OpenAI-shaped at this point; if
@@ -862,19 +852,6 @@ func (e *Executor) executeOpenAI(
 				for k, vs := range resp.Header {
 					for _, v := range vs {
 						params.W.Header().Add(k, v)
-					}
-				}
-				// 2026-07-13: Surface compression metadata to clients so they
-				// can adapt their session strategy (e.g. trim client-side
-				// history, reset conversation, switch to compact model).
-				if contextLenRecovery.lastReason != "" && contextLenRecovery.lastReason != "noop" {
-					params.W.Header().Set("X-Gateway-Context-Compressed", "true")
-					params.W.Header().Set("X-Gateway-Compression-Reason", contextLenRecovery.lastReason)
-					if contextLenRecovery.lastStrategy != "" {
-						params.W.Header().Set("X-Gateway-Compression-Strategy", contextLenRecovery.lastStrategy)
-					}
-					if contextLenRecovery.lastMeta != nil {
-						params.W.Header().Set("X-Gateway-Compression-Meta", string(contextLenRecovery.lastMeta))
 					}
 				}
 				params.W.WriteHeader(resp.StatusCode)
@@ -1002,9 +979,20 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 	bodyBytes := prepareRequestBody(&p, cand)
 
 	// 2026-07-12: Apply format validation even in legacy path.
-	// Always validate, regardless of e.IR initialization status.
-	// This prevents tool_call_id_mismatch errors in OpenAI→OpenAI path.
-	bodyBytes = applyInlineValidation(bodyBytes)
+	// Parse → Validate → Serialize to clean up malformed requests.
+	if e.IR != nil {
+		irReq, parseErr := e.IR.ParseOpenAI(bodyBytes)
+		if parseErr == nil {
+			irReq = ir.ValidateAndFixRequest(irReq)
+			// Override model to outbound model
+			irReq.Model = resolveOutboundModel(params, cand)
+			bodyBytes, _ = e.IR.SerializeOpenAI(irReq)
+		} else {
+			slog.Warn("legacy path: IR parse failed, skipping validation",
+				"error", parseErr.Error(),
+			)
+		}
+	}
 
 	if e.NormalizeOpenAITools != nil {
 		bodyBytes = e.NormalizeOpenAITools(bodyBytes)
@@ -1101,27 +1089,8 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 	// (executor_anthropic.go). See transform/ctx_compress.go for rationale:
 	// upstreams like minimax trim server-side on direct calls, but proxy
 	// clients must trim at the gateway.
-	//
-	// 2026-07-13: Added fallback context window (128K) when ContextWindow is nil.
-	// This prevents upstream "context window exceeded" errors for models where
-	// the canonical context_window is not yet populated (e.g. gpt-5.6-luna).
-	if cand.Protocol != "anthropic-messages" {
-		effectiveWindow := 0
-		if cand.ContextWindow != nil {
-			effectiveWindow = *cand.ContextWindow
-		} else if len(bodyBytes) > 100*1024 { // Only apply fallback for requests >100KB
-			// Conservative default: 128K tokens for unknown context windows
-			effectiveWindow = 128 * 1024
-			slog.Info("context_compress: using fallback context window",
-				"provider_id", cand.ProviderID,
-				"raw_model", cand.RawModel,
-				"fallback_window", effectiveWindow,
-				"request_size_bytes", len(bodyBytes),
-			)
-		}
-		if effectiveWindow > 0 {
-			bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, effectiveWindow)
-		}
+	if cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
+		bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
 	}
 	return bodyBytes
 }
