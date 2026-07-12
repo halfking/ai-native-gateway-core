@@ -38,8 +38,14 @@ type SelfCheckWorker struct {
 }
 
 // TriggerManualRun triggers a manual self-check run for the given model.
-func (w *SelfCheckWorker) TriggerManualRun(model string) {
-	w.triggerCh <- model
+// Returns error if the trigger channel is full.
+func (w *SelfCheckWorker) TriggerManualRun(model string) error {
+	select {
+	case w.triggerCh <- model:
+		return nil
+	default:
+		return fmt.Errorf("manual trigger channel is full, try again later")
+	}
 }
 
 // selfCheckToolDef is the tool used by every self-check conversation.
