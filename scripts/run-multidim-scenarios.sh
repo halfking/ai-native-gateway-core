@@ -65,7 +65,7 @@ prereq_check() {
   echo "=== prereq check ==="
   curl -sS "$GATEWAY/healthz" >/dev/null 2>&1 || { echo "✗ gateway down at $GATEWAY"; exit 1; }
   psql -d llm_gateway -tc "SELECT 1" >/dev/null 2>&1 || { echo "✗ DB down"; exit 1; }
-  local n; n=$(pgrep -f 'server-v3.py' | wc -l | tr -d ' ')
+  local n; n=$(pgrep -f 'server-v2.py' | wc -l | tr -d ' ')
   [ "${n:-0}" -ge 50 ] || { echo "✗ only ${n:-0}/60 mocks running"; exit 1; }
   echo "✓ gateway + DB + $n mocks OK"
 }
