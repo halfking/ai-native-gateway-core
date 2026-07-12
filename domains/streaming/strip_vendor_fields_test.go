@@ -66,19 +66,18 @@ func TestStripZhipuFieldsBody(t *testing.T) {
 		kept     []string
 	}{
 		{
-			name: "strips zhipu private fields",
+			name: "strips zhipu private fields but preserves OpenAI compatible fields",
 			input: `{
 				"id": "chat-123",
 				"model": "glm-4",
 				"choices": [{"message": {"content": "hello"}}],
 				"usage": {"prompt_tokens": 10, "completion_tokens": 5},
 				"zhipu_request_id": "private-id-123",
-				"cache_read_tokens": 100,
 				"web_search_results": ["result1", "result2"],
 				"system_fingerprint": "fp-123"
 			}`,
-			stripped: []string{"zhipu_request_id", "web_search_results", "system_fingerprint"},
-			kept:     []string{"id", "model", "choices", "usage"},
+			stripped: []string{"zhipu_request_id", "web_search_results"},
+			kept:     []string{"id", "model", "choices", "usage", "system_fingerprint"},
 		},
 		{
 			name:     "handles empty body",
@@ -98,7 +97,8 @@ func TestStripZhipuFieldsBody(t *testing.T) {
 		},
 		{
 			// Real capture: glm-5.2 response from provider_id=32, ts=2026-07-09
-			name: "strips GLM-5 nested usage details and reasoning chain",
+			// audit-09 fix: preserve usage detail and reasoning content
+			name: "preserves GLM-5 nested usage details and reasoning chain",
 			input: `{
 				"id": "202607091302388f6a7ff3cf8c400c",
 				"model": "glm-5.2",
@@ -120,17 +120,14 @@ func TestStripZhipuFieldsBody(t *testing.T) {
 				}],
 				"system_fingerprint": "fp_glm5_2"
 			}`,
-			stripped: []string{
-				"prompt_tokens_details",
-				"completion_tokens_details",
-				"reasoning_content",
-				"system_fingerprint",
-			},
+			stripped: []string{},
 			kept: []string{
 				"id", "model", "usage",
 				"usage.prompt_tokens", "usage.completion_tokens", "usage.total_tokens",
+				"usage.prompt_tokens_details", "usage.completion_tokens_details",
 				"choices.0.message.role", "choices.0.message.content",
-				"choices.0.message.tool_calls", "choices.0.finish_reason",
+				"choices.0.message.tool_calls", "choices.0.message.reasoning_content",
+				"choices.0.finish_reason", "system_fingerprint",
 			},
 		},
 	}
@@ -176,7 +173,7 @@ func TestStripDeepSeekFieldsBody(t *testing.T) {
 		kept     []string
 	}{
 		{
-			name: "strips deepseek private fields including reasoning_tokens",
+			name: "strips only deepseek_request_id; preserves billing and standard fields",
 			input: `{
 				"id": "chat-456",
 				"model": "deepseek-chat",
@@ -190,11 +187,11 @@ func TestStripDeepSeekFieldsBody(t *testing.T) {
 				"prompt_cache_hit_tokens": 15,
 				"system_fingerprint": "fp-456"
 			}`,
-			stripped: []string{"deepseek_request_id", "prompt_cache_hit_tokens", "system_fingerprint"},
-			kept:     []string{"id", "model", "choices", "usage"},
+			stripped: []string{"deepseek_request_id"},
+			kept:     []string{"id", "model", "choices", "usage", "usage.reasoning_tokens", "prompt_cache_hit_tokens", "system_fingerprint"},
 		},
 		{
-			name: "handles R1 reasoning fields",
+			name: "preserves R1 reasoning fields (billing-critical)",
 			input: `{
 				"id": "chat-r1",
 				"model": "deepseek-reasoner",
@@ -202,8 +199,8 @@ func TestStripDeepSeekFieldsBody(t *testing.T) {
 				"reasoning_tokens": 100,
 				"choices": [{"message": {"content": "answer"}}]
 			}`,
-			stripped: []string{"reasoning_content", "reasoning_tokens"},
-			kept:     []string{"id", "model", "choices"},
+			stripped: []string{},
+			kept:     []string{"id", "model", "choices", "reasoning_content", "reasoning_tokens"},
 		},
 	}
 
@@ -216,14 +213,16 @@ func TestStripDeepSeekFieldsBody(t *testing.T) {
 				t.Fatalf("failed to unmarshal result: %v", err)
 			}
 
+			// Check stripped fields
 			for _, field := range tt.stripped {
-				if _, exists := resultMap[field]; exists {
+				if !assertFieldAbsent(t, resultMap, field) {
 					t.Errorf("field %s should be stripped but still exists", field)
 				}
 			}
 
+			// Check kept fields (support nested paths)
 			for _, field := range tt.kept {
-				if _, exists := resultMap[field]; !exists {
+				if !assertFieldPresent(t, resultMap, field) {
 					t.Errorf("field %s should be kept but was removed", field)
 				}
 			}
@@ -239,7 +238,7 @@ func TestStripDoubaoFieldsBody(t *testing.T) {
 		kept     []string
 	}{
 		{
-			name: "strips doubao/volcengine private fields",
+			name: "strips doubao/volcengine private fields but preserves OpenAI compatible fields",
 			input: `{
 				"id": "chat-db",
 				"model": "doubao-pro",
@@ -251,8 +250,8 @@ func TestStripDoubaoFieldsBody(t *testing.T) {
 				"ab_test_group": "experiment-A",
 				"system_fingerprint": "fp-db"
 			}`,
-			stripped: []string{"doubao_request_id", "seeddance_request_id", "content_safety_score", "ab_test_group", "system_fingerprint"},
-			kept:     []string{"id", "model", "choices", "usage"},
+			stripped: []string{"doubao_request_id", "seeddance_request_id", "content_safety_score", "ab_test_group"},
+			kept:     []string{"id", "model", "choices", "usage", "system_fingerprint"},
 		},
 		{
 			name:     "handles invalid json gracefully",
@@ -330,6 +329,7 @@ func TestStripMinimaxFieldsBody(t *testing.T) {
 func TestStripMinimaxNestedFields(t *testing.T) {
 	// Real capture from 252 (provider_id=14, 2026-07-09 to 2026-07-11):
 	// MiniMax M2 thinking-mode response with Anthropic-style usage extras.
+	// 2026-07-12 audit fix: preserve usage detail and reasoning for billing.
 	input := `{
 		"id": "chatmm-abc",
 		"model": "MiniMax-M2.7",
@@ -360,14 +360,8 @@ func TestStripMinimaxNestedFields(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	stripped := []string{
-		"total_characters",
-		"cache_read_tokens",
-		"prompt_tokens_details",
-		"completion_tokens_details",
-		"reasoning",
-		"system_fingerprint",
-	}
+	// No nested fields are stripped after audit-09 fix
+	stripped := []string{}
 	for _, field := range stripped {
 		if !assertFieldAbsent(t, resultMap, field) {
 			t.Errorf("field %s should be stripped but still exists", field)
@@ -377,8 +371,12 @@ func TestStripMinimaxNestedFields(t *testing.T) {
 	kept := []string{
 		"id", "model", "usage",
 		"usage.total_tokens", "usage.prompt_tokens", "usage.completion_tokens",
+		"usage.total_characters", "usage.cache_read_tokens",
+		"usage.prompt_tokens_details", "usage.completion_tokens_details",
 		"choices.0.message.role", "choices.0.message.content",
+		"choices.0.message.reasoning",
 		"choices.0.finish_reason",
+		"system_fingerprint",
 	}
 	for _, field := range kept {
 		if !assertFieldPresent(t, resultMap, field) {

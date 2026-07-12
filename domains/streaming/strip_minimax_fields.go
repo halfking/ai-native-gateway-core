@@ -8,6 +8,10 @@ import (
 // Top-level MiniMax fields observed in production (provider_id=14 on 252).
 // Source: 2026-07-11 production capture, ~16400 successful responses.
 // MiniMax returns standard {id, model, created, choices, usage} plus these.
+//
+// 2026-07-12 audit fix (audit-09): 移除 OpenAI compatible 标准字段。
+// - object、system_fingerprint 是 OpenAI compatible 标准字段，保留供客户端解析
+// - service_tier 是请求/响应官方定价字段，billing 依赖，保留
 var minimaxPrivateFields = []string{
 	"nvext",
 	"audio_content",
@@ -17,29 +21,11 @@ var minimaxPrivateFields = []string{
 	"output_sensitive",
 	"output_sensitive_type",
 	"output_sensitive_int",
-	"service_tier",
 	"base_resp",
 	"request_id",
 	"workflow_run_id",
 	"created_by",
-	"object",
-	"system_fingerprint",
 	"usage_extra",
-}
-
-// Nested fields that MiniMax adds under standard structures:
-//   - usage.total_characters / usage.cache_read_tokens
-//     (Anthropic-style extension surface added on top of OpenAI shape)
-//   - usage.prompt_tokens_details / usage.completion_tokens_details
-//     (when thinking mode emits reasoning_tokens)
-//   - choices.0.message.reasoning
-//     (legacy reasoning surface; production sees it in 4 responses of 16K)
-var minimaxPrivateNestedFields = []string{
-	"usage.total_characters",
-	"usage.cache_read_tokens",
-	"usage.prompt_tokens_details",
-	"usage.completion_tokens_details",
-	"choices.0.message.reasoning",
 }
 
 func StripMinimaxFieldsBody(body []byte) []byte {
@@ -57,11 +43,9 @@ func StripMinimaxFieldsBody(body []byte) []byte {
 			stripped++
 		}
 	}
-	for _, p := range minimaxPrivateNestedFields {
-		if stripNestedPath(raw, p) {
-			stripped++
-		}
-	}
+	// 2026-07-12 audit fix: removed nested field stripping.
+	// usage detail (total_characters, cache_read_tokens, prompt/completion_tokens_details)
+	// and choices.0.message.reasoning are now preserved for billing/audit.
 	if stripped == 0 {
 		return body
 	}
