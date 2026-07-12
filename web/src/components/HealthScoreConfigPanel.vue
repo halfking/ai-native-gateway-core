@@ -1,213 +1,28 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-
 const { t } = useI18n()
-
-// 健康评分配置（默认值，暂无后端API）
-const config = ref({
-  error_ended_penalty: 30,
-  abandoned_penalty: 15,
-  per_error_penalty: 3,
-  per_error_cap: 30,
-  per_compliance_penalty: 10,
-  per_compliance_cap: 30,
-  high_latency_threshold_ms: 5000,
-  high_latency_penalty: 15,
-  model_switch_threshold: 3,
-  model_switch_penalty: 10,
-  prompt_injection_penalty: 20,
-  pii_penalty: 15,
-  toxic_output_penalty: 15,
-  sensitive_penalty_cap: 30,
-})
-
-const showInfo = ref(false)
 </script>
 
 <template>
-  <div class="health-score-config-panel">
-    <el-alert
-      type="info"
-      :closable="false"
-      show-icon
-      style="margin-bottom: 20px;"
-    >
-      <template #title>
-        {{ t('sessions.config.healthInfo') }}
-      </template>
-    </el-alert>
-
-    <el-card shadow="hover" style="margin-bottom: 20px;">
-      <template #header>
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span>{{ t('sessions.config.outcomeRules') }}</span>
-          <el-button type="primary" size="small" disabled>
-            {{ t('common.save') }} ({{ t('sessions.config.comingSoon') }})
-          </el-button>
-        </div>
-      </template>
-
-      <el-form label-width="200px">
-        <el-form-item :label="t('sessions.config.errorEndedPenalty')">
-          <el-input-number
-            v-model="config.error_ended_penalty"
-            :min="0"
-            :max="100"
-            disabled
-          />
-          <span class="form-hint">{{ t('sessions.config.errorEndedHint') }}</span>
-        </el-form-item>
-
-        <el-form-item :label="t('sessions.config.abandonedPenalty')">
-          <el-input-number
-            v-model="config.abandoned_penalty"
-            :min="0"
-            :max="100"
-            disabled
-          />
-          <span class="form-hint">{{ t('sessions.config.abandonedHint') }}</span>
-        </el-form-item>
-      </el-form>
-    </el-card>
-
-    <el-card shadow="hover" style="margin-bottom: 20px;">
-      <template #header>
-        <span>{{ t('sessions.config.errorRules') }}</span>
-      </template>
-
-      <el-form label-width="200px">
-        <el-form-item :label="t('sessions.config.perErrorPenalty')">
-          <el-input-number
-            v-model="config.per_error_penalty"
-            :min="0"
-            :max="50"
-            disabled
-          />
-          <span class="form-hint">{{ t('sessions.config.perErrorHint') }}</span>
-        </el-form-item>
-
-        <el-form-item :label="t('sessions.config.perErrorCap')">
-          <el-input-number
-            v-model="config.per_error_cap"
-            :min="0"
-            :max="100"
-            disabled
-          />
-        </el-form-item>
-      </el-form>
-    </el-card>
-
-    <el-card shadow="hover" style="margin-bottom: 20px;">
-      <template #header>
-        <span>{{ t('sessions.config.performanceRules') }}</span>
-      </template>
-
-      <el-form label-width="200px">
-        <el-form-item :label="t('sessions.config.highLatencyThreshold')">
-          <el-input-number
-            v-model="config.high_latency_threshold_ms"
-            :min="1000"
-            :max="60000"
-            :step="1000"
-            disabled
-          />
-          <span class="form-hint">ms</span>
-        </el-form-item>
-
-        <el-form-item :label="t('sessions.config.highLatencyPenalty')">
-          <el-input-number
-            v-model="config.high_latency_penalty"
-            :min="0"
-            :max="50"
-            disabled
-          />
-        </el-form-item>
-
-        <el-form-item :label="t('sessions.config.modelSwitchThreshold')">
-          <el-input-number
-            v-model="config.model_switch_threshold"
-            :min="1"
-            :max="20"
-            disabled
-          />
-        </el-form-item>
-
-        <el-form-item :label="t('sessions.config.modelSwitchPenalty')">
-          <el-input-number
-            v-model="config.model_switch_penalty"
-            :min="0"
-            :max="50"
-            disabled
-          />
-        </el-form-item>
-      </el-form>
-    </el-card>
-
-    <el-card shadow="hover">
-      <template #header>
-        <span>{{ t('sessions.config.securityRules') }}</span>
-      </template>
-
-      <el-form label-width="200px">
-        <el-form-item :label="t('sessions.config.promptInjectionPenalty')">
-          <el-input-number
-            v-model="config.prompt_injection_penalty"
-            :min="0"
-            :max="100"
-            disabled
-          />
-        </el-form-item>
-
-        <el-form-item :label="t('sessions.config.piiPenalty')">
-          <el-input-number
-            v-model="config.pii_penalty"
-            :min="0"
-            :max="100"
-            disabled
-          />
-        </el-form-item>
-
-        <el-form-item :label="t('sessions.config.toxicOutputPenalty')">
-          <el-input-number
-            v-model="config.toxic_output_penalty"
-            :min="0"
-            :max="100"
-            disabled
-          />
-        </el-form-item>
-
-        <el-form-item :label="t('sessions.config.sensitivePenaltyCap')">
-          <el-input-number
-            v-model="config.sensitive_penalty_cap"
-            :min="0"
-            :max="100"
-            disabled
-          />
-          <span class="form-hint">{{ t('sessions.config.sensitivePenaltyCapHint') }}</span>
-        </el-form-item>
-      </el-form>
-    </el-card>
+  <div class="health-panel">
+    <section class="health-hero">
+      <div><span class="eyebrow">{{ t('sessions.config.healthReadonly') }}</span><h2>{{ t('sessions.config.healthTitle') }}</h2><p>{{ t('sessions.config.healthReadonlyHint') }}</p></div>
+      <span class="status-badge">{{ t('sessions.config.moduleEnabled') }}</span>
+    </section>
+    <section class="health-grid">
+      <article><strong>{{ t('sessions.config.healthMetricToken') }}</strong><span>{{ t('sessions.config.healthMetricTokenHint') }}</span></article>
+      <article><strong>{{ t('sessions.config.healthMetricLatency') }}</strong><span>{{ t('sessions.config.healthMetricLatencyHint') }}</span></article>
+      <article><strong>{{ t('sessions.config.healthMetricCompliance') }}</strong><span>{{ t('sessions.config.healthMetricComplianceHint') }}</span></article>
+      <article><strong>{{ t('sessions.config.healthMetricOutcome') }}</strong><span>{{ t('sessions.config.healthMetricOutcomeHint') }}</span></article>
+    </section>
+    <div class="health-footer"><span>{{ t('sessions.config.healthSource') }}</span><a href="/admin/session-analytics">{{ t('sessions.config.healthViewAnalytics') }}</a></div>
   </div>
 </template>
 
 <style scoped>
-.health-score-config-panel {
-  max-width: 900px;
-}
-
-.form-hint {
-  margin-left: 12px;
-  font-size: 12px;
-  color: #909399;
-}
-
-:deep(.el-form-item) {
-  margin-bottom: 20px;
-}
-
-:deep(.el-card__header) {
-  padding: 12px 20px;
-  font-weight: 500;
-}
+.health-panel { display:grid; gap:12px; max-width:980px; }
+.health-hero { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px; border:1px solid var(--border); border-radius:var(--radius); background:var(--card); }
+.eyebrow { color:var(--accent-h); font-size:10px; text-transform:uppercase; letter-spacing:.06em; } h2 { margin:4px 0; color:var(--text); font-size:16px; } p { margin:0; color:var(--muted); font-size:12px; }
+.status-badge { color:var(--success); border:1px solid color-mix(in srgb,var(--success) 40%,var(--border)); border-radius:999px; padding:4px 8px; font-size:11px; white-space:nowrap; }
+.health-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; } article { display:grid; gap:4px; padding:12px; background:var(--card); border:1px solid var(--border); border-radius:var(--radius); } article strong { color:var(--text); font-size:12px; } article span,.health-footer { color:var(--muted); font-size:11px; line-height:1.45; } .health-footer { display:flex; justify-content:space-between; gap:12px; padding:4px 2px; } a { color:var(--accent-h); } @media(max-width:560px){.health-hero{align-items:start;flex-direction:column}.health-grid{grid-template-columns:1fr}}
 </style>

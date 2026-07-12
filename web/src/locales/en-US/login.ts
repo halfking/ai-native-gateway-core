@@ -17,6 +17,8 @@ export default {
   },
   changePassword: 'Change password',
   passwordChangeSuccess: 'Password changed successfully',
+  passwordChangedReloading: 'Password updated, signing out and back in…',
+  passwordChangedReLogin: 'Password updated. Please sign in with your new password.',
   // 2026-07-09: First-load auth probe message
   checking: 'Checking login status…',
 }

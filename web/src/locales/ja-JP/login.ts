@@ -18,5 +18,7 @@ export default {
   },
   changePassword: 'パスワード変更',
   passwordChangeSuccess: 'パスワードが正常に変更されました',
+  passwordChangedReloading: 'パスワードを更新しました。ログアウトして再ログインしています…',
+  passwordChangedReLogin: 'パスワードを更新しました。新しいパスワードで再ログインしてください。',
   checking: 'ログイン状態を確認中…',
 }

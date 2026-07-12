@@ -41,6 +41,15 @@
   "provider_error": {
     "other": "falló la solicitud ascendente"
   },
+  "upstream_credential_invalid": {
+    "other": "Clave de API de credencial ascendente no válida (el proveedor rechazó nuestra clave). Este es un problema de configuración de credenciales, no un problema de clave del cliente — contacte al administrador de la pasarela para actualizar la credencial ascendente."
+  },
+  "upstream_credential_revoked": {
+    "other": "Clave de API de credencial ascendente revocada (el proveedor informa que la clave ya no está activa). Este es un problema de configuración de credenciales — contacte al administrador de la pasarela para rotar la credencial ascendente."
+  },
+  "upstream_quota_permanent": {
+    "other": "Cuota de credencial ascendente agotada permanentemente (el proveedor devolvió 402 / quota_exceeded). Este es un problema de configuración — recargue la cuenta ascendente o rote la credencial."
+  },
   "internal_error": {
     "other": "Error interno del servidor"
   },

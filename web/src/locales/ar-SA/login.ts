@@ -18,5 +18,7 @@ export default {
   },
   changePassword: 'تغيير كلمة المرور',
   passwordChangeSuccess: 'تم تغيير كلمة المرور بنجاح',
+  passwordChangedReloading: 'تم تحديث كلمة المرور، جارٍ تسجيل الخروج ثم الدخول مجددًا…',
+  passwordChangedReLogin: 'تم تحديث كلمة المرور. يرجى تسجيل الدخول باستخدام كلمة المرور الجديدة.',
   checking: 'جارٍ التحقق من حالة تسجيل الدخول…',
 }

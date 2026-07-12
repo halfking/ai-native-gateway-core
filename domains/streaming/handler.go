@@ -1986,6 +1986,59 @@ func (h *ChatHandler) serveWithExecutor(
 					})
 				return
 			}
+
+			// 2026-07-12: distinguish upstream credential failures from generic
+			// upstream errors. When the upstream provider rejected the
+			// gateway's stored credential (HTTP 401/403/402 → KindAuth /
+			// KindAuthRevoked / KindQuotaPermanent), surface a dedicated error
+			// code so operators can:
+			//   - filter request_logs by error_kind = upstream_credential_invalid
+			//     vs the old blanket "provider_error" or "model_not_found",
+			//   - immediately tell the client "this is NOT your API key" by
+			//     surfacing a clear, dedicated message,
+			//   - alert on it independently of generic provider_error.
+			//
+			// This check must sit INSIDE the `if Exhausted` block because
+			// IsCredentialFatal(KindAuth/KindAuthRevoked/KindQuotaPermanent)
+			// = true → executor does NOT retry → returns Exhausted=true.
+			// Placing it outside would mean these errors never reach the
+			// classification logic (they'd hit the model_not_found fallback).
+			//
+			// The error.code + error.kind fields are kept aligned so dashboards
+			// keying on either field see the same cause. error.message carries
+			// the localized, actionable text; gateway_debug preserves the
+			// upstream HTTP status + body for forensic drilling.
+			var upstreamStatusCode int
+			if ue, ok := extractUpstreamError(execErr); ok && ue.StatusCode > 0 {
+				upstreamStatusCode = ue.StatusCode
+			}
+			credCode, credI18nKey, credHTTPStatus, credErrType := classifyUpstreamCredentialFailure(execErrTyped.LastKind, upstreamStatusCode)
+			if credCode != "" {
+				errCode = credCode
+				logCtx.SetOutboundModel(explicitOutbound)
+				logCtx.failAndMark(credCode, execErr.Error(), providerID, credentialID)
+				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
+				markLogged()
+				debugInfo := map[string]any{
+					"stage":             "execution",
+					"kind":              string(execErrTyped.LastKind),
+					"tried":             execErrTyped.Tried,
+					"retryable":         errorsx.IsRetryable(execErrTyped.LastKind),
+					"upstream_status":   upstreamStatusCode,
+					"failure_origin":    "upstream_credential",
+					"client_key_status": "valid",
+					"attempts":          execErrTyped.Attempts,
+				}
+				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
+				if preStreamPrepared {
+					writePrewarmedStreamError(w, i18n.T(r.Context(), credI18nKey), credErrType, credCode)
+					return
+				}
+				writeErrorJSONWithDebug(w, credHTTPStatus, requestID,
+					i18n.T(r.Context(), credI18nKey), credErrType, credCode, debugInfo)
+				return
+			}
+
 			// Step 6 (2026-06-18): preserve backward-compat error.code
 			// = "model_not_found" but surface the REAL underlying
 			// kind in error.kind + X-Gateway-Last-Kind header. Many
@@ -2068,6 +2121,7 @@ func (h *ChatHandler) serveWithExecutor(
 				)
 			}
 		}
+
 		logCtx.failAndMark("provider_error", enrichedErrMsg, providerID, credentialID)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 		markLogged()
@@ -2800,6 +2854,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 
 	if h.maasSvc != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
 		pt, ct, crt, cwt := 0, 0, 0, 0
+		streamChunkCount := 0
 		if reqLog.PromptTokens != nil {
 			pt = *reqLog.PromptTokens
 		}
@@ -2812,7 +2867,10 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		if reqLog.CacheWriteTokens != nil {
 			cwt = *reqLog.CacheWriteTokens
 		}
-		if pt > 0 || ct > 0 || crt > 0 || cwt > 0 {
+		if reqLog.StreamChunkCount != nil {
+			streamChunkCount = *reqLog.StreamChunkCount
+		}
+		if shouldChargeUsage(reqLog.Success, reqLog.FailureStage, reqLog.ErrorKind, pt, ct, crt, cwt, streamChunkCount) {
 			canonical := evt.CanonicalName
 			if canonical == "" {
 				canonical = evt.ClientModel
@@ -3081,6 +3139,9 @@ func capturePartialBodyOnReadError(body []byte, attemptRequestBody *[]byte, atte
 //	auto-route decider failed → "gw_auto_route_decider_failed"
 //	upstream 429              → "rate_limit"        (unchanged)
 //	upstream 429/503          → "concurrent"        (unchanged)
+//	upstream 401/403          → "upstream_credential_invalid"
+//	                            "upstream_credential_revoked"     (unchanged)
+//	upstream 402 quota        → "upstream_quota_permanent"        (unchanged)
 //	other early-exits         → errCode passthrough
 func mapGatewayErrorToDetail(errCode string) string {
 	switch errCode {
@@ -3119,6 +3180,10 @@ func mapGatewayErrorToDetail(errCode string) string {
 	case "auto_route_decider_failed":
 		return "gw_auto_route_decider_failed"
 	default:
+		// Upstream-originated codes (e.g. upstream_credential_invalid,
+		// upstream_credential_revoked, upstream_quota_permanent,
+		// rate_limit, concurrent, model_not_found) fall through
+		// unchanged — they are NOT gateway failures.
 		return errCode
 	}
 }
@@ -3137,6 +3202,13 @@ func mapGatewayErrorToDetail(errCode string) string {
 // assumed to be upstream.  This mirrors the rule used in
 // mapGatewayErrorToDetail: the codes that get a "gw_" prefix are
 // gateway; everything else is upstream.
+//
+// Note (2026-07-12): upstream_credential_invalid / upstream_credential_revoked
+// / upstream_quota_permanent fall into the "upstream" bucket because they
+// originate from the upstream provider rejecting our stored credential.
+// The earlier Stage distinction ("client key problem" vs "upstream
+// credential problem") is carried by the error.code itself, not by the
+// stage.
 func classifyFailureStage(errCode string) string {
 	switch errCode {
 	case "rate_limit_exceeded",
@@ -3913,6 +3985,43 @@ func extractUpstreamError(err error) (*upstreampkg.Error, bool) {
 		}
 	}
 	return nil, false
+}
+
+// classifyUpstreamCredentialFailure (2026-07-12) maps an upstream auth /
+// quota failure to the dedicated client-facing error code, i18n message
+// key, HTTP status, and OpenAI-style error type. The whole purpose of
+// this helper is to make "the upstream rejected OUR credential" stand
+// out from "the upstream had a transient 5xx" — operations staff need to
+// be able to grep request_logs.error_kind and immediately tell the two
+// apart.
+//
+// Returns ("", "", 0, "") when the failure is NOT a credential problem
+// (caller should fall back to the generic provider_error path). This
+// keeps the helper non-invasive: only the three credential-related
+// upstream kinds are intercepted.
+//
+// Mapping:
+//
+//	KindAuth            → upstream_credential_invalid / 401 / authentication_error
+//	KindAuthRevoked     → upstream_credential_revoked / 401 / authentication_error
+//	KindQuotaPermanent  → upstream_quota_permanent    / 402 / insufficient_quota
+//
+// 401 is reused for both auth kinds because the gateway cannot reliably
+// tell "invalid key" from "revoked key" without parsing the upstream
+// message body, and clients care about the actionable distinction (key
+// invalid vs. quota exhausted) more than the precise status mapping.
+// The HTTP body and i18n message carry the precise reason.
+func classifyUpstreamCredentialFailure(kind errorsx.ErrorKind, upstreamStatus int) (code, i18nKey string, httpStatus int, errType string) {
+	switch kind {
+	case errorsx.KindAuth:
+		_ = upstreamStatus // status reserved for future use (e.g. 401 vs 403 split)
+		return "upstream_credential_invalid", i18n.MsgUpstreamCredentialInvalid, http.StatusBadGateway, "authentication_error"
+	case errorsx.KindAuthRevoked:
+		return "upstream_credential_revoked", i18n.MsgUpstreamCredentialRevoked, http.StatusBadGateway, "authentication_error"
+	case errorsx.KindQuotaPermanent:
+		return "upstream_quota_permanent", i18n.MsgUpstreamQuotaPermanent, http.StatusBadGateway, "insufficient_quota"
+	}
+	return "", "", 0, ""
 }
 
 // extractUpstreamReason returns the human-readable upstream rejection

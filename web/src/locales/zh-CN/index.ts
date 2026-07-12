@@ -50,6 +50,7 @@ import formatAnomaliesView from './formatAnomaliesView'
 import agentRegistryView from './agentRegistryView'
 import outputCompliance from './outputCompliance'
 import ops from './ops'
+import tenantModels from './tenantModels'
 
 export default {
   common,
@@ -103,4 +104,5 @@ export default {
   agentRegistryView,
   outputCompliance,
   ops,
+  tenantModels,
 }
