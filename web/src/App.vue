@@ -156,6 +156,9 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
     // 强制修改密码（首次登录）流程：注销当前会话 → 重新登录 → 刷新页面。
     // 这是必须的，因为改密后服务端会撤销旧会话 / 旧 token 的有效性，
     // 也避免用户带着一个挂着旧身份的页面继续操作。
+    // 重要：clearAll() 之后 store.userInfo 会被清空，所以必须在 clearAll 之前
+    // 拿到 username，否则下面的自动重登会因为 store.userInfo 为 null 而跳过。
+    const username = store.userInfo?.username ?? ''
     const newPassword = payload?.newPassword ?? ''
     try {
       await apiLogout()
@@ -165,9 +168,9 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
     clearAll()
     markAuthHydrated()
     // 重新登录以触发 store.jwtToken / store.userInfo.must_change_password=false 重新拉取
-    if (newPassword && store.userInfo?.username) {
+    if (newPassword && username) {
       try {
-        const resp = await login(store.userInfo.username, newPassword)
+        const resp = await login(username, newPassword)
         const respAny = resp as any
         if (respAny?.access_token) {
           setJwtToken(respAny.access_token)
@@ -181,6 +184,11 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
         router.push('/')
         return
       }
+    } else {
+      // 没有 username 也没法自动重登，让用户手动登录
+      passwordSuccessMessage.value = t('login.passwordChangedReLogin')
+      router.push('/')
+      return
     }
     passwordSuccessMessage.value = t('login.passwordChangedReloading')
     // 强制刷新整个页面，确保所有 store / i18n / 数据视图都按新身份重建

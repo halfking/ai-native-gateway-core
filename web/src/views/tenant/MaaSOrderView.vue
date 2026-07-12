@@ -57,8 +57,8 @@ function channelLabel(c: string) {
   return c
 }
 
-function orderTypeLabel(t: string) {
-  return t === 'subscribe' ? t('tenants.order.typeSubscribe') : t('tenants.order.typeTopup')
+function orderTypeLabel(orderType: string) {
+  return orderType === 'subscribe' ? t('tenants.order.typeSubscribe') : t('tenants.order.typeTopup')
 }
 
 const productName = computed(() => {

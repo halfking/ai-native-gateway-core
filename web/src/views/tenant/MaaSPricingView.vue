@@ -179,22 +179,22 @@ onMounted(load)
 
     <h3 class="section-title">{{ t('tenants.pricing.topupPackages') }}</h3>
     <div class="pricing-grid">
-      <div v-for="t in topups" :key="t.id" class="pricing-card card">
-        <div class="pricing-tier">{{ t.tier }}</div>
-        <h4>{{ t.name }}</h4>
+      <div v-for="pkg in topups" :key="pkg.id" class="pricing-card card">
+        <div class="pricing-tier">{{ pkg.tier }}</div>
+        <h4>{{ pkg.name }}</h4>
         <div class="pricing-price">
-          <span class="price-num">¥{{ fmtPrice(t.price_cents) }}</span>
+          <span class="price-num">¥{{ fmtPrice(pkg.price_cents) }}</span>
         </div>
         <div class="pricing-credits">
-          {{ t('tenants.pricing.creditsAmount', { n: fmtCredits(t.credits_amount) }) }}
+          {{ t('tenants.pricing.creditsAmount', { n: fmtCredits(pkg.credits_amount) }) }}
         </div>
         <button
           v-if="!isAdminTenantView"
           class="btn btn-primary btn-block"
           :disabled="!!buying"
-          @click="buyTopup(t)"
+          @click="buyTopup(pkg)"
         >
-          {{ buying === t.id + 10000 ? t('tenants.pricing.creatingOrder') : t('tenants.pricing.buyNow') }}
+          {{ buying === pkg.id + 10000 ? t('tenants.pricing.creatingOrder') : t('tenants.pricing.buyNow') }}
         </button>
       </div>
       <div v-if="!loading && topups.length === 0" class="empty-card">
