@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { describe, expect, it } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
