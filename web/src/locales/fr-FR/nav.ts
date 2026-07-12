@@ -53,6 +53,8 @@ export default {
     opsFaults: "故障管理",
     opsAutoUpdate: "自动更新",
     opsCenter: "中心运维",
-    opsVibeCoding: "VibeCoding"
+    opsVibeCoding: "VibeCoding",
+    tenantLicense: "Ma Licence",
+    tenantAutoUpdate: "Mes Mises à jour"
   }
 }
