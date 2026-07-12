@@ -1700,9 +1700,20 @@ onMounted(() => {
 }
 
 .config-editor .number-input,
-.config-editor .text-input,
-.config-editor .select-input {
+.config-editor .text-input {
   width: 100%;
+  padding: 6px 10px;
+  background: var(--bg-card, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  color: var(--text-primary, #e6edf3);
+  font-size: 13px;
+  font-family: inherit;
+}
+.config-editor .select-input {
+  width: auto;
+  min-width: 150px;
+  max-width: 100%;
   padding: 6px 10px;
   background: var(--bg-card, #161b22);
   border: 1px solid var(--border, #30363d);
