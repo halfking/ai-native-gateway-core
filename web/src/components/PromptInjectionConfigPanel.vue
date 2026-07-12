@@ -6,12 +6,11 @@
 //   2. /admin/modules 的「提示词注入检测」模块的「配置」标签
 // 高级功能(LLM 引擎 / Canary Token / 严重度矩阵 / 统计)请前往
 // /admin/prompt-injection 完整页处理。
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  CATEGORIES,
   getCategoryMeta,
   getSeverityTagType,
   getPolicy,
@@ -22,6 +21,12 @@ import {
   type PromptInjectionRule,
   type PromptInjectionPolicy,
 } from '../api/promptInjection'
+
+// Props:
+//   - moduleEnabled: when false, the panel shows a banner warning that all
+//     settings will be inert. Defaults to true so the panel works standalone
+//     (e.g. when dropped into /admin/modules without an explicit prop).
+const { moduleEnabled = true } = defineProps<{ moduleEnabled?: boolean }>()
 
 const { t } = useI18n()
 const router = useRouter()
@@ -36,12 +41,19 @@ const success = ref('')
 
 const policy = ref<PromptInjectionPolicy | null>(null)
 const rules = ref<PromptInjectionRule[]>([])
-const dirtyRules = new Map<number, number>() // rule id → new severity (debounced PUT)
+// id → severity; debounced flush. NEVER cleared before processing — see
+// flushSeverityUpdates() for the safe clear-after-success pattern.
+const dirtyRules = new Map<number, number>()
 
 const search = ref('')
 type FilterKind = 'all' | 'system' | 'custom' | 'enabled' | 'disabled'
 const filterKind = ref<FilterKind>('all')
 const expandedRules = ref<Set<number>>(new Set())
+
+let policySaveTimer: ReturnType<typeof setTimeout> | null = null
+let ruleSeverityTimer: ReturnType<typeof setTimeout> | null = null
+let successClearTimer: ReturnType<typeof setTimeout> | null = null
+const ruleBusy = new Set<number>()
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -49,6 +61,9 @@ const expandedRules = ref<Set<number>>(new Set())
 async function load() {
   loading.value = true
   error.value = ''
+  // Reset state on reload so we don't auto-save the just-loaded policy.
+  flushPolicySave(true)
+  flushSeverityUpdates(true)
   try {
     const [policyRes, rulesRes] = await Promise.all([getPolicy(), listRules()])
     policy.value = policyRes
@@ -61,6 +76,11 @@ async function load() {
 }
 
 onMounted(load)
+onBeforeUnmount(() => {
+  flushPolicySave(true)
+  flushSeverityUpdates(true)
+  if (successClearTimer) clearTimeout(successClearTimer)
+})
 
 // ---------------------------------------------------------------------------
 // Derived
@@ -81,7 +101,8 @@ const filteredRules = computed<PromptInjectionRule[]>(() => {
         (r.description || '').toLowerCase().includes(q),
     )
   }
-  // Group by category_new, falling back to category for legacy rules.
+  // Group by category_new (fall back to legacy category), then by severity desc,
+  // then by rule_name. Returns a fresh array so callers can rely on order.
   return [...list].sort((a, b) => {
     const ca = a.category_new || a.category || ''
     const cb = b.category_new || b.category || ''
@@ -91,32 +112,52 @@ const filteredRules = computed<PromptInjectionRule[]>(() => {
   })
 })
 
-const enabledCount = computed(() => rules.value.filter((r) => r.enabled).length)
-const disabledCount = computed(() => rules.length - enabledCount.value)
-
-const statsSummary = computed(() => ({
-  total: rules.value.length,
-  enabled: enabledCount.value,
-  disabled: rules.value.length - enabledCount.value,
-  categories: new Set(
-    rules.value.map((r) => r.category_new || r.category).filter(Boolean),
-  ).size,
-}))
+const statsSummary = computed(() => {
+  const total = rules.value.length
+  const enabled = rules.value.filter((r) => r.enabled).length
+  return {
+    total,
+    enabled,
+    disabled: total - enabled,
+    categories: new Set(
+      rules.value.map((r) => r.category_new || r.category).filter(Boolean),
+    ).size,
+  }
+})
 
 // ---------------------------------------------------------------------------
-// Save policy (debounced on every change)
+// Save policy (debounced on every change). Initial policy load does NOT trigger
+// a save because the watch below only fires when the policy object reference or
+// deep contents change after `policy` becomes non-null (we guard inside
+// schedulePolicySave).
 // ---------------------------------------------------------------------------
-let policySaveTimer: ReturnType<typeof setTimeout> | null = null
+function flushPolicySave(cancelOnly = false) {
+  if (policySaveTimer) {
+    clearTimeout(policySaveTimer)
+    policySaveTimer = null
+  }
+  if (cancelOnly) return
+}
+
+function showSavedFlash() {
+  success.value = t('sessions.config.promptInjectionPolicySaveSuccess')
+  if (successClearTimer) clearTimeout(successClearTimer)
+  successClearTimer = setTimeout(() => {
+    success.value = ''
+    successClearTimer = null
+  }, 1800)
+}
+
 function schedulePolicySave() {
   if (!policy.value || savingPolicy.value) return
-  if (policySaveTimer) clearTimeout(policySaveTimer)
+  flushPolicySave(true)
   policySaveTimer = setTimeout(async () => {
+    policySaveTimer = null
     if (!policy.value) return
     savingPolicy.value = true
     try {
       await updatePolicy(policy.value)
-      success.value = t('sessions.config.promptInjectionPolicySaveSuccess')
-      setTimeout(() => (success.value = ''), 1800)
+      showSavedFlash()
     } catch (e: any) {
       error.value = e?.message || t('sessions.config.promptInjectionSaveError')
     } finally {
@@ -125,9 +166,15 @@ function schedulePolicySave() {
   }, 500)
 }
 
+let policyWatchReady = false
 watch(
   policy,
   () => {
+    if (!policyWatchReady) {
+      // First invocation is the initial assignment in load(); ignore.
+      policyWatchReady = true
+      return
+    }
     if (policy.value) schedulePolicySave()
   },
   { deep: true },
@@ -136,7 +183,6 @@ watch(
 // ---------------------------------------------------------------------------
 // Rule actions
 // ---------------------------------------------------------------------------
-const ruleBusy = new Set<number>()
 async function onToggleRule(rule: PromptInjectionRule, value: boolean) {
   if (ruleBusy.has(rule.id)) return
   ruleBusy.add(rule.id)
@@ -153,28 +199,44 @@ async function onToggleRule(rule: PromptInjectionRule, value: boolean) {
   }
 }
 
-let ruleSeverityTimer: ReturnType<typeof setTimeout> | null = null
-function onSeverityChange(rule: PromptInjectionRule, value: number) {
+function flushSeverityUpdates(cancelOnly = false) {
+  if (ruleSeverityTimer) {
+    clearTimeout(ruleSeverityTimer)
+    ruleSeverityTimer = null
+  }
+  if (cancelOnly) return
+}
+
+function scheduleSeveritySave(rule: PromptInjectionRule, value: number) {
   rule.severity = value
   dirtyRules.set(rule.id, value)
-  if (ruleSeverityTimer) clearTimeout(ruleSeverityTimer)
+  flushSeverityUpdates(true)
   ruleSeverityTimer = setTimeout(async () => {
-    const updates = Array.from(dirtyRules.entries())
-    dirtyRules.clear()
-    for (const [id, severity] of updates) {
-      const target = rules.value.find((r) => r.id === id)
-      if (!target) continue
+    ruleSeverityTimer = null
+    // Snapshot before processing so we keep un-flushed updates if one fails.
+    const pending = Array.from(dirtyRules.entries())
+    let failed = false
+    for (const [id, severity] of pending) {
       try {
         await updateRule(id, { severity })
+        dirtyRules.delete(id)
       } catch (e: any) {
+        failed = true
         ElMessage.error(e?.message || t('sessions.config.promptInjectionSaveError'))
-        // revert by reloading
+        // Revert the failing rule by reloading from server; other pending
+        // updates stay in dirtyRules and will retry on next change.
         await load()
-        return
+        break
       }
     }
-    ElMessage.success(t('sessions.config.promptInjectionRuleSaveSuccess'))
+    if (!failed && pending.length) {
+      ElMessage.success(t('sessions.config.promptInjectionRuleSaveSuccess'))
+    }
   }, 600)
+}
+
+function onSeverityChange(rule: PromptInjectionRule, value: number) {
+  scheduleSeveritySave(rule, value)
 }
 
 function toggleExpanded(id: number) {
@@ -188,9 +250,13 @@ function toggleExpanded(id: number) {
 // Display helpers
 // ---------------------------------------------------------------------------
 function categoryDisplay(raw: string) {
-  const meta = getCategoryMeta(raw)
+  const safeRaw = raw || 'unknown'
+  const meta = getCategoryMeta(safeRaw)
+  // vue-i18n v9: pass the fallback via the `default` option so missing keys
+  // (or missing translations) render a sensible Chinese label instead of the
+  // raw dotted key path.
   return {
-    label: t(`sessions.config.${meta.i18nKey}`, meta.zhFallback),
+    label: t(`sessions.config.${meta.i18nKey}`, undefined, { default: meta.zhFallback || safeRaw }),
     tagType: meta.tagType,
   }
 }
@@ -198,6 +264,16 @@ function categoryDisplay(raw: string) {
 function openFullConfig() {
   router.push('/admin/prompt-injection')
 }
+
+// Threshold validation: 0..10 and log ≤ warn ≤ sanitize ≤ block.
+const thresholdInvalid = computed(() => {
+  const p = policy.value
+  if (!p) return false
+  const vals = [p.score_threshold_log, p.score_threshold_warn, p.score_threshold_sanitize, p.score_threshold_block]
+  if (vals.some((v) => v < 0 || v > 10)) return true
+  for (let i = 1; i < vals.length; i++) if (vals[i] < vals[i - 1]) return true
+  return false
+})
 </script>
 
 <template>
@@ -210,9 +286,10 @@ function openFullConfig() {
       <div>
         <strong>{{ t('sessions.config.promptInjectionPolicyTitle') }}</strong>
         <span class="meta">
-          {{ t('sessions.config.tenantScope') }} · {{ statsSummary.total }}
-          {{ t('sessions.config.promptInjectionRuleEnabled').toLowerCase() }}
-          {{ statsSummary.enabled }} / {{ statsSummary.total }}
+          {{ t('sessions.config.promptInjectionStatsSummary', {
+            total: statsSummary.total,
+            enabled: statsSummary.enabled,
+          }) }}
         </span>
       </div>
       <button class="btn btn-primary btn-sm" type="button" @click="openFullConfig">
@@ -220,6 +297,11 @@ function openFullConfig() {
       </button>
     </div>
     <p class="panel-subtitle">{{ t('sessions.config.promptInjectionSubtitle') }}</p>
+
+    <!-- ─── Module-disabled warning ─────────────────────────────────────── -->
+    <div v-if="!moduleEnabled" class="banner banner-warn" role="status">
+      {{ t('sessions.config.promptInjectionModuleDisabled') }}
+    </div>
 
     <!-- ─── Loading skeleton ────────────────────────────────────────────── -->
     <div v-if="loading && !policy" class="state">{{ t('sessions.config.loading') }}</div>
@@ -252,7 +334,7 @@ function openFullConfig() {
       <div class="field-row">
         <div class="field-label">
           <label>{{ t('sessions.config.promptInjectionFieldMode') }}</label>
-          <span>{{ t('sessions.config.promptInjectionFieldModeEnforce') }}</span>
+          <span>{{ t('sessions.config.promptInjectionFieldModeHint') }}</span>
         </div>
         <div class="radio-group">
           <label class="radio-pill">
@@ -345,6 +427,9 @@ function openFullConfig() {
           />
         </div>
       </div>
+      <p v-if="thresholdInvalid" class="threshold-error" role="alert">
+        {{ t('sessions.config.promptInjectionThresholdInvalid') }}
+      </p>
     </section>
 
     <!-- ─── Rules section ──────────────────────────────────────────────── -->
@@ -380,7 +465,12 @@ function openFullConfig() {
 
       <!-- Rules list grouped by category -->
       <div v-if="!filteredRules.length" class="state">
-        {{ t('sessions.config.loading') }}
+        <template v-if="search || filterKind !== 'all'">
+          {{ t('sessions.config.promptInjectionEmptyFiltered') }}
+        </template>
+        <template v-else>
+          {{ t('sessions.config.loading') }}
+        </template>
       </div>
       <div v-else class="rules-list">
         <article
@@ -593,6 +683,8 @@ function openFullConfig() {
 .banner { padding: 8px 10px; border-radius: 6px; font-size: 12px; }
 .banner-error { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .banner-success { color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border)); background: color-mix(in srgb, var(--success) 8%, transparent); }
+.banner-warn { color: #b8821a; border: 1px solid color-mix(in srgb, #d29922 35%, var(--border)); background: color-mix(in srgb, #d29922 8%, transparent); }
+.threshold-error { color: var(--danger); font-size: 11px; margin: 6px 0 0; }
 .state { color: var(--muted); font-size: 12px; padding: 10px 0; }
 
 @media (max-width: 800px) {

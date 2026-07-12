@@ -37,6 +37,9 @@ vi.mock('element-plus', () => ({
   ElMessage: ElMessageMock,
 }))
 
+// Stub element-plus el-tag to silence component-resolution warnings in tests.
+const globalStubs = { 'el-tag': { template: '<span class="el-tag-stub"><slot /></span>' } }
+
 const messages = {
   'zh-CN': {
     common: { save: '保存' },
@@ -51,6 +54,7 @@ const messages = {
         promptInjectionFieldEnabled: '启用提示词注入检测',
         promptInjectionFieldEnabledHint: '总开关说明',
         promptInjectionFieldMode: '检测模式',
+        promptInjectionFieldModeHint: '观察 vs 强制说明',
         promptInjectionFieldModeObserve: '观察模式',
         promptInjectionFieldModeEnforce: '强制模式',
         promptInjectionSectionLayers: '检测层级',
@@ -72,6 +76,10 @@ const messages = {
         promptInjectionFieldThresholdSanitize: '清洗阈值',
         promptInjectionFieldThresholdBlock: '阻断阈值',
         promptInjectionFieldThresholdHint: '阈值说明',
+        promptInjectionThresholdInvalid: '阈值无效：必须满足 记录 ≤ 警告 ≤ 清洗 ≤ 阻断',
+        promptInjectionStatsSummary: '共 {total} 条规则，已启用 {enabled} 条',
+        promptInjectionModuleDisabled: '模块未启用，配置不会生效',
+        promptInjectionEmptyFiltered: '没有匹配的规则',
         promptInjectionRulesTitle: '检测规则（{count}）',
         promptInjectionRulesHint: '规则说明',
         promptInjectionRuleSystem: '系统',
@@ -189,10 +197,11 @@ const sampleRules: PromptInjectionRule[] = [
   },
 ]
 
-async function load() {
+async function load(props: Record<string, unknown> = {}) {
   const { default: PromptInjectionConfigPanel } = await import('./PromptInjectionConfigPanel.vue')
   const wrapper = mount(PromptInjectionConfigPanel, {
-    global: { plugins: [i18n], stubs: { 'router-link': true } },
+    global: { plugins: [i18n], stubs: { ...globalStubs, 'router-link': true } },
+    props,
   })
   await flushPromises()
   return wrapper
@@ -224,16 +233,21 @@ describe('PromptInjectionConfigPanel', () => {
     expect(wrapper.text()).toContain('检测策略')
   })
 
-  it('renders 47-rule hint placeholder; not real data but visible', async () => {
+  it('renders both seeded rules', async () => {
     const wrapper = await load()
-    // The component uses rules from API; assert both seeded rules are visible.
     expect(wrapper.findAll('.rule-card')).toHaveLength(2)
+  })
+
+  it('does NOT auto-save on initial policy load', async () => {
+    await load()
+    // Initial load sets policy + rules. The watch must skip this assignment
+    // to avoid an unnecessary PUT right after GET.
+    await new Promise((r) => setTimeout(r, 700))
+    expect(updatePolicyMock).not.toHaveBeenCalled()
   })
 
   it('toggles a rule and calls toggleRule API', async () => {
     const wrapper = await load()
-    // Drive the rule toggle through the script exposure to avoid DOM-order fragility
-    // (the policy section also renders switch inputs).
     const vm = wrapper.vm as unknown as {
       rules: PromptInjectionRule[]
       onToggleRule: (rule: PromptInjectionRule, value: boolean) => Promise<void>
@@ -242,25 +256,48 @@ describe('PromptInjectionConfigPanel', () => {
     expect(toggleRuleMock).toHaveBeenCalledWith(1, false)
   })
 
+  it('reverts a rule toggle on API failure', async () => {
+    const wrapper = await load()
+    toggleRuleMock.mockRejectedValueOnce(new Error('boom'))
+    const vm = wrapper.vm as unknown as {
+      rules: PromptInjectionRule[]
+      onToggleRule: (rule: PromptInjectionRule, value: boolean) => Promise<void>
+    }
+    const rule = vm.rules[0]
+    const before = rule.enabled
+    await vm.onToggleRule(rule, !before)
+    expect(rule.enabled).toBe(before)
+    expect(ElMessageMock.error).toHaveBeenCalledWith(expect.stringContaining('boom'))
+  })
+
   it('persists policy changes via debounced PUT', async () => {
     const wrapper = await load()
-    // Mutate policy directly via the script exposure (bypasses v-model / DOM ordering).
     const vm = wrapper.vm as unknown as {
       policy: PromptInjectionPolicy | null
-      onToggleRule: (rule: PromptInjectionRule, value: boolean) => Promise<void>
     }
     expect(vm.policy).not.toBeNull()
     vm.policy!.enabled = false
     vm.policy!.detection_mode = 'enforce'
-    // Wait for the debounced save
     await new Promise((r) => setTimeout(r, 700))
     await flushPromises()
-    // updatePolicyMock may have been called by the initial load's policy watcher too;
-    // assert the LATEST call carries the mutation.
     expect(updatePolicyMock).toHaveBeenCalled()
     const sent = updatePolicyMock.mock.calls.at(-1)![0]
     expect(sent.enabled).toBe(false)
     expect(sent.detection_mode).toBe('enforce')
+  })
+
+  it('debounces severity updates per rule', async () => {
+    const wrapper = await load()
+    const vm = wrapper.vm as unknown as {
+      rules: PromptInjectionRule[]
+      scheduleSeveritySave: (rule: PromptInjectionRule, value: number) => void
+    }
+    vm.scheduleSeveritySave(vm.rules[0], 3)
+    vm.scheduleSeveritySave(vm.rules[0], 5)
+    vm.scheduleSeveritySave(vm.rules[0], 7)
+    await new Promise((r) => setTimeout(r, 700))
+    expect(updateRuleMock).toHaveBeenCalledTimes(1)
+    expect(updateRuleMock).toHaveBeenCalledWith(1, { severity: 7 })
   })
 
   it('navigates to full config page when "open full" is clicked', async () => {
@@ -270,16 +307,52 @@ describe('PromptInjectionConfigPanel', () => {
     expect(pushMock).toHaveBeenCalledWith('/admin/prompt-injection')
   })
 
-  it('filters rules by category', async () => {
+  it('navigates to advanced tab via router.push on link click', async () => {
+    const wrapper = await load()
+    const cards = wrapper.findAll('.link-card')
+    expect(cards.length).toBe(4)
+    await cards[0].trigger('click')
+    expect(pushMock).toHaveBeenCalledWith('/admin/prompt-injection?tab=engines')
+  })
+
+  it('filters rules by category (custom only)', async () => {
     const wrapper = await load()
     const chips = wrapper.findAll('.filter-chips .chip-btn')
     expect(chips.length).toBeGreaterThanOrEqual(5)
-    // Click "Custom only"
     const customChip = chips.find((c) => c.text().includes('自定义'))
     expect(customChip).toBeDefined()
     await customChip!.trigger('click')
     await flushPromises()
     expect(wrapper.findAll('.rule-card')).toHaveLength(1)
     expect(wrapper.text()).toContain('custom_x')
+  })
+
+  it('shows "no matching rules" when search returns nothing', async () => {
+    const wrapper = await load()
+    const search = wrapper.find('input[type=search]')
+    await search.setValue('zzz_no_match_zzz')
+    await flushPromises()
+    expect(wrapper.text()).toContain('没有匹配的规则')
+  })
+
+  it('flags invalid thresholds', async () => {
+    const wrapper = await load()
+    const vm = wrapper.vm as unknown as { policy: PromptInjectionPolicy | null }
+    // Force log=8 > warn=5 (out of order)
+    vm.policy!.score_threshold_log = 8
+    vm.policy!.score_threshold_warn = 5
+    await flushPromises()
+    expect(wrapper.text()).toContain('阈值无效')
+  })
+
+  it('shows module-disabled banner when moduleEnabled=false', async () => {
+    const wrapper = await load({ moduleEnabled: false })
+    expect(wrapper.text()).toContain('模块未启用')
+    expect(wrapper.find('.banner-warn').exists()).toBe(true)
+  })
+
+  it('hides module-disabled banner by default (moduleEnabled=true)', async () => {
+    const wrapper = await load()
+    expect(wrapper.find('.banner-warn').exists()).toBe(false)
   })
 })
