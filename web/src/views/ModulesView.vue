@@ -13,6 +13,7 @@ import {
 } from '../api/modules'
 import { listSettings, type SettingItem } from '../api'
 import { useRouter } from 'vue-router'
+import PromptInjectionConfigPanel from '../components/PromptInjectionConfigPanel.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -953,6 +954,11 @@ onMounted(() => {
                 </div>
               </div>
             </div>
+          </template>
+
+          <!-- 提示词注入检测模块的专用配置表单（与 /admin/session-config 共享） -->
+          <template v-else-if="selectedKey === 'prompt_injection'">
+            <PromptInjectionConfigPanel />
           </template>
 
           <!-- 其他模块的通用配置表单 -->
