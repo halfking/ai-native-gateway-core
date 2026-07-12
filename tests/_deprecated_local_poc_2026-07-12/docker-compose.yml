@@ -1,0 +1,78 @@
+# tests/local — 本地测试全景 (2026-07-12 incident response)
+#
+# 一键起：DB (PostgreSQL 17) + Redis 7 + LLM Gateway 模拟 + 压测客户端
+# 三种预设场景：baseline / kill-switch / high-concurrency
+#
+# 适用：本地回归 + 高并发探测。**生产请用 deploy-* skill。**
+
+include:
+  - ../../scripts/mocks/docker-compose.yml  # 既有 mock 网关基础镜像（如果存在）
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: llmgw-local-postgres
+    environment:
+      POSTGRES_USER: llm_gateway
+      POSTGRES_PASSWORD: local_password
+      POSTGRES_DB: llm_gateway
+    ports:
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./seed:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llm_gateway -d llm_gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: llmgw-local-redis
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Mock LLM upstream. Streams OpenAI-compatible fake responses to simulate
+  # the real upstream latency profile (TTFB ~150ms, chunk interval ~30ms).
+  mock-llm:
+    image: ghcr.io/kaixuan/llmgw-mock-llm:latest
+    container_name: llmgw-mock-upstream
+    profiles: ["with-mock"]
+    ports:
+      - "6000:8000"
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: tests/local/Dockerfile.gateway
+    container_name: llmgw-local-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ENV: local
+      LLM_GATEWAY_DATABASE_URL: postgres://llm_gateway:local_password@postgres:5432/llm_gateway?sslmode=disable
+      LLM_GATEWAY_REDIS_ADDR: redis:6379
+      LLM_GATEWAY_LISTEN_ADDR: 0.0.0.0:8781
+      # Kill-switch defaults — all ENABLED. Pass overrides via `make baseline KILL=1`.
+      KILL_SESSION_COMPRESSION: ${KILL_SESSION_COMPRESSION:-}
+      KILL_SESSION_CACHE: ${KILL_SESSION_CACHE:-}
+      KILL_CIRCUIT_DEGRADATION: ${KILL_CIRCUIT_DEGRADATION:-}
+      KILL_RATE_LIMITER: ${KILL_RATE_LIMITER:-}
+      KILL_FP_SLOT: ${KILL_FP_SLOT:-}
+      # Mock upstream — replaces real LLM providers.
+      LLM_GATEWAY_MOCK_LLM_BASE_URL: http://mock-llm:8000
+    ports:
+      - "58781:8781"
+    profiles: ["default", "no-mock"]
+
+volumes:
+  pgdata:

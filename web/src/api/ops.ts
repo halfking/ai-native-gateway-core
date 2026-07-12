@@ -71,6 +71,17 @@ export async function createLicense(data: {
   return req<License>('POST', '/api/admin/licenses', data)
 }
 
+export async function updateLicense(id: number, data: {
+  customer_name?: string
+  customer_email?: string
+  max_devices?: number
+  subscription_tier?: string
+  features?: string[]
+  expires_at?: string
+}): Promise<License> {
+  return req<License>('PUT', `/api/admin/licenses/${id}`, data)
+}
+
 export async function revokeLicense(id: number): Promise<void> {
   return req<void>('POST', `/api/admin/licenses/${id}/revoke`)
 }
@@ -93,6 +104,79 @@ export async function rejectOfflineActivation(id: string, reason: string): Promi
 
 export async function deactivateDevice(licenseId: number, hardwareHash: string, reason: string): Promise<void> {
   return req<void>('POST', `/api/admin/licenses/${licenseId}/devices/${hardwareHash}/deactivate`, { reason })
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Module Management
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface ProductModule {
+  id: number
+  key: string
+  name: string
+  description: string
+  category: string
+  icon?: string
+  setting_key?: string
+  is_base: boolean
+  sort_order: number
+  enabled: boolean
+  created_at: string
+  updated_at: string
+  features: ProductModuleFeature[]
+}
+
+export interface ProductModuleFeature {
+  id: number
+  module_key: string
+  feature_key: string
+  feature_name: string
+  description: string
+  setting_key?: string
+  enabled: boolean
+  created_at: string
+}
+
+export interface SubscriptionTierInfo {
+  code: string
+  name: string
+  description: string
+  price_cents: number
+  sort_order: number
+  module_keys: string[]
+}
+
+export interface LicenseModuleOverride {
+  license_id: number
+  module_key: string
+  enabled: boolean
+  config?: Record<string, unknown>
+  expires_at?: string
+}
+
+export async function getProductModules(): Promise<ProductModule[]> {
+  return req<ProductModule[]>('GET', '/api/admin/modules')
+}
+
+export async function getSubscriptionTiers(): Promise<SubscriptionTierInfo[]> {
+  return req<SubscriptionTierInfo[]>('GET', '/api/admin/tiers')
+}
+
+export async function getLicenseModuleOverrides(licenseId: number): Promise<LicenseModuleOverride[]> {
+  return req<LicenseModuleOverride[]>('GET', `/api/admin/licenses/${licenseId}/modules`)
+}
+
+export async function upsertLicenseModule(licenseId: number, data: {
+  module_key: string
+  enabled: boolean
+  config?: Record<string, unknown>
+  expires_at?: string
+}): Promise<LicenseModuleOverride> {
+  return req<LicenseModuleOverride>('POST', `/api/admin/licenses/${licenseId}/modules`, data)
+}
+
+export async function deleteLicenseModule(licenseId: number, moduleKey: string): Promise<void> {
+  return req<void>('DELETE', `/api/admin/licenses/${licenseId}/modules/${moduleKey}`)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -298,74 +382,81 @@ export async function sendCommand(instanceId: string, command: string, args: Rec
 
 export interface VibeCodingProject {
   id: number
+  tenant_id: string
   name: string
+  description: string
   language: string
   framework: string
-  status: 'active' | 'archived'
+  status: 'active' | 'archived' | 'deleted'
+  settings: Record<string, unknown>
+  created_by: string
   created_at: string
   updated_at: string
 }
 
 export interface VibeCodingSession {
   id: number
-  project_id: number
-  session_name: string
-  started_at: string
-  ended_at?: string
-  duration_seconds: number
-  status: 'active' | 'completed'
+  project_id?: number
+  tenant_id: string
+  session_id: string
+  task_type: string
+  status: 'active' | 'completed' | 'failed' | 'cancelled'
+  messages: unknown[]
+  metadata: Record<string, unknown>
+  created_at: string
+  completed_at?: string
 }
 
 export interface CodeReview {
   id: number
-  session_id: number
-  language: string
+  session_id?: number
+  tenant_id: string
   file_path: string
+  language: string
+  original_code: string
+  review_result: {
+    issues: CodeIssue[]
+    suggestions: string[]
+    summary: string
+    complexity: number
+    maintainability: string
+  }
   score: number
-  issues: CodeIssue[]
-  suggestions: CodeSuggestion[]
-  reviewed_at: string
+  created_at: string
 }
 
 export interface CodeIssue {
   line: number
   severity: 'error' | 'warning' | 'info'
   message: string
-  code: string
-}
-
-export interface CodeSuggestion {
-  line: number
-  message: string
-  suggested_code: string
+  category: string
 }
 
 export async function getVibeCodingProjects(): Promise<VibeCodingProject[]> {
-  return req<VibeCodingProject[]>('GET', '/api/admin/vibecoding/projects')
+  const res = await req<{ items: VibeCodingProject[] }>('GET', '/api/admin/vibecoding/projects')
+  return res.items || []
 }
 
 export async function createVibeCodingProject(data: {
   name: string
   language: string
-  framework: string
+  framework?: string
 }): Promise<VibeCodingProject> {
   return req<VibeCodingProject>('POST', '/api/admin/vibecoding/projects', data)
 }
 
 export async function getVibeCodingSessions(projectId?: number): Promise<VibeCodingSession[]> {
-  const path = projectId 
-    ? `/api/admin/vibecoding/projects/${projectId}/sessions`
-    : '/api/admin/vibecoding/sessions'
-  return req<VibeCodingSession[]>('GET', path)
+  const q = projectId ? `?project_id=${projectId}` : ''
+  const res = await req<{ items: VibeCodingSession[] }>('GET', `/api/admin/vibecoding/sessions${q}`)
+  return res.items || []
 }
 
-export async function createVibeCodingSession(projectId: number, sessionName: string): Promise<VibeCodingSession> {
-  return req<VibeCodingSession>('POST', `/api/admin/vibecoding/projects/${projectId}/sessions`, { session_name: sessionName })
+export async function createVibeCodingSession(projectId: number, taskType: string): Promise<VibeCodingSession> {
+  return req<VibeCodingSession>('POST', '/api/admin/vibecoding/sessions', { task_type: taskType, project_id: projectId })
 }
 
 export async function getCodeReviews(sessionId?: number): Promise<CodeReview[]> {
-  const path = sessionId
-    ? `/api/admin/vibecoding/sessions/${sessionId}/reviews`
-    : '/api/admin/vibecoding/reviews'
-  return req<CodeReview[]>('GET', path)
+  const q = sessionId ? `?session_id=${sessionId}` : ''
+  const res = await req<{ items: CodeReview[] }>('GET', `/api/admin/vibecoding/reviews${q}`)
+  return res.items || []
 }

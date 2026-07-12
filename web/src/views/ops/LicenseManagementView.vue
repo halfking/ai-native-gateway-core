@@ -5,15 +5,21 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getLicenses,
   createLicense,
+  updateLicense,
   revokeLicense,
   getLicenseDevices,
   getOfflineActivationRequests,
   approveOfflineActivation,
   rejectOfflineActivation,
   deactivateDevice,
+  getProductModules,
+  getLicenseModuleOverrides,
+  upsertLicenseModule,
   type License,
   type LicenseDevice,
   type OfflineActivationRequest,
+  type ProductModule,
+  type LicenseModuleOverride,
 } from '../../api/ops'
 
 const { t } = useI18n()
@@ -32,6 +38,18 @@ const pagination = ref({ offset: 0, limit: 20 })
 const showCreateDialog = ref(false)
 const createForm = ref({
   customer: '',
+  customer_email: '',
+  max_devices: 5,
+  subscription_tier: 'starter',
+  features: '',
+  expires_at: '',
+})
+
+// Edit dialog state
+const showEditDialog = ref(false)
+const editingLicense = ref<License | null>(null)
+const editForm = ref({
+  customer_name: '',
   customer_email: '',
   max_devices: 5,
   subscription_tier: 'starter',
@@ -133,6 +151,45 @@ async function handleCreate() {
   }
 }
 
+function handleEditLicense(row: License) {
+  editingLicense.value = row
+  editForm.value = {
+    customer_name: row.customer_name,
+    customer_email: row.customer_email || '',
+    max_devices: row.max_devices,
+    subscription_tier: row.subscription_tier || 'starter',
+    features: (row.features || []).join(', '),
+    expires_at: row.expires_at,
+  }
+  showEditDialog.value = true
+}
+
+async function handleSaveEdit() {
+  if (!editingLicense.value) return
+  const features = editForm.value.features
+    ? editForm.value.features.split(',').map((s: string) => s.trim()).filter(Boolean)
+    : []
+  loading.value = true
+  try {
+    await updateLicense(editingLicense.value.id, {
+      customer_name: editForm.value.customer_name || undefined,
+      customer_email: editForm.value.customer_email || undefined,
+      max_devices: editForm.value.max_devices,
+      subscription_tier: editForm.value.subscription_tier || undefined,
+      features: features.length > 0 ? features : undefined,
+      expires_at: editForm.value.expires_at || undefined,
+    })
+    ElMessage.success(t('common.updateSuccess'))
+    showEditDialog.value = false
+    await load()
+  } catch (error) {
+    ElMessage.error(t('common.operationFailed'))
+    console.error(error)
+  } finally {
+    loading.value = false
+  }
+}
+
 async function handleRevoke(license: License) {
   try {
     await ElMessageBox.confirm(
@@ -204,6 +261,78 @@ async function handleRejectOffline(request: OfflineActivationRequest) {
       console.error(error)
     }
   }
+}
+
+// Module management state
+const catalogModules = ref<ProductModule[]>([])
+const catalogLoaded = ref(false)
+const showModuleDialog = ref(false)
+const moduleLicense = ref<License | null>(null)
+const licenseModuleOverrides = ref<Map<string, LicenseModuleOverride>>(new Map())
+const moduleSaving = ref(false)
+
+function getModuleOverride(moduleKey: string): LicenseModuleOverride | undefined {
+  return licenseModuleOverrides.value.get(moduleKey)
+}
+
+function isModuleEnabled(moduleKey: string): boolean {
+  const ov = getModuleOverride(moduleKey)
+  if (ov !== undefined) return ov.enabled
+  return false
+}
+
+async function loadCatalog() {
+  if (catalogLoaded.value) return
+  try {
+    catalogModules.value = await getProductModules()
+    catalogLoaded.value = true
+  } catch (e) {
+    console.error('Failed to load module catalog', e)
+  }
+}
+
+async function handleManageModules(row: License) {
+  moduleLicense.value = row
+  licenseModuleOverrides.value = new Map()
+  await loadCatalog()
+  try {
+    const overrides = await getLicenseModuleOverrides(row.id)
+    for (const ov of overrides) {
+      licenseModuleOverrides.value.set(ov.module_key, ov)
+    }
+  } catch (e) {
+    console.error('Failed to load module overrides', e)
+  }
+  showModuleDialog.value = true
+}
+
+async function handleToggleModule(moduleKey: string, enabled: boolean) {
+  if (!moduleLicense.value) return
+  moduleSaving.value = true
+  try {
+    await upsertLicenseModule(moduleLicense.value.id, { module_key: moduleKey, enabled })
+    licenseModuleOverrides.value.set(moduleKey, {
+      license_id: moduleLicense.value.id,
+      module_key: moduleKey,
+      enabled,
+    })
+    ElMessage.success(`${moduleKey}: ${enabled ? 'enabled' : 'disabled'}`)
+  } catch (e) {
+    ElMessage.error(`Failed to update module ${moduleKey}`)
+    console.error(e)
+  } finally {
+    moduleSaving.value = false
+  }
+}
+
+function groupedModules() {
+  const groups = new Map<string, ProductModule[]>()
+  for (const m of catalogModules.value) {
+    const g = groups.get(m.category) || []
+    g.push(m)
+    groups.set(m.category, g)
+  }
+  return groups
 }
 
 async function handleDeactivateDevice(row: License, device: LicenseDevice) {
@@ -383,8 +512,14 @@ onMounted(() => {
         <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column :label="t('common.actions')" width="120" fixed="right">
+        <el-table-column :label="t('common.actions')" width="240" fixed="right">
           <template #default="{ row }">
+            <el-button size="small" @click="handleEditLicense(row)">
+              {{ t('common.edit') }}
+            </el-button>
+            <el-button size="small" @click="handleManageModules(row)">
+              {{ t('ops.license.modules') }}
+            </el-button>
             <el-button
               v-if="licenseStatus(row) === 'active'"
               type="danger"
@@ -452,6 +587,82 @@ onMounted(() => {
           {{ t('common.create') }}
         </el-button>
       </template>
+    </el-dialog>
+
+    <!-- Edit License Dialog -->
+    <el-dialog
+      v-model="showEditDialog"
+      :title="t('common.edit') + ': ' + (editingLicense?.customer_name || '')"
+      width="500px"
+    >
+      <el-form :model="editForm" label-width="140px">
+        <el-form-item :label="t('ops.license.customer')">
+          <el-input v-model="editForm.customer_name" />
+        </el-form-item>
+        <el-form-item :label="t('ops.license.customerEmail')">
+          <el-input v-model="editForm.customer_email" />
+        </el-form-item>
+        <el-form-item :label="t('ops.license.maxDevices')">
+          <el-input-number v-model="editForm.max_devices" :min="1" :max="1000" />
+        </el-form-item>
+        <el-form-item :label="t('ops.license.subscriptionTier')">
+          <el-select v-model="editForm.subscription_tier" style="width: 100%">
+            <el-option label="starter" value="starter" />
+            <el-option label="pro" value="pro" />
+            <el-option label="enterprise" value="enterprise" />
+            <el-option label="custom" value="custom" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="t('ops.license.features')">
+          <el-input v-model="editForm.features" />
+        </el-form-item>
+        <el-form-item :label="t('ops.license.expiresAt')">
+          <el-date-picker
+            v-model="editForm.expires_at"
+            type="datetime"
+            placeholder="YYYY-MM-DDTHH:mm:ssZ"
+            value-format="YYYY-MM-DDTHH:mm:ssZ"
+            style="width: 100%"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showEditDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="loading" @click="handleSaveEdit">
+          {{ t('common.save') }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Module Management Dialog -->
+    <el-dialog
+      v-model="showModuleDialog"
+      :title="t('ops.license.modulesTitle') + (moduleLicense ? ': ' + moduleLicense.customer_name : '')"
+      width="700px"
+    >
+      <div v-loading="moduleSaving" class="module-dialog-body">
+        <div v-for="[category, mods] in groupedModules()" :key="category" class="module-category">
+          <h4 class="category-title">{{ category }}</h4>
+          <div class="module-list">
+            <div v-for="m in mods" :key="m.key" class="module-item">
+              <div class="module-info">
+                <span class="module-name">{{ m.name }}</span>
+                <span class="module-key">{{ m.key }}</span>
+                <span v-if="m.is_base" class="module-base-tag">base</span>
+              </div>
+              <div class="module-desc">{{ m.description }}</div>
+              <div class="module-controls">
+                <el-switch
+                  :model-value="isModuleEnabled(m.key)"
+                  :disabled="m.is_base || moduleSaving"
+                  @change="(val: boolean) => handleToggleModule(m.key, val)"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+        <el-empty v-if="catalogModules.length === 0" :description="t('common.feedback.noData')" />
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -521,5 +732,74 @@ onMounted(() => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
   line-height: 1.4;
+}
+
+.module-dialog-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.module-category {
+  margin-bottom: 20px;
+}
+
+.category-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+  text-transform: capitalize;
+  color: var(--el-text-color-primary);
+}
+
+.module-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.module-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  width: calc(50% - 4px);
+  box-sizing: border-box;
+}
+
+.module-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.module-name {
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.module-key {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  font-family: monospace;
+}
+
+.module-base-tag {
+  font-size: 10px;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.module-desc {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.3;
+}
+
+.module-controls {
+  margin-top: 4px;
 }
 </style>

@@ -58,15 +58,13 @@ AS $$
         -- 0 failures → healthy_confirmed watchdog (every 2h)
         WHEN consecutive_failures <= 0 THEN INTERVAL '2 hours'
 
-        -- 3+ failures → still recovering toward broken_confirmed
-        WHEN consecutive_failures >= 3 THEN INTERVAL '60 minutes'
-
 		-- Failed active targets use the operational recovery ladder.
 		WHEN consecutive_failures = 1 THEN INTERVAL '10 seconds'
 		WHEN consecutive_failures = 2 THEN INTERVAL '30 seconds'
 		WHEN consecutive_failures = 3 THEN INTERVAL '60 seconds'
 		WHEN consecutive_failures = 4 THEN INTERVAL '120 seconds'
 		WHEN consecutive_failures = 5 THEN INTERVAL '300 seconds'
+		WHEN consecutive_failures >= 6 THEN INTERVAL '3600 seconds'
 		ELSE INTERVAL '3600 seconds'
     END;
 $$;

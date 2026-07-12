@@ -11,7 +11,8 @@ package main
 //
 // Safety: every layer defaults to disabled, so building + running this code
 // has zero effect unless an operator opts in via:
-//   - LLM_GATEWAY_GOAL_ENABLED=true (or per-tenant goal.enabled setting), AND
+//   - LLM_GATEWAY_GOAL_ENABLED=true (or goal.enabled setting, platform-scoped),
+//     AND
 //   - LLMGatewayAutoLLMEndpoint=... (so the completion-detection/audit LLM
 //     judgement calls have somewhere to go)
 // The follow-up engine itself enforces MaxFollowUpDepth / MaxFollowUpsPerSession
