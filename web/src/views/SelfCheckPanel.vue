@@ -166,14 +166,14 @@ function fmtRelative(s: string | undefined): string {
   return Math.round(ms / 86400_000) + 'd 前'
 }
 
-// 柔和、低饱和度的语义色板，避免大面积亮色块造成视觉不协调
-// good=沉稳青绿 / warn=沉稳琥珀 / danger=沉稳砖红 / neutral=石板灰
+// 与深色主题语义色对齐的色板（用于文字着色，在深色卡片背景上有良好对比度）
+// good=success / warn=warning / danger=danger / neutral=muted / accent=indigo
 const COLOR = {
-  good: '#5b9b7f',
-  warn: '#c2925a',
-  danger: '#c77a7a',
-  neutral: '#94a3b8',
-  accent: '#64748b',
+  good: '#3fb950',
+  warn: '#d29922',
+  danger: '#f85149',
+  neutral: '#8b949e',
+  accent: '#6366f1',
 }
 
 function statusColor(status: string): string {
@@ -181,7 +181,7 @@ function statusColor(status: string): string {
     case 'success': return COLOR.good
     case 'partial': return COLOR.warn
     case 'failed': return COLOR.danger
-    case 'running': return '#5b7fb8'
+    case 'running': return COLOR.accent
     default: return COLOR.neutral
   }
 }
@@ -490,20 +490,20 @@ function healthColor(rate: number): string {
 }
 
 .status-badge.enabled {
-  background: #ecfdf3;
-  color: #15803d;
-  border: 1px solid #bbf7d0;
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(63, 185, 80, 0.4);
 }
 
 .status-badge.disabled {
-  background: #fef2f2;
-  color: #b91c1c;
-  border: 1px solid #fecaca;
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--danger);
+  border: 1px solid rgba(248, 81, 73, 0.4);
 }
 
 .interval-info {
   font-size: 12px;
-  color: #64748b;
+  color: var(--muted);
   font-family: monospace;
 }
 
@@ -518,25 +518,27 @@ function healthColor(rate: number): string {
 .btn {
   padding: 6px 16px;
   border-radius: 4px;
-  border: 1px solid #cbd5e1;
-  background: white;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
   cursor: pointer;
   font-size: 13px;
   white-space: nowrap;
 }
 
 .btn:hover {
-  background: #f8fafc;
+  background: var(--bg-subtle);
 }
 
 .btn-primary {
-  background: #3b82f6;
-  color: white;
-  border-color: #3b82f6;
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
 }
 
 .btn-primary:hover {
-  background: #2563eb;
+  background: var(--accent-h);
+  border-color: var(--accent-h);
 }
 
 .btn-primary:disabled {
@@ -545,7 +547,8 @@ function healthColor(rate: number): string {
 }
 
 .btn-secondary {
-  background: #f1f5f9;
+  background: var(--bg-subtle);
+  color: var(--text);
 }
 
 .btn-tiny {
@@ -556,8 +559,9 @@ function healthColor(rate: number): string {
 .range-select {
   padding: 5px 12px;
   border-radius: 4px;
-  border: 1px solid #cbd5e1;
-  background: white;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
   white-space: nowrap;
   font-size: 13px;
 }
@@ -572,9 +576,9 @@ function healthColor(rate: number): string {
 }
 
 .alert-danger {
-  background: #fef6f6;
-  color: #b91c1c;
-  border: 1px solid #fecaca;
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--danger);
+  border: 1px solid rgba(248, 81, 73, 0.35);
 }
 
 .btn-close {
@@ -595,13 +599,13 @@ function healthColor(rate: number): string {
 .summary-card {
   padding: 12px 16px;
   border-radius: 6px;
-  background: #fbfcfd;
-  border: 1px solid #e6ebf2;
+  background: var(--card);
+  border: 1px solid var(--border);
 }
 
 .card-label {
   font-size: 11px;
-  color: #64748b;
+  color: var(--muted);
   margin-bottom: 4px;
 }
 
@@ -613,10 +617,10 @@ function healthColor(rate: number): string {
 .section-title {
   font-size: 14px;
   font-weight: 600;
-  color: #475569;
+  color: var(--text);
   margin: 20px 0 12px 0;
   padding-bottom: 4px;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border);
 }
 
 .model-grid {
@@ -627,9 +631,9 @@ function healthColor(rate: number): string {
 
 .model-card {
   padding: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: white;
+  background: var(--card);
 }
 
 .model-name {
@@ -637,6 +641,7 @@ function healthColor(rate: number): string {
   font-weight: 600;
   margin-bottom: 8px;
   word-break: break-all;
+  color: var(--text);
 }
 
 .model-stats {
@@ -651,7 +656,7 @@ function healthColor(rate: number): string {
 }
 
 .stat-label {
-  color: #64748b;
+  color: var(--muted);
 }
 
 .stat-value {
@@ -684,7 +689,7 @@ function healthColor(rate: number): string {
 
 .error-bar-track {
   height: 16px;
-  background: #f1f5f9;
+  background: var(--bg-subtle);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -728,16 +733,17 @@ function healthColor(rate: number): string {
 
 .trend-label {
   font-size: 9px;
-  color: #94a3b8;
+  color: var(--muted);
   margin-top: 4px;
   font-family: monospace;
 }
 
+/* 最近运行记录列表 */
 .runs-table {
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
-  background: white;
+  background: var(--card);
 }
 
 .runs-header, .runs-summary {
@@ -750,22 +756,22 @@ function healthColor(rate: number): string {
 }
 
 .runs-header {
-  background: #f8fafc;
+  background: var(--bg-subtle);
   font-weight: 600;
-  color: #475569;
+  color: var(--muted);
 }
 
 .runs-summary {
   cursor: pointer;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--border);
 }
 
 .runs-summary:hover {
-  background: #f8fafc;
+  background: var(--bg-subtle);
 }
 
 .runs-row.expanded .runs-summary {
-  background: #f5f9ff;
+  background: rgba(99, 102, 241, 0.1);
 }
 
 .col-action {
@@ -773,19 +779,19 @@ function healthColor(rate: number): string {
 }
 
 .expand-icon {
-  color: #94a3b8;
+  color: var(--muted);
 }
 
 .runs-detail {
   padding: 16px;
-  background: #f8fafc;
-  border-top: 1px solid #e2e8f0;
+  background: var(--bg-subtle);
+  border-top: 1px solid var(--border);
 }
 
 .runs-detail h5 {
   margin: 12px 0 8px 0;
   font-size: 12px;
-  color: #475569;
+  color: var(--muted);
 }
 
 .upstream-info, .error-detail {
@@ -796,12 +802,12 @@ function healthColor(rate: number): string {
 .upstream-error {
   margin-top: 4px;
   padding: 4px 8px;
-  background: #fef6f6;
-  border: 1px solid #fde0e0;
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid rgba(248, 81, 73, 0.35);
   border-radius: 3px;
   font-family: monospace;
   font-size: 11px;
-  color: #b91c1c;
+  color: var(--danger);
 }
 
 .rounds-table {
@@ -812,12 +818,12 @@ function healthColor(rate: number): string {
 
 .rounds-table th, .rounds-table td {
   padding: 4px 8px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border);
   text-align: left;
 }
 
 .rounds-table th {
-  background: #f1f5f9;
+  background: var(--card);
   font-weight: 600;
 }
 
@@ -832,7 +838,7 @@ function healthColor(rate: number): string {
 .empty-state {
   padding: 24px;
   text-align: center;
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 13px;
 }
 
@@ -850,9 +856,11 @@ function healthColor(rate: number): string {
 }
 
 .modal-content {
-  background: white;
+  background: var(--card);
+  color: var(--text);
   padding: 24px;
   border-radius: 8px;
+  border: 1px solid var(--border);
   width: 480px;
   max-width: 90vw;
 }
@@ -869,7 +877,7 @@ function healthColor(rate: number): string {
   display: block;
   margin-bottom: 4px;
   font-size: 13px;
-  color: #475569;
+  color: var(--muted);
 }
 
 .form-group input,
@@ -878,7 +886,9 @@ function healthColor(rate: number): string {
   width: 100%;
   padding: 6px 8px;
   border-radius: 4px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
   font-size: 13px;
   font-family: inherit;
 }
