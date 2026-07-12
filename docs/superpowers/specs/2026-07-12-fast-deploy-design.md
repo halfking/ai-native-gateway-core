@@ -469,4 +469,257 @@ deploy/systemd/
 | 客户端 `verify_local.go` bug 导致误拒合法 license | 启动时如 license.dat 校验失败，**回退到试用模式**而非直接 503 |
 | 升级替换失败导致网关无法启动 | `installer upgrade apply` 校验新二进制可执行后再 rename；失败自动 restore |
 | 心跳风暴（瞬时大量实例） | 服务端 `/api/v1/instances/heartbeat` 用令牌桶限流（默认 60/min/instance） |
-| 数据库 schema 漂移 | 所有 ALTER 走 `IF NOT EXISTS` + down.sql 在 376 单独维护 |
+| 数据库 schema 漂移 | 所有 ALTER 走 `IF NOT EXISTS` + down.sql 在 376 单独维护 |# 附录：审计修订（v2）
+
+## 审计结论
+
+v1 设计存在 **12 个 P0 阻塞问题**，核心缺陷：
+
+1. M1 离线模式矛盾（声称离线但依赖主控端）
+2. M3 K8s 按 pod 注册会占满 MaxDevices
+3. instance_token 24h TTL 无续期机制
+4. M5 DB 独立表拆分缺失
+5. 升级状态机不支持 K8s
+
+## 核心修正
+
+### 修正 1：M1 离线模式协议独立
+
+**问题**：v1 设计所有激活/心跳/升级依赖 llm.kxpms.cn，但 M1 定义为无外网。
+
+**修正**：
+- M1 **禁用心跳**，改用本地 cron 每 6h 校验 license.dat
+- 离线激活：U 盘携带 license.dat（1 年有效，内嵌 CRL snapshot）
+- 离线升级：U 盘携带 tar.gz（含二进制+镜像+SQL）
+- license.dat 内嵌 30 天 CRL，客户端离线校验
+
+### 修正 2：M3 K8s deployment_id 粒度
+
+**问题**：v1 按 pod 注册，10 个 pod 占满 MaxDevices=10。
+
+**修正**：
+- 注册粒度：`deployment_id = <namespace>/<deployment-name>`
+- 一个 deployment 占用 **1 个** license_devices 槽位
+- `gateway_instances` 新增字段：
+  - `instance_type` TEXT (standalone / k8s-deployment / docker)
+  - `deployment_id` TEXT
+  - `replica_count` INT
+- sidecar 聚合心跳：每 pod 跑 `kx-heartbeat-agent`，5 分钟聚合一次上报
+
+### 修正 3：instance_token 续期机制
+
+**问题**：v1 设计 24h TTL，主控端离线时无法续期。
+
+**修正**：
+- instance_token：7 天 TTL（JWT，EdDSA 签名）
+- refresh_token：90 天 TTL，存储在 `~/.kx-gateway/refresh.token`
+- 客户端每 6 天自动调 `POST /api/v1/instances/refresh` 换新 token
+- refresh_token 丢失或过期 → 重新 register
+
+### 修正 4：M5 DB 独立表拆分
+
+**问题**：v1 设计所有表在主控端 DB，M5 场景未说明。
+
+**修正**：
+
+| 表 | M2/M4 | M5 |
+|----|-------|----|
+| licenses / license_devices / gateway_instances / instance_heartbeats / releases | 主控端 DB | 主控端 DB |
+| instance_release_status | 主控端 DB | **客户端 DB** |
+| tenants / users / ... | 客户端 DB | 客户端 DB |
+
+M5 升级完成后通过 `/api/v1/updates/report` 回写主控端的 `gateway_instances.current_version`。
+
+### 修正 5：升级状态机扩展
+
+**问题**：v1 状态机不支持 K8s 滚动更新。
+
+**修正**：
+
+`autoupdate/types.go` 新增常量：
+```go
+const (
+    StatusRollingUpdateStarted  = "rolling_update_started"
+    StatusRollingUpdateProgress = "rolling_update_progress"
+    StatusRollingUpdateComplete = "rolling_update_complete"
+)
+```
+
+Helm hook `post-upgrade` 调用 `POST /api/v1/updates/report`。
+
+### 修正 6：心跳频率与批量写入
+
+**问题**：v1 M3 K8s 100 pod × 60s = 6000/min 心跳风暴。
+
+**修正**：
+- M2/M4/M5：60s 直连
+- M3：sidecar 5min 聚合（每 deployment 一次，非每 pod）
+- 主控端离线判定：
+  - M2/M4/M5：120s
+  - M3：360s（容忍 1 次 miss）
+
+### 修正 7：instance_heartbeats 表分区
+
+**问题**：v1 无分区，长期积累性能下降。
+
+**修正**：
+
+```sql
+-- 377_instance_heartbeats_partition.sql
+CREATE TABLE instance_heartbeats (
+    id BIGSERIAL,
+    instance_id TEXT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metrics JSONB,
+    PRIMARY KEY (instance_id, timestamp)
+) PARTITION BY RANGE (timestamp);
+
+-- 按月分区，保留 90 天
+CREATE TABLE instance_heartbeats_2026_07 PARTITION OF instance_heartbeats
+    FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
+```
+
+cron 自动创建未来 3 月分区 + 删除 90 天前分区。
+
+### 修正 8：安全加固
+
+#### 密钥持久化
+
+| 密钥 | 存储 | 持久化 |
+|------|------|--------|
+| server Ed25519 keypair | `/var/lib/license-authority/keys/` | bind-mount |
+| client Ed25519 keypair | `~/.kx-gateway/keys/` | Docker volume / K8s Secret |
+| refresh_token | `~/.kx-gateway/refresh.token` | 同上 |
+
+#### JWT 算法
+
+```go
+// 使用 EdDSA (Ed25519)，非 HMAC
+jwt.SigningMethodEdDSA
+```
+
+#### 离线请求加密
+
+```json
+{
+  "encrypted_payload": "base64(AES-GCM(...))",
+  "nonce": "...",
+  "tag": "..."
+}
+```
+
+加密密钥：`SHA256(license_key)`
+
+#### nonce 缓存
+
+Redis SETNX，5 分钟 TTL（非内存）。
+
+#### CRL 缓存
+
+7 天（v1 的 30 天太长）。
+
+### 修正 9：center/types.go 结构体同步
+
+```go
+// center/types.go
+type InstanceInfo struct {
+    InstanceID    string    `json:"instance_id"`
+    InstanceType  string    `json:"instance_type"`  // 新增
+    DeploymentID  string    `json:"deployment_id,omitempty"`  // 新增
+    ReplicaCount  int       `json:"replica_count"`  // 新增
+    Hostname      string    `json:"hostname"`
+    IPAddress     string    `json:"ip_address"`
+    Region        string    `json:"region,omitempty"`
+    Version       string    `json:"version"`
+    BuildSeq      int       `json:"build_seq"`
+    StartedAt     time.Time `json:"started_at"`
+    LastHeartbeat time.Time `json:"last_heartbeat"`
+    Status        string    `json:"status"`
+    LicenseKeyHash string   `json:"license_key_hash"`  // 新增
+    HardwareHash   string   `json:"hardware_hash"`  // 新增
+}
+```
+
+### 修正 10：API 路由共存
+
+| 路径 | 用途 | 所在进程 |
+|------|------|---------|
+| `/api/admin/licenses/*` | 内部管理（运维平台调用） | `cmd/gateway`（主控端实例） |
+| `/api/v1/license/*` | 客户端公开激活 | `cmd/license-authority` |
+| `/api/v1/instances/*` | 客户端注册/心跳 | `cmd/license-authority` |
+| `/api/v1/updates/*` | 客户端升级 | `cmd/license-authority` |
+
+`cmd/license-authority` 内部调用 `licensing.AdminHandler` 但挂载到 `/api/v1/*` 新路径。
+
+## 修订后的第一阶段范围
+
+| 模式 | W1 | W2 | W3 | W4 | W5 |
+|------|----|----|----|----|-----|
+| M1 离线 | - | - | ✅ 离线激活 | ✅ 离线升级 | ✅ e2e |
+| M2 在线 | ✅ 在线激活 | ✅ 启动校验 | ✅ 心跳 | ✅ 在线升级 | ✅ e2e |
+| M4 Docker | - | ✅ 同 M2 | ✅ 同 M2 | ✅ 同 M2 | ✅ e2e |
+| M3 K8s | - | - | - | - | ❌ 第二阶段 |
+| M5 DB 独立 | - | - | - | - | ❌ 第二阶段 |
+
+## 修订后的数据库迁移
+
+| 文件 | 内容 |
+|------|------|
+| 376_gateway_instances_auth.sql | 新增 instance_type / deployment_id / replica_count / instance_token / refresh_token / public_key / license_key_hash / hardware_hash |
+| 377_instance_heartbeats_partition.sql | 创建按月分区表 + cron 自动管理 |
+
+## 修订后的实施计划调整
+
+### A 组（主控端）新增任务
+
+- A11：Redis 集成（nonce 缓存）
+- A12：EdDSA JWT 签名
+- A13：refresh_token 签发与校验
+
+### B 组（客户端验证）新增任务
+
+- B7：refresh_token 自动续期（6 天 cron）
+- B8：M1 离线模式本地 cron 校验
+
+### C 组（安装器）新增任务
+
+- C8：M1 离线升级包处理（tar.gz 解压 + docker load + SQL）
+
+### D 组（实例注册）修订任务
+
+- D1 修订：register 同时写 license_devices，支持 instance_type / deployment_id
+
+### E 组（数据库）新增任务
+
+- E3：377 分区表迁移
+
+### F 组（e2e）新增任务
+
+- F7：M1 离线场景（无主控端）
+- F8：M2 心跳中断 → 120s offline
+- F9：refresh_token 过期 → 重新 register
+
+## 第二阶段预留
+
+M3/M5 第二阶段必须：
+
+1. 复用 `/api/v1/*` 端点（不引入新路径）
+2. 复用 `gateway_instances` / `license_devices` 表（只扩展字段）
+3. 复用 `autoupdate/types.go` 状态枚举（只新增 3 个 rolling_update_*）
+4. 客户端 API 调用签名机制不变
+
+## v1 → v2 关键差异汇总
+
+| 维度 | v1 | v2 |
+|------|----|-----|
+| M1 心跳 | 依赖主控端 | 禁用，本地 cron |
+| M3 粒度 | pod | deployment |
+| token TTL | 24h | 7d + refresh 90d |
+| M5 表 | 未说明 | 主控端 vs 客户端 |
+| 升级状态 | 7 个枚举 | 10 个（+3 K8s） |
+| 心跳频率 | M3=60s | M3=5min sidecar |
+| heartbeats 表 | 单表 | 月分区 90d TTL |
+| JWT 算法 | 未说明 | EdDSA |
+| 离线 req | 明文 | AES-GCM |
+| nonce | 内存 | Redis 5min |
+| CRL 缓存 | 30d | 7d |
