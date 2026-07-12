@@ -11,6 +11,7 @@ type Store interface {
 	CreateRelease(ctx context.Context, rel *Release) error
 	GetRelease(ctx context.Context, version string) (*Release, error)
 	GetLatestRelease(ctx context.Context, channel Channel) (*Release, error)
+	GetLatestReleaseAfter(ctx context.Context, channel Channel, currentBuildSeq int) (*Release, error)
 	ListReleases(ctx context.Context, channel Channel, offset, limit int) ([]Release, int, error)
 	UpdateReleaseStatus(ctx context.Context, id int64, published bool) error
 
@@ -27,4 +28,7 @@ type Store interface {
 	// Instance Release Status
 	GetInstanceStatus(ctx context.Context, instanceID string) (*ReleaseStatus, error)
 	UpdateInstanceStatus(ctx context.Context, status *ReleaseStatus) error
+
+	// Update Report
+	RecordUpdateReport(ctx context.Context, report *UpdateReportData) error
 }

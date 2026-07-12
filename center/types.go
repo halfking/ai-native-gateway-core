@@ -75,15 +75,23 @@ type CommandResultPayload struct {
 }
 
 type InstanceInfo struct {
-	InstanceID    string    `json:"instance_id"`
-	Hostname      string    `json:"hostname"`
-	IPAddress     string    `json:"ip_address"`
-	Region        string    `json:"region,omitempty"`
-	Version       string    `json:"version"`
-	BuildSeq      int       `json:"build_seq"`
-	StartedAt     time.Time `json:"started_at"`
-	LastHeartbeat time.Time `json:"last_heartbeat"`
-	Status        string    `json:"status"`
+	InstanceID     string    `json:"instance_id"`
+	Hostname       string    `json:"hostname"`
+	IPAddress      string    `json:"ip_address"`
+	Region         string    `json:"region,omitempty"`
+	Version        string    `json:"version"`
+	BuildSeq       int       `json:"build_seq"`
+	StartedAt      time.Time `json:"started_at"`
+	LastHeartbeat  time.Time `json:"last_heartbeat"`
+	Status         string    `json:"status"`
+	InstanceType   string    `json:"instance_type,omitempty"`
+	DeploymentID   string    `json:"deployment_id,omitempty"`
+	ReplicaCount   int       `json:"replica_count,omitempty"`
+	LicenseKeyHash string    `json:"license_key_hash,omitempty"`
+	HardwareHash   string    `json:"hardware_hash,omitempty"`
+	PublicKey      string    `json:"public_key,omitempty"`
+	InstanceToken  string    `json:"instance_token,omitempty"`
+	RefreshToken   string    `json:"refresh_token,omitempty"`
 }
 
 const (
