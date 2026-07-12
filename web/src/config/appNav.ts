@@ -139,6 +139,19 @@ export function canShowNavItem(
   return true
 }
 
+// 整个分组是否对当前用户隐藏（例如「模型与路由」分组对租户用户隐藏）。
+// 分组本身的隐藏规则由调用方传入的 hideForTenant 决定。
+export function canShowNavGroup(
+  group: NavGroup,
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+): boolean {
+  // 「模型与路由」分组对租户（tenant portal）整体隐藏：内部的 items 大多
+  // 已带 hideForTenant:true，但显式分组隐藏更明确，避免任何 item 漏写导致
+  // 暴露给非普通租户管理员。
+  if (group.id === 'models-routing' && opts.isTenantPortal) return false
+  return true
+}
+
 export function visibleNavItems(
   items: NavItem[],
   opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
@@ -151,6 +164,7 @@ export function visibleNavGroups(
   opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
 ): NavGroup[] {
   return groups
+    .filter((g) => canShowNavGroup(g, opts))
     .map((g) => ({
       ...g,
       items: g.items.filter((item) => canShowNavItem(item, opts)),

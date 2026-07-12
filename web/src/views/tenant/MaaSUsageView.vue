@@ -1,4 +1,6 @@
 <script setup lang="ts">
+// MaaSUsageView.vue — /tenant/usage 页面（我的消耗 / 管理员只读消耗视图）。
+// 2026-07-12: 文案全面接入 i18n。
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
@@ -19,7 +21,7 @@ const { t } = useI18n()
 
 const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
 const pageTitle = computed(() =>
-  ctxPageTitle(isAdminTenantView.value ? '消耗统计' : '我的消耗'),
+  ctxPageTitle(isAdminTenantView.value ? t('tenants.usage.adminTitle') : t('tenants.usage.title')),
 )
 const backLink = computed(() => maasBackLink('usage'))
 
@@ -107,7 +109,7 @@ async function load() {
   } catch (e: unknown) {
     summary.value = null
     ledger.value = []
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('tenants.usage.loadFailed')
   } finally {
     loading.value = false
   }
@@ -124,26 +126,26 @@ onMounted(load)
       <div class="page-header-actions">
         <span class="tenant-badge tenant-badge--admin">{{ tenantLabel }}</span>
         <select v-model.number="days" class="limit-select" @change="load">
-          <option :value="7">近 7 天</option>
-          <option :value="30">近 30 天</option>
+          <option :value="7">{{ t('tenants.usage.days7') }}</option>
+          <option :value="30">{{ t('tenants.usage.days30') }}</option>
         </select>
         <select v-model.number="limit" class="limit-select" @change="load">
-          <option :value="50">流水 50 条</option>
-          <option :value="100">流水 100 条</option>
-          <option :value="200">流水 200 条</option>
+          <option :value="50">{{ t('tenants.usage.ledgerLimit50') }}</option>
+          <option :value="100">{{ t('tenants.usage.ledgerLimit100') }}</option>
+          <option :value="200">{{ t('tenants.usage.ledgerLimit200') }}</option>
         </select>
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-          {{ loading ? '加载中…' : '刷新' }}
+          {{ loading ? t('tenants.usage.loading') : t('tenants.usage.refresh') }}
         </button>
       </div>
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
-    <div v-else-if="loading && !summary" class="empty">加载中…</div>
+    <div v-else-if="loading && !summary" class="empty">{{ t('tenants.usage.loading') }}</div>
 
     <div v-if="summary" class="stat-cards">
       <div class="stat-card card">
-        <div class="stat-label">积分消耗</div>
+        <div class="stat-label">{{ t('tenants.usage.statCreditsConsumed') }}</div>
         <div class="stat-value stat-value--fee">
           <FeeCostCell
             inline
@@ -152,31 +154,38 @@ onMounted(load)
             :show-cost="isAdminTenantView"
           />
         </div>
-        <div class="stat-hint">近 {{ days }} 天 · {{ fmtNum(summary.total_requests) }} 次请求</div>
+        <div class="stat-hint">
+          {{ t('tenants.usage.statCreditsConsumedHint', { days, n: fmtNum(summary.total_requests) }) }}
+        </div>
       </div>
       <div class="stat-card card">
         <div class="stat-label">{{ t('tenants.maasUsageView.ledgerTotalLabel') }}</div>
         <div class="stat-value">{{ fmtNum(consumeTotal) }} <span class="unit">{{ t('common.unit.credits') }}</span></div>
-        <div class="stat-hint">{{ t('tenants.maasUsageView.ledgerTotalHint', { limit, count: recentConsumeCount }) }}</div>
+        <div class="stat-hint">
+          {{ t('tenants.maasUsageView.ledgerTotalHint', { limit, count: recentConsumeCount }) }}
+        </div>
       </div>
     </div>
 
     <div v-if="summary" class="card chart-card">
-      <div class="card-title">使用趋势 <span class="hint">t('tenants.maasUsageView.trendHint')</span></div>
+      <div class="card-title">
+        {{ t('tenants.usage.trendTitle') }}
+        <span class="hint">{{ t('tenants.usage.trendCredits') }} · {{ t('tenants.usage.trendRequests') }}</span>
+      </div>
       <div v-if="!summary.trend.length" class="empty">
-        t('tenants.maasUsageView.emptyTrend', { days })
-        <RouterLink v-if="!isAdminTenantView" :to="pricingLink">t('tenants.maasUsageView.buyCredits')</RouterLink>
-        <span v-else>t('tenants.maasUsageView.rechargeHint')</span>
+        {{ t('tenants.usage.emptyTrend', { days }) }}
+        <RouterLink v-if="!isAdminTenantView" :to="pricingLink">{{ t('tenants.usage.emptyTrendBuyCredits') }}</RouterLink>
+        <span v-else>{{ t('tenants.usage.emptyTrendAdminHint') }}</span>
       </div>
       <div v-else class="trend-grid">
         <div class="trend-section">
-          <div class="trend-label">积分消耗</div>
+          <div class="trend-label">{{ t('tenants.usage.trendCredits') }}</div>
           <div class="trend-bars">
             <div
               v-for="row in summary.trend"
               :key="'c-' + row.date"
               class="trend-col"
-              :title="`${row.date}: ${row.credits} 积分`"
+              :title="`${row.date}: ${row.credits} ${t('common.unit.credits')}`"
             >
               <span
                 class="trend-bar credits"
@@ -187,13 +196,13 @@ onMounted(load)
           </div>
         </div>
         <div class="trend-section">
-          <div class="trend-label">请求次数</div>
+          <div class="trend-label">{{ t('tenants.usage.trendRequests') }}</div>
           <div class="trend-bars">
             <div
               v-for="row in summary.trend"
               :key="'r-' + row.date"
               class="trend-col"
-              :title="`${row.date}: ${row.requests} 次`"
+              :title="`${row.date}: ${row.requests} ${t('common.unit.requests')}`"
             >
               <span
                 class="trend-bar requests"
@@ -207,8 +216,11 @@ onMounted(load)
     </div>
 
     <div v-if="summary" class="card chart-card">
-      <div class="card-title">按模型排行 <span class="hint">积分消耗</span></div>
-      <div v-if="!summary.by_model.length" class="empty">暂无模型消耗数据</div>
+      <div class="card-title">
+        {{ t('tenants.usage.byModel') }}
+        <span class="hint">{{ t('tenants.usage.byModelHint') }}</span>
+      </div>
+      <div v-if="!summary.by_model.length" class="empty">{{ t('tenants.usage.emptyByModel') }}</div>
       <div v-else class="bar-chart">
         <div v-for="row in summary.by_model" :key="row.model" class="bar-row">
           <span class="bar-label" :title="row.model">{{ row.model }}</span>
@@ -225,23 +237,23 @@ onMounted(load)
               :cost-usd="row.cost_usd"
               :show-cost="isAdminTenantView"
             />
-            · {{ fmtNum(row.requests) }} 次
+            · {{ fmtNum(row.requests) }} {{ t('common.unit.requests') }}
           </span>
         </div>
       </div>
     </div>
 
     <div class="card table-card">
-      <h3 class="table-title">积分流水</h3>
+      <h3 class="table-title">{{ t('tenants.usage.ledgerTitle') }}</h3>
       <table class="table" style="width:100%">
         <thead>
           <tr>
-            <th>时间</th>
-            <th>类型</th>
-            <th style="text-align:right">变动</th>
-            <th style="text-align:right">余额</th>
-            <th>关联</th>
-            <th>备注</th>
+            <th>{{ t('tenants.usage.colTime') }}</th>
+            <th>{{ t('tenants.usage.colType') }}</th>
+            <th style="text-align:right">{{ t('tenants.usage.colDelta') }}</th>
+            <th style="text-align:right">{{ t('tenants.usage.colBalance') }}</th>
+            <th>{{ t('tenants.usage.colRef') }}</th>
+            <th>{{ t('tenants.usage.colNote') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -263,8 +275,8 @@ onMounted(load)
           </tr>
           <tr v-if="!loading && ledger.length === 0">
             <td colspan="6" class="empty">
-              暂无流水记录。
-              <RouterLink v-if="!isAdminTenantView" :to="pricingLink">去t('tenants.maasUsageView.buyCredits')</RouterLink>
+              {{ t('tenants.usage.emptyLedger') }}
+              <RouterLink v-if="!isAdminTenantView" :to="pricingLink">{{ t('tenants.usage.goBuyCredits') }}</RouterLink>
             </td>
           </tr>
         </tbody>
