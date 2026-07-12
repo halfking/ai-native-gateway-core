@@ -13,6 +13,8 @@ import (
 // setupAPIRoutes registers all /api/v1/* routes.
 // Routes are mapped from traditional /api/admin/* to /api/v1/* for License Authority.
 func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.PrivateKey) {
+	serverPubKey := serverPrivKey.Public().(ed25519.PublicKey)
+
 	// ── Licensing routes (/api/v1/license/*) ──────────────────────────────
 	// AdminHandler requires Store, CryptoConfig, Activator, OfflineManager, Validator
 	// For now, we instantiate minimal dependencies (nil placeholders for non-Store deps)
@@ -37,6 +39,10 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 	// ── Refresh token endpoint ────────────────────────────────────────────
 	refreshHandler := NewRefreshHandler(centerStore, serverPrivKey)
 	instancesGroup.POST("/refresh", refreshHandler.HandleRefresh)
+
+	// ── Heartbeat endpoint ────────────────────────────────────────────────
+	heartbeatHandler := NewHeartbeatHandler(centerStore, serverPubKey)
+	heartbeatHandler.RegisterRoutes(instancesGroup)
 
 	// ── Autoupdate routes (/api/v1/updates/*) ─────────────────────────────
 	updateStore := autoupdate.NewPgxStore(pool)
