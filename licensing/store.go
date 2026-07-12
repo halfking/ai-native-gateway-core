@@ -23,7 +23,7 @@ type Store interface {
 	RejectOfflineRequest(ctx context.Context, requestID, reason string) error
 
 	CountActiveDevices(ctx context.Context, licenseKey string) (int, error)
-	ListAllLicenses(ctx context.Context, offset, limit int) ([]License, int, error)
+	ListAllLicenses(ctx context.Context, offset, limit int, query, statusFilter string) ([]License, int, error)
 	ListAllDevices(ctx context.Context, licenseKey string) ([]Device, error)
 
 	GetLicenseModules(ctx context.Context, licenseKey string) (map[string]*LicenseModule, error)

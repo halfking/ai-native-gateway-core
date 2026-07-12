@@ -196,6 +196,19 @@ async def handle_chat(request: web.Request) -> web.StreamResponse:
         await asyncio.sleep(delay_ms / 1000.0)
         # success path
 
+    elif mode == "no_available_accounts":
+        STATE.counters["requests_error"] += 1
+        return web.json_response(
+            {
+                "error": {
+                    "message": "No available accounts: no available accounts",
+                    "type": "api_error",
+                },
+                "type": "error",
+            },
+            status=503,
+        )
+
     elif mode == "rate_limited":
         STATE.counters["requests_error"] += 1
         return web.json_response(
@@ -401,10 +414,32 @@ async def handle_models(_request: web.Request) -> web.Response:
     )
 
 
+async def handle_admin_state_get(_request: web.Request) -> web.Response:
+    return web.json_response(STATE.to_dict())
+
+
+async def handle_admin_state_set(request: web.Request) -> web.Response:
+    body = await request.json()
+    new_mode = body.get("mode", "healthy")
+    ttl = int(body.get("ttl_seconds", 0))
+    latency_min = body.get("latency_min_ms")
+    latency_max = body.get("latency_max_ms")
+    if latency_min is not None:
+        latency_min = int(latency_min)
+    if latency_max is not None:
+        latency_max = int(latency_max)
+    STATE.change_mode(
+        new_mode, ttl_seconds=ttl, latency_min=latency_min, latency_max=latency_max
+    )
+    return web.json_response(STATE.to_dict())
+
+
 def build_app() -> web.Application:
     app = web.Application()
     app.router.add_post("/v1/chat/completions", handle_chat)
     app.router.add_get("/v1/models", handle_models)
+    app.router.add_get("/admin/state", handle_admin_state_get)
+    app.router.add_post("/admin/state", handle_admin_state_set)
     app.router.add_get("/healthz", handle_health)
     app.router.add_get("/", handle_health)
     return app
