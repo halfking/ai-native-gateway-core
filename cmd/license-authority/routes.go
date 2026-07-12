@@ -30,6 +30,10 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 	instancesGroup := api.Group("/instances")
 	centerAPI.RegisterRoutes(instancesGroup)
 
+	// ── Register endpoint ─────────────────────────────────────────────────
+	registerHandler := NewRegisterHandler(licenseStore, centerStore, serverPrivKey)
+	registerHandler.RegisterRoutes(instancesGroup)
+
 	// ── Refresh token endpoint ────────────────────────────────────────────
 	refreshHandler := NewRefreshHandler(centerStore, serverPrivKey)
 	instancesGroup.POST("/refresh", refreshHandler.HandleRefresh)
