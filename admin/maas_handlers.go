@@ -14,6 +14,8 @@ import (
 func (h *Handler) registerMaasRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/maas/settings", h.superAdmin(h.handleMaasSettings))
 	mux.HandleFunc("/api/admin/maas/model-rates/batch", h.superAdmin(h.handleMaasModelRateBatch))
+	mux.HandleFunc("/api/admin/maas/model-rates/batch-reset", h.superAdmin(h.handleMaasModelRateBatchReset))
+	mux.HandleFunc("/api/admin/maas/model-rates/batch-fill-global", h.superAdmin(h.handleMaasModelRateBatchFillGlobal))
 	mux.HandleFunc("/api/admin/maas/model-rates", h.superAdmin(h.handleMaasModelRates))
 	mux.HandleFunc("/api/admin/maas/model-rates/", h.superAdmin(h.handleMaasModelRateByID))
 	mux.HandleFunc("/api/admin/maas/plans", h.superAdmin(h.handleMaasPlans))
@@ -181,6 +183,69 @@ func (h *Handler) handleMaasModelRateBatch(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
+}
+
+// handleMaasModelRateBatchReset clears the given custom pricing fields across
+// many canonical ids in one round trip (e.g. reset all selected rows).
+func (h *Handler) handleMaasModelRateBatchReset(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Items []maas.BatchResetWithID `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if len(req.Items) == 0 {
+		writeError(w, http.StatusBadRequest, "items required")
+		return
+	}
+	updated, err := svc.BatchResetModelRates(r.Context(), req.Items)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
+}
+
+// handleMaasModelRateBatchFillGlobal materialises the current global
+// effective rate onto the given canonical ids. Useful for "freeze current
+// discount" operations.
+func (h *Handler) handleMaasModelRateBatchFillGlobal(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Items []maas.BatchFillGlobalWithID `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if len(req.Items) == 0 {
+		writeError(w, http.StatusBadRequest, "items required")
+		return
+	}
+	written, err := svc.BatchFillGlobalModelRates(r.Context(), req.Items)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": written})
 }
 
 func (h *Handler) handleMaasPlans(w http.ResponseWriter, r *http.Request) {

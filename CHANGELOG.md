@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2026-07-13
 
 ### Added
+- **/model-pricing 标准模型定价与多模态计费**
+  `model-pricing` 是用户视角的"标准模型定价清单"，本次纠正了三处偏差：
+  (1) 列表每个 canonical model 只占一行，移除"厂家（vendor）"列，用户不需要关心供应商；
+  (2) 强化批量操作，新增「全部恢复全局」「填入当前全局」两个动作，与原「批量定价」「粘贴到所选」共同覆盖 4 种典型工作流；
+  (3) 为多模态模型（gemini-2.5-flash-image、doubao-seed、glm-4v 等）扩展独立的 image / audio / video token 单价，与 text token 区分计费。
+  - DB：新增 `model_credit_rates.credits_per_1m_{image,audio,video}_tokens` 3 字段 + `manual_{image,audio,video}` 3 标志位，迁移脚本 `deploy/sql/docs/pricing/2026_07_13_model_credit_multimodal.sql`（idempotent）。
+  - Go 后端：`BaseRateSet` / `ModelRateValues` / `storedModelRates` / `AdminModelRateRow` / `ModelRateUpsert` 加 6 字段；`ListAdminModelRates` SQL + Scan 更新；`UpsertModelRate` + `ResetModelRateFields` 支持新 key；新增 `ChargeRequestMultimodal(TokenUsage)` + `BatchResetModelRates` + `BatchFillGlobalModelRates` + `/api/admin/maas/model-rates/batch-reset` + `/api/admin/maas/model-rates/batch-fill-global` route。`ChargeRequest` 旧 4 维签名保留不变，向后兼容。
+  - Go credits：新增 `TokenUsage` 与 `CalcCreditsMultimodal` 作为单一计费入口；旧 `CalcCredits` 变薄为 4-tuple wrapper。
+  - 前端：`AdminMaasModelRate` / `MaasModelRateUpsert` 类型扩展；`StandardModelPricingView` 删除 vendor 列、新增「模态」列（按 modality 着色 badge）、手工状态徽章从 N/4 升 N/7；批量操作栏新增「全部恢复全局」「填入当前全局」按钮；手工定价 modal 拆分为「文本 Token 维度」「多模态 Token 维度」两段。
+  - 文案：zh-CN / en-US `standardModelPricing` 文案补全；修复 en-US 既有中文残留。
+  - 单测：`maas/model_rates_multimodal_test.go` 7 测试函数 + 7 subtest 覆盖。
+  - 完整设计：`docs/changelogs/2026-07-13-standard-model-pricing.md`。
 - **错误触发的主动探测 (Error-Triggered Active Probe)**  
   连续失败 ≥2 次时立即直连上游探测（0s 延迟），按 5s → 30s → 2m → 5m → 15m backoff 链执行最多 5 轮。
   探测结果写入 `request_logs`（`task_type='probe_triggered'`），自动推送到实时请求流，前端可通过

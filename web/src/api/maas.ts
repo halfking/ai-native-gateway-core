@@ -39,19 +39,29 @@ export interface AdminMaasModelRate {
   display_name: string
   vendor: string
   family: string | null
+  modality: string
   status: string
   credits_per_1m_in: number
   credits_per_1m_out: number
   credits_per_1m_cache_in: number
   credits_per_1m_cache_out: number
+  credits_per_1m_image_tokens: number
+  credits_per_1m_audio_tokens: number
+  credits_per_1m_video_tokens: number
   manual_in: boolean
   manual_out: boolean
   manual_cache_in: boolean
   manual_cache_out: boolean
+  manual_image: boolean
+  manual_audio: boolean
+  manual_video: boolean
   custom_credits_per_1m_in: number | null
   custom_credits_per_1m_out: number | null
   custom_credits_per_1m_cache_in: number | null
   custom_credits_per_1m_cache_out: number | null
+  custom_credits_per_1m_image_tokens: number | null
+  custom_credits_per_1m_audio_tokens: number | null
+  custom_credits_per_1m_video_tokens: number | null
   is_custom: boolean
   updated_at: string | null
 }
@@ -61,10 +71,16 @@ export interface MaasModelRateUpsert {
   credits_per_1m_out: number
   credits_per_1m_cache_in: number
   credits_per_1m_cache_out: number
+  credits_per_1m_image_tokens?: number
+  credits_per_1m_audio_tokens?: number
+  credits_per_1m_video_tokens?: number
   manual_in: boolean
   manual_out: boolean
   manual_cache_in: boolean
   manual_cache_out: boolean
+  manual_image?: boolean
+  manual_audio?: boolean
+  manual_video?: boolean
 }
 
 export interface AdminMaasModelRatesResponse {
@@ -206,12 +222,32 @@ export function batchUpsertAdminMaasModelRates(updates: Array<{
   credits_per_1m_out: number
   credits_per_1m_cache_in: number
   credits_per_1m_cache_out: number
+  credits_per_1m_image_tokens?: number
+  credits_per_1m_audio_tokens?: number
+  credits_per_1m_video_tokens?: number
   manual_in: boolean
   manual_out: boolean
   manual_cache_in: boolean
   manual_cache_out: boolean
+  manual_image?: boolean
+  manual_audio?: boolean
+  manual_video?: boolean
 }>) {
   return req<{ updated: number }>('POST', '/api/admin/maas/model-rates/batch', { updates })
+}
+
+export function batchResetAdminMaasModelRates(items: Array<{
+  canonical_id: number
+  fields: string[]
+}>) {
+  return req<{ updated: number }>('POST', '/api/admin/maas/model-rates/batch-reset', { items })
+}
+
+export function batchFillGlobalAdminMaasModelRates(items: Array<{
+  canonical_id: number
+  all_dimensions: boolean
+}>) {
+  return req<{ updated: number }>('POST', '/api/admin/maas/model-rates/batch-fill-global', { items })
 }
 
 export function deleteAdminMaasModelRate(canonicalId: number) {

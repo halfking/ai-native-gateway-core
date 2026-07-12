@@ -2023,7 +2023,13 @@ CREATE TABLE public.model_credit_rates (
     manual_in boolean DEFAULT false NOT NULL,
     manual_out boolean DEFAULT false NOT NULL,
     manual_cache_in boolean DEFAULT false NOT NULL,
-    manual_cache_out boolean DEFAULT false NOT NULL
+    manual_cache_out boolean DEFAULT false NOT NULL,
+    credits_per_1m_image_tokens bigint,
+    credits_per_1m_audio_tokens bigint,
+    credits_per_1m_video_tokens bigint,
+    manual_image boolean DEFAULT false NOT NULL,
+    manual_audio boolean DEFAULT false NOT NULL,
+    manual_video boolean DEFAULT false NOT NULL
 );
 
 

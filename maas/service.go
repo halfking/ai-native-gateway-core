@@ -97,11 +97,34 @@ func (s *Service) PreCheckCredits(ctx context.Context, tenantID string) error {
 }
 
 // ChargeRequest deducts credits after a successful upstream call.
+//
+// This is the legacy 4-tuple signature kept for backward compatibility with
+// existing relay/streaming handlers. New code paths should prefer
+// ChargeRequestMultimodal which surfaces image / audio / video token
+// counters for accurate billing on multimodal models (gemini-*-image,
+// doubao-seed, glm-4v, etc.).
 func (s *Service) ChargeRequest(ctx context.Context, tenantID, requestID, canonicalName string, promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens int) (int64, error) {
+	return s.chargeTokens(ctx, tenantID, requestID, canonicalName, TokenUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		CacheReadTokens:  cacheReadTokens,
+		CacheWriteTokens: cacheWriteTokens,
+	})
+}
+
+// ChargeRequestMultimodal charges a request that may carry multimodal
+// token counters (image_tokens / audio_tokens / video_tokens). Empty
+// fields contribute nothing and are safe to pass as zero — useful while
+// upstream parsing gradually adopts IR.Usage.Image/Audio/Video.
+func (s *Service) ChargeRequestMultimodal(ctx context.Context, tenantID, requestID, canonicalName string, usage TokenUsage) (int64, error) {
+	return s.chargeTokens(ctx, tenantID, requestID, canonicalName, usage)
+}
+
+func (s *Service) chargeTokens(ctx context.Context, tenantID, requestID, canonicalName string, usage TokenUsage) (int64, error) {
 	if !s.Enabled() || tenantID == "" || tenantID == "default" {
 		return 0, nil
 	}
-	if promptTokens <= 0 && completionTokens <= 0 && cacheReadTokens <= 0 && cacheWriteTokens <= 0 {
+	if !usage.Any() {
 		return 0, nil
 	}
 
@@ -113,7 +136,7 @@ func (s *Service) ChargeRequest(ctx context.Context, tenantID, requestID, canoni
 	if err != nil {
 		return 0, err
 	}
-	amount := CalcCredits(promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens, rates)
+	amount := CalcCreditsMultimodal(usage, rates)
 	if amount <= 0 {
 		return 0, nil
 	}
@@ -233,24 +256,28 @@ func (s *Service) ensureWallet(ctx context.Context, tx pgx.Tx, tenantID string) 
 func (s *Service) modelRateValues(ctx context.Context, canonicalName string, settings Settings) (ModelRateValues, error) {
 	global := globalEffective(settings)
 	if canonicalName == "" {
-		return ModelRateValues{In: global.In, Out: global.Out, CacheIn: global.CacheIn, CacheOut: global.CacheOut}, nil
+		return modelValuesFromBase(global), nil
 	}
 	var stored storedModelRates
 	err := s.pool.QueryRow(ctx, `
 		SELECT mcr.credits_per_1m_in, mcr.credits_per_1m_out,
 		       mcr.credits_per_1m_cache_in, mcr.credits_per_1m_cache_out,
+		       mcr.credits_per_1m_image_tokens, mcr.credits_per_1m_audio_tokens, mcr.credits_per_1m_video_tokens,
 		       COALESCE(mcr.manual_in, FALSE), COALESCE(mcr.manual_out, FALSE),
-		       COALESCE(mcr.manual_cache_in, FALSE), COALESCE(mcr.manual_cache_out, FALSE)
+		       COALESCE(mcr.manual_cache_in, FALSE), COALESCE(mcr.manual_cache_out, FALSE),
+		       COALESCE(mcr.manual_image, FALSE), COALESCE(mcr.manual_audio, FALSE), COALESCE(mcr.manual_video, FALSE)
 		FROM models_canonical mc
 		LEFT JOIN model_credit_rates mcr ON mcr.canonical_id = mc.id
 		WHERE mc.canonical_name = $1 AND COALESCE(mc.status, 'active') = 'active'
 		LIMIT 1
 	`, canonicalName).Scan(
 		&stored.In, &stored.Out, &stored.CacheIn, &stored.CacheOut,
+		&stored.Image, &stored.Audio, &stored.Video,
 		&stored.ManualIn, &stored.ManualOut, &stored.ManualCacheIn, &stored.ManualCacheOut,
+		&stored.ManualImage, &stored.ManualAudio, &stored.ManualVideo,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ModelRateValues{In: global.In, Out: global.Out, CacheIn: global.CacheIn, CacheOut: global.CacheOut}, nil
+		return modelValuesFromBase(global), nil
 	}
 	if err != nil {
 		return ModelRateValues{}, err
