@@ -26,15 +26,6 @@ var (
 		},
 		[]string{"model"},
 	)
-
-	// 凭据 FpSlot 饱和度
-	fpSlotSaturationRatio = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "llmgw_fp_slot_saturation_ratio",
-			Help: "FpSlot saturation ratio per credential",
-		},
-		[]string{"credential_id"},
-	)
 )
 
 // DegradationTracker 跟踪降级模式统计
