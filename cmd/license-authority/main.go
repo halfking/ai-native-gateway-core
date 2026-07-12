@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/center"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/labstack/echo/v4"
 )
@@ -76,6 +77,13 @@ func main() {
 
 	// ── Routes ────────────────────────────────────────────────────────────
 	registerRoutes(e, dbConn.Pool(), serverPrivKey)
+
+	// ── Start MonitorInstances goroutine ──────────────────────────────────
+	centerStore := center.NewPgxStore(dbConn.Pool())
+	monitorCtx, cancelMonitor := context.WithCancel(ctx)
+	defer cancelMonitor()
+	go center.MonitorInstances(monitorCtx, centerStore, 30*time.Second)
+	slog.Info("instance monitor started", "interval", "30s")
 
 	// ── Graceful Shutdown ─────────────────────────────────────────────────
 	go func() {
