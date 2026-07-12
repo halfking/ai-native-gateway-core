@@ -83,10 +83,31 @@ type ResponseToolCall struct {
 }
 
 // ResponseUsage holds token usage statistics.
+// audit-ir-multimodal (2026-07-13): Extended to support cache tokens,
+// reasoning tokens, and multimodal (vision/audio/video) token breakdowns
+// for accurate billing across all providers.
 type ResponseUsage struct {
+	// Basic token counts (always present)
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+
+	// Cache tokens (Anthropic, OpenAI with prompt caching)
+	// nil = not applicable for this provider/request
+	CacheReadTokens  *int // Cache hit tokens (billed at reduced rate)
+	CacheWriteTokens *int // Cache creation tokens (billed at premium rate)
+
+	// Reasoning tokens (DeepSeek R1, OpenAI reasoning models)
+	ReasoningTokens *int
+
+	// Multimodal token breakdowns (Vision, Audio, Video)
+	// Enables separate billing for different modalities
+	ImageTokens *int // Vision input tokens
+	AudioTokens *int // Audio input/output tokens
+	VideoTokens *int // Video input tokens
+
+	// Provider-specific token counts (e.g., Doubao seed_token_usage)
+	ProviderTokens *int
 }
 
 // ─── Parse ─────────────────────────────────────────────────────────────────
@@ -112,8 +133,10 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		Usage      struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"` // audit-ir-multimodal (2026-07-13)
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`     // audit-ir-multimodal (2026-07-13)
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -131,6 +154,18 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 			CompletionTokens: src.Usage.OutputTokens,
 			TotalTokens:      src.Usage.InputTokens + src.Usage.OutputTokens,
 		},
+	}
+
+	// audit-ir-multimodal (2026-07-13): Extract Anthropic cache tokens
+	// Previously these fields were ignored in non-streaming responses,
+	// causing billing inaccuracy for Anthropic requests with prompt caching.
+	if src.Usage.CacheCreationInputTokens > 0 {
+		v := src.Usage.CacheCreationInputTokens
+		ir.Usage.CacheWriteTokens = &v
+	}
+	if src.Usage.CacheReadInputTokens > 0 {
+		v := src.Usage.CacheReadInputTokens
+		ir.Usage.CacheReadTokens = &v
 	}
 
 	for _, c := range src.Content {
@@ -198,6 +233,17 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 			TotalTokens      int `json:"total_tokens"`
+			// audit-ir-multimodal (2026-07-13): OpenAI detailed usage fields
+			PromptTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+				AudioTokens  int `json:"audio_tokens"`
+				ImageTokens  int `json:"image_tokens"`
+				VideoTokens  int `json:"video_tokens"`
+			} `json:"prompt_tokens_details"`
+			CompletionTokensDetails struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+				AudioTokens     int `json:"audio_tokens"`
+			} `json:"completion_tokens_details"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -214,6 +260,40 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 			CompletionTokens: src.Usage.CompletionTokens,
 			TotalTokens:      src.Usage.TotalTokens,
 		},
+	}
+
+	// audit-ir-multimodal (2026-07-13): Extract OpenAI detailed usage fields
+	// for accurate multimodal billing (vision, audio, video) and cache tokens.
+	if src.Usage.PromptTokensDetails.CachedTokens > 0 {
+		v := src.Usage.PromptTokensDetails.CachedTokens
+		ir.Usage.CacheReadTokens = &v
+	}
+	if src.Usage.PromptTokensDetails.ImageTokens > 0 {
+		v := src.Usage.PromptTokensDetails.ImageTokens
+		ir.Usage.ImageTokens = &v
+	}
+	if src.Usage.PromptTokensDetails.AudioTokens > 0 {
+		v := src.Usage.PromptTokensDetails.AudioTokens
+		ir.Usage.AudioTokens = &v
+	}
+	if src.Usage.PromptTokensDetails.VideoTokens > 0 {
+		v := src.Usage.PromptTokensDetails.VideoTokens
+		ir.Usage.VideoTokens = &v
+	}
+	if src.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+		v := src.Usage.CompletionTokensDetails.ReasoningTokens
+		ir.Usage.ReasoningTokens = &v
+	}
+	if src.Usage.CompletionTokensDetails.AudioTokens > 0 {
+		// Audio output tokens (GPT-4o Audio)
+		v := src.Usage.CompletionTokensDetails.AudioTokens
+		if ir.Usage.AudioTokens == nil {
+			ir.Usage.AudioTokens = &v
+		} else {
+			// Sum input + output audio tokens
+			total := *ir.Usage.AudioTokens + v
+			ir.Usage.AudioTokens = &total
+		}
 	}
 
 	if len(src.Choices) > 0 {
@@ -327,11 +407,7 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 			"message":       msg,
 			"finish_reason": finishReason,
 		}},
-		"usage": map[string]any{
-			"prompt_tokens":     ir.Usage.PromptTokens,
-			"completion_tokens": ir.Usage.CompletionTokens,
-			"total_tokens":      ir.Usage.TotalTokens,
-		},
+		"usage": buildOpenAIUsageObject(&ir.Usage),
 	}
 
 	return json.Marshal(out)
@@ -380,6 +456,46 @@ func buildOpenAIResponseContent(ir *InternalResponse) any {
 	return blocks
 }
 
+// buildOpenAIUsageObject builds OpenAI usage object with detailed token breakdowns.
+// audit-ir-multimodal (2026-07-13): Supports cache tokens, reasoning tokens,
+// and multimodal token fields (image, audio, video) for accurate billing.
+func buildOpenAIUsageObject(usage *ResponseUsage) map[string]any {
+	usageObj := map[string]any{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
+	}
+
+	// prompt_tokens_details (cache, multimodal input)
+	promptDetails := make(map[string]any)
+	if usage.CacheReadTokens != nil && *usage.CacheReadTokens > 0 {
+		promptDetails["cached_tokens"] = *usage.CacheReadTokens
+	}
+	if usage.ImageTokens != nil && *usage.ImageTokens > 0 {
+		promptDetails["image_tokens"] = *usage.ImageTokens
+	}
+	if usage.AudioTokens != nil && *usage.AudioTokens > 0 {
+		promptDetails["audio_tokens"] = *usage.AudioTokens
+	}
+	if usage.VideoTokens != nil && *usage.VideoTokens > 0 {
+		promptDetails["video_tokens"] = *usage.VideoTokens
+	}
+	if len(promptDetails) > 0 {
+		usageObj["prompt_tokens_details"] = promptDetails
+	}
+
+	// completion_tokens_details (reasoning, audio output)
+	completionDetails := make(map[string]any)
+	if usage.ReasoningTokens != nil && *usage.ReasoningTokens > 0 {
+		completionDetails["reasoning_tokens"] = *usage.ReasoningTokens
+	}
+	if len(completionDetails) > 0 {
+		usageObj["completion_tokens_details"] = completionDetails
+	}
+
+	return usageObj
+}
+
 // SerializeAnthropicResponse serializes an InternalResponse into an Anthropic
 // Messages API response body. Used for Q2 (anthropic client ← openai upstream).
 func SerializeAnthropicResponse(ir *InternalResponse, clientModel string) ([]byte, error) {
@@ -406,13 +522,30 @@ func SerializeAnthropicResponse(ir *InternalResponse, clientModel string) ([]byt
 		"content":       content,
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
-		"usage": map[string]any{
-			"input_tokens":  ir.Usage.PromptTokens,
-			"output_tokens": ir.Usage.CompletionTokens,
-		},
+		"usage":         buildAnthropicUsageObject(&ir.Usage),
 	}
 
 	return json.Marshal(out)
+}
+
+// buildAnthropicUsageObject builds Anthropic usage object with cache token details.
+// audit-ir-multimodal (2026-07-13): Exports cache_creation_input_tokens and
+// cache_read_input_tokens for accurate Anthropic prompt caching billing.
+func buildAnthropicUsageObject(usage *ResponseUsage) map[string]any {
+	usageObj := map[string]any{
+		"input_tokens":  usage.PromptTokens,
+		"output_tokens": usage.CompletionTokens,
+	}
+
+	// Anthropic cache token fields
+	if usage.CacheWriteTokens != nil && *usage.CacheWriteTokens > 0 {
+		usageObj["cache_creation_input_tokens"] = *usage.CacheWriteTokens
+	}
+	if usage.CacheReadTokens != nil && *usage.CacheReadTokens > 0 {
+		usageObj["cache_read_input_tokens"] = *usage.CacheReadTokens
+	}
+
+	return usageObj
 }
 
 // buildAnthropicResponseContent builds Anthropic content blocks from IR.

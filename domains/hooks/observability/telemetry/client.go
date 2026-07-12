@@ -111,13 +111,19 @@ type RequestLogEntry struct {
 	CompletionTokens *int         `json:"completion_tokens,omitempty"`
 	CacheReadTokens  *int         `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens *int         `json:"cache_write_tokens,omitempty"`
-	CostUSD          *float64     `json:"cost_usd,omitempty"`
-	CostDisplay      *float64     `json:"cost_display,omitempty"`
-	CostCurrency     *string      `json:"cost_currency,omitempty"`
-	LatencyMs        *int         `json:"latency_ms,omitempty"`
-	Success          bool         `json:"success"`
-	RequestStatus    *string      `json:"request_status,omitempty"`
-	ErrorKind        *string      `json:"error_kind,omitempty"`
+	// audit-ir-multimodal (2026-07-13): Multimodal and reasoning token fields
+	ReasoningTokens *int     `json:"reasoning_tokens,omitempty"`
+	ImageTokens     *int     `json:"image_tokens,omitempty"`
+	AudioTokens     *int     `json:"audio_tokens,omitempty"`
+	VideoTokens     *int     `json:"video_tokens,omitempty"`
+	ProviderTokens  *int     `json:"provider_tokens,omitempty"`
+	CostUSD         *float64 `json:"cost_usd,omitempty"`
+	CostDisplay     *float64 `json:"cost_display,omitempty"`
+	CostCurrency    *string  `json:"cost_currency,omitempty"`
+	LatencyMs       *int     `json:"latency_ms,omitempty"`
+	Success         bool     `json:"success"`
+	RequestStatus   *string  `json:"request_status,omitempty"`
+	ErrorKind       *string  `json:"error_kind,omitempty"`
 	// UsageSource indicates where the token counts came from:
 	//   "llm"       — extracted from upstream response.usage block
 	//   "estimated" — computed locally from request/response text (fallback)
@@ -625,7 +631,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			credential_id, provider_id, canonical_id,
 			client_profile, request_mode, affinity_hit,
 			prompt_tokens, completion_tokens,
-			cache_read_tokens, cache_write_tokens, total_tokens,
+			cache_read_tokens, cache_write_tokens,
+			-- audit-ir-multimodal (2026-07-13): multimodal and reasoning token fields
+			reasoning_tokens, image_tokens, audio_tokens, video_tokens, provider_tokens,
+			total_tokens,
 			cost_usd, cost_display, cost_currency,
 			latency_ms, success, request_status, error_kind, search_text,
 			identity_hash, response_checksum,
@@ -667,8 +676,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$8, $9, $10,
 		$11, $12, $13,
 		$14, $15,
-		$16, $17, $18,
-		$19, $20, $21,
+		$16, $17,
+		-- audit-ir-multimodal (2026-07-13): $18-$22 multimodal tokens
+		$18, $19, $20, $21, $22,
+		$23,
+		$24, $25, $26,
 		$22, $23, $24, $25, $26,
 		$27, $28,
 		$29, $30, $31, $32,
@@ -792,6 +804,12 @@ $42,
 		entry.CompletionTokens,
 		entry.CacheReadTokens,
 		entry.CacheWriteTokens,
+		// audit-ir-multimodal (2026-07-13): multimodal token fields
+		entry.ReasoningTokens,
+		entry.ImageTokens,
+		entry.AudioTokens,
+		entry.VideoTokens,
+		entry.ProviderTokens,
 		totalTokens,
 		entry.CostUSD,
 		entry.CostDisplay,
@@ -995,7 +1013,13 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       total_tokens = COALESCE($13, total_tokens),
 		       cache_read_tokens = COALESCE($14, cache_read_tokens),
 		       cache_write_tokens = COALESCE($15, cache_write_tokens),
-		       cost_usd = COALESCE($16, cost_usd),
+		       -- audit-ir-multimodal (2026-07-13): multimodal token fields
+		       reasoning_tokens = COALESCE($16, reasoning_tokens),
+		       image_tokens = COALESCE($17, image_tokens),
+		       audio_tokens = COALESCE($18, audio_tokens),
+		       video_tokens = COALESCE($19, video_tokens),
+		       provider_tokens = COALESCE($20, provider_tokens),
+		       cost_usd = COALESCE($21, cost_usd),
 		       cost_display = COALESCE($17, cost_display),
 		       cost_currency = COALESCE($18, cost_currency),
 		       stream_first_chunk_ms = COALESCE($19, stream_first_chunk_ms),
