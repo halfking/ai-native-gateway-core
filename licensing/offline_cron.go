@@ -2,7 +2,6 @@ package licensing
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -38,7 +37,9 @@ func OfflineVerificationDaemon(ctx context.Context, interval time.Duration, lice
 		if err := EnterCommunityMode(); err != nil {
 			slog.Error("offline_cron: failed to enter community mode", "error", err)
 		}
-		return fmt.Errorf("load public key: %w", err)
+		// Return nil: don't fail the daemon (caller shouldn't be forced to restart).
+		// The community mode marker file signals the gateway to start in restricted mode.
+		return nil
 	}
 
 	slog.Info("offline_cron: verification daemon started",
