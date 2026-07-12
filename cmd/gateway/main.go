@@ -922,8 +922,9 @@ func main() {
 	// ── Request WAL (Request Logger) ───────────────────────────────────────
 	// 2026-06-22: Synchronous initial log + async batch updates for request lifecycle.
 	// Uses same DB pool as telemetryClient. Disabled if env var LLM_GATEWAY_REQUEST_WAL_DISABLE=true.
+	var requestLogger *telemetry.RequestLogger
 	if dbConn != nil && dbConn.Enabled() && os.Getenv("LLM_GATEWAY_REQUEST_WAL_DISABLE") != "true" {
-		requestLogger := telemetry.NewRequestLogger(dbConn.Pool(), &telemetry.RequestLoggerConfig{
+		requestLogger = telemetry.NewRequestLogger(dbConn.Pool(), &telemetry.RequestLoggerConfig{
 			QueueSize:    10000,
 			BatchSize:    50,
 			FlushTimeout: 100 * time.Millisecond,
@@ -1883,17 +1884,26 @@ func main() {
 
 			// 2. 初始化文件写入器（支持 gzip 压缩）
 			fileWriter := dbdegradation.NewFileWriter(backupDir)
+			telemetryClient.SetFallbackWriter(fileWriter)
+			if requestLogger != nil {
+				requestLogger.SetFallbackWriter(fileWriter)
+			}
 			defer fileWriter.Close()
 
 			// 3. 初始化文件读取器
 			fileReader := dbdegradation.NewFileReader(backupDir)
 
 			// 4. 初始化数据恢复管理器
-			recovery := dbdegradation.NewRecovery(
-				dbConn.Pool(),
-				fileReader,
-				100, // batch size
-			)
+			recovery := dbdegradation.NewRecovery(dbConn.Pool(), fileReader, 100)
+			genericRecovery := dbdegradation.NewGenericRecovery(fileReader, func(ctx context.Context, record dbdegradation.BackupRecord) error {
+				if record.Type == "request_log" {
+					return telemetryClient.ReplayFallback(ctx, record)
+				}
+				if requestLogger != nil {
+					return requestLogger.ReplayFallback(ctx, record)
+				}
+				return fmt.Errorf("request WAL logger not configured")
+			})
 
 			// 5. 初始化 TTL 管理器
 			sessionRedisClient := session.NewRedisClientFromClient(fpSlotRedis)
@@ -1915,6 +1925,11 @@ func main() {
 				case dbdegradation.DBStatusDegraded:
 					// 进入降级模式
 					sessionMgr.SetDegradedMode(true)
+					telemetryClient.SetDegraded(true)
+					if requestLogger != nil {
+						requestLogger.SetDegraded(true)
+					}
+
 					if err := ttlManager.EnterDegradedMode(context.Background()); err != nil {
 						slog.Error("failed to enter degraded mode", "error", err)
 					}
@@ -1925,6 +1940,11 @@ func main() {
 				case dbdegradation.DBStatusAvailable:
 					// 退出降级模式
 					sessionMgr.SetDegradedMode(false)
+					telemetryClient.SetDegraded(false)
+					if requestLogger != nil {
+						requestLogger.SetDegraded(false)
+					}
+
 					if err := ttlManager.ExitDegradedMode(context.Background()); err != nil {
 						slog.Error("failed to exit degraded mode", "error", err)
 					}
@@ -1942,6 +1962,24 @@ func main() {
 			// 9. 注入到管理 Handler
 			if adminHandler != nil {
 				adminHandler.WireDBDegradation(dbMonitor, fileReader, recovery, ttlManager)
+				adminHandler.WireDegradationControl(dbMonitor, ttlManager, fileWriter, fileReader, genericRecovery,
+					func(context.Context) error {
+						sessionMgr.SetDegradedMode(true)
+						telemetryClient.SetDegraded(true)
+						if requestLogger != nil {
+							requestLogger.SetDegraded(true)
+						}
+						return nil
+					},
+					func(context.Context) error {
+						sessionMgr.SetDegradedMode(false)
+						telemetryClient.SetDegraded(false)
+						if requestLogger != nil {
+							requestLogger.SetDegraded(false)
+						}
+						return nil
+					},
+				)
 			}
 
 			slog.Info("database degradation module initialized",

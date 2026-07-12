@@ -3,12 +3,15 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 )
 
 const (
@@ -35,6 +38,9 @@ type RequestLogger struct {
 	config     *RequestLoggerConfig
 	wg         sync.WaitGroup
 	done       chan struct{}
+	fallback   dbdegradation.BackupWriter
+	degraded   bool
+	mu         sync.RWMutex
 }
 
 type RequestLoggerConfig struct {
@@ -92,12 +98,58 @@ func NewRequestLogger(pool *pgxpool.Pool, cfg *RequestLoggerConfig) *RequestLogg
 	return rl
 }
 
+func (rl *RequestLogger) SetFallbackWriter(writer dbdegradation.BackupWriter) {
+	rl.fallback = writer
+}
+
+func (rl *RequestLogger) ReplayFallback(ctx context.Context, record dbdegradation.BackupRecord) error {
+	if strings.HasSuffix(record.RecordKey, ":initial") {
+		var req InitialRequest
+		if err := json.Unmarshal(record.Payload, &req); err != nil {
+			return err
+		}
+		if rl.db == nil {
+			return fmt.Errorf("request logger database not configured")
+		}
+		_, err := rl.db.Exec(ctx, `
+			INSERT INTO request_wal_hot (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, NOW())
+			ON CONFLICT (request_id, created_at) DO NOTHING
+		`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel)
+		return err
+	}
+	var update LogUpdate
+	if err := json.Unmarshal(record.Payload, &update); err != nil {
+		return err
+	}
+	return rl.persistUpdate(ctx, &update)
+}
+
+func (rl *RequestLogger) SetDegraded(enabled bool) {
+	rl.mu.Lock()
+	rl.degraded = enabled
+	rl.mu.Unlock()
+}
+
+func (rl *RequestLogger) isDegraded() bool {
+	rl.mu.RLock()
+	degraded := rl.degraded
+	rl.mu.RUnlock()
+	return degraded
+}
+
 func (rl *RequestLogger) Enabled() bool {
 	return rl != nil && rl.config != nil && rl.config.Enabled
 }
 
 func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest) error {
-	if !rl.Enabled() || rl.db == nil {
+	if !rl.Enabled() {
+		return nil
+	}
+	if rl.isDegraded() && rl.fallback != nil {
+		return rl.fallback.WriteRequestWAL(ctx, req.RequestID+":initial", req)
+	}
+	if rl.db == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -117,6 +169,12 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 	`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel)
 
 	if err != nil {
+		if rl.fallback != nil {
+			if fallbackErr := rl.fallback.WriteRequestWAL(ctx, req.RequestID+":initial", req); fallbackErr != nil {
+				slog.Warn("request_logger: initial fallback failed", "request_id", req.RequestID, "error", fallbackErr)
+			}
+			return nil
+		}
 		slog.Warn("request_logger: CreateInitial failed",
 			"request_id", req.RequestID,
 			"error", err)
@@ -127,6 +185,12 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 
 func (rl *RequestLogger) Update(update *LogUpdate) {
 	if !rl.Enabled() || update == nil {
+		return
+	}
+	if rl.isDegraded() && rl.fallback != nil {
+		if err := rl.fallback.WriteRequestWAL(context.Background(), update.RequestID+":update", update); err != nil {
+			slog.Warn("request_logger: degraded update fallback failed", "request_id", update.RequestID, "error", err)
+		}
 		return
 	}
 	select {
@@ -144,7 +208,14 @@ func (rl *RequestLogger) UpdateSync(ctx context.Context, update *LogUpdate) erro
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return rl.persistUpdate(ctx, update)
+	err := rl.persistUpdate(ctx, update)
+	if err != nil && rl.fallback != nil {
+		if fallbackErr := rl.fallback.WriteRequestWAL(ctx, update.RequestID+":update", update); fallbackErr != nil {
+			return fallbackErr
+		}
+		return nil
+	}
+	return err
 }
 
 func (rl *RequestLogger) worker() {
@@ -195,9 +266,15 @@ func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
 
 	for _, update := range batch {
 		if err := rl.persistUpdateInTx(ctx, tx, update); err != nil {
-			slog.Warn("request_logger: persist update in batch failed",
-				"request_id", update.RequestID,
-				"error", err)
+			if rl.fallback != nil {
+				if fallbackErr := rl.fallback.WriteRequestWAL(ctx, update.RequestID+":update", update); fallbackErr != nil {
+					slog.Warn("request_logger: update fallback failed", "request_id", update.RequestID, "error", fallbackErr)
+				}
+			} else {
+				slog.Warn("request_logger: persist update in batch failed",
+					"request_id", update.RequestID,
+					"error", err)
+			}
 		}
 	}
 
