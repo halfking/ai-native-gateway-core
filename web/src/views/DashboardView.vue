@@ -58,7 +58,7 @@ const {
 // 从localStorage恢复 Tab 选择
 onMounted(() => {
   const saved = localStorage.getItem(STORAGE_KEY_TAB)
-  if (saved === 'stream' || saved === 'stats') {
+   if (saved === 'stream' || saved === 'stats' || saved === 'selfcheck') {
     activeTab.value = saved
   }
   

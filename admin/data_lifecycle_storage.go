@@ -637,6 +637,13 @@ func (h *Handler) handleDataLifecycleTableVacuum(w http.ResponseWriter, r *http.
 	h.handleTableMaintenance(w, r, "VACUUM")
 }
 
+// handleDataLifecycleTableVacuumAsync POST /api/admin/data-lifecycle/storage/tables/vacuum-async
+//
+// 异步 VACUUM (ANALYZE) — 立即返回 job_id，后台 goroutine 执行。
+func (h *Handler) handleDataLifecycleTableVacuumAsync(w http.ResponseWriter, r *http.Request) {
+	h.handleAsyncTableMaintenance(w, r, "VACUUM")
+}
+
 // handleDataLifecycleTableVacuumFull POST /api/admin/data-lifecycle/storage/tables/vacuum-full
 //
 // 执行 VACUUM FULL — ACCESS EXCLUSIVE 锁表，把磁盘还给 OS。
@@ -645,12 +652,26 @@ func (h *Handler) handleDataLifecycleTableVacuumFull(w http.ResponseWriter, r *h
 	h.handleTableMaintenance(w, r, "VACUUM FULL")
 }
 
+// handleDataLifecycleTableVacuumFullAsync POST /api/admin/data-lifecycle/storage/tables/vacuum-full-async
+//
+// 异步 VACUUM FULL — 立即返回 job_id，后台 goroutine 执行。
+func (h *Handler) handleDataLifecycleTableVacuumFullAsync(w http.ResponseWriter, r *http.Request) {
+	h.handleAsyncTableMaintenance(w, r, "VACUUM FULL")
+}
+
 // handleDataLifecycleTableReindex POST /api/admin/data-lifecycle/storage/tables/reindex
 //
 // 执行 REINDEX INDEX（所有索引）— 锁表但短，回收索引 bloat。
 // 安全等级：🟡 中（业务低峰期）。
 func (h *Handler) handleDataLifecycleTableReindex(w http.ResponseWriter, r *http.Request) {
 	h.handleTableMaintenance(w, r, "REINDEX")
+}
+
+// handleDataLifecycleTableReindexAsync POST /api/admin/data-lifecycle/storage/tables/reindex-async
+//
+// 异步 REINDEX — 立即返回 job_id，后台 goroutine 执行。
+func (h *Handler) handleDataLifecycleTableReindexAsync(w http.ResponseWriter, r *http.Request) {
+	h.handleAsyncTableMaintenance(w, r, "REINDEX")
 }
 
 // handleTableMaintenance 通用执行器
@@ -769,4 +790,182 @@ func (h *Handler) handleTableMaintenance(w http.ResponseWriter, r *http.Request,
 		"operator", r.Header.Get("X-Admin-User"))
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleAsyncTableMaintenance 通用异步维护操作执行器
+//
+// 接受请求后立即返回 job_id，后台 goroutine 执行 VACUUM / VACUUM FULL / REINDEX。
+func (h *Handler) handleAsyncTableMaintenance(w http.ResponseWriter, r *http.Request, op string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req tableMaintenanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	fullName, err := validateTableForMaintenance(req.Schema, req.Table)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var jobType JobType
+	switch op {
+	case "VACUUM":
+		jobType = JobTypeVacuum
+	case "VACUUM FULL":
+		jobType = JobTypeVacuumFull
+	case "REINDEX":
+		jobType = JobTypeReindex
+	default:
+		writeError(w, http.StatusBadRequest, "unknown operation: "+op)
+		return
+	}
+
+	job := newJobRun(jobType, fullName)
+	h.lifecycleJobs.add(job)
+
+	timeout := 5 * time.Minute
+	lockTimeout := "5s"
+	switch op {
+	case "VACUUM":
+		timeout = 10 * time.Minute
+		lockTimeout = "10s"
+	case "VACUUM FULL":
+		timeout = 30 * time.Minute
+		lockTimeout = "5s"
+	case "REINDEX":
+		timeout = 15 * time.Minute
+		lockTimeout = "5s"
+	}
+
+	jobCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	job.cancelFn = cancel
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				now := time.Now().UTC()
+				job.Status = JobStatusFailed
+				job.Error = fmt.Sprintf("panic: %v", r)
+				job.FinishedAt = &now
+				job.UpdatedAt = now
+				job.DurationMS = time.Since(job.StartedAt).Milliseconds()
+				slog.Error("data-lifecycle: maintenance job panic", "job_id", job.ID, "table", fullName, "op", op, "panic", r)
+			}
+		}()
+
+		job.Status = JobStatusRunning
+		job.UpdatedAt = time.Now().UTC()
+		start := time.Now()
+
+		var sizeBefore int64
+		if size, err := getTableSizeBytes(jobCtx, h, fullName); err == nil {
+			sizeBefore = size
+			job.Result["size_before_bytes"] = size
+		}
+
+		if jobCtx.Err() != nil {
+			job.Status = JobStatusCancelled
+			now := time.Now().UTC()
+			job.FinishedAt = &now
+			job.UpdatedAt = now
+			job.DurationMS = time.Since(start).Milliseconds()
+			return
+		}
+
+		conn, err := h.db.Acquire(jobCtx)
+		if err != nil {
+			job.Status = JobStatusFailed
+			job.Error = fmt.Sprintf("failed to acquire conn: %v", err)
+			now := time.Now().UTC()
+			job.FinishedAt = &now
+			job.UpdatedAt = now
+			job.DurationMS = time.Since(start).Milliseconds()
+			return
+		}
+
+		if _, err := conn.Exec(jobCtx, fmt.Sprintf("SET LOCAL lock_timeout = '%s'", lockTimeout)); err != nil {
+			conn.Release()
+			job.Status = JobStatusFailed
+			job.Error = fmt.Sprintf("failed to set lock_timeout: %v", err)
+			now := time.Now().UTC()
+			job.FinishedAt = &now
+			job.UpdatedAt = now
+			job.DurationMS = time.Since(start).Milliseconds()
+			return
+		}
+
+		var sql string
+		switch op {
+		case "VACUUM":
+			sql = fmt.Sprintf("VACUUM (ANALYZE) %s", fullName)
+		case "VACUUM FULL":
+			sql = fmt.Sprintf("VACUUM FULL %s", fullName)
+		case "REINDEX":
+			sql = fmt.Sprintf("REINDEX TABLE %s", fullName)
+		}
+
+		slog.Info("data-lifecycle: async maintenance op start",
+			"job_id", job.ID, "op", op, "table", fullName)
+
+		if _, err := conn.Exec(jobCtx, sql); err != nil {
+			conn.Release()
+			job.Status = JobStatusFailed
+			job.Error = fmt.Sprintf("%s failed: %v", op, err)
+			now := time.Now().UTC()
+			job.FinishedAt = &now
+			job.UpdatedAt = now
+			job.DurationMS = time.Since(start).Milliseconds()
+			slog.Warn("data-lifecycle: async maintenance job failed",
+				"job_id", job.ID, "op", op, "table", fullName, "error", err)
+			return
+		}
+		conn.Release()
+
+		var sizeAfter int64
+		if size, err := getTableSizeBytes(jobCtx, h, fullName); err == nil {
+			sizeAfter = size
+			job.Result["size_after_bytes"] = size
+		}
+
+		sizeSaved := sizeBefore - sizeAfter
+		reclaimedPct := 0
+		if sizeBefore > 0 {
+			reclaimedPct = int(sizeSaved * 100 / sizeBefore)
+		}
+
+		job.Status = JobStatusSuccess
+		job.Message = fmt.Sprintf("%s completed: saved %s (%.1f%% reclaimed)",
+			op, humanBytes(sizeSaved), float64(reclaimedPct))
+		job.Result["size_saved_bytes"] = sizeSaved
+		job.Result["reclaimed_pct"] = reclaimedPct
+		job.Result["size_before_human"] = humanBytes(sizeBefore)
+		job.Result["size_after_human"] = humanBytes(sizeAfter)
+		job.Result["size_saved_human"] = humanBytes(sizeSaved)
+		now := time.Now().UTC()
+		job.FinishedAt = &now
+		job.UpdatedAt = now
+		job.DurationMS = time.Since(start).Milliseconds()
+
+		slog.Info("data-lifecycle: async maintenance job done",
+			"job_id", job.ID, "op", op, "table", fullName,
+			"size_before", humanBytes(sizeBefore),
+			"size_after", humanBytes(sizeAfter),
+			"saved", humanBytes(sizeSaved),
+			"duration_ms", job.DurationMS)
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"job_id":   job.ID,
+		"status":   string(job.Status),
+		"target":   job.Target,
+		"poll_url": "/api/admin/data-lifecycle/jobs/" + job.ID,
+	})
 }

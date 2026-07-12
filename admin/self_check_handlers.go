@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -61,6 +62,10 @@ type scRun struct {
 }
 
 func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
 	model := r.URL.Query().Get("model")
 	status := r.URL.Query().Get("status")
 	limit := 50
@@ -70,6 +75,20 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	where := ` WHERE 1=1`
+	args := []any{}
+	argIdx := 1
+	if model != "" {
+		where += " AND model_name = $" + strconv.Itoa(argIdx)
+		args = append(args, model)
+		argIdx++
+	}
+	if status != "" {
+		where += " AND status = $" + strconv.Itoa(argIdx)
+		args = append(args, status)
+		argIdx++
+	}
+
 	query := `SELECT id, model_name, started_at, completed_at, duration_ms,
 		status, rounds_total, rounds_success, had_tool_call,
 		total_tokens, avg_latency_ms,
@@ -77,20 +96,7 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 		upstream_tested, COALESCE(upstream_result,'') AS upstream_result,
 		COALESCE(upstream_latency_ms,0) AS upstream_latency_ms,
 		COALESCE(upstream_error,'') AS upstream_error
-		FROM self_check_runs WHERE 1=1`
-	args := []any{}
-	argIdx := 1
-
-	if model != "" {
-		query += " AND model_name = $" + strconv.Itoa(argIdx)
-		args = append(args, model)
-		argIdx++
-	}
-	if status != "" {
-		query += " AND status = $" + strconv.Itoa(argIdx)
-		args = append(args, status)
-		argIdx++
-	}
+		FROM self_check_runs` + where
 	query += " ORDER BY started_at DESC LIMIT $" + strconv.Itoa(argIdx)
 	args = append(args, limit)
 
@@ -117,7 +123,11 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 
 	// Total count.
 	var total int
-	h.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM self_check_runs`).Scan(&total)
+	countArgs := append([]any(nil), args[:len(args)-1]...)
+	if err := h.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM self_check_runs`+where, countArgs...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 
 	writeJSON(w, 200, map[string]any{"items": items, "total": total})
 }
@@ -125,6 +135,10 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 // --- Get Run ---
 
 func (h *SelfCheckHandler) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
 	// Extract ID from path: /api/self-check/runs/{id}
 	idStr := r.URL.Path[len("/api/self-check/runs/"):]
 	if idStr == "" {
@@ -207,6 +221,10 @@ func (h *SelfCheckHandler) handleGetRun(w http.ResponseWriter, r *http.Request) 
 // --- Settings ---
 
 func (h *SelfCheckHandler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
 	var s struct {
 		Enabled        bool            `json:"enabled"`
 		NormalInterval int             `json:"normal_interval_seconds"`
@@ -263,31 +281,56 @@ func (h *SelfCheckHandler) handleUpdateSettings(w http.ResponseWriter, r *http.R
 		argIdx++
 	}
 	if body.NormalInterval != nil {
+		if *body.NormalInterval < 10 || *body.NormalInterval > 600 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "normal interval must be between 10 and 600 seconds"})
+			return
+		}
 		sets = append(sets, "normal_interval_seconds=$"+strconv.Itoa(argIdx))
 		args = append(args, *body.NormalInterval)
 		argIdx++
 	}
 	if body.FaultInterval != nil {
+		if *body.FaultInterval < 5 || *body.FaultInterval > 300 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "fault interval must be between 5 and 300 seconds"})
+			return
+		}
 		sets = append(sets, "fault_interval_seconds=$"+strconv.Itoa(argIdx))
 		args = append(args, *body.FaultInterval)
 		argIdx++
 	}
 	if body.ModelSource != nil {
+		if *body.ModelSource != "top10" && *body.ModelSource != "featured" && *body.ModelSource != "both" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "model source must be top10, featured, or both"})
+			return
+		}
 		sets = append(sets, "model_source=$"+strconv.Itoa(argIdx))
 		args = append(args, *body.ModelSource)
 		argIdx++
 	}
 	if body.MaxModels != nil {
+		if *body.MaxModels < 1 || *body.MaxModels > 50 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "max models must be between 1 and 50"})
+			return
+		}
 		sets = append(sets, "max_models=$"+strconv.Itoa(argIdx))
 		args = append(args, *body.MaxModels)
 		argIdx++
 	}
 	if body.MaxTokens != nil {
+		if *body.MaxTokens < 1000 || *body.MaxTokens > 1000000 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "max tokens must be between 1000 and 1000000"})
+			return
+		}
 		sets = append(sets, "max_tokens_per_run=$"+strconv.Itoa(argIdx))
 		args = append(args, *body.MaxTokens)
 		argIdx++
 	}
 	if len(body.FeaturedModels) > 0 {
+		var featured []string
+		if err := json.Unmarshal(body.FeaturedModels, &featured); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "featured_model_ids must be a JSON string array"})
+			return
+		}
 		sets = append(sets, "featured_model_ids=$"+strconv.Itoa(argIdx))
 		args = append(args, body.FeaturedModels)
 		argIdx++
@@ -322,7 +365,10 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		Model string `json:"model"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
 	if h.worker == nil {
 		writeJSON(w, 503, map[string]any{"error": "worker not available", "message": "self-check worker is not initialized"})
 		return
@@ -337,6 +383,10 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 // --- Stats ---
 
 func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
 	rangeParam := r.URL.Query().Get("range")
 	if rangeParam == "" {
 		rangeParam = "24h"
@@ -471,6 +521,10 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 // --- Models ---
 
 func (h *SelfCheckHandler) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
 	rows, err := h.db.Query(r.Context(), `
 		SELECT model_name, COUNT(*) AS total,
 		COUNT(*) FILTER (WHERE status='success') AS success,

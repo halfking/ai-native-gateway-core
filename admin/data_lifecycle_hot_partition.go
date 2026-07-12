@@ -701,6 +701,8 @@ func (h *Handler) handleDataLifecycleHotCronStats(w http.ResponseWriter, r *http
 }
 
 // handleDataLifecycleDropPartition POST /api/admin/data-lifecycle/partitions/drop
+//
+// 同步模式（保留兼容）。推荐使用 /drop-async + GET /jobs/{id} 实现非阻塞。
 func (h *Handler) handleDataLifecycleDropPartition(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -789,4 +791,140 @@ func (h *Handler) handleDataLifecycleDropPartition(w http.ResponseWriter, r *htt
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// dropPartitionAsyncRequest async drop partition request body
+type dropPartitionAsyncRequest struct {
+	PartitionName string `json:"partition_name"`
+	Confirm       bool   `json:"confirm"`
+}
+
+// handleDataLifecycleDropPartitionAsync POST /api/admin/data-lifecycle/partitions/drop-async
+//
+// 异步删除分区：立即返回 job_id，后台 goroutine 执行 DROP TABLE。
+// 前端通过 GET /api/admin/data-lifecycle/jobs/{id} 轮询状态。
+func (h *Handler) handleDataLifecycleDropPartitionAsync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req dropPartitionAsyncRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if !req.Confirm {
+		writeError(w, http.StatusBadRequest, "confirm must be true to execute drop operation")
+		return
+	}
+	if req.PartitionName == "" {
+		writeError(w, http.StatusBadRequest, "partition_name is required")
+		return
+	}
+	if strings.HasSuffix(req.PartitionName, "_hot") {
+		writeError(w, http.StatusBadRequest, "cannot drop hot tables, use promote instead")
+		return
+	}
+
+	job := newJobRun(JobTypeDropPartition, req.PartitionName)
+	h.lifecycleJobs.add(job)
+
+	jobCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	job.cancelFn = cancel
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				now := time.Now().UTC()
+				job.Status = JobStatusFailed
+				job.Error = fmt.Sprintf("panic: %v", r)
+				job.FinishedAt = &now
+				job.UpdatedAt = now
+				job.DurationMS = time.Since(job.StartedAt).Milliseconds()
+				slog.Error("data-lifecycle: drop partition job panic", "job_id", job.ID, "partition", req.PartitionName, "panic", r)
+			}
+		}()
+
+		job.Status = JobStatusRunning
+		job.UpdatedAt = time.Now().UTC()
+
+		start := time.Now()
+
+		var parentTable string
+		var sizeBytes int64
+		var sizeHuman string
+		var rowCount int64
+		checkQuery := `
+			SELECT
+				p.relname AS parent_table,
+				pg_total_relation_size(c.oid) AS size_bytes,
+				pg_size_pretty(pg_total_relation_size(c.oid)) AS size_human,
+				c.reltuples::bigint AS row_count
+			FROM pg_class c
+			JOIN pg_inherits i ON c.oid = i.inhrelid
+			JOIN pg_class p ON i.inhparent = p.oid
+			WHERE c.relname = $1
+				AND c.relkind = 'r'
+		`
+		err := h.db.QueryRow(jobCtx, checkQuery, req.PartitionName).Scan(
+			&parentTable, &sizeBytes, &sizeHuman, &rowCount,
+		)
+		if err != nil {
+			job.Status = JobStatusFailed
+			job.Error = fmt.Sprintf("partition not found: %v", err)
+			now := time.Now().UTC()
+			job.FinishedAt = &now
+			job.UpdatedAt = now
+			job.DurationMS = time.Since(start).Milliseconds()
+			slog.Error("data-lifecycle: drop partition check failed", "job_id", job.ID, "partition", req.PartitionName, "error", err)
+			return
+		}
+
+		if jobCtx.Err() != nil {
+			job.Status = JobStatusCancelled
+			now := time.Now().UTC()
+			job.FinishedAt = &now
+			job.UpdatedAt = now
+			job.DurationMS = time.Since(start).Milliseconds()
+			return
+		}
+
+		dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", req.PartitionName)
+		if _, err := h.db.Exec(jobCtx, dropSQL); err != nil {
+			job.Status = JobStatusFailed
+			job.Error = fmt.Sprintf("drop failed: %v", err)
+			now := time.Now().UTC()
+			job.FinishedAt = &now
+			job.UpdatedAt = now
+			job.DurationMS = time.Since(start).Milliseconds()
+			slog.Error("data-lifecycle: drop partition job failed", "job_id", job.ID, "partition", req.PartitionName, "error", err)
+			return
+		}
+
+		job.Status = JobStatusSuccess
+		job.Message = fmt.Sprintf("successfully dropped partition %s from %s", req.PartitionName, parentTable)
+		job.Result["partition_name"] = req.PartitionName
+		job.Result["rows_deleted"] = rowCount
+		job.Result["space_freed_bytes"] = sizeBytes
+		job.Result["space_freed_human"] = sizeHuman
+		now := time.Now().UTC()
+		job.FinishedAt = &now
+		job.UpdatedAt = now
+		job.DurationMS = time.Since(start).Milliseconds()
+
+		slog.Warn("data-lifecycle: drop partition job done",
+			"job_id", job.ID, "partition", req.PartitionName,
+			"parent_table", parentTable,
+			"rows_deleted", rowCount, "space_freed", sizeHuman,
+			"duration_ms", job.DurationMS)
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"job_id":   job.ID,
+		"status":   string(job.Status),
+		"target":   job.Target,
+		"poll_url": "/api/admin/data-lifecycle/jobs/" + job.ID,
+	})
 }

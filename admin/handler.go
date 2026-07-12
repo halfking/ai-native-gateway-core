@@ -172,6 +172,10 @@ type Handler struct {
 	// 在 NewHandler 中初始化，永不为 nil。
 	hotJobMgr *hotJobManager
 
+	// lifecycleJobs 是通用异步任务注册表（drop partition / vacuum / reindex）；
+	// 详见 data_lifecycle_jobs.go。在 NewHandler 中初始化，永不为 nil。
+	lifecycleJobs *jobRegistry
+
 	// hotCron 是 hot 表夜间自动迁移调度器；StartHotCron() 启动 goroutine。
 	// nil 表示未启用（DB 不可用 / 测试模式）。
 	hotCron *HotCronScheduler
@@ -183,6 +187,8 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	h.autoTitleGen = NewAutoTitleGenerator(h)
 	// 2026-07-13: hot 表异步迁移任务注册表（内存）；异步任务状态由前端轮询查询
 	h.hotJobMgr = newHotJobManager()
+	// 2026-07-13: 通用异步任务注册表，管理 drop partition / vacuum / reindex 等任务
+	h.lifecycleJobs = newJobRegistry()
 	return h
 }
 
@@ -501,6 +507,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/data-lifecycle/hot/job", h.superAdmin(h.handleDataLifecycleHotJob))  // /job/{id}/cancel 等
 	mux.HandleFunc("/api/admin/data-lifecycle/hot/cron/stats", h.superAdmin(h.handleDataLifecycleHotCronStats))
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/drop", h.superAdmin(h.handleDataLifecycleDropPartition))
+	// Async drop partition (2026-07-13)
+	mux.HandleFunc("/api/admin/data-lifecycle/partitions/drop-async", h.superAdmin(h.handleDataLifecycleDropPartitionAsync))
+	// Generic async job query endpoints (2026-07-13)
+	mux.HandleFunc("/api/admin/data-lifecycle/jobs", admin(h.handleLifecycleJobs))
+	mux.HandleFunc("/api/admin/data-lifecycle/jobs/", admin(h.handleLifecycleJobByID))
 	// Storage overview endpoints (2026-07-01)
 	mux.HandleFunc("/api/admin/data-lifecycle/storage", admin(h.handleDataLifecycleStorage))
 	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables", admin(h.handleDataLifecycleTableSizes))
@@ -509,6 +520,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/vacuum", h.superAdmin(h.handleDataLifecycleTableVacuum))
 	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/vacuum-full", h.superAdmin(h.handleDataLifecycleTableVacuumFull))
 	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/reindex", h.superAdmin(h.handleDataLifecycleTableReindex))
+	// Async per-table maintenance (2026-07-13): VACUUM / VACUUM FULL / REINDEX
+	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/vacuum-async", h.superAdmin(h.handleDataLifecycleTableVacuumAsync))
+	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/vacuum-full-async", h.superAdmin(h.handleDataLifecycleTableVacuumFullAsync))
+	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables/reindex-async", h.superAdmin(h.handleDataLifecycleTableReindexAsync))
 	// Blob management endpoints (2026-07-01)
 	mux.HandleFunc("/api/admin/data-lifecycle/blobs/top", admin(h.handleDataLifecycleBlobTop))
 	mux.HandleFunc("/api/admin/data-lifecycle/blobs/cleanup/preview", admin(h.handleDataLifecycleBlobCleanupPreview))
