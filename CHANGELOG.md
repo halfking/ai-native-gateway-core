@@ -5,7 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-07-12
+## [Unreleased] - 2026-07-13
+
+### Added
+- **错误触发的主动探测 (Error-Triggered Active Probe)**  
+  连续失败 ≥2 次时立即直连上游探测（0s 延迟），按 5s → 30s → 2m → 5m → 15m backoff 链执行最多 5 轮。
+  探测结果写入 `request_logs`（`task_type='probe_triggered'`），自动推送到实时请求流，前端可通过
+  `IsProbe/ProbeOrigin/ProbeAttempt` 字段一键过滤"仅探测"。用于快速隔离"上游 vs gateway vs 客户端"问题。
+  - 新增 `bg/active_probe_worker.go` + `bg/active_probe_executor.go` + `bg/active_probe_emitter.go`
+  - 新增 `bg/active_probe_backoff.go` 计算 backoff 链
+  - 新增 `settings/spec_error_probe.go` 提供 4 个平台级配置项
+  - 新增 `admin/probe_request_info.go` 提取探测元数据
+  - 修改 `domains/credentialstate/manager.go` 在 `UpdateOnFailure` 触发探测
+  - 修改 `cmd/gateway/main.go` 构造并 wire `ActiveProbeWorker`
+  - 修改 `admin/live_stream_sse.go` / `admin/live_stream_redis_store.go` 透传探测字段到实时流
+  - 完整设计文档: `docs/自检功能/04-error-triggered-probe-design.md`
 
 ### Security and Reliability
 - Fixed Feishu callback validation to parse Unix-second timestamps, reject
