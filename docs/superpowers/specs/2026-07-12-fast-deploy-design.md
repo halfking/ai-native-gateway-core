@@ -201,26 +201,30 @@ Response:
 }
 ```
 
-#### 执行（沿用 `autoupdate/installer.go` + `rollback.go`，但增加状态机）
+#### 执行（沿用 `autoupdate/installer.go` + `rollback.go`，但状态机与现状对齐）
+
+客户端状态枚举与 `autoupdate/types.go:StatusPending/.../StatusRollback` **完全复用**，状态机新增的 `verifying/backing_up/reporting` 通过 `upgrade_logs.status` 字段在现有枚举内表达，避免新建枚举：
 
 ```
 upgrade start --to v1.14.0
-   ├─ state=downloading → GET /api/v1/updates/manifest → 下载新二进制到 bin/llm-gateway-go.new
-   ├─ state=verifying   → SHA256 校验 + 启动测试（--version）
-   ├─ state=backing_up  → 备份当前二进制到 backups/manual/<old_version>_<ts>
-   ├─ state=installing  → os.Rename 原子替换 + 写 VERSION
-   ├─ state=reporting   → POST /api/v1/updates/report {result: success}
+   ├─ status=pending       → 主控端写 upgrade_logs(status=pending)
+   ├─ status=downloading   → GET /api/v1/updates/manifest → 下载新二进制到 bin/llm-gateway-go.new
+   ├─ status=ready_to_restart
+   │     ├─ SHA256 校验 + 启动测试（--version），失败 → status=failed → 自动 rollback
+   │     └─ 备份当前二进制到 backups/manual/<old_version>_<ts>
+   ├─ status=upgrading     → os.Rename 原子替换 + 写 VERSION
+   ├─ status=success       → POST /api/v1/updates/report {status: success}
    └─ done
 
 upgrade rollback --to v1.13.0
-   ├─ state=searching   → 在 backups/manual/ 找匹配版本
-   ├─ state=verifying   → 验证备份文件
-   ├─ state=restoring   → 原子还原 + 写 VERSION
-   ├─ state=reporting   → POST /api/v1/updates/rollback {result: success}
+   ├─ status=pending       → 主控端写 upgrade_logs(status=pending, retry_count++)
+   ├─ status=upgrading     → 在 backups/manual/ 找匹配版本 → 原子还原 + 写 VERSION
+   ├─ status=rolled_back   → POST /api/v1/updates/rollback {status: rolled_back}
    └─ done
 ```
 
-> 当前 `installer.go` 缺状态枚举、缺进度上报、缺与主控端的 result 回调。
+> **表选择**：升级执行状态写 `instance_release_status`，长期审计/历史写 `upgrade_logs`。
+> 两个表都已存在（`autoupdate/store_pgx.go:170, 224, 240`），无须新建表；状态枚举与字段命名严格沿用现有。
 
 ### 3.6 离线授权（air-gapped）
 
@@ -286,7 +290,8 @@ ALTER TABLE gateway_instances
 CREATE INDEX IF NOT EXISTS idx_gi_license ON gateway_instances (license_key_hash);
 ```
 
-> 复用 `374_license_devices.hardware_hash`；这里 `gateway_instances.hardware_hash` 作为冗余便于反查。
+> **实例↔license 绑定**：`register` 成功时同步写 `license_devices(instance_id=..., hardware_hash=...)`，
+> 防止 instance_token 与 license 设备关系脱钩（`licensing/device_manager.go` 已有 `ActivateDevice`/`DeactivateDevice`）。
 
 ---
 
