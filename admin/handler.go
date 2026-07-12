@@ -119,10 +119,11 @@ type Handler struct {
 	sessionCleanupWorker   *session.CleanupWorker        // 2026-07-06 清理过期 stopped session
 
 	// 数据库降级模块 (2026-07-10)
-	dbMonitor  *dbdegradation.Monitor
-	fileReader *dbdegradation.FileReader
-	recovery   *dbdegradation.Recovery
-	ttlManager *dbdegradation.TTLManager
+	dbMonitor   *dbdegradation.Monitor
+	fileReader  *dbdegradation.FileReader
+	recovery    *dbdegradation.Recovery
+	ttlManager  *dbdegradation.TTLManager
+	degradation *degradationControl
 
 	dashboardEventRecorder interface {
 		RecordAccess(tenantID, userID, userRole, sessionID, apiPath, apiMethod string, statusCode int, responseTime time.Duration, cacheHit bool)
@@ -576,6 +577,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/backups/{filename}/recover", admin(h.handleRecoverBackupFile))
 		mux.HandleFunc("/api/admin/backups/recover-all", admin(h.handleRecoverAllBackups))
 		mux.HandleFunc("/api/admin/recovery-tasks/{task_id}", admin(h.handleGetRecoveryTask))
+	}
+	if h.degradation != nil {
+		mux.HandleFunc("/api/admin/data-lifecycle/degradation/control", h.superAdmin(h.handleDegradationControl))
+		mux.HandleFunc("/api/admin/data-lifecycle/degradation/status", admin(h.handleDegradationStatus))
+		mux.HandleFunc("/api/admin/data-lifecycle/degradation/recover", h.superAdmin(h.handleDegradationRecovery))
+		mux.HandleFunc("/api/admin/data-lifecycle/degradation/tasks/{task_id}", admin(h.handleDegradationRecoveryTask))
 	}
 
 	// Module management — enterprise feature module listing, toggling, and

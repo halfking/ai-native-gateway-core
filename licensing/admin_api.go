@@ -29,11 +29,17 @@ func NewAdminHandler(store Store, crypto *CryptoConfig, activator *Activator, of
 	}
 }
 
+func RegisterModuleRoutes(g *echo.Group, store Store) {
+	mh := NewModuleAdminHandler(store)
+	mh.RegisterRoutes(g)
+}
+
 func (h *AdminHandler) RegisterRoutes(g *echo.Group) {
 	g.POST("/licenses", h.CreateLicense)
 	g.GET("/licenses", h.ListLicenses)
 	g.GET("/licenses/:id", h.GetLicense)
 	g.POST("/licenses/:id/revoke", h.RevokeLicense)
+	g.PUT("/licenses/:id", h.UpdateLicense)
 	g.GET("/licenses/:id/devices", h.ListDevices)
 	g.POST("/licenses/:id/devices/:hash/deactivate", h.DeactivateDevice)
 
@@ -51,9 +57,12 @@ func generateLicenseKey() string {
 
 func (h *AdminHandler) CreateLicense(c echo.Context) error {
 	var req struct {
-		Customer   string `json:"customer"`
-		MaxDevices int    `json:"max_devices"`
-		ExpiresAt  string `json:"expires_at"`
+		Customer         string   `json:"customer"`
+		CustomerEmail    string   `json:"customer_email"`
+		MaxDevices       int      `json:"max_devices"`
+		SubscriptionTier string   `json:"subscription_tier"`
+		Features         []string `json:"features"`
+		ExpiresAt        string   `json:"expires_at"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -64,11 +73,18 @@ func (h *AdminHandler) CreateLicense(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid expires_at format"})
 	}
 
+	if req.Features == nil {
+		req.Features = []string{}
+	}
+
 	lic := &License{
-		LicenseKey:   generateLicenseKey(),
-		CustomerName: req.Customer,
-		MaxDevices:   req.MaxDevices,
-		ExpiresAt:    expiresAt,
+		LicenseKey:       generateLicenseKey(),
+		CustomerName:     req.Customer,
+		CustomerEmail:    req.CustomerEmail,
+		MaxDevices:       req.MaxDevices,
+		SubscriptionTier: req.SubscriptionTier,
+		Features:         req.Features,
+		ExpiresAt:        expiresAt,
 	}
 
 	if err := h.store.CreateLicense(c.Request().Context(), lic); err != nil {
@@ -84,8 +100,10 @@ func (h *AdminHandler) ListLicenses(c echo.Context) error {
 	if limit == 0 {
 		limit = 20
 	}
+	query := c.QueryParam("query")
+	statusFilter := c.QueryParam("status")
 
-	licenses, total, err := h.store.ListAllLicenses(c.Request().Context(), offset, limit)
+	licenses, total, err := h.store.ListAllLicenses(c.Request().Context(), offset, limit, query, statusFilter)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -134,6 +152,60 @@ func (h *AdminHandler) RevokeLicense(c echo.Context) error {
 	h.validator.InvalidateCache(lic.LicenseKey)
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "license revoked"})
+}
+
+func (h *AdminHandler) UpdateLicense(c echo.Context) error {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
+	}
+
+	existing, err := h.store.GetLicenseByID(c.Request().Context(), id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "license not found"})
+	}
+
+	var req struct {
+		CustomerName     *string  `json:"customer_name"`
+		CustomerEmail    *string  `json:"customer_email"`
+		MaxDevices       *int     `json:"max_devices"`
+		SubscriptionTier *string  `json:"subscription_tier"`
+		Features         []string `json:"features"`
+		ExpiresAt        *string  `json:"expires_at"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	if req.CustomerName != nil {
+		existing.CustomerName = *req.CustomerName
+	}
+	if req.CustomerEmail != nil {
+		existing.CustomerEmail = *req.CustomerEmail
+	}
+	if req.MaxDevices != nil {
+		existing.MaxDevices = *req.MaxDevices
+	}
+	if req.SubscriptionTier != nil {
+		existing.SubscriptionTier = *req.SubscriptionTier
+	}
+	if req.Features != nil {
+		existing.Features = req.Features
+	}
+	if req.ExpiresAt != nil {
+		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid expires_at format"})
+		}
+		existing.ExpiresAt = t
+	}
+
+	if err := h.store.UpdateLicense(c.Request().Context(), existing); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	h.validator.InvalidateCache(existing.LicenseKey)
+	return c.JSON(http.StatusOK, existing)
 }
 
 func (h *AdminHandler) ListDevices(c echo.Context) error {

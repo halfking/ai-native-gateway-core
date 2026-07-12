@@ -65,7 +65,7 @@ prereq_check() {
   echo "=== prereq check ==="
   curl -sS "$GATEWAY/healthz" >/dev/null 2>&1 || { echo "✗ gateway down at $GATEWAY"; exit 1; }
   psql -d llm_gateway -tc "SELECT 1" >/dev/null 2>&1 || { echo "✗ DB down"; exit 1; }
-  local n; n=$(pgrep -f 'server-v3.py' | wc -l | tr -d ' ')
+  local n; n=$(pgrep -f 'server-v2.py' | wc -l | tr -d ' ')
   [ "${n:-0}" -ge 50 ] || { echo "✗ only ${n:-0}/60 mocks running"; exit 1; }
   echo "✓ gateway + DB + $n mocks OK"
 }
@@ -182,6 +182,53 @@ echo "  --- wave 2: verify C group recovered ---"
 run_loadtest S10-quota-recovery-w2 --clients 40 --rounds 4 --models "$MODELS" --prompt-size short
 reset_all
 
-echo -e "\n========== ALL 10 SCENARIOS COMPLETE =========="
+# ============================================================================
+# S11 供应商冷却状态测试 ⭐ — 验证错误信息返回与自动探测恢复
+# 场景：供应商进入冷却状态 → 客户端收到正确错误 → 自动探测恢复
+# ============================================================================
+echo -e "\n========== S11: 供应商冷却状态测试 =========="
+# C 组进入冷却状态
+set_group_state C rate_limited
+# 发送少量请求验证错误信息
+echo "  --- wave 1: verify cooling state error messages ---"
+for i in {1..5}; do
+  curl -sS -X POST "$GATEWAY/v1/chat/completions" \
+    -H "Authorization: Bearer sk-stress-test-01-hash-0000000000000000000000000000000000000001" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"loadtest-mini-alpha","messages":[{"role":"user","content":"test"}],"max_tokens":10}' 2>&1
+  echo ""
+done
+# 等待冷却恢复
+echo "  --- waiting 10s for auto-probe to recover ---"
+sleep 10
+# 验证冷却恢复后正常路由
+echo "  --- wave 2: verify recovery after cooling ---"
+run_loadtest S11-cooling-recovery --clients 20 --rounds 3 --models "loadtest-mini-alpha" --prompt-size short
+reset_mode C
+
+# ============================================================================
+# S12 凭证冷却状态测试 ⭐ — 验证错误信息返回与状态同步
+# 场景：单个凭证进入冷却状态 → 验证错误信息 → 自动探测 → 状态同步更新
+# ============================================================================
+echo -e "\n========== S12: 凭证冷却状态测试 =========="
+# 为 C 组设置低并发限制触发冷却
+for port in 19090 19091 19092 19093 19094; do
+  orch set-quota "$port" 500 1800 >/dev/null 2>&1
+done
+# 高并发请求触发凭证冷却
+echo "  --- wave 1: trigger credential cooling ---"
+run_loadtest S12-credential-cooling --clients 80 --rounds 5 --models "loadtest-standard-alpha" --prompt-size short
+# 检查冷却状态
+echo "  --- checking cooling state in DB ---"
+psql -d llm_gateway -c "SELECT id, provider_id, availability_state, quota_state FROM credentials WHERE provider_id IN (SELECT id FROM providers WHERE code LIKE 'loadtest%') LIMIT 10;"
+# 等待冷却恢复
+echo "  --- waiting 15s for auto-probe to recover ---"
+sleep 15
+# 验证冷却恢复后正常路由
+echo "  --- wave 2: verify recovery after cooling ---"
+run_loadtest S12-credential-recovery --clients 40 --rounds 3 --models "loadtest-standard-alpha" --prompt-size short
+reset_all; disable_free_pool
+
+echo -e "\n========== ALL 12 SCENARIOS COMPLETE =========="
 echo "Results: $RESULTS_DIR/"
 ls -la "$RESULTS_DIR/"
