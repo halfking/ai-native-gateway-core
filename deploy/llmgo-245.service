@@ -1,0 +1,30 @@
+[Unit]
+Description=LLM Gateway Go (245 pre-prod · llmgo.kxpms.cn · e37f7a8c)
+Documentation=https://llm.kxpms.cn
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/llm-gateway-go
+EnvironmentFile=/opt/llm-gateway-go/.env
+ExecStart=/opt/llm-gateway-go/gateway
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/llm-gateway-go/gateway.stdout.log
+StandardError=append:/var/log/llm-gateway-go/gateway.stderr.log
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=32768
+
+[Install]
+WantedBy=multi-user.target
