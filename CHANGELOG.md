@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   与服务端 `middleware/sigverify.go` 格式对齐，方便后续启用服务端校验。
 
 ### Fixed
+- Restored the vendored go-redis maintenance-notification log package so
+  default `-mod=vendor` builds resolve all Redis internal imports.
 - Completed SessionForensics replay evidence preservation, six-scenario audit
   contracts, mutation safety checks, and output-compliance nil-result handling.
 - Corrected the domain dependency lint scope and prevented output redaction
