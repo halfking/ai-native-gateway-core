@@ -12,7 +12,10 @@ import (
 // 2026-07-12: Created to ensure tool_call_id_mismatch prevention works
 // even when e.IR is nil (which is the default in production).
 func applyInlineValidation(bodyBytes []byte) []byte {
-	slog.Info("applyInlineValidation: called", "body_size", len(bodyBytes))
+	// Debug level: this runs on every request, so Info-level would flood
+	// production logs. Operators can opt-in via LLM_GATEWAY_DEBUG_INLINE_VALIDATION=1
+	// by switching back to slog.Info in a per-deploy override if needed.
+	slog.Debug("applyInlineValidation: called", "body_size", len(bodyBytes))
 
 	// Use IR converter to parse (handles string/array content correctly)
 	irReq, err := ir.ParseOpenAI(bodyBytes)
@@ -35,7 +38,7 @@ func applyInlineValidation(bodyBytes []byte) []byte {
 		return bodyBytes
 	}
 
-	slog.Info("applyInlineValidation: validation applied",
+	slog.Debug("applyInlineValidation: validation applied",
 		"original_size", len(bodyBytes),
 		"fixed_size", len(fixedBytes),
 	)
