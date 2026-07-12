@@ -128,21 +128,37 @@ func (s *PgxStore) DeleteInstance(ctx context.Context, instanceID string) error 
 
 // RecordHeartbeat 记录心跳
 func (s *PgxStore) RecordHeartbeat(ctx context.Context, instanceID string, payload *HeartbeatPayload) error {
-	// 更新实例最后心跳时间
-	updateQuery := `UPDATE gateway_instances SET last_heartbeat = now(), status = $2 WHERE instance_id = $1`
-	if _, err := s.db.Exec(ctx, updateQuery, instanceID, StatusOnline); err != nil {
+	// Serialize payload to JSONB
+	metricsJSON, err := json.Marshal(payload)
+	if err != nil {
 		return err
 	}
 
-	// 记录心跳历史
+	// Begin transaction
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// 更新实例最后心跳时间
+	updateQuery := `UPDATE gateway_instances SET last_heartbeat = now(), status = $2 WHERE instance_id = $1`
+	if _, err := tx.Exec(ctx, updateQuery, instanceID, StatusOnline); err != nil {
+		return err
+	}
+
+	// 记录心跳历史 (with JSONB metrics)
 	insertQuery := `
-		INSERT INTO instance_heartbeats (instance_id, timestamp, uptime_secs, num_goroutine, alloc_mb, status)
-		VALUES ($1, now(), $2, $3, $4, $5)
+		INSERT INTO instance_heartbeats (instance_id, timestamp, uptime_secs, num_goroutine, alloc_mb, status, metrics)
+		VALUES ($1, now(), $2, $3, $4, $5, $6)
 	`
-	_, err := s.db.Exec(ctx, insertQuery,
-		instanceID, payload.UptimeSecs, payload.NumGoroutine, payload.AllocMB, StatusOnline,
-	)
-	return err
+	if _, err := tx.Exec(ctx, insertQuery,
+		instanceID, payload.UptimeSecs, payload.NumGoroutine, payload.AllocMB, StatusOnline, metricsJSON,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 // GetLastHeartbeat 获取最后心跳时间
