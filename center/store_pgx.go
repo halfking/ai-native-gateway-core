@@ -18,11 +18,15 @@ func NewPgxStore(db *pgxpool.Pool) *PgxStore {
 	return &PgxStore{db: db}
 }
 
-// RegisterInstance 注册实例
+// RegisterInstance 注册实例（新增字段支持）
 func (s *PgxStore) RegisterInstance(ctx context.Context, instance *InstanceInfo) error {
 	query := `
-		INSERT INTO gateway_instances (instance_id, hostname, ip_address, region, version, build_seq, status, started_at, last_heartbeat)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+		INSERT INTO gateway_instances (
+			instance_id, hostname, ip_address, region, version, build_seq, status, started_at, last_heartbeat,
+			instance_type, deployment_id, replica_count, license_key_hash, hardware_hash, public_key,
+			instance_token, refresh_token, refresh_token_issued_at, refresh_token_expires_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, $10, $11, $12, $13, $14, $15, $16, now(), now() + interval '90 days')
 		ON CONFLICT (instance_id) DO UPDATE SET
 			hostname = EXCLUDED.hostname,
 			ip_address = EXCLUDED.ip_address,
@@ -30,11 +34,24 @@ func (s *PgxStore) RegisterInstance(ctx context.Context, instance *InstanceInfo)
 			version = EXCLUDED.version,
 			build_seq = EXCLUDED.build_seq,
 			started_at = EXCLUDED.started_at,
-			last_heartbeat = now()
+			last_heartbeat = now(),
+			instance_type = EXCLUDED.instance_type,
+			deployment_id = EXCLUDED.deployment_id,
+			replica_count = EXCLUDED.replica_count,
+			license_key_hash = EXCLUDED.license_key_hash,
+			hardware_hash = EXCLUDED.hardware_hash,
+			public_key = EXCLUDED.public_key,
+			instance_token = EXCLUDED.instance_token,
+			refresh_token = EXCLUDED.refresh_token,
+			refresh_token_issued_at = now(),
+			refresh_token_expires_at = now() + interval '90 days'
 	`
 	_, err := s.db.Exec(ctx, query,
 		instance.InstanceID, instance.Hostname, instance.IPAddress, instance.Region,
 		instance.Version, instance.BuildSeq, instance.Status, instance.StartedAt,
+		instance.InstanceType, instance.DeploymentID, instance.ReplicaCount,
+		instance.LicenseKeyHash, instance.HardwareHash, instance.PublicKey,
+		instance.InstanceToken, instance.RefreshToken,
 	)
 	return err
 }
@@ -111,21 +128,37 @@ func (s *PgxStore) DeleteInstance(ctx context.Context, instanceID string) error 
 
 // RecordHeartbeat 记录心跳
 func (s *PgxStore) RecordHeartbeat(ctx context.Context, instanceID string, payload *HeartbeatPayload) error {
-	// 更新实例最后心跳时间
-	updateQuery := `UPDATE gateway_instances SET last_heartbeat = now(), status = $2 WHERE instance_id = $1`
-	if _, err := s.db.Exec(ctx, updateQuery, instanceID, StatusOnline); err != nil {
+	// Serialize payload to JSONB
+	metricsJSON, err := json.Marshal(payload)
+	if err != nil {
 		return err
 	}
 
-	// 记录心跳历史
+	// Begin transaction
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// 更新实例最后心跳时间
+	updateQuery := `UPDATE gateway_instances SET last_heartbeat = now(), status = $2 WHERE instance_id = $1`
+	if _, err := tx.Exec(ctx, updateQuery, instanceID, StatusOnline); err != nil {
+		return err
+	}
+
+	// 记录心跳历史 (with JSONB metrics)
 	insertQuery := `
-		INSERT INTO instance_heartbeats (instance_id, timestamp, uptime_secs, num_goroutine, alloc_mb, status)
-		VALUES ($1, now(), $2, $3, $4, $5)
+		INSERT INTO instance_heartbeats (instance_id, timestamp, uptime_secs, num_goroutine, alloc_mb, status, metrics)
+		VALUES ($1, now(), $2, $3, $4, $5, $6)
 	`
-	_, err := s.db.Exec(ctx, insertQuery,
-		instanceID, payload.UptimeSecs, payload.NumGoroutine, payload.AllocMB, StatusOnline,
-	)
-	return err
+	if _, err := tx.Exec(ctx, insertQuery,
+		instanceID, payload.UptimeSecs, payload.NumGoroutine, payload.AllocMB, StatusOnline, metricsJSON,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 // GetLastHeartbeat 获取最后心跳时间
@@ -325,6 +358,35 @@ func (s *PgxStore) GetLatestStatus(ctx context.Context, instanceID string) (*Sta
 		return nil, err
 	}
 	return status, nil
+}
+
+// GetInstanceByRefreshToken retrieves instance by refresh_token
+func (s *PgxStore) GetInstanceByRefreshToken(ctx context.Context, refreshToken string) (*InstanceInfo, error) {
+	query := `
+		SELECT instance_id, hostname, ip_address, region, version, build_seq, status, started_at, last_heartbeat
+		FROM gateway_instances
+		WHERE refresh_token = $1 AND refresh_token_expires_at > now()
+	`
+	instance := &InstanceInfo{}
+	err := s.db.QueryRow(ctx, query, refreshToken).Scan(
+		&instance.InstanceID, &instance.Hostname, &instance.IPAddress, &instance.Region,
+		&instance.Version, &instance.BuildSeq, &instance.Status, &instance.StartedAt, &instance.LastHeartbeat,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return instance, nil
+}
+
+// UpdateRefreshToken updates the refresh_token and expiry for an instance
+func (s *PgxStore) UpdateRefreshToken(ctx context.Context, instanceID, refreshToken string, expiresAt time.Time) error {
+	query := `
+		UPDATE gateway_instances
+		SET refresh_token = $2, refresh_token_issued_at = now(), refresh_token_expires_at = $3
+		WHERE instance_id = $1
+	`
+	_, err := s.db.Exec(ctx, query, instanceID, refreshToken, expiresAt)
+	return err
 }
 
 // Ensure interface compliance
