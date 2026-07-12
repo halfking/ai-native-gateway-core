@@ -12,8 +12,8 @@ import (
 
 // mockApprovalManager is a mock implementation of ApprovalManager for testing.
 type mockApprovalManager struct {
-	approveFunc             func(ctx context.Context, approvalID, tenantID, approvedBy, reason string) error
-	rejectFunc              func(ctx context.Context, approvalID, tenantID, approvedBy, reason string) error
+	approveFunc                func(ctx context.Context, approvalID, tenantID, approvedBy, reason string) error
+	rejectFunc                 func(ctx context.Context, approvalID, tenantID, approvedBy, reason string) error
 	getApprovalByRequestIDFunc func(ctx context.Context, requestID string) (tenantID string, err error)
 }
 
@@ -76,7 +76,7 @@ func TestHandleVerification_Success(t *testing.T) {
 	echoStr := "test_echo"
 	timestamp := "1234567890"
 	nonce := "test_nonce"
-	
+
 	// Build URL with parameters
 	url := "/callback?echostr=" + echoStr + "&timestamp=" + timestamp + "&nonce=" + nonce + "&msg_signature=invalid"
 	req := httptest.NewRequest(http.MethodGet, url, nil)
@@ -398,7 +398,7 @@ func TestVerifySignature(t *testing.T) {
 			nonce:     "random",
 			echoStr:   "echo123",
 			signature: "e8ff5d5a8e8c92e4b1f8c5f3c66f6a74e3b87654", // Pre-calculated SHA1
-			expected:  false, // Will fail unless we calculate correct SHA1
+			expected:  false,                                      // Will fail unless we calculate correct SHA1
 		},
 		{
 			name:      "invalid_signature",
