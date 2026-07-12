@@ -39,6 +39,21 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		N                   *int            `json:"n,omitempty"`
 		User                string          `json:"user,omitempty"`
 		ParallelToolCalls   *bool           `json:"parallel_tool_calls,omitempty"`
+
+		// audit-provider-multimodal (2026-07-13): personalized fields
+		ReasoningEffort    string          `json:"reasoning_effort,omitempty"`
+		Modalities         json.RawMessage `json:"modalities,omitempty"`
+		Audio              json.RawMessage `json:"audio,omitempty"`
+		LogitBias          json.RawMessage `json:"logit_bias,omitempty"`
+		Store              *bool           `json:"store,omitempty"`
+		ServiceTier        string          `json:"service_tier,omitempty"`
+		Prediction         json.RawMessage `json:"prediction,omitempty"`
+		Verbosity          string          `json:"verbosity,omitempty"`
+		WebSearchOptions   json.RawMessage `json:"web_search_options,omitempty"`
+		PromptCacheKey     string          `json:"prompt_cache_key,omitempty"`
+		SafetyIdentifier   string          `json:"safety_identifier,omitempty"`
+		PreviousResponseID string          `json:"previous_response_id,omitempty"`
+		Truncation         string          `json:"truncation,omitempty"`
 	}
 
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -52,6 +67,11 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		"tools": true, "tool_choice": true, "frequency_penalty": true, "presence_penalty": true,
 		"logprobs": true, "top_logprobs": true, "seed": true, "response_format": true,
 		"n": true, "user": true, "parallel_tool_calls": true,
+		// audit-provider-multimodal (2026-07-13): recognized structured fields
+		"reasoning_effort": true, "modalities": true, "audio": true, "logit_bias": true,
+		"store": true, "service_tier": true, "prediction": true, "verbosity": true,
+		"web_search_options": true, "prompt_cache_key": true, "safety_identifier": true,
+		"previous_response_id": true, "truncation": true,
 	}
 
 	extensions := make(map[string]json.RawMessage)
@@ -62,17 +82,69 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 	}
 
 	ir := &InternalRequest{
-		Model:             src.Model,
-		SourceProtocol:    ProtocolOpenAIChat,
-		FrequencyPenalty:  src.FrequencyPenalty,
-		PresencePenalty:   src.PresencePenalty,
-		Logprobs:          src.LogProbs,
-		TopLogprobs:       src.TopLogProbs,
-		Seed:              src.Seed,
-		N:                 derefInt(src.N),
-		User:              src.User,
-		ParallelToolCalls: src.ParallelToolCalls,
-		Extensions:        extensions, // P0 fix: preserve unknown fields
+		Model:              src.Model,
+		SourceProtocol:     ProtocolOpenAIChat,
+		FrequencyPenalty:   src.FrequencyPenalty,
+		PresencePenalty:    src.PresencePenalty,
+		Logprobs:           src.LogProbs,
+		TopLogprobs:        src.TopLogProbs,
+		Seed:               src.Seed,
+		N:                  derefInt(src.N),
+		User:               src.User,
+		ParallelToolCalls:  src.ParallelToolCalls,
+		Store:              src.Store,
+		ServiceTier:        src.ServiceTier,
+		Verbosity:          src.Verbosity,
+		PromptCacheKey:     src.PromptCacheKey,
+		SafetyIdentifier:   src.SafetyIdentifier,
+		PreviousResponseID: src.PreviousResponseID,
+		Truncation:         src.Truncation,
+		Extensions:         extensions, // P0 fix: preserve unknown fields
+	}
+
+	// audit-provider-multimodal (2026-07-13): Reasoning effort (OpenAI o1/o3)
+	if src.ReasoningEffort != "" {
+		ir.Reasoning = &ReasoningConfig{Effort: src.ReasoningEffort}
+	}
+
+	// Modalities (OpenAI TTS multimodal output config)
+	if src.Modalities != nil && string(src.Modalities) != "null" {
+		var mods []string
+		if err := json.Unmarshal(src.Modalities, &mods); err == nil {
+			ir.Modalities = mods
+		}
+	}
+
+	// Audio output config (OpenAI TTS)
+	if src.Audio != nil && string(src.Audio) != "null" {
+		var ac AudioConfig
+		if err := json.Unmarshal(src.Audio, &ac); err == nil {
+			ir.AudioConfig = &ac
+		}
+	}
+
+	// Logit bias (OpenAI)
+	if src.LogitBias != nil && string(src.LogitBias) != "null" {
+		var lb map[string]float64
+		if err := json.Unmarshal(src.LogitBias, &lb); err == nil {
+			ir.LogitBias = lb
+		}
+	}
+
+	// Prediction (OpenAI)
+	if src.Prediction != nil && string(src.Prediction) != "null" {
+		var p Prediction
+		if err := json.Unmarshal(src.Prediction, &p); err == nil {
+			ir.Prediction = &p
+		}
+	}
+
+	// Web search options (OpenAI)
+	if src.WebSearchOptions != nil && string(src.WebSearchOptions) != "null" {
+		var wso WebSearchOptions
+		if err := json.Unmarshal(src.WebSearchOptions, &wso); err == nil {
+			ir.WebSearchOptions = &wso
+		}
 	}
 
 	if src.MaxTokens != nil {
@@ -232,6 +304,24 @@ func parseOpenAIContentBlocks(blocks []any) ([]ContentBlock, error) {
 			img := parseOpenAIImageBlock(blockMap)
 			irBlock.Image = img
 			irBlock.Type = "image" // Normalize to our type
+		case "input_audio":
+			// audit-provider-multimodal (2026-07-13): OpenAI chat audio input
+			// {type:"input_audio", input_audio:{data, format}}
+			ia := parseOpenAIInputAudioBlock(blockMap)
+			irBlock.InputAudio = ia
+		case "image", "audio", "video", "document":
+			// audit-provider-multimodal (2026-07-13): pass-through multimodal blocks
+			if img := parseOpenAIImageBlock(blockMap); img != nil {
+				irBlock.Image = img
+			}
+		case "file":
+			// OpenAI file input via Responses API
+			irBlock.Document = parseOpenAIFileBlock(blockMap)
+			irBlock.Type = "document" // Normalize to our internal type
+		case "input_file":
+			// OpenAI Responses API file input variant
+			irBlock.Document = parseOpenAIFileBlock(blockMap)
+			irBlock.Type = "document"
 		default:
 			raw, _ := json.Marshal(blockMap)
 			irBlock.RawContent = string(raw)
@@ -511,4 +601,78 @@ func derefInt(p *int) int {
 		return 0
 	}
 	return *p
+}
+
+// parseOpenAIInputAudioBlock parses an OpenAI input_audio content block.
+// audit-provider-multimodal (2026-07-13): OpenAI chat audio input support.
+// Shape: { type:"input_audio", input_audio:{ data:"<base64>", format:"wav"|"mp3" } }
+func parseOpenAIInputAudioBlock(block map[string]any) *InputAudioBlock {
+	ia := &InputAudioBlock{}
+
+	if inner, ok := block["input_audio"].(map[string]any); ok {
+		if d, ok := inner["data"].(string); ok {
+			ia.Data = d
+		}
+		if f, ok := inner["format"].(string); ok {
+			ia.Format = f
+		}
+	}
+
+	// Flat shape fallback
+	if ia.Data == "" {
+		if d, ok := block["data"].(string); ok {
+			ia.Data = d
+		}
+	}
+	if ia.Format == "" {
+		if f, ok := block["format"].(string); ok {
+			ia.Format = f
+		}
+	}
+
+	return ia
+}
+
+// parseOpenAIFileBlock parses an OpenAI file input block (Responses API).
+// audit-provider-multimodal (2026-07-13): PDF/text file input via Responses API.
+// Shape: { type:"file", file:{ filename, file_data } }
+//
+//	{ type:"input_file", input_file:{...} }
+func parseOpenAIFileBlock(block map[string]any) *DocumentBlock {
+	db := &DocumentBlock{Kind: "file"}
+
+	var inner map[string]any
+	if v, ok := block["file"].(map[string]any); ok {
+		inner = v
+	} else if v, ok := block["input_file"].(map[string]any); ok {
+		inner = v
+	} else {
+		inner = block
+	}
+
+	src := &DocumentSource{Type: "file"}
+	if fn, ok := inner["filename"].(string); ok {
+		db.Title = fn
+	}
+	if fd, ok := inner["file_data"].(string); ok {
+		if strings.HasPrefix(fd, "data:") {
+			idx := strings.Index(fd, "base64,")
+			if idx >= 0 {
+				src.MediaType = strings.TrimSuffix(strings.TrimPrefix(fd[:idx], "data:"), ";")
+				src.Data = fd[idx+len("base64,"):]
+				src.Type = "base64"
+			}
+		} else if strings.HasPrefix(fd, "http") {
+			src.Type = "url"
+			src.Data = fd
+		} else {
+			src.Type = "text"
+			src.Data = fd
+		}
+	}
+	if mt, ok := inner["mime_type"].(string); ok && src.MediaType == "" {
+		src.MediaType = mt
+	}
+	db.Source = src
+	return db
 }
