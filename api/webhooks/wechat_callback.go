@@ -116,7 +116,7 @@ func (h *WeChatCallbackHandler) handleEvent(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	// Try JSON format first
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
@@ -239,9 +239,9 @@ func (h *WeChatCallbackHandler) handleXMLEvent(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	action := parts[1]        // "approve" or "reject"
-	approvalID := parts[2]    // "req-xxx"
-	tenantID := parts[3]      // "tenant-123"
+	action := parts[1]     // "approve" or "reject"
+	approvalID := parts[2] // "req-xxx"
+	tenantID := parts[3]   // "tenant-123"
 	userID := event.FromUserName
 
 	// Process approval action
