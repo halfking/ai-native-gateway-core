@@ -32,8 +32,8 @@ type OwnerContextFunc func(sessionID, tenantID string) (callerOwner, dataOwner s
 
 // OutputComplianceInterceptor 实现 response.ResponseInterceptor。
 type OutputComplianceInterceptor struct {
-	checker     *outputcompliance.Checker
-	ownerFn     OwnerContextFunc // 可空：为 nil 时 caller/data owner 均视为空（保守脱敏）
+	checker *outputcompliance.Checker
+	ownerFn OwnerContextFunc // 可空：为 nil 时 caller/data owner 均视为空（保守脱敏）
 }
 
 // NewOutputComplianceInterceptor 构造拦截器。checker 必须非 nil；ownerFn 可为 nil。
@@ -106,15 +106,15 @@ func (it *OutputComplianceInterceptor) InterceptStreamEnd(ctx context.Context, m
 		return nil, nil
 	}
 	req := &response.InterceptRequest{
-		SessionID:    meta.SessionID,
-		RequestID:    meta.RequestID,
-		TenantID:     meta.TenantID,
-		ClientModel:  meta.ClientModel,
-		ResponseBody: meta.ResponseBody,
-		TokensUsed:   meta.TokensUsed,
+		SessionID:     meta.SessionID,
+		RequestID:     meta.RequestID,
+		TenantID:      meta.TenantID,
+		ClientModel:   meta.ClientModel,
+		ResponseBody:  meta.ResponseBody,
+		TokensUsed:    meta.TokensUsed,
 		ContextWindow: meta.ContextWindow,
-		MessageCount: meta.MessageCount,
-		FinishReason: meta.FinishReason,
+		MessageCount:  meta.MessageCount,
+		FinishReason:  meta.FinishReason,
 	}
 	res, err := it.processBody(ctx, req)
 	if err != nil || res == nil {
@@ -228,6 +228,7 @@ func rewriteAssistantContent(body []byte, redactedContent string) ([]byte, bool)
 		role, _ := msg["role"].(string)
 		if role != "assistant" && role != "" {
 			// 只改 assistant 消息；空 role 的也改（兼容）
+			continue
 		}
 		if _, exists := msg["content"]; exists {
 			msg["content"] = redactedContent

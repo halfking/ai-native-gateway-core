@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Completed SessionForensics replay evidence preservation, six-scenario audit
+  contracts, mutation safety checks, and output-compliance nil-result handling.
+- Corrected the domain dependency lint scope and prevented output redaction
+  from modifying non-assistant response choices.
+
 ## [2026-07-05] - Script 合并 (deploy-scripts-merge)
 
 ### 🛠 重构
