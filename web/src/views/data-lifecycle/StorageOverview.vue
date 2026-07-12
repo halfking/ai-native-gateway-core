@@ -442,20 +442,20 @@ async function executeOp() {
     }
 
     // Async polling path
-    const jobId = startRes.job_id
+    const jobId = startRes.run_id
     let finished = false
     let job: any = null
     while (!finished) {
       await new Promise((r) => setTimeout(r, 2000))
       job = await dataLifecycleJob(jobId)
-      if (['success', 'failed', 'cancelled'].includes(job.status)) {
+      if (['succeeded', 'failed', 'cancelled'].includes(job.status)) {
         finished = true
       } else {
         busy[tRow.table] = t('dataLifecycle.storageOverview.rowResult.running', { op })
       }
     }
 
-    if (job.status === 'success') {
+    if (job.status === 'succeeded') {
       const result = job.result || {}
       lastResult[tRow.table] = {
         schema: tRow.schema, table: tRow.table, operation: op,

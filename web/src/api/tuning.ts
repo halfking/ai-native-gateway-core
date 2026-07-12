@@ -430,10 +430,11 @@ export function dataLifecycleTableReindex(body: TableMaintenanceRequest) {
 // ── Async maintenance job types (2026-07-13) ──────────────────────
 
 export interface AsyncJobResponse {
-  job_id: string
+  run_id: string
   status: string
-  target: string
-  poll_url: string
+  async: boolean
+  polling_url: string
+  message?: string
 }
 
 export interface JobListResponse {

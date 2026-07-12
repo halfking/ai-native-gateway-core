@@ -838,10 +838,11 @@ func (h *Handler) handleDataLifecycleDropPartitionAsync(w http.ResponseWriter, r
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"job_id":   run.RunID,
-		"status":   string(run.Status),
-		"target":   req.PartitionName,
-		"poll_url": "/api/admin/data-lifecycle/jobs/" + run.RunID,
+		"run_id":      run.RunID,
+		"status":      string(run.Status),
+		"async":       true,
+		"polling_url": "/api/admin/data-lifecycle/jobs/" + run.RunID,
+		"message":     fmt.Sprintf("已调度删除分区任务: %s", req.PartitionName),
 	})
 }
 
@@ -895,6 +896,8 @@ func (h *Handler) runDropPartitionJob(ctx context.Context, run *JobRun, partitio
 		"space_freed_b":  sizeBytes,
 		"parent_table":   parentTable,
 	}, fmt.Sprintf("成功删除分区 %s (释放 %s, %d 行)", partitionName, sizeHuman, rowCount))
+
+	h.succeedJob(run, fmt.Sprintf("已删除分区 %s", partitionName))
 
 	slog.Warn("data-lifecycle: drop partition job done",
 		"job_id", run.RunID, "partition", partitionName,

@@ -511,8 +511,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/data-lifecycle/hot/job/", h.superAdmin(h.handleDataLifecycleHotJob)) // /job/{id}
 	mux.HandleFunc("/api/admin/data-lifecycle/hot/job", h.superAdmin(h.handleDataLifecycleHotJob))  // /job/{id}/cancel 等
 	mux.HandleFunc("/api/admin/data-lifecycle/hot/cron/stats", h.superAdmin(h.handleDataLifecycleHotCronStats))
-	mux.HandleFunc("/api/admin/data-lifecycle/partitions/drop", h.superAdmin(h.handleDataLifecycleDropPartition))
-	// Async drop partition (2026-07-13)
+	// Drop partition — async dispatch (2026-07-13: both /drop and /drop-async dispatch to job registry)
+	mux.HandleFunc("/api/admin/data-lifecycle/partitions/drop", h.superAdmin(h.handleDataLifecycleDropPartitionAsync))
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/drop-async", h.superAdmin(h.handleDataLifecycleDropPartitionAsync))
 	// Generic async job query endpoints (2026-07-13)
 	mux.HandleFunc("/api/admin/data-lifecycle/jobs", admin(h.handleLifecycleJobs))

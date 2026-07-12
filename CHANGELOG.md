@@ -46,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   与服务端 `middleware/sigverify.go` 格式对齐，方便后续启用服务端校验。
 
 ### Fixed
+- **data-lifecycle 异步任务状态修复**：drop partition 任务完成后正确设置
+  `JobStatusSucceeded`；cancel 操作改为 `JobStatusCancelled`（原误设为 Failed）；
+  `StartJob` 修复 `cancelFn` 未赋值导致 cancel 无法中断。统一 `/drop` 和
+  `/drop-async` 路由走异步分发。前后端 `AsyncJobResponse` 字段对齐
+  (`job_id`→`run_id`, `poll_url`→`polling_url`)。清理 5 个未使用方法。
 - Preserved Anthropic unknown request fields and unknown multimodal content blocks
   during same-protocol IR round trips; added OpenAI `parallel_tool_calls` coverage.
 - Restored same-protocol request extensions when an IR request has no recorded
