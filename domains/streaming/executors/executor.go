@@ -1054,10 +1054,6 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			}
 		}
 
-		if !settings.IsEnabled("circuit_degradation") && false {
-			// unreachable: short-circuit the kill-switch into Allow's path
-			// for readability; the real bypass lives in Circuit.Allow.
-		}
 		// KILL-SWITCH (2026-07-12 incident): when circuit_degradation is
 		// disabled (KILL_CIRCUIT_DEGRADATION=1), bypass the circuit
 		// breaker entirely and always try the candidate. The DB-side
@@ -1076,8 +1072,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				releaseFpLease(e.FpSlots, fpLease)
 				continue
 			}
-			// kill-switch path: skip circuit, fall through to Limiter.AcquireAll
-			lastErr = nil
+			// Kill-switch path: skip circuit and fall through to Limiter.AcquireAll.
 		}
 
 		release, acquireErr := e.Limiter.AcquireAll(
