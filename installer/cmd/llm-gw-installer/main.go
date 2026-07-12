@@ -70,6 +70,7 @@ func main() {
 	root.AddCommand(uninstallCmd())
 	root.AddCommand(versionCmd())
 	root.AddCommand(activateCmd())
+	root.AddCommand(heartbeatCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
