@@ -25,7 +25,7 @@ phase() { echo -e "\n${B}═══════ $* ═══════${N}"; }
 # ── 配置 ──────────────────────────────────────────────────────────
 SSH_HOST="192.168.31.28"
 SSH_USER="kaixuan"
-SSH_PASS="<SSH_PASSWORD_REDACTED>"
+SSH_PASS="kaixuan123"
 REMOTE_DIR="~/workspace/official-deploy/services/llm-gateway-go"
 BINARY_NAME="llm-gateway-go"
 

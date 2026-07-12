@@ -17,7 +17,7 @@ set -euo pipefail
 
 PG_CONTAINER="${PG_CONTAINER:-r112_postgres}"
 PG_USER="${PG_USER:-kxuser}"
-PG_PASS="${PG_PASS:-<TEST_DB_PASSWORD_REDACTED>}"
+PG_PASS="${PG_PASS:-kxpass}"
 TARGET_DB="${TARGET_DB:-llm_gateway}"
 ADMIN_DB="postgres"
 

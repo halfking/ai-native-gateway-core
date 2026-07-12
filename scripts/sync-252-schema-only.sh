@@ -98,7 +98,7 @@ local_run_sql() {
 
 # ── Pre-flight: 252 reachable ─────────────────────────────
 info "Pre-flight: connecting to 252 via SSH tunnel (localhost:$TUNNEL_PORT)"
-if ! PGPASSWORD="${PG_PASS:-<DB_PASSWORD_REDACTED>}" \
+if ! PGPASSWORD="${PG_PASS:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}" \
      psql -h localhost -p "$TUNNEL_PORT" -U llm_gateway -d llm_gateway \
      -tAc "SELECT 1" >/dev/null 2>&1; then
   err "Cannot reach 252. Start the tunnel first:"
@@ -121,7 +121,7 @@ if [ "$MODE" = "check" ]; then
     "triggers:SELECT count(*) FROM information_schema.triggers WHERE event_object_schema='public'"
   do
     label="${m%%:*}"; q="${m#*:}"
-    c252=$(PGPASSWORD="${PG_PASS:-<DB_PASSWORD_REDACTED>}" psql -h localhost -p "$TUNNEL_PORT" -U llm_gateway -d llm_gateway -tAc "$q")
+    c252=$(PGPASSWORD="${PG_PASS:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}" psql -h localhost -p "$TUNNEL_PORT" -U llm_gateway -d llm_gateway -tAc "$q")
     clocal=$(local_psql "$q")
     mark=$([ "$c252" = "$clocal" ] && echo "✓" || echo "✗")
     printf "  %-14s %8s %8s  %s\n" "$label" "$c252" "$clocal" "$mark"
@@ -289,7 +289,7 @@ for m in \
   "triggers:SELECT count(*) FROM information_schema.triggers WHERE event_object_schema='public'"
 do
   label="${m%%:*}"; q="${m#*:}"
-  c252=$(PGPASSWORD="${PG_PASS:-<DB_PASSWORD_REDACTED>}" psql -h localhost -p "$TUNNEL_PORT" -U llm_gateway -d llm_gateway -tAc "$q")
+  c252=$(PGPASSWORD="${PG_PASS:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}" psql -h localhost -p "$TUNNEL_PORT" -U llm_gateway -d llm_gateway -tAc "$q")
   clocal=$(local_psql "$q")
   mark=$([ "$c252" = "$clocal" ] && echo "✓" || echo "✗")
   printf "  %-14s %8s %8s  %s\n" "$label" "$c252" "$clocal" "$mark"
