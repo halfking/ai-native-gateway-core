@@ -31,8 +31,7 @@ linters:
         # 规则 1: domain/ 零依赖（叶子包）
         domain-zero-deps:
           files:
-            - "$all"
-            - "!**/domain/**"
+            - "domain/*.go"
           deny:
             - pkg: "github.com/kaixuan/llm-gateway-go/domain"
               desc: "domain/ 是叶子包，不应被业务包依赖（只能依赖接口）"

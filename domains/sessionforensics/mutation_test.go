@@ -92,6 +92,26 @@ func TestMutate_M1_ModelSwap(t *testing.T) {
 	}
 }
 
+func TestMutate_GlobalModelSwapStartsAtFirstTurn(t *testing.T) {
+	pack := buildMockPack(t, 3)
+	if err := sessionforensics.Mutate(pack, sessionforensics.Mutation{
+		Kind: sessionforensics.MKindModelSwap, Extra: "claude-sonnet-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range pack.Messages {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal([]byte(message.Content), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Model != "claude-sonnet-5" {
+			t.Fatalf("turn %d model = %q", message.Turn, body.Model)
+		}
+	}
+}
+
 // TestMutate_M2_ToolTruncated 验证 tools 字段被删。
 func TestMutate_M2_ToolTruncated(t *testing.T) {
 	pack := buildMockPackWithTools(t, 5)

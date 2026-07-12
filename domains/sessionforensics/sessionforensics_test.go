@@ -34,18 +34,6 @@ func newMockStore() *mockStore {
 	}
 }
 
-func (m *mockStore) putSession(sid string, rows []map[string]any) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.sessionRows[sid] = rows
-}
-
-func (m *mockStore) putSummary(sid string, row map[string]any) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.summaryRows[sid] = row
-}
-
 func (m *mockStore) Query(ctx context.Context, sql string, args ...any) (sessionforensics.RowIterator, error) {
 	m.mu.Lock()
 	m.lastSQL = append(m.lastSQL, sql)
@@ -93,7 +81,7 @@ func (m *mockStore) QueryRow(ctx context.Context, sql string, args ...any) sessi
 			r := m.summaryRows[sid]
 			m.mu.Unlock()
 			if r == nil {
-				return &mockRow{err: pgxErrNoRows}
+				return &mockRow{err: errNoRows}
 			}
 			return &mockRow{row: r}
 		}
@@ -104,10 +92,7 @@ func (m *mockStore) QueryRow(ctx context.Context, sql string, args ...any) sessi
 	return &mockRow{}
 }
 
-// rowSet 占位（兼容旧签名）
-type rowSet struct{}
-
-var pgxErrNoRows = errors.New("no rows in result set")
+var errNoRows = errors.New("no rows in result set")
 
 type mockRows struct {
 	idx  int
@@ -115,10 +100,7 @@ type mockRows struct {
 }
 
 func (r *mockRows) Next() bool {
-	if r.idx < len(r.rows) {
-		return true
-	}
-	return false
+	return r.idx < len(r.rows)
 }
 func (r *mockRows) Scan(...any) error {
 	if r.idx >= len(r.rows) {
@@ -270,6 +252,31 @@ func TestReplayer_Replay_MultiTurnDeltaAppend(t *testing.T) {
 	}
 	t.Logf("strategy counts: %v", rep.Aggregate.StrategyCounts)
 	t.Logf("lossiness counts: %v", rep.Aggregate.LossinessCounts)
+}
+
+func TestReplayer_Replay_NilPack(t *testing.T) {
+	if report := sessionforensics.NewReplayer().Replay(context.Background(), nil, sessionforensics.ReplayOptions{}); report != nil {
+		t.Fatalf("Replay(nil) = %#v, want nil", report)
+	}
+}
+
+func TestLoadExtractPyFile_PreservesTurnEvidence(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "session.json")
+	body := `{"session_meta":{"id":"gxw_evidence_001"},"turns":[{"turn":1,"request_id":"req_1","ts":"2026-07-12T00:00:00Z","client_model":"gpt-4o","success":true,"latency_ms":42,"request_body":{"model":"gpt-4o","messages":[]},"response_body":{"id":"resp_1"}}]}`
+	if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pack, err := sessionforensics.LoadExtractPyFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := pack.Messages[0]
+	if message.RequestID != "req_1" || message.Model != "gpt-4o" || message.LatencyMs != 42 || !message.Success {
+		t.Fatalf("turn evidence not preserved: %#v", message)
+	}
+	if message.ResponseContent == "" {
+		t.Fatal("response content not preserved")
+	}
 }
 
 func TestReplayer_Replay_HyperlongTriggersStrip(t *testing.T) {
