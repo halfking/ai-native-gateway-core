@@ -48,11 +48,12 @@ type InternalRequest struct {
 	ToolChoice *ToolChoice
 
 	// Sampling parameters (shared)
-	MaxTokens   int      // OpenAI: max_tokens; Anthropic: max_tokens
-	Temperature *float64 // OpenAI: temperature; Anthropic: temperature
-	TopP        *float64 // OpenAI: top_p; Anthropic: top_p
-	TopK        *int     // Anthropic-only (OpenAI has no equivalent)
-	Stop        []string // OpenAI: stop[]; Anthropic: stop_sequences[]
+	MaxTokens         int      // OpenAI: max_tokens; Anthropic: max_tokens
+	Temperature       *float64 // OpenAI: temperature; Anthropic: temperature
+	TopP              *float64 // OpenAI: top_p; Anthropic: top_p
+	TopK              *int     // Anthropic-only (OpenAI has no equivalent)
+	Stop              []string // OpenAI: stop[]; Anthropic: stop_sequences[]
+	ParallelToolCalls *bool    // OpenAI-compatible providers
 
 	Stream bool // Streaming flag (passthrough both directions)
 

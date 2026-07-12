@@ -94,6 +94,18 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		out["documents"] = docs
 	}
 
+	if req.SourceProtocol == "" || req.SourceProtocol == ProtocolAnthropicMessages {
+		for key, value := range req.Extensions {
+			if _, exists := out[key]; exists {
+				continue
+			}
+			var decoded any
+			if err := json.Unmarshal(value, &decoded); err == nil {
+				out[key] = decoded
+			}
+		}
+	}
+
 	return json.Marshal(out)
 }
 
@@ -378,6 +390,17 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string) m
 
 	case "redacted_thinking":
 		out["thinking"] = block.RedactedThinking
+
+	default:
+		if raw, ok := block.RawContent.(string); ok && raw != "" {
+			var original map[string]any
+			if err := json.Unmarshal([]byte(raw), &original); err == nil {
+				if _, exists := original["type"]; !exists {
+					original["type"] = block.Type
+				}
+				out = original
+			}
+		}
 	}
 
 	// Add cache_control if present
