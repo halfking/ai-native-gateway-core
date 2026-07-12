@@ -104,6 +104,9 @@ func (r *Replayer) ReplaySingle(ctx context.Context, pack *SessionPack, turn int
 	}
 	step := ReplayStep{
 		Turn:                 turn,
+		RequestID:            msg.RequestID,
+		Ts:                   msg.CreatedAt,
+		Model:                replayModel(body, msg.Model),
 		CompressionStrategy:  res.CompressionStrategy,
 		WindowTriggered:      res.WindowTriggered,
 		SummaryMarker:        res.SummaryMarker,
@@ -121,6 +124,9 @@ func (r *Replayer) ReplaySingle(ctx context.Context, pack *SessionPack, turn int
 // Replay 把整个 pack 按 turn 顺序回放，产出 *ReplayReport。
 func (r *Replayer) Replay(ctx context.Context, pack *SessionPack, opt ReplayOptions) *ReplayReport {
 	opt = opt.validate()
+	if pack == nil {
+		return nil
+	}
 	rep := &ReplayReport{
 		SessionID: pack.SessionMeta.ID,
 		Label:     pack.SessionMeta.Label(),
@@ -151,6 +157,9 @@ func (r *Replayer) Replay(ctx context.Context, pack *SessionPack, opt ReplayOpti
 		}
 		rep.Steps = append(rep.Steps, ReplayStep{
 			Turn:                 i + 1,
+			RequestID:            msg.RequestID,
+			Ts:                   msg.CreatedAt,
+			Model:                replayModel(body, msg.Model),
 			MsgCountIn:           countMessagesInBody(body),
 			MsgCountOut:          res.MsgCount,
 			CompressionStrategy:  res.CompressionStrategy,
@@ -163,12 +172,22 @@ func (r *Replayer) Replay(ctx context.Context, pack *SessionPack, opt ReplayOpti
 			BytesBefore:          len(body),
 			BytesAfter:           out,
 			OutboundBodySize:     out,
-			ToolsCachedHit:       hasToolsCachedMarker(body),
+			ToolsCachedHit:       hasToolsCachedMarker(res.OutboundBody),
 		})
 	}
 	rep.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	rep.Aggregate = aggregateOf(rep.Steps)
 	return rep
+}
+
+func replayModel(body []byte, fallback string) string {
+	var raw struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &raw); err == nil && raw.Model != "" {
+		return raw.Model
+	}
+	return fallback
 }
 
 // SessionMeta.Label 是一个便捷方法（无 -> 用 ID 兜底）。
@@ -199,6 +218,9 @@ func rewriteModel(body []byte, newModel string) []byte {
 }
 
 func hasToolsCachedMarker(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return false

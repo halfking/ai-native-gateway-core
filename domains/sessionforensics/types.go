@@ -38,6 +38,12 @@ type ExportMessage struct {
 	Turn                int            `json:"turn"`
 	Role                string         `json:"role"`
 	Content             string         `json:"content"`
+	RequestID           string         `json:"request_id,omitempty"`
+	Model               string         `json:"model,omitempty"`
+	ResponseContent     string         `json:"response_content,omitempty"`
+	Success             bool           `json:"success"`
+	ErrorKind           string         `json:"error_kind,omitempty"`
+	LatencyMs           int            `json:"latency_ms,omitempty"`
 	ParentRequestID     string         `json:"parent_request_id,omitempty"`
 	CompressionReason   string         `json:"compression_reason,omitempty"`
 	CompressionStrategy string         `json:"compression_strategy,omitempty"`
