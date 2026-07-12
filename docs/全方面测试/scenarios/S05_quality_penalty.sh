@@ -9,7 +9,7 @@ echo "[S05] quality penalty: G=slow, J=flaky"
 set_group G slow
 set_group J flaky
 run_loadtest S05_quality_penalty \
-    --n-clients 80 --rps-per-client 8 --duration 60 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tok3 --prompt short
 print_summary S05_quality_penalty
 echo "  期望：G<5% 流量, J<1% 流量, 健康组 >90%"

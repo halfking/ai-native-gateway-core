@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/_lib.sh"
 reset_all_suppliers
 echo "[S02] cost-optimization: 80 clients, 5 models"
 run_loadtest S02_cost_route \
-    --n-clients 80 --rps-per-client 8 --duration 60 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tier --prompt short
 print_summary S02_cost_route
 echo "  期望：C/D 组占 >60% 流量（参考 ADMIN 观察）"

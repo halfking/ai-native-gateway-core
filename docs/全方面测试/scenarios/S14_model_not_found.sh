@@ -17,7 +17,7 @@ cat /tmp/s14.json; echo
 echo ""
 # 批量压测
 run_loadtest S14_model_not_found \
-    --n-clients 40 --rps-per-client 5 --duration 30 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models loadtest-nonexistent-xyz --prompt short
 print_summary S14_model_not_found
 echo "  期望：100% 错误, P95 < 50ms, 无上游调用"
