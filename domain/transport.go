@@ -18,6 +18,16 @@ type TransportContext struct {
 	ClientModel   string
 	OutboundModel string
 
+	// ClientCatalogCode is the catalog code of the client's entry provider,
+	// if known. Used by IR transport to determine same-provider extension
+	// restoration. Empty when the client entry point is unknown or when
+	// the executor has not yet resolved a candidate.
+	ClientCatalogCode string
+
+	// UpstreamCatalogCode is the catalog code of the chosen upstream
+	// candidate. Set by the executor after candidate selection.
+	UpstreamCatalogCode string
+
 	Transform      *TransformResult
 	ToolsRequested bool
 

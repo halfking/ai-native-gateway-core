@@ -16,6 +16,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   tileClick: [requestId: string]
+  emergencyDiagnose: [data: { credentialId: number; model: string; laneName: string }]
 }>()
 
 // 泳道名称显示（不截断，允许折行）
@@ -24,6 +25,45 @@ const displayName = computed(() => {
   const count = props.lane.stats.total
   return `${name} (${count})`
 })
+
+// 连续失败检测（最近 10 个请求中连续失败数）
+const consecutiveFailures = computed(() => {
+  const requests = props.lane.requests
+  if (requests.length === 0) return 0
+  
+  let count = 0
+  // 从最新的请求开始往前数
+  for (let i = requests.length - 1; i >= Math.max(0, requests.length - 10); i--) {
+    if (!requests[i].success) {
+      count++
+    } else {
+      break // 遇到成功请求就停止
+    }
+  }
+  return count
+})
+
+// 是否显示应急诊断按钮（≥3 次连续失败 且 用户是 super_admin）
+const showEmergencyButton = computed(() => {
+  return consecutiveFailures.value >= 3
+})
+
+function handleEmergencyDiagnose() {
+  // 从 lane 中提取 credential_id（如果 groupBy='credential'，name 就是 credential label）
+  // 这里简化处理：通过最近一个失败请求的 credential_id
+  const recentFailure = props.lane.requests
+    .slice()
+    .reverse()
+    .find(r => !r.success)
+  
+  if (!recentFailure) return
+  
+  emit('emergencyDiagnose', {
+    credentialId: recentFailure.credential_id || 0,
+    model: recentFailure.client_model || props.lane.name,
+    laneName: props.lane.name
+  })
+}
 
 // 动态计算可显示的请求数
 const trackRef = ref<HTMLElement | null>(null)
@@ -131,6 +171,15 @@ watch(
           ✗{{ lane.stats.failure }}
         </span>
       </div>
+      <!-- 应急诊断按钮 -->
+      <button
+        v-if="showEmergencyButton"
+        class="swim-lane__emergency-btn"
+        @click.stop="handleEmergencyDiagnose"
+        title="连续失败，点击诊断"
+      >
+        ⚠️ 诊断
+      </button>
     </div>
     <div class="swim-lane__track" ref="trackRef">
       <TransitionGroup name="swim-tile" tag="div" class="swim-lane__tiles">
@@ -213,6 +262,41 @@ watch(
 .swim-lane__stat--failure {
   color: var(--danger, #f85149);
 }
+
+.swim-lane__emergency-btn {
+  margin-top: 6px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #ffffff;
+  background: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 0 8px rgba(255, 107, 53, 0.4);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.swim-lane__emergency-btn:hover {
+  background: linear-gradient(135deg, #ff8555 0%, #ffa03e 100%);
+  box-shadow: 0 0 12px rgba(255, 107, 53, 0.6);
+  transform: translateY(-1px);
+}
+
+.swim-lane__emergency-btn:active {
+  transform: translateY(0);
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(255, 107, 53, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(255, 107, 53, 0.7);
+  }
+}
+
 
 .swim-lane__track {
   /* flex: 1 1 auto + min-width: 0 才是"占满剩余空间 + 可被压缩"的正确写法；
