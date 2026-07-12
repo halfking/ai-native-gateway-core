@@ -1356,6 +1356,24 @@ func main() {
 
 		slog.Info("CHECKPOINT: after EnsureSeedAdmin")
 
+		// 2026-07-13: 启动 hot 表夜间自动迁移 cron。
+		// 配置来源：环境变量 HOT_CRON_RUN_AT（"HH:MM"，默认 02:00），
+		// HOT_CRON_DISABLED=1 可关掉；保留时长 HOT_CRON_RETENTION_HOURS（默认 24）。
+		hotCronCfg := admin.HotCronConfigFromEnv()
+		if hotCronCfg.Enabled {
+			hotCron := admin.NewHotCronScheduler(adminHandler, hotCronCfg)
+			// 用 shutdown root ctx（<-ctx.Done() 之后整个进程退出），所以这里
+			// 直接用 adminHandler 生命周期内的 ctx 即可，shutdown 时显式 Stop。
+			hotCron.Start(context.Background())
+			adminHandler.SetHotCron(hotCron)
+			defer hotCron.Stop()
+			slog.Info("hot cron started via env config",
+				"run_at", fmt.Sprintf("%02d:%02d", hotCronCfg.RunAtHour, hotCronCfg.RunAtMinute),
+				"retention_hours", hotCronCfg.RetentionHours)
+		} else {
+			slog.Info("hot cron disabled via HOT_CRON_DISABLED env")
+		}
+
 		// Seed providers asynchronously to avoid blocking HTTP server startup (2026-06-22)
 		go func() {
 			seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1412,6 +1430,7 @@ func main() {
 	var settingsAuditCleaner *bg.SettingsAuditCleaner
 	var taxonomySync *bg.TaxonomySync
 	var partitionManager *bg.PartitionManager
+	var selfCheckWorker *bg.SelfCheckWorker
 	// peakCollector / weeklyPeakRollup / slotSuggester are declared
 	// at the top of main() so the executor can reference them.
 
@@ -1454,7 +1473,7 @@ func main() {
 
 		if selfCheckAPIKey != "" {
 			// Use empty baseURL to trigger env var / default detection in NewSelfCheckWorker
-			selfCheckWorker := bg.NewSelfCheckWorker(dbConn.Pool(), selfCheckAPIKey, "", keyring)
+			selfCheckWorker = bg.NewSelfCheckWorker(dbConn.Pool(), selfCheckAPIKey, "", keyring)
 			selfCheckWorker.Start(context.Background())
 			slog.Info("CHECKPOINT: selfCheckWorker started", "api_key_source", func() string {
 				if os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY") != "" {
@@ -2436,6 +2455,9 @@ func main() {
 
 			// Self-check admin endpoints (2026-07-12)
 			selfCheckHandler := admin.NewSelfCheckHandler(dbConn.Pool())
+			if selfCheckWorker != nil {
+				selfCheckHandler.SetWorker(selfCheckWorker)
+			}
 			adminMw := func(fn http.HandlerFunc) http.HandlerFunc {
 				return admin.AdminMiddleware(fn, dbConn.Pool(), cfg.SecretKey)
 			}

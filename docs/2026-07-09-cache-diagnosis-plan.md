@@ -455,7 +455,7 @@ LIMIT 30;
 
 ```bash
 # 选项 A：本地 r112（结构验证 + 受控流量验证）
-PGPASSWORD='<TEST_DB_PASSWORD>' psql -h localhost -p 15432 -U kxuser -d llm_gateway -f <query>
+PGPASSWORD='kxpass' psql -h localhost -p 15432 -U kxuser -d llm_gateway -f <query>
 
 # 选项 B：真实运行环境
 # 前提：目标机器上已经实际运行 llm-gateway-go，且 request_logs / usage_ledger 有真实流量数据。

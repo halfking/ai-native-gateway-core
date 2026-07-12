@@ -1,5 +1,56 @@
 <template>
   <div class="hot-partition-manager">
+    <!-- 2026-07-13: 夜间 cron 状态卡片 -->
+    <div class="card cron-stats-card">
+      <h3 class="card-title">
+        {{ t('dataLifecycle.hotPartition.cronStatsTitle') }}
+        <el-tag
+          v-if="cronStats.enabled"
+          type="success"
+          size="small"
+          class="cron-tag"
+        >
+          {{ t('dataLifecycle.hotPartition.cronEnabled') }}
+        </el-tag>
+        <el-tag v-else type="info" size="small" class="cron-tag">
+          {{ t('dataLifecycle.hotPartition.cronDisabled') }}
+        </el-tag>
+      </h3>
+      <p class="card-desc">{{ t('dataLifecycle.hotPartition.cronStatsDesc') }}</p>
+      <div class="cron-stats-grid">
+        <div class="cron-stat">
+          <span class="cron-stat-label">触发时间</span>
+          <span class="cron-stat-value">{{ cronStats.run_at || '02:00' }}</span>
+        </div>
+        <div class="cron-stat">
+          <span class="cron-stat-label">保留时长</span>
+          <span class="cron-stat-value">{{ cronStats.retention_hours || 24 }} 小时</span>
+        </div>
+        <div class="cron-stat">
+          <span class="cron-stat-label">批量大小</span>
+          <span class="cron-stat-value">{{ cronStats.batch_size || 500 }}</span>
+        </div>
+        <div class="cron-stat">
+          <span class="cron-stat-label">{{ t('dataLifecycle.hotPartition.cronRunCount') }}</span>
+          <span class="cron-stat-value">{{ cronStats.run_count || 0 }}</span>
+        </div>
+        <div class="cron-stat" v-if="cronStats.last_run_at">
+          <span class="cron-stat-label">{{ t('dataLifecycle.hotPartition.cronLastRun') }}</span>
+          <span class="cron-stat-value">{{ formatRelativeTime(cronStats.last_run_at) }}</span>
+        </div>
+        <div class="cron-stat" v-if="cronStats.last_error">
+          <span class="cron-stat-label">{{ t('dataLifecycle.hotPartition.cronLastError') }}</span>
+          <span class="cron-stat-value cron-stat-error">{{ cronStats.last_error }}</span>
+        </div>
+        <div class="cron-stat" v-if="cronStats.running_now">
+          <el-tag type="warning" size="small">
+            {{ t('dataLifecycle.hotPartition.cronRunning') }}
+          </el-tag>
+        </div>
+      </div>
+      <p class="card-desc cron-hint">{{ t('dataLifecycle.hotPartition.asyncEnabledHint') }}</p>
+    </div>
+
     <div class="card">
       <h3 class="card-title">{{ t('dataLifecycle.hotPartition.hotTableTitle') }}</h3>
       <p class="card-desc">{{ t('dataLifecycle.hotPartition.hotTableDesc') }}</p>
@@ -52,6 +103,16 @@
               :disabled="table.migrating"
             >
               {{ table.migrating ? t('dataLifecycle.hotPartition.migrating') : t('dataLifecycle.hotPartition.startMigrate') }}
+            </button>
+
+            <!-- 迁移中显示取消按钮（异步任务 ID 存在时启用） -->
+            <button
+              v-if="table.migrating && table.jobId"
+              type="button"
+              class="btn btn-sm btn-danger"
+              @click="cancelJob(table, table.jobId)"
+            >
+              {{ t('dataLifecycle.hotPartition.cancel') }}
             </button>
           </div>
 
@@ -252,7 +313,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox, ElOption, ElSelect } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '@/i18n'
@@ -267,6 +328,8 @@ interface HotTable {
   rows: number
   retentionHours: number
   migrating: boolean
+  // 2026-07-13: 异步任务的 job_id，用于取消按钮
+  jobId?: string
   progress?: {
     migrated: number
     batches: number
@@ -274,7 +337,7 @@ interface HotTable {
     percent: number
   }
   result?: {
-    status: 'success' | 'partial' | 'failed'
+    status: 'success' | 'partial' | 'failed' | 'cancelled'
     message: string
     warning?: string
   }
@@ -321,46 +384,69 @@ const { t } = useI18n()
 const loading = ref(false)
 const deleting = ref(false)
 
+// 2026-07-13: 夜间 cron 调度器状态
+const cronStats = ref<{
+  enabled: boolean
+  run_at: string
+  retention_hours: number
+  batch_size: number
+  run_count: number
+  running_now: boolean
+  last_run_at?: string
+  last_error?: string
+}>({
+  enabled: false,
+  run_at: '02:00',
+  retention_hours: 24,
+  batch_size: 500,
+  run_count: 0,
+  running_now: false,
+})
+
 // Hot 表数据
 const hotTables = ref<HotTable[]>([
   {
     label: 'request_logs_hot',
     name: 'request_logs_hot',
+    label: 'requestLogs',
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
     rows: 0,
-    retentionHours: 168,
+    retentionHours: 24, // 2026-07-13: 默认改为 1 天
     migrating: false,
   },
   {
     label: 'credential_model_index_hot',
     name: 'credential_model_index_hot',
+    label: 'credentialModelIndex',
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
     rows: 0,
-    retentionHours: 168,
+    retentionHours: 24,
     migrating: false,
   },
   {
     label: 'usage_ledger_hot',
     name: 'usage_ledger_hot',
+    label: 'usageLedger',
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
     rows: 0,
-    retentionHours: 168,
+    retentionHours: 24,
     migrating: false,
   },
   {
     label: 'routing_decision_log_hot',
     name: 'routing_decision_log_hot',
+    label: 'routingDecisionLog',
     sizeHuman: '—',
     sizeBytes: 0,
     toastHuman: '—',
     rows: 0,
-    retentionHours: 168,
+    retentionHours: 24,
     migrating: false,
   },
 ])
@@ -375,7 +461,30 @@ const deleteConfirmInput = ref('')
 onMounted(() => {
   loadHotTableStats()
   loadPartitionTables()
+  loadCronStats()
+  // 30 秒刷新 cron stats（捕获 running_now / last_run_at 变化）
+  setInterval(loadCronStats, 30_000)
 })
+
+async function loadCronStats() {
+  try {
+    const res = await req<any>('GET', '/api/admin/data-lifecycle/hot/cron/stats')
+    cronStats.value = res
+  } catch (err) {
+    console.error('加载夜间 cron 状态失败:', err)
+  }
+}
+
+// 相对时间格式化：把 ISO 时间转为"X 分钟前"等格式
+function formatRelativeTime(isoTime: string): string {
+  if (!isoTime) return '—'
+  const t = new Date(isoTime).getTime()
+  const diff = Date.now() - t
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86400_000) return `${Math.floor(diff / 3600_000)} 小时前`
+  return `${Math.floor(diff / 86400_000)} 天前`
+}
 
 async function loadHotTableStats() {
   try {
@@ -465,6 +574,9 @@ async function loadPartitions() {
   }
 }
 
+// 全局轮询定时器：所有正在运行的 job 共享一个 2 秒定时器
+const pollingHandles = new Map<string, ReturnType<typeof setInterval>>()
+
 async function promoteTable(table: HotTable) {
   const hoursLabel =
     table.retentionHours === 0
@@ -483,39 +595,135 @@ async function promoteTable(table: HotTable) {
   table.migrating = true
   table.progress = { migrated: 0, batches: 0, duration: 0, percent: 0 }
   table.result = undefined
+  table.jobId = undefined
 
   try {
-    const res = await req<any>('POST', '/api/admin/data-lifecycle/hot/promote', {
+    // 2026-07-13: 调用异步接口，立即返回 job_id，后台轮询状态。
+    // 旧版同步接口 /hot/promote 仍保留兼容（10 分钟超时），但推荐前端迁移到异步。
+    const startRes = await req<any>('POST', '/api/admin/data-lifecycle/hot/promote-async', {
       table_name: table.name,
       retention_hours: table.retentionHours,
-      batch_size: 1000,
+      batch_size: 500,
       max_batches: 0,
     })
 
-    table.result = {
-      status: res.status,
-      message: res.message,
-      warning: res.warning,
+    const jobId = startRes.job_id
+    if (!jobId) {
+      throw new Error(t('dataLifecycle.hotPartition.jobIdMissing'))
     }
+    table.jobId = jobId
 
-    table.progress = {
-      migrated: res.total_migrated,
-      batches: res.batches_executed,
-      duration: res.duration_seconds,
-      percent: 100,
-    }
+    // 启动 2 秒一次的轮询
+    const interval = setInterval(() => pollJob(table, jobId), 2000)
+    pollingHandles.set(jobId, interval)
 
-    // 刷新统计
-    await loadHotTableStats()
+    // 立即轮询一次（不等 2 秒）
+    await pollJob(table, jobId)
   } catch (err: any) {
     table.result = {
       status: 'failed',
       message: err.response?.data?.error || err.message || t('dataLifecycle.hotPartition.migrationFailed'),
     }
-  } finally {
     table.migrating = false
   }
 }
+
+// pollJob 单次轮询：拉取最新 job 状态并更新 table 上的进度/结果。
+// 终态（success / failed / cancelled / partial）时停止轮询。
+async function pollJob(table: HotTable, jobId: string) {
+  try {
+    const job = await req<any>('GET', `/api/admin/data-lifecycle/hot/job/${jobId}`)
+    const isTerminal = ['success', 'failed', 'cancelled', 'partial'].includes(job.status)
+
+    if (!isTerminal) {
+      // 运行中：刷新进度。total_migrated 单调递增，估算 percent 用批次进度或时间占比。
+      const percent = job.batches_executed > 0 ? Math.min(95, job.batches_executed * 5) : 5
+      table.progress = {
+        migrated: job.total_migrated,
+        batches: job.batches_executed,
+        duration: job.duration_seconds || Math.floor((Date.now() / 1000) - new Date(job.started_at).getTime() / 1000),
+        percent,
+      }
+      return
+    }
+
+    // 终态：清理轮询，更新结果
+    const handle = pollingHandles.get(jobId)
+    if (handle) {
+      clearInterval(handle)
+      pollingHandles.delete(jobId)
+    }
+
+    table.progress = {
+      migrated: job.total_migrated,
+      batches: job.batches_executed,
+      duration: job.duration_seconds,
+      percent: 100,
+    }
+    table.result = {
+      status: job.status,
+      message: job.message || '',
+      warning: job.warning || '',
+    }
+
+    // 失败时把 error 字段也带出来
+    if (job.status === 'failed' && job.error) {
+      table.result.message = job.error
+    }
+
+    table.migrating = false
+
+    // 迁移完成后刷新统计
+    await loadHotTableStats()
+
+    // 成功迁移后给个明显的提示
+    if (job.status === 'success' && job.total_migrated > 0) {
+      ElMessage.success({
+        message: t('dataLifecycle.hotPartition.asyncCompleted', { n: job.total_migrated }),
+        duration: 5000,
+      })
+    } else if (job.status === 'failed') {
+      ElMessage.error({
+        message: t('dataLifecycle.hotPartition.asyncFailed', { error: job.error }),
+        duration: 0, // 不自动关闭
+        showClose: true,
+      })
+    }
+  } catch (err: any) {
+    console.error('轮询任务状态失败:', err)
+    // 网络错误不立即停止，继续重试
+  }
+}
+
+// 取消正在运行的任务（前端"取消"按钮）
+async function cancelJob(table: HotTable, jobId: string) {
+  try {
+    await ElMessageBox.confirm(
+      t('dataLifecycle.hotPartition.cancelConfirm'),
+      t('dataLifecycle.hotPartition.cancelTitle'),
+      { type: 'warning', confirmButtonText: t('dataLifecycle.hotPartition.cancel'), cancelButtonText: t('dataLifecycle.hotPartition.deleteModal.cancel') },
+    )
+  } catch {
+    return
+  }
+
+  try {
+    await req('POST', `/api/admin/data-lifecycle/hot/job/${jobId}/cancel`)
+    ElMessage.info(t('dataLifecycle.hotPartition.cancelRequested'))
+    // 立即轮询一次以更新状态
+    await pollJob(table, jobId)
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.error || err.message)
+  }
+}
+
+// 组件卸载时清理所有轮询
+onUnmounted(() => {
+  for (const handle of pollingHandles.values()) {
+    clearInterval(handle)
+  }
+  pollingHandles.clear()
+})
 
 function hotTableLabel(tableName: string): string {
   const labels: Record<string, string> = {
@@ -604,6 +812,57 @@ function formatNumber(num: number): string {
 <style scoped>
 .hot-partition-manager {
   padding: 20px;
+}
+
+/* 2026-07-13: 夜间 cron 状态卡片 */
+.cron-stats-card {
+  background: linear-gradient(135deg, #161b22 0%, #1c2230 100%);
+  border-color: rgba(56, 139, 253, 0.3);
+}
+
+.cron-tag {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.cron-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 16px;
+  margin: 12px 0;
+}
+
+.cron-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cron-stat-label {
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.cron-stat-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.cron-stat-error {
+  color: #f85149;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.cron-hint {
+  margin-top: 12px;
+  margin-bottom: 0;
+  padding: 8px 12px;
+  background: rgba(56, 139, 253, 0.1);
+  border-left: 3px solid #388bfd;
+  border-radius: 4px;
+  font-size: 12px;
 }
 
 /* 通用卡片 (与父视图风格一致) */

@@ -26,7 +26,7 @@ BASE_SCHEMA_SQL="$ROOT_DIR/sql/schema/01-schema.sql"
 
 PG_CONTAINER="r112_postgres"
 PG_USER="kxuser"
-PG_PASS="${PG_PASS:?PG_PASS must be set}"
+PG_PASS="kxpass"
 TARGET_DB="llm_gateway"
 ADMIN_DB="postgres"   # CREATE DATABASE 必须在 postgres 库下执行
 
