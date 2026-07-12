@@ -1,0 +1,30 @@
+{
+  "scenario": "S04_quota_failover",
+  "gateway": "http://localhost:8781",
+  "models": [
+    "loadtest-mini-alpha",
+    "loadtest-standard-alpha",
+    "loadtest-pro-alpha"
+  ],
+  "n_clients": 10,
+  "rps_per_client": 3.0,
+  "duration_sec": 30,
+  "prompt_size": "short",
+  "sticky_ratio": 0.0,
+  "stream_ratio": 0.0,
+  "fault_inject_cancel": 0.0,
+  "metrics": {
+    "total": 320,
+    "succ": 320,
+    "fail": 0,
+    "success_rate": 1.0,
+    "p50_ms": 11.362834004103206,
+    "p95_ms": 3534.449582999514,
+    "p99_ms": 3820.247625000775,
+    "max_ms": 3982.3025000005146,
+    "throughput_rps": 9.686642097397371,
+    "elapsed_sec": 33.03518358399742,
+    "fail_by_status": {},
+    "fail_by_kind": {}
+  }
+}

@@ -6,10 +6,11 @@ import {
   getTenant, getTenantUsers, getTenantKeys, getTenantStats, updateUser,
   getAdminMaasWallet, getAdminMaasLedger, adjustAdminMaasCredits, grantAdminMaasCredits,
   getAdminMaasTenantOrders, confirmAdminMaasOrder,
+  getAdminMaasConsumptionDetail,
   MAAS_LEDGER_TYPE_LABELS, MAAS_POOL_LABELS, MAAS_ORDER_STATUS_LABELS,
   TENANT_STATUS_LABELS, TENANT_STATUS_COLORS,
 } from '../api'
-import type { Tenant, TenantUser, TenantKey, TenantStats, MaasWallet, MaasLedgerEntry, MaasBillingOrder } from '../api'
+import type { Tenant, TenantUser, TenantKey, TenantStats, MaasWallet, MaasLedgerEntry, MaasBillingOrder, MaasConsumptionDetail } from '../api'
 import TenantEditDialog from './TenantEditDialog.vue'
 import FeeCostCell from '../components/FeeCostCell.vue'
 import TenantModelPolicyPanel from '../components/TenantModelPolicyPanel.vue'
@@ -25,8 +26,12 @@ const keys = ref<TenantKey[]>([])
 const stats = ref<TenantStats | null>(null)
 const loading = ref(false)
 const error = ref('')
-const activeTab = ref<'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger' | 'orders' | 'model-policies'>('overview')
+const activeTab = ref<'overview' | 'users' | 'keys' | 'stats' | 'billing' | 'wallet' | 'ledger' | 'orders' | 'model-policies'>('overview')
 const statsDays = ref(7)
+const billingDays = ref(7)
+const billingOwnerUser = ref('')
+const billing = ref<MaasConsumptionDetail | null>(null)
+const billingLoading = ref(false)
 const showEdit = ref(false)
 const maasWallet = ref<MaasWallet | null>(null)
 const maasLedger = ref<MaasLedgerEntry[]>([])
@@ -105,6 +110,17 @@ async function loadOrders() {
   }
 }
 
+async function loadBilling() {
+  billingLoading.value = true
+  try {
+    billing.value = await getAdminMaasConsumptionDetail(tenantCode.value, billingDays.value, billingOwnerUser.value)
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '加载计费明细失败'
+  } finally {
+    billingLoading.value = false
+  }
+}
+
 async function submitAdjust() {
   const amount = parseInt(adjustAmount.value, 10)
   if (!amount || Number.isNaN(amount)) {
@@ -180,11 +196,12 @@ function ledgerTypeLabel(t: string) {
   return MAAS_LEDGER_TYPE_LABELS[t] || t
 }
 
-async function switchTab(t: 'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger' | 'orders' | 'model-policies') {
+async function switchTab(t: 'overview' | 'users' | 'keys' | 'stats' | 'billing' | 'wallet' | 'ledger' | 'orders' | 'model-policies') {
   activeTab.value = t
   if (t === 'users' && users.value.length === 0) await loadUsers()
   if (t === 'keys' && keys.value.length === 0) await loadKeys()
   if (t === 'stats' && !stats.value) await loadStats()
+  if (t === 'billing' && !billing.value) await loadBilling()
   if (t === 'wallet' && !maasWallet.value) await loadWallet()
   if (t === 'ledger' && maasLedger.value.length === 0) await loadLedger()
   if (t === 'orders' && maasOrders.value.length === 0) await loadOrders()
@@ -224,6 +241,11 @@ function fmtNum(n?: number) {
 function fmtCost(n?: number) {
   if (n == null) return '-'
   return '$' + n.toFixed(2)
+}
+
+function fmtRate(value?: number) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return `${(value * 100).toFixed(1)}%`
 }
 
 function maasLink(path: string) {
@@ -266,6 +288,7 @@ watch(() => route.params.tenantId, loadTenant)
         <button :class="{ active: activeTab === 'keys' }" @click="switchTab('keys')">密钥 ({{ tenant.api_key_count }})</button>
         <button :class="{ active: activeTab === 'model-policies' }" @click="switchTab('model-policies')">模型管控</button>
         <button :class="{ active: activeTab === 'stats' }" @click="switchTab('stats')">统计</button>
+        <button :class="{ active: activeTab === 'billing' }" @click="switchTab('billing')">计费审计</button>
         <button :class="{ active: activeTab === 'wallet' }" @click="switchTab('wallet')">钱包</button>
         <button :class="{ active: activeTab === 'orders' }" @click="switchTab('orders')">订单</button>
         <button :class="{ active: activeTab === 'ledger' }" @click="switchTab('ledger')">账本</button>
@@ -481,6 +504,46 @@ watch(() => route.params.tenantId, loadTenant)
                   />
                 </td>
               </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Billing Audit Tab -->
+      <div v-if="activeTab === 'billing'" class="tab-content">
+        <div class="stats-toolbar billing-toolbar">
+          <label>时间窗口:</label>
+          <select v-model.number="billingDays" @change="loadBilling">
+            <option :value="1">近 1 天</option>
+            <option :value="7">近 7 天</option>
+            <option :value="30">近 30 天</option>
+            <option :value="90">近 90 天</option>
+          </select>
+          <label for="billing-owner-user">用户:</label>
+          <input id="billing-owner-user" v-model="billingOwnerUser" class="billing-user-input" placeholder="按 API Key 所属用户过滤" @keyup.enter="loadBilling" />
+          <button class="btn btn-primary btn-sm" :disabled="billingLoading" @click="loadBilling">{{ billingLoading ? '加载中…' : '查询' }}</button>
+        </div>
+
+        <div v-if="billing" class="stat-cards">
+          <div class="stat-card"><div class="stat-label">计费组合</div><div class="stat-value">{{ billing.rows.length }}</div></div>
+          <div class="stat-card"><div class="stat-label">积分消耗</div><div class="stat-value">{{ fmtNum(billing.rows.reduce((sum, row) => sum + row.credits_charged, 0)) }}</div></div>
+          <div class="stat-card"><div class="stat-label">上游成本</div><div class="stat-value">{{ fmtCost(billing.rows.reduce((sum, row) => sum + row.upstream_cost_usd, 0)) }}</div></div>
+          <div class="stat-card"><div class="stat-label">租户收入</div><div class="stat-value">{{ fmtCost(billing.rows.reduce((sum, row) => sum + row.tenant_revenue_usd, 0)) }}</div></div>
+          <div class="stat-card"><div class="stat-label">毛利</div><div class="stat-value" :class="{ 'negative-value': billing.rows.reduce((sum, row) => sum + row.gross_margin_usd, 0) < 0 }">{{ fmtCost(billing.rows.reduce((sum, row) => sum + row.gross_margin_usd, 0)) }}</div></div>
+          <div class="stat-card"><div class="stat-label">取消后计费</div><div class="stat-value">{{ fmtNum(billing.rows.reduce((sum, row) => sum + row.cancelled_billed_requests, 0)) }}</div></div>
+        </div>
+
+        <div class="billing-table-wrap">
+          <table class="table billing-table">
+            <thead><tr><th>用户</th><th>供应商</th><th>凭据</th><th>模型</th><th>请求</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>积分</th><th>成本</th><th>收入</th><th>毛利率</th><th>取消计费</th></tr></thead>
+            <tbody>
+              <tr v-for="row in billing?.rows || []" :key="`${row.provider_id}-${row.credential_id}-${row.canonical_id}-${row.owner_user}`">
+                <td>{{ row.owner_user || '未标记' }}</td><td>{{ row.provider_name || '未标记' }}</td><td><code>{{ row.credential_label || row.credential_id || '未标记' }}</code></td><td><code>{{ row.model }}</code></td>
+                <td>{{ fmtNum(row.requests) }}</td><td class="mono">{{ fmtNum(row.prompt_tokens) }} / {{ fmtNum(row.completion_tokens) }}</td><td class="mono">{{ fmtNum(row.cache_read_tokens) }} / {{ fmtNum(row.cache_write_tokens) }}</td><td class="mono">{{ fmtNum(row.credits_charged) }}</td>
+                <td>{{ fmtCost(row.upstream_cost_usd) }}</td><td>{{ fmtCost(row.tenant_revenue_usd) }}</td><td :class="{ 'negative-value': row.gross_margin_rate < 0 }">{{ fmtRate(row.gross_margin_rate) }}</td>
+                <td><span v-if="row.cancelled_billed_requests" class="badge badge-yellow">{{ row.cancelled_billed_requests }}</span><span v-else>—</span></td>
+              </tr>
+              <tr v-if="!billingLoading && (!billing || billing.rows.length === 0)"><td colspan="12" class="table-empty">暂无已计费明细</td></tr>
             </tbody>
           </table>
         </div>
@@ -736,6 +799,21 @@ watch(() => route.params.tenantId, loadTenant)
   color: var(--text);
   font-size: 13px;
 }
+.billing-toolbar { flex-wrap: wrap; }
+.billing-user-input {
+  min-width: 220px;
+  padding: 5px 9px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+}
+.billing-table-wrap { overflow-x: auto; }
+.billing-table { min-width: 1100px; }
+.billing-table th, .billing-table td { white-space: nowrap; }
+.table-empty { text-align: center; padding: 40px; color: var(--muted); }
+.negative-value { color: #f87171; }
 .stats-tables h3 { font-size: 14px; margin: 16px 0 8px; color: var(--muted); }
 .adjust-form {
   margin-top: 20px;
@@ -811,4 +889,10 @@ watch(() => route.params.tenantId, loadTenant)
 }
 .maas-shortcut-icon { font-size: 20px; }
 .maas-shortcut-label { font-size: 12px; font-weight: 500; }
+
+@media (max-width: 720px) {
+  .billing-toolbar { align-items: stretch; }
+  .billing-user-input { min-width: 0; flex: 1 1 100%; }
+  .billing-toolbar .btn { width: 100%; }
+}
 </style>

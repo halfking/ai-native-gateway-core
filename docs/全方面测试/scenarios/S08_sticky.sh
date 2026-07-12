@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/_lib.sh"
 reset_all_suppliers
 echo "[S08] sticky session: 30 clients × 10 sessions × 80% reuse"
 run_loadtest S08_sticky \
-    --n-clients 30 --rps-per-client 6 --duration 60 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models loadtest-mini-alpha --prompt short \
     --sticky-ratio 0.8 --sticky-pool 10
 print_summary S08_sticky

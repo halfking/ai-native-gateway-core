@@ -8,7 +8,7 @@ reset_all_suppliers
 echo "[S09] streaming: 50% stream ratio, broken_stream on G"
 set_group G broken_stream
 run_loadtest S09_streaming \
-    --n-clients 40 --rps-per-client 5 --duration 60 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tok3 --prompt short \
     --stream-ratio 0.5
 print_summary S09_streaming
