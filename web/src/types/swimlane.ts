@@ -55,6 +55,10 @@ export interface RequestTile {
   cost_usd?: number
   prompt_tokens?: number
   completion_tokens?: number
+  // 2026-07-13: error-triggered probe fields
+  is_probe?: boolean
+  probe_origin?: 'direct' | 'gateway' | 'scheduled'
+  probe_attempt?: number
 }
 
 // 维度统计项
