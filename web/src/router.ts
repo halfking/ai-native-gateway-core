@@ -203,7 +203,7 @@ export const router = createRouter({
     { path: '/admin/session-analytics/tasks/:id', component: TaskAnalyticsView, meta: { requiresAuth: true } },
     { path: '/admin/session-config', component: SessionConfigView, meta: { requiresAuth: true } },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
-    { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
+    { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresSuper: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },
     { path: '/admin/agents',       component: AgentRegistryView, meta: { requiresSuper: true } },
     { path: '/admin/modules',      component: ModulesView, meta: { requiresSuper: true } },

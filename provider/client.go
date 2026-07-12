@@ -317,7 +317,41 @@ func InvalidateAllCandidateCache() {
 	defaultClient.mu.Unlock()
 	// 2026-07-03: 降级为 Debug —— 此函数在每次永久故障/状态变更时都会被调用，
 	// Info 级别会在批量故障场景下刷屏日志。
-	slog.Debug("candidate cache invalidated")
+	slog.Debug("candidate cache invalidated (all)")
+}
+
+// InvalidateCandidateCacheForCredential (OPT-5, 2026-07-12) clears only
+// the cache entries that include the given credential. This avoids
+// invalidating the entire cache when a single credential's state
+// changes (e.g. quota exhausted, auth revoked) — the previous
+// InvalidateAllCandidateCache caused a thundering-herd against the DB
+// for every concurrent request on every other credential.
+//
+// Cost: O(N) over cache entries × O(K) over PlanOrder per entry. Both N
+// and K are bounded (cache holds at most a few hundred entries; PlanOrder
+// is the candidate count for one model) so the per-call cost is
+// negligible compared to the avoided DB roundtrips.
+func InvalidateCandidateCacheForCredential(credentialID int) {
+	if defaultClient == nil || credentialID == 0 {
+		return
+	}
+	defaultClient.mu.Lock()
+	defer defaultClient.mu.Unlock()
+	for key, entry := range defaultClient.candCache {
+		if entry.value == nil {
+			delete(defaultClient.candCache, key)
+			continue
+		}
+		for _, p := range entry.value.PlanOrder {
+			if p.CredentialID == credentialID {
+				delete(defaultClient.candCache, key)
+				break
+			}
+		}
+	}
+	slog.Debug("candidate cache invalidated for credential",
+		"credential_id", credentialID,
+	)
 }
 
 func (c *Client) Enabled() bool {

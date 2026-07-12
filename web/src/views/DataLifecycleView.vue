@@ -26,6 +26,7 @@
     <!-- Tab 内容 -->
     <StorageOverview v-show="activeTab === 'storage'" ref="storageRef" />
     <HotPartitionManager v-show="activeTab === 'hot-partition'" />
+    <DegradationRecovery v-show="activeTab === 'degradation-recovery'" ref="degradationRef" />
     <StorageConfig v-show="activeTab === 'storage-config'" ref="storageConfigRef" />
     <LogManagement v-show="activeTab === 'logs-mgmt'" ref="logMgmtRef" />
     <BlobManager v-show="activeTab === 'blobs'" />
@@ -206,18 +207,19 @@ import BlobManager from './data-lifecycle/BlobManager.vue'
 import AttachmentManager from './data-lifecycle/AttachmentManager.vue'
 import FilesystemMaintenance from './data-lifecycle/FilesystemMaintenance.vue'
 import StorageConfig from './data-lifecycle/StorageConfig.vue'
-import LogManagement from './data-lifecycle/LogManagement.vue'
+import DegradationRecovery from './data-lifecycle/DegradationRecovery.vue'
 
 const { t } = useI18n()
 
 
 Chart.register(...registerables)
 
-type TabKey = 'storage' | 'hot-partition' | 'storage-config' | 'logs-mgmt' | 'blobs' | 'attachments' | 'filesystem' | 'logs'
+type TabKey = 'storage' | 'hot-partition' | 'degradation-recovery' | 'storage-config' | 'logs-mgmt' | 'blobs' | 'attachments' | 'filesystem' | 'logs'
 
 const tabs: { key: TabKey; label: string; badge?: string }[] = [
   { key: 'storage', label: '存储总览' },
   { key: 'hot-partition', label: 'Hot表迁移 & 分区清理' },
+  { key: 'degradation-recovery', label: '降级恢复与清理' },
   { key: 'storage-config', label: '存储配置' },
   { key: 'logs-mgmt', label: '日志管理' },
   { key: 'attachments', label: '会话附件' },
@@ -236,6 +238,7 @@ const storageRef = ref<any>(null)
 const filesystemRef = ref<any>(null)
 const storageConfigRef = ref<any>(null)
 const logMgmtRef = ref<any>(null)
+const degradationRef = ref<any>(null)
 let chartInstance: Chart | null = null
 
 function formatNumber(n: number): string { return n.toLocaleString(localeRef.value) }
@@ -267,6 +270,7 @@ async function refreshAll() {
       filesystemRef.value?.load?.(),
       storageConfigRef.value?.load?.(),
       logMgmtRef.value?.load?.(),
+      degradationRef.value?.load?.(),
     ])
   } finally {
     isLoading.value = false

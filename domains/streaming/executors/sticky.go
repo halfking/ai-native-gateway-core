@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
 // calculateSessionStickyTTL 根据模型类型计算动态 TTL（Phase 1）
@@ -21,7 +23,7 @@ func calculateSessionStickyTTL(model string) time.Duration {
 	}
 
 	// completion 模型：长文本生成（需要在 chat 之前检查，因为有些模型名包含两者）
-	if strings.Contains(modelLower, "completion") || strings.Contains(modelLower, "instruct") || 
+	if strings.Contains(modelLower, "completion") || strings.Contains(modelLower, "instruct") ||
 		strings.Contains(modelLower, "davinci") {
 		return 30 * time.Minute
 	}
@@ -79,12 +81,36 @@ type StickyCache struct {
 
 type stickyEntry struct {
 	credentialID int
-	failures     int
-	expiresAt    time.Time
+	failures     int // legacy field; preserved for backward compatibility
+	// AUDIT-1: 连续失败追踪。
+	// consecutiveFailures 在 RecordFailure 中递增；
+	// 当两次失败间隔 > 10s 时重置为 1。
+	// 达到阈值（默认 2）→ 删除 entry，下次请求重新走路由选择。
+	consecutiveFailures int
+	lastFailureAt       time.Time
+	expiresAt           time.Time
 }
 
 func NewStickyCache() *StickyCache {
-	return &StickyCache{items: make(map[string]stickyEntry)}
+	c := &StickyCache{items: make(map[string]stickyEntry)}
+	// Clear all bindings when the rate-limit gate transitions to disabled.
+	// This avoids stale sticky entries from before the gate-off interval
+	// affecting routing once the gate is re-enabled.
+	ratelimit.RegisterTransitionHandler(func(enabled bool) {
+		if !enabled {
+			c.Clear()
+		}
+	})
+	return c
+}
+
+// Clear removes every sticky binding from the cache.
+func (s *StickyCache) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k := range s.items {
+		delete(s.items, k)
+	}
 }
 
 func (s *StickyCache) SetDB(pool *pgxpool.Pool) {
@@ -178,28 +204,108 @@ func (s *StickyCache) Set(key string, credentialID int, ttl time.Duration) {
 	s.items[key] = stickyEntry{
 		credentialID: credentialID,
 		failures:     0,
-		expiresAt:    time.Now().Add(ttl),
+		// AUDIT-1: 成功（或新设置）清零连续失败计数器。
+		consecutiveFailures: 0,
+		lastFailureAt:       time.Time{},
+		expiresAt:           time.Now().Add(ttl),
 	}
 }
 
+// AUDIT-1 (2026-07-12): 重新实现 RecordFailure 的"2 次连续失败 + 10s
+// 窗口"重置逻辑。
+//
+// 用户要求：使用当前的路由节点请求出错，10 秒后再次请求还出错（相当于
+// 连续请求出错了 2 次）→ 应该重走路由选择的过程。
+//
+// 语义：
+//  1. 每次失败都检查"上一次失败时间"，若在 10s 窗口内 → 算连续失败；
+//     若超过 10s → 重置为"第 1 次失败"。
+//  2. 连续失败计数达到 2 → 立即删除 sticky entry，下次请求重新路由。
+//  3. 成功调用（RecordSuccess / Set）会自动清零连续计数。
+//  4. 进入失败状态时保留 credentialID 信息便于 trace，
+//     但已删除 entry 后任何后续访问都视为 miss。
 func (s *StickyCache) RecordFailure(key string, threshold int) bool {
+	const consecutiveWindow = 10 * time.Second
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.items[key]
-	if !ok || time.Now().After(e.expiresAt) {
+	now := time.Now()
+	if !ok || now.After(e.expiresAt) {
 		delete(s.items, key)
 		return true
 	}
-	e.failures++
-	if threshold <= 0 {
-		threshold = 3
+	// 检查 10s 窗口：上一次失败距今 > 10s 视为不连续，重置为 1
+	if e.lastFailureAt.IsZero() || now.Sub(e.lastFailureAt) > consecutiveWindow {
+		e.consecutiveFailures = 1
+	} else {
+		e.consecutiveFailures++
 	}
-	if e.failures >= threshold {
+	e.lastFailureAt = now
+	if threshold <= 0 {
+		threshold = 2 // AUDIT-1: 默认 2 次（用户语义）
+	}
+	if e.consecutiveFailures >= threshold {
 		delete(s.items, key)
 		return true
 	}
 	s.items[key] = e
 	return false
+}
+
+// RecordFailureMultiLevel records a failure for every sticky level that
+// currently points at credentialID. Once any matching level reaches the
+// threshold, all matching levels are removed together so a later lookup
+// cannot fall back to the same failed credential through L2 or L3.
+func (s *StickyCache) RecordFailureMultiLevel(
+	tenantID string,
+	appID, apiKeyID *int,
+	clientProfile string,
+	sessionID string,
+	model string,
+	credentialID int,
+	threshold int,
+) bool {
+	l1, l2, l3 := buildStickyKeys(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
+	keys := []string{l1, l2, l3}
+	if threshold <= 0 {
+		threshold = 2
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	matched := make([]string, 0, len(keys))
+	reached := false
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		e, ok := s.items[key]
+		if !ok || now.After(e.expiresAt) || e.credentialID != credentialID {
+			continue
+		}
+		matched = append(matched, key)
+		if e.lastFailureAt.IsZero() || now.Sub(e.lastFailureAt) > 10*time.Second {
+			e.consecutiveFailures = 1
+		} else {
+			e.consecutiveFailures++
+		}
+		e.lastFailureAt = now
+		if e.consecutiveFailures >= threshold {
+			reached = true
+		}
+		// AUDIT-2 (2026-07-12): Always write back the updated entry, even
+		// when threshold is not reached. The previous code only wrote back
+		// entries that didn't reach threshold, but this was inside the loop,
+		// so the last matched entry would be written multiple times.
+		s.items[key] = e
+	}
+	if reached {
+		for _, key := range matched {
+			delete(s.items, key)
+		}
+	}
+	return reached
 }
 
 func (s *StickyCache) RecordSuccess(key string, credentialID int, ttl time.Duration) {
@@ -233,7 +339,10 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 		s.items[l1] = stickyEntry{
 			credentialID: credentialID,
 			failures:     0,
-			expiresAt:    now.Add(ttl),
+			// AUDIT-1: 清零连续失败计数。
+			consecutiveFailures: 0,
+			lastFailureAt:       time.Time{},
+			expiresAt:           now.Add(ttl),
 		}
 		slog.Debug("sticky L1 recorded",
 			"key", l1,
@@ -245,18 +354,22 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	// L2: client + model (2小时，从24小时缩短)
 	if l2 != "" {
 		s.items[l2] = stickyEntry{
-			credentialID: credentialID,
-			failures:     0,
-			expiresAt:    now.Add(2 * time.Hour),
+			credentialID:        credentialID,
+			failures:            0,
+			consecutiveFailures: 0,
+			lastFailureAt:       time.Time{},
+			expiresAt:           now.Add(2 * time.Hour),
 		}
 	}
 
 	// L3: client baseline (1天，从7天缩短)
 	if l3 != "" {
 		s.items[l3] = stickyEntry{
-			credentialID: credentialID,
-			failures:     0,
-			expiresAt:    now.Add(24 * time.Hour),
+			credentialID:        credentialID,
+			failures:            0,
+			consecutiveFailures: 0,
+			lastFailureAt:       time.Time{},
+			expiresAt:           now.Add(24 * time.Hour),
 		}
 	}
 	s.mu.Unlock()
@@ -363,6 +476,31 @@ func (s *StickyCache) Delete(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.items, key)
+}
+
+// DeleteMultiLevel removes all sticky levels for a given session context.
+// Used when a credential becomes permanently unavailable (e.g., auth failure).
+// AUDIT-2 (2026-07-12): added to support credential-fatal error cleanup.
+func (s *StickyCache) DeleteMultiLevel(
+	tenantID string,
+	appID, apiKeyID *int,
+	clientProfile string,
+	sessionID string,
+	model string,
+	credentialID int,
+) {
+	l1, l2, l3 := buildStickyKeys(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, key := range []string{l1, l2, l3} {
+		if key == "" {
+			continue
+		}
+		entry, ok := s.items[key]
+		if ok && entry.credentialID == credentialID {
+			delete(s.items, key)
+		}
+	}
 }
 
 func (s *StickyCache) Len() int {
