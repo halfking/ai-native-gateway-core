@@ -135,6 +135,7 @@ export default {
     clickToCopy: 'Click to copy',
     guidePanelTitle: 'Operation guide',
     guidePanelDesc: 'Complete workflow for registration and storage',
+    filledFromPlatform: 'Filled {name} config. Paste the API Key and click "Probe & save".',
   },
   models: {
     title: 'Free models in pool',

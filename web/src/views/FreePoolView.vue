@@ -65,7 +65,15 @@ const quickEntryCard = ref<HTMLElement | null>(null)
 
 const tempEmail = ref<{ address: string; password: string; token: string; web_url: string } | null>(null)
 const tempEmailLoading = ref(false)
-const tempInbox = ref<Array<{ id: string; from?: string; subject?: string; intro?: string }>>([])
+interface TempInboxMessage {
+  id: string
+  from?: string
+  subject?: string
+  intro?: string
+  verificationCode?: string | null
+}
+
+const tempInbox = ref<TempInboxMessage[]>([])
 const tempPolling = ref(false)
 const keySubmitting = ref(false)
 const newKey = ref({
@@ -225,11 +233,11 @@ function fillFromPlatform(p: SignupPlatformEntry) {
   activeTab.value = 'assistant'
   probeResult.value = null
   showAdvancedOptions.value = false
-  
-  // 滚动到表单并提示
+
+  // Scroll to the form and show a hint
   nextTick(() => {
     quickEntryCard.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    message.value = `已填入 ${p.name} 的配置，请粘贴 API Key 并点击「探活并入库」`
+    message.value = t('freePool.assistant.filledFromPlatform', { name: p.name })
   })
 }
 
@@ -327,11 +335,11 @@ async function pollTempInbox() {
   try {
     const res = await pollFreePoolTempEmail(tempEmail.value.token)
     if (res.ok && res.messages) {
-      // 自动提取验证码
+      // Auto-extract verification code; prefer subject over intro
       tempInbox.value = res.messages.map(m => ({
         ...m,
-        verificationCode: extractVerificationCode(m.subject || '') 
-                       || extractVerificationCode(m.intro || '')
+        verificationCode: extractVerificationCode(m.subject)
+                        ?? extractVerificationCode(m.intro),
       }))
       message.value = `收件箱 ${res.total ?? res.messages.length} 封`
     } else {
@@ -344,9 +352,12 @@ async function pollTempInbox() {
   }
 }
 
-function extractVerificationCode(text: string): string | null {
+// Extracts a likely verification code (4-8 digit number) from an email snippet.
+// Prefer subject over intro to reduce false positives (dates, phone numbers).
+// Returns null when nothing looks like a code, so the UI can hide the highlight.
+function extractVerificationCode(text?: string): string | null {
   if (!text) return null
-  const match = text.match(/\b\d{6}\b/)
+  const match = text.match(/\b\d{4,8}\b/)
   return match ? match[0] : null
 }
 
@@ -483,26 +494,26 @@ onMounted(load)
     <div class="page-header">
       <h2>免费资源池</h2>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-ghost" @click="load" :disabled="loading || syncing">刷新</button>
-        <button class="btn btn-ghost" @click="runBootstrap" :disabled="loading || syncing">
+        <button class="btn btn-ghost" type="button" @click="load" :disabled="loading || syncing">刷新</button>
+        <button class="btn btn-ghost" type="button" @click="runBootstrap" :disabled="loading || syncing">
           {{ syncing ? t('freePool.bootstrapSyncing') : t('freePool.bootstrap') }}
         </button>
-        <button class="btn btn-ghost" @click="runBridgeOAuth" :disabled="loading || syncing">
+        <button class="btn btn-ghost" type="button" @click="runBridgeOAuth" :disabled="loading || syncing">
           OAuth 桥接
         </button>
-        <button class="btn btn-ghost" @click="runImportEnv" :disabled="loading || syncing">
+        <button class="btn btn-ghost" type="button" @click="runImportEnv" :disabled="loading || syncing">
           导入环境变量 Key
         </button>
-        <button class="btn btn-ghost" @click="runDiscover" :disabled="loading || syncing">
+        <button class="btn btn-ghost" type="button" @click="runDiscover" :disabled="loading || syncing">
           自动学习并注册
         </button>
-        <button class="btn btn-primary" @click="activeTab = 'assistant'; showKeyForm = false; showAddForm = false">
+        <button class="btn btn-primary" type="button" @click="activeTab = 'assistant'; showKeyForm = false; showAddForm = false">
           快速录入
         </button>
-        <button class="btn btn-primary" @click="showKeyForm = !showKeyForm">
+        <button class="btn btn-primary" type="button" @click="showKeyForm = !showKeyForm">
           {{ showKeyForm ? t('freePool.hideKeyForm') : t('freePool.showKeyForm') }}
         </button>
-        <button class="btn btn-primary" @click="showAddForm = !showAddForm">
+        <button class="btn btn-primary" type="button" @click="showAddForm = !showAddForm">
           {{ showAddForm ? t('freePool.hideKeyForm') : t('freePool.showAddForm') }}
         </button>
       </div>
@@ -576,10 +587,10 @@ onMounted(load)
         </div>
       </div>
       <div style="margin-top:12px;display:flex;gap:8px">
-        <button class="btn btn-primary" :disabled="keySubmitting" @click="submitKey">
+        <button class="btn btn-primary" type="button" :disabled="keySubmitting" @click="submitKey">
           {{ keySubmitting ? t('freePool.submitting') : t('freePool.submit') }}
         </button>
-        <button class="btn btn-ghost" @click="showKeyForm = false">取消</button>
+        <button class="btn btn-ghost" type="button" @click="showKeyForm = false">取消</button>
       </div>
     </div>
 
@@ -633,10 +644,10 @@ onMounted(load)
       </div>
 
       <div style="margin-top:16px;display:flex;gap:8px;align-items:center">
-        <button class="btn btn-primary" @click="submitNew" :disabled="submitting">
+        <button class="btn btn-primary" type="button" @click="submitNew" :disabled="submitting">
           {{ submitting ? t('freePool.submitting') : t('freePool.submit') }}
         </button>
-        <button class="btn btn-ghost" @click="showAddForm = false" :disabled="submitting">取消</button>
+        <button class="btn btn-ghost" type="button" @click="showAddForm = false" :disabled="submitting">取消</button>
       </div>
     </div>
 
@@ -644,22 +655,22 @@ onMounted(load)
 
     <template v-else-if="poolData">
       <div class="tab-bar" style="margin-bottom:16px">
-        <button class="tab-btn" :class="{ active: activeTab === 'assistant' }" @click="activeTab = 'assistant'">
+        <button class="tab-btn" type="button" :class="{ active: activeTab === 'assistant' }" @click="activeTab = 'assistant'">
           注册助手
         </button>
-        <button class="tab-btn" :class="{ active: activeTab === 'models' }" @click="activeTab = 'models'">
+        <button class="tab-btn" type="button" :class="{ active: activeTab === 'models' }" @click="activeTab = 'models'">
           免费模型清单 ({{ liveModels.length }})
         </button>
-        <button class="tab-btn" :class="{ active: activeTab === 'providers' }" @click="activeTab = 'providers'">
+        <button class="tab-btn" type="button" :class="{ active: activeTab === 'providers' }" @click="activeTab = 'providers'">
           Provider ({{ poolData.pool.length }})
         </button>
-        <button class="tab-btn" :class="{ active: activeTab === 'catalog' }" @click="activeTab = 'catalog'">
+        <button class="tab-btn" type="button" :class="{ active: activeTab === 'catalog' }" @click="activeTab = 'catalog'">
           模板目录 ({{ catalog.length }})
         </button>
-        <button class="tab-btn" :class="{ active: activeTab === 'keys' }" @click="activeTab = 'keys'">
+        <button class="tab-btn" type="button" :class="{ active: activeTab === 'keys' }" @click="activeTab = 'keys'">
           凭据来源 ({{ poolKeys.length }})
         </button>
-        <button class="tab-btn" :class="{ active: activeTab === 'guide' }" @click="activeTab = 'guide'">
+        <button class="tab-btn" type="button" :class="{ active: activeTab === 'guide' }" @click="activeTab = 'guide'">
           获取方式与审计
         </button>
       </div>
@@ -682,17 +693,25 @@ onMounted(load)
             </div>
           </div>
           
-          <!-- 高级选项切换 -->
+          <!-- Advanced options toggle -->
           <button 
             class="btn btn-ghost btn-sm advanced-toggle" 
+            type="button"
+            :aria-expanded="showAdvancedOptions"
+            aria-controls="quick-entry-advanced-options"
             @click="showAdvancedOptions = !showAdvancedOptions"
           >
             {{ showAdvancedOptions ? t('freePool.assistant.hideAdvanced') : t('freePool.assistant.showAdvanced') }}
-            <span class="chevron">{{ showAdvancedOptions ? '▲' : '▼' }}</span>
+            <span class="chevron" aria-hidden="true">{{ showAdvancedOptions ? '▲' : '▼' }}</span>
           </button>
           
-          <!-- 高级选项（可折叠） -->
-          <div v-show="showAdvancedOptions" class="form-grid" style="margin-top:12px">
+          <!-- Advanced options (collapsible) -->
+          <div
+            v-show="showAdvancedOptions"
+            id="quick-entry-advanced-options"
+            class="form-grid"
+            style="margin-top:12px"
+          >
             <div class="form-item" style="grid-column:1/-1">
               <label>注册 / 文档页 URL</label>
               <input v-model="quickEntry.signup_url" class="input" placeholder="https://openrouter.ai/signup" />
@@ -725,14 +744,15 @@ onMounted(load)
             <pre>{{ JSON.stringify(probeResult, null, 2) }}</pre>
           </div>
           <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-ghost" :disabled="quickProbing || quickSaving" @click="runQuickProbe">
+            <button class="btn btn-ghost" type="button" :disabled="quickProbing || quickSaving" @click="runQuickProbe">
               {{ quickProbing ? t('freePool.probeOnlyLoading') : t('freePool.probeOnly') }}
             </button>
-            <button class="btn btn-primary" :disabled="quickProbing || quickSaving" @click="runQuickSave(true)">
+            <button class="btn btn-primary" type="button" :disabled="quickProbing || quickSaving" @click="runQuickSave(true)">
               {{ quickSaving ? t('freePool.probeAndSaveLoading') : t('freePool.probeAndSave') }}
             </button>
             <button
               v-if="quickEntry.signup_url"
+              type="button"
               class="btn btn-ghost"
               @click="openUrl(quickEntry.signup_url)"
             >打开注册页</button>
@@ -745,27 +765,32 @@ onMounted(load)
             一键生成 mail.tm 邮箱收验证码。注册完成后请尽快复制 Key 并入库。
           </p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-            <button class="btn btn-primary" :disabled="tempEmailLoading" @click="generateTempEmail">
+            <button class="btn btn-primary" type="button" :disabled="tempEmailLoading" @click="generateTempEmail">
               {{ tempEmailLoading ? t('freePool.generateTempEmailLoading') : t('freePool.generateTempEmail') }}
             </button>
             <button
               v-if="tempEmail"
+              type="button"
               class="btn btn-ghost"
               :disabled="tempPolling"
               @click="pollTempInbox"
             >{{ tempPolling ? t('freePool.refreshInboxLoading') : t('freePool.refreshInbox') }}</button>
-            <button v-if="tempEmail" class="btn btn-ghost" @click="openUrl(tempEmail.web_url)">打开 mail.tm</button>
+            <button v-if="tempEmail" type="button" class="btn btn-ghost" @click="openUrl(tempEmail.web_url)">打开 mail.tm</button>
           </div>
           <div v-if="tempEmail" class="temp-email-box">
             <div class="temp-row">
-              <span class="cell-muted">地址</span>
+              <span class="cell-muted">{{ t('freePool.assistant.address') }}</span>
               <code>{{ tempEmail.address }}</code>
-              <button class="btn btn-ghost btn-sm" @click="copyText(tempEmail.address)">复制</button>
+              <button class="btn btn-ghost btn-sm" type="button" @click="copyText(tempEmail.address)">
+                {{ t('freePool.assistant.copy') }}
+              </button>
             </div>
             <div class="temp-row">
-              <span class="cell-muted">密码</span>
+              <span class="cell-muted">{{ t('freePool.assistant.password') }}</span>
               <code>{{ tempEmail.password }}</code>
-              <button class="btn btn-ghost btn-sm" @click="copyText(tempEmail.password)">复制</button>
+              <button class="btn btn-ghost btn-sm" type="button" @click="copyText(tempEmail.password)">
+                {{ t('freePool.assistant.copy') }}
+              </button>
             </div>
           </div>
           <ul v-if="tempInbox.length" class="inbox-list">
@@ -776,13 +801,16 @@ onMounted(load)
               </div>
               <div class="cell-muted inbox-intro">{{ m.intro }}</div>
               
-              <!-- 验证码高亮 -->
+              <!-- Verification code highlight -->
               <div v-if="m.verificationCode" class="verification-code-box">
                 <span class="verification-label">{{ t('freePool.assistant.verificationCode') }}</span>
-                <code class="verification-code" @click="copyText(m.verificationCode)">
-                  {{ m.verificationCode }}
-                </code>
-                <button class="btn btn-ghost btn-sm" @click="copyText(m.verificationCode)">
+                <button
+                  type="button"
+                  class="verification-code"
+                  :aria-label="`${t('freePool.assistant.verificationCode')}: ${m.verificationCode} - ${t('freePool.assistant.clickToCopy')}`"
+                  @click="copyText(m.verificationCode)"
+                >{{ m.verificationCode }}</button>
+                <button class="btn btn-ghost btn-sm" type="button" @click="copyText(m.verificationCode)">
                   {{ t('freePool.assistant.copy') }}
                 </button>
               </div>
@@ -793,6 +821,7 @@ onMounted(load)
             <button
               v-for="t in signupHub.tools.filter(x => x.tool_type === 'temp_email' && !x.builtin)"
               :key="t.id"
+              type="button"
               class="btn btn-ghost btn-sm"
               @click="openUrl(t.url)"
             >{{ t.name }}</button>
@@ -809,6 +838,7 @@ onMounted(load)
           </div>
           <div class="hub-filters">
             <button
+              type="button"
               class="tab-btn btn-sm"
               :class="{ active: hubCategory === 'all' }"
               @click="hubCategory = 'all'"
@@ -816,6 +846,7 @@ onMounted(load)
             <button
               v-for="cat in hubCategories"
               :key="cat.id"
+              type="button"
               class="tab-btn btn-sm"
               :class="{ active: hubCategory === cat.id }"
               @click="hubCategory = cat.id"
@@ -837,10 +868,11 @@ onMounted(load)
                 <span v-for="tag in p.tags" :key="tag" class="model-tag template">{{ tag }}</span>
               </div>
               <div class="platform-actions">
-                <button class="btn btn-primary btn-sm" @click="fillFromPlatform(p)">填入录入</button>
-                <button class="btn btn-ghost btn-sm" @click="openUrl(p.signup_url)">打开注册</button>
+                <button class="btn btn-primary btn-sm" type="button" @click="fillFromPlatform(p)">填入录入</button>
+                <button class="btn btn-ghost btn-sm" type="button" @click="openUrl(p.signup_url)">打开注册</button>
                 <button
                   v-if="p.api_key_url && p.api_key_url !== p.signup_url"
+                  type="button"
                   class="btn btn-ghost btn-sm"
                   @click="openUrl(p.api_key_url)"
                 >获取 Key</button>
@@ -857,23 +889,30 @@ onMounted(load)
           </div>
         </div>
         
-        <!-- 操作指南折叠面板 -->
+        <!-- Operation guide collapsible panel -->
         <div class="guide-panel-wrapper">
-          <button 
-            class="guide-panel-toggle" 
+          <button
+            class="guide-panel-toggle"
+            type="button"
+            :aria-expanded="showGuidePanel"
+            aria-controls="free-pool-guide-panel-content"
             @click="showGuidePanel = !showGuidePanel"
           >
             <div class="toggle-left">
-              <span class="guide-icon">📖</span>
+              <span class="guide-icon" aria-hidden="true">📖</span>
               <div>
                 <strong>{{ t('freePool.assistant.guidePanelTitle') }}</strong>
                 <div class="cell-muted">{{ t('freePool.assistant.guidePanelDesc') }}</div>
               </div>
             </div>
-            <span class="chevron">{{ showGuidePanel ? '▲' : '▼' }}</span>
+            <span class="chevron" aria-hidden="true">{{ showGuidePanel ? '▲' : '▼' }}</span>
           </button>
           
-          <div v-show="showGuidePanel" class="guide-panel-content">
+          <div
+            v-show="showGuidePanel"
+            id="free-pool-guide-panel-content"
+            class="guide-panel-content"
+          >
             <!-- 快速开始 -->
             <section class="guide-section">
               <h4>{{ t('freePool.guide.quickStartTitle') }}</h4>
@@ -1179,6 +1218,11 @@ onMounted(load)
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
+@media (max-width: 640px) {
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+}
 .form-item {
   display: flex;
   flex-direction: column;
@@ -1193,9 +1237,10 @@ onMounted(load)
 .advanced-toggle {
   margin-top: 8px;
   font-size: 12px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 4px 10px;
 }
 .chevron {
   font-size: 10px;
@@ -1413,7 +1458,9 @@ onMounted(load)
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   margin-bottom: 6px;
+  flex-wrap: wrap;
 }
 .inbox-intro {
   font-size: 12px;
@@ -1428,6 +1475,7 @@ onMounted(load)
   border: 1px solid rgba(63,185,80,.25);
   border-radius: 6px;
   margin-top: 8px;
+  flex-wrap: wrap;
 }
 .verification-label {
   font-size: 11px;
@@ -1442,9 +1490,16 @@ onMounted(load)
   padding: 4px 8px;
   border-radius: 4px;
   background: rgba(63,185,80,.15);
+  border: 1px solid transparent;
+  font-family: inherit;
 }
 .verification-code:hover {
   background: rgba(63,185,80,.25);
+}
+.verification-code:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-color: var(--accent);
 }
 .tool-links { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
