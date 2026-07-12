@@ -57,5 +57,7 @@ export default {
     opsAutoUpdate: 'Auto Update',
     opsCenter: 'Center Operations',
     opsVibeCoding: 'VibeCoding',
+    tenantLicense: 'My License',
+    tenantAutoUpdate: 'My Updates',
   },
 }

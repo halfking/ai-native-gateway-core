@@ -58,5 +58,7 @@ export default {
     opsAutoUpdate: '自动更新',
     opsCenter: '中心运维',
     opsVibeCoding: 'VibeCoding',
+    tenantLicense: '我的授权',
+    tenantAutoUpdate: '我的更新',
   },
 }
