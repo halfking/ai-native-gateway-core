@@ -33,6 +33,14 @@ type Manager struct {
 	credProbeV2Submitter func(credID int)
 	modelProbeSubmitter  func(ctx context.Context, credID int, model string) error
 
+	// 2026-07-13: 错误触发的主动探测提交函数（bg.ActiveProbeWorker.Submit）。
+	// 连续失败 ≥2 次时立即调用，让 ActiveProbeWorker 直接探测上游并把
+	// 探测结果写入 request_logs（自动出现在实时请求流）。
+	activeProbeSubmitter func(credID int, model string, parentReqID string)
+
+	// 2026-07-13: 触发主动探测的连续失败阈值（默认 2，配置来自 settings.error_probe.consecutive_threshold）
+	activeProbeThreshold int
+
 	// Phase 2: 模型热度追踪器（可选，nil 时禁用热度感知探测）
 	popularityTracker *ModelPopularityTracker
 
@@ -78,6 +86,20 @@ func (m *Manager) Stop() {
 func (m *Manager) SetProbeSubmitter(credFn func(int), modelFn func(context.Context, int, string) error) {
 	m.credProbeV2Submitter = credFn
 	m.modelProbeSubmitter = modelFn
+}
+
+// SetActiveProbeSubmitter (2026-07-13) 注册错误触发的主动探测提交器。
+// 当 UpdateOnFailure 累计到 consecutive_fails >= activeProbeThreshold 时
+// 立即调用 fn，fn 由 bg.ActiveProbeWorker.Submit 实现。
+//
+// threshold 传 0 或负数使用默认值 2。
+func (m *Manager) SetActiveProbeSubmitter(fn func(credID int, model string, parentReqID string), threshold int) {
+	m.activeProbeSubmitter = fn
+	if threshold > 0 {
+		m.activeProbeThreshold = threshold
+	} else if m.activeProbeThreshold <= 0 {
+		m.activeProbeThreshold = 2
+	}
 }
 
 // SetInvalidateCandidateCache 设置候选缓存失效函数（避免循环依赖）
@@ -168,6 +190,29 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	// 1. 临时故障（429/503/timeout）：连续失败 >= 3 → 30秒后验证，间隔递增 (30s → 2m → 5m)
 	// 2. 永久故障（auth/quota/model_not_found）：连续失败 >= 2 → 标记 broken，探测间隔 15分钟
 	// 3. 闪断保护：2秒内有成功 → 不触发探测
+	//
+	// 2026-07-13: 错误触发的主动探测 (active_probe)。
+	// 当连续失败 >= activeProbeThreshold（默认 2）时立即调用 activeProbeSubmitter，
+	// bg.ActiveProbeWorker 会按 5s → 30s → 2m → 5m → 15m backoff 链直连上游探测，
+	// 每轮结果写 request_logs，自动出现在实时请求流。
+	// active_probe 与下面的"永久/临时分级探测"并行：
+	//   - active_probe 优先用于快速隔离"上游 vs gateway"问题，0s 延迟
+	//   - credProbeV2（5min 延迟）作为兜底
+	if m.activeProbeSubmitter != nil && state.ConsecutiveFails >= m.activeProbeThreshold {
+		// 闪断保护：2秒内有成功 → 不触发探测，避免误判瞬时网络抖动
+		if state.LastSuccessAt == nil || now.Sub(*state.LastSuccessAt) > 2*time.Second {
+			slog.Info("credstate: triggering active_probe",
+				"credential_id", credID,
+				"model", model,
+				"error_kind", errKind,
+				"consecutive_fails", state.ConsecutiveFails,
+				"threshold", m.activeProbeThreshold,
+				"parent_request_id", requestID,
+			)
+			m.activeProbeSubmitter(credID, model, requestID)
+		}
+	}
+
 	isTransient := errKind == errorsx.KindRateLimit ||
 		errKind == errorsx.KindUpstreamDown ||
 		errKind == errorsx.KindTimeout ||
