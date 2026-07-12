@@ -242,3 +242,91 @@ W5 末尾必须全部满足：
 - `13-双版本构建与分发策略.md` 的剩余主张（build tags、双二进制）
 
 > 这些都复用本计划定义的 `/api/v1/*` 协议与 `gateway_instances` / `license_devices` 表结构。
+---
+
+## 附录：审计后任务补充
+
+### 新增任务（基于 v2 修订）
+
+#### A 组补充（主控端）
+
+| ID | 任务 | 状态 | 依赖 | 文件 |
+|----|------|------|------|------|
+| A11 | Redis 集成：nonce 缓存（5 min TTL，防重放） | [新] | A8 | `cmd/license-authority/middleware/redis_nonce.go` |
+| A12 | EdDSA JWT 签名（golang-jwt/jwt/v5 + Ed25519） | [新] | A7 | `cmd/license-authority/jwt_eddsa.go` |
+| A13 | refresh_token 签发与校验（`POST /api/v1/instances/refresh`） | [新] | A12 | `cmd/license-authority/refresh_handler.go` |
+
+#### B 组补充（客户端验证）
+
+| ID | 任务 | 状态 | 依赖 | 文件 |
+|----|------|------|------|------|
+| B7 | refresh_token 自动续期（cron 每 6 天，存 `~/.kx-gateway/refresh.token`） | [新] | B3 | `licensing/token_refresh.go` |
+| B8 | M1 离线模式本地 cron（每 6h 校验 license.dat，禁用心跳） | [新] | B1 | `licensing/offline_cron.go` |
+
+#### C 组补充（安装器）
+
+| ID | 任务 | 状态 | 依赖 | 文件 |
+|----|------|------|------|------|
+| C8 | M1 离线升级包处理（tar.gz 解压 + docker load + SQL + 回退） | [新] | C3 | `installer/internal/upgrader/offline_apply.go` |
+
+#### D 组修订（实例注册）
+
+| ID | 任务修订 | 变更 |
+|----|---------|------|
+| D1 | register 写 license_devices 时支持 `instance_type` / `deployment_id` | 新增字段校验 |
+
+#### E 组补充（数据库）
+
+| ID | 任务 | 状态 | 依赖 | 文件 |
+|----|------|------|------|------|
+| E3 | 377_instance_heartbeats_partition.sql（按月分区 + cron 管理） | [新] | E1 | `sql/migrations/startup/377_instance_heartbeats_partition.sql` |
+| E4 | 377_instance_heartbeats_partition.down.sql（撤销分区） | [新] | E3 | `sql/migrations/startup/377_instance_heartbeats_partition.down.sql` |
+
+#### F 组补充（e2e）
+
+| ID | 任务 | 状态 | 依赖 | 文件 |
+|----|------|------|------|------|
+| F7 | M1 离线场景（无主控端，U 盘激活 + 升级） | [新] | C8, B8 | `tests/e2e/fast-deploy/scenarios/05-m1-offline.sh` |
+| F8 | M2 心跳中断 → 120s 自动 offline | [新] | D2 | `tests/e2e/fast-deploy/scenarios/06-heartbeat-timeout.sh` |
+| F9 | refresh_token 过期 → 自动重新 register | [新] | B7 | `tests/e2e/fast-deploy/scenarios/07-token-refresh.sh` |
+
+### 修订后的 W1-W5 里程碑
+
+| W | 里程碑 | 新增验收 |
+|---|--------|---------|
+| W1 | 主控端骨架 + DB 迁移 | + Redis nonce 缓存 + EdDSA JWT |
+| W2 | 客户端激活 + 启动校验 | + refresh_token 自动续期 |
+| W3 | 心跳 + M1 离线激活 | + M1 本地 cron 校验（禁用心跳） |
+| W4 | 升级 check/apply/rollback | + M1 离线升级包（tar.gz） |
+| W5 | e2e + 文档 | + F7 M1 离线场景 + F8 心跳超时 + F9 token 续期 |
+
+### 修订后的文件 Owner
+
+| 包 | 新增文件 | Owner |
+|----|---------|-------|
+| `cmd/license-authority/middleware/` | redis_nonce.go | A |
+| `cmd/license-authority/` | jwt_eddsa.go, refresh_handler.go | A |
+| `licensing/` | token_refresh.go, offline_cron.go | B |
+| `installer/internal/upgrader/` | offline_apply.go | C |
+| `sql/migrations/startup/` | 377_*.sql | E |
+| `tests/e2e/fast-deploy/scenarios/` | 05-m1-offline.sh, 06-heartbeat-timeout.sh, 07-token-refresh.sh | QA |
+
+### v2 风险更新
+
+| 风险 | 等级 | v1 缺失 | v2 缓解 |
+|------|------|---------|---------|
+| M1 license.dat 1 年到期无法续期 | 高 | 未提及 | 管理员提前 30 天重签 + 自动告警 |
+| refresh_token 90 天丢失需重新注册 | 中 | 未提及 | 提示用户备份 + 支持 re-register |
+| M3 sidecar 资源开销（10MB/pod） | 中 | 未提及 | 可接受；后续可用 daemonset |
+| Redis 单点故障导致 nonce 缓存失效 | 中 | 未提及 | Redis Sentinel / 回退到内存 |
+| 377 分区表 cron 脚本失败导致 OOM | 低 | 未提及 | 监控 + 手动清理脚本 |
+
+### Definition of Done 补充
+
+W5 末尾新增验收：
+
+8. M1 离线场景：无主控端连接，U 盘激活 + 升级全流程通过
+9. M2 心跳中断 120s 后主控端显示 offline
+10. refresh_token 第 6 天自动续期，90 天过期后重新 register
+11. 377 分区表已创建，过去 3 个月数据可查，91 天前数据已自动清理
+12. Redis nonce 缓存命中率 > 99%（`INFO stats`）
