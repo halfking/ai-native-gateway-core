@@ -1,0 +1,30 @@
+{
+  "scenario": "S16_before_recharge",
+  "gateway": "http://localhost:8781",
+  "models": [
+    "loadtest-mini-alpha",
+    "loadtest-standard-alpha",
+    "loadtest-pro-alpha"
+  ],
+  "n_clients": 10,
+  "rps_per_client": 3.0,
+  "duration_sec": 30,
+  "prompt_size": "short",
+  "sticky_ratio": 0.0,
+  "stream_ratio": 0.0,
+  "fault_inject_cancel": 0.0,
+  "metrics": {
+    "total": 289,
+    "succ": 289,
+    "fail": 0,
+    "success_rate": 1.0,
+    "p50_ms": 15.469957994355354,
+    "p95_ms": 3542.0936249938677,
+    "p99_ms": 3975.47341700556,
+    "max_ms": 4010.097250000399,
+    "throughput_rps": 8.620880057455304,
+    "elapsed_sec": 33.52325958300207,
+    "fail_by_status": {},
+    "fail_by_kind": {}
+  }
+}

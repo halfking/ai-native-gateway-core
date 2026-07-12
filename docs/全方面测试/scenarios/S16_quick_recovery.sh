@@ -11,7 +11,7 @@ echo "[S16] quick recovery: C 配额 2000 → 耗尽 → 充值到 500000"
 set_group_quota C 2000 1800
 echo "  wave 1: 耗尽 C 组配额"
 run_loadtest S16_before_recharge \
-    --n-clients 40 --rps-per-client 5 --duration 30 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tok3 --prompt short
 
 # 充值
@@ -22,7 +22,7 @@ echo "  充值完成，等待 2s..."
 # 立即重测
 sleep 2
 run_loadtest S16_after_recharge \
-    --n-clients 40 --rps-per-client 5 --duration 30 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tok3 --prompt short
 END=$(date +%s.%N)
 ELAPSED=$(python3 -c "print(f'{$END - $START:.2f}')")

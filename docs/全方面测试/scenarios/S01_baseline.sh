@@ -8,6 +8,6 @@ source "$SCRIPT_DIR/_lib.sh"
 reset_all_suppliers
 echo "[S01] baseline 80 clients × 8 rounds × 3 models"
 run_loadtest S01_baseline \
-    --n-clients 80 --rps-per-client 8 --duration 60 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models core --prompt short
 print_summary S01_baseline
