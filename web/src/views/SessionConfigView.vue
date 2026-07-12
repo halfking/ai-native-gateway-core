@@ -110,7 +110,15 @@ onMounted(async () => {
   margin: 0 auto;
   padding: 16px 20px 32px;
   color: var(--text);
+  /* Dock the content block to the top-left of the available area so that
+     long forms (compression stats / health / prompt-injection rules)
+     align with the page heading instead of being centered with whitespace
+     on either side. See ModulesView for the same top-left docking pattern. */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
+.session-config-view > * { width: 100%; max-width: 100%; }
 .page-header {
   display: flex;
   align-items: end;

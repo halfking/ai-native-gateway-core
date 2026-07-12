@@ -1189,12 +1189,18 @@ func main() {
 	// 修复：admin.NewHandler 在 db=nil 时仍能创建（handler 内部按需 db），
 	// 保证 /api/auth/* 路由全部注册上，DB 相关 handler 在请求时再 503/500。
 	var adminHandler *admin.Handler
+	var promptInjectionHandler *admin.PromptInjectionHandler
 	{
 		var adminDB *pgxpool.Pool
 		if dbConn != nil && dbConn.Enabled() {
 			adminDB = dbConn.Pool()
 		}
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
+		// 注册 /api/admin/prompt-injection/* 路由(策略、规则、引擎、
+		// Canary、严重度矩阵、检测日志、统计)。修复前端调用 404 的 bug。
+		// 之前 handler 已实现但从未被 wire 到 main mux,导致 SPA 中所有
+		// prompt-injection API 都返回 404 (page is empty)。
+		promptInjectionHandler = admin.NewPromptInjectionHandler(adminDB, cfg.SecretKey)
 
 		slog.Info("admin handler created", "db_enabled", adminDB != nil)
 	}
@@ -2346,6 +2352,11 @@ func main() {
 	if adminHandler != nil {
 		slog.Info("CHECKPOINT: before admin RegisterRoutes")
 		adminHandler.RegisterRoutes(mux)
+		// /api/admin/prompt-injection/* — 策略、规则、引擎、Canary、严重度矩阵、检测日志。
+		if promptInjectionHandler != nil {
+			promptInjectionHandler.RegisterRoutes(mux)
+			slog.Info("prompt-injection API registered")
+		}
 		// Routing health check endpoints (2026-07-10)
 		if dbConn != nil && dbConn.Enabled() {
 			healthCheckHandler := admin.NewHealthCheckHandler(dbConn.Pool())

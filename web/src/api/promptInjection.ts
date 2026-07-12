@@ -163,6 +163,170 @@ export function updateRule(id: number | string, patch: UpdateRulePatch) {
 }
 
 // ---------------------------------------------------------------------------
+// Engines, canary tokens, severity matrix, stats, detections
+// (Full-page-only endpoints; not used by PromptInjectionConfigPanel.)
+// ---------------------------------------------------------------------------
+
+export interface LLMEngine {
+  id: number
+  tenant_id: string
+  engine_name: string
+  description?: string
+  model_canonical_id?: number | null
+  model_name?: string
+  credential_id?: number | null
+  temperature?: number
+  max_tokens?: number
+  timeout_ms?: number
+  max_retries?: number
+  system_prompt?: string
+  detection_prompt?: string
+  priority?: number
+  enabled?: boolean
+  total_calls?: number
+  total_detections?: number
+  avg_latency_ms?: number
+  error_count?: number
+  last_called_at?: string | null
+  created_at?: string
+  updated_at?: string
+}
+export interface CreateEngineInput {
+  engine_name: string
+  description?: string
+  model_canonical_id?: number | null
+  temperature?: number
+  max_tokens?: number
+  timeout_ms?: number
+  max_retries?: number
+  system_prompt?: string
+  detection_prompt?: string
+  priority?: number
+  enabled?: boolean
+}
+
+export function listEngines() {
+  return req<{ engines: LLMEngine[]; count: number }>('GET', '/api/admin/prompt-injection/engines')
+}
+export function getEngine(id: number | string) {
+  return req<LLMEngine>('GET', `/api/admin/prompt-injection/engines/${id}`)
+}
+export function createEngine(payload: CreateEngineInput) {
+  return req<{ message: string; engine_id: number }>('POST', '/api/admin/prompt-injection/engines', payload)
+}
+export function updateEngine(id: number | string, patch: Partial<LLMEngine>) {
+  return req<{ message: string }>('PUT', `/api/admin/prompt-injection/engines/${id}`, patch)
+}
+export function removeEngine(id: number | string) {
+  return req<{ message: string }>('DELETE', `/api/admin/prompt-injection/engines/${id}`)
+}
+
+export interface CanaryToken {
+  id: number
+  tenant_id: string
+  token_value?: string
+  token_type?: string
+  token_name?: string
+  description?: string
+  leak_action?: string
+  notify_on_leak?: boolean
+  active?: boolean
+  expires_at?: string | null
+  times_injected?: number
+  times_leaked?: number
+  last_leaked_at?: string | null
+  created_at?: string
+}
+export interface CreateCanaryInput {
+  token_name?: string
+  token_type?: string
+  token_value?: string
+  description?: string
+  leak_action?: string
+  notify_on_leak?: boolean
+  active?: boolean
+  expires_at?: string | null
+}
+
+export function listCanaryTokens() {
+  return req<{ tokens: CanaryToken[]; count: number }>('GET', '/api/admin/prompt-injection/canary-tokens')
+}
+export function createCanaryToken(payload: CreateCanaryInput) {
+  return req<{ message: string; token_id: number; token_value: string }>('POST', '/api/admin/prompt-injection/canary-tokens', payload)
+}
+export function updateCanaryToken(id: number | string, patch: Partial<CanaryToken>) {
+  return req<{ message: string }>('PUT', `/api/admin/prompt-injection/canary-tokens/${id}`, patch)
+}
+export function removeCanaryToken(id: number | string) {
+  return req<{ message: string }>('DELETE', `/api/admin/prompt-injection/canary-tokens/${id}`)
+}
+
+export interface SeverityAction {
+  id: number
+  tenant_id: string
+  severity_level: string
+  observe_action?: string
+  enforce_action?: string
+  require_approval?: boolean
+  approval_timeout_minutes?: number
+  notify_on_detect?: boolean
+  notify_channels?: string[]
+  affect_session_health?: boolean
+  session_health_penalty?: number
+  terminate_session_on_repeat?: boolean
+  repeat_threshold?: number
+}
+export function getSeverityMatrix() {
+  return req<{ matrix: SeverityAction[] }>('GET', '/api/admin/prompt-injection/severity-matrix')
+}
+export function updateSeverityMatrix(matrix: SeverityAction[]) {
+  return req<{ message: string }>('PUT', '/api/admin/prompt-injection/severity-matrix', matrix)
+}
+
+export interface DetectionStats {
+  total_detections?: number
+  blocked_count?: number
+  critical_count?: number
+  high_count?: number
+  medium_count?: number
+  low_count?: number
+  approval_count?: number
+  replaced_count?: number
+  terminated_count?: number
+  canary_leak_count?: number
+  avg_score?: number
+  max_score?: number
+  avg_llm_confidence?: number
+  affected_sessions?: number
+}
+export function listStats() {
+  return req<DetectionStats>('GET', '/api/admin/prompt-injection/stats')
+}
+
+export interface DetectionListParams {
+  page?: number
+  page_size?: number
+  risk_level?: string
+  action?: string
+  session_key?: string
+  blocked?: string
+  category?: string
+}
+export interface DetectionListResponse {
+  detections: any[]
+  page: number
+  page_size: number
+  total: number
+}
+export function listDetections(params: DetectionListParams = {}) {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== '' && v !== null && v !== undefined) qs.set(k, String(v))
+  }
+  return req<DetectionListResponse>('GET', '/api/admin/prompt-injection/detections' + (qs.toString() ? `?${qs}` : ''))
+}
+
+// ---------------------------------------------------------------------------
 // Display metadata — kept in sync with PromptInjectionSettingsView.vue.
 // ---------------------------------------------------------------------------
 
