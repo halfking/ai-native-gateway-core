@@ -99,7 +99,7 @@ function updateChart() {
       top: 'center',
       textStyle: { color: '#8b949e', fontSize: 11 },
     },
-    graphic: props.avgScore !== undefined && props.avgScore !== null
+    graphic: (props.avgScore !== undefined && props.avgScore !== null
       ? [
           {
             type: 'text',
@@ -125,7 +125,7 @@ function updateChart() {
             },
           },
         ]
-      : undefined,
+      : undefined) as any,
     series: [
       {
         type: 'pie',

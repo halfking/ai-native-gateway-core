@@ -53,7 +53,7 @@ const filteredReviews = computed(() => {
   return reviews.value.filter((r) => r.session_id === selectedSessionId.value)
 })
 
-function reviewIssues(review: CodeReview): CodeIssue[] {
+function reviewIssues(review: CodeReview): any[] {
   return review.review_result?.issues || []
 }
 

@@ -115,11 +115,11 @@
       </el-card>
 
       <!-- 模型切换可视化 -->
-      <el-card id="model-switches" shadow="never" style="margin-top: 16px" v-if="panorama.analysis?.model_switches?.length">
-        <template #header>模型切换历史（{{ panorama.analysis.model_switches.length }} 次）</template>
+      <el-card id="model-switches" shadow="never" style="margin-top: 16px" v-if="(panorama.analysis as any)?.model_switches?.length">
+        <template #header>模型切换历史（{{ (panorama.analysis as any).model_switches.length }} 次）</template>
         <el-timeline>
           <el-timeline-item
-            v-for="(sw, idx) in panorama.analysis.model_switches"
+            v-for="(sw, idx) in (panorama.analysis as any).model_switches"
             :key="idx"
             :timestamp="sw.reason || '切换'"
             placement="top"

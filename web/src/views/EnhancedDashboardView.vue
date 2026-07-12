@@ -80,7 +80,7 @@ function handleRefresh() {
       v-if="error" 
       type="error" 
       :title="t('dashboard.loadError') || 'Load Error'"
-      :description="error.message"
+      :description="((error as unknown) as Error).message"
       show-icon
       :closable="false"
       style="margin-bottom: 20px;"

@@ -47,6 +47,9 @@ export interface RequestTile {
   vendor: string          // 原厂 (openai, anthropic, google, etc.)
   provider: string        // 供应商 (openai-official, claude-aws, etc.)
   status: string          // success, in_progress, failure
+  success?: boolean       // derived flag: status === 'success'
+  credential_id?: number  // optional, only present when available
+  client_model?: string   // optional, the original client-facing model name
   error_kind?: string     // 5xx, 4xx, timeout, not_found, other
   latency_ms?: number
   cost_usd?: number

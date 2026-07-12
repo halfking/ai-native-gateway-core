@@ -133,12 +133,21 @@ export function hexToRgba(hex: string, alpha: number): string {
  */
 export function errorKindLabel(errorKind: string | undefined | null): string {
   if (!errorKind) return ''
-  const k = errorKind.trim()
+  const k = errorKind.trim().toLowerCase()
   if (!k) return ''
-  // Return the full error_kind for complete visibility, replacing
-  // underscores with spaces for readability. The tile CSS will handle
-  // truncation with ellipsis if needed.
-  return k.replace(/_/g, ' ')
+  // Priority-ordered classification. The first matching rule wins.
+  // "upstream_*" prefixes bump a timeout/rate/auth/not-found into
+  // the upstream_5xx bucket because they describe server-side failure
+  // modes from the client's point of view.
+  if (/(5xx|server|upstream|provider|overloaded|backend|internal)/.test(k)) return '5xx'
+  if (/(?<!upstream_)(?<!backend_)(?<!server_)(?<!provider_)\btimeout\b/.test(k)) return 'timeout'
+  if (/(client_disconnect|disconnect|network_reset|network_error|connection_reset|eof|cancelled|canceled)/.test(k)) return 'disc'
+  if (/(rate_limit|rate-limit|quota_exceeded|quota)/.test(k)) return 'rate'
+  if (/(unauthor|forbidden|auth)/.test(k)) return 'auth'
+  if (/(model_not_found|no_route|\bnot_found\b|resolve|policy|missing)/.test(k)) return 'no model'
+  // Fallback: replace underscores with spaces and cap at 8 chars.
+  const flat = k.replace(/_/g, ' ')
+  return flat.slice(0, 8)
 }
 
 /**
