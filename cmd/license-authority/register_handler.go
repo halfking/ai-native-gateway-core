@@ -100,7 +100,7 @@ func (h *RegisterHandler) HandleRegister(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to sign token"})
 	}
 
-	// 生成 refresh_token (30天有效期)
+	// 生成 refresh_token (90天有效期，按设计稿 §修正 3)
 	refreshToken, err := GenerateRefreshToken()
 	if err != nil {
 		slog.Error("generate refresh token failed", "error", err)

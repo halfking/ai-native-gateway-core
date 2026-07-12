@@ -26,7 +26,7 @@ func (s *PgxStore) RegisterInstance(ctx context.Context, instance *InstanceInfo)
 			instance_type, deployment_id, replica_count, license_key_hash, hardware_hash, public_key,
 			instance_token, refresh_token, refresh_token_issued_at, refresh_token_expires_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, $10, $11, $12, $13, $14, $15, $16, now(), now() + interval '30 days')
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, $10, $11, $12, $13, $14, $15, $16, now(), now() + interval '90 days')
 		ON CONFLICT (instance_id) DO UPDATE SET
 			hostname = EXCLUDED.hostname,
 			ip_address = EXCLUDED.ip_address,
@@ -44,7 +44,7 @@ func (s *PgxStore) RegisterInstance(ctx context.Context, instance *InstanceInfo)
 			instance_token = EXCLUDED.instance_token,
 			refresh_token = EXCLUDED.refresh_token,
 			refresh_token_issued_at = now(),
-			refresh_token_expires_at = now() + interval '30 days'
+			refresh_token_expires_at = now() + interval '90 days'
 	`
 	_, err := s.db.Exec(ctx, query,
 		instance.InstanceID, instance.Hostname, instance.IPAddress, instance.Region,
