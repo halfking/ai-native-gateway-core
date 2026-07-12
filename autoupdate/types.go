@@ -88,3 +88,12 @@ type UpgradeStep struct {
 	Description string `json:"description"`
 	Optional    bool   `json:"optional"`
 }
+
+type UpdateReportData struct {
+	InstanceID  string `json:"instance_id"`
+	FromVersion string `json:"from_version"`
+	ToVersion   string `json:"to_version"`
+	Status      string `json:"status"`
+	DurationMS  int    `json:"duration_ms"`
+	Error       string `json:"error,omitempty"`
+}
