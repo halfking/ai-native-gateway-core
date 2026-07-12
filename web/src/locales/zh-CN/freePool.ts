@@ -135,6 +135,7 @@ export default {
     clickToCopy: '点击复制',
     guidePanelTitle: '操作指南',
     guidePanelDesc: '完整的注册与入库流程说明',
+    filledFromPlatform: '已填入 {name} 的配置，请粘贴 API Key 并点击「探活并入库」',
   },
   models: {
     title: '当前池内免费模型',

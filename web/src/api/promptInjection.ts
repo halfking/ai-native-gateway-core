@@ -139,7 +139,26 @@ export function toggleRule(id: number | string, enabled: boolean) {
   )
 }
 
-export function updateRule(id: number | string, patch: Partial<PromptInjectionRule>) {
+/**
+ * Fields the backend actually accepts on PUT /api/admin/prompt-injection/rules/{id}.
+ *
+ * Source of truth: admin/prompt_injection_handler.go:updateRule (lines 392-421).
+ * Fields NOT here (rule_name, category, category_new, is_system, rule_type) are
+ * either immutable or system-only and would be silently ignored — keeping them
+ * out of the request type prevents drift.
+ */
+export interface UpdateRulePatch {
+  pattern?: string
+  description?: string
+  severity?: number
+  enabled?: boolean
+  case_sensitive?: boolean
+  action_override?: string
+  tags?: string[]
+  examples?: string[]
+}
+
+export function updateRule(id: number | string, patch: UpdateRulePatch) {
   return req<{ message: string }>('PUT', `/api/admin/prompt-injection/rules/${id}`, patch)
 }
 
