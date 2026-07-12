@@ -56,6 +56,17 @@ func (m *mockLicenseStore) ActivateDevice(ctx context.Context, dev *licensing.De
 func (m *mockLicenseStore) GetLicenseByID(ctx context.Context, id int64) (*licensing.License, error) {
 	return nil, nil
 }
+func (m *mockLicenseStore) GetLicenseByHardwareHash(ctx context.Context, hardwareHash string) (*licensing.License, error) {
+	// Look through devices to find one with matching hardware hash
+	for licKey, devs := range m.devices {
+		for _, dev := range devs {
+			if dev.HardwareHash == hardwareHash && dev.Status == "active" {
+				return m.licenses[licKey], nil
+			}
+		}
+	}
+	return nil, nil
+}
 func (m *mockLicenseStore) CreateLicense(ctx context.Context, lic *licensing.License) error {
 	return nil
 }

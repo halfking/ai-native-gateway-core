@@ -66,6 +66,44 @@ func (s *PgxStore) GetLicenseByID(ctx context.Context, id int64) (*License, erro
 	return &lic, nil
 }
 
+// GetLicenseByHardwareHash looks up the license that owns an active device
+// with the given hardware_hash. This lets callers identify the license
+// without knowing the license_key in advance — used by the register flow
+// where clients only send LicenseKeyHash = SHA256[:16] of the key.
+//
+// Returns (nil, nil) when no active device is found for that hardware_hash,
+// so callers can decide whether to treat it as "unknown device" or "new device".
+func (s *PgxStore) GetLicenseByHardwareHash(ctx context.Context, hardwareHash string) (*License, error) {
+	if hardwareHash == "" {
+		return nil, nil
+	}
+	var lic License
+	var featuresJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT l.id, l.license_key, l.customer_name, l.customer_email, l.max_devices,
+		       l.subscription_tier, l.features, l.expires_at, l.created_at, l.revoked_at
+		FROM licenses l
+		JOIN license_devices d ON d.license_id = l.id
+		WHERE d.hardware_hash = $1 AND d.status = 'active'
+		ORDER BY d.activated_at DESC
+		LIMIT 1
+	`, hardwareHash).Scan(
+		&lic.ID, &lic.LicenseKey, &lic.CustomerName, &lic.CustomerEmail,
+		&lic.MaxDevices, &lic.SubscriptionTier, &featuresJSON,
+		&lic.ExpiresAt, &lic.CreatedAt, &lic.RevokedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(featuresJSON, &lic.Features); err != nil {
+		return nil, err
+	}
+	return &lic, nil
+}
+
 func (s *PgxStore) CreateLicense(ctx context.Context, lic *License) error {
 	featuresJSON, err := json.Marshal(lic.Features)
 	if err != nil {
