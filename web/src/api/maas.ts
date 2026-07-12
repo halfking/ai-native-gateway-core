@@ -200,6 +200,20 @@ export function resetAdminMaasModelRateFields(canonicalId: number, fields: strin
   return req<{ status: string }>('PATCH', `/api/admin/maas/model-rates/${canonicalId}`, { fields })
 }
 
+export function batchUpsertAdminMaasModelRates(updates: Array<{
+  canonical_id: number
+  credits_per_1m_in: number
+  credits_per_1m_out: number
+  credits_per_1m_cache_in: number
+  credits_per_1m_cache_out: number
+  manual_in: boolean
+  manual_out: boolean
+  manual_cache_in: boolean
+  manual_cache_out: boolean
+}>) {
+  return req<{ updated: number }>('POST', '/api/admin/maas/model-rates/batch', { updates })
+}
+
 export function deleteAdminMaasModelRate(canonicalId: number) {
   return req<{ status: string }>('DELETE', `/api/admin/maas/model-rates/${canonicalId}`)
 }

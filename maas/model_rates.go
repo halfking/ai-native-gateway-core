@@ -204,6 +204,27 @@ func (s *Service) UpsertModelRate(ctx context.Context, canonicalID int, req Mode
 	return err
 }
 
+// ModelRateUpsertWithID pairs a canonical_id with its upsert payload.
+type ModelRateUpsertWithID struct {
+	CanonicalID int `json:"canonical_id"`
+	ModelRateUpsert
+}
+
+// BatchUpsertModelRates applies multiple per-model manual credit rate overrides.
+func (s *Service) BatchUpsertModelRates(ctx context.Context, updates []ModelRateUpsertWithID) (int, error) {
+	if !s.Enabled() {
+		return 0, errors.New("maas service disabled")
+	}
+	updated := 0
+	for _, u := range updates {
+		if err := s.UpsertModelRate(ctx, u.CanonicalID, u.ModelRateUpsert); err != nil {
+			continue
+		}
+		updated++
+	}
+	return updated, nil
+}
+
 // DeleteModelRate removes all custom pricing so the model falls back to global base.
 func (s *Service) DeleteModelRate(ctx context.Context, canonicalID int) error {
 	if !s.Enabled() {
