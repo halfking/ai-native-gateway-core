@@ -250,6 +250,46 @@ CREATE TABLE billing_compatibility_rules (
 );
 ```
 
+## 附录：事后修订（2026-07-13）
+
+### 关键教训：plan_type 与 billing_mode 是独立概念
+
+**原方案假设**：`credentials.plan_type` 可作为 SSOT 派生 `credential_model_bindings.billing_mode`。
+
+**生产验证**：两者本质上是采-销分离的商业模型：
+
+| 字段 | 含义 | 来源 |
+|------|------|------|
+| `credentials.plan_type` | **销售侧**套餐类型（卖给客户的计划） | 财务/销售系统 |
+| `credential_model_bindings.billing_mode` | **采购侧**计费模式（上游供应商的计价方式） | 供应商签约 |
+
+**矛盾案例**：credential 17 的 `plan_type='token_plan'`（令牌包套餐）但 `billing_mode='per_token'`（按量计费），这是一个合法的商业组合——客户买了套餐包，但供应商按量计费。
+
+### 已执行的修复（迁移 335）
+
+迁移 335 执行了以下操作：
+
+1. **移除 `v_routable_credential_models` 视图中的兼容性检查** — 不再将 plan_type 与 billing_mode 不一致视为不可路由
+2. **保留 `DeriveBillingMode` 函数** — 仅作为新凭据创建时的初始默认值，不作为强制约束
+3. **保留 `plan_type_origin` 标记** — 用于追踪数据修正来源
+
+### 当前推荐实践
+
+1. **创建新凭据时**：使用 `DeriveBillingMode` 从 plan_type 派生初始 billing_mode
+2. **运行时**：两者可以独立变化，不做强制一致性校验
+3. **监控**：仅监控 billing_mode 为 NULL 或空字符串的情况（技术异常），不监控 plan_type 与 billing_mode 的"不一致"
+4. **长期**：保持现有双字段设计，不做废弃计划
+
+### 相关迁移序列
+
+| 迁移 | 作用 | 状态 |
+|------|------|------|
+| 327 | 新增 plan_type 列 + 派生 billing_mode | 部分回滚（视图检查已移除） |
+| 334 | 尝试对齐 billing_mode = plan_type | 已回滚 |
+| 335 | **移除兼容性检查，承认采-销分离** | 当前有效 |
+
+---
+
 ## 附录
 
 ### A. 相关文件清单

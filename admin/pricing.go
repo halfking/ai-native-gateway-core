@@ -358,7 +358,7 @@ func (h *Handler) pricingExport(w http.ResponseWriter, r *http.Request) {
 			c.label AS credential,
 			mo.unit_price_in_per_1m, mo.unit_price_out_per_1m,
 			mo.cache_read_price_per_1m, mo.cache_write_price_per_1m,
-			COALESCE(mo.currency, 'USD'), COALESCE(mo.billing_mode, 'token'),
+			COALESCE(mo.currency, 'USD'), COALESCE(mo.billing_mode, 'per_token'),
 			COALESCE(mo.pricing_source, '')
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id

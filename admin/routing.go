@@ -180,11 +180,11 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		BillingRound          int      `json:"billing_round"`
 	}
 
-		rawModels := append([]string{normalizedModel}, variants[1:]...)
-		// 2026-07-09 fix: v_routable_credential_models 视图经 migration 127/332
-		// 重写后不再暴露 credential_status/lifecycle/availability/quota 等列，
-		// 改为从已 JOIN 的 credentials(c) / credential_model_bindings(cmb) 表中获取。
-		rows, err := h.db.Query(ctx, `
+	rawModels := append([]string{normalizedModel}, variants[1:]...)
+	// 2026-07-09 fix: v_routable_credential_models 视图经 migration 127/332
+	// 重写后不再暴露 credential_status/lifecycle/availability/quota 等列，
+	// 改为从已 JOIN 的 credentials(c) / credential_model_bindings(cmb) 表中获取。
+	rows, err := h.db.Query(ctx, `
 			SELECT
 				p.id AS provider_id,
 				COALESCE(p.display_name, p.code) AS provider_name,
@@ -215,7 +215,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(cmb.manual_priority, 99) AS manual_priority,
 				COALESCE(cmb.active_sessions, 0) AS active_sessions,
 				COALESCE(cmb.consecutive_failures, 0) AS consecutive_failures,
-				COALESCE(cmb.billing_mode, 'token') AS billing_mode,
+				COALESCE(cmb.billing_mode, 'per_token') AS billing_mode,
 				mo.unit_price_in_per_1m,
 				mo.unit_price_out_per_1m,
 				COALESCE(cmb.currency, 'USD') AS currency,
@@ -241,7 +241,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			  AND p.enabled IS TRUE
 			  AND (v.is_routable = true OR $2)
 			ORDER BY
-				CASE COALESCE(cmb.billing_mode, 'token')
+				CASE COALESCE(cmb.billing_mode, 'per_token')
 					WHEN 'free' THEN 1
 					WHEN 'token_plan' THEN 1
 					WHEN 'code_plan' THEN 1
@@ -1836,7 +1836,7 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
 			c.concurrency_limit,
 			COALESCE(mo.currency, 'USD') AS currency,
-			COALESCE(mo.billing_mode, 'token') AS billing_mode,
+			COALESCE(mo.billing_mode, 'per_token') AS billing_mode,
 			mo.unit_price_in_per_1m,
 			mo.unit_price_out_per_1m,
 			CASE
@@ -1851,7 +1851,7 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		  AND (lower(mo.raw_model_name) = lower($1) OR lower(mo.standardized_name) = lower($1))
 		  AND mo.available IS TRUE
 		ORDER BY
-			CASE COALESCE(mo.billing_mode, 'token')
+			CASE COALESCE(mo.billing_mode, 'per_token')
 				WHEN 'free' THEN 1
 				WHEN 'token_plan' THEN 1
 				WHEN 'code_plan' THEN 1
@@ -2555,7 +2555,7 @@ func (h *Handler) handleFreePoolModels(w http.ResponseWriter, r *http.Request) {
 		SELECT
 			mo.id AS offer_id, mo.raw_model_name, mo.standardized_name,
 			COALESCE(mc.canonical_name, '') AS canonical_name,
-			mo.available, COALESCE(mo.billing_mode, 'token') AS billing_mode,
+			mo.available, COALESCE(mo.billing_mode, 'per_token') AS billing_mode,
 			COALESCE(mo.routing_tier, 9) AS routing_tier,
 			mo.unit_price_in_per_1m, mo.unit_price_out_per_1m, mo.currency,
 			COALESCE(p.catalog_code, '') AS catalog_code,
