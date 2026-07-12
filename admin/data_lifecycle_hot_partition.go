@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -67,147 +67,99 @@ func (h *Handler) handleDataLifecyclePromoteHot(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// 默认值；显式传入 0 表示迁移全部数据。
-	retentionHours := 168
+	hours := 24
 	if req.RetentionHours != nil {
-		retentionHours = *req.RetentionHours
+		hours = *req.RetentionHours
 	}
-	if retentionHours < 0 {
+	if hours < 0 {
 		writeError(w, http.StatusBadRequest, "retention_hours must be non-negative")
 		return
 	}
-	if req.BatchSize == 0 {
-		req.BatchSize = 1000
+	batch := req.BatchSize
+	if batch == 0 {
+		batch = 5000
 	}
-	if req.BatchSize < 0 {
+	if batch < 0 {
 		writeError(w, http.StatusBadRequest, "batch_size must be positive")
 		return
 	}
-	if req.BatchSize > 10000 {
-		req.BatchSize = 10000 // 限制最大批次
+	if batch > 50000 {
+		batch = 50000
 	}
 
-	// 验证表名
-	validTables := map[string]string{
-		"request_logs_hot":           "promote_request_logs_hot_to_partition",
-		"usage_ledger_hot":           "promote_usage_ledger_hot_to_partition",
-		"request_wal_hot":            "promote_request_wal_hot_to_partition",
-		"routing_decision_log_hot":   "promote_routing_decision_log_hot_to_partition",
-		"credential_model_index_hot": "promote_credential_model_index_hot_to_partition",
-		"request_logs_bodies_hot":    "promote_request_logs_bodies_hot_to_partition",
-		"credit_ledger_hot":          "promote_credit_ledger_hot_to_partition",
-		"tool_usage_stats_hot":       "promote_tool_usage_stats_hot_to_partition",
-		"model_probe_runs_hot":       "promote_model_probe_runs_hot_to_partition", // Migration 385
-	}
-
-	fnName, ok := validTables[req.TableName]
+	fn, ok := hotTablePromoteFnMap[req.TableName]
 	if !ok {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid table_name: %s", req.TableName))
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
-	defer cancel()
-
-	resp := promoteHotResponse{
-		TableName: req.TableName,
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
-		Status:    "success",
-	}
-	start := time.Now()
-
-	slog.Info("data-lifecycle: manual promote hot table start",
-		"table", req.TableName,
-		"retention_hours", retentionHours,
-		"batch_size", req.BatchSize,
-		"max_batches", req.MaxBatches)
-
-	// 循环执行迁移，直到没有更多数据或达到批次限制
-	totalMigrated := int64(0)
-	batchCount := 0
-	retentionInterval := fmt.Sprintf("%d hours", retentionHours)
-
-	for {
-		if ctx.Err() != nil {
-			resp.Status = "partial"
-			resp.Message = "timeout reached, partial migration completed"
-			break
-		}
-
-		if req.MaxBatches > 0 && batchCount >= req.MaxBatches {
-			resp.Status = "partial"
-			resp.Message = fmt.Sprintf("max_batches limit reached (%d)", req.MaxBatches)
-			break
-		}
-
-		// 调用迁移函数
-		var migrated int64
-		err := h.db.QueryRow(ctx,
-			fmt.Sprintf("SELECT %s($1::interval, $2::int)", fnName),
-			retentionInterval,
-			req.BatchSize,
-		).Scan(&migrated)
-
-		if err != nil {
-			resp.Status = "failed"
-			resp.Message = fmt.Sprintf("migration failed at batch %d: %v", batchCount+1, err)
-			slog.Error("data-lifecycle: manual promote failed",
-				"table", req.TableName,
-				"batch", batchCount+1,
-				"error", err)
-			break
-		}
-
-		if migrated == 0 {
-			// 没有更多数据需要迁移
-			resp.Message = "all eligible rows migrated"
-			break
-		}
-
-		totalMigrated += migrated
-		batchCount++
-
-		slog.Info("data-lifecycle: manual promote batch complete",
-			"table", req.TableName,
-			"batch", batchCount,
-			"migrated", migrated,
-			"total", totalMigrated)
-	}
-
-	resp.TotalMigrated = totalMigrated
-	resp.BatchesExecuted = batchCount
-	resp.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	resp.DurationSeconds = int64(time.Since(start).Seconds())
-
-	if totalMigrated == 0 && resp.Status == "success" {
-		resp.Message = "no rows eligible for migration (all data within retention window)"
-	}
-
-	// 特别提醒：如果是 request_logs_hot，迁移后需要 VACUUM 才能真正释放空间
-	if req.TableName == "request_logs_hot" && totalMigrated > 0 {
-		resp.Warning = "已迁移数据，但 TOAST 空间尚未释放。请在【存储总览】页面对 request_logs_hot 执行 VACUUM FULL 以回收磁盘空间。"
-	}
-
-	slog.Info("data-lifecycle: manual promote complete",
-		"table", req.TableName,
-		"total_migrated", totalMigrated,
-		"batches", batchCount,
-		"duration_seconds", resp.DurationSeconds,
-		"status", resp.Status)
+	run := h.StartJob(JobTypePromoteHot, map[string]any{
+		"table_name":      req.TableName,
+		"fn_name":         fn,
+		"retention_hours": hours,
+		"batch_size":      batch,
+		"max_batches":     req.MaxBatches,
+	}, r.Header.Get("X-Admin-User"), func(ctx context.Context, run *JobRun) {
+		h.runPromoteJobSync(ctx, run, req.TableName, fn, hours, batch)
+	})
 
 	w.Header().Set("Content-Type", "application/json")
-	//nolint:errcheck
-	json.NewEncoder(w).Encode(resp)
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]any{
+		"run_id":      run.RunID,
+		"table_name":  req.TableName,
+		"status":      "queued",
+		"async":       true,
+		"polling_url": "/api/admin/data-lifecycle/jobs/" + run.RunID,
+		"started_at":  run.StartedAt.UTC().Format(time.RFC3339),
+		"message":     "迁移任务已创建，正在后台执行",
+	})
 }
 
-// POST /api/admin/data-lifecycle/partitions/drop
-//
-// 删除指定的分区表及其数据。
-// 用途：手动清理旧分区数据，释放磁盘空间。
-// 安全措施：
-// 1. 需要 super_admin 权限
-// 2. 需要 confirm=true
-// 3. 只能删除已存在的分区表，不能删除 hot 表
+func (h *Handler) runPromoteJobSync(ctx context.Context, run *JobRun, table, fnName string, hours, batch int) {
+	totalMigrated := int64(0)
+	batchCount := 0
+	retentionInterval := fmt.Sprintf("%d hours", hours)
+	for {
+		if ctx.Err() != nil {
+			break
+		}
+		var m int64
+		err := h.db.QueryRow(ctx, fmt.Sprintf("SELECT %s($1::interval, $2::int)", fnName), retentionInterval, batch).Scan(&m)
+		if err != nil {
+			h.failJob(run, err.Error())
+			return
+		}
+		if m == 0 {
+			break
+		}
+		totalMigrated += m
+		batchCount++
+		h.UpdateProgress(run, totalMigrated, totalMigrated*5, batchCount, fmt.Sprintf("已迁移 %d 行", totalMigrated))
+	}
+	h.SetResult(run, map[string]any{
+		"total_migrated":   totalMigrated,
+		"batches_executed": batchCount,
+	}, "迁移完成")
+	registry := h.getJobRegistry()
+	registry.mu.Lock()
+	run.Status = JobStatusSucceeded
+	run.Message = "迁移完成"
+	registry.mu.Unlock()
+}
+
+var hotTablePromoteFnMap = map[string]string{
+	"request_logs_hot":           "promote_request_logs_hot_to_partition",
+	"usage_ledger_hot":           "promote_usage_ledger_hot_to_partition",
+	"request_wal_hot":            "promote_request_wal_hot_to_partition",
+	"routing_decision_log_hot":   "promote_routing_decision_log_hot_to_partition",
+	"credential_model_index_hot": "promote_credential_model_index_hot_to_partition",
+	"request_logs_bodies_hot":    "promote_request_logs_bodies_hot_to_partition",
+	"credit_ledger_hot":          "promote_credit_ledger_hot_to_partition",
+	"tool_usage_stats_hot":       "promote_tool_usage_stats_hot_to_partition",
+	"model_probe_runs_hot":       "promote_model_probe_runs_hot_to_partition",
+}
+
 func (h *Handler) handleDataLifecycleDropPartition(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -219,111 +171,62 @@ func (h *Handler) handleDataLifecycleDropPartition(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-
 	if !req.Confirm {
 		writeError(w, http.StatusBadRequest, "confirm must be true to execute drop operation")
 		return
 	}
-
 	if req.PartitionName == "" {
 		writeError(w, http.StatusBadRequest, "partition_name is required")
 		return
 	}
 
-	// 安全检查：不允许删除 hot 表
-	if req.PartitionName == "request_logs_hot" ||
-		req.PartitionName == "usage_ledger_hot" ||
-		req.PartitionName == "routing_decision_log_hot" ||
-		req.PartitionName == "credential_model_index_hot" {
-		writeError(w, http.StatusBadRequest, "cannot drop hot tables, use promote instead")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-
-	resp := dropPartitionResponse{
-		PartitionName: req.PartitionName,
-		ExecutedAt:    time.Now().UTC().Format(time.RFC3339),
-		Status:        "success",
-	}
-
-	// 1. 检查分区表是否存在，获取大小和行数
-	var parentTable string
-	var sizeBytes int64
-	var sizeHuman string
-	var rowCount int64
-
-	checkQuery := `
-		SELECT 
-			p.relname AS parent_table,
-			pg_total_relation_size(c.oid) AS size_bytes,
-			pg_size_pretty(pg_total_relation_size(c.oid)) AS size_human,
-			c.reltuples::bigint AS row_count
-		FROM pg_class c
-		JOIN pg_inherits i ON c.oid = i.inhrelid
-		JOIN pg_class p ON i.inhparent = p.oid
-		WHERE c.relname = $1
-			AND c.relkind = 'r'
-	`
-
-	err := h.db.QueryRow(ctx, checkQuery, req.PartitionName).Scan(
-		&parentTable,
-		&sizeBytes,
-		&sizeHuman,
-		&rowCount,
-	)
-
-	if err != nil {
-		resp.Status = "failed"
-		resp.Message = fmt.Sprintf("partition not found or not a partition table: %v", err)
-		w.WriteHeader(http.StatusNotFound)
-		w.Header().Set("Content-Type", "application/json")
-		//nolint:errcheck
-		json.NewEncoder(w).Encode(resp)
-		return
-	}
-
-	resp.ParentTable = parentTable
-	resp.SpaceFreed = sizeBytes
-	resp.SpaceFreedHuman = sizeHuman
-	resp.RowsDeleted = rowCount
-
-	slog.Warn("data-lifecycle: dropping partition",
-		"partition", req.PartitionName,
-		"parent_table", parentTable,
-		"rows", rowCount,
-		"size", sizeHuman)
-
-	// 2. 执行删除
-	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", req.PartitionName)
-	_, err = h.db.Exec(ctx, dropSQL)
-	if err != nil {
-		resp.Status = "failed"
-		resp.Message = fmt.Sprintf("drop failed: %v", err)
-		slog.Error("data-lifecycle: drop partition failed",
-			"partition", req.PartitionName,
-			"error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Header().Set("Content-Type", "application/json")
-		//nolint:errcheck
-		json.NewEncoder(w).Encode(resp)
-		return
-	}
-
-	resp.Message = fmt.Sprintf("successfully dropped partition %s from %s", req.PartitionName, parentTable)
-
-	slog.Warn("data-lifecycle: partition dropped",
-		"partition", req.PartitionName,
-		"parent_table", parentTable,
-		"rows_deleted", rowCount,
-		"space_freed", sizeHuman)
+	run := h.StartJob(JobTypeDropPartition, map[string]any{
+		"partition_name": req.PartitionName,
+	}, r.Header.Get("X-Admin-User"), func(ctx context.Context, run *JobRun) {
+		h.runDropJobAsync(ctx, run, req.PartitionName)
+	})
 
 	w.Header().Set("Content-Type", "application/json")
-	//nolint:errcheck
-	json.NewEncoder(w).Encode(resp)
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]any{
+		"run_id":      run.RunID,
+		"status":      "queued",
+		"async":       true,
+		"polling_url": "/api/admin/data-lifecycle/jobs/" + run.RunID,
+		"message":     fmt.Sprintf("正在调度删除 %s", req.PartitionName),
+	})
 }
 
+func (h *Handler) runDropJobAsync(ctx context.Context, run *JobRun, partition string) {
+	if strings.ContainsAny(partition, " ;'\"") {
+		h.failJob(run, "invalid partition name characters")
+		return
+	}
+	if _, err := h.db.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", partition)); err != nil {
+		h.failJob(run, fmt.Sprintf("drop failed: %v", err))
+		return
+	}
+	h.SetResult(run, map[string]any{
+		"partition_name": partition,
+	}, "已删除")
+	registry := h.getJobRegistry()
+	registry.mu.Lock()
+	run.Status = JobStatusSucceeded
+	run.Message = "已删除"
+	registry.mu.Unlock()
+}
+
+// isHotTableName indicates whether a table is in the hot list
+func isHotTableName(name string) bool {
+	switch name {
+	case "request_logs_hot", "usage_ledger_hot", "request_wal_hot",
+		"routing_decision_log_hot", "credential_model_index_hot",
+		"request_logs_bodies_hot", "credit_ledger_hot",
+		"tool_usage_stats_hot", "model_probe_runs_hot":
+		return true
+	}
+	return false
+}
 
 // ─── Async Job Endpoints ─────────────────────────────────────
 
@@ -336,10 +239,14 @@ func (h *Handler) handleDataLifecycleJobs(w http.ResponseWriter, r *http.Request
 	if v := r.URL.Query().Get("limit"); v != "" {
 		var n int
 		for _, c := range v {
-			if c < '0' || c > '9' { break }
+			if c < '0' || c > '9' {
+				break
+			}
 			n = n*10 + int(c-'0')
 		}
-		if n > 0 && n <= 100 { limit = n }
+		if n > 0 && n <= 100 {
+			limit = n
+		}
 	}
 	running, history := h.listJobs(limit)
 	w.Header().Set("Content-Type", "application/json")
