@@ -50,4 +50,12 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 	updateAPI := autoupdate.NewAdminAPI(updateStore, nil, nil, nil)
 	updatesGroup := api.Group("/updates")
 	updateAPI.RegisterRoutes(updatesGroup)
+
+	// ── Update check endpoint ─────────────────────────────────────────────
+	updateHandler := NewUpdateHandler(updateStore, serverPubKey)
+	updateHandler.RegisterRoutes(updatesGroup)
+
+	// ── Update report endpoint ────────────────────────────────────────────
+	updateReportHandler := NewUpdateReportHandler(updateStore)
+	updateReportHandler.RegisterRoutes(updatesGroup)
 }
