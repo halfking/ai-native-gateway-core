@@ -167,12 +167,22 @@ type Handler struct {
 	// 置位，供随后的 GET-assemble 响应带上 migration_run_id。atomic.Value
 	// 避免与并发 GET 竞争。每次 PUT 末尾复位为 ""。
 	pendingMigrationRunID atomic.Value // string
+
+	// hotJobMgr 持有所有 hot 表迁移的异步任务状态；详见 data_lifecycle_hot_partition.go。
+	// 在 NewHandler 中初始化，永不为 nil。
+	hotJobMgr *hotJobManager
+
+	// hotCron 是 hot 表夜间自动迁移调度器；StartHotCron() 启动 goroutine。
+	// nil 表示未启用（DB 不可用 / 测试模式）。
+	hotCron *HotCronScheduler
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	h := &Handler{db: db, secret: secretKey, encKey: encKey}
 	// Initialize auto title generator
 	h.autoTitleGen = NewAutoTitleGenerator(h)
+	// 2026-07-13: hot 表异步迁移任务注册表（内存）；异步任务状态由前端轮询查询
+	h.hotJobMgr = newHotJobManager()
 	return h
 }
 
@@ -483,7 +493,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/archive", h.superAdmin(h.handleDataLifecycleArchivePartition))
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/archive-batch", h.superAdmin(h.handleDataLifecycleArchiveBatch))
 	// Hot table to partition migration endpoints (2026-07-10)
+	// 2026-07-13: 新增异步接口 + 任务状态查询 + 取消；同步接口保留兼容
 	mux.HandleFunc("/api/admin/data-lifecycle/hot/promote", h.superAdmin(h.handleDataLifecyclePromoteHot))
+	mux.HandleFunc("/api/admin/data-lifecycle/hot/promote-async", h.superAdmin(h.handleDataLifecyclePromoteHotAsync))
+	mux.HandleFunc("/api/admin/data-lifecycle/hot/jobs", h.superAdmin(h.handleDataLifecycleHotJobs))
+	mux.HandleFunc("/api/admin/data-lifecycle/hot/job/", h.superAdmin(h.handleDataLifecycleHotJob)) // /job/{id}
+	mux.HandleFunc("/api/admin/data-lifecycle/hot/job", h.superAdmin(h.handleDataLifecycleHotJob))  // /job/{id}/cancel 等
+	mux.HandleFunc("/api/admin/data-lifecycle/hot/cron/stats", h.superAdmin(h.handleDataLifecycleHotCronStats))
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/drop", h.superAdmin(h.handleDataLifecycleDropPartition))
 	// Storage overview endpoints (2026-07-01)
 	mux.HandleFunc("/api/admin/data-lifecycle/storage", admin(h.handleDataLifecycleStorage))
