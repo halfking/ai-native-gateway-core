@@ -334,7 +334,11 @@ func (r *Router) planByTier(candidates []provider.Candidate, policy *provider.Po
 		// Apply round-robin rotation when multiple candidates exist
 		// This prevents always selecting the first candidate when scores are equal
 		if len(sorted) > 1 {
-			offset := int(r.rrCounter.Add(1) % uint64(len(sorted)))
+			// Keep the first plan in score order. Subsequent plans rotate
+			// across the bucket so the initial routing decision remains
+			// deterministic while repeated requests are balanced.
+			counter := r.rrCounter.Add(1) - 1
+			offset := int(counter % uint64(len(sorted)))
 			slog.Info("ROUND_ROBIN_DEBUG", "counter", r.rrCounter.Load(), "offset", offset, "bucket_size", len(sorted))
 			sorted = rotateCandidates(sorted, offset)
 		}

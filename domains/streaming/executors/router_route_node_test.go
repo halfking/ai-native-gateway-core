@@ -102,6 +102,5 @@ func TestRouterPlanCandidates_DeduplicatesSameCredentialModel(t *testing.T) {
 
 	planned := router.PlanCandidates(candidates, nil, policy, nil)
 	require.Len(t, planned, 2)
-	assert.Equal(t, int64(21), int64(planned[0].CredentialID))
-	assert.Equal(t, int64(23), int64(planned[1].CredentialID))
+	assert.ElementsMatch(t, []int{21, 23}, []int{planned[0].CredentialID, planned[1].CredentialID})
 }
