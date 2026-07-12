@@ -242,6 +242,7 @@ export default {
     retention: {
       all: '立即迁移全部',
       '1day': '保留 1 天',
+      '3day': '保留 3 天',
       '7day': '保留 7 天',
       '30day': '保留 30 天',
     },
@@ -252,6 +253,7 @@ export default {
     promoteConfirm: '确认迁移 {label} 中超过 {hours} 的数据？',
     promoteAll: '全部',
     hours: '{n} 小时',
+    days: '{n} 天',
     emptyResult: '暂无数据',
     // 2026-07-13: 异步任务支持
     jobIdMissing: '异步任务启动失败：未返回 job_id',

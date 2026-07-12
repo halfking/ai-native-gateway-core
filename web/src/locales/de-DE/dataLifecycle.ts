@@ -227,6 +227,7 @@ export default {
     retention: {
       all: "Sofort alles migrieren",
       "1day": "Letzte 1 Tag behalten",
+      "3day": "Letzte 3 Tage behalten",
       "7day": "Letzte 7 Tage behalten",
       "30day": "Letzte 30 Tage behalten"
     },
@@ -234,9 +235,10 @@ export default {
     migrating: "Migriere…",
     migrationProgress: "{migrated} Zeilen migriert ({batches} Stapel, {duration}s)",
     promoteConfirm: "Daten aus {label} migrieren, die älter als {hours} sind?",
-    promoteAll: "alles",
-    hours: "{n} Stunden",
-    emptyResult: "Keine Daten",
+promoteAll: "alles",
+   hours: "{n} Stunden",
+   days: "{n} Tage",
+   emptyResult: "Keine Daten",
     partitionTitle: "Monatliche Partitionsverwaltung",
     partitionDesc: "Alte monatliche Partitionen löschen, um Speicherplatz freizugeben.",
     partitionWarning: "Dieser Vorgang ist nicht umkehrbar — bitte mit Vorsicht.",
