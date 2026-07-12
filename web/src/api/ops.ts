@@ -11,7 +11,10 @@ export interface License {
   id: number
   license_key: string
   customer_name: string
+  customer_email?: string
   max_devices: number
+  subscription_tier?: string
+  features?: string[]
   expires_at: string
   created_at: string
   revoked_at?: string
@@ -26,6 +29,8 @@ export interface LicenseDevice {
   activated_at: string
   last_heartbeat?: string
   status: string
+  deactivated_at?: string
+  deactivate_reason?: string
 }
 
 export interface OfflineActivationRequest {
@@ -40,14 +45,27 @@ export interface OfflineActivationRequest {
   status: string
 }
 
-export async function getLicenses(): Promise<License[]> {
-  const res = await req<{ licenses: License[]; total: number }>('GET', '/api/admin/licenses')
-  return res.licenses || []
+export async function getLicenses(params?: {
+  offset?: number
+  limit?: number
+  query?: string
+  status?: string
+}): Promise<{ licenses: License[]; total: number }> {
+  const q = new URLSearchParams()
+  if (params?.offset !== undefined) q.set('offset', String(params.offset))
+  if (params?.limit !== undefined) q.set('limit', String(params.limit))
+  if (params?.query) q.set('query', params.query)
+  if (params?.status) q.set('status', params.status)
+  const qs = q.toString()
+  return req<{ licenses: License[]; total: number }>('GET', '/api/admin/licenses' + (qs ? '?' + qs : ''))
 }
 
 export async function createLicense(data: {
   customer: string
+  customer_email?: string
   max_devices: number
+  subscription_tier?: string
+  features?: string[]
   expires_at: string
 }): Promise<License> {
   return req<License>('POST', '/api/admin/licenses', data)
@@ -71,6 +89,10 @@ export async function approveOfflineActivation(id: string): Promise<{ activation
 
 export async function rejectOfflineActivation(id: string, reason: string): Promise<void> {
   return req<void>('POST', `/api/admin/licenses/offline-requests/${id}/reject`, { reason })
+}
+
+export async function deactivateDevice(licenseId: number, hardwareHash: string, reason: string): Promise<void> {
+  return req<void>('POST', `/api/admin/licenses/${licenseId}/devices/${hardwareHash}/deactivate`, { reason })
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -142,46 +164,85 @@ export async function triggerManualFix(eventId: number): Promise<void> {
 export interface Release {
   id: number
   version: string
-  channel: 'stable' | 'beta' | 'alpha'
-  status: 'draft' | 'published' | 'archived'
+  build_seq: number
+  channel: 'stable' | 'beta' | 'canary'
+  title: string
+  description: string
+  changelog: string
+  image_tag: string
+  image_digest?: string
+  min_version?: string
+  mandatory: boolean
+  created_by: string
+  created_at: string
   published_at?: string
-  rollout_percentage: number
-  download_url: string
-  checksum: string
-  release_notes: string
+}
+
+export interface GrayReleaseRule {
+  id: number
+  release_id: number
+  phase: 'canary' | 'batch_1' | 'batch_2' | 'batch_3' | 'full'
+  percent: number
+  selectors?: string
+  status: string
   created_at: string
 }
 
 export interface UpgradeLog {
-  id: number
+  release_id: number
   instance_id: string
-  from_version: string
-  to_version: string
-  status: 'pending' | 'downloading' | 'installing' | 'success' | 'failed'
+  status: 'pending' | 'downloading' | 'ready_to_restart' | 'upgrading' | 'success' | 'failed' | 'rolled_back'
+  version: string
   started_at: string
   completed_at?: string
-  error_message?: string
+  error?: string
+  retry_count: number
 }
 
-export async function getReleases(): Promise<Release[]> {
-  return req<Release[]>('GET', '/api/admin/releases')
+export async function getReleases(channel?: string): Promise<{ items: Release[]; total: number }> {
+  const query = channel ? `?channel=${channel}` : ''
+  return req<{ items: Release[]; total: number }>('GET', `/api/admin/releases${query}`)
 }
 
-export async function createRelease(data: Omit<Release, 'id' | 'created_at' | 'published_at'>): Promise<Release> {
+export async function createRelease(data: {
+  version: string
+  build_seq: number
+  channel: 'stable' | 'beta' | 'canary'
+  title: string
+  image_tag: string
+  created_by: string
+  description?: string
+  changelog?: string
+  image_digest?: string
+  min_version?: string
+  mandatory?: boolean
+}): Promise<Release> {
   return req<Release>('POST', '/api/admin/releases', data)
 }
 
-export async function publishRelease(id: number, rolloutPercentage: number): Promise<Release> {
-  return req<Release>('POST', `/api/admin/releases/${id}/publish`, { rollout_percentage: rolloutPercentage })
+export async function publishRelease(version: string): Promise<void> {
+  return req<void>('POST', `/api/admin/releases/${version}/publish`)
 }
 
-export async function rollbackRelease(id: number): Promise<void> {
-  return req<void>('POST', `/api/admin/releases/${id}/rollback`)
+export async function unpublishRelease(version: string): Promise<void> {
+  return req<void>('POST', `/api/admin/releases/${version}/unpublish`)
 }
 
-export async function getUpgradeLogs(releaseId?: number): Promise<UpgradeLog[]> {
-  const path = releaseId ? `/api/admin/releases/${releaseId}/logs` : '/api/admin/releases/logs'
-  return req<UpgradeLog[]>('GET', path)
+export async function createGrayRelease(version: string, data: { phase: string; percent: number }): Promise<GrayReleaseRule> {
+  return req<GrayReleaseRule>('POST', `/api/admin/releases/${version}/gray`, data)
+}
+
+export async function updateGrayPhase(version: string, data: { phase: string; percent: number }): Promise<void> {
+  return req<void>('PATCH', `/api/admin/releases/${version}/gray`, data)
+}
+
+export async function rollbackRelease(targetVersion: string): Promise<void> {
+  return req<void>('POST', '/api/admin/rollback', { target_version: targetVersion })
+}
+
+export async function getUpgradeLogs(instanceID?: string): Promise<UpgradeLog[]> {
+  const query = instanceID ? `?instance_id=${instanceID}` : ''
+  return req<UpgradeLog[]>('GET', `/api/admin/upgrade-logs${query}`)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -227,8 +288,8 @@ export async function getHeartbeatHistory(instanceId: string, hours: number = 24
   return req<HeartbeatHistory[]>('GET', `/api/admin/center/instances/${instanceId}/heartbeat?hours=${hours}`)
 }
 
-export async function sendCommand(instanceId: string, command: string, params: Record<string, unknown>): Promise<void> {
-  return req<void>('POST', `/api/admin/center/instances/${instanceId}/command`, { command, params })
+export async function sendCommand(instanceId: string, command: string, args: Record<string, string>, issuedBy: string): Promise<void> {
+  return req<void>('POST', `/api/admin/center/instances/${instanceId}/command`, { command, args, issued_by: issuedBy })
 }
 
 // ────────────────────────────────────────────────────────────────────────────

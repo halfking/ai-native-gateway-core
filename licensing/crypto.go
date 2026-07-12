@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -121,6 +122,25 @@ func (c *CryptoConfig) VerifyJWT(tokenStr string) (jwt.MapClaims, error) {
 		return nil, errors.New("invalid token")
 	}
 	return claims, nil
+}
+
+func LoadPrivateKeyFromPEM(pemStr string) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, errors.New("invalid PEM")
+	}
+	priv, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		priv, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse private key: %w", err)
+		}
+	}
+	rsaPriv, ok := priv.(*rsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("not RSA private key")
+	}
+	return rsaPriv, nil
 }
 
 func LoadPublicKeyFromPEM(pemStr string) (*rsa.PublicKey, error) {
