@@ -73,10 +73,9 @@ func (h *RegisterHandler) HandleRegister(c echo.Context) error {
 		}
 		existingDevice = dev
 	} else {
-		// 未通过 hardware_hash 找到 license。新设备注册要求 license_key 不能为空。
-		if req.LicenseKeyHash == "" {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "license_key_hash is required for new device registration"})
-		}
+		// 未通过 hardware_hash 找到 license → 走新设备路径。
+		// 注：req.LicenseKeyHash 非空必填校验在 line 54 已强制（missing required fields → 400），
+		// 此处无需重复检查。
 		// 新设备：尝试把 LicenseKeyHash 当成完整 license_key 查找（兼容旧版安装器
 		// 把完整 license_key 直接放到 license_key_hash 字段的情况）。
 		// 找不到时返回 404，不再 fallback 把 hash 当成 key 写入设备表。

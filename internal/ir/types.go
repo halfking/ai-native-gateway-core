@@ -191,6 +191,8 @@ type ImageSource struct {
 	MediaType string `json:"media_type,omitempty"` // "image/png" etc.
 	URL       string `json:"url,omitempty"`
 	Data      string `json:"data,omitempty"` // base64 without prefix
+	// audit-10 (2026-07-13): OpenAI image_url.detail parameter
+	Detail string `json:"detail,omitempty"`
 }
 
 // ToolUse is an assistant's tool call request.

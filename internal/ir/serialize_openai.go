@@ -87,6 +87,20 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 		out["tool_choice"] = serializeOpenAIToolChoice(req.ToolChoice)
 	}
 
+	// P0 fix (2026-07-13): Restore Extensions (vendor-specific unknown fields)
+	// Extensions contains fields like reasoning_effort (DeepSeek), web_search (GLM),
+	// bot_setting (MiniMax), etc. that were preserved during ParseOpenAI.
+	// Restore them to output for lossless passthrough to upstream providers.
+	for key, val := range req.Extensions {
+		// Only restore if key doesn't conflict with known fields
+		if _, exists := out[key]; !exists {
+			var v any
+			if err := json.Unmarshal(val, &v); err == nil {
+				out[key] = v
+			}
+		}
+	}
+
 	// Validate tool_call integrity before sending to upstream
 	// Skip validation for single-message requests to avoid breaking unit tests
 	if len(messages) > 2 {
@@ -266,11 +280,16 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 					}
 					url = "data:" + mt + ";base64," + block.Image.Data
 				}
+
+				imageURL := map[string]any{"url": url}
+				// P1-1 fix (2026-07-13): Restore detail parameter if present
+				if block.Image.Detail != "" {
+					imageURL["detail"] = block.Image.Detail
+				}
+
 				result = append(result, map[string]any{
-					"type": "image_url",
-					"image_url": map[string]any{
-						"url": url,
-					},
+					"type":      "image_url",
+					"image_url": imageURL,
 				})
 			}
 		case "tool_use":
