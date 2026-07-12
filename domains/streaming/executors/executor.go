@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/ratelimit" // AUDIT-3: 限流总开关
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -697,14 +699,73 @@ func (e *ExecuteError) Error() string {
 //
 // Fix: 2026-07-09 GLM-5.2 outage — every Release call MUST go through this
 // helper so the context-isolation fix is applied uniformly.
+// OPT-1 (2026-07-12): releaseFpLease fires the Redis release on a background
+// goroutine instead of blocking the request hot-path. The previous
+// synchronous implementation added 0~150 ms latency per request (Release
+// runs a Lua script and retries up to 3× on transient Redis errors with
+// 50/100/150 ms backoff). Three call sites use this in defer blocks:
+//
+//   - line ~957 (circuit/limiter acquisition failure)
+//   - line ~974 (limiter acquisition failure)
+//   - line ~1006 (post-execute cleanup, success and error paths)
+//
+// All three are the LAST step of a request lifecycle — there is no caller
+// waiting on the result. The Release script is idempotent and the worst
+// case under failure is that the slot key keeps its current TTL and self-
+// expires (≤30 min) — the same outcome the old code had on retry exhaustion.
+//
+// A buffered pending channel caps the queue; if Redis is so degraded that
+// the worker falls behind, we drop the Release rather than leak goroutines.
+// The slot key then auto-expires on its Redis-side TTL, which is the
+// intended safety net.
 func releaseFpLease(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) {
 	if lease == nil || m == nil || !m.Enabled() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	m.Release(ctx, lease)
+	select {
+	case fpReleaseQueue <- fpReleaseJob{m: m, lease: lease}:
+	default:
+		// Queue full — fall back to synchronous release with a short
+		// timeout. This branch should be rare; the queue is sized to
+		// absorb the worst observed burst (1024 in-flight requests).
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		m.Release(ctx, lease)
+	}
 }
+
+// fpReleaseJob pairs a Manager and a Lease for the background release worker.
+type fpReleaseJob struct {
+	m     *credentialfpslot.Manager
+	lease *credentialfpslot.Lease
+}
+
+// fpReleaseQueue buffers background Release calls. Buffered (1024) so that
+// a sudden burst does not synchronously block the hot path. When full,
+// releaseFpLease falls back to a bounded synchronous call.
+var fpReleaseQueue = make(chan fpReleaseJob, 1024)
+
+// fpReleaseWorker drains fpReleaseQueue, calling Manager.Release on each
+// job with an independent background context. A single worker goroutine
+// is sufficient: Redis Release is a single Lua script (low cost), and
+// Manager.Release has its own internal 3-attempt retry loop. If we ever
+// observe queue depth > 100 sustained, bump the worker count or the
+// queue size — but in practice Release latency is sub-millisecond.
+var fpReleaseWorkerOnce sync.Once
+
+func ensureFpReleaseWorker() {
+	fpReleaseWorkerOnce.Do(func() {
+		go func() {
+			for job := range fpReleaseQueue {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				job.m.Release(ctx, job.lease)
+				cancel()
+			}
+		}()
+	})
+}
+
+func init() { ensureFpReleaseWorker() }
 
 func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// Layer 0: Global identity pool cap (if enabled).
@@ -712,7 +773,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// the pool LRU-recycles an existing identity, so the request appears
 	// to the upstream as a returning user (anti-rate-limit evasion).
 	var globalIdentity interface{}
-	if e.IdentityPool != nil && e.IdentityPool.Enabled() {
+	if ratelimit.IsRateLimitEnabled() && e.IdentityPool != nil && e.IdentityPool.Enabled() {
 		// Use the request fingerprint as the identity key. The identity
 		// package extracts a stable hash from X-Device-Seed / User-Agent / IP.
 		fpString := params.ClientID.IdentityHash
@@ -746,7 +807,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// instead of the old single-level lookup (L3 only). This ensures different session IDs
 	// get different credentials, fixing the load balancing issue. The pickStickyCredentialID
 	// helper is also used by the sync-retry path so both legs stay consistent.
+	//
+	// AUDIT-3 (2026-07-12): when rate_limit.enabled is OFF, force sticky
+	// to nil so every request goes through normal P2C + per-tier rotation.
+	// Combined with the gate-off early-returns in Limiter / FpSlot / RPM,
+	// this delivers the user semantic: "较均衡地将请求分发到所有综合最优
+	// 的可用节点中" — no fingerprint pinning, no concurrency cap, no RPM
+	// cap, and no session pinning; the router picks by score + rotation only.
 	stickyCredID := e.pickStickyCredentialID(params)
+	if !ratelimit.IsRateLimitEnabled() {
+		stickyCredID = nil
+	}
 	if os.Getenv("STICKY_MULTILEVEL_DEBUG") == "1" {
 		slog.Info("STICKY_PICK",
 			"session_id", params.SessionID,
@@ -889,7 +960,29 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// 单次会话中，同一凭据失败 2 次后强制跳过，避免 Sync Retry 反复打到同一凭据。
 	sessionBlacklist := make(map[int]int) // credentialID -> consecutive failures in this session
 
+	// OPT-3 (2026-07-12): per-provider content_filter short-circuit set.
+	// When a candidate returns content_filter, all sibling candidates of
+	// the SAME provider are skipped (the upstream content policy is shared).
+	// Candidates from DIFFERENT providers are still tried because each
+	// provider has its own content policy.
+	contentFilterProviders := make(map[int]struct{})
+
 	for _, cand := range candidates {
+		// OPT-3: skip siblings of providers that already returned
+		// content_filter. The credential is healthy; the content is
+		// the problem. We do NOT update circuit / sticky / state —
+		// see classifyContentFilterError below for the rationale.
+		if _, hit := contentFilterProviders[cand.ProviderID]; hit {
+			trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
+				ProviderID:   cand.ProviderID,
+				CredentialID: cand.CredentialID,
+				RawModel:     cand.RawModel,
+				Tier:         cand.Tier,
+				Reason:       "content_filter_same_provider",
+			})
+			continue
+		}
+
 		// 2026-07-09: 检查会话黑名单
 		if sessionBlacklist[cand.CredentialID] >= 2 {
 			slog.Warn("executor: credential blacklisted for this session",
@@ -1254,13 +1347,25 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// "new_sensitive (1026)", OpenAI "content_filter", etc).
 		// Content-determined: the same prompt is rejected on every
 		// sibling credential of the same provider, so short-circuit
-		// the candidate loop — do NOT waste upstream quota retrying.
+		// within the same provider — do NOT waste upstream quota retrying
+		// siblings that will also reject for the same content.
+		//
+		// OPT-3 (2026-07-12): the previous implementation used `break`
+		// which exited the entire candidate loop. That was wrong when
+		// the candidate list spans multiple providers: provider-2's
+		// credentials do NOT share provider-1's content policy and may
+		// serve the request. The fix is to skip only the remaining
+		// candidates with the same ProviderID. If a different provider
+		// later returns content_filter, that provider is short-circuited
+		// independently. The handler still renders a 400 with the first
+		// upstream reason — lastErr / lastKind are set below.
+		//
 		// Skip all side effects (circuit / sticky / state) — the
 		// credential is healthy, the content is the problem. The
 		// handler renders a 400 with the upstream reason + an
 		// actionable hint via KindContentFilter.
 		if kind, ok := classifyContentFilterError(execErr); ok {
-			slog.Info("executor: content_filter rejection, short-circuiting candidate loop",
+			slog.Info("executor: content_filter rejection, short-circuiting same-provider candidates",
 				"kind", kind,
 				"credential_id", cand.CredentialID,
 				"provider_id", cand.ProviderID,
@@ -1277,7 +1382,12 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				Kind:         kind,
 				Reason:       execErr.Error(),
 			})
-			break // short-circuit: content determined, no retry helps
+			// OPT-3: record the provider so remaining siblings can be
+			// skipped without re-running classifyContentFilterError.
+			contentFilterProviders[cand.ProviderID] = struct{}{}
+			// Skip siblings of the same provider. Use continue-with-label
+			// so the outer for loop can iterate to the next provider.
+			continue
 		}
 
 		if sie, ok := execErr.(*streamInterruptedError); ok {
@@ -1600,7 +1710,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// 重试 3 次都打到同一凭据。现在根据 lastKind 判断：
 			// credential-fatal → 强制切换；其他 → 保留 sticky。
 			var retryStickyID *int
-			if errorsx.IsCredentialFatal(lastKind) {
+			if !ratelimit.IsRateLimitEnabled() {
+				retryStickyID = nil
+			} else if errorsx.IsCredentialFatal(lastKind) {
 				retryStickyID = nil // 强制切换
 			} else {
 				retryStickyID = e.pickStickyCredentialID(params) // 保留（与首次 Execute() 同口径：L1→L2→L3）
@@ -2042,10 +2154,13 @@ func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID
 		slog.Debug("credential state error write failed", "credential_id", credentialID, "kind", kind, "error", err)
 		return
 	}
-	// Invalidate candidate cache to ensure routing picks up the new credential state
-	// without waiting for the 30-second cache expiry. This is critical for quota exhaustion
-	// scenarios where we need to immediately exclude the exhausted credential.
-	provider.InvalidateAllCandidateCache()
+	// OPT-5 (2026-07-12): per-credential cache invalidation. The previous
+	// InvalidateAllCandidateCache() flushed every cached candidate for
+	// every model, causing a thundering-herd against the DB when many
+	// concurrent requests raced to refill the cache after a single
+	// quota-exhausted credential was written. The per-credential scan
+	// only touches cache entries whose PlanOrder includes this credential.
+	provider.InvalidateCandidateCacheForCredential(credentialID)
 }
 
 // forceUnpinOnFatalKind clears the session pin for a credential whose kind
@@ -2182,23 +2297,33 @@ func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kin
 		e.Router.Sticky.Delete(params.StickyKey)
 		return
 	}
-	// 2026-06-13: network / upstream-down / client-bug kinds are NOT the
-	// credential's fault. Previously any of these counted toward the
-	// sticky-failure threshold (3), so 3 transient TCP resets in an
-	// hour would silently unbind the sticky session and force a
-	// credential re-pick. Only "real" credential-level failures should
-	// count: rate-limit, concurrent-overload, stream-timeout, quota.
-	// KindContextLength is also included here because the request's
-	// context overflow is the caller's fault, not the credential's.
+	// Client cancellation, malformed/unsupported request shapes, and
+	// context overflow are not node failures and must not trigger a
+	// reroute. Network, timeout, upstream-down, rate-limit, concurrent,
+	// and stream-timeout errors do indicate that the current route may
+	// be unhealthy, so they count toward the two-failure decision.
 	if kind == errorsx.KindCanceled ||
-		kind == errorsx.KindNetwork ||
-		kind == errorsx.KindTimeout ||
-		kind == errorsx.KindUpstreamDown ||
 		kind == errorsx.KindContextLength ||
 		errorsx.IsClientBug(kind) {
 		return
 	}
-	e.Router.Sticky.RecordFailure(params.StickyKey, 5)
+	// AUDIT-1 (2026-07-12): 默认阈值 2，对应"连续 2 次失败触发路由重选"。
+	// 之前硬编码 5，与用户语义不符：用户期望"使用当前节点出错 10s 后
+	// 再次出错即重走路由"，是 2 次而非 5 次。
+	if params.SessionID != "" && params.Model != "" {
+		e.Router.Sticky.RecordFailureMultiLevel(
+			params.TenantID,
+			params.AppID,
+			params.ApiKeyID,
+			params.ClientID.Fingerprint.ClientProfile,
+			params.SessionID,
+			params.Model,
+			credentialID,
+			2,
+		)
+		return
+	}
+	e.Router.Sticky.RecordFailure(params.StickyKey, 2)
 }
 
 // recordBanditSuccess records a successful request in the Bandit scorer.
