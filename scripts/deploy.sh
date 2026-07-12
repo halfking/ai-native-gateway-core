@@ -150,7 +150,7 @@ done
 SSH_PORT="${SSH_PORT:-25022}"
 SSH_USER="${SSH_USER:-root}"
 
-# 154 / 252 / 245 / 186 — 全部用 root + <SSH_PASSWORD>，密钥登录优先
+# 154 / 252 / 245 / 186 — 全部用 root + Kaixuan2026&#*9527，密钥登录优先
 SERVER_154="root@47.97.111.154"
 SERVER_154_HOST="47.97.111.154"
 SERVER_252="root@115.29.212.252"
@@ -160,7 +160,7 @@ SERVER_245_HOST="8.136.114.245"
 SERVER_186="root@118.31.18.168"
 SERVER_186_HOST="118.31.18.168"
 
-# kaixuan-1/2/3 — 内网 tart VM + k3s，使用不同凭据（kaixuan/<SSH_PASSWORD>）
+# kaixuan-1/2/3 — 内网 tart VM + k3s，使用不同凭据（kaixuan/kaixuan123）
 SERVER_KAIXUAN_1="kaixuan@192.168.31.28"
 SERVER_KAIXUAN_1_HOST="192.168.31.28"
 SERVER_KAIXUAN_2="kaixuan@192.168.31.19"
@@ -211,7 +211,7 @@ SCP_71_OPT="$SCP_154_OPT"
 # 注意: IMAGE_NAME = docker 镜像名 (含 kx- 前缀); K8S_CONTAINER = K8s pod 容器名 (无前缀)
 IMAGE_NAME="kx-llm-gateway-go"
 K8S_CONTAINER="llm-gateway-go"
-# registry.kxpms.cn = 245 阿里网关（公网 8.136.114.245），kaixuan/<ADMIN_PASSWORD>（生产）
+# registry.kxpms.cn = 245 阿里网关（公网 8.136.114.245），kaixuan/Veritrans&9527（生产）
 # registry.itestu.cn = kaixuan-1 内网（192.168.31.8:5000），开发测试用
 REGISTRY_INT="${REGISTRY_INT:-registry.kxpms.cn}"
 REGISTRY_DEV="${REGISTRY_DEV:-registry.itestu.cn}"

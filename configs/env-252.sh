@@ -8,12 +8,7 @@
 SSH_HOST="115.29.212.252"
 SSH_PORT="25022"
 SSH_USER="root"
-# SSH 密码已不再硬编码：必须从 env 注入 DEPLOY_SSH_PASS（推荐使用 SSH 密钥登录）
-if [ -z "${DEPLOY_SSH_PASS:-}" ]; then
-  echo "必须设置 DEPLOY_SSH_PASS 环境变量" >&2
-  return 1 2>/dev/null || exit 1
-fi
-SSH_PASS="${DEPLOY_SSH_PASS}"
+SSH_PASS="Kaixuan2026&#*9527"
 
 # ── Docker ─────────────────────────────────────────────────────────────────
 DOCKER_HOST="${SSH_USER}@${SSH_HOST}"
@@ -28,12 +23,7 @@ DOCKER_PG_CONTAINER="pg-252-pg17"
 PG_HOST="localhost"              # Via SSH tunnel (local:15432 → 252:172.16.2.210:5432)
 PG_PORT="15432"                 # SSH tunnel port
 PG_USER="llm_gateway"
-# PG 密码已不再硬编码：必须从 env 注入 PG_PASS（推荐使用 SOPS/Kubernetes Secret）
-if [ -z "${PG_PASS:-}" ]; then
-  echo "必须设置 PG_PASS 环境变量（DB 密码已不再硬编码）" >&2
-  return 1 2>/dev/null || exit 1
-fi
-PG_PASS="${PG_PASS}"
+PG_PASS="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
 PG_DB="llm_gateway"
 
 # External access via nginx stream

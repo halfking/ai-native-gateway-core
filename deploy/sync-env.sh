@@ -4,7 +4,7 @@
 # Usage: bash deploy/sync-env.sh [154|252|kaixuan-1]
 #   154      主机部署（llm.kxpms.cn，47.97.111.154）
 #   252      阿里云数据面（llm.itestu.cn，115.29.212.252）
-#   kaixuan-1  内网 k3s 控制面（192.168.31.28，kaixuan/<SSH_PASSWORD>）
+#   kaixuan-1  内网 k3s 控制面（192.168.31.28，kaixuan/kaixuan123）
 
 set -euo pipefail
 

@@ -194,7 +194,7 @@ func TestColumnarStorageInfoDefaults(t *testing.T) {
 //
 // 启用方法：
 //
-//	TEST_DATABASE_URL="postgres://kxuser:<TEST_DB_PASSWORD>@127.0.0.1:5432/llm_gateway?sslmode=disable" \
+//	TEST_DATABASE_URL="postgres://kxuser:kxpass@127.0.0.1:5432/llm_gateway?sslmode=disable" \
 //	go test ./admin -run TestQueryDatabaseStorageAgainstLocalDB -v
 func TestQueryDatabaseStorageAgainstLocalDB(t *testing.T) {
 	dbURL := os.Getenv("TEST_DATABASE_URL")

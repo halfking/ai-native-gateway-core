@@ -17,7 +17,7 @@
 ### P0: deploy-154.sh SSH 密码硬编码
 
 - **提交**: `d126f6243` + `a3e13fef3` + 多次迭代中硬编码保留
-- **问题**: `deploy-154.sh` 和 `deploy-154-data-bindmounts.sh` 注释中暴露生产环境 SSH 密码 `<SSH_PASSWORD>`
+- **问题**: `deploy-154.sh` 和 `deploy-154-data-bindmounts.sh` 注释中暴露生产环境 SSH 密码 `Kaixuan2026&#*9527`
 - **风险**: 任何有仓库访问权限的人可获取生产服务器密码
 - **处理**: 已替换为 `<your-password>` 占位符并推送 (commit `6ca721c2d`)
 - **建议**: 轮换旧密码

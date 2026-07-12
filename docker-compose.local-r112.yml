@@ -20,7 +20,7 @@ version: "3.9"
 
 x-pg-env: &pg-env
   POSTGRES_USER: kxuser
-  POSTGRES_PASSWORD: <TEST_DB_PASSWORD>
+  POSTGRES_PASSWORD: kxpass
   POSTGRES_DB: postgres
 
 services:
@@ -159,7 +159,7 @@ services:
       LOG_LEVEL: "info"
       STICKY_MULTILEVEL_DEBUG: "1"
       # ── 依赖 (compose 内服务名) ──
-      LLM_GATEWAY_DATABASE_URL: "postgres://kxuser:<TEST_DB_PASSWORD>@postgres:5432/llm_gateway?sslmode=disable"
+      LLM_GATEWAY_DATABASE_URL: "postgres://kxuser:kxpass@postgres:5432/llm_gateway?sslmode=disable"
       LLM_GATEWAY_REDIS_ADDR: "redis:6379"
       # ── credential 解密 key (与 03-local-mock-credential.sql 配对) ──
       # 32-byte deterministic key, base64url. LOCAL ONLY, never production.
@@ -175,7 +175,7 @@ services:
       # ── 指向真 mock upstream (仅用于无 credential 命中时的兜底) ──
       LLM_GATEWAY_UPSTREAM: "http://llm-mock-upstream:18080"
       # ── Seed admin password (本地测试) ──
-      LLM_GATEWAY_SEED_ADMIN_PASSWORD: "<ADMIN_PASSWORD>"
+      LLM_GATEWAY_SEED_ADMIN_PASSWORD: "Veritrans&9527"
       # ── Frontend static dir (Docker image 中的路径) ──
       LLM_GATEWAY_STATIC_DIR: "/opt/llm-gateway-go/web/dist"
     healthcheck:
@@ -215,7 +215,7 @@ services:
       LOG_LEVEL: info
       LISTEN_ADDR: ":8080"
       # ── 依赖指向 compose 内服务名 (docker DNS 自动解析) ──
-      DATABASE_URL: postgres://kxuser:<TEST_DB_PASSWORD>@postgres:5432/llm_gateway?sslmode=disable
+      DATABASE_URL: postgres://kxuser:kxpass@postgres:5432/llm_gateway?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       MEMORA_URL: http://memora-mcp:80
       # 指向真 OpenAI 兼容 mock (支持 chat/completions 真实回包)
