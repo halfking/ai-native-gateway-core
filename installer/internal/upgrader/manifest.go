@@ -9,7 +9,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
+
+var sha256Pattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
 // Manifest 离线升级包清单
 type Manifest struct {
@@ -41,14 +45,35 @@ func LoadManifest(path string) (*Manifest, error) {
 	if manifest.Version == "" {
 		return nil, fmt.Errorf("manifest missing version field")
 	}
+	if len(manifest.Files) == 0 {
+		return nil, fmt.Errorf("manifest files must not be empty")
+	}
+	for _, file := range manifest.Files {
+		if err := validateManifestFile(file); err != nil {
+			return nil, err
+		}
+	}
 
 	return &manifest, nil
 }
 
 // VerifyManifest 验证清单中所有文件的 SHA256
 func VerifyManifest(manifest *Manifest, extractDir string) error {
+	if manifest == nil || len(manifest.Files) == 0 {
+		return fmt.Errorf("manifest files must not be empty")
+	}
 	for _, f := range manifest.Files {
-		filePath := filepath.Join(extractDir, f.Path)
+		filePath, err := secureManifestPath(extractDir, f.Path)
+		if err != nil {
+			return err
+		}
+		info, err := os.Lstat(filePath)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", f.Path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("manifest path is not a regular file: %s", f.Path)
+		}
 
 		// 计算文件 SHA256
 		hash, err := calculateFileSHA256(filePath)
@@ -63,6 +88,38 @@ func VerifyManifest(manifest *Manifest, extractDir string) error {
 	}
 
 	return nil
+}
+
+func validateManifestFile(file FileChecksum) error {
+	if _, err := secureManifestPath("/extract", file.Path); err != nil {
+		return err
+	}
+	if !sha256Pattern.MatchString(strings.TrimSpace(file.SHA256)) {
+		return fmt.Errorf("invalid SHA256 for %s", file.Path)
+	}
+	return nil
+}
+
+func secureManifestPath(root, name string) (string, error) {
+	if name == "" || filepath.IsAbs(name) {
+		return "", fmt.Errorf("invalid manifest path: %q", name)
+	}
+	clean := filepath.Clean(name)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("manifest path escapes extraction directory: %q", name)
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve extraction directory: %w", err)
+	}
+	pathAbs, err := filepath.Abs(filepath.Join(rootAbs, clean))
+	if err != nil {
+		return "", fmt.Errorf("resolve manifest path: %w", err)
+	}
+	if pathAbs != rootAbs && !strings.HasPrefix(pathAbs, rootAbs+string(filepath.Separator)) {
+		return "", fmt.Errorf("manifest path escapes extraction directory: %q", name)
+	}
+	return pathAbs, nil
 }
 
 // calculateFileSHA256 计算文件的 SHA256 校验和

@@ -83,13 +83,14 @@ file_checksum() {
 }
 
 migration_files() {
-  local scope=$1 file filename version version_number
+  local scope=$1 file filename version version_number migration_root
+  migration_root="$ROOT_DIR/sql/migrations/$scope"
   while IFS= read -r file; do
     filename=$(basename "$file")
     version=${filename%%_*}
     version_number=${version%%[^0-9]*}
     printf '%s\t%s\t%s\n' "$version_number" "$version" "$file"
-  done < <(find "$ROOT_DIR/sql/migrations/$scope" -maxdepth 1 -type f -name '[0-9]*.sql' ! -name '*.down.sql' -print) |
+  done < <(find "$migration_root" -type f -name '[0-9]*.sql' ! -name '*.down.sql' -print) |
     LC_ALL=C sort -n -k1,1 -k2,2 |
     cut -f3-
 }

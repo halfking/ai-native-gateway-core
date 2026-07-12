@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/center"
@@ -31,6 +32,7 @@ type RefreshRequest struct {
 // RefreshResponse is the response body for refresh endpoint
 type RefreshResponse struct {
 	InstanceToken string `json:"instance_token"`
+	RefreshToken  string `json:"refresh_token"`
 	ExpiresIn     int    `json:"expires_in"` // seconds
 }
 
@@ -57,10 +59,15 @@ func (h *RefreshHandler) HandleRefresh(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
 
-	// Sign new instance_token
-	// TODO: retrieve license_key_hash from instance metadata or database
-	licenseKeyHash := "" // Placeholder - will be implemented by Agent-B
-	instanceToken, err := SignInstanceToken(instance.InstanceID, licenseKeyHash, h.serverPrivKey)
+	newRefreshToken, err := GenerateRefreshToken()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to generate refresh token"})
+	}
+	// Rotate the bearer credential so a leaked token cannot be replayed indefinitely.
+	if err := h.store.UpdateRefreshToken(ctx, instance.InstanceID, newRefreshToken, time.Now().Add(90*24*time.Hour)); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to rotate refresh token"})
+	}
+	instanceToken, err := SignInstanceToken(instance.InstanceID, instance.LicenseKeyHash, h.serverPrivKey)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to sign token"})
 	}
@@ -68,6 +75,7 @@ func (h *RefreshHandler) HandleRefresh(c echo.Context) error {
 	// Return new token
 	return c.JSON(http.StatusOK, RefreshResponse{
 		InstanceToken: instanceToken,
+		RefreshToken:  newRefreshToken,
 		ExpiresIn:     7 * 24 * 60 * 60, // 7 days in seconds
 	})
 }

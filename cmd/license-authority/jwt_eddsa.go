@@ -22,6 +22,7 @@ func SignInstanceToken(instanceID, licenseKeyHash string, serverPrivKey ed25519.
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   fmt.Sprintf("instance:%s", instanceID),
 			Issuer:    "llm.kxpms.cn",
+			Audience:  jwt.ClaimStrings{"license-authority-instance-api"},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(7 * 24 * time.Hour)),
 		},
@@ -45,7 +46,7 @@ func VerifyInstanceToken(tokenString string, serverPubKey ed25519.PublicKey) (*I
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return serverPubKey, nil
-	})
+	}, jwt.WithIssuer("llm.kxpms.cn"), jwt.WithAudience("license-authority-instance-api"))
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse JWT: %w", err)
