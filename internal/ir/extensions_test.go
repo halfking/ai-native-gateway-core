@@ -7,18 +7,35 @@ import (
 )
 
 func TestParseOpenAI_Extensions(t *testing.T) {
-	ir, _ := ParseOpenAI([]byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"test"}],"reasoning_effort":"high"}`))
+	// audit-provider-multimodal (2026-07-13): reasoning_effort was promoted from
+	// Extensions to structured IR field. This test now verifies that an
+	// unrelated unknown field still flows through Extensions.
+	ir, _ := ParseOpenAI([]byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"test"}],"custom_vendor_param":true}`))
 	if len(ir.Extensions) == 0 {
-		t.Error("Extensions empty")
+		t.Error("Extensions empty for unknown fields")
+	}
+	if _, ok := ir.Extensions["custom_vendor_param"]; !ok {
+		t.Error("Unknown field not captured in Extensions")
 	}
 }
 func TestSerializeOpenAI_Extensions(t *testing.T) {
-	ir := &InternalRequest{Model: "test", Messages: []Message{{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}}}, Extensions: map[string]json.RawMessage{"reasoning_effort": json.RawMessage(`"high"`)}}
+	// audit-provider-multimodal (2026-07-13): reasoning_effort now flows through
+	// the structured ReasoningConfig field. This test verifies that an unrelated
+	// Extensions entry is still serialized back to the body.
+	ir := &InternalRequest{
+		Model:      "test",
+		Messages:   []Message{{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}}},
+		Reasoning:  &ReasoningConfig{Effort: "high"},
+		Extensions: map[string]json.RawMessage{"custom_vendor_param": json.RawMessage(`true`)},
+	}
 	body, _ := SerializeOpenAI(ir)
 	var out map[string]any
 	json.Unmarshal(body, &out)
 	if out["reasoning_effort"] != "high" {
-		t.Error("Extensions not restored")
+		t.Error("Structured reasoning_effort not serialized")
+	}
+	if out["custom_vendor_param"] != true {
+		t.Error("Extensions not restored for unknown fields")
 	}
 }
 

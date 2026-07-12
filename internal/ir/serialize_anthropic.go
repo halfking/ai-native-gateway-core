@@ -83,6 +83,25 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		}
 	}
 
+	// audit-provider-multimodal (2026-07-13): Reasoning effort → Anthropic thinking block
+	// When Reasoning is set without Thinking, map Effort → thinking with type=enabled
+	// and a default budget based on effort level.
+	if req.Reasoning != nil && req.Thinking == nil {
+		thinking := map[string]any{}
+		if req.Reasoning.Type != "" {
+			thinking["type"] = req.Reasoning.Type
+		} else {
+			thinking["type"] = "enabled"
+		}
+		if req.Reasoning.BudgetTokens != nil {
+			thinking["budget_tokens"] = *req.Reasoning.BudgetTokens
+		} else if req.Reasoning.Effort != "" {
+			// Map effort level to a default budget_tokens (Anthropic requires integer)
+			thinking["budget_tokens"] = mapEffortToBudget(req.Reasoning.Effort)
+		}
+		out["thinking"] = thinking
+	}
+
 	// Cache control (top-level)
 	if len(req.CacheControl) > 0 {
 		out["cache_control"] = serializeAnthropicCacheControl(req.CacheControl)
@@ -618,4 +637,21 @@ func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvide
 	}
 
 	return nil
+}
+
+// mapEffortToBudget maps OpenAI-style reasoning effort level to Anthropic thinking
+// budget_tokens. These are defaults; users should override via ReasoningConfig.BudgetTokens
+// for production use.
+// audit-provider-multimodal (2026-07-13): Cross-protocol reasoning effort → budget mapping.
+func mapEffortToBudget(effort string) int {
+	switch effort {
+	case "low":
+		return 2048
+	case "medium":
+		return 8192
+	case "high":
+		return 16384
+	default:
+		return 8192
+	}
 }

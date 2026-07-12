@@ -70,6 +70,85 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 		out["response_format"] = rf
 	}
 
+	// audit-provider-multimodal (2026-07-13): Personalized provider fields
+	if req.Reasoning != nil && req.Reasoning.Effort != "" {
+		out["reasoning_effort"] = req.Reasoning.Effort
+	}
+	if len(req.Modalities) > 0 {
+		out["modalities"] = req.Modalities
+	}
+	if req.AudioConfig != nil {
+		ac := map[string]any{}
+		if req.AudioConfig.Voice != "" {
+			ac["voice"] = req.AudioConfig.Voice
+		}
+		if req.AudioConfig.Format != "" {
+			ac["format"] = req.AudioConfig.Format
+		}
+		if req.AudioConfig.Speed > 0 {
+			ac["speed"] = req.AudioConfig.Speed
+		}
+		out["audio"] = ac
+	}
+	if len(req.LogitBias) > 0 {
+		out["logit_bias"] = req.LogitBias
+	}
+	if req.Store != nil {
+		out["store"] = *req.Store
+	}
+	if req.ServiceTier != "" {
+		out["service_tier"] = req.ServiceTier
+	}
+	if req.Prediction != nil {
+		out["prediction"] = map[string]any{
+			"type":    req.Prediction.Type,
+			"content": req.Prediction.Content,
+		}
+	}
+	if req.Verbosity != "" {
+		out["verbosity"] = req.Verbosity
+	}
+	if req.WebSearchOptions != nil {
+		wso := map[string]any{}
+		if req.WebSearchOptions.ContextSize != "" {
+			wso["context_size"] = req.WebSearchOptions.ContextSize
+		} else if req.WebSearchOptions.SearchContextSize != "" {
+			wso["search_context_size"] = req.WebSearchOptions.SearchContextSize
+		}
+		if req.WebSearchOptions.UserLocation != nil {
+			loc := map[string]any{}
+			if req.WebSearchOptions.UserLocation.Type != "" {
+				loc["type"] = req.WebSearchOptions.UserLocation.Type
+			}
+			if req.WebSearchOptions.UserLocation.City != "" {
+				loc["city"] = req.WebSearchOptions.UserLocation.City
+			}
+			if req.WebSearchOptions.UserLocation.Country != "" {
+				loc["country"] = req.WebSearchOptions.UserLocation.Country
+			}
+			if req.WebSearchOptions.UserLocation.Region != "" {
+				loc["region"] = req.WebSearchOptions.UserLocation.Region
+			}
+			if req.WebSearchOptions.UserLocation.Timezone != "" {
+				loc["timezone"] = req.WebSearchOptions.UserLocation.Timezone
+			}
+			wso["user_location"] = loc
+		}
+		out["web_search_options"] = wso
+	}
+	if req.PromptCacheKey != "" {
+		out["prompt_cache_key"] = req.PromptCacheKey
+	}
+	if req.SafetyIdentifier != "" {
+		out["safety_identifier"] = req.SafetyIdentifier
+	}
+	if req.PreviousResponseID != "" {
+		out["previous_response_id"] = req.PreviousResponseID
+	}
+	if req.Truncation != "" {
+		out["truncation"] = req.Truncation
+	}
+
 	// Messages (system prompt becomes first message)
 	messages := serializeOpenAIMessages(req)
 	if len(messages) > 0 {
@@ -297,6 +376,29 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 					"image_url": imageURL,
 				})
 			}
+		case "audio":
+			// audit-provider-multimodal (2026-07-13): OpenAI audio output config in messages
+			if block.Audio != nil {
+				result = append(result, serializeOpenAIAudioBlock(block.Audio))
+			}
+		case "input_audio":
+			// audit-provider-multimodal (2026-07-13): OpenAI chat audio input
+			if block.InputAudio != nil {
+				result = append(result, map[string]any{
+					"type": "input_audio",
+					"input_audio": map[string]any{
+						"data":   block.InputAudio.Data,
+						"format": block.InputAudio.Format,
+					},
+				})
+			}
+		case "video", "document":
+			// audit-provider-multimodal (2026-07-13): pass-through for Qwen-VL video, OpenAI file input
+			if block.Document != nil {
+				result = append(result, serializeOpenAIDocumentBlock(block.Document))
+			} else if block.Video != nil {
+				result = append(result, serializeOpenAIVideoBlock(block.Video))
+			}
 		case "tool_use":
 			// tool_use blocks are converted to OpenAI tool_calls format and
 			// stored in message.ToolCalls (handled by the caller), not in the
@@ -442,4 +544,84 @@ func validateToolCallIntegrity(messages []map[string]any) error {
 	}
 
 	return nil
+}
+
+// serializeOpenAIAudioBlock converts an audio content block to OpenAI-compatible output.
+// audit-provider-multimodal (2026-07-13): OpenAI audio output config + Gemini speech_config.
+func serializeOpenAIAudioBlock(audio *MediaSource) map[string]any {
+	block := map[string]any{"type": "audio"}
+	if audio.Format != "" {
+		block["format"] = audio.Format
+	}
+	// Carry data/url through input_audio-style structure for OpenAI compat
+	inner := map[string]any{}
+	switch audio.Type {
+	case "base64":
+		inner["data"] = audio.Data
+		if audio.Format != "" {
+			inner["format"] = audio.Format
+		}
+		block["input_audio"] = inner
+	case "url":
+		inner["url"] = audio.URL
+		block["input_audio"] = inner
+	case "file_id":
+		inner["file_id"] = audio.FileID
+		block["input_audio"] = inner
+	}
+	return block
+}
+
+// serializeOpenAIVideoBlock converts a video content block to OpenAI-compatible output.
+// audit-provider-multimodal (2026-07-13): For Qwen-VL video and Gemini video input
+// (OpenAI does not have native video, so we pass through as input_file with video MIME).
+func serializeOpenAIVideoBlock(video *MediaSource) map[string]any {
+	block := map[string]any{"type": "video_url"}
+	urlStr := video.URL
+	if video.Type == "base64" && video.Data != "" {
+		mt := video.MediaType
+		if mt == "" {
+			mt = "video/mp4"
+		}
+		urlStr = "data:" + mt + ";base64," + video.Data
+	}
+	inner := map[string]any{"url": urlStr}
+	if video.MediaType != "" {
+		inner["mime_type"] = video.MediaType
+	}
+	block["video_url"] = inner
+	return block
+}
+
+// serializeOpenAIDocumentBlock converts a document content block to OpenAI file input.
+// audit-provider-multimodal (2026-07-13): For PDF/text/csv via OpenAI Responses file input.
+func serializeOpenAIDocumentBlock(doc *DocumentBlock) map[string]any {
+	if doc == nil || doc.Source == nil {
+		return nil
+	}
+	block := map[string]any{"type": "file"}
+	fileInner := map[string]any{}
+	if doc.Title != "" {
+		fileInner["filename"] = doc.Title
+	}
+	switch doc.Source.Type {
+	case "base64":
+		if doc.Source.MediaType != "" {
+			fileInner["mime_type"] = doc.Source.MediaType
+		}
+		// file_data is the data URI form (matches OpenAI Responses API)
+		mt := doc.Source.MediaType
+		if mt == "" {
+			mt = "application/pdf"
+		}
+		fileInner["file_data"] = "data:" + mt + ";base64," + doc.Source.Data
+	case "url":
+		fileInner["file_data"] = doc.Source.Data
+	case "file_id":
+		fileInner["file_id"] = doc.Source.Data
+	case "text":
+		fileInner["file_data"] = doc.Source.Data
+	}
+	block["file"] = fileInner
+	return block
 }

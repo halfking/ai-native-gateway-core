@@ -91,6 +91,50 @@ type InternalRequest struct {
 	// Metadata is the generic metadata container (Anthropic: metadata.user_id → User)
 	Metadata *Metadata
 
+	// ─── Multimodal & Personalized Provider Fields (audit-provider-multimodal, 2026-07-13) ───
+
+	// Reasoning enables extended reasoning mode across providers.
+	// (OpenAI o1/o3 → reasoning_effort; DeepSeek R1/GLM-Z1/MiniMax-M3/Qwen QwQ → effort/budget)
+	Reasoning *ReasoningConfig
+
+	// Modalities specifies desired output modalities (OpenAI TTS / Gemini responseModalities):
+	//   ["text"] / ["text","audio"] / ["image","text"]
+	Modalities []string
+
+	// AudioConfig is the OpenAI/Gemini output audio configuration.
+	// OpenAI: { voice, format, speed }; Gemini: speech_config.
+	AudioConfig *AudioConfig
+
+	// LogitBias OpenAI-only: maps token IDs (-100..100) to bias values.
+	LogitBias map[string]float64
+
+	// Store OpenAI-only: whether to store the response for later retrieval.
+	Store *bool
+
+	// ServiceTier OpenAI-only: "auto" | "default" | "priority".
+	ServiceTier string
+
+	// Prediction OpenAI: predicted content for speculative-decoding latency reduction.
+	Prediction *Prediction
+
+	// Verbosity OpenAI: "low" | "medium" | "high".
+	Verbosity string
+
+	// WebSearchOptions OpenAI: web_search_options.context_size = "low"/"medium"/"high".
+	WebSearchOptions *WebSearchOptions
+
+	// PromptCacheKey OpenAI Responses: cache routing key.
+	PromptCacheKey string
+
+	// SafetyIdentifier OpenAI: abuse tracking identifier.
+	SafetyIdentifier string
+
+	// PreviousResponseID OpenAI Responses: chained response ID.
+	PreviousResponseID string
+
+	// Truncation OpenAI: "auto" | "disabled".
+	Truncation string
+
 	// ─── Source protocol (used by Serializer to determine output format) ───
 	SourceProtocol string // "openai-chat" | "anthropic-messages"
 
@@ -154,7 +198,7 @@ type Message struct {
 }
 
 // ContentBlock represents a single content element. Type values:
-// "text" | "image" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
+// "text" | "image" | "audio" | "video" | "document" | "input_audio" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
 type ContentBlock struct {
 	Type string // Discriminant
 
@@ -163,6 +207,21 @@ type ContentBlock struct {
 
 	// type=image
 	Image *ImageSource
+
+	// type=audio (OpenAI input_audio / Anthropic 4.6 audio / Qwen audio_url)
+	// audit-provider-multimodal (2026-07-13): unified multimodal audio abstraction
+	Audio *MediaSource
+
+	// type=video (Gemini / Qwen video input)
+	Video *MediaSource
+
+	// type=document (Anthropic message content document / OpenAI file)
+	// audit-provider-multimodal (2026-07-13): PDF/text/csv document support
+	Document *DocumentBlock
+
+	// type=input_audio (OpenAI chat audio input block)
+	// Convenience alias for Audio with simplified structure
+	InputAudio *InputAudioBlock
 
 	// type=tool_use
 	ToolUse *ToolUse
@@ -184,6 +243,68 @@ type ContentBlock struct {
 
 	// RawContent preserves the original content format for unknown block types.
 	RawContent any
+}
+
+// MediaSource is the unified multimedia input source (audio/video).
+// Supports URL, base64 data, file_id (Gemini/Anthropic container), and file_uri (Gemini).
+type MediaSource struct {
+	// Kind identifies the media type: "audio" | "video"
+	Kind string `json:"kind,omitempty"`
+
+	// Format is the media-specific format hint
+	//   audio: "wav" | "mp3" | "pcm16" | "flac"
+	//   video: "mp4" | "mov" | "webm"
+	Format string `json:"format,omitempty"`
+
+	// Type identifies the source carrier: "url" | "base64" | "file_id" | "file_uri"
+	Type string `json:"type,omitempty"`
+
+	// MediaType is the MIME type: "audio/wav", "video/mp4", etc.
+	MediaType string `json:"media_type,omitempty"`
+
+	// URL is the HTTP(S) URL for Type="url"
+	URL string `json:"url,omitempty"`
+
+	// Data is the base64-encoded payload (no prefix) for Type="base64"
+	Data string `json:"data,omitempty"`
+
+	// FileID references a pre-uploaded file (Gemini files API, Anthropic container)
+	FileID string `json:"file_id,omitempty"`
+
+	// FileURI references a remote file (Gemini fileData.fileUri)
+	FileURI string `json:"file_uri,omitempty"`
+
+	// Detail is the OpenAI image detail hint (low/high/auto)
+	Detail string `json:"detail,omitempty"`
+}
+
+// DocumentBlock represents a PDF/text/csv document in message content.
+// audit-provider-multimodal (2026-07-13): unified document abstraction for
+// Anthropic PDF, OpenAI file input, and Gemini fileData.
+type DocumentBlock struct {
+	// Kind identifies the document type: "pdf" | "text" | "csv"
+	Kind string `json:"kind,omitempty"`
+
+	// MIMEType: "application/pdf" | "text/plain" | "text/csv" | ...
+	MIMEType string `json:"mime_type,omitempty"`
+
+	// Source carries the actual document payload
+	Source *DocumentSource `json:"source,omitempty"`
+
+	// Title is an optional human-readable label
+	Title string `json:"title,omitempty"`
+
+	// Context is an optional description (Anthropic document.context)
+	Context string `json:"context,omitempty"`
+
+	// CacheCtrl attaches Anthropic prompt caching hint
+	CacheCtrl *CacheControl `json:"cache_control,omitempty"`
+}
+
+// InputAudioBlock is the OpenAI input_audio content block (simplified form).
+type InputAudioBlock struct {
+	Data   string `json:"data"`   // base64-encoded audio data
+	Format string `json:"format"` // "wav" | "mp3"
 }
 
 // ImageSource represents an image in a message.
@@ -239,6 +360,31 @@ type ThinkingConfig struct {
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
+// ReasoningConfig holds extended reasoning configuration.
+// audit-provider-multimodal (2026-07-13): Unified field across OpenAI o1/o3,
+// DeepSeek R1, GLM-Z1, MiniMax-M3, Qwen QwQ, Gemini 2.5+, Anthropic thinking.
+//
+// Serializer maps to per-protocol fields:
+//   - OpenAI:  reasoning_effort (Effort)
+//   - Anthropic: thinking { type:"enabled", budget_tokens:Budget }
+//   - Qwen:    enable_thinking=true + thinking_budget
+//   - Gemini:  generationConfig.thinkingConfig
+//   - DeepSeek/GLM/MiniMax: handled via Extensions when configured as object
+type ReasoningConfig struct {
+	// Type is the canonical toggle: "enabled" | "disabled"
+	// When SourceProtocol is OpenAI, omitted means use effort level only.
+	Type string `json:"type,omitempty"`
+
+	// Effort is the OpenAI/DeepSeek/GLM reasoning effort level: "low" | "medium" | "high"
+	Effort string `json:"effort,omitempty"`
+
+	// BudgetTokens is the Anthropic-style token budget for thinking.
+	BudgetTokens *int `json:"budget_tokens,omitempty"`
+
+	// MaxReasoningTokens is the DeepSeek/Qwen QwQ maximum reasoning token cap.
+	MaxReasoningTokens *int `json:"max_reasoning_tokens,omitempty"`
+}
+
 // ThinkingBlock is the actual thinking content from Claude.
 //
 // PR-2 (2026-06-24): Signature added so claude-opus-4-8 round-trips
@@ -285,4 +431,40 @@ type Metadata struct {
 type ResponseFormat struct {
 	Type   string          `json:"type"` // "text" | "json_object"
 	Schema json.RawMessage `json:"json_schema,omitempty"`
+}
+
+// ─── Personalized Provider Fields (audit-provider-multimodal, 2026-07-13) ───
+
+// AudioConfig is the OpenAI/Gemini output audio configuration.
+// OpenAI chat audio output: { voice, format, speed }.
+// Gemini multimodal output: speech_config.
+type AudioConfig struct {
+	Voice  string  `json:"voice,omitempty"`  // "alloy" / "echo" / "fable" / "onyx" / "nova" / "shimmer"
+	Format string  `json:"format,omitempty"` // "mp3" | "opus" | "aac" | "flac" | "wav" | "pcm"
+	Speed  float64 `json:"speed,omitempty"`  // 0.25..4.0
+}
+
+// Prediction is the OpenAI predicted-content block for speculative decoding.
+// When set, the model can return the prediction content in fewer output tokens,
+// reducing latency for repeated prefixes (e.g., editing flows).
+type Prediction struct {
+	Type    string `json:"type"`              // "content"
+	Content string `json:"content,omitempty"` // predicted assistant prefix
+}
+
+// WebSearchOptions configures the OpenAI built-in web_search tool.
+// Includes context-size and optional user location hints.
+type WebSearchOptions struct {
+	ContextSize       string        `json:"context_size,omitempty"` // "low" | "medium" | "high"
+	UserLocation      *UserLocation `json:"user_location,omitempty"`
+	SearchContextSize string        `json:"search_context_size,omitempty"` // alias for some versions
+}
+
+// UserLocation provides coarse user location for OpenAI search-result personalization.
+type UserLocation struct {
+	Type     string `json:"type,omitempty"` // "approximate"
+	City     string `json:"city,omitempty"`
+	Country  string `json:"country,omitempty"`
+	Region   string `json:"region,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
 }

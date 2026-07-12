@@ -34,10 +34,23 @@ var standardRequestFields = map[string]bool{
 	"metadata":            true,
 	"reasoning_effort":    true,
 
+	// audit-provider-multimodal (2026-07-13): Personalized provider fields
+	"modalities":           true,
+	"audio":                true,
+	"prediction":           true,
+	"verbosity":            true,
+	"web_search_options":   true,
+	"prompt_cache_key":     true,
+	"safety_identifier":    true,
+	"previous_response_id": true,
+	"truncation":           true,
+
 	// Anthropic 特有
 	"system":         true,
 	"stop_sequences": true,
 	"thinking":       true,
+	"cache_control":  true,
+	"documents":      true,
 
 	// 注意：Ollama 特有字段（keep_alive, format, context, raw, template）
 	// 当前未在此列表中，因此会被 Extensions 机制捕获并透传。
