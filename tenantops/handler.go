@@ -1,8 +1,10 @@
 package tenantops
 
 import (
+	"encoding/json"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 )
@@ -46,22 +48,20 @@ func (h *Handler) licenseStatus(c echo.Context) error {
 	defer rows.Close()
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var item map[string]any
-		var id int64
+		var lid int64
 		var key, name, email, tier *string
 		var max int
 		var features []byte
 		var expires, created, revoked *any
-		if err := rows.Scan(&id, &key, &name, &email, &max, &tier, &features, &expires, &created, &revoked); err != nil {
+		if err := rows.Scan(&lid, &key, &name, &email, &max, &tier, &features, &expires, &created, &revoked); err != nil {
 			return err
 		}
-		item = map[string]any{"id": id, "license_key": maskLicenseKey(value(key)), "customer_name": value(name), "customer_email": value(email), "max_devices": max, "subscription_tier": value(tier), "features": features, "expires_at": pointerValue(expires), "created_at": pointerValue(created), "revoked_at": pointerValue(revoked)}
-		items = append(items, item)
+		items = append(items, map[string]any{"id": lid, "license_key": maskLicenseKey(value(key)), "customer_name": value(name), "customer_email": value(email), "max_devices": max, "subscription_tier": value(tier), "features": parseFeatures(features), "expires_at": pointerValue(expires), "created_at": pointerValue(created), "revoked_at": pointerValue(revoked)})
 	}
 	if err := rows.Err(); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "license lookup failed"})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"tenant_id": id, "licenses": items})
+	return c.JSON(http.StatusOK, map[string]any{"tenant_id": id, "tenant_name": h.tenantName(c, id), "licenses": items})
 }
 
 func (h *Handler) updateCheck(c echo.Context) error {
@@ -93,7 +93,7 @@ func (h *Handler) updateCheck(c echo.Context) error {
 	if err := rows.Err(); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "update lookup failed"})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"tenant_id": id, "current_version": "", "items": items})
+	return c.JSON(http.StatusOK, map[string]any{"tenant_id": id, "tenant_name": h.tenantName(c, id), "current_version": "", "items": items})
 }
 
 func value(v *string) string {
@@ -108,6 +108,34 @@ func pointerValue(v *any) any {
 		return nil
 	}
 	return *v
+}
+
+// tenantName resolves the human-readable name for a tenant code from the
+// tenants table. Returns an empty string when the tenant row is absent (e.g.
+// the 'default' platform tenant), so the caller can fall back to the code.
+func (h *Handler) tenantName(c echo.Context, code string) string {
+	var name string
+	err := h.db.QueryRow(c.Request().Context(),
+		`SELECT name FROM tenants WHERE code = $1`, code).Scan(&name)
+	if err != nil && err != pgx.ErrNoRows {
+		// Non-fatal: surface nothing, the frontend falls back to the code.
+		return ""
+	}
+	return name
+}
+
+// parseFeatures decodes the JSONB features column into a JSON array. A raw
+// []byte would otherwise be base64-encoded by encoding/json, so the frontend
+// would receive a string instead of ["feat_a", "feat_b"].
+func parseFeatures(raw []byte) []any {
+	out := make([]any, 0)
+	if len(raw) == 0 {
+		return out
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return make([]any, 0)
+	}
+	return out
 }
 
 func maskLicenseKey(key string) string {
