@@ -159,7 +159,8 @@ func TestTransportIRConverter_SerializeOpenAI_RestoresExtensions(t *testing.T) {
 	conv := NewTransportIRConverter(inner)
 
 	req := &ir.InternalRequest{
-		Model: "gpt-4o",
+		Model:          "gpt-4o",
+		SourceProtocol: ir.ProtocolOpenAIChat,
 		Extensions: map[string]json.RawMessage{
 			"custom_field": json.RawMessage(`"value123"`),
 		},
@@ -191,7 +192,8 @@ func TestTransportIRConverter_SerializeAnthropic_RestoresExtensions(t *testing.T
 	conv := NewTransportIRConverter(inner)
 
 	req := &ir.InternalRequest{
-		Model: "claude-sonnet-4",
+		Model:          "claude-sonnet-4",
+		SourceProtocol: ir.ProtocolAnthropicMessages,
 		Extensions: map[string]json.RawMessage{
 			"thinking_budget": json.RawMessage(`5000`),
 		},

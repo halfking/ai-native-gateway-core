@@ -1,0 +1,9 @@
+{
+  "source_url": "https://platform.openai.com/docs/api-reference/chat",
+  "captured_at": "2026-07-12",
+  "api_version": "2026-07",
+  "model": "gpt-4o",
+  "provider_profile": "openai-chat",
+  "redaction_version": "v1",
+  "fixture_kind": "synthetic-contract"
+}
