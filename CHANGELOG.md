@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   与服务端 `middleware/sigverify.go` 格式对齐，方便后续启用服务端校验。
 
 ### Fixed
+- Removed inactive FpSlot degradation code and an unobserved saturation metric
+  so the streaming executor passes static analysis without dead paths.
 - Restored the vendored go-redis maintenance-notification log package so
   default `-mod=vendor` builds resolve all Redis internal imports.
 - Completed SessionForensics replay evidence preservation, six-scenario audit
