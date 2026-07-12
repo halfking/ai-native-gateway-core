@@ -48,10 +48,10 @@ SCENARIOS=(S01_baseline S02_cost_route S03_concurrency_diff S04_quota_failover
 
 # 先启动 mock_supplier cluster
 echo "─── 启动 60 个 mock_supplier ───"
-PIDS_DIR="${PIDS_DIR:-/tmp/lab-suppliers}" \
-    mkdir -p "$PIDS_DIR"
-PIDS_DIR="${PIDS_DIR:-/tmp/lab-suppliers}" \
-    bash tools/start_suppliers.sh
+PIDS_DIR="${PIDS_DIR:-/tmp/lab-suppliers}"
+export PIDS_DIR
+mkdir -p "$PIDS_DIR"
+bash tools/start_suppliers.sh
 echo ""
 
 # 预备
@@ -111,8 +111,8 @@ echo ""
 
 # 最后 cleanup
 echo "─── 清理 ───"
-PIDS_DIR="${PIDS_DIR:-/tmp/lab-suppliers}" \
-    bash tools/start_suppliers.sh stop
+export PIDS_DIR="${PIDS_DIR:-/tmp/lab-suppliers}"
+bash tools/start_suppliers.sh stop
 echo ""
 
 if [ "$FAIL" -eq 0 ]; then
