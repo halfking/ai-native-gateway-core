@@ -115,3 +115,92 @@ func newJobRun(jobType JobType, target string) *JobRun {
 		Result:    make(map[string]any),
 	}
 }
+
+// handleLifecycleJobs GET /api/admin/data-lifecycle/jobs
+//
+// 列出所有通用异步任务（按 StartedAt DESC），以及当前 running 任务。
+func (h *Handler) handleLifecycleJobs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	all := h.lifecycleJobs.list()
+	running := make([]*JobRun, 0)
+	history := make([]*JobRun, 0)
+	for _, j := range all {
+		if j.Status == JobStatusPending || j.Status == JobStatusRunning {
+			running = append(running, j)
+		} else {
+			history = append(history, j)
+		}
+	}
+	// 清理 cancelFn（不序列化）
+	sanitize := func(jobs []*JobRun) []*JobRun {
+		out := make([]*JobRun, len(jobs))
+		for i, j := range jobs {
+			c := *j
+			c.cancelFn = nil
+			out[i] = &c
+		}
+		return out
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"running": sanitize(running),
+		"history": sanitize(history),
+	})
+}
+
+// handleLifecycleJobByID GET/POST /api/admin/data-lifecycle/jobs/{id}
+//
+// GET: 查询单个任务状态
+// POST: 取消任务（需要 /cancel 路径后缀）
+func (h *Handler) handleLifecycleJobByID(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/admin/data-lifecycle/jobs/")
+	id = strings.TrimSpace(id)
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "job id is required")
+		return
+	}
+
+	// POST 到 /jobs/{id}/cancel → 取消任务
+	if r.Method == http.MethodPost && strings.HasSuffix(id, "/cancel") {
+		id = strings.TrimSuffix(id, "/cancel")
+		ok := h.lifecycleJobs.cancel(id)
+		if !ok {
+			writeError(w, http.StatusNotFound, "job not found or already in terminal state")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_id": id,
+			"status": "cancellation_requested",
+		})
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	job, ok := h.lifecycleJobs.get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	c := *job
+	c.cancelFn = nil
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(c)
+}
+
+// logRunningJobs 是生命周期任务的定时状态记录（用于指标/调试），每 30 秒记录一次仍然 running 的任务
+func (h *Handler) logRunningJobs() {
+	all := h.lifecycleJobs.list()
+	for _, j := range all {
+		if j.Status == JobStatusRunning || j.Status == JobStatusPending {
+			slog.Info("lifecycle-job-running", "job_id", j.ID, "type", j.Type, "target", j.Target, "status", j.Status)
+		}
+	}
+}

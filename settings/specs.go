@@ -19,6 +19,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, ErrorProbeSpecs()...)
 	// 会话全景分析模块主开关（admin/modules 统一管理）→ platform 范围。
 	out = append(out, SessionAnalyticsSpecs()...)
+	// 2026-07-13: 数据生命周期相关配置
+	out = append(out, LifecycleSpecs()...)
 	return out
 }
 
