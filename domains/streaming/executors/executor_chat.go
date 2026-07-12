@@ -979,20 +979,9 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 	bodyBytes := prepareRequestBody(&p, cand)
 
 	// 2026-07-12: Apply format validation even in legacy path.
-	// Parse → Validate → Serialize to clean up malformed requests.
-	if e.IR != nil {
-		irReq, parseErr := e.IR.ParseOpenAI(bodyBytes)
-		if parseErr == nil {
-			irReq = ir.ValidateAndFixRequest(irReq)
-			// Override model to outbound model
-			irReq.Model = resolveOutboundModel(params, cand)
-			bodyBytes, _ = e.IR.SerializeOpenAI(irReq)
-		} else {
-			slog.Warn("legacy path: IR parse failed, skipping validation",
-				"error", parseErr.Error(),
-			)
-		}
-	}
+	// Always validate, regardless of e.IR initialization status.
+	// This prevents tool_call_id_mismatch errors in OpenAI→OpenAI path.
+	bodyBytes = applyInlineValidation(bodyBytes)
 
 	if e.NormalizeOpenAITools != nil {
 		bodyBytes = e.NormalizeOpenAITools(bodyBytes)

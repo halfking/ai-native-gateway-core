@@ -2,7 +2,10 @@ package authentication
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestKeyVerifier_Disabled(t *testing.T) {
@@ -46,6 +49,56 @@ func TestIsBudgetExceeded(t *testing.T) {
 	}
 	if isBudgetExceeded(&InvalidKeyError{}) == true {
 		t.Error("should not recognize InvalidKeyError as budget exceeded")
+	}
+}
+
+func TestIsMissingUsageLedgerView(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "plain error",
+			err:  errors.New("some other failure"),
+			want: false,
+		},
+		{
+			name: "42P01 from message body",
+			err: &pgconn.PgError{
+				Code:    "42P01",
+				Message: `relation "usage_ledger_with_current_month" does not exist`,
+			},
+			want: true,
+		},
+		{
+			name: "42P01 for unrelated table",
+			err: &pgconn.PgError{
+				Code:    "42P01",
+				Message: `relation "other_table" does not exist`,
+			},
+			want: false,
+		},
+		{
+			name: "different pg code",
+			err: &pgconn.PgError{
+				Code:    "42703",
+				Message: `column "x" does not exist`,
+			},
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isMissingUsageLedgerView(tc.err); got != tc.want {
+				t.Fatalf("isMissingUsageLedgerView(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 

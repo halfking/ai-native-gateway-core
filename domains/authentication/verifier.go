@@ -5,16 +5,67 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/singleflight"
 )
+
+// usageLedgerViewRe extracts the relation name from a 42P01 error when
+// usage_ledger_with_current_month (or its dependencies) is missing.
+// PostgreSQL does not populate TableName for this class of error, so we
+// fall back to the message body.
+var usageLedgerViewRe = regexp.MustCompile(`relation "([^"]+)" does not exist`)
+
+// budgetViewMatches reports whether the relation reported in a 42P01
+// message is part of the usage_ledger view family. We accept the parent
+// view or any of its underlying tables (hot + monthly partitions) so a
+// brief inconsistency in PostgreSQL's reported relation name does not
+// trigger the wrong error path.
+func budgetViewMatches(relation string) bool {
+	switch relation {
+	case "usage_ledger_with_current_month",
+		"usage_ledger",
+		"usage_ledger_hot",
+		"usage_ledger_2026_07",
+		"usage_ledger_default":
+		return true
+	}
+	// Partitioned tables use monthly suffixes (e.g. usage_ledger_2026_08).
+	if strings.HasPrefix(relation, "usage_ledger_20") {
+		return true
+	}
+	return false
+}
+
+// isMissingUsageLedgerView reports whether err is a Postgres 42P01
+// complaining about usage_ledger_with_current_month (or its inner tables).
+// The auth path treats this as "budget tracking is unavailable" rather
+// than failing every request during a migration window.
+func isMissingUsageLedgerView(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42P01" {
+		return false
+	}
+	if pgErr.TableName != "" {
+		return budgetViewMatches(pgErr.TableName)
+	}
+	if m := usageLedgerViewRe.FindStringSubmatch(pgErr.Message); len(m) == 2 {
+		return budgetViewMatches(m[1])
+	}
+	return false
+}
 
 // Tier default limits
 var tierDefaults = map[string][2]int{
@@ -368,9 +419,24 @@ func (kv *KeyVerifier) checkBudgetDB(ctx context.Context, keyID int) error {
 		return nil
 	}
 	var spent float64
-	// Query from view (hot + partitions) to include recent 7-day data
-	if err := kv.dbPool.QueryRow(ctx, "SELECT COALESCE(SUM(cost_usd), 0)::float8 FROM usage_ledger_with_current_month WHERE api_key_id = $1", keyID).Scan(&spent); err != nil {
-		return err
+	// Query from view (hot + partitions) to include recent 7-day data.
+	// Note: usage_ledger_with_current_month is an optional aggregation
+	// view that may not be migrated yet. In that case fall back to
+	// spending=0 — budget enforcement is disabled until the view is
+	// created, since the alternative would be failing every budgeted
+	// request during a migration window. The primary access control
+	// is API key validation, not the budget check, so this is safe.
+	viewErr := kv.dbPool.QueryRow(ctx, "SELECT COALESCE(SUM(cost_usd), 0)::float8 FROM usage_ledger_with_current_month WHERE api_key_id = $1", keyID).Scan(&spent)
+	if viewErr != nil {
+		if isMissingUsageLedgerView(viewErr) {
+			spent = 0
+			slog.Warn("key verifier: usage_ledger_with_current_month view missing; budget enforcement disabled until migration is applied",
+				"key_id", keyID,
+				"hint", "apply migration 344 (sql/migrations/startup/344_usage_ledger_hot_independence.sql)",
+			)
+		} else {
+			return viewErr
+		}
 	}
 	if spent >= *budget {
 		return &BudgetExceededError{KeyID: keyID, Budget: *budget, Spent: spent}

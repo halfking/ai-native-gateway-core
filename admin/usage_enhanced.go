@@ -12,6 +12,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -148,6 +149,22 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
+		if isMissingRelationError(err) {
+			view := reportMissingRelation(slog.Default(), "usageCostTrend", err)
+			writeJSON(w, http.StatusOK, CostTrendResponse{
+				GroupBy:    groupBy,
+				DateFrom:   startTime.Format("2006-01-02"),
+				DateTo:     endTime.Format("2006-01-02"),
+				Entries:    []CostTrendEntry{},
+				OtherCost:  0,
+				OtherCount: 0,
+			})
+			slog.Warn("usageCostTrend degraded: missing optional view",
+				"relation", view,
+				"hint", missingRelationHint(view),
+			)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "cost-trend query failed: "+err.Error())
 		return
 	}
@@ -186,6 +203,7 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	entries = append([]CostTrendEntry{}, entries...) // never serialize nil
 	resp := CostTrendResponse{
 		GroupBy:    groupBy,
 		DateFrom:   startTime.Format("2006-01-02"),
@@ -269,6 +287,19 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 	// 查询当前周期统计
 	currentStats, err := h.queryPeriodStats(ctx, tid, currentStart, currentEnd, currentPeriod)
 	if err != nil {
+		if isMissingRelationError(err) {
+			view := reportMissingRelation(slog.Default(), "usagePeriodCompare:current", err)
+			writeJSON(w, http.StatusOK, PeriodCompareResponse{
+				Current:     PeriodStats{Period: currentPeriod},
+				Previous:    PeriodStats{Period: previousPeriod},
+				ByDimension: map[string][]DimChange{},
+			})
+			slog.Warn("usagePeriodCompare degraded: missing optional view",
+				"relation", view,
+				"hint", missingRelationHint(view),
+			)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "current period query failed: "+err.Error())
 		return
 	}
@@ -276,6 +307,19 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 	// 查询对比周期统计
 	previousStats, err := h.queryPeriodStats(ctx, tid, previousStart, previousEnd, previousPeriod)
 	if err != nil {
+		if isMissingRelationError(err) {
+			view := reportMissingRelation(slog.Default(), "usagePeriodCompare:previous", err)
+			writeJSON(w, http.StatusOK, PeriodCompareResponse{
+				Current:     PeriodStats{Period: currentPeriod},
+				Previous:    PeriodStats{Period: previousPeriod},
+				ByDimension: map[string][]DimChange{},
+			})
+			slog.Warn("usagePeriodCompare degraded on previous query: missing optional view",
+				"relation", view,
+				"hint", missingRelationHint(view),
+			)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "previous period query failed: "+err.Error())
 		return
 	}
@@ -511,6 +555,19 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
+		if isMissingRelationError(err) {
+			view := reportMissingRelation(slog.Default(), "usageCacheEconomics", err)
+			resp := CacheEconomicsResponse{
+				DateFrom: startTime.Format("2006-01-02"),
+				DateTo:   endTime.Format("2006-01-02"),
+			}
+			slog.Warn("usageCacheEconomics degraded: missing optional view",
+				"relation", view,
+				"hint", missingRelationHint(view),
+			)
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "cache-economics query failed: "+err.Error())
 		return
 	}
