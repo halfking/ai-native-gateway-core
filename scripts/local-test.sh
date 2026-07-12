@@ -134,7 +134,7 @@ if [ "$RUN_INTEGRATION" = "1" ]; then
     record "request lifecycle test" SKIP "go 未安装"
   else
     info "go test -tags=integration TestRequestLifecycle"
-    export LLM_GATEWAY_PG_URL="postgres://kxuser:<TEST_DB_PASSWORD_REDACTED>@localhost:5432/llm_gateway?sslmode=disable"
+    export LLM_GATEWAY_PG_URL="postgres://kxuser:kxpass@localhost:5432/llm_gateway?sslmode=disable"
     # 注意: 同包的 quadrants_test.go 有预存编译失败 (streaming.AnthropicExecutor 已删除),
     # 导致整个 tests/integration 包无法编译. 这里用 -run 指定也无法绕过编译阶段.
     # 临时方案: 如果编译失败则标记 SKIP.

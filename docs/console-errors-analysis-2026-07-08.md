@@ -138,7 +138,7 @@ psql -h localhost -U llm_gateway -d llm_gateway -f /path/to/2026_07_08_add_sessi
 **选项B**: 使用psql 10+客户端
 ```bash
 # 在有新版psql的机器上执行
-PGPASSWORD='<DB_PASSWORD_REDACTED>' \
+PGPASSWORD='4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg' \
   psql -h 172.16.2.210 -U llm_gateway -d llm_gateway \
   -f 2026_07_08_add_session_state_missing_columns.sql
 ```

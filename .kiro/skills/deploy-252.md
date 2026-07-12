@@ -142,7 +142,7 @@
 ### 数据库用户清单（统一）
 
 - `crm_user` / `crm_pass123` → CRM
-- `llm_gateway` / `<DB_PASSWORD_REDACTED>` → 主超级用户
+- `llm_gateway` / `4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg` → 主超级用户
 - `kaixuan_user` / `kaixuan_pass123` → 开轩主应用
 - `doc_tools_user` / `doc_tools_pass123` → doc-tools
 - `casdoor_user` / `casdoor_pass123` → Casdoor

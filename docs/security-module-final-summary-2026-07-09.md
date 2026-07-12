@@ -97,7 +97,7 @@ $ curl -s http://localhost:8781/api/admin/modules -H "Authorization: Bearer $TOK
 1. ✅ 打开 http://localhost:8781/admin
 2. ✅ 显示登录表单
 3. ✅ 输入用户名: admin
-4. ✅ 输入密码: <ADMIN_PASSWORD_REDACTED>
+4. ✅ 输入密码: Veritrans&9527
 5. ✅ 点击登录按钮
 6. ✅ 登录成功，显示管理后台仪表盘
 
@@ -261,7 +261,7 @@ $ curl -s http://localhost:8781/api/admin/modules -H "Authorization: Bearer $TOK
 - Gateway: http://localhost:8781
 - Admin: http://localhost:8781/admin
 - Modules: http://localhost:8781/admin/modules
-- 登录凭据: admin / <ADMIN_PASSWORD_REDACTED>
+- 登录凭据: admin / Veritrans&9527
 
 ---
 

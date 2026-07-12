@@ -8,7 +8,7 @@
 SSH_HOST="115.29.212.252"
 SSH_PORT="25022"
 SSH_USER="root"
-SSH_PASS="<SSH_PASSWORD_REDACTED>"
+SSH_PASS="Kaixuan2026&#*9527"
 
 # ── Docker ─────────────────────────────────────────────────────────────────
 DOCKER_HOST="${SSH_USER}@${SSH_HOST}"
@@ -23,7 +23,7 @@ DOCKER_PG_CONTAINER="pg-252-pg17"
 PG_HOST="localhost"              # Via SSH tunnel (local:15432 → 252:172.16.2.210:5432)
 PG_PORT="15432"                 # SSH tunnel port
 PG_USER="llm_gateway"
-PG_PASS="<DB_PASSWORD_REDACTED>"
+PG_PASS="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
 PG_DB="llm_gateway"
 
 # External access via nginx stream

@@ -81,7 +81,7 @@ services:
     environment:
       LLM_GATEWAY_DATABASE_URL: postgres://llmgw:llmgw@postgres:5432/llmgw?sslmode=disable
       LLM_GATEWAY_REDIS_ADDR: redis:6379
-      LLM_GATEWAY_ADMIN_PASSWORD: <ADMIN_PASSWORD_REDACTED>
+      LLM_GATEWAY_ADMIN_PASSWORD: Veritrans&9527
       LLM_GATEWAY_CORS_ORIGINS: "*"
       LLM_GATEWAY_ENV: development
     depends_on:
@@ -147,7 +147,7 @@ bash scripts/local-deploy.sh restart
 # 3. 测试登录
 curl -X POST http://localhost:8781/api/auth/token \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"<ADMIN_PASSWORD_REDACTED>"}'
+  -d '{"username":"admin","password":"Veritrans&9527"}'
 ```
 
 ---
@@ -155,7 +155,7 @@ curl -X POST http://localhost:8781/api/auth/token \
 ## 登录凭证
 
 - **用户名**: admin
-- **密码**: <ADMIN_PASSWORD_REDACTED>
+- **密码**: Veritrans&9527
 - **Bcrypt Hash**: `$2b$12$Qqs0L1OgsNok8IYW4rBe8ekHq.1Nz42/ehUhaTvtl6s182hhIdDTK`
 
 ---

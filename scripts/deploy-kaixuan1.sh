@@ -19,7 +19,7 @@
 #
 # 前置 (HARD-GATE):
 #   env-injector inject kaixuan-1
-#   export SSHPASS='<SSH_PASSWORD_REDACTED>'
+#   export SSHPASS='kaixuan123'
 # =====================================================================
 
 set -euo pipefail
@@ -36,7 +36,7 @@ phase() { echo -e "\n${B}═══════ $* ═══════${N}"; }
 SSH_HOST="192.168.31.28"
 SSH_PORT="22"
 SSH_USER="kaixuan"
-SSH_PASS="${SSHPASS:-<SSH_PASSWORD_REDACTED>}"
+SSH_PASS="${SSHPASS:-kaixuan123}"
 REMOTE_DIR="~/workspace/official-deploy/services/llm-gateway-go"
 REMOTE_ABS="/Users/kaixuan/workspace/official-deploy/services/llm-gateway-go"
 LISTEN_PORT="${LLM_GATEWAY_PORT:-8080}"

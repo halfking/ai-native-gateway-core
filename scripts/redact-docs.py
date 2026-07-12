@@ -42,11 +42,11 @@ p("api_key", "sk-test")
 p("api_key", "834a588e-dcfe-4daf-90c0-e65435c6e6ba")
 
 # Passwords
-p("ssh_pwd", "<SSH_PASSWORD_REDACTED>")
-p("admin_pwd", "<ADMIN_PASSWORD_REDACTED>")
-p("db_pwd", "<DB_PASSWORD_REDACTED>")
+p("ssh_pwd", "Kaixuan2026&#*9527")
+p("admin_pwd", "Veritrans&9527")
+p("db_pwd", "4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg")
 p("db_pwd", "llm_gateway_2024")
-p("db_pwd", "<TEST_DB_PASSWORD_REDACTED>")
+p("db_pwd", "kxpass")
 
 # Public IPs
 p("pub_ip", "14.103.112.184")

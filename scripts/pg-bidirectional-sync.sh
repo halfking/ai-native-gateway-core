@@ -40,7 +40,7 @@ local_cmd() {
 
 # 函数：执行远程命令
 remote_cmd() {
-    export SSHPASS='<SSH_PASSWORD_REDACTED>'
+    export SSHPASS='Kaixuan2026&#*9527'
     sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOST" \
         "docker exec $REMOTE_CONTAINER psql -U $REMOTE_USER -d $REMOTE_DB -t -A -c \"$1\""
 }
@@ -87,7 +87,7 @@ sync_table() {
         # 本地 → 252
         docker exec "$LOCAL_CONTAINER" pg_dump -U "$LOCAL_USER" -d "$LOCAL_DB" -t "$table" --schema-only --no-owner --no-privileges > /tmp/sync_table.sql
         
-        export SSHPASS='<SSH_PASSWORD_REDACTED>'
+        export SSHPASS='Kaixuan2026&#*9527'
         sshpass -e scp -o StrictHostKeyChecking=no -p "$REMOTE_PORT" /tmp/sync_table.sql root@"$REMOTE_HOST":/tmp/
         
         sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOST" \
@@ -97,7 +97,7 @@ sync_table() {
         
     elif [ "$direction" = "remote-to-local" ]; then
         # 252 → 本地
-        export SSHPASS='<SSH_PASSWORD_REDACTED>'
+        export SSHPASS='Kaixuan2026&#*9527'
         sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOST" \
             "docker exec $REMOTE_CONTAINER pg_dump -U $REMOTE_USER -d $REMOTE_DB -t $table --schema-only --no-owner --no-privileges > /tmp/sync_table.sql"
         

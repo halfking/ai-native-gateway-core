@@ -14,7 +14,7 @@
 1. **连接生产环境** (252 prod-aliyun-252)
    - SSH tunnel: `115.29.212.252:25022 → 172.16.2.210:5432`
    - 数据库: PG17 podman container, `llm_gateway` (citus 11.3 + columnar)
-   - 用户: `llm_gateway / <DB_PASSWORD_REDACTED>` (superuser, RLS bypass)
+   - 用户: `llm_gateway / 4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg` (superuser, RLS bypass)
    - 表: `request_logs_hot` (18261 行) + `request_logs_2026_07` (69 行)
 
 2. **真实数据提取** (近 7 天约 30K 调用)

@@ -18,7 +18,7 @@
 
 ```bash
 # 在 kaixuan-1 主机上 (192.168.31.28)
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
+export SSHPASS='kaixuan123'
 sshpass -e ssh kaixuan@192.168.31.28
 
 # 进入 Tart VM (k3s-server at 192.168.31.8)
@@ -47,7 +47,7 @@ SELECT pg_reload_conf();
 ### 1.2 验证连接可用
 
 ```bash
-PGPASSWORD="<DB_PASSWORD_REDACTED>" psql \
+PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql \
   -h 192.168.31.8 -p 30432 -U llm_gateway -d llm_gateway \
   -c "SELECT 1;"
 ```
@@ -101,7 +101,7 @@ cd ~/workspace/official-deploy/services/llm-gateway-go
 ### 3.1 表数量
 
 ```bash
-PGPASSWORD="<DB_PASSWORD_REDACTED>" psql \
+PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql \
   -h 192.168.31.8 -p 30432 -U llm_gateway -d llm_gateway \
   -c "SELECT count(*) FROM pg_tables WHERE schemaname='public';"
 ```
@@ -111,7 +111,7 @@ PGPASSWORD="<DB_PASSWORD_REDACTED>" psql \
 ### 3.2 DB 大小
 
 ```bash
-PGPASSWORD="<DB_PASSWORD_REDACTED>" psql \
+PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql \
   -h 192.168.31.8 -p 30432 -U llm_gateway -d llm_gateway \
   -c "SELECT pg_size_pretty(pg_database_size('llm_gateway'));"
 ```
@@ -121,7 +121,7 @@ PGPASSWORD="<DB_PASSWORD_REDACTED>" psql \
 ### 3.3 扩展检查
 
 ```bash
-PGPASSWORD="<DB_PASSWORD_REDACTED>" psql \
+PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql \
   -h 192.168.31.8 -p 30432 -U llm_gateway -d llm_gateway \
   -c "SELECT extname, extversion FROM pg_extension WHERE extname IN ('vector','citus','columnar_am');"
 ```
@@ -134,7 +134,7 @@ PGPASSWORD="<DB_PASSWORD_REDACTED>" psql \
 ### 3.4 行数对比（Top 10）
 
 ```bash
-PGPASSWORD="<DB_PASSWORD_REDACTED>" psql \
+PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql \
   -h 192.168.31.8 -p 30432 -U llm_gateway -d llm_gateway \
   -c "
 SELECT schemaname||'.'||tablename AS tbl,
@@ -157,7 +157,7 @@ LIMIT 10;
 cd ~/workspace/official-deploy/services/llm-gateway-go
 
 # 生成 kaixuan-1 状态
-PGPASSWORD="<DB_PASSWORD_REDACTED>" psql \
+PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql \
   -h 192.168.31.8 -p 30432 -U llm_gateway -d llm_gateway \
   -c "SELECT count(*) as tables, pg_size_pretty(pg_database_size('llm_gateway')) as size FROM pg_tables WHERE schemaname='public';" \
   > /tmp/kaixuan1-status.txt
@@ -186,7 +186,7 @@ ping -c 3 192.168.31.8
 telnet 192.168.31.8 30432
 
 # 检查 PG 状态
-PGPASSWORD="<DB_PASSWORD_REDACTED>" pg_isready \
+PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" pg_isready \
   -h 192.168.31.8 -p 30432
 ```
 
@@ -194,12 +194,12 @@ PGPASSWORD="<DB_PASSWORD_REDACTED>" pg_isready \
 
 ```bash
 # 确认用户
-PGPASSWORD="<DB_PASSWORD_REDACTED>" psql \
+PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql \
   -h 192.168.31.8 -p 30432 -U llm_gateway -d llm_gateway \
   -c "\du llm_gateway"
 
 # 确认数据库
-PGPASSWORD="<DB_PASSWORD_REDACTED>" psql \
+PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql \
   -h 192.168.31.8 -p 30432 -U llm_gateway -d postgres \
   -c "\l llm_gateway"
 ```
@@ -228,14 +228,14 @@ ls -lh /tmp/pg-table-copy/<timestamp>/
 PG_HOST="localhost"              # Via SSH tunnel
 PG_PORT="15432"                  # SSH tunnel port
 PG_USER="llm_gateway"
-PG_PASS="<DB_PASSWORD_REDACTED>"
+PG_PASS="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
 PG_DB="llm_gateway"
 ```
 
 **注意**: 需要先建立 SSH tunnel:
 
 ```bash
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
+export SSHPASS='Kaixuan2026&#*9527'
 sshpass -e ssh -f -N -o ServerAliveInterval=30 \
   -L 15432:172.16.2.210:5432 \
   -p 25022 root@115.29.212.252
@@ -248,7 +248,7 @@ sshpass -e ssh -f -N -o ServerAliveInterval=30 \
 PG_HOST="192.168.31.8"          # k3s server (Tart VM)
 PG_PORT="30432"                  # k3s NodePort
 PG_USER="llm_gateway"
-PG_PASS="<DB_PASSWORD_REDACTED>"
+PG_PASS="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
 PG_DB="llm_gateway"
 ```
 
@@ -261,7 +261,7 @@ PG_DB="llm_gateway"
 pg_isready -h 192.168.31.8 -p 30432
 
 # 2. 建立 SSH tunnel (252)
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
+export SSHPASS='Kaixuan2026&#*9527'
 sshpass -e ssh -f -N -L 15432:172.16.2.210:5432 -p 25022 root@115.29.212.252
 
 # 3. 执行同步
@@ -269,7 +269,7 @@ cd ~/workspace/official-deploy/services/llm-gateway-go
 ./scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-kaixuan1.sh --verbose
 
 # 4. 验证
-PGPASSWORD="<DB_PASSWORD_REDACTED>" psql -h 192.168.31.8 -p 30432 -U llm_gateway -d llm_gateway -c "SELECT count(*) FROM pg_tables WHERE schemaname='public';"
+PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql -h 192.168.31.8 -p 30432 -U llm_gateway -d llm_gateway -c "SELECT count(*) FROM pg_tables WHERE schemaname='public';"
 
 # 5. 清理 SSH tunnel
 lsof -tiTCP:15432 -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null

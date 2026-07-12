@@ -162,19 +162,19 @@ ON CONFLICT (canonical_name) DO UPDATE SET
 **服务器**: 252 (115.29.212.252)  
 **数据库**: PostgreSQL 17 @ 172.16.2.210:5432  
 **库名**: llm_gateway  
-**用户**: llm_gateway / <DB_PASSWORD_REDACTED>
+**用户**: llm_gateway / 4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg
 
 ### 3.2 部署步骤
 
 1. **建立 SSH 隧道**:
    ```bash
-   export SSHPASS='<SSH_PASSWORD_REDACTED>'
+   export SSHPASS='Kaixuan2026&#*9527'
    sshpass -e ssh -p 25022 -f -N -L 15432:172.16.2.210:5432 root@115.29.212.252
    ```
 
 2. **执行 SQL**:
    ```bash
-   PGPASSWORD='<DB_PASSWORD_REDACTED>' psql \
+   PGPASSWORD='4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg' psql \
      -h localhost -p 15432 \
      -U llm_gateway -d llm_gateway \
      -f deploy/sql/001_vendor_family_mappings.sql

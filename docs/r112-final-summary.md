@@ -78,7 +78,7 @@ Passed: 10/11 (90%)
 
 #### 关键功能验证
 
-- [x] 登录功能正常（admin / <ADMIN_PASSWORD_REDACTED>）
+- [x] 登录功能正常（admin / Veritrans&9527）
 - [x] 用户信息持久化（localStorage）
 - [x] 刷新后保持登录状态
 - [x] 模块列表加载（13/17 modules enabled）
@@ -128,7 +128,7 @@ ssh root@154 "cd /opt/llm-gateway-go && tar xzf deploy-*.tar.gz && docker-compos
 
 # 8. 验证
 curl -s http://154.host:8781/healthz
-curl -s http://154.host:8781/api/auth/token -X POST -H "Content-Type: application/json" -d '{"username":"admin","password":"<ADMIN_PASSWORD_REDACTED>"}' | jq .
+curl -s http://154.host:8781/api/auth/token -X POST -H "Content-Type: application/json" -d '{"username":"admin","password":"Veritrans&9527"}' | jq .
 ```
 
 ### ⚠️ 已知问题

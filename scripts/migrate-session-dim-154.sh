@@ -52,7 +52,7 @@ echo ""
 # 步骤 2: 上传迁移文件
 echo -e "${YELLOW}[2/7]${NC} 上传迁移文件到服务器..."
 if [ $DRY_RUN -eq 0 ]; then
-  sshpass -p '<SSH_PASSWORD_REDACTED>' scp -P "$REMOTE_PORT" \
+  sshpass -p 'Kaixuan2026&#*9527' scp -P "$REMOTE_PORT" \
     "$MIGRATION_FILE" \
     "$REMOTE_USER@$REMOTE_HOST:/tmp/350_session_analytics_fix.sql"
   echo -e "${GREEN}✓ 上传成功${NC}"
@@ -64,7 +64,7 @@ echo ""
 # 步骤 3: 备份现有数据
 echo -e "${YELLOW}[3/7]${NC} 备份 session_summaries 表..."
 if [ $DRY_RUN -eq 0 ]; then
-  sshpass -p '<SSH_PASSWORD_REDACTED>' ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" << EOF
+  sshpass -p 'Kaixuan2026&#*9527' ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" << EOF
 export PGPASSWORD='${LLM_GATEWAY_DB_PASSWORD:-}'
 pg_dump -U $DB_USER -h $DB_HOST -d $DB_NAME \
   -t session_summaries \
@@ -81,7 +81,7 @@ echo ""
 # 步骤 4: 检查表是否已存在
 echo -e "${YELLOW}[4/7]${NC} 检查 session_dim 表状态..."
 if [ $DRY_RUN -eq 0 ]; then
-  TABLE_EXISTS=$(sshpass -p '<SSH_PASSWORD_REDACTED>' ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" << 'EOF'
+  TABLE_EXISTS=$(sshpass -p 'Kaixuan2026&#*9527' ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" << 'EOF'
 export PGPASSWORD="${LLM_GATEWAY_DB_PASSWORD:-}"
 psql -U llm_gateway -h 172.16.2.210 -d llm_gateway -t -c \
   "SELECT COUNT(*) FROM information_schema.tables WHERE table_name='session_dim'" 2>/dev/null || echo "0"
@@ -100,7 +100,7 @@ echo ""
 # 步骤 5: 执行迁移
 echo -e "${YELLOW}[5/7]${NC} 执行 350_session_analytics_fix.sql..."
 if [ $DRY_RUN -eq 0 ]; then
-  sshpass -p '<SSH_PASSWORD_REDACTED>' ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" << 'EOF'
+  sshpass -p 'Kaixuan2026&#*9527' ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" << 'EOF'
 export PGPASSWORD="${LLM_GATEWAY_DB_PASSWORD:-}"
 psql -U llm_gateway -h 172.16.2.210 -d llm_gateway \
   -f /tmp/350_session_analytics_fix.sql \
@@ -123,7 +123,7 @@ echo ""
 # 步骤 6: 验证
 echo -e "${YELLOW}[6/7]${NC} 验证迁移结果..."
 if [ $DRY_RUN -eq 0 ]; then
-  sshpass -p '<SSH_PASSWORD_REDACTED>' ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" << 'EOF'
+  sshpass -p 'Kaixuan2026&#*9527' ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" << 'EOF'
 export PGPASSWORD="${LLM_GATEWAY_DB_PASSWORD:-}"
 
 echo "=== 检查 session_dim 表 ==="
@@ -149,7 +149,7 @@ echo ""
 # 步骤 7: 重启服务
 echo -e "${YELLOW}[7/7]${NC} 重启 llm-gateway-go 服务..."
 if [ $DRY_RUN -eq 0 ]; then
-  sshpass -p '<SSH_PASSWORD_REDACTED>' ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" << 'EOF'
+  sshpass -p 'Kaixuan2026&#*9527' ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" << 'EOF'
 systemctl restart llm-gateway-go.service
 sleep 3
 systemctl status llm-gateway-go.service --no-pager -l | head -15

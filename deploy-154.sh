@@ -29,7 +29,7 @@ phase() { echo -e "\n${B}═══════ $* ═══════${N}"; }
 SSH_HOST="47.97.111.154"
 SSH_PORT="25022"
 SSH_USER="root"
-SSH_PASS="<SSH_PASSWORD_REDACTED>"
+SSH_PASS="Kaixuan2026&#*9527"
 REMOTE_DIR="/opt/llm-gateway-go"
 BINARY_NAME="gateway"  # 注意：154 上是 gateway，不是 llm-gateway-go
 

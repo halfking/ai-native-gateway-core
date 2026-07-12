@@ -239,7 +239,7 @@ with sync_playwright() as p:
     # 2. Login
     page.click('button:has-text("Sign in")')
     page.fill('input[type="text"]', 'admin')
-    page.fill('input[type="password"]', '<ADMIN_PASSWORD_REDACTED>')
+    page.fill('input[type="password"]', 'Veritrans&9527')
     page.click('button:has-text("登录")')
     
     # 3. Verify localStorage

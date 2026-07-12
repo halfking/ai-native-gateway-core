@@ -113,7 +113,7 @@ credit_ledger 表有**业务约束**导致直接插入失败。这不是bug，�
    - 新增 integration 测试：`tests/integration/credit_ledger_service_test.go`
    - 覆盖 `GrantCredits` / `AdjustCredits`
    - 验证钱包余额、ledger entry_type / amount / balance_after / pool 一致性
-   - 已使用 `LLM_GATEWAY_PG_URL=postgres://kxuser:<TEST_DB_PASSWORD_REDACTED>@127.0.0.1:55432/llm_gateway?sslmode=disable` 实跑通过
+   - 已使用 `LLM_GATEWAY_PG_URL=postgres://kxuser:kxpass@127.0.0.1:55432/llm_gateway?sslmode=disable` 实跑通过
    - 同时已将历史坏测试 `tests/integration/quadrants_test.go` 隔离到额外 build tag，避免阻断整个 integration 套件
 
 4. **执行过程中的环境发现**:
