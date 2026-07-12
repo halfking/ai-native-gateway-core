@@ -9,8 +9,8 @@ import (
 // (without matching assistant tool_use) are rejected with a clear error.
 func TestSerializeAnthropic_OrphanedToolResult(t *testing.T) {
 	req := &InternalRequest{
-		Model:      "claude-3-5-sonnet-20241022",
-		MaxTokens:  1024,
+		Model:     "claude-3-5-sonnet-20241022",
+		MaxTokens: 1024,
 		Messages: []Message{
 			{
 				Role:    "user",
@@ -58,8 +58,8 @@ func TestSerializeAnthropic_OrphanedToolResult(t *testing.T) {
 // TestSerializeAnthropic_ValidToolUse tests that valid tool_use → tool_result chains pass.
 func TestSerializeAnthropic_ValidToolUse(t *testing.T) {
 	req := &InternalRequest{
-		Model:      "claude-3-5-sonnet-20241022",
-		MaxTokens:  1024,
+		Model:     "claude-3-5-sonnet-20241022",
+		MaxTokens: 1024,
 		Messages: []Message{
 			{
 				Role:    "user",
@@ -164,8 +164,8 @@ func TestSerializeAnthropic_MiniMaxOrphanedToolResult(t *testing.T) {
 // TestSerializeAnthropic_PartialOrphans tests mixed valid and orphaned tool_results.
 func TestSerializeAnthropic_PartialOrphans(t *testing.T) {
 	req := &InternalRequest{
-		Model:      "claude-3-5-sonnet-20241022",
-		MaxTokens:  1024,
+		Model:     "claude-3-5-sonnet-20241022",
+		MaxTokens: 1024,
 		Messages: []Message{
 			{
 				Role:    "user",
@@ -226,8 +226,8 @@ func TestSerializeAnthropic_PartialOrphans(t *testing.T) {
 func TestSerializeAnthropic_ShortMessageList(t *testing.T) {
 	// Single message - should not trigger validation
 	req := &InternalRequest{
-		Model:      "claude-3-5-sonnet-20241022",
-		MaxTokens:  1024,
+		Model:     "claude-3-5-sonnet-20241022",
+		MaxTokens: 1024,
 		Messages: []Message{
 			{
 				Role:    "user",
@@ -256,8 +256,8 @@ func TestSerializeAnthropic_ShortMessageList(t *testing.T) {
 // TestSerializeAnthropic_MultipleOrphans tests error message truncation.
 func TestSerializeAnthropic_MultipleOrphans(t *testing.T) {
 	req := &InternalRequest{
-		Model:      "claude-3-5-sonnet-20241022",
-		MaxTokens:  1024,
+		Model:     "claude-3-5-sonnet-20241022",
+		MaxTokens: 1024,
 		Messages: []Message{
 			{
 				Role:    "user",
