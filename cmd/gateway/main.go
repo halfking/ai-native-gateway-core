@@ -2286,7 +2286,8 @@ func main() {
 		licensingOffline := licensing.NewOfflineManager(licensingCrypto, licensingStore)
 		licensingHandler := licensing.NewAdminHandler(licensingStore, licensingCrypto, licensingActivator, licensingOffline, licensingValidator)
 		licensingHandler.RegisterRoutes(e.Group("/api/admin"))
-		slog.Info("Phase 2: Licensing API enabled (/api/admin/licenses)")
+		licensing.RegisterModuleRoutes(e.Group("/api/admin"), licensingStore)
+		slog.Info("Phase 2: Licensing API enabled (/api/admin/licenses, /api/admin/modules)")
 
 		// Phase 3: Fault Management (故障自愈)
 		faultStore := fault.NewPgxStore(pool)
