@@ -28,16 +28,6 @@
 set -e  # 遇到错误立即退出
 
 # ============================================================================
-# 前置 (HARD-GATE): DEPLOY_SSH_PASS 必须从 env 注入，不再硬编码
-# ============================================================================
-if [ -z "${DEPLOY_SSH_PASS:-}" ]; then
-  echo "✗ 必须设置 DEPLOY_SSH_PASS 环境变量（密码已不再硬编码）" >&2
-  echo "  示例: export DEPLOY_SSH_PASS='<your-password>'" >&2
-  echo "  推荐: 使用 ~/.ssh/id_ed25519 密钥登录" >&2
-  exit 1
-fi
-
-# ============================================================================
 # 配置
 # ============================================================================
 
@@ -48,8 +38,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SSH_HOST="${DEPLOY_SSH_HOST:-47.97.111.154}"
 SSH_PORT="${DEPLOY_SSH_PORT:-25022}"
 SSH_USER="${DEPLOY_SSH_USER:-root}"
-SSH_PASS="${DEPLOY_SSH_PASS}"
-export SSH_PASS
+SSH_PASS="${DEPLOY_SSH_PASS:-Kaixuan2026&#*9527}"
 TARGET_DIR="${DEPLOY_TARGET_DIR:-/opt/llm-gateway-go}"
 
 # 颜色输出

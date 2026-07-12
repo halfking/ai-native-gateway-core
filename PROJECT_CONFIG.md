@@ -21,8 +21,8 @@
 服务器信息:
   SSH地址: 14.103.112.184:25022
   默认用户: admin
-  默认密码: <ADMIN_PASSWORD>
-  Root密码: <SSH_PASSWORD>
+  默认密码: Veritrans&9527
+  Root密码: Kaixuan2026&#*9527
   
 数据库配置:
   类型: PostgreSQL
@@ -218,7 +218,7 @@ ssh -p 25022 admin@14.103.112.184
 
 # 切换到root
 sudo su -
-# 密码: <SSH_PASSWORD>
+# 密码: Kaixuan2026&#*9527
 
 # 查看服务状态
 systemctl status llm-gateway

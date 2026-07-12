@@ -29,8 +29,23 @@ type SelfCheckWorker struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 
+	triggerCh chan string
+
+	cleanupCounter int
+
 	faultModels map[string]time.Time
 	faultMu     sync.RWMutex
+}
+
+// TriggerManualRun triggers a manual self-check run for the given model.
+// Returns error if the trigger channel is full.
+func (w *SelfCheckWorker) TriggerManualRun(model string) error {
+	select {
+	case w.triggerCh <- model:
+		return nil
+	default:
+		return fmt.Errorf("manual trigger channel is full, try again later")
+	}
 }
 
 // selfCheckToolDef is the tool used by every self-check conversation.
@@ -69,6 +84,7 @@ func NewSelfCheckWorker(db *pgxpool.Pool, apiKey, baseURL string, keyring *secre
 		keyring:     keyring,
 		client:      &http.Client{Timeout: 30 * time.Second},
 		stopCh:      make(chan struct{}),
+		triggerCh:   make(chan string, 10),
 		faultModels: make(map[string]time.Time),
 	}
 }
@@ -87,6 +103,13 @@ func (w *SelfCheckWorker) Start(ctx context.Context) {
 			case <-w.stopCh:
 				slog.Info("self_check_worker stopped")
 				return
+			case model := <-w.triggerCh:
+				s, err := w.loadSettings(ctx)
+				if err != nil {
+					slog.Error("self_check_worker: manual trigger: load settings failed", "error", err)
+					continue
+				}
+				w.runModel(ctx, model, s.MaxTokens)
 			case <-ticker.C:
 				w.runOnce(ctx)
 			}
@@ -184,6 +207,26 @@ func (w *SelfCheckWorker) runOnce(ctx context.Context) {
 		}(model)
 	}
 	wg.Wait()
+
+	// Data retention: cleanup records older than 30 days (run hourly)
+	w.cleanupCounter++
+	if w.cleanupCounter >= 60 {
+		w.cleanupCounter = 0
+		w.cleanupOldRecords(ctx)
+	}
+}
+
+func (w *SelfCheckWorker) cleanupOldRecords(ctx context.Context) {
+	cutoff := time.Now().Add(-30 * 24 * time.Hour)
+	tag, err := w.db.Exec(ctx, `DELETE FROM self_check_runs WHERE started_at < $1`, cutoff)
+	if err != nil {
+		slog.Error("self_check_worker: cleanup failed", "error", err)
+		return
+	}
+	n := tag.RowsAffected()
+	if n > 0 {
+		slog.Info("self_check_worker: cleaned up old records", "deleted_runs", n)
+	}
 }
 
 // --------------------------------------------------------------------------

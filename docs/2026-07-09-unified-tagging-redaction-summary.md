@@ -338,7 +338,7 @@ graph TB
 - [x] gateway 可单独干净启动（`:8783`，使用 `LLM_GATEWAY_LISTEN=:8783`）
 - [x] `GET /health` 返回 200
 - [x] dashboard dev server 可访问（vite 页面可打开）
-- [ ] admin 登录（`admin / <ADMIN_PASSWORD>`）
+- [ ] admin 登录（`admin / Veritrans&9527`）
 - [ ] 登录后验证设置页与会话详情页
 
 ### 本地验证阻塞说明（2026-07-09）
@@ -352,7 +352,7 @@ POST /api/auth/token -> 404 Not Found
 已确认：
 - `admin/handler.go` 源码中**存在** `mux.HandleFunc("/api/auth/token", h.handleLogin)`
 - 但本地当前运行形态下，该控制面登录路由并未实际暴露出来
-- 因此，浏览器侧无法完成 `admin / <ADMIN_PASSWORD>` 登录，也就无法继续验证登录后页面（设置页、会话详情页）
+- 因此，浏览器侧无法完成 `admin / Veritrans&9527` 登录，也就无法继续验证登录后页面（设置页、会话详情页）
 
 这不是本轮增强 1-4 引入的回归，而是**本地运行入口/构建形态**与预期控制面装配不一致导致的阻塞项。后续若要完成登录态 UI 验证，需要先修复本地控制面路由装配问题，或使用已知可登录的运行入口。
 

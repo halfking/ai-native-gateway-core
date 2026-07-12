@@ -42,7 +42,7 @@ health_check() {
   ok "网关健康"
 }
 
-pg() { PGPASSWORD=<TEST_DB_PASSWORD> docker exec "$DB_CONTAINER" psql -U kxuser -d llm_gateway -tAc "$1" 2>/dev/null; }
+pg() { PGPASSWORD=kxpass docker exec "$DB_CONTAINER" psql -U kxuser -d llm_gateway -tAc "$1" 2>/dev/null; }
 
 # ══════════════════════════════════════════════════════════════════════
 # TC6: Quota 耗尽后静默切换
