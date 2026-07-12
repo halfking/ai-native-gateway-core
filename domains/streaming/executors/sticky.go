@@ -273,9 +273,12 @@ func (s *StickyCache) RecordFailureMultiLevel(
 		e.lastFailureAt = now
 		if e.consecutiveFailures >= threshold {
 			reached = true
-		} else {
-			s.items[key] = e
 		}
+		// AUDIT-2 (2026-07-12): Always write back the updated entry, even
+		// when threshold is not reached. The previous code only wrote back
+		// entries that didn't reach threshold, but this was inside the loop,
+		// so the last matched entry would be written multiple times.
+		s.items[key] = e
 	}
 	if reached {
 		for _, key := range matched {
@@ -453,6 +456,30 @@ func (s *StickyCache) Delete(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.items, key)
+}
+
+// DeleteMultiLevel removes all sticky levels for a given session context.
+// Used when a credential becomes permanently unavailable (e.g., auth failure).
+// AUDIT-2 (2026-07-12): added to support credential-fatal error cleanup.
+func (s *StickyCache) DeleteMultiLevel(
+	tenantID string,
+	appID, apiKeyID *int,
+	clientProfile string,
+	sessionID string,
+	model string,
+) {
+	l1, l2, l3 := buildStickyKeys(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l1 != "" {
+		delete(s.items, l1)
+	}
+	if l2 != "" {
+		delete(s.items, l2)
+	}
+	if l3 != "" {
+		delete(s.items, l3)
+	}
 }
 
 func (s *StickyCache) Len() int {
