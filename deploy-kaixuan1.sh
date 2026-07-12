@@ -25,7 +25,17 @@ phase() { echo -e "\n${B}═══════ $* ═══════${N}"; }
 # ── 配置 ──────────────────────────────────────────────────────────
 SSH_HOST="192.168.31.28"
 SSH_USER="kaixuan"
-SSH_PASS="kaixuan123"
+# P0 安全修复：密码必须从环境变量或 SOPS 注入，不再硬编码。
+# 推荐方式：
+#   1) export DEPLOY_SSH_PASS='<your-password>'    # 环境变量
+#   2) 使用 ssh 密钥: ~/.ssh/id_ed25519            # 优先于密码
+if [ -z "${DEPLOY_SSH_PASS:-}" ]; then
+  err "缺少 DEPLOY_SSH_PASS 环境变量（密码已不再硬编码）"
+  echo "请设置: export DEPLOY_SSH_PASS='<your-password>'"
+  echo "或配置 SSH 密钥登录: ~/.ssh/id_ed25519"
+  exit 1
+fi
+SSH_PASS="${DEPLOY_SSH_PASS}"
 REMOTE_DIR="~/workspace/official-deploy/services/llm-gateway-go"
 BINARY_NAME="llm-gateway-go"
 
