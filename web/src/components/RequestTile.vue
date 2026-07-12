@@ -24,15 +24,15 @@ const emit = defineEmits<{
   click: [requestId: string]
 }>()
 
-// 背景色（状态色） - 2026-07-09: 交换背景色和边框色显示
+// 背景色 - 2026-07-13: 改为透明，状态信息通过边框色表达
 const bgColor = computed(() => {
-  const key = getStatusBorderKey(props.tile.status, props.tile.error_kind)
-  return STATUS_BORDER_COLORS[key] || STATUS_BORDER_COLORS['__default__']
+  return 'transparent'
 })
 
-// 边框色（原厂色） - 2026-07-09: 交换背景色和边框色显示
+// 边框色（状态色） - 2026-07-13: 边框色表示请求状态
 const borderColor = computed(() => {
-  return VENDOR_COLORS[props.tile.vendor] || VENDOR_COLORS['__unknown__']
+  const key = getStatusBorderKey(props.tile.status, props.tile.error_kind)
+  return STATUS_BORDER_COLORS[key] || STATUS_BORDER_COLORS['__default__']
 })
 
 // 时间显示（HH:mm）
@@ -166,6 +166,7 @@ function handleClick() {
     :class="{
       'request-tile--highlighted': isHighlighted,
       'request-tile--dimmed': isDimmed,
+      'request-tile--probe': tile.is_probe,
     }"
     :style="{
       '--bg-color': bgColor,
@@ -175,6 +176,9 @@ function handleClick() {
     :title="tooltipText"
     @click="handleClick"
   >
+    <!-- 2026-07-13: 探测请求标识（右上角T字） -->
+    <div v-if="tile.is_probe" class="request-tile__probe-badge" title="探测请求">T</div>
+    
     <div class="request-tile__time">{{ timeLabel }}</div>
     <div class="request-tile__model">{{ line2Content }}</div>
     <div class="request-tile__provider">{{ line3Content }}</div>
@@ -216,6 +220,24 @@ function handleClick() {
 .request-tile--dimmed {
   opacity: 0.4;
   filter: grayscale(0.5);
+}
+
+/* 2026-07-13: 探测请求标识徽章（右上角小T字） */
+.request-tile__probe-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 14px;
+  height: 14px;
+  background: rgba(99, 102, 241, 0.9);
+  color: white;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  border-radius: 2px;
+  z-index: 2;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
 .request-tile__time {
