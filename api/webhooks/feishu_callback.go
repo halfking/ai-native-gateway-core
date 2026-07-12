@@ -6,22 +6,22 @@ package webhooks
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"sort"
-	"strings"
+	"strconv"
 	"time"
 )
 
 // FeishuCallbackHandler handles Feishu approval callbacks.
 type FeishuCallbackHandler struct {
-	manager       ApprovalManager
-	verifyToken   string // Feishu app verification token
-	encryptKey    string // Feishu app encrypt key (optional)
+	manager     ApprovalManager
+	verifyToken string // Feishu app verification token
+	encryptKey  string // Feishu app encrypt key (optional)
 }
 
 // FeishuCallbackConfig contains configuration for Feishu callback handler.
@@ -57,7 +57,7 @@ func (h *FeishuCallbackHandler) HandleCallback(w http.ResponseWriter, r *http.Re
 		h.writeError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	// Parse callback payload
 	var callback FeishuCallback
@@ -149,7 +149,8 @@ func (h *FeishuCallbackHandler) handleEventCallback(w http.ResponseWriter, r *ht
 
 	// Execute action
 	ctx := r.Context()
-	if action == "approve" {
+	switch action {
+	case "approve":
 		reason := fmt.Sprintf("Approved via Feishu by %s", userName)
 		if userName == "" {
 			reason = fmt.Sprintf("Approved via Feishu (user: %s)", userID)
@@ -169,7 +170,7 @@ func (h *FeishuCallbackHandler) handleEventCallback(w http.ResponseWriter, r *ht
 			"action":  "approved",
 		})
 
-	} else if action == "reject" {
+	case "reject":
 		reason := fmt.Sprintf("Rejected via Feishu by %s", userName)
 		if userName == "" {
 			reason = fmt.Sprintf("Rejected via Feishu (user: %s)", userID)
@@ -218,61 +219,32 @@ func (h *FeishuCallbackHandler) verifySignature(r *http.Request, body []byte) bo
 	}
 
 	// Verify timestamp is recent (within 5 minutes)
-	ts, err := time.Parse("1136189045", timestamp) // Unix timestamp format
-	if err == nil {
-		if time.Since(ts) > 5*time.Minute {
-			slog.Warn("timestamp too old", "timestamp", timestamp)
-			return false
-		}
+	unixSeconds, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		slog.Warn("invalid timestamp", "timestamp", timestamp)
+		return false
+	}
+	if skew := time.Since(time.Unix(unixSeconds, 0)); skew > 5*time.Minute || skew < -5*time.Minute {
+		slog.Warn("timestamp too old", "timestamp", timestamp)
+		return false
 	}
 
-	// Calculate expected signature
-	// signature = sha256(timestamp + nonce + encrypt_key + body)
-	data := timestamp + nonce + h.verifyToken + string(body)
+	// Feishu signs timestamp + nonce + encrypt key + body. Fall back to the
+	// verification token for existing deployments that have not set an encrypt key.
+	signingKey := h.encryptKey
+	if signingKey == "" {
+		signingKey = h.verifyToken
+	}
+	data := timestamp + nonce + signingKey + string(body)
 	hash := sha256.Sum256([]byte(data))
 	expected := hex.EncodeToString(hash[:])
 
-	if signature != expected {
-		slog.Warn("signature mismatch", "expected", expected, "got", signature)
+	if subtle.ConstantTimeCompare([]byte(signature), []byte(expected)) != 1 {
+		slog.Warn("signature mismatch")
 		return false
 	}
 
 	return true
-}
-
-// Alternative signature verification using sorted params (some Feishu apps use this)
-func (h *FeishuCallbackHandler) verifySignatureAlternative(params map[string]string) bool {
-	if h.verifyToken == "" {
-		return true // No verification configured
-	}
-
-	signature, ok := params["signature"]
-	if !ok {
-		return false
-	}
-
-	// Remove signature from params
-	delete(params, "signature")
-
-	// Sort keys and build string
-	keys := make([]string, 0, len(params))
-	for k := range params {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var sb strings.Builder
-	sb.WriteString(h.verifyToken)
-	for _, k := range keys {
-		sb.WriteString(k)
-		sb.WriteString(params[k])
-	}
-
-	// Calculate SHA256 hash
-	hash := sha256.Sum256([]byte(sb.String()))
-	expected := hex.EncodeToString(hash[:])
-
-	return signature == expected
 }
 
 // Helper methods
@@ -293,32 +265,32 @@ func (h *FeishuCallbackHandler) writeError(w http.ResponseWriter, status int, me
 
 // FeishuCallback represents the structure of a Feishu event callback.
 type FeishuCallback struct {
-	Type      string             `json:"type"`       // url_verification, event_callback
-	Challenge string             `json:"challenge"`  // For URL verification
-	Token     string             `json:"token"`      // App verification token
-	Event     *FeishuEvent       `json:"event"`      // Event data
+	Type      string       `json:"type"`      // url_verification, event_callback
+	Challenge string       `json:"challenge"` // For URL verification
+	Token     string       `json:"token"`     // App verification token
+	Event     *FeishuEvent `json:"event"`     // Event data
 }
 
 // FeishuEvent represents the event data in a callback.
 type FeishuEvent struct {
-	Type     string            `json:"type"`       // card.action.trigger, etc.
-	UserID   string            `json:"user_id"`    // User who triggered the action
-	OpenID   string            `json:"open_id"`    // Alternative user ID
-	Action   *FeishuAction     `json:"action"`     // Action details
-	Sender   *FeishuSender     `json:"sender"`     // Sender information
-	Token    string            `json:"token"`      // Event token
+	Type   string        `json:"type"`    // card.action.trigger, etc.
+	UserID string        `json:"user_id"` // User who triggered the action
+	OpenID string        `json:"open_id"` // Alternative user ID
+	Action *FeishuAction `json:"action"`  // Action details
+	Sender *FeishuSender `json:"sender"`  // Sender information
+	Token  string        `json:"token"`   // Event token
 }
 
 // FeishuAction represents button action details.
 type FeishuAction struct {
-	Value    map[string]string `json:"value"`      // Button value data
-	Tag      string            `json:"tag"`        // Action tag
+	Value map[string]string `json:"value"` // Button value data
+	Tag   string            `json:"tag"`   // Action tag
 }
 
 // FeishuSender represents sender information.
 type FeishuSender struct {
-	SenderID   string `json:"sender_id"`
-	OpenID     string `json:"open_id"`
-	UserID     string `json:"user_id"`
-	TenantKey  string `json:"tenant_key"`
+	SenderID  string `json:"sender_id"`
+	OpenID    string `json:"open_id"`
+	UserID    string `json:"user_id"`
+	TenantKey string `json:"tenant_key"`
 }

@@ -3,12 +3,16 @@ package webhooks
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // MockApprovalManager is a simple mock implementation without external dependencies.
@@ -16,7 +20,7 @@ type MockApprovalManager struct {
 	approveFunc            func(ctx context.Context, requestID, tenantID, approvedBy, reason string) error
 	rejectFunc             func(ctx context.Context, requestID, tenantID, approvedBy, reason string) error
 	getApprovalByRequestID func(ctx context.Context, requestID string) (string, error)
-	
+
 	// Track calls for verification
 	approveCalls []approveCall
 	rejectCalls  []rejectCall
@@ -79,6 +83,53 @@ func TestNewFeishuCallbackHandler(t *testing.T) {
 	}
 	if handler.encryptKey != "test_key" {
 		t.Error("encryptKey not set correctly")
+	}
+}
+
+func TestFeishuCallbackHandler_VerifySignatureTimestamp(t *testing.T) {
+	handler := NewFeishuCallbackHandler(FeishuCallbackConfig{
+		VerifyToken: "verify_token",
+		EncryptKey:  "encrypt_key",
+	})
+	body := []byte(`{"type":"event_callback"}`)
+
+	newRequest := func(timestamp string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/callback", nil)
+		nonce := "nonce"
+		hash := sha256.Sum256([]byte(timestamp + nonce + handler.encryptKey + string(body)))
+		req.Header.Set("X-Lark-Signature", hex.EncodeToString(hash[:]))
+		req.Header.Set("X-Lark-Request-Timestamp", timestamp)
+		req.Header.Set("X-Lark-Request-Nonce", nonce)
+		return req
+	}
+
+	if !handler.verifySignature(newRequest(strconv.FormatInt(time.Now().Unix(), 10)), body) {
+		t.Fatal("current Unix timestamp with valid signature should be accepted")
+	}
+	if handler.verifySignature(newRequest(strconv.FormatInt(time.Now().Add(-6*time.Minute).Unix(), 10)), body) {
+		t.Fatal("expired timestamp should be rejected")
+	}
+	if handler.verifySignature(newRequest(strconv.FormatInt(time.Now().Add(6*time.Minute).Unix(), 10)), body) {
+		t.Fatal("future timestamp outside the allowed window should be rejected")
+	}
+	if handler.verifySignature(newRequest("not-a-timestamp"), body) {
+		t.Fatal("invalid timestamp should be rejected")
+	}
+}
+
+func TestFeishuCallbackHandler_VerifySignatureUsesVerifyTokenWithoutEncryptKey(t *testing.T) {
+	handler := NewFeishuCallbackHandler(FeishuCallbackConfig{VerifyToken: "verify_token"})
+	body := []byte(`{"type":"event_callback"}`)
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	nonce := "nonce"
+	hash := sha256.Sum256([]byte(timestamp + nonce + handler.verifyToken + string(body)))
+	req := httptest.NewRequest(http.MethodPost, "/callback", nil)
+	req.Header.Set("X-Lark-Signature", hex.EncodeToString(hash[:]))
+	req.Header.Set("X-Lark-Request-Timestamp", timestamp)
+	req.Header.Set("X-Lark-Request-Nonce", nonce)
+
+	if !handler.verifySignature(req, body) {
+		t.Fatal("valid legacy verify-token signature should be accepted")
 	}
 }
 
