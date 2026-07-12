@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-13
 
+### Fixed (P0)
+- **请求记录保存失败（audit-ir-multimodal 部署后）**
+  `commit 5447bf6b1` (audit-ir-multimodal, 2026-07-13 05:03) 在
+  `RequestLogEntry` 新增 5 个 multimodal 字段，并在
+  `domains/hooks/observability/telemetry/client.go` 的 INSERT 中写入；
+  配套 migration `350_multimodal_token_fields.sql` 只给 `request_logs`
+  **父表**加列，**未触及 `request_logs_hot`（生产实际写入目标）**。
+  v990 二进制 (05:52 部署) 之后所有 INSERT 立即报
+  `column "reasoning_tokens" does not exist`，整个事务回滚导致
+  `usage_ledger_hot` 一同停止写入；失败被 `fallback.WriteRequestLog`
+  写入 104MB 的 jsonl.gz，日志无任何错误记录。
+  本次修复：
+    - 新 migration `2026-07-13-multimodal-token-fields-hot.sql` 给
+      `request_logs_hot` / `usage_ledger_hot` / `request_logs`（父表
+      + 所有 monthly partition）加 5 列 + `idx_request_logs_hot_multimodal_usage`。
+      已直接应用到 252 / pg-252-pg17。
+    - 重写 `client.go` 中 INSERT VALUES 占位符 `$2..$79`，与列名顺序
+      逐项对齐；同样重写 UPDATE SET 子句 + VALUES（71 列 → `$2..$75`），
+      修复 `cost_display = COALESCE($17, ...)` 这种把
+      multimodal 占位符复用到 cost 列的错位 bug。
+  验证（生产 v992 部署后）：`request_logs_hot` /
+  `usage_ledger_hot` 重新开始写入；`success` /
+  `total_tokens` / `request_status` 在 UPDATE 后正确填充。
+  详细 RCA + 验证： `docs/changelogs/2026-07-13-request-log-save-fail-fix.md`。
+
 ### Added
 - **data-lifecycle Hot 表迁移 UI 重构 + credential_model_index 写入去重**
   解决 252 pg17 高速增长表（credential_model_index_2026_07 ≈ 836k 行 / 月）"短时间插入大量相似数据"
