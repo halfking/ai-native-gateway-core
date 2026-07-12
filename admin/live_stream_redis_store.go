@@ -98,6 +98,10 @@ type liveRequestRedisPayload struct {
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	ErrorKind        *string  `json:"error_kind,omitempty"`
 	FailureStage     *string  `json:"failure_stage,omitempty"`
+	// 2026-07-13: 主动探测标记
+	IsProbe      bool   `json:"is_probe,omitempty"`
+	ProbeOrigin  string `json:"probe_origin,omitempty"`
+	ProbeAttempt int    `json:"probe_attempt,omitempty"`
 }
 
 const (
@@ -383,6 +387,9 @@ func marshalLiveRequestRedisPayload(req LiveRequest) (string, error) {
 		CostUSD:          req.CostUSD,
 		ErrorKind:        req.ErrorKind,
 		FailureStage:     req.FailureStage,
+		IsProbe:          req.IsProbe,
+		ProbeOrigin:      req.ProbeOrigin,
+		ProbeAttempt:     req.ProbeAttempt,
 	}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -414,6 +421,9 @@ func unmarshalLiveRequestRedisPayload(data string) (LiveRequest, error) {
 		CostUSD:          p.CostUSD,
 		ErrorKind:        p.ErrorKind,
 		FailureStage:     p.FailureStage,
+		IsProbe:          p.IsProbe,
+		ProbeOrigin:      p.ProbeOrigin,
+		ProbeAttempt:     p.ProbeAttempt,
 	}, nil
 }
 
