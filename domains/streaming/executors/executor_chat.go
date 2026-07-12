@@ -864,6 +864,19 @@ func (e *Executor) executeOpenAI(
 						params.W.Header().Add(k, v)
 					}
 				}
+				// 2026-07-13: Surface compression metadata to clients so they
+				// can adapt their session strategy (e.g. trim client-side
+				// history, reset conversation, switch to compact model).
+				if contextLenRecovery.lastReason != "" && contextLenRecovery.lastReason != "noop" {
+					params.W.Header().Set("X-Gateway-Context-Compressed", "true")
+					params.W.Header().Set("X-Gateway-Compression-Reason", contextLenRecovery.lastReason)
+					if contextLenRecovery.lastStrategy != "" {
+						params.W.Header().Set("X-Gateway-Compression-Strategy", contextLenRecovery.lastStrategy)
+					}
+					if contextLenRecovery.lastMeta != nil {
+						params.W.Header().Set("X-Gateway-Compression-Meta", string(contextLenRecovery.lastMeta))
+					}
+				}
 				params.W.WriteHeader(resp.StatusCode)
 				//nolint:errcheck // HTTP write error non-recoverable
 				params.W.Write(respBody)
@@ -1088,8 +1101,27 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 	// (executor_anthropic.go). See transform/ctx_compress.go for rationale:
 	// upstreams like minimax trim server-side on direct calls, but proxy
 	// clients must trim at the gateway.
-	if cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
-		bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+	//
+	// 2026-07-13: Added fallback context window (128K) when ContextWindow is nil.
+	// This prevents upstream "context window exceeded" errors for models where
+	// the canonical context_window is not yet populated (e.g. gpt-5.6-luna).
+	if cand.Protocol != "anthropic-messages" {
+		effectiveWindow := 0
+		if cand.ContextWindow != nil {
+			effectiveWindow = *cand.ContextWindow
+		} else if len(bodyBytes) > 100*1024 { // Only apply fallback for requests >100KB
+			// Conservative default: 128K tokens for unknown context windows
+			effectiveWindow = 128 * 1024
+			slog.Info("context_compress: using fallback context window",
+				"provider_id", cand.ProviderID,
+				"raw_model", cand.RawModel,
+				"fallback_window", effectiveWindow,
+				"request_size_bytes", len(bodyBytes),
+			)
+		}
+		if effectiveWindow > 0 {
+			bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, effectiveWindow)
+		}
 	}
 	return bodyBytes
 }
