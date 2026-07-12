@@ -230,6 +230,36 @@ function outboundModelDisplay(row: RequestLogDetail | null): string {
   if (!row) return '—'
   return row.provider_model || row.outbound_model || '—'
 }
+
+// 2026-07-13: 错误触发的主动探测元数据辅助函数
+function isProbeRequest(row: RequestLogDetail | null): boolean {
+  return row?.task_type === 'probe_triggered'
+}
+
+function probeOriginLabel(origin: string | null | undefined): string {
+  switch (origin) {
+    case 'probe_direct': return '直连上游'
+    case 'probe_gateway': return '网关路径'
+    case 'probe_scheduled': return '定时探测'
+    default: return '主动探测'
+  }
+}
+
+function probeAttempt(row: RequestLogDetail | null): number | null {
+  if (!row?.auto_decision) return null
+  const meta = row.auto_decision as Record<string, unknown> | null
+  if (meta && typeof meta === 'object' && typeof meta.probe_attempt === 'number') {
+    return meta.probe_attempt as number
+  }
+  // 回退：从 quality_flags 中尝试读取 "attempt_N" 标记（兼容老数据）
+  if (Array.isArray(row.quality_flags)) {
+    for (const flag of row.quality_flags) {
+      const match = /^attempt_(\d+)$/.exec(flag)
+      if (match) return parseInt(match[1], 10)
+    }
+  }
+  return null
+}
 </script>
 
 <template>
@@ -411,6 +441,28 @@ function outboundModelDisplay(row: RequestLogDetail | null): string {
   gap: 10px 16px;
   font-size: 12px;
   margin-bottom: 8px;
+}
+
+/* 2026-07-13: 错误触发的主动探测元数据样式 */
+.probe-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  background: rgba(64, 158, 255, 0.12);
+  border: 1px solid rgba(64, 158, 255, 0.4);
+  border-radius: 4px;
+  font-size: 12px;
+  color: #1890ff;
+}
+.probe-info .probe-origin {
+  font-weight: 500;
+}
+.probe-info .probe-attempt {
+  padding: 0 6px;
+  background: rgba(64, 158, 255, 0.2);
+  border-radius: 3px;
+  font-weight: 600;
 }
 .tab-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
 .tab-badge {
