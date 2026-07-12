@@ -13,6 +13,7 @@ import (
 
 func (h *Handler) registerMaasRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/maas/settings", h.superAdmin(h.handleMaasSettings))
+	mux.HandleFunc("/api/admin/maas/model-rates/batch", h.superAdmin(h.handleMaasModelRateBatch))
 	mux.HandleFunc("/api/admin/maas/model-rates", h.superAdmin(h.handleMaasModelRates))
 	mux.HandleFunc("/api/admin/maas/model-rates/", h.superAdmin(h.handleMaasModelRateByID))
 	mux.HandleFunc("/api/admin/maas/plans", h.superAdmin(h.handleMaasPlans))
@@ -151,6 +152,35 @@ func (h *Handler) handleMaasModelRateByID(w http.ResponseWriter, r *http.Request
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (h *Handler) handleMaasModelRateBatch(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Updates []maas.ModelRateUpsertWithID `json:"updates"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if len(req.Updates) == 0 {
+		writeError(w, http.StatusBadRequest, "updates required")
+		return
+	}
+	updated, err := svc.BatchUpsertModelRates(r.Context(), req.Updates)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
 }
 
 func (h *Handler) handleMaasPlans(w http.ResponseWriter, r *http.Request) {

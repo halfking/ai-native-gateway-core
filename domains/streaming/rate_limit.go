@@ -40,7 +40,16 @@ type rateLimitOutcome struct {
 // the chat, responses and messages endpoints. It never writes to the
 // response — callers compose headers + body themselves so each endpoint
 // keeps its own response shape (OpenAI vs Anthropic vs Responses).
+//
+// AUDIT-2 (2026-07-12): when rate_limit.enabled is OFF, the entire
+// gateway RPM layer is bypassed (Skipped=true). This matches the user
+// semantic "限流降级模块关闭时不限制 RPM"; only the upstream provider's
+// own rate-limit (which the LLM gateway cannot control) still applies.
 func checkGatewayRateLimit(keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimiter) rateLimitOutcome {
+	// AUDIT-2: 限流总开关关闭 → 整个 RPM 检查 no-op。
+	if !ratelimit.IsRateLimitEnabled() {
+		return rateLimitOutcome{Skipped: true}
+	}
 	if keyInfo == nil || rl == nil || keyInfo.IsInternal {
 		return rateLimitOutcome{Skipped: true}
 	}
