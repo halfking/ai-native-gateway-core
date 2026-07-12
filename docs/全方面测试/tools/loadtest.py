@@ -289,8 +289,14 @@ async def run(args):
 
     # periodic reporter
     async def printer():
-        while True:
+        if args.duration:
+            end_realtime = started + args.duration + 3.0  # 多给 3s 让 client 收尾
+        else:
+            end_realtime = float("inf")
+        while time.monotonic() < end_realtime:
             await asyncio.sleep(3.0)
+            if time.monotonic() >= end_realtime:
+                break
             snap = stats.snapshot(started)
             print(
                 f"[t={snap['elapsed_sec']:6.1f}s] total={snap['total']:5d} "
@@ -302,11 +308,11 @@ async def run(args):
             )
 
     tasks.append(printer())
+
     try:
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
         pass
-
     final = stats.snapshot(started)
     out = {
         "scenario": args.scenario,

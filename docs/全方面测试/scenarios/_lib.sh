@@ -4,12 +4,14 @@
 
 set -euo pipefail
 
-TOOLS_DIR="$(cd "$(dirname "$0")/../tools" && pwd)"
-RESULTS_DIR="$(cd "$(dirname "$0")/.." && pwd)/results"
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../tools" && pwd)"
+RESULTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)/results"
 mkdir -p "$RESULTS_DIR"
 
 GATEWAY="${GATEWAY:-http://localhost:8781}"
-API_KEYS="${API_KEYS:-sk-loadtest-01-hash-0000000000000000000000000000000000000001,sk-loadtest-02-hash-0000000000000000000000000000000000000002,sk-loadtest-03-hash-0000000000000000000000000000000000000003,sk-loadtest-04-hash-0000000000000000000000000000000000000004}"
+# raw API keys (gateway 用 HMAC-SHA256 + secret_key 算 hash，去 api_keys 表查)
+# 默认使用 seed.sql 注入的 sk-loadtest-01..08 这 8 把 key
+API_KEYS="${API_KEYS:-sk-loadtest-01,sk-loadtest-02,sk-loadtest-03,sk-loadtest-04,sk-loadtest-05,sk-loadtest-06,sk-loadtest-07,sk-loadtest-08}"
 
 # Reset all suppliers to default state
 reset_all_suppliers() {
