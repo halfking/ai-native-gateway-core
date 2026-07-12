@@ -17,6 +17,8 @@ export default {
   },
   changePassword: '修改密码',
   passwordChangeSuccess: '密码修改成功',
+  passwordChangedReloading: '密码已更新，正在注销并重新登录…',
+  passwordChangedReLogin: '密码已更新，请使用新密码重新登录。',
   // 2026-07-09: 首次进入页面时检测 cookie auth 状态的提示文案
   checking: '正在检测登录状态…',
 }

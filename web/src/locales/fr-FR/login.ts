@@ -18,5 +18,7 @@ export default {
   },
   changePassword: 'Changer le mot de passe',
   passwordChangeSuccess: 'Mot de passe changé avec succès',
+  passwordChangedReloading: 'Mot de passe mis à jour, déconnexion puis reconnexion…',
+  passwordChangedReLogin: 'Mot de passe mis à jour. Veuillez vous reconnecter avec votre nouveau mot de passe.',
   checking: 'Vérification du statut de connexion…',
 }

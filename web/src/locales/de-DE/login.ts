@@ -18,5 +18,7 @@ export default {
   },
   changePassword: 'Passwort ändern',
   passwordChangeSuccess: 'Passwort erfolgreich geändert',
+  passwordChangedReloading: 'Passwort aktualisiert, ab- und wieder anmelden…',
+  passwordChangedReLogin: 'Passwort aktualisiert. Bitte mit dem neuen Passwort anmelden.',
   checking: 'Anmeldestatus wird überprüft…',
 }

@@ -1,5 +1,8 @@
 <script setup lang="ts">
+// MaaSOrderView.vue — /tenant/orders/:id 订单支付页。
+// 2026-07-12: 文案全面接入 i18n。
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import { useRoute } from 'vue-router'
 import {
@@ -10,6 +13,7 @@ import type { MaasBillingOrder } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 import PageBackLink from '../../components/PageBackLink.vue'
 
+const { t } = useI18n()
 const route = useRoute()
 const { maasBackLink } = useMaasTenantContext()
 const orderId = computed(() => Number(route.params.id))
@@ -48,13 +52,19 @@ function statusClass(s: string) {
 }
 
 function channelLabel(c: string) {
-  return c === 'wechat' ? '微信支付' : c === 'alipay' ? '支付宝' : c
+  if (c === 'wechat') return t('tenants.order.channelWechat')
+  if (c === 'alipay') return t('tenants.order.channelAlipay')
+  return c
+}
+
+function orderTypeLabel(t: string) {
+  return t === 'subscribe' ? t('tenants.order.typeSubscribe') : t('tenants.order.typeTopup')
 }
 
 const productName = computed(() => {
   if (!order.value) return ''
-  if (order.value.order_type === 'subscribe') return order.value.plan_name || '月包订阅'
-  return order.value.package_name || '加油包'
+  if (order.value.order_type === 'subscribe') return order.value.plan_name || t('tenants.order.productDefaultSubscribe')
+  return order.value.package_name || t('tenants.order.productDefaultTopup')
 })
 
 async function load() {
@@ -67,7 +77,7 @@ async function load() {
       pollTimer = null
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('tenants.order.loadFailed')
   } finally {
     loading.value = false
   }
@@ -87,11 +97,11 @@ onUnmounted(() => {
   <div>
     <div class="page-header">
       <PageBackLink v-if="backLink" :to="backLink.to" :label="backLink.label" />
-      <h2>订单支付</h2>
+      <h2>{{ t('tenants.order.title') }}</h2>
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
-    <div v-if="loading && !order" class="empty">加载中…</div>
+    <div v-if="loading && !order" class="empty">{{ t('tenants.order.loading') }}</div>
 
     <div v-if="order" class="order-card card">
       <div class="order-header">
@@ -103,30 +113,30 @@ onUnmounted(() => {
       </div>
 
       <div class="order-meta">
-        <div class="meta-row"><span>类型</span><span>{{ order.order_type === 'subscribe' ? '月包订阅' : '加油包' }}</span></div>
-        <div class="meta-row"><span>金额</span><span class="amount">¥{{ fmtPrice(order.amount_cents) }}</span></div>
-        <div class="meta-row"><span>积分</span><span>{{ fmtCredits(order.credits) }}</span></div>
-        <div class="meta-row"><span>支付方式</span><span>{{ channelLabel(order.payment_channel) }}</span></div>
-        <div class="meta-row"><span>创建时间</span><span class="mono">{{ fmtTime(order.created_at) }}</span></div>
-        <div class="meta-row"><span>过期时间</span><span class="mono">{{ fmtTime(order.expires_at) }}</span></div>
+        <div class="meta-row"><span>{{ t('tenants.order.metaType') }}</span><span>{{ orderTypeLabel(order.order_type) }}</span></div>
+        <div class="meta-row"><span>{{ t('tenants.order.metaAmount') }}</span><span class="amount">¥{{ fmtPrice(order.amount_cents) }}</span></div>
+        <div class="meta-row"><span>{{ t('tenants.order.metaCredits') }}</span><span>{{ fmtCredits(order.credits) }}</span></div>
+        <div class="meta-row"><span>{{ t('tenants.order.metaChannel') }}</span><span>{{ channelLabel(order.payment_channel) }}</span></div>
+        <div class="meta-row"><span>{{ t('tenants.order.metaCreatedAt') }}</span><span class="mono">{{ fmtTime(order.created_at) }}</span></div>
+        <div class="meta-row"><span>{{ t('tenants.order.metaExpiresAt') }}</span><span class="mono">{{ fmtTime(order.expires_at) }}</span></div>
       </div>
 
       <div v-if="order.status === 'pending'" class="pay-section">
         <div class="qr-box">
           <div class="qr-placeholder">
             <div class="qr-icon">📱</div>
-            <div class="qr-title">扫码支付（占位）</div>
+            <div class="qr-title">{{ t('tenants.order.qrPlaceholder') }}</div>
             <div class="qr-order mono">{{ order.order_no }}</div>
           </div>
         </div>
         <div v-if="order.payment_hint" class="pay-hint">{{ order.payment_hint }}</div>
         <div v-if="order.stub_mode" class="stub-note">
-          支付账号尚未接入，请备注订单号联系客服完成支付。
+          {{ t('tenants.order.stubNote') }}
         </div>
       </div>
 
       <div v-else-if="order.status === 'paid'" class="paid-note">
-        ✅ 支付已确认，积分已到账。
+        {{ t('tenants.order.paidNote') }}
       </div>
     </div>
   </div>

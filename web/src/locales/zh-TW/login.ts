@@ -18,5 +18,7 @@ export default {
   },
   changePassword: '修改密碼',
   passwordChangeSuccess: '密碼修改成功',
+  passwordChangedReloading: '密碼已更新，正在登出並重新登入…',
+  passwordChangedReLogin: '密碼已更新，請使用新密碼重新登入。',
   checking: '正在偵測登入狀態…',
 }
