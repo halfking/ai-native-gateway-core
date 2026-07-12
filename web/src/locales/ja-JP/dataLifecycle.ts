@@ -227,6 +227,7 @@ export default {
     retention: {
       all: "今すぐ全件移行",
       "1day": "最新 1 日を保持",
+      "3day": "最新 3 日を保持",
       "7day": "最新 7 日を保持",
       "30day": "最新 30 日を保持"
     },
@@ -236,6 +237,7 @@ export default {
     promoteConfirm: "{label} のうち {hours} より古いデータを移行しますか？",
     promoteAll: "すべて",
     hours: "{n} 時間",
+    days: "{n} 日",
     emptyResult: "データがありません",
     partitionTitle: "月次パーティション管理",
     partitionDesc: "古い月次パーティションを削除してディスクを解放します。",

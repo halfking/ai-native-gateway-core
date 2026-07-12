@@ -15,7 +15,7 @@
         <div class="head-actions">
           <span class="retention-hint">
             默认保留
-            <strong>{{ formatHours(defaultRetentionHours) }}</strong>
+            <strong>{{ formatDays(defaultRetentionDays) }}</strong>
             ，后台每小时自动迁移
           </span>
           <button class="btn btn-sm btn-ghost" :disabled="loading" @click="loadAll">
@@ -51,24 +51,33 @@
           </div>
 
           <div class="migration-controls">
-            <el-select
-              v-model="table.retentionHours"
-              class="retention-select"
+            <el-radio-group
+              v-model="table.retentionDays"
+              class="retention-radio"
               :disabled="table.runningJobId !== null"
-              :teleported="true"
-              popper-class="hot-retention-popper"
               :aria-label="hotTableLabel(table.name)"
+              size="small"
             >
-              <el-option :value="1" :label="t('dataLifecycle.hotPartition.retention.1day')" />
-              <el-option :value="3" label="保留 3 天" />
-              <el-option :value="7" :label="t('dataLifecycle.hotPartition.retention.7day')" />
-              <el-option :value="30" :label="t('dataLifecycle.hotPartition.retention.30day')" />
-              <el-option :value="0" :label="t('dataLifecycle.hotPartition.retention.all')" />
-            </el-select>
+              <el-radio-button :label="1">
+                {{ t('dataLifecycle.hotPartition.retention.1day') }}
+              </el-radio-button>
+              <el-radio-button :label="3">
+                {{ t('dataLifecycle.hotPartition.retention.3day') }}
+              </el-radio-button>
+              <el-radio-button :label="7">
+                {{ t('dataLifecycle.hotPartition.retention.7day') }}
+              </el-radio-button>
+              <el-radio-button :label="30">
+                {{ t('dataLifecycle.hotPartition.retention.30day') }}
+              </el-radio-button>
+              <el-radio-button :label="0">
+                {{ t('dataLifecycle.hotPartition.retention.all') }}
+              </el-radio-button>
+            </el-radio-group>
 
             <button
               type="button"
-              class="btn btn-sm btn-primary"
+              class="btn btn-sm btn-primary start-migrate-btn"
               @click="promoteTable(table)"
               :disabled="table.runningJobId !== null"
             >
@@ -374,7 +383,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { ElMessage, ElMessageBox, ElOption, ElSelect } from 'element-plus'
+import { ElMessage, ElMessageBox, ElRadioGroup, ElRadioButton } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '@/i18n'
 import { req } from '@/api/_core'
@@ -390,7 +399,12 @@ interface HotTable {
   sizeBytes: number
   toastHuman: string
   rows: number
-  retentionHours: number
+  /**
+   * Retention in DAYS. Values: 1, 3, 7, 30, 0 (0 = migrate everything).
+   * Converted to hours (×24) before sending to backend.
+   * 修复历史 bug：原 UI 用 hours 但 label 显示“天”，admin 选“保留 1 天”时实际只保留 1 小时。
+   */
+  retentionDays: number
   runningJobId: string | null
   currentJob: JobRun | null
   lastResult: {
@@ -445,13 +459,13 @@ const { t } = useI18n()
 const loading = ref(false)
 const deleting = ref(false)
 const globalError = ref<string | null>(null)
-const defaultRetentionHours = ref(24)
+const defaultRetentionDays = ref(1)
 
 const hotTables = ref<HotTable[]>([
-  { name: 'request_logs_hot', label: 'request_logs_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionHours: 24, runningJobId: null, currentJob: null, lastResult: null },
-  { name: 'credential_model_index_hot', label: 'credential_model_index_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionHours: 24, runningJobId: null, currentJob: null, lastResult: null },
-  { name: 'usage_ledger_hot', label: 'usage_ledger_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionHours: 24, runningJobId: null, currentJob: null, lastResult: null },
-  { name: 'routing_decision_log_hot', label: 'routing_decision_log_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionHours: 24, runningJobId: null, currentJob: null, lastResult: null },
+  { name: 'request_logs_hot', label: 'request_logs_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionDays: 1, runningJobId: null, currentJob: null, lastResult: null },
+  { name: 'credential_model_index_hot', label: 'credential_model_index_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionDays: 1, runningJobId: null, currentJob: null, lastResult: null },
+  { name: 'usage_ledger_hot', label: 'usage_ledger_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionDays: 1, runningJobId: null, currentJob: null, lastResult: null },
+  { name: 'routing_decision_log_hot', label: 'routing_decision_log_hot', sizeHuman: '—', sizeBytes: 0, toastHuman: '—', rows: 0, retentionDays: 1, runningJobId: null, currentJob: null, lastResult: null },
 ])
 
 const partitionTables = ref<PartitionTable[]>([])
@@ -568,9 +582,9 @@ async function loadPartitions() {
 
 async function promoteTable(table: HotTable) {
   const hoursLabel =
-    table.retentionHours === 0
+    table.retentionDays === 0
       ? t('dataLifecycle.hotPartition.promoteAll')
-      : t('dataLifecycle.hotPartition.hours', { n: table.retentionHours })
+      : t('dataLifecycle.hotPartition.days', { n: table.retentionDays })
   try {
     await ElMessageBox.confirm(
       t('dataLifecycle.hotPartition.promoteConfirm', { label: hotTableLabel(table.name), hours: hoursLabel }),
@@ -585,10 +599,14 @@ async function promoteTable(table: HotTable) {
     return
   }
 
+  // retentionDays=0 → 立即迁移全部（retention_hours=0）
+  // 否则 days × 24 = hours
+  const retentionHours = table.retentionDays === 0 ? 0 : table.retentionDays * 24
+
   try {
     const resp = await promoteHotTable({
       table_name: table.name,
-      retention_hours: table.retentionHours,
+      retention_hours: retentionHours,
       batch_size: 5000,
     })
     table.runningJobId = resp.run_id
@@ -778,10 +796,10 @@ function formatTime(iso: string): string {
   })
 }
 
-function formatHours(h: number): string {
-  if (h === 0) return '立即迁移全部'
-  if (h < 24) return `${h} 小时`
-  return `${(h / 24).toFixed(0)} 天`
+function formatDays(d: number): string {
+  if (d === 0) return '立即迁移全部'
+  if (d < 1) return `${Math.round(d * 24)} 小时`
+  return `${d} 天`
 }
 
 function progressPercent(job: JobRun | null): number {
@@ -1003,27 +1021,58 @@ function formatNumber(num: number): string {
 
 .migration-controls {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 10px;
   margin-bottom: 12px;
+  align-items: center;
 }
 
-.retention-select {
-  flex: 1;
-  min-width: 0;
+.retention-radio {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
 }
 
-:global(.hot-retention-popper) {
-  z-index: 3000;
+.start-migrate-btn {
+  flex: 0 0 auto;
+  min-width: 100px;
 }
 
-:global(.hot-retention-popper .el-select-dropdown__item) {
-  min-height: 36px;
-  line-height: 36px;
-  padding: 0 14px;
+:global(.retention-radio .el-radio-button__inner) {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 0;
+  background: transparent;
+  border-color: #30363d;
+  color: #8b949e;
 }
 
-:global(.hot-retention-popper .el-select-dropdown__item.is-selected) {
-  color: #818cf8;
+:global(.retention-radio .el-radio-button:first-child .el-radio-button__inner) {
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+
+:global(.retention-radio .el-radio-button:last-child .el-radio-button__inner) {
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+:global(.retention-radio .el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: #6366f1;
+  color: #c7d2fe;
+  box-shadow: -1px 0 0 0 #6366f1;
+}
+
+:global(.retention-radio .el-radio-button.is-active .el-radio-button__inner) {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: #6366f1;
+  color: #c7d2fe;
+}
+
+:global(.retention-radio .el-radio-button__inner:hover) {
+  color: #e6edf3;
 }
 
 .migration-progress {

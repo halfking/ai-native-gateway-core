@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2026-07-13
 
 ### Added
+- **data-lifecycle Hot 表迁移 UI 重构 + credential_model_index 写入去重**
+  解决 252 pg17 高速增长表（credential_model_index_2026_07 ≈ 836k 行 / 月）"短时间插入大量相似数据"
+  的增量模式问题；同步修正 https://llm.kxpms.cn/admin/data-lifecycle 中"Hot 表数据迁移"的交互
+  与迁移功能。
+
+  - **UI 修复**：`<el-select>` 下拉换成 `<el-radio-group>` radio 按钮组，避免"保留 1 天"实际只
+    保留 1 小时的标签/值不一致 bug（`retentionHours` 1/3/7/30 与 i18n key `1day/7day/30day`
+    单位错配）。前端 `retentionDays` 字段语义清晰，在 `promoteHotTable` 调用前 ×24 转 hours。
+    新增 `retention.3day` 与 `days` i18n key，覆盖全部 8 个 locale（zh-CN/TW/en-US/ja-JP/
+    ko/de-DE/es-ES/fr-FR/ar-SA）。
+
+  - **后端写入去重**：`bg/auto_index_refresher.go::rollupCredentialModelIndexSQL` 增加
+    `WITH fresh AS (...) SELECT f.* FROM fresh f WHERE NOT EXISTS (...)` CTE。
+    仅与"上一次 bucket"对比 success_rate / p95_latency_ms / score_smart / score_speed_first
+    / score_cost_first 五个核心指标，全部一致则跳过 insert。
+    实测 252 prod 数据：21,038 hot rows / 33 buckets → 20,433 (97.1%) 是完全重复。
+    dedup 后 hot 表 5-min 写入量从 ~600 行降至仅在 metrics 真正变化时插入；
+    配合现有 partition_manager 1h promote + 24h retention 窗口，hot 表规模从
+    ~14,400 行（理论上限）稳定在 ~600 行左右。
+
+  - **文档**：`docs/changelogs/2026-07-13-data-lifecycle-radio-and-dedup.md`。
+
+### Added (prior batch)
 - **/model-pricing 标准模型定价与多模态计费**
   `model-pricing` 是用户视角的"标准模型定价清单"，本次纠正了三处偏差：
   (1) 列表每个 canonical model 只占一行，移除"厂家（vendor）"列，用户不需要关心供应商；

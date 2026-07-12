@@ -252,6 +252,7 @@ func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket ti
 // The Decider still calls autoroute.Score() at request time using fresh
 // signals, so the SQL scores are advisory.
 const rollupCredentialModelIndexSQL = `
+WITH fresh AS (
 -- ── Half 1: traffic-derived rows (5-min window from request_logs) ─────────
 SELECT
     $1::timestamptz AS bucket,
@@ -354,6 +355,30 @@ WHERE v.is_routable = TRUE
           OR rl.client_model  = pm.raw_model_name)
         AND rl.ts >= NOW() - INTERVAL '5 minutes'
   )
+)
+-- ── Dedup: skip rows whose (credential_id, raw_model) had IDENTICAL
+-- metrics (success_rate, p95, all 3 scores) in the most recent prior
+-- bucket. 2026-07-13 incident: 97.1% of inserts were pure duplicates.
+-- We only check against the immediate previous bucket so that genuine
+-- metric changes (success_rate 0.9 → 0.85 → 0.9) are still recorded.
+SELECT f.*
+FROM fresh f
+WHERE NOT EXISTS (
+    SELECT 1 FROM credential_model_index prev
+    WHERE prev.credential_id = f.credential_id
+      AND prev.raw_model      = f.raw_model
+      AND prev.bucket = (
+          SELECT MAX(bucket) FROM credential_model_index prev2
+          WHERE prev2.credential_id = f.credential_id
+            AND prev2.raw_model      = f.raw_model
+            AND prev2.bucket        < f.bucket
+      )
+      AND prev.success_rate        IS NOT DISTINCT FROM f.success_rate
+      AND prev.p95_latency_ms      IS NOT DISTINCT FROM f.p95_latency_ms
+      AND prev.score_smart         IS NOT DISTINCT FROM f.score_smart
+      AND prev.score_speed_first   IS NOT DISTINCT FROM f.score_speed_first
+      AND prev.score_cost_first    IS NOT DISTINCT FROM f.score_cost_first
+)
 `
 
 // rollupCredentialModelIndexONCONFLICT is the ON CONFLICT clause for the

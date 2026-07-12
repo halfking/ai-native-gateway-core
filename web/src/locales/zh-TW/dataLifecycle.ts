@@ -227,6 +227,7 @@ export default {
     retention: {
       all: "立即遷移全部",
       "1day": "保留 1 天",
+      "3day": "保留 3 天",
       "7day": "保留 7 天",
       "30day": "保留 30 天"
     },
@@ -236,6 +237,7 @@ export default {
     promoteConfirm: "確認遷移 {label} 中超過 {hours} 的資料？",
     promoteAll: "全部",
     hours: "{n} 小時",
+    days: "{n} 天",
     emptyResult: "暫無資料",
     partitionTitle: "月度分區管理",
     partitionDesc: "刪除舊的月度分區以釋放磁碟空間。",

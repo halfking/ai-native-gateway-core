@@ -227,6 +227,7 @@ export default {
     retention: {
       all: "Tout migrer maintenant",
       "1day": "Conserver 1 jour",
+      "3day": "Conserver 3 jours",
       "7day": "Conserver 7 jours",
       "30day": "Conserver 30 jours"
     },
@@ -236,6 +237,7 @@ export default {
     promoteConfirm: "Migrer de {label} les données de plus de {hours} ?",
     promoteAll: "tout",
     hours: "{n} heures",
+    days: "{n} jours",
     emptyResult: "Aucune donnée",
     partitionTitle: "Gestion des partitions mensuelles",
     partitionDesc: "Supprimez les anciennes partitions mensuelles pour libérer de l'espace disque.",

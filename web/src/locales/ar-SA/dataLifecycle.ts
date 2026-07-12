@@ -227,6 +227,7 @@ export default {
     retention: {
       all: "ترحيل الكل الآن",
       "1day": "الاحتفاظ بآخر يوم واحد",
+      "3day": "الاحتفاظ بآخر 3 أيام",
       "7day": "الاحتفاظ بآخر 7 أيام",
       "30day": "الاحتفاظ بآخر 30 يومًا"
     },
@@ -236,6 +237,7 @@ export default {
     promoteConfirm: "ترحيل البيانات الأقدم من {hours} من {label}؟",
     promoteAll: "الكل",
     hours: "{n} ساعات",
+    days: "{n} أيام",
     emptyResult: "لا توجد بيانات",
     partitionTitle: "إدارة التقسيمات الشهرية",
     partitionDesc: "احذف التقسيمات الشهرية القديمة لتحرير مساحة القرص.",

@@ -242,6 +242,7 @@ export default {
     retention: {
       all: 'Migrate everything now',
       '1day': 'Keep last 1 day',
+      '3day': 'Keep last 3 days',
       '7day': 'Keep last 7 days',
       '30day': 'Keep last 30 days',
     },
@@ -252,6 +253,7 @@ export default {
     promoteConfirm: 'Migrate rows older than {hours} from {label}?',
     promoteAll: 'all',
     hours: '{n} hours',
+    days: '{n} days',
     emptyResult: 'No data',
     // 2026-07-13: async job support
     jobIdMissing: 'Failed to start async job: missing job_id',

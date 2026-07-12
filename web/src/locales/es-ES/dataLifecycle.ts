@@ -227,6 +227,7 @@ export default {
     retention: {
       all: "Migrar todo ahora",
       "1day": "Conservar último 1 día",
+      "3day": "Conservar últimos 3 días",
       "7day": "Conservar últimos 7 días",
       "30day": "Conservar últimos 30 días"
     },
@@ -236,6 +237,7 @@ export default {
     promoteConfirm: "¿Migrar de {label} los datos con más de {hours}?",
     promoteAll: "todo",
     hours: "{n} horas",
+    days: "{n} días",
     emptyResult: "Sin datos",
     partitionTitle: "Gestión de particiones mensuales",
     partitionDesc: "Elimine particiones mensuales antiguas para liberar espacio en disco.",
