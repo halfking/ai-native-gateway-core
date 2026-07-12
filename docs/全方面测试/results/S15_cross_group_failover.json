@@ -1,0 +1,36 @@
+{
+  "scenario": "S15_cross_group",
+  "gateway": "http://localhost:8781",
+  "models": [
+    "loadtest-mini-alpha",
+    "loadtest-mini-beta",
+    "loadtest-mini-gamma",
+    "loadtest-standard-alpha",
+    "loadtest-standard-beta",
+    "loadtest-standard-gamma",
+    "loadtest-pro-alpha",
+    "loadtest-pro-beta",
+    "loadtest-pro-gamma"
+  ],
+  "n_clients": 10,
+  "rps_per_client": 3.0,
+  "duration_sec": 30,
+  "prompt_size": "short",
+  "sticky_ratio": 0.0,
+  "stream_ratio": 0.0,
+  "fault_inject_cancel": 0.0,
+  "metrics": {
+    "total": 291,
+    "succ": 291,
+    "fail": 0,
+    "success_rate": 1.0,
+    "p50_ms": 11.699916998622939,
+    "p95_ms": 3559.1745839992655,
+    "p99_ms": 4011.3714580002124,
+    "max_ms": 4304.845375001605,
+    "throughput_rps": 8.535060268833858,
+    "elapsed_sec": 34.094662584000616,
+    "fail_by_status": {},
+    "fail_by_kind": {}
+  }
+}

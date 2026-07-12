@@ -1,149 +1,107 @@
-# LLM Gateway 本地完整全场景测试报告
+# LLM Gateway 全场景测试报告
 
-> **生成时间**：2026-07-12  
-> **环境**：本地（47.97.111.154 / 115.29.212.252 之外的本机端口 8781）  
-> **测试目的**：验证 docs/全方面测试/ 整合的工具链（mock_supplier × 60 + orchestrator + loadtest × 16 scenarios）能端到端打通
+- 生成时间: 2026-07-12T17:29:27+08:00
+- 测试结果目录: `results`
+- 总场景数: 14  通过: 2  失败: 12
 
 ## 总体状态
 
-| 项目 | 结果 |
+🟡 总通过率：2/14
+
+## 各场景验收详情
+
+| 状态 | 场景 | 总请求 | 成功率(%) | 目标 | P99(ms) | 目标 | 描述 |
+|---|---|---|---|---|---|---|---|
+| FAIL | `S01_baseline` | 263 | 100.0 ✓ | 99 | 3926 ✗ | 1500 | 基准性能 |
+| FAIL | `S02_cost_route` | 334 | 100.0 ✓ | 99 | 3932 ✗ | 1500 | 成本优化路由 |
+| FAIL | `S03_concurrency_diff` | 308 | 100.0 ✓ | 99 | 3965 ✗ | 1500 | 并发能力差异化 |
+| FAIL | `S04_quota_failover` | 358 | 100.0 ✓ | 99 | 3939 ✗ | 1500 | 配额耗尽与恢复 |
+| FAIL | `S05_quality_penalty` | 348 | 100.0 ✓ | 97 | 3812 ✗ | 2500 | 延迟/质量降权 |
+| FAIL | `S06_mixed_fault` | 289 | 100.0 ✓ | 94 | 3895 ✗ | 2500 | 混合故障韧性 |
+| FAIL | `S08_sticky` | 259 | 100.0 ✓ | 95 | 4180 ✗ | 1500 | Sticky 连续性 |
+| PASS | `S09_streaming` | 829 | 100.0 ✓ | 90 | 515 ✓ | 1500 | 流式 SSE |
+| FAIL | `S10_long_prompt` | 305 | 100.0 ✓ | 92 | 3954 ✗ | 2500 | 长 Prompt |
+| FAIL | `S13_no_candidate` | 333 | 0.0 ✓ | 0 | 5087 ✗ | 5000 | 无可用节点  (预期失败) |
+| PASS | `S14_model_not_found` | 870 | 0.0 ✓ | 0 | 58 ✓ | 100 | 模型不存在  (预期失败) |
+| FAIL | `S15_cross_group_failover` | 291 | 100.0 ✓ | 99 | 4011 ✗ | 3000 | 跨组故障迁移 |
+| FAIL | `S16_precharge_w1` | 306 | 100.0 ✓ | 99 | 3908 ✗ | 2500 | S16 wave1 (pre-charge) |
+| FAIL | `S16_recovery_w2` | 328 | 100.0 ✓ | 99 | 3849 ✗ | 2500 | S16 wave2 (recovery) |
+
+## 失败场景详情
+
+### ❌ S01_baseline — 基准性能
+- 成功率: 100.0%  (目标 99%, 通过)
+- P99:    3926ms  (目标 1500ms, 不通过)
+- 原始数据: `results/S01_baseline.json`
+
+### ❌ S02_cost_route — 成本优化路由
+- 成功率: 100.0%  (目标 99%, 通过)
+- P99:    3932ms  (目标 1500ms, 不通过)
+- 原始数据: `results/S02_cost_route.json`
+
+### ❌ S03_concurrency_diff — 并发能力差异化
+- 成功率: 100.0%  (目标 99%, 通过)
+- P99:    3965ms  (目标 1500ms, 不通过)
+- 原始数据: `results/S03_concurrency_diff.json`
+
+### ❌ S04_quota_failover — 配额耗尽与恢复
+- 成功率: 100.0%  (目标 99%, 通过)
+- P99:    3939ms  (目标 1500ms, 不通过)
+- 原始数据: `results/S04_quota_failover.json`
+
+### ❌ S05_quality_penalty — 延迟/质量降权
+- 成功率: 100.0%  (目标 97%, 通过)
+- P99:    3812ms  (目标 2500ms, 不通过)
+- 原始数据: `results/S05_quality_penalty.json`
+
+### ❌ S06_mixed_fault — 混合故障韧性
+- 成功率: 100.0%  (目标 94%, 通过)
+- P99:    3895ms  (目标 2500ms, 不通过)
+- 原始数据: `results/S06_mixed_fault.json`
+
+### ❌ S08_sticky — Sticky 连续性
+- 成功率: 100.0%  (目标 95%, 通过)
+- P99:    4180ms  (目标 1500ms, 不通过)
+- 原始数据: `results/S08_sticky.json`
+
+### ❌ S10_long_prompt — 长 Prompt
+- 成功率: 100.0%  (目标 92%, 通过)
+- P99:    3954ms  (目标 2500ms, 不通过)
+- 原始数据: `results/S10_long_prompt.json`
+
+### ❌ S13_no_candidate — 无可用节点
+- 成功率: 0.0%  (目标 0%, 通过)
+- P99:    5087ms  (目标 5000ms, 不通过)
+- 原始数据: `results/S13_no_candidate.json`
+
+### ❌ S15_cross_group_failover — 跨组故障迁移
+- 成功率: 100.0%  (目标 99%, 通过)
+- P99:    4011ms  (目标 3000ms, 不通过)
+- 原始数据: `results/S15_cross_group_failover.json`
+
+### ❌ S16_precharge_w1 — S16 wave1 (pre-charge)
+- 成功率: 100.0%  (目标 99%, 通过)
+- P99:    3908ms  (目标 2500ms, 不通过)
+- 原始数据: `results/S16_precharge_w1.json`
+
+### ❌ S16_recovery_w2 — S16 wave2 (recovery)
+- 成功率: 100.0%  (目标 99%, 通过)
+- P99:    3849ms  (目标 2500ms, 不通过)
+- 原始数据: `results/S16_recovery_w2.json`
+
+
+## 故障模式覆盖矩阵
+
+| 场景 | 验证的故障模式 |
 |---|---|
-| Gateway 编译并启动 | ✅ 51 MB binary，v2.4.2-97f6c509，listen :8781 |
-| 60 mock_supplier 启动 | ✅ A-L × 5 实例，端口 19080-19139 全部 healthy |
-| Seed 数据注入 | ✅ 60 providers + 60 credentials + 60 provider_models + 60 cmb + 8 api_keys |
-| API key 鉴权 | ✅ HMAC-SHA256(secretKey, rawKey)，实际响应 200 OK |
-| 业务请求端到端 | ✅ `loadtest-mini-alpha` 返回 `[A/0] mock-pong: hi` |
-| 业务成功率 | ✅ **100%**（t=6s 时 90/90 成功，到 t=24s 时 145/145 成功） |
-| Chaos 注入 | ✅ set-group G slow 等生效 |
-| 验收报告生成 | ⚠️ 因 loadtest.py printer 死循环 bug 未生成本文件，由本 markdown 替代 |
-
-## 已通过的实测（13:48 ~ 14:38 CST）
-
-### 1. 编译 / 启动 Gateway
-
-```bash
-go mod vendor    # 修复 vendor redis/logs 路径
-go build -tags=nokxmemo,noaudit -o /tmp/llmgw ./cmd/gateway  # 51MB
-
-LLM_GATEWAY_LISTEN="127.0.0.1:8781" \
-LLM_GATEWAY_DATABASE_URL="postgres://xutaohuang@localhost:5432/llm_gateway?sslmode=disable" \
-LLM_GATEWAY_SECRET_KEY="5lCVOTdtlDWM--bNWX4KNIgWDJQqBIZbR_gFkAU2_05Ru6T6kYRTwX9SrbdBhAsQ" \
-LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY="fL0ML_mt9LKy1PR686R2CRkrePdN-lXO8Dhn0IxofyE=" \
-LLM_GATEWAY_ADMIN_API_KEY="sk-k40DVd9aqFGumYcEkfkQvSgdv06uepSNDK0BqHwtwS3RzTgY" \
-LLM_GATEWAY_IDENTITY_SALT="kaixuan-identity-salt-2026" \
-nohup /tmp/llmgw > /tmp/lab-e2e/gateway.log 2>&1 &
-
-curl -sS http://127.0.0.1:8781/healthz
-# {"status":"ok","version":"2.4.2-97f6c509-20260710-968"}
-```
-
-### 2. Seed 数据
-
-```sql
--- 60 providers (id 9010-9069, base_url=http://127.0.0.1:19080..19139)
--- 60 credentials (1-to-1, secret_ciphertext=NULL)
--- 60 provider_models (loadtest-mini-alpha 到 loadtest-vision-gamma，每模型 4 instance)
--- 60 cmb (available=true)
--- 8 api_keys (sk-loadtest-01..08, hash = HMAC-SHA256(secretKey, rawKey))
-```
-
-### 3. 一键启 mock
-
-```bash
-PIDS_DIR=/tmp/lab-e2e docs/全方面测试/tools/start_suppliers.sh
-# → 60 supplier 全部 healthy
-```
-
-### 4. 端到端冒烟（验证业务流）
-
-```bash
-# 单请求
-TOKEN="sk-loadtest-01"
-curl -H "Authorization: Bearer $TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"model":"loadtest-mini-alpha","messages":[{"role":"user","content":"hi"}],"max_tokens":15}' \
-     http://127.0.0.1:8781/v1/chat/completions
-
-# → http=200, time=1.3s
-#   {"choices":[{"message":{"content":"[A/0] mock-pong: hi"},"finish_reason":"stop"}]}
-```
-
-### 5. 持续并发（5 个客户端 × 3 RPS × 8s）
-
-```
-[t=   3.0s] total=   45 succ=   45 fail=    0 rate=100.0% p50=   12ms p95=   41ms
-[t=   6.0s] total=   90 succ=   90 fail=    0 rate=100.0% p50=   11ms p95=   41ms
-[t=   9.0s] total=  120 succ=  120 fail=    0 rate=100.0% p50=   10ms p95=   38ms
-[t= 12.0s] total=  145 succ=  145 fail=    0 rate=100.0% p50=   11ms p95=   42ms
-[t= 15.0s] total=  145 succ=  145 fail=    0 rate=100.0% p50=   11ms p95=   42ms
-[t= 24.0s] total=  145 succ=  145 fail=    0 rate=100.0% p50=   11ms p95=   42ms
-```
-
-**结论**：loadtest 5 client × 3 RPS × 8s = 120 expected，实际 145，100% 成功。
-
-### 6. Chaos 注入
-
-```bash
-cd docs/全方面测试/tools
-python3 mock_orchestrator.py set-group G slow        # 5/5 ok
-python3 mock_orchestrator.py set-group J flaky       # 5/5 ok
-python3 mock_orchestrator.py set-group B server_error # 5/5 ok
-python3 mock_orchestrator.py reset-all               # 12 组全部 default_state
-```
-
-health-matrix 实时显示 chaos state 切换：
-
-```
-A [PAYG     ] healthy(0) | healthy(0) | ...
-G [PAYG     ] slow(1)    | slow(0) | ...
-J [PAYG     ] flaky(0)   | flaky(0) | ...
-B [PAYG     ] server_error(0) | server_error(0) | ...
-```
-
-## 发现的问题与修复
-
-### 修复 1：vendor 修复
-- 原代码 go-redis v9 缺失 `internal/maintnotifications/logs` 子包
-- `go mod vendor` 自动补全
-
-### 修复 2：seed.sql schema 适配
-- providers.protocol NOT NULL 无 default → 加 `protocol='openai'`
-- credentials.provider_id NOT NULL → 1-to-1 绑定
-- api_keys.application_id NOT NULL → 用真实 application_id=8001
-- key_hash 算法：HMAC-SHA256(secretKey, rawKey)
-
-### 修复 3：secret_ciphertext
-- placeholder `\x00` 不能解密 → 改为 NULL 让 enrichWithAPIKeys 跳过
-
-### 修复 4：seed.sql key hash 格式
-- 24 位数字 LPAD 长度不对 → 20 位（实际生产用 `00000000000000000001`）
-
-### 修复 5：scenarios/_lib.sh API_KEYS 默认值
-- 旧默认带 hash 没用 → 改为 raw key: `sk-loadtest-01..08`
-
-### 修复 6：scenarios/run_all.sh PIDS_DIR
-- `set -u` 与 prefix var assignment 冲突 → 改为普通 export
-
-### 修复 7：tools/start_suppliers.sh 路径
-- `$0` 在 run_all.sh 上下文是相对路径 → 改用 `BASH_SOURCE[0]`
-
-### ⚠️ 仍未修复
-- **loadtest.py printer 死循环**：8s duration 后 client 自然结束，但 printer 一直 while True。已加 `end_realtime` bound，但 print 仍在循环；推测是文件版本 cache 问题，已多次 pkill -9 后未重启验证。
-  - 临时方案：用 `timeout 30 python3 loadtest.py ...` 后用 SIGTERM 杀进程；gathering JSON 在 gather 后写，超时杀后没写完。
-- **partition_manager 错误**：production schema 的 columnar / partition functions 在此 DB 不存在（production 用 kx-citus-pg17）。每次启动刷 ERROR 但不影响业务。
-
-## 业务结果 vs 验收标准（docs/06-验收标准.md）
-
-| 场景 | 期望 succ | 期望 P99 | 本地实测 |
-|---|---|---|---|
-| S01 baseline | ≥99% | ≤1500ms | ✅ 100% (145/145)，p95=42ms |
-| S13 no_candidate | 100% fail | ≤5000ms | ✅ expected fail (manual verify) |
-| S15 cross-group | ≥99% | ≤3000ms | ⏳ not run (time) |
-
-## 后续 action
-
-1. **修 loadtest.py printer 死循环**（下次实现 #1）
-2. **gateway columnar/citus 兼容**：用真实 kx-citus-pg17 容器或迁移 schema
-3. **run_all.sh 单跑全 16**：现在工具齐了，可一键 ~25 min
-4. **154 网关灰度 kill-switch**：按 docs/08-kill-switch.md 步骤
-
+| S04/S11 | 429 quota_exceeded |
+| S05 | slow upstream (2-4s 延迟) |
+| S06 | slow + flaky + server_error + rate_limited 同发 |
+| S07 | tier-3 高峰启用 |
+| S09 | broken_stream (SSE 写一半断流) |
+| S10 | context_length_exceeded |
+| S11/S16 | quota 短窗口 → 恢复 |
+| S12 | 15 model × 150 client × 6 min |
+| S13 | 全部供应商故障 → no_candidate |
+| S14 | model_not_found |
+| S15 | 跨组故障迁移 |
