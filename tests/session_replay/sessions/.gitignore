@@ -1,0 +1,3 @@
+# Real exported sessions from 252 prod (large JSON, regenerated via /tmp/session_export/extract.py)
+session_*.json
+reports/
