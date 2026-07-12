@@ -45,6 +45,9 @@ type ExtractPyTurn struct {
 	BodySizeBytes int             `json:"body_size_bytes"`
 	RespSizeBytes int             `json:"resp_size_bytes"`
 	MsgCount      int             `json:"msg_count"`
+	Success       bool            `json:"success"`
+	ErrorKind     string          `json:"error_kind,omitempty"`
+	LatencyMs     int             `json:"latency_ms,omitempty"`
 	RequestBody   json.RawMessage `json:"request_body"`
 	OutboundBody  json.RawMessage `json:"outbound_body,omitempty"`
 	ResponseBody  json.RawMessage `json:"response_body,omitempty"`
@@ -88,10 +91,16 @@ func (e *ExtractPySession) ToSessionPack() *SessionPack {
 			bodyText = "{}"
 		}
 		pack.Messages = append(pack.Messages, ExportMessage{
-			Turn:      t.Turn,
-			Role:      "user", // extract.py 不区分 per-role，统一标记 user
-			Content:   bodyText,
-			CreatedAt: t.Ts,
+			Turn:            t.Turn,
+			Role:            "user", // extract.py 不区分 per-role，统一标记 user
+			Content:         bodyText,
+			RequestID:       t.RequestID,
+			Model:           t.ClientModel,
+			ResponseContent: string(t.ResponseBody),
+			Success:         t.Success,
+			ErrorKind:       t.ErrorKind,
+			LatencyMs:       t.LatencyMs,
+			CreatedAt:       t.Ts,
 		})
 	}
 	return pack

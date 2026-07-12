@@ -86,6 +86,10 @@ func (h *Hook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
 		env.Metadata["output_compliance_error"] = err.Error()
 		return nil
 	}
+	if result == nil {
+		env.Metadata["output_compliance_error"] = "checker returned no result"
+		return nil
+	}
 	env.Metadata["output_compliance_result"] = map[string]any{
 		"compliant": result.Compliant,
 		"blocked":   result.Blocked,
