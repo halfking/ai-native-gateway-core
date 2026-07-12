@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -265,14 +266,44 @@ func (s *PgxStore) CountActiveDevices(ctx context.Context, licenseKey string) (i
 	return count, err
 }
 
-func (s *PgxStore) ListAllLicenses(ctx context.Context, offset, limit int) ([]License, int, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, license_key, customer_name, customer_email, max_devices,
-		       subscription_tier, features, expires_at, created_at, revoked_at
-		FROM licenses
-		ORDER BY created_at DESC
-		LIMIT $1 OFFSET $2
-	`, limit, offset)
+func (s *PgxStore) ListAllLicenses(ctx context.Context, offset, limit int, query, statusFilter string) ([]License, int, error) {
+	where := "WHERE 1=1"
+	args := []interface{}{}
+	argIdx := 1
+
+	if query != "" {
+		where += " AND (customer_name ILIKE $" + strconv.Itoa(argIdx) +
+			" OR customer_email ILIKE $" + strconv.Itoa(argIdx) +
+			" OR license_key ILIKE $" + strconv.Itoa(argIdx) + ")"
+		args = append(args, "%"+query+"%")
+		argIdx++
+	}
+
+	switch statusFilter {
+	case "active":
+		where += " AND revoked_at IS NULL AND expires_at > NOW()"
+	case "expired":
+		where += " AND revoked_at IS NULL AND expires_at <= NOW()"
+	case "revoked":
+		where += " AND revoked_at IS NOT NULL"
+	}
+
+	// Count
+	countSQL := "SELECT COUNT(*) FROM licenses " + where
+	var total int
+	if err := s.pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// Data query
+	dataSQL := "SELECT id, license_key, customer_name, customer_email, max_devices, " +
+		"subscription_tier, features, expires_at, created_at, revoked_at " +
+		"FROM licenses " + where +
+		" ORDER BY created_at DESC" +
+		" LIMIT $" + strconv.Itoa(argIdx) + " OFFSET $" + strconv.Itoa(argIdx+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.pool.Query(ctx, dataSQL, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -293,11 +324,6 @@ func (s *PgxStore) ListAllLicenses(ctx context.Context, offset, limit int) ([]Li
 			return nil, 0, err
 		}
 		licenses = append(licenses, lic)
-	}
-
-	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM licenses`).Scan(&total); err != nil {
-		return nil, 0, err
 	}
 
 	return licenses, total, rows.Err()
