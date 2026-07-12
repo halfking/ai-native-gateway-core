@@ -118,6 +118,10 @@ func (w *SelfCheckWorker) Start(ctx context.Context) {
 					w.runModel(ctx, model, s.MaxTokens)
 					continue
 				}
+				if !s.Enabled {
+					slog.Info("self_check_worker: manual trigger ignored because self-check is disabled")
+					continue
+				}
 				models, err := w.selectModels(ctx, s)
 				if err != nil {
 					slog.Error("self_check_worker: manual trigger: select models failed", "error", err)
@@ -490,7 +494,7 @@ func (w *SelfCheckWorker) doConversationRound(ctx context.Context, model string,
 	body := map[string]any{
 		"model":      model,
 		"messages":   messages,
-		"max_tokens": 100,
+		"max_tokens": maxTokens,
 		"tools":      []map[string]any{selfCheckToolDef},
 	}
 	reqBody, _ := json.Marshal(body)

@@ -97,24 +97,6 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	if clientModel != "" {
 		body = replaceModelInResponseBody(body, clientModel)
 	}
-	// Strip vendor-specific private fields based on catalog_code (P0.3, 2026-07-11).
-	// MiniMax: nvext, base_resp, request_id, etc.
-	// GLM/Zhipu: zhipu_request_id, cache_read_tokens, web_search_results, etc.
-	// DeepSeek: reasoning_tokens (R1计费字段), prompt_cache_hit_tokens, etc.
-	// Doubao: doubao_request_id, seeddance_request_id, content_safety_score, etc.
-	// TODO(AUDIT-2026-07-11): catalog_code 需要从调用处传递进来，当前实现为占位。
-	if c.StripMinimaxFields != nil {
-		body = c.StripMinimaxFields(body)
-	}
-	if c.StripZhipuFields != nil {
-		body = c.StripZhipuFields(body)
-	}
-	if c.StripDeepSeekFields != nil {
-		body = c.StripDeepSeekFields(body)
-	}
-	if c.StripDoubaoFields != nil {
-		body = c.StripDoubaoFields(body)
-	}
 	// Write-time 客户端可见脱敏（2026-07-09，增强 1）。
 	// 在 w.Write 前调用，让客户端真正收到脱敏后字节。
 	// sessionID/tenantID 需从上下文传入（当前简化为空，TODO: 从 routing 上下文注入）。
@@ -812,9 +794,6 @@ func (e *Executor) executeOpenAI(
 			}
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
-			}
-			if e.StripMinimaxFields != nil {
-				respBody = e.StripMinimaxFields(respBody)
 			}
 			// Q2 non-stream response (anthropic client ← openai upstream):
 			// the upstream body is still OpenAI-shaped at this point; if

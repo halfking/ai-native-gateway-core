@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strings"
 )
 
 var errNotFound = errors.New("key not found")
@@ -13,6 +14,9 @@ type UsageData struct {
 	CompletionTokens *int
 	CacheReadTokens  *int
 	CacheWriteTokens *int
+	ReasoningTokens  *int
+	CacheMissTokens  *int
+	ProviderTokens   *int
 }
 
 func ExtractUsageFromChunk(payload string) UsageData {
@@ -75,6 +79,41 @@ func ExtractUsageFromChunk(payload string) UsageData {
 		}
 	}
 
+	// Reasoning usage is reported by OpenAI-compatible providers under either
+	// completion_tokens_details or a provider-specific top-level field.
+	if detail, err := objVal(usage, "completion_tokens_details"); err == nil {
+		if v, err := intValue(detail, "reasoning_tokens"); err == nil {
+			result.ReasoningTokens = &v
+		}
+	}
+	if result.ReasoningTokens == nil {
+		for _, key := range []string{"reasoning_tokens", "reasoning_token_count"} {
+			if v, err := intValue(usage, key); err == nil {
+				result.ReasoningTokens = &v
+				break
+			}
+		}
+	}
+
+	// DeepSeek/Doubao-compatible endpoints may expose cache hit/miss as
+	// separate counters. Keep miss separate because it is normally billed at
+	// the regular input rate rather than the cache-read rate.
+	for _, key := range []string{"prompt_cache_miss_tokens", "cache_miss_tokens"} {
+		if v, err := intValue(usage, key); err == nil {
+			result.CacheMissTokens = &v
+			break
+		}
+	}
+
+	// Doubao Seed usage is provider billing evidence, not a generic token
+	// replacement. Preserve it separately until the provider rate card maps it.
+	for _, key := range []string{"seed_token_usage", "seed_tokens"} {
+		if v, err := intValue(usage, key); err == nil {
+			result.ProviderTokens = &v
+			break
+		}
+	}
+
 	// total_tokens fallback: if we have total but missing prompt/completion, infer them
 	if (result.PromptTokens == nil || result.CompletionTokens == nil) && result.PromptTokens == nil {
 		if total, err := intValue(usage, "total_tokens"); err == nil && total > 0 {
@@ -88,6 +127,16 @@ func ExtractUsageFromChunk(payload string) UsageData {
 	}
 
 	return result
+}
+
+// ExtractDoubaoUsageFromChunk extracts only fields that are valid for the
+// official Doubao profile. The catalog guard prevents a volcengine-coding
+// aggregate response from being interpreted as Doubao usage.
+func ExtractDoubaoUsageFromChunk(payload string, catalogCode string) UsageData {
+	if strings.ToLower(strings.TrimSpace(catalogCode)) != "doubao" {
+		return UsageData{}
+	}
+	return ExtractUsageFromChunk(payload)
 }
 
 func ExtractFinishReason(payload string) string {

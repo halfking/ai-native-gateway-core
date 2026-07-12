@@ -120,6 +120,10 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 
 	// Total count.
 	var total int
@@ -213,6 +217,10 @@ func (h *SelfCheckHandler) handleGetRun(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		rounds = append(rounds, rd)
+	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
 	}
 
 	writeJSON(w, 200, map[string]any{"run": run, "rounds": rounds})
@@ -327,7 +335,7 @@ func (h *SelfCheckHandler) handleUpdateSettings(w http.ResponseWriter, r *http.R
 	}
 	if len(body.FeaturedModels) > 0 {
 		var featured []string
-		if err := json.Unmarshal(body.FeaturedModels, &featured); err != nil {
+		if string(body.FeaturedModels) == "null" || json.Unmarshal(body.FeaturedModels, &featured) != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "featured_model_ids must be a JSON string array"})
 			return
 		}
@@ -552,6 +560,10 @@ func (h *SelfCheckHandler) handleModels(w http.ResponseWriter, r *http.Request) 
 		if rows.Scan(&m.Model, &m.Total, &m.Success, &m.Failed, &m.LastRun) == nil {
 			models = append(models, m)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
 	}
 	writeJSON(w, 200, map[string]any{"models": models})
 }
