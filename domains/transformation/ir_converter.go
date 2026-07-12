@@ -56,6 +56,7 @@ type TransportIRConverter struct {
 	extractor *IRExtensionExtractor
 	restorer  *IRExtensionRestorer
 	cb        *StreamCircuitBreaker
+	context   *domain.TransportContext // optional; used for catalog-aware restoration
 }
 
 // NewTransportIRConverter creates a converter that wraps inner with
@@ -74,6 +75,11 @@ func (c *TransportIRConverter) SetCircuitBreaker(cb *StreamCircuitBreaker) {
 	if cb != nil {
 		c.cb = cb
 	}
+}
+
+// SetContext injects TransportContext for catalog-aware extension restoration.
+func (c *TransportIRConverter) SetContext(ctx *domain.TransportContext) {
+	c.context = ctx
 }
 
 func (c *TransportIRConverter) circuitCheck() error {
@@ -159,7 +165,7 @@ func (c *TransportIRConverter) SerializeOpenAI(req *ir.InternalRequest) ([]byte,
 		c.recordErr()
 		return nil, err
 	}
-	out = c.restoreExtensions(out, req.Extensions)
+	out = c.restoreRequestExtensions(out, req, ir.ProtocolOpenAIChat)
 	c.recordOK()
 	return out, nil
 }
@@ -175,7 +181,7 @@ func (c *TransportIRConverter) SerializeAnthropic(req *ir.InternalRequest) ([]by
 		c.recordErr()
 		return nil, err
 	}
-	out = c.restoreExtensions(out, req.Extensions)
+	out = c.restoreRequestExtensions(out, req, ir.ProtocolAnthropicMessages)
 	c.recordOK()
 	return out, nil
 }
@@ -193,6 +199,22 @@ func (c *TransportIRConverter) restoreExtensions(body []byte, ext map[string]jso
 		return body
 	}
 	return restored
+}
+
+// restoreRequestExtensions conditionally restores request extensions based on
+// SourceProtocol and catalog code hints.
+func (c *TransportIRConverter) restoreRequestExtensions(body []byte, req *ir.InternalRequest, targetProtocol string) []byte {
+	if req == nil || req.SourceProtocol != targetProtocol {
+		return body
+	}
+	// Check catalog code hint if available
+	if c.context != nil && c.context.ClientCatalogCode != "" && c.context.UpstreamCatalogCode != "" {
+		if c.context.ClientCatalogCode != c.context.UpstreamCatalogCode {
+			// Cross-provider: do not restore extensions even if protocols match
+			return body
+		}
+	}
+	return c.restoreExtensions(body, req.Extensions)
 }
 
 // ─── Response direction (Phase D) ───

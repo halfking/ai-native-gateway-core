@@ -12,9 +12,11 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/disguise"
+	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -925,6 +927,16 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				return nil, fmt.Errorf("format conversion disabled for provider %d (anthropic→openai)", cand.ProviderID)
 			}
 		}
+		// Inject catalog code context for same-provider extension restoration
+		if converter, ok := e.IR.(interface {
+			SetContext(*domain.TransportContext)
+		}); ok {
+			ctx := &domain.TransportContext{
+				UpstreamCatalogCode: cand.CatalogCode,
+				// ClientCatalogCode remains empty until routing layer tracks it
+			}
+			converter.SetContext(ctx)
+		}
 		// Parse Anthropic body → IR → Serialize OpenAI
 		irReq, err := e.IR.ParseAnthropic(sourceBody)
 		if err != nil {
@@ -932,6 +944,12 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		}
 		// Override model to outbound model (matching existing behavior)
 		irReq.Model = resolveOutboundModel(params, cand)
+		// 2026-07-12: Validate and fix request format before serialization.
+		// Applies automatic fixes: orphaned tool messages, empty content,
+		// tool_call structure, role alternation, system message placement.
+		// Prevents upstream rejections from MiniMax 2013, OpenAI item_reference,
+		// and other format-related errors.
+		irReq = ir.ValidateAndFixRequest(irReq)
 		bodyBytes, err := e.IR.SerializeOpenAI(irReq)
 		if err != nil {
 			return nil, fmt.Errorf("ir serialize openai: %w", err)
@@ -959,6 +977,23 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 	p := *params
 	p.BodyBytes = sourceBody
 	bodyBytes := prepareRequestBody(&p, cand)
+
+	// 2026-07-12: Apply format validation even in legacy path.
+	// Parse → Validate → Serialize to clean up malformed requests.
+	if e.IR != nil {
+		irReq, parseErr := e.IR.ParseOpenAI(bodyBytes)
+		if parseErr == nil {
+			irReq = ir.ValidateAndFixRequest(irReq)
+			// Override model to outbound model
+			irReq.Model = resolveOutboundModel(params, cand)
+			bodyBytes, _ = e.IR.SerializeOpenAI(irReq)
+		} else {
+			slog.Warn("legacy path: IR parse failed, skipping validation",
+				"error", parseErr.Error(),
+			)
+		}
+	}
+
 	if e.NormalizeOpenAITools != nil {
 		bodyBytes = e.NormalizeOpenAITools(bodyBytes)
 	}
