@@ -4,13 +4,15 @@ import { useI18n } from 'vue-i18n'
 import ApprovalConfigPanel from '../components/ApprovalConfigPanel.vue'
 import CompressionConfigPanel from '../components/CompressionConfigPanel.vue'
 import HealthScoreConfigPanel from '../components/HealthScoreConfigPanel.vue'
+import PromptInjectionConfigPanel from '../components/PromptInjectionConfigPanel.vue'
 import { getModuleEnabled } from '../api/modules'
 
 const { t } = useI18n()
-type TabKey = 'approval' | 'compression' | 'health'
+type TabKey = 'approval' | 'compression' | 'promptInjection' | 'health'
 
 const activeTab = ref<TabKey>('approval')
 const healthEnabled = ref(false)
+const promptInjectionEnabled = ref(false)
 const moduleLoading = ref(true)
 
 const tabs = computed<{ key: TabKey; label: string }[]>(() => {
@@ -18,6 +20,7 @@ const tabs = computed<{ key: TabKey; label: string }[]>(() => {
     { key: 'approval', label: t('sessions.config.approvalTab') },
     { key: 'compression', label: t('sessions.config.compressionTab') },
   ]
+  if (promptInjectionEnabled.value) items.push({ key: 'promptInjection', label: t('sessions.config.promptInjectionTab') })
   if (healthEnabled.value) items.push({ key: 'health', label: t('sessions.config.healthTab') })
   return items
 })
@@ -44,12 +47,16 @@ function handleTabKey(event: KeyboardEvent) {
 
 onMounted(async () => {
   try {
-    healthEnabled.value = await getModuleEnabled('session_inspector')
-  } catch {
-    healthEnabled.value = false
+    const [health, promptInjection] = await Promise.all([
+      getModuleEnabled('session_inspector').catch(() => false),
+      getModuleEnabled('prompt_injection').catch(() => false),
+    ])
+    healthEnabled.value = health
+    promptInjectionEnabled.value = promptInjection
   } finally {
     moduleLoading.value = false
     if (!healthEnabled.value && activeTab.value === 'health') activeTab.value = 'approval'
+    if (!promptInjectionEnabled.value && activeTab.value === 'promptInjection') activeTab.value = 'approval'
   }
 })
 </script>
@@ -91,6 +98,7 @@ onMounted(async () => {
     >
       <ApprovalConfigPanel v-if="activeTab === 'approval'" />
       <CompressionConfigPanel v-else-if="activeTab === 'compression'" />
+      <PromptInjectionConfigPanel v-else-if="activeTab === 'promptInjection'" />
       <HealthScoreConfigPanel v-else-if="healthEnabled" />
     </section>
   </main>
