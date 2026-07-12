@@ -323,7 +323,11 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 		Model string `json:"model"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
-	// TODO: trigger a manual run via the worker channel.
+	if h.worker == nil {
+		writeJSON(w, 503, map[string]any{"error": "worker not available", "message": "self-check worker is not initialized"})
+		return
+	}
+	h.worker.TriggerManualRun(body.Model)
 	writeJSON(w, 200, map[string]any{"ok": true, "message": "manual trigger queued", "model": body.Model})
 }
 

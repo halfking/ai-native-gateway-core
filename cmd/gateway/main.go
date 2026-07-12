@@ -1412,6 +1412,7 @@ func main() {
 	var settingsAuditCleaner *bg.SettingsAuditCleaner
 	var taxonomySync *bg.TaxonomySync
 	var partitionManager *bg.PartitionManager
+	var selfCheckWorker *bg.SelfCheckWorker
 	// peakCollector / weeklyPeakRollup / slotSuggester are declared
 	// at the top of main() so the executor can reference them.
 
@@ -1454,7 +1455,7 @@ func main() {
 
 		if selfCheckAPIKey != "" {
 			// Use empty baseURL to trigger env var / default detection in NewSelfCheckWorker
-			selfCheckWorker := bg.NewSelfCheckWorker(dbConn.Pool(), selfCheckAPIKey, "", keyring)
+			selfCheckWorker = bg.NewSelfCheckWorker(dbConn.Pool(), selfCheckAPIKey, "", keyring)
 			selfCheckWorker.Start(context.Background())
 			slog.Info("CHECKPOINT: selfCheckWorker started", "api_key_source", func() string {
 				if os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY") != "" {
@@ -2436,6 +2437,9 @@ func main() {
 
 			// Self-check admin endpoints (2026-07-12)
 			selfCheckHandler := admin.NewSelfCheckHandler(dbConn.Pool())
+			if selfCheckWorker != nil {
+				selfCheckHandler.SetWorker(selfCheckWorker)
+			}
 			adminMw := func(fn http.HandlerFunc) http.HandlerFunc {
 				return admin.AdminMiddleware(fn, dbConn.Pool(), cfg.SecretKey)
 			}
