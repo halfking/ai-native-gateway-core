@@ -7,7 +7,18 @@ import (
 )
 
 // ParseOpenAI parses an OpenAI Chat Completions request body into InternalRequest.
+//
+// Extensions support (P0 fix, 2026-07-13):
+// Unknown fields (vendor-specific params like reasoning_effort, web_search,
+// bot_setting, etc.) are extracted into IR.Extensions for lossless passthrough.
 func ParseOpenAI(body []byte) (*InternalRequest, error) {
+	// Phase 1: Parse to map to capture ALL fields (including unknown ones)
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(body, &rawMap); err != nil {
+		return nil, fmt.Errorf("unmarshal openai body to map: %w", err)
+	}
+
+	// Phase 2: Parse known fields to struct
 	var src struct {
 		Model               string          `json:"model"`
 		Messages            json.RawMessage `json:"messages"`
@@ -33,6 +44,22 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		return nil, fmt.Errorf("unmarshal openai body: %w", err)
 	}
 
+	// Phase 3: Extract unknown fields to Extensions
+	knownFields := map[string]bool{
+		"model": true, "messages": true, "max_tokens": true, "max_completion_tokens": true,
+		"temperature": true, "top_p": true, "stop": true, "stream": true,
+		"tools": true, "tool_choice": true, "frequency_penalty": true, "presence_penalty": true,
+		"logprobs": true, "top_logprobs": true, "seed": true, "response_format": true,
+		"n": true, "user": true,
+	}
+
+	extensions := make(map[string]json.RawMessage)
+	for key, val := range rawMap {
+		if !knownFields[key] && len(val) > 0 && string(val) != "null" {
+			extensions[key] = val
+		}
+	}
+
 	ir := &InternalRequest{
 		Model:            src.Model,
 		SourceProtocol:   ProtocolOpenAIChat,
@@ -43,6 +70,7 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		Seed:             src.Seed,
 		N:                derefInt(src.N),
 		User:             src.User,
+		Extensions:       extensions, // P0 fix: preserve unknown fields
 	}
 
 	if src.MaxTokens != nil {
@@ -232,9 +260,10 @@ func parseOpenAIImageBlock(block map[string]any) *ImageSource {
 	url, _ := urlObj["url"].(string)
 	img.URL = url
 
-	// detail can be "low", "high", "auto" — 暂不透传，保留兼容
+	// P1-1 fix (2026-07-13): Preserve detail parameter
+	// detail can be "low", "high", "auto" — controls image resolution/token usage
 	if detail, ok := urlObj["detail"].(string); ok {
-		_ = detail
+		img.Detail = detail
 	}
 
 	// 解析 data URI，填充 base64 专用字段
