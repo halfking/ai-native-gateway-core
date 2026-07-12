@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getTenantUpdates, type Release } from '../../api/ops'
 
-const route = useRoute()
 const loading = ref(true)
 const tenantID = ref('')
 const currentVersion = ref('未知')
@@ -13,7 +11,7 @@ const releases = ref<Release[]>([])
 async function load() {
   loading.value = true
   try {
-    const data = await getTenantUpdates(typeof route.query.tenant === 'string' ? route.query.tenant : undefined)
+    const data = await getTenantUpdates()
     tenantID.value = data.tenant_id
     currentVersion.value = data.current_version || '未知'
     releases.value = data.items || []
@@ -38,7 +36,7 @@ onMounted(load)
         <el-table-column prop="version" label="版本" width="140" />
         <el-table-column prop="title" label="标题" min-width="220" />
         <el-table-column prop="channel" label="渠道" width="110" />
-        <el-table-column prop="mandatory" label="必须更新" width="110"><template #default="{ row }">{{ row.mandatory ? '是' : '否' }}</template></el-table-column>
+        <el-table-column prop="mandatory" label="必须更新" width="110"><template #default="{ row = {} } = {}">{{ row.mandatory ? '是' : '否' }}</template></el-table-column>
         <el-table-column prop="published_at" label="发布时间" width="190" />
       </el-table>
     </el-card>

@@ -55,8 +55,11 @@ func (h *Handler) licenseStatus(c echo.Context) error {
 		if err := rows.Scan(&id, &key, &name, &email, &max, &tier, &features, &expires, &created, &revoked); err != nil {
 			return err
 		}
-		item = map[string]any{"id": id, "license_key": value(key), "customer_name": value(name), "customer_email": value(email), "max_devices": max, "subscription_tier": value(tier), "features": features, "expires_at": pointerValue(expires), "created_at": pointerValue(created), "revoked_at": pointerValue(revoked)}
+		item = map[string]any{"id": id, "license_key": maskLicenseKey(value(key)), "customer_name": value(name), "customer_email": value(email), "max_devices": max, "subscription_tier": value(tier), "features": features, "expires_at": pointerValue(expires), "created_at": pointerValue(created), "revoked_at": pointerValue(revoked)}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "license lookup failed"})
 	}
 	return c.JSON(http.StatusOK, map[string]any{"tenant_id": id, "licenses": items})
 }
@@ -87,6 +90,9 @@ func (h *Handler) updateCheck(c echo.Context) error {
 		}
 		items = append(items, map[string]any{"id": rid, "version": value(version), "build_seq": seq, "channel": value(channel), "title": value(title), "description": value(description), "changelog": value(changelog), "image_tag": value(image), "image_digest": value(digest), "min_version": value(min), "mandatory": mandatory, "created_by": value(createdBy), "created_at": pointerValue(created), "published_at": pointerValue(published)})
 	}
+	if err := rows.Err(); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "update lookup failed"})
+	}
 	return c.JSON(http.StatusOK, map[string]any{"tenant_id": id, "current_version": "", "items": items})
 }
 
@@ -102,4 +108,11 @@ func pointerValue(v *any) any {
 		return nil
 	}
 	return *v
+}
+
+func maskLicenseKey(key string) string {
+	if len(key) <= 8 {
+		return "********"
+	}
+	return key[:4] + "..." + key[len(key)-4:]
 }

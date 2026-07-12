@@ -185,17 +185,17 @@ onMounted(load)
         <el-table-column prop="language" :label="t('ops.vibecoding.language')" width="120" />
         <el-table-column prop="framework" :label="t('ops.vibecoding.framework')" width="150" />
         <el-table-column prop="status" :label="t('common.status')" width="100">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <el-tag :type="statusType(row.status)" size="small">
               {{ t(`ops.vibecoding.status.${row.status}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          <template #default="{ row = {} } = {}">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="200" fixed="right">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <el-button type="primary" size="small" @click="openSessionDialog(row)">
               {{ t('ops.vibecoding.newSession') }}
             </el-button>
@@ -221,20 +221,20 @@ onMounted(load)
         <el-table-column prop="task_type" :label="t('ops.vibecoding.sessionName')" width="200" />
         <el-table-column prop="project_id" :label="t('ops.vibecoding.projectId')" width="100" />
         <el-table-column prop="status" :label="t('common.status')" width="100">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <el-tag :type="statusType(row.status)" size="small">
               {{ t(`ops.vibecoding.status.${row.status}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('ops.vibecoding.startedAt')" width="160">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          <template #default="{ row = {} } = {}">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
         <el-table-column prop="completed_at" :label="t('ops.vibecoding.endedAt')" width="160">
-          <template #default="{ row }">{{ row.completed_at ? formatDate(row.completed_at) : '—' }}</template>
+          <template #default="{ row = {} } = {}">{{ row.completed_at ? formatDate(row.completed_at) : '—' }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="140" fixed="right">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <el-button size="small" @click="selectedSessionId = row.id">
               {{ t('ops.vibecoding.viewReviews') }}
             </el-button>
@@ -257,27 +257,27 @@ onMounted(load)
         <el-table-column prop="language" :label="t('ops.vibecoding.language')" width="100" />
         <el-table-column prop="file_path" :label="t('ops.vibecoding.filePath')" min-width="250" show-overflow-tooltip />
         <el-table-column prop="score" :label="t('ops.vibecoding.score')" width="100">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <el-tag :type="getScoreColor(row.score)" size="small">
               {{ row.score }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.vibecoding.issues')" width="80">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <el-badge :value="reviewIssues(row).length" :type="reviewIssues(row).length > 0 ? 'danger' : 'success'" />
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.vibecoding.suggestions')" width="80">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <el-badge :value="reviewSuggestions(row).length" type="info" />
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('ops.vibecoding.reviewedAt')" width="160">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          <template #default="{ row = {} } = {}">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="100" fixed="right">
-          <template #default="{ row }">
+          <template #default="{ row = {} } = {}">
             <el-button size="small" @click="viewReviewDetail(row)">
               {{ t('common.detail') }}
             </el-button>
@@ -363,7 +363,7 @@ onMounted(load)
         <el-table :data="reviewIssues(selectedReview)" size="small" style="margin-bottom: 20px">
           <el-table-column prop="line" :label="t('ops.vibecoding.line')" width="80" />
           <el-table-column prop="severity" :label="t('ops.vibecoding.severity')" width="100">
-            <template #default="{ row }">
+            <template #default="{ row = {} } = {}">
               <el-tag :type="severityType(row.severity)" size="small">
                 {{ row.severity }}
               </el-tag>
@@ -377,7 +377,7 @@ onMounted(load)
         <el-table :data="reviewSuggestions(selectedReview)" size="small">
           <el-table-column type="index" :label="'#'" width="50" />
           <el-table-column prop="" :label="t('ops.vibecoding.message')" min-width="300" show-overflow-tooltip>
-            <template #default="{ row }">{{ row }}</template>
+            <template #default="{ row = {} } = {}">{{ row }}</template>
           </el-table-column>
         </el-table>
       </div>
