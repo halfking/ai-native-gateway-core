@@ -958,7 +958,7 @@ onMounted(() => {
 
           <!-- 提示词注入检测模块的专用配置表单（与 /admin/session-config 共享） -->
           <template v-else-if="selectedKey === 'prompt_injection'">
-            <PromptInjectionConfigPanel />
+            <PromptInjectionConfigPanel :module-enabled="selectedModule?.enabled ?? false" />
           </template>
 
           <!-- 其他模块的通用配置表单 -->
