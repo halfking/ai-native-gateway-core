@@ -1,6 +1,24 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createI18n } from 'vue-i18n'
 import UsersView from './UsersView.vue'
+import usersMessages from '../locales/zh-CN/users'
+
+const i18n = createI18n({
+  legacy: false,
+  locale: 'zh-CN',
+  messages: {
+    'zh-CN': {
+      users: usersMessages,
+      common: {
+        confirm: '确认',
+        cancel: '取消',
+      },
+    },
+  },
+  missingWarn: false,
+  fallbackWarn: false,
+})
 
 const getUsersMock = vi.fn()
 const getTenantsAdminMock = vi.fn()
@@ -53,7 +71,7 @@ describe('UsersView tenant admin permissions', () => {
   })
 
   it('shows reset password but hides create and delete in read-only tenant mode', async () => {
-    const wrapper = mount(UsersView)
+    const wrapper = mount(UsersView, { global: { plugins: [i18n] } })
     await flushPromises()
 
     expect(wrapper.text()).toContain('当前仅开放查看和重置本租户用户密码')
@@ -64,7 +82,7 @@ describe('UsersView tenant admin permissions', () => {
   })
 
   it('shows live password policy feedback in reset dialog', async () => {
-    const wrapper = mount(UsersView)
+    const wrapper = mount(UsersView, { global: { plugins: [i18n] } })
     await flushPromises()
 
     const resetButton = wrapper.findAll('button').find((node) => node.text().includes('重置密码'))
@@ -82,7 +100,7 @@ describe('UsersView tenant admin permissions', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('✕ 两次输入的新密码不一致')
-    const confirmButton = wrapper.findAll('button').find((node) => node.text().includes('确认'))
+    const confirmButton = wrapper.findAll('button').find((node) => node.text().includes('重置') && !node.text().includes('密码'))
     expect((confirmButton!.element as HTMLButtonElement).disabled).toBe(true)
   })
 
@@ -91,7 +109,7 @@ describe('UsersView tenant admin permissions', () => {
     tenantAdminMode = false
     createUserMock.mockResolvedValue({ id: 99 })
 
-    const wrapper = mount(UsersView)
+    const wrapper = mount(UsersView, { global: { plugins: [i18n] } })
     await flushPromises()
 
     const openButton = wrapper.findAll('button').find((node) => node.text().includes('新建用户'))
