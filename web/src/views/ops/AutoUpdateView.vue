@@ -21,6 +21,9 @@ const { t } = useI18n()
 const releases = ref<Release[]>([])
 const upgradeLogs = ref<UpgradeLog[]>([])
 const loading = ref(false)
+const logsLoading = ref(false)
+const page = ref(1)
+const pageSize = ref(20)
 
 // Create dialog state
 const showCreateDialog = ref(false)
@@ -64,10 +67,14 @@ async function load() {
 }
 
 async function loadUpgradeLogs() {
+  logsLoading.value = true
   try {
     upgradeLogs.value = await getUpgradeLogs()
   } catch (error) {
-    console.error('Failed to load upgrade logs:', error)
+    ElMessage.error(t('ops.autoupdate.loadLogsFailed'))
+    console.error(error)
+  } finally {
+    logsLoading.value = false
   }
 }
 
@@ -152,10 +159,17 @@ function openGrayDialog(release: Release) {
 async function handleCreateGray() {
   loading.value = true
   try {
-    await createGrayRelease(grayForm.value.version, {
-      phase: grayForm.value.phase,
-      percent: grayForm.value.percent,
-    })
+    try {
+      await createGrayRelease(grayForm.value.version, {
+        phase: grayForm.value.phase,
+        percent: grayForm.value.percent,
+      })
+    } catch {
+      await updateGrayPhase(grayForm.value.version, {
+        phase: grayForm.value.phase,
+        percent: grayForm.value.percent,
+      })
+    }
     ElMessage.success(t('ops.autoupdate.grayCreateSuccess'))
     showGrayDialog.value = false
   } catch (error) {
@@ -231,7 +245,7 @@ onMounted(() => {
 <template>
   <div class="autoupdate-view">
     <div class="page-header">
-      <h1>🚀 {{ t('ops.autoupdate.title') }}</h1>
+      <h1>{{ t('ops.autoupdate.title') }}</h1>
       <div class="header-actions">
         <el-button @click="openRollbackDialog">
           {{ t('ops.autoupdate.rollback') }}
@@ -247,13 +261,13 @@ onMounted(() => {
       <template #header>
         <span>{{ t('ops.autoupdate.releases') }}</span>
       </template>
-      <el-table v-loading="loading" :data="releases">
+      <el-table v-loading="loading" :data="releases.slice((page - 1) * pageSize, page * pageSize)">
         <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="120" />
         <el-table-column prop="build_seq" :label="t('ops.autoupdate.buildSeq')" width="80" />
         <el-table-column prop="channel" :label="t('ops.autoupdate.channelLabel')" width="90">
           <template #default="{ row }">
             <el-tag :type="channelType(row.channel)" size="small">
-              {{ row.channel }}
+              {{ t(`ops.autoupdate.channel.${row.channel}`) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -294,6 +308,15 @@ onMounted(() => {
           </template>
         </el-table-column>
       </el-table>
+      <div v-if="releases.length > pageSize" class="pagination-wrap">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :total="releases.length"
+          :page-sizes="[10, 20, 50]"
+          layout="sizes, prev, pager, next"
+        />
+      </div>
     </el-card>
 
     <!-- Upgrade Logs -->
@@ -301,13 +324,13 @@ onMounted(() => {
       <template #header>
         <span>{{ t('ops.autoupdate.upgradeLogs') }}</span>
       </template>
-      <el-table :data="upgradeLogs" size="small">
+      <el-table v-loading="logsLoading" :data="upgradeLogs" size="small">
         <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="200" />
         <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="120" />
         <el-table-column prop="status" :label="t('common.status')" width="120">
           <template #default="{ row }">
             <el-tag :type="logStatusType(row.status)" size="small">
-              {{ row.status }}
+              {{ t(`ops.autoupdate.logStatus.${row.status}`) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -337,9 +360,9 @@ onMounted(() => {
         </el-form-item>
         <el-form-item :label="t('ops.autoupdate.channelLabel')" required>
           <el-radio-group v-model="createForm.channel">
-            <el-radio label="stable">Stable</el-radio>
-            <el-radio label="beta">Beta</el-radio>
-            <el-radio label="canary">Canary</el-radio>
+            <el-radio label="stable">{{ t('ops.autoupdate.channel.stable') }}</el-radio>
+            <el-radio label="beta">{{ t('ops.autoupdate.channel.beta') }}</el-radio>
+            <el-radio label="canary">{{ t('ops.autoupdate.channel.canary') }}</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item :label="t('ops.autoupdate.releaseTitle')" required>
@@ -387,11 +410,11 @@ onMounted(() => {
         </el-form-item>
         <el-form-item :label="t('ops.autoupdate.grayPhase')" required>
           <el-select v-model="grayForm.phase" style="width: 100%">
-            <el-option label="Canary (金丝雀)" value="canary" />
-            <el-option label="Batch 1 (第一批)" value="batch_1" />
-            <el-option label="Batch 2 (第二批)" value="batch_2" />
-            <el-option label="Batch 3 (第三批)" value="batch_3" />
-            <el-option label="Full (全量)" value="full" />
+            <el-option :label="t('ops.autoupdate.grayPhaseCanary')" value="canary" />
+            <el-option :label="t('ops.autoupdate.grayPhaseBatch1')" value="batch_1" />
+            <el-option :label="t('ops.autoupdate.grayPhaseBatch2')" value="batch_2" />
+            <el-option :label="t('ops.autoupdate.grayPhaseBatch3')" value="batch_3" />
+            <el-option :label="t('ops.autoupdate.grayPhaseFull')" value="full" />
           </el-select>
         </el-form-item>
         <el-form-item :label="t('ops.autoupdate.rolloutPercentage')" required>
@@ -467,6 +490,12 @@ onMounted(() => {
 
 .logs-card {
   margin-top: 20px;
+}
+
+.pagination-wrap {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .card-header {

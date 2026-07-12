@@ -5,6 +5,125 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+---
+
+## [v1.14.0] - 2026-07-12 (License + Upgrade)
+
+### 🚀 新增功能 (Features)
+
+#### License 管理系统
+- **在线激活** (`licensing/admin_api.go`)
+  - `POST /api/v1/license/trial` - 7 天试用申请
+  - `POST /api/v1/license/activate` - License Key 在线激活
+  - `POST /api/v1/license/refresh` - 24h Token 续期
+- **离线激活** (`licensing/offline.go`)
+  - 请求生成 + 响应导入
+  - 支持完全断网环境
+- **设备管理** (`licensing/device_manager.go`)
+  - 基于硬件指纹的设备绑定
+  - max_devices 限制
+  - 设备激活/停用
+
+#### 实例注册与心跳
+- **实例注册** (`center/server.go`)
+  - `POST /api/v1/instances/register` - 实例首次注册
+  - Ed25519 密钥对签发
+  - instance_token (JWT, 24h TTL)
+- **心跳协议** (`center/monitor.go`)
+  - `POST /api/v1/instances/heartbeat` - 60s 心跳上报
+  - 状态判定: online (≤30s) / degraded (30s-2min) / offline (>2min)
+  - 自动监控与告警
+- **Token 续期** (`center/admin_api.go`)
+  - `POST /api/v1/instances/refresh` - Token 刷新
+
+#### 自动升级与回滚
+- **升级检查** (`autoupdate/admin_api.go`)
+  - `GET /api/v1/updates/latest` - 检查最新版本（6h 周期）
+  - `GET /api/v1/updates/manifest` - 下载升级清单
+- **升级执行** (`autoupdate/installer.go`)
+  - 下载 → SHA256 校验 → 启动测试 → 备份 → 原子替换
+  - 健康检查（5s 内失败自动回退）
+  - 状态上报到主控端
+- **回滚支持** (`autoupdate/rollback.go`)
+  - `POST /api/v1/updates/report` - 升级结果上报
+  - 自动回滚 + 手动回滚
+  - 备份保留策略（最近 5 个）
+
+#### 安装器增强
+- **新增子命令** (`installer/cmd/llm-gw-installer/`)
+  - `activate` - 激活管理（trial/online/offline）
+  - `heartbeat` - 心跳测试
+  - `upgrade check` - 检查更新
+  - `upgrade apply` - 应用升级
+  - `upgrade rollback` - 回滚版本
+  - `status` - 查看实例状态
+
+### 🗄️ 数据库变更 (Database)
+
+#### 新增表
+- `licenses` - License 记录
+- `license_devices` - 设备绑定
+- `offline_activation_requests` - 离线激活请求
+- `gateway_instances` - 实例注册
+- `instance_heartbeats` - 心跳记录
+- `releases` - 版本发布
+- `release_status` - 升级状态
+
+#### 字段新增
+- `gateway_instances` 增强 (Migration 376):
+  - `instance_token` TEXT - JWT Token
+  - `public_key` TEXT - Ed25519 公钥
+  - `current_version` TEXT - 当前版本
+  - `build_seq` INT - 构建序号
+  - `license_key_hash` TEXT - License 哈希
+  - `hardware_hash` TEXT - 硬件指纹
+  - `last_heartbeat_at` TIMESTAMPTZ - 最后心跳时间
+  - `last_status` TEXT - 实例状态
+
+### 🔒 安全 (Security)
+
+- **Ed25519 签名**: 所有 `/api/v1/instances/*` 请求签名验证
+- **RSA-PKCS1v15**: License 签名与验证
+- **JWT 认证**: instance_token (24h TTL)
+- **重放防护**: X-Timestamp ±300s + nonce 缓存 5 分钟
+- **CRL 支持**: 撤销列表检查（7 天缓存）
+
+### 📚 文档 (Documentation)
+
+- 新增 `README.md` - 快速开始指南
+- 新增 `docs/API.md` - 8 个主控端 API 端点
+- 新增 `docs/DEPLOYMENT.md` - M1-M4 四种部署模式
+- 新增 `docs/UPGRADE.md` - 在线/离线升级流程
+- 更新 `CHANGELOG.md` - 版本历史
+
+### 🛠️ 部署模式 (Deployment)
+
+- **M1 单机部署**: 二进制 + systemd（离线模式）
+- **M2 单机 Docker**: docker-compose 快速部署
+- **M3 K8s Sidecar**: kustomize + sidecar 心跳聚合
+- **M4 K8s Operator**: CRD + 声明式管理（规划中）
+
+### ⚙️ 环境变量 (Environment)
+
+新增 20+ 环境变量：
+- `LICENSE_FILE` - License 文件路径
+- `INSTANCE_ID` - 实例 ID（自动生成）
+- `MAIN_CONTROL_URL` - 主控端地址
+- `HEARTBEAT_INTERVAL_SECS` - 心跳间隔（默认 60s）
+- `UPGRADE_CHECK_INTERVAL_SECS` - 升级检查间隔（默认 6h）
+- `MAX_TENANTS` - 最大租户数（License 控制）
+- `MAX_DEVICES` - 最大设备数（License 控制）
+- `ENABLE_AUTO_UPDATE` - 启用自动更新
+- `BACKUP_DIR` - 备份目录
+
+### 🐛 Bug 修复 (Bug Fixes)
+
+- 修复 `center/store_pgx.go` 字段缺失问题
+- 修复 `autoupdate/types.go` 状态枚举不完整
+- 修复 License 过期后无法启动问题（降级模式）
+
+---
+
 ## [2026-07-05] - Script 合并 (deploy-scripts-merge)
 
 ### 🛠 重构
