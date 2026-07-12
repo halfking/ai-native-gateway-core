@@ -43,8 +43,8 @@ func (r *Recovery) RecoverFile(ctx context.Context, filename string, deleteAfter
 	}
 	r.tasks.Store(taskID, task)
 
-	// 使用带超时的 context（30 分钟）
-	taskCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	// 使用带超时的 context（30 分钟），继承调用方 context
+	taskCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 
 	// 异步执行恢复
 	go func() {
@@ -74,8 +74,14 @@ func (r *Recovery) RecoverAll(ctx context.Context, deleteAfter bool) (string, er
 	}
 	r.tasks.Store(taskID, task)
 
+	// 使用带超时的 context，继承调用方 context
+	taskCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+
 	// 异步执行批量恢复
-	go r.executeRecoveryAll(context.Background(), task, files, deleteAfter)
+	go func() {
+		defer cancel()
+		r.executeRecoveryAll(taskCtx, task, files, deleteAfter)
+	}()
 
 	return taskID, nil
 }
@@ -87,13 +93,34 @@ func (r *Recovery) GetTaskStatus(taskID string) (*RecoveryTask, bool) {
 		return nil, false
 	}
 	task := value.(*RecoveryTask)
-	return task, true
+
+	// 持锁读取并返回副本
+	task.mu.RLock()
+	defer task.mu.RUnlock()
+
+	snapshot := &RecoveryTask{
+		ID:               task.ID,
+		Filename:         task.Filename,
+		Status:           task.Status,
+		TotalRecords:     task.TotalRecords,
+		ProcessedRecords: task.ProcessedRecords,
+		SuccessCount:     task.SuccessCount,
+		FailureCount:     task.FailureCount,
+		StartedAt:        task.StartedAt,
+		CompletedAt:      task.CompletedAt,
+		Error:            task.Error,
+		Progress:         task.Progress,
+	}
+
+	return snapshot, true
 }
 
 // executeRecovery 执行单个文件的恢复
 func (r *Recovery) executeRecovery(ctx context.Context, task *RecoveryTask, deleteAfter bool) {
+	task.mu.Lock()
 	task.Status = "running"
 	task.StartedAt = time.Now()
+	task.mu.Unlock()
 
 	// 读取所有记录
 	var records []BackupRecord
@@ -103,14 +130,18 @@ func (r *Recovery) executeRecovery(ctx context.Context, task *RecoveryTask, dele
 	})
 
 	if err != nil {
+		task.mu.Lock()
 		task.Status = "failed"
-		task.Error = fmt.Sprintf("read records: %v", err)
+		task.Error = "failed to read backup records"
 		task.CompletedAt = time.Now()
+		task.mu.Unlock()
 		slog.Error("recovery: failed to read records", "task_id", task.ID, "error", err)
 		return
 	}
 
+	task.mu.Lock()
 	task.TotalRecords = len(records)
+	task.mu.Unlock()
 
 	// 按会话分组
 	sessionRecords := r.groupBySession(records)
@@ -118,23 +149,31 @@ func (r *Recovery) executeRecovery(ctx context.Context, task *RecoveryTask, dele
 	// 批量恢复
 	for sessionID, recs := range sessionRecords {
 		if err := r.recoverSession(ctx, sessionID, recs); err != nil {
+			task.mu.Lock()
 			task.FailureCount++
+			task.mu.Unlock()
 			slog.Warn("recovery: failed to recover session",
 				"task_id", task.ID,
 				"session_id", sessionID,
 				"error", err,
 			)
 		} else {
+			task.mu.Lock()
 			task.SuccessCount++
+			task.mu.Unlock()
 		}
+		task.mu.Lock()
 		task.ProcessedRecords += len(recs)
 		task.Progress = float64(task.ProcessedRecords) / float64(task.TotalRecords) * 100
+		task.mu.Unlock()
 	}
 
 	// 完成
+	task.mu.Lock()
 	task.CompletedAt = time.Now()
 	if task.FailureCount == 0 {
 		task.Status = "completed"
+		task.mu.Unlock()
 		slog.Info("recovery: completed successfully",
 			"task_id", task.ID,
 			"filename", task.Filename,
@@ -150,7 +189,8 @@ func (r *Recovery) executeRecovery(ctx context.Context, task *RecoveryTask, dele
 		}
 	} else {
 		task.Status = "completed_with_errors"
-		task.Error = fmt.Sprintf("recovered %d sessions, %d failed", task.SuccessCount, task.FailureCount)
+		task.Error = "recovery completed with errors"
+		task.mu.Unlock()
 		slog.Warn("recovery: completed with errors",
 			"task_id", task.ID,
 			"success", task.SuccessCount,
@@ -161,8 +201,10 @@ func (r *Recovery) executeRecovery(ctx context.Context, task *RecoveryTask, dele
 
 // executeRecoveryAll 执行所有文件的恢复
 func (r *Recovery) executeRecoveryAll(ctx context.Context, task *RecoveryTask, files []BackupFile, deleteAfter bool) {
+	task.mu.Lock()
 	task.Status = "running"
 	task.StartedAt = time.Now()
+	task.mu.Unlock()
 
 	for _, file := range files {
 		// 为每个文件创建子任务
@@ -175,18 +217,22 @@ func (r *Recovery) executeRecoveryAll(ctx context.Context, task *RecoveryTask, f
 		r.executeRecovery(ctx, subTask, deleteAfter)
 
 		// 汇总到主任务
+		task.mu.Lock()
 		task.ProcessedRecords += subTask.ProcessedRecords
 		task.SuccessCount += subTask.SuccessCount
 		task.FailureCount += subTask.FailureCount
+		task.mu.Unlock()
 	}
 
+	task.mu.Lock()
 	task.CompletedAt = time.Now()
 	if task.FailureCount == 0 {
 		task.Status = "completed"
 	} else {
 		task.Status = "completed_with_errors"
-		task.Error = fmt.Sprintf("recovered files with %d failures", task.FailureCount)
+		task.Error = "recovery completed with errors"
 	}
+	task.mu.Unlock()
 }
 
 // groupBySession 按会话分组记录
