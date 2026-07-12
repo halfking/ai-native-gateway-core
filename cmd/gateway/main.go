@@ -699,6 +699,9 @@ func main() {
 		routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
 		routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
 		routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
+		routingExec.StripZhipuFields = streaming.StripZhipuFieldsBody
+		routingExec.StripDeepSeekFields = streaming.StripDeepSeekFieldsBody
+		routingExec.StripDoubaoFields = streaming.StripDoubaoFieldsBody
 		// Write-time 客户端可见脱敏（2026-07-09，增强 1）
 		routingExec.RedactBodyFn = buildRedactBodyFn(dbConn.Stdlib())
 		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second

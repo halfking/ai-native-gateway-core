@@ -813,8 +813,18 @@ func (e *Executor) executeOpenAI(
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
 			}
+			// Strip vendor-specific private fields (audit-09 fix: 2026-07-12)
 			if e.StripMinimaxFields != nil {
 				respBody = e.StripMinimaxFields(respBody)
+			}
+			if e.StripZhipuFields != nil {
+				respBody = e.StripZhipuFields(respBody)
+			}
+			if e.StripDeepSeekFields != nil {
+				respBody = e.StripDeepSeekFields(respBody)
+			}
+			if e.StripDoubaoFields != nil {
+				respBody = e.StripDoubaoFields(respBody)
 			}
 			// Q2 non-stream response (anthropic client ← openai upstream):
 			// the upstream body is still OpenAI-shaped at this point; if

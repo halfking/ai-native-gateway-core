@@ -299,6 +299,18 @@ type Executor struct {
 	// the chat response body before it is returned to the client.
 	// Wired from main.go (relay.StripMinimaxFieldsBody).
 	StripMinimaxFields StripMinimaxFieldsFunc
+	// StripZhipuFields strips zhipu/GLM-private fields (zhipu_request_id,
+	// web_search_results, retrieval_documents, etc.). Wired from main.go.
+	// Audit-09 fix: 2026-07-12, preserves system_fingerprint and usage detail.
+	StripZhipuFields func([]byte) []byte
+	// StripDeepSeekFields strips deepseek-private fields (deepseek_request_id,
+	// model_type, cache_hit_tokens, etc.). Wired from main.go.
+	// Audit-09 fix: 2026-07-12, preserves reasoning_tokens and cache tokens.
+	StripDeepSeekFields func([]byte) []byte
+	// StripDoubaoFields strips doubao/volcengine-private fields (doubao_request_id,
+	// seeddance_request_id, content_safety_score, etc.). Wired from main.go.
+	// Audit-09 fix: 2026-07-12, preserves system_fingerprint.
+	StripDoubaoFields func([]byte) []byte
 	// RedactBodyFn (2026-07-09, 增强 1) write-time 客户端可见脱敏。
 	// 在 w.Write 前调用，让客户端真正收到脱敏后字节。
 	// 签名：func(body []byte, sessionID, tenantID string) []byte
