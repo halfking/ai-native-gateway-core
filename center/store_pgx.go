@@ -59,14 +59,14 @@ func (s *PgxStore) RegisterInstance(ctx context.Context, instance *InstanceInfo)
 // GetInstance 获取实例信息
 func (s *PgxStore) GetInstance(ctx context.Context, instanceID string) (*InstanceInfo, error) {
 	query := `
-		SELECT instance_id, hostname, ip_address, region, version, build_seq, status, started_at, last_heartbeat
+		SELECT instance_id, hostname, ip_address, region, version, build_seq, status, started_at, last_heartbeat, license_key_hash
 		FROM gateway_instances
 		WHERE instance_id = $1
 	`
 	instance := &InstanceInfo{}
 	err := s.db.QueryRow(ctx, query, instanceID).Scan(
 		&instance.InstanceID, &instance.Hostname, &instance.IPAddress, &instance.Region,
-		&instance.Version, &instance.BuildSeq, &instance.Status, &instance.StartedAt, &instance.LastHeartbeat,
+		&instance.Version, &instance.BuildSeq, &instance.Status, &instance.StartedAt, &instance.LastHeartbeat, &instance.LicenseKeyHash,
 	)
 	if err != nil {
 		return nil, err
