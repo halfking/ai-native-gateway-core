@@ -201,12 +201,13 @@ type promoteHotAsyncRequest struct {
 
 // promoteHotAsyncResponse 异步任务启动响应
 type promoteHotAsyncResponse struct {
-	JobID     string `json:"job_id"`
-	TableName string `json:"table_name"`
-	Status    string `json:"status"`
-	StartedAt string `json:"started_at"`
-	PollURL   string `json:"poll_url"`
-	Message   string `json:"message"`
+	RunID      string `json:"run_id"`
+	TableName  string `json:"table_name"`
+	Status     string `json:"status"`
+	Async      bool   `json:"async"`
+	PollingURL string `json:"polling_url"`
+	StartedAt  string `json:"started_at"`
+	Message    string `json:"message"`
 }
 
 // 默认保留时间改为 24 小时（2026-07-13 产品调整：hot 表只保留最近 1 天）
@@ -251,12 +252,13 @@ func (h *Handler) handleDataLifecyclePromoteHotAsync(w http.ResponseWriter, r *h
 	if existing := h.findRunningJobForTable(req.TableName); existing != nil {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(promoteHotAsyncResponse{
-			JobID:     existing.ID,
-			TableName: existing.TableName,
-			Status:    string(existing.Status),
-			StartedAt: existing.StartedAt.UTC().Format(time.RFC3339),
-			PollURL:   fmt.Sprintf("/api/admin/data-lifecycle/hot/job/%s", existing.ID),
-			Message:   "an existing job is already running for this table; reused",
+			RunID:      existing.ID,
+			TableName:  existing.TableName,
+			Status:     string(existing.Status),
+			Async:      true,
+			PollingURL: fmt.Sprintf("/api/admin/data-lifecycle/hot/job/%s", existing.ID),
+			StartedAt:  existing.StartedAt.UTC().Format(time.RFC3339),
+			Message:    "an existing job is already running for this table; reused",
 		})
 		return
 	}
@@ -291,12 +293,13 @@ func (h *Handler) handleDataLifecyclePromoteHotAsync(w http.ResponseWriter, r *h
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(promoteHotAsyncResponse{
-		JobID:     job.ID,
-		TableName: job.TableName,
-		Status:    string(job.Status),
-		StartedAt: job.StartedAt.Format(time.RFC3339),
-		PollURL:   fmt.Sprintf("/api/admin/data-lifecycle/hot/job/%s", job.ID),
-		Message:   "job accepted, poll status endpoint for progress",
+		RunID:      job.ID,
+		TableName:  job.TableName,
+		Status:     string(job.Status),
+		Async:      true,
+		PollingURL: fmt.Sprintf("/api/admin/data-lifecycle/hot/job/%s", job.ID),
+		StartedAt:  job.StartedAt.Format(time.RFC3339),
+		Message:    "job accepted, poll status endpoint for progress",
 	})
 }
 

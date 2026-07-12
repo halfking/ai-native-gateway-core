@@ -504,8 +504,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/archive", h.superAdmin(h.handleDataLifecycleArchivePartition))
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/archive-batch", h.superAdmin(h.handleDataLifecycleArchiveBatch))
 	// Hot table to partition migration endpoints (2026-07-10)
-	// 2026-07-13: 新增异步接口 + 任务状态查询 + 取消；同步接口保留兼容
-	mux.HandleFunc("/api/admin/data-lifecycle/hot/promote", h.superAdmin(h.handleDataLifecyclePromoteHot))
+	// 2026-07-13: /promote 统一走异步分发，保留 /promote-async 以便兼容
+	mux.HandleFunc("/api/admin/data-lifecycle/hot/promote", h.superAdmin(h.handleDataLifecyclePromoteHotAsync))
 	mux.HandleFunc("/api/admin/data-lifecycle/hot/promote-async", h.superAdmin(h.handleDataLifecyclePromoteHotAsync))
 	mux.HandleFunc("/api/admin/data-lifecycle/hot/jobs", h.superAdmin(h.handleDataLifecycleHotJobs))
 	mux.HandleFunc("/api/admin/data-lifecycle/hot/job/", h.superAdmin(h.handleDataLifecycleHotJob)) // /job/{id}
