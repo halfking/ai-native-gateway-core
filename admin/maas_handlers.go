@@ -257,7 +257,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 		}
 		writeJSON(w, http.StatusOK, account)
 	case "usage":
-		if len(parts) < 3 || parts[1] != "usage" || parts[2] != "summary" {
+		if len(parts) < 3 || parts[1] != "usage" {
 			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
@@ -277,12 +277,25 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 				limit = n
 			}
 		}
-		summary, err := svc.QueryUsageSummaryWithCost(r.Context(), tenantCode, days, limit)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+		switch parts[2] {
+		case "summary":
+			summary, err := svc.QueryUsageSummaryWithCost(r.Context(), tenantCode, days, limit)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, summary)
+		case "detail":
+			ownerUser := r.URL.Query().Get("owner_user")
+			detail, err := svc.QueryConsumptionDetail(r.Context(), tenantCode, ownerUser, days)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, detail)
+		default:
+			writeError(w, http.StatusNotFound, "not found")
 		}
-		writeJSON(w, http.StatusOK, summary)
 	case "ledger":
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")

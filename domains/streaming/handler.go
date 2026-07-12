@@ -2854,6 +2854,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 
 	if h.maasSvc != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
 		pt, ct, crt, cwt := 0, 0, 0, 0
+		streamChunkCount := 0
 		if reqLog.PromptTokens != nil {
 			pt = *reqLog.PromptTokens
 		}
@@ -2866,7 +2867,10 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		if reqLog.CacheWriteTokens != nil {
 			cwt = *reqLog.CacheWriteTokens
 		}
-		if pt > 0 || ct > 0 || crt > 0 || cwt > 0 {
+		if reqLog.StreamChunkCount != nil {
+			streamChunkCount = *reqLog.StreamChunkCount
+		}
+		if shouldChargeUsage(reqLog.Success, reqLog.FailureStage, reqLog.ErrorKind, pt, ct, crt, cwt, streamChunkCount) {
 			canonical := evt.CanonicalName
 			if canonical == "" {
 				canonical = evt.ClientModel
