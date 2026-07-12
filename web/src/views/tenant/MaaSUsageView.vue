@@ -78,13 +78,13 @@ function fmtTime(s: string) {
   return new Date(s).toLocaleString(localeRef.value)
 }
 
-function typeLabel(t: string) {
-  return MAAS_LEDGER_TYPE_LABELS[t] || t
+function typeLabel(entryType: string) {
+  return MAAS_LEDGER_TYPE_LABELS[entryType] || entryType
 }
 
-function typeBadgeClass(t: string) {
-  if (t === 'consume') return 'badge-red'
-  if (t === 'topup') return 'badge-green'
+function typeBadgeClass(entryType: string) {
+  if (entryType === 'consume') return 'badge-red'
+  if (entryType === 'topup') return 'badge-green'
   return 'badge-blue'
 }
 
