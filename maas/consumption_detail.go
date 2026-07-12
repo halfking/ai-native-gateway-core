@@ -49,10 +49,7 @@ func (s *Service) QueryConsumptionDetail(ctx context.Context, tenantID, ownerUse
 	}
 	days = ClampUsageDays(days)
 	ownerUser = strings.TrimSpace(ownerUser)
-	logsTable := "request_logs_with_current_month"
-	if days <= 7 {
-		logsTable = "request_logs_hot"
-	}
+	logsTable := requestLogsSource(days)
 
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
