@@ -1,13 +1,16 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -228,6 +231,21 @@ func (h *SelfCheckHandler) handleGetRun(w http.ResponseWriter, r *http.Request) 
 
 // --- Settings ---
 
+// defaultFeaturedModelsSC is the default featured model list used when seeding
+// the single-row self_check_settings table (matches migration 338).
+const defaultFeaturedModelsSC = `["minimax-m2.7","glm-5.2","mimo-v2.5","claude-sonnet-5","gpt-5.4","gpt-5.6-luna","deepseek-v4-pro"]`
+
+// ensureSelfCheckSettingsRow guarantees the single settings row (id=1) exists,
+// seeding it with defaults when missing. This keeps the settings endpoint from
+// 500-ing when the migration's seed insert hasn't run yet.
+func (h *SelfCheckHandler) ensureSelfCheckSettingsRow(ctx context.Context) error {
+	_, err := h.db.Exec(ctx, `
+		INSERT INTO self_check_settings (id, featured_model_ids)
+		VALUES (1, $1::jsonb)
+		ON CONFLICT (id) DO NOTHING`, defaultFeaturedModelsSC)
+	return err
+}
+
 func (h *SelfCheckHandler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -253,8 +271,30 @@ func (h *SelfCheckHandler) handleGetSettings(w http.ResponseWriter, r *http.Requ
 		&s.ModelSource, &s.MaxModels, &s.MaxTokens, &s.FeaturedModels,
 		&s.UpdatedAt, &s.UpdatedBy)
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
-		return
+		// If the settings row is missing, seed it with defaults and retry once
+		// instead of returning 500 (migration seed may not have run).
+		if errors.Is(err, pgx.ErrNoRows) {
+			if seedErr := h.ensureSelfCheckSettingsRow(r.Context()); seedErr != nil {
+				slog.Error("self_check: seed default settings failed", "error", seedErr)
+				writeJSON(w, 500, map[string]any{"error": "settings not initialized: " + seedErr.Error()})
+				return
+			}
+			// Re-query after seeding.
+			err = h.db.QueryRow(r.Context(), `
+				SELECT enabled, normal_interval_seconds, fault_interval_seconds,
+				model_source, max_models, max_tokens_per_run, featured_model_ids,
+				updated_at, updated_by
+				FROM self_check_settings WHERE id=1`,
+			).Scan(&s.Enabled, &s.NormalInterval, &s.FaultInterval,
+				&s.ModelSource, &s.MaxModels, &s.MaxTokens, &s.FeaturedModels,
+				&s.UpdatedAt, &s.UpdatedBy)
+		}
+		if err != nil {
+			// Still failing — likely the table itself doesn't exist yet.
+			slog.Error("self_check: load settings failed", "error", err)
+			writeJSON(w, 500, map[string]any{"error": "self_check_settings table unavailable: " + err.Error()})
+			return
+		}
 	}
 	writeJSON(w, 200, s)
 }
