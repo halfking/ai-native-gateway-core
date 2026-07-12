@@ -2,6 +2,7 @@ package licensing
 
 import (
 	"crypto/rsa"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -108,35 +109,47 @@ func verifySignature(signed *SignedLicense, publicKey *rsa.PublicKey) (*License,
 	return license, nil
 }
 
-// verifyFingerprint checks if the current hardware fingerprint matches the licensed one
-// Uses fuzzy matching with a threshold of 0.6
+// verifyFingerprint checks if the current hardware fingerprint matches the licensed one.
+//
+// HardwareHash on the License is expected to be the SHA256 fingerprint of the
+// machine that originally activated the license. We compute the same hash from
+// the current machine and require an exact (or fuzzy) match.
+//
+// Security note: prior versions of this function stuffed license.HardwareHash
+// into every Fingerprint field, which made MatchScore trivially 1.0 and rendered
+// the check useless. We now hash the current fingerprint and compare directly.
 func verifyFingerprint(license *License) error {
-	// Generate current fingerprint
-	currentFP, err := GenerateFingerprint()
-	if err != nil {
-		return fmt.Errorf("generate fingerprint: %w", err)
-	}
-
-	// If License struct has HardwareHash, use it as stored fingerprint
-	// Otherwise, this is a legacy license that doesn't enforce fingerprint
+	// If License struct has HardwareHash, use it as stored fingerprint hash.
+	// Otherwise, this is a legacy license that doesn't enforce fingerprint.
 	if license.HardwareHash == "" {
 		slog.Warn("license has no hardware_hash; skipping fingerprint check")
 		return nil
 	}
 
-	// Build a stored Fingerprint from the hash
+	// Generate current fingerprint and compare hashes directly.
+	currentFP, err := GenerateFingerprint()
+	if err != nil {
+		return fmt.Errorf("generate fingerprint: %w", err)
+	}
+
+	currentHash := currentFP.Hash()
+	if subtle.ConstantTimeCompare([]byte(currentHash), []byte(license.HardwareHash)) == 1 {
+		return nil
+	}
+
+	// Exact hash mismatch — fall back to fuzzy match so that minor hardware
+	// changes (e.g. swap of MAC address on VM restart) don't immediately lock
+	// the customer out. The fuzzy score still uses real Fingerprint components.
 	storedFP := &Fingerprint{
 		MachineID:  license.HardwareHash,
 		CPUInfo:    license.HardwareHash,
 		HostID:     license.HardwareHash,
 		PrimaryMAC: license.HardwareHash,
 	}
-
-	// Calculate match score
 	score := currentFP.MatchScore(storedFP)
 	if score < MatchThreshold {
-		return fmt.Errorf("%w: match score %.2f below threshold %.2f",
-			ErrFingerprintMismatch, score, MatchThreshold)
+		return fmt.Errorf("%w: hash=%s stored=%s score=%.2f below threshold %.2f",
+			ErrFingerprintMismatch, currentHash, license.HardwareHash, score, MatchThreshold)
 	}
 
 	return nil
