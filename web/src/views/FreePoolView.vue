@@ -59,6 +59,9 @@ const quickEntry = ref({
 const quickProbing = ref(false)
 const quickSaving = ref(false)
 const probeResult = ref<Record<string, unknown> | null>(null)
+const showAdvancedOptions = ref(false)
+const showGuidePanel = ref(false)
+const quickEntryCard = ref<HTMLElement | null>(null)
 
 const tempEmail = ref<{ address: string; password: string; token: string; web_url: string } | null>(null)
 const tempEmailLoading = ref(false)
@@ -221,6 +224,13 @@ function fillFromPlatform(p: SignupPlatformEntry) {
   quickEntry.value.source_detail = p.name
   activeTab.value = 'assistant'
   probeResult.value = null
+  showAdvancedOptions.value = false
+  
+  // 滚动到表单并提示
+  nextTick(() => {
+    quickEntryCard.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    message.value = `已填入 ${p.name} 的配置，请粘贴 API Key 并点击「探活并入库」`
+  })
 }
 
 function openUrl(url: string) {
@@ -317,7 +327,12 @@ async function pollTempInbox() {
   try {
     const res = await pollFreePoolTempEmail(tempEmail.value.token)
     if (res.ok && res.messages) {
-      tempInbox.value = res.messages
+      // 自动提取验证码
+      tempInbox.value = res.messages.map(m => ({
+        ...m,
+        verificationCode: extractVerificationCode(m.subject || '') 
+                       || extractVerificationCode(m.intro || '')
+      }))
       message.value = `收件箱 ${res.total ?? res.messages.length} 封`
     } else {
       error.value = res.error || t('freePool.fetchInboxFailed')
@@ -327,6 +342,12 @@ async function pollTempInbox() {
   } finally {
     tempPolling.value = false
   }
+}
+
+function extractVerificationCode(text: string): string | null {
+  if (!text) return null
+  const match = text.match(/\b\d{6}\b/)
+  return match ? match[0] : null
 }
 
 async function copyText(text: string) {
@@ -645,19 +666,36 @@ onMounted(load)
 
       <!-- Assistant tab -->
       <div v-if="activeTab === 'assistant'" class="assistant-layout">
-        <div class="card quick-entry-card">
+        <div ref="quickEntryCard" class="card quick-entry-card">
           <h3 style="margin-top:0">快速录入凭据</h3>
           <p class="cell-muted" style="margin:0 0 12px">
             粘贴注册页、Base URL 与 API Key → 探活验证 → 加密写入数据库。也可从下方平台卡片一键填入。
           </p>
           <div class="form-grid">
             <div class="form-item" style="grid-column:1/-1">
-              <label>注册 / 文档页 URL</label>
-              <input v-model="quickEntry.signup_url" class="input" placeholder="https://openrouter.ai/signup" />
-            </div>
-            <div class="form-item" style="grid-column:1/-1">
               <label>Base URL *</label>
               <input v-model="quickEntry.base_url" class="input" placeholder="https://openrouter.ai/api/v1" />
+            </div>
+            <div class="form-item" style="grid-column:1/-1">
+              <label>API Key</label>
+              <input v-model="quickEntry.api_key" class="input" type="password" placeholder="sk-..." />
+            </div>
+          </div>
+          
+          <!-- 高级选项切换 -->
+          <button 
+            class="btn btn-ghost btn-sm advanced-toggle" 
+            @click="showAdvancedOptions = !showAdvancedOptions"
+          >
+            {{ showAdvancedOptions ? t('freePool.assistant.hideAdvanced') : t('freePool.assistant.showAdvanced') }}
+            <span class="chevron">{{ showAdvancedOptions ? '▲' : '▼' }}</span>
+          </button>
+          
+          <!-- 高级选项（可折叠） -->
+          <div v-show="showAdvancedOptions" class="form-grid" style="margin-top:12px">
+            <div class="form-item" style="grid-column:1/-1">
+              <label>注册 / 文档页 URL</label>
+              <input v-model="quickEntry.signup_url" class="input" placeholder="https://openrouter.ai/signup" />
             </div>
             <div class="form-item">
               <label>Catalog Code</label>
@@ -666,10 +704,6 @@ onMounted(load)
             <div class="form-item">
               <label>显示名称</label>
               <input v-model="quickEntry.display_name" class="input" placeholder="Provider 显示名" />
-            </div>
-            <div class="form-item" style="grid-column:1/-1">
-              <label>API Key</label>
-              <input v-model="quickEntry.api_key" class="input" type="password" placeholder="sk-..." />
             </div>
             <div class="form-item">
               <label>来源类型</label>
@@ -685,6 +719,7 @@ onMounted(load)
               <input v-model="quickEntry.source_detail" class="input" placeholder="如 AIGoCode VS Code 插件" />
             </div>
           </div>
+          
           <div v-if="probeResult" class="probe-box">
             <strong>探活结果</strong>
             <pre>{{ JSON.stringify(probeResult, null, 2) }}</pre>
@@ -734,9 +769,23 @@ onMounted(load)
             </div>
           </div>
           <ul v-if="tempInbox.length" class="inbox-list">
-            <li v-for="m in tempInbox" :key="m.id">
-              <strong>{{ m.subject || t('freePool.noSubject') }}</strong>
-              <div class="cell-muted">{{ m.from }} · {{ m.intro }}</div>
+            <li v-for="m in tempInbox" :key="m.id" class="inbox-item">
+              <div class="inbox-header">
+                <strong>{{ m.subject || t('freePool.noSubject') }}</strong>
+                <span class="cell-muted">{{ m.from }}</span>
+              </div>
+              <div class="cell-muted inbox-intro">{{ m.intro }}</div>
+              
+              <!-- 验证码高亮 -->
+              <div v-if="m.verificationCode" class="verification-code-box">
+                <span class="verification-label">{{ t('freePool.assistant.verificationCode') }}</span>
+                <code class="verification-code" @click="copyText(m.verificationCode)">
+                  {{ m.verificationCode }}
+                </code>
+                <button class="btn btn-ghost btn-sm" @click="copyText(m.verificationCode)">
+                  {{ t('freePool.assistant.copy') }}
+                </button>
+              </div>
             </li>
           </ul>
           <div v-if="signupHub" class="tool-links" style="margin-top:16px">
@@ -805,6 +854,67 @@ onMounted(load)
                 <strong>{{ step.title }}</strong> — {{ step.detail }}
               </li>
             </ol>
+          </div>
+        </div>
+        
+        <!-- 操作指南折叠面板 -->
+        <div class="guide-panel-wrapper">
+          <button 
+            class="guide-panel-toggle" 
+            @click="showGuidePanel = !showGuidePanel"
+          >
+            <div class="toggle-left">
+              <span class="guide-icon">📖</span>
+              <div>
+                <strong>{{ t('freePool.assistant.guidePanelTitle') }}</strong>
+                <div class="cell-muted">{{ t('freePool.assistant.guidePanelDesc') }}</div>
+              </div>
+            </div>
+            <span class="chevron">{{ showGuidePanel ? '▲' : '▼' }}</span>
+          </button>
+          
+          <div v-show="showGuidePanel" class="guide-panel-content">
+            <!-- 快速开始 -->
+            <section class="guide-section">
+              <h4>{{ t('freePool.guide.quickStartTitle') }}</h4>
+              <ol class="guide-steps-detail">
+                <li>
+                  <strong>{{ t('freePool.guide.step1') }}</strong>
+                  <p>{{ t('freePool.guide.step1Detail') }}</p>
+                </li>
+                <li>
+                  <strong>{{ t('freePool.guide.step2') }}</strong>
+                  <p>{{ t('freePool.guide.step2Detail') }}</p>
+                </li>
+                <li>
+                  <strong>{{ t('freePool.guide.step3') }}</strong>
+                  <p>{{ t('freePool.guide.step3Detail') }}</p>
+                </li>
+                <li>
+                  <strong>{{ t('freePool.guide.step4') }}</strong>
+                  <p>{{ t('freePool.guide.step4Detail') }}</p>
+                </li>
+                <li>
+                  <strong>{{ t('freePool.guide.step5') }}</strong>
+                  <p>{{ t('freePool.guide.step5Detail') }}</p>
+                </li>
+              </ol>
+            </section>
+            
+            <!-- 常见问题 -->
+            <section class="guide-section">
+              <h4>{{ t('freePool.guide.troubleshooting') }}</h4>
+              <dl class="troubleshooting-list">
+                <dt>{{ t('freePool.guide.issue1') }}</dt>
+                <dd>{{ t('freePool.guide.issue1Solution') }}</dd>
+                
+                <dt>{{ t('freePool.guide.issue2') }}</dt>
+                <dd>{{ t('freePool.guide.issue2Solution') }}</dd>
+                
+                <dt>{{ t('freePool.guide.issue3') }}</dt>
+                <dd>{{ t('freePool.guide.issue3Solution') }}</dd>
+              </dl>
+            </section>
           </div>
         </div>
       </div>
@@ -1080,6 +1190,18 @@ onMounted(load)
   color: var(--muted);
 }
 
+.advanced-toggle {
+  margin-top: 8px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chevron {
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
 .tab-bar { display: flex; gap: 8px; flex-wrap: wrap; }
 .tab-btn {
   border: 1px solid var(--border);
@@ -1176,6 +1298,24 @@ onMounted(load)
   font-size: 12px;
   color: var(--text);
 }
+.guide-steps-detail {
+  margin: 0 0 0 20px;
+  padding: 0;
+}
+.guide-steps-detail li {
+  margin-bottom: 12px;
+  line-height: 1.6;
+}
+.guide-steps-detail li strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text);
+}
+.guide-steps-detail li p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
 .discovery-log {
   font-size: 11px;
   padding: 12px;
@@ -1257,8 +1397,113 @@ onMounted(load)
 .temp-row code { font-size: 12px; word-break: break-all; }
 .inbox-list {
   margin: 12px 0 0;
-  padding-left: 18px;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.inbox-item {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.inbox-item:last-child {
+  border-bottom: none;
+}
+.inbox-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.inbox-intro {
   font-size: 12px;
+  margin-bottom: 8px;
+}
+.verification-code-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(63,185,80,.08);
+  border: 1px solid rgba(63,185,80,.25);
+  border-radius: 6px;
+  margin-top: 8px;
+}
+.verification-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+.verification-code {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--success);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(63,185,80,.15);
+}
+.verification-code:hover {
+  background: rgba(63,185,80,.25);
 }
 .tool-links { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.guide-panel-wrapper {
+  margin-top: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.guide-panel-toggle {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  background: var(--card);
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.guide-panel-toggle:hover {
+  background: var(--bg-subtle, var(--bg));
+}
+.toggle-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+}
+.guide-icon {
+  font-size: 24px;
+}
+.guide-panel-content {
+  padding: 20px;
+  background: var(--bg-subtle, var(--bg));
+  border-top: 1px solid var(--border);
+}
+.guide-section {
+  margin-bottom: 24px;
+}
+.guide-section:last-child {
+  margin-bottom: 0;
+}
+.guide-section h4 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  color: var(--text);
+}
+.troubleshooting-list {
+  margin: 0;
+}
+.troubleshooting-list dt {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--text);
+}
+.troubleshooting-list dd {
+  margin: 0 0 12px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
 </style>
