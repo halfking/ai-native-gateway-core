@@ -4,6 +4,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 )
@@ -116,21 +117,19 @@ func verifyFingerprint(license *License) error {
 		return fmt.Errorf("generate fingerprint: %w", err)
 	}
 
-	// For now, we need to extract stored fingerprint from license
-	// The license should store a Fingerprint field or HardwareHash
-	// Since the License struct doesn't have fingerprint data yet,
-	// we'll need to check against stored devices or implement fingerprint storage
-
-	// Parse stored fingerprint from license features or custom field
-	// This is a placeholder - actual implementation depends on how fingerprint is stored
-	var storedFP *Fingerprint
-
-	// Try to find fingerprint in license metadata
-	// For now, skip fingerprint check if no stored fingerprint found
-	if storedFP == nil {
-		// No stored fingerprint to compare - this might be first activation
-		// In production, you'd want to enforce this more strictly
+	// If License struct has HardwareHash, use it as stored fingerprint
+	// Otherwise, this is a legacy license that doesn't enforce fingerprint
+	if license.HardwareHash == "" {
+		slog.Warn("license has no hardware_hash; skipping fingerprint check")
 		return nil
+	}
+
+	// Build a stored Fingerprint from the hash
+	storedFP := &Fingerprint{
+		MachineID:  license.HardwareHash,
+		CPUInfo:    license.HardwareHash,
+		HostID:     license.HardwareHash,
+		PrimaryMAC: license.HardwareHash,
 	}
 
 	// Calculate match score
