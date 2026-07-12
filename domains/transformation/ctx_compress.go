@@ -109,6 +109,28 @@ func CompressMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
 
 	softLimit := int(float64(contextWindow) * defaultSoftLimitFraction)
 	estimated := estimatePromptTokens(bodyBytes)
+
+	// 2026-07-13: Force-compress large requests even when within soft limit.
+	// For requests > 1MB, the upstream's per-message processing overhead is
+	// significant and many providers (e.g. MiniMax via apiclaude) have strict
+	// per-request size limits independent of token count. Aggressive trimming
+	// at the 50% soft limit prevents upstream 400 errors like
+	// "Your input exceeds the context window".
+	const largeRequestBytes = 1024 * 1024 // 1MB
+	const aggressiveSoftLimitFraction = 0.50
+	if len(bodyBytes) > largeRequestBytes {
+		aggressiveLimit := int(float64(contextWindow) * aggressiveSoftLimitFraction)
+		if estimated > aggressiveLimit || len(bodyBytes) > largeRequestBytes*2 {
+			slog.Info("context_compress: aggressive trim for large request",
+				"request_size_bytes", len(bodyBytes),
+				"estimated_tokens", estimated,
+				"aggressive_limit", aggressiveLimit,
+				"original_messages", len(req.Messages),
+			)
+			softLimit = aggressiveLimit
+		}
+	}
+
 	if estimated <= softLimit {
 		return bodyBytes
 	}
