@@ -72,7 +72,7 @@ func (c *Client) Download(ctx context.Context, id, tenantID string) (*SessionPac
 	if err != nil {
 		return nil, fmt.Errorf("sessionforensics: download %s: %w", id, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusNotFound {
@@ -123,7 +123,7 @@ func (c *Client) Upload(ctx context.Context, pack *SessionPack) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	rb, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("sessionforensics: upload status=%d body=%s",
@@ -165,7 +165,7 @@ func (c *Client) FetchByPackID(ctx context.Context, packID, tenantID string) (*S
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, ErrSessionNotFound
