@@ -242,6 +242,7 @@ tbody tr:hover { background: rgba(255,255,255,.02); }
 .alert-danger  { background: rgba(248,81,73,.1);  border: 1px solid rgba(248,81,73,.3); color: var(--danger); }
 .alert-success { background: rgba(63,185,80,.1);  border: 1px solid rgba(63,185,80,.3); color: var(--success); }
 .alert-info    { background: rgba(99,102,241,.1); border: 1px solid rgba(99,102,241,.3); color: var(--accent-h); }
+.alert-meta    { margin-left: 8px; opacity: .7; font-size: 12px; font-family: var(--mono); }
 
 .background-tasks-banner {
   display: flex;

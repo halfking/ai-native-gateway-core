@@ -116,6 +116,22 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 		&summary.AvgLatencyMs,
 		&summary.SuccessRate,
 	); err != nil {
+		if isMissingRelationError(err) {
+			view := reportMissingRelation(slog.Default(), "usageSummary", err)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"total_requests":          0,
+				"total_prompt_tokens":     0,
+				"total_completion_tokens": 0,
+				"total_cost_usd":          0.0,
+				"avg_latency_ms":          0.0,
+				"success_rate":            0.0,
+				"degraded":                true,
+				"missing_view":            view,
+				"error_code":              "VIEW_MISSING",
+				"hint":                    fmt.Sprintf("数据视图 %s 尚未初始化，请先执行数据聚合迁移", view),
+			})
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "summary query failed: "+err.Error())
 		return
 	}
@@ -229,6 +245,26 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 		&overview.OfflineCredentials,
 		&overview.TotalCredentials,
 	); err != nil {
+		if isMissingRelationError(err) {
+			view := reportMissingRelation(slog.Default(), "usageDashboard", err)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"total_api_keys":            0,
+				"active_api_keys":           0,
+				"active_api_keys_in_window": 0,
+				"total_models":              0,
+				"active_models_in_window":   0,
+				"total_providers":           0,
+				"active_providers":          0,
+				"offline_models":            0,
+				"offline_credentials":       0,
+				"total_credentials":         0,
+				"degraded":                  true,
+				"missing_view":              view,
+				"error_code":                "VIEW_MISSING",
+				"hint":                      fmt.Sprintf("数据视图 %s 尚未初始化，请先执行数据聚合迁移", view),
+			})
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "dashboard query failed: "+err.Error())
 		return
 	}
@@ -305,6 +341,15 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
+		if isMissingRelationError(err) {
+			view := reportMissingRelation(slog.Default(), "usageHotKeys", err)
+			writeJSON(w, http.StatusOK, []any{})
+			slog.Warn("dashboard hot-keys query degraded: missing optional view",
+				"relation", view,
+				"hint", missingRelationHint(view),
+			)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "hot-keys query failed: "+err.Error())
 		return
 	}
@@ -407,6 +452,15 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
+		if isMissingRelationError(err) {
+			view := reportMissingRelation(slog.Default(), "usageByProvider", err)
+			writeJSON(w, http.StatusOK, []any{})
+			slog.Warn("dashboard by-provider query degraded: missing optional view",
+				"relation", view,
+				"hint", missingRelationHint(view),
+			)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "by-provider query failed: "+err.Error())
 		return
 	}
@@ -500,6 +554,15 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
+		if isMissingRelationError(err) {
+			view := reportMissingRelation(slog.Default(), "usageByModel", err)
+			writeJSON(w, http.StatusOK, []any{})
+			slog.Warn("dashboard by-model query degraded: missing optional view",
+				"relation", view,
+				"hint", missingRelationHint(view),
+			)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "by-model query failed: "+err.Error())
 		return
 	}
