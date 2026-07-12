@@ -1,0 +1,32 @@
+{
+  "scenario": "S14_model_not_found",
+  "gateway": "http://localhost:8781",
+  "models": [
+    "loadtest-nonexistent-xyz"
+  ],
+  "n_clients": 10,
+  "rps_per_client": 3.0,
+  "duration_sec": 30,
+  "prompt_size": "short",
+  "sticky_ratio": 0.0,
+  "stream_ratio": 0.0,
+  "fault_inject_cancel": 0.0,
+  "metrics": {
+    "total": 870,
+    "succ": 0,
+    "fail": 870,
+    "success_rate": 0.0,
+    "p50_ms": 11.600375000853091,
+    "p95_ms": 24.17191700078547,
+    "p99_ms": 58.34741699800361,
+    "max_ms": 60.85575000179233,
+    "throughput_rps": 26.35388708890017,
+    "elapsed_sec": 33.01220791700325,
+    "fail_by_status": {
+      "503": 870
+    },
+    "fail_by_kind": {
+      "server_error": 870
+    }
+  }
+}
