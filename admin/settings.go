@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -278,6 +279,12 @@ func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string
 		writeError(w, http.StatusInternalServerError, "save failed: "+err.Error())
 		return
 	}
+	if !tenant && key == ratelimit.RateLimitGateKey {
+		var enabled bool
+		if err := json.Unmarshal(body.Value, &enabled); err == nil {
+			ratelimit.SetRateLimitEnabled(enabled)
+		}
+	}
 
 	// Audit.
 	user, role, ip := authIdentity(r)
@@ -346,6 +353,12 @@ func (h *Handler) settingsRollback(w http.ResponseWriter, r *http.Request, key s
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if !tenant && key == ratelimit.RateLimitGateKey {
+		var enabled bool
+		if err := json.Unmarshal(newVal, &enabled); err == nil {
+			ratelimit.SetRateLimitEnabled(enabled)
+		}
 	}
 
 	user, role, ip := authIdentity(r)

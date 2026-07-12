@@ -36,7 +36,7 @@ const projectForm = ref({
 const showSessionDialog = ref(false)
 const sessionForm = ref({
   projectId: 0,
-  sessionName: '',
+  taskType: '',
 })
 
 // Review detail dialog
@@ -52,6 +52,14 @@ const filteredReviews = computed(() => {
   if (!selectedSessionId.value) return reviews.value
   return reviews.value.filter((r) => r.session_id === selectedSessionId.value)
 })
+
+function reviewIssues(review: CodeReview): CodeIssue[] {
+  return review.review_result?.issues || []
+}
+
+function reviewSuggestions(review: CodeReview): string[] {
+  return review.review_result?.suggestions || []
+}
 
 async function load() {
   loading.value = true
@@ -96,20 +104,20 @@ async function handleCreateProject() {
 function openSessionDialog(project: VibeCodingProject) {
   sessionForm.value = {
     projectId: project.id,
-    sessionName: '',
+    taskType: '',
   }
   showSessionDialog.value = true
 }
 
 async function handleCreateSession() {
-  if (!sessionForm.value.sessionName) {
+  if (!sessionForm.value.taskType) {
     ElMessage.warning(t('ops.vibecoding.fillRequired'))
     return
   }
 
   loading.value = true
   try {
-    await createVibeCodingSession(sessionForm.value.projectId, sessionForm.value.sessionName)
+    await createVibeCodingSession(sessionForm.value.projectId, sessionForm.value.taskType)
     ElMessage.success(t('ops.vibecoding.createSessionSuccess'))
     showSessionDialog.value = false
     await load()
@@ -152,13 +160,6 @@ function severityType(severity: string) {
 
 function formatDate(date: string) {
   return new Date(date).toLocaleString()
-}
-
-function formatDuration(seconds: number) {
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  if (hours > 0) return `${hours}h ${minutes}m`
-  return `${minutes}m`
 }
 
 onMounted(load)
@@ -216,7 +217,7 @@ onMounted(load)
         </div>
       </template>
       <el-table :data="filteredSessions" size="small">
-        <el-table-column prop="session_name" :label="t('ops.vibecoding.sessionName')" width="200" />
+        <el-table-column prop="task_type" :label="t('ops.vibecoding.sessionName')" width="200" />
         <el-table-column prop="project_id" :label="t('ops.vibecoding.projectId')" width="100" />
         <el-table-column prop="status" :label="t('common.status')" width="100">
           <template #default="{ row }">
@@ -225,14 +226,11 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="duration_seconds" :label="t('ops.vibecoding.duration')" width="100">
-          <template #default="{ row }">{{ formatDuration(row.duration_seconds) }}</template>
+        <el-table-column prop="created_at" :label="t('ops.vibecoding.startedAt')" width="160">
+          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column prop="started_at" :label="t('ops.vibecoding.startedAt')" width="160">
-          <template #default="{ row }">{{ formatDate(row.started_at) }}</template>
-        </el-table-column>
-        <el-table-column prop="ended_at" :label="t('ops.vibecoding.endedAt')" width="160">
-          <template #default="{ row }">{{ row.ended_at ? formatDate(row.ended_at) : '—' }}</template>
+        <el-table-column prop="completed_at" :label="t('ops.vibecoding.endedAt')" width="160">
+          <template #default="{ row }">{{ row.completed_at ? formatDate(row.completed_at) : '—' }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="140" fixed="right">
           <template #default="{ row }">
@@ -257,25 +255,25 @@ onMounted(load)
       <el-table :data="filteredReviews" size="small">
         <el-table-column prop="language" :label="t('ops.vibecoding.language')" width="100" />
         <el-table-column prop="file_path" :label="t('ops.vibecoding.filePath')" min-width="250" show-overflow-tooltip />
-        <el-table-column prop="score" :label="t('ops.vibecoding.score')" width="120">
+        <el-table-column prop="score" :label="t('ops.vibecoding.score')" width="100">
           <template #default="{ row }">
             <el-tag :type="getScoreColor(row.score)" size="small">
-              {{ row.score }}/100
+              {{ row.score }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column :label="t('ops.vibecoding.issues')" width="100">
+        <el-table-column :label="t('ops.vibecoding.issues')" width="80">
           <template #default="{ row }">
-            <el-badge :value="row.issues.length" :type="row.issues.length > 0 ? 'danger' : 'success'" />
+            <el-badge :value="reviewIssues(row).length" :type="reviewIssues(row).length > 0 ? 'danger' : 'success'" />
           </template>
         </el-table-column>
-        <el-table-column :label="t('ops.vibecoding.suggestions')" width="100">
+        <el-table-column :label="t('ops.vibecoding.suggestions')" width="80">
           <template #default="{ row }">
-            <el-badge :value="row.suggestions.length" type="info" />
+            <el-badge :value="reviewSuggestions(row).length" type="info" />
           </template>
         </el-table-column>
-        <el-table-column prop="reviewed_at" :label="t('ops.vibecoding.reviewedAt')" width="160">
-          <template #default="{ row }">{{ formatDate(row.reviewed_at) }}</template>
+        <el-table-column prop="created_at" :label="t('ops.vibecoding.reviewedAt')" width="160">
+          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="100" fixed="right">
           <template #default="{ row }">
@@ -319,8 +317,8 @@ onMounted(load)
       width="500px"
     >
       <el-form :model="sessionForm" label-width="120px">
-        <el-form-item :label="t('ops.vibecoding.sessionName')" required>
-          <el-input v-model="sessionForm.sessionName" :placeholder="t('ops.vibecoding.sessionNamePlaceholder')" />
+        <el-form-item :label="t('ops.vibecoding.taskType')" required>
+          <el-input v-model="sessionForm.taskType" :placeholder="t('ops.vibecoding.taskTypePlaceholder')" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -347,18 +345,21 @@ onMounted(load)
           </el-descriptions-item>
           <el-descriptions-item :label="t('ops.vibecoding.score')">
             <el-tag :type="getScoreColor(selectedReview.score)">
-              {{ selectedReview.score }}/100
+              {{ selectedReview.score }}
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item :label="t('ops.vibecoding.reviewedAt')">
-            {{ formatDate(selectedReview.reviewed_at) }}
+            {{ formatDate(selectedReview.created_at) }}
+          </el-descriptions-item>
+          <el-descriptions-item :label="t('ops.vibecoding.summary')" :span="2">
+            {{ selectedReview.review_result?.summary }}
           </el-descriptions-item>
         </el-descriptions>
 
         <el-divider />
 
-        <h4>{{ t('ops.vibecoding.issues') }}</h4>
-        <el-table :data="selectedReview.issues" size="small" style="margin-bottom: 20px">
+        <h4>{{ t('ops.vibecoding.issues') }} ({{ reviewIssues(selectedReview).length }})</h4>
+        <el-table :data="reviewIssues(selectedReview)" size="small" style="margin-bottom: 20px">
           <el-table-column prop="line" :label="t('ops.vibecoding.line')" width="80" />
           <el-table-column prop="severity" :label="t('ops.vibecoding.severity')" width="100">
             <template #default="{ row }">
@@ -368,14 +369,15 @@ onMounted(load)
             </template>
           </el-table-column>
           <el-table-column prop="message" :label="t('ops.vibecoding.message')" min-width="200" />
-          <el-table-column prop="code" :label="t('ops.vibecoding.code')" width="120" />
+          <el-table-column prop="category" :label="t('ops.vibecoding.category')" width="120" />
         </el-table>
 
-        <h4>{{ t('ops.vibecoding.suggestions') }}</h4>
-        <el-table :data="selectedReview.suggestions" size="small">
-          <el-table-column prop="line" :label="t('ops.vibecoding.line')" width="80" />
-          <el-table-column prop="message" :label="t('ops.vibecoding.message')" min-width="200" />
-          <el-table-column prop="suggested_code" :label="t('ops.vibecoding.suggestedCode')" min-width="200" show-overflow-tooltip />
+        <h4>{{ t('ops.vibecoding.suggestions') }} ({{ reviewSuggestions(selectedReview).length }})</h4>
+        <el-table :data="reviewSuggestions(selectedReview)" size="small">
+          <el-table-column type="index" :label="'#'" width="50" />
+          <el-table-column prop="" :label="t('ops.vibecoding.message')" min-width="300" show-overflow-tooltip>
+            <template #default="{ row }">{{ row }}</template>
+          </el-table-column>
         </el-table>
       </div>
       <template #footer>

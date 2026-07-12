@@ -15,6 +15,7 @@
     <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
       📖 您是租户管理员，当前为只读模式。上游成本价格仅供查看，不能修改或导入。
     </div>
+    <div v-if="globalMsg" class="alert" :class="globalMsgOk ? 'alert-success' : 'alert-danger'" style="margin-bottom:12px">{{ globalMsg }}</div>
 
     <div class="pm-summary" v-if="summary">
       <div class="stat-card">
@@ -113,6 +114,7 @@
         </select>
       </div>
       <button class="btn btn-sm" @click="clearFilters">清空</button>
+      <button v-if="!readOnly" class="btn btn-sm btn-primary" @click="openModelBatchPricing">按模型批量定价</button>
     </div>
 
     <!-- View Tabs -->
@@ -377,6 +379,85 @@
       </div>
     </Teleport>
 
+    <!-- Model Batch Pricing Modal -->
+    <div v-if="showModelBatchModal" class="modal-overlay" @click.self="showModelBatchModal = false">
+      <div class="modal batch-pricing-modal" @click.stop>
+        <h3>按模型批量定价</h3>
+
+        <div class="form-group">
+          <label>选择标准模型</label>
+          <ModelPicker
+            v-model="batchPricingModelName"
+            placeholder="搜索并选择模型…"
+            title="按模型批量定价"
+          />
+        </div>
+
+        <div v-if="batchPricingModelName && batchPricingOffers.length > 0" class="batch-offers">
+          <h4>该模型下的 Offer（{{ batchPricingOffers.length }} 个）</h4>
+          <div class="batch-offer-select-all">
+            <label><input type="checkbox" :checked="batchPricingAllSelected" @change="toggleBatchPricingAll" /> 全选</label>
+          </div>
+          <div class="batch-offer-list">
+            <div v-for="o in batchPricingOffers" :key="o.offer_id" class="batch-offer-row" :class="{ selected: batchPricingSelected.has(o.offer_id) }">
+              <label class="batch-offer-label">
+                <input type="checkbox" :checked="batchPricingSelected.has(o.offer_id)" @change="toggleBatchPricingOffer(o.offer_id)" />
+                <span class="offer-provider">{{ o.provider_name }}</span>
+                <span class="offer-cred">{{ o.credential_label }}</span>
+                <span class="offer-price-mini">{{ o.unit_price_in_per_1m != null ? o.unit_price_in_per_1m : '-' }}/{{ o.unit_price_out_per_1m != null ? o.unit_price_out_per_1m : '-' }}</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="batchPricingSelected.size > 0" class="batch-pricing-form">
+          <h4>批量定价</h4>
+          <div class="batch-pricing-grid">
+            <div class="form-group">
+              <label>输入价（每百万 Token）</label>
+              <input v-model.number="batchPricingForm.unit_price_in_per_1m" type="number" step="0.001" class="input compact" />
+            </div>
+            <div class="form-group">
+              <label>输出价（每百万 Token）</label>
+              <input v-model.number="batchPricingForm.unit_price_out_per_1m" type="number" step="0.001" class="input compact" />
+            </div>
+            <div class="form-group">
+              <label>缓存读价（每百万）</label>
+              <input v-model.number="batchPricingForm.cache_read_price_per_1m" type="number" step="0.001" class="input compact" />
+            </div>
+            <div class="form-group">
+              <label>缓存写价（每百万）</label>
+              <input v-model.number="batchPricingForm.cache_write_price_per_1m" type="number" step="0.001" class="input compact" />
+            </div>
+            <div class="form-group">
+              <label>币种</label>
+              <select v-model="batchPricingForm.currency" class="input compact">
+                <option value="CNY">CNY</option>
+                <option value="USD">USD</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>计费模式</label>
+              <select v-model="batchPricingForm.billing_mode" class="input compact">
+                <option value="">不修改</option>
+                <option value="per_token">按 Token</option>
+                <option value="per_request">按次</option>
+                <option value="monthly">包月</option>
+                <option value="free">免费</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-primary btn-sm" :disabled="savingBatch || batchPricingSelected.size === 0" @click="applyModelBatchPricing">
+            {{ savingBatch ? '保存中…' : `应用到 ${batchPricingSelected.size} 个 Offer` }}
+          </button>
+          <button class="btn btn-sm" @click="showModelBatchModal = false">取消</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Auto Inherit Modal -->
     <div v-if="showInheritPreview" class="modal-overlay" @click.self="showInheritPreview = false">
       <div class="modal" @click.stop>
@@ -493,6 +574,25 @@ const filters = ref({
   pricing_status: '',
   availability: '',
 })
+
+// Global feedback (visible outside drawer)
+const globalMsg = ref('')
+const globalMsgOk = ref(false)
+
+// Model batch pricing state
+const showModelBatchModal = ref(false)
+const batchPricingModelName = ref('')
+const batchPricingOffers = ref<Offer[]>([])
+const batchPricingSelected = ref<Set<number>>(new Set())
+const batchPricingForm = ref({
+  unit_price_in_per_1m: 0,
+  unit_price_out_per_1m: 0,
+  cache_read_price_per_1m: 0,
+  cache_write_price_per_1m: 0,
+  currency: 'CNY',
+  billing_mode: '',
+})
+const savingBatch = ref(false)
 
 // Auto inherit state
 const showInheritPreview = ref(false)
@@ -779,16 +879,91 @@ async function pasteToSelected() {
       headers: authHeaders(),
       body: JSON.stringify({ updates }),
     })
+    if (!res.ok) {
+      const errText = await res.text().catch(() => 'unknown error')
+      throw new Error(`HTTP ${res.status}: ${errText}`)
+    }
     const data = await res.json()
-    saveMsg.value = `已更新 ${data.updated} 个 offer`
-    saveOk.value = true
+    globalMsg.value = `已更新 ${data.updated} 个 offer`
+    globalMsgOk.value = true
     selectedRows.value.clear()
     await fetchTable()
   } catch (e) {
-    saveMsg.value = '批量更新失败'
-    saveOk.value = false
+    globalMsg.value = `批量更新失败: ${e instanceof Error ? e.message : '未知错误'}`
+    globalMsgOk.value = false
   } finally {
     saving.value = false
+  }
+}
+
+const batchPricingAllSelected = computed(() => {
+  return batchPricingOffers.value.length > 0 && batchPricingOffers.value.every(o => batchPricingSelected.value.has(o.offer_id))
+})
+
+function openModelBatchPricing() {
+  showModelBatchModal.value = true
+  batchPricingModelName.value = ''
+  batchPricingOffers.value = []
+  batchPricingSelected.value.clear()
+  batchPricingForm.value = {
+    unit_price_in_per_1m: 0,
+    unit_price_out_per_1m: 0,
+    cache_read_price_per_1m: 0,
+    cache_write_price_per_1m: 0,
+    currency: 'CNY',
+    billing_mode: '',
+  }
+}
+
+function toggleBatchPricingAll(e: Event) {
+  const checked = (e.target as HTMLInputElement).checked
+  if (checked) {
+    batchPricingOffers.value.forEach(o => batchPricingSelected.value.add(o.offer_id))
+  } else {
+    batchPricingSelected.value.clear()
+  }
+}
+
+function toggleBatchPricingOffer(offerId: number) {
+  if (batchPricingSelected.value.has(offerId)) {
+    batchPricingSelected.value.delete(offerId)
+  } else {
+    batchPricingSelected.value.add(offerId)
+  }
+}
+
+async function applyModelBatchPricing() {
+  if (batchPricingSelected.value.size === 0) return
+  savingBatch.value = true
+  try {
+    const updates = Array.from(batchPricingSelected.value).map(offer_id => ({
+      offer_id,
+      unit_price_in_per_1m: batchPricingForm.value.unit_price_in_per_1m || null,
+      unit_price_out_per_1m: batchPricingForm.value.unit_price_out_per_1m || null,
+      cache_read_price_per_1m: batchPricingForm.value.cache_read_price_per_1m || null,
+      cache_write_price_per_1m: batchPricingForm.value.cache_write_price_per_1m || null,
+      currency: batchPricingForm.value.currency,
+      billing_mode: batchPricingForm.value.billing_mode || null,
+    }))
+    const res = await fetch(`${API}/bulk-update`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ updates }),
+    })
+    if (!res.ok) {
+      const errText = await res.text().catch(() => 'unknown error')
+      throw new Error(`HTTP ${res.status}: ${errText}`)
+    }
+    const data = await res.json()
+    globalMsg.value = `按模型批量定价完成：已更新 ${data.updated} 个 offer`
+    globalMsgOk.value = true
+    showModelBatchModal.value = false
+    await fetchData()
+  } catch (e) {
+    globalMsg.value = `批量定价失败: ${e instanceof Error ? e.message : '未知错误'}`
+    globalMsgOk.value = false
+  } finally {
+    savingBatch.value = false
   }
 }
 
@@ -884,7 +1059,7 @@ async function importCsv() {
     fd.append('file', importFile.value)
     const res = await fetch(`${API}/import`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${authBearer()}`, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': `Bearer ${authBearer()}` },
       body: fd,
     })
     const data = await res.json()
@@ -902,6 +1077,27 @@ watch(viewMode, () => {
   if (viewMode.value === 'table' && tableItems.value.length === 0) {
     fetchTable()
   }
+})
+
+watch(batchPricingModelName, (newVal) => {
+  if (!newVal || !families.value.length) {
+    batchPricingOffers.value = []
+    batchPricingSelected.value.clear()
+    return
+  }
+  const q = newVal.toLowerCase()
+  const matched = families.value.filter(f =>
+    f.canonical_name.toLowerCase().includes(q) ||
+    f.family?.toLowerCase().includes(q)
+  )
+  const offers: Offer[] = []
+  for (const fam of matched) {
+    for (const o of fam.offers) {
+      offers.push({ ...o, credential_label: o.credential_label || c_label(o.credential_id) })
+    }
+  }
+  batchPricingOffers.value = offers
+  batchPricingSelected.value.clear()
 })
 
 onMounted(fetchData)
@@ -1059,6 +1255,22 @@ onMounted(fetchData)
 /* Modals */
 
 .modal h3 { margin-top: 0; color: #fff; }
+.batch-pricing-modal { width: min(700px, 100%); max-height: 90vh; overflow-y: auto; }
+.batch-offers { margin: 12px 0; border: 1px solid #333; border-radius: 6px; padding: 10px; max-height: 240px; overflow-y: auto; }
+.batch-offers h4 { margin: 0 0 8px; font-size: 13px; color: #cba6f7; }
+.batch-offer-select-all { margin-bottom: 6px; font-size: 13px; }
+.batch-offer-list { display: flex; flex-direction: column; gap: 4px; }
+.batch-offer-row { padding: 4px 6px; border-radius: 4px; }
+.batch-offer-row:hover { background: #2a2a3e; }
+.batch-offer-row.selected { background: #3a3a5e; }
+.batch-offer-label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.offer-price-mini { color: #f9e2af; font-size: 12px; margin-left: auto; }
+.batch-pricing-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid #333; }
+.batch-pricing-form h4 { margin: 0 0 10px; font-size: 13px; color: #cba6f7; }
+.batch-pricing-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+@media (max-width: 600px) { .batch-pricing-grid { grid-template-columns: 1fr 1fr; } }
+.alert-success { background: rgba(166, 227, 161, 0.15); border: 1px solid #a6e3a1; color: #a6e3a1; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+.alert-danger { background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #ef4444; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .inherit-details { max-height: 300px; overflow-y: auto; margin: 12px 0; }
 .inherit-row { padding: 4px 0; font-size: 13px; color: #888; }
 </style>

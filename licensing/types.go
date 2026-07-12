@@ -69,12 +69,46 @@ type OfflineRequest struct {
 	RejectReason   string     `json:"reject_reason,omitempty"`
 }
 
+type ProductModule struct {
+	ID          int       `json:"id"`
+	Key         string    `json:"key"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Category    string    `json:"category"`
+	Icon        *string   `json:"icon,omitempty"`
+	SettingKey  *string   `json:"setting_key,omitempty"`
+	IsBase      bool      `json:"is_base"`
+	SortOrder   int       `json:"sort_order"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type ProductModuleFeature struct {
+	ID          int       `json:"id"`
+	ModuleKey   string    `json:"module_key"`
+	FeatureKey  string    `json:"feature_key"`
+	FeatureName string    `json:"feature_name"`
+	Description string    `json:"description"`
+	SettingKey  *string   `json:"setting_key,omitempty"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 type LicenseModule struct {
 	LicenseID int64      `json:"license_id"`
 	ModuleKey string     `json:"module_key"`
 	Enabled   bool       `json:"enabled"`
 	Config    []byte     `json:"config,omitempty"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+type SubscriptionTier struct {
+	Code        string `json:"code"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	PriceCents  int    `json:"price_cents"`
+	SortOrder   int    `json:"sort_order"`
 }
 
 type TierModuleMap struct {

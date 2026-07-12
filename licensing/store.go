@@ -8,6 +8,7 @@ type Store interface {
 	GetLicense(ctx context.Context, licenseKey string) (*License, error)
 	GetLicenseByID(ctx context.Context, id int64) (*License, error)
 	CreateLicense(ctx context.Context, lic *License) error
+	UpdateLicense(ctx context.Context, lic *License) error
 	RevokeLicense(ctx context.Context, licenseKey string) error
 
 	GetActiveDevices(ctx context.Context, licenseKey string) ([]Device, error)
@@ -23,8 +24,15 @@ type Store interface {
 	RejectOfflineRequest(ctx context.Context, requestID, reason string) error
 
 	CountActiveDevices(ctx context.Context, licenseKey string) (int, error)
-	ListAllLicenses(ctx context.Context, offset, limit int) ([]License, int, error)
+	ListAllLicenses(ctx context.Context, offset, limit int, query, statusFilter string) ([]License, int, error)
 	ListAllDevices(ctx context.Context, licenseKey string) ([]Device, error)
 
 	GetLicenseModules(ctx context.Context, licenseKey string) (map[string]*LicenseModule, error)
+	ListProductModules(ctx context.Context) ([]ProductModule, error)
+	ListProductModuleFeatures(ctx context.Context) ([]ProductModuleFeature, error)
+	ListSubscriptionTiers(ctx context.Context) ([]SubscriptionTier, error)
+	ListTierModuleMaps(ctx context.Context) ([]TierModuleMap, error)
+	ListLicenseModulesByID(ctx context.Context, licenseID int64) ([]LicenseModule, error)
+	UpsertLicenseModule(ctx context.Context, lm *LicenseModule) error
+	DeleteLicenseModule(ctx context.Context, licenseID int64, moduleKey string) error
 }
