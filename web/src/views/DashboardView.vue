@@ -97,10 +97,15 @@ async function load() {
     overview.value = overviewData
     models.value = modelsData
     hotKeys.value = hotKeysData
-    
+
     // 非阻塞加载压缩统计
     void loadCompressionStats()
   } catch (e: unknown) {
+    // The backend now returns HTTP 200 with a `degraded` flag when an
+    // optional aggregation view (e.g. usage_ledger_with_current_month)
+    // is missing. Those cases are handled in `load()` by checking the
+    // payload below. This catch is reserved for unexpected transport
+    // failures and should remain non-destructive on the layout.
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false

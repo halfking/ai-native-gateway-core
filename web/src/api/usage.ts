@@ -16,6 +16,14 @@ export interface UsageSummary {
   total_cost_usd: number
   avg_latency_ms: number
   success_rate: number
+  // Optional degradation markers. When the backend cannot run its aggregation
+  // because a database view is missing, it returns zeroed metrics together
+  // with these flags so the UI can show a non-blocking hint instead of a
+  // destructive error banner.
+  degraded?: boolean
+  missing_view?: string
+  error_code?: string
+  hint?: string
 }
 
 export interface DashboardOverview {
@@ -29,6 +37,10 @@ export interface DashboardOverview {
   offline_models: number
   offline_credentials: number
   total_credentials: number
+  degraded?: boolean
+  missing_view?: string
+  error_code?: string
+  hint?: string
 }
 
 export interface HotApiKeyEntry {
