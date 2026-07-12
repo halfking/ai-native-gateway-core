@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2026-07-12
 
 ### Security and Reliability
+- Fixed Feishu callback validation to parse Unix-second timestamps, reject
+  excessive clock skew, and compare signatures in constant time.
 - Protected License Authority administration endpoints with an explicit bearer token and separated them from instance client routes.
 - Added JWT issuer/audience validation, refresh-token rotation, stable license binding, request body limits, and replay nonce scoping.
 - Hardened offline upgrade manifests against empty inventories, invalid checksums, path traversal, symlink escapes, and partial `psql` execution.
