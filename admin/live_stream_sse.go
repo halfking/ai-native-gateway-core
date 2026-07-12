@@ -34,12 +34,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -134,6 +136,14 @@ type LiveRequest struct {
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	ErrorKind        *string  `json:"error_kind,omitempty"`
 	FailureStage     *string  `json:"failure_stage,omitempty"` // "gateway" | "upstream" — failure origin
+
+	// 2026-07-13: 主动探测标记字段
+	// IsProbe 由 entry.TaskType=='probe_triggered' 推断。
+	// ProbeOrigin = "direct" / "gateway" / "scheduled"，目前仅 "direct"。
+	// ProbeAttempt 是当前轮次 (1-5)。
+	IsProbe      bool   `json:"is_probe,omitempty"`
+	ProbeOrigin  string `json:"probe_origin,omitempty"`
+	ProbeAttempt int    `json:"probe_attempt,omitempty"`
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -1160,6 +1170,13 @@ func classifyModelCategoryFallback(model string) string {
 //   - Model: outboundModel → clientModel → canonical_name (from canonicalID)
 //   - ModelCategory: from Model → from Provider (when model is empty)
 //   - ProviderCode: already resolved by caller (credential → provider)
+//
+// The trailing *telemetry.RequestLogEntry arg is used to populate the
+// 2026-07-13 probe-pill fields (IsProbe / ProbeOrigin / ProbeAttempt):
+//
+//	task_type        = "probe_triggered" → IsProbe = true
+//	task_type_chosen = "probe_direct" | "probe_gateway" | "probe_scheduled"
+//	auto_decision    = JSON {"probe_attempt": N} → ProbeAttempt = N
 func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	ctx context.Context,
 	requestID string,
@@ -1178,6 +1195,7 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	totalTokens *int,
 	costUSD *float64,
 	failureStage *string,
+	entry *telemetry.RequestLogEntry,
 ) LiveRequest {
 	out := LiveRequest{
 		RequestID:        requestID,
@@ -1267,6 +1285,47 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	} else {
 		out.Status = status
 	}
+
+	// 2026-07-13: 主动探测 pill — entry.TaskType=='probe_triggered'
+	// 触发 IsProbe=true，origin/attempt 从 entry.TaskTypeChosen 和
+	// entry.AutoDecision JSONB 解析。详见 admin/probe_request_info.go
+	// 注释（probe_request_info.go 的 extractProbeInfo 是为该函数准备的
+	// 辅助函数；本文件未 import 该 symbol 是为了避免循环依赖）。
+	if entry != nil && entry.TaskType != nil && *entry.TaskType == "probe_triggered" {
+		out.IsProbe = true
+		origin := "direct"
+		if entry.TaskTypeChosen != nil {
+			switch *entry.TaskTypeChosen {
+			case "probe_direct":
+				origin = "direct"
+			case "probe_gateway":
+				origin = "gateway"
+			case "probe_scheduled":
+				origin = "scheduled"
+			}
+		}
+		out.ProbeOrigin = origin
+		if entry.AutoDecision != nil && *entry.AutoDecision != "" {
+			var meta map[string]any
+			if err := json.Unmarshal([]byte(*entry.AutoDecision), &meta); err == nil {
+				if v, ok := meta["probe_attempt"].(float64); ok {
+					out.ProbeAttempt = int(v)
+				} else if v, ok := meta["probe_attempt"].(int); ok {
+					out.ProbeAttempt = v
+				}
+			}
+		}
+		if out.ProbeAttempt == 0 && entry.QualityFlags != nil {
+			for _, f := range entry.QualityFlags {
+				if len(f) > 8 && f[:8] == "attempt_" {
+					if n, err := strconv.Atoi(f[8:]); err == nil && n > out.ProbeAttempt {
+						out.ProbeAttempt = n
+					}
+				}
+			}
+		}
+	}
+
 	return out
 }
 
