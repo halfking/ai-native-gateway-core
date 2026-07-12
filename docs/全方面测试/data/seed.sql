@@ -42,19 +42,24 @@ FROM generate_series(0, 59) AS i;
 
 INSERT INTO credentials (id, provider_id, tenant_id, label,
                        secret_ciphertext, secret_kid, status, trust_level,
-                       health_status, plan_consumed_json, tags, created_at, updated_at)
+                       health_status, plan_consumed_json, tags,
+                       effective_concurrency, concurrency_limit, fp_slot_limit,
+                       created_at, updated_at)
 SELECT
     9010 + i,
     9010 + i,
     'default',
     'cred-' || (9010+i),
-    '\x00',
+    NULL,  -- 2026-07-12 main 分支新逻辑不识别 '\x00' placeholder，设为 NULL
     'k1',
     'active',
     'trusted',
     'healthy',
     '{}'::jsonb,
     '[]'::jsonb,
+    100,   -- effective_concurrency (避免 C/D fp_slot 卡)
+    100,   -- concurrency_limit
+    50,    -- fp_slot_limit
     NOW(),
     NOW()
 FROM generate_series(0, 59) AS i;

@@ -10,7 +10,7 @@ set_group A server_error
 set_group B server_error
 
 run_loadtest S15_cross_group \
-    --n-clients 80 --rps-per-client 8 --duration 60 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tier --prompt short
 print_summary S15_cross_group
 

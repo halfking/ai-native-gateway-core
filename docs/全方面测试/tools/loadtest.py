@@ -103,7 +103,7 @@ class Stats:
         def pct(p):
             return d[int(n * p)] if n else 0
 
-        elapsed = time.time() - started
+        elapsed = time.monotonic() - started
         return {
             "total": self.total,
             "succ": self.succ,
@@ -258,7 +258,7 @@ async def client_worker(
 
 
 async def run(args):
-    started = time.time()
+    started = time.monotonic()  # 必须用 monotonic 与 client_worker 内部一致
     api_keys = [k.strip() for k in args.api_keys.split(",") if k.strip()]
     if args.models in MODELS_GROUP:
         models = MODELS_GROUP[args.models]
@@ -307,7 +307,7 @@ async def run(args):
                 flush=True,
             )
 
-    tasks.append(printer())
+    tasks.append(asyncio.create_task(printer()))
 
     try:
         await asyncio.gather(*tasks)

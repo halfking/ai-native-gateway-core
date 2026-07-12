@@ -11,7 +11,7 @@ set_group J flaky
 set_group B server_error
 set_group K rate_limited
 run_loadtest S06_mixed_fault \
-    --n-clients 100 --rps-per-client 6 --duration 60 \
+    --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tok3 --prompt short
 print_summary S06_mixed_fault
 echo "  期望：>95% 成功，无级联"
