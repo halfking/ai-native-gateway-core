@@ -61,25 +61,18 @@ AS $$
         -- 3+ failures → still recovering toward broken_confirmed
         WHEN consecutive_failures >= 3 THEN INTERVAL '60 minutes'
 
-        -- 1 failure: ramp up frequency when fresh, taper when stale
-        WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <   300 THEN INTERVAL '1 minute'
-        WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <  1800 THEN INTERVAL '3 minutes'
-        WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <  3600 THEN INTERVAL '10 minutes'
-        WHEN consecutive_failures = 1                              THEN INTERVAL '30 minutes'
-
-        -- 2 failures: same pattern but with longer floor
-        WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <   300 THEN INTERVAL '2 minutes'
-        WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <  1800 THEN INTERVAL '5 minutes'
-        WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <  3600 THEN INTERVAL '15 minutes'
-        WHEN consecutive_failures = 2                              THEN INTERVAL '45 minutes'
-
-        -- 4+ failures: very rare, treat like 3+
-        ELSE INTERVAL '60 minutes'
+		-- Failed active targets use the operational recovery ladder.
+		WHEN consecutive_failures = 1 THEN INTERVAL '10 seconds'
+		WHEN consecutive_failures = 2 THEN INTERVAL '30 seconds'
+		WHEN consecutive_failures = 3 THEN INTERVAL '60 seconds'
+		WHEN consecutive_failures = 4 THEN INTERVAL '120 seconds'
+		WHEN consecutive_failures = 5 THEN INTERVAL '300 seconds'
+		ELSE INTERVAL '3600 seconds'
     END;
 $$;
 
 COMMENT ON FUNCTION model_probe_backoff_v2(INTEGER, TIMESTAMPTZ) IS
-'Adaptive backoff: 0 fails = 2h watchdog; 1 fail ramps 1m→30m as the failure ages; 2 fails ramps 2m→45m; 3+ fails = 60m recovering.';
+'Adaptive backoff: 0 failures = 2h watchdog; recovery ladder = 10s, 30s, 60s, 120s, 300s, then 3600s.';
 
 -- Passive-failure boost: when the executor records a candidate failure
 -- for a (cred, model) that is NOT broken_confirmed, recompute next_retry_at
