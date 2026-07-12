@@ -98,7 +98,7 @@ onMounted(async () => {
     >
       <ApprovalConfigPanel v-if="activeTab === 'approval'" />
       <CompressionConfigPanel v-else-if="activeTab === 'compression'" />
-      <PromptInjectionConfigPanel v-else-if="activeTab === 'promptInjection'" />
+      <PromptInjectionConfigPanel v-else-if="activeTab === 'promptInjection'" :module-enabled="promptInjectionEnabled" />
       <HealthScoreConfigPanel v-else-if="healthEnabled" />
     </section>
   </main>
