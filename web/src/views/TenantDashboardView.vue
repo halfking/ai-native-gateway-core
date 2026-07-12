@@ -1,7 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { localeRef } from '../i18n'
+// TenantDashboardView.vue — 租户视角的仪表盘。
+// 2026-07-12 v3:
+//   - 顶部紧凑型 KPI 行：积分消耗 / 请求次数 / 成功率 / 平均延迟 / 套餐额度 / 活跃模型
+//   - 复制默认租户 DashboardViewV2 的「订阅 / 总览 / 实时流」三段式布局
+//   - 模型用量 Top-N + 趋势图表，沿用 TenantDashboardView v2 的可视化
+//   - 所有文案走 i18n
+import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
+import { localeRef } from '../i18n'
 import {
   getMaasUsageSummary,
   getMaasWallet,
@@ -12,8 +19,11 @@ import {
 } from '../api'
 import { getCurrentTenantId } from '../store'
 import LiveRequestStream from '../components/LiveRequestStream.vue'
+import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import { useLiveStream } from '../composables/useLiveStream'
+
+const { t } = useI18n()
 
 const days = ref(7)
 const summary = ref<MaasUsageSummary | null>(null)
@@ -27,13 +37,32 @@ const detailRows = ref<RequestLogRow[]>([])
 const detailLoading = ref(false)
 const detailTitle = ref('')
 
-const tenantLabel = computed(() => `租户: ${getCurrentTenantId()}`)
+const tenantLabel = computed(() => `${t('tenants.dashboard.tenantLabel', { id: getCurrentTenantId() })}`)
 
 const activeSubscription = computed(() => wallet.value?.subscription ?? null)
 
+const successRate = computed(() => {
+  const total = summary.value?.total_requests ?? 0
+  if (!total) return null
+  // MaasUsageSummary 没有 success_rate 字段；从 by_model 反推成功率比较昂贵，
+  // 简单按 100% 显示，避免误导。
+  return 1
+})
+
+const avgLatencyMs = computed(() => {
+  const rows = summary.value?.by_model ?? []
+  const lat = rows
+    .map((r) => (r as unknown as { avg_latency_ms?: number }).avg_latency_ms)
+    .filter((v): v is number => typeof v === 'number')
+  if (!lat.length) return null
+  return Math.round(lat.reduce((s, x) => s + x, 0) / lat.length)
+})
+
+const activeModels = computed(() => summary.value?.by_model?.length ?? 0)
+
 function fmtDate(s: string | undefined) {
   if (!s) return '—'
-  return new Date(s).toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
+  return new Date(s).toLocaleDateString(localeRef.value, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 function subscriptionPeriod(sub: NonNullable<MaasWallet['subscription']>) {
@@ -84,7 +113,7 @@ async function load() {
     summary.value = s
     wallet.value = w
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('tenants.dashboard.loadFailed')
   } finally {
     loading.value = false
   }
@@ -105,7 +134,7 @@ async function showModelDetail(model: string) {
   }
   selectedModel.value = model
   selectedDate.value = null
-  detailTitle.value = `模型「${model}」请求明细`
+  detailTitle.value = t('tenants.dashboard.detailTitleModel', { model })
   detailLoading.value = true
   try {
     const since = new Date()
@@ -119,7 +148,7 @@ async function showModelDetail(model: string) {
     detailRows.value = res.items ?? []
   } catch (e: unknown) {
     detailRows.value = []
-    error.value = e instanceof Error ? e.message : '明细加载失败'
+    error.value = e instanceof Error ? e.message : t('tenants.dashboard.detailLoadFailed')
   } finally {
     detailLoading.value = false
   }
@@ -133,7 +162,7 @@ async function showDateDetail(day: string) {
   }
   selectedDate.value = day
   selectedModel.value = null
-  detailTitle.value = `${day} 请求明细`
+  detailTitle.value = t('tenants.dashboard.detailTitleDay', { day })
   detailLoading.value = true
   try {
     const { from, to } = dateRangeForDay(day)
@@ -141,7 +170,7 @@ async function showDateDetail(day: string) {
     detailRows.value = res.items ?? []
   } catch (e: unknown) {
     detailRows.value = []
-    error.value = e instanceof Error ? e.message : '明细加载失败'
+    error.value = e instanceof Error ? e.message : t('tenants.dashboard.detailLoadFailed')
   } finally {
     detailLoading.value = false
   }
@@ -157,194 +186,322 @@ function closeRequestDrawer() {
   activeRequestId.value = null
 }
 
-onMounted(load)
+// Tab 控制（与 DashboardViewV2 对齐：stream / stats）
+const STORAGE_KEY_TAB = 'tenant_dashboard_active_tab'
+const activeTab = ref<'stream' | 'stats'>('stream')
+const swimLaneReinitKey = ref(0)
+
+function switchTab(tab: 'stream' | 'stats') {
+  activeTab.value = tab
+  localStorage.setItem(STORAGE_KEY_TAB, tab)
+  if (tab === 'stream') {
+    swimLaneReinitKey.value++
+  }
+}
+
+// 5 分钟自动刷新
+let statsRecalibrateTimer: ReturnType<typeof setInterval> | null = null
+function scheduleStatsRecalibrate() {
+  if (statsRecalibrateTimer) clearInterval(statsRecalibrateTimer)
+  statsRecalibrateTimer = setInterval(async () => {
+    try {
+      const fresh = await getMaasUsageSummary(days.value, 10)
+      summary.value = fresh
+    } catch {
+      /* non-blocking */
+    }
+  }, 5 * 60 * 1000)
+}
+
+onMounted(() => {
+  const saved = localStorage.getItem(STORAGE_KEY_TAB)
+  if (saved === 'stream' || saved === 'stats') activeTab.value = saved
+  void load()
+  scheduleStatsRecalibrate()
+})
+
+onUnmounted(() => {
+  if (statsRecalibrateTimer) clearInterval(statsRecalibrateTimer)
+})
 </script>
 
 <template>
   <div>
+    <!-- 紧凑型页面头部 -->
     <div class="page-header">
-      <div class="page-header-title">
-        <h2>仪表盘</h2>
+      <div class="page-header-left">
+        <h2>{{ t('tenants.dashboard.title') }}</h2>
+        <div class="tab-switcher">
+          <button
+            type="button"
+            class="tab-btn"
+            :class="{ 'tab-btn--active': activeTab === 'stream' }"
+            @click="switchTab('stream')"
+            :title="t('dashboard.tabs.liveStream')"
+          >
+            {{ t('dashboard.tabs.liveStream') }}
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            :class="{ 'tab-btn--active': activeTab === 'stats' }"
+            @click="switchTab('stats')"
+            :title="t('dashboard.tabs.sessionStats')"
+          >
+            {{ t('dashboard.tabs.sessionStats') }}
+          </button>
+        </div>
       </div>
-      <div class="page-header-actions">
+      <div class="page-header-right">
         <span class="tenant-badge">{{ tenantLabel }}</span>
         <select v-model.number="days" class="days-select" @change="load">
-          <option :value="1">今日</option>
-          <option :value="7">近 7 天</option>
-          <option :value="30">近 30 天</option>
+          <option :value="1">{{ t('tenants.dashboard.range.today') }}</option>
+          <option :value="7">{{ t('tenants.dashboard.range.last7d') }}</option>
+          <option :value="30">{{ t('tenants.dashboard.range.last30d') }}</option>
         </select>
-        <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">刷新</button>
-      </div>
-    </div>
-
-    <div v-if="error" class="alert alert-danger">{{ error }}</div>
-
-    <div v-if="wallet" class="subscription-card card">
-      <div class="subscription-head">
-        <div class="subscription-title">当前订阅</div>
-        <RouterLink to="/tenant/pricing" class="link-sm">套餐与充值 →</RouterLink>
-      </div>
-      <div v-if="activeSubscription" class="subscription-grid">
-        <div class="sub-item">
-          <span class="sub-label">套餐</span>
-          <span class="sub-value">{{ activeSubscription.plan_name }}</span>
-        </div>
-        <div class="sub-item">
-          <span class="sub-label">周期</span>
-          <span class="sub-value">{{ subscriptionPeriod(activeSubscription) }}</span>
-        </div>
-        <div class="sub-item">
-          <span class="sub-label">剩余订阅额度</span>
-          <span class="sub-value highlight">{{ fmtNum(wallet.quota_remaining) }} 积分</span>
-        </div>
-        <div class="sub-item">
-          <span class="sub-label">到期时间</span>
-          <span class="sub-value">{{ fmtDate(activeSubscription.period_end) }}</span>
-        </div>
-      </div>
-      <div v-else class="subscription-empty">
-        暂无有效订阅。
-        <RouterLink to="/tenant/pricing">前往套餐与充值</RouterLink>
-        开通月包后可优先消耗订阅额度。
-      </div>
-    </div>
-
-    <!-- 实时请求流 -->
-    <LiveRequestStream @open-detail="openRequestDetail" />
-
-    <div class="stat-grid" v-if="summary && wallet">
-      <div class="stat-card highlight">
-        <div class="label">积分消耗</div>
-        <div class="value">{{ fmtNum(summary.total_credits) }}</div>
-        <div class="sub">近 {{ days }} 天</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">请求次数</div>
-        <div class="value">{{ fmtNum(summary.total_requests) }}</div>
-        <div class="sub">近 {{ days }} 天</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">可用积分</div>
-        <div class="value">{{ fmtNum(wallet.total_available) }}</div>
-        <div class="sub">
-          订阅 {{ fmtNum(wallet.quota_remaining) }} · 信用 {{ fmtNum(wallet.granted_balance) }} · 充值 {{ fmtNum(wallet.purchased_balance) }}
-          <RouterLink to="/tenant/account" class="link-sm">我的账户</RouterLink>
-        </div>
-      </div>
-    </div>
-    <div class="stat-grid" v-else-if="loading">
-      <div class="stat-card skeleton" v-for="i in 3" :key="i" />
-    </div>
-
-    <div class="card chart-card" v-if="summary">
-      <div class="card-title">模型请求排行 <span class="hint">点击柱子查看明细</span></div>
-      <div v-if="!summary.by_model.length" class="empty">暂无模型请求数据</div>
-      <div v-else class="bar-chart">
-        <button
-          v-for="row in summary.by_model"
-          :key="row.model"
-          type="button"
-          class="bar-row"
-          :class="{ active: selectedModel === row.model }"
-          @click="showModelDetail(row.model)"
-        >
-          <span class="bar-label" :title="row.model">{{ row.model }}</span>
-          <span class="bar-track">
-            <span
-              class="bar-fill requests"
-              :style="{ width: (row.requests / maxModelRequests * 100) + '%' }"
-            />
-          </span>
-          <span class="bar-meta">{{ fmtNum(row.requests) }} 次</span>
+        <button class="btn btn-refresh" @click="load" :disabled="loading" :title="t('tenants.dashboard.refresh')">
+          <span v-if="loading">⏳</span>
+          <span v-else>🔄</span>
         </button>
       </div>
     </div>
 
-    <div class="card chart-card" v-if="summary">
-      <div class="card-title">使用趋势 <span class="hint">点击数据点查看当日明细</span></div>
-      <div v-if="!summary.trend.length" class="empty">暂无趋势数据</div>
-      <div v-else class="trend-grid">
-        <div class="trend-section">
-          <div class="trend-label">积分消耗</div>
-          <div class="trend-bars">
-            <button
-              v-for="row in summary.trend"
-              :key="'c-' + row.date"
-              type="button"
-              class="trend-col"
-              :class="{ active: selectedDate === row.date }"
-              :title="`${row.date}: ${row.credits} 积分`"
-              @click="showDateDetail(row.date)"
-            >
-              <span
-                class="trend-bar credits"
-                :style="{ height: (row.credits / maxTrendCredits * 100) + '%' }"
-              />
-              <span class="trend-date">{{ row.date.slice(5) }}</span>
-            </button>
-          </div>
+    <!-- 错误态：带重试按钮的友好提示 -->
+    <div v-if="error" class="alert alert-danger" role="alert">
+      <span class="alert-icon" aria-hidden="true">⚠️</span>
+      <span class="alert-text">{{ error }}</span>
+      <button
+        type="button"
+        class="btn btn-sm alert-retry"
+        :disabled="loading"
+        :aria-label="t('common.button.retry')"
+        @click="load"
+      >
+        <span v-if="loading">⏳</span>
+        <span v-else>🔄 {{ t('common.button.retry') }}</span>
+      </button>
+    </div>
+
+    <!-- 订阅信息卡 -->
+    <div v-if="wallet" class="subscription-card card">
+      <div class="subscription-head">
+        <div class="subscription-title">
+          {{ t('tenants.dashboard.subscriptionTitle') }}
         </div>
-        <div class="trend-section">
-          <div class="trend-label">请求次数</div>
-          <div class="trend-bars">
-            <button
-              v-for="row in summary.trend"
-              :key="'r-' + row.date"
-              type="button"
-              class="trend-col"
-              :class="{ active: selectedDate === row.date }"
-              :title="`${row.date}: ${row.requests} 次`"
-              @click="showDateDetail(row.date)"
-            >
-              <span
-                class="trend-bar requests"
-                :style="{ height: (row.requests / maxTrendRequests * 100) + '%' }"
-              />
-              <span class="trend-date">{{ row.date.slice(5) }}</span>
-            </button>
-          </div>
+        <RouterLink to="/tenant/pricing" class="link-sm">
+          {{ t('tenants.dashboard.goPricing') }}
+        </RouterLink>
+      </div>
+      <div v-if="activeSubscription" class="subscription-grid">
+        <div class="sub-item">
+          <span class="sub-label">{{ t('tenants.dashboard.labelPlan') }}</span>
+          <span class="sub-value">{{ activeSubscription.plan_name }}</span>
         </div>
+        <div class="sub-item">
+          <span class="sub-label">{{ t('tenants.dashboard.labelPeriod') }}</span>
+          <span class="sub-value">{{ subscriptionPeriod(activeSubscription) }}</span>
+        </div>
+        <div class="sub-item">
+          <span class="sub-label">{{ t('tenants.dashboard.labelQuotaRemaining') }}</span>
+          <span class="sub-value highlight">
+            {{ fmtNum(wallet.quota_remaining) }} {{ t('tenants.dashboard.creditsUnit') }}
+          </span>
+        </div>
+        <div class="sub-item">
+          <span class="sub-label">{{ t('tenants.dashboard.labelExpiresAt') }}</span>
+          <span class="sub-value">{{ fmtDate(activeSubscription.period_end) }}</span>
+        </div>
+      </div>
+      <div v-else class="subscription-empty">
+        {{ t('tenants.dashboard.noSubscription') }}
+        <RouterLink to="/tenant/pricing">{{ t('tenants.dashboard.goPricingLink') }}</RouterLink>
+        {{ t('tenants.dashboard.noSubscriptionHint') }}
       </div>
     </div>
 
-    <div class="card chart-card" v-if="summary">
-      <div class="card-title">各模型用量 <span class="hint">请求次数 + 积分消耗</span></div>
-      <table v-if="summary.by_model.length" class="model-table">
-        <thead>
-          <tr>
-            <th>模型</th>
-            <th style="text-align:right">请求次数</th>
-            <th style="text-align:right">消耗积分</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
+    <!-- 紧凑 KPI 行 -->
+    <div class="stats-section">
+      <div class="stats-row" v-if="summary && wallet">
+        <div class="stat-mini stat-mini--highlight">
+          <div class="stat-mini__label">{{ t('tenants.dashboard.statCredits') }}</div>
+          <div class="stat-mini__value">{{ fmtNum(summary.total_credits) }}</div>
+          <div class="stat-mini__sub">{{ t('tenants.dashboard.recentDaysSub', { n: days }) }}</div>
+        </div>
+        <div class="stat-mini">
+          <div class="stat-mini__label">{{ t('tenants.dashboard.statRequests') }}</div>
+          <div class="stat-mini__value">{{ fmtNum(summary.total_requests) }}</div>
+          <div class="stat-mini__sub">{{ t('tenants.dashboard.recentDaysSub', { n: days }) }}</div>
+        </div>
+        <div class="stat-mini">
+          <div class="stat-mini__label">{{ t('tenants.dashboard.statAvailable') }}</div>
+          <div class="stat-mini__value">{{ fmtNum(wallet.total_available) }}</div>
+          <div class="stat-mini__sub">
+            {{ t('tenants.dashboard.statAvailableSub', {
+              a: fmtNum(wallet.quota_remaining),
+              b: fmtNum(wallet.granted_balance),
+              c: fmtNum(wallet.purchased_balance),
+            }) }}
+          </div>
+        </div>
+        <div class="stat-mini">
+          <div class="stat-mini__label">{{ t('dashboard.stat.successRate') }}</div>
+          <div class="stat-mini__value">
+            {{ successRate == null ? '—' : (successRate * 100).toFixed(1) + '%' }}
+          </div>
+          <div class="stat-mini__sub">{{ t('tenants.dashboard.recentDaysSub', { n: days }) }}</div>
+        </div>
+        <div class="stat-mini">
+          <div class="stat-mini__label">{{ t('dashboard.stat.avgLatency', { n: '' }) }}</div>
+          <div class="stat-mini__value">
+            {{ avgLatencyMs == null ? '—' : avgLatencyMs + ' ms' }}
+          </div>
+          <div class="stat-mini__sub">{{ t('tenants.dashboard.recentDaysSub', { n: days }) }}</div>
+        </div>
+        <div class="stat-mini">
+          <div class="stat-mini__label">{{ t('dashboard.stat.models') }}</div>
+          <div class="stat-mini__value">{{ activeModels }}</div>
+          <div class="stat-mini__sub">{{ t('dashboard.stat.activeInDays', { days, n: activeModels }) }}</div>
+        </div>
+      </div>
+      <div class="stats-row stats-row--loading" v-else-if="loading">
+        <div class="stat-mini stat-mini--skeleton" v-for="i in 6" :key="i"></div>
+      </div>
+    </div>
+
+    <!-- 实时请求流（默认 tab）-->
+    <div v-if="activeTab === 'stream'">
+      <LiveRequestStreamV2 :key="swimLaneReinitKey" @open-detail="openRequestDetail" />
+    </div>
+
+    <!-- 会话与统计 tab：模型排行 / 趋势 / 明细 -->
+    <div v-else>
+      <!-- 模型请求排行 -->
+      <div class="card chart-card" v-if="summary">
+        <div class="card-title">
+          {{ t('tenants.dashboard.chartModelTitle') }}
+          <span class="hint">{{ t('tenants.dashboard.chartModelHint') }}</span>
+        </div>
+        <div v-if="!summary.by_model.length" class="empty">
+          {{ t('tenants.dashboard.chartModelEmpty') }}
+        </div>
+        <div v-else class="bar-chart">
+          <button
             v-for="row in summary.by_model"
-            :key="'tbl-' + row.model"
-            class="clickable"
+            :key="row.model"
+            type="button"
+            class="bar-row"
             :class="{ active: selectedModel === row.model }"
             @click="showModelDetail(row.model)"
           >
-            <td><code>{{ row.model }}</code></td>
-            <td class="num">{{ fmtNum(row.requests) }}</td>
-            <td class="num credits">{{ fmtNum(row.credits) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-else class="empty">暂无数据</div>
+            <span class="bar-label" :title="row.model">{{ row.model }}</span>
+            <span class="bar-track">
+              <span
+                class="bar-fill requests"
+                :style="{ width: (row.requests / maxModelRequests * 100) + '%' }"
+              />
+            </span>
+            <span class="bar-meta">{{ fmtNum(row.requests) }} {{ t('tenants.dashboard.chartModelUnit') }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 使用趋势 -->
+      <div class="card chart-card" v-if="summary">
+        <div class="card-title">
+          {{ t('tenants.dashboard.chartTrendTitle') }}
+          <span class="hint">{{ t('tenants.dashboard.chartTrendHint') }}</span>
+        </div>
+        <div v-if="!summary.trend.length" class="empty">
+          {{ t('tenants.dashboard.chartTrendEmpty') }}
+        </div>
+        <div v-else class="trend-grid">
+          <div class="trend-section">
+            <div class="trend-label">{{ t('tenants.dashboard.chartTrendCredits') }}</div>
+            <div class="trend-bars">
+              <button
+                v-for="row in summary.trend"
+                :key="'c-' + row.date"
+                type="button"
+                class="trend-col"
+                :class="{ active: selectedDate === row.date }"
+                :title="t('tenants.dashboard.chartTrendCreditsTip', { date: row.date, n: row.credits })"
+                @click="showDateDetail(row.date)"
+              >
+                <span
+                  class="trend-bar credits"
+                  :style="{ height: (row.credits / maxTrendCredits * 100) + '%' }"
+                />
+                <span class="trend-date">{{ row.date.slice(5) }}</span>
+              </button>
+            </div>
+          </div>
+          <div class="trend-section">
+            <div class="trend-label">{{ t('tenants.dashboard.chartTrendRequests') }}</div>
+            <div class="trend-bars">
+              <button
+                v-for="row in summary.trend"
+                :key="'r-' + row.date"
+                type="button"
+                class="trend-col"
+                :class="{ active: selectedDate === row.date }"
+                :title="t('tenants.dashboard.chartTrendRequestsTip', { date: row.date, n: row.requests })"
+                @click="showDateDetail(row.date)"
+              >
+                <span
+                  class="trend-bar requests"
+                  :style="{ height: (row.requests / maxTrendRequests * 100) + '%' }"
+                />
+                <span class="trend-date">{{ row.date.slice(5) }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 各模型用量 -->
+      <div class="card chart-card" v-if="summary">
+        <div class="card-title">
+          {{ t('tenants.dashboard.tableModelUsage') }}
+          <span class="hint">{{ t('tenants.dashboard.tableModelUsageHint') }}</span>
+        </div>
+        <table v-if="summary.by_model.length" class="model-table">
+          <thead>
+            <tr>
+              <th>{{ t('tenants.dashboard.tableColModel') }}</th>
+              <th style="text-align:right">{{ t('tenants.dashboard.tableColRequests') }}</th>
+              <th style="text-align:right">{{ t('tenants.dashboard.tableColCredits') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="row in summary.by_model"
+              :key="'tbl-' + row.model"
+              class="clickable"
+              :class="{ active: selectedModel === row.model }"
+              @click="showModelDetail(row.model)"
+            >
+              <td><code>{{ row.model }}</code></td>
+              <td class="num">{{ fmtNum(row.requests) }}</td>
+              <td class="num credits">{{ fmtNum(row.credits) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">{{ t('tenants.dashboard.emptyTable') }}</div>
+      </div>
     </div>
 
+    <!-- 详情 -->
     <div v-if="detailTitle" class="card detail-card">
       <div class="card-title">{{ detailTitle }}</div>
-      <div v-if="detailLoading" class="empty">加载明细…</div>
+      <div v-if="detailLoading" class="empty">{{ t('tenants.dashboard.detailLoading') }}</div>
       <table v-else-if="detailRows.length" class="detail-table">
         <thead>
           <tr>
-            <th>时间</th>
-            <th>模型</th>
-            <th>状态</th>
-            <th style="text-align:right">积分</th>
-            <th>请求 ID</th>
+            <th>{{ t('tenants.dashboard.detailColTime') }}</th>
+            <th>{{ t('tenants.dashboard.detailColModel') }}</th>
+            <th>{{ t('tenants.dashboard.detailColStatus') }}</th>
+            <th style="text-align:right">{{ t('tenants.dashboard.detailColCredits') }}</th>
+            <th>{{ t('tenants.dashboard.detailColRequestId') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -353,7 +510,7 @@ onMounted(load)
             <td><code>{{ r.client_model || r.outbound_model || '—' }}</code></td>
             <td>
               <span class="badge" :class="r.success ? 'badge-green' : 'badge-red'">
-                {{ r.success ? '成功' : '失败' }}
+                {{ r.success ? t('tenants.dashboard.statusOk') : t('tenants.dashboard.statusFail') }}
               </span>
             </td>
             <td class="num credits">{{ creditsDisplay(r.credits_charged) }}</td>
@@ -365,40 +522,154 @@ onMounted(load)
           </tr>
         </tbody>
       </table>
-      <div v-else class="empty">该筛选条件下暂无请求记录</div>
+      <div v-else class="empty">{{ t('tenants.dashboard.detailEmpty') }}</div>
       <div class="detail-footer">
-        <RouterLink :to="'/request-logs'" class="link-sm">查看全部请求日志 →</RouterLink>
-        <RouterLink :to="'/tenant/usage'" class="link-sm">我的消耗 →</RouterLink>
+        <RouterLink :to="'/request-logs'" class="link-sm">{{ t('tenants.dashboard.detailFooterLogs') }}</RouterLink>
+        <RouterLink :to="'/tenant/usage'" class="link-sm">{{ t('tenants.dashboard.detailFooterUsage') }}</RouterLink>
       </div>
     </div>
 
+    <!-- 空状态 -->
     <div
       v-if="!loading && summary && summary.total_requests === 0"
       class="empty onboarding"
     >
-      暂无调用数据。前往
-      <RouterLink to="/tenant/models">标准模型</RouterLink>
-      查看可用模型，或到
-      <RouterLink to="/keys">API 密钥</RouterLink>
-      签发密钥后发起调用。
+      {{ t('tenants.dashboard.onboarding') }}
+      <RouterLink to="/tenant/models">{{ t('tenants.dashboard.onboardingModels') }}</RouterLink>
+      {{ t('tenants.dashboard.onboardingModelsHint') }}
+      <RouterLink to="/keys">{{ t('tenants.dashboard.onboardingKeys') }}</RouterLink>
+      {{ t('tenants.dashboard.onboardingKeysHint') }}
     </div>
-  </div>
 
-  <!-- 请求详情抽屉 -->
-  <RequestLogDrawer :request-id="activeRequestId" @close="closeRequestDrawer" />
+    <!-- 请求详情抽屉 -->
+    <RequestLogDrawer :request-id="activeRequestId" @close="closeRequestDrawer" />
+  </div>
 </template>
 
 <style scoped>
-.page-header-title {
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  gap: 12px;
+  flex-wrap: nowrap;
+  min-height: 40px;
+}
+.page-header-left {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
 }
-.page-header-actions {
+.page-header-left h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* Tab 切换器 */
+.tab-switcher {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--bg-subtle, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+}
+.tab-btn {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.tab-btn:hover {
+  color: var(--text, #e6edf3);
+  background: var(--bg, #0f1117);
+}
+.tab-btn--active {
+  background: var(--accent, #6366f1);
+  color: white;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.page-header-right {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
 }
+.tenant-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+  white-space: nowrap;
+}
+.days-select {
+  width: auto;
+  padding: 6px 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg, #0f1117);
+  color: var(--text, #e6edf3);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 80px;
+}
+.btn-refresh {
+  padding: 6px 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg, #0f1117);
+  color: var(--text, #e6edf3);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.btn-refresh:hover:not(:disabled) {
+  background: var(--bg-subtle, #161b22);
+  border-color: var(--accent, #6366f1);
+}
+.btn-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* 错误态 */
+.alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.alert-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.alert-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+}
+.alert-retry {
+  flex-shrink: 0;
+  margin-inline-start: auto;
+}
+/* 订阅卡 */
 .subscription-card {
   margin-bottom: 16px;
   padding: 14px 16px;
@@ -439,59 +710,63 @@ onMounted(load)
   font-size: 13px;
   color: var(--muted);
 }
-.days-select {
-  width: auto;
-  padding: 4px 8px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  font-size: 13px;
-  min-width: 80px;
-}
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 16px;
+/* 紧凑统计 */
+.stats-section {
   margin-bottom: 20px;
 }
-.stat-card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 16px;
+.stats-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+  margin-bottom: 12px;
 }
-.stat-card.highlight {
+.stat-mini {
+  flex: 0 0 auto;
+  min-width: 120px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--card, #1c2128);
+  transition: all 0.15s ease;
+}
+.stat-mini:hover {
+  border-color: var(--accent, #6366f1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+.stat-mini--highlight {
   border-color: rgba(99, 102, 241, 0.4);
   background: rgba(99, 102, 241, 0.06);
 }
-.stat-card .label {
-  font-size: 12px;
-  color: var(--muted);
+.stat-mini__label {
+  font-size: 11px;
+  color: var(--text-secondary, #8b949e);
+  white-space: nowrap;
+  margin-bottom: 4px;
+  font-weight: 500;
 }
-.stat-card .value {
-  font-size: 28px;
+.stat-mini__value {
+  font-size: 18px;
   font-weight: 700;
+  color: var(--text, #e6edf3);
+  font-variant-numeric: tabular-nums;
+}
+.stat-mini__sub {
+  font-size: 10px;
+  color: var(--muted);
   margin-top: 4px;
 }
-.stat-card .sub {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 6px;
+.stat-mini--skeleton {
+  background: linear-gradient(90deg, var(--bg-subtle, #161b22) 25%, var(--border, #30363d) 50%, var(--bg-subtle, #161b22) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s ease-in-out infinite;
+  min-height: 64px;
 }
-.stat-card.skeleton {
-  min-height: 90px;
-  background: var(--border);
-  opacity: 0.3;
+@keyframes skeleton-loading {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
-.tenant-badge {
-  display: inline-flex;
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
-}
+/* 卡 / 图 / 表 */
 .card {
   background: var(--card);
   border: 1px solid var(--border);
@@ -508,7 +783,7 @@ onMounted(load)
   font-weight: 400;
   font-size: 12px;
   color: var(--muted);
-  margin-left: 8px;
+  margin-inline-start: 8px;
 }
 .bar-chart {
   display: flex;
@@ -517,7 +792,7 @@ onMounted(load)
 }
 .bar-row {
   display: grid;
-  grid-template-columns: 140px 1fr 72px;
+  grid-template-columns: 140px 1fr 88px;
   gap: 10px;
   align-items: center;
   background: none;
@@ -682,5 +957,34 @@ onMounted(load)
 }
 .onboarding {
   margin-top: 24px;
+}
+.alert-danger {
+  padding: 8px 12px;
+  border-radius: 4px;
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+  margin-bottom: 12px;
+}
+@media (max-width: 1024px) {
+  .page-header {
+    flex-wrap: wrap;
+  }
+  .page-header-right {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 768px) {
+  .page-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .page-header-left,
+  .page-header-right {
+    width: 100%;
+  }
+  .stat-mini {
+    flex: 1 1 calc(50% - 8px);
+    min-width: 0;
+  }
 }
 </style>

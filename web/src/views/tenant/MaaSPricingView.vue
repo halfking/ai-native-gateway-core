@@ -1,5 +1,8 @@
 <script setup lang="ts">
+// MaaSPricingView.vue — /tenant/pricing 页面（套餐与充值）。
+// 2026-07-12: 文案全面接入 i18n。
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import { useRouter } from 'vue-router'
 import {
@@ -14,8 +17,10 @@ import type { MaasPlan, MaasTopupPackage, MaasWallet } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 import PageBackLink from '../../components/PageBackLink.vue'
 
+const { t } = useI18n()
+
 const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle, maasBackLink, tenantQuerySuffix } = useMaasTenantContext()
-const pageTitle = computed(() => ctxPageTitle('套餐与充值'))
+const pageTitle = computed(() => ctxPageTitle(t('tenants.pricing.title')))
 const backLink = computed(() => maasBackLink('pricing'))
 
 const router = useRouter()
@@ -53,7 +58,7 @@ async function load() {
     wallet.value = walletRes
     currencyDisplay.value = settingsRes.currency_display || 'CNY'
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('tenants.pricing.loadFailed')
   } finally {
     loading.value = false
   }
@@ -73,7 +78,7 @@ async function buyPlan(plan: MaasPlan) {
       query: tenantQuerySuffix(),
     })
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '创建订单失败'
+    error.value = e instanceof Error ? e.message : t('tenants.pricing.createOrderFailed')
   } finally {
     buying.value = null
   }
@@ -93,7 +98,7 @@ async function buyTopup(pkg: MaasTopupPackage) {
       query: tenantQuerySuffix(),
     })
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '创建订单失败'
+    error.value = e instanceof Error ? e.message : t('tenants.pricing.createOrderFailed')
   } finally {
     buying.value = null
   }
@@ -112,11 +117,11 @@ onMounted(load)
           {{ tenantLabel }}
         </span>
         <select v-if="!isAdminTenantView" v-model="payChannel" class="channel-select">
-          <option value="alipay">支付宝</option>
-          <option value="wechat">微信支付</option>
+          <option value="alipay">{{ t('tenants.pricing.payChannelAlipay') }}</option>
+          <option value="wechat">{{ t('tenants.pricing.payChannelWechat') }}</option>
         </select>
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-          {{ loading ? '加载中…' : '刷新' }}
+          {{ loading ? t('tenants.pricing.loading') : t('tenants.pricing.refresh') }}
         </button>
       </div>
     </div>
@@ -125,50 +130,54 @@ onMounted(load)
 
     <div v-if="wallet" class="wallet-card card">
       <div class="wallet-stat">
-        <div class="wallet-label">订阅额度</div>
+        <div class="wallet-label">{{ t('tenants.pricing.walletQuota') }}</div>
         <div class="wallet-value">{{ fmtCredits(wallet.quota_remaining) }}</div>
       </div>
       <div class="wallet-stat">
-        <div class="wallet-label">信用积分</div>
+        <div class="wallet-label">{{ t('tenants.pricing.walletGranted') }}</div>
         <div class="wallet-value">{{ fmtCredits(wallet.granted_balance) }}</div>
       </div>
       <div class="wallet-stat">
-        <div class="wallet-label">充值积分</div>
+        <div class="wallet-label">{{ t('tenants.pricing.walletPurchased') }}</div>
         <div class="wallet-value">{{ fmtCredits(wallet.purchased_balance) }}</div>
       </div>
       <div class="wallet-stat wallet-stat--highlight">
-        <div class="wallet-label">可用总额</div>
+        <div class="wallet-label">{{ t('tenants.pricing.walletTotal') }}</div>
         <div class="wallet-value">{{ fmtCredits(wallet.total_available) }}</div>
       </div>
     </div>
 
     <div v-if="isAdminTenantView" class="alert alert-info">
-      管理员只读视图：代客下单请在租户详情页「钱包 / 订单」Tab 操作。
+      {{ t('tenants.pricing.adminHint') }}
     </div>
 
-    <h3 class="section-title">月包套餐</h3>
+    <h3 class="section-title">{{ t('tenants.pricing.monthlyPlans') }}</h3>
     <div class="pricing-grid">
       <div v-for="p in plans" :key="p.id" class="pricing-card card">
         <div class="pricing-tier">{{ p.tier }}</div>
         <h4>{{ p.name }}</h4>
         <div class="pricing-price">
           <span class="price-num">¥{{ fmtPrice(p.price_cents) }}</span>
-          <span class="price-period">/ 月</span>
+          <span class="price-period">{{ t('tenants.pricing.pricePeriod') }}</span>
         </div>
-        <div class="pricing-credits">{{ fmtCredits(p.monthly_credits) }} 积分 / 月</div>
+        <div class="pricing-credits">
+          {{ t('tenants.pricing.creditsPerMonth', { n: fmtCredits(p.monthly_credits) }) }}
+        </div>
         <button
           v-if="!isAdminTenantView"
           class="btn btn-primary btn-block"
           :disabled="!!buying"
           @click="buyPlan(p)"
         >
-          {{ buying === p.id ? '创建订单…' : '立即购买' }}
+          {{ buying === p.id ? t('tenants.pricing.creatingOrder') : t('tenants.pricing.buyNow') }}
         </button>
       </div>
-      <div v-if="!loading && plans.length === 0" class="empty-card">暂无可用月包</div>
+      <div v-if="!loading && plans.length === 0" class="empty-card">
+        {{ t('tenants.pricing.emptyMonthlyPlans') }}
+      </div>
     </div>
 
-    <h3 class="section-title">加油包</h3>
+    <h3 class="section-title">{{ t('tenants.pricing.topupPackages') }}</h3>
     <div class="pricing-grid">
       <div v-for="t in topups" :key="t.id" class="pricing-card card">
         <div class="pricing-tier">{{ t.tier }}</div>
@@ -176,17 +185,21 @@ onMounted(load)
         <div class="pricing-price">
           <span class="price-num">¥{{ fmtPrice(t.price_cents) }}</span>
         </div>
-        <div class="pricing-credits">{{ fmtCredits(t.credits_amount) }} 积分</div>
+        <div class="pricing-credits">
+          {{ t('tenants.pricing.creditsAmount', { n: fmtCredits(t.credits_amount) }) }}
+        </div>
         <button
           v-if="!isAdminTenantView"
           class="btn btn-primary btn-block"
           :disabled="!!buying"
           @click="buyTopup(t)"
         >
-          {{ buying === t.id + 10000 ? '创建订单…' : '立即购买' }}
+          {{ buying === t.id + 10000 ? t('tenants.pricing.creatingOrder') : t('tenants.pricing.buyNow') }}
         </button>
       </div>
-      <div v-if="!loading && topups.length === 0" class="empty-card">暂无可用加油包</div>
+      <div v-if="!loading && topups.length === 0" class="empty-card">
+        {{ t('tenants.pricing.emptyTopupPackages') }}
+      </div>
     </div>
   </div>
 </template>

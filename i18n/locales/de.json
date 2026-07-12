@@ -41,6 +41,15 @@
   "provider_error": {
     "other": "Upstream-Anforderung fehlgeschlagen"
   },
+  "upstream_credential_invalid": {
+    "other": "Upstream-Anmeldedaten-API-Schlüssel ungültig (Anbieter hat unseren Schlüssel abgelehnt). Dies ist ein Konfigurationsproblem der Anmeldedaten, kein Problem des Client-Schlüssels — wenden Sie sich an den Gateway-Administrator, um die Upstream-Anmeldedaten zu aktualisieren."
+  },
+  "upstream_credential_revoked": {
+    "other": "Upstream-Anmeldedaten-API-Schlüssel widerrufen (Anbieter meldet, der Schlüssel ist nicht mehr aktiv). Dies ist ein Konfigurationsproblem — wenden Sie sich an den Gateway-Administrator, um die Upstream-Anmeldedaten zu rotieren."
+  },
+  "upstream_quota_permanent": {
+    "other": "Upstream-Anmeldedaten-Kontingent dauerhaft erschöpft (Anbieter hat 402 / quota_exceeded zurückgegeben). Dies ist ein Konfigurationsproblem — laden Sie das Upstream-Konto auf oder rotieren Sie die Anmeldedaten."
+  },
   "internal_error": {
     "other": "Interner Serverfehler"
   },

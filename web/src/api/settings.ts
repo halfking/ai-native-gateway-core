@@ -74,3 +74,8 @@ export function updateTenantSetting(tenantID: string, key: string, body: { value
   return req<{ status: string; new_value: any }>(
     'PUT', `/api/admin/tenant-settings/${encodeURIComponent(tenantID)}/${key}`, body)
 }
+
+export function getTenantSetting(tenantID: string, key: string) {
+  return req<{ spec: SettingSpec; value: any; source: string }>(
+    'GET', `/api/admin/tenant-settings/${encodeURIComponent(tenantID)}/${key}`)
+}
