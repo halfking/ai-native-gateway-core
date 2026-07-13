@@ -887,3 +887,175 @@ func mapOpenAIFinishReasonToAnthropic(reason string) string {
 		return "end_turn"
 	}
 }
+
+// ─── Gemini Stream Serializer (audit-gemini-stream, 2026-07-13) ─────────────
+
+// SerializeGemini serializes a StreamChunk IR to the Gemini
+// streamGenerateContent SSE format. Output is one `data: {...}\n\n`
+// line per chunk (matching Gemini's wire format).
+//
+// Gemini SSE shape:
+//
+//	data: {"candidates":[{"content":{"parts":[...],"role":"model"},"index":0}]}
+//	data: {"candidates":[{"content":{"parts":[...],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{...}}
+//	data: [DONE]
+//
+// audit-gemini-stream (2026-07-13): Completes the Gemini native adapter by
+// adding stream serialization. Map IR StreamDelta → Gemini parts:
+//   - text       → {"text": "..."}
+//   - reasoning  → {"thought": "..."} (Gemini 2.5+)
+//   - tool_call  → {"functionCall": {"name": "...", "args": {...}}}
+//
+// Usage chunks emit usageMetadata with modality-aware token breakdowns.
+func (c *StreamChunk) SerializeGemini() string {
+	if c == nil {
+		return ""
+	}
+
+	switch c.Type {
+	case ChunkTypeDone:
+		return "data: [DONE]\n\n"
+
+	case ChunkTypeError:
+		if c.Error == nil {
+			return ""
+		}
+		// Gemini error events use promptFeedback.blockReason or inline error.
+		// For simplicity we emit a candidate with an empty finishReason.
+		body := map[string]any{
+			"error": map[string]any{
+				"code":    c.Error.Code,
+				"message": c.Error.Message,
+				"status":  c.Error.Type,
+			},
+		}
+		data, _ := json.Marshal(body)
+		return fmt.Sprintf("data: %s\n\n", data)
+
+	case ChunkTypeUsage, ChunkTypeDelta:
+		body := map[string]any{}
+
+		// Build candidates array (most chunks have one candidate)
+		if c.Type == ChunkTypeDelta || c.FinishReason != "" {
+			candidate := map[string]any{"index": 0}
+
+			if c.Delta != nil {
+				parts := make([]map[string]any, 0)
+
+				// Text content
+				if c.Delta.Content != "" {
+					parts = append(parts, map[string]any{"text": c.Delta.Content})
+				}
+
+				// Reasoning (Gemini 2.5+ thought)
+				if c.Delta.ReasoningContent != "" {
+					parts = append(parts, map[string]any{"thought": c.Delta.ReasoningContent})
+				}
+
+				// Tool calls (functionCall)
+				for _, tc := range c.Delta.ToolCalls {
+					if tc.Name != "" {
+						var args any = map[string]any{}
+						if tc.Arguments != "" {
+							if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+								// Fallback: pass raw string
+								args = tc.Arguments
+							}
+						}
+						parts = append(parts, map[string]any{
+							"functionCall": map[string]any{
+								"name": tc.Name,
+								"args": args,
+							},
+						})
+					}
+				}
+
+				if len(parts) > 0 {
+					candidate["content"] = map[string]any{
+						"role":  "model",
+						"parts": parts,
+					}
+				}
+			}
+
+			if c.FinishReason != "" {
+				candidate["finishReason"] = mapOpenAIFinishReasonToGemini(c.FinishReason)
+			}
+
+			body["candidates"] = []map[string]any{candidate}
+		}
+
+		// Usage metadata (end-of-stream or usage chunks)
+		if c.Usage != nil {
+			body["usageMetadata"] = buildGeminiUsageMetadata(c.Usage)
+		}
+
+		// Model version echo (if known)
+		if c.Model != "" {
+			body["modelVersion"] = c.Model
+		}
+
+		data, _ := json.Marshal(body)
+		return fmt.Sprintf("data: %s\n\n", data)
+
+	default:
+		return ""
+	}
+}
+
+// buildGeminiUsageMetadata constructs the usageMetadata block from IR StreamUsage.
+// Includes modality-aware token breakdowns for multimodal billing accuracy.
+func buildGeminiUsageMetadata(usage *StreamUsage) map[string]any {
+	md := map[string]any{
+		"promptTokenCount":     usage.PromptTokens,
+		"candidatesTokenCount": usage.CompletionTokens,
+		"totalTokenCount":      usage.TotalTokens,
+	}
+
+	// Modality-aware prompt tokens (Gemini 2.0+)
+	var promptDetails []map[string]any
+	if usage.ImageTokens != nil && *usage.ImageTokens > 0 {
+		promptDetails = append(promptDetails, map[string]any{
+			"modality":   "IMAGE",
+			"tokenCount": *usage.ImageTokens,
+		})
+	}
+	if usage.AudioTokens != nil && *usage.AudioTokens > 0 {
+		promptDetails = append(promptDetails, map[string]any{
+			"modality":   "AUDIO",
+			"tokenCount": *usage.AudioTokens,
+		})
+	}
+	if len(promptDetails) > 0 {
+		md["promptTokensDetails"] = promptDetails
+	}
+
+	// Cached content tokens (Gemini context caching)
+	if usage.CacheReadTokens != nil && *usage.CacheReadTokens > 0 {
+		md["cachedContentTokenCount"] = *usage.CacheReadTokens
+	}
+
+	// Reasoning tokens (Gemini 2.5+ thoughts)
+	if usage.ReasoningTokens != nil && *usage.ReasoningTokens > 0 {
+		md["thoughtsTokenCount"] = *usage.ReasoningTokens
+	}
+
+	return md
+}
+
+// mapOpenAIFinishReasonToGemini converts IR/OpenAI finish reasons to Gemini form.
+func mapOpenAIFinishReasonToGemini(reason string) string {
+	switch reason {
+	case "stop":
+		return "STOP"
+	case "length":
+		return "MAX_TOKENS"
+	case "content_filter":
+		return "SAFETY"
+	case "tool_calls":
+		return "STOP" // Gemini emits STOP with functionCall part
+	default:
+		return "STOP"
+	}
+}
