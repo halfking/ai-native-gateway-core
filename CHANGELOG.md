@@ -62,6 +62,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - 任何失败（含 stale state）都写 audit row（outcome= failed/noop + failure_reason）；
     - Evidence 永远不含凭据、cookie、raw body、上游 URL、客户端 IP、UA、session 标题。
 
+### Added (deployment management hardening — slices 1-3 of design)
+- **目标契约层**（`scripts/deploy-lib/targets.sh`）：每个目标（154/245/186/252/kaixuan-*）导出标准化 JSON 契约（support / service_manager / service_name / binary_path / health_url / ssh_host / ssh_key_env / rollback_policy / legacy_aliases）。`target_check_actionable <target> <action>` 在任何 lock / build / ssh 之前拒绝 retired（186）、deferred（252/184/kaixuan-*）、unsupported（kaixuan-2/3）。
+- **双层锁原语**（`scripts/deploy-lib/lock.sh`）：本地 flock-or-mkdir 锁 + 远程 mkdir 锁；元数据只记 target / source_user / source_host / pid / started_at / commit / version，无 secret。二次 acquire 返回 EX_TEMPFAIL (75)。`force-unlock <target>` 是唯一允许的远程锁强制删除入口。
+- **主机操作 seams**（`scripts/deploy-lib/host.sh`）：245 版本化 release bundle 布局（`/opt/llm-gateway-go/releases/${VERSION}` + `current/` symlink）、`systemctl show` 预检、`curl /healthz` 健康等待、`verified=true` 元数据翻转。
+- **154 systemd unit**（`deploy/llm-gateway-go.service`）：镜像 `deploy/llmgo-245.service` 的硬化 + 资源限制配置，使 canonical CLI 在两个目标上可以一致地 `systemctl show`。
+- **Canonical CLI 前端**：插入 `scripts/deploy.sh` 头部，识别 `<action> <target>` 形式（plan/deploy/verify/rollback/force-unlock）。Plan/verify/rollback/force-unlock 在本切片返回契约或文档化的"将随切片 4/5 实现"提示，不执行任何副作用。Legacy shorthand `./scripts/deploy.sh <target>` 落穿到原有逻辑保留兼容。
+- **离线测试 harness + schema**（`tests/deploy_cli_test.sh` + `tests/fixtures/plan_schema.json`）：24 个断言覆盖 plan_required_fields（11 字段）、alias_resolution（71→154、184→252）、target_support（245 接受 / 186/252/184/kaixuan-1 拒绝）、local_lock_contention（第一次 acquire 成功 / 第二次返回 EX_TEMPFAIL / 释放后第三次成功）；sops regex 与 scan-secrets 占位待切片 6/7。
+- **JSON 输出契约**：每个字段引号包裹（修复了 `legacy_aliases="71"` 被序列化为裸数字的尾随 bug）。
+
+详细说明：`docs/changelogs/2026-07-13-deployment-management-slice-1-to-3.md`。
+
 ### Added (customer UI closure — P0 journey gap)
 - **客户面向 API（无需登录即可访问）**：
   - `GET /api/system/license/status` — 当前授权状态（none/active/grace/expired/revoked）
