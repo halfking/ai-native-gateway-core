@@ -121,5 +121,19 @@ func (om *OfflineManager) VerifyOfflineLicense(ctx context.Context, b64SignedLic
 		return nil, err
 	}
 
-	return om.crypto.VerifyLicense(signedLicense)
+	license, err := om.crypto.VerifyLicense(signedLicense)
+	if err != nil {
+		return nil, err
+	}
+
+	// P2 修复：增加过期/吊销检查（与在线验证保持一致）
+	// 之前只验证 RSA 签名，离线 license 可在过期后继续使用。
+	if time.Now().After(license.ExpiresAt) {
+		return nil, fmt.Errorf("%w: expired at %s", ErrLicenseExpired, license.ExpiresAt.Format(time.RFC3339))
+	}
+	if license.RevokedAt != nil {
+		return nil, fmt.Errorf("%w: revoked at %s", ErrLicenseRevoked, license.RevokedAt.Format(time.RFC3339))
+	}
+
+	return license, nil
 }

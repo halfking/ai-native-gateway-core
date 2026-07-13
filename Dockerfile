@@ -107,4 +107,10 @@ USER appuser
 
 EXPOSE 8781
 
+# P2 修复：添加 HEALTHCHECK 以便 Docker/orchestrator 验证容器健康状态
+# 使用 wget 因为 alpine slim runtime 不一定有 curl
+# 健康端点 /healthz 与服务 cmd/gateway 中的 health handler 对应
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8781/healthz || exit 1
+
 ENTRYPOINT ["/usr/local/bin/llm-gateway-go"]
