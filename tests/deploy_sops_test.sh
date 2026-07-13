@@ -86,13 +86,13 @@ test_sops_envelope_detection() {
   assert_file_exists ".env.252.enc tracks"          "$ENV_252"
   assert_file_exists ".env.kaixuan-1.enc tracks"    "$ENV_KAIXUAN_1"
 
-  # SOPS envelopes have data-key blocks, sops: sections, and
-  # encrypted_regex/unencrypted_regex lists. The data-key block is
-  # typically inline on the "data": "ENC[...]" line, so we grep
-  # without the leading-anchor.
+  # SOPS envelopes carry the JSON-shaped preamble with optional
+  # leading whitespace (real sops output indents with tabs). Each
+  # marker may sit on its own line OR inline on a "data"/"sops" key
+  # in the JSON object. We grep with whitespace tolerance.
   local has_enckey_252 has_sops_252 has_encrypted_252
-  has_enckey_252=$(grep -c '\bENC\[' "$ENV_252")
-  has_sops_252=$(grep -Ec '^[[:space:]]*"sops":' "$ENV_252")
+  has_enckey_252=$(grep -Ec '\bENC\[' "$ENV_252")
+  has_sops_252=$(grep -Ec '^[[:space:]]*"(sops|data)":' "$ENV_252")
   has_encrypted_252=$(grep -Ec '^[[:space:]]*"(encrypted|unencrypted)_regex":' "$ENV_252")
   if [[ $has_enckey_252 -ge 1 ]]; then
     log_pass ".env.252.enc carries ENC[ data-key block"
