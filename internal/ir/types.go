@@ -23,6 +23,9 @@ import "encoding/json"
 const (
 	ProtocolOpenAIChat        = "openai-chat"
 	ProtocolAnthropicMessages = "anthropic-messages"
+	// ProtocolGeminiGenerate is the native Google Gemini generateContent API.
+	// audit-gemini-adapter (2026-07-13).
+	ProtocolGeminiGenerate = "gemini-generate"
 )
 
 // InternalRequest is the unified intermediate representation for all inbound
@@ -134,6 +137,20 @@ type InternalRequest struct {
 
 	// Truncation OpenAI: "auto" | "disabled".
 	Truncation string
+
+	// ─── Claude 4.5+ fields (audit-claude-4-5, 2026-07-13) ───
+
+	// MCPServers configures Model Context Protocol servers for Claude 4.5+.
+	// When set, the upstream Anthropic API exposes MCP tools to the model.
+	MCPServers []MCPServer
+
+	// ContextManagement configures Claude 4.5+ automatic context cleanup.
+	// When set, the upstream applies edits to compress conversation history
+	// (typically when context window threshold is exceeded).
+	ContextManagement *ContextManagement
+
+	// Container describes an uploaded file container for Claude 4.5+ skills.
+	Container *Container
 
 	// ─── Source protocol (used by Serializer to determine output format) ───
 	SourceProtocol string // "openai-chat" | "anthropic-messages"
@@ -309,12 +326,15 @@ type InputAudioBlock struct {
 
 // ImageSource represents an image in a message.
 type ImageSource struct {
-	Type      string `json:"type"`                 // "url" | "base64"
+	Type      string `json:"type"`                 // "url" | "base64" | "file_id" | "file_uri"
 	MediaType string `json:"media_type,omitempty"` // "image/png" etc.
 	URL       string `json:"url,omitempty"`
 	Data      string `json:"data,omitempty"` // base64 without prefix
 	// audit-10 (2026-07-13): OpenAI image_url.detail parameter
 	Detail string `json:"detail,omitempty"`
+	// audit-gemini-adapter (2026-07-13): Gemini fileData.fileUri carrier
+	FileID  string `json:"file_id,omitempty"`
+	FileURI string `json:"file_uri,omitempty"`
 }
 
 // ToolUse is an assistant's tool call request.
@@ -467,4 +487,145 @@ type UserLocation struct {
 	Country  string `json:"country,omitempty"`
 	Region   string `json:"region,omitempty"`
 	Timezone string `json:"timezone,omitempty"`
+}
+
+// ─── Gemini Native Adapter (audit-gemini-adapter, 2026-07-13) ─────────────
+
+// GenerationConfig mirrors Gemini's generationConfig block. Used when an
+// inbound request (OpenAI or Anthropic) needs to be serialized to native
+// Gemini format. Most fields overlap with InternalRequest sampling params;
+// Gemini-specific extras include responseSchema, responseMimeType, and
+// thinkingConfig for Gemini 2.5+.
+type GenerationConfig struct {
+	Temperature      *float64              `json:"temperature,omitempty"`
+	TopP             *float64              `json:"topP,omitempty"`
+	TopK             *int                  `json:"topK,omitempty"`
+	MaxOutputTokens  *int                  `json:"maxOutputTokens,omitempty"`
+	StopSequences    []string              `json:"stopSequences,omitempty"`
+	ResponseMimeType string                `json:"responseMimeType,omitempty"`
+	ResponseSchema   json.RawMessage       `json:"responseSchema,omitempty"`
+	CandidateCount   *int                  `json:"candidateCount,omitempty"`
+	PresencePenalty  *float64              `json:"presencePenalty,omitempty"`
+	FrequencyPenalty *float64              `json:"frequencyPenalty,omitempty"`
+	Seed             *int64                `json:"seed,omitempty"`
+	ThinkingConfig   *GeminiThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+// GeminiThinkingConfig is Gemini 2.5+ extended thinking configuration.
+// Maps to { thinkingBudget: N } where N is the token budget.
+type GeminiThinkingConfig struct {
+	ThinkingBudget  *int `json:"thinkingBudget,omitempty"`
+	IncludeThoughts bool `json:"includeThoughts,omitempty"`
+}
+
+// SafetySetting represents a Gemini safetySettings entry.
+// Category: HARM_CATEGORY_HARASSMENT / HATE_SPEECH / SEXUALLY_EXPLICIT / DANGEROUS_CONTENT
+// Threshold: BLOCK_NONE / BLOCK_ONLY_HIGH / BLOCK_MEDIUM_AND_ABOVE / BLOCK_LOW_AND_ABOVE
+type SafetySetting struct {
+	Category  string `json:"category"`
+	Threshold string `json:"threshold"`
+}
+
+// GeminiPart represents a single element in Gemini's `contents[].parts[]` array.
+// At most one of Text/InlineData/FileData/FunctionCall/FunctionResponse is set.
+type GeminiPart struct {
+	Text             string                  `json:"text,omitempty"`
+	InlineData       *GeminiInlineData       `json:"inlineData,omitempty"`
+	FileData         *GeminiFileData         `json:"fileData,omitempty"`
+	FunctionCall     *GeminiFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *GeminiFunctionResponse `json:"functionResponse,omitempty"`
+	Thought          string                  `json:"thought,omitempty"` // Gemini 2.5 thinking part
+}
+
+// GeminiInlineData carries base64-encoded media in a Gemini part.
+type GeminiInlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
+// GeminiFileData references a file already uploaded via the Gemini Files API.
+type GeminiFileData struct {
+	MimeType string `json:"mimeType,omitempty"`
+	FileURI  string `json:"fileUri"`
+}
+
+// GeminiFunctionCall mirrors the structure Gemini uses for assistant tool calls.
+type GeminiFunctionCall struct {
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args,omitempty"`
+}
+
+// GeminiFunctionResponse is the role="function" message part returned to Gemini.
+type GeminiFunctionResponse struct {
+	Name     string          `json:"name"`
+	Response json.RawMessage `json:"response"`
+}
+
+// GeminiContent represents a single Gemini `contents[]` entry.
+// Role: "user" | "model" | "function".
+type GeminiContent struct {
+	Role  string       `json:"role"`
+	Parts []GeminiPart `json:"parts"`
+}
+
+// ─── Claude 4.5+ Fields (audit-claude-4-5, 2026-07-13) ────────────────────
+
+// MCPServer describes a Model Context Protocol server exposed to Claude 4.5+.
+// MCP servers extend Claude with external tools (databases, APIs, code execution).
+// When set, the upstream Anthropic API will route tool calls to these servers.
+type MCPServer struct {
+	// Type: "url" (only "url" supported today).
+	Type string `json:"type,omitempty"`
+
+	// URL is the MCP server endpoint.
+	URL string `json:"url,omitempty"`
+
+	// Name identifies the server in error messages and tool prefixes.
+	Name string `json:"name,omitempty"`
+
+	// ToolConfig allows per-tool filtering or renaming.
+	ToolConfig json.RawMessage `json:"tool_config,omitempty"`
+
+	// AuthorizationToken is the bearer token sent to the MCP server.
+	AuthorizationToken string `json:"authorization_token,omitempty"`
+}
+
+// ContextEdit represents a single edit operation in Claude 4.5+
+// `context_management.edits[]`. Multiple edits are applied in order.
+//
+// Types:
+//   - "clear_tool_uses_20250919" — clear tool_use/tool_result blocks
+//   - "clear_thinking_20251015"   — clear thinking blocks (when budget exhausted)
+type ContextEdit struct {
+	Type string `json:"type"`
+
+	// Threshold: % of context window that triggers the clear (0–100)
+	Threshold *int `json:"threshold,omitempty"`
+
+	// Keep is the minimum number of recent items to retain.
+	Keep *int `json:"keep,omitempty"`
+
+	// ClearToolInputs controls whether tool input/output is also cleared (default true)
+	ClearToolInputs *bool `json:"clear_tool_inputs,omitempty"`
+}
+
+// ContextManagement is the container for Claude 4.5+ context edits.
+// When set, the upstream Anthropic API will apply these edits to the
+// conversation before sending to the model.
+type ContextManagement struct {
+	Edits []ContextEdit `json:"edits,omitempty"`
+}
+
+// ContainerSkill describes a skill loaded into a Claude 4.5+ container.
+// Type: "anthropic" (built-in) | "custom" (user-uploaded).
+type ContainerSkill struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// Container describes an uploaded file container for Claude 4.5+.
+// When set, the uploaded skills are available to the model.
+type Container struct {
+	ID     string           `json:"id,omitempty"`
+	Skills []ContainerSkill `json:"skills,omitempty"`
 }

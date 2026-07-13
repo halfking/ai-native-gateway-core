@@ -40,12 +40,15 @@ func TestSerializeOpenAI_Extensions(t *testing.T) {
 }
 
 func TestAnthropicExtensionsRoundTrip(t *testing.T) {
-	ir, err := ParseAnthropic([]byte(`{"model":"claude","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"context_management":{"edits":[]}}`))
+	// audit-claude-4-5 (2026-07-13): context_management promoted from
+	// Extensions to structured IR field. Use an unrelated unknown vendor
+	// field to test the Extensions mechanism.
+	ir, err := ParseAnthropic([]byte(`{"model":"claude","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"custom_vendor_param":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := ir.Extensions["context_management"]; !ok {
-		t.Fatal("context_management was not preserved")
+	if _, ok := ir.Extensions["custom_vendor_param"]; !ok {
+		t.Fatal("Unknown field not preserved in Extensions")
 	}
 	body, err := SerializeAnthropic(ir)
 	if err != nil {
@@ -55,8 +58,8 @@ func TestAnthropicExtensionsRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(body, &out); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := out["context_management"]; !ok {
-		t.Fatal("context_management was not restored")
+	if out["custom_vendor_param"] != true {
+		t.Fatal("Extensions field not restored")
 	}
 }
 
