@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-13
 
+### Added (route-incident diagnosis, Phase 2 mutating actions + audit + evidence)
+- **路由事件诊断 Phase 2 (mutating + audit + 证据导出)**：
+  落地 spec `2026-07-13-route-incident-diagnosis-design.md` 第二期。
+  详细说明：`docs/changelogs/2026-07-13-route-incident-phase2.md`。
+  视觉验证：`ui-verify-route-incident-phase2-{actions,audit,
+  confirm,export,overview}-20260713-170608.png`。
+  - **持久化（追加）**：
+    - `routing_audit_log` 不可变审计表（idempotency_key 唯一
+      索引、outcome、pre/post snapshot、actor_ip_hash 不存原值）；
+    - `diagnostic_runs` 不可变诊断运行表（route_key +
+      sanitized result，存 SHA-256 integrity 之前的脱敏结果）；
+    - migration `390_routing_audit_log.sql`；
+    - `db/db.go::ensureRouteIncidentPhase2Schema` 启动时建表。
+  - **Action 基础设施（`domains/routeincident/action_infra.go`）**：
+    - 单一调度入口 `dispatchAction`，同一事务里：version 检查
+      `FOR UPDATE`、pre-snapshot、执行 executor、写 audit + run、
+      提交；
+    - 幂等重放：`ON CONFLICT (idempotency_key) DO NOTHING`
+      + 缓存结果回放（response.idempotent=true）；
+    - 输入校验：`reason`（≤256 字符）/ `confirmation_token`
+      （SHA-256 哈希后存）/ `idempotency_key`（必填唯一）；
+    - 参数 allow-list `allowedParameterKeys`，**禁止**任意 URL、
+      raw body、shell、SQL（spec §"Phase Two Diagnostic Runs And
+      Actions"）；
+    - 客户端/IP 只存哈希前缀 8 字节。
+  - **5 个 mutating actions + 2 个 diagnostic tests**：
+    - `recover`（同步状态转换 + 加 version + 写 recovered_at）；
+    - `reprobe` / `release_slot` / `reset_slots` /
+      `reset_availability` / `direct_upstream_test` /
+      `through_gateway_test` 全部走同一 dispatcher；
+    - 每个 executor 返回 sanitized DiagnosticRun，raw body /
+      upstream URL / auth header 永远不进库。
+  - **证据导出（`domains/routeincident/evidence.go`）**：
+    - `BuildEvidenceExport` 从完成的 DiagnosticRun 拼装
+      {Run, Incident, Events, Timeline}；
+    - SHA-256 over canonicalized JSON（跨 run 可重现）；
+    - 强约束：`MaxEvidenceExportBytes = 2MiB`、
+      `MaxEvidenceEvents = 200`；
+    - 不携带 tenant_id、凭据 secret、auth header、请求/响应
+      body、客户端 IP、UA、raw upstream error、session 标题。
+  - **Admin API**（`admin/route_incidents.go` 追加）：
+    - `GET /api/admin/route-incidents/{id}/audit`
+    - `GET /api/admin/route-incidents/{id}/runs`
+    - `POST /api/admin/route-incidents/{id}/{recover|reprobe|
+      release-slot|reset-slots|reset-availability|
+      direct-upstream-test|through-gateway-test}`
+    - `GET /api/admin/route-incidents/{id}/export?run_id=...`
+    - super-admin only + 跨租户 404 不变；
+    - `actorFromRequest` 从 `AuthContext` 提取 actor + IP 哈希。
+  - **前端 (`web/src/types/routeIncident.ts` + `api/routeIncidents.ts`)**：
+    - 新类型：`ActionKind`、`ActionOutcome`、`DiagnosticRun`、
+      `AuditLogEntry`、`IntegrityChecksum`、`EvidenceExport`；
+    - 客户端生成幂等键 `generateIdempotencyKey` + 8 字符确认
+      令牌；
+    - `dispatchAction` / `getAuditLog` / `getDiagnosticRuns` /
+      `exportEvidence` 4 个新 client 方法。
+  - **抽屉 UI（`RouteIncidentDrawer.vue` 追加）**：
+    - 第 8 节：操作面板（7 个按钮 + destructive/test/slot
+      视觉分级 + 操作结果条）；
+    - 第 9 节：审计日志（outcome pill + actor + reason +
+      inline 证据导出链接）；
+    - 二次确认弹窗：reason（必填 256 字内）+ confirmation
+      token（自动生成）+ 附加参数 details（slot_id /
+      target_state / timeout_ms / max_tokens，全部 allow-list）；
+    - 证据导出 banner：显示 SHA-256 前 16 字符 + run/event/
+      time-bucket 计数 + 下载 JSON；
+    - 焦点陷阱覆盖 modal 与 drawer 互斥；Escape 关闭 modal
+      优先于 drawer；reduced-motion 保留。
+  - **测试**：
+    - Go 单测覆盖 `sanitizeReason` / `sanitizeParameters`
+      allow-list / `IsAllowedAction` / `ActionKind.IsMutating` /
+      `DiagnosticRunState.IsTerminal` / `hashToken` / `hashIP` /
+      调度器的 stale-state + 未知 action + 缺失 reason +
+      缺失 confirm token + evidence_export 豁免；
+    - Vue Vitest 已有 useRouteIncidents 6 个测试 + 客户端
+      generateIdempotencyKey 行为不变；
+    - `go build ./...` ✅ / `go test ./domains/routeincident/...
+      ./admin/...` ✅ / `npm run build` ✅；
+    - Playwright 抓取 5 张 Phase 2 PNG。
+  - **不变量（继承 Phase 1 并新增）**：
+    - 写操作要求 reason + confirmation_token + idempotency_key
+      + version match，缺一即拒绝（400）；
+    - `idempotency_key` 唯一索引拒绝重复执行（同 key 重放
+      返回 cached result 并 `idempotent: true`）；
+    - 不绕过下游健康检查原语；recover 仅切换状态机；
+    - 跨租户 404（资源不存在 / 跨租户 / 操作目标不存在）；
+    - 任何失败（含 stale state）都写 audit row（outcome=
+      failed/noop + failure_reason）；
+    - Evidence 永远不含凭据、cookie、raw body、上游 URL、
+      客户端 IP、UA、session 标题。
+
 ### Added (route-incident diagnosis, Phase 1 read-only)
 - **路由事件诊断 (Phase 1 read-only)**：泳道上的“诊断”入口与
   右侧诊断工作台落地。Backend 状态机负责
