@@ -482,6 +482,8 @@ func archiveSpecs() []archiveSpec {
 // Migrations 341, 343-347 (2026-07-05) unified all tables to hot table architecture.
 // All promote functions now use *_hot_to_partition pattern.
 //
+// 2026-07-13: added candidate_failure_logs_hot (Migration 392).
+//
 // Each function signature is promote_<table>_hot_to_partition(p_retention interval,
 // p_batch_size int) RETURNS bigint; the caller loops until the function
 // returns 0 (no more eligible cold rows for this table).
@@ -496,6 +498,7 @@ func promoteSpecs() []archiveSpec {
 		{fnName: "promote_credit_ledger_hot_to_partition", label: "credit_ledger"},
 		{fnName: "promote_tool_usage_stats_hot_to_partition", label: "tool_usage_stats"},
 		{fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
+		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"}, // Migration 392
 	}
 }
 

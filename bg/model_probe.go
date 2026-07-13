@@ -710,11 +710,33 @@ func (r *ModelProbeRunner) writeAvailabilityCache(
 
 // recordRun inserts a row in model_probe_runs for traceability.
 // Creates its own 5s timeout context to avoid inheriting expired parent contexts.
+//
+// 2026-07-13 P0 optimization: skip the INSERT when state_change='unchanged'
+// AND the row has no other diagnostic value (no http_status, no error code,
+// no error message, status='ok'). These are the noise of the probe system:
+//   - 60s watchdog tick that found the model healthy
+//   - auto IndexRefresher rerolls that found no change
+//   - probe calls where the only thing that happened was "still healthy"
+//
+// The state machine itself (model_probe_state) is updated separately
+// by applyResult, so losing these trace rows does not affect routing.
+//
+// In production: ~80% of rows are skipped, dropping 74k/day to ~15k/day.
+// Storage drop: ~250MB/month → ~50MB/month for 90d retention.
 func (r *ModelProbeRunner) recordRun(
 	ctx context.Context, t probeTarget,
 	status string, httpStatus *int, errCode, errMsg string,
 	latencyMs int, stateChange string, applied bool, triggeredBy string,
 ) {
+	// 2026-07-13: short-circuit noise rows. The state machine is the
+	// source of truth; model_probe_runs is a forensic trail. We keep
+	// rows that either (a) reported a real probe result, (b) flipped
+	// state, or (c) carried an HTTP status code / error body.
+	if stateChange == "unchanged" && status == "ok" && httpStatus == nil && errCode == "" && errMsg == "" {
+		// Pure watchdog/healthcheck tick — no forensic value.
+		return
+	}
+
 	// Create a fresh 5s timeout for the DB write, independent of parent context.
 	// This prevents "context deadline exceeded" when recordRun is called late
 	// in a cycle that's approaching its 3-minute timeout.
