@@ -11,9 +11,11 @@ import (
 
 // Installer 安装器（备份 + 替换 + 验证）
 type Installer struct {
-	binPath   string
-	backupDir string
-	dataDir   string
+	binPath       string
+	backupDir     string
+	dataDir       string
+	migrationCmd  string // P1: 数据库迁移命令（可选）
+	migrationArgs []string
 }
 
 // NewInstaller 创建安装器
@@ -77,6 +79,24 @@ func (i *Installer) Install(ctx context.Context, downloadPath string, release *R
 	versionFile := filepath.Join(i.dataDir, "VERSION")
 	if err := os.WriteFile(versionFile, []byte(release.Version+"\n"), 0644); err != nil {
 		result.Error = fmt.Sprintf("write version file: %v", err)
+	}
+
+	// 6. 数据库迁移（P1 修复：协调二进制升级与数据库迁移）
+	if i.migrationCmd != "" {
+		if err := i.runMigration(ctx); err != nil {
+			result.Error = fmt.Sprintf("install succeeded but migration failed: %v", err)
+			result.Success = false
+			result.DurationMs = time.Since(start).Milliseconds()
+			return result, fmt.Errorf("migration failed: %w", err)
+		}
+	}
+
+	// 7. 重启服务（P1 修复：自动 systemctl restart）
+	if err := i.restartService(ctx); err != nil {
+		result.Error = fmt.Sprintf("install succeeded but service restart failed: %v", err)
+		result.Success = false
+		result.DurationMs = time.Since(start).Milliseconds()
+		return result, fmt.Errorf("service restart failed: %w", err)
 	}
 
 	result.Success = true
@@ -187,4 +207,49 @@ func (i *Installer) CleanupOldBackups(keepCount int) error {
 	}
 
 	return nil
+}
+
+// restartService 重启服务（P1 修复：自动 systemctl restart）
+func (i *Installer) restartService(ctx context.Context) error {
+	// TODO: 从配置文件读取服务名称
+	serviceName := "llm-gateway-go"
+
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", serviceName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl restart %s failed: %w, output: %s", serviceName, err, string(output))
+	}
+
+	// 等待服务启动
+	time.Sleep(3 * time.Second)
+
+	// 验证服务状态
+	statusCmd := exec.CommandContext(ctx, "systemctl", "is-active", serviceName)
+	statusOutput, err := statusCmd.CombinedOutput()
+	if err != nil || string(statusOutput) != "active\n" {
+		return fmt.Errorf("service %s not active after restart: %s", serviceName, string(statusOutput))
+	}
+
+	return nil
+}
+
+// runMigration 运行数据库迁移（P1 修复：协调二进制升级与数据库迁移）
+func (i *Installer) runMigration(ctx context.Context) error {
+	if i.migrationCmd == "" {
+		return nil
+	}
+	
+	cmd := exec.CommandContext(ctx, i.migrationCmd, i.migrationArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("migration command %s failed: %w, output: %s", i.migrationCmd, err, string(output))
+	}
+	
+	return nil
+}
+
+// SetMigration 配置数据库迁移命令（P1：可选配置）
+func (i *Installer) SetMigration(cmd string, args ...string) {
+	i.migrationCmd = cmd
+	i.migrationArgs = args
 }
