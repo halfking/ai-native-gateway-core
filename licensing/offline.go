@@ -12,14 +12,22 @@ import (
 )
 
 type OfflineManager struct {
-	crypto *CryptoConfig
-	store  Store
+	crypto   *CryptoConfig
+	store    Store
+	notifier ActivationNotifier
 }
 
 func NewOfflineManager(crypto *CryptoConfig, store Store) *OfflineManager {
 	return &OfflineManager{
-		crypto: crypto,
-		store:  store,
+		crypto:   crypto,
+		store:    store,
+		notifier: &LogActivationNotifier{},
+	}
+}
+
+func (om *OfflineManager) SetActivationNotifier(notifier ActivationNotifier) {
+	if notifier != nil {
+		om.notifier = notifier
 	}
 }
 
@@ -93,6 +101,12 @@ func (om *OfflineManager) ApproveOfflineRequest(ctx context.Context, requestID s
 		"license_key", req.LicenseKey,
 		"activation_code", activationCode,
 	)
+
+	if om.notifier != nil {
+		if err := om.notifier.NotifyApproved(ctx, lic, req, activationCode); err != nil {
+			slog.Warn("activation notification failed", "request_id", requestID, "error", err)
+		}
+	}
 
 	return &OfflineApprovalResult{
 		ActivationCode: activationCode,

@@ -53,6 +53,7 @@ export default {
     promptInjection: '提示词注入检测',
     examples: '接入示例',
     chat: '对话',
+    opsOverview: '运维概览',
     opsLicenses: 'License管理',
     opsFaults: '故障管理',
     opsAutoUpdate: '自动更新',

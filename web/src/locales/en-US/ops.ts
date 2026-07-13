@@ -1,6 +1,20 @@
 export default {
   title: 'Operations Platform',
-  
+
+  overview: {
+    title: 'Operations Overview',
+    loadFailed: 'Failed to load overview data',
+    onlineInstances: 'Online Instances',
+    totalLicenses: 'Total Licenses',
+    pendingApprovals: 'Pending Approvals',
+    todayUpgrades: 'Upgrades Today',
+    openFaults: 'Open Faults',
+    recentUpgrades: 'Recent Upgrades',
+    recentFaults: 'Recent Alerts',
+    pendingOffline: 'Pending Offline Activations',
+    viewAll: 'View All',
+  },
+
   // License Management
   license: {
     title: 'License Management',

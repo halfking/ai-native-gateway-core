@@ -60,6 +60,7 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 
 	// Initialize OfflineManager
 	offlineManager := licensing.NewOfflineManager(cryptoConfig, licenseStore)
+	offlineManager.SetActivationNotifier(licensing.NewActivationNotifierFromEnv())
 
 	// Initialize AdminHandler with all dependencies
 	licenseHandler := licensing.NewAdminHandler(licenseStore, cryptoConfig, activator, offlineManager, validator)
