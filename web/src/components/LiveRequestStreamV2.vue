@@ -236,6 +236,12 @@ const filteredLanes = computed(() => {
     }))
     .filter(lane => lane.requests.length > 0)
 })
+
+// 2026-07-13: 冷启动检测 — 后端尚未推送任何泳道
+// "仅探测" 过滤后为空不算冷启动（已有泳道只是被过滤）
+const isColdStart = computed(() => {
+  return lanes.value.length === 0
+})
 </script>
 
 <template>
@@ -393,13 +399,11 @@ const filteredLanes = computed(() => {
         @tile-click="handleTileClick"
         @emergency-diagnose="handleEmergencyDiagnose"
       />
-      <div v-if="filteredLanes.length === 0" class="swim-lanes__empty">
-        <template v-if="probeFilter === 'probe_only'">
-          暂无探测请求（连续失败 ≥2 次会触发主动探测）
-        </template>
-        <template v-else>
-          暂无请求数据
-        </template>
+      <!-- 2026-07-13: 冷启动提示，仅整局无任何泳道数据时显示
+           "仅探测"过滤为空时不显示（已有泳道只是被过滤，按钮文字已说明） -->
+      <div v-if="isColdStart" class="swim-lanes__empty">
+        <span class="swim-lanes__empty-icon">⏳</span>
+        <span class="swim-lanes__empty-text">等待实时请求流数据…</span>
       </div>
     </div>
 
@@ -819,10 +823,23 @@ const filteredLanes = computed(() => {
 }
 
 .swim-lanes__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   padding: 40px 20px;
   text-align: center;
   color: var(--muted, #8b949e);
   font-size: 13px;
+}
+
+.swim-lanes__empty-icon {
+  font-size: 16px;
+  opacity: 0.7;
+}
+
+.swim-lanes__empty-text {
+  letter-spacing: 0.2px;
 }
 
 @media (max-width: 768px) {
