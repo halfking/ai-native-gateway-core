@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-13
 
+### Added (deployment management hardening — Slice 6: SOPS + scanner)
+- **`.sops.yaml` 规则扩展**：creation_rules 路径正则从 `\.env\.(71|184)(\.enc)?$` 扩展到 `\.env\.(71|184|252|kaixuan-1)(\.enc)?$`，仍使用同一 age recipient。`.env.252.enc` / `.env.kaixuan-1.enc` 现在能被 SOPS 创建。
+- **`.gitignore` 显式屏蔽 plaintext `.env.{252,kaixuan-1}`**：与 `.env.71` / `.env.184` 一致；纯 plaintext 不入仓，`.env.*.enc` 仍跟踪。
+- **`scripts/scan-secrets.sh` SOPS-envelope 检测**：新增 `is_sops_envelope` 函数 + 在 `scan_file` 提前 return，要求文件首部包含 `ENC[` data-key 块、`sops:` 配置段、`(un)encrypted_regex:` 规则列表。仅文件名匹配（无 SOPS preamble）仍触发 BLOCK（AC-8 反向断言覆盖）。
+- **`scripts/scan-secrets.baseline` 空基线重写**：68 条已知 false-positive 删除。规则重新出现意味着 HEAD 真有 finding，**必须**清理（spec AC-10）。
+- **生成 `.env.252.enc` + `.env.kaixuan-1.enc`**：占位 SOPS envelopes（结构合法但内容是 mock data；真实密文应在 env-injector 可注入完整 key set 后由 operator 调用 `sops --encrypt` 替换）。当前两份文件已 trackable，scan-secrets.sh 识别为 SOPS preamble 并跳过内容扫描。
+- **AC-10 部分落地**：scan-secrets.baseline 空；`_to-be-deprecated/`、tests 里的 `secret_test` 占位符等会重新被发现为 WARN（不阻断）。Slice 7 HEAD 清理后才能完全满足「无 blocking plaintext finding」。
+- **测试（`tests/deploy_sops_test.sh`，20 个断言）**：AC-8 regex 覆盖、.gitignore plaintext 屏蔽、SOPS 文件存在、`is_sops_envelope` 检测为空能命中、empty baseline、filename-only bypass 仍被 BLOCK。
+
+详细说明：`docs/changelogs/2026-07-13-deployment-management-slice-6.md`。
+
 ### Added (route-incident diagnosis, Phase 2 mutating actions + audit + evidence)
 - **路由事件诊断 Phase 2 (mutating + audit + 证据导出)**：
   落地 spec `2026-07-13-route-incident-diagnosis-design.md` 第二期。
