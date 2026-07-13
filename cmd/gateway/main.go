@@ -1486,7 +1486,7 @@ func main() {
 		selfCheckAPIKey := os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY")
 		if selfCheckAPIKey == "" {
 			var err error
-			selfCheckAPIKey, err = bg.EnsureSystemAPIKey(context.Background(), dbConn.Pool(), fernetKey, keyring)
+			selfCheckAPIKey, err = bg.EnsureSystemAPIKey(context.Background(), dbConn.Pool(), fernetKey, keyring, cfg.SecretKey)
 			if err != nil {
 				slog.Warn("self-check worker disabled: cannot get system API key", "error", err)
 				selfCheckAPIKey = ""
