@@ -2,6 +2,22 @@
 
 > 所有 REST API 端点，按用途分组。详细签名见各章。
 >
+> **2026-07-13 同步**：状态标记更新到当前 main 分支。
+> - ✅ 已落地：`/api/v1/license/{trial,activate,refresh,offline/issue,crl}`、
+>   `/api/v1/instances/{register,heartbeat,refresh}`、
+>   `/api/v1/updates/{latest,manifest,report,rollback}`，全部在
+>   `cmd/license-authority` 内。
+> - ✅ 已落地：`/api/admin/licenses*`、`/api/admin/releases*`、
+>   `/api/admin/autoupdate/*`（Bearer token 认证）、
+>   `/api/admin/center/*`、`/api/admin/faults/*`、`/api/admin/vibecoding/*`。
+> - ✅ 已落地：`/api/center/{activate,deactivate,heartbeat,validate,
+>   offline/request,offline/verify}` 在客户端二进制内供主控端反向调用。
+> - ❌ 待实现 P0：`/api/system/license/{trial,activate,offline/request,
+>   offline/import,status}`、`/api/system/upgrade/{check,start,stream,
+>   rollback,status}`、`/api/system/telemetry/pref`、`/api/system/info`、
+>   `/api/system/restart`，落地位 `gateway/internal/api/`。
+> - ❌ 待实现 P2：`/api/v1/collect/runtime` 主控端聚合 API。
+>
 > **状态标记**：`[已实现]` = 代码中存在路由注册，`[待实现]` = 仅文档设计，代码不存在。
 
 ## 一、主控端 API（仅 master 二进制）
