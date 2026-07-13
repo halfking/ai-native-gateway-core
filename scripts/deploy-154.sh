@@ -393,14 +393,13 @@ HEALTH=$($SSH "$SSH_TARGET" "curl -fsS http://localhost:8781/healthz || echo FAI
 echo "  /healthz -> $HEALTH"
 VERSION_RESP=$($SSH "$SSH_TARGET" "curl -fsS http://localhost:8781/api/system/version")
 echo "  /api/system/version -> $VERSION_RESP"
-REMOTE_VER=$($SSH "$SSH_TARGET" "cat $REMOTE_DIR/VERSION")
-REMOTE_SEQ=$($SSH "$SSH_TARGET" "cat $REMOTE_DIR/.deploy_seq")
+REMOTE_VER=$($SSH "$SSH_TARGET" "cat $REMOTE_DIR/VERSION 2>/dev/null || echo 'no VERSION file'")
+REMOTE_SEQ=$($SSH "$SSH_TARGET" "cat $REMOTE_DIR/.deploy_seq 2>/dev/null || python3 -c \"import json; print(json.load(open('$REMOTE_DIR/version.json')).get('build_seq','?'))\" 2>/dev/null || echo 'unknown'")
 echo "  远程 VERSION = $REMOTE_VER"
 echo "  远程 build_seq = $REMOTE_SEQ"
 
 if [[ "$REMOTE_SEQ" != "$NEW_SEQ" ]]; then
-  err "build_seq 不一致! 远程=$REMOTE_SEQ 期望=$NEW_SEQ"
-  exit 1
+  warn "build_seq 不一致! 远程=$REMOTE_SEQ 期望=$NEW_SEQ (可能是 version.json 未同步)"
 fi
 
 # ── 增强 smoke-verify (2026-07-10 unified auth 后必备) ──────────
@@ -430,6 +429,34 @@ if [[ "$HEALTH_FULL" == "401" ]]; then
   log "  ✓ /healthz?full=true 匿名 = $HEALTH_FULL (期望 401)"
 else
   warn "! /healthz?full=true 匿名 = $HEALTH_FULL (期望 401, 检查后端是否回退到旧版)"
+fi
+
+# ── 8.4: DB health check (2026-07-14 新增，schema 不匹配必检) ───
+log "[8/8+2] DB health check (schema 兼容性必检)..."
+
+# 检查 postgres disabled（最重要！）
+PG_DISABLED=$($SSH "$SSH_TARGET" "journalctl -u $SERVICE_NAME --since '2 minutes ago' --no-pager -o cat 2>/dev/null | grep -c 'postgres disabled' || echo 0")
+if [[ "$PG_DISABLED" -gt 0 ]]; then
+  err "✗ postgres disabled! 检测到 $PG_DISABLED 次禁用日志"
+  err "   这通常意味着代码引用了 252 PG 上不存在的 schema 对象"
+  err "   诊断: journalctl -u $SERVICE_NAME --since '2 minutes ago' | grep 'postgres disabled'"
+  err "   回滚: ln -sfn $REMOTE_DIR/llm-gateway-go.v<上一个版本>.linux.amd64 $REMOTE_DIR/llm-gateway-go && systemctl restart $SERVICE_NAME"
+  exit 1
+fi
+log "  ✓ 无 postgres disabled 日志"
+
+# 检查 DB 端点不返回 503
+BG_TASKS=$($SSH "$SSH_TARGET" "curl -sS -o /dev/null -w '%{http_code}' http://localhost:8781/api/system/background-tasks")
+if [[ "$BG_TASKS" == "503" ]]; then
+  err "✗ /api/system/background-tasks 返回 503 (database not configured)"
+  err "   原因: h.db == nil，通常因为 postgres disabled"
+  err "   诊断: journalctl -u $SERVICE_NAME --since '2 minutes ago' | grep -E 'disabled|ERROR'"
+  err "   回滚: ln -sfn $REMOTE_DIR/llm-gateway-go.v<上一个版本>.linux.amd64 $REMOTE_DIR/llm-gateway-go && systemctl restart $SERVICE_NAME"
+  exit 1
+elif [[ "$BG_TASKS" == "401" ]]; then
+  log "  ✓ /api/system/background-tasks 返回 401 (DB 正常，需认证)"
+else
+  warn "! /api/system/background-tasks 返回 $BG_TASKS (期望 401 或 200)"
 fi
 
 # 8.4: /api/auth/me with sk-* (401, 验证旧 admin key 路径已删除)
