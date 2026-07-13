@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-13
 
+### Fixed (P1 - Audit Round 3)
+- **autoupdate Admin API 认证**：所有 `/api/admin/releases/*` 和 `/api/admin/autoupdate/*` 端点增加 Bearer token 认证，token 从环境变量 `AUTOUPDATE_ADMIN_TOKEN` 读取（未配置时使用默认开发 token）
+- **数据库迁移协调**：`Installer` 增加可选的数据库迁移命令配置（`SetMigration(cmd, args...)`），在二进制替换后、服务重启前自动执行迁移
+- **GPG 签名验证**：新增 `GPGVerifier` 和 `Downloader.DownloadWithGPG` 方法，支持验证下载文件的 GPG 签名（`.sig` 或 `.asc`），以及 SHA256SUMS 文件签名验证
+
 ### Fixed (P0)
 - **Gemini 流式响应实时转换**：Gemini 原生流式端点不再使用
   `httptest.ResponseRecorder` 缓存整个 ChatHandler 响应；新增可 flush 的
