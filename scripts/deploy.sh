@@ -68,6 +68,95 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# ── Canonical CLI front-end (spec cf8aad1a9, Slice 1 / 3) ─────────────
+# Detect the documented canonical form:
+#   scripts/deploy.sh plan <target>
+#   scripts/deploy.sh deploy <target> [--dry-run]
+#   scripts/deploy.sh verify <target>
+#   scripts/deploy.sh rollback <target> [--to <version>]
+#   scripts/deploy.sh force-unlock <target>
+# When matched, the canonical handlers short-circuit and exit. The
+# legacy shorthand (./scripts/deploy.sh <target>) and the rest of
+# the existing logic fall through unchanged.
+if [[ $# -ge 2 ]]; then
+  case "$1" in
+    plan|verify|rollback|force-unlock)
+      # shellcheck source=scripts/deploy-lib/targets.sh
+      # shellcheck source=scripts/deploy-lib/lock.sh
+      source "$SCRIPT_DIR/deploy-lib/targets.sh"
+      source "$SCRIPT_DIR/deploy-lib/lock.sh"
+
+      ACTION_CANONICAL=$1
+      TARGET_CANONICAL_RAW=$2
+      shift 2
+      TARGET_CANONICAL=$(target_resolve_alias "$TARGET_CANONICAL_RAW")
+
+      # Refuse retired/deferred/unsupported targets before any side
+      # effect (per spec AC-4 / §"Compatibility disposition").
+      if ! target_check_actionable "$TARGET_CANONICAL" "$ACTION_CANONICAL"; then
+        exit 64
+      fi
+
+      case "$ACTION_CANONICAL" in
+        plan)
+          # `--json` flag emits the raw contract for tooling; default
+          # is a human-readable view (still no secret values).
+          if [[ "${1:-}" == "--json" ]]; then
+            target_contract "$TARGET_CANONICAL"
+          else
+            printf 'target: %s\n' "$TARGET_CANONICAL"
+            contract=$(target_contract "$TARGET_CANONICAL")
+            for field in support service_manager service_name binary_path web_path health_url ssh_host ssh_key_env rollback_policy legacy_aliases; do
+              printf '  %-18s %s\n' "$field" "$(printf '%s' "$contract" | sed -n "s/.*\"$field\":\"\\([^\"]*\\)\".*/\\1/p")"
+            done
+          fi
+          exit 0
+          ;;
+        force-unlock)
+          # Per spec §"Locking": only force-unlock removes a stale lock.
+          ssh_host=$(target_field "$TARGET_CANONICAL" ssh_host)
+          if [[ -z "$ssh_host" ]]; then
+            echo "ERROR: $TARGET_CANONICAL has no ssh_host" >&2
+            exit 64
+          fi
+          lock_path="/var/lib/llm-gateway-go/deploy.lock"
+          ssh ${SSH_KEY_ARGS:-} "$ssh_host" "rm -rf '$lock_path'"
+          echo "force-unlock $TARGET_CANONICAL: removed $lock_path"
+          exit 0
+          ;;
+        rollback)
+          # Slice 1 surfaces the contract; the actual rollback
+          # implementation lands in slice 4. Until then we print
+          # the contract and exit 0 so the canonical CLI is wired.
+          contract=$(target_contract "$TARGET_CANONICAL")
+          policy=$(printf '%s' "$contract" | sed -n 's/.*"rollback_policy":"\([^"]*\)".*/\1/p')
+          case "$policy" in
+            versioned)
+              echo "rollback $TARGET_CANONICAL: versioned rollback (slice 4 will implement)"
+              exit 0
+              ;;
+            runbook)
+              echo "rollback $TARGET_CANONICAL: refused — see existing runbook (slice 5 will convert)"
+              exit 64
+              ;;
+            refuse|*)
+              echo "ERROR: rollback $TARGET_CANONICAL refused (policy=$policy)" >&2
+              exit 64
+              ;;
+          esac
+          ;;
+        verify)
+          # Slice 1 surfaces the contract; full verify lands in slice 4.
+          contract=$(target_contract "$TARGET_CANONICAL")
+          health_url=$(printf '%s' "$contract" | sed -n 's/.*"health_url":"\([^"]*\)".*/\1/p')
+          echo "verify $TARGET_CANONICAL: health_url=$health_url (slice 4 will implement remote check)"
+          exit 0
+          ;;
+      esac
+      ;;
+  esac
+fi
+
 # ── 颜色与日志 ─────────────────────────────────────────────────────
 G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[0;34m'; N='\033[0m'
 ok()    { echo -e "${G}✓${N} $*"; }
