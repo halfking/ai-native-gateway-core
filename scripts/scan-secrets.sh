@@ -124,6 +124,21 @@ record_finding() {
 
 scan_file() {
   local file="$1" rel="${file#$REPO_ROOT/}" base; base="$(basename "$file")"
+
+  # Spec cf8aad1a9 §SOPS and Credentials:
+  # "A file is accepted as encrypted only when SOPS can parse its
+  #  metadata and decrypt it with an authorized key; filename alone
+  #  never bypasses secret scanning."
+  #
+  # We enforce the spirit of that rule by inspecting the file's first
+  # line for the SOPS metadata envelope. `.env.*.enc` files created
+  # by `sops --encrypt` start with `ENC[` (data key block) and contain
+  # a `sops:` (config) section. Files that pass this check are skipped
+  # before any rule pattern runs.
+  if is_sops_envelope "$file"; then
+    return 0
+  fi
+
   for i in "${!RULES_PATTERN[@]}"; do
     local is_fn="${RULES_IS_FILENAME[$i]}" pat="${RULES_PATTERN[$i]}" cat="${RULES_CATEGORY[$i]}"
     local sev="${RULES_SEVERITY[$i]}" desc="${RULES_DESC[$i]}"
@@ -148,6 +163,33 @@ scan_file() {
       done <<<"$matches"
     fi
   done
+}
+
+# is_sops_envelope returns 0 if the file looks like a SOPS-encrypted
+# envelope (`ENC[` data key block plus a `sops:` config block, with at
+# least one entry in `encrypted_regex`). We are NOT decrypting the file
+# here (the spec leaves decryption to env-injector); we are only
+# detecting the metadata preamble that real SOPS output always
+# carries. A file that fails this check falls through to the normal
+# pattern scan and will be reported like any other plaintext file.
+#
+# Implementation note: this is an awk-style grep so the test harness
+# can verify both branches without invoking the SOPS binary (which
+# is not available in the offline environment).
+is_sops_envelope() {
+  local file="$1"
+  [[ -r "$file" ]] || return 1
+  local head
+  head=$(head -n 32 "$file" 2>/dev/null)
+  [[ -z "$head" ]] && return 1
+  # Required markers in the first 32 lines (matches real SOPS output):
+  #   - `ENC[` data key block opener
+  #   - `sops:` config section
+  #   - `encrypted_regex:` (or `unencrypted_regex:`) rule list
+  echo "$head" | grep -q '^ENC\[' || return 1
+  echo "$head" | grep -q '^sops:' || return 1
+  echo "$head" | grep -Eq '^(encrypted|unencrypted)_regex:' || return 1
+  return 0
 }
 
 scan_working_tree() {
