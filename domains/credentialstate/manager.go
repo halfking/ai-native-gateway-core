@@ -45,10 +45,13 @@ type Manager struct {
 	// *time.Timer returned by time.AfterFunc lets Stop() cancel a scheduled
 	// credProbeV2 reprobe before it fires — otherwise a pending backoff timer
 	// can survive a graceful shutdown and fire into a stopped/dead DB, or worse
-	// race with a freshly-restarted process. Each entry holds the timer plus
-	// the (credID, model) it was scheduled for so duplicates can be deduped.
+	// race with a freshly-restarted process. Pending work is credential-level
+	// because CredentialProbeV2 probes a credential rather than a model.
 	pendingTimersMu sync.Mutex
-	pendingTimers   map[string]*time.Timer // key = fmt.Sprintf("%d:%s", credID, model)
+	pendingTimers   map[string]*pendingProbeTimer // key = credential ID
+	nextTimerGen    uint64
+	stopped         bool
+	callbacks       sync.WaitGroup
 
 	// Phase 2: 模型热度追踪器（可选，nil 时禁用热度感知探测）
 	popularityTracker *ModelPopularityTracker
@@ -63,6 +66,12 @@ type CacheEntry struct {
 	ExpiresAt time.Time
 }
 
+type pendingProbeTimer struct {
+	timer *time.Timer
+	gen   uint64
+	dueAt time.Time
+}
+
 // NewManager 创建状态管理器
 func NewManager(db *pgxpool.Pool, redisClient *redis.Client) *Manager {
 	m := &Manager{
@@ -72,7 +81,7 @@ func NewManager(db *pgxpool.Pool, redisClient *redis.Client) *Manager {
 		memCacheTTL:   10 * time.Second,
 		redisCacheTTL: 5 * time.Minute,
 		staleTTL:      2 * time.Minute,
-		pendingTimers: make(map[string]*time.Timer),
+		pendingTimers: make(map[string]*pendingProbeTimer),
 	}
 	m.batchWriter = NewBatchWriter(db, 5*time.Second, 100)
 	return m
@@ -90,17 +99,16 @@ func (m *Manager) Start(ctx context.Context) {
 // Stop 停止管理器
 func (m *Manager) Stop() {
 	m.batchWriter.Stop()
-	// 2026-07-13 (BUG #2 fix): cancel any in-flight tiered reprobe timers
-	// so a graceful shutdown does not race with a delayed SubmitFastProbe.
-	// Stop() on a fired timer is a no-op, so this is safe at any phase.
 	m.pendingTimersMu.Lock()
-	for k, t := range m.pendingTimers {
-		if t != nil {
-			t.Stop()
+	m.stopped = true
+	for k, pending := range m.pendingTimers {
+		if pending != nil && pending.timer != nil {
+			pending.timer.Stop()
 		}
 		delete(m.pendingTimers, k)
 	}
 	m.pendingTimersMu.Unlock()
+	m.callbacks.Wait()
 }
 
 // SetProbeSubmitter 设置快速探测提交函数（避免循环依赖）
@@ -218,7 +226,7 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	// 每轮结果写 request_logs，自动出现在实时请求流。
 	// active_probe 与下面的"永久/临时分级探测"并行：
 	//   - active_probe 优先用于快速隔离"上游 vs gateway"问题，0s 延迟
-	//   - credProbeV2（5min 延迟）作为兜底
+	//   - credProbeV2（按 30s/2m/5m 分级延迟后立即探测）作为兜底
 	if m.activeProbeSubmitter != nil && state.ConsecutiveFails >= m.activeProbeThreshold {
 		// 闪断保护：2秒内有成功 → 不触发探测，避免误判瞬时网络抖动
 		if state.LastSuccessAt == nil || now.Sub(*state.LastSuccessAt) > 2*time.Second {
@@ -464,57 +472,79 @@ func (m *Manager) cacheKey(credID int, model string) string {
 	return fmt.Sprintf("%d:%s", credID, model)
 }
 
-// scheduleCredProbe enqueues a delayed credProbeV2 submission for the
-// (credID, model) pair, honoring the tiered backoff (30s / 2m / 5m).
+// scheduleCredProbe enqueues one delayed credential-level probe, honoring the
+// tiered backoff. CredentialProbeV2 probes a credential (not a model), so
+// pending work is deduplicated by credential ID. If a later failure requests
+// a later due time, the existing earlier probe is retained.
 //
 // 2026-07-13 (BUG #2 fix): this is the implementation that the previous
 // `m.credProbeV2Submitter(credID)` call site silently bypassed. Calling
 // the submitter immediately defeated the documented "分级回退" tiered
-// retry and effectively made every transient-failure reprobe fixed at
-// credProbeV2's own 5-minute fastReprobeDelay.
+// retry and effectively made every transient-failure reprobe wait for an
+// unintended additional five-minute delay.
 //
 // Behaviour:
 //   - If no submitter is wired or backoff <= 0, fires immediately
 //     (preserves the legacy "best-effort" semantics for tests).
-//   - If the same (credID, model) already has a pending timer, replaces
-//     it (the latest failure should always own the schedule — older
-//     timers are stale).
-//   - If backoff is zero, fires synchronously via goroutine to match the
-//     call-site's existing fire-and-forget style.
+//   - A pending earlier probe for the same credential is retained; a new
+//     request only replaces it when it would run sooner.
 //   - Stores the *time.Timer on the manager so Stop() can cancel it.
 func (m *Manager) scheduleCredProbe(credID int, model string, backoff time.Duration) {
 	if m == nil || m.credProbeV2Submitter == nil {
 		return
 	}
-	key := fmt.Sprintf("%d:%s", credID, model)
+	key := fmt.Sprintf("%d", credID)
+	dueAt := time.Now().Add(backoff)
 
-	// Replace any prior pending timer for this (cred, model) pair so the
-	// newest failure controls the schedule. Stop() on an already-fired
-	// timer returns false but is otherwise a safe no-op.
 	m.pendingTimersMu.Lock()
-	if prev, ok := m.pendingTimers[key]; ok && prev != nil {
-		prev.Stop()
-		delete(m.pendingTimers, key)
+	if m.stopped {
+		m.pendingTimersMu.Unlock()
+		return
 	}
+	if prev, ok := m.pendingTimers[key]; ok && prev != nil {
+		if !prev.dueAt.IsZero() && !dueAt.Before(prev.dueAt) {
+			m.pendingTimersMu.Unlock()
+			return
+		}
+		if prev.timer != nil {
+			prev.timer.Stop()
+		}
+	}
+	m.nextTimerGen++
+	generation := m.nextTimerGen
+	pending := &pendingProbeTimer{gen: generation, dueAt: dueAt}
+	m.pendingTimers[key] = pending
 	m.pendingTimersMu.Unlock()
 
 	fire := func() {
-		// Clear our slot before firing so subsequent failures can re-arm
-		// without racing with the in-flight submission.
 		m.pendingTimersMu.Lock()
+		current, ok := m.pendingTimers[key]
+		if !ok || current != pending || current.gen != generation || m.stopped {
+			m.pendingTimersMu.Unlock()
+			return
+		}
 		delete(m.pendingTimers, key)
+		m.callbacks.Add(1)
+		submitter := m.credProbeV2Submitter
 		m.pendingTimersMu.Unlock()
-		m.credProbeV2Submitter(credID)
+		defer m.callbacks.Done()
+		if submitter != nil {
+			submitter(credID)
+		}
 	}
 
 	if backoff <= 0 {
+		// The callback still goes through the same generation/stopped checks.
 		go fire()
 		return
 	}
 
-	timer := time.AfterFunc(backoff, fire)
 	m.pendingTimersMu.Lock()
-	m.pendingTimers[key] = timer
+	if current, ok := m.pendingTimers[key]; !ok || current != pending || m.stopped {
+		m.pendingTimersMu.Unlock()
+		return
+	}
+	pending.timer = time.AfterFunc(backoff, fire)
 	m.pendingTimersMu.Unlock()
 }
 

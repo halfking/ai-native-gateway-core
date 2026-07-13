@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,9 +41,16 @@ type CredentialProbeV2 struct {
 	fastReprobeQueue chan int // credential IDs
 	cancel           context.CancelFunc
 	done             chan struct{}
+	started          bool
+	stopped          bool
+	lifecycleMu      sync.Mutex
+	probeWG          sync.WaitGroup
 
 	// 新增：状态管理器引用
 	stateManager credentialstate.StateObserver
+
+	probeCtxMu sync.RWMutex
+	probeCtx   context.Context
 }
 
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
@@ -80,16 +88,67 @@ func (c *CredentialProbeV2) SubmitFastProbe(credID int) {
 }
 
 func (c *CredentialProbeV2) Start(ctx context.Context) {
-	ctx, c.cancel = context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	c.lifecycleMu.Lock()
+	if c.started || c.stopped {
+		c.lifecycleMu.Unlock()
+		cancel()
+		return
+	}
+	c.started = true
+	c.cancel = cancel
+	c.probeCtxMu.Lock()
+	c.probeCtx = ctx
+	c.probeCtxMu.Unlock()
+	c.lifecycleMu.Unlock()
 	go c.run(ctx)
 	slog.Info("credential probe v2 started", "interval", c.interval)
 }
 
 func (c *CredentialProbeV2) Stop() {
-	if c.cancel != nil {
-		c.cancel()
+	c.lifecycleMu.Lock()
+	if c.stopped {
+		c.lifecycleMu.Unlock()
+		return
 	}
-	<-c.done
+	c.stopped = true
+	cancel := c.cancel
+	started := c.started
+	c.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if started {
+		<-c.done
+	}
+	c.probeWG.Wait()
+}
+
+// ProbeNowAsync executes a credential probe immediately in the background.
+// It is used after a caller has already applied its own backoff. Unlike
+// SubmitFastProbe, it does not add the separate five-minute fast-reprobe delay.
+func (c *CredentialProbeV2) ProbeNowAsync(credID int) {
+	if c == nil {
+		return
+	}
+	c.lifecycleMu.Lock()
+	if !c.started || c.stopped {
+		c.lifecycleMu.Unlock()
+		return
+	}
+	c.probeCtxMu.RLock()
+	ctx := c.probeCtx
+	c.probeCtxMu.RUnlock()
+	if ctx == nil {
+		c.lifecycleMu.Unlock()
+		return
+	}
+	c.probeWG.Add(1)
+	c.lifecycleMu.Unlock()
+	go func() {
+		defer c.probeWG.Done()
+		c.ProbeNow(ctx, credID)
+	}()
 }
 
 func (c *CredentialProbeV2) run(ctx context.Context) {

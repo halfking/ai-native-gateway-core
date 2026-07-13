@@ -113,6 +113,7 @@ func (e *ActiveProbeEmitter) Emit(
 		FailureStage:     strPtrOrNil(failureStage),
 		// Link back to the original failed business request so /request-logs
 		// can correlate the probe row with its trigger.
+		ParentRequestID: strPtrTelemetry(parentReqID),
 		ClientRequestID: strPtrTelemetry(parentReqID),
 		// 2026-07-13: probe observability fields
 		IsAutoRequest:  boolPtrTelemetry(true),

@@ -130,10 +130,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   等任何延迟；而 `credProbeV2` 内部自有 5min fastReprobeDelay，所以无论
   连失多少次，最终探测间隔都被强制覆盖为 5min。注释里的"分级回退"成了
   仅注释可见的特性。
-  修复：新增 `Manager.scheduleCredProbe(credID, model, backoff)`，真按 backoff
-  延迟分发；用 `pendingTimers map[*time.Timer]` 保证 (credID, model) 维度的
-  dedup 与 `Stop()` 时可取消。补 `TestManager_TieredReprobeUsesBackoff`
-  （功能 + 源码扫描双重校验）。
+  修复：新增 `Manager.scheduleCredProbe(credID, model, backoff)`，按 credential 维度去重，
+  只保留更早的待执行探测；到期后调用 `CredentialProbeV2.ProbeNowAsync`，不再叠加内部
+  5min fast-reprobe 延迟。定时器支持 generation 校验、关停取消与回调等待。补
+  `TestManager_TieredReprobeUsesBackoff` 运行时测试。
+
+- **错误触发主动探测闭环与生命周期修复（审计）**
+  `ActiveProbeWorker` 现在正确接入 `CredentialStateManager`，探测成功可恢复路由；
+  `ActiveProbeEmitter` 同时写入专用 `parent_request_id` 字段和兼容的
+  `client_request_id`；补充 worker/probe/state manager 的幂等关停、取消竞态保护，
+  避免回调写入已关闭依赖。
 
 - **设计文档时间线示例（BUG #3）**
   `docs/自检功能/04-error-triggered-probe-design.md` §2.2 时序段写的是
