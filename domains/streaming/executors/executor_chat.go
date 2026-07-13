@@ -683,22 +683,16 @@ func (e *Executor) executeOpenAI(
 							CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
 						}, nil
 					} else if isResumable {
-						// 2026-07-13: BUG fix - 流中断且 resumable 时，不应立即降级凭据。
-						// 仅记录熔断器失败，状态降级由外层 Execute() 通过 StateObserver.UpdateOnFailure
-						// 触发，后者会：
-						// 1. 累计 consecutive_fails
-						// 2. 立即触发主动探测（activeProbeSubmitter）
-						// 3. 只有当 consecutive_fails >= 阈值（默认3）时才降级
-						// 这样实现了"错误时立即重试+触发探测，只有探测失败+重试失败才降级"的语义。
 						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
-						// KindConcurrent 是严重错误，需要立即冷却
 						if streamKind == errorsx.KindConcurrent {
 							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, streamKind,
 								fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
+						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
+							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
+							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
 					} else if streamKind == errorsx.KindConcurrent {
-						// 2026-07-13: BUG fix - non-resumable + concurrent overload 立即冷却
 						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
 						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, streamKind,
 							fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
@@ -710,10 +704,12 @@ func (e *Executor) executeOpenAI(
 							"chunk_count", streamOutcome.ChunkCount,
 						)
 					} else {
-						// 2026-07-13: BUG fix - non-resumable 但非 concurrent 的流中断，不立即降级。
-						// 状态降级由外层 Execute() 通过 StateObserver.UpdateOnFailure 处理，
-						// 累计连续失败并触发主动探测，只有探测失败才最终降级。
 						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
+							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, streamKind,
+								fmt.Errorf("stream %s (non-resumable)", streamOutcome.Reason))
+							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
+						}
 						slog.Warn("non-resumable stream interrupted",
 							"credential_id", cand.CredentialID,
 							"provider_id", cand.ProviderID,
