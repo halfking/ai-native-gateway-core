@@ -137,7 +137,6 @@ function scheduleStatsRecalibrate() {
     try {
       const fresh = await getUsageSummary(days.value)
       summary.value = fresh
-      resetLiveStream()
     } catch {
       /* non-blocking */
     }

@@ -265,7 +265,6 @@ function scheduleStatsRecalibrate() {
       const fresh = await getUsageSummary(days.value)
       summary.value = fresh
       seenLiveRequestIds.clear()
-      resetLiveStream()
     } catch {
       /* non-blocking; next tick will retry */
     }
