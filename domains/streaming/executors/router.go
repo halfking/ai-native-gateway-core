@@ -14,6 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credential"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -123,8 +124,14 @@ func (r *Router) PlanCandidates(
 		// 2026-07-04: 单候选者降级逻辑（minimax-m3 model_not_found 修复）
 		// 当所有候选者都被过滤，但只有1-2个候选者且原因是瞬态的（cooling, rate_limited, suspicious），
 		// 则降级使用该候选者，避免完全失败。这是针对单点候选者场景的容错机制。
+		//
+		// 2026-07-14: tryDegradedMode 现在也查询 StateManager。之前它只看
+		// c.UnavailableReason()（DB 派生字段），而 filterAvailableWithStateManager
+		// 过滤候选时不修改候选结构体，导致被内存态（state:timeout 等）过滤掉的单点
+		// 候选 UnavailableReason() 返回空串、降级不触发 → 0 节点 503。生产事故
+		// ba9fc64f（gpt-5.6-luna cred=2 state:timeout）即此路径。
 		if len(candidates) <= 2 {
-			degradedCandidates := r.tryDegradedMode(candidates)
+			degradedCandidates := r.tryDegradedMode(queryCtx, candidates)
 			if len(degradedCandidates) > 0 {
 				slog.Warn("router: degraded mode activated, using transiently unavailable candidates",
 					"total_candidates", len(candidates),
@@ -786,11 +793,28 @@ func (r *Router) banditOrder(cands []provider.Candidate) []provider.Candidate {
 // 即使该候选者可能在几秒后恢复。降级模式允许在这种情况下继续使用该候选者。
 //
 // 2026-07-04: 单候选者降级逻辑
-func (r *Router) tryDegradedMode(candidates []provider.Candidate) []provider.Candidate {
+//
+// 2026-07-14: 增加 StateManager 感知。filterAvailableWithStateManager 过滤候选时
+// 不修改候选结构体，被内存态（state:timeout / state:rate_limit 等）过滤掉的候选
+// UnavailableReason() 仍是空串。若不在此处补查 StateManager，单点候选被瞬态内存态
+// 拒绝时降级永远不触发，直接 0 节点 503（生产事故 ba9fc64f 即此路径）。
+// 查询的 reason 与 PlanCandidates 统计分支（router.go reasonCounts）同源：
+// state.LastError == string(errKind)，见 credentialstate/manager.go:218,437。
+func (r *Router) tryDegradedMode(ctx context.Context, candidates []provider.Candidate) []provider.Candidate {
 	var degradedCandidates []provider.Candidate
 
 	for _, c := range candidates {
 		reason := c.UnavailableReason()
+
+		// 候选 DB 字段全可用（UnavailableReason 为空）时，回落到 StateManager
+		// 查内存态原因。reason 以 "state:" 前缀标记来源，与 PlanCandidates 统计
+		// 分支的 "state:"+smReason 拼法保持一致，便于日志关联。
+		if reason == "" && r.StateManager != nil && r.StateManager.Enabled() {
+			if _, smReason := r.StateManager.IsAvailable(ctx, c.CredentialID, c.RawModel); smReason != "" {
+				reason = "state:" + smReason
+			}
+		}
+
 		if isTransientUnavailableReason(reason) {
 			slog.Info("router: degraded mode candidate accepted",
 				"credential_id", c.CredentialID,
@@ -811,17 +835,31 @@ func (r *Router) tryDegradedMode(candidates []provider.Candidate) []provider.Can
 // - availability:rate_limited - 速率限制，通常几秒到几分钟后恢复
 // - availability:suspended - 临时暂停，可能很快恢复
 //
+// 以及 StateManager 内存态原因（state:<errKind>，对应 credentialstate/manager.go
+// isTransient 四个错误种类，触发 5min cooling）：
+// - state:timeout / state:stream_timeout - 上游超时
+// - state:rate_limit - 上游限流
+// - state:upstream_down - 上游不可用
+//
 // 永久原因（不应降级使用）：
 // - availability:auth_failed - 认证失败，需要人工修复
 // - quota:balance_exhausted - 余额耗尽，需要充值
 // - lifecycle:disabled - 已禁用，需要人工启用
+// - state:auth / state:auth_revoked / state:model_not_found / state:quota_permanent
 //
 // 2026-07-04: 单候选者降级逻辑
+// 2026-07-14: 增加 state:<errKind> 瞬态分支。用 errorsx 常量字符串值而非魔法串，
+// 与 credentialstate/manager.go:248-251 的 isTransient 集合保持一致，避免漂移。
 func isTransientUnavailableReason(reason string) bool {
 	switch reason {
 	case "availability:cooling",
 		"availability:rate_limited",
 		"availability:suspended":
+		return true
+	case "state:" + string(errorsx.KindTimeout),
+		"state:" + string(errorsx.KindStreamTimeout),
+		"state:" + string(errorsx.KindRateLimit),
+		"state:" + string(errorsx.KindUpstreamDown):
 		return true
 	default:
 		return false
