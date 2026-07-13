@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2026-07-13
 
 ### Fixed (P0)
+- **Gemini 流式响应实时转换**：Gemini 原生流式端点不再使用
+  `httptest.ResponseRecorder` 缓存整个 ChatHandler 响应；新增可 flush 的
+  SSE 桥接 writer，逐个将 OpenAI chunk 转换为 Gemini `candidates` 格式，
+  同时保留上游错误响应，并将重复的 `[DONE]` 终止标记收敛为一个。
+  详细说明：`docs/changelogs/2026-07-13-gemini-stream-sse-fix.md`。
+
+### Fixed (P0)
 - **请求记录保存失败（audit-ir-multimodal 部署后）**
   `commit 5447bf6b1` (audit-ir-multimodal, 2026-07-13 05:03) 在
   `RequestLogEntry` 新增 5 个 multimodal 字段，并在
