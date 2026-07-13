@@ -15,15 +15,17 @@ CREATE FUNCTION public.model_probe_backoff_v2(consecutive_failures integer, last
         -- 3+ failures → still recovering toward broken_confirmed
         WHEN consecutive_failures >= 3 THEN INTERVAL '60 minutes'
 
+        -- 2026-07-13 fix: 最小 backoff 从 1m 升到 2m（与 cycle tick 5min 不冲突）
+        -- 之前 1m 间隔加上 cycle 10s tick → 同一 (cred, model) 在 1m 内被探测 6 次
         -- 1 failure: ramp up frequency when fresh, taper when stale
-        WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <   300 THEN INTERVAL '1 minute'
+        WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <   300 THEN INTERVAL '2 minutes'
         WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <  1800 THEN INTERVAL '3 minutes'
         WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <  3600 THEN INTERVAL '10 minutes'
         WHEN consecutive_failures = 1                              THEN INTERVAL '30 minutes'
 
         -- 2 failures: same pattern but with longer floor
-        WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <   300 THEN INTERVAL '2 minutes'
-        WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <  1800 THEN INTERVAL '5 minutes'
+        WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <   300 THEN INTERVAL '5 minutes'
+        WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <  1800 THEN INTERVAL '10 minutes'
         WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <  3600 THEN INTERVAL '15 minutes'
         WHEN consecutive_failures = 2                              THEN INTERVAL '45 minutes'
 

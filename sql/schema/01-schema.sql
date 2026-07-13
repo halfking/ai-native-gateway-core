@@ -306,15 +306,16 @@ CREATE FUNCTION public.model_probe_backoff_v2(consecutive_failures integer, last
         -- 3+ failures → still recovering toward broken_confirmed
         WHEN consecutive_failures >= 3 THEN INTERVAL '60 minutes'
 
+        -- 2026-07-13 fix: minimum backoff raised to 2m to match cycle tick 5min
         -- 1 failure: ramp up frequency when fresh, taper when stale
-        WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <   300 THEN INTERVAL '1 minute'
+        WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <   300 THEN INTERVAL '2 minutes'
         WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <  1800 THEN INTERVAL '3 minutes'
         WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <  3600 THEN INTERVAL '10 minutes'
         WHEN consecutive_failures = 1                              THEN INTERVAL '30 minutes'
 
         -- 2 failures: same pattern but with longer floor
-        WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <   300 THEN INTERVAL '2 minutes'
-        WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <  1800 THEN INTERVAL '5 minutes'
+        WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <   300 THEN INTERVAL '5 minutes'
+        WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <  1800 THEN INTERVAL '10 minutes'
         WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <  3600 THEN INTERVAL '15 minutes'
         WHEN consecutive_failures = 2                              THEN INTERVAL '45 minutes'
 
@@ -356,11 +357,15 @@ BEGIN
         RETURN;
     END IF;
 
+    -- 2026-07-14 audit fix: skip healthy_confirmed bindings. LEAST() in
+    -- SQL returns the earlier timestamp, so without this guard a healthy
+    -- 2h-watchdog next_retry_at would be clobbered to now+30s and
+    -- trigger an immediate probe on a binding that should be left alone.
     UPDATE model_probe_state mps
     SET next_retry_at = LEAST(COALESCE(mps.next_retry_at, new_retry), new_retry)
     WHERE mps.credential_id = p_credential_id
       AND mps.raw_model_name = p_raw_model_name
-      AND COALESCE(mps.state, 'unknown') <> 'broken_confirmed';
+      AND COALESCE(mps.state, 'unknown') NOT IN ('broken_confirmed', 'healthy_confirmed');
 END;
 $$;
 
