@@ -23,7 +23,7 @@ type Store interface {
 	// Upgrade Logs
 	CreateUpgradeLog(ctx context.Context, instanceID string, oldVer, newVer string) (int64, error)
 	UpdateUpgradeLog(ctx context.Context, id int64, status string, err string, completedAt time.Time) error
-	GetUpgradeHistory(ctx context.Context, instanceID string, limit int) ([]ReleaseStatus, error)
+	GetUpgradeHistory(ctx context.Context, instanceID string, offset, limit int) ([]ReleaseStatus, int, error)
 
 	// Instance Release Status
 	GetInstanceStatus(ctx context.Context, instanceID string) (*ReleaseStatus, error)

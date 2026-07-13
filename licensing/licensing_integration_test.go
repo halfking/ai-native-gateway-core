@@ -168,8 +168,12 @@ func TestLicensingIntegration(t *testing.T) {
 			Signature: []byte("cryptographic-signature"),
 		}
 
-		err = store.ApproveOfflineRequest(ctx, requestID, signedLicense)
+		err = store.ApproveOfflineRequest(ctx, requestID, signedLicense, "ABCD1234")
 		require.NoError(t, err, "ApproveOfflineRequest should succeed")
+
+		code, err := store.GetOfflineActivationCode(ctx, requestID)
+		require.NoError(t, err, "GetOfflineActivationCode should succeed")
+		assert.Equal(t, "ABCD1234", code)
 	})
 
 	t.Run("DeviceLimit", func(t *testing.T) {

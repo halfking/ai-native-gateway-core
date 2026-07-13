@@ -1,6 +1,7 @@
 package upgrader
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -69,11 +70,11 @@ func (c *Client) CheckUpdate(ctx context.Context, currentVersion, channel string
 	return &result, nil
 }
 
-// ReportUpdateResult 上报更新结果
+// ReportUpdateRequest 上报更新结果
 type ReportUpdateRequest struct {
 	InstanceID string `json:"instance_id"`
 	Version    string `json:"version"`
-	Status     string `json:"status"` // success / failed
+	Status     string `json:"status"` // success / failed / rolled_back
 	Error      string `json:"error,omitempty"`
 	DurationMs int64  `json:"duration_ms"`
 }
@@ -81,14 +82,31 @@ type ReportUpdateRequest struct {
 // ReportUpdate 上报更新结果
 func (c *Client) ReportUpdate(ctx context.Context, req *ReportUpdateRequest) error {
 	url := fmt.Sprintf("%s/api/v1/updates/report", c.baseURL)
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
 
-	// 暂不实现实际上报逻辑（第一阶段可省略）
-	_ = url
-	_ = req
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("http request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(respBody))
+	}
 	return nil
 }
 
-// ReportRollback 上报回滚
+// ReportRollbackRequest 上报回滚
 type ReportRollbackRequest struct {
 	InstanceID string `json:"instance_id"`
 	ToVersion  string `json:"to_version"`
@@ -98,9 +116,26 @@ type ReportRollbackRequest struct {
 // ReportRollback 上报回滚
 func (c *Client) ReportRollback(ctx context.Context, req *ReportRollbackRequest) error {
 	url := fmt.Sprintf("%s/api/v1/updates/rollback", c.baseURL)
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
 
-	// 暂不实现实际上报逻辑（第一阶段可省略）
-	_ = url
-	_ = req
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("http request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(respBody))
+	}
 	return nil
 }

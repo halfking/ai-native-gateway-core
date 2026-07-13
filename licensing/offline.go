@@ -3,6 +3,8 @@ package licensing
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -47,10 +49,24 @@ func (om *OfflineManager) CreateOfflineRequest(ctx context.Context, req *Offline
 	})
 }
 
-func (om *OfflineManager) ApproveOfflineRequest(ctx context.Context, requestID string) (*SignedLicense, error) {
+func (om *OfflineManager) ApproveOfflineRequest(ctx context.Context, requestID string) (*OfflineApprovalResult, error) {
 	req, err := om.store.GetOfflineRequest(ctx, requestID)
 	if err != nil {
 		return nil, err
+	}
+
+	if req.Status == "approved" && req.ActivationCode != "" {
+		if req.ApprovedLicense == nil {
+			return nil, fmt.Errorf("approved request missing signed license payload")
+		}
+		return &OfflineApprovalResult{
+			ActivationCode: req.ActivationCode,
+			SignedLicense:  req.ApprovedLicense,
+			RequestID:      requestID,
+		}, nil
+	}
+	if req.Status == "rejected" {
+		return nil, errors.New("request was rejected")
 	}
 
 	lic, err := om.store.GetLicense(ctx, req.LicenseKey)
@@ -58,18 +74,31 @@ func (om *OfflineManager) ApproveOfflineRequest(ctx context.Context, requestID s
 		return nil, err
 	}
 
+	activationCode, err := GenerateActivationCode()
+	if err != nil {
+		return nil, fmt.Errorf("generate activation code: %w", err)
+	}
+
 	signedLicense, err := om.crypto.SignLicense(lic)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := om.store.ApproveOfflineRequest(ctx, requestID, signedLicense); err != nil {
+	if err := om.store.ApproveOfflineRequest(ctx, requestID, signedLicense, activationCode); err != nil {
 		return nil, err
 	}
 
-	slog.Info("offline request approved", "request_id", requestID, "license_key", req.LicenseKey)
+	slog.Info("offline request approved",
+		"request_id", requestID,
+		"license_key", req.LicenseKey,
+		"activation_code", activationCode,
+	)
 
-	return signedLicense, nil
+	return &OfflineApprovalResult{
+		ActivationCode: activationCode,
+		SignedLicense:  signedLicense,
+		RequestID:      requestID,
+	}, nil
 }
 
 func (om *OfflineManager) VerifyOfflineLicense(ctx context.Context, b64SignedLicense string) (*License, error) {

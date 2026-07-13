@@ -91,8 +91,11 @@ func (m *mockLicenseStore) CreateOfflineRequest(ctx context.Context, req *licens
 func (m *mockLicenseStore) GetOfflineRequest(ctx context.Context, requestID string) (*licensing.OfflineRequest, error) {
 	return nil, nil
 }
-func (m *mockLicenseStore) ApproveOfflineRequest(ctx context.Context, requestID string, signedLicense *licensing.SignedLicense) error {
+func (m *mockLicenseStore) ApproveOfflineRequest(ctx context.Context, requestID string, signedLicense *licensing.SignedLicense, activationCode string) error {
 	return nil
+}
+func (m *mockLicenseStore) GetOfflineActivationCode(ctx context.Context, requestID string) (string, error) {
+	return "", nil
 }
 func (m *mockLicenseStore) ListOfflineRequests(ctx context.Context) ([]licensing.OfflineRequest, error) {
 	return nil, nil

@@ -239,7 +239,8 @@ func (s *PgxStore) CreateOfflineRequest(ctx context.Context, req *OfflineRequest
 func (s *PgxStore) ListOfflineRequests(ctx context.Context) ([]OfflineRequest, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT license_key, hardware_hash, instance_id, device_name, request_id,
-		       created_at, approved_at, signed_license
+		       created_at, approved_at, COALESCE(status, 'pending'), reject_reason,
+		       activation_code
 		FROM offline_activation_requests
 		ORDER BY created_at DESC
 	`)
@@ -252,18 +253,22 @@ func (s *PgxStore) ListOfflineRequests(ctx context.Context) ([]OfflineRequest, e
 	for rows.Next() {
 		var req OfflineRequest
 		var approvedAt sql.NullTime
-		var signedLicense sql.NullString
+		var rejectReason sql.NullString
+		var activationCode sql.NullString
 		if err := rows.Scan(
 			&req.LicenseKey, &req.HardwareHash, &req.InstanceID, &req.DeviceName,
-			&req.RequestID, &req.Timestamp, &approvedAt, &signedLicense,
+			&req.RequestID, &req.Timestamp, &approvedAt, &req.Status, &rejectReason, &activationCode,
 		); err != nil {
 			return nil, err
 		}
 		if approvedAt.Valid {
 			req.ApprovedAt = &approvedAt.Time
 		}
-		if signedLicense.Valid {
-			req.ActivationCode = signedLicense.String
+		if rejectReason.Valid {
+			req.RejectReason = rejectReason.String
+		}
+		if activationCode.Valid {
+			req.ActivationCode = activationCode.String
 		}
 		requests = append(requests, req)
 	}
@@ -281,11 +286,19 @@ func (s *PgxStore) RejectOfflineRequest(ctx context.Context, requestID, reason s
 
 func (s *PgxStore) GetOfflineRequest(ctx context.Context, requestID string) (*OfflineRequest, error) {
 	var req OfflineRequest
+	var approvedAt sql.NullTime
+	var status sql.NullString
+	var rejectReason sql.NullString
+	var activationCode sql.NullString
+	var signedLicenseJSON []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT license_key, hardware_hash, instance_id, device_name, request_id, created_at
+		SELECT license_key, hardware_hash, instance_id, device_name, request_id, created_at,
+		       approved_at, COALESCE(status, 'pending'), reject_reason, activation_code, signed_license
 		FROM offline_activation_requests WHERE request_id = $1
 	`, requestID).Scan(
-		&req.LicenseKey, &req.HardwareHash, &req.InstanceID, &req.DeviceName, &req.RequestID, &req.Timestamp,
+		&req.LicenseKey, &req.HardwareHash, &req.InstanceID, &req.DeviceName,
+		&req.RequestID, &req.Timestamp, &approvedAt, &status, &rejectReason,
+		&activationCode, &signedLicenseJSON,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -293,20 +306,56 @@ func (s *PgxStore) GetOfflineRequest(ctx context.Context, requestID string) (*Of
 		}
 		return nil, err
 	}
+	if approvedAt.Valid {
+		req.ApprovedAt = &approvedAt.Time
+	}
+	if status.Valid {
+		req.Status = status.String
+	}
+	if rejectReason.Valid {
+		req.RejectReason = rejectReason.String
+	}
+	if activationCode.Valid {
+		req.ActivationCode = activationCode.String
+	}
+	if len(signedLicenseJSON) > 0 {
+		var signed SignedLicense
+		if err := json.Unmarshal(signedLicenseJSON, &signed); err != nil {
+			return nil, err
+		}
+		req.ApprovedLicense = &signed
+	}
 	return &req, nil
 }
 
-func (s *PgxStore) ApproveOfflineRequest(ctx context.Context, requestID string, signedLicense *SignedLicense) error {
+func (s *PgxStore) ApproveOfflineRequest(ctx context.Context, requestID string, signedLicense *SignedLicense, activationCode string) error {
 	signedJSON, err := json.Marshal(signedLicense)
 	if err != nil {
 		return err
 	}
 	_, err = s.pool.Exec(ctx, `
 		UPDATE offline_activation_requests
-		SET approved_at = NOW(), signed_license = $2
+		SET approved_at = NOW(), signed_license = $2, activation_code = $3, status = 'approved'
 		WHERE request_id = $1
-	`, requestID, signedJSON)
+	`, requestID, signedJSON, activationCode)
 	return err
+}
+
+func (s *PgxStore) GetOfflineActivationCode(ctx context.Context, requestID string) (string, error) {
+	var code sql.NullString
+	err := s.pool.QueryRow(ctx, `
+		SELECT activation_code FROM offline_activation_requests WHERE request_id = $1
+	`, requestID).Scan(&code)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errors.New("request not found")
+		}
+		return "", err
+	}
+	if !code.Valid || code.String == "" {
+		return "", errors.New("activation code not found")
+	}
+	return code.String, nil
 }
 
 func (s *PgxStore) CountActiveDevices(ctx context.Context, licenseKey string) (int, error) {

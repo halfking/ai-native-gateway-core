@@ -22,6 +22,9 @@ const releases = ref<Release[]>([])
 const upgradeLogs = ref<UpgradeLog[]>([])
 const loading = ref(false)
 const logsLoading = ref(false)
+const logsPage = ref(1)
+const logsPageSize = ref(20)
+const logsTotal = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 
@@ -69,7 +72,12 @@ async function load() {
 async function loadUpgradeLogs() {
   logsLoading.value = true
   try {
-    upgradeLogs.value = await getUpgradeLogs()
+    const res = await getUpgradeLogs({
+      offset: (logsPage.value - 1) * logsPageSize.value,
+      limit: logsPageSize.value,
+    })
+    upgradeLogs.value = res.items || []
+    logsTotal.value = res.total || 0
   } catch (error) {
     ElMessage.error(t('ops.autoupdate.loadLogsFailed'))
     console.error(error)
@@ -343,6 +351,17 @@ onMounted(() => {
         <el-table-column prop="error" :label="t('ops.autoupdate.errorMessage')" min-width="200" show-overflow-tooltip />
         <el-table-column prop="retry_count" :label="t('ops.autoupdate.retryCount')" width="90" />
       </el-table>
+      <div v-if="logsTotal > logsPageSize" class="pagination-wrap">
+        <el-pagination
+          v-model:current-page="logsPage"
+          v-model:page-size="logsPageSize"
+          :total="logsTotal"
+          :page-sizes="[10, 20, 50]"
+          layout="sizes, prev, pager, next"
+          @current-change="loadUpgradeLogs"
+          @size-change="loadUpgradeLogs"
+        />
+      </div>
     </el-card>
 
     <!-- Create Release Dialog -->

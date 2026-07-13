@@ -291,17 +291,15 @@ func (h *AdminHandler) ListOfflineRequests(c echo.Context) error {
 func (h *AdminHandler) ApproveOfflineRequest(c echo.Context) error {
 	requestID := c.Param("id")
 
-	signedLicense, err := h.offlineManager.ApproveOfflineRequest(c.Request().Context(), requestID)
+	result, err := h.offlineManager.ApproveOfflineRequest(c.Request().Context(), requestID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	// Generate a human-readable activation code from the signed license data
-	activationCode := hex.EncodeToString(signedLicense.Data[:8])
-
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"activation_code": activationCode,
-		"signed_license":  signedLicense,
+		"activation_code": result.ActivationCode,
+		"request_id":      result.RequestID,
+		"signed_license":  result.SignedLicense,
 	})
 }
 

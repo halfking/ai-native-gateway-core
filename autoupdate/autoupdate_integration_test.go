@@ -137,7 +137,7 @@ func TestAutoUpdateIntegration(t *testing.T) {
 		assert.Equal(t, 25, updatedRule.Percent)
 
 		// Step 6: Get Upgrade History
-		history, err := store.GetUpgradeHistory(ctx, instanceID, 10)
+		history, _, err := store.GetUpgradeHistory(ctx, instanceID, 0, 10)
 		require.NoError(t, err)
 		assert.NotEmpty(t, history, "Should have upgrade history")
 	})
@@ -234,7 +234,7 @@ func TestAutoUpdateIntegration(t *testing.T) {
 		assert.Equal(t, "v1.0.0", status.Version)
 
 		// Get upgrade history to see failed attempt
-		history, err := store.GetUpgradeHistory(ctx, instanceID, 5)
+		history, _, err := store.GetUpgradeHistory(ctx, instanceID, 0, 5)
 		require.NoError(t, err)
 		assert.NotEmpty(t, history)
 
