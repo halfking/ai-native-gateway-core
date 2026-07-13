@@ -192,7 +192,13 @@ func (m *Manager) UpdateOnSuccess(ctx context.Context, credID int, model string,
 //
 // 探测触发时使用 requestID 的来源租户，使 request_logs 中的探测行归属
 // 到正确的租户，而不是先前硬编码的 "system"。
-func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID string) {
+//
+// 2026-07-14: billingMode 参数。当 billingMode=="free" 且 errKind 是 transient
+// （timeout/network/rate_limit/upstream_down/stream_timeout）时，不进入 cooling
+// （不设 Available=false），让该凭据留在路由池里，仅靠 RecentSuccessRate 软降权
+// 排到健康凭据之后。产品原则：50% 成功率的免费凭据"有总比没有强"。
+// 永久错误（auth/model_not_found/quota_permanent）对免费凭据仍硬剔。
+func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID, billingMode string) {
 	// 2026-07-01: 过滤不应计入凭据错误统计的情况
 	// 1. 用户取消（KindCanceled）：用户主动取消请求，不是凭据问题
 	// 2. 客户端错误（IsClientBug）：包括 model_not_found, tool_call_id_mismatch, unsupported_feature
@@ -208,6 +214,12 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 		state = &State{
 			CredentialID: credID,
 			Model:        model,
+			// 2026-07-14: 免费凭据首次出现（无历史状态）时，Available 初始化为
+			// true。否则 Go 零值 false 会让一次 transient 失败就把它判为不可用
+			// （IsAvailable 读 !state.Available），违背"免费凭据 transient 不硬剔"
+			// 的原则。付费凭据默认 false（保持历史行为：一次失败即不可用，靠
+			// success/probe 恢复）。
+			Available: billingMode == "free",
 		}
 	}
 
@@ -217,6 +229,19 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	state.ConsecutiveFails++
 	state.LastError = string(errKind)
 	state.Source = "request"
+
+	// 2026-07-14: 免费凭据 transient 失败——确保 Available 保持 true。
+	// 即使之前因别的原因（如历史 cooling 翻 false）处于 false，只要这次是
+	// transient 且凭据免费，就把它留在路由池里（软降权）。永久错误不在此列，
+	// 下面 permanent 分支会正常翻 false。
+	isTransient := errKind == errorsx.KindRateLimit ||
+		errKind == errorsx.KindUpstreamDown ||
+		errKind == errorsx.KindTimeout ||
+		errKind == errorsx.KindStreamTimeout
+
+	if billingMode == "free" && isTransient {
+		state.Available = true
+	}
 
 	// 智能探测策略：
 	// 1. 临时故障（429/503/timeout）：连续失败 >= 3 → 30秒后验证，间隔递增 (30s → 2m → 5m)
@@ -245,11 +270,6 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 		}
 	}
 
-	isTransient := errKind == errorsx.KindRateLimit ||
-		errKind == errorsx.KindUpstreamDown ||
-		errKind == errorsx.KindTimeout ||
-		errKind == errorsx.KindStreamTimeout
-
 	isPermanent := errKind == errorsx.KindAuth ||
 		errKind == errorsx.KindAuthRevoked ||
 		errKind == errorsx.KindModelNotFound ||
@@ -275,33 +295,50 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 		}
 
 	} else if isTransient && state.ConsecutiveFails >= 3 {
-		// 临时故障（429/503/timeout/stream_timeout）：连续失败 >= 3。
-		//
-		// 2026-07-09 修正（问题2 - NVIDIA NIM 流式无反馈长时间未熔断）：
-		// 之前此处只调度探测，凭据仍保持 Available=true 继续接收请求，
-		// 导致流式无反馈（first_byte_timeout / stream_timeout，归为
-		// KindStreamTimeout）的凭据长时间挂在路由池里，前端持续无响应。
-		//
-		// 现在：连续 3 次临时故障立即把凭据置为 cooling（Available=false，
-		// RecoverAt = now + 5min），并失效候选缓存，让路由在下一次候选
-		// 解析时立即剔除该凭据。探测恢复（UpdateFromProbe）会在凭据真正
-		// 恢复后把 Available 翻回 true。
-		const transientCooling = 5 * time.Minute
-		state.Available = false
-		nextRetry := now.Add(transientCooling)
-		state.RecoverAt = &nextRetry
+		// 2026-07-14: 免费凭据（billing_mode=free）对 transient 错误容忍。
+		// 不进入 cooling（不设 Available=false / RecoverAt、不失效候选缓存、
+		// 不调度 cooling 探测），让该凭据留在路由池里。不稳定性靠
+		// RecentSuccessRate → router loadScore quality 分（权重 0.2）软降权，
+		// 排到健康凭据之后。产品原则：50% 成功率的免费凭据"有总比没有强"。
+		// 注意：上面的 ConsecutiveFails++ / LastError 仍执行，观测与软降权
+		// 信号不丢；永久错误分支也不受影响（免费凭据坏 key 仍硬剔）。
+		if billingMode == "free" {
+			slog.Info("credstate: free credential transient failures tolerated (soft demote only)",
+				"credential_id", credID,
+				"model", model,
+				"error_kind", errKind,
+				"consecutive_fails", state.ConsecutiveFails)
+			// 跳过 cooling：state.Available 保持原值（未翻 false），
+			// 不设 RecoverAt，不 invalidateCandidateCache，不 scheduleCredProbe。
+			// 探测恢复仍由其它路径（stale TTL / active probe）驱动。
+		} else {
+			// 临时故障（429/503/timeout/stream_timeout）：连续失败 >= 3。
+			//
+			// 2026-07-09 修正（问题2 - NVIDIA NIM 流式无反馈长时间未熔断）：
+			// 之前此处只调度探测，凭据仍保持 Available=true 继续接收请求，
+			// 导致流式无反馈（first_byte_timeout / stream_timeout，归为
+			// KindStreamTimeout）的凭据长时间挂在路由池里，前端持续无响应。
+			//
+			// 现在：连续 3 次临时故障立即把凭据置为 cooling（Available=false，
+			// RecoverAt = now + 5min），并失效候选缓存，让路由在下一次候选
+			// 解析时立即剔除该凭据。探测恢复（UpdateFromProbe）会在凭据真正
+			// 恢复后把 Available 翻回 true。
+			const transientCooling = 5 * time.Minute
+			state.Available = false
+			nextRetry := now.Add(transientCooling)
+			state.RecoverAt = &nextRetry
 
-		slog.Warn("credstate: transient failure threshold reached, credential cooling",
-			"credential_id", credID,
-			"model", model,
-			"error_kind", errKind,
-			"consecutive_fails", state.ConsecutiveFails,
-			"cooling_seconds", int(transientCooling.Seconds()),
-			"recover_at", nextRetry)
+			slog.Warn("credstate: transient failure threshold reached, credential cooling",
+				"credential_id", credID,
+				"model", model,
+				"error_kind", errKind,
+				"consecutive_fails", state.ConsecutiveFails,
+				"cooling_seconds", int(transientCooling.Seconds()),
+				"recover_at", nextRetry)
 
-		if m.invalidateCandidateCache != nil {
-			m.invalidateCandidateCache()
-		}
+			if m.invalidateCandidateCache != nil {
+				m.invalidateCandidateCache()
+			}
 
 		// 递增退避探测 (30s → 2m → 5m)：探测用于在 cooling 期间提前发现
 		// 凭据恢复，探测成功后 UpdateFromProbe 会立即恢复路由。
@@ -336,6 +373,7 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 
 			m.scheduleCredProbe(credID, model, backoff)
 		}
+		} // end non-free cooling
 	}
 
 	m.setToMemCache(key, state)

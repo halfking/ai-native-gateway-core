@@ -498,7 +498,7 @@ type Executor struct {
 	// Nil disables credential state tracking (preserves legacy behavior).
 	StateObserver interface {
 		UpdateOnSuccess(ctx context.Context, credID int, model string, latencyMs int, requestID string)
-		UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID string)
+		UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID, billingMode string)
 	}
 
 	// URSM (2026-07-03): 统一路由状态管理器，替代分散的状态管理逻辑。
@@ -769,6 +769,39 @@ func releaseFpLease(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) 
 		defer cancel()
 		m.Release(ctx, lease)
 	}
+}
+
+// freeCredentialsTolerateTransient reports whether a transient failure on a
+// free-tier credential should be left to the soft-demote path
+// (RecentSuccessRate → loadScore quality score) instead of hard-excluding the
+// credential (credentialstate cooling / circuit-breaker OPEN).
+//
+// Product principle (2026-07-14): a free credential at ~50% success rate is
+// still "better than nothing" under load. The existing soft-demote in
+// router_scoring.go:calculateQualityScore already ranks it behind healthy
+// paid credentials (quality 0.5 → score penalty), so we only need to stop the
+// two hard-exclude paths from evicting it.
+//
+// Only transient/network kinds are tolerated. Permanent failures
+// (auth/auth_revoked/model_not_found/quota_permanent) still hard-exclude even
+// free credentials — a dead key or a wrong model must not drag the route down.
+//
+// billingMode "" or "per_token" (the common case) returns false, so paid
+// credentials are unaffected.
+func freeCredentialsTolerateTransient(billingMode string, kind errorsx.ErrorKind) bool {
+	if billingMode != "free" {
+		return false
+	}
+	switch kind {
+	case errorsx.KindTimeout,
+		errorsx.KindStreamTimeout,
+		errorsx.KindNetwork,
+		errorsx.KindRateLimit,
+		errorsx.KindUpstreamDown,
+		errorsx.KindTransient:
+		return true
+	}
+	return false
 }
 
 // fpReleaseJob pairs a Manager and a Lease for the background release worker.
@@ -1476,6 +1509,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					kind,
 					requestID,
 					params.TenantID,
+					cand.BillingMode,
 				)
 			}
 
@@ -1519,7 +1553,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				// because the executor's outer loop now drives the failover
 				// to the next candidate, and we want the DB state to be
 				// authoritative before that next lookup.
-				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
+					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				}
 				e.recordBanditFailure(cand.CredentialID, kind)
 				if kind == errorsx.KindConcurrent {
 					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
@@ -1550,7 +1586,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				// The inner tryCandidate already wrote the credential state
 				// with the correct kind; this branch keeps the circuit counter
 				// consistent and ensures the kind is recorded.
-				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
+					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				}
 				e.recordBanditFailure(cand.CredentialID, kind)
 				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
@@ -1676,10 +1714,15 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				kind,
 				requestID,
 				params.TenantID,
+				cand.BillingMode,
 			)
 		}
 
-		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+		// 2026-07-14: 免费凭据 transient 错误不 RecordFailure（避免 circuit
+		// breaker OPEN 硬剔），仅靠 RecentSuccessRate 软降权。永久错误仍记录。
+		if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
+			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+		}
 		e.recordBanditFailure(cand.CredentialID, kind)
 		trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
 			ProviderID:   cand.ProviderID,
