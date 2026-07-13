@@ -2034,6 +2034,19 @@ CREATE TABLE public.model_credit_rates (
 
 
 --
+-- Name: maas_credit_consumption_buckets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.maas_credit_consumption_buckets (
+    tenant_id text NOT NULL,
+    bucket_start timestamp with time zone NOT NULL,
+    credits bigint DEFAULT 0 NOT NULL,
+    request_count integer DEFAULT 0 NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: model_discovery_runs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5850,6 +5863,14 @@ ALTER TABLE ONLY public.model_credit_rates
 
 
 --
+-- Name: maas_credit_consumption_buckets maas_credit_consumption_buckets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.maas_credit_consumption_buckets
+    ADD CONSTRAINT maas_credit_consumption_buckets_pkey PRIMARY KEY (tenant_id, bucket_start);
+
+
+--
 -- Name: model_discovery_runs model_discovery_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7328,6 +7349,13 @@ CREATE INDEX idx_request_logs_credential_ts ON ONLY public.request_logs USING bt
 --
 
 CREATE INDEX idx_request_logs_credits_charged ON ONLY public.request_logs USING btree (tenant_id, ts DESC) WHERE ((credits_charged IS NOT NULL) AND (credits_charged > 0));
+
+
+--
+-- Name: idx_mccb_recent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mccb_recent ON public.maas_credit_consumption_buckets USING btree (bucket_start DESC);
 
 
 --

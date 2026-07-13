@@ -1124,6 +1124,21 @@ func main() {
 		maasSvc := maas.NewService(dbConn.Pool())
 		chatHandler.SetMaas(maasSvc)
 		slog.Info("maas credits billing enabled")
+
+		// 2026-07-13: backfill hourly credit consumption buckets so the
+		// admin dashboard "总积分消耗" KPI is ready immediately on startup.
+		// Idempotent: ON CONFLICT DO UPDATE SET credits = EXCLUDED
+		// converges to usage_ledger.credits_charged source-of-truth values.
+		// Errors are logged but not fatal — dashboard degrades to zero hint
+		// when the bucket table is empty.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if _, err := maasSvc.BackfillCreditConsumptionBuckets(ctx, 90); err != nil {
+				slog.Warn("maas: startup backfill of credit consumption buckets failed",
+					"error", err)
+			}
+		}()
 	}
 
 	// ── Attachment Extractor (2026-07-01) ───────────────────────────────
