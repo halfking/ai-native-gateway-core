@@ -820,11 +820,13 @@ deploy_host() {
     *) err "deploy_host 不支持 target: $target"; return 1 ;;
   esac
 
+  BIN_NAME="llm-gateway-go.v${NEW_BUILD_SEQ}.linux.amd64"
+
   # 1) 编译二进制
   cross_compile
 
   # 2) 上传到服务器
-  local bin_name="llm-gateway-go.v${NEW_SEQ}.linux.amd64"
+  local bin_name="$BIN_NAME"
   info "scp $bin_name → $ssh_target:$bin_dir/"
   ssh $ssh_opt "$ssh_target" "mkdir -p $bin_dir/{data,logs,web}"
   scp $ssh_opt "$bin_name" "$ssh_target:$bin_dir/$bin_name"
@@ -891,8 +893,8 @@ cd $bin_dir
 LATEST_BAK=\$(ls -t *.bak* 2>/dev/null | head -1)
 if [[ -z "\\$LATEST_BAK" ]]; then echo "  无备份可回滚"; exit 1; fi
 echo "  回滚到: \\$LATEST_BAK"
-cp "\\$LATEST_BAK" "llm-gateway-go.v${NEW_SEQ:-UNKNOWN}.linux.amd64"
-ln -sf "llm-gateway-go.v${NEW_SEQ:-UNKNOWN}.linux.amd64" llm-gateway-go
+cp "\\$LATEST_BAK" "llm-gateway-go.v${NEW_BUILD_SEQ:-UNKNOWN}.linux.amd64"
+ln -sf "llm-gateway-go.v${NEW_BUILD_SEQ:-UNKNOWN}.linux.amd64" llm-gateway-go
 systemctl restart llm-gateway-go.service
 sleep 5
 echo "  当前版本: \$(cat $bin_dir/VERSION)"
