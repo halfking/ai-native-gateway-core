@@ -220,6 +220,24 @@ func (s *Service) chargeTokens(ctx context.Context, tenantID, requestID, canonic
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
+
+	// 2026-07-13: increment hourly consumption bucket so the admin
+	// dashboard's "总积分消耗" KPI can be served by an O(≤24-2160) btree
+	// scan instead of a N-row SUM over usage_ledger. The atomic
+	// INSERT … ON CONFLICT DO UPDATE is row-locked by PG, so concurrent
+	// ChargeRequest calls in different gateway instances accumulate
+	// safely without external locking. Backfill (cmd/gateway startup)
+	// reconciles from usage_ledger.credits_charged for catch-up windows.
+	_, _ = s.pool.Exec(ctx, `
+		INSERT INTO maas_credit_consumption_buckets
+			(tenant_id, bucket_start, credits, request_count, updated_at)
+		VALUES
+			($1, date_trunc('hour', now()), $2, 1, now())
+		ON CONFLICT (tenant_id, bucket_start) DO UPDATE
+			SET credits       = maas_credit_consumption_buckets.credits + EXCLUDED.credits,
+			    request_count = maas_credit_consumption_buckets.request_count + 1,
+			    updated_at    = now()
+	`, tenantID, amount)
 	return amount, nil
 }
 

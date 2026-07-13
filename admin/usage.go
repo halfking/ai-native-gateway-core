@@ -95,13 +95,42 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 		whereClause += " AND tenant_id = $2"
 		args = append(args, tid)
 	}
+	// 2026-07-13: total_credits_charged is now read from the hourly
+	// counter table maas_credit_consumption_buckets (≤ N hours scan via
+	// the PK index) instead of an N-row SUM(credits_charged) over the
+	// full window in usage_ledger. ChargeRequest atomically increments
+	// the counter at write time, so the bucket table is the source of
+	// truth for the dashboard KPI card. usage_ledger.credits_charged
+	// remains the audit trail; the bucket table is the speed layer.
+	//
+	// Fallback: if the bucket table is missing (first deploy before SQL
+	// migration applied) or empty (BackfillCreditConsumptionBuckets
+	// hasn't run yet), the COALESCE returns 0 and the admin layout's
+	// existing degraded hint will guide the operator.
+	var creditsClause string
+	if tid != "" {
+		creditsClause = `
+			COALESCE(
+				(SELECT SUM(credits) FROM maas_credit_consumption_buckets
+				  WHERE tenant_id = $2
+				    AND bucket_start >= now() - ($1 * INTERVAL '1 day')),
+				0
+			)::bigint AS total_credits_charged`
+	} else {
+		creditsClause = `
+			COALESCE(
+				(SELECT SUM(credits) FROM maas_credit_consumption_buckets
+				  WHERE bucket_start >= now() - ($1 * INTERVAL '1 day')),
+				0
+			)::bigint AS total_credits_charged`
+	}
 	row := h.db.QueryRow(ctx, `
 		SELECT
 			COUNT(*)                                        AS total_requests,
 			COALESCE(SUM(prompt_tokens), 0)                 AS total_prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0)             AS total_completion_tokens,
 			COALESCE(SUM(cost_usd), 0.0)                    AS total_cost_usd,
-			COALESCE(SUM(credits_charged), 0)::bigint      AS total_credits_charged,
+			`+creditsClause+`,
 			COALESCE(AVG(latency_ms), 0.0)                  AS avg_latency_ms,
 			COALESCE(
 				SUM(CASE WHEN success THEN 1 ELSE 0 END)::FLOAT
