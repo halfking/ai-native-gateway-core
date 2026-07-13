@@ -426,3 +426,40 @@ func TestPlanCandidates_DegradedMode_StateManagerPermanent(t *testing.T) {
 			len(result))
 	}
 }
+
+// TestFreeCredentialsTolerateTransient 验证免费凭据 transient 容忍判定
+// （2026-07-14）。免费凭据对 transient 错误不硬剔（靠软降权），但对永久错误
+// 仍硬剔。付费凭据（billingMode="" 或 "per_token"）永远 false（走原硬剔路径）。
+func TestFreeCredentialsTolerateTransient(t *testing.T) {
+	tests := []struct {
+		name        string
+		billingMode string
+		kind        errorsx.ErrorKind
+		want        bool
+	}{
+		// 免费 + transient → 容忍（不硬剔）
+		{"free+timeout", "free", errorsx.KindTimeout, true},
+		{"free+stream_timeout", "free", errorsx.KindStreamTimeout, true},
+		{"free+network", "free", errorsx.KindNetwork, true},
+		{"free+rate_limit", "free", errorsx.KindRateLimit, true},
+		{"free+upstream_down", "free", errorsx.KindUpstreamDown, true},
+		{"free+transient", "free", errorsx.KindTransient, true},
+		// 免费 + 永久 → 不容忍（仍硬剔，坏 key 不拖垮路由）
+		{"free+auth", "free", errorsx.KindAuth, false},
+		{"free+model_not_found", "free", errorsx.KindModelNotFound, false},
+		{"free+quota_permanent", "free", errorsx.KindQuotaPermanent, false},
+		// 付费 → 永远 false（走原硬剔路径）
+		{"paid+timeout", "", errorsx.KindTimeout, false},
+		{"per_token+timeout", "per_token", errorsx.KindTimeout, false},
+		{"paid+auth", "per_token", errorsx.KindAuth, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := freeCredentialsTolerateTransient(tt.billingMode, tt.kind)
+			if got != tt.want {
+				t.Errorf("freeCredentialsTolerateTransient(billingMode=%q, kind=%q) = %v, want %v",
+					tt.billingMode, tt.kind, got, tt.want)
+			}
+		})
+	}
+}

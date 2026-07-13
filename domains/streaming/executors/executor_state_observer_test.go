@@ -40,7 +40,7 @@ func (m *mockStateObserver) UpdateOnSuccess(ctx context.Context, credID int, mod
 	})
 }
 
-func (m *mockStateObserver) UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID string) {
+func (m *mockStateObserver) UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID, billingMode string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.failures = append(m.failures, failureCall{
@@ -79,13 +79,13 @@ func TestStateObserver_UserCancelSkipped(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. User cancel - should be skipped by manager (but executor still calls it)
-	mock.UpdateOnFailure(ctx, 100, "gpt-4", errorsx.KindCanceled, "req-1", "default")
+	mock.UpdateOnFailure(ctx, 100, "gpt-4", errorsx.KindCanceled, "req-1", "default", "")
 
 	// 2. Real error - should be recorded
-	mock.UpdateOnFailure(ctx, 100, "gpt-4", errorsx.KindNetwork, "req-2", "default")
+	mock.UpdateOnFailure(ctx, 100, "gpt-4", errorsx.KindNetwork, "req-2", "default", "")
 
 	// 3. Another real error
-	mock.UpdateOnFailure(ctx, 100, "gpt-4", errorsx.KindRateLimit, "req-3", "default")
+	mock.UpdateOnFailure(ctx, 100, "gpt-4", errorsx.KindRateLimit, "req-3", "default", "")
 
 	failures := mock.getFailures()
 
@@ -146,16 +146,16 @@ func TestStateObserver_Integration(t *testing.T) {
 	model := "gpt-4"
 
 	// Scenario 1: User cancels request
-	mock.UpdateOnFailure(ctx, credID, model, errorsx.KindCanceled, "req-cancel", "default")
+	mock.UpdateOnFailure(ctx, credID, model, errorsx.KindCanceled, "req-cancel", "default", "")
 
 	// Scenario 2: Network error (real failure)
-	mock.UpdateOnFailure(ctx, credID, model, errorsx.KindNetwork, "req-net-fail", "default")
+	mock.UpdateOnFailure(ctx, credID, model, errorsx.KindNetwork, "req-net-fail", "default", "")
 
 	// Scenario 3: Success
 	mock.UpdateOnSuccess(ctx, credID, model, 1200, "req-success")
 
 	// Scenario 4: Auth error (permanent failure)
-	mock.UpdateOnFailure(ctx, credID, model, errorsx.KindAuth, "req-auth-fail", "default")
+	mock.UpdateOnFailure(ctx, credID, model, errorsx.KindAuth, "req-auth-fail", "default", "")
 
 	failures := mock.getFailures()
 	successes := mock.getSuccesses()
@@ -196,7 +196,7 @@ func TestStateObserver_ConcurrentCalls(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer wg.Done()
-			mock.UpdateOnFailure(ctx, 100+id, "gpt-4", errorsx.KindNetwork, "concurrent-fail", "default")
+			mock.UpdateOnFailure(ctx, 100+id, "gpt-4", errorsx.KindNetwork, "concurrent-fail", "default", "")
 		}(i)
 	}
 
