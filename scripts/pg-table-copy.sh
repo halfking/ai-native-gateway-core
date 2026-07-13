@@ -98,6 +98,24 @@ TGT_USER="$PG_USER"
 TGT_PASS="$PG_PASS"
 TGT_DB="$PG_DB"
 
+# ── Local docker target detection ─────────────────────────────────────────
+# On macOS the host may run a Homebrew PostgreSQL on localhost:5432 that shadows
+# the docker container's published port. When the target is the local docker
+# container (env file sets DOCKER_HOST="local" + DOCKER_PG_CONTAINER), route all
+# target access through `docker exec -i` instead of `psql -h localhost`.
+# This mirrors sync-252-schema-only.sh and avoids hitting the wrong instance
+# (see skill pg-sync-252-to-env Q0).
+TGT_IS_LOCAL_DOCKER=false
+TGT_CONTAINER="${DOCKER_PG_CONTAINER:-}"
+if [[ "${DOCKER_HOST:-}" == "local" && -n "$TGT_CONTAINER" ]]; then
+  TGT_IS_LOCAL_DOCKER=true
+  # The target env file may inherit a stale DOCKER_HOST from a previously sourced
+  # remote config (e.g. env-252.sh sets DOCKER_HOST to an SSH endpoint). Reset it
+  # so plain `docker` calls target the host daemon.
+  unset DOCKER_HOST
+  info "Target is local docker container: $TGT_CONTAINER (bypassing localhost:5432)"
+fi
+
 # ── Helper functions ──────────────────────────────────────────────────────
 
 # Run psql on source
@@ -105,9 +123,26 @@ src_psql() {
   PGPASSWORD="$SRC_PASS" psql -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" -tAq "$@"
 }
 
-# Run psql on target
+# Run psql on target. Local docker → docker exec; remote → network psql.
 tgt_psql() {
-  PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" -tAq "$@"
+  if $TGT_IS_LOCAL_DOCKER; then
+    PGPASSWORD="$TGT_PASS" docker exec -i -e PGPASSWORD="$TGT_PASS" "$TGT_CONTAINER" \
+      psql -U "$TGT_USER" -d "$TGT_DB" -tAq "$@"
+  else
+    PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" -tAq "$@"
+  fi
+}
+
+# Import a SQL file into the target. Local docker pipes via stdin to docker exec.
+tgt_psql_file() {
+  local f="$1"
+  if $TGT_IS_LOCAL_DOCKER; then
+    docker exec -i -e PGPASSWORD="$TGT_PASS" "$TGT_CONTAINER" \
+      psql -U "$TGT_USER" -d "$TGT_DB" -v ON_ERROR_STOP=off < "$f"
+  else
+    PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" \
+      -v ON_ERROR_STOP=off -f "$f"
+  fi
 }
 
 # Check if table matches any hot pattern (shell glob matching)
@@ -217,12 +252,19 @@ else
   SCHEMA_FILE="$WORK_DIR/$TIMESTAMP/schema_all.sql"
   info "Exporting schema to $SCHEMA_FILE"
   
+  # --clean --if-exists: emit per-object DROP ... IF EXISTS before each CREATE,
+  # so re-importing into a non-empty target replaces objects instead of failing
+  # with "already exists". This is safer than DROP SCHEMA CASCADE (which would
+  # also drop Citus/columnar metadata). columnar_internal.* stays excluded.
+  # Note: we do NOT use --disable-triggers here (schema-only, no data).
   PGPASSWORD="$SRC_PASS" pg_dump \
     -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" \
     --schema-only \
     --no-owner \
     --no-privileges \
-    --exclude-table='columnar_internal.*' \
+    --clean --if-exists \
+    --exclude-schema='columnar_internal' \
+    --exclude-schema='citus' \
     -f "$SCHEMA_FILE" 2>/dev/null
   
   SCHEMA_SIZE=$(du -h "$SCHEMA_FILE" | cut -f1)
@@ -299,15 +341,25 @@ else
   if $DRY_RUN; then
     dim "  [DRY-RUN] Would import schema from $SCHEMA_FILE"
   else
-    info "Importing schema to target..."
+    info "Importing schema to target (with --clean: existing objects are dropped then recreated)..."
     
     tgt_psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$TGT_DB' AND pid<>pg_backend_pid();" &>/dev/null || true
     
-    PGPASSWORD="$TGT_PASS" psql \
-      -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" \
-      -f "$SCHEMA_FILE" 2>&1 | tail -5
-    
-    ok "Schema imported"
+    # --clean mode emits per-object DROP IF EXISTS; "does not exist, skipping"
+    # notices are expected. Capture full output for diagnosis, show tail + errors.
+    if tgt_psql_file "$SCHEMA_FILE" > "$WORK_DIR/$TIMESTAMP/schema_import.log" 2>&1; then
+      ok "Schema imported"
+    else
+      # psql may exit non-zero on dropped-object errors; surface real failures.
+      err_count=$(grep -ciE "error:|fatal" "$WORK_DIR/$TIMESTAMP/schema_import.log" 2>/dev/null || echo 0)
+      if [ "$err_count" -gt 0 ]; then
+        warn "Schema import reported $err_count errors (showing first 15):"
+        grep -iE "error:|fatal" "$WORK_DIR/$TIMESTAMP/schema_import.log" | head -15
+        warn "Full log: $WORK_DIR/$TIMESTAMP/schema_import.log"
+      else
+        ok "Schema imported (non-zero exit was only 'does not exist, skipping' notices)"
+      fi
+    fi
   fi
 fi
 
@@ -345,10 +397,8 @@ else
       fi
       
       printf "  %-45s %8s" "$schema.$tbl" "$tbl_size"
-      
-      if PGPASSWORD="$TGT_PASS" psql \
-        -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" \
-        -f "$data_file" &>/dev/null; then
+
+      if tgt_psql_file "$data_file" &>/dev/null; then
         echo -e " ${G}OK${N}"
         IMPORTED=$((IMPORTED + 1))
       else
