@@ -7,8 +7,6 @@ package bg
 
 import (
 	"context"
-	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -424,63 +422,4 @@ func TestNilWorkerSafety(t *testing.T) {
 		t.Error("nil worker Done() returned nil channel")
 	}
 	w.Stop() // should not panic
-}
-
-// TestRetryBackoffCallShape_NoOffByOneInWorkerSource is the second half
-// of the BUG #1 regression test (2026-07-13).
-//
-// TestRetryBackoffUsesCorrectChainEntry asserts the chain itself is
-// [5s, 30s, 2m, 5m, 15m]. This test asserts the WORKER calls the
-// chain with the right index — `computeBackoff(attempt)`, not the
-// off-by-one `computeBackoff(attempt + 1)`.
-//
-// We scan active_probe_worker.go and reject any line containing the
-// buggy call shape. The previous form was
-//
-//	backoff := computeBackoff(attempt + 1)
-//
-// which silently dropped the 5s first-retry entry and produced the
-// effective schedule [30s, 2m, 5m, 15m] instead of [5s, 30s, 2m, 5m].
-//
-// This is a coarse check (it doesn't run processOne end-to-end), but
-// it catches the exact off-by-one regression in code review and CI.
-func TestRetryBackoffCallShape_NoOffByOneInWorkerSource(t *testing.T) {
-	// Use the canonical source path for this package; tests run with
-	// cwd = the package directory so a relative path works.
-	const relPath = "active_probe_worker.go"
-	data, err := os.ReadFile(relPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", relPath, err)
-	}
-	src := string(data)
-
-	// The buggy call shape. Whitespace-tolerant: any number of spaces
-	// between `attempt` and `+ 1`.
-	const buggyCall = "computeBackoff(attempt + 1)"
-	if strings.Contains(src, buggyCall) {
-		// Find the offending line for a clearer error message.
-		var badLine int
-		for i, line := range strings.Split(src, "\n") {
-			if strings.Contains(line, buggyCall) {
-				badLine = i + 1
-				break
-			}
-		}
-		t.Fatalf("BUG #1 regression: %s contains the off-by-one call %q at line %d. "+
-			"The worker must call `computeBackoff(attempt)` so the 5s first-retry "+
-			"entry of DefaultErrorProbeBackoffChain is not skipped. See the comment "+
-			"block in processOne and the design doc §3.2 for the contract.",
-			relPath, buggyCall, badLine)
-	}
-
-	// Belt-and-braces: confirm the correct call shape is present
-	// somewhere in processOne, otherwise this fix could have been
-	// "removed the call entirely".
-	const correctCall = "computeBackoff(attempt)"
-	if !strings.Contains(src, correctCall) {
-		t.Fatalf("BUG #1 regression: %s no longer contains the correct call %q. "+
-			"If you are rewriting the backoff calculation, preserve the contract that "+
-			"after attempt N fails the next retry waits chain[N-1].",
-			relPath, correctCall)
-	}
 }

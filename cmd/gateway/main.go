@@ -1669,6 +1669,9 @@ func main() {
 				TimeoutMs:            epTimeoutMs,
 			})
 			slog.Info("CHECKPOINT: before activeProbe.Start")
+			if stateManager != nil {
+				activeProbe.SetStateManager(stateManager)
+			}
 			activeProbe.Start(context.Background())
 			slog.Info("CHECKPOINT: after activeProbe.Start")
 		}
@@ -1682,7 +1685,7 @@ func main() {
 			// trigger immediate verification after threshold breaches.
 			if credProbeV2 != nil {
 				stateManager.SetProbeSubmitter(
-					credProbeV2.SubmitFastProbe,
+					credProbeV2.ProbeNowAsync,
 					func(ctx context.Context, credID int, model string) error {
 						if modelProbe != nil {
 							return modelProbe.TriggerManual(ctx, credID, model)
@@ -2940,6 +2943,17 @@ func main() {
 		if err := pprofSrv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("pprof diagnostic server shutdown error", "error", err)
 		}
+	}
+
+	// Stop probe/state services before closing their shared dependencies.
+	if activeProbe != nil {
+		activeProbe.Stop()
+	}
+	if credProbeV2 != nil {
+		credProbeV2.Stop()
+	}
+	if stateManager != nil {
+		stateManager.Stop()
 	}
 
 	// 2. Stop hub/background producers before closing their dependencies.

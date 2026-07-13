@@ -56,10 +56,13 @@ type ActiveProbeWorker struct {
 	queue   chan probeTask
 	mu      sync.Mutex
 	running map[string]*probeState
+	stopped bool
+	started bool
 
-	cancel context.CancelFunc
-	done   chan struct{}
-	wg     sync.WaitGroup
+	cancel   context.CancelFunc
+	done     chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 type probeTask struct {
@@ -122,6 +125,10 @@ func (w *ActiveProbeWorker) Submit(credID int, model string, parentReqID string)
 	key := probeKey(credID, model)
 
 	w.mu.Lock()
+	if w.stopped {
+		w.mu.Unlock()
+		return
+	}
 	if _, exists := w.running[key]; exists {
 		w.mu.Unlock()
 		slog.Debug("active_probe: dedup hit, already running",
@@ -154,6 +161,15 @@ func (w *ActiveProbeWorker) Submit(credID int, model string, parentReqID string)
 	}
 }
 
+// SetStateManager wires the state observer after construction. The gateway
+// builds the worker before the legacy credential-state manager is available.
+func (w *ActiveProbeWorker) SetStateManager(observer credentialstate.StateObserver) {
+	if w == nil {
+		return
+	}
+	w.cfg.StateManager = observer
+}
+
 // Start spawns the worker goroutine. Idempotent on cfg.Enabled=false.
 func (w *ActiveProbeWorker) Start(ctx context.Context) {
 	if w == nil || !w.cfg.Enabled {
@@ -162,9 +178,16 @@ func (w *ActiveProbeWorker) Start(ctx context.Context) {
 		}
 		return
 	}
+	w.mu.Lock()
+	if w.stopped || w.started {
+		w.mu.Unlock()
+		return
+	}
+	w.started = true
 	wctx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
 	w.wg.Add(1)
+	w.mu.Unlock()
 	go w.runLoop(wctx)
 	slog.Info("active_probe worker started",
 		"consecutive_threshold", w.cfg.ConsecutiveThreshold,
@@ -180,15 +203,31 @@ func (w *ActiveProbeWorker) Stop() {
 	if w == nil {
 		return
 	}
-	if w.cancel != nil {
-		w.cancel()
-	}
-	w.wg.Wait()
-	close(w.done)
+	w.stopOnce.Do(func() {
+		w.mu.Lock()
+		w.stopped = true
+		w.mu.Unlock()
+		if w.cancel != nil {
+			w.cancel()
+		}
+		w.wg.Wait()
+		w.mu.Lock()
+		clear(w.running)
+		w.mu.Unlock()
+		close(w.done)
+	})
 }
 
 func (w *ActiveProbeWorker) runLoop(ctx context.Context) {
 	defer w.wg.Done()
+	defer func() {
+		if ctx.Err() != nil {
+			w.mu.Lock()
+			w.stopped = true
+			clear(w.running)
+			w.mu.Unlock()
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
