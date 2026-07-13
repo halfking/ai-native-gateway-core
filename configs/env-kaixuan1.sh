@@ -25,6 +25,11 @@ PG_DB="llm_gateway"
 PG_EXTERNAL_HOST="pg-dev.itestu.cn"
 PG_EXTERNAL_PORT="5432"          # nps forwarded port (TBD)
 
+# Host-mode fallback when tart-vm / k3s PG (192.168.31.8:30432) is unreachable.
+# 252 socat pg-tunnel-11033.service forwards 11033 -> pg-252-pg17:5432.
+PG_FALLBACK_HOST="115.29.212.252"
+PG_FALLBACK_PORT="11033"
+
 # ── k3s Cluster ───────────────────────────────────────────────────────────
 K3S_SERVER="192.168.31.8"       # control-plane, master
 K3S_AGENT_2="192.168.31.9"     # worker (kaixuan-2)

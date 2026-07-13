@@ -3,8 +3,8 @@
 // 2026-07-05: 更新為中性化、全球化的產品定位。
 export default {
   kicker: '內核開源 · 企業級 · 私有部署',
-  title: 'LLM Gateway — 企業級開源 AI 網關',
-  subtitle: '內核開源的企業級 AI 網關。統一治理、全球 LLM 接入、合規與資料主權 — 全部內核開源。',
+  title: 'AI-Native組織核心網關',
+  subtitle: 'AI-Native 組織核心網關。統一治理、全球 LLM 接入、合規與資料主權 — 內核開源、私有化部署。',
   featuresTitle: '核心能力',
   featuresSubtitle: '覆蓋從接入到營運的關鍵環節',
   heroPoints: [
