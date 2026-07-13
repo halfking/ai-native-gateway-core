@@ -112,11 +112,14 @@ $SSH "$SSH_TARGET" "chmod +x $REMOTE_DIR/gateway"
 # 上传 version.json
 $SCP version.json "$SSH_TARGET:$REMOTE_DIR/version.json"
 
-# 上传前端 (如果构建了)
+# 上传前端 (展平到 web/ 目录)
 if [[ "$SKIP_FRONTEND" == "false" ]] && [[ -d web/dist ]]; then
   $SSH "$SSH_TARGET" "rm -rf $REMOTE_DIR/web && mkdir -p $REMOTE_DIR/web"
   tar czf - -C web dist | $SSH "$SSH_TARGET" "cat | tar xzf - -C $REMOTE_DIR/web --strip-components=1"
 fi
+
+# 2026-07-14 fix: 确保 STATIC_DIR 指向 web/（展平模式），不是 web/dist
+$SSH "$SSH_TARGET" "sed -i 's|LLM_GATEWAY_STATIC_DIR=.*dist.*|LLM_GATEWAY_STATIC_DIR=$REMOTE_DIR/web|' $REMOTE_DIR/.env 2>/dev/null || true"
 
 # 启动
 $SSH "$SSH_TARGET" "systemctl daemon-reload && systemctl start $SERVICE_NAME"
