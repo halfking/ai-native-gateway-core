@@ -64,6 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     立即恢复 / 证据包导出（spec §"Phase Two"），所有 mutating
     action 接口暂不实现。
 
+### Fixed (P2 - Audit Round 4)
+- **Docker HEALTHCHECK**：Dockerfile 增加 `HEALTHCHECK` 配置（30s 间隔、3 次重试），使用 wget 检查 `/healthz` 端点
+- **版本比较支持预发布标签**：`autoupdate/version.go` 增加 alpha/beta/rc 支持（如 `2.4.2-alpha.1`、`2.4.2-beta.2`、`2.4.2-rc.1`）。预发布版本按 `alpha < beta < rc < release` 排序，数字后缀按数值比较。新增 `IsPreRelease()` 辅助函数和 `version_test.go` 测试
+- **License 离线验证增加过期/吊销检查**：`licensing/offline.go` 的 `VerifyOfflineLicense` 现在检查 `ExpiresAt` 和 `RevokedAt`，与在线验证保持一致。之前离线 license 可在过期/吊销后继续使用
+
 ### Fixed (P1 - Audit Round 3)
 - **autoupdate Admin API 认证**：所有 `/api/admin/releases/*` 和 `/api/admin/autoupdate/*` 端点增加 Bearer token 认证，token 从环境变量 `AUTOUPDATE_ADMIN_TOKEN` 读取（未配置时使用默认开发 token）
 - **数据库迁移协调**：`Installer` 增加可选的数据库迁移命令配置（`SetMigration(cmd, args...)`），在二进制替换后、服务重启前自动执行迁移
