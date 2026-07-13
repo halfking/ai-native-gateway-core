@@ -148,8 +148,8 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 		&summary.AvgLatencyMs,
 		&summary.SuccessRate,
 	); err != nil {
-		if isMissingRelationError(err) {
-			view := reportMissingRelation(slog.Default(), "usageSummary", err)
+		if IsMissingRelationError(err) {
+			view := ReportMissingRelation(slog.Default(), "usageSummary", err)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"total_requests":          0,
 				"total_prompt_tokens":     0,
@@ -278,8 +278,8 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 		&overview.OfflineCredentials,
 		&overview.TotalCredentials,
 	); err != nil {
-		if isMissingRelationError(err) {
-			view := reportMissingRelation(slog.Default(), "usageDashboard", err)
+		if IsMissingRelationError(err) {
+			view := ReportMissingRelation(slog.Default(), "usageDashboard", err)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"total_api_keys":            0,
 				"active_api_keys":           0,
@@ -374,8 +374,8 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		if isMissingRelationError(err) {
-			view := reportMissingRelation(slog.Default(), "usageHotKeys", err)
+		if IsMissingRelationError(err) {
+			view := ReportMissingRelation(slog.Default(), "usageHotKeys", err)
 			writeJSON(w, http.StatusOK, []any{})
 			slog.Warn("dashboard hot-keys query degraded: missing optional view",
 				"relation", view,
@@ -485,8 +485,8 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		if isMissingRelationError(err) {
-			view := reportMissingRelation(slog.Default(), "usageByProvider", err)
+		if IsMissingRelationError(err) {
+			view := ReportMissingRelation(slog.Default(), "usageByProvider", err)
 			writeJSON(w, http.StatusOK, []any{})
 			slog.Warn("dashboard by-provider query degraded: missing optional view",
 				"relation", view,
@@ -587,8 +587,8 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		if isMissingRelationError(err) {
-			view := reportMissingRelation(slog.Default(), "usageByModel", err)
+		if IsMissingRelationError(err) {
+			view := ReportMissingRelation(slog.Default(), "usageByModel", err)
 			writeJSON(w, http.StatusOK, []any{})
 			slog.Warn("dashboard by-model query degraded: missing optional view",
 				"relation", view,

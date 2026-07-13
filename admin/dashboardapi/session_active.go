@@ -1,5 +1,7 @@
 // Package dashboardapi - session_active.go
 // 活跃会话 API：查询当前活跃的会话列表
+//
+// 2026-07-13: 增加 session_summaries 表缺失时的优雅降级
 package dashboardapi
 
 import (
@@ -8,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin/dashboarddegrade"
 )
 
 // SessionActiveHandler 活跃会话 Handler
@@ -76,6 +79,10 @@ func (h *SessionActiveHandler) HandleSessionActive(w http.ResponseWriter, r *htt
 	var totalActive int
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM session_summaries %s", whereClause)
 	if err := h.db.QueryRow(ctx, countQuery, args...).Scan(&totalActive); err != nil {
+		if dashboarddegrade.IsMissingRelationError(err) {
+			h.writeDegraded(w, params, startTime, "session-active:count", err)
+			return
+		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to count active sessions", err.Error())
 		return
@@ -104,6 +111,10 @@ func (h *SessionActiveHandler) HandleSessionActive(w http.ResponseWriter, r *htt
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
+		if dashboarddegrade.IsMissingRelationError(err) {
+			h.writeDegraded(w, params, startTime, "session-active:list", err)
+			return
+		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query active sessions", err.Error())
 		return
@@ -140,4 +151,24 @@ func (h *SessionActiveHandler) HandleSessionActive(w http.ResponseWriter, r *htt
 		TookMs:      time.Since(startTime).Milliseconds(),
 	}
 	writeSuccessJSON(w, resp, metadata)
+}
+
+// writeDegraded 缺表降级 — 返回 0 值 + degraded:true，前端按空态渲染。
+func (h *SessionActiveHandler) writeDegraded(w http.ResponseWriter, params QueryParams, startTime time.Time, op string, err error) {
+	view := dashboarddegrade.ExtractRelationName(err)
+	writeSuccessJSON(w, SessionActiveResponse{
+		Sessions:    []ActiveSessionItem{},
+		TotalActive: 0,
+		Page:        params.Page,
+		Size:        params.Size,
+	}, &Metadata{
+		Total:       0,
+		Page:        params.Page,
+		Size:        params.Size,
+		GeneratedAt: time.Now(),
+		TookMs:      time.Since(startTime).Milliseconds(),
+		Degraded:    true,
+		MissingView: view,
+		Hint:        "数据视图尚未初始化，请先执行数据聚合迁移",
+	})
 }

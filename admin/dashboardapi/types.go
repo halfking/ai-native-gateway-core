@@ -64,6 +64,11 @@ type Metadata struct {
 	CacheHit    bool      `json:"cache_hit,omitempty"`
 	GeneratedAt time.Time `json:"generated_at"`
 	TookMs      int64     `json:"took_ms,omitempty"`
+	// 2026-07-13: 优雅降级元数据 — 当前端仪表盘访问一个尚未迁移的表时
+	// 返回，让前端可以区分"真无数据" vs "数据库未就绪"。
+	Degraded    bool   `json:"degraded,omitempty"`
+	MissingView string `json:"missing_view,omitempty"`
+	Hint        string `json:"hint,omitempty"`
 }
 
 // ────────────────────────────────────────────────────────────────

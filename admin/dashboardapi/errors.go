@@ -1,5 +1,7 @@
 // Package dashboardapi - errors.go
 // 错误统计 API：查询错误分布、错误趋势、常见错误
+//
+// 2026-07-13: 增加 session_module_executions_hot 表缺失时的优雅降级
 package dashboardapi
 
 import (
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin/dashboarddegrade"
 )
 
 // ErrorsHandler 错误统计 Handler
@@ -84,6 +87,11 @@ func (h *ErrorsHandler) HandleErrors(w http.ResponseWriter, r *http.Request) {
 	// 1. 错误摘要
 	summary, err := h.queryErrorSummary(ctx, params)
 	if err != nil {
+		if dashboarddegrade.IsMissingRelationError(err) {
+			h.writeDegraded(w, startTime, "errors:summary", err)
+			apiStatus = "degraded"
+			return
+		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query error summary", err.Error())
 		return
@@ -92,6 +100,11 @@ func (h *ErrorsHandler) HandleErrors(w http.ResponseWriter, r *http.Request) {
 	// 2. 错误分布
 	dist, err := h.queryErrorDistribution(ctx, params)
 	if err != nil {
+		if dashboarddegrade.IsMissingRelationError(err) {
+			h.writeDegraded(w, startTime, "errors:distribution", err)
+			apiStatus = "degraded"
+			return
+		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query error distribution", err.Error())
 		return
@@ -100,6 +113,11 @@ func (h *ErrorsHandler) HandleErrors(w http.ResponseWriter, r *http.Request) {
 	// 3. 最近错误
 	recentErrors, err := h.queryRecentErrors(ctx, params)
 	if err != nil {
+		if dashboarddegrade.IsMissingRelationError(err) {
+			h.writeDegraded(w, startTime, "errors:recent", err)
+			apiStatus = "degraded"
+			return
+		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query recent errors", err.Error())
 		return
@@ -108,6 +126,11 @@ func (h *ErrorsHandler) HandleErrors(w http.ResponseWriter, r *http.Request) {
 	// 4. Top 错误
 	topErrors, err := h.queryTopErrors(ctx, params)
 	if err != nil {
+		if dashboarddegrade.IsMissingRelationError(err) {
+			h.writeDegraded(w, startTime, "errors:top", err)
+			apiStatus = "degraded"
+			return
+		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query top errors", err.Error())
 		return
@@ -288,4 +311,24 @@ func (h *ErrorsHandler) queryTopErrors(ctx context.Context, params QueryParams) 
 		return nil, err
 	}
 	return items, nil
+}
+
+// writeDegraded 写一个"缺表降级"的 200 响应，包含调用时记录的
+// op 名称 + 缺失视图。前端拿到 HTTP 200 + degraded:true 时按 0 值
+// 渲染，仍然展示其它已经可用的指标卡片。
+func (h *ErrorsHandler) writeDegraded(w http.ResponseWriter, startTime time.Time, op string, err error) {
+	view := dashboarddegrade.ExtractRelationName(err)
+	now := time.Now()
+	writeSuccessJSON(w, ErrorStatsResponse{
+		Summary:      ErrorSummary{},
+		Distribution: []ErrorDistItem{},
+		Trend:        []ErrorTrendItem{},
+		TopErrors:    []ErrorDetail{},
+	}, &Metadata{
+		GeneratedAt: now,
+		TookMs:      time.Since(startTime).Milliseconds(),
+		Degraded:    true,
+		MissingView: view,
+		Hint:        "数据视图尚未初始化，请先执行数据聚合迁移",
+	})
 }

@@ -56,28 +56,28 @@ func TestIsMissingRelationError(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isMissingRelationError(tc.err)
+			got := IsMissingRelationError(tc.err)
 			if got != tc.want {
-				t.Fatalf("isMissingRelationError(%v) = %v, want %v", tc.err, got, tc.want)
+				t.Fatalf("IsMissingRelationError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}
 }
 
 func TestReportMissingRelationReturnsViewName(t *testing.T) {
-	view := reportMissingRelation(nil, "test", &pgconn.PgError{
+	view := ReportMissingRelation(nil, "test", &pgconn.PgError{
 		Code:      "42P01",
 		TableName: "usage_ledger_with_current_month",
 	})
 	if view != "usage_ledger_with_current_month" {
 		t.Fatalf("expected view name, got %q", view)
 	}
-	if view := reportMissingRelation(nil, "test", errors.New("other")); view != "" {
+	if view := ReportMissingRelation(nil, "test", errors.New("other")); view != "" {
 		t.Fatalf("expected empty view, got %q", view)
 	}
 	// PostgreSQL does not populate TableName for 42P01, so the helper
 	// must fall back to parsing the message body.
-	view = reportMissingRelation(nil, "test", &pgconn.PgError{
+	view = ReportMissingRelation(nil, "test", &pgconn.PgError{
 		Code:    "42P01",
 		Message: `relation "usage_ledger_with_current_month" does not exist`,
 	})
