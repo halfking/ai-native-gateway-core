@@ -12,8 +12,7 @@
 //	attempt 2 → 5s  delay after attempt 1 failed
 //	attempt 3 → 30s delay after attempt 2 failed
 //	attempt 4 → 2m  delay after attempt 3 failed
-//	attempt 5 → 5m  delay after attempt 4 failed
-//	attempt 6 → 15m delay after attempt 5 failed (max-attempts reached)
+//	attempt 5 → 5m  delay after attempt 4 failed (max-attempts reached)
 //
 // After the first successful probe OR after max_attempts failures the
 // entry is removed from the dedup map and control returns to the
