@@ -62,6 +62,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - 任何失败（含 stale state）都写 audit row（outcome= failed/noop + failure_reason）；
     - Evidence 永远不含凭据、cookie、raw body、上游 URL、客户端 IP、UA、session 标题。
 
+### Added (deployment management hardening — slices 1-4 of design)
+- **目标契约层**（`scripts/deploy-lib/targets.sh`）：每个目标（154/245/186/252/kaixuan-*）导出标准化 JSON 契约（support / service_manager / service_name / binary_path / health_url / ssh_host / ssh_key_env / rollback_policy / legacy_aliases）。`target_check_actionable <target> <action>` 在任何 lock / build / ssh 之前拒绝 retired（186）、deferred（252/184/kaixuan-*）、unsupported（kaixuan-2/3）。
+- **双层锁原语**（`scripts/deploy-lib/lock.sh`）：本地 flock-or-mkdir 锁 + 远程 mkdir 锁；元数据只记 target / source_user / source_host / pid / started_at / commit / version，无 secret。二次 acquire 返回 EX_TEMPFAIL (75)。`force-unlock <target>` 是唯一允许的远程锁强制删除入口。
+- **主机操作 seams（245 backup / deploy / verify / rollback）**（`scripts/deploy-lib/host.sh`）：
+  - 245 release bundle 布局（`/opt/llm-gateway-go/releases/${VERSION}/gateway` + `web/` + `version.json` + `VERSION` + `SHA256SUMS` + `deployment.json`）
+  - `host_stage_release` 装配本地 bundle（install + sha256sum + 初始 `verified:false` metadata）
+  - `host_verify_bundle` 校验 SHA256SUMS（防篡改）
+  - `host_atomic_switch` 通过 `ln -sfn` 完成 `current` symlink 切换 + systemctl restart（一次原子 rename(2)）
+  - `host_wait_healthy` 轮询 /healthz
+  - `host_mark_verified` 翻转 `deployment.json`（纯 shell，无 python 依赖）
+  - `host_list_verified_releases` newest-first 列表，跳过 active 版本
+  - `host_select_rollback_target` 自动选择 + 退出码 4 (`no_rollback_target`) 占位
+  - `host_prune_releases` 保留 5 newest verified + active + 1 newest failed
+  - `host_root_for` + `HOST_INSTALL_ROOT` 环境变量允许离线测试 harness 重定向路径到 TMPDIR（无需 ssh 模拟层）
+- **154 systemd unit**（`deploy/llm-gateway-go.service`）：镜像 `deploy/llmgo-245.service` 的硬化 + 资源限制配置，使 canonical CLI 在两个目标上可以一致地 `systemctl show`。
+- **Canonical CLI 增强**：`scripts/deploy.sh` 头部插入的 canonical 前端新增 `deploy` action。`rollback 245 --to <version>` 拒绝未验证 / 不存在的版本；`rollback 245`（无 `--to`）通过 `host_select_rollback_target` 自动选择；`verify 245`/`deploy 245` 输出可被 CI 接管的契约。
+- **离线测试 harness（Slice 4）**（`tests/deploy_host_test.sh`）：23 个断言覆盖 stage_release、stage_release_refuses_missing_inputs、verify_bundle_passes_and_fails、atomic_switch_creates_symlinks、mark_verified_flips_metadata、rollback_to_refuses_unverified、select_rollback_target_picks_newest_verified、select_rollback_target_returns_4_when_empty、failed_health_triggers_rollback_marker（AC-7 占位）。
+
+详细说明：`docs/changelogs/2026-07-13-deployment-management-slice-4.md`。
+
 ### Added (deployment management hardening — slices 1-3 of design)
 - **目标契约层**（`scripts/deploy-lib/targets.sh`）：每个目标（154/245/186/252/kaixuan-*）导出标准化 JSON 契约（support / service_manager / service_name / binary_path / health_url / ssh_host / ssh_key_env / rollback_policy / legacy_aliases）。`target_check_actionable <target> <action>` 在任何 lock / build / ssh 之前拒绝 retired（186）、deferred（252/184/kaixuan-*）、unsupported（kaixuan-2/3）。
 - **双层锁原语**（`scripts/deploy-lib/lock.sh`）：本地 flock-or-mkdir 锁 + 远程 mkdir 锁；元数据只记 target / source_user / source_host / pid / started_at / commit / version，无 secret。二次 acquire 返回 EX_TEMPFAIL (75)。`force-unlock <target>` 是唯一允许的远程锁强制删除入口。
