@@ -204,6 +204,14 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 				continue
 			}
 
+			// 2026-07-13: state table archive is per-table retention,
+			// not twoMonthsAgo. We pass a sentinel and the dedicated
+			// drop function reads per-table settings.
+			if s.fnName == "drop_old_state_partitions" {
+				pm.dropOldStatePartitions(ctx, s)
+				continue
+			}
+
 			pm.runArchive(ctx, s, twoMonthsAgo)
 		}
 	}
@@ -221,6 +229,70 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// historical ones can be reaped. Hot-reloadable via
 	// lifecycle.credential_model_index_ttl_days (default 7).
 	pm.cleanupOldCredentialModelIndex(ctx)
+
+	// 4. 2026-07-13: credential_probe_model_log TTL cleanup.
+	// This is a heap (columnar) table without partitions, so we
+	// directly DELETE old rows. Runs every tick (1h); default 90d
+	// retention via lifecycle.credential_probe_model_log_ttl_days.
+	pm.cleanupOldCredentialProbeModelLog(ctx)
+}
+
+// dropOldStatePartitions calls the SQL helper
+// `drop_old_state_partitions(retention_days)` which drops monthly
+// partitions older than the retention window for state tables
+// (routing_decision_log, candidate_failure_logs, handoff_logs,
+// credential_model_call_history, model_probe_runs, etc.).
+//
+// 2026-07-13 状态表精简：
+//   - 状态/路由类表默认 30 天 DROP PARTITION
+//   - 请求记录类表（usage_ledger、request_wal、credit_ledger、tool_usage_stats）
+//     默认 1 天（hot 表，依赖月度分区长期保留但不 DROP）
+//   - credential_probe_model_log 是列存储堆表，需通过单独清理任务
+//
+// Designed to run on day-2 of the month (matches archiveSpecs()).
+// Per-table retention is read fresh from settings.Global on every call
+// (lifecycle.*_ttl_days) so changes take effect on the next
+// partition_manager tick (1h by default). Returns the number of
+// partitions dropped; logs a single summary line.
+func (pm *PartitionManager) dropOldStatePartitions(ctx context.Context, s archiveSpec) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	// Pass the smallest TTL as the global retention — individual
+	// partitions older than ANY of the per-table TTLs are eligible to
+	// drop. The SQL function does per-table policy enforcement.
+	// We use the maximum across all state tables so we don't
+	// accidentally drop partitions still needed.
+	maxDays := settingsGetPlatformInt("lifecycle.routing_decision_log_ttl_days", 30)
+	if d := settingsGetPlatformInt("lifecycle.candidate_failure_logs_ttl_days", 30); d > maxDays {
+		maxDays = d
+	}
+	if d := settingsGetPlatformInt("lifecycle.handoff_logs_ttl_days", 30); d > maxDays {
+		maxDays = d
+	}
+	if d := settingsGetPlatformInt("lifecycle.credential_model_call_history_ttl_days", 30); d > maxDays {
+		maxDays = d
+	}
+	if d := settingsGetPlatformInt("lifecycle.model_probe_runs_ttl_days", 90); d > maxDays {
+		maxDays = d
+	}
+	if maxDays < 30 {
+		maxDays = 30 // safety floor — never set to less than 30d
+	}
+
+	var dropped int64
+	err := pm.db.QueryRow(timeoutCtx,
+		"SELECT drop_old_state_partitions($1)", maxDays,
+	).Scan(&dropped)
+	if err != nil {
+		slog.Error("partition_manager: state table drop failed",
+			"label", s.label, "ttl_days", maxDays, "error", err)
+		return
+	}
+	if dropped > 0 {
+		slog.Info("partition_manager: state table drop ran",
+			"label", s.label, "ttl_days", maxDays, "partitions_dropped", dropped)
+	}
 }
 
 // cleanupOldCredentialModelIndex calls the SQL helper
@@ -284,6 +356,39 @@ func (pm *PartitionManager) dropOldModelProbeRunsPartitions(ctx context.Context)
 
 	slog.Info("partition_manager: model_probe_runs cleanup ran",
 		"retention_days", retentionDays)
+}
+
+// cleanupOldCredentialProbeModelLog deletes rows from
+// credential_probe_model_log older than the configured TTL.
+//
+// 2026-07-13: this is a heap (columnar) table without monthly
+// partitions, so we use direct DELETE. Designed to run every tick
+// (1h by default); the SQL DELETE is index-backed on created_at
+// (we add an index if missing). Hot-reloadable via
+// lifecycle.credential_probe_model_log_ttl_days (default 90).
+func (pm *PartitionManager) cleanupOldCredentialProbeModelLog(ctx context.Context) {
+	ttlDays := settingsGetPlatformInt("lifecycle.credential_probe_model_log_ttl_days", 90)
+	if ttlDays < 7 {
+		ttlDays = 7 // safety floor
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	var deleted int64
+	err := pm.db.QueryRow(timeoutCtx,
+		"SELECT cleanup_old_credential_probe_model_log($1)", ttlDays,
+	).Scan(&deleted)
+	if err != nil {
+		slog.Error("partition_manager: credential_probe_model_log cleanup failed",
+			"ttl_days", ttlDays, "error", err)
+		return
+	}
+
+	if deleted > 0 {
+		slog.Info("partition_manager: credential_probe_model_log cleanup ran",
+			"ttl_days", ttlDays, "rows_deleted", deleted)
+	}
 }
 
 func (pm *PartitionManager) runArchive(ctx context.Context, s archiveSpec, twoMonthsAgo time.Time) {
@@ -363,9 +468,12 @@ func ensureSpecs() []archiveSpec {
 // Remaining archive functions:
 //   - routing_decision_log: lightweight archive
 //   - credential_model_index: 7-day cutoff archive
+//   - state tables (routing_decision_log, candidate_failure_logs, handoff_logs):
+//     day-2 monthly DROP via drop_old_state_partitions (per-table retention)
 func archiveSpecs() []archiveSpec {
 	return []archiveSpec{
 		{day: 1, fnName: "archive_routing_decision_log", label: "routing_decision_log"},
+		{day: 2, fnName: "drop_old_state_partitions", label: "state_tables"},
 		{day: 3, fnName: "archive_credential_model_index", label: "credential_model_index"},
 	}
 }
