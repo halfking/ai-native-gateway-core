@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -738,12 +739,16 @@ func truncateStrSC(s string, maxLen int) string {
 // --------------------------------------------------------------------------
 
 // EnsureSystemAPIKey gets or creates a system-level API key for the self-check worker.
-func EnsureSystemAPIKey(ctx context.Context, db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring) (string, error) {
-	// Try to find an existing system key.
+// secretKey is the gateway HMAC secret (cfg.SecretKey) and MUST be the same one used by
+// the data-plane verifier (domains/authentication), otherwise the generated key will fail
+// verification with "invalid_key". See self_check_worker.go's audit for the root cause.
+func EnsureSystemAPIKey(ctx context.Context, db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring, secretKey string) (string, error) {
+	// Try to find an existing system key that belongs to this worker.
 	var ciphertext []byte
 	err := db.QueryRow(ctx, `
 		SELECT key_ciphertext FROM api_keys
 		WHERE COALESCE(is_system, FALSE) = TRUE AND status = 'active'
+		  AND owner_user = 'self-check-worker'
 		ORDER BY created_at DESC LIMIT 1`,
 	).Scan(&ciphertext)
 	if err == nil && len(ciphertext) > 0 {
@@ -764,8 +769,11 @@ func EnsureSystemAPIKey(ctx context.Context, db *pgxpool.Pool, encKey []byte, ke
 
 	// Generate a new system key.
 	newKey := fmt.Sprintf("sk-selfcheck-%s", randomHexSC(24))
-	keyHash := newKey // simple hash for self-check keys
-	keyPrefix := newKey[:16]
+	// CRITICAL: key_hash must be HMAC-SHA256(secretKey, raw) — the same transform the
+	// data-plane verifier uses at lookup time. Storing the plaintext (as the old code did)
+	// means the verifier's WHERE key_hash = HMAC(...) never matches → 401 invalid_key.
+	keyHash := authentication.HashAPIKey(secretKey, newKey)
+	keyPrefix := newKey[:10] + "****"
 
 	var encCiphertext string
 	if keyring != nil {
