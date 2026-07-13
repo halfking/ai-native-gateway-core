@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -199,6 +200,75 @@ func (s *PgxStore) ActivateDevice(ctx context.Context, dev *Device) error {
 		RETURNING id, activated_at, last_heartbeat
 	`, dev.LicenseID, dev.InstanceID, dev.HardwareHash, dev.DeviceName,
 	).Scan(&dev.ID, &dev.ActivatedAt, &dev.LastHeartbeat)
+}
+
+// ActivateDeviceIfUnderLimit inserts the device atomically only when the
+// active device count is below maxDevices. The check and the insert run
+// inside one PostgreSQL transaction with SELECT … FOR UPDATE on the
+// parent licenses row, so two concurrent activations of the same
+// license cannot exceed the MaxDevices ceiling.
+//
+// Returns ErrDeviceLimitExceeded when the license has no remaining
+// slots, ErrDeviceAlreadyActivated when this hardware hash already has
+// an active device, or a wrapped DB error otherwise.
+func (s *PgxStore) ActivateDeviceIfUnderLimit(ctx context.Context, dev *Device, maxDevices int) error {
+	if dev == nil {
+		return errors.New("nil device")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var max int
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(max_devices, 0) FROM licenses WHERE id = $1 FOR UPDATE`, dev.LicenseID).Scan(&max); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("license not found")
+		}
+		return fmt.Errorf("lock license: %w", err)
+	}
+	if maxDevices > 0 && maxDevices < max {
+		max = maxDevices
+	}
+
+	// Reject duplicate active devices on the same hardware hash.
+	var existing int
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(1) FROM license_devices
+		WHERE license_id = $1 AND hardware_hash = $2 AND status = 'active'
+	`, dev.LicenseID, dev.HardwareHash).Scan(&existing); err != nil {
+		return fmt.Errorf("check existing device: %w", err)
+	}
+	if existing > 0 {
+		return ErrDeviceAlreadyActivated
+	}
+
+	var activeCount int
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(1) FROM license_devices
+		WHERE license_id = $1 AND status = 'active'
+	`, dev.LicenseID).Scan(&activeCount); err != nil {
+		return fmt.Errorf("count active devices: %w", err)
+	}
+	if max > 0 && activeCount >= max {
+		return ErrDeviceLimitExceeded
+	}
+
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO license_devices (license_id, instance_id, hardware_hash, device_name,
+		                             activated_at, last_heartbeat, status)
+		VALUES ($1, $2, $3, $4, NOW(), NOW(), 'active')
+		RETURNING id, activated_at, last_heartbeat
+	`, dev.LicenseID, dev.InstanceID, dev.HardwareHash, dev.DeviceName,
+	).Scan(&dev.ID, &dev.ActivatedAt, &dev.LastHeartbeat); err != nil {
+		return fmt.Errorf("insert device: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
 }
 
 func (s *PgxStore) DeactivateDevice(ctx context.Context, licenseKey, hardwareHash, reason string) error {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -14,7 +15,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// hotPromoteTableMap: 热表名 → 数据库迁移函数名。
+var partitionNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*_[0-9]{4}_[0-9]{2}$`)
+
+func validPartitionName(name string) bool {
+	return partitionNamePattern.MatchString(name) && !strings.HasSuffix(name, "_hot")
+}
+
+func quoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
 // 与 SQL 函数一一对应（partition_manager 模块定义）。
 var hotPromoteTableMap = map[string]string{
 	"request_logs_hot":           "promote_request_logs_hot_to_partition",
@@ -720,8 +730,8 @@ func (h *Handler) handleDataLifecycleDropPartition(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, "confirm must be true to execute drop operation")
 		return
 	}
-	if req.PartitionName == "" {
-		writeError(w, http.StatusBadRequest, "partition_name is required")
+	if req.PartitionName == "" || !validPartitionName(req.PartitionName) {
+		writeError(w, http.StatusBadRequest, "invalid partition_name")
 		return
 	}
 	if strings.HasSuffix(req.PartitionName, "_hot") {
@@ -776,7 +786,7 @@ func (h *Handler) handleDataLifecycleDropPartition(w http.ResponseWriter, r *htt
 		"parent_table", parentTable,
 		"rows", rowCount, "size", sizeHuman)
 
-	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", req.PartitionName)
+	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", quoteIdentifier(req.PartitionName))
 	if _, err := h.db.Exec(ctx, dropSQL); err != nil {
 		resp.Status = "failed"
 		resp.Message = fmt.Sprintf("drop failed: %v", err)
@@ -820,8 +830,8 @@ func (h *Handler) handleDataLifecycleDropPartitionAsync(w http.ResponseWriter, r
 		writeError(w, http.StatusBadRequest, "confirm must be true to execute drop operation")
 		return
 	}
-	if req.PartitionName == "" {
-		writeError(w, http.StatusBadRequest, "partition_name is required")
+	if req.PartitionName == "" || !validPartitionName(req.PartitionName) {
+		writeError(w, http.StatusBadRequest, "invalid partition_name")
 		return
 	}
 	if strings.HasSuffix(req.PartitionName, "_hot") {
@@ -885,7 +895,7 @@ func (h *Handler) runDropPartitionJob(ctx context.Context, run *JobRun, partitio
 
 	h.TouchHeartbeat(run, "执行 DROP TABLE")
 
-	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", partitionName)
+	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", quoteIdentifier(partitionName))
 	if _, err := h.db.Exec(ctx, dropSQL); err != nil {
 		h.failJob(run, fmt.Sprintf("drop failed: %v", err))
 		slog.Error("data-lifecycle: drop partition job failed", "job_id", run.RunID, "partition", partitionName, "error", err)

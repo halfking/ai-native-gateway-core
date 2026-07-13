@@ -2556,36 +2556,55 @@ func main() {
 		e.HideBanner = true
 		e.HidePort = true
 
-		// Echo JWT 认证中间件 — 确保所有运维平台 API 必须附带有效的 JWT
-		// 与 admin.AdminMiddleware 使用相同的 VerifyToken + jwtSecret 逻辑
+		// Customer-facing routes must use a separate Echo instance. Echo's
+		// e.Use middleware applies to every route in the instance, so mounting
+		// public customer routes on the admin instance would still require JWT.
+		customerEcho := echo.New()
+		customerEcho.HideBanner = true
+		customerEcho.HidePort = true
+
 		jwtSecret := func() string {
 			if s := os.Getenv("LLM_GATEWAY_JWT_SECRET"); s != "" {
 				return s
 			}
 			return cfg.SecretKey
 		}()
-		if jwtSecret != "" {
-			e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-				return func(c echo.Context) error {
-					auth := c.Request().Header.Get("Authorization")
-					if len(auth) < 7 || auth[:7] != "Bearer " {
-						return c.JSON(http.StatusUnauthorized, map[string]string{"error": "authentication required"})
-					}
-					tokenStr := auth[7:]
-					claims, err := admin.VerifyToken(tokenStr, jwtSecret)
-					if err != nil || claims.UserID <= 0 {
-						return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
-					}
-					// 将用户信息注入 Echo context
-					c.Set("user_id", claims.UserID)
-					c.Set("tenant_id", claims.TenantID)
-					c.Set("username", claims.Username)
-					c.Set("role", claims.Role)
-					return next(c)
+
+		jwtMiddleware := func(next echo.HandlerFunc) echo.HandlerFunc {
+			return func(c echo.Context) error {
+				if jwtSecret == "" {
+					return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "admin authentication is not configured"})
 				}
-			})
-		} else {
-			slog.Warn("JWT secret not configured — Echo bridge auth middleware DISABLED (insecure!)")
+				auth := c.Request().Header.Get("Authorization")
+				if len(auth) < 7 || auth[:7] != "Bearer " {
+					return c.JSON(http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+				}
+				tokenStr := auth[7:]
+				claims, err := admin.VerifyToken(tokenStr, jwtSecret)
+				if err != nil || claims.UserID <= 0 {
+					return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+				}
+				// 将用户信息注入 Echo context
+				c.Set("user_id", claims.UserID)
+				c.Set("tenant_id", claims.TenantID)
+				c.Set("username", claims.Username)
+				c.Set("role", claims.Role)
+				return next(c)
+			}
+		}
+		e.Use(jwtMiddleware)
+
+		requireSuperAdmin := func(next echo.HandlerFunc) echo.HandlerFunc {
+			return func(c echo.Context) error {
+				if role, _ := c.Get("role").(string); role != "super_admin" {
+					return c.JSON(http.StatusForbidden, map[string]string{"error": "super_admin required"})
+				}
+				return next(c)
+			}
+		}
+
+		if jwtSecret == "" {
+			slog.Warn("JWT secret not configured — admin Echo routes will reject requests")
 		}
 
 		pool := dbConn.Pool()
@@ -2631,15 +2650,16 @@ func main() {
 		licensingActivator := licensing.NewActivator(licensingCrypto, licensingStore, licensingDeviceManager)
 		licensingOffline := licensing.NewOfflineManager(licensingCrypto, licensingStore)
 		licensingHandler := licensing.NewAdminHandler(licensingStore, licensingCrypto, licensingActivator, licensingOffline, licensingValidator)
-		licensingHandler.RegisterRoutes(e.Group("/api/admin"))
-		licensing.RegisterModuleRoutes(e.Group("/api/admin"), licensingStore)
+		adminGroup := e.Group("/api/admin", requireSuperAdmin)
+		licensingHandler.RegisterRoutes(adminGroup)
+		licensing.RegisterModuleRoutes(adminGroup, licensingStore)
 		slog.Info("Phase 2: Licensing API enabled (/api/admin/licenses, /api/admin/modules)")
 
 		// 2026-07-13: Customer-facing license endpoints. Unauthenticated by
 		// design — the customer must query status & activate before any
 		// admin login. Mounted under /api/system/license/ on the same mux.
 		licensingCustomerAPI := licensing.NewCustomerAPI(licensingStore, licensingActivator, licensingOffline)
-		customerLicenseGroup := e.Group("/api/system/license")
+		customerLicenseGroup := customerEcho.Group("/api/system/license")
 		customerLicenseGroup.Use(noAuthCustomerMiddleware())
 		licensingCustomerAPI.RegisterRoutes(customerLicenseGroup)
 		slog.Info("Phase 2: Customer license API enabled (/api/system/license/*)")
@@ -2650,7 +2670,7 @@ func main() {
 		faultRuleEngine := fault.NewRuleEngine(faultStore, faultActionExecutor)
 		faultDetector := fault.NewDetector(faultStore, faultRuleEngine)
 		faultHandler := fault.NewAdminHandler(faultStore, faultDetector, faultRuleEngine)
-		faultHandler.RegisterRoutes(e.Group("/api/admin/faults"))
+		faultHandler.RegisterRoutes(adminGroup.Group("/faults"))
 		slog.Info("Phase 3: Fault Management API enabled (/api/admin/faults/*)")
 
 		// Phase 4: Auto-update (自动升级)
@@ -2660,18 +2680,16 @@ func main() {
 		autoupdateRollback := autoupdate.NewRollback("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
 		autoupdateAPI := autoupdate.NewAdminAPI(autoupdateStore, autoupdateDownloader, autoupdateInstaller, autoupdateRollback)
 		// 前端使用 /api/admin/releases，前端期望不含 /autoupdate 前缀
-		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/releases"))
+		autoupdateAPI.RegisterRoutes(adminGroup.Group("/releases"))
 		slog.Info("Phase 4: Auto-update API enabled (/api/admin/releases/*)")
 
-		// Autoupdate upgrade-logs 端点（前端使用 path = /api/admin/upgrade-logs 或 /api/admin/releases/upgrade-logs）
-		// 这里单独注册以兼容多种路径
-		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/autoupdate"))
+		autoupdateAPI.RegisterRoutes(adminGroup.Group("/autoupdate"))
 
 		// 2026-07-13: Customer-facing upgrade endpoints. Read-only — actual
 		// upgrade execution stays on /api/admin/releases/*. These allow the
 		// customer's browser to see "an update is available" before login.
 		autoupdateCustomerAPI := autoupdate.NewCustomerAPI(autoupdateStore, currentGatewayVersionProvider(), autoupdate.ChannelStable)
-		customerUpgradeGroup := e.Group("/api/system/upgrade")
+		customerUpgradeGroup := customerEcho.Group("/api/system/upgrade")
 		customerUpgradeGroup.Use(noAuthCustomerMiddleware())
 		autoupdateCustomerAPI.RegisterRoutes(customerUpgradeGroup)
 		slog.Info("Phase 4: Customer upgrade API enabled (/api/system/upgrade/*)")
@@ -2680,7 +2698,7 @@ func main() {
 		centerStore := center.NewPgxStore(pool)
 		centerServer := center.NewServer(centerStore)
 		centerAPI := center.NewAdminAPI(centerServer, centerStore)
-		centerAPI.RegisterRoutes(e.Group("/api/admin/center"))
+		centerAPI.RegisterRoutes(adminGroup.Group("/center"))
 		slog.Info("Phase 5: Center Ops API enabled (/api/admin/center/*)")
 
 		// Phase 7: VibeCoding
@@ -2689,19 +2707,18 @@ func main() {
 		vibecodingSessionManager := vibecoding.NewSessionManager(vibecodingStore)
 		vibecodingReviewManager := vibecoding.NewReviewManager(vibecodingStore)
 		vibecodingAPI := vibecoding.NewAdminAPI(vibecodingProjectManager, vibecodingSessionManager, vibecodingReviewManager)
-		vibecodingAPI.RegisterRoutes(e.Group("/api/admin/vibecoding"))
-		tenantops.NewHandler(pool).RegisterRoutes(e.Group("/api/tenant"))
+		vibecodingAPI.RegisterRoutes(adminGroup.Group("/vibecoding"))
+		tenantops.NewHandler(pool).RegisterRoutes(e.Group("/api/tenant", jwtMiddleware))
 		slog.Info("Phase 7: VibeCoding API enabled (/api/admin/vibecoding/*)")
 
 		// 将 Echo 挂载到 http.ServeMux
 		mux.Handle("/api/admin/", e)
 		mux.Handle("/api/tenant/", e)
-		// Customer-facing endpoints reuse the same Echo instance but only the
-		// /api/system/license/* and /api/system/upgrade/* subtrees were
-		// registered on it (see above). Mounting the same Echo at multiple
-		// prefixes is supported by http.ServeMux's longest-match semantics.
-		mux.Handle("/api/system/license/", e)
-		mux.Handle("/api/system/upgrade/", e)
+		// Customer-facing endpoints use an Echo instance without the admin JWT
+		// middleware. Keep this mount separate from the admin instance so public
+		// activation and status checks remain reachable before login.
+		mux.Handle("/api/system/license/", customerEcho)
+		mux.Handle("/api/system/upgrade/", customerEcho)
 		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
 	}
 
@@ -3763,6 +3780,7 @@ func incidentUpdateFromResult(r *routeincident.TransitionResult) *admin.LiveInci
 	u := r.Update
 	out := &admin.LiveIncidentUpdate{
 		Type:           "incident_update",
+		TenantID:       u.RouteKey.TenantID,
 		IncidentID:     u.IncidentID,
 		State:          string(u.State),
 		FailureStreak:  u.FailureStreak,

@@ -2,6 +2,7 @@ package licensing
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 )
 
@@ -26,36 +27,6 @@ func (dm *DeviceManager) ActivateDevice(ctx context.Context, req *ActivationRequ
 		}, nil
 	}
 
-	existingDev, err := dm.store.GetDeviceByHardwareHash(ctx, req.LicenseKey, req.HardwareHash)
-	if err != nil {
-		return nil, err
-	}
-
-	if existingDev != nil && existingDev.Status == "active" {
-		slog.Info("device already activated", "hardware_hash", req.HardwareHash)
-		activeDevices, _ := dm.store.GetActiveDevices(ctx, req.LicenseKey)
-		return &ActivationResponse{
-			Success:       true,
-			ActiveDevices: activeDevices,
-			Message:       "device already activated",
-		}, nil
-	}
-
-	activeCount, err := dm.store.CountActiveDevices(ctx, req.LicenseKey)
-	if err != nil {
-		return nil, err
-	}
-
-	if activeCount >= lic.MaxDevices {
-		activeDevices, _ := dm.store.GetActiveDevices(ctx, req.LicenseKey)
-		return &ActivationResponse{
-			Success:        false,
-			ActiveDevices:  activeDevices,
-			NeedDeactivate: true,
-			Message:        "device limit exceeded, please deactivate one device",
-		}, nil
-	}
-
 	newDev := &Device{
 		LicenseID:    lic.ID,
 		InstanceID:   req.InstanceID,
@@ -64,7 +35,34 @@ func (dm *DeviceManager) ActivateDevice(ctx context.Context, req *ActivationRequ
 		Status:       "active",
 	}
 
-	if err := dm.store.ActivateDevice(ctx, newDev); err != nil {
+	// Single transaction: the store rejects with ErrDeviceLimitExceeded or
+	// ErrDeviceAlreadyActivated when the corresponding invariant would be
+	// violated, so two concurrent activations cannot exceed MaxDevices.
+	err = dm.store.ActivateDeviceIfUnderLimit(ctx, newDev, lic.MaxDevices)
+	switch {
+	case err == nil:
+		// fall through to the success path below.
+	case errors.Is(err, ErrDeviceAlreadyActivated):
+		existingDev, _ := dm.store.GetDeviceByHardwareHash(ctx, req.LicenseKey, req.HardwareHash)
+		if existingDev != nil && existingDev.Status == "active" {
+			slog.Info("device already activated", "hardware_hash", req.HardwareHash)
+			activeDevices, _ := dm.store.GetActiveDevices(ctx, req.LicenseKey)
+			return &ActivationResponse{
+				Success:       true,
+				ActiveDevices: activeDevices,
+				Message:       "device already activated",
+			}, nil
+		}
+		return nil, err
+	case errors.Is(err, ErrDeviceLimitExceeded):
+		activeDevices, _ := dm.store.GetActiveDevices(ctx, req.LicenseKey)
+		return &ActivationResponse{
+			Success:        false,
+			ActiveDevices:  activeDevices,
+			NeedDeactivate: true,
+			Message:        "device limit exceeded, please deactivate one device",
+		}, nil
+	default:
 		return nil, err
 	}
 

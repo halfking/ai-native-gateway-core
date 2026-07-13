@@ -36,8 +36,10 @@ type StateObserver interface {
 
 	// UpdateOnFailure records a failed real request. After the configured
 	// consecutive-failure threshold it triggers a fast re-probe via the
-	// injected probe submitter.
-	UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID string)
+	// injected probe submitter. The supplied tenantID is propagated onto
+	// the emitted request_logs row (and downstream SSE envelopes) so the
+	// probe is attributed to the requesting tenant rather than "system".
+	UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID string)
 
 	// UpdateFromProbe applies an authoritative probe result (from a
 	// background or manual probe). Probe results always win over

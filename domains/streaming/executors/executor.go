@@ -498,7 +498,7 @@ type Executor struct {
 	// Nil disables credential state tracking (preserves legacy behavior).
 	StateObserver interface {
 		UpdateOnSuccess(ctx context.Context, credID int, model string, latencyMs int, requestID string)
-		UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID string)
+		UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID string)
 	}
 
 	// URSM (2026-07-03): 统一路由状态管理器，替代分散的状态管理逻辑。
@@ -1475,6 +1475,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					cand.RawModel,
 					kind,
 					requestID,
+					params.TenantID,
 				)
 			}
 
@@ -1674,6 +1675,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				cand.RawModel,
 				kind,
 				requestID,
+				params.TenantID,
 			)
 		}
 

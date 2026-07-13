@@ -512,7 +512,7 @@ func (s *Store) Get(ctx context.Context, tenantID, id string) (*Incident, error)
 		       version, created_at, updated_at
 		FROM route_incidents
 		WHERE id = $1
-		  AND tenant_id = $2
+		  AND ($2 = '' OR tenant_id = $2)
 	`
 	row := s.pool.QueryRow(ctx, sql, id, tenantID)
 	inc, err := scanIncident(row)

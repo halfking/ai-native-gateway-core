@@ -27,7 +27,7 @@ const step = ref(1)
 const status = ref<CustomerLicenseStatus | null>(null)
 const loading = ref(false)
 const onlineForm = ref({ license_key: '', device_name: '' })
-const offlineForm = ref({ signed_license: '', activation_code: '' })
+const offlineForm = ref({ signed_license: '', request_id: '', activation_code: '' })
 const lastResult = ref<ActivationResult | null>(null)
 const offlineRequestResult = ref<{ request_id: string; signed_request: string } | null>(null)
 
@@ -96,8 +96,8 @@ async function handleActivate() {
 }
 
 async function handleOfflineActivate() {
-  if (!offlineForm.value.signed_license.trim()) {
-    ElMessage.warning('请粘贴签名后的 License 内容')
+  if (!offlineForm.value.signed_license.trim() || !offlineForm.value.request_id.trim() || !offlineForm.value.activation_code.trim()) {
+    ElMessage.warning('请填写签名 License、Request ID 和 Activation Code')
     return
   }
   loading.value = true
@@ -154,7 +154,7 @@ function resetWizard() {
   lastResult.value = null
   offlineRequestResult.value = null
   onlineForm.value = { license_key: '', device_name: '' }
-  offlineForm.value = { signed_license: '', activation_code: '' }
+  offlineForm.value = { signed_license: '', request_id: '', activation_code: '' }
   refresh()
 }
 
@@ -309,7 +309,10 @@ onMounted(refresh)
             placeholder="粘贴 License Authority 审批后返回的 base64 签名 License"
           />
         </el-form-item>
-        <el-form-item label="Activation Code（可选，仅作记录）">
+        <el-form-item label="Request ID（必填）">
+          <el-input v-model="offlineForm.request_id" placeholder="粘贴审批对应的 Request ID" />
+        </el-form-item>
+        <el-form-item label="Activation Code（必填）">
           <el-input v-model="offlineForm.activation_code" placeholder="例如：ABCD2345" />
         </el-form-item>
       </el-form>

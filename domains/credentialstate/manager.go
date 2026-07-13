@@ -36,7 +36,7 @@ type Manager struct {
 	// 2026-07-13: 错误触发的主动探测提交函数（bg.ActiveProbeWorker.Submit）。
 	// 连续失败 ≥2 次时立即调用，让 ActiveProbeWorker 直接探测上游并把
 	// 探测结果写入 request_logs（自动出现在实时请求流）。
-	activeProbeSubmitter func(credID int, model string, parentReqID string)
+	activeProbeSubmitter func(credID int, model string, tenantID string, parentReqID string)
 
 	// 2026-07-13: 触发主动探测的连续失败阈值（默认 2，配置来自 settings.error_probe.consecutive_threshold）
 	activeProbeThreshold int
@@ -122,7 +122,7 @@ func (m *Manager) SetProbeSubmitter(credFn func(int), modelFn func(context.Conte
 // 立即调用 fn，fn 由 bg.ActiveProbeWorker.Submit 实现。
 //
 // threshold 传 0 或负数使用默认值 2。
-func (m *Manager) SetActiveProbeSubmitter(fn func(credID int, model string, parentReqID string), threshold int) {
+func (m *Manager) SetActiveProbeSubmitter(fn func(credID int, model string, tenantID string, parentReqID string), threshold int) {
 	m.activeProbeSubmitter = fn
 	if threshold > 0 {
 		m.activeProbeThreshold = threshold
@@ -189,7 +189,10 @@ func (m *Manager) UpdateOnSuccess(ctx context.Context, credID int, model string,
 }
 
 // UpdateOnFailure 请求失败时更新状态（含闪断保护）
-func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID string) {
+//
+// 探测触发时使用 requestID 的来源租户，使 request_logs 中的探测行归属
+// 到正确的租户，而不是先前硬编码的 "system"。
+func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID string) {
 	// 2026-07-01: 过滤不应计入凭据错误统计的情况
 	// 1. 用户取消（KindCanceled）：用户主动取消请求，不是凭据问题
 	// 2. 客户端错误（IsClientBug）：包括 model_not_found, tool_call_id_mismatch, unsupported_feature
@@ -238,7 +241,7 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 				"threshold", m.activeProbeThreshold,
 				"parent_request_id", requestID,
 			)
-			m.activeProbeSubmitter(credID, model, requestID)
+			m.activeProbeSubmitter(credID, model, tenantID, requestID)
 		}
 	}
 

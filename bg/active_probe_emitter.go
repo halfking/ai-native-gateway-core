@@ -44,6 +44,7 @@ func (e *ActiveProbeEmitter) Emit(
 	ctx context.Context,
 	credID int,
 	providerID int,
+	tenantID string,
 	rawModel string,
 	outboundModel string,
 	parentReqID string,
@@ -52,6 +53,10 @@ func (e *ActiveProbeEmitter) Emit(
 ) {
 	if e == nil || e.telemetry == nil || !e.telemetry.Enabled() {
 		return
+	}
+
+	if tenantID == "" {
+		tenantID = "default"
 	}
 
 	success := result.Status == ProbeStatusSuccess
@@ -88,6 +93,7 @@ func (e *ActiveProbeEmitter) Emit(
 		"probe_status":      string(result.Status),
 		"probe_err_code":    result.ErrCode,
 		"probe_latency_ms":  result.LatencyMs,
+		"tenant_id":         tenantID,
 	})
 	if err != nil {
 		autoDecision = []byte(`{}`)
@@ -99,7 +105,7 @@ func (e *ActiveProbeEmitter) Emit(
 
 	entry := &telemetry.RequestLogEntry{
 		RequestID:        requestID,
-		TenantID:         "system",
+		TenantID:         tenantID,
 		ClientModel:      strPtrTelemetry(rawModel),
 		OutboundModel:    strPtrTelemetry(outboundModel),
 		CredentialID:     &credIDCopy,

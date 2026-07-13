@@ -10,6 +10,7 @@ import {
   useRouteIncidents,
 } from './useRouteIncidents'
 import type { RouteIncidentUpdate } from '../types/routeIncident'
+import { store } from '../store'
 
 function makeUpdate(over: Partial<RouteIncidentUpdate> = {}): RouteIncidentUpdate {
   return {
@@ -38,6 +39,7 @@ function makeUpdate(over: Partial<RouteIncidentUpdate> = {}): RouteIncidentUpdat
 describe('useRouteIncidents', () => {
   beforeEach(() => {
     resetRouteIncidents()
+    store.userInfo = { id: 1, tenant_id: 'default', username: 'admin', display_name: 'Admin', email: '', role: 'super_admin', enabled: true }
   })
 
   it('registers an active incident under its affected lanes', () => {

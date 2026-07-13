@@ -79,6 +79,7 @@ type LiveStreamEnvelope struct {
 // convention; tests assert the field set.
 type LiveIncidentUpdate struct {
 	Type           string              `json:"type"`
+	TenantID       string              `json:"-"`
 	IncidentID     string              `json:"incident_id"`
 	State          string              `json:"state"`
 	FailureStreak  int                 `json:"failure_streak"`
@@ -877,6 +878,9 @@ func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 func (h *LiveStreamSSEHub) shouldDeliver(c *liveStreamClient, env LiveStreamEnvelope) bool {
 	if c.isSuper {
 		return true
+	}
+	if env.Incident != nil {
+		return normalizeLiveStreamTenant(env.Incident.TenantID) == normalizeLiveStreamTenant(c.tenantID)
 	}
 	if env.Request != nil {
 		return env.Request.TenantID == c.tenantID

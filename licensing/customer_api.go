@@ -2,6 +2,7 @@ package licensing
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -54,8 +55,6 @@ func (api *CustomerAPI) RegisterRoutes(g *echo.Group) {
 //	restricted— service is in restricted mode (see restricted_mode.go)
 type CustomerStatusResponse struct {
 	State            string     `json:"state"`
-	CustomerName     string     `json:"customer_name,omitempty"`
-	CustomerEmail    string     `json:"customer_email,omitempty"`
 	LicenseKey       string     `json:"license_key,omitempty"`
 	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
 	DaysRemaining    int        `json:"days_remaining,omitempty"`
@@ -94,9 +93,7 @@ func (api *CustomerAPI) handleStatus(c echo.Context) error {
 		return c.JSON(http.StatusOK, resp)
 	}
 
-	resp.CustomerName = lic.CustomerName
-	resp.CustomerEmail = lic.CustomerEmail
-	resp.LicenseKey = lic.LicenseKey
+	resp.LicenseKey = maskLicenseKey(lic.LicenseKey)
 	resp.ExpiresAt = &lic.ExpiresAt
 	resp.SubscriptionTier = lic.SubscriptionTier
 	resp.DaysRemaining = int(time.Until(lic.ExpiresAt).Hours() / 24)
@@ -183,9 +180,7 @@ func buildCustomerStatus(ctx context.Context, store Store, lic *License, hwHash 
 	}
 	resp := CustomerStatusResponse{
 		Mode:             mode,
-		CustomerName:     lic.CustomerName,
-		CustomerEmail:    lic.CustomerEmail,
-		LicenseKey:       lic.LicenseKey,
+		LicenseKey:       maskLicenseKey(lic.LicenseKey),
 		ExpiresAt:        &lic.ExpiresAt,
 		SubscriptionTier: lic.SubscriptionTier,
 		DaysRemaining:    int(time.Until(lic.ExpiresAt).Hours() / 24),
@@ -253,11 +248,10 @@ func (api *CustomerAPI) handleActivate(c echo.Context) error {
 type OfflineActivateRequest struct {
 	// SignedLicense is the base64-encoded SignedLicense envelope produced by
 	// the License Authority offline approval flow. The customer pastes this
-	// along with the ActivationCode into the offline activation form.
-	SignedLicense string `json:"signed_license"`
-	// ActivationCode is the human-readable 8-char code from the admin.
-	// Used as a sanity check; the cryptographic source of truth is SignedLicense.
-	ActivationCode string `json:"activation_code,omitempty"`
+	// along with the request id and one-time activation code.
+	SignedLicense  string `json:"signed_license"`
+	RequestID      string `json:"request_id"`
+	ActivationCode string `json:"activation_code"`
 }
 
 func (api *CustomerAPI) handleOfflineActivate(c echo.Context) error {
@@ -267,13 +261,8 @@ func (api *CustomerAPI) handleOfflineActivate(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
-	if strings.TrimSpace(req.SignedLicense) == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "signed_license is required"})
-	}
-
-	lic, err := api.offlineManager.VerifyOfflineLicense(ctx, req.SignedLicense)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	if strings.TrimSpace(req.SignedLicense) == "" || strings.TrimSpace(req.RequestID) == "" || strings.TrimSpace(req.ActivationCode) == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "signed_license, request_id, and activation_code are required"})
 	}
 
 	fp, err := GenerateFingerprint()
@@ -282,21 +271,51 @@ func (api *CustomerAPI) handleOfflineActivate(c echo.Context) error {
 	}
 	hwHash := fp.Hash()
 
+	offlineReq, err := api.store.GetOfflineRequest(ctx, strings.TrimSpace(req.RequestID))
+	if err != nil || offlineReq == nil || offlineReq.Status != "approved" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "offline request is not approved"})
+	}
+	if offlineReq.HardwareHash != hwHash || NormalizeActivationCode(req.ActivationCode) != NormalizeActivationCode(offlineReq.ActivationCode) {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "offline approval does not match this device"})
+	}
+
+	lic, err := api.offlineManager.VerifyOfflineLicense(ctx, req.SignedLicense)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	if lic.LicenseKey != offlineReq.LicenseKey || offlineReq.ApprovedLicense == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "offline license does not match the approved request"})
+	}
+	approved, err := MarshalToBase64(offlineReq.ApprovedLicense)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "invalid approved license"})
+	}
+	provided, err := UnmarshalFromBase64(req.SignedLicense)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid signed license"})
+	}
+	providedEncoded, err := MarshalToBase64(provided)
+	if err != nil || providedEncoded != approved {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "signed license does not match the approved request"})
+	}
+
 	device := &Device{
 		LicenseID:    lic.ID,
-		InstanceID:   uuid.New().String(),
+		InstanceID:   offlineReq.InstanceID,
 		HardwareHash: hwHash,
-		DeviceName:   defaultDeviceName("", fp),
+		DeviceName:   offlineReq.DeviceName,
 		Status:       "active",
 	}
-	if err := api.store.ActivateDevice(ctx, device); err != nil {
+	switch err := api.store.ActivateDeviceIfUnderLimit(ctx, device, lic.MaxDevices); {
+	case errors.Is(err, ErrDeviceAlreadyActivated):
+		return c.JSON(http.StatusConflict, map[string]string{"error": "device is already activated"})
+	case errors.Is(err, ErrDeviceLimitExceeded):
+		return c.JSON(http.StatusConflict, map[string]string{"error": "device limit exceeded"})
+	case err != nil:
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	slog.Info("customer offline license activated",
-		"license_key", lic.LicenseKey,
-		"hardware_hash", hwHash,
-		"with_code", req.ActivationCode != "")
+	slog.Info("customer offline license activated", "license_key", lic.LicenseKey, "hardware_hash", hwHash)
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"success":           true,
 		"expires_at":        lic.ExpiresAt,
@@ -391,4 +410,17 @@ func defaultDeviceName(provided string, fp *Fingerprint) string {
 		return fp.HostID
 	}
 	return "gateway"
+}
+
+// maskLicenseKey keeps the public status response useful for identifying the
+// bound license without returning the activation credential itself.
+func maskLicenseKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	if len(key) <= 4 {
+		return "****"
+	}
+	return "****" + key[len(key)-4:]
 }

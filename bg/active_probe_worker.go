@@ -65,16 +65,19 @@ type ActiveProbeWorker struct {
 }
 
 type probeTask struct {
-	CredID int
-	Model  string
+	CredID    int
+	Model     string
+	TenantID  string
+	RequestID string
 }
 
 type probeState struct {
 	CredentialID  int
 	Model         string
+	TenantID      string
+	ParentReqID   string
 	Attempt       int
 	NextRunAt     time.Time
-	ParentReqID   string
 	LastTriggerAt time.Time
 }
 
@@ -117,7 +120,7 @@ func probeKey(credID int, model string) string {
 // parentReqID is the request_id of the failed business request that
 // triggered the probe. Stored so the probe row in request_logs can be
 // correlated with the original failure via parent_request_id.
-func (w *ActiveProbeWorker) Submit(credID int, model string, parentReqID string) {
+func (w *ActiveProbeWorker) Submit(credID int, model string, tenantID string, parentReqID string) {
 	if w == nil || !w.cfg.Enabled {
 		return
 	}
@@ -137,6 +140,7 @@ func (w *ActiveProbeWorker) Submit(credID int, model string, parentReqID string)
 	w.running[key] = &probeState{
 		CredentialID:  credID,
 		Model:         model,
+		TenantID:      tenantID,
 		Attempt:       0,
 		NextRunAt:     time.Now(), // first attempt runs immediately
 		ParentReqID:   parentReqID,
@@ -145,10 +149,11 @@ func (w *ActiveProbeWorker) Submit(credID int, model string, parentReqID string)
 	w.mu.Unlock()
 
 	select {
-	case w.queue <- probeTask{CredID: credID, Model: model}:
+	case w.queue <- probeTask{CredID: credID, Model: model, TenantID: tenantID, RequestID: parentReqID}:
 		slog.Info("active_probe: submitted",
 			"cred_id", credID,
 			"model", model,
+			"tenant_id", tenantID,
 			"parent_req_id", parentReqID,
 		)
 	default:
@@ -302,8 +307,8 @@ func (w *ActiveProbeWorker) processOne(ctx context.Context, task probeTask) {
 	result.Log(task.CredID, task.Model, attempt)
 
 	// 3. Emit to request_logs (auto-pushed to live-stream SSE).
-	w.emitter.Emit(ctx, target.CredentialID, target.ProviderID, task.Model,
-		target.OutboundModel, state.ParentReqID, attempt, result)
+	w.emitter.Emit(ctx, target.CredentialID, target.ProviderID, state.TenantID,
+		task.Model, target.OutboundModel, state.ParentReqID, attempt, result)
 
 	// 4. Close the loop with the state manager.
 	if result.Status == ProbeStatusSuccess {
