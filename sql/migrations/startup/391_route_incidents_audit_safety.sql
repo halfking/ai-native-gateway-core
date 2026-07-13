@@ -97,11 +97,20 @@ CREATE TABLE IF NOT EXISTS diagnostic_runs (
     heartbeat_at        TIMESTAMPTZ,
     trigger_source      TEXT,
     error               TEXT,
-    summary_json        JSONB NOT NULL DEFAULT '{}'::jsonb
+    summary_json        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE diagnostic_runs
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 CREATE INDEX IF NOT EXISTS idx_diagnostic_runs_tenant_started
     ON diagnostic_runs (tenant_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_diagnostic_runs_created
+    ON diagnostic_runs (created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_diagnostic_runs_incident
     ON diagnostic_runs (incident_id);

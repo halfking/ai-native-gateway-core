@@ -122,6 +122,20 @@ for BASE_SQL in "$ROOT_DIR/sql/schema/00-prereqs.sql" "$BASE_SCHEMA_SQL" "$ROOT_
 done
 rm -f /tmp/r112_base_$$.log
 
+# A date-named migration sorts before the numbered hot-table migration, but
+# it updates the same tables. Create local heap targets first so a clean test
+# database can apply migrations in filename order.
+info "Ensuring local hot-table prerequisites..."
+pg_exec_db -c "
+  CREATE TABLE IF NOT EXISTS request_logs_hot
+  (LIKE request_logs INCLUDING ALL);
+  CREATE TABLE IF NOT EXISTS usage_ledger_hot
+  (LIKE usage_ledger INCLUDING ALL);
+  CREATE TABLE IF NOT EXISTS request_wal_hot
+  (LIKE request_wal INCLUDING ALL);
+" >/dev/null
+ok "local hot-table prerequisites ready"
+
 info "应用 migrations (目录: $MIGRATIONS_DIR)..."
 
 # 排序: 001-052 (主序列) + 291-300 (补丁序列)
@@ -151,6 +165,7 @@ SKIP_MIGRATIONS=(
   "317_partition_credential_model_index.sql"
   "321_cleanup_stale_in_progress.sql"
   "340_create_partition_query_views.sql"
+  "342_create_other_table_views.sql"
   "341_hot_table_independence.fix.sql"
   "343_fix_routing_decision_log_columnar.sql"
   "344_usage_ledger_hot_independence.sql"
@@ -246,6 +261,24 @@ if [ -f "$LOCAL_SEED" ]; then
     err "local mock credential seed 加载失败 (非致命, v1 chat 转发将不可用)"
     err "  排查: PGPASSWORD=$PG_PASS docker exec -i $PG_CONTAINER psql -U $PG_USER -d $TARGET_DB -f $LOCAL_SEED"
   fi
+fi
+
+# Apply the same additive migration that will later be synchronized to 252.
+# Keeping this as one source of truth prevents local-only schema drift.
+FORMAL_MIGRATION="$ROOT_DIR/deploy/sql/migrations/2026-07-14-routing-persistence-hardening.sql"
+if [ -f "$FORMAL_MIGRATION" ]; then
+  info "Applying routing persistence hardening migration..."
+  if PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" -i \
+       "$PG_CONTAINER" psql -U "$PG_USER" -d "$TARGET_DB" \
+       -v ON_ERROR_STOP=1 -f - < "$FORMAL_MIGRATION" >/tmp/r112_routing_hardening_$$.log 2>&1; then
+    ok "routing persistence hardening migration applied"
+  else
+    err "routing persistence hardening migration failed"
+    head -40 /tmp/r112_routing_hardening_$$.log | sed 's/^/    /' >&2
+    rm -f /tmp/r112_routing_hardening_$$.log
+    exit 1
+  fi
+  rm -f /tmp/r112_routing_hardening_$$.log
 fi
 
 # ── 验证 ──

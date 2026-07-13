@@ -28,7 +28,11 @@ services:
   # PostgreSQL (Citus 11.3, 与 184/71 生产一致)
   # ─────────────────────────────────────────────────────────────────────
   postgres:
-    image: citusdata/citus:11.3.0
+    # 2026-07-14: switched from citusdata/citus:11.3.0 (amd64 only) to
+    # pgvector/pgvector:pg17 (native arm64). The gateway does not use
+    # Citus distributed features in local tests; plain PG17 + pgvector
+    # matches production column types and keeps everything arm64-native.
+    image: pgvector/pgvector:pg17
     container_name: r112_postgres
     environment:
       <<: *pg-env
@@ -140,8 +144,8 @@ services:
   gateway:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: r112-gateway:local
+      dockerfile: Dockerfile.local-arm64
+    image: r112-gateway:local-arm64
     container_name: r112_gateway
     depends_on:
       postgres:
@@ -172,6 +176,7 @@ services:
       LLM_GATEWAY_CORS_ORIGINS: "*"
       # ── 附件目录 (容器内可写, 避免启动时 mkdir 失败) ──
       LLM_GATEWAY_ATTACHMENT_DIR: "/tmp/attachments"
+      LLM_GATEWAY_BACKUP_DIR: "/tmp/llm-gateway-backups"
       # ── 指向真 mock upstream (仅用于无 credential 命中时的兜底) ──
       LLM_GATEWAY_UPSTREAM: "http://llm-mock-upstream:18080"
       # ── Seed admin password (本地测试) ──
@@ -189,13 +194,12 @@ services:
 
   # ─────────────────────────────────────────────────────────────────────
   # Gateway v2 (本地 build, cmd/gateway-v2/Dockerfile)
+  # 2026-07-14: disabled for arm64 local test (Dockerfile still amd64)
   # ─────────────────────────────────────────────────────────────────────
   gateway-v2:
-    build:
-      context: .
-      dockerfile: cmd/gateway-v2/Dockerfile
-    image: r112-gateway-v2:local
+    image: r112-gateway-v2:disabled
     container_name: r112_gateway_v2
+    profiles: ["v2"]
     depends_on:
       postgres:
         condition: service_healthy

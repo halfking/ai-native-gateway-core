@@ -1282,24 +1282,12 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if mnf, ok := execErr.(*modelNotFoundError); ok {
 			mnfCtx, mnfCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 			defer mnfCancel()
-			// Step 5 (2026-06-18): removed the e.disableModelOffer(...) call.
-			//
-			// Why: KindModelNotFound is in the IsClientBug set (errorsx.IsClientBug),
-			// so disableModelOffer was guaranteed to early-return after logging a
-			// warn. It was dead code in the only path that called it, AND it
-			// masked the actual intent ("this credential's offer is gone — keep
-			// moving, do NOT punish the credential") behind a misleading log.
-			//
-			// What we do instead:
-			//   1. record a row in model_probe_runs so the
-			//      /api/routing/recent-model-failures badge can surface it
-			//      to the operator.
-			//   2. continue to the next candidate — the credential stays
-			//      available, the circuit is not opened, the cooling state
-			//      is not written. The classifier + targeted probe will
-			//      catch a real "this model is gone" pattern within the
-			//      next 30s-2m-5m-15m backoff window.
+			// ModelNotFound is a provider/model compatibility failure, not a
+			// client bug. Record it at model-binding scope immediately so this
+			// credential/model pair leaves the candidate pool while the probe
+			// worker determines whether the offer has recovered.
 			e.recordModelNotFound(mnfCtx, mnf.credentialID, mnf.rawModel, mnf.body)
+			e.writeCredentialStateOnError(mnfCtx, mnf.credentialID, mnf.rawModel, errorsx.KindModelNotFound, execErr)
 			// Step 6 (2026-06-18): MnfStreak — client hot-path break
 			// for persistent (not intermittent) model_not_found. The
 			// background probe consensus (bg/model_probe.go) owns
@@ -1307,14 +1295,6 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// user experience when the upstream has clearly gone
 			// away.
 			e.recordMnfStreak(params, cand.CredentialID)
-
-			// BUG-4 fix (2026-06-18): If this credential+model has
-			// accumulated too many recent model_not_found errors (from
-			// both routing_404 and scheduler probes), temporarily cool
-			// the binding so the router skips it for the next N minutes.
-			// This prevents a 0%-success credential from being
-			// repeatedly selected when it's the only routable candidate.
-			e.coolBindingOnMnfStreak(mnfCtx, cand.CredentialID, mnf.rawModel)
 
 			lastErr = execErr
 			lastKind = errorsx.KindModelNotFound
@@ -1608,6 +1588,13 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"err_msg":      execErr.Error(),
 				},
 			)
+		} else {
+			// 2026-07-13: defensive log when FailureLogger is nil
+			// (diagnosis aid for candidate_failure_logs write gaps).
+			slog.Warn("executor: FailureLogger is nil, candidate failure not logged",
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel,
+				"error_kind", kind)
 		}
 
 		failureCtx, failureCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
@@ -1906,13 +1893,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 // background worker will pick the binding up and run targeted probes
 // (consensus + backoff) to decide whether to mark it broken_confirmed.
 //
-// We deliberately do NOT touch model_offers.available or
-// credentials.availability_state here — KindModelNotFound is in the
-// IsClientBug set (errorsx.IsClientBug), and a transient 404 from one
-// upstream should not cool the credential or strip the offer. The 3-strike
-// consensus logic in bg/model_probe.go is the only thing that may eventually
-// mark a binding unavailable, and it only does so after 3 *consecutive*
-// targeted probes agree the model is gone.
+// This records the evidence row only. The executor's MNF branch separately
+// writes the per-model binding state through the credential Writer; the probe
+// worker remains responsible for confirming recovery or a persistent outage.
 func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, rawModel, body string) {
 	if e.DB == nil || !e.DB.Enabled() {
 		return
@@ -3112,7 +3095,7 @@ func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
 	case errorsx.KindAuth, errorsx.KindAuthRevoked,
 		errorsx.KindQuota, errorsx.KindQuotaPeriodic, errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent,
 		errorsx.KindConcurrent, errorsx.KindRateLimit,
-		errorsx.KindStreamTimeout:
+		errorsx.KindStreamTimeout, errorsx.KindModelNotFound:
 		return true
 	default:
 		return false

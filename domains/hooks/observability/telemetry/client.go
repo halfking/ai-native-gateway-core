@@ -367,7 +367,9 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 		if err := c.persistRequestLog(entry); err != nil {
 			if c.fallback != nil {
 				if fallbackErr := c.fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry); fallbackErr != nil {
-					slog.Warn("telemetry request sync fallback failed", "request_id", entry.RequestID, "error", fallbackErr)
+					slog.Warn("telemetry request sync fallback failed", "request_id", entry.RequestID, "db_error", err, "fallback_error", fallbackErr)
+				} else {
+					slog.Warn("telemetry request db persist failed; fallback written", "request_id", entry.RequestID, "op", entry.Op, "error", err)
 				}
 			} else {
 				slog.Warn("telemetry request sync persist failed", "request_id", entry.RequestID, "op", entry.Op, "error", err)
@@ -433,7 +435,9 @@ func (c *Client) flush(batch []any) {
 			if err := c.persistRequestLog(v); err != nil {
 				if c.fallback != nil {
 					if fallbackErr := c.fallback.WriteRequestLog(context.Background(), v.RequestID+":"+string(v.Op), v); fallbackErr != nil {
-						slog.Warn("telemetry request fallback failed", "request_id", v.RequestID, "error", fallbackErr)
+						slog.Warn("telemetry request fallback failed", "request_id", v.RequestID, "db_error", err, "fallback_error", fallbackErr)
+					} else {
+						slog.Warn("telemetry request db persist failed; fallback written", "request_id", v.RequestID, "op", v.Op, "error", err)
 					}
 				} else {
 					slog.Warn("telemetry request db persist failed", "request_id", v.RequestID, "op", v.Op, "error", err)

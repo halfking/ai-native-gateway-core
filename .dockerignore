@@ -1,7 +1,7 @@
 # Build artifacts (regenerated inside the image)
 web/node_modules
-web/dist
 web/.vite
+# NOTE: web/dist is NOT ignored for Dockerfile.local-arm64 (pre-built COPY)
 
 # VCS / IDE
 .git

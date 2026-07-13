@@ -25,13 +25,13 @@ func TestNewAuditTrimmer_Defaults(t *testing.T) {
 
 func TestAuditTrimmer_TrimOnce_NilPool(t *testing.T) {
 	tr := NewAuditTrimmer(nil)
-	overridesDeleted, auditDeleted, err := tr.TrimOnce(context.Background())
+	overridesDeleted, auditDeleted, armorDeleted, err := tr.TrimOnce(context.Background())
 	if err != nil {
 		t.Errorf("expected nil error when pool is nil, got %v", err)
 	}
-	if overridesDeleted != 0 || auditDeleted != 0 {
-		t.Errorf("expected 0 deletes with nil pool, got %d/%d",
-			overridesDeleted, auditDeleted)
+	if overridesDeleted != 0 || auditDeleted != 0 || armorDeleted != 0 {
+		t.Errorf("expected 0 deletes with nil pool, got %d/%d/%d",
+			overridesDeleted, auditDeleted, armorDeleted)
 	}
 }
 

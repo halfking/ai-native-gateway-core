@@ -39,6 +39,12 @@ func fpPinKey(sessionID string, credentialID int) string {
 	return fmt.Sprintf("llmgw:sess_cred_fp:%s:%d", sessionID, credentialID)
 }
 
+// modelIndexKey 生成模型级索引key (包含该模型下所有凭据的 rawModel 映射)
+// 用于 DB 降级时替代 DB 查询发现候选凭据
+func modelIndexKey(model string) string {
+	return fmt.Sprintf("ursm:model:%s", model)
+}
+
 // concSlotKey 生成并发槽全局计数key
 func concSlotKey(credentialID int) string {
 	return fmt.Sprintf("llmgw:conc_slot:%d", credentialID)
