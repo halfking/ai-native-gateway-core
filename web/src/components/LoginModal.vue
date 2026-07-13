@@ -52,7 +52,8 @@ async function handleLogin() {
       } else {
         try {
           const me = await getAuthMe()
-          setUserInfo(me)
+          const meAny = me as { user?: typeof resp.user }
+          setUserInfo(meAny?.user ?? me)
         } catch { /* ignore */ }
       }
       close()
