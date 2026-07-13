@@ -249,12 +249,9 @@ watch(
 .swim-lane {
   display: flex;
   align-items: stretch;
-  gap: 8px;
-  min-height: 68px;
+  gap: 10px;
+  min-height: 72px;
   padding: 4px 0;
-  /* flex item 默认 min-width:auto 会阻止父容器内收缩，导致宽屏以下
-   * 视口下 swim-lane 把父容器顶超出滚动；显式 0 让 ResizeObserver 拿到
-   * 真实的可用宽度。 */
   min-width: 0;
   width: 100%;
   max-width: 100%;
@@ -262,19 +259,19 @@ watch(
 }
 
 .swim-lane__label {
-  /* 固定宽度的左侧标题 — 已显式足够放常见原厂/供应商/模型名，长名折行。 */
   flex: 0 0 160px;
   min-width: 0;
   width: 160px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 6px 10px;
-  background: var(--bg-subtle, #161b22);
+  padding: 8px 10px;
+  background: linear-gradient(180deg, #1a1f27 0%, #161b22 100%);
   border: 1px solid var(--border, #30363d);
-  border-radius: 6px;
-  gap: 4px;
+  border-radius: 8px;
+  gap: 5px;
   overflow-wrap: break-word;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .swim-lane__name {
@@ -335,22 +332,27 @@ watch(
 
 
 .swim-lane__track {
-  /* flex: 1 1 auto + min-width: 0 才是"占满剩余空间 + 可被压缩"的正确写法；
-   * 缺 min-width:0 时，ResizeObserver 拿到的 clientWidth 会比预期大，
-   * maxVisibleTiles 计算错误，色块超出滚动条 / 进入下一行。 */
   flex: 1 1 0;
   min-width: 0;
   width: auto;
   display: flex;
   align-items: center;
-  background: var(--bg-subtle, #161b22);
+  background:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent calc(80px + 6px - 1px),
+      rgba(255, 255, 255, 0.035) calc(80px + 6px - 1px),
+      rgba(255, 255, 255, 0.035) calc(80px + 6px)
+    ),
+    linear-gradient(180deg, #14181f 0%, #161b22 100%);
   border: 1px solid var(--border, #30363d);
-  border-radius: 6px;
-  padding: 4px 8px;
+  border-radius: 8px;
+  padding: 6px 10px;
   overflow: hidden;
-  /* 不要横向滚动 — 超出显示宽度的请求由 JS 截断显示最新的 N 个 */
   overflow-x: hidden;
   overflow-y: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .swim-lane__tiles {
@@ -360,8 +362,8 @@ watch(
   min-height: 60px;
   width: 100%;
   min-width: 0;
-  /* 最新的请求贴右侧（视觉上像时间轴向右流动） */
-  justify-content: flex-start;
+  /* 最新请求靠右，形成时间轴向右流动的观感 */
+  justify-content: flex-end;
   flex-wrap: nowrap;
 }
 

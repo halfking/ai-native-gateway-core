@@ -51,4 +51,10 @@ describe('dashboard degraded-mode contract', () => {
     expect(source).toContain('error_code?:')
     expect(source).toContain('hint?:')
   })
+
+  it('does not show global empty state on live stream tab (stream handles its own empty UI)', async () => {
+    const source = await readViewSource('DashboardViewV2.vue')
+    expect(source).toMatch(/activeTab !== 'stream'/)
+    expect(source).toMatch(/LiveRequestStreamV2 自行处理/)
+  })
 })

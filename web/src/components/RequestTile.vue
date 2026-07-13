@@ -1,18 +1,11 @@
 <script setup lang="ts">
 // RequestTile.vue — 请求色块组件（80x60）
-// 2026-07-05: 泳道系统中的单个请求可视化
-// 2026-07-13 v4: 视觉重构
-//   - 状态以「左上角小三角形」表示：failure=红、success=绿、in_progress=蓝、cancelled=灰
-//   - 边框色 = 模型/原厂色（vendor/provider）
-//   - 探测/测试请求在三角形中显示 "T"
-//   - 文字统一亮色（暗色皮肤下可读性好）
-//   - 新增空闲（idle）样式：虚框表示
+// 2026-07-13 v5: 现代观测面板风格 — 玻璃质感卡片 + 左侧色带 + 状态圆点
 
 import { computed } from 'vue'
 import type { RequestTile as RequestTileType, GroupByDimension } from '../types/swimlane'
 import {
   VENDOR_COLORS,
-  getStatusBorderKey,
   calculateFontSize,
   truncateText,
 } from '../types/swimlane'
@@ -29,39 +22,27 @@ const emit = defineEmits<{
   click: [requestId: string]
 }>()
 
-// 边框色（模型/原厂色） - 2026-07-13 v4: 边框色表示模型来源
-const borderColor = computed(() => {
+const accentColor = computed(() => {
   return VENDOR_COLORS[props.tile.vendor] || VENDOR_COLORS['__unknown__']
 })
 
-// 状态三角形颜色 - 2026-07-13 v4: 左上角小三角形
 const statusColor = computed(() => {
   const s = props.tile.status
-  // 优先级：failure > success > in_progress > cancelled
-  if (s === 'failure') return '#ef4444'          // 红
-  if (s === 'success') return '#22c55e'          // 绿
-  if (s === 'in_progress') return '#3b82f6'      // 蓝
-  if (s === 'cancelled' || s === 'canceled') return '#6b7280' // 用户取消（灰）
-  if (s === 'idle') return 'transparent'        // 空闲不显示三角
-  return '#a1a1aa'                                // 兜底灰
+  if (s === 'failure') return '#ef4444'
+  if (s === 'success') return '#22c55e'
+  if (s === 'in_progress') return '#3b82f6'
+  if (s === 'cancelled' || s === 'canceled') return '#9ca3af'
+  if (s === 'idle') return 'transparent'
+  return '#a1a1aa'
 })
 
-// 是否显示三角形（空闲不显示）
-const showStatusTriangle = computed(() => {
-  return props.tile.status !== 'idle'
-})
+const showStatusDot = computed(() => props.tile.status !== 'idle')
 
-// 是否是探测/测试请求
-const isTestRequest = computed(() => {
-  return props.tile.is_probe === true
-})
+const isTestRequest = computed(() => props.tile.is_probe === true)
+const isIdle = computed(() => props.tile.status === 'idle')
+const isInProgress = computed(() => props.tile.status === 'in_progress')
+const isFailure = computed(() => props.tile.status === 'failure')
 
-// 是否空闲块
-const isIdle = computed(() => {
-  return props.tile.status === 'idle'
-})
-
-// 时间显示（HH:mm）
 const timeLabel = computed(() => {
   const date = new Date(props.tile.timestamp)
   const hh = String(date.getHours()).padStart(2, '0')
@@ -69,24 +50,17 @@ const timeLabel = computed(() => {
   return `${hh}:${mm}`
 })
 
-// 延迟显示
 const latencyLabel = computed(() => {
   if (!props.tile.latency_ms) return ''
   const ms = props.tile.latency_ms
-  if (ms >= 1000) {
-    return `${(ms / 1000).toFixed(1)}s`
-  }
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`
   return `${Math.round(ms)}ms`
 })
 
-// 模型名称（动态字体大小）
-const modelFontSize = computed(() => {
-  return calculateFontSize(props.tile.model, 80)
-})
+const modelFontSize = computed(() => calculateFontSize(props.tile.model, 80))
 
-// 第二行内容（根据分组模式）
 const line2Content = computed(() => {
-  if (isIdle.value) return '空闲'
+  if (isIdle.value) return props.tile.model || '空闲'
   if (props.tile.is_probe) {
     const origin = props.tile.probe_origin === 'gateway' ? 'GW' :
                    props.tile.probe_origin === 'scheduled' ? 'SCHED' : 'DIRECT'
@@ -94,24 +68,25 @@ const line2Content = computed(() => {
     return `${origin}${attempt}`
   }
 
-  if (props.groupBy === 'vendor') {
+  if (props.groupBy === 'vendor' || props.groupBy === 'provider') {
     return truncateText(props.tile.model, 12)
   }
-  if (props.groupBy === 'provider') {
-    return truncateText(props.tile.model, 12)
-  }
-  // model模式：显示状态或错误
   if (props.tile.status === 'success') return '✓ 成功'
-  if (props.tile.status === 'in_progress') return '⋯ 处理中'
-  if (props.tile.status === 'cancelled' || props.tile.status === 'canceled') return '取消'
+  if (props.tile.status === 'in_progress') return '处理中'
+  if (props.tile.status === 'cancelled' || props.tile.status === 'canceled') return '已取消'
   if (props.tile.error_kind) {
-    const label = errorKindLabel(props.tile.error_kind)
-    return truncateText(label, 12)
+    return truncateText(errorKindLabel(props.tile.error_kind), 12)
   }
   return '—'
 })
 
-// 完整的 tooltip 信息
+const line3Content = computed(() => {
+  if (isIdle.value) return '心跳占位'
+  if (props.groupBy === 'vendor') return truncateText(props.tile.provider, 10)
+  if (props.groupBy === 'provider') return truncateText(props.tile.vendor, 10)
+  return truncateText(props.tile.provider, 10)
+})
+
 const tooltipText = computed(() => {
   const lines: string[] = []
   if (props.tile.is_probe) {
@@ -119,9 +94,7 @@ const tooltipText = computed(() => {
     const originLabel = props.tile.probe_origin === 'gateway' ? '网关路径' :
                         props.tile.probe_origin === 'scheduled' ? '定时探测' : '直连上游'
     lines.push(`来源: ${originLabel}`)
-    if (props.tile.probe_attempt) {
-      lines.push(`轮次: 第 ${props.tile.probe_attempt} 轮`)
-    }
+    if (props.tile.probe_attempt) lines.push(`轮次: 第 ${props.tile.probe_attempt} 轮`)
   }
   if (props.tile.status === 'failure') {
     if (props.tile.error_kind) {
@@ -151,12 +124,8 @@ const tooltipText = computed(() => {
     const c = props.tile.completion_tokens ?? 0
     lines.push(`Token: ${p} + ${c}`)
   }
-  if (props.tile.cost_usd != null) {
-    lines.push(`费用: $${props.tile.cost_usd.toFixed(4)}`)
-  }
-  if (props.tile.request_id) {
-    lines.push(`ID: ${props.tile.request_id.slice(0, 12)}`)
-  }
+  if (props.tile.cost_usd != null) lines.push(`费用: $${props.tile.cost_usd.toFixed(4)}`)
+  if (props.tile.request_id) lines.push(`ID: ${props.tile.request_id.slice(0, 12)}`)
   if (props.tile.timestamp) {
     try {
       lines.push(`时间: ${new Date(props.tile.timestamp).toLocaleString()}`)
@@ -165,19 +134,8 @@ const tooltipText = computed(() => {
   return lines.join('\n')
 })
 
-// 第三行内容（根据分组模式）
-const line3Content = computed(() => {
-  if (isIdle.value) return '心跳'
-  if (props.groupBy === 'vendor') {
-    return truncateText(props.tile.provider, 10)
-  }
-  if (props.groupBy === 'provider') {
-    return truncateText(props.tile.vendor, 10)
-  }
-  return truncateText(props.tile.provider, 10)
-})
-
 function handleClick() {
+  if (isIdle.value) return
   emit('click', props.tile.request_id)
 }
 </script>
@@ -190,114 +148,188 @@ function handleClick() {
       'request-tile--dimmed': isDimmed,
       'request-tile--probe': tile.is_probe,
       'request-tile--idle': isIdle,
+      'request-tile--in-progress': isInProgress,
+      'request-tile--failure': isFailure,
     }"
     :style="{
-      '--border-color': borderColor,
+      '--accent-color': accentColor,
       '--status-color': statusColor,
       '--model-font-size': modelFontSize + 'px',
     }"
     :title="tooltipText"
     @click="handleClick"
   >
-    <!-- 2026-07-13 v4: 左上角状态三角形（探测请求在三角形中显示 "T"） -->
-    <div v-if="showStatusTriangle" class="request-tile__status-corner">
-      <span v-if="isTestRequest" class="request-tile__status-label">T</span>
-    </div>
+    <div class="request-tile__accent" aria-hidden="true" />
+    <span
+      v-if="showStatusDot"
+      class="request-tile__status-dot"
+      :class="{ 'request-tile__status-dot--pulse': isInProgress }"
+      aria-hidden="true"
+    />
+    <span v-if="isTestRequest" class="request-tile__probe-badge" aria-hidden="true">T</span>
 
-    <div class="request-tile__time" v-if="!isIdle">{{ timeLabel }}</div>
-    <div class="request-tile__model">{{ line2Content }}</div>
-    <div class="request-tile__provider">{{ line3Content }}</div>
-    <div class="request-tile__latency" v-if="latencyLabel && !isIdle">{{ latencyLabel }}</div>
+    <div class="request-tile__body">
+      <div v-if="!isIdle" class="request-tile__time">{{ timeLabel }}</div>
+      <div class="request-tile__model">{{ line2Content }}</div>
+      <div class="request-tile__footer">
+        <span class="request-tile__provider">{{ line3Content }}</span>
+        <span v-if="latencyLabel && !isIdle" class="request-tile__latency">{{ latencyLabel }}</span>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .request-tile {
+  --tile-radius: 8px;
   width: 80px;
   height: 60px;
-  border-radius: 4px;
-  border: 0.75px solid var(--border-color, #6b7280);
-  background: transparent;
-  padding: 4px 6px;
+  border-radius: var(--tile-radius);
+  border: 1px solid color-mix(in srgb, var(--accent-color, #6b7280) 38%, transparent);
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--accent-color, #6b7280) 16%, #1c2128) 0%,
+      color-mix(in srgb, var(--accent-color, #6b7280) 6%, #161b22) 100%
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 1px 2px rgba(0, 0, 0, 0.25);
+  padding: 0;
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
                'PingFang SC', 'Microsoft YaHei', sans-serif;
   display: flex;
-  flex-direction: column;
-  justify-content: space-between;
   flex-shrink: 0;
   position: relative;
   overflow: hidden;
 }
 
 .request-tile:hover {
-  transform: scale(1.08);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  transform: translateY(-2px) scale(1.04);
+  border-color: color-mix(in srgb, var(--accent-color, #6b7280) 65%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 6px 16px rgba(0, 0, 0, 0.35),
+    0 0 0 1px color-mix(in srgb, var(--accent-color, #6b7280) 25%, transparent);
   z-index: 10;
 }
 
 .request-tile--highlighted {
-  box-shadow: 0 0 0 2.5px rgba(99, 102, 241, 0.6);
+  box-shadow:
+    0 0 0 2px rgba(99, 102, 241, 0.55),
+    0 4px 14px rgba(99, 102, 241, 0.2);
   z-index: 5;
 }
 
 .request-tile--dimmed {
-  opacity: 0.4;
-  filter: grayscale(0.5);
+  opacity: 0.38;
+  filter: grayscale(0.45);
 }
 
-/* 空闲色块：虚框表示 */
 .request-tile--idle {
-  border: 0.75px dashed var(--border-color, #6b7280);
-  opacity: 0.55;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent-color, #6b7280) 30%, transparent);
+  background: transparent;
+  box-shadow: none;
+  cursor: default;
+  opacity: 0.6;
 }
 
-/* 2026-07-13 v4: 左上角小三角形（CSS border 实现，18px 放大版） */
-.request-tile__status-corner {
+.request-tile--idle:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.request-tile--failure {
+  border-color: color-mix(in srgb, #ef4444 45%, var(--accent-color, #6b7280));
+}
+
+.request-tile--probe {
+  border-color: color-mix(in srgb, #38bdf8 50%, var(--accent-color, #6b7280));
+}
+
+.request-tile__accent {
   position: absolute;
-  top: 0;
   left: 0;
-  width: 0;
-  height: 0;
-  border-style: solid;
-  border-width: 18px 18px 0 0;
-  border-color: var(--status-color, #6b7280) transparent transparent transparent;
-  z-index: 2;
-  pointer-events: none;
-  line-height: 1;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent-color, #6b7280);
+  border-radius: var(--tile-radius) 0 0 var(--tile-radius);
 }
 
-.request-tile__status-label {
+.request-tile--failure .request-tile__accent {
+  background: linear-gradient(180deg, #ef4444, var(--accent-color, #6b7280));
+}
+
+.request-tile__status-dot {
   position: absolute;
-  top: -16px;
-  left: 1px;
-  font-size: 12px;
-  font-weight: 800;
-  color: #ffffff;
-  text-shadow: 0 0 2px rgba(0,0,0,0.7);
-  line-height: 1;
-  width: 14px;
-  text-align: center;
-  letter-spacing: -0.4px;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-color, #a1a1aa);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+  z-index: 2;
 }
 
-/* 2026-07-13 v4: 亮色文字（暗主题下可读） */
+.request-tile__status-dot--pulse {
+  animation: status-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35), 0 0 0 0 rgba(59, 130, 246, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35), 0 0 0 4px rgba(59, 130, 246, 0.25);
+  }
+}
+
+.request-tile__probe-badge {
+  position: absolute;
+  top: 3px;
+  left: 6px;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  color: #e0f2fe;
+  background: rgba(14, 165, 233, 0.55);
+  border: 1px solid rgba(56, 189, 248, 0.6);
+  z-index: 2;
+}
+
+.request-tile__body {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px 4px 9px;
+}
+
 .request-tile__time {
-  font-size: 10px;
-  text-align: center;
-  line-height: 1.2;
-  color: #f3f4f6;
+  font-size: 9px;
+  text-align: right;
+  line-height: 1.1;
+  color: rgba(243, 244, 246, 0.75);
   font-weight: 500;
-  /* 给左上角三角形让位 */
-  padding-left: 12px;
-  margin-top: -2px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
 
 .request-tile__model {
   font-size: var(--model-font-size, 10px);
   text-align: center;
-  line-height: 1.2;
+  line-height: 1.25;
   font-weight: 600;
   color: #f9fafb;
   overflow: hidden;
@@ -306,25 +338,35 @@ function handleClick() {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   word-break: break-word;
+  margin: 1px 0;
+}
+
+.request-tile__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px;
+  min-width: 0;
 }
 
 .request-tile__provider {
-  font-size: 9px;
-  text-align: center;
+  font-size: 8px;
   line-height: 1.2;
-  color: #d1d5db;
+  color: rgba(209, 213, 219, 0.85);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
 }
 
 .request-tile__latency {
-  font-size: 9px;
-  text-align: center;
+  font-size: 8px;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
-  color: #e5e7eb;
-  font-weight: 500;
+  color: rgba(229, 231, 235, 0.9);
+  font-weight: 600;
+  flex-shrink: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -333,6 +375,9 @@ function handleClick() {
   }
   .request-tile:hover {
     transform: none;
+  }
+  .request-tile__status-dot--pulse {
+    animation: none;
   }
 }
 </style>
