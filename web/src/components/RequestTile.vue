@@ -176,7 +176,7 @@ function handleClick() {
       :class="{ 'request-tile__status-dot--pulse': isInProgress }"
       aria-hidden="true"
     />
-    <span v-if="isTestRequest" class="request-tile__probe-badge" :class="probeBadgeClass" :title="probeBadgeTooltip">⚙</span>
+    <span v-if="isTestRequest" class="request-tile__probe-badge" :class="probeBadgeClass" :title="probeBadgeTooltip">T</span>
 
     <div class="request-tile__body">
       <div v-if="!isIdle" class="request-tile__time">{{ timeLabel }}</div>
@@ -261,6 +261,27 @@ function handleClick() {
 
 .request-tile--probe {
   border-color: color-mix(in srgb, #38bdf8 50%, var(--accent-color, #6b7280));
+  /* 2026-07-14: 探测请求特殊背景 — 青色玻璃质感，与正常业务请求一眼区分 */
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, #38bdf8 22%, #1c2128) 0%,
+      color-mix(in srgb, #0ea5e9 10%, #161b22) 100%
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(56, 189, 248, 0.12),
+    0 0 0 1px color-mix(in srgb, #38bdf8 20%, transparent),
+    0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.request-tile--probe.request-tile--failure {
+  border-color: color-mix(in srgb, #38bdf8 35%, #ef4444 45%);
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, #38bdf8 14%, color-mix(in srgb, #ef4444 18%, #1c2128)) 0%,
+      color-mix(in srgb, #0ea5e9 7%, #161b22) 100%
+    );
 }
 
 .request-tile__accent {
@@ -306,7 +327,7 @@ function handleClick() {
   position: absolute;
   top: 3px;
   left: 4px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 900;
   line-height: 1;
   width: 14px;
@@ -315,10 +336,11 @@ function handleClick() {
   align-items: center;
   justify-content: center;
   border-radius: 3px;
+  letter-spacing: -0.5px;
   color: #0c1a26;
-  background: linear-gradient(180deg, #fde68a 0%, #fbbf24 100%);
-  border: 1.5px solid #f59e0b;
-  box-shadow: 0 0 4px rgba(251, 191, 36, 0.6);
+  background: linear-gradient(180deg, #7dd3fc 0%, #38bdf8 100%);
+  border: 1.5px solid #0284c7;
+  box-shadow: 0 0 5px rgba(56, 189, 248, 0.8);
   z-index: 3;
 }
 
