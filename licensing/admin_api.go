@@ -87,7 +87,21 @@ func (h *AdminHandler) CreateLicense(c echo.Context) error {
 		ExpiresAt:        expiresAt,
 	}
 
-	if err := h.store.CreateLicense(c.Request().Context(), lic); err != nil {
+	// P2 修复：collision check（检查 license_key 冲突）
+	maxRetries := 5
+	for i := 0; i < maxRetries; i++ {
+		// 尝试创建 license
+		err := h.store.CreateLicense(c.Request().Context(), lic)
+		if err == nil {
+			// 成功
+			break
+		}
+		// 如果是唯一约束冲突，重新生成 key
+		if isUniqueConstraintViolation(err) && i < maxRetries-1 {
+			lic.LicenseKey = generateLicenseKey()
+			continue
+		}
+		// 其他错误或重试耗尽
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
@@ -309,4 +323,29 @@ func (h *AdminHandler) RejectOfflineRequest(c echo.Context) error {
 		"request_id": requestID,
 		"reason":     req.Reason,
 	})
+}
+
+// isUniqueConstraintViolation 检查是否为唯一约束冲突（P2 辅助函数）
+func isUniqueConstraintViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	// PostgreSQL 唯一约束冲突错误码：23505
+	errMsg := err.Error()
+	return containsSubstr(errMsg, "unique constraint") ||
+		containsSubstr(errMsg, "duplicate key") ||
+		containsSubstr(errMsg, "23505")
+}
+
+func containsSubstr(s, substr string) bool {
+	return len(s) >= len(substr) && findSubstr(s, substr)
+}
+
+func findSubstr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

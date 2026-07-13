@@ -805,10 +805,11 @@ deploy_71() {
 
 # ── 通用 host-mode 部署函数 (2026-07-12) ──────────────────────────────
 # 154 / 186 / 245 等 systemd 主机部署共用此函数
-# 调用方式: deploy_host <target_var> <ssh_opt> <ssh_user@host>
-# 例如: deploy_host 154 "$SSH_154_OPT" "$SERVER_154"
+# 调用方式: deploy_host <target>
+# 例如: deploy_host 154
 deploy_host() {
-  local target="$1" ssh_opt="$2" ssh_target="$3"
+  local target="$1"
+  local ssh_opt="" ssh_target="" bin_dir=""
   phase "════════════ $target systemd 主机部署 ════════════"
 
   # 选择对应的 SSH_OPT 和 SERVER（根据 target 名称）
