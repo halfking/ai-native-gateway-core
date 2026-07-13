@@ -103,7 +103,6 @@ func (w *CandidateFailureWriter) LogFailure(
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	//nolint:errcheck // best-effort INSERT; log + ignore.
 	_, err := w.pool.Exec(ctx, `
 		INSERT INTO candidate_failure_logs (
 			request_id, tenant_id, credential_id, provider_id, raw_model_name,

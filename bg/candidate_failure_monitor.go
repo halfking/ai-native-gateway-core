@@ -25,6 +25,7 @@
 //	CANDIDATE_FAILURE_COOL_RATIO=0.8              ratio over recent attempts
 //	CANDIDATE_FAILURE_COOL_MIN_SAMPLES=20         min attempts before cool
 //	CANDIDATE_FAILURE_COOL_MINUTES=2              cool duration
+//	CANDIDATE_FAILURE_STALENESS_THRESHOLD=30m     max age of the last failure row
 //	CANDIDATE_FAILURE_WEBHOOK_URL=""               optional webhook for alerts
 package bg
 
@@ -63,14 +64,15 @@ type CandidateFailureMonitor struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	interval       time.Duration
-	alertThresh    int
-	alertWindow    time.Duration
-	alertCooldown  time.Duration
-	coolRatio      float64
-	coolMinSamples int
-	coolMinutes    int
-	webhookURL     string
+	interval           time.Duration
+	alertThresh        int
+	alertWindow        time.Duration
+	alertCooldown      time.Duration
+	coolRatio          float64
+	coolMinSamples     int
+	coolMinutes        int
+	stalenessThreshold time.Duration
+	webhookURL         string
 
 	// alertLastFired debounces duplicate alerts. Keyed by
 	// "credential_id|raw_model_name|error_kind".
@@ -84,18 +86,19 @@ type CandidateFailureMonitor struct {
 
 func NewCandidateFailureMonitor(db *pgxpool.Pool) *CandidateFailureMonitor {
 	m := &CandidateFailureMonitor{
-		db:             db,
-		done:           make(chan struct{}),
-		interval:       parseDurationEnv("CANDIDATE_FAILURE_MONITOR_INTERVAL", time.Minute),
-		alertThresh:    parseIntEnv("CANDIDATE_FAILURE_ALERT_THRESHOLD", 10),
-		alertWindow:    parseDurationEnv("CANDIDATE_FAILURE_ALERT_WINDOW", 5*time.Minute),
-		alertCooldown:  parseDurationEnv("CANDIDATE_FAILURE_ALERT_COOLDOWN", 15*time.Minute),
-		coolRatio:      parseFloatEnv("CANDIDATE_FAILURE_COOL_RATIO", 0.8),
-		coolMinSamples: parseIntEnv("CANDIDATE_FAILURE_COOL_MIN_SAMPLES", 20),
-		coolMinutes:    parseIntEnv("CANDIDATE_FAILURE_COOL_MINUTES", 2),
-		webhookURL:     os.Getenv("CANDIDATE_FAILURE_WEBHOOK_URL"),
-		alertLastFired: make(map[string]time.Time),
-		recentAlerts:   make([]CandidateFailureAlert, 0, 64),
+		db:                 db,
+		done:               make(chan struct{}),
+		interval:           parseDurationEnv("CANDIDATE_FAILURE_MONITOR_INTERVAL", time.Minute),
+		alertThresh:        parseIntEnv("CANDIDATE_FAILURE_ALERT_THRESHOLD", 10),
+		alertWindow:        parseDurationEnv("CANDIDATE_FAILURE_ALERT_WINDOW", 5*time.Minute),
+		alertCooldown:      parseDurationEnv("CANDIDATE_FAILURE_ALERT_COOLDOWN", 15*time.Minute),
+		coolRatio:          parseFloatEnv("CANDIDATE_FAILURE_COOL_RATIO", 0.8),
+		coolMinSamples:     parseIntEnv("CANDIDATE_FAILURE_COOL_MIN_SAMPLES", 20),
+		coolMinutes:        parseIntEnv("CANDIDATE_FAILURE_COOL_MINUTES", 2),
+		stalenessThreshold: parseDurationEnv("CANDIDATE_FAILURE_STALENESS_THRESHOLD", 30*time.Minute),
+		webhookURL:         os.Getenv("CANDIDATE_FAILURE_WEBHOOK_URL"),
+		alertLastFired:     make(map[string]time.Time),
+		recentAlerts:       make([]CandidateFailureAlert, 0, 64),
 	}
 	slog.Info("candidate_failure_monitor configured",
 		"interval", m.interval,
@@ -104,6 +107,7 @@ func NewCandidateFailureMonitor(db *pgxpool.Pool) *CandidateFailureMonitor {
 		"cool_ratio", m.coolRatio,
 		"cool_min_samples", m.coolMinSamples,
 		"cool_minutes", m.coolMinutes,
+		"staleness_threshold", m.stalenessThreshold,
 		"webhook_set", m.webhookURL != "",
 	)
 	return m
@@ -154,6 +158,58 @@ func (m *CandidateFailureMonitor) tick(ctx context.Context) {
 	if err := m.checkAutoCool(stepCtx); err != nil {
 		slog.Warn("candidate_failure_monitor: checkAutoCool failed", "error", err)
 	}
+	if err := m.checkStaleness(stepCtx); err != nil {
+		slog.Warn("candidate_failure_monitor: checkStaleness failed", "error", err)
+	}
+}
+
+// checkStaleness detects a dead or unwired failure-log pipeline when the
+// gateway has recent request activity. A quiet gateway must not alert merely
+// because no candidate failure has ever been recorded.
+func (m *CandidateFailureMonitor) checkStaleness(ctx context.Context) error {
+	var lastFailure, lastRequest *time.Time
+	if err := m.db.QueryRow(ctx, `
+		SELECT
+			(SELECT max(ts) FROM candidate_failure_logs),
+			(SELECT max(ts) FROM request_logs WHERE ts >= now() - interval '5 minutes')
+	`).Scan(&lastFailure, &lastRequest); err != nil {
+		return err
+	}
+	if !failureLogIsStale(lastFailure, lastRequest, time.Now(), m.stalenessThreshold) {
+		return nil
+	}
+
+	now := time.Now()
+	key := "candidate_failure_logs|staleness"
+	if !m.shouldFire(key, now) {
+		return nil
+	}
+
+	age := "no rows"
+	if lastFailure != nil {
+		age = time.Since(*lastFailure).Round(time.Second).String()
+	}
+	alert := CandidateFailureAlert{
+		Ts:        now,
+		ErrorKind: "candidate_failure_log_stale",
+		WindowSec: int(m.stalenessThreshold.Seconds()),
+		LastBody:  age,
+	}
+	slog.Error("candidate_failure_monitor: failure log is stale",
+		"last_insert_at", lastFailure,
+		"last_request_at", lastRequest,
+		"age", age,
+		"threshold", m.stalenessThreshold,
+	)
+	m.fireAlert(alert)
+	return nil
+}
+
+func failureLogIsStale(lastFailure, lastRequest *time.Time, now time.Time, threshold time.Duration) bool {
+	if lastRequest == nil {
+		return false
+	}
+	return lastFailure == nil || now.Sub(*lastFailure) >= threshold
 }
 
 // checkAlerts scans candidate_failure_logs over the alert window and

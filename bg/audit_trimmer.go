@@ -2,15 +2,17 @@ package bg
 
 // audit_trimmer.go — P8.8: daily TTL worker for audit log tables.
 //
-// Trims rows older than 90 days from both audit tables that grew
-// in P7.9 / P7.9.1:
+// Trims rows older than 90 days from the audit tables:
 //   - routing_overrides_audit  (trigger-based, contains override actions)
 //   - routing_audit_log        (app-level, contains IP/UA + override actions)
+//   - armor_judgments          (security/armor observe-only audit, added v2.3)
 //
 // Why a daily worker: audit tables grow at the rate of admin
 // actions. Without a TTL, a busy admin tenant would accumulate
 // millions of audit rows over a year, hurting query performance
-// and consuming storage.
+// and consuming storage. armor_judgments additionally grows at
+// ~1300 rows/day (one per Judge.Score + pattern match), reaching
+// ~1.6 GB/year if left uncapped.
 //
 // Cadence: 24h. The trim is bounded (LIMIT 5000 per batch per
 // table) so even a backlog of millions of rows can be drained
@@ -81,10 +83,10 @@ func (t *AuditTrimmer) Stop() {
 //
 // Returns the number of rows deleted from each table and any
 // error encountered. Best-effort: errors are logged but don't
-// stop the second table from being trimmed.
-func (t *AuditTrimmer) TrimOnce(ctx context.Context) (overridesDeleted, auditDeleted int64, err error) {
+// stop subsequent tables from being trimmed.
+func (t *AuditTrimmer) TrimOnce(ctx context.Context) (overridesDeleted, auditDeleted, armorDeleted int64, err error) {
 	if t.pool == nil {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 	start := time.Now()
 
@@ -120,9 +122,27 @@ func (t *AuditTrimmer) TrimOnce(ctx context.Context) (overridesDeleted, auditDel
 		auditDeleted = res2.RowsAffected()
 	}
 
+	// armor_judgments (v2.3 security observe-only audit). Uses
+	// created_at (not ts) per the table schema in migration.
+	res3, err := t.pool.Exec(ctx, `
+		DELETE FROM armor_judgments
+		WHERE id IN (
+			SELECT id FROM armor_judgments
+			WHERE created_at < NOW() - $1::interval
+			ORDER BY created_at
+			LIMIT 5000
+		)
+	`, t.retention.String())
+	if err != nil {
+		slog.Warn("audit_trimmer: armor_judgments delete failed", "error", err)
+	} else {
+		armorDeleted = res3.RowsAffected()
+	}
+
 	slog.Info("audit_trimmer: trim complete",
 		"overrides_deleted", overridesDeleted,
 		"audit_deleted", auditDeleted,
+		"armor_deleted", armorDeleted,
 		"duration_ms", time.Since(start).Milliseconds())
 	return
 }

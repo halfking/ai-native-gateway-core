@@ -17,6 +17,7 @@ DROP INDEX IF EXISTS idx_routing_audit_log_action;
 DROP INDEX IF EXISTS idx_diagnostic_runs_tenant_started;
 DROP INDEX IF EXISTS idx_diagnostic_runs_incident;
 DROP INDEX IF EXISTS idx_diagnostic_runs_state;
+DROP INDEX IF EXISTS idx_diagnostic_runs_created;
 DROP INDEX IF EXISTS idx_approval_routing_rules_tenant;
 
 -- Drop CHECK constraint (best-effort)
@@ -37,6 +38,9 @@ ALTER TABLE routing_audit_log
     DROP COLUMN IF EXISTS diagnostic_run_id,
     DROP COLUMN IF EXISTS actor_ip_hash,
     DROP COLUMN IF EXISTS created_at;
+
+-- These columns are only present when diagnostic_runs pre-existed this
+-- migration; DROP TABLE above handles the normal rollback path.
 
 -- Note: routing_audit_log original columns (id, ts, actor, action, target_type,
 -- target_id, before_json, after_json) are preserved.

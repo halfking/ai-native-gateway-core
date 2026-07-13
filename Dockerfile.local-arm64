@@ -1,0 +1,32 @@
+# Local arm64 Dockerfile — pre-built binary + web/dist
+#
+# Host (arm64) compiles the Go binary and Vue SPA natively, then this
+# Dockerfile only packages them into a minimal alpine runtime.
+# This avoids pulling a multi-GB builder image and cross-toolchain issues.
+#
+# Prerequisites (run on host before docker build):
+#   CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -ldflags="-s -w" \
+#     -o .build-local/llm-gateway-go ./cmd/gateway
+#   cd web && npm ci && npm run build && cd ..
+
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata wget bash \
+    && addgroup -g 1001 -S appuser \
+    && adduser -u 1001 -D -H -s /sbin/nologin -G appuser appuser
+
+WORKDIR /
+
+COPY .build-local/llm-gateway-go /usr/local/bin/llm-gateway-go
+COPY web/dist /opt/llm-gateway-go/web/dist
+
+RUN chown -R appuser:appuser /opt/llm-gateway-go
+
+USER appuser
+
+EXPOSE 8781
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8781/healthz || exit 1
+
+ENTRYPOINT ["/usr/local/bin/llm-gateway-go"]

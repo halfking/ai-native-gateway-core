@@ -15,6 +15,7 @@
 bin/
 dist/
 build/
+.build-local/
 coverage/
 
 # Test artifacts
