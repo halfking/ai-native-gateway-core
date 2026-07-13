@@ -17,10 +17,27 @@ export interface UserInfo {
   must_change_password?: boolean
 }
 
+function normalizeUserInfo(raw: UserInfo | null): UserInfo | null {
+  if (!raw) return null
+  const wrapped = raw as UserInfo & { user?: UserInfo }
+  if (!wrapped.role && wrapped.user?.role) {
+    return wrapped.user
+  }
+  return raw
+}
+
+function loadStoredUserInfo(): UserInfo | null {
+  try {
+    return normalizeUserInfo(JSON.parse(localStorage.getItem(USER_KEY) ?? 'null'))
+  } catch {
+    return null
+  }
+}
+
 export const store = reactive({
   apiKey: localStorage.getItem(KEY) ?? '',
   jwtToken: localStorage.getItem(JWT_KEY) ?? '', // Real JWT, persisted for Bearer header
-  userInfo: JSON.parse(localStorage.getItem(USER_KEY) ?? 'null') as UserInfo | null,
+  userInfo: loadStoredUserInfo(),
   locale: localStorage.getItem(LOCALE_KEY) ?? 'zh-CN',
   // 2026-07-09: authHydrated tracks whether we've probed /api/auth/me.
   // App.vue 必须等 authHydrated=true 才能决定渲染 app-layout vs guest-layout，
@@ -82,9 +99,10 @@ export function authBearer(): string {
 }
 
 export function setUserInfo(user: UserInfo | null) {
-  store.userInfo = user
-  if (user) {
-    localStorage.setItem(USER_KEY, JSON.stringify(user))
+  const normalized = normalizeUserInfo(user)
+  store.userInfo = normalized
+  if (normalized) {
+    localStorage.setItem(USER_KEY, JSON.stringify(normalized))
   } else {
     localStorage.removeItem(USER_KEY)
   }

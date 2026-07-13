@@ -48,7 +48,7 @@ onMounted(async () => {
         if (meAny?.access_token) {
           setJwtToken(meAny.access_token)
         }
-        setUserInfo(me)
+        setUserInfo(meAny?.user ?? me)
       } catch {
         // 401 → no valid cookie either, user is logged out
         clearJwt()

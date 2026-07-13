@@ -26,11 +26,8 @@ func NewAdminAPI(store Store, downloader *Downloader, installer *Installer, roll
 	}
 }
 
-// RegisterRoutes 注册路由（P1 修复：增加认证中间件）
+// RegisterRoutes 注册路由（认证由 Echo 桥接层统一 JWT 中间件处理）
 func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
-	// P1 修复：所有 autoupdate Admin API 需要认证
-	g.Use(AuthMiddleware())
-
 	g.POST("", a.CreateRelease)
 	g.GET("", a.ListReleases)
 	g.GET("/:version", a.GetRelease)
