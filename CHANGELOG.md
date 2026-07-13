@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-13
 
+### Added (customer UI closure — P0 journey gap)
+- **客户面向 API（无需登录即可访问）**：
+  - `GET /api/system/license/status` — 当前授权状态（none/active/grace/expired/revoked）
+  - `GET /api/system/license/info` — License 详情（features / max_devices / active_devices / 心跳时间）
+  - `POST /api/system/license/activate` — 在线激活（License Key）
+  - `POST /api/system/license/offline-activate` — 离线激活（粘贴 SignedLicense + ActivationCode）
+  - `POST /api/system/license/offline-request` — 生成离线激活请求（base64 envelope）
+  - `POST /api/system/license/heartbeat` — 手动触发心跳
+  - `GET /api/system/upgrade/status` — 当前版本 vs 渠道最新版本
+  - `POST /api/system/upgrade/check` — 触发升级检查
+- **客户面向 Vue 组件**：
+  - `views/ActivationWizard.vue` — 4 步激活向导
+  - `views/LicenseInfoView.vue` — License 详情 + 心跳管理
+  - `views/UpgradePanel.vue` — 升级面板
+  - `components/UpgradeBanner.vue` — 全局升级提示横幅
+- **公开路由**：`/activate` / `/license` / `/upgrade`（`meta: { public: true }`）。`App.vue` 在这些路由上跳过 `/api/auth/me` 探测，避免被 API 客户端的 401 重定向锁死。
+
+详细说明：`docs/changelogs/2026-07-13-customer-ui-closure.md`。
+
 ### Fixed (ops auth hydration + autoupdate JWT)
 - **运维概览 403 / 刷新后租户视角**：`/api/auth/me` 返回 `{ user, access_token }` 时正确持久化 `user.role`，兼容历史 localStorage 嵌套结构。
 - **autoupdate 升级日志 401**：移除与 Echo JWT 冲突的 `AUTOUPDATE_ADMIN_TOKEN` 中间件，运维概览加载不再被踢到 `/login`。
