@@ -164,12 +164,17 @@ target_154_contract() {
 }
 
 # Slice 1 / 4 target: 245 (gateway server, full versioned rollback).
+# 2026-07-14: service_name corrected to llm-gateway-go.service — the ACTUAL
+# unit name on the 245 host (confirmed via `systemctl list-units`). The
+# deploy/llmgo-245.service template uses this name; the earlier
+# "llmgo-245.service" value was a stale artifact name that never matched
+# the running unit, which would have broken host_restart_service.
 target_245_contract() {
   _json_object \
     target "245" \
     support "canonical" \
     service_manager "systemd" \
-    service_name "llmgo-245.service" \
+    service_name "llm-gateway-go.service" \
     binary_path "/opt/llm-gateway-go/gateway" \
     web_path "/opt/llm-gateway-go/web" \
     health_url "http://127.0.0.1:8781/healthz" \
