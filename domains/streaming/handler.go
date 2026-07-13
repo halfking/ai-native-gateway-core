@@ -4288,19 +4288,28 @@ func StreamChunkErrorsFromLogCtxForTest(c *RequestLogContext) int {
 	return streamChunkErrorsFromLogCtx(c)
 }
 
-// resolveGatewayVersion reads the build version from /opt/llm-gateway-go/VERSION
-// (written at image build time by the Dockerfile's RUN echo … > VERSION step).
+// resolveGatewayVersion reads the build version from version.json (SSOT).
 // Falls back to GIT_SHA env var, then to "unknown" if neither is available.
+//
+// 2026-07-14: 移除对旧 VERSION 文件的依赖，统一读 version.json。
 func resolveGatewayVersion() string {
 	candidates := []string{
-		"/opt/llm-gateway-go/VERSION",
-		"/.VERSION",
-		"VERSION",
+		"/opt/llm-gateway-go/version.json",
+		"version.json",
 	}
 	for _, path := range candidates {
 		if raw, err := os.ReadFile(path); err == nil {
-			if v := strings.TrimSpace(string(raw)); v != "" {
-				return v
+			var v struct {
+				Version string `json:"version"`
+				GitSHA  string `json:"git_sha"`
+			}
+			if json.Unmarshal(raw, &v) == nil {
+				if v.Version != "" {
+					if v.GitSHA != "" {
+						return v.Version + "-" + v.GitSHA
+					}
+					return v.Version
+				}
 			}
 		}
 	}
