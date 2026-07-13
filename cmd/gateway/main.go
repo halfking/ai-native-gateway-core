@@ -53,6 +53,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
+	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"                 //nolint:depguard
@@ -1418,6 +1419,42 @@ func main() {
 		if autoTitleGen != nil {
 			chatHandler.SetAutoTitleGenerator(autoTitleGen)
 			slog.Info("auto session title generator wired (async, fire-and-forget)")
+		}
+	}
+
+	// ── Route incident diagnosis (2026-07-13, Phase 1 read-only) ───────
+	// Wires the route-incident store, observer, read-only API, and the
+	// SSE `incident_update` envelope publication. The store requires
+	// a database; the SSE hub is required for the live publish path.
+	// Either being nil degrades gracefully (the diagnose entry is
+	// hidden, the API returns 503, the observer drops its events).
+	// The observer is wired to telemetry.SetOnRequestLogPersisted (NOT
+	// the "Emitted" hook) so it only runs on rows that are already
+	// durable in request_logs.
+	if adminHandler != nil && dbConn != nil && dbConn.Enabled() {
+		incidentStore := routeincident.NewStore(dbConn.Pool())
+		incidentHandler := admin.NewRouteIncidentsHandler(incidentStore, dbConn.Pool())
+		adminHandler.SetRouteIncidentsHandler(incidentHandler)
+
+		if telemetryClient.Enabled() {
+			publishFn := func(r *routeincident.TransitionResult) {
+				if r == nil || r.NoOp || liveStreamHub == nil {
+					return
+				}
+				liveStreamHub.PublishIncidentUpdate(incidentUpdateFromResult(r))
+			}
+			incidentObserver := routeincident.NewObserver(incidentStore, routeincident.ObserverConfig{
+				QueueSize:    1024,
+				MaxRetries:   4,
+				RetryBackoff: 200 * time.Millisecond,
+				MaxBackoff:   5 * time.Second,
+				Publish:      publishFn,
+			})
+			if incidentObserver != nil {
+				incidentObserver.Start(context.Background())
+				telemetryClient.SetOnRequestLogPersisted(incidentObserver.AsHook())
+				slog.Info("route incident observer enabled (telemetry onPersisted → store → SSE incident_update)")
+			}
 		}
 	}
 
@@ -3687,4 +3724,57 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		CostUSD:          entry.CostUSD,
 		ErrorKind:        entry.ErrorKind,
 	}
+}
+
+// incidentUpdateFromResult converts a route-incident transition
+// result into the SSE envelope body. It is the single bridge
+// between the observer (domain) and the dashboard hub (admin), so
+// the conversion is centralised here to keep both packages free of
+// mutual dependencies. All sanitization (kind / stage length) is
+// already done in domains/routeincident/redact.go.
+func incidentUpdateFromResult(r *routeincident.TransitionResult) *admin.LiveIncidentUpdate {
+	if r == nil || r.Incident == nil {
+		return nil
+	}
+	u := r.Update
+	out := &admin.LiveIncidentUpdate{
+		Type:           "incident_update",
+		IncidentID:     u.IncidentID,
+		State:          string(u.State),
+		FailureStreak:  u.FailureStreak,
+		RecoveryStreak: u.RecoveryStreak,
+		Visible:        u.Visible,
+		UpdatedAt:      u.UpdatedAt,
+		RouteKey: admin.LiveRouteKey{
+			Protocol:     u.RouteKey.Protocol,
+			Model:        u.RouteKey.Model,
+			ProviderID:   u.RouteKey.ProviderID,
+			CredentialID: u.RouteKey.CredentialID,
+		},
+	}
+	if u.LastError != nil {
+		out.LastError = &admin.LiveSanitizedError{
+			Kind:  u.LastError.Kind,
+			Stage: u.LastError.Stage,
+		}
+	}
+	// Affected lanes are derived from the route key. The frontend
+	// uses the model dimension as the primary aggregation key; the
+	// provider dimension is a secondary key. We omit the
+	// value here because the hub knows how to render the
+	// dimensions it cares about (see useSwimLane.ts). Phase 2
+	// will populate these from the canonical → vendor mapping.
+	if u.RouteKey.Model != "" {
+		out.AffectedLanes = append(out.AffectedLanes, admin.AffectedLane{
+			Dimension: "model",
+			Value:     u.RouteKey.Model,
+		})
+	}
+	if u.RouteKey.ProviderID != nil {
+		out.AffectedLanes = append(out.AffectedLanes, admin.AffectedLane{
+			Dimension: "provider",
+			Value:     fmt.Sprintf("provider-%d", *u.RouteKey.ProviderID),
+		})
+	}
+	return out
 }

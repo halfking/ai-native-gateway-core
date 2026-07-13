@@ -1,0 +1,494 @@
+<!doctype html>
+<!--
+  route-incident-phase2-demo.html — static visual verification page
+  for the Phase 2 mutating actions + audit log + evidence export.
+
+  The page renders 4 sections that mirror the RouteIncidentDrawer
+  UI:
+    1. Action panel (8. 操作与诊断)
+    2. Audit log (9. 审计日志)
+    3. Confirm modal (弹窗)
+    4. Evidence export banner
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Route Incident — Phase 2 视觉验证</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --bg-subtle: #161b22;
+      --card: #1c2128;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-secondary: #8b949e;
+      --success: #3fb950;
+      --warning: #d29922;
+      --danger: #f85149;
+      --accent: #6366f1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    h1, h2, h3 { margin: 0 0 8px 0; }
+    h1 { font-size: 16px; }
+    h2 { font-size: 13px; }
+    h3 { font-size: 12px; }
+    .page { max-width: 1100px; margin: 0 auto; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 24px;
+      margin-top: 16px;
+    }
+    .case {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+    .case__title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .case__caption {
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+    .case__frame {
+      position: relative;
+      min-height: 200px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      overflow: hidden;
+    }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+    .chip {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      font-size: 10px;
+      color: var(--text-secondary);
+      margin-left: 6px;
+    }
+    .empty {
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+    .note {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin: 6px 0 0 0;
+    }
+
+    .action-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 8px;
+    }
+    .action-btn {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: left;
+    }
+    .action-btn--destructive { border-color: rgba(248, 81, 73, 0.5); color: var(--danger); }
+    .action-btn--test { border-color: rgba(99, 102, 241, 0.4); color: var(--accent); }
+    .action-btn--slot { border-color: rgba(210, 153, 34, 0.4); color: var(--warning); }
+
+    .action-result {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      font-size: 11px;
+      padding: 6px 10px;
+      background: var(--bg);
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+    .pill {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .pill--success { background: rgba(63, 185, 80, 0.18); color: var(--success); }
+    .pill--failed { background: rgba(248, 81, 73, 0.18); color: var(--danger); }
+    .pill--muted { background: rgba(139, 148, 158, 0.18); color: var(--text-secondary); }
+
+    .audit-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .audit-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      flex-wrap: wrap;
+      padding: 2px 0;
+      border-bottom: 1px dashed var(--border);
+    }
+    .audit-row__time {
+      font-family: monospace;
+      color: var(--text-secondary);
+      min-width: 130px;
+    }
+    .audit-row__action {
+      font-family: monospace;
+      color: var(--accent);
+      font-size: 11px;
+    }
+    .audit-row__actor {
+      font-size: 10px;
+      color: var(--text-secondary);
+    }
+    .audit-row__reason {
+      font-size: 11px;
+      color: var(--text);
+      flex: 1;
+      min-width: 100px;
+    }
+    .link {
+      font-family: monospace;
+      font-size: 10px;
+      color: var(--accent);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 1px 6px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+
+    /* Modal */
+    .modal-mask {
+      position: relative;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      border-radius: 6px;
+      padding: 24px;
+      min-height: 380px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-panel {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      width: min(440px, 100%);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+      display: flex;
+      flex-direction: column;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-subtle);
+    }
+    .modal-header h3 { font-size: 13px; font-weight: 600; }
+    .modal-close {
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .modal-body {
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .modal-hint { font-size: 11px; color: var(--text-secondary); margin: 0; }
+    .modal-warning {
+      font-size: 11px;
+      background: rgba(248, 81, 73, 0.12);
+      border: 1px solid rgba(248, 81, 73, 0.4);
+      color: var(--danger);
+      padding: 6px 8px;
+      border-radius: 4px;
+      margin: 0;
+    }
+    .modal-label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+    .modal-required { color: var(--danger); }
+    .modal-textarea,
+    .modal-input {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-family: inherit;
+      resize: vertical;
+    }
+    .modal-input--code {
+      font-family: monospace;
+      letter-spacing: 0.05em;
+    }
+    .modal-counter {
+      font-size: 10px;
+      color: var(--text-secondary);
+      text-align: right;
+    }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-subtle);
+    }
+    .modal-btn {
+      font-size: 11px;
+      padding: 5px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .modal-btn--primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+    .modal-btn--destructive {
+      background: var(--danger);
+      border-color: var(--danger);
+      color: white;
+    }
+
+    /* Export banner */
+    .export-mask {
+      position: relative;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      border-radius: 6px;
+      padding: 24px;
+      min-height: 220px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .export-panel {
+      background: var(--bg-subtle);
+      border: 1px solid var(--success);
+      border-radius: 6px;
+      padding: 14px;
+      width: min(380px, 100%);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    }
+    .export-panel h4 {
+      margin: 0 0 6px 0;
+      font-size: 13px;
+      color: var(--success);
+    }
+    .export-detail {
+      font-size: 11px;
+      margin: 4px 0;
+      color: var(--text-secondary);
+    }
+    .export-detail code {
+      font-family: monospace;
+      background: var(--bg);
+      padding: 1px 4px;
+      border-radius: 2px;
+    }
+    .export-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Route Incident — Phase 2 视觉验证</h1>
+    <p style="font-size: 12px; color: var(--text-secondary); margin: 0 0 8px 0;">
+      4 个状态：action panel · audit log · confirm modal · evidence export banner
+    </p>
+    <div class="grid">
+      <div class="case" id="case-actions">
+        <div class="case__title">
+          <h2>1. Action panel — 7 个操作按钮</h2>
+          <span class="case__caption">recover · reprobe · reset slots · reset availability · direct test · through test · release slot</span>
+        </div>
+        <div class="case__frame">
+          <div class="section-title">
+            8. 操作与诊断
+            <span class="chip">活跃</span>
+          </div>
+          <div class="action-grid">
+            <button class="action-btn action-btn--destructive">标记恢复</button>
+            <button class="action-btn">重新探测</button>
+            <button class="action-btn action-btn--destructive">重置所有槽位</button>
+            <button class="action-btn action-btn--destructive">重置可用性</button>
+            <button class="action-btn action-btn--test">直连上游测试</button>
+            <button class="action-btn action-btn--test">经网关测试</button>
+            <button class="action-btn action-btn--slot">释放槽位</button>
+          </div>
+          <p class="note">所有写操作均要求确认令牌 + 操作原因 + 幂等键；不会绕过下游健康检查原语。</p>
+          <div class="action-result">
+            <span class="pill pill--success">成功</span>
+            <span style="font-family: monospace; color: var(--text-secondary);">最近一次操作结果：审计 #42，运行 abc12345</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="case" id="case-audit">
+        <div class="case__title">
+          <h2>2. Audit log — 不可变审计行</h2>
+          <span class="case__caption">actor · reason · idempotency_key · outcome · pre/post snapshot</span>
+        </div>
+        <div class="case__frame">
+          <div class="section-title">9. 审计日志</div>
+          <ol class="audit-list">
+            <li class="audit-row">
+              <span class="audit-row__time">2026-07-13 17:01:12</span>
+              <span class="pill pill--success">成功</span>
+              <span class="audit-row__action">recover</span>
+              <span class="audit-row__actor">操作人 alice</span>
+              <span class="audit-row__reason">上游短暂抖动后人工复核并标记恢复</span>
+            </li>
+            <li class="audit-row">
+              <span class="audit-row__time">2026-07-13 16:58:47</span>
+              <span class="pill pill--success">成功</span>
+              <span class="audit-row__action">reprobe</span>
+              <span class="audit-row__actor">操作人 alice</span>
+              <span class="audit-row__reason">第 3 次失败后人工触发重新探测</span>
+              <button class="link">导出证据 #deadbeef</button>
+            </li>
+            <li class="audit-row">
+              <span class="audit-row__time">2026-07-13 16:52:33</span>
+              <span class="pill pill--failed">失败</span>
+              <span class="audit-row__action">release_slot</span>
+              <span class="audit-row__actor">操作人 alice</span>
+              <span class="audit-row__reason">slot 不存在或已释放</span>
+            </li>
+            <li class="audit-row">
+              <span class="audit-row__time">2026-07-13 16:48:21</span>
+              <span class="pill pill--success">成功</span>
+              <span class="audit-row__action">through_gateway_test</span>
+              <span class="audit-row__actor">操作人 bob</span>
+              <span class="audit-row__reason">对照直连测试的延迟</span>
+              <button class="link">导出证据 #1234abcd</button>
+            </li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="case" id="case-confirm">
+        <div class="case__title">
+          <h2>3. Confirm modal — 二次确认 + 原因 + 令牌</h2>
+          <span class="case__caption">reason（必填 256 字符内） · confirmation_token · idempotency_key（自动生成）</span>
+        </div>
+        <div class="case__frame">
+          <div class="modal-mask">
+            <div class="modal-panel">
+              <div class="modal-header">
+                <h3>标记恢复</h3>
+                <button class="modal-close">✕</button>
+              </div>
+              <div class="modal-body">
+                <p class="modal-hint">把事件状态变为 recovered 并加版本号；不等同绕过健康检查</p>
+                <p class="modal-warning">
+                  ⚠️ 这是一个改变路由状态的操作。不会绕过下游健康检查；操作前会快照当前状态。
+                </p>
+                <label class="modal-label">
+                  操作原因 <span class="modal-required">*</span>
+                  <textarea class="modal-textarea" rows="3">上游短暂抖动后人工复核并标记恢复</textarea>
+                  <span class="modal-counter">28 / 256</span>
+                </label>
+                <label class="modal-label">
+                  确认令牌 <span class="modal-required">*</span>
+                  <input class="modal-input modal-input--code" type="text" value="4f8a2c9b1e7d" readonly />
+                  <span class="modal-hint">请复制此令牌并粘贴到下方（演示版本：直接使用展示值即可）</span>
+                </label>
+              </div>
+              <div class="modal-footer">
+                <button class="modal-btn">取消</button>
+                <button class="modal-btn modal-btn--destructive">确认 标记恢复</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="case" id="case-export">
+        <div class="case__title">
+          <h2>4. Evidence export banner — 含完整性 checksum</h2>
+          <span class="case__caption">SHA-256 over canonicalized {run, incident, events, timeline} JSON</span>
+        </div>
+        <div class="case__frame">
+          <div class="export-mask">
+            <div class="export-panel">
+              <h4>证据已生成</h4>
+              <p class="export-detail">
+                SHA-256: <code>4a8b2c9d1e3f5a7b…</code>
+              </p>
+              <p class="export-detail">
+                包含：run + incident + 12 个事件 + 96 个时间桶
+              </p>
+              <p class="export-detail">
+                导出者：alice · 生成时间：2026-07-13 17:01:30 UTC
+              </p>
+              <div class="export-actions">
+                <button class="modal-btn modal-btn--primary">下载 JSON</button>
+                <button class="modal-btn">关闭</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

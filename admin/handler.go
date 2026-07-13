@@ -57,7 +57,11 @@ type Handler struct {
 	// request_logs rows to dashboard SSE clients at
 	// GET /api/admin/live-stream. nil disables the endpoint.
 	liveStreamHub *LiveStreamSSEHub
-	peakCollector interface {
+	// routeIncidentHandler (2026-07-13) backs the read-only
+	// /api/admin/route-incidents* endpoints. nil disables the
+	// diagnose feature on the swim lane.
+	routeIncidentHandler *RouteIncidentsHandler
+	peakCollector        interface {
 		Acquire(credID int64, model string)
 		Release(credID int64, model string)
 		Stats() map[string]interface{}
@@ -270,6 +274,14 @@ func (h *Handler) SetKeyring(kr *secret.Keyring) {
 // telemetry to connected dashboards. Pass nil to disable.
 func (h *Handler) SetLiveStreamSSE(hub *LiveStreamSSEHub) {
 	h.liveStreamHub = hub
+}
+
+// SetRouteIncidentsHandler wires the read-only route-incident API
+// (Phase 1, 2026-07-13). Once set, /api/admin/route-incidents* and
+// the /incident_update SSE envelope become available. Pass nil to
+// disable (the swim lane's diagnose button is hidden in that case).
+func (h *Handler) SetRouteIncidentsHandler(rih *RouteIncidentsHandler) {
+	h.routeIncidentHandler = rih
 }
 
 // SetSessionManager (2026-07-06) wires the session.Manager for the
@@ -552,6 +564,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	if h.liveStreamHub != nil {
 		mux.HandleFunc("/api/admin/live-stream", admin(h.liveStreamHub.HandleLiveStream))
 		mux.HandleFunc("/api/admin/live-stream/stats", admin(h.handleLiveStreamStats))
+	}
+
+	// 2026-07-13: read-only route-incident diagnosis API (Phase 1).
+	// Super-admin only. nil handler means the diagnose entry is
+	// hidden on the swim lane and the SSE incident_update envelope
+	// is suppressed.
+	if h.routeIncidentHandler != nil {
+		h.routeIncidentHandler.RegisterRoutes(mux, h.superAdmin)
 	}
 
 	// 2026-07-05: 泳道初始化数据接口（从request_logs查询最近N小时的请求）

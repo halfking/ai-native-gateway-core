@@ -57,14 +57,60 @@ import (
 // hub's shouldDeliver picks the right one per client so a super-admin's
 // lane view is never overwritten by an individual tenant's snapshot.
 type LiveStreamEnvelope struct {
-	Type       string              `json:"type"`
-	Timestamp  time.Time           `json:"ts"`
-	Request    *LiveRequest        `json:"request,omitempty"`
-	Requests   []LiveRequest       `json:"requests,omitempty"`
-	Snapshot   *LiveStreamSnapshot `json:"snapshot,omitempty"`
-	Delta      *LiveStreamDelta    `json:"delta,omitempty"`
-	Health     *LiveStreamHealth   `json:"health,omitempty"`
+	Type      string              `json:"type"`
+	Timestamp time.Time           `json:"ts"`
+	Request   *LiveRequest        `json:"request,omitempty"`
+	Requests  []LiveRequest       `json:"requests,omitempty"`
+	Snapshot  *LiveStreamSnapshot `json:"snapshot,omitempty"`
+	Delta     *LiveStreamDelta    `json:"delta,omitempty"`
+	Health    *LiveStreamHealth   `json:"health,omitempty"`
+	// Incident (2026-07-13) carries a route incident update for the
+	// dashboard's diagnose entry. Type="incident_update" identifies
+	// this variant on the wire. The body is sanitized — no tenant
+	// id, no credential value, no full request body.
+	Incident   *LiveIncidentUpdate `json:"incident,omitempty"`
 	superDelta *LiveStreamDelta    `json:"-"` // attached to Delta during fanOut for super clients; not serialised directly
+}
+
+// LiveIncidentUpdate is the wire shape of a route incident update
+// (see domains/routeincident.IncidentUpdate). It is duplicated here
+// to keep admin's import surface clean and to keep the SSE contract
+// decoupled from the domain types. The body is identical by
+// convention; tests assert the field set.
+type LiveIncidentUpdate struct {
+	Type           string              `json:"type"`
+	IncidentID     string              `json:"incident_id"`
+	State          string              `json:"state"`
+	FailureStreak  int                 `json:"failure_streak"`
+	RecoveryStreak int                 `json:"recovery_streak"`
+	Visible        bool                `json:"visible"`
+	AffectedLanes  []AffectedLane      `json:"affected_lanes,omitempty"`
+	LastError      *LiveSanitizedError `json:"last_error,omitempty"`
+	RouteKey       LiveRouteKey        `json:"route_key"`
+	UpdatedAt      time.Time           `json:"updated_at"`
+}
+
+// AffectedLane matches domains/routeincident.AffectedLane.
+type AffectedLane struct {
+	Dimension string `json:"dimension"`
+	Value     string `json:"value"`
+}
+
+// LiveSanitizedError matches domains/routeincident.SanitizedError.
+type LiveSanitizedError struct {
+	Kind  string `json:"kind"`
+	Stage string `json:"stage,omitempty"`
+}
+
+// LiveRouteKey is the sanitized projection of a route key. The
+// tenant id is intentionally NOT serialised so the dashboard
+// cannot accidentally surface a cross-tenant incident on the wrong
+// user's screen.
+type LiveRouteKey struct {
+	Protocol     string `json:"endpoint_protocol"`
+	Model        string `json:"model"`
+	ProviderID   *int64 `json:"provider_id,omitempty"`
+	CredentialID *int64 `json:"credential_id,omitempty"`
 }
 
 // LiveStreamHealth reports backend resource health for the dashboard.
@@ -254,6 +300,14 @@ type LiveStreamSSEHub struct {
 	// broadcast a health_update envelope when the state changes.
 	lastHealthMu sync.RWMutex
 	lastHealth   *LiveStreamHealth
+
+	// 2026-07-13: route-incident updates ride their own channel
+	// so a burst of incidents cannot starve the per-request feed.
+	// Initialised lazily on the first PublishIncidentUpdate call so
+	// deployments that never wire the diagnose feature pay nothing.
+	incidentMu       sync.Mutex
+	incidentUpdateCh chan LiveStreamEnvelope
+	incidentDrops    atomic.Int64
 }
 
 type cachedSnapshotEntry struct {
@@ -929,6 +983,83 @@ func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
 	case h.broadcast <- req:
 	default:
 		slog.Debug("live stream broadcast queue full, dropping request", "request_id", req.RequestID)
+	}
+}
+
+// incidentUpdateCh is a separate, lower-priority channel for
+// route-incident updates. We keep the two channels distinct so
+// bursts of incident updates (e.g. a flapping route) cannot
+// starve the per-request feed.
+const (
+	incidentUpdateChCapacity = 256
+	incidentUpdateDropsLog   = 50 // log every Nth drop to bound the log volume
+)
+
+// PublishIncidentUpdate fans out a route incident transition to all
+// connected SSE clients. It is non-blocking: when the channel is
+// full the update is dropped and a counter is incremented (logged
+// at most every incidentUpdateDropsLog drops). Returns immediately
+// if the hub is nil or the update is nil.
+//
+// The function is intentionally separate from Publish so the
+// per-request feed (which has its own back-pressure policy) is not
+// affected by incident bursts. The observer calls this from its
+// own goroutine so the call is also non-blocking with respect to
+// the telemetry worker.
+func (h *LiveStreamSSEHub) PublishIncidentUpdate(upd *LiveIncidentUpdate) {
+	if h == nil || upd == nil {
+		return
+	}
+	if h.incidentUpdateCh == nil {
+		h.initIncidentUpdateCh()
+	}
+	upd.Type = "incident_update"
+	env := LiveStreamEnvelope{
+		Type:      "incident_update",
+		Timestamp: time.Now().UTC(),
+		Incident:  upd,
+	}
+	select {
+	case h.incidentUpdateCh <- env:
+	default:
+		h.incidentDrops.Add(1)
+		if n := h.incidentDrops.Load(); n%incidentUpdateDropsLog == 1 {
+			slog.Warn("live stream incident update queue full, dropping",
+				"dropped", n,
+				"incident_id", upd.IncidentID,
+				"state", upd.State,
+			)
+		}
+	}
+}
+
+// initIncidentUpdateCh lazily creates the channel + drops counter.
+// The hub constructor doesn't pre-allocate them so the cost is
+// only paid when the diagnose feature is actually wired in.
+func (h *LiveStreamSSEHub) initIncidentUpdateCh() {
+	h.incidentMu.Lock()
+	defer h.incidentMu.Unlock()
+	if h.incidentUpdateCh == nil {
+		h.incidentUpdateCh = make(chan LiveStreamEnvelope, incidentUpdateChCapacity)
+		// Drive a tiny fan-out goroutine so the observer never
+		// touches the broadcast channel directly. The hub's main
+		// loop is too expensive to poll many channels; this is
+		// the cheapest correct path.
+		go h.fanOutIncidentUpdates()
+	}
+}
+
+func (h *LiveStreamSSEHub) fanOutIncidentUpdates() {
+	for {
+		select {
+		case <-h.stopCh:
+			return
+		case env, ok := <-h.incidentUpdateCh:
+			if !ok {
+				return
+			}
+			h.fanOut(env)
+		}
 	}
 }
 
