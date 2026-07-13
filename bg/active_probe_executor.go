@@ -121,7 +121,7 @@ func (e *ActiveProbeExecutor) LoadTarget(ctx context.Context, credID int, model 
 	)
 	err := e.db.QueryRow(queryCtx, `
 		SELECT c.provider_id,
-		       COALESCE(pm.outbound_model_name, ''),
+		       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
 		       COALESCE(p.base_url, ''),
 		       COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext,
@@ -185,7 +185,14 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 		return res
 	}
 
-	body, err := buildProbePingBody(t.OutboundModel, t.Protocol)
+	// Use OutboundModel if available, otherwise fall back to RawModel
+	// to handle cases where outbound_model_name is NULL in the database.
+	model := t.OutboundModel
+	if model == "" {
+		model = t.RawModel
+	}
+
+	body, err := buildProbePingBody(model, t.Protocol)
 	if err != nil {
 		res.Status = ProbeStatusFailed
 		res.ErrCode = "body_build"
