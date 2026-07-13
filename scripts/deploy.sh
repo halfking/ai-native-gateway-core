@@ -131,6 +131,32 @@ if [[ $# -ge 2 ]]; then
           # bundle (or honor --to <version>), validate checksums, and
           # atomically swap `current`. Refuse to roll back when the
           # selected bundle is unverified or missing.
+          #
+          # Slice 5 update: 154 contracts report rollback_policy=runbook
+          # because the canonical CLI does not yet have parity tests
+          # for 154. Honor the policy here so callers get a clear
+          # pointer to the existing runbook instead of a misleading
+          # "no_rollback_target: 154 has no eligible verified bundle".
+          contract=$(target_contract "$TARGET_CANONICAL")
+          policy=$(printf '%s' "$contract" | sed -n 's/.*"rollback_policy":"\([^"]*\)".*/\1/p')
+          case "$policy" in
+            runbook)
+              cat <<EOF >&2
+ERROR: rollback $TARGET_CANONICAL is delivered via the existing runbook, not
+       the canonical CLI. See scripts/deploy-154.sh and the documented
+       154 rollback runbook for the operator procedure.
+       This slice's canonical versioned rollback is wired for 245 only;
+       conversion to versioned 154 rollback happens after canonical 154
+       deploy parity tests pass (spec §Compatibility disposition).
+EOF
+              exit 64
+              ;;
+            refuse|"")
+              echo "ERROR: rollback $TARGET_CANONICAL refused (policy=$policy)" >&2
+              exit 64
+              ;;
+          esac
+
           target_version=""
           while [[ $# -gt 0 ]]; do
             case "$1" in
