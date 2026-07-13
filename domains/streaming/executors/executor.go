@@ -1708,6 +1708,29 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			)
 			continue
 		}
+
+		// 2026-07-14 fix: transient / rate_limit / timeout 也应透明 failover
+		// 到下一个候选。之前这些错误会短路 break 进入 sync retry，但 sync
+		// retry 重新推导的候选列表中同一凭据仍然 available → 无限重试同一
+		// 凭据 → credential 23 (NVIDIA nvidia-latest) 永远不被尝试。
+		//
+		// 现在对这些 transient 类错误也 continue，让执行器遍历到下一个候选。
+		// 场景：credential 21 (MiniMax prod-v2) rate_limit → credential 19
+		// (NVIDIA endless) transient → credential 23 (NVIDIA nvidia-latest)
+		// → 成功！
+		if kind == errorsx.KindTransient ||
+			kind == errorsx.KindRateLimit ||
+			kind == errorsx.KindTimeout ||
+			kind == errorsx.KindStreamTimeout ||
+			kind == errorsx.KindUpstreamDown {
+			slog.Warn("executor: transient error, trying next candidate",
+				"kind", kind,
+				"credential_id", cand.CredentialID,
+				"provider_id", cand.ProviderID,
+				"err", execErr.Error(),
+			)
+			continue
+		}
 	}
 
 	trace.FailureReason = "all_candidates_failed"
