@@ -177,3 +177,4 @@ web/.i18n-fix-tmp.mjs
 bin/
 backups/
 llm-gateway-go.v969.linux.amd64
+fix-selfcheck-keyhash

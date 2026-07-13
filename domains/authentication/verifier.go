@@ -348,10 +348,19 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 	return &info, nil
 }
 
-func hashAPIKey(secretKey, rawKey string) string {
+// HashAPIKey hashes an API key using HMAC-SHA256 keyed with secretKey, returning
+// the hex digest. This is the canonical key_hash stored in api_keys and used by
+// the verifier for lookups. All writers (admin, self-check worker, etc.) MUST use
+// this so the verifier's WHERE key_hash = $1 matches.
+func HashAPIKey(secretKey, rawKey string) string {
 	mac := hmac.New(sha256.New, []byte(secretKey))
 	mac.Write([]byte(rawKey))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// hashAPIKey is the unexported alias kept for the internal call sites below.
+func hashAPIKey(secretKey, rawKey string) string {
+	return HashAPIKey(secretKey, rawKey)
 }
 
 func (kv *KeyVerifier) getCache(key string) *KeyInfo {
