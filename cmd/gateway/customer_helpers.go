@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"log/slog"
-	"strconv"
 
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
 	"github.com/labstack/echo/v4"
@@ -147,22 +146,16 @@ func noAuthCustomerMiddleware() echo.MiddlewareFunc {
 }
 
 // currentGatewayVersionProvider returns a VersionProvider closure that
-// captures the running gateway's Version + BuildNumber ldflag-injected values.
+// captures the running gateway's version from version.json (SSOT).
 //
 // In tests this can be replaced with a fixed closure to make upgrade checks
 // deterministic.
 func currentGatewayVersionProvider() autoupdate.VersionProvider {
 	return func() (string, int) {
-		v := Version
+		v := Version()
 		if v == "" {
 			v = "dev"
 		}
-		seq := 0
-		if BuildNumber != "" && BuildNumber != "0" {
-			if n, err := strconv.Atoi(BuildNumber); err == nil {
-				seq = n
-			}
-		}
-		return v, seq
+		return v, BuildSeqInt()
 	}
 }

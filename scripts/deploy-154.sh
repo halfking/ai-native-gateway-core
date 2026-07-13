@@ -239,12 +239,10 @@ fi
 
 # ── Step 4: Go 交叉编译 ───────────────────────────────────────
 log "[4/8] Go 交叉编译 linux/amd64..."
+# 2026-07-14: 移除 ldflags 版本注入。版本号统一从 version.json 文件读取（SSOT）。
+# version.json 通过 scp 上传到 154，runtime 自动读取。
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
-  -ldflags="-s -w \
-    -X 'main.Version=$NEW_VERSION' \
-    -X 'main.GitCommit=$HEAD_SHA' \
-    -X 'main.BuildDate=$HEAD_DATE' \
-    -X 'main.BuildNumber=$NEW_SEQ'" \
+  -ldflags="-s -w" \
   -o "$BIN_NAME" \
   ./cmd/gateway
 ls -lh "$BIN_NAME"

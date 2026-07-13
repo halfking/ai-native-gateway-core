@@ -2505,7 +2505,7 @@ func main() {
 				//nolint:errcheck // HTTP write error non-recoverable
 				//nolint:errcheck // HTTP write error non-recoverable
 				w.Write([]byte(fmt.Sprintf(`{"service":"llm-gateway-go","version":"%s","git_sha":"%s","build_seq":"%s"}`,
-					Version, GitCommit, BuildNumber)))
+					Version(), GitCommit(), BuildNumber())))
 				return
 			}
 			http.NotFound(w, r)
