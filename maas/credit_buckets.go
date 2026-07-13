@@ -44,7 +44,7 @@ func (s *Service) BackfillCreditConsumptionBuckets(ctx context.Context, lookback
 		SELECT
 			`+alias+`.tenant_id,
 			date_trunc('hour', `+alias+`.ts) AS bucket_start,
-			COALESCE(SUM(`+RequestLogCreditsSQL(alias)+`), 0)::bigint AS credits,
+			COALESCE(SUM(`+RequestLogCreditsSQL(alias, false)+`), 0)::bigint AS credits,
 			COUNT(*)::int AS request_count,
 			now() AS updated_at
 		FROM `+logsTable+`
