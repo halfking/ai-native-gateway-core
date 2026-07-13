@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **运维概览 403 / 刷新后租户视角**：`/api/auth/me` 返回 `{ user, access_token }` 时正确持久化 `user.role`，兼容历史 localStorage 嵌套结构。
 - **autoupdate 升级日志 401**：移除与 Echo JWT 冲突的 `AUTOUPDATE_ADMIN_TOKEN` 中间件，运维概览加载不再被踢到 `/login`。
 
+### Added (deployment management hardening — design + rotation checklist)
+- **部署管理硬化设计**：`docs/superpowers/specs/2026-07-13-deployment-management-hardening-design.md` 落地第五轮首个部署切片设计；154（deploy/verify）与 245（deploy/verify/rollback）成为首批 canonical 目标，186 退役，252/184/kaixuan 延后统一，引入双层锁、版本化 release bundle、SOPS `.env.252.enc` 与 `.env.kaixuan-1.enc` 复用现有 recipient 方案。详细说明：`docs/changelogs/2026-07-13-deployment-management-hardening.md`。
+
 ### Added (route-incident diagnosis, Phase 2 mutating actions + audit + evidence)
 - **路由事件诊断 Phase 2 (mutating + audit + 证据导出)**：
   落地 spec `2026-07-13-route-incident-diagnosis-design.md` 第二期。
