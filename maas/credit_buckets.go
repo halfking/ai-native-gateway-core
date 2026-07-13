@@ -8,12 +8,12 @@ import (
 )
 
 // BackfillCreditConsumptionBuckets re-derives the hourly credit-consumption
-// counter table from usage_ledger.credits_charged over the lookback window
+// counter table from request_logs.credits_charged over the lookback window
 // (typically 90 days, the longest window the dashboard supports).
 //
 // Idempotency: rows are overwritten (ON CONFLICT … DO UPDATE SET credits =
 // EXCLUDED.credits), so repeated runs in the same hour bucket converge to
-// the same total that usage_ledger reports. ChargeRequest's atomic upsert
+// the same total that request_logs reports. ChargeRequest's atomic upsert
 // has already been writing the same hour bucket live; the only data that
 // could differ between the live counter and the backfill at run-time is
 // the request just committed between SELECT and INSERT — which lands in
@@ -37,19 +37,25 @@ func (s *Service) BackfillCreditConsumptionBuckets(ctx context.Context, lookback
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	logsTable, alias := requestLogsSource(lookbackDays)
 	res, err := s.pool.Exec(ctx, `
 		INSERT INTO maas_credit_consumption_buckets
 			(tenant_id, bucket_start, credits, request_count, updated_at)
 		SELECT
-			tenant_id,
-			date_trunc('hour', ts) AS bucket_start,
-			COALESCE(SUM(credits_charged), 0)::bigint AS credits,
+			`+alias+`.tenant_id,
+			date_trunc('hour', `+alias+`.ts) AS bucket_start,
+			COALESCE(SUM(`+RequestLogCreditsSQL(alias)+`), 0)::bigint AS credits,
 			COUNT(*)::int AS request_count,
 			now() AS updated_at
-		FROM usage_ledger_with_current_month
-		WHERE ts >= now() - ($1::int * INTERVAL '1 day')
-		  AND credits_charged IS NOT NULL
-		GROUP BY tenant_id, date_trunc('hour', ts)
+		FROM `+logsTable+`
+		WHERE `+alias+`.ts >= now() - ($1::int * INTERVAL '1 day')
+		  AND `+alias+`.tenant_id NOT IN ('', 'default')
+		  AND (`+alias+`.credits_charged IS NOT NULL
+		    OR COALESCE(`+alias+`.prompt_tokens, 0)
+		     + COALESCE(`+alias+`.completion_tokens, 0)
+		     + COALESCE(`+alias+`.cache_read_tokens, 0)
+		     + COALESCE(`+alias+`.cache_write_tokens, 0) > 0)
+		GROUP BY `+alias+`.tenant_id, date_trunc('hour', `+alias+`.ts)
 		ON CONFLICT (tenant_id, bucket_start) DO UPDATE
 			SET credits       = EXCLUDED.credits,
 			    request_count = EXCLUDED.request_count,

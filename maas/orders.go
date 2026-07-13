@@ -419,8 +419,8 @@ func (s *Service) creditPurchased(ctx context.Context, tx pgx.Tx, tenantID strin
 	var balance int64
 	err := tx.QueryRow(ctx, `
 		UPDATE tenant_credit_wallets
-		   SET purchased_balance = purchased_balance + $2,
-		       balance_credits = granted_balance + purchased_balance + $2,
+		   SET purchased_balance = purchased_balance + $2::bigint,
+		       balance_credits = granted_balance + purchased_balance + $2::bigint,
 		       updated_at = now()
 		 WHERE tenant_id = $1
 		RETURNING balance_credits
@@ -448,8 +448,8 @@ func (s *Service) GrantCredits(ctx context.Context, tenantID string, amount int6
 	var balance int64
 	err = tx.QueryRow(ctx, `
 		UPDATE tenant_credit_wallets
-		   SET granted_balance = granted_balance + $2,
-		       balance_credits = granted_balance + purchased_balance + $2,
+		   SET granted_balance = granted_balance + $2::bigint,
+		       balance_credits = granted_balance + purchased_balance + $2::bigint,
 		       updated_at = now()
 		 WHERE tenant_id = $1
 		RETURNING balance_credits

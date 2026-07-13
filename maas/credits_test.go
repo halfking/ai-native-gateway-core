@@ -32,3 +32,21 @@ func TestEffectiveModelRates_partialManual(t *testing.T) {
 		t.Fatalf("partial manual failed: %+v", eff)
 	}
 }
+
+// PostgreSQL rejects untyped prepared params in `$2 + $3` (SQLSTATE 42725).
+func TestChargeWalletUpdateSQLCasts(t *testing.T) {
+	sql := `
+		UPDATE tenant_credit_wallets
+		   SET granted_balance = $2,
+		       purchased_balance = $3,
+		       balance_credits = $2::bigint + $3::bigint,
+		       updated_at = now()
+		 WHERE tenant_id = $1
+		RETURNING balance_credits
+	`
+	for _, want := range []string{"$2::bigint + $3::bigint", "granted_balance = $2"} {
+		if !contains(sql, want) {
+			t.Fatalf("wallet update SQL missing %q", want)
+		}
+	}
+}

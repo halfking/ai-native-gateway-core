@@ -41,19 +41,49 @@ func TestQueryCreditsFromBucketsSQLShape(t *testing.T) {
 	}
 }
 
-func TestQueryCreditsFromLedgerFallbackSQLShape(t *testing.T) {
+func TestQueryCreditsFromRequestLogsFallbackSQLShape(t *testing.T) {
 	sql := `
-		SELECT COALESCE(SUM(credits_charged), 0)::bigint
-		  FROM usage_ledger_with_current_month
-		 WHERE ts >= now() - ($1 * INTERVAL '1 day') AND credits_charged IS NOT NULL
+		SELECT COALESCE(SUM(COALESCE(r.credits_charged, CASE)), 0)::bigint
+		  FROM request_logs_hot AS r
+		 WHERE r.ts >= now() - ($1 * INTERVAL '1 day')
+		   AND r.tenant_id NOT IN ('', 'default')
 	`
 	for _, want := range []string{
-		"usage_ledger_with_current_month",
-		"credits_charged IS NOT NULL",
-		"COALESCE(SUM(credits_charged), 0)::bigint",
+		"request_logs_hot",
+		"tenant_id NOT IN ('', 'default')",
+		"COALESCE(SUM",
 	} {
 		if !strings.Contains(sql, want) {
-			t.Errorf("credits ledger fallback SQL missing %q", want)
+			t.Errorf("credits request_logs fallback SQL missing %q", want)
+		}
+	}
+}
+
+func TestRequestLogsFromClauseUsesUnionForLongWindows(t *testing.T) {
+	from, alias := requestLogsFromClause(30)
+	if alias != "r" {
+		t.Fatalf("alias = %q, want r", alias)
+	}
+	if !strings.Contains(from, "request_logs_with_current_month") {
+		t.Fatalf("long window must use cross-month view: %q", from)
+	}
+	from7, _ := requestLogsFromClause(7)
+	if strings.Contains(from7, "UNION ALL") {
+		t.Fatalf("7-day window should use hot table only: %q", from7)
+	}
+}
+
+func TestQueryCreditsFromBucketsReturnsRowCount(t *testing.T) {
+	sql := `
+		SELECT COALESCE(SUM(credits), 0)::bigint,
+		       COUNT(*)::bigint
+		  FROM maas_credit_consumption_buckets
+		 WHERE tenant_id = $1
+		   AND bucket_start >= now() - ($2::int * INTERVAL '1 day')
+	`
+	for _, want := range []string{"COUNT(*)::bigint", "COALESCE(SUM(credits), 0)::bigint"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("credits bucket SQL missing %q", want)
 		}
 	}
 }

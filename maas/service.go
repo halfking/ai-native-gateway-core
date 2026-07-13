@@ -208,7 +208,7 @@ func (s *Service) chargeTokens(ctx context.Context, tenantID, requestID, canonic
 		UPDATE tenant_credit_wallets
 		   SET granted_balance = $2,
 		       purchased_balance = $3,
-		       balance_credits = $2 + $3,
+		       balance_credits = $2::bigint + $3::bigint,
 		       updated_at = now()
 		 WHERE tenant_id = $1
 		RETURNING balance_credits
@@ -227,7 +227,7 @@ func (s *Service) chargeTokens(ctx context.Context, tenantID, requestID, canonic
 	// INSERT … ON CONFLICT DO UPDATE is row-locked by PG, so concurrent
 	// ChargeRequest calls in different gateway instances accumulate
 	// safely without external locking. Backfill (cmd/gateway startup)
-	// reconciles from usage_ledger.credits_charged for catch-up windows.
+	// reconciles from request_logs.credits_charged for catch-up windows.
 	_, _ = s.pool.Exec(ctx, `
 		INSERT INTO maas_credit_consumption_buckets
 			(tenant_id, bucket_start, credits, request_count, updated_at)
@@ -691,8 +691,8 @@ func (s *Service) AdjustCredits(ctx context.Context, tenantID string, amount int
 	if amount > 0 {
 		err = tx.QueryRow(ctx, `
 			UPDATE tenant_credit_wallets
-			   SET purchased_balance = purchased_balance + $2,
-			       balance_credits = granted_balance + purchased_balance + $2,
+			   SET purchased_balance = purchased_balance + $2::bigint,
+			       balance_credits = granted_balance + purchased_balance + $2::bigint,
 			       updated_at = now()
 			 WHERE tenant_id = $1
 			RETURNING balance_credits
@@ -700,10 +700,10 @@ func (s *Service) AdjustCredits(ctx context.Context, tenantID string, amount int
 	} else {
 		err = tx.QueryRow(ctx, `
 			UPDATE tenant_credit_wallets
-			   SET purchased_balance = purchased_balance + $2,
-			       balance_credits = granted_balance + purchased_balance + $2,
+			   SET purchased_balance = purchased_balance + $2::bigint,
+			       balance_credits = granted_balance + purchased_balance + $2::bigint,
 			       updated_at = now()
-			 WHERE tenant_id = $1 AND purchased_balance + $2 >= 0
+			 WHERE tenant_id = $1 AND purchased_balance + $2::bigint >= 0
 			RETURNING balance_credits
 		`, tenantID, amount).Scan(&balance)
 	}
