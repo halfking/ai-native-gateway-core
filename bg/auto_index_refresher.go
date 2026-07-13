@@ -359,8 +359,14 @@ WHERE v.is_routable = TRUE
 -- ── Dedup: skip rows whose (credential_id, raw_model) had IDENTICAL
 -- metrics (success_rate, p95, all 3 scores) in the most recent prior
 -- bucket. 2026-07-13 incident: 97.1% of inserts were pure duplicates.
--- We only check against the immediate previous bucket so that genuine
--- metric changes (success_rate 0.9 → 0.85 → 0.9) are still recorded.
+--
+-- 2026-07-13 dedup scope fix: was a single-bucket lookup. Now it checks
+-- the LATEST row overall — so when traffic is stable for 6 hours we
+-- collapse 72 hourly buckets into 1, instead of only avoiding duplicate
+-- writes to the immediately previous bucket.
+-- Genuine metric changes (success_rate 0.9 -> 0.85 -> 0.9) are still
+-- recorded because the comparison is against the most-recent row
+-- (whose metrics would already match the new row if nothing changed).
 SELECT f.*
 FROM fresh f
 WHERE NOT EXISTS (
@@ -372,6 +378,7 @@ WHERE NOT EXISTS (
           WHERE prev2.credential_id = f.credential_id
             AND prev2.raw_model      = f.raw_model
             AND prev2.bucket        < f.bucket
+            AND prev2.bucket        > f.bucket - INTERVAL '7 days'
       )
       AND prev.success_rate        IS NOT DISTINCT FROM f.success_rate
       AND prev.p95_latency_ms      IS NOT DISTINCT FROM f.p95_latency_ms

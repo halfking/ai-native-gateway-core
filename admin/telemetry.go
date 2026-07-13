@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -105,6 +106,17 @@ type telemetryIngester struct {
 }
 
 var ingester *telemetryIngester
+
+// keepAllBodies returns true when the operator has explicitly opted
+// into persisting request/response bodies for ALL requests (including
+// successful ones). Default is false — bodies are only kept for
+// failed rows, which slashes request_logs_bodies disk usage by ~90%.
+// Override at runtime: `export LLM_GATEWAY_KEEP_ALL_BODIES=true` and
+// restart. Used by 2026-07-13 disk-pressure incident on 154.
+func keepAllBodies() bool {
+	v := os.Getenv("LLM_GATEWAY_KEEP_ALL_BODIES")
+	return v == "true" || v == "1"
+}
 
 // StartIngester spins up the in-process telemetry ingest worker.
 // Called from cmd/gateway/main.go once the DB pool is ready.
@@ -224,6 +236,19 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	rawModel := firstNonEmptyStr(e.OutboundModel, e.ClientModel)
 	search := buildSearchText(e)
 
+	// 2026-07-13: drop request_body/response_body for SUCCESS rows.
+	// The full TOAST'd bodies are the largest contributor to disk usage
+	// (3.4 GB / 24k rows in one month on 154). For failures we still
+	// keep them for forensics. Override via env var
+	// `LLM_GATEWAY_KEEP_ALL_BODIES=true` to restore old behavior
+	// (e.g. when debugging a specific production issue).
+	requestBody := e.RequestBody
+	responseBody := e.ResponseBody
+	if e.Success && !keepAllBodies() {
+		requestBody = nil
+		responseBody = nil
+	}
+
 	tx, err := t.db.Begin(ctx)
 	if err != nil {
 		slog.Warn("telemetry ingest begin failed", "error", err)
@@ -316,7 +341,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		e.IdentityHash, e.ResponseChecksum,
 		e.TransformRuleID, e.EgressProtocol, e.FailureDetailCode,
 		e.RequestPreview, e.TransformSummary, e.ResponsePreview,
-		e.RequestBody, e.ResponseBody,
+		requestBody, responseBody,
 		e.StreamFirstChunkMs, e.StreamChunkCount, e.StreamDoneReceived,
 		e.StreamInterrupted,
 		// 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).

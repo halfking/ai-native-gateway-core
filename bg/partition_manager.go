@@ -210,6 +210,47 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 
 	// 2. model_probe_runs partition cleanup (every tick, hot-reloadable retention)
 	pm.dropOldModelProbeRunsPartitions(ctx)
+
+	// 3. 2026-07-13: credential_model_index 7-day TTL cleanup.
+	// The SQL function `cleanup_old_credential_model_index()` deletes
+	// `credential_model_index` rows older than 7 days. The dedup change
+	// in auto_index_refresher.go (only-when-changed writes) keeps the
+	// table from growing while traffic is stable; this cleanup handles
+	// the long-tail case where a model stops being routed entirely
+	// (e.g. credential disabled) so no more rows are inserted and the
+	// historical ones can be reaped. Hot-reloadable via
+	// lifecycle.credential_model_index_ttl_days (default 7).
+	pm.cleanupOldCredentialModelIndex(ctx)
+}
+
+// cleanupOldCredentialModelIndex calls the SQL helper
+// `cleanup_old_credential_model_index()` which deletes rows older than
+// the configured TTL. Designed to run every partition_manager tick
+// (1h by default); the SQL DELETE is index-backed on `bucket` so the
+// overhead is a few hundred milliseconds even on million-row tables.
+func (pm *PartitionManager) cleanupOldCredentialModelIndex(ctx context.Context) {
+	ttlDays := settings.GetPlatformInt("lifecycle.credential_model_index_ttl_days", 7)
+	if ttlDays < 1 {
+		ttlDays = 7 // safety floor — never set to 0 (would wipe the table)
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	var deleted int64
+	err := pm.db.QueryRow(timeoutCtx,
+		"SELECT cleanup_old_credential_model_index()",
+	).Scan(&deleted)
+	if err != nil {
+		slog.Error("partition_manager: credential_model_index cleanup failed",
+			"ttl_days", ttlDays, "error", err)
+		return
+	}
+
+	if deleted > 0 {
+		slog.Info("partition_manager: credential_model_index cleanup ran",
+			"ttl_days", ttlDays, "rows_deleted", deleted)
+	}
 }
 
 // dropOldModelProbeRunsPartitions drops monthly partitions of
@@ -414,6 +455,14 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 // This function is called on every promote tick — there is no caching
 // layer to invalidate. Updated settings take effect within one tick
 // (DefaultPromoteInterval = 1h).
+//
+// Per-table retention settings (all hot-reloadable, all default 24h except
+// request_logs_bodies which is 1d due to size):
+//   - probe.hot_retention_hours                — model_probe_runs_hot
+//   - lifecycle.hot_retention_hours            — request_logs_hot, usage_ledger_hot, ...
+//   - lifecycle.request_logs_bodies_retention_hours — request_logs_bodies (1d default)
+//   - lifecycle.credential_model_index_ttl_days  — credential_model_index (reaped by
+//                                                  cleanup_old_credential_model_index())
 func resolvePromoteConfig(label string) (time.Duration, int) {
 	switch label {
 	case "model_probe_runs_hot":
@@ -427,17 +476,31 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 		if batchSize < 100 {
 			batchSize = 100
 		}
-		if batchSize > 50000 {
-			batchSize = 50000
+		if batchSize > 50_000 {
+			batchSize = 50_000
 		}
 		return retention, batchSize
+	case "request_logs_bodies":
+		// 2026-07-13: request_logs_bodies stores full request/response
+		// payloads (TOAST). It grew to 3.4 GB / 24k rows in one month
+		// because the default retention was 7d. Bodies are only needed
+		// for forensic / export use cases — operators rarely look at
+		// them more than a day after the fact. Default drops to 24h;
+		// operators can override via
+		// lifecycle.request_logs_bodies_retention_hours.
+		hours := settingsGetPlatformInt("lifecycle.request_logs_bodies_retention_hours", 24)
+		retention := time.Duration(hours) * time.Hour
+		if retention < time.Hour {
+			retention = time.Hour // safety floor — at least 1h
+		}
+		return retention, promoteBatchSize
 	default:
 		hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
 		retention := time.Duration(hours) * time.Hour
 		if retention < time.Hour { retention = time.Hour }
 		batchSize := settingsGetPlatformInt("lifecycle.promote_batch_size", promoteBatchSize)
 		if batchSize < 100 { batchSize = 100 }
-		if batchSize > 50000 { batchSize = 50000 }
+		if batchSize > 50_000 { batchSize = 50_000 }
 		return retention, batchSize
 	}
 }
