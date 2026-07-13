@@ -42,20 +42,35 @@ func TestQueryCreditsFromBucketsSQLShape(t *testing.T) {
 }
 
 func TestQueryCreditsFromRequestLogsFallbackSQLShape(t *testing.T) {
-	sql := `
+	platformSQL := `
 		SELECT COALESCE(SUM(COALESCE(r.credits_charged, CASE)), 0)::bigint
 		  FROM request_logs_hot AS r
 		 WHERE r.ts >= now() - ($1 * INTERVAL '1 day')
-		   AND r.tenant_id NOT IN ('', 'default')
+		   AND r.tenant_id <> ''
 	`
-	for _, want := range []string{
-		"request_logs_hot",
-		"tenant_id NOT IN ('', 'default')",
-		"COALESCE(SUM",
-	} {
-		if !strings.Contains(sql, want) {
-			t.Errorf("credits request_logs fallback SQL missing %q", want)
+	tenantSQL := `
+		SELECT COALESCE(SUM(COALESCE(r.credits_charged, CASE)), 0)::bigint
+		  FROM request_logs_hot AS r
+		 WHERE r.ts >= now() - ($1 * INTERVAL '1 day')
+		   AND r.tenant_id = $2
+	`
+	for _, sql := range []string{platformSQL, tenantSQL} {
+		for _, want := range []string{"request_logs_hot", "COALESCE(SUM"} {
+			if !strings.Contains(sql, want) {
+				t.Errorf("credits request_logs fallback SQL missing %q", want)
+			}
 		}
+	}
+}
+
+func TestIsPlatformCreditsScope(t *testing.T) {
+	for _, tid := range []string{"", "default"} {
+		if !isPlatformCreditsScope(tid) {
+			t.Fatalf("isPlatformCreditsScope(%q) = false, want true", tid)
+		}
+	}
+	if isPlatformCreditsScope("hansi") {
+		t.Fatal("tenant-scoped id must not be platform scope")
 	}
 }
 
