@@ -1510,20 +1510,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			}
 
 			if sie.resumable {
-				// Stream is resumable (few chunks sent) - try next candidate.
-				// The inner tryCandidate already wrote the credential state
-				// with the correct kind; here we just record the failure on
-				// the circuit to keep the counter consistent. For
-				// KindConcurrent we also re-affirm by writing state again
-				// because the executor's outer loop now drives the failover
-				// to the next candidate, and we want the DB state to be
-				// authoritative before that next lookup.
+				// 2026-07-13: BUG fix - Stream is resumable (few chunks sent) - try next candidate.
+				// 不在此处立即降级凭据，仅记录熔断器失败。状态降级由 StateObserver.UpdateOnFailure
+				// 处理，该函数已在上面的 L1472 调用，会：
+				// 1. 累计 consecutive_fails
+				// 2. 立即触发主动探测（activeProbeSubmitter，如果连续失败 >= 阈值）
+				// 3. 只有当 consecutive_fails >= 3 时才降级（进入 cooling）
+				// 这样实现了"错误时立即重试+触发探测，只有探测失败+重试失败才降级"的语义。
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 				e.recordBanditFailure(cand.CredentialID, kind)
+				// KindConcurrent 是严重错误，需要立即冷却
 				if kind == errorsx.KindConcurrent {
-					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
-					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
-				} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
 					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
 				}
@@ -1545,13 +1542,13 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 				continue
 			} else {
-				// Stream is not resumable (too many chunks sent) - return error.
-				// The inner tryCandidate already wrote the credential state
-				// with the correct kind; this branch keeps the circuit counter
-				// consistent and ensures the kind is recorded.
+				// 2026-07-13: BUG fix - Stream is not resumable (too many chunks sent) - return error.
+				// 不立即降级凭据（除了 KindConcurrent），状态降级由 StateObserver.UpdateOnFailure
+				// 处理（已在上面 L1472 调用），会累计连续失败并触发主动探测。
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 				e.recordBanditFailure(cand.CredentialID, kind)
-				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
+				// KindConcurrent 是严重错误，需要立即冷却
+				if kind == errorsx.KindConcurrent {
 					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
 					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
 				}

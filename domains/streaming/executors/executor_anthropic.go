@@ -928,7 +928,11 @@ func (e *Executor) executeAnthropicOnce(
 			isResumable := outcome.Resumable && outcome.ChunkCount < e.StreamRetryThreshold
 			isBenignEOF := outcome.Reason == "eof_without_done" && outcome.ChunkCount > 0
 
+			// 2026-07-13: BUG fix - 流中断时不立即降级凭据。
+			// 仅记录熔断器失败，状态降级由外层 Execute() 通过 StateObserver.UpdateOnFailure
+			// 触发，后者会立即触发主动探测，只有探测失败+重试失败才降级。
 			if !isBenignEOF && isResumable {
+				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
 			} else if !isBenignEOF {
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
 			}
