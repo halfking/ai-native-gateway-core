@@ -121,6 +121,18 @@ func (e *ActiveProbeEmitter) Emit(
 		// can correlate the probe row with its trigger.
 		ParentRequestID: strPtrTelemetry(parentReqID),
 		ClientRequestID: strPtrTelemetry(parentReqID),
+		// 2026-07-14 fix: request_logs.chk_compression_parent_single is
+		// `parent_request_id IS NULL OR compression_reason IS NOT NULL`.
+		// The parent_request_id column was originally reserved for the
+		// compression parent-child chain; we reuse it here for probe→trigger
+		// correlation, so we MUST supply a non-NULL compression_reason to
+		// satisfy the CHECK constraint. Without this every probe INSERT was
+		// silently rejected with SQLSTATE 23514, the row never landed in
+		// request_logs_hot, and the live-stream tile (pushed via onEmitted)
+		// vanished on refresh / returned 404 on /api/logs/:id.
+		// "probe_correlation" makes the non-compression intent explicit and
+		// keeps the column self-documenting for operators reading the table.
+		CompressionReason: strPtrTelemetry("probe_correlation"),
 		// 2026-07-13: probe observability fields
 		IsAutoRequest:  boolPtrTelemetry(true),
 		TaskType:       strPtrTelemetry("probe_triggered"),
