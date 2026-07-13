@@ -15,7 +15,7 @@
 #   主机: kaixuan-1 (192.168.31.28, macOS ARM64)
 #   DB: K3s 本地 PG (postgresql-0.pms-test.svc.cluster.local, 独立 schema)
 #   Service: launchd (~/Library/LaunchAgents/com.kaixuan.llm-gateway-go.plist)
-#   Listen port: 8080
+#   Listen port: 8088 (NPC [llm_gateway] → 252:11008)
 #
 # 前置 (HARD-GATE):
 #   env-injector inject kaixuan-1
@@ -39,7 +39,7 @@ SSH_USER="kaixuan"
 SSH_PASS="${SSHPASS:-kaixuan123}"
 REMOTE_DIR="~/workspace/official-deploy/services/llm-gateway-go"
 REMOTE_ABS="/Users/kaixuan/workspace/official-deploy/services/llm-gateway-go"
-LISTEN_PORT="${LLM_GATEWAY_PORT:-8080}"
+LISTEN_PORT="${LLM_GATEWAY_PORT:-8088}"
 SERVICE_LABEL="com.kaixuan.llm-gateway-go"
 PLIST_REL="~/Library/LaunchAgents/${SERVICE_LABEL}.plist"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"

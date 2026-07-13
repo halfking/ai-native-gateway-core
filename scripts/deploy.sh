@@ -179,7 +179,7 @@ SSH_KEY_154="${SSH_KEY_154:-$HOME/.ssh/id_ed25519}"
 SSH_KEY_252="${SSH_KEY_252:-$HOME/.ssh/id_ed25519}"
 SSH_KEY_245="${SSH_KEY_245:-$HOME/.ssh/id_ed25519}"
 SSH_KEY_186="${SSH_KEY_186:-$HOME/.ssh/id_ed25519}"
-SSH_KEY_KAIXUAN_1="${SSH_KEY_KAIXUAN_1:-$HOME/.ssh/kaixuan1_id_rsa}"
+SSH_KEY_KAIXUAN_1="${SSH_KEY_KAIXUAN_1:-$HOME/.ssh/id_ed25519}"
 SSH_KEY_KAIXUAN_2="${SSH_KEY_KAIXUAN_2:-$HOME/.ssh/kaixuan2_id_rsa}"
 SSH_KEY_KAIXUAN_3="${SSH_KEY_KAIXUAN_3:-$HOME/.ssh/kaixuan3_id_rsa}"
 
@@ -192,7 +192,7 @@ SSH_154_OPT="-p $SSH_PORT -i $SSH_KEY_154 -o StrictHostKeyChecking=accept-new -o
 SSH_252_OPT="-p $SSH_PORT -i $SSH_KEY_252 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
 SSH_245_OPT="-p $SSH_PORT -i $SSH_KEY_245 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
 SSH_186_OPT="-p $SSH_PORT -i $SSH_KEY_186 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
-SSH_KAIXUAN_1_OPT="-p $SSH_PORT -i $SSH_KEY_KAIXUAN_1 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+SSH_KAIXUAN_1_OPT="-p 22 -i $SSH_KEY_KAIXUAN_1 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
 SSH_KAIXUAN_2_OPT="-p $SSH_PORT -i $SSH_KEY_KAIXUAN_2 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
 SSH_KAIXUAN_3_OPT="-p $SSH_PORT -i $SSH_KEY_KAIXUAN_3 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
 
@@ -222,6 +222,11 @@ REGISTRY_252="${REGISTRY_252:-${REGISTRY_INT}}"
 REGISTRY_LOCAL="${REGISTRY_LOCAL:-${REGISTRY_DEV}}"
 K8S_NS="pms-test"
 K8S_DEP="llm-gateway-go-deployment"
+KAIXUAN1_KUBECONFIG="${KAIXUAN1_KUBECONFIG:-$HOME/.kube/kaixuan-1-config}"
+KAIXUAN1_K3S_API="${KAIXUAN1_K3S_API:-192.168.31.8:6443}"
+KAIXUAN1_NODEPORT="${KAIXUAN1_NODEPORT:-30080}"
+KAIXUAN1_NPC_PORT="${KAIXUAN1_NPC_PORT:-11008}"
+LLM_ITESTU_DOMAIN="https://llm.itestu.cn"
 
 # 71 binary
 BIN_NAME="llm-gateway-go.v321.linux.amd64"
@@ -421,6 +426,145 @@ commit_build_seq() {
   git add build_seq version.json
   git commit -m "chore: bump build_seq to ${NEW_BUILD_SEQ} via deploy.sh [skip ci]" 2>&1 | tail -3
   ok "build_seq 已提交"
+}
+
+# ── kaixuan-1 k3s 部署 ─────────────────────────────────────────────
+
+k3s_kaixuan1_reachable() {
+  KUBECONFIG="$KAIXUAN1_KUBECONFIG" kubectl cluster-info --request-timeout=8s >/dev/null 2>&1
+}
+
+push_to_kaixuan1_registry() {
+  phase "kaixuan-1: 推送到 ${REGISTRY_DEV}"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    info "[DRY-RUN] 跳过 docker push ${REGISTRY_DEV}"
+    return 0
+  fi
+  local remote_img="${REGISTRY_DEV}/${IMAGE_NAME}:${IMAGE_TAG}"
+  docker tag "${IMAGE_NAME}:${IMAGE_TAG}" "$remote_img"
+  docker tag "${IMAGE_NAME}:${IMAGE_TAG}" "${REGISTRY_DEV}/${IMAGE_NAME}:latest"
+  if docker push "$remote_img" 2>/tmp/.push_k1.err && docker push "${REGISTRY_DEV}/${IMAGE_NAME}:latest" 2>/tmp/.push_k1_latest.err; then
+    ok "已推送到 ${REGISTRY_DEV}"
+    return 0
+  fi
+  warn "直推 ${REGISTRY_DEV} 失败（tart-vm registry 可能不可达）:"
+  head -3 /tmp/.push_k1.err 2>/dev/null || true
+  return 1
+}
+
+update_k3s_kaixuan1_deployment() {
+  phase "kaixuan-1: kubectl apply + set image"
+  if [[ "$DRY_RUN" == "true" ]]; then return 0; fi
+  export KUBECONFIG="$KAIXUAN1_KUBECONFIG"
+  kubectl apply -f "$REPO_ROOT/deploy/k8s/llm-gateway-go-deployment.yaml"
+  kubectl set image "deployment/${K8S_DEP}" \
+    "${K8S_CONTAINER}=${REGISTRY_DEV}/${IMAGE_NAME}:${IMAGE_TAG}" -n "$K8S_NS"
+  kubectl rollout status "deployment/${K8S_DEP}" -n "$K8S_NS" --timeout=5m
+  ok "k3s 滚动更新完成"
+}
+
+configure_252_nginx_llm_itestu() {
+  phase "252: llm.itestu.cn nginx → 127.0.0.1:${KAIXUAN1_NPC_PORT}"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    info "[DRY-RUN] 跳过 nginx 更新"
+    return 0
+  fi
+  ssh $SSH_252_OPT $SERVER_252 bash <<'NGINX_EOF'
+set -e
+CONF=/etc/nginx/conf.d/llm.itestu.cn.conf
+cp "$CONF" "${CONF}.bak.$(date +%Y%m%d-%H%M%S)"
+sed -i 's|proxy_pass http://127.0.0.1:8780;|proxy_pass http://127.0.0.1:11008;|g' "$CONF"
+grep -q '127.0.0.1:11008' "$CONF" || { echo "nginx 更新失败: 未找到 11008"; exit 1; }
+nginx -t
+systemctl reload nginx
+echo "✓ nginx reloaded"
+NGINX_EOF
+  ok "252 nginx 已指向 NPC 隧道 :${KAIXUAN1_NPC_PORT}"
+}
+
+configure_kaixuan1_npc_llm_gateway() {
+  local target_addr="$1"
+  phase "kaixuan-1: NPC [llm_gateway] → ${target_addr}"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    info "[DRY-RUN] 跳过 NPC 更新 (target=${target_addr})"
+    return 0
+  fi
+  ssh $SSH_KAIXUAN_1_OPT $SERVER_KAIXUAN_1 bash <<EOF
+set -e
+CONF=\$HOME/.local/npc/npc-kaixuan-1-nginx-entry.conf
+cp "\$CONF" "\${CONF}.bak.\$(date +%Y%m%d-%H%M%S)"
+python3 - <<'PY'
+from pathlib import Path
+import re
+conf = Path.home() / ".local/npc/npc-kaixuan-1-nginx-entry.conf"
+text = conf.read_text()
+block = re.compile(
+    r"(\[llm_gateway\][^\[]*target_addr=)[^\n]+",
+    re.MULTILINE,
+)
+new_text, n = block.subn(r"\g<1>${target_addr}", text, count=1)
+if n != 1:
+    raise SystemExit("llm_gateway block not updated")
+conf.write_text(new_text)
+print("✓ NPC target_addr=${target_addr}")
+PY
+launchctl kickstart -k "gui/\$(id -u)/com.kxmemory.npc.primary" 2>/dev/null || true
+sleep 2
+EOF
+  ok "NPC llm_gateway 已更新"
+}
+
+verify_kaixuan1_public() {
+  phase "kaixuan-1: 公网验证 ${LLM_ITESTU_DOMAIN}/healthz"
+  if [[ "$DRY_RUN" == "true" ]]; then return 0; fi
+  sleep 5
+  local body
+  body=$(curl -fsS --max-time 15 "${LLM_ITESTU_DOMAIN}/healthz" 2>&1 || echo "")
+  if [[ -z "$body" ]]; then
+    err "${LLM_ITESTU_DOMAIN}/healthz 不可达"
+    return 1
+  fi
+  ok "${LLM_ITESTU_DOMAIN} → $body"
+  if ! echo "$body" | grep -q "$IMAGE_TAG"; then
+    warn "公网版本未匹配 IMAGE_TAG=$IMAGE_TAG（可能 CDN/缓存）"
+  fi
+  return 0
+}
+
+deploy_k3s_kaixuan1_host() {
+  phase "kaixuan-1: host 模式回退 (launchd / :8088, NPC 隧道)"
+  warn "k3s 不可达 — 使用 macOS host 部署（tart-vm 恢复后可切回 k3s NodePort :${KAIXUAN1_NODEPORT}）"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    info "[DRY-RUN] 将执行 deploy-kaixuan1.sh --skip-bump"
+    configure_kaixuan1_npc_llm_gateway "127.0.0.1:8088"
+    configure_252_nginx_llm_itestu
+    return 0
+  fi
+  LLM_GATEWAY_PORT=8088 bash "$REPO_ROOT/scripts/deploy-kaixuan1.sh" --skip-bump || return 1
+  configure_kaixuan1_npc_llm_gateway "127.0.0.1:8088"
+  configure_252_nginx_llm_itestu
+  verify_kaixuan1_public || return 1
+}
+
+deploy_k3s_kaixuan1() {
+  phase "════════════ kaixuan-1 k3s 部署 ════════════"
+  if k3s_kaixuan1_reachable; then
+    ok "k3s API 可达 (${KAIXUAN1_K3S_API})"
+    build_image || return 2
+    push_to_kaixuan1_registry || {
+      err "镜像推送失败 — registry ${REGISTRY_DEV} 不可达"
+      return 3
+    }
+    update_k3s_kaixuan1_deployment || return 4
+    configure_kaixuan1_npc_llm_gateway "192.168.31.8:${KAIXUAN1_NODEPORT}"
+    configure_252_nginx_llm_itestu
+    verify_kaixuan1_public || return 5
+    ok "kaixuan-1 k3s 部署完成"
+    return 0
+  fi
+  err "k3s 集群不可达 (KUBECONFIG=${KAIXUAN1_KUBECONFIG}, api=${KAIXUAN1_K3S_API})"
+  err "  常见原因: tart-vm Guest Agent 未运行 / 192.168.31.8 网络不通"
+  deploy_k3s_kaixuan1_host || return 4
 }
 
 # ── 184 部署 ────────────────────────────────────────────────────────
@@ -911,8 +1055,10 @@ main() {
       get_version
       if [[ "$TARGET" == "184" ]]; then
         deploy_184  # legacy 别名，使用旧 K8s 函数
+      elif [[ "$TARGET" == "kaixuan-1" ]]; then
+        deploy_k3s_kaixuan1 || exit $?
       else
-        err "TARGET=$TARGET (k3s-mode) 尚未实现 deploy_k3s；请用 ./scripts/deploy.sh 252"
+        err "TARGET=$TARGET (k3s-mode) 尚未实现 deploy_k3s；请用 ./scripts/deploy.sh kaixuan-1 或 252"
         exit 64
       fi
       commit_build_seq
