@@ -381,6 +381,12 @@ onMounted(() => {
         <el-table-column prop="license_key" :label="t('ops.license.licenseKey')" width="200" />
         <el-table-column prop="instance_id" :label="t('ops.license.deviceId')" width="150" />
         <el-table-column prop="request_id" :label="t('ops.license.requestCode')" />
+        <el-table-column prop="activation_code" :label="t('ops.license.activationCode')" width="120">
+          <template #default="{ row = {} } = {}">
+            <span v-if="row.activation_code">{{ row.activation_code }}</span>
+            <span v-else class="cell-sub">—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="status" :label="t('common.status')" width="100">
           <template #default="{ row = {} } = {}">
             <el-tag :type="row.status === 'pending' ? 'warning' : 'success'" size="small">

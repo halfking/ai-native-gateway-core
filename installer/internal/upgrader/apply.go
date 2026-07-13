@@ -66,10 +66,11 @@ func ApplyUpdate(release *Release, dataDir, masterURL string) error {
 	// 7. 健康检查（3 次重试，间隔 1s）
 	fmt.Println("▶ 健康检查 ...")
 	if err := healthCheck(3, 1*time.Second); err != nil {
-		// 回滚
 		fmt.Println("⚠️  健康检查失败，自动回滚 ...")
-		_ = copyFile(backupPath, binPath)
-		_ = restartService()
+		if rbErr := rollbackAfterFailedUpgrade(dataDir, backupPath, binPath, currentVersion); rbErr != nil {
+			return fmt.Errorf("health check failed and rollback incomplete: health=%w rollback=%v", err, rbErr)
+		}
+		reportUpgrade(masterURL, release.Version, "rolled_back", err.Error(), time.Since(start))
 		return fmt.Errorf("health check failed, rolled back: %w", err)
 	}
 
@@ -84,14 +85,8 @@ func ApplyUpdate(release *Release, dataDir, masterURL string) error {
 		fmt.Printf("⚠️  清理旧备份失败: %v\n", err)
 	}
 
-	// 10. 上报结果（可选）
-	client := NewClient(masterURL)
-	_ = client.ReportUpdate(context.Background(), &ReportUpdateRequest{
-		InstanceID: "local", // 实际应从配置读取
-		Version:    release.Version,
-		Status:     "success",
-		DurationMs: time.Since(start).Milliseconds(),
-	})
+	// 10. 上报结果
+	reportUpgrade(masterURL, release.Version, "success", "", time.Since(start))
 
 	fmt.Printf("✅ 升级完成: %s (耗时 %v)\n", release.Version, time.Since(start))
 	return nil
@@ -278,4 +273,29 @@ func cleanupOldBackups(backupDir string, keepCount int) error {
 	}
 
 	return nil
+}
+
+func rollbackAfterFailedUpgrade(dataDir, backupPath, binPath, previousVersion string) error {
+	if err := copyFile(backupPath, binPath); err != nil {
+		return fmt.Errorf("restore binary: %w", err)
+	}
+	if err := restartService(); err != nil {
+		return fmt.Errorf("restart after rollback: %w", err)
+	}
+	versionFile := filepath.Join(dataDir, "app", "VERSION")
+	if err := os.WriteFile(versionFile, []byte(previousVersion+"\n"), 0644); err != nil {
+		return fmt.Errorf("restore version file: %w", err)
+	}
+	return nil
+}
+
+func reportUpgrade(masterURL, version, status, errMsg string, duration time.Duration) {
+	client := NewClient(masterURL)
+	_ = client.ReportUpdate(context.Background(), &ReportUpdateRequest{
+		InstanceID: resolveInstanceID(),
+		Version:    version,
+		Status:     status,
+		Error:      errMsg,
+		DurationMs: duration.Milliseconds(),
+	})
 }

@@ -22,7 +22,8 @@ type Store interface {
 
 	CreateOfflineRequest(ctx context.Context, req *OfflineRequest) error
 	GetOfflineRequest(ctx context.Context, requestID string) (*OfflineRequest, error)
-	ApproveOfflineRequest(ctx context.Context, requestID string, signedLicense *SignedLicense) error
+	ApproveOfflineRequest(ctx context.Context, requestID string, signedLicense *SignedLicense, activationCode string) error
+	GetOfflineActivationCode(ctx context.Context, requestID string) (string, error)
 	ListOfflineRequests(ctx context.Context) ([]OfflineRequest, error)
 	RejectOfflineRequest(ctx context.Context, requestID, reason string) error
 

@@ -67,8 +67,8 @@ func (m *mockUpdateCheckStore) UpdateUpgradeLog(ctx context.Context, id int64, s
 	return nil
 }
 
-func (m *mockUpdateCheckStore) GetUpgradeHistory(ctx context.Context, instanceID string, limit int) ([]autoupdate.ReleaseStatus, error) {
-	return nil, nil
+func (m *mockUpdateCheckStore) GetUpgradeHistory(ctx context.Context, instanceID string, offset, limit int) ([]autoupdate.ReleaseStatus, int, error) {
+	return nil, 0, nil
 }
 
 func (m *mockUpdateCheckStore) GetInstanceStatus(ctx context.Context, instanceID string) (*autoupdate.ReleaseStatus, error) {

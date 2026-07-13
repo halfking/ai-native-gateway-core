@@ -225,16 +225,27 @@ func (a *AdminAPI) UpdateGrayPhase(c echo.Context) error {
 // GetUpgradeLogs 获取升级日志
 func (a *AdminAPI) GetUpgradeLogs(c echo.Context) error {
 	instanceID := c.QueryParam("instance_id")
+	offset := 0
 	limit := 50
+	_, _ = fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
 	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
 
-	history, err := a.store.GetUpgradeHistory(c.Request().Context(), instanceID, limit)
+	history, total, err := a.store.GetUpgradeHistory(c.Request().Context(), instanceID, offset, limit)
 	if err != nil {
 		slog.Error("get upgrade history failed", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "get upgrade history failed"})
 	}
 
-	return c.JSON(http.StatusOK, history)
+	if history == nil {
+		history = []ReleaseStatus{}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"items":  history,
+		"total":  total,
+		"offset": offset,
+		"limit":  limit,
+	})
 }
 
 // RollbackRelease 回滚版本

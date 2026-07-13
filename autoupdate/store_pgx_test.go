@@ -298,7 +298,7 @@ func TestPgxStore_GetUpgradeHistory(t *testing.T) {
 	}
 
 	// Get history
-	history, err := store.GetUpgradeHistory(ctx, instanceID, 10)
+	history, _, err := store.GetUpgradeHistory(ctx, instanceID, 0, 10)
 	assert.NoError(t, err)
 	assert.Len(t, history, 4, "should retrieve all 4 logs")
 

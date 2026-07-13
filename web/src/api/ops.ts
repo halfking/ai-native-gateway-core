@@ -362,9 +362,20 @@ export async function rollbackRelease(targetVersion: string): Promise<void> {
   return req<void>('POST', '/api/admin/releases/rollback', { target_version: targetVersion })
 }
 
-export async function getUpgradeLogs(instanceID?: string): Promise<UpgradeLog[]> {
-  const query = instanceID ? `?instance_id=${instanceID}` : ''
-  return req<UpgradeLog[]>('GET', `/api/admin/releases/upgrade-logs${query}`)
+export async function getUpgradeLogs(params?: {
+  instance_id?: string
+  offset?: number
+  limit?: number
+}): Promise<{ items: UpgradeLog[]; total: number; offset: number; limit: number }> {
+  const search = new URLSearchParams()
+  if (params?.instance_id) search.set('instance_id', params.instance_id)
+  if (params?.offset != null) search.set('offset', String(params.offset))
+  if (params?.limit != null) search.set('limit', String(params.limit))
+  const query = search.toString() ? `?${search.toString()}` : ''
+  return req<{ items: UpgradeLog[]; total: number; offset: number; limit: number }>(
+    'GET',
+    `/api/admin/releases/upgrade-logs${query}`
+  )
 }
 
 // ────────────────────────────────────────────────────────────────────────────

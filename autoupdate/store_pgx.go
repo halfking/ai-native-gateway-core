@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -208,37 +209,68 @@ func (s *PgxStore) UpdateUpgradeLog(ctx context.Context, id int64, status string
 	return err
 }
 
-// GetUpgradeHistory 获取升级历史
-func (s *PgxStore) GetUpgradeHistory(ctx context.Context, instanceID string, limit int) ([]ReleaseStatus, error) {
-	query := `
+// GetUpgradeHistory 获取升级历史（instanceID 为空时返回全部实例）
+func (s *PgxStore) GetUpgradeHistory(ctx context.Context, instanceID string, offset, limit int) ([]ReleaseStatus, int, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	scanRows := func(rows pgx.Rows) ([]ReleaseStatus, error) {
+		defer rows.Close()
+		var history []ReleaseStatus
+		for rows.Next() {
+			var rs ReleaseStatus
+			var id int64
+			var oldVer string
+			var errMsg *string
+			if err := rows.Scan(&id, &rs.InstanceID, &oldVer, &rs.Version, &rs.Status, &rs.StartedAt, &rs.CompletedAt, &errMsg, &rs.RetryCount); err != nil {
+				return nil, err
+			}
+			if errMsg != nil {
+				rs.Error = *errMsg
+			}
+			history = append(history, rs)
+		}
+		return history, rows.Err()
+	}
+
+	if instanceID != "" {
+		var total int
+		if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM upgrade_logs WHERE instance_id = $1`, instanceID).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+		rows, err := s.db.Query(ctx, `
+			SELECT id, instance_id, old_version, new_version, status, started_at, completed_at, error_message, retry_count
+			FROM upgrade_logs
+			WHERE instance_id = $1
+			ORDER BY started_at DESC
+			LIMIT $2 OFFSET $3
+		`, instanceID, limit, offset)
+		if err != nil {
+			return nil, 0, err
+		}
+		history, err := scanRows(rows)
+		return history, total, err
+	}
+
+	var total int
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM upgrade_logs`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.Query(ctx, `
 		SELECT id, instance_id, old_version, new_version, status, started_at, completed_at, error_message, retry_count
 		FROM upgrade_logs
-		WHERE instance_id = $1
 		ORDER BY started_at DESC
-		LIMIT $2
-	`
-	rows, err := s.db.Query(ctx, query, instanceID, limit)
+		LIMIT $1 OFFSET $2
+	`, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	defer rows.Close()
-
-	var history []ReleaseStatus
-	for rows.Next() {
-		var rs ReleaseStatus
-		var id int64
-		var oldVer string
-		var errMsg *string
-		if err := rows.Scan(&id, &rs.InstanceID, &oldVer, &rs.Version, &rs.Status, &rs.StartedAt, &rs.CompletedAt, &errMsg, &rs.RetryCount); err != nil {
-			return nil, err
-		}
-		if errMsg != nil {
-			rs.Error = *errMsg
-		}
-		history = append(history, rs)
-	}
-
-	return history, nil
+	history, err := scanRows(rows)
+	return history, total, err
 }
 
 // GetInstanceStatus 获取实例升级状态
