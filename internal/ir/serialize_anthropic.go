@@ -113,6 +113,69 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		out["documents"] = docs
 	}
 
+	// audit-claude-4-5 (2026-07-13): Claude 4.5+ fields
+	if len(req.MCPServers) > 0 {
+		mcpServers := make([]map[string]any, 0, len(req.MCPServers))
+		for _, s := range req.MCPServers {
+			entry := map[string]any{}
+			if s.Type != "" {
+				entry["type"] = s.Type
+			}
+			if s.URL != "" {
+				entry["url"] = s.URL
+			}
+			if s.Name != "" {
+				entry["name"] = s.Name
+			}
+			if s.ToolConfig != nil {
+				entry["tool_config"] = s.ToolConfig
+			}
+			if s.AuthorizationToken != "" {
+				entry["authorization_token"] = s.AuthorizationToken
+			}
+			mcpServers = append(mcpServers, entry)
+		}
+		out["mcp_servers"] = mcpServers
+	}
+	if req.ContextManagement != nil {
+		cm := map[string]any{}
+		if len(req.ContextManagement.Edits) > 0 {
+			edits := make([]map[string]any, 0, len(req.ContextManagement.Edits))
+			for _, e := range req.ContextManagement.Edits {
+				edit := map[string]any{"type": e.Type}
+				if e.Threshold != nil {
+					edit["threshold"] = *e.Threshold
+				}
+				if e.Keep != nil {
+					edit["keep"] = *e.Keep
+				}
+				if e.ClearToolInputs != nil {
+					edit["clear_tool_inputs"] = *e.ClearToolInputs
+				}
+				edits = append(edits, edit)
+			}
+			cm["edits"] = edits
+		}
+		out["context_management"] = cm
+	}
+	if req.Container != nil {
+		c := map[string]any{}
+		if req.Container.ID != "" {
+			c["id"] = req.Container.ID
+		}
+		if len(req.Container.Skills) > 0 {
+			skills := make([]map[string]any, 0, len(req.Container.Skills))
+			for _, sk := range req.Container.Skills {
+				skills = append(skills, map[string]any{
+					"name": sk.Name,
+					"type": sk.Type,
+				})
+			}
+			c["skills"] = skills
+		}
+		out["container"] = c
+	}
+
 	if req.SourceProtocol == "" || req.SourceProtocol == ProtocolAnthropicMessages {
 		for key, value := range req.Extensions {
 			if _, exists := out[key]; exists {

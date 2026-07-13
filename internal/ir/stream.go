@@ -51,11 +51,34 @@ const (
 )
 
 // StreamDelta represents incremental content in a chunk.
+//
+// audit-stream-multimodal (2026-07-13): Extended with multimodal delta fields
+// for audio output (OpenAI Realtime/gpt-4o-audio-preview) and thinking signature
+// propagation (Anthropic signature_delta).
 type StreamDelta struct {
 	Role             string                // "assistant" (first chunk only)
 	Content          string                // Text content delta
 	ReasoningContent string                // Thinking/reasoning delta (OpenAI: reasoning_content, Anthropic: thinking)
 	ToolCalls        []StreamToolCallDelta // Incremental tool calls
+
+	// ThinkingSignature carries the Anthropic chain-of-thought verification
+	// token emitted at the end of a thinking block (signature_delta event).
+	// Critical for Anthropic multi-turn round-trip.
+	ThinkingSignature string
+
+	// AudioDelta is the OpenAI audio output chunk (gpt-4o-audio-preview realtime).
+	AudioDelta *StreamAudioDelta
+
+	// DeltaType is the explicit content type from the upstream provider:
+	//   "text" | "reasoning" | "audio" | "tool_call" | "signature" | ""
+	DeltaType string
+}
+
+// StreamAudioDelta carries incremental audio output (base64 PCM chunks +
+// optional transcript text).
+type StreamAudioDelta struct {
+	Data       string `json:"data"`
+	Transcript string `json:"transcript"`
 }
 
 // StreamToolCallDelta represents incremental tool call data.
@@ -68,10 +91,25 @@ type StreamToolCallDelta struct {
 }
 
 // StreamUsage holds token usage statistics for a stream chunk.
+//
+// audit-stream-multimodal (2026-07-13): Extended with cache tokens, reasoning
+// tokens, and multimodal token breakdowns for parity with non-stream Usage.
 type StreamUsage struct {
 	PromptTokens     int // Input tokens (Anthropic: input_tokens)
 	CompletionTokens int // Output tokens (Anthropic: output_tokens)
 	TotalTokens      int // Sum of prompt + completion
+
+	// Cache tokens (Anthropic prompt caching, OpenAI prompt caching)
+	CacheReadTokens  *int
+	CacheWriteTokens *int
+
+	// Reasoning tokens (DeepSeek R1, OpenAI o1/o3)
+	ReasoningTokens *int
+
+	// Multimodal token breakdowns
+	ImageTokens *int
+	AudioTokens *int
+	VideoTokens *int
 }
 
 // StreamError represents an error in the stream.
@@ -133,6 +171,8 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 				Content          string          `json:"content"`
 				ReasoningContent string          `json:"reasoning_content"`
 				ToolCalls        json.RawMessage `json:"tool_calls"`
+				// audit-stream-multimodal (2026-07-13): OpenAI audio output delta
+				Audio json.RawMessage `json:"audio"`
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
@@ -140,6 +180,17 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 			TotalTokens      int `json:"total_tokens"`
+			// audit-stream-multimodal (2026-07-13): detailed usage
+			PromptTokensDetails *struct {
+				CachedTokens int `json:"cached_tokens"`
+				AudioTokens  int `json:"audio_tokens"`
+				ImageTokens  int `json:"image_tokens"`
+				VideoTokens  int `json:"video_tokens"`
+			} `json:"prompt_tokens_details"`
+			CompletionTokensDetails *struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+				AudioTokens     int `json:"audio_tokens"`
+			} `json:"completion_tokens_details"`
 		} `json:"usage"`
 	}
 
@@ -162,6 +213,33 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 			CompletionTokens: raw.Usage.CompletionTokens,
 			TotalTokens:      raw.Usage.TotalTokens,
 		}
+		// audit-stream-multimodal (2026-07-13): detailed usage fields
+		if raw.Usage.PromptTokensDetails != nil {
+			d := raw.Usage.PromptTokensDetails
+			if d.CachedTokens > 0 {
+				v := d.CachedTokens
+				chunk.Usage.CacheReadTokens = &v
+			}
+			if d.AudioTokens > 0 {
+				v := d.AudioTokens
+				chunk.Usage.AudioTokens = &v
+			}
+			if d.ImageTokens > 0 {
+				v := d.ImageTokens
+				chunk.Usage.ImageTokens = &v
+			}
+			if d.VideoTokens > 0 {
+				v := d.VideoTokens
+				chunk.Usage.VideoTokens = &v
+			}
+		}
+		if raw.Usage.CompletionTokensDetails != nil {
+			d := raw.Usage.CompletionTokensDetails
+			if d.ReasoningTokens > 0 {
+				v := d.ReasoningTokens
+				chunk.Usage.ReasoningTokens = &v
+			}
+		}
 		// Usage chunks can also have finish_reason
 		if len(raw.Choices) > 0 && raw.Choices[0].FinishReason != nil {
 			chunk.FinishReason = *raw.Choices[0].FinishReason
@@ -179,6 +257,30 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 			Role:             delta.Role,
 			Content:          delta.Content,
 			ReasoningContent: delta.ReasoningContent,
+		}
+		// Determine delta type for cross-protocol routing
+		switch {
+		case delta.Audio != nil && string(delta.Audio) != "null":
+			chunk.Delta.DeltaType = "audio"
+		case delta.ReasoningContent != "":
+			chunk.Delta.DeltaType = "reasoning"
+		case delta.Content != "":
+			chunk.Delta.DeltaType = "text"
+		}
+
+		// audit-stream-multimodal (2026-07-13): parse audio output delta
+		if len(delta.Audio) > 0 && string(delta.Audio) != "null" {
+			var ad struct {
+				Data       string `json:"data"`
+				Transcript string `json:"transcript"`
+				ExpiresAt  int64  `json:"expires_at"`
+			}
+			if err := json.Unmarshal(delta.Audio, &ad); err == nil {
+				chunk.Delta.AudioDelta = &StreamAudioDelta{
+					Data:       ad.Data,
+					Transcript: ad.Transcript,
+				}
+			}
 		}
 
 		// Parse tool_calls if present
@@ -265,7 +367,9 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 				ID    string `json:"id"`
 				Model string `json:"model"`
 				Usage struct {
-					InputTokens int `json:"input_tokens"`
+					InputTokens              int `json:"input_tokens"`
+					CacheCreationInputTokens int `json:"cache_creation_input_tokens"` // audit-stream-multimodal
+					CacheReadInputTokens     int `json:"cache_read_input_tokens"`     // audit-stream-multimodal
 				} `json:"usage"`
 			} `json:"message"`
 		}
@@ -278,6 +382,15 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 		chunk.Model = evt.Message.Model
 		chunk.Usage = &StreamUsage{
 			PromptTokens: evt.Message.Usage.InputTokens,
+		}
+		// audit-stream-multimodal (2026-07-13): extract Anthropic cache tokens
+		if evt.Message.Usage.CacheCreationInputTokens > 0 {
+			v := evt.Message.Usage.CacheCreationInputTokens
+			chunk.Usage.CacheWriteTokens = &v
+		}
+		if evt.Message.Usage.CacheReadInputTokens > 0 {
+			v := evt.Message.Usage.CacheReadInputTokens
+			chunk.Usage.CacheReadTokens = &v
 		}
 		return chunk, nil
 
@@ -359,14 +472,12 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 				Arguments: evt.Delta.PartialJSON,
 			}}
 		case "signature_delta":
-			// PR-2 (2026-06-24): closed-loop support for Anthropic
-			// thinking blocks. The signature has no OpenAI-protocol
-			// equivalent, so we emit a no-op Delta and rely on
-			// stream-side state to correlate the signature with its
-			// preceding thinking block. Crucially we do NOT return an
-			// error, which is what the old default branch did and
-			// which previously broke the downstream tool_use chunk.
-			_ = evt.Delta.Signature
+			// audit-stream-multimodal (2026-07-13): propagate the signature
+			// through the IR so downstream serializer can preserve it on the
+			// next Anthropic turn (without this, opus-4-8 multi-turn requests
+			// lose the chain-of-thought verification token).
+			chunk.Delta.ThinkingSignature = evt.Delta.Signature
+			chunk.Delta.DeltaType = "signature"
 		}
 
 		return chunk, nil
@@ -508,6 +619,17 @@ func (c *StreamChunk) SerializeOpenAI(chatID string, model string, created int64
 			if c.Delta.ReasoningContent != "" {
 				delta["reasoning_content"] = c.Delta.ReasoningContent
 			}
+			// audit-stream-multimodal (2026-07-13): OpenAI audio output delta
+			if c.Delta.AudioDelta != nil {
+				audioInner := map[string]any{}
+				if c.Delta.AudioDelta.Data != "" {
+					audioInner["data"] = c.Delta.AudioDelta.Data
+				}
+				if c.Delta.AudioDelta.Transcript != "" {
+					audioInner["transcript"] = c.Delta.AudioDelta.Transcript
+				}
+				delta["audio"] = audioInner
+			}
 			if len(c.Delta.ToolCalls) > 0 {
 				var toolCalls []map[string]any
 				for _, tc := range c.Delta.ToolCalls {
@@ -553,11 +675,36 @@ func (c *StreamChunk) SerializeOpenAI(chatID string, model string, created int64
 
 		// Add usage if present
 		if c.Usage != nil {
-			obj["usage"] = map[string]any{
+			usageObj := map[string]any{
 				"prompt_tokens":     c.Usage.PromptTokens,
 				"completion_tokens": c.Usage.CompletionTokens,
 				"total_tokens":      c.Usage.TotalTokens,
 			}
+			// audit-stream-multimodal (2026-07-13): detailed usage output
+			promptDetails := map[string]any{}
+			if c.Usage.CacheReadTokens != nil {
+				promptDetails["cached_tokens"] = *c.Usage.CacheReadTokens
+			}
+			if c.Usage.ImageTokens != nil {
+				promptDetails["image_tokens"] = *c.Usage.ImageTokens
+			}
+			if c.Usage.AudioTokens != nil {
+				promptDetails["audio_tokens"] = *c.Usage.AudioTokens
+			}
+			if c.Usage.VideoTokens != nil {
+				promptDetails["video_tokens"] = *c.Usage.VideoTokens
+			}
+			if len(promptDetails) > 0 {
+				usageObj["prompt_tokens_details"] = promptDetails
+			}
+			completionDetails := map[string]any{}
+			if c.Usage.ReasoningTokens != nil {
+				completionDetails["reasoning_tokens"] = *c.Usage.ReasoningTokens
+			}
+			if len(completionDetails) > 0 {
+				usageObj["completion_tokens_details"] = completionDetails
+			}
+			obj["usage"] = usageObj
 		}
 
 		body, _ := json.Marshal(obj)
@@ -887,7 +1034,6 @@ func mapOpenAIFinishReasonToAnthropic(reason string) string {
 		return "end_turn"
 	}
 }
-
 // ─── Gemini Stream Serializer (audit-gemini-stream, 2026-07-13) ─────────────
 
 // SerializeGemini serializes a StreamChunk IR to the Gemini

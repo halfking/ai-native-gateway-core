@@ -28,6 +28,10 @@ func ParseAnthropic(body []byte) (*InternalRequest, error) {
 		Thinking      *anthropicThinking `json:"thinking,omitempty"`
 		CacheControl  json.RawMessage    `json:"cache_control,omitempty"`
 		Documents     json.RawMessage    `json:"documents,omitempty"`
+		// audit-claude-4-5 (2026-07-13): Anthropic Claude 4.5+ fields
+		MCPServers        json.RawMessage `json:"mcp_servers,omitempty"`
+		ContextManagement json.RawMessage `json:"context_management,omitempty"`
+		Container         json.RawMessage `json:"container,omitempty"`
 	}
 
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -39,6 +43,8 @@ func ParseAnthropic(body []byte) (*InternalRequest, error) {
 		"stream": true, "temperature": true, "top_p": true, "top_k": true,
 		"stop_sequences": true, "tools": true, "tool_choice": true,
 		"metadata": true, "thinking": true, "cache_control": true, "documents": true,
+		// audit-claude-4-5 (2026-07-13): recognized structured fields
+		"mcp_servers": true, "context_management": true, "container": true,
 	}
 	extensions := make(map[string]json.RawMessage)
 	for key, value := range rawMap {
@@ -135,6 +141,29 @@ func ParseAnthropic(body []byte) (*InternalRequest, error) {
 			return nil, fmt.Errorf("parse documents: %w", err)
 		}
 		ir.Documents = docs
+	}
+
+	// audit-claude-4-5 (2026-07-13): Parse Claude 4.5+ fields
+	if src.MCPServers != nil && string(src.MCPServers) != "null" {
+		var mcpServers []MCPServer
+		if err := json.Unmarshal(src.MCPServers, &mcpServers); err != nil {
+			return nil, fmt.Errorf("parse mcp_servers: %w", err)
+		}
+		ir.MCPServers = mcpServers
+	}
+	if src.ContextManagement != nil && string(src.ContextManagement) != "null" {
+		var cm ContextManagement
+		if err := json.Unmarshal(src.ContextManagement, &cm); err != nil {
+			return nil, fmt.Errorf("parse context_management: %w", err)
+		}
+		ir.ContextManagement = &cm
+	}
+	if src.Container != nil && string(src.Container) != "null" {
+		var c Container
+		if err := json.Unmarshal(src.Container, &c); err != nil {
+			return nil, fmt.Errorf("parse container: %w", err)
+		}
+		ir.Container = &c
 	}
 
 	return ir, nil
