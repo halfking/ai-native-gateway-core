@@ -79,6 +79,14 @@ func (i *Installer) Install(ctx context.Context, downloadPath string, release *R
 		result.Error = fmt.Sprintf("write version file: %v", err)
 	}
 
+	// 6. 重启服务（P1 修复：自动 systemctl restart）
+	if err := i.restartService(ctx); err != nil {
+		result.Error = fmt.Sprintf("install succeeded but service restart failed: %v", err)
+		result.Success = false
+		result.DurationMs = time.Since(start).Milliseconds()
+		return result, fmt.Errorf("service restart failed: %w", err)
+	}
+
 	result.Success = true
 	result.DurationMs = time.Since(start).Milliseconds()
 	return result, nil
@@ -186,5 +194,29 @@ func (i *Installer) CleanupOldBackups(keepCount int) error {
 		_ = os.Remove(path)
 	}
 
+	return nil
+}
+
+// restartService 重启服务（P1 修复：自动 systemctl restart）
+func (i *Installer) restartService(ctx context.Context) error {
+	// TODO: 从配置文件读取服务名称
+	serviceName := "llm-gateway-go"
+	
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", serviceName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl restart %s failed: %w, output: %s", serviceName, err, string(output))
+	}
+	
+	// 等待服务启动
+	time.Sleep(3 * time.Second)
+	
+	// 验证服务状态
+	statusCmd := exec.CommandContext(ctx, "systemctl", "is-active", serviceName)
+	statusOutput, err := statusCmd.CombinedOutput()
+	if err != nil || string(statusOutput) != "active\n" {
+		return fmt.Errorf("service %s not active after restart: %s", serviceName, string(statusOutput))
+	}
+	
 	return nil
 }

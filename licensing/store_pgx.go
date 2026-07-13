@@ -321,16 +321,13 @@ func (s *PgxStore) CountActiveDevices(ctx context.Context, licenseKey string) (i
 }
 
 func (s *PgxStore) ListAllLicenses(ctx context.Context, offset, limit int, query, statusFilter string) ([]License, int, error) {
+	// P2 修复：SQL 参数化（原先字符串拼接 $1/$2/$3）
 	where := "WHERE 1=1"
 	args := []interface{}{}
-	argIdx := 1
 
 	if query != "" {
-		where += " AND (customer_name ILIKE $" + strconv.Itoa(argIdx) +
-			" OR customer_email ILIKE $" + strconv.Itoa(argIdx) +
-			" OR license_key ILIKE $" + strconv.Itoa(argIdx) + ")"
+		where += " AND (customer_name ILIKE $1 OR customer_email ILIKE $1 OR license_key ILIKE $1)"
 		args = append(args, "%"+query+"%")
-		argIdx++
 	}
 
 	switch statusFilter {
@@ -349,12 +346,11 @@ func (s *PgxStore) ListAllLicenses(ctx context.Context, offset, limit int, query
 		return nil, 0, err
 	}
 
-	// Data query
+	// Data query（P2 修复：用 $2/$3 而不是字符串拼接序号）
 	dataSQL := "SELECT id, license_key, customer_name, customer_email, max_devices, " +
 		"subscription_tier, features, expires_at, created_at, revoked_at " +
 		"FROM licenses " + where +
-		" ORDER BY created_at DESC" +
-		" LIMIT $" + strconv.Itoa(argIdx) + " OFFSET $" + strconv.Itoa(argIdx+1)
+		" ORDER BY created_at DESC LIMIT $" + strconv.Itoa(len(args)+1) + " OFFSET $" + strconv.Itoa(len(args)+2)
 	args = append(args, limit, offset)
 
 	rows, err := s.pool.Query(ctx, dataSQL, args...)

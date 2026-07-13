@@ -12,10 +12,18 @@ VERSION="$(basename "${BUILD_DIR}" | sed 's/^release-//')"
 GIT_SHA="$(git -C "$(dirname "${BUILD_DIR}")" rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")"
 BUILD_DATE="$(date -u +%Y%m%d)"
 
-# 计算文件 SHA256
+# 计算文件 SHA256（P2 修复：兼容 macOS）
 sha256_file() {
   if [[ -f "$1" ]]; then
-    sha256sum "$1" | awk '{print $1}'
+    if command -v sha256sum >/dev/null 2>&1; then
+      # Linux
+      sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+      # macOS
+      shasum -a 256 "$1" | awk '{print $1}'
+    else
+      echo ""
+    fi
   else
     echo ""
   fi

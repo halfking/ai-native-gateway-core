@@ -3,8 +3,10 @@ package autoupdate
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -64,6 +66,14 @@ func (r *Rollback) Rollback(ctx context.Context, targetVersion string) (*Rollbac
 	versionFile := filepath.Join(r.dataDir, "VERSION")
 	if err := os.WriteFile(versionFile, []byte(targetVersion+"\n"), 0644); err != nil {
 		result.Error = fmt.Sprintf("write version file: %v", err)
+	}
+
+	// 5. 健康检查（P1 修复：回滚后验证服务可用）
+	if err := r.healthCheck(ctx); err != nil {
+		result.Error = fmt.Sprintf("rollback succeeded but health check failed: %v", err)
+		result.Success = false
+		result.DurationMs = time.Since(start).Milliseconds()
+		return result, fmt.Errorf("health check failed after rollback: %w", err)
 	}
 
 	result.Success = true
@@ -209,16 +219,35 @@ type BackupInfo struct {
 	ModTime time.Time
 }
 
-// contains 检查字符串是否包含子串
+// contains 检查字符串是否包含子串（P0 修复：使用标准库）
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && findSubstring(s, substr))
+	return strings.Contains(s, substr)
 }
 
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+// healthCheck 健康检查（P1 修复：回滚后验证服务可用）
+func (r *Rollback) healthCheck(ctx context.Context) error {
+	// 默认健康检查端点：http://localhost:8080/health
+	// TODO: 从配置文件读取端点地址
+	healthURL := "http://localhost:8080/health"
+	
+	// 给服务 5 秒启动时间
+	time.Sleep(5 * time.Second)
+	
+	req, err := http.NewRequestWithContext(ctx, "GET", healthURL, nil)
+	if err != nil {
+		return fmt.Errorf("create health check request: %w", err)
 	}
-	return false
+	
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("health check request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("health check returned status %d", resp.StatusCode)
+	}
+	
+	return nil
 }
