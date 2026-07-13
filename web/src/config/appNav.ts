@@ -107,6 +107,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: '运维平台',
     labelKey: 'nav.group.opsplatform',
     items: [
+      { path: '/ops/overview', label: '运维概览', labelKey: 'nav.item.opsOverview', icon: '📊', super: true, hideForTenant: true },
       { path: '/ops/licenses', label: 'License管理', labelKey: 'nav.item.opsLicenses', icon: '🔑', super: true, hideForTenant: true },
       { path: '/ops/faults', label: '故障管理', labelKey: 'nav.item.opsFaults', icon: '⚠️', super: true, hideForTenant: true },
       { path: '/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', super: true, hideForTenant: true },

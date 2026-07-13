@@ -67,6 +67,7 @@ const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
 const SessionConfigView = () => import('./views/SessionConfigView.vue')
+const OpsOverviewView = () => import('./views/ops/OpsOverviewView.vue')
 const LicenseManagementView = () => import('./views/ops/LicenseManagementView.vue')
 const FaultManagementView = () => import('./views/ops/FaultManagementView.vue')
 const AutoUpdateView = () => import('./views/ops/AutoUpdateView.vue')
@@ -220,6 +221,8 @@ export const router = createRouter({
     { path: '/chat',               component: ChatView },
 
     // Operations Platform (platform management, super_admin only)
+    { path: '/ops',                redirect: '/ops/overview' },
+    { path: '/ops/overview',       component: OpsOverviewView, meta: { requiresSuper: true } },
     { path: '/ops/licenses',       component: LicenseManagementView, meta: { requiresSuper: true } },
     { path: '/ops/faults',         component: FaultManagementView, meta: { requiresSuper: true } },
     { path: '/ops/autoupdate',     component: AutoUpdateView, meta: { requiresSuper: true } },

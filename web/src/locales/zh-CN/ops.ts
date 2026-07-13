@@ -1,6 +1,20 @@
 export default {
   title: '运维平台',
-  
+
+  overview: {
+    title: '运维概览',
+    loadFailed: '加载概览数据失败',
+    onlineInstances: '在线实例',
+    totalLicenses: 'License 总数',
+    pendingApprovals: '待审批激活',
+    todayUpgrades: '今日升级',
+    openFaults: '未处理故障',
+    recentUpgrades: '最近升级',
+    recentFaults: '最新告警',
+    pendingOffline: '待审批离线激活',
+    viewAll: '查看全部',
+  },
+
   // License Management
   license: {
     title: 'License管理',

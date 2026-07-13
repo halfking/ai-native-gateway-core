@@ -52,6 +52,7 @@ export default {
     promptInjection: 'Prompt Injection Detection',
     examples: 'Examples',
     chat: 'Chat',
+    opsOverview: 'Operations Overview',
     opsLicenses: 'License Management',
     opsFaults: 'Fault Management',
     opsAutoUpdate: 'Auto Update',
