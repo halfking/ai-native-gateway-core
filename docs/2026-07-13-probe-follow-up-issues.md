@@ -11,11 +11,67 @@
 
 ---
 
+## 核心发现：Credential 归属问题
+
+### 原始问题重现
+观察到业务失败请求（如 `ca8bd28f...`）记录的 `credential_id=21`，但主动探测却针对 `credential_id=19`。
+
+### 根本原因
+这**不是主动探测系统的 bug**，而是 **request logging 层面的数据不一致**：
+
+1. **状态更新（正确）**：`UpdateOnFailure` 使用当前实际失败的候选
+2. **主动探测（正确）**：针对实际触发失败阈值的 credential
+3. **Request logs（错误）**：失败日志使用初始候选列表的首个 `candidates[0]`
+
+因此：
+- `credential_id=19` 才是**真正失败**并触发探测的
+- `credential_id=21` 只是**被错误记录**在 request_logs 中
+- 主动探测系统本身工作正常
+
+详见下方「待修复问题 #1」。
+
+---
+
 ## 待修复问题
 
 ### 高优先级
 
-#### 1. CredentialProbeV2 的 `/models` URL 候选失败逻辑
+#### 1. Request logs 的 credential_id 记录不一致 ⚠️
+
+**问题描述**:
+- Handler 失败时记录 `request_logs` 使用的是初始候选列表的首个 `candidates[0]`
+- 但 executor 内部可能已经重试了多个 credential，实际失败的是其他候选
+- `UpdateOnFailure` 和主动探测使用的是**正确的**当前失败候选
+- 导致业务失败日志与状态更新、主动探测的 credential_id 不一致
+
+**实际案例**:
+- 业务失败请求记录为 `credential_id=21`（首个候选，MiniMax 官方）
+- 主动探测针对的是 `credential_id=19`（实际触发失败阈值的，NVIDIA NIM）
+- 这不是探测错误，而是 request_logs 记录不准确
+
+**位置**:
+- `domains/streaming/handler.go:1885-1920` (失败日志使用 `candidates[0]`)
+- `domains/streaming/executors/executor.go:1569-1677` (状态更新使用当前 `cand`)
+
+**建议修复**:
+```go
+// 在 handler 失败路径中，使用 executor 返回的最终候选
+if execErr.Attempts != nil && len(execErr.Attempts) > 0 {
+    lastAttempt := execErr.Attempts[len(execErr.Attempts)-1]
+    providerID = lastAttempt.ProviderID
+    credentialID = lastAttempt.CredentialID
+} else {
+    // fallback to candidates[0]
+}
+```
+
+或者在 request_logs 中增加字段记录完整的候选尝试序列。
+
+**影响范围**: 高（影响故障诊断准确性，容易误导分析）
+
+---
+
+#### 2. CredentialProbeV2 的 `/models` URL 候选失败逻辑
 
 **问题描述**:
 - `ModelsURLCandidates` 返回多个候选 URL（如 `/models`、`/v1/models`）
@@ -42,7 +98,7 @@ for _, url := range candidates {
 
 ---
 
-#### 2. 新 binding 无法首次入队
+#### 3. 新 binding 无法首次入队
 
 **问题描述**:
 - `ModelProbeRunner.cycle()` 查询条件要求 `mps.next_retry_at <= NOW()`
@@ -64,7 +120,7 @@ WHERE (mps.next_retry_at IS NULL OR mps.next_retry_at <= NOW())
 
 ---
 
-#### 3. Redis availability cache 初始化时序问题
+#### 4. Redis availability cache 初始化时序问题
 
 **问题描述**:
 - 探测器注入 `modelAvailabilityCache` 时（main.go:1559, 1585, 1625），该变量尚未创建
@@ -84,7 +140,61 @@ WHERE (mps.next_retry_at IS NULL OR mps.next_retry_at <= NOW())
 
 ### 中优先级
 
-#### 4. 恢复阈值不一致
+#### 5. 主动探测的 parent request ID 字段混淆
+
+**问题描述**:
+- 代码文档和注释称记录 `parent_request_id`
+- 实际写入的是 `client_request_id` 字段
+- 真正的 `ParentRequestID` 字段没有被填充
+- 导致字段语义不清晰，查询时容易混淆
+
+**位置**:
+- `bg/active_probe_emitter.go:113-115` (实际写入 ClientRequestID)
+- `domains/hooks/observability/telemetry/client.go:169-179` (ParentRequestID 定义)
+- `docs/changelogs/2026-07-13-error-triggered-probe.md:149-157` (文档描述)
+
+**当前实际映射**:
+```text
+probe.request_logs.client_request_id = parent business request_id
+probe.auto_decision.parent_request_id = parent business request_id
+probe.request_logs.parent_request_id = NULL (未填充)
+```
+
+**建议修复**:
+1. 统一使用 `ParentRequestID` 字段，而非 `ClientRequestID`
+2. 或更新文档明确说明字段实际用途
+
+**影响范围**: 中等（字段混淆，但实际功能可用）
+
+---
+
+#### 6. 流式中断无 candidate_failure_logs 记录
+
+**问题描述**:
+- streaming interruption 分支调用 `UpdateOnFailure`，但不调用 `FailureLogger.LogFailure`
+- 导致流式中断后 failover 成功的场景，首个候选的失败只有状态记录，没有详细日志
+- 影响故障诊断的完整性
+
+**位置**:
+- `domains/streaming/executors/executor.go:1453-1565` (中断处理)
+- `domains/streaming/executors/executor.go:1582-1609` (普通失败才记录)
+
+**建议修复**:
+```go
+// 在 streaming interruption 分支也调用 FailureLogger
+if e.FailureLogger != nil {
+    e.FailureLogger.LogFailure(ctx, &FailureLogEntry{
+        CredentialID: cand.CredentialID,
+        // ... 其他字段
+    })
+}
+```
+
+**影响范围**: 中等（日志完整性，不影响路由）
+
+---
+
+#### 7. 恢复阈值不一致
 
 **问题描述**:
 - 主共识状态机要求连续 3 次成功 → `healthy_confirmed`
@@ -104,7 +214,7 @@ WHERE mps.consecutive_successes >= 3  -- 与主共识一致
 
 ---
 
-#### 5. 模型列表大小写敏感比较
+#### 8. 模型列表大小写敏感比较
 
 **问题描述**:
 - `/v1/models` 响应解析后用 `==` 比较模型 ID
@@ -130,7 +240,7 @@ if strings.EqualFold(modelID, targetModel) {
 
 ---
 
-#### 6. Anthropic 协议主动探测不完整
+#### 9. Anthropic 协议主动探测不完整
 
 **问题描述**:
 - `ActiveProbeExecutor` 对 Anthropic 使用 `/v1/messages` endpoint
