@@ -1,5 +1,8 @@
 // Package dashboardapi - module_stats.go
 // 模块执行统计 API：查询各模块的执行次数、耗时、缓存命中率
+//
+// 2026-07-13: 增加 session_module_executions_hot 表缺失时的优雅降级，
+// 复用 admin/dashboarddegrade 中的 helper。
 package dashboardapi
 
 import (
@@ -8,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin/dashboarddegrade"
 )
 
 // ModuleStatsHandler 模块执行统计 Handler
@@ -98,6 +102,24 @@ func (h *ModuleStatsHandler) HandleModuleStats(w http.ResponseWriter, r *http.Re
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
+		if dashboarddegrade.IsMissingRelationError(err) {
+			view := dashboarddegrade.Report(nil, "moduleStats", err)
+			apiStatus = "degraded"
+			now := time.Now()
+			writeSuccessJSON(w, ModuleStatsResponse{
+				Modules:     []ModuleStatsItem{},
+				Summary:     ModuleStatsSummary{},
+				PeriodStart: now.AddDate(0, 0, -7),
+				PeriodEnd:   now,
+			}, &Metadata{
+				GeneratedAt: now,
+				TookMs:      time.Since(startTime).Milliseconds(),
+				Degraded:    true,
+				MissingView: view,
+				Hint:        "数据视图尚未初始化，请先执行数据聚合迁移",
+			})
+			return
+		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query module stats", err.Error())
 		return

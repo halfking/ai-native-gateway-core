@@ -1,5 +1,7 @@
 // Package dashboardapi - performance.go
 // 性能指标 API：查询系统性能指标（延迟、吞吐量、资源使用）
+//
+// 2026-07-13: 增加 session_module_executions_hot 表缺失时的优雅降级
 package dashboardapi
 
 import (
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin/dashboarddegrade"
 )
 
 // PerformanceHandler 性能指标 Handler
@@ -90,6 +93,11 @@ func (h *PerformanceHandler) HandlePerformance(w http.ResponseWriter, r *http.Re
 	// 1. 性能摘要
 	summary, err := h.queryPerformanceSummary(ctx, params)
 	if err != nil {
+		if dashboarddegrade.IsMissingRelationError(err) {
+			h.writeDegraded(w, startTime, "performance:summary", err)
+			apiStatus = "degraded"
+			return
+		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query performance summary", err.Error())
 		return
@@ -98,6 +106,11 @@ func (h *PerformanceHandler) HandlePerformance(w http.ResponseWriter, r *http.Re
 	// 2. 延迟分布
 	latencyDist, err := h.queryLatencyDistribution(ctx, params)
 	if err != nil {
+		if dashboarddegrade.IsMissingRelationError(err) {
+			h.writeDegraded(w, startTime, "performance:latency", err)
+			apiStatus = "degraded"
+			return
+		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query latency distribution", err.Error())
 		return
@@ -106,6 +119,11 @@ func (h *PerformanceHandler) HandlePerformance(w http.ResponseWriter, r *http.Re
 	// 3. 吞吐量趋势
 	throughput, err := h.queryThroughput(ctx, params)
 	if err != nil {
+		if dashboarddegrade.IsMissingRelationError(err) {
+			h.writeDegraded(w, startTime, "performance:throughput", err)
+			apiStatus = "degraded"
+			return
+		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query throughput", err.Error())
 		return
@@ -114,6 +132,11 @@ func (h *PerformanceHandler) HandlePerformance(w http.ResponseWriter, r *http.Re
 	// 4. 慢查询
 	slowQueries, err := h.querySlowQueries(ctx, params)
 	if err != nil {
+		if dashboarddegrade.IsMissingRelationError(err) {
+			h.writeDegraded(w, startTime, "performance:slow", err)
+			apiStatus = "degraded"
+			return
+		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query slow queries", err.Error())
 		return
@@ -276,4 +299,22 @@ func (h *PerformanceHandler) querySlowQueries(ctx context.Context, params QueryP
 		return nil, err
 	}
 	return items, nil
+}
+
+// writeDegraded 写一个"缺表降级"的 200 响应。仪表盘布局保持完整。
+func (h *PerformanceHandler) writeDegraded(w http.ResponseWriter, startTime time.Time, op string, err error) {
+	view := dashboarddegrade.ExtractRelationName(err)
+	now := time.Now()
+	writeSuccessJSON(w, PerformanceResponse{
+		Summary:     PerformanceSummary{},
+		LatencyDist: LatencyDistribution{},
+		Throughput:  []ThroughputPoint{},
+		SlowQueries: []SlowQueryItem{},
+	}, &Metadata{
+		GeneratedAt: now,
+		TookMs:      time.Since(startTime).Milliseconds(),
+		Degraded:    true,
+		MissingView: view,
+		Hint:        "数据视图尚未初始化，请先执行数据聚合迁移",
+	})
 }

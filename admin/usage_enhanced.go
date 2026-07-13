@@ -149,8 +149,8 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		if isMissingRelationError(err) {
-			reportMissingRelation(slog.Default(), "usageCostTrend", err)
+		if IsMissingRelationError(err) {
+			ReportMissingRelation(slog.Default(), "usageCostTrend", err)
 			writeJSON(w, http.StatusOK, CostTrendResponse{
 				GroupBy:    groupBy,
 				DateFrom:   startTime.Format("2006-01-02"),
@@ -283,8 +283,8 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 	// 查询当前周期统计
 	currentStats, err := h.queryPeriodStats(ctx, tid, currentStart, currentEnd, currentPeriod)
 	if err != nil {
-		if isMissingRelationError(err) {
-			reportMissingRelation(slog.Default(), "usagePeriodCompare:current", err)
+		if IsMissingRelationError(err) {
+			ReportMissingRelation(slog.Default(), "usagePeriodCompare:current", err)
 			writeJSON(w, http.StatusOK, PeriodCompareResponse{
 				Current:     PeriodStats{Period: currentPeriod},
 				Previous:    PeriodStats{Period: previousPeriod},
@@ -299,8 +299,8 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 	// 查询对比周期统计
 	previousStats, err := h.queryPeriodStats(ctx, tid, previousStart, previousEnd, previousPeriod)
 	if err != nil {
-		if isMissingRelationError(err) {
-			reportMissingRelation(slog.Default(), "usagePeriodCompare:previous", err)
+		if IsMissingRelationError(err) {
+			ReportMissingRelation(slog.Default(), "usagePeriodCompare:previous", err)
 			writeJSON(w, http.StatusOK, PeriodCompareResponse{
 				Current:     PeriodStats{Period: currentPeriod},
 				Previous:    PeriodStats{Period: previousPeriod},
@@ -543,8 +543,8 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		if isMissingRelationError(err) {
-			reportMissingRelation(slog.Default(), "usageCacheEconomics", err)
+		if IsMissingRelationError(err) {
+			ReportMissingRelation(slog.Default(), "usageCacheEconomics", err)
 			resp := CacheEconomicsResponse{
 				DateFrom: startTime.Format("2006-01-02"),
 				DateTo:   endTime.Format("2006-01-02"),
