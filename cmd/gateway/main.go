@@ -2359,6 +2359,18 @@ func main() {
 	mux.Handle("/v1/responses", responsesHandler)
 	mux.Handle("/v1/models", modelsHandler)
 
+	// audit-gateway-gemini (2026-07-13): Gemini native API endpoints.
+	// Both /v1beta/models/{m}:generateContent and /v1/models/{m}:generateContent
+	// shapes are routed through a single GeminiHandler which parses the
+	// Gemini-native body via the IR layer, dispatches through ChatHandler,
+	// and converts the response back to Gemini native format. This gives
+	// Gemini clients full compatibility without a separate executor —
+	// credentials, stickiness, retries, audit, telemetry all reuse the
+	// OpenAI infrastructure via IR translation.
+	geminiHandler := streaming.NewGeminiHandler(chatHandler)
+	mux.Handle("/v1beta/models/", geminiHandler)
+	mux.Handle("/v1/models/", geminiHandler) // also catch Gemini :generateContent on newer paths
+
 	// Overlay the v2 Pipeline wrapper on top of the 4 v1 endpoints
 	// when the flag is on. The wrapper is a Pipeline preflight
 	// (tracing/security/audit/...) → chatHandler.ServeHTTP →
