@@ -167,19 +167,24 @@ T+5s+800ms : Provider 返回 503
               Source: "probe_direct"
               LastError: "upstream_503"
 
-T+5s+810ms : attempt < max_attempts(5) → 重新入队
-         → next_backoff = backoff(2) = 30s
+T+5s+810ms : attempt (1) < max_attempts(5) → 重新入队
+         → next_backoff = backoff(1) = 5s    (chain[0]，首次重试延迟)
 
-T+35s : Worker 取出 (attempt=2)
+T+10s  : Worker 取出 (attempt=2)
          → 再次直连探测
          → 重复上面的流程
          ...
-T+5s   : 第 1 次失败 → 30s 后第 2 次
-T+35s  : 第 2 次失败 → +2min 后第 3 次 = T+2m35s
-T+4m35s: 第 3 次失败 → +5min 后第 4 次 = T+9m35s
-T+14m35s:第 4 次失败 → +15min 后第 5 次 = T+29m35s
-T+29m35s:第 5 次失败 → failed_final 终态
+T+10s      : 第 1 次失败 → +5s 后第 2 次                = T+15s
+T+15s      : 第 2 次失败 → +30s 后第 3 次               = T+45s
+T+45s      : 第 3 次失败 → +2min 后第 4 次              = T+2m45s
+T+2m45s    : 第 4 次失败 → +5min 后第 5 次              = T+7m45s
+T+7m45s    : 第 5 次失败 → failed_final 终态
          → 退出探测循环，依赖 passive_probe_listener / credential_recovery 自动恢复
+
+注：以上时间线假设第 1 次提交的瞬时触发在 T+5s（即业务第 2 次失败触发 Submit
+的时间）。链 [5s, 30s, 2m, 5m, 15m] 共 5 项，其中 15m 是 chain[4] 的 cap，
+在默认 MaxAttempts=5 配置下不会真正被消费（attempt 5 失败后 attempt >= 
+MaxAttempts 直接进入 failed_final）。
 ```
 
 ---
