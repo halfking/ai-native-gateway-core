@@ -1,3 +1,16 @@
+# SOPS configuration for llm-gateway-go
+#
+# Spec cf8aad1a9 §SOPS and Credentials: every target whose environment
+# is committed to the repository uses this single rule with the existing
+# age recipient. Plaintext .env.<target> files are explicitly ignored
+# by .gitignore; only the .enc envelopes are trackable.
+#
+# Adding a new target:
+#   1. Extend the path_regex below to include the new alias.
+#   2. Generate the envelope with env-injector; never hand-author a
+#      .env.<target>.enc file (it must be decryptable by an authorized
+#      recipient).
+#   3. Add .env.<target> to .gitignore's plaintext block.
 creation_rules:
-  - path_regex: \.env\.(71|184)(\.enc)?$
+  - path_regex: \.env\.(71|184|252|kaixuan-1)(\.enc)?$
     age: age1uwuh5zdw4nfvvs0vdndsxzscqt9hj6slajaczdql494kp8pkxvesscl9d5
