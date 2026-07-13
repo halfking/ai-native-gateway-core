@@ -8,7 +8,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useLiveStream } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
-import { isSuperAdmin, authBearer } from '../store'
+import { isSuperAdmin, authBearer, getCurrentTenantId } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
 import SwimLane from './SwimLane.vue'
 import LiveStreamLegend from './LiveStreamLegend.vue'
@@ -434,6 +434,7 @@ const isColdStart = computed(() => {
     <!-- 诊断工作台（2026-07-13，Phase 1 只读） -->
     <RouteIncidentDrawer
       :incident-id="activeIncidentId"
+      :tenant-id="isSuperAdmin() ? undefined : getCurrentTenantId()"
       :preview="activeIncidentPreview"
       @close="closeDiagnose"
       @open-request="handleRequestFromDrawer"

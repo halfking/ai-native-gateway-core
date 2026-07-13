@@ -2,9 +2,11 @@ package autoupdate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,17 +14,39 @@ import (
 
 // Rollback 回滚器（恢复备份 + 清理）
 type Rollback struct {
-	binPath   string
-	backupDir string
-	dataDir   string
+	binPath      string
+	backupDir    string
+	dataDir      string
+	serviceName  string // 可选：回滚后重启的 systemd 服务名
+	healthURL    string // 可选：默认 http://localhost:8781/healthz
+	startWait    time.Duration
+	healthClient *http.Client
 }
 
 // NewRollback 创建回滚器
 func NewRollback(binPath, backupDir, dataDir string) *Rollback {
 	return &Rollback{
-		binPath:   binPath,
-		backupDir: backupDir,
-		dataDir:   dataDir,
+		binPath:      binPath,
+		backupDir:    backupDir,
+		dataDir:      dataDir,
+		healthURL:    "http://localhost:8781/healthz",
+		startWait:    5 * time.Second,
+		healthClient: &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+// SetServiceName enables a systemctl restart of the named service after
+// the rollback. Pass an empty string to skip the restart step.
+func (r *Rollback) SetServiceName(name string) {
+	r.serviceName = strings.TrimSpace(name)
+}
+
+// SetHealthURL overrides the post-rollback health-check endpoint. The
+// default targets /healthz on port 8781 to match the gateway's default
+// listen address; pass the listener address your deployment exposes.
+func (r *Rollback) SetHealthURL(url string) {
+	if url = strings.TrimSpace(url); url != "" {
+		r.healthURL = url
 	}
 }
 
@@ -68,7 +92,17 @@ func (r *Rollback) Rollback(ctx context.Context, targetVersion string) (*Rollbac
 		result.Error = fmt.Sprintf("write version file: %v", err)
 	}
 
-	// 5. 健康检查（P1 修复：回滚后验证服务可用）
+	// 5. 重启服务（可选 — 与 install 对称）
+	if r.serviceName != "" {
+		if err := r.restartService(ctx); err != nil {
+			result.Error = fmt.Sprintf("rollback succeeded but service restart failed: %v", err)
+			result.Success = false
+			result.DurationMs = time.Since(start).Milliseconds()
+			return result, fmt.Errorf("service restart failed after rollback: %w", err)
+		}
+	}
+
+	// 6. 健康检查：验证回滚后的服务可用
 	if err := r.healthCheck(ctx); err != nil {
 		result.Error = fmt.Sprintf("rollback succeeded but health check failed: %v", err)
 		result.Success = false
@@ -224,30 +258,63 @@ func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
 
-// healthCheck 健康检查（P1 修复：回滚后验证服务可用）
+// healthCheck 健康检查（P1 修复：回滚后验证服务可用）。
+//
+// The endpoint defaults to http://<gateway>/healthz — the gateway's
+// configured health probe. Override via SetHealthURL when the deployment
+// uses a reverse proxy or a different listen address.
 func (r *Rollback) healthCheck(ctx context.Context) error {
-	// 默认健康检查端点：http://localhost:8080/health
-	// TODO: 从配置文件读取端点地址
-	healthURL := "http://localhost:8080/health"
-	
-	// 给服务 5 秒启动时间
-	time.Sleep(5 * time.Second)
-	
+	healthURL := r.healthURL
+	if healthURL == "" {
+		healthURL = "http://localhost:8781/healthz"
+	}
+
+	// 给服务启动时间（默认 5 秒，可被 startWait 覆盖）
+	if r.startWait > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(r.startWait):
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", healthURL, nil)
 	if err != nil {
 		return fmt.Errorf("create health check request: %w", err)
 	}
-	
-	client := &http.Client{Timeout: 10 * time.Second}
+
+	client := r.healthClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("health check request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("health check returned status %d", resp.StatusCode)
 	}
-	
+
+	return nil
+}
+
+// restartService restarts the configured systemd unit (if any).
+func (r *Rollback) restartService(ctx context.Context) error {
+	if r.serviceName == "" {
+		return errors.New("service name not configured")
+	}
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", r.serviceName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl restart %s failed: %w, output: %s", r.serviceName, err, string(output))
+	}
+	time.Sleep(3 * time.Second)
+	statusCmd := exec.CommandContext(ctx, "systemctl", "is-active", r.serviceName)
+	statusOutput, err := statusCmd.CombinedOutput()
+	if err != nil || string(statusOutput) != "active\n" {
+		return fmt.Errorf("service %s not active after restart: %s", r.serviceName, string(statusOutput))
+	}
 	return nil
 }

@@ -8,6 +8,7 @@
 // Diagnosis API" / "Dashboard Experience").
 
 import { computed, reactive, type ComputedRef, onBeforeUnmount } from 'vue'
+import { isSuperAdmin } from '../store'
 import type {
   LaneKey,
   RouteIncident,
@@ -156,7 +157,7 @@ export function useRouteIncidents() {
   // lane. Returns false for the "Other" aggregate (when the caller
   // passes `isOthers`).
   function canDiagnose(lane: { isOthers: boolean }): boolean {
-    return !lane.isOthers
+    return isSuperAdmin() && !lane.isOthers
   }
 
   const visibleIncidents: ComputedRef<RouteIncident[]> = computed(() => {

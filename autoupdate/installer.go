@@ -2,10 +2,13 @@ package autoupdate
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -16,6 +19,7 @@ type Installer struct {
 	dataDir       string
 	migrationCmd  string // P1: 数据库迁移命令（可选）
 	migrationArgs []string
+	serviceName   string // 可选：安装完成后重启的 systemd 服务名
 }
 
 // NewInstaller 创建安装器
@@ -25,6 +29,12 @@ func NewInstaller(binPath, backupDir, dataDir string) *Installer {
 		backupDir: backupDir,
 		dataDir:   dataDir,
 	}
+}
+
+// SetServiceName enables an automatic systemctl restart of the named service
+// after a successful install. Pass an empty string to skip the restart step.
+func (i *Installer) SetServiceName(name string) {
+	i.serviceName = strings.TrimSpace(name)
 }
 
 // InstallResult 安装结果
@@ -75,28 +85,46 @@ func (i *Installer) Install(ctx context.Context, downloadPath string, release *R
 		return result, err
 	}
 
-	// 5. 写入版本信息
+	// 5. 写入版本信息（only on success — a partial install must not
+	//    leave a future restart pointing at an incompatible binary).
 	versionFile := filepath.Join(i.dataDir, "VERSION")
 	if err := os.WriteFile(versionFile, []byte(release.Version+"\n"), 0644); err != nil {
 		result.Error = fmt.Sprintf("write version file: %v", err)
+		if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
+			result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
+		}
+		result.DurationMs = time.Since(start).Milliseconds()
+		return result, fmt.Errorf("write version file: %w", err)
 	}
 
 	// 6. 数据库迁移（P1 修复：协调二进制升级与数据库迁移）
 	if i.migrationCmd != "" {
 		if err := i.runMigration(ctx); err != nil {
 			result.Error = fmt.Sprintf("install succeeded but migration failed: %v", err)
+			if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
+				result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
+			}
+			_ = os.WriteFile(versionFile, []byte(result.OldVersion+"\n"), 0644)
 			result.Success = false
 			result.DurationMs = time.Since(start).Milliseconds()
 			return result, fmt.Errorf("migration failed: %w", err)
 		}
 	}
 
-	// 7. 重启服务（P1 修复：自动 systemctl restart）
-	if err := i.restartService(ctx); err != nil {
-		result.Error = fmt.Sprintf("install succeeded but service restart failed: %v", err)
-		result.Success = false
-		result.DurationMs = time.Since(start).Milliseconds()
-		return result, fmt.Errorf("service restart failed: %w", err)
+	// 7. 重启服务（可选 — 通过 SetServiceName 配置）
+	if i.serviceName != "" {
+		if err := i.restartService(ctx); err != nil {
+			result.Error = fmt.Sprintf("install succeeded but service restart failed: %v", err)
+			if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
+				result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
+			}
+			_ = os.WriteFile(versionFile, []byte(result.OldVersion+"\n"), 0644)
+			result.Success = false
+			result.DurationMs = time.Since(start).Milliseconds()
+			return result, fmt.Errorf("service restart failed: %w", err)
+		}
+	} else {
+		slog.Info("installer: service restart skipped (no service_name configured)")
 	}
 
 	result.Success = true
@@ -209,10 +237,12 @@ func (i *Installer) CleanupOldBackups(keepCount int) error {
 	return nil
 }
 
-// restartService 重启服务（P1 修复：自动 systemctl restart）
+// restartService 重启服务（由 SetServiceName 显式启用）
 func (i *Installer) restartService(ctx context.Context) error {
-	// TODO: 从配置文件读取服务名称
-	serviceName := "llm-gateway-go"
+	serviceName := i.serviceName
+	if serviceName == "" {
+		return errors.New("service name not configured")
+	}
 
 	cmd := exec.CommandContext(ctx, "systemctl", "restart", serviceName)
 	output, err := cmd.CombinedOutput()
@@ -238,13 +268,13 @@ func (i *Installer) runMigration(ctx context.Context) error {
 	if i.migrationCmd == "" {
 		return nil
 	}
-	
+
 	cmd := exec.CommandContext(ctx, i.migrationCmd, i.migrationArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("migration command %s failed: %w, output: %s", i.migrationCmd, err, string(output))
 	}
-	
+
 	return nil
 }
 

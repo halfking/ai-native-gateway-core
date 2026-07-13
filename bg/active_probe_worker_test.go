@@ -24,7 +24,7 @@ type stubStateObserver struct {
 func (s *stubStateObserver) UpdateOnSuccess(_ context.Context, _ int, _ string, _ int, _ string) {
 }
 
-func (s *stubStateObserver) UpdateOnFailure(_ context.Context, _ int, _ string, _ interface{}, _ string) {
+func (s *stubStateObserver) UpdateOnFailure(_ context.Context, _ int, _ string, _ interface{}, _ string, _ string) {
 }
 
 func (s *stubStateObserver) UpdateFromProbe(_ context.Context, st *credentialstate.State) {
@@ -81,9 +81,9 @@ func TestNewActiveProbeWorker_DisabledNoStart(t *testing.T) {
 func TestSubmit_DedupPreventsDuplicate(t *testing.T) {
 	w := newTestWorker()
 
-	w.Submit(42, "gpt-4", "req-1")
-	w.Submit(42, "gpt-4", "req-2") // dedup hit
-	w.Submit(42, "gpt-4", "req-3") // dedup hit
+	w.Submit(42, "gpt-4", "default", "req-1")
+	w.Submit(42, "gpt-4", "default", "req-2") // dedup hit
+	w.Submit(42, "gpt-4", "default", "req-3") // dedup hit
 
 	if got := w.RunningCount(); got != 1 {
 		t.Errorf("RunningCount = %d, want 1 (dedup should keep only one entry)", got)
@@ -93,9 +93,9 @@ func TestSubmit_DedupPreventsDuplicate(t *testing.T) {
 func TestSubmit_DifferentKeysAllowed(t *testing.T) {
 	w := newTestWorker()
 
-	w.Submit(1, "gpt-4", "req-1")
-	w.Submit(2, "gpt-4", "req-2")
-	w.Submit(1, "claude-sonnet-5", "req-3")
+	w.Submit(1, "gpt-4", "default", "req-1")
+	w.Submit(2, "gpt-4", "default", "req-2")
+	w.Submit(1, "claude-sonnet-5", "default", "req-3")
 
 	if got := w.RunningCount(); got != 3 {
 		t.Errorf("RunningCount = %d, want 3 (distinct keys)", got)
@@ -105,7 +105,7 @@ func TestSubmit_DifferentKeysAllowed(t *testing.T) {
 func TestSubmit_DisabledIsNoOp(t *testing.T) {
 	w := NewActiveProbeWorker(ActiveProbeWorkerConfig{Enabled: false})
 
-	w.Submit(1, "gpt-4", "req-1")
+	w.Submit(1, "gpt-4", "default", "req-1")
 
 	if got := w.RunningCount(); got != 0 {
 		t.Errorf("disabled worker should not track probes, got RunningCount=%d", got)
@@ -115,7 +115,7 @@ func TestSubmit_DisabledIsNoOp(t *testing.T) {
 func TestMarkSuccess_ClearsDedup(t *testing.T) {
 	w := newTestWorker()
 
-	w.Submit(7, "gpt-4", "req-1")
+	w.Submit(7, "gpt-4", "default", "req-1")
 	if w.RunningCount() != 1 {
 		t.Fatalf("after Submit: RunningCount=%d, want 1", w.RunningCount())
 	}
@@ -130,7 +130,7 @@ func TestMarkSuccess_ClearsDedup(t *testing.T) {
 func TestMarkFailedFinal_ClearsDedup(t *testing.T) {
 	w := newTestWorker()
 
-	w.Submit(8, "gpt-4", "req-1")
+	w.Submit(8, "gpt-4", "default", "req-1")
 	w.markFailedFinal(8, "gpt-4")
 
 	if w.RunningCount() != 0 {
@@ -141,7 +141,7 @@ func TestMarkFailedFinal_ClearsDedup(t *testing.T) {
 func TestMarkFailedRetry_ReschedulesAtLaterTime(t *testing.T) {
 	w := newTestWorker()
 
-	w.Submit(9, "gpt-4", "req-1")
+	w.Submit(9, "gpt-4", "default", "req-1")
 
 	// markFailedRetry with attempt=1 and a 5s delay
 	future := time.Now().Add(5 * time.Second)
@@ -399,8 +399,8 @@ func TestRunningKeys_EmptyAndPopulated(t *testing.T) {
 		t.Errorf("empty worker should have no keys, got %v", keys)
 	}
 
-	w.Submit(1, "a", "r1")
-	w.Submit(2, "b", "r2")
+	w.Submit(1, "a", "default", "r1")
+	w.Submit(2, "b", "default", "r2")
 
 	keys := w.RunningKeys()
 	if len(keys) != 2 {
@@ -411,7 +411,7 @@ func TestRunningKeys_EmptyAndPopulated(t *testing.T) {
 func TestNilWorkerSafety(t *testing.T) {
 	var w *ActiveProbeWorker
 	// All public methods must be nil-safe.
-	w.Submit(1, "m", "r")
+	w.Submit(1, "m", "default", "r")
 	if got := w.RunningCount(); got != 0 {
 		t.Errorf("nil worker RunningCount = %d, want 0", got)
 	}

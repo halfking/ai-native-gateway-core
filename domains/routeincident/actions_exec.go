@@ -109,31 +109,18 @@ func recoverExecutor(ctx context.Context, tx pgx.Tx, snap *Incident, in *ActionR
 	finished := time.Now().UTC()
 	run.FinishedAt = &finished
 
-	// The post-snapshot records the state we would apply IF the
-	// downstream probe confirms. The actual store UPDATE happens
-	// here so the dashboard reads the recovered state on next
-	// SSE envelope.
+	// A recovery action cannot claim a verified recovery: the executor does
+	// not have a downstream probe result in this transaction. Keep the
+	// incident state unchanged and record an auditable probe intent instead.
 	post := map[string]any{
-		"state":           targetState,
-		"failure_streak":  0,
-		"recovery_streak": 5,
-		"version":         snap.Version + 1,
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE route_incidents
-		SET state = $2,
-		    failure_streak = 0,
-		    recovery_streak = 5,
-		    recovered_at = now(),
-		    total_successes = total_successes + 1,
-		    version = version + 1
-		WHERE id = $1 AND version = $3
-	`, snap.ID, targetState, snap.Version); err != nil {
-		return nil, nil, nil, fmt.Errorf("update incident: %w", err)
+		"state":           string(snap.State),
+		"failure_streak":  snap.FailureStreak,
+		"recovery_streak": snap.RecoveryStreak,
+		"version":         snap.Version,
+		"reprobe_pending": true,
 	}
 	response := map[string]any{
-		"outcome":       "recovered",
-		"recovered_at":  finished.UTC().Format(time.RFC3339Nano),
+		"outcome":       "reprobe_pending",
 		"run_id":        runID,
 		"verifier_kind": run.Result["verifier_kind"],
 	}

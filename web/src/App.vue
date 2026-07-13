@@ -45,7 +45,7 @@ onMounted(async () => {
   // login, and the API client's 401 handler would otherwise trigger a redirect
   // to /login before App.vue's own redirect-suppression runs.
   const publicPaths = ['/activate', '/license', '/upgrade']
-  const onPublicRoute = !!route.meta?.public || publicPaths.includes(route.path)
+  const onPublicRoute = publicPaths.includes(route.path)
   try {
     if (!onPublicRoute && !store.jwtToken && !store.apiKey) {
       // No JWT in localStorage, no API key — check if cookie is still valid
@@ -65,7 +65,7 @@ onMounted(async () => {
     // else: store.jwtToken or store.apiKey already present → authenticated
   } finally {
     markAuthHydrated()
-    if (!isLoggedIn.value && !route.meta.public && !publicPaths.includes(route.path)) {
+    if (!isLoggedIn.value && !publicPaths.includes(route.path)) {
       router.replace({ path: '/', query: { login: '1', redirect: route.fullPath } })
     }
   }

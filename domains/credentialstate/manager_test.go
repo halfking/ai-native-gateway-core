@@ -70,14 +70,14 @@ func TestManager_UpdateOnFailure(t *testing.T) {
 	}, nil)
 
 	// 第一次失败
-	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-1")
+	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-1", "default")
 	if triggered {
 		t.Error("should not trigger probe after 1 failure")
 	}
 
 	// 第二次失败（应该触发快速探测）
 	time.Sleep(3 * time.Second) // 等待超过2秒
-	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-2")
+	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-2", "default")
 
 	if !triggered {
 		t.Error("should trigger probe after 2 consecutive failures")
@@ -152,7 +152,7 @@ func TestManager_UpdateOnFailure_IgnoresCanceled(t *testing.T) {
 	initialFails := state.ConsecutiveFails
 
 	// 用户取消 - 不应计入错误统计
-	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindCanceled, "req-1")
+	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindCanceled, "req-1", "default")
 
 	// 验证状态未变化
 	state, _ = m.GetState(ctx, 1, "test-model")
@@ -170,7 +170,7 @@ func TestManager_UpdateOnFailure_IgnoresCanceled(t *testing.T) {
 	}
 
 	// 验证真实错误仍然会被计入
-	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-2")
+	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-2", "default")
 	state, _ = m.GetState(ctx, 1, "test-model")
 
 	if state.ConsecutiveFails != initialFails+1 {
@@ -205,8 +205,8 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 	// 1st and 2nd stream-timeout failures: below the 3-failure threshold,
 	// no cooling should be scheduled (RecoverAt stays nil, cache not
 	// invalidated). These two alone must NOT trip the new fast-cooling.
-	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-1")
-	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-2")
+	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-1", "default")
+	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-2", "default")
 	s, _ := m.GetState(ctx, credID, model)
 	if s == nil {
 		t.Fatal("expected state after 2 failures")
@@ -225,7 +225,7 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 	// ~5min RecoverAt and invalidate the candidate cache so the router
 	// drops the credential on its next resolve.
 	before := time.Now()
-	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-3")
+	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-3", "default")
 	s, _ = m.GetState(ctx, credID, model)
 	if s == nil {
 		t.Fatal("expected state after 3 failures")

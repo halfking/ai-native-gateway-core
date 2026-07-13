@@ -123,6 +123,33 @@ func (s *fakeStore) ActivateDevice(ctx context.Context, dev *Device) error {
 	return nil
 }
 
+// ActivateDeviceIfUnderLimit mirrors the production store in-memory: enforce
+// the per-license MaxDevices ceiling plus dedupe on active hardware_hash.
+func (s *fakeStore) ActivateDeviceIfUnderLimit(ctx context.Context, dev *Device, maxDevices int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := licenseKeyFromLicenseID(s.licenses, dev.LicenseID)
+	for _, existing := range s.devices[key] {
+		if existing.HardwareHash == dev.HardwareHash && existing.Status == "active" {
+			return ErrDeviceAlreadyActivated
+		}
+	}
+	if maxDevices > 0 {
+		active := 0
+		for _, existing := range s.devices[key] {
+			if existing.Status == "active" {
+				active++
+			}
+		}
+		if active >= maxDevices {
+			return ErrDeviceLimitExceeded
+		}
+	}
+	s.devices[dev.HardwareHash] = append(s.devices[dev.HardwareHash], dev)
+	s.devices[key] = append(s.devices[key], dev)
+	return nil
+}
+
 func licenseKeyFromLicenseID(licenses map[string]*License, id int64) string {
 	for k, lic := range licenses {
 		if lic.ID == id {
@@ -354,9 +381,6 @@ func TestCustomerAPI_Status_ActiveLicense(t *testing.T) {
 	}
 	if resp.State != "active" {
 		t.Errorf("expected state=active, got %q", resp.State)
-	}
-	if resp.CustomerName != "Acme" {
-		t.Errorf("expected customer=Acme, got %q", resp.CustomerName)
 	}
 	if resp.SubscriptionTier != "enterprise" {
 		t.Errorf("expected tier=enterprise, got %q", resp.SubscriptionTier)

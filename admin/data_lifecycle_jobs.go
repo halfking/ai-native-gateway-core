@@ -98,10 +98,17 @@ func (h *Handler) StartJob(op JobType, params map[string]any, operator string, f
 			}
 			h.finalizeJob(run)
 		}()
+		registry := h.getJobRegistry()
+		registry.mu.Lock()
+		if run.Status == JobStatusCancelled {
+			registry.mu.Unlock()
+			return
+		}
 		run.Status = JobStatusRunning
 		hb := time.Now()
 		run.HeartbeatAt = &hb
 		run.Message = "running"
+		registry.mu.Unlock()
 		fn(ctx, run)
 	}()
 	return run
@@ -166,6 +173,9 @@ func (h *Handler) failJob(run *JobRun, errMsg string) {
 	registry := h.getJobRegistry()
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	if run.Status == JobStatusCancelled {
+		return
+	}
 	run.Status = JobStatusFailed
 	run.Error = errMsg
 	run.Message = "failed: " + errMsg
@@ -178,6 +188,9 @@ func (h *Handler) succeedJob(run *JobRun, msg string) {
 	registry := h.getJobRegistry()
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	if run.Status == JobStatusCancelled {
+		return
+	}
 	run.Status = JobStatusSucceeded
 	if msg != "" {
 		run.Message = msg

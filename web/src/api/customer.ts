@@ -34,7 +34,8 @@ export interface ActivateRequest {
 
 export interface OfflineActivateRequest {
   signed_license: string
-  activation_code?: string
+  request_id: string
+  activation_code: string
 }
 
 export interface OfflineRequestPayload {

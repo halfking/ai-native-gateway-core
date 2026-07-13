@@ -14,6 +14,14 @@ type Store interface {
 	UpdateLicense(ctx context.Context, lic *License) error
 	RevokeLicense(ctx context.Context, licenseKey string) error
 
+	// ActivateDeviceIfUnderLimit inserts a device row only when the active
+	// device count for the license is below MaxDevices. The check + insert
+	// runs inside a single transaction, so concurrent activations cannot
+	// exceed MaxDevices. Returns ErrDeviceLimitExceeded when the limit is
+	// reached, or ErrDeviceAlreadyActive when this hardware_hash already
+	// has an active device.
+	ActivateDeviceIfUnderLimit(ctx context.Context, dev *Device, maxDevices int) error
+
 	GetActiveDevices(ctx context.Context, licenseKey string) ([]Device, error)
 	GetDeviceByHardwareHash(ctx context.Context, licenseKey, hardwareHash string) (*Device, error)
 	ActivateDevice(ctx context.Context, dev *Device) error

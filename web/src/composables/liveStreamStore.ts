@@ -9,6 +9,7 @@
 
 import { reactive, computed, type ComputedRef } from 'vue'
 import { authBearer } from '../store'
+import type { RouteIncidentUpdate } from '../types/routeIncident'
 
 export type LiveStatus = 'in_progress' | 'success' | 'failure'
 
@@ -94,13 +95,14 @@ export interface LiveStreamHealth {
 }
 
 export interface LiveStreamEnvelope {
-  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update'
+  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update' | 'incident_update'
   ts: string
   request?: LiveRequest
   requests?: LiveRequest[]
   snapshot?: LiveStreamSnapshot
   delta?: LiveStreamDelta
   health?: LiveStreamHealth
+  incident?: RouteIncidentUpdate
 }
 
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' | 'unsupported'

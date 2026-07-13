@@ -36,7 +36,7 @@ LANGUAGE plpgsql
 AS $function$
 DECLARE
     total_dropped bigint := 0;
-    cutoff_ts timestamptz := NOW() - (p_retention_days || ' days')::interval;
+    cutoff_ts timestamptz;
     r record;
     target_tables text[] := ARRAY[
         'routing_decision_log',
@@ -55,6 +55,7 @@ BEGIN
         RAISE WARNING 'drop_old_state_partitions: retention_days=% < 1, clamping to 1', p_retention_days;
         p_retention_days := 1;
     END IF;
+    cutoff_ts := NOW() - (p_retention_days || ' days')::interval;
 
     FOREACH parent_name IN ARRAY target_tables LOOP
         FOR r IN
@@ -106,12 +107,13 @@ LANGUAGE plpgsql
 AS $function$
 DECLARE
     deleted_count bigint;
-    cutoff_ts timestamptz := NOW() - (p_retention_days || ' days')::interval;
+    cutoff_ts timestamptz;
 BEGIN
     IF p_retention_days < 7 THEN
         RAISE WARNING 'cleanup_old_credential_probe_model_log: retention_days=% < 7, clamping to 7', p_retention_days;
         p_retention_days := 7;
     END IF;
+    cutoff_ts := NOW() - (p_retention_days || ' days')::interval;
 
     DELETE FROM credential_probe_model_log
     WHERE created_at < cutoff_ts;
