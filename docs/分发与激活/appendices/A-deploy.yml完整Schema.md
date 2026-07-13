@@ -1,6 +1,12 @@
 # 附录 A — deploy.yml 完整 Schema
 
 > llm-gateway-go v1.x 部署配置文件完整说明。
+>
+> **2026-07-13 同步**：当前 `install.sh` 通过探测 OS/arch 启动
+> `installer/cmd/llm-gw-installer`，不需要 `deploy.yml` 作为运行期配置。
+> 本 Schema 仍可作为安装前参数传入，主要入口是
+> `--db-url` / `--license-server` / `--image-source` 等 CLI 标志。下表
+> 保留 schema 形态作为参考。
 
 ## 一、文件位置与版本
 
