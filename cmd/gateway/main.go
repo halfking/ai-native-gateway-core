@@ -1699,7 +1699,7 @@ func main() {
 				Keyring:              keyring,
 				EncKey:               fernetKey,
 				Telemetry:            telemetryClient,
-				StateManager:         nil, // wired below once stateManager is constructed
+				StateManager:         stateManager,
 				Enabled:              epEnabled,
 				ConsecutiveThreshold: epThreshold,
 				MaxAttempts:          epMaxAttempts,
