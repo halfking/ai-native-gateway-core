@@ -218,7 +218,7 @@ watch(
           ✗{{ lane.stats.failure }}
         </span>
       </div>
-      <!-- 应急诊断按钮 - 2026-07-13: 可见区域错误率 >= 1/3 时显示 -->
+      <!-- 2026-07-13: 诊断功能暂时隐藏，待诊断功能完成后再次开启
       <button
         v-if="showEmergencyButton"
         class="swim-lane__emergency-btn"
@@ -227,6 +227,7 @@ watch(
       >
         ⚠️ 诊断
       </button>
+      -->
     </div>
     <div class="swim-lane__track" ref="trackRef">
       <TransitionGroup name="swim-tile" tag="div" class="swim-lane__tiles">
