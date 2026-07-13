@@ -75,6 +75,9 @@ const CenterOpsView = () => import('./views/ops/CenterOpsView.vue')
 const VibeCodingView = () => import('./views/ops/VibeCodingView.vue')
 const TenantLicenseView = () => import('./views/tenant/TenantLicenseView.vue')
 const TenantAutoUpdateView = () => import('./views/tenant/TenantAutoUpdateView.vue')
+const ActivationWizard = () => import('./views/ActivationWizard.vue')
+const LicenseInfoView = () => import('./views/LicenseInfoView.vue')
+const UpgradePanel = () => import('./views/UpgradePanel.vue')
 
 // Operations Platform views. Platform management remains super-admin only;
 // tenant routes below expose read-only, tenant-scoped status views.
@@ -233,6 +236,13 @@ export const router = createRouter({
     // the current tenant. These intentionally do not reuse platform CRUD views.
     { path: '/tenant/license',     component: TenantLicenseView, meta: { requiresAuth: true, tenantOps: true } },
     { path: '/tenant/autoupdate',  component: TenantAutoUpdateView, meta: { requiresAuth: true, tenantOps: true } },
+
+    // Customer-facing (public). The customer can complete activation before
+    // logging in; once logged in the same routes remain reachable but the
+    // sidebar/nav guides them to richer /tenant/* or /ops/* views.
+    { path: '/activate', component: ActivationWizard, meta: { public: true } },
+    { path: '/license',  component: LicenseInfoView,  meta: { public: true } },
+    { path: '/upgrade',  component: UpgradePanel,      meta: { public: true } },
 
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

@@ -1,6 +1,7 @@
 // zh-CN/index.ts — 聚合简体中文各模块。新增模块在此 import + 合并。
 import common from './common'
 import nav from './nav'
+import customer from './customer'
 import login from './login'
 import app from './app'
 import errors from './errors'
@@ -105,4 +106,5 @@ export default {
   outputCompliance,
   ops,
   tenantModels,
+  customer,
 }

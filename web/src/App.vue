@@ -9,6 +9,7 @@ import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
 import SystemStatusIndicator from './components/SystemStatusIndicator.vue'
+import UpgradeBanner from './components/UpgradeBanner.vue'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
 import { useNavAccordion } from './composables/useNavAccordion'
@@ -38,8 +39,15 @@ onMounted(async () => {
   // Otherwise, check if the HttpOnly cookie is still valid (for users who logged in
   // before this JWT-persistence change). The server's /api/auth/me now returns a
   // fresh access_token in the response so we can persist it to localStorage.
+  //
+  // 2026-07-13: Skip the probe on customer-facing public routes (/activate,
+  // /license, /upgrade). The activation wizard must remain reachable without a
+  // login, and the API client's 401 handler would otherwise trigger a redirect
+  // to /login before App.vue's own redirect-suppression runs.
+  const publicPaths = ['/activate', '/license', '/upgrade']
+  const onPublicRoute = !!route.meta?.public || publicPaths.includes(route.path)
   try {
-    if (!store.jwtToken && !store.apiKey) {
+    if (!onPublicRoute && !store.jwtToken && !store.apiKey) {
       // No JWT in localStorage, no API key — check if cookie is still valid
       try {
         const me = await getAuthMe()
@@ -57,7 +65,7 @@ onMounted(async () => {
     // else: store.jwtToken or store.apiKey already present → authenticated
   } finally {
     markAuthHydrated()
-    if (!isLoggedIn.value && !route.meta.public) {
+    if (!isLoggedIn.value && !route.meta.public && !publicPaths.includes(route.path)) {
       router.replace({ path: '/', query: { login: '1', redirect: route.fullPath } })
     }
   }
@@ -303,6 +311,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
     </aside>
 
     <main class="main-content">
+      <UpgradeBanner />
       <header class="main-header">
         <button
           type="button"
@@ -356,6 +365,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
       </div>
     </header>
     <main class="guest-main">
+      <UpgradeBanner />
       <RouterView />
     </main>
     <LoginModal v-model="showLoginModal" />
