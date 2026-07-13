@@ -34,7 +34,7 @@ log_step() {
 if [ -z "${LLM_GATEWAY_DATABASE_URL:-}" ]; then
     log_error "LLM_GATEWAY_DATABASE_URL 环境变量未设置"
     echo "请设置数据库连接字符串，例如："
-    echo "export LLM_GATEWAY_DATABASE_URL='postgres://user:pass@host:port/dbname'"
+    echo "export LLM_GATEWAY_DATABASE_URL='postgres://<user>:<password>@<host>:<port>/<database>'"
     exit 1
 fi
 

@@ -70,14 +70,32 @@ WHITELIST_PATTERNS=(
   'YOUR_API_KEY_HERE' '<REDACTED>' '<INTERNAL_IP_REDACTED>' '<REDACTED_PASSWORD>'
   '<REDACTED_HASH>' '__REDACTED_[A-Z_]+__' '__INTERNAL_[A-Z_]+__'
   'xxxxxxxx-xxxx-xxxx' 'placeholder'
+  # Slice 7: documentation placeholders use angle-bracket syntax
+  '<user>:<password>@<host>' '<password>@'
 )
 
 EXCLUDE_DIRS=(".git" "node_modules" "vendor" "build" "dist" "out" "coverage"
   ".playwright-mcp" ".codegraph" ".cache" ".runtime" ".ruff_cache"
-  ".pnpm-store" ".secrets" ".deploy" ".trash" ".artifacts" ".idea" ".vscode" ".cursor")
+  ".pnpm-store" ".secrets" ".deploy" ".trash" ".artifacts" ".idea" ".vscode" ".cursor"
+  # Slice 7: the legacy migration carve-out is git-ignored and
+  # scheduled for deletion. Stop the scanner from crawling it.
+  "_to-be-deprecated")
 EXCLUDE_FILES=("scan-secrets.sh" "scan-secrets.config" "scan-secrets.replacements"
-  "scan-secrets.baseline" "package-lock.json" "pnpm-lock.yaml" "go.sum")
-EXCLUDE_EXTS=("png" "jpg" "jpeg" "gif" "ico" "svg" "woff" "woff2" "ttf" "eot" "pdf" "zip" "tar" "gz" "bin" "exe" "dll" "so" "dylib" "class" "jar")
+  "scan-secrets.baseline" "package-lock.json" "pnpm-lock.yaml" "go.sum"
+  # Slice 7: PEM key artifacts are legitimate test/infra fixtures,
+  # not analyst-defined credentials. They go through the key
+  # generator's documented flow; if a SECRET-private-key need shows
+  # up here, that's a contract violation that should be discussed in
+  # code review rather than papered over.
+  "server.priv" "server.pub"
+  "*.pem" "*.priv" "*.pub")
+EXCLUDE_EXTS=("png" "jpg" "jpeg" "gif" "ico" "svg" "woff" "woff2" "ttf" "eot"
+  "pdf" "zip" "tar" "gz" "bz2" "xz" "7z"
+  "bin" "exe" "dll" "so" "dylib" "class" "jar"
+  # Slice 7: tracked Linux/amd64 build artifacts are not credential
+  # sources — never read them. (The .gitignore keeps new ones out;
+  # legacy tracked copies are excluded here too.)
+  "linux.amd64")
 
 TOTAL_FILES_SCANNED=0
 TOTAL_FINDINGS=0
@@ -92,8 +110,18 @@ is_excluded_path() {
   done
   local base; base="$(basename "$path")"
   for f in "${EXCLUDE_FILES[@]}"; do [[ "$base" == $f ]] && return 0; done
+  # Extension check: match either the final suffix OR the multi-part
+  # suffix for patterns like 'linux.amd64' (which appears in our
+  # exclude list as a single token).
   local ext="${base##*.}"
-  for e in "${EXCLUDE_EXTS[@]}"; do [[ "${ext,,}" == "$e" ]] && return 0; done
+  for e in "${EXCLUDE_EXTS[@]}"; do
+    [[ "$ext" == "$e" ]] && return 0
+    # If the extension list contains a dot-separated compound suffix
+    # (e.g. "linux.amd64"), match the tail of the basename.
+    if [[ "$e" == *.* && "$base" == *."$e" ]]; then
+      return 0
+    fi
+  done
   return 1
 }
 
