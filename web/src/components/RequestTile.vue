@@ -39,6 +39,16 @@ const statusColor = computed(() => {
 const showStatusDot = computed(() => props.tile.status !== 'idle')
 
 const isTestRequest = computed(() => props.tile.is_probe === true)
+const probeOrigin = computed(() => props.tile.probe_origin || 'direct')
+const probeBadgeClass = computed(() => `request-tile__probe-badge--${probeOrigin.value}`)
+const probeBadgeTooltip = computed(() => {
+  const labels: Record<string, string> = {
+    direct: '🛡️ 主动探测 (直连上游)',
+    gateway: '🛡️ 主动探测 (网关路径)',
+    scheduled: '⏰ 周期探测 (scheduler)',
+  }
+  return labels[probeOrigin.value] || '🛡️ 探测请求'
+})
 const isIdle = computed(() => props.tile.status === 'idle')
 const isInProgress = computed(() => props.tile.status === 'in_progress')
 const isFailure = computed(() => props.tile.status === 'failure')
@@ -166,7 +176,7 @@ function handleClick() {
       :class="{ 'request-tile__status-dot--pulse': isInProgress }"
       aria-hidden="true"
     />
-    <span v-if="isTestRequest" class="request-tile__probe-badge" aria-hidden="true">T</span>
+    <span v-if="isTestRequest" class="request-tile__probe-badge" :class="probeBadgeClass" :title="probeBadgeTooltip">⚙</span>
 
     <div class="request-tile__body">
       <div v-if="!isIdle" class="request-tile__time">{{ timeLabel }}</div>
@@ -295,16 +305,40 @@ function handleClick() {
 .request-tile__probe-badge {
   position: absolute;
   top: 3px;
-  left: 6px;
-  font-size: 8px;
-  font-weight: 800;
+  left: 4px;
+  font-size: 11px;
+  font-weight: 900;
   line-height: 1;
-  padding: 1px 3px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 3px;
-  color: #e0f2fe;
-  background: rgba(14, 165, 233, 0.55);
-  border: 1px solid rgba(56, 189, 248, 0.6);
-  z-index: 2;
+  color: #0c1a26;
+  background: linear-gradient(180deg, #fde68a 0%, #fbbf24 100%);
+  border: 1.5px solid #f59e0b;
+  box-shadow: 0 0 4px rgba(251, 191, 36, 0.6);
+  z-index: 3;
+}
+
+/* 按探测来源区分颜色：scheduled=橙黄/周期，direct=红色/主动 */
+.request-tile__probe-badge--direct {
+  background: linear-gradient(180deg, #fca5a5 0%, #ef4444 100%);
+  border-color: #b91c1c;
+  color: #fff;
+}
+
+.request-tile__probe-badge--scheduled {
+  background: linear-gradient(180deg, #fde68a 0%, #fbbf24 100%);
+  border-color: #f59e0b;
+  color: #422006;
+}
+
+.request-tile__probe-badge--gateway {
+  background: linear-gradient(180deg, #93c5fd 0%, #3b82f6 100%);
+  border-color: #1d4ed8;
+  color: #fff;
 }
 
 .request-tile__body {

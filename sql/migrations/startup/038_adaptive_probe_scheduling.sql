@@ -44,6 +44,10 @@
 -- Mirrors: docs/2026-06-23-adaptive-probe-algorithm.md
 
 -- v2 backoff: age-aware
+-- 2026-07-13: minimum backoff raised from 10s/30s to 2m/5m to prevent
+-- thrashing with cycle tick (raised from 10s to 5min in model_probe.go).
+-- Previous ladder (10s/30s/60s/...) caused 21 probes/min for healthy
+-- models when 1m backoff was shorter than 10s cycle tick.
 CREATE OR REPLACE FUNCTION model_probe_backoff_v2(
     consecutive_failures INTEGER,
     last_attempt_at TIMESTAMPTZ
@@ -58,19 +62,27 @@ AS $$
         -- 0 failures → healthy_confirmed watchdog (every 2h)
         WHEN consecutive_failures <= 0 THEN INTERVAL '2 hours'
 
-		-- Failed active targets use the operational recovery ladder.
-		WHEN consecutive_failures = 1 THEN INTERVAL '10 seconds'
-		WHEN consecutive_failures = 2 THEN INTERVAL '30 seconds'
-		WHEN consecutive_failures = 3 THEN INTERVAL '60 seconds'
-		WHEN consecutive_failures = 4 THEN INTERVAL '120 seconds'
-		WHEN consecutive_failures = 5 THEN INTERVAL '300 seconds'
-		WHEN consecutive_failures >= 6 THEN INTERVAL '3600 seconds'
-		ELSE INTERVAL '3600 seconds'
+		-- 2026-07-13 fix: minimum backoff raised to 2m to match cycle tick 5min.
+		-- 1 failure: ramp up frequency when fresh, taper when stale
+		WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <   300 THEN INTERVAL '2 minutes'
+		WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <  1800 THEN INTERVAL '3 minutes'
+		WHEN consecutive_failures = 1 AND (SELECT secs FROM age) <  3600 THEN INTERVAL '10 minutes'
+		WHEN consecutive_failures = 1                              THEN INTERVAL '30 minutes'
+
+		-- 2 failures: same pattern with longer floor
+		WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <   300 THEN INTERVAL '5 minutes'
+		WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <  1800 THEN INTERVAL '10 minutes'
+		WHEN consecutive_failures = 2 AND (SELECT secs FROM age) <  3600 THEN INTERVAL '15 minutes'
+		WHEN consecutive_failures = 2                              THEN INTERVAL '45 minutes'
+
+		-- 3+ failures → 1h recovering
+		WHEN consecutive_failures >= 3 THEN INTERVAL '60 minutes'
+		ELSE INTERVAL '60 minutes'
     END;
 $$;
 
 COMMENT ON FUNCTION model_probe_backoff_v2(INTEGER, TIMESTAMPTZ) IS
-'Adaptive backoff: 0 failures = 2h watchdog; recovery ladder = 10s, 30s, 60s, 120s, 300s, then 3600s.';
+'Adaptive backoff: 0 fails = 2h watchdog; 1 fail ramps 2m→30m as failure ages; 2 fails ramps 5m→45m; 3+ fails = 60m recovering. 2026-07-13: minimum 2m to match cycle tick 5min.';
 
 -- Passive-failure boost: when the executor records a candidate failure
 -- for a (cred, model) that is NOT broken_confirmed, recompute next_retry_at
@@ -114,11 +126,15 @@ BEGIN
     END IF;
 
     -- Only update if the new retry is sooner than the existing one.
+    -- 2026-07-14 audit fix: skip healthy_confirmed bindings. LEAST() in
+    -- SQL returns the earlier timestamp, so without this guard a healthy
+    -- 2h-watchdog next_retry_at would be clobbered to now+30s and
+    -- trigger an immediate probe on a binding that should be left alone.
     UPDATE model_probe_state mps
     SET next_retry_at = LEAST(COALESCE(mps.next_retry_at, new_retry), new_retry)
     WHERE mps.credential_id = p_credential_id
       AND mps.raw_model_name = p_raw_model_name
-      AND COALESCE(mps.state, 'unknown') <> 'broken_confirmed';
+      AND COALESCE(mps.state, 'unknown') NOT IN ('broken_confirmed', 'healthy_confirmed');
 END;
 $$;
 

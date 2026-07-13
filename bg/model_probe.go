@@ -52,11 +52,20 @@ const (
 	// of failures can't hammer the upstream all at once.
 	MaxBatchPerCycle = 20
 
-	// ProbeInterval is the scheduler wake-up interval. Targets are still
-	// gated by model_probe_state.next_retry_at, so healthy models keep their
-	// longer watchdog interval while failed active models can be retried at
-	// 10s/30s/60s/... after a passive failure boost.
-	ProbeInterval = 10 * time.Second
+	// 2026-07-13 fix: 探测周期从 10s 改为 5min。
+	//
+	// 之前 ProbeInterval = 10s 导致：
+	//   - 154 上观察到每分钟 21 次 scheduler 触发（正常应该是 5min 1 次）
+	//   - model_probe_backoff_v2 最小值 10s（1次失败后），
+	//     与 10s tick 完美重叠 → 失败后立即被重新探测
+	//   - applyPassiveBoosts 把 next_retry_at 推到 30s，
+	//     但 cycle 10s 一次 → 仍立即触发
+	//
+	// 新值 5min 与 healthy_confirmed watchdog（2h）兼容：
+	//   - 正常 healthy 凭据 2h 才探测一次
+	//   - 失败时按 backoff 10s/30s/1m/2m/5m 间隔探测
+	//   - cycle 5min 一次不会与 1m/2m/5m backoff 冲突
+	ProbeInterval = 5 * time.Minute
 )
 
 // ModelProbeRunner is the v2 (consensus + backoff) implementation.
@@ -230,6 +239,7 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 	defer rows.Close()
 
 	var due []queued
+	seen := make(map[string]struct{}, MaxBatchPerCycle) // 2026-07-14: per-cycle dedup
 	for rows.Next() {
 		var q queued
 		var ciphertext []byte
@@ -241,6 +251,22 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		); err != nil {
 			continue
 		}
+		// 2026-07-14 audit fix: dedupe by (credential_id, raw_model) within
+		// a single cycle. The SQL query is not strictly unique because the
+		// ORDER BY can produce ties (e.g. when multiple bindings share
+		// consecutive_failures=0 and the same last_attempt_at). Without
+		// this, one cycle may probe the same (cred, model) twice in a
+		// 5min window — defeating the backoff schedule and confusing
+		// operators watching the live stream.
+		dedupKey := fmt.Sprintf("%d|%s", q.t.CredentialID, q.t.RawModel)
+		if _, ok := seen[dedupKey]; ok {
+			slog.Debug("model probe v2: skipping duplicate target within cycle",
+				"credential_id", q.t.CredentialID,
+				"raw_model", q.t.RawModel)
+			continue
+		}
+		seen[dedupKey] = struct{}{}
+
 		apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
 		if decErr != nil {
 			// Decrypt failure counts as a hard auth failure; record
@@ -510,7 +536,7 @@ func (r *ModelProbeRunner) reconcileBrokenConfirmedBindings(ctx context.Context)
 // applyPassiveBoosts scans the candidate_failure_logs table for bindings
 // with a recent spike and pulls their next_retry_at forward. Without this,
 // the minimax-m3 06-23 incident showed 27 'no_candidates' errors during a
-// 5-minute window, but the runner was waiting on a 5-minute backoff, so
+// 5-minute window, but the runner was waiting on its 5-minute backoff, so
 // recovery took 5+ minutes even though the underlying failure had cleared
 // after the first 30 seconds.
 //
@@ -519,8 +545,9 @@ func (r *ModelProbeRunner) reconcileBrokenConfirmedBindings(ctx context.Context)
 //   - 2  failures in last 5 min  → next_retry_at = NOW() + 1m
 //   - else                        → leave schedule alone
 //
-// Runs once per cycle (every 10 min) BEFORE the target query, so the
-// boosted schedules flow into the same cycle's selection.
+// 2026-07-13 fix: comment said "Runs once per cycle (every 10 min)" but
+// ProbeInterval was 10s, leading to 21 probes/min for healthy models.
+// With ProbeInterval now 5min, this matches the docstring again.
 func (r *ModelProbeRunner) applyPassiveBoosts(ctx context.Context) {
 	rows, err := r.db.Query(ctx, `
 		SELECT DISTINCT credential_id, raw_model_name
