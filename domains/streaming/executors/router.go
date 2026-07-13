@@ -90,10 +90,25 @@ func (r *Router) PlanCandidates(
 	if len(available) == 0 {
 		// Build a per-reason breakdown so the next "all providers failed at
 		// the same time" outage can be root-caused from this log line alone.
+		//
+		// 2026-07-13 fix: also query StateManager for each candidate's
+		// in-memory rejection reason (e.g. cooling/transient). Previously
+		// only `c.UnavailableReason()` was consulted, but candidates filtered
+		// by the state manager have an empty UnavailableReason() and were
+		// logged as `unknown`. We now surface the actual StateManager reason
+		// so operators can see *why* the candidate was rejected without
+		// having to correlate with credential_state_log separately.
 		reasonCounts := make(map[string]int, 8)
 		var sampleReasons []string
+		queryCtx, queryCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer queryCancel()
 		for _, c := range candidates {
 			reason := c.UnavailableReason()
+			if reason == "" && r.StateManager != nil && r.StateManager.Enabled() {
+				if _, smReason := r.StateManager.IsAvailable(queryCtx, c.CredentialID, c.RawModel); smReason != "" {
+					reason = "state:" + smReason
+				}
+			}
 			if reason == "" {
 				reason = "unknown"
 			}
@@ -249,10 +264,25 @@ func (r *Router) planLegacy(
 	if len(available) == 0 {
 		// Build a per-reason breakdown so the next "all providers failed at
 		// the same time" outage can be root-caused from this log line alone.
+		//
+		// 2026-07-13 fix: also query StateManager for each candidate's
+		// in-memory rejection reason (e.g. cooling/transient). Previously
+		// only `c.UnavailableReason()` was consulted, but candidates filtered
+		// by the state manager have an empty UnavailableReason() and were
+		// logged as `unknown`. We now surface the actual StateManager reason
+		// so operators can see *why* the candidate was rejected without
+		// having to correlate with credential_state_log separately.
 		reasonCounts := make(map[string]int, 8)
 		var sampleReasons []string
+		queryCtx, queryCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer queryCancel()
 		for _, c := range candidates {
 			reason := c.UnavailableReason()
+			if reason == "" && r.StateManager != nil && r.StateManager.Enabled() {
+				if _, smReason := r.StateManager.IsAvailable(queryCtx, c.CredentialID, c.RawModel); smReason != "" {
+					reason = "state:" + smReason
+				}
+			}
 			if reason == "" {
 				reason = "unknown"
 			}
