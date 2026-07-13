@@ -2635,6 +2635,15 @@ func main() {
 		licensing.RegisterModuleRoutes(e.Group("/api/admin"), licensingStore)
 		slog.Info("Phase 2: Licensing API enabled (/api/admin/licenses, /api/admin/modules)")
 
+		// 2026-07-13: Customer-facing license endpoints. Unauthenticated by
+		// design — the customer must query status & activate before any
+		// admin login. Mounted under /api/system/license/ on the same mux.
+		licensingCustomerAPI := licensing.NewCustomerAPI(licensingStore, licensingActivator, licensingOffline)
+		customerLicenseGroup := e.Group("/api/system/license")
+		customerLicenseGroup.Use(noAuthCustomerMiddleware())
+		licensingCustomerAPI.RegisterRoutes(customerLicenseGroup)
+		slog.Info("Phase 2: Customer license API enabled (/api/system/license/*)")
+
 		// Phase 3: Fault Management (故障自愈)
 		faultStore := fault.NewPgxStore(pool)
 		faultActionExecutor := fault.NewActionExecutor()
@@ -2658,6 +2667,15 @@ func main() {
 		// 这里单独注册以兼容多种路径
 		autoupdateAPI.RegisterRoutes(e.Group("/api/admin/autoupdate"))
 
+		// 2026-07-13: Customer-facing upgrade endpoints. Read-only — actual
+		// upgrade execution stays on /api/admin/releases/*. These allow the
+		// customer's browser to see "an update is available" before login.
+		autoupdateCustomerAPI := autoupdate.NewCustomerAPI(autoupdateStore, currentGatewayVersionProvider(), autoupdate.ChannelStable)
+		customerUpgradeGroup := e.Group("/api/system/upgrade")
+		customerUpgradeGroup.Use(noAuthCustomerMiddleware())
+		autoupdateCustomerAPI.RegisterRoutes(customerUpgradeGroup)
+		slog.Info("Phase 4: Customer upgrade API enabled (/api/system/upgrade/*)")
+
 		// Phase 5: Center Ops (中心运维)
 		centerStore := center.NewPgxStore(pool)
 		centerServer := center.NewServer(centerStore)
@@ -2678,6 +2696,12 @@ func main() {
 		// 将 Echo 挂载到 http.ServeMux
 		mux.Handle("/api/admin/", e)
 		mux.Handle("/api/tenant/", e)
+		// Customer-facing endpoints reuse the same Echo instance but only the
+		// /api/system/license/* and /api/system/upgrade/* subtrees were
+		// registered on it (see above). Mounting the same Echo at multiple
+		// prefixes is supported by http.ServeMux's longest-match semantics.
+		mux.Handle("/api/system/license/", e)
+		mux.Handle("/api/system/upgrade/", e)
 		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
 	}
 
