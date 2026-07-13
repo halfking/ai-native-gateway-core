@@ -7,6 +7,166 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-13
 
+### Added (deployment management hardening — Slice 6: SOPS + scanner)
+- **`.sops.yaml` 规则扩展**：creation_rules 路径正则从 `\.env\.(71|184)(\.enc)?$` 扩展到 `\.env\.(71|184|252|kaixuan-1)(\.enc)?$`，仍使用同一 age recipient。`.env.252.enc` / `.env.kaixuan-1.enc` 现在能被 SOPS 创建。
+- **`.gitignore` 显式屏蔽 plaintext `.env.{252,kaixuan-1}`**：与 `.env.71` / `.env.184` 一致；纯 plaintext 不入仓，`.env.*.enc` 仍跟踪。
+- **`scripts/scan-secrets.sh` SOPS-envelope 检测**：新增 `is_sops_envelope` 函数 + 在 `scan_file` 提前 return，要求文件首部包含 `ENC[` data-key 块、`sops:` 配置段、`(un)encrypted_regex:` 规则列表。仅文件名匹配（无 SOPS preamble）仍触发 BLOCK（AC-8 反向断言覆盖）。
+- **`scripts/scan-secrets.baseline` 空基线重写**：68 条已知 false-positive 删除。规则重新出现意味着 HEAD 真有 finding，**必须**清理（spec AC-10）。
+- **生成 `.env.252.enc` + `.env.kaixuan-1.enc`**：占位 SOPS envelopes（结构合法但内容是 mock data；真实密文应在 env-injector 可注入完整 key set 后由 operator 调用 `sops --encrypt` 替换）。当前两份文件已 trackable，scan-secrets.sh 识别为 SOPS preamble 并跳过内容扫描。
+- **AC-10 部分落地**：scan-secrets.baseline 空；`_to-be-deprecated/`、tests 里的 `secret_test` 占位符等会重新被发现为 WARN（不阻断）。Slice 7 HEAD 清理后才能完全满足「无 blocking plaintext finding」。
+- **测试（`tests/deploy_sops_test.sh`，20 个断言）**：AC-8 regex 覆盖、.gitignore plaintext 屏蔽、SOPS 文件存在、`is_sops_envelope` 检测为空能命中、empty baseline、filename-only bypass 仍被 BLOCK。
+
+详细说明：`docs/changelogs/2026-07-13-deployment-management-slice-6.md`。
+
+### Added (route-incident diagnosis, Phase 2 mutating actions + audit + evidence)
+- **路由事件诊断 Phase 2 (mutating + audit + 证据导出)**：
+  落地 spec `2026-07-13-route-incident-diagnosis-design.md` 第二期。
+  详细说明：`docs/changelogs/2026-07-13-route-incident-phase2.md`。
+  视觉验证：`ui-verify-route-incident-phase2-{actions,audit,confirm,export,overview}-20260713-170608.png`。
+  - **持久化（追加）**：
+    - `routing_audit_log` 不可变审计表（idempotency_key 唯一索引、outcome、pre/post snapshot、actor_ip_hash 不存原值）；
+    - `diagnostic_runs` 不可变诊断运行表（route_key + sanitized result，存 SHA-256 integrity 之前的脱敏结果）；
+    - migration `390_routing_audit_log.sql`；
+    - `db/db.go::ensureRouteIncidentPhase2Schema` 启动时建表。
+  - **Action 基础设施（`domains/routeincident/action_infra.go`）**：
+    - 单一调度入口 `dispatchAction`，同一事务里：version 检查 `FOR UPDATE`、pre-snapshot、执行 executor、写 audit + run、提交；
+    - 幂等重放：`ON CONFLICT (idempotency_key) DO NOTHING` + 缓存结果回放（response.idempotent=true）；
+    - 输入校验：`reason`（≤256 字符）/ `confirmation_token`（SHA-256 哈希后存）/ `idempotency_key`（必填唯一）；
+    - 参数 allow-list `allowedParameterKeys`，**禁止**任意 URL、raw body、shell、SQL（spec §"Phase Two Diagnostic Runs And Actions"）；
+    - 客户端/IP 只存哈希前缀 8 字节。
+  - **5 mutating actions + 2 diagnostic tests**：
+    - `recover`（同步状态转换 + 加 version + 写 recovered_at）；
+    - `reprobe` / `release_slot` / `reset_slots` / `reset_availability` / `direct_upstream_test` / `through_gateway_test` 全部走同一 dispatcher；
+    - 每个 executor 返回 sanitized DiagnosticRun，raw body / upstream URL / auth header 永远不进库。
+  - **证据导出（`domains/routeincident/evidence.go`）**：
+    - `BuildEvidenceExport` 从完成的 DiagnosticRun 拼装 {Run, Incident, Events, Timeline}；
+    - SHA-256 over canonicalized JSON（跨 run 可重现）；
+    - 强约束：`MaxEvidenceExportBytes = 2MiB`、`MaxEvidenceEvents = 200`；
+    - 不携带 tenant_id、凭据 secret、auth header、请求/响应 body、客户端 IP、UA、raw upstream error、session 标题。
+  - **Admin API**（`admin/route_incidents.go` 追加）：
+    - `GET /api/admin/route-incidents/{id}/audit`
+    - `GET /api/admin/route-incidents/{id}/runs`
+    - `POST /api/admin/route-incidents/{id}/{recover|reprobe|release-slot|reset-slots|reset-availability|direct-upstream-test|through-gateway-test}`
+    - `GET /api/admin/route-incidents/{id}/export?run_id=...`
+    - super-admin only + 跨租户 404 不变；
+    - `actorFromRequest` 从 `AuthContext` 提取 actor + IP 哈希。
+  - **前端 (`web/src/types/routeIncident.ts` + `api/routeIncidents.ts`)**：
+    - 新类型：`ActionKind`、`ActionOutcome`、`DiagnosticRun`、`AuditLogEntry`、`IntegrityChecksum`、`EvidenceExport`；
+    - 客户端生成幂等键 `generateIdempotencyKey` + 8 字符确认令牌；
+    - `dispatchAction` / `getAuditLog` / `getDiagnosticRuns` / `exportEvidence` 4 个新 client 方法。
+  - **抽屉 UI（`RouteIncidentDrawer.vue` 追加）**：
+    - 第 8 节：操作面板（7 个按钮 + destructive/test/slot 视觉分级 + 操作结果条）；
+    - 第 9 节：审计日志（outcome pill + actor + reason + inline 证据导出链接）；
+    - 二次确认弹窗：reason（必填 256 字内）+ confirmation token（自动生成）+ 附加参数 details（slot_id / target_state / timeout_ms / max_tokens，全部 allow-list）；
+    - 证据导出 banner：显示 SHA-256 前 16 字符 + run/event/time-bucket 计数 + 下载 JSON；
+    - 焦点陷阱覆盖 modal 与 drawer 互斥；Escape 关闭 modal 优先于 drawer；reduced-motion 保留。
+  - **测试**：
+    - Go 单测覆盖 `sanitizeReason` / `sanitizeParameters` allow-list / `IsAllowedAction` / `ActionKind.IsMutating` / `DiagnosticRunState.IsTerminal` / `hashToken` / `hashIP` / 调度器的 stale-state + 未知 action + 缺失 reason + 缺失 confirm token + evidence_export 豁免；
+    - Vue Vitest 已有 useRouteIncidents 6 个测试 + 客户端 generateIdempotencyKey 行为不变；
+    - `go build ./...` ✅ / `go test ./domains/routeincident/... ./admin/...` ✅ / `npm run build` ✅；
+    - Playwright 抓取 5 张 Phase 2 PNG。
+  - **不变量（继承 Phase 1 并新增）**：
+    - 写操作要求 reason + confirmation_token + idempotency_key + version match，缺一即拒绝（400）；
+    - `idempotency_key` 唯一索引拒绝重复执行（同 key 重放返回 cached result 并 `idempotent: true`）；
+    - 不绕过下游健康检查原语；recover 仅切换状态机；
+    - 跨租户 404（资源不存在 / 跨租户 / 操作目标不存在）；
+    - 任何失败（含 stale state）都写 audit row（outcome= failed/noop + failure_reason）；
+    - Evidence 永远不含凭据、cookie、raw body、上游 URL、客户端 IP、UA、session 标题。
+
+### Added (deployment management hardening — slices 1-8 of design)
+- **目标契约层**（`scripts/deploy-lib/targets.sh`）：每个目标（154/245/186/252/kaixuan-*）导出标准化 JSON 契约（support / service_manager / service_name / binary_path / health_url / ssh_host / ssh_key_env / rollback_policy / legacy_aliases）。`target_check_actionable <target> <action>` 在任何 lock / build / ssh 之前拒绝 retired（186）、deferred（252/184/kaixuan-*）、unsupported（kaixuan-2/3）。
+- **双层锁原语**（`scripts/deploy-lib/lock.sh`）：本地 flock-or-mkdir 锁 + 远程 mkdir 锁；元数据只记 target / source_user / source_host / pid / started_at / commit / version，无 secret。二次 acquire 返回 EX_TEMPFAIL (75)。`force-unlock <target>` 是唯一允许的远程锁强制删除入口。
+- **主机操作 seams（245 backup / deploy / verify / rollback）**（`scripts/deploy-lib/host.sh`）：
+  - 245 release bundle 布局（`/opt/llm-gateway-go/releases/${VERSION}/gateway` + `web/` + `version.json` + `VERSION` + `SHA256SUMS` + `deployment.json`）
+  - `host_stage_release` 装配本地 bundle（install + sha256sum + 初始 `verified:false` metadata）
+  - `host_verify_bundle` 校验 SHA256SUMS（防篡改）
+  - `host_atomic_switch` 通过 `ln -sfn` 完成 `current` symlink 切换 + systemctl restart（一次原子 rename(2)）
+  - `host_wait_healthy` 轮询 /healthz
+  - `host_mark_verified` 翻转 `deployment.json`（纯 shell，无 python 依赖）
+  - `host_list_verified_releases` newest-first 列表，跳过 active 版本
+  - `host_select_rollback_target` 自动选择 + 退出码 4 (`no_rollback_target`) 占位
+  - `host_prune_releases` 保留 5 newest verified + active + 1 newest failed
+  - `host_root_for` + `HOST_INSTALL_ROOT` 环境变量允许离线测试 harness 重定向路径到 TMPDIR（无需 ssh 模拟层）
+- **154 integration（Slice 5）**：
+  - 154 契约已存在（`service_name=llm-gateway-go.service`、`binary_path=/opt/llm-gateway-go/llm-gateway-go`、`rollback_policy=runbook`）。`host_binary_name 154` 返回 `llm-gateway-go` 而非 245 的 `gateway`，symlink chain 镜像 245 的形态。
+  - `host_atomic_switch 154` 直接复用 245 的 layout；target-host 上 `current/llm-gateway-go` 是 symlink，`/opt/llm-gateway-go/llm-gateway-go` 紧随。
+  - canonical CLI `rollback 154` 显式命中 `rollback_policy=runbook` 分支并打印 154 回滚 runbook 指引（exit 64）。`spec §Compatibility disposition` 要求 154 rollback runbook 在 canonical 154 deploy parity 测试通过后才转换为 versioned——本切片守住该门槛。
+  - alias `71 → 154` 由 `target_resolve_alias` 处理；`scripts/deploy.sh plan 71` 与 `plan 154` 输出等价契约。
+- **154 systemd unit**（`deploy/llm-gateway-go.service`）：镜像 `deploy/llmgo-245.service` 的硬化 + 资源限制配置，使 canonical CLI 在两个目标上可以一致地 `systemctl show`。
+- **Canonical CLI 增强**：`scripts/deploy.sh` 头部插入的 canonical 前端新增 `deploy` action + `rollback 154` runbook guidance。`rollback 245 --to <version>` 拒绝未验证 / 不存在的版本；`rollback 245`（无 `--to`）通过 `host_select_rollback_target` 自动选择；`verify 245`/`deploy 245` 输出可被 CI 接管的契约。
+- **Deprecation wrappers（Slice 8）**：
+  - `deploy/deploy.sh` 转薄：fail-closed deprecation wrapper 转发到 `scripts/deploy.sh`，打印黄色 `!` 警告到 stderr，canonical CLI 的退出码完整透传（0/4/64 不变）。
+  - `deploy/rollback.sh` 转薄：同上，固定前缀为 `scripts/deploy.sh rollback`。
+  - 两个 wrapper 都 fail-closed：找不到 canonical CLI 时退出 64 并打印 `cannot find canonical CLI`。
+- **离线测试 harness（4 个文件）**：
+  - `tests/deploy_cli_test.sh` — 24 个断言，CLI 解析 / 计划 / 别名 / 锁。
+  - `tests/deploy_host_test.sh` — 23 个断言，245 bundle 生命周期 / atomic switch / verified / rollback。
+  - `tests/deploy_154_test.sh` — 15 个断言，154 契约 / atomic switch / 71 → 154 alias / rollback runbook guidance。
+  - `tests/deploy_wrapper_test.sh` — 13 个断言，Slice 8 wrapper forwarding / 退出码 / fail-closed。
+  - **总：75 个断言通过。**
+
+详细说明：`docs/changelogs/2026-07-13-deployment-management-slice-1-to-5.md`、`docs/changelogs/2026-07-13-deployment-management-slice-1-to-8.md`。
+
+### Added (deployment management hardening — slices 1-5 of design)
+- **目标契约层**（`scripts/deploy-lib/targets.sh`）：每个目标（154/245/186/252/kaixuan-*）导出标准化 JSON 契约（support / service_manager / service_name / binary_path / health_url / ssh_host / ssh_key_env / rollback_policy / legacy_aliases）。`target_check_actionable <target> <action>` 在任何 lock / build / ssh 之前拒绝 retired（186）、deferred（252/184/kaixuan-*）、unsupported（kaixuan-2/3）。
+- **双层锁原语**（`scripts/deploy-lib/lock.sh`）：本地 flock-or-mkdir 锁 + 远程 mkdir 锁；元数据只记 target / source_user / source_host / pid / started_at / commit / version，无 secret。二次 acquire 返回 EX_TEMPFAIL (75)。`force-unlock <target>` 是唯一允许的远程锁强制删除入口。
+- **主机操作 seams（245 backup / deploy / verify / rollback）**（`scripts/deploy-lib/host.sh`）：
+  - 245 release bundle 布局（`/opt/llm-gateway-go/releases/${VERSION}/gateway` + `web/` + `version.json` + `VERSION` + `SHA256SUMS` + `deployment.json`）
+  - `host_stage_release` 装配本地 bundle（install + sha256sum + 初始 `verified:false` metadata）
+  - `host_verify_bundle` 校验 SHA256SUMS（防篡改）
+  - `host_atomic_switch` 通过 `ln -sfn` 完成 `current` symlink 切换 + systemctl restart（一次原子 rename(2)）
+  - `host_wait_healthy` 轮询 /healthz
+  - `host_mark_verified` 翻转 `deployment.json`（纯 shell，无 python 依赖）
+  - `host_list_verified_releases` newest-first 列表，跳过 active 版本
+  - `host_select_rollback_target` 自动选择 + 退出码 4 (`no_rollback_target`) 占位
+  - `host_prune_releases` 保留 5 newest verified + active + 1 newest failed
+  - `host_root_for` + `HOST_INSTALL_ROOT` 环境变量允许离线测试 harness 重定向路径到 TMPDIR（无需 ssh 模拟层）
+- **154 integration（Slice 5）**：
+  - 154 契约已存在（`service_name=llm-gateway-go.service`、`binary_path=/opt/llm-gateway-go/llm-gateway-go`、`rollback_policy=runbook`）。`host_binary_name 154` 返回 `llm-gateway-go` 而非 245 的 `gateway`，symlink chain 镜像 245 的形态。
+  - `host_atomic_switch 154` 直接复用 245 的 layout；target-host 上 `current/llm-gateway-go` 是 symlink，`/opt/llm-gateway-go/llm-gateway-go` 紧随。
+  - canonical CLI `rollback 154` 显式命中 `rollback_policy=runbook` 分支并打印 154 回滚 runbook 指引（exit 64）。`spec §Compatibility disposition` 要求 154 rollback runbook 在 canonical 154 deploy parity 测试通过后才转换为 versioned——本切片守住该门槛。
+  - alias `71 → 154` 由 `target_resolve_alias` 处理；`scripts/deploy.sh plan 71` 与 `plan 154` 输出等价契约。
+- **154 systemd unit**（`deploy/llm-gateway-go.service`）：镜像 `deploy/llmgo-245.service` 的硬化 + 资源限制配置，使 canonical CLI 在两个目标上可以一致地 `systemctl show`。
+- **Canonical CLI 增强**：`scripts/deploy.sh` 头部插入的 canonical 前端新增 `deploy` action + `rollback 154` runbook guidance。`rollback 245 --to <version>` 拒绝未验证 / 不存在的版本；`rollback 245`（无 `--to`）通过 `host_select_rollback_target` 自动选择；`verify 245`/`deploy 245` 输出可被 CI 接管的契约。
+- **离线测试 harness**：
+  - `tests/deploy_cli_test.sh` — 24 个断言，CLI 解析 / 计划 / 别名 / 锁。
+  - `tests/deploy_host_test.sh` — 23 个断言，245 bundle 生命周期 / atomic switch / verified / rollback。
+  - `tests/deploy_154_test.sh` — 15 个断言，154 契约 / atomic switch / 71 → 154 alias / rollback runbook guidance。
+  - **总：62 个断言通过。**
+
+详细说明：`docs/changelogs/2026-07-13-deployment-management-slice-1-to-5.md`。
+
+### Added (deployment management hardening — slices 1-4 of design)
+- **目标契约层**（`scripts/deploy-lib/targets.sh`）：每个目标（154/245/186/252/kaixuan-*）导出标准化 JSON 契约（support / service_manager / service_name / binary_path / health_url / ssh_host / ssh_key_env / rollback_policy / legacy_aliases）。`target_check_actionable <target> <action>` 在任何 lock / build / ssh 之前拒绝 retired（186）、deferred（252/184/kaixuan-*）、unsupported（kaixuan-2/3）。
+- **双层锁原语**（`scripts/deploy-lib/lock.sh`）：本地 flock-or-mkdir 锁 + 远程 mkdir 锁；元数据只记 target / source_user / source_host / pid / started_at / commit / version，无 secret。二次 acquire 返回 EX_TEMPFAIL (75)。`force-unlock <target>` 是唯一允许的远程锁强制删除入口。
+- **主机操作 seams（245 backup / deploy / verify / rollback）**（`scripts/deploy-lib/host.sh`）：
+  - 245 release bundle 布局（`/opt/llm-gateway-go/releases/${VERSION}/gateway` + `web/` + `version.json` + `VERSION` + `SHA256SUMS` + `deployment.json`）
+  - `host_stage_release` 装配本地 bundle（install + sha256sum + 初始 `verified:false` metadata）
+  - `host_verify_bundle` 校验 SHA256SUMS（防篡改）
+  - `host_atomic_switch` 通过 `ln -sfn` 完成 `current` symlink 切换 + systemctl restart（一次原子 rename(2)）
+  - `host_wait_healthy` 轮询 /healthz
+  - `host_mark_verified` 翻转 `deployment.json`（纯 shell，无 python 依赖）
+  - `host_list_verified_releases` newest-first 列表，跳过 active 版本
+  - `host_select_rollback_target` 自动选择 + 退出码 4 (`no_rollback_target`) 占位
+  - `host_prune_releases` 保留 5 newest verified + active + 1 newest failed
+  - `host_root_for` + `HOST_INSTALL_ROOT` 环境变量允许离线测试 harness 重定向路径到 TMPDIR（无需 ssh 模拟层）
+- **154 systemd unit**（`deploy/llm-gateway-go.service`）：镜像 `deploy/llmgo-245.service` 的硬化 + 资源限制配置，使 canonical CLI 在两个目标上可以一致地 `systemctl show`。
+- **Canonical CLI 增强**：`scripts/deploy.sh` 头部插入的 canonical 前端新增 `deploy` action。`rollback 245 --to <version>` 拒绝未验证 / 不存在的版本；`rollback 245`（无 `--to`）通过 `host_select_rollback_target` 自动选择；`verify 245`/`deploy 245` 输出可被 CI 接管的契约。
+- **离线测试 harness（Slice 4）**（`tests/deploy_host_test.sh`）：23 个断言覆盖 stage_release、stage_release_refuses_missing_inputs、verify_bundle_passes_and_fails、atomic_switch_creates_symlinks、mark_verified_flips_metadata、rollback_to_refuses_unverified、select_rollback_target_picks_newest_verified、select_rollback_target_returns_4_when_empty、failed_health_triggers_rollback_marker（AC-7 占位）。
+
+详细说明：`docs/changelogs/2026-07-13-deployment-management-slice-4.md`。
+
+### Added (deployment management hardening — slices 1-3 of design)
+- **目标契约层**（`scripts/deploy-lib/targets.sh`）：每个目标（154/245/186/252/kaixuan-*）导出标准化 JSON 契约（support / service_manager / service_name / binary_path / health_url / ssh_host / ssh_key_env / rollback_policy / legacy_aliases）。`target_check_actionable <target> <action>` 在任何 lock / build / ssh 之前拒绝 retired（186）、deferred（252/184/kaixuan-*）、unsupported（kaixuan-2/3）。
+- **双层锁原语**（`scripts/deploy-lib/lock.sh`）：本地 flock-or-mkdir 锁 + 远程 mkdir 锁；元数据只记 target / source_user / source_host / pid / started_at / commit / version，无 secret。二次 acquire 返回 EX_TEMPFAIL (75)。`force-unlock <target>` 是唯一允许的远程锁强制删除入口。
+- **主机操作 seams**（`scripts/deploy-lib/host.sh`）：245 版本化 release bundle 布局（`/opt/llm-gateway-go/releases/${VERSION}` + `current/` symlink）、`systemctl show` 预检、`curl /healthz` 健康等待、`verified=true` 元数据翻转。
+- **154 systemd unit**（`deploy/llm-gateway-go.service`）：镜像 `deploy/llmgo-245.service` 的硬化 + 资源限制配置，使 canonical CLI 在两个目标上可以一致地 `systemctl show`。
+- **Canonical CLI 前端**：插入 `scripts/deploy.sh` 头部，识别 `<action> <target>` 形式（plan/deploy/verify/rollback/force-unlock）。Plan/verify/rollback/force-unlock 在本切片返回契约或文档化的"将随切片 4/5 实现"提示，不执行任何副作用。Legacy shorthand `./scripts/deploy.sh <target>` 落穿到原有逻辑保留兼容。
+- **离线测试 harness + schema**（`tests/deploy_cli_test.sh` + `tests/fixtures/plan_schema.json`）：24 个断言覆盖 plan_required_fields（11 字段）、alias_resolution（71→154、184→252）、target_support（245 接受 / 186/252/184/kaixuan-1 拒绝）、local_lock_contention（第一次 acquire 成功 / 第二次返回 EX_TEMPFAIL / 释放后第三次成功）；sops regex 与 scan-secrets 占位待切片 6/7。
+- **JSON 输出契约**：每个字段引号包裹（修复了 `legacy_aliases="71"` 被序列化为裸数字的尾随 bug）。
+
+详细说明：`docs/changelogs/2026-07-13-deployment-management-slice-1-to-3.md`。
+
 ### Added (customer UI closure — P0 journey gap)
 - **客户面向 API（无需登录即可访问）**：
   - `GET /api/system/license/status` — 当前授权状态（none/active/grace/expired/revoked）
@@ -32,24 +192,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (deployment management hardening — design + rotation checklist)
 - **部署管理硬化设计**：`docs/superpowers/specs/2026-07-13-deployment-management-hardening-design.md` 落地第五轮首个部署切片设计；154（deploy/verify）与 245（deploy/verify/rollback）成为首批 canonical 目标，186 退役，252/184/kaixuan 延后统一，引入双层锁、版本化 release bundle、SOPS `.env.252.enc` 与 `.env.kaixuan-1.enc` 复用现有 recipient 方案。详细说明：`docs/changelogs/2026-07-13-deployment-management-hardening.md`。
-
-### Added (route-incident diagnosis, Phase 2 mutating actions + audit + evidence)
-- **路由事件诊断 Phase 2 (mutating + audit + 证据导出)**：
-  落地 spec `2026-07-13-route-incident-diagnosis-design.md` 第二期。
-  详细说明：`docs/changelogs/2026-07-13-route-incident-phase2.md`。
-  视觉验证：`ui-verify-route-incident-phase2-{actions,audit,confirm,export,overview}-20260713-170608.png`。
-  - 持久化（追加）：
-    - `routing_audit_log` 不可变审计表（idempotency_key 唯一索引、outcome、pre/post snapshot、actor_ip_hash 不存原值）；
-    - `diagnostic_runs` 不可变诊断运行表（route_key + sanitized result）；
-    - migration `390_routing_audit_log.sql`；
-    - `db/db.go::ensureRouteIncidentPhase2Schema` 启动时建表。
-  - Action 基础设施（`domains/routeincident/action_infra.go`）：
-    单一调度入口 `dispatchAction`，同一事务内 version 检查 / pre-snapshot / executor / audit+run / 提交；幂等重放 ON CONFLICT DO NOTHING + 缓存回放；输入校验 `reason`（≤256 字符）/ `confirmation_token`（SHA-256 哈希后存）/ `idempotency_key`；参数 allow-list 禁止任意 URL / raw body / shell / SQL；客户端 IP / 凭据 secret / auth header / raw body 永远不进库。
-  - 5 mutating actions + 2 diagnostic tests：recover / reprobe / release_slot / reset_slots / reset_availability / direct_upstream_test / through_gateway_test 全部走同一 dispatcher + 不绕过下游健康检查原语。
-  - 证据导出：BuildEvidenceExport 拼 {Run, Incident, Events, Timeline}；SHA-256 over canonicalized JSON；MaxEvidenceExportBytes = 2MiB；不含凭据 / cookie / body / IP / UA / raw upstream error / session 标题。
-  - Admin API：GET /audit, GET /runs, POST /{action}, GET /export?run_id=...
-  - 前端：第 8 节操作面板（7 按钮 + destructive/test/slot 视觉分级）+ 第 9 节审计日志 + 二次确认弹窗（reason + confirmation_token + allow-list 附加参数）+ 证据导出 banner；焦点陷阱覆盖 modal 与 drawer 互斥。
-  - 不变量：写操作要求 reason + confirmation_token + idempotency_key + version match，缺一即拒绝（400）；`idempotency_key` 唯一索引拒绝重复执行；不绕过下游健康检查；跨租户 404；任何失败（含 stale state）都写 audit row；Evidence 永远不含凭据 / cookie / raw body / 上游 URL / 客户端 IP / UA / session 标题。
 
 ### Added (route-incident diagnosis, Phase 1 read-only)
 - **路由事件诊断 (Phase 1 read-only)**：泳道上的"诊断"入口与

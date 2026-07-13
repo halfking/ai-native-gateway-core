@@ -163,3 +163,141 @@ export interface LaneKey {
   dimension: 'vendor' | 'provider' | 'model'
   value: string
 }
+
+// ─── Phase 2: action / diagnostic-run / audit / evidence ────────
+
+export type ActionKind =
+  | 'direct_upstream_test'
+  | 'through_gateway_test'
+  | 'reprobe'
+  | 'release_slot'
+  | 'reset_slots'
+  | 'reset_availability'
+  | 'recover'
+  | 'evidence_export'
+
+export type ActionOutcome = 'success' | 'noop' | 'failed'
+
+export type DiagnosticRunState =
+  | 'pending'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+
+export interface ActionRequest {
+  reason: string
+  confirmation_token?: string
+  idempotency_key: string
+  parameters?: Record<string, unknown>
+}
+
+export interface ActionResponse {
+  audit_id: number
+  outcome: ActionOutcome
+  failure_reason?: string | null
+  diagnostic_run?: DiagnosticRun | null
+  incident?: RouteIncident | null
+  response?: Record<string, unknown>
+  idempotent: boolean
+}
+
+export interface DiagnosticRun {
+  id: string
+  incident_id: string
+  tenant_id: string
+  kind: ActionKind
+  state: DiagnosticRunState
+  route_key: Record<string, unknown>
+  parameters: Record<string, unknown>
+  started_at: string
+  finished_at?: string | null
+  result: Record<string, unknown>
+  audit_log_id?: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AuditLogEntry {
+  id: number
+  incident_id?: string | null
+  tenant_id: string
+  action: ActionKind
+  actor: string
+  reason: string
+  idempotency_key: string
+  outcome: ActionOutcome
+  failure_reason?: string | null
+  diagnostic_run_id?: string | null
+  pre_snapshot: Record<string, unknown>
+  post_snapshot: Record<string, unknown>
+  response_payload: Record<string, unknown>
+  created_at: string
+}
+
+export interface IntegrityChecksum {
+  algorithm: string
+  value: string
+}
+
+export interface EvidenceExport {
+  run: DiagnosticRun
+  incident: RouteIncident
+  events: RouteIncidentEvent[]
+  timeline: RouteIncidentTimelinePoint[]
+  integrity: IntegrityChecksum
+  generated_at: string
+  exporter: string
+}
+
+export const MUTATING_ACTIONS: ActionKind[] = [
+  'direct_upstream_test',
+  'through_gateway_test',
+  'reprobe',
+  'release_slot',
+  'reset_slots',
+  'reset_availability',
+  'recover',
+]
+
+export const NON_DESTRUCTIVE_ACTIONS: ActionKind[] = [
+  'direct_upstream_test',
+  'through_gateway_test',
+  'reprobe',
+]
+
+// Action labels for the dashboard. i18n keys map onto these.
+export const ACTION_LABEL: Record<ActionKind, { title: string; hint: string }> = {
+  direct_upstream_test: {
+    title: '直连上游测试',
+    hint: '绕过网关直接对供应商发起一次安全探测请求',
+  },
+  through_gateway_test: {
+    title: '经网关测试',
+    hint: '经过完整 IR 转换 + 凭据选择 + 重试路径的合成探测',
+  },
+  reprobe: {
+    title: '重新探测',
+    hint: '记录一次重探意图，下游凭据状态原语是真实信号来源',
+  },
+  release_slot: {
+    title: '释放槽位',
+    hint: '指定一个 slot 主动释放，参数 slot_id 必填',
+  },
+  reset_slots: {
+    title: '重置所有槽位',
+    hint: '清空该凭据下的全部 slot 占用',
+  },
+  reset_availability: {
+    title: '重置可用性',
+    hint: '把凭据可用性状态重置为 available',
+  },
+  recover: {
+    title: '标记恢复',
+    hint: '把事件状态变为 recovered 并加版本号；不等同绕过健康检查',
+  },
+  evidence_export: {
+    title: '证据导出',
+    hint: '从一次已完成的诊断运行生成脱敏证据包',
+  },
+}

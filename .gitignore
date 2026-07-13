@@ -146,12 +146,25 @@ deploy/r*-*/
 
 
 # 环境变量（明文，不提交）
+# Spec cf8aad1a9 §SOPS and Credentials: only encrypted forms are
+# trackable. Plaintext .env.* keys are sourced exclusively from
+# env-injector at deploy time; they never enter the repository.
 .env.local
 .env.71
 .env.184
+.env.252
+.env.kaixuan-1
+.env.*.user
+.env.*.local
+.env.*.production
 
-# 加密文件可提交
-# .env.*.enc
+# 加密文件可提交（每个目标对应一个 .env.<target>.enc）
+# 与 `.env.<target>` plaintext 行相反——这些是显式 allow-list，
+# 覆盖更上面可能存在的 `*.enc` 忽略规则。
+!.env.71.enc
+!.env.184.enc
+!.env.252.enc
+!.env.kaixuan-1.enc
 deployment-report-*.md
 FINAL_AUDIT_REPORT_*.md
 FINAL_SUMMARY_REPORT.md

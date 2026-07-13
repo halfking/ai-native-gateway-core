@@ -181,6 +181,9 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	if err := db.ensureRouteIncidentSchema(migCtx); err != nil {
 		return nil, err
 	}
+	if err := db.ensureRouteIncidentPhase2Schema(migCtx); err != nil {
+		return nil, err
+	}
 	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
 		return nil, err
 	}
@@ -2757,5 +2760,89 @@ func (d *DB) ensureRouteIncidentSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("route_incident schema ensured (route_incidents + route_incident_events)")
+	return nil
+}
+
+// ensureRouteIncidentPhase2Schema mirrors
+// sql/migrations/startup/390_routing_audit_log.sql for startup
+// apply. Idempotent. Creates the append-only audit trail and the
+// diagnostic_runs table used by Phase-2 mutating actions and
+// evidence export.
+func (d *DB) ensureRouteIncidentPhase2Schema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+
+	// 2026-07-14 fix: routing_audit_log may already exist from an older
+	// schema (8 columns, no idempotency_key). CREATE TABLE IF NOT EXISTS
+	// silently skips, but then the index creation on created_at fails.
+	// Use ALTER TABLE ADD COLUMN IF NOT EXISTS to backfill missing columns
+	// idempotently, then create indexes that reference those columns.
+	_, err := d.pool.Exec(ctx, `
+		-- Backfill routing_audit_log columns if the table pre-dates Phase 2.
+		ALTER TABLE routing_audit_log
+		    ADD COLUMN IF NOT EXISTS incident_id UUID,
+		    ADD COLUMN IF NOT EXISTS tenant_id TEXT,
+		    ADD COLUMN IF NOT EXISTS confirmation_token_hash TEXT,
+		    ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
+		    ADD COLUMN IF NOT EXISTS request_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+		    ADD COLUMN IF NOT EXISTS pre_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+		    ADD COLUMN IF NOT EXISTS post_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+		    ADD COLUMN IF NOT EXISTS response_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+		    ADD COLUMN IF NOT EXISTS outcome TEXT,
+		    ADD COLUMN IF NOT EXISTS failure_reason TEXT,
+		    ADD COLUMN IF NOT EXISTS diagnostic_run_id UUID,
+		    ADD COLUMN IF NOT EXISTS actor_ip_hash TEXT,
+		    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+		-- Backfill tenant_id for legacy rows
+		UPDATE routing_audit_log SET tenant_id = 'default' WHERE tenant_id IS NULL;
+
+		-- Idempotency unique index (only if column has values)
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_routing_audit_log_idem
+			ON routing_audit_log (idempotency_key);
+
+		CREATE INDEX IF NOT EXISTS idx_routing_audit_log_incident_created
+			ON routing_audit_log (incident_id, created_at DESC)
+			WHERE incident_id IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_routing_audit_log_tenant_created
+			ON routing_audit_log (tenant_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_routing_audit_log_actor_created
+			ON routing_audit_log (actor, created_at DESC);
+
+		-- diagnostic_runs: ensure table + columns
+		CREATE TABLE IF NOT EXISTS diagnostic_runs (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			incident_id     UUID NOT NULL REFERENCES route_incidents(id) ON DELETE CASCADE,
+			tenant_id       TEXT NOT NULL,
+			kind            TEXT NOT NULL,
+			state           TEXT NOT NULL DEFAULT 'pending',
+			route_key       JSONB NOT NULL,
+			parameters      JSONB NOT NULL DEFAULT '{}'::jsonb,
+			started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			finished_at     TIMESTAMPTZ,
+			result          JSONB NOT NULL DEFAULT '{}'::jsonb,
+			audit_log_id    BIGINT REFERENCES routing_audit_log(id) ON DELETE SET NULL,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		-- Backfill columns for pre-existing diagnostic_runs
+		ALTER TABLE diagnostic_runs
+		    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+		CREATE INDEX IF NOT EXISTS idx_diagnostic_runs_incident
+			ON diagnostic_runs (incident_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_diagnostic_runs_tenant
+			ON diagnostic_runs (tenant_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_diagnostic_runs_state
+			ON diagnostic_runs (state, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_diagnostic_runs_kind_state
+			ON diagnostic_runs (kind, state, started_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("route_incident phase-2 schema ensured (routing_audit_log + diagnostic_runs)")
 	return nil
 }

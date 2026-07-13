@@ -1,0 +1,34 @@
+[Unit]
+Description=LLM Gateway Go (154 production · llm.kxpms.cn)
+Documentation=https://llm.kxpms.cn
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/llm-gateway-go
+EnvironmentFile=/opt/llm-gateway-go/.env
+ExecStart=/opt/llm-gateway-go/llm-gateway-go
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/llm-gateway-go/gateway.stdout.log
+StandardError=append:/var/log/llm-gateway-go/gateway.stderr.log
+
+# Hardening — mirror of deploy/llmgo-245.service. Slice 1 pins the
+# tracked 154 unit so the deploy path can validate `systemctl show`
+# against the same name everywhere instead of accepting a free-form
+# override. Production target always runs the symlinked binary at
+# /opt/llm-gateway-go/llm-gateway-go (see scripts/deploy-lib/host.sh).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=32768
+
+[Install]
+WantedBy=multi-user.target
