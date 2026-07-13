@@ -14,6 +14,12 @@ export interface UsageSummary {
   total_prompt_tokens: number
   total_completion_tokens: number
   total_cost_usd: number
+  // 2026-07-13: 总积分消耗（admin）— tenant-side credits_charged 之和，
+  // 由 maas ChargeRequest 在请求落库时按 model_credit_rates × token 实时
+  // 计算并写入 usage_ledger.credits_charged。前端仪表盘 "总积分消耗" 卡片
+  // 展示此字段，使平台运营能直接看到「按当前定价 × 总 token」折算的
+  // 销售口径积分消耗量，与 cost_usd 上游成本口径并列。
+  total_credits_charged?: number
   avg_latency_ms: number
   success_rate: number
   // Optional degradation markers. When the backend cannot run its aggregation

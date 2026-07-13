@@ -344,9 +344,9 @@ onUnmounted(() => {
     <div class="stats-section">
       <div class="stats-row" v-if="summary && wallet">
         <div class="stat-mini stat-mini--highlight">
-          <div class="stat-mini__label">{{ t('tenants.dashboard.statCredits') }}</div>
+          <div class="stat-mini__label">{{ t('tenants.dashboard.statCreditsConsumed') }}</div>
           <div class="stat-mini__value">{{ fmtNum(summary.total_credits) }}</div>
-          <div class="stat-mini__sub">{{ t('tenants.dashboard.recentDaysSub', { n: days }) }}</div>
+          <div class="stat-mini__sub">{{ t('tenants.dashboard.statCreditsConsumedSub', { n: days }) }}</div>
         </div>
         <div class="stat-mini">
           <div class="stat-mini__label">{{ t('tenants.dashboard.statRequests') }}</div>

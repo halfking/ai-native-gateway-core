@@ -284,6 +284,14 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
           <div class="stat-mini__label">总费用</div>
           <div class="stat-mini__value">{{ fmtCost(summary.total_cost_usd) }}</div>
         </div>
+        <!-- 2026-07-13: 总积分消耗（admin）— 按平台定价 × 实际 token 量从
+             request_logs/usage_ledger.credits_charged 求和。"销售口径"积分，
+             与上游成本口径（cost_usd）并列。 -->
+        <div class="stat-mini stat-mini--highlight">
+          <div class="stat-mini__label">总积分消耗</div>
+          <div class="stat-mini__value">{{ fmt(summary.total_credits_charged ?? 0) }}</div>
+          <div class="stat-mini__sub">按定价 × token 计算</div>
+        </div>
         <div class="stat-mini">
           <div class="stat-mini__label">成功率</div>
           <div class="stat-mini__value" :style="{ color: (summary.success_rate ?? 1) > 0.95 ? 'var(--success)' : 'var(--warning)' }">

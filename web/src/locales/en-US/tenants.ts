@@ -211,6 +211,8 @@ export default {
     goPricingLink: 'Go to plans & top-up',
     noSubscriptionHint: 'Subscribe to a monthly plan to consume subscription quota first.',
     statCredits: 'Credits used',
+    statCreditsConsumed: 'Total credits consumed',
+    statCreditsConsumedSub: 'Last {n} days · priced × tokens',
     statRequests: 'Requests',
     statAvailable: 'Available credits',
     recentDaysSub: 'Last {n} days',
