@@ -337,9 +337,10 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
       @open-detail="openRequestDetail"
     />
 
-    <!-- 空状态：暂无请求数据时引导用户 -->
+    <!-- 空状态：仅在非实时流 Tab 且汇总无数据时显示
+         实时流 Tab 由 LiveRequestStreamV2 自行处理冷启动/空态，避免与泳道叠层 -->
     <div
-      v-if="!loading && !error && summary && summary.total_requests === 0"
+      v-if="!loading && !error && summary && summary.total_requests === 0 && activeTab !== 'stream'"
       class="empty-state"
       role="status"
     >

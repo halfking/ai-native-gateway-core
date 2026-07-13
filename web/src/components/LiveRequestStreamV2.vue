@@ -813,34 +813,44 @@ const isColdStart = computed(() => {
 .swim-lanes {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   margin-top: 12px;
-  /* 关键：swim-lanes 是 swim-lane 的 flex 父，必须 min-width:0 否则
-   *   flex item 拒绝收缩、宽屏溢出时仍会出现横向滚动。 */
   min-width: 0;
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
+  padding: 4px 0 2px;
 }
 
 .swim-lanes__empty {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 40px 20px;
+  gap: 10px;
+  padding: 48px 20px;
   text-align: center;
   color: var(--muted, #8b949e);
   font-size: 13px;
+  border: 1px dashed color-mix(in srgb, var(--border, #30363d) 80%, transparent);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(22, 27, 34, 0.6) 0%, rgba(15, 17, 23, 0.4) 100%);
 }
 
 .swim-lanes__empty-icon {
-  font-size: 16px;
-  opacity: 0.7;
+  font-size: 22px;
+  opacity: 0.85;
+  animation: empty-pulse 2.4s ease-in-out infinite;
 }
 
 .swim-lanes__empty-text {
   letter-spacing: 0.2px;
+  color: var(--text-secondary, #8b949e);
+}
+
+@keyframes empty-pulse {
+  0%, 100% { opacity: 0.85; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.96); }
 }
 
 @media (max-width: 768px) {
