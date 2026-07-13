@@ -173,9 +173,9 @@ scan_file() {
 # carries. A file that fails this check falls through to the normal
 # pattern scan and will be reported like any other plaintext file.
 #
-# Implementation note: this is an awk-style grep so the test harness
-# can verify both branches without invoking the SOPS binary (which
-# is not available in the offline environment).
+# Implementation note: real `sops --encrypt` output is JSON-spaced
+# (lines start with tabs), so we match with optional leading
+# whitespace rather than anchoring to column 0.
 is_sops_envelope() {
   local file="$1"
   [[ -r "$file" ]] || return 1
@@ -183,12 +183,12 @@ is_sops_envelope() {
   head=$(head -n 32 "$file" 2>/dev/null)
   [[ -z "$head" ]] && return 1
   # Required markers in the first 32 lines (matches real SOPS output):
-  #   - `ENC[` data key block opener
-  #   - `sops:` config section
-  #   - `encrypted_regex:` (or `unencrypted_regex:`) rule list
-  echo "$head" | grep -q '^ENC\[' || return 1
-  echo "$head" | grep -q '^sops:' || return 1
-  echo "$head" | grep -Eq '^(encrypted|unencrypted)_regex:' || return 1
+  #   - `ENC[` data key block opener (often inline on the "data": line)
+  #   - `sops:` config section header
+  #   - `(un)encrypted_regex:` rule list (always at least one)
+  echo "$head" | grep -Eq '^[[:space:]]*"(data|sops)":' || return 1
+  echo "$head" | grep -Eq '\bENC\[' || return 1
+  echo "$head" | grep -Eq '^[[:space:]]*"(encrypted|unencrypted)_regex":' || return 1
   return 0
 }
 
