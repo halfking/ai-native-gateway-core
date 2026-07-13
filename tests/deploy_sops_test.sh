@@ -90,10 +90,14 @@ test_sops_envelope_detection() {
   # leading whitespace (real sops output indents with tabs). Each
   # marker may sit on its own line OR inline on a "data"/"sops" key
   # in the JSON object. We grep with whitespace tolerance.
-  local has_enckey_252 has_sops_252 has_encrypted_252
+  #
+  # v2: Real SOPS envelopes always have mac/lastmodified/version and
+  # age/pgp/kms key groups. The old encrypted_regex check was wrong —
+  # that field only exists when .sops.yaml specifies it.
+  local has_enckey_252 has_sops_252 has_metadata_252
   has_enckey_252=$(grep -Ec '\bENC\[' "$ENV_252")
   has_sops_252=$(grep -Ec '^[[:space:]]*"(sops|data)":' "$ENV_252")
-  has_encrypted_252=$(grep -Ec '^[[:space:]]*"(encrypted|unencrypted)_regex":' "$ENV_252")
+  has_metadata_252=$(grep -Ec '^[[:space:]]*"(mac|lastmodified|version|age)":' "$ENV_252")
   if [[ $has_enckey_252 -ge 1 ]]; then
     log_pass ".env.252.enc carries ENC[ data-key block"
   else
@@ -104,10 +108,10 @@ test_sops_envelope_detection() {
   else
     log_fail ".env.252.enc missing sops: section"
   fi
-  if [[ $has_encrypted_252 -ge 1 ]]; then
-    log_pass ".env.252.enc carries (un)encrypted_regex: rule list"
+  if [[ $has_metadata_252 -ge 1 ]]; then
+    log_pass ".env.252.enc carries SOPS metadata (mac/age/version)"
   else
-    log_fail ".env.252.enc missing (un)encrypted_regex: rule list"
+    log_fail ".env.252.enc missing SOPS metadata markers"
   fi
 }
 

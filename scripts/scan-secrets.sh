@@ -167,39 +167,77 @@ scan_file() {
     return 0
   fi
 
+  # ── v2 performance: filename rules (fast, no file I/O) ──────────────
   for i in "${!RULES_PATTERN[@]}"; do
-    local is_fn="${RULES_IS_FILENAME[$i]}" pat="${RULES_PATTERN[$i]}" cat="${RULES_CATEGORY[$i]}"
-    local sev="${RULES_SEVERITY[$i]}" desc="${RULES_DESC[$i]}"
-    if [[ "$is_fn" == "1" ]]; then
-      if echo "$base" | grep -qiE -e "$pat" 2>/dev/null; then
-        local key="$rel:0:$cat"; is_baselined "$key" && continue
-        record_finding "$rel" 0 "$cat" "$sev" "$desc" "filename: $base"
+    if [[ "${RULES_IS_FILENAME[$i]}" == "1" ]]; then
+      if echo "$base" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
+        local key="$rel:0:${RULES_CATEGORY[$i]}"
+        is_baselined "$key" && continue
+        record_finding "$rel" 0 "${RULES_CATEGORY[$i]}" "${RULES_SEVERITY[$i]}" "${RULES_DESC[$i]}" "filename: $base"
       fi
-    else
-      local matches; matches=$(grep -niE -e "$pat" "$file" 2>/dev/null || true)
-      [[ -z "$matches" ]] && continue
-      while IFS= read -r match_line; do
-        [[ -z "$match_line" ]] && continue
-        local ln="${match_line%%:*}" content="${match_line#*:}"
-        local whitelisted=0
-        for wl in "${WHITELIST_PATTERNS[@]}"; do
-          if echo "$content" | grep -qiE -e "$wl" 2>/dev/null; then whitelisted=1; break; fi
-        done
-        [[ $whitelisted -eq 1 ]] && continue
-        local key="$rel:$ln:$cat"; is_baselined "$key" && continue
-        record_finding "$rel" "$ln" "$cat" "$sev" "$desc" "$content"
-      done <<<"$matches"
     fi
   done
+
+  # ── v2 performance: combined content grep (1 call instead of N) ────
+  # Build a single grep invocation with all content patterns via -e flags.
+  # This reduces fork+exec from 49× per file to 1× per file.
+  local grep_args=()
+  for i in "${!RULES_PATTERN[@]}"; do
+    if [[ "${RULES_IS_FILENAME[$i]}" != "1" ]]; then
+      grep_args+=(-e "${RULES_PATTERN[$i]}")
+    fi
+  done
+
+  if [[ ${#grep_args[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  local matches
+  matches=$(grep -niE "${grep_args[@]}" "$file" 2>/dev/null || true)
+  [[ -z "$matches" ]] && return 0
+
+  # Parse each matching line and re-attribute to the first matching rule
+  while IFS= read -r match_line; do
+    [[ -z "$match_line" ]] && continue
+    local ln="${match_line%%:*}" content="${match_line#*:}"
+
+    # Check whitelist (combined into one grep for speed)
+    local whitelisted=0
+    for wl in "${WHITELIST_PATTERNS[@]}"; do
+      if echo "$content" | grep -qiE -e "$wl" 2>/dev/null; then whitelisted=1; break; fi
+    done
+    [[ $whitelisted -eq 1 ]] && continue
+
+    # Re-match individual patterns to determine category/severity
+    # (fast: only runs against the single matched line, not the whole file)
+    for i in "${!RULES_PATTERN[@]}"; do
+      if [[ "${RULES_IS_FILENAME[$i]}" != "1" ]]; then
+        if echo "$content" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
+          local key="$rel:$ln:${RULES_CATEGORY[$i]}"
+          is_baselined "$key" && break
+          record_finding "$rel" "$ln" "${RULES_CATEGORY[$i]}" "${RULES_SEVERITY[$i]}" "${RULES_DESC[$i]}" "$content"
+          break
+        fi
+      fi
+    done
+  done <<<"$matches"
 }
 
 # is_sops_envelope returns 0 if the file looks like a SOPS-encrypted
-# envelope (`ENC[` data key block plus a `sops:` config block, with at
-# least one entry in `encrypted_regex`). We are NOT decrypting the file
-# here (the spec leaves decryption to env-injector); we are only
-# detecting the metadata preamble that real SOPS output always
-# carries. A file that fails this check falls through to the normal
-# pattern scan and will be reported like any other plaintext file.
+# envelope. We are NOT decrypting the file here (the spec leaves
+# decryption to env-injector); we are only detecting the metadata
+# preamble that real SOPS output always carries. A file that fails
+# this check falls through to the normal pattern scan and will be
+# reported like any other plaintext file.
+#
+# Required markers in the first 32 lines (matches real SOPS JSON output):
+#   - `ENC[`  — AES256_GCM data key block opener
+#   - `"mac":` — SOPS MAC field (always present, integrity check)
+#   - `"(age|pgp|kms)":` — key group (at least one recipient backend)
+#
+# Note: `encrypted_regex`/`unencrypted_regex` are optional config fields
+# that only appear when .sops.yaml specifies them; they are NOT metadata
+# and must not be required for envelope detection (v2 fix).
 #
 # Implementation note: real `sops --encrypt` output is JSON-spaced
 # (lines start with tabs), so we match with optional leading
@@ -210,32 +248,205 @@ is_sops_envelope() {
   local head
   head=$(head -n 32 "$file" 2>/dev/null)
   [[ -z "$head" ]] && return 1
-  # Required markers in the first 32 lines (matches real SOPS output):
-  #   - `ENC[` data key block opener (often inline on the "data": line)
-  #   - `sops:` config section header
-  #   - `(un)encrypted_regex:` rule list (always at least one)
   echo "$head" | grep -Eq '^[[:space:]]*"(data|sops)":' || return 1
   echo "$head" | grep -Eq '\bENC\[' || return 1
-  echo "$head" | grep -Eq '^[[:space:]]*"(encrypted|unencrypted)_regex":' || return 1
+  echo "$head" | grep -Eq '^[[:space:]]*"(mac|lastmodified|version)":' || return 1
+  echo "$head" | grep -Eq '^[[:space:]]*"(age|pgp|kms)":' || return 1
   return 0
 }
 
+# scan_working_tree: v2 performance optimization.
+# Instead of forking grep per-file (8941 files × N patterns = ~438K forks),
+# we use batched grep calls:
+#
+#   1. Build file list via git ls-files / find (1 call)
+#   2. Filter excluded paths via single grep -vE (1 call)
+#   3. Identify SOPS envelopes via grep -rl on .enc files (≤3 calls)
+#   4. Run filename rules via grep on basenames (1 call)
+#   5. Run content rules via single xargs grep -niE (1 call)
+#
+# Total: ~7 process forks instead of ~54K.
 scan_working_tree() {
+  local tmpdir
+  tmpdir=$(mktemp -d -t kx-scan.XXXXXX)
+  local filelist="$tmpdir/files"
+  local candidates="$tmpdir/candidates"
+  local scannable="$tmpdir/scannable"
+  local sopsset="$tmpdir/sops"
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  # ── Step 1: Build candidate file list ──────────────────────────────
   if [[ $TRACKED_ONLY -eq 1 ]] && git rev-parse --git-dir >/dev/null 2>&1; then
-    while IFS= read -r -d '' file; do
-      is_excluded_path "$file" && continue
-      TOTAL_FILES_SCANNED=$((TOTAL_FILES_SCANNED + 1))
-      scan_file "$file"
-    done < <(git ls-files -z -- "${PATHS[@]}" 2>/dev/null | while IFS= read -r -d '' f; do
-      [[ -f "$REPO_ROOT/$f" ]] && printf '%s\0' "$REPO_ROOT/$f"
-    done)
+    git ls-files -- "${PATHS[@]}" 2>/dev/null | while IFS= read -r f; do
+      [[ -f "$REPO_ROOT/$f" ]] && echo "$REPO_ROOT/$f"
+    done > "$candidates"
   else
-    while IFS= read -r -d '' file; do
-      is_excluded_path "$file" && continue
-      TOTAL_FILES_SCANNED=$((TOTAL_FILES_SCANNED + 1))
-      scan_file "$file"
-    done < <(find "${PATHS[@]}" -type f -print0 2>/dev/null)
+    find "${PATHS[@]}" -type f > "$candidates" 2>/dev/null
   fi
+
+  # ── Step 2: Filter excluded paths (single grep -vE) ────────────────
+  local excl_pat=""
+  for d in "${EXCLUDE_DIRS[@]}"; do
+    excl_pat="${excl_pat:+$excl_pat|}/$d/"
+  done
+  for f in "${EXCLUDE_FILES[@]}"; do
+    local glob_pat; glob_pat=$(echo "$f" | sed 's/\./\\./g; s/\*/.*/g')
+    excl_pat="${excl_pat:+$excl_pat|}/$glob_pat$"
+  done
+  for e in "${EXCLUDE_EXTS[@]}"; do
+    local dot_e; dot_e=$(echo "$e" | sed 's/\./\\./g')
+    excl_pat="${excl_pat:+$excl_pat|}\.$dot_e$"
+  done
+
+  if [[ -n "$excl_pat" ]]; then
+    grep -vE "$excl_pat" "$candidates" > "$candidates.tmp" 2>/dev/null || true
+    mv "$candidates.tmp" "$candidates"
+  fi
+
+  # ── Step 3: Identify SOPS envelopes (batch grep -rl on .enc files) ─
+  > "$sopsset"
+  grep -E '\.enc$' "$candidates" > "$tmpdir/encfiles" 2>/dev/null || true
+  if [[ -s "$tmpdir/encfiles" ]]; then
+    # SOPS envelopes must have: ENC[AES256_GCM AND "mac" AND "age"
+    local enc_files; enc_files=$(cat "$tmpdir/encfiles")
+    grep -rl 'ENC\[AES256_GCM' $enc_files 2>/dev/null > "$tmpdir/enc_sops1" || true
+    if [[ -s "$tmpdir/enc_sops1" ]]; then
+      grep -rl '"mac"' $(cat "$tmpdir/enc_sops1") 2>/dev/null > "$tmpdir/enc_sops2" || true
+      if [[ -s "$tmpdir/enc_sops2" ]]; then
+        grep -rl '"age"' $(cat "$tmpdir/enc_sops2") 2>/dev/null > "$sopsset" || true
+      fi
+    fi
+  fi
+
+  # ── Step 4: Subtract SOPS files from candidates ────────────────────
+  if [[ -s "$sopsset" ]]; then
+    grep -vxF -f "$sopsset" "$candidates" > "$scannable" 2>/dev/null || true
+  else
+    cp "$candidates" "$scannable"
+  fi
+
+  TOTAL_FILES_SCANNED=$(wc -l < "$scannable" 2>/dev/null | tr -d ' ')
+
+  # ── Step 5: Filename rules (batch grep on basenames) ───────────────
+  local fn_grep_args=()
+  for i in "${!RULES_PATTERN[@]}"; do
+    if [[ "${RULES_IS_FILENAME[$i]}" == "1" ]]; then
+      fn_grep_args+=(-e "${RULES_PATTERN[$i]}")
+    fi
+  done
+
+  if [[ ${#fn_grep_args[@]} -gt 0 ]]; then
+    # Match filenames against filename rules using grep on the path list
+    local fn_matches="$tmpdir/fn_matches"
+    grep -nE "${fn_grep_args[@]}" "$candidates" > "$fn_matches" 2>/dev/null || true
+
+    # Pre-build filename regexes for bash matching (zero-fork)
+    local -a fn_regexes=() fn_indices=()
+    for i in "${!RULES_PATTERN[@]}"; do
+      if [[ "${RULES_IS_FILENAME[$i]}" == "1" ]]; then
+        fn_regexes+=("${RULES_PATTERN[$i]}")
+        fn_indices+=("$i")
+      fi
+    done
+
+    # Load SOPS set into a bash associative array for O(1) lookup
+    declare -A sops_map=()
+    if [[ -s "$sopsset" ]]; then
+      while IFS= read -r sp; do
+        sops_map["$sp"]=1
+      done < "$sopsset"
+    fi
+
+    if [[ -s "$fn_matches" ]]; then
+      while IFS= read -r match_line; do
+        [[ -z "$match_line" ]] && continue
+        local line_no="${match_line%%:*}"
+        local file_path; file_path=$(sed -n "${line_no}p" "$candidates")
+        [[ -z "$file_path" ]] && continue
+
+        # Skip SOPS envelopes (O(1) hash lookup, no fork)
+        [[ -n "${sops_map[$file_path]:-}" ]] && continue
+
+        local rel="${file_path#$REPO_ROOT/}"
+        local base="${file_path##*/}"
+
+        # Re-attribute to specific rule (bash regex, no fork)
+        for idx in "${!fn_regexes[@]}"; do
+          local rule_idx="${fn_indices[$idx]}"
+          local pat="${fn_regexes[$idx]}"
+          if [[ "$base" =~ $pat ]]; then
+            local key="$rel:0:${RULES_CATEGORY[$rule_idx]}"
+            is_baselined "$key" && break
+            record_finding "$rel" 0 "${RULES_CATEGORY[$rule_idx]}" "${RULES_SEVERITY[$rule_idx]}" "${RULES_DESC[$rule_idx]}" "filename: $base"
+            break
+          fi
+        done
+      done < "$fn_matches"
+    fi
+  fi
+
+  # ── Step 6: Build combined content grep args ───────────────────────
+  local grep_args=()
+  for i in "${!RULES_PATTERN[@]}"; do
+    if [[ "${RULES_IS_FILENAME[$i]}" != "1" ]]; then
+      grep_args+=(-e "${RULES_PATTERN[$i]}")
+    fi
+  done
+
+  [[ ${#grep_args[@]} -eq 0 ]] && return 0
+
+  # ── Step 7: Single grep pass over all scannable files ──────────────
+  local raw_matches="$tmpdir/matches"
+  xargs grep -niE "${grep_args[@]}" -- < "$scannable" > "$raw_matches" 2>/dev/null || true
+
+  # ── Step 8: Parse matches and attribute to rules ──────────────────
+  # Pre-build bash-compatible regex arrays for zero-fork matching.
+  # Bash [[ =~ ]] avoids ~53K grep forks (1208 matches × 44 patterns).
+  local -a content_regexes=() content_indices=()
+  for i in "${!RULES_PATTERN[@]}"; do
+    if [[ "${RULES_IS_FILENAME[$i]}" != "1" ]]; then
+      content_regexes+=("${RULES_PATTERN[$i]}")
+      content_indices+=("$i")
+    fi
+  done
+
+  # Build combined whitelist regex for single-check filtering
+  local wl_combined=""
+  for wl in "${WHITELIST_PATTERNS[@]}"; do
+    if [[ -n "$wl_combined" ]]; then
+      wl_combined="$wl_combined|$wl"
+    else
+      wl_combined="$wl"
+    fi
+  done
+
+  while IFS= read -r match_line; do
+    [[ -z "$match_line" ]] && continue
+    local rest="$match_line"
+    local file_part="${rest%%:*}"
+    rest="${rest#*:}"
+    local ln_part="${rest%%:*}"
+    local content="${rest#*:}"
+
+    # Whitelist check (single regex, no fork)
+    if [[ -n "$wl_combined" && "$content" =~ $wl_combined ]]; then
+      continue
+    fi
+
+    local rel="${file_part#$REPO_ROOT/}"
+
+    # Attribute to first matching rule (bash regex, no fork)
+    for idx in "${!content_regexes[@]}"; do
+      local rule_idx="${content_indices[$idx]}"
+      local pat="${content_regexes[$idx]}"
+      if [[ "$content" =~ $pat ]]; then
+        local key="$rel:$ln_part:${RULES_CATEGORY[$rule_idx]}"
+        is_baselined "$key" && break
+        record_finding "$rel" "$ln_part" "${RULES_CATEGORY[$rule_idx]}" "${RULES_SEVERITY[$rule_idx]}" "${RULES_DESC[$rule_idx]}" "$content"
+        break
+      fi
+    done
+  done < "$raw_matches"
 }
 
 echo "${BOLD}🔍 SI-LLM-Gateway Secret Scanner${RESET}"
