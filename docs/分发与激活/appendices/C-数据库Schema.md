@@ -1,6 +1,12 @@
 # 附录 C — 数据库 Schema
 
 > 关键表结构（与 license / 升级 / 采集相关）。
+>
+> **2026-07-13 同步**：已落地的迁移版本号以仓库内 `sql/migrations/`
+> 实际为准；下表保留结构与字段说明，不列出历史的迁移号。所有 schema
+> 都通过 `db/db.go::ensureXxxSchema()` 在启动期幂等创建。`runtime_metrics`
+> / `instance_info` / `telemetry_prefs` 是 `telemetry` 模块待补表
+> （P1）。
 
 ## 一、License 相关表
 
