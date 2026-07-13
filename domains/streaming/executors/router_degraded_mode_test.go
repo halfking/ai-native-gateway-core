@@ -1,8 +1,11 @@
 package executors
 
 import (
+	"context"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -87,7 +90,7 @@ func TestTryDegradedMode_TransientReasons(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			candidates := []provider.Candidate{tt.candidate}
-			result := r.tryDegradedMode(candidates)
+			result := r.tryDegradedMode(context.Background(), candidates)
 
 			if len(result) != tt.wantCount {
 				t.Errorf("tryDegradedMode() returned %d candidates, want %d. Candidate: %+v",
@@ -216,6 +219,19 @@ func TestIsTransientUnavailableReason(t *testing.T) {
 		{"availability:rate_limited", true},
 		{"availability:suspended", true},
 
+		// StateManager 内存态原因（瞬态，应降级）
+		// 对应 credentialstate/manager.go isTransient 的四个 errKind
+		{"state:" + string(errorsx.KindTimeout), true},
+		{"state:" + string(errorsx.KindStreamTimeout), true},
+		{"state:" + string(errorsx.KindRateLimit), true},
+		{"state:" + string(errorsx.KindUpstreamDown), true},
+
+		// StateManager 内存态原因（永久，不应降级）
+		{"state:" + string(errorsx.KindAuth), false},
+		{"state:" + string(errorsx.KindAuthRevoked), false},
+		{"state:" + string(errorsx.KindModelNotFound), false},
+		{"state:" + string(errorsx.KindQuotaPermanent), false},
+
 		// 永久原因
 		{"availability:auth_failed", false},
 		{"availability:unreachable", false},
@@ -237,5 +253,176 @@ func TestIsTransientUnavailableReason(t *testing.T) {
 					tt.reason, got, tt.want)
 			}
 		})
+	}
+}
+
+// stateProviderStub 实现 credentialstate.StateProvider，用于在路由测试中
+// 模拟内存态 (credID, model) → (available, reason)。reason 取 errorsx
+// ErrorKind 字符串值，与 credentialstate/manager.go:218 LastError 赋值一致。
+// 风格仿照 router_route_node_test.go 的 routerFpSlotsStub（map 驱动的小结构体）。
+type stateProviderStub struct {
+	// unavailable[credID][model] = reason（非空即不可用）
+	unavailable map[int]map[string]string
+	enabled     bool
+}
+
+func newstateProviderStub() *stateProviderStub {
+	return &stateProviderStub{
+		unavailable: make(map[int]map[string]string),
+		enabled:     true,
+	}
+}
+
+// set 标记 (credID, model) 不可用，返回给定 errKind 作为 reason。
+func (s *stateProviderStub) set(credID int, model string, kind errorsx.ErrorKind) *stateProviderStub {
+	if s.unavailable[credID] == nil {
+		s.unavailable[credID] = make(map[string]string)
+	}
+	s.unavailable[credID][model] = string(kind)
+	return s
+}
+
+func (s *stateProviderStub) GetState(_ context.Context, credID int, model string) (*credentialstate.State, error) {
+	reason, ok := s.unavailable[credID][model]
+	if !ok || reason == "" {
+		return &credentialstate.State{CredentialID: credID, Model: model, Available: true}, nil
+	}
+	return &credentialstate.State{CredentialID: credID, Model: model, Available: false, LastError: reason}, nil
+}
+
+func (s *stateProviderStub) IsAvailable(_ context.Context, credID int, model string) (bool, string) {
+	reason, ok := s.unavailable[credID][model]
+	if !ok || reason == "" {
+		return true, ""
+	}
+	return false, reason
+}
+
+func (s *stateProviderStub) Enabled() bool { return s.enabled }
+
+// TestTryDegradedMode_StateManagerTransient 验证当候选 DB 字段全可用
+// (UnavailableReason()=="") 但被 StateManager 内存态判为瞬态不可用时，
+// 降级模式仍会采纳该候选。
+//
+// 回归 2026-07-14 生产事故 ba9fc64f：gpt-5.6-luna 单候选 cred=2 被
+// state:timeout 过滤后 tryDegradedMode 返回 0 → 503 no_candidate。
+func TestTryDegradedMode_StateManagerTransient(t *testing.T) {
+	// 候选 DB 层完全可用——这是关键，确保唯一拒绝来源是 StateManager。
+	availableCandidate := func(credID int) provider.Candidate {
+		return provider.Candidate{
+			CredentialID: credID,
+			ProviderID:   314,
+			RawModel:     "gpt-5.6-luna",
+			Routable:     true,
+			// AvailabilityState/QuotaState/LifecycleStatus 均默认零值 → 可用
+		}
+	}
+
+	tests := []struct {
+		name      string
+		smReason  errorsx.ErrorKind // StateManager 返回的 reason（空串=可用）
+		wantCount int
+	}{
+		// 瞬态：应降级
+		{"state:timeout 应降级", errorsx.KindTimeout, 1},
+		{"state:stream_timeout 应降级", errorsx.KindStreamTimeout, 1},
+		{"state:rate_limit 应降级", errorsx.KindRateLimit, 1},
+		{"state:upstream_down 应降级", errorsx.KindUpstreamDown, 1},
+		// 永久：不应降级
+		{"state:auth 不降级", errorsx.KindAuth, 0},
+		{"state:auth_revoked 不降级", errorsx.KindAuthRevoked, 0},
+		{"state:model_not_found 不降级", errorsx.KindModelNotFound, 0},
+		{"state:quota_permanent 不降级", errorsx.KindQuotaPermanent, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm := newstateProviderStub().
+				set(2, "gpt-5.6-luna", tt.smReason)
+			r := &Router{StateManager: sm}
+
+			candidates := []provider.Candidate{availableCandidate(2)}
+			result := r.tryDegradedMode(context.Background(), candidates)
+
+			if len(result) != tt.wantCount {
+				t.Errorf("tryDegradedMode() with state:%s returned %d candidates, want %d",
+					tt.smReason, len(result), tt.wantCount)
+			}
+		})
+	}
+}
+
+// TestTryDegradedMode_NoStateManager 向后兼容：StateManager 为 nil 时，
+// 只看候选自身 UnavailableReason()，行为与 2026-07-04 版本一致。
+func TestTryDegradedMode_NoStateManager(t *testing.T) {
+	r := &Router{} // StateManager == nil
+
+	// DB 层 cooling → 应降级（既有路径）
+	cooling := provider.Candidate{
+		CredentialID: 1, ProviderID: 10, RawModel: "m", Routable: true,
+		AvailabilityState: "cooling",
+	}
+	if got := r.tryDegradedMode(context.Background(), []provider.Candidate{cooling}); len(got) != 1 {
+		t.Errorf("no-SM cooling: got %d, want 1", len(got))
+	}
+
+	// DB 层全可用且无 SM → 无原因，不降级
+	clean := provider.Candidate{
+		CredentialID: 2, ProviderID: 10, RawModel: "m", Routable: true,
+	}
+	if got := r.tryDegradedMode(context.Background(), []provider.Candidate{clean}); len(got) != 0 {
+		t.Errorf("no-SM clean: got %d, want 0", len(got))
+	}
+}
+
+// TestPlanCandidates_DegradedMode_StateManagerTimeout 端到端回归：
+// 单候选被 StateManager 判 timeout 时，PlanCandidates 应走降级返回 1，
+// 而不是 0 节点 503。这条直接锁住生产 bug ba9fc64f。
+func TestPlanCandidates_DegradedMode_StateManagerTimeout(t *testing.T) {
+	sm := newstateProviderStub().
+		set(2, "gpt-5.6-luna", errorsx.KindTimeout)
+	r := &Router{StateManager: sm}
+
+	candidates := []provider.Candidate{
+		{
+			CredentialID: 2,
+			ProviderID:   314,
+			RawModel:     "gpt-5.6-luna",
+			Routable:     true,
+			// DB 层全可用——拒绝只来自 StateManager 内存态
+		},
+	}
+
+	result := r.PlanCandidates(candidates, nil, nil, nil)
+	if len(result) != 1 {
+		t.Fatalf("PlanCandidates() with single state:timeout candidate returned %d, want 1 (degraded mode). "+
+			"This is the ba9fc64f regression: single-point candidate rejected by transient SM state must degrade, not 503.",
+			len(result))
+	}
+	if result[0].CredentialID != 2 {
+		t.Errorf("returned credential_id=%d, want 2", result[0].CredentialID)
+	}
+}
+
+// TestPlanCandidates_DegradedMode_StateManagerPermanent 端到端：
+// 单候选被 StateManager 判永久错误（auth）时，降级不触发，返回 0。
+func TestPlanCandidates_DegradedMode_StateManagerPermanent(t *testing.T) {
+	sm := newstateProviderStub().
+		set(2, "gpt-5.6-luna", errorsx.KindAuth)
+	r := &Router{StateManager: sm}
+
+	candidates := []provider.Candidate{
+		{
+			CredentialID: 2,
+			ProviderID:   314,
+			RawModel:     "gpt-5.6-luna",
+			Routable:     true,
+		},
+	}
+
+	result := r.PlanCandidates(candidates, nil, nil, nil)
+	if len(result) != 0 {
+		t.Errorf("PlanCandidates() with single state:auth candidate returned %d, want 0 (permanent error must not degrade)",
+			len(result))
 	}
 }
