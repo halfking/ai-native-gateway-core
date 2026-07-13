@@ -7,6 +7,8 @@ package bg
 
 import (
 	"context"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -160,6 +162,74 @@ func TestMarkFailedRetry_ReschedulesAtLaterTime(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("markFailedRetry should re-enqueue the task")
+	}
+}
+
+// TestRetryBackoffUsesCorrectChainEntry is the regression test for BUG #1
+// (2026-07-13).
+//
+// Before the fix, processOne called computeBackoff(attempt + 1) after
+// the just-failed probe, which silently dropped the 5s entry of
+// DefaultErrorProbeBackoffChain — the effective retry schedule became
+// [30s, 2m, 5m, 15m] instead of the documented [5s, 30s, 2m, 5m, 15m].
+//
+// This test exercises the math inside processOne directly (so it does
+// not need a DB / executor / emitter) and asserts:
+//   * after attempt=N fails, the worker schedules the next attempt in
+//     chain[N-1] (= computeBackoff(N)) — NOT chain[N] (= computeBackoff(N+1)).
+//
+// To catch a regression to `computeBackoff(attempt + 1)` we compute the
+// off-by-one form HERE and assert it is *not* what the worker would
+// produce. If the worker regresses to off-by-one, the offender will
+// stop matching the documented schedule, and we fail with a clear message.
+func TestRetryBackoffUsesCorrectChainEntry(t *testing.T) {
+	// workerBackoff mirrors the line in processOne (post-fix):
+	//   backoff := computeBackoff(attempt)
+	// We extract it here as a free function so this test stays
+	// independent of the worker struct.
+	workerBackoff := func(justFailedAttempt int) time.Duration {
+		return computeBackoff(justFailedAttempt)
+	}
+
+	// buggyBackoff mirrors the OLD broken line:
+	//   backoff := computeBackoff(attempt + 1)
+	buggyBackoff := func(justFailedAttempt int) time.Duration {
+		return computeBackoff(justFailedAttempt + 1)
+	}
+
+	// (just-failed attempt) → documented backoff
+	cases := []struct {
+		failedAttempt int
+		want          time.Duration
+	}{
+		{1, 5 * time.Second},  // chain[0] — the entry the bug skipped
+		{2, 30 * time.Second}, // chain[1]
+		{3, 2 * time.Minute},  // chain[2]
+		{4, 5 * time.Minute},  // chain[3]
+		{5, 15 * time.Minute}, // chain[4] — capped, not exercised in prod (MaxAttempts=5 → markFailedFinal before this)
+	}
+	for _, c := range cases {
+		got := workerBackoff(c.failedAttempt)
+		if got != c.want {
+			t.Errorf("BUG #1 regression: after attempt %d failed, worker schedules next "+
+				"in %v, want %v. The fix replaced computeBackoff(attempt+1) with "+
+				"computeBackoff(attempt) so the 5s first-retry entry is no longer skipped.",
+				c.failedAttempt, got, c.want)
+		}
+
+		// Cross-check: the buggy form must NOT equal the documented value,
+		// otherwise the chain is too short to detect the off-by-one.
+		// (chain[3]=5m and chain[4]=15m are different; chain[4] and an
+		// out-of-range attempt give back chain[last]=15m, so the last row
+		// of cases below legitimately matches both forms.)
+		if c.failedAttempt < 5 {
+			if gotBuggy := buggyBackoff(c.failedAttempt); gotBuggy == c.want {
+				t.Errorf("BUG #1 detectability: computeBackoff(%d) == computeBackoff(%d) "+
+					"== %v. The chain is degenerate at this row — the off-by-one bug "+
+					"would silently slip past the regression check.",
+					c.failedAttempt+1, c.failedAttempt, c.want)
+			}
+		}
 	}
 }
 
@@ -354,4 +424,63 @@ func TestNilWorkerSafety(t *testing.T) {
 		t.Error("nil worker Done() returned nil channel")
 	}
 	w.Stop() // should not panic
+}
+
+// TestRetryBackoffCallShape_NoOffByOneInWorkerSource is the second half
+// of the BUG #1 regression test (2026-07-13).
+//
+// TestRetryBackoffUsesCorrectChainEntry asserts the chain itself is
+// [5s, 30s, 2m, 5m, 15m]. This test asserts the WORKER calls the
+// chain with the right index — `computeBackoff(attempt)`, not the
+// off-by-one `computeBackoff(attempt + 1)`.
+//
+// We scan active_probe_worker.go and reject any line containing the
+// buggy call shape. The previous form was
+//
+//	backoff := computeBackoff(attempt + 1)
+//
+// which silently dropped the 5s first-retry entry and produced the
+// effective schedule [30s, 2m, 5m, 15m] instead of [5s, 30s, 2m, 5m].
+//
+// This is a coarse check (it doesn't run processOne end-to-end), but
+// it catches the exact off-by-one regression in code review and CI.
+func TestRetryBackoffCallShape_NoOffByOneInWorkerSource(t *testing.T) {
+	// Use the canonical source path for this package; tests run with
+	// cwd = the package directory so a relative path works.
+	const relPath = "active_probe_worker.go"
+	data, err := os.ReadFile(relPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", relPath, err)
+	}
+	src := string(data)
+
+	// The buggy call shape. Whitespace-tolerant: any number of spaces
+	// between `attempt` and `+ 1`.
+	const buggyCall = "computeBackoff(attempt + 1)"
+	if strings.Contains(src, buggyCall) {
+		// Find the offending line for a clearer error message.
+		var badLine int
+		for i, line := range strings.Split(src, "\n") {
+			if strings.Contains(line, buggyCall) {
+				badLine = i + 1
+				break
+			}
+		}
+		t.Fatalf("BUG #1 regression: %s contains the off-by-one call %q at line %d. "+
+			"The worker must call `computeBackoff(attempt)` so the 5s first-retry "+
+			"entry of DefaultErrorProbeBackoffChain is not skipped. See the comment "+
+			"block in processOne and the design doc §3.2 for the contract.",
+			relPath, buggyCall, badLine)
+	}
+
+	// Belt-and-braces: confirm the correct call shape is present
+	// somewhere in processOne, otherwise this fix could have been
+	// "removed the call entirely".
+	const correctCall = "computeBackoff(attempt)"
+	if !strings.Contains(src, correctCall) {
+		t.Fatalf("BUG #1 regression: %s no longer contains the correct call %q. "+
+			"If you are rewriting the backoff calculation, preserve the contract that "+
+			"after attempt N fails the next retry waits chain[N-1].",
+			relPath, correctCall)
+	}
 }

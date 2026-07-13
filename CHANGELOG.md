@@ -113,6 +113,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   与服务端 `middleware/sigverify.go` 格式对齐，方便后续启用服务端校验。
 
 ### Fixed
+- **错误触发的主动探测 backoff 链 off-by-one（BUG #1）**
+  `bg/active_probe_worker.go::processOne` 在 attempt 失败后调用
+  `computeBackoff(attempt + 1)`，把链路 `DefaultErrorProbeBackoffChain =
+  [5s, 30s, 2m, 5m, 15m]` 的第一项 5s 静默丢弃。实际序列是
+  `0s → 30s → 2m → 5m → 15m`（4 次重试，22m30s 才放弃），而不是设计文档
+  §3.2 中规定的 `0s → 5s → 30s → 2m → 5m → 15m`（5 次重试，7m35s 放弃）。
+  修复：改为 `computeBackoff(attempt)`，并补 `TestRetryBackoffUsesCorrectChainEntry`
+  + 源码扫描型 `TestRetryBackoffCallShape_NoOffByOneInWorkerSource`（在
+  `bg/active_probe_worker.go` 再次出现 `computeBackoff(attempt + 1)` 即报错）。
+
+- **「递增退避探测 (30s → 2m → 5m)」分级回退死代码（BUG #2）**
+  `domains/credentialstate/manager.go::UpdateOnFailure` 在瞬时故障 ≥3 次
+  分支里，根据连续失败次数算出 `backoff`（≤3 → 30s，≤5 → 2m，否则 5m），
+  但调用 `m.credProbeV2Submitter(credID)` 时**立刻触发**，没有 `time.AfterFunc`
+  等任何延迟；而 `credProbeV2` 内部自有 5min fastReprobeDelay，所以无论
+  连失多少次，最终探测间隔都被强制覆盖为 5min。注释里的"分级回退"成了
+  仅注释可见的特性。
+  修复：新增 `Manager.scheduleCredProbe(credID, model, backoff)`，真按 backoff
+  延迟分发；用 `pendingTimers map[*time.Timer]` 保证 (credID, model) 维度的
+  dedup 与 `Stop()` 时可取消。补 `TestManager_TieredReprobeUsesBackoff`
+  （功能 + 源码扫描双重校验）。
+
+- **设计文档时间线示例（BUG #3）**
+  `docs/自检功能/04-error-triggered-probe-design.md` §2.2 时序段写的是
+  30s→2m→5m→15m，与 §3.2 链路定义不一致。修正为 T+15s、T+45s、T+2m45s、
+  T+7m45s 五次重试，并注明 chain[4] 的 15m cap 在默认 MaxAttempts=5 下
+  不会真正被消费。
+
 - **data-lifecycle 异步任务状态修复**：drop partition 任务完成后正确设置
   `JobStatusSucceeded`；cancel 操作改为 `JobStatusCancelled`（原误设为 Failed）；
   `StartJob` 修复 `cancelFn` 未赋值导致 cancel 无法中断。统一 `/drop` 和

@@ -2,6 +2,8 @@ package credentialstate
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -256,6 +258,105 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 	}
 	if s.ConsecutiveFails != 0 {
 		t.Fatalf("consecutive_fails should reset to 0 after success, got %d", s.ConsecutiveFails)
+	}
+}
+
+// TestManager_TieredReprobeUsesBackoff verifies the BUG #2 fix
+// (2026-07-13): the conditional branch on transient failures
+// (≥3 consecutive) computed a `backoff` value (30s / 2m / 5m by
+// consecutive_fails count) but the previous implementation fired the
+// credProbeV2 submitter *immediately*, throwing away the computed delay.
+// The effective schedule had collapsed to whatever delay credProbeV2 itself
+// applies (5min fastReprobeDelay), regardless of the consecutive count.
+//
+// After the fix, the submitter must NOT fire within the first 30 seconds;
+// it must fire approximately at 30s ± scheduling slack. The test uses a
+// short substituted backoff by calling scheduleCredProbe directly so we
+// don't have to wait 30s for the wall-clock assertion.
+//
+// We do TWO checks:
+//   1. Functional: scheduleCredProbe honours a positive backoff (via the
+//      test seam — we construct the manager, plant a probe submitter
+//      that records its arrival time, and feed a small backoff).
+//   2. Source-shape: scan manager.go and reject the legacy
+//      `m.credProbeV2Submitter(credID)` call inside the transient
+//      branch, which was the bug.
+func TestManager_TieredReprobeUsesBackoff(t *testing.T) {
+	// ----- (1) functional check via scheduleCredProbe -----
+	m := NewManager(nil, nil)
+
+	type fireRecord struct {
+		at      time.Time
+		credID  int
+	}
+	fired := make(chan fireRecord, 4)
+	m.SetProbeSubmitter(func(credID int) {
+		fired <- fireRecord{at: time.Now(), credID: credID}
+	}, nil)
+
+	// 100ms backoff is small enough to keep the test fast but large enough
+	// that the scheduler can't realistically deliver it in 0ms. If the
+	// branch regresses to "fire immediately", we observe arrivalAt <
+	// backoff-50% which is impossible if the timer ran.
+	const backoff = 100 * time.Millisecond
+	start := time.Now()
+	m.scheduleCredProbe(123, "gpt-4", backoff)
+
+	select {
+	case got := <-fired:
+		elapsed := got.at.Sub(start)
+		// Allow up to 2× backoff to absorb CI clock skew; we just want
+		// to confirm the submitter did NOT arrive "immediately"
+		// (within ~1ms of call).
+		if elapsed < backoff/2 {
+			t.Fatalf("BUG #2 regression: scheduleCredProbe fired after %v, expected >= %v "+
+				"(the previous code called credProbeV2Submitter immediately, "+
+				"throwing away the computed backoff). elapsed=%v backoff=%v",
+				elapsed, backoff/2, elapsed, backoff)
+		}
+		if got.credID != 123 {
+			t.Errorf("scheduled fire for wrong credID: got %d, want 123", got.credID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("scheduled reprobe never fired")
+	}
+
+	// ----- (2) source-shape check on manager.go -----
+	// The transient branch in UpdateOnFailure used to call
+	//   m.credProbeV2Submitter(credID)
+	// inline, defeating the tiered backoff. After the fix the call site
+	// must go through m.scheduleCredProbe(...). This check is intentionally
+	// tolerant of the helper being defined elsewhere in the file — it
+	// only fails if the direct legacy call reappears in the transient
+	// block.
+	const relPath = "manager.go"
+	data, err := os.ReadFile(relPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", relPath, err)
+	}
+	src := string(data)
+
+	// Cheap heuristic: look for the comment that introduces the tiered
+	// backoff AND the dispatch through scheduleCredProbe. If the file
+	// still uses m.credProbeV2Submitter(credID) inline AND the backoff
+	// comment is present, that combination is the bug.
+	hasBackoffComment := strings.Contains(src, "递增退避探测")
+	hasInlineFire := strings.Contains(src, "m.credProbeV2Submitter(credID)")
+	hasHelperDispatch := strings.Contains(src, "m.scheduleCredProbe(")
+
+	if hasBackoffComment && hasInlineFire && !hasHelperDispatch {
+		t.Fatalf("BUG #2 regression: %s has the tiered-backoff comment AND the inline "+
+			"m.credProbeV2Submitter(credID) call, but no m.scheduleCredProbe(...) "+
+			"dispatch. The previous code computed the backoff value but threw it "+
+			"away by firing the submitter immediately.", relPath)
+	}
+
+	// Confirm the scheduleCredProbe helper exists (otherwise the fix is
+	// incomplete — we just tore out the inline call without replacing it).
+	if !hasHelperDispatch {
+		t.Fatalf("BUG #2 regression: %s no longer dispatches via m.scheduleCredProbe(...); "+
+			"either the helper was renamed (update this test) or the dispatch was deleted "+
+			"without replacement.", relPath)
 	}
 }
 

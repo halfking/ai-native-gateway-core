@@ -41,6 +41,15 @@ type Manager struct {
 	// 2026-07-13: 触发主动探测的连续失败阈值（默认 2，配置来自 settings.error_probe.consecutive_threshold）
 	activeProbeThreshold int
 
+	// 2026-07-13 (BUG #2 fix): pending reprobe timers. Holding a reference to the
+	// *time.Timer returned by time.AfterFunc lets Stop() cancel a scheduled
+	// credProbeV2 reprobe before it fires — otherwise a pending backoff timer
+	// can survive a graceful shutdown and fire into a stopped/dead DB, or worse
+	// race with a freshly-restarted process. Each entry holds the timer plus
+	// the (credID, model) it was scheduled for so duplicates can be deduped.
+	pendingTimersMu sync.Mutex
+	pendingTimers   map[string]*time.Timer // key = fmt.Sprintf("%d:%s", credID, model)
+
 	// Phase 2: 模型热度追踪器（可选，nil 时禁用热度感知探测）
 	popularityTracker *ModelPopularityTracker
 
@@ -63,6 +72,7 @@ func NewManager(db *pgxpool.Pool, redisClient *redis.Client) *Manager {
 		memCacheTTL:   10 * time.Second,
 		redisCacheTTL: 5 * time.Minute,
 		staleTTL:      2 * time.Minute,
+		pendingTimers: make(map[string]*time.Timer),
 	}
 	m.batchWriter = NewBatchWriter(db, 5*time.Second, 100)
 	return m
@@ -80,6 +90,17 @@ func (m *Manager) Start(ctx context.Context) {
 // Stop 停止管理器
 func (m *Manager) Stop() {
 	m.batchWriter.Stop()
+	// 2026-07-13 (BUG #2 fix): cancel any in-flight tiered reprobe timers
+	// so a graceful shutdown does not race with a delayed SubmitFastProbe.
+	// Stop() on a fired timer is a no-op, so this is safe at any phase.
+	m.pendingTimersMu.Lock()
+	for k, t := range m.pendingTimers {
+		if t != nil {
+			t.Stop()
+		}
+		delete(m.pendingTimers, k)
+	}
+	m.pendingTimersMu.Unlock()
 }
 
 // SetProbeSubmitter 设置快速探测提交函数（避免循环依赖）
@@ -273,6 +294,18 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 
 		// 递增退避探测 (30s → 2m → 5m)：探测用于在 cooling 期间提前发现
 		// 凭据恢复，探测成功后 UpdateFromProbe 会立即恢复路由。
+		//
+		// 2026-07-13 (BUG #2 fix): the previous code computed `backoff`
+		// (30s / 2m / 5m depending on the consecutive_failures count) but
+		// then fired credProbeV2Submitter immediately — the backoff value
+		// was unused. credProbeV2 itself adds its own 5-minute delay, so
+		// the effective schedule collapsed to "always 5 minutes" regardless
+		// of how many consecutive failures had accumulated. This made the
+		// "分级回退" tiered retry a documentation-only feature.
+		//
+		// After the fix we actually honor the backoff via time.AfterFunc.
+		// The timer is keyed by (credID, model) and stored on the manager
+		// so Stop() can cancel a pending reprobe at shutdown.
 		var backoff time.Duration
 		switch {
 		case state.ConsecutiveFails <= 3:
@@ -290,9 +323,7 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 				"consecutive_fails", state.ConsecutiveFails,
 				"backoff", backoff)
 
-			if m.credProbeV2Submitter != nil {
-				m.credProbeV2Submitter(credID)
-			}
+			m.scheduleCredProbe(credID, model, backoff)
 		}
 	}
 
@@ -431,6 +462,60 @@ func (m *Manager) TriggerPing(ctx context.Context, credID int, model string) {
 
 func (m *Manager) cacheKey(credID int, model string) string {
 	return fmt.Sprintf("%d:%s", credID, model)
+}
+
+// scheduleCredProbe enqueues a delayed credProbeV2 submission for the
+// (credID, model) pair, honoring the tiered backoff (30s / 2m / 5m).
+//
+// 2026-07-13 (BUG #2 fix): this is the implementation that the previous
+// `m.credProbeV2Submitter(credID)` call site silently bypassed. Calling
+// the submitter immediately defeated the documented "分级回退" tiered
+// retry and effectively made every transient-failure reprobe fixed at
+// credProbeV2's own 5-minute fastReprobeDelay.
+//
+// Behaviour:
+//   - If no submitter is wired or backoff <= 0, fires immediately
+//     (preserves the legacy "best-effort" semantics for tests).
+//   - If the same (credID, model) already has a pending timer, replaces
+//     it (the latest failure should always own the schedule — older
+//     timers are stale).
+//   - If backoff is zero, fires synchronously via goroutine to match the
+//     call-site's existing fire-and-forget style.
+//   - Stores the *time.Timer on the manager so Stop() can cancel it.
+func (m *Manager) scheduleCredProbe(credID int, model string, backoff time.Duration) {
+	if m == nil || m.credProbeV2Submitter == nil {
+		return
+	}
+	key := fmt.Sprintf("%d:%s", credID, model)
+
+	// Replace any prior pending timer for this (cred, model) pair so the
+	// newest failure controls the schedule. Stop() on an already-fired
+	// timer returns false but is otherwise a safe no-op.
+	m.pendingTimersMu.Lock()
+	if prev, ok := m.pendingTimers[key]; ok && prev != nil {
+		prev.Stop()
+		delete(m.pendingTimers, key)
+	}
+	m.pendingTimersMu.Unlock()
+
+	fire := func() {
+		// Clear our slot before firing so subsequent failures can re-arm
+		// without racing with the in-flight submission.
+		m.pendingTimersMu.Lock()
+		delete(m.pendingTimers, key)
+		m.pendingTimersMu.Unlock()
+		m.credProbeV2Submitter(credID)
+	}
+
+	if backoff <= 0 {
+		go fire()
+		return
+	}
+
+	timer := time.AfterFunc(backoff, fire)
+	m.pendingTimersMu.Lock()
+	m.pendingTimers[key] = timer
+	m.pendingTimersMu.Unlock()
 }
 
 // Enabled 是否启用

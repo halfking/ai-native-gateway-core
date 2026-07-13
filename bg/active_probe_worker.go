@@ -301,7 +301,24 @@ func (w *ActiveProbeWorker) processOne(ctx context.Context, task probeTask) {
 		w.markFailedFinal(task.CredID, task.Model)
 		return
 	}
-	backoff := computeBackoff(attempt + 1)
+	// 2026-07-13 (BUG #1 fix): the chain `DefaultErrorProbeBackoffChain =
+	// [5s, 30s, 2m, 5m, 15m]` is the delay BEFORE the (attempt+1)-th
+	// probe runs — i.e. the wait after the just-failed `attempt`-th
+	// probe. Therefore the chain entry we want here is the one whose
+	// 1-based index equals the just-failed `attempt`. That is simply
+	// `computeBackoff(attempt)`.
+	//
+	// The previous code passed `attempt + 1`, which silently dropped
+	// the 5s entry of the chain: after attempt 1 failed we waited 30s
+	// (= chain[1]) instead of 5s (= chain[0]). The effective schedule
+	// became [30s, 2m, 5m, 15m] (only 4 retries fired) and the
+	// failed_final fallthrough landed at T+22m30s instead of the
+	// documented T+7m35s.
+	//
+	// After this fix the schedule is exactly the documented
+	// `[5s, 30s, 2m, 5m, 15m]` matching the header in
+	// bg/active_probe_backoff.go and §3.2 of the design doc.
+	backoff := computeBackoff(attempt)
 	w.markFailedRetry(task.CredID, task.Model, attempt, time.Now().Add(backoff), backoff)
 }
 
