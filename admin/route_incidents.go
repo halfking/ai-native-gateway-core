@@ -21,6 +21,10 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -120,13 +124,40 @@ func (h *RouteIncidentsHandler) handleSubrouter(w http.ResponseWriter, r *http.R
 		return
 	}
 	id := parts[0]
-	switch {
-	case len(parts) == 1:
-		h.handleDetail(w, r, id)
-	case parts[1] == "events":
+	if len(parts) == 1 {
+		if r.Method == http.MethodGet {
+			h.handleDetail(w, r, id)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+	switch parts[1] {
+	case "events":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
 		h.handleEvents(w, r, id)
-	case parts[1] == "timeline":
+	case "timeline":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
 		h.handleTimeline(w, r, id)
+	case "audit":
+		h.handleAudit(w, r, id)
+	case "runs":
+		h.handleRuns(w, r, id)
+	case "recover", "reprobe", "release-slot", "reset-slots",
+		"reset-availability", "direct-upstream-test", "through-gateway-test":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.handleAction(w, r, id, parts[1])
+	case "export":
+		h.handleExport(w, r, id)
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
@@ -136,6 +167,10 @@ func (h *RouteIncidentsHandler) handleSubrouter(w http.ResponseWriter, r *http.R
 // Returns 404 on cross-tenant or missing — the caller cannot tell
 // the difference.
 func (h *RouteIncidentsHandler) handleDetail(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -205,6 +240,213 @@ func (h *RouteIncidentsHandler) handleTimeline(w http.ResponseWriter, r *http.Re
 		"count":             len(points),
 		"insufficient_data": insufficient,
 	})
+}
+
+// handleAudit responds to GET /api/admin/route-incidents/{id}/audit.
+// Phase-2 read endpoint that returns the immutable audit log for
+// the incident. Tenant-scoped; cross-tenant returns 404 (the
+// handler cannot tell missing-vs-cross-tenant apart by design).
+func (h *RouteIncidentsHandler) handleAudit(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	limit := parseIntDefault(r.URL.Query().Get("limit"), 100)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	// Verify the incident is in this tenant (404 for cross-tenant).
+	if inc, err := h.store.Get(ctx, tenantID, id); err != nil || inc == nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	entries, err := h.store.AuditLogList(ctx, tenantID, id, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "audit list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": entries,
+		"count": len(entries),
+	})
+}
+
+// handleRuns responds to GET /api/admin/route-incidents/{id}/runs.
+// Phase-2 read endpoint that lists diagnostic runs (tests and
+// actions) recorded against this incident.
+func (h *RouteIncidentsHandler) handleRuns(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	limit := parseIntDefault(r.URL.Query().Get("limit"), 50)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if inc, err := h.store.Get(ctx, tenantID, id); err != nil || inc == nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	runs, err := h.store.DiagnosticRunsList(ctx, tenantID, id, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "runs list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": runs,
+		"count": len(runs),
+	})
+}
+
+// actionNameMap maps URL slugs to the canonical ActionKind.
+var actionNameMap = map[string]routeincident.ActionKind{
+	"recover":              routeincident.ActionRecover,
+	"reprobe":              routeincident.ActionReprobe,
+	"release-slot":         routeincident.ActionReleaseSlot,
+	"reset-slots":          routeincident.ActionResetSlots,
+	"reset-availability":   routeincident.ActionResetAvailability,
+	"direct-upstream-test": routeincident.ActionDirectUpstreamTest,
+	"through-gateway-test": routeincident.ActionThroughGatewayTest,
+}
+
+// handleAction is the dispatch endpoint for every mutating action
+// and diagnostic test. The request body is the canonical
+// ActionRequest (see domains/routeincident/actions.go). The
+// response is ActionResponse. Authorisation is the superAdmin
+// middleware (already applied by RegisterRoutes).
+//
+// Each call records a routing_audit_log row. The unique index on
+// `idempotency_key` rejects duplicate executions; the dispatcher
+// reuses the cached result on retry.
+func (h *RouteIncidentsHandler) handleAction(w http.ResponseWriter, r *http.Request, id, actionSlug string) {
+	kind, ok := actionNameMap[actionSlug]
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown action")
+		return
+	}
+	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	var body routeincident.ActionRequest
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed request body")
+		return
+	}
+	actor, ipHash := actorFromRequest(r)
+	expectedVersion := parseInt64Default(r.URL.Query().Get("expected_version"), 0)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+
+	resp, err := dispatchActionByKind(ctx, h.store, kind, tenantID, id, body, actor, ipHash, expectedVersion)
+	if err != nil {
+		switch {
+		case errors.Is(err, routeincident.ErrStaleState):
+			writeError(w, http.StatusConflict, "stale incident state, refetch and retry")
+		case errors.Is(err, routeincident.ErrInvalidInput):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, routeincident.ErrIdempotencyConflict):
+			writeError(w, http.StatusConflict, "idempotency key conflict")
+		case errors.Is(err, routeincident.ErrNoDatabase):
+			writeError(w, http.StatusServiceUnavailable, "database unavailable")
+		default:
+			writeError(w, http.StatusInternalServerError, "action failed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// dispatchActionByKind centralises the kind-to-dispatcher routing
+// so the handler stays a thin wrapper. The store methods are
+// defined in actions_exec.go.
+func dispatchActionByKind(
+	ctx context.Context,
+	store *routeincident.Store,
+	kind routeincident.ActionKind,
+	tenantID, incidentID string,
+	body routeincident.ActionRequest,
+	actor, ipHash string,
+	expectedVersion int64,
+) (*routeincident.ActionResponse, error) {
+	switch kind {
+	case routeincident.ActionRecover:
+		return store.DispatchRecover(ctx, tenantID, incidentID, actor, body.Reason, body.ConfirmationToken, body.IdempotencyKey, ipHash, expectedVersion)
+	case routeincident.ActionReprobe:
+		return store.DispatchReprobe(ctx, tenantID, incidentID, actor, body.Reason, body.ConfirmationToken, body.IdempotencyKey, ipHash, expectedVersion, body.Parameters)
+	case routeincident.ActionReleaseSlot:
+		return store.DispatchReleaseSlot(ctx, tenantID, incidentID, actor, body.Reason, body.ConfirmationToken, body.IdempotencyKey, ipHash, expectedVersion, body.Parameters)
+	case routeincident.ActionResetSlots:
+		return store.DispatchResetSlots(ctx, tenantID, incidentID, actor, body.Reason, body.ConfirmationToken, body.IdempotencyKey, ipHash, expectedVersion, body.Parameters)
+	case routeincident.ActionResetAvailability:
+		return store.DispatchResetAvailability(ctx, tenantID, incidentID, actor, body.Reason, body.ConfirmationToken, body.IdempotencyKey, ipHash, expectedVersion, body.Parameters)
+	case routeincident.ActionDirectUpstreamTest:
+		return store.DispatchDirectUpstreamTest(ctx, tenantID, incidentID, actor, body.Reason, body.ConfirmationToken, body.IdempotencyKey, ipHash, expectedVersion, body.Parameters)
+	case routeincident.ActionThroughGatewayTest:
+		return store.DispatchThroughGatewayTest(ctx, tenantID, incidentID, actor, body.Reason, body.ConfirmationToken, body.IdempotencyKey, ipHash, expectedVersion, body.Parameters)
+	default:
+		return nil, fmt.Errorf("%w: unsupported action kind %q", routeincident.ErrInvalidInput, kind)
+	}
+}
+
+// handleExport responds to GET /api/admin/route-incidents/{id}/export?run_id=...
+// Phase-2 evidence export. Builds the sanitized bundle, writes the
+// audit row, and returns the bundle with an integrity checksum.
+func (h *RouteIncidentsHandler) handleExport(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+	if runID == "" {
+		writeError(w, http.StatusBadRequest, "run_id is required")
+		return
+	}
+	reason := strings.TrimSpace(r.URL.Query().Get("reason"))
+	confirmToken := strings.TrimSpace(r.URL.Query().Get("confirmation_token"))
+	idemKey := strings.TrimSpace(r.URL.Query().Get("idempotency_key"))
+	if idemKey == "" {
+		// The dashboard always supplies one; we fall back to a
+		// deterministic key so a manual download doesn't double-
+		// audit. Production deployments are expected to pass an
+		// explicit idempotency_key from the client.
+		idemKey = "export-" + runID
+	}
+	actor, ipHash := actorFromRequest(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Confirm the incident belongs to this tenant; otherwise the
+	// export would leak cross-tenant data.
+	if inc, err := h.store.Get(ctx, tenantID, id); err != nil || inc == nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	export, err := h.store.BuildEvidenceExport(ctx, tenantID, runID, actor)
+	if err != nil {
+		if errors.Is(err, routeincident.ErrInvalidInput) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "export failed")
+		return
+	}
+	if export == nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	if err := h.store.RecordEvidenceExportAudit(ctx, tenantID, id, actor, reason, confirmToken, idemKey, ipHash, runID); err != nil {
+		// Audit failure must not leak the export — return 500 so
+		// the operator re-tries with an idempotent key.
+		writeError(w, http.StatusInternalServerError, "audit failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, export)
 }
 
 // handleStats responds to GET /api/admin/route-incidents/stats.
@@ -409,6 +651,72 @@ func riItoa(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// actorFromRequest extracts the authenticated user id from the
+// request's AuthContext (set by AdminMiddleware) plus the IP hash
+// for the audit row. We never store the raw IP — only its SHA-256
+// prefix. If the middleware didn't populate the user id (which
+// would be a programming error since the route is super-admin
+// only), we fall back to "unknown" so the audit row is still
+// attributed.
+func actorFromRequest(r *http.Request) (actor, ipHash string) {
+	actor = "unknown"
+	if auth := GetAuthContext(r); auth != nil {
+		if auth.Username != "" {
+			actor = auth.Username
+		} else if auth.UserID != 0 {
+			actor = fmt.Sprintf("user-%d", auth.UserID)
+		}
+	}
+	if v, ok := r.Context().Value(adminIPKey{}).(string); ok && v != "" {
+		ipHash = ipShortHash(v)
+	}
+	if ipHash == "" {
+		ipHash = ipShortHash(r.RemoteAddr)
+	}
+	return actor, ipHash
+}
+
+// adminIPKey is the request-context key for the caller IP. The
+// middleware that resolves a request typically puts the IP
+// directly in r.RemoteAddr, but a downstream proxy may populate
+// this context value to give the audit row a hashable source.
+// adminUserKey is unused — the user id comes from AuthContext
+// via the standard AdminMiddleware.
+type adminIPKey struct{}
+
+// ipShortHash is a short SHA-256 prefix (16 hex chars) — same
+// scheme as the domain layer's hashIP helper. We duplicate the
+// tiny implementation here rather than importing it to keep the
+// admin layer free of crypto dependencies.
+func ipShortHash(s string) string {
+	if s == "" {
+		return ""
+	}
+	h := sha256.New()
+	h.Write([]byte(s))
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:8])
+}
+
+// parseInt64Default is the int64 variant of parseIntDefault. The
+// default is returned for any malformed input.
+func parseInt64Default(s string, def int64) int64 {
+	if s == "" {
+		return def
+	}
+	n := int64(0)
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return def
+		}
+		n = n*10 + int64(c-'0')
+		if n > 1<<62 {
+			return def
+		}
+	}
+	return n
 }
 
 // sampleRequestsFor returns a small list of request IDs that

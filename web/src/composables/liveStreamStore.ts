@@ -94,13 +94,16 @@ export interface LiveStreamHealth {
 }
 
 export interface LiveStreamEnvelope {
-  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update'
+  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update' | 'incident_update'
   ts: string
   request?: LiveRequest
   requests?: LiveRequest[]
   snapshot?: LiveStreamSnapshot
   delta?: LiveStreamDelta
   health?: LiveStreamHealth
+  // 2026-07-13: route-incident diagnostic update. The shape is
+  // a sanitized RouteIncidentUpdate — see web/src/types/routeIncident.ts.
+  incident?: import('../types/routeIncident').RouteIncidentUpdate
 }
 
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' | 'unsupported'
@@ -286,12 +289,14 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     // Health-only envelope; state already updated above.
     return
   }
-  if (env.type === 'incident_update' && (env as LiveStreamEnvelope & { incident?: unknown }).incident) {
-    // 2026-07-13: route-incident diagnostic updates. The envelope
-    // is dynamically imported to avoid a hard cycle between
-    // liveStreamStore and the route-incident composable.
+  if (env.type === 'incident_update' && env.incident) {
+    // 2026-07-13: route-incident diagnostic updates. Forwarded
+    // to the useRouteIncidents reducer which maintains the per-
+    // lane index. We use a dynamic import to avoid a hard cycle
+    // between the live stream store and the route-incident
+    // composable.
     void import('./useRouteIncidents').then((mod) => {
-      mod.applyIncidentUpdate((env as unknown as { incident: Parameters<typeof mod.applyIncidentUpdate>[0] }).incident)
+      mod.applyIncidentUpdate(env.incident!)
     })
     return
   }
