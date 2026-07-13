@@ -181,6 +181,9 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	if err := db.ensureRouteIncidentSchema(migCtx); err != nil {
 		return nil, err
 	}
+	if err := db.ensureRouteIncidentPhase2Schema(migCtx); err != nil {
+		return nil, err
+	}
 	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
 		return nil, err
 	}
@@ -2757,5 +2760,88 @@ func (d *DB) ensureRouteIncidentSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("route_incident schema ensured (route_incidents + route_incident_events)")
+	return nil
+}
+
+// ensureRouteIncidentPhase2Schema mirrors
+// sql/migrations/startup/390_routing_audit_log.sql for startup
+// apply. Idempotent. Creates the append-only audit trail and the
+// diagnostic_runs table used by Phase-2 mutating actions and
+// evidence export.
+func (d *DB) ensureRouteIncidentPhase2Schema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS routing_audit_log (
+			id                      BIGSERIAL PRIMARY KEY,
+			incident_id             UUID REFERENCES route_incidents(id) ON DELETE SET NULL,
+			tenant_id               TEXT NOT NULL,
+			action                  TEXT NOT NULL
+				CHECK (action IN (
+					'direct_upstream_test', 'through_gateway_test',
+					'reprobe', 'release_slot', 'reset_slots',
+					'reset_availability', 'recover',
+					'evidence_export'
+				)),
+			actor                   TEXT NOT NULL,
+			reason                  TEXT NOT NULL,
+			confirmation_token_hash TEXT NOT NULL,
+			idempotency_key         TEXT NOT NULL,
+			request_payload         JSONB NOT NULL DEFAULT '{}'::jsonb,
+			pre_snapshot            JSONB NOT NULL DEFAULT '{}'::jsonb,
+			post_snapshot           JSONB NOT NULL DEFAULT '{}'::jsonb,
+			response_payload        JSONB NOT NULL DEFAULT '{}'::jsonb,
+			outcome                 TEXT NOT NULL
+				CHECK (outcome IN ('success', 'noop', 'failed')),
+			failure_reason          TEXT,
+			diagnostic_run_id       UUID,
+			actor_ip_hash           TEXT,
+			created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_routing_audit_log_idem
+			ON routing_audit_log (idempotency_key);
+		CREATE INDEX IF NOT EXISTS idx_routing_audit_log_incident_created
+			ON routing_audit_log (incident_id, created_at DESC)
+			WHERE incident_id IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_routing_audit_log_tenant_created
+			ON routing_audit_log (tenant_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_routing_audit_log_actor_created
+			ON routing_audit_log (actor, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS diagnostic_runs (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			incident_id     UUID NOT NULL REFERENCES route_incidents(id) ON DELETE CASCADE,
+			tenant_id       TEXT NOT NULL,
+			kind            TEXT NOT NULL
+				CHECK (kind IN (
+					'direct_upstream_test', 'through_gateway_test',
+					'reprobe', 'release_slot', 'reset_slots',
+					'reset_availability', 'recover'
+				)),
+			state           TEXT NOT NULL DEFAULT 'pending'
+				CHECK (state IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
+			route_key       JSONB NOT NULL,
+			parameters      JSONB NOT NULL DEFAULT '{}'::jsonb,
+			started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			finished_at     TIMESTAMPTZ,
+			result          JSONB NOT NULL DEFAULT '{}'::jsonb,
+			audit_log_id    BIGINT REFERENCES routing_audit_log(id) ON DELETE SET NULL,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_diagnostic_runs_incident
+			ON diagnostic_runs (incident_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_diagnostic_runs_tenant
+			ON diagnostic_runs (tenant_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_diagnostic_runs_state
+			ON diagnostic_runs (state, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_diagnostic_runs_kind_state
+			ON diagnostic_runs (kind, state, started_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("route_incident phase-2 schema ensured (routing_audit_log + diagnostic_runs)")
 	return nil
 }
