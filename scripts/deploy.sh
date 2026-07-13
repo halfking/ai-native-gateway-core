@@ -809,14 +809,14 @@ deploy_71() {
 # 例如: deploy_host 154
 deploy_host() {
   local target="$1"
-  local ssh_opt="" ssh_target="" bin_dir=""
+  local ssh_opt="" scp_opt="" ssh_target="" bin_dir=""
   phase "════════════ $target systemd 主机部署 ════════════"
 
   # 选择对应的 SSH_OPT 和 SERVER（根据 target 名称）
   case "$target" in
-    154) ssh_opt="$SSH_154_OPT"; ssh_target="$SERVER_154"; bin_dir="/opt/llm-gateway-go" ;;
-    186) ssh_opt="$SSH_186_OPT"; ssh_target="$SERVER_186"; bin_dir="/opt/llm-gateway-go" ;;
-    245) ssh_opt="$SSH_245_OPT"; ssh_target="$SERVER_245"; bin_dir="/opt/llm-gateway-go" ;;
+    154) ssh_opt="$SSH_154_OPT"; scp_opt="$SCP_154_OPT"; ssh_target="$SERVER_154"; bin_dir="/opt/llm-gateway-go" ;;
+    186) ssh_opt="$SSH_186_OPT"; scp_opt="$SCP_186_OPT"; ssh_target="$SERVER_186"; bin_dir="/opt/llm-gateway-go" ;;
+    245) ssh_opt="$SSH_245_OPT"; scp_opt="$SCP_245_OPT"; ssh_target="$SERVER_245"; bin_dir="/opt/llm-gateway-go" ;;
     *) err "deploy_host 不支持 target: $target"; return 1 ;;
   esac
 
@@ -829,10 +829,10 @@ deploy_host() {
   local bin_name="$BIN_NAME"
   info "scp $bin_name → $ssh_target:$bin_dir/"
   ssh $ssh_opt "$ssh_target" "mkdir -p $bin_dir/{data,logs,web}"
-  scp $ssh_opt "$bin_name" "$ssh_target:$bin_dir/$bin_name"
+  scp $scp_opt "$bin_name" "$ssh_target:$bin_dir/$bin_name"
 
   # 3) 上传 version.json
-  scp $ssh_opt "version.json" "$ssh_target:$bin_dir/version.json"
+  scp $scp_opt "version.json" "$ssh_target:$bin_dir/version.json"
 
   # 4) 上传 web/dist（如有）
   if [[ -d web/dist ]]; then
