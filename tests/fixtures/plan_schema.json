@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kx.local/schemas/deploy-plan-v1.json",
+  "title": "deploy plan output (canonical CLI)",
+  "description": "Pinned by tests/deploy_cli_test.sh AC-1. Field order, key set, and types are fixed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "target",
+    "support",
+    "service_manager",
+    "service_name",
+    "binary_path",
+    "web_path",
+    "health_url",
+    "ssh_host",
+    "ssh_key_env",
+    "rollback_policy",
+    "legacy_aliases"
+  ],
+  "properties": {
+    "target": {
+      "type": "string",
+      "description": "Canonical target key after legacy-alias resolution.",
+      "enum": ["154", "245", "186", "252", "kaixuan-1", "kaixuan-2", "kaixuan-3"]
+    },
+    "support": {
+      "type": "string",
+      "enum": ["canonical", "retired", "deferred", "sops-only", "unsupported"]
+    },
+    "service_manager": {
+      "type": "string",
+      "enum": ["systemd", "k3s", "launchd", ""]
+    },
+    "service_name": {
+      "type": "string"
+    },
+    "binary_path": {
+      "type": "string"
+    },
+    "web_path": {
+      "type": "string"
+    },
+    "health_url": {
+      "type": "string"
+    },
+    "ssh_host": {
+      "type": "string"
+    },
+    "ssh_key_env": {
+      "type": "string",
+      "description": "Name of the SSH_KEY_<TARGET> env var expected by ssh/scp wrappers."
+    },
+    "rollback_policy": {
+      "type": "string",
+      "enum": ["versioned", "runbook", "refuse"]
+    },
+    "legacy_aliases": {
+      "description": "Array of strings OR a single string for legacy_aliases (kept permissive for now).",
+      "oneOf": [
+        { "type": "array", "items": { "type": "string" } },
+        { "type": "string" }
+      ]
+    }
+  }
+}
