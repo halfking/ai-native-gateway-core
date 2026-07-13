@@ -823,3 +823,172 @@ func mapFinishReasonToAnthropic(reason string) string {
 		return "end_turn"
 	}
 }
+
+// ─── Gemini Native Response Serializer (audit-gateway-gemini, 2026-07-13) ─────
+
+// SerializeGeminiResponse serializes an InternalResponse into a Gemini
+// generateContent response body.
+//
+// Gemini response shape:
+//
+//	{
+//	  "candidates": [{
+//	    "content": {"parts": [...], "role": "model"},
+//	    "finishReason": "STOP",
+//	    "index": 0
+//	  }],
+//	  "usageMetadata": {"promptTokenCount": ..., "candidatesTokenCount": ..., "totalTokenCount": ...},
+//	  "modelVersion": "..."
+//	}
+//
+// audit-gateway-gemini (2026-07-13): Completes the gateway-side of the
+// Gemini native protocol. Used by handler_gemini.go when converting
+// upstream OpenAI/Anthropic responses back to Gemini-native format.
+func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]byte, error) {
+	if irResp == nil {
+		return nil, fmt.Errorf("response is nil")
+	}
+
+	model := irResp.Model
+	if clientModel != "" {
+		model = clientModel
+	}
+
+	candidate := map[string]any{
+		"index": 0,
+	}
+
+	parts := make([]map[string]any, 0)
+	for _, c := range irResp.Content {
+		switch c.Type {
+		case "text":
+			if c.Text != "" {
+				parts = append(parts, map[string]any{"text": c.Text})
+			}
+		case "tool_use":
+			if c.ID != "" && c.Name != "" {
+				var args any = map[string]any{}
+				if c.Input != nil {
+					var parsed any
+					if err := json.Unmarshal(c.Input, &parsed); err == nil {
+						args = parsed
+					}
+				}
+				parts = append(parts, map[string]any{
+					"functionCall": map[string]any{
+						"name": c.Name,
+						"args": args,
+					},
+				})
+			}
+		case "thinking":
+			if c.Thinking != "" {
+				parts = append(parts, map[string]any{"thought": c.Thinking})
+			}
+		}
+	}
+
+	emittedToolIDs := make(map[string]bool)
+	for _, c := range irResp.Content {
+		if c.Type == "tool_use" {
+			emittedToolIDs[c.ID] = true
+		}
+	}
+	for _, tc := range irResp.ToolCalls {
+		if tc.ID == "" || tc.Name == "" {
+			continue
+		}
+		if emittedToolIDs[tc.ID] {
+			continue
+		}
+		var args any = map[string]any{}
+		if tc.Arguments != "" {
+			var parsed any
+			if err := json.Unmarshal([]byte(tc.Arguments), &parsed); err == nil {
+				args = parsed
+			}
+		}
+		parts = append(parts, map[string]any{
+			"functionCall": map[string]any{
+				"name": tc.Name,
+				"args": args,
+			},
+		})
+	}
+
+	if len(parts) > 0 {
+		candidate["content"] = map[string]any{
+			"role":  "model",
+			"parts": parts,
+		}
+	}
+
+	if irResp.FinishReason != "" {
+		candidate["finishReason"] = mapFinishReasonToGemini(irResp.FinishReason)
+	}
+
+	out := map[string]any{
+		"candidates":    []map[string]any{candidate},
+		"usageMetadata": buildGeminiResponseUsageMetadata(&irResp.Usage),
+	}
+
+	if model != "" {
+		out["modelVersion"] = model
+	}
+
+	return json.Marshal(out)
+}
+
+// buildGeminiResponseUsageMetadata is the non-stream counterpart of
+// buildGeminiUsageMetadata in stream.go. Maps IR ResponseUsage → Gemini
+// usageMetadata with modality-aware breakdowns.
+func buildGeminiResponseUsageMetadata(usage *ResponseUsage) map[string]any {
+	md := map[string]any{
+		"promptTokenCount":     usage.PromptTokens,
+		"candidatesTokenCount": usage.CompletionTokens,
+		"totalTokenCount":      usage.TotalTokens,
+	}
+
+	var promptDetails []map[string]any
+	if usage.ImageTokens != nil && *usage.ImageTokens > 0 {
+		promptDetails = append(promptDetails, map[string]any{
+			"modality":   "IMAGE",
+			"tokenCount": *usage.ImageTokens,
+		})
+	}
+	if usage.AudioTokens != nil && *usage.AudioTokens > 0 {
+		promptDetails = append(promptDetails, map[string]any{
+			"modality":   "AUDIO",
+			"tokenCount": *usage.AudioTokens,
+		})
+	}
+	if len(promptDetails) > 0 {
+		md["promptTokensDetails"] = promptDetails
+	}
+
+	if usage.CacheReadTokens != nil && *usage.CacheReadTokens > 0 {
+		md["cachedContentTokenCount"] = *usage.CacheReadTokens
+	}
+
+	if usage.ReasoningTokens != nil && *usage.ReasoningTokens > 0 {
+		md["thoughtsTokenCount"] = *usage.ReasoningTokens
+	}
+
+	return md
+}
+
+// mapFinishReasonToGemini converts IR/OpenAI finish reasons to Gemini form.
+func mapFinishReasonToGemini(reason string) string {
+	switch reason {
+	case "stop":
+		return "STOP"
+	case "length":
+		return "MAX_TOKENS"
+	case "content_filter":
+		return "SAFETY"
+	case "tool_calls":
+		return "STOP" // Gemini emits STOP with functionCall parts
+	default:
+		return "STOP"
+	}
+}
