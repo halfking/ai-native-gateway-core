@@ -29,8 +29,7 @@ func TestRequestLogsSource(t *testing.T) {
 		t.Fatalf("requestLogsSource(7) = %q/%q", source, alias)
 	}
 	source, alias = requestLogsSource(30)
-	want := "(SELECT * FROM request_logs_hot UNION ALL SELECT * FROM request_logs) AS r"
-	if source != want || alias != "r" {
+	if source != "request_logs_with_current_month AS r" || alias != "r" {
 		t.Fatalf("requestLogsSource(30) = %q/%q", source, alias)
 	}
 }

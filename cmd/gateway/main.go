@@ -1128,7 +1128,7 @@ func main() {
 		// 2026-07-13: backfill hourly credit consumption buckets so the
 		// admin dashboard "总积分消耗" KPI is ready immediately on startup.
 		// Idempotent: ON CONFLICT DO UPDATE SET credits = EXCLUDED
-		// converges to usage_ledger.credits_charged source-of-truth values.
+		// converges to request_logs.credits_charged source-of-truth values.
 		// Errors are logged but not fatal — dashboard degrades to zero hint
 		// when the bucket table is empty.
 		go func() {
