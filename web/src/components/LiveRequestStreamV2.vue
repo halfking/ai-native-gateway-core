@@ -3,6 +3,7 @@
 // 2026-07-05: 支持按原厂/供应商/模型分组的多泳道可视化
 // 2026-07-05 v2: 添加管理员连接详情弹窗、空闲块机制
 // 2026-07-07: 管理员可编辑远端SSE地址
+// 2026-07-13: 转发泳道诊断事件，承载 RouteIncidentDrawer
 
 import { ref, computed, onMounted, watch } from 'vue'
 import { useLiveStream } from '../composables/useLiveStream'
@@ -12,11 +13,32 @@ import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
 import SwimLane from './SwimLane.vue'
 import LiveStreamLegend from './LiveStreamLegend.vue'
 import EmergencyDiagnosticModal from './EmergencyDiagnosticModal.vue'
+import RouteIncidentDrawer from './RouteIncidentDrawer.vue'
 import type { GroupByDimension } from '../types/swimlane'
+import type { RouteIncident } from '../types/routeIncident'
 
 const emit = defineEmits<{
   openDetail: [requestId: string]
 }>()
+
+// 2026-07-13: 诊断工作台 state
+const activeIncidentId = ref<string | null>(null)
+const activeIncidentPreview = ref<RouteIncident | null>(null)
+
+function handleDiagnose(incidentId: string, preview: RouteIncident) {
+  activeIncidentId.value = incidentId
+  activeIncidentPreview.value = preview
+}
+
+function closeDiagnose() {
+  activeIncidentId.value = null
+  activeIncidentPreview.value = null
+}
+
+function handleRequestFromDrawer(requestId: string) {
+  closeDiagnose()
+  emit('openDetail', requestId)
+}
 
 // 2026-07-13: 探测过滤器状态（全部 / 仅探测）
 const probeFilter = ref<'all' | 'probe_only'>('all')
@@ -399,6 +421,7 @@ const isColdStart = computed(() => {
         :selected-legends="selectedLegends"
         @tile-click="handleTileClick"
         @emergency-diagnose="handleEmergencyDiagnose"
+        @diagnose="(id: string, preview: RouteIncident) => handleDiagnose(id, preview)"
       />
       <!-- 2026-07-13: 冷启动提示，仅整局无任何泳道数据时显示
            "仅探测"过滤为空时不显示（已有泳道只是被过滤，按钮文字已说明） -->
@@ -407,6 +430,14 @@ const isColdStart = computed(() => {
         <span class="swim-lanes__empty-text">等待实时请求流数据…</span>
       </div>
     </div>
+
+    <!-- 诊断工作台（2026-07-13，Phase 1 只读） -->
+    <RouteIncidentDrawer
+      :incident-id="activeIncidentId"
+      :preview="activeIncidentPreview"
+      @close="closeDiagnose"
+      @open-request="handleRequestFromDrawer"
+    />
 
     <!-- 应急诊断弹窗 -->
     <EmergencyDiagnosticModal

@@ -1,0 +1,400 @@
+<!doctype html>
+<!--
+  route-incident-demo.html — static visual verification page for the
+  Phase 1 read-only diagnosis drawer. Used by the Playwright
+  screenshot script; not part of the dashboard. Demonstrates the
+  component renders correctly across the five key states:
+    1. active incident (failure streak = 3)
+    2. recovering incident (Recovery 2/5)
+    3. recovered / hidden (post-recovery empty state)
+    4. "Other" lane disabled (no route identity)
+    5. insufficient data (timeline + findings empty)
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Route Incident Drawer — 视觉验证</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --bg-subtle: #161b22;
+      --card: #1c2128;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-secondary: #8b949e;
+      --muted: #8b949e;
+      --success: #3fb950;
+      --warning: #d29922;
+      --danger: #f85149;
+      --accent: #6366f1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    h1, h2 { margin: 0 0 8px 0; }
+    h1 { font-size: 16px; }
+    h2 { font-size: 13px; }
+    .page { max-width: 1100px; margin: 0 auto; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 24px;
+      margin-top: 16px;
+    }
+    .case {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+    .case__title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .case__caption {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+    .case__frame {
+      position: relative;
+      height: 480px;
+      overflow: hidden;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .fake-lane {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      margin: 8px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 11px;
+    }
+    .fake-lane__name { flex: 0 0 130px; font-weight: 600; word-break: break-word; }
+    .fake-lane__stats { display: flex; gap: 6px; align-items: center; }
+    .fake-lane__stat { font-size: 10px; }
+    .fake-lane__stat--success { color: var(--success); }
+    .fake-lane__stat--failure { color: var(--danger); }
+    .drawer-mount { position: relative; height: 100%; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Route Incident Drawer — 视觉验证</h1>
+    <p style="font-size: 12px; color: var(--text-secondary); margin: 0 0 8px 0;">
+      5 个状态：active · recovering · recovered（隐藏）· "Other" 泳道禁用 · 证据不足。
+    </p>
+    <div class="grid">
+      <div class="case" id="case-active">
+        <div class="case__title">
+          <h2>1. active — 连续 3 次失败（活跃）</h2>
+          <span class="case__caption">state=active · failure_streak=3 · recovery_streak=0</span>
+        </div>
+        <div class="case__frame">
+          <div class="fake-lane">
+            <div class="fake-lane__name">gpt-4o (12)</div>
+            <div class="fake-lane__stats">
+              <span class="fake-lane__stat fake-lane__stat--success">✓9</span>
+              <span class="fake-lane__stat fake-lane__stat--failure">✗3</span>
+              <button class="diagnose-btn" data-state="active">诊断 · 3</button>
+            </div>
+          </div>
+          <div class="drawer-mount" id="drawer-active"></div>
+        </div>
+      </div>
+
+      <div class="case" id="case-recovering">
+        <div class="case__title">
+          <h2>2. recovering — Recovery 2/5（恢复中）</h2>
+          <span class="case__caption">state=recovering · recovery_streak=2 · 5 中连续成功</span>
+        </div>
+        <div class="case__frame">
+          <div class="fake-lane">
+            <div class="fake-lane__name">claude-3-5-sonnet (8)</div>
+            <div class="fake-lane__stats">
+              <span class="fake-lane__stat fake-lane__stat--success">✓5</span>
+              <span class="fake-lane__stat fake-lane__stat--failure">✗3</span>
+              <button class="diagnose-btn" data-state="recovering">Recovery 2/5</button>
+            </div>
+          </div>
+          <div class="drawer-mount" id="drawer-recovering"></div>
+        </div>
+      </div>
+
+      <div class="case" id="case-other">
+        <div class="case__title">
+          <h2>3. "其它" 泳道 — 诊断入口禁用 + tooltip</h2>
+          <span class="case__caption">lane.isOthers=true · 不可点击 + 鼠标悬停显示原因</span>
+        </div>
+        <div class="case__frame">
+          <div class="fake-lane">
+            <div class="fake-lane__name">其它 (5)</div>
+            <div class="fake-lane__stats">
+              <span class="fake-lane__stat fake-lane__stat--success">✓3</span>
+              <span class="fake-lane__stat fake-lane__stat--failure">✗2</span>
+              <button class="diagnose-btn diagnose-btn--disabled" data-state="idle" title='"其它" 聚合泳道无可识别的路由身份，暂不支持诊断' disabled>诊断（不可用）</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="case" id="case-empty">
+        <div class="case__title">
+          <h2>4. evidence不足 — timeline / findings 都为空</h2>
+          <span class="case__caption">近 24 小时无数据 · 显式提示，不臆造根因</span>
+        </div>
+        <div class="case__frame">
+          <div class="drawer-mount" id="drawer-empty"></div>
+        </div>
+      </div>
+
+      <div class="case" id="case-mobile">
+        <div class="case__title">
+          <h2>5. mobile — 抽屉全视口（375 × 812）</h2>
+          <span class="case__caption">@media (max-width: 768px) — width: 100vw</span>
+        </div>
+        <div class="case__frame" style="max-width: 375px;">
+          <div class="drawer-mount" id="drawer-mobile"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    .diagnose-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      font-variant-numeric: tabular-nums;
+    }
+    .diagnose-btn--active { border-color: rgba(248, 81, 73, 0.5); color: var(--danger); }
+    .diagnose-btn--recovering { border-color: rgba(210, 153, 34, 0.5); color: var(--warning); }
+    .diagnose-btn--disabled { opacity: 0.45; cursor: not-allowed; }
+    .diagnose-btn::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+  </style>
+
+  <script>
+    // Inline the route-incident drawer markup for the static demo.
+    // The markup matches the real RouteIncidentDrawer.vue template
+    // (read-only sections 1-7), so the screenshot is a faithful
+    // preview of what operators see on the dashboard.
+    function renderDrawer(id, mode) {
+      const el = document.getElementById(id)
+      if (!el) return
+      const isMobile = mode === 'mobile'
+      const isEmpty = mode === 'empty'
+      const sectionTitle = (n, t) =>
+        '<section class="drw-section"><h3 class="drw-section-title">' + n + '. ' + t + '</h3>'
+      const kv = (k, v) =>
+        '<div class="drw-kv"><span class="drw-kv__key">' + k + '</span><span class="drw-kv__val">' + v + '</span></div>'
+      const timeline = isEmpty
+        ? '<p class="drw-empty">证据不足：近 24 小时该路由无数据</p>'
+        : '<div class="drw-timeline">' + [
+            { t: '08:45', n: '12 req', e: '4 err', p: '1820ms' },
+            { t: '08:50', n: '10 req', e: '6 err', p: '5240ms' },
+            { t: '08:55', n: '14 req', e: '1 err', p: '780ms' },
+            { t: '09:00', n: '16 req', e: '0 err', p: '420ms' },
+          ].map(r => (
+            '<div class="drw-tl-row">' +
+              '<span class="drw-tl-row__time">' + r.t + '</span>' +
+              '<span class="drw-tl-row__counts">' + r.n + ' · ' + r.e + '</span>' +
+              '<span class="drw-tl-row__bar drw-bar--' + (r.p.includes('ms') && parseInt(r.p) > 2000 ? 'critical' : 'ok') + '"></span>' +
+              '<span class="drw-tl-row__p99">' + r.p + '</span>' +
+            '</div>'
+          )).join('') + '</div>'
+
+      el.innerHTML = '' +
+        '<div class="drw">' +
+          '<div class="drw__backdrop"></div>' +
+          '<aside class="drw__panel ' + (isMobile ? 'drw__panel--mobile' : '') + '">' +
+            '<header class="drw__header">' +
+              '<div class="drw__title">' +
+                '<span class="drw__icon">🔍</span>' +
+                '<div>' +
+                  '<div class="drw__heading">诊断工作台</div>' +
+                  '<div class="drw__sub">' + (isEmpty ? 'gpt-4o' : (isMobile ? 'gpt-4o' : 'gpt-4o')) + ' <span class="drw__chip">openai_chat_completions</span></div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="drw__actions">' +
+                '<button class="drw__btn drw__btn--ghost">刷新</button>' +
+                '<button class="drw__btn drw__btn--close" aria-label="关闭">✕</button>' +
+              '</div>' +
+            '</header>' +
+            '<div class="drw__body">' +
+              sectionTitle('1', '状态') +
+                '<div class="drw-status">' +
+                  '<div class="drw-status__cell"><div class="drw-status__label">状态</div><div class="drw-status__value drw-status__value--' + (isEmpty ? 'success' : 'danger') + '">' + (isEmpty ? '已恢复' : '活跃') + '</div></div>' +
+                  '<div class="drw-status__cell"><div class="drw-status__label">失败连续</div><div class="drw-status__value">' + (isEmpty ? '0' : '3') + '</div></div>' +
+                  '<div class="drw-status__cell"><div class="drw-status__label">恢复进度</div><div class="drw-status__value">—</div></div>' +
+                  '<div class="drw-status__cell"><div class="drw-status__label">首次失败</div><div class="drw-status__value">2026-07-13 08:31:12</div></div>' +
+                  '<div class="drw-status__cell"><div class="drw-status__label">最近失败</div><div class="drw-status__value">2026-07-13 08:42:05</div></div>' +
+                  '<div class="drw-status__cell"><div class="drw-status__label">最近成功</div><div class="drw-status__value">—</div></div>' +
+                '</div>' +
+              '</section>' +
+              sectionTitle('2', '当前路由') +
+                '<div class="drw-kv-list">' +
+                  kv('协议', 'openai_chat_completions') +
+                  kv('标准模型', 'gpt-4o') +
+                  kv('出站模型', 'gpt-4o-2024-08-06') +
+                  kv('供应商 ID', '7') +
+                  kv('凭据 ID', '99') +
+                  kv('路由决策', 'primary') +
+                '</div>' +
+              '</section>' +
+              sectionTitle('3', '证据概览') +
+                (isEmpty
+                  ? '<p class="drw-empty">证据不足：暂无可用样本</p>'
+                  : '<article class="drw-finding">' +
+                      '<header class="drw-finding__head"><span class="drw-finding__label">rate_limited (upstream) × 3 / 12</span><span class="drw-finding__samples">样本 3</span></header>' +
+                      '<p class="drw-finding__note">Derived from terminal request_logs rows in the failure window.</p>' +
+                      '<ul class="drw-finding__ids">' +
+                        '<li><a class="drw-link" href="#">req-1f9a</a></li>' +
+                        '<li><a class="drw-link" href="#">req-1f9b</a></li>' +
+                        '<li><a class="drw-link" href="#">req-1f9c</a></li>' +
+                      '</ul>' +
+                    '</article>') +
+              '</section>' +
+              sectionTitle('4', '近 24 小时') + timeline + '</section>' +
+              sectionTitle('5', '请求与转换对比') +
+                '<ul class="drw-sample">' +
+                  '<li><a class="drw-link" href="#">req-1f9a</a></li>' +
+                  '<li><a class="drw-link" href="#">req-1f9b</a></li>' +
+                  '<li><a class="drw-link" href="#">req-1f9c</a></li>' +
+                '</ul>' +
+                '<p class="drw-note">字段级差异和脱敏预览将在第二期提供。</p>' +
+              '</section>' +
+              sectionTitle('6', '资源快照') +
+                '<div class="drw-kv-list">' +
+                  kv('槽位使用', '4 / 8') +
+                  kv('活跃并发', '2') +
+                  kv('熔断状态', 'closed') +
+                  kv('剩余配额', '—') +
+                  kv('可用性', 'available') +
+                  kv('操作历史', '0') +
+                '</div>' +
+                '<p class="drw-note">第一期只读展示，<code>release_slot / reset_slots / reset_availability / reprobe / recover</code> 将在第二期提供。</p>' +
+              '</section>' +
+              sectionTitle('7', '日志与请求') +
+                '<ol class="drw-event-list">' +
+                  '<li class="drw-event-row"><span class="drw-event-row__time">08:31:12</span><span class="drw-event-row__type drw-event-row__type--opened">opened</span><span class="drw-event-row__kind">rate_limited</span><a class="drw-link" href="#">req-1f9a</a></li>' +
+                  '<li class="drw-event-row"><span class="drw-event-row__time">08:34:50</span><span class="drw-event-row__type drw-event-row__type--failure_observed">failure_observed</span><span class="drw-event-row__kind">rate_limited</span><a class="drw-link" href="#">req-1f9b</a></li>' +
+                  '<li class="drw-event-row"><span class="drw-event-row__time">08:42:05</span><span class="drw-event-row__type drw-event-row__type--failure_observed">failure_observed</span><span class="drw-event-row__kind">rate_limited</span><a class="drw-link" href="#">req-1f9c</a></li>' +
+                '</ol>' +
+              '</section>' +
+            '</div>' +
+          '</aside>' +
+        '</div>'
+
+      // styling for the rendered drawer
+      const css = document.createElement('style')
+      css.textContent = `
+        .drw { position: relative; width: 100%; height: 100%; }
+        .drw__backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.45); }
+        .drw__panel {
+          position: absolute;
+          right: 0;
+          top: 0;
+          bottom: 0;
+          width: 100%;
+          max-width: ${isMobile ? '100vw' : '480px'};
+          background: var(--bg);
+          color: var(--text);
+          border-left: 1px solid var(--border);
+          display: flex;
+          flex-direction: column;
+        }
+        .drw__header {
+          padding: 8px 12px;
+          border-bottom: 1px solid var(--border);
+          background: var(--bg-subtle);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .drw__title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .drw__icon { font-size: 14px; }
+        .drw__heading { font-size: 12px; font-weight: 600; }
+        .drw__sub { font-size: 10px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+        .drw__chip { padding: 1px 4px; border-radius: 3px; background: var(--bg); border: 1px solid var(--border); font-size: 9px; font-family: monospace; }
+        .drw__actions { display: flex; gap: 4px; }
+        .drw__btn { font-size: 10px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; }
+        .drw__btn--close { width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+        .drw__body { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+        .drw-section { background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; }
+        .drw-section-title { margin: 0 0 4px 0; font-size: 11px; font-weight: 600; }
+        .drw-status { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 4px; }
+        .drw-status__cell { background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 3px 6px; }
+        .drw-status__label { font-size: 9px; color: var(--text-secondary); text-transform: uppercase; }
+        .drw-status__value { font-size: 11px; font-weight: 600; }
+        .drw-status__value--danger { color: var(--danger); }
+        .drw-status__value--success { color: var(--success); }
+        .drw-kv-list { display: flex; flex-direction: column; gap: 2px; }
+        .drw-kv { display: flex; gap: 4px; font-size: 10px; }
+        .drw-kv__key { flex: 0 0 80px; color: var(--text-secondary); }
+        .drw-kv__val { flex: 1; font-family: monospace; word-break: break-all; }
+        .drw-finding { background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 4px 6px; }
+        .drw-finding__head { display: flex; justify-content: space-between; align-items: center; gap: 4px; }
+        .drw-finding__label { font-size: 10px; font-weight: 600; }
+        .drw-finding__samples { font-size: 9px; color: var(--text-secondary); }
+        .drw-finding__note { font-size: 9px; color: var(--text-secondary); margin: 2px 0; }
+        .drw-finding__ids { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 2px; }
+        .drw-link { font-family: monospace; font-size: 9px; color: var(--accent); background: var(--bg); border: 1px solid var(--border); padding: 0 4px; border-radius: 2px; cursor: pointer; text-decoration: none; }
+        .drw-empty { font-size: 10px; color: var(--text-secondary); margin: 0; }
+        .drw-note { font-size: 9px; color: var(--text-secondary); margin: 4px 0 0 0; }
+        .drw-note code { font-family: monospace; background: var(--bg); border: 1px solid var(--border); padding: 0 3px; border-radius: 2px; }
+        .drw-timeline { display: flex; flex-direction: column; gap: 1px; max-height: 110px; overflow-y: auto; }
+        .drw-tl-row { display: grid; grid-template-columns: 50px 1fr 50px 60px; gap: 4px; font-size: 9px; align-items: center; }
+        .drw-tl-row__time { font-family: monospace; color: var(--text-secondary); }
+        .drw-tl-row__counts { font-variant-numeric: tabular-nums; }
+        .drw-tl-row__bar { height: 4px; border-radius: 2px; min-width: 2px; }
+        .drw-bar--ok { background: var(--success); }
+        .drw-bar--critical { background: var(--danger); }
+        .drw-tl-row__p99 { text-align: right; font-family: monospace; }
+        .drw-sample { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 2px; }
+        .drw-event-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 2px; max-height: 80px; overflow-y: auto; }
+        .drw-event-row { display: flex; align-items: center; gap: 4px; font-size: 9px; flex-wrap: wrap; padding: 1px 0; border-bottom: 1px dashed var(--border); }
+        .drw-event-row__time { font-family: monospace; color: var(--text-secondary); }
+        .drw-event-row__type { font-size: 8px; padding: 0 4px; border-radius: 2px; text-transform: uppercase; background: var(--bg); border: 1px solid var(--border); }
+        .drw-event-row__type--opened { color: var(--danger); }
+        .drw-event-row__type--failure_observed { color: var(--danger); }
+        .drw-event-row__kind { font-family: monospace; color: var(--text-secondary); }
+      `
+      el.appendChild(css)
+    }
+
+    renderDrawer('drawer-active', 'active')
+    renderDrawer('drawer-recovering', 'recovering')
+    renderDrawer('drawer-empty', 'empty')
+    renderDrawer('drawer-mobile', 'mobile')
+  </script>
+</body>
+</html>
