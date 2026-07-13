@@ -210,6 +210,8 @@ export default {
     goPricingLink: '前往套餐与充值',
     noSubscriptionHint: '开通月包后可优先消耗订阅额度。',
     statCredits: '积分消耗',
+    statCreditsConsumed: '总积分消耗',
+    statCreditsConsumedSub: '近 {n} 天 · 按定价 × token 计算',
     statRequests: '请求次数',
     statAvailable: '可用积分',
     recentDaysSub: '近 {n} 天',

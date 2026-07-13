@@ -80,12 +80,13 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var summary struct {
-		TotalRequests      int     `json:"total_requests"`
-		TotalPromptTokens  int     `json:"total_prompt_tokens"`
-		TotalCompletionTok int     `json:"total_completion_tokens"`
-		TotalCostUSD       float64 `json:"total_cost_usd"`
-		AvgLatencyMs       float64 `json:"avg_latency_ms"`
-		SuccessRate        float64 `json:"success_rate"`
+		TotalRequests       int     `json:"total_requests"`
+		TotalPromptTokens   int     `json:"total_prompt_tokens"`
+		TotalCompletionTok  int     `json:"total_completion_tokens"`
+		TotalCostUSD        float64 `json:"total_cost_usd"`
+		TotalCreditsCharged int64   `json:"total_credits_charged"`
+		AvgLatencyMs        float64 `json:"avg_latency_ms"`
+		SuccessRate         float64 `json:"success_rate"`
 	}
 	tid := EffectiveTenantIDAll(r) // Use All version for super_admin to see all tenants
 	whereClause := "ts >= now() - ($1 * INTERVAL '1 day')"
@@ -100,6 +101,7 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 			COALESCE(SUM(prompt_tokens), 0)                 AS total_prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0)             AS total_completion_tokens,
 			COALESCE(SUM(cost_usd), 0.0)                    AS total_cost_usd,
+			COALESCE(SUM(credits_charged), 0)::bigint      AS total_credits_charged,
 			COALESCE(AVG(latency_ms), 0.0)                  AS avg_latency_ms,
 			COALESCE(
 				SUM(CASE WHEN success THEN 1 ELSE 0 END)::FLOAT
@@ -113,6 +115,7 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 		&summary.TotalPromptTokens,
 		&summary.TotalCompletionTok,
 		&summary.TotalCostUSD,
+		&summary.TotalCreditsCharged,
 		&summary.AvgLatencyMs,
 		&summary.SuccessRate,
 	); err != nil {
@@ -123,6 +126,7 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 				"total_prompt_tokens":     0,
 				"total_completion_tokens": 0,
 				"total_cost_usd":          0.0,
+				"total_credits_charged":   0,
 				"avg_latency_ms":          0.0,
 				"success_rate":            0.0,
 				"degraded":                true,
