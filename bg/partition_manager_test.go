@@ -76,8 +76,11 @@ func TestArchiveSpecsScheduling(t *testing.T) {
 	// are routing_decision_log (day 1) and credential_model_index
 	// (day 3) — both small-data jobs that drop partitions after a
 	// 2-month hold.
-	if len(specs) != 2 {
-		t.Fatalf("archiveSpecs() returned %d entries, want 2 (after migration 331)", len(specs))
+	//
+	// 2026-07-13 (Migration 391): state table partition drop added
+	// on day 2. Total 3 archive specs.
+	if len(specs) != 3 {
+		t.Fatalf("archiveSpecs() returned %d entries, want 3 (after migration 391)", len(specs))
 	}
 
 	// Each spec must carry a non-empty fnName and a label.
@@ -102,9 +105,10 @@ func TestArchiveSpecsScheduling(t *testing.T) {
 		}
 	}
 
-	// The post-331 expected archive functions.
+	// The post-391 expected archive functions.
 	expected := []string{
 		"archive_routing_decision_log",
+		"drop_old_state_partitions",
 		"archive_credential_model_index",
 	}
 	for _, fn := range expected {
