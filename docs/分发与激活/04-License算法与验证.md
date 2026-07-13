@@ -1,5 +1,9 @@
 # 04. License 算法与验证
 
+> 当前 main 分支（2026-07-13）已落地的算法与验证实现与本文一致；
+> 离线 / 在线的过期/吊销检查在 `licensing/offline.go::VerifyOfflineLicense`
+> 已补完（第四轮审计）。
+
 ## 一、算法选型
 
 | 用途 | 算法 | 选型理由 |
@@ -161,32 +165,10 @@ type Fingerprint struct {
 
 ## 六、时钟防回拨（M1-C10）
 
-```go
-// licensing/clock.go（待实现）
-
-type ClockGuard struct {
-    storage     ClockStorage
-    tolerance   time.Duration  // 默认 5 分钟
-}
-
-func (g *ClockGuard) ValidateLicense() error {
-    now := time.Now()
-    
-    // 1. 检查启动时间倒退
-    lastBoot, err := g.storage.LastBootTime()
-    if err == nil && now.Before(lastBoot) {
-        return fmt.Errorf("clock rollback detected")
-    }
-    
-    // 2. 检查 license 验证时间倒退
-    lastVerify, err := g.storage.LastKnownLicenseVerify()
-    if err == nil && now.Before(lastVerify.Add(-g.tolerance)) {
-        return fmt.Errorf("license verify time rolled back")
-    }
-    
-    return nil
-}
-```
+> 已实现：`licensing/clock.go` 含 `ClockGuard` 结构，缺接口时通过
+> `restricted_mode.go` 间接施加引导。`ClockGuard.ValidateLicense`
+> 同时跟踪上一次启动时间与上一次 license 验证时间，与本节算法一致；
+> 偏移超过 `tolerance`（默认 5 分钟）即判定回拨。
 
 ## 七、License 验证时机
 
@@ -231,28 +213,20 @@ func (v *Validator) ValidateLicense(ctx context.Context, licenseKey string) (*Li
 
 ## 九、双版本 License 强制策略
 
+> **2026-07-13 修订**：当前仓库不再使用 `cmd/gateway-master/main.go` /
+> `cmd/gateway-client/main.go` 双 build tag 的物理隔离 — 公开入口唯一
+> 为 `cmd/gateway/main.go`。License 强制策略改为：
+> - **Master side（`cmd/license-authority`）**：跳过本地 license 校验，
+>   仅校验 license key 自身合法性。
+> - **Customer side（`installer` + `cmd/gateway`）**：启动期
+>   `licensing/restricted_mode.go` 在缺失 / 过期 / 吊销 / 指纹不匹配
+>   时返回 503 + UI 引导 `/setup`。
+
 | 版本 | 强制策略 | 实现 |
 |------|---------|------|
-| **Master** | ❌ 跳过 | `licensing.SkipEnforcement()` |
-| **Customer** | ✅ 强制 | `licensing.EnforceAtStartup()` |
-
-```go
-// cmd/gateway-master/main.go
-// +build master
-func main() {
-    licensing.SkipEnforcement()
-    // ...
-}
-
-// cmd/gateway-client/main.go
-// +build customer
-func main() {
-    if err := licensing.EnforceAtStartup(); err != nil {
-        log.Fatalf("license validation failed: %v", err)
-    }
-    // ...
-}
-```
+| **Master / Authority** | ❌ 不本地强制 | `cmd/license-authority/main.go` |
+| **Customer gateway** | ✅ 强制 | `licensing/restricted_mode.go` |
+| **Customer installer** | ✅ 安装期写入 | `installer/cmd/llm-gw-installer/activate.go` |
 
 ## 十、防破解加固（M3-C11/C12/C13）
 
