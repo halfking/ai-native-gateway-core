@@ -39,7 +39,12 @@ type StateObserver interface {
 	// injected probe submitter. The supplied tenantID is propagated onto
 	// the emitted request_logs row (and downstream SSE envelopes) so the
 	// probe is attributed to the requesting tenant rather than "system".
-	UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID string)
+	//
+	// billingMode is the candidate's model_offers.billing_mode ("free",
+	// "per_token", ...). When it is "free" the manager tolerates transient
+	// failures (does not flip Available=false / cooling) so the credential
+	// stays routable and is only soft-demoted by RecentSuccessRate.
+	UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID, billingMode string)
 
 	// UpdateFromProbe applies an authoritative probe result (from a
 	// background or manual probe). Probe results always win over

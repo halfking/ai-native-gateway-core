@@ -470,14 +470,17 @@ func (e *Executor) doCompactionUpstream(
 
 	resp, err := e.doCompactionHTTP(req)
 	if err != nil {
-		if e.Circuit != nil {
+		if e.Circuit != nil && !freeCredentialsTolerateTransient(cand.BillingMode, errorsx.KindNetwork) {
 			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindNetwork)
 		}
 		return nil, err
 	}
 	if e.Circuit != nil {
 		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
-			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.ClassifyErrorWithBody(resp.StatusCode, nil))
+			kind := errorsx.ClassifyErrorWithBody(resp.StatusCode, nil)
+			if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
+				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+			}
 		} else if resp.StatusCode < 400 {
 			e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
 		}
