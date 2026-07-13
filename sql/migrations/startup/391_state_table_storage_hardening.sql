@@ -136,18 +136,28 @@ CREATE INDEX IF NOT EXISTS idx_credential_probe_model_log_created_at
 --
 -- credential_model_call_history 是 TimescaleDB hypertable，原 retention
 -- policy 是 7d。升级到 30d 匹配状态表精简方案。policy 修改是幂等的。
+--
+-- 2026-07-13 fix: 当 TimescaleDB 扩展未安装时（如非 TimescaleDB 部署），
+-- 静默跳过而不是让整个迁移失败。credential_model_call_history 仍由
+-- Go 层 call_history_aggregator 写入，但没有 TimescaleDB 自动压缩/保留。
 DO $$
 BEGIN
-    IF EXISTS (
-        SELECT 1 FROM timescaledb_information.hypertables
-        WHERE hypertable_name = 'credential_model_call_history'
-    ) THEN
-        PERFORM remove_retention_policy('credential_model_call_history');
-        PERFORM add_retention_policy('credential_model_call_history', INTERVAL '30 days');
-        RAISE NOTICE 'credential_model_call_history retention policy: 7d -> 30d';
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+        IF EXISTS (
+            SELECT 1 FROM timescaledb_information.hypertables
+            WHERE hypertable_name = 'credential_model_call_history'
+        ) THEN
+            PERFORM remove_retention_policy('credential_model_call_history');
+            PERFORM add_retention_policy('credential_model_call_history', INTERVAL '30 days');
+            RAISE NOTICE 'credential_model_call_history retention policy: 7d -> 30d';
+        ELSE
+            RAISE NOTICE 'credential_model_call_history is not a hypertable; skipping retention policy change';
+        END IF;
     ELSE
-        RAISE NOTICE 'credential_model_call_history is not a hypertable; skipping retention policy change';
+        RAISE NOTICE 'timescaledb extension not installed; skipping credential_model_call_history retention policy change';
     END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'credential_model_call_history retention policy change failed: %', SQLERRM;
 END $$;
 
 -- ═══════════════════════════════════════════════════════════════
@@ -161,19 +171,23 @@ END $$;
 -- ═══════════════════════════════════════════════════════════════
 -- 6. 更新 settings_kv 默认值（如果不存在则插入）
 -- ═══════════════════════════════════════════════════════════════
-INSERT INTO settings_kv (key, value, scope, category, description, hot_reloadable, updated_at)
+--
+-- 2026-07-13 fix: 154 实际 schema 是
+--   key, value, value_type, scope, category, updated_at, updated_by, prev_value, prev_updated_at
+-- 没有 description/hot_reloadable 列。改用与 settings_kv 实际 schema 兼容的 INSERT。
+INSERT INTO settings_kv (key, value, value_type, scope, category, updated_at)
 SELECT * FROM (VALUES
-    ('lifecycle.routing_decision_log_ttl_days', '30'::jsonb, 'platform', 'lifecycle', 'routing_decision_log 月度分区保留天数（默认 30d）', true, NOW()),
-    ('lifecycle.candidate_failure_logs_ttl_days', '30'::jsonb, 'platform', 'lifecycle', 'candidate_failure_logs 月度分区保留天数（默认 30d）', true, NOW()),
-    ('lifecycle.handoff_logs_ttl_days', '30'::jsonb, 'platform', 'lifecycle', 'handoff_logs 月度分区保留天数（默认 30d）', true, NOW()),
-    ('lifecycle.credential_model_call_history_ttl_days', '30'::jsonb, 'platform', 'lifecycle', 'TimescaleDB chunk 保留天数（默认 30d）', true, NOW()),
-    ('lifecycle.model_probe_runs_ttl_days', '90'::jsonb, 'platform', 'lifecycle', 'model_probe_runs 月度分区保留天数（默认 90d）', true, NOW()),
-    ('lifecycle.credential_probe_model_log_ttl_days', '90'::jsonb, 'platform', 'lifecycle', 'credential_probe_model_log 堆表保留天数（默认 90d）', true, NOW()),
-    ('lifecycle.usage_ledger_ttl_days', '1'::jsonb, 'platform', 'lifecycle', 'usage_ledger 月度分区保留天数（默认 1d，请求记录类）', true, NOW()),
-    ('lifecycle.request_wal_ttl_days', '1'::jsonb, 'platform', 'lifecycle', 'request_wal 月度分区保留天数（默认 1d）', true, NOW()),
-    ('lifecycle.credit_ledger_ttl_days', '1'::jsonb, 'platform', 'lifecycle', 'credit_ledger 月度分区保留天数（默认 1d）', true, NOW()),
-    ('lifecycle.tool_usage_stats_ttl_days', '1'::jsonb, 'platform', 'lifecycle', 'tool_usage_stats 月度分区保留天数（默认 1d）', true, NOW())
-) AS v(key, value, scope, category, description, hot_reloadable, updated_at)
+    ('lifecycle.routing_decision_log_ttl_days', '30'::jsonb, 'int', 'platform', 'lifecycle', NOW()),
+    ('lifecycle.candidate_failure_logs_ttl_days', '30'::jsonb, 'int', 'platform', 'lifecycle', NOW()),
+    ('lifecycle.handoff_logs_ttl_days', '30'::jsonb, 'int', 'platform', 'lifecycle', NOW()),
+    ('lifecycle.credential_model_call_history_ttl_days', '30'::jsonb, 'int', 'platform', 'lifecycle', NOW()),
+    ('lifecycle.model_probe_runs_ttl_days', '90'::jsonb, 'int', 'platform', 'lifecycle', NOW()),
+    ('lifecycle.credential_probe_model_log_ttl_days', '90'::jsonb, 'int', 'platform', 'lifecycle', NOW()),
+    ('lifecycle.usage_ledger_ttl_days', '1'::jsonb, 'int', 'platform', 'lifecycle', NOW()),
+    ('lifecycle.request_wal_ttl_days', '1'::jsonb, 'int', 'platform', 'lifecycle', NOW()),
+    ('lifecycle.credit_ledger_ttl_days', '1'::jsonb, 'int', 'platform', 'lifecycle', NOW()),
+    ('lifecycle.tool_usage_stats_ttl_days', '1'::jsonb, 'int', 'platform', 'lifecycle', NOW())
+) AS v(key, value, value_type, scope, category, updated_at)
 WHERE NOT EXISTS (SELECT 1 FROM settings_kv WHERE key = v.key);
 
 -- ═══════════════════════════════════════════════════════════════
