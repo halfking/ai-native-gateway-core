@@ -216,7 +216,7 @@ function handleClick() {
   width: 80px;
   height: 60px;
   border-radius: 4px;
-  border: 1.5px solid var(--border-color, #6b7280);
+  border: 0.75px solid var(--border-color, #6b7280);
   background: transparent;
   padding: 4px 6px;
   cursor: pointer;
@@ -249,11 +249,11 @@ function handleClick() {
 
 /* 空闲色块：虚框表示 */
 .request-tile--idle {
-  border: 1.5px dashed var(--border-color, #6b7280);
+  border: 0.75px dashed var(--border-color, #6b7280);
   opacity: 0.55;
 }
 
-/* 2026-07-13 v4: 左上角小三角形（CSS border 实现） */
+/* 2026-07-13 v4: 左上角小三角形（CSS border 实现，18px 放大版） */
 .request-tile__status-corner {
   position: absolute;
   top: 0;
@@ -261,7 +261,7 @@ function handleClick() {
   width: 0;
   height: 0;
   border-style: solid;
-  border-width: 9px 9px 0 0;
+  border-width: 18px 18px 0 0;
   border-color: var(--status-color, #6b7280) transparent transparent transparent;
   z-index: 2;
   pointer-events: none;
@@ -270,16 +270,16 @@ function handleClick() {
 
 .request-tile__status-label {
   position: absolute;
-  top: -8px;
-  left: 0px;
-  font-size: 7px;
+  top: -16px;
+  left: 1px;
+  font-size: 12px;
   font-weight: 800;
   color: #ffffff;
-  text-shadow: 0 0 1px rgba(0,0,0,0.6);
+  text-shadow: 0 0 2px rgba(0,0,0,0.7);
   line-height: 1;
-  width: 8px;
+  width: 14px;
   text-align: center;
-  letter-spacing: -0.2px;
+  letter-spacing: -0.4px;
 }
 
 /* 2026-07-13 v4: 亮色文字（暗主题下可读） */
@@ -289,6 +289,9 @@ function handleClick() {
   line-height: 1.2;
   color: #f3f4f6;
   font-weight: 500;
+  /* 给左上角三角形让位 */
+  padding-left: 12px;
+  margin-top: -2px;
 }
 
 .request-tile__model {
