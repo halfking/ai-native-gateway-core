@@ -239,8 +239,9 @@ const filteredLanes = computed(() => {
 
 // 2026-07-13: 冷启动检测 — 后端尚未推送任何泳道
 // "仅探测" 过滤后为空不算冷启动（已有泳道只是被过滤）
+// 2026-07-13 修正：只有 filteredLanes 也为空时才显示空态（避免有泳道显示时仍显示"暂无请求数据"）
 const isColdStart = computed(() => {
-  return lanes.value.length === 0
+  return lanes.value.length === 0 && filteredLanes.value.length === 0
 })
 </script>
 
