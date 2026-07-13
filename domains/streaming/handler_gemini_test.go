@@ -12,6 +12,26 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
+type geminiFlushWriter struct {
+	header  http.Header
+	status  int
+	body    strings.Builder
+	flushes int
+}
+
+func (w *geminiFlushWriter) Header() http.Header { return w.header }
+
+func (w *geminiFlushWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.body.Write(p)
+}
+
+func (w *geminiFlushWriter) WriteHeader(status int) { w.status = status }
+
+func (w *geminiFlushWriter) Flush() { w.flushes++ }
+
 // init installs a discard logger for test runs.
 func init() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -72,6 +92,55 @@ func TestGeminiStatusFor_HTTPStatusCodeMapping(t *testing.T) {
 		if got := geminiStatusFor(httpStatus); got != wantGemini {
 			t.Errorf("geminiStatusFor(%d) = %q, want %q", httpStatus, got, wantGemini)
 		}
+	}
+}
+
+func TestGeminiStreamWriter_ConvertsFlushedChunks(t *testing.T) {
+	w := &geminiFlushWriter{header: make(http.Header)}
+	gw := newGeminiStreamWriter(w)
+
+	first := `data: {"id":"chunk-1","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"Hi"}}]}` + "\n\n"
+	second := `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n"
+	if _, err := gw.Write([]byte(first[:len(first)/2])); err != nil {
+		t.Fatalf("first partial write: %v", err)
+	}
+	if w.body.Len() != 0 {
+		t.Fatal("partial SSE line was written before its newline")
+	}
+	if _, err := gw.Write([]byte(first[len(first)/2:])); err != nil {
+		t.Fatalf("first complete write: %v", err)
+	}
+	if !strings.Contains(w.body.String(), `"text":"Hi"`) {
+		t.Fatalf("converted Gemini chunk missing text: %s", w.body.String())
+	}
+	if _, err := gw.Write([]byte(second)); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	if !strings.Contains(w.body.String(), `"finishReason":"STOP"`) {
+		t.Fatalf("converted Gemini chunk missing finish reason: %s", w.body.String())
+	}
+	gw.Flush()
+	if w.flushes != 1 {
+		t.Fatalf("flushes = %d, want 1", w.flushes)
+	}
+	if _, err := gw.Write([]byte("data: [DONE]\n\ndata: [DONE]\n")); err != nil {
+		t.Fatalf("done write: %v", err)
+	}
+	if got := strings.Count(w.body.String(), "data: [DONE]"); got != 1 {
+		t.Fatalf("DONE count = %d, want 1", got)
+	}
+}
+
+func TestGeminiStreamWriter_PreservesErrorResponses(t *testing.T) {
+	w := &geminiFlushWriter{header: make(http.Header)}
+	gw := newGeminiStreamWriter(w)
+	gw.WriteHeader(http.StatusBadGateway)
+	payload := []byte(`{"error":{"message":"upstream unavailable"}}`)
+	if _, err := gw.Write(payload); err != nil {
+		t.Fatalf("error write: %v", err)
+	}
+	if got := w.body.String(); got != string(payload) {
+		t.Fatalf("body = %q, want %q", got, payload)
 	}
 }
 

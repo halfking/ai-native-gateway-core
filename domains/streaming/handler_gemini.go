@@ -33,6 +33,87 @@ type GeminiHandler struct {
 	chatHandler *ChatHandler
 }
 
+type geminiStreamWriter struct {
+	http.ResponseWriter
+	flusher http.Flusher
+	pending []byte
+	status  int
+	done    bool
+}
+
+func newGeminiStreamWriter(w http.ResponseWriter) *geminiStreamWriter {
+	gw := &geminiStreamWriter{ResponseWriter: w}
+	gw.flusher, _ = w.(http.Flusher)
+	return gw
+}
+
+func (w *geminiStreamWriter) Write(p []byte) (int, error) {
+	if w.status >= http.StatusBadRequest {
+		return w.ResponseWriter.Write(p)
+	}
+	w.pending = append(w.pending, p...)
+	for {
+		lineEnd := bytes.IndexByte(w.pending, '\n')
+		if lineEnd < 0 {
+			break
+		}
+		line := bytes.TrimSpace(w.pending[:lineEnd])
+		w.pending = w.pending[lineEnd+1:]
+		if len(line) == 0 {
+			continue
+		}
+		if err := w.writeChunk(line); err != nil {
+			return len(p), err
+		}
+	}
+	return len(p), nil
+}
+
+func (w *geminiStreamWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *geminiStreamWriter) writeChunk(line []byte) error {
+	if bytes.Equal(line, []byte("data: [DONE]")) {
+		if w.done {
+			return nil
+		}
+		w.done = true
+		_, err := w.ResponseWriter.Write([]byte("data: [DONE]\n\n"))
+		return err
+	}
+	chunk, err := ir.ParseOpenAIStreamChunk(string(line))
+	if err != nil {
+		// ChatHandler can emit a non-SSE error after stream setup. Preserve it
+		// so the caller receives the original diagnostic rather than a dropped chunk.
+		_, writeErr := w.ResponseWriter.Write(append(append([]byte{}, line...), '\n'))
+		if writeErr != nil {
+			return writeErr
+		}
+		return nil
+	}
+	if output := chunk.SerializeGemini(); output != "" {
+		_, err = w.ResponseWriter.Write([]byte(output))
+	}
+	return err
+}
+
+func (w *geminiStreamWriter) Flush() {
+	if w.flusher != nil {
+		w.flusher.Flush()
+	}
+}
+
+func (w *geminiStreamWriter) finish() error {
+	if len(bytes.TrimSpace(w.pending)) == 0 {
+		return nil
+	}
+	line := bytes.TrimSpace(w.pending)
+	w.pending = nil
+	return w.writeChunk(line)
+}
+
 // geminiModelPathRe matches the Gemini model suffix in URL paths.
 var geminiModelPathRe = regexp.MustCompile(`/(?:v1beta|v1)/models/([^:/]+)(?::(generateContent|streamGenerateContent))`)
 
@@ -104,15 +185,27 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Mark origin so downstream observability can distinguish Gemini-via-IR
 	synthReq.Header.Set("X-Gw-Client-Protocol", ir.ProtocolGeminiGenerate)
 
-	// Step 8: Dispatch to ChatHandler and capture response
+	// Step 8: Stream through a real ResponseWriter so ChatHandler flushes
+	// reach the Gemini client as soon as each upstream chunk is available.
+	if wantStream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Accel-Buffering", "no")
+		streamWriter := newGeminiStreamWriter(w)
+		h.chatHandler.ServeHTTP(streamWriter, synthReq)
+		if err := streamWriter.finish(); err != nil {
+			slog.Warn("gemini_handler: failed to flush final stream chunk", "err", err)
+		}
+		return
+	}
+
+	// Non-streaming requests still use a recorder so the complete response can
+	// be converted through the response IR before it is written to the client.
 	rec := httptest.NewRecorder()
 	h.chatHandler.ServeHTTP(rec, synthReq)
-
-	// Step 9: Apply upstream status + headers, then transform body
 	respStatus := rec.Code
 	respHeader := rec.Header()
 	respBody := rec.Body.Bytes()
-
 	for k, vals := range respHeader {
 		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Content-Encoding") {
 			continue
@@ -121,15 +214,11 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(k, v)
 		}
 	}
-
 	if respStatus >= 400 || len(respBody) == 0 {
-		// Error/empty: forward as-is
 		w.WriteHeader(respStatus)
 		_, _ = w.Write(respBody)
 		return
 	}
-
-	// Step 10: Convert OpenAI response → IR
 	irResp, err := ir.ParseOpenAIResponse(respBody)
 	if err != nil {
 		slog.Warn("gemini_handler: failed to parse OpenAI response as IR",
@@ -138,51 +227,7 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(respBody)
 		return
 	}
-
-	// Step 11: Streaming vs non-streaming output
-	if wantStream {
-		// OpenAI SSE → IR StreamChunk → Gemini SSE
-		flusher, _ := w.(http.Flusher)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("X-Accel-Buffering", "no")
-		w.WriteHeader(http.StatusOK)
-
-		// Scan each OpenAI SSE line, convert to Gemini SSE via IR chunk
-		for _, raw := range bytes.Split(respBody, []byte("\n")) {
-			line := bytes.TrimSpace(raw)
-			if len(line) == 0 {
-				continue
-			}
-			// Strip "data: " prefix
-			payload := line
-			if bytes.HasPrefix(payload, []byte("data:")) {
-				payload = bytes.TrimPrefix(payload, []byte("data:"))
-				payload = bytes.TrimSpace(payload)
-			}
-			if bytes.Equal(payload, []byte("[DONE]")) {
-				_, _ = w.Write([]byte("data: [DONE]\n\n"))
-				if flusher != nil {
-					flusher.Flush()
-				}
-				continue
-			}
-			// Parse OpenAI chunk → IR chunk
-			chunk, err := ir.ParseOpenAIStreamChunk(string(line))
-			if err != nil {
-				continue
-			}
-			// Serialize IR chunk → Gemini SSE
-			geminiLine := chunk.SerializeGemini()
-			if geminiLine == "" {
-				continue
-			}
-			_, _ = w.Write([]byte(geminiLine))
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-	} else {
+	{
 		// Non-stream: serialize full Gemini response
 		geminiRespBytes, err := ir.SerializeGeminiResponse(irResp, clientModel(irReq))
 		if err != nil {
