@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-13
 
+### Added (route-incident diagnosis, Phase 1 read-only)
+- **路由事件诊断 (Phase 1 read-only)**：泳道上的“诊断”入口与
+  右侧诊断工作台落地。Backend 状态机负责
+  `healthy → active → recovering → recovered` 切换，3 连续终态失败
+  触发，5 连续终态成功恢复，1-4 连续成功不隐藏且显示
+  `Recovery n/5`。客户端 key 错误、客户端取消、其它非因供应商
+  原因的失败 **不计入诊断触发**（spec 不变量）。
+  详细说明：`docs/superpowers/specs/2026-07-13-route-incident-diagnosis-design.md`，
+  视觉验证：`ui-verify-route-incident-{active,recovering,other-disabled,drawer-insufficient-data,mobile-drawer}-20260713-150319.png`。
+  - 持久化：新增 `route_incidents` 聚合表 + `route_incident_events`
+    不可变事件表（migration `389_route_incidents.sql`，
+    `db/db.go::ensureRouteIncidentSchema`），事务式
+    `SELECT ... FOR UPDATE` + idempotent 事件插入。
+  - 异步观察器：`domains/routeincident.Observer` 挂钩
+    `telemetry.SetOnRequestLogPersisted`（注意：不是 Emitted 钩子），
+    有界队列 + bounded backoff 重试。
+  - 只读 API：`admin/route_incidents.go` 暴露
+    `GET /api/admin/route-incidents` / `{id}` / `{id}/events` /
+    `{id}/timeline` / `stats`（super-admin only，跨租户资源 404）。
+  - SSE 增量：`admin.LiveStreamSSEHub.PublishIncidentUpdate` 发送
+    `incident_update` envelope，与现有 request envelope 同管线。
+  - 仪表盘：`web/src/components/RouteIncidentDrawer.vue` 7 节
+    只读工作台（状态 / 当前路由 / 证据概览 / 近 24 小时 /
+    请求与转换对比 / 资源快照 / 日志与请求），含 Escape 关闭、
+    focus trap、reduced-motion 支持；移动端全视口。
+  - 泳道入口：`SwimLane` 新增诊断按钮（`active`/`recovering`
+    状态机驱动 + `Other` 泳道禁用 + tooltip 解释原因），保留
+    旧版错误率启发式作为无状态机时的兜底。
+  - 状态合并：`composables/useRouteIncidents.ts` 把 SSE 增量
+    折成 per-lane 索引；`liveStreamStore.ts` 解析
+    `incident_update` envelope。
+  - 测试：Go 单测覆盖 DecideState 全部转移 + 脱敏 + observer
+    队列溢出/非路由失败过滤；Vitest 覆盖 Vue 状态机 reducer。
+  - 视觉验证：Playwright 在 desktop 1280×900 与 mobile 375×812
+    视口下抓取 6 张截图（`ui-verify-route-incident-*.png`）。
+  - 第一期 **不** 包含 DiagnosticRun / 直连/经网关测试 /
+    立即恢复 / 证据包导出（spec §"Phase Two"），所有 mutating
+    action 接口暂不实现。
+
 ### Fixed (P0)
 - **Gemini 流式响应实时转换**：Gemini 原生流式端点不再使用
   `httptest.ResponseRecorder` 缓存整个 ChatHandler 响应；新增可 flush 的

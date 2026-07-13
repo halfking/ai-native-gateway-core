@@ -178,6 +178,9 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	if err := db.ensureCenterOpsSchema(migCtx); err != nil {
 		return nil, err
 	}
+	if err := db.ensureRouteIncidentSchema(migCtx); err != nil {
+		return nil, err
+	}
 	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
 		return nil, err
 	}
@@ -2662,5 +2665,97 @@ func (d *DB) ensureCenterOpsSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("center_ops schema ensured (4 tables)")
+	return nil
+}
+
+// ensureRouteIncidentSchema mirrors sql/migrations/startup/389_route_incidents.sql
+// for startup apply. Idempotent. Creates the route_incidents aggregate
+// and route_incident_events evidence trail (Phase 1 read-only diagnosis).
+//
+// See docs/superpowers/specs/2026-07-13-route-incident-diagnosis-design.md.
+func (d *DB) ensureRouteIncidentSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS route_incidents (
+			id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id           TEXT NOT NULL,
+			endpoint_protocol   TEXT NOT NULL,
+			model               TEXT NOT NULL,
+			provider_id         BIGINT,
+			credential_id       BIGINT,
+			state               TEXT NOT NULL
+				CHECK (state IN ('active', 'recovering', 'recovered')),
+			failure_streak      INT  NOT NULL DEFAULT 0,
+			recovery_streak     INT  NOT NULL DEFAULT 0,
+			first_failure_at    TIMESTAMPTZ NOT NULL,
+			last_failure_at     TIMESTAMPTZ,
+			last_success_at     TIMESTAMPTZ,
+			recovered_at        TIMESTAMPTZ,
+			total_failures      BIGINT NOT NULL DEFAULT 0,
+			total_successes     BIGINT NOT NULL DEFAULT 0,
+			last_error_kind     TEXT,
+			last_failure_stage  TEXT,
+			resolution_source   TEXT,
+			resolved_by_user    TEXT,
+			resolved_reason     TEXT,
+			version             BIGINT NOT NULL DEFAULT 1,
+			created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_route_incidents_active_route
+			ON route_incidents (
+				tenant_id, endpoint_protocol, model, COALESCE(provider_id, 0), COALESCE(credential_id, 0)
+			)
+			WHERE state IN ('active', 'recovering');
+		CREATE INDEX IF NOT EXISTS idx_route_incidents_state_updated
+			ON route_incidents (state, updated_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_route_incidents_tenant_state
+			ON route_incidents (tenant_id, state, updated_at DESC);
+
+		CREATE OR REPLACE FUNCTION touch_route_incidents_updated_at()
+		RETURNS trigger
+		LANGUAGE plpgsql AS $$
+		BEGIN
+			NEW.updated_at := now();
+			RETURN NEW;
+		END;
+		$$;
+		DROP TRIGGER IF EXISTS route_incidents_touch ON route_incidents;
+		CREATE TRIGGER route_incidents_touch
+			BEFORE UPDATE ON route_incidents
+			FOR EACH ROW EXECUTE FUNCTION touch_route_incidents_updated_at();
+
+		CREATE TABLE IF NOT EXISTS route_incident_events (
+			id                  BIGSERIAL PRIMARY KEY,
+			incident_id         UUID NOT NULL REFERENCES route_incidents(id) ON DELETE CASCADE,
+			event_type          TEXT NOT NULL
+				CHECK (event_type IN (
+					'opened', 'failure_observed', 'recovery_progress',
+					'recovered', 'diagnostic_run', 'operator_action'
+				)),
+			request_id          TEXT,
+			terminal_status     TEXT,
+			failure_kind        TEXT,
+			failure_stage       TEXT,
+			failure_streak      INT,
+			recovery_streak     INT,
+			evidence            JSONB NOT NULL DEFAULT '{}'::jsonb,
+			actor               TEXT,
+			created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_route_incident_events_idem
+			ON route_incident_events (incident_id, request_id, terminal_status)
+			WHERE request_id IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_route_incident_events_incident_created
+			ON route_incident_events (incident_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_route_incident_events_type_created
+			ON route_incident_events (event_type, created_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("route_incident schema ensured (route_incidents + route_incident_events)")
 	return nil
 }

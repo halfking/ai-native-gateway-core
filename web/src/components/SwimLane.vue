@@ -3,6 +3,7 @@
 // 2026-07-05: 显示单条泳道及其请求色块
 // 2026-07-07: 动态计算可显示的请求数，适配窗口宽度；标题折行
 // 2026-07-07 v2: ResizeObserver 防抖 + 父容器 min-width:0 + 宽屏/窄屏分级
+// 2026-07-13: 增加诊断入口（活跃/恢复中显示 1/5..4/5；其它泳道禁用并附 tooltip）
 
 import { computed, ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import type {
@@ -10,6 +11,8 @@ import type {
   RequestTile as RequestTileType,
   GroupByDimension,
 } from '../types/swimlane'
+import { useRouteIncidents } from '../composables/useRouteIncidents'
+import type { RouteIncident } from '../types/routeIncident'
 import RequestTile from './RequestTile.vue'
 
 const props = defineProps<{
@@ -21,7 +24,58 @@ const props = defineProps<{
 const emit = defineEmits<{
   tileClick: [requestId: string]
   emergencyDiagnose: [data: { credentialId: number; model: string; laneName: string }]
+  diagnose: [incidentId: string, preview: RouteIncident]
 }>()
+
+// ─── 诊断入口（2026-07-13，spec §"Dashboard Experience"）─────────────
+// 触发条件（state-machine 视角）：后端检测到连续 3 次终态失败，
+// 通过 SSE incident_update 把泳道变成 active；恢复中显示 n/5；
+// 恢复 5 次后自动隐藏。其它泳道（无可识别路由身份）禁用。
+// 同时保留用户此前基于"可见错误率 >= 1/3"的应急诊断按钮作为
+// 状态机未启用时的兜底（dashboard 可能在没有 route_incidents
+// 表的旧环境运行）。
+const { incidentsForLane, canDiagnose } = useRouteIncidents()
+
+const activeIncidents = computed<RouteIncident[]>(() => {
+  if (!canDiagnose(props.lane)) return []
+  return incidentsForLane(props.groupBy, props.lane.id)
+})
+
+const primaryIncident = computed<RouteIncident | null>(
+  () => activeIncidents.value[0] ?? null,
+)
+
+const diagnoseLabel = computed<string>(() => {
+  const inc = primaryIncident.value
+  if (!inc) return ''
+  if (inc.state === 'recovering') {
+    return `Recovery ${inc.recovery_streak}/5`
+  }
+  return `诊断 · ${inc.failure_streak}`
+})
+
+const diagnoseDisabled = computed<boolean>(() => {
+  if (!canDiagnose(props.lane)) return true
+  return activeIncidents.value.length === 0
+})
+
+const diagnoseTooltip = computed<string>(() => {
+  if (!canDiagnose(props.lane)) {
+    return '"其它" 聚合泳道无可识别的路由身份，暂不支持诊断'
+  }
+  if (activeIncidents.value.length === 0) {
+    return '当前泳道无活跃诊断事件（连续失败未达到 3 次）'
+  }
+  return primaryIncident.value?.state === 'recovering'
+    ? '连续成功进度：点击查看恢复详情'
+    : '点击查看诊断工作台'
+})
+
+function handleDiagnoseClick() {
+  const inc = primaryIncident.value
+  if (!inc || diagnoseDisabled.value) return
+  emit('diagnose', inc.id, inc)
+}
 
 // 泳道名称显示（不截断，允许折行）
 const displayName = computed(() => {
@@ -29,37 +83,6 @@ const displayName = computed(() => {
   const count = props.lane.stats.total
   return `${name} (${count})`
 })
-
-// 2026-07-13: 可见区域错误率检测（可见请求中错误占比 >= 1/3 时显示诊断按钮）
-// 2026-07-13 v2: 修正 — 后端 LiveStreamTile 没有 success 字段，按 status 判断
-const visibleErrorRate = computed(() => {
-  const visible = visibleRequests.value
-  if (visible.length === 0) return 0
-  
-  const errorCount = visible.filter(r => r.status !== 'success').length
-  return errorCount / visible.length
-})
-
-// 是否显示应急诊断按钮（可见区域 >= 1/3 请求错误）
-const showEmergencyButton = computed(() => {
-  return visibleErrorRate.value >= 1/3
-})
-
-function handleEmergencyDiagnose() {
-  // 找到最近一个失败请求作为诊断目标
-  const recentFailure = props.lane.requests
-    .slice()
-    .reverse()
-    .find(r => r.status !== 'success')
-  
-  if (!recentFailure) return
-  
-  emit('emergencyDiagnose', {
-    credentialId: (recentFailure as any).credential_id || 0,
-    model: (recentFailure as any).client_model || props.lane.name,
-    laneName: props.lane.name
-  })
-}
 
 // 动态计算可显示的请求数
 const trackRef = ref<HTMLElement | null>(null)
@@ -129,6 +152,35 @@ const renderedRequests = computed<RequestTileType[]>(() => {
   if (ph) list.push(ph)
   return list
 })
+
+// 2026-07-13: 应急诊断按钮 — 旧版启发式（错误率 >= 1/3）。
+// 当且仅当 state-machine 还没有 active incident 时才显示，避免重复。
+// 兜底逻辑：dashboard 第一次加载、observer 未启动、或
+// route_incidents 表尚未迁移。
+const visibleErrorRate = computed(() => {
+  const visible = visibleRequests.value
+  if (visible.length === 0) return 0
+  const errorCount = visible.filter((r) => r.status !== 'success').length
+  return errorCount / visible.length
+})
+
+const showEmergencyButton = computed(() => {
+  if (primaryIncident.value) return false
+  return visibleErrorRate.value >= 1 / 3
+})
+
+function handleEmergencyDiagnose() {
+  const recentFailure = props.lane.requests
+    .slice()
+    .reverse()
+    .find((r) => r.status !== 'success')
+  if (!recentFailure) return
+  emit('emergencyDiagnose', {
+    credentialId: (recentFailure as any).credential_id || 0,
+    model: (recentFailure as any).client_model || props.lane.name,
+    laneName: props.lane.name,
+  })
+}
 
 function isTileHighlighted(tileKey: string): boolean {
   if (props.selectedLegends.size === 0) return false
@@ -217,17 +269,29 @@ watch(
         <span class="swim-lane__stat swim-lane__stat--failure" :title="`失败: ${lane.stats.failure}`">
           ✗{{ lane.stats.failure }}
         </span>
+        <button
+          v-if="!lane.isOthers || primaryIncident || showEmergencyButton"
+          type="button"
+          :class="[
+            'swim-lane__diagnose',
+            primaryIncident
+              ? `swim-lane__diagnose--${primaryIncident.state}`
+              : (lane.isOthers ? 'swim-lane__diagnose--disabled' : 'swim-lane__diagnose--idle'),
+            { 'swim-lane__diagnose--disabled': diagnoseDisabled },
+          ]"
+          :disabled="diagnoseDisabled"
+          :title="diagnoseTooltip"
+          :aria-label="diagnoseTooltip"
+          @click.stop="primaryIncident ? handleDiagnoseClick() : handleEmergencyDiagnose()"
+        >
+          <span class="swim-lane__diagnose-dot" aria-hidden="true" />
+          <span class="swim-lane__diagnose-label">
+            <template v-if="primaryIncident">{{ diagnoseLabel }}</template>
+            <template v-else-if="lane.isOthers">诊断（不可用）</template>
+            <template v-else>诊断</template>
+          </span>
+        </button>
       </div>
-      <!-- 2026-07-13: 诊断功能暂时隐藏，待诊断功能完成后再次开启
-      <button
-        v-if="showEmergencyButton"
-        class="swim-lane__emergency-btn"
-        @click.stop="handleEmergencyDiagnose"
-        :title="`可见区域错误率: ${(visibleErrorRate * 100).toFixed(0)}%，点击诊断`"
-      >
-        ⚠️ 诊断
-      </button>
-      -->
     </div>
     <div class="swim-lane__track" ref="trackRef">
       <TransitionGroup name="swim-tile" tag="div" class="swim-lane__tiles">
@@ -309,6 +373,74 @@ watch(
 
 .swim-lane__stat--failure {
   color: var(--danger, #f85149);
+}
+
+.swim-lane__diagnose {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #30363d);
+  background: var(--bg, #0f1117);
+  color: var(--text, #e6edf3);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.swim-lane__diagnose:hover:not(:disabled) {
+  border-color: var(--accent, #6366f1);
+  background: var(--bg-subtle, #161b22);
+}
+
+.swim-lane__diagnose:disabled,
+.swim-lane__diagnose--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.swim-lane__diagnose-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-secondary, #8b949e);
+}
+
+.swim-lane__diagnose--active {
+  border-color: rgba(248, 81, 73, 0.5);
+  color: var(--danger, #f85149);
+}
+.swim-lane__diagnose--active .swim-lane__diagnose-dot {
+  background: var(--danger, #f85149);
+  box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.18);
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+.swim-lane__diagnose--recovering {
+  border-color: rgba(210, 153, 34, 0.5);
+  color: var(--warning, #d29922);
+}
+.swim-lane__diagnose--recovering .swim-lane__diagnose-dot {
+  background: var(--warning, #d29922);
+}
+
+.swim-lane__diagnose-label {
+  line-height: 1;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .swim-lane__diagnose--active .swim-lane__diagnose-dot {
+    animation: none;
+  }
 }
 
 .swim-lane__emergency-btn {

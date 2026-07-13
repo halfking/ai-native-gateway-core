@@ -286,6 +286,15 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     // Health-only envelope; state already updated above.
     return
   }
+  if (env.type === 'incident_update' && (env as LiveStreamEnvelope & { incident?: unknown }).incident) {
+    // 2026-07-13: route-incident diagnostic updates. The envelope
+    // is dynamically imported to avoid a hard cycle between
+    // liveStreamStore and the route-incident composable.
+    void import('./useRouteIncidents').then((mod) => {
+      mod.applyIncidentUpdate((env as unknown as { incident: Parameters<typeof mod.applyIncidentUpdate>[0] }).incident)
+    })
+    return
+  }
 }
 
 function mergeDelta(delta: LiveStreamDelta) {
