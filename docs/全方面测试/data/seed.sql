@@ -98,6 +98,51 @@ SELECT
     NOW()
 FROM generate_series(0, 59) AS i;
 
+-- ── Set baseline metrics on every cmb ───────────────────────────
+-- Without these, the candidate query treats every credential as 9999ms
+-- (COALESCE of NULL p95_latency_ms) which neutralises the latency-aware
+-- penalty that S05/S06/S12 rely on. Setting group-appropriate baselines
+-- lets P2C prefer fast suppliers even on the first request.
+--
+-- Group layout (from tools/start_suppliers.sh):
+--   A=9010-9014  tier=1 healthy   p95= 50ms
+--   B=9015-9019  tier=1 healthy   p95= 60ms
+--   C=9020-9024  tier=1 healthy   p95= 70ms (token_plan cost=0)
+--   D=9025-9029  tier=1 healthy   p95= 80ms (code_plan cost=0)
+--   E=9030-9034  tier=2 healthy   p95=120ms
+--   F=9035-9039  tier=2 healthy   p95=150ms
+--   G=9040-9044  tier=2 SLOW      p95=3500ms (2-4s delay default)
+--   H=9045-9049  tier=1 fp_slot=3 p95= 80ms
+--   I=9050-9054  tier=1 healthy   p95=100ms
+--   J=9055-9059  tier=1 FLAKY     p95=300ms (intermittent slow)
+--   K=9060-9064  tier=3 healthy   p95=110ms (rate-limited by default)
+--   L=9065-9069  tier=2 healthy   p95=140ms
+UPDATE credential_model_bindings cmb
+SET p95_latency_ms = CASE
+        WHEN cmb.credential_id BETWEEN 9010 AND 9014 THEN  50
+        WHEN cmb.credential_id BETWEEN 9015 AND 9019 THEN  60
+        WHEN cmb.credential_id BETWEEN 9020 AND 9024 THEN  70
+        WHEN cmb.credential_id BETWEEN 9025 AND 9029 THEN  80
+        WHEN cmb.credential_id BETWEEN 9030 AND 9034 THEN 120
+        WHEN cmb.credential_id BETWEEN 9035 AND 9039 THEN 150
+        WHEN cmb.credential_id BETWEEN 9040 AND 9044 THEN 3500  -- G slow default
+        WHEN cmb.credential_id BETWEEN 9045 AND 9049 THEN  80
+        WHEN cmb.credential_id BETWEEN 9050 AND 9054 THEN 100
+        WHEN cmb.credential_id BETWEEN 9055 AND 9059 THEN 300   -- J flaky
+        WHEN cmb.credential_id BETWEEN 9060 AND 9064 THEN 110
+        ELSE 140
+    END,
+    success_rate = CASE
+        WHEN cmb.credential_id BETWEEN 9055 AND 9059 THEN 0.85  -- J flaky
+        ELSE 0.97
+    END,
+    billing_mode = CASE
+        WHEN cmb.credential_id BETWEEN 9020 AND 9024 THEN 'token_plan'
+        WHEN cmb.credential_id BETWEEN 9025 AND 9029 THEN 'code_plan'
+        ELSE 'per_token'
+    END
+WHERE cmb.credential_id BETWEEN 9010 AND 9069;
+
 -- ── 8 api_keys ───────────────────────────────────────────────────
 -- application_id 引用真实 application，应用 ID 8001-8008 在真实表里，我们硬编码 8001
 INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, owner_user,
