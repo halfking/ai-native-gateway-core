@@ -26,6 +26,8 @@ func quoteIdentifier(name string) string {
 }
 
 // 与 SQL 函数一一对应（partition_manager 模块定义）。
+// 2026-07-14: model_probe_runs_hot 切换为纯 hot 表策略，
+// 移除了 model_probe_runs_hot 项（不再 promote）。
 var hotPromoteTableMap = map[string]string{
 	"request_logs_hot":           "promote_request_logs_hot_to_partition",
 	"usage_ledger_hot":           "promote_usage_ledger_hot_to_partition",
@@ -35,7 +37,6 @@ var hotPromoteTableMap = map[string]string{
 	"request_logs_bodies_hot":    "promote_request_logs_bodies_hot_to_partition",
 	"credit_ledger_hot":          "promote_credit_ledger_hot_to_partition",
 	"tool_usage_stats_hot":       "promote_tool_usage_stats_hot_to_partition",
-	"model_probe_runs_hot":       "promote_model_probe_runs_hot_to_partition",
 }
 
 // HotJobStatus 状态枚举
