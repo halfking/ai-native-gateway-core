@@ -54,6 +54,7 @@ export interface BoardPayload {
   }
   days: number
   source?: string
+  degraded?: boolean
 }
 
 export interface BoardQuery {

@@ -27,6 +27,9 @@ function onProviderFilter(e: Event) {
 
 <template>
   <div class="board-panel">
+    <div v-if="boardState.board.value?.degraded" class="board-degraded" role="status">
+      {{ $t('dashboard.board.degradedHint', { source: boardState.board.value?.source ?? 'request_logs_hot' }) }}
+    </div>
     <BoardStatusCards :board="boardState.board.value" @open-selfcheck="dashboardTab.switchTab('selfcheck')" />
     <BoardSummaryRow :summary="boardState.board.value?.summary" />
     <BoardPieGrid
@@ -57,6 +60,15 @@ function onProviderFilter(e: Event) {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+.board-degraded {
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(210, 153, 34, 0.45);
+  background: rgba(210, 153, 34, 0.08);
+  color: var(--warning);
+  font-size: 12px;
 }
 .filter-label {
   font-size: 12px;

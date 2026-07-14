@@ -70,6 +70,7 @@ export default {
     trendCost: '成本 (USD)',
     filterProvider: '供应商 ID',
     allProviders: '全部',
+    degradedHint: '分钟级聚合表暂无数据，当前展示来自 {source} 的热数据回退；执行迁移 394 并等待 rollup 后可获得完整看板性能。',
   },
   proxyWarning: {
     title: '⚠ 出口代理不可达',
