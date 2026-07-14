@@ -9,7 +9,7 @@ import (
 
 const version = "v1.13.0"
 
-func runActivate(mode, email, licenseKey, licensePath, masterURL string) error {
+func runActivate(mode, email, licenseKey, licensePath, masterURL string, agree bool) error {
 	if mode == "" {
 		return fmt.Errorf("必须指定 --mode 参数")
 	}
@@ -18,7 +18,7 @@ func runActivate(mode, email, licenseKey, licensePath, masterURL string) error {
 
 	switch mode {
 	case "trial":
-		return handleTrial(client, email)
+		return handleTrial(client, email, agree)
 	case "key":
 		return handleOnlineActivation(client, licenseKey)
 	case "offline-request":
@@ -31,14 +31,17 @@ func runActivate(mode, email, licenseKey, licensePath, masterURL string) error {
 }
 
 // handleTrial 处理试用申请
-func handleTrial(client *activation.Client, email string) error {
+func handleTrial(client *activation.Client, email string, agree bool) error {
 	if email == "" {
 		return fmt.Errorf("-email 参数不能为空")
+	}
+	if !agree {
+		return fmt.Errorf("必须使用 --agree 同意服务条款和隐私政策")
 	}
 
 	fmt.Printf("▶ 申请试用 License (%s) ...\n", email)
 
-	resp, err := client.RequestTrial(email)
+	resp, err := client.RequestTrial(email, agree)
 	if err != nil {
 		return fmt.Errorf("申请失败: %w", err)
 	}

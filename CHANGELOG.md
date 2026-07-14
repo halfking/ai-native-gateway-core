@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### Distribution business-process alignment
+
+- Added the user agreement and data-processing authorization for runtime telemetry and controlled update notifications.
+- Enforced explicit terms acceptance for Trial requests from browser and installer clients.
+- Added business-process standards, code-verification addenda, and an honest completion assessment with release blockers.
+
 ### License security hardening
 
 - Made trial issuance fail closed when distributed Redis rate limiting is unavailable.
