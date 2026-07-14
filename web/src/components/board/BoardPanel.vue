@@ -1,26 +1,36 @@
 <script setup lang="ts">
-import { inject, type Ref } from 'vue'
+import { inject, computed, type Ref } from 'vue'
 import BoardSummaryRow from './BoardSummaryRow.vue'
 import BoardStatusCards from './BoardStatusCards.vue'
 import BoardPieGrid from './BoardPieGrid.vue'
 import BoardUsageTrendSection from './BoardUsageTrendSection.vue'
 import type { BoardPayload, BoardOperationalPayload } from '../../api/board'
-import type { BoardTimeRange } from '../../utils/boardTimeRange'
+import { defaultBoardTimeRange, type BoardTimeRange } from '../../utils/boardTimeRange'
 
 const boardState = inject<{
   board: Ref<BoardPayload | null>
-  operational: Ref<BoardOperationalPayload | null>
+  operational?: Ref<BoardOperationalPayload | null>
   days: Ref<number>
   timeRange: Ref<BoardTimeRange>
   loading: Ref<boolean>
   load: () => Promise<void>
   setTimeRange: (next: BoardTimeRange) => void
   startAutoRefresh: () => Promise<void>
-}>('dashboardBoard')!
+}>('dashboardBoard')
+
+if (!boardState) {
+  throw new Error('dashboardBoard inject missing — mount BoardPanel under DashboardView')
+}
 
 const dashboardTab = inject<{
   switchTab: (tab: 'board' | 'stream' | 'stats' | 'selfcheck') => void
 }>('dashboardTab')!
+
+const operational = computed(() => boardState.operational?.value ?? null)
+const board = computed(() => boardState.board.value)
+const timeRange = computed(() => boardState.timeRange?.value ?? defaultBoardTimeRange())
+const days = computed(() => boardState.days?.value ?? 1)
+const loading = computed(() => boardState.loading?.value ?? false)
 
 async function onTimeRangeChange(next: BoardTimeRange) {
   boardState.setTimeRange(next)
@@ -31,18 +41,18 @@ async function onTimeRangeChange(next: BoardTimeRange) {
 
 <template>
   <div class="board-panel">
-    <BoardStatusCards :operational="boardState.operational.value" @open-selfcheck="dashboardTab.switchTab('selfcheck')" />
-    <BoardSummaryRow :summary="boardState.board.value?.summary" :loading="boardState.loading.value" />
+    <BoardStatusCards :operational="operational" @open-selfcheck="dashboardTab.switchTab('selfcheck')" />
+    <BoardSummaryRow :summary="board?.summary" :loading="loading" />
     <BoardUsageTrendSection
-      :board="boardState.board.value"
-      :time-range="boardState.timeRange.value"
-      :loading="boardState.loading.value"
+      :board="board"
+      :time-range="timeRange"
+      :loading="loading"
       @time-range-change="onTimeRangeChange"
     />
     <BoardPieGrid
-      :board="boardState.board.value"
-      :days="boardState.days.value"
-      :loading="boardState.loading.value"
+      :board="board"
+      :days="days"
+      :loading="loading"
     />
   </div>
 </template>
