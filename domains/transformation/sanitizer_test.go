@@ -331,6 +331,45 @@ func TestSimplifyTools_EmptyToolsArray(t *testing.T) {
 	}
 }
 
+func TestSimplifyTools_DropsInvalidEmptyName(t *testing.T) {
+	in := []byte(`{"model":"minimax-m3","tools":[
+		{"type":"function","function":{"name":"","description":"bad","parameters":{}}},
+		{"type":"function","function":{"name":"lookup","description":"ok","parameters":{}}}
+	]}`)
+
+	out := SimplifyTools(in)
+	var body struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if len(body.Tools) != 1 {
+		t.Fatalf("tools = %d, want 1 valid tool", len(body.Tools))
+	}
+	fn := body.Tools[0]["function"].(map[string]any)
+	if fn["name"] != "lookup" {
+		t.Fatalf("remaining tool name = %v, want lookup", fn["name"])
+	}
+}
+
+func TestSimplifyTools_RewritesNonFunctionType(t *testing.T) {
+	in := []byte(`{"model":"minimax-m3","tools":[
+		{"type":"custom","name":"lookup","description":"ok","parameters":{}}
+	]}`)
+
+	out := SimplifyTools(in)
+	var body struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if got := body.Tools[0]["type"]; got != "function" {
+		t.Fatalf("tool type = %v, want function", got)
+	}
+}
+
 func TestSimplifyTools_MixedFormats(t *testing.T) {
 	// Mix of canonical and non-canonical tools.
 	in := []byte(`{

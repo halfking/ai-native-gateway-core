@@ -25,18 +25,17 @@ type PickProbeResult struct {
 	Source string
 }
 
-// PickProbeModelForCredential implements the 5-level fallback algorithm
-// (manual > request_logs > domestic_featured > domestic_random_fallback > empty).
+// PickProbeModelForCredential implements the 4-level fallback algorithm
+// (manual > request_logs > featured > random_fallback > empty).
 // Skips credentials with source='manual' (already pinned by admin).
 //
-// Priority 2 "domestic_featured" — domestic providers only — picks a binding
-// model whose standardized_name (with raw_model_name fallback) appears in
-// routing_policy.featured_models. We deliberately bias toward "hot / mainstream"
-// models for the credential-level health probe because a single obscure /
-// deprecated binding that happens to be available should not be allowed to
-// flip the whole credential to unreachable. This matches the Layer 4
-// featuredCycle in model_probe.go so the two probe layers agree on what
-// counts as a "featured" model.
+// Priority 2 "featured" — picks a binding model whose standardized_name
+// (with raw_model_name fallback) appears in routing_policy.featured_models.
+// We deliberately bias toward "hot / mainstream" models for the credential-level
+// health probe because a single obscure / deprecated binding that happens to be
+// available should not be allowed to flip the whole credential to unreachable.
+// This matches the Layer 4 featuredCycle in model_probe.go so the two probe
+// layers agree on what counts as a "featured" model.
 //
 // If no featured match exists, we fall back to the previous random pick
 // over the credential's available bindings (source='auto:domestic_random')
@@ -90,21 +89,7 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 		}
 	}
 
-	// Priority 2: domestic provider — featured-first pick.
-	var domestic bool
-	err = db.QueryRow(ctx, `
-		SELECT p.domestic
-		FROM credentials c JOIN providers p ON p.id = c.provider_id
-		WHERE c.id = $1
-	`, credID).Scan(&domestic)
-	if err != nil {
-		return PickProbeResult{}, err
-	}
-	if !domestic {
-		return PickProbeResult{}, nil
-	}
-
-	// Priority 2a: featured match. routing_policy.featured_models holds
+	// Priority 2: featured match. routing_policy.featured_models holds
 	// standardized model names (e.g. "claude-3-5-sonnet-20241022",
 	// "gpt-4o"). We compare on standardized_name first (the canonical
 	// representation); the OR with raw_model_name is a defensive
@@ -143,7 +128,7 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 	}
 	rows.Close()
 
-	// Priority 2b: safety-net random pick across all available bindings.
+	// Priority 3: safety-net random pick across all available bindings.
 	// Only reached when no featured model is bound to this credential.
 	// Preserved from the original 4-level design so providers with no
 	// featured bindings still get a sensible default_probe_model.

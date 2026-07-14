@@ -284,6 +284,10 @@ func parseAnthropicMessage(msg map[string]any) (*Message, error) {
 	// Handle tool_use_id (for tool role)
 	if toolUseID, ok := msg["tool_use_id"].(string); ok {
 		irMsg.ToolCallID = toolUseID
+	} else if toolCallID, ok := msg["tool_call_id"].(string); ok {
+		// MiniMax's Anthropic-compatible endpoint uses tool_call_id at the
+		// message level in some responses, not only inside tool_result blocks.
+		irMsg.ToolCallID = toolCallID
 	}
 
 	// Handle source (for tool role results that aren't in content blocks)
