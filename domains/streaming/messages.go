@@ -654,6 +654,8 @@ func convertBlockMessage(role string, blocks []any) map[string]any {
 	var textParts []string
 	var toolCalls []map[string]any
 	var passthrough []map[string]any
+	var contentParts []any
+	var hasNonTextContent bool
 
 	for _, b := range blocks {
 		block, ok := b.(map[string]any)
@@ -666,6 +668,7 @@ func convertBlockMessage(role string, blocks []any) map[string]any {
 		case "text":
 			if text, ok := block["text"].(string); ok && text != "" {
 				textParts = append(textParts, text)
+				contentParts = append(contentParts, map[string]any{"type": "text", "text": text})
 			}
 		case "tool_use":
 			args := block["input"]
@@ -693,26 +696,29 @@ func convertBlockMessage(role string, blocks []any) map[string]any {
 			source, _ := block["source"].(map[string]any)
 			if source != nil {
 				if imgPart := convertImageBlock(source); imgPart != nil {
-					return map[string]any{
-						"role":    "user",
-						"content": []any{imgPart},
-					}
+					hasNonTextContent = true
+					contentParts = append(contentParts, imgPart)
 				}
 			}
 		default:
 			passthrough = append(passthrough, block)
+			contentParts = append(contentParts, block)
 		}
 	}
-
 	if len(toolCalls) > 0 {
 		result := map[string]any{
 			"role":       role,
 			"tool_calls": toolCalls,
 		}
-		if len(textParts) > 0 {
+		if hasNonTextContent {
+			result["content"] = contentParts
+		} else if len(textParts) > 0 {
 			result["content"] = strings.Join(textParts, "\n")
 		}
 		return result
+	}
+	if hasNonTextContent {
+		return map[string]any{"role": role, "content": contentParts}
 	}
 
 	if len(passthrough) > 0 {

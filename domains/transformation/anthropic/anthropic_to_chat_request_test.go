@@ -110,6 +110,34 @@ func TestAnthropicRequestToChat_ContentBlocks(t *testing.T) {
 	}
 }
 
+func TestAnthropicRequestToChat_PreservesMixedImageContent(t *testing.T) {
+	in := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"text","text":"describe this"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}]}]}`)
+	out, err := ConvertAnthropicRequestToChat(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatal(err)
+	}
+	msg := body["messages"].([]any)[0].(map[string]any)
+	parts := msg["content"].([]any)
+	if len(parts) != 2 {
+		t.Fatalf("content parts = %d, want 2", len(parts))
+	}
+	if parts[0].(map[string]any)["text"] != "describe this" {
+		t.Errorf("text block was not preserved: %v", parts[0])
+	}
+	image := parts[1].(map[string]any)
+	if image["type"] != "image_url" {
+		t.Errorf("image type = %v, want image_url", image["type"])
+	}
+	imageURL := image["image_url"].(map[string]any)["url"]
+	if imageURL != "data:image/png;base64,aGVsbG8=" {
+		t.Errorf("image URL = %v", imageURL)
+	}
+}
+
 func TestAnthropicRequestToChat_ToolUse(t *testing.T) {
 	in := []byte(`{
         "model":"gpt-4",
