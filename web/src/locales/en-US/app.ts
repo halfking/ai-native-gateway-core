@@ -1,6 +1,6 @@
 // app.ts — App.vue shell strings (header roles, sidebar collapse, logout, language switcher).
 export default {
-  brand: 'LLM Gateway',
+  brand: 'AI-Native Org Gateway',
   role: {
     super_admin: 'Super Admin',
     tenant_admin: 'Tenant Admin',
