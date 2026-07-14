@@ -146,6 +146,8 @@ func convertAnthropicMessageToChat(m any) (map[string]any, bool) {
 	case []any:
 		// Parse content blocks
 		var textParts []string
+		var contentParts []any
+		var hasNonTextContent bool
 		var toolCalls []map[string]any
 		var toolResult *map[string]any
 
@@ -157,6 +159,7 @@ func convertAnthropicMessageToChat(m any) (map[string]any, bool) {
 			case "text":
 				if text, ok := b["text"].(string); ok {
 					textParts = append(textParts, text)
+					contentParts = append(contentParts, map[string]any{"type": "text", "text": text})
 				}
 			case "tool_use":
 				toolID, _ := b["id"].(string)
@@ -202,18 +205,29 @@ func convertAnthropicMessageToChat(m any) (map[string]any, bool) {
 				}
 			case "image":
 				// Anthropic image → OpenAI image_url
-				// Simplified: convert to text placeholder
 				if source, ok := b["source"].(map[string]any); ok {
 					sourceType, _ := source["type"].(string)
 					switch sourceType {
 					case "url":
 						if url, ok := source["url"].(string); ok {
-							textParts = append(textParts, "[Image: "+url+"]")
+							hasNonTextContent = true
+							contentParts = append(contentParts, map[string]any{
+								"type":      "image_url",
+								"image_url": map[string]any{"url": url},
+							})
 						}
 					case "base64":
-						// For base64 images, we'd need to construct proper multipart content
-						// For now, just note it exists
-						textParts = append(textParts, "[Image: base64 data]")
+						mediaType, _ := source["media_type"].(string)
+						data, _ := source["data"].(string)
+						if mediaType != "" && data != "" {
+							hasNonTextContent = true
+							contentParts = append(contentParts, map[string]any{
+								"type": "image_url",
+								"image_url": map[string]any{
+									"url": "data:" + mediaType + ";base64," + data,
+								},
+							})
+						}
 					}
 				}
 			}
@@ -225,7 +239,9 @@ func convertAnthropicMessageToChat(m any) (map[string]any, bool) {
 		}
 
 		// Otherwise, construct regular message
-		if len(textParts) > 0 {
+		if hasNonTextContent {
+			msg["content"] = contentParts
+		} else if len(textParts) > 0 {
 			msg["content"] = strings.Join(textParts, "\n")
 		} else {
 			msg["content"] = ""

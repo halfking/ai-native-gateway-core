@@ -274,7 +274,7 @@ func hasThinkingBlocks(msgs []json.RawMessage) bool {
 		}
 		if json.Unmarshal(m.Content, &parts) == nil {
 			for _, p := range parts {
-				if p.Type == "thinking" || p.Type == "image_url" || p.Type == "input_audio" {
+				if p.Type == "thinking" {
 					return true
 				}
 			}
@@ -300,11 +300,8 @@ func stripThinkingBlocks(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 
-	// Content is an array of blocks — filter out non-text blocks
-	var parts []struct {
-		Type json.RawMessage `json:"type"`
-		Text string          `json:"text,omitempty"`
-	}
+	// Content is an array of blocks. Keep every block except thinking.
+	var parts []json.RawMessage
 	if err := json.Unmarshal(m.Content, &parts); err != nil {
 		return raw
 	}
@@ -312,18 +309,19 @@ func stripThinkingBlocks(raw json.RawMessage) json.RawMessage {
 	filtered := make([]json.RawMessage, 0, len(parts))
 	changed := false
 	for _, p := range parts {
-		// Check type
-		var typeStr string
-		//nolint:errcheck // test parse, non-critical
-		json.Unmarshal(p.Type, &typeStr)
+		var block struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(p, &block); err != nil {
+			filtered = append(filtered, p)
+			continue
+		}
 
-		switch typeStr {
-		case "text", "tool_use", "tool_result":
-			filtered = append(filtered, p.Type)
-		case "thinking", "image_url", "input_audio":
+		switch block.Type {
+		case "thinking":
 			changed = true
 		default:
-			filtered = append(filtered, p.Type)
+			filtered = append(filtered, p)
 		}
 	}
 
