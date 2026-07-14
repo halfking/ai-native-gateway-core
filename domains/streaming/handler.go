@@ -36,6 +36,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -1071,7 +1072,10 @@ func (h *ChatHandler) serveWithExecutor(
 		return
 	}
 
-	clientModel := reqBody.Model
+	// 2026-07-14: enforce lowercase at the wire boundary so downstream
+	// SQL matches (canonical_raw_name / standardized_name / model_aliases)
+	// work without lower() wrappers.
+	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
 	logCtx.SetClientModel(clientModel)
 	if sessionID == "" {
 		sessionID = extractSessionIDFromBody(bodyBytes)
@@ -1236,7 +1240,8 @@ func (h *ChatHandler) serveWithExecutor(
 		} else {
 			logCtx.IsAutoRequest = true
 		}
-		clientModel = reqBody.Model
+		// 2026-07-14: keep the client-facing model name lowercase.
+		clientModel = modelname.CanonicalizeClientModel(reqBody.Model)
 		logCtx.SetClientModel(clientModel)
 	}
 
@@ -1843,7 +1848,25 @@ func (h *ChatHandler) serveWithExecutor(
 		},
 		ClientProtocol: clientProtocol,
 		ClientModel:    clientModel,
-		OutboundModel:  outboundForLog,
+		// OutboundModel is intentionally set to clientModel here so the
+		// upstream body builder (executor_chat.prepareRequestBody /
+		// executor_anthropic.prepareAnthropicRequestBody) does NOT echo
+		// the FIRST candidate's model into a retry/failover attempt's
+		// request body. The actual upstream model id is resolved per
+		// candidate inside the executor via resolveOutboundModel().
+		//
+		// outboundForLog is preserved for request_logs / decision log /
+		// audit and is exposed via params.Transform.MatchedRule +
+		// explicitOutbound (see recordInitialRequestLog below).
+		//
+		// Historical behaviour before 2026-07-14 wrote
+		// `OutboundModel: outboundForLog` here, which caused retries to
+		// the NEXT candidate to still send the previous candidate's
+		// upstream model id. For NVIDIA NIM this meant candidate #2+
+		// received a short id like "glm-5.2" or "minimax-m3" instead of
+		// the required publisher-prefixed "z-ai/glm-5.2" /
+		// "minimaxai/minimax-m3" → model_not_found.
+		OutboundModel:  clientModel,
 		ClientID:       clientID,
 		Transform:      txResult,
 		Resolution:     modelResolution,

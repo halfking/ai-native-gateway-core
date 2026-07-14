@@ -715,7 +715,16 @@ func extractManifestModels(manifest *string) ([]string, error) {
 // Manual disables (reason LIKE 'manual%') are preserved; legacy soft-deletes
 // and auto disables are re-enabled when the vendor still lists the model.
 func (h *Handler) upsertModelForProvider(ctx context.Context, credentialID int, rawName string) error {
-	return modelcatalog.UpsertCredentialModel(ctx, h.db, credentialID, rawName, modelname.StandardizeName(rawName), nil)
+	canonicalRawName := modelname.CanonicalizeClientModel(rawName)
+	return modelcatalog.UpsertCredentialModel(
+		ctx,
+		h.db,
+		credentialID,
+		rawName,                // provider-facing name, keep casing
+		canonicalRawName,       // client-facing lowercase key
+		canonicalRawName,       // standardized_name, also lowercase
+		nil,
+	)
 }
 
 func (h *Handler) updateCredHealth(ctx context.Context, credentialID int, status, errMsg string) {

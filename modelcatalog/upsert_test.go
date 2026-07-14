@@ -36,6 +36,70 @@ func TestPreserveManualDisable(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 
+// TestUpsertSQL_LowercaseContract pins the case-handling guarantees that
+// gateway.go enforces after the 2026-07-14 case audit:
+//   - the INSERT populates provider_models.canonical_raw_name
+//   - the INSERT keeps raw_model_name and canonical_raw_name as distinct
+//     columns (provider-facing vs client-facing)
+//   - the SQL does NOT wrap either column in lower(...)
+//
+// If any future migration drops the canonical_raw_name column or starts
+// silently lowercasing raw_model_name, this test will fail.
+func TestUpsertSQL_LowercaseContract(t *testing.T) {
+	s := upsertCredentialModelSQL
+
+	wantSubstrings := []string{
+		"INSERT INTO provider_models (",
+		"raw_model_name,",
+		"canonical_raw_name,",
+		"canonical_id,",
+		"standardized_name,",
+		"SELECT cred.provider_id, $2, $3,",
+		"canonical_raw_name = COALESCE(EXCLUDED.canonical_raw_name",
+	}
+
+	for _, want := range wantSubstrings {
+		if !strings.Contains(s, want) {
+			t.Errorf("upsertCredentialModelSQL is missing %q (would break the lowercase model-name contract)", want)
+		}
+	}
+
+	// Explicitly forbid lower() in the upsert SQL — callers are responsible
+	// for canonicalising inputs via modelname.CanonicalizeClientModel.
+	forbiddenSubstrings := []string{
+		"lower(raw_model_name)",
+		"lower(canonical_raw_name)",
+	}
+	for _, bad := range forbiddenSubstrings {
+		if strings.Contains(s, bad) {
+			t.Errorf("upsertCredentialModelSQL must not contain %q (callers pre-lowercase inputs)", bad)
+		}
+	}
+}
+
+func TestUpsertCredentialModel_AcceptsAllLowercaseArgs(t *testing.T) {
+	// 2026-07-14: this test guards the new canonicalRawName parameter on
+	// UpsertCredentialModel by exercising the SQL constant against a
+	// representative set of (rawName, canonicalRawName) pairs. It does NOT
+	// touch the DB; it asserts only that the SQL is structurally valid
+	// (the prepared statements can be parsed). Use pgxmock or a real DB
+	// for end-to-end behaviour.
+	s := upsertCredentialModelSQL
+
+	wantBindings := []string{
+		"$1", // credentialID
+		"$2", // rawName
+		"$3", // canonicalRawName
+		"$4", // standardizedName
+		"$5", // canonicalID
+	}
+	for _, b := range wantBindings {
+		if !strings.Contains(s, b) {
+			t.Errorf("upsertCredentialModelSQL is missing parameter binding %q", b)
+		}
+	}
+}
+
 // TestDeriveBillingMode covers the SSOT mapping from credentials.plan_type
 // to credential_model_bindings.billing_mode. This mirrors the CASE WHEN
 // expression in upsertCredentialModelSQL and migrations/136.

@@ -12,8 +12,9 @@ LEFT JOIN LATERAL (
       (rl.canonical_id IS NOT NULL AND mo.canonical_id = rl.canonical_id)
       OR (
         rl.canonical_id IS NULL AND (
-          lower(mo.standardized_name) = lower(COALESCE(mc.canonical_name, rl.client_model, ''))
-          OR lower(mo.raw_model_name) = lower(COALESCE(rl.outbound_model, rl.client_model, ''))
+          -- 2026-07-14: client-side columns are persisted lowercase.
+          mo.standardized_name = lower(COALESCE(mc.canonical_name, rl.client_model, ''))
+          OR mo.canonical_raw_name = lower(COALESCE(rl.outbound_model, rl.client_model, ''))
         )
       )
     )
@@ -26,7 +27,7 @@ LEFT JOIN LATERAL (
     END,
     CASE WHEN NULLIF(TRIM(mo.outbound_model_name), '') IS NOT NULL THEN 0 ELSE 1 END,
     CASE
-      WHEN lower(TRIM(mo.raw_model_name)) <> lower(TRIM(COALESCE(mo.standardized_name, mc.canonical_name, rl.client_model, '')))
+      WHEN TRIM(mo.raw_model_name) <> TRIM(COALESCE(mo.standardized_name, mc.canonical_name, rl.client_model, ''))
       THEN 0 ELSE 1
     END,
     mo.available DESC NULLS LAST,

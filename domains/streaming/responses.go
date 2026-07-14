@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 )
 
@@ -243,7 +244,8 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	attemptClientModel = reqBody.Model
 
-	clientModel := reqBody.Model
+	// 2026-07-14: lowercase at the wire boundary.
+	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
 
 	if keyInfo != nil {
 		profile := clientProfileFromKey(keyInfo)
@@ -438,7 +440,11 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// clients, instead of the IR-based Responses translator.
 		ClientProtocol: "openai-responses",
 		ClientModel:    clientModel,
-		OutboundModel:  outboundForLog,
+		// See domains/streaming/handler.go for the rationale: the
+		// executor resolves the upstream model per candidate, so we
+		// pass clientModel here to avoid leaking the FIRST candidate's
+		// outbound id into retry/failover attempts.
+		OutboundModel:  clientModel,
 		ClientID:       clientID,
 		Transform:      txResult,
 		Resolution:     modelResolution,

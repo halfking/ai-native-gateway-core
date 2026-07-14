@@ -609,7 +609,15 @@ var splitFamilyIDs = func() []string {
 }()
 
 func (s *Service) upsertModel(ctx context.Context, cred credential, rawName string) error {
-	// Normalize the model name
+	// 2026-07-14: provider-vs-client name split.
+	//   - canonicalRawName is the CLIENT-facing lowercase key, persisted
+	//     in provider_models.canonical_raw_name and used by SQL matching.
+	//   - standardizedName is the historical "provider-canonical" column
+	//     (kept lowercase for the same reason).
+	//   - rawName is the PROVIDER-facing name (e.g. NVIDIA NIM
+	//     "z-ai/glm-5.2", Meta "meta/llama-3.3-70b-instruct") and is kept
+	//     unchanged in provider_models.raw_model_name.
+	canonicalRawName := modelname.CanonicalizeClientModel(rawName)
 	canonicalName := NormalizeModelName(rawName)
 	family := InferFamily(canonicalName)
 
@@ -630,6 +638,9 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 	//      admin-edited family that *differs* from what we'd
 	//      compute (i.e. NOT a known split token) is left alone so
 	//      we don't trample manual classifications.
+	//
+	// 2026-07-14: canonical_name is now always written as lowercase so
+	// internal SQL joins don't need `lower(...) = lower(...)` wrappers.
 	var canonicalID int
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO models_canonical (canonical_name, family, tags, source, status)
@@ -673,22 +684,35 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 		return err
 	}
 
-	// Upsert into model_aliases
+	// Upsert into model_aliases. raw_name is also enforced lowercase here
+	// (alias_sync.go's rebuildAliasIndex does the same in batch).
 	aliases := GenerateAliases(rawName, canonicalName)
 	for _, alias := range aliases {
+		normalizedAlias := modelname.CanonicalizeClientModel(alias)
+		if normalizedAlias == "" {
+			continue
+		}
 		_, err := s.db.Exec(ctx, `
 			INSERT INTO model_aliases (raw_name, canonical_id, status)
 			VALUES ($1, $2, 'active')
 			ON CONFLICT (raw_name) DO UPDATE SET
 				canonical_id = EXCLUDED.canonical_id,
 				status = 'active'
-		`, alias, canonicalID)
+		`, normalizedAlias, canonicalID)
 		if err != nil {
-			slog.Debug("failed to upsert alias", "alias", alias, "error", err)
+			slog.Debug("failed to upsert alias", "alias", normalizedAlias, "error", err)
 		}
 	}
 
-	return modelcatalog.UpsertCredentialModel(ctx, s.db, cred.ID, rawName, modelname.StandardizeName(rawName), &canonicalID)
+	return modelcatalog.UpsertCredentialModel(
+		ctx,
+		s.db,
+		cred.ID,
+		rawName,                          // provider-facing: keep casing
+		canonicalRawName,                 // client-facing lowercase key
+		modelname.CanonicalizeClientModel(rawName), // standardized_name stays lowercase too
+		&canonicalID,
+	)
 }
 
 func (s *Service) updateCredentialHealth(ctx context.Context, credentialID int, status, errMsg string) {

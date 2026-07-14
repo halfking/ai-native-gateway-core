@@ -2,6 +2,7 @@ package modelname
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -69,6 +70,63 @@ func TestNormalizeRouteKey(t *testing.T) {
 	for _, tc := range tests {
 		if got := NormalizeRouteKey(tc.in); got != tc.want {
 			t.Errorf("NormalizeRouteKey(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCanonicalizeClientModel(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "whitespace", in: "   ", want: ""},
+		{name: "trim spaces", in: "  glm-5.2  ", want: "glm-5.2"},
+		{name: "uppercase glm", in: "GLM-5.2", want: "glm-5.2"},
+		{name: "mixed case minimax", in: "MiniMax-M3", want: "minimax-m3"},
+		{name: "minimax short form", in: "MINIMAX-M3", want: "minimax-m3"},
+		{name: "already lower", in: "glm-5.2", want: "glm-5.2"},
+		{name: "dotted version preserved", in: "minimax-m2.7", want: "minimax-m2.7"},
+		{name: "dash variant preserved", in: "glm-4-7", want: "glm-4-7"},
+		{name: "GPT uppercase", in: "GPT-4O", want: "gpt-4o"},
+		{name: "claude uppercase", in: "Claude-Sonnet-4-6", want: "claude-sonnet-4-6"},
+		// provider-prefixed client input → still lowercased (we only strip
+		// casing here; vendor prefix is removed by NormalizeRouteKey when
+		// needed for cross-form matching, but the canonical DB key keeps
+		// the prefix when the family owns the namespace).
+		{name: "zhipu prefix", in: "Zhipu/glm-4.7", want: "zhipu/glm-4.7"},
+		{name: "nvidia prefix passthrough", in: "z-ai/glm-5.2", want: "z-ai/glm-5.2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanonicalizeClientModel(tc.in); got != tc.want {
+				t.Errorf("CanonicalizeClientModel(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCanonicalizeClientModel_AlwaysLower pins the gateway-wide case
+// contract: every input must collapse to a value that is byte-equal to
+// its lowercase form. A regression here would re-introduce the
+// mixed-case alias / canonical_name drift that triggered the
+// 2026-07-14 audit.
+func TestCanonicalizeClientModel_AlwaysLower(t *testing.T) {
+	inputs := []string{
+		"GLM-5.2", "glm-5.2", " GLM-5.2 ", "Z-AI/GLM-5.2",
+		"MiniMax-M3", "minimax-m3", "MINIMAX-M3",
+		"meta/llama-3.3-70b-instruct", "Meta/Llama-3.3-70B-Instruct",
+		"Claude-Opus-4-6", "claude-opus-4-6", "CLAUDE-OPUS-4-6",
+		"gpt-4o", "GPT-4O", "  Gpt-4O  ",
+	}
+	for _, in := range inputs {
+		got := CanonicalizeClientModel(in)
+		if got != strings.ToLower(strings.TrimSpace(got)) {
+			t.Errorf("CanonicalizeClientModel(%q) = %q is not lowercase", in, got)
+		}
+		if strings.TrimSpace(in) == "" && got != "" {
+			t.Errorf("CanonicalizeClientModel(%q) should return empty for whitespace input, got %q", in, got)
 		}
 	}
 }

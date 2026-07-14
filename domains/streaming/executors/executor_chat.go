@@ -1020,25 +1020,55 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 // Extracted as a free function so unit tests can verify each protocol
 // branch without spinning up the full HTTP retry loop.
 
-// resolveOutboundModel picks the upstream model field.
-// Mirrors Python prepare_candidate → render_outbound_model() default path:
-// transform-rendered OutboundModel wins; else cand.RawModel which is
-// COALESCE(outbound_model_name, raw_model_name) from model_offers.
+// resolveOutboundModel picks the upstream model field for the CURRENT candidate.
+//
+// Selection rules (2026-07-14 NIM fix):
+//  1. If the resolved transform template explicitly names an upstream model
+//     (params.Transform.OutboundModel non-empty) AND it differs from the
+//     candidate's offer raw name, use the template. This preserves the
+//     historical "admin-override transform wins" path relied on by
+//     executor_glm_test.go::TestResolveOutboundModel_ExplicitTransformWins.
+//  2. Otherwise, if params.OutboundModel is non-empty AND it differs from the
+//     candidate's offer raw name, use params.OutboundModel. This preserves
+//     the legacy call sites that pre-set OutboundModel from the FIRST
+//     candidate's outboundForLog when that value still differs from the
+//     current candidate's offer.
+//  3. Otherwise use the CURRENT candidate's cand.RawModel (which is already
+//     COALESCE(outbound_model_name, raw_model_name) from model_offers). This
+//     guarantees that retries/failovers to another candidate send the new
+//     candidate's own upstream model ID — fixing the previous behaviour where
+//     the FIRST candidate's value was applied unconditionally and caused
+//     cross-provider 404s (e.g. NVIDIA NIM receiving "glm-5.2" instead of the
+//     required "z-ai/glm-5.2").
+//
+// handlers/messages/responses now set params.OutboundModel = clientModel
+// (NOT the first candidate's outboundForLog), so step (2) is effectively
+// dormant in the runtime path; we keep it for direct callers (tests, async
+// retry) that still thread an explicit outbound.
+//
+// Mirrors Python prepare_candidate → render_outbound_model() default path.
 func resolveOutboundModel(params *ExecParams, cand provider.Candidate) string {
-	if params.OutboundModel != "" {
-		return params.OutboundModel
+	if params == nil {
+		return cand.RawModel
+	}
+	if params.Transform != nil && params.Transform.OutboundModel != "" {
+		if cand.OfferRawModel == "" || params.Transform.OutboundModel != cand.OfferRawModel {
+			return params.Transform.OutboundModel
+		}
+	}
+	if params.OutboundModel != "" && params.OutboundModel != params.ClientModel {
+		if cand.OfferRawModel == "" || params.OutboundModel != cand.OfferRawModel {
+			return params.OutboundModel
+		}
 	}
 	return cand.RawModel
 }
 
 func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
-	outboundModel := params.OutboundModel
-	if outboundModel == "" {
-		outboundModel = cand.RawModel
-	}
+	outboundModel := resolveOutboundModel(params, cand)
 
 	bodyBytes := params.BodyBytes
-	if outboundModel != params.ClientModel {
+	if outboundModel != "" && outboundModel != params.ClientModel {
 		bodyBytes = replaceModelInRequestBody(bodyBytes, outboundModel)
 	}
 	// injectStreamOptions adds OpenAI-specific `"stream_options":{"include_usage":true}`

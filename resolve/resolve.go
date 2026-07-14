@@ -110,7 +110,11 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 		return passthrough(clientModel), nil
 	}
 	normalized := variants[0]
-	rawLookup := strings.TrimSpace(strings.ToLower(clientModel))
+	// 2026-07-14: all SQL columns compared below are persisted lowercase
+	// (model_aliases.raw_name, models_canonical.canonical_name). Compare
+	// against the lowercased client model instead of wrapping each
+	// column in lower(...).
+	rawLookup := modelname.CanonicalizeClientModel(clientModel)
 	profile := strings.TrimSpace(strings.ToLower(clientProfile))
 
 	var canonicalID *int
@@ -125,9 +129,9 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 		err := r.dbPool.QueryRow(ctx, `
 			SELECT id, canonical_name
 			FROM models_canonical
-			WHERE lower(canonical_name) = lower($1)
+			WHERE canonical_name = $1
 			  AND COALESCE(status, 'active') = 'active'
-		`, v).Scan(&canonicalID, &canonicalName)
+		`, modelname.CanonicalizeClientModel(v)).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {
 			hitPath = "canonical"
 			break
@@ -156,7 +160,7 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			SELECT mc.id, mc.canonical_name
 			FROM model_aliases ma
 			JOIN models_canonical mc ON mc.id = ma.canonical_id
-			WHERE lower(ma.raw_name) = lower($1)
+			WHERE ma.raw_name = $1
 			  AND COALESCE(ma.status, 'active') = 'active'
 			  AND COALESCE(mc.status, 'active') = 'active'
 			  AND (
@@ -166,7 +170,7 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			      OR $2 = ''
 			  )
 			LIMIT 1
-		`, v, profile).Scan(&canonicalID, &canonicalName)
+		`, modelname.CanonicalizeClientModel(v), profile).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {
 			hitPath = "alias"
 			break
@@ -196,7 +200,7 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			SELECT mc.id, mc.canonical_name
 			FROM model_aliases ma
 			JOIN models_canonical mc ON mc.id = ma.canonical_id
-			WHERE lower(ma.raw_name) = lower($1)
+			WHERE ma.raw_name = $1
 			  AND COALESCE(ma.status, 'active') = 'active'
 			  AND COALESCE(mc.status, 'active') = 'active'
 			  AND (
