@@ -139,25 +139,7 @@ func (h *Handler) queryOverviewCountsMinute(ctx context.Context, tenantID string
 	`, days).Scan(keys, models, providers)
 }
 
-func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, days int) (map[string]any, bool, error) {
-	out, err := h.queryBoardPiesMinute(ctx, tenantID, days)
-	if err == nil && !boardPiesAllEmpty(out) {
-		return out, true, nil
-	}
-	if err != nil && !IsMissingRelationError(err) {
-		// Non-schema errors: still attempt hot-log fallback before surfacing.
-	}
-	fb, fbErr := h.fallbackBoardPies(ctx, tenantID, days)
-	if fbErr != nil {
-		if err != nil {
-			return emptyBoardPies(), false, err
-		}
-		return out, false, fbErr
-	}
-	return fb, false, nil
-}
-
-func (h *Handler) queryBoardPiesMinute(ctx context.Context, tenantID string, days int) (map[string]any, error) {
+func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, days int) (map[string]any, error) {
 	types := map[string]string{
 		"clients":         "client_profile",
 		"virtual_ips":     "virtual_ip",
@@ -213,25 +195,7 @@ func (h *Handler) queryDimPie(ctx context.Context, tenantID string, days int, di
 	return items, nil
 }
 
-func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, days int, providerID int64) ([]boardTrendPoint, bool, error) {
-	points, err := h.queryBoardTrendsMinute(ctx, tenantID, days, providerID)
-	if err == nil && len(points) > 0 {
-		return points, true, nil
-	}
-	if err != nil && !IsMissingRelationError(err) {
-		// fall through to hot-log fallback
-	}
-	fb, fbErr := h.fallbackBoardTrends(ctx, tenantID, days, providerID)
-	if fbErr != nil {
-		if err != nil {
-			return nil, false, err
-		}
-		return points, false, fbErr
-	}
-	return fb, false, nil
-}
-
-func (h *Handler) queryBoardTrendsMinute(ctx context.Context, tenantID string, days int, providerID int64) ([]boardTrendPoint, error) {
+func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, days int, providerID int64) ([]boardTrendPoint, error) {
 	tenantClause, tenantArgs := boardTenantClause(tenantID, 2)
 	args := []any{days}
 	args = append(args, tenantArgs...)

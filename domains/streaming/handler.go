@@ -2398,7 +2398,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 
 	var requestBodyText *string
 	if len(requestBody) > 0 {
-		v := string(requestBody)
+		v := string(redactAttachmentBodyIfEnabled(requestBody))
 		requestBodyText = &v
 	}
 	var responseBodyText *string
@@ -2523,7 +2523,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			responseBodyText = strPtr(previewStr)
 		}
 	}
-	requestPreviewText := requestPreview(requestBody)
+	requestPreviewText := requestPreview(redactAttachmentBodyIfEnabled(requestBody))
 	transformSummaryText := transformSummary(txResult, evt.OutboundModel)
 	responsePreviewText := responsePreview(responseBody)
 	var requestPreviewPtr *string
@@ -3312,7 +3312,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	}
 	var requestBodyText *string
 	if len(requestBody) > 0 {
-		v := string(requestBody)
+		v := string(redactAttachmentBodyIfEnabled(requestBody))
 		requestBodyText = &v
 	}
 	tenantID := "default"
@@ -3327,7 +3327,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 		keyPrefix, keyOwner, appCode = keyMetaFromKeyInfo(keyInfo)
 	}
 	var requestPreviewPtr *string
-	if preview := requestPreview(requestBody); preview != "" {
+	if preview := requestPreview(redactAttachmentBodyIfEnabled(requestBody)); preview != "" {
 		requestPreviewPtr = strPtr(preview)
 	}
 	var transformSummaryPtr *string

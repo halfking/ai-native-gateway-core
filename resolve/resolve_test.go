@@ -109,12 +109,12 @@ func TestCacheKey(t *testing.T) {
 	}
 }
 
-func TestLowerUnique(t *testing.T) {
-	result := lowerUnique([]string{"GPT-4o", "gpt-4o", "GPT-4O-2024-08-06", ""})
+func TestUniqueRawModels(t *testing.T) {
+	result := uniqueRawModels([]string{"GPT-4o", "gpt-4o", "GPT-4O-2024-08-06", ""})
 	if len(result) != 2 {
 		t.Fatalf("expected 2, got %d: %v", len(result), result)
 	}
-	if result[0] != "gpt-4o" || result[1] != "gpt-4o-2024-08-06" {
+	if result[0] != "GPT-4o" || result[1] != "GPT-4O-2024-08-06" {
 		t.Fatalf("unexpected values: %v", result)
 	}
 }

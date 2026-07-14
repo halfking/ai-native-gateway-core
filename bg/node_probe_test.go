@@ -9,13 +9,21 @@ import (
 // sequence mandated by the spec — any change here must be a
 // deliberate spec update.
 func TestNodeProbeBackoffLadder(t *testing.T) {
-	want := []int{5, 30, 60, 300, 3600, 7200, 86400}
-	if len(nodeProbeBackoff) != len(want) {
-		t.Fatalf("len mismatch: got %d want %d", len(nodeProbeBackoff), len(want))
+	want := []time.Duration{
+		5 * time.Second,
+		30 * time.Second,
+		60 * time.Second,
+		5 * time.Minute,
+		1 * time.Hour,
+		2 * time.Hour,
+		24 * time.Hour,
+	}
+	if len(NodeProbeBackoffChain) != len(want) {
+		t.Fatalf("len mismatch: got %d want %d", len(NodeProbeBackoffChain), len(want))
 	}
 	for i, v := range want {
-		if nodeProbeBackoff[i] != v {
-			t.Fatalf("backoff[%d] = %d, want %d", i, nodeProbeBackoff[i], v)
+		if NodeProbeBackoffChain[i] != v {
+			t.Fatalf("backoff[%d] = %v, want %v", i, NodeProbeBackoffChain[i], v)
 		}
 	}
 }

@@ -34,13 +34,21 @@ import (
 	"time"
 )
 
+// probeRetryDelaysDefault is the default short-jitter retry schedule for
+// credential/model probes. The first entry is 0 (no delay before the first
+// attempt) so the happy path is unchanged.
+//
+// The authoritative backoff chain definitions live in bg/probe_backoff.go.
+// This package keeps its own defaults because bg cannot import probeutil
+// (circular dependency — probeutil is imported by bg).
+var probeRetryDelaysDefault = []time.Duration{0, 2 * time.Second, 5 * time.Second}
+
 // ProbeRetryDelays is the short-jitter retry schedule for credential/model
-// probes. The first entry is 0 (no delay before the first attempt) so the
-// happy path is unchanged.
+// probes. First entry is 0 so the happy path is unchanged.
 //
 // Exported so the admin /check-health entry can share the same schedule
 // with the background CredentialProbeV2 cycle.
-var ProbeRetryDelays = []time.Duration{0, 2 * time.Second, 5 * time.Second}
+var ProbeRetryDelays = probeRetryDelaysDefault
 
 // IsProbeRetryableStatus reports whether the given HTTP status code (or 0
 // for "no response at all") is worth retrying with the short-jitter

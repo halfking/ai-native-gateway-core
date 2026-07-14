@@ -9,7 +9,7 @@ export default {
     dataOps: "Datenoperationen",
     guide: "Onboarding",
     chat: "Chat",
-    opsplatform: "Betriebsplattform"
+    opsplatform: "运维平台"
   },
   item: {
     overview: "Übersicht",

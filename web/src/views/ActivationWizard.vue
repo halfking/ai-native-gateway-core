@@ -29,6 +29,7 @@ const status = ref<CustomerLicenseStatus | null>(null)
 const loading = ref(false)
 const onlineForm = ref({ license_key: '', device_name: '' })
 const trialEmail = ref('')
+const trialAgreed = ref(false)
 const offlineForm = ref({ signed_license: '', request_id: '', activation_code: '' })
 const lastResult = ref<ActivationResult | null>(null)
 const offlineRequestResult = ref<{ request_id: string; signed_request: string } | null>(null)
@@ -102,9 +103,13 @@ async function handleTrial() {
     ElMessage.warning('请输入有效邮箱')
     return
   }
+  if (!trialAgreed.value) {
+    ElMessage.warning('请先同意用户协议与数据处理授权')
+    return
+  }
   loading.value = true
   try {
-    const result = await requestTrial({ email: trialEmail.value.trim() })
+    const result = await requestTrial({ email: trialEmail.value.trim(), agree: true })
     if (!result.success || !result.license_key) {
       ElMessage.error(result.message || '试用申请失败')
       return
@@ -248,6 +253,10 @@ onMounted(refresh)
           placeholder="用于接收试用信息的邮箱"
           clearable
         />
+        <el-checkbox v-model="trialAgreed" class="trial-consent">
+          我已阅读并同意
+          <a href="/user-agreement.html" target="_blank" rel="noopener">用户协议与数据处理授权</a>
+        </el-checkbox>
       </div>
       <div v-else-if="status?.state === 'expired'">
         <el-alert
