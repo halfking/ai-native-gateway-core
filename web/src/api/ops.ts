@@ -358,6 +358,54 @@ export async function updateGrayPhase(version: string, data: { phase: string; pe
   return req<void>('PATCH', `/api/admin/releases/${version}/gray`, data)
 }
 
+export async function getGrayRules(limit = 50): Promise<{ items: GrayReleaseRuleView[]; total: number }> {
+  return req('GET', `/api/admin/releases/gray-rules?limit=${limit}`)
+}
+
+export async function getGrayRelease(version: string): Promise<GrayReleaseRule> {
+  return req<GrayReleaseRule>('GET', `/api/admin/releases/${encodeURIComponent(version)}/gray`)
+}
+
+export interface GrayReleaseRuleView extends GrayReleaseRule {
+  version: string
+  release_title?: string
+}
+
+export interface ReleaseArtifact {
+  id?: number
+  release_version: string
+  platform: string
+  arch: string
+  edition?: string
+  artifact_name: string
+  sha256: string
+  size_bytes: number
+  download_path: string
+}
+
+export async function getReleaseArtifacts(version: string): Promise<{ items: ReleaseArtifact[]; version: string }> {
+  return req('GET', `/api/admin/downloads/artifacts?version=${encodeURIComponent(version)}`)
+}
+
+export async function upsertReleaseArtifact(data: ReleaseArtifact): Promise<ReleaseArtifact> {
+  return req('POST', '/api/admin/downloads/artifacts', data)
+}
+
+export interface OpsAlert {
+  id: string
+  severity: string
+  title: string
+  message: string
+  source: string
+  status: string
+  instance_id?: string
+  detected_at: string
+}
+
+export async function getCenterAlerts(): Promise<{ items: OpsAlert[]; total: number; open: number }> {
+  return req('GET', '/api/admin/center/alerts')
+}
+
 export async function rollbackRelease(targetVersion: string): Promise<void> {
   return req<void>('POST', '/api/admin/releases/rollback', { target_version: targetVersion })
 }

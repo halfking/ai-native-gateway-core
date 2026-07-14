@@ -1,8 +1,8 @@
 {
-  "version": "2.4.5-45643c37-20260714-1020",
+  "version": "2.4.5-c2631711-20260714-1021",
   "git_tag": "2.4.5",
-  "git_sha": "45643c37",
-  "build_seq": 1020,
+  "git_sha": "c2631711",
+  "build_seq": 1021,
   "build_date": "20260714",
   "module": "llm-gateway-go"
 }

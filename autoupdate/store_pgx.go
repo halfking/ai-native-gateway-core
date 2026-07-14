@@ -175,6 +175,38 @@ func (s *PgxStore) GetGrayRule(ctx context.Context, releaseID int64) (*GrayRelea
 	return rule, nil
 }
 
+// ListGrayRules returns gray rollout rules with release version/title.
+func (s *PgxStore) ListGrayRules(ctx context.Context, limit int) ([]GrayReleaseRuleView, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT g.id, g.release_id, g.phase, g.percent, g.selectors, g.status, g.created_at,
+		       r.version, r.title
+		FROM gray_release_rules g
+		JOIN releases r ON r.id = g.release_id
+		ORDER BY g.created_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []GrayReleaseRuleView
+	for rows.Next() {
+		var v GrayReleaseRuleView
+		if err := rows.Scan(
+			&v.ID, &v.ReleaseID, &v.Phase, &v.Percent, &v.Selectors, &v.Status, &v.CreatedAt,
+			&v.Version, &v.ReleaseTitle,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // UpdateGrayPhase 更新灰度阶段
 func (s *PgxStore) UpdateGrayPhase(ctx context.Context, releaseID int64, phase Phase, percent int) error {
 	query := `

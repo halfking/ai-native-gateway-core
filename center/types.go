@@ -99,3 +99,15 @@ const (
 	StatusOffline  = "offline"
 	StatusDegraded = "degraded"
 )
+
+// OpsAlert is a derived operational alert (no separate rules engine yet).
+type OpsAlert struct {
+	ID         string    `json:"id"`
+	Severity   string    `json:"severity"`
+	Title      string    `json:"title"`
+	Message    string    `json:"message"`
+	Source     string    `json:"source"`
+	Status     string    `json:"status"`
+	InstanceID string    `json:"instance_id,omitempty"`
+	DetectedAt time.Time `json:"detected_at"`
+}

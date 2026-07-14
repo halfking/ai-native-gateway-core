@@ -34,6 +34,7 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 	g.GET("/commands/:id", a.GetCommand)
 	g.GET("/commands/:id/status", a.GetCommandStatus)
 	g.GET("/dashboard/stats", a.GetDashboardStats)
+	g.GET("/alerts", a.ListAlerts)
 }
 
 // ListInstances 列出实例
@@ -178,4 +179,51 @@ func (a *AdminAPI) GetDashboardStats(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, stats)
+}
+
+// ListAlerts returns derived alerts from instance heartbeat/status (v2 stub).
+func (a *AdminAPI) ListAlerts(c echo.Context) error {
+	instances, _, err := a.server.ListInstances(c.Request().Context(), "", 0, 500)
+	if err != nil {
+		slog.Error("list alerts failed", "error", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "list alerts failed"})
+	}
+
+	now := time.Now()
+	var alerts []OpsAlert
+	for _, inst := range instances {
+		age := now.Sub(inst.LastHeartbeat)
+		switch inst.Status {
+		case StatusOffline:
+			alerts = append(alerts, OpsAlert{
+				ID:         "center-offline-" + inst.InstanceID,
+				Severity:   "critical",
+				Title:      "实例离线",
+				Message:    fmt.Sprintf("%s (%s) 超过 %d 分钟无心跳", inst.Hostname, inst.InstanceID, int(age.Minutes())),
+				Source:     "center",
+				Status:     "triggered",
+				InstanceID: inst.InstanceID,
+				DetectedAt: inst.LastHeartbeat,
+			})
+		case StatusDegraded:
+			alerts = append(alerts, OpsAlert{
+				ID:         "center-degraded-" + inst.InstanceID,
+				Severity:   "warning",
+				Title:      "实例降级",
+				Message:    fmt.Sprintf("%s 心跳延迟 %d 秒", inst.InstanceID, int(age.Seconds())),
+				Source:     "center",
+				Status:     "triggered",
+				InstanceID: inst.InstanceID,
+				DetectedAt: inst.LastHeartbeat,
+			})
+		}
+	}
+	if alerts == nil {
+		alerts = []OpsAlert{}
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"items":  alerts,
+		"total":  len(alerts),
+		"open":   len(alerts),
+	})
 }
