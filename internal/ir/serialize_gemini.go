@@ -128,7 +128,14 @@ func buildGeminiContents(messages []Message) []map[string]any {
 
 		// Chat Completions tool messages carry their result outside content.
 		// Gemini requires the corresponding functionResponse part.
-		if msg.Role == "function" || (msg.Role == "tool" && msg.ToolCallID != "") {
+		hasToolResultBlock := false
+		for _, block := range msg.Content {
+			if block.Type == "tool_result" && block.ToolResult != nil {
+				hasToolResultBlock = true
+				break
+			}
+		}
+		if !hasToolResultBlock && (msg.Role == "function" || (msg.Role == "tool" && msg.ToolCallID != "")) {
 			name := msg.Name
 			if name == "" {
 				name = toolUseNameFromID(msg.ToolCallID)
