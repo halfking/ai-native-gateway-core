@@ -105,12 +105,7 @@ func TestPickProbeModelForCredential_DomesticFeatured_StandardizedNameHit(t *tes
 		WithArgs(credID).
 		WillReturnError(errNoRows)
 
-	// Provider is domestic.
-	mock.ExpectQuery("SELECT p\\.domestic").
-		WithArgs(credID).
-		WillReturnRows(pgxmock.NewRows([]string{"domestic"}).AddRow(true))
-
-	// Priority 2a: featured query. Expect the bind to pick a featured
+	// Priority 2: featured query. Expect the bind to pick a featured
 	// standardized_name (sorted by standardized_name, LIMIT 1).
 	mock.ExpectQuery("pm\\.standardized_name = ANY").
 		WithArgs(credID).
@@ -153,10 +148,6 @@ func TestPickProbeModelForCredential_DomesticFeatured_RawModelNameFallback(t *te
 	mock.ExpectQuery("SELECT client_model").
 		WithArgs(credID).
 		WillReturnError(errNoRows)
-
-	mock.ExpectQuery("SELECT p\\.domestic").
-		WithArgs(credID).
-		WillReturnRows(pgxmock.NewRows([]string{"domestic"}).AddRow(true))
 
 	// Featured query still hits because raw_model_name matches featured_models
 	// even though standardized_name is NULL — the OR clause catches it.
@@ -201,10 +192,6 @@ func TestPickProbeModelForCredential_DomesticFeatured_MultipleHitsStableOrder(t 
 	mock.ExpectQuery("SELECT client_model").
 		WithArgs(credID).
 		WillReturnError(errNoRows)
-
-	mock.ExpectQuery("SELECT p\\.domestic").
-		WithArgs(credID).
-		WillReturnRows(pgxmock.NewRows([]string{"domestic"}).AddRow(true))
 
 	// SQL has ORDER BY COALESCE(pm.standardized_name, pm.raw_model_name)
 	// LIMIT 1 — the mock returns what the database would return *after*
@@ -251,11 +238,7 @@ func TestPickProbeModelForCredential_DomesticFeatured_NoMatch_DegradesToRandom(t
 		WithArgs(credID).
 		WillReturnError(errNoRows)
 
-	mock.ExpectQuery("SELECT p\\.domestic").
-		WithArgs(credID).
-		WillReturnRows(pgxmock.NewRows([]string{"domestic"}).AddRow(true))
-
-	// Priority 2a: featured query — returns nothing (no rows).
+	// Priority 2: featured query — returns nothing (no rows).
 	mock.ExpectQuery("pm\\.standardized_name = ANY").
 		WithArgs(credID).
 		WillReturnRows(pgxmock.NewRows([]string{"probe_model"})) // empty
@@ -283,11 +266,11 @@ func TestPickProbeModelForCredential_DomesticFeatured_NoMatch_DegradesToRandom(t
 	}
 }
 
-// TestPickProbeModelForCredential_NonDomestic_NoFeaturedRun ensures the
-// featured query does NOT execute for non-domestic providers — overseas
-// providers go through the existing 2-step probe with whatever the
-// request_log hit was, or no model at all.
-func TestPickProbeModelForCredential_NonDomestic_NoFeaturedRun(t *testing.T) {
+// TestPickProbeModelForCredential_NonDomestic_FallsToRandom ensures overseas
+// providers get a probe model assigned via the same featured→random fallback
+// as domestic providers. Without this, nvidia (domestic=false) credentials
+// would never get probed and failures go undetected.
+func TestPickProbeModelForCredential_NonDomestic_FallsToRandom(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)
@@ -306,21 +289,29 @@ func TestPickProbeModelForCredential_NonDomestic_NoFeaturedRun(t *testing.T) {
 		WithArgs(credID).
 		WillReturnError(errNoRows)
 
-	mock.ExpectQuery("SELECT p\\.domestic").
+	// Priority 2: featured query — no featured matches for this credential.
+	mock.ExpectQuery("pm\\.standardized_name = ANY").
 		WithArgs(credID).
-		WillReturnRows(pgxmock.NewRows([]string{"domestic"}).AddRow(false))
+		WillReturnRows(pgxmock.NewRows([]string{"probe_model"})) // empty
 
-	// No further queries expected: non-domestic returns empty immediately.
+	// Priority 3: random pick across all available bindings.
+	mock.ExpectQuery("FROM credential_model_bindings cmb").
+		WithArgs(credID).
+		WillReturnRows(pgxmock.NewRows([]string{"probe_model"}).AddRow("minimaxai/minimax-m3"))
 
 	got, err := PickProbeModelForCredential(context.Background(), mock, credID)
 	if err != nil {
 		t.Fatalf("PickProbeModelForCredential: %v", err)
 	}
-	if got.Model != "" || got.Source != "" {
-		t.Errorf("non-domestic should yield empty result, got %+v", got)
+	if got.Model != "minimaxai/minimax-m3" {
+		t.Errorf("Model: got %q want %q", got.Model, "minimaxai/minimax-m3")
+	}
+	if got.Source != "auto:domestic_random" {
+		t.Errorf("Source: got %q want %q (overseas with no featured → random fallback)",
+			got.Source, "auto:domestic_random")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations (featured/random queries must NOT run for non-domestic): %v", err)
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 

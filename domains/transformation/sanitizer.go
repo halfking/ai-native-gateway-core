@@ -2,6 +2,7 @@ package transformation
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 // alwaysKeepFieldsOpenAI is the set of fields the gateway passes through
@@ -280,9 +281,14 @@ func SimplifyTools(body []byte) []byte {
 		}
 
 		// Check if already has canonical shape: {"type":"function","function":{...}}
-		if _, hasType := tool["type"]; hasType {
+		if toolType, hasType := tool["type"].(string); hasType && toolType == "function" {
 			fnObj, hasFn := tool["function"].(map[string]any)
 			if hasFn {
+				name, validName := fnObj["name"].(string)
+				if !validName || strings.TrimSpace(name) == "" {
+					changed = true
+					continue
+				}
 				// Check if function has all required fields
 				_, hasName := fnObj["name"]
 				_, hasDesc := fnObj["description"]
@@ -329,8 +335,11 @@ func SimplifyTools(body []byte) []byte {
 		}
 
 		// Ensure required fields exist with sensible defaults.
-		if _, ok := fn["name"]; !ok {
-			fn["name"] = ""
+		name, hasName := fn["name"].(string)
+		if !hasName || strings.TrimSpace(name) == "" {
+			// An empty function name is not a valid MiniMax/OpenAI tool. Do
+			// not manufacture a request that the upstream can only reject.
+			continue
 		}
 		if _, ok := fn["description"]; !ok {
 			fn["description"] = ""
