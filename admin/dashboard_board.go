@@ -42,23 +42,15 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	summary, summaryFromMinute := h.queryBoardSummary(ctx, filterTenant, days)
-	if !summaryFromMinute {
+	summary, fromMinute := h.queryBoardSummary(ctx, filterTenant, days)
+	if !fromMinute {
 		summary = h.fallbackBoardSummary(ctx, filterTenant, days)
 	}
 
-	pies, piesFromMinute, piesErr := h.queryBoardPies(ctx, filterTenant, days)
-	if piesErr != nil || pies == nil {
-		pies = emptyBoardPies()
-	}
-	trends, trendsFromMinute, trendsErr := h.queryBoardTrends(ctx, filterTenant, days, providerID)
-	if trendsErr != nil || trends == nil {
-		trends = []boardTrendPoint{}
-	}
+	pies, _ := h.queryBoardPies(ctx, filterTenant, days)
+	trends, _ := h.queryBoardTrends(ctx, filterTenant, days, providerID)
 	bgTasks := h.queryBoardBackgroundTasks(ctx)
 	selfcheck := h.queryBoardSelfCheck(ctx)
-
-	source, degraded := boardDataSource(summaryFromMinute, piesFromMinute, trendsFromMinute)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"summary":           summary,
@@ -67,8 +59,7 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 		"background_tasks":  bgTasks,
 		"selfcheck":         selfcheck,
 		"days":              days,
-		"source":            source,
-		"degraded":          degraded,
+		"source":            boardSource(fromMinute),
 	})
 }
 
@@ -122,14 +113,11 @@ func boardDays(r *http.Request) int {
 	return days
 }
 
-func boardDataSource(summaryFromMinute, piesFromMinute, trendsFromMinute bool) (source string, degraded bool) {
-	if summaryFromMinute && piesFromMinute && trendsFromMinute {
-		return "request_stats_minute", false
+func boardSource(fromMinute bool) string {
+	if fromMinute {
+		return "request_stats_minute"
 	}
-	if !summaryFromMinute && !piesFromMinute && !trendsFromMinute {
-		return "request_logs_hot", true
-	}
-	return "mixed", true
+	return "request_logs_hot"
 }
 
 func boardTenantClause(tenantID string, startArg int) (clause string, args []any) {

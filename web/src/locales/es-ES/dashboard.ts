@@ -68,7 +68,6 @@ v2: {
     trendCost: 'Cost (USD)',
     filterProvider: 'Provider ID',
     allProviders: 'All',
-    degradedHint: 'Minute-level aggregates are empty; showing fallback data from {source}. Run migration 394 and wait for rollup for full board performance.',
   },
   proxyWarning: {
     title: "⚠ Proxy de salida inaccesible",
