@@ -2669,6 +2669,7 @@ func main() {
 		// design — the customer must query status & activate before any
 		// admin login. Mounted under /api/system/license/ on the same mux.
 		licensingCustomerAPI := licensing.NewCustomerAPI(licensingStore, licensingActivator, licensingOffline)
+		licensingCustomerAPI.SetTrialAuthorityURL(os.Getenv("LICENSE_AUTHORITY_URL"))
 		customerLicenseGroup := customerEcho.Group("/api/system/license")
 		customerLicenseGroup.Use(noAuthCustomerMiddleware())
 		licensingCustomerAPI.RegisterRoutes(customerLicenseGroup)
