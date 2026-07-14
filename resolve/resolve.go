@@ -150,7 +150,7 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			ClientModel:    clientModel,
 			CanonicalID:    canonicalID,
 			CanonicalName:  canonicalName,
-			RawModels:      lowerUnique(all),
+			RawModels:      uniqueRawModels(all),
 			ResolutionPath: hitPath,
 		}, nil
 	}
@@ -190,7 +190,7 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			ClientModel:    clientModel,
 			CanonicalID:    canonicalID,
 			CanonicalName:  canonicalName,
-			RawModels:      lowerUnique(all),
+			RawModels:      uniqueRawModels(all),
 			ResolutionPath: hitPath,
 		}, nil
 	}
@@ -221,7 +221,7 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 				ClientModel:    clientModel,
 				CanonicalID:    canonicalID,
 				CanonicalName:  canonicalName,
-				RawModels:      lowerUnique(all),
+				RawModels:      uniqueRawModels(all),
 				ResolutionPath: "raw_fallback",
 			}, nil
 		}
@@ -271,6 +271,21 @@ func lowerUnique(values []string) []string {
 		}
 		seen[value] = true
 		out = append(out, value)
+	}
+	return out
+}
+
+func uniqueRawModels(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		key := strings.ToLower(trimmed)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, trimmed)
 	}
 	return out
 }
