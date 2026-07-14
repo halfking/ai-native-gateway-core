@@ -298,6 +298,57 @@ func TestCustomerAPI_TrialAuthorityURLAllowsHTTPOnlyInDevelopment(t *testing.T) 
 	}
 }
 
+func TestCustomerAPI_Trial_RejectsMissingAgreement(t *testing.T) {
+	api, _ := newTestCustomerAPI(t)
+	api.SetTrialAuthorityURL("http://127.0.0.1:8443")
+	e := setupEcho(api)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/license/trial", bytes.NewReader([]byte(`{"email":"user@example.com"}`)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCustomerAPI_Trial_ForwardsAgreementToAuthority(t *testing.T) {
+	t.Setenv("APP_ENV", "test")
+	var gotBody trialRequest
+	authority := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/license/trial" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":     true,
+			"license_key": "TRIAL-abc",
+		})
+	}))
+	defer authority.Close()
+
+	api, _ := newTestCustomerAPI(t)
+	api.SetTrialAuthorityURL(authority.URL)
+	e := setupEcho(api)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/system/license/trial", bytes.NewReader([]byte(`{"email":"user@example.com","agree":true}`)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !gotBody.Agree {
+		t.Fatal("expected agree=true to be forwarded to authority")
+	}
+	if gotBody.Email != "user@example.com" {
+		t.Fatalf("unexpected email forwarded: %q", gotBody.Email)
+	}
+}
+
 func TestCustomerAPI_Status_NoLicense(t *testing.T) {
 	api, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
@@ -395,6 +446,176 @@ func TestCustomerAPI_Activate_MissingLicenseKey(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCustomerAPI_Activate_Success(t *testing.T) {
+	api, store := newTestCustomerAPI(t)
+	e := setupEcho(api)
+
+	lic := &License{
+		ID:               10,
+		LicenseKey:       "LIC-ACTIVATE-OK",
+		CustomerName:     "Acme",
+		MaxDevices:       3,
+		SubscriptionTier: "pro",
+		ExpiresAt:        time.Now().Add(30 * 24 * time.Hour),
+		CreatedAt:        time.Now(),
+	}
+	store.licenses[lic.LicenseKey] = lic
+
+	body, _ := json.Marshal(map[string]string{
+		"license_key": lic.LicenseKey,
+		"device_name": "test-node",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/system/license/activate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ActivationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Success || resp.ErrorCode != CodeActivationSuccess {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if resp.SignedLicense == nil {
+		t.Fatal("expected signed_license on success")
+	}
+	if resp.MaxDevices != 3 {
+		t.Fatalf("max_devices = %d, want 3", resp.MaxDevices)
+	}
+}
+
+func TestCustomerAPI_Activate_LicenseNotFound(t *testing.T) {
+	api, _ := newTestCustomerAPI(t)
+	e := setupEcho(api)
+
+	body, _ := json.Marshal(map[string]string{"license_key": "LIC-MISSING"})
+	req := httptest.NewRequest(http.MethodPost, "/api/system/license/activate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ActivationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.ErrorCode != CodeLicenseNotFound || resp.Success {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestCustomerAPI_Activate_LicenseExpired(t *testing.T) {
+	api, store := newTestCustomerAPI(t)
+	e := setupEcho(api)
+
+	lic := &License{
+		ID:         11,
+		LicenseKey: "LIC-EXPIRED",
+		MaxDevices: 1,
+		ExpiresAt:  time.Now().Add(-24 * time.Hour),
+		CreatedAt:  time.Now().Add(-48 * time.Hour),
+	}
+	store.licenses[lic.LicenseKey] = lic
+
+	body, _ := json.Marshal(map[string]string{"license_key": lic.LicenseKey})
+	req := httptest.NewRequest(http.MethodPost, "/api/system/license/activate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusGone {
+		t.Fatalf("expected 410, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ActivationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.ErrorCode != CodeLicenseExpired {
+		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, CodeLicenseExpired)
+	}
+}
+
+func TestCustomerAPI_Activate_LicenseRevoked(t *testing.T) {
+	api, store := newTestCustomerAPI(t)
+	e := setupEcho(api)
+
+	revokedAt := time.Now().Add(-time.Hour)
+	lic := &License{
+		ID:         12,
+		LicenseKey: "LIC-REVOKED",
+		MaxDevices: 1,
+		ExpiresAt:  time.Now().Add(30 * 24 * time.Hour),
+		RevokedAt:  &revokedAt,
+		CreatedAt:  time.Now().Add(-48 * time.Hour),
+	}
+	store.licenses[lic.LicenseKey] = lic
+
+	body, _ := json.Marshal(map[string]string{"license_key": lic.LicenseKey})
+	req := httptest.NewRequest(http.MethodPost, "/api/system/license/activate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ActivationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.ErrorCode != CodeLicenseRevoked {
+		t.Fatalf("error_code = %q, want %q", resp.ErrorCode, CodeLicenseRevoked)
+	}
+}
+
+func TestCustomerAPI_Activate_DeviceLimitExceeded(t *testing.T) {
+	api, store := newTestCustomerAPI(t)
+	e := setupEcho(api)
+
+	lic := &License{
+		ID:         13,
+		LicenseKey: "LIC-LIMIT",
+		MaxDevices: 1,
+		ExpiresAt:  time.Now().Add(30 * 24 * time.Hour),
+		CreatedAt:  time.Now(),
+	}
+	store.licenses[lic.LicenseKey] = lic
+	now := time.Now()
+	store.devices[lic.LicenseKey] = []*Device{
+		{
+			ID: 99, LicenseID: lic.ID, InstanceID: "inst-other",
+			HardwareHash: "other-hardware-hash", DeviceName: "other-host",
+			ActivatedAt: now, Status: "active", LastHeartbeat: &now,
+		},
+	}
+
+	body, _ := json.Marshal(map[string]string{"license_key": lic.LicenseKey})
+	req := httptest.NewRequest(http.MethodPost, "/api/system/license/activate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ActivationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.ErrorCode != CodeDeviceLimitExceeded || !resp.NeedDeactivate {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if len(resp.ActiveDevices) != 1 || resp.MaxDevices != 1 {
+		t.Fatalf("active_devices=%d max_devices=%d", len(resp.ActiveDevices), resp.MaxDevices)
 	}
 }
 

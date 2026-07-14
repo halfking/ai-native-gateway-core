@@ -65,9 +65,11 @@ type ActivationRequest struct {
 
 type ActivationResponse struct {
 	Success        bool           `json:"success"`
+	ErrorCode      string         `json:"error_code,omitempty"`
 	SignedLicense  *SignedLicense `json:"signed_license,omitempty"`
 	ExpiresAt      *time.Time     `json:"expires_at,omitempty"`
 	ActiveDevices  []Device       `json:"active_devices"`
+	MaxDevices     int            `json:"max_devices,omitempty"`
 	Message        string         `json:"message,omitempty"`
 	NeedDeactivate bool           `json:"need_deactivate,omitempty"`
 }

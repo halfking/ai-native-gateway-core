@@ -33,6 +33,49 @@ const trialAgreed = ref(false)
 const offlineForm = ref({ signed_license: '', request_id: '', activation_code: '' })
 const lastResult = ref<ActivationResult | null>(null)
 const offlineRequestResult = ref<{ request_id: string; signed_request: string } | null>(null)
+const trialAgreementVersion = '2026-07-14'
+
+const showDeviceLimit = computed(() =>
+  lastResult.value?.need_deactivate === true
+  || lastResult.value?.error_code === 'device_limit_exceeded',
+)
+
+function activationErrorMessage(result: ActivationResult): string {
+  const code = result.error_code
+  if (code) {
+    const key = `customer.wizard.errorCodes.${code}`
+    const translated = t(key)
+    if (translated !== key) return translated
+  }
+  return result.message || t('customer.wizard.messages.activateFailed')
+}
+
+function deviceLimitBody(): string {
+  const active = lastResult.value?.active_devices?.length ?? 0
+  const max = lastResult.value?.max_devices ?? active
+  return t('customer.wizard.messages.deviceLimitBody', { active, max })
+}
+
+async function handleActivationResult(result: ActivationResult) {
+  lastResult.value = result
+  if (result.success) {
+    ElMessage.success(t('customer.wizard.messages.activateSuccess'))
+    await refresh()
+    step.value = 4
+    return
+  }
+  if (result.need_deactivate || result.error_code === 'device_limit_exceeded') {
+    await ElMessageBox.confirm(
+      deviceLimitBody(),
+      t('customer.wizard.messages.deviceLimitTitle'),
+      { confirmButtonText: t('customer.wizard.messages.deviceLimitOk') },
+    )
+    return
+  }
+  ElMessage.error(activationErrorMessage(result))
+}
+
+const trialReady = computed(() => trialEmail.value.includes('@') && trialAgreed.value)
 
 const stateLabel = computed(() => {
   switch (status.value?.state) {
@@ -77,20 +120,7 @@ async function handleActivate() {
   }
   loading.value = true
   try {
-    lastResult.value = await activateLicense(onlineForm.value)
-    if (lastResult.value.success) {
-      ElMessage.success(t('customer.wizard.messages.activateSuccess'))
-      await refresh()
-      step.value = 4
-    } else if (lastResult.value.need_deactivate) {
-      ElMessageBox.confirm(
-        t('customer.wizard.messages.deviceLimitBody'),
-        t('customer.wizard.messages.deviceLimitTitle'),
-        { confirmButtonText: t('customer.wizard.messages.deviceLimitOk') },
-      )
-    } else {
-      ElMessage.error(lastResult.value.message || t('customer.wizard.messages.activateFailed'))
-    }
+    await handleActivationResult(await activateLicense(onlineForm.value))
   } catch (err) {
     ElMessage.error(t('customer.wizard.messages.activateFailedWithMsg', { msg: (err as Error).message }))
   } finally {
@@ -100,25 +130,37 @@ async function handleActivate() {
 
 async function handleTrial() {
   if (!trialEmail.value.trim() || !trialEmail.value.includes('@')) {
-    ElMessage.warning('请输入有效邮箱')
+    ElMessage.warning(t('customer.wizard.messages.trialEmailInvalid'))
     return
   }
   if (!trialAgreed.value) {
-    ElMessage.warning('请先同意用户协议与数据处理授权')
+    ElMessage.warning(t('customer.wizard.messages.trialConsentRequired'))
     return
   }
   loading.value = true
   try {
     const result = await requestTrial({ email: trialEmail.value.trim(), agree: true })
     if (!result.success || !result.license_key) {
-      ElMessage.error(result.message || '试用申请失败')
+      ElMessage.error(result.message || t('customer.wizard.messages.trialFailed'))
       return
     }
     onlineForm.value.license_key = result.license_key
-    ElMessage.success('试用 License 已创建，请继续完成激活')
+    ElMessage.success(t('customer.wizard.messages.trialCreated'))
+    await handleActivationResult(await activateLicense({
+      license_key: result.license_key,
+      device_name: onlineForm.value.device_name || undefined,
+    }))
+    if (lastResult.value?.success) {
+      return
+    }
+    if (lastResult.value?.need_deactivate || lastResult.value?.error_code === 'device_limit_exceeded') {
+      step.value = 2
+      return
+    }
+    ElMessage.warning(t('customer.wizard.messages.trialActivateFailed'))
     step.value = 2
   } catch (err) {
-    ElMessage.error(`试用申请失败: ${(err as Error).message}`)
+    ElMessage.error(t('customer.wizard.messages.trialFailedWithMsg', { msg: (err as Error).message }))
   } finally {
     loading.value = false
   }
@@ -236,8 +278,8 @@ onMounted(refresh)
           :description="t('customer.wizard.step1.noneDesc')"
         />
         <div class="cta-row">
-          <el-button type="primary" size="large" @click="handleTrial">
-            申请试用
+          <el-button type="primary" size="large" :disabled="!trialReady" :loading="loading" @click="handleTrial">
+            {{ t('customer.wizard.step1.trialCta') }}
           </el-button>
           <el-button type="primary" size="large" @click="step = 2">
             {{ t('customer.wizard.step1.onlineActivate') }}
@@ -250,13 +292,14 @@ onMounted(refresh)
           v-model="trialEmail"
           class="trial-email"
           type="email"
-          placeholder="用于接收试用信息的邮箱"
+          :placeholder="t('customer.wizard.step1.trialEmail')"
           clearable
         />
         <el-checkbox v-model="trialAgreed" class="trial-consent">
-          我已阅读并同意
-          <a href="/user-agreement.html" target="_blank" rel="noopener">用户协议与数据处理授权</a>
+          {{ t('customer.wizard.step1.trialConsent') }}
+          <a href="/user-agreement.html" target="_blank" rel="noopener">{{ t('customer.wizard.step1.trialAgreement') }}</a>
         </el-checkbox>
+        <p class="trial-version">{{ t('customer.wizard.step1.trialAgreementVersion', { version: trialAgreementVersion }) }}</p>
       </div>
       <div v-else-if="status?.state === 'expired'">
         <el-alert
@@ -315,6 +358,26 @@ onMounted(refresh)
           {{ t('customer.wizard.step2.createOfflineRequest') }}
         </el-button>
       </div>
+
+      <el-alert
+        v-if="showDeviceLimit"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="device-limit-alert"
+        :title="t('customer.wizard.messages.deviceLimitTitle')"
+        :description="deviceLimitBody()"
+      />
+      <el-table
+        v-if="showDeviceLimit && lastResult?.active_devices?.length"
+        :data="lastResult.active_devices"
+        size="small"
+        class="device-limit-table"
+      >
+        <el-table-column :label="t('customer.wizard.deviceTable.deviceName')" prop="device_name" />
+        <el-table-column :label="t('customer.wizard.deviceTable.instanceId')" prop="instance_id" />
+        <el-table-column :label="t('customer.wizard.deviceTable.lastHeartbeat')" prop="last_heartbeat" />
+      </el-table>
     </el-card>
 
     <!-- Step 3: Offline activation -->
@@ -411,6 +474,15 @@ onMounted(refresh)
   flex-wrap: wrap;
   margin-top: 16px;
 }
+.trial-email { margin-top: 16px; }
+.trial-consent { margin-top: 12px; display: block; }
+.trial-version {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #909399;
+}
+.device-limit-alert { margin-top: 16px; }
+.device-limit-table { margin-top: 12px; }
 .signed-request {
   background: #f5f7fa;
   border: 1px solid #dcdfe6;

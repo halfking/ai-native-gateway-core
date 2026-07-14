@@ -21,9 +21,11 @@ func NewDeviceManager(store Store, validator *Validator) *DeviceManager {
 func (dm *DeviceManager) ActivateDevice(ctx context.Context, req *ActivationRequest) (*ActivationResponse, error) {
 	lic, err := dm.validator.ValidateLicense(ctx, req.LicenseKey)
 	if err != nil {
+		code, msg := mapValidatorError(err)
 		return &ActivationResponse{
-			Success: false,
-			Message: err.Error(),
+			Success:   false,
+			ErrorCode: code,
+			Message:   msg,
 		}, nil
 	}
 
@@ -49,7 +51,9 @@ func (dm *DeviceManager) ActivateDevice(ctx context.Context, req *ActivationRequ
 			activeDevices, _ := dm.store.GetActiveDevices(ctx, req.LicenseKey)
 			return &ActivationResponse{
 				Success:       true,
+				ErrorCode:     CodeDeviceAlreadyActivated,
 				ActiveDevices: activeDevices,
+				MaxDevices:    lic.MaxDevices,
 				Message:       "device already activated",
 			}, nil
 		}
@@ -58,7 +62,9 @@ func (dm *DeviceManager) ActivateDevice(ctx context.Context, req *ActivationRequ
 		activeDevices, _ := dm.store.GetActiveDevices(ctx, req.LicenseKey)
 		return &ActivationResponse{
 			Success:        false,
+			ErrorCode:      CodeDeviceLimitExceeded,
 			ActiveDevices:  activeDevices,
+			MaxDevices:     lic.MaxDevices,
 			NeedDeactivate: true,
 			Message:        "device limit exceeded, please deactivate one device",
 		}, nil
@@ -72,8 +78,10 @@ func (dm *DeviceManager) ActivateDevice(ctx context.Context, req *ActivationRequ
 
 	return &ActivationResponse{
 		Success:       true,
+		ErrorCode:     CodeActivationSuccess,
 		ActiveDevices: activeDevices,
 		ExpiresAt:     &lic.ExpiresAt,
+		MaxDevices:    lic.MaxDevices,
 		Message:       "activation successful",
 	}, nil
 }
