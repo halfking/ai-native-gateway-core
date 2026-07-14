@@ -320,11 +320,10 @@ If v2 causes regressions in production:
 | Phase 2 — Edge-case Tests (lock + network + rollback + promotion) | ✅ Complete | 18aaf6612 |
 | Phase 3A — Rotation Automation | ✅ Complete | 80354fd79 |
 | Phase 3B — Ops Dashboard | ⏸️ Deferred | — |
-| Phase 3C — License Hardening | ⏸️ Deferred | — |
-| Phase 4 — Final Audit Report | ✅ Complete | (this doc) |
+| Phase 3C — License Hardening | ✅ Complete | 6e1a25e32 |
+| Phase 4 — Final Audit Report | ✅ Complete | 866611714 (this doc) + 5dc132b7 (Phase 3C addendum) |
 
-**3/6 phases delivered. 2 deferred items are nice-to-have dashboard / license
-hardening — not blocking production.**
+**5/6 phases delivered. Phase 3B (ops dashboard) is the only deferred item.**
 
 ---
 

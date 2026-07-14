@@ -35,10 +35,88 @@ Phase 2 follow-up to Slice 7 credential cleanup. Continues work from handoff `cf
 - **`tests/rotate_credentials_test.sh`** (10 assertions): `--list` enumerates 5 pending credentials, missing args → exit 64, off-allow-list keys rejected, value-count mismatch detected, dry-run no side effects, real sops encryption round-trip, encrypt failure rolls back, comments/blank lines stripped from input
 - **`.gitignore`** updated: runtime rotation log excluded (per-environment state — commit hashes / key lengths / backup paths are private)
 
-**Changed (v1→v2 fixups)**
+### Added (license module hardening — Phase 3C)
 
-- `tests/deploy_sops_test.sh`: AC-9 SOPS-envelope detection matches new `is_sops_envelope` signature (mac/age/version instead of broken encrypted_regex check)
-- `.sops.yaml` regex now matches real SOPS output (no regression — same age recipient, same path filter)
+Three production hardening improvements that the original license module
+lacked. Closes the "许可的管理" pillar of the v2 spec.
+
+**Grace period for license verification** (`licensing/grace.go`)
+
+In production, master unavailability (network blip, rolling restart) should
+not push the service into restricted mode — instance_token is still valid
+for up to 7 days. New `GracePolicy.EnforceWithGrace`:
+
+- Success → clear marker, return nil
+- First failure (no prior marker) → hard-fail (defense in depth: never trust
+  a brand-new marker's grace window on day 1)
+- Subsequent failure + marker in window → `ErrLicenseInGracePeriod`
+- Subsequent failure + marker past window → hard-fail (grace exceeded)
+- `LICENSE_NO_GRACE=1` env var → always hard-fail (incident revoke)
+
+`FailureMarker` written atomically (tmp + rename), atomic attempts
+counter preserved across re-marks so ops can spot persistent vs transient
+outages. `LICENSE_NO_GRACE` opt-out documented in code.
+
+**Exponential backoff with jitter for token refresh** (`token_refresh.go`)
+
+v1 hardcoded `5s / 30s / 120s`. New `BackoffConfig`:
+
+- `BaseDelay × 2^(attempt-2)`, capped at `MaxDelay`
+- `JitterFraction` (0..1) to avoid thundering herd when many instances
+  retry in lockstep
+- `MaxAttempts` configurable (1 disables retries)
+- `Sleep` and `Rand` hooks for tests
+
+`DefaultBackoffConfig`: 5s base, 5min cap, 6 attempts, 20% jitter (worst
+case ~155s, comfortable against the 7-day instance_token budget).
+`AutoRefreshTokenWithConfig` exposes the policy-aware API; the
+original `AutoRefreshToken` signature defaults to the safe policy.
+
+**Restricted-mode bypass fix** (`restricted_mode.go`)
+
+Vulnerability: `len(path) >= 19 && path[:19] == "/api/system/license"`
+is logically equivalent to `strings.HasPrefix` — and HasPrefix matches
+ANY path that *starts with* the prefix regardless of boundary char.
+
+Attack vectors that v1 allowed in restricted mode:
+
+- `/api/system/licenseeXploit` — admin endpoint reachable
+- `/api/system/licenseAdmin` — bypass access to admin UI
+- `/api/system/license.json` — file-paths may matter for caching rules
+
+v2 fix: `licensePathAllowed(path)` now requires the char after the
+prefix to be `'/'` or end-of-string. Helpers extracted to be testable
+in isolation (no Echo plumbing needed in unit tests).
+
+**Daemon health observability** (`daemon_health.go`)
+
+Add `*DaemonHealth` snapshot exposed via `GetDaemonHealth()`:
+
+- `TotalCycles / TotalSuccesses / TotalFailures`
+- `ConsecutiveFails` — 3+ in a row marks the daemon unhealthy
+- `LastSuccessAt / LastErrorAt` — for staleness SLOs
+- `LastError` — for the dashboard tooltip
+- `RecentFailures ring buffer` capped at 8 entries
+
+Tested for race-safety with 50 concurrent reader/writer pairs. The
+snapshot is returned by pointer because the embedded `sync.RWMutex`
+must never be copied.
+
+**Tests** (`licensing/hardening_v2_test.go` — 559 lines, 21+ test functions)
+
+- Grace (7): FailureRecordedOnDisk, AttemptCounterIncrements,
+  ClearRemovesMarker, PolicySuccessClearsMarker,
+  FreshFailure_NoMarker_HardFailsImmediately,
+  OldFailure_ExceedsGrace_FailClosed, NoGraceEnvHardFailsImmediately
+- Backoff (5): NextDelayExponential, NextDelayRespectsMax,
+  JitterIsBounded, CapsAttempts, HonorsZeroAttempts
+- DaemonHealth (5): RecordSuccess, RecordFailureConsecutive,
+  RecentFailuresBounded, IsStale, ConcurrentAccess
+- RestrictedMode (4, 9 subtests): BypassFix (rejects `licenseeXploit`,
+  `licenseAdmin`, `license.json`, `licensethief`, `LICENSE`), HealthEndpoint,
+  MiddlewareBlocksBypass (full echo integration)
+
+All tests pass. Existing `licensing/*_test.go` continue to pass (no regressions).
 
 ### Test totals
 
