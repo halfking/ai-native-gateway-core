@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### Multimodal Phase 2A (direct-main)
+
+- Start local attachment reliability delivery; detailed commit chain is in
+  `docs/changelogs/2026-07-14-multimodal-phase2a.md`.
+
 ### 会话优化 v2 融合实施方案
 
 - 新增附件目录均衡、原子写入、慢上传、失败策略和供应商 failover 复用方案。

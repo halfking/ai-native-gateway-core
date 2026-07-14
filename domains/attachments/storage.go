@@ -12,11 +12,11 @@
 //
 // 存储路径布局：
 //
-//	{BaseDir}/YYYY/MM/req_{requestID}/{hash16}{ext}
+//	{BaseDir}/YYYY/MM/{hash[0:2]}/{hash[2:4]}/{hash}{ext}
 //
 // 例如：
 //
-//	/data/attachments/2026/07/req_abc123/a1b2c3d4e5f6g7h8.png
+//	/data/attachments/2026/07/a1/b2/a1b2c3d4e5f6....png
 package attachments
 
 import (
@@ -49,7 +49,8 @@ type AttachmentMetadata struct {
 	ContentType string `json:"content_type"`
 	// Size 解码后的字节数
 	Size int64 `json:"size"`
-	// Path 文件系统相对路径（相对 BaseDir），如 2026/07/req_xxx/abc.png
+	// Path 文件系统相对路径（相对 BaseDir），如 2026/07/a1/b2/<sha256>.png。
+	// 历史 req_<requestID> 路径仍可被读取。
 	Path string `json:"path"`
 	// Hash 内容 SHA256 十六进制，用于去重和完整性校验
 	Hash string `json:"hash"`
@@ -256,13 +257,8 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 		maxSize = DefaultMaxSize
 	}
 
-	// 目标路径：YYYY/MM/req_{requestID}/
+	// 新写入按内容哈希分片。历史 req_<requestID> 路径由读取接口兼容。
 	now := time.Now()
-	relDir := filepath.Join(
-		fmt.Sprintf("%04d", now.Year()),
-		fmt.Sprintf("%02d", int(now.Month())),
-		fmt.Sprintf("req_%s", sanitizeRequestID(requestID)),
-	)
 
 	// 流式解码：边解码边计算哈希
 	hasher := sha256.New()
@@ -285,7 +281,13 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 
 	hashHex := hex.EncodeToString(hasher.Sum(nil))
 	ext := mimeTypeToExt(contentType)
-	fileName := hashHex[:16] + ext
+	relDir := filepath.Join(
+		fmt.Sprintf("%04d", now.Year()),
+		fmt.Sprintf("%02d", int(now.Month())),
+		hashHex[:2],
+		hashHex[2:4],
+	)
+	fileName := hashHex + ext
 	relPath := filepath.Join(relDir, fileName)
 
 	backend := s.GetBackend()
