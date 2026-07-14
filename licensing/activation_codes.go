@@ -12,6 +12,12 @@ const (
 	CodeLicenseRevoked         = "license_revoked"
 	CodeDeviceLimitExceeded    = "device_limit_exceeded"
 	CodeDeviceAlreadyActivated = "device_already_activated"
+
+	CodeOfflineRequestNotApproved = "offline_request_not_approved"
+	CodeOfflineMismatchDevice     = "offline_mismatch_device"
+	CodeOfflineInvalidSignature   = "offline_invalid_signature"
+	CodeOfflineLicenseMismatch    = "offline_license_mismatch"
+	CodeOfflineActivationSuccess  = "offline_activation_success"
 )
 
 func activationHTTPStatus(code string) int {
@@ -24,6 +30,9 @@ func activationHTTPStatus(code string) int {
 		return http.StatusForbidden
 	case CodeDeviceLimitExceeded, CodeDeviceAlreadyActivated:
 		return http.StatusConflict
+	case CodeOfflineRequestNotApproved, CodeOfflineMismatchDevice,
+		CodeOfflineInvalidSignature, CodeOfflineLicenseMismatch:
+		return http.StatusBadRequest
 	default:
 		return http.StatusBadRequest
 	}

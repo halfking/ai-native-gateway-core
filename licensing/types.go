@@ -86,6 +86,18 @@ type OfflineApprovalResult struct {
 	RequestID      string         `json:"request_id"`
 }
 
+type OfflineActivateResponse struct {
+	Success          bool       `json:"success"`
+	ErrorCode        string     `json:"error_code,omitempty"`
+	Message          string     `json:"message,omitempty"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	CustomerName     string     `json:"customer_name,omitempty"`
+	SubscriptionTier string     `json:"subscription_tier,omitempty"`
+	NeedDeactivate   bool       `json:"need_deactivate,omitempty"`
+	ActiveDevices    []Device   `json:"active_devices,omitempty"`
+	MaxDevices       int        `json:"max_devices,omitempty"`
+}
+
 type OfflineRequest struct {
 	LicenseKey      string         `json:"license_key"`
 	HardwareHash    string         `json:"hardware_hash"`
