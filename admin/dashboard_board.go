@@ -32,7 +32,12 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
-	days := boardDays(r)
+	tr, rangeErr := boardTimeRangeFromRequest(r)
+	if rangeErr != nil {
+		writeError(w, http.StatusBadRequest, rangeErr.Error())
+		return
+	}
+	days := tr.Days
 	filterTenant := r.URL.Query().Get("tenant_id")
 	if filterTenant == "" {
 		filterTenant = EffectiveTenantIDAll(r)
@@ -44,7 +49,7 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 
 	scope := boardScopeForTenant(filterTenant)
 
-	if h.boardCache != nil {
+	if h.boardCache != nil && !tr.Custom {
 		payload, err := h.boardCache.GetOrRebuild(ctx, scope, days, providerID)
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "board stats cache: "+err.Error())
@@ -59,26 +64,37 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Redis unavailable — degraded path (dev/single-node without Redis only).
-	summary, fromMinute := h.queryBoardSummary(ctx, filterTenant, days)
+	// Custom range or Redis unavailable — query PostgreSQL directly.
+	summary, fromMinute := h.queryBoardSummary(ctx, filterTenant, tr)
 	if !fromMinute {
-		summary = h.fallbackBoardSummary(ctx, filterTenant, days)
+		summary = h.fallbackBoardSummary(ctx, filterTenant, tr)
 	}
 
-	pies, _ := h.queryBoardPies(ctx, filterTenant, days)
-	trends, _ := h.queryBoardTrends(ctx, filterTenant, days, providerID)
+	pies, _ := h.queryBoardPies(ctx, filterTenant, tr)
+	trends, _ := h.queryBoardTrends(ctx, filterTenant, tr, providerID)
 	bgTasks := h.queryBoardBackgroundTasks(ctx)
 	selfcheck := h.queryBoardSelfCheck(ctx)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"summary":          summary,
 		"pies":             pies,
 		"trends":           trends,
 		"background_tasks": bgTasks,
 		"selfcheck":        selfcheck,
 		"days":             days,
-		"source":           boardSource(fromMinute) + "_degraded_no_redis",
-	})
+		"source":           boardSource(fromMinute) + func() string {
+			if tr.Custom {
+				return "_custom_range"
+			}
+			return "_degraded_no_redis"
+		}(),
+	}
+	if tr.Custom {
+		resp["range_start"] = tr.Start.Format("2006-01-02")
+		resp["range_end"] = tr.End.Add(-24 * time.Hour).Format("2006-01-02")
+		resp["includes_today"] = tr.includesTodayUTC()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) handleDashboardBoardErrorDrill(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +156,7 @@ func (h *Handler) handleDashboardBoardErrorDrill(w http.ResponseWriter, r *http.
 }
 
 func boardDays(r *http.Request) int {
-	days := queryInt(r, "days", 7)
+	days := queryInt(r, "days", 1)
 	if days < 1 {
 		days = 1
 	}

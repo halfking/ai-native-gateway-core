@@ -1,0 +1,99 @@
+package admin
+
+import (
+	"fmt"
+	"net/http"
+	"time"
+)
+
+// boardTimeRange is the resolved window for dashboard board queries.
+type boardTimeRange struct {
+	Start  time.Time
+	End    time.Time
+	Days   int
+	Custom bool
+}
+
+func boardTimeRangeFromRequest(r *http.Request) (boardTimeRange, error) {
+	startStr := queryString(r, "start")
+	endStr := queryString(r, "end")
+	if startStr == "" && endStr == "" {
+		days := boardDays(r)
+		now := time.Now().UTC()
+		return boardTimeRange{
+			Start:  now.Add(-time.Duration(days) * 24 * time.Hour).Truncate(24 * time.Hour),
+			End:    now,
+			Days:   days,
+			Custom: false,
+		}, nil
+	}
+	start, end, err := resolveUsageTimeRange(r, 1)
+	if err != nil {
+		return boardTimeRange{}, err
+	}
+	days := int(end.Sub(start) / (24 * time.Hour))
+	if days < 1 {
+		days = 1
+	}
+	return boardTimeRange{
+		Start:  start,
+		End:    end,
+		Days:   days,
+		Custom: true,
+	}, nil
+}
+
+func (tr boardTimeRange) includesTodayUTC() bool {
+	now := time.Now().UTC()
+	todayStart := now.Truncate(24 * time.Hour)
+	return tr.End.After(todayStart)
+}
+
+func (tr boardTimeRange) trendBucketUnit() string {
+	if tr.End.Sub(tr.Start) > 24*time.Hour {
+		return "hour"
+	}
+	return "minute"
+}
+
+func boardMinuteWhere(tr boardTimeRange, tenantID string, extraStartArg int) (where string, args []any) {
+	args = []any{tr.Start, tr.End}
+	where = "bucket >= $1 AND bucket < $2"
+	argN := 3
+	if tenantID != "" {
+		where += fmt.Sprintf(" AND tenant_id = $%d", argN)
+		args = append(args, tenantID)
+		argN++
+	}
+	_ = extraStartArg
+	return where, args
+}
+
+func boardLogsWhere(tr boardTimeRange, alias, tenantID string) (where string, args []any) {
+	args = []any{tr.Start, tr.End}
+	where = alias + ".ts >= $1 AND " + alias + ".ts < $2"
+	if tenantID != "" {
+		where += " AND " + alias + ".tenant_id = $3"
+		args = append(args, tenantID)
+	}
+	return where, args
+}
+
+func daysToBoardTimeRange(days int) boardTimeRange {
+	now := time.Now().UTC()
+	return boardTimeRange{
+		Start: now.Add(-time.Duration(days) * 24 * time.Hour).Truncate(24 * time.Hour),
+		End:   now,
+		Days:  days,
+	}
+}
+
+func (tr boardTimeRange) dimMinuteWhere(tenantID string) (where string, args []any) {
+	args = []any{tr.Start, tr.End}
+	where = "bucket >= $1 AND bucket < $2"
+	if tenantID != "" {
+		where += " AND tenant_id = $3"
+		args = append(args, tenantID)
+	}
+	return where, args
+}

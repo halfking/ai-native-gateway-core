@@ -1,8 +1,14 @@
-import { ref, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { fetchDashboardBoard, type BoardPayload } from '../api/board'
 import { getSetting } from '../api/settings'
 import { acquireLiveStream, subscribeTerminalRequests } from './liveStreamStore'
 import { applyLiveRequestToBoard } from './boardLiveMerge'
+import {
+  defaultBoardTimeRange,
+  boardRangeIncludesToday,
+  toBoardTimeQuery,
+  type BoardTimeRange,
+} from '../utils/boardTimeRange'
 
 const DEFAULT_REFRESH_MS = 1000
 
@@ -23,7 +29,10 @@ async function resolveRefreshMs(): Promise<number> {
 }
 
 export function useDashboardBoard() {
-  const days = ref(7)
+  const timeRange = ref<BoardTimeRange>(defaultBoardTimeRange())
+  const days = computed(() => timeRange.value.days)
+  const liveUpdatesEnabled = computed(() => boardRangeIncludesToday(timeRange.value))
+
   const loading = ref(false)
   const error = ref<string | null>(null)
   const board = ref<BoardPayload | null>(null)
@@ -35,10 +44,11 @@ export function useDashboardBoard() {
   const appliedTerminalIds = new Set<string>()
 
   function mergeTerminalRequest(requestId: string, req: Parameters<typeof applyLiveRequestToBoard>[1]) {
+    if (!liveUpdatesEnabled.value) return
     if (appliedTerminalIds.has(requestId)) return
     if (!board.value) return
     appliedTerminalIds.add(requestId)
-    board.value = applyLiveRequestToBoard(board.value, req, days.value)
+    board.value = applyLiveRequestToBoard(board.value, req, timeRange.value)
   }
 
   function adoptBoardPayload(fresh: BoardPayload, opts?: { silentReconcile?: boolean }) {
@@ -46,7 +56,7 @@ export function useDashboardBoard() {
     const localTotal = local?.summary?.total_requests ?? 0
     const remoteTotal = fresh.summary?.total_requests ?? 0
 
-    if (opts?.silentReconcile && local && remoteTotal < localTotal) {
+    if (opts?.silentReconcile && liveUpdatesEnabled.value && local && remoteTotal < localTotal) {
       board.value = {
         ...fresh,
         summary: local.summary,
@@ -69,7 +79,7 @@ export function useDashboardBoard() {
     }
     error.value = null
     try {
-      const fresh = await fetchDashboardBoard({ days: days.value })
+      const fresh = await fetchDashboardBoard(toBoardTimeQuery(timeRange.value))
       adoptBoardPayload(fresh, { silentReconcile: silent })
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : '加载失败'
@@ -81,6 +91,7 @@ export function useDashboardBoard() {
   }
 
   function wireLiveUpdates() {
+    if (!liveUpdatesEnabled.value) return
     if (!releaseLiveStream) {
       releaseLiveStream = acquireLiveStream()
     }
@@ -101,9 +112,13 @@ export function useDashboardBoard() {
 
   async function startAutoRefresh() {
     if (refreshTimer) clearInterval(refreshTimer)
-    wireLiveUpdates()
-    refreshMs = await resolveRefreshMs()
-    refreshTimer = window.setInterval(() => void load({ silent: true }), refreshMs)
+    if (liveUpdatesEnabled.value) {
+      wireLiveUpdates()
+      refreshMs = await resolveRefreshMs()
+      refreshTimer = window.setInterval(() => void load({ silent: true }), refreshMs)
+    } else {
+      unwireLiveUpdates()
+    }
   }
 
   function stopAutoRefresh() {
@@ -114,14 +129,33 @@ export function useDashboardBoard() {
     unwireLiveUpdates()
   }
 
+  function setTimeRange(next: BoardTimeRange) {
+    timeRange.value = next
+  }
+
+  watch(liveUpdatesEnabled, (enabled) => {
+    if (enabled) {
+      void startAutoRefresh()
+    } else {
+      if (refreshTimer) {
+        clearInterval(refreshTimer)
+        refreshTimer = undefined
+      }
+      unwireLiveUpdates()
+    }
+  })
+
   onUnmounted(() => stopAutoRefresh())
 
   return {
+    timeRange,
     days,
+    liveUpdatesEnabled,
     loading,
     error,
     board,
     load,
+    setTimeRange,
     startAutoRefresh,
     stopAutoRefresh,
   }

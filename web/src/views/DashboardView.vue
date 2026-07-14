@@ -51,12 +51,14 @@ function switchTab(tab: DashboardTabId) {
 }
 
 watch(
-  () => boardState.days.value,
+  () => boardState.timeRange.value,
   () => {
     if (isDefault.value && activeTab.value === 'board') {
       void boardState.load()
+      void boardState.startAutoRefresh()
     }
   },
+  { deep: true },
 )
 
 async function loadDrawerData() {
@@ -86,9 +88,12 @@ onUnmounted(() => {
 provide('dashboardBoard', {
   board: boardState.board,
   days: boardState.days,
+  timeRange: boardState.timeRange,
   loading: boardState.loading,
   error: boardState.error,
   load: boardState.load,
+  setTimeRange: boardState.setTimeRange,
+  startAutoRefresh: boardState.startAutoRefresh,
 })
 
 provide('dashboardDrawer', {

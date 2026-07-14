@@ -287,52 +287,79 @@ export interface ProviderDailyModelUsage {
   cost_usd: number
 }
 
-export function getUsageByProvider(days = 30, limit = 200) {
-  return req<ProviderUsageRow[]>('GET', `/api/usage/by-provider?days=${days}&limit=${limit}`)
+import type { BoardTimeQuery } from '../utils/boardTimeRange'
+
+function usageTimeQs(q: BoardTimeQuery & { limit?: number }) {
+  const qs = new URLSearchParams()
+  if (q.start && q.end) {
+    qs.set('start', q.start)
+    qs.set('end', q.end)
+  } else {
+    qs.set('days', String(q.days ?? 1))
+  }
+  if (q.limit != null) qs.set('limit', String(q.limit))
+  return qs
 }
 
-export function getProviderUsageSummary(providerId: number, days = 30) {
-  return req<ProviderUsageSummary>('GET', `/api/usage/providers/${providerId}?days=${days}`)
+export function getUsageByProvider(time: BoardTimeQuery, limit = 200) {
+  const qs = usageTimeQs({ ...time, limit })
+  return req<ProviderUsageRow[]>('GET', `/api/usage/by-provider?${qs}`)
+}
+
+export function getProviderUsageSummary(providerId: number, time: BoardTimeQuery) {
+  const qs = usageTimeQs(time)
+  return req<ProviderUsageSummary>('GET', `/api/usage/providers/${providerId}?${qs}`)
 }
 
 export function getProviderUsageTrend(
   providerId: number,
   period: UsageTrendPeriod = 'day',
-  days = 30,
+  time: BoardTimeQuery,
 ) {
-  return req<TrendEntry[]>('GET', `/api/usage/providers/${providerId}/trend?period=${period}&days=${days}`)
+  const qs = usageTimeQs(time)
+  qs.set('period', period)
+  return req<TrendEntry[]>('GET', `/api/usage/providers/${providerId}/trend?${qs}`)
 }
 
-export function getProviderUsageModels(providerId: number, days = 30, limit = 100) {
-  return req<ProviderModelUsage[]>('GET', `/api/usage/providers/${providerId}/models?days=${days}&limit=${limit}`)
+export function getProviderUsageModels(providerId: number, time: BoardTimeQuery, limit = 100) {
+  const qs = usageTimeQs({ ...time, limit })
+  return req<ProviderModelUsage[]>('GET', `/api/usage/providers/${providerId}/models?${qs}`)
 }
 
-export function getProviderDailyModels(providerId: number, days = 30) {
-  return req<ProviderDailyModelUsage[]>('GET', `/api/usage/providers/${providerId}/daily-models?days=${days}`)
+export function getProviderDailyModels(providerId: number, time: BoardTimeQuery) {
+  const qs = usageTimeQs(time)
+  return req<ProviderDailyModelUsage[]>('GET', `/api/usage/providers/${providerId}/daily-models?${qs}`)
 }
 
-export async function downloadProviderUsageExport(days = 30) {
+function exportFilename(prefix: string, time: BoardTimeQuery) {
+  if (time.start && time.end) return `${prefix}-${time.start}_${time.end}.csv`
+  return `${prefix}-${time.days ?? 1}d.csv`
+}
+
+export async function downloadProviderUsageExport(time: BoardTimeQuery) {
   const { BASE, headers } = await import('./_core')
-  const res = await fetch(`${BASE}/api/usage/providers/export?days=${days}`, { headers: headers() })
+  const qs = usageTimeQs(time)
+  const res = await fetch(`${BASE}/api/usage/providers/export?${qs}`, { headers: headers() })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `provider-usage-${days}d.csv`
+  a.download = exportFilename('provider-usage', time)
   a.click()
   URL.revokeObjectURL(url)
 }
 
-export async function downloadProviderDetailExport(providerId: number, days = 30) {
+export async function downloadProviderDetailExport(providerId: number, time: BoardTimeQuery) {
   const { BASE, headers } = await import('./_core')
-  const res = await fetch(`${BASE}/api/usage/providers/${providerId}/export?days=${days}`, { headers: headers() })
+  const qs = usageTimeQs(time)
+  const res = await fetch(`${BASE}/api/usage/providers/${providerId}/export?${qs}`, { headers: headers() })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `provider-${providerId}-daily-${days}d.csv`
+  a.download = exportFilename(`provider-${providerId}-daily`, time)
   a.click()
   URL.revokeObjectURL(url)
 }

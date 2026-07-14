@@ -1,5 +1,7 @@
-import type { BoardPayload, BoardPieItem, BoardTrendPoint } from '../api/board'
+import type { BoardPayload, BoardTrendPoint } from '../api/board'
 import type { LiveRequest } from './liveStreamStore'
+import type { BoardTimeRange } from '../utils/boardTimeRange'
+import { isWithinBoardRange, resolveBoardRangeMs } from '../utils/boardTimeRange'
 
 const UNKNOWN = '__unknown__'
 
@@ -8,11 +10,13 @@ export function isTerminalBoardRequest(req: LiveRequest): boolean {
   return req.status === 'success' || req.status === 'failure'
 }
 
+/** @deprecated use isWithinBoardRange */
 export function isWithinBoardDays(ts: string | undefined, days: number): boolean {
+  const endMs = Date.now()
+  const startMs = endMs - days * 86_400_000
   if (!ts) return false
   const when = Date.parse(ts)
-  if (Number.isNaN(when)) return false
-  return when >= Date.now() - days * 86_400_000
+  return !Number.isNaN(when) && when >= startMs && when <= endMs
 }
 
 function num(v: number | null | undefined): number {
@@ -24,12 +28,12 @@ function pieKey(raw: string | undefined): string {
   return k || UNKNOWN
 }
 
-function bumpPieItem(items: BoardPieItem[], key: string, delta: {
+function bumpPieItem(items: BoardPayload['pies']['models'], key: string, delta: {
   requests: number
   tokens: number
   credits: number
   cost_usd: number
-}): BoardPieItem[] {
+}) {
   const next = items.map((item) => ({ ...item }))
   const idx = next.findIndex((item) => item.key === key)
   if (idx >= 0) {
@@ -53,11 +57,12 @@ function bumpPieItem(items: BoardPieItem[], key: string, delta: {
   return next
 }
 
-function trendBucketKey(ts: string, days: number): string {
+function trendBucketKey(ts: string, range: BoardTimeRange): string {
   const d = new Date(ts)
   if (Number.isNaN(d.getTime())) return new Date().toISOString()
   const utc = new Date(d.getTime())
-  if (days <= 1) {
+  const spanMs = resolveBoardRangeMs(range).endMs - resolveBoardRangeMs(range).startMs
+  if (spanMs <= 86_400_000) {
     utc.setUTCSeconds(0, 0)
     return utc.toISOString()
   }
@@ -65,13 +70,13 @@ function trendBucketKey(ts: string, days: number): string {
   return utc.toISOString()
 }
 
-function bumpTrend(trends: BoardTrendPoint[], ts: string, days: number, delta: {
+function bumpTrend(trends: BoardTrendPoint[], ts: string, range: BoardTimeRange, delta: {
   requests: number
   tokens: number
   credits: number
   cost_usd: number
 }): BoardTrendPoint[] {
-  const bucket = trendBucketKey(ts, days)
+  const bucket = trendBucketKey(ts, range)
   const next = trends.map((p) => ({ ...p }))
   const idx = next.findIndex((p) => p.bucket === bucket)
   if (idx >= 0) {
@@ -99,9 +104,9 @@ function bumpTrend(trends: BoardTrendPoint[], ts: string, days: number, delta: {
 export function applyLiveRequestToBoard(
   board: BoardPayload,
   req: LiveRequest,
-  days: number,
+  range: BoardTimeRange,
 ): BoardPayload {
-  if (!isTerminalBoardRequest(req) || !isWithinBoardDays(req.ts, days)) {
+  if (!isTerminalBoardRequest(req) || !isWithinBoardRange(req.ts, range)) {
     return board
   }
 
@@ -137,7 +142,7 @@ export function applyLiveRequestToBoard(
     pies.errors = bumpPieItem(pies.errors ?? [], pieKey(req.error_kind ?? undefined), pieDelta)
   }
 
-  const trends = bumpTrend(board.trends ?? [], req.ts, days, {
+  const trends = bumpTrend(board.trends ?? [], req.ts, range, {
     requests: 1,
     tokens: totalTokens,
     credits: 0,
@@ -149,7 +154,7 @@ export function applyLiveRequestToBoard(
     summary,
     pies,
     trends,
-    days,
+    days: range.days,
     source: 'live_sse_delta',
     cache_meta: {
       ...(board.cache_meta ?? {}),

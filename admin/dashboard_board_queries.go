@@ -7,10 +7,8 @@ import (
 	"time"
 )
 
-func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, days int) (map[string]any, bool) {
-	tenantClause, tenantArgs := boardTenantClause(tenantID, 2)
-	args := []any{days}
-	args = append(args, tenantArgs...)
+func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, bool) {
+	where, args := boardMinuteWhere(tr, tenantID, 0)
 
 	var totalReq, successCnt, failCnt, promptTok, compTok, totalTok, credits, latencySum int64
 	var costUSD float64
@@ -26,8 +24,7 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, days i
 			COALESCE(SUM(cost_usd), 0),
 			COALESCE(SUM(latency_ms_sum), 0)
 		FROM request_stats_minute
-		WHERE bucket >= now() - ($1::int * INTERVAL '1 day')
-		`+tenantClause+`
+		WHERE `+where+`
 	`, args...).Scan(
 		&totalReq, &successCnt, &failCnt, &promptTok, &compTok, &totalTok, &credits, &costUSD, &latencySum,
 	)
@@ -36,7 +33,7 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, days i
 	}
 
 	var activeKeys, activeModels, providers int
-	_ = h.queryOverviewCounts(ctx, tenantID, days, &activeKeys, &activeModels, &providers)
+	_ = h.queryOverviewCounts(ctx, tenantID, tr, &activeKeys, &activeModels, &providers)
 
 	successRate := 0.0
 	if totalReq > 0 {
@@ -48,28 +45,23 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, days i
 	}
 
 	return map[string]any{
-		"total_requests":          totalReq,
-		"total_prompt_tokens":   promptTok,
-		"total_completion_tokens": compTok,
-		"total_tokens":            totalTok,
-		"total_cost_usd":          costUSD,
-		"total_credits_charged":   credits,
-		"success_rate":            successRate,
-		"avg_latency_ms":          avgLatency,
-		"active_api_keys":         activeKeys,
-		"active_models":           activeModels,
-		"providers":               providers,
+		"total_requests":            totalReq,
+		"total_prompt_tokens":       promptTok,
+		"total_completion_tokens":   compTok,
+		"total_tokens":              totalTok,
+		"total_cost_usd":            costUSD,
+		"total_credits_charged":     credits,
+		"success_rate":              successRate,
+		"avg_latency_ms":            avgLatency,
+		"active_api_keys":           activeKeys,
+		"active_models":             activeModels,
+		"providers":                 providers,
 	}, true
 }
 
-func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, days int) map[string]any {
-	logsTable, alias := requestLogsFromClause(days)
-	where := alias + `.ts >= now() - ($1 * INTERVAL '1 day')`
-	args := []any{days}
-	if tenantID != "" {
-		where += " AND " + alias + `.tenant_id = $2`
-		args = append(args, tenantID)
-	}
+func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr boardTimeRange) map[string]any {
+	logsTable, alias := requestLogsFromClause(tr.Days)
+	where, args := boardLogsWhere(tr, alias, tenantID)
 
 	var totalReq int64
 	var promptTok, compTok sql.NullInt64
@@ -87,59 +79,57 @@ func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, day
 		WHERE `+where+` AND `+alias+`.request_status IN ('success', 'failure')
 	`, args...).Scan(&totalReq, &promptTok, &compTok, &costUSD, &avgLatency, &successRate)
 
-	credits := h.queryTotalCreditsCharged(ctx, tenantID, days)
+	credits := h.queryTotalCreditsCharged(ctx, tenantID, tr.Days)
 
 	var activeKeys, activeModels, providers int
-	_ = h.queryOverviewCounts(ctx, tenantID, days, &activeKeys, &activeModels, &providers)
+	_ = h.queryOverviewCounts(ctx, tenantID, tr, &activeKeys, &activeModels, &providers)
 
 	return map[string]any{
-		"total_requests":          totalReq,
-		"total_prompt_tokens":   promptTok.Int64,
-		"total_completion_tokens": compTok.Int64,
-		"total_tokens":            promptTok.Int64 + compTok.Int64,
-		"total_cost_usd":          costUSD.Float64,
-		"total_credits_charged":   credits,
-		"success_rate":            successRate.Float64,
-		"avg_latency_ms":          avgLatency.Float64,
-		"active_api_keys":         activeKeys,
-		"active_models":           activeModels,
-		"providers":               providers,
+		"total_requests":            totalReq,
+		"total_prompt_tokens":       promptTok.Int64,
+		"total_completion_tokens":   compTok.Int64,
+		"total_tokens":              promptTok.Int64 + compTok.Int64,
+		"total_cost_usd":            costUSD.Float64,
+		"total_credits_charged":     credits,
+		"success_rate":              successRate.Float64,
+		"avg_latency_ms":            avgLatency.Float64,
+		"active_api_keys":           activeKeys,
+		"active_models":             activeModels,
+		"providers":                 providers,
 	}
 }
 
-func (h *Handler) queryOverviewCounts(ctx context.Context, tenantID string, days int, keys, models, providers *int) error {
-	if err := h.queryOverviewCountsMinute(ctx, tenantID, days, keys, models, providers); err != nil {
+func (h *Handler) queryOverviewCounts(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {
+	if err := h.queryOverviewCountsMinute(ctx, tenantID, tr, keys, models, providers); err != nil {
 		if !IsMissingRelationError(err) {
 			return err
 		}
 	}
-	return h.fillOverviewCountsFromLogs(ctx, tenantID, days, keys, models, providers)
+	return h.fillOverviewCountsFromLogs(ctx, tenantID, tr, keys, models, providers)
 }
 
-func (h *Handler) queryOverviewCountsMinute(ctx context.Context, tenantID string, days int, keys, models, providers *int) error {
+func (h *Handler) queryOverviewCountsMinute(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {
 	if tenantID != "" {
 		return h.db.QueryRow(ctx, `
 			SELECT
 				(SELECT COUNT(*) FROM api_keys WHERE tenant_id = $1 AND enabled = TRUE),
 				(SELECT COUNT(DISTINCT dim_key) FROM request_stats_dim_minute
-				 WHERE dim_type = 'model' AND tenant_id = $1
-				   AND bucket >= now() - ($2::int * INTERVAL '1 day')),
+				 WHERE dim_type = 'model' AND tenant_id = $1 AND bucket >= $2 AND bucket < $3),
 				(SELECT COUNT(DISTINCT dim_key) FROM request_stats_dim_minute
-				 WHERE dim_type = 'provider' AND tenant_id = $1
-				   AND bucket >= now() - ($2::int * INTERVAL '1 day'))
-		`, tenantID, days).Scan(keys, models, providers)
+				 WHERE dim_type = 'provider' AND tenant_id = $1 AND bucket >= $2 AND bucket < $3)
+		`, tenantID, tr.Start, tr.End).Scan(keys, models, providers)
 	}
 	return h.db.QueryRow(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM api_keys WHERE enabled = TRUE),
 			(SELECT COUNT(DISTINCT dim_key) FROM request_stats_dim_minute
-			 WHERE dim_type = 'model' AND bucket >= now() - ($1::int * INTERVAL '1 day')),
+			 WHERE dim_type = 'model' AND bucket >= $1 AND bucket < $2),
 			(SELECT COUNT(DISTINCT dim_key) FROM request_stats_dim_minute
-			 WHERE dim_type = 'provider' AND bucket >= now() - ($1::int * INTERVAL '1 day'))
-	`, days).Scan(keys, models, providers)
+			 WHERE dim_type = 'provider' AND bucket >= $1 AND bucket < $2)
+	`, tr.Start, tr.End).Scan(keys, models, providers)
 }
 
-func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, days int) (map[string]any, error) {
+func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
 	types := map[string]string{
 		"clients":         "client_profile",
 		"virtual_ips":     "virtual_ip",
@@ -151,7 +141,7 @@ func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, days int)
 	}
 	out := make(map[string]any, len(types))
 	for key, dimType := range types {
-		items, err := h.queryDimPie(ctx, tenantID, days, dimType)
+		items, err := h.queryDimPie(ctx, tenantID, tr, dimType)
 		if err != nil {
 			return nil, err
 		}
@@ -163,10 +153,13 @@ func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, days int)
 	return out, nil
 }
 
-func (h *Handler) queryDimPie(ctx context.Context, tenantID string, days int, dimType string) ([]boardPieItem, error) {
-	tenantClause, tenantArgs := boardTenantClause(tenantID, 3)
-	args := []any{days, dimType}
-	args = append(args, tenantArgs...)
+func (h *Handler) queryDimPie(ctx context.Context, tenantID string, tr boardTimeRange, dimType string) ([]boardPieItem, error) {
+	args := []any{dimType, tr.Start, tr.End}
+	where := "dim_type = $1 AND bucket >= $2 AND bucket < $3"
+	if tenantID != "" {
+		where += " AND tenant_id = $4"
+		args = append(args, tenantID)
+	}
 
 	rows, err := h.db.Query(ctx, `
 		SELECT dim_key,
@@ -175,9 +168,7 @@ func (h *Handler) queryDimPie(ctx context.Context, tenantID string, days int, di
 			COALESCE(SUM(credits_charged), 0),
 			COALESCE(SUM(cost_usd), 0)
 		FROM request_stats_dim_minute
-		WHERE bucket >= now() - ($1::int * INTERVAL '1 day')
-		  AND dim_type = $2
-		`+tenantClause+`
+		WHERE `+where+`
 		GROUP BY dim_key
 		ORDER BY SUM(requests) DESC
 		LIMIT 25
@@ -198,19 +189,16 @@ func (h *Handler) queryDimPie(ctx context.Context, tenantID string, days int, di
 	return items, nil
 }
 
-func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, days int, providerID int64) ([]boardTrendPoint, error) {
-	tenantClause, tenantArgs := boardTenantClause(tenantID, 2)
-	args := []any{days}
-	args = append(args, tenantArgs...)
-	providerClause := ""
+func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64) ([]boardTrendPoint, error) {
+	where, args := boardMinuteWhere(tr, tenantID, 0)
 	if providerID > 0 {
-		providerClause = fmt.Sprintf(" AND provider_id = $%d", len(args)+1)
+		where += fmt.Sprintf(" AND provider_id = $%d", len(args)+1)
 		args = append(args, providerID)
 	}
-	bucketUnit := boardTrendBucketExpr(days)
+	bucketUnit := tr.trendBucketUnit()
 	bucketExpr := "bucket"
 	if bucketUnit == "hour" {
-		bucketExpr = fmt.Sprintf("date_trunc('hour', bucket)")
+		bucketExpr = "date_trunc('hour', bucket)"
 	}
 
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
@@ -220,11 +208,10 @@ func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, days in
 			COALESCE(SUM(credits_charged), 0),
 			COALESCE(SUM(cost_usd), 0)
 		FROM request_stats_minute
-		WHERE bucket >= now() - ($1::int * INTERVAL '1 day')
-		`+tenantClause+providerClause+`
+		WHERE %s
 		GROUP BY 1
 		ORDER BY 1 ASC
-	`, bucketExpr), args...)
+	`, bucketExpr, where), args...)
 	if err != nil {
 		return nil, err
 	}

@@ -3,18 +3,33 @@ import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import TrendLineChart from '../analytics/TrendLineChart.vue'
 import ProviderUsageExplorer from '../ProviderUsageExplorer.vue'
+import BoardPeriodSelector from './BoardPeriodSelector.vue'
 import type { BoardPayload } from '../../api/board'
+import type { BoardTimeRange } from '../../utils/boardTimeRange'
+import { formatBoardRangeLabel, toBoardTimeQuery } from '../../utils/boardTimeRange'
 
 const props = defineProps<{
   board: BoardPayload | null | undefined
-  days: number
+  timeRange: BoardTimeRange
   loading?: boolean
+}>()
+
+const emit = defineEmits<{
+  'update:timeRange': [value: BoardTimeRange]
+  'time-range-change': [value: BoardTimeRange]
 }>()
 
 const { t } = useI18n()
 const explorerOpen = ref(false)
 
 const summary = computed(() => props.board?.summary)
+const periodLabel = computed(() => formatBoardRangeLabel(props.timeRange, t))
+const timeQuery = computed(() => toBoardTimeQuery(props.timeRange))
+
+function onRangeChange(next: BoardTimeRange) {
+  emit('update:timeRange', next)
+  emit('time-range-change', next)
+}
 
 function fmt(n: number | undefined) {
   if (n == null) return '—'
@@ -32,9 +47,16 @@ function fmtCost(v: number | undefined) {
 <template>
   <section class="usage-trend-section">
     <div class="section-head">
-      <div>
-        <h3 class="section-title">{{ t('dashboard.board.trendTitle') }}</h3>
-        <p class="section-sub">{{ t('dashboard.providerUsage.periodHint', { days }) }}</p>
+      <div class="section-head-left">
+        <div class="title-row">
+          <h3 class="section-title">{{ t('dashboard.board.trendTitle') }}</h3>
+          <BoardPeriodSelector
+            :model-value="timeRange"
+            @update:model-value="onRangeChange"
+            @change="onRangeChange"
+          />
+        </div>
+        <p class="section-sub">{{ t('dashboard.providerUsage.periodHint', { period: periodLabel }) }}</p>
       </div>
       <button type="button" class="btn-more" @click="explorerOpen = true">
         {{ t('dashboard.providerUsage.more') }} →
@@ -66,7 +88,12 @@ function fmtCost(v: number | undefined) {
 
     <TrendLineChart :data="board?.trends ?? []" :loading="loading" />
 
-    <ProviderUsageExplorer :open="explorerOpen" :days="days" @close="explorerOpen = false" />
+    <ProviderUsageExplorer
+      :open="explorerOpen"
+      :time-range="timeRange"
+      :time-query="timeQuery"
+      @close="explorerOpen = false"
+    />
   </section>
 </template>
 
@@ -83,8 +110,18 @@ function fmtCost(v: number | undefined) {
   justify-content: space-between;
   gap: 12px;
 }
+.section-head-left {
+  flex: 1;
+  min-width: 0;
+}
+.title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
 .section-title { margin: 0; font-size: 15px; font-weight: 600; }
-.section-sub { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); }
+.section-sub { margin: 6px 0 0; font-size: 12px; color: var(--text-muted); }
 .btn-more {
   flex-shrink: 0;
   font-size: 13px;
@@ -114,5 +151,6 @@ function fmtCost(v: number | undefined) {
 .period-stat strong { font-size: 15px; color: var(--text); }
 @media (max-width: 900px) {
   .period-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .title-row { flex-direction: column; align-items: flex-start; }
 }
 </style>
