@@ -576,11 +576,27 @@ func TestBuildLiveStreamSnapshot_ServerSideAggregation(t *testing.T) {
 	if len(s.Dimensions["vendor"]) != 2 {
 		t.Fatalf("expected 2 vendor lanes, got %d", len(s.Dimensions["vendor"]))
 	}
-	if s.Dimensions["vendor"][0].ID != "openai" {
-		t.Fatalf("top vendor should be openai, got %s", s.Dimensions["vendor"][0].ID)
+	// 2026-07-14: buildLiveStreamLanes now sorts by lane id only
+	// (alphabetical), not by stats.Total. Verify the new ordering
+	// rule explicitly. Counts are still per-lane.
+	byID := map[string]int{}
+	for i, l := range s.Dimensions["vendor"] {
+		byID[l.ID] = i
 	}
-	if s.Dimensions["vendor"][0].Stats.Total != 2 {
-		t.Fatalf("openai lane total should be 2, got %d", s.Dimensions["vendor"][0].Stats.Total)
+	openaiIdx, ok := byID["openai"]
+	if !ok {
+		t.Fatalf("expected an openai vendor lane, got %#v", s.Dimensions["vendor"])
+	}
+	anthropicIdx, ok := byID["anthropic"]
+	if !ok {
+		t.Fatalf("expected an anthropic vendor lane, got %#v", s.Dimensions["vendor"])
+	}
+	// Alphabetical: "anthropic" < "openai", so anthropic must come first.
+	if anthropicIdx >= openaiIdx {
+		t.Fatalf("alphabetical ordering violated: anthropic=%d openai=%d", anthropicIdx, openaiIdx)
+	}
+	if s.Dimensions["vendor"][openaiIdx].Stats.Total != 2 {
+		t.Fatalf("openai lane total should be 2, got %d", s.Dimensions["vendor"][openaiIdx].Stats.Total)
 	}
 	if len(s.Dimensions["provider"][0].Requests) == 0 {
 		t.Fatal("provider lane should include render-ready requests")
@@ -953,5 +969,28 @@ func TestParseActivityKey(t *testing.T) {
 				t.Errorf("dimensionKey = %q, want %q", info.dimensionKey, c.wantDimKey)
 			}
 		})
+	}
+}
+
+func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
+	items := []LiveRequest{
+		{RequestID: "r1", ModelCategory: "openai", Status: "success"},
+		{RequestID: "r2", ModelCategory: "openai", Status: "success"},
+		{RequestID: "r3", ModelCategory: "anthropic", Status: "success"},
+	}
+	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	if len(lanes) < 2 {
+		t.Fatalf("expected at least 2 lanes, got %d", len(lanes))
+	}
+	// openai has higher Total but anthropic must come first (alphabetical).
+	if lanes[0].ID != "anthropic" {
+		t.Fatalf("expected anthropic first (stable sort), got %q then %q", lanes[0].ID, lanes[1].ID)
+	}
+	if lanes[1].ID != "openai" {
+		t.Fatalf("expected openai second, got %q", lanes[1].ID)
+	}
+	if lanes[1].Stats.Total <= lanes[0].Stats.Total {
+		t.Fatalf("openai should still have higher Total in stats, anthropic=%d openai=%d",
+			lanes[0].Stats.Total, lanes[1].Stats.Total)
 	}
 }
