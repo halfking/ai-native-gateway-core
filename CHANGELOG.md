@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### Phase 3B-5 — Scanner whitelist extension + loadtest artifact hygiene
+
+延续 Phase 3B-4 的 scanner 治理，本地工作区补两个小补丁（未 commit 进
+349e6e532 的 follow-up）：
+
+**1. `scripts/scan-secrets.sh` — WHITELIST_PATTERNS 扩展 8 条**（line 75-80）
+
+新增合法占位符形态，让 scanner 通过文档/测试代码中的"已知无害"模式：
+
+- `'REDACTED'` — bare literal（已存在 `<REDACTED>` angle-bracket）
+- `'\$\{[A-Z_][A-Z0-9_]*\}'` `'\${[A-Z_][A-Z0-9_]*\}'` — env-var / shell var 占位符
+- `'user:pass@host' 'user:password@host' ':pass@' ':password@' 'username:password@' 'dbuser:dbpass@'` — generic connection-string examples
+
+设计意图：**扩展白名单**而不是扩大 baseline — scanner 变聪明了，
+而不是"掩盖问题"。baseline 仍是 0 条目（spec AC-10）。
+
+**2. `.gitignore` — 屏蔽 loadtest runtime 输出**
+
+`docs/**/results/*.json` 现在 gitignored。本地
+`docs/全方面测试/results/S03_concurrency.json` 等 6 个文件是
+`docs/全方面测试/05-执行流程.md` 跑出来的运行时 artifact，不属于源码，
+不应入库。
+
+详细 changelog：`docs/changelogs/2026-07-14-scan-secrets-whitelist.md`
+
+---
+
 ### Added (deployment-management hardening v2)
 
 Phase 2 follow-up to Slice 7 credential cleanup. Continues work from handoff `cf8aad1a9`.
