@@ -46,17 +46,6 @@ export interface ChartDataset {
   tension?: number
 }
 
-export interface ChartDataset {
-  label: string
-  data: number[]
-  borderColor?: string
-  backgroundColor?: string
-  fill?: boolean
-  yAxisID?: string
-  borderWidth?: number
-  tension?: number
-}
-
 export interface ChartOptions {
   responsive?: boolean
   maintainAspectRatio?: boolean
@@ -85,18 +74,19 @@ export function useChart<
   let disposed = false
 
   const destroyChart = () => {
-    if (!chartInstance.value) return
+    const chart = chartInstance.value
+    chartInstance.value = null
+    if (!chart) return
     try {
-      chartInstance.value.stop()
+      chart.stop()
     } catch {
-      /* chart may already be torn down */
+      /* animator may already be stopped */
     }
     try {
-      chartInstance.value.destroy()
+      chart.destroy()
     } catch {
       /* ignore destroy races when canvas is detached */
     }
-    chartInstance.value = null
   }
 
   const initChart = () => {
@@ -108,6 +98,15 @@ export function useChart<
     }
 
     try {
+      const existing = Chart.getChart(canvas)
+      if (existing) {
+        try {
+          existing.stop()
+          existing.destroy()
+        } catch {
+          /* best-effort cleanup of orphaned instance on same canvas */
+        }
+      }
       destroyChart()
       chartInstance.value = new Chart(canvas, config.value)
       loading.value = false
@@ -120,6 +119,11 @@ export function useChart<
 
   const updateChart = (newData?: TData[], newLabels?: TLabel[]) => {
     if (!chartInstance.value || disposed) return
+    const canvas = canvasRef.value
+    if (!canvas?.isConnected) {
+      destroyChart()
+      return
+    }
 
     if (newData && chartInstance.value.data.datasets[0]) {
       ;(chartInstance.value.data.datasets[0] as { data: unknown }).data = newData as unknown
@@ -130,7 +134,7 @@ export function useChart<
     }
 
     try {
-      chartInstance.value.update()
+      chartInstance.value.update('none')
     } catch {
       destroyChart()
     }
@@ -151,7 +155,8 @@ export function useChart<
     error,
     updateChart,
     destroyChart,
-    initChart
+    initChart,
+    isDisposed: () => disposed,
   }
 }
 
@@ -191,6 +196,7 @@ export function createTimeSeriesConfig(
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: false,
       interaction: {
         mode: 'index',
         intersect: false
@@ -238,6 +244,7 @@ export function createDoughnutConfig(
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: false,
       plugins: {
         legend: {
           display: true,
@@ -291,6 +298,7 @@ export function createStackedAreaConfig(
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: false,
       interaction: {
         mode: 'index',
         intersect: false

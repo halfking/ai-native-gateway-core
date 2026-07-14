@@ -920,3 +920,26 @@ func TestParseActivityKey(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
+	items := []LiveRequest{
+		{RequestID: "r1", ModelCategory: "openai", Status: "success"},
+		{RequestID: "r2", ModelCategory: "openai", Status: "success"},
+		{RequestID: "r3", ModelCategory: "anthropic", Status: "success"},
+	}
+	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	if len(lanes) < 2 {
+		t.Fatalf("expected at least 2 lanes, got %d", len(lanes))
+	}
+	// openai has higher Total but anthropic must come first (alphabetical).
+	if lanes[0].ID != "anthropic" {
+		t.Fatalf("expected anthropic first (stable sort), got %q then %q", lanes[0].ID, lanes[1].ID)
+	}
+	if lanes[1].ID != "openai" {
+		t.Fatalf("expected openai second, got %q", lanes[1].ID)
+	}
+	if lanes[1].Stats.Total <= lanes[0].Stats.Total {
+		t.Fatalf("openai should still have higher Total in stats, anthropic=%d openai=%d",
+			lanes[0].Stats.Total, lanes[1].Stats.Total)
+	}
+}

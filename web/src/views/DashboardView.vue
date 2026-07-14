@@ -18,7 +18,6 @@ export type DashboardTabId = 'board' | 'stream' | 'stats' | 'selfcheck'
 const STORAGE_KEY_TAB = 'dashboard_active_tab'
 
 const activeTab = ref<DashboardTabId>('board')
-const swimLaneReinitKey = ref(0)
 
 const isDefault = computed(() => isDefaultTenant())
 
@@ -33,17 +32,21 @@ onMounted(() => {
     activeTab.value = saved
   }
 
-  if (isDefault.value) {
+  if (isDefault.value && activeTab.value === 'board') {
     void boardState.load()
     boardState.startAutoRefresh()
   }
 })
 
 function switchTab(tab: DashboardTabId) {
+  if (activeTab.value === 'board' && tab !== 'board') {
+    boardState.stopAutoRefresh()
+  }
   activeTab.value = tab
   localStorage.setItem(STORAGE_KEY_TAB, tab)
-  if (tab === 'stream') {
-    swimLaneReinitKey.value++
+  if (tab === 'board') {
+    void boardState.load()
+    boardState.startAutoRefresh()
   }
 }
 
@@ -100,8 +103,6 @@ provide('dashboardTab', {
   activeTab,
   switchTab,
 })
-
-provide('swimLaneReinitKey', swimLaneReinitKey)
 
 provide('dashboardActions', {
   refreshBoard,
