@@ -30,13 +30,16 @@ func NewAdminAPI(store Store, downloader *Downloader, installer *Installer, roll
 func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 	g.POST("", a.CreateRelease)
 	g.GET("", a.ListReleases)
+	// Static paths must be registered before /:version to avoid param capture.
+	g.GET("/gray-rules", a.ListGrayRules)
+	g.GET("/upgrade-logs", a.GetUpgradeLogs)
+	g.POST("/rollback", a.RollbackRelease)
 	g.GET("/:version", a.GetRelease)
 	g.POST("/:version/publish", a.PublishRelease)
 	g.POST("/:version/unpublish", a.UnpublishRelease)
+	g.GET("/:version/gray", a.GetGrayRelease)
 	g.POST("/:version/gray", a.CreateGrayRelease)
 	g.PATCH("/:version/gray", a.UpdateGrayPhase)
-	g.GET("/upgrade-logs", a.GetUpgradeLogs)
-	g.POST("/rollback", a.RollbackRelease)
 }
 
 // CreateRelease 创建发布版本
@@ -217,6 +220,36 @@ func (a *AdminAPI) UpdateGrayPhase(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "gray phase updated"})
+}
+
+// ListGrayRules lists all gray rollout rules.
+func (a *AdminAPI) ListGrayRules(c echo.Context) error {
+	limit := 50
+	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
+
+	rules, err := a.store.ListGrayRules(c.Request().Context(), limit)
+	if err != nil {
+		slog.Error("list gray rules failed", "error", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "list gray rules failed"})
+	}
+	if rules == nil {
+		rules = []GrayReleaseRuleView{}
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"items": rules, "total": len(rules)})
+}
+
+// GetGrayRelease returns the active gray rule for a release version.
+func (a *AdminAPI) GetGrayRelease(c echo.Context) error {
+	version := c.Param("version")
+	rel, err := a.store.GetRelease(c.Request().Context(), version)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "release not found"})
+	}
+	rule, err := a.store.GetGrayRule(c.Request().Context(), rel.ID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "gray rule not found"})
+	}
+	return c.JSON(http.StatusOK, rule)
 }
 
 // GetUpgradeLogs 获取升级日志

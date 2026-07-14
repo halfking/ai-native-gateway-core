@@ -47,6 +47,13 @@ type GrayReleaseRule struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// GrayReleaseRuleView joins gray rule with release metadata for admin UI.
+type GrayReleaseRuleView struct {
+	GrayReleaseRule
+	Version      string `json:"version"`
+	ReleaseTitle string `json:"release_title,omitempty"`
+}
+
 type ReleaseStatus struct {
 	ReleaseID   int64      `json:"release_id"`
 	InstanceID  string     `json:"instance_id"`

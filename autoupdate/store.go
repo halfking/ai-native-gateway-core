@@ -18,6 +18,7 @@ type Store interface {
 	// Gray Release Rules
 	CreateGrayRule(ctx context.Context, rule *GrayReleaseRule) error
 	GetGrayRule(ctx context.Context, releaseID int64) (*GrayReleaseRule, error)
+	ListGrayRules(ctx context.Context, limit int) ([]GrayReleaseRuleView, error)
 	UpdateGrayPhase(ctx context.Context, releaseID int64, phase Phase, percent int) error
 
 	// Upgrade Logs
