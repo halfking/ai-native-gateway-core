@@ -149,6 +149,46 @@ describe('mergeDelta', () => {
 })
 
 // ---------------------------------------------------------------------------
+// mergeSnapshotFromServer — lanes must survive empty Redis reconcile
+// ---------------------------------------------------------------------------
+
+describe('mergeSnapshotFromServer', () => {
+  beforeEach(() => {
+    __testing.resetStream()
+    __testing.state.snapshot = {
+      summary: { total: 1, success: 1, failure: 0 },
+      detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+      dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+      dimension_legends: { vendor: [], provider: [], model: [] },
+      status_legends: [],
+    }
+  })
+
+  it('keeps existing lanes when incoming snapshot omits them', () => {
+    __testing.mergeSnapshotFromServer({
+      summary: { total: 0, success: 0, failure: 0 },
+      detail_dimensions: { vendor: [], provider: [], model: [] },
+      dimensions: { vendor: [], provider: [], model: [] },
+      dimension_legends: { vendor: [], provider: [], model: [] },
+      status_legends: [],
+    })
+    expect(__testing.state.snapshot!.dimensions.vendor.map((l) => l.id)).toEqual(['openai'])
+  })
+
+  it('updates summary from incoming without dropping lanes', () => {
+    __testing.mergeSnapshotFromServer({
+      summary: { total: 2, success: 2, failure: 0 },
+      detail_dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
+      dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
+      dimension_legends: { vendor: [], provider: [], model: [] },
+      status_legends: [],
+    })
+    expect(__testing.state.snapshot!.summary.total).toBe(2)
+    expect(__testing.state.snapshot!.dimensions.vendor[0].requests).toHaveLength(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // pushOrQueue (HEAD-side: same request_id transition triggers leave+enter)
 // ---------------------------------------------------------------------------
 

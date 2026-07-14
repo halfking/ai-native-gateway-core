@@ -144,6 +144,49 @@ func TestLiveStreamRedisStore_IdleMarker(t *testing.T) {
 	if s.Summary.Total != 1 {
 		t.Fatalf("idle markers should not count as real request summary, got %#v (items=%#v)", s.Summary, items)
 	}
+	vendorLanes := s.Dimensions["vendor"]
+	var openaiLane *LiveStreamLane
+	for i := range vendorLanes {
+		if vendorLanes[i].ID == "openai" {
+			openaiLane = &vendorLanes[i]
+			break
+		}
+	}
+	if openaiLane == nil {
+		t.Fatalf("expected openai vendor lane with idle tile, lanes=%#v", vendorLanes)
+	}
+	hasIdleTile := false
+	for _, tile := range openaiLane.Requests {
+		if tile.Status == "idle" {
+			hasIdleTile = true
+			break
+		}
+	}
+	if !hasIdleTile {
+		t.Fatalf("expected idle tile inside openai vendor lane, requests=%#v", openaiLane.Requests)
+	}
+}
+
+func TestLiveRequestTile_ProbeFields(t *testing.T) {
+	tile := liveRequestTile(LiveRequest{
+		RequestID:    "probe-1",
+		Ts:           "2026-07-14T12:00:00Z",
+		Model:        "gpt-4o",
+		ProviderCode: "openai",
+		Status:       "success",
+		IsProbe:      true,
+		ProbeOrigin:  "gateway",
+		ProbeAttempt: 2,
+	})
+	if !tile.IsProbe {
+		t.Fatalf("expected IsProbe=true, got %#v", tile)
+	}
+	if tile.ProbeOrigin != "gateway" {
+		t.Fatalf("expected ProbeOrigin=gateway, got %q", tile.ProbeOrigin)
+	}
+	if tile.ProbeAttempt != 2 {
+		t.Fatalf("expected ProbeAttempt=2, got %d", tile.ProbeAttempt)
+	}
 }
 
 func TestLiveStreamRedisStore_NilClient(t *testing.T) {
