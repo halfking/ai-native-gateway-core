@@ -53,7 +53,7 @@ export interface BoardPayload {
     last_run_at?: string
   }
   days: number
-  source?: string
+  source?: 'postgresql_baseline' | 'redis_baseline_delta' | 'live_sse_delta' | string
   cache_meta?: {
     fold_unit?: string
     scope?: string
