@@ -151,25 +151,8 @@ func (c *CloudreveStorageBackend) parentDirURL(key string) (string, error) {
 	return c.baseURL + "/dav" + c.remotePath + "/" + encoded, nil
 }
 
-// sanitizeKey validates a storage key and rejects attempts to escape the
-// remote directory. Mirrors the safety contract of LocalStorageBackend.getFilePath.
-func sanitizeKey(key string) (string, error) {
-	if key == "" {
-		return "", errors.New("cloudreve storage: empty key")
-	}
-	cleaned := strings.ReplaceAll(key, "\\", "/")
-	cleaned = path.Clean(cleaned)
-	if cleaned == "." || cleaned == "/" {
-		return "", fmt.Errorf("cloudreve storage: key %q resolves to root", key)
-	}
-	// Defend against traversal even after Clean() (defense in depth).
-	if strings.HasPrefix(cleaned, "../") || cleaned == ".." || strings.Contains(cleaned, "/../") {
-		return "", fmt.Errorf("cloudreve storage: key %q escapes storage root", key)
-	}
-	// Trim a leading slash so we always join with one explicit "/".
-	cleaned = strings.TrimLeft(cleaned, "/")
-	return cleaned, nil
-}
+// sanitizeKey is defined in sanitize_key.go (shared across Cloudreve / OSS / S3
+// backends so the safety contract is uniform).
 
 // do executes an HTTP request with Basic auth attached and returns the response.
 // The caller is responsible for closing resp.Body. We translate non-2xx codes

@@ -3,8 +3,9 @@
 package attachments
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -14,318 +15,348 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// OSSStorageBackend implements StorageBackend using Aliyun OSS
+// OSSStorageBackend implements StorageBackend against 阿里云对象存储 OSS.
+//
+// Configuration is sourced from the OSSConfig type defined alongside the
+// StorageBackend interface in storage_backend.go (no duplicate declarations).
+// Reference: aliyun-oss-go-sdk/oss (already in go.mod).
+//
+// Mapping to canonical StorageBackend methods:
+//
+//	Save / SaveReader → bucket.PutObject
+//	Get / GetReader   → bucket.GetObject
+//	Delete            → bucket.DeleteObject
+//	Exists            → bucket.IsObjectExist
+//	List              → bucket.ListObjects (paged)
+//	GetMetadata       → bucket.GetObjectMeta
+//
+// Gated behind the storage_oss build tag so the default binary keeps no
+// aliyun SDK linkage. Enable with:
+//
+//	go build -tags storage_oss ./cmd/gateway
 type OSSStorageBackend struct {
 	client     *oss.Client
 	bucketName string
-	prefix     string
+	prefix     string // object-key prefix inside the bucket
 }
 
-// OSSConfig holds configuration for OSS storage backend
-type OSSConfig struct {
-	Endpoint        string
-	AccessKeyID     string
-	AccessKeySecret string
-	BucketName      string
-	Prefix          string // Optional prefix for all keys
-}
-
-// NewOSSStorageBackend creates a new Aliyun OSS storage backend
-func NewOSSStorageBackend(config OSSConfig) (*OSSStorageBackend, error) {
+// NewOSSStorageBackend constructs an OSS backend against the provided bucket.
+//
+// Validation enforced here:
+//   - Endpoint, AccessKeyID, AccessKeySecret, BucketName must all be set.
+//   - Bucket must be reachable (GetBucketInfo).
+//
+// The returned backend is concurrency-safe — the OSS SDK's *oss.Client holds
+// pooled HTTP connections internally.
+func NewOSSStorageBackend(config *OSSConfig) (*OSSStorageBackend, error) {
+	if config == nil {
+		return nil, errors.New("oss storage: config is nil")
+	}
 	if config.Endpoint == "" {
-		return nil, fmt.Errorf("OSS endpoint cannot be empty")
+		return nil, errors.New("oss storage: Endpoint is required")
 	}
-	if config.AccessKeyID == "" {
-		return nil, fmt.Errorf("OSS access key ID cannot be empty")
-	}
-	if config.AccessKeySecret == "" {
-		return nil, fmt.Errorf("OSS access key secret cannot be empty")
+	if config.AccessKeyID == "" || config.AccessKeySecret == "" {
+		return nil, errors.New("oss storage: AccessKeyID and AccessKeySecret are required")
 	}
 	if config.BucketName == "" {
-		return nil, fmt.Errorf("OSS bucket name cannot be empty")
+		return nil, errors.New("oss storage: BucketName is required")
 	}
 
-	// Create OSS client
 	client, err := oss.New(config.Endpoint, config.AccessKeyID, config.AccessKeySecret)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create OSS client: %w", err)
+		return nil, fmt.Errorf("oss storage: create client: %w", err)
 	}
 
-	// Verify bucket exists
-	bucket, err := client.Bucket(config.BucketName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get bucket: %w", err)
-	}
-
-	// Test bucket access
-	_, err = bucket.GetBucketInfo()
-	if err != nil {
-		return nil, fmt.Errorf("failed to access bucket (check permissions): %w", err)
+	// Validate bucket reachability by issuing a lightweight GetBucketACL.
+	// This catches auth/permission issues without exposing a separate
+	// health-check call later.
+	if _, err = client.GetBucketACL(config.BucketName); err != nil {
+		return nil, fmt.Errorf("oss storage: GetBucketACL (check creds and bucket): %w", err)
 	}
 
 	return &OSSStorageBackend{
 		client:     client,
 		bucketName: config.BucketName,
-		prefix:     strings.TrimSuffix(config.Prefix, "/"),
+		prefix:     strings.Trim(config.BasePath, "/"),
 	}, nil
 }
 
-// Save stores a file and returns its storage key
-func (s *OSSStorageBackend) Save(reader io.Reader, metadata StorageMetadata) (string, error) {
-	// Calculate hash while reading
-	hash := sha256.New()
-	teeReader := io.TeeReader(reader, hash)
-
-	// Buffer the content to allow retry and get size
-	content, err := io.ReadAll(teeReader)
+// keyFor merges the storage backend prefix with the relative key. Mirrors
+// LocalStorageBackend.getFilePath semantics (no traversal, forward slashes).
+func (o *OSSStorageBackend) keyFor(storageKey string) (string, error) {
+	cleaned, err := sanitizeKey(storageKey)
 	if err != nil {
-		return "", fmt.Errorf("failed to read content: %w", err)
+		return "", err
 	}
-
-	if len(content) == 0 {
-		return "", fmt.Errorf("empty file not allowed")
+	if o.prefix == "" {
+		return cleaned, nil
 	}
-
-	// Generate storage key based on hash
-	hashStr := hex.EncodeToString(hash.Sum(nil))
-	storageKey := s.generateStorageKey(hashStr, metadata.Filename)
-	ossKey := s.getOSSKey(storageKey)
-
-	bucket, err := s.client.Bucket(s.bucketName)
-	if err != nil {
-		return "", fmt.Errorf("failed to get bucket: %w", err)
-	}
-
-	// Check if object already exists (deduplication)
-	exists, err := bucket.IsObjectExist(ossKey)
-	if err != nil {
-		log.Warn().Err(err).Str("oss_key", ossKey).Msg("Failed to check object existence, proceeding with upload")
-	} else if exists {
-		log.Debug().
-			Str("storage_key", storageKey).
-			Str("filename", metadata.Filename).
-			Msg("Object already exists in OSS, reusing existing object")
-		return storageKey, nil
-	}
-
-	// Prepare options
-	options := []oss.Option{
-		oss.ContentType(metadata.ContentType),
-		oss.ContentDisposition(fmt.Sprintf("attachment; filename=\"%s\"", metadata.Filename)),
-	}
-
-	// Upload to OSS
-	err = bucket.PutObject(ossKey, strings.NewReader(string(content)), options...)
-	if err != nil {
-		return "", fmt.Errorf("failed to upload to OSS: %w", err)
-	}
-
-	log.Info().
-		Str("storage_key", storageKey).
-		Str("oss_key", ossKey).
-		Str("filename", metadata.Filename).
-		Int("size", len(content)).
-		Str("content_type", metadata.ContentType).
-		Msg("File uploaded to OSS successfully")
-
-	return storageKey, nil
+	return o.prefix + "/" + cleaned, nil
 }
 
-// Get retrieves a file by its storage key
-func (s *OSSStorageBackend) Get(storageKey string) (io.ReadCloser, error) {
-	ossKey := s.getOSSKey(storageKey)
+// bucket lazily resolves the *oss.Bucket. OSS SDK's Bucket() is cheap but not
+// entirely free; we cache nothing because the SDK already pools connections.
+func (o *OSSStorageBackend) bucket() (*oss.Bucket, error) {
+	return o.client.Bucket(o.bucketName)
+}
 
-	bucket, err := s.client.Bucket(s.bucketName)
+// Save uploads data via OSS PutObject. Streaming is delegated to the SDK
+// (it reads from bytes.Reader internally). Atomic on the storage side — PUT
+// overwrites in place, so this matches the WebDAV PUT path used by the
+// Cloudreve adapter.
+func (o *OSSStorageBackend) Save(ctx context.Context, key string, data []byte) error {
+	ossKey, err := o.keyFor(key)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get bucket: %w", err)
+		return err
+	}
+	bucket, err := o.bucket()
+	if err != nil {
+		return fmt.Errorf("oss storage: get bucket: %w", err)
+	}
+
+	if err := bucket.PutObject(ossKey, bytes.NewReader(data)); err != nil {
+		return fmt.Errorf("oss storage: PutObject %q: %w", ossKey, err)
+	}
+	log.Debug().Str("key", ossKey).Int("size", len(data)).Msg("oss storage: saved")
+	return nil
+}
+
+// SaveReader streams reader into OSS via the SDK's io.Reader overload.
+// Caller is expected to provide the size up-front for proper Content-Length;
+// the OSS SDK supports chunked transfer as a fallback when size is unknown,
+// but we mirror the canonical contract and require it.
+func (o *OSSStorageBackend) SaveReader(ctx context.Context, key string, reader io.Reader, size int64) error {
+	if size < 0 {
+		return errors.New("oss storage: SaveReader requires non-negative size")
+	}
+	ossKey, err := o.keyFor(key)
+	if err != nil {
+		return err
+	}
+	bucket, err := o.bucket()
+	if err != nil {
+		return fmt.Errorf("oss storage: get bucket: %w", err)
+	}
+
+	if err := bucket.PutObject(ossKey, reader); err != nil {
+		return fmt.Errorf("oss storage: PutObjectReader %q: %w", ossKey, err)
+	}
+	return nil
+}
+
+// Get reads the full object into memory. For large files prefer GetReader.
+func (o *OSSStorageBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	r, err := o.GetReader(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+// GetReader opens a streaming GET. A NoSuchKey surface maps to a
+// "file not found" error matching the LocalStorageBackend phrasing.
+func (o *OSSStorageBackend) GetReader(ctx context.Context, key string) (io.ReadCloser, error) {
+	ossKey, err := o.keyFor(key)
+	if err != nil {
+		return nil, err
+	}
+	bucket, err := o.bucket()
+	if err != nil {
+		return nil, fmt.Errorf("oss storage: get bucket: %w", err)
 	}
 
 	reader, err := bucket.GetObject(ossKey)
 	if err != nil {
-		if ossErr, ok := err.(oss.ServiceError); ok && ossErr.Code == "NoSuchKey" {
-			return nil, fmt.Errorf("file not found: %s", storageKey)
+		if isOSSNotFound(err) {
+			return nil, fmt.Errorf("oss storage: file not found: %s", key)
 		}
-		return nil, fmt.Errorf("failed to get object from OSS: %w", err)
+		return nil, fmt.Errorf("oss storage: GetObject %q: %w", ossKey, err)
 	}
-
 	return reader, nil
 }
 
-// Delete removes a file by its storage key
-func (s *OSSStorageBackend) Delete(storageKey string) error {
-	ossKey := s.getOSSKey(storageKey)
-
-	bucket, err := s.client.Bucket(s.bucketName)
+// Delete removes the object. OSS silently succeeds on missing objects, so we
+// match the canonical contract by also returning nil in that case.
+func (o *OSSStorageBackend) Delete(ctx context.Context, key string) error {
+	ossKey, err := o.keyFor(key)
 	if err != nil {
-		return fmt.Errorf("failed to get bucket: %w", err)
+		return err
 	}
-
-	err = bucket.DeleteObject(ossKey)
+	bucket, err := o.bucket()
 	if err != nil {
-		// OSS doesn't error on deleting non-existent objects
-		return fmt.Errorf("failed to delete object from OSS: %w", err)
+		return fmt.Errorf("oss storage: get bucket: %w", err)
 	}
-
-	log.Info().
-		Str("storage_key", storageKey).
-		Str("oss_key", ossKey).
-		Msg("Object deleted from OSS successfully")
-
+	if err := bucket.DeleteObject(ossKey); err != nil {
+		return fmt.Errorf("oss storage: DeleteObject %q: %w", ossKey, err)
+	}
 	return nil
 }
 
-// Exists checks if a file exists by its storage key
-func (s *OSSStorageBackend) Exists(storageKey string) (bool, error) {
-	ossKey := s.getOSSKey(storageKey)
-
-	bucket, err := s.client.Bucket(s.bucketName)
+// Exists uses OSS IsObjectExist — cheaper than a HEAD with full body.
+func (o *OSSStorageBackend) Exists(ctx context.Context, key string) (bool, error) {
+	ossKey, err := o.keyFor(key)
 	if err != nil {
-		return false, fmt.Errorf("failed to get bucket: %w", err)
+		return false, err
 	}
-
+	bucket, err := o.bucket()
+	if err != nil {
+		return false, fmt.Errorf("oss storage: get bucket: %w", err)
+	}
 	exists, err := bucket.IsObjectExist(ossKey)
 	if err != nil {
-		return false, fmt.Errorf("failed to check object existence: %w", err)
+		return false, fmt.Errorf("oss storage: IsObjectExist %q: %w", ossKey, err)
 	}
-
 	return exists, nil
 }
 
-// GetMetadata retrieves metadata for a file
-func (s *OSSStorageBackend) GetMetadata(storageKey string) (*StorageMetadata, error) {
-	ossKey := s.getOSSKey(storageKey)
-
-	bucket, err := s.client.Bucket(s.bucketName)
+// GetMetadata fetches size / last-modified via OSS GetObjectMeta (HEAD-equivalent).
+func (o *OSSStorageBackend) GetMetadata(ctx context.Context, key string) (*FileMetadata, error) {
+	ossKey, err := o.keyFor(key)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get bucket: %w", err)
+		return nil, err
+	}
+	bucket, err := o.bucket()
+	if err != nil {
+		return nil, fmt.Errorf("oss storage: get bucket: %w", err)
 	}
 
 	meta, err := bucket.GetObjectMeta(ossKey)
 	if err != nil {
-		if ossErr, ok := err.(oss.ServiceError); ok && ossErr.Code == "NoSuchKey" {
-			return nil, fmt.Errorf("file not found: %s", storageKey)
+		if isOSSNotFound(err) {
+			return nil, fmt.Errorf("oss storage: file not found: %s", key)
 		}
-		return nil, fmt.Errorf("failed to get object metadata: %w", err)
+		return nil, fmt.Errorf("oss storage: GetObjectMeta %q: %w", ossKey, err)
 	}
 
-	// Extract filename from storage key
-	filename := s.extractFilename(storageKey)
-
-	// Parse last modified time
-	var createdAt time.Time
-	if lastModified := meta.Get("Last-Modified"); lastModified != "" {
-		createdAt, _ = time.Parse(time.RFC1123, lastModified)
-	}
-
-	// Parse content length
 	var size int64
-	if contentLength := meta.Get("Content-Length"); contentLength != "" {
-		fmt.Sscanf(contentLength, "%d", &size)
+	if cl := meta.Get("Content-Length"); cl != "" {
+		_, _ = fmt.Sscanf(cl, "%d", &size)
 	}
+	var modTime time.Time
+	if lm := meta.Get("Last-Modified"); lm != "" {
+		if t, perr := time.Parse(time.RFC1123, lm); perr == nil {
+			modTime = t
+		}
+	}
+	etag := strings.Trim(meta.Get("ETag"), `"`)
 
-	return &StorageMetadata{
-		Filename:    filename,
-		Size:        size,
-		ContentType: meta.Get("Content-Type"),
-		CreatedAt:   createdAt,
+	return &FileMetadata{
+		Key:          key,
+		Size:         size,
+		LastModified: modTime,
+		ContentType:  meta.Get("Content-Type"),
+		ETag:         etag,
 	}, nil
 }
 
-// List lists all files with optional prefix filter
-func (s *OSSStorageBackend) List(prefix string) ([]string, error) {
-	bucket, err := s.client.Bucket(s.bucketName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get bucket: %w", err)
+// List paginates bucket.ListObjects under the requested prefix. Returns storage
+// keys (i.e. the keys with the OSS prefix stripped) so the rest of the
+// attachments package sees backend-agnostic paths.
+func (o *OSSStorageBackend) List(ctx context.Context, prefix string) ([]string, error) {
+	cleanedPrefix := prefix
+	if cleanedPrefix != "" {
+		c, err := sanitizeKey(cleanedPrefix)
+		if err != nil {
+			return nil, err
+		}
+		cleanedPrefix = c
 	}
 
-	// Construct OSS prefix
-	ossPrefix := s.prefix
-	if prefix != "" {
+	// Compose OSS-side prefix from backend prefix + user-supplied prefix.
+	ossPrefix := o.prefix
+	if cleanedPrefix != "" {
 		if ossPrefix != "" {
-			ossPrefix = ossPrefix + "/" + prefix
+			ossPrefix = ossPrefix + "/" + cleanedPrefix
 		} else {
-			ossPrefix = prefix
+			ossPrefix = cleanedPrefix
 		}
+	}
+
+	bucket, err := o.bucket()
+	if err != nil {
+		return nil, fmt.Errorf("oss storage: get bucket: %w", err)
 	}
 
 	var keys []string
 	marker := ""
-
 	for {
-		result, err := bucket.ListObjects(oss.Prefix(ossPrefix), oss.Marker(marker), oss.MaxKeys(1000))
+		result, err := bucket.ListObjects(
+			oss.Prefix(ossPrefix),
+			oss.Marker(marker),
+			oss.MaxKeys(1000),
+		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list objects: %w", err)
+			return nil, fmt.Errorf("oss storage: ListObjects: %w", err)
 		}
-
 		for _, obj := range result.Objects {
-			// Convert OSS key back to storage key
-			storageKey := s.ossKeyToStorageKey(obj.Key)
-			if storageKey != "" {
-				keys = append(keys, storageKey)
-			}
+			keys = append(keys, stripOSSPrefix(obj.Key, o.prefix))
 		}
-
 		if !result.IsTruncated {
 			break
 		}
 		marker = result.NextMarker
 	}
-
 	return keys, nil
 }
 
-// GetURL returns a presigned URL for accessing the file
-func (s *OSSStorageBackend) GetURL(storageKey string, expiry time.Duration) (string, error) {
-	ossKey := s.getOSSKey(storageKey)
-
-	bucket, err := s.client.Bucket(s.bucketName)
-	if err != nil {
-		return "", fmt.Errorf("failed to get bucket: %w", err)
-	}
-
-	// Generate presigned URL with expiry
-	expirySeconds := int64(expiry.Seconds())
-	if expirySeconds <= 0 {
-		expirySeconds = 3600 // Default 1 hour
-	}
-
-	url, err := bucket.SignURL(ossKey, oss.HTTPGet, expirySeconds)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
-	}
-
-	return url, nil
+// GetBackendType returns the canonical name used by StorageConfig.Type.
+func (o *OSSStorageBackend) GetBackendType() string {
+	return "oss"
 }
 
-// generateStorageKey creates a storage key from hash and filename
-// Format: <prefix>/<hash>/<filename>
-func (s *OSSStorageBackend) generateStorageKey(hash, filename string) string {
-	// Use first 2 chars of hash as prefix for better distribution
-	prefix := hash[:2]
-	return fmt.Sprintf("%s/%s/%s", prefix, hash, filename)
+// HealthCheck calls GetBucketACL on the configured bucket — exercises both
+// credential validity and network reachability. Mirrors the pattern used by
+// the Cloudreve adapter's PROPFIND Depth:0 probe.
+//
+// S3StorageBackend uses HeadBucket (more appropriate for AWS); kept distinct
+// because SDKs differ.
+func (o *OSSStorageBackend) HealthCheck(ctx context.Context) error {
+	if _, err := o.client.GetBucketACL(o.bucketName); err != nil {
+		return fmt.Errorf("oss storage: health check failed: %w", err)
+	}
+	return nil
 }
 
-// getOSSKey converts a storage key to an OSS object key
-func (s *OSSStorageBackend) getOSSKey(storageKey string) string {
-	if s.prefix != "" {
-		return s.prefix + "/" + storageKey
+// stripOSSPrefix removes the configured backend prefix from an OSS object key
+// to yield a storage key matching the canonical StorageBackend contract.
+//
+//	obj.Key = "attachments/2026/07/a1/b2/abc.png"
+//	prefix  = "attachments"
+//	→ "2026/07/a1/b2/abc.png"
+func stripOSSPrefix(objKey, prefix string) string {
+	if prefix == "" {
+		return objKey
 	}
-	return storageKey
+	p := prefix + "/"
+	if strings.HasPrefix(objKey, p) {
+		return strings.TrimPrefix(objKey, p)
+	}
+	return objKey
 }
 
-// ossKeyToStorageKey converts an OSS object key back to storage key
-func (s *OSSStorageBackend) ossKeyToStorageKey(ossKey string) string {
-	if s.prefix != "" {
-		return strings.TrimPrefix(ossKey, s.prefix+"/")
+// isOSSNotFound inspects any returned error and reports whether it represents
+// a missing object. OSS uses ServiceError with StatusCode 404 for missing
+// objects (and 203 in some legacy paths per SDK source).
+//
+// OSS returns ServiceError as a value type with a value-receiver Error()
+// method. errors.As walks the wrap chain looking for either *oss.ServiceError
+// or oss.ServiceError values; we try both.
+func isOSSNotFound(err error) bool {
+	if err == nil {
+		return false
 	}
-	return ossKey
+	var ptrTarget *oss.ServiceError
+	if errors.As(err, &ptrTarget) && ptrTarget != nil {
+		return ptrTarget.StatusCode == 404 || ptrTarget.StatusCode == 203
+	}
+	var valTarget oss.ServiceError
+	if errors.As(err, &valTarget) {
+		return valTarget.StatusCode == 404 || valTarget.StatusCode == 203
+	}
+	return false
 }
 
-// extractFilename extracts the filename from a storage key
-func (s *OSSStorageBackend) extractFilename(storageKey string) string {
-	parts := strings.Split(storageKey, "/")
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
-	}
-	return storageKey
-}
+// Compile-time check: OSSStorageBackend implements StorageBackend. Catches
+// signature drift early at `go build` time instead of at the first request.
+var _ StorageBackend = (*OSSStorageBackend)(nil)

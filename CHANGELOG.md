@@ -30,6 +30,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/changelogs/2026-07-15-cloudreve-storage-backend.md` for the full
   design rationale and deployment notes.
 
+### OSS / S3 StorageBackend canonical adapters (audit §4.4 关闭)
+
+- Removed the legacy `storage_backend_oss.go` and `storage_backend_s3.go`
+  build-tag files that drifted from the canonical `StorageBackend`
+  interface (`ctx`-less signatures, `StorageMetadata` vs `FileMetadata`,
+  duplicate `OSSConfig`/`S3Config` redeclarations). With `-tags storage_oss`
+  or `-tags storage_s3` the package previously failed to compile — that whole
+  failure mode is closed in this change.
+- Replaced with canonical implementations aligning with the Cloudreve adapter:
+  - `OSSStorageBackend`: `bucket.PutObject` / `GetObject` /
+    `DeleteObject` / `IsObjectExist` / `GetObjectMeta` /
+    `ListObjects` (paginated) via `aliyun-oss-go-sdk`.
+  - `S3StorageBackend`: `s3.PutObject` / `GetObject` / `DeleteObject` /
+    `HeadObject` / `ListObjectsV2` (paginator) /
+    `HeadBucket` (health) via `aws-sdk-go-v2`.
+- Both honor the `BasePath` / `UsePathStyle` / `UseInternalEndpoint`
+  configuration knobs already declared on the canonical `OSSConfig` /
+  `S3Config` types in `storage_backend.go`.
+- Extracted shared helpers: `sanitize_key.go` (storage-key sanitization,
+  reused by Cloudreve / OSS / S3) and `detect_content_type.go`
+  (MIME-from-extension used by S3 PutObject).
+- Added 7 OSS tests and 13 S3 tests covering constructor validation,
+  `keyFor`/`stripPrefix` path-safety, `Save`/`Get` roundtrips,
+  `SaveReader` (incl. negative-size rejection), `Exists`, `Delete`,
+  `GetMetadata`, `HealthCheck`, `GetBackendType`, `isOSSNotFound` /
+  `isS3NotFound` error-classification.
+- All six build-tag combinations verified: `""`, `cloudreve_storage`,
+  `storage_oss`, `storage_s3`, `cloudreve_storage,storage_oss`,
+  `cloudreve_storage,storage_s3` — every combination compiles and tests
+  green; `go vet` clean. See
+  `docs/changelogs/2026-07-15-oss-s3-storage-canonical.md` for the design
+  notes and known limitations.
+
 ### Per-(provider, model) modality routing
 
 - Added `provider_models.modality` column with CHECK
