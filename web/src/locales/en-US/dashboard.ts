@@ -218,6 +218,12 @@ export default {
     originDirect: 'Direct upstream',
     idleHeartbeat: 'Heartbeat placeholder',
     tileIdle: 'Idle',
+    // 2026-07-14: idle_marker elapsed-minutes labels
+    idleUnderOneMin: 'Idle < 1 min',
+    idleMinutes: 'Idle {n} min',
+    idleHours: 'Idle {h} h',
+    idleHoursMinutes: 'Idle {h} h {m} min',
+    idleReasonNoTraffic: 'No traffic (5 minutes idle)',
     cacheWindow: 'Cache / window',
     connectionDetailTitle: 'Click for connection details',
     dimensionVendor: 'Vendor',

@@ -2,6 +2,8 @@ package credentialstate
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -332,7 +334,7 @@ func TestManager_FreeCredentialPermanentStillHardExcludes(t *testing.T) {
 }
 
 // itoa avoids importing strconv just for a 1..N loop counter in the test.
-func itoa(i int) string { return string(rune('0'+i)) }
+func itoa(i int) string { return string(rune('0' + i)) }
 
 // TestManager_TieredReprobeUsesBackoff verifies the BUG #2 fix
 // (2026-07-13): a positive backoff is honored at runtime, replacing an
@@ -381,6 +383,133 @@ func TestManager_TieredReprobeUsesBackoff(t *testing.T) {
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("stopped manager fired %d callbacks, want 1", got)
 	}
+}
+
+// TestManager_OnNoCandidates_FansOutActiveProbe is the regression
+// guard for the 2026-07-14 minimax-m3 incident: when the router
+// returns zero available nodes, the executor now forwards the
+// candidate list to the state manager which dispatches one
+// ActiveProbeWorker.Submit per (credential, model) pair.
+//
+// We assert:
+//  1. credential_id == 0 is filtered out (no phantom probes).
+//  2. Empty RawModel is filtered out.
+//  3. Dedup: same (credID, model) repeated → 1 submit.
+//  4. Cap: more than onNoCandidatesFanoutLimit candidates → capped.
+//  5. parentReqID / tenantID are propagated as-is so the probe
+//     row in request_logs carries the right correlation ids.
+func TestManager_OnNoCandidates_FansOutActiveProbe(t *testing.T) {
+	m := NewManager(nil, nil)
+	m.Start(context.Background())
+	defer m.Stop()
+
+	type submission struct {
+		credID      int
+		model       string
+		tenantID    string
+		parentReqID string
+	}
+	var got []submission
+	var mu sync.Mutex
+	m.SetActiveProbeSubmitter(func(credID int, model string, tenantID string, parentReqID string) {
+		mu.Lock()
+		got = append(got, submission{credID, model, tenantID, parentReqID})
+		mu.Unlock()
+	}, 2)
+
+	sig := NoCandidatesSignal{
+		ClientModel: "minimax-m3",
+		TenantID:    "tenant-a",
+		RequestID:   "req-failed",
+		Candidates: []NoCandidatesCandidate{
+			{CredentialID: 0, ProviderID: 1, RawModel: "minimax-m3"},                      // dropped: credID=0
+			{CredentialID: 7, ProviderID: 2, RawModel: "minimax-m3"},                      // ok
+			{CredentialID: 7, ProviderID: 2, RawModel: "minimax-m3"},                      // dedup with above
+			{CredentialID: 7, ProviderID: 2, RawModel: ""},                                // dropped: empty model
+			{CredentialID: 8, ProviderID: 3, RawModel: "minimax-m3"},                      // ok
+			{CredentialID: 9, ProviderID: 4, RawModel: "minimax-m3", BillingMode: "free"}, // ok
+		},
+	}
+	m.OnNoCandidates(context.Background(), sig)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 3 {
+		t.Fatalf("OnNoCandidates dispatched %d probes, want 3 (got %#v)", len(got), got)
+	}
+	seen := map[string]bool{}
+	for _, s := range got {
+		seen[fmt.Sprintf("%d|%s", s.credID, s.model)] = true
+		if s.tenantID != "tenant-a" {
+			t.Errorf("probe tenant_id = %q, want tenant-a", s.tenantID)
+		}
+		if s.parentReqID != "req-failed" {
+			t.Errorf("probe parent_req_id = %q, want req-failed", s.parentReqID)
+		}
+	}
+	for _, k := range []string{"7|minimax-m3", "8|minimax-m3", "9|minimax-m3"} {
+		if !seen[k] {
+			t.Errorf("missing expected probe submission for %s", k)
+		}
+	}
+}
+
+// TestManager_OnNoCandidates_CapRespected asserts that the manager
+// stops dispatching after onNoCandidatesFanoutLimit even when the
+// router reported a very long candidate list. The cap exists so a
+// flapping tenant cannot saturate the 128-deep ActiveProbeWorker
+// queue; the test keeps the assertion in lock-step with the constant.
+func TestManager_OnNoCandidates_CapRespected(t *testing.T) {
+	m := NewManager(nil, nil)
+	m.Start(context.Background())
+	defer m.Stop()
+
+	var fired atomic.Int32
+	m.SetActiveProbeSubmitter(func(credID int, model string, tenantID string, parentReqID string) {
+		fired.Add(1)
+	}, 2)
+
+	cands := make([]NoCandidatesCandidate, 0, onNoCandidatesFanoutLimit*2)
+	for i := 0; i < onNoCandidatesFanoutLimit*2; i++ {
+		cands = append(cands, NoCandidatesCandidate{
+			CredentialID: 1000 + i,
+			ProviderID:   1,
+			RawModel:     "minimax-m3",
+		})
+	}
+	m.OnNoCandidates(context.Background(), NoCandidatesSignal{
+		ClientModel: "minimax-m3",
+		TenantID:    "tenant-a",
+		RequestID:   "req-failed",
+		Candidates:  cands,
+	})
+
+	if got := int(fired.Load()); got != onNoCandidatesFanoutLimit {
+		t.Fatalf("OnNoCandidates fired %d probes, want %d (cap)", got, onNoCandidatesFanoutLimit)
+	}
+}
+
+// TestManager_OnNoCandidates_NilSubmitter asserts that wiring
+// OnNoCandidates before any active_probe submitter is a no-op
+// rather than a panic. The manager also tolerates an empty
+// candidate list (returns immediately).
+func TestManager_OnNoCandidates_NilSubmitter(t *testing.T) {
+	m := NewManager(nil, nil)
+	m.Start(context.Background())
+	defer m.Stop()
+	// Intentionally do NOT call SetActiveProbeSubmitter.
+	m.OnNoCandidates(context.Background(), NoCandidatesSignal{
+		ClientModel: "minimax-m3",
+		RequestID:   "req-failed",
+		Candidates: []NoCandidatesCandidate{
+			{CredentialID: 7, RawModel: "minimax-m3"},
+		},
+	})
+	// Empty candidates — should also be a no-op.
+	m.OnNoCandidates(context.Background(), NoCandidatesSignal{
+		ClientModel: "minimax-m3",
+		RequestID:   "req-failed",
+	})
 }
 
 func setupTestDB(t *testing.T) *pgxpool.Pool {
