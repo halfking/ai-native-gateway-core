@@ -19,7 +19,7 @@
 
 ## 2. 数据库首轮更新（部署前）
 
-按以下顺序应用三个迁移；任意一步失败则回滚：
+按以下顺序应用六个迁移；任意一步失败则回滚：
 
 ```bash
 # 一键顺序执行 + 前置预检 + 后置校验
@@ -31,15 +31,30 @@ PGPASSWORD=xxx ./sql/fixes/apply-nim-case-fixes.sh
 ```bash
 PGPASSWORD=xxx psql -v ON_ERROR_STOP=1 -f sql/migrations/startup/394_nvidia_nim_outbound_model_id.sql
 PGPASSWORD=xxx psql -v ON_ERROR_STOP=1 -f sql/migrations/startup/395_provider_models_canonical_raw_name.sql
+PGPASSWORD=xxx psql -v ON_ERROR_STOP=1 -f sql/migrations/startup/395b_dedup_provider_models_and_aliases.sql
+PGPASSWORD=xxx psql -v ON_ERROR_STOP=1 -f sql/migrations/startup/395c_canonical_raw_name_unprefix.sql
 PGPASSWORD=xxx psql -v ON_ERROR_STOP=1 -f sql/migrations/startup/396_model_aliases_canonical_lowercase.sql
+PGPASSWORD=xxx psql -v ON_ERROR_STOP=1 -f sql/migrations/startup/398_model_offers_add_canonical_raw_name.sql
 ```
 
 `394` 修 NIM 上 `outbound_model_name` 与 `raw_model_name` 的版本错位
 （6 条 `z-ai/glm-5.2` → `glm-5.1` 类型的 drift），
 `395` 新增 `provider_models.canonical_raw_name` 列并回填 + 加
 `UNIQUE (provider_id, canonical_raw_name)` 索引，
+`395b` 解决 `mimo-v2.5-pro` mixed-case 重复 + 修 `model_aliases.status` 约束（用 `deprecated` 替代 `inactive`），
+`395c` 把 `provider_models.canonical_raw_name` / `standardized_name` 改为
+**剥 vendor 前缀**的小写形式，让 NIM `z-ai/glm-5.2` 与客户端 `glm-5.2`
+命中同一条 `canonical_raw_name`（2026-07-14 hotfix：NIM 在生产部署
+后客户端请求 `glm-5.2` / `minimax-m3` / `glm-5.1` 全部不可用，根因
+正是 `canonical_raw_name` 仍带 `z-ai/` / `minimaxai/` 前缀）。
+UNIQUE 索引扩为 `(provider_id, canonical_raw_name, raw_model_name)`
+以保留 NIM 上同一 model 不同 publisher 的区分。
 `396` 把历史 mixed-case 的 `model_aliases.raw_name` 与
 `models_canonical.canonical_name` 一次性下转小写并解决冲突。
+**`398` 是 `/request-logs` 报 500 的根因修复**：
+`model_offers` 是一个 VIEW，定义中没有 `pm.canonical_raw_name` 列，
+新代码 `mo.canonical_raw_name` 全部报 "column does not exist" 错误。
+重建 VIEW 加入该列后修复。
 
 ## 3. 系统部署
 
