@@ -215,6 +215,17 @@ export default {
     originDirect: '直连上游',
     idleHeartbeat: '心跳占位',
     tileIdle: '空闲',
+    // 2026-07-14: idle_marker carries the elapsed-minutes label so
+    // operators see "无流量 X 分钟" instead of a generic "[空闲]"
+    // tile. These keys are referenced by RequestTile.vue's
+    // idleLabel computed.
+    idleUnderOneMin: '空闲 < 1 分钟',
+    idleMinutes: '空闲 {n} 分钟',
+    idleHours: '空闲 {h} 小时',
+    idleHoursMinutes: '空闲 {h} 小时 {m} 分钟',
+    // Explicit error reason shown in the tooltip header for an idle
+    // marker. Mirrors the backend's idleMarkerErrorKind constant.
+    idleReasonNoTraffic: '无流量（5 分钟无请求）',
     cacheWindow: '缓存/窗口',
     connectionDetailTitle: '点击查看连接详情',
     dimensionVendor: '原厂',

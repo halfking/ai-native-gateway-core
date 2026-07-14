@@ -1904,6 +1904,12 @@ func (h *ChatHandler) serveWithExecutor(
 			}
 			return ""
 		}(),
+		// 2026-07-14: pass the per-request id so the no-candidates
+		// fallback inside Execute() can hand it to ActiveProbeWorker
+		// as the probe row's parent_request_id. Without this the
+		// probe row in request_logs / live-stream would have no link
+		// back to the failed business request.
+		RequestID: requestID,
 		// 2026-07-07: Multi-level sticky routing (L1: session+model, L2: client+model, L3: client).
 		SessionID: gwSessionID,
 		Model:     clientModel,

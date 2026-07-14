@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // RequestTile.vue — 请求色块组件（80x60）
 // 2026-07-13 v5: 现代观测面板风格 — 玻璃质感卡片 + 左侧色带 + 状态圆点
+// 2026-07-14: 探测/idle tile 显示明确的错误原因（不再静默 "[空闲]"）
 
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -12,7 +13,7 @@ import {
 } from '../types/swimlane'
 import { errorKindLabel } from '../composables/liveStreamDisplay'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const props = defineProps<{
   tile: RequestTileType
@@ -35,7 +36,7 @@ const statusColor = computed(() => {
   if (s === 'success') return '#22c55e'
   if (s === 'in_progress') return '#3b82f6'
   if (s === 'cancelled' || s === 'canceled') return '#9ca3af'
-  if (s === 'idle') return 'transparent'
+  if (s === 'idle') return '#9ca3af'
   return '#a1a1aa'
 })
 
@@ -56,6 +57,43 @@ const isIdle = computed(() => props.tile.status === 'idle')
 const isInProgress = computed(() => props.tile.status === 'in_progress')
 const isFailure = computed(() => props.tile.status === 'failure')
 
+// 2026-07-14: idle markers now arrive with an explicit error_kind
+// ('no_traffic_5min') so we can show "无流量 X 分钟" instead of a
+// generic "[空闲]" tile. Compute the elapsed minutes from the
+// tile's timestamp; this matches the back-end's "5 minute silence"
+// threshold so the label tells the operator exactly how long the
+// lane has been silent.
+const idleElapsedMinutes = computed<number | null>(() => {
+  if (!isIdle.value || !props.tile.timestamp) return null
+  const t = new Date(props.tile.timestamp).getTime()
+  if (Number.isNaN(t)) return null
+  const diffMs = Date.now() - t
+  if (diffMs <= 0) return null
+  return Math.floor(diffMs / 60000)
+})
+
+const idleLabel = computed<string>(() => {
+  const m = idleElapsedMinutes.value
+  if (m == null) return t('dashboard.liveStream.tileIdle')
+  if (m < 1) return t('dashboard.liveStream.idleUnderOneMin')
+  if (m < 60) return t('dashboard.liveStream.idleMinutes', { n: m })
+  const hours = Math.floor(m / 60)
+  const remMin = m % 60
+  if (remMin === 0) return t('dashboard.liveStream.idleHours', { h: hours })
+  return t('dashboard.liveStream.idleHoursMinutes', { h: hours, m: remMin })
+})
+
+// 2026-07-14: tile error reason line. Prefer a human-readable label
+// of the typed error_kind (e.g. "5xx 服务端错误") when the tile is a
+// probe failure — that is the "明确的错误原因" the operator asked
+// for. For idle markers we use the idle_label so the operator can
+// see the elapsed time at a glance.
+const errorReasonLabel = computed<string | null>(() => {
+  if (isIdle.value) return idleLabel.value
+  if (props.tile.error_kind) return errorKindLabel(props.tile.error_kind)
+  return null
+})
+
 const timeLabel = computed(() => {
   const date = new Date(props.tile.timestamp)
   const hh = String(date.getHours()).padStart(2, '0')
@@ -73,7 +111,12 @@ const latencyLabel = computed(() => {
 const modelFontSize = computed(() => calculateFontSize(props.tile.model, 80))
 
 const line2Content = computed(() => {
-  if (isIdle.value) return props.tile.model || t('dashboard.liveStream.tileIdle')
+  if (isIdle.value) {
+    // Idle tiles: line 2 carries the elapsed minutes label, not the
+    // model name (which is "[空闲]"). This is what the operator
+    // sees as "泳道已空闲 X 分钟".
+    return idleLabel.value
+  }
   if (props.tile.is_probe) {
     const origin = props.tile.probe_origin === 'gateway' ? 'GW' :
                    props.tile.probe_origin === 'scheduled' ? 'SCHED' : 'DIRECT'
@@ -134,7 +177,17 @@ const tooltipText = computed(() => {
   } else if (props.tile.status === 'cancelled' || props.tile.status === 'canceled') {
     lines.push(tooltipLine(`${tip}.status`, t(`${statusVal}.cancelled`)))
   } else if (props.tile.status === 'idle') {
-    lines.push(tooltipLine(`${tip}.status`, t(`${statusVal}.idle`)))
+    // 2026-07-14: idle tile tooltip carries the explicit
+    // "no_traffic_5min" error_kind + the elapsed minutes so an
+    // operator hovering the tile learns (a) why it's idle and
+    // (b) how long the silence has lasted. The locale variable is
+    // referenced to keep vue-i18n's reactive locale watcher live —
+    // otherwise re-rendering on language switch drops the line.
+    void locale.value
+    if (props.tile.error_kind) {
+      lines.push(tooltipLine(`${tip}.errorKind`, errorKindLabel(props.tile.error_kind)))
+    }
+    lines.push(tooltipLine(`${tip}.status`, idleLabel.value))
   }
   if (props.tile.model) lines.push(tooltipLine(`${tip}.model`, props.tile.model))
   if (props.tile.vendor) lines.push(tooltipLine(`${tip}.vendor`, props.tile.vendor))
@@ -195,6 +248,18 @@ function handleClick() {
     <div class="request-tile__body">
       <div v-if="!isIdle" class="request-tile__time">{{ timeLabel }}</div>
       <div class="request-tile__model">{{ line2Content }}</div>
+      <!--
+        2026-07-14: explicit error_reason strip below the model line.
+        Idle tiles surface "无流量 X 分钟", probe failures surface the
+        classified error_kind ("5xx", "rate_limit", etc.). Plain
+        failure tiles reuse the same field so the operator always sees
+        WHY the tile is red, not just THAT it is red.
+      -->
+      <div
+        v-if="errorReasonLabel"
+        class="request-tile__reason"
+        :class="{ 'request-tile__reason--idle': isIdle, 'request-tile__reason--probe': isTestRequest }"
+      >{{ errorReasonLabel }}</div>
       <div class="request-tile__footer">
         <span class="request-tile__provider">{{ line3Content }}</span>
         <span v-if="latencyLabel && !isIdle" class="request-tile__latency">{{ latencyLabel }}</span>
@@ -437,6 +502,33 @@ function handleClick() {
   color: rgba(229, 231, 235, 0.9);
   font-weight: 600;
   flex-shrink: 0;
+}
+
+/* 2026-07-14: explicit error_reason strip rendered below the model
+   line so operators see WHY the tile is red/idle/probe-failed, not
+   just THAT it is. Plain text, dimmed, single line — must not
+   steal vertical space from the model label above.
+   - .request-tile__reason:        base (failure path)
+   - .request-tile__reason--idle:  idle lane ("空闲 X 分钟")
+   - .request-tile__reason--probe: probe row, mirrors the cyan accent */
+.request-tile__reason {
+  font-size: 8px;
+  line-height: 1.1;
+  text-align: center;
+  font-weight: 600;
+  color: rgba(248, 113, 113, 0.95); /* default = failure red */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.01em;
+  margin-top: 1px;
+}
+.request-tile__reason--idle {
+  color: rgba(156, 163, 175, 0.95);
+  font-weight: 500;
+}
+.request-tile__reason--probe {
+  color: rgba(56, 189, 248, 0.95);
 }
 
 @media (prefers-reduced-motion: reduce) {

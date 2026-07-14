@@ -478,6 +478,10 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		TenantID:  tenant(keyInfo),
 		AppID:     appID(keyInfo),
 		ApiKeyID:  apiKeyIDPtr(keyInfo),
+		// 2026-07-14: hand the per-request id to the executor so the
+		// no-candidates fallback can pass it to ActiveProbeWorker as
+		// the probe row's parent_request_id.
+		RequestID: requestID,
 	})
 
 	if execErr != nil {

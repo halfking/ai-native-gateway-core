@@ -452,6 +452,41 @@ func TestLiveStreamRedisStore_IdleMarkerWritesMainQueue(t *testing.T) {
 	if modelIdle == nil {
 		t.Fatalf("expected a model-scoped idle marker (Model=gpt-4o only), got members %#v", members)
 	}
+
+	// 2026-07-14: every idle_marker MUST carry an explicit error_kind
+	// ("no_traffic_5min") and failure_stage ("idle") so the dashboard
+	// can render "无流量 5 分钟" instead of a generic "[空闲]" tile.
+	for label, m := range map[string]*LiveRequest{
+		"vendor":   vendorIdle,
+		"provider": providerIdle,
+		"model":    modelIdle,
+	} {
+		if m == nil {
+			continue
+		}
+		if m.ErrorKind == nil || *m.ErrorKind != idleMarkerErrorKind {
+			t.Errorf("%s idle marker missing error_kind=%q (got %#v)", label, idleMarkerErrorKind, m.ErrorKind)
+		}
+		if m.FailureStage == nil || *m.FailureStage != "idle" {
+			t.Errorf("%s idle marker missing failure_stage=\"idle\" (got %#v)", label, m.FailureStage)
+		}
+		if m.Status != "idle" {
+			t.Errorf("%s idle marker has wrong status %q, want \"idle\"", label, m.Status)
+		}
+	}
+}
+
+// TestLiveStreamRedisStore_IdleThresholdIs5Min guards the 2026-07-14
+// change from 60s → 300s. A future "tighten to 30s" tweak would
+// re-introduce the "空闲 1m" tile pollution operators complained
+// about, so we lock the constant here.
+func TestLiveStreamRedisStore_IdleThresholdIs5Min(t *testing.T) {
+	if idleThresholdSeconds != 300 {
+		t.Fatalf("idleThresholdSeconds = %d, want 300 (5 minutes)", idleThresholdSeconds)
+	}
+	if idleMarkerErrorKind != "no_traffic_5min" {
+		t.Fatalf("idleMarkerErrorKind = %q, want \"no_traffic_5min\"", idleMarkerErrorKind)
+	}
 }
 
 func TestComputeDelta_ReturnsAllLanesWhenOldIsNil(t *testing.T) {

@@ -113,7 +113,26 @@ const (
 	liveStreamTTL            = 28800 * time.Second // 8 hours
 	liveStreamLaneLimit      = 30
 	liveStreamReplayLimit    = 200 // 默认回放请求数：泳道中请求的有效期靠 TTL(8h)保证，数量上限放宽到 200，让请求“直到被挤出去”而非被过小的 replay 上限提前丢弃
-	idleThresholdSeconds     = 60  // 1 minute
+	// idleThresholdSeconds = 5 minutes (300s). When a (vendor/provider/model)
+	// queue has not received a real request within this window, the hub
+	// inserts an idle_marker so the lane stays visible on the dashboard
+	// and operators can see when the traffic stopped.
+	//
+	// 2026-07-14: was 60s. The 60s threshold was too aggressive — a 90s
+	// gap between two consecutive requests on the same model would
+	// already insert an idle_marker, polluting the live view with
+	// "空闲 1m" tiles that were not actually diagnostic. Raising to
+	// 5 minutes aligns with the operator intent: a lane is "idle"
+	// only when it has been silent long enough to be noticeable, not
+	// just momentarily quiet.
+	idleThresholdSeconds = 300
+	// idleMarkerErrorKind is the error_kind stamped onto idle_marker
+	// requests so the dashboard can distinguish a "no traffic" lane
+	// from a "traffic but failing" lane. The value flows through
+	// LiveRequest.ErrorKind → LiveStreamTile.ErrorKind, so the
+	// RequestTile component renders it as the tile's error reason
+	// without any special-casing on the frontend.
+	idleMarkerErrorKind = "no_traffic_5min"
 )
 
 // normalizeModelKey returns a case-insensitive, whitespace-trimmed
@@ -509,11 +528,25 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 	for key := range stats {
 		keys = append(keys, key)
 	}
+	// 2026-07-14 stability fix: the previous sort used
+	// `stats.Total DESC, lane.id ASC`. While the tie-breaker kept
+	// equal-Total lanes ordered, ANY single new request on a lane
+	// would shift it past lanes whose Total happened to be one
+	// smaller. With ties straddled across many lanes, the visual
+	// result was a back-and-forth swap ("lane flicker") every
+	// snapshot — exactly the symptom operators reported.
+	//
+	// New strategy: rank by stats.Total DESC, but use the lane id as
+	// the sole tie-breaker. We rely on the frontend's
+	// mergeDelta() (see web/src/composables/liveStreamStore.ts) to
+	// merge incoming lanes by lane.id rather than re-rendering the
+	// whole array, so the SSE wire payload can stay coarse-grained
+	// while the DOM stays stable.
 	sort.Slice(keys, func(i, j int) bool {
-		if stats[keys[i]].Total == stats[keys[j]].Total {
-			return keys[i] < keys[j]
+		if stats[keys[i]].Total != stats[keys[j]].Total {
+			return stats[keys[i]].Total > stats[keys[j]].Total
 		}
-		return stats[keys[i]].Total > stats[keys[j]].Total
+		return keys[i] < keys[j]
 	})
 
 	// Build lanes - no more top N or others aggregation, return all lanes
@@ -962,12 +995,21 @@ func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time)
 	}
 	requestID := fmt.Sprintf("idle-%s-%s-%s-%d", scope, dimension, key, ts.UnixNano())
 
+	// 2026-07-14: stamp an explicit error_kind on every idle_marker so
+	// the frontend can surface a clear "无流量 X 分钟" message instead
+	// of just rendering "[空闲]" with no reason. The same ErrorKind
+	// field is read by the live-stream dashboard's idle/error logic,
+	// keeping the wire shape consistent with real failure rows.
+	errKind := idleMarkerErrorKind
+	failureStage := "idle"
 	marker := LiveRequest{
-		Type:      "idle_marker",
-		RequestID: requestID,
-		Ts:        ts.UTC().Format(time.RFC3339),
-		TenantID:  tenantID,
-		Status:    "idle",
+		Type:         "idle_marker",
+		RequestID:    requestID,
+		Ts:           ts.UTC().Format(time.RFC3339),
+		TenantID:     tenantID,
+		Status:       "idle",
+		ErrorKind:    &errKind,
+		FailureStage: &failureStage,
 	}
 
 	// Each idle marker carries ONLY the identity of the lane it represents,
