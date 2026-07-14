@@ -13,6 +13,19 @@ export default {
     recentFaults: '最新告警',
     pendingOffline: '待审批离线激活',
     viewAll: '查看全部',
+    // v2 Phase 3B-1: 许可子系统的运行时状态（与许可管理目录不同）
+    licenseSubsystem: '许可子系统',
+    licenseModeNormal: '运行中',
+    licenseModeRestricted: '已停服',
+    licenseModeGrace: '宽容期（剩余 {hours} 小时）',
+    lastRefresh: '上次刷新',
+    consecutiveFailures: '连续失败次数',
+    totalCycles: '共 {n} 轮',
+    lastError: '最近错误',
+    justNow: '刚刚',
+    minutesAgo: '{n} 分钟前',
+    hoursAgo: '{n} 小时前',
+    daysAgo: '{n} 天前',
   },
 
   // License Management

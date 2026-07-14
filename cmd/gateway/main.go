@@ -2612,6 +2612,16 @@ func main() {
 		// Phase 2: Licensing (License管理)
 		licensingStore := licensing.NewPgxStore(pool)
 
+		// Where the v2 grace-period FailureMarker lives. We use the
+		// same path the offline / token-refresh enforcement path uses
+		// so the grace and the daemon agree on where state is rooted.
+		// Default path mirrors the offline license check; can be
+		// overridden via LLM_GATEWAY_LICENSE_DATA_DIR for tests.
+		licenseDataDir := os.Getenv("LLM_GATEWAY_LICENSE_DATA_DIR")
+		if licenseDataDir == "" {
+			licenseDataDir = "/var/lib/kx-gateway"
+		}
+
 		// 从配置加载 License 加密密钥
 		licensingCrypto := &licensing.CryptoConfig{
 			JWTSecret:     []byte(jwtSecret),
@@ -2662,7 +2672,12 @@ func main() {
 		customerLicenseGroup := customerEcho.Group("/api/system/license")
 		customerLicenseGroup.Use(noAuthCustomerMiddleware())
 		licensingCustomerAPI.RegisterRoutes(customerLicenseGroup)
-		slog.Info("Phase 2: Customer license API enabled (/api/system/license/*)")
+
+		// v2 Phase 3B-1: License health endpoints for ops dashboards
+		// (DaemonHealth snapshot + grace state). No auth — these
+		// expose only metadata about the licensing subsystem itself.
+		licensing.NewLicenseHealthHandler(licenseDataDir, licensing.DefaultGracePeriod).RegisterHealthRoutes(customerLicenseGroup)
+		slog.Info("Phase 3B-1: License health endpoints enabled (/api/system/license/health, /api/system/license/status)")
 
 		// Phase 3: Fault Management (故障自愈)
 		faultStore := fault.NewPgxStore(pool)

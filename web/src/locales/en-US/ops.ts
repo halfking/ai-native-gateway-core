@@ -13,6 +13,20 @@ export default {
     recentFaults: 'Recent Alerts',
     pendingOffline: 'Pending Offline Activations',
     viewAll: 'View All',
+    // v2 Phase 3B-1: license subsystem runtime state (separate
+    // from the licence-management catalogue cards).
+    licenseSubsystem: 'License Subsystem',
+    licenseModeNormal: 'Operational',
+    licenseModeRestricted: 'Restricted',
+    licenseModeGrace: 'Grace ({hours}h left)',
+    lastRefresh: 'Last Refresh',
+    consecutiveFailures: 'Consecutive Failures',
+    totalCycles: '{n} cycles',
+    lastError: 'Last Error',
+    justNow: 'just now',
+    minutesAgo: '{n}m ago',
+    hoursAgo: '{n}h ago',
+    daysAgo: '{n}d ago',
   },
 
   // License Management
