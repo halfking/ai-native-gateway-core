@@ -37,12 +37,21 @@ ping + 1 轮工具调用（与原 `bg/self_check_worker.go` 的 3 轮相比节�
 
 不重试 — 仅记入 `self_check_runs`，**不**触发 §B 节点探测（避免无限循环）。
 
+### 2.5 顺序执行 + 跨进程互斥
+
+凭据自检**严格按顺序逐个执行**，绝不同一时刻并发多个：
+
+- **进程内**：`cycleOnce` 每 tick（5min）只取 1 个 due 凭据，`runOne` 同步执行完毕后才进入下一 tick。
+- **跨进程**（154 / kaixuan-* 多实例写同一 PG）：`runOne` 入口用 `pg_try_advisory_xact_lock(credential_id)` 抢占事务级咨询锁。锁失败 = 另一实例正在处理该凭据 → 本实例跳过该 tick。
+- 锁是事务级（xact_lock），worker 崩溃 / 进程退出时 PG 自动释放，不会死锁。
+- 配合 5min tick，最坏情况：N 个实例同时启动，每个 tick 抢不同凭据，互不冲突。
+
 ## 3. 节点探测（§B）规则
 
 ### 3.1 触发
 
 - 来源：`bg/credentialstate.Manager.UpdateOnFailure`（与 `bg.ActiveProbeWorker` 同源）
-- 同 (cred, model) 5 分钟内不重入（`in_flight_until` 列）
+- 同 (cred, model) 5 分钟内不重入（`in_flight_until` 列 + `SELECT ... FOR UPDATE SKIP LOCKED` 跨进程互斥）
 
 ### 3.2 双轮会话
 

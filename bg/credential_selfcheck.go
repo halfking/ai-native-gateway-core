@@ -141,11 +141,11 @@ func (w *CredentialSelfcheckWorker) loop(ctx context.Context) {
 	}
 }
 
-// cycleOnce picks at most ONE due credential and processes it.  We do
-// not flood — 5-min cycle with 1 credential per tick = max 12
-// self-checks/hour, which is well under the "every minute 2+ probes"
-// baseline observed on 252 and matches the spec's "1 per 24h per
-// credential" requirement.
+// cycleOnce picks at most ONE due credential and processes it sequentially.
+// Sequential per-process (5-min tick, 1 credential per tick) combined with
+// a PG advisory lock guarantees cross-instance isolation: if the selected
+// (credential_id) is already being self-checked by another gateway instance,
+// pg_try_advisory_xact_lock returns false and we skip silently.
 func (w *CredentialSelfcheckWorker) cycleOnce(ctx context.Context) {
 	credID, ok, err := w.pickDueCredential(ctx)
 	if err != nil {
@@ -155,6 +155,23 @@ func (w *CredentialSelfcheckWorker) cycleOnce(ctx context.Context) {
 	if !ok {
 		return // nothing due
 	}
+
+	// Cross-instance mutual exclusion via PG advisory lock.
+	// Lock key = credential_id (int4).  Failure means another
+	// instance already holds the lock → skip this tick.
+	var locked bool
+	lockCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := w.db.QueryRow(lockCtx,
+		`SELECT pg_try_advisory_xact_lock($1)`, credID,
+	).Scan(&locked); err != nil || !locked {
+		if err != nil {
+			slog.Warn("credential_selfcheck_worker: advisory lock query failed",
+				"credential_id", credID, "error", err)
+		}
+		return
+	}
+
 	if err := w.runOne(ctx, credID); err != nil {
 		slog.Warn("credential_selfcheck_worker: runOne failed",
 			"credential_id", credID, "error", err)

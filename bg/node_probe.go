@@ -199,13 +199,20 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 // two-round probe.  Concurrency is deliberately 1 per tick — the
 // worker is in a low-traffic hot path and we want predictable DB
 // pressure.
+//
+// Cross-instance isolation: pickDueAtomically issues a single
+// SELECT ... FOR UPDATE SKIP LOCKED + UPDATE in_flight_until inside
+// a transaction, so two gateway instances cannot both pick the same
+// (cred, model) row at the same instant.  Combined with the in-memory
+// dedup map this guarantees "one in-flight probe per (cred, model)
+// globally".
 func (w *NodeProbeWorker) cycle(ctx context.Context) {
-	credID, model, err := w.pickDue(ctx)
+	credID, model, ok, err := w.pickDueAtomically(ctx)
 	if err != nil {
 		slog.Warn("node_probe_worker: pick due failed", "error", err)
 		return
 	}
-	if credID == 0 {
+	if !ok {
 		return
 	}
 	key := fmt.Sprintf("%d|%s", credID, model)
@@ -228,15 +235,33 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) {
 	}
 }
 
-// pickDue returns one (credID, model) whose next_retry_at has elapsed
-// and which is not paused / in flight.  Returns (0, "", nil) when
-// nothing is due.
-func (w *NodeProbeWorker) pickDue(ctx context.Context) (int, string, error) {
-	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+// pickDueAtomically selects the next-due (cred, model) row and marks
+// it in-flight in a single transaction so concurrent gateway instances
+// cannot pick the same row.  Uses SELECT ... FOR UPDATE SKIP LOCKED:
+//
+//	BEGIN;
+//	  SELECT credential_id, raw_model_name
+//	    FROM node_probe_state
+//	   WHERE paused = FALSE AND next_retry_at <= now()
+//	     AND (in_flight_until IS NULL OR in_flight_until <= now())
+//	   ORDER BY next_retry_at ASC
+//	   LIMIT 1
+//	   FOR UPDATE SKIP LOCKED;
+//	  UPDATE node_probe_state SET in_flight_until = now() + $1 WHERE ...;
+//	COMMIT;
+//
+// Returns (credID, model, true, nil) on success, (0, "", false, nil)
+// when nothing is due.
+func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, bool, error) {
+	tx, err := w.db.Begin(ctx)
+	if err != nil {
+		return 0, "", false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() //nolint:errcheck
+
 	var credID int
 	var model string
-	err := w.db.QueryRow(queryCtx, `
+	err = tx.QueryRow(ctx, `
 		SELECT credential_id, raw_model_name
 		FROM node_probe_state
 		WHERE paused = FALSE
@@ -244,14 +269,25 @@ func (w *NodeProbeWorker) pickDue(ctx context.Context) (int, string, error) {
 		  AND (in_flight_until IS NULL OR in_flight_until <= now())
 		ORDER BY next_retry_at ASC
 		LIMIT 1
+		FOR UPDATE SKIP LOCKED
 	`).Scan(&credID, &model)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
-			return 0, "", nil
+			return 0, "", false, nil
 		}
-		return 0, "", err
+		return 0, "", false, err
 	}
-	return credID, model, nil
+	if _, err := tx.Exec(ctx, `
+		UPDATE node_probe_state
+		   SET in_flight_until = now() + $1::interval
+		 WHERE credential_id = $2 AND raw_model_name = $3
+	`, fmt.Sprintf("%d seconds", int(nodeProbeInFlightWindow.Seconds())), credID, model); err != nil {
+		return 0, "", false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, "", false, err
+	}
+	return credID, model, true, nil
 }
 
 // runOne executes the two-round probe and updates the state row +
