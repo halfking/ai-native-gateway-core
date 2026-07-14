@@ -112,10 +112,7 @@ const modelFontSize = computed(() => calculateFontSize(props.tile.model, 80))
 
 const line2Content = computed(() => {
   if (isIdle.value) {
-    // Idle tiles: line 2 carries the elapsed minutes label, not the
-    // model name (which is "[空闲]"). This is what the operator
-    // sees as "泳道已空闲 X 分钟".
-    return idleLabel.value
+    return props.tile.model || t('dashboard.liveStream.tileIdle')
   }
   if (props.tile.is_probe) {
     const origin = props.tile.probe_origin === 'gateway' ? 'GW' :
@@ -243,10 +240,22 @@ function handleClick() {
       :class="{ 'request-tile__status-dot--pulse': isInProgress }"
       aria-hidden="true"
     />
-    <span v-if="isTestRequest" class="request-tile__probe-badge" :class="probeBadgeClass" :title="probeBadgeTooltip">T</span>
+    <span
+      v-if="isTestRequest"
+      class="request-tile__probe-badge"
+      :class="probeBadgeClass"
+      :title="probeBadgeTooltip"
+      aria-label="probe"
+    >
+      <svg class="request-tile__probe-icon" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+        <circle cx="8" cy="8" r="1.6" fill="currentColor" />
+        <path d="M8 2.2v2.2M8 11.6v2.2M2.2 8h2.2M11.6 8h2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+      </svg>
+    </span>
 
     <div class="request-tile__body">
-      <div v-if="!isIdle" class="request-tile__time">{{ timeLabel }}</div>
+      <div class="request-tile__time">{{ timeLabel }}</div>
       <div class="request-tile__model">{{ line2Content }}</div>
       <!--
         2026-07-14: explicit error_reason strip below the model line.
@@ -405,22 +414,24 @@ function handleClick() {
 .request-tile__probe-badge {
   position: absolute;
   top: 3px;
-  left: 4px;
-  font-size: 10px;
-  font-weight: 900;
-  line-height: 1;
+  left: 5px;
   width: 14px;
   height: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 3px;
-  letter-spacing: -0.5px;
   color: #0c1a26;
   background: linear-gradient(180deg, #7dd3fc 0%, #38bdf8 100%);
   border: 1.5px solid #0284c7;
   box-shadow: 0 0 5px rgba(56, 189, 248, 0.8);
   z-index: 3;
+}
+
+.request-tile__probe-icon {
+  width: 10px;
+  height: 10px;
+  display: block;
 }
 
 /* 按探测来源区分颜色：scheduled=橙黄/周期，direct=红色/主动 */
@@ -453,12 +464,14 @@ function handleClick() {
 
 .request-tile__time {
   font-size: 9px;
-  text-align: right;
+  text-align: center;
   line-height: 1.1;
   color: rgba(243, 244, 246, 0.75);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+  width: 100%;
+  flex-shrink: 0;
 }
 
 .request-tile__model {

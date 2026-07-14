@@ -34,7 +34,7 @@ func boardPiesAllEmpty(pies map[string]any) bool {
 }
 
 func (h *Handler) fillOverviewCountsFromLogs(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {
-	logsTable, alias := requestLogsFromClause(tr.Days)
+	logsTable, alias := boardRequestLogsFromClause()
 	where, args := boardLogsWhere(tr, alias, tenantID)
 	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
 	modelExpr := fmt.Sprintf(`COALESCE(NULLIF(%s.client_model, ''), NULLIF(%s.outbound_model, ''))`, alias, alias)
@@ -57,7 +57,7 @@ func (h *Handler) fillOverviewCountsFromLogs(ctx context.Context, tenantID strin
 }
 
 func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64) ([]boardTrendPoint, error) {
-	logsTable, alias := requestLogsFromClause(tr.Days)
+	logsTable, alias := boardRequestLogsFromClause()
 	where, args := boardLogsWhere(tr, alias, tenantID)
 	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
 	if providerID > 0 {
@@ -97,7 +97,7 @@ func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, tr b
 	return points, nil
 }
 
-func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, days int) (map[string]any, error) {
+func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
 	types := map[string]string{
 		"clients":         "client_profile",
 		"virtual_ips":     "virtual_ip",
@@ -109,7 +109,7 @@ func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, days i
 	}
 	out := emptyBoardPies()
 	for key, dimType := range types {
-		items, err := h.fallbackDimPie(ctx, tenantID, days, dimType)
+		items, err := h.fallbackDimPie(ctx, tenantID, tr, dimType)
 		if err != nil {
 			out[key] = []boardPieItem{}
 			continue
@@ -122,15 +122,10 @@ func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, days i
 	return out, nil
 }
 
-func (h *Handler) fallbackDimPie(ctx context.Context, tenantID string, days int, dimType string) ([]boardPieItem, error) {
-	logsTable, alias := requestLogsFromClause(days)
-	where := alias + `.ts >= now() - ($1 * INTERVAL '1 day')`
+func (h *Handler) fallbackDimPie(ctx context.Context, tenantID string, tr boardTimeRange, dimType string) ([]boardPieItem, error) {
+	logsTable, alias := boardRequestLogsFromClause()
+	where, args := boardLogsWhere(tr, alias, tenantID)
 	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
-	args := []any{days}
-	if tenantID != "" {
-		where += fmt.Sprintf(" AND %s.tenant_id = $%d", alias, len(args)+1)
-		args = append(args, tenantID)
-	}
 
 	groupExpr, onlyFailures := fallbackDimGroupExpr(alias, dimType)
 	if onlyFailures {

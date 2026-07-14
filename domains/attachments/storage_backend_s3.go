@@ -8,261 +8,353 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// S3StorageBackend 实现基于AWS S3或MinIO的存储后端
+// S3StorageBackend implements StorageBackend against AWS S3 or any
+// S3-compatible service (MinIO, Ceph, etc.).
+//
+// Configuration is sourced from the S3Config type defined alongside the
+// StorageBackend interface in storage_backend.go (no duplicate declarations).
+//
+// Reference: aws-sdk-go-v2 (already in go.mod).
+//
+// Mapping to canonical StorageBackend methods:
+//
+//	Save / SaveReader → s3.PutObject
+//	Get / GetReader   → s3.GetObject
+//	Delete            → s3.DeleteObject
+//	Exists            → s3.HeadObject (404 = false)
+//	List              → s3.ListObjectsV2 paginator
+//	GetMetadata       → s3.HeadObject (Content-Length / LastModified)
+//
+// Gated behind the storage_s3 build tag so the default binary keeps no
+// aws-sdk linkage. Enable with:
+//
+//	go build -tags storage_s3 ./cmd/gateway
 type S3StorageBackend struct {
-	client   *s3.Client
+	client   *awss3.Client
 	bucket   string
-	prefix   string // 可选的对象键前缀
-	endpoint string // MinIO或S3兼容服务的端点
+	prefix   string
+	endpoint string
 }
 
-// S3Config S3/MinIO存储配置
-type S3Config struct {
-	Endpoint        string // 留空使用AWS S3，填写则用于MinIO等兼容服务
-	Region          string
-	AccessKeyID     string
-	SecretAccessKey string
-	Bucket          string
-	Prefix          string // 对象键前缀，如 "attachments/"
-	UsePathStyle    bool   // MinIO通常需要设置为true
-}
-
-// NewS3StorageBackend 创建S3存储后端实例
-func NewS3StorageBackend(cfg S3Config) (*S3StorageBackend, error) {
-	if cfg.Bucket == "" {
-		return nil, fmt.Errorf("S3 bucket name is required")
+// NewS3StorageBackend constructs an S3 backend.
+//
+// Validation enforced here:
+//   - BucketName must be set.
+//   - Region defaults to "us-east-1" when blank (AWS SDK requires it).
+//   - For S3-compatible services (MinIO), set Endpoint + UsePathStyle=true.
+//
+// When credentials are absent the SDK falls back to its default provider
+// chain (env vars → shared config → IRSA for EKS). Useful for in-cluster
+// deployments where static creds should not be baked into the image.
+func NewS3StorageBackend(config *S3Config) (*S3StorageBackend, error) {
+	if config == nil {
+		return nil, errors.New("s3 storage: config is nil")
 	}
-	if cfg.Region == "" {
-		cfg.Region = "us-east-1" // 默认区域
+	if config.BucketName == "" {
+		return nil, errors.New("s3 storage: BucketName is required")
+	}
+	region := config.Region
+	if region == "" {
+		region = "us-east-1"
 	}
 
-	// 构建AWS配置
-	var opts []func(*config.LoadOptions) error
-	opts = append(opts, config.WithRegion(cfg.Region))
-
-	// 如果提供了访问密钥，使用静态凭证
-	if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
-		opts = append(opts, config.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+	opts := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRegion(region),
+	}
+	if config.AccessKeyID != "" && config.SecretAccessKey != "" {
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(
+				config.AccessKeyID,
+				config.SecretAccessKey,
+				"",
+			),
 		))
 	}
 
-	awsCfg, err := config.LoadDefaultConfig(context.Background(), opts...)
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+		return nil, fmt.Errorf("s3 storage: load aws config: %w", err)
 	}
 
-	// 创建S3客户端
-	clientOpts := []func(*s3.Options){}
-	if cfg.Endpoint != "" {
-		// 自定义端点（用于MinIO等）
-		clientOpts = append(clientOpts, func(o *s3.Options) {
-			o.BaseEndpoint = aws.String(cfg.Endpoint)
-			o.UsePathStyle = cfg.UsePathStyle
+	clientOpts := []func(*awss3.Options){}
+	if config.Endpoint != "" {
+		// Custom endpoint for MinIO/Cloudflare R2/Ceph RGW.
+		clientOpts = append(clientOpts, func(o *awss3.Options) {
+			o.BaseEndpoint = aws.String(config.Endpoint)
+			o.UsePathStyle = config.UsePathStyle
 		})
 	}
 
-	client := s3.NewFromConfig(awsCfg, clientOpts...)
+	client := awss3.NewFromConfig(awsCfg, clientOpts...)
 
 	return &S3StorageBackend{
 		client:   client,
-		bucket:   cfg.Bucket,
-		prefix:   strings.TrimSuffix(cfg.Prefix, "/"),
-		endpoint: cfg.Endpoint,
+		bucket:   config.BucketName,
+		prefix:   strings.Trim(config.BasePath, "/"),
+		endpoint: config.Endpoint,
 	}, nil
 }
 
-// buildKey 构建完整的对象键
-func (s *S3StorageBackend) buildKey(path string) string {
-	path = strings.TrimPrefix(path, "/")
-	if s.prefix == "" {
-		return path
+// keyFor merges prefix with the storage key. Mirrors Cloudreve's adapter.
+func (s *S3StorageBackend) keyFor(storageKey string) (string, error) {
+	cleaned, err := sanitizeKey(storageKey)
+	if err != nil {
+		return "", err
 	}
-	return s.prefix + "/" + path
+	if s.prefix == "" {
+		return cleaned, nil
+	}
+	return s.prefix + "/" + cleaned, nil
 }
 
-// Save 保存文件到S3
-func (s *S3StorageBackend) Save(ctx context.Context, path string, content []byte) error {
-	key := s.buildKey(path)
+// stripPrefix is the inverse of keyFor — used by List.
+func (s *S3StorageBackend) stripPrefix(objectKey string) string {
+	if s.prefix == "" {
+		return objectKey
+	}
+	p := s.prefix + "/"
+	return strings.TrimPrefix(objectKey, p)
+}
 
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+// Save uploads data. PUT is idempotent, so retries are safe.
+func (s *S3StorageBackend) Save(ctx context.Context, key string, data []byte) error {
+	objectKey, err := s.keyFor(key)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.PutObject(ctx, &awss3.PutObjectInput{
 		Bucket:        aws.String(s.bucket),
-		Key:           aws.String(key),
-		Body:          bytes.NewReader(content),
-		ContentLength: aws.Int64(int64(len(content))),
-		ContentType:   aws.String(detectContentType(path)),
+		Key:           aws.String(objectKey),
+		Body:          bytes.NewReader(data),
+		ContentLength: aws.Int64(int64(len(data))),
+		ContentType:   aws.String(detectContentType(objectKey)),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to upload to S3: %w", err)
+		return fmt.Errorf("s3 storage: PutObject %q: %w", objectKey, err)
 	}
-
 	return nil
 }
 
-// Load 从S3加载文件
-func (s *S3StorageBackend) Load(ctx context.Context, path string) ([]byte, error) {
-	key := s.buildKey(path)
+// SaveReader streams the reader into S3 via the SDK's io.Reader overload.
+//
+// S3 streaming caveat: aws-sdk-go-v2 requires a seekable body or a precomputed
+// checksum to avoid double-buffering inside the SDK. We materialize into a
+// bytes.Reader so the SDK can compute its checksum cheaply. For callers that
+// need true streaming across the wire they should use multipart upload
+// directly — outside the scope of this single-shot backend.
+//
+// Memory cost: O(body size). Acceptable for the canonical Attachment use
+// case (≤20MB per the LocalStorageBackend contract).
+func (s *S3StorageBackend) SaveReader(ctx context.Context, key string, reader io.Reader, size int64) error {
+	if size < 0 {
+		return errors.New("s3 storage: SaveReader requires non-negative size")
+	}
+	objectKey, err := s.keyFor(key)
+	if err != nil {
+		return err
+	}
 
-	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
+	buf, err := io.ReadAll(io.LimitReader(reader, size))
+	if err != nil {
+		return fmt.Errorf("s3 storage: read body for %q: %w", objectKey, err)
+	}
+	body := bytes.NewReader(buf)
+	_, err = s.client.PutObject(ctx, &awss3.PutObjectInput{
+		Bucket:        aws.String(s.bucket),
+		Key:           aws.String(objectKey),
+		Body:          body,
+		ContentLength: aws.Int64(int64(len(buf))),
+		ContentType:   aws.String(detectContentType(objectKey)),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get object from S3: %w", err)
+		return fmt.Errorf("s3 storage: PutObjectReader %q: %w", objectKey, err)
 	}
-	defer result.Body.Close()
-
-	content, err := io.ReadAll(result.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read S3 object content: %w", err)
-	}
-
-	return content, nil
+	return nil
 }
 
-// Exists 检查S3对象是否存在
-func (s *S3StorageBackend) Exists(ctx context.Context, path string) (bool, error) {
-	key := s.buildKey(path)
+// Get returns the full object body. For large files prefer GetReader.
+func (s *S3StorageBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	r, err := s.GetReader(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
 
-	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+// GetReader opens a streaming GET. 404 ⇒ "file not found" matching
+// LocalStorageBackend / Cloudreve adapters.
+func (s *S3StorageBackend) GetReader(ctx context.Context, key string) (io.ReadCloser, error) {
+	objectKey, err := s.keyFor(key)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.client.GetObject(ctx, &awss3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
+		Key:    aws.String(objectKey),
 	})
 	if err != nil {
-		// 检查是否为NotFound错误
-		var notFound *types.NotFound
-		if errors.As(err, &notFound) {
+		if isS3NotFound(err) {
+			return nil, fmt.Errorf("s3 storage: file not found: %s", key)
+		}
+		return nil, fmt.Errorf("s3 storage: GetObject %q: %w", objectKey, err)
+	}
+	return result.Body, nil
+}
+
+// Delete removes the object. Per AWS docs S3 silently succeeds on missing
+// keys, so no special-case for 404 is needed.
+func (s *S3StorageBackend) Delete(ctx context.Context, key string) error {
+	objectKey, err := s.keyFor(key)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.DeleteObject(ctx, &awss3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(objectKey),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 storage: DeleteObject %q: %w", objectKey, err)
+	}
+	return nil
+}
+
+// Exists uses HeadObject (cheap HEAD). 404 ⇒ false without error.
+func (s *S3StorageBackend) Exists(ctx context.Context, key string) (bool, error) {
+	objectKey, err := s.keyFor(key)
+	if err != nil {
+		return false, err
+	}
+	_, err = s.client.HeadObject(ctx, &awss3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(objectKey),
+	})
+	if err != nil {
+		if isS3NotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("failed to check S3 object existence: %w", err)
+		return false, fmt.Errorf("s3 storage: HeadObject %q: %w", objectKey, err)
 	}
-
 	return true, nil
 }
 
-// Delete 从S3删除文件
-func (s *S3StorageBackend) Delete(ctx context.Context, path string) error {
-	key := s.buildKey(path)
-
-	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+// GetMetadata uses HeadObject and maps to the canonical FileMetadata.
+func (s *S3StorageBackend) GetMetadata(ctx context.Context, key string) (*FileMetadata, error) {
+	objectKey, err := s.keyFor(key)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.client.HeadObject(ctx, &awss3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
+		Key:    aws.String(objectKey),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to delete S3 object: %w", err)
+		if isS3NotFound(err) {
+			return nil, fmt.Errorf("s3 storage: file not found: %s", key)
+		}
+		return nil, fmt.Errorf("s3 storage: HeadObject %q: %w", objectKey, err)
 	}
 
-	return nil
+	var size int64
+	if result.ContentLength != nil {
+		size = *result.ContentLength
+	}
+	var modTime time.Time
+	if result.LastModified != nil {
+		modTime = *result.LastModified
+	}
+	etag := strings.Trim(aws.ToString(result.ETag), `"`)
+
+	return &FileMetadata{
+		Key:          key,
+		Size:         size,
+		LastModified: modTime,
+		ContentType:  aws.ToString(result.ContentType),
+		ETag:         etag,
+	}, nil
 }
 
-// List 列出S3中指定前缀下的所有文件
+// List paginates ListObjectsV2 under the requested prefix. Returns storage
+// keys (prefix stripped) so the rest of the package sees backend-agnostic paths.
 func (s *S3StorageBackend) List(ctx context.Context, prefix string) ([]string, error) {
-	fullPrefix := s.buildKey(prefix)
+	cleaned := prefix
+	if cleaned != "" {
+		c, err := sanitizeKey(cleaned)
+		if err != nil {
+			return nil, err
+		}
+		cleaned = c
+	}
+
+	fullPrefix := s.prefix
+	if cleaned != "" {
+		if fullPrefix != "" {
+			fullPrefix = fullPrefix + "/" + cleaned
+		} else {
+			fullPrefix = cleaned
+		}
+	}
 	if fullPrefix != "" && !strings.HasSuffix(fullPrefix, "/") {
 		fullPrefix += "/"
 	}
 
-	var files []string
-	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+	var keys []string
+	paginator := awss3.NewListObjectsV2Paginator(s.client, &awss3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
 		Prefix: aws.String(fullPrefix),
 	})
-
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list S3 objects: %w", err)
+			return nil, fmt.Errorf("s3 storage: ListObjectsV2: %w", err)
 		}
-
 		for _, obj := range page.Contents {
-			if obj.Key != nil {
-				// 移除前缀，返回相对路径
-				relPath := strings.TrimPrefix(*obj.Key, s.prefix+"/")
-				files = append(files, relPath)
+			if obj.Key == nil {
+				continue
 			}
+			keys = append(keys, s.stripPrefix(*obj.Key))
 		}
 	}
-
-	return files, nil
+	return keys, nil
 }
 
-// GetMetadata 获取S3对象的元数据
-func (s *S3StorageBackend) GetMetadata(ctx context.Context, path string) (*StorageMetadata, error) {
-	key := s.buildKey(path)
+// GetBackendType returns the canonical name used by StorageConfig.Type.
+func (s *S3StorageBackend) GetBackendType() string {
+	return "s3"
+}
 
-	result, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+// HealthCheck calls HeadBucket — exercises creds + network + bucket policy.
+// Cheaper than GetBucketInfo and avoids needing ListBucket permission.
+func (s *S3StorageBackend) HealthCheck(ctx context.Context) error {
+	_, err := s.client.HeadBucket(ctx, &awss3.HeadBucketInput{
 		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get S3 object metadata: %w", err)
+		return fmt.Errorf("s3 storage: HealthCheck failed: %w", err)
 	}
-
-	size := int64(0)
-	if result.ContentLength != nil {
-		size = *result.ContentLength
-	}
-
-	modTime := time.Now()
-	if result.LastModified != nil {
-		modTime = *result.LastModified
-	}
-
-	return &StorageMetadata{
-		Size:         size,
-		ModifiedTime: modTime,
-		ContentType:  aws.ToString(result.ContentType),
-		ETag:         aws.ToString(result.ETag),
-	}, nil
+	return nil
 }
 
-// GetURL 获取S3对象的预签名URL
-func (s *S3StorageBackend) GetURL(ctx context.Context, path string, expiry time.Duration) (string, error) {
-	key := s.buildKey(path)
-
-	presignClient := s3.NewPresignClient(s.client)
-	presignResult, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-	}, func(opts *s3.PresignOptions) {
-		opts.Expires = expiry
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
+// isS3NotFound inspects any returned error and reports whether it represents
+// a missing object. S3 returns *types.NotFound for missing objects.
+func isS3NotFound(err error) bool {
+	if err == nil {
+		return false
 	}
-
-	return presignResult.URL, nil
+	var nf *types.NotFound
+	return errors.As(err, &nf)
 }
 
-// detectContentType 根据文件扩展名检测内容类型
-func detectContentType(path string) string {
-	ext := strings.ToLower(filepath.Ext(path))
-	contentTypes := map[string]string{
-		".jpg":  "image/jpeg",
-		".jpeg": "image/jpeg",
-		".png":  "image/png",
-		".gif":  "image/gif",
-		".webp": "image/webp",
-		".pdf":  "application/pdf",
-		".txt":  "text/plain",
-		".json": "application/json",
-		".xml":  "application/xml",
-		".zip":  "application/zip",
-	}
-
-	if ct, ok := contentTypes[ext]; ok {
-		return ct
-	}
-	return "application/octet-stream"
-}
+// Compile-time check: S3StorageBackend implements StorageBackend. Catches
+// signature drift early at `go build` time instead of at the first request.
+var _ StorageBackend = (*S3StorageBackend)(nil)

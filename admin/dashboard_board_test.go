@@ -14,6 +14,7 @@ func TestDashboardBoardRoutesRegistered(t *testing.T) {
 	body := string(src)
 	for _, route := range []string{
 		"/api/admin/dashboard/board",
+		"/api/admin/dashboard/operational",
 		"/api/admin/dashboard/board/error-drill",
 	} {
 		if !strings.Contains(body, route) {

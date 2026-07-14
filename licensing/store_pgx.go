@@ -211,6 +211,17 @@ func (s *PgxStore) SetRuntimeTelemetryPreference(ctx context.Context, preference
 	if err != nil {
 		return err
 	}
+	if !preference.Enabled {
+		_, err = tx.Exec(ctx, `
+			DELETE FROM runtime_metrics
+			WHERE instance_id IN (
+				SELECT instance_id FROM gateway_instances WHERE hardware_hash = $1
+			)
+		`, preference.HardwareHash)
+		if err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }
 

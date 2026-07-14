@@ -112,46 +112,8 @@ const visibleRequests = computed(() => {
   return requests.slice(requests.length - max)
 })
 
-// 周期性 tick（每分钟）— 用于刷新空闲占位显示
-// 必须先声明：idlePlaceholderTile / renderedRequests 依赖它
-const nowTick = ref(Date.now())
-let idleTicker: ReturnType<typeof setInterval> | null = null
-
-// 2026-07-13 v4: 空闲占位虚框（每 5 分钟一个，泳道内最多 1 个）
-// 设计：泳道长时间无请求时，显示一个虚框块让用户感知「已空闲」+ 时长
-const IDLE_PLACEHOLDER_MS = 5 * 60 * 1000 // 5 分钟
-
-const idlePlaceholderTile = computed<RequestTileType | null>(() => {
-  const now = nowTick.value // 引用响应式值触发每分钟重算
-  const requests = props.lane.requests
-  // 泳道没有任何请求时不显示占位（初始空泳道留给欢迎态）
-  if (requests.length === 0) return null
-  const lastTs = requests[requests.length - 1].timestamp
-  if (!lastTs) return null
-  const last = new Date(lastTs).getTime()
-  if (Number.isNaN(last)) return null
-  const gap = now - last
-  if (gap < IDLE_PLACEHOLDER_MS) return null
-  const idleMinutes = Math.floor(gap / 60000)
-  const placeholder: RequestTileType = {
-    request_id: `idle-marker-${props.lane.id}`,
-    timestamp: new Date(now - IDLE_PLACEHOLDER_MS).toISOString(),
-    model: `空闲 ${idleMinutes}m`,
-    vendor: '__idle__',
-    provider: '无请求',
-    status: 'idle',
-  }
-  return placeholder
-})
-
-// 用于渲染的完整列表（真实请求 + 末尾占位）
-const renderedRequests = computed<RequestTileType[]>(() => {
-  const list = [...visibleRequests.value]
-  // 占位只在尾部追加，不参与可见区域容量限制（占位不进错误率统计）
-  const ph = idlePlaceholderTile.value
-  if (ph) list.push(ph)
-  return list
-})
+// 用于渲染的完整列表（含后端 idle 标记，按时间戳排序，不再追加尾部占位）
+const renderedRequests = computed<RequestTileType[]>(() => visibleRequests.value)
 
 // 2026-07-13: 应急诊断按钮 — 旧版启发式（错误率 >= 1/3）。
 // 当且仅当 state-machine 还没有 active incident 时才显示，避免重复。
@@ -195,16 +157,6 @@ function isTileDimmed(tileKey: string): boolean {
 function handleTileClick(requestId: string) {
   emit('tileClick', requestId)
 }
-
-onMounted(() => {
-  idleTicker = setInterval(() => {
-    nowTick.value = Date.now()
-  }, 60_000)
-})
-
-onUnmounted(() => {
-  if (idleTicker) clearInterval(idleTicker)
-})
 
 // —— ResizeObserver 监听轨道宽度变化 ——
 let resizeObserver: ResizeObserver | null = null

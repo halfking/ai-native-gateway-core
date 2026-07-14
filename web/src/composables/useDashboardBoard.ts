@@ -1,7 +1,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { fetchDashboardBoard, type BoardPayload } from '../api/board'
+import { fetchDashboardBoard, fetchBoardOperational, type BoardPayload, type BoardOperationalPayload } from '../api/board'
 import { getSetting } from '../api/settings'
-import { acquireLiveStream, subscribeTerminalRequests } from './liveStreamStore'
+import { subscribeTerminalRequests, connectionRef } from './liveStreamStore'
 import { applyLiveRequestToBoard } from './boardLiveMerge'
 import {
   defaultBoardTimeRange,
@@ -10,7 +10,9 @@ import {
   type BoardTimeRange,
 } from '../utils/boardTimeRange'
 
-const DEFAULT_REFRESH_MS = 1000
+const DEFAULT_REFRESH_MS = 10_000
+const SSE_RECONCILE_MIN_MS = 30_000
+const OPERATIONAL_REFRESH_MS = 30_000
 
 async function resolveRefreshMs(): Promise<number> {
   try {
@@ -28,6 +30,11 @@ async function resolveRefreshMs(): Promise<number> {
   }
 }
 
+function sseConnectionActive(): boolean {
+  const state = connectionRef.value
+  return state === 'open' || state === 'connecting' || state === 'reconnecting'
+}
+
 export function useDashboardBoard() {
   const timeRange = ref<BoardTimeRange>(defaultBoardTimeRange())
   const days = computed(() => timeRange.value.days)
@@ -36,11 +43,13 @@ export function useDashboardBoard() {
   const loading = ref(false)
   const error = ref<string | null>(null)
   const board = ref<BoardPayload | null>(null)
+  const operational = ref<BoardOperationalPayload | null>(null)
 
   let refreshTimer: number | undefined
+  let operationalTimer: number | undefined
   let refreshMs = DEFAULT_REFRESH_MS
-  let releaseLiveStream: (() => void) | null = null
   let unsubscribeTerminal: (() => void) | null = null
+  let loadInFlight = false
   const appliedTerminalIds = new Set<string>()
 
   function mergeTerminalRequest(requestId: string, req: Parameters<typeof applyLiveRequestToBoard>[1]) {
@@ -72,18 +81,33 @@ export function useDashboardBoard() {
     appliedTerminalIds.clear()
   }
 
+  async function loadOperational() {
+    if (document.hidden) return
+    try {
+      operational.value = await fetchBoardOperational()
+    } catch {
+      // operational cards are non-critical; keep last snapshot
+    }
+  }
+
   async function load(options?: { silent?: boolean }) {
+    if (loadInFlight) return
     const silent = options?.silent === true
+    if (document.hidden && silent) return
+    loadInFlight = true
     if (!silent) {
       loading.value = true
     }
     error.value = null
+    const operationalPromise = loadOperational()
     try {
       const fresh = await fetchDashboardBoard(toBoardTimeQuery(timeRange.value))
       adoptBoardPayload(fresh, { silentReconcile: silent })
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : '加载失败'
     } finally {
+      await operationalPromise
+      loadInFlight = false
       if (!silent) {
         loading.value = false
       }
@@ -92,9 +116,6 @@ export function useDashboardBoard() {
 
   function wireLiveUpdates() {
     if (!liveUpdatesEnabled.value) return
-    if (!releaseLiveStream) {
-      releaseLiveStream = acquireLiveStream()
-    }
     if (!unsubscribeTerminal) {
       unsubscribeTerminal = subscribeTerminalRequests((req) => {
         if (!req.request_id) return
@@ -106,18 +127,66 @@ export function useDashboardBoard() {
   function unwireLiveUpdates() {
     unsubscribeTerminal?.()
     unsubscribeTerminal = null
-    releaseLiveStream?.()
-    releaseLiveStream = null
+  }
+
+  async function resolvePollIntervalMs(): Promise<number> {
+    const base = await resolveRefreshMs()
+    if (liveUpdatesEnabled.value && sseConnectionActive()) {
+      return Math.max(base, SSE_RECONCILE_MIN_MS)
+    }
+    return base
+  }
+
+  function scheduleOperationalPoll() {
+    if (operationalTimer) clearInterval(operationalTimer)
+    operationalTimer = window.setInterval(() => {
+      void loadOperational()
+    }, OPERATIONAL_REFRESH_MS)
+  }
+
+  function stopOperationalPoll() {
+    if (operationalTimer) {
+      clearInterval(operationalTimer)
+      operationalTimer = undefined
+    }
+  }
+
+  function schedulePoll() {
+    if (refreshTimer) clearInterval(refreshTimer)
+    refreshTimer = window.setInterval(() => {
+      if (document.hidden) return
+      void load({ silent: true })
+    }, refreshMs)
+  }
+
+  function onVisibilityChange() {
+    if (document.hidden) {
+      if (refreshTimer) {
+        clearInterval(refreshTimer)
+        refreshTimer = undefined
+      }
+      return
+    }
+    if (liveUpdatesEnabled.value) {
+      void load({ silent: true })
+      void loadOperational()
+      schedulePoll()
+    }
   }
 
   async function startAutoRefresh() {
     if (refreshTimer) clearInterval(refreshTimer)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     if (liveUpdatesEnabled.value) {
       wireLiveUpdates()
-      refreshMs = await resolveRefreshMs()
-      refreshTimer = window.setInterval(() => void load({ silent: true }), refreshMs)
+      refreshMs = await resolvePollIntervalMs()
+      void loadOperational()
+      scheduleOperationalPoll()
+      schedulePoll()
+      document.addEventListener('visibilitychange', onVisibilityChange)
     } else {
       unwireLiveUpdates()
+      stopOperationalPoll()
     }
   }
 
@@ -126,6 +195,8 @@ export function useDashboardBoard() {
       clearInterval(refreshTimer)
       refreshTimer = undefined
     }
+    stopOperationalPoll()
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     unwireLiveUpdates()
   }
 
@@ -154,7 +225,9 @@ export function useDashboardBoard() {
     loading,
     error,
     board,
+    operational,
     load,
+    loadOperational,
     setTimeRange,
     startAutoRefresh,
     stopAutoRefresh,

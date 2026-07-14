@@ -105,6 +105,7 @@ export function applyLiveRequestToBoard(
   const completion = num(req.completion_tokens)
   const totalTokens = num(req.total_tokens) || prompt + completion
   const cost = num(req.cost_usd)
+  const credits = num(req.credits_charged)
   const latency = num(req.latency_ms)
   const success = req.status === 'success'
 
@@ -120,15 +121,17 @@ export function applyLiveRequestToBoard(
   summary.total_completion_tokens = (summary.total_completion_tokens ?? 0) + completion
   summary.total_tokens = (summary.total_tokens ?? 0) + totalTokens
   summary.total_cost_usd = (summary.total_cost_usd ?? 0) + cost
+  summary.total_credits_charged = (summary.total_credits_charged ?? 0) + credits
   summary.success_rate = (prevSuccessCount + (success ? 1 : 0)) / nextTotal
   summary.avg_latency_ms = (prevAvgLatency * prevTotal + latency) / nextTotal
 
-  const pieDelta = { requests: 1, tokens: totalTokens, credits: 0, cost_usd: cost }
+  const pieDelta = { requests: 1, tokens: totalTokens, credits, cost_usd: cost }
   const pies = { ...board.pies }
-  pies.clients = bumpPieItem(pies.clients ?? [], UNKNOWN, pieDelta)
+  pies.clients = bumpPieItem(pies.clients ?? [], pieKey(req.client_profile ?? undefined), pieDelta)
   pies.models = bumpPieItem(pies.models ?? [], pieKey(req.model), pieDelta)
   pies.providers = bumpPieItem(pies.providers ?? [], pieKey(req.provider_code), pieDelta)
   pies.tenants = bumpPieItem(pies.tenants ?? [], pieKey(req.tenant_id), pieDelta)
+  pies.identity_hashes = bumpPieItem(pies.identity_hashes ?? [], pieKey(req.identity_hash ?? undefined), pieDelta)
   if (!success) {
     pies.errors = bumpPieItem(pies.errors ?? [], pieKey(req.error_kind ?? undefined), pieDelta)
   }
@@ -136,7 +139,7 @@ export function applyLiveRequestToBoard(
   const trends = bumpTrend(board.trends ?? [], req.ts, range, {
     requests: 1,
     tokens: totalTokens,
-    credits: 0,
+    credits,
     cost_usd: cost,
   })
 

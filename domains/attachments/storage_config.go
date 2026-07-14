@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // StorageConfig 存储配置
 type StorageConfig struct {
-	Type string // 存储类型：local, oss, s3
+	Type string // 存储类型：local, oss, s3, cloudreve
 
 	// Local 存储配置
 	LocalDir string
@@ -31,6 +33,13 @@ type StorageConfig struct {
 	S3Prefix          string
 	S3UseSSL          bool
 	S3ForcePathStyle  bool
+
+	// Cloudreve 存储配置（WebDAV 适配）
+	CloudreveBaseURL    string
+	CloudreveUsername   string
+	CloudrevePassword   string
+	CloudreveRemotePath string
+	CloudreveTimeoutSec int
 }
 
 // NewStorageBackendFromConfig 根据配置创建存储后端
@@ -63,6 +72,16 @@ func NewStorageBackendFromConfig(config StorageConfig) (StorageBackend, error) {
 			BucketName:      config.S3Bucket,
 			BasePath:        config.S3Prefix,
 			UsePathStyle:    config.S3ForcePathStyle,
+		})
+
+	case "cloudreve":
+		// Cloudreve 云盘（WebDAV 适配）。需使用 -tags cloudreve_storage 编译。
+		return NewCloudreveStorageBackend(CloudreveConfig{
+			BaseURL:    config.CloudreveBaseURL,
+			Username:   config.CloudreveUsername,
+			Password:   config.CloudrevePassword,
+			RemotePath: config.CloudreveRemotePath,
+			Timeout:    time.Duration(config.CloudreveTimeoutSec) * time.Second,
 		})
 
 	default:
@@ -98,6 +117,20 @@ func LoadStorageConfigFromEnv() StorageConfig {
 		config.S3Prefix = getEnv("LLM_GATEWAY_S3_PREFIX", "attachments/")
 		config.S3UseSSL = getEnv("LLM_GATEWAY_S3_USE_SSL", "true") == "true"
 		config.S3ForcePathStyle = getEnv("LLM_GATEWAY_S3_FORCE_PATH_STYLE", "false") == "true"
+
+	case "cloudreve":
+		config.CloudreveBaseURL = getEnv("LLM_GATEWAY_CLOUDREVE_BASE_URL", "")
+		config.CloudreveUsername = getEnv("LLM_GATEWAY_CLOUDREVE_USERNAME", "")
+		config.CloudrevePassword = getEnv("LLM_GATEWAY_CLOUDREVE_PASSWORD", "")
+		config.CloudreveRemotePath = getEnv("LLM_GATEWAY_CLOUDREVE_REMOTE_PATH", "/llm-gateway-attachments")
+		if t := getEnv("LLM_GATEWAY_CLOUDREVE_TIMEOUT_SEC", "30"); t != "" {
+			if n, err := strconv.Atoi(t); err == nil {
+				config.CloudreveTimeoutSec = n
+			}
+		}
+		if config.CloudreveTimeoutSec == 0 {
+			config.CloudreveTimeoutSec = 30
+		}
 	}
 
 	return config
@@ -150,6 +183,17 @@ func ValidateStorageConfig(config StorageConfig) error {
 		}
 		if config.S3Region == "" {
 			return fmt.Errorf("S3 region is required")
+		}
+
+	case "cloudreve":
+		if config.CloudreveBaseURL == "" {
+			return fmt.Errorf("Cloudreve base URL is required")
+		}
+		if config.CloudreveUsername == "" {
+			return fmt.Errorf("Cloudreve username is required")
+		}
+		if config.CloudrevePassword == "" {
+			return fmt.Errorf("Cloudreve password is required")
 		}
 
 	default:

@@ -5,6 +5,7 @@ import type { BoardSummary } from '../../api/board'
 
 defineProps<{
   summary: BoardSummary | null | undefined
+  loading?: boolean
 }>()
 
 const { t } = useI18n()
@@ -28,7 +29,10 @@ function fmtPct(v: number | undefined) {
 </script>
 
 <template>
-  <div v-if="summary" class="stats-row">
+  <div v-if="loading && !summary" class="stats-row stats-row--skeleton">
+    <div v-for="i in 9" :key="i" class="stat-mini stat-mini--skeleton" />
+  </div>
+  <div v-else-if="summary" class="stats-row">
     <div class="stat-mini">
       <div class="stat-mini__label">{{ t('dashboard.stat.totalRequests') }}</div>
       <div class="stat-mini__value">{{ fmt(summary.total_requests) }}</div>
@@ -101,5 +105,19 @@ function fmtPct(v: number | undefined) {
   font-size: 10px;
   color: var(--text-muted);
   margin-top: 2px;
+}
+.stats-row--skeleton {
+  min-height: 72px;
+}
+.stat-mini--skeleton {
+  flex: 1 1 120px;
+  min-height: 56px;
+  background: linear-gradient(90deg, var(--border) 25%, transparent 37%, var(--border) 63%);
+  background-size: 400% 100%;
+  animation: board-shimmer 1.2s ease infinite;
+}
+@keyframes board-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: 0 0; }
 }
 </style>

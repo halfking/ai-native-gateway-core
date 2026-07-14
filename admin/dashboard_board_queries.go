@@ -7,6 +7,31 @@ import (
 	"time"
 )
 
+func (h *Handler) shouldUseBoardLogsFallback(ctx context.Context, tenantID string, tr boardTimeRange) bool {
+	if tr.Days <= 1 {
+		return false
+	}
+	where, args := boardMinuteWhere(tr, tenantID, 0)
+	var minBucket sql.NullTime
+	err := h.db.QueryRow(ctx, `
+		SELECT MIN(bucket) FROM request_stats_minute WHERE `+where, args...).Scan(&minBucket)
+	if err != nil || !minBucket.Valid {
+		return true
+	}
+	return minBucket.Time.After(tr.Start.Add(boardStatsCoverageSlack(tr)))
+}
+
+func trendPointsCoverRange(tr boardTimeRange, points []boardTrendPoint) bool {
+	if len(points) == 0 {
+		return false
+	}
+	earliest, err := time.Parse(time.RFC3339, points[0].Bucket)
+	if err != nil {
+		return false
+	}
+	return !earliest.After(tr.Start.Add(boardStatsCoverageSlack(tr)))
+}
+
 func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, bool) {
 	where, args := boardMinuteWhere(tr, tenantID, 0)
 
@@ -29,6 +54,9 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boa
 		&totalReq, &successCnt, &failCnt, &promptTok, &compTok, &totalTok, &credits, &costUSD, &latencySum,
 	)
 	if err != nil || totalReq == 0 {
+		return nil, false
+	}
+	if h.shouldUseBoardLogsFallback(ctx, tenantID, tr) {
 		return nil, false
 	}
 
@@ -60,7 +88,7 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boa
 }
 
 func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr boardTimeRange) map[string]any {
-	logsTable, alias := requestLogsFromClause(tr.Days)
+	logsTable, alias := boardRequestLogsFromClause()
 	where, args := boardLogsWhere(tr, alias, tenantID)
 
 	var totalReq int64
@@ -127,6 +155,23 @@ func (h *Handler) queryOverviewCountsMinute(ctx context.Context, tenantID string
 			(SELECT COUNT(DISTINCT dim_key) FROM request_stats_dim_minute
 			 WHERE dim_type = 'provider' AND bucket >= $1 AND bucket < $2)
 	`, tr.Start, tr.End).Scan(keys, models, providers)
+}
+
+func (h *Handler) resolveBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
+	pies, err := h.queryBoardPies(ctx, tenantID, tr)
+	if err != nil {
+		if IsMissingRelationError(err) {
+			return h.fallbackBoardPies(ctx, tenantID, tr)
+		}
+		return nil, err
+	}
+	if h.shouldUseBoardLogsFallback(ctx, tenantID, tr) {
+		fb, fbErr := h.fallbackBoardPies(ctx, tenantID, tr)
+		if fbErr == nil {
+			return fb, nil
+		}
+	}
+	return pies, nil
 }
 
 func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
@@ -197,12 +242,15 @@ func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr bo
 		}
 		return nil, err
 	}
-	if len(points) > 0 {
+	if trendPointsCoverRange(tr, points) {
 		return points, nil
 	}
 	fallback, fbErr := h.fallbackBoardTrends(ctx, tenantID, tr, providerID)
 	if fbErr != nil {
-		return points, nil
+		if len(points) > 0 {
+			return points, nil
+		}
+		return nil, fbErr
 	}
 	return fallback, nil
 }

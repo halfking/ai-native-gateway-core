@@ -339,7 +339,7 @@ function exportFilename(prefix: string, time: BoardTimeQuery) {
 export async function downloadProviderUsageExport(time: BoardTimeQuery) {
   const { BASE, headers } = await import('./_core')
   const qs = usageTimeQs(time)
-  const res = await fetch(`${BASE}/api/usage/providers/export?${qs}`, { headers: headers() })
+  const res = await fetch(`${BASE}/api/usage/providers/export?${qs}`, { headers: headers('GET') })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
@@ -353,7 +353,7 @@ export async function downloadProviderUsageExport(time: BoardTimeQuery) {
 export async function downloadProviderDetailExport(providerId: number, time: BoardTimeQuery) {
   const { BASE, headers } = await import('./_core')
   const qs = usageTimeQs(time)
-  const res = await fetch(`${BASE}/api/usage/providers/${providerId}/export?${qs}`, { headers: headers() })
+  const res = await fetch(`${BASE}/api/usage/providers/${providerId}/export?${qs}`, { headers: headers('GET') })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)

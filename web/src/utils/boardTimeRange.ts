@@ -71,9 +71,10 @@ export function toBoardTimeQuery(range: BoardTimeRange): BoardTimeQuery {
 }
 
 export function utcRollingStartMs(days: number, endMs = Date.now()): number {
-  const s = new Date(endMs - days * 86_400_000)
-  s.setUTCHours(0, 0, 0, 0)
-  return s.getTime()
+  const end = new Date(endMs)
+  end.setUTCHours(0, 0, 0, 0)
+  const start = new Date(end.getTime() - Math.max(0, days - 1) * 86_400_000)
+  return start.getTime()
 }
 
 export function resolveBoardRangeMs(range: BoardTimeRange, endMs = Date.now()): { startMs: number; endMs: number } {

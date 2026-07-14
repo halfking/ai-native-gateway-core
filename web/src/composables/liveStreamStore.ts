@@ -32,6 +32,9 @@ export interface LiveRequest {
   cost_usd?: number | null
   error_kind?: string | null
   failure_stage?: string | null  // "gateway" | "upstream" — failure origin
+  client_profile?: string | null
+  identity_hash?: string | null
+  credits_charged?: number | null
   // 2026-07-13: error-triggered probe fields
   is_probe?: boolean
   probe_origin?: 'direct' | 'gateway' | 'scheduled'
@@ -57,6 +60,9 @@ export interface LiveStreamTile {
   cost_usd?: number | null
   prompt_tokens?: number | null
   completion_tokens?: number | null
+  is_probe?: boolean
+  probe_origin?: string
+  probe_attempt?: number
 }
 
 export interface LiveStreamLane {
@@ -239,6 +245,17 @@ function pushOrQueue(item: LiveRequest) {
     }
     return
   }
+  if (item.type === 'idle_marker' && item.request_id) {
+    const existingIndex = liveStreamState.requests.findIndex(
+      (r) => r.request_id === item.request_id,
+    )
+    if (existingIndex >= 0) {
+      // Idle markers keep a stable request_id; update payload in place so
+      // the tile stays in chronological order (pushed left by newer requests).
+      liveStreamState.requests[existingIndex] = item
+      return
+    }
+  }
   if (item.type !== 'idle_marker' && item.request_id) {
     if (idIndex.has(item.request_id)) {
       const existingIndex = liveStreamState.requests.findIndex(
@@ -296,20 +313,27 @@ function applyInitialData(items: LiveRequest[]) {
 
 function handleEnvelope(env: LiveStreamEnvelope) {
   liveStreamState.lastEventAt = Date.now()
-  // Update Redis health from any envelope that carries it.
   if (env.health) {
     liveStreamState.redisHealthy = env.health.redis_connected
     liveStreamState.redisError = env.health.redis_error || ''
   }
-  if (env.snapshot) {
-    liveStreamState.snapshot = env.snapshot
-  } else if (env.delta) {
-    mergeDelta(env.delta)
-  }
+
   if (env.type === 'initial_data' && Array.isArray(env.requests)) {
+    if (env.snapshot) {
+      mergeSnapshotFromServer(env.snapshot)
+    } else if (env.delta) {
+      mergeDelta(env.delta)
+    }
     applyInitialData(env.requests)
     return
   }
+
+  if (env.delta) {
+    mergeDelta(env.delta)
+  } else if (env.snapshot) {
+    mergeSnapshotFromServer(env.snapshot)
+  }
+
   if (env.type === 'request' && env.request) {
     pushOrQueue(env.request)
     notifyTerminalRequest(env.request)
@@ -320,19 +344,38 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     return
   }
   if (env.type === 'health_update') {
-    // Health-only envelope; state already updated above.
     return
   }
   if (env.type === 'incident_update' && env.incident) {
-    // 2026-07-13: route-incident diagnostic updates. Forwarded
-    // to the useRouteIncidents reducer which maintains the per-
-    // lane index. We use a dynamic import to avoid a hard cycle
-    // between the live stream store and the route-incident
-    // composable.
     void import('./useRouteIncidents').then((mod) => {
       mod.applyIncidentUpdate(env.incident!)
     })
     return
+  }
+}
+
+/** Merge server snapshot without dropping lanes that disappeared from Redis. */
+function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
+  if (!liveStreamState.snapshot) {
+    liveStreamState.snapshot = incoming
+    return
+  }
+  const s = liveStreamState.snapshot
+  s.summary = incoming.summary
+  s.status_legends = incoming.status_legends
+  for (const dim of ['vendor', 'provider', 'model'] as const) {
+    if (incoming.dimensions[dim]) {
+      if (!s.dimensions[dim]) s.dimensions[dim] = []
+      mergeLanesById(s.dimensions[dim], incoming.dimensions[dim])
+    }
+    if (incoming.detail_dimensions[dim]) {
+      if (!s.detail_dimensions[dim]) s.detail_dimensions[dim] = []
+      mergeLanesById(s.detail_dimensions[dim], incoming.detail_dimensions[dim])
+    }
+    if (incoming.dimension_legends[dim]) {
+      if (!s.dimension_legends[dim]) s.dimension_legends[dim] = []
+      mergeLegendsByKey(s.dimension_legends[dim], incoming.dimension_legends[dim])
+    }
   }
 }
 
@@ -418,36 +461,16 @@ function mergeDelta(delta: LiveStreamDelta) {
   s.status_legends = delta.status_legends
   for (const dim of ['vendor', 'provider', 'model'] as const) {
     if (delta.changed_lanes[dim]) {
-      // 2026-07-14: both this branch and the original Cursor-side
-      // refactor agree on the lane-id-keyed merge goal (no full-array
-      // replacement). The Cursor refactor compares the previous lane
-      // object's data fields and reuses the reference when nothing
-      // changed; that is strictly better than my first draft (which
-      // always mutated in place) because a "no-op" delta no longer
-      // triggers Vue's reactivity at all. Adopt their
-      // `mergeLaneList` and re-apply my legend-side optimisation on
-      // top.
-      s.dimensions[dim] = mergeLaneList(s.dimensions[dim] || [], delta.changed_lanes[dim])
-      s.detail_dimensions[dim] = mergeLaneList(s.detail_dimensions[dim] || [], delta.changed_lanes[dim])
+      // mergeLanesById updates in place and preserves lane order so
+      // backend rank changes do not reshuffle the whole swim-lane row.
+      if (!s.dimensions[dim]) s.dimensions[dim] = []
+      mergeLanesById(s.dimensions[dim], delta.changed_lanes[dim])
+      if (!s.detail_dimensions[dim]) s.detail_dimensions[dim] = []
+      mergeLanesById(s.detail_dimensions[dim], delta.changed_lanes[dim])
     }
     if (delta.dimension_legends && delta.dimension_legends[dim]) {
-      // Merge legend by key so we don't visually replace the whole
-      // legend strip on every snapshot either.
+      if (!s.dimension_legends[dim]) s.dimension_legends[dim] = []
       mergeLegendsByKey(s.dimension_legends[dim], delta.dimension_legends[dim])
-    }
-  }
-  // Cheap stale-lane prune: any lane id that the new full snapshot
-  // (rebuilt by the next request broadcast) drops is also pruned
-  // here. We only remove when the same dimension reports an empty
-  // incoming batch (no fresh data to keep the lane alive); if a
-  // lane disappears because traffic stopped, the backend's
-  // ScanAndRecordIdleMarkers writes an idle_marker for it within
-  // `idleThresholdSeconds` (5 minutes), so a real outage lane
-  // will resurface there before being pruned.
-  for (const dim of ['vendor', 'provider', 'model'] as const) {
-    const incoming = delta.changed_lanes[dim]
-    if (incoming !== undefined && incoming.length === 0 && delta.summary.total === 0) {
-      s.dimensions[dim] = []
     }
   }
 }
@@ -623,6 +646,7 @@ export const __testing = {
   handleEnvelope,
   applyInitialData,
   mergeDelta,
+  mergeSnapshotFromServer,
   mergeLaneList,
   laneDataEqual,
   resetStream,

@@ -190,6 +190,9 @@ type LiveRequest struct {
 	IsProbe      bool   `json:"is_probe,omitempty"`
 	ProbeOrigin  string `json:"probe_origin,omitempty"`
 	ProbeAttempt int    `json:"probe_attempt,omitempty"`
+	ClientProfile string `json:"client_profile,omitempty"`
+	IdentityHash  string `json:"identity_hash,omitempty"`
+	CreditsCharged *int  `json:"credits_charged,omitempty"`
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -213,7 +216,7 @@ func (c *LiveStreamConfig) defaults() {
 		c.InitialReplayLimit = liveStreamReplayLimit
 	}
 	if c.IdleThreshold <= 0 {
-		c.IdleThreshold = LiveStreamLaneRetention
+		c.IdleThreshold = LiveStreamIdleThreshold
 	}
 	if c.IdleTickInterval <= 0 {
 		c.IdleTickInterval = 10 * time.Second
@@ -1493,6 +1496,21 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	out.IsProbe = probe.IsProbe
 	out.ProbeOrigin = probe.ProbeOrigin
 	out.ProbeAttempt = probe.ProbeAttempt
+	if entry != nil {
+		if entry.ClientProfile != nil {
+			out.ClientProfile = strings.TrimSpace(*entry.ClientProfile)
+		}
+		if entry.IdentityHash != nil {
+			out.IdentityHash = strings.TrimSpace(*entry.IdentityHash)
+		}
+		if entry.CreditsCharged != nil {
+			v := int(*entry.CreditsCharged)
+			out.CreditsCharged = &v
+		}
+		if entry.GwSessionID != nil && out.GwSessionID == "" {
+			out.GwSessionID = strings.TrimSpace(*entry.GwSessionID)
+		}
+	}
 
 	return out
 }

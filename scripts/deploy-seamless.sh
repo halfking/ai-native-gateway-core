@@ -23,6 +23,7 @@
 #
 # 安全网:
 #   - healthz 失败 → 自动 rollback 到上一个 verified 版本
+#   - healthz 通过但 DB 未就绪 (503) → 同样自动 rollback
 #   - adopt 步骤保留旧二进制为 releases/legacy-<ts>/ (verified=true)
 #   - build_seq 单调递增 (245→1004, 154→1005)
 # =====================================================================
@@ -37,6 +38,10 @@ cd "$PROJECT_ROOT"
 source "$SCRIPT_DIR/deploy-lib/targets.sh"
 # shellcheck source=deploy-lib/host.sh
 source "$SCRIPT_DIR/deploy-lib/host.sh"
+# shellcheck source=deploy-lib/post-deploy-verify.sh
+source "$SCRIPT_DIR/deploy-lib/post-deploy-verify.sh"
+# shellcheck source=deploy-lib/db-changelog.sh
+source "$SCRIPT_DIR/deploy-lib/db-changelog.sh"
 
 GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; RED=$'\033[0;31m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'
 log()  { echo -e "${BLUE}[seamless]${NC} $*"; }
@@ -123,6 +128,36 @@ REMOTE_ROOT=$(host_root_for "$TARGET")
 SERVICE_NAME=$(target_field "$TARGET" service_name)
 HEALTH_URL=$(target_field "$TARGET" health_url)
 BIN_NAME=$(host_binary_name "$TARGET")
+
+# 154 用 /etc/llm-gateway-go/env；245 用 /opt/llm-gateway-go/.env
+_env_file_for_target() {
+  case "$TARGET" in
+    154) printf '%s\n' "/etc/llm-gateway-go/env" ;;
+    245) printf '%s\n' "/opt/llm-gateway-go/.env" ;;
+    *)   printf '%s\n' "/etc/llm-gateway-go/env" ;;
+  esac
+}
+
+# healthz 或 DB 校验失败时回滚到上一个 verified 版本
+_seamless_auto_rollback() {
+  local reason=$1 failed_version=$2
+  err "$reason — 自动回滚..."
+  local prev
+  prev=$(host_select_rollback_target "$SSH_CMD" "$TARGET" "$failed_version" 2>/dev/null || true)
+  if [[ -n "$prev" ]]; then
+    warn "回滚到 releases/$prev"
+    host_atomic_switch "$SSH_CMD" "$TARGET" "$prev" 2>&1 | sed 's/^/    /' || true
+    if host_wait_healthy "$SSH_CMD" "$TARGET" 30 2>&1 \
+      && deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90; then
+      ok "已回滚到 $prev (healthz + DB OK)"
+      return 0
+    fi
+    err "回滚后 healthz/DB 仍失败!"
+    return 1
+  fi
+  err "无可用回滚目标! 手动检查: $SSH_CMD 'systemctl status $SERVICE_NAME'"
+  return 1
+}
 
 # ── 子命令: status ─────────────────────────────────────────────
 do_status() {
@@ -255,6 +290,16 @@ do_deploy() {
   local version bundle_dir deploy_start
   deploy_start=$(date +%s)
 
+  log "[0/9] 部署前 PG 预检"
+  deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)" || exit 2
+
+  if [[ "$TARGET" == "245" ]]; then
+    if ! $SSH_CMD "grep -q '^LLM_GATEWAY_ADMIN_USER=' '$(_env_file_for_target)' && grep -q '^LLM_GATEWAY_ADMIN_PASSWORD=' '$(_env_file_for_target)'" 2>/dev/null; then
+      warn "245 .env 缺少 ADMIN_USER/PASSWORD → 从 154 同步"
+      bash "$SCRIPT_DIR/ops/sync-245-env-from-154.sh" || warn "245 env 同步失败，继续部署"
+    fi
+  fi
+
   # 1. bump version
   if [[ -n "$SEQ_FLAG" ]]; then
     log "[1/9] bump version $SEQ_FLAG"
@@ -268,20 +313,21 @@ do_deploy() {
   local seq_val=$(python3 -c "import json;print(json.load(open('version.json'))['build_seq'])")
   ok "version=$full_version seq=$seq_val"
 
-  # 2. 前端构建
-  if [[ "$SKIP_FRONTEND" == "false" ]]; then
-    log "[2/9] 前端构建"
-    (cd web && npm run build 2>&1 | tail -3)
-    ok "web/dist 已生成"
-  else
-    log "[2/9] 跳过前端 (--no-frontend)"
-  fi
-
-  # 3. Go 交叉编译
-  log "[3/9] Go 交叉编译 linux/amd64"
+  # 2–3. 前端 + 后端并行构建（默认同时部署前后端）
+  log "[2/9] 前端 + 后端并行构建"
   local tmpbin="/tmp/__seamless_${TARGET}_binary"
+  local fe_pid=""
+  if [[ "$SKIP_FRONTEND" == "false" ]]; then
+    (cd web && npm run build 2>&1 | tail -5) &
+    fe_pid=$!
+  else
+    warn "跳过前端 (--no-frontend)，仅更新二进制"
+  fi
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
-    -o "$tmpbin" ./cmd/gateway
+    -o "$tmpbin" ./cmd/gateway &
+  local go_pid=$!
+  [[ -n "$fe_pid" ]] && wait "$fe_pid" && ok "web/dist 已生成"
+  wait "$go_pid"
   ok "编译完成 ($(du -h "$tmpbin" | cut -f1))"
 
   # 4. stage bundle (本地)
@@ -301,6 +347,11 @@ do_deploy() {
   HOST_STAGE_TARGET="$TARGET" host_verify_bundle "$SSH_CMD" "$REMOTE_ROOT/releases/$version" \
     && ok "校验通过" || { err "校验失败，中止 (bundle 保留在 releases/$version/)"; exit 1; }
 
+  # 6.5 切换前 DB 迁移 + changelog（缩短 restart 后 EnsureSchema 等待）
+  log "[6.5/9] 切换前 pending 迁移 + db-changelog"
+  deploy_apply_pending_migrations "$SSH_CMD" "$(_env_file_for_target)" "$TARGET" "$seq_val" "$(git rev-parse --short HEAD)" \
+    || { err "DB 迁移失败，中止（未切换符号链接）"; exit 1; }
+
   # 7. adopt 检测
   log "[7/9] adopt 检测"
   if ! $SSH_CMD "test -L '$REMOTE_ROOT/current'" 2>/dev/null; then
@@ -310,28 +361,38 @@ do_deploy() {
     ok "已采用 releases/ 布局"
   fi
 
-  # 8. atomic switch + restart
+  # 8. atomic switch + restart（无感切换窗口 ≈ restart 耗时）
   log "[8/9] 原子符号链接切换 + restart"
+  local switch_start switch_end switch_elapsed
+  switch_start=$(date +%s)
   host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /' || true
-  ok "符号链接已切换到 releases/$version"
+  switch_end=$(date +%s)
+  switch_elapsed=$((switch_end - switch_start))
+  ok "符号链接已切换 (${switch_elapsed}s 含 restart)"
 
-  # 9. wait healthy (失败自动回滚)
-  log "[9/9] 等待 /healthz (60s 超时)"
-  if host_wait_healthy "$SSH_CMD" "$TARGET" 60 2>&1; then
-    host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /' || true
-    ok "healthz 通过，标记 verified"
-  else
-    err "healthz 超时! 自动回滚到上一个 verified 版本..."
-    local prev
-    prev=$(host_select_rollback_target "$SSH_CMD" "$TARGET" "$version" 2>/dev/null || true)
-    if [[ -n "$prev" ]]; then
-      warn "回滚到 releases/$prev"
-      host_atomic_switch "$SSH_CMD" "$TARGET" "$prev" 2>&1 | sed 's/^/    /' || true
-      host_wait_healthy "$SSH_CMD" "$TARGET" 30 2>&1 && ok "已回滚到 $prev" || err "回滚后 healthz 仍失败!"
+  # 9. wait healthy + DB ready (失败自动回滚)
+  log "[9/9] 验证 /healthz + DB (healthz 30s, DB 60s)"
+  if host_wait_healthy "$SSH_CMD" "$TARGET" 30 2>&1; then
+    if deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 60; then
+      host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /' || true
+      ok "healthz + DB 通过，标记 verified"
     else
-      err "无可用回滚目标! 手动检查: $SSH_CMD 'systemctl status $SERVICE_NAME'"
+      _seamless_auto_rollback "DB 未就绪 (database not configured 风险)" "$version" || true
+      exit 1
     fi
+  else
+    _seamless_auto_rollback "healthz 超时" "$version" || true
     exit 1
+  fi
+
+  # 9.5 可选：同步 env admin 密码到 users 表（避免 JWT 与 env 漂移）
+  if [[ "${DEPLOY_SYNC_ADMIN_PASSWORD:-true}" == "true" ]]; then
+    log "[9.5/9] 同步 admin 密码 (env → users)"
+    if bash "$SCRIPT_DIR/ops/sync-admin-password-from-env.sh" "$TARGET"; then
+      ok "admin 密码已同步"
+    else
+      warn "admin 密码同步失败（不影响部署，可手动: bash scripts/ops/sync-admin-password-from-env.sh ${TARGET}）"
+    fi
   fi
 
   # 清理本地临时文件
@@ -343,7 +404,7 @@ do_deploy() {
 
   local elapsed=$(( $(date +%s) - deploy_start ))
   echo ""
-  ok "✅ $TARGET 部署完成 ($elapsed s) — version=$version seq=$seq_val"
+  ok "✅ $TARGET 部署完成 (总 ${elapsed}s, 切换 ${switch_elapsed}s) — version=$version seq=$seq_val"
   echo ""
   echo "验证:"
   echo "  curl http://$TARGET/api/system/version   (或 ssh 后 curl localhost:8781)"
@@ -375,11 +436,12 @@ do_rollback() {
 
   log "原子切换 + restart..."
   host_atomic_switch "$SSH_CMD" "$TARGET" "$target_version" 2>&1 | sed 's/^/    /' || true
-  if host_wait_healthy "$SSH_CMD" "$TARGET" 60 2>&1; then
-    ok "回滚完成 → $target_version"
+  if host_wait_healthy "$SSH_CMD" "$TARGET" 60 2>&1 \
+    && deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90; then
+    ok "回滚完成 → $target_version (healthz + DB OK)"
     $SSH_CMD "curl -fsS '$HEALTH_URL' >/dev/null && echo '  healthz OK'" 2>/dev/null || true
   else
-    err "回滚后 healthz 失败! 手动检查"
+    err "回滚后 healthz/DB 失败! 手动检查"
     exit 1
   fi
 }
