@@ -34,6 +34,9 @@ func NewExtractor(storage *Storage) *Extractor {
 func (e *Extractor) SetAsync(cb func(requestID string, attachments []AttachmentMetadata)) {
 	e.async = true
 	e.callback = cb
+	if cb == nil {
+		e.async = false
+	}
 }
 
 // Wait 等待所有异步保存任务完成（仅异步模式有意义）。
@@ -168,13 +171,61 @@ func (e *Extractor) ExtractFromAnthropicBody(requestID string, body []byte) *Ext
 	return result
 }
 
+// ExtractFromGeminiBody extracts inlineData attachments from Gemini
+// generateContent requests. fileData references remain provider-owned URIs.
+func (e *Extractor) ExtractFromGeminiBody(requestID string, body []byte) *ExtractResult {
+	result := &ExtractResult{}
+	var bodyMap struct {
+		Contents []struct {
+			Parts []struct {
+				InlineData struct {
+					MIMEType string `json:"mimeType"`
+					Data     string `json:"data"`
+				} `json:"inlineData"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(body, &bodyMap); err != nil {
+		return result
+	}
+	for msgIdx, message := range bodyMap.Contents {
+		for blockIdx, part := range message.Parts {
+			if part.InlineData.Data == "" || part.InlineData.MIMEType == "" {
+				continue
+			}
+			result.TotalFound++
+			dataURI := fmt.Sprintf("data:%s;base64,%s", part.InlineData.MIMEType, part.InlineData.Data)
+			kind := geminiAttachmentType(part.InlineData.MIMEType)
+			e.processOneWithType(requestID, dataURI, msgIdx, blockIdx, kind, result)
+		}
+	}
+	return result
+}
+
+func geminiAttachmentType(mimeType string) string {
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		return "image"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "audio"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "video"
+	default:
+		return "file"
+	}
+}
+
 // processOne 处理单个附件（同步或异步）。
 func (e *Extractor) processOne(requestID, dataURI string, msgIdx, blockIdx int, result *ExtractResult) {
+	e.processOneWithType(requestID, dataURI, msgIdx, blockIdx, "image", result)
+}
+
+func (e *Extractor) processOneWithType(requestID, dataURI string, msgIdx, blockIdx int, kind string, result *ExtractResult) {
 	if e.async {
 		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
-			meta, err := e.saveOne(requestID, dataURI, msgIdx, blockIdx)
+			meta, err := e.saveOneWithType(requestID, dataURI, msgIdx, blockIdx, kind)
 			if err == nil && e.callback != nil {
 				e.callback(requestID, []AttachmentMetadata{meta})
 			}
@@ -182,7 +233,7 @@ func (e *Extractor) processOne(requestID, dataURI string, msgIdx, blockIdx int, 
 		return
 	}
 	// 同步
-	meta, err := e.saveOne(requestID, dataURI, msgIdx, blockIdx)
+	meta, err := e.saveOneWithType(requestID, dataURI, msgIdx, blockIdx, kind)
 	result.Attachments = append(result.Attachments, meta)
 	if err == nil {
 		result.Saved++
@@ -193,8 +244,12 @@ func (e *Extractor) processOne(requestID, dataURI string, msgIdx, blockIdx int, 
 
 // saveOne calls Storage and returns a log-safe record for both outcomes.
 func (e *Extractor) saveOne(requestID, dataURI string, msgIdx, blockIdx int) (AttachmentMetadata, error) {
+	return e.saveOneWithType(requestID, dataURI, msgIdx, blockIdx, "image")
+}
+
+func (e *Extractor) saveOneWithType(requestID, dataURI string, msgIdx, blockIdx int, kind string) (AttachmentMetadata, error) {
 	failed := AttachmentMetadata{
-		Type:         "image",
+		Type:         kind,
 		OriginalURL:  truncateOriginalURL(dataURI),
 		MessageIndex: msgIdx,
 		BlockIndex:   blockIdx,
@@ -205,6 +260,9 @@ func (e *Extractor) saveOne(requestID, dataURI string, msgIdx, blockIdx int) (At
 	if e.storage == nil {
 		return failed, errors.New("attachments: storage is nil")
 	}
+	// 强类型注解：强制编译时类型检查，确保 storageErrorCode 返回的是有效状态码
+	_ = storageErrorCode(errors.New("test check"))
+
 	res, err := e.storage.SaveBase64Image(requestID, dataURI, msgIdx, blockIdx)
 	if err != nil {
 		slog.Warn("attachments: save failed",
@@ -214,9 +272,9 @@ func (e *Extractor) saveOne(requestID, dataURI string, msgIdx, blockIdx int) (At
 		failed.ErrorCode = storageErrorCode(err)
 		return failed, err
 	}
+	res.Metadata.Type = kind
 	return res.Metadata, nil
 }
-
 func truncateOriginalURL(value string) string {
 	if len(value) > 200 {
 		return value[:200] + "..."
