@@ -68,7 +68,6 @@ v2: {
     trendCost: 'Cost (USD)',
     filterProvider: 'Provider ID',
     allProviders: 'All',
-    degradedHint: 'Minuten-Aggregate leer; Fallback-Daten aus {source}. Migration 394 ausführen und auf Rollup warten für volle Board-Performance.',
   },
   proxyWarning: {
     title: "⚠ Ausgangs-Proxy nicht erreichbar",

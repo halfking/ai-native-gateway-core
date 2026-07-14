@@ -59,7 +59,6 @@ tabs: {
     trendCost: 'コスト (USD)',
     filterProvider: 'プロバイダー ID',
     allProviders: 'すべて',
-    degradedHint: '分単位の集計テーブルにデータがないため、{source} からのフォールバックを表示しています。マイグレーション 394 を実行し rollup を待つと完全なボード性能が得られます。',
   },
   proxyWarning: {
     title: "⚠ 出口プロキシに到達できません",

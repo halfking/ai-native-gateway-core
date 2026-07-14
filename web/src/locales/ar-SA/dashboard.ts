@@ -68,7 +68,6 @@ v2: {
     trendCost: 'Cost (USD)',
     filterProvider: 'Provider ID',
     allProviders: 'All',
-    degradedHint: 'تجميعات الدقائق فارغة؛ يتم عرض بيانات احتياطية من {source}. نفّذ الترحيل 394 وانتظر rollup للأداء الكامل.',
   },
   proxyWarning: {
     title: "⚠ وكيل الخروج غير قابل للوصول",
