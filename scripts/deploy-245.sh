@@ -135,7 +135,9 @@ fi
 log "  ✓ 服务 active"
 
 # DB health check
-PG_DISABLED=$($SSH "$SSH_TARGET" "journalctl -u $SERVICE_NAME --since '2 minutes ago' --no-pager -o cat 2>/dev/null | grep -c 'postgres disabled' || echo 0")
+PG_DISABLED=$($SSH "$SSH_TARGET" "journalctl -u $SERVICE_NAME --since '2 minutes ago' --no-pager -o cat 2>/dev/null | grep -c 'postgres disabled' || true")
+PG_DISABLED=$(echo "$PG_DISABLED" | head -1 | tr -d '[:space:]')
+PG_DISABLED=${PG_DISABLED:-0}
 if [[ "$PG_DISABLED" -gt 0 ]]; then
   err "✗ postgres disabled! schema 不匹配"
   $SSH "$SSH_TARGET" "journalctl -u $SERVICE_NAME --since '2 minutes ago' --no-pager -o cat | grep 'postgres disabled'"
