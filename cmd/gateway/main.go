@@ -1501,6 +1501,8 @@ func main() {
 	var modelAvailabilityKeyCounter *bg.AvailabilityKeyCounter
 	var passiveProbe *bg.PassiveProbeListener
 	var activeProbe *bg.ActiveProbeWorker // 2026-07-13: 错误触发的主动探测
+	// 2026-07-14: 30s system-health monitor (GDRT H badge).
+	var systemHealthWorker *bg.SystemHealthWorker
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
 	var settingsAuditCleaner *bg.SettingsAuditCleaner
@@ -1816,8 +1818,8 @@ func main() {
 
 				// C. system_health — 30s windowed success-rate monitor
 				// for the GDRT H badge.
-				systemHealth := bg.NewSystemHealthWorker(dbConn.Pool())
-				systemHealth.Start(context.Background())
+				systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool())
+				systemHealthWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: system_health_worker started")
 			}
 		}
@@ -2431,6 +2433,25 @@ func main() {
 	mux.Handle("/healthz", healthHandler)
 	mux.Handle("/healthz/full",
 		middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(healthHandler))
+	// 2026-07-14: 30s system-health JSON for the GDRT H badge on the
+	// homepage. CORS open (no auth) so the SPA login page can show
+	// the indicator. Returns 503 only when the worker is not
+	// configured (db disabled).
+	mux.HandleFunc("/api/health/system", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if systemHealthWorker == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"suspect","detail":"worker not configured"}`))
+			return
+		}
+		s := systemHealthWorker.Last()
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(s)
+	})
 
 	// NET-008 fix: /metrics 必须 admin 鉴权（暴露所有 prometheus 注册
 	// 指标含 provider / credential 等敏感标签）。使用
