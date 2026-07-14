@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { NotificationChannel } from '../api/approval'
 import { testNotificationChannel } from '../api/approval'
+
+const { t } = useI18n()
 
 const props = withDefaults(defineProps<{
   modelValue: {
@@ -51,20 +54,20 @@ function validateChannelConfig(channel: NotificationChannel): string | null {
   
   if (channel.type === 'feishu') {
     if (channel.config.webhook_url && !validateUrl(channel.config.webhook_url)) {
-      return 'Webhook URL 格式不正确'
+      return t('approval.notificationChannels.validation.webhookInvalid')
     }
     if (!channel.config.app_id && !channel.config.webhook_url) {
-      return '请至少填写 App ID 或 Webhook URL'
+      return t('approval.notificationChannels.validation.feishuRequired')
     }
   }
   
   if (channel.type === 'wecom') {
-    if (!channel.config.corp_id) return '企业 ID 不能为空'
-    if (!channel.config.agent_id) return 'Agent ID 不能为空'
+    if (!channel.config.corp_id) return t('approval.notificationChannels.validation.corpIdRequired')
+    if (!channel.config.agent_id) return t('approval.notificationChannels.validation.agentIdRequired')
   }
   
   if (channel.type === 'dingtalk') {
-    if (!channel.config.app_key) return 'App Key 不能为空'
+    if (!channel.config.app_key) return t('approval.notificationChannels.validation.appKeyRequired')
   }
   
   return null
@@ -81,18 +84,18 @@ async function testChannel(type: 'feishu' | 'wecom' | 'dingtalk') {
   }
   
   testing.value = type
-  testResults.value[type] = { success: false, message: '测试中...' }
+  testResults.value[type] = { success: false, message: t('approval.notificationChannels.testing') }
   
   try {
     const result = await testNotificationChannel(channel)
     testResults.value[type] = {
       success: result.status === 'success',
-      message: result.message || '测试成功'
+      message: result.message || t('approval.notificationChannels.test.success')
     }
   } catch (e: any) {
     testResults.value[type] = {
       success: false,
-      message: e.message || '测试失败'
+      message: e.message || t('approval.notificationChannels.test.failed')
     }
   } finally {
     testing.value = null
@@ -105,16 +108,16 @@ const channelIcons = {
   dingtalk: '📱'
 }
 
-const channelLabels = {
-  feishu: '飞书',
-  wecom: '企业微信',
-  dingtalk: '钉钉'
-}
+const channelLabels = computed(() => ({
+  feishu: t('approval.notificationChannels.channels.feishu'),
+  wecom: t('approval.notificationChannels.channels.wecom'),
+  dingtalk: t('approval.notificationChannels.channels.dingtalk'),
+}))
 </script>
 
 <template>
   <div class="notification-channels">
-    <h3 class="section-title">通知渠道配置</h3>
+    <h3 class="section-title">{{ t('approval.notificationChannels.title') }}</h3>
     
     <!-- 飞书 -->
     <div class="channel-card">
@@ -158,7 +161,7 @@ const channelLabels = {
         </div>
         
         <div class="form-group">
-          <label>Webhook URL <span class="optional">(可选)</span></label>
+          <label>Webhook URL <span class="optional">{{ t('approval.notificationChannels.optional') }}</span></label>
           <input
             type="text"
             class="form-input"
@@ -174,7 +177,7 @@ const channelLabels = {
             @click="testChannel('feishu')"
             :disabled="testing === 'feishu'"
           >
-            {{ testing === 'feishu' ? '测试中...' : '测试连接' }}
+            {{ testing === 'feishu' ? t('approval.notificationChannels.testing') : t('approval.notificationChannels.testConnection') }}
           </button>
           <div v-if="testResults.feishu" class="test-result" :class="{ success: testResults.feishu.success, error: !testResults.feishu.success }">
             {{ testResults.feishu.message }}
@@ -241,7 +244,7 @@ const channelLabels = {
             @click="testChannel('wecom')"
             :disabled="testing === 'wecom'"
           >
-            {{ testing === 'wecom' ? '测试中...' : '测试连接' }}
+            {{ testing === 'wecom' ? t('approval.notificationChannels.testing') : t('approval.notificationChannels.testConnection') }}
           </button>
           <div v-if="testResults.wecom" class="test-result" :class="{ success: testResults.wecom.success, error: !testResults.wecom.success }">
             {{ testResults.wecom.message }}
@@ -297,7 +300,7 @@ const channelLabels = {
             @click="testChannel('dingtalk')"
             :disabled="testing === 'dingtalk'"
           >
-            {{ testing === 'dingtalk' ? '测试中...' : '测试连接' }}
+            {{ testing === 'dingtalk' ? t('approval.notificationChannels.testing') : t('approval.notificationChannels.testConnection') }}
           </button>
           <div v-if="testResults.dingtalk" class="test-result" :class="{ success: testResults.dingtalk.success, error: !testResults.dingtalk.success }">
             {{ testResults.dingtalk.message }}

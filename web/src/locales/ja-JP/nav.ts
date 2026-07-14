@@ -9,7 +9,7 @@ export default {
     dataOps: "データ運用",
     guide: "接続ガイド",
     chat: "チャット",
-    opsplatform: "运维平台"
+    opsplatform: "運用プラットフォーム"
   },
   item: {
     overview: "概要",

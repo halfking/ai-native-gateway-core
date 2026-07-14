@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { ApprovalRule } from '../api/approval'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   modelValue: ApprovalRule[]
@@ -29,38 +32,53 @@ const rules = computed({
   set: (value) => emit('update:modelValue', value),
 })
 
-const fieldOptions = [
-  { value: 'model', label: '模型名称' },
-  { value: 'tenant_id', label: '租户 ID' },
-  { value: 'api_key', label: 'API Key' },
-  { value: 'prompt_tokens', label: 'Prompt Token 数' },
-  { value: 'estimated_cost', label: '预估费用' },
-  { value: 'user_id', label: '用户 ID' },
-  { value: 'ip_address', label: 'IP 地址' },
-]
+const fieldKeys = ['model', 'tenant_id', 'api_key', 'prompt_tokens', 'estimated_cost', 'user_id', 'ip_address'] as const
+const operatorKeys = ['equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'matches_regex'] as const
+const actionKeys = ['require_approval', 'auto_approve', 'auto_reject'] as const
+const riskKeys = ['low', 'medium', 'high', 'critical'] as const
 
-const operatorOptions = [
-  { value: 'equals', label: '等于' },
-  { value: 'not_equals', label: '不等于' },
-  { value: 'contains', label: '包含' },
-  { value: 'not_contains', label: '不包含' },
-  { value: 'greater_than', label: '大于' },
-  { value: 'less_than', label: '小于' },
-  { value: 'matches_regex', label: '匹配正则' },
-]
+const actionColors: Record<string, string> = {
+  require_approval: '#f59e0b',
+  auto_approve: '#10b981',
+  auto_reject: '#ef4444',
+}
 
-const actionOptions = [
-  { value: 'require_approval', label: '需要审批', color: '#f59e0b' },
-  { value: 'auto_approve', label: '自动通过', color: '#10b981' },
-  { value: 'auto_reject', label: '自动拒绝', color: '#ef4444' },
-]
+const riskColors: Record<string, string> = {
+  low: '#10b981',
+  medium: '#f59e0b',
+  high: '#f97316',
+  critical: '#ef4444',
+}
 
-const riskLevelOptions = [
-  { value: 'low', label: '低风险', color: '#10b981' },
-  { value: 'medium', label: '中风险', color: '#f59e0b' },
-  { value: 'high', label: '高风险', color: '#f97316' },
-  { value: 'critical', label: '严重', color: '#ef4444' },
-]
+const fieldOptions = computed(() =>
+  fieldKeys.map((value) => ({
+    value,
+    label: t(`approval.rulesEditor.fields.${value}`),
+  })),
+)
+
+const operatorOptions = computed(() =>
+  operatorKeys.map((value) => ({
+    value,
+    label: t(`approval.rulesEditor.operators.${value}`),
+  })),
+)
+
+const actionOptions = computed(() =>
+  actionKeys.map((value) => ({
+    value,
+    label: t(`approval.rulesEditor.actions.${value}`),
+    color: actionColors[value],
+  })),
+)
+
+const riskLevelOptions = computed(() =>
+  riskKeys.map((value) => ({
+    value,
+    label: t(`approval.rulesEditor.riskLevels.${value}`),
+    color: riskColors[value],
+  })),
+)
 
 function openAddDialog() {
   editingIndex.value = null
@@ -94,7 +112,7 @@ function saveRule() {
 }
 
 function removeRule(index: number) {
-  if (confirm('确认删除该规则？')) {
+  if (confirm(t('approval.rulesEditor.confirmDelete'))) {
     const list = [...rules.value]
     list.splice(index, 1)
     list.forEach((r, i) => r.priority = i)
@@ -139,33 +157,33 @@ function onDragEnd() {
 }
 
 function getRiskLevelColor(level: string): string {
-  return riskLevelOptions.find(o => o.value === level)?.color || '#8b949e'
+  return riskColors[level] || '#8b949e'
 }
 
 function getActionColor(action: string): string {
-  return actionOptions.find(o => o.value === action)?.color || '#8b949e'
+  return actionColors[action] || '#8b949e'
 }
 
 function getActionLabel(action: string): string {
-  return actionOptions.find(o => o.value === action)?.label || action
+  return actionOptions.value.find(o => o.value === action)?.label || action
 }
 
 function getRiskLevelLabel(level: string): string {
-  return riskLevelOptions.find(o => o.value === level)?.label || level
+  return riskLevelOptions.value.find(o => o.value === level)?.label || level
 }
 </script>
 
 <template>
   <div class="approval-rules">
     <div class="header">
-      <h3>审批规则</h3>
+      <h3>{{ t('approval.rulesEditor.title') }}</h3>
       <button class="btn btn-primary" @click="openAddDialog">
-        <span>➕</span> 添加规则
+        <span>➕</span> {{ t('approval.rulesEditor.add') }}
       </button>
     </div>
 
     <div v-if="!rules.length" class="empty">
-      暂无规则，请添加
+      {{ t('approval.rulesEditor.empty') }}
     </div>
 
     <div v-else class="rules-list">
@@ -184,7 +202,7 @@ function getRiskLevelLabel(level: string): string {
           <div class="rule-info">
             <div class="rule-name">{{ rule.name }}</div>
             <div class="rule-meta">
-              <span class="priority-badge">优先级: {{ rule.priority + 1 }}</span>
+              <span class="priority-badge">{{ t('approval.rulesEditor.priority', { n: rule.priority + 1 }) }}</span>
               <span class="risk-badge" :style="{ background: getRiskLevelColor(rule.risk_level) + '22', color: getRiskLevelColor(rule.risk_level) }">
                 {{ getRiskLevelLabel(rule.risk_level) }}
               </span>
@@ -198,14 +216,14 @@ function getRiskLevelLabel(level: string): string {
               class="btn-icon"
               :class="{ active: rule.enabled }"
               @click="toggleEnabled(index)"
-              :title="rule.enabled ? '禁用' : '启用'"
+              :title="rule.enabled ? t('approval.rulesEditor.disable') : t('approval.rulesEditor.enable')"
             >
               {{ rule.enabled ? '✓' : '✗' }}
             </button>
-            <button class="btn-icon" @click="openEditDialog(index)" title="编辑">
+            <button class="btn-icon" @click="openEditDialog(index)" :title="t('approval.rulesEditor.edit')">
               ✏️
             </button>
-            <button class="btn-icon btn-danger" @click="removeRule(index)" title="删除">
+            <button class="btn-icon btn-danger" @click="removeRule(index)" :title="t('approval.rulesEditor.delete')">
               🗑️
             </button>
           </div>
@@ -216,7 +234,7 @@ function getRiskLevelLabel(level: string): string {
         </div>
         
         <div class="rule-conditions">
-          <div class="conditions-label">条件：</div>
+          <div class="conditions-label">{{ t('approval.rulesEditor.conditions') }}</div>
           <div class="conditions-list">
             <div v-for="(cond, ci) in rule.conditions" :key="ci" class="condition-item">
               <code>{{ fieldOptions.find(f => f.value === cond.field)?.label || cond.field }}</code>
@@ -232,34 +250,34 @@ function getRiskLevelLabel(level: string): string {
     <div v-if="showDialog" class="dialog-overlay" @click.self="showDialog = false">
       <div class="dialog dialog-large">
         <div class="dialog-header">
-          <h3>{{ editingIndex !== null ? '编辑规则' : '添加规则' }}</h3>
+          <h3>{{ editingIndex !== null ? t('approval.rulesEditor.editTitle') : t('approval.rulesEditor.addTitle') }}</h3>
           <button class="btn-close" @click="showDialog = false">✕</button>
         </div>
         
         <div class="dialog-body">
           <div class="form-group">
-            <label>规则名称 <span class="required">*</span></label>
+            <label>{{ t('approval.rulesEditor.form.name') }} <span class="required">*</span></label>
             <input
               v-model="formData.name"
               type="text"
               class="form-input"
-              placeholder="例如：高成本请求审批"
+              :placeholder="t('approval.rulesEditor.form.namePlaceholder')"
             />
           </div>
 
           <div class="form-group">
-            <label>描述</label>
+            <label>{{ t('approval.rulesEditor.form.description') }}</label>
             <textarea
               v-model="formData.description"
               class="form-textarea"
               rows="2"
-              placeholder="规则说明..."
+              :placeholder="t('approval.rulesEditor.form.descriptionPlaceholder')"
             />
           </div>
 
           <div class="form-row">
             <div class="form-group">
-              <label>动作 <span class="required">*</span></label>
+              <label>{{ t('approval.rulesEditor.form.action') }} <span class="required">*</span></label>
               <select v-model="formData.action" class="form-select">
                 <option v-for="opt in actionOptions" :key="opt.value" :value="opt.value">
                   {{ opt.label }}
@@ -268,7 +286,7 @@ function getRiskLevelLabel(level: string): string {
             </div>
 
             <div class="form-group">
-              <label>风险等级 <span class="required">*</span></label>
+              <label>{{ t('approval.rulesEditor.form.riskLevel') }} <span class="required">*</span></label>
               <select v-model="formData.risk_level" class="form-select">
                 <option v-for="opt in riskLevelOptions" :key="opt.value" :value="opt.value">
                   {{ opt.label }}
@@ -278,7 +296,7 @@ function getRiskLevelLabel(level: string): string {
           </div>
 
           <div class="form-group">
-            <label>条件 <span class="required">*</span></label>
+            <label>{{ t('approval.rulesEditor.form.conditions') }} <span class="required">*</span></label>
             <div class="conditions-editor">
               <div
                 v-for="(cond, index) in formData.conditions"
@@ -301,21 +319,21 @@ function getRiskLevelLabel(level: string): string {
                   v-model="cond.value"
                   type="text"
                   class="form-input form-input-sm"
-                  placeholder="值"
+                  :placeholder="t('approval.rulesEditor.form.value')"
                 />
                 
                 <button
                   class="btn-icon"
                   @click="removeCondition(index)"
                   :disabled="formData.conditions.length === 1"
-                  title="删除条件"
+                  :title="t('approval.rulesEditor.form.removeCondition')"
                 >
                   ✕
                 </button>
               </div>
               
               <button class="btn btn-ghost btn-sm" @click="addCondition">
-                ➕ 添加条件
+                ➕ {{ t('approval.rulesEditor.form.addCondition') }}
               </button>
             </div>
           </div>
@@ -323,14 +341,14 @@ function getRiskLevelLabel(level: string): string {
           <div class="form-group">
             <label class="checkbox-label">
               <input v-model="formData.enabled" type="checkbox" />
-              <span>启用规则</span>
+              <span>{{ t('approval.rulesEditor.form.enableRule') }}</span>
             </label>
           </div>
         </div>
 
         <div class="dialog-footer">
-          <button class="btn btn-ghost" @click="showDialog = false">取消</button>
-          <button class="btn btn-primary" @click="saveRule">保存</button>
+          <button class="btn btn-ghost" @click="showDialog = false">{{ t('approval.rulesEditor.cancel') }}</button>
+          <button class="btn btn-primary" @click="saveRule">{{ t('approval.rulesEditor.save') }}</button>
         </div>
       </div>
     </div>

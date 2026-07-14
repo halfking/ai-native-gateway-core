@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { Approver } from '../api/approval'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   modelValue: Approver[]
@@ -36,17 +39,17 @@ function validateForm(): boolean {
   formErrors.value = {}
   
   if (!formData.value.name.trim()) {
-    formErrors.value.name = '姓名不能为空'
+    formErrors.value.name = t('approval.approverManager.validation.nameRequired')
   }
   
   if (!formData.value.email.trim()) {
-    formErrors.value.email = '邮箱不能为空'
+    formErrors.value.email = t('approval.approverManager.validation.emailRequired')
   } else if (!validateEmail(formData.value.email)) {
-    formErrors.value.email = '邮箱格式不正确'
+    formErrors.value.email = t('approval.approverManager.validation.emailInvalid')
   }
   
   if (!formData.value.role.trim()) {
-    formErrors.value.role = '角色不能为空'
+    formErrors.value.role = t('approval.approverManager.validation.roleRequired')
   }
   
   return Object.keys(formErrors.value).length === 0
@@ -86,7 +89,7 @@ function saveApprover() {
 }
 
 function removeApprover(index: number) {
-  if (confirm('确认删除该审批人？')) {
+  if (confirm(t('approval.approverManager.confirmDelete'))) {
     const list = [...approvers.value]
     list.splice(index, 1)
     // Reorder priorities
@@ -121,14 +124,14 @@ function moveDown(index: number) {
 <template>
   <div class="approver-manager">
     <div class="header">
-      <h3>审批人列表</h3>
+      <h3>{{ t('approval.approverManager.title') }}</h3>
       <button class="btn btn-primary" @click="openAddDialog">
-        <span>➕</span> 添加审批人
+        <span>➕</span> {{ t('approval.approverManager.add') }}
       </button>
     </div>
 
     <div v-if="!approvers.length" class="empty">
-      暂无审批人，请添加
+      {{ t('approval.approverManager.empty') }}
     </div>
 
     <div v-else class="approver-list">
@@ -142,7 +145,7 @@ function moveDown(index: number) {
           <div class="approver-header">
             <span class="approver-name">{{ approver.name }}</span>
             <span class="approver-role">{{ approver.role }}</span>
-            <span class="priority-badge">优先级: {{ approver.priority + 1 }}</span>
+            <span class="priority-badge">{{ t('approval.approverManager.priority', { n: approver.priority + 1 }) }}</span>
           </div>
           <div class="approver-email">📧 {{ approver.email }}</div>
         </div>
@@ -152,7 +155,7 @@ function moveDown(index: number) {
             class="btn-icon"
             :class="{ active: approver.enabled }"
             @click="toggleEnabled(index)"
-            :title="approver.enabled ? '禁用' : '启用'"
+            :title="approver.enabled ? t('approval.approverManager.disable') : t('approval.approverManager.enable')"
           >
             {{ approver.enabled ? '✓' : '✗' }}
           </button>
@@ -160,7 +163,7 @@ function moveDown(index: number) {
             class="btn-icon"
             @click="moveUp(index)"
             :disabled="index === 0"
-            title="上移"
+            :title="t('approval.approverManager.moveUp')"
           >
             ↑
           </button>
@@ -168,21 +171,21 @@ function moveDown(index: number) {
             class="btn-icon"
             @click="moveDown(index)"
             :disabled="index === approvers.length - 1"
-            title="下移"
+            :title="t('approval.approverManager.moveDown')"
           >
             ↓
           </button>
           <button
             class="btn-icon"
             @click="openEditDialog(index)"
-            title="编辑"
+            :title="t('approval.approverManager.edit')"
           >
             ✏️
           </button>
           <button
             class="btn-icon btn-danger"
             @click="removeApprover(index)"
-            title="删除"
+            :title="t('approval.approverManager.delete')"
           >
             🗑️
           </button>
@@ -194,25 +197,25 @@ function moveDown(index: number) {
     <div v-if="showDialog" class="dialog-overlay" @click.self="showDialog = false">
       <div class="dialog">
         <div class="dialog-header">
-          <h3>{{ editingIndex !== null ? '编辑审批人' : '添加审批人' }}</h3>
+          <h3>{{ editingIndex !== null ? t('approval.approverManager.editTitle') : t('approval.approverManager.addTitle') }}</h3>
           <button class="btn-close" @click="showDialog = false">✕</button>
         </div>
         
         <div class="dialog-body">
           <div class="form-group">
-            <label>姓名 <span class="required">*</span></label>
+            <label>{{ t('approval.approverManager.form.name') }} <span class="required">*</span></label>
             <input
               v-model="formData.name"
               type="text"
               class="form-input"
-              placeholder="请输入姓名"
+              :placeholder="t('approval.approverManager.form.namePlaceholder')"
               :class="{ error: formErrors.name }"
             />
             <span v-if="formErrors.name" class="error-message">{{ formErrors.name }}</span>
           </div>
 
           <div class="form-group">
-            <label>邮箱 <span class="required">*</span></label>
+            <label>{{ t('approval.approverManager.form.email') }} <span class="required">*</span></label>
             <input
               v-model="formData.email"
               type="email"
@@ -224,12 +227,12 @@ function moveDown(index: number) {
           </div>
 
           <div class="form-group">
-            <label>角色 <span class="required">*</span></label>
+            <label>{{ t('approval.approverManager.form.role') }} <span class="required">*</span></label>
             <input
               v-model="formData.role"
               type="text"
               class="form-input"
-              placeholder="例如：技术主管、产品经理"
+              :placeholder="t('approval.approverManager.form.rolePlaceholder')"
               :class="{ error: formErrors.role }"
             />
             <span v-if="formErrors.role" class="error-message">{{ formErrors.role }}</span>
@@ -238,14 +241,14 @@ function moveDown(index: number) {
           <div class="form-group">
             <label class="checkbox-label">
               <input v-model="formData.enabled" type="checkbox" />
-              <span>启用</span>
+              <span>{{ t('approval.approverManager.form.enabled') }}</span>
             </label>
           </div>
         </div>
 
         <div class="dialog-footer">
-          <button class="btn btn-ghost" @click="showDialog = false">取消</button>
-          <button class="btn btn-primary" @click="saveApprover">保存</button>
+          <button class="btn btn-ghost" @click="showDialog = false">{{ t('approval.approverManager.cancel') }}</button>
+          <button class="btn btn-primary" @click="saveApprover">{{ t('approval.approverManager.save') }}</button>
         </div>
       </div>
     </div>
