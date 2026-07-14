@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-07-14
+
+### Added (deployment-management hardening v2)
+
+Phase 2 follow-up to Slice 7 credential cleanup. Continues work from handoff `cf8aad1a9`.
+
+**Phase 1 — Infrastructure (commit 948519323)**
+
+- **`envinjector/` Go package** (5 files, 374 lines): SOPS credential decryption with target registry, legacy alias map (184→252, 71→154), JSON+dotenv+data-envelope parsing, eval/JSON/dotenv output formatters, mock decrypter for testing
+- **`cmd/env-injector/main.go`** CLI (175 lines): `inject --target=<alias> [--format=...] [--dry-run]`, `verify`, `list`, `encrypt`, `version`, `help`. Auto-detects `~/.config/sops/age/keys.txt` if `SOPS_AGE_KEY_FILE` not set.
+- **`tests/env_injector_test.sh`** — 9 CLI integration assertions (AC-I1..AC-I6)
+- **`envinjector/injector_test.go`** — 16 Go unit tests
+- **Real `.env.252.enc`** replacing the Slice-6 mock envelope (2 credentials: SSH_PASS_252, PG_PASS_252)
+- **Real `.env.kaixuan-1.enc`** replacing the mock envelope (3 credentials: SSH_PASS_KAIXUAN1, PG_PASS_KAIXUAN1, REGISTRY_PASS_KAIXUAN1)
+- **`scripts/scan-secrets.sh` v2 performance rewrite** (`scan_working_tree` rewritten with batched grep + bash regex zero-fork matching). Full scan: 120s timeout → 23s wall time (5.2× speedup). Fixes SOPS-envelope detection (`is_sops_envelope`) to check for `ENC[`, `"mac"`, `"(age|pgp|kms):"` (always present) instead of the broken v1 check for `encrypted_regex`.
+
+**Phase 2 — Edge-case test suites (commit 18aaf6612)**
+
+41 new test assertions across 4 suites:
+- **`tests/deploy_lock_test.sh`** (12 assertions): concurrent same-process + parallel-process race, stale-lock detection (no auto-eviction), trap-release on crash, force-unlock operator-driven, lock-metadata contains no secrets
+- **`tests/deploy_network_test.sh`** (9 assertions): mid-deploy network drop, first-call failure, prior release intact on partial deploy, verified flag never auto-flips, no deadlock after serial failures
+- **`tests/deploy_rollback_test.sh`** (11 assertions): select skips unverified bundles, select refuses when only active is verified, rollback to active is no-op, rollback swaps current_link, rollback refuses missing version, select exits 4 (no_rollback_target)
+- **`tests/deploy_promotion_test.sh`** (9 assertions): 245→154 promotion gate artifacts committed, `--seq` pinning idempotent, sequential bumps add exactly 1, pinned seq reuses image tag, gate refuses promotion on 245 verify failure
+
+**Phase 3A — Credential rotation automation (commit 80354fd79)**
+
+- **`scripts/rotate-credentials.sh`** (339 lines): 5-step rotation protocol — pre-flight health check, encrypted envelope backup, merge-then-replace (preserves credentials NOT in batch), sops encrypt with `--config`, post-rotation decrypt verify, per-environment log to `docs/changelogs/credential-rotation.log`. Fail-closed rollback on any error. Allow-list enforcement (`SSH_PASS_*`, `PG_PASS_*`, `REGISTRY_PASS_*`) prevents typo-driven injection. `--dry-run` mode for plan confirmation.
+- **`tests/rotate_credentials_test.sh`** (10 assertions): `--list` enumerates 5 pending credentials, missing args → exit 64, off-allow-list keys rejected, value-count mismatch detected, dry-run no side effects, real sops encryption round-trip, encrypt failure rolls back, comments/blank lines stripped from input
+- **`.gitignore`** updated: runtime rotation log excluded (per-environment state — commit hashes / key lengths / backup paths are private)
+
+**Changed (v1→v2 fixups)**
+
+- `tests/deploy_sops_test.sh`: AC-9 SOPS-envelope detection matches new `is_sops_envelope` signature (mac/age/version instead of broken encrypted_regex check)
+- `.sops.yaml` regex now matches real SOPS output (no regression — same age recipient, same path filter)
+
+### Test totals
+
+```
+v1 baseline:     95 deploy tests + 9 env-injector tests = 104
+v2 phase 2:      + 41 edge-case assertions
+v2 phase 3A:     + 10 rotation assertions
+─────────────────────────────────────────────
+Total:           155 deploy/ops tests, all passing
+Go unit tests:   16 passing
+Scanner perf:    120s timeout → 23s (5.2× improvement)
+```
+
+Detailed acceptance criteria + design decisions: `docs/audits/2026-07-14-deployment-hardening-audit.md` and `docs/implementation-summaries/2026-07-14-deploy-ops-license-v2-phase1.md`.
+
 ## [Unreleased] - 2026-07-13
 
 ### Added (deployment management hardening — Slice 6: SOPS + scanner)
