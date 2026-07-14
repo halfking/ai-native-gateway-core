@@ -213,7 +213,10 @@ func (c *LiveStreamConfig) defaults() {
 		c.InitialReplayLimit = liveStreamReplayLimit
 	}
 	if c.IdleThreshold <= 0 {
-		c.IdleThreshold = 60 * time.Second
+		// 2026-07-14: was 60s. Aligns with the store-side
+		// idleThresholdSeconds = 300s so the SSE hub and the
+		// Redis store agree on what counts as "idle".
+		c.IdleThreshold = 5 * time.Minute
 	}
 	if c.IdleTickInterval <= 0 {
 		c.IdleTickInterval = 10 * time.Second
