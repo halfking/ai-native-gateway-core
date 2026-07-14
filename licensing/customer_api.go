@@ -1,7 +1,9 @@
 package licensing
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -22,6 +24,13 @@ type CustomerAPI struct {
 	store          Store
 	activator      *Activator
 	offlineManager *OfflineManager
+	trialURL       string
+}
+
+// SetTrialAuthorityURL enables the customer gateway to proxy trial requests
+// to the License Authority without exposing a cross-origin browser endpoint.
+func (api *CustomerAPI) SetTrialAuthorityURL(url string) {
+	api.trialURL = strings.TrimRight(strings.TrimSpace(url), "/")
 }
 
 // NewCustomerAPI wires the customer-facing handlers around existing components.
@@ -39,9 +48,47 @@ func (api *CustomerAPI) RegisterRoutes(g *echo.Group) {
 	g.GET("/status", api.handleStatus)
 	g.GET("/info", api.handleInfo)
 	g.POST("/activate", api.handleActivate)
+	g.POST("/trial", api.handleTrial)
 	g.POST("/offline-activate", api.handleOfflineActivate)
 	g.POST("/offline-request", api.handleOfflineRequest)
 	g.POST("/heartbeat", api.handleHeartbeat)
+}
+
+type trialRequest struct {
+	Email string `json:"email"`
+}
+
+func (api *CustomerAPI) handleTrial(c echo.Context) error {
+	if api.trialURL == "" {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "trial activation is not configured"})
+	}
+	var req trialRequest
+	if err := c.Bind(&req); err != nil || strings.TrimSpace(req.Email) == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "email is required"})
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to encode trial request"})
+	}
+	request, err := http.NewRequestWithContext(c.Request().Context(), http.MethodPost, api.trialURL+"/api/v1/license/trial", bytes.NewReader(body))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create trial request"})
+	}
+	request.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return c.JSON(http.StatusBadGateway, map[string]string{"error": "license authority unavailable"})
+	}
+	defer response.Body.Close()
+	var result map[string]interface{}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return c.JSON(http.StatusBadGateway, map[string]string{"error": "invalid license authority response"})
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return c.JSON(response.StatusCode, result)
+	}
+	return c.JSON(response.StatusCode, result)
 }
 
 // CustomerStatusResponse is the payload for /api/system/license/status.

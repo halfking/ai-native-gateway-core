@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### License distribution and trial activation
+
+- Added License Authority trial issuance with validation, configurable duration, and rate limiting.
+- Added customer gateway trial proxy and ActivationWizard trial entry.
+- Added distribution/activation audit, v2 architecture, push-upgrade design, and implementation gates.
+
 ### 数据库存储清理 — 48 GB → 9.3 GB（38.7 GB 回收）
 
 清理 252 pg17 上无长期保留价值的历史数据。根因：model_probe_runs 之前

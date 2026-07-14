@@ -32,6 +32,17 @@ export interface ActivateRequest {
   device_name?: string
 }
 
+export interface TrialRequest {
+  email: string
+}
+
+export interface TrialResult {
+  success: boolean
+  license_key?: string
+  message?: string
+  expires_at?: string
+}
+
 export interface OfflineActivateRequest {
   signed_license: string
   request_id: string
@@ -68,6 +79,10 @@ export function getLicenseInfo() {
 
 export function activateLicense(payload: ActivateRequest) {
   return req<ActivationResult>('POST', '/api/system/license/activate', payload)
+}
+
+export function requestTrial(payload: TrialRequest) {
+  return req<TrialResult>('POST', '/api/system/license/trial', payload)
 }
 
 export function offlineActivate(payload: OfflineActivateRequest) {

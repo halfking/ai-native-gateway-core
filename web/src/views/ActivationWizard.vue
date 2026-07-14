@@ -15,6 +15,7 @@ import { useI18n } from 'vue-i18n'
 import {
   getLicenseStatus,
   activateLicense,
+  requestTrial,
   offlineActivate,
   createOfflineRequest,
   type CustomerLicenseStatus,
@@ -27,6 +28,7 @@ const step = ref(1)
 const status = ref<CustomerLicenseStatus | null>(null)
 const loading = ref(false)
 const onlineForm = ref({ license_key: '', device_name: '' })
+const trialEmail = ref('')
 const offlineForm = ref({ signed_license: '', request_id: '', activation_code: '' })
 const lastResult = ref<ActivationResult | null>(null)
 const offlineRequestResult = ref<{ request_id: string; signed_request: string } | null>(null)
@@ -90,6 +92,28 @@ async function handleActivate() {
     }
   } catch (err) {
     ElMessage.error(t('customer.wizard.messages.activateFailedWithMsg', { msg: (err as Error).message }))
+  } finally {
+    loading.value = false
+  }
+}
+
+async function handleTrial() {
+  if (!trialEmail.value.trim() || !trialEmail.value.includes('@')) {
+    ElMessage.warning('请输入有效邮箱')
+    return
+  }
+  loading.value = true
+  try {
+    const result = await requestTrial({ email: trialEmail.value.trim() })
+    if (!result.success || !result.license_key) {
+      ElMessage.error(result.message || '试用申请失败')
+      return
+    }
+    onlineForm.value.license_key = result.license_key
+    ElMessage.success('试用 License 已创建，请继续完成激活')
+    step.value = 2
+  } catch (err) {
+    ElMessage.error(`试用申请失败: ${(err as Error).message}`)
   } finally {
     loading.value = false
   }
@@ -207,6 +231,9 @@ onMounted(refresh)
           :description="t('customer.wizard.step1.noneDesc')"
         />
         <div class="cta-row">
+          <el-button type="primary" size="large" @click="handleTrial">
+            申请试用
+          </el-button>
           <el-button type="primary" size="large" @click="step = 2">
             {{ t('customer.wizard.step1.onlineActivate') }}
           </el-button>
@@ -214,6 +241,13 @@ onMounted(refresh)
             {{ t('customer.wizard.step1.offlineActivate') }}
           </el-button>
         </div>
+        <el-input
+          v-model="trialEmail"
+          class="trial-email"
+          type="email"
+          placeholder="用于接收试用信息的邮箱"
+          clearable
+        />
       </div>
       <div v-else-if="status?.state === 'expired'">
         <el-alert
