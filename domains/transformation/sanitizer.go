@@ -683,6 +683,21 @@ func extractReasoning(msg map[string]any) string {
 	}
 }
 
+// dedupConsecutive merges two adjacent messages that share the role
+// `user` or `assistant`. The original implementation string-coerced
+// `content`, which silently dropped every image_url / image / file block
+// when the message body was an array form (the OpenAI multimodal
+// shape).  The new behaviour preserves the content array:
+//
+//   - string + string → "a\nb"   (unchanged)
+//   - array + string  → array ++ ["text", "…"]
+//   - string + array  → ["text", "a"] ++ array
+//   - array + array   → array ++ array   (text parts from either side are kept)
+//
+// For an array-form merge we promote any plain-string side into a single
+// `{"type":"text","text":…}` part first so the result is always a
+// well-formed OpenAI content array.  Merging only happens when the
+// merged result is well-formed, otherwise we leave both messages alone.
 func dedupConsecutive(msgs []map[string]any) []map[string]any {
 	if len(msgs) <= 1 {
 		return msgs
@@ -693,12 +708,56 @@ func dedupConsecutive(msgs []map[string]any) []map[string]any {
 		prevRole, _ := result[len(result)-1]["role"].(string)
 		curRole, _ := msgs[i]["role"].(string)
 		if prevRole == curRole && (curRole == "user" || curRole == "assistant") {
-			prevContent, _ := result[len(result)-1]["content"].(string)
-			curContent, _ := msgs[i]["content"].(string)
-			result[len(result)-1]["content"] = prevContent + "\n" + curContent
+			prevContent := result[len(result)-1]["content"]
+			curContent := msgs[i]["content"]
+			merged, ok := mergeContents(prevContent, curContent)
+			if !ok {
+				// Refuse to merge when the result would corrupt data
+				// (e.g. tool_calls or unknown content shapes). Keep both messages.
+				result = append(result, msgs[i])
+				continue
+			}
+			result[len(result)-1]["content"] = merged
 		} else {
 			result = append(result, msgs[i])
 		}
 	}
 	return result
+}
+
+// mergeContents combines two OpenAI content values of any of the four
+// forms (string / array of parts) into a single form that preserves
+// every image_url / image / file block.  It returns ok=false when at
+// least one side carries a non-text structural field (e.g. tool_calls,
+// tool_call_id) so the caller can abort the merge.
+func mergeContents(a, b any) (any, bool) {
+	aParts, aIsArr, aStr, aOk := toContentParts(a)
+	bParts, bIsArr, bStr, bOk := toContentParts(b)
+	if !aOk || !bOk {
+		return nil, false
+	}
+	if !aIsArr && !bIsArr {
+		// string + string — the original behaviour, kept verbatim.
+		return aStr + "\n" + bStr, true
+	}
+	out := make([]any, 0, len(aParts)+len(bParts))
+	out = append(out, aParts...)
+	out = append(out, bParts...)
+	return out, true
+}
+
+// toContentParts normalises an OpenAI Chat Completions `content` value
+// into a slice of parts.  Plain strings are wrapped as a single text
+// part; arrays are passed through verbatim.  It returns ok=false when
+// the shape is not one of the two well-formed varieties so the merge
+// can be aborted instead of silently dropping data.
+func toContentParts(v any) (parts []any, isArray bool, asString string, ok bool) {
+	switch x := v.(type) {
+	case string:
+		return []any{map[string]any{"type": "text", "text": x}}, false, x, true
+	case []any:
+		return x, true, "", true
+	default:
+		return nil, false, "", false
+	}
 }

@@ -52,6 +52,22 @@ func TestStripToolInfo_NoToolsToStrip(t *testing.T) {
 	}
 }
 
+func TestStripThinkingBlocks_PreservesMultimodalBlocks(t *testing.T) {
+	raw := json.RawMessage(`{"role":"user","content":[{"type":"thinking","thinking":"internal"},{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"https://example.com/image.png"}},{"type":"input_audio","input_audio":{"data":"Zm9v","format":"wav"}}]}`)
+	out := stripThinkingBlocks(raw)
+	var message map[string]any
+	if err := json.Unmarshal(out, &message); err != nil {
+		t.Fatal(err)
+	}
+	parts := message["content"].([]any)
+	if len(parts) != 3 {
+		t.Fatalf("content parts = %d, want 3", len(parts))
+	}
+	if parts[0].(map[string]any)["type"] != "text" || parts[1].(map[string]any)["type"] != "image_url" || parts[2].(map[string]any)["type"] != "input_audio" {
+		t.Errorf("non-thinking blocks were not preserved: %v", parts)
+	}
+}
+
 // TestStripToolInfo_OpenAI_CompletedRound 验证 openai 协议下, 完成 tool 轮被剥离,
 // 保留最后一轮。
 func TestStripToolInfo_OpenAI_CompletedRound(t *testing.T) {

@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ConvertChatRequestToAnthropic converts an OpenAI Chat Completions request
@@ -99,9 +100,17 @@ func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
 			case "image_url":
 				if imageURL, ok := blockMap["image_url"].(map[string]any); ok {
 					if url, ok := imageURL["url"].(string); ok {
+						source := map[string]any{"type": "url", "url": url}
+						if mediaType, data, ok := parseImageDataURI(url); ok {
+							source = map[string]any{
+								"type":       "base64",
+								"media_type": mediaType,
+								"data":       data,
+							}
+						}
 						blocks = append(blocks, map[string]any{
 							"type":   "image",
-							"source": map[string]any{"type": "url", "url": url},
+							"source": source,
 						})
 					}
 				}
@@ -151,6 +160,22 @@ func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
 		out["content"] = existing
 	}
 	return out
+}
+
+func parseImageDataURI(value string) (mediaType, data string, ok bool) {
+	if !strings.HasPrefix(value, "data:") {
+		return "", "", false
+	}
+	comma := strings.IndexByte(value, ',')
+	if comma <= len("data:") {
+		return "", "", false
+	}
+	meta := strings.TrimPrefix(value[:comma], "data:")
+	parts := strings.Split(meta, ";")
+	if len(parts) < 2 || parts[len(parts)-1] != "base64" || parts[0] == "" {
+		return "", "", false
+	}
+	return parts[0], value[comma+1:], true
 }
 
 func convertChatToolChoiceToAnthropic(toolChoice any) any {
