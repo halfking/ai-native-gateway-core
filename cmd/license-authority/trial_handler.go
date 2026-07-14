@@ -41,6 +41,8 @@ type trialResponse struct {
 	ExpiresAt  string `json:"expires_at,omitempty"`
 }
 
+const trialAgreementVersion = "2026-07-14"
+
 func NewTrialHandler(store licensing.Store, redisClient *redis.Client) *TrialHandler {
 	days := 15
 	if value := getEnv("LICENSE_TRIAL_DAYS", ""); value != "" {
@@ -109,7 +111,17 @@ func (h *TrialHandler) handleTrial(c echo.Context) error {
 		Features:         []string{},
 		ExpiresAt:        expiresAt,
 	}
-	if err := h.store.CreateLicense(c.Request().Context(), license); err != nil {
+	consentStore, ok := h.store.(licensing.TrialConsentStore)
+	if !ok {
+		_ = h.limiter.ReleaseEmail(c.Request().Context(), email)
+		return c.JSON(http.StatusServiceUnavailable, trialResponse{Message: "trial consent audit is temporarily unavailable"})
+	}
+	consent := &licensing.TrialConsent{
+		AgreementVersion: trialAgreementVersion,
+		AcceptedAt:       time.Now().UTC(),
+		Source:           "trial_api",
+	}
+	if err := consentStore.CreateTrialLicenseWithConsent(c.Request().Context(), license, consent); err != nil {
 		_ = h.limiter.ReleaseEmail(c.Request().Context(), email)
 		return c.JSON(http.StatusInternalServerError, trialResponse{Message: "unable to create trial license"})
 	}

@@ -7,7 +7,7 @@
 ## 已完成
 
 - Trial、License Key、离线申请/导入的基础 API 与 UI/CLI 入口。
-- Trial 明示同意校验、默认 15 天、Redis fail-closed、限流和同邮箱一次领取。
+- Trial 明示同意校验、协议版本/时间/来源持久化审计、默认 15 天、Redis fail-closed、限流和同邮箱一次领取。
 - 公开用户协议明确运行遥测、受控更新授权以及原始 AI 会话内容非采集边界。
 - License 状态/详情查询、设备限制、基础 restricted/grace 行为。
 - Release 查询、客户升级查询、升级提示 UI、本地 installer 升级、健康检查和回滚。
@@ -17,7 +17,7 @@
 
 | 流程 | 阻断项 | 结论 |
 |---|---|---|
-| Trial 激活 | 同意记录未持久化为协议版本/时间；真实 Authority+Redis+浏览器 e2e 未完成 | 不可标记完成 |
+| Trial 激活 | 真实 Authority+Redis+浏览器 e2e 未完成 | 不可标记完成 |
 | 离线激活 | 请求文件下载、审批门户、重复导入和失败恢复 e2e 未完成 | 不可标记完成 |
 | 升级 | 无签名 envelope、审批、持久队列、客户端 receiver/executor、结果回写和灰度暂停 | 不可标记完成 |
 | 遥测 | 无 opt-in 偏好存储、allowlist collector、认证 ingest、删除和保留实现 | 不可标记完成 |
