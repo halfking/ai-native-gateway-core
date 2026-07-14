@@ -84,6 +84,25 @@ func TestParseAnthropic_MiniMaxToolCallID(t *testing.T) {
 	}
 }
 
+func TestParseAnthropic_MiniMaxMessageLevelToolCallID(t *testing.T) {
+	body := []byte(`{
+		"model":"MiniMax-M3",
+		"messages":[{
+			"role":"tool",
+			"tool_call_id":"call_message_level",
+			"content":"ok"
+		}]
+	}`)
+
+	req, err := ParseAnthropic(body)
+	if err != nil {
+		t.Fatalf("ParseAnthropic failed: %v", err)
+	}
+	if got := req.Messages[0].ToolCallID; got != "call_message_level" {
+		t.Fatalf("ToolCallID = %q, want call_message_level", got)
+	}
+}
+
 // TestParseAnthropic_RoundTripWithTargetProvider 测试 Parse → Serialize 往返保留
 // MiniMax 的 tool_call_id。
 func TestParseAnthropic_RoundTripWithTargetProvider(t *testing.T) {

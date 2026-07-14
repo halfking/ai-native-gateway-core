@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### MiniMax-M3 format audit
+
+- Integrated the session optimization v2 and format conversion standards into
+  a MiniMax-M3 audit chapter with separate OpenAI-compatible and
+  Anthropic-compatible request paths, tool-call invariants, multimodal rules,
+  compression constraints, and 154/252 evidence.
+- Reject invalid MiniMax tools with empty function names instead of sending a
+  request the upstream can only reject.
+- Preserve message-level MiniMax `tool_call_id` while parsing
+  Anthropic-compatible requests.
+
 ### Format conversion audit and Gemini tool preservation
 
 - Added `docs/格式转换/` as the SSOT for client/provider protocol conversion,
