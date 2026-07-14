@@ -82,21 +82,34 @@ export function useChart<
   const chartInstance = ref<Chart<TType, TData, TLabel> | null>(null)
   const loading = ref(true)
   const error = ref<string | null>(null)
+  let disposed = false
+
+  const destroyChart = () => {
+    if (!chartInstance.value) return
+    try {
+      chartInstance.value.stop()
+    } catch {
+      /* chart may already be torn down */
+    }
+    try {
+      chartInstance.value.destroy()
+    } catch {
+      /* ignore destroy races when canvas is detached */
+    }
+    chartInstance.value = null
+  }
 
   const initChart = () => {
-    if (!canvasRef.value) {
+    if (disposed) return
+    const canvas = canvasRef.value
+    if (!canvas || !canvas.isConnected) {
       error.value = 'Canvas element not found'
       return
     }
 
     try {
-      // 销毁旧实例
-      if (chartInstance.value) {
-        chartInstance.value.destroy()
-      }
-
-      // 创建新图表
-      chartInstance.value = new Chart(canvasRef.value, config.value)
+      destroyChart()
+      chartInstance.value = new Chart(canvas, config.value)
       loading.value = false
       error.value = null
     } catch (e) {
@@ -106,7 +119,7 @@ export function useChart<
   }
 
   const updateChart = (newData?: TData[], newLabels?: TLabel[]) => {
-    if (!chartInstance.value) return
+    if (!chartInstance.value || disposed) return
 
     if (newData && chartInstance.value.data.datasets[0]) {
       ;(chartInstance.value.data.datasets[0] as { data: unknown }).data = newData as unknown
@@ -116,13 +129,10 @@ export function useChart<
       ;(chartInstance.value.data as { labels: unknown }).labels = newLabels as unknown
     }
 
-    chartInstance.value.update()
-  }
-
-  const destroyChart = () => {
-    if (chartInstance.value) {
-      chartInstance.value.destroy()
-      chartInstance.value = null
+    try {
+      chartInstance.value.update()
+    } catch {
+      destroyChart()
     }
   }
 
@@ -131,6 +141,7 @@ export function useChart<
   })
 
   onUnmounted(() => {
+    disposed = true
     destroyChart()
   })
 

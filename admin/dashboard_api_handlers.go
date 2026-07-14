@@ -73,7 +73,8 @@ func dashboardAPIRequest(r *http.Request) *http.Request {
 }
 
 func (h *Handler) handleDashboardSessionOverviewAudited(w http.ResponseWriter, r *http.Request) {
-	h.serveDashboardAPI(w, r, h.handleDashboardSessionOverview)
+	handler := dashboardapi.NewSessionOverviewHandler(h.db, nil)
+	h.serveDashboardAPI(w, r, handler.HandleSessionOverview)
 }
 
 // handleDashboardSessionTrend 处理会话趋势请求
