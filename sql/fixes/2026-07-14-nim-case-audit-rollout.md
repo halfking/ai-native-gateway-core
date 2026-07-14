@@ -114,3 +114,54 @@ PGPASSWORD=xxx psql -v ON_ERROR_STOP=1 -f sql/migrations/startup/397_runtime_log
   - `396 / 397` 回滚：上一轮的 mixed-case 数据已经消失，但可以从
     `request_logs_archive` / `model_aliases_archive` 等备份表回灌；
     这次部署前后**务必**完成一次 `pg_dump`。
+
+## 6. 长期维护 (2026-07-14 部署后)
+
+### 6.1 已安装的 245 cron 任务
+
+部署到 245 时已自动安装 systemd timer：
+
+```
+/opt/llm-gateway-go/ops/nim-case-cron.sh      # 主脚本（local-only 健康检查）
+/opt/llm-gateway-go/ops/nim-case-cron.service
+/etc/systemd/system/nim-case-cron.{service,timer}
+```
+
+每天 04:30 自动运行，输出 `/var/log/llm-gateway-go/nim-case-cron.log`。
+最近一次手工触发：exit 0；`Wed 2026-07-15 04:30:00 CST` 下次自动运行。
+检查项：healthz / version / postgres disabled / memory / discovery / WARN 计数。
+
+### 6.2 跨机器 drift 巡检 (在 252 上跑)
+
+`sql/fixes/check-nvidia-nim-outbound-model-id-drift.sh` 跑在 252 容器里
+(`REMOTE_MODE=1` + `docker exec pg-252-pg17`)；由人工 / 部署脚本触发：
+
+```bash
+ssh root@115.29.212.252 "set -a; . /opt/pms-dev/.runtime-secrets/infra.env; set +a; \
+  bash /tmp/check-nvidia-nim-outbound-model-id-drift.sh"
+```
+
+未来若要在 245 自动跑，可加 245→252 的 SSH 密钥到 `/root/.ssh/`，然后把
+上面的 ssh 嵌入 nim-case-cron.sh。
+
+### 6.3 列存表历史 mixed-case 清理
+
+`sql/fixes/normalize-columnar-historical.sql` 是一份**手操工具**，需要在维护窗口运行。
+它会：
+1. 把 `candidate_failure_logs` 临时 rename → 新建 rowstore 表 → `INSERT...SELECT` → DROP 旧表
+2. 对 `request_logs` 每个 columnar 分区做相同流程（外加 `ATTACH PARTITION`）
+3. 然后 `columnar_ensure_columnar()` 还原
+
+风险：转换期间阻塞写入，**仅在月度分区轮换时跑**。
+
+### 6.4 154 生产部署
+
+245 验证通过后，154 走相同流程：
+
+```bash
+PGPASSWORD=... ./sql/fixes/apply-nim-case-fixes.sh --phase a   # 同样适用于 154
+PGPASSWORD=... ./sql/fixes/apply-nim-case-fixes.sh --phase b   # 245 部署后 ≥24h 跑
+bash scripts/deploy-154.sh                                    # 用 154 现有 runbook
+```
+
+154 的 cron / drift 同样按上述 6.1 / 6.2 接入即可。

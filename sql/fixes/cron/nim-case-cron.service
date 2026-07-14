@@ -1,0 +1,12 @@
+[Unit]
+Description=LLM Gateway: NIM / model-case daily sanity check
+Documentation=file:///opt/llm-gateway-go/ops/nim-case-cron.sh
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/llm-gateway-go/ops/nim-case-cron.sh
+WorkingDirectory=/opt/llm-gateway-go/ops
+StandardOutput=append:/var/log/llm-gateway-go/nim-case-cron.log
+StandardError=append:/var/log/llm-gateway-go/nim-case-cron.log
+Nice=10
