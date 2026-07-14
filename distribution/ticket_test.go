@@ -24,11 +24,12 @@ func TestTicketSignerRoundTrip(t *testing.T) {
 }
 
 func TestTicketSignerExpired(t *testing.T) {
-	signer := NewTicketSigner([]byte("test-secret"), -time.Minute)
+	signer := NewTicketSigner([]byte("test-secret"), time.Second)
 	token, _, err := signer.Issue("req-2", "v1.0.0", "darwin", "arm64")
 	if err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(1100 * time.Millisecond)
 	if _, err := signer.Verify(token); err == nil {
 		t.Fatal("expected expired error")
 	}

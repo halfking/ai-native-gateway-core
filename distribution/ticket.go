@@ -72,7 +72,7 @@ func (s *TicketSigner) Verify(token string) (*TicketClaims, error) {
 	if err := json.Unmarshal(raw, &claims); err != nil {
 		return nil, err
 	}
-	if time.Now().Unix() > claims.ExpiresUnix {
+	if time.Now().Unix() >= claims.ExpiresUnix {
 		return nil, fmt.Errorf("ticket expired")
 	}
 	return &claims, nil

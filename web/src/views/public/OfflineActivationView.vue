@@ -118,7 +118,7 @@ async function copyResponse() {
             accept=".req,.txt,.json"
             class="off-upload"
           >
-            <el-button link type="primary">上传文件</el-button>
+            <el-button link type="primary">{{ t('public.offline.uploadFile') }}</el-button>
           </el-upload>
         </el-form-item>
         <el-button type="primary" :loading="loading" @click="handleSubmit">
