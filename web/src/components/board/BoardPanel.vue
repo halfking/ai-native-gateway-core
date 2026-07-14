@@ -4,11 +4,12 @@ import BoardSummaryRow from './BoardSummaryRow.vue'
 import BoardStatusCards from './BoardStatusCards.vue'
 import BoardPieGrid from './BoardPieGrid.vue'
 import BoardUsageTrendSection from './BoardUsageTrendSection.vue'
-import type { BoardPayload } from '../../api/board'
+import type { BoardPayload, BoardOperationalPayload } from '../../api/board'
 import type { BoardTimeRange } from '../../utils/boardTimeRange'
 
 const boardState = inject<{
   board: Ref<BoardPayload | null>
+  operational: Ref<BoardOperationalPayload | null>
   days: Ref<number>
   timeRange: Ref<BoardTimeRange>
   loading: Ref<boolean>
@@ -30,8 +31,8 @@ async function onTimeRangeChange(next: BoardTimeRange) {
 
 <template>
   <div class="board-panel">
-    <BoardStatusCards :board="boardState.board.value" @open-selfcheck="dashboardTab.switchTab('selfcheck')" />
-    <BoardSummaryRow :summary="boardState.board.value?.summary" />
+    <BoardStatusCards :operational="boardState.operational.value" @open-selfcheck="dashboardTab.switchTab('selfcheck')" />
+    <BoardSummaryRow :summary="boardState.board.value?.summary" :loading="boardState.loading.value" />
     <BoardUsageTrendSection
       :board="boardState.board.value"
       :time-range="boardState.timeRange.value"

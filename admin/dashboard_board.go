@@ -59,7 +59,6 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 			payload["source"] = "redis_baseline_delta"
 		}
 		payload["days"] = days
-		attachBoardOperational(ctx, h, payload)
 		writeJSON(w, http.StatusOK, payload)
 		return
 	}
@@ -72,16 +71,12 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 
 	pies, _ := h.queryBoardPies(ctx, filterTenant, tr)
 	trends, _ := h.resolveBoardTrends(ctx, filterTenant, tr, providerID)
-	bgTasks := h.queryBoardBackgroundTasks(ctx)
-	selfcheck := h.queryBoardSelfCheck(ctx)
 
 	resp := map[string]any{
-		"summary":          summary,
-		"pies":             pies,
-		"trends":           trends,
-		"background_tasks": bgTasks,
-		"selfcheck":        selfcheck,
-		"days":             days,
+		"summary": summary,
+		"pies":    pies,
+		"trends":  trends,
+		"days":    days,
 		"source":           boardSource(fromMinute) + func() string {
 			if tr.Custom {
 				return "_custom_range"

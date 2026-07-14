@@ -103,9 +103,12 @@ type liveRequestRedisPayload struct {
 	ErrorKind        *string  `json:"error_kind,omitempty"`
 	FailureStage     *string  `json:"failure_stage,omitempty"`
 	// 2026-07-13: 主动探测标记
-	IsProbe      bool   `json:"is_probe,omitempty"`
-	ProbeOrigin  string `json:"probe_origin,omitempty"`
-	ProbeAttempt int    `json:"probe_attempt,omitempty"`
+	IsProbe          bool     `json:"is_probe,omitempty"`
+	ProbeOrigin      string   `json:"probe_origin,omitempty"`
+	ProbeAttempt     int      `json:"probe_attempt,omitempty"`
+	ClientProfile    string   `json:"client_profile,omitempty"`
+	IdentityHash     string   `json:"identity_hash,omitempty"`
+	CreditsCharged   *int     `json:"credits_charged,omitempty"`
 }
 
 // LiveStreamRecordRetention is the Redis TTL for request detail keys and
@@ -119,6 +122,9 @@ const LiveStreamLaneVisibleLimit = 20
 // LiveStreamIdleThreshold is how long a lane must be silent before an idle
 // marker is written into the stream.
 const LiveStreamIdleThreshold = 5 * time.Minute
+
+const idleMarkerErrorKind = "no_traffic_5min"
+const idleMarkerFailureStage = "idle"
 
 // LiveStreamLaneRetention is the default for in-memory cached snapshot
 // eviction in the SSE hub (not Redis record TTL).
@@ -475,6 +481,9 @@ func marshalLiveRequestRedisPayload(req LiveRequest) (string, error) {
 		IsProbe:          req.IsProbe,
 		ProbeOrigin:      req.ProbeOrigin,
 		ProbeAttempt:     req.ProbeAttempt,
+		ClientProfile:    req.ClientProfile,
+		IdentityHash:     req.IdentityHash,
+		CreditsCharged:   req.CreditsCharged,
 	}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -509,6 +518,9 @@ func unmarshalLiveRequestRedisPayload(data string) (LiveRequest, error) {
 		IsProbe:          p.IsProbe,
 		ProbeOrigin:      p.ProbeOrigin,
 		ProbeAttempt:     p.ProbeAttempt,
+		ClientProfile:    p.ClientProfile,
+		IdentityHash:     p.IdentityHash,
+		CreditsCharged:   p.CreditsCharged,
 	}, nil
 }
 
@@ -972,6 +984,12 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 			slog.Debug("skipping malformed activity key", "key", k)
 			continue
 		}
+		// Main-queue activity is a heartbeat only; swim lanes are built from
+		// vendor/provider/model dimension keys. Skip "main" so we do not
+		// enqueue dimension-less idle markers that never render in a lane.
+		if info.dimension == "main" {
+			continue
+		}
 		idle = append(idle, pending{info: info, key: k, lastActivity: lastActivity})
 	}
 
@@ -1014,16 +1032,16 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 }
 
 // idleMarkerQueueKeys returns the Redis ZSET keys an idle marker should
-// land in. Because Replay()/Snapshot() only ever read the main queue and
-// rebuild lanes in memory from it, an idle marker MUST be written to the
-// main queue (plus its tenant-scoped twin) to be visible at all. The old
-// implementation wrote only to per-dimension ZSETs that nothing reads,
-// making every idle marker invisible dead data.
+// land in. Global-scope markers go to the super-admin main queue; tenant-
+// scoped markers go to that tenant's main queue only — never both — so
+// Replay() does not show duplicate idle tiles for the same lane.
 func idleMarkerQueueKeys(tenantID, dimension, dimensionKey string) []string {
-	tenantID = normalizeLiveStreamTenant(tenantID)
-	// All idle markers go to main so they are replayed and rendered inside
-	// the lane that matches their carried dimension value.
-	return []string{liveStreamMainKey, tenantLiveStreamKey(tenantID, "main")}
+	_ = dimension
+	_ = dimensionKey
+	if strings.TrimSpace(tenantID) == "" {
+		return []string{liveStreamMainKey}
+	}
+	return []string{tenantLiveStreamKey(normalizeLiveStreamTenant(tenantID), "main")}
 }
 
 func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time) LiveRequest {
@@ -1036,12 +1054,16 @@ func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time)
 	safeKey := strings.NewReplacer(":", "_", "/", "_").Replace(key)
 	requestID := fmt.Sprintf("idle-%s-%s-%s", scope, dimension, safeKey)
 
+	errKind := idleMarkerErrorKind
+	failStage := idleMarkerFailureStage
 	marker := LiveRequest{
-		Type:      "idle_marker",
-		RequestID: requestID,
-		Ts:        ts.UTC().Format(time.RFC3339),
-		TenantID:  tenantID,
-		Status:    "idle",
+		Type:         "idle_marker",
+		RequestID:    requestID,
+		Ts:           ts.UTC().Format(time.RFC3339),
+		TenantID:     tenantID,
+		Status:       "idle",
+		ErrorKind:    &errKind,
+		FailureStage: &failStage,
 	}
 
 	// Each idle marker carries ONLY the identity of the lane it represents,

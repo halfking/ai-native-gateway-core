@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import type { BoardPayload } from '../../api/board'
+import type { BoardOperationalPayload } from '../../api/board'
 
 defineProps<{
-  board: BoardPayload | null | undefined
+  operational: BoardOperationalPayload | null | undefined
 }>()
 
 const emit = defineEmits<{
@@ -19,26 +19,26 @@ function fmtPct(v: number | undefined) {
 </script>
 
 <template>
-  <div v-if="board" class="status-grid">
+  <div v-if="operational" class="status-grid">
     <div class="status-card">
       <div class="status-card__title">{{ t('dashboard.board.bgTasks') }}</div>
-      <div v-if="board.background_tasks?.discovery?.running" class="status-card__badge status-card__badge--active">
+      <div v-if="operational.background_tasks?.discovery?.running" class="status-card__badge status-card__badge--active">
         {{ t('dashboard.backgroundTasks.title') }}
       </div>
       <div v-else class="status-card__line">
-        {{ t('dashboard.board.discoveryStatus') }}: {{ board.background_tasks?.discovery?.status ?? '—' }}
+        {{ t('dashboard.board.discoveryStatus') }}: {{ operational.background_tasks?.discovery?.status ?? '—' }}
       </div>
       <div class="status-card__line">
-        {{ t('dashboard.board.probeChecks') }}: {{ board.background_tasks?.probe_loop?.checks_last_10m ?? 0 }}
+        {{ t('dashboard.board.probeChecks') }}: {{ operational.background_tasks?.probe_loop?.checks_last_10m ?? 0 }}
       </div>
     </div>
     <div class="status-card status-card--clickable" @click="emit('openSelfcheck')">
       <div class="status-card__title">{{ t('dashboard.board.selfcheckTitle') }}</div>
       <div class="status-card__line">
-        {{ t('dashboard.board.selfcheckLast') }}: {{ board.selfcheck?.last_status ?? '—' }}
+        {{ t('dashboard.board.selfcheckLast') }}: {{ operational.selfcheck?.last_status ?? '—' }}
       </div>
       <div class="status-card__line">
-        {{ t('dashboard.board.selfcheckRate') }}: {{ fmtPct(board.selfcheck?.success_rate) }}
+        {{ t('dashboard.board.selfcheckRate') }}: {{ fmtPct(operational.selfcheck?.success_rate) }}
       </div>
       <div class="status-card__hint">{{ t('dashboard.board.selfcheckHint') }}</div>
     </div>

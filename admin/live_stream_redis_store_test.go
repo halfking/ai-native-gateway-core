@@ -332,7 +332,7 @@ func TestLiveRequestRedisPayload_OnlyObservationFields(t *testing.T) {
 		"type": {}, "request_id": {}, "ts": {}, "tenant_id": {}, "gw_session_id": {},
 		"model": {}, "model_category": {}, "provider_code": {}, "status": {},
 		"latency_ms": {}, "prompt_tokens": {}, "completion_tokens": {}, "total_tokens": {},
-		"cost_usd": {}, "error_kind": {},
+		"cost_usd": {}, "error_kind": {}, "client_profile": {}, "identity_hash": {}, "credits_charged": {},
 	}
 	for key := range raw {
 		if _, ok := allowed[key]; !ok {

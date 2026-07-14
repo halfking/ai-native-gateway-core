@@ -30,6 +30,23 @@ export interface BoardSummary {
   providers?: number
 }
 
+export interface BoardBackgroundTasks {
+  discovery?: { running?: boolean; status?: string; trigger?: string; started_at?: string; heartbeat_at?: string }
+  probe_loop?: { checks_last_10m?: number }
+}
+
+export interface BoardSelfcheck {
+  total_runs_24h?: number
+  success_rate?: number
+  last_status?: string
+  last_run_at?: string
+}
+
+export interface BoardOperationalPayload {
+  background_tasks?: BoardBackgroundTasks
+  selfcheck?: BoardSelfcheck
+}
+
 export interface BoardPayload {
   summary: BoardSummary
   pies: {
@@ -42,16 +59,8 @@ export interface BoardPayload {
     providers: BoardPieItem[]
   }
   trends: BoardTrendPoint[]
-  background_tasks: {
-    discovery?: { running?: boolean; status?: string; trigger?: string; started_at?: string; heartbeat_at?: string }
-    probe_loop?: { checks_last_10m?: number }
-  }
-  selfcheck: {
-    total_runs_24h?: number
-    success_rate?: number
-    last_status?: string
-    last_run_at?: string
-  }
+  background_tasks?: BoardBackgroundTasks
+  selfcheck?: BoardSelfcheck
   days: number
   source?: 'postgresql_baseline' | 'redis_baseline_delta' | 'live_sse_delta' | string
   cache_meta?: {
@@ -81,6 +90,10 @@ export function fetchDashboardBoard(params: BoardQuery = {}): Promise<BoardPaylo
   if (params.provider_id != null) qs.set('provider_id', String(params.provider_id))
   const q = qs.toString()
   return req<BoardPayload>('GET', `/api/admin/dashboard/board${q ? `?${q}` : ''}`)
+}
+
+export function fetchBoardOperational(): Promise<BoardOperationalPayload> {
+  return req<BoardOperationalPayload>('GET', '/api/admin/dashboard/operational')
 }
 
 export function fetchBoardErrorDrill(params: {
