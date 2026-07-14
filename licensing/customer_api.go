@@ -408,38 +408,93 @@ func (api *CustomerAPI) handleOfflineActivate(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "signed_license, request_id, and activation_code are required"})
 	}
 
+	resp := api.buildOfflineActivateResponse(ctx, &req)
+	status := http.StatusOK
+	if !resp.Success {
+		status = activationHTTPStatus(resp.ErrorCode)
+		slog.Warn("customer offline activation failed",
+			"request_id", req.RequestID,
+			"error_code", resp.ErrorCode,
+		)
+	} else {
+		slog.Info("customer offline license activated",
+			"request_id", req.RequestID,
+			"error_code", CodeOfflineActivationSuccess,
+		)
+	}
+	return c.JSON(status, resp)
+}
+
+func (api *CustomerAPI) buildOfflineActivateResponse(ctx context.Context, req *OfflineActivateRequest) *OfflineActivateResponse {
 	fp, err := GenerateFingerprint()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "fingerprint generation failed"})
+		return &OfflineActivateResponse{
+			Success:   false,
+			ErrorCode: CodeOfflineInvalidSignature,
+			Message:   "fingerprint generation failed",
+		}
 	}
 	hwHash := fp.Hash()
 
 	offlineReq, err := api.store.GetOfflineRequest(ctx, strings.TrimSpace(req.RequestID))
 	if err != nil || offlineReq == nil || offlineReq.Status != "approved" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "offline request is not approved"})
+		return &OfflineActivateResponse{
+			Success:   false,
+			ErrorCode: CodeOfflineRequestNotApproved,
+			Message:   "offline request is not approved",
+		}
 	}
 	if offlineReq.HardwareHash != hwHash || NormalizeActivationCode(req.ActivationCode) != NormalizeActivationCode(offlineReq.ActivationCode) {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "offline approval does not match this device"})
+		return &OfflineActivateResponse{
+			Success:   false,
+			ErrorCode: CodeOfflineMismatchDevice,
+			Message:   "offline approval does not match this device",
+		}
 	}
 
 	lic, err := api.offlineManager.VerifyOfflineLicense(ctx, req.SignedLicense)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		code, msg := mapValidatorError(err)
+		if code == "" {
+			code = CodeOfflineInvalidSignature
+			msg = err.Error()
+		}
+		return &OfflineActivateResponse{
+			Success:   false,
+			ErrorCode: code,
+			Message:   msg,
+		}
 	}
 	if lic.LicenseKey != offlineReq.LicenseKey || offlineReq.ApprovedLicense == nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "offline license does not match the approved request"})
+		return &OfflineActivateResponse{
+			Success:   false,
+			ErrorCode: CodeOfflineLicenseMismatch,
+			Message:   "offline license does not match the approved request",
+		}
 	}
 	approved, err := MarshalToBase64(offlineReq.ApprovedLicense)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "invalid approved license"})
+		return &OfflineActivateResponse{
+			Success:   false,
+			ErrorCode: CodeOfflineLicenseMismatch,
+			Message:   "invalid approved license",
+		}
 	}
 	provided, err := UnmarshalFromBase64(req.SignedLicense)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid signed license"})
+		return &OfflineActivateResponse{
+			Success:   false,
+			ErrorCode: CodeOfflineInvalidSignature,
+			Message:   "invalid signed license",
+		}
 	}
 	providedEncoded, err := MarshalToBase64(provided)
 	if err != nil || providedEncoded != approved {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "signed license does not match the approved request"})
+		return &OfflineActivateResponse{
+			Success:   false,
+			ErrorCode: CodeOfflineLicenseMismatch,
+			Message:   "signed license does not match the approved request",
+		}
 	}
 
 	device := &Device{
@@ -451,21 +506,37 @@ func (api *CustomerAPI) handleOfflineActivate(c echo.Context) error {
 	}
 	switch err := api.store.ActivateDeviceIfUnderLimit(ctx, device, lic.MaxDevices); {
 	case errors.Is(err, ErrDeviceAlreadyActivated):
-		return c.JSON(http.StatusConflict, map[string]string{"error": "device is already activated"})
+		return &OfflineActivateResponse{
+			Success:   true,
+			ErrorCode: CodeDeviceAlreadyActivated,
+			Message:   "device is already activated",
+		}
 	case errors.Is(err, ErrDeviceLimitExceeded):
-		return c.JSON(http.StatusConflict, map[string]string{"error": "device limit exceeded"})
+		activeDevices, _ := api.store.GetActiveDevices(ctx, lic.LicenseKey)
+		return &OfflineActivateResponse{
+			Success:        false,
+			ErrorCode:      CodeDeviceLimitExceeded,
+			NeedDeactivate: true,
+			ActiveDevices:  activeDevices,
+			MaxDevices:     lic.MaxDevices,
+			Message:        "device limit exceeded",
+		}
 	case err != nil:
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return &OfflineActivateResponse{
+			Success:   false,
+			ErrorCode: CodeOfflineInvalidSignature,
+			Message:   err.Error(),
+		}
 	}
 
-	slog.Info("customer offline license activated", "license_key", lic.LicenseKey, "hardware_hash", hwHash)
-	return c.JSON(http.StatusOK, map[string]interface{}{
-		"success":           true,
-		"expires_at":        lic.ExpiresAt,
-		"customer_name":     lic.CustomerName,
-		"subscription_tier": lic.SubscriptionTier,
-		"message":           "offline activation successful",
-	})
+	return &OfflineActivateResponse{
+		Success:          true,
+		ErrorCode:        CodeOfflineActivationSuccess,
+		ExpiresAt:        &lic.ExpiresAt,
+		CustomerName:     lic.CustomerName,
+		SubscriptionTier: lic.SubscriptionTier,
+		Message:          "offline activation successful",
+	}
 }
 
 type OfflineRequestPayload struct {
@@ -484,11 +555,18 @@ func (api *CustomerAPI) handleOfflineRequest(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "license_key is required"})
 	}
 
-	if _, err := api.store.GetLicense(ctx, req.LicenseKey); err != nil {
+	lic, err := api.store.GetLicense(ctx, req.LicenseKey)
+	if err != nil {
 		if err.Error() == "license not found" {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "license_key not found"})
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if time.Now().After(lic.ExpiresAt) {
+		return c.JSON(http.StatusGone, map[string]string{"error": "license has expired"})
+	}
+	if lic.RevokedAt != nil {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "license has been revoked"})
 	}
 
 	fp, err := GenerateFingerprint()
