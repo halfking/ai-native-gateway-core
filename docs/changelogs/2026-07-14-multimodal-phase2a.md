@@ -27,7 +27,8 @@
 
 ## Phase 2C follow-up
 
-- Added opt-in request-log redaction with `LLM_GATEWAY_REDACT_ATTACHMENT_BODY=1`.
+- Request-log attachment redaction is now **enabled by default**.
+  Set `LLM_GATEWAY_REDACT_ATTACHMENT_BODY=0` to opt-out.
 - Valid JSON log bodies replace `data:` payloads with MIME-preserving placeholders;
   outbound provider bodies remain unchanged.
 
