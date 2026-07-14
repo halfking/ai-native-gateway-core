@@ -171,6 +171,10 @@ func (m *mockUpdateStore) CreateGrayRule(ctx context.Context, rule *autoupdate.G
 	return nil
 }
 
+func (m *mockUpdateStore) ListGrayRules(ctx context.Context, limit int) ([]autoupdate.GrayReleaseRuleView, error) {
+	return nil, nil
+}
+
 func (m *mockUpdateStore) GetGrayRule(ctx context.Context, releaseID int64) (*autoupdate.GrayReleaseRule, error) {
 	return nil, nil
 }

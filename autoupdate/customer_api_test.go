@@ -90,6 +90,9 @@ func (s *fakeStore) UpdateReleaseStatus(ctx context.Context, id int64, published
 	return nil
 }
 func (s *fakeStore) CreateGrayRule(ctx context.Context, rule *GrayReleaseRule) error { return nil }
+func (s *fakeStore) ListGrayRules(ctx context.Context, limit int) ([]GrayReleaseRuleView, error) {
+	return nil, nil
+}
 func (s *fakeStore) GetGrayRule(ctx context.Context, releaseID int64) (*GrayReleaseRule, error) {
 	return nil, nil
 }
