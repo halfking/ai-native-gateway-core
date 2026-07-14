@@ -72,6 +72,12 @@ WHITELIST_PATTERNS=(
   'xxxxxxxx-xxxx-xxxx' 'placeholder'
   # Slice 7: documentation placeholders use angle-bracket syntax
   '<user>:<password>@<host>' '<password>@'
+  # Phase 3B-4 cleanup: also skip lines with shell/env-var placeholders
+  # or bare REDACTED (not just angle-bracket <REDACTED>)
+  'REDACTED' '\$\{[A-Z_][A-Z0-9_]*\}' '\${[A-Z_][A-Z0-9_]*}'
+  # Phase 3B-4 cleanup pt.2: skip generic user:pass@host examples in docs
+  'user:pass@host' 'user:password@host' ':pass@' ':password@'
+  'username:password@' 'dbuser:dbpass@'
 )
 
 EXCLUDE_DIRS=(".git" "node_modules" "vendor" "build" "dist" "out" "coverage"

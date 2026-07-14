@@ -184,6 +184,10 @@ FINAL_COMPLETION_REPORT.md
 TEST_RESULTS_*.md
 test_output.log
 reports/
+# loadtest / 多页面测试 runtime JSON outputs (run artifacts, not source)
+# 触发: docs/<feature>/results/*.json (如 docs/全方面测试/results/S*.json)
+docs/**/results/*.json
+
 _to-be-deprecated/
 Dockerfile.web-fix
 web-dist.tar.gz
