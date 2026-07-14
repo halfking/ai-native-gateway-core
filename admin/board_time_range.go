@@ -19,13 +19,7 @@ func boardTimeRangeFromRequest(r *http.Request) (boardTimeRange, error) {
 	endStr := queryString(r, "end")
 	if startStr == "" && endStr == "" {
 		days := boardDays(r)
-		now := time.Now().UTC()
-		return boardTimeRange{
-			Start:  now.Add(-time.Duration(days) * 24 * time.Hour).Truncate(24 * time.Hour),
-			End:    now,
-			Days:   days,
-			Custom: false,
-		}, nil
+		return boardPresetTimeRange(days, time.Now().UTC()), nil
 	}
 	start, end, err := resolveUsageTimeRange(r, 1)
 	if err != nil {
@@ -113,12 +107,30 @@ func boardLogsWhere(tr boardTimeRange, alias, tenantID string) (where string, ar
 }
 
 func daysToBoardTimeRange(days int) boardTimeRange {
-	now := time.Now().UTC()
-	return boardTimeRange{
-		Start: now.Add(-time.Duration(days) * 24 * time.Hour).Truncate(24 * time.Hour),
-		End:   now,
-		Days:  days,
+	return boardPresetTimeRange(days, time.Now().UTC())
+}
+
+// boardPresetTimeRange maps preset tabs to calendar-aligned UTC windows.
+func boardPresetTimeRange(days int, now time.Time) boardTimeRange {
+	if days < 1 {
+		days = 1
 	}
+	todayStart := now.Truncate(24 * time.Hour)
+	return boardTimeRange{
+		Start:  todayStart.Add(-time.Duration(days-1) * 24 * time.Hour),
+		End:    now,
+		Days:   days,
+		Custom: false,
+	}
+}
+
+// boardRequestLogsFromClause returns the cross-partition union view for dashboard queries.
+func boardRequestLogsFromClause() (from string, alias string) {
+	return "request_logs_with_current_month AS r", "r"
+}
+
+func boardStatsCoverageSlack(tr boardTimeRange) time.Duration {
+	return time.Duration(tr.trendBucketMinutes()) * time.Minute
 }
 
 func (tr boardTimeRange) dimMinuteWhere(tenantID string) (where string, args []any) {
