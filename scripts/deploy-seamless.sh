@@ -378,6 +378,16 @@ do_deploy() {
     exit 1
   fi
 
+  # 9.5 可选：同步 env admin 密码到 users 表（避免 JWT 与 env 漂移）
+  if [[ "${DEPLOY_SYNC_ADMIN_PASSWORD:-true}" == "true" ]]; then
+    log "[9.5/9] 同步 admin 密码 (env → users)"
+    if bash "$SCRIPT_DIR/ops/sync-admin-password-from-env.sh" "$TARGET"; then
+      ok "admin 密码已同步"
+    else
+      warn "admin 密码同步失败（不影响部署，可手动: bash scripts/ops/sync-admin-password-from-env.sh $TARGET）"
+    fi
+  fi
+
   # 清理本地临时文件
   rm -f "$tmpbin"; rm -rf "$bundle_dir"
 

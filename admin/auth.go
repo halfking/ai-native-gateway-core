@@ -180,9 +180,9 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			}
 			// 验证密码
 			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) != nil {
-				// 密码错误
+				// 密码错误 — users 表存在则不回退 env LLM_GATEWAY_ADMIN_PASSWORD
 				h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=invalid_password ip=%s", clientIP))
-				writeError(w, http.StatusUnauthorized, "Invalid credentials")
+				writeError(w, http.StatusUnauthorized, "Invalid credentials: password does not match the users table record (env admin password is not used when this username exists)")
 				return
 			}
 			// 密码正确，检查租户状态

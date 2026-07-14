@@ -87,6 +87,7 @@ onUnmounted(() => {
 
 provide('dashboardBoard', {
   board: boardState.board,
+  operational: boardState.operational,
   days: boardState.days,
   timeRange: boardState.timeRange,
   loading: boardState.loading,
