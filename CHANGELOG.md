@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-07-15
+
+### Comprehensive test fixes (local R112 Docker)
+
+After pulling origin/main and rebuilding the gateway + frontend for
+local Docker (r112 stack: pgvector/pgvector:pg17 + gateway +
+llm-mock-upstream + 60 mock_supplier processes), the 全方面测试 suite
+ran against the freshly provisioned local DB.
+
+- **DB schema synced from 252.** The local `llm_gateway` DB was
+  rebuilt from `pg_dump --schema-only` of `pg-252-pg17` (172.16.2.210),
+  with `citus`/`citus_columnar` extension lines removed (local image
+  has no Citus) and `default_table_access_method=columnar` errors
+  tolerated; `schema_migrations` rows for all 402 migrations imported.
+- **Migration 402 applied locally.** Restored the missing
+  `system_health_status(integer)` function, `node_probe_state` table,
+  and the three model_offers INSTEAD OF triggers that did not land on
+  252 either but are required by `bg/system_health.go` and the
+  realtime dashboard.
+- **`system_health_status` returns 0 when no samples.** Without the
+  `COALESCE` the function returned `success_rate = NULL`, causing
+  `system_health_worker` to error every 30s with "cannot scan NULL
+  into *float64". The fix is local-DB only; main already had this
+  race case covered post-deploy.
+- **`credential_most_used_model` function created.** Migration 341
+  defined it but the object was lost on 252; re-created on local so
+  `bg/credential_selfcheck.go` stops spamming
+  "function does not exist (SQLSTATE 42883)" every cycle.
+
+### Load-test fixture portability
+
+- **`docs/全方面测试/data/seed.sql`** now treats `loadtest_host` as a
+  psql variable. Default is `host.docker.internal`, so the seeded
+  60 providers route correctly from inside the gateway container to
+  the 60 mock_supplier processes on the host (Docker Desktop forwards
+  this to 127.0.0.1). Override with `psql -v loadtest_host=192.168.x.y`
+  for non-Docker runs.
+- **`INSERT INTO provider_models` now writes `canonical_raw_name`.**
+  Migration 395 made the column NOT NULL; the seed fixture did not
+  provide it and failed at INSERT.
+
+### Mock orchestrator correctness
+
+- **`docs/全方面测试/tools/mock_orchestrator.py` `reset-all`** now
+  forces every supplier to `healthy` instead of each group's
+  `default_state`. Three groups (G=slow, J=flaky, K=rate_limited)
+  ship with non-healthy defaults that previously poisoned every
+  baseline run (S01) and any scenario that called
+  `reset_all_suppliers()` first (S02/S03/S07/S08/S09/S10/S12/S15).
+  The per-group default is still reachable via `reset-group G` for
+  scenarios that need a non-healthy starting point (S05/S06).
+
 ## [Unreleased] - 2026-07-14
 
 ### MiniMax-M3 format audit

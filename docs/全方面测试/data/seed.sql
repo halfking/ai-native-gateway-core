@@ -24,7 +24,7 @@ SELECT
     9010 + i,
     'loadtest-' || LPAD((9010+i)::text, 4, '0'),
     'Loadtest ' || (9010+i),
-    'http://127.0.0.1:' || (19080 + i),
+    'http://' || COALESCE(NULLIF(:'loadtest_host', ''), 'host.docker.internal') || ':' || (19080 + i),
     'cloud',
     TRUE,
     FALSE,
@@ -76,10 +76,11 @@ WITH models(name) AS (
            ('vision-alpha'), ('vision-beta'), ('vision-gamma')
 )
 INSERT INTO provider_models (id, provider_id, raw_model_name, outbound_model_name,
-                             standardized_name, created_at)
+                             canonical_raw_name, standardized_name, created_at)
 SELECT
     9100 + i,
     9010 + i,
+    'loadtest-' || (SELECT name FROM models OFFSET (i % 15) LIMIT 1),
     'loadtest-' || (SELECT name FROM models OFFSET (i % 15) LIMIT 1),
     'loadtest-' || (SELECT name FROM models OFFSET (i % 15) LIMIT 1),
     'loadtest-' || (SELECT name FROM models OFFSET (i % 15) LIMIT 1),
