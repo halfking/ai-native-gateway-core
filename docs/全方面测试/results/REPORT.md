@@ -1,88 +1,77 @@
 # LLM Gateway 全场景测试报告
 
-- 生成时间: 2026-07-12T17:52:06+08:00
-- 测试结果目录: `results`
-- 总场景数: 14  通过: 3  失败: 11
+- 生成时间: 2026-07-14T15:49:15+08:00
+- 测试结果目录: `docs/全方面测试/results`
+- 总场景数: 18  通过: 10  失败: 8
 
 ## 总体状态
 
-🟡 总通过率：3/14
+🟡 总通过率：10/18
 
 ## 各场景验收详情
 
 | 状态 | 场景 | 总请求 | 成功率(%) | 目标 | P99(ms) | 目标 | 描述 |
 |---|---|---|---|---|---|---|---|
-| FAIL | `S01_baseline` | 243 | 100.0 ✓ | 99 | 3884 ✗ | 1500 | 基准性能 |
-| FAIL | `S02_cost_route` | 376 | 100.0 ✓ | 99 | 3859 ✗ | 1500 | 成本优化路由 |
+| PASS | `S01_baseline` | 857 | 100.0 ✓ | 99 | 178 ✓ | 1500 | 基准性能 |
+| FAIL | `S02_cost_route` | 429 | 100.0 ✓ | 99 | 3952 ✗ | 1500 | 成本优化路由 |
 | FAIL | `S03_concurrency_diff` | 338 | 100.0 ✓ | 99 | 3786 ✗ | 1500 | 并发能力差异化 |
-| FAIL | `S04_quota_failover` | 320 | 100.0 ✓ | 99 | 3820 ✗ | 1500 | 配额耗尽与恢复 |
-| FAIL | `S05_quality_penalty` | 306 | 100.0 ✓ | 97 | 3907 ✗ | 2500 | 延迟/质量降权 |
-| FAIL | `S06_mixed_fault` | 321 | 100.0 ✓ | 94 | 3802 ✗ | 2500 | 混合故障韧性 |
-| FAIL | `S08_sticky` | 287 | 100.0 ✓ | 95 | 3800 ✗ | 1500 | Sticky 连续性 |
-| PASS | `S09_streaming` | 844 | 100.0 ✓ | 90 | 515 ✓ | 1500 | 流式 SSE |
-| FAIL | `S10_long_prompt` | 328 | 100.0 ✓ | 92 | 3966 ✗ | 2500 | 长 Prompt |
-| PASS | `S13_no_candidate` | 252 | 0.0 ✓ | 0 | 4583 ✓ | 5000 | 无可用节点  (预期失败) |
-| PASS | `S14_model_not_found` | 860 | 0.0 ✓ | 0 | 52 ✓ | 100 | 模型不存在  (预期失败) |
-| FAIL | `S15_cross_group_failover` | 264 | 83.0 ✗ | 99 | 3997 ✗ | 3000 | 跨组故障迁移 |
-| FAIL | `S16_precharge_w1` | 289 | 100.0 ✓ | 99 | 3975 ✗ | 2500 | S16 wave1 (pre-charge) |
-| FAIL | `S16_recovery_w2` | 268 | 100.0 ✓ | 99 | 3894 ✗ | 2500 | S16 wave2 (recovery) |
+| PASS | `S04_quota_failover` | 860 | 100.0 ✓ | 99 | 47 ✓ | 1500 | 配额耗尽与恢复 |
+| PASS | `S05_quality_penalty` | 860 | 100.0 ✓ | 97 | 45 ✓ | 2500 | 延迟/质量降权 |
+| PASS | `S06_mixed_fault` | 860 | 100.0 ✓ | 94 | 46 ✓ | 2500 | 混合故障韧性 |
+| FAIL | `S07_peak_dispatch` | 21679 | 100.0 ✓ | 99 | 7566 ✗ | 2500 | 高峰动态调度 |
+| PASS | `S08_sticky` | 856 | 100.0 ✓ | 95 | 74 ✓ | 1500 | Sticky 连续性 |
+| PASS | `S09_streaming` | 845 | 100.0 ✓ | 90 | 97 ✓ | 1500 | 流式 SSE |
+| PASS | `S10_long_prompt` | 841 | 100.0 ✓ | 92 | 48 ✓ | 2500 | 长 Prompt |
+| PASS | `S11_quota_recovery` | 4388 | 100.0 ✓ | 99 | 134 ✓ | 1500 | 周期性配额恢复 |
+| FAIL | `S12_comprehensive` | 44208 | 100.0 ✓ | 98 | 7305 ✗ | 2500 | 全场景综合压测 |
+| FAIL | `S12_post_recovery` | 6728 | 100.0 ✓ | 98 | 6474 ✗ | 2500 | 全场景综合压测 (恢复) |
+| PASS | `S13_no_candidate` | 276 | 0.0 ✓ | 0 | 4554 ✓ | 5000 | 无可用节点  (预期失败) |
+| PASS | `S14_model_not_found` | 884 | 0.0 ✓ | 0 | 19 ✓ | 100 | 模型不存在  (预期失败) |
+| FAIL | `S15_cross_group_failover` | 378 | 88.4 ✗ | 99 | 3790 ✗ | 3000 | 跨组故障迁移 |
+| FAIL | `S16_after_recharge` | 451 | 67.6 ✗ | 99 | 1027 ✓ | 2500 | 配额快速恢复 (后) |
+| FAIL | `S16_before_recharge` | 434 | 65.2 ✗ | 99 | 1030 ✓ | 2500 | 配额快速恢复 (前) |
 
 ## 失败场景详情
 
-### ❌ S01_baseline — 基准性能
-- 成功率: 100.0%  (目标 99%, 通过)
-- P99:    3884ms  (目标 1500ms, 不通过)
-- 原始数据: `results/S01_baseline.json`
-
 ### ❌ S02_cost_route — 成本优化路由
 - 成功率: 100.0%  (目标 99%, 通过)
-- P99:    3859ms  (目标 1500ms, 不通过)
-- 原始数据: `results/S02_cost_route.json`
+- P99:    3952ms  (目标 1500ms, 不通过)
+- 原始数据: `docs/全方面测试/results/S02_cost_route.json`
 
 ### ❌ S03_concurrency_diff — 并发能力差异化
 - 成功率: 100.0%  (目标 99%, 通过)
 - P99:    3786ms  (目标 1500ms, 不通过)
-- 原始数据: `results/S03_concurrency_diff.json`
+- 原始数据: `docs/全方面测试/results/S03_concurrency_diff.json`
 
-### ❌ S04_quota_failover — 配额耗尽与恢复
+### ❌ S07_peak_dispatch — 高峰动态调度
 - 成功率: 100.0%  (目标 99%, 通过)
-- P99:    3820ms  (目标 1500ms, 不通过)
-- 原始数据: `results/S04_quota_failover.json`
+- P99:    7566ms  (目标 2500ms, 不通过)
+- 原始数据: `docs/全方面测试/results/S07_peak_dispatch.json`
 
-### ❌ S05_quality_penalty — 延迟/质量降权
-- 成功率: 100.0%  (目标 97%, 通过)
-- P99:    3907ms  (目标 2500ms, 不通过)
-- 原始数据: `results/S05_quality_penalty.json`
+### ❌ S12_comprehensive — 全场景综合压测
+- 成功率: 100.0%  (目标 98%, 通过)
+- P99:    7305ms  (目标 2500ms, 不通过)
+- 原始数据: `docs/全方面测试/results/S12_comprehensive.json`
 
-### ❌ S06_mixed_fault — 混合故障韧性
-- 成功率: 100.0%  (目标 94%, 通过)
-- P99:    3802ms  (目标 2500ms, 不通过)
-- 原始数据: `results/S06_mixed_fault.json`
-
-### ❌ S08_sticky — Sticky 连续性
-- 成功率: 100.0%  (目标 95%, 通过)
-- P99:    3800ms  (目标 1500ms, 不通过)
-- 原始数据: `results/S08_sticky.json`
-
-### ❌ S10_long_prompt — 长 Prompt
-- 成功率: 100.0%  (目标 92%, 通过)
-- P99:    3966ms  (目标 2500ms, 不通过)
-- 原始数据: `results/S10_long_prompt.json`
+### ❌ S12_post_recovery — 全场景综合压测 (恢复)
+- 成功率: 100.0%  (目标 98%, 通过)
+- P99:    6474ms  (目标 2500ms, 不通过)
+- 原始数据: `docs/全方面测试/results/S12_post_recovery.json`
 
 ### ❌ S15_cross_group_failover — 跨组故障迁移
-- 成功率: 83.0%  (目标 99%, 不通过)
-- P99:    3997ms  (目标 3000ms, 不通过)
-- 原始数据: `results/S15_cross_group_failover.json`
+- 成功率: 88.4%  (目标 99%, 不通过)
+- P99:    3790ms  (目标 3000ms, 不通过)
+- 原始数据: `docs/全方面测试/results/S15_cross_group_failover.json`
 
-### ❌ S16_precharge_w1 — S16 wave1 (pre-charge)
-- 成功率: 100.0%  (目标 99%, 通过)
-- P99:    3975ms  (目标 2500ms, 不通过)
-- 原始数据: `results/S16_precharge_w1.json`
+### ❌ S16_after_recharge — 配额快速恢复 (后)
+- 成功率: 67.6%  (目标 99%, 不通过)
+- P99:    1027ms  (目标 2500ms, 通过)
+- 原始数据: `docs/全方面测试/results/S16_after_recharge.json`
 
-### ❌ S16_recovery_w2 — S16 wave2 (recovery)
-- 成功率: 100.0%  (目标 99%, 通过)
-- P99:    3894ms  (目标 2500ms, 不通过)
-- 原始数据: `results/S16_recovery_w2.json`
+### ❌ S16_before_recharge — 配额快速恢复 (前)
+- 成功率: 65.2%  (目标 99%, 不通过)
+- P99:    1030ms  (目标 2500ms, 通过)
+- 原始数据: `docs/全方面测试/results/S16_before_recharge.json`
 
 
 ## 故障模式覆盖矩阵

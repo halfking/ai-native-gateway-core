@@ -1,5 +1,5 @@
 {
-  "scenario": "S02_cost_route",
+  "scenario": "S07_peak_dispatch",
   "gateway": "http://localhost:8781",
   "models": [
     "loadtest-mini-alpha",
@@ -12,24 +12,24 @@
     "loadtest-pro-beta",
     "loadtest-pro-gamma"
   ],
-  "n_clients": 10,
-  "rps_per_client": 3.0,
-  "duration_sec": 30,
-  "prompt_size": "short",
+  "n_clients": 150,
+  "rps_per_client": 5.0,
+  "duration_sec": 90,
+  "prompt_size": "long",
   "sticky_ratio": 0.0,
   "stream_ratio": 0.0,
   "fault_inject_cancel": 0.0,
   "metrics": {
-    "total": 429,
-    "succ": 429,
+    "total": 21679,
+    "succ": 21679,
     "fail": 0,
     "success_rate": 1.0,
-    "p50_ms": 13.239957974292338,
-    "p95_ms": 3375.668291992042,
-    "p99_ms": 3952.337708993582,
-    "max_ms": 3999.041583010694,
-    "throughput_rps": 12.994911179395894,
-    "elapsed_sec": 33.0129228339938,
+    "p50_ms": 35.88354101520963,
+    "p95_ms": 5024.474499979988,
+    "p99_ms": 7565.502165991347,
+    "max_ms": 10791.707333002705,
+    "throughput_rps": 217.61417078227382,
+    "elapsed_sec": 99.62126970899408,
     "fail_by_status": {},
     "fail_by_kind": {}
   }

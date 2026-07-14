@@ -351,6 +351,20 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(candidates) == 0 {
+		// Distinguish "model not recognized anywhere" (400 invalid_model) from
+		// "model recognized but no routable provider right now" (503 no_candidate).
+		// The ModelKnown probe is one cheap indexed query and saves an upstream
+		// round-trip + a confusing 503 for typos in the client request.
+		if !h.chatHandler.provider.ModelKnown(r.Context(), clientModel) {
+			attemptErrCode = "invalid_model"
+			attemptErrMsg = fmt.Sprintf("Model '%s' is not supported by this gateway", clientModel)
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeResponsesError(w, http.StatusBadRequest, attemptErrMsg, "invalid_request_error", "invalid_model")
+			return
+		}
 		// This is the real no_candidate case - no database error, just no matching providers
 		attemptErrCode = "no_candidate"
 		attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)

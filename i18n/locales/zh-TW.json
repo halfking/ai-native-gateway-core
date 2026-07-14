@@ -35,6 +35,9 @@
   "no_candidate": {
     "other": "沒有可用於模型「{{.Model}}」的供應商"
   },
+  "invalid_model": {
+    "other": "模型 '{{.Model}}' 不被此閘道支援"
+  },
   "meta_tool_error": {
     "other": "元工具處理失敗"
   },

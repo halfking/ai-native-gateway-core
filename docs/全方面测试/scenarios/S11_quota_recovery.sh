@@ -8,7 +8,7 @@ reset_all_suppliers
 echo "[S11] quota recovery: C 短窗口 3000/60s"
 set_group_quota C 3000 60
 echo "  wave 1: 耗尽 C 组"
-run_loadtest S11_quota_w1 \
+run_loadtest S11_quota_recovery \
     --n-clients 40 --rps-per-client 5 --duration 30 \
     --models tok3 --prompt short
 
@@ -16,7 +16,7 @@ echo "  等待 65s 让配额窗口过期..."
 sleep 65
 
 echo "  wave 2: 验证 C 组恢复"
-run_loadtest S11_quota_w2 \
+run_loadtest S11_quota_recovery \
     --n-clients 40 --rps-per-client 5 --duration 30 \
     --models tok3 --prompt short
 

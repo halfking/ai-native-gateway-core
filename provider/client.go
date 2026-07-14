@@ -446,6 +446,37 @@ func (c *Client) GetPolicy(ctx context.Context) (*Policy, error) {
 	return c.getPolicyCached(ctx)
 }
 
+// ModelKnown reports whether the model name has any explicitly-registered
+// provider offer or alias. It deliberately excludes models_canonical because
+// that table is auto-populated on first sighting by resolveModelDB — using
+// it would let the auto-insert mask typos in client requests as 503
+// "no_candidate" instead of 400 "invalid_model". The check is one cheap
+// SQL with three indexed equality predicates on provider_models.standardized_name,
+// provider_models.raw_model_name, and model_aliases.raw_name.
+func (c *Client) ModelKnown(ctx context.Context, model string) bool {
+	if !c.Enabled() || c.dbPool == nil || strings.TrimSpace(model) == "" {
+		return false
+	}
+	var found bool
+	err := c.dbPool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM provider_models
+			 WHERE lower(standardized_name) = lower($1)
+			UNION ALL
+			SELECT 1 FROM provider_models
+			 WHERE lower(raw_model_name) = lower($1)
+			UNION ALL
+			SELECT 1 FROM model_aliases
+			 WHERE lower(raw_name) = lower($1)
+			LIMIT 1
+		)
+	`, model).Scan(&found)
+	if err != nil {
+		return false
+	}
+	return found
+}
+
 func (c *Client) getPolicyCached(ctx context.Context) (*Policy, error) {
 	c.mu.RLock()
 	if c.polCache.value != nil && time.Now().Before(c.polCache.expires) {

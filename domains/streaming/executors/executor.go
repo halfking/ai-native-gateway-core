@@ -50,6 +50,7 @@ type providerResolver interface {
 	Enabled() bool
 	// 2026-07-03: Bug #7 fix - added tenantID parameter
 	GetCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, *provider.Policy, error)
+	ModelKnown(ctx context.Context, model string) bool
 }
 
 type NormalizerFunc func(chunk []byte, isStream bool) []byte

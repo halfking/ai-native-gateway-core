@@ -35,6 +35,9 @@
   "no_candidate": {
     "other": "Aucun fournisseur disponible pour le modèle « {{.Model}} »"
   },
+  "invalid_model": {
+    "other": "Le modèle '{{.Model}}' n'est pas pris en charge par cette passerelle"
+  },
   "meta_tool_error": {
     "other": "Échec du traitement du méta-outil"
   },

@@ -9,7 +9,7 @@ echo "[S15] cross-group failover: A=server_error, B=server_error"
 set_group A server_error
 set_group B server_error
 
-run_loadtest S15_cross_group \
+run_loadtest S15_cross_group_failover \
     --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tier --prompt short
 print_summary S15_cross_group

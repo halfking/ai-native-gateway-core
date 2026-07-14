@@ -12,21 +12,21 @@
   "stream_ratio": 0.0,
   "fault_inject_cancel": 0.0,
   "metrics": {
-    "total": 860,
+    "total": 884,
     "succ": 0,
-    "fail": 860,
+    "fail": 884,
     "success_rate": 0.0,
-    "p50_ms": 13.412749998678919,
-    "p95_ms": 26.037333002022933,
-    "p99_ms": 51.69200000091223,
-    "max_ms": 54.383583003073,
-    "throughput_rps": 26.048027297731586,
-    "elapsed_sec": 33.015935915995215,
+    "p50_ms": 5.41466599679552,
+    "p95_ms": 14.751833979971707,
+    "p99_ms": 19.135415990604088,
+    "max_ms": 26.76854099263437,
+    "throughput_rps": 26.77521833521468,
+    "elapsed_sec": 33.01560379200964,
     "fail_by_status": {
-      "503": 860
+      "400": 884
     },
     "fail_by_kind": {
-      "server_error": 860
+      "invalid_request_error": 884
     }
   }
 }

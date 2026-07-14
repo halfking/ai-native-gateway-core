@@ -148,9 +148,14 @@ def main():
                 + f" | _ | _ | _ | _ | parse error: {r.get('error', '')} |"
             )
             continue
-        ok_pct = "✓" if r["ok_pct"] else "✗"
-        ok_p99 = "✓" if r["ok_p99"] else "✗"
+        ok_pct = "✓" if r.get("ok_pct", False) else "✗"
+        ok_p99 = "✓" if r.get("ok_p99", False) else "✗"
         fail_str = "  (预期失败)" if r.get("fail_expected") else ""
+        if r.get("status") == "unknown":
+            print(
+                f"| ⚠️ | `{r['scenario']}` | {r.get('total', 0)} | _ | _ | _ | _ | {r.get('label', r['scenario'])}{fail_str} (no gate defined) |"
+            )
+            continue
         print(
             f"| {r['status']} | `{r['scenario']}` | {r['total']} | "
             f"{r['succ_pct']:.1f} {ok_pct} | {r['succ_pct_target']} | "
