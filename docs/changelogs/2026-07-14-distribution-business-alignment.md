@@ -6,7 +6,7 @@ Date: 2026-07-14
 
 - Added a public user agreement covering runtime telemetry authorization and controlled update notifications.
 - Explicitly excluded raw AI conversations, prompts, completions, uploaded files, credentials, and request/response bodies from telemetry collection.
-- Required explicit terms acceptance for Trial issuance in the browser, installer CLI, and License Authority API.
+- Required explicit terms acceptance for Trial issuance in the browser, installer CLI, and License Authority API, with atomic consent audit persistence.
 - Standardized the default Trial duration at 15 days.
 - Added business-process standards, a code-verification report, a completion assessment, and flow-oriented remaining tasks.
 
