@@ -157,7 +157,7 @@ func TestParseGemini_MixedAttachmentMetadata(t *testing.T) {
 			t.Errorf("block %d mime = %q, want %q", i, mime, expected.mime)
 		}
 	}
-	if got := blocks[4].Document.Source.FileURI; got != "files/text-1" {
+	if got := blocks[4].Document.Source.Data; got != "files/text-1" {
 		t.Errorf("file URI = %q, want files/text-1", got)
 	}
 }
