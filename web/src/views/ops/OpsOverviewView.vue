@@ -10,8 +10,12 @@ import {
   getUpgradeLogs,
   getFaultStats,
   getFaultEvents,
+  getLicenseHealth,
+  getLicenseStatus,
   type CenterStats,
   type FaultEvent,
+  type LicenseHealth,
+  type LicenseStatus,
   type OfflineActivationRequest,
   type UpgradeLog,
 } from '../../api/ops'
@@ -28,6 +32,11 @@ const todayUpgrades = ref(0)
 const recentLogs = ref<UpgradeLog[]>([])
 const recentFaults = ref<FaultEvent[]>([])
 const pendingRequests = ref<OfflineActivationRequest[]>([])
+// License subsystem health (v2 Phase 3B-1) — separate from the
+// license-management metrics: this is about daemon self-state
+// (refresh daemon, grace period) not customer license catalogue.
+const licenseHealth = ref<LicenseHealth | null>(null)
+const licenseStatus = ref<LicenseStatus | null>(null)
 
 const quickLinks = computed(() => [
   { path: '/ops/center', icon: '🖥️', label: t('ops.center.title') },
@@ -68,6 +77,8 @@ async function load() {
       upgradeRes,
       faultStats,
       faultEvents,
+      licHealth,
+      licStatus,
     ] = await Promise.all([
       getCenterStats(),
       getLicenses({ limit: 1 }),
@@ -75,6 +86,11 @@ async function load() {
       getUpgradeLogs({ limit: 20 }),
       getFaultStats(),
       getFaultEvents({ status: 'new', limit: 5 }),
+      // v2 Phase 3B-1: license subsystem health. These endpoints are
+      // allowed without admin auth (they expose only metadata), but a
+      // 4xx/5xx here shouldn't fail the whole page — catch locally.
+      getLicenseHealth().catch(() => null),
+      getLicenseStatus().catch(() => null),
     ])
 
     centerStats.value = center
@@ -87,12 +103,49 @@ async function load() {
     todayUpgrades.value = (upgradeRes.items || []).filter((log) =>
       isToday(log.completed_at || log.started_at)
     ).length
+    licenseHealth.value = licHealth
+    licenseStatus.value = licStatus
   } catch (error) {
     ElMessage.error(t('ops.overview.loadFailed'))
     console.error(error)
   } finally {
     loading.value = false
   }
+}
+
+// License-subsection summary colour: green if healthy & no grace, amber
+// if in-grace, red if restricted / unhealthy.
+const licenseStatusTone = computed(() => {
+  if (!licenseStatus.value) return 'info'
+  if (licenseStatus.value.mode === 'restricted') return 'danger'
+  if (licenseStatus.value.mode === 'in_grace') return 'warning'
+  if (licenseHealth.value && !licenseHealth.value.healthy) return 'warning'
+  return 'success'
+})
+
+const licenseStatusLabel = computed(() => {
+  if (!licenseStatus.value) return '—'
+  const s = licenseStatus.value
+  if (s.mode === 'restricted') return t('ops.overview.licenseModeRestricted')
+  if (s.mode === 'in_grace') {
+    const hours = Math.max(0, Math.round(s.grace_remaining_seconds / 3600))
+    return t('ops.overview.licenseModeGrace', { hours })
+  }
+  return t('ops.overview.licenseModeNormal')
+})
+
+function formatRel(iso?: string): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  const diff = Date.now() - d.getTime()
+  if (diff < 0) return t('ops.overview.justNow')
+  const mins = Math.round(diff / 60000)
+  if (mins < 1) return t('ops.overview.justNow')
+  if (mins < 60) return t('ops.overview.minutesAgo', { n: mins })
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return t('ops.overview.hoursAgo', { n: hours })
+  const days = Math.round(hours / 24)
+  return t('ops.overview.daysAgo', { n: days })
 }
 
 function goTo(path: string) {
@@ -136,10 +189,42 @@ onMounted(load)
           <div class="stat-label">{{ t('ops.overview.todayUpgrades') }}</div>
         </div>
       </el-card>
+      <el-card shadow="hover" class="stat-card" @click="goTo('/ops/licenses')">
+        <div class="stat-item">
+          <div class="stat-value" :class="`stat-${licenseStatusTone}`">{{ licenseStatusLabel }}</div>
+          <div class="stat-label">{{ t('ops.overview.licenseSubsystem') }}</div>
+        </div>
+      </el-card>
       <el-card shadow="hover" class="stat-card" @click="goTo('/ops/faults')">
         <div class="stat-item">
           <div class="stat-value stat-danger">{{ openFaults }}</div>
           <div class="stat-label">{{ t('ops.overview.openFaults') }}</div>
+        </div>
+      </el-card>
+    </div>
+
+    <!-- v2 Phase 3B-1: License subsystem detail card. Shows the
+         daemon's most recent refresh outcome + consecutive-failure
+         count. Hidden until the API is reachable so older deployments
+         don't show a "never" string. -->
+    <div v-if="licenseHealth" class="license-health-card">
+      <el-card shadow="hover">
+        <div class="health-row">
+          <div class="health-label">{{ t('ops.overview.lastRefresh') }}</div>
+          <div class="health-value">
+            <span :class="`health-pill health-${licenseStatusTone}`">{{ formatRel(licenseHealth.last_cycle_at) }}</span>
+          </div>
+        </div>
+        <div class="health-row">
+          <div class="health-label">{{ t('ops.overview.consecutiveFailures') }}</div>
+          <div class="health-value">
+            <span class="health-num">{{ licenseHealth.consecutive_fails }}</span>
+            <span class="health-meta">{{ t('ops.overview.totalCycles', { n: licenseHealth.total_cycles }) }}</span>
+          </div>
+        </div>
+        <div v-if="licenseHealth.last_error" class="health-row error-row">
+          <div class="health-label">{{ t('ops.overview.lastError') }}</div>
+          <div class="health-value error-text">{{ licenseHealth.last_error }}</div>
         </div>
       </el-card>
     </div>
@@ -275,6 +360,52 @@ onMounted(load)
 .stat-warning { color: var(--el-color-warning); }
 .stat-danger { color: var(--el-color-danger); }
 .stat-info { color: var(--el-color-info); }
+
+/* v2 Phase 3B-1: License subsystem detail card */
+.license-health-card {
+  margin-bottom: 20px;
+}
+.health-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 0;
+}
+.health-label {
+  width: 160px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  flex-shrink: 0;
+}
+.health-value {
+  flex: 1;
+}
+.health-num {
+  font-weight: 700;
+  font-size: 16px;
+}
+.health-meta {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.health-pill {
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 13px;
+}
+.health-success { background: var(--el-color-success-light-7); color: var(--el-color-success); }
+.health-warning { background: var(--el-color-warning-light-7); color: var(--el-color-warning); }
+.health-danger  { background: var(--el-color-danger-light-7);  color: var(--el-color-danger); }
+.health-info    { color: var(--el-text-color-secondary); }
+.error-row { border-top: 1px dashed var(--el-color-danger-light-7); padding-top: 8px; margin-top: 6px; }
+.error-text {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--el-color-danger);
+  word-break: break-all;
+}
 
 .quick-links {
   display: grid;
