@@ -32,6 +32,9 @@ export interface LiveRequest {
   cost_usd?: number | null
   error_kind?: string | null
   failure_stage?: string | null  // "gateway" | "upstream" — failure origin
+  client_profile?: string | null
+  identity_hash?: string | null
+  credits_charged?: number | null
   // 2026-07-13: error-triggered probe fields
   is_probe?: boolean
   probe_origin?: 'direct' | 'gateway' | 'scheduled'

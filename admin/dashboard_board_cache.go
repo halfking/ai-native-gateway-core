@@ -62,15 +62,3 @@ func boardScopeForTenant(tenantID string) boardcache.Scope {
 	}
 	return boardcache.ScopeTenant(tenantID)
 }
-
-func attachBoardOperational(ctx context.Context, h *Handler, payload map[string]any) {
-	if payload == nil {
-		return
-	}
-	if bgTasks := h.queryBoardBackgroundTasks(ctx); bgTasks != nil {
-		payload["background_tasks"] = bgTasks
-	}
-	if selfcheck := h.queryBoardSelfCheck(ctx); selfcheck != nil {
-		payload["selfcheck"] = selfcheck
-	}
-}

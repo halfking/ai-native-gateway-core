@@ -32,6 +32,7 @@ func (s *Service) foldScope(ctx context.Context, scope Scope) {
 		}
 		applySummaryDelta(board, agg)
 		applyPieDelta(board, dimAgg)
+		truncateBoardPies(board)
 		applyTrendDelta(board, agg)
 		meta := map[string]string{
 			"folded_at": time.Now().UTC().Format(time.RFC3339),

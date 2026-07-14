@@ -1,5 +1,5 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { fetchDashboardBoard, type BoardPayload } from '../api/board'
+import { fetchDashboardBoard, fetchBoardOperational, type BoardPayload, type BoardOperationalPayload } from '../api/board'
 import { getSetting } from '../api/settings'
 import { subscribeTerminalRequests, connectionRef } from './liveStreamStore'
 import { applyLiveRequestToBoard } from './boardLiveMerge'
@@ -10,8 +10,9 @@ import {
   type BoardTimeRange,
 } from '../utils/boardTimeRange'
 
-const DEFAULT_REFRESH_MS = 1000
-const SSE_RECONCILE_MIN_MS = 3000
+const DEFAULT_REFRESH_MS = 10_000
+const SSE_RECONCILE_MIN_MS = 30_000
+const OPERATIONAL_REFRESH_MS = 30_000
 
 async function resolveRefreshMs(): Promise<number> {
   try {
@@ -42,8 +43,10 @@ export function useDashboardBoard() {
   const loading = ref(false)
   const error = ref<string | null>(null)
   const board = ref<BoardPayload | null>(null)
+  const operational = ref<BoardOperationalPayload | null>(null)
 
   let refreshTimer: number | undefined
+  let operationalTimer: number | undefined
   let refreshMs = DEFAULT_REFRESH_MS
   let unsubscribeTerminal: (() => void) | null = null
   let loadInFlight = false
@@ -78,6 +81,15 @@ export function useDashboardBoard() {
     appliedTerminalIds.clear()
   }
 
+  async function loadOperational() {
+    if (document.hidden) return
+    try {
+      operational.value = await fetchBoardOperational()
+    } catch {
+      // operational cards are non-critical; keep last snapshot
+    }
+  }
+
   async function load(options?: { silent?: boolean }) {
     if (loadInFlight) return
     const silent = options?.silent === true
@@ -87,12 +99,14 @@ export function useDashboardBoard() {
       loading.value = true
     }
     error.value = null
+    const operationalPromise = loadOperational()
     try {
       const fresh = await fetchDashboardBoard(toBoardTimeQuery(timeRange.value))
       adoptBoardPayload(fresh, { silentReconcile: silent })
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : '加载失败'
     } finally {
+      await operationalPromise
       loadInFlight = false
       if (!silent) {
         loading.value = false
@@ -123,6 +137,20 @@ export function useDashboardBoard() {
     return base
   }
 
+  function scheduleOperationalPoll() {
+    if (operationalTimer) clearInterval(operationalTimer)
+    operationalTimer = window.setInterval(() => {
+      void loadOperational()
+    }, OPERATIONAL_REFRESH_MS)
+  }
+
+  function stopOperationalPoll() {
+    if (operationalTimer) {
+      clearInterval(operationalTimer)
+      operationalTimer = undefined
+    }
+  }
+
   function schedulePoll() {
     if (refreshTimer) clearInterval(refreshTimer)
     refreshTimer = window.setInterval(() => {
@@ -141,6 +169,7 @@ export function useDashboardBoard() {
     }
     if (liveUpdatesEnabled.value) {
       void load({ silent: true })
+      void loadOperational()
       schedulePoll()
     }
   }
@@ -151,10 +180,13 @@ export function useDashboardBoard() {
     if (liveUpdatesEnabled.value) {
       wireLiveUpdates()
       refreshMs = await resolvePollIntervalMs()
+      void loadOperational()
+      scheduleOperationalPoll()
       schedulePoll()
       document.addEventListener('visibilitychange', onVisibilityChange)
     } else {
       unwireLiveUpdates()
+      stopOperationalPoll()
     }
   }
 
@@ -163,6 +195,7 @@ export function useDashboardBoard() {
       clearInterval(refreshTimer)
       refreshTimer = undefined
     }
+    stopOperationalPoll()
     document.removeEventListener('visibilitychange', onVisibilityChange)
     unwireLiveUpdates()
   }
@@ -192,7 +225,9 @@ export function useDashboardBoard() {
     loading,
     error,
     board,
+    operational,
     load,
+    loadOperational,
     setTimeRange,
     startAutoRefresh,
     stopAutoRefresh,
