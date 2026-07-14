@@ -91,12 +91,17 @@ func TestCanonicalizeClientModel(t *testing.T) {
 		{name: "dash variant preserved", in: "glm-4-7", want: "glm-4-7"},
 		{name: "GPT uppercase", in: "GPT-4O", want: "gpt-4o"},
 		{name: "claude uppercase", in: "Claude-Sonnet-4-6", want: "claude-sonnet-4-6"},
-		// provider-prefixed client input → still lowercased (we only strip
-		// casing here; vendor prefix is removed by NormalizeRouteKey when
-		// needed for cross-form matching, but the canonical DB key keeps
-		// the prefix when the family owns the namespace).
-		{name: "zhipu prefix", in: "Zhipu/glm-4.7", want: "zhipu/glm-4.7"},
-		{name: "nvidia prefix passthrough", in: "z-ai/glm-5.2", want: "z-ai/glm-5.2"},
+		// 2026-07-14 fix: vendor prefix is stripped so NIM's
+		// "z-ai/glm-5.2" collapses to the same canonical key as the
+		// client's "glm-5.2". This is the property that makes
+		// loadCandidatesByModalityDB's (1) canonical_raw_name = $1
+		// clause match NIM offers.
+		{name: "zhipu prefix", in: "Zhipu/glm-4.7", want: "glm-4.7"},
+		{name: "nvidia z-ai prefix", in: "z-ai/glm-5.2", want: "glm-5.2"},
+		{name: "nvidia minimaxai prefix", in: "minimaxai/minimax-m3", want: "minimax-m3"},
+		{name: "nvidia z-ai uppercase", in: "Z-AI/GLM-5.2", want: "glm-5.2"},
+		{name: "anthropic claude prefix", in: "anthropic/claude-3-5-sonnet", want: "claude-3-5-sonnet"},
+		{name: "openai prefix", in: "openai/gpt-4o", want: "gpt-4o"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

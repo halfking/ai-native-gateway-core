@@ -259,6 +259,29 @@ func setupEcho(api *CustomerAPI) *echo.Echo {
 	return e
 }
 
+func TestCustomerAPI_TrialAuthorityURLRequiresHTTPSOutsideDevelopment(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	api, _ := newTestCustomerAPI(t)
+	api.SetTrialAuthorityURL("http://authority.internal/?token=secret")
+	if api.trialURL != "" {
+		t.Fatalf("expected insecure or credential-bearing authority URL to be rejected")
+	}
+
+	api.SetTrialAuthorityURL("https://authority.internal/base/?token=secret")
+	if api.trialURL != "https://authority.internal/base" {
+		t.Fatalf("unexpected normalized authority URL: %q", api.trialURL)
+	}
+}
+
+func TestCustomerAPI_TrialAuthorityURLAllowsHTTPOnlyInDevelopment(t *testing.T) {
+	t.Setenv("APP_ENV", "test")
+	api, _ := newTestCustomerAPI(t)
+	api.SetTrialAuthorityURL("http://127.0.0.1:8443")
+	if api.trialURL != "http://127.0.0.1:8443" {
+		t.Fatalf("expected local HTTP authority URL in test environment, got %q", api.trialURL)
+	}
+}
+
 func TestCustomerAPI_Status_NoLicense(t *testing.T) {
 	api, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)

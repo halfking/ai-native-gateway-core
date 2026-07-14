@@ -232,5 +232,14 @@ func StandardizeName(rawName string) string {
 // provider_models.raw_model_name with their original casing so the gateway
 // can pass them upstream unchanged.
 func CanonicalizeClientModel(rawName string) string {
-	return strings.TrimSpace(strings.ToLower(strings.TrimSpace(rawName)))
+	// 2026-07-14 fix: also strip the vendor prefix so that NIM's
+	// "z-ai/glm-5.2" / "minimaxai/minimax-m3" raw_model_name collapses
+	// to the same canonical key as the client's "glm-5.2" /
+	// "minimax-m3". Without this, loadCandidatesByModalityDB's
+	// "canonical_raw_name = $1" clause never matches NIM offers.
+	rawName = strings.TrimSpace(strings.ToLower(rawName))
+	if idx := strings.LastIndex(rawName, "/"); idx >= 0 {
+		rawName = rawName[idx+1:]
+	}
+	return strings.TrimSpace(rawName)
 }

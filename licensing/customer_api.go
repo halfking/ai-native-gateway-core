@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -29,8 +32,21 @@ type CustomerAPI struct {
 
 // SetTrialAuthorityURL enables the customer gateway to proxy trial requests
 // to the License Authority without exposing a cross-origin browser endpoint.
-func (api *CustomerAPI) SetTrialAuthorityURL(url string) {
-	api.trialURL = strings.TrimRight(strings.TrimSpace(url), "/")
+func (api *CustomerAPI) SetTrialAuthorityURL(rawURL string) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "https" && !isDevelopmentEnvironment()) {
+		api.trialURL = ""
+		return
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	api.trialURL = strings.TrimRight(parsed.String(), "/")
+}
+
+func isDevelopmentEnvironment() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	return value == "dev" || value == "development" || value == "test"
 }
 
 // NewCustomerAPI wires the customer-facing handlers around existing components.
@@ -75,14 +91,20 @@ func (api *CustomerAPI) handleTrial(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create trial request"})
 	}
 	request.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return c.JSON(http.StatusBadGateway, map[string]string{"error": "license authority unavailable"})
 	}
 	defer response.Body.Close()
+	limitedBody := io.LimitReader(response.Body, 64<<10)
 	var result map[string]interface{}
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(limitedBody).Decode(&result); err != nil {
 		return c.JSON(http.StatusBadGateway, map[string]string{"error": "invalid license authority response"})
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
