@@ -548,9 +548,10 @@ func TestLiveStreamRedisStore_IdleMarkerWritesMainQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ZRange tenant main: %v", err)
 	}
-	// req-1 + one idle marker per idle dimension (vendor, provider, model, main).
-	if len(members) < 2 {
-		t.Fatalf("expected tenant main queue to contain req-1 + idle markers, got %d: %#v", len(members), members)
+	// req-1 + one idle marker per idle dimension (vendor, provider, model).
+	// "main" activity keys are skipped — they never render in a swim lane.
+	if len(members) < 4 {
+		t.Fatalf("expected tenant main queue to contain req-1 + 3 idle markers, got %d: %#v", len(members), members)
 	}
 
 	// Resolve every idle marker from the tenant main queue and assert each
@@ -588,6 +589,29 @@ func TestLiveStreamRedisStore_IdleMarkerWritesMainQueue(t *testing.T) {
 	}
 	if modelIdle == nil {
 		t.Fatalf("expected a model-scoped idle marker (Model=gpt-4o only), got members %#v", members)
+	}
+	for _, idle := range []*LiveRequest{vendorIdle, providerIdle, modelIdle} {
+		if idle.ErrorKind == nil || *idle.ErrorKind != idleMarkerErrorKind {
+			t.Fatalf("expected error_kind=%q on idle marker, got %#v", idleMarkerErrorKind, idle)
+		}
+	}
+	// Global-scope idle markers must not land in the tenant main queue.
+	for _, m := range members {
+		if strings.HasPrefix(m, "idle-global-") {
+			t.Fatalf("global idle marker %q should not be in tenant main queue", m)
+		}
+	}
+}
+
+func TestIdleMarkerQueueKeys_ScopeRouting(t *testing.T) {
+	global := idleMarkerQueueKeys("", "vendor", "openai")
+	if len(global) != 1 || global[0] != liveStreamMainKey {
+		t.Fatalf("global idle queues=%#v want [%q]", global, liveStreamMainKey)
+	}
+	tenant := idleMarkerQueueKeys("tenant-a", "vendor", "openai")
+	want := tenantLiveStreamKey("tenant-a", "main")
+	if len(tenant) != 1 || tenant[0] != want {
+		t.Fatalf("tenant idle queues=%#v want [%q]", tenant, want)
 	}
 }
 
