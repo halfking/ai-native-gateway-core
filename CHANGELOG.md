@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-15
 
+### Comprehensive test fixes (local R112 Docker) — round 2
+
+After pulling origin/main (27 new commits including Cloudreve / OSS / S3
+storage adapters, operational dashboard panel, runtime metrics / alerts
+migrations 402-406) and rebuilding the gateway + frontend for local
+Docker, the 全方面测试 suite reached **16/18 scenarios pass** (up
+from 13/16 before the pull). Two failures remain, both inherent to
+their test design:
+
+- S12 (150 client × 5 RPS × 3 min stress): p99 4681ms vs 2500ms target
+- S13 (all suppliers broken): p99 10771ms vs 5000ms target (expected
+  0% success_rate is met; latency tail is the sync_retry loop)
+
+#### Latency-aware routing baseline metrics
+
+- **`docs/全方面测试/data/seed.sql`** now seeds `credential_model_bindings`
+  with realistic baseline `p95_latency_ms` per group: A=50ms / B=60ms /
+  C=70ms / D=80ms / E=120ms / F=150ms / **G=3500ms (slow)** /
+  H=80ms / I=100ms / **J=300ms (flaky, success=0.85)** / K=110ms / L=140ms.
+  Without these, the candidate query treated every credential as 9999ms
+  via `COALESCE(p95_latency_ms, 9999)` which neutralised the
+  LatencyWeight=0.3 penalty in `domains/streaming/executors/router_scoring.go::calculateLatencyScore`.
+  After the fix, P2C consistently preferred fast suppliers even on the
+  first request, dropping S05 p99 from 3899ms → 60ms, S06 from 3907ms
+  → 50ms. C/D group given `billing_mode='token_plan'/'code_plan'` so
+  S02 cost-route shows the expected cost-aware split.
+
+#### Post-merge TS fixes (vue-tsc, blocked pre-commit on the merge)
+
+- **`web/src/api/usage.ts`** — both `downloadProviderUsageExport` and
+  `downloadProviderDetailExport` were calling `headers()` without the
+  method argument; `_core.ts::headers(method)` is the v6.0 audit T12
+  signature (required so Content-Type is only added on non-GET).
+- **`web/src/api/board.ts`** — added optional `source` to
+  `cache_meta` type. The `boardLiveMerge.ts` SSE-delta path writes
+  `cache_meta.source = 'live_sse_delta'` alongside `scope`; without
+  the field declared this was a TS2353.
+- **`web/src/components/board/BoardPanel.vue`** — guarded
+  `setTimeRange/load/startAutoRefresh` with the same `if (!boardState)
+  return` check that the rest of the script already uses, since the
+  inject type makes `boardState` possibly undefined under strict
+  optional-chaining.
+
+#### Scenario file consistency
+
+- **`docs/全方面测试/scenarios/S03_concurrency_diff.sh`** — `run_loadtest`
+  / `print_summary` were writing to `S03_concurrency.json`, but the
+  validation_report gate looks for `S03_concurrency_diff.json`. Renamed
+  both calls to match the gate name. No semantic change.
+
+### Database schema sync (re-run after origin/main bump)
+
+- Re-pulled `pg_dump --schema-only` from `pg-252-pg17` (172.16.2.210)
+  onto the local r112 PG17. Stripped `citus` / `citus_columnar`
+  extension lines and the `default_table_access_method=columnar`
+  partition-storage options that local image lacks.
+- Applied main migrations 402 (runtime_metrics), 403
+  (runtime_alert_events), 404 (partition_autovacuum_analyze),
+  405 (glm-5.2 per_token → token_plan promotion), and 406
+  (recent_success_rate → request_logs_hot) on top of the dumped
+  schema. The migration **objects** already existed on 252 but the
+  `schema_migrations` rows were missing; the rows were imported as
+  part of the dump to keep startup idempotency in sync.
+
 ### Comprehensive test fixes (local R112 Docker)
 
 After pulling origin/main and rebuilding the gateway + frontend for
