@@ -418,17 +418,12 @@ function mergeDelta(delta: LiveStreamDelta) {
   s.status_legends = delta.status_legends
   for (const dim of ['vendor', 'provider', 'model'] as const) {
     if (delta.changed_lanes[dim]) {
-      // 2026-07-14: both this branch and the original Cursor-side
-      // refactor agree on the lane-id-keyed merge goal (no full-array
-      // replacement). The Cursor refactor compares the previous lane
-      // object's data fields and reuses the reference when nothing
-      // changed; that is strictly better than my first draft (which
-      // always mutated in place) because a "no-op" delta no longer
-      // triggers Vue's reactivity at all. Adopt their
-      // `mergeLaneList` and re-apply my legend-side optimisation on
-      // top.
-      s.dimensions[dim] = mergeLaneList(s.dimensions[dim] || [], delta.changed_lanes[dim])
-      s.detail_dimensions[dim] = mergeLaneList(s.detail_dimensions[dim] || [], delta.changed_lanes[dim])
+      // mergeLanesById updates in place and preserves lane order so
+      // backend rank changes do not reshuffle the whole swim-lane row.
+      if (!s.dimensions[dim]) s.dimensions[dim] = []
+      mergeLanesById(s.dimensions[dim], delta.changed_lanes[dim])
+      if (!s.detail_dimensions[dim]) s.detail_dimensions[dim] = []
+      mergeLanesById(s.detail_dimensions[dim], delta.changed_lanes[dim])
     }
     if (delta.dimension_legends && delta.dimension_legends[dim]) {
       // Merge legend by key so we don't visually replace the whole

@@ -1,7 +1,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { fetchDashboardBoard, type BoardPayload } from '../api/board'
 import { getSetting } from '../api/settings'
-import { acquireLiveStream, subscribeTerminalRequests } from './liveStreamStore'
+import { subscribeTerminalRequests, connectionRef } from './liveStreamStore'
 import { applyLiveRequestToBoard } from './boardLiveMerge'
 import {
   defaultBoardTimeRange,
@@ -11,6 +11,7 @@ import {
 } from '../utils/boardTimeRange'
 
 const DEFAULT_REFRESH_MS = 1000
+const SSE_RECONCILE_MIN_MS = 3000
 
 async function resolveRefreshMs(): Promise<number> {
   try {
@@ -28,6 +29,11 @@ async function resolveRefreshMs(): Promise<number> {
   }
 }
 
+function sseConnectionActive(): boolean {
+  const state = connectionRef.value
+  return state === 'open' || state === 'connecting' || state === 'reconnecting'
+}
+
 export function useDashboardBoard() {
   const timeRange = ref<BoardTimeRange>(defaultBoardTimeRange())
   const days = computed(() => timeRange.value.days)
@@ -39,8 +45,8 @@ export function useDashboardBoard() {
 
   let refreshTimer: number | undefined
   let refreshMs = DEFAULT_REFRESH_MS
-  let releaseLiveStream: (() => void) | null = null
   let unsubscribeTerminal: (() => void) | null = null
+  let loadInFlight = false
   const appliedTerminalIds = new Set<string>()
 
   function mergeTerminalRequest(requestId: string, req: Parameters<typeof applyLiveRequestToBoard>[1]) {
@@ -73,7 +79,10 @@ export function useDashboardBoard() {
   }
 
   async function load(options?: { silent?: boolean }) {
+    if (loadInFlight) return
     const silent = options?.silent === true
+    if (document.hidden && silent) return
+    loadInFlight = true
     if (!silent) {
       loading.value = true
     }
@@ -84,6 +93,7 @@ export function useDashboardBoard() {
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : '加载失败'
     } finally {
+      loadInFlight = false
       if (!silent) {
         loading.value = false
       }
@@ -92,9 +102,6 @@ export function useDashboardBoard() {
 
   function wireLiveUpdates() {
     if (!liveUpdatesEnabled.value) return
-    if (!releaseLiveStream) {
-      releaseLiveStream = acquireLiveStream()
-    }
     if (!unsubscribeTerminal) {
       unsubscribeTerminal = subscribeTerminalRequests((req) => {
         if (!req.request_id) return
@@ -106,16 +113,46 @@ export function useDashboardBoard() {
   function unwireLiveUpdates() {
     unsubscribeTerminal?.()
     unsubscribeTerminal = null
-    releaseLiveStream?.()
-    releaseLiveStream = null
+  }
+
+  async function resolvePollIntervalMs(): Promise<number> {
+    const base = await resolveRefreshMs()
+    if (liveUpdatesEnabled.value && sseConnectionActive()) {
+      return Math.max(base, SSE_RECONCILE_MIN_MS)
+    }
+    return base
+  }
+
+  function schedulePoll() {
+    if (refreshTimer) clearInterval(refreshTimer)
+    refreshTimer = window.setInterval(() => {
+      if (document.hidden) return
+      void load({ silent: true })
+    }, refreshMs)
+  }
+
+  function onVisibilityChange() {
+    if (document.hidden) {
+      if (refreshTimer) {
+        clearInterval(refreshTimer)
+        refreshTimer = undefined
+      }
+      return
+    }
+    if (liveUpdatesEnabled.value) {
+      void load({ silent: true })
+      schedulePoll()
+    }
   }
 
   async function startAutoRefresh() {
     if (refreshTimer) clearInterval(refreshTimer)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     if (liveUpdatesEnabled.value) {
       wireLiveUpdates()
-      refreshMs = await resolveRefreshMs()
-      refreshTimer = window.setInterval(() => void load({ silent: true }), refreshMs)
+      refreshMs = await resolvePollIntervalMs()
+      schedulePoll()
+      document.addEventListener('visibilitychange', onVisibilityChange)
     } else {
       unwireLiveUpdates()
     }
@@ -126,6 +163,7 @@ export function useDashboardBoard() {
       clearInterval(refreshTimer)
       refreshTimer = undefined
     }
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     unwireLiveUpdates()
   }
 
