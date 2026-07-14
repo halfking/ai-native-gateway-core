@@ -32,11 +32,6 @@ function onProviderFilter(e: Event) {
     </div>
     <BoardStatusCards :board="boardState.board.value" @open-selfcheck="dashboardTab.switchTab('selfcheck')" />
     <BoardSummaryRow :summary="boardState.board.value?.summary" />
-    <BoardPieGrid
-      :board="boardState.board.value"
-      :days="boardState.days.value"
-      :loading="boardState.loading.value"
-    />
     <TrendLineChart :data="boardState.board.value?.trends ?? []" :loading="boardState.loading.value">
       <template #filters>
         <label class="filter-label">
@@ -52,6 +47,11 @@ function onProviderFilter(e: Event) {
         </label>
       </template>
     </TrendLineChart>
+    <BoardPieGrid
+      :board="boardState.board.value"
+      :days="boardState.days.value"
+      :loading="boardState.loading.value"
+    />
   </div>
 </template>
 
@@ -59,7 +59,7 @@ function onProviderFilter(e: Event) {
 .board-panel {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 12px;
 }
 .board-degraded {
   margin-bottom: 8px;
