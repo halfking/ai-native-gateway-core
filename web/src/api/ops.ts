@@ -512,3 +512,44 @@ export async function getCodeReviews(sessionId?: number): Promise<CodeReview[]> 
   const res = await req<{ items: CodeReview[] }>('GET', `/api/admin/vibecoding/reviews${q}`)
   return res.items || []
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// License Health (v2 Phase 3B-1)
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface LicenseHealth {
+  healthy: boolean
+  started_at?: string
+  last_cycle_at?: string
+  last_success_at?: string
+  last_error_at?: string
+  last_error?: string
+  total_cycles: number
+  total_successes: number
+  total_failures: number
+  consecutive_fails: number
+  recent_failures?: string[]
+  stale: boolean
+}
+
+export interface LicenseStatus {
+  mode: 'normal' | 'in_grace' | 'restricted'
+  grace_configured_seconds: number
+  in_grace: boolean
+  grace_remaining_seconds: number
+  marker?: {
+    failed_at: string
+    reason?: string
+    source?: string
+    attempts: number
+  }
+  no_grace_honored: boolean
+}
+
+export async function getLicenseHealth(): Promise<LicenseHealth> {
+  return req<LicenseHealth>('GET', '/api/system/license/health')
+}
+
+export async function getLicenseStatus(): Promise<LicenseStatus> {
+  return req<LicenseStatus>('GET', '/api/system/license/status')
+}

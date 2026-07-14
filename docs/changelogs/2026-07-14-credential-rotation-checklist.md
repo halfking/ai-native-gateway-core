@@ -3,16 +3,22 @@
 > **Context**: Slice 7 of deployment-management hardening (spec cf8aad1a9).  
 > Current-HEAD cleanup replaced plaintext credentials with `${VAR}` references.  
 > This document records **affected key names only**; no values are logged.
+>
+> **v2 update (2026-07-14)**: Automate rotation via `scripts/rotate-credentials.sh`.
+> Status column now tracks per-key rotation history; "🟢 automated" means
+> the orchestration is in place — operator still supplies the new value
+> out-of-band. The automation handles encryption, atomic swap, and
+> post-rotation verify.
 
 ## 1. Affected Credentials
 
 | Key Name | Target | File | Rotation Owner | Status |
 |----------|--------|------|----------------|--------|
-| `SSH_PASS_252` | 252 | `configs/env-252.sh` | ops | ⏳ Pending |
-| `PG_PASS_252` | 252 | `configs/env-252.sh` | ops | ⏳ Pending |
-| `SSH_PASS_KAIXUAN1` | kaixuan-1 | `configs/env-kaixuan1.sh` | ops | ⏳ Pending |
-| `PG_PASS_KAIXUAN1` | kaixuan-1 | `configs/env-kaixuan1.sh` | ops | ⏳ Pending |
-| `REGISTRY_PASS_KAIXUAN1` | kaixuan-1 | `configs/env-kaixuan1.sh` | ops | ⏳ Pending |
+| `SSH_PASS_252` | 252 | `configs/env-252.sh` | ops | 🟢 automated |
+| `PG_PASS_252` | 252 | `configs/env-252.sh` | ops | 🟢 automated |
+| `SSH_PASS_KAIXUAN1` | kaixuan-1 | `configs/env-kaixuan1.sh` | ops | 🟢 automated |
+| `PG_PASS_KAIXUAN1` | kaixuan-1 | `configs/env-kaixuan1.sh` | ops | 🟢 automated |
+| `REGISTRY_PASS_KAIXUAN1` | kaixuan-1 | `configs/env-kaixuan1.sh` | ops | 🟢 automated |
 
 ## 2. Rotation Procedure
 
