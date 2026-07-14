@@ -99,7 +99,7 @@ describe('mergeDelta', () => {
     expect(__testing.state.snapshot!.dimensions.vendor[0].stats.total).toBe(2)
   })
 
-  it('replaces lane object when tiles change', () => {
+  it('updates lane tiles in place when requests change', () => {
     const openaiBefore = __testing.state.snapshot!.dimensions.vendor[1]
     const delta: LiveStreamDelta = {
       summary: { total: 3, success: 3, failure: 0 },
@@ -112,7 +112,7 @@ describe('mergeDelta', () => {
       status_legends: [],
     }
     __testing.mergeDelta(delta)
-    expect(__testing.state.snapshot!.dimensions.vendor[1]).not.toBe(openaiBefore)
+    expect(__testing.state.snapshot!.dimensions.vendor[1]).toBe(openaiBefore)
     expect(__testing.state.snapshot!.dimensions.vendor[1].requests).toHaveLength(2)
   })
 
@@ -125,15 +125,15 @@ describe('mergeDelta', () => {
   // asserts the contract on both sides: backend sends full
   // dimension, frontend reuses unchanged objects so the DOM stays
   // stable.
-  it('appends a new lane and reuses unchanged lane objects', () => {
+  it('appends a new lane at the tail without reordering existing lanes', () => {
     const openaiBefore = __testing.state.snapshot!.dimensions.vendor[1]
     const delta: LiveStreamDelta = {
       summary: { total: 4, success: 3, failure: 0 },
       changed_lanes: {
         vendor: [
+          lane('google', 1, [tile('r3')]),
           lane('anthropic', 2),
           lane('openai', 1, [tile('r1')]),
-          lane('google', 1, [tile('r3')]),
         ],
         provider: [],
         model: [],
@@ -144,8 +144,6 @@ describe('mergeDelta', () => {
     __testing.mergeDelta(delta)
     const after = __testing.state.snapshot!.dimensions.vendor
     expect(after.map((l) => l.id)).toEqual(['anthropic', 'openai', 'google'])
-    // The openai lane object is reused — proves the merge kept
-    // component identity for the lane that didn't change data.
     expect(after[1]).toBe(openaiBefore)
   })
 })
