@@ -3,18 +3,22 @@ import { computed, onMounted, ref } from 'vue'
 import { getProviders, type Provider } from '../api'
 
 const props = withDefaults(defineProps<{
-  modelValue: string
+  modelValue: string | number | null
+  valueMode?: 'code' | 'id'
   placeholder?: string
   disabled?: boolean
   title?: string
+  allowClear?: boolean
 }>(), {
+  valueMode: 'code',
   placeholder: '选择供应商…',
   disabled: false,
   title: '选择供应商',
+  allowClear: true,
 })
 
 const emit = defineEmits<{
-  'update:modelValue': [value: string]
+  'update:modelValue': [value: string | number | null]
 }>()
 
 const open = ref(false)
@@ -23,7 +27,29 @@ const loadErr = ref('')
 const search = ref('')
 const providers = ref<Provider[]>([])
 
-const triggerLabel = computed(() => props.modelValue || '')
+const isIdMode = computed(() => props.valueMode === 'id')
+
+const selectedProvider = computed(() => {
+  if (isIdMode.value) {
+    const id = typeof props.modelValue === 'number' ? props.modelValue : null
+    return providers.value.find((p) => p.id === id) ?? null
+  }
+  const code = typeof props.modelValue === 'string' ? props.modelValue : ''
+  if (!code) return null
+  return providers.value.find((p) =>
+    p.catalog_code === code || p.display_name === code,
+  ) ?? null
+})
+
+const triggerLabel = computed(() => {
+  if (selectedProvider.value) {
+    return selectedProvider.value.display_name || selectedProvider.value.catalog_code
+  }
+  if (isIdMode.value && typeof props.modelValue === 'number') {
+    return `#${props.modelValue}`
+  }
+  return typeof props.modelValue === 'string' ? props.modelValue : ''
+})
 
 const filteredProviders = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -31,9 +57,15 @@ const filteredProviders = computed(() => {
   return providers.value.filter((p) => {
     const name = (p.display_name || '').toLowerCase()
     const code = (p.catalog_code || '').toLowerCase()
-    return name.includes(q) || code.includes(q)
+    return name.includes(q) || code.includes(q) || String(p.id).includes(q)
   })
 })
+
+function isChosen(provider: Provider) {
+  if (isIdMode.value) return props.modelValue === provider.id
+  const code = provider.catalog_code || provider.display_name || ''
+  return props.modelValue === code
+}
 
 async function loadProviders() {
   loading.value = true
@@ -61,12 +93,16 @@ function closeDialog() {
 }
 
 function pickProvider(provider: Provider) {
-  emit('update:modelValue', provider.catalog_code || provider.display_name || '')
+  if (isIdMode.value) {
+    emit('update:modelValue', provider.id)
+  } else {
+    emit('update:modelValue', provider.catalog_code || provider.display_name || '')
+  }
   closeDialog()
 }
 
 function clearValue() {
-  emit('update:modelValue', '')
+  emit('update:modelValue', isIdMode.value ? null : '')
 }
 
 onMounted(() => {
@@ -81,7 +117,7 @@ onMounted(() => {
       <span v-else class="pp-placeholder">{{ placeholder }}</span>
       <span class="pp-actions">
         <button
-          v-if="modelValue"
+          v-if="allowClear && (modelValue !== '' && modelValue != null)"
           type="button"
           class="pp-clear"
           :disabled="disabled"
@@ -114,11 +150,11 @@ onMounted(() => {
                 :key="provider.id"
                 type="button"
                 class="pp-item"
-                :class="{ chosen: modelValue === (provider.catalog_code || provider.display_name) }"
+                :class="{ chosen: isChosen(provider) }"
                 @click="pickProvider(provider)"
               >
                 <span class="pp-name">{{ provider.display_name }}</span>
-                <span class="pp-meta">{{ provider.catalog_code || '—' }}</span>
+                <span class="pp-meta">{{ provider.catalog_code || '—' }} · ID {{ provider.id }}</span>
               </button>
             </div>
           </div>

@@ -109,7 +109,7 @@ func TestLiveStreamRedisStore_IdleMarker(t *testing.T) {
 	}
 
 	// Force every activity key into the past so lanes are considered idle.
-	staleUnix := seedTs.Unix() - idleThresholdSeconds - 5
+	staleUnix := seedTs.Unix() - int64(LiveStreamLaneRetention.Seconds()) - 5
 	for _, k := range mr.Keys() {
 		if strings.HasPrefix(k, liveStreamActivityPrefix) {
 			mr.Set(k, fmt.Sprintf("%d", staleUnix))
@@ -117,7 +117,7 @@ func TestLiveStreamRedisStore_IdleMarker(t *testing.T) {
 	}
 
 	emitTs := time.Now().UTC()
-	if err := store.ScanAndRecordIdleMarkers(ctx, emitTs); err != nil {
+	if err := store.ScanAndRecordIdleMarkers(ctx, emitTs, LiveStreamLaneRetention); err != nil {
 		t.Fatalf("ScanAndRecordIdleMarkers: %v", err)
 	}
 
@@ -154,7 +154,7 @@ func TestLiveStreamRedisStore_NilClient(t *testing.T) {
 	if err := store.Record(ctx, LiveRequest{RequestID: "test"}); err != nil {
 		t.Errorf("Record with nil client should return nil, got %v", err)
 	}
-	if err := store.ScanAndRecordIdleMarkers(ctx, time.Now()); err != nil {
+	if err := store.ScanAndRecordIdleMarkers(ctx, time.Now(), LiveStreamLaneRetention); err != nil {
 		t.Errorf("ScanAndRecordIdleMarkers with nil client should return nil, got %v", err)
 	}
 	items, err := store.Replay(ctx, "", true, 50)
@@ -392,14 +392,14 @@ func TestLiveStreamRedisStore_IdleMarkerWritesMainQueue(t *testing.T) {
 	}
 
 	// Force activity keys stale so the vendor/provider/model/main lanes emit idle markers.
-	staleUnix := seedTs.Unix() - idleThresholdSeconds - 5
+	staleUnix := seedTs.Unix() - int64(LiveStreamLaneRetention.Seconds()) - 5
 	for _, k := range mr.Keys() {
 		if strings.HasPrefix(k, liveStreamActivityPrefix) {
 			mr.Set(k, fmt.Sprintf("%d", staleUnix))
 		}
 	}
 
-	if err := store.ScanAndRecordIdleMarkers(ctx, time.Now().UTC()); err != nil {
+	if err := store.ScanAndRecordIdleMarkers(ctx, time.Now().UTC(), LiveStreamLaneRetention); err != nil {
 		t.Fatalf("ScanAndRecordIdleMarkers: %v", err)
 	}
 
@@ -541,11 +541,14 @@ func TestBuildLiveStreamSnapshot_ServerSideAggregation(t *testing.T) {
 	if len(s.Dimensions["vendor"]) != 2 {
 		t.Fatalf("expected 2 vendor lanes, got %d", len(s.Dimensions["vendor"]))
 	}
-	if s.Dimensions["vendor"][0].ID != "openai" {
-		t.Fatalf("top vendor should be openai, got %s", s.Dimensions["vendor"][0].ID)
+	if s.Dimensions["vendor"][0].ID != "anthropic" {
+		t.Fatalf("first vendor lane should be anthropic (stable sort), got %s", s.Dimensions["vendor"][0].ID)
 	}
-	if s.Dimensions["vendor"][0].Stats.Total != 2 {
-		t.Fatalf("openai lane total should be 2, got %d", s.Dimensions["vendor"][0].Stats.Total)
+	if s.Dimensions["vendor"][1].ID != "openai" {
+		t.Fatalf("second vendor lane should be openai, got %s", s.Dimensions["vendor"][1].ID)
+	}
+	if s.Dimensions["vendor"][1].Stats.Total != 2 {
+		t.Fatalf("openai lane total should be 2, got %d", s.Dimensions["vendor"][1].Stats.Total)
 	}
 	if len(s.Dimensions["provider"][0].Requests) == 0 {
 		t.Fatal("provider lane should include render-ready requests")
@@ -687,14 +690,17 @@ func TestLiveStreamSSEHub_EvictStaleCachedSnapshots(t *testing.T) {
 // Added 2026-07-09 alongside the live-stream-cache-evict-stall fix
 // (computeScopeDelta enter-and-refresh + tunable TTL via env).
 func TestLiveStreamSSEHub_ConfigDefaults(t *testing.T) {
-	t.Run("zero_value_yields_10min_defaults", func(t *testing.T) {
+	t.Run("zero_value_yields_4h_defaults", func(t *testing.T) {
 		hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{})
-		if hub.cfg.CachedSnapshotTTL != 10*time.Minute {
-			t.Fatalf("expected CachedSnapshotTTL=10m, got %s", hub.cfg.CachedSnapshotTTL)
+		if hub.cfg.CachedSnapshotTTL != LiveStreamLaneRetention {
+			t.Fatalf("expected CachedSnapshotTTL=4h, got %s", hub.cfg.CachedSnapshotTTL)
 		}
-		if hub.cfg.CachedSnapshotCleanupInterval != 10*time.Minute {
-			t.Fatalf("expected CachedSnapshotCleanupInterval=10m when zero, got %s",
+		if hub.cfg.CachedSnapshotCleanupInterval != LiveStreamLaneRetention {
+			t.Fatalf("expected CachedSnapshotCleanupInterval=4h when zero, got %s",
 				hub.cfg.CachedSnapshotCleanupInterval)
+		}
+		if hub.cfg.IdleThreshold != LiveStreamLaneRetention {
+			t.Fatalf("expected IdleThreshold=4h, got %s", hub.cfg.IdleThreshold)
 		}
 	})
 

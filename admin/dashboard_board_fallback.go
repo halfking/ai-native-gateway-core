@@ -85,6 +85,9 @@ func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, days i
 			out[key] = []boardPieItem{}
 			continue
 		}
+		if dimType == "provider" {
+			items = h.resolveProviderPieLabels(ctx, items)
+		}
 		out[key] = items
 	}
 	return out, nil
@@ -249,6 +252,9 @@ func (h *Handler) fallbackErrorDrill(
 			continue
 		}
 		items = append(items, item)
+	}
+	if dimension == "provider" {
+		items = h.resolveProviderPieLabels(ctx, items)
 	}
 	return items, nil
 }

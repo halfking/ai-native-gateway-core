@@ -40,6 +40,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
+	"github.com/kaixuan/llm-gateway-go/distribution"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/approval"                            //nolint:depguard // D1: approval config management
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -55,6 +56,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
+	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"                 //nolint:depguard
@@ -104,7 +106,7 @@ func positiveDurationEnv(key string, fallback time.Duration) time.Duration {
 }
 
 func liveStreamCachedDurationsFromEnv() (time.Duration, time.Duration) {
-	ttl := positiveDurationEnv("LLM_GATEWAY_LIVE_STREAM_CACHED_TTL", 10*time.Minute)
+	ttl := positiveDurationEnv("LLM_GATEWAY_LIVE_STREAM_CACHED_TTL", admin.LiveStreamLaneRetention)
 	cleanup := positiveDurationEnv("LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL", ttl)
 	return ttl, cleanup
 }
@@ -161,6 +163,7 @@ func main() {
 	var peakCollector *bg.ConcurrencyPeakCollector
 	var weeklyPeakRollup *bg.WeeklyPeakRollup
 	var statsMinuteAccumulator *stats.MinuteAccumulator
+	var statsBoardCache *boardcache.Service
 	var statsMinuteRollup *bg.StatsMinuteRollup
 	var slotSuggester *bg.SlotSuggester
 	var autoIndexRefresher *bg.AutoIndexRefresher
@@ -1013,7 +1016,7 @@ func main() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
 			BroadcastQueueSize:            2048,
 			InitialReplayLimit:            200,
-			IdleThreshold:                 60 * time.Second,
+			IdleThreshold:                 admin.LiveStreamLaneRetention,
 			IdleTickInterval:              10 * time.Second,
 			KeepaliveInterval:             25 * time.Second,
 			RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
@@ -1937,6 +1940,20 @@ func main() {
 			}
 		}
 
+		// Dashboard board cache: Redis online read path for /api/admin/dashboard/board.
+		// Must run in both full and data-plane modes (245 uses bgDataPlaneOnly=true).
+		if fpSlotRedis != nil && adminHandler != nil {
+			statsBoardCache = boardcache.New(fpSlotRedis)
+			statsBoardCache.SetBaselineBuilder(adminHandler.BuildBoardBaseline)
+			statsBoardCache.Start(context.Background())
+			adminHandler.SetBoardCache(statsBoardCache)
+			if telemetryClient.Enabled() {
+				telemetryClient.AddOnRequestLogPersisted(statsBoardCache.Record)
+				slog.Info("boardcache wired (telemetry onPersisted)")
+			}
+			slog.Info("boardcache service started")
+		}
+
 		// Weekly rollup + auto-tune suggester require writes to
 		// credentials/audit; only run in "full" mode.
 		slog.Info("CHECKPOINT: before bgDataPlaneOnly check for weekly/auto-tune", "bgDataPlaneOnly", bgDataPlaneOnly)
@@ -2831,6 +2848,39 @@ func main() {
 		tenantops.NewHandler(pool).RegisterRoutes(e.Group("/api/tenant", jwtMiddleware))
 		slog.Info("Phase 7: VibeCoding API enabled (/api/admin/vibecoding/*)")
 
+		// Phase 8: Distribution — public download/donation + ops stats
+		distStore := distribution.NewPgxStore(pool)
+		distCatalog := distribution.NewCatalogService(
+			distStore,
+			distribution.NewReleaseCatalogProvider(pool),
+			os.Getenv("DOWNLOAD_BASE_URL"),
+			distribution.LoadVersionFallback(),
+		)
+		ticketSecret := []byte(strings.TrimSpace(os.Getenv("DOWNLOAD_TICKET_SECRET")))
+		if len(ticketSecret) == 0 {
+			ticketSecret = []byte(jwtSecret)
+		}
+		distPayment := maas.StubQRProvider{}
+		distPublic := distribution.NewPublicAPI(distStore, distCatalog, distribution.NewTicketSigner(ticketSecret, 10*time.Minute), distPayment)
+		distDonation := distribution.NewDonationAPI(distStore, distPayment)
+		distAdmin := distribution.NewAdminAPI(distStore)
+		distOffline := distribution.NewOfflinePublicAPI(licensingOffline, licensingStore)
+
+		downloadPublicGroup := customerEcho.Group("/api/downloads")
+		downloadPublicGroup.Use(noAuthCustomerMiddleware())
+		distPublic.RegisterRoutes(downloadPublicGroup)
+
+		donationPublicGroup := customerEcho.Group("/api/donations")
+		donationPublicGroup.Use(noAuthCustomerMiddleware())
+		distDonation.RegisterRoutes(donationPublicGroup)
+
+		offlinePublicGroup := customerEcho.Group("/api/public/offline-activation")
+		offlinePublicGroup.Use(noAuthCustomerMiddleware())
+		distOffline.RegisterRoutes(offlinePublicGroup)
+
+		distAdmin.RegisterRoutes(adminGroup.Group("/downloads"))
+		slog.Info("Phase 8: Distribution API enabled (/api/downloads/*, /api/donations/*, /api/admin/downloads/*)")
+
 		// 将 Echo 挂载到 http.ServeMux
 		mux.Handle("/api/admin/", e)
 		mux.Handle("/api/tenant/", e)
@@ -2839,6 +2889,9 @@ func main() {
 		// activation and status checks remain reachable before login.
 		mux.Handle("/api/system/license/", customerEcho)
 		mux.Handle("/api/system/upgrade/", customerEcho)
+		mux.Handle("/api/downloads/", customerEcho)
+		mux.Handle("/api/donations/", customerEcho)
+		mux.Handle("/api/public/offline-activation/", customerEcho)
 		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
 	}
 
@@ -3213,6 +3266,9 @@ func main() {
 	}
 	if weeklyPeakRollup != nil {
 		weeklyPeakRollup.Stop()
+	}
+	if statsBoardCache != nil {
+		statsBoardCache.Stop()
 	}
 	if statsMinuteAccumulator != nil {
 		statsMinuteAccumulator.Stop()

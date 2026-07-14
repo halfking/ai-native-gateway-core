@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,6 +37,10 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
 	case "tenants":
 		h.listTenants(w, r)
 	default:
+		if strings.HasPrefix(remaining, "providers/") {
+			h.handleUsageProviderRoutes(w, r, remaining)
+			return
+		}
 		h.usageKeyDetail(w, r)
 	}
 }

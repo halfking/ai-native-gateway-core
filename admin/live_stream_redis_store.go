@@ -13,15 +13,15 @@ import (
 )
 
 // LiveStreamRedisStore backs the realtime request stream with Redis,
-// keeping the most recent 1 hour of requests in a sorted set so that
-// clients can replay on reconnect/refresh without hitting the DB.
+// keeping recent requests in sorted sets so clients can replay on
+// reconnect/refresh without hitting the DB.
 //
 // Design:
 //   - Main queue: ZSET llmgw:live:main (score = unix_ms, member = JSON)
 //   - Dimension queues: ZSET llmgw:live:dim:{vendor|provider|model}:{key}
 //   - Status queues: ZSET llmgw:live:status:{success|failure|in_progress}
-//   - TTL: 1 hour (3600s)
-//   - Idle markers: Type="idle_marker" entries inserted every 1 minute of silence
+//   - TTL: LiveStreamLaneRetention (default 4 hours)
+//   - Idle markers: inserted after LiveStreamLaneRetention of silence
 //
 // Graceful degradation: all write errors are logged but not surfaced;
 // the hub falls back to DB replay when Redis is unavailable.
@@ -104,6 +104,10 @@ type liveRequestRedisPayload struct {
 	ProbeAttempt int    `json:"probe_attempt,omitempty"`
 }
 
+// LiveStreamLaneRetention is the default retention for Redis live-stream
+// queues, dimension lane activity keys, and in-memory snapshot eviction.
+const LiveStreamLaneRetention = 4 * time.Hour
+
 const (
 	liveStreamMainKey        = "llmgw:live:main"
 	liveStreamNotifyChannel  = "llmgw:live:events"
@@ -111,10 +115,9 @@ const (
 	liveStreamStatPrefix     = "llmgw:live:status:"
 	liveStreamTenantSet      = "llmgw:live:tenants"
 	liveStreamActivityPrefix = "llmgw:live:activity:"
-	liveStreamTTL            = 28800 * time.Second // 8 hours
+	liveStreamTTL            = LiveStreamLaneRetention
 	liveStreamLaneLimit      = 30
-	liveStreamReplayLimit    = 200 // 默认回放请求数：泳道中请求的有效期靠 TTL(8h)保证，数量上限放宽到 200，让请求“直到被挤出去”而非被过小的 replay 上限提前丢弃
-	idleThresholdSeconds     = 60  // 1 minute
+	liveStreamReplayLimit    = 200 // 默认回放请求数：泳道中请求的有效期靠 TTL 保证，数量上限放宽到 200，让请求“直到被挤出去”而非被过小的 replay 上限提前丢弃
 )
 
 // normalizeModelKey returns a case-insensitive, whitespace-trimmed
@@ -880,14 +883,18 @@ func parseActivityKey(key string) (activityKeyInfo, bool) {
 }
 
 // ScanAndRecordIdleMarkers scans all dimension queues and inserts idle
-// markers for queues that have been idle for more than idleThresholdSeconds.
+// markers for queues that have been idle for longer than idleThreshold.
 // Each idle marker is written ONLY to the queue it pertains to (plus its
 // tenant-scoped twin), so an idle vendor marker never pollutes the model
 // lane or the main queue.
-func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts time.Time) error {
+func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts time.Time, idleThreshold time.Duration) error {
 	if s == nil || s.rdb == nil {
 		return nil
 	}
+	if idleThreshold <= 0 {
+		idleThreshold = LiveStreamLaneRetention
+	}
+	idleThresholdSeconds := int64(idleThreshold.Seconds())
 
 	nowUnix := ts.Unix()
 

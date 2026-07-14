@@ -424,8 +424,24 @@ export async function getHeartbeatHistory(instanceId: string, hours: number = 24
   return req<HeartbeatRecord[]>('GET', `/api/admin/center/instances/${instanceId}/heartbeats?since=${encodeURIComponent(since)}&limit=100`)
 }
 
-export async function sendCommand(instanceId: string, command: string, args: Record<string, string>, issuedBy: string): Promise<void> {
-  return req<void>('POST', `/api/admin/center/instances/${instanceId}/command`, { command, args, issued_by: issuedBy })
+export interface IssuedCommand {
+  command_id: string
+  instance_id: string
+  command: string
+  status: string
+}
+
+export async function sendCommand(instanceId: string, command: string, args: Record<string, string>, issuedBy: string): Promise<IssuedCommand> {
+  return req<IssuedCommand>('POST', `/api/admin/center/instances/${instanceId}/command`, { command, args, issued_by: issuedBy })
+}
+
+export async function getCommandStatus(commandId: string): Promise<{
+  command_id: string
+  status: string
+  result?: string
+  executed_at?: string
+}> {
+  return req('GET', `/api/admin/center/commands/${encodeURIComponent(commandId)}/status`)
 }
 
 // ────────────────────────────────────────────────────────────────────────────

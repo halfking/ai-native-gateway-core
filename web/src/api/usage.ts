@@ -247,3 +247,92 @@ export function getCacheEconomics(opts: { date_from?: string; date_to?: string }
   const s = qs.toString()
   return req<CacheEconomicsResponse>('GET', `/api/admin/usage/cache-economics${s ? '?' + s : ''}`)
 }
+
+// ── Provider usage (dashboard reconciliation) ─────────────────────────
+
+export interface ProviderUsageRow {
+  provider_id: number
+  provider_name: string
+  provider_code: string
+  request_count: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_cost_usd: number
+  success_rate: number
+}
+
+export interface ProviderUsageSummary extends ProviderUsageRow {
+  total_tokens: number
+  unique_models: number
+  window_start: string
+  window_end: string
+}
+
+export interface ProviderModelUsage {
+  model: string
+  request_count: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cost_usd: number
+  avg_latency_ms: number
+  success_rate: number
+}
+
+export interface ProviderDailyModelUsage {
+  date: string
+  model: string
+  request_count: number
+  total_tokens: number
+  cost_usd: number
+}
+
+export function getUsageByProvider(days = 30, limit = 200) {
+  return req<ProviderUsageRow[]>('GET', `/api/usage/by-provider?days=${days}&limit=${limit}`)
+}
+
+export function getProviderUsageSummary(providerId: number, days = 30) {
+  return req<ProviderUsageSummary>('GET', `/api/usage/providers/${providerId}?days=${days}`)
+}
+
+export function getProviderUsageTrend(
+  providerId: number,
+  period: UsageTrendPeriod = 'day',
+  days = 30,
+) {
+  return req<TrendEntry[]>('GET', `/api/usage/providers/${providerId}/trend?period=${period}&days=${days}`)
+}
+
+export function getProviderUsageModels(providerId: number, days = 30, limit = 100) {
+  return req<ProviderModelUsage[]>('GET', `/api/usage/providers/${providerId}/models?days=${days}&limit=${limit}`)
+}
+
+export function getProviderDailyModels(providerId: number, days = 30) {
+  return req<ProviderDailyModelUsage[]>('GET', `/api/usage/providers/${providerId}/daily-models?days=${days}`)
+}
+
+export async function downloadProviderUsageExport(days = 30) {
+  const { BASE, headers } = await import('./_core')
+  const res = await fetch(`${BASE}/api/usage/providers/export?days=${days}`, { headers: headers() })
+  if (!res.ok) throw new Error(`export failed: ${res.status}`)
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `provider-usage-${days}d.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+export async function downloadProviderDetailExport(providerId: number, days = 30) {
+  const { BASE, headers } = await import('./_core')
+  const res = await fetch(`${BASE}/api/usage/providers/${providerId}/export?days=${days}`, { headers: headers() })
+  if (!res.ok) throw new Error(`export failed: ${res.status}`)
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `provider-${providerId}-daily-${days}d.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}

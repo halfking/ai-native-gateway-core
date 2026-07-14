@@ -79,6 +79,9 @@ const TenantAutoUpdateView = () => import('./views/tenant/TenantAutoUpdateView.v
 const ActivationWizard = () => import('./views/ActivationWizard.vue')
 const LicenseInfoView = () => import('./views/LicenseInfoView.vue')
 const UpgradePanel = () => import('./views/UpgradePanel.vue')
+const DownloadView = () => import('./views/public/DownloadView.vue')
+const SupportView = () => import('./views/public/SupportView.vue')
+const OfflineActivationView = () => import('./views/public/OfflineActivationView.vue')
 
 // Operations Platform views. Platform management remains super-admin only;
 // tenant routes below expose read-only, tenant-scoped status views.
@@ -245,6 +248,11 @@ export const router = createRouter({
     { path: '/activate', component: ActivationWizard, meta: { public: true } },
     { path: '/license',  component: LicenseInfoView,  meta: { public: true } },
     { path: '/upgrade',  component: UpgradePanel,      meta: { public: true } },
+
+    // Public distribution portal — standalone layout (no app sidebar)
+    { path: '/download',           component: DownloadView,          meta: { public: true, publicPortal: true } },
+    { path: '/support',            component: SupportView,           meta: { public: true, publicPortal: true } },
+    { path: '/offline-activation', component: OfflineActivationView, meta: { public: true, publicPortal: true } },
 
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

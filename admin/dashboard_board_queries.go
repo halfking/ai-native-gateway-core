@@ -155,6 +155,9 @@ func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, days int)
 		if err != nil {
 			return nil, err
 		}
+		if dimType == "provider" {
+			items = h.resolveProviderPieLabels(ctx, items)
+		}
 		out[key] = items
 	}
 	return out, nil

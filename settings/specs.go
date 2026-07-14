@@ -21,6 +21,7 @@ func PlatformSpecs() []*Spec {
 	// 2026-07-13: 数据生命周期（hot 表 retention / promote 频率 / batch size）
 	out = append(out, LifecycleSpecs()...)
   	out = append(out, SessionAnalyticsSpecs()...)
+	out = append(out, DashboardSpecs()...)
 	return out
 }
 

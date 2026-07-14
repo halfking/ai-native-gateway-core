@@ -201,7 +201,7 @@ type LiveStreamConfig struct {
 	IdleTickInterval              time.Duration
 	KeepaliveInterval             time.Duration
 	RedisClient                   *redis.Client // optional: enables 1-hour Redis cache
-	CachedSnapshotTTL             time.Duration // 淘汰阈值；零值 → 10min。可通过 LLM_GATEWAY_LIVE_STREAM_CACHED_TTL 覆盖
+	CachedSnapshotTTL             time.Duration // 淘汰阈值；零值 → 4h。可通过 LLM_GATEWAY_LIVE_STREAM_CACHED_TTL 覆盖
 	CachedSnapshotCleanupInterval time.Duration // evict ticker 周期；零值 → 与 TTL 一致。可通过 LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL 覆盖
 }
 
@@ -213,7 +213,7 @@ func (c *LiveStreamConfig) defaults() {
 		c.InitialReplayLimit = liveStreamReplayLimit
 	}
 	if c.IdleThreshold <= 0 {
-		c.IdleThreshold = 60 * time.Second
+		c.IdleThreshold = LiveStreamLaneRetention
 	}
 	if c.IdleTickInterval <= 0 {
 		c.IdleTickInterval = 10 * time.Second
@@ -222,7 +222,7 @@ func (c *LiveStreamConfig) defaults() {
 		c.KeepaliveInterval = 25 * time.Second
 	}
 	if c.CachedSnapshotTTL <= 0 {
-		c.CachedSnapshotTTL = 10 * time.Minute
+		c.CachedSnapshotTTL = LiveStreamLaneRetention
 	}
 	if c.CachedSnapshotCleanupInterval <= 0 {
 		c.CachedSnapshotCleanupInterval = c.CachedSnapshotTTL
@@ -747,7 +747,7 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 	}
 	now := time.Now().UTC()
 	if h.store != nil {
-		if err := h.store.ScanAndRecordIdleMarkers(context.Background(), now); err != nil {
+		if err := h.store.ScanAndRecordIdleMarkers(context.Background(), now, h.cfg.IdleThreshold); err != nil {
 			slog.Debug("live stream scan and record idle markers failed", "err", err.Error(), "timestamp", now.Format(time.RFC3339))
 		}
 	}
