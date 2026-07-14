@@ -4409,9 +4409,15 @@ func detectEmptyStreamResponse(m map[string]any, reqLog *telemetry.RequestLogEnt
 
 	// Check 4: No upstream finish_reason
 	// Normal successful completion should have "stop" or "length"
-	hasFinishReason := reqLog.UpstreamFinishReason != nil && *reqLog.UpstreamFinishReason != ""
-	if hasFinishReason {
-		return false // Normal finish means not empty
+	// NOTE: reqLog.UpstreamFinishReason is set AFTER emitTelemetry calls this,
+	// so we read from the summary map m directly. This fixes the timing bug
+	// where a valid stream with finish_reason (e.g. "stop", "tool_calls") and
+	// few chunks was misclassified as empty (Provider 18 NVIDIA NIM).
+	if v, ok := m["upstream_finish_reason"].(string); ok && v != "" {
+		hasFinishReason := v == "stop" || v == "length" || v == "tool_calls"
+		if hasFinishReason {
+			return false // Normal finish means not empty
+		}
 	}
 
 	// All empty indicators present - this is truly an empty response

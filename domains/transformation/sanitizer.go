@@ -179,7 +179,7 @@ func CollapseToolHistory(body []byte) []byte {
 
 func ApplyCapabilitySanitizer(body []byte, catalogCode string) []byte {
 	switch catalogCode {
-	case "nvidia_nim":
+	case "nvidia_nim", "nvidia":
 		body = stripBooleanParams(body)
 	case "deepseek":
 		body = capMaxTokens(body, 8192)
