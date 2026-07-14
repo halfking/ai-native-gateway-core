@@ -120,6 +120,39 @@ func (s *PgxStore) CreateLicense(ctx context.Context, lic *License) error {
 	).Scan(&lic.ID, &lic.CreatedAt)
 }
 
+func (s *PgxStore) CreateTrialLicenseWithConsent(ctx context.Context, lic *License, consent *TrialConsent) error {
+	featuresJSON, err := json.Marshal(lic.Features)
+	if err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx, `
+		INSERT INTO licenses (license_key, customer_name, customer_email, max_devices,
+		                      subscription_tier, features, expires_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		RETURNING id, created_at
+	`, lic.LicenseKey, lic.CustomerName, lic.CustomerEmail, lic.MaxDevices,
+		lic.SubscriptionTier, featuresJSON, lic.ExpiresAt,
+	).Scan(&lic.ID, &lic.CreatedAt)
+	if err != nil {
+		return err
+	}
+	consent.LicenseID = lic.ID
+	_, err = tx.Exec(ctx, `
+		INSERT INTO license_trial_consents (license_id, agreement_version, accepted_at, source)
+		VALUES ($1, $2, $3, $4)
+	`, consent.LicenseID, consent.AgreementVersion, consent.AcceptedAt, consent.Source)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *PgxStore) UpdateLicense(ctx context.Context, lic *License) error {
 	featuresJSON, err := json.Marshal(lic.Features)
 	if err != nil {
