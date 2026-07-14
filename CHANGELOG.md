@@ -5,7 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-07-13
+## [Unreleased] - 2026-07-14
+
+### Changed (multimodal attachment documentation audit)
+- **新增** `docs/会话优化v2/04-厂商标准与适配矩阵.md`：涵盖 OpenAI、Anthropic、Gemini、Mistral 的图片/音频/文档/文件引用官方能力与网关适配约束。
+- **修正** README 厂商适配结论与待办优先级标题编号。
+- **修正** 02 多模态审计报告中的 Extractor 方法名（`ExtractAndSave` → `ExtractFromOpenAIBody`/`ExtractFromAnthropicBody`）。
+- **修正** 02 报告审计范围说明：明确标注 Gemini 原生协议不在本次 Phase 1 审计范围。
+- **修正** 03 多模态技术方案目标与架构：从"统一 URL 替换"改为"供应商感知引用"，新增 data URL / gateway URL / provider file URI 三种引用模式。
+- **修正** 03 方案风险与验收标准：URL 不保证减少 token，引用按目标供应商选择，日志统一脱敏而非简单 base64 删除。
+- **修正** 01 存储配置审计：追加凭据与 URL 安全、生命周期一致性、热切换边界等风险。
+- 详见：`docs/changelogs/2026-07-14-multimodal-docs-audit.md`。
+
+### Fixed (multimodal cross-protocol preservation)
+- 修复 OpenAI → Anthropic 转换中 `data:image/...;base64,...` 被错误标记为 URL 的问题。
+- 修复 Anthropic → OpenAI 图片被替换成文本占位符，以及图文混合块丢失文本的问题。
+- 修复 streaming bridge 在 OpenAI → Anthropic 路径中的同类 data URI 问题。
+- 修复会话压缩过滤器把 `image_url` / `input_audio` 等完整内容块误删或只保留 `type` 字段的问题。
+- 增加跨协议、多模态混合内容和压缩保真回归测试。
+- 详见：`docs/changelogs/2026-07-14-multimodal-attachment-pipeline-proposal.md`。
+
+### Fixed (multimodal content lost through gateway for minimax-m3)
+- **OpenAI 多模态请求体静默丢失图片**：`domains/transformation/sanitizer.go::dedupConsecutive`
+  对 `messages[i].content` 做 `. (string)` 类型断言，OpenAI 多模态数组
+  形式（`[{"type":"text",...},{"type":"image_url",...}]`）断言失败
+  并被静默丢弃，导致两个连续 user / assistant 消息合并后所有
+  `image_url` / `image` / `input_audio` / `file` 块丢失。
+- 触发：所有走 OpenAI 协议的 upstream（含 minimax-m3、deepseek 等）。
+  直连上游能正常收到图片，因为绕过了 `domains/transformation/`
+  链路。修复改为形状感知合并：string+string / array+array /
+  array+string / string+array 四种形态分别安全处理，数组侧原样
+  保留所有非文本块。
+- 详见：`docs/changelogs/2026-07-14-multimodal-merge-loss.md`。
 
 ### Added (route-incident diagnosis, Phase 2 mutating actions + audit + evidence)
 - **路由事件诊断 Phase 2 (mutating + audit + 证据导出)**：
