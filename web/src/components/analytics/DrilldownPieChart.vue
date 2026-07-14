@@ -74,6 +74,7 @@ const hasData = computed(() => (props.data?.length ?? 0) > 0)
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
 }
 .pie-card__title {
   font-weight: 600;
