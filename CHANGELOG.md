@@ -14,6 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Registered `/admin/session-replay` route (`SessionReplayView`, super-only).
 - Hardened `deploy-245.sh` postgres-disabled grep parsing.
 
+### Distribution business-process alignment
+
+- Added the user agreement and data-processing authorization for runtime telemetry and controlled update notifications.
+- Enforced explicit terms acceptance for Trial requests from browser and installer clients.
+- Added business-process standards, code-verification addenda, and an honest completion assessment with release blockers.
+
+### License security hardening
+
+- Made trial issuance fail closed when distributed Redis rate limiting is unavailable.
+- Added hashed IP rate-limit keys and one-trial-per-email reservation across instances.
+- Restricted customer-to-authority trial proxy URLs to HTTPS outside development and blocked redirects/oversized responses.
+
 ### License distribution and trial activation
 
 - Added License Authority trial issuance with validation, configurable duration, and rate limiting.
