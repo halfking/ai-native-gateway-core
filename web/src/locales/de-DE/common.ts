@@ -141,4 +141,8 @@ export default {
   time: 'Zeit',
   warning: 'Warnung',
   yes: 'Ja',
+  view: 'Anzeigen',
+  updateSuccess: 'Erfolgreich aktualisiert',
+  operationFailed: 'Vorgang fehlgeschlagen',
+  errorColumn: 'Fehler',
 }

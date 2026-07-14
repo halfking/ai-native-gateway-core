@@ -1,22 +1,16 @@
 <script setup lang="ts">
 // RoutingAuditView.vue — P9.2: admin UI for routing override audit log.
-//
-// Surfaces every INSERT/UPDATE/DELETE on the routing_overrides
-// table (P7.9 trigger + P7.9.1 app-level log) so admins can
-// answer "who changed what when".
-//
-// Three sections:
-//   1. Filter bar (action, actor, override_id, days, limit)
-//   2. Audit table with colour-coded action badges
-//   3. JSON diff display (before/after details, expandable)
 
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { localeRef } from '../i18n'
 import {
   getRoutingAudit,
   type RoutingAuditEntry,
 } from '../api'
 
-// ── State ────────────────────────────────────────────────────────
+const { t } = useI18n()
+
 const entries = ref<RoutingAuditEntry[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -40,14 +34,13 @@ async function load() {
       limit: filterLimit.value,
     })
     entries.value = r.entries
-  } catch (e: any) {
-    error.value = e?.message ?? String(e)
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
 }
 
-// ── Helpers ─────────────────────────────────────────────────────
 function actionClass(a: string): string {
   switch (a) {
     case 'insert': return 'action-insert'
@@ -58,12 +51,9 @@ function actionClass(a: string): string {
 }
 
 function actionLabel(a: string): string {
-  switch (a) {
-    case 'insert': return 'Create'
-    case 'update': return 'Update'
-    case 'delete': return 'Delete'
-    default: return a
-  }
+  const key = `routingAudit.actions.${a}` as 'routingAudit.actions.insert'
+  if (a === 'insert' || a === 'update' || a === 'delete') return t(key)
+  return a
 }
 
 function shortModel(m?: string): string {
@@ -73,7 +63,7 @@ function shortModel(m?: string): string {
 
 function fmtDate(d?: string): string {
   if (!d) return '—'
-  return new Date(d).toLocaleString()
+  return new Date(d).toLocaleString(localeRef.value)
 }
 
 const summary = computed(() => {
@@ -91,93 +81,85 @@ onMounted(load)
 
 <template>
   <div class="audit-view">
-    <h1>Routing Overrides Audit</h1>
-    <p class="subtitle">
-      Every change to the routing_overrides table is recorded
-      (P7.9 trigger + P7.9.1 app-level log) with the actor,
-      action, and the row state. Use this to answer "who banned
-      which model, when, and why".
-    </p>
+    <h1>{{ t('routingAudit.title') }}</h1>
+    <p class="subtitle">{{ t('routingAudit.subtitle') }}</p>
 
-    <!-- ── Summary cards ─────────────────────────────────────── -->
     <div v-if="entries.length > 0" class="summary-cards">
       <div class="summary-card">
-        <div class="summary-label">Total</div>
+        <div class="summary-label">{{ t('routingAudit.summary.total') }}</div>
         <div class="summary-value">{{ summary.total }}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Inserts</div>
+        <div class="summary-label">{{ t('routingAudit.summary.inserts') }}</div>
         <div class="summary-value" style="color: #22c55e">{{ summary.insert }}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Updates</div>
+        <div class="summary-label">{{ t('routingAudit.summary.updates') }}</div>
         <div class="summary-value" style="color: #3b82f6">{{ summary.update }}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Deletes</div>
+        <div class="summary-label">{{ t('routingAudit.summary.deletes') }}</div>
         <div class="summary-value" style="color: #ef4444">{{ summary.delete }}</div>
       </div>
     </div>
 
-    <!-- ── Filter bar ──────────────────────────────────────── -->
     <section class="card">
       <div class="filter-bar">
-        <label>Action:
+        <label>{{ t('routingAudit.filter.action') }}:
           <select v-model="filterAction" @change="load">
-            <option value="">(all)</option>
+            <option value="">{{ t('routingAudit.filter.all') }}</option>
             <option value="insert">insert</option>
             <option value="update">update</option>
             <option value="delete">delete</option>
           </select>
         </label>
-        <label>Actor:
-          <input v-model="filterActor" placeholder="admin username"
+        <label>{{ t('routingAudit.filter.actor') }}:
+          <input v-model="filterActor" :placeholder="t('routingAudit.filter.actorPlaceholder')"
                  @keyup.enter="load" />
         </label>
-        <label>Override ID:
+        <label>{{ t('routingAudit.filter.overrideId') }}:
           <input v-model.number="filterOverrideId" type="number" min="1"
-                 placeholder="e.g. 42" @keyup.enter="load" />
+                 :placeholder="t('routingAudit.filter.overrideIdPlaceholder')" @keyup.enter="load" />
         </label>
-        <label>Window:
+        <label>{{ t('routingAudit.filter.window') }}:
           <select v-model.number="filterDays" @change="load">
-            <option :value="1">1 day</option>
-            <option :value="7">7 days</option>
-            <option :value="30">30 days</option>
-            <option :value="90">90 days</option>
+            <option :value="1">{{ t('routingAudit.filter.days.d1') }}</option>
+            <option :value="7">{{ t('routingAudit.filter.days.d7') }}</option>
+            <option :value="30">{{ t('routingAudit.filter.days.d30') }}</option>
+            <option :value="90">{{ t('routingAudit.filter.days.d90') }}</option>
           </select>
         </label>
-        <label>Limit:
+        <label>{{ t('routingAudit.filter.limit') }}:
           <select v-model.number="filterLimit" @change="load">
-            <option :value="50">50</option>
-            <option :value="200">200</option>
-            <option :value="500">500</option>
-            <option :value="1000">1000</option>
+            <option :value="50">{{ t('routingAudit.filter.limits.l50') }}</option>
+            <option :value="200">{{ t('routingAudit.filter.limits.l200') }}</option>
+            <option :value="500">{{ t('routingAudit.filter.limits.l500') }}</option>
+            <option :value="1000">{{ t('routingAudit.filter.limits.l1000') }}</option>
           </select>
         </label>
         <button @click="load" :disabled="loading">
-          {{ loading ? 'Loading…' : 'Refresh' }}
+          {{ loading ? t('routingAudit.filter.loading') : t('routingAudit.filter.refresh') }}
         </button>
       </div>
       <p v-if="error" class="error">⚠️ {{ error }}</p>
     </section>
 
-    <!-- ── Audit table ─────────────────────────────────────── -->
     <section class="card">
-      <h2>Audit entries ({{ entries.length }})</h2>
+      <h2>{{ t('routingAudit.table.title', { n: entries.length }) }}</h2>
       <p v-if="!loading && entries.length === 0" class="empty">
-        No audit entries match the filter.
+        {{ t('routingAudit.table.empty') }}
       </p>
 
       <table v-else class="audit-table">
         <thead>
           <tr>
-            <th>When</th>
-            <th>Action</th>
-            <th>Override</th>
-            <th>Task / Profile / Mode</th>
-            <th>Model</th>
-            <th>Reason</th>
-            <th>Actor</th>
+            <th>{{ t('routingAudit.table.headers.when') }}</th>
+            <th>{{ t('routingAudit.table.headers.action') }}</th>
+            <th>{{ t('routingAudit.table.headers.override') }}</th>
+            <th>{{ t('routingAudit.table.headers.taskProfileMode') }}</th>
+            <th>{{ t('routingAudit.table.headers.model') }}</th>
+            <th>{{ t('routingAudit.table.headers.reason') }}</th>
+            <th>{{ t('routingAudit.table.headers.actor') }}</th>
             <th></th>
           </tr>
         </thead>
@@ -216,15 +198,15 @@ onMounted(load)
               <td colspan="8">
                 <div class="diff">
                   <div v-if="e.old_expires_at" class="diff-field">
-                    <span class="diff-label">Old expires_at:</span>
+                    <span class="diff-label">{{ t('routingAudit.expand.oldExpires') }}:</span>
                     <code>{{ e.old_expires_at }}</code>
                   </div>
                   <div v-if="e.expires_at" class="diff-field">
-                    <span class="diff-label">New expires_at:</span>
+                    <span class="diff-label">{{ t('routingAudit.expand.newExpires') }}:</span>
                     <code>{{ e.expires_at }}</code>
                   </div>
                   <div v-if="!e.old_expires_at && !e.expires_at" class="text-muted">
-                    No diff fields for this action.
+                    {{ t('routingAudit.expand.noDiff') }}
                   </div>
                 </div>
               </td>

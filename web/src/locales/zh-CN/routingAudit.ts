@@ -1,0 +1,51 @@
+// routingAudit.ts — RoutingAuditView 文案。
+export default {
+  title: '路由覆盖审计',
+  subtitle: 'routing_overrides 表的每次变更均会记录操作者、动作与行状态，用于追溯「谁在何时封禁了哪个模型」。',
+  summary: {
+    total: '总计',
+    inserts: '新增',
+    updates: '更新',
+    deletes: '删除',
+  },
+  filter: {
+    action: '动作',
+    all: '(全部)',
+    actor: '操作者',
+    actorPlaceholder: '管理员用户名',
+    overrideId: '覆盖 ID',
+    overrideIdPlaceholder: '如 42',
+    window: '时间窗口',
+    limit: '条数限制',
+    refresh: '刷新',
+    loading: '加载中…',
+    days: { d1: '1 天', d7: '7 天', d30: '30 天', d90: '90 天' },
+    limits: { l50: '50', l200: '200', l500: '500', l1000: '1000' },
+  },
+  actions: {
+    insert: '新增',
+    update: '更新',
+    delete: '删除',
+  },
+  table: {
+    title: '审计记录 ({n})',
+    empty: '没有匹配的审计记录。',
+    headers: {
+      when: '时间',
+      action: '动作',
+      override: '覆盖',
+      taskProfileMode: '任务 / Profile / 模式',
+      model: '模型',
+      reason: '原因',
+      actor: '操作者',
+    },
+    details: '详情',
+    before: '变更前',
+    after: '变更后',
+  },
+  expand: {
+    oldExpires: '变更前 expires_at',
+    newExpires: '变更后 expires_at',
+    noDiff: '此操作无差异字段',
+  },
+}

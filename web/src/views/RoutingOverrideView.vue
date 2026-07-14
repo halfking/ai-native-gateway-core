@@ -12,6 +12,7 @@
 //   4. Extend modal (per-row)
 
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   getRoutingOverrides,
   createRoutingOverride,
@@ -20,6 +21,8 @@ import {
   type RoutingOverride,
   type RoutingOverrideCreate,
 } from '../api'
+
+const { t } = useI18n()
 
 // ── List state ───────────────────────────────────────────────────
 const overrides = ref<RoutingOverride[]>([])
@@ -61,15 +64,15 @@ const createSubmitting = ref(false)
 async function submitCreate() {
   createError.value = null
   if (!createForm.value.task_type.trim()) {
-    createError.value = 'task_type is required'
+    createError.value = t('routingOverride.create.errors.taskTypeRequired')
     return
   }
   if (!createForm.value.reason.trim()) {
-    createError.value = 'reason is required (audit trail)'
+    createError.value = t('routingOverride.create.errors.reasonRequired')
     return
   }
   if (createForm.value.mode === 'ban' && !createForm.value.model_chosen?.trim()) {
-    createError.value = 'ban mode requires model_chosen'
+    createError.value = t('routingOverride.create.errors.banRequiresModel')
     return
   }
 
@@ -96,14 +99,19 @@ async function submitCreate() {
 
 // ── Delete action ───────────────────────────────────────────────
 async function deleteOverride(o: RoutingOverride) {
-  if (!confirm(`Delete override #${o.id} (${o.mode} ${o.model_chosen ?? '*'} for ${o.task_type})?\n\nThis is a soft-delete (sets expires_at to 1s ago); the OverrideStore filter excludes it from the next refresh.`)) {
+  if (!confirm(t('routingOverride.table.deleteConfirm', {
+    id: o.id,
+    mode: o.mode,
+    model: o.model_chosen ?? '*',
+    task: o.task_type,
+  }))) {
     return
   }
   try {
     await deleteRoutingOverride(o.id)
     await loadOverrides()
   } catch (e: any) {
-    alert('Delete failed: ' + (e?.message ?? e))
+    alert(t('routingOverride.table.deleteFailed') + (e?.message ?? e))
   }
 }
 
@@ -175,30 +183,28 @@ onMounted(loadOverrides)
 
 <template>
   <div class="overrides-view">
-    <h1>Routing Overrides</h1>
+    <h1>{{ t('routingOverride.title') }}</h1>
     <p class="subtitle">
-      Pin or ban specific models for a (task_type, profile) pair.
-      Changes take effect within 1 minute via the OverrideStore
-      refresh. Find candidate (model, task) pairs to ban from the
-      <router-link to="/correlations">Correlations dashboard</router-link>.
+      {{ t('routingOverride.subtitle') }}
+      <router-link to="/correlations">{{ t('routingOverride.correlationsLink') }}</router-link>.
     </p>
 
     <!-- ── Summary cards ─────────────────────────────────── -->
     <div v-if="overrides.length > 0" class="summary-cards">
       <div class="summary-card">
-        <div class="summary-label">Total active</div>
+        <div class="summary-label">{{ t('routingOverride.summary.total') }}</div>
         <div class="summary-value">{{ summary.total }}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Bans</div>
+        <div class="summary-label">{{ t('routingOverride.summary.bans') }}</div>
         <div class="summary-value" style="color: #f97316">{{ summary.bans }}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Pins</div>
+        <div class="summary-label">{{ t('routingOverride.summary.pins') }}</div>
         <div class="summary-value" style="color: #22c55e">{{ summary.pins }}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Expiring in 7d</div>
+        <div class="summary-label">{{ t('routingOverride.summary.expiring') }}</div>
         <div class="summary-value" :style="{ color: summary.expiring > 0 ? '#eab308' : '#888' }">
           {{ summary.expiring }}
         </div>
@@ -210,25 +216,25 @@ onMounted(loadOverrides)
       <div class="filter-bar">
         <label>
           <input type="checkbox" v-model="filterActive" @change="loadOverrides" />
-          Active only
+          {{ t('routingOverride.filter.activeOnly') }}
         </label>
-        <label>Task type:
-          <input v-model="filterTaskType" placeholder="e.g. code, reasoning"
+        <label>{{ t('routingOverride.filter.taskType') }}:
+          <input v-model="filterTaskType" :placeholder="t('routingOverride.filter.taskTypePlaceholder')"
                  @keyup.enter="loadOverrides" />
         </label>
-        <label>Profile:
+        <label>{{ t('routingOverride.filter.profile') }}:
           <select v-model="filterProfile" @change="loadOverrides">
-            <option value="">(all)</option>
+            <option value="">{{ t('routingOverride.filter.all') }}</option>
             <option value="smart">smart</option>
             <option value="speed_first">speed_first</option>
             <option value="cost_first">cost_first</option>
           </select>
         </label>
         <button @click="loadOverrides" :disabled="loading">
-          {{ loading ? 'Loading…' : 'Refresh' }}
+          {{ loading ? t('routingOverride.filter.loading') : t('routingOverride.filter.refresh') }}
         </button>
         <button @click="showCreateForm = !showCreateForm" class="btn-new">
-          {{ showCreateForm ? 'Cancel' : '+ New override' }}
+          {{ showCreateForm ? t('routingOverride.filter.cancel') : t('routingOverride.filter.newOverride') }}
         </button>
       </div>
 
@@ -237,10 +243,10 @@ onMounted(loadOverrides)
 
     <!-- ── Create form ───────────────────────────────────── -->
     <section v-if="showCreateForm" class="card create-form">
-      <h2>New routing override</h2>
+      <h2>{{ t('routingOverride.create.title') }}</h2>
       <p class="hint">
-        Pin: model is forced to top of candidates (wins regardless of score).<br>
-        Ban: model is excluded from candidates entirely.
+        {{ t('routingOverride.create.hintPin') }}<br>
+        {{ t('routingOverride.create.hintBan') }}
       </p>
 
       <div class="form-grid">
@@ -299,9 +305,9 @@ onMounted(loadOverrides)
 
     <!-- ── Overrides table ──────────────────────────────── -->
     <section class="card">
-      <h2>Overrides ({{ overrides.length }})</h2>
+      <h2>{{ t('routingOverride.table.title', { n: overrides.length }) }}</h2>
       <p v-if="!loading && overrides.length === 0" class="empty">
-        No overrides match the filter. Click "+ New override" to create one.
+        {{ t('routingOverride.table.empty') }}
       </p>
 
       <table v-else class="overrides-table">

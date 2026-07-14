@@ -166,6 +166,7 @@ export default {
       stable: 'Stable',
       beta: 'Beta',
       canary: 'Canary',
+      _unknown: 'Unbekannt',
     },
     logStatus: {
       pending: 'Pending',
@@ -175,6 +176,7 @@ export default {
       success: 'Success',
       failed: 'Failed',
       rolled_back: 'Rolled Back',
+      _unknown: 'Unbekannt',
     },
   },
 
@@ -260,6 +262,22 @@ export default {
       active: 'Active',
       archived: 'Archived',
       completed: 'Completed',
+      _unknown: 'Unbekannt',
     },
   },
+
+
+  overview: {
+    title: 'Betriebsübersicht',
+    loadFailed: 'Übersichtsdaten konnten nicht geladen werden',
+    onlineInstances: 'Online-Instanzen',
+    totalLicenses: 'Lizenzen gesamt',
+    pendingApprovals: 'Ausstehende Aktivierungen',
+    todayUpgrades: 'Upgrades heute',
+    openFaults: 'Offene Störungen',
+    recentUpgrades: 'Letzte Upgrades',
+    recentFaults: 'Neueste Warnungen',
+    pendingOffline: 'Ausstehende Offline-Aktivierungen',
+    viewAll: 'Alle anzeigen',
+  }
 }

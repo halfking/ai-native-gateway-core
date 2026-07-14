@@ -64,6 +64,9 @@ export default {
     'auth.login_failed': 'فشل تسجيل الدخول',
     'auth.logout': 'تسجيل الخروج',
     'auth.rate_limited': 'تحديد المعدل',
+    'authentication.login': 'تسجيل الدخول',
+    'authentication.login_failed': 'فشل تسجيل الدخول',
+    'authentication.logout': 'تسجيل الخروج',
   },
   errors: {
     loadFailed: 'فشل التحميل',
@@ -72,6 +75,6 @@ export default {
   // 扁平键（供 Vue 组件直接使用）
   loadFailed: 'فشل التحميل',
   dash: '—',
-  refreshing: '刷新中…',
-  refresh: '刷新',
+  refreshing: 'Refreshing…',
+  refresh: 'Refresh',
 }

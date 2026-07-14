@@ -54,6 +54,7 @@ import (
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
+	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"                 //nolint:depguard
@@ -159,6 +160,8 @@ func main() {
 	// after dbConn is initialized.
 	var peakCollector *bg.ConcurrencyPeakCollector
 	var weeklyPeakRollup *bg.WeeklyPeakRollup
+	var statsMinuteAccumulator *stats.MinuteAccumulator
+	var statsMinuteRollup *bg.StatsMinuteRollup
 	var slotSuggester *bg.SlotSuggester
 	var autoIndexRefresher *bg.AutoIndexRefresher
 	// memorySvc holds the legacy memora concrete client/sink behind the
@@ -1942,6 +1945,15 @@ func main() {
 			weeklyPeakRollup = bg.NewWeeklyPeakRollup(dbConn.Pool())
 			weeklyPeakRollup.Start(context.Background())
 
+			statsMinuteAccumulator = stats.NewMinuteAccumulator(dbConn.Pool())
+			statsMinuteAccumulator.Start(context.Background())
+			statsMinuteRollup = bg.NewStatsMinuteRollup(dbConn.Pool())
+			statsMinuteRollup.Start(context.Background())
+			if telemetryClient.Enabled() {
+				telemetryClient.AddOnRequestLogPersisted(statsMinuteAccumulator.Record)
+				slog.Info("stats minute accumulator wired (telemetry onPersisted)")
+			}
+
 			slog.Info("CHECKPOINT: after weeklyPeakRollup.Start")
 			slotSuggester = bg.NewSlotSuggester(dbConn.Pool())
 			slotSuggester.Start(context.Background())
@@ -3200,6 +3212,12 @@ func main() {
 	}
 	if weeklyPeakRollup != nil {
 		weeklyPeakRollup.Stop()
+	}
+	if statsMinuteAccumulator != nil {
+		statsMinuteAccumulator.Stop()
+	}
+	if statsMinuteRollup != nil {
+		statsMinuteRollup.Stop()
 	}
 	if slotSuggester != nil {
 		slotSuggester.Stop()

@@ -64,6 +64,9 @@ export default {
     'auth.login_failed': 'Échec de connexion',
     'auth.logout': 'Déconnexion',
     'auth.rate_limited': 'Limite de débit atteinte',
+    'authentication.login': 'Connexion',
+    'authentication.login_failed': 'Échec de connexion',
+    'authentication.logout': 'Déconnexion',
   },
   errors: {
     loadFailed: 'Échec du chargement',
@@ -72,6 +75,6 @@ export default {
   // 扁平键（供 Vue 组件直接使用）
   loadFailed: 'Échec du chargement',
   dash: '—',
-  refreshing: '刷新中…',
-  refresh: '刷新',
+  refreshing: 'Refreshing…',
+  refresh: 'Refresh',
 }

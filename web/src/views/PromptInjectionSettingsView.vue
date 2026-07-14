@@ -1,8 +1,8 @@
 <template>
   <div class="prompt-injection-settings">
     <div class="settings-header">
-      <h2>🛡️ {{ t('promptInjectionFull.title') }}</h2>
-      <p class="description">{{ t('promptInjectionFull.subtitle') }}</p>
+      <h2>{{ t('sessions.promptInjectionFull.title') }}</h2>
+      <p class="description">{{ t('sessions.promptInjectionFull.subtitle') }}</p>
     </div>
 
     <el-tabs
@@ -11,25 +11,25 @@
       class="settings-tabs"
     >
       <!-- Tab 1: 策略（折叠嵌入配置面板） -->
-      <el-tab-pane :label="t('promptInjectionFull.tabPolicy')" name="policy">
+      <el-tab-pane :label="t('sessions.promptInjectionFull.tabPolicy')" name="policy">
         <template #label>
-          <span><el-icon><Setting /></el-icon> {{ t('promptInjectionFull.tabPolicy') }}</span>
+          <span><el-icon><Setting /></el-icon> {{ t('sessions.promptInjectionFull.tabPolicy') }}</span>
         </template>
         <PromptInjectionConfigPanel />
       </el-tab-pane>
 
       <!-- Tab 2: LLM 引擎 -->
-      <el-tab-pane :label="t('promptInjectionFull.tabEngines')" name="engines">
+      <el-tab-pane :label="t('sessions.promptInjectionFull.tabEngines')" name="engines">
         <template #label>
-          <span><el-icon><Cpu /></el-icon> {{ t('promptInjectionFull.tabEngines') }}</span>
+          <span><el-icon><Cpu /></el-icon> {{ t('sessions.promptInjectionFull.tabEngines') }}</span>
         </template>
 
         <el-card class="section-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span>{{ t('promptInjectionFull.enginesTitle') }}</span>
+              <span>{{ t('sessions.promptInjectionFull.enginesTitle') }}</span>
               <el-button type="primary" size="small" @click="showAddEngine = true">
-                <el-icon><Plus /></el-icon> {{ t('promptInjectionFull.addEngine') }}
+                <el-icon><Plus /></el-icon> {{ t('sessions.promptInjectionFull.addEngine') }}
               </el-button>
             </div>
           </template>
@@ -37,36 +37,36 @@
           <!-- No engines yet — render an explicit empty state instead of relying
                on el-table to coerce its empty template into a usable row. -->
           <div v-if="!enginesLoading && engines.length === 0" class="empty-state">
-            <p>{{ t('promptInjectionFull.enginesEmpty') }}</p>
-            <p class="meta">{{ t('promptInjectionFull.enginesEmptyHint') }}</p>
+            <p>{{ t('sessions.promptInjectionFull.enginesEmpty') }}</p>
+            <p class="meta">{{ t('sessions.promptInjectionFull.enginesEmptyHint') }}</p>
           </div>
-          <div v-else-if="enginesLoading" class="state">{{ t('promptInjectionFull.loading') }}</div>
+          <div v-else-if="enginesLoading" class="state">{{ t('sessions.promptInjectionFull.loading') }}</div>
           <el-table v-else :data="engines" style="width: 100%" stripe>
-            <el-table-column prop="engine_name" :label="t('promptInjectionFull.colName')" width="180" />
-            <el-table-column :label="t('promptInjectionFull.colModel')" width="220">
+            <el-table-column prop="engine_name" :label="t('sessions.promptInjectionFull.colName')" width="180" />
+            <el-table-column :label="t('sessions.promptInjectionFull.colModel')" width="220">
               <template #default="{ row }">
-                <el-tag size="small">{{ row.model_name || t('promptInjectionFull.notConfigured') }}</el-tag>
+                <el-tag size="small">{{ row.model_name || t('sessions.promptInjectionFull.notConfigured') }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="priority" :label="t('promptInjectionFull.colPriority')" width="80" />
-            <el-table-column prop="temperature" :label="t('promptInjectionFull.colTemperature')" width="80" />
-            <el-table-column prop="timeout_ms" :label="t('promptInjectionFull.colTimeoutMs')" width="100" />
-            <el-table-column prop="total_calls" :label="t('promptInjectionFull.colCalls')" width="100" />
-            <el-table-column prop="total_detections" :label="t('promptInjectionFull.colDetections')" width="110" />
-            <el-table-column :label="t('promptInjectionFull.colAvgLatency')" width="120">
+            <el-table-column prop="priority" :label="t('sessions.promptInjectionFull.colPriority')" width="80" />
+            <el-table-column prop="temperature" :label="t('sessions.promptInjectionFull.colTemperature')" width="80" />
+            <el-table-column prop="timeout_ms" :label="t('sessions.promptInjectionFull.colTimeoutMs')" width="100" />
+            <el-table-column prop="total_calls" :label="t('sessions.promptInjectionFull.colCalls')" width="100" />
+            <el-table-column prop="total_detections" :label="t('sessions.promptInjectionFull.colDetections')" width="110" />
+            <el-table-column :label="t('sessions.promptInjectionFull.colAvgLatency')" width="120">
               <template #default="{ row }">
                 {{ row.avg_latency_ms ? row.avg_latency_ms.toFixed(0) + 'ms' : '-' }}
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colEnabled')" width="80">
+            <el-table-column :label="t('sessions.promptInjectionFull.colEnabled')" width="80">
               <template #default="{ row }">
                 <el-switch v-model="row.enabled" @change="updateEngine(row)" />
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colActions')" width="180" fixed="right">
+            <el-table-column :label="t('sessions.promptInjectionFull.colActions')" width="180" fixed="right">
               <template #default="{ row, $index }">
-                <el-button size="small" @click="editEngine(row)">{{ t('promptInjectionFull.edit') }}</el-button>
-                <el-button size="small" type="danger" @click="deleteEngine(row)">{{ t('promptInjectionFull.delete') }}</el-button>
+                <el-button size="small" @click="editEngine(row)">{{ t('sessions.promptInjectionFull.edit') }}</el-button>
+                <el-button size="small" type="danger" @click="deleteEngine(row)">{{ t('sessions.promptInjectionFull.delete') }}</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -76,40 +76,40 @@
         <el-card class="section-card" shadow="never" v-if="engines.length">
           <template #header>
             <div class="card-header">
-              <span>{{ t('promptInjectionFull.promptTemplateTitle') }}</span>
+              <span>{{ t('sessions.promptInjectionFull.promptTemplateTitle') }}</span>
               <el-tag v-if="selectedEngine.id" type="info" size="small">
-                {{ t('promptInjectionFull.editingEngine', { name: selectedEngine.engine_name }) }}
+                {{ t('sessions.promptInjectionFull.editingEngine', { name: selectedEngine.engine_name }) }}
               </el-tag>
-              <span v-else class="meta">{{ t('promptInjectionFull.promptTemplateHint') }}</span>
+              <span v-else class="meta">{{ t('sessions.promptInjectionFull.promptTemplateHint') }}</span>
             </div>
           </template>
 
           <el-alert type="info" :closable="false" style="margin-bottom: 16px">
             <template #title>
               <div>
-                <p><strong>{{ t('promptInjectionFull.promptVars') }}</strong></p>
-                <p><code>{user_input}</code> - {{ t('promptInjectionFull.varUserInput') }}</p>
-                <p><code>{system_prompt}</code> - {{ t('promptInjectionFull.varSystemPrompt') }}</p>
-                <p><code>{detection_categories}</code> - {{ t('promptInjectionFull.varCategories') }}</p>
+                <p><strong>{{ t('sessions.promptInjectionFull.promptVars') }}</strong></p>
+                <p><code>{user_input}</code> - {{ t('sessions.promptInjectionFull.varUserInput') }}</p>
+                <p><code>{system_prompt}</code> - {{ t('sessions.promptInjectionFull.varSystemPrompt') }}</p>
+                <p><code>{detection_categories}</code> - {{ t('sessions.promptInjectionFull.varCategories') }}</p>
               </div>
             </template>
           </el-alert>
 
           <div class="prompt-editor">
-            <label>{{ t('promptInjectionFull.systemPromptLabel') }}</label>
+            <label>{{ t('sessions.promptInjectionFull.systemPromptLabel') }}</label>
             <el-input
               v-model="selectedEngine.system_prompt"
               type="textarea"
               :rows="4"
-              :placeholder="t('promptInjectionFull.systemPromptPlaceholder')"
+              :placeholder="t('sessions.promptInjectionFull.systemPromptPlaceholder')"
               :disabled="!selectedEngine.id"
             />
-            <label style="margin-top: 12px">{{ t('promptInjectionFull.detectionPromptLabel') }}</label>
+            <label style="margin-top: 12px">{{ t('sessions.promptInjectionFull.detectionPromptLabel') }}</label>
             <el-input
               v-model="selectedEngine.detection_prompt"
               type="textarea"
               :rows="8"
-              :placeholder="t('promptInjectionFull.detectionPromptPlaceholder')"
+              :placeholder="t('sessions.promptInjectionFull.detectionPromptPlaceholder')"
               :disabled="!selectedEngine.id"
             />
           </div>
@@ -117,31 +117,31 @@
       </el-tab-pane>
 
       <!-- Tab 3: 严重度矩阵 -->
-      <el-tab-pane :label="t('promptInjectionFull.tabSeverity')" name="severity">
+      <el-tab-pane :label="t('sessions.promptInjectionFull.tabSeverity')" name="severity">
         <template #label>
-          <span><el-icon><Warning /></el-icon> {{ t('promptInjectionFull.tabSeverity') }}</span>
+          <span><el-icon><Warning /></el-icon> {{ t('sessions.promptInjectionFull.tabSeverity') }}</span>
         </template>
 
         <el-card class="section-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span>{{ t('promptInjectionFull.severityTitle') }}</span>
-              <el-button type="primary" size="small" @click="saveSeverityMatrix">{{ t('promptInjectionFull.save') }}</el-button>
+              <span>{{ t('sessions.promptInjectionFull.severityTitle') }}</span>
+              <el-button type="primary" size="small" @click="saveSeverityMatrix">{{ t('sessions.promptInjectionFull.save') }}</el-button>
             </div>
           </template>
 
           <el-alert type="info" :closable="false" style="margin-bottom: 16px">
             <template #title>
-              {{ t('promptInjectionFull.severityHint') }}
+              {{ t('sessions.promptInjectionFull.severityHint') }}
             </template>
           </el-alert>
 
           <div v-if="!severityMatrixLoading && severityMatrix.length === 0" class="empty-state">
-            <p>{{ t('promptInjectionFull.severityEmpty') }}</p>
+            <p>{{ t('sessions.promptInjectionFull.severityEmpty') }}</p>
           </div>
-          <div v-else-if="severityMatrixLoading" class="state">{{ t('promptInjectionFull.loading') }}</div>
+          <div v-else-if="severityMatrixLoading" class="state">{{ t('sessions.promptInjectionFull.loading') }}</div>
           <el-table v-else :data="severityMatrix" style="width: 100%" stripe border>
-            <el-table-column :label="t('promptInjectionFull.colSeverityLevel')" width="120">
+            <el-table-column :label="t('sessions.promptInjectionFull.colSeverityLevel')" width="120">
               <template #default="{ row }">
                 <el-tag :type="getSeverityTagType(row.severity_level) as any" size="large">
                   {{ getSeverityLabel(row.severity_level) }}
@@ -149,61 +149,61 @@
               </template>
             </el-table-column>
 
-            <el-table-column :label="t('promptInjectionFull.colObserveAction')" width="160">
+            <el-table-column :label="t('sessions.promptInjectionFull.colObserveAction')" width="160">
               <template #default="{ row }">
                 <el-select v-model="row.observe_action" size="small">
-                  <el-option :label="t('promptInjectionFull.actionLog')" value="log" />
-                  <el-option :label="t('promptInjectionFull.actionWarn')" value="warn" />
+                  <el-option :label="t('sessions.promptInjectionFull.actionLog')" value="log" />
+                  <el-option :label="t('sessions.promptInjectionFull.actionWarn')" value="warn" />
                 </el-select>
               </template>
             </el-table-column>
 
-            <el-table-column :label="t('promptInjectionFull.colEnforceAction')" width="180">
+            <el-table-column :label="t('sessions.promptInjectionFull.colEnforceAction')" width="180">
               <template #default="{ row }">
                 <el-select v-model="row.enforce_action" size="small">
-                  <el-option :label="t('promptInjectionFull.actionLog')" value="log" />
-                  <el-option :label="t('promptInjectionFull.actionWarn')" value="warn" />
-                  <el-option :label="t('promptInjectionFull.actionReplace')" value="replace" />
-                  <el-option :label="t('promptInjectionFull.actionRedact')" value="redact" />
-                  <el-option :label="t('promptInjectionFull.actionRemove')" value="remove" />
-                  <el-option :label="t('promptInjectionFull.actionReject')" value="reject" />
-                  <el-option :label="t('promptInjectionFull.actionTerminate')" value="terminate" />
-                  <el-option :label="t('promptInjectionFull.actionApprove')" value="approve" />
-                  <el-option :label="t('promptInjectionFull.actionBlock')" value="block" />
+                  <el-option :label="t('sessions.promptInjectionFull.actionLog')" value="log" />
+                  <el-option :label="t('sessions.promptInjectionFull.actionWarn')" value="warn" />
+                  <el-option :label="t('sessions.promptInjectionFull.actionReplace')" value="replace" />
+                  <el-option :label="t('sessions.promptInjectionFull.actionRedact')" value="redact" />
+                  <el-option :label="t('sessions.promptInjectionFull.actionRemove')" value="remove" />
+                  <el-option :label="t('sessions.promptInjectionFull.actionReject')" value="reject" />
+                  <el-option :label="t('sessions.promptInjectionFull.actionTerminate')" value="terminate" />
+                  <el-option :label="t('sessions.promptInjectionFull.actionApprove')" value="approve" />
+                  <el-option :label="t('sessions.promptInjectionFull.actionBlock')" value="block" />
                 </el-select>
               </template>
             </el-table-column>
 
-            <el-table-column :label="t('promptInjectionFull.colRequireApproval')" width="120">
+            <el-table-column :label="t('sessions.promptInjectionFull.colRequireApproval')" width="120">
               <template #default="{ row }">
                 <el-switch v-model="row.require_approval" />
               </template>
             </el-table-column>
 
-            <el-table-column :label="t('promptInjectionFull.colApprovalTimeout')" width="180">
+            <el-table-column :label="t('sessions.promptInjectionFull.colApprovalTimeout')" width="180">
               <template #default="{ row }">
                 <el-input-number v-model="row.approval_timeout_minutes" :min="0" :max="1440" size="small" :disabled="!row.require_approval" />
-                <div class="help-text-small">{{ t('promptInjectionFull.timeoutZeroHint') }}</div>
+                <div class="help-text-small">{{ t('sessions.promptInjectionFull.timeoutZeroHint') }}</div>
               </template>
             </el-table-column>
 
-            <el-table-column :label="t('promptInjectionFull.colNotify')" width="80">
+            <el-table-column :label="t('sessions.promptInjectionFull.colNotify')" width="80">
               <template #default="{ row }">
                 <el-switch v-model="row.notify_on_detect" />
               </template>
             </el-table-column>
 
-            <el-table-column :label="t('promptInjectionFull.colHealthPenalty')" width="140">
+            <el-table-column :label="t('sessions.promptInjectionFull.colHealthPenalty')" width="140">
               <template #default="{ row }">
                 <el-input-number v-model="row.session_health_penalty" :min="0" :max="100" size="small" />
               </template>
             </el-table-column>
 
-            <el-table-column :label="t('promptInjectionFull.colRepeatTerminate')" width="180">
+            <el-table-column :label="t('sessions.promptInjectionFull.colRepeatTerminate')" width="180">
               <template #default="{ row }">
                 <el-switch v-model="row.terminate_session_on_repeat" />
                 <div v-if="row.terminate_session_on_repeat" class="help-text-small">
-                  {{ t('promptInjectionFull.repeatThresholdLabel') }}
+                  {{ t('sessions.promptInjectionFull.repeatThresholdLabel') }}
                   <el-input-number v-model="row.repeat_threshold" :min="1" :max="10" size="small" style="width: 80px" />
                 </div>
               </template>
@@ -214,7 +214,7 @@
         <el-card class="section-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span>{{ t('promptInjectionFull.flowTitle') }}</span>
+              <span>{{ t('sessions.promptInjectionFull.flowTitle') }}</span>
             </div>
           </template>
 
@@ -229,19 +229,19 @@
       </el-tab-pane>
 
       <!-- Tab 4: 检测规则 -->
-      <el-tab-pane :label="t('promptInjectionFull.tabRules')" name="rules">
+      <el-tab-pane :label="t('sessions.promptInjectionFull.tabRules')" name="rules">
         <template #label>
-          <span><el-icon><List /></el-icon> {{ t('promptInjectionFull.tabRules') }}</span>
+          <span><el-icon><List /></el-icon> {{ t('sessions.promptInjectionFull.tabRules') }}</span>
         </template>
 
         <el-card class="section-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span>{{ t('promptInjectionFull.rulesTitle') }}</span>
+              <span>{{ t('sessions.promptInjectionFull.rulesTitle') }}</span>
               <div>
                 <el-input
                   v-model="ruleSearch"
-                  :placeholder="t('promptInjectionFull.searchPlaceholder')"
+                  :placeholder="t('sessions.promptInjectionFull.searchPlaceholder')"
                   style="width: 220px; margin-right: 12px"
                   size="small"
                   clearable
@@ -252,7 +252,7 @@
                   </template>
                 </el-input>
                 <el-button type="primary" size="small" @click="showAddRule = true">
-                  <el-icon><Plus /></el-icon> {{ t('promptInjectionFull.addRule') }}
+                  <el-icon><Plus /></el-icon> {{ t('sessions.promptInjectionFull.addRule') }}
                 </el-button>
               </div>
             </div>
@@ -271,13 +271,13 @@
             </el-tag>
           </div>
 
-          <div v-if="rulesLoading && rules.length === 0" class="state">{{ t('promptInjectionFull.loading') }}</div>
+          <div v-if="rulesLoading && rules.length === 0" class="state">{{ t('sessions.promptInjectionFull.loading') }}</div>
           <div v-else-if="!rules.length" class="empty-state">
-            <p>{{ t('promptInjectionFull.rulesEmpty') }}</p>
+            <p>{{ t('sessions.promptInjectionFull.rulesEmpty') }}</p>
           </div>
           <el-table v-else :data="rules" style="width: 100%" stripe>
-            <el-table-column prop="rule_name" :label="t('promptInjectionFull.colRuleName')" width="220" show-overflow-tooltip />
-            <el-table-column :label="t('promptInjectionFull.colCategory')" width="150">
+            <el-table-column prop="rule_name" :label="t('sessions.promptInjectionFull.colRuleName')" width="220" show-overflow-tooltip />
+            <el-table-column :label="t('sessions.promptInjectionFull.colCategory')" width="150">
               <template #default="{ row }">
                 <el-tag
                   :type="getCategoryType(row.category_new || row.category) as any"
@@ -287,30 +287,30 @@
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colSeverity')" width="100">
+            <el-table-column :label="t('sessions.promptInjectionFull.colSeverity')" width="100">
               <template #default="{ row }">
                 <el-tag :type="getSeverityTagType(row.severity) as any" size="small">
                   {{ row.severity }}/10
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="description" :label="t('promptInjectionFull.colDescription')" show-overflow-tooltip />
-            <el-table-column :label="t('promptInjectionFull.colType')" width="80">
+            <el-table-column prop="description" :label="t('sessions.promptInjectionFull.colDescription')" show-overflow-tooltip />
+            <el-table-column :label="t('sessions.promptInjectionFull.colType')" width="80">
               <template #default="{ row }">
                 <el-tag :type="row.is_system ? 'info' : 'success'" size="small">
-                  {{ row.is_system ? t('promptInjectionFull.systemRule') : t('promptInjectionFull.customRule') }}
+                  {{ row.is_system ? t('sessions.promptInjectionFull.systemRule') : t('sessions.promptInjectionFull.customRule') }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colEnabled')" width="80">
+            <el-table-column :label="t('sessions.promptInjectionFull.colEnabled')" width="80">
               <template #default="{ row }">
                 <el-switch v-model="row.enabled" @change="toggleRule(row)" />
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colActions')" width="120" fixed="right">
+            <el-table-column :label="t('sessions.promptInjectionFull.colActions')" width="120" fixed="right">
               <template #default="{ row }">
-                <el-button v-if="!row.is_system" size="small" type="danger" @click="deleteRule(row)">{{ t('promptInjectionFull.delete') }}</el-button>
-                <span v-else class="meta">{{ t('promptInjectionFull.lockedHint') }}</span>
+                <el-button v-if="!row.is_system" size="small" type="danger" @click="deleteRule(row)">{{ t('sessions.promptInjectionFull.delete') }}</el-button>
+                <span v-else class="meta">{{ t('sessions.promptInjectionFull.lockedHint') }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -318,66 +318,66 @@
       </el-tab-pane>
 
       <!-- Tab 5: Canary Token -->
-      <el-tab-pane :label="t('promptInjectionFull.tabCanary')" name="canary">
+      <el-tab-pane :label="t('sessions.promptInjectionFull.tabCanary')" name="canary">
         <template #label>
-          <span><el-icon><Key /></el-icon> {{ t('promptInjectionFull.tabCanary') }}</span>
+          <span><el-icon><Key /></el-icon> {{ t('sessions.promptInjectionFull.tabCanary') }}</span>
         </template>
 
         <el-card class="section-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span>{{ t('promptInjectionFull.canaryTitle') }}</span>
+              <span>{{ t('sessions.promptInjectionFull.canaryTitle') }}</span>
               <el-button type="primary" size="small" @click="showAddCanary = true">
-                <el-icon><Plus /></el-icon> {{ t('promptInjectionFull.createToken') }}
+                <el-icon><Plus /></el-icon> {{ t('sessions.promptInjectionFull.createToken') }}
               </el-button>
             </div>
           </template>
 
           <el-alert type="info" :closable="false" style="margin-bottom: 16px">
             <template #title>
-              {{ t('promptInjectionFull.canaryHint') }}
+              {{ t('sessions.promptInjectionFull.canaryHint') }}
             </template>
           </el-alert>
 
-          <div v-if="canaryLoading && canaryTokens.length === 0" class="state">{{ t('promptInjectionFull.loading') }}</div>
+          <div v-if="canaryLoading && canaryTokens.length === 0" class="state">{{ t('sessions.promptInjectionFull.loading') }}</div>
           <div v-else-if="!canaryTokens.length" class="empty-state">
-            <p>{{ t('promptInjectionFull.canaryEmpty') }}</p>
+            <p>{{ t('sessions.promptInjectionFull.canaryEmpty') }}</p>
           </div>
           <el-table v-else :data="canaryTokens" style="width: 100%" stripe>
-            <el-table-column prop="token_name" :label="t('promptInjectionFull.colName')" width="150" />
-            <el-table-column :label="t('promptInjectionFull.colTokenValue')" width="320">
+            <el-table-column prop="token_name" :label="t('sessions.promptInjectionFull.colName')" width="150" />
+            <el-table-column :label="t('sessions.promptInjectionFull.colTokenValue')" width="320">
               <template #default="{ row }">
                 <el-text truncated>{{ row.token_value }}</el-text>
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colType')" width="80">
+            <el-table-column :label="t('sessions.promptInjectionFull.colType')" width="80">
               <template #default="{ row }">
                 <el-tag size="small">{{ row.token_type }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colLeakAction')" width="140">
+            <el-table-column :label="t('sessions.promptInjectionFull.colLeakAction')" width="140">
               <template #default="{ row }">
                 <el-tag :type="getActionType(row.leak_action) as any" size="small">
                   {{ getActionLabel(row.leak_action) }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="times_injected" :label="t('promptInjectionFull.colInjected')" width="110" />
-            <el-table-column :label="t('promptInjectionFull.colLeaked')" width="110">
+            <el-table-column prop="times_injected" :label="t('sessions.promptInjectionFull.colInjected')" width="110" />
+            <el-table-column :label="t('sessions.promptInjectionFull.colLeaked')" width="110">
               <template #default="{ row }">
                 <el-tag :type="row.times_leaked > 0 ? 'danger' : 'success'" size="small">
                   {{ row.times_leaked }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colEnabled')" width="80">
+            <el-table-column :label="t('sessions.promptInjectionFull.colEnabled')" width="80">
               <template #default="{ row }">
                 <el-switch v-model="row.active" @change="updateCanaryToken(row)" />
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colActions')" width="120" fixed="right">
+            <el-table-column :label="t('sessions.promptInjectionFull.colActions')" width="120" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" type="danger" @click="deleteCanaryToken(row)">{{ t('promptInjectionFull.delete') }}</el-button>
+                <el-button size="small" type="danger" @click="deleteCanaryToken(row)">{{ t('sessions.promptInjectionFull.delete') }}</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -385,17 +385,17 @@
       </el-tab-pane>
 
       <!-- Tab 6: 审批队列 — 快速跳转 -->
-      <el-tab-pane :label="t('promptInjectionFull.tabApprovals')" name="approvals">
+      <el-tab-pane :label="t('sessions.promptInjectionFull.tabApprovals')" name="approvals">
         <template #label>
-          <span><el-icon><Checked /></el-icon> {{ t('promptInjectionFull.tabApprovals') }}</span>
+          <span><el-icon><Checked /></el-icon> {{ t('sessions.promptInjectionFull.tabApprovals') }}</span>
         </template>
 
         <el-card class="section-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span>{{ t('promptInjectionFull.approvalsTitle') }}</span>
+              <span>{{ t('sessions.promptInjectionFull.approvalsTitle') }}</span>
               <el-button type="primary" @click="goToApprovalPage">
-                <el-icon><Link /></el-icon> {{ t('promptInjectionFull.goToApprovalCenter') }}
+                <el-icon><Link /></el-icon> {{ t('sessions.promptInjectionFull.goToApprovalCenter') }}
               </el-button>
             </div>
           </template>
@@ -403,7 +403,7 @@
           <el-alert type="info" :closable="false" style="margin-bottom: 16px">
             <template #title>
               <div>
-                <p>{{ t('promptInjectionFull.approvalsIntro') }}</p>
+                <p>{{ t('sessions.promptInjectionFull.approvalsIntro') }}</p>
               </div>
             </template>
           </el-alert>
@@ -412,151 +412,151 @@
             <el-col :span="8">
               <el-card shadow="hover" class="quick-link-card" @click="goToApprovalPage">
                 <el-icon size="48" color="#409eff"><Checked /></el-icon>
-                <h3>{{ t('promptInjectionFull.queueTitle') }}</h3>
-                <p>{{ t('promptInjectionFull.queueDesc') }}</p>
+                <h3>{{ t('sessions.promptInjectionFull.queueTitle') }}</h3>
+                <p>{{ t('sessions.promptInjectionFull.queueDesc') }}</p>
               </el-card>
             </el-col>
             <el-col :span="8">
               <el-card shadow="hover" class="quick-link-card" @click="goToApprovalConfig">
                 <el-icon size="48" color="#67c23a"><Setting /></el-icon>
-                <h3>{{ t('promptInjectionFull.approvalCfgTitle') }}</h3>
-                <p>{{ t('promptInjectionFull.approvalCfgDesc') }}</p>
+                <h3>{{ t('sessions.promptInjectionFull.approvalCfgTitle') }}</h3>
+                <p>{{ t('sessions.promptInjectionFull.approvalCfgDesc') }}</p>
               </el-card>
             </el-col>
             <el-col :span="8">
               <el-card shadow="hover" class="quick-link-card" @click="goToSeverityTab">
                 <el-icon size="48" color="#e6a23c"><Warning /></el-icon>
-                <h3>{{ t('promptInjectionFull.matrixTitle') }}</h3>
-                <p>{{ t('promptInjectionFull.matrixDesc') }}</p>
+                <h3>{{ t('sessions.promptInjectionFull.matrixTitle') }}</h3>
+                <p>{{ t('sessions.promptInjectionFull.matrixDesc') }}</p>
               </el-card>
             </el-col>
           </el-row>
 
-          <el-divider content-position="left">{{ t('promptInjectionFull.triggerTitle') }}</el-divider>
+          <el-divider content-position="left">{{ t('sessions.promptInjectionFull.triggerTitle') }}</el-divider>
 
           <el-descriptions :column="2" border>
-            <el-descriptions-item :label="t('promptInjectionFull.highRisk')">
+            <el-descriptions-item :label="t('sessions.promptInjectionFull.highRisk')">
               <el-tag type="warning">score ≥ 8</el-tag>
-              <span style="margin-left: 8px">{{ t('promptInjectionFull.highRiskDesc') }}</span>
+              <span style="margin-left: 8px">{{ t('sessions.promptInjectionFull.highRiskDesc') }}</span>
             </el-descriptions-item>
-            <el-descriptions-item :label="t('promptInjectionFull.criticalRisk')">
+            <el-descriptions-item :label="t('sessions.promptInjectionFull.criticalRisk')">
               <el-tag type="danger">score ≥ 10</el-tag>
-              <span style="margin-left: 8px">{{ t('promptInjectionFull.criticalRiskDesc') }}</span>
+              <span style="margin-left: 8px">{{ t('sessions.promptInjectionFull.criticalRiskDesc') }}</span>
             </el-descriptions-item>
           </el-descriptions>
 
           <el-alert type="warning" :closable="false" style="margin-top: 16px">
             <template #title>
-              {{ t('promptInjectionFull.matrixTip') }}
+              {{ t('sessions.promptInjectionFull.matrixTip') }}
             </template>
           </el-alert>
         </el-card>
       </el-tab-pane>
 
       <!-- Tab 7: 统计监控 -->
-      <el-tab-pane :label="t('promptInjectionFull.tabStats')" name="stats">
+      <el-tab-pane :label="t('sessions.promptInjectionFull.tabStats')" name="stats">
         <template #label>
-          <span><el-icon><DataAnalysis /></el-icon> {{ t('promptInjectionFull.tabStats') }}</span>
+          <span><el-icon><DataAnalysis /></el-icon> {{ t('sessions.promptInjectionFull.tabStats') }}</span>
         </template>
 
         <el-card class="section-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span>{{ t('promptInjectionFull.statsTitle') }}</span>
-              <el-button size="small" @click="refreshStats">{{ t('promptInjectionFull.refresh') }}</el-button>
+              <span>{{ t('sessions.promptInjectionFull.statsTitle') }}</span>
+              <el-button size="small" @click="refreshStats">{{ t('sessions.promptInjectionFull.refresh') }}</el-button>
             </div>
           </template>
 
           <el-row :gutter="20">
-            <el-col :span="4"><el-statistic :title="t('promptInjectionFull.totalDetections')" :value="stats.total_detections"><template #suffix>{{ t('promptInjectionFull.times') }}</template></el-statistic></el-col>
-            <el-col :span="4"><el-statistic :title="t('promptInjectionFull.blocked')" :value="stats.blocked_count"><template #suffix>{{ t('promptInjectionFull.times') }}</template></el-statistic></el-col>
-            <el-col :span="4"><el-statistic :title="t('promptInjectionFull.approvals')" :value="stats.approval_count"><template #suffix>{{ t('promptInjectionFull.times') }}</template></el-statistic></el-col>
-            <el-col :span="4"><el-statistic :title="t('promptInjectionFull.replaced')" :value="stats.replaced_count"><template #suffix>{{ t('promptInjectionFull.times') }}</template></el-statistic></el-col>
-            <el-col :span="4"><el-statistic :title="t('promptInjectionFull.terminated')" :value="stats.terminated_count"><template #suffix>{{ t('promptInjectionFull.times') }}</template></el-statistic></el-col>
-            <el-col :span="4"><el-statistic :title="t('promptInjectionFull.canaryLeaks')" :value="stats.canary_leak_count"><template #suffix>{{ t('promptInjectionFull.times') }}</template></el-statistic></el-col>
+            <el-col :span="4"><el-statistic :title="t('sessions.promptInjectionFull.totalDetections')" :value="stats.total_detections"><template #suffix>{{ t('sessions.promptInjectionFull.times') }}</template></el-statistic></el-col>
+            <el-col :span="4"><el-statistic :title="t('sessions.promptInjectionFull.blocked')" :value="stats.blocked_count"><template #suffix>{{ t('sessions.promptInjectionFull.times') }}</template></el-statistic></el-col>
+            <el-col :span="4"><el-statistic :title="t('sessions.promptInjectionFull.approvals')" :value="stats.approval_count"><template #suffix>{{ t('sessions.promptInjectionFull.times') }}</template></el-statistic></el-col>
+            <el-col :span="4"><el-statistic :title="t('sessions.promptInjectionFull.replaced')" :value="stats.replaced_count"><template #suffix>{{ t('sessions.promptInjectionFull.times') }}</template></el-statistic></el-col>
+            <el-col :span="4"><el-statistic :title="t('sessions.promptInjectionFull.terminated')" :value="stats.terminated_count"><template #suffix>{{ t('sessions.promptInjectionFull.times') }}</template></el-statistic></el-col>
+            <el-col :span="4"><el-statistic :title="t('sessions.promptInjectionFull.canaryLeaks')" :value="stats.canary_leak_count"><template #suffix>{{ t('sessions.promptInjectionFull.times') }}</template></el-statistic></el-col>
           </el-row>
 
           <el-divider />
 
           <el-row :gutter="20">
-            <el-col :span="6"><el-statistic :title="t('promptInjectionFull.avgScore')" :value="stats.avg_score" :precision="1"><template #suffix>/ 10</template></el-statistic></el-col>
-            <el-col :span="6"><el-statistic :title="t('promptInjectionFull.maxScore')" :value="stats.max_score"><template #suffix>/ 10</template></el-statistic></el-col>
-            <el-col :span="6"><el-statistic :title="t('promptInjectionFull.avgLLMConf')" :value="stats.avg_llm_confidence" :precision="2"><template #suffix>/ 1</template></el-statistic></el-col>
-            <el-col :span="6"><el-statistic :title="t('promptInjectionFull.affectedSessions')" :value="stats.affected_sessions" /></el-col>
+            <el-col :span="6"><el-statistic :title="t('sessions.promptInjectionFull.avgScore')" :value="stats.avg_score" :precision="1"><template #suffix>/ 10</template></el-statistic></el-col>
+            <el-col :span="6"><el-statistic :title="t('sessions.promptInjectionFull.maxScore')" :value="stats.max_score"><template #suffix>/ 10</template></el-statistic></el-col>
+            <el-col :span="6"><el-statistic :title="t('sessions.promptInjectionFull.avgLLMConf')" :value="stats.avg_llm_confidence" :precision="2"><template #suffix>/ 1</template></el-statistic></el-col>
+            <el-col :span="6"><el-statistic :title="t('sessions.promptInjectionFull.affectedSessions')" :value="stats.affected_sessions" /></el-col>
           </el-row>
 
           <el-divider />
 
-          <h4>{{ t('promptInjectionFull.riskDistribution') }}</h4>
+          <h4>{{ t('sessions.promptInjectionFull.riskDistribution') }}</h4>
           <el-row :gutter="10">
-            <el-col :span="6"><div class="risk-item risk-critical"><div class="risk-label">{{ t('promptInjectionFull.critical') }}</div><div class="risk-count">{{ stats.critical_count }}</div></div></el-col>
-            <el-col :span="6"><div class="risk-item risk-high"><div class="risk-label">{{ t('promptInjectionFull.high') }}</div><div class="risk-count">{{ stats.high_count }}</div></div></el-col>
-            <el-col :span="6"><div class="risk-item risk-medium"><div class="risk-label">{{ t('promptInjectionFull.medium') }}</div><div class="risk-count">{{ stats.medium_count }}</div></div></el-col>
-            <el-col :span="6"><div class="risk-item risk-low"><div class="risk-label">{{ t('promptInjectionFull.low') }}</div><div class="risk-count">{{ stats.low_count }}</div></div></el-col>
+            <el-col :span="6"><div class="risk-item risk-critical"><div class="risk-label">{{ t('sessions.promptInjectionFull.critical') }}</div><div class="risk-count">{{ stats.critical_count }}</div></div></el-col>
+            <el-col :span="6"><div class="risk-item risk-high"><div class="risk-label">{{ t('sessions.promptInjectionFull.high') }}</div><div class="risk-count">{{ stats.high_count }}</div></div></el-col>
+            <el-col :span="6"><div class="risk-item risk-medium"><div class="risk-label">{{ t('sessions.promptInjectionFull.medium') }}</div><div class="risk-count">{{ stats.medium_count }}</div></div></el-col>
+            <el-col :span="6"><div class="risk-item risk-low"><div class="risk-label">{{ t('sessions.promptInjectionFull.low') }}</div><div class="risk-count">{{ stats.low_count }}</div></div></el-col>
           </el-row>
         </el-card>
 
         <el-card class="section-card" shadow="never">
           <template #header>
             <div class="card-header">
-              <span>{{ t('promptInjectionFull.detectionLogsTitle') }}</span>
-              <el-button size="small" @click="loadDetections">{{ t('promptInjectionFull.refresh') }}</el-button>
+              <span>{{ t('sessions.promptInjectionFull.detectionLogsTitle') }}</span>
+              <el-button size="small" @click="loadDetections">{{ t('sessions.promptInjectionFull.refresh') }}</el-button>
             </div>
           </template>
 
           <el-form :inline="true" class="filter-form">
-            <el-form-item :label="t('promptInjectionFull.riskLevel')">
-              <el-select v-model="detectionFilter.risk_level" @change="loadDetections" clearable :placeholder="t('promptInjectionFull.all')">
-                <el-option :label="t('promptInjectionFull.critical')" value="critical" />
-                <el-option :label="t('promptInjectionFull.high')" value="high" />
-                <el-option :label="t('promptInjectionFull.medium')" value="medium" />
-                <el-option :label="t('promptInjectionFull.low')" value="low" />
+            <el-form-item :label="t('sessions.promptInjectionFull.riskLevel')">
+              <el-select v-model="detectionFilter.risk_level" @change="loadDetections" clearable :placeholder="t('sessions.promptInjectionFull.all')">
+                <el-option :label="t('sessions.promptInjectionFull.critical')" value="critical" />
+                <el-option :label="t('sessions.promptInjectionFull.high')" value="high" />
+                <el-option :label="t('sessions.promptInjectionFull.medium')" value="medium" />
+                <el-option :label="t('sessions.promptInjectionFull.low')" value="low" />
               </el-select>
             </el-form-item>
 
-            <el-form-item :label="t('promptInjectionFull.colEnforceAction')">
-              <el-select v-model="detectionFilter.action" @change="loadDetections" clearable :placeholder="t('promptInjectionFull.all')">
-                <el-option :label="t('promptInjectionFull.actionLog')" value="log" />
-                <el-option :label="t('promptInjectionFull.actionWarn')" value="warn" />
-                <el-option :label="t('promptInjectionFull.actionReplace')" value="replace" />
-                <el-option :label="t('promptInjectionFull.actionReject')" value="reject" />
-                <el-option :label="t('promptInjectionFull.actionBlock')" value="block" />
-                <el-option :label="t('promptInjectionFull.actionApprove')" value="approve" />
+            <el-form-item :label="t('sessions.promptInjectionFull.colEnforceAction')">
+              <el-select v-model="detectionFilter.action" @change="loadDetections" clearable :placeholder="t('sessions.promptInjectionFull.all')">
+                <el-option :label="t('sessions.promptInjectionFull.actionLog')" value="log" />
+                <el-option :label="t('sessions.promptInjectionFull.actionWarn')" value="warn" />
+                <el-option :label="t('sessions.promptInjectionFull.actionReplace')" value="replace" />
+                <el-option :label="t('sessions.promptInjectionFull.actionReject')" value="reject" />
+                <el-option :label="t('sessions.promptInjectionFull.actionBlock')" value="block" />
+                <el-option :label="t('sessions.promptInjectionFull.actionApprove')" value="approve" />
               </el-select>
             </el-form-item>
 
-            <el-form-item :label="t('promptInjectionFull.session')">
+            <el-form-item :label="t('sessions.promptInjectionFull.session')">
               <el-input
                 v-model="detectionFilter.session_key"
-                :placeholder="t('promptInjectionFull.sessionPlaceholder')"
+                :placeholder="t('sessions.promptInjectionFull.sessionPlaceholder')"
                 @keyup.enter="loadDetections"
                 clearable
               />
             </el-form-item>
           </el-form>
 
-          <div v-if="detectionsLoading && detections.length === 0" class="state">{{ t('promptInjectionFull.loading') }}</div>
+          <div v-if="detectionsLoading && detections.length === 0" class="state">{{ t('sessions.promptInjectionFull.loading') }}</div>
           <div v-else-if="!detections.length" class="empty-state">
-            <p>{{ t('promptInjectionFull.detectionsEmpty') }}</p>
+            <p>{{ t('sessions.promptInjectionFull.detectionsEmpty') }}</p>
           </div>
           <el-table v-else :data="detections" style="width: 100%" stripe>
-            <el-table-column prop="detected_at" :label="t('promptInjectionFull.colTime')" width="180" />
-            <el-table-column prop="request_id" :label="t('promptInjectionFull.colRequestId')" width="180" show-overflow-tooltip />
-            <el-table-column :label="t('promptInjectionFull.colScore')" width="80">
+            <el-table-column prop="detected_at" :label="t('sessions.promptInjectionFull.colTime')" width="180" />
+            <el-table-column prop="request_id" :label="t('sessions.promptInjectionFull.colRequestId')" width="180" show-overflow-tooltip />
+            <el-table-column :label="t('sessions.promptInjectionFull.colScore')" width="80">
               <template #default="{ row }">
                 <el-tag :type="getSeverityTagType(row.detection_score) as any" size="small">
                   {{ row.detection_score }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colRiskLevel')" width="100">
+            <el-table-column :label="t('sessions.promptInjectionFull.colRiskLevel')" width="100">
               <template #default="{ row }">
                 <el-tag :type="getRiskLevelType(row.risk_level) as any" size="small">
                   {{ getRiskLevelLabel(row.risk_level) }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colCategory')" width="200">
+            <el-table-column :label="t('sessions.promptInjectionFull.colCategory')" width="200">
               <template #default="{ row }">
                 <template v-for="cat in (row.categories || [])" :key="cat">
                   <el-tag size="small" style="margin-right: 4px">{{ getCategoryLabel(cat) }}</el-tag>
@@ -564,19 +564,19 @@
                 <span v-if="!row.categories || !row.categories.length" class="meta">-</span>
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colEnforceAction')" width="100">
+            <el-table-column :label="t('sessions.promptInjectionFull.colEnforceAction')" width="100">
               <template #default="{ row }">
                 <el-tag :type="getActionType(row.action_taken) as any" size="small">
                   {{ getActionLabel(row.action_taken) }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column :label="t('promptInjectionFull.colLLMConf')" width="110">
+            <el-table-column :label="t('sessions.promptInjectionFull.colLLMConf')" width="110">
               <template #default="{ row }">
                 {{ row.llm_confidence ? (row.llm_confidence * 100).toFixed(0) + '%' : '-' }}
               </template>
             </el-table-column>
-            <el-table-column prop="evidence_text" :label="t('promptInjectionFull.colEvidence')" show-overflow-tooltip />
+            <el-table-column prop="evidence_text" :label="t('sessions.promptInjectionFull.colEvidence')" show-overflow-tooltip />
           </el-table>
 
           <el-pagination
@@ -595,109 +595,109 @@
 
     <!-- ============= Dialogs ============= -->
 
-    <el-dialog v-model="showAddEngine" :title="t('promptInjectionFull.addEngineTitle')" width="600px">
+    <el-dialog v-model="showAddEngine" :title="t('sessions.promptInjectionFull.addEngineTitle')" width="600px">
       <el-form :model="newEngine" label-width="140px">
-        <el-form-item :label="t('promptInjectionFull.colName')" required>
-          <el-input v-model="newEngine.engine_name" :placeholder="t('promptInjectionFull.engineNamePlaceholder')" />
+        <el-form-item :label="t('sessions.promptInjectionFull.colName')" required>
+          <el-input v-model="newEngine.engine_name" :placeholder="t('sessions.promptInjectionFull.engineNamePlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colDescription')">
-          <el-input v-model="newEngine.description" :placeholder="t('promptInjectionFull.engineDescPlaceholder')" />
+        <el-form-item :label="t('sessions.promptInjectionFull.colDescription')">
+          <el-input v-model="newEngine.description" :placeholder="t('sessions.promptInjectionFull.engineDescPlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colModel')">
-          <el-select v-model="newEngine.model_canonical_id" :placeholder="t('promptInjectionFull.selectModel')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colModel')">
+          <el-select v-model="newEngine.model_canonical_id" :placeholder="t('sessions.promptInjectionFull.selectModel')">
             <el-option v-for="m in availableModels" :key="m.id" :label="m.canonical_name" :value="m.id" />
           </el-select>
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colTemperature')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colTemperature')">
           <el-slider v-model="newEngine.temperature" :min="0" :max="2" :step="0.1" />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colMaxTokens')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colMaxTokens')">
           <el-input-number v-model="newEngine.max_tokens" :min="100" :max="4096" />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colTimeoutMs')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colTimeoutMs')">
           <el-input-number v-model="newEngine.timeout_ms" :min="1000" :max="30000" />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colPriority')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colPriority')">
           <el-input-number v-model="newEngine.priority" :min="0" :max="100" />
-          <span class="help-text">{{ t('promptInjectionFull.priorityHelp') }}</span>
+          <span class="help-text">{{ t('sessions.promptInjectionFull.priorityHelp') }}</span>
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colEnabled')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colEnabled')">
           <el-switch v-model="newEngine.enabled" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showAddEngine = false">{{ t('promptInjectionFull.cancel') }}</el-button>
-        <el-button type="primary" @click="createEngine">{{ t('promptInjectionFull.create') }}</el-button>
+        <el-button @click="showAddEngine = false">{{ t('sessions.promptInjectionFull.cancel') }}</el-button>
+        <el-button type="primary" @click="createEngine">{{ t('sessions.promptInjectionFull.create') }}</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showAddRule" :title="t('promptInjectionFull.addRuleTitle')" width="600px">
+    <el-dialog v-model="showAddRule" :title="t('sessions.promptInjectionFull.addRuleTitle')" width="600px">
       <el-form :model="newRule" label-width="140px">
-        <el-form-item :label="t('promptInjectionFull.colRuleName')" required>
-          <el-input v-model="newRule.rule_name" :placeholder="t('promptInjectionFull.ruleNamePlaceholder')" />
+        <el-form-item :label="t('sessions.promptInjectionFull.colRuleName')" required>
+          <el-input v-model="newRule.rule_name" :placeholder="t('sessions.promptInjectionFull.ruleNamePlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colType')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colType')">
           <el-select v-model="newRule.rule_type">
-            <el-option :label="t('promptInjectionFull.basicRule')" value="basic" />
-            <el-option :label="t('promptInjectionFull.advancedRule')" value="advanced" />
+            <el-option :label="t('sessions.promptInjectionFull.basicRule')" value="basic" />
+            <el-option :label="t('sessions.promptInjectionFull.advancedRule')" value="advanced" />
           </el-select>
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colCategory')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colCategory')">
           <el-select v-model="newRule.category_new">
             <el-option v-for="cat in allCategories" :key="cat.value" :label="cat.label" :value="cat.value" />
           </el-select>
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colPattern')" required>
-          <el-input v-model="newRule.pattern" type="textarea" :rows="3" :placeholder="t('promptInjectionFull.patternPlaceholder')" />
+        <el-form-item :label="t('sessions.promptInjectionFull.colPattern')" required>
+          <el-input v-model="newRule.pattern" type="textarea" :rows="3" :placeholder="t('sessions.promptInjectionFull.patternPlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colDescription')">
-          <el-input v-model="newRule.description" :placeholder="t('promptInjectionFull.ruleDescPlaceholder')" />
+        <el-form-item :label="t('sessions.promptInjectionFull.colDescription')">
+          <el-input v-model="newRule.description" :placeholder="t('sessions.promptInjectionFull.ruleDescPlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colSeverity')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colSeverity')">
           <el-slider v-model="newRule.severity" :min="1" :max="10" show-stops />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colCaseSensitive')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colCaseSensitive')">
           <el-switch v-model="newRule.case_sensitive" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showAddRule = false">{{ t('promptInjectionFull.cancel') }}</el-button>
-        <el-button type="primary" @click="createRule">{{ t('promptInjectionFull.create') }}</el-button>
+        <el-button @click="showAddRule = false">{{ t('sessions.promptInjectionFull.cancel') }}</el-button>
+        <el-button type="primary" @click="createRule">{{ t('sessions.promptInjectionFull.create') }}</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showAddCanary" :title="t('promptInjectionFull.createTokenTitle')" width="500px">
+    <el-dialog v-model="showAddCanary" :title="t('sessions.promptInjectionFull.createTokenTitle')" width="500px">
       <el-form :model="newCanary" label-width="140px">
-        <el-form-item :label="t('promptInjectionFull.colName')">
-          <el-input v-model="newCanary.token_name" :placeholder="t('promptInjectionFull.tokenNamePlaceholder')" />
+        <el-form-item :label="t('sessions.promptInjectionFull.colName')">
+          <el-input v-model="newCanary.token_name" :placeholder="t('sessions.promptInjectionFull.tokenNamePlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colType')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colType')">
           <el-select v-model="newCanary.token_type">
-            <el-option :label="t('promptInjectionFull.tokenTypeUuid')" value="uuid" />
-            <el-option :label="t('promptInjectionFull.tokenTypeCustom')" value="custom" />
+            <el-option :label="t('sessions.promptInjectionFull.tokenTypeUuid')" value="uuid" />
+            <el-option :label="t('sessions.promptInjectionFull.tokenTypeCustom')" value="custom" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="newCanary.token_type === 'custom'" :label="t('promptInjectionFull.colTokenValue')">
-          <el-input v-model="newCanary.token_value" :placeholder="t('promptInjectionFull.tokenValuePlaceholder')" />
+        <el-form-item v-if="newCanary.token_type === 'custom'" :label="t('sessions.promptInjectionFull.colTokenValue')">
+          <el-input v-model="newCanary.token_value" :placeholder="t('sessions.promptInjectionFull.tokenValuePlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colDescription')">
-          <el-input v-model="newCanary.description" :placeholder="t('promptInjectionFull.tokenDescPlaceholder')" />
+        <el-form-item :label="t('sessions.promptInjectionFull.colDescription')">
+          <el-input v-model="newCanary.description" :placeholder="t('sessions.promptInjectionFull.tokenDescPlaceholder')" />
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colLeakAction')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colLeakAction')">
           <el-select v-model="newCanary.leak_action">
-            <el-option :label="t('promptInjectionFull.actionBlock')" value="block" />
-            <el-option :label="t('promptInjectionFull.actionReject')" value="reject" />
-            <el-option :label="t('promptInjectionFull.actionWarn')" value="warn" />
-            <el-option :label="t('promptInjectionFull.actionLog')" value="log" />
+            <el-option :label="t('sessions.promptInjectionFull.actionBlock')" value="block" />
+            <el-option :label="t('sessions.promptInjectionFull.actionReject')" value="reject" />
+            <el-option :label="t('sessions.promptInjectionFull.actionWarn')" value="warn" />
+            <el-option :label="t('sessions.promptInjectionFull.actionLog')" value="log" />
           </el-select>
         </el-form-item>
-        <el-form-item :label="t('promptInjectionFull.colNotify')">
+        <el-form-item :label="t('sessions.promptInjectionFull.colNotify')">
           <el-switch v-model="newCanary.notify_on_leak" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showAddCanary = false">{{ t('promptInjectionFull.cancel') }}</el-button>
-        <el-button type="primary" @click="createCanaryToken">{{ t('promptInjectionFull.create') }}</el-button>
+        <el-button @click="showAddCanary = false">{{ t('sessions.promptInjectionFull.cancel') }}</el-button>
+        <el-button type="primary" @click="createCanaryToken">{{ t('sessions.promptInjectionFull.create') }}</el-button>
       </template>
     </el-dialog>
 
@@ -754,7 +754,7 @@ function getCategoryType(raw: string) {
 }
 function getCategoryLabel(raw: string) {
   const meta = getCategoryMeta(raw)
-  return t(`promptInjectionFull.cat.${meta.i18nKey}`, meta.zhFallback)
+  return t(`sessions.promptInjectionFull.cat.${meta.i18nKey}`, meta.zhFallback)
 }
 function getSeverityType(severity: number) {
   return getSeverityTagType(severity)
@@ -764,7 +764,7 @@ function getRiskLevelType(level: string): 'danger' | 'warning' | 'info' {
   return types[level] || 'info'
 }
 function getRiskLevelLabel(level: string): string {
-  return ({ critical: t('promptInjectionFull.critical'), high: t('promptInjectionFull.high'), medium: t('promptInjectionFull.medium'), low: t('promptInjectionFull.low') } as Record<string, string>)[level] || level
+  return ({ critical: t('sessions.promptInjectionFull.critical'), high: t('sessions.promptInjectionFull.high'), medium: t('sessions.promptInjectionFull.medium'), low: t('sessions.promptInjectionFull.low') } as Record<string, string>)[level] || level
 }
 function getActionType(action: string): 'danger' | 'warning' | 'success' | 'info' {
   const types: Record<string, 'danger' | 'warning' | 'success' | 'info'> = {
@@ -776,43 +776,43 @@ function getActionType(action: string): 'danger' | 'warning' | 'success' | 'info
 }
 function getActionLabel(action: string): string {
   const m: Record<string, string> = {
-    block: t('promptInjectionFull.actionBlock'),
-    reject: t('promptInjectionFull.actionReject'),
-    terminate: t('promptInjectionFull.actionTerminate'),
-    approve: t('promptInjectionFull.actionApprove'),
-    replace: t('promptInjectionFull.actionReplace'),
-    redact: t('promptInjectionFull.actionRedact'),
-    remove: t('promptInjectionFull.actionRemove'),
-    sanitize: t('promptInjectionFull.actionSanitize'),
-    quarantine: t('promptInjectionFull.actionQuarantine'),
-    warn: t('promptInjectionFull.actionWarn'),
-    log: t('promptInjectionFull.actionLog'),
-    pass: t('promptInjectionFull.actionPass'),
+    block: t('sessions.promptInjectionFull.actionBlock'),
+    reject: t('sessions.promptInjectionFull.actionReject'),
+    terminate: t('sessions.promptInjectionFull.actionTerminate'),
+    approve: t('sessions.promptInjectionFull.actionApprove'),
+    replace: t('sessions.promptInjectionFull.actionReplace'),
+    redact: t('sessions.promptInjectionFull.actionRedact'),
+    remove: t('sessions.promptInjectionFull.actionRemove'),
+    sanitize: t('sessions.promptInjectionFull.actionSanitize'),
+    quarantine: t('sessions.promptInjectionFull.actionQuarantine'),
+    warn: t('sessions.promptInjectionFull.actionWarn'),
+    log: t('sessions.promptInjectionFull.actionLog'),
+    pass: t('sessions.promptInjectionFull.actionPass'),
   }
   return m[action] || action
 }
 function getSeverityLabel(level: string): string {
   const m: Record<string, string> = {
-    critical: t('promptInjectionFull.cvcCritical'),
-    high: t('promptInjectionFull.cvcHigh'),
-    medium: t('promptInjectionFull.cvcMedium'),
-    low: t('promptInjectionFull.cvcLow'),
+    critical: t('sessions.promptInjectionFull.cvcCritical'),
+    high: t('sessions.promptInjectionFull.cvcHigh'),
+    medium: t('sessions.promptInjectionFull.cvcMedium'),
+    low: t('sessions.promptInjectionFull.cvcLow'),
   }
   return m[level] || level
 }
 
 // Hard-coded description table for the "处理流程说明" card.
 const actionDescriptions = computed(() => ([
-  { key: 'pass', title: t('promptInjectionFull.actionPass'), desc: t('promptInjectionFull.flowPassDesc') },
-  { key: 'log', title: t('promptInjectionFull.actionLog'), desc: t('promptInjectionFull.flowLogDesc') },
-  { key: 'warn', title: t('promptInjectionFull.actionWarn'), desc: t('promptInjectionFull.flowWarnDesc') },
-  { key: 'replace', title: t('promptInjectionFull.actionReplace'), desc: t('promptInjectionFull.flowReplaceDesc') },
-  { key: 'redact', title: t('promptInjectionFull.actionRedact'), desc: t('promptInjectionFull.flowRedactDesc') },
-  { key: 'remove', title: t('promptInjectionFull.actionRemove'), desc: t('promptInjectionFull.flowRemoveDesc') },
-  { key: 'reject', title: t('promptInjectionFull.actionReject'), desc: t('promptInjectionFull.flowRejectDesc') },
-  { key: 'terminate', title: t('promptInjectionFull.actionTerminate'), desc: t('promptInjectionFull.flowTerminateDesc') },
-  { key: 'approve', title: t('promptInjectionFull.actionApprove'), desc: t('promptInjectionFull.flowApproveDesc') },
-  { key: 'block', title: t('promptInjectionFull.actionBlock'), desc: t('promptInjectionFull.flowBlockDesc') },
+  { key: 'pass', title: t('sessions.promptInjectionFull.actionPass'), desc: t('sessions.promptInjectionFull.flowPassDesc') },
+  { key: 'log', title: t('sessions.promptInjectionFull.actionLog'), desc: t('sessions.promptInjectionFull.flowLogDesc') },
+  { key: 'warn', title: t('sessions.promptInjectionFull.actionWarn'), desc: t('sessions.promptInjectionFull.flowWarnDesc') },
+  { key: 'replace', title: t('sessions.promptInjectionFull.actionReplace'), desc: t('sessions.promptInjectionFull.flowReplaceDesc') },
+  { key: 'redact', title: t('sessions.promptInjectionFull.actionRedact'), desc: t('sessions.promptInjectionFull.flowRedactDesc') },
+  { key: 'remove', title: t('sessions.promptInjectionFull.actionRemove'), desc: t('sessions.promptInjectionFull.flowRemoveDesc') },
+  { key: 'reject', title: t('sessions.promptInjectionFull.actionReject'), desc: t('sessions.promptInjectionFull.flowRejectDesc') },
+  { key: 'terminate', title: t('sessions.promptInjectionFull.actionTerminate'), desc: t('sessions.promptInjectionFull.flowTerminateDesc') },
+  { key: 'approve', title: t('sessions.promptInjectionFull.actionApprove'), desc: t('sessions.promptInjectionFull.flowApproveDesc') },
+  { key: 'block', title: t('sessions.promptInjectionFull.actionBlock'), desc: t('sessions.promptInjectionFull.flowBlockDesc') },
 ]))
 
 // ───── Engines ─────
@@ -836,7 +836,7 @@ const loadEngines = async () => {
     const res = await listEngines()
     engines.value = res.engines || []
   } catch (e: any) {
-    ElMessage.error(t('promptInjectionFull.loadEnginesFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.loadEnginesFailed', { msg: e?.message || '' }))
   } finally { enginesLoading.value = false }
 }
 const loadAvailableModels = async () => {
@@ -850,18 +850,18 @@ import { req } from '../api/_core'
 const createEngine = async () => {
   try {
     await apiCreateEngine(newEngine as any)
-    ElMessage.success(t('promptInjectionFull.engineCreated'))
+    ElMessage.success(t('sessions.promptInjectionFull.engineCreated'))
     showAddEngine.value = false
     Object.assign(newEngine, { engine_name: '', description: '', model_canonical_id: null, temperature: 0.1, max_tokens: 512, timeout_ms: 3000, priority: 0, enabled: true })
     await loadEngines()
-  } catch (e: any) { ElMessage.error(t('promptInjectionFull.createFailed', { msg: e?.message || '' })) }
+  } catch (e: any) { ElMessage.error(t('sessions.promptInjectionFull.createFailed', { msg: e?.message || '' })) }
 }
 const updateEngine = async (engine: any) => {
   try {
     await apiUpdateEngine(engine.id, engine)
-    ElMessage.success(t('promptInjectionFull.engineUpdated'))
+    ElMessage.success(t('sessions.promptInjectionFull.engineUpdated'))
   } catch (e: any) {
-    ElMessage.error(t('promptInjectionFull.updateFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.updateFailed', { msg: e?.message || '' }))
     engine.enabled = !engine.enabled
   }
 }
@@ -875,13 +875,13 @@ const editEngine = async (engine: any) => {
 }
 const deleteEngine = async (engine: any) => {
   try {
-    await ElMessageBox.confirm(t('promptInjectionFull.confirmDelete'), t('promptInjectionFull.confirmTitle'), { type: 'warning' })
+    await ElMessageBox.confirm(t('sessions.promptInjectionFull.confirmDelete'), t('sessions.promptInjectionFull.confirmTitle'), { type: 'warning' })
     await deleteEngineApi(engine.id)
-    ElMessage.success(t('promptInjectionFull.engineDeleted'))
+    ElMessage.success(t('sessions.promptInjectionFull.engineDeleted'))
     loadEngines()
     if (selectedEngine.id === engine.id) Object.assign(selectedEngine, { id: null, engine_name: '', system_prompt: '', detection_prompt: '' })
   } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error(t('promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
+    if (e !== 'cancel') ElMessage.error(t('sessions.promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
   }
 }
 async function deleteEngineApi(id: number | string) { return removeEngine(id) }
@@ -901,15 +901,15 @@ const loadSeverityMatrix = async () => {
     const res = await getSeverityMatrix()
     severityMatrix.value = res.matrix || []
   } catch (e: any) {
-    ElMessage.error(t('promptInjectionFull.loadMatrixFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.loadMatrixFailed', { msg: e?.message || '' }))
   } finally { severityMatrixLoading.value = false }
 }
 const saveSeverityMatrix = async () => {
   try {
     await updateSeverityMatrix(severityMatrix.value)
-    ElMessage.success(t('promptInjectionFull.matrixSaved'))
+    ElMessage.success(t('sessions.promptInjectionFull.matrixSaved'))
   } catch (e: any) {
-    ElMessage.error(t('promptInjectionFull.saveFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.saveFailed', { msg: e?.message || '' }))
   }
 }
 
@@ -933,7 +933,7 @@ const ruleCategories = computed(() => {
     counts[c] = (counts[c] || 0) + 1
   })
   return [
-    { value: '', label: t('promptInjectionFull.all'), count: rules.value.length },
+    { value: '', label: t('sessions.promptInjectionFull.all'), count: rules.value.length },
     ...CATEGORIES.filter((c) => counts[c.value]).map((c) => ({ value: c.value, label: c.zhFallback, count: counts[c.value] || 0 })),
   ]
 })
@@ -947,37 +947,37 @@ const loadRules = async () => {
     })
     rules.value = res.rules || []
   } catch (e: any) {
-    ElMessage.error(t('promptInjectionFull.loadRulesFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.loadRulesFailed', { msg: e?.message || '' }))
   } finally { rulesLoading.value = false }
 }
 const toggleRule = async (rule: any) => {
   try {
     await apiToggleRule(rule.id, rule.enabled)
-    ElMessage.success(t('promptInjectionFull.ruleUpdated'))
+    ElMessage.success(t('sessions.promptInjectionFull.ruleUpdated'))
   } catch (e: any) {
-    ElMessage.error(t('promptInjectionFull.updateFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.updateFailed', { msg: e?.message || '' }))
     rule.enabled = !rule.enabled
   }
 }
 const createRule = async () => {
   try {
     await req('POST', '/api/admin/prompt-injection/rules', newRule as any)
-    ElMessage.success(t('promptInjectionFull.ruleCreated'))
+    ElMessage.success(t('sessions.promptInjectionFull.ruleCreated'))
     showAddRule.value = false
     Object.assign(newRule, { rule_name: '', rule_type: 'basic', category_new: '', pattern: '', description: '', severity: 5, case_sensitive: false, enabled: true })
     loadRules()
   } catch (e: any) {
-    ElMessage.error(t('promptInjectionFull.createFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.createFailed', { msg: e?.message || '' }))
   }
 }
 const deleteRule = async (rule: any) => {
   try {
-    await ElMessageBox.confirm(t('promptInjectionFull.confirmDelete'), t('promptInjectionFull.confirmTitle'), { type: 'warning' })
+    await ElMessageBox.confirm(t('sessions.promptInjectionFull.confirmDelete'), t('sessions.promptInjectionFull.confirmTitle'), { type: 'warning' })
     await req('DELETE', `/api/admin/prompt-injection/rules/${rule.id}`)
-    ElMessage.success(t('promptInjectionFull.ruleDeleted'))
+    ElMessage.success(t('sessions.promptInjectionFull.ruleDeleted'))
     loadRules()
   } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error(t('promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
+    if (e !== 'cancel') ElMessage.error(t('sessions.promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
   }
 }
 
@@ -996,36 +996,36 @@ const loadCanaryTokens = async () => {
     const res = await listCanaryTokens()
     canaryTokens.value = res.tokens || []
   } catch (e: any) {
-    ElMessage.error(t('promptInjectionFull.loadCanaryFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.loadCanaryFailed', { msg: e?.message || '' }))
   } finally { canaryLoading.value = false }
 }
 const createCanaryToken = async () => {
   try {
     await createCanaryApi(newCanary as any)
-    ElMessage.success(t('promptInjectionFull.tokenCreated'))
+    ElMessage.success(t('sessions.promptInjectionFull.tokenCreated'))
     showAddCanary.value = false
     Object.assign(newCanary, { token_name: '', token_type: 'uuid', token_value: '', description: '', leak_action: 'block', notify_on_leak: true, active: true })
     loadCanaryTokens()
-  } catch (e: any) { ElMessage.error(t('promptInjectionFull.createFailed', { msg: e?.message || '' })) }
+  } catch (e: any) { ElMessage.error(t('sessions.promptInjectionFull.createFailed', { msg: e?.message || '' })) }
 }
 async function createCanaryApi(payload: any) { return apiCreateCanaryToken(payload) }
 const updateCanaryToken = async (token: any) => {
   try {
     await apiUpdateCanaryToken(token.id, token)
-    ElMessage.success(t('promptInjectionFull.tokenUpdated'))
+    ElMessage.success(t('sessions.promptInjectionFull.tokenUpdated'))
   } catch (e: any) {
-    ElMessage.error(t('promptInjectionFull.updateFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.updateFailed', { msg: e?.message || '' }))
     token.active = !token.active
   }
 }
 const deleteCanaryToken = async (token: any) => {
   try {
-    await ElMessageBox.confirm(t('promptInjectionFull.confirmDelete'), t('promptInjectionFull.confirmTitle'), { type: 'warning' })
+    await ElMessageBox.confirm(t('sessions.promptInjectionFull.confirmDelete'), t('sessions.promptInjectionFull.confirmTitle'), { type: 'warning' })
     await deleteCanaryApi(token.id)
-    ElMessage.success(t('promptInjectionFull.tokenDeleted'))
+    ElMessage.success(t('sessions.promptInjectionFull.tokenDeleted'))
     loadCanaryTokens()
   } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error(t('promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
+    if (e !== 'cancel') ElMessage.error(t('sessions.promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
   }
 }
 async function deleteCanaryApi(id: number | string) { return removeCanaryToken(id) }
@@ -1046,7 +1046,7 @@ const refreshStats = async () => {
   try {
     const res = await listStats()
     Object.assign(stats, res)
-  } catch (e: any) { ElMessage.error(t('promptInjectionFull.loadStatsFailed', { msg: e?.message || '' })) }
+  } catch (e: any) { ElMessage.error(t('sessions.promptInjectionFull.loadStatsFailed', { msg: e?.message || '' })) }
 }
 const loadDetections = async () => {
   detectionsLoading.value = true
@@ -1059,7 +1059,7 @@ const loadDetections = async () => {
     detections.value = res.detections || []
     detectionPagination.total = res.total || 0
   } catch (e: any) {
-    ElMessage.error(t('promptInjectionFull.loadDetectionsFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.loadDetectionsFailed', { msg: e?.message || '' }))
   } finally { detectionsLoading.value = false }
 }
 

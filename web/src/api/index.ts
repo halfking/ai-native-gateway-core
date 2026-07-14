@@ -13,6 +13,8 @@ export * from './provider-probe'
 export * from './provider-settings'
 export * from './settings'
 export * from './modules'
+export * from './usage'
+export * from './board'
 export {
   BASE,
   headers,

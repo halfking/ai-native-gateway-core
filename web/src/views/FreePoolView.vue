@@ -492,7 +492,7 @@ onMounted(load)
 <template>
   <div>
     <div class="page-header">
-      <h2>免费资源池</h2>
+      <h2>{{ t('freePool.page.title') }}</h2>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-ghost" type="button" @click="load" :disabled="loading || syncing">刷新</button>
         <button class="btn btn-ghost" type="button" @click="runBootstrap" :disabled="loading || syncing">
