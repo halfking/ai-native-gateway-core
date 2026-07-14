@@ -353,7 +353,7 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 }
 
 // LoadAttachment 从存储后端加载附件内容。
-// relPath 为相对路径，如 2026/07/req_xxx/abc.png。
+// relPath 为相对路径，如 2026/07/a1/b2/<sha256>.png（历史路径 req_xxx/ 仍兼容）。
 // 返回文件内容、MIME 类型和错误。
 func (s *Storage) LoadAttachment(relPath string) ([]byte, string, error) {
 	if s == nil {
