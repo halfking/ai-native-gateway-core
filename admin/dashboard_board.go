@@ -69,7 +69,7 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 		summary = h.fallbackBoardSummary(ctx, filterTenant, tr)
 	}
 
-	pies, _ := h.queryBoardPies(ctx, filterTenant, tr)
+	pies, _ := h.resolveBoardPies(ctx, filterTenant, tr)
 	trends, _ := h.resolveBoardTrends(ctx, filterTenant, tr, providerID)
 
 	resp := map[string]any{
@@ -165,7 +165,7 @@ func boardSource(fromMinute bool) string {
 	if fromMinute {
 		return "request_stats_minute"
 	}
-	return "request_logs_hot"
+	return "request_logs_with_current_month"
 }
 
 func boardTenantClause(tenantID string, startArg int) (clause string, args []any) {

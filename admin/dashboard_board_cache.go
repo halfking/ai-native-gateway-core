@@ -17,7 +17,7 @@ func (h *Handler) buildBoardPayload(ctx context.Context, tenantFilter string, da
 	if !fromMinute {
 		summary = h.fallbackBoardSummary(ctx, tenantFilter, tr)
 	}
-	pies, err := h.queryBoardPies(ctx, tenantFilter, tr)
+	pies, err := h.resolveBoardPies(ctx, tenantFilter, tr)
 	if err != nil {
 		return nil, err
 	}
