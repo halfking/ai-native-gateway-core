@@ -170,7 +170,7 @@ onMounted(load)
         <el-table :data="recentLogs" size="small" empty-text="—">
           <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="160" show-overflow-tooltip />
           <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="100" />
-          <el-table-column prop="status" :label="t('common.status')" width="100">
+          <el-table-column prop="status" :label="t('common.table.status')" width="100">
             <template #default="{ row = {} } = {}">
               <el-tag size="small">{{ row.status }}</el-tag>
             </template>

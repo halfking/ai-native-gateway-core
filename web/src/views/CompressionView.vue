@@ -257,7 +257,7 @@ watch(activeTab, loadAll)
 <template>
   <div class="compression-view">
     <div class="page-header">
-      <h2>压缩概览</h2>
+      <h2>{{ t('compression.title') }}</h2>
       <div class="time-range-tabs">
         <button
           v-for="tab in ([
@@ -279,16 +279,16 @@ watch(activeTab, loadAll)
           v-model="customFromInput"
           type="datetime-local"
           class="input-sm"
-          placeholder="开始时间"
+          :placeholder="t('compression.custom.from')"
         />
-        <span class="range-sep">至</span>
+        <span class="range-sep">{{ t('compression.custom.sep') }}</span>
         <input
           v-model="customToInput"
           type="datetime-local"
           class="input-sm"
-          placeholder="结束时间"
+          :placeholder="t('compression.custom.to')"
         />
-        <button class="btn btn-sm btn-primary" @click="applyCustom">查询</button>
+        <button class="btn btn-sm btn-primary" @click="applyCustom">{{ t('compression.custom.apply') }}</button>
       </div>
       <button class="btn btn-ghost btn-sm refresh-btn" @click="loadAll" :disabled="loading">
         {{ loading ? t('compression.loading') : t('compression.refresh') }}
@@ -323,19 +323,19 @@ watch(activeTab, loadAll)
     <!-- Summary Cards -->
     <div class="stats-row" v-if="stats" :class="{ loading }">
       <div class="stat-card">
-        <div class="stat-label">总请求数</div>
+        <div class="stat-label">{{ t('compression.stats.totalRequests') }}</div>
         <div class="stat-value">{{ fmtNum(stats.total_requests) }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">已压缩</div>
+        <div class="stat-label">{{ t('compression.stats.compressed') }}</div>
         <div class="stat-value" style="color:var(--success,#22c55e)">{{ fmtNum(stats.compressed_total) }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">压缩率</div>
+        <div class="stat-label">{{ t('compression.stats.compressionRate') }}</div>
         <div class="stat-value">{{ fmtPct(stats.compression_rate) }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">预估节省 Token</div>
+        <div class="stat-label">{{ t('compression.stats.estimatedSaved') }}</div>
         <div class="stat-value" style="color:var(--warning,#f59e0b)">
           {{ stats.estimated_tokens_saved != null ? fmtNum(stats.estimated_tokens_saved) : '—' }}
         </div>
@@ -345,13 +345,13 @@ watch(activeTab, loadAll)
     <!-- Strategy Distribution + Time Series -->
     <div class="charts-row" v-if="stats">
       <div class="card chart-card">
-        <h3 class="card-title">压缩策略分布</h3>
+        <h3 class="card-title">{{ t('compression.charts.strategyDistribution') }}</h3>
         <div class="strategy-bars">
           <div
             v-for="[strategy, count] in strategyEntries"
             :key="strategy"
             class="strategy-bar-row"
-            :title="`${strategyLabel(strategy)}: ${count} 条 (${fmtPct(stats ? count / stats.total_requests : 0)})`"
+            :title="t('compression.charts.titleSuffix', { strategy: strategyLabel(strategy), count, pct: fmtPct(stats ? count / stats.total_requests : 0) })"
           >
             <span class="strategy-label">{{ strategyLabel(strategy) }}</span>
             <div class="bar-track">
@@ -368,7 +368,7 @@ watch(activeTab, loadAll)
         </div>
       </div>
       <div class="card chart-card">
-        <h3 class="card-title">压缩率趋势 <span class="badge">{{ timeBucketLabel }}</span></h3>
+        <h3 class="card-title">{{ t('compression.charts.compressionRateTrend') }} <span class="badge">{{ timeBucketLabel }}</span></h3>
         <div class="time-series" v-if="chartBuckets.length">
           <div class="chart-y-axis">
             <span>{{ fmtPct(1) }}</span>
@@ -382,35 +382,35 @@ watch(activeTab, loadAll)
               v-for="bucket in chartBuckets"
               :key="bucket.hour"
               class="chart-bar-col"
-              :title="`${bucket.hour}: ${fmtNum(bucket.total)} 请求, ${fmtPct(bucket.rate)} 压缩率`"
+              :title="t('compression.charts.barTitle', { hour: bucket.hour, n: fmtNum(bucket.total), pct: fmtPct(bucket.rate) })"
             >
               <div class="rate-bar" :style="{ height: (bucket.rate * 100) + '%' }" />
             </div>
           </div>
         </div>
-        <div v-else class="empty-hint">暂无可用的时间序列数据</div>
+        <div v-else class="empty-hint">{{ t('compression.charts.noData') }}</div>
       </div>
     </div>
 
     <!-- Session Detail Table -->
     <div class="card session-card">
       <div class="card-header">
-        <h3 class="card-title">会话压缩详情</h3>
-        <span class="count-badge">共 {{ sessionsCount }} 条</span>
+        <h3 class="card-title">{{ t('compression.table.title') }}</h3>
+        <span class="count-badge">{{ t('compression.table.count', { n: sessionsCount }) }}</span>
       </div>
-      <div v-if="sessionsLoading" class="loading-hint">加载中…</div>
-      <div v-else-if="!sessions.length" class="empty-hint">所选时间段内没有压缩会话记录</div>
+      <div v-if="sessionsLoading" class="loading-hint">{{ t('compression.loading') }}</div>
+      <div v-else-if="!sessions.length" class="empty-hint">{{ t('compression.table.empty') }}</div>
       <div v-else class="table-wrap">
         <table class="data-table">
           <thead>
             <tr>
-              <th>会话ID</th>
-              <th>策略</th>
-              <th>请求数</th>
-              <th>压缩消息数</th>
-              <th>压缩Token数</th>
-              <th>消息节省</th>
-              <th>最后时间</th>
+              <th>{{ t('compression.table.sessionId') }}</th>
+              <th>{{ t('compression.table.strategy') }}</th>
+              <th>{{ t('compression.table.requests') }}</th>
+              <th>{{ t('compression.table.compressedMsgs') }}</th>
+              <th>{{ t('compression.table.compressedTokens') }}</th>
+              <th>{{ t('compression.table.msgSaved') }}</th>
+              <th>{{ t('compression.table.lastTime') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -442,15 +442,15 @@ watch(activeTab, loadAll)
           :disabled="sessionPage <= 1"
           @click="goPage(sessionPage - 1)"
         >
-          上一页
+          {{ t('compression.pagination.previous') }}
         </button>
-        <span class="page-info">{{ sessionPage }} / {{ totalPages }}</span>
+        <span class="page-info">{{ t('compression.pagination.pageInfo', { current: sessionPage, total: totalPages }) }}</span>
         <button
           class="btn btn-sm"
           :disabled="sessionPage >= totalPages"
           @click="goPage(sessionPage + 1)"
         >
-          下一页
+          {{ t('compression.pagination.next') }}
         </button>
       </div>
     </div>

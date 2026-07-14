@@ -166,6 +166,7 @@ export default {
       stable: 'Stable',
       beta: 'Beta',
       canary: 'Canary',
+      _unknown: 'Desconocido',
     },
     logStatus: {
       pending: 'Pending',
@@ -175,6 +176,7 @@ export default {
       success: 'Success',
       failed: 'Failed',
       rolled_back: 'Rolled Back',
+      _unknown: 'Desconocido',
     },
   },
 
@@ -260,6 +262,22 @@ export default {
       active: 'Active',
       archived: 'Archived',
       completed: 'Completed',
+      _unknown: 'Desconocido',
     },
   },
+
+
+  overview: {
+    title: 'Resumen de operaciones',
+    loadFailed: 'Error al cargar datos del resumen',
+    onlineInstances: 'Instancias en línea',
+    totalLicenses: 'Licencias totales',
+    pendingApprovals: 'Activaciones pendientes',
+    todayUpgrades: 'Actualizaciones hoy',
+    openFaults: 'Fallos abiertos',
+    recentUpgrades: 'Actualizaciones recientes',
+    recentFaults: 'Alertas recientes',
+    pendingOffline: 'Activaciones offline pendientes',
+    viewAll: 'Ver todo',
+  }
 }

@@ -378,5 +378,46 @@ export default {
     channelWechat: "微信支付",
     typeSubscribe: "月包订阅",
     typeTopup: "加油包"
-  }
+  },
+
+  tenantOps: {
+    autoUpdate: {
+      title: 'Mes mises à jour',
+      subtitle: 'Infos de mise à jour en lecture seule pour le locataire {tenant}',
+      loadFailed: 'Échec du chargement des mises à jour. Réessayez plus tard ou contactez l’administrateur.',
+      infoAlert: 'La plateforme fournit les mises à jour selon la politique de publication. Cette page ne permet ni publication ni retour arrière.',
+      currentVersion: 'Version actuelle',
+      emptyReleases: 'Aucune mise à jour disponible',
+      table: {
+        version: 'Version',
+        title: 'Titre',
+        channel: 'Canal',
+        mandatory: 'Obligatoire',
+        publishedAt: 'Publié le',
+        yes: 'Oui',
+        no: 'Non',
+      },
+      unknownVersion: 'Inconnu',
+      loadError: 'Impossible de charger les mises à jour disponibles',
+    },
+    license: {
+      title: 'Ma licence',
+      subtitle: 'Infos de licence en lecture seule pour le locataire {tenant}',
+      loadFailed: 'Échec du chargement de la licence. Réessayez plus tard ou contactez l’administrateur.',
+      infoAlert: 'Cette page est en lecture seule. Contactez l’administrateur pour modifier la licence.',
+      empty: 'Aucun enregistrement de licence pour ce locataire',
+      table: {
+        tier: 'Offre',
+        maxDevices: 'Limite d’appareils',
+        expiresAt: 'Expiration',
+        status: 'Statut',
+        features: 'Fonctionnalités',
+      },
+      status: {
+        active: 'Active',
+        expired: 'Expirée',
+        revoked: 'Révoquée',
+      },
+    },
+  },
 }

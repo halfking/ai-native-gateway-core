@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import ModelPicker from '../components/ModelPicker.vue'
 import { req } from '../api/_core'
@@ -92,6 +93,7 @@ const systemHealth = ref<ProbeSystemHealth | null>(null)
 const models = ref<ModelHealthSummary[]>([])
 const queues = ref<ProbeQueueSnapshot[]>([])
 const router = useRouter()
+const { t } = useI18n()
 
 const modelFilter = ref('')
 const healthFilter = ref<string>('')
@@ -218,40 +220,40 @@ onUnmounted(() => {
   <div class="page-container">
     <!-- Header -->
     <div class="top-bar">
-      <router-link to="/routing-v2" class="back-link">← 路由全景</router-link>
-      <h1>探测健康度</h1>
+      <router-link to="/routing-v2" class="back-link">{{ t('probeHealth.backLink') }}</router-link>
+      <h1>{{ t('probeHealth.title') }}</h1>
       <div class="spacer"></div>
       <label class="auto-refresh-label">
         <input type="checkbox" v-model="autoRefresh" />
-        自动刷新 (30s)
+        {{ t('probeHealth.autoRefresh') }}
       </label>
-      <button @click="refreshAll" class="btn btn-sm btn-ghost">刷新</button>
+      <button @click="refreshAll" class="btn btn-sm btn-ghost">{{ t('probeHealth.refresh') }}</button>
     </div>
 
     <!-- System Health Card -->
     <div v-if="systemHealth" class="card stats-grid">
       <div class="stat-item">
-        <div class="stat-label">总节点</div>
+        <div class="stat-label">{{ t('probeHealth.stats.totalNodes') }}</div>
         <div class="stat-value">{{ systemHealth.total_nodes }}</div>
       </div>
       <div class="stat-item stat-success">
-        <div class="stat-label">健康</div>
+        <div class="stat-label">{{ t('probeHealth.stats.healthy') }}</div>
         <div class="stat-value">{{ systemHealth.healthy_nodes }}</div>
       </div>
       <div class="stat-item stat-danger">
-        <div class="stat-label">失败</div>
+        <div class="stat-label">{{ t('probeHealth.stats.failing') }}</div>
         <div class="stat-value">{{ systemHealth.failing_nodes }}</div>
       </div>
       <div class="stat-item stat-warning">
-        <div class="stat-label">可疑</div>
+        <div class="stat-label">{{ t('probeHealth.stats.suspicious') }}</div>
         <div class="stat-value">{{ systemHealth.suspicious_nodes }}</div>
       </div>
       <div class="stat-item stat-accent">
-        <div class="stat-label">探测中</div>
+        <div class="stat-label">{{ t('probeHealth.stats.probing') }}</div>
         <div class="stat-value">{{ systemHealth.probing_nodes }}</div>
       </div>
       <div class="stat-item stat-danger" v-if="systemHealth.critical_nodes > 0">
-        <div class="stat-label">危急</div>
+        <div class="stat-label">{{ t('probeHealth.stats.critical') }}</div>
         <div class="stat-value">{{ systemHealth.critical_nodes }}</div>
       </div>
     </div>
@@ -259,19 +261,19 @@ onUnmounted(() => {
     <!-- Priority Queues -->
     <div class="card queue-grid">
       <div class="queue-item queue-urgent">
-        <div class="queue-label">P0 Urgent</div>
+        <div class="queue-label">{{ t('probeHealth.queue.urgent') }}</div>
         <div class="queue-value">{{ priorityQueueTotals.urgent }}</div>
       </div>
       <div class="queue-item queue-suspicious">
-        <div class="queue-label">P1 Suspicious</div>
+        <div class="queue-label">{{ t('probeHealth.queue.suspicious') }}</div>
         <div class="queue-value">{{ priorityQueueTotals.suspicious }}</div>
       </div>
       <div class="queue-item queue-failing">
-        <div class="queue-label">P2 Failing</div>
+        <div class="queue-label">{{ t('probeHealth.queue.failing') }}</div>
         <div class="queue-value">{{ priorityQueueTotals.failing }}</div>
       </div>
       <div class="queue-item queue-watchdog">
-        <div class="queue-label">P3 Watchdog</div>
+        <div class="queue-label">{{ t('probeHealth.queue.watchdog') }}</div>
         <div class="queue-value">{{ priorityQueueTotals.watchdog }}</div>
       </div>
     </div>
@@ -281,19 +283,19 @@ onUnmounted(() => {
       <ModelPicker
         v-model="modelFilter"
         mode="single"
-        placeholder="选择模型..."
+        :placeholder="t('probeHealth.filter.modelPlaceholder')"
         class="model-picker-wrapper"
       />
       
       <select v-model="healthFilter" class="filter-input">
-        <option value="">全部健康度</option>
-        <option value="healthy">健康</option>
-        <option value="degraded">降级</option>
-        <option value="warning">警告</option>
-        <option value="critical">危急</option>
+        <option value="">{{ t('probeHealth.filter.allHealth') }}</option>
+        <option value="healthy">{{ t('probeHealth.filter.healthHealthy') }}</option>
+        <option value="degraded">{{ t('probeHealth.filter.healthDegraded') }}</option>
+        <option value="warning">{{ t('probeHealth.filter.healthWarning') }}</option>
+        <option value="critical">{{ t('probeHealth.filter.healthCritical') }}</option>
       </select>
 
-      <button @click="fetchModels" class="btn btn-sm btn-secondary">应用筛选</button>
+      <button @click="fetchModels" class="btn btn-sm btn-secondary">{{ t('probeHealth.filter.apply') }}</button>
     </div>
 
     <!-- Models Table -->
@@ -301,15 +303,15 @@ onUnmounted(() => {
       <table class="data-table">
         <thead>
           <tr>
-            <th>模型</th>
-            <th>Provider</th>
-            <th class="text-center">总数</th>
-            <th class="text-center">健康</th>
-            <th class="text-center">可疑</th>
-            <th class="text-center">失败</th>
-            <th class="text-center">优先级</th>
-            <th class="text-center">成功率(7d)</th>
-            <th class="text-center">健康度</th>
+            <th>{{ t('probeHealth.table.model') }}</th>
+            <th>{{ t('probeHealth.table.provider') }}</th>
+            <th class="text-center">{{ t('probeHealth.table.total') }}</th>
+            <th class="text-center">{{ t('probeHealth.table.healthy') }}</th>
+            <th class="text-center">{{ t('probeHealth.table.suspicious') }}</th>
+            <th class="text-center">{{ t('probeHealth.table.failing') }}</th>
+            <th class="text-center">{{ t('probeHealth.table.priority') }}</th>
+            <th class="text-center">{{ t('probeHealth.table.successRate7d') }}</th>
+            <th class="text-center">{{ t('probeHealth.table.health') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -355,8 +357,8 @@ onUnmounted(() => {
         </tbody>
       </table>
       
-      <div v-if="loading" class="empty-state">加载中...</div>
-      <div v-else-if="filteredModels.length === 0" class="empty-state">暂无数据</div>
+      <div v-if="loading" class="empty-state">{{ t('probeHealth.loading') }}</div>
+      <div v-else-if="filteredModels.length === 0" class="empty-state">{{ t('probeHealth.empty') }}</div>
     </div>
 
   </div>

@@ -378,5 +378,46 @@ export default {
     channelWechat: "微信支付",
     typeSubscribe: "月包订阅",
     typeTopup: "加油包"
-  }
+  },
+
+  tenantOps: {
+    autoUpdate: {
+      title: 'Meine Updates',
+      subtitle: 'Schreibgeschützte Update-Infos für Mandant {tenant}',
+      loadFailed: 'Updates konnten nicht geladen werden. Später erneut versuchen oder Plattform-Admin kontaktieren.',
+      infoAlert: 'Die Plattform liefert Updates gemäß Release-Richtlinie. Diese Seite bietet kein Veröffentlichen oder Rollback.',
+      currentVersion: 'Aktuelle Version',
+      emptyReleases: 'Keine Updates verfügbar',
+      table: {
+        version: 'Version',
+        title: 'Titel',
+        channel: 'Kanal',
+        mandatory: 'Pflicht',
+        publishedAt: 'Veröffentlicht',
+        yes: 'Ja',
+        no: 'Nein',
+      },
+      unknownVersion: 'Unbekannt',
+      loadError: 'Verfügbare Updates konnten nicht geladen werden',
+    },
+    license: {
+      title: 'Meine Lizenz',
+      subtitle: 'Schreibgeschützte Lizenzinfos für Mandant {tenant}',
+      loadFailed: 'Lizenzinformationen konnten nicht geladen werden. Später erneut versuchen oder Plattform-Admin kontaktieren.',
+      infoAlert: 'Diese Seite ist schreibgeschützt. Lizenzänderungen über Plattform-Admin.',
+      empty: 'Keine Lizenzeinträge für diesen Mandanten',
+      table: {
+        tier: 'Tarif',
+        maxDevices: 'Geräte-Limit',
+        expiresAt: 'Läuft ab',
+        status: 'Status',
+        features: 'Funktionen',
+      },
+      status: {
+        active: 'Aktiv',
+        expired: 'Abgelaufen',
+        revoked: 'Widerrufen',
+      },
+    },
+  },
 }

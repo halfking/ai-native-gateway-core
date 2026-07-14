@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { clearAll } from '../store'
 import { logout as apiLogout } from '../api/auth'
 
+const { t } = useI18n()
 const router = useRouter()
 
 function goHome() {
@@ -19,12 +21,12 @@ async function logout() {
 <template>
   <div class="forbidden-page">
     <div class="forbidden-card">
-      <div class="forbidden-icon">🔒</div>
-      <h1>403 - 访问被拒绝</h1>
-      <p class="subtitle">此页面仅限超级管理员访问。您的租户管理员账户没有访问权限。</p>
+      <div class="forbidden-icon" aria-hidden="true">🔒</div>
+      <h1>{{ t('forbidden.title') }}</h1>
+      <p class="subtitle">{{ t('forbidden.subtitle') }}</p>
       <div class="actions">
-        <button class="btn btn-primary" @click="goHome">返回仪表盘</button>
-        <button class="btn btn-ghost" @click="logout">切换账户</button>
+        <button class="btn btn-primary" @click="goHome">{{ t('forbidden.goDashboard') }}</button>
+        <button class="btn btn-ghost" @click="logout">{{ t('forbidden.switchAccount') }}</button>
       </div>
     </div>
   </div>

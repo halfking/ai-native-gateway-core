@@ -2,22 +2,19 @@
   <div class="page-layout session-replay">
     <div class="page-header">
       <div>
-        <h2>会话回放调试</h2>
-        <p class="text-muted">
-          把生产会话下载到本地，回放 SessionCompressor / SessionCache，
-          验证压缩 / 缓存 / 摘要模块的实际行为。
-        </p>
+        <h2>{{ t('sessions.replay.title') }}</h2>
+        <p class="text-muted">{{ t('sessions.replay.subtitle') }}</p>
       </div>
       <div class="header-actions">
         <input
           v-model="sessionIdInput"
           class="cf-input"
-          placeholder="gw_session_id…"
+          :placeholder="t('sessions.replay.sessionIdPlaceholder')"
           aria-label="Session ID"
           @keyup.enter="loadByInput"
         />
         <button class="btn btn-primary" @click="loadByInput">
-          加载
+          {{ t('sessions.replay.load') }}
         </button>
       </div>
     </div>
@@ -25,30 +22,30 @@
     <!-- Toolbar -->
     <div v-if="pack" class="card toolbar">
       <div class="toolbar-row">
-        <label>模拟模型
+        <label>{{ t('sessions.replay.simulateModel') }}
           <select v-model="modelOverride" @change="recomputeReplay">
-            <option value="">(保留原 model)</option>
+            <option value="">{{ t('sessions.replay.keepOriginalModel') }}</option>
             <option value="gpt-4o">gpt-4o (128K)</option>
             <option value="claude-sonnet-5">claude-sonnet-5 (200K)</option>
             <option value="gpt-5.6-terra">gpt-5.6-terra (1M)</option>
             <option value="gpt-5.4">gpt-5.4 (1M)</option>
           </select>
         </label>
-        <label>Context Window (tokens)
+        <label>{{ t('sessions.replay.contextWindow') }}
           <input v-model.number="contextWindow" type="number" min="0"
                  step="1000" @change="recomputeReplay" />
         </label>
         <button class="btn" @click="regenerateSummary" :disabled="summarizing">
-          {{ summarizing ? '生成中…' : '重新生成摘要' }}
+          {{ summarizing ? t('sessions.replay.regenerating') : t('sessions.replay.regenerateSummary') }}
         </button>
         <button class="btn" @click="exportReport">
-          导出报告
+          {{ t('sessions.replay.exportReport') }}
         </button>
       </div>
       <div class="toolbar-row muted">
         <span>{{ pack.session_meta.label || pack.session_meta.id }}</span>
         <span>·</span>
-        <span>{{ pack.messages.length }} 轮</span>
+        <span>{{ t('sessions.replay.turns', { n: pack.messages.length }) }}</span>
         <span>·</span>
         <span>{{ pack.session_meta.tenant_id || 'default' }}</span>
         <span v-if="pack.session_meta.title">·</span>
@@ -59,72 +56,72 @@
     <!-- Summary block -->
     <div v-if="summary" class="card summary-block">
       <div class="card-title">
-        <span>摘要 (source: {{ summary.source }})</span>
+        <span>{{ t('sessions.replay.summaryTitle', { source: summary.source }) }}</span>
         <span class="muted" v-if="summary.generated_at">{{ formatTs(summary.generated_at) }}</span>
       </div>
       <div class="summary-row">
-        <strong>Title:</strong> {{ summary.title || '(empty)' }}
+        <strong>{{ t('sessions.replay.summary.titleLabel') }}</strong> {{ summary.title || t('sessions.replay.summary.empty') }}
       </div>
       <div class="summary-row">
-        <strong>Summary:</strong>
+        <strong>{{ t('sessions.replay.summary.summaryLabel') }}</strong>
         <span v-if="summary.summary">{{ summary.summary }}</span>
-        <span v-else class="muted">(empty)</span>
+        <span v-else class="muted">{{ t('sessions.replay.summary.empty') }}</span>
       </div>
       <div class="summary-row" v-if="summary.key_topics && summary.key_topics.length">
-        <strong>Topics:</strong>
+        <strong>{{ t('sessions.replay.summary.topicsLabel') }}</strong>
         <span v-for="t in summary.key_topics" :key="t" class="topic-chip">{{ t }}</span>
       </div>
     </div>
 
     <!-- Aggregate -->
     <div v-if="report && report.aggregate" class="card aggregate">
-      <div class="card-title">聚合指标</div>
+      <div class="card-title">{{ t('sessions.replay.aggregateTitle') }}</div>
       <div class="agg-grid">
-        <div class="agg-cell"><div class="cell-line2">总轮次</div><div class="cell-line1">{{ report.aggregate.total_turns }}</div></div>
-        <div class="agg-cell"><div class="cell-line2">压缩策略</div>
+        <div class="agg-cell"><div class="cell-line2">{{ t('sessions.replay.totalTurns') }}</div><div class="cell-line1">{{ report.aggregate.total_turns }}</div></div>
+        <div class="agg-cell"><div class="cell-line2">{{ t('sessions.replay.strategy') }}</div>
           <div class="cell-line1">
             <span v-for="(cnt, strat) in report.aggregate.strategy_counts" :key="strat" class="badge">
               {{ strat || '∅' }} × {{ cnt }}
             </span>
           </div>
         </div>
-        <div class="agg-cell"><div class="cell-line2">Lossiness</div>
+        <div class="agg-cell"><div class="cell-line2">{{ t('sessions.replay.lossiness') }}</div>
           <div class="cell-line1">
             <span v-for="(cnt, l) in report.aggregate.lossiness_counts" :key="l" class="badge">
               {{ l }} × {{ cnt }}
             </span>
           </div>
         </div>
-        <div class="agg-cell"><div class="cell-line2">缓存命中</div>
+        <div class="agg-cell"><div class="cell-line2">{{ t('sessions.replay.cacheHits') }}</div>
           <div class="cell-line1">
             <span v-for="(cnt, t) in report.aggregate.cache_tier_counts" :key="t" class="badge">
               {{ t }} × {{ cnt }}
             </span>
           </div>
         </div>
-        <div class="agg-cell"><div class="cell-line2">最大 in</div><div class="cell-line1">{{ formatBytes(report.aggregate.max_bytes_before) }}</div></div>
-        <div class="agg-cell"><div class="cell-line2">最大 out</div><div class="cell-line1">{{ formatBytes(report.aggregate.max_bytes_after) }}</div></div>
-        <div class="agg-cell"><div class="cell-line2">最大压缩比</div><div class="cell-line1">{{ (report.aggregate.max_compression_ratio * 100).toFixed(1) }}%</div></div>
-        <div class="agg-cell"><div class="cell-line2">平均压缩比</div><div class="cell-line1">{{ (report.aggregate.avg_compression_ratio * 100).toFixed(1) }}%</div></div>
+        <div class="agg-cell"><div class="cell-line2">{{ t('sessions.replay.maxIn') }}</div><div class="cell-line1">{{ formatBytes(report.aggregate.max_bytes_before) }}</div></div>
+        <div class="agg-cell"><div class="cell-line2">{{ t('sessions.replay.maxOut') }}</div><div class="cell-line1">{{ formatBytes(report.aggregate.max_bytes_after) }}</div></div>
+        <div class="agg-cell"><div class="cell-line2">{{ t('sessions.replay.maxRatio') }}</div><div class="cell-line1">{{ (report.aggregate.max_compression_ratio * 100).toFixed(1) }}%</div></div>
+        <div class="agg-cell"><div class="cell-line2">{{ t('sessions.replay.avgRatio') }}</div><div class="cell-line1">{{ (report.aggregate.avg_compression_ratio * 100).toFixed(1) }}%</div></div>
       </div>
     </div>
 
     <!-- Per-step -->
     <div v-if="report && report.steps && report.steps.length" class="card">
-      <div class="card-title">每轮回放</div>
+      <div class="card-title">{{ t('sessions.replay.perStepTitle') }}</div>
       <div class="step-table-wrap">
         <table class="data-table compact">
           <thead>
             <tr>
               <th>#</th>
-              <th>压缩策略</th>
-              <th>Lossiness</th>
-              <th>缓存层</th>
-              <th>In (B)</th>
-              <th>Out (B)</th>
-              <th>Δ 消息</th>
-              <th>窗口触发</th>
-              <th>摘要标记</th>
+              <th>{{ t('sessions.replay.stepTable.strategy') }}</th>
+              <th>{{ t('sessions.replay.stepTable.lossiness') }}</th>
+              <th>{{ t('sessions.replay.stepTable.cacheTier') }}</th>
+              <th>{{ t('sessions.replay.stepTable.bytesIn') }}</th>
+              <th>{{ t('sessions.replay.stepTable.bytesOut') }}</th>
+              <th>{{ t('sessions.replay.stepTable.deltaMsg') }}</th>
+              <th>{{ t('sessions.replay.stepTable.windowTrigger') }}</th>
+              <th>{{ t('sessions.replay.stepTable.summaryMarker') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -153,14 +150,17 @@
     </div>
 
     <!-- Loading & Error -->
-    <div v-if="loading" class="loading-state"><span class="spinner" /><span>加载中…</span></div>
+    <div v-if="loading" class="loading-state"><span class="spinner" /><span>{{ t('common.feedback.loading') }}</span></div>
     <div v-if="error" class="alert alert-danger" role="alert">{{ error }}</div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { req } from '../api/_core'
+
+const { t } = useI18n()
 
 // ---- 类型（与 domains/sessionforensics/types.go 对齐）----
 
@@ -266,7 +266,7 @@ function lossinessBadgeClass(l: string): string {
 async function loadByInput() {
   const id = sessionIdInput.value.trim()
   if (!id) {
-    error.value = '请输入 gw_session_id'
+    error.value = t('sessions.replay.enterSessionId')
     return
   }
   await loadSession(id)

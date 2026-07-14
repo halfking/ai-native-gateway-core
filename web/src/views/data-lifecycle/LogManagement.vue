@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import {
   logConfigGet, logConfigUpdate, logFilesList, logStats,
@@ -7,6 +8,7 @@ import {
   type LogConfig, type LogFile, type LogStats, type LogOpResult,
 } from '../../api'
 
+const { t } = useI18n()
 const config = ref<LogConfig | null>(null)
 const stats = ref<LogStats | null>(null)
 const files = ref<LogFile[]>([])
@@ -183,9 +185,9 @@ function fmtNum(n: number) {
 <template>
   <div class="log-management">
     <div class="header">
-      <h2>日志管理</h2>
+      <h2>{{ t('dataLifecycle.pages.logManagement') }}</h2>
       <button @click="load" :disabled="loading" class="btn-refresh">
-        {{ loading ? '加载中...' : '刷新' }}
+        {{ loading ? t('dataLifecycle.loading') : t('dataLifecycle.refresh') }}
       </button>
     </div>
 
