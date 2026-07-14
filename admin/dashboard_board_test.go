@@ -31,3 +31,17 @@ func TestBoardSummaryPrefersMinuteTable(t *testing.T) {
 		t.Fatal("board summary must read request_stats_minute first")
 	}
 }
+
+func TestBoardTrendsUseResolveWithFallback(t *testing.T) {
+	src, err := os.ReadFile("dashboard_board_queries.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "resolveBoardTrends") {
+		t.Fatal("board trends must use resolveBoardTrends with logs fallback")
+	}
+	if !strings.Contains(body, "sqlTrendBucket") {
+		t.Fatal("board trends must bucket with sqlTrendBucket")
+	}
+}

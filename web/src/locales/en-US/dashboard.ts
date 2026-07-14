@@ -99,6 +99,8 @@ export default {
     periodDay: 'Daily',
     periodWeek: 'Weekly',
     periodMonth: 'Monthly',
+    periodLabel: 'Period: {period}',
+    periodRange: '{start} to {end}',
     modelBreakdown: 'By model',
     dailyBreakdown: 'Daily model breakdown',
   },

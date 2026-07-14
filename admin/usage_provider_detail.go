@@ -204,15 +204,11 @@ func (h *Handler) providerExists(ctx context.Context, providerID int) bool {
 func (h *Handler) usageProvidersExport(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	days := queryInt(r, "days", 30)
-	if days < 1 {
-		days = 1
+	startTime, endTime, rangeErr := resolveUsageTimeRange(r, 1)
+	if rangeErr != nil {
+		writeError(w, http.StatusBadRequest, rangeErr.Error())
+		return
 	}
-	if days > 90 {
-		days = 90
-	}
-	startTime := time.Now().UTC().AddDate(0, 0, -days).Truncate(24 * time.Hour)
-	endTime := time.Now().UTC()
 	tid := EffectiveTenantIDAll(r)
 	whereTenant := ""
 	args := []any{startTime, endTime}
@@ -243,7 +239,10 @@ func (h *Handler) usageProvidersExport(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=provider-usage-%s.csv", time.Now().UTC().Format("20060102")))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(
+		"attachment; filename=provider-usage-%s_%s.csv",
+		startTime.Format("20060102"), endTime.Add(-24*time.Hour).Format("20060102"),
+	))
 	w.Write([]byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM for Excel
 	cw := csv.NewWriter(w)
 	_ = cw.Write([]string{
@@ -252,7 +251,10 @@ func (h *Handler) usageProvidersExport(w http.ResponseWriter, r *http.Request) {
 		"cost_usd", "success_rate", "period_start", "period_end",
 	})
 	periodStart := startTime.Format("2006-01-02")
-	periodEnd := endTime.Format("2006-01-02")
+	periodEnd := endTime.Add(-24 * time.Hour).Format("2006-01-02")
+	if endTime.Sub(startTime) <= 24*time.Hour {
+		periodEnd = periodStart
+	}
 	for rows.Next() {
 		var id int
 		var name, code string

@@ -189,17 +189,31 @@ func (h *Handler) queryDimPie(ctx context.Context, tenantID string, tr boardTime
 	return items, nil
 }
 
+func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64) ([]boardTrendPoint, error) {
+	points, err := h.queryBoardTrends(ctx, tenantID, tr, providerID)
+	if err != nil {
+		if IsMissingRelationError(err) {
+			return h.fallbackBoardTrends(ctx, tenantID, tr, providerID)
+		}
+		return nil, err
+	}
+	if len(points) > 0 {
+		return points, nil
+	}
+	fallback, fbErr := h.fallbackBoardTrends(ctx, tenantID, tr, providerID)
+	if fbErr != nil {
+		return points, nil
+	}
+	return fallback, nil
+}
+
 func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64) ([]boardTrendPoint, error) {
 	where, args := boardMinuteWhere(tr, tenantID, 0)
 	if providerID > 0 {
 		where += fmt.Sprintf(" AND provider_id = $%d", len(args)+1)
 		args = append(args, providerID)
 	}
-	bucketUnit := tr.trendBucketUnit()
-	bucketExpr := "bucket"
-	if bucketUnit == "hour" {
-		bucketExpr = "date_trunc('hour', bucket)"
-	}
+	bucketExpr := sqlTrendBucket("bucket", tr.trendBucketMinutes())
 
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s,

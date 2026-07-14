@@ -96,6 +96,8 @@ export default {
     periodDay: '按天',
     periodWeek: '按周',
     periodMonth: '按月',
+    periodLabel: '统计周期：{period}',
+    periodRange: '{start} 至 {end}',
     modelBreakdown: '模型聚合',
     dailyBreakdown: '每日模型明细',
   },

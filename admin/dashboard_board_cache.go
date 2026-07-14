@@ -21,7 +21,7 @@ func (h *Handler) buildBoardPayload(ctx context.Context, tenantFilter string, da
 	if err != nil {
 		return nil, err
 	}
-	trends, err := h.queryBoardTrends(ctx, tenantFilter, tr, providerID)
+	trends, err := h.resolveBoardTrends(ctx, tenantFilter, tr, providerID)
 	if err != nil {
 		return nil, err
 	}

@@ -1,7 +1,7 @@
 import type { BoardPayload, BoardTrendPoint } from '../api/board'
 import type { LiveRequest } from './liveStreamStore'
 import type { BoardTimeRange } from '../utils/boardTimeRange'
-import { isWithinBoardRange, resolveBoardRangeMs } from '../utils/boardTimeRange'
+import { isWithinBoardRange, alignToTrendBucket } from '../utils/boardTimeRange'
 
 const UNKNOWN = '__unknown__'
 
@@ -58,16 +58,7 @@ function bumpPieItem(items: BoardPayload['pies']['models'], key: string, delta: 
 }
 
 function trendBucketKey(ts: string, range: BoardTimeRange): string {
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return new Date().toISOString()
-  const utc = new Date(d.getTime())
-  const spanMs = resolveBoardRangeMs(range).endMs - resolveBoardRangeMs(range).startMs
-  if (spanMs <= 86_400_000) {
-    utc.setUTCSeconds(0, 0)
-    return utc.toISOString()
-  }
-  utc.setUTCMinutes(0, 0, 0)
-  return utc.toISOString()
+  return alignToTrendBucket(ts, range)
 }
 
 function bumpTrend(trends: BoardTrendPoint[], ts: string, range: BoardTimeRange, delta: {

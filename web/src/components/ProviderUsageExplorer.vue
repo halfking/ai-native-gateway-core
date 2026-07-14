@@ -40,6 +40,22 @@ const exportLoading = ref(false)
 
 const isDetailView = computed(() => selected.value != null)
 const periodLabel = computed(() => formatBoardRangeLabel(props.timeRange, t))
+const detailPeriodLabel = computed(() => {
+  if (summary.value?.window_start && summary.value?.window_end) {
+    const start = summary.value.window_start.slice(0, 10)
+    const end = summary.value.window_end.slice(0, 10)
+    if (start === end || summary.value.window_end.endsWith('T00:00:00')) {
+      return t('dashboard.providerUsage.periodRange', { start, end: start })
+    }
+    const endInclusive = new Date(summary.value.window_end)
+    endInclusive.setUTCDate(endInclusive.getUTCDate() - 1)
+    return t('dashboard.providerUsage.periodRange', {
+      start,
+      end: endInclusive.toISOString().slice(0, 10),
+    })
+  }
+  return periodLabel.value
+})
 
 const filteredRows = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -194,6 +210,7 @@ watch(() => props.timeQuery, () => {
                   <p class="pue-sub">
                     <template v-if="isDetailView">
                       <span class="muted">{{ selected!.provider_code }} · ID {{ selected!.provider_id }}</span>
+                      <span class="pue-period">{{ t('dashboard.providerUsage.periodLabel', { period: detailPeriodLabel }) }}</span>
                     </template>
                     <template v-else>
                       {{ t('dashboard.providerUsage.subtitle', { period: periodLabel }) }}
@@ -228,6 +245,7 @@ watch(() => props.timeQuery, () => {
               <Transition name="pue-pane" mode="out-in">
                 <div v-if="!isDetailView" key="list" class="pue-pane">
                   <div class="pue-toolbar">
+                    <span class="pue-period-badge">{{ t('dashboard.providerUsage.periodLabel', { period: periodLabel }) }}</span>
                     <input v-model="search" class="pue-search" :placeholder="t('dashboard.providerUsage.search')" />
                   </div>
                   <div v-loading="loading" class="pue-list">
@@ -456,6 +474,27 @@ watch(() => props.timeQuery, () => {
 .pue-toolbar {
   padding: 12px 20px 0;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pue-period-badge {
+  display: inline-flex;
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.pue-period {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--accent);
 }
 
 .pue-search {

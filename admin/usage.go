@@ -394,12 +394,10 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
-	days := queryInt(r, "days", 7)
-	if days < 1 {
-		days = 1
-	}
-	if days > 90 {
-		days = 90
+	startTime, endTime, rangeErr := resolveUsageTimeRange(r, 1)
+	if rangeErr != nil {
+		writeError(w, http.StatusBadRequest, rangeErr.Error())
+		return
 	}
 	limit := queryInt(r, "limit", 50)
 	if limit < 1 {
@@ -410,14 +408,14 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	tid := EffectiveTenantIDAll(r) // Use All version for super_admin to see all tenants
+	tid := EffectiveTenantIDAll(r)
 
 	var query string
 	var args []any
-	args = append(args, days, limit) // $1 = days, $2 = limit
+	args = append(args, startTime, endTime, limit)
 
 	if tid != "" {
-		args = append(args, tid) // $3 = tenant_id
+		args = append(args, tid)
 		query = `
 			SELECT
 				p.id,
@@ -431,11 +429,11 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 			FROM usage_ledger_with_current_month u
 			JOIN credentials c ON c.id = u.credential_id
 			JOIN providers p ON p.id = c.provider_id
-			WHERE u.tenant_id = $3
-			  AND u.ts >= now() - ($1 * INTERVAL '1 day')
+			WHERE u.tenant_id = $4
+			  AND u.ts >= $1 AND u.ts < $2
 			GROUP BY p.id, p.display_name, p.code
 			ORDER BY total_cost_usd DESC, request_count DESC
-			LIMIT $2
+			LIMIT $3
 		`
 	} else {
 		query = `
@@ -451,10 +449,10 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 			FROM usage_ledger_with_current_month u
 			JOIN credentials c ON c.id = u.credential_id
 			JOIN providers p ON p.id = c.provider_id
-			WHERE u.ts >= now() - ($1 * INTERVAL '1 day')
+			WHERE u.ts >= $1 AND u.ts < $2
 			GROUP BY p.id, p.display_name, p.code
 			ORDER BY total_cost_usd DESC, request_count DESC
-			LIMIT $2
+			LIMIT $3
 		`
 	}
 
