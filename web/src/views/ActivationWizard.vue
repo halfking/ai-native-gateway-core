@@ -104,7 +104,7 @@ async function handleTrial() {
     return
   }
   if (!trialAgreed.value) {
-    ElMessage.warning('请先同意服务条款和隐私政策')
+    ElMessage.warning('请先同意用户协议与数据处理授权')
     return
   }
   loading.value = true
