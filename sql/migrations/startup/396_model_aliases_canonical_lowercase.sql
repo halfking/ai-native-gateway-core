@@ -71,8 +71,11 @@ WHERE raw_name <> lower(raw_name);
 
 -- ---------------------------------------------------------------------------
 -- 3. Resolve collisions created by step 2 (e.g. "MiniMax-M3" + "minimax-m3"
---    now both want raw_name = 'minimax-m3'). We pick the lower id as the
---    canonical row and re-point / deactivate the others.
+--    now both want raw_name = 'minimax-m3'). We pick the lowest-id ACTIVE
+--    row as the winner; every non-active row sharing the raw_name is set
+--    to 'deprecated' (the only non-active status the model_aliases status
+--    CHECK allows besides active). canonical_id on losers is re-pointed
+--    at the winner so /models listings still resolve.
 -- ---------------------------------------------------------------------------
 WITH ranked AS (
     SELECT
@@ -80,24 +83,23 @@ WITH ranked AS (
         raw_name,
         canonical_id,
         status,
-        ROW_NUMBER() OVER (PARTITION BY raw_name ORDER BY id) AS rn
+        ROW_NUMBER() OVER (
+            PARTITION BY raw_name
+            ORDER BY (status = 'active') DESC, id
+        ) AS rn
     FROM model_aliases
 ),
 winner AS (
-    SELECT id, raw_name, canonical_id
-    FROM ranked
-    WHERE rn = 1
+    SELECT id, raw_name, canonical_id FROM ranked WHERE rn = 1
 ),
 loser AS (
-    SELECT l.id, w.id AS winner_id
+    SELECT l.id, w.id AS winner_id, w.canonical_id AS winner_canonical_id
     FROM ranked l
     JOIN winner w ON l.raw_name = w.raw_name AND l.id <> w.id
 )
 UPDATE model_aliases ma
-SET status = 'inactive',
-    canonical_id = COALESCE((
-        SELECT canonical_id FROM model_aliases WHERE id = loser.winner_id
-    ), ma.canonical_id)
+SET status = 'deprecated',
+    canonical_id = COALESCE(loser.winner_canonical_id, ma.canonical_id)
 FROM loser
 WHERE ma.id = loser.id;
 
