@@ -36,7 +36,7 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, days i
 	}
 
 	var activeKeys, activeModels, providers int
-	_ = h.queryOverviewCounts(ctx, tenantID, &activeKeys, &activeModels, &providers)
+	_ = h.queryOverviewCounts(ctx, tenantID, days, &activeKeys, &activeModels, &providers)
 
 	successRate := 0.0
 	if totalReq > 0 {
@@ -90,7 +90,7 @@ func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, day
 	credits := h.queryTotalCreditsCharged(ctx, tenantID, days)
 
 	var activeKeys, activeModels, providers int
-	_ = h.queryOverviewCounts(ctx, tenantID, &activeKeys, &activeModels, &providers)
+	_ = h.queryOverviewCounts(ctx, tenantID, days, &activeKeys, &activeModels, &providers)
 
 	return map[string]any{
 		"total_requests":          totalReq,
@@ -107,25 +107,36 @@ func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, day
 	}
 }
 
-func (h *Handler) queryOverviewCounts(ctx context.Context, tenantID string, keys, models, providers *int) error {
+func (h *Handler) queryOverviewCounts(ctx context.Context, tenantID string, days int, keys, models, providers *int) error {
+	if err := h.queryOverviewCountsMinute(ctx, tenantID, days, keys, models, providers); err != nil {
+		if !IsMissingRelationError(err) {
+			return err
+		}
+	}
+	return h.fillOverviewCountsFromLogs(ctx, tenantID, days, keys, models, providers)
+}
+
+func (h *Handler) queryOverviewCountsMinute(ctx context.Context, tenantID string, days int, keys, models, providers *int) error {
 	if tenantID != "" {
 		return h.db.QueryRow(ctx, `
 			SELECT
 				(SELECT COUNT(*) FROM api_keys WHERE tenant_id = $1 AND enabled = TRUE),
-				(SELECT COUNT(DISTINCT canonical_id) FROM request_stats_dim_minute
-				 WHERE dim_type = 'model' AND tenant_id = $1 AND bucket >= now() - INTERVAL '7 days'),
 				(SELECT COUNT(DISTINCT dim_key) FROM request_stats_dim_minute
-				 WHERE dim_type = 'provider' AND tenant_id = $1 AND bucket >= now() - INTERVAL '7 days')
-		`, tenantID).Scan(keys, models, providers)
+				 WHERE dim_type = 'model' AND tenant_id = $1
+				   AND bucket >= now() - ($2::int * INTERVAL '1 day')),
+				(SELECT COUNT(DISTINCT dim_key) FROM request_stats_dim_minute
+				 WHERE dim_type = 'provider' AND tenant_id = $1
+				   AND bucket >= now() - ($2::int * INTERVAL '1 day'))
+		`, tenantID, days).Scan(keys, models, providers)
 	}
 	return h.db.QueryRow(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM api_keys WHERE enabled = TRUE),
 			(SELECT COUNT(DISTINCT dim_key) FROM request_stats_dim_minute
-			 WHERE dim_type = 'model' AND bucket >= now() - INTERVAL '7 days'),
+			 WHERE dim_type = 'model' AND bucket >= now() - ($1::int * INTERVAL '1 day')),
 			(SELECT COUNT(DISTINCT dim_key) FROM request_stats_dim_minute
-			 WHERE dim_type = 'provider' AND bucket >= now() - INTERVAL '7 days')
-	`).Scan(keys, models, providers)
+			 WHERE dim_type = 'provider' AND bucket >= now() - ($1::int * INTERVAL '1 day'))
+	`, days).Scan(keys, models, providers)
 }
 
 func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, days int) (map[string]any, bool, error) {
@@ -229,9 +240,14 @@ func (h *Handler) queryBoardTrendsMinute(ctx context.Context, tenantID string, d
 		providerClause = fmt.Sprintf(" AND provider_id = $%d", len(args)+1)
 		args = append(args, providerID)
 	}
+	bucketUnit := boardTrendBucketExpr(days)
+	bucketExpr := "bucket"
+	if bucketUnit == "hour" {
+		bucketExpr = fmt.Sprintf("date_trunc('hour', bucket)")
+	}
 
-	rows, err := h.db.Query(ctx, `
-		SELECT bucket,
+	rows, err := h.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s,
 			COALESCE(SUM(requests), 0),
 			COALESCE(SUM(total_tokens), 0),
 			COALESCE(SUM(credits_charged), 0),
@@ -239,9 +255,9 @@ func (h *Handler) queryBoardTrendsMinute(ctx context.Context, tenantID string, d
 		FROM request_stats_minute
 		WHERE bucket >= now() - ($1::int * INTERVAL '1 day')
 		`+tenantClause+providerClause+`
-		GROUP BY bucket
-		ORDER BY bucket ASC
-	`, args...)
+		GROUP BY 1
+		ORDER BY 1 ASC
+	`, bucketExpr), args...)
 	if err != nil {
 		return nil, err
 	}

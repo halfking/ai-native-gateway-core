@@ -76,6 +76,29 @@ func (h *Handler) queryErrorDrill(
 	days int,
 	errorKind, dimension string,
 ) ([]boardPieItem, error) {
+	items, err := h.queryErrorDrillMinute(ctx, tenantID, days, errorKind, dimension)
+	if err == nil && len(items) > 0 {
+		return items, nil
+	}
+	if err != nil && !IsMissingRelationError(err) {
+		// fall through to hot-log fallback
+	}
+	fb, fbErr := h.fallbackErrorDrill(ctx, tenantID, days, errorKind, dimension)
+	if fbErr != nil {
+		if err != nil {
+			return nil, err
+		}
+		return items, fbErr
+	}
+	return fb, nil
+}
+
+func (h *Handler) queryErrorDrillMinute(
+	ctx context.Context,
+	tenantID string,
+	days int,
+	errorKind, dimension string,
+) ([]boardPieItem, error) {
 	tenantClause, tenantArgs := boardTenantClause(tenantID, 4)
 	args := []any{days, errorKind}
 	args = append(args, tenantArgs...)

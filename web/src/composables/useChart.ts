@@ -153,6 +153,20 @@ export function createTimeSeriesConfig(
   datasets: ChartDataset[],
   options?: ChartOptions
 ): ChartConfiguration {
+  const { scales: scaleOverrides, ...restOptions } = options ?? {}
+  const defaultScales = {
+    x: {
+      grid: {
+        display: false
+      }
+    },
+    y: {
+      beginAtZero: true,
+      grid: {
+        color: 'rgba(255, 255, 255, 0.06)'
+      }
+    }
+  }
   return {
     type,
     data: {
@@ -180,19 +194,10 @@ export function createTimeSeriesConfig(
         }
       },
       scales: {
-        x: {
-          grid: {
-            display: false
-          }
-        },
-        y: {
-          beginAtZero: true,
-          grid: {
-            color: 'rgba(255, 255, 255, 0.06)'
-          }
-        }
+        ...defaultScales,
+        ...(scaleOverrides as Record<string, unknown> | undefined),
       },
-      ...options
+      ...restOptions
     }
   }
 }

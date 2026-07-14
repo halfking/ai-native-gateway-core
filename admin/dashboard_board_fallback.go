@@ -33,6 +33,41 @@ func boardPiesAllEmpty(pies map[string]any) bool {
 	return true
 }
 
+func boardTrendBucketExpr(days int) string {
+	if days > 1 {
+		return "hour"
+	}
+	return "minute"
+}
+
+func (h *Handler) fillOverviewCountsFromLogs(ctx context.Context, tenantID string, days int, keys, models, providers *int) error {
+	logsTable, alias := requestLogsFromClause(days)
+	where := alias + `.ts >= now() - ($1 * INTERVAL '1 day')`
+	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
+	args := []any{days}
+	if tenantID != "" {
+		where += fmt.Sprintf(" AND %s.tenant_id = $%d", alias, len(args)+1)
+		args = append(args, tenantID)
+	}
+	modelExpr := fmt.Sprintf(`COALESCE(NULLIF(%s.client_model, ''), NULLIF(%s.outbound_model, ''))`, alias, alias)
+	var logModels, logProviders int
+	err := h.db.QueryRow(ctx, fmt.Sprintf(`
+		SELECT
+			(SELECT COUNT(DISTINCT %s) FROM %s WHERE %s AND %s IS NOT NULL),
+			(SELECT COUNT(DISTINCT %s.provider_id) FROM %s WHERE %s AND %s.provider_id IS NOT NULL)
+	`, modelExpr, logsTable, where, modelExpr, alias, logsTable, where, alias), args...).Scan(&logModels, &logProviders)
+	if err != nil {
+		return err
+	}
+	if *models == 0 && logModels > 0 {
+		*models = logModels
+	}
+	if *providers == 0 && logProviders > 0 {
+		*providers = logProviders
+	}
+	return nil
+}
+
 func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, days int) (map[string]any, error) {
 	types := map[string]string{
 		"clients":         "client_profile",
@@ -136,9 +171,10 @@ func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, days
 		args = append(args, providerID)
 	}
 	creditsExpr := maas.RequestLogCreditsSQL(alias, tenantID == "" || tenantID == "default")
+	bucketUnit := boardTrendBucketExpr(days)
 
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT date_trunc('minute', %s.ts),
+		SELECT date_trunc('%s', %s.ts),
 			COUNT(*)::bigint,
 			COALESCE(SUM(COALESCE(%s.prompt_tokens, 0) + COALESCE(%s.completion_tokens, 0)
 				+ COALESCE(%s.cache_read_tokens, 0) + COALESCE(%s.cache_write_tokens, 0)), 0)::bigint,
@@ -148,7 +184,7 @@ func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, days
 		WHERE %s
 		GROUP BY 1
 		ORDER BY 1 ASC
-	`, alias, alias, alias, alias, alias, creditsExpr, alias, logsTable, where), args...)
+	`, bucketUnit, alias, alias, alias, alias, alias, creditsExpr, alias, logsTable, where), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -165,4 +201,54 @@ func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, days
 		points = append(points, p)
 	}
 	return points, nil
+}
+
+func (h *Handler) fallbackErrorDrill(
+	ctx context.Context,
+	tenantID string,
+	days int,
+	errorKind, dimension string,
+) ([]boardPieItem, error) {
+	logsTable, alias := requestLogsFromClause(days)
+	where := alias + `.ts >= now() - ($1 * INTERVAL '1 day')`
+	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
+	where += ` AND COALESCE(` + alias + `.error_kind, '') = $2`
+	args := []any{days, errorKind}
+	if tenantID != "" {
+		where += fmt.Sprintf(" AND %s.tenant_id = $%d", alias, len(args)+1)
+		args = append(args, tenantID)
+	}
+
+	var groupExpr string
+	switch dimension {
+	case "provider":
+		groupExpr = fmt.Sprintf("COALESCE(%s.provider_id::text, '__unknown__')", alias)
+	case "client", "client_profile":
+		groupExpr = fmt.Sprintf("COALESCE(NULLIF(%s.client_profile, ''), '__unknown__')", alias)
+	default:
+		groupExpr = fmt.Sprintf("COALESCE(NULLIF(%s.client_model, ''), NULLIF(%s.outbound_model, ''), '__unknown__')", alias, alias)
+	}
+
+	rows, err := h.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s, COUNT(*)::bigint, 0::bigint, 0::bigint, 0::float8
+		FROM %s
+		WHERE %s
+		GROUP BY 1
+		ORDER BY 2 DESC
+		LIMIT 20
+	`, groupExpr, logsTable, where), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []boardPieItem
+	for rows.Next() {
+		var item boardPieItem
+		if err := rows.Scan(&item.Key, &item.Requests, &item.Tokens, &item.Credits, &item.CostUSD); err != nil {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items, nil
 }
