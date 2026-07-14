@@ -9,10 +9,21 @@
 
 ## Commit chain
 
-- Pending: Phase 2A step 1 hash-sharded attachment paths.
-- Pending: Phase 2A steps 2-4 stateful local storage and strict policy.
-- Pending: Phase 2A steps 5-7 cancellation and failover manifest verification.
-- Pending: executable S17, S18, S20, and S21 attachment audit evidence.
+- `58f31d74d` `feat(attachments): hash-shard local files [direct-main]`
+  - Phase 2A steps 1-2: SHA256 two-level path shards, cross-request dedup,
+    legacy relative-path reads, and existing atomic local writes.
+- `4b86e92ff` `feat(attachments): enforce manifest status and strict mode [direct-main]`
+  - Phase 2A steps 3-4 and 6: persisted manifest states, strict-by-default
+    failure handling, and Anthropic attachment extraction.
+- `1a1cff8cd` `feat(attachments): bound uploads and reuse failover manifest [direct-main]`
+  - Phase 2A steps 5 and 7: body-read deadline/cancellation, immutable retry
+    input, and executable S17/S18/S20/S21 audit evidence.
+
+## Verification
+
+- `go test ./...`
+- `go vet ./...`
+- `python3 docs/全方面测试/tools/attachment_audit.py --json`
 
 ## References
 
