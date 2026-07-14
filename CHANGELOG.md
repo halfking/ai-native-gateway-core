@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Distribution business-process alignment
 
 - Added the user agreement and data-processing authorization for runtime telemetry and controlled update notifications.
+- Added opt-in runtime telemetry preferences and immutable consent events for activated instances; telemetry remains disabled by default.
 - Enforced explicit terms acceptance for Trial requests from browser and installer clients.
 - Persisted Trial agreement version, acceptance time, source, and License association atomically with issuance.
 - Added business-process standards, code-verification addenda, and an honest completion assessment with release blockers.

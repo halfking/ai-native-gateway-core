@@ -54,12 +54,12 @@ import (
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
-	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"                 //nolint:depguard
-	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/stats"
+	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming" //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -2777,6 +2777,7 @@ func main() {
 		customerLicenseGroup := customerEcho.Group("/api/system/license")
 		customerLicenseGroup.Use(noAuthCustomerMiddleware())
 		licensingCustomerAPI.RegisterRoutes(customerLicenseGroup)
+		licensingCustomerAPI.RegisterTelemetryPreferenceRoutes(e.Group("/api/tenant/telemetry-preference"))
 
 		// v2 Phase 3B-1: License health endpoints for ops dashboards
 		// (DaemonHealth snapshot + grace state). No auth — these

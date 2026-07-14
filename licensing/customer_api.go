@@ -70,6 +70,69 @@ func (api *CustomerAPI) RegisterRoutes(g *echo.Group) {
 	g.POST("/heartbeat", api.handleHeartbeat)
 }
 
+// RegisterTelemetryPreferenceRoutes mounts customer-admin-only endpoints.
+// Do not mount these routes under public activation endpoints.
+func (api *CustomerAPI) RegisterTelemetryPreferenceRoutes(g *echo.Group) {
+	g.GET("", api.handleTelemetryPreference)
+	g.PUT("", api.handleTelemetryPreference)
+}
+
+const runtimeTelemetryAgreementVersion = "2026-07-14"
+
+type telemetryPreferenceRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (api *CustomerAPI) handleTelemetryPreference(c echo.Context) error {
+	role, _ := c.Get("role").(string)
+	if role != "tenant_admin" && role != "super_admin" {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "tenant_admin required"})
+	}
+	store, ok := api.store.(RuntimeTelemetryPreferenceStore)
+	if !ok {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "telemetry preferences are unavailable"})
+	}
+	fingerprint, err := GenerateFingerprint()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "fingerprint generation failed"})
+	}
+	hardwareHash := fingerprint.Hash()
+	license, err := api.store.GetLicenseByHardwareHash(c.Request().Context(), hardwareHash)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "license lookup failed"})
+	}
+	if license == nil {
+		return c.JSON(http.StatusConflict, map[string]string{"error": "activate a license before changing telemetry preference"})
+	}
+
+	if c.Request().Method == http.MethodGet {
+		preference, err := store.GetRuntimeTelemetryPreference(c.Request().Context(), hardwareHash)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "telemetry preference lookup failed"})
+		}
+		if preference == nil {
+			return c.JSON(http.StatusOK, RuntimeTelemetryPreference{LicenseID: license.ID, Enabled: false, AgreementVersion: runtimeTelemetryAgreementVersion})
+		}
+		return c.JSON(http.StatusOK, preference)
+	}
+
+	var request telemetryPreferenceRequest
+	if err := c.Bind(&request); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid telemetry preference"})
+	}
+	preference := &RuntimeTelemetryPreference{
+		HardwareHash: hardwareHash, LicenseID: license.ID, Enabled: request.Enabled,
+		AgreementVersion: runtimeTelemetryAgreementVersion,
+	}
+	if userID, ok := c.Get("user_id").(int64); ok {
+		preference.OperatorUserID = userID
+	}
+	if err := store.SetRuntimeTelemetryPreference(c.Request().Context(), preference, "customer_api"); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "unable to save telemetry preference"})
+	}
+	return c.JSON(http.StatusOK, preference)
+}
+
 type trialRequest struct {
 	Email string `json:"email"`
 }

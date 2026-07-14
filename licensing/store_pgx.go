@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -147,6 +148,66 @@ func (s *PgxStore) CreateTrialLicenseWithConsent(ctx context.Context, lic *Licen
 		INSERT INTO license_trial_consents (license_id, agreement_version, accepted_at, source)
 		VALUES ($1, $2, $3, $4)
 	`, consent.LicenseID, consent.AgreementVersion, consent.AcceptedAt, consent.Source)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *PgxStore) GetRuntimeTelemetryPreference(ctx context.Context, hardwareHash string) (*RuntimeTelemetryPreference, error) {
+	var preference RuntimeTelemetryPreference
+	err := s.pool.QueryRow(ctx, `
+		SELECT hardware_hash, license_id, enabled, agreement_version, updated_at, disabled_at
+		FROM runtime_telemetry_preferences
+		WHERE hardware_hash = $1
+	`, hardwareHash).Scan(
+		&preference.HardwareHash, &preference.LicenseID, &preference.Enabled,
+		&preference.AgreementVersion, &preference.UpdatedAt, &preference.DisabledAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &preference, nil
+}
+
+func (s *PgxStore) SetRuntimeTelemetryPreference(ctx context.Context, preference *RuntimeTelemetryPreference, source string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	now := time.Now().UTC()
+	preference.UpdatedAt = now
+	if preference.Enabled {
+		preference.DisabledAt = nil
+	} else {
+		preference.DisabledAt = &now
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO runtime_telemetry_preferences
+			(hardware_hash, license_id, enabled, agreement_version, updated_at, disabled_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (hardware_hash) DO UPDATE SET
+			license_id = EXCLUDED.license_id,
+			enabled = EXCLUDED.enabled,
+			agreement_version = EXCLUDED.agreement_version,
+			updated_at = EXCLUDED.updated_at,
+			disabled_at = EXCLUDED.disabled_at
+	`, preference.HardwareHash, preference.LicenseID, preference.Enabled,
+		preference.AgreementVersion, preference.UpdatedAt, preference.DisabledAt)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO runtime_telemetry_consent_events
+			(hardware_hash, license_id, enabled, agreement_version, operator_user_id, source, occurred_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, preference.HardwareHash, preference.LicenseID, preference.Enabled,
+		preference.AgreementVersion, preference.OperatorUserID, source, preference.UpdatedAt)
 	if err != nil {
 		return err
 	}
