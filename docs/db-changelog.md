@@ -12,3 +12,21 @@
 | 403 | `403_runtime_alert_events.sql` |
 | 404 | `404_partition_autovacuum_analyze.sql` |
 
+## 2026-07-14T20:02:28Z — deploy 245 build_seq 1031 (506fcfaa)
+
+| Migration | File |
+|-----------|------|
+| 403 | `403_runtime_alert_events.sql` |
+| 404 | `404_partition_autovacuum_analyze.sql` |
+| 405 | `405_glm52_promote_per_token_to_token_plan.sql` |
+| 406 | `406_recent_success_rate_read_hot.sql` |
+
+## 2026-07-14T20:04:10Z — deploy 245 build_seq 1032 (506fcfaa)
+
+| Migration | File |
+|-----------|------|
+| 403 | `403_runtime_alert_events.sql` |
+| 404 | `404_partition_autovacuum_analyze.sql` |
+| 405 | `405_glm52_promote_per_token_to_token_plan.sql` |
+| 406 | `406_recent_success_rate_read_hot.sql` |
+
