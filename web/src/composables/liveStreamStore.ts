@@ -328,6 +328,55 @@ function handleEnvelope(env: LiveStreamEnvelope) {
   }
 }
 
+function tilesEqual(a: LiveStreamTile[], b: LiveStreamTile[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]
+    const y = b[i]
+    if (
+      x.request_id !== y.request_id ||
+      x.timestamp !== y.timestamp ||
+      x.status !== y.status ||
+      x.model !== y.model ||
+      x.vendor !== y.vendor ||
+      x.provider !== y.provider
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+function statsEqual(a: LiveStreamStats, b: LiveStreamStats): boolean {
+  return (
+    a.total === b.total &&
+    a.success === b.success &&
+    a.failure === b.failure &&
+    (a.in_progress ?? 0) === (b.in_progress ?? 0)
+  )
+}
+
+function laneDataEqual(a: LiveStreamLane, b: LiveStreamLane): boolean {
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.dimension === b.dimension &&
+    a.isOthers === b.isOthers &&
+    statsEqual(a.stats, b.stats) &&
+    tilesEqual(a.requests, b.requests)
+  )
+}
+
+/** Patch lanes by id; reuse unchanged lane objects to avoid SwimLane remounts. */
+function mergeLaneList(existing: LiveStreamLane[], incoming: LiveStreamLane[]): LiveStreamLane[] {
+  const byId = new Map(existing.map((lane) => [lane.id, lane]))
+  return incoming.map((inc) => {
+    const prev = byId.get(inc.id)
+    if (prev && laneDataEqual(prev, inc)) return prev
+    return inc
+  })
+}
+
 function mergeDelta(delta: LiveStreamDelta) {
   // 2026-07-14: the previous implementation did
   //   s.dimensions[dim] = delta.changed_lanes[dim]
@@ -360,9 +409,18 @@ function mergeDelta(delta: LiveStreamDelta) {
   s.summary = delta.summary
   s.status_legends = delta.status_legends
   for (const dim of ['vendor', 'provider', 'model'] as const) {
-    const incoming = delta.changed_lanes[dim]
-    if (incoming && incoming.length > 0) {
-      mergeLanesById(s.dimensions[dim], incoming)
+    if (delta.changed_lanes[dim]) {
+      // 2026-07-14: both this branch and the original Cursor-side
+      // refactor agree on the lane-id-keyed merge goal (no full-array
+      // replacement). The Cursor refactor compares the previous lane
+      // object's data fields and reuses the reference when nothing
+      // changed; that is strictly better than my first draft (which
+      // always mutated in place) because a "no-op" delta no longer
+      // triggers Vue's reactivity at all. Adopt their
+      // `mergeLaneList` and re-apply my legend-side optimisation on
+      // top.
+      s.dimensions[dim] = mergeLaneList(s.dimensions[dim] || [], delta.changed_lanes[dim])
+      s.detail_dimensions[dim] = mergeLaneList(s.detail_dimensions[dim] || [], delta.changed_lanes[dim])
     }
     if (delta.dimension_legends && delta.dimension_legends[dim]) {
       // Merge legend by key so we don't visually replace the whole
@@ -551,6 +609,8 @@ export const __testing = {
   handleEnvelope,
   applyInitialData,
   mergeDelta,
+  mergeLaneList,
+  laneDataEqual,
   resetStream,
   refCount: () => refCount,
   es: () => es,

@@ -524,7 +524,7 @@ watch(
 }
 
 .swim-tile-move {
-  transition: transform 0.4s ease;
+  transition: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

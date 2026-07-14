@@ -106,6 +106,7 @@ type liveRequestRedisPayload struct {
 
 const (
 	liveStreamMainKey        = "llmgw:live:main"
+	liveStreamNotifyChannel  = "llmgw:live:events"
 	liveStreamDimPrefix      = "llmgw:live:dim:"
 	liveStreamStatPrefix     = "llmgw:live:status:"
 	liveStreamTenantSet      = "llmgw:live:tenants"
@@ -288,7 +289,52 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	if err != nil {
 		return fmt.Errorf("redis pipeline exec failed: request_id=%s tenant_id=%s model=%s provider=%s category=%s queue_count=%d: %w", req.RequestID, tenantID, req.Model, req.ProviderCode, req.ModelCategory, len(queueKeys), err)
 	}
+	if err := s.NotifyChange(ctx, tenantID, req.RequestID); err != nil {
+		slog.Debug("live stream redis notify failed", "request_id", req.RequestID, "tenant_id", tenantID, "err", err.Error())
+	}
 	return nil
+}
+
+type liveStreamNotifyPayload struct {
+	RequestID string `json:"request_id"`
+	TenantID  string `json:"tenant_id"`
+}
+
+// NotifyChange publishes a lightweight event so SSE hubs (local or
+// remote) can react to Redis writes without coupling to the request
+// handler goroutine.
+func (s *LiveStreamRedisStore) NotifyChange(ctx context.Context, tenantID, requestID string) error {
+	if s == nil || s.rdb == nil || requestID == "" {
+		return nil
+	}
+	payload, err := json.Marshal(liveStreamNotifyPayload{
+		RequestID: requestID,
+		TenantID:  normalizeLiveStreamTenant(tenantID),
+	})
+	if err != nil {
+		return err
+	}
+	return s.rdb.Publish(ctx, liveStreamNotifyChannel, payload).Err()
+}
+
+// LoadRequest reads the latest request detail from Redis. Used by the
+// pub/sub subscriber to rebuild the LiveRequest before SSE fan-out.
+func (s *LiveStreamRedisStore) LoadRequest(ctx context.Context, tenantID, requestID string) (LiveRequest, error) {
+	if s == nil || s.rdb == nil || requestID == "" {
+		return LiveRequest{}, fmt.Errorf("live stream store unavailable")
+	}
+	tenantID = normalizeLiveStreamTenant(tenantID)
+	data, err := s.rdb.Get(ctx, liveStreamGlobalRequestDetailKey(requestID)).Result()
+	if err == redis.Nil && tenantID != "" {
+		data, err = s.rdb.Get(ctx, liveStreamRequestDetailKey(tenantID, requestID)).Result()
+	}
+	if err == redis.Nil {
+		return LiveRequest{}, fmt.Errorf("request not found: %s", requestID)
+	}
+	if err != nil {
+		return LiveRequest{}, err
+	}
+	return unmarshalLiveRequestRedisPayload(data)
 }
 
 func removeLiveRequestFromQueues(ctx context.Context, pipe redis.Pipeliner, tenantID string, req LiveRequest) {
@@ -536,18 +582,13 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 	// result was a back-and-forth swap ("lane flicker") every
 	// snapshot — exactly the symptom operators reported.
 	//
-	// New strategy: rank by stats.Total DESC, but use the lane id as
-	// the sole tie-breaker. We rely on the frontend's
-	// mergeDelta() (see web/src/composables/liveStreamStore.ts) to
-	// merge incoming lanes by lane.id rather than re-rendering the
-	// whole array, so the SSE wire payload can stay coarse-grained
-	// while the DOM stays stable.
-	sort.Slice(keys, func(i, j int) bool {
-		if stats[keys[i]].Total != stats[keys[j]].Total {
-			return stats[keys[i]].Total > stats[keys[j]].Total
-		}
-		return keys[i] < keys[j]
-	})
+	// New strategy: rank by lane id (alphabetical) ONLY. Total still
+	// surfaces in the lane header (success / failure counts) and the
+	// legend strip, but is no longer used to order lanes. The user
+	// trades "lanes ranked by activity" for "lanes that NEVER move"
+	// — the latter is the right answer for a realtime swim lane where
+	// the operator's eye tracks lane position, not lane rank.
+	sort.Strings(keys)
 
 	// Build lanes - no more top N or others aggregation, return all lanes
 	// Skip empty keys and unknown/other categories

@@ -339,6 +339,10 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 
 // Run drives the hub event loop. Blocks until Stop() is called.
 func (h *LiveStreamSSEHub) Run() {
+	if h.store != nil && h.cfg.RedisClient != nil {
+		go h.runRedisSubscriber()
+	}
+
 	idleTicker := time.NewTicker(h.cfg.IdleTickInterval)
 	keepaliveTicker := time.NewTicker(h.cfg.KeepaliveInterval)
 	// evict ticker 周期默认跟随 CachedSnapshotTTL，但可被独立放宽——
@@ -976,9 +980,76 @@ func (h *LiveStreamSSEHub) evict(c *liveStreamClient) {
 	h.safeClose(c)
 }
 
-// Publish enqueues a new request for fan-out. Drops if the broadcast
-// queue is full so a stuck consumer can never block the producer.
+// runRedisSubscriber listens for Redis pub/sub notifications and
+// enqueues reconstructed requests for SSE fan-out. This decouples
+// live updates from the request handler: any gateway instance that
+// writes to Redis can drive dashboards on every connected hub.
+func (h *LiveStreamSSEHub) runRedisSubscriber() {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-h.stopCh
+		cancel()
+	}()
+
+	pubsub := h.cfg.RedisClient.Subscribe(ctx, liveStreamNotifyChannel)
+	defer pubsub.Close()
+
+	slog.Info("live stream redis subscriber started", "channel", liveStreamNotifyChannel)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-pubsub.Channel():
+			if !ok {
+				return
+			}
+			h.handleRedisNotify(msg.Payload)
+		}
+	}
+}
+
+func (h *LiveStreamSSEHub) handleRedisNotify(payload string) {
+	if h.store == nil {
+		return
+	}
+	var notify liveStreamNotifyPayload
+	if err := json.Unmarshal([]byte(payload), &notify); err != nil {
+		slog.Debug("live stream redis notify: invalid payload", "err", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	req, err := h.store.LoadRequest(ctx, notify.TenantID, notify.RequestID)
+	cancel()
+	if err != nil {
+		slog.Debug("live stream redis notify: load request failed", "request_id", notify.RequestID, "tenant_id", notify.TenantID, "err", err.Error())
+		return
+	}
+	h.enqueueBroadcast(req)
+}
+
+func (h *LiveStreamSSEHub) enqueueBroadcast(req LiveRequest) {
+	select {
+	case h.broadcast <- req:
+	default:
+		slog.Debug("live stream broadcast queue full, dropping request", "request_id", req.RequestID)
+	}
+}
+
+// Publish persists a request to Redis and relies on the pub/sub
+// subscriber to fan out SSE updates. Falls back to in-memory
+// broadcast when Redis is unavailable.
 func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
+	if h.store != nil && h.cfg.RedisClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		err := h.store.Record(ctx, req)
+		cancel()
+		if err != nil {
+			slog.Debug("live stream redis record failed", "request_id", req.RequestID, "tenant_id", req.TenantID, "model", req.Model, "provider", req.ProviderCode, "err", err.Error())
+			h.enqueueBroadcast(req)
+		}
+		return
+	}
 	if h.store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		if err := h.store.Record(ctx, req); err != nil {
@@ -986,11 +1057,7 @@ func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
 		}
 		cancel()
 	}
-	select {
-	case h.broadcast <- req:
-	default:
-		slog.Debug("live stream broadcast queue full, dropping request", "request_id", req.RequestID)
-	}
+	h.enqueueBroadcast(req)
 }
 
 // incidentUpdateCh is a separate, lower-priority channel for

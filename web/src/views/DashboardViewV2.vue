@@ -39,8 +39,6 @@ const dashboardTab = inject<{
 
 const dashboardActions = inject<{ refreshBoard: () => Promise<void> }>('dashboardActions')!
 
-const swimLaneReinitKey = inject<Ref<number>>('swimLaneReinitKey')!
-
 const statsDrawerRef = ref<InstanceType<typeof StatsDrawer> | null>(null)
 const activeRequestId = ref<string | null>(null)
 
@@ -194,8 +192,7 @@ async function onDaysChange() {
     <SelfCheckPanel v-if="activeTab === 'selfcheck'" />
 
     <LiveRequestStreamV2
-      v-if="activeTab === 'stream'"
-      :key="swimLaneReinitKey"
+      v-show="activeTab === 'stream'"
       @open-detail="openRequestDetail"
     />
 
