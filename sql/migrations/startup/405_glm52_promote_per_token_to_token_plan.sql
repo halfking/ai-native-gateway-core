@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 403: Reclassify high-perf glm-5.2 credentials token → token_plan
+-- Migration 405: Reclassify high-perf glm-5.2 credentials token → token_plan
 -- Created: 2026-07-15
 -- Author:  gateway maintainers (glm-5.2 routing skew incident)
 --
@@ -46,7 +46,7 @@
 
 \set ON_ERROR_STOP on
 
-\echo '=== 403 glm-5.2 per_token → token_plan promotion ==='
+\echo '=== 405 glm-5.2 per_token → token_plan promotion ==='
 
 -- ---------------------------------------------------------------------------
 -- 0. Pre-flight: show the credentials we are about to promote.
@@ -132,4 +132,4 @@ WHERE (p.code, c.label) IN (
   AND pm.canonical_raw_name = 'glm-5.2'
 ORDER BY p.code, c.label;
 
-\echo '=== 403 glm-5.2 per_token → token_plan promotion: done ==='
+\echo '=== 405 glm-5.2 per_token → token_plan promotion: done ==='
