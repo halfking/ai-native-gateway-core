@@ -33,6 +33,7 @@ const days = computed(() => boardState.days?.value ?? 1)
 const loading = computed(() => boardState.loading?.value ?? false)
 
 async function onTimeRangeChange(next: BoardTimeRange) {
+  if (!boardState) return
   boardState.setTimeRange(next)
   await boardState.load()
   await boardState.startAutoRefresh()

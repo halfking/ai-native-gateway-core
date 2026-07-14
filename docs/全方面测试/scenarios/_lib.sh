@@ -20,6 +20,38 @@ reset_all_suppliers() {
     cd "$RESULTS_DIR/.."
 }
 
+# Refresh model_offers.p95_latency_ms from recent request_logs so the
+# router's load-aware selection (P2C + LatencyWeight=0.3) actually has
+# up-to-date data to work with. Without this, every credential appears
+# equally slow (COALESCE p95=9999), which neutralises the latency-aware
+# penalty that S05 / S06 / S12 rely on.
+#
+# This is what production looks like after a few minutes of traffic
+# (auto_index_refresher updates the same column every 5 minutes in
+# production; we just do it inline for a 30-second test run).
+refresh_p95_metrics() {
+    PGHOST="${PGHOST:-localhost}" PGPORT="${PGPORT:-5432}" \
+    PGUSER="${PGUSER:-kxuser}" PGPASSWORD="${PGPASSWORD:-kxpass}" \
+    PGDB="${PGDB:-llm_gateway}" \
+    psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" -c "
+        WITH p95_data AS (
+            SELECT credential_id,
+                   COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms)::int, 100)::int AS p95,
+                   COUNT(*)::int AS samples
+            FROM request_logs_hot
+            WHERE ts >= NOW() - INTERVAL '5 minutes'
+              AND credential_id BETWEEN 9010 AND 9069
+            GROUP BY credential_id
+        )
+        UPDATE model_offers mo
+        SET p95_latency_ms = GREATEST(p95_data.p95, COALESCE(mo.p95_latency_ms, 100))
+        FROM p95_data
+        WHERE mo.credential_id = p95_data.credential_id
+          AND p95_data.samples >= 5
+          AND COALESCE(mo.p95_latency_ms, 0) != p95_data.p95;
+    " >/dev/null 2>&1 || true
+}
+
 # Run loadtest with given parameters, write JSON to results/SCENARIO_NAME.json
 run_loadtest() {
     local scenario="$1"; shift

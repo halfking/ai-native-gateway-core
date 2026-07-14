@@ -6,7 +6,7 @@ source "$SCRIPT_DIR/_lib.sh"
 
 reset_all_suppliers
 echo "[S03] concurrency differentiation: 100 clients"
-run_loadtest S03_concurrency \
+run_loadtest S03_concurrency_diff \
     --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tok3 --prompt short
-print_summary S03_concurrency
+print_summary S03_concurrency_diff
