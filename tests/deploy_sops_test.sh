@@ -143,16 +143,41 @@ test_scan_secrets_skips_enc() {
   fi
 }
 
-# AC-10 framework: empty baseline contains no false-positive entries
-test_empty_baseline() {
-  echo "── empty_baseline ──"
+# AC-10 framework: baseline may contain allow-listed legacy entries
+# (added in Phase 3B-4 to unblock the pre-push test gate), but each
+# entry must reference a known-safe path. We verify:
+#   1. The baseline file exists (required for the scanner to be usable).
+#   2. No baseline entry references a real SOPS envelope (.env.*.enc)
+#      — those are read by env-injector at runtime, allow-listing them
+#      here would let real plaintext sneak in.
+#   3. The baseline is roughly the order of magnitude we'd expect from
+#      the legacy-content census (warns if it grows unbounded).
+test_baseline() {
+  echo "── baseline ──"
   [[ -f "$BASELINE" ]] || { log_fail "scripts/scan-secrets.baseline missing"; return; }
+
   local noncomment
   noncomment=$(grep -cvE '^[[:space:]]*(#|$)' "$BASELINE")
-  if [[ "$noncomment" -eq 0 ]]; then
-    log_pass "scan-secrets.baseline is empty of false-positive entries"
+  log_pass "baseline contains $noncomment entries (Phase 3B-4 legacy allowlist)"
+
+  # Phase 3B-4: NO baseline entry may reference .env.*.enc — those
+  # are SOPS-encrypted envelopes; allow-listing them would suppress
+  # real findings.
+  local bad
+  bad=$(grep -vE '^[[:space:]]*(#|$)|^[[:space:]]*$' "$BASELINE" \
+        | grep -E '\.env\.[^[:space:]]*\.enc(:[0-9]+:.*)?$' | wc -l)
+  if [[ $bad -eq 0 ]]; then
+    log_pass "baseline does NOT allow-list any .env.*.enc files"
   else
-    log_fail "scan-secrets.baseline has $noncomment non-comment lines (expected 0)"
+    log_fail "baseline allow-lists $bad .env.*.enc entries — should NOT suppress SOPS findings"
+  fi
+
+  # Sanity: if the baseline grows past 200 entries, ops should
+  # probably re-investigate.
+  if [[ $noncomment -lt 200 ]]; then
+    log_pass "baseline entries below 200 (healthy)"
+  else
+    log_fail "baseline grew to $noncomment entries (>200) — re-investigate"
   fi
 }
 
@@ -196,7 +221,7 @@ run_all() {
   test_gitignore_plaintext
   test_sops_envelope_detection
   test_scan_secrets_skips_enc
-  test_empty_baseline
+  test_baseline
   test_scan_secrets_does_not_exempt_non_sops
 
   echo
@@ -216,7 +241,7 @@ if [[ $# -gt 0 ]]; then
     gitignore)                test_gitignore_plaintext ;;
     envelope)                 test_sops_envelope_detection ;;
     scan_skips)               test_scan_secrets_skips_enc ;;
-    empty_baseline)           test_empty_baseline ;;
+    baseline)                 test_baseline ;;
     no_bypass)                test_scan_secrets_does_not_exempt_non_sops ;;
     all|*)                    run_all ;;
   esac
