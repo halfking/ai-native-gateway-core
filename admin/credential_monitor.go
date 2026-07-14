@@ -325,15 +325,17 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 					) cmi ON true
 					-- P95 live: percentile_cont 3h window fallback
 					LEFT JOIN LATERAL (
-						SELECT
-							percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::int AS p95_live,
-							AVG(latency_ms)::int AS avg_live
-						FROM request_logs_with_current_month
-						WHERE credential_id = c.id
-						  AND lower(COALESCE(outbound_model, client_model)) = lower(mo.raw_model_name)
-						  AND ts > NOW() - INTERVAL '3 hours'
-						  AND latency_ms IS NOT NULL
-					) live ON true
+							SELECT
+								percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::int AS p95_live,
+								AVG(latency_ms)::int AS avg_live
+							FROM request_logs_with_current_month
+							WHERE credential_id = c.id
+							  -- 2026-07-14: provider_models.canonical_raw_name is the
+							  -- lowercase client-facing key; compare directly.
+							  AND lower(COALESCE(outbound_model, client_model)) = mo.canonical_raw_name
+							  AND ts > NOW() - INTERVAL '3 hours'
+							  AND latency_ms IS NOT NULL
+						) live ON true
 					-- 🆕 2026-06-23: last_used + total_calls (24h credential_model_call_history).
 					-- 184 host system postgres 真实表 schema (2026-06-24 实查, migration 033):
 					--   credential_id, raw_model, window_start, total_calls, success_calls,

@@ -438,7 +438,7 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 		JOIN providers   p ON p.id = c.provider_id
 		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
 		WHERE mo.canonical_id = $1
-		   OR lower(mo.standardized_name) IN (SELECT lower(raw_name) FROM model_aliases WHERE canonical_id = $1)
+		   OR mo.standardized_name IN (SELECT raw_name FROM model_aliases WHERE canonical_id = $1)
 		ORDER BY provider_name, credential_id
 	`, id)
 	if err != nil {
@@ -705,8 +705,10 @@ func (h *Handler) getTagMatrix(w http.ResponseWriter, r *http.Request) {
 	query := `SELECT mc.canonical_name, COALESCE(mc.tags,'[]'::jsonb),
 	                 p.id, COALESCE(p.display_name,''), COUNT(DISTINCT mo.id) AS offer_count
 	          FROM models_canonical mc
-	          JOIN model_aliases ma ON ma.canonical_id = mc.id
-	          JOIN model_offers mo ON lower(mo.standardized_name) = lower(ma.raw_name)
+		          JOIN model_aliases ma ON ma.canonical_id = mc.id
+		          -- 2026-07-14: standardized_name and model_aliases.raw_name are
+		          -- both persisted lowercase; compare directly.
+		          JOIN model_offers mo ON mo.standardized_name = ma.raw_name
 	          JOIN credentials c ON c.id = mo.credential_id
 	          JOIN providers p ON p.id = c.provider_id
 	          WHERE mo.available = TRUE AND c.status = 'active' AND p.enabled = TRUE
