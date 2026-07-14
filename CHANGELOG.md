@@ -5,7 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-07-14
+## [Unreleased] - 2026-07-15
+
+### Cloudreve StorageBackend adapter
+
+- Added `cloudreve` as a fourth pluggable storage backend in
+  `domains/attachments/`, gated behind the `cloudreve_storage` build tag so
+  the default binary stays dependency-free. Implementation uses Cloudreve v4's
+  WebDAV endpoint (`PUT`/`GET`/`HEAD`/`DELETE`/`PROPFIND`/`MKCOL`) over HTTP
+  Basic auth.
+- New files: `storage_backend_cloudreve.go`,
+  `storage_backend_cloudreve_stub.go`, `propfind_parser.go`,
+  `storage_backend_cloudreve_test.go` (13 unit tests via `httptest`),
+  `storage_config_cloudreve_test.go` (8 integration tests).
+- Extended `StorageConfig`, `NewStorageBackendFromConfig`,
+  `LoadStorageConfigFromEnv` and `ValidateStorageConfig` with the
+  `LLM_GATEWAY_CLOUDREVE_*` env variables (base URL / username / password /
+  remote path / timeout).
+- 21/21 new tests passing under `-tags cloudreve_storage`; no regressions in
+  the 8 existing canonical tests.
+- Boot-time wiring in `cmd/gateway/main.go` deliberately unchanged — explicit
+  decision: opt-in switches through `attachments.NewStorageBackendFromConfig`
+  + `NewStorageWithBackend`. See
+  `docs/changelogs/2026-07-15-cloudreve-storage-backend.md` for the full
+  design rationale and deployment notes.
+
+### Per-(provider, model) modality routing
+
+- Added `provider_models.modality` column with CHECK
+  (text/vision/audio/multimodal/embedding) for per-(provider, raw_model_name)
+  capability override of `models_canonical.modality`. Migration:
+  `deploy/sql/migrations/2026-07-15-modality-routing.sql` + `.down.sql`.
+- Backfill: volcengine-coding catalog 默认 modality=text；火山方舟 Coding
+  Plan 内的 minimax-m2.x / minimax-m3 显式 text；minimax 直连 catalog 上的
+  minimax-m3 显式 multimodal；models_canonical.minimax-m3 默认值修正为
+  multimodal（按 platform.minimax.io 官方文档）。
+- 路由 SQL (`provider/client.go::loadCandidatesByModalityDB`) 改为包含语义：
+  vision 请求 → modality IN ('vision', 'multimodal')；audio 请求 →
+  modality IN ('audio', 'multimodal')；纯文本请求不过滤。修复
+  "minimax-m3 不支持图像输入" 误报（直连 OK 但通过网关失败）。
+- `provider.Candidate.Modality` 新增字段，SQL 中 `COALESCE(pm.modality,
+  mc.modality, 'text')` 解析结果。
+- Chat handler (`domains/streaming/handler.go`) 和 Anthropic Messages handler
+  (`domains/streaming/messages.go`) 在 `GetCandidates` 之前调用
+  `detectRequestModality(bodyBytes)` 解析 image/audio/video blocks，把
+  modality 传给 `GetCandidatesByModality`。
+- 新增 `domains/streaming/modality_detect.go` + 22 case 测试：OpenAI Chat /
+  Anthropic Messages / Gemini native (parts + inlineData) 全部覆盖。
 
 ### MiniMax-M3 format audit
 
