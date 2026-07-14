@@ -361,6 +361,45 @@ func TestSerializeGemini_ToolCallToFunctionCall(t *testing.T) {
 	}
 }
 
+func TestSerializeGemini_OpenAIToolCallsAndResults(t *testing.T) {
+	call := ToolCall{ID: "call_weather"}
+	call.Type = "function"
+	call.Function.Name = "get_weather"
+	call.Function.Arguments = `{"city":"Shanghai"}`
+
+	ir := &InternalRequest{Messages: []Message{
+		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "weather?"}}},
+		{Role: "assistant", ToolCalls: []ToolCall{call}},
+		{Role: "tool", ToolCallID: "call_weather", Name: "get_weather", Content: []ContentBlock{{Type: "text", Text: `{"temperature":28}`}}},
+	}}
+
+	body, err := SerializeGemini(ir)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	var out struct {
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				FunctionCall     map[string]any `json:"functionCall"`
+				FunctionResponse map[string]any `json:"functionResponse"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(out.Contents) != 3 {
+		t.Fatalf("contents = %d, want 3", len(out.Contents))
+	}
+	if out.Contents[1].Parts[0].FunctionCall["name"] != "get_weather" {
+		t.Errorf("functionCall name = %v", out.Contents[1].Parts[0].FunctionCall["name"])
+	}
+	if out.Contents[2].Parts[0].FunctionResponse["name"] != "get_weather" {
+		t.Errorf("functionResponse name = %v", out.Contents[2].Parts[0].FunctionResponse["name"])
+	}
+}
+
 // TestRoundTripGemini parses a request, serializes it, and verifies key fields survive.
 func TestRoundTripGemini(t *testing.T) {
 	original := []byte(`{
