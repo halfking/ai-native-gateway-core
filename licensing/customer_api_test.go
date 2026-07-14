@@ -19,17 +19,19 @@ import (
 // fakeStore is an in-memory implementation of Store for unit tests.
 // Only the methods exercised by CustomerAPI tests are populated.
 type fakeStore struct {
-	mu        sync.Mutex
-	licenses  map[string]*License
-	devices   map[string][]*Device // keyed by license_key
-	telemetry map[string]*RuntimeTelemetryPreference
+	mu              sync.Mutex
+	licenses        map[string]*License
+	devices         map[string][]*Device // keyed by license_key
+	telemetry       map[string]*RuntimeTelemetryPreference
+	offlineRequests map[string]*OfflineRequest
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		licenses:  map[string]*License{},
-		devices:   map[string][]*Device{},
-		telemetry: map[string]*RuntimeTelemetryPreference{},
+		licenses:        map[string]*License{},
+		devices:         map[string][]*Device{},
+		telemetry:       map[string]*RuntimeTelemetryPreference{},
+		offlineRequests: map[string]*OfflineRequest{},
 	}
 }
 
@@ -205,15 +207,56 @@ func (s *fakeStore) ListAllLicenses(ctx context.Context, offset, limit int, quer
 func (s *fakeStore) ListAllDevices(ctx context.Context, licenseKey string) ([]Device, error) {
 	return nil, nil
 }
-func (s *fakeStore) CreateOfflineRequest(ctx context.Context, req *OfflineRequest) error { return nil }
+func (s *fakeStore) CreateOfflineRequest(ctx context.Context, req *OfflineRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.offlineRequests[req.RequestID]; exists {
+		return fmt.Errorf("offline request already exists")
+	}
+	copy := *req
+	if copy.Status == "" {
+		copy.Status = "pending"
+	}
+	s.offlineRequests[req.RequestID] = &copy
+	return nil
+}
 func (s *fakeStore) GetOfflineRequest(ctx context.Context, requestID string) (*OfflineRequest, error) {
-	return nil, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.offlineRequests[requestID]
+	if !ok {
+		return nil, fmt.Errorf("request not found")
+	}
+	copy := *req
+	if req.ApprovedLicense != nil {
+		licCopy := *req.ApprovedLicense
+		copy.ApprovedLicense = &licCopy
+	}
+	return &copy, nil
 }
 func (s *fakeStore) ApproveOfflineRequest(ctx context.Context, requestID string, signedLicense *SignedLicense, activationCode string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.offlineRequests[requestID]
+	if !ok {
+		return fmt.Errorf("request not found")
+	}
+	now := time.Now()
+	req.Status = "approved"
+	req.ApprovedAt = &now
+	req.ActivationCode = activationCode
+	if signedLicense != nil {
+		licCopy := *signedLicense
+		req.ApprovedLicense = &licCopy
+	}
 	return nil
 }
 func (s *fakeStore) GetOfflineActivationCode(ctx context.Context, requestID string) (string, error) {
-	return "", nil
+	req, err := s.GetOfflineRequest(ctx, requestID)
+	if err != nil {
+		return "", err
+	}
+	return req.ActivationCode, nil
 }
 func (s *fakeStore) ListOfflineRequests(ctx context.Context) ([]OfflineRequest, error) {
 	return nil, nil
@@ -257,7 +300,7 @@ func generateTestKeyPairFromRSA(t *testing.T) (*rsa.PrivateKey, error) {
 	return rsa.GenerateKey(rand.Reader, 2048)
 }
 
-func newTestCustomerAPI(t *testing.T) (*CustomerAPI, *fakeStore) {
+func newTestCustomerAPI(t *testing.T) (*CustomerAPI, *fakeStore, *CryptoConfig) {
 	t.Helper()
 	store := newFakeStore()
 	crypto := newTestCrypto(t)
@@ -265,7 +308,7 @@ func newTestCustomerAPI(t *testing.T) (*CustomerAPI, *fakeStore) {
 	deviceManager := NewDeviceManager(store, validator)
 	activator := NewActivator(crypto, store, deviceManager)
 	offlineMgr := NewOfflineManager(crypto, store)
-	return NewCustomerAPI(store, activator, offlineMgr), store
+	return NewCustomerAPI(store, activator, offlineMgr), store, crypto
 }
 
 func setupEcho(api *CustomerAPI) *echo.Echo {
@@ -277,7 +320,7 @@ func setupEcho(api *CustomerAPI) *echo.Echo {
 
 func TestCustomerAPI_TrialAuthorityURLRequiresHTTPSOutsideDevelopment(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	api.SetTrialAuthorityURL("http://authority.internal/?token=secret")
 	if api.trialURL != "" {
 		t.Fatalf("expected insecure or credential-bearing authority URL to be rejected")
@@ -291,7 +334,7 @@ func TestCustomerAPI_TrialAuthorityURLRequiresHTTPSOutsideDevelopment(t *testing
 
 func TestCustomerAPI_TrialAuthorityURLAllowsHTTPOnlyInDevelopment(t *testing.T) {
 	t.Setenv("APP_ENV", "test")
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	api.SetTrialAuthorityURL("http://127.0.0.1:8443")
 	if api.trialURL != "http://127.0.0.1:8443" {
 		t.Fatalf("expected local HTTP authority URL in test environment, got %q", api.trialURL)
@@ -299,7 +342,7 @@ func TestCustomerAPI_TrialAuthorityURLAllowsHTTPOnlyInDevelopment(t *testing.T) 
 }
 
 func TestCustomerAPI_Trial_RejectsMissingAgreement(t *testing.T) {
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	api.SetTrialAuthorityURL("http://127.0.0.1:8443")
 	e := setupEcho(api)
 
@@ -329,7 +372,7 @@ func TestCustomerAPI_Trial_ForwardsAgreementToAuthority(t *testing.T) {
 	}))
 	defer authority.Close()
 
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	api.SetTrialAuthorityURL(authority.URL)
 	e := setupEcho(api)
 
@@ -350,7 +393,7 @@ func TestCustomerAPI_Trial_ForwardsAgreementToAuthority(t *testing.T) {
 }
 
 func TestCustomerAPI_Status_NoLicense(t *testing.T) {
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/system/license/status", nil)
@@ -373,7 +416,7 @@ func TestCustomerAPI_Status_NoLicense(t *testing.T) {
 }
 
 func TestCustomerAPI_RuntimeTelemetryPreference(t *testing.T) {
-	api, store := newTestCustomerAPI(t)
+	api, store, _ := newTestCustomerAPI(t)
 	fingerprint, err := GenerateFingerprint()
 	if err != nil {
 		t.Fatal(err)
@@ -435,7 +478,7 @@ func TestCustomerAPI_RuntimeTelemetryPreference(t *testing.T) {
 }
 
 func TestCustomerAPI_Activate_MissingLicenseKey(t *testing.T) {
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	body, _ := json.Marshal(map[string]string{"device_name": "test"})
@@ -450,7 +493,7 @@ func TestCustomerAPI_Activate_MissingLicenseKey(t *testing.T) {
 }
 
 func TestCustomerAPI_Activate_Success(t *testing.T) {
-	api, store := newTestCustomerAPI(t)
+	api, store, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	lic := &License{
@@ -492,7 +535,7 @@ func TestCustomerAPI_Activate_Success(t *testing.T) {
 }
 
 func TestCustomerAPI_Activate_LicenseNotFound(t *testing.T) {
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	body, _ := json.Marshal(map[string]string{"license_key": "LIC-MISSING"})
@@ -514,7 +557,7 @@ func TestCustomerAPI_Activate_LicenseNotFound(t *testing.T) {
 }
 
 func TestCustomerAPI_Activate_LicenseExpired(t *testing.T) {
-	api, store := newTestCustomerAPI(t)
+	api, store, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	lic := &License{
@@ -545,7 +588,7 @@ func TestCustomerAPI_Activate_LicenseExpired(t *testing.T) {
 }
 
 func TestCustomerAPI_Activate_LicenseRevoked(t *testing.T) {
-	api, store := newTestCustomerAPI(t)
+	api, store, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	revokedAt := time.Now().Add(-time.Hour)
@@ -578,7 +621,7 @@ func TestCustomerAPI_Activate_LicenseRevoked(t *testing.T) {
 }
 
 func TestCustomerAPI_Activate_DeviceLimitExceeded(t *testing.T) {
-	api, store := newTestCustomerAPI(t)
+	api, store, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	lic := &License{
@@ -620,7 +663,7 @@ func TestCustomerAPI_Activate_DeviceLimitExceeded(t *testing.T) {
 }
 
 func TestCustomerAPI_OfflineActivate_MissingSignedLicense(t *testing.T) {
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	body, _ := json.Marshal(map[string]string{"activation_code": "ABCDEFGH"})
@@ -635,7 +678,7 @@ func TestCustomerAPI_OfflineActivate_MissingSignedLicense(t *testing.T) {
 }
 
 func TestCustomerAPI_OfflineRequest_LicenseNotFound(t *testing.T) {
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	body, _ := json.Marshal(map[string]string{"license_key": "LIC-NONEXISTENT"})
@@ -650,7 +693,7 @@ func TestCustomerAPI_OfflineRequest_LicenseNotFound(t *testing.T) {
 }
 
 func TestCustomerAPI_Heartbeat_NoLicense(t *testing.T) {
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/system/license/heartbeat", nil)
@@ -663,7 +706,7 @@ func TestCustomerAPI_Heartbeat_NoLicense(t *testing.T) {
 }
 
 func TestCustomerAPI_Status_ActiveLicense(t *testing.T) {
-	api, store := newTestCustomerAPI(t)
+	api, store, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	// Seed an active license with a device bound to current hardware.
@@ -713,7 +756,7 @@ func TestCustomerAPI_Status_ActiveLicense(t *testing.T) {
 }
 
 func TestCustomerAPI_Status_ExpiredLicense(t *testing.T) {
-	api, store := newTestCustomerAPI(t)
+	api, store, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	hwHash := currentTestFingerprintHash(t)
@@ -745,7 +788,7 @@ func TestCustomerAPI_Status_ExpiredLicense(t *testing.T) {
 }
 
 func TestCustomerAPI_Status_GraceLicense(t *testing.T) {
-	api, store := newTestCustomerAPI(t)
+	api, store, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	hwHash := currentTestFingerprintHash(t)
@@ -777,7 +820,7 @@ func TestCustomerAPI_Status_GraceLicense(t *testing.T) {
 }
 
 func TestCustomerAPI_Status_RevokedLicense(t *testing.T) {
-	api, store := newTestCustomerAPI(t)
+	api, store, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	hwHash := currentTestFingerprintHash(t)
@@ -808,7 +851,7 @@ func TestCustomerAPI_Status_RevokedLicense(t *testing.T) {
 }
 
 func TestCustomerAPI_Info_NoLicense(t *testing.T) {
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/system/license/info", nil)
@@ -828,7 +871,7 @@ func TestCustomerAPI_Info_NoLicense(t *testing.T) {
 }
 
 func TestCustomerAPI_Heartbeat_ActiveLicense(t *testing.T) {
-	api, store := newTestCustomerAPI(t)
+	api, store, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	hwHash := currentTestFingerprintHash(t)
@@ -853,7 +896,7 @@ func TestCustomerAPI_Heartbeat_ActiveLicense(t *testing.T) {
 }
 
 func TestCustomerAPI_OfflineActivate_InvalidSignature(t *testing.T) {
-	api, _ := newTestCustomerAPI(t)
+	api, _, _ := newTestCustomerAPI(t)
 	e := setupEcho(api)
 
 	body, _ := json.Marshal(map[string]string{
