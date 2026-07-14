@@ -593,7 +593,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			CanonicalName:  canonicalName,
 			CanonicalID:    canonicalID,
 			ResolutionPath: variantResolutionPath(hitPath, hitVariant, modelname.NormalizeRouteKey(model)),
-			RawModels:      uniqueRawModels(append(raw, model)),
+			RawModels:      lowerUnique(append(raw, model)),
 		}, nil
 	}
 
@@ -633,7 +633,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			CanonicalName:  canonicalName,
 			CanonicalID:    canonicalID,
 			ResolutionPath: variantResolutionPath(hitPath, hitVariant, modelname.NormalizeRouteKey(model)),
-			RawModels:      uniqueRawModels(append(raw, model)),
+			RawModels:      lowerUnique(append(raw, model)),
 		}, nil
 	}
 
@@ -661,7 +661,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			if err != nil {
 				return nil, err
 			}
-			return &resolveResponse{ClientModel: model, CanonicalName: canonicalName, CanonicalID: canonicalID, ResolutionPath: "raw_fallback", RawModels: uniqueRawModels(append(raw, model, rawLookup))}, nil
+			return &resolveResponse{ClientModel: model, CanonicalName: canonicalName, CanonicalID: canonicalID, ResolutionPath: "raw_fallback", RawModels: lowerUnique(append(raw, model, rawLookup))}, nil
 		}
 		if err != nil && err != pgx.ErrNoRows {
 			return nil, err
@@ -1051,21 +1051,6 @@ func lowerUnique(values []string) []string {
 		}
 		seen[value] = true
 		out = append(out, value)
-	}
-	return out
-}
-
-func uniqueRawModels(values []string) []string {
-	seen := make(map[string]bool, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		key := strings.ToLower(trimmed)
-		if key == "" || seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, trimmed)
 	}
 	return out
 }

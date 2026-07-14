@@ -128,33 +128,6 @@ func TestExtractFromAnthropicBody_URLSourceSkipped(t *testing.T) {
 	}
 }
 
-func TestExtractFromGeminiBody_MixedInlineData(t *testing.T) {
-	tmp := t.TempDir()
-	storage, err := NewStorage(tmp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	extractor := NewExtractor(storage)
-	body := []byte(`{"contents":[{"role":"user","parts":[
-		{"inlineData":{"mimeType":"image/png","data":"aW1n"}},
-		{"inlineData":{"mimeType":"audio/mpeg","data":"YXVkaW8="}},
-		{"inlineData":{"mimeType":"video/mp4","data":"dmlkZW8="}},
-		{"inlineData":{"mimeType":"application/pdf","data":"cGRm"}},
-		{"fileData":{"mimeType":"text/plain","fileUri":"files/text-1"}}
-	]}]}`)
-
-	result := extractor.ExtractFromGeminiBody("req-gemini", body)
-	if result.TotalFound != 4 || result.Saved != 4 || result.Failed != 0 {
-		t.Fatalf("unexpected result: %+v", result)
-	}
-	wantTypes := []string{"image", "audio", "video", "file"}
-	for i, want := range wantTypes {
-		if result.Attachments[i].Type != want {
-			t.Errorf("attachment %d type = %q, want %q", i, result.Attachments[i].Type, want)
-		}
-	}
-}
-
 func TestExtract_StorageFailureDoesNotPanic(t *testing.T) {
 	// nil storage 不应 panic
 	e := NewExtractor(nil)

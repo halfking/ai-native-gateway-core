@@ -118,10 +118,3 @@ func TestLowerUnique(t *testing.T) {
 		t.Fatalf("unexpected values: %v", result)
 	}
 }
-
-func TestUniqueRawModels_PreservesVendorCasing(t *testing.T) {
-	got := uniqueRawModels([]string{"MiniMax-M3", "minimax-m3", " GPT-4o ", ""})
-	if len(got) != 2 || got[0] != "MiniMax-M3" || got[1] != "GPT-4o" {
-		t.Fatalf("unexpected raw models: %v", got)
-	}
-}
