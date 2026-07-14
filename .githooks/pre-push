@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
 # .githooks/pre-push — SI-LLM-Gateway 双仓库推送保护
+#
+# v2 Phase 3B-3: 在原有 sensitive-info scan 之上，新增 11 套 shell 测试 +
+# envinjector unit tests 作为可跳过的硬门控。operator 可通过
+# SKIP_TESTS=1 env var 或 git push --no-verify 跳过。
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
@@ -19,6 +23,8 @@ fi
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
 scanner="$repo_root/scripts/scan-secrets.sh"
 
+# ── 1. Sensitive-info scan (BLOCK-level findings) ────────────────────────
+
 if [[ ! -x "$scanner" ]]; then
   echo "⚠️  scan-secrets.sh not found or not executable: $scanner" >&2
   echo "    Run: ./scripts/install-githooks.sh" >&2
@@ -26,7 +32,6 @@ fi
 
 echo "🔍 GitHub push detected — running sensitive-info scan (strict mode)..."
 
-# 扫描 working tree 关键目录
 scan_failed=0
 if [[ -x "$scanner" ]]; then
   baseline="$repo_root/scripts/scan-secrets.baseline"
@@ -50,5 +55,66 @@ if [[ $scan_failed -eq 1 ]]; then
   exit 1
 fi
 
-echo "✅ Scan clean — push to GitHub allowed"
+# ── 2. v2 Phase 3B-3: 11-suite shell test gate ──────────────────────────
+
+if [[ "${SKIP_TESTS:-0}" == "1" ]]; then
+  echo "⏩ SKIP_TESTS=1 — skipping test gate (use only with extreme caution)"
+else
+  echo "🧪 Running 11-suite shell test gate (v2 Phase 3B-3)..."
+
+  test_failures=0
+  while IFS= read -r t; do
+    # Ensure executable — some tests are tracked without +x bit.
+    chmod +x "$t" 2>/dev/null || true
+    # Per-suite timeout to bound the gate (60s is generous for
+    # the existing shells).
+    test_name=$(basename "$t")
+    echo -n "  $test_name: "
+    if timeout 60 bash "$t" > /tmp/test-$$.log 2>&1; then
+      summary=$(grep -E "summary:" /tmp/test-$$.log | tail -1)
+      [[ -n "$summary" ]] && summary="  $summary"
+      echo "PASS${summary}"
+    else
+      echo "FAIL (see /tmp/test-$$.log)"
+      test_failures=$((test_failures + 1))
+    fi
+  done < <(find "$repo_root/tests" -maxdepth 1 -name '*.sh' -print | sort)
+
+  if [[ $test_failures -gt 0 ]]; then
+    echo "" >&2
+    echo "🚫 Push to GitHub BLOCKED: ${test_failures} test suite(s) failed." >&2
+    echo "" >&2
+    echo "   To bypass (NOT recommended):" >&2
+    echo "     SKIP_TESTS=1 git push …   (CI/quick-push only)" >&2
+    echo "     git push --no-verify …    (last resort)" >&2
+    echo "" >&2
+    rm -f /tmp/test-$$.log
+    exit 1
+  fi
+  rm -f /tmp/test-$$.log
+fi
+
+# ── 3. v2 Phase 3B-3: Go unit tests (opt-in via RUN_GO_TESTS=1) ────────────
+
+# Running all Go tests takes ~25s for licensing + ~3s for envinjector
+# on developer machines; CI pipelines run them separately. We make
+# this opt-in so contributors do not pay the cost on every push by
+# default. Operators wanting full coverage pre-push can set:
+#   RUN_GO_TESTS=1 git push …
+if [[ "${RUN_GO_TESTS:-0}" == "1" ]]; then
+  echo "🐹 Running Go unit tests (RUN_GO_TESTS=1)..."
+  if command -v go >/dev/null 2>&1; then
+    if ! (cd "$repo_root" && go test ./licensing/... ./envinjector/... -count=1 -timeout=180s) > /tmp/go-test-$$.log 2>&1; then
+      echo "❌ Go unit tests failed." >&2
+      tail -20 /tmp/go-test-$$.log | sed 's/^/    /'
+      rm -f /tmp/go-test-$$.log
+      exit 1
+    fi
+    rm -f /tmp/go-test-$$.log
+  else
+    echo "⚠️  go not in PATH — skipping Go-test gate" >&2
+  fi
+fi
+
+echo "✅ Scan clean + tests passing — push to GitHub allowed"
 exit 0
