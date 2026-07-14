@@ -167,6 +167,14 @@ deploy/r*-*/
 !.env.kaixuan-1.enc
 deployment-report-*.md
 FINAL_AUDIT_REPORT_*.md
+
+# Credential rotation log — produced by scripts/rotate-credentials.sh,
+# per-environment state (commit hashes, key lengths, backup paths).
+# The empty template commit keeps the directory tracked; runtime
+# entries are gitignored so they don't leak into other branches.
+docs/changelogs/credential-rotation.log
+!docs/changelogs/credential-rotation.log.keep
+
 FINAL_SUMMARY_REPORT.md
 FINAL_SUMMARY.md
 FINAL_COMPLETION_REPORT.md
