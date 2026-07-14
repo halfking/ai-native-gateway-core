@@ -14,6 +14,10 @@
 #     396_model_aliases_canonical_lowercase.sql
 #         → 下转 model_aliases.raw_name + models_canonical.canonical_name
 #           并合并 mixed-case 冲突。
+#     398_model_offers_add_canonical_raw_name.sql
+#         → model_offers VIEW 加入 pm.canonical_raw_name 列，
+#           修复 /request-logs 500。必须在部署前执行，因为
+#           新代码大量引用 mo.canonical_raw_name。
 #
 #   Phase B — 部署后（gateway 已用新代码稳定运行 ≥24h）
 #     397_runtime_logs_lowercase.sql
@@ -106,10 +110,13 @@ fi
 # Phase A: catalog 不变量。
 # ---------------------------------------------------------------------------
 if [[ "$PHASE" == "a" || "$PHASE" == "all" || "$PHASE" == "phase-a" ]]; then
-    run_sql_file "step_1_outbound_canonicalisation"  "${MIGRATION_DIR}/394_nvidia_nim_outbound_model_id.sql"
-    run_sql_file "step_2_canonical_raw_name_backfill" "${MIGRATION_DIR}/395_provider_models_canonical_raw_name.sql"
-    run_sql_file "step_3_aliases_lowercase"          "${MIGRATION_DIR}/396_model_aliases_canonical_lowercase.sql"
-fi
+	    run_sql_file "step_1_outbound_canonicalisation"  "${MIGRATION_DIR}/394_nvidia_nim_outbound_model_id.sql"
+	    run_sql_file "step_2_canonical_raw_name_backfill" "${MIGRATION_DIR}/395_provider_models_canonical_raw_name.sql"
+	    run_sql_file "step_2b_dedup_provider_models_and_aliases" "${MIGRATION_DIR}/395b_dedup_provider_models_and_aliases.sql"
+	    run_sql_file "step_2c_canonical_unprefix"        "${MIGRATION_DIR}/395c_canonical_raw_name_unprefix.sql"
+	    run_sql_file "step_3_aliases_lowercase"          "${MIGRATION_DIR}/396_model_aliases_canonical_lowercase.sql"
+	    run_sql_file "step_5_model_offers_canonical_raw"  "${MIGRATION_DIR}/398_model_offers_add_canonical_raw_name.sql"
+	fi
 
 # ---------------------------------------------------------------------------
 # Phase B: runtime logs 不变量。
@@ -123,9 +130,12 @@ fi
 # ---------------------------------------------------------------------------
 if [[ "$DRY_RUN" != "1" ]]; then
     run_sql_file "postflight_canonical_raw_name_lowercase" <(cat <<'SQL'
-SELECT COUNT(*) AS mixed_canonical_raw_name_count
-FROM provider_models
-WHERE canonical_raw_name <> lower(canonical_raw_name);
+SELECT
+    (SELECT COUNT(*) FROM provider_models
+       WHERE canonical_raw_name <> lower(split_part(raw_model_name, '/', -1))) AS mixed_canonical_raw_name,
+    (SELECT COUNT(*) FROM provider_models
+       WHERE standardized_name IS NOT NULL
+         AND standardized_name <> lower(split_part(raw_model_name, '/', -1))) AS mixed_standardized_name;
 SQL
 )
     run_sql_file "postflight_canonical_name_lowercase" <(cat <<'SQL'
