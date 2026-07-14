@@ -57,21 +57,28 @@ const chartConfig = computed(() =>
   }),
 )
 
-const { initChart, destroyChart } = useChart(canvasRef, chartConfig)
+const { initChart, destroyChart, isDisposed } = useChart(canvasRef, chartConfig)
+
+let alive = true
 
 async function refreshChart() {
+  if (!alive || isDisposed()) return
   if (!hasData.value) {
     destroyChart()
     return
   }
   await nextTick()
+  if (!alive || isDisposed()) return
   initChart()
 }
 
 watch(chartConfig, () => void refreshChart(), { deep: true })
 watch(() => props.data?.length, () => void refreshChart())
 onMounted(() => void refreshChart())
-onBeforeUnmount(() => destroyChart())
+onBeforeUnmount(() => {
+  alive = false
+  destroyChart()
+})
 
 const hasData = computed(() => (props.data?.length ?? 0) > 0)
 </script>

@@ -121,6 +121,38 @@ fi
 # 2026-07-14 fix: 确保 STATIC_DIR 指向 web/（展平模式），不是 web/dist
 $SSH "$SSH_TARGET" "sed -i 's|LLM_GATEWAY_STATIC_DIR=.*dist.*|LLM_GATEWAY_STATIC_DIR=$REMOTE_DIR/web|' $REMOTE_DIR/.env 2>/dev/null || true"
 
+# 2026-07-14: 确保 Redis 指向 252 数据面（与 154 一致）。
+# 245 经内网 172.16.2.210:6389 可达；未配置时泳道维度数据无法写入 Redis。
+# 用法: LLM_GATEWAY_REDIS_ADDR=172.16.2.210:6389 LLM_GATEWAY_REDIS_PASSWORD=... bash scripts/deploy-245.sh
+if [[ -n "${LLM_GATEWAY_REDIS_ADDR:-}" ]]; then
+  log "  注入 Redis 配置..."
+  $SSH "$SSH_TARGET" \
+    "REDIS_ADDR='${LLM_GATEWAY_REDIS_ADDR}' REDIS_PASSWORD='${LLM_GATEWAY_REDIS_PASSWORD:-}' REDIS_DB='${LLM_GATEWAY_REDIS_DB:-0}'" \
+    bash -s <<'REMOTE_REDIS'
+set -euo pipefail
+ENV="/opt/llm-gateway-go/.env"
+cp "$ENV" "$ENV.bak.redis.$(date +%Y%m%d-%H%M%S)"
+python3 - <<'PY'
+from pathlib import Path
+import re, os
+env = Path("/opt/llm-gateway-go/.env")
+text = env.read_text()
+text = re.sub(r"(?m)^#.*Redis.*\n", "", text)
+text = re.sub(r"(?m)^# LLM_GATEWAY_REDIS_.*\n", "", text)
+lines = [ln for ln in text.splitlines() if not ln.startswith("LLM_GATEWAY_REDIS_")]
+if lines and lines[-1].strip():
+    lines.append("")
+lines.extend([
+    "# Redis (252 data plane, shared with 154)",
+    f"LLM_GATEWAY_REDIS_ADDR={os.environ['REDIS_ADDR']}",
+    f"LLM_GATEWAY_REDIS_PASSWORD={os.environ['REDIS_PASSWORD']}",
+    f"LLM_GATEWAY_REDIS_DB={os.environ.get('REDIS_DB', '0')}",
+])
+env.write_text("\n".join(lines) + "\n")
+PY
+REMOTE_REDIS
+fi
+
 # 启动
 $SSH "$SSH_TARGET" "systemctl daemon-reload && systemctl start $SERVICE_NAME"
 sleep 8

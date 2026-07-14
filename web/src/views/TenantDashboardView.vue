@@ -198,14 +198,10 @@ function closeRequestDrawer() {
 // Tab 控制（与 DashboardViewV2 对齐：stream / stats）
 const STORAGE_KEY_TAB = 'tenant_dashboard_active_tab'
 const activeTab = ref<'stream' | 'stats'>('stream')
-const swimLaneReinitKey = ref(0)
 
 function switchTab(tab: 'stream' | 'stats') {
   activeTab.value = tab
   localStorage.setItem(STORAGE_KEY_TAB, tab)
-  if (tab === 'stream') {
-    swimLaneReinitKey.value++
-  }
 }
 
 // 5 分钟自动刷新
@@ -389,13 +385,13 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 实时请求流（默认 tab）-->
-    <div v-if="activeTab === 'stream'">
-      <LiveRequestStreamV2 :key="swimLaneReinitKey" @open-detail="openRequestDetail" />
+    <!-- 实时请求流（v-show 避免 Tab 切换时 remount 导致泳道闪烁）-->
+    <div v-show="activeTab === 'stream'">
+      <LiveRequestStreamV2 @open-detail="openRequestDetail" />
     </div>
 
     <!-- 会话与统计 tab：模型排行 / 趋势 / 明细 -->
-    <div v-else>
+    <div v-show="activeTab === 'stats'">
       <!-- 模型请求排行 -->
       <div class="card chart-card" v-if="summary">
         <div class="card-title">
