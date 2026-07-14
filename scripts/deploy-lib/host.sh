@@ -271,6 +271,9 @@ host_atomic_switch() {
   # `current` is the only one systemd actually observes at restart.
   "$ssh_cmd" "ln -sfn '$release_dir' '$current_link'"
   "$ssh_cmd" "ln -sfn '$current_link/$bin_name' '$binary_link'"
+  # 2026-07-15: 245 历史上 /web 可能是实体目录；对目录执行 ln -sfn 会在
+  # 目录内创建嵌套 symlink 而非替换，导致 nginx 继续服务旧 index.html。
+  "$ssh_cmd" "if [ -e '$web_link' ] && [ ! -L '$web_link' ]; then mv '$web_link' '${web_link}.legacy.\$(date +%Y%m%d-%H%M%S)'; fi"
   "$ssh_cmd" "ln -sfn '$current_link/web' '$web_link'"
   "$ssh_cmd" "ln -sfn '$current_link/version.json' '$version_link'"
   host_restart_service "$ssh_cmd" "$target"
