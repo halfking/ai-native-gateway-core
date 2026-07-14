@@ -67,6 +67,7 @@ export interface BoardPayload {
     fold_unit?: string
     scope?: string
     built_at?: string
+    source?: string
   }
 }
 
