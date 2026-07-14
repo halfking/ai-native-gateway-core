@@ -378,5 +378,46 @@ export default {
     channelWechat: "微信支付",
     typeSubscribe: "月包订阅",
     typeTopup: "加油包"
-  }
+  },
+
+  tenantOps: {
+    autoUpdate: {
+      title: 'تحديثاتي',
+      subtitle: 'معلومات التحديث للقراءة فقط للمستأجر {tenant}',
+      loadFailed: 'فشل تحميل التحديثات. أعد المحاولة لاحقًا أو اتصل بمسؤول المنصة.',
+      infoAlert: 'توفر المنصة التحديثات وفق سياسة الإصدار. هذه الصفحة لا تنشر ولا تتراجع عن التحديثات.',
+      currentVersion: 'الإصدار الحالي',
+      emptyReleases: 'لا توجد تحديثات متاحة',
+      table: {
+        version: 'الإصدار',
+        title: 'العنوان',
+        channel: 'القناة',
+        mandatory: 'إلزامي',
+        publishedAt: 'تاريخ النشر',
+        yes: 'نعم',
+        no: 'لا',
+      },
+      unknownVersion: 'غير معروف',
+      loadError: 'تعذر تحميل التحديثات المتاحة',
+    },
+    license: {
+      title: 'ترخيصي',
+      subtitle: 'معلومات الترخيص للقراءة فقط للمستأجر {tenant}',
+      loadFailed: 'فشل تحميل معلومات الترخيص. أعد المحاولة لاحقًا أو اتصل بمسؤول المنصة.',
+      infoAlert: 'هذه الصفحة للقراءة فقط. اتصل بمسؤول المنصة لتغيير الترخيص.',
+      empty: 'لا توجد سجلات ترخيص لهذا المستأجر',
+      table: {
+        tier: 'الباقة',
+        maxDevices: 'حد الأجهزة',
+        expiresAt: 'تاريخ الانتهاء',
+        status: 'الحالة',
+        features: 'الميزات',
+      },
+      status: {
+        active: 'نشط',
+        expired: 'منتهي',
+        revoked: 'ملغى',
+      },
+    },
+  },
 }

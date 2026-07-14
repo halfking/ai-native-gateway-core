@@ -476,7 +476,7 @@ function onKeydown(e: KeyboardEvent) {
   <div class="chat-page">
     <div class="page-header chat-header">
       <div>
-        <h2>对话</h2>
+        <h2>{{ t('chat.page.title') }}</h2>
         <p class="chat-subtitle">通过 OpenAI 兼容接口直接与网关模型对话</p>
       </div>
       <div class="chat-controls">

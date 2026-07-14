@@ -544,7 +544,12 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 	if profile == "" {
 		profile = ""
 	}
-	rawLookup := strings.TrimSpace(strings.ToLower(model))
+	// 2026-07-14: every SQL comparison below uses provider_models.canonical_raw_name
+	// (or model_aliases.raw_name / models_canonical.canonical_name), all of which are
+	// persisted as lowercase. We compare with the lowercase form of the client's
+	// request — modelname.CanonicalizeClientModel — so the SQL queries are now plain
+	// equality lookups instead of `lower(col) = lower($1)`.
+	rawLookup := modelname.CanonicalizeClientModel(model)
 
 	// 2026-06-19 audit: walk the cross-form variant matrix so a
 	// request like "claude-sonnet-4.6" matches a DB canonical
@@ -553,7 +558,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 	// see why a resolve landed where it did.
 	variants := modelname.NormalizeRouteKeyAliases(model)
 	if len(variants) == 0 {
-		return &resolveResponse{ClientModel: model, ResolutionPath: "direct", RawModels: []string{strings.ToLower(strings.TrimSpace(model))}}, nil
+		return &resolveResponse{ClientModel: model, ResolutionPath: "direct", RawModels: []string{rawLookup}}, nil
 	}
 
 	var canonicalID *int
@@ -566,9 +571,9 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 		err := c.dbPool.QueryRow(ctx, `
 			SELECT id, canonical_name
 			FROM models_canonical
-			WHERE lower(canonical_name) = lower($1)
+			WHERE canonical_name = $1
 			  AND COALESCE(status, 'active') = 'active'
-		`, v).Scan(&canonicalID, &canonicalName)
+		`, modelname.CanonicalizeClientModel(v)).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {
 			hitVariant = v
 			hitPath = "canonical"
@@ -588,7 +593,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			CanonicalName:  canonicalName,
 			CanonicalID:    canonicalID,
 			ResolutionPath: variantResolutionPath(hitPath, hitVariant, modelname.NormalizeRouteKey(model)),
-			RawModels:      lowerUnique(append(raw, model)),
+			RawModels:      uniqueRawModels(append(raw, model)),
 		}, nil
 	}
 
@@ -598,7 +603,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			SELECT mc.id, mc.canonical_name
 			FROM model_aliases ma
 			JOIN models_canonical mc ON mc.id = ma.canonical_id
-			WHERE lower(ma.raw_name) = lower($1)
+			WHERE ma.raw_name = $1
 			  AND COALESCE(ma.status, 'active') = 'active'
 			  AND COALESCE(mc.status, 'active') = 'active'
 			  AND (
@@ -608,7 +613,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			      OR $2 = ''
 			  )
 			LIMIT 1
-		`, v, profile).Scan(&canonicalID, &canonicalName)
+		`, modelname.CanonicalizeClientModel(v), profile).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {
 			hitVariant = v
 			hitPath = "alias"
@@ -628,7 +633,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			CanonicalName:  canonicalName,
 			CanonicalID:    canonicalID,
 			ResolutionPath: variantResolutionPath(hitPath, hitVariant, modelname.NormalizeRouteKey(model)),
-			RawModels:      lowerUnique(append(raw, model)),
+			RawModels:      uniqueRawModels(append(raw, model)),
 		}, nil
 	}
 
@@ -656,7 +661,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			if err != nil {
 				return nil, err
 			}
-			return &resolveResponse{ClientModel: model, CanonicalName: canonicalName, CanonicalID: canonicalID, ResolutionPath: "raw_fallback", RawModels: lowerUnique(append(raw, model, rawLookup))}, nil
+			return &resolveResponse{ClientModel: model, CanonicalName: canonicalName, CanonicalID: canonicalID, ResolutionPath: "raw_fallback", RawModels: uniqueRawModels(append(raw, model, rawLookup))}, nil
 		}
 		if err != nil && err != pgx.ErrNoRows {
 			return nil, err
@@ -760,7 +765,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 	if c.dbPool == nil {
 		return nil, nil
 	}
-	clientModelLower := strings.ToLower(clientModel)
+	// 2026-07-14: provider_models.canonical_raw_name, model_aliases.raw_name,
+	// and standardized_name are all persisted lowercase. The matching
+	// columns below are equality-only lookups against this canonical key,
+	// so we lowercase the client request once at the boundary instead of
+	// wrapping each column in lower(col).
+	clientModelLower := modelname.CanonicalizeClientModel(clientModel)
 
 	// 2026-07-03: Bug #7 fix - support tenantID parameter
 	// If tenantID is empty, use 'default' as fallback (backward compatibility)
@@ -828,12 +838,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		      AND (v.raw_model_name = mo.raw_model_name OR v.raw_model_name = mo.standardized_name)
 		LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
 		LEFT JOIN model_aliases ma
-		       ON lower(ma.raw_name) = lower(mo.raw_model_name)
+		       ON ma.raw_name = mo.canonical_raw_name
 		      AND COALESCE(ma.status, 'active') = 'active'
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
 		-- LEFT JOIN model_name_mapping for standardized name lookup fallback
 		LEFT JOIN model_name_mapping mnm
-		       ON lower(mnm.raw_model_name) = lower(mo.raw_model_name)
+		       ON mnm.raw_model_name = mo.canonical_raw_name
 		-- Last-N success rate over request_logs. LATERAL so each candidate
 		-- row carries its own recent (rate, samples). STABLE function, hits
 		-- idx_request_logs_credential_ts (credential_id, ts DESC) so the
@@ -871,23 +881,17 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		  -- the success rate recovers (expected within 50-100 requests).
 		  AND NOT (rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < 0.3)
 		  AND (
-		      -- (1) exact (case-insensitive) match on the offer's raw_model_name
-		      lower(mo.raw_model_name) = $1
+		      -- (1) exact match on the offer's canonical_raw_name (lowercase)
+		      mo.canonical_raw_name = $1
 		      -- (2) standardized-name match: the offer's standardized_name column
-		      -- already holds the provider-prefix-stripped form (set at upsert
-		      -- time via discovery.NormalizeModelName). This closes the gap
-		      -- when raw_model_name carries a provider namespace (e.g.
-		      -- "minimaxai/minimax-m3") that never equals the client-requested
-		      -- "minimax-m3", AND the alias table is empty/stale. Added
-		      -- 2026-06-23 to stop single-candidate outages caused by the
-		      -- taxonomy YAML / alias_sync path being offline.
-		      OR lower(mo.standardized_name) = $1
+		      -- holds the prefix-stripped lowercase form (set at upsert time).
+		      OR mo.standardized_name = $1
 		      -- (3) model_name_mapping lookup: centralized raw->standardized mapping
-		      OR lower(mnm.standardized_name) = $1
+		      OR mnm.standardized_name = $1
 		      -- (4) alias match: client_model points to a canonical that this offer belongs to
 		      OR EXISTS (
 		          SELECT 1 FROM model_aliases ma2
-		          WHERE lower(ma2.raw_name) = $1
+		          WHERE ma2.raw_name = $1
 		            AND COALESCE(ma2.status, 'active') = 'active'
 		            AND (
 		                (mo.canonical_id IS NOT NULL AND ma2.canonical_id = mo.canonical_id)
@@ -1047,6 +1051,21 @@ func lowerUnique(values []string) []string {
 		}
 		seen[value] = true
 		out = append(out, value)
+	}
+	return out
+}
+
+func uniqueRawModels(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		key := strings.ToLower(trimmed)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, trimmed)
 	}
 	return out
 }

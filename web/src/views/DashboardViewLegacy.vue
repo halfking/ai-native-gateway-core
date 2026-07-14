@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, inject, type Ref, type ComputedRef } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
 import { RouterLink } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
@@ -24,6 +25,8 @@ import {
 } from '../api'
 import { type LiveRequest } from '../composables/useLiveStream'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
+
+const { t } = useI18n()
 
 // 从父组件注入版本切换器
 const versionSwitcher = inject<{
@@ -278,7 +281,7 @@ scheduleStatsRecalibrate()
   <div v-else>
     <div class="page-header">
       <div class="page-header-title">
-        <h2>仪表盘</h2>
+        <h2>{{ t('dashboard.title') }}</h2>
         
         <!-- 版本切换器（集成到标题旁） -->
         <div v-if="versionSwitcher" class="version-switcher">

@@ -235,6 +235,11 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// directly DELETE old rows. Runs every tick (1h); default 90d
 	// retention via lifecycle.credential_probe_model_log_ttl_days.
 	pm.cleanupOldCredentialProbeModelLog(ctx)
+
+	// 5. 2026-07-14: request_logs_bodies partition cleanup (every tick).
+	// Request/response bodies are only needed for debugging; older than
+	// lifecycle.request_logs_bodies_ttl_days (default 7d) get DROP'd.
+	pm.dropOldRequestLogsBodiesPartitions(ctx)
 }
 
 // dropOldStatePartitions calls the SQL helper
@@ -356,6 +361,37 @@ func (pm *PartitionManager) dropOldModelProbeRunsPartitions(ctx context.Context)
 
 	slog.Info("partition_manager: model_probe_runs cleanup ran",
 		"retention_days", retentionDays)
+}
+
+// dropOldRequestLogsBodiesPartitions drops monthly partitions of
+// request_logs_bodies older than the configured TTL. Retention is
+// read fresh from settings.Global on every call
+// (lifecycle.request_logs_bodies_ttl_days, default 7), so changes
+// take effect on the next partition_manager tick.
+func (pm *PartitionManager) dropOldRequestLogsBodiesPartitions(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.request_logs_bodies_ttl_days", 7)
+	if retentionDays < 1 {
+		retentionDays = 7
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	var dropped int64
+	err := pm.db.QueryRow(timeoutCtx,
+		"SELECT COUNT(*) FROM drop_old_request_logs_bodies_partitions($1)",
+		retentionDays,
+	).Scan(&dropped)
+	if err != nil {
+		slog.Error("partition_manager: request_logs_bodies cleanup failed",
+			"ttl_days", retentionDays, "error", err)
+		return
+	}
+
+	if dropped > 0 {
+		slog.Info("partition_manager: request_logs_bodies cleanup dropped partitions",
+			"ttl_days", retentionDays, "count", dropped)
+	}
 }
 
 // cleanupOldCredentialProbeModelLog deletes rows from
@@ -573,7 +609,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 //   - lifecycle.hot_retention_hours            — request_logs_hot, usage_ledger_hot, ...
 //   - lifecycle.request_logs_bodies_retention_hours — request_logs_bodies (1d default)
 //   - lifecycle.credential_model_index_ttl_days  — credential_model_index (reaped by
-//                                                  cleanup_old_credential_model_index())
+//     cleanup_old_credential_model_index())
 func resolvePromoteConfig(label string) (time.Duration, int) {
 	switch label {
 	case "model_probe_runs_hot":
@@ -608,10 +644,16 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 	default:
 		hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
 		retention := time.Duration(hours) * time.Hour
-		if retention < time.Hour { retention = time.Hour }
+		if retention < time.Hour {
+			retention = time.Hour
+		}
 		batchSize := settingsGetPlatformInt("lifecycle.promote_batch_size", promoteBatchSize)
-		if batchSize < 100 { batchSize = 100 }
-		if batchSize > 50_000 { batchSize = 50_000 }
+		if batchSize < 100 {
+			batchSize = 100
+		}
+		if batchSize > 50_000 {
+			batchSize = 50_000
+		}
 		return retention, batchSize
 	}
 }

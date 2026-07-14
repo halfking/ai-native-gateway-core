@@ -106,6 +106,53 @@ func TestSaveBase64Image_Dedup(t *testing.T) {
 	}
 }
 
+func TestSaveBase64Image_HashShardedPathAndLegacyRead(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStorage(dir)
+	if err != nil {
+		t.Fatalf("NewStorage: %v", err)
+	}
+
+	first, err := s.SaveBase64Image("req-first", testPNGDataURI(), 0, 0)
+	if err != nil {
+		t.Fatalf("first SaveBase64Image: %v", err)
+	}
+	second, err := s.SaveBase64Image("req-second", testPNGDataURI(), 0, 0)
+	if err != nil {
+		t.Fatalf("second SaveBase64Image: %v", err)
+	}
+
+	parts := strings.Split(filepath.ToSlash(first.Path), "/")
+	if len(parts) != 5 {
+		t.Fatalf("path segments = %v, want YYYY/MM/aa/bb/hash.ext", parts)
+	}
+	if parts[2] != first.Metadata.Hash[:2] || parts[3] != first.Metadata.Hash[2:4] {
+		t.Errorf("hash shards = %q/%q, want %q/%q", parts[2], parts[3], first.Metadata.Hash[:2], first.Metadata.Hash[2:4])
+	}
+	if parts[4] != first.Metadata.Hash+".png" {
+		t.Errorf("filename = %q, want full sha256 filename", parts[4])
+	}
+	if first.Path != second.Path || !second.Deduped {
+		t.Errorf("cross-request dedup = (%q, %t), want (%q, true)", second.Path, second.Deduped, first.Path)
+	}
+
+	legacyPath := filepath.Join("2026", "07", "req_legacy", "legacy.png")
+	legacyData := []byte("legacy attachment")
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, legacyPath)), 0755); err != nil {
+		t.Fatalf("create legacy directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, legacyPath), legacyData, 0600); err != nil {
+		t.Fatalf("write legacy attachment: %v", err)
+	}
+	got, _, err := s.LoadAttachment(legacyPath)
+	if err != nil {
+		t.Fatalf("LoadAttachment legacy path: %v", err)
+	}
+	if string(got) != string(legacyData) {
+		t.Errorf("legacy data = %q, want %q", got, legacyData)
+	}
+}
+
 func TestSaveBase64Image_InvalidDataURI(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := NewStorage(dir)

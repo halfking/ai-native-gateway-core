@@ -19,6 +19,11 @@ func LifecycleSpecs() []*Spec {
 		{Key: "lifecycle.model_probe_runs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(7), Max: floatPtr(3650), Default: 90, DangerLevel: Warning, HotReload: true, Description: "model_probe_runs 保留天数", DescriptionLong: "model_probe_runs 月度分区保留天数。默认 90 天。", Unit: "天"},
 		{Key: "lifecycle.credential_probe_model_log_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 90, DangerLevel: Warning, HotReload: true, Description: "credential_probe_model_log 保留天数", DescriptionLong: "credential_probe_model_log 保留天数（列存储堆表，需通过 batch cleanup 任务）。默认 90 天。", Unit: "天"},
 
+		// 2026-07-14: request_logs_bodies 月度分区保留天数。
+		// 请求/响应 body 仅用于调试/导出，常规运营很少看 >1 天的 body。
+		// 超过此天数的月度分区会被 drop_old_request_logs_bodies_partitions() 自动 DROP。
+		{Key: "lifecycle.request_logs_bodies_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 7, DangerLevel: Warning, HotReload: true, Description: "request_logs_bodies 保留天数", DescriptionLong: "request_logs_bodies 月度分区保留天数。body 仅用于调试，超过此天数的分区会被自动 DROP。默认 7 天。", Unit: "天"},
+
 		// 2026-07-13: 请求记录类表保留期 - 默认 1 天（hot 表）。
 		// 业务方可通过 setting 调整。注意：月度分区仍由 partition_manager 自动创建，
 		// 但不会自动 DROP（保留期由各业务方按需设置 archive.*_days）。

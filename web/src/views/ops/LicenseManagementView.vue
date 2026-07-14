@@ -363,7 +363,7 @@ onMounted(() => {
 <template>
   <div class="license-management-view">
     <div class="page-header">
-      <h1>🔑 {{ t('ops.license.title') }}</h1>
+      <h1>{{ t('ops.license.title') }}</h1>
       <el-button type="primary" @click="showCreateDialog = true">
         + {{ t('ops.license.create') }}
       </el-button>
@@ -387,7 +387,7 @@ onMounted(() => {
             <span v-else class="cell-sub">—</span>
           </template>
         </el-table-column>
-        <el-table-column prop="status" :label="t('common.status')" width="100">
+        <el-table-column prop="status" :label="t('common.table.status')" width="100">
           <template #default="{ row = {} } = {}">
             <el-tag :type="row.status === 'pending' ? 'warning' : 'success'" size="small">
               {{ t(`ops.license.status.${row.status}`) }}
@@ -424,7 +424,7 @@ onMounted(() => {
           @clear="handleSearch"
           @keyup.enter="handleSearch"
         />
-        <el-select v-model="statusFilter" clearable :placeholder="t('common.status')" style="width: 140px" @change="handleSearch">
+        <el-select v-model="statusFilter" clearable :placeholder="t('common.table.status')" style="width: 140px" @change="handleSearch">
           <el-option :label="t('ops.license.status.active')" value="active" />
           <el-option :label="t('ops.license.status.expired')" value="expired" />
           <el-option :label="t('ops.license.status.revoked')" value="revoked" />
@@ -446,7 +446,7 @@ onMounted(() => {
                 <el-table v-if="devices[scope.row.id]" :data="devices[scope.row.id]" size="small">
                   <el-table-column prop="instance_id" :label="t('ops.license.deviceId')" />
                   <el-table-column prop="device_name" :label="t('ops.license.hostname')" />
-                  <el-table-column prop="status" :label="t('common.status')" width="90">
+                  <el-table-column prop="status" :label="t('common.table.status')" width="90">
                     <template #default="deviceScope">
                       <el-tag :type="deviceScope?.row?.status === 'active' ? 'success' : 'info'" size="small">
                         {{ deviceScope?.row?.status }}
@@ -511,7 +511,7 @@ onMounted(() => {
         <el-table-column prop="expires_at" :label="t('ops.license.expiresAt')" width="160">
           <template #default="{ row = {} } = {}">{{ formatDate(row.expires_at) }}</template>
         </el-table-column>
-        <el-table-column :label="t('common.status')" width="100">
+        <el-table-column :label="t('common.table.status')" width="100">
           <template #default="{ row = {} } = {}">
             <el-tag :type="statusType(licenseStatus(row))" size="small">
               {{ t(`ops.license.status.${licenseStatus(row)}`) }}

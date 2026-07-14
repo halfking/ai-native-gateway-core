@@ -63,6 +63,9 @@ export default {
     'auth.login_failed': 'Inicio de sesión fallido',
     'auth.logout': 'Cierre de sesión',
     'auth.rate_limited': 'Limitado por tasa',
+    'authentication.login': 'Inicio de sesión',
+    'authentication.login_failed': 'Error de inicio de sesión',
+    'authentication.logout': 'Cierre de sesión',
   },
   errors: {
     loadFailed: 'Error al cargar',
@@ -71,6 +74,6 @@ export default {
   // 扁平键（供 Vue 组件直接使用）
   loadFailed: 'Error al cargar',
   dash: '—',
-  refreshing: '刷新中…',
-  refresh: '刷新',
+  refreshing: 'Refreshing…',
+  refresh: 'Refresh',
 }

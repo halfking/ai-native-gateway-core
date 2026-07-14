@@ -39,6 +39,9 @@ func TestExtractFromOpenAIBody(t *testing.T) {
 	if att.MessageIndex != 0 || att.BlockIndex != 1 {
 		t.Errorf("index = (%d,%d), want (0,1)", att.MessageIndex, att.BlockIndex)
 	}
+	if att.Status != AttachmentStatusManifestReady {
+		t.Errorf("Status = %q, want %q", att.Status, AttachmentStatusManifestReady)
+	}
 }
 
 func TestExtractFromOpenAIBody_HTTPURLNotExtracted(t *testing.T) {
@@ -125,6 +128,33 @@ func TestExtractFromAnthropicBody_URLSourceSkipped(t *testing.T) {
 	}
 }
 
+func TestExtractFromGeminiBody_MixedInlineData(t *testing.T) {
+	tmp := t.TempDir()
+	storage, err := NewStorage(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extractor := NewExtractor(storage)
+	body := []byte(`{"contents":[{"role":"user","parts":[
+		{"inlineData":{"mimeType":"image/png","data":"aW1n"}},
+		{"inlineData":{"mimeType":"audio/mpeg","data":"YXVkaW8="}},
+		{"inlineData":{"mimeType":"video/mp4","data":"dmlkZW8="}},
+		{"inlineData":{"mimeType":"application/pdf","data":"cGRm"}},
+		{"fileData":{"mimeType":"text/plain","fileUri":"files/text-1"}}
+	]}]}`)
+
+	result := extractor.ExtractFromGeminiBody("req-gemini", body)
+	if result.TotalFound != 4 || result.Saved != 4 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	wantTypes := []string{"image", "audio", "video", "file"}
+	for i, want := range wantTypes {
+		if result.Attachments[i].Type != want {
+			t.Errorf("attachment %d type = %q, want %q", i, result.Attachments[i].Type, want)
+		}
+	}
+}
+
 func TestExtract_StorageFailureDoesNotPanic(t *testing.T) {
 	// nil storage 不应 panic
 	e := NewExtractor(nil)
@@ -136,6 +166,9 @@ func TestExtract_StorageFailureDoesNotPanic(t *testing.T) {
 	}
 	if result.Saved != 0 {
 		t.Errorf("Saved = %d, want 0 (nil storage)", result.Saved)
+	}
+	if len(result.Attachments) != 1 || result.Attachments[0].Status != AttachmentStatusStoreFailed {
+		t.Errorf("failed attachment status = %+v, want store_failed", result.Attachments)
 	}
 }
 

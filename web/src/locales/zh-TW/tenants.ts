@@ -378,5 +378,46 @@ export default {
     channelWechat: "微信支付",
     typeSubscribe: "月包订阅",
     typeTopup: "加油包"
-  }
+  },
+
+  tenantOps: {
+    autoUpdate: {
+      title: '我的更新',
+      subtitle: '租戶 {tenant} 的唯讀更新資訊',
+      loadFailed: '更新資訊載入失敗，請稍後重試或聯絡平台管理員。',
+      infoAlert: '平台會根據發布策略為你的實例提供更新，此頁面不提供發布或回滾操作。',
+      currentVersion: '目前版本',
+      emptyReleases: '目前沒有可用更新',
+      table: {
+        version: '版本',
+        title: '標題',
+        channel: '渠道',
+        mandatory: '必須更新',
+        publishedAt: '發布時間',
+        yes: '是',
+        no: '否',
+      },
+      unknownVersion: '未知',
+      loadError: '無法載入可用更新',
+    },
+    license: {
+      title: '我的授權',
+      subtitle: '租戶 {tenant} 的授權資訊（唯讀）',
+      loadFailed: '授權資訊載入失敗，請稍後重試或聯絡平台管理員。',
+      infoAlert: '此頁面僅顯示目前租戶資訊，授權變更請聯絡平台管理員。',
+      empty: '目前租戶暫無授權記錄',
+      table: {
+        tier: '套餐',
+        maxDevices: '裝置上限',
+        expiresAt: '到期時間',
+        status: '狀態',
+        features: '功能',
+      },
+      status: {
+        active: '有效',
+        expired: '已過期',
+        revoked: '已撤銷',
+      },
+    },
+  },
 }

@@ -166,6 +166,7 @@ export default {
       stable: 'Stable',
       beta: 'Beta',
       canary: 'Canary',
+      _unknown: '不明',
     },
     logStatus: {
       pending: 'Pending',
@@ -175,6 +176,7 @@ export default {
       success: 'Success',
       failed: 'Failed',
       rolled_back: 'Rolled Back',
+      _unknown: '不明',
     },
   },
 
@@ -260,6 +262,22 @@ export default {
       active: 'Active',
       archived: 'Archived',
       completed: 'Completed',
+      _unknown: '不明',
     },
   },
+
+
+  overview: {
+    title: '運用概要',
+    loadFailed: '概要データの読み込みに失敗しました',
+    onlineInstances: 'オンラインインスタンス',
+    totalLicenses: 'ライセンス総数',
+    pendingApprovals: '承認待ちアクティベーション',
+    todayUpgrades: '本日のアップグレード',
+    openFaults: '未処理の障害',
+    recentUpgrades: '最近のアップグレード',
+    recentFaults: '最新アラート',
+    pendingOffline: '承認待ちオフラインアクティベーション',
+    viewAll: 'すべて表示',
+  }
 }

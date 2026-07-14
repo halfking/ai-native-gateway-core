@@ -245,7 +245,7 @@ onMounted(load)
     <div class="top-bar">
       <div class="top-bar-head">
         <router-link to="/routing-v2" class="back-link">← 路由全景</router-link>
-        <h2>模型路由全景</h2>
+        <h2>{{ t('routing.overview.title') }}</h2>
         <div class="toolbar-filters">
           <button
             class="profile-pill"

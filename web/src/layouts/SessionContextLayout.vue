@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, provide, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
   useSessionFilters,
@@ -9,6 +10,7 @@ import {
 
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
 
 const filters = useSessionFilters()
 const list = useSessionList()
@@ -60,35 +62,35 @@ defineExpose({ refreshList })
           v-if="isDetail"
           :to="{ path: '/session-context', query: backListQuery }"
           class="back-link"
-        >← 会话列表</router-link>
-        <h2>会话上下文</h2>
+        >{{ t('sessions.contextLayout.backToList') }}</router-link>
+        <h2>{{ t('nav.item.sessionContext') }}</h2>
         <div v-if="!isDetail" class="seg-tabs">
           <button
             class="seg-tab"
             :class="{ active: activeListTab === 'topic' }"
             @click="goListTab('topic')"
-          >有主题</button>
+          >{{ t('sessions.contextLayout.tabTopic') }}</button>
           <button
             class="seg-tab"
             :class="{ active: activeListTab === 'no-topic' }"
             @click="goListTab('no-topic')"
-          >无主题</button>
+          >{{ t('sessions.contextLayout.tabNoTopic') }}</button>
         </div>
         <button
           v-if="!isDetail"
           class="btn btn-sm btn-ghost refresh-btn"
           :disabled="loading"
-          title="刷新"
+          :title="t('sessions.contextLayout.refreshTitle')"
           @click="refreshList"
         >↻</button>
       </div>
       <div v-if="!isDetail && meta" class="hero-stats">
-        <span class="chip">时间窗 <strong>{{ meta.hours }}h</strong></span>
-        <span class="chip">有主题 <strong>{{ meta.topic_count }}</strong></span>
-        <span class="chip">无主题 <strong>{{ meta.no_topic_count }}</strong></span>
-        <span class="chip">聚合窗 <strong>{{ meta.no_topic_window }}h</strong></span>
+        <span class="chip">{{ t('sessions.contextLayout.statHours') }} <strong>{{ meta.hours }}h</strong></span>
+        <span class="chip">{{ t('sessions.contextLayout.statTopic') }} <strong>{{ meta.topic_count }}</strong></span>
+        <span class="chip">{{ t('sessions.contextLayout.statNoTopic') }} <strong>{{ meta.no_topic_count }}</strong></span>
+        <span class="chip">{{ t('sessions.contextLayout.statWindow') }} <strong>{{ meta.no_topic_window }}h</strong></span>
       </div>
-      <p v-if="!isDetail" class="sub">Memora L1 会话记忆与对话线索</p>
+      <p v-if="!isDetail" class="sub">{{ t('sessions.contextLayout.subtitle') }}</p>
     </div>
 
     <RouterView />

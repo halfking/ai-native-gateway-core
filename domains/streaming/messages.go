@@ -19,6 +19,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 )
 
@@ -211,7 +212,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
+	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
 	if err != nil {
 		if len(bodyBytes) > 0 {
 			attemptRequestBody = bodyBytes
@@ -233,6 +234,18 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(bodyBytes) > 0 {
 		attemptRequestBody = bodyBytes
+	}
+	if h.chatHandler.attachmentExtractor != nil {
+		extractResult := h.chatHandler.attachmentExtractor.ExtractFromAnthropicBody(requestID, bodyBytes)
+		if applyAttachmentResult(logCtx, extractResult) && attachmentStrictMode() {
+			attemptErrCode = "attachment_store_failed"
+			attemptErrMsg = "attachment storage failed"
+			logCtx.SetError(attemptErrCode, attemptErrMsg)
+			logCtx.EmitFailure(attemptErrCode, attemptErrMsg, nil, nil)
+			*attemptLogged = true
+			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", attemptErrMsg)
+			return
+		}
 	}
 	if len(bodyBytes) > maxBodySize {
 		attemptErrCode = "body_too_large"
@@ -282,7 +295,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// unchanged; the executor handles Q2/Q4 dispatch internally.
 	attemptClientModel = reqBody.Model
 
-	clientModel := reqBody.Model
+	// 2026-07-14: lowercase at the wire boundary.
+	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
 
 	// ── Tenant model policy (Round 48, 2026-06-21) ──────────────
 	// Inserted here so a denied request never reaches GetCandidates.
@@ -482,17 +496,25 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		SuppressSuccessWrite: !isStream,
 		ClientProtocol:       "anthropic-messages",
 		ClientModel:          clientModel,
-		OutboundModel:        outboundForLog,
-		ClientID:             clientID,
-		Transform:            txResult,
-		Resolution:           modelResolution,
-		Candidates:           candidates,
-		Policy:               policy,
-		AuditBuilder:         auditBuilder,
-		Capture:              streamCapture,
-		ToolsRequested:       false,
-		StreamWrapper:        anthropicStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
-		StickyKey:            buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
+		// See domains/streaming/handler.go for the rationale: the
+		// executor resolves the upstream model per candidate using
+		// params.Transform + cand.RawModel, so we deliberately pass
+		// clientModel here (instead of explicitOutbound / outboundForLog)
+		// to avoid leaking the FIRST candidate's upstream id into a
+		// retry/failover attempt — which on NVIDIA NIM manifests as
+		// "model_not_found" when candidate #2+ uses a different publisher
+		// prefix.
+		OutboundModel:  clientModel,
+		ClientID:       clientID,
+		Transform:      txResult,
+		Resolution:     modelResolution,
+		Candidates:     candidates,
+		Policy:         policy,
+		AuditBuilder:   auditBuilder,
+		Capture:        streamCapture,
+		ToolsRequested: false,
+		StreamWrapper:  anthropicStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
+		StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
 		KeyID: func() int {
 			if keyInfo != nil {
 				return keyInfo.ID
@@ -545,6 +567,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "Upstream request failed")
 		return
 	}
+	logCtx.markAttachmentsSent()
 
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 

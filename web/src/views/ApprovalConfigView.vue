@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { getApprovalConfig, updateApprovalConfig, type ApprovalConfig } from '../api/approval'
 import ApproverManager from '../components/ApproverManager.vue'
 import NotificationChannels from '../components/NotificationChannels.vue'
 import ApprovalRules from '../components/ApprovalRules.vue'
 
+const { t } = useI18n()
 const loading = ref(false)
 const saving = ref(false)
 const error = ref<string | null>(null)
@@ -20,16 +22,16 @@ const config = ref<ApprovalConfig>({
   rules: [],
 })
 
-const modeOptions = [
-  { value: 'disabled', label: '禁用', description: '完全关闭审批功能' },
-  { value: 'automatic', label: '自动审批', description: '根据规则自动处理' },
-  { value: 'manual', label: '人工审批', description: '需要审批人手动审批' },
-]
+const modeOptions = computed(() => [
+  { value: 'disabled', label: t('approval.config.mode.disabled'), description: t('approval.config.mode.disabledDesc') },
+  { value: 'automatic', label: t('approval.config.mode.automatic'), description: t('approval.config.mode.automaticDesc') },
+  { value: 'manual', label: t('approval.config.mode.manual'), description: t('approval.config.mode.manualDesc') },
+])
 
-const timeoutActionOptions = [
-  { value: 'approve', label: '自动通过', description: '超时后自动批准请求' },
-  { value: 'reject', label: '自动拒绝', description: '超时后自动拒绝请求' },
-]
+const timeoutActionOptions = computed(() => [
+  { value: 'approve', label: t('approval.config.timeoutAction.approve'), description: t('approval.config.timeoutAction.approveDesc') },
+  { value: 'reject', label: t('approval.config.timeoutAction.reject'), description: t('approval.config.timeoutAction.rejectDesc') },
+])
 
 async function loadConfig() {
   loading.value = true
@@ -44,7 +46,7 @@ async function loadConfig() {
       approvers: loadedConfig.approvers || [],
     }
   } catch (e: any) {
-    error.value = e.message || '加载配置失败'
+    error.value = e.message || t('approval.config.errors.loadFailed')
     console.error('Failed to load approval config:', e)
   } finally {
     loading.value = false
@@ -58,21 +60,21 @@ async function saveConfig() {
   
   try {
     await updateApprovalConfig(config.value)
-    successMessage.value = '保存成功'
+    successMessage.value = t('approval.config.success.saved')
     setTimeout(() => {
       successMessage.value = null
     }, 3000)
   } catch (e: any) {
-    error.value = e.message || '保存失败'
+    error.value = e.message || t('approval.config.errors.saveFailed')
   } finally {
     saving.value = false
   }
 }
 
 function formatTimeout(seconds: number): string {
-  if (seconds < 60) return `${seconds} 秒`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`
-  return `${Math.floor(seconds / 3600)} 小时`
+  if (seconds < 60) return t('approval.config.format.seconds', { n: seconds })
+  if (seconds < 3600) return t('approval.config.format.minutes', { n: Math.floor(seconds / 60) })
+  return t('approval.config.format.hours', { n: Math.floor(seconds / 3600) })
 }
 
 onMounted(() => {
@@ -85,15 +87,15 @@ onMounted(() => {
     <!-- Header -->
     <div class="page-header">
       <div>
-        <h1>审批配置</h1>
-        <p class="page-description">配置审批流程、审批人和通知渠道</p>
+        <h1>{{ t('approval.config.title') }}</h1>
+        <p class="page-description">{{ t('approval.config.description') }}</p>
       </div>
       <button 
         class="btn btn-primary btn-large"
         @click="saveConfig"
         :disabled="saving || loading"
       >
-        {{ saving ? '保存中...' : '💾 保存配置' }}
+        {{ saving ? t('approval.config.saving') : t('approval.config.save') }}
       </button>
     </div>
 
@@ -110,7 +112,7 @@ onMounted(() => {
 
     <!-- Loading -->
     <div v-if="loading" class="loading-container">
-      <div class="loading-spinner">加载中...</div>
+      <div class="loading-spinner">{{ t('approval.config.loading') }}</div>
     </div>
 
     <!-- Content -->
@@ -118,14 +120,14 @@ onMounted(() => {
       <!-- Basic Settings -->
       <section class="section">
         <div class="section-header">
-          <h2>基本设置</h2>
+          <h2>{{ t('approval.config.sections.basic') }}</h2>
         </div>
         
         <div class="settings-grid">
           <div class="setting-item">
             <div class="setting-label">
-              <span>启用审批流程</span>
-              <span class="setting-hint">开启后，符合规则的请求将进入审批流程</span>
+              <span>{{ t('approval.config.enabled.label') }}</span>
+              <span class="setting-hint">{{ t('approval.config.enabled.hint') }}</span>
             </div>
             <label class="switch-label">
               <input 
@@ -134,14 +136,14 @@ onMounted(() => {
                 class="switch-input"
               />
               <span class="switch-track"></span>
-              <span class="switch-text">{{ config.enabled ? '已启用' : '已禁用' }}</span>
+              <span class="switch-text">{{ config.enabled ? t('approval.config.enabled.on') : t('approval.config.enabled.off') }}</span>
             </label>
           </div>
 
           <div class="setting-item">
             <div class="setting-label">
-              <span>审批模式</span>
-              <span class="setting-hint">选择审批的工作模式</span>
+              <span>{{ t('approval.config.mode.label') }}</span>
+              <span class="setting-hint">{{ t('approval.config.mode.hint') }}</span>
             </div>
             <select v-model="config.mode" class="form-select">
               <option v-for="opt in modeOptions" :key="opt.value" :value="opt.value">
@@ -152,8 +154,8 @@ onMounted(() => {
 
           <div class="setting-item">
             <div class="setting-label">
-              <span>审批超时时间</span>
-              <span class="setting-hint">当前设置: {{ formatTimeout(config.timeout_seconds) }}</span>
+              <span>{{ t('approval.config.timeout.label') }}</span>
+              <span class="setting-hint">{{ t('approval.config.timeout.hint', { value: formatTimeout(config.timeout_seconds) }) }}</span>
             </div>
             <div class="timeout-input-group">
               <input 
@@ -164,14 +166,14 @@ onMounted(() => {
                 max="86400"
                 step="60"
               />
-              <span class="input-suffix">秒</span>
+              <span class="input-suffix">{{ t('approval.config.timeout.suffix') }}</span>
             </div>
           </div>
 
           <div class="setting-item">
             <div class="setting-label">
-              <span>超时后行为</span>
-              <span class="setting-hint">审批超时后的处理方式</span>
+              <span>{{ t('approval.config.timeoutAction.label') }}</span>
+              <span class="setting-hint">{{ t('approval.config.timeoutAction.hint') }}</span>
             </div>
             <select v-model="config.timeout_action" class="form-select">
               <option v-for="opt in timeoutActionOptions" :key="opt.value" :value="opt.value">
@@ -185,8 +187,8 @@ onMounted(() => {
       <!-- Approvers -->
       <section class="section">
         <div class="section-header">
-          <h2>审批人管理</h2>
-          <p class="section-description">配置审批人员及其优先级</p>
+          <h2>{{ t('approval.config.sections.approvers') }}</h2>
+          <p class="section-description">{{ t('approval.config.sectionsDesc.approvers') }}</p>
         </div>
         <ApproverManager v-model="config.approvers" />
       </section>
@@ -194,8 +196,8 @@ onMounted(() => {
       <!-- Notification Channels -->
       <section class="section">
         <div class="section-header">
-          <h2>通知渠道</h2>
-          <p class="section-description">配置审批通知的发送渠道</p>
+          <h2>{{ t('approval.config.sections.channels') }}</h2>
+          <p class="section-description">{{ t('approval.config.sectionsDesc.channels') }}</p>
         </div>
         <NotificationChannels v-model="config.notification_channels" />
       </section>
@@ -203,8 +205,8 @@ onMounted(() => {
       <!-- Rules -->
       <section class="section">
         <div class="section-header">
-          <h2>审批规则</h2>
-          <p class="section-description">定义哪些请求需要审批</p>
+          <h2>{{ t('approval.config.sections.rules') }}</h2>
+          <p class="section-description">{{ t('approval.config.sectionsDesc.rules') }}</p>
         </div>
         <ApprovalRules v-model="config.rules" />
       </section>
@@ -216,7 +218,7 @@ onMounted(() => {
           @click="saveConfig"
           :disabled="saving || loading"
         >
-          {{ saving ? '保存中...' : '💾 保存配置' }}
+          {{ saving ? t('approval.config.saving') : t('approval.config.save') }}
         </button>
       </div>
     </div>

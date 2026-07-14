@@ -12,11 +12,11 @@
 //
 // 存储路径布局：
 //
-//	{BaseDir}/YYYY/MM/req_{requestID}/{hash16}{ext}
+//	{BaseDir}/YYYY/MM/{hash[0:2]}/{hash[2:4]}/{hash}{ext}
 //
 // 例如：
 //
-//	/data/attachments/2026/07/req_abc123/a1b2c3d4e5f6g7h8.png
+//	/data/attachments/2026/07/a1/b2/a1b2c3d4e5f6....png
 package attachments
 
 import (
@@ -41,6 +41,18 @@ var ErrInvalidDataURI = errors.New("invalid data URI format")
 // 超过此值的附件会被拒绝存储，但请求仍正常转发。
 const DefaultMaxSize = 20 << 20
 
+// AttachmentStatus describes the attachment lifecycle persisted in request logs.
+type AttachmentStatus string
+
+const (
+	AttachmentStatusDetected      AttachmentStatus = "detected"
+	AttachmentStatusStoring       AttachmentStatus = "storing"
+	AttachmentStatusStored        AttachmentStatus = "stored"
+	AttachmentStatusManifestReady AttachmentStatus = "manifest_ready"
+	AttachmentStatusSent          AttachmentStatus = "sent"
+	AttachmentStatusStoreFailed   AttachmentStatus = "store_failed"
+)
+
 // AttachmentMetadata 描述单个附件的元数据，序列化后存入 request_logs.attachments。
 type AttachmentMetadata struct {
 	// Type 附件类型：image | file
@@ -49,7 +61,8 @@ type AttachmentMetadata struct {
 	ContentType string `json:"content_type"`
 	// Size 解码后的字节数
 	Size int64 `json:"size"`
-	// Path 文件系统相对路径（相对 BaseDir），如 2026/07/req_xxx/abc.png
+	// Path 文件系统相对路径（相对 BaseDir），如 2026/07/a1/b2/<sha256>.png。
+	// 历史 req_<requestID> 路径仍可被读取。
 	Path string `json:"path"`
 	// Hash 内容 SHA256 十六进制，用于去重和完整性校验
 	Hash string `json:"hash"`
@@ -61,6 +74,10 @@ type AttachmentMetadata struct {
 	BlockIndex int `json:"block_index"`
 	// CreatedAt 保存时间
 	CreatedAt time.Time `json:"created_at"`
+	// Status is the latest durable lifecycle state for this attachment.
+	Status AttachmentStatus `json:"status"`
+	// ErrorCode is populated for failed storage without exposing raw data.
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 // Storage 附件存储管理器。支持多种存储后端（本地文件系统、OSS、S3等）。
@@ -256,13 +273,8 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 		maxSize = DefaultMaxSize
 	}
 
-	// 目标路径：YYYY/MM/req_{requestID}/
+	// 新写入按内容哈希分片。历史 req_<requestID> 路径由读取接口兼容。
 	now := time.Now()
-	relDir := filepath.Join(
-		fmt.Sprintf("%04d", now.Year()),
-		fmt.Sprintf("%02d", int(now.Month())),
-		fmt.Sprintf("req_%s", sanitizeRequestID(requestID)),
-	)
 
 	// 流式解码：边解码边计算哈希
 	hasher := sha256.New()
@@ -285,7 +297,13 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 
 	hashHex := hex.EncodeToString(hasher.Sum(nil))
 	ext := mimeTypeToExt(contentType)
-	fileName := hashHex[:16] + ext
+	relDir := filepath.Join(
+		fmt.Sprintf("%04d", now.Year()),
+		fmt.Sprintf("%02d", int(now.Month())),
+		hashHex[:2],
+		hashHex[2:4],
+	)
+	fileName := hashHex + ext
 	relPath := filepath.Join(relDir, fileName)
 
 	backend := s.GetBackend()
@@ -324,6 +342,7 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 		MessageIndex: msgIdx,
 		BlockIndex:   blockIdx,
 		CreatedAt:    now,
+		Status:       AttachmentStatusManifestReady,
 	}
 
 	return &SaveResult{
@@ -334,7 +353,7 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 }
 
 // LoadAttachment 从存储后端加载附件内容。
-// relPath 为相对路径，如 2026/07/req_xxx/abc.png。
+// relPath 为相对路径，如 2026/07/a1/b2/<sha256>.png（历史路径 req_xxx/ 仍兼容）。
 // 返回文件内容、MIME 类型和错误。
 func (s *Storage) LoadAttachment(relPath string) ([]byte, string, error) {
 	if s == nil {

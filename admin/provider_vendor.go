@@ -715,7 +715,23 @@ func extractManifestModels(manifest *string) ([]string, error) {
 // Manual disables (reason LIKE 'manual%') are preserved; legacy soft-deletes
 // and auto disables are re-enabled when the vendor still lists the model.
 func (h *Handler) upsertModelForProvider(ctx context.Context, credentialID int, rawName string) error {
-	return modelcatalog.UpsertCredentialModel(ctx, h.db, credentialID, rawName, modelname.StandardizeName(rawName), nil)
+	// 2026-07-14: NIM vendor prefix (z-ai/glm-5.2, minimaxai/minimax-m3 ...)
+	// must be stripped so that "glm-5.2" client requests route to the
+	// right offer. CanonicalizeClientModel already strips the prefix;
+	// standardized_name follows the same NormalizeRouteKey contract
+	// (date-stripped / dash-collapsed) so it stays compatible with
+	// existing query code that compares standardized_name = $1.
+	canonicalRawName := modelname.CanonicalizeClientModel(rawName)
+	standardizedName := modelname.NormalizeRouteKey(rawName)
+	return modelcatalog.UpsertCredentialModel(
+		ctx,
+		h.db,
+		credentialID,
+		rawName,             // provider-facing name, keep casing
+		canonicalRawName,    // client-facing lowercase key
+		standardizedName,    // standardized_name = lower(NormalizeRouteKey(raw))
+		nil,
+	)
 }
 
 func (h *Handler) updateCredHealth(ctx context.Context, credentialID int, status, errMsg string) {

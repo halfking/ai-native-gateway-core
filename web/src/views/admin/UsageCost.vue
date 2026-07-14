@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Chart, registerables } from 'chart.js'
 import {
   getCostTrend,
@@ -13,6 +14,8 @@ import {
 
 // 注册 Chart.js 组件
 Chart.register(...registerables)
+
+const { t } = useI18n()
 
 // 状态
 const loading = ref(false)
@@ -83,13 +86,20 @@ const trendIcon = computed(() => {
   return '→'
 })
 
+const attributionColumnLabel = computed(() => {
+  const dim = attributionDimension.value
+  if (dim === 'provider') return t('dataLifecycle.usageCost.attribution.colProvider')
+  if (dim === 'intent') return t('dataLifecycle.usageCost.attribution.colIntent')
+  return t('dataLifecycle.usageCost.attribution.colModel')
+})
+
 // API 调用
 const fetchCostTrend = async () => {
   try {
     costTrendData.value = await getCostTrend(attributionDimension.value)
   } catch (e) {
     console.error('Cost trend fetch error:', e)
-    error.value = e instanceof Error ? e.message : 'Failed to fetch cost trend'
+    error.value = e instanceof Error ? e.message : t('dataLifecycle.usageCost.errors.costTrend')
   }
 }
 
@@ -98,7 +108,7 @@ const fetchPeriodCompare = async () => {
     periodCompareData.value = await getPeriodCompare(currentPeriod.value, previousPeriod.value)
   } catch (e) {
     console.error('Period compare fetch error:', e)
-    error.value = e instanceof Error ? e.message : 'Failed to fetch period comparison'
+    error.value = e instanceof Error ? e.message : t('dataLifecycle.usageCost.errors.periodCompare')
   }
 }
 
@@ -107,7 +117,7 @@ const fetchCacheEconomics = async () => {
     cacheEconomicsData.value = await getCacheEconomics()
   } catch (e) {
     console.error('Cache economics fetch error:', e)
-    error.value = e instanceof Error ? e.message : 'Failed to fetch cache economics'
+    error.value = e instanceof Error ? e.message : t('dataLifecycle.usageCost.errors.cacheEconomics')
   }
 }
 
@@ -150,7 +160,7 @@ const renderPieChart = () => {
 
   // 如果有 other 成本，添加到图表
   if (costTrendData.value.other_cost > 0) {
-    labels.push('其他')
+    labels.push(t('dataLifecycle.usageCost.attribution.otherLabel'))
     values.push(costTrendData.value.other_cost)
   }
 
@@ -218,13 +228,13 @@ const renderTrendChart = () => {
       labels,
       datasets: [
         {
-          label: '输入成本',
+          label: t('dataLifecycle.usageCost.charts.inputCost'),
           data: inputCosts,
           backgroundColor: '#6366f1',
           stack: 'stack1',
         },
         {
-          label: '输出成本',
+          label: t('dataLifecycle.usageCost.charts.outputCost'),
           data: outputCosts,
           backgroundColor: '#8b5cf6',
           stack: 'stack1',
@@ -301,10 +311,10 @@ onMounted(() => {
 <template>
   <div class="usage-cost-view">
     <div class="page-header">
-      <h2>用量成本</h2>
+      <h2>{{ t('dataLifecycle.pages.usageCost') }}</h2>
       <div class="page-header-actions">
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="loadAll">
-          {{ loading ? '加载中…' : '刷新' }}
+          {{ loading ? t('dataLifecycle.usageCost.loading') : t('dataLifecycle.usageCost.refresh') }}
         </button>
       </div>
     </div>
@@ -313,47 +323,45 @@ onMounted(() => {
 
     <!-- 同比环比对比卡片 -->
     <div class="section">
-      <h3 class="section-title">成本对比</h3>
+      <h3 class="section-title">{{ t('dataLifecycle.usageCost.compare.title') }}</h3>
       <div class="compare-cards">
         <div class="card compare-card">
           <div class="compare-period-selector">
-            <label>本期：<input v-model="currentPeriod" type="month" class="period-input" /></label>
-            <label>对比：<input v-model="previousPeriod" type="month" class="period-input" /></label>
+            <label>{{ t('dataLifecycle.usageCost.compare.currentPeriod') }}<input v-model="currentPeriod" type="month" class="period-input" /></label>
+            <label>{{ t('dataLifecycle.usageCost.compare.previousPeriod') }}<input v-model="previousPeriod" type="month" class="period-input" /></label>
           </div>
 
           <div v-if="periodCompareData" class="compare-content">
             <div class="compare-row">
               <div class="compare-col">
-                <div class="compare-label">本期 ({{ periodCompareData.current.period }})</div>
+                <div class="compare-label">{{ t('dataLifecycle.usageCost.compare.currentLabel', { period: periodCompareData.current.period }) }}</div>
                 <div class="compare-value">{{ formatCurrency(periodCompareData.current.total_cost_usd) }}</div>
                 <div class="compare-meta">
-                  {{ formatNumber(periodCompareData.current.total_requests) }} 次请求
-                  · {{ periodCompareData.current.unique_models }} 个模型
+                  {{ t('dataLifecycle.usageCost.compare.meta', { requests: formatNumber(periodCompareData.current.total_requests), models: periodCompareData.current.unique_models }) }}
                 </div>
               </div>
 
               <div class="compare-col">
-                <div class="compare-label">对比期 ({{ periodCompareData.previous.period }})</div>
+                <div class="compare-label">{{ t('dataLifecycle.usageCost.compare.previousLabel', { period: periodCompareData.previous.period }) }}</div>
                 <div class="compare-value">{{ formatCurrency(periodCompareData.previous.total_cost_usd) }}</div>
                 <div class="compare-meta">
-                  {{ formatNumber(periodCompareData.previous.total_requests) }} 次请求
-                  · {{ periodCompareData.previous.unique_models }} 个模型
+                  {{ t('dataLifecycle.usageCost.compare.meta', { requests: formatNumber(periodCompareData.previous.total_requests), models: periodCompareData.previous.unique_models }) }}
                 </div>
               </div>
 
               <div class="compare-col compare-change">
-                <div class="compare-label">变化</div>
+                <div class="compare-label">{{ t('dataLifecycle.usageCost.compare.change') }}</div>
                 <div class="compare-value" :class="trendClass">
                   {{ trendIcon }} {{ formatPercent(Math.abs(periodCompareData.change_pct)) }}
                 </div>
                 <div class="compare-meta">
                   {{ periodCompareData.change_abs >= 0 ? '+' : '' }}{{ formatCurrency(periodCompareData.change_abs) }}
-                  <span v-if="periodCompareData.significant" class="badge badge-warning">显著</span>
+                  <span v-if="periodCompareData.significant" class="badge badge-warning">{{ t('dataLifecycle.usageCost.compare.significant') }}</span>
                 </div>
               </div>
             </div>
           </div>
-          <div v-else-if="loading" class="empty-state">加载中…</div>
+          <div v-else-if="loading" class="empty-state">{{ t('dataLifecycle.usageCost.loading') }}</div>
         </div>
       </div>
     </div>
@@ -361,14 +369,14 @@ onMounted(() => {
     <!-- 成本归因 -->
     <div class="section">
       <div class="section-header">
-        <h3 class="section-title">成本归因</h3>
+        <h3 class="section-title">{{ t('dataLifecycle.usageCost.attribution.title') }}</h3>
         <div class="attribution-selector">
           <label>
-            分组维度：
+            {{ t('dataLifecycle.usageCost.attribution.groupBy') }}
             <select v-model="attributionDimension" class="dimension-select">
-              <option value="model">按模型</option>
-              <option value="provider">按提供商</option>
-              <option value="intent">按意图</option>
+              <option value="model">{{ t('dataLifecycle.usageCost.attribution.model') }}</option>
+              <option value="provider">{{ t('dataLifecycle.usageCost.attribution.provider') }}</option>
+              <option value="intent">{{ t('dataLifecycle.usageCost.attribution.intent') }}</option>
             </select>
           </label>
         </div>
@@ -377,17 +385,17 @@ onMounted(() => {
       <div v-if="costTrendData" class="card chart-container">
         <div class="chart-grid">
           <div class="chart-panel">
-            <h4 class="chart-title">成本占比</h4>
+            <h4 class="chart-title">{{ t('dataLifecycle.usageCost.attribution.shareChart') }}</h4>
             <div class="chart-wrapper">
               <canvas id="costPieChart"></canvas>
             </div>
             <div v-if="costTrendData.other_count > 0" class="chart-note">
-              其他 {{ costTrendData.other_count }} 项合计: {{ formatCurrency(costTrendData.other_cost) }}
+              {{ t('dataLifecycle.usageCost.attribution.otherNote', { count: costTrendData.other_count, cost: formatCurrency(costTrendData.other_cost) }) }}
             </div>
           </div>
 
           <div class="chart-panel">
-            <h4 class="chart-title">成本明细（输入 vs 输出）</h4>
+            <h4 class="chart-title">{{ t('dataLifecycle.usageCost.attribution.detailChart') }}</h4>
             <div class="chart-wrapper">
               <canvas id="costTrendChart"></canvas>
             </div>
@@ -399,13 +407,13 @@ onMounted(() => {
           <table class="cost-table">
             <thead>
               <tr>
-                <th>{{ attributionDimension === 'model' ? '模型' : attributionDimension === 'provider' ? '提供商' : '意图' }}</th>
-                <th class="num">请求数</th>
-                <th class="num">总成本</th>
-                <th class="num">输入成本</th>
-                <th class="num">输出成本</th>
-                <th class="num">占比</th>
-                <th class="num">平均延迟</th>
+                <th>{{ attributionColumnLabel }}</th>
+                <th class="num">{{ t('dataLifecycle.usageCost.attribution.colRequests') }}</th>
+                <th class="num">{{ t('dataLifecycle.usageCost.attribution.colTotalCost') }}</th>
+                <th class="num">{{ t('dataLifecycle.usageCost.attribution.colInputCost') }}</th>
+                <th class="num">{{ t('dataLifecycle.usageCost.attribution.colOutputCost') }}</th>
+                <th class="num">{{ t('dataLifecycle.usageCost.attribution.colShare') }}</th>
+                <th class="num">{{ t('dataLifecycle.usageCost.attribution.colLatency') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -422,16 +430,16 @@ onMounted(() => {
           </table>
         </div>
       </div>
-      <div v-else-if="loading" class="card empty-state">加载中…</div>
+      <div v-else-if="loading" class="card empty-state">{{ t('dataLifecycle.usageCost.loading') }}</div>
     </div>
 
     <!-- 缓存经济学面板 -->
     <div class="section">
-      <h3 class="section-title">缓存经济学</h3>
+      <h3 class="section-title">{{ t('dataLifecycle.usageCost.cache.title') }}</h3>
       <div v-if="cacheEconomicsData" class="card cache-panel">
         <div class="cache-grid">
           <div class="cache-item">
-            <div class="cache-label">缓存命中率</div>
+            <div class="cache-label">{{ t('dataLifecycle.usageCost.cache.hitRate') }}</div>
             <div class="cache-value">{{ formatPercent(cacheEconomicsData.cache_hit_ratio * 100) }}</div>
             <div class="cache-hint">
               {{ formatNumber(cacheEconomicsData.cache_read_tokens) }} / 
@@ -440,37 +448,37 @@ onMounted(() => {
           </div>
 
           <div class="cache-item">
-            <div class="cache-label">缓存节省</div>
+            <div class="cache-label">{{ t('dataLifecycle.usageCost.cache.cacheSaved') }}</div>
             <div class="cache-value cache-value--green">{{ formatCurrency(cacheEconomicsData.dollars_saved) }}</div>
-            <div class="cache-hint">相对无缓存</div>
+            <div class="cache-hint">{{ t('dataLifecycle.usageCost.cache.cacheSavedHint') }}</div>
           </div>
 
           <div class="cache-item">
-            <div class="cache-label">压缩节省</div>
+            <div class="cache-label">{{ t('dataLifecycle.usageCost.cache.compressionSaved') }}</div>
             <div class="cache-value cache-value--green">{{ formatCurrency(cacheEconomicsData.compression_saved) }}</div>
-            <div class="cache-hint">{{ formatNumber(cacheEconomicsData.compressed_requests) }} 次压缩</div>
+            <div class="cache-hint">{{ t('dataLifecycle.usageCost.cache.compressionCount', { n: formatNumber(cacheEconomicsData.compressed_requests) }) }}</div>
           </div>
 
           <div class="cache-item">
-            <div class="cache-label">综合节省率</div>
+            <div class="cache-label">{{ t('dataLifecycle.usageCost.cache.savingsRate') }}</div>
             <div class="cache-value cache-value--highlight">{{ formatPercent(cacheEconomicsData.savings_rate) }}</div>
-            <div class="cache-hint">总节省 {{ formatCurrency(cacheEconomicsData.total_saved) }}</div>
+            <div class="cache-hint">{{ t('dataLifecycle.usageCost.cache.totalSaved', { cost: formatCurrency(cacheEconomicsData.total_saved) }) }}</div>
           </div>
 
           <div class="cache-item">
-            <div class="cache-label">实际支出</div>
+            <div class="cache-label">{{ t('dataLifecycle.usageCost.cache.actualSpend') }}</div>
             <div class="cache-value">{{ formatCurrency(cacheEconomicsData.dollars_spent) }}</div>
-            <div class="cache-hint">占无优化成本 {{ formatPercent(cacheEconomicsData.effective_cost_ratio * 100) }}</div>
+            <div class="cache-hint">{{ t('dataLifecycle.usageCost.cache.effectiveRatio', { pct: formatPercent(cacheEconomicsData.effective_cost_ratio * 100) }) }}</div>
           </div>
 
           <div class="cache-item">
-            <div class="cache-label">总请求数</div>
+            <div class="cache-label">{{ t('dataLifecycle.usageCost.cache.totalRequests') }}</div>
             <div class="cache-value">{{ formatNumber(cacheEconomicsData.total_requests) }}</div>
             <div class="cache-hint">{{ cacheEconomicsData.date_from }} ~ {{ cacheEconomicsData.date_to }}</div>
           </div>
         </div>
       </div>
-      <div v-else-if="loading" class="card empty-state">加载中…</div>
+      <div v-else-if="loading" class="card empty-state">{{ t('dataLifecycle.usageCost.loading') }}</div>
     </div>
   </div>
 </template>

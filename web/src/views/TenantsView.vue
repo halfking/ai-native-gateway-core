@@ -3,14 +3,15 @@ import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { getTenantsAdmin, TENANT_STATUSES, TENANT_STATUS_LABELS, TENANT_STATUS_COLORS } from '../api'
+import { getTenantsAdmin, TENANT_STATUSES, TENANT_STATUS_COLORS } from '../api'
 import type { Tenant } from '../api'
 import TenantCreateDialog from './TenantCreateDialog.vue'
 import FeeCostCell from '../components/FeeCostCell.vue'
 import { isPlatformOpsView } from '../store'
+import { useTenantStatusLabel } from '../composables/useTenantStatusLabel'
 
 const { t } = useI18n()
-
+const { tenantStatusLabel } = useTenantStatusLabel()
 
 const router = useRouter()
 const tenants = ref<Tenant[]>([])
@@ -25,7 +26,7 @@ async function load() {
   try {
     tenants.value = await getTenantsAdmin(filterStatus.value || undefined)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('tenants.loadFailed')
+    error.value = e instanceof Error ? e.message : t('tenants.list.loadFailed')
   } finally {
     loading.value = false
   }
@@ -36,7 +37,7 @@ function statusColor(s: string) {
 }
 
 function statusLabel(s: string) {
-  return TENANT_STATUS_LABELS[s] || s
+  return tenantStatusLabel(s)
 }
 
 function fmtTime(s: string) {
@@ -61,63 +62,63 @@ onMounted(load)
 <template>
   <div class="tenants-page">
     <div class="page-header">
-      <h1>🏢 租户管理</h1>
-      <button class="btn btn-primary" @click="showCreate = true">+ 新建租户</button>
+      <h1>{{ t('tenants.list.title') }}</h1>
+      <button class="btn btn-primary" @click="showCreate = true">{{ t('tenants.list.createBtn') }}</button>
     </div>
 
     <div v-if="error" class="alert alert-danger" style="margin-bottom:12px">{{ error }}</div>
 
     <div class="filters">
-      <label>状态:</label>
+      <label>{{ t('tenants.list.statusLabel') }}:</label>
       <select v-model="filterStatus" @change="load">
-        <option value="">全部</option>
+        <option value="">{{ t('tenants.list.allStatuses') }}</option>
         <option v-for="s in TENANT_STATUSES" :key="s" :value="s">{{ statusLabel(s) }}</option>
       </select>
     </div>
 
-    <div v-if="loading" class="loading">加载中…</div>
+    <div v-if="loading" class="loading">{{ t('tenants.list.loading') }}</div>
 
     <table v-else class="table tenants-table" style="width:100%">
       <thead>
         <tr>
-          <th>租户名</th>
-          <th>租户 code</th>
-          <th>状态</th>
-          <th>用户数</th>
-          <th>密钥数</th>
-          <th>7天费用</th>
-          <th>总请求</th>
-          <th>联系邮箱</th>
-          <th>创建时间</th>
+          <th>{{ t('tenants.list.colName') }}</th>
+          <th>{{ t('tenants.list.colCode') }}</th>
+          <th>{{ t('tenants.list.colStatus') }}</th>
+          <th>{{ t('tenants.list.colUsers') }}</th>
+          <th>{{ t('tenants.list.colKeys') }}</th>
+          <th>{{ t('tenants.list.colCost7d') }}</th>
+          <th>{{ t('tenants.list.colRequests') }}</th>
+          <th>{{ t('tenants.list.colContact') }}</th>
+          <th>{{ t('tenants.list.colCreated') }}</th>
         </tr>
       </thead>
       <tbody>
         <tr
-          v-for="t in tenants"
-          :key="t.code"
+          v-for="tenant in tenants"
+          :key="tenant.code"
           class="tenant-row"
           tabindex="0"
-          @click="goDetail(t)"
-          @keydown.enter="goDetail(t)"
+          @click="goDetail(tenant)"
+          @keydown.enter="goDetail(tenant)"
         >
-          <td><strong>{{ t.name }}</strong></td>
-          <td><code>{{ t.code }}</code></td>
-          <td><span class="badge" :class="statusColor(t.status)">{{ statusLabel(t.status) }}</span></td>
-          <td>{{ fmtNum(t.user_count) }}</td>
-          <td>{{ fmtNum(t.api_key_count) }}</td>
+          <td><strong>{{ tenant.name }}</strong></td>
+          <td><code>{{ tenant.code }}</code></td>
+          <td><span class="badge" :class="statusColor(tenant.status)">{{ statusLabel(tenant.status) }}</span></td>
+          <td>{{ fmtNum(tenant.user_count) }}</td>
+          <td>{{ fmtNum(tenant.api_key_count) }}</td>
           <td>
             <FeeCostCell
-              :credits="t.credits_7d"
-              :cost-usd="t.cost_7d_usd"
+              :credits="tenant.credits_7d"
+              :cost-usd="tenant.cost_7d_usd"
               :show-cost="showCost"
             />
           </td>
-          <td>{{ fmtNum(t.total_requests) }}</td>
-          <td>{{ t.contact_email || '-' }}</td>
-          <td class="mono">{{ fmtTime(t.created_at) }}</td>
+          <td>{{ fmtNum(tenant.total_requests) }}</td>
+          <td>{{ tenant.contact_email || '-' }}</td>
+          <td class="mono">{{ fmtTime(tenant.created_at) }}</td>
         </tr>
         <tr v-if="tenants.length === 0">
-          <td colspan="9" style="text-align:center; color: var(--muted); padding: 40px">无数据</td>
+          <td colspan="9" style="text-align:center; color: var(--muted); padding: 40px">{{ t('tenants.list.empty') }}</td>
         </tr>
       </tbody>
     </table>

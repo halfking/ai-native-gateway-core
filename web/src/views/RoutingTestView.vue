@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   resolveRouting, probeModel,
   getScoreDetails, updateManualPriority,
@@ -8,6 +9,7 @@ import {
 } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
 
+const { t } = useI18n()
 const modelInput  = ref('')
 const clientProfile = ref('')
 const resolution  = ref<RoutingResolveResponse | null>(null)
@@ -178,7 +180,7 @@ function dateWindow(c: RoutingCandidate): string {
 <template>
   <div>
     <div class="page-header">
-      <h2>路由测试</h2>
+      <h2>{{ t('routing.test.title') }}</h2>
     </div>
     <p style="color:var(--muted);margin-bottom:20px">
       输入客户端模型名，查看解析路径与路由候选；可模拟 Cursor/RooCode 等终端 profile。

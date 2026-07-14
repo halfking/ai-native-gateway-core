@@ -188,6 +188,7 @@ export default {
       stable: '穩定版',
       beta: '測試版',
       canary: '金絲雀版',
+      _unknown: '未知',
     },
     logStatus: {
       pending: '等待中',
@@ -197,6 +198,7 @@ export default {
       success: '成功',
       failed: '失敗',
       rolled_back: '已回滾',
+      _unknown: '未知',
     },
   },
 
@@ -294,6 +296,22 @@ export default {
       active: '活躍',
       archived: '已歸檔',
       completed: '已完成',
+      _unknown: '未知',
     },
   },
+
+
+  overview: {
+    title: '維運概覽',
+    loadFailed: '載入概覽資料失敗',
+    onlineInstances: '線上實例',
+    totalLicenses: 'License 總數',
+    pendingApprovals: '待審批啟用',
+    todayUpgrades: '今日升級',
+    openFaults: '未處理故障',
+    recentUpgrades: '最近升級',
+    recentFaults: '最新告警',
+    pendingOffline: '待審批離線啟用',
+    viewAll: '查看全部',
+  }
 }

@@ -381,7 +381,8 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 		    SELECT mc.canonical_name
 		    FROM model_aliases ma
 		    JOIN models_canonical mc ON mc.id = ma.canonical_id
-		    WHERE lower(ma.raw_name) = lower(agg.raw_model_name)
+		    -- 2026-07-14: model_aliases.raw_name is persisted lowercase.
+		    WHERE ma.raw_name = lower(agg.raw_model_name)
 		    LIMIT 1
 		) mc ON TRUE
 		ORDER BY agg.total_failures DESC, agg.last_failed_at DESC

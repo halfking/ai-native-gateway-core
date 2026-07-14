@@ -66,7 +66,16 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		// Mark ctx with a sentinel that OriginMiddleware uses to decide
+		// whether inbound X-LLM-Origin-Stage / X-LLM-Origin-Actor are
+		// trustworthy.  AuthMiddleware only knows about the static
+		// expected key (no DB access), so it cannot distinguish "user
+		// with their own key" from "system worker calling with the
+		// global key".  OriginMiddleware trusts X-LLM-Origin-* only
+		// when this sentinel is present AND the actor name is in the
+		// trusted list (middleware/origin_mw.go:trustedOriginOwners).
+		ctx := RegisterAuthOwnerUser(r.Context(), "global-auth-passed")
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

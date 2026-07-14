@@ -306,7 +306,7 @@ function toggleGuide(id: ClientGuideId) {
 <template>
   <div>
     <div class="page-header">
-      <h2>接入指南</h2>
+      <h2>{{ t('examples.title') }}</h2>
     </div>
 
     <p style="color:var(--muted);margin-bottom:12px">

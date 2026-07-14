@@ -37,6 +37,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/maas"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
@@ -1005,7 +1006,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
+	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
 	if err != nil {
 		logCtx.CapturePartialBody(bodyBytes)
 		logCtx.SetError("body_read_error", fmt.Sprintf("failed to read request body: %v", err))
@@ -1030,14 +1031,22 @@ func (h *ChatHandler) serveWithExecutor(
 		// 附件依然可追溯。提取失败不阻塞请求转发（best-effort）。
 		if h.attachmentExtractor != nil {
 			extractResult := h.attachmentExtractor.ExtractFromOpenAIBody(requestID, bodyBytes)
-			if extractResult != nil && extractResult.Saved > 0 {
-				// 将提取的元数据暂存到 logCtx，后续写入 request_logs.attachments JSONB
-				logCtx.Attachments = extractResult.Attachments
+			if extractResult != nil {
+				failed := applyAttachmentResult(logCtx, extractResult)
 				slog.Debug("attachments: extracted from request",
 					"request_id", requestID,
 					"found", extractResult.TotalFound,
 					"saved", extractResult.Saved,
 					"failed", extractResult.Failed)
+				if failed && attachmentStrictMode() {
+					logCtx.SetError("attachment_store_failed", "attachment storage failed")
+					logCtx.EmitFailure("attachment_store_failed", "attachment storage failed", nil, nil)
+					logCtx.MarkLogged()
+					writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+						"error": map[string]string{"message": "attachment storage failed", "type": "server_error", "code": "attachment_store_failed"},
+					})
+					return
+				}
 			}
 		}
 	}
@@ -1071,7 +1080,10 @@ func (h *ChatHandler) serveWithExecutor(
 		return
 	}
 
-	clientModel := reqBody.Model
+	// 2026-07-14: enforce lowercase at the wire boundary so downstream
+	// SQL matches (canonical_raw_name / standardized_name / model_aliases)
+	// work without lower() wrappers.
+	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
 	logCtx.SetClientModel(clientModel)
 	if sessionID == "" {
 		sessionID = extractSessionIDFromBody(bodyBytes)
@@ -1236,7 +1248,8 @@ func (h *ChatHandler) serveWithExecutor(
 		} else {
 			logCtx.IsAutoRequest = true
 		}
-		clientModel = reqBody.Model
+		// 2026-07-14: keep the client-facing model name lowercase.
+		clientModel = modelname.CanonicalizeClientModel(reqBody.Model)
 		logCtx.SetClientModel(clientModel)
 	}
 
@@ -1843,7 +1856,25 @@ func (h *ChatHandler) serveWithExecutor(
 		},
 		ClientProtocol: clientProtocol,
 		ClientModel:    clientModel,
-		OutboundModel:  outboundForLog,
+		// OutboundModel is intentionally set to clientModel here so the
+		// upstream body builder (executor_chat.prepareRequestBody /
+		// executor_anthropic.prepareAnthropicRequestBody) does NOT echo
+		// the FIRST candidate's model into a retry/failover attempt's
+		// request body. The actual upstream model id is resolved per
+		// candidate inside the executor via resolveOutboundModel().
+		//
+		// outboundForLog is preserved for request_logs / decision log /
+		// audit and is exposed via params.Transform.MatchedRule +
+		// explicitOutbound (see recordInitialRequestLog below).
+		//
+		// Historical behaviour before 2026-07-14 wrote
+		// `OutboundModel: outboundForLog` here, which caused retries to
+		// the NEXT candidate to still send the previous candidate's
+		// upstream model id. For NVIDIA NIM this meant candidate #2+
+		// received a short id like "glm-5.2" or "minimax-m3" instead of
+		// the required publisher-prefixed "z-ai/glm-5.2" /
+		// "minimaxai/minimax-m3" → model_not_found.
+		OutboundModel:  clientModel,
 		ClientID:       clientID,
 		Transform:      txResult,
 		Resolution:     modelResolution,
@@ -2155,6 +2186,7 @@ func (h *ChatHandler) serveWithExecutor(
 		writeErrorJSONWithDebug(w, http.StatusBadGateway, requestID, i18n.T(r.Context(), i18n.MsgProviderError), "server_error", "provider_error", debugInfo)
 		return
 	}
+	logCtx.markAttachmentsSent()
 	if preStream != nil {
 		preStream.stop()
 		preStream = nil
@@ -2366,7 +2398,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 
 	var requestBodyText *string
 	if len(requestBody) > 0 {
-		v := string(requestBody)
+		v := string(redactAttachmentBodyIfEnabled(requestBody))
 		requestBodyText = &v
 	}
 	var responseBodyText *string
@@ -2491,7 +2523,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			responseBodyText = strPtr(previewStr)
 		}
 	}
-	requestPreviewText := requestPreview(requestBody)
+	requestPreviewText := requestPreview(redactAttachmentBodyIfEnabled(requestBody))
 	transformSummaryText := transformSummary(txResult, evt.OutboundModel)
 	responsePreviewText := responsePreview(responseBody)
 	var requestPreviewPtr *string
@@ -2579,6 +2611,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		// domains/streaming/messages.go and responses.go paths; see
 		// clientReqIDPtr setup above. Audit P0-6.
 		ClientRequestID: clientReqIDPtr,
+		Attachments:     attachmentsFromLogContext(logCtx),
 	}
 	// v3: if v7 compression_strategy is empty but a session compressor strategy
 	// exists, prefer the session compressor value so the row is queryable.
@@ -3279,7 +3312,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	}
 	var requestBodyText *string
 	if len(requestBody) > 0 {
-		v := string(requestBody)
+		v := string(redactAttachmentBodyIfEnabled(requestBody))
 		requestBodyText = &v
 	}
 	tenantID := "default"
@@ -3294,7 +3327,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 		keyPrefix, keyOwner, appCode = keyMetaFromKeyInfo(keyInfo)
 	}
 	var requestPreviewPtr *string
-	if preview := requestPreview(requestBody); preview != "" {
+	if preview := requestPreview(redactAttachmentBodyIfEnabled(requestBody)); preview != "" {
 		requestPreviewPtr = strPtr(preview)
 	}
 	var transformSummaryPtr *string
