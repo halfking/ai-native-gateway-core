@@ -38,11 +38,11 @@ const stateColor = computed(() => {
 
 const stateLabel = computed(() => {
   switch (info.value?.state) {
-    case 'active': return '已激活'
-    case 'grace': return '宽限期'
-    case 'expired': return '已过期'
-    case 'revoked': return '已吊销'
-    default: return '未激活'
+    case 'active': return t('customer.info.states.active')
+    case 'grace': return t('customer.info.states.grace')
+    case 'expired': return t('customer.info.states.expired')
+    case 'revoked': return t('customer.info.states.revoked')
+    default: return t('customer.info.states.none')
   }
 })
 
@@ -58,7 +58,7 @@ async function refresh() {
       telemetryAvailable.value = false
     }
   } catch (err) {
-    ElMessage.error(`查询 License 信息失败: ${(err as Error).message}`)
+    ElMessage.error(t('customer.info.loadFailed', { msg: (err as Error).message }))
   } finally {
     loading.value = false
   }
@@ -116,16 +116,46 @@ onBeforeUnmount(() => {
     <el-card>
       <template #header>
         <div class="header-row">
-          <span class="card-title">License 信息</span>
+          <span class="card-title">{{ t('customer.info.title') }}</span>
           <div class="header-actions">
             <el-tag :type="stateColor as any" size="large">{{ stateLabel }}</el-tag>
-            <el-button @click="refresh" :loading="loading" size="small">刷新</el-button>
+            <el-button @click="refresh" :loading="loading" size="small">{{ t('customer.info.refresh') }}</el-button>
           </div>
         </div>
       </template>
 
-      <el-empty v-if="info?.state === 'none'" description="本机尚未激活 License">
-        <el-button type="primary" @click="$router.push('/activate')">前往激活向导</el-button>
+      <el-alert
+        v-if="info?.state === 'expired'"
+        type="error"
+        :closable="false"
+        show-icon
+        class="state-banner"
+        :title="t('customer.info.expiredBanner')"
+      >
+        <template #default>
+          <el-button type="primary" size="small" @click="$router.push('/activate')">
+            {{ t('customer.info.reactivate') }}
+          </el-button>
+        </template>
+      </el-alert>
+
+      <el-alert
+        v-if="info?.state === 'revoked'"
+        type="error"
+        :closable="false"
+        show-icon
+        class="state-banner"
+        :title="t('customer.info.revokedBanner')"
+      >
+        <template #default>
+          <el-button type="primary" size="small" @click="$router.push('/activate')">
+            {{ t('customer.info.reactivate') }}
+          </el-button>
+        </template>
+      </el-alert>
+
+      <el-empty v-if="info?.state === 'none'" :description="t('customer.info.notActivated')">
+        <el-button type="primary" @click="$router.push('/activate')">{{ t('customer.info.gotoActivate') }}</el-button>
       </el-empty>
 
       <el-descriptions v-else :column="2" border>
@@ -234,6 +264,7 @@ onBeforeUnmount(() => {
 .card-title {
   font-weight: 600;
 }
+.state-banner { margin-bottom: 16px; }
 .heartbeat-row {
   margin-top: 16px;
   display: flex;

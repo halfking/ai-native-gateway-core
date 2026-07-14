@@ -1,4 +1,4 @@
-import { req } from './_core'
+import { req, BASE, headers } from './_core'
 
 // customer.ts — Customer-facing License & Upgrade APIs (2026-07-13)
 //
@@ -61,12 +61,26 @@ export interface OfflineRequestResponse {
   message: string
 }
 
+export type ActivationErrorCode =
+  | 'activation_success'
+  | 'license_not_found'
+  | 'license_expired'
+  | 'license_revoked'
+  | 'device_limit_exceeded'
+  | 'device_already_activated'
+
 export interface ActivationResult {
   success: boolean
+  error_code?: ActivationErrorCode
   message?: string
   signed_license?: { data: string; signature: string }
   expires_at?: string
-  active_devices?: Array<{ device_name: string; instance_id: string }>
+  max_devices?: number
+  active_devices?: Array<{
+    device_name: string
+    instance_id: string
+    last_heartbeat?: string
+  }>
   need_deactivate?: boolean
 }
 
@@ -78,8 +92,40 @@ export function getLicenseInfo() {
   return req<CustomerLicenseInfo>('GET', '/api/system/license/info')
 }
 
-export function activateLicense(payload: ActivateRequest) {
-  return req<ActivationResult>('POST', '/api/system/license/activate', payload)
+export async function activateLicense(payload: ActivateRequest): Promise<ActivationResult> {
+  const r = await fetch(BASE + '/api/system/license/activate', {
+    method: 'POST',
+    headers: headers('POST'),
+    credentials: 'same-origin',
+    body: JSON.stringify(payload),
+  })
+
+  const text = await r.text()
+  let body: ActivationResult | null = null
+  if (text) {
+    try {
+      body = JSON.parse(text) as ActivationResult
+    } catch {
+      body = null
+    }
+  }
+
+  if (body && typeof body.success === 'boolean') {
+    return body
+  }
+
+  let msg = r.statusText
+  if (body?.message) {
+    msg = body.message
+  } else if (text) {
+    try {
+      const j = JSON.parse(text)
+      msg = (j && typeof j.error === 'string') ? j.error : text
+    } catch {
+      msg = text
+    }
+  }
+  throw new Error(msg)
 }
 
 export function requestTrial(payload: TrialRequest) {

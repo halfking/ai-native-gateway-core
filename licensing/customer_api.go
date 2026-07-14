@@ -135,16 +135,21 @@ func (api *CustomerAPI) handleTelemetryPreference(c echo.Context) error {
 
 type trialRequest struct {
 	Email string `json:"email"`
+	Agree bool   `json:"agree"`
 }
 
 func (api *CustomerAPI) handleTrial(c echo.Context) error {
-	if api.trialURL == "" {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "trial activation is not configured"})
-	}
 	var req trialRequest
 	if err := c.Bind(&req); err != nil || strings.TrimSpace(req.Email) == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "email is required"})
 	}
+	if !req.Agree {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "terms acceptance is required"})
+	}
+	if api.trialURL == "" {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "trial activation is not configured"})
+	}
+	req.Email = strings.TrimSpace(req.Email)
 	body, err := json.Marshal(req)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to encode trial request"})
@@ -366,14 +371,20 @@ func (api *CustomerAPI) handleActivate(c echo.Context) error {
 	}
 
 	if !resp.Success {
-		status := http.StatusBadRequest
-		if resp.NeedDeactivate {
-			status = http.StatusConflict
-		}
+		status := activationHTTPStatus(resp.ErrorCode)
+		slog.Warn("customer license activation failed",
+			"license_key", req.LicenseKey,
+			"hardware_hash", hwHash,
+			"error_code", resp.ErrorCode,
+		)
 		return c.JSON(status, resp)
 	}
 
-	slog.Info("customer license activated", "license_key", req.LicenseKey, "hardware_hash", hwHash)
+	slog.Info("customer license activated",
+		"license_key", req.LicenseKey,
+		"hardware_hash", hwHash,
+		"error_code", CodeActivationSuccess,
+	)
 	return c.JSON(http.StatusOK, resp)
 }
 
