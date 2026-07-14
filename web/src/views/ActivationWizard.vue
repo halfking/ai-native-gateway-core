@@ -36,13 +36,13 @@ const offlineRequestResult = ref<{ request_id: string; signed_request: string } 
 
 const stateLabel = computed(() => {
   switch (status.value?.state) {
-    case 'active': return t('customer.wizard.states.active', '已激活')
-    case 'grace': return t('customer.wizard.states.grace', '宽限期')
-    case 'expired': return t('customer.wizard.states.expired', '已过期')
-    case 'revoked': return t('customer.wizard.states.revoked', '已吊销')
+    case 'active': return t('customer.wizard.states.active')
+    case 'grace': return t('customer.wizard.states.grace')
+    case 'expired': return t('customer.wizard.states.expired')
+    case 'revoked': return t('customer.wizard.states.revoked')
     case 'none':
     default:
-      return t('customer.wizard.states.none', '未激活')
+      return t('customer.wizard.states.none')
   }
 })
 
@@ -64,7 +64,7 @@ async function refresh() {
       step.value = 4
     }
   } catch (err) {
-    ElMessage.error(`查询授权状态失败: ${(err as Error).message}`)
+    ElMessage.error(t('customer.wizard.messages.statusLoadFailed', { msg: (err as Error).message }))
   } finally {
     loading.value = false
   }
@@ -72,27 +72,27 @@ async function refresh() {
 
 async function handleActivate() {
   if (!onlineForm.value.license_key.trim()) {
-    ElMessage.warning('请输入 License Key')
+    ElMessage.warning(t('customer.wizard.messages.enterLicenseKey'))
     return
   }
   loading.value = true
   try {
     lastResult.value = await activateLicense(onlineForm.value)
     if (lastResult.value.success) {
-      ElMessage.success('激活成功！')
+      ElMessage.success(t('customer.wizard.messages.activateSuccess'))
       await refresh()
       step.value = 4
     } else if (lastResult.value.need_deactivate) {
       ElMessageBox.confirm(
-        '设备数量已达上限，请先在管理后台停用一个设备后再激活。',
-        '设备已达上限',
-        { confirmButtonText: '我知道了' },
+        t('customer.wizard.messages.deviceLimitBody'),
+        t('customer.wizard.messages.deviceLimitTitle'),
+        { confirmButtonText: t('customer.wizard.messages.deviceLimitOk') },
       )
     } else {
-      ElMessage.error(lastResult.value.message || '激活失败')
+      ElMessage.error(lastResult.value.message || t('customer.wizard.messages.activateFailed'))
     }
   } catch (err) {
-    ElMessage.error(`激活失败: ${(err as Error).message}`)
+    ElMessage.error(t('customer.wizard.messages.activateFailedWithMsg', { msg: (err as Error).message }))
   } finally {
     loading.value = false
   }
@@ -126,21 +126,21 @@ async function handleTrial() {
 
 async function handleOfflineActivate() {
   if (!offlineForm.value.signed_license.trim() || !offlineForm.value.request_id.trim() || !offlineForm.value.activation_code.trim()) {
-    ElMessage.warning('请填写签名 License、Request ID 和 Activation Code')
+    ElMessage.warning(t('customer.wizard.messages.fillOfflineFields'))
     return
   }
   loading.value = true
   try {
     const result = await offlineActivate(offlineForm.value)
     if (result.success) {
-      ElMessage.success('离线激活成功！')
+      ElMessage.success(t('customer.wizard.messages.offlineSuccess'))
       await refresh()
       step.value = 4
     } else {
-      ElMessage.error(result.message || '离线激活失败')
+      ElMessage.error(result.message || t('customer.wizard.messages.offlineFailed'))
     }
   } catch (err) {
-    ElMessage.error(`离线激活失败: ${(err as Error).message}`)
+    ElMessage.error(t('customer.wizard.messages.offlineFailedWithMsg', { msg: (err as Error).message }))
   } finally {
     loading.value = false
   }
@@ -148,7 +148,7 @@ async function handleOfflineActivate() {
 
 async function handleCreateOfflineRequest() {
   if (!onlineForm.value.license_key.trim()) {
-    ElMessage.warning('请输入 License Key 以生成离线请求')
+    ElMessage.warning(t('customer.wizard.messages.enterKeyForOffline'))
     return
   }
   loading.value = true
@@ -161,10 +161,10 @@ async function handleCreateOfflineRequest() {
       request_id: result.request_id,
       signed_request: result.signed_request,
     }
-    ElMessage.success('已生成离线请求，请提交给 License Authority 审批')
+    ElMessage.success(t('customer.wizard.messages.offlineRequestCreated'))
     step.value = 3
   } catch (err) {
-    ElMessage.error(`生成离线请求失败: ${(err as Error).message}`)
+    ElMessage.error(t('customer.wizard.messages.offlineRequestFailed', { msg: (err as Error).message }))
   } finally {
     loading.value = false
   }
@@ -173,8 +173,8 @@ async function handleCreateOfflineRequest() {
 function copyToClipboard(text: string) {
   if (!text) return
   navigator.clipboard.writeText(text).then(
-    () => ElMessage.success('已复制到剪贴板'),
-    () => ElMessage.error('复制失败，请手动选择'),
+    () => ElMessage.success(t('customer.wizard.messages.copied')),
+    () => ElMessage.error(t('customer.wizard.messages.copyFailed')),
   )
 }
 
@@ -195,8 +195,8 @@ onMounted(refresh)
     <el-card class="wizard-header" shadow="never">
       <div class="header-row">
         <div>
-          <h2>License 激活向导</h2>
-          <p class="subtitle">通过 4 步完成首次激活或重新激活</p>
+          <h2>{{ t('customer.wizard.headerTitle') }}</h2>
+          <p class="subtitle">{{ t('customer.wizard.headerSubtitle') }}</p>
         </div>
         <el-tag :type="stateColor as any" size="large" effect="dark">
           {{ stateLabel }}
@@ -204,11 +204,11 @@ onMounted(refresh)
       </div>
       <div v-if="status?.state === 'active'" class="status-summary">
         <el-descriptions :column="3" border size="small">
-          <el-descriptions-item label="客户">{{ status.customer_name || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="订阅层级">{{ status.subscription_tier || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="到期时间">{{ status.expires_at || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="剩余天数">{{ status.days_remaining ?? '—' }}</el-descriptions-item>
-          <el-descriptions-item label="License Key" :span="2">
+          <el-descriptions-item :label="t('customer.wizard.status.customer')">{{ status.customer_name || '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('customer.wizard.status.tier')">{{ status.subscription_tier || '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('customer.wizard.status.expiresAt')">{{ status.expires_at || '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('customer.wizard.status.daysRemaining')">{{ status.days_remaining ?? '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('customer.wizard.status.licenseKey')" :span="2">
             <code>{{ status.license_key || '—' }}</code>
           </el-descriptions-item>
         </el-descriptions>
@@ -216,34 +216,34 @@ onMounted(refresh)
     </el-card>
 
     <el-steps :active="step - 1" finish-status="success" class="wizard-steps">
-      <el-step title="当前状态" description="查看授权情况" />
-      <el-step title="输入 License" description="在线激活" />
-      <el-step title="离线激活" description="无网络环境" />
-      <el-step title="完成" description="激活成功" />
+      <el-step :title="t('customer.wizard.steps.status.title')" :description="t('customer.wizard.steps.status.description')" />
+      <el-step :title="t('customer.wizard.steps.online.title')" :description="t('customer.wizard.steps.online.description')" />
+      <el-step :title="t('customer.wizard.steps.offline.title')" :description="t('customer.wizard.steps.offline.description')" />
+      <el-step :title="t('customer.wizard.steps.done.title')" :description="t('customer.wizard.steps.done.description')" />
     </el-steps>
 
     <!-- Step 1: Status overview -->
     <el-card v-if="step === 1" class="step-card">
       <template #header>
-        <span class="card-title">第 1 步：当前授权状态</span>
+        <span class="card-title">{{ t('customer.wizard.step1.title') }}</span>
       </template>
       <div v-if="status?.state === 'none'">
         <el-alert
           type="info"
           :closable="false"
           show-icon
-          title="尚未激活 License"
-          description="本机首次启动后，需要完成激活才能解锁全部功能。在线激活需要 License Authority 可达；离线激活适用于隔离网络环境。"
+          :title="t('customer.wizard.step1.noneTitle')"
+          :description="t('customer.wizard.step1.noneDesc')"
         />
         <div class="cta-row">
           <el-button type="primary" size="large" @click="handleTrial">
             申请试用
           </el-button>
           <el-button type="primary" size="large" @click="step = 2">
-            在线激活
+            {{ t('customer.wizard.step1.onlineActivate') }}
           </el-button>
           <el-button size="large" @click="step = 3">
-            离线激活
+            {{ t('customer.wizard.step1.offlineActivate') }}
           </el-button>
         </div>
         <el-input
@@ -263,12 +263,12 @@ onMounted(refresh)
           type="error"
           :closable="false"
           show-icon
-          title="License 已过期"
-          description="服务已进入受限模式（仅 /api/system/license/* 与健康检查可用）。请联系您的 License Authority 续期。"
+          :title="t('customer.wizard.step1.expiredTitle')"
+          :description="t('customer.wizard.step1.expiredDesc')"
         />
         <div class="cta-row">
-          <el-button type="primary" @click="step = 2">重新激活</el-button>
-          <el-button @click="step = 3">离线激活</el-button>
+          <el-button type="primary" @click="step = 2">{{ t('customer.wizard.step1.reactivate') }}</el-button>
+          <el-button @click="step = 3">{{ t('customer.wizard.step1.offlineActivate') }}</el-button>
         </div>
       </div>
       <div v-else-if="status?.state === 'grace'">
@@ -276,43 +276,43 @@ onMounted(refresh)
           type="warning"
           :closable="false"
           show-icon
-          title="License 处于宽限期"
-          :description="`还剩 ${status.grace_days_left ?? 0} 天，请尽快续期`"
+          :title="t('customer.wizard.step1.graceTitle')"
+          :description="t('customer.wizard.step1.graceDesc', { days: status.grace_days_left ?? 0 })"
         />
         <div class="cta-row">
-          <el-button type="primary" @click="step = 2">立即续期</el-button>
-          <el-button @click="resetWizard">稍后处理</el-button>
+          <el-button type="primary" @click="step = 2">{{ t('customer.wizard.step1.renewNow') }}</el-button>
+          <el-button @click="resetWizard">{{ t('customer.wizard.step1.later') }}</el-button>
         </div>
       </div>
       <div v-else-if="status?.state === 'active'">
-        <el-alert type="success" :closable="false" show-icon title="License 有效" description="无需再次激活。" />
+        <el-alert type="success" :closable="false" show-icon :title="t('customer.wizard.step1.activeTitle')" :description="t('customer.wizard.step1.activeDesc')" />
       </div>
     </el-card>
 
     <!-- Step 2: Online activation -->
     <el-card v-if="step === 2" class="step-card">
       <template #header>
-        <span class="card-title">第 2 步：输入 License Key 进行在线激活</span>
+        <span class="card-title">{{ t('customer.wizard.step2.title') }}</span>
       </template>
       <el-form :model="onlineForm" label-position="top">
-        <el-form-item label="License Key" required>
+        <el-form-item :label="t('customer.wizard.step2.licenseKey')" required>
           <el-input
             v-model="onlineForm.license_key"
-            placeholder="LIC-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+            :placeholder="t('customer.wizard.step2.licenseKeyPlaceholder')"
             clearable
           />
         </el-form-item>
-        <el-form-item label="设备名称（可选）">
-          <el-input v-model="onlineForm.device_name" placeholder="例如：production-cluster-01" />
+        <el-form-item :label="t('customer.wizard.step2.deviceName')">
+          <el-input v-model="onlineForm.device_name" :placeholder="t('customer.wizard.step2.deviceNamePlaceholder')" />
         </el-form-item>
       </el-form>
       <div class="cta-row">
-        <el-button @click="step = 1">上一步</el-button>
+        <el-button @click="step = 1">{{ t('customer.wizard.step2.prev') }}</el-button>
         <el-button type="primary" :loading="loading" @click="handleActivate">
-          立即激活
+          {{ t('customer.wizard.step2.activate') }}
         </el-button>
         <el-button @click="handleCreateOfflineRequest" :loading="loading">
-          生成离线请求
+          {{ t('customer.wizard.step2.createOfflineRequest') }}
         </el-button>
       </div>
     </el-card>
@@ -320,49 +320,49 @@ onMounted(refresh)
     <!-- Step 3: Offline activation -->
     <el-card v-if="step === 3" class="step-card">
       <template #header>
-        <span class="card-title">第 3 步：离线激活</span>
+        <span class="card-title">{{ t('customer.wizard.step3.title') }}</span>
       </template>
 
       <div v-if="offlineRequestResult" class="offline-request-block">
         <el-alert type="success" :closable="false" show-icon>
-          <template #title>离线请求已生成</template>
+          <template #title>{{ t('customer.wizard.step3.requestGenerated') }}</template>
           <template #default>
-            请将以下内容提交给 License Authority 审批：
+            {{ t('customer.wizard.step3.submitHint') }}
             <pre class="signed-request">{{ offlineRequestResult.signed_request }}</pre>
             <div class="cta-row">
               <el-button size="small" @click="copyToClipboard(offlineRequestResult.signed_request)">
-                复制请求内容
+                {{ t('customer.wizard.step3.copyRequest') }}
               </el-button>
               <el-button size="small" @click="copyToClipboard(offlineRequestResult.request_id)">
-                复制 Request ID
+                {{ t('customer.wizard.step3.copyRequestId') }}
               </el-button>
             </div>
           </template>
         </el-alert>
       </div>
 
-      <el-divider content-position="left">输入审批结果</el-divider>
+      <el-divider content-position="left">{{ t('customer.wizard.step3.inputResult') }}</el-divider>
 
       <el-form :model="offlineForm" label-position="top">
-        <el-form-item label="签名后的 License（必填）">
+        <el-form-item :label="t('customer.wizard.step3.signedLicense')">
           <el-input
             v-model="offlineForm.signed_license"
             type="textarea"
             :rows="6"
-            placeholder="粘贴 License Authority 审批后返回的 base64 签名 License"
+            :placeholder="t('customer.wizard.step3.signedLicensePlaceholder')"
           />
         </el-form-item>
-        <el-form-item label="Request ID（必填）">
-          <el-input v-model="offlineForm.request_id" placeholder="粘贴审批对应的 Request ID" />
+        <el-form-item :label="t('customer.wizard.step3.requestId')">
+          <el-input v-model="offlineForm.request_id" :placeholder="t('customer.wizard.step3.requestIdPlaceholder')" />
         </el-form-item>
-        <el-form-item label="Activation Code（必填）">
-          <el-input v-model="offlineForm.activation_code" placeholder="例如：ABCD2345" />
+        <el-form-item :label="t('customer.wizard.step3.activationCode')">
+          <el-input v-model="offlineForm.activation_code" :placeholder="t('customer.wizard.step3.activationCodePlaceholder')" />
         </el-form-item>
       </el-form>
       <div class="cta-row">
-        <el-button @click="step = 2">上一步</el-button>
+        <el-button @click="step = 2">{{ t('customer.wizard.step3.prev') }}</el-button>
         <el-button type="primary" :loading="loading" @click="handleOfflineActivate">
-          应用离线 License
+          {{ t('customer.wizard.step3.apply') }}
         </el-button>
       </div>
     </el-card>
@@ -370,16 +370,16 @@ onMounted(refresh)
     <!-- Step 4: Done -->
     <el-card v-if="step === 4" class="step-card">
       <template #header>
-        <span class="card-title">第 4 步：激活完成</span>
+        <span class="card-title">{{ t('customer.wizard.step4.title') }}</span>
       </template>
       <el-result
         icon="success"
-        title="License 激活成功"
-        sub-title="您现在可以开始使用本机的全部功能。"
+        :title="t('customer.wizard.step4.successTitle')"
+        :sub-title="t('customer.wizard.step4.successSubtitle')"
       >
         <template #extra>
-          <el-button type="primary" @click="resetWizard">重新检查</el-button>
-          <el-button @click="$router.push('/')">返回首页</el-button>
+          <el-button type="primary" @click="resetWizard">{{ t('customer.wizard.step4.recheck') }}</el-button>
+          <el-button @click="$router.push('/')">{{ t('customer.wizard.step4.goHome') }}</el-button>
         </template>
       </el-result>
     </el-card>

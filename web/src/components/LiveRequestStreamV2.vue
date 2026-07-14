@@ -6,6 +6,7 @@
 // 2026-07-13: 转发泳道诊断事件，承载 RouteIncidentDrawer
 
 import { ref, computed, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useLiveStream } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
 import { isSuperAdmin, authBearer, getCurrentTenantId } from '../store'
@@ -16,6 +17,8 @@ import EmergencyDiagnosticModal from './EmergencyDiagnosticModal.vue'
 import RouteIncidentDrawer from './RouteIncidentDrawer.vue'
 import type { GroupByDimension } from '../types/swimlane'
 import type { RouteIncident } from '../types/routeIncident'
+
+const { t } = useI18n()
 
 const emit = defineEmits<{
   openDetail: [requestId: string]
@@ -193,9 +196,9 @@ function cancelEditUrl() {
 // 测试 SSE 连接
 function testConnection() {
   if (connection.value === 'open') {
-    window.alert('SSE连接正常！\n状态: 已连接\n地址: ' + streamUrl.value)
+    window.alert(t('dashboard.liveStream.sseTestOk', { url: streamUrl.value }))
   } else {
-    window.alert('SSE未连接\n状态: ' + connection.value + '\n地址: ' + streamUrl.value)
+    window.alert(t('dashboard.liveStream.sseTestFail', { status: connection.value, url: streamUrl.value }))
   }
 }
 
@@ -217,11 +220,11 @@ const windowCount = computed(() => {
 
 // 连接状态标签
 const connectionLabel = computed(() => {
-  if (connection.value === 'open') return '已连接'
-  if (connection.value === 'connecting') return '连接中'
-  if (connection.value === 'reconnecting') return '重连中'
-  if (connection.value === 'unsupported') return '不支持'
-  return '未连接'
+  if (connection.value === 'open') return t('dashboard.liveStream.statusOpen')
+  if (connection.value === 'connecting') return t('dashboard.liveStream.statusConnecting')
+  if (connection.value === 'reconnecting') return t('dashboard.liveStream.statusReconnecting')
+  if (connection.value === 'unsupported') return t('dashboard.liveStream.statusUnsupported')
+  return t('dashboard.liveStream.statusClosed')
 })
 
 const connectionClass = computed(() => {
@@ -230,9 +233,9 @@ const connectionClass = computed(() => {
 
 // 维度标签
 const dimensionLabel = computed(() => {
-  if (groupBy.value === 'vendor') return '原厂'
-  if (groupBy.value === 'provider') return '供应商'
-  return '模型'
+  if (groupBy.value === 'vendor') return t('dashboard.liveStream.dimensionVendor')
+  if (groupBy.value === 'provider') return t('dashboard.liveStream.dimensionProvider')
+  return t('dashboard.liveStream.dimensionModel')
 })
 
 function handleGroupByChange(dimension: GroupByDimension) {
@@ -271,7 +274,7 @@ const isColdStart = computed(() => {
   <div class="live-stream-v2">
     <!-- 标题栏 -->
     <div class="stream-header">
-      <h3 class="stream-title">实时请求流</h3>
+      <h3 class="stream-title">{{ t('dashboard.liveStream.title') }}</h3>
       
       <div class="stream-controls">
         <!-- 分组切换 -->
@@ -282,7 +285,7 @@ const isColdStart = computed(() => {
             :class="{ 'control-btn--active': groupBy === 'vendor' }"
             @click="handleGroupByChange('vendor')"
           >
-            按原厂
+            {{ t('dashboard.liveStream.groupByVendor') }}
           </button>
           <button
             type="button"
@@ -290,7 +293,7 @@ const isColdStart = computed(() => {
             :class="{ 'control-btn--active': groupBy === 'provider' }"
             @click="handleGroupByChange('provider')"
           >
-            按供应商
+            {{ t('dashboard.liveStream.groupByProvider') }}
           </button>
           <button
             type="button"
@@ -298,83 +301,80 @@ const isColdStart = computed(() => {
             :class="{ 'control-btn--active': groupBy === 'model' }"
             @click="handleGroupByChange('model')"
           >
-            按模型
+            {{ t('dashboard.liveStream.groupByModel') }}
           </button>
         </div>
 
-        <!-- 2026-07-13: 探测过滤器 (仅探测/全部) -->
         <div class="control-group">
           <button
             type="button"
             class="control-btn"
             :class="{ 'control-btn--active': probeFilter === 'all' }"
             @click="probeFilter = 'all'"
-            title="显示所有请求（默认）"
+            :title="t('dashboard.liveStream.probeAllTitle')"
           >
-            全部
+            {{ t('dashboard.liveStream.probeAll') }}
           </button>
           <button
             type="button"
             class="control-btn control-btn--probe"
             :class="{ 'control-btn--active': probeFilter === 'probe_only' }"
             @click="probeFilter = 'probe_only'"
-            title="仅显示主动探测请求"
+            :title="t('dashboard.liveStream.probeOnlyTitle')"
           >
-            🛡️ 仅探测
+            {{ t('dashboard.liveStream.probeOnly') }}
           </button>
         </div>
         
-        <!-- 连接状态 -->
         <div class="control-group">
           <button
             type="button"
             class="connection-status"
             :class="connectionClass"
             @click="toggleConnectionDetail"
-            title="点击查看连接详情"
+            :title="t('dashboard.liveStream.connectionDetailTitle')"
           >
             <span class="status-dot" />
             {{ connectionLabel }}
           </button>
         </div>
         
-        <!-- 连接详情弹窗（所有用户可查看） -->
         <div v-if="showConnectionDetail" class="connection-detail-popup">
           <div class="popup-header">
-            <h4>SSE 连接详情</h4>
+            <h4>{{ t('dashboard.liveStream.sseDetailTitle') }}</h4>
             <button type="button" class="popup-close" @click="showConnectionDetail = false">✕</button>
           </div>
           <div class="popup-body">
             <div class="detail-row">
-              <span class="detail-label">连接状态:</span>
+              <span class="detail-label">{{ t('dashboard.liveStream.sseStatusLabel') }}:</span>
               <span class="detail-value" :class="connectionClass">{{ connectionLabel }}</span>
             </div>
             <div class="detail-row">
-              <span class="detail-label">SSE地址:</span>
+              <span class="detail-label">{{ t('dashboard.liveStream.sseUrlLabel') }}:</span>
               <div class="detail-value url-edit-group">
                 <template v-if="!isEditingUrl">
                   <code class="url-display">{{ streamUrl }}</code>
-                  <button v-if="isAdmin" type="button" class="edit-btn" @click="startEditUrl" title="编辑地址">编辑</button>
+                  <button v-if="isAdmin" type="button" class="edit-btn" @click="startEditUrl" :title="t('dashboard.liveStream.editUrl')">{{ t('dashboard.liveStream.editUrl') }}</button>
                 </template>
                 <template v-else>
                   <input 
                     v-model="editUrlValue" 
                     class="url-input" 
-                    placeholder="输入SSE地址"
+                    :placeholder="t('dashboard.liveStream.editUrlPlaceholder')"
                     @keyup.enter="saveUrl"
                     @keyup.escape="cancelEditUrl"
                   />
                   <div class="url-edit-actions">
-                    <button type="button" class="save-btn" @click="saveUrl">保存</button>
-                    <button type="button" class="reset-btn" @click="resetUrl" title="恢复默认">默认</button>
-                    <button type="button" class="cancel-btn" @click="cancelEditUrl">取消</button>
+                    <button type="button" class="save-btn" @click="saveUrl">{{ t('dashboard.liveStream.save') }}</button>
+                    <button type="button" class="reset-btn" @click="resetUrl" :title="t('dashboard.liveStream.resetDefault')">{{ t('dashboard.liveStream.resetDefault') }}</button>
+                    <button type="button" class="cancel-btn" @click="cancelEditUrl">{{ t('dashboard.liveStream.cancel') }}</button>
                   </div>
                 </template>
               </div>
             </div>
             <div class="popup-actions">
-              <button type="button" class="test-btn" @click="testConnection">测试连接</button>
-              <button type="button" class="close-btn" @click="showConnectionDetail = false">关闭</button>
+              <button type="button" class="test-btn" @click="testConnection">{{ t('dashboard.liveStream.testConnection') }}</button>
+              <button type="button" class="close-btn" @click="showConnectionDetail = false">{{ t('dashboard.liveStream.close') }}</button>
             </div>
           </div>
         </div>
@@ -385,12 +385,11 @@ const isColdStart = computed(() => {
           class="control-btn"
           @click="togglePause"
         >
-          {{ paused ? '恢复' : '暂停' }}
+          {{ paused ? t('dashboard.liveStream.resume') : t('dashboard.liveStream.pause') }}
         </button>
         
-        <!-- 缓存统计 -->
         <div class="cache-stats">
-          <span class="cache-stats__label">缓存/窗口</span>
+          <span class="cache-stats__label">{{ t('dashboard.liveStream.cacheWindow') }}</span>
           <span class="cache-stats__value">{{ bufferCount }}/{{ windowCount }}</span>
         </div>
       </div>
@@ -408,7 +407,7 @@ const isColdStart = computed(() => {
     <!-- Redis 健康警告 -->
     <div v-if="!redisHealthyRef" class="redis-health-warning">
       <span class="redis-warning-icon">⚠</span>
-      <span>Redis 不可用：{{ redisErrorRef || '缓存服务连接失败' }}。实时数据降级为数据库查询，可能存在延迟。</span>
+      <span>{{ t('dashboard.liveStream.redisWarning', { error: redisErrorRef || t('dashboard.liveStream.redisFallbackError') }) }}</span>
     </div>
     
     <!-- 泳道区域 -->
@@ -427,7 +426,7 @@ const isColdStart = computed(() => {
            "仅探测"过滤为空时不显示（已有泳道只是被过滤，按钮文字已说明） -->
       <div v-if="isColdStart" class="swim-lanes__empty">
         <span class="swim-lanes__empty-icon">⏳</span>
-        <span class="swim-lanes__empty-text">等待实时请求流数据…</span>
+        <span class="swim-lanes__empty-text">{{ t('dashboard.liveStream.emptyWaiting') }}</span>
       </div>
     </div>
 

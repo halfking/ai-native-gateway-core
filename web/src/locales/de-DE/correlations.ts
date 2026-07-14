@@ -1,6 +1,11 @@
-// Auto-translated draft (de-DE) · 2026-07-02 · please review
-// correlations.ts — CorrelationsView strings.
-// Only one Chinese string exists in the template (the H1 title).
+// Auto-synced from en-US (de-DE)
 export default {
-  title: 'Auto-Route Korrelationsanalyse',
+  title: 'Auto-Route correlation analysis',
+  sections: {
+    byModel: 'By model',
+    byStrategy: 'By strategy',
+    byTaskType: 'By task type',
+    outlier: 'By (model, task type) — outlier detector',
+    topModels: 'Top-3 models per task type',
+  },
 }

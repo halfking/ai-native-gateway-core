@@ -597,7 +597,7 @@ onUnmounted(() => stopPoll())
     <!-- Unified top: title + tabs + refresh -->
     <div class="top-bar">
       <div class="top-bar-head">
-        <h2>路由全景</h2>
+        <h2>{{ t('routing.dashboard.title') }}</h2>
         <div class="seg-tabs">
           <button class="seg-tab" :class="{ active: activeTab === 'analytics' }" @click="activeTab = 'analytics'">数据分析</button>
           <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">两层路由</button>

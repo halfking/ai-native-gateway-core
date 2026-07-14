@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -15,6 +18,8 @@ import (
 )
 
 var errBodyTooLarge = errors.New("request body too large")
+
+const defaultRequestBodyTimeout = 120 * time.Second
 
 // requestAttemptMeta captures request-side facts as early as possible so
 // request_logs rows stay useful even when auth or body read fails later.
@@ -35,9 +40,42 @@ func bufferRequestBody(r *http.Request, limit int) ([]byte, error) {
 	if r == nil || r.Body == nil {
 		return nil, nil
 	}
-	buf, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
+	buf, err := readRequestBody(r.Context(), r.Body, limit)
 	r.Body = io.NopCloser(bytes.NewReader(buf))
 	return buf, err
+}
+
+func readRequestBody(ctx context.Context, body io.ReadCloser, limit int) ([]byte, error) {
+	if body == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, requestBodyTimeout())
+	defer cancel()
+	type result struct {
+		data []byte
+		err  error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(io.LimitReader(body, int64(limit)+1))
+		resultCh <- result{data: data, err: err}
+	}()
+	select {
+	case result := <-resultCh:
+		return result.data, result.err
+	case <-ctx.Done():
+		_ = body.Close()
+		result := <-resultCh
+		return result.data, ctx.Err()
+	}
+}
+
+func requestBodyTimeout() time.Duration {
+	seconds, err := strconv.Atoi(os.Getenv("LLM_GATEWAY_ATTACHMENT_REQUEST_BODY_TIMEOUT_SEC"))
+	if err != nil || seconds <= 0 {
+		return defaultRequestBodyTimeout
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // ensureRequestBodyBuffered peeks the JSON body once for logging and model

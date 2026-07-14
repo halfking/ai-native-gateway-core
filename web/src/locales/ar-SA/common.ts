@@ -140,4 +140,8 @@ export default {
   time: 'الوقت',
   warning: 'تحذير',
   yes: 'نعم',
+  view: 'عرض',
+  updateSuccess: 'تم التحديث',
+  operationFailed: 'فشلت العملية',
+  errorColumn: 'خطأ',
 }

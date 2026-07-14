@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { localeRef } from '../i18n'
 import { useRouter } from 'vue-router'
 import { getApprovalList, approveApproval, rejectApproval, getApprovalStats, type ApprovalItem, type ApprovalStats } from '../api/approval'
 import { isSuperAdmin } from '../store'
 
+const { t } = useI18n()
 const router = useRouter()
 
 // State
@@ -33,21 +36,21 @@ const sortOrder = ref<'asc' | 'desc'>('desc')
 // Real-time updates
 let refreshInterval: number | undefined
 
-const statusOptions = [
-  { value: '', label: '全部状态' },
-  { value: 'pending', label: '待审批' },
-  { value: 'approved', label: '已批准' },
-  { value: 'rejected', label: '已拒绝' },
-  { value: 'timeout', label: '已超时' },
-]
+const statusOptions = computed(() => [
+  { value: '', label: t('approval.list.filter.allStatus') },
+  { value: 'pending', label: t('approval.list.status.pending') },
+  { value: 'approved', label: t('approval.list.status.approved') },
+  { value: 'rejected', label: t('approval.list.status.rejected') },
+  { value: 'timeout', label: t('approval.list.status.timeout') },
+])
 
-const riskLevelOptions = [
-  { value: '', label: '全部风险等级' },
-  { value: 'LOW', label: '低风险' },
-  { value: 'MEDIUM', label: '中风险' },
-  { value: 'HIGH', label: '高风险' },
-  { value: 'CRITICAL', label: '严重风险' },
-]
+const riskLevelOptions = computed(() => [
+  { value: '', label: t('approval.list.filter.allRisk') },
+  { value: 'LOW', label: t('approval.list.risk.LOW') },
+  { value: 'MEDIUM', label: t('approval.list.risk.MEDIUM') },
+  { value: 'HIGH', label: t('approval.list.risk.HIGH') },
+  { value: 'CRITICAL', label: t('approval.list.risk.CRITICAL') },
+])
 
 const filteredApprovals = computed(() => {
   let list = approvals.value
@@ -75,13 +78,12 @@ function getRiskLevelColor(level: string): string {
 }
 
 function getRiskLevelLabel(level: string): string {
-  switch (level?.toUpperCase()) {
-    case 'LOW': return '低风险'
-    case 'MEDIUM': return '中风险'
-    case 'HIGH': return '高风险'
-    case 'CRITICAL': return '严重'
-    default: return level || '-'
+  const key = `approval.list.risk.${level?.toUpperCase()}`
+  const mapped = level?.toUpperCase()
+  if (mapped === 'LOW' || mapped === 'MEDIUM' || mapped === 'HIGH' || mapped === 'CRITICAL') {
+    return t(key as 'approval.list.risk.LOW')
   }
+  return level || '-'
 }
 
 function getStatusColor(status: string): string {
@@ -95,13 +97,13 @@ function getStatusColor(status: string): string {
 }
 
 function getStatusLabel(status: string): string {
-  switch (status) {
-    case 'pending': return '待审批'
-    case 'approved': return '已批准'
-    case 'rejected': return '已拒绝'
-    case 'timeout': return '已超时'
-    default: return status
+  const labels: Record<string, string> = {
+    pending: t('approval.list.status.pending'),
+    approved: t('approval.list.status.approved'),
+    rejected: t('approval.list.status.rejected'),
+    timeout: t('approval.list.status.timeout'),
   }
+  return labels[status] || status
 }
 
 function formatDate(dateStr: string): string {
@@ -114,7 +116,7 @@ function formatDate(dateStr: string): string {
   const days = Math.floor(hours / 24)
 
   if (days > 7) {
-    return date.toLocaleDateString('zh-CN', { 
+    return date.toLocaleDateString(localeRef.value, { 
       year: 'numeric', 
       month: '2-digit', 
       day: '2-digit',
@@ -122,10 +124,10 @@ function formatDate(dateStr: string): string {
       minute: '2-digit'
     })
   }
-  if (days > 0) return `${days} 天前`
-  if (hours > 0) return `${hours} 小时前`
-  if (minutes > 0) return `${minutes} 分钟前`
-  return '刚刚'
+  if (days > 0) return t('approval.list.relativeTime.daysAgo', { n: days })
+  if (hours > 0) return t('approval.list.relativeTime.hoursAgo', { n: hours })
+  if (minutes > 0) return t('approval.list.relativeTime.minutesAgo', { n: minutes })
+  return t('approval.list.relativeTime.justNow')
 }
 
 function formatCost(cost?: number): string {
@@ -155,7 +157,7 @@ async function loadApprovals() {
     totalPages.value = response.total_pages
     currentPage.value = response.page
   } catch (e: any) {
-    error.value = e.message || '加载审批列表失败'
+    error.value = e.message || t('approval.list.errors.loadListFailed')
   } finally {
     loading.value = false
   }
@@ -170,35 +172,35 @@ async function loadStats() {
 }
 
 async function quickApprove(item: ApprovalItem) {
-  if (!confirm(`确认批准此请求？\n请求 ID: ${item.request_id}`)) {
+  if (!confirm(t('approval.list.confirm.approve', { id: item.request_id }))) {
     return
   }
   
   try {
     await approveApproval(item.request_id)
-    successMessage.value = '审批请求已批准'
+    successMessage.value = t('approval.list.success.approved')
     setTimeout(() => successMessage.value = null, 3000)
     await loadApprovals()
     await loadStats()
   } catch (e: any) {
-    error.value = e.message || '批准失败'
+    error.value = e.message || t('approval.list.errors.approveFailed')
   }
 }
 
 async function quickReject(item: ApprovalItem) {
-  const reason = prompt(`请输入拒绝原因：`)
+  const reason = prompt(t('approval.list.confirm.rejectPrompt'))
   if (!reason || !reason.trim()) {
     return
   }
   
   try {
     await rejectApproval(item.request_id, reason)
-    successMessage.value = '审批请求已拒绝'
+    successMessage.value = t('approval.list.success.rejected')
     setTimeout(() => successMessage.value = null, 3000)
     await loadApprovals()
     await loadStats()
   } catch (e: any) {
-    error.value = e.message || '拒绝失败'
+    error.value = e.message || t('approval.list.errors.rejectFailed')
   }
 }
 
@@ -248,7 +250,6 @@ onBeforeUnmount(() => {
 })
 
 // Watch filters
-import { watch } from 'vue'
 watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
   currentPage.value = 1
   loadApprovals()
@@ -260,15 +261,15 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
     <!-- Header -->
     <div class="page-header">
       <div>
-        <h1>审批请求</h1>
-        <p class="page-description">管理和处理审批请求</p>
+        <h1>{{ t('approval.list.title') }}</h1>
+        <p class="page-description">{{ t('approval.list.description') }}</p>
       </div>
       <div class="header-actions">
         <button class="btn btn-secondary" @click="loadApprovals" :disabled="loading">
-          🔄 {{ loading ? '刷新中...' : '刷新' }}
+          {{ loading ? t('approval.list.refreshing') : t('approval.list.refresh') }}
         </button>
         <button class="btn btn-secondary" @click="router.push('/admin/approval-config')">
-          ⚙️ 审批配置
+          {{ t('approval.list.config') }}
         </button>
       </div>
     </div>
@@ -289,23 +290,23 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
     <!-- Stats Cards -->
     <div v-if="stats" class="stats-grid">
       <div class="stat-card">
-        <div class="stat-label">待审批</div>
+        <div class="stat-label">{{ t('approval.list.stats.pending') }}</div>
         <div class="stat-value" :class="{ 'stat-highlight': stats.pending > 0 }">{{ stats.pending }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">今日新增</div>
+        <div class="stat-label">{{ t('approval.list.stats.todayTotal') }}</div>
         <div class="stat-value">{{ stats.today_total }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">已批准</div>
+        <div class="stat-label">{{ t('approval.list.stats.approved') }}</div>
         <div class="stat-value stat-green">{{ stats.approved }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">已拒绝</div>
+        <div class="stat-label">{{ t('approval.list.stats.rejected') }}</div>
         <div class="stat-value stat-red">{{ stats.rejected }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">平均处理时间</div>
+        <div class="stat-label">{{ t('approval.list.stats.avgTime') }}</div>
         <div class="stat-value stat-small">{{ Math.round(stats.avg_approval_time_seconds / 60) }}m</div>
       </div>
     </div>
@@ -314,7 +315,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
     <div class="filters-section">
       <div class="filters-row">
         <div class="filter-group">
-          <label>状态</label>
+          <label>{{ t('approval.list.filter.status') }}</label>
           <select v-model="statusFilter" class="form-select">
             <option v-for="opt in statusOptions" :key="opt.value" :value="opt.value">
               {{ opt.label }}
@@ -323,7 +324,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
         </div>
 
         <div class="filter-group">
-          <label>风险等级</label>
+          <label>{{ t('approval.list.filter.riskLevel') }}</label>
           <select v-model="riskLevelFilter" class="form-select">
             <option v-for="opt in riskLevelOptions" :key="opt.value" :value="opt.value">
               {{ opt.label }}
@@ -332,18 +333,18 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
         </div>
 
         <div class="filter-group filter-group-grow">
-          <label>搜索</label>
+          <label>{{ t('approval.list.filter.search') }}</label>
           <input
             v-model="searchQuery"
             type="text"
             class="form-input"
-            placeholder="搜索 Session ID 或 Request ID..."
+            :placeholder="t('approval.list.filter.searchPlaceholder')"
           />
         </div>
 
         <div class="filter-actions">
           <button class="btn btn-secondary btn-sm" @click="resetFilters">
-            重置
+            {{ t('approval.list.filter.reset') }}
           </button>
         </div>
       </div>
@@ -352,25 +353,24 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
     <!-- Table -->
     <div class="table-container">
       <div v-if="loading && approvals.length === 0" class="loading-state">
-        <div class="loading-spinner">加载中...</div>
+        <div class="loading-spinner">{{ t('approval.list.loading') }}</div>
       </div>
 
       <div v-else-if="filteredApprovals.length === 0" class="empty-state">
-        <div class="empty-icon">📋</div>
-        <p>暂无审批请求</p>
+        <p>{{ t('approval.list.empty') }}</p>
       </div>
 
       <table v-else class="data-table">
         <thead>
           <tr>
-            <th>请求 ID</th>
-            <th>会话 ID</th>
-            <th>风险等级</th>
-            <th>触发原因</th>
-            <th>预估成本</th>
-            <th>创建时间</th>
-            <th>状态</th>
-            <th class="actions-column">操作</th>
+            <th>{{ t('approval.list.table.requestId') }}</th>
+            <th>{{ t('approval.list.table.sessionId') }}</th>
+            <th>{{ t('approval.list.table.riskLevel') }}</th>
+            <th>{{ t('approval.list.table.trigger') }}</th>
+            <th>{{ t('approval.list.table.cost') }}</th>
+            <th>{{ t('approval.list.table.createdAt') }}</th>
+            <th>{{ t('approval.list.table.status') }}</th>
+            <th class="actions-column">{{ t('approval.list.table.actions') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -399,7 +399,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
                 {{ formatDate(item.created_at) }}
               </span>
               <div v-if="item.time_left && item.status === 'pending'" class="time-left">
-                剩余: {{ item.time_left }}
+                {{ t('approval.list.timeLeft', { time: item.time_left }) }}
               </div>
             </td>
             <td>
@@ -413,7 +413,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
                   v-if="item.status === 'pending'" 
                   class="btn btn-success btn-xs"
                   @click="quickApprove(item)"
-                  title="批准"
+                  :title="t('approval.list.actions.approve')"
                 >
                   ✓
                 </button>
@@ -421,14 +421,14 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
                   v-if="item.status === 'pending'" 
                   class="btn btn-danger btn-xs"
                   @click="quickReject(item)"
-                  title="拒绝"
+                  :title="t('approval.list.actions.reject')"
                 >
                   ✕
                 </button>
                 <button 
                   class="btn btn-secondary btn-xs"
                   @click="viewDetail(item)"
-                  title="查看详情"
+                  :title="t('approval.list.actions.viewDetail')"
                 >
                   👁
                 </button>
@@ -446,11 +446,11 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
         @click="changePage(currentPage - 1)"
         :disabled="currentPage === 1"
       >
-        上一页
+        {{ t('approval.list.pagination.previous') }}
       </button>
       
       <div class="pagination-info">
-        第 {{ currentPage }} / {{ totalPages }} 页 (共 {{ totalItems }} 条)
+        {{ t('approval.list.pagination.info', { page: currentPage, totalPages, total: totalItems }) }}
       </div>
       
       <button 
@@ -458,7 +458,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
         @click="changePage(currentPage + 1)"
         :disabled="currentPage === totalPages"
       >
-        下一页
+        {{ t('approval.list.pagination.next') }}
       </button>
     </div>
   </div>

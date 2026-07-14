@@ -16,12 +16,16 @@
 //	   ↓
 //	broken_confirmed     (3 consecutive fail) ← stops probing
 //
-// Backoff schedule (model_probe_backoff SQL function):
+// Backoff schedule (Go-based exponential backoff via probe_backoff.go):
 //
-//	consecutive_failures = 0 → 1 min
-//	consecutive_failures = 1 → 5 min
-//	consecutive_failures = 2 → 15 min
-//	consecutive_failures = 3 → 60 min (and stop — broken_confirmed)
+//	consecutive_failures = 0 → 2h (healthy watchdog)
+//	consecutive_failures = 1 → 5m (base)
+//	consecutive_failures = 2 → 10m (base × 2)
+//	consecutive_failures = 3 → 20m (base × 4)
+//	consecutive_failures = 4 → 40m (base × 8)
+//	consecutive_failures ≥ 5 → 80m (base × 16, capped at 2h)
+//
+// Hot-reloadable via probe.backoff_* settings.
 //
 // CRITICAL invariant: a model that's manually disabled NEVER gets
 // auto-recovered.  The runner re-checks c.manual_disabled on every
@@ -40,6 +44,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 const (
@@ -597,20 +602,15 @@ func (r *ModelProbeRunner) applyResult(
 	newSucc, newFail int, newState string,
 ) {
 
-	var nextRetryExpr string
+	cfg := LoadProbeBackoffConfig()
+	var nextRetryInterval time.Duration
 	switch newState {
 	case "healthy_confirmed":
-		// Watchdog: re-probe every 2h to catch silent regressions.
-		nextRetryExpr = "NOW() + INTERVAL '2 hours'"
+		nextRetryInterval = cfg.NextDelay(0)
 	case "broken_confirmed":
-		// Stop probing; require operator to nudge.
-		nextRetryExpr = "NOW() + INTERVAL '7 days'"
+		nextRetryInterval = time.Duration(settings.GetPlatformInt("probe.broken_watchdog_hours", 168)) * time.Hour
 	default:
-		// 2026-06-23: use age-aware backoff (model_probe_backoff_v2).
-		// Older failures get longer intervals — the binding has had time
-		// to recover on its own. Fresh failures get shorter intervals
-		// so the runner can quickly confirm whether the spike is real.
-		nextRetryExpr = "NOW() + model_probe_backoff_v2($5, NOW())"
+		nextRetryInterval = cfg.NextDelay(newFail)
 	}
 
 	q := `
@@ -619,9 +619,9 @@ func (r *ModelProbeRunner) applyResult(
 		     consecutive_successes, consecutive_failures, total_attempts,
 		     last_attempt_at, next_retry_at, last_status,
 		     last_state_change_at, last_state_change_run)
-		VALUES ($1, $2, $3, $4, $5, 1, NOW(), ` + nextRetryExpr + `, $6,
-		        CASE WHEN $7 IN ('recovered','broke') THEN NOW() ELSE NULL END,
-		        CASE WHEN $7 IN ('recovered','broke') THEN
+		VALUES ($1, $2, $3, $4, $5, 1, NOW(), NOW() + $6::interval, $7,
+		        CASE WHEN $8 IN ('recovered','broke') THEN NOW() ELSE NULL END,
+		        CASE WHEN $8 IN ('recovered','broke') THEN
 		    (SELECT id FROM model_probe_runs_with_current_month
 		             WHERE credential_id = $1 AND raw_model_name = $2
 		             ORDER BY id DESC LIMIT 1)
@@ -637,9 +637,11 @@ func (r *ModelProbeRunner) applyResult(
 		    last_state_change_at   = COALESCE(EXCLUDED.last_state_change_at, model_probe_state.last_state_change_at),
 		    last_state_change_run  = COALESCE(EXCLUDED.last_state_change_run, model_probe_state.last_state_change_run)
 	`
+	intervalStr := fmt.Sprintf("%d seconds", int(nextRetryInterval.Seconds()))
 	if _, err := r.db.Exec(ctx, q,
 		t.CredentialID, t.RawModel, newState,
 		newSucc, newFail,
+		intervalStr,
 		status, stateChange,
 	); err != nil {
 		slog.Warn("model probe v2: applyResult failed",
@@ -676,7 +678,7 @@ func (r *ModelProbeRunner) applyResult(
 			slog.Info("model probe: marked binding unavailable (broken_confirmed)",
 				"credential_id", t.CredentialID, "raw_model", t.RawModel)
 		}
-		r.writeAvailabilityCache(ctx, t, newState, false, status, newSucc, newFail, 7*24*time.Hour)
+		r.writeAvailabilityCache(ctx, t, newState, false, status, newSucc, newFail, nextRetryInterval)
 	case "healthy_confirmed":
 		_, err := r.db.Exec(ctx, `
 			UPDATE credential_model_bindings cmb
@@ -697,9 +699,9 @@ func (r *ModelProbeRunner) applyResult(
 			slog.Info("model probe: restored binding available (healthy_confirmed)",
 				"credential_id", t.CredentialID, "raw_model", t.RawModel)
 		}
-		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, 2*time.Hour)
+		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, nextRetryInterval)
 	default:
-		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, 15*time.Minute)
+		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, nextRetryInterval)
 	}
 }
 

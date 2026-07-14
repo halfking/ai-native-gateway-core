@@ -4,7 +4,7 @@
 // only covers chrome and form copy.
 export default {
   list: {
-    title: '🏢 Tenant management',
+    title: 'Tenant management',
     createBtn: '+ New tenant',
     statusLabel: 'Status',
     allStatuses: 'All',
@@ -20,6 +20,13 @@ export default {
     colCreated: 'Created',
     empty: 'No data',
     loadFailed: 'Load failed',
+  },
+  status: {
+    active: 'Active',
+    trial: 'Trial',
+    suspended: 'Suspended',
+    expired: 'Expired',
+    disabled: 'Disabled',
   },
   create: {
     title: 'New tenant',
@@ -373,6 +380,47 @@ export default {
     channelWechat: 'WeChat Pay',
     typeSubscribe: 'Monthly subscription',
     typeTopup: 'Top-up package',
+  },
+
+  tenantOps: {
+    autoUpdate: {
+      title: 'My updates',
+      subtitle: 'Read-only update info for tenant {tenant}',
+      loadFailed: 'Failed to load updates. Retry later or contact platform admin.',
+      infoAlert: 'The platform delivers updates per release policy. This page does not publish or roll back.',
+      currentVersion: 'Current version',
+      emptyReleases: 'No updates available',
+      table: {
+        version: 'Version',
+        title: 'Title',
+        channel: 'Channel',
+        mandatory: 'Mandatory',
+        publishedAt: 'Published',
+        yes: 'Yes',
+        no: 'No',
+      },
+      unknownVersion: 'Unknown',
+      loadError: 'Failed to load available updates',
+    },
+    license: {
+      title: 'My license',
+      subtitle: 'Read-only license info for tenant {tenant}',
+      loadFailed: 'Failed to load license info. Retry later or contact platform admin.',
+      infoAlert: 'This page is read-only. Contact platform admin for license changes.',
+      empty: 'No license records for this tenant',
+      table: {
+        tier: 'Plan',
+        maxDevices: 'Device limit',
+        expiresAt: 'Expires',
+        status: 'Status',
+        features: 'Features',
+      },
+      status: {
+        active: 'Active',
+        expired: 'Expired',
+        revoked: 'Revoked',
+      },
+    },
   },
 
   maasUsageView: {

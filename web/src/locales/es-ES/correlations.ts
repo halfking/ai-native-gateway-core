@@ -1,5 +1,11 @@
-// Auto-translated draft (es-ES) · 2026-07-02 · please review
-// correlations.ts — Vista de análisis de correlaciones.
+// Auto-synced from en-US (es-ES)
 export default {
-  title: 'Análisis de correlación de Auto-Route',
+  title: 'Auto-Route correlation analysis',
+  sections: {
+    byModel: 'By model',
+    byStrategy: 'By strategy',
+    byTaskType: 'By task type',
+    outlier: 'By (model, task type) — outlier detector',
+    topModels: 'Top-3 models per task type',
+  },
 }

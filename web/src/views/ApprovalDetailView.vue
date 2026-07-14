@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
 import { useRouter, useRoute } from 'vue-router'
 import { getApprovalDetail, approveApproval, rejectApproval, type ApprovalDetail } from '../api/approval'
@@ -7,6 +8,7 @@ import PageBackLink from '../components/PageBackLink.vue'
 
 const router = useRouter()
 const route = useRoute()
+const { t } = useI18n()
 
 const requestId = computed(() => route.params.id as string)
 
@@ -185,8 +187,8 @@ onBeforeUnmount(() => {
     <!-- Header -->
     <div class="page-header">
       <div>
-        <PageBackLink :to="'/admin/approvals'" label="返回审批列表" />
-        <h1>审批请求详情</h1>
+        <PageBackLink :to="'/admin/approvals'" :label="t('approval.detail.back')" />
+        <h1>{{ t('approval.detail.title') }}</h1>
         <p class="page-description">Request ID: {{ requestId }}</p>
       </div>
     </div>
@@ -214,7 +216,7 @@ onBeforeUnmount(() => {
       <!-- Basic Info -->
       <section class="section">
         <div class="section-header">
-          <h2>基本信息</h2>
+          <h2>{{ t('approval.detail.sections.basic') }}</h2>
           <span class="badge" :class="`badge-${getStatusColor(approval.status)}`">
             {{ getStatusLabel(approval.status) }}
           </span>
@@ -290,7 +292,7 @@ onBeforeUnmount(() => {
       <!-- Sensitive Info -->
       <section v-if="approval.detect_result?.sensitive_info?.length" class="section">
         <div class="section-header">
-          <h2>敏感信息检测</h2>
+          <h2>{{ t('approval.detail.sections.sensitive') }}</h2>
           <span class="badge badge-red">{{ approval.detect_result.sensitive_info.length }} 项</span>
         </div>
 
@@ -357,7 +359,7 @@ onBeforeUnmount(() => {
       <!-- Action Forms -->
       <section v-if="isPending" class="section action-section">
         <div class="section-header">
-          <h2>审批操作</h2>
+          <h2>{{ t('approval.detail.sections.actions') }}</h2>
         </div>
 
         <div v-if="!showApproveForm && !showRejectForm" class="action-buttons-main">
@@ -433,7 +435,7 @@ onBeforeUnmount(() => {
       <!-- Decision History (if decided) -->
       <section v-if="isDecided" class="section">
         <div class="section-header">
-          <h2>审批历史</h2>
+          <h2>{{ t('approval.detail.sections.history') }}</h2>
         </div>
 
         <div class="timeline">

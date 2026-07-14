@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { createTenant, TENANT_STATUSES, TENANT_STATUS_LABELS } from '../api'
+import { useI18n } from 'vue-i18n'
+import { createTenant, TENANT_STATUSES } from '../api'
 import type { CreateTenantResponse } from '../api'
+import { useTenantStatusLabel } from '../composables/useTenantStatusLabel'
 
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'created'): void
 }>()
 
+const { t } = useI18n()
+const { tenantStatusLabel } = useTenantStatusLabel()
 const router = useRouter()
 const form = ref({
   code: '',
@@ -21,9 +25,13 @@ const submitting = ref(false)
 const error = ref('')
 const createdResult = ref<CreateTenantResponse | null>(null)
 
+const codeHint = computed(() =>
+  t('tenants.create.codeHint', { suffix: `${form.value.code || 'code'}user` }),
+)
+
 async function handleSubmit() {
   if (!form.value.code || !form.value.name) {
-    error.value = 'code 和 name 不能为空'
+    error.value = t('tenants.create.codeAndNameRequired')
     return
   }
   submitting.value = true
@@ -38,7 +46,7 @@ async function handleSubmit() {
     })
     emit('created')
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '创建失败'
+    error.value = e instanceof Error ? e.message : t('tenants.create.createFailed')
   } finally {
     submitting.value = false
   }
@@ -56,61 +64,61 @@ function goDetail() {
   <div class="modal-backdrop" @click.self="emit('close')">
     <div class="modal-card">
       <template v-if="!createdResult">
-        <h3>新建租户</h3>
+        <h3>{{ t('tenants.create.title') }}</h3>
         <div v-if="error" class="alert alert-danger">{{ error }}</div>
         <form @submit.prevent="handleSubmit">
           <div class="form-group">
-            <label>租户 code *</label>
-            <input v-model="form.code" placeholder="例如: acme" pattern="[a-z0-9_-]+" required />
-            <small>只能包含小写字母、数字、下划线和连字符；将自动创建管理员账号 {code}user</small>
+            <label>{{ t('tenants.create.codeLabel') }}</label>
+            <input v-model="form.code" :placeholder="t('tenants.create.codePlaceholder')" pattern="[a-z0-9_-]+" required />
+            <small>{{ codeHint }}</small>
           </div>
           <div class="form-group">
-            <label>租户名称 *</label>
-            <input v-model="form.name" placeholder="例如: Acme Corp" required />
+            <label>{{ t('tenants.create.nameLabel') }}</label>
+            <input v-model="form.name" :placeholder="t('tenants.create.namePlaceholder')" required />
           </div>
           <div class="form-group">
-            <label>状态</label>
+            <label>{{ t('tenants.create.statusLabel') }}</label>
             <select v-model="form.status">
-              <option v-for="s in TENANT_STATUSES" :key="s" :value="s">{{ TENANT_STATUS_LABELS[s] }}</option>
+              <option v-for="s in TENANT_STATUSES" :key="s" :value="s">{{ tenantStatusLabel(s) }}</option>
             </select>
           </div>
           <div class="form-group">
-            <label>联系邮箱</label>
-            <input v-model="form.contact_email" type="email" placeholder="admin@example.com" />
+            <label>{{ t('tenants.create.contactLabel') }}</label>
+            <input v-model="form.contact_email" type="email" :placeholder="t('tenants.create.contactPlaceholder')" />
           </div>
           <div class="form-group">
-            <label>描述</label>
-            <textarea v-model="form.description" rows="3" placeholder="可选"></textarea>
+            <label>{{ t('tenants.create.descLabel') }}</label>
+            <textarea v-model="form.description" rows="3" :placeholder="t('tenants.create.descPlaceholder')"></textarea>
           </div>
           <div class="modal-actions">
             <button type="submit" class="btn btn-primary" :disabled="submitting">
-              {{ submitting ? '创建中…' : '创建' }}
+              {{ submitting ? t('tenants.create.creating') : t('tenants.create.create') }}
             </button>
-            <button type="button" class="btn btn-ghost" @click="emit('close')">取消</button>
+            <button type="button" class="btn btn-ghost" @click="emit('close')">{{ t('tenants.create.cancel') }}</button>
           </div>
         </form>
       </template>
 
       <template v-else>
-        <h3>✅ 租户创建成功</h3>
-        <p class="success-hint">默认管理员已创建，初始密码仅显示一次，请妥善保存。</p>
+        <h3>{{ t('tenants.create.successTitle') }}</h3>
+        <p class="success-hint">{{ t('tenants.create.successHint') }}</p>
         <div class="cred-box">
           <div class="cred-row">
-            <span class="cred-label">租户</span>
+            <span class="cred-label">{{ t('tenants.create.credTenant') }}</span>
             <code>{{ createdResult.name }} ({{ createdResult.code }})</code>
           </div>
           <div v-if="createdResult.default_admin" class="cred-row">
-            <span class="cred-label">管理员</span>
+            <span class="cred-label">{{ t('tenants.create.credAdmin') }}</span>
             <code>{{ createdResult.default_admin.username }}</code>
           </div>
           <div v-if="createdResult.initial_password" class="cred-row">
-            <span class="cred-label">初始密码</span>
+            <span class="cred-label">{{ t('tenants.create.credPassword') }}</span>
             <code class="password">{{ createdResult.initial_password }}</code>
           </div>
         </div>
         <div class="modal-actions">
-          <button type="button" class="btn btn-primary" @click="goDetail">进入租户详情</button>
-          <button type="button" class="btn btn-ghost" @click="emit('close')">关闭</button>
+          <button type="button" class="btn btn-primary" @click="goDetail">{{ t('tenants.create.goDetail') }}</button>
+          <button type="button" class="btn btn-ghost" @click="emit('close')">{{ t('tenants.create.close') }}</button>
         </div>
       </template>
     </div>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 // CorrelationsView.vue — Auto-route correlation analysis (P7.4).
 //
 // Visualises the 5 tables returned by
@@ -20,6 +21,8 @@ import {
   type CorrelationRowMT,
   type CorrelationVerdict,
 } from '../api'
+
+const { t } = useI18n()
 
 // ── State ────────────────────────────────────────────────────────
 const resp = ref<AutoRouteCorrelationsResponse | null>(null)
@@ -95,7 +98,7 @@ onMounted(load)
 
 <template>
   <div class="correlations-view">
-    <h1>Auto-Route 关联分析 (Correlations)</h1>
+    <h1>{{ t('correlations.title') }}</h1>
     <p class="subtitle">
       Cross-references the promoted columns on
       <code>request_logs</code> (P7.2) to surface correlations between
@@ -139,7 +142,7 @@ onMounted(load)
 
       <!-- ── 1. By model ───────────────────────────────────── -->
       <section class="card">
-        <h2>By model</h2>
+        <h2>{{ t('correlations.sections.byModel') }}</h2>
         <p class="hint">Per-model success / latency / cost across all auto requests.</p>
         <table v-if="resp.by_model.length > 0" class="corr-table">
           <thead>
@@ -162,7 +165,7 @@ onMounted(load)
 
       <!-- ── 2. By strategy ────────────────────────────────── -->
       <section class="card">
-        <h2>By strategy</h2>
+        <h2>{{ t('correlations.sections.byStrategy') }}</h2>
         <p class="hint">
           Per-strategy success / latency. Useful for confirming the
           pattern_layered strategy actually outperforms
@@ -189,7 +192,7 @@ onMounted(load)
 
       <!-- ── 3. By task type ──────────────────────────────── -->
       <section class="card">
-        <h2>By task type</h2>
+        <h2>{{ t('correlations.sections.byTaskType') }}</h2>
         <p class="hint">Per-task_type success / latency / cost.</p>
         <table v-if="resp.by_task_type.length > 0" class="corr-table">
           <thead>
@@ -212,7 +215,7 @@ onMounted(load)
 
       <!-- ── 4. By (model, task) — outlier detector ────────── -->
       <section class="card">
-        <h2>By (model, task type) — outlier detector</h2>
+        <h2>{{ t('correlations.sections.outlier') }}</h2>
         <p class="hint">
           A model that performs well on chat but poorly on reasoning
           is a candidate to blacklist via routing overrides. Look for
@@ -241,7 +244,7 @@ onMounted(load)
 
       <!-- ── 5. Verdict: top-3 per task type ────────────────── -->
       <section class="card">
-        <h2>Top-3 models per task type</h2>
+        <h2>{{ t('correlations.sections.topModels') }}</h2>
         <p class="hint">
           Ranked by success rate (ties broken by latency). Use this
           when designing routing overrides or weight profiles.

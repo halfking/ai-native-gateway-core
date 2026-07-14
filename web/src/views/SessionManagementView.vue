@@ -128,7 +128,10 @@ async function loadSessions() {
       credentials: 'include'
     })
     if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}`)
+      if (resp.status === 503) {
+        throw new Error(t('sessions.management.errors.serviceUnavailable'))
+      }
+      throw new Error(t('sessions.management.errors.httpStatus', { status: resp.status }))
     }
     const data = await resp.json()
     sessions.value = data.sessions || []
@@ -530,7 +533,7 @@ onUnmounted(() => {
                     <th>{{ t('sessions.management.detail.totalTurns') }}</th>
                     <th>{{ t('sessions.management.columns.tokens') }}</th>
                     <th>{{ t('sessions.management.columns.cost') }}</th>
-                    <th>switch_reason</th>
+                    <th>{{ t('sessions.management.detail.switchReason') }}</th>
                   </tr>
                 </thead>
                 <tbody>

@@ -51,6 +51,11 @@ import formatAnomaliesView from './formatAnomaliesView'
 import agentRegistryView from './agentRegistryView'
 import outputCompliance from './outputCompliance'
 import ops from './ops'
+import qualityCorrelations from './qualityCorrelations'
+import routingAudit from './routingAudit'
+import routingOverride from './routingOverride'
+import probeHealth from './probeHealth'
+import approval from './approval'
 import tenantModels from './tenantModels'
 
 export default {
@@ -105,6 +110,11 @@ export default {
   agentRegistryView,
   outputCompliance,
   ops,
+  qualityCorrelations,
+  routingAudit,
+  routingOverride,
+  probeHealth,
+  approval,
   tenantModels,
   customer,
 }

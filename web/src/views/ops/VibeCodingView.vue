@@ -14,7 +14,11 @@ import {
   type CodeIssue,
 } from '../../api/ops'
 
+import { useEnumLabel } from '../../composables/useEnumLabel'
+
 const { t } = useI18n()
+const enumLabel = useEnumLabel()
+const vibeStatusLabel = (value?: string | null) => enumLabel('ops.vibecoding.status', value)
 
 const projects = ref<VibeCodingProject[]>([])
 const sessions = ref<VibeCodingSession[]>([])
@@ -169,7 +173,7 @@ onMounted(load)
 <template>
   <div class="vibecoding-view">
     <div class="page-header">
-      <h1>💻 {{ t('ops.vibecoding.title') }}</h1>
+      <h1>{{ t('ops.vibecoding.title') }}</h1>
       <el-button type="primary" @click="showProjectDialog = true">
         + {{ t('ops.vibecoding.createProject') }}
       </el-button>
@@ -184,10 +188,10 @@ onMounted(load)
         <el-table-column prop="name" :label="t('ops.vibecoding.projectName')" width="200" />
         <el-table-column prop="language" :label="t('ops.vibecoding.language')" width="120" />
         <el-table-column prop="framework" :label="t('ops.vibecoding.framework')" width="150" />
-        <el-table-column prop="status" :label="t('common.status')" width="100">
+        <el-table-column prop="status" :label="t('common.table.status')" width="100">
           <template #default="{ row = {} } = {}">
             <el-tag :type="statusType(row.status)" size="small">
-              {{ t(`ops.vibecoding.status.${row.status}`) }}
+              {{ vibeStatusLabel(row.status) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -220,10 +224,10 @@ onMounted(load)
       <el-table :data="filteredSessions" size="small">
         <el-table-column prop="task_type" :label="t('ops.vibecoding.sessionName')" width="200" />
         <el-table-column prop="project_id" :label="t('ops.vibecoding.projectId')" width="100" />
-        <el-table-column prop="status" :label="t('common.status')" width="100">
+        <el-table-column prop="status" :label="t('common.table.status')" width="100">
           <template #default="{ row = {} } = {}">
             <el-tag :type="statusType(row.status)" size="small">
-              {{ t(`ops.vibecoding.status.${row.status}`) }}
+              {{ vibeStatusLabel(row.status) }}
             </el-tag>
           </template>
         </el-table-column>

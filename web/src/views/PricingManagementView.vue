@@ -1,7 +1,7 @@
 <template>
   <div class="pricing-management">
     <div class="pm-header">
-      <h2>成本价格</h2>
+      <h2>{{ t('pricingManagement.page.title') }}</h2>
       <div class="pm-actions">
         <button class="btn btn-sm" @click="fetchData" :disabled="loading">
           {{ loading ? t('pricingManagement.refreshLoading') : t('pricingManagement.refresh') }}

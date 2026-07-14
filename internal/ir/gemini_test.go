@@ -109,6 +109,59 @@ func TestParseGemini_FileURI(t *testing.T) {
 	}
 }
 
+func TestParseGemini_MixedAttachmentMetadata(t *testing.T) {
+	body := []byte(`{
+		"contents": [{"role": "user", "parts": [
+			{"inlineData": {"mimeType": "image/png", "data": "img"}},
+			{"inlineData": {"mimeType": "audio/mpeg", "data": "audio"}},
+			{"inlineData": {"mimeType": "video/mp4", "data": "video"}},
+			{"inlineData": {"mimeType": "application/pdf", "data": "pdf"}},
+			{"fileData": {"mimeType": "text/plain", "fileUri": "files/text-1"}}
+		]}]
+	}`)
+
+	parsed, err := ParseGemini(body)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	blocks := parsed.Messages[0].Content
+	if len(blocks) != 5 {
+		t.Fatalf("Content blocks = %d, want 5", len(blocks))
+	}
+	want := []struct {
+		typ  string
+		mime string
+	}{
+		{"image", "image/png"},
+		{"audio", "audio/mpeg"},
+		{"video", "video/mp4"},
+		{"document", "application/pdf"},
+		{"document", "text/plain"},
+	}
+	for i, expected := range want {
+		if blocks[i].Type != expected.typ {
+			t.Errorf("block %d type = %q, want %q", i, blocks[i].Type, expected.typ)
+		}
+		mime := ""
+		switch blocks[i].Type {
+		case "image":
+			mime = blocks[i].Image.MediaType
+		case "audio":
+			mime = blocks[i].Audio.MediaType
+		case "video":
+			mime = blocks[i].Video.MediaType
+		case "document":
+			mime = blocks[i].Document.Source.MediaType
+		}
+		if mime != expected.mime {
+			t.Errorf("block %d mime = %q, want %q", i, mime, expected.mime)
+		}
+	}
+	if got := blocks[4].Document.Source.Data; got != "files/text-1" {
+		t.Errorf("file URI = %q, want files/text-1", got)
+	}
+}
+
 // TestParseGemini_ToolConfigModes verifies AUTO/ANY/NONE/tool mapping.
 func TestParseGemini_ToolConfigModes(t *testing.T) {
 	cases := []struct {

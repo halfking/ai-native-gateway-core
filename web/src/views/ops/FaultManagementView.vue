@@ -272,7 +272,7 @@ onMounted(load)
     <!-- Filters -->
     <el-card class="filters-card" shadow="never">
       <el-space>
-        <el-select v-model="filterStatus" :placeholder="t('common.status')" style="width: 150px">
+        <el-select v-model="filterStatus" :placeholder="t('common.table.status')" style="width: 150px">
           <el-option :label="t('common.all')" value="all" />
           <el-option :label="t('ops.fault.status.new')" value="new" />
           <el-option :label="t('ops.fault.status.acknowledged')" value="acknowledged" />
@@ -304,7 +304,7 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="status" :label="t('common.status')" width="100">
+        <el-table-column prop="status" :label="t('common.table.status')" width="100">
           <template #default="{ row = {} } = {}">
             <el-tag :type="statusType(row.status)" size="small">
               {{ t(`ops.fault.status.${row.status}`) }}
@@ -332,7 +332,7 @@ onMounted(load)
         <el-descriptions :column="2" border>
           <el-descriptions-item :label="t('ops.fault.titleLabel')" :span="2">{{ selectedEvent.title }}</el-descriptions-item>
           <el-descriptions-item :label="t('ops.fault.ruleName')">{{ selectedEvent.rule_name }}</el-descriptions-item>
-          <el-descriptions-item :label="t('common.status')">
+          <el-descriptions-item :label="t('common.table.status')">
             <el-tag :type="statusType(selectedEvent.status)" size="small">{{ t(`ops.fault.status.${selectedEvent.status}`) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item :label="t('ops.fault.severityLabel')">

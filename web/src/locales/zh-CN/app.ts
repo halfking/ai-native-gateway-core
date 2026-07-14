@@ -1,6 +1,6 @@
 // app.ts — App.vue 外壳框架文案（顶栏角色、侧栏折叠、退出、语言切换）。
 export default {
-  brand: 'LLM Gateway',
+  brand: 'AI-Native 组织网关',
   role: {
     super_admin: '超级管理员',
     tenant_admin: '租户管理员',

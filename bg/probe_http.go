@@ -38,7 +38,8 @@ const (
 
 // probeBackoff is the retry schedule for Layer 1 (model list) probe.
 // Spec: 0s (immediate), 10s, 15s, 30s — total 4 attempts within ~70s.
-var probeBackoff = []time.Duration{0, 10 * time.Second, 15 * time.Second, 30 * time.Second}
+// Centralized definition lives in bg/probe_backoff.go as HTTPProbeBackoffChain.
+var probeBackoff = HTTPProbeBackoffChain
 
 // httpProbeResult is the structured outcome of a single HTTP probe attempt.
 type httpProbeResult struct {

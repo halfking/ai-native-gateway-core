@@ -389,7 +389,7 @@ func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, provid
 
 	var requestBodyText *string
 	if len(c.Body) > 0 {
-		v := string(c.Body)
+		v := string(redactAttachmentBodyIfEnabled(c.Body))
 		requestBodyText = &v
 	}
 	var responseBodyText *string
@@ -408,7 +408,7 @@ func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, provid
 	}
 
 	var requestPreviewPtr *string
-	if preview := requestPreview(c.Body); preview != "" {
+	if preview := requestPreview(redactAttachmentBodyIfEnabled(c.Body)); preview != "" {
 		requestPreviewPtr = strPtr(preview)
 	}
 	var responsePreviewPtr *string
@@ -455,12 +455,7 @@ func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, provid
 	streamChunksSentPtr = &sent
 
 	// 2026-07-01: 序列化附件元数据为 JSONB
-	var attachmentsJSON json.RawMessage
-	if len(c.Attachments) > 0 {
-		if b, err := json.Marshal(c.Attachments); err == nil {
-			attachmentsJSON = b
-		}
-	}
+	attachmentsJSON := attachmentsJSON(c.Attachments)
 
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:         c.RequestID,

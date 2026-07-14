@@ -378,5 +378,46 @@ export default {
     channelWechat: "微信支付",
     typeSubscribe: "月包订阅",
     typeTopup: "加油包"
-  }
+  },
+
+  tenantOps: {
+    autoUpdate: {
+      title: 'Mis actualizaciones',
+      subtitle: 'Información de actualización de solo lectura para el inquilino {tenant}',
+      loadFailed: 'No se pudieron cargar las actualizaciones. Reintente más tarde o contacte al administrador.',
+      infoAlert: 'La plataforma entrega actualizaciones según la política de publicación. Esta página no publica ni revierte.',
+      currentVersion: 'Versión actual',
+      emptyReleases: 'No hay actualizaciones disponibles',
+      table: {
+        version: 'Versión',
+        title: 'Título',
+        channel: 'Canal',
+        mandatory: 'Obligatoria',
+        publishedAt: 'Publicado',
+        yes: 'Sí',
+        no: 'No',
+      },
+      unknownVersion: 'Desconocido',
+      loadError: 'No se pudieron cargar las actualizaciones disponibles',
+    },
+    license: {
+      title: 'Mi licencia',
+      subtitle: 'Información de licencia de solo lectura para el inquilino {tenant}',
+      loadFailed: 'No se pudo cargar la licencia. Reintente más tarde o contacte al administrador.',
+      infoAlert: 'Esta página es de solo lectura. Contacte al administrador para cambios de licencia.',
+      empty: 'No hay registros de licencia para este inquilino',
+      table: {
+        tier: 'Plan',
+        maxDevices: 'Límite de dispositivos',
+        expiresAt: 'Vence',
+        status: 'Estado',
+        features: 'Funciones',
+      },
+      status: {
+        active: 'Activa',
+        expired: 'Expirada',
+        revoked: 'Revocada',
+      },
+    },
+  },
 }

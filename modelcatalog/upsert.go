@@ -17,11 +17,21 @@ import (
 //   - Manually disabled bindings (available=false AND unavailable_reason LIKE 'manual%')
 //     keep their availability flags unchanged.
 //   - All other states (including legacy soft-delete reason='deleted') are re-enabled.
-func UpsertCredentialModel(ctx context.Context, db *pgxpool.Pool, credentialID int, rawName, standardizedName string, canonicalID *int) error {
+//
+// 2026-07-14: enforces the gateway-wide case rule:
+//   - rawName is the PROVIDER-facing name (e.g. NVIDIA NIM "z-ai/glm-5.2",
+//     Meta "meta/llama-3.3-70b-instruct"). It is stored in
+//     provider_models.raw_model_name unchanged.
+//   - canonicalRawName is the CLIENT-facing lowercase key used by all
+//     internal SQL matching; stored in provider_models.canonical_raw_name
+//     and enforced UNIQUE per provider (migration 395).
+//   - standardizedName is the historical provider-canonical column, also
+//     stored lowercase; kept for back-compat with /models listings.
+func UpsertCredentialModel(ctx context.Context, db *pgxpool.Pool, credentialID int, rawName, canonicalRawName, standardizedName string, canonicalID *int) error {
 	if db == nil {
 		return fmt.Errorf("database not configured")
 	}
-	_, err := db.Exec(ctx, upsertCredentialModelSQL, credentialID, rawName, standardizedName, canonicalID)
+	_, err := db.Exec(ctx, upsertCredentialModelSQL, credentialID, rawName, canonicalRawName, standardizedName, canonicalID)
 	return err
 }
 
@@ -43,9 +53,18 @@ WITH cred AS (
     SELECT provider_id, plan_type FROM credentials WHERE id = $1
 ),
 upsert_pm AS (
-    INSERT INTO provider_models (provider_id, raw_model_name, canonical_id, standardized_name, available, last_seen_at)
-    SELECT cred.provider_id, $2, $4, $3, TRUE, NOW() FROM cred
+    INSERT INTO provider_models (
+        provider_id,
+        raw_model_name,
+        canonical_raw_name,
+        canonical_id,
+        standardized_name,
+        available,
+        last_seen_at
+    )
+    SELECT cred.provider_id, $2, $3, $5, $4, TRUE, NOW() FROM cred
     ON CONFLICT (provider_id, raw_model_name) DO UPDATE SET
+        canonical_raw_name = COALESCE(EXCLUDED.canonical_raw_name, provider_models.canonical_raw_name),
         canonical_id = COALESCE(EXCLUDED.canonical_id, provider_models.canonical_id),
         standardized_name = COALESCE(EXCLUDED.standardized_name, provider_models.standardized_name),
         last_seen_at = NOW(),

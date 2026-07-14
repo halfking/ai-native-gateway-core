@@ -9,6 +9,7 @@ import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
 import SystemStatusIndicator from './components/SystemStatusIndicator.vue'
+import SystemHealthBadge from './components/SystemHealthBadge.vue'
 import UpgradeBanner from './components/UpgradeBanner.vue'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
@@ -98,6 +99,11 @@ const versionInfo = ref<{
   build_date?: string
   build_seq?: number
 }>({})
+
+function formatVersionDisplay(v?: string): string {
+  if (!v) return ''
+  return v.replace(/^v+/i, '')
+}
 
 async function loadVersion() {
   if (!isLoggedIn.value) return
@@ -235,7 +241,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
           alt="开轩启圭"
           class="sidebar-logo-img"
         />
-        <span v-show="!collapsed" class="sidebar-logo-text">LLM Gateway</span>
+        <span v-show="!collapsed" class="sidebar-logo-text">{{ $t('app.brand') }}</span>
       </div>
 
       <nav class="sidebar-nav">
@@ -248,7 +254,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
             :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
             :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
           >
-            <span class="nav-icon">{{ item.icon }}</span>
+            <span v-if="item.icon" class="nav-icon">{{ item.icon }}</span>
             <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
           </RouterLink>
         </div>
@@ -280,7 +286,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
               :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
               :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
             >
-              <span class="nav-icon">{{ item.icon }}</span>
+              <span v-if="item.icon" class="nav-icon">{{ item.icon }}</span>
               <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
             </RouterLink>
           </div>
@@ -322,6 +328,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
           {{ collapsed ? '»' : '«' }}
         </button>
         <SystemStatusIndicator />
+        <SystemHealthBadge />
         <div class="main-header-right">
           <div v-if="passwordSuccessMessage" class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
           <div class="header-meta">
@@ -332,7 +339,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
             </template>
             <template v-if="versionInfo.version">
               <span v-if="store.userInfo" class="meta-sep" aria-hidden="true">·</span>
-              <span class="version-tag">v{{ versionInfo.version }}</span>
+              <span class="version-tag">v{{ formatVersionDisplay(versionInfo.version) }}</span>
               <template v-if="versionInfo.build_seq != null">
                 <span class="meta-sep" aria-hidden="true">·</span>
                 <span class="version-build">#{{ versionInfo.build_seq }}</span>

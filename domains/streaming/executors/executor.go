@@ -839,6 +839,10 @@ func ensureFpReleaseWorker() {
 func init() { ensureFpReleaseWorker() }
 
 func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
+	// Keep the inbound body immutable across candidate failover. Per-candidate
+	// protocol rendering works from this snapshot and never re-enters attachment extraction.
+	params.BodyBytes = append([]byte(nil), params.BodyBytes...)
+
 	// Layer 0: Global identity pool cap (if enabled).
 	// Acquire a stable identity for this end-user. If the cap is reached,
 	// the pool LRU-recycles an existing identity, so the request appears

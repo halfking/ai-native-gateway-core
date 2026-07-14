@@ -1,127 +1,60 @@
 <script setup lang="ts">
-// DashboardViewV2.vue — 新版仪表盘（紧凑统计 + 泳道系统）
-// 2026-07-05: 单行统计卡片 + 多泳道实时请求流
-// 2026-07-05 v3: 使用父组件提供的共享数据源
-// 2026-07-10 v4: 支持 Tab 切换（stream vs stats）
-// 2026-07-12 v5: 新增系统监测 Tab
+// DashboardViewV2.vue — 看板 + 实时流 + 会话统计 + 系统监测
 
 import { ref, computed, inject, type Ref } from 'vue'
-import { RouterLink } from 'vue-router'
-import { localeRef } from '../i18n'
+import { useI18n } from 'vue-i18n'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import StatsDrawer from '../components/StatsDrawer.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionStatsPanel from '../components/SessionStatsPanel.vue'
+import BoardPanel from '../components/board/BoardPanel.vue'
 import SelfCheckPanel from './SelfCheckPanel.vue'
-import type {
-  UsageSummary,
-  ModelUsage,
-  DashboardOverview,
-  HotApiKeyEntry,
-  CompressionStats,
-  ModelDiscoveryStatusResponse,
-} from '../api'
+import type { BoardPayload } from '../api/board'
+import type { ModelUsage, HotApiKeyEntry } from '../api'
+import type { DashboardTabId } from './DashboardView.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
-// 从父组件注入共享数据
-const dashboardData = inject<{
+const { t } = useI18n()
+
+const boardState = inject<{
+  board: Ref<BoardPayload | null>
   days: Ref<number>
   loading: Ref<boolean>
   error: Ref<string | null>
-  summary: Ref<UsageSummary | null>
-  overview: Ref<DashboardOverview | null>
+  load: () => Promise<void>
+}>('dashboardBoard')!
+
+const drawerState = inject<{
   models: Ref<ModelUsage[]>
   hotKeys: Ref<HotApiKeyEntry[]>
-  compStats: Ref<CompressionStats | null>
-  discoveryStatus: Ref<ModelDiscoveryStatusResponse | null>
-  load: () => Promise<void>
-}>('dashboardData')!
+  drawerLoading: Ref<boolean>
+  loadDrawerData: () => Promise<void>
+}>('dashboardDrawer')!
 
-// 从父组件注入 Tab 控制
 const dashboardTab = inject<{
-  activeTab: Ref<'stream' | 'stats' | 'selfcheck'>
-  switchTab: (tab: 'stream' | 'stats' | 'selfcheck') => void
+  activeTab: Ref<DashboardTabId>
+  switchTab: (tab: DashboardTabId) => void
 }>('dashboardTab')!
 
-// 从父组件注入泳道重新初始化key
+const dashboardActions = inject<{ refreshBoard: () => Promise<void> }>('dashboardActions')!
+
 const swimLaneReinitKey = inject<Ref<number>>('swimLaneReinitKey')!
 
 const statsDrawerRef = ref<InstanceType<typeof StatsDrawer> | null>(null)
 const activeRequestId = ref<string | null>(null)
 
-// 使用注入的数据
-const days = dashboardData.days
-const loading = dashboardData.loading
-const error = dashboardData.error
-const summary = dashboardData.summary
-const overview = dashboardData.overview
-const models = dashboardData.models
-const hotKeys = dashboardData.hotKeys
-const compStats = dashboardData.compStats
-const discoveryStatus = dashboardData.discoveryStatus
-const load = dashboardData.load
-
-// Tab 控制
+const days = boardState.days
+const loading = boardState.loading
+const error = boardState.error
 const activeTab = dashboardTab.activeTab
 
-// Degraded-mode hint: when the backend reports that an aggregation view
-// is missing, we still render the dashboard with zeroed metrics but
-// surface a non-blocking info banner so the operator knows the data
-// pipeline hasn't been migrated yet. This keeps the layout intact while
-// explaining why numbers may look low.
-const degradedHint = computed(() => {
-  const summaryHint = summary.value?.hint
-  const overviewHint = overview.value?.hint
-  const summaryView = summary.value?.missing_view
-  const overviewView = overview.value?.missing_view
-  const summaryDegraded = summary.value?.degraded
-  const overviewDegraded = overview.value?.degraded
-  if (!summaryDegraded && !overviewDegraded) {
-    return null
-  }
-  const view = summaryView || overviewView || 'data view'
-  return summaryHint || overviewHint || `数据视图 ${view} 尚未初始化，请先执行数据聚合迁移`
-})
-const degradedView = computed(() => summary.value?.missing_view || overview.value?.missing_view || '')
-
-// Tenant info
 const tenantLabel = computed(() => {
   const tenantId = getCurrentTenantId()
-  const isAdmin = isSuperAdmin()
-  const isDefault = isDefaultTenant()
-  
-  if (isAdmin && isDefault) {
-    return '整站数据'
-  } else if (isDefault) {
-    return '默认租户'
-  } else {
-    return `租户: ${tenantId}`
-  }
+  if (isSuperAdmin() && isDefaultTenant()) return t('dashboard.tenantLabel.default')
+  if (isDefaultTenant()) return t('dashboard.tenantLabel.super')
+  return t('dashboard.tenantLabel.tenant', { tenantId })
 })
-
-function fmt(n: number | undefined, decimals = 0) {
-  if (n === undefined || n === null) return '—'
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K'
-  return Number(n).toFixed(decimals)
-}
-
-function fmtCost(v: number | undefined) {
-  if (v === undefined || v === null) return '—'
-  return '$' + Number(v).toFixed(4)
-}
-
-function fmtPct(v: number | undefined) {
-  if (v === undefined || v === null) return '—'
-  return (Number(v) * 100).toFixed(1) + '%'
-}
-
-function fmtDate(v: string | null | undefined) {
-  if (!v) return '—'
-  return new Date(v).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
-}
-
 
 function openRequestDetail(id: string) {
   activeRequestId.value = id
@@ -131,8 +64,19 @@ function closeRequestDrawer() {
   activeRequestId.value = null
 }
 
-function openStatsDrawer(tab: 'apikeys' | 'models') {
+async function openStatsDrawer(tab: 'apikeys' | 'models') {
+  await drawerState.loadDrawerData()
   statsDrawerRef.value?.open(tab)
+}
+
+async function onRefresh() {
+  await dashboardActions.refreshBoard()
+}
+
+async function onDaysChange() {
+  if (activeTab.value === 'board') {
+    await boardState.load()
+  }
 }
 </script>
 
@@ -141,10 +85,19 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
     <!-- 紧凑型页面头部 - 单行布局 -->
     <div class="page-header">
       <div class="page-header-left">
-        <h2>仪表盘</h2>
+        <h2>{{ t('dashboard.title') }}</h2>
         
         <!-- Tab 切换器（集成到标题旁） -->
         <div class="tab-switcher">
+          <button
+            type="button"
+            class="tab-btn"
+            :class="{ 'tab-btn--active': activeTab === 'board' }"
+            @click="dashboardTab.switchTab('board')"
+            :title="$t('dashboard.tabs.board')"
+          >
+            {{ $t('dashboard.tabs.board') }}
+          </button>
           <button
             type="button"
             class="tab-btn"
@@ -168,9 +121,9 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
             class="tab-btn"
             :class="{ 'tab-btn--active': activeTab === 'selfcheck' }"
             @click="dashboardTab.switchTab('selfcheck')"
-            title="系统监测"
+            :title="t('dashboard.tabs.selfcheck')"
           >
-            系统监测
+            {{ t('dashboard.tabs.selfcheck') }}
           </button>
         </div>
         
@@ -184,18 +137,18 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
           class="quick-btn"
           @click="openStatsDrawer('apikeys')"
           :disabled="loading"
-          title="查看API Key排行"
+          :title="t('dashboard.v2.quickApiKeyTitle')"
         >
-          📊 API Key
+          {{ t('dashboard.v2.quickApiKey') }}
         </button>
         <button 
           type="button" 
           class="quick-btn"
           @click="openStatsDrawer('models')"
           :disabled="loading"
-          title="查看模型统计"
+          :title="t('dashboard.v2.quickModelsTitle')"
         >
-          📈 模型
+          {{ t('dashboard.v2.quickModels') }}
         </button>
         
         <!-- 租户标签 -->
@@ -204,34 +157,21 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
         </span>
         
         <!-- 时间范围选择 -->
-        <select v-model.number="days" class="days-select" @change="load">
-          <option :value="1">今日</option>
-          <option :value="7">近 7 天</option>
-          <option :value="30">近 30 天</option>
-          <option :value="90">近 90 天</option>
+        <select v-model.number="days" class="days-select" @change="onDaysChange">
+          <option :value="1">{{ t('dashboard.range.today') }}</option>
+          <option :value="7">{{ t('dashboard.range.last7d') }}</option>
+          <option :value="30">{{ t('dashboard.range.last30d') }}</option>
+          <option :value="90">{{ t('dashboard.range.last90d') }}</option>
         </select>
         
         <!-- 刷新按钮 -->
-        <button class="btn btn-refresh" @click="load" :disabled="loading" title="刷新数据">
+        <button class="btn btn-refresh" @click="onRefresh" :disabled="loading" :title="t('dashboard.v2.refreshData')">
           <span v-if="loading">⏳</span>
           <span v-else>🔄</span>
         </button>
       </div>
     </div>
 
-    <!-- 数据视图降级提示：不阻塞布局，仅展示一条温和提示 -->
-    <div
-      v-if="degradedHint"
-      class="alert alert-info"
-      role="status"
-      data-testid="dashboard-degraded-hint"
-    >
-      <span class="alert-icon" aria-hidden="true">ℹ️</span>
-      <span class="alert-text">{{ degradedHint }}</span>
-      <span v-if="degradedView" class="alert-meta">视图：{{ degradedView }}</span>
-    </div>
-
-    <!-- 错误态：带重试按钮的友好提示 -->
     <div v-if="error" class="alert alert-danger" role="alert">
       <span class="alert-icon" aria-hidden="true">⚠️</span>
       <span class="alert-text">{{ error }}</span>
@@ -239,125 +179,32 @@ function openStatsDrawer(tab: 'apikeys' | 'models') {
         type="button"
         class="btn btn-sm alert-retry"
         :disabled="loading"
-        aria-label="重新加载数据"
-        @click="load"
+        :aria-label="t('dashboard.v2.reloadAria')"
+        @click="onRefresh"
       >
         <span v-if="loading">⏳</span>
-        <span v-else>🔄 重试</span>
+        <span v-else>🔄 {{ t('dashboard.v2.retry') }}</span>
       </button>
     </div>
 
-    <!-- 后台任务横幅 -->
-    <div
-      v-if="discoveryStatus?.running"
-      class="background-tasks-banner background-tasks-banner--active"
-    >
-      <strong>后台任务进行中</strong>
-      <span>模型发现（{{ discoveryStatus.running.trigger }}）</span>
-      <span>开始 {{ fmtDate(discoveryStatus.running.started_at) }}</span>
-      <span>心跳 {{ fmtDate(discoveryStatus.running.heartbeat_at) }}</span>
-      <span class="background-tasks-hint">管理页可能变慢</span>
-      <RouterLink to="/models">查看详情</RouterLink>
-    </div>
-    <div
-      v-else-if="discoveryStatus?.latest"
-      class="background-tasks-banner"
-    >
-      <span>最近模型发现：{{ discoveryStatus.latest.status }}</span>
-      <span>{{ fmtDate(discoveryStatus.latest.finished_at || discoveryStatus.latest.started_at) }}</span>
-      <RouterLink to="/models">模型页</RouterLink>
-    </div>
+    <BoardPanel v-if="activeTab === 'board'" />
 
-    <!-- 紧凑统计行 -->
-    <div class="stats-section">
-      <div class="stats-row" v-if="summary && overview">
-        <!-- 9个指标 -->
-        <div class="stat-mini">
-          <div class="stat-mini__label">总请求数</div>
-          <div class="stat-mini__value">{{ fmt(summary.total_requests) }}</div>
-        </div>
-        <div class="stat-mini">
-          <div class="stat-mini__label">总Token</div>
-          <div class="stat-mini__value">{{ fmt((summary.total_prompt_tokens ?? 0) + (summary.total_completion_tokens ?? 0)) }}</div>
-        </div>
-        <div class="stat-mini">
-          <div class="stat-mini__label">总费用</div>
-          <div class="stat-mini__value">{{ fmtCost(summary.total_cost_usd) }}</div>
-        </div>
-        <!-- 2026-07-13: 总积分消耗（admin）— 按平台定价 × 实际 token 量从
-             request_logs/usage_ledger.credits_charged 求和。"销售口径"积分，
-             与上游成本口径（cost_usd）并列。 -->
-        <div class="stat-mini stat-mini--highlight">
-          <div class="stat-mini__label">总积分消耗</div>
-          <div class="stat-mini__value">{{ fmt(summary.total_credits_charged ?? 0) }}</div>
-          <div class="stat-mini__sub">按定价 × token 计算</div>
-        </div>
-        <div class="stat-mini">
-          <div class="stat-mini__label">成功率</div>
-          <div class="stat-mini__value" :style="{ color: (summary.success_rate ?? 1) > 0.95 ? 'var(--success)' : 'var(--warning)' }">
-            {{ fmtPct(summary.success_rate) }}
-          </div>
-        </div>
-        <div class="stat-mini">
-          <div class="stat-mini__label">平均延迟</div>
-          <div class="stat-mini__value">{{ fmt(summary.avg_latency_ms) }}ms</div>
-        </div>
-        <div class="stat-mini">
-          <div class="stat-mini__label">API Key</div>
-          <div class="stat-mini__value">{{ fmt(overview.active_api_keys) }}</div>
-        </div>
-        <div class="stat-mini">
-          <div class="stat-mini__label">模型数</div>
-          <div class="stat-mini__value">{{ fmt(overview.active_models_in_window) }}</div>
-        </div>
-        <div class="stat-mini">
-          <div class="stat-mini__label">供应商</div>
-          <div class="stat-mini__value">{{ fmt(overview.active_providers) }}</div>
-        </div>
-        <div class="stat-mini" v-if="compStats">
-          <div class="stat-mini__label">会话压缩</div>
-          <div class="stat-mini__value">{{ compStats.compressed_total }}</div>
-        </div>
-      </div>
-      <div class="stats-row stats-row--loading" v-else-if="loading">
-        <div class="stat-mini stat-mini--skeleton" v-for="i in 9" :key="i"></div>
-      </div>
-    </div>
-
-    <!-- 会话统计面板（仅在 stats tab 显示） -->
     <SessionStatsPanel v-if="activeTab === 'stats'" style="margin-bottom: 20px;" />
 
-    <!-- 系统监测面板（仅在 selfcheck tab 显示） -->
     <SelfCheckPanel v-if="activeTab === 'selfcheck'" />
 
-    <!-- 实时请求流V2（仅在 stream tab 显示） -->
     <LiveRequestStreamV2
       v-if="activeTab === 'stream'"
       :key="swimLaneReinitKey"
       @open-detail="openRequestDetail"
     />
 
-    <!-- 空状态：仅在非实时流 Tab 且汇总无数据时显示
-         实时流 Tab 由 LiveRequestStreamV2 自行处理冷启动/空态，避免与泳道叠层 -->
-    <div
-      v-if="!loading && !error && summary && summary.total_requests === 0 && activeTab !== 'stream'"
-      class="empty-state"
-      role="status"
-    >
-      <div class="empty-state__icon" aria-hidden="true">🚀</div>
-      <div class="empty-state__title">暂无请求数据</div>
-      <div class="empty-state__hint">
-        配置好提供商后，通过 <code>/v1/chat/completions</code> 发起调用即可在此查看实时请求流。
-      </div>
-    </div>
-
-    <!-- 抽屉组件 -->
     <StatsDrawer
       ref="statsDrawerRef"
-      :hot-keys="hotKeys"
-      :models="models"
+      :hot-keys="drawerState.hotKeys.value"
+      :models="drawerState.models.value"
       :days="days"
-      :loading="loading"
+      :loading="drawerState.drawerLoading.value"
     />
 
     <!-- 请求详情抽屉 -->

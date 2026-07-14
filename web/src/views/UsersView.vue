@@ -163,7 +163,7 @@ onMounted(() => { load(); loadTenants() })
 <template>
   <div class="users-page">
     <div class="page-header">
-      <h1>👤 {{ t('users.title') }}</h1>
+      <h1>{{ t('users.title') }}</h1>
       <button v-if="canCreateUsers" class="btn btn-primary" @click="showCreate = true">+ {{ t('users.create') }}</button>
     </div>
 

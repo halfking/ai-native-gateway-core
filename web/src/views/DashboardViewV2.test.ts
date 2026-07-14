@@ -17,44 +17,34 @@ async function readViewSource(filename: string): Promise<string> {
   throw new Error(`${filename} not found in candidate paths`)
 }
 
-describe('dashboard degraded-mode contract', () => {
-  it('exposes degraded markers in the UsageSummary type', async () => {
-    const source = await readViewSource('DashboardViewV2.vue')
-    // The dashboard view must compute a `degradedHint` and a `degradedView`
-    // when summary or overview reports `degraded: true`.
-    expect(source).toMatch(/degradedHint/)
-    expect(source).toMatch(/degradedView/)
-    expect(source).toMatch(/summary\.value\?\.hint/)
-    expect(source).toMatch(/overview\.value\?\.hint/)
+describe('dashboard board tab contract', () => {
+  it('defaults to board tab in DashboardView', async () => {
+    const source = await readViewSource('DashboardView.vue')
+    expect(source).toContain("ref<DashboardTabId>('board')")
+    expect(source).toContain("saved === 'board'")
   })
 
-  it('renders the degraded hint as a non-blocking info banner', async () => {
+  it('renders BoardPanel only on board tab', async () => {
     const source = await readViewSource('DashboardViewV2.vue')
-    expect(source).toContain('dashboard-degraded-hint')
-    expect(source).toMatch(/<div[^>]*class="alert alert-info"/)
-    // The degraded hint must come BEFORE the destructive alert-danger
-    // so the operator sees the friendly explanation first.
-    const infoIdx = source.indexOf('alert alert-info')
-    const dangerIdx = source.indexOf('alert alert-danger')
-    expect(infoIdx).toBeGreaterThan(-1)
-    expect(dangerIdx).toBeGreaterThan(-1)
-    expect(infoIdx).toBeLessThan(dangerIdx)
+    expect(source).toContain("activeTab === 'board'")
+    expect(source).toContain('BoardPanel')
+    expect(source).not.toMatch(/<div class="stats-section"/)
   })
 
-  it('updates the UsageSummary type to include degradation fields', async () => {
+  it('loads SSE only when stream tab is mounted via v-if', async () => {
+    const source = await readViewSource('DashboardViewV2.vue')
+    expect(source).toMatch(/activeTab === 'stream'/)
+    expect(source).toContain('LiveRequestStreamV2')
+    const dash = await readViewSource('DashboardView.vue')
+    expect(dash).not.toContain('useLiveStream')
+  })
+
+  it('board API module exports fetchDashboardBoard', async () => {
     const source = await readFile(
-      resolve(process.cwd(), 'web/src/api/usage.ts').toString(),
+      resolve(process.cwd(), 'web/src/api/board.ts').toString(),
       'utf8',
-    ).catch(() => readFile(resolve(process.cwd(), 'src/api/usage.ts'), 'utf8'))
-    expect(source).toContain('degraded?:')
-    expect(source).toContain('missing_view?:')
-    expect(source).toContain('error_code?:')
-    expect(source).toContain('hint?:')
-  })
-
-  it('does not show global empty state on live stream tab (stream handles its own empty UI)', async () => {
-    const source = await readViewSource('DashboardViewV2.vue')
-    expect(source).toMatch(/activeTab !== 'stream'/)
-    expect(source).toMatch(/LiveRequestStreamV2 自行处理/)
+    ).catch(() => readFile(resolve(process.cwd(), 'src/api/board.ts'), 'utf8'))
+    expect(source).toContain('fetchDashboardBoard')
+    expect(source).toContain('/api/admin/dashboard/board')
   })
 })

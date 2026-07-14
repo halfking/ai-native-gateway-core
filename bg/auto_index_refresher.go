@@ -292,10 +292,10 @@ SELECT
     (COALESCE(100 * (1 - LEAST(1.0, AVG(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m) / 20.0)), 50) * 0.50
    + COALESCE(100 - LEAST(100, percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms) / 30), 50) * 0.10
    + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.15
-   + 50 * 0.20
-   + 100 * 0.05
-   + 80 * 0.10)::numeric(8,4) AS score_cost_first
-FROM request_logs rl
+    + 50 * 0.20
+    + 100 * 0.05
+    + 80 * 0.10)::numeric(8,4) AS score_cost_first
+FROM request_logs_hot rl
 JOIN credentials cr ON cr.id = rl.credential_id
 LEFT JOIN model_offers mo
   ON mo.credential_id = rl.credential_id
@@ -349,7 +349,7 @@ LEFT JOIN models_canonical mc       ON mc.id = pm.canonical_id
 WHERE v.is_routable = TRUE
   AND pm.raw_model_name IS NOT NULL
   AND NOT EXISTS (
-      SELECT 1 FROM request_logs rl
+      SELECT 1 FROM request_logs_hot rl
       WHERE rl.credential_id = v.credential_id
         AND (rl.outbound_model = pm.raw_model_name
           OR rl.client_model  = pm.raw_model_name)
@@ -440,7 +440,7 @@ SELECT
          ELSE 0
     END AS avg_cost_per_1k_usd,
     MODE() WITHIN GROUP (ORDER BY rl.credential_id) AS primary_credential_id
-FROM request_logs rl
+FROM request_logs_hot rl
 WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
   AND rl.ts < $1
   AND rl.is_auto_request = TRUE
