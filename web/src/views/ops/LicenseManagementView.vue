@@ -21,8 +21,17 @@ import {
   type ProductModule,
   type LicenseModuleOverride,
 } from '../../api/ops'
+import { getLicenseHolders, type LicenseHolder } from '../../api/public'
 
 const { t } = useI18n()
+
+const activeTab = ref('licenses')
+const holders = ref<LicenseHolder[]>([])
+const holdersTotal = ref(0)
+const holdersLoading = ref(false)
+const holderQuery = ref('')
+const holdersPage = ref(1)
+const holdersPageSize = ref(20)
 
 const licenses = ref<License[]>([])
 const devices = ref<Record<number, LicenseDevice[]>>({})
@@ -354,9 +363,32 @@ async function handleDeactivateDevice(row: License, device: LicenseDevice) {
   }
 }
 
+async function loadHolders() {
+  holdersLoading.value = true
+  try {
+    const res = await getLicenseHolders({
+      offset: (holdersPage.value - 1) * holdersPageSize.value,
+      limit: holdersPageSize.value,
+      query: holderQuery.value || undefined,
+    })
+    holders.value = res.holders || []
+    holdersTotal.value = res.total
+  } catch {
+    ElMessage.error(t('ops.license.loadHoldersFailed'))
+  } finally {
+    holdersLoading.value = false
+  }
+}
+
+function formatDonation(cents?: number) {
+  if (!cents) return '—'
+  return `¥${(cents / 100).toFixed(2)}`
+}
+
 onMounted(() => {
   load()
   loadOfflineRequests()
+  loadHolders()
 })
 </script>
 
@@ -368,6 +400,9 @@ onMounted(() => {
         + {{ t('ops.license.create') }}
       </el-button>
     </div>
+
+    <el-tabs v-model="activeTab" class="license-tabs" @tab-change="(name: string) => name === 'holders' && loadHolders()">
+      <el-tab-pane :label="t('ops.license.licensesTab')" name="licenses">
 
     <!-- Offline Activation Requests -->
     <el-card v-if="offlineRequests.length > 0" class="offline-requests-card" shadow="never">
@@ -552,6 +587,51 @@ onMounted(() => {
         />
       </div>
     </el-card>
+
+      </el-tab-pane>
+
+      <el-tab-pane :label="t('ops.license.holdersTab')" name="holders">
+        <el-card class="main-card" shadow="never">
+          <div class="toolbar">
+            <el-input
+              v-model="holderQuery"
+              :placeholder="t('ops.license.holderEmail')"
+              clearable
+              style="width: 280px"
+              @keyup.enter="holdersPage = 1; loadHolders()"
+            />
+            <el-button type="primary" @click="holdersPage = 1; loadHolders()">{{ t('common.button.search') }}</el-button>
+          </div>
+          <el-table v-loading="holdersLoading" :data="holders" size="small">
+            <el-table-column prop="email" :label="t('ops.license.holderEmail')" min-width="200" />
+            <el-table-column prop="display_name" :label="t('ops.license.customer')" width="140" />
+            <el-table-column :label="t('ops.license.holderLicenses')" width="100">
+              <template #default="{ row = {} } = {}">{{ row.license_count ?? 0 }}</template>
+            </el-table-column>
+            <el-table-column :label="t('ops.license.holderDevices')" width="100">
+              <template #default="{ row = {} } = {}">{{ row.device_count ?? 0 }}</template>
+            </el-table-column>
+            <el-table-column :label="t('ops.license.holderDonations')" width="120">
+              <template #default="{ row = {} } = {}">{{ formatDonation(row.donation_total_cents) }}</template>
+            </el-table-column>
+            <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
+              <template #default="{ row = {} } = {}">{{ formatDate(row.created_at) }}</template>
+            </el-table-column>
+          </el-table>
+          <div class="pagination-wrapper">
+            <el-pagination
+              v-model:page-size="holdersPageSize"
+              :page-sizes="[10, 20, 50]"
+              :total="holdersTotal"
+              :current-page="holdersPage"
+              layout="total, sizes, prev, pager, next"
+              @current-change="(p: number) => { holdersPage = p; loadHolders() }"
+              @size-change="(s: number) => { holdersPageSize = s; holdersPage = 1; loadHolders() }"
+            />
+          </div>
+        </el-card>
+      </el-tab-pane>
+    </el-tabs>
 
     <!-- Create License Dialog -->
     <el-dialog

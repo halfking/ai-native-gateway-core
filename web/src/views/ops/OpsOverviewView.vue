@@ -19,6 +19,7 @@ import {
   type OfflineActivationRequest,
   type UpgradeLog,
 } from '../../api/ops'
+import { getDownloadStats, type DownloadStats } from '../../api/public'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -37,12 +38,14 @@ const pendingRequests = ref<OfflineActivationRequest[]>([])
 // (refresh daemon, grace period) not customer license catalogue.
 const licenseHealth = ref<LicenseHealth | null>(null)
 const licenseStatus = ref<LicenseStatus | null>(null)
+const downloadStats = ref<DownloadStats | null>(null)
 
 const quickLinks = computed(() => [
   { path: '/ops/center', icon: '🖥️', label: t('ops.center.title') },
   { path: '/ops/licenses', icon: '🔑', label: t('ops.license.title') },
   { path: '/ops/autoupdate', icon: '🚀', label: t('ops.autoupdate.title') },
   { path: '/ops/faults', icon: '⚠️', label: t('ops.fault.title') },
+  { path: '/download', icon: '📦', label: t('ops.overview.publicPortal') },
 ])
 
 function isToday(dateStr: string) {
@@ -79,6 +82,7 @@ async function load() {
       faultEvents,
       licHealth,
       licStatus,
+      dlStats,
     ] = await Promise.all([
       getCenterStats(),
       getLicenses({ limit: 1 }),
@@ -91,6 +95,7 @@ async function load() {
       // 4xx/5xx here shouldn't fail the whole page — catch locally.
       getLicenseHealth().catch(() => null),
       getLicenseStatus().catch(() => null),
+      getDownloadStats().catch(() => null),
     ])
 
     centerStats.value = center
@@ -105,6 +110,7 @@ async function load() {
     ).length
     licenseHealth.value = licHealth
     licenseStatus.value = licStatus
+    downloadStats.value = dlStats
   } catch (error) {
     ElMessage.error(t('ops.overview.loadFailed'))
     console.error(error)
@@ -199,6 +205,18 @@ onMounted(load)
         <div class="stat-item">
           <div class="stat-value stat-danger">{{ openFaults }}</div>
           <div class="stat-label">{{ t('ops.overview.openFaults') }}</div>
+        </div>
+      </el-card>
+      <el-card v-if="downloadStats" shadow="hover" class="stat-card" @click="goTo('/download')">
+        <div class="stat-item">
+          <div class="stat-value stat-info">{{ downloadStats.today_downloads }}</div>
+          <div class="stat-label">{{ t('ops.overview.todayDownloads') }}</div>
+        </div>
+      </el-card>
+      <el-card v-if="downloadStats" shadow="hover" class="stat-card" @click="goTo('/download')">
+        <div class="stat-item">
+          <div class="stat-value stat-primary">{{ downloadStats.supporter_count }}</div>
+          <div class="stat-label">{{ t('ops.overview.supporterCount') }}</div>
         </div>
       </el-card>
     </div>

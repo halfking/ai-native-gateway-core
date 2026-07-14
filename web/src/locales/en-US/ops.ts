@@ -250,6 +250,7 @@ export default {
     loadHeartbeatFailed: 'Failed to load heartbeat history',
     commandSent: 'Command sent',
     commandFailed: 'Failed to send command',
+    lastCommand: 'Last command {id} · status: {status}',
     instanceId: 'Instance ID',
     hostname: 'Hostname',
     ipAddress: 'IP Address',

@@ -56,6 +56,7 @@ export default {
     step2: '2. Upload or paste request content',
     step3: '3. Wait for approval and download activation.resp',
     uploadLabel: 'Activation request content',
+    uploadFile: 'Upload file',
     uploadPlaceholder: 'Paste Base64 content of activation.req…',
     submit: 'Submit request',
     requestId: 'Request ID',

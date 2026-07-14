@@ -57,6 +57,7 @@ export default {
     step2: '2. 上传或粘贴请求内容',
     step3: '3. 等待审批并下载 activation.resp',
     uploadLabel: '激活请求文件内容',
+    uploadFile: '上传文件',
     uploadPlaceholder: '粘贴 activation.req 的 Base64 内容…',
     submit: '提交请求',
     requestId: '请求 ID',
