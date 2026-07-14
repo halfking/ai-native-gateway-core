@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import {
   storageConfigGet, storageConfigUpdate, storageConfigTestPath,
@@ -10,6 +11,7 @@ import {
   type MigrationRun,
 } from '../../api'
 
+const { t } = useI18n()
 const config = ref<StorageConfig | null>(null)
 const loading = ref(false)
 const saving = ref(false)
@@ -242,7 +244,7 @@ function fmtNum(n?: number) {
 <template>
   <div class="storage-config">
     <div class="header">
-      <h2>存储配置</h2>
+      <h2>{{ t('dataLifecycle.pages.storageConfig') }}</h2>
       <button @click="load" :disabled="loading" class="btn-refresh">
         {{ loading ? '加载中...' : '刷新' }}
       </button>

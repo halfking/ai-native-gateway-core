@@ -202,6 +202,7 @@ export default {
       stable: 'Stable',
       beta: 'Beta',
       canary: 'Canary',
+      _unknown: 'Unknown',
     },
     logStatus: {
       pending: 'Pending',
@@ -211,6 +212,7 @@ export default {
       success: 'Success',
       failed: 'Failed',
       rolled_back: 'Rolled Back',
+      _unknown: 'Unknown',
     },
   },
 
@@ -308,6 +310,7 @@ export default {
       active: 'Active',
       archived: 'Archived',
       completed: 'Completed',
+      _unknown: 'Unknown',
     },
   },
 }

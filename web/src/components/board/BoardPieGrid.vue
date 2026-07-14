@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import DrilldownPieChart from '../analytics/DrilldownPieChart.vue'
 import { fetchBoardErrorDrill, type BoardPayload, type BoardPieItem } from '../../api/board'
@@ -39,12 +39,10 @@ async function onDrillDimChange(dim: 'model' | 'provider' | 'client') {
   if (errorDrillKind.value) await onErrorClick(errorDrillKind.value)
 }
 
-function metricToggle() {
-  return [
-    { key: 'requests', label: t('dashboard.board.metricRequests') },
-    { key: 'tokens', label: t('dashboard.board.metricTokens') },
-  ]
-}
+const metricOptions = computed(() => [
+  { key: 'requests' as const, label: t('dashboard.board.metricRequests') },
+  { key: 'tokens' as const, label: t('dashboard.board.metricTokens') },
+])
 </script>
 
 <template>
@@ -56,9 +54,17 @@ function metricToggle() {
       :loading="loading"
     >
       <template #metric-toggle>
-        <select v-model="pieMetric" class="metric-select">
-          <option v-for="m in metricToggle()" :key="m.key" :value="m.key">{{ m.label }}</option>
-        </select>
+        <div class="metric-radio" role="radiogroup" :aria-label="t('dashboard.board.metricToggle')">
+          <label
+            v-for="m in metricOptions"
+            :key="m.key"
+            class="metric-radio__item"
+            :class="{ active: pieMetric === m.key }"
+          >
+            <input v-model="pieMetric" type="radio" name="board-pie-metric" :value="m.key" />
+            <span>{{ m.label }}</span>
+          </label>
+        </div>
       </template>
     </DrilldownPieChart>
 
@@ -128,10 +134,38 @@ function metricToggle() {
   gap: 12px;
   margin-bottom: 16px;
 }
-.metric-select {
-  font-size: 12px;
-  padding: 2px 6px;
+.metric-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-subtle, var(--bg));
+}
+.metric-radio__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  user-select: none;
+}
+.metric-radio__item input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+}
+.metric-radio__item.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-weight: 600;
 }
 .drill-panel {
   grid-column: 1 / -1;

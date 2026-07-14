@@ -137,7 +137,7 @@ onMounted(load)
 <template>
   <div>
     <div class="page-header">
-      <h2>路由策略</h2>
+      <h2>{{ t('routing.policy.title') }}</h2>
       <button class="btn btn-ghost" @click="load" :disabled="loading">刷新</button>
     </div>
     <p style="color:var(--muted);margin-bottom:16px">

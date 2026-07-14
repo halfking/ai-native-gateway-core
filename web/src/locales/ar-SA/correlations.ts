@@ -1,6 +1,11 @@
-// Auto-translated draft (ar-SA) · 2026-07-02 · please review
-// correlations.ts — نصوص CorrelationsView.
-// سلسلة واحدة.
+// Auto-synced from en-US (ar-SA)
 export default {
-  title: 'تحليل ارتباط Auto-Route (Correlations)',
+  title: 'Auto-Route correlation analysis',
+  sections: {
+    byModel: 'By model',
+    byStrategy: 'By strategy',
+    byTaskType: 'By task type',
+    outlier: 'By (model, task type) — outlier detector',
+    topModels: 'Top-3 models per task type',
+  },
 }

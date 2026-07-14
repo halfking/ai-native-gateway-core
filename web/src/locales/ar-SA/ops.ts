@@ -166,6 +166,7 @@ export default {
       stable: 'Stable',
       beta: 'Beta',
       canary: 'Canary',
+      _unknown: 'غير معروف',
     },
     logStatus: {
       pending: 'Pending',
@@ -175,6 +176,7 @@ export default {
       success: 'Success',
       failed: 'Failed',
       rolled_back: 'Rolled Back',
+      _unknown: 'غير معروف',
     },
   },
 
@@ -260,6 +262,22 @@ export default {
       active: 'Active',
       archived: 'Archived',
       completed: 'Completed',
+      _unknown: 'غير معروف',
     },
   },
+
+
+  overview: {
+    title: 'نظرة عامة على العمليات',
+    loadFailed: 'فشل تحميل بيانات النظرة العامة',
+    onlineInstances: 'النسخ المتصلة',
+    totalLicenses: 'إجمالي التراخيص',
+    pendingApprovals: 'تفعيلات قيد الموافقة',
+    todayUpgrades: 'ترقيات اليوم',
+    openFaults: 'أعطال مفتوحة',
+    recentUpgrades: 'آخر الترقيات',
+    recentFaults: 'أحدث التنبيهات',
+    pendingOffline: 'تفعيلات offline قيد الموافقة',
+    viewAll: 'عرض الكل',
+  }
 }

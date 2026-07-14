@@ -3,7 +3,7 @@
 // 马甲数 (MAAS / ledger / wallet / orders) 标签直接使用 API 返回的常量,这里只覆盖外壳文案。
 export default {
   list: {
-    title: '🏢 租户管理',
+    title: '租户管理',
     createBtn: '+ 新建租户',
     statusLabel: '状态',
     allStatuses: '全部',
@@ -19,6 +19,13 @@ export default {
     colCreated: '创建时间',
     empty: '无数据',
     loadFailed: '加载失败',
+  },
+  status: {
+    active: '正常',
+    trial: '试用',
+    suspended: '暂停',
+    expired: '过期',
+    disabled: '已禁用',
   },
   create: {
     title: '新建租户',
@@ -376,6 +383,47 @@ export default {
     channelWechat: '微信支付',
     typeSubscribe: '月包订阅',
     typeTopup: '加油包',
+  },
+
+  tenantOps: {
+    autoUpdate: {
+      title: '我的更新',
+      subtitle: '租户 {tenant} 的只读更新信息',
+      loadFailed: '更新信息加载失败，请稍后重试或联系平台管理员。',
+      infoAlert: '平台会根据发布策略为你的实例提供更新，此页面不提供发布或回滚操作。',
+      currentVersion: '当前版本',
+      emptyReleases: '当前没有可用更新',
+      table: {
+        version: '版本',
+        title: '标题',
+        channel: '渠道',
+        mandatory: '必须更新',
+        publishedAt: '发布时间',
+        yes: '是',
+        no: '否',
+      },
+      unknownVersion: '未知',
+      loadError: '无法加载可用更新',
+    },
+    license: {
+      title: '我的授权',
+      subtitle: '租户 {tenant} 的授权信息（只读）',
+      loadFailed: '授权信息加载失败，请稍后重试或联系平台管理员。',
+      infoAlert: '此页面仅显示当前租户信息，授权变更请联系平台管理员。',
+      empty: '当前租户暂无授权记录',
+      table: {
+        tier: '套餐',
+        maxDevices: '设备上限',
+        expiresAt: '到期时间',
+        status: '状态',
+        features: '功能',
+      },
+      status: {
+        active: '有效',
+        expired: '已过期',
+        revoked: '已撤销',
+      },
+    },
   },
 
   maasUsageView: {

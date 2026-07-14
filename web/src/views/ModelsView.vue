@@ -779,7 +779,7 @@ watch(activeTab, async (tab) => {
 <template>
   <div>
     <div class="page-header">
-      <h2>模型与目录</h2>
+      <h2>{{ t('models.page.title') }}</h2>
       <div v-if="activeTab === 'canonical'" style="display:flex;gap:8px;align-items:center">
         <span class="badge badge-gray">{{ filtered.length }} 个模型</span>
         <button v-if="!readOnly" class="btn btn-ghost btn-sm" @click="openFeaturedDrawer">

@@ -76,7 +76,7 @@ export default {
       aliasPlaceholder: '如: prod, dev, zhangsan-cli',
       copied: '✓ 已复制',
       copy: '📋 复制密钥',
-      stats: '📊 使用统计',
+      stats: 'Statistiques d’utilisation',
       approve: '审批',
       disable: '禁用',
       enable: '启用',

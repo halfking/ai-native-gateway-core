@@ -141,4 +141,8 @@ export default {
   time: '時間',
   warning: '警告',
   yes: '是',
+  view: '查看',
+  updateSuccess: '更新成功',
+  operationFailed: '操作失败',
+  errorColumn: '错误',
 }

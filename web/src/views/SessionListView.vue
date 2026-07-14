@@ -105,6 +105,14 @@ const searchQ = ref('')
 
 const compressedCount = computed(() => data.value?.sessions.filter(s => s.is_compressed).length || 0)
 
+function humanizeError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e)
+  if (/session manager not wired/i.test(msg)) {
+    return t('sessions.list.errors.managerNotWired')
+  }
+  return msg
+}
+
 async function loadData() {
   loading.value = true
   error.value = ''
@@ -116,7 +124,7 @@ async function loadData() {
       q: searchQ.value.trim() || undefined,
     })
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = humanizeError(e)
   } finally {
     loading.value = false
   }

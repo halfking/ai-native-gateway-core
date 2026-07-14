@@ -63,6 +63,9 @@ export default {
     'auth.login_failed': '登录失败',
     'auth.logout': '登出',
     'auth.rate_limited': '限流',
+    'authentication.login': '登录',
+    'authentication.login_failed': '登录失败',
+    'authentication.logout': '登出',
   },
   errors: {
     loadFailed: '加载失败',

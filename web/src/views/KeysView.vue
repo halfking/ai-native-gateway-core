@@ -574,7 +574,7 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <div class="page-header">
-      <h2>API 密钥管理</h2>
+      <h2>{{ t('keys.list.title') }}</h2>
       <div style="display:flex;gap:8px">
         <button class="btn btn-ghost" @click="openDefaultLimits">⚙ 默认限制</button>
         <button class="btn btn-primary" @click="openNew">+ 签发密钥</button>
@@ -791,7 +791,7 @@ onBeforeUnmount(() => {
               >
                 {{ copiedId === `drawer-${selectedKey.id}` ? t('keys.copied') : t('keys.copy') }}
               </button>
-              <button class="btn btn-secondary btn-sm" @click="viewStats(selectedKey)">📊 使用统计</button>
+              <button class="btn btn-secondary btn-sm" @click="viewStats(selectedKey)">{{ t('keys.list.drawer.stats') }}</button>
               <button
                 v-if="selectedKey.status === 'pending'"
                 class="btn btn-success btn-sm"

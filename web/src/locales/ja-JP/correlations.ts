@@ -1,6 +1,11 @@
-// Auto-translated draft (zh-TW/ja-JP) · 2026-07-02 · please review
-// correlations.ts — CorrelationsView 文案。
-// 単一の文字列です。
+// Auto-synced from en-US (ja-JP)
 export default {
-  title: 'Auto-Route 関連分析 (Correlations)',
+  title: 'Auto-Route correlation analysis',
+  sections: {
+    byModel: 'By model',
+    byStrategy: 'By strategy',
+    byTaskType: 'By task type',
+    outlier: 'By (model, task type) — outlier detector',
+    topModels: 'Top-3 models per task type',
+  },
 }

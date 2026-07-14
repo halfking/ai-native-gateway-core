@@ -166,6 +166,7 @@ export default {
       stable: 'Stable',
       beta: 'Beta',
       canary: 'Canary',
+      _unknown: 'Inconnu',
     },
     logStatus: {
       pending: 'Pending',
@@ -175,6 +176,7 @@ export default {
       success: 'Success',
       failed: 'Failed',
       rolled_back: 'Rolled Back',
+      _unknown: 'Inconnu',
     },
   },
 
@@ -260,6 +262,22 @@ export default {
       active: 'Active',
       archived: 'Archived',
       completed: 'Completed',
+      _unknown: 'Inconnu',
     },
   },
+
+
+  overview: {
+    title: 'Vue d’ensemble des opérations',
+    loadFailed: 'Échec du chargement de la vue d’ensemble',
+    onlineInstances: 'Instances en ligne',
+    totalLicenses: 'Licences totales',
+    pendingApprovals: 'Activations en attente',
+    todayUpgrades: 'Mises à niveau du jour',
+    openFaults: 'Pannes ouvertes',
+    recentUpgrades: 'Mises à niveau récentes',
+    recentFaults: 'Alertes récentes',
+    pendingOffline: 'Activations hors ligne en attente',
+    viewAll: 'Tout voir',
+  }
 }

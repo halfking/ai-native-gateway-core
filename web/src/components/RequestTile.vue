@@ -3,6 +3,7 @@
 // 2026-07-13 v5: 现代观测面板风格 — 玻璃质感卡片 + 左侧色带 + 状态圆点
 
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { RequestTile as RequestTileType, GroupByDimension } from '../types/swimlane'
 import {
   VENDOR_COLORS,
@@ -10,6 +11,8 @@ import {
   truncateText,
 } from '../types/swimlane'
 import { errorKindLabel } from '../composables/liveStreamDisplay'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   tile: RequestTileType
@@ -43,11 +46,11 @@ const probeOrigin = computed(() => props.tile.probe_origin || 'direct')
 const probeBadgeClass = computed(() => `request-tile__probe-badge--${probeOrigin.value}`)
 const probeBadgeTooltip = computed(() => {
   const labels: Record<string, string> = {
-    direct: '🛡️ 主动探测 (直连上游)',
-    gateway: '🛡️ 主动探测 (网关路径)',
-    scheduled: '⏰ 周期探测 (scheduler)',
+    direct: t('dashboard.liveStream.probeDirect'),
+    gateway: t('dashboard.liveStream.probeGateway'),
+    scheduled: t('dashboard.liveStream.probeScheduled'),
   }
-  return labels[probeOrigin.value] || '🛡️ 探测请求'
+  return labels[probeOrigin.value] || t('dashboard.liveStream.probeGeneric')
 })
 const isIdle = computed(() => props.tile.status === 'idle')
 const isInProgress = computed(() => props.tile.status === 'in_progress')
@@ -70,7 +73,7 @@ const latencyLabel = computed(() => {
 const modelFontSize = computed(() => calculateFontSize(props.tile.model, 80))
 
 const line2Content = computed(() => {
-  if (isIdle.value) return props.tile.model || '空闲'
+  if (isIdle.value) return props.tile.model || t('dashboard.liveStream.tileIdle')
   if (props.tile.is_probe) {
     const origin = props.tile.probe_origin === 'gateway' ? 'GW' :
                    props.tile.probe_origin === 'scheduled' ? 'SCHED' : 'DIRECT'
@@ -81,9 +84,9 @@ const line2Content = computed(() => {
   if (props.groupBy === 'vendor' || props.groupBy === 'provider') {
     return truncateText(props.tile.model, 12)
   }
-  if (props.tile.status === 'success') return '✓ 成功'
-  if (props.tile.status === 'in_progress') return '处理中'
-  if (props.tile.status === 'cancelled' || props.tile.status === 'canceled') return '已取消'
+  if (props.tile.status === 'success') return `✓ ${t('dashboard.liveStream.legend.success')}`
+  if (props.tile.status === 'in_progress') return t('dashboard.liveStream.legend.inProgress')
+  if (props.tile.status === 'cancelled' || props.tile.status === 'canceled') return t('dashboard.liveStream.legend.cancelled')
   if (props.tile.error_kind) {
     return truncateText(errorKindLabel(props.tile.error_kind), 12)
   }
@@ -91,54 +94,65 @@ const line2Content = computed(() => {
 })
 
 const line3Content = computed(() => {
-  if (isIdle.value) return '心跳占位'
+  if (isIdle.value) return t('dashboard.liveStream.idleHeartbeat')
   if (props.groupBy === 'vendor') return truncateText(props.tile.provider, 10)
   if (props.groupBy === 'provider') return truncateText(props.tile.vendor, 10)
   return truncateText(props.tile.provider, 10)
 })
 
+function tooltipLine(labelKey: string, value: string) {
+  return `${t(labelKey)}: ${value}`
+}
+
 const tooltipText = computed(() => {
   const lines: string[] = []
+  const tip = 'dashboard.liveStream.tooltip'
+  const statusVal = 'dashboard.liveStream.tooltip.statusValue'
   if (props.tile.is_probe) {
-    lines.push('🛡️ 探测请求')
-    const originLabel = props.tile.probe_origin === 'gateway' ? '网关路径' :
-                        props.tile.probe_origin === 'scheduled' ? '定时探测' : '直连上游'
-    lines.push(`来源: ${originLabel}`)
-    if (props.tile.probe_attempt) lines.push(`轮次: 第 ${props.tile.probe_attempt} 轮`)
+    lines.push(t('dashboard.liveStream.probeGeneric'))
+    const originLabel = props.tile.probe_origin === 'gateway'
+      ? t('dashboard.liveStream.originGateway')
+      : props.tile.probe_origin === 'scheduled'
+        ? t('dashboard.liveStream.originScheduled')
+        : t('dashboard.liveStream.originDirect')
+    lines.push(t('dashboard.liveStream.probeOriginLabel', { origin: originLabel }))
+    if (props.tile.probe_attempt) {
+      lines.push(t('dashboard.liveStream.probeAttempt', { n: props.tile.probe_attempt }))
+    }
   }
   if (props.tile.status === 'failure') {
     if (props.tile.error_kind) {
-      lines.push(`错误类型: ${errorKindLabel(props.tile.error_kind)}`)
-      lines.push(`原始代码: ${props.tile.error_kind}`)
+      lines.push(tooltipLine(`${tip}.errorKind`, errorKindLabel(props.tile.error_kind)))
+      lines.push(tooltipLine(`${tip}.errorRawCode`, props.tile.error_kind))
     } else {
-      lines.push('状态: 请求失败')
+      lines.push(tooltipLine(`${tip}.status`, t(`${statusVal}.failure`)))
     }
   } else if (props.tile.status === 'success') {
-    lines.push('状态: 成功')
+    lines.push(tooltipLine(`${tip}.status`, t(`${statusVal}.success`)))
   } else if (props.tile.status === 'in_progress') {
-    lines.push('状态: 处理中')
+    lines.push(tooltipLine(`${tip}.status`, t(`${statusVal}.inProgress`)))
   } else if (props.tile.status === 'cancelled' || props.tile.status === 'canceled') {
-    lines.push('状态: 用户取消')
+    lines.push(tooltipLine(`${tip}.status`, t(`${statusVal}.cancelled`)))
   } else if (props.tile.status === 'idle') {
-    lines.push('状态: 空闲（心跳占位）')
+    lines.push(tooltipLine(`${tip}.status`, t(`${statusVal}.idle`)))
   }
-  if (props.tile.model) lines.push(`模型: ${props.tile.model}`)
-  if (props.tile.vendor) lines.push(`原厂: ${props.tile.vendor}`)
-  if (props.tile.provider) lines.push(`供应商: ${props.tile.provider}`)
+  if (props.tile.model) lines.push(tooltipLine(`${tip}.model`, props.tile.model))
+  if (props.tile.vendor) lines.push(tooltipLine(`${tip}.vendor`, props.tile.vendor))
+  if (props.tile.provider) lines.push(tooltipLine(`${tip}.provider`, props.tile.provider))
   if (props.tile.latency_ms != null) {
     const ms = props.tile.latency_ms
-    lines.push(`延迟: ${ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms'}`)
+    lines.push(tooltipLine(`${tip}.latency`, ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms'))
   }
   if (props.tile.prompt_tokens != null || props.tile.completion_tokens != null) {
     const p = props.tile.prompt_tokens ?? 0
     const c = props.tile.completion_tokens ?? 0
-    lines.push(`Token: ${p} + ${c}`)
+    lines.push(tooltipLine(`${tip}.tokens`, t(`${tip}.tokenFormat`, { p, c })))
   }
-  if (props.tile.cost_usd != null) lines.push(`费用: $${props.tile.cost_usd.toFixed(4)}`)
-  if (props.tile.request_id) lines.push(`ID: ${props.tile.request_id.slice(0, 12)}`)
+  if (props.tile.cost_usd != null) lines.push(tooltipLine(`${tip}.cost`, `$${props.tile.cost_usd.toFixed(4)}`))
+  if (props.tile.request_id) lines.push(tooltipLine(`${tip}.requestId`, props.tile.request_id.slice(0, 12)))
   if (props.tile.timestamp) {
     try {
-      lines.push(`时间: ${new Date(props.tile.timestamp).toLocaleString()}`)
+      lines.push(tooltipLine(`${tip}.time`, new Date(props.tile.timestamp).toLocaleString()))
     } catch { /* ignore */ }
   }
   return lines.join('\n')

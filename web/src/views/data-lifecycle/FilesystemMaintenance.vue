@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import { attachmentFilesystemStats, attachmentFilesystemCleanup } from '../../api'
+
+const { t } = useI18n()
 
 interface FilesystemStats {
   attachment_dir: string
@@ -140,7 +143,7 @@ defineExpose({ load })
 <template>
   <div class="filesystem-maintenance">
     <div class="header">
-      <h2>文件系统维护</h2>
+      <h2>{{ t('dataLifecycle.pages.filesystemMaintenance') }}</h2>
       <button @click="load" :disabled="loading" class="btn-refresh">
         {{ loading ? '加载中...' : '刷新' }}
       </button>

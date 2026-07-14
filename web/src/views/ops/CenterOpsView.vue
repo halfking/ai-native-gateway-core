@@ -287,7 +287,7 @@ onMounted(load)
         <el-table-column prop="region" :label="t('ops.center.region')" width="100" />
         <el-table-column prop="version" :label="t('ops.center.version')" width="120" />
         <el-table-column prop="build_seq" :label="t('ops.center.buildSeq')" width="80" />
-        <el-table-column prop="status" :label="t('common.status')" width="100">
+        <el-table-column prop="status" :label="t('common.table.status')" width="100">
           <template #default="{ row = {} } = {}">
             <el-tag :type="statusType(row.status)" size="small">
               {{ t(`ops.center.status.${row.status}`) }}
