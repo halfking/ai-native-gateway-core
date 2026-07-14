@@ -478,6 +478,10 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		TenantID:  tenant(keyInfo),
 		AppID:     appID(keyInfo),
 		ApiKeyID:  apiKeyIDPtr(keyInfo),
+		// 2026-07-14: hand the per-request id to the executor so the
+		// no-candidates fallback can pass it to ActiveProbeWorker as
+		// the probe row's parent_request_id.
+		RequestID: requestID,
 	})
 
 	if execErr != nil {
@@ -545,6 +549,10 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 			var items []map[string]any
 			if json.Unmarshal(rawInput, &items) == nil {
 				for _, item := range items {
+					if message, ok := convertResponsesInputItem(item); ok {
+						messages = append(messages, message)
+						continue
+					}
 					role, _ := item["role"].(string)
 					if role == "" {
 						role = "user"
@@ -585,6 +593,53 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 	}
 
 	return chatBody
+}
+
+// convertResponsesInputItem preserves the tool-call chain when translating
+// Responses API input items to Chat Completions messages. Dropping these
+// fields leaves function_call_output without a matching function_call.
+func convertResponsesInputItem(item map[string]any) (map[string]any, bool) {
+	typ, _ := item["type"].(string)
+	switch typ {
+	case "function_call":
+		id, _ := item["call_id"].(string)
+		if id == "" {
+			id, _ = item["id"].(string)
+		}
+		name, _ := item["name"].(string)
+		arguments, _ := item["arguments"].(string)
+		if id == "" || name == "" {
+			return nil, false
+		}
+		return map[string]any{
+			"role":    "assistant",
+			"content": nil,
+			"tool_calls": []any{map[string]any{
+				"id":   id,
+				"type": "function",
+				"function": map[string]any{
+					"name":      name,
+					"arguments": arguments,
+				},
+			}},
+		}, true
+	case "function_call_output":
+		id, _ := item["call_id"].(string)
+		if id == "" {
+			return nil, false
+		}
+		output := item["output"]
+		if output == nil {
+			output = ""
+		}
+		return map[string]any{
+			"role":         "tool",
+			"tool_call_id": id,
+			"content":      output,
+		}, true
+	default:
+		return nil, false
+	}
 }
 
 func normalizeResponsesTools(value any) any {

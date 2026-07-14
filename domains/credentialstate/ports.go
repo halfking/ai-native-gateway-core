@@ -21,6 +21,43 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
+// NoCandidatesSignal is the lightweight payload passed from
+// streaming/executors to the state manager when the router returns zero
+// available candidates (ErrNoAvailableNodes / "no_candidate_from_router").
+//
+// 2026-07-14 fix: previously this case never reached ActiveProbeWorker,
+// so a 5-minute model outage on minimax-m3 produced zero probe rows and
+// the realtime dashboard showed only the failed request with no
+// follow-up investigation artifact. Surfacing the candidate list lets
+// the manager fan out per-credential probes just like a single failed
+// request would, but scoped to the most-likely-recoverable nodes.
+type NoCandidatesSignal struct {
+	// ClientModel is the canonical model the caller asked for (e.g.
+	// "minimax-m3"). Used purely for logging / metrics.
+	ClientModel string
+	// TenantID is propagated onto the probe row's tenant_id so the
+	// request_logs hot table shows the correct owner.
+	TenantID string
+	// RequestID is the request_id of the failed business request that
+	// triggered the no-candidates path. Linked to the probe row's
+	// parent_request_id so /request-logs can correlate.
+	RequestID string
+	// Candidates are the upstream candidates the router filtered out.
+	// Only credentials with credential_id != 0 are forwarded to
+	// ActiveProbeWorker.Submit so we never probe a phantom 0-id row.
+	Candidates []NoCandidatesCandidate
+}
+
+// NoCandidatesCandidate is the minimum slice of provider.Candidate the
+// state manager needs to fire an ActiveProbeWorker.Submit. Defined here
+// (not in provider/) to keep credentialstate free of provider imports.
+type NoCandidatesCandidate struct {
+	CredentialID int
+	ProviderID   int
+	RawModel     string
+	BillingMode  string // "free" | "per_token" | "" — used for soft/hard demote semantics
+}
+
 // StateObserver is the write-side contract: producers of state-change
 // events (bg probes, request health tracker) call these methods to push
 // updates into the state manager.
@@ -50,6 +87,17 @@ type StateObserver interface {
 	// background or manual probe). Probe results always win over
 	// in-flight request-derived state.
 	UpdateFromProbe(ctx context.Context, state *State)
+
+	// OnNoCandidates (2026-07-14) fires when the router reports zero
+	// available nodes for a request. The manager fans the signal out
+	// to the registered active_probe submitter, restricted to
+	// candidates with credential_id != 0. This is the missing piece
+	// that previously left "no available node" outages un-probed
+	// (minimax-m3 2026-07-14 incident).
+	//
+	// Safe to call when no active_probe submitter is wired: the
+	// manager logs at debug and returns without touching state.
+	OnNoCandidates(ctx context.Context, sig NoCandidatesSignal)
 }
 
 // StateProvider is the read-side contract: the router queries it to

@@ -452,6 +452,41 @@ func TestLiveStreamRedisStore_IdleMarkerWritesMainQueue(t *testing.T) {
 	if modelIdle == nil {
 		t.Fatalf("expected a model-scoped idle marker (Model=gpt-4o only), got members %#v", members)
 	}
+
+	// 2026-07-14: every idle_marker MUST carry an explicit error_kind
+	// ("no_traffic_5min") and failure_stage ("idle") so the dashboard
+	// can render "无流量 5 分钟" instead of a generic "[空闲]" tile.
+	for label, m := range map[string]*LiveRequest{
+		"vendor":   vendorIdle,
+		"provider": providerIdle,
+		"model":    modelIdle,
+	} {
+		if m == nil {
+			continue
+		}
+		if m.ErrorKind == nil || *m.ErrorKind != idleMarkerErrorKind {
+			t.Errorf("%s idle marker missing error_kind=%q (got %#v)", label, idleMarkerErrorKind, m.ErrorKind)
+		}
+		if m.FailureStage == nil || *m.FailureStage != "idle" {
+			t.Errorf("%s idle marker missing failure_stage=\"idle\" (got %#v)", label, m.FailureStage)
+		}
+		if m.Status != "idle" {
+			t.Errorf("%s idle marker has wrong status %q, want \"idle\"", label, m.Status)
+		}
+	}
+}
+
+// TestLiveStreamRedisStore_IdleThresholdIs5Min guards the 2026-07-14
+// change from 60s → 300s. A future "tighten to 30s" tweak would
+// re-introduce the "空闲 1m" tile pollution operators complained
+// about, so we lock the constant here.
+func TestLiveStreamRedisStore_IdleThresholdIs5Min(t *testing.T) {
+	if idleThresholdSeconds != 300 {
+		t.Fatalf("idleThresholdSeconds = %d, want 300 (5 minutes)", idleThresholdSeconds)
+	}
+	if idleMarkerErrorKind != "no_traffic_5min" {
+		t.Fatalf("idleMarkerErrorKind = %q, want \"no_traffic_5min\"", idleMarkerErrorKind)
+	}
 }
 
 func TestComputeDelta_ReturnsAllLanesWhenOldIsNil(t *testing.T) {
@@ -541,11 +576,27 @@ func TestBuildLiveStreamSnapshot_ServerSideAggregation(t *testing.T) {
 	if len(s.Dimensions["vendor"]) != 2 {
 		t.Fatalf("expected 2 vendor lanes, got %d", len(s.Dimensions["vendor"]))
 	}
-	if s.Dimensions["vendor"][0].ID != "anthropic" {
-		t.Fatalf("vendors should use stable alphabetical order, got %s", s.Dimensions["vendor"][0].ID)
+	// 2026-07-14: buildLiveStreamLanes now sorts by lane id only
+	// (alphabetical), not by stats.Total. Verify the new ordering
+	// rule explicitly. Counts are still per-lane.
+	byID := map[string]int{}
+	for i, l := range s.Dimensions["vendor"] {
+		byID[l.ID] = i
 	}
-	if s.Dimensions["vendor"][1].ID != "openai" || s.Dimensions["vendor"][1].Stats.Total != 2 {
-		t.Fatalf("openai lane total should be 2, got %#v", s.Dimensions["vendor"][1])
+	openaiIdx, ok := byID["openai"]
+	if !ok {
+		t.Fatalf("expected an openai vendor lane, got %#v", s.Dimensions["vendor"])
+	}
+	anthropicIdx, ok := byID["anthropic"]
+	if !ok {
+		t.Fatalf("expected an anthropic vendor lane, got %#v", s.Dimensions["vendor"])
+	}
+	// Alphabetical: "anthropic" < "openai", so anthropic must come first.
+	if anthropicIdx >= openaiIdx {
+		t.Fatalf("alphabetical ordering violated: anthropic=%d openai=%d", anthropicIdx, openaiIdx)
+	}
+	if s.Dimensions["vendor"][openaiIdx].Stats.Total != 2 {
+		t.Fatalf("openai lane total should be 2, got %d", s.Dimensions["vendor"][openaiIdx].Stats.Total)
 	}
 	if len(s.Dimensions["provider"][0].Requests) == 0 {
 		t.Fatal("provider lane should include render-ready requests")
