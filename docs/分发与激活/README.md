@@ -77,11 +77,11 @@ https://llm.kxpms.cn    install.sh 5 模式     4 入口激活（trial/key/     
 
 | 能力 | 目标路径 | 优先级 |
 |------|----------|--------|
-| 用户侧激活向导 UI | `web/src/views/setup/ActivationWizard.vue` | P1 |
+| 用户侧激活向导 UI | `web/src/views/ActivationWizard.vue` | P1 |
 | 首次访问授权对话框 | `web/src/components/TelemetryConsentDialog.vue` | P1 |
-| License 详情 / 遥测 / 升级 用户侧 UI | `web/src/views/settings/{LicenseInfo,Telemetry,UpgradePanel}.vue` | P1 |
+| License 详情 / 升级 用户侧 UI | `web/src/views/LicenseInfoView.vue`、`web/src/views/UpgradePanel.vue` | P1 |
 | 首页升级 Banner | `web/src/components/UpgradeBanner.vue` | P2 |
-| 用户侧网关 API（`/api/system/license/*`、`/api/system/upgrade/*`） | `gateway/internal/api/{setup_handler,upgrade_user_handler,telemetry_handler,license_user_handler}.go` | P0（Phase 2 入口） |
+| 用户侧网关 API（`/api/system/license/*`、`/api/system/upgrade/*`） | `licensing/customer_api.go`、`autoupdate/customer_api.go` | 已有；契约/试用/error mapping 需收敛 |
 | 运行状态采集器（系统 + 流量 + 业务聚合） | `gateway/internal/collector/*.go` | P1 |
 | 独立回退 CLI | `scripts/kx-gateway-rollback` | P2 |
 | 反调试 / 自检 / 防重放 | `licensing/{antitamper,antidebug,nonce}.go` | P2 |
@@ -90,6 +90,29 @@ https://llm.kxpms.cn    install.sh 5 模式     4 入口激活（trial/key/     
 > 详细缺口与排期见 [11-实施路线图](./11-实施路线图.md)。
 
 ## 五、阅读顺序建议
+
+## 六、2026-07-14 审计与增强方案
+
+本次审计以代码为准，确认当前主链路为 `installer CLI → licensing → License Authority`，浏览器侧激活、运行状态采集接收、主动升级推送和告警闭环仍需补齐。
+
+### 审计报告
+
+1. [审计范围与方法](./audit/01-scope.md)
+2. [现状能力矩阵](./audit/02-current-state.md)
+3. [缺口分析](./audit/03-gaps.md)
+4. [优先级矩阵](./audit/04-priorities.md)
+5. [审计建议与决策](./audit/05-recommendations.md)
+
+### v2 增强方案
+
+1. [总览与三端拓扑](./v2/00-overview.md)
+2. [客户侧增强](./v2/01-client-side.md)
+3. [中心侧增强](./v2/02-center-side.md)
+4. [内核侧增强](./v2/03-kernel-side.md)
+5. [升级推送专题](./v2/04-upgrade-push.md)
+6. [实施计划与执行门禁](./v2/05-implementation.md)
+
+首个执行切片是 `DIST-001` API 契约冻结和 `DIST-002` 浏览器侧 License API；在契约冻结前不直接实现全部 UI 和推送通道。
 
 **客户侧角色（最快上手）**
 1. 02-用户旅程（完整 5 阶段）

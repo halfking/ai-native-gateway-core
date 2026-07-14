@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### License distribution and trial activation
+
+- Added License Authority trial issuance with validation, configurable duration, and rate limiting.
+- Added customer gateway trial proxy and ActivationWizard trial entry.
+- Added distribution/activation audit, v2 architecture, push-upgrade design, and implementation gates.
+
 ### Phase 3B-5 — Scanner whitelist extension + loadtest artifact hygiene
 
 延续 Phase 3B-4 的 scanner 治理，本地工作区补两个小补丁（未 commit 进
