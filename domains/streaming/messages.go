@@ -212,7 +212,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
+	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
 	if err != nil {
 		if len(bodyBytes) > 0 {
 			attemptRequestBody = bodyBytes

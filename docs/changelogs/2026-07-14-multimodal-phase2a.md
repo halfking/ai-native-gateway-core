@@ -11,6 +11,8 @@
 
 - Pending: Phase 2A step 1 hash-sharded attachment paths.
 - Pending: Phase 2A steps 2-4 stateful local storage and strict policy.
+- Pending: Phase 2A steps 5-7 cancellation and failover manifest verification.
+- Pending: executable S17, S18, S20, and S21 attachment audit evidence.
 
 ## References
 
