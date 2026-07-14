@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### 会话优化 v2 融合实施方案
+
+- 新增附件目录均衡、原子写入、慢上传、失败策略和供应商 failover 复用方案。
+- 新增多模态会话压缩完整性校验、日志脱敏和供应商感知引用约束。
+- 明确客户端小写标准模型名与供应商原始模型名的分层契约。
+- 新增全方面测试 S17-S28 场景矩阵，覆盖附件链路和模型名称治理。
+
 ### Phase 3B-5 — Scanner whitelist extension + loadtest artifact hygiene
 
 延续 Phase 3B-4 的 scanner 治理，本地工作区补两个小补丁（未 commit 进
