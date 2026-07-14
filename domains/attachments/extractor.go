@@ -2,10 +2,12 @@ package attachments
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Extractor 从 LLM 请求体（OpenAI / Anthropic 格式）中扫描并提取 base64 编码的附件。
@@ -41,13 +43,13 @@ func (e *Extractor) Wait() {
 
 // ExtractResult 是 ExtractFromOpenAIBody 的返回。
 type ExtractResult struct {
-	// Attachments 成功保存的附件元数据。同步模式下完整；异步模式下为空。
+	// Attachments contains a record for every detected attachment, including failures.
 	Attachments []AttachmentMetadata
 	// TotalFound 扫描到的 base64 附件总数
 	TotalFound int
 	// Saved 成功保存的数量
 	Saved int
-	// Failed 保存失败的数量（不影响请求转发）
+	// Failed 保存失败的数量。
 	Failed int
 }
 
@@ -57,7 +59,7 @@ type ExtractResult struct {
 // 对每个匹配块调用 Storage.SaveBase64Image。
 //
 // body 为原始 JSON 字节，不会被修改（转发用原始 body，确保上游收到完整图片）。
-// 失败的附件只记录 warning，不返回错误 —— 附件保存是 best-effort，不应阻塞转发。
+// 保存策略由调用方决定；结果始终包含每个检测到的附件状态。
 func (e *Extractor) ExtractFromOpenAIBody(requestID string, body []byte) *ExtractResult {
 	result := &ExtractResult{}
 
@@ -172,38 +174,64 @@ func (e *Extractor) processOne(requestID, dataURI string, msgIdx, blockIdx int, 
 		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
-			meta := e.saveOne(requestID, dataURI, msgIdx, blockIdx)
-			if meta != nil && e.callback != nil {
-				e.callback(requestID, []AttachmentMetadata{*meta})
+			meta, err := e.saveOne(requestID, dataURI, msgIdx, blockIdx)
+			if err == nil && e.callback != nil {
+				e.callback(requestID, []AttachmentMetadata{meta})
 			}
 		}()
 		return
 	}
 	// 同步
-	meta := e.saveOne(requestID, dataURI, msgIdx, blockIdx)
-	if meta != nil {
-		result.Attachments = append(result.Attachments, *meta)
+	meta, err := e.saveOne(requestID, dataURI, msgIdx, blockIdx)
+	result.Attachments = append(result.Attachments, meta)
+	if err == nil {
 		result.Saved++
 	} else {
 		result.Failed++
 	}
 }
 
-// saveOne 调用 Storage 保存单个附件，返回元数据或 nil（失败时记录 warning）。
-func (e *Extractor) saveOne(requestID, dataURI string, msgIdx, blockIdx int) *AttachmentMetadata {
+// saveOne calls Storage and returns a log-safe record for both outcomes.
+func (e *Extractor) saveOne(requestID, dataURI string, msgIdx, blockIdx int) (AttachmentMetadata, error) {
+	failed := AttachmentMetadata{
+		Type:         "image",
+		OriginalURL:  truncateOriginalURL(dataURI),
+		MessageIndex: msgIdx,
+		BlockIndex:   blockIdx,
+		CreatedAt:    time.Now(),
+		Status:       AttachmentStatusStoreFailed,
+		ErrorCode:    "storage_unavailable",
+	}
 	if e.storage == nil {
-		return nil
+		return failed, errors.New("attachments: storage is nil")
 	}
 	res, err := e.storage.SaveBase64Image(requestID, dataURI, msgIdx, blockIdx)
 	if err != nil {
-		// 存储失败不阻塞转发：记录 warning，附件元数据不写入
-		slog.Warn("attachments: save failed (request will still be forwarded)",
+		slog.Warn("attachments: save failed",
 			"request_id", requestID,
 			"message_index", msgIdx,
 			"error", err)
-		return nil
+		failed.ErrorCode = storageErrorCode(err)
+		return failed, err
 	}
-	return &res.Metadata
+	return res.Metadata, nil
+}
+
+func truncateOriginalURL(value string) string {
+	if len(value) > 200 {
+		return value[:200] + "..."
+	}
+	return value
+}
+
+func storageErrorCode(err error) string {
+	if errors.Is(err, ErrInvalidDataURI) {
+		return "invalid_data_uri"
+	}
+	if strings.Contains(err.Error(), "too large") {
+		return "file_too_large"
+	}
+	return "storage_failed"
 }
 
 // CountOnly 仅扫描统计附件数量，不保存。用于不需要保存但想知道有多少附件的场景。
