@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -35,6 +37,9 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 	g.GET("/commands/:id/status", a.GetCommandStatus)
 	g.GET("/dashboard/stats", a.GetDashboardStats)
 	g.GET("/alerts", a.ListAlerts)
+	g.POST("/alerts/:id/acknowledge", a.AcknowledgeAlert)
+	g.POST("/alerts/:id/resolve", a.ResolveAlert)
+	g.POST("/alerts/:id/suppress", a.SuppressAlert)
 }
 
 // ListInstances 列出实例
@@ -181,7 +186,7 @@ func (a *AdminAPI) GetDashboardStats(c echo.Context) error {
 	return c.JSON(http.StatusOK, stats)
 }
 
-// ListAlerts returns derived alerts from instance heartbeat/status (v2 stub).
+// ListAlerts returns derived alerts from instance heartbeat/status and persisted runtime alerts.
 func (a *AdminAPI) ListAlerts(c echo.Context) error {
 	instances, _, err := a.server.ListInstances(c.Request().Context(), "", 0, 500)
 	if err != nil {
@@ -218,12 +223,127 @@ func (a *AdminAPI) ListAlerts(c echo.Context) error {
 			})
 		}
 	}
+
+	if pgxStore, ok := a.store.(*PgxStore); ok {
+		runtimeAlerts, err := pgxStore.ListOpenRuntimeAlerts(c.Request().Context(), 200)
+		if err != nil {
+			slog.Error("list runtime alerts failed", "error", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "list runtime alerts failed"})
+		}
+		for _, evt := range runtimeAlerts {
+			alerts = append(alerts, runtimeAlertToOpsAlert(evt))
+		}
+	}
+
 	if alerts == nil {
 		alerts = []OpsAlert{}
+	}
+	open := 0
+	for _, alert := range alerts {
+		if alert.Status == "triggered" || alert.Status == "acknowledged" || alert.Status == "suppressed" {
+			open++
+		}
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"items":  alerts,
 		"total":  len(alerts),
-		"open":   len(alerts),
+		"open":   open,
 	})
+}
+
+type alertActionRequest struct {
+	Actor    string `json:"actor"`
+	Hours    int    `json:"hours"`
+	Duration int    `json:"duration_hours"`
+}
+
+// AcknowledgeAlert acknowledges a persisted runtime alert.
+func (a *AdminAPI) AcknowledgeAlert(c echo.Context) error {
+	id, err := parseRuntimeAlertID(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	pgxStore, ok := a.store.(*PgxStore)
+	if !ok {
+		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "runtime alerts unavailable"})
+	}
+	var req alertActionRequest
+	_ = c.Bind(&req)
+	actor := req.Actor
+	if actor == "" {
+		actor = "admin"
+	}
+	if err := pgxStore.AcknowledgeRuntimeAlert(c.Request().Context(), id, actor); err != nil {
+		slog.Error("acknowledge runtime alert failed", "error", err, "id", id)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "acknowledge failed"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"ok": true})
+}
+
+// ResolveAlert resolves a persisted runtime alert.
+func (a *AdminAPI) ResolveAlert(c echo.Context) error {
+	id, err := parseRuntimeAlertID(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	pgxStore, ok := a.store.(*PgxStore)
+	if !ok {
+		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "runtime alerts unavailable"})
+	}
+	var req alertActionRequest
+	_ = c.Bind(&req)
+	actor := req.Actor
+	if actor == "" {
+		actor = "admin"
+	}
+	if err := pgxStore.ResolveRuntimeAlert(c.Request().Context(), id, actor); err != nil {
+		slog.Error("resolve runtime alert failed", "error", err, "id", id)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "resolve failed"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"ok": true})
+}
+
+// SuppressAlert suppresses a persisted runtime alert for a duration.
+func (a *AdminAPI) SuppressAlert(c echo.Context) error {
+	id, err := parseRuntimeAlertID(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	pgxStore, ok := a.store.(*PgxStore)
+	if !ok {
+		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "runtime alerts unavailable"})
+	}
+	var req alertActionRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+	}
+	hours := req.Hours
+	if hours <= 0 {
+		hours = req.Duration
+	}
+	if hours <= 0 {
+		hours = 24
+	}
+	actor := req.Actor
+	if actor == "" {
+		actor = "admin"
+	}
+	until := time.Now().UTC().Add(time.Duration(hours) * time.Hour)
+	if err := pgxStore.SuppressRuntimeAlert(c.Request().Context(), id, until, actor); err != nil {
+		slog.Error("suppress runtime alert failed", "error", err, "id", id)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "suppress failed"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"ok": true, "suppressed_until": until})
+}
+
+func parseRuntimeAlertID(raw string) (int64, error) {
+	const prefix = "runtime-"
+	if !strings.HasPrefix(raw, prefix) {
+		return 0, fmt.Errorf("unsupported alert id")
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(raw, prefix), 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid runtime alert id")
+	}
+	return id, nil
 }

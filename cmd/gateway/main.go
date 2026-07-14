@@ -65,6 +65,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
+	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -146,6 +147,7 @@ func useNewProbeMode() bool {
 }
 
 func main() {
+	processStartedAt := time.Now()
 	// Round 39 (2026-06-16) — initialize OTel tracer.
 	// Default-disabled; activates only when OTEL_EXPORTER_OTLP_ENDPOINT
 	// is set. The shutdown function flushes pending spans before
@@ -347,6 +349,16 @@ func main() {
 		} else {
 			slog.Info("token refresh daemon disabled (LICENSE_AUTHORITY_URL not set)")
 		}
+	}
+
+	if dbConn != nil && dbConn.Enabled() {
+		collector.MaybeStart(context.Background(), collector.StartupConfig{
+			Pool:         dbConn.Pool(),
+			DataDir:      "/var/lib/kx-gateway",
+			AuthorityURL: os.Getenv("LICENSE_AUTHORITY_URL"),
+			Version:      Version(),
+			StartTime:    processStartedAt,
+		})
 	}
 
 	// Check if community mode is active

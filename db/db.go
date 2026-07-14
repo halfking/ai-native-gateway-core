@@ -55,7 +55,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	// pingCtx above is only for the initial Ping() check; reusing it
 	// for the migrations makes a real DB with many tables (15+ ALTER/
 	// CREATE INDEX / MATERIALIZED VIEW statements) time out at boot.
-	migCtx, migCancel := context.WithTimeout(ctx, 60*time.Second)
+	// EnsureSchema on production PG (252) can exceed 60s when the disk is
+	// under pressure or autovacuum holds locks. Boot without DB bricks the
+	// admin UI ("database not configured") while /healthz still returns 200.
+	migCtx, migCancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer migCancel()
 	if err := db.ensureRequestLogSchema(migCtx); err != nil {
 		return nil, err
@@ -178,6 +181,9 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	if err := db.ensureCenterOpsSchema(migCtx); err != nil {
 		return nil, err
 	}
+	if err := db.ensureRuntimeMetricsSchema(migCtx); err != nil {
+		return nil, err
+	}
 	if err := db.ensureRouteIncidentSchema(migCtx); err != nil {
 		return nil, err
 	}
@@ -188,6 +194,9 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		return nil, err
 	}
 	if err := db.ensureDistributionSchema(migCtx); err != nil {
+		return nil, err
+	}
+	if err := db.ensurePartitionAutovacuumSchema(migCtx); err != nil {
 		return nil, err
 	}
 	// Dashboard views are derived data for the admin UI, not critical-path.
@@ -2709,6 +2718,69 @@ func (d *DB) ensureCenterOpsSchema(ctx context.Context) error {
 	return nil
 }
 
+// ensureRuntimeMetricsSchema mirrors sql/migrations/startup/402_runtime_metrics.sql
+// and 403_runtime_alert_events.sql for startup apply.
+func (d *DB) ensureRuntimeMetricsSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS runtime_metrics (
+			id                  BIGSERIAL PRIMARY KEY,
+			instance_id         TEXT NOT NULL,
+			license_id          BIGINT REFERENCES licenses(id) ON DELETE SET NULL,
+			timestamp           TIMESTAMPTZ NOT NULL DEFAULT now(),
+			cpu_usage_pct       REAL,
+			mem_used_mb         BIGINT,
+			mem_total_mb        BIGINT,
+			disk_used_gb        BIGINT,
+			disk_total_gb       BIGINT,
+			db_size_mb          BIGINT,
+			uptime_secs         BIGINT,
+			current_concurrency INT,
+			last_5min_tps       REAL,
+			last_5min_p50_ms    REAL,
+			last_5min_p99_ms    REAL,
+			last_5min_success_pct REAL,
+			model_usage         JSONB,
+			tenant_count        INT
+		);
+		CREATE INDEX IF NOT EXISTS idx_rt_instance_time
+			ON runtime_metrics (instance_id, timestamp DESC);
+		CREATE INDEX IF NOT EXISTS idx_rt_time
+			ON runtime_metrics (timestamp DESC);
+
+		CREATE TABLE IF NOT EXISTS runtime_alert_events (
+			id                BIGSERIAL PRIMARY KEY,
+			rule_key          TEXT NOT NULL,
+			instance_id       TEXT NOT NULL,
+			severity          TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error', 'critical')),
+			title             TEXT NOT NULL,
+			message           TEXT NOT NULL,
+			status            TEXT NOT NULL DEFAULT 'triggered'
+				CHECK (status IN ('triggered', 'acknowledged', 'resolved', 'suppressed')),
+			metric_value      DOUBLE PRECISION,
+			detected_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+			acked_at          TIMESTAMPTZ,
+			acked_by          TEXT,
+			resolved_at       TIMESTAMPTZ,
+			resolved_by       TEXT,
+			suppressed_until  TIMESTAMPTZ,
+			updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_rae_instance_status
+			ON runtime_alert_events (instance_id, status, detected_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_rae_rule_open
+			ON runtime_alert_events (rule_key, instance_id)
+			WHERE status IN ('triggered', 'acknowledged', 'suppressed');
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("runtime_metrics schema ensured (runtime_metrics, runtime_alert_events)")
+	return nil
+}
+
 // ensureRouteIncidentSchema mirrors sql/migrations/startup/389_route_incidents.sql
 // for startup apply. Idempotent. Creates the route_incidents aggregate
 // and route_incident_events evidence trail (Phase 1 read-only diagnosis).
@@ -2962,5 +3034,100 @@ func (d *DB) ensureDistributionSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("distribution schema ensured (license_holders, download_events, donations, release_artifacts)")
+	return nil
+}
+
+// ensurePartitionAutovacuumSchema mirrors sql/migrations/startup/404_partition_autovacuum_analyze.sql.
+// Applies aggressive autovacuum reloptions on hot/partition tables; ANALYZE runs via partition_manager.
+func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION apply_llm_gateway_autovacuum_settings()
+		RETURNS integer LANGUAGE plpgsql AS $fn$
+		DECLARE
+		    opts_sql constant text := '
+		        autovacuum_enabled=true,
+		        autovacuum_vacuum_scale_factor=0.05,
+		        autovacuum_vacuum_threshold=10,
+		        autovacuum_analyze_scale_factor=0.02,
+		        autovacuum_analyze_threshold=50';
+		    r record;
+		    applied integer := 0;
+		BEGIN
+		    FOR r IN
+		        SELECT c.relname FROM pg_class c
+		        JOIN pg_namespace n ON n.oid = c.relnamespace
+		        WHERE n.nspname = 'public' AND c.relkind = 'r'
+		          AND (c.relname LIKE '%\_hot' ESCAPE '\'
+		            OR c.relname = 'credential_probe_model_log')
+		    LOOP
+		        BEGIN
+		            EXECUTE format('ALTER TABLE %I SET (%s)', r.relname, opts_sql);
+		            applied := applied + 1;
+		        EXCEPTION WHEN others THEN
+		            RAISE NOTICE 'skip autovacuum %: %', r.relname, SQLERRM;
+		        END;
+		    END LOOP;
+		    FOR r IN
+		        SELECT c.relname FROM pg_class c
+		        JOIN pg_namespace n ON n.oid = c.relnamespace
+		        JOIN pg_inherits i ON i.inhrelid = c.oid
+		        JOIN pg_class p ON p.oid = i.inhparent
+		        WHERE n.nspname = 'public'
+		          AND p.relname = ANY (ARRAY[
+		              'credential_model_index','model_probe_runs','request_logs',
+		              'routing_decision_log','request_wal','usage_ledger',
+		              'credit_ledger','tool_usage_stats','candidate_failure_logs',
+		              'handoff_logs','request_logs_bodies'])
+		    LOOP
+		        BEGIN
+		            EXECUTE format('ALTER TABLE %I SET (%s)', r.relname, opts_sql);
+		            applied := applied + 1;
+		        EXCEPTION WHEN others THEN
+		            RAISE NOTICE 'skip autovacuum partition %: %', r.relname, SQLERRM;
+		        END;
+		    END LOOP;
+		    RETURN applied;
+		END;
+		$fn$;
+
+		CREATE OR REPLACE FUNCTION analyze_llm_gateway_table_stats(p_recent_months integer DEFAULT 2)
+		RETURNS integer LANGUAGE plpgsql AS $fn$
+		DECLARE r record; suffix text; m integer; analyzed integer := 0;
+		BEGIN
+		    IF p_recent_months < 1 THEN p_recent_months := 1;
+		    ELSIF p_recent_months > 12 THEN p_recent_months := 12; END IF;
+		    FOR r IN
+		        SELECT c.relname FROM pg_class c
+		        JOIN pg_namespace n ON n.oid = c.relnamespace
+		        JOIN pg_am am ON am.oid = c.relam
+		        WHERE n.nspname = 'public' AND c.relkind = 'r'
+		          AND c.relname LIKE '%\_hot' ESCAPE '\' AND am.amname = 'heap'
+		    LOOP
+		        EXECUTE format('ANALYZE %I', r.relname); analyzed := analyzed + 1;
+		    END LOOP;
+		    FOR m IN 0..(p_recent_months - 1) LOOP
+		        suffix := to_char(date_trunc('month', now()) - (m || ' months')::interval, 'YYYY_MM');
+		        FOR r IN
+		            SELECT c.relname FROM pg_class c
+		            JOIN pg_namespace n ON n.oid = c.relnamespace
+		            WHERE n.nspname = 'public' AND c.relkind = 'r'
+		              AND c.relname ~ ('^(credential_model_index|model_probe_runs|request_logs|routing_decision_log|request_wal|usage_ledger|credit_ledger|tool_usage_stats|candidate_failure_logs|handoff_logs|request_logs_bodies)_' || suffix || '$')
+		        LOOP
+		            EXECUTE format('ANALYZE %I', r.relname); analyzed := analyzed + 1;
+		        END LOOP;
+		    END LOOP;
+		    RETURN analyzed;
+		END;
+		$fn$;
+
+		SELECT apply_llm_gateway_autovacuum_settings();
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("partition autovacuum settings ensured (hot + partition tables)")
 	return nil
 }

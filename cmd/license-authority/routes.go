@@ -89,6 +89,10 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 	heartbeatHandler := NewHeartbeatHandler(centerStore, serverPubKey)
 	heartbeatHandler.RegisterRoutes(instanceClientGroup)
 
+	// ── Runtime metrics ingest ────────────────────────────────────────────
+	collectHandler := NewCollectHandler(centerStore)
+	collectHandler.RegisterRoutes(instanceTokenGroup(api, serverPubKey))
+
 	// ── Autoupdate routes (/api/v1/updates/*) ─────────────────────────────
 	updateStore := autoupdate.NewPgxStore(pool)
 	downloader := autoupdate.NewDownloader("/var/lib/kx-gateway/downloads")

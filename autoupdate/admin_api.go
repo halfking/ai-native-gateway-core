@@ -35,11 +35,14 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 	g.GET("/upgrade-logs", a.GetUpgradeLogs)
 	g.POST("/rollback", a.RollbackRelease)
 	g.GET("/:version", a.GetRelease)
+	g.GET("/:version/rollout-status", a.GetRolloutStatus)
 	g.POST("/:version/publish", a.PublishRelease)
 	g.POST("/:version/unpublish", a.UnpublishRelease)
 	g.GET("/:version/gray", a.GetGrayRelease)
 	g.POST("/:version/gray", a.CreateGrayRelease)
 	g.PATCH("/:version/gray", a.UpdateGrayPhase)
+	g.POST("/:version/gray/pause", a.PauseGrayRelease)
+	g.POST("/:version/gray/resume", a.ResumeGrayRelease)
 }
 
 // CreateRelease 创建发布版本
@@ -214,12 +217,97 @@ func (a *AdminAPI) UpdateGrayPhase(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "release not found"})
 	}
 
+	currentRule, _ := a.store.GetGrayRule(c.Request().Context(), rel.ID)
+	if currentRule != nil && req.Percent > currentRule.Percent {
+		stats, statsErr := a.store.GetRolloutStats(c.Request().Context(), version)
+		if statsErr != nil {
+			slog.Error("rollout stats lookup failed", "error", statsErr, "version", version)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "rollout stats lookup failed"})
+		}
+		gate := EvaluateRolloutGate(stats)
+		if !gate.Allowed {
+			if pauseErr := a.store.UpdateGrayRuleStatus(c.Request().Context(), rel.ID, "paused"); pauseErr != nil {
+				slog.Error("auto pause gray rule failed", "error", pauseErr, "version", version)
+			}
+			return c.JSON(http.StatusConflict, map[string]interface{}{
+				"error":  "rollout gate blocked phase advance",
+				"reason": gate.Reason,
+				"gate":   gate,
+			})
+		}
+	}
+
 	if err := a.store.UpdateGrayPhase(c.Request().Context(), rel.ID, req.Phase, req.Percent); err != nil {
 		slog.Error("update gray phase failed", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "update gray phase failed"})
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "gray phase updated"})
+}
+
+// GetRolloutStatus returns rollout gate evaluation for a release version.
+func (a *AdminAPI) GetRolloutStatus(c echo.Context) error {
+	version := c.Param("version")
+	rel, err := a.store.GetRelease(c.Request().Context(), version)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "release not found"})
+	}
+	stats, err := a.store.GetRolloutStats(c.Request().Context(), version)
+	if err != nil {
+		slog.Error("rollout stats lookup failed", "error", err, "version", version)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "rollout stats lookup failed"})
+	}
+	gate := EvaluateRolloutGate(stats)
+	ruleStatus := ""
+	if rule, ruleErr := a.store.GetGrayRule(c.Request().Context(), rel.ID); ruleErr == nil && rule != nil {
+		ruleStatus = rule.Status
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"version":     version,
+		"rule_status": ruleStatus,
+		"gate":        gate,
+	})
+}
+
+// PauseGrayRelease pauses an active gray rollout.
+func (a *AdminAPI) PauseGrayRelease(c echo.Context) error {
+	version := c.Param("version")
+	rel, err := a.store.GetRelease(c.Request().Context(), version)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "release not found"})
+	}
+	if err := a.store.UpdateGrayRuleStatus(c.Request().Context(), rel.ID, "paused"); err != nil {
+		slog.Error("pause gray rule failed", "error", err, "version", version)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "pause gray rule failed"})
+	}
+	return c.JSON(http.StatusOK, map[string]string{"message": "gray rollout paused"})
+}
+
+// ResumeGrayRelease resumes a paused gray rollout after gate re-check.
+func (a *AdminAPI) ResumeGrayRelease(c echo.Context) error {
+	version := c.Param("version")
+	rel, err := a.store.GetRelease(c.Request().Context(), version)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "release not found"})
+	}
+	stats, err := a.store.GetRolloutStats(c.Request().Context(), version)
+	if err != nil {
+		slog.Error("rollout stats lookup failed", "error", err, "version", version)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "rollout stats lookup failed"})
+	}
+	gate := EvaluateRolloutGate(stats)
+	if !gate.Allowed {
+		return c.JSON(http.StatusConflict, map[string]interface{}{
+			"error":  "rollout gate still blocking resume",
+			"reason": gate.Reason,
+			"gate":   gate,
+		})
+	}
+	if err := a.store.UpdateGrayRuleStatus(c.Request().Context(), rel.ID, "active"); err != nil {
+		slog.Error("resume gray rule failed", "error", err, "version", version)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "resume gray rule failed"})
+	}
+	return c.JSON(http.StatusOK, map[string]string{"message": "gray rollout resumed"})
 }
 
 // ListGrayRules lists all gray rollout rules.
