@@ -27,16 +27,11 @@ const DefaultPromoteInterval = 1 * time.Hour
 // are eligible to be migrated to the matching monthly partition by the
 // promote_*_default_batch functions installed in migration 336.
 //
-// Changed from 7d to 24h on 2026-07-13 per product adjustment: hot tables
-// now only keep 1 day of data. Application-layer UPDATE/DELETE typically
-// completes within seconds/minutes, so 24h still comfortably covers
-// in-flight mutations.
-//
-// Per-table retention windows can be overridden via settings_kv:
-//   - probe.hot_retention_hours (default 24)
-//
-// The PartitionManager reads these on every promote cycle so changes
-// take effect on the next tick (no restart required, true hot reload).
+// 2026-07 hot-table architecture:
+//   - most *_hot tables keep a short hot window, then promote into monthly
+//     partitions on the promote scheduler;
+//   - model_probe_runs_hot is an exception as of 2026-07-14: it no longer
+//     promotes and is cleaned by direct TTL DELETE.
 const DefaultRetentionWindow = 24 * time.Hour
 
 // promoteBatchSize is the per-call LIMIT inside each promote_xxx_batch
@@ -47,10 +42,9 @@ const DefaultRetentionWindow = 24 * time.Hour
 const promoteBatchSize = 5000
 
 // PartitionManager automatically creates next month's partition,
-// archives old partitions to columnar storage, and continuously
-// migrates cold rows from *_default partitions into the matching
-// monthly partition (so *_default only ever holds the recent 7-day
-// window per the 2026-07 data-lifecycle architecture).
+// archives old partitions to columnar storage, continuously migrates
+// cold rows from most *_hot tables into matching monthly partitions,
+// and applies direct TTL cleanup for model_probe_runs_hot.
 //
 // Runs `interval` for ensure+archive (typically 24h). Runs
 // `promoteInterval` for the promote cycle (typically 1h — see
@@ -522,7 +516,7 @@ func promoteSpecs() []archiveSpec {
 		{fnName: "promote_tool_usage_stats_hot_to_partition", label: "tool_usage_stats"},
 		// model_probe_runs_hot 已切换为纯 hot 表策略（2026-07-14），
 		// 不再 promote 到 columnar 分区。hot 表数据通过 cleanupOldModelProbeRuns()
-		// 按 7 天 TTL 直接 DELETE 清理。
+		// 按 lifecycle.model_probe_runs_ttl_days 直接 DELETE 清理。
 		// {fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
 		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"}, // Migration 392
 	}
@@ -534,13 +528,8 @@ func promoteSpecs() []archiveSpec {
 // DefaultRetentionWindow and promoteBatchSize. Each iteration is one
 // single-statement CTE inside PostgreSQL — atomic per batch.
 //
-// Retention and batch size come from settings.Global (hot-reloadable):
-//   - probe.hot_retention_hours (default 24h)
-//   - probe.promote_batch_size (default 5000)
-//
-// All other tables use DefaultRetentionWindow (24h) and promoteBatchSize
-// (5000) constants. Settings changes take effect on the next tick — no
-// restart required.
+// Retention and batch size come from settings.Global (hot-reloadable).
+// model_probe_runs_hot no longer participates in this flow.
 //
 // The function always terminates: each batch either moves
 // `promoteBatchSize` rows (caller loops) or 0 rows (caller breaks
@@ -587,7 +576,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 // a given hot table. Reads from settings.Global with hot-reload support
 // (every call reads the latest value from settings_kv). Falls back to
 // DefaultRetentionWindow / promoteBatchSize for tables without a
-// per-table setting, and to type-specific defaults for model_probe_runs.
+// per-table setting.
 //
 // This function is called on every promote tick — there is no caching
 // layer to invalidate. Updated settings take effect within one tick
@@ -595,7 +584,6 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 //
 // Per-table retention settings (all hot-reloadable, all default 24h except
 // request_logs_bodies which is 1d due to size):
-//   - probe.hot_retention_hours                — model_probe_runs_hot
 //   - lifecycle.hot_retention_hours            — request_logs_hot, usage_ledger_hot, ...
 //   - lifecycle.request_logs_bodies_retention_hours — request_logs_bodies (1d default)
 //   - lifecycle.credential_model_index_ttl_days  — credential_model_index (reaped by

@@ -11,7 +11,7 @@ const CategoryProbe Category = "probe"
 // monthly columnar partitions by bg.PartitionManager.
 func ProbeSpecs() []*Spec {
 	return []*Spec{
-		// ── Hot table retention ────────────────────────────────────────
+		// ── Deprecated model_probe_runs partition settings ─────────────
 		{
 			Key:             "probe.hot_retention_hours",
 			Type:            TypeInt,
@@ -20,14 +20,14 @@ func ProbeSpecs() []*Spec {
 			Min:             floatPtr(1),
 			Max:             floatPtr(720), // 30 days
 			Default:         24,
-			Description:     "热表保留小时数",
-			DescriptionLong: "model_probe_runs_hot 表中保留的最近探测记录小时数。超过此时间的记录会被 bg.PartitionManager 自动 promote 到月度 columnar 分区。设为 1 表示只保留当天数据。修改后下次 promote 周期（约 1 小时）生效。",
+			Description:     "已废弃: model_probe_runs 热表小时数",
+			DescriptionLong: "已废弃。2026-07-14 起 model_probe_runs_hot 改为纯 hot 表 + DELETE TTL 策略，不再读取 probe.hot_retention_hours，也不再 promote 到月度 columnar 分区。请改用 lifecycle.model_probe_runs_ttl_days。",
 			Unit:            "小时",
 			DangerLevel:     Warning,
 			HotReload:       true,
 		},
 
-		// ── Monthly partition retention ────────────────────────────────
+		// ── Deprecated model_probe_runs partition retention ────────────
 		{
 			Key:             "probe.partition_retention_days",
 			Type:            TypeInt,
@@ -36,14 +36,14 @@ func ProbeSpecs() []*Spec {
 			Min:             floatPtr(7),
 			Max:             floatPtr(3650), // 10 years
 			Default:         90,
-			Description:     "分区保留天数",
-			DescriptionLong: "model_probe_runs 历史分区的保留天数。超过此天数的月度分区会被 drop_old_model_probe_runs_partitions() 自动删除（释放磁盘空间）。DROP PARTITION 是 O(1) 操作，对在线查询无影响。",
+			Description:     "已废弃: model_probe_runs 分区保留天数",
+			DescriptionLong: "已废弃。2026-07-14 起 model_probe_runs 不再写入月度分区，也不再执行 drop_old_model_probe_runs_partitions()。请改用 lifecycle.model_probe_runs_ttl_days 控制 hot 表 DELETE TTL。",
 			Unit:            "天",
 			DangerLevel:     Warning,
 			HotReload:       true,
 		},
 
-		// ── Auto-promote cycle ─────────────────────────────────────────
+		// ── Deprecated model_probe_runs promote settings ───────────────
 		{
 			Key:             "probe.promote_batch_size",
 			Type:            TypeInt,
@@ -52,22 +52,22 @@ func ProbeSpecs() []*Spec {
 			Min:             floatPtr(100),
 			Max:             floatPtr(50000),
 			Default:         5000,
-			Description:     "Promote 批大小",
-			DescriptionLong: "每次 promote_model_probe_runs_hot_to_partition 调用迁移的最大行数。控制单次事务的内存占用和锁等待时间。增大可提升吞吐，减小可降低长事务风险。",
+			Description:     "已废弃: model_probe_runs promote 批大小",
+			DescriptionLong: "已废弃。2026-07-14 起 model_probe_runs_hot 不再 promote；该设置已不再生效。",
 			Unit:            "行",
 			DangerLevel:     Safe,
 			HotReload:       true,
 		},
 
-		// ── Auto-cleanup cycle ─────────────────────────────────────────
+		// ── Deprecated model_probe_runs cleanup switch ────────────────
 		{
 			Key:             "probe.partition_cleanup_enabled",
 			Type:            TypeBool,
 			Scope:           ScopePlatform,
 			Category:        CategoryProbe,
 			Default:         true,
-			Description:     "启用自动分区清理",
-			DescriptionLong: "控制 bg.PartitionManager 是否自动 drop 过期分区。关闭后需要手动调用 drop_old_model_probe_runs_partitions()。建议保持开启。",
+			Description:     "已废弃: 启用 model_probe_runs 分区清理",
+			DescriptionLong: "已废弃。2026-07-14 起 model_probe_runs 不再使用月度分区，该开关不再影响实际行为。",
 			Unit:            "",
 			DangerLevel:     Dangerous,
 			HotReload:       true,
