@@ -35,6 +35,9 @@
   "no_candidate": {
     "other": "没有可用于模型“{{.Model}}”的供应商"
   },
+  "invalid_model": {
+    "other": "模型 '{{.Model}}' 不被此网关支持"
+  },
   "meta_tool_error": {
     "other": "元工具处理失败"
   },

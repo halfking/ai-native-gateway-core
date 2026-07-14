@@ -335,6 +335,7 @@ type providerClientAdapter struct {
 type routingProviderResolver interface {
 	Enabled() bool
 	GetCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, *provider.Policy, error)
+	ModelKnown(ctx context.Context, model string) bool
 }
 
 func (p providerClientAdapter) Enabled() bool {
@@ -342,6 +343,13 @@ func (p providerClientAdapter) Enabled() bool {
 		return false
 	}
 	return p.r.Enabled()
+}
+
+func (p providerClientAdapter) ModelKnown(ctx context.Context, model string) bool {
+	if p.r == nil {
+		return false
+	}
+	return p.r.ModelKnown(ctx, model)
 }
 
 func (p providerClientAdapter) GetCandidates(ctx context.Context, model, profile string) ([]compression.ProviderCandidate, error) {

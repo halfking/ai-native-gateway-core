@@ -35,6 +35,9 @@
   "no_candidate": {
     "other": "No hay proveedor disponible para el modelo «{{.Model}}»"
   },
+  "invalid_model": {
+    "other": "El modelo '{{.Model}}' no es compatible con esta puerta de enlace"
+  },
   "meta_tool_error": {
     "other": "Error en el procesamiento de la meta-herramienta"
   },

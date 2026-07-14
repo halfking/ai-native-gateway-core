@@ -35,6 +35,9 @@
   "no_candidate": {
     "other": "モデル「{{.Model}}」に利用可能なプロバイダがありません"
   },
+  "invalid_model": {
+    "other": "モデル '{{.Model}}' はこのゲートウェイでサポートされていません"
+  },
   "meta_tool_error": {
     "other": "メタツールの処理に失敗しました"
   },

@@ -201,6 +201,7 @@ type chatRequestBody struct {
 type providerResolver interface {
 	Enabled() bool
 	GetCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, *provider.Policy, error)
+	ModelKnown(ctx context.Context, model string) bool
 }
 
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
@@ -1423,6 +1424,18 @@ func (h *ChatHandler) serveWithExecutor(
 		return
 	}
 	if len(candidates) == 0 {
+		// 2026-07-14: Distinguish "model not recognized anywhere" (400
+		// invalid_model) from "model recognized but no routable provider right
+		// now" (503 no_candidate). Saves a confusing 503 for typos in the
+		// client request.
+		if !h.provider.ModelKnown(r.Context(), clientModel) {
+			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "invalid_model", nil, int(time.Since(startTime).Milliseconds()))
+			logCtx.failAndMark("invalid_model",
+				fmt.Sprintf("Model '%s' is not supported by this gateway", clientModel), nil, nil)
+			markLogged()
+			writeErrorJSONCtx(r.Context(), w, http.StatusBadRequest, requestID, "invalid_request_error", i18n.MsgInvalidModel, map[string]any{"Model": clientModel})
+			return
+		}
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
 		logCtx.failAndMark("no_candidate",
 			fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)

@@ -6,8 +6,8 @@ source "$SCRIPT_DIR/_lib.sh"
 
 reset_all_suppliers
 echo "[S07] peak dispatch: 150 clients"
-run_loadtest S07_peak \
+run_loadtest S07_peak_dispatch \
     --n-clients 150 --rps-per-client 5 --duration 90 \
-    --models tier --prompt mixed
+    --models tier --prompt long
 print_summary S07_peak
 echo "  期望：K 组收到流量（启用 tier=3 备用）"

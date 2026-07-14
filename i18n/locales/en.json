@@ -35,6 +35,9 @@
   "no_candidate": {
     "other": "No available provider for model '{{.Model}}'"
   },
+  "invalid_model": {
+    "other": "Model '{{.Model}}' is not supported by this gateway"
+  },
   "meta_tool_error": {
     "other": "Meta-tool processing failed"
   },

@@ -38,6 +38,7 @@ const (
 
 	// Model / provider selection.
 	MsgNoCandidate   = "no_candidate"    // "No available provider for model '{{.Model}}'"
+	MsgInvalidModel  = "invalid_model"   // "Model '{{.Model}}' is not supported by this gateway"
 	MsgMetaToolError = "meta_tool_error" // "Meta-tool processing failed"
 	MsgProviderError = "provider_error"  // "upstream request failed"
 

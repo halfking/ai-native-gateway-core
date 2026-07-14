@@ -35,6 +35,9 @@
   "no_candidate": {
     "other": "Kein verfügbarer Anbieter für Modell „{{.Model}}“"
   },
+  "invalid_model": {
+    "other": "Das Modell '{{.Model}}' wird von diesem Gateway nicht unterstützt"
+  },
   "meta_tool_error": {
     "other": "Verarbeitung des Meta-Tools fehlgeschlagen"
   },

@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/_lib.sh"
 reset_all_suppliers
 echo "[S10] long prompt: 40 clients × long prompt + E=context_too_long"
 set_group E context_too_long
-run_loadtest S10_long \
+run_loadtest S10_long_prompt \
     --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tok3 --prompt long
 print_summary S10_long
