@@ -2163,7 +2163,7 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 		FROM model_offers mo
 		WHERE mo.id = cmb.provider_model_id
 		  AND cmb.credential_id = $1
-		  AND COALESCE(mo.outbound_model_name, mo.standardized_name, mo.raw_model_name) = $2
+		  AND COALESCE(mo.outbound_model_name, mo.raw_model_name) = $2
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
@@ -2252,7 +2252,7 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 		 FROM provider_models pm
 		 WHERE pm.id = cmb.provider_model_id
 		   AND cmb.credential_id = $1
-		   AND COALESCE(pm.outbound_model_name, pm.standardized_name, pm.raw_model_name) = $2
+		   AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
 		   AND cmb.available = TRUE
 		   AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		   AND COALESCE(cmb.admin_protected, FALSE) = FALSE`,

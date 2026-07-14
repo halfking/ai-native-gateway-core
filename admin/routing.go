@@ -1654,8 +1654,8 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(ctx, `
 		SELECT c.id, c.provider_id, p.base_url, COALESCE(p.protocol,'openai'),
 		       c.secret_ciphertext,
-		       COALESCE(mo.outbound_model_name, mo.standardized_name, mo.raw_model_name),
-		       COALESCE(mo.outbound_model_name, mo.standardized_name, mo.raw_model_name)
+		       COALESCE(mo.outbound_model_name, mo.raw_model_name),
+		       COALESCE(mo.outbound_model_name, mo.raw_model_name)
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id AND c.status = 'active'
 		JOIN providers p ON p.id = c.provider_id AND p.enabled = TRUE
