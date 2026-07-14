@@ -521,7 +521,7 @@ operators no longer need the workaround for normal pushes.
 Detailed acceptance criteria + design decisions: `docs/audits/2026-07-14-deployment-hardening-audit.md` and `docs/implementation-summaries/2026-07-14-deploy-ops-license-v2-phase1.md`.
 
 ## [Unreleased] - 2026-07-13
-=======
+
 ### Changed (multimodal attachment documentation audit)
 - **新增** `docs/会话优化v2/04-厂商标准与适配矩阵.md`：涵盖 OpenAI、Anthropic、Gemini、Mistral 的图片/音频/文档/文件引用官方能力与网关适配约束。
 - **修正** README 厂商适配结论与待办优先级标题编号。
@@ -552,7 +552,6 @@ Detailed acceptance criteria + design decisions: `docs/audits/2026-07-14-deploym
   array+string / string+array 四种形态分别安全处理，数组侧原样
   保留所有非文本块。
 - 详见：`docs/changelogs/2026-07-14-multimodal-merge-loss.md`。
->>>>>>> opencode/hidden-otter
 
 ### Added (deployment management hardening — Slice 6: SOPS + scanner)
 - **`.sops.yaml` 规则扩展**：creation_rules 路径正则从 `\.env\.(71|184)(\.enc)?$` 扩展到 `\.env\.(71|184|252|kaixuan-1)(\.enc)?$`，仍使用同一 age recipient。`.env.252.enc` / `.env.kaixuan-1.enc` 现在能被 SOPS 创建。

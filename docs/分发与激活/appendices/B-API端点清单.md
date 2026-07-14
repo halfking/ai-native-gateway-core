@@ -12,7 +12,7 @@
 >   `/api/admin/center/*`、`/api/admin/faults/*`、`/api/admin/vibecoding/*`。
 > - ✅ 已落地：`/api/center/{activate,deactivate,heartbeat,validate,
 >   offline/request,offline/verify}` 在客户端二进制内供主控端反向调用。
-> - ❌ 待实现 P0：`/api/system/license/{trial,activate,offline/request,
+> - ✅ 已实现：`/api/system/license/{trial,activate,offline-request,
 >   offline/import,status}`、`/api/system/upgrade/{check,start,stream,
 >   rollback,status}`、`/api/system/telemetry/pref`、`/api/system/info`、
 >   `/api/system/restart`，落地位 `gateway/internal/api/`。

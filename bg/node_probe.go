@@ -28,13 +28,13 @@
 // Two rounds per attempt
 // ──────────────────────
 //  1. direct  — POST the upstream provider's base URL using the
-//               decrypted credential, mirroring the "isolate_upstream"
-//               call in bg/self_check_worker.go.  Verifies the
-//               upstream is actually serving traffic.
+//     decrypted credential, mirroring the "isolate_upstream"
+//     call in bg/self_check_worker.go.  Verifies the
+//     upstream is actually serving traffic.
 //  2. gateway — POST the local gateway with the system API key.
-//               Verifies the credential is wired into routing and
-//               the gateway-side plugins (auth, transform, billing,
-//               rate-limit) are not blocking the path.
+//     Verifies the credential is wired into routing and
+//     the gateway-side plugins (auth, transform, billing,
+//     rate-limit) are not blocking the path.
 //
 // Both rounds must succeed (HTTP 200 + a tool call echo) for the
 // attempt to count as success.  Either failure advances the backoff
@@ -42,10 +42,11 @@
 //
 // Outbound X-LLM-Origin-* headers
 // ────────────────────────────────
-//   X-LLM-Origin-Stage : node_probe
-//   X-LLM-Origin-Actor : node-probe-worker
-//   X-Forwarded-For    : $LLM_GATEWAY_EGRESS_FORWARDED_FOR + egress IP
-//   X-Real-IP          : $LLM_GATEWAY_EGRESS_IP
+//
+//	X-LLM-Origin-Stage : node_probe
+//	X-LLM-Origin-Actor : node-probe-worker
+//	X-Forwarded-For    : $LLM_GATEWAY_EGRESS_FORWARDED_FOR + egress IP
+//	X-Real-IP          : $LLM_GATEWAY_EGRESS_IP
 package bg
 
 import (
@@ -64,14 +65,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
-
-// NodeProbe backoff ladder — see spec §1.3.
-var nodeProbeBackoff = []int{5, 30, 60, 300, 3600, 7200, 86400}
-
 const (
-	// nodeProbeMaxAttempts is the number of failed attempts before
-	// the state row is marked paused (still ticks at 24h so an
-	// operator can observe the staleness).
+	// nodeProbeMaxAttempts matches the length of NodeProbeBackoffChain.
 	nodeProbeMaxAttempts = 7
 
 	// nodeProbeTickInterval is how often the worker scans for due
@@ -101,7 +96,7 @@ type NodeProbeWorker struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 
-	mu     sync.Mutex
+	mu       sync.Mutex
 	inFlight map[string]struct{} // dedup key: "<credID>|<model>"
 }
 
@@ -339,8 +334,9 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			WHERE credential_id = $1 AND raw_model_name = $2
 		`, credID, model)
 	} else {
-		nextSec := nodeProbeBackoff[attempt-1]
-		nextRetryAt := now.Add(time.Duration(nextSec) * time.Second)
+		backoff := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
+		nextRetryAt := now.Add(backoff)
+		nextSec := int(backoff.Seconds())
 		_, _ = w.db.Exec(ctx, `
 			UPDATE node_probe_state SET
 				consecutive_failures = $3,
@@ -361,6 +357,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	}
 
 	// Persist audit row.
+	nextSec := int(ChainBackoffIndex(attempt, NodeProbeBackoffChain).Seconds())
 	_, _ = w.db.Exec(ctx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
@@ -373,7 +370,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			$11, $12, $13, $14, $15,
 			$16, $17, $18, $19
 		)`,
-		credID, model, triggerKind, attempt, nodeProbeBackoff[attempt-1],
+		credID, model, triggerKind, attempt, nextSec,
 		direct.ok, direct.httpStatus, direct.errCode, direct.latencyMs, direct.errDetail,
 		gw.ok, gw.httpStatus, gw.errCode, gw.latencyMs, gw.errDetail,
 		success, startedAt, now, durationMs,
@@ -382,9 +379,9 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 }
 
 type nodeProbeStateRow struct {
-	ConsecutiveFailures int
+	ConsecutiveFailures  int
 	ConsecutiveSuccesses int
-	Paused              bool
+	Paused               bool
 }
 
 func (w *NodeProbeWorker) loadState(ctx context.Context, credID int, model string) (nodeProbeStateRow, error) {
