@@ -275,11 +275,23 @@ func serializeAnthropicMessage(msg Message, targetProvider string) map[string]an
 				toolResult["tool_use_id"] = msg.ToolCallID
 			}
 		}
-		// Extract content from text blocks
+		// Extract content from text blocks. Also handle tool_result blocks nested
+		// inside the message content (e.g. when the IR was produced by parsing an
+		// OpenAI/Anthropic-style tool_result block that was placed in a user-role
+		// message). Without this, any text inside a tool_result sub-block would be
+		// silently dropped when re-serialized to the Anthropic wire format.
 		var textParts []string
 		for _, block := range msg.Content {
 			if block.Type == "text" {
 				textParts = append(textParts, block.Text)
+				continue
+			}
+			if block.Type == "tool_result" && block.ToolResult != nil {
+				for _, cb := range block.ToolResult.Content {
+					if cb.Type == "text" {
+						textParts = append(textParts, cb.Text)
+					}
+				}
 			}
 		}
 		toolResult["content"] = joinTextPartsAnthropic(textParts)
