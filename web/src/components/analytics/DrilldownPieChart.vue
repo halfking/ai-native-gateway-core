@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useChart, createDoughnutConfig, generateColors } from '../../composables/useChart'
 import type { BoardPieItem } from '../../api/board'
 
@@ -39,8 +39,18 @@ const chartConfig = computed(() => {
 
 const { initChart, destroyChart } = useChart(canvasRef, chartConfig)
 
-watch(chartConfig, () => initChart(), { deep: true })
-onMounted(() => initChart())
+async function refreshChart() {
+  if (!hasData.value) {
+    destroyChart()
+    return
+  }
+  await nextTick()
+  initChart()
+}
+
+watch(chartConfig, () => void refreshChart(), { deep: true })
+watch(() => props.data?.length, () => void refreshChart())
+onMounted(() => void refreshChart())
 onBeforeUnmount(() => destroyChart())
 
 const hasData = computed(() => (props.data?.length ?? 0) > 0)

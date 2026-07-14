@@ -564,9 +564,9 @@ func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params Que
 	args := []interface{}{}
 	argIdx := 1
 
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+	where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
 		args = append(args, params.TenantID)
 		argIdx++
 	}
@@ -574,19 +574,35 @@ func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params Que
 
 	query := fmt.Sprintf(`
 		SELECT
-			COALESCE(client_id, 'unknown') as client_id,
+			COALESCE(NULLIF(TRIM(sd.client_id), ''), NULLIF(ss.client_models[1], ''), 'unknown') as client_id,
 			COUNT(*) as session_count,
-			COALESCE(SUM(total_cost_usd), 0) as total_cost,
-			MAX(last_request_at) as last_activity
-		FROM session_summaries
+			COALESCE(SUM(ss.total_cost_usd), 0) as total_cost,
+			MAX(ss.last_request_at) as last_activity
+		FROM session_summaries ss
+		LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key
 		%s
-		GROUP BY client_id
+		GROUP BY COALESCE(NULLIF(TRIM(sd.client_id), ''), NULLIF(ss.client_models[1], ''), 'unknown')
 		ORDER BY total_cost DESC
 		LIMIT $%d
 	`, whereClause, argIdx)
 	args = append(args, limit)
 
 	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil && isMissingSessionDim(err) {
+		query = fmt.Sprintf(`
+			SELECT
+				COALESCE(NULLIF(ss.client_models[1], ''), 'unknown') as client_id,
+				COUNT(*) as session_count,
+				COALESCE(SUM(ss.total_cost_usd), 0) as total_cost,
+				MAX(ss.last_request_at) as last_activity
+			FROM session_summaries ss
+			%s
+			GROUP BY COALESCE(NULLIF(ss.client_models[1], ''), 'unknown')
+			ORDER BY total_cost DESC
+			LIMIT $%d
+		`, whereClause, argIdx)
+		rows, err = h.db.Query(ctx, query, args...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -608,9 +624,9 @@ func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params Query
 	args := []interface{}{}
 	argIdx := 1
 
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+	where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
 		args = append(args, params.TenantID)
 		argIdx++
 	}
@@ -618,19 +634,23 @@ func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params Query
 
 	query := fmt.Sprintf(`
 		SELECT
-			COALESCE(task_id, 'unknown') as task_id,
+			COALESCE(NULLIF(TRIM(sd.task_id), ''), 'unknown') as task_id,
 			COUNT(*) as session_count,
-			COALESCE(SUM(total_cost_usd), 0) as total_cost,
-			MAX(last_request_at) as last_activity
-		FROM session_summaries
+			COALESCE(SUM(ss.total_cost_usd), 0) as total_cost,
+			MAX(ss.last_request_at) as last_activity
+		FROM session_summaries ss
+		LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key
 		%s
-		GROUP BY task_id
+		GROUP BY COALESCE(NULLIF(TRIM(sd.task_id), ''), 'unknown')
 		ORDER BY session_count DESC
 		LIMIT $%d
 	`, whereClause, argIdx)
 	args = append(args, limit)
 
 	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil && isMissingSessionDim(err) {
+		return []TaskRankItem{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}

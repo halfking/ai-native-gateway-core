@@ -5,6 +5,7 @@
 package dashboardapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -67,73 +68,18 @@ func (h *SessionActiveHandler) HandleSessionActive(w http.ResponseWriter, r *htt
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
-	// 查询活跃会话（最近1小时有请求）
-	where := []string{"last_request_at >= NOW() - INTERVAL '1 hour'"}
-	args := []interface{}{}
-	argIdx := 1
-
-	appendDashboardScope(&where, params, &args, &argIdx, "", true)
-	whereClause := "WHERE " + joinStrings(where, " AND ")
-
-	// 总数查询
-	var totalActive int
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM session_summaries %s", whereClause)
-	if err := h.db.QueryRow(ctx, countQuery, args...).Scan(&totalActive); err != nil {
-		if dashboarddegrade.IsMissingRelationError(err) {
-			h.writeDegraded(w, params, startTime, "session-active:count", err)
-			return
-		}
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to count active sessions", err.Error())
-		return
+	totalActive, sessions, err := h.queryActiveSessions(ctx, params, true)
+	if err != nil && isMissingSessionDim(err) {
+		totalActive, sessions, err = h.queryActiveSessions(ctx, params, false)
 	}
-
-	// 分页查询
-	offset := (params.Page - 1) * params.Size
-	query := fmt.Sprintf(`
-		SELECT
-			session_key,
-			COALESCE(tenant_id, '') as tenant_id,
-			COALESCE(client_id, '') as client_id,
-			COALESCE(models_used[1], '') as model,
-			COALESCE(request_count, 0) as request_count,
-			COALESCE(total_cost_usd, 0) as total_cost,
-			health_score,
-			COALESCE(health_grade, '') as health_grade,
-			last_request_at,
-			first_request_at
-		FROM session_summaries
-		%s
-		ORDER BY last_request_at DESC
-		LIMIT $%d OFFSET $%d
-	`, whereClause, argIdx, argIdx+1)
-	args = append(args, params.Size, offset)
-
-	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		if dashboarddegrade.IsMissingRelationError(err) {
-			h.writeDegraded(w, params, startTime, "session-active:list", err)
+			h.writeDegraded(w, params, startTime, "session-active", err)
 			return
 		}
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query active sessions", err.Error())
 		return
-	}
-	defer rows.Close()
-
-	sessions := make([]ActiveSessionItem, 0)
-	for rows.Next() {
-		var item ActiveSessionItem
-		if err := rows.Scan(
-			&item.SessionKey, &item.TenantID, &item.ClientID, &item.Model,
-			&item.RequestCount, &item.TotalCost, &item.HealthScore, &item.HealthGrade,
-			&item.LastActiveAt, &item.CreatedAt,
-		); err != nil {
-			apiStatus = "error"
-			writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to scan session", err.Error())
-			return
-		}
-		sessions = append(sessions, item)
 	}
 
 	resp := SessionActiveResponse{
@@ -151,6 +97,82 @@ func (h *SessionActiveHandler) HandleSessionActive(w http.ResponseWriter, r *htt
 		TookMs:      time.Since(startTime).Milliseconds(),
 	}
 	writeSuccessJSON(w, resp, metadata)
+}
+
+func isMissingSessionDim(err error) bool {
+	return dashboarddegrade.IsMissingRelationError(err) &&
+		dashboarddegrade.ExtractRelationName(err) == "session_dim"
+}
+
+func (h *SessionActiveHandler) queryActiveSessions(ctx context.Context, params QueryParams, withDim bool) (int, []ActiveSessionItem, error) {
+	fromClause := "FROM session_summaries ss"
+	if withDim {
+		fromClause = `FROM session_summaries ss
+		LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key`
+	}
+
+	where := []string{"ss.last_request_at >= NOW() - INTERVAL '1 hour'"}
+	args := []interface{}{}
+	argIdx := 1
+
+	appendDashboardScope(&where, params, &args, &argIdx, "ss", false)
+	if withDim {
+		if clause := buildOwnerWhere(params.auth, &args, &argIdx, "sd"); clause != "" {
+			where = append(where, clause)
+		}
+	}
+	whereClause := "WHERE " + joinStrings(where, " AND ")
+
+	var totalActive int
+	if err := h.db.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) %s %s", fromClause, whereClause), args...).Scan(&totalActive); err != nil {
+		return 0, nil, err
+	}
+
+	clientExpr := "COALESCE(NULLIF(ss.client_models[1], ''), '')"
+	if withDim {
+		clientExpr = "COALESCE(NULLIF(TRIM(sd.client_id), ''), NULLIF(ss.client_models[1], ''), '')"
+	}
+
+	offset := (params.Page - 1) * params.Size
+	listArgs := append([]interface{}{}, args...)
+	listArgs = append(listArgs, params.Size, offset)
+	query := fmt.Sprintf(`
+		SELECT
+			ss.session_key,
+			COALESCE(ss.tenant_id, '') as tenant_id,
+			%s as client_id,
+			COALESCE(ss.models_used[1], '') as model,
+			COALESCE(ss.request_count, 0) as request_count,
+			COALESCE(ss.total_cost_usd, 0) as total_cost,
+			ss.health_score,
+			COALESCE(ss.health_grade, '') as health_grade,
+			ss.last_request_at,
+			ss.first_request_at
+		%s
+		%s
+		ORDER BY ss.last_request_at DESC
+		LIMIT $%d OFFSET $%d
+	`, clientExpr, fromClause, whereClause, argIdx, argIdx+1)
+
+	rows, err := h.db.Query(ctx, query, listArgs...)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+
+	sessions := make([]ActiveSessionItem, 0)
+	for rows.Next() {
+		var item ActiveSessionItem
+		if err := rows.Scan(
+			&item.SessionKey, &item.TenantID, &item.ClientID, &item.Model,
+			&item.RequestCount, &item.TotalCost, &item.HealthScore, &item.HealthGrade,
+			&item.LastActiveAt, &item.CreatedAt,
+		); err != nil {
+			return 0, nil, err
+		}
+		sessions = append(sessions, item)
+	}
+	return totalActive, sessions, nil
 }
 
 // writeDegraded 缺表降级 — 返回 0 值 + degraded:true，前端按空态渲染。
