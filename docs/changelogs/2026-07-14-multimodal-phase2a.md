@@ -25,6 +25,12 @@
 - `go vet ./...`
 - `python3 docs/全方面测试/tools/attachment_audit.py --json`
 
+## Phase 2C follow-up
+
+- Added opt-in request-log redaction with `LLM_GATEWAY_REDACT_ATTACHMENT_BODY=1`.
+- Valid JSON log bodies replace `data:` payloads with MIME-preserving placeholders;
+  outbound provider bodies remain unchanged.
+
 ## References
 
 - `docs/会话优化v2/05-融合实施方案-附件与模型契约.md`
