@@ -10,10 +10,11 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 
 	// Migration 330 (2026-07-04) added usage_ledger. Migration 328a
 	// (2026-07-02) added request_logs_bodies. Migration 385 (2026-07-11)
-	// added model_probe_runs. The history is captured in the table
-	// comments at each migration; this test just pins the current set
-	// so a future onboarding bumps this expectation together with the
-	// migration.
+	// added model_probe_runs, but 2026-07-14 retired it (pure-hot-table
+	// strategy — no more columnar partitions). The history is captured
+	// in the table comments at each migration; this test just pins the
+	// current set so a future onboarding bumps this expectation
+	// together with the migration.
 	expected := map[string]bool{
 		"ensure_request_logs_partition":           false,
 		"ensure_request_logs_bodies_partition":    false,
@@ -21,7 +22,6 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 		"ensure_routing_decision_log_partition":   false,
 		"ensure_credential_model_index_partition": false,
 		"ensure_usage_ledger_partition":           false, // Migration 330
-		"ensure_model_probe_runs_partition":       false, // Migration 385
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -42,19 +42,18 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 
 	// Migration 341-350 (2026-07-05) replaced *_default catch-all
 	// partitions with independent *_hot tables. Migration 385 (2026-07-11)
-	// added model_probe_runs_hot. Migration 392 (2026-07-13) added
-	// candidate_failure_logs_hot.
+	// added model_probe_runs_hot, but 2026-07-14 retired it (pure-hot-table
+	// strategy). Migration 392 (2026-07-13) added candidate_failure_logs_hot.
 	expected := map[string]bool{
-		"promote_request_logs_hot_to_partition":             false,
-		"promote_usage_ledger_hot_to_partition":             false,
-		"promote_request_wal_hot_to_partition":              false,
-		"promote_routing_decision_log_hot_to_partition":     false,
-		"promote_credential_model_index_hot_to_partition":   false,
-		"promote_request_logs_bodies_hot_to_partition":      false,
-		"promote_credit_ledger_hot_to_partition":            false,
-		"promote_tool_usage_stats_hot_to_partition":         false,
-		"promote_model_probe_runs_hot_to_partition":         false, // Migration 385
-		"promote_candidate_failure_logs_hot_to_partition":   false, // Migration 392
+		"promote_request_logs_hot_to_partition":           false,
+		"promote_usage_ledger_hot_to_partition":           false,
+		"promote_request_wal_hot_to_partition":            false,
+		"promote_routing_decision_log_hot_to_partition":   false,
+		"promote_credential_model_index_hot_to_partition": false,
+		"promote_request_logs_bodies_hot_to_partition":    false,
+		"promote_credit_ledger_hot_to_partition":          false,
+		"promote_tool_usage_stats_hot_to_partition":       false,
+		"promote_candidate_failure_logs_hot_to_partition": false, // Migration 392
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
