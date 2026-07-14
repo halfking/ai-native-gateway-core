@@ -71,7 +71,7 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pies, _ := h.queryBoardPies(ctx, filterTenant, tr)
-	trends, _ := h.queryBoardTrends(ctx, filterTenant, tr, providerID)
+	trends, _ := h.resolveBoardTrends(ctx, filterTenant, tr, providerID)
 	bgTasks := h.queryBoardBackgroundTasks(ctx)
 	selfcheck := h.queryBoardSelfCheck(ctx)
 

@@ -33,6 +33,36 @@ export function boardRangeIncludesToday(range: BoardTimeRange): boolean {
   return range.end >= today
 }
 
+/** Chart bucket size aligned with backend: today=5m, 7d=15m, 30d+=1h. */
+export function boardTrendBucketMinutes(range: BoardTimeRange): number {
+  if (range.preset === 'custom' && range.start && range.end) {
+    const { startMs, endMs } = resolveBoardRangeMs(range)
+    const spanMs = endMs - startMs
+    if (spanMs <= 48 * 86_400_000) return 5
+    if (spanMs <= 14 * 86_400_000) return 15
+    return 60
+  }
+  if (range.days <= 1) return 5
+  if (range.days <= 7) return 15
+  return 60
+}
+
+export function alignToTrendBucket(ts: string | Date, range: BoardTimeRange): string {
+  const d = ts instanceof Date ? ts : new Date(ts)
+  if (Number.isNaN(d.getTime())) return new Date().toISOString()
+  const mins = boardTrendBucketMinutes(range)
+  const utc = new Date(Date.UTC(
+    d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
+    d.getUTCHours(), d.getUTCMinutes(), 0, 0,
+  ))
+  if (mins >= 60) {
+    utc.setUTCMinutes(0, 0, 0)
+    return utc.toISOString()
+  }
+  utc.setUTCMinutes(Math.floor(utc.getUTCMinutes() / mins) * mins, 0, 0)
+  return utc.toISOString()
+}
+
 export function toBoardTimeQuery(range: BoardTimeRange): BoardTimeQuery {
   if (range.preset === 'custom' && range.start && range.end) {
     return { start: range.start, end: range.end, days: range.days }

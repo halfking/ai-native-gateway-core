@@ -177,12 +177,22 @@ func (h *Handler) usageProviderDetailExport(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(
-		"attachment; filename=provider-%d-daily-models-%s.csv",
-		providerID, time.Now().UTC().Format("20060102"),
+		"attachment; filename=provider-%d-daily-models-%s_%s.csv",
+		providerID,
+		startTime.Format("20060102"),
+		endTime.Add(-24*time.Hour).Format("20060102"),
 	))
 	w.Write([]byte{0xEF, 0xBB, 0xBF})
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"date", "provider_id", "provider_name", "provider_code", "model", "requests", "total_tokens", "cost_usd"})
+	periodStart := startTime.Format("2006-01-02")
+	periodEnd := endTime.Add(-24 * time.Hour).Format("2006-01-02")
+	if endTime.Sub(startTime) <= 24*time.Hour {
+		periodEnd = periodStart
+	}
+	_ = cw.Write([]string{
+		"period_start", "period_end",
+		"date", "provider_id", "provider_name", "provider_code", "model", "requests", "total_tokens", "cost_usd",
+	})
 	for rows.Next() {
 		var date, model string
 		var reqs, tokens int64
@@ -191,6 +201,7 @@ func (h *Handler) usageProviderDetailExport(w http.ResponseWriter, r *http.Reque
 			continue
 		}
 		_ = cw.Write([]string{
+			periodStart, periodEnd,
 			date, strconv.Itoa(providerID), name, code, model,
 			strconv.FormatInt(reqs, 10),
 			strconv.FormatInt(tokens, 10),

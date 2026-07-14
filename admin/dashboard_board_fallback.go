@@ -33,13 +33,6 @@ func boardPiesAllEmpty(pies map[string]any) bool {
 	return true
 }
 
-func boardTrendBucketExpr(days int) string {
-	if days > 1 {
-		return "hour"
-	}
-	return "minute"
-}
-
 func (h *Handler) fillOverviewCountsFromLogs(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {
 	logsTable, alias := requestLogsFromClause(tr.Days)
 	where, args := boardLogsWhere(tr, alias, tenantID)
@@ -61,6 +54,47 @@ func (h *Handler) fillOverviewCountsFromLogs(ctx context.Context, tenantID strin
 		*providers = logProviders
 	}
 	return nil
+}
+
+func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64) ([]boardTrendPoint, error) {
+	logsTable, alias := requestLogsFromClause(tr.Days)
+	where, args := boardLogsWhere(tr, alias, tenantID)
+	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
+	if providerID > 0 {
+		where += fmt.Sprintf(" AND %s.provider_id = $%d", alias, len(args)+1)
+		args = append(args, providerID)
+	}
+	creditsExpr := maas.RequestLogCreditsSQL(alias, tenantID == "" || tenantID == "default")
+	bucketExpr := sqlTrendBucket(alias+".ts", tr.trendBucketMinutes())
+
+	rows, err := h.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s,
+			COUNT(*)::bigint,
+			COALESCE(SUM(COALESCE(%s.prompt_tokens, 0) + COALESCE(%s.completion_tokens, 0)
+				+ COALESCE(%s.cache_read_tokens, 0) + COALESCE(%s.cache_write_tokens, 0)), 0)::bigint,
+			COALESCE(SUM(%s), 0)::bigint,
+			COALESCE(SUM(%s.cost_usd), 0)::float8
+		FROM %s
+		WHERE %s
+		GROUP BY 1
+		ORDER BY 1 ASC
+	`, bucketExpr, alias, alias, alias, alias, creditsExpr, alias, logsTable, where), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var points []boardTrendPoint
+	for rows.Next() {
+		var p boardTrendPoint
+		var bucket time.Time
+		if err := rows.Scan(&bucket, &p.Requests, &p.Tokens, &p.Credits, &p.CostUSD); err != nil {
+			continue
+		}
+		p.Bucket = bucket.UTC().Format(time.RFC3339)
+		points = append(points, p)
+	}
+	return points, nil
 }
 
 func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, days int) (map[string]any, error) {
@@ -153,52 +187,6 @@ func fallbackDimGroupExpr(alias, dimType string) (expr string, onlyFailures bool
 	default:
 		return unknown, false
 	}
-}
-
-func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, days int, providerID int64) ([]boardTrendPoint, error) {
-	logsTable, alias := requestLogsFromClause(days)
-	where := alias + `.ts >= now() - ($1 * INTERVAL '1 day')`
-	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
-	args := []any{days}
-	if tenantID != "" {
-		where += fmt.Sprintf(" AND %s.tenant_id = $%d", alias, len(args)+1)
-		args = append(args, tenantID)
-	}
-	if providerID > 0 {
-		where += fmt.Sprintf(" AND %s.provider_id = $%d", alias, len(args)+1)
-		args = append(args, providerID)
-	}
-	creditsExpr := maas.RequestLogCreditsSQL(alias, tenantID == "" || tenantID == "default")
-	bucketUnit := boardTrendBucketExpr(days)
-
-	rows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT date_trunc('%s', %s.ts),
-			COUNT(*)::bigint,
-			COALESCE(SUM(COALESCE(%s.prompt_tokens, 0) + COALESCE(%s.completion_tokens, 0)
-				+ COALESCE(%s.cache_read_tokens, 0) + COALESCE(%s.cache_write_tokens, 0)), 0)::bigint,
-			COALESCE(SUM(%s), 0)::bigint,
-			COALESCE(SUM(%s.cost_usd), 0)::float8
-		FROM %s
-		WHERE %s
-		GROUP BY 1
-		ORDER BY 1 ASC
-	`, bucketUnit, alias, alias, alias, alias, alias, creditsExpr, alias, logsTable, where), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var points []boardTrendPoint
-	for rows.Next() {
-		var p boardTrendPoint
-		var bucket time.Time
-		if err := rows.Scan(&bucket, &p.Requests, &p.Tokens, &p.Credits, &p.CostUSD); err != nil {
-			continue
-		}
-		p.Bucket = bucket.UTC().Format(time.RFC3339)
-		points = append(points, p)
-	}
-	return points, nil
 }
 
 func (h *Handler) fallbackErrorDrill(

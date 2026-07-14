@@ -49,8 +49,41 @@ func (tr boardTimeRange) includesTodayUTC() bool {
 	return tr.End.After(todayStart)
 }
 
+// trendBucketMinutes picks chart bucket size: today=5m, 7d=15m, 30d+=1h.
+func (tr boardTimeRange) trendBucketMinutes() int {
+	if tr.Custom {
+		span := tr.End.Sub(tr.Start)
+		switch {
+		case span <= 48*time.Hour:
+			return 5
+		case span <= 14*24*time.Hour:
+			return 15
+		default:
+			return 60
+		}
+	}
+	switch {
+	case tr.Days <= 1:
+		return 5
+	case tr.Days <= 7:
+		return 15
+	default:
+		return 60
+	}
+}
+
+func sqlTrendBucket(column string, minutes int) string {
+	if minutes >= 60 {
+		return fmt.Sprintf("date_trunc('hour', %s)", column)
+	}
+	return fmt.Sprintf(
+		"date_trunc('hour', %s) + (FLOOR(EXTRACT(minute FROM %s)::int / %d) * interval '%d minutes')",
+		column, column, minutes, minutes,
+	)
+}
+
 func (tr boardTimeRange) trendBucketUnit() string {
-	if tr.End.Sub(tr.Start) > 24*time.Hour {
+	if tr.trendBucketMinutes() >= 60 {
 		return "hour"
 	}
 	return "minute"
