@@ -63,13 +63,20 @@ export interface BoardPayload {
 
 export interface BoardQuery {
   days?: number
+  start?: string
+  end?: string
   tenant_id?: string
   provider_id?: number
 }
 
 export function fetchDashboardBoard(params: BoardQuery = {}): Promise<BoardPayload> {
   const qs = new URLSearchParams()
-  if (params.days != null) qs.set('days', String(params.days))
+  if (params.start && params.end) {
+    qs.set('start', params.start)
+    qs.set('end', params.end)
+  } else if (params.days != null) {
+    qs.set('days', String(params.days))
+  }
   if (params.tenant_id) qs.set('tenant_id', params.tenant_id)
   if (params.provider_id != null) qs.set('provider_id', String(params.provider_id))
   const q = qs.toString()

@@ -12,15 +12,16 @@ func (h *Handler) SetBoardCache(svc *boardcache.Service) {
 }
 
 func (h *Handler) buildBoardPayload(ctx context.Context, tenantFilter string, days int, providerID int64) (map[string]any, error) {
-	summary, fromMinute := h.queryBoardSummary(ctx, tenantFilter, days)
+	tr := daysToBoardTimeRange(days)
+	summary, fromMinute := h.queryBoardSummary(ctx, tenantFilter, tr)
 	if !fromMinute {
-		summary = h.fallbackBoardSummary(ctx, tenantFilter, days)
+		summary = h.fallbackBoardSummary(ctx, tenantFilter, tr)
 	}
-	pies, err := h.queryBoardPies(ctx, tenantFilter, days)
+	pies, err := h.queryBoardPies(ctx, tenantFilter, tr)
 	if err != nil {
 		return nil, err
 	}
-	trends, err := h.queryBoardTrends(ctx, tenantFilter, days, providerID)
+	trends, err := h.queryBoardTrends(ctx, tenantFilter, tr, providerID)
 	if err != nil {
 		return nil, err
 	}

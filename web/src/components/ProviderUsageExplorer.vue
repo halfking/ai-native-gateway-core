@@ -13,10 +13,13 @@ import {
   downloadProviderUsageExport,
   downloadProviderDetailExport,
 } from '../api/usage'
+import type { BoardTimeQuery, BoardTimeRange } from '../utils/boardTimeRange'
+import { formatBoardRangeLabel } from '../utils/boardTimeRange'
 
 const props = defineProps<{
   open: boolean
-  days: number
+  timeRange: BoardTimeRange
+  timeQuery: BoardTimeQuery
 }>()
 
 const emit = defineEmits<{ close: [] }>()
@@ -36,6 +39,7 @@ const detailLoading = ref(false)
 const exportLoading = ref(false)
 
 const isDetailView = computed(() => selected.value != null)
+const periodLabel = computed(() => formatBoardRangeLabel(props.timeRange, t))
 
 const filteredRows = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -65,7 +69,7 @@ function fmtPct(n: number | undefined) {
 async function loadList() {
   loading.value = true
   try {
-    rows.value = await getUsageByProvider(props.days, 200)
+    rows.value = await getUsageByProvider(props.timeQuery, 200)
   } finally {
     loading.value = false
   }
@@ -77,10 +81,10 @@ async function loadDetail(row: ProviderUsageRow) {
   detailLoading.value = true
   try {
     const [s, trend, m, daily] = await Promise.all([
-      getProviderUsageSummary(row.provider_id, props.days),
-      getProviderUsageTrend(row.provider_id, 'day', props.days),
-      getProviderUsageModels(row.provider_id, props.days),
-      getProviderDailyModels(row.provider_id, props.days),
+      getProviderUsageSummary(row.provider_id, props.timeQuery),
+      getProviderUsageTrend(row.provider_id, 'day', props.timeQuery),
+      getProviderUsageModels(row.provider_id, props.timeQuery),
+      getProviderDailyModels(row.provider_id, props.timeQuery),
     ])
     summary.value = s
     trendData.value = trend.map((p) => ({
@@ -102,7 +106,7 @@ async function onTrendPeriodChange(period: UsageTrendPeriod) {
   if (!selected.value) return
   detailLoading.value = true
   try {
-    const trend = await getProviderUsageTrend(selected.value.provider_id, period, props.days)
+    const trend = await getProviderUsageTrend(selected.value.provider_id, period, props.timeQuery)
     trendData.value = trend.map((p) => ({
       bucket: p.period,
       requests: p.requests,
@@ -126,7 +130,7 @@ function backToList() {
 async function exportAll() {
   exportLoading.value = true
   try {
-    await downloadProviderUsageExport(props.days)
+    await downloadProviderUsageExport(props.timeQuery)
   } finally {
     exportLoading.value = false
   }
@@ -136,7 +140,7 @@ async function exportDetail() {
   if (!selected.value) return
   exportLoading.value = true
   try {
-    await downloadProviderDetailExport(selected.value.provider_id, props.days)
+    await downloadProviderDetailExport(selected.value.provider_id, props.timeQuery)
   } finally {
     exportLoading.value = false
   }
@@ -150,7 +154,7 @@ watch(() => props.open, (v) => {
   }
 })
 
-watch(() => props.days, () => {
+watch(() => props.timeQuery, () => {
   if (props.open) {
     if (selected.value) {
       void loadDetail(selected.value)
@@ -158,7 +162,7 @@ watch(() => props.days, () => {
       void loadList()
     }
   }
-})
+}, { deep: true })
 </script>
 
 <template>
@@ -192,7 +196,7 @@ watch(() => props.days, () => {
                       <span class="muted">{{ selected!.provider_code }} · ID {{ selected!.provider_id }}</span>
                     </template>
                     <template v-else>
-                      {{ t('dashboard.providerUsage.subtitle', { days }) }}
+                      {{ t('dashboard.providerUsage.subtitle', { period: periodLabel }) }}
                     </template>
                   </p>
                 </div>

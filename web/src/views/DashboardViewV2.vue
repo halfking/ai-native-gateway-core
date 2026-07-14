@@ -42,7 +42,6 @@ const dashboardActions = inject<{ refreshBoard: () => Promise<void> }>('dashboar
 const statsDrawerRef = ref<InstanceType<typeof StatsDrawer> | null>(null)
 const activeRequestId = ref<string | null>(null)
 
-const days = boardState.days
 const loading = boardState.loading
 const error = boardState.error
 const activeTab = dashboardTab.activeTab
@@ -69,12 +68,6 @@ async function openStatsDrawer(tab: 'apikeys' | 'models') {
 
 async function onRefresh() {
   await dashboardActions.refreshBoard()
-}
-
-async function onDaysChange() {
-  if (activeTab.value === 'board') {
-    await boardState.load()
-  }
 }
 </script>
 
@@ -153,14 +146,6 @@ async function onDaysChange() {
         <span class="tenant-badge" :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }">
           {{ tenantLabel }}
         </span>
-        
-        <!-- 时间范围选择 -->
-        <select v-model.number="days" class="days-select" @change="onDaysChange">
-          <option :value="1">{{ t('dashboard.range.today') }}</option>
-          <option :value="7">{{ t('dashboard.range.last7d') }}</option>
-          <option :value="30">{{ t('dashboard.range.last30d') }}</option>
-          <option :value="90">{{ t('dashboard.range.last90d') }}</option>
-        </select>
         
         <!-- 刷新按钮 -->
         <button class="btn btn-refresh" @click="onRefresh" :disabled="loading" :title="t('dashboard.v2.refreshData')">

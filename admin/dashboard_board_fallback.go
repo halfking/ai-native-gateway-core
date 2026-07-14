@@ -40,15 +40,10 @@ func boardTrendBucketExpr(days int) string {
 	return "minute"
 }
 
-func (h *Handler) fillOverviewCountsFromLogs(ctx context.Context, tenantID string, days int, keys, models, providers *int) error {
-	logsTable, alias := requestLogsFromClause(days)
-	where := alias + `.ts >= now() - ($1 * INTERVAL '1 day')`
+func (h *Handler) fillOverviewCountsFromLogs(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {
+	logsTable, alias := requestLogsFromClause(tr.Days)
+	where, args := boardLogsWhere(tr, alias, tenantID)
 	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
-	args := []any{days}
-	if tenantID != "" {
-		where += fmt.Sprintf(" AND %s.tenant_id = $%d", alias, len(args)+1)
-		args = append(args, tenantID)
-	}
 	modelExpr := fmt.Sprintf(`COALESCE(NULLIF(%s.client_model, ''), NULLIF(%s.outbound_model, ''))`, alias, alias)
 	var logModels, logProviders int
 	err := h.db.QueryRow(ctx, fmt.Sprintf(`
