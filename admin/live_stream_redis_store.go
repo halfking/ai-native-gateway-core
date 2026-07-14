@@ -48,6 +48,9 @@ type LiveStreamTile struct {
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	PromptTokens     *int     `json:"prompt_tokens,omitempty"`
 	CompletionTokens *int     `json:"completion_tokens,omitempty"`
+	IsProbe          bool     `json:"is_probe,omitempty"`
+	ProbeOrigin      string   `json:"probe_origin,omitempty"`
+	ProbeAttempt     int      `json:"probe_attempt,omitempty"`
 }
 
 type LiveStreamLane struct {
@@ -610,28 +613,20 @@ func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 	// This ensures idle markers inherit the queue's identity rather than creating separate idle lanes
 	switch dimension {
 	case "vendor":
-		// 返回 model name / "其他" 也算合法 key —— 不能在这里返回 ""，
-		// 否则 resolveVendorForRequest 的最后兜底"用模型名称"会被丢弃，
-		// 反而出现"原厂"泳道被过滤消失。
-		key := resolveVendorForRequest(req)
-		// idle marker 永远不进入 vendor / provider / model 维度
 		if req.Type == "idle_marker" {
+			if req.ModelCategory != "" {
+				return req.ModelCategory
+			}
 			return ""
 		}
+		key := resolveVendorForRequest(req)
 		return key
 	case "provider":
-		// 设计原则（2026-07-09 审计修正）：provider(供应商) 维度只认凭据反查的结果
-		// （telemetry.CredentialID → credentials JOIN providers → display_name）。
-		// 之前当 ProviderCode 为空时用 CanonicalName/Model 兜底，会把模型名
-		// （如 "minimax-m3"）塞进 provider 维度，于是同一个供应商同时出现
-		// "MiniMax"（凭据反查）和 "minimax-m3"（模型名兜底）两个泳道。
-		//
-		// 现在：ProviderCode 为空/未知时返回 ""，该请求不在 provider 维度显示，
-		// 模型名永远只出现在 model 维度。ProviderCode 为空的两种真实场景：
-		//   1) credential_id == 0：请求未到达凭据选择（auth/路由失败/探测记录）；
-		//   2) 凭据已被删除，credential→provider JOIN 查不到。
-		// 这两种情况下"供应商"本身就没有意义，不应凭空造一个模型名泳道。
 		if req.Type == "idle_marker" {
+			pc := strings.TrimSpace(req.ProviderCode)
+			if pc != "" && pc != "unknown" && pc != "__unknown__" {
+				return pc
+			}
 			return ""
 		}
 		pc := strings.TrimSpace(req.ProviderCode)
@@ -640,17 +635,13 @@ func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 		}
 		return pc
 	case "model":
-		// Use CanonicalName for aggregation so the same model from different
-		// credentials (with different outbound names) aggregates into one lane.
-		// Fallback to Model for backward compatibility when CanonicalName is empty.
-		//
-		// Case-insensitive: canonical name and outbound model may differ in
-		// casing across credentials ("MiniMax-M3" vs "minimax-m3"); we fold
-		// to a lower-case trimmed form so both spellings fall into the
-		// same lane. The original case is preserved in the rendered label
-		// because lane display goes through the canonical name field, not
-		// this dimension key.
 		if req.Type == "idle_marker" {
+			if req.CanonicalName != "" {
+				return normalizeModelKey(req.CanonicalName)
+			}
+			if req.Model != "" {
+				return normalizeModelKey(req.Model)
+			}
 			return ""
 		}
 		if req.CanonicalName != "" {
@@ -755,6 +746,9 @@ func liveRequestTile(req LiveRequest) LiveStreamTile {
 		CostUSD:          req.CostUSD,
 		PromptTokens:     req.PromptTokens,
 		CompletionTokens: req.CompletionTokens,
+		IsProbe:          req.IsProbe,
+		ProbeOrigin:      req.ProbeOrigin,
+		ProbeAttempt:     req.ProbeAttempt,
 	}
 	// Idle markers carry only their own dimension's identity. Surface a
 	// human-readable "[空闲]" label on whichever field is empty so the
@@ -926,7 +920,6 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 		key  string
 	}
 	var idle []pending
-	refreshPipe := s.rdb.Pipeline()
 	for i, k := range activityKeys {
 		val, err := cmds[i].Result()
 		if err != nil {
@@ -946,15 +939,9 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 			continue
 		}
 		idle = append(idle, pending{info: info, key: k})
-		// Refresh the activity timestamp so we do not re-emit on every tick.
-		refreshPipe.Set(ctx, k, nowUnix, liveStreamTTL)
 	}
 
 	if len(idle) == 0 {
-		// Still flush the refresh pipeline (no-op if empty).
-		if _, err := refreshPipe.Exec(ctx); err != nil && err != redis.Nil {
-			return fmt.Errorf("refresh activity timestamps failed: %w", err)
-		}
 		return nil
 	}
 
@@ -984,9 +971,6 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 	if _, err := writePipe.Exec(ctx); err != nil && err != redis.Nil {
 		return fmt.Errorf("write idle markers failed: %w", err)
 	}
-	if _, err := refreshPipe.Exec(ctx); err != nil && err != redis.Nil {
-		slog.Debug("refresh activity timestamps failed (non-fatal)", "err", err.Error())
-	}
 	return nil
 }
 
@@ -1004,13 +988,14 @@ func idleMarkerQueueKeys(tenantID, dimension, dimensionKey string) []string {
 }
 
 func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time) LiveRequest {
-	// requestID must be unique per (scope, dimension, key, tick); include
-	// the scope to prevent collision between global and tenant-scoped markers.
+	// Stable request_id per lane so each idle tick updates the same tile
+	// (ZADD member) instead of appending a new idle row.
 	scope := "global"
 	if tenantID != "" {
 		scope = "t-" + tenantID
 	}
-	requestID := fmt.Sprintf("idle-%s-%s-%s-%d", scope, dimension, key, ts.UnixNano())
+	safeKey := strings.NewReplacer(":", "_", "/", "_").Replace(key)
+	requestID := fmt.Sprintf("idle-%s-%s-%s", scope, dimension, safeKey)
 
 	marker := LiveRequest{
 		Type:      "idle_marker",
