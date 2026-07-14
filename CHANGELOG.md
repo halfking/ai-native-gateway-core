@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### Responses API tool-call continuity
+
+- Preserve `function_call` and `function_call_output` IDs when converting
+  `/v1/responses` input into Chat Completions messages. This prevents
+  gpt-5.6-luna from receiving an orphaned tool output and returning
+  `tool call id mismatch`.
+
 ### Live request stream: idle markers, probe on no-candidates, swim-lane flicker
 
 - **Active probe on no-candidates (regression fix).** 2026-07-14 minimax-m3
