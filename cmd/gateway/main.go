@@ -65,6 +65,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
+	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -1017,7 +1018,7 @@ func main() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
 			BroadcastQueueSize:            2048,
 			InitialReplayLimit:            200,
-			IdleThreshold:                 admin.LiveStreamLaneRetention,
+			IdleThreshold:                 admin.LiveStreamIdleThreshold,
 			IdleTickInterval:              10 * time.Second,
 			KeepaliveInterval:             25 * time.Second,
 			RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
@@ -2811,6 +2812,14 @@ func main() {
 		// expose only metadata about the licensing subsystem itself.
 		licensing.NewLicenseHealthHandler(licenseDataDir, licensing.DefaultGracePeriod).RegisterHealthRoutes(customerLicenseGroup)
 		slog.Info("Phase 3B-1: License health endpoints enabled (/api/system/license/health, /api/system/license/status)")
+
+		collector.MaybeStart(context.Background(), collector.StartupConfig{
+			Pool:         pool,
+			DataDir:      licenseDataDir,
+			AuthorityURL: os.Getenv("LICENSE_AUTHORITY_URL"),
+			Version:      Version(),
+			StartTime:    time.Now(),
+		})
 
 		// Phase 3: Fault Management (故障自愈)
 		faultStore := fault.NewPgxStore(pool)

@@ -242,6 +242,17 @@ function pushOrQueue(item: LiveRequest) {
     }
     return
   }
+  if (item.type === 'idle_marker' && item.request_id) {
+    const existingIndex = liveStreamState.requests.findIndex(
+      (r) => r.request_id === item.request_id,
+    )
+    if (existingIndex >= 0) {
+      // Idle markers keep a stable request_id; update payload in place so
+      // the tile stays in chronological order (pushed left by newer requests).
+      liveStreamState.requests[existingIndex] = item
+      return
+    }
+  }
   if (item.type !== 'idle_marker' && item.request_id) {
     if (idIndex.has(item.request_id)) {
       const existingIndex = liveStreamState.requests.findIndex(
