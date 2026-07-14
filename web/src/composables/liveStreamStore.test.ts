@@ -217,10 +217,10 @@ describe('pushOrQueue', () => {
     expect(__testing.state.requests[1]?.status).toBe('success')
   })
 
-  it('does not de-dup idle_marker by request_id', () => {
-    __testing.pushOrQueue({ type: 'idle_marker', ts: '2026-07-14T00:00:00Z' } as LiveRequest)
-    __testing.pushOrQueue({ type: 'idle_marker', ts: '2026-07-14T00:01:00Z' } as LiveRequest)
-    expect(__testing.state.requests).toHaveLength(2)
-    expect(__testing.state.requests.every((r) => r.type === 'idle_marker')).toBe(true)
+  it('updates idle_marker in place when request_id is stable', () => {
+    __testing.pushOrQueue({ type: 'idle_marker', request_id: 'idle-openai', ts: '2026-07-14T00:00:00Z' } as LiveRequest)
+    __testing.pushOrQueue({ type: 'idle_marker', request_id: 'idle-openai', ts: '2026-07-14T00:05:00Z' } as LiveRequest)
+    expect(__testing.state.requests).toHaveLength(1)
+    expect(__testing.state.requests[0]?.ts).toBe('2026-07-14T00:05:00Z')
   })
 })

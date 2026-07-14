@@ -20,8 +20,9 @@ import (
 //   - Main queue: ZSET llmgw:live:main (score = unix_ms, member = JSON)
 //   - Dimension queues: ZSET llmgw:live:dim:{vendor|provider|model}:{key}
 //   - Status queues: ZSET llmgw:live:status:{success|failure|in_progress}
-//   - TTL: LiveStreamLaneRetention (default 4 hours)
-//   - Idle markers: inserted after LiveStreamLaneRetention of silence
+//   - TTL: LiveStreamRecordRetention (default 2 hours, product minimum)
+//   - Visible lane window: LiveStreamLaneVisibleLimit (20 tiles)
+//   - Idle markers: inserted after LiveStreamIdleThreshold (5 min) of silence
 //
 // Graceful degradation: all write errors are logged but not surfaced;
 // the hub falls back to DB replay when Redis is unavailable.
@@ -107,8 +108,20 @@ type liveRequestRedisPayload struct {
 	ProbeAttempt int    `json:"probe_attempt,omitempty"`
 }
 
-// LiveStreamLaneRetention is the default retention for Redis live-stream
-// queues, dimension lane activity keys, and in-memory snapshot eviction.
+// LiveStreamRecordRetention is the Redis TTL for request detail keys and
+// sorted-set queues. Product requirement: at least 2 hours.
+const LiveStreamRecordRetention = 2 * time.Hour
+
+// LiveStreamLaneVisibleLimit is how many tiles each swim lane shows. Entries
+// scrolled past this window are trimmed from per-dimension Redis queues.
+const LiveStreamLaneVisibleLimit = 20
+
+// LiveStreamIdleThreshold is how long a lane must be silent before an idle
+// marker is written into the stream.
+const LiveStreamIdleThreshold = 5 * time.Minute
+
+// LiveStreamLaneRetention is the default for in-memory cached snapshot
+// eviction in the SSE hub (not Redis record TTL).
 const LiveStreamLaneRetention = 4 * time.Hour
 
 const (
@@ -118,9 +131,9 @@ const (
 	liveStreamStatPrefix     = "llmgw:live:status:"
 	liveStreamTenantSet      = "llmgw:live:tenants"
 	liveStreamActivityPrefix = "llmgw:live:activity:"
-	liveStreamTTL            = LiveStreamLaneRetention
-	liveStreamLaneLimit      = 30
-	liveStreamReplayLimit    = 200 // 默认回放请求数：泳道中请求的有效期靠 TTL 保证，数量上限放宽到 200，让请求“直到被挤出去”而非被过小的 replay 上限提前丢弃
+	liveStreamTTL            = LiveStreamRecordRetention
+	liveStreamLaneLimit      = LiveStreamLaneVisibleLimit
+	liveStreamReplayLimit    = 200 // main-queue replay cap; per-lane display capped at liveStreamLaneLimit
 )
 
 // normalizeModelKey returns a case-insensitive, whitespace-trimmed
@@ -268,6 +281,7 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	for _, key := range queueKeys {
 		pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: req.RequestID})
 		pipe.Expire(ctx, key, liveStreamTTL)
+		trimLiveStreamQueue(pipe, ctx, key, liveStreamQueueKeepLimit(key))
 	}
 	pipe.Set(ctx, liveStreamRequestDetailKey(tenantID, req.RequestID), data, liveStreamTTL)
 	pipe.Set(ctx, liveStreamGlobalRequestDetailKey(req.RequestID), data, liveStreamTTL)
@@ -328,6 +342,25 @@ func removeLiveRequestFromQueues(ctx context.Context, pipe redis.Pipeliner, tena
 	for _, key := range liveRequestQueueKeys(tenantID, req) {
 		pipe.ZRem(ctx, key, req.RequestID)
 	}
+}
+
+// liveStreamQueueKeepLimit returns how many members to retain in a Redis
+// sorted-set queue. Main queues keep enough history for multi-lane replay;
+// dimension/status queues trim to the visible swim-lane window (20).
+func liveStreamQueueKeepLimit(key string) int {
+	if key == liveStreamMainKey || strings.HasSuffix(key, ":main") {
+		return liveStreamReplayLimit
+	}
+	return LiveStreamLaneVisibleLimit
+}
+
+// trimLiveStreamQueue removes the oldest members so at most keep entries
+// remain (highest scores / newest requests). Called after every ZADD.
+func trimLiveStreamQueue(pipe redis.Pipeliner, ctx context.Context, key string, keep int) {
+	if keep <= 0 {
+		return
+	}
+	pipe.ZRemRangeByRank(ctx, key, 0, int64(-keep-1))
 }
 
 func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
@@ -886,7 +919,7 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 		return nil
 	}
 	if idleThreshold <= 0 {
-		idleThreshold = LiveStreamLaneRetention
+		idleThreshold = LiveStreamIdleThreshold
 	}
 	idleThresholdSeconds := int64(idleThreshold.Seconds())
 
@@ -916,8 +949,9 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 	}
 
 	type pending struct {
-		info activityKeyInfo
-		key  string
+		info         activityKeyInfo
+		key          string
+		lastActivity int64
 	}
 	var idle []pending
 	for i, k := range activityKeys {
@@ -938,7 +972,7 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 			slog.Debug("skipping malformed activity key", "key", k)
 			continue
 		}
-		idle = append(idle, pending{info: info, key: k})
+		idle = append(idle, pending{info: info, key: k, lastActivity: lastActivity})
 	}
 
 	if len(idle) == 0 {
@@ -948,13 +982,17 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 	// 3) Build + persist idle markers, writing only to the relevant lane(s).
 	writePipe := s.rdb.Pipeline()
 	for _, p := range idle {
-		marker := createIdleMarkerForDimension(p.info.dimension, p.info.dimensionKey, p.info.tenantID, ts)
+		// Anchor idle at the moment silence began (last activity + threshold),
+		// not at scan time, so new requests push the idle tile left instead
+		// of keeping it pinned at the tail.
+		idleStartedAt := time.Unix(p.lastActivity+idleThresholdSeconds, 0).UTC()
+		marker := createIdleMarkerForDimension(p.info.dimension, p.info.dimensionKey, p.info.tenantID, idleStartedAt)
 		data, err := marshalLiveRequestRedisPayload(marker)
 		if err != nil {
 			slog.Debug("failed to marshal idle marker", "dimension", p.info.dimension, "dimension_key", p.info.dimensionKey, "tenant_id", p.info.tenantID, "err", err.Error())
 			continue
 		}
-		score := float64(ts.UnixMilli())
+		score := float64(idleStartedAt.UnixMilli())
 
 		// Detail lookups: store under the global key always, and the
 		// tenant key when scoped, so Replay can resolve the marker.
@@ -965,6 +1003,7 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 		for _, qkey := range idleMarkerQueueKeys(marker.TenantID, p.info.dimension, p.info.dimensionKey) {
 			writePipe.ZAdd(ctx, qkey, redis.Z{Score: score, Member: marker.RequestID})
 			writePipe.Expire(ctx, qkey, liveStreamTTL)
+			trimLiveStreamQueue(writePipe, ctx, qkey, liveStreamQueueKeepLimit(qkey))
 		}
 	}
 

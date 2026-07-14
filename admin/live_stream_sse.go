@@ -213,7 +213,7 @@ func (c *LiveStreamConfig) defaults() {
 		c.InitialReplayLimit = liveStreamReplayLimit
 	}
 	if c.IdleThreshold <= 0 {
-		c.IdleThreshold = LiveStreamLaneRetention
+		c.IdleThreshold = LiveStreamIdleThreshold
 	}
 	if c.IdleTickInterval <= 0 {
 		c.IdleTickInterval = 10 * time.Second

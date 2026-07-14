@@ -167,6 +167,100 @@ func TestLiveStreamRedisStore_IdleMarker(t *testing.T) {
 	}
 }
 
+func TestLiveStreamQueueKeepLimit(t *testing.T) {
+	if got := liveStreamQueueKeepLimit(liveStreamMainKey); got != liveStreamReplayLimit {
+		t.Fatalf("main queue keep=%d want %d", got, liveStreamReplayLimit)
+	}
+	if got := liveStreamQueueKeepLimit("llmgw:live:tenant:default:main"); got != liveStreamReplayLimit {
+		t.Fatalf("tenant main keep=%d want %d", got, liveStreamReplayLimit)
+	}
+	if got := liveStreamQueueKeepLimit(liveStreamDimPrefix + "vendor:openai"); got != LiveStreamLaneVisibleLimit {
+		t.Fatalf("dimension queue keep=%d want %d", got, LiveStreamLaneVisibleLimit)
+	}
+}
+
+func TestIdleMarkerAnchorsAtSilenceStart(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer mr.Close()
+	store := NewLiveStreamRedisStore(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	ctx := context.Background()
+
+	lastActivity := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	threshold := 5 * time.Minute
+	mr.Set("llmgw:live:activity:global:vendor:openai", fmt.Sprintf("%d", lastActivity.Unix()))
+
+	emitTs := lastActivity.Add(threshold + time.Minute)
+	if err := store.ScanAndRecordIdleMarkers(ctx, emitTs, threshold); err != nil {
+		t.Fatalf("ScanAndRecordIdleMarkers: %v", err)
+	}
+
+	items, err := store.Replay(ctx, "", true, 50)
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	var idle *LiveRequest
+	for i := range items {
+		if items[i].Type == "idle_marker" {
+			idle = &items[i]
+			break
+		}
+	}
+	if idle == nil {
+		t.Fatalf("expected idle marker, got %#v", items)
+	}
+	wantTs := lastActivity.Add(threshold).UTC().Format(time.RFC3339)
+	if idle.Ts != wantTs {
+		t.Fatalf("idle ts=%q want %q (anchored at silence start, not scan time)", idle.Ts, wantTs)
+	}
+	if idle.Ts == emitTs.UTC().Format(time.RFC3339) {
+		t.Fatal("idle marker must not use scan time as timestamp")
+	}
+}
+
+func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer mr.Close()
+	store := NewLiveStreamRedisStore(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	ctx := context.Background()
+	base := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 25; i++ {
+		req := LiveRequest{
+			RequestID:     fmt.Sprintf("req-%02d", i),
+			Ts:            base.Add(time.Duration(i) * time.Second).UTC().Format(time.RFC3339),
+			Model:         "gpt-4o",
+			ModelCategory: "openai",
+			ProviderCode:  "openai",
+			Status:        "success",
+		}
+		if err := store.Record(ctx, req); err != nil {
+			t.Fatalf("Record %d: %v", i, err)
+		}
+	}
+
+	key := liveStreamDimPrefix + "vendor:openai"
+	n, err := store.rdb.ZCard(ctx, key).Result()
+	if err != nil {
+		t.Fatalf("ZCard: %v", err)
+	}
+	if n != int64(LiveStreamLaneVisibleLimit) {
+		t.Fatalf("dimension queue len=%d want %d", n, LiveStreamLaneVisibleLimit)
+	}
+	oldest, err := store.rdb.ZRange(ctx, key, 0, 0).Result()
+	if err != nil {
+		t.Fatalf("ZRange: %v", err)
+	}
+	if len(oldest) == 0 || oldest[0] != "req-05" {
+		t.Fatalf("oldest member=%v want req-05 (first 5 trimmed)", oldest)
+	}
+}
+
 func TestLiveRequestTile_ProbeFields(t *testing.T) {
 	tile := liveRequestTile(LiveRequest{
 		RequestID:    "probe-1",
@@ -742,8 +836,8 @@ func TestLiveStreamSSEHub_ConfigDefaults(t *testing.T) {
 			t.Fatalf("expected CachedSnapshotCleanupInterval=4h when zero, got %s",
 				hub.cfg.CachedSnapshotCleanupInterval)
 		}
-		if hub.cfg.IdleThreshold != LiveStreamLaneRetention {
-			t.Fatalf("expected IdleThreshold=4h, got %s", hub.cfg.IdleThreshold)
+		if hub.cfg.IdleThreshold != LiveStreamIdleThreshold {
+			t.Fatalf("expected IdleThreshold=5m, got %s", hub.cfg.IdleThreshold)
 		}
 	})
 
