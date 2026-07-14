@@ -400,6 +400,33 @@ func TestSerializeGemini_OpenAIToolCallsAndResults(t *testing.T) {
 	}
 }
 
+func TestSerializeGemini_DoesNotDuplicateToolResultBlock(t *testing.T) {
+	ir := &InternalRequest{Messages: []Message{{
+		Role:       "tool",
+		ToolCallID: "gemini_call_lookup",
+		Content: []ContentBlock{{Type: "tool_result", ToolResult: &ToolResult{
+			ToolUseID: "gemini_call_lookup",
+			Content:   []ContentBlock{{Type: "text", Text: "ok"}},
+		}}},
+	}}}
+
+	body, err := SerializeGemini(ir)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	var out struct {
+		Contents []struct {
+			Parts []map[string]any `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(out.Contents) != 1 || len(out.Contents[0].Parts) != 1 {
+		t.Fatalf("got %d contents and %d parts, want one functionResponse part", len(out.Contents), len(out.Contents[0].Parts))
+	}
+}
+
 // TestRoundTripGemini parses a request, serializes it, and verifies key fields survive.
 func TestRoundTripGemini(t *testing.T) {
 	original := []byte(`{
