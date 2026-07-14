@@ -188,6 +188,13 @@ let es: EventSource | null = null
 let refCount = 0
 
 let onEvictCb: ((id: string) => void) | null = null
+const terminalListeners = new Set<(req: LiveRequest) => void>()
+
+function notifyTerminalRequest(req: LiveRequest) {
+  if (req.type === 'idle_marker' || !req.request_id) return
+  if (req.status !== 'success' && req.status !== 'failure') return
+  for (const fn of terminalListeners) fn(req)
+}
 
 function trimOldest() {
   if (liveStreamState.requests.length < MAX_VISIBLE) return
@@ -305,6 +312,7 @@ function handleEnvelope(env: LiveStreamEnvelope) {
   }
   if (env.type === 'request' && env.request) {
     pushOrQueue(env.request)
+    notifyTerminalRequest(env.request)
     return
   }
   if (env.type === 'idle_marker') {
@@ -599,6 +607,12 @@ export function reconnectStream() {
 }
 export function setOnRequestEvicted(cb: ((id: string) => void) | null) {
   onEvictCb = cb
+}
+
+/** Subscribe to completed requests (success/failure) for board stat deltas. */
+export function subscribeTerminalRequests(listener: (req: LiveRequest) => void): () => void {
+  terminalListeners.add(listener)
+  return () => terminalListeners.delete(listener)
 }
 
 export const __testing = {
