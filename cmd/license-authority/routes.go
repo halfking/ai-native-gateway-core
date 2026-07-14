@@ -31,6 +31,8 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 
 	// ── Licensing routes (/api/v1/license/*) ──────────────────────────────
 	licenseStore := licensing.NewPgxStore(pool)
+	trialHandler := NewTrialHandler(licenseStore)
+	trialHandler.RegisterRoutes(api)
 
 	// Secrets must be stable across restarts and must never use a public default.
 	aesKey, err := loadSecretKey("LICENSE_AES_KEY", 32)
