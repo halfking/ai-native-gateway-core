@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### License security hardening
+
+- Made trial issuance fail closed when distributed Redis rate limiting is unavailable.
+- Added hashed IP rate-limit keys and one-trial-per-email reservation across instances.
+- Restricted customer-to-authority trial proxy URLs to HTTPS outside development and blocked redirects/oversized responses.
+
 ### License distribution and trial activation
 
 - Added License Authority trial issuance with validation, configurable duration, and rate limiting.
