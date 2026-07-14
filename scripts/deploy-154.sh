@@ -19,6 +19,8 @@
 #   bash scripts/deploy-154.sh --no-frontend      # 跳过前端构建
 #   bash scripts/deploy-154.sh --ssh root@47.97.111.154 --port 25022
 #
+#   DEPLOY_154_LEGACY=true bash scripts/deploy-154.sh   # 旧 stop→scp 流程
+#
 # 前置 (硬门禁):
 #   env-injector inject aliyun-gateway-154
 #   ↑ 必须先注入 SSH_KEY_154 / LLM_GATEWAY_SECRET_KEY 等
@@ -53,6 +55,11 @@
 #      应该能看到 name-mapping 字符串 (新路由已注册)
 # =====================================================================
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${DEPLOY_154_LEGACY:-false}" != "true" ]]; then
+  exec bash "$SCRIPT_DIR/deploy-seamless.sh" deploy 154 "$@"
+fi
 
 # ── 默认值 ──────────────────────────────────────────────────────
 SSH_TARGET="${LLM_GATEWAY_154_SSH:-root@47.97.111.154}"
