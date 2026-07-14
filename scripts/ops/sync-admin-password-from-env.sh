@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
 # 将远端 env 中的 LLM_GATEWAY_ADMIN_PASSWORD 同步到 users 表（JWT 登录 SSOT）。
-# users 表存在 admin 时，/api/auth/token 不会回退 env 密码。
-#
-# 用法:
-#   bash scripts/ops/sync-admin-password-from-env.sh 154
-#   bash scripts/ops/sync-admin-password-from-env.sh 245
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="${1:-154}"
 
 case "$TARGET" in
@@ -32,7 +25,7 @@ for k in ~/.ssh/id_ed25519 ~/.ssh/56_id_rsa ~/.ssh/71_id_rsa; do
   [[ -f "$k" ]] && SSH_KEY_FILE="$k" && break
 done
 
-ssh_cmd() {
+ssh_run() {
   if [[ -n "$SSH_KEY_FILE" && -f "$SSH_KEY_FILE" ]]; then
     ssh -i "$SSH_KEY_FILE" -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_HOST" "$@"
   else
@@ -40,45 +33,55 @@ ssh_cmd() {
   fi
 }
 
-echo "[sync-admin] 读取 $TARGET env 并生成 bcrypt hash..."
-ADMIN_USER=$(ssh_cmd "grep '^LLM_GATEWAY_ADMIN_USER=' '$ENV_FILE' | cut -d= -f2-" | tr -d '\r')
-ADMIN_PW=$(ssh_cmd "grep '^LLM_GATEWAY_ADMIN_PASSWORD=' '$ENV_FILE' | cut -d= -f2-" | tr -d '\r')
-DB_URL=$(ssh_cmd "grep '^LLM_GATEWAY_DATABASE_URL=' '$ENV_FILE' | cut -d= -f2-" | tr -d '\r')
+echo "[sync-admin] 远端 pgcrypto 更新 users.password_hash ($TARGET)..."
+ssh_run "ENV_FILE='$ENV_FILE' bash -s" <<'REMOTE'
+set -euo pipefail
+python3 <<'PY'
+import json, os, subprocess, sys, urllib.error, urllib.request, uuid
 
-[[ -n "$ADMIN_USER" && -n "$ADMIN_PW" && -n "$DB_URL" ]] || {
-  echo "ERROR: env 缺少 ADMIN_USER / ADMIN_PASSWORD / DATABASE_URL" >&2
-  exit 1
-}
+def read_env(path):
+    out = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            k, v = line.split('=', 1)
+            out[k] = v
+    return out
 
-HASH=$(printf '%s' "$ADMIN_PW" | (cd "$PROJECT_ROOT" && go run "$SCRIPT_DIR/bcrypt-hash.go"))
-HASH_ESC=${HASH//\'/\'\'}
-
-echo "[sync-admin] 更新 users.password_hash (username=$ADMIN_USER)..."
-ssh_cmd "psql '$DB_URL' -v ON_ERROR_STOP=1 -c \"UPDATE users SET password_hash = '$HASH_ESC', must_change_password = false, updated_at = now() WHERE username = '$ADMIN_USER';\""
-
-echo "[sync-admin] 验证登录..."
-if ssh_cmd "python3 - <<'PY'
-import json, os, subprocess, urllib.request
-env = {}
-with open('$ENV_FILE') as f:
-    for line in f:
-        line = line.strip()
-        if not line or line.startswith('#') or '=' not in line:
-            continue
-        k, v = line.split('=', 1)
-        env[k] = v
+env = read_env(os.environ['ENV_FILE'])
 user = env.get('LLM_GATEWAY_ADMIN_USER', 'admin')
 pw = env.get('LLM_GATEWAY_ADMIN_PASSWORD', '')
+db = env.get('LLM_GATEWAY_DATABASE_URL', '')
+if not user or not pw or not db:
+    print('ERROR: missing ADMIN_USER/PASSWORD/DATABASE_URL in env', file=sys.stderr)
+    sys.exit(1)
+
+tag = 'pw_' + uuid.uuid4().hex
+sql = (
+    f"UPDATE users SET password_hash = crypt(${tag}${pw}${tag}$, gen_salt('bf', 10)), "
+    f"must_change_password = false, updated_at = now() WHERE username = '{user.replace(chr(39), chr(39)*2)}';"
+)
+r = subprocess.run(['psql', db, '-v', 'ON_ERROR_STOP=1', '-c', sql], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+if r.returncode != 0:
+    print(r.stderr or r.stdout, file=sys.stderr)
+    sys.exit(r.returncode)
+
 body = json.dumps({'username': user, 'password': pw}).encode()
-req = urllib.request.Request('http://127.0.0.1:8781/api/auth/token', data=body, headers={'Content-Type': 'application/json'}, method='POST')
+req = urllib.request.Request(
+    'http://127.0.0.1:8781/api/auth/token',
+    data=body,
+    headers={'Content-Type': 'application/json'},
+    method='POST',
+)
 try:
-    with urllib.request.urlopen(req, timeout=10) as r:
-        print(r.status)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        print(resp.status)
 except urllib.error.HTTPError as e:
-    print(e.code)
-PY" | grep -q '^200$'; then
-  echo "[sync-admin] ✓ 登录成功 (HTTP 200)"
-else
-  echo "[sync-admin] ✗ 登录仍失败" >&2
-  exit 1
-fi
+    print(e.code, file=sys.stderr)
+    sys.exit(1)
+PY
+REMOTE
+
+echo "[sync-admin] ✓ 密码已同步且登录验证通过 (HTTP 200)"
