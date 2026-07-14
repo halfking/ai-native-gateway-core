@@ -457,25 +457,31 @@ func (c *Client) ModelKnown(ctx context.Context, model string) bool {
 	if !c.Enabled() || c.dbPool == nil || strings.TrimSpace(model) == "" {
 		return false
 	}
+	lookup := modelname.CanonicalizeClientModel(model)
+	if lookup == "" {
+		return false
+	}
 	var found bool
-	err := c.dbPool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM provider_models
-			 WHERE lower(standardized_name) = lower($1)
-			UNION ALL
-			SELECT 1 FROM provider_models
-			 WHERE lower(raw_model_name) = lower($1)
-			UNION ALL
-			SELECT 1 FROM model_aliases
-			 WHERE lower(raw_name) = lower($1)
-			LIMIT 1
-		)
-	`, model).Scan(&found)
+	err := c.dbPool.QueryRow(ctx, modelKnownSQL, lookup).Scan(&found)
 	if err != nil {
 		return false
 	}
 	return found
 }
+
+const modelKnownSQL = `
+		SELECT EXISTS (
+			SELECT 1 FROM provider_models
+			 WHERE canonical_raw_name = $1
+			UNION ALL
+			SELECT 1 FROM provider_models
+			 WHERE standardized_name = $1
+			UNION ALL
+			SELECT 1 FROM model_aliases
+			 WHERE raw_name = $1
+			LIMIT 1
+		)
+`
 
 func (c *Client) getPolicyCached(ctx context.Context) (*Policy, error) {
 	c.mu.RLock()
@@ -593,7 +599,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			CanonicalName:  canonicalName,
 			CanonicalID:    canonicalID,
 			ResolutionPath: variantResolutionPath(hitPath, hitVariant, modelname.NormalizeRouteKey(model)),
-			RawModels:      lowerUnique(append(raw, model)),
+			RawModels:      uniqueRawModels(append(raw, model)),
 		}, nil
 	}
 
@@ -633,7 +639,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			CanonicalName:  canonicalName,
 			CanonicalID:    canonicalID,
 			ResolutionPath: variantResolutionPath(hitPath, hitVariant, modelname.NormalizeRouteKey(model)),
-			RawModels:      lowerUnique(append(raw, model)),
+			RawModels:      uniqueRawModels(append(raw, model)),
 		}, nil
 	}
 
@@ -645,7 +651,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			SELECT mc.id, mc.canonical_name
 			FROM model_aliases ma
 			JOIN models_canonical mc ON mc.id = ma.canonical_id
-			WHERE lower(ma.raw_name) = lower($1)
+			WHERE ma.raw_name = $1
 			  AND COALESCE(ma.status, 'active') = 'active'
 			  AND COALESCE(mc.status, 'active') = 'active'
 			  AND (
@@ -661,7 +667,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			if err != nil {
 				return nil, err
 			}
-			return &resolveResponse{ClientModel: model, CanonicalName: canonicalName, CanonicalID: canonicalID, ResolutionPath: "raw_fallback", RawModels: lowerUnique(append(raw, model, rawLookup))}, nil
+			return &resolveResponse{ClientModel: model, CanonicalName: canonicalName, CanonicalID: canonicalID, ResolutionPath: "raw_fallback", RawModels: uniqueRawModels(append(raw, model, rawLookup))}, nil
 		}
 		if err != nil && err != pgx.ErrNoRows {
 			return nil, err
@@ -1041,16 +1047,17 @@ func normalizePolicy(pol *Policy) *Policy {
 	return pol
 }
 
-func lowerUnique(values []string) []string {
+func uniqueRawModels(values []string) []string {
 	seen := make(map[string]bool, len(values))
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		value = strings.ToLower(strings.TrimSpace(value))
-		if value == "" || seen[value] {
+		trimmed := strings.TrimSpace(value)
+		key := strings.ToLower(trimmed)
+		if key == "" || seen[key] {
 			continue
 		}
-		seen[value] = true
-		out = append(out, value)
+		seen[key] = true
+		out = append(out, trimmed)
 	}
 	return out
 }

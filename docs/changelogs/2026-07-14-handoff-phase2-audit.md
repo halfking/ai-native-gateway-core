@@ -6,7 +6,7 @@
 ## 总结
 
 - `6bdc19406` 已经是 `HEAD` 和 `origin/main`，没有待拉取的后续提交。
-- Phase 2A 的 1-7 项已有代码落地；本轮补上 Gemini `inlineData` 多类型提取 vertical slice，但仍存在契约注释、完整入口覆盖和验收工具不足，不能据此宣称 HTTP/供应商验收完成。
+- Phase 2A 的 1-7 项已有代码落地，但仍存在契约注释、完整入口覆盖和验收工具不足，不能据此宣称 HTTP/供应商验收完成。
 - Phase 2B 被 files.kxpms.cn 上传契约阻塞；当前 Cloudreve v4 只能证明存在上传会话/凭据/完成回调链，不能证明存在网关可调用的通用 `POST /upload`。
 - Phase 2C 尚未建立 `request_attachments` 表；历史 `request_logs.request_body` 的 backfill、TTL 和权限策略仍待设计。
 - Phase 2D 尚未完成：`provider/client.go` 和 `resolve/resolve.go` 仍会用 `lowerUnique` 污染 `RawModels`，且 `provider/client.go` 仍保留 `lower(ma.raw_name) = lower($1)` 旁路。
@@ -39,7 +39,7 @@
 
 ### A4：extractResult.Failed 可观测性
 
-- 结论：提取器现在把失败附件放入 `Attachments` 并设置 `store_failed`，Chat/Anthropic 路径已有 strict 传播测试；本轮增加 Gemini `inlineData` 提取并复用同一状态记录。但工具和文档仍没有证明所有入口的失败响应、指标和前端状态完整闭环。
+- 结论：提取器现在把失败附件放入 `Attachments` 并设置 `store_failed`，但调用方是否将失败状态写入日志并由 strict 策略阻断，必须逐入口验证。当前 Chat 入口只展示了提取调用，工具和文档没有证明失败响应、指标和前端状态完整闭环。
 - 文件:行：`domains/attachments/extractor.go:41-52,186-214`；`domains/streaming/handler.go:1026-1043`；`domains/streaming/request_log_pipeline.go:79-96,458-502`
 - 是否影响实现顺序：是。先完成失败状态传播和 strict 断言，再做供应商引用替换，避免 Phase 2B 放大静默丢附件。
 - 风险等级：高
@@ -55,7 +55,7 @@
 
 ### A6：压缩/清理旁路
 
-- 结论：Phase 1 已有附件保留相关代码和 Gemini/OpenAI IR 测试，本轮增加 Gemini 多类型边界；但不能仅以 `hasThinkingBlocks` 作为附件完整性证明。需覆盖 compression、sanitize、resolve、identity 和协议序列化的统一引用计数/哈希校验；当前未找到 S23 的独立回归证据。
+- 结论：Phase 1 已有附件保留相关代码和 Gemini/OpenAI IR 测试，但不能仅以 `hasThinkingBlocks` 作为附件完整性证明。需覆盖 compression、sanitize、resolve、identity 和协议序列化的统一引用计数/哈希校验；当前未找到 S23 的独立回归证据。
 - 文件:行：`domains/hooks/compression/strip.go`；`domains/transformation/sanitizer.go`；`internal/ir/serialize_openai.go:577`；`internal/ir/gemini_test.go:54-90`；`docs/会话优化v2/05-融合实施方案-附件与模型契约.md:122-132`
 - 是否影响实现顺序：是。S23/S24 应在继续扩展供应商附件引用前完成，避免压缩与 failover 破坏 manifest。
 - 风险等级：中高
