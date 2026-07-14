@@ -67,6 +67,7 @@ const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
 const SessionConfigView = () => import('./views/SessionConfigView.vue')
+const SessionReplayView = () => import('./views/SessionReplayView.vue')
 const OpsOverviewView = () => import('./views/ops/OpsOverviewView.vue')
 const LicenseManagementView = () => import('./views/ops/LicenseManagementView.vue')
 const FaultManagementView = () => import('./views/ops/FaultManagementView.vue')
@@ -209,6 +210,7 @@ export const router = createRouter({
     { path: '/admin/session-analytics/clients/:id', component: ClientAnalyticsView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/tasks/:id', component: TaskAnalyticsView, meta: { requiresAuth: true } },
     { path: '/admin/session-config', component: SessionConfigView, meta: { requiresSuper: true } },
+    { path: '/admin/session-replay', component: SessionReplayView, meta: { requiresSuper: true } },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresSuper: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },

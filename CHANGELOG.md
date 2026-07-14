@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### Sessions i18n leaks (P2)
+
+- Fixed Chinese leaks in `sessions.ts` for de-DE, fr-FR, es-ES, ar-SA, ja-JP, en-US, and zh-TW (`management`/`turns`, audit flat keys, root config).
+- Added locale sync scripts: `sync-sessions-locale-leaks.mjs`, `sync-sessions-locale-leaks-data.mjs`, `sync-sessions-management-turns.mjs`.
+- Registered `/admin/session-replay` route (`SessionReplayView`, super-only).
+- Hardened `deploy-245.sh` postgres-disabled grep parsing.
+
 ### License distribution and trial activation
 
 - Added License Authority trial issuance with validation, configurable duration, and rate limiting.
