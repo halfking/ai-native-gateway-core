@@ -2,9 +2,16 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # .githooks/pre-push — SI-LLM-Gateway 双仓库推送保护
 #
-# v2 Phase 3B-3: 在原有 sensitive-info scan 之上，新增 11 套 shell 测试 +
-# envinjector unit tests 作为可跳过的硬门控。operator 可通过
-# SKIP_TESTS=1 env var 或 git push --no-verify 跳过。
+# v2 Phase 3B-3 + 3B-4: 在原有 sensitive-info scan 之上，新增 11 套 shell
+# 测试 + 1 套可选 Go test gate (RUN_GO_TESTS=1)。operator 可通过
+# SKIP_TESTS=1 / STRICT_SCANNER=1 / git push --no-verify 跳过。
+#
+# 默认使用 --mode=normal（WARN 不阻断）— 与本地 `scan-secrets.sh`
+# 调用行为一致。需要严格模式（任何 finding 阻断）时：
+#   STRICT_SCANNER=1 git push …
+#
+# 测试 gate 默认开启（每次 push ~30-60s）。紧急绕过：
+#   SKIP_TESTS=1 git push …
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
@@ -30,14 +37,23 @@ if [[ ! -x "$scanner" ]]; then
   echo "    Run: ./scripts/install-githooks.sh" >&2
 fi
 
-echo "🔍 GitHub push detected — running sensitive-info scan (strict mode)..."
+echo "🔍 GitHub push detected — running sensitive-info scan (normal mode)..."
+
+# v2 Phase 3B-4: pre-push uses --mode=normal, not strict, so that
+# only BLOCK findings block the push. WARN findings (e.g. docs with
+# placeholder URLs, scrubbed KNOWN_LEAK test values) are visible
+# but non-blocking — same behavior we get from `scan-secrets.sh`
+# called locally. Operators running in --mode=strict can opt in
+# per-push via STRICT_SCANNER=1.
+scan_mode=normal
+[[ "${STRICT_SCANNER:-0}" == "1" ]] && scan_mode=strict
 
 scan_failed=0
 if [[ -x "$scanner" ]]; then
   baseline="$repo_root/scripts/scan-secrets.baseline"
   baseline_arg=""
   [[ -f "$baseline" ]] && baseline_arg="--baseline=$baseline"
-  if ! "$scanner" --mode=strict --paths=. --tracked-only $baseline_arg --format=text >/tmp/scan-output.txt 2>&1; then
+  if ! "$scanner" --mode="$scan_mode" --paths=. --tracked-only $baseline_arg --format=text >/tmp/scan-output.txt 2>&1; then
     echo "❌ Sensitive findings detected:" >&2
     head -50 /tmp/scan-output.txt
     scan_failed=1
