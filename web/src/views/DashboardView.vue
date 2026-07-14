@@ -4,7 +4,7 @@
 import { ref, onMounted, computed, provide, onUnmounted, watch } from 'vue'
 import DashboardViewV2 from './DashboardViewV2.vue'
 import TenantDashboardView from './TenantDashboardView.vue'
-import { isDefaultTenant } from '../store'
+import { isDefaultTenant, store } from '../store'
 import {
   getUsageByModel,
   getHotApiKeys,
