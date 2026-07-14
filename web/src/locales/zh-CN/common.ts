@@ -140,4 +140,9 @@ export default {
   time: '时间',
   warning: '警告',
   yes: '是',
+  // 扁平别名（ops 等页使用 t('common.view') 等形式）
+  view: '查看',
+  updateSuccess: '更新成功',
+  operationFailed: '操作失败',
+  errorColumn: '错误',
 }

@@ -839,7 +839,7 @@ onUnmounted(() => {
     <div class="top-bar-wrapper">
       <div class="top-bar top-bar-primary">
         <router-link to="/routing-v2" class="back-link">← 路由全景</router-link>
-        <h1>凭据监控</h1>
+        <h1>{{ t('credentialMonitor.page.title') }}</h1>
         <div class="refresh-group">
           <label>
             <input type="checkbox" :checked="autoRefresh" @change="toggleAutoRefresh" />

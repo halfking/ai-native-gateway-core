@@ -140,4 +140,8 @@ export default {
   time: 'Time',
   warning: 'Warning',
   yes: 'Yes',
+  view: 'View',
+  updateSuccess: 'Updated successfully',
+  operationFailed: 'Operation failed',
+  errorColumn: 'Error',
 }

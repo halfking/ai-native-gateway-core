@@ -1,5 +1,6 @@
 // fr-FR/index.ts — Français. Agrège les traductions de chaque module.
 import common from './common'
+import customer from './customer'
 import nav from './nav'
 import login from './login'
 import app from './app'
@@ -50,10 +51,16 @@ import formatAnomaliesView from './formatAnomaliesView'
 import outputCompliance from './outputCompliance'
 import agentRegistryView from './agentRegistryView'
 import ops from './ops'
+import qualityCorrelations from './qualityCorrelations'
+import routingAudit from './routingAudit'
+import routingOverride from './routingOverride'
+import approval from './approval'
+import probeHealth from './probeHealth'
 import tenantModels from './tenantModels'
 
 export default {
   common,
+  customer,
   nav,
   login,
   app,
@@ -103,5 +110,12 @@ export default {
   formatAnomaliesView,
   agentRegistryView,
   ops,
+  qualityCorrelations,
+  routingAudit,
+  routingOverride,
+  approval,
+  probeHealth,
   tenantModels,
+
+
 }

@@ -141,4 +141,8 @@ export default {
   time: '時間',
   warning: '警告',
   yes: 'はい',
+  view: '表示',
+  updateSuccess: '更新しました',
+  operationFailed: '操作に失敗しました',
+  errorColumn: 'エラー',
 }

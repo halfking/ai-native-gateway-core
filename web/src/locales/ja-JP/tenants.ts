@@ -378,5 +378,46 @@ export default {
     channelWechat: "微信支付",
     typeSubscribe: "月包订阅",
     typeTopup: "加油包"
-  }
+  },
+
+  tenantOps: {
+    autoUpdate: {
+      title: 'マイアップデート',
+      subtitle: 'テナント {tenant} の読み取り専用更新情報',
+      loadFailed: '更新情報の読み込みに失敗しました。後でもう一度お試しいただくか、管理者にお問い合わせください。',
+      infoAlert: 'プラットフォームはリリースポリシーに従って更新を提供します。このページでは公開やロールバックはできません。',
+      currentVersion: '現在のバージョン',
+      emptyReleases: '利用可能な更新はありません',
+      table: {
+        version: 'バージョン',
+        title: 'タイトル',
+        channel: 'チャネル',
+        mandatory: '必須',
+        publishedAt: '公開日',
+        yes: 'はい',
+        no: 'いいえ',
+      },
+      unknownVersion: '不明',
+      loadError: '利用可能な更新を読み込めませんでした',
+    },
+    license: {
+      title: 'マイライセンス',
+      subtitle: 'テナント {tenant} の読み取り専用ライセンス情報',
+      loadFailed: 'ライセンス情報の読み込みに失敗しました。後でもう一度お試しいただくか、管理者にお問い合わせください。',
+      infoAlert: 'このページは読み取り専用です。ライセンス変更はプラットフォーム管理者にお問い合わせください。',
+      empty: 'このテナントのライセンス記録はありません',
+      table: {
+        tier: 'プラン',
+        maxDevices: 'デバイス上限',
+        expiresAt: '有効期限',
+        status: 'ステータス',
+        features: '機能',
+      },
+      status: {
+        active: '有効',
+        expired: '期限切れ',
+        revoked: '失効',
+      },
+    },
+  },
 }

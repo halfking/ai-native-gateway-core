@@ -215,6 +215,7 @@ export default {
       stable: '稳定版',
       beta: '测试版',
       canary: '金丝雀版',
+      _unknown: '未知',
     },
     logStatus: {
       pending: '等待中',
@@ -224,6 +225,7 @@ export default {
       success: '成功',
       failed: '失败',
       rolled_back: '已回滚',
+      _unknown: '未知',
     },
   },
 
@@ -321,6 +323,7 @@ export default {
       active: '活跃',
       archived: '已归档',
       completed: '已完成',
+      _unknown: '未知',
     },
   },
 }

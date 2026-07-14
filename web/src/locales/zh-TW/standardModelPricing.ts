@@ -93,4 +93,17 @@ export default {
   refresh: '刷新',
   saving: '保存中…',
   save: '保存',
+
+  batch: {
+    selected: '已選 {n} 項',
+    paste: '貼上到所選',
+    price: '批量定價',
+    resetAll: '全部恢復全域',
+    resetAllConfirm: '將 {n} 個模型的全部手工定價恢復為全域基準？',
+    fillGlobalConfirm: '把當前全域基準 × 折扣寫入 {n} 個模型（保留手工標誌）？',
+    msgPasted: '已更新 {n} 個模型',
+    msgReset: '已恢復 {n} 個模型',
+    msgFilled: '已寫入 {n} 個模型',
+    msgFailed: '批量操作失敗',
+  },
 }

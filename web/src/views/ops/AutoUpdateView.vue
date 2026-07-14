@@ -16,7 +16,12 @@ import {
   type UpgradeLog,
 } from '../../api/ops'
 
+import { useEnumLabel } from '../../composables/useEnumLabel'
+
 const { t } = useI18n()
+const enumLabel = useEnumLabel()
+const channelLabel = (value?: string | null) => enumLabel('ops.autoupdate.channel', value)
+const logStatusLabel = (value?: string | null) => enumLabel('ops.autoupdate.logStatus', value)
 
 const releases = ref<Release[]>([])
 const upgradeLogs = ref<UpgradeLog[]>([])
@@ -275,7 +280,7 @@ onMounted(() => {
         <el-table-column prop="channel" :label="t('ops.autoupdate.channelLabel')" width="90">
           <template #default="{ row = {} } = {}">
             <el-tag :type="channelType(row.channel)" size="small">
-              {{ t(`ops.autoupdate.channel.${row.channel}`) }}
+              {{ channelLabel(row.channel) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -335,10 +340,10 @@ onMounted(() => {
       <el-table v-loading="logsLoading" :data="upgradeLogs" size="small">
         <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="200" />
         <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="120" />
-        <el-table-column prop="status" :label="t('common.status')" width="120">
+        <el-table-column prop="status" :label="t('common.table.status')" width="120">
           <template #default="{ row = {} } = {}">
             <el-tag :type="logStatusType(row.status)" size="small">
-              {{ t(`ops.autoupdate.logStatus.${row.status}`) }}
+              {{ logStatusLabel(row.status) }}
             </el-tag>
           </template>
         </el-table-column>

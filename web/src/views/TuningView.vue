@@ -11,6 +11,7 @@
 // (bearer token from store).
 
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   getTuningProposals,
   approveTuningProposal,
@@ -24,6 +25,8 @@ import {
   type StrategyBreakdownRow,
   type StrategyResponse,
 } from '../api'
+
+const { t } = useI18n()
 
 // ── Proposals section ────────────────────────────────────────────
 const proposals = ref<TuningProposal[]>([])
@@ -212,7 +215,7 @@ onMounted(async () => {
 
 <template>
   <div class="tuning-view">
-    <h1>Auto-Route 反馈调优</h1>
+    <h1>{{ t('tuning.title') }}</h1>
     <p class="subtitle">
       Tuning feedback loop for the auto-route classifier. The daily
       analyzer at 02:00 UTC generates proposals from accumulated
@@ -221,7 +224,7 @@ onMounted(async () => {
 
     <!-- ── 1. Pending proposals ────────────────────────────────── -->
     <section class="card">
-      <h2>调优提案 (Proposals)</h2>
+      <h2>{{ t('tuning.sections.proposals') }}</h2>
       <div class="filter-bar">
         <label>Status:
           <select v-model="filterStatus" @change="loadProposals">
@@ -292,7 +295,7 @@ onMounted(async () => {
 
     <!-- ── 2. Accuracy dashboard ──────────────────────────────── -->
     <section class="card">
-      <h2>准确度仪表盘 (Accuracy Dashboard)</h2>
+      <h2>{{ t('tuning.sections.accuracy') }}</h2>
       <div class="filter-bar">
         <label>Window:
           <select v-model.number="accuracyDays" @change="loadAccuracy">
@@ -368,7 +371,7 @@ onMounted(async () => {
 
     <!-- ── 3. A/B Strategy breakdown ──────────────────────────── -->
     <section class="card">
-      <h2>A/B 分类策略对比 (Strategy Breakdown)</h2>
+      <h2>{{ t('tuning.sections.strategy') }}</h2>
       <p class="hint">
         Compares the pattern-layered classifier (default) against the
         baseline keyword-only heuristic. When A/B is enabled, traffic
@@ -460,7 +463,7 @@ onMounted(async () => {
 
     <!-- ── 4. Manual trigger ──────────────────────────────────── -->
     <section class="card">
-      <h2>手动触发分析 (Manual Analyze)</h2>
+      <h2>{{ t('tuning.sections.manual') }}</h2>
       <p class="hint">
         Normally the analyzer runs daily at 02:00 UTC. Click below to
         force an immediate run and refresh the proposal list.

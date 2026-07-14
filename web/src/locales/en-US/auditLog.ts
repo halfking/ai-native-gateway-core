@@ -63,6 +63,9 @@ export default {
     'auth.login_failed': 'Login failed',
     'auth.logout': 'Logout',
     'auth.rate_limited': 'Rate limited',
+    'authentication.login': 'Login',
+    'authentication.login_failed': 'Login failed',
+    'authentication.logout': 'Logout',
   },
   errors: {
     loadFailed: 'Failed to load',
@@ -71,6 +74,6 @@ export default {
   // 扁平键（供 Vue 组件直接使用）
   loadFailed: 'Load failed',
   dash: '—',
-  refreshing: '刷新中…',
-  refresh: '刷新',
+  refreshing: 'Refreshing…',
+  refresh: 'Refresh',
 }

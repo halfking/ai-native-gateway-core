@@ -100,6 +100,11 @@ const versionInfo = ref<{
   build_seq?: number
 }>({})
 
+function formatVersionDisplay(v?: string): string {
+  if (!v) return ''
+  return v.replace(/^v+/i, '')
+}
+
 async function loadVersion() {
   if (!isLoggedIn.value) return
   const token = authBearer()
@@ -236,7 +241,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
           alt="开轩启圭"
           class="sidebar-logo-img"
         />
-        <span v-show="!collapsed" class="sidebar-logo-text">LLM Gateway</span>
+        <span v-show="!collapsed" class="sidebar-logo-text">{{ $t('app.brand') }}</span>
       </div>
 
       <nav class="sidebar-nav">
@@ -249,7 +254,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
             :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
             :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
           >
-            <span class="nav-icon">{{ item.icon }}</span>
+            <span v-if="item.icon" class="nav-icon">{{ item.icon }}</span>
             <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
           </RouterLink>
         </div>
@@ -281,7 +286,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
               :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
               :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
             >
-              <span class="nav-icon">{{ item.icon }}</span>
+              <span v-if="item.icon" class="nav-icon">{{ item.icon }}</span>
               <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
             </RouterLink>
           </div>
@@ -334,7 +339,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
             </template>
             <template v-if="versionInfo.version">
               <span v-if="store.userInfo" class="meta-sep" aria-hidden="true">·</span>
-              <span class="version-tag">v{{ versionInfo.version }}</span>
+              <span class="version-tag">v{{ formatVersionDisplay(versionInfo.version) }}</span>
               <template v-if="versionInfo.build_seq != null">
                 <span class="meta-sep" aria-hidden="true">·</span>
                 <span class="version-build">#{{ versionInfo.build_seq }}</span>

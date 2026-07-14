@@ -1,24 +1,13 @@
 <script setup lang="ts">
-// QualityCorrelationsView.vue — P8.2: request-feature × outcome analytics.
-//
-// Where CorrelationsView surfaces MODEL-level breakdowns
-// (model × task, strategy × task), this view surfaces REQUEST-level
-// correlations: which request features (prompt length, tools, images,
-// code block) predict the outcome (success / quality).
-//
-// The "insights" section at the bottom ranks predictors by Pearson
-// correlation with avg_quality — useful for finding "what's making
-// our requests fail" without manually cross-tabbing.
-
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   getQualityCorrelations,
-  type QualityCorrelationRow,
-  type QualityCorrelationInsight,
   type QualityCorrelationResponse,
 } from '../api'
 
-// ── State ───────────────────────────────────────────────────────
+const { t } = useI18n()
+
 const resp = ref<QualityCorrelationResponse | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -33,14 +22,13 @@ async function load() {
       days: days.value,
       by: by.value,
     })
-  } catch (e: any) {
-    error.value = e?.message ?? String(e)
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
 }
 
-// ── Helpers ─────────────────────────────────────────────────────
 function qualityColor(q: number): string {
   if (q >= 0.85) return '#22c55e'
   if (q >= 0.7) return '#84cc16'
@@ -66,6 +54,14 @@ function fmtMs(ms: number): string {
   return `${(ms / 1000).toFixed(2)}s`
 }
 
+function byLabel(b: string): string {
+  const key = `qualityCorrelations.filter.by.${b}` as 'qualityCorrelations.filter.by.prompt_length'
+  if (b === 'prompt_length' || b === 'tools' || b === 'images' || b === 'code_block') {
+    return t(key)
+  }
+  return b
+}
+
 const totalSamples = computed(() => {
   if (!resp.value) return 0
   return resp.value.breakdown.reduce((acc, r) => acc + r.samples, 0)
@@ -76,35 +72,29 @@ onMounted(load)
 
 <template>
   <div class="qc-view">
-    <h1>Quality Correlations</h1>
-    <p class="subtitle">
-      Cross-references request features (prompt length, tool count,
-      image count, code block presence) with outcome (success,
-      latency, quality). Useful for finding "what's making our
-      requests fail" without manually cross-tabbing.
-    </p>
+    <h1>{{ t('qualityCorrelations.title') }}</h1>
+    <p class="subtitle">{{ t('qualityCorrelations.subtitle') }}</p>
 
-    <!-- ── Filter bar ────────────────────────────────────── -->
     <section class="card filter-card">
       <div class="filter-bar">
-        <label>Window:
+        <label>{{ t('qualityCorrelations.filter.window') }}:
           <select v-model.number="days" @change="load">
-            <option :value="1">1 day</option>
-            <option :value="7">7 days</option>
-            <option :value="30">30 days</option>
-            <option :value="90">90 days</option>
+            <option :value="1">{{ t('qualityCorrelations.filter.days.d1') }}</option>
+            <option :value="7">{{ t('qualityCorrelations.filter.days.d7') }}</option>
+            <option :value="30">{{ t('qualityCorrelations.filter.days.d30') }}</option>
+            <option :value="90">{{ t('qualityCorrelations.filter.days.d90') }}</option>
           </select>
         </label>
-        <label>Bucket by:
+        <label>{{ t('qualityCorrelations.filter.bucketBy') }}:
           <select v-model="by" @change="load">
-            <option value="prompt_length">Prompt length</option>
-            <option value="tools">Tool count</option>
-            <option value="images">Has image</option>
-            <option value="code_block">Has code block</option>
+            <option value="prompt_length">{{ t('qualityCorrelations.filter.by.prompt_length') }}</option>
+            <option value="tools">{{ t('qualityCorrelations.filter.by.tools') }}</option>
+            <option value="images">{{ t('qualityCorrelations.filter.by.images') }}</option>
+            <option value="code_block">{{ t('qualityCorrelations.filter.by.code_block') }}</option>
           </select>
         </label>
         <button @click="load" :disabled="loading">
-          {{ loading ? 'Loading…' : 'Refresh' }}
+          {{ loading ? t('qualityCorrelations.filter.loading') : t('qualityCorrelations.filter.refresh') }}
         </button>
       </div>
       <p v-if="error" class="error">⚠️ {{ error }}</p>
@@ -112,24 +102,23 @@ onMounted(load)
 
     <template v-if="resp">
       <p class="meta">
-        <span>Generated: {{ resp.generated_at }}</span>
-        <span>Window: {{ resp.window_days }} days</span>
-        <span>Total samples: {{ totalSamples.toLocaleString() }}</span>
-        <span v-if="totalSamples < 30" class="warn">⚠️ Need ≥ 30 samples for insights</span>
+        <span>{{ t('qualityCorrelations.meta.generated') }}: {{ resp.generated_at }}</span>
+        <span>{{ t('qualityCorrelations.meta.window') }}: {{ t('qualityCorrelations.meta.windowDays', { n: resp.window_days }) }}</span>
+        <span>{{ t('qualityCorrelations.meta.totalSamples') }}: {{ totalSamples.toLocaleString() }}</span>
+        <span v-if="totalSamples < 30" class="warn">⚠️ {{ t('qualityCorrelations.meta.needSamples') }}</span>
       </p>
 
-      <!-- ── Breakdown table ─────────────────────────────────── -->
       <section class="card">
-        <h2>Breakdown by {{ byLabel(by) }}</h2>
+        <h2>{{ t('qualityCorrelations.breakdown.title', { by: byLabel(by) }) }}</h2>
         <table v-if="resp.breakdown.length > 0" class="qc-table">
           <thead>
             <tr>
-              <th>Bucket</th>
-              <th>Samples</th>
-              <th>Success</th>
-              <th>Latency</th>
-              <th>Quality</th>
-              <th>Cost</th>
+              <th>{{ t('qualityCorrelations.breakdown.headers.bucket') }}</th>
+              <th>{{ t('qualityCorrelations.breakdown.headers.samples') }}</th>
+              <th>{{ t('qualityCorrelations.breakdown.headers.success') }}</th>
+              <th>{{ t('qualityCorrelations.breakdown.headers.latency') }}</th>
+              <th>{{ t('qualityCorrelations.breakdown.headers.quality') }}</th>
+              <th>{{ t('qualityCorrelations.breakdown.headers.cost') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -147,18 +136,12 @@ onMounted(load)
             </tr>
           </tbody>
         </table>
-        <p v-else class="empty">No data — try lowering the days or expanding the filter.</p>
+        <p v-else class="empty">{{ t('qualityCorrelations.breakdown.empty') }}</p>
       </section>
 
-      <!-- ── Insights panel ───────────────────────────────────── -->
       <section class="card insights-card">
-        <h2>What predicts quality? (Pearson correlation)</h2>
-        <p class="hint">
-          Each predictor is correlated with avg_quality across
-          buckets. Stronger |r| means the feature is a better
-          predictor of quality. Useful for asking: "if we focus
-          on one improvement, which one moves the needle most?"
-        </p>
+        <h2>{{ t('qualityCorrelations.insights.title') }}</h2>
+        <p class="hint">{{ t('qualityCorrelations.insights.hint') }}</p>
 
         <ol v-if="resp.insights.length > 0" class="insights-list">
           <li v-for="(ins, i) in resp.insights" :key="ins.predictor" class="insight-item">
@@ -173,36 +156,20 @@ onMounted(load)
               </div>
               <div class="insight-interpretation">{{ ins.interpretation }}</div>
               <div class="insight-meta">
-                {{ ins.buckets }} buckets · {{ ins.samples.toLocaleString() }} samples
+                {{ t('qualityCorrelations.insights.buckets', { n: ins.buckets }) }}
+                · {{ t('qualityCorrelations.insights.samples', { n: ins.samples }) }}
               </div>
             </div>
           </li>
         </ol>
         <p v-else class="empty">
-          <span v-if="totalSamples < 30">Need at least 30 samples to compute meaningful correlations.</span>
-          <span v-else>No insights (unexpected). Check server logs.</span>
+          <span v-if="totalSamples < 30">{{ t('qualityCorrelations.insights.emptyInsufficient') }}</span>
+          <span v-else>{{ t('qualityCorrelations.insights.emptyUnexpected') }}</span>
         </p>
       </section>
     </template>
   </div>
 </template>
-
-<script lang="ts">
-// Helper for the template — expose byLabel as a method.
-export default {
-  methods: {
-    byLabel(b: string): string {
-      switch (b) {
-        case 'prompt_length': return 'prompt length'
-        case 'tools':         return 'tool count'
-        case 'images':        return 'has image'
-        case 'code_block':    return 'code block presence'
-        default: return b
-      }
-    },
-  },
-}
-</script>
 
 <style scoped>
 .qc-view {
@@ -211,21 +178,14 @@ export default {
   margin: 0 auto;
   color: var(--text, #e6e6e6);
 }
-h1 {
-  margin: 0 0 8px;
-  font-size: 24px;
-}
+h1 { margin: 0 0 8px; font-size: 24px; }
 h2 {
   margin: 0 0 12px;
   font-size: 18px;
   border-bottom: 1px solid var(--border, #2a2a2a);
   padding-bottom: 8px;
 }
-.subtitle {
-  margin: 0 0 24px;
-  color: #888;
-  font-size: 14px;
-}
+.subtitle { margin: 0 0 24px; color: #888; font-size: 14px; }
 .card {
   background: var(--card-bg, #1a1a1a);
   border: 1px solid var(--border, #2a2a2a);
@@ -266,11 +226,7 @@ h2 {
   font-size: 13px;
 }
 .filter-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
-.error {
-  color: #ef4444;
-  font-size: 13px;
-  margin-top: 8px;
-}
+.error { color: #ef4444; font-size: 13px; margin-top: 8px; }
 .meta {
   display: flex;
   gap: 16px;
@@ -280,21 +236,9 @@ h2 {
   margin: 0 0 16px;
 }
 .meta .warn { color: #eab308; }
-.empty {
-  color: #888;
-  font-size: 13px;
-  font-style: italic;
-}
-.hint {
-  color: #888;
-  font-size: 13px;
-  margin: 0 0 12px;
-}
-.qc-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
+.empty { color: #888; font-size: 13px; font-style: italic; }
+.hint { color: #888; font-size: 13px; margin: 0 0 12px; }
+.qc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .qc-table th {
   text-align: left;
   padding: 8px 10px;
@@ -303,10 +247,7 @@ h2 {
   color: #aaa;
   font-weight: 500;
 }
-.qc-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid #1f1f1f;
-}
+.qc-table td { padding: 8px 10px; border-bottom: 1px solid #1f1f1f; }
 .tag {
   font-family: 'SF Mono', Menlo, monospace;
   font-size: 11px;
@@ -315,11 +256,7 @@ h2 {
   color: #93c5fd;
   border-radius: 3px;
 }
-.insights-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
+.insights-list { list-style: none; padding: 0; margin: 0; }
 .insight-item {
   display: grid;
   grid-template-columns: 48px 1fr;
@@ -328,9 +265,7 @@ h2 {
   padding: 12px 0;
   border-bottom: 1px solid #1f1f1f;
 }
-.insight-item:last-child {
-  border-bottom: none;
-}
+.insight-item:last-child { border-bottom: none; }
 .insight-rank {
   font-size: 20px;
   font-weight: 700;
@@ -358,13 +293,6 @@ h2 {
   font-weight: 600;
   font-family: 'SF Mono', Menlo, monospace;
 }
-.insight-interpretation {
-  font-size: 13px;
-  color: #ccc;
-  margin-bottom: 2px;
-}
-.insight-meta {
-  font-size: 11px;
-  color: #666;
-}
+.insight-interpretation { font-size: 13px; color: #ccc; margin-bottom: 2px; }
+.insight-meta { font-size: 11px; color: #666; }
 </style>

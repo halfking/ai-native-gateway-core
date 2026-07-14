@@ -157,7 +157,7 @@ function handleRefresh() {
       </template>
       <el-table :data="errorStats.top_errors" stripe>
         <el-table-column prop="module" :label="t('common.module') || 'Module'" width="150" />
-        <el-table-column prop="error_message" :label="t('common.error') || 'Error'" show-overflow-tooltip />
+        <el-table-column prop="error_message" :label="t('common.errorColumn')" show-overflow-tooltip />
         <el-table-column prop="count" :label="t('common.count') || 'Count'" width="100" align="right" />
         <el-table-column prop="last_occurred" :label="t('common.lastOccurred') || 'Last Occurred'" width="180">
           <template #default="{ row }">
@@ -187,7 +187,7 @@ function handleRefresh() {
             {{ new Date(row.executed_at).toLocaleString() }}
           </template>
         </el-table-column>
-        <el-table-column prop="error_message" :label="t('common.error') || 'Error'" show-overflow-tooltip />
+        <el-table-column prop="error_message" :label="t('common.errorColumn')" show-overflow-tooltip />
       </el-table>
     </el-card>
   </div>
