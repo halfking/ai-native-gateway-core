@@ -41,10 +41,7 @@ SCENARIOS = {
     "S18": ("./domains/attachments", "TestExtractFromAnthropicBody"),
     "S20": ("./domains/streaming", "TestReadRequestBodyTimeoutClosesSlowBody"),
     "S21": ("./domains/attachments", "TestSaveBase64Image_MaxSize"),
-    "S19": (
-        "./internal/ir",
-        "TestParseGemini_(InlineImageData|FileURI|MixedAttachmentMetadata)",
-    ),
+    "S19": ("./domains/attachments", "TestExtractFromGeminiBody_MixedInlineData"),
     "S22": ("./domains/streaming/executors", "TestPrepareRequestBody_"),
     "S23": (
         "./domains/hooks/compression",
