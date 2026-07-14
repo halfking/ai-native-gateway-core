@@ -34,6 +34,7 @@ export interface ActivateRequest {
 
 export interface TrialRequest {
   email: string
+  agree: boolean
 }
 
 export interface TrialResult {

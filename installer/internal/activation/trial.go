@@ -8,6 +8,7 @@ import (
 // TrialRequest 试用申请请求
 type TrialRequest struct {
 	Email string `json:"email"`
+	Agree bool   `json:"agree"`
 }
 
 // TrialResponse 试用申请响应
@@ -19,8 +20,8 @@ type TrialResponse struct {
 }
 
 // RequestTrial 申请试用 license
-func (c *Client) RequestTrial(email string) (*TrialResponse, error) {
-	req := TrialRequest{Email: email}
+func (c *Client) RequestTrial(email string, agree bool) (*TrialResponse, error) {
+	req := TrialRequest{Email: email, Agree: agree}
 
 	respBody, err := c.doRequest("POST", "/api/v1/license/trial", req)
 	if err != nil {
