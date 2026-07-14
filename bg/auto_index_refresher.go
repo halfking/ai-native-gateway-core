@@ -370,11 +370,11 @@ WHERE v.is_routable = TRUE
 SELECT f.*
 FROM fresh f
 WHERE NOT EXISTS (
-    SELECT 1 FROM credential_model_index prev
+    SELECT 1 FROM credential_model_index_hot prev
     WHERE prev.credential_id = f.credential_id
       AND prev.raw_model      = f.raw_model
       AND prev.bucket = (
-          SELECT MAX(bucket) FROM credential_model_index prev2
+          SELECT MAX(bucket) FROM credential_model_index_hot prev2
           WHERE prev2.credential_id = f.credential_id
             AND prev2.raw_model      = f.raw_model
             AND prev2.bucket        < f.bucket

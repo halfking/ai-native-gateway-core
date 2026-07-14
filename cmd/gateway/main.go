@@ -64,6 +64,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
+	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -1059,6 +1060,15 @@ func main() {
 		})
 		chatHandler.SetRequestLogger(requestLogger)
 		slog.Info("request WAL enabled", "queue_size", 10000, "batch_size", 50)
+	}
+
+	// 2026-07-15: Mirror request_logs.attachments JSONB into the relational
+	// public.request_attachments table (migration 401). Best-effort hook:
+	// any DB error is logged but never blocks the primary INSERT.
+	if telemetryClient != nil && dbConn != nil && dbConn.Enabled() {
+		attachmentRepo := attachments.NewRepository(dbConn.Pool())
+		telemetryClient.AddOnRequestLogPersisted(attachmentmirror.PersistHook(attachmentRepo))
+		slog.Info("attachment mirror enabled (request_attachments relational write)")
 	}
 
 	// v3 (2026-06-19) session-level intelligent compression.
