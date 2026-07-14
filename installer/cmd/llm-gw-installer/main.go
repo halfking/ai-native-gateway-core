@@ -88,13 +88,14 @@ func activateCmd() *cobra.Command {
 		licenseKey  string
 		licensePath string
 		masterURL   string
+		agree       bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "activate",
 		Short: "License 激活管理",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runActivate(mode, email, licenseKey, licensePath, masterURL)
+			return runActivate(mode, email, licenseKey, licensePath, masterURL, agree)
 		},
 	}
 
@@ -103,6 +104,7 @@ func activateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&licenseKey, "license-key", "", "License Key（key / offline-request 模式）")
 	cmd.Flags().StringVar(&licensePath, "license-path", "license.dat", "离线 license 文件路径（offline-import 模式）")
 	cmd.Flags().StringVar(&masterURL, "master-url", "https://llm.kxpms.cn", "主控端 URL")
+	cmd.Flags().BoolVar(&agree, "agree", false, "同意服务条款和隐私政策（trial 模式必填）")
 
 	return cmd
 }

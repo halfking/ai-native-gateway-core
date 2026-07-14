@@ -106,6 +106,21 @@ func TestTrialHandlerRejectsInvalidEmailWithoutCreatingLicense(t *testing.T) {
 	require.Equal(t, 0, store.count)
 }
 
+func TestTrialHandlerRejectsMissingTermsAcceptance(t *testing.T) {
+	store := &trialStore{}
+	h := newTrialHandlerForTest(store)
+	e := echo.New()
+	h.RegisterRoutes(e.Group("/api/v1"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/license/trial", strings.NewReader(`{"email":"user@example.com"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, 0, store.count)
+}
+
 func TestTrialHandlerCreatesConfiguredTrialLicense(t *testing.T) {
 	store := &trialStore{}
 	h := newTrialHandlerForTest(store)
@@ -113,7 +128,7 @@ func TestTrialHandlerCreatesConfiguredTrialLicense(t *testing.T) {
 	e := echo.New()
 	h.RegisterRoutes(e.Group("/api/v1"))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/license/trial", strings.NewReader(`{"email":"User@Example.com"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/license/trial", strings.NewReader(`{"email":"User@Example.com","agree":true}`))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
@@ -135,7 +150,7 @@ func TestTrialHandlerLimitsRepeatedRequests(t *testing.T) {
 	h.RegisterRoutes(e.Group("/api/v1"))
 
 	for i := 0; i < 4; i++ {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/license/trial", strings.NewReader(fmt.Sprintf(`{"email":"user-%d@example.com"}`, i)))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/license/trial", strings.NewReader(fmt.Sprintf(`{"email":"user-%d@example.com","agree":true}`, i)))
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 		rec := httptest.NewRecorder()
 		e.ServeHTTP(rec, req)
@@ -155,7 +170,7 @@ func TestTrialHandlerAllowsOnlyOneTrialPerEmail(t *testing.T) {
 	h.RegisterRoutes(e.Group("/api/v1"))
 
 	for i := 0; i < 2; i++ {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/license/trial", strings.NewReader(`{"email":"User@Example.com"}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/license/trial", strings.NewReader(`{"email":"User@Example.com","agree":true}`))
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 		req.Header.Set(echo.HeaderXForwardedFor, "192.0.2.10")
 		rec := httptest.NewRecorder()
@@ -175,7 +190,7 @@ func TestTrialHandlerFailsClosedWithoutRedis(t *testing.T) {
 	e := echo.New()
 	h.RegisterRoutes(e.Group("/api/v1"))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/license/trial", strings.NewReader(`{"email":"user@example.com"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/license/trial", strings.NewReader(`{"email":"user@example.com","agree":true}`))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)

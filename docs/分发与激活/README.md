@@ -6,6 +6,8 @@
 
 ## 一、文档目录
 
+业务标准入口：[00-业务流程标准](./00-业务流程标准.md)。当前对齐结果见[业务流程对齐报告](./业务流程对齐报告-2026-07-14.md)。所有后续设计、实现和验收以业务角色、状态机和标准流程为准。
+
 | # | 文档 | 主题 | 当前重点 |
 |---|------|------|----------|
 | 01 | [01-产品概述与商业模式](./01-产品概述与商业模式.md) | SaaS + 私有化 + 离线授权；v2 按 token 留空间 | 套餐矩阵 + 商业触点 |
@@ -21,6 +23,7 @@
 | 11 | [11-实施路线图](./11-实施路线图.md) | 5 个里程碑 | 主/客双版本进度 |
 | 12 | [12-执行计划与并发任务](./12-执行计划与并发任务.md) | WBS + 依赖 | 工程师排期 |
 | 13 | [13-双版本构建与分发策略](./13-双版本构建与分发策略.md) | master/customer 物理隔离 | 编译产物差异 |
+| 14 | [14-用户协议与数据处理授权](./14-用户协议与数据处理授权.md) | 运行遥测与受控更新授权 | 数据最小化与非采集边界 |
 |  | [附录 A — deploy.yml Schema](./appendices/A-deploy.yml完整Schema.md) | 部署配置文件 | schema_version 1 |
 |  | [附录 B — API 端点清单](./appendices/B-API端点清单.md) | 主控/客户端 REST API | 已实现状态 |
 |  | [附录 C — 数据库 Schema](./appendices/C-数据库Schema.md) | license/upgrade/collect 表 | 迁移版本号 |
@@ -102,6 +105,8 @@ https://llm.kxpms.cn    install.sh 5 模式     4 入口激活（trial/key/     
 3. [缺口分析](./audit/03-gaps.md)
 4. [优先级矩阵](./audit/04-priorities.md)
 5. [审计建议与决策](./audit/05-recommendations.md)
+6. [代码核验补充报告](./audit/06-code-verification-2026-07-14.md)
+7. [业务特性完成度审计](./audit/07-business-completion-assessment-2026-07-14.md)
 
 ### v2 增强方案
 
@@ -111,8 +116,9 @@ https://llm.kxpms.cn    install.sh 5 模式     4 入口激活（trial/key/     
 4. [内核侧增强](./v2/03-kernel-side.md)
 5. [升级推送专题](./v2/04-upgrade-push.md)
 6. [实施计划与执行门禁](./v2/05-implementation.md)
+7. [剩余任务计划](./v2/06-remaining-tasks.md)
 
-首个执行切片是 `DIST-001` API 契约冻结和 `DIST-002` 浏览器侧 License API；在契约冻结前不直接实现全部 UI 和推送通道。
+当前实现判断以[代码核验补充报告](./audit/06-code-verification-2026-07-14.md)为准。首个剩余执行切片是 `P0-01` 契约冻结与 `P0-02` Authority Redis HA；升级 push、采集和告警不得在安全契约前并行放大。
 
 **客户侧角色（最快上手）**
 1. 02-用户旅程（完整 5 阶段）
