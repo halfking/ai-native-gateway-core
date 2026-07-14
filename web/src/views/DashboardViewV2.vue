@@ -25,12 +25,18 @@ const boardState = inject<{
   load: () => Promise<void>
 }>('dashboardBoard')!
 
+const days = boardState.days
+
 const drawerState = inject<{
   models: Ref<ModelUsage[]>
   hotKeys: Ref<HotApiKeyEntry[]>
   drawerLoading: Ref<boolean>
   loadDrawerData: () => Promise<void>
 }>('dashboardDrawer')!
+
+const hotKeys = computed(() => drawerState.hotKeys.value)
+const drawerModels = computed(() => drawerState.models.value)
+const drawerLoading = computed(() => drawerState.drawerLoading.value)
 
 const dashboardTab = inject<{
   activeTab: Ref<DashboardTabId>
@@ -183,10 +189,10 @@ async function onRefresh() {
 
     <StatsDrawer
       ref="statsDrawerRef"
-      :hot-keys="drawerState.hotKeys.value"
-      :models="drawerState.models.value"
+      :hot-keys="hotKeys"
+      :models="drawerModels"
       :days="days"
-      :loading="drawerState.drawerLoading.value"
+      :loading="drawerLoading"
     />
 
     <!-- 请求详情抽屉 -->

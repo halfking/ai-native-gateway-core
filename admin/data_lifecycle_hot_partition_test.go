@@ -174,6 +174,8 @@ func TestDefaultHotRetentionHours(t *testing.T) {
 }
 
 func TestHotPromoteTableMap(t *testing.T) {
+	// 2026-07-14: model_probe_runs_hot 切换为纯 hot 表策略，
+	// 不再 promote，移除了对应的 map 项。
 	expected := []string{
 		"request_logs_hot",
 		"usage_ledger_hot",
@@ -183,7 +185,6 @@ func TestHotPromoteTableMap(t *testing.T) {
 		"request_logs_bodies_hot",
 		"credit_ledger_hot",
 		"tool_usage_stats_hot",
-		"model_probe_runs_hot",
 	}
 	for _, name := range expected {
 		if _, ok := hotPromoteTableMap[name]; !ok {

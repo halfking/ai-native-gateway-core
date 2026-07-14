@@ -424,7 +424,13 @@ func parseAnthropicContentBlock(blockMap map[string]any) *ContentBlock {
 		inputJSON, _ := json.Marshal(inputRaw)
 		irBlock.ToolUse = &ToolUse{ID: id, Name: name, Input: inputJSON}
 	case "tool_result":
+		// MiniMax（Anthropic 兼容协议）使用 tool_call_id 字段名。
+		// 优先解析 tool_use_id，回退到 tool_call_id；与批量 helper
+		// parseAnthropicContentBlocks（335-338 行）保持一致。
 		toolUseID, _ := blockMap["tool_use_id"].(string)
+		if toolUseID == "" {
+			toolUseID, _ = blockMap["tool_call_id"].(string)
+		}
 		isError, _ := blockMap["is_error"].(bool)
 		content := blockMap["content"]
 		var contentBlocks []ContentBlock

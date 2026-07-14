@@ -84,13 +84,8 @@ const visibleTileCount = computed(() => {
 
 const visibleRequests = computed(() => {
   const all = filteredRequests.value
-  const reals = all.filter((r) => r.type !== 'idle_marker')
-  const idles = all.filter((r) => r.type === 'idle_marker')
-  if (visibleTileCount.value >= reals.length) {
-    return all
-  }
-  const take = reals.slice(reals.length - visibleTileCount.value)
-  return [...idles, ...take]
+  if (visibleTileCount.value >= all.length) return all
+  return all.slice(all.length - visibleTileCount.value)
 })
 
 const connectionLabel = computed(() => {

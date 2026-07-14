@@ -60,6 +60,8 @@ type Handler struct {
 	liveStreamHub *LiveStreamSSEHub
 	// boardCache (2026-07-14) Redis baseline+delta for dashboard board API.
 	boardCache *boardcache.Service
+	// boardOperationalCache caches discovery/probe/selfcheck for /dashboard/operational.
+	boardOperationalCache *boardOperationalCache
 	// routeIncidentHandler (2026-07-13) backs the read-only
 	// /api/admin/route-incidents* endpoints. nil disables the
 	// diagnose feature on the swim lane.
@@ -591,6 +593,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/errors", admin(h.handleDashboardErrors))
 	mux.HandleFunc("/api/admin/dashboard/performance", admin(h.handleDashboardPerformance))
 	mux.HandleFunc("/api/admin/dashboard/board", admin(h.handleDashboardBoard))
+	mux.HandleFunc("/api/admin/dashboard/operational", admin(h.handleDashboardOperational))
 	mux.HandleFunc("/api/admin/dashboard/board/error-drill", admin(h.handleDashboardBoardErrorDrill))
 
 	// 2026-07-07: P2会话分析 - 客户端/任务维度分析

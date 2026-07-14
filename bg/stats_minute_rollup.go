@@ -13,11 +13,11 @@ import (
 const (
 	statsRollupInterval  = 1 * time.Minute
 	statsRetentionDays   = 90
-	statsBackfillDays    = 7
+	statsBackfillDays    = 30
 	statsRollupBatchSize = 5000
 )
 
-// StatsMinuteRollup compensates the in-memory accumulator by scanning request_logs_hot.
+// StatsMinuteRollup compensates the in-memory accumulator by scanning request_logs_with_current_month.
 type StatsMinuteRollup struct {
 	db     *pgxpool.Pool
 	cancel context.CancelFunc
@@ -137,7 +137,7 @@ func (w *StatsMinuteRollup) rollupVirtualIP(ctx context.Context, since, until ti
 			COALESCE(SUM(COALESCE(r.prompt_tokens,0)+COALESCE(r.completion_tokens,0)), 0)::bigint,
 			COALESCE(SUM(`+creditsExpr+`), 0)::bigint,
 			COALESCE(SUM(r.cost_usd), 0)
-		FROM request_logs_hot r
+		FROM request_logs_with_current_month r
 		WHERE r.request_status IN ('success', 'failure')
 		  AND r.ts > $1 AND r.ts <= $2
 		GROUP BY 1, 2, 4
@@ -174,7 +174,7 @@ func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Ti
 			COALESCE(SUM(`+creditsExpr+`), 0)::bigint,
 			COALESCE(SUM(r.cost_usd), 0),
 			COALESCE(SUM(r.latency_ms), 0)::bigint
-		FROM request_logs_hot r
+		FROM request_logs_with_current_month r
 		WHERE r.request_status IN ('success', 'failure')
 		  AND r.ts > $1 AND r.ts <= $2
 		GROUP BY 1, 2, 3, 4
@@ -223,7 +223,7 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 				COALESCE(SUM(COALESCE(r.prompt_tokens,0)+COALESCE(r.completion_tokens,0)), 0)::bigint,
 				COALESCE(SUM(`+creditsExpr+`), 0)::bigint,
 				COALESCE(SUM(r.cost_usd), 0)
-			FROM request_logs_hot r
+			FROM request_logs_with_current_month r
 			WHERE r.request_status IN ('success', 'failure')
 			  AND r.ts > $1 AND r.ts <= $2
 			  AND ($3 <> 'error_kind' OR NOT r.success)
@@ -252,7 +252,7 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 			COALESCE(r.provider_id, 0),
 			COALESCE(NULLIF(r.client_profile, ''), ''),
 			COUNT(*)::bigint
-		FROM request_logs_hot r
+		FROM request_logs_with_current_month r
 		WHERE r.request_status = 'failure'
 		  AND r.ts > $1 AND r.ts <= $2
 		GROUP BY 1, 2, 3, 4, 5, 6

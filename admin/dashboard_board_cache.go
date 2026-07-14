@@ -17,7 +17,7 @@ func (h *Handler) buildBoardPayload(ctx context.Context, tenantFilter string, da
 	if !fromMinute {
 		summary = h.fallbackBoardSummary(ctx, tenantFilter, tr)
 	}
-	pies, err := h.queryBoardPies(ctx, tenantFilter, tr)
+	pies, err := h.resolveBoardPies(ctx, tenantFilter, tr)
 	if err != nil {
 		return nil, err
 	}
@@ -61,16 +61,4 @@ func boardScopeForTenant(tenantID string) boardcache.Scope {
 		return boardcache.ScopeGlobal
 	}
 	return boardcache.ScopeTenant(tenantID)
-}
-
-func attachBoardOperational(ctx context.Context, h *Handler, payload map[string]any) {
-	if payload == nil {
-		return
-	}
-	if bgTasks := h.queryBoardBackgroundTasks(ctx); bgTasks != nil {
-		payload["background_tasks"] = bgTasks
-	}
-	if selfcheck := h.queryBoardSelfCheck(ctx); selfcheck != nil {
-		payload["selfcheck"] = selfcheck
-	}
 }

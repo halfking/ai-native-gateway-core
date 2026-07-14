@@ -183,6 +183,14 @@ func (m *mockUpdateStore) UpdateGrayPhase(ctx context.Context, releaseID int64, 
 	return nil
 }
 
+func (m *mockUpdateStore) UpdateGrayRuleStatus(ctx context.Context, releaseID int64, status string) error {
+	return nil
+}
+
+func (m *mockUpdateStore) GetRolloutStats(ctx context.Context, version string) (autoupdate.RolloutStats, error) {
+	return autoupdate.RolloutStats{}, nil
+}
+
 func (m *mockUpdateStore) CreateUpgradeLog(ctx context.Context, instanceID string, oldVer, newVer string) (int64, error) {
 	return 0, nil
 }

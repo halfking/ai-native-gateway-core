@@ -4,7 +4,7 @@
 import { ref, onMounted, computed, provide, onUnmounted, watch } from 'vue'
 import DashboardViewV2 from './DashboardViewV2.vue'
 import TenantDashboardView from './TenantDashboardView.vue'
-import { isDefaultTenant } from '../store'
+import { isDefaultTenant, store } from '../store'
 import {
   getUsageByModel,
   getHotApiKeys,
@@ -51,6 +51,16 @@ function switchTab(tab: DashboardTabId) {
 }
 
 watch(
+  () => store.jwtToken,
+  (token, prev) => {
+    if (token && !prev && isDefault.value && activeTab.value === 'board') {
+      void boardState.load()
+      void boardState.startAutoRefresh()
+    }
+  },
+)
+
+watch(
   () => boardState.timeRange.value,
   () => {
     if (isDefault.value && activeTab.value === 'board') {
@@ -87,6 +97,7 @@ onUnmounted(() => {
 
 provide('dashboardBoard', {
   board: boardState.board,
+  operational: boardState.operational,
   days: boardState.days,
   timeRange: boardState.timeRange,
   loading: boardState.loading,

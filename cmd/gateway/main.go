@@ -65,6 +65,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
+	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -146,6 +147,7 @@ func useNewProbeMode() bool {
 }
 
 func main() {
+	processStartedAt := time.Now()
 	// Round 39 (2026-06-16) — initialize OTel tracer.
 	// Default-disabled; activates only when OTEL_EXPORTER_OTLP_ENDPOINT
 	// is set. The shutdown function flushes pending spans before
@@ -347,6 +349,16 @@ func main() {
 		} else {
 			slog.Info("token refresh daemon disabled (LICENSE_AUTHORITY_URL not set)")
 		}
+	}
+
+	if dbConn != nil && dbConn.Enabled() {
+		collector.MaybeStart(context.Background(), collector.StartupConfig{
+			Pool:         dbConn.Pool(),
+			DataDir:      "/var/lib/kx-gateway",
+			AuthorityURL: os.Getenv("LICENSE_AUTHORITY_URL"),
+			Version:      Version(),
+			StartTime:    processStartedAt,
+		})
 	}
 
 	// Check if community mode is active
@@ -1017,7 +1029,7 @@ func main() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
 			BroadcastQueueSize:            2048,
 			InitialReplayLimit:            200,
-			IdleThreshold:                 admin.LiveStreamLaneRetention,
+			IdleThreshold:                 admin.LiveStreamIdleThreshold,
 			IdleTickInterval:              10 * time.Second,
 			KeepaliveInterval:             25 * time.Second,
 			RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
@@ -1485,7 +1497,7 @@ func main() {
 			})
 			if incidentObserver != nil {
 				incidentObserver.Start(context.Background())
-				telemetryClient.SetOnRequestLogPersisted(incidentObserver.AsHook())
+				telemetryClient.AddOnRequestLogPersisted(incidentObserver.AsHook())
 				slog.Info("route incident observer enabled (telemetry onPersisted → store → SSE incident_update)")
 			}
 		}

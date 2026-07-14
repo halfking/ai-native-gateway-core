@@ -27,28 +27,12 @@ const DefaultPromoteInterval = 1 * time.Hour
 // are eligible to be migrated to the matching monthly partition by the
 // promote_*_default_batch functions installed in migration 336.
 //
-// Changed from 7d to 24h on 2026-07-13 per product adjustment: hot tables
-// now only keep 1 day of data. Application-layer UPDATE/DELETE typically
-// completes within seconds/minutes, so 24h still comfortably covers
-// in-flight mutations.
-//
-// Per-table retention windows can be overridden via settings_kv:
-//   - probe.hot_retention_hours (default 24)
-//
-// The PartitionManager reads these on every promote cycle so changes
-// take effect on the next tick (no restart required, true hot reload).
+// 2026-07 hot-table architecture:
+//   - most *_hot tables keep a short hot window, then promote into monthly
+//     partitions on the promote scheduler;
+//   - model_probe_runs_hot is an exception as of 2026-07-14: it no longer
+//     promotes and is cleaned by direct TTL DELETE.
 const DefaultRetentionWindow = 24 * time.Hour
-
-// defaultProbeHotRetention is the default retention for model_probe_runs_hot
-// when settings.Global is nil or the key is missing. Mirrors the value in
-// settings/spec_probe.go (probe.hot_retention_hours Default=24).
-const defaultProbeHotRetention = 24 * time.Hour
-
-// defaultProbeBatchSize mirrors settings/spec_probe.go (probe.promote_batch_size Default=5000).
-const defaultProbeBatchSize = 5000
-
-// defaultProbePartitionRetention mirrors settings/spec_probe.go (probe.partition_retention_days Default=90).
-const defaultProbePartitionRetention = 90 * 24 * time.Hour
 
 // promoteBatchSize is the per-call LIMIT inside each promote_xxx_batch
 // CTE. Keeps per-tx memory bounded so a backlog cannot OOM the gateway.
@@ -58,10 +42,9 @@ const defaultProbePartitionRetention = 90 * 24 * time.Hour
 const promoteBatchSize = 5000
 
 // PartitionManager automatically creates next month's partition,
-// archives old partitions to columnar storage, and continuously
-// migrates cold rows from *_default partitions into the matching
-// monthly partition (so *_default only ever holds the recent 7-day
-// window per the 2026-07 data-lifecycle architecture).
+// archives old partitions to columnar storage, continuously migrates
+// cold rows from most *_hot tables into matching monthly partitions,
+// and applies direct TTL cleanup for model_probe_runs_hot.
 //
 // Runs `interval` for ensure+archive (typically 24h). Runs
 // `promoteInterval` for the promote cycle (typically 1h — see
@@ -187,10 +170,10 @@ func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 // for the table scheduled for today (day-of-month in 1..3).
 // Outside that window this is a no-op.
 //
-// Also drops old model_probe_runs partitions every tick (hot reload
-// retention via probe.partition_retention_days). Separate from the
-// archiveSpecs day-of-month gate because probe retention is typically
-// much shorter (90 days) and dropping is O(1) (no row migration needed).
+// Also runs model_probe_runs_hot 14-day TTL DELETE cleanup
+// (controlled by lifecycle.model_probe_runs_ttl_days, hot reloadable).
+// 2026-07-14: switched from columnar-partition strategy to pure-hot-table,
+// so no more monthly partition drops for model_probe_runs.
 func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	now := time.Now()
 
@@ -216,8 +199,9 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 		}
 	}
 
-	// 2. model_probe_runs partition cleanup (every tick, hot-reloadable retention)
-	pm.dropOldModelProbeRunsPartitions(ctx)
+	// 2. model_probe_runs hot table cleanup (every tick, 14-day TTL).
+	// 2026-07-14: switched from columnar-partition strategy to pure-hot-table.
+	pm.cleanupOldModelProbeRuns(ctx)
 
 	// 3. 2026-07-13: credential_model_index 7-day TTL cleanup.
 	// The SQL function `cleanup_old_credential_model_index()` deletes
@@ -330,37 +314,32 @@ func (pm *PartitionManager) cleanupOldCredentialModelIndex(ctx context.Context) 
 	}
 }
 
-// dropOldModelProbeRunsPartitions drops monthly partitions of
-// model_probe_runs older than the configured retention. Retention is
-// read fresh from settings.Global on every call (probe.partition_retention_days,
-// default 90), so changes take effect on the next partition_manager tick.
-func (pm *PartitionManager) dropOldModelProbeRunsPartitions(ctx context.Context) {
-	if !settings.GetPlatformBool("probe.partition_cleanup_enabled", true) {
-		return
+// cleanupOldModelProbeRuns deletes old rows from model_probe_runs_hot.
+// 2026-07-14: pure-hot-table strategy — no more columnar partitions.
+// Retention is controlled by lifecycle.model_probe_runs_ttl_days
+// (default 14, hot-reloadable).
+func (pm *PartitionManager) cleanupOldModelProbeRuns(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.model_probe_runs_ttl_days", 14)
+	if retentionDays < 1 {
+		retentionDays = 14
 	}
 
-	retentionDays := settings.GetPlatformInt("probe.partition_retention_days", int(defaultProbePartitionRetention.Hours()/24))
-	if retentionDays < 7 {
-		retentionDays = 7 // safety floor
-	}
-
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Use a simpler form: call the function and let it RAISE NOTICE on each drop.
-	// The function returns TABLE(dropped_partition text, rows_dropped bigint).
-	_, err := pm.db.Exec(timeoutCtx,
-		"SELECT * FROM drop_old_model_probe_runs_partitions($1)",
-		retentionDays,
-	)
+	tag, err := pm.db.Exec(timeoutCtx,
+		"DELETE FROM model_probe_runs_hot WHERE created_at < now() - ($1 || ' days')::interval",
+		retentionDays)
 	if err != nil {
-		slog.Error("partition_manager: model_probe_runs cleanup failed",
+		slog.Error("partition_manager: model_probe_runs hot cleanup failed",
 			"retention_days", retentionDays, "error", err)
 		return
 	}
-
-	slog.Info("partition_manager: model_probe_runs cleanup ran",
-		"retention_days", retentionDays)
+	n := tag.RowsAffected()
+	if n > 0 {
+		slog.Info("partition_manager: cleaned model_probe_runs_hot",
+			"deleted_rows", n, "retention_days", retentionDays)
+	}
 }
 
 // dropOldRequestLogsBodiesPartitions drops monthly partitions of
@@ -488,8 +467,10 @@ func ensureSpecs() []archiveSpec {
 		{fnName: "ensure_request_wal_partition", label: "request_wal"},
 		{fnName: "ensure_routing_decision_log_partition", label: "routing_decision_log"},
 		{fnName: "ensure_credential_model_index_partition", label: "credential_model_index"},
-		{fnName: "ensure_usage_ledger_partition", label: "usage_ledger"},         // Migration 330
-		{fnName: "ensure_model_probe_runs_partition", label: "model_probe_runs"}, // Migration 385
+		{fnName: "ensure_usage_ledger_partition", label: "usage_ledger"}, // Migration 330
+		// model_probe_runs 已切换为纯 hot 表策略（2026-07-14），
+		// 不再 promote 到 columnar 分区，所以也不需要 ensure。
+		// {fnName: "ensure_model_probe_runs_partition", label: "model_probe_runs"}, // Migration 385 (retired)
 	}
 }
 
@@ -533,7 +514,10 @@ func promoteSpecs() []archiveSpec {
 		{fnName: "promote_request_logs_bodies_hot_to_partition", label: "request_logs_bodies"},
 		{fnName: "promote_credit_ledger_hot_to_partition", label: "credit_ledger"},
 		{fnName: "promote_tool_usage_stats_hot_to_partition", label: "tool_usage_stats"},
-		{fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
+		// model_probe_runs_hot 已切换为纯 hot 表策略（2026-07-14），
+		// 不再 promote 到 columnar 分区。hot 表数据通过 cleanupOldModelProbeRuns()
+		// 按 lifecycle.model_probe_runs_ttl_days 直接 DELETE 清理。
+		// {fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
 		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"}, // Migration 392
 	}
 }
@@ -544,13 +528,8 @@ func promoteSpecs() []archiveSpec {
 // DefaultRetentionWindow and promoteBatchSize. Each iteration is one
 // single-statement CTE inside PostgreSQL — atomic per batch.
 //
-// Retention and batch size come from settings.Global (hot-reloadable):
-//   - probe.hot_retention_hours (default 24h)
-//   - probe.promote_batch_size (default 5000)
-//
-// All other tables use DefaultRetentionWindow (24h) and promoteBatchSize
-// (5000) constants. Settings changes take effect on the next tick — no
-// restart required.
+// Retention and batch size come from settings.Global (hot-reloadable).
+// model_probe_runs_hot no longer participates in this flow.
 //
 // The function always terminates: each batch either moves
 // `promoteBatchSize` rows (caller loops) or 0 rows (caller breaks
@@ -591,13 +570,33 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 				"label", s.label, "rows", n)
 		}
 	}
+	pm.analyzePartitionStats(ctx)
+}
+
+// analyzePartitionStats refreshes planner stats on hot heap tables and recent
+// monthly partitions. Columnar partitions after bulk promote often keep
+// n_mod_since_analyze=0 so autovacuum analyze never fires.
+func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	var n int64
+	err := pm.db.QueryRow(timeoutCtx,
+		"SELECT analyze_llm_gateway_table_stats($1)", 2,
+	).Scan(&n)
+	if err != nil {
+		slog.Warn("partition_manager: analyze stats failed", "error", err)
+		return
+	}
+	if n > 0 {
+		slog.Info("partition_manager: analyze stats", "tables", n)
+	}
 }
 
 // resolvePromoteConfig returns the retention interval and batch size for
 // a given hot table. Reads from settings.Global with hot-reload support
 // (every call reads the latest value from settings_kv). Falls back to
 // DefaultRetentionWindow / promoteBatchSize for tables without a
-// per-table setting, and to type-specific defaults for model_probe_runs.
+// per-table setting.
 //
 // This function is called on every promote tick — there is no caching
 // layer to invalidate. Updated settings take effect within one tick
@@ -605,28 +604,12 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 //
 // Per-table retention settings (all hot-reloadable, all default 24h except
 // request_logs_bodies which is 1d due to size):
-//   - probe.hot_retention_hours                — model_probe_runs_hot
 //   - lifecycle.hot_retention_hours            — request_logs_hot, usage_ledger_hot, ...
 //   - lifecycle.request_logs_bodies_retention_hours — request_logs_bodies (1d default)
 //   - lifecycle.credential_model_index_ttl_days  — credential_model_index (reaped by
 //     cleanup_old_credential_model_index())
 func resolvePromoteConfig(label string) (time.Duration, int) {
 	switch label {
-	case "model_probe_runs_hot":
-		// Per-table setting: probe.hot_retention_hours
-		hours := settingsGetPlatformInt("probe.hot_retention_hours", int(defaultProbeHotRetention.Hours()))
-		retention := time.Duration(hours) * time.Hour
-		if retention < time.Hour {
-			retention = time.Hour // safety floor
-		}
-		batchSize := settingsGetPlatformInt("probe.promote_batch_size", defaultProbeBatchSize)
-		if batchSize < 100 {
-			batchSize = 100
-		}
-		if batchSize > 50_000 {
-			batchSize = 50_000
-		}
-		return retention, batchSize
 	case "request_logs_bodies":
 		// 2026-07-13: request_logs_bodies stores full request/response
 		// payloads (TOAST). It grew to 3.4 GB / 24k rows in one month

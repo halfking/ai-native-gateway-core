@@ -20,8 +20,9 @@ import (
 //   - Main queue: ZSET llmgw:live:main (score = unix_ms, member = JSON)
 //   - Dimension queues: ZSET llmgw:live:dim:{vendor|provider|model}:{key}
 //   - Status queues: ZSET llmgw:live:status:{success|failure|in_progress}
-//   - TTL: LiveStreamLaneRetention (default 4 hours)
-//   - Idle markers: inserted after LiveStreamLaneRetention of silence
+//   - TTL: LiveStreamRecordRetention (default 2 hours, product minimum)
+//   - Visible lane window: LiveStreamLaneVisibleLimit (20 tiles)
+//   - Idle markers: inserted after LiveStreamIdleThreshold (5 min) of silence
 //
 // Graceful degradation: all write errors are logged but not surfaced;
 // the hub falls back to DB replay when Redis is unavailable.
@@ -48,6 +49,9 @@ type LiveStreamTile struct {
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	PromptTokens     *int     `json:"prompt_tokens,omitempty"`
 	CompletionTokens *int     `json:"completion_tokens,omitempty"`
+	IsProbe          bool     `json:"is_probe,omitempty"`
+	ProbeOrigin      string   `json:"probe_origin,omitempty"`
+	ProbeAttempt     int      `json:"probe_attempt,omitempty"`
 }
 
 type LiveStreamLane struct {
@@ -99,13 +103,31 @@ type liveRequestRedisPayload struct {
 	ErrorKind        *string  `json:"error_kind,omitempty"`
 	FailureStage     *string  `json:"failure_stage,omitempty"`
 	// 2026-07-13: 主动探测标记
-	IsProbe      bool   `json:"is_probe,omitempty"`
-	ProbeOrigin  string `json:"probe_origin,omitempty"`
-	ProbeAttempt int    `json:"probe_attempt,omitempty"`
+	IsProbe          bool     `json:"is_probe,omitempty"`
+	ProbeOrigin      string   `json:"probe_origin,omitempty"`
+	ProbeAttempt     int      `json:"probe_attempt,omitempty"`
+	ClientProfile    string   `json:"client_profile,omitempty"`
+	IdentityHash     string   `json:"identity_hash,omitempty"`
+	CreditsCharged   *int     `json:"credits_charged,omitempty"`
 }
 
-// LiveStreamLaneRetention is the default retention for Redis live-stream
-// queues, dimension lane activity keys, and in-memory snapshot eviction.
+// LiveStreamRecordRetention is the Redis TTL for request detail keys and
+// sorted-set queues. Product requirement: at least 2 hours.
+const LiveStreamRecordRetention = 2 * time.Hour
+
+// LiveStreamLaneVisibleLimit is how many tiles each swim lane shows. Entries
+// scrolled past this window are trimmed from per-dimension Redis queues.
+const LiveStreamLaneVisibleLimit = 20
+
+// LiveStreamIdleThreshold is how long a lane must be silent before an idle
+// marker is written into the stream.
+const LiveStreamIdleThreshold = 5 * time.Minute
+
+const idleMarkerErrorKind = "no_traffic_5min"
+const idleMarkerFailureStage = "idle"
+
+// LiveStreamLaneRetention is the default for in-memory cached snapshot
+// eviction in the SSE hub (not Redis record TTL).
 const LiveStreamLaneRetention = 4 * time.Hour
 
 const (
@@ -115,9 +137,9 @@ const (
 	liveStreamStatPrefix     = "llmgw:live:status:"
 	liveStreamTenantSet      = "llmgw:live:tenants"
 	liveStreamActivityPrefix = "llmgw:live:activity:"
-	liveStreamTTL            = LiveStreamLaneRetention
-	liveStreamLaneLimit      = 30
-	liveStreamReplayLimit    = 200 // 默认回放请求数：泳道中请求的有效期靠 TTL 保证，数量上限放宽到 200，让请求“直到被挤出去”而非被过小的 replay 上限提前丢弃
+	liveStreamTTL            = LiveStreamRecordRetention
+	liveStreamLaneLimit      = LiveStreamLaneVisibleLimit
+	liveStreamReplayLimit    = 200 // main-queue replay cap; per-lane display capped at liveStreamLaneLimit
 )
 
 // normalizeModelKey returns a case-insensitive, whitespace-trimmed
@@ -265,6 +287,7 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	for _, key := range queueKeys {
 		pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: req.RequestID})
 		pipe.Expire(ctx, key, liveStreamTTL)
+		trimLiveStreamQueue(pipe, ctx, key, liveStreamQueueKeepLimit(key))
 	}
 	pipe.Set(ctx, liveStreamRequestDetailKey(tenantID, req.RequestID), data, liveStreamTTL)
 	pipe.Set(ctx, liveStreamGlobalRequestDetailKey(req.RequestID), data, liveStreamTTL)
@@ -325,6 +348,25 @@ func removeLiveRequestFromQueues(ctx context.Context, pipe redis.Pipeliner, tena
 	for _, key := range liveRequestQueueKeys(tenantID, req) {
 		pipe.ZRem(ctx, key, req.RequestID)
 	}
+}
+
+// liveStreamQueueKeepLimit returns how many members to retain in a Redis
+// sorted-set queue. Main queues keep enough history for multi-lane replay;
+// dimension/status queues trim to the visible swim-lane window (20).
+func liveStreamQueueKeepLimit(key string) int {
+	if key == liveStreamMainKey || strings.HasSuffix(key, ":main") {
+		return liveStreamReplayLimit
+	}
+	return LiveStreamLaneVisibleLimit
+}
+
+// trimLiveStreamQueue removes the oldest members so at most keep entries
+// remain (highest scores / newest requests). Called after every ZADD.
+func trimLiveStreamQueue(pipe redis.Pipeliner, ctx context.Context, key string, keep int) {
+	if keep <= 0 {
+		return
+	}
+	pipe.ZRemRangeByRank(ctx, key, 0, int64(-keep-1))
 }
 
 func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
@@ -439,6 +481,9 @@ func marshalLiveRequestRedisPayload(req LiveRequest) (string, error) {
 		IsProbe:          req.IsProbe,
 		ProbeOrigin:      req.ProbeOrigin,
 		ProbeAttempt:     req.ProbeAttempt,
+		ClientProfile:    req.ClientProfile,
+		IdentityHash:     req.IdentityHash,
+		CreditsCharged:   req.CreditsCharged,
 	}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -473,6 +518,9 @@ func unmarshalLiveRequestRedisPayload(data string) (LiveRequest, error) {
 		IsProbe:          p.IsProbe,
 		ProbeOrigin:      p.ProbeOrigin,
 		ProbeAttempt:     p.ProbeAttempt,
+		ClientProfile:    p.ClientProfile,
+		IdentityHash:     p.IdentityHash,
+		CreditsCharged:   p.CreditsCharged,
 	}, nil
 }
 
@@ -610,28 +658,20 @@ func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 	// This ensures idle markers inherit the queue's identity rather than creating separate idle lanes
 	switch dimension {
 	case "vendor":
-		// 返回 model name / "其他" 也算合法 key —— 不能在这里返回 ""，
-		// 否则 resolveVendorForRequest 的最后兜底"用模型名称"会被丢弃，
-		// 反而出现"原厂"泳道被过滤消失。
-		key := resolveVendorForRequest(req)
-		// idle marker 永远不进入 vendor / provider / model 维度
 		if req.Type == "idle_marker" {
+			if req.ModelCategory != "" {
+				return req.ModelCategory
+			}
 			return ""
 		}
+		key := resolveVendorForRequest(req)
 		return key
 	case "provider":
-		// 设计原则（2026-07-09 审计修正）：provider(供应商) 维度只认凭据反查的结果
-		// （telemetry.CredentialID → credentials JOIN providers → display_name）。
-		// 之前当 ProviderCode 为空时用 CanonicalName/Model 兜底，会把模型名
-		// （如 "minimax-m3"）塞进 provider 维度，于是同一个供应商同时出现
-		// "MiniMax"（凭据反查）和 "minimax-m3"（模型名兜底）两个泳道。
-		//
-		// 现在：ProviderCode 为空/未知时返回 ""，该请求不在 provider 维度显示，
-		// 模型名永远只出现在 model 维度。ProviderCode 为空的两种真实场景：
-		//   1) credential_id == 0：请求未到达凭据选择（auth/路由失败/探测记录）；
-		//   2) 凭据已被删除，credential→provider JOIN 查不到。
-		// 这两种情况下"供应商"本身就没有意义，不应凭空造一个模型名泳道。
 		if req.Type == "idle_marker" {
+			pc := strings.TrimSpace(req.ProviderCode)
+			if pc != "" && pc != "unknown" && pc != "__unknown__" {
+				return pc
+			}
 			return ""
 		}
 		pc := strings.TrimSpace(req.ProviderCode)
@@ -640,17 +680,13 @@ func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 		}
 		return pc
 	case "model":
-		// Use CanonicalName for aggregation so the same model from different
-		// credentials (with different outbound names) aggregates into one lane.
-		// Fallback to Model for backward compatibility when CanonicalName is empty.
-		//
-		// Case-insensitive: canonical name and outbound model may differ in
-		// casing across credentials ("MiniMax-M3" vs "minimax-m3"); we fold
-		// to a lower-case trimmed form so both spellings fall into the
-		// same lane. The original case is preserved in the rendered label
-		// because lane display goes through the canonical name field, not
-		// this dimension key.
 		if req.Type == "idle_marker" {
+			if req.CanonicalName != "" {
+				return normalizeModelKey(req.CanonicalName)
+			}
+			if req.Model != "" {
+				return normalizeModelKey(req.Model)
+			}
 			return ""
 		}
 		if req.CanonicalName != "" {
@@ -755,6 +791,9 @@ func liveRequestTile(req LiveRequest) LiveStreamTile {
 		CostUSD:          req.CostUSD,
 		PromptTokens:     req.PromptTokens,
 		CompletionTokens: req.CompletionTokens,
+		IsProbe:          req.IsProbe,
+		ProbeOrigin:      req.ProbeOrigin,
+		ProbeAttempt:     req.ProbeAttempt,
 	}
 	// Idle markers carry only their own dimension's identity. Surface a
 	// human-readable "[空闲]" label on whichever field is empty so the
@@ -892,7 +931,7 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 		return nil
 	}
 	if idleThreshold <= 0 {
-		idleThreshold = LiveStreamLaneRetention
+		idleThreshold = LiveStreamIdleThreshold
 	}
 	idleThresholdSeconds := int64(idleThreshold.Seconds())
 
@@ -922,11 +961,11 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 	}
 
 	type pending struct {
-		info activityKeyInfo
-		key  string
+		info         activityKeyInfo
+		key          string
+		lastActivity int64
 	}
 	var idle []pending
-	refreshPipe := s.rdb.Pipeline()
 	for i, k := range activityKeys {
 		val, err := cmds[i].Result()
 		if err != nil {
@@ -945,29 +984,33 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 			slog.Debug("skipping malformed activity key", "key", k)
 			continue
 		}
-		idle = append(idle, pending{info: info, key: k})
-		// Refresh the activity timestamp so we do not re-emit on every tick.
-		refreshPipe.Set(ctx, k, nowUnix, liveStreamTTL)
+		// Main-queue activity is a heartbeat only; swim lanes are built from
+		// vendor/provider/model dimension keys. Skip "main" so we do not
+		// enqueue dimension-less idle markers that never render in a lane.
+		if info.dimension == "main" {
+			continue
+		}
+		idle = append(idle, pending{info: info, key: k, lastActivity: lastActivity})
 	}
 
 	if len(idle) == 0 {
-		// Still flush the refresh pipeline (no-op if empty).
-		if _, err := refreshPipe.Exec(ctx); err != nil && err != redis.Nil {
-			return fmt.Errorf("refresh activity timestamps failed: %w", err)
-		}
 		return nil
 	}
 
 	// 3) Build + persist idle markers, writing only to the relevant lane(s).
 	writePipe := s.rdb.Pipeline()
 	for _, p := range idle {
-		marker := createIdleMarkerForDimension(p.info.dimension, p.info.dimensionKey, p.info.tenantID, ts)
+		// Anchor idle at the moment silence began (last activity + threshold),
+		// not at scan time, so new requests push the idle tile left instead
+		// of keeping it pinned at the tail.
+		idleStartedAt := time.Unix(p.lastActivity+idleThresholdSeconds, 0).UTC()
+		marker := createIdleMarkerForDimension(p.info.dimension, p.info.dimensionKey, p.info.tenantID, idleStartedAt)
 		data, err := marshalLiveRequestRedisPayload(marker)
 		if err != nil {
 			slog.Debug("failed to marshal idle marker", "dimension", p.info.dimension, "dimension_key", p.info.dimensionKey, "tenant_id", p.info.tenantID, "err", err.Error())
 			continue
 		}
-		score := float64(ts.UnixMilli())
+		score := float64(idleStartedAt.UnixMilli())
 
 		// Detail lookups: store under the global key always, and the
 		// tenant key when scoped, so Replay can resolve the marker.
@@ -978,46 +1021,49 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 		for _, qkey := range idleMarkerQueueKeys(marker.TenantID, p.info.dimension, p.info.dimensionKey) {
 			writePipe.ZAdd(ctx, qkey, redis.Z{Score: score, Member: marker.RequestID})
 			writePipe.Expire(ctx, qkey, liveStreamTTL)
+			trimLiveStreamQueue(writePipe, ctx, qkey, liveStreamQueueKeepLimit(qkey))
 		}
 	}
 
 	if _, err := writePipe.Exec(ctx); err != nil && err != redis.Nil {
 		return fmt.Errorf("write idle markers failed: %w", err)
 	}
-	if _, err := refreshPipe.Exec(ctx); err != nil && err != redis.Nil {
-		slog.Debug("refresh activity timestamps failed (non-fatal)", "err", err.Error())
-	}
 	return nil
 }
 
 // idleMarkerQueueKeys returns the Redis ZSET keys an idle marker should
-// land in. Because Replay()/Snapshot() only ever read the main queue and
-// rebuild lanes in memory from it, an idle marker MUST be written to the
-// main queue (plus its tenant-scoped twin) to be visible at all. The old
-// implementation wrote only to per-dimension ZSETs that nothing reads,
-// making every idle marker invisible dead data.
+// land in. Global-scope markers go to the super-admin main queue; tenant-
+// scoped markers go to that tenant's main queue only — never both — so
+// Replay() does not show duplicate idle tiles for the same lane.
 func idleMarkerQueueKeys(tenantID, dimension, dimensionKey string) []string {
-	tenantID = normalizeLiveStreamTenant(tenantID)
-	// All idle markers go to main so they are replayed and rendered inside
-	// the lane that matches their carried dimension value.
-	return []string{liveStreamMainKey, tenantLiveStreamKey(tenantID, "main")}
+	_ = dimension
+	_ = dimensionKey
+	if strings.TrimSpace(tenantID) == "" {
+		return []string{liveStreamMainKey}
+	}
+	return []string{tenantLiveStreamKey(normalizeLiveStreamTenant(tenantID), "main")}
 }
 
 func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time) LiveRequest {
-	// requestID must be unique per (scope, dimension, key, tick); include
-	// the scope to prevent collision between global and tenant-scoped markers.
+	// Stable request_id per lane so each idle tick updates the same tile
+	// (ZADD member) instead of appending a new idle row.
 	scope := "global"
 	if tenantID != "" {
 		scope = "t-" + tenantID
 	}
-	requestID := fmt.Sprintf("idle-%s-%s-%s-%d", scope, dimension, key, ts.UnixNano())
+	safeKey := strings.NewReplacer(":", "_", "/", "_").Replace(key)
+	requestID := fmt.Sprintf("idle-%s-%s-%s", scope, dimension, safeKey)
 
+	errKind := idleMarkerErrorKind
+	failStage := idleMarkerFailureStage
 	marker := LiveRequest{
-		Type:      "idle_marker",
-		RequestID: requestID,
-		Ts:        ts.UTC().Format(time.RFC3339),
-		TenantID:  tenantID,
-		Status:    "idle",
+		Type:         "idle_marker",
+		RequestID:    requestID,
+		Ts:           ts.UTC().Format(time.RFC3339),
+		TenantID:     tenantID,
+		Status:       "idle",
+		ErrorKind:    &errKind,
+		FailureStage: &failStage,
 	}
 
 	// Each idle marker carries ONLY the identity of the lane it represents,

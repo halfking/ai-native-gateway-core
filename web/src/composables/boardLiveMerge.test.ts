@@ -45,6 +45,9 @@ describe('boardLiveMerge', () => {
       model: 'gpt-4o',
       provider_code: 'openai',
       tenant_id: 'default',
+      client_profile: 'cursor',
+      identity_hash: 'fp-abc',
+      credits_charged: 42,
       prompt_tokens: 10,
       completion_tokens: 20,
       total_tokens: 30,
@@ -54,7 +57,10 @@ describe('boardLiveMerge', () => {
     const out = applyLiveRequestToBoard(emptyBoard(), req, range7d)
     expect(out.summary?.total_requests).toBe(11)
     expect(out.summary?.total_tokens).toBe(1030)
+    expect(out.summary?.total_credits_charged).toBe(42)
     expect(out.pies?.models?.find((m) => m.key === 'gpt-4o')?.requests).toBe(1)
+    expect(out.pies?.clients?.find((m) => m.key === 'cursor')?.requests).toBe(1)
+    expect(out.pies?.identity_hashes?.find((m) => m.key === 'fp-abc')?.requests).toBe(1)
     expect(out.source).toBe('live_sse_delta')
   })
 

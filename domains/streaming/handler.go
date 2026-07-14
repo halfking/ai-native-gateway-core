@@ -4386,9 +4386,6 @@ func detectEmptyStreamResponse(m map[string]any, reqLog *telemetry.RequestLogEnt
 	if !ok || chunkCount > 3 {
 		return false // More than 3 chunks likely has content
 	}
-	if chunkCount > 3 {
-		return false // More than 3 chunks likely has content
-	}
 
 	// Check 2: Zero completion tokens
 	hasTokens := reqLog.CompletionTokens != nil && *reqLog.CompletionTokens > 0
