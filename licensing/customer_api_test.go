@@ -19,16 +19,32 @@ import (
 // fakeStore is an in-memory implementation of Store for unit tests.
 // Only the methods exercised by CustomerAPI tests are populated.
 type fakeStore struct {
-	mu       sync.Mutex
-	licenses map[string]*License
-	devices  map[string][]*Device // keyed by license_key
+	mu        sync.Mutex
+	licenses  map[string]*License
+	devices   map[string][]*Device // keyed by license_key
+	telemetry map[string]*RuntimeTelemetryPreference
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		licenses: map[string]*License{},
-		devices:  map[string][]*Device{},
+		licenses:  map[string]*License{},
+		devices:   map[string][]*Device{},
+		telemetry: map[string]*RuntimeTelemetryPreference{},
 	}
+}
+
+func (s *fakeStore) GetRuntimeTelemetryPreference(_ context.Context, hardwareHash string) (*RuntimeTelemetryPreference, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.telemetry[hardwareHash], nil
+}
+
+func (s *fakeStore) SetRuntimeTelemetryPreference(_ context.Context, preference *RuntimeTelemetryPreference, _ string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	copy := *preference
+	s.telemetry[preference.HardwareHash] = &copy
+	return nil
 }
 
 func (s *fakeStore) GetLicense(ctx context.Context, licenseKey string) (*License, error) {
@@ -303,6 +319,68 @@ func TestCustomerAPI_Status_NoLicense(t *testing.T) {
 	if resp.Mode != "licensed" && resp.Mode != "community" {
 		t.Errorf("expected mode to be licensed or community, got %q", resp.Mode)
 	}
+}
+
+func TestCustomerAPI_RuntimeTelemetryPreference(t *testing.T) {
+	api, store := newTestCustomerAPI(t)
+	fingerprint, err := GenerateFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	license := &License{ID: 42, LicenseKey: "LIC-telemetry", CustomerEmail: "ops@example.com"}
+	store.licenses[license.LicenseKey] = license
+	store.devices[license.LicenseKey] = []*Device{{HardwareHash: fingerprint.Hash(), Status: "active"}}
+
+	newServer := func(role string) *echo.Echo {
+		e := echo.New()
+		group := e.Group("/api/tenant/telemetry-preference")
+		group.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+			return func(c echo.Context) error {
+				c.Set("role", role)
+				c.Set("user_id", int64(7))
+				return next(c)
+			}
+		})
+		api.RegisterTelemetryPreferenceRoutes(group)
+		return e
+	}
+
+	t.Run("rejects unauthorised role", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/tenant/telemetry-preference", nil)
+		rec := httptest.NewRecorder()
+		newServer("viewer").ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+		}
+	})
+
+	t.Run("defaults disabled and tenant admin can enable", func(t *testing.T) {
+		e := newServer("tenant_admin")
+		getReq := httptest.NewRequest(http.MethodGet, "/api/tenant/telemetry-preference", nil)
+		getRec := httptest.NewRecorder()
+		e.ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("GET status = %d, body = %s", getRec.Code, getRec.Body.String())
+		}
+		var before RuntimeTelemetryPreference
+		if err := json.Unmarshal(getRec.Body.Bytes(), &before); err != nil {
+			t.Fatal(err)
+		}
+		if before.Enabled {
+			t.Fatal("telemetry must default to disabled")
+		}
+
+		putReq := httptest.NewRequest(http.MethodPut, "/api/tenant/telemetry-preference", bytes.NewBufferString(`{"enabled":true}`))
+		putReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		putRec := httptest.NewRecorder()
+		e.ServeHTTP(putRec, putReq)
+		if putRec.Code != http.StatusOK {
+			t.Fatalf("PUT status = %d, body = %s", putRec.Code, putRec.Body.String())
+		}
+		if preference := store.telemetry[fingerprint.Hash()]; preference == nil || !preference.Enabled {
+			t.Fatal("enabled telemetry preference was not saved")
+		}
+	})
 }
 
 func TestCustomerAPI_Activate_MissingLicenseKey(t *testing.T) {

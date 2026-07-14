@@ -54,3 +54,10 @@ type Store interface {
 type TrialConsentStore interface {
 	CreateTrialLicenseWithConsent(ctx context.Context, lic *License, consent *TrialConsent) error
 }
+
+// RuntimeTelemetryPreferenceStore owns consent state and its immutable audit
+// events. It must never store prompts, completions, request bodies, or secrets.
+type RuntimeTelemetryPreferenceStore interface {
+	GetRuntimeTelemetryPreference(ctx context.Context, hardwareHash string) (*RuntimeTelemetryPreference, error)
+	SetRuntimeTelemetryPreference(ctx context.Context, preference *RuntimeTelemetryPreference, source string) error
+}

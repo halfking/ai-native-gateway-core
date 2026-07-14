@@ -25,6 +25,18 @@ type TrialConsent struct {
 	Source           string    `json:"source"`
 }
 
+// RuntimeTelemetryPreference controls whether this activated instance may
+// submit allowlisted operational aggregates to the service operator.
+type RuntimeTelemetryPreference struct {
+	HardwareHash     string     `json:"-"`
+	LicenseID        int64      `json:"license_id"`
+	Enabled          bool       `json:"enabled"`
+	AgreementVersion string     `json:"agreement_version"`
+	OperatorUserID   int64      `json:"-"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	DisabledAt       *time.Time `json:"disabled_at,omitempty"`
+}
+
 type SignedLicense struct {
 	Data      []byte `json:"data"`
 	Signature []byte `json:"signature"`

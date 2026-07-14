@@ -541,11 +541,11 @@ func TestBuildLiveStreamSnapshot_ServerSideAggregation(t *testing.T) {
 	if len(s.Dimensions["vendor"]) != 2 {
 		t.Fatalf("expected 2 vendor lanes, got %d", len(s.Dimensions["vendor"]))
 	}
-	if s.Dimensions["vendor"][0].ID != "openai" {
-		t.Fatalf("top vendor should be openai, got %s", s.Dimensions["vendor"][0].ID)
+	if s.Dimensions["vendor"][0].ID != "anthropic" {
+		t.Fatalf("vendors should use stable alphabetical order, got %s", s.Dimensions["vendor"][0].ID)
 	}
-	if s.Dimensions["vendor"][0].Stats.Total != 2 {
-		t.Fatalf("openai lane total should be 2, got %d", s.Dimensions["vendor"][0].Stats.Total)
+	if s.Dimensions["vendor"][1].ID != "openai" || s.Dimensions["vendor"][1].Stats.Total != 2 {
+		t.Fatalf("openai lane total should be 2, got %#v", s.Dimensions["vendor"][1])
 	}
 	if len(s.Dimensions["provider"][0].Requests) == 0 {
 		t.Fatal("provider lane should include render-ready requests")

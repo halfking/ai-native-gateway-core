@@ -109,6 +109,22 @@ export function sendHeartbeat() {
   )
 }
 
+export interface RuntimeTelemetryPreference {
+  license_id: number
+  enabled: boolean
+  agreement_version: string
+  updated_at?: string
+  disabled_at?: string
+}
+
+export function getRuntimeTelemetryPreference() {
+  return req<RuntimeTelemetryPreference>('GET', '/api/tenant/telemetry-preference')
+}
+
+export function setRuntimeTelemetryPreference(enabled: boolean) {
+  return req<RuntimeTelemetryPreference>('PUT', '/api/tenant/telemetry-preference', { enabled })
+}
+
 // ── Upgrade APIs ─────────────────────────────────────────────────────────
 
 export interface UpgradeStatus {
