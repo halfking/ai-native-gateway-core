@@ -200,10 +200,37 @@ func NormalizeRouteKeyAliases(model string) []string {
 }
 
 // StandardizeName is an alias for NormalizeRouteKey. The split between
-// these two functions existed to apply family-specific dot/dash rewrites
+// these functions existed to apply family-specific dot/dash rewrites
 // (GLM / MiniMax / Claude); that logic has been removed — see package doc.
 // Keeping the name as an alias lets existing call sites continue to compile
 // without churn.
 func StandardizeName(rawName string) string {
 	return NormalizeRouteKey(rawName)
+}
+
+// CanonicalizeClientModel is the canonical form that the gateway persists in
+// its database for the CLIENT-side model name (canonical_name,
+// canonical_raw_name, standardized_name, model_aliases.raw_name, etc.).
+//
+// Contract (2026-07-14):
+//
+//   - Always returns a lowercase, whitespace-trimmed, vendor-prefix-stripped
+//     string so that equality lookups in SQL do NOT need a `lower()` wrapper.
+//   - Clients can submit "GLM-5.2", " glm-5.2 ", "z-ai/glm-5.2" or
+//     "Z-AI/GLM-5.2"; all four map to "glm-5.2".
+//   - Empty / whitespace-only input returns "".
+//
+// Note: this is intentionally stricter than NormalizeRouteKey in two ways:
+//   - it strips vendor prefixes (matches how we canonicalize SQL rows)
+//   - it does NOT collapse runs of `-`/`_` (a model name like
+//     "minimax-m2-7" stays distinct from "minimax-m2.7" until we either
+//     confirm a normalization rule, or rely on model_aliases to bridge the
+//     gap). This avoids silently rewriting a client-requested form.
+//
+// Provider model names coming back from /v1/models on NVIDIA NIM, OpenAI,
+// etc. are NOT routed through this function — they live in
+// provider_models.raw_model_name with their original casing so the gateway
+// can pass them upstream unchanged.
+func CanonicalizeClientModel(rawName string) string {
+	return strings.TrimSpace(strings.ToLower(strings.TrimSpace(rawName)))
 }

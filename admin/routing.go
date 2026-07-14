@@ -1035,7 +1035,8 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 			LEFT JOIN LATERAL (
 				SELECT canonical_id
 				FROM model_aliases
-				WHERE lower(raw_name) = lower(rl.client_model)
+				-- 2026-07-14: model_aliases.raw_name is stored lowercase; compare directly.
+				WHERE raw_name = lower(rl.client_model)
 				  AND status = 'active'
 				LIMIT 1
 			) ma ON TRUE
@@ -1108,7 +1109,9 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 		LEFT JOIN LATERAL (
 			SELECT canonical_id
 			FROM model_aliases
-			WHERE lower(raw_name) = lower(mo.raw_model_name)
+			-- 2026-07-14: provider_models.canonical_raw_name is the lowercase key
+			-- mirrored into model_aliases.raw_name; compare directly.
+			WHERE raw_name = mo.canonical_raw_name
 			  AND status = 'active'
 			LIMIT 1
 		) ma ON TRUE
@@ -1657,7 +1660,8 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		JOIN credentials c ON c.id = mo.credential_id AND c.status = 'active'
 		JOIN providers p ON p.id = c.provider_id AND p.enabled = TRUE
 		WHERE mo.available = TRUE
-		  AND (lower(mo.raw_model_name) = lower($1) OR lower(mo.standardized_name) = lower($1))
+		  -- 2026-07-14: client-side columns are persisted lowercase.
+		  AND (mo.canonical_raw_name = lower($1) OR mo.standardized_name = lower($1))
 		  AND COALESCE(c.lifecycle_status,'active') = 'active'
 		  AND COALESCE(c.availability_state,'ready') = 'ready'
 		ORDER BY mo.manual_priority NULLS LAST,
@@ -1782,9 +1786,10 @@ func (h *Handler) handleRoutingManualPriority(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// 2026-07-14: canonical_raw_name is the lowercase client-facing key.
 	tag, err := h.db.Exec(ctx, `
 		UPDATE model_offers SET manual_priority = $1
-		WHERE credential_id = $2 AND lower(raw_model_name) = lower($3)
+		WHERE credential_id = $2 AND canonical_raw_name = lower($3)
 	`, req.ManualPriority, req.CredentialID, req.ModelName)
 	if err != nil {
 		slog.Error("manual-priority update failed", "error", err, "cred_id", req.CredentialID, "model", req.ModelName)
@@ -1848,7 +1853,8 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		WHERE p.tenant_id = 'default'
-		  AND (lower(mo.raw_model_name) = lower($1) OR lower(mo.standardized_name) = lower($1))
+		  -- 2026-07-14: client-side columns are persisted lowercase.
+		  AND (mo.canonical_raw_name = lower($1) OR mo.standardized_name = lower($1))
 		  AND mo.available IS TRUE
 		ORDER BY
 			CASE COALESCE(mo.billing_mode, 'per_token')

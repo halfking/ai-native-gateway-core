@@ -19,6 +19,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 )
 
@@ -282,7 +283,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// unchanged; the executor handles Q2/Q4 dispatch internally.
 	attemptClientModel = reqBody.Model
 
-	clientModel := reqBody.Model
+	// 2026-07-14: lowercase at the wire boundary.
+	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
 
 	// ── Tenant model policy (Round 48, 2026-06-21) ──────────────
 	// Inserted here so a denied request never reaches GetCandidates.
@@ -482,7 +484,15 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		SuppressSuccessWrite: !isStream,
 		ClientProtocol:       "anthropic-messages",
 		ClientModel:          clientModel,
-		OutboundModel:        outboundForLog,
+		// See domains/streaming/handler.go for the rationale: the
+		// executor resolves the upstream model per candidate using
+		// params.Transform + cand.RawModel, so we deliberately pass
+		// clientModel here (instead of explicitOutbound / outboundForLog)
+		// to avoid leaking the FIRST candidate's upstream id into a
+		// retry/failover attempt — which on NVIDIA NIM manifests as
+		// "model_not_found" when candidate #2+ uses a different publisher
+		// prefix.
+		OutboundModel:        clientModel,
 		ClientID:             clientID,
 		Transform:            txResult,
 		Resolution:           modelResolution,

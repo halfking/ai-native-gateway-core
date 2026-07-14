@@ -192,8 +192,9 @@ const requestLogsJoins = `
 			(rl.canonical_id IS NOT NULL AND mo.canonical_id = rl.canonical_id)
 			OR (
 				rl.canonical_id IS NULL AND (
-					lower(mo.standardized_name) = lower(COALESCE(mc.canonical_name, rl.client_model, ''))
-					OR lower(mo.raw_model_name) = lower(COALESCE(rl.outbound_model, rl.client_model, ''))
+					-- 2026-07-14: client-side columns are persisted lowercase.
+					mo.standardized_name = lower(COALESCE(mc.canonical_name, rl.client_model, ''))
+					OR mo.canonical_raw_name = lower(COALESCE(rl.outbound_model, rl.client_model, ''))
 				)
 			)
 		  )
@@ -403,7 +404,8 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 				SELECT 1
 				FROM model_aliases ma
 				JOIN models_canonical mc ON mc.id = ma.canonical_id
-				WHERE lower(ma.raw_name) = lower(rl.client_model)
+				-- 2026-07-14: model_aliases.raw_name is stored lowercase.
+				WHERE ma.raw_name = lower(rl.client_model)
 				  AND ma.status = 'active'
 				  AND mc.canonical_name ILIKE $%d
 			)
@@ -672,7 +674,8 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN LATERAL (
 			SELECT canonical_id
 			FROM model_aliases
-			WHERE lower(raw_name) = lower(rl.client_model)
+			-- 2026-07-14: model_aliases.raw_name is persisted lowercase.
+			WHERE raw_name = lower(rl.client_model)
 			  AND status = 'active'
 			LIMIT 1
 		) ma ON TRUE
