@@ -6,14 +6,22 @@
 #
 set -euo pipefail
 
+# 与 post-deploy-verify.sh 共用 SSH 调用约定（remote_ssh / ssh 函数名）
+_deploy_verify_ssh() {
+  local ssh_cmd=$1
+  shift
+  # shellcheck disable=SC2086
+  $ssh_cmd "$@"
+}
+
 _db_changelog_repo_root() {
   cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd
 }
 
 : "${DB_CHANGELOG_FILE:=$(_db_changelog_repo_root)/docs/db-changelog.md}"
 
-_db_log()  { echo -e "${DEPLOY_VERIFY_GREEN:-}[db]${DEPLOY_VERIFY_NC:-} $*"; }
-_db_warn() { echo -e "${DEPLOY_VERIFY_YELLOW:-}[db]${DEPLOY_VERIFY_NC:-} $*"; }
+_db_log()  { echo -e "${DEPLOY_VERIFY_GREEN:-}[db]${DEPLOY_VERIFY_NC:-} $*" >&2; }
+_db_warn() { echo -e "${DEPLOY_VERIFY_YELLOW:-}[db]${DEPLOY_VERIFY_NC:-} $*" >&2; }
 _db_err()  { echo -e "${DEPLOY_VERIFY_RED:-}[db]${DEPLOY_VERIFY_NC:-} $*" >&2; }
 
 # 远端 psql 包装（245 无 psql → docker postgres:17-alpine）
@@ -40,11 +48,22 @@ _psql -tAc \"SELECT version FROM schema_migrations WHERE version ~ '^[0-9]+\$' O
     2>/dev/null | grep -E '^[0-9]+$' || true
 }
 
+_deploy_max_applied_migration_id() {
+  local ssh_cmd=$1 env_file=$2
+  local max
+  max=$(_deploy_verify_ssh "$ssh_cmd" "$(_deploy_remote_psql_script "$env_file")
+_psql -tAc \"SELECT COALESCE(max(version::int), 0) FROM schema_migrations WHERE version ~ '^[0-9]+\$'\"" \
+    2>/dev/null | tr -d '[:space:]')
+  max=${max:-0}
+  echo "$max"
+}
+
 _deploy_pending_startup_migrations() {
   local ssh_cmd=$1 env_file=$2
-  local repo_root applied f base ver
+  local repo_root max_applied f base ver
   repo_root=$(_db_changelog_repo_root)
-  applied=" $(_deploy_applied_migration_ids "$ssh_cmd" "$env_file" | tr '\n' ' ') "
+  max_applied=$(_deploy_max_applied_migration_id "$ssh_cmd" "$env_file")
+  _db_log "schema_migrations max=${max_applied}（仅 apply 编号 > max 的 startup 迁移）"
   cd "$repo_root"
   for f in sql/migrations/startup/[0-9]*.sql; do
     [[ -f "$f" ]] || continue
@@ -54,10 +73,12 @@ _deploy_pending_startup_migrations() {
     [[ "$base" == *.bak.skip ]] && continue
     ver=$(echo "$base" | grep -oE '^[0-9]+' || true)
     [[ -n "$ver" ]] || continue
+    # 仅三位编号 startup 迁移（跳过 2026-07-13-*.sql 等）
+    [[ "$base" =~ ^[0-9]{3}_ ]] || continue
     if head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED'; then
       continue
     fi
-    if [[ "$applied" != *" $ver "* ]]; then
+    if (( 10#$ver > max_applied )); then
       printf '%s\n' "$f"
     fi
   done
@@ -94,7 +115,7 @@ deploy_apply_pending_migrations() {
     ver=$(echo "$base" | grep -oE '^[0-9]+')
     desc=$(echo "$base" | sed 's/^[0-9]*_//;s/.sql$//')
     _db_log "  → $base"
-    if ! "$ssh_cmd" "$(_deploy_remote_psql_script "$env_file")
+    if ! _deploy_verify_ssh "$ssh_cmd" "$(_deploy_remote_psql_script "$env_file")
 _psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base'" 2>/tmp/_mig_err_${ver}.log; then
       if grep -qiE 'already exists|duplicate key|relation .* already exists' "/tmp/_mig_err_${ver}.log" 2>/dev/null; then
         _db_warn "  ⊘ $base idempotent"
@@ -107,7 +128,7 @@ _psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base'" 2>/tmp/_mig_err_${ver}.log; the
     else
       applied_count=$((applied_count + 1))
     fi
-    "$ssh_cmd" "$(_deploy_remote_psql_script "$env_file")
+    _deploy_verify_ssh "$ssh_cmd" "$(_deploy_remote_psql_script "$env_file")
 _psql -c \"INSERT INTO schema_migrations (version, description) VALUES ('$ver', '$desc') ON CONFLICT (version) DO NOTHING\"" \
       >/dev/null 2>&1 || true
     applied_files+=("$base")

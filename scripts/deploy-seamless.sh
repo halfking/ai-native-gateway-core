@@ -384,7 +384,7 @@ do_deploy() {
     if bash "$SCRIPT_DIR/ops/sync-admin-password-from-env.sh" "$TARGET"; then
       ok "admin 密码已同步"
     else
-      warn "admin 密码同步失败（不影响部署，可手动: bash scripts/ops/sync-admin-password-from-env.sh $TARGET）"
+      warn "admin 密码同步失败（不影响部署，可手动: bash scripts/ops/sync-admin-password-from-env.sh ${TARGET}）"
     fi
   fi
 
