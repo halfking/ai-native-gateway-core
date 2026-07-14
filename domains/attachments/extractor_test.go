@@ -39,6 +39,9 @@ func TestExtractFromOpenAIBody(t *testing.T) {
 	if att.MessageIndex != 0 || att.BlockIndex != 1 {
 		t.Errorf("index = (%d,%d), want (0,1)", att.MessageIndex, att.BlockIndex)
 	}
+	if att.Status != AttachmentStatusManifestReady {
+		t.Errorf("Status = %q, want %q", att.Status, AttachmentStatusManifestReady)
+	}
 }
 
 func TestExtractFromOpenAIBody_HTTPURLNotExtracted(t *testing.T) {
@@ -136,6 +139,9 @@ func TestExtract_StorageFailureDoesNotPanic(t *testing.T) {
 	}
 	if result.Saved != 0 {
 		t.Errorf("Saved = %d, want 0 (nil storage)", result.Saved)
+	}
+	if len(result.Attachments) != 1 || result.Attachments[0].Status != AttachmentStatusStoreFailed {
+		t.Errorf("failed attachment status = %+v, want store_failed", result.Attachments)
 	}
 }
 

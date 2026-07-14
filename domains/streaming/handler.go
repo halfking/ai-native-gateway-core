@@ -36,8 +36,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
-	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/maas"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
@@ -1031,14 +1031,22 @@ func (h *ChatHandler) serveWithExecutor(
 		// 附件依然可追溯。提取失败不阻塞请求转发（best-effort）。
 		if h.attachmentExtractor != nil {
 			extractResult := h.attachmentExtractor.ExtractFromOpenAIBody(requestID, bodyBytes)
-			if extractResult != nil && extractResult.Saved > 0 {
-				// 将提取的元数据暂存到 logCtx，后续写入 request_logs.attachments JSONB
-				logCtx.Attachments = extractResult.Attachments
+			if extractResult != nil {
+				failed := applyAttachmentResult(logCtx, extractResult)
 				slog.Debug("attachments: extracted from request",
 					"request_id", requestID,
 					"found", extractResult.TotalFound,
 					"saved", extractResult.Saved,
 					"failed", extractResult.Failed)
+				if failed && attachmentStrictMode() {
+					logCtx.SetError("attachment_store_failed", "attachment storage failed")
+					logCtx.EmitFailure("attachment_store_failed", "attachment storage failed", nil, nil)
+					logCtx.MarkLogged()
+					writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+						"error": map[string]string{"message": "attachment storage failed", "type": "server_error", "code": "attachment_store_failed"},
+					})
+					return
+				}
 			}
 		}
 	}
@@ -2602,6 +2610,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		// domains/streaming/messages.go and responses.go paths; see
 		// clientReqIDPtr setup above. Audit P0-6.
 		ClientRequestID: clientReqIDPtr,
+		Attachments:     attachmentsFromLogContext(logCtx),
 	}
 	// v3: if v7 compression_strategy is empty but a session compressor strategy
 	// exists, prefer the session compressor value so the row is queryable.

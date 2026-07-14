@@ -41,6 +41,18 @@ var ErrInvalidDataURI = errors.New("invalid data URI format")
 // 超过此值的附件会被拒绝存储，但请求仍正常转发。
 const DefaultMaxSize = 20 << 20
 
+// AttachmentStatus describes the attachment lifecycle persisted in request logs.
+type AttachmentStatus string
+
+const (
+	AttachmentStatusDetected      AttachmentStatus = "detected"
+	AttachmentStatusStoring       AttachmentStatus = "storing"
+	AttachmentStatusStored        AttachmentStatus = "stored"
+	AttachmentStatusManifestReady AttachmentStatus = "manifest_ready"
+	AttachmentStatusSent          AttachmentStatus = "sent"
+	AttachmentStatusStoreFailed   AttachmentStatus = "store_failed"
+)
+
 // AttachmentMetadata 描述单个附件的元数据，序列化后存入 request_logs.attachments。
 type AttachmentMetadata struct {
 	// Type 附件类型：image | file
@@ -62,6 +74,10 @@ type AttachmentMetadata struct {
 	BlockIndex int `json:"block_index"`
 	// CreatedAt 保存时间
 	CreatedAt time.Time `json:"created_at"`
+	// Status is the latest durable lifecycle state for this attachment.
+	Status AttachmentStatus `json:"status"`
+	// ErrorCode is populated for failed storage without exposing raw data.
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 // Storage 附件存储管理器。支持多种存储后端（本地文件系统、OSS、S3等）。
@@ -326,6 +342,7 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 		MessageIndex: msgIdx,
 		BlockIndex:   blockIdx,
 		CreatedAt:    now,
+		Status:       AttachmentStatusManifestReady,
 	}
 
 	return &SaveResult{

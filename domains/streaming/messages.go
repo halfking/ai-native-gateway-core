@@ -235,6 +235,18 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(bodyBytes) > 0 {
 		attemptRequestBody = bodyBytes
 	}
+	if h.chatHandler.attachmentExtractor != nil {
+		extractResult := h.chatHandler.attachmentExtractor.ExtractFromAnthropicBody(requestID, bodyBytes)
+		if applyAttachmentResult(logCtx, extractResult) && attachmentStrictMode() {
+			attemptErrCode = "attachment_store_failed"
+			attemptErrMsg = "attachment storage failed"
+			logCtx.SetError(attemptErrCode, attemptErrMsg)
+			logCtx.EmitFailure(attemptErrCode, attemptErrMsg, nil, nil)
+			*attemptLogged = true
+			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", attemptErrMsg)
+			return
+		}
+	}
 	if len(bodyBytes) > maxBodySize {
 		attemptErrCode = "body_too_large"
 		attemptErrMsg = "request body too large"
@@ -492,17 +504,17 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// retry/failover attempt — which on NVIDIA NIM manifests as
 		// "model_not_found" when candidate #2+ uses a different publisher
 		// prefix.
-		OutboundModel:        clientModel,
-		ClientID:             clientID,
-		Transform:            txResult,
-		Resolution:           modelResolution,
-		Candidates:           candidates,
-		Policy:               policy,
-		AuditBuilder:         auditBuilder,
-		Capture:              streamCapture,
-		ToolsRequested:       false,
-		StreamWrapper:        anthropicStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
-		StickyKey:            buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
+		OutboundModel:  clientModel,
+		ClientID:       clientID,
+		Transform:      txResult,
+		Resolution:     modelResolution,
+		Candidates:     candidates,
+		Policy:         policy,
+		AuditBuilder:   auditBuilder,
+		Capture:        streamCapture,
+		ToolsRequested: false,
+		StreamWrapper:  anthropicStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
+		StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
 		KeyID: func() int {
 			if keyInfo != nil {
 				return keyInfo.ID
@@ -555,6 +567,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "Upstream request failed")
 		return
 	}
+	logCtx.markAttachmentsSent()
 
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 
