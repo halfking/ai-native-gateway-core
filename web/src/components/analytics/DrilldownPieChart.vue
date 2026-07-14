@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import type { ActiveElement, ChartEvent } from 'chart.js'
 import { useChart, createDoughnutConfig, generateColors } from '../../composables/useChart'
 import type { BoardPieItem } from '../../api/board'
 
@@ -28,7 +29,7 @@ const chartConfig = computed(() => {
   const values = items.map((i) => (metric.value === 'tokens' ? i.tokens : i.requests))
   const labels = items.map((i) => labelFor(i.key))
   return createDoughnutConfig(labels, values, generateColors(items.length), {
-    onClick: (_e, elements) => {
+    onClick: (_e: ChartEvent, elements: ActiveElement[]) => {
       if (!elements?.length) return
       const idx = elements[0].index
       const key = items[idx]?.key

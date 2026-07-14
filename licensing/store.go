@@ -48,3 +48,9 @@ type Store interface {
 	UpsertLicenseModule(ctx context.Context, lm *LicenseModule) error
 	DeleteLicenseModule(ctx context.Context, licenseID int64, moduleKey string) error
 }
+
+// TrialConsentStore atomically creates a Trial license and its agreement audit
+// evidence. License Authority refuses Trial issuance when this is unavailable.
+type TrialConsentStore interface {
+	CreateTrialLicenseWithConsent(ctx context.Context, lic *License, consent *TrialConsent) error
+}

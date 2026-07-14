@@ -16,6 +16,15 @@ type License struct {
 	HardwareHash     string     `json:"hardware_hash,omitempty"`
 }
 
+// TrialConsent is the minimum audit record required for a Trial agreement.
+// It deliberately excludes client IPs, request bodies, and AI content.
+type TrialConsent struct {
+	LicenseID        int64     `json:"license_id"`
+	AgreementVersion string    `json:"agreement_version"`
+	AcceptedAt       time.Time `json:"accepted_at"`
+	Source           string    `json:"source"`
+}
+
 type SignedLicense struct {
 	Data      []byte `json:"data"`
 	Signature []byte `json:"signature"`

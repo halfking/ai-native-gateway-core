@@ -16,13 +16,21 @@ import (
 )
 
 type trialStore struct {
-	lic   *licensing.License
-	count int
+	lic     *licensing.License
+	consent *licensing.TrialConsent
+	count   int
 }
 
 func (s *trialStore) CreateLicense(_ context.Context, lic *licensing.License) error {
 	s.count++
 	s.lic = lic
+	return nil
+}
+
+func (s *trialStore) CreateTrialLicenseWithConsent(_ context.Context, lic *licensing.License, consent *licensing.TrialConsent) error {
+	s.count++
+	s.lic = lic
+	s.consent = consent
 	return nil
 }
 
@@ -141,6 +149,9 @@ func TestTrialHandlerCreatesConfiguredTrialLicense(t *testing.T) {
 	require.Equal(t, "user@example.com", store.lic.CustomerEmail)
 	require.Equal(t, "TRIAL-", store.lic.LicenseKey[:6])
 	require.WithinDuration(t, time.Now().Add(14*24*time.Hour), store.lic.ExpiresAt, time.Second)
+	require.Equal(t, trialAgreementVersion, store.consent.AgreementVersion)
+	require.Equal(t, "trial_api", store.consent.Source)
+	require.WithinDuration(t, time.Now().UTC(), store.consent.AcceptedAt, time.Second)
 }
 
 func TestTrialHandlerLimitsRepeatedRequests(t *testing.T) {

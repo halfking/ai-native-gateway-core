@@ -2309,6 +2309,17 @@ func (d *DB) ensureLicenseModulesSchema(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_lma_key ON license_module_audit (license_key, created_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_lma_module ON license_module_audit (module_key, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS license_trial_consents (
+			id                BIGSERIAL PRIMARY KEY,
+			license_id        BIGINT NOT NULL UNIQUE REFERENCES licenses(id) ON DELETE CASCADE,
+			agreement_version TEXT NOT NULL,
+			accepted_at       TIMESTAMPTZ NOT NULL,
+			source            TEXT NOT NULL,
+			created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_license_trial_consents_accepted_at
+			ON license_trial_consents (accepted_at DESC);
 	`)
 	if err != nil {
 		return err
