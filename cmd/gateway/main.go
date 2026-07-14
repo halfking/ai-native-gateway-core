@@ -124,6 +124,23 @@ var (
 	gApprovalMgr *sessionaudit.ApprovalManager
 )
 
+// useNewProbeMode controls whether the legacy probe workers
+// (bg/self_check_worker.go featured mode, bg/credential_probe_v2.go,
+// bg/model_probe.go, bg/passive_probe_listener.go,
+// bg/active_probe_worker.go) start.  When true (the default since
+// 2026-07-14) the new bg/credential_selfcheck.go + bg/node_probe.go
+// + bg/system_health.go own the probe/self-check surface; the legacy
+// workers are skipped to fix the "1 minute ≥ 2 probes" frequency
+// issue observed on 252.  Set LLM_GATEWAY_USE_NEW_PROBE_MODE=false
+// to roll back to the legacy behavior.
+func useNewProbeMode() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_USE_NEW_PROBE_MODE")))
+	if v == "" {
+		return true // default to the new mode per the 2026-07-14 spec rewrite
+	}
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
 func main() {
 	// Round 39 (2026-06-16) — initialize OTel tracer.
 	// Default-disabled; activates only when OTEL_EXPORTER_OTLP_ENDPOINT
@@ -1531,15 +1548,23 @@ func main() {
 		}
 
 		if selfCheckAPIKey != "" {
-			// Use empty baseURL to trigger env var / default detection in NewSelfCheckWorker
-			selfCheckWorker = bg.NewSelfCheckWorker(dbConn.Pool(), selfCheckAPIKey, "", keyring)
-			selfCheckWorker.Start(context.Background())
-			slog.Info("CHECKPOINT: selfCheckWorker started", "api_key_source", func() string {
-				if os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY") != "" {
-					return "env_var"
-				}
-				return "generated"
-			}())
+			// 2026-07-14: gate the legacy featured-model self-check
+			// (1-min tick, 3-model pool) behind the new-mode switch.
+			// The new bg/credential_selfcheck.go handles per-credential
+			// daily checks; the legacy worker is kept around for rollback.
+			if useNewProbeMode() {
+				slog.Info("selfCheckWorker (legacy featured) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
+			} else {
+				// Use empty baseURL to trigger env var / default detection in NewSelfCheckWorker
+				selfCheckWorker = bg.NewSelfCheckWorker(dbConn.Pool(), selfCheckAPIKey, "", keyring)
+				selfCheckWorker.Start(context.Background())
+				slog.Info("CHECKPOINT: selfCheckWorker started", "api_key_source", func() string {
+					if os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY") != "" {
+						return "env_var"
+					}
+					return "generated"
+				}())
+			}
 		}
 
 		// Track C C6 (2026-06-18): pending entry sweeper. Marks
@@ -1600,7 +1625,11 @@ func main() {
 				credProbeV2.SetStateManager(stateManager)
 			}
 			slog.Info("CHECKPOINT: before credProbeV2.Start")
-			credProbeV2.Start(context.Background())
+			if useNewProbeMode() {
+				slog.Info("credProbeV2 (legacy 1h) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
+			} else {
+				credProbeV2.Start(context.Background())
+			}
 			slog.Info("CHECKPOINT: after credProbeV2.Start")
 
 			// 900-series: default probe model picker (spec §4.2.1) — daily 0:00
@@ -1621,7 +1650,11 @@ func main() {
 			}
 			modelProbe.SetAvailabilityCache(modelAvailabilityCache)
 			slog.Info("CHECKPOINT: before modelProbe.Start")
-			modelProbe.Start(context.Background())
+			if useNewProbeMode() {
+				slog.Info("modelProbe (legacy 5min consensus) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
+			} else {
+				modelProbe.Start(context.Background())
+			}
 			slog.Info("CHECKPOINT: after modelProbe.Start")
 
 			// 2026-06-28 收口：当前 unified scheduler 与旧 probe 体系并行写
@@ -1661,7 +1694,11 @@ func main() {
 			passiveProbe = bg.NewPassiveProbeListener(dbConn.Pool(), credential.NewWriter(dbConn.Pool()))
 			passiveProbe.SetAvailabilityCache(modelAvailabilityCache)
 			slog.Info("CHECKPOINT: before passiveProbe.Start")
-			passiveProbe.Start(context.Background())
+			if useNewProbeMode() {
+				slog.Info("passiveProbe (legacy 30s request_logs scan) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
+			} else {
+				passiveProbe.Start(context.Background())
+			}
 			slog.Info("CHECKPOINT: after passiveProbe.Start")
 		}
 		slog.Info("CHECKPOINT: after probe workers block")
@@ -1709,7 +1746,11 @@ func main() {
 			if stateManager != nil {
 				activeProbe.SetStateManager(stateManager)
 			}
-			activeProbe.Start(context.Background())
+			if useNewProbeMode() {
+				slog.Info("activeProbe (legacy error-triggered) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
+			} else {
+				activeProbe.Start(context.Background())
+			}
 			slog.Info("CHECKPOINT: after activeProbe.Start")
 		}
 
@@ -1749,6 +1790,36 @@ func main() {
 			}
 			stateManager.Start(context.Background())
 			slog.Info("credential state manager started")
+
+			// 2026-07-14: launch the new probe workers from the
+			// spec rewrite.  They replace the legacy selfCheck /
+			// credProbeV2 / modelProbe / passiveProbe / activeProbe
+			// stack, all of which are gated by useNewProbeMode() above.
+			if useNewProbeMode() {
+				// A. credential_selfcheck — 24h/cred daily check
+				// (uses the same system api key as the legacy worker).
+				credSelfcheck := bg.NewCredentialSelfcheckWorker(dbConn.Pool(), selfCheckAPIKey, "")
+				credSelfcheck.Start(context.Background())
+				slog.Info("CHECKPOINT: credential_selfcheck_worker started")
+
+				// B. node_probe — error-triggered 5s/30s/60s/5m/1h/2h/24h
+				// backoff, direct + gateway two rounds.
+				nodeProbe := bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "")
+				nodeProbe.Start(context.Background())
+				slog.Info("CHECKPOINT: node_probe_worker started")
+				// Wire stateManager → node_probe so consecutive
+				// failures >= threshold trigger the new path
+				// (replaces the legacy active_probe wiring above).
+				stateManager.SetActiveProbeSubmitter(nodeProbe.Submit, 2)
+				slog.Info("credstate: node_probe submitter wired",
+					"consecutive_threshold", 2)
+
+				// C. system_health — 30s windowed success-rate monitor
+				// for the GDRT H badge.
+				systemHealth := bg.NewSystemHealthWorker(dbConn.Pool())
+				systemHealth.Start(context.Background())
+				slog.Info("CHECKPOINT: system_health_worker started")
+			}
 		}
 
 		slog.Info("CHECKPOINT: before NewStickyCleaner")
