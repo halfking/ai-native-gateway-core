@@ -51,6 +51,16 @@ function switchTab(tab: DashboardTabId) {
 }
 
 watch(
+  () => store.jwtToken,
+  (token, prev) => {
+    if (token && !prev && isDefault.value && activeTab.value === 'board') {
+      void boardState.load()
+      void boardState.startAutoRefresh()
+    }
+  },
+)
+
+watch(
   () => boardState.timeRange.value,
   () => {
     if (isDefault.value && activeTab.value === 'board') {
