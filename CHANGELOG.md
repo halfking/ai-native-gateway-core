@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### Format conversion audit and Gemini tool preservation
+
+- Added `docs/格式转换/` as the SSOT for client/provider protocol conversion,
+  multimodal mappings, audit status, official references, fixtures, and release
+  gates.
+- Fixed native Gemini serialization of IR `Message.ToolCalls` and `tool` results
+  so OpenAI-shaped tool rounds are emitted as `functionCall` and
+  `functionResponse` instead of being dropped.
+- Added a regression test covering the cross-protocol tool call/result path.
+
 ### Responses API tool-call continuity
 
 - Preserve `function_call` and `function_call_output` IDs when converting

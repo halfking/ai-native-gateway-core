@@ -104,6 +104,45 @@ func buildGeminiContents(messages []Message) []map[string]any {
 
 		parts := make([]map[string]any, 0)
 
+		// OpenAI Chat/Responses input may normalize tool calls into the
+		// message-level ToolCalls field. Preserve those calls when the same IR
+		// is sent to native Gemini instead of relying only on Anthropic blocks.
+		for _, call := range msg.ToolCalls {
+			name := call.Function.Name
+			if name == "" {
+				continue
+			}
+			args := map[string]any{}
+			if call.Function.Arguments != "" {
+				if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+					continue
+				}
+			}
+			parts = append(parts, map[string]any{
+				"functionCall": map[string]any{
+					"name": name,
+					"args": args,
+				},
+			})
+		}
+
+		// Chat Completions tool messages carry their result outside content.
+		// Gemini requires the corresponding functionResponse part.
+		if msg.Role == "function" || (msg.Role == "tool" && msg.ToolCallID != "") {
+			name := msg.Name
+			if name == "" {
+				name = toolUseNameFromID(msg.ToolCallID)
+			}
+			if name != "" {
+				parts = append(parts, map[string]any{
+					"functionResponse": map[string]any{
+						"name":     name,
+						"response": map[string]any{"result": extractTextFromContent(msg.Content)},
+					},
+				})
+			}
+		}
+
 		// Convert each ContentBlock
 		for _, block := range msg.Content {
 			switch block.Type {
