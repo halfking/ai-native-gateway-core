@@ -65,7 +65,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
-	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -1486,7 +1485,7 @@ func main() {
 			})
 			if incidentObserver != nil {
 				incidentObserver.Start(context.Background())
-				telemetryClient.SetOnRequestLogPersisted(incidentObserver.AsHook())
+				telemetryClient.AddOnRequestLogPersisted(incidentObserver.AsHook())
 				slog.Info("route incident observer enabled (telemetry onPersisted → store → SSE incident_update)")
 			}
 		}
@@ -2812,14 +2811,6 @@ func main() {
 		// expose only metadata about the licensing subsystem itself.
 		licensing.NewLicenseHealthHandler(licenseDataDir, licensing.DefaultGracePeriod).RegisterHealthRoutes(customerLicenseGroup)
 		slog.Info("Phase 3B-1: License health endpoints enabled (/api/system/license/health, /api/system/license/status)")
-
-		collector.MaybeStart(context.Background(), collector.StartupConfig{
-			Pool:         pool,
-			DataDir:      licenseDataDir,
-			AuthorityURL: os.Getenv("LICENSE_AUTHORITY_URL"),
-			Version:      Version(),
-			StartTime:    time.Now(),
-		})
 
 		// Phase 3: Fault Management (故障自愈)
 		faultStore := fault.NewPgxStore(pool)
