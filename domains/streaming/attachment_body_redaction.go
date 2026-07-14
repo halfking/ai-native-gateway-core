@@ -8,8 +8,15 @@ import (
 
 const attachmentBodyRedactionEnv = "LLM_GATEWAY_REDACT_ATTACHMENT_BODY"
 
+// redactAttachmentBodyIfEnabled replaces inline base64 attachment data in
+// request bodies with a redacted placeholder before logging.  Enabled by
+// default; set LLM_GATEWAY_REDACT_ATTACHMENT_BODY=0 to disable.
 func redactAttachmentBodyIfEnabled(body []byte) []byte {
-	if strings.TrimSpace(os.Getenv(attachmentBodyRedactionEnv)) != "1" || len(body) == 0 {
+	if len(body) == 0 {
+		return body
+	}
+	// Default: enabled.  Only disable when explicitly set to "0".
+	if strings.TrimSpace(os.Getenv(attachmentBodyRedactionEnv)) == "0" {
 		return body
 	}
 	return redactAttachmentBody(body)
