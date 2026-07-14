@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -42,14 +41,20 @@ SCENARIOS = {
     "S18": ("./domains/attachments", "TestExtractFromAnthropicBody"),
     "S20": ("./domains/streaming", "TestReadRequestBodyTimeoutClosesSlowBody"),
     "S21": ("./domains/attachments", "TestSaveBase64Image_MaxSize"),
-    "S19": ("./internal/ir", "TestParseGemini_"),
-    "S22": ("./domains/streaming/executors", "Test"),
-    "S23": ("./domains/hooks/compression", "Test"),
-    "S24": ("./domains/streaming", "Test"),
-    "S25": ("./modelname", "Test"),
-    "S26": ("./provider", "Test"),
-    "S27": (".", "Test"),
-    "S28": ("./discovery", "Test"),
+    "S19": (
+        "./internal/ir",
+        "TestParseGemini_(InlineImageData|FileURI|MixedAttachmentMetadata)",
+    ),
+    "S22": ("./domains/streaming/executors", "TestPrepareRequestBody_"),
+    "S23": (
+        "./domains/hooks/compression",
+        "TestStripThinkingBlocks_PreservesMultimodalBlocks",
+    ),
+    "S24": ("./domains/streaming/executors", "TestStateObserver_UserCancelSkipped"),
+    "S25": ("./modelname", "TestCanonicalizeClientModel_AlwaysLower"),
+    "S26": ("./domains/streaming/executors", "TestResolveOutboundModel_"),
+    "S27": ("./modelcatalog", "TestUpsertSQL_LowercaseContract"),
+    "S28": ("./discovery", "TestMergeManifestModels_CaseInsensitiveDedup"),
 }
 
 PARTIAL_SCENARIOS = {
