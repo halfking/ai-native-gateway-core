@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### 数据库存储清理 — 48 GB → 9.3 GB（38.7 GB 回收）
+
+清理 252 pg17 上无长期保留价值的历史数据。根因：model_probe_runs 之前
+ProbeInterval=10s（2026-07-13 才改为 5min）且无噪声跳过过滤器，导致 13 天内
+积累 ~28 亿行（37 GB）；request_logs_bodies 月度分区无自动清理。
+
+- **model_probe_runs_2026_07 (37 GB)**：TRUNCATE。~28 亿行的列存分区，
+  2026-07-13 的噪声跳过 + 5min 探测间隔已大幅降低增量。probe 状态机
+  (model_probe_state) 不受影响。
+- **request_logs_bodies_2026_07 (3.4 GB)**：TRUNCATE。请求元数据按月存
+  于独立 `request_logs` 表，body 仅用于调试/导出。
+- **设置调整**：`lifecycle.model_probe_runs_ttl_days` = 14（此前 90），
+  `probe.partition_retention_days` = 14（此前 90）。
+- **新增 request_logs_bodies 月度分区 TTL**：`lifecycle.request_logs_bodies_ttl_days` = 7，
+  `drop_old_request_logs_bodies_partitions(retention_days)` SQL 函数，
+  `bg/partition_manager.go::dropOldRequestLogsBodiesPartitions` 每次 tick 执行。
+- **受影响文件**：`bg/partition_manager.go`、`settings/spec_lifecycle.go`。
+  完整分析见 `docs/changelogs/2026-07-14-storage-cleanup.md`。
+
 ### Multimodal Phase 2A (direct-main)
 
 - Start local attachment reliability delivery; detailed commit chain is in
