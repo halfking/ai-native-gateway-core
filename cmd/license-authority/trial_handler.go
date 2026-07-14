@@ -31,6 +31,7 @@ type trialLimiter interface {
 
 type trialRequestBody struct {
 	Email string `json:"email"`
+	Agree bool   `json:"agree"`
 }
 
 type trialResponse struct {
@@ -41,10 +42,10 @@ type trialResponse struct {
 }
 
 func NewTrialHandler(store licensing.Store, redisClient *redis.Client) *TrialHandler {
-	days := 14
+	days := 15
 	if value := getEnv("LICENSE_TRIAL_DAYS", ""); value != "" {
 		if _, err := fmt.Sscan(value, &days); err != nil || days < 1 || days > 90 {
-			days = 14
+			days = 15
 		}
 	}
 	return &TrialHandler{
@@ -71,6 +72,9 @@ func (h *TrialHandler) handleTrial(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, trialResponse{Message: "invalid request body"})
 	}
 	email := strings.ToLower(strings.TrimSpace(body.Email))
+	if !body.Agree {
+		return c.JSON(http.StatusBadRequest, trialResponse{Message: "terms acceptance is required"})
+	}
 	parsed, err := mail.ParseAddress(email)
 	if err != nil || parsed.Address != email {
 		return c.JSON(http.StatusBadRequest, trialResponse{Message: "valid email is required"})
