@@ -59,6 +59,7 @@ tabs: {
     trendCost: '成本 (USD)',
     filterProvider: '供應商 ID',
     allProviders: '全部',
+    degradedHint: '分鐘級聚合表暫無資料，目前顯示來自 {source} 的熱資料回退；執行遷移 394 並等待 rollup 後可獲得完整看板效能。',
   },
   proxyWarning: {
     title: "⚠ 出口代理無法連線",
