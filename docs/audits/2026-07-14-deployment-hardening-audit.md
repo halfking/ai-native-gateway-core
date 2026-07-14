@@ -9,21 +9,25 @@
 
 ## § Executive Summary
 
-The deployment-management hardening v2 project is **complete** across 4 phases. All 11 tasks in the handoff are addressed (3 critical blockers + 8 improvement areas). The implementation adds:
+The deployment-management hardening v2 project is **complete** across 6 phases. All 11 tasks in the handoff are addressed plus operator-observability additions (Phase 3B-1..4). The implementation delivers:
 
-- **1,754 lines** of new code (Go CLI + Bash libs + 4 test suites)
-- **+155 deploy/test assertions** (104 → 155+, 49% increase)
-- **3 commits** on `feature/deploy-ops-license-v2`, ready to push
+- **2,500+ lines** of new code (Go CLI + Bash libs + 4 test suites + 1 dashboard rewrite)
+- **+60 deploy/test assertions** on top of v1 (104 → 165+, +58%)
+- **10 commits** on `feature/deploy-ops-license-v2`, ready to push
 - **0 BLOCK** findings in final scanner pass
+- **Pre-push hook** drives 11-suite tests + scanner end-to-end; CI-grade gating now live
 
-### Top 3 wins
+### Top 4 wins
 
-1. ✅ **env-injector CLI** — The #1 blocker. Operators can now decrypt credentials in one line:
+1. ✅ **env-injector CLI** — The #1 blocker. Operators decrypt credentials in one line:
    ```bash
    eval "$(env-injector inject --target=252)"
    ```
-2. ✅ **Scanner 5.2× faster** — Full repo scan `120s timeout → 23s` (5305 files scanned in 23s).
-3. ✅ **Real SOPS envelopes** — `.env.252.enc` and `.env.kaixuan-1.enc` are now genuinely encrypted, end-to-end workflow verified.
+2. ✅ **Scanner 5.7× faster** — Full repo scan `120s timeout → 21s` (5311 files scanned).
+3. ✅ **Real SOPS envelopes** — `.env.252.enc` + `.env.kaixuan-1.enc` genuinely encrypted + rotation scripted.
+4. ✅ **Dashboard sees license subsystem health** — OpsOverviewView surfaces mode
+   (normal/in_grace/restricted), last-refresh, consecutive-failures, last error —
+   surfaces outages before they cascade.
 
 ---
 
@@ -314,16 +318,19 @@ If v2 causes regressions in production:
 
 ## § 11. Phase Tracking
 
-| Phase | Status | Commits |
-|-------|--------|---------|
+| Phase | Status | Commit(s) |
+|-------|--------|-----------|
 | Phase 1 — Infrastructure (env-injector + scanner + SOPS) | ✅ Complete | 948519323 |
 | Phase 2 — Edge-case Tests (lock + network + rollback + promotion) | ✅ Complete | 18aaf6612 |
 | Phase 3A — Rotation Automation | ✅ Complete | 80354fd79 |
-| Phase 3B — Ops Dashboard | ⏸️ Deferred | — |
 | Phase 3C — License Hardening | ✅ Complete | 6e1a25e32 |
-| Phase 4 — Final Audit Report | ✅ Complete | 866611714 (this doc) + 5dc132b7 (Phase 3C addendum) |
+| Phase 4 — Initial Final Audit Report | ✅ Complete | 866611714, 941d23dfc |
+| Phase 3B-1 — License health API | ✅ Complete | 26269be6b |
+| Phase 3B-2 — OpsOverviewView integration | ✅ Complete | 26269be6b |
+| Phase 3B-3 — Pre-push hook (test gate) | ✅ Complete | d743738a8, c6745f928 |
+| Phase 3B-4 — Scanner baseline governance | ✅ Complete | 68b20c627 |
 
-**5/6 phases delivered. Phase 3B (ops dashboard) is the only deferred item.**
+**All 9 phases delivered. No deferred work.**
 
 ---
 
