@@ -570,6 +570,26 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 				"label", s.label, "rows", n)
 		}
 	}
+	pm.analyzePartitionStats(ctx)
+}
+
+// analyzePartitionStats refreshes planner stats on hot heap tables and recent
+// monthly partitions. Columnar partitions after bulk promote often keep
+// n_mod_since_analyze=0 so autovacuum analyze never fires.
+func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	var n int64
+	err := pm.db.QueryRow(timeoutCtx,
+		"SELECT analyze_llm_gateway_table_stats($1)", 2,
+	).Scan(&n)
+	if err != nil {
+		slog.Warn("partition_manager: analyze stats failed", "error", err)
+		return
+	}
+	if n > 0 {
+		slog.Info("partition_manager: analyze stats", "tables", n)
+	}
 }
 
 // resolvePromoteConfig returns the retention interval and batch size for

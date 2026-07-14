@@ -88,6 +88,8 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
+# shellcheck source=deploy-lib/post-deploy-verify.sh
+source "$SCRIPT_DIR/deploy-lib/post-deploy-verify.sh"
 
 GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; RED=$'\033[0;31m'; NC=$'\033[0m'
 log()  { echo -e "${GREEN}[deploy-154]${NC} $*"; }
@@ -201,6 +203,7 @@ log "  git clean: ✓"
 
 $SSH "$SSH_TARGET" "echo connected && uname -a" >/dev/null || { err "SSH 不可达"; exit 1; }
 log "  ssh OK: ✓"
+deploy_preflight_pg_from_remote_env "$SSH" "/etc/llm-gateway-go/env" || exit 2
 
 # ── Step 2: bump-version ──────────────────────────────────────
 if [[ "$SKIP_BUMP" == "true" ]]; then
@@ -386,10 +389,14 @@ log "  服务已启动 ✓"
 
 # ── Step 8: smoke-verify ─────────────────────────────────────
 log "[8/8] 验证..."
-sleep 3
-HEALTH=$($SSH "$SSH_TARGET" "curl -fsS http://localhost:8781/healthz || echo FAILED")
+if ! deploy_verify_gateway_ready "$SSH" "$SERVICE_NAME" 8781 120; then
+  err "DB 未就绪 — 部署失败，请回滚或排查 252 PG"
+  exit 1
+fi
+sleep 1
+HEALTH=$($SSH "$SSH_TARGET" "curl -fsS http://127.0.0.1:8781/healthz || echo FAILED")
 echo "  /healthz -> $HEALTH"
-VERSION_RESP=$($SSH "$SSH_TARGET" "curl -fsS http://localhost:8781/api/system/version")
+VERSION_RESP=$($SSH "$SSH_TARGET" "curl -fsS http://127.0.0.1:8781/api/system/version")
 echo "  /api/system/version -> $VERSION_RESP"
 REMOTE_VER=$($SSH "$SSH_TARGET" "cat $REMOTE_DIR/VERSION 2>/dev/null || echo 'no VERSION file'")
 REMOTE_SEQ=$($SSH "$SSH_TARGET" "cat $REMOTE_DIR/.deploy_seq 2>/dev/null || python3 -c \"import json; print(json.load(open('$REMOTE_DIR/version.json')).get('build_seq','?'))\" 2>/dev/null || echo 'unknown'")
@@ -429,22 +436,21 @@ else
   warn "! /healthz?full=true 匿名 = $HEALTH_FULL (期望 401, 检查后端是否回退到旧版)"
 fi
 
-# ── 8.4: DB health check (2026-07-14 新增，schema 不匹配必检) ───
+# ── 8.4: DB health check（deploy_verify_gateway_ready 已覆盖；此处保留快速复检）──
 log "[8/8+2] DB health check (schema 兼容性必检)..."
 
-# 检查 postgres disabled（最重要！）
-PG_DISABLED=$($SSH "$SSH_TARGET" "journalctl -u $SERVICE_NAME --since '2 minutes ago' --no-pager -o cat 2>/dev/null | grep -c 'postgres disabled' || echo 0")
+PG_DISABLED=$($SSH "$SSH_TARGET" "journalctl -u $SERVICE_NAME --since '3 minutes ago' --no-pager -o cat 2>/dev/null | grep -c 'postgres disabled' || echo 0")
+PG_DISABLED=$(echo "$PG_DISABLED" | head -1 | tr -d '[:space:]')
+PG_DISABLED=${PG_DISABLED:-0}
 if [[ "$PG_DISABLED" -gt 0 ]]; then
   err "✗ postgres disabled! 检测到 $PG_DISABLED 次禁用日志"
-  err "   这通常意味着代码引用了 252 PG 上不存在的 schema 对象"
-  err "   诊断: journalctl -u $SERVICE_NAME --since '2 minutes ago' | grep 'postgres disabled'"
-  err "   回滚: ln -sfn $REMOTE_DIR/llm-gateway-go.v<上一个版本>.linux.amd64 $REMOTE_DIR/llm-gateway-go && systemctl restart $SERVICE_NAME"
+  err "   这通常意味着 EnsureSchema 超时或 252 PG 不可用"
+  err "   诊断: journalctl -u $SERVICE_NAME --since '5 minutes ago' | grep 'postgres disabled'"
   exit 1
 fi
 log "  ✓ 无 postgres disabled 日志"
 
-# 检查 DB 端点不返回 503
-BG_TASKS=$($SSH "$SSH_TARGET" "curl -sS -o /dev/null -w '%{http_code}' http://localhost:8781/api/system/background-tasks")
+BG_TASKS=$($SSH "$SSH_TARGET" "curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8781/api/system/background-tasks")
 if [[ "$BG_TASKS" == "503" ]]; then
   err "✗ /api/system/background-tasks 返回 503 (database not configured)"
   err "   原因: h.db == nil，通常因为 postgres disabled"

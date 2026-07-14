@@ -9,10 +9,14 @@ import {
   unpublishRelease,
   createGrayRelease,
   updateGrayPhase,
+  getRolloutStatus,
+  pauseGrayRelease,
+  resumeGrayRelease,
   rollbackRelease,
   getUpgradeLogs,
   type Release,
   type GrayReleaseRule,
+  type RolloutStatus,
   type UpgradeLog,
 } from '../../api/ops'
 
@@ -60,6 +64,12 @@ const grayForm = ref({
 // Rollback dialog state
 const showRollbackDialog = ref(false)
 const rollbackTarget = ref('')
+
+// Rollout gate dialog state
+const showRolloutDialog = ref(false)
+const rolloutLoading = ref(false)
+const rolloutStatus = ref<RolloutStatus | null>(null)
+const rolloutVersion = ref('')
 
 async function load() {
   loading.value = true
@@ -185,11 +195,72 @@ async function handleCreateGray() {
     }
     ElMessage.success(t('ops.autoupdate.grayCreateSuccess'))
     showGrayDialog.value = false
-  } catch (error) {
-    ElMessage.error(t('ops.autoupdate.grayCreateFailed'))
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { reason?: string } }; message?: string }
+    const reason = err?.response?.data?.reason
+    ElMessage.error(reason || t('ops.autoupdate.grayCreateFailed'))
     console.error(error)
   } finally {
     loading.value = false
+  }
+}
+
+async function openRolloutDialog(release: Release) {
+  rolloutVersion.value = release.version
+  showRolloutDialog.value = true
+  rolloutLoading.value = true
+  try {
+    rolloutStatus.value = await getRolloutStatus(release.version)
+  } catch (error) {
+    ElMessage.error(t('ops.autoupdate.rolloutLoadFailed'))
+    console.error(error)
+    showRolloutDialog.value = false
+  } finally {
+    rolloutLoading.value = false
+  }
+}
+
+async function refreshRolloutStatus() {
+  if (!rolloutVersion.value) return
+  rolloutLoading.value = true
+  try {
+    rolloutStatus.value = await getRolloutStatus(rolloutVersion.value)
+  } catch (error) {
+    ElMessage.error(t('ops.autoupdate.rolloutLoadFailed'))
+    console.error(error)
+  } finally {
+    rolloutLoading.value = false
+  }
+}
+
+async function handlePauseRollout() {
+  if (!rolloutVersion.value) return
+  rolloutLoading.value = true
+  try {
+    await pauseGrayRelease(rolloutVersion.value)
+    ElMessage.success(t('ops.autoupdate.rolloutPauseSuccess'))
+    await refreshRolloutStatus()
+  } catch (error) {
+    ElMessage.error(t('ops.autoupdate.rolloutActionFailed'))
+    console.error(error)
+  } finally {
+    rolloutLoading.value = false
+  }
+}
+
+async function handleResumeRollout() {
+  if (!rolloutVersion.value) return
+  rolloutLoading.value = true
+  try {
+    await resumeGrayRelease(rolloutVersion.value)
+    ElMessage.success(t('ops.autoupdate.rolloutResumeSuccess'))
+    await refreshRolloutStatus()
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { reason?: string } } }
+    ElMessage.error(err?.response?.data?.reason || t('ops.autoupdate.rolloutActionFailed'))
+    console.error(error)
+  } finally {
+    rolloutLoading.value = false
   }
 }
 
@@ -297,7 +368,7 @@ onMounted(() => {
         <el-table-column prop="published_at" :label="t('ops.autoupdate.publishedAt')" width="160">
           <template #default="{ row = {} } = {}">{{ formatDate(row.published_at) }}</template>
         </el-table-column>
-        <el-table-column :label="t('common.actions')" width="260" fixed="right">
+        <el-table-column :label="t('common.actions')" width="340" fixed="right">
           <template #default="{ row = {} } = {}">
             <el-button
               v-if="!row.published_at"
@@ -317,6 +388,14 @@ onMounted(() => {
             </el-button>
             <el-button size="small" @click="openGrayDialog(row)">
               {{ t('ops.autoupdate.gray') }}
+            </el-button>
+            <el-button
+              v-if="row.published_at"
+              size="small"
+              type="info"
+              @click="openRolloutDialog(row)"
+            >
+              {{ t('ops.autoupdate.rolloutGate') }}
             </el-button>
           </template>
         </el-table-column>
@@ -459,6 +538,58 @@ onMounted(() => {
       </template>
     </el-dialog>
 
+    <!-- Rollout Gate Dialog -->
+    <el-dialog
+      v-model="showRolloutDialog"
+      :title="t('ops.autoupdate.rolloutTitle', { version: rolloutVersion })"
+      width="560px"
+    >
+      <div v-loading="rolloutLoading">
+        <template v-if="rolloutStatus">
+          <el-descriptions :column="2" border size="small" class="rollout-desc">
+            <el-descriptions-item :label="t('ops.autoupdate.rolloutRuleStatus')">
+              {{ rolloutStatus.rule_status || '-' }}
+            </el-descriptions-item>
+            <el-descriptions-item :label="t('ops.autoupdate.rolloutGateAllowed')">
+              <el-tag :type="rolloutStatus.gate.allowed ? 'success' : 'danger'" size="small">
+                {{ rolloutStatus.gate.allowed ? t('common.yes') : t('common.no') }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item :label="t('ops.autoupdate.rolloutSuccessRate')">
+              {{ rolloutStatus.gate.stats.success_rate_pct }}%
+            </el-descriptions-item>
+            <el-descriptions-item :label="t('ops.autoupdate.rolloutRollbackRate')">
+              {{ rolloutStatus.gate.stats.rollback_rate_pct }}%
+            </el-descriptions-item>
+            <el-descriptions-item :label="t('ops.autoupdate.rolloutSamples')" :span="2">
+              {{ rolloutStatus.gate.stats.total }}
+              ({{ t('ops.autoupdate.rolloutSuccessCount') }}: {{ rolloutStatus.gate.stats.success_count }},
+              {{ t('ops.autoupdate.rolloutFailedCount') }}: {{ rolloutStatus.gate.stats.failed_count }},
+              {{ t('ops.autoupdate.rolloutRolledBackCount') }}: {{ rolloutStatus.gate.stats.rolled_back_count }})
+            </el-descriptions-item>
+          </el-descriptions>
+          <el-alert
+            v-if="rolloutStatus.gate.reason"
+            :title="rolloutStatus.gate.reason"
+            :type="rolloutStatus.gate.allowed ? 'info' : 'warning'"
+            :closable="false"
+            show-icon
+            class="rollout-reason"
+          />
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="showRolloutDialog = false">{{ t('common.close') }}</el-button>
+        <el-button :loading="rolloutLoading" @click="refreshRolloutStatus">{{ t('common.refresh') }}</el-button>
+        <el-button type="warning" :loading="rolloutLoading" @click="handlePauseRollout">
+          {{ t('ops.autoupdate.rolloutPause') }}
+        </el-button>
+        <el-button type="success" :loading="rolloutLoading" @click="handleResumeRollout">
+          {{ t('ops.autoupdate.rolloutResume') }}
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- Rollback Dialog -->
     <el-dialog
       v-model="showRollbackDialog"
@@ -526,5 +657,13 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.rollout-desc {
+  margin-bottom: 12px;
+}
+
+.rollout-reason {
+  margin-top: 12px;
 }
 </style>

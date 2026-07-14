@@ -23,6 +23,7 @@
 #
 # 安全网:
 #   - healthz 失败 → 自动 rollback 到上一个 verified 版本
+#   - healthz 通过但 DB 未就绪 (503) → 同样自动 rollback
 #   - adopt 步骤保留旧二进制为 releases/legacy-<ts>/ (verified=true)
 #   - build_seq 单调递增 (245→1004, 154→1005)
 # =====================================================================
@@ -37,6 +38,8 @@ cd "$PROJECT_ROOT"
 source "$SCRIPT_DIR/deploy-lib/targets.sh"
 # shellcheck source=deploy-lib/host.sh
 source "$SCRIPT_DIR/deploy-lib/host.sh"
+# shellcheck source=deploy-lib/post-deploy-verify.sh
+source "$SCRIPT_DIR/deploy-lib/post-deploy-verify.sh"
 
 GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; RED=$'\033[0;31m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'
 log()  { echo -e "${BLUE}[seamless]${NC} $*"; }
@@ -123,6 +126,36 @@ REMOTE_ROOT=$(host_root_for "$TARGET")
 SERVICE_NAME=$(target_field "$TARGET" service_name)
 HEALTH_URL=$(target_field "$TARGET" health_url)
 BIN_NAME=$(host_binary_name "$TARGET")
+
+# 154 用 /etc/llm-gateway-go/env；245 用 /opt/llm-gateway-go/.env
+_env_file_for_target() {
+  case "$TARGET" in
+    154) printf '%s\n' "/etc/llm-gateway-go/env" ;;
+    245) printf '%s\n' "/opt/llm-gateway-go/.env" ;;
+    *)   printf '%s\n' "/etc/llm-gateway-go/env" ;;
+  esac
+}
+
+# healthz 或 DB 校验失败时回滚到上一个 verified 版本
+_seamless_auto_rollback() {
+  local reason=$1 failed_version=$2
+  err "$reason — 自动回滚..."
+  local prev
+  prev=$(host_select_rollback_target "$SSH_CMD" "$TARGET" "$failed_version" 2>/dev/null || true)
+  if [[ -n "$prev" ]]; then
+    warn "回滚到 releases/$prev"
+    host_atomic_switch "$SSH_CMD" "$TARGET" "$prev" 2>&1 | sed 's/^/    /' || true
+    if host_wait_healthy "$SSH_CMD" "$TARGET" 30 2>&1 \
+      && deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90; then
+      ok "已回滚到 $prev (healthz + DB OK)"
+      return 0
+    fi
+    err "回滚后 healthz/DB 仍失败!"
+    return 1
+  fi
+  err "无可用回滚目标! 手动检查: $SSH_CMD 'systemctl status $SERVICE_NAME'"
+  return 1
+}
 
 # ── 子命令: status ─────────────────────────────────────────────
 do_status() {
@@ -255,6 +288,9 @@ do_deploy() {
   local version bundle_dir deploy_start
   deploy_start=$(date +%s)
 
+  log "[0/9] 部署前 PG 预检"
+  deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)" || exit 2
+
   # 1. bump version
   if [[ -n "$SEQ_FLAG" ]]; then
     log "[1/9] bump version $SEQ_FLAG"
@@ -315,22 +351,18 @@ do_deploy() {
   host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /' || true
   ok "符号链接已切换到 releases/$version"
 
-  # 9. wait healthy (失败自动回滚)
-  log "[9/9] 等待 /healthz (60s 超时)"
+  # 9. wait healthy + DB ready (失败自动回滚)
+  log "[9/9] 等待 /healthz + DB 就绪 (healthz 60s, DB 最长 120s)"
   if host_wait_healthy "$SSH_CMD" "$TARGET" 60 2>&1; then
-    host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /' || true
-    ok "healthz 通过，标记 verified"
-  else
-    err "healthz 超时! 自动回滚到上一个 verified 版本..."
-    local prev
-    prev=$(host_select_rollback_target "$SSH_CMD" "$TARGET" "$version" 2>/dev/null || true)
-    if [[ -n "$prev" ]]; then
-      warn "回滚到 releases/$prev"
-      host_atomic_switch "$SSH_CMD" "$TARGET" "$prev" 2>&1 | sed 's/^/    /' || true
-      host_wait_healthy "$SSH_CMD" "$TARGET" 30 2>&1 && ok "已回滚到 $prev" || err "回滚后 healthz 仍失败!"
+    if deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 120; then
+      host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /' || true
+      ok "healthz + DB 通过，标记 verified"
     else
-      err "无可用回滚目标! 手动检查: $SSH_CMD 'systemctl status $SERVICE_NAME'"
+      _seamless_auto_rollback "DB 未就绪 (database not configured 风险)" "$version" || true
+      exit 1
     fi
+  else
+    _seamless_auto_rollback "healthz 超时" "$version" || true
     exit 1
   fi
 
@@ -375,11 +407,12 @@ do_rollback() {
 
   log "原子切换 + restart..."
   host_atomic_switch "$SSH_CMD" "$TARGET" "$target_version" 2>&1 | sed 's/^/    /' || true
-  if host_wait_healthy "$SSH_CMD" "$TARGET" 60 2>&1; then
-    ok "回滚完成 → $target_version"
+  if host_wait_healthy "$SSH_CMD" "$TARGET" 60 2>&1 \
+    && deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90; then
+    ok "回滚完成 → $target_version (healthz + DB OK)"
     $SSH_CMD "curl -fsS '$HEALTH_URL' >/dev/null && echo '  healthz OK'" 2>/dev/null || true
   else
-    err "回滚后 healthz 失败! 手动检查"
+    err "回滚后 healthz/DB 失败! 手动检查"
     exit 1
   fi
 }

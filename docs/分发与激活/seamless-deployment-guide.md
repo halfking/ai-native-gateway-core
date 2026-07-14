@@ -56,7 +56,9 @@ bash scripts/deploy-seamless.sh deploy 154 --seq 1005
 6. **verify** — 远端 `sha256sum -c SHA256SUMS --strict`
 7. **adopt 检测** — 若无 `current` 符号链接（首次），把现有扁平二进制纳入 `releases/legacy-<ts>/`（verified=true），建符号链接
 8. **atomic switch** — `ln -sfn releases/<version> current` + 重建 4 个符号链接 + `systemctl restart`
-9. **wait healthy** — curl `/healthz` 循环（60s 超时）。**通过 → mark verified；失败 → 自动 rollback 到上一个 verified 版本**
+9. **wait healthy + DB** — curl `/healthz`（60s）+ 轮询 `/api/system/background-tasks`（120s，非 503）。**通过 → mark verified；healthz 或 DB 失败 → 自动 rollback**
+
+> 2026-07-15：`deploy-lib/post-deploy-verify.sh` 已接入。详见 [无感更新 Runbook](../2026-07-15-无感更新-runbook.md)。
 
 ### 1.3 回滚（一条命令）
 

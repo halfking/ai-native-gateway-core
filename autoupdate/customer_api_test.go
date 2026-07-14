@@ -99,6 +99,12 @@ func (s *fakeStore) GetGrayRule(ctx context.Context, releaseID int64) (*GrayRele
 func (s *fakeStore) UpdateGrayPhase(ctx context.Context, releaseID int64, phase Phase, percent int) error {
 	return nil
 }
+func (s *fakeStore) UpdateGrayRuleStatus(ctx context.Context, releaseID int64, status string) error {
+	return nil
+}
+func (s *fakeStore) GetRolloutStats(ctx context.Context, version string) (RolloutStats, error) {
+	return RolloutStats{}, nil
+}
 func (s *fakeStore) CreateUpgradeLog(ctx context.Context, instanceID, oldVer, newVer string) (int64, error) {
 	return 0, nil
 }

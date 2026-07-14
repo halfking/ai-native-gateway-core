@@ -2,39 +2,29 @@
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Line } from 'vue-chartjs'
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-} from 'chart.js'
 import {
   getCenterInstances,
   getCenterStats,
-  getHeartbeatHistory,
   sendCommand,
   getCommandStatus,
+  getCenterAlerts,
+  acknowledgeCenterAlert,
+  resolveCenterAlert,
+  suppressCenterAlert,
   type CenterInstance,
   type CenterStats,
-  type HeartbeatRecord,
   type IssuedCommand,
+  type OpsAlert,
 } from '../../api/ops'
-
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
 
 const { t } = useI18n()
 
 const instances = ref<CenterInstance[]>([])
 const stats = ref<CenterStats | null>(null)
+const alerts = ref<OpsAlert[]>([])
+const alertsOpen = ref(0)
 const loading = ref(false)
-const expandedRows = ref<string[]>([])
-const heartbeatData = ref<Record<string, HeartbeatRecord[]>>({})
-
+const alertsLoading = ref(false)
 const page = ref(1)
 const pageSize = ref(20)
 
@@ -58,36 +48,80 @@ const commandOptions = computed(() => [
 
 async function load() {
   loading.value = true
+  alertsLoading.value = true
   try {
-    const [instancesData, statsData] = await Promise.all([
+    const [instancesData, statsData, alertsData] = await Promise.all([
       getCenterInstances(),
       getCenterStats(),
+      getCenterAlerts(),
     ])
     instances.value = instancesData
     stats.value = statsData
+    alerts.value = alertsData.items
+    alertsOpen.value = alertsData.open
   } catch (error) {
     ElMessage.error(t('ops.center.loadFailed'))
     console.error(error)
   } finally {
     loading.value = false
+    alertsLoading.value = false
   }
 }
 
-async function handleExpandChange(row: CenterInstance) {
-  const idx = expandedRows.value.indexOf(row.instance_id)
-  if (idx > -1) {
-    expandedRows.value.splice(idx, 1)
-    return
-  }
+function canManageAlert(alert: OpsAlert) {
+  return alert.id.startsWith('runtime-')
+}
 
-  expandedRows.value.push(row.instance_id)
-  if (!heartbeatData.value[row.instance_id]) {
-    try {
-      heartbeatData.value[row.instance_id] = await getHeartbeatHistory(row.instance_id, 24)
-    } catch (error) {
-      ElMessage.error(t('ops.center.loadHeartbeatFailed'))
-      console.error(error)
-    }
+function alertSeverityType(severity: string) {
+  const map: Record<string, 'success' | 'warning' | 'danger' | 'info'> = {
+    critical: 'danger',
+    error: 'danger',
+    warning: 'warning',
+    info: 'info',
+  }
+  return map[severity] || 'info'
+}
+
+function alertStatusType(status: string) {
+  const map: Record<string, 'success' | 'warning' | 'danger' | 'info'> = {
+    triggered: 'danger',
+    acknowledged: 'warning',
+    suppressed: 'info',
+    resolved: 'success',
+  }
+  return map[status] || 'info'
+}
+
+async function handleAcknowledgeAlert(alert: OpsAlert) {
+  try {
+    await acknowledgeCenterAlert(alert.id)
+    ElMessage.success(t('ops.center.alerts.ackSuccess'))
+    await load()
+  } catch (error) {
+    ElMessage.error(t('ops.center.alerts.actionFailed'))
+    console.error(error)
+  }
+}
+
+async function handleResolveAlert(alert: OpsAlert) {
+  try {
+    await resolveCenterAlert(alert.id)
+    ElMessage.success(t('ops.center.alerts.resolveSuccess'))
+    await load()
+  } catch (error) {
+    ElMessage.error(t('ops.center.alerts.actionFailed'))
+    console.error(error)
+  }
+}
+
+async function handleSuppressAlert(alert: OpsAlert) {
+  try {
+    await suppressCenterAlert(alert.id, 24)
+    ElMessage.success(t('ops.center.alerts.suppressSuccess'))
+    await load()
+  } catch (error) {
+    ElMessage.error(t('ops.center.alerts.actionFailed'))
+    console.error(error)
   }
 }
 
@@ -169,68 +203,6 @@ function formatDate(date: string) {
   return new Date(date).toLocaleString()
 }
 
-function formatUptime(seconds: number) {
-  if (!seconds && seconds !== 0) return '-'
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${minutes}m`
-  return `${minutes}m`
-}
-
-function allocMbColor(mb: number) {
-  if (mb > 500) return '#F56C6C'
-  if (mb > 200) return '#E6A23C'
-  return '#67C23A'
-}
-
-function getChartData(instanceId: string) {
-  const history = heartbeatData.value[instanceId] || []
-  return {
-    labels: history.map((h) => new Date(h.timestamp).toLocaleTimeString()),
-    datasets: [
-      {
-        label: t('ops.center.cmd.healthCheck'),
-        data: history.map((h) => h.alloc_mb),
-        borderColor: 'rgb(75, 192, 192)',
-        backgroundColor: 'rgba(75, 192, 192, 0.2)',
-        tension: 0.4,
-        yAxisID: 'y',
-      },
-      {
-        label: 'Goroutines',
-        data: history.map((h) => h.num_goroutine),
-        borderColor: 'rgb(255, 99, 132)',
-        backgroundColor: 'rgba(255, 99, 132, 0.2)',
-        tension: 0.4,
-        yAxisID: 'y1',
-      },
-    ],
-  }
-}
-
-const chartOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  interaction: { intersect: false, mode: 'index' as const },
-  plugins: {
-    legend: { position: 'top' as const },
-  },
-  scales: {
-    y: {
-      beginAtZero: true,
-      title: { display: true, text: 'Alloc MB' },
-    },
-    y1: {
-      beginAtZero: true,
-      position: 'right' as const,
-      grid: { display: false },
-      title: { display: true, text: 'Goroutines' },
-    },
-  },
-}
-
 const paginatedInstances = computed(() => {
   const start = (page.value - 1) * pageSize.value
   return instances.value.slice(start, start + pageSize.value)
@@ -285,40 +257,73 @@ onMounted(load)
       </el-card>
     </div>
 
-    <!-- Instances Table -->
-    <el-card class="main-card" shadow="never">
-      <el-table
-        v-loading="loading"
-        :data="paginatedInstances"
-        :row-key="(row: CenterInstance) => row.instance_id"
-        :expand-row-keys="expandedRows"
-        @expand-change="handleExpandChange"
-      >
-        <el-table-column type="expand">
+    <!-- Alerts -->
+    <el-card class="alerts-card" shadow="never">
+      <template #header>
+        <div class="alerts-header">
+          <span>{{ t('ops.center.alerts.title') }}</span>
+          <el-tag type="danger" size="small">{{ t('ops.center.alerts.openCount', { count: alertsOpen }) }}</el-tag>
+        </div>
+      </template>
+      <el-table v-loading="alertsLoading" :data="alerts" empty-text="-" row-key="id">
+        <template #empty>
+          <span>{{ t('ops.center.alerts.empty') }}</span>
+        </template>
+        <el-table-column prop="severity" :label="t('ops.center.alerts.severity')" width="100">
           <template #default="{ row = {} } = {}">
-            <div class="expanded-content">
-              <div v-if="heartbeatData[row.instance_id]?.length" class="metrics-grid">
-                <div class="metric-item">
-                  <span class="metric-label">{{ t('ops.center.cpuUsage') }}:</span>
-                  <span class="metric-value">{{ formatUptime(heartbeatData[row.instance_id][0].uptime_secs) }}</span>
-                </div>
-                <div class="metric-item">
-                  <span class="metric-label">{{ t('ops.center.memoryUsage') }}:</span>
-                  <el-progress :percentage="Math.min(heartbeatData[row.instance_id][0].alloc_mb / 10, 100)" :stroke-width="8" :color="allocMbColor(heartbeatData[row.instance_id][0].alloc_mb)" />
-                  <span class="metric-detail">{{ heartbeatData[row.instance_id][0].alloc_mb.toFixed(1) }} MB</span>
-                </div>
-                <div class="metric-item">
-                  <span class="metric-label">Goroutines:</span>
-                  <span class="metric-value">{{ heartbeatData[row.instance_id][0].num_goroutine }}</span>
-                </div>
-              </div>
-              <div class="chart-container">
-                <h4>{{ t('ops.center.heartbeatHistory') }}</h4>
-                <Line :data="getChartData(row.instance_id)" :options="chartOptions" />
-              </div>
-            </div>
+            <el-tag :type="alertSeverityType(row.severity)" size="small">{{ row.severity }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column prop="title" :label="t('ops.center.alerts.alertTitle')" min-width="140" />
+        <el-table-column prop="message" :label="t('ops.center.alerts.message')" min-width="220" show-overflow-tooltip />
+        <el-table-column prop="source" :label="t('ops.center.alerts.source')" width="120" />
+        <el-table-column prop="status" :label="t('common.table.status')" width="110">
+          <template #default="{ row = {} } = {}">
+            <el-tag :type="alertStatusType(row.status)" size="small">
+              {{ t(`ops.center.alerts.status.${row.status}`, row.status) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="180" />
+        <el-table-column prop="detected_at" :label="t('ops.center.alerts.detectedAt')" width="170">
+          <template #default="{ row = {} } = {}">{{ formatDate(row.detected_at) }}</template>
+        </el-table-column>
+        <el-table-column :label="t('common.actions')" width="220" fixed="right">
+          <template #default="{ row = {} } = {}">
+            <template v-if="canManageAlert(row)">
+              <el-button
+                v-if="row.status === 'triggered'"
+                size="small"
+                type="primary"
+                @click="handleAcknowledgeAlert(row)"
+              >
+                {{ t('ops.center.alerts.acknowledge') }}
+              </el-button>
+              <el-button
+                v-if="row.status === 'triggered' || row.status === 'acknowledged'"
+                size="small"
+                type="success"
+                @click="handleResolveAlert(row)"
+              >
+                {{ t('ops.center.alerts.resolve') }}
+              </el-button>
+              <el-button
+                v-if="row.status === 'triggered' || row.status === 'acknowledged'"
+                size="small"
+                @click="handleSuppressAlert(row)"
+              >
+                {{ t('ops.center.alerts.suppress') }}
+              </el-button>
+            </template>
+            <span v-else class="muted-action">—</span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <!-- Instances Table -->
+    <el-card class="main-card" shadow="never">
+      <el-table v-loading="loading" :data="paginatedInstances" row-key="instance_id">
         <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="200" />
         <el-table-column prop="hostname" :label="t('ops.center.hostname')" width="150" />
         <el-table-column prop="ip_address" :label="t('ops.center.ipAddress')" width="130" />
@@ -330,12 +335,6 @@ onMounted(load)
             <el-tag :type="statusType(row.status)" size="small">
               {{ t(`ops.center.status.${row.status}`) }}
             </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column :label="t('ops.center.uptime')" width="100">
-          <template #default="{ row = {} } = {}">
-            <span v-if="heartbeatData[row.instance_id]?.length">{{ formatUptime(heartbeatData[row.instance_id][0].uptime_secs) }}</span>
-            <span v-else>-</span>
           </template>
         </el-table-column>
         <el-table-column prop="last_heartbeat" :label="t('ops.center.lastHeartbeat')" width="160">
@@ -474,6 +473,21 @@ onMounted(load)
   margin-top: 20px;
 }
 
+.alerts-card {
+  margin-bottom: 20px;
+}
+
+.alerts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.muted-action {
+  color: var(--el-text-color-placeholder);
+}
+
 .expanded-content {
   padding: 20px;
   background-color: var(--el-fill-color-light);
@@ -496,6 +510,16 @@ onMounted(load)
   font-size: 14px;
   font-weight: 500;
   color: var(--el-text-color-primary);
+}
+
+.history-table-wrap {
+  margin-top: 20px;
+}
+
+.history-table-wrap h4 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .chart-container {

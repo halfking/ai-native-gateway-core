@@ -48,6 +48,8 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
+# shellcheck source=deploy-lib/post-deploy-verify.sh
+source "$SCRIPT_DIR/deploy-lib/post-deploy-verify.sh"
 
 GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; RED=$'\033[0;31m'; NC=$'\033[0m'
 log()  { echo -e "${GREEN}[deploy-245]${NC} $*"; }
@@ -70,7 +72,8 @@ fi
 log "[1/5] 预检..."
 [[ -f go.mod ]] || { err "go.mod 不存在"; exit 1; }
 $SSH "$SSH_TARGET" "echo connected" >/dev/null || { err "SSH 不可达"; exit 1; }
-log "  git clean + ssh OK ✓"
+deploy_preflight_pg_from_remote_env "$SSH" "$REMOTE_DIR/.env" || exit 2
+log "  git clean + ssh OK + PG ✓"
 
 # ── Step 2: 获取版本信息 ──
 log "[2/5] 版本信息..."
@@ -155,7 +158,6 @@ fi
 
 # 启动
 $SSH "$SSH_TARGET" "systemctl daemon-reload && systemctl start $SERVICE_NAME"
-sleep 8
 
 # 验证
 IS_ACTIVE=$($SSH "$SSH_TARGET" "systemctl is-active $SERVICE_NAME")
@@ -166,20 +168,15 @@ if [[ "$IS_ACTIVE" != "active" ]]; then
 fi
 log "  ✓ 服务 active"
 
-# DB health check
-PG_DISABLED=$($SSH "$SSH_TARGET" "journalctl -u $SERVICE_NAME --since '2 minutes ago' --no-pager -o cat 2>/dev/null | grep -c 'postgres disabled' || true")
-PG_DISABLED=$(echo "$PG_DISABLED" | head -1 | tr -d '[:space:]')
-PG_DISABLED=${PG_DISABLED:-0}
-if [[ "$PG_DISABLED" -gt 0 ]]; then
-  err "✗ postgres disabled! schema 不匹配"
-  $SSH "$SSH_TARGET" "journalctl -u $SERVICE_NAME --since '2 minutes ago' --no-pager -o cat | grep 'postgres disabled'"
+if ! deploy_verify_gateway_ready "$SSH" "$SERVICE_NAME" 8781 120; then
+  err "✗ DB 未就绪 — 245 部署失败"
   err "回滚: mv $REMOTE_DIR/gateway.bak.* $REMOTE_DIR/gateway && systemctl restart $SERVICE_NAME"
   exit 1
 fi
-log "  ✓ 无 postgres disabled"
+log "  ✓ DB 就绪 (background-tasks 非 503)"
 
 # Version check
-VERSION_RESP=$($SSH "$SSH_TARGET" "curl -fsS http://localhost:8781/api/system/version")
+VERSION_RESP=$($SSH "$SSH_TARGET" "curl -fsS http://127.0.0.1:8781/api/system/version")
 echo "  /api/system/version -> $VERSION_RESP"
 
 rm -f /tmp/__deploy_245_binary

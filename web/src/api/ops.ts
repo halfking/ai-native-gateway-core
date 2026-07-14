@@ -366,6 +366,39 @@ export async function getGrayRelease(version: string): Promise<GrayReleaseRule> 
   return req<GrayReleaseRule>('GET', `/api/admin/releases/${encodeURIComponent(version)}/gray`)
 }
 
+export interface RolloutStats {
+  total: number
+  success_count: number
+  failed_count: number
+  rolled_back_count: number
+  success_rate_pct: number
+  rollback_rate_pct: number
+}
+
+export interface RolloutGateResult {
+  allowed: boolean
+  reason?: string
+  stats: RolloutStats
+}
+
+export interface RolloutStatus {
+  version: string
+  rule_status: string
+  gate: RolloutGateResult
+}
+
+export async function getRolloutStatus(version: string): Promise<RolloutStatus> {
+  return req<RolloutStatus>('GET', `/api/admin/releases/${encodeURIComponent(version)}/rollout-status`)
+}
+
+export async function pauseGrayRelease(version: string): Promise<void> {
+  return req<void>('POST', `/api/admin/releases/${encodeURIComponent(version)}/gray/pause`)
+}
+
+export async function resumeGrayRelease(version: string): Promise<void> {
+  return req<void>('POST', `/api/admin/releases/${encodeURIComponent(version)}/gray/resume`)
+}
+
 export interface GrayReleaseRuleView extends GrayReleaseRule {
   version: string
   release_title?: string
@@ -404,6 +437,18 @@ export interface OpsAlert {
 
 export async function getCenterAlerts(): Promise<{ items: OpsAlert[]; total: number; open: number }> {
   return req('GET', '/api/admin/center/alerts')
+}
+
+export async function acknowledgeCenterAlert(alertId: string, actor: string = 'admin'): Promise<void> {
+  return req<void>('POST', `/api/admin/center/alerts/${encodeURIComponent(alertId)}/acknowledge`, { actor })
+}
+
+export async function resolveCenterAlert(alertId: string, actor: string = 'admin'): Promise<void> {
+  return req<void>('POST', `/api/admin/center/alerts/${encodeURIComponent(alertId)}/resolve`, { actor })
+}
+
+export async function suppressCenterAlert(alertId: string, hours = 24, actor: string = 'admin'): Promise<void> {
+  return req<void>('POST', `/api/admin/center/alerts/${encodeURIComponent(alertId)}/suppress`, { actor, hours })
 }
 
 export async function rollbackRelease(targetVersion: string): Promise<void> {
