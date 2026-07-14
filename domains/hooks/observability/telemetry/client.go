@@ -1719,3 +1719,59 @@ func mergeBoolPtr(dst **bool, src *bool) {
 		*dst = &v
 	}
 }
+
+// ApplyOriginFromContext reads the origin metadata (origin_stage,
+// origin_actor, client_ip, client_forwarded_for) that OriginMiddleware
+// stored on the request context and copies it onto the entry.  This is
+// the bridge between middleware/origin_mw.go and the telemetry insert
+// path; it is intentionally defensive — nil-safe and idempotent so the
+// caller can run it before every EmitRequestLogInsert/Update.
+//
+// Precedence rule (mirrors the first-write-wins COALESCE on the DB
+// side): the entry's existing non-nil values are preserved, ctx only
+// fills in missing ones.  That way a caller that set
+// origin_stage="node_probe" programmatically (e.g. ActiveProbeEmitter)
+// is not overwritten by a stale "business" value in ctx.
+//
+// Wire format (string keys — Go stdlib convention for cross-package
+// context values):
+//
+//	"origin.stage"        string — self_check | node_probe | system_health | business
+//	"origin.actor"        string — worker / actor name (e.g. node-probe-worker)
+//	"origin.client_ip"    string — real client IP (single value, X-Real-IP > XFF[0] > RemoteAddr)
+//	"origin.xff"          string — full X-Forwarded-For chain (≤ 1024B)
+func (e *RequestLogEntry) ApplyOriginFromContext(ctx context.Context) {
+	if e == nil || ctx == nil {
+		return
+	}
+	if v, ok := ctx.Value(originCtxKey("origin.stage")).(string); ok && v != "" {
+		if e.OriginStage == nil {
+			s := v
+			e.OriginStage = &s
+		}
+	}
+	if v, ok := ctx.Value(originCtxKey("origin.actor")).(string); ok && v != "" {
+		if e.OriginActor == nil {
+			s := v
+			e.OriginActor = &s
+		}
+	}
+	if v, ok := ctx.Value(originCtxKey("origin.client_ip")).(string); ok && v != "" {
+		if e.ClientIP == nil {
+			s := v
+			e.ClientIP = &s
+		}
+	}
+	if v, ok := ctx.Value(originCtxKey("origin.xff")).(string); ok && v != "" {
+		if e.ClientForwardedFor == nil {
+			s := v
+			e.ClientForwardedFor = &s
+		}
+	}
+}
+
+// originCtxKey is a string-typed context key so middleware/origin_mw.go
+// (which cannot import this package without creating a cycle) can set
+// the same key from the other side.  Using a string key follows the
+// Go stdlib convention for cross-package context values.
+type originCtxKey string
