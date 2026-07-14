@@ -88,7 +88,6 @@ provide('dashboardBoard', {
   days: boardState.days,
   loading: boardState.loading,
   error: boardState.error,
-  filterProviderId: boardState.filterProviderId,
   load: boardState.load,
 })
 

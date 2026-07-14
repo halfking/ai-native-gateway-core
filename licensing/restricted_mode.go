@@ -38,10 +38,8 @@ func RestrictedModeMiddleware() echo.MiddlewareFunc {
 				return next(c)
 			}
 
-			// 2. Allow license management endpoints — exact OR prefix
-			//    with boundary. Reject bypass attempts like
-			//    /api/system/licenseeXploit.
-			if allowed := licensePathAllowed(path); allowed {
+			// 2. Allow customer-facing license, upgrade, and distribution endpoints.
+			if allowed := customerPublicPathAllowed(path); allowed {
 				return next(c)
 			}
 
@@ -49,31 +47,42 @@ func RestrictedModeMiddleware() echo.MiddlewareFunc {
 			return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{
 				"error":   "license_required",
 				"message": "Service is in restricted mode due to license verification failure. Please contact your administrator to resolve licensing issues.",
-				"details": "Only /api/healthz and /api/system/license/* endpoints are available in restricted mode.",
+				"details": "Only /api/healthz, /api/system/license/*, /api/system/upgrade/*, /api/downloads/*, /api/donations/*, and /api/public/offline-activation/* are available in restricted mode.",
 			})
 		}
 	}
 }
 
-// licensePathAllowed reports whether the path is a license
-// management endpoint (exact /api/system/license or any
-// /api/system/license/... subpath).
-//
-// Split out as a separate function so unit tests can call it
-// directly with arbitrary path strings without spinning up the
-// full echo middleware.
+// customerPublicPathAllowed reports paths reachable before admin login or during
+// restricted mode: license/upgrade flows plus public download & donation portal.
+func customerPublicPathAllowed(path string) bool {
+	prefixes := []string{
+		"/api/system/license",
+		"/api/system/upgrade",
+		"/api/downloads",
+		"/api/donations",
+		"/api/public/offline-activation",
+	}
+	for _, prefix := range prefixes {
+		if pathAllowedWithBoundary(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// licensePathAllowed reports whether the path is a license management endpoint.
 func licensePathAllowed(path string) bool {
-	const prefix = "/api/system/license"
+	return pathAllowedWithBoundary(path, "/api/system/license")
+}
+
+func pathAllowedWithBoundary(path, prefix string) bool {
 	if path == prefix {
 		return true
 	}
 	if !strings.HasPrefix(path, prefix) {
 		return false
 	}
-	// HasPrefix matched — check the boundary character. With the
-	// prefix "/api/system/license", the next char at index 19 must
-	// be either '/' (subpath) or end-of-string (root). Anything
-	// else (e.g. '.', '-', 'A') is a bypass attempt.
 	if len(path) == len(prefix) {
 		return true
 	}

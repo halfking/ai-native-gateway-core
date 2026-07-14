@@ -141,6 +141,9 @@ func (h *Handler) queryErrorDrillMinute(
 		}
 		items = append(items, item)
 	}
+	if dimension == "provider" {
+		items = h.resolveProviderPieLabels(ctx, items)
+	}
 	return items, nil
 }
 

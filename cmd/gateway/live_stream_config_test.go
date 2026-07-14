@@ -32,8 +32,8 @@ func TestLiveStreamCachedDurationsFromEnv(t *testing.T) {
 		t.Setenv("LLM_GATEWAY_LIVE_STREAM_CACHED_TTL", "")
 		t.Setenv("LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL", "")
 		ttl, cleanup := liveStreamCachedDurationsFromEnv()
-		if ttl != 10*time.Minute || cleanup != ttl {
-			t.Fatalf("expected defaults ttl=cleanup=10m, got ttl=%s cleanup=%s", ttl, cleanup)
+		if ttl != 4*time.Hour || cleanup != ttl {
+			t.Fatalf("expected defaults ttl=cleanup=4h, got ttl=%s cleanup=%s", ttl, cleanup)
 		}
 	})
 

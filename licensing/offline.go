@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -113,6 +114,48 @@ func (om *OfflineManager) ApproveOfflineRequest(ctx context.Context, requestID s
 		SignedLicense:  signedLicense,
 		RequestID:      requestID,
 	}, nil
+}
+
+// ImportSignedRequest decodes a customer-exported activation.req file and
+// registers it in the authority store when not already present.
+func (om *OfflineManager) ImportSignedRequest(ctx context.Context, b64Signed string) (*OfflineRequest, error) {
+	signed, err := UnmarshalFromBase64(strings.TrimSpace(b64Signed))
+	if err != nil {
+		return nil, fmt.Errorf("invalid signed request: %w", err)
+	}
+	if len(signed.Data) == 0 {
+		return nil, errors.New("signed request missing payload")
+	}
+	plain, err := om.crypto.DecryptAES(signed.Data)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt request: %w", err)
+	}
+	var req OfflineRequest
+	if err := json.Unmarshal(plain, &req); err != nil {
+		return nil, fmt.Errorf("parse request: %w", err)
+	}
+	if strings.TrimSpace(req.LicenseKey) == "" || strings.TrimSpace(req.HardwareHash) == "" {
+		return nil, errors.New("request missing license_key or hardware_hash")
+	}
+	if req.RequestID == "" {
+		req.RequestID = uuid.New().String()
+	}
+	if req.Status == "" {
+		req.Status = "pending"
+	}
+	if req.Timestamp.IsZero() {
+		req.Timestamp = time.Now()
+	}
+
+	existing, err := om.store.GetOfflineRequest(ctx, req.RequestID)
+	if err == nil && existing != nil {
+		return existing, nil
+	}
+	if err := om.store.CreateOfflineRequest(ctx, &req); err != nil {
+		return nil, err
+	}
+	slog.Info("offline request imported", "request_id", req.RequestID, "license_key", req.LicenseKey)
+	return &req, nil
 }
 
 func (om *OfflineManager) VerifyOfflineLicense(ctx context.Context, b64SignedLicense string) (*License, error) {

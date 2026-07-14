@@ -18,9 +18,11 @@ import {
   getCenterStats,
   getHeartbeatHistory,
   sendCommand,
+  getCommandStatus,
   type CenterInstance,
   type CenterStats,
   type HeartbeatRecord,
+  type IssuedCommand,
 } from '../../api/ops'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
@@ -43,6 +45,8 @@ const commandForm = ref({
   command: 'restart',
 })
 const commandParamsText = ref('{}')
+const lastCommand = ref<IssuedCommand | null>(null)
+const commandPollTimer = ref<ReturnType<typeof setInterval> | null>(null)
 
 const commandOptions = computed(() => [
   { value: 'restart', label: t('ops.center.cmd.restart') },
@@ -110,20 +114,45 @@ async function handleSendCommand() {
 
   loading.value = true
   try {
-    await sendCommand(
+    const issued = await sendCommand(
       commandForm.value.instanceId,
       commandForm.value.command,
       args,
       'admin'
     )
+    lastCommand.value = issued
     ElMessage.success(t('ops.center.commandSent'))
     showCommandDialog.value = false
+    startCommandPoll(issued.command_id)
   } catch (error) {
     ElMessage.error(t('ops.center.commandFailed'))
     console.error(error)
   } finally {
     loading.value = false
   }
+}
+
+function startCommandPoll(commandId: string) {
+  if (commandPollTimer.value) clearInterval(commandPollTimer.value)
+  let attempts = 0
+  commandPollTimer.value = setInterval(async () => {
+    attempts += 1
+    try {
+      const st = await getCommandStatus(commandId)
+      if (lastCommand.value?.command_id === commandId) {
+        lastCommand.value = { ...lastCommand.value, status: st.status }
+      }
+      if (st.status !== 'pending' || attempts >= 30) {
+        if (commandPollTimer.value) clearInterval(commandPollTimer.value)
+        commandPollTimer.value = null
+      }
+    } catch {
+      if (attempts >= 30 && commandPollTimer.value) {
+        clearInterval(commandPollTimer.value)
+        commandPollTimer.value = null
+      }
+    }
+  }, 2000)
 }
 
 function statusType(status: string) {
@@ -218,6 +247,15 @@ onMounted(load)
         {{ t('common.refresh') }}
       </el-button>
     </div>
+
+    <el-alert
+      v-if="lastCommand"
+      :title="t('ops.center.lastCommand', { id: lastCommand.command_id, status: lastCommand.status })"
+      type="info"
+      show-icon
+      :closable="false"
+      class="last-cmd-alert"
+    />
 
     <!-- Stats Dashboard -->
     <div v-if="stats" class="stats-grid">

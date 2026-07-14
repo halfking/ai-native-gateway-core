@@ -34,6 +34,10 @@ const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
 const isTenantPortal = computed(() => !isPlatformOps.value)
 
+/** Public download/donation portal — always full-page, no app chrome */
+const PUBLIC_PORTAL_PATHS = ['/download', '/support', '/offline-activation']
+const isPublicPortalRoute = computed(() => PUBLIC_PORTAL_PATHS.includes(route.path))
+
 onMounted(async () => {
   // 2026-07-10: Auth hydration — probe /api/auth/me if JWT not already in localStorage.
   // If store.jwtToken is already populated (from localStorage), we're authenticated.
@@ -45,7 +49,7 @@ onMounted(async () => {
   // /license, /upgrade). The activation wizard must remain reachable without a
   // login, and the API client's 401 handler would otherwise trigger a redirect
   // to /login before App.vue's own redirect-suppression runs.
-  const publicPaths = ['/activate', '/license', '/upgrade']
+  const publicPaths = ['/activate', '/license', '/upgrade', ...PUBLIC_PORTAL_PATHS]
   const onPublicRoute = publicPaths.includes(route.path)
   try {
     if (!onPublicRoute && !store.jwtToken && !store.apiKey) {
@@ -231,6 +235,9 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
     <div class="auth-loading-spinner" />
     <div class="auth-loading-text">{{ t('login.checking') || '正在检测登录状态…' }}</div>
   </div>
+  <div v-else-if="isPublicPortalRoute" class="public-portal-shell">
+    <RouterView />
+  </div>
   <div v-else-if="isLoggedIn" class="app-layout" :class="{ 'sidebar-collapsed': collapsed }">
     <aside class="sidebar">
       <div class="sidebar-logo">
@@ -382,6 +389,9 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
 
 <style scoped>
 /* 2026-07-09: 首次进入时的 auth 探测加载中状态 */
+.public-portal-shell {
+  min-height: 100vh;
+}
 .auth-loading {
   display: flex;
   flex-direction: column;

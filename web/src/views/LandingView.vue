@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import ServiceLandingPage from '../components/ServiceLandingPage.vue'
 
 const { t, tm } = useI18n()
+const router = useRouter()
 
 const heroPoints = computed(() => tm('landing.heroPoints') as string[])
 
@@ -92,6 +94,26 @@ const advantages = computed(() => [
       :hide-cta="true"
     />
 
+    <!-- 私有化下载入口 -->
+    <section class="llmgo-download-cta">
+      <div class="llmgo-download-cta__inner">
+        <h2 class="llmgo-download-cta__title">{{ t('landing.downloadCta.title') }}</h2>
+        <p class="llmgo-download-cta__sub">{{ t('landing.downloadCta.subtitle') }}</p>
+        <div class="llmgo-download-cta__actions">
+          <el-button type="primary" size="large" @click="router.push('/download')">
+            {{ t('landing.downloadCta.download') }}
+          </el-button>
+          <el-button size="large" @click="router.push('/support')">
+            {{ t('landing.downloadCta.support') }}
+          </el-button>
+          <el-button link type="primary" @click="router.push('/activate')">
+            {{ t('landing.downloadCta.activate') }}
+          </el-button>
+        </div>
+        <p class="llmgo-download-cta__note">{{ t('landing.downloadCta.note') }}</p>
+      </div>
+    </section>
+
     <!-- 路线图预告区块 -->
     <section class="llmgo-roadmap">
       <div class="llmgo-roadmap__inner">
@@ -145,6 +167,49 @@ const advantages = computed(() => [
 .llmgo-landing :deep(.kx-landing__points li) {
   background: var(--panel, #1a1d27);
   border-color: var(--border, #2a2d3a);
+}
+
+/* 下载 CTA */
+.llmgo-download-cta {
+  padding: 24px 16px 8px;
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.llmgo-download-cta__inner {
+  padding: 28px 24px;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(15, 17, 23, 0.6));
+  text-align: center;
+}
+
+.llmgo-download-cta__title {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 600;
+  color: #e8eaed;
+}
+
+.llmgo-download-cta__sub {
+  margin: 0 0 20px;
+  font-size: 14px;
+  color: #94a3b8;
+}
+
+.llmgo-download-cta__actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.llmgo-download-cta__note {
+  margin: 16px 0 0;
+  font-size: 12px;
+  color: #64748b;
 }
 
 /* 路线图预告区块 */

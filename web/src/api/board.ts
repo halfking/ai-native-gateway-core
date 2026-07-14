@@ -54,6 +54,11 @@ export interface BoardPayload {
   }
   days: number
   source?: string
+  cache_meta?: {
+    fold_unit?: string
+    scope?: string
+    built_at?: string
+  }
 }
 
 export interface BoardQuery {

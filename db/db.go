@@ -187,6 +187,9 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
 		return nil, err
 	}
+	if err := db.ensureDistributionSchema(migCtx); err != nil {
+		return nil, err
+	}
 	// Dashboard views are derived data for the admin UI, not critical-path.
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.
@@ -2855,5 +2858,85 @@ func (d *DB) ensureRouteIncidentPhase2Schema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("route_incident phase-2 schema ensured (routing_audit_log + diagnostic_runs)")
+	return nil
+}
+
+// ensureDistributionSchema mirrors sql/migrations/startup/400_distribution.sql
+func (d *DB) ensureDistributionSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS license_holders (
+			id              BIGSERIAL PRIMARY KEY,
+			email           TEXT NOT NULL UNIQUE,
+			display_name    TEXT NOT NULL DEFAULT '',
+			holder_type     TEXT NOT NULL DEFAULT 'individual'
+				CHECK (holder_type IN ('individual', 'organization')),
+			consent_version TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_seen_at    TIMESTAMPTZ
+		);
+
+		ALTER TABLE licenses
+			ADD COLUMN IF NOT EXISTS holder_id BIGINT REFERENCES license_holders(id) ON DELETE SET NULL;
+		CREATE INDEX IF NOT EXISTS idx_licenses_holder ON licenses (holder_id)
+			WHERE holder_id IS NOT NULL;
+
+		CREATE TABLE IF NOT EXISTS download_events (
+			id              BIGSERIAL PRIMARY KEY,
+			request_id      TEXT NOT NULL UNIQUE,
+			release_version TEXT NOT NULL,
+			platform        TEXT NOT NULL,
+			arch            TEXT NOT NULL DEFAULT '',
+			edition         TEXT NOT NULL DEFAULT 'customer',
+			channel         TEXT NOT NULL DEFAULT 'stable',
+			holder_id       BIGINT REFERENCES license_holders(id) ON DELETE SET NULL,
+			donation_id     BIGINT,
+			result          TEXT NOT NULL DEFAULT 'started'
+				CHECK (result IN ('started', 'completed', 'failed')),
+			duration_ms     INT,
+			source          TEXT NOT NULL DEFAULT 'web',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_download_events_created ON download_events (created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS donations (
+			id              BIGSERIAL PRIMARY KEY,
+			order_no        TEXT NOT NULL UNIQUE,
+			holder_id       BIGINT REFERENCES license_holders(id) ON DELETE SET NULL,
+			email           TEXT NOT NULL DEFAULT '',
+			amount_cents    INT NOT NULL CHECK (amount_cents > 0),
+			currency        TEXT NOT NULL DEFAULT 'CNY',
+			channel         TEXT NOT NULL DEFAULT 'alipay'
+				CHECK (channel IN ('alipay', 'wechat', 'manual')),
+			status          TEXT NOT NULL DEFAULT 'pending'
+				CHECK (status IN ('pending', 'paid', 'cancelled', 'expired')),
+			tier_label      TEXT NOT NULL DEFAULT 'supporter',
+			paid_at         TIMESTAMPTZ,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_donations_status ON donations (status, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS release_artifacts (
+			id              BIGSERIAL PRIMARY KEY,
+			release_version TEXT NOT NULL,
+			platform        TEXT NOT NULL,
+			arch            TEXT NOT NULL DEFAULT '',
+			edition         TEXT NOT NULL DEFAULT 'customer',
+			artifact_name   TEXT NOT NULL,
+			sha256          TEXT NOT NULL DEFAULT '',
+			size_bytes      BIGINT NOT NULL DEFAULT 0,
+			download_path   TEXT NOT NULL,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE (release_version, platform, arch, edition, artifact_name)
+		);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("distribution schema ensured (license_holders, download_events, donations, release_artifacts)")
 	return nil
 }

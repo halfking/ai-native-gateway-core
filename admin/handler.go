@@ -21,6 +21,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -57,6 +58,8 @@ type Handler struct {
 	// request_logs rows to dashboard SSE clients at
 	// GET /api/admin/live-stream. nil disables the endpoint.
 	liveStreamHub *LiveStreamSSEHub
+	// boardCache (2026-07-14) Redis baseline+delta for dashboard board API.
+	boardCache *boardcache.Service
 	// routeIncidentHandler (2026-07-13) backs the read-only
 	// /api/admin/route-incidents* endpoints. nil disables the
 	// diagnose feature on the swim lane.

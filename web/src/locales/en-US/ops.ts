@@ -27,6 +27,12 @@ export default {
     minutesAgo: '{n}m ago',
     hoursAgo: '{n}h ago',
     daysAgo: '{n}d ago',
+    todayDownloads: 'Downloads Today',
+    weekDownloads: '7-Day Downloads',
+    supporterCount: 'Supporters',
+    donationTotal: 'Donations (CNY)',
+    activationRate: '30d Activation Rate',
+    publicPortal: 'Public Portal',
   },
 
   // License Management
@@ -79,6 +85,13 @@ export default {
     deactivateReason: 'Enter deactivation reason',
     deactivateSuccess: 'Device deactivated successfully',
     deactivateFailed: 'Failed to deactivate device',
+    holdersTab: 'License Holders',
+    licensesTab: 'Licenses',
+    holderEmail: 'Holder Email',
+    holderLicenses: 'Licenses',
+    holderDevices: 'Devices',
+    holderDonations: 'Total Donated',
+    loadHoldersFailed: 'Failed to load holders',
     status: {
       active: 'Active',
       expired: 'Expired',

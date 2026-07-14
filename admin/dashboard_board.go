@@ -42,6 +42,24 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	scope := boardScopeForTenant(filterTenant)
+
+	if h.boardCache != nil {
+		payload, err := h.boardCache.GetOrRebuild(ctx, scope, days, providerID)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "board stats cache: "+err.Error())
+			return
+		}
+		if payload["source"] == nil {
+			payload["source"] = "redis_baseline_delta"
+		}
+		payload["days"] = days
+		attachBoardOperational(ctx, h, payload)
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+
+	// Redis unavailable — degraded path (dev/single-node without Redis only).
 	summary, fromMinute := h.queryBoardSummary(ctx, filterTenant, days)
 	if !fromMinute {
 		summary = h.fallbackBoardSummary(ctx, filterTenant, days)
@@ -53,13 +71,13 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 	selfcheck := h.queryBoardSelfCheck(ctx)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"summary":           summary,
-		"pies":              pies,
-		"trends":            trends,
-		"background_tasks":  bgTasks,
-		"selfcheck":         selfcheck,
-		"days":              days,
-		"source":            boardSource(fromMinute),
+		"summary":          summary,
+		"pies":             pies,
+		"trends":           trends,
+		"background_tasks": bgTasks,
+		"selfcheck":        selfcheck,
+		"days":             days,
+		"source":           boardSource(fromMinute) + "_degraded_no_redis",
 	})
 }
 
@@ -89,6 +107,25 @@ func (h *Handler) handleDashboardBoardErrorDrill(w http.ResponseWriter, r *http.
 
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
+
+	scope := boardScopeForTenant(tenantID)
+	if h.boardCache != nil {
+		items, err := h.boardCache.GetOrRebuildDrill(ctx, scope, days, errorKind, dimension,
+			func(c context.Context, tenantFilter string, d int, ek, dim string) ([]map[string]any, error) {
+				return h.buildErrorDrillMaps(c, tenantFilter, d, ek, dim)
+			})
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "board drill cache: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"error_kind": errorKind,
+			"dimension":  dimension,
+			"items":      items,
+			"source":     "redis",
+		})
+		return
+	}
 
 	items, err := h.queryErrorDrill(ctx, tenantID, days, errorKind, dimension)
 	if err != nil {
