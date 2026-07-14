@@ -708,9 +708,9 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 		ctx,
 		s.db,
 		cred.ID,
-		rawName,                          // provider-facing: keep casing
-		canonicalRawName,                 // client-facing lowercase key
-		modelname.CanonicalizeClientModel(rawName), // standardized_name stays lowercase too
+		rawName,                           // provider-facing: keep casing
+		canonicalRawName,                  // client-facing lowercase key (no vendor prefix)
+		modelname.NormalizeRouteKey(rawName), // 2026-07-14: standardized_name = stripped lower
 		&canonicalID,
 	)
 }
