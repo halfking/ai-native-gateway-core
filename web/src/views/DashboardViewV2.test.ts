@@ -39,12 +39,12 @@ describe('dashboard board tab contract', () => {
     expect(dash).not.toContain('useLiveStream')
   })
 
-  it('board API module exports fetchDashboardBoard', async () => {
+  it('board panel tolerates missing operational inject', async () => {
     const source = await readFile(
-      resolve(process.cwd(), 'web/src/api/board.ts').toString(),
+      resolve(process.cwd(), 'web/src/components/board/BoardPanel.vue'),
       'utf8',
-    ).catch(() => readFile(resolve(process.cwd(), 'src/api/board.ts'), 'utf8'))
-    expect(source).toContain('fetchDashboardBoard')
-    expect(source).toContain('/api/admin/dashboard/board')
+    ).catch(() => readFile(resolve(process.cwd(), 'src/components/board/BoardPanel.vue'), 'utf8'))
+    expect(source).toContain('operational?.value')
+    expect(source).not.toContain('boardState.operational.value')
   })
 })
