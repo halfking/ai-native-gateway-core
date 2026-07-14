@@ -63,6 +63,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/changelogs/2026-07-15-oss-s3-storage-canonical.md` for the design
   notes and known limitations.
 
+### Storage adapter deploy verification (245 / 154 live smoke test)
+
+- Both `f17c97c85` (Cloudreve) and `ac8519d62` (OSS/S3 canonical) are
+  **deployment-safe** library-only changes. They do not touch
+  `cmd/gateway/main.go` boot path; runtime behaviour on 245 and 154 is
+  unchanged after deploy until a follow-up PR adds the boot wiring.
+- Build matrix verification: 6 tag combinations × {build, vet, test} — all
+  green. Test counts: 21 default / 41 cloudreve / 27 oss / 34 s3 (PASS).
+- Live smoke-test: 245 (`99c5e900@1037`) and 154 (`ce5869d2@1033`) both
+  healthy — `/healthz` 200, `/api/system/background-tasks` 401 (expected,
+  no auth), no error spikes in recent logs (154 has pre-existing telemetry
+  `ON CONFLICT DO UPDATE` warnings, unrelated to this work).
+- `bump-version.sh --dry-run` shows the natural target for these commits:
+  `2.4.5-ac8519d6-20260714-1033`. The actual bump is left to the existing
+  release flow to avoid stomping an in-flight parallel WIP version bump.
+- See `docs/2026-07-15-storage-adapters-deploy-verification.md` for the
+  full matrix, smoke-test transcript, deploy-decision rationale, and
+  the residual risk register (pre-commit hook known-broken, List()
+  integration coverage deferred to 245 staging).
+
 ### Per-(provider, model) modality routing
 
 - Added `provider_models.modality` column with CHECK
