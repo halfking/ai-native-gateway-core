@@ -24,12 +24,9 @@ type Client struct {
 	done  chan struct{}
 	wg    sync.WaitGroup
 
-	// onPersisted is invoked once after every successful INSERT/UPDATE
-	// of a request_logs row. Consumers (e.g. admin.LiveStreamSSEHub)
-	// use this hook to fan-out live dashboard updates without
-	// coupling telemetry to admin. May be nil; the callback MUST be
-	// cheap and non-blocking.
-	onPersisted func(entry *RequestLogEntry)
+	// onPersisted hooks run after every successful INSERT/UPDATE of a
+	// request_logs row. Consumers use AddOnRequestLogPersisted to register.
+	onPersisted []func(entry *RequestLogEntry)
 
 	// onEmitted is invoked immediately when EmitRequestLog is called,
 	// BEFORE the entry is queued or persisted to the database. This
@@ -307,12 +304,24 @@ func (c *Client) ReplayFallback(ctx context.Context, record dbdegradation.Backup
 	return c.insertRequestLog(&entry)
 }
 
-// SetOnRequestLogPersisted registers a hook invoked after each
-// successful INSERT/UPDATE of a request_logs row. The hook runs on
-// the telemetry worker goroutine — it must be cheap and non-blocking.
-// Pass nil to clear. Safe to call before or after the worker starts.
+// SetOnRequestLogPersisted registers the sole persisted hook (replaces any prior hooks).
+// Prefer AddOnRequestLogPersisted when multiple consumers are needed.
 func (c *Client) SetOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
-	c.onPersisted = fn
+	if fn == nil {
+		c.onPersisted = nil
+		return
+	}
+	c.onPersisted = []func(entry *RequestLogEntry){fn}
+}
+
+// AddOnRequestLogPersisted appends a hook invoked after each successful
+// INSERT/UPDATE of a request_logs row. Hooks run on the telemetry worker
+// goroutine and must be cheap and non-blocking.
+func (c *Client) AddOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
+	if fn == nil {
+		return
+	}
+	c.onPersisted = append(c.onPersisted, fn)
 }
 
 // SetOnRequestLogEmitted registers a hook invoked immediately when
@@ -533,18 +542,17 @@ func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 	} else {
 		err = c.insertRequestLog(entry)
 	}
-	if err == nil && c.onPersisted != nil {
-		// Fan-out hook (e.g. live dashboard SSE hub) — must never
-		// block telemetry. recover() guards against a panicking
-		// consumer that could otherwise take down the worker.
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Warn("telemetry onPersisted panic", "request_id", entry.RequestID)
-				}
-			}()
-			c.onPersisted(entry)
-		}()
+	if err == nil && len(c.onPersisted) > 0 {
+		for _, hook := range c.onPersisted {
+			func(h func(*RequestLogEntry)) {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Warn("telemetry onPersisted panic", "request_id", entry.RequestID)
+					}
+				}()
+				h(entry)
+			}(hook)
+		}
 	}
 	return err
 }
