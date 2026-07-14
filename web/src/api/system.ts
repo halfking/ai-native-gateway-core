@@ -131,3 +131,19 @@ export interface HealthResponse {
 export function getHealth(full = false) {
   return req<HealthResponse>('GET', `/healthz${full ? '?full=true' : ''}`)
 }
+
+// 2026-07-14: 30s system-health snapshot for the GDRT H badge.
+//   ok       — green:  recent 30s success rate >= 80%
+//   degraded — red:    recent 30s success rate <  80%
+//   suspect  — grey:   no traffic in the last 30s
+export interface SystemHealthResponse {
+  status: 'ok' | 'degraded' | 'suspect'
+  success_rate: number
+  sample_count: number
+  failure_count: number
+  last_check_at: string
+}
+
+export function getSystemHealth() {
+  return req<SystemHealthResponse>('GET', '/api/health/system')
+}

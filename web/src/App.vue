@@ -9,6 +9,7 @@ import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
 import SystemStatusIndicator from './components/SystemStatusIndicator.vue'
+import SystemHealthBadge from './components/SystemHealthBadge.vue'
 import UpgradeBanner from './components/UpgradeBanner.vue'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
@@ -322,6 +323,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
           {{ collapsed ? '»' : '«' }}
         </button>
         <SystemStatusIndicator />
+        <SystemHealthBadge />
         <div class="main-header-right">
           <div v-if="passwordSuccessMessage" class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
           <div class="header-meta">
