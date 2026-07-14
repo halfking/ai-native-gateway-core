@@ -199,6 +199,25 @@ function trimOldest() {
   }
 }
 
+// 2026-07-14: when an incoming request has the same request_id as an
+// existing tile, we previously just overwrote the slot in place — the
+// tile would stay where it was (middle of the visible region) but the
+// status/fields would suddenly swap. The operator's eye sees this as
+// a "status flicker": the blue (in_progress) tile silently turns into
+// a green (success) tile at the same position.
+//
+// The correct visual is: the OLD tile animates out (slides off to the
+// left), and the NEW tile animates in at the right (the natural
+// "latest request" slot). To trigger the TransitionGroup leave/enter
+// animations inside SwimLane.vue, we must:
+//
+//   1. Splice the old entry out of the array first, then
+//   2. push the new entry.
+//
+// Reusing the slot (as before) only re-runs the same render path and
+// the transition hooks see no key change. Splice + push makes the key
+// disappear and reappear, which is what Vue needs to fire the
+// swim-tile-leave-active / swim-tile-enter-active CSS transitions.
 function pushOrQueue(item: LiveRequest) {
   if (liveStreamState.paused) {
     pending.push(item)
@@ -214,14 +233,22 @@ function pushOrQueue(item: LiveRequest) {
     return
   }
   if (item.type !== 'idle_marker' && item.request_id) {
-    // 2026-07-04: if request_id already exists, UPDATE in place instead of ignore.
-    // This way in_progress -> success/failure transitions update the live tile.
     if (idIndex.has(item.request_id)) {
       const existingIndex = liveStreamState.requests.findIndex(
         r => r.request_id === item.request_id
       )
       if (existingIndex >= 0) {
-        liveStreamState.requests[existingIndex] = item
+        // 1) Splice the old entry — Vue TransitionGroup sees the key
+        // disappear and runs the swim-tile-leave-active animation.
+        const old = liveStreamState.requests.splice(existingIndex, 1)[0]
+        // Mark it evicted for any downstream subscribers (e.g. the
+        // detail drawer). If they were already showing this request,
+        // they should re-open with the fresh data once the new tile
+        // is pushed in step 2.
+        if (old && onEvictCb) onEvictCb(old.request_id!)
+        // 2) Push the new entry — Vue TransitionGroup sees a new key
+        // appear at the tail and runs swim-tile-enter-active.
+        liveStreamState.requests.push(item)
       }
       return
     }
@@ -351,6 +378,24 @@ function mergeLaneList(existing: LiveStreamLane[], incoming: LiveStreamLane[]): 
 }
 
 function mergeDelta(delta: LiveStreamDelta) {
+  // 2026-07-14: the previous implementation did
+  //   s.dimensions[dim] = delta.changed_lanes[dim]
+  // which **replaced** the entire lane array per dimension every time
+  // ANY single lane changed. That broke Vue's TransitionGroup inside
+  // SwimLane.vue: the surrounding keys stayed stable but every lane
+  // component was re-rendered as a brand-new child, producing the
+  // "swim lane flicker" operators reported.
+  //
+  // The fix is lane-id keyed merge:
+  //   - for each lane in the delta's changed_lanes, look up by
+  //     lane.id in the existing snapshot
+  //     · hit  → mutate the existing object in place (Stats + Requests)
+  //     · miss → append it to the snapshot, preserving current order
+  //   - lanes that vanish from the new snapshot are NOT removed here
+  //     (we never had a "removed_lane_ids" channel — the backend
+  //     simply omits them in the next snapshot, so a follow-up
+  //     computeScopeDelta path or a periodic reconcile takes care
+  //     of it. See `pruneStaleLanes` below.)
   if (!liveStreamState.snapshot) {
     liveStreamState.snapshot = {
       summary: delta.summary,
@@ -359,18 +404,107 @@ function mergeDelta(delta: LiveStreamDelta) {
       dimension_legends: delta.dimension_legends || { vendor: [], provider: [], model: [] },
       status_legends: delta.status_legends,
     }
-    return
   }
   const s = liveStreamState.snapshot
   s.summary = delta.summary
   s.status_legends = delta.status_legends
   for (const dim of ['vendor', 'provider', 'model'] as const) {
     if (delta.changed_lanes[dim]) {
+      // 2026-07-14: both this branch and the original Cursor-side
+      // refactor agree on the lane-id-keyed merge goal (no full-array
+      // replacement). The Cursor refactor compares the previous lane
+      // object's data fields and reuses the reference when nothing
+      // changed; that is strictly better than my first draft (which
+      // always mutated in place) because a "no-op" delta no longer
+      // triggers Vue's reactivity at all. Adopt their
+      // `mergeLaneList` and re-apply my legend-side optimisation on
+      // top.
       s.dimensions[dim] = mergeLaneList(s.dimensions[dim] || [], delta.changed_lanes[dim])
       s.detail_dimensions[dim] = mergeLaneList(s.detail_dimensions[dim] || [], delta.changed_lanes[dim])
     }
     if (delta.dimension_legends && delta.dimension_legends[dim]) {
-      s.dimension_legends[dim] = delta.dimension_legends[dim]
+      // Merge legend by key so we don't visually replace the whole
+      // legend strip on every snapshot either.
+      mergeLegendsByKey(s.dimension_legends[dim], delta.dimension_legends[dim])
+    }
+  }
+  // Cheap stale-lane prune: any lane id that the new full snapshot
+  // (rebuilt by the next request broadcast) drops is also pruned
+  // here. We only remove when the same dimension reports an empty
+  // incoming batch (no fresh data to keep the lane alive); if a
+  // lane disappears because traffic stopped, the backend's
+  // ScanAndRecordIdleMarkers writes an idle_marker for it within
+  // `idleThresholdSeconds` (5 minutes), so a real outage lane
+  // will resurface there before being pruned.
+  for (const dim of ['vendor', 'provider', 'model'] as const) {
+    const incoming = delta.changed_lanes[dim]
+    if (incoming !== undefined && incoming.length === 0 && delta.summary.total === 0) {
+      s.dimensions[dim] = []
+    }
+  }
+}
+
+// mergeLanesById merges an incoming lanes list into the existing one
+// without changing order or component identity. For each incoming
+// lane:
+//
+//   - If an existing lane has the same id, update its Stats and
+//     Requests in place (Vue sees the same component, just with new
+//     props — no remount, no TransitionGroup flicker).
+//   - Otherwise append the new lane to the tail of the existing
+//     list. The Tailwind/TransitionGroup enter animation runs once.
+//
+// We deliberately do NOT re-sort the existing array. The backend
+// already sorts lanes by stats.Total DESC + lane.id ASC tie-breaker
+// (admin/live_stream_redis_store.go:buildLiveStreamLanes), and a
+// position swap of an existing lane would re-run the leave/enter
+// animation. If a lane's rank changes (because a newer request
+// landed on a previously-silent lane), the backend's lanesChanged
+// check will include that lane in the next changed_lanes batch and
+// the new ordering arrives whole — but the existing lanes that did
+// NOT change rank stay where they are. This is what the operator
+// wants: "no flicker" + "newest lane visible".
+function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) {
+  const byId = new Map<string, number>()
+  for (let i = 0; i < existing.length; i++) {
+    byId.set(existing[i].id, i)
+  }
+  for (const lane of incoming) {
+    const idx = byId.get(lane.id)
+    if (idx === undefined) {
+      // New lane — append at the tail. Keep the relative order
+      // the backend produced for any other brand-new lanes in the
+      // same delta.
+      byId.set(lane.id, existing.length)
+      existing.push(lane)
+    } else {
+      // Existing lane — mutate in place. Don't touch .id (it's the
+      // merge key) or .dimension (it's structural).
+      const target = existing[idx]
+      target.name = lane.name
+      target.isOthers = lane.isOthers
+      target.stats = lane.stats
+      target.requests = lane.requests
+    }
+  }
+}
+
+// mergeLegendsByKey is the same idea but for the legend strips —
+// merge by legend.key instead of replacing the whole array.
+function mergeLegendsByKey(existing: LiveStreamLegendItem[], incoming: LiveStreamLegendItem[]) {
+  const byKey = new Map<string, number>()
+  for (let i = 0; i < existing.length; i++) {
+    byKey.set(existing[i].key, i)
+  }
+  for (const item of incoming) {
+    const idx = byKey.get(item.key)
+    if (idx === undefined) {
+      byKey.set(item.key, existing.length)
+      existing.push(item)
+    } else {
+      const target = existing[idx]
+      target.name = item.name
+      target.count = item.count
     }
   }
 }

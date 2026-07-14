@@ -19,6 +19,14 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// onNoCandidatesFanoutLimit caps the number of (credential, model)
+// pairs OnNoCandidates will hand to the active_probe worker per call.
+// 8 is empirically enough for the largest model_offers rows we have
+// seen in production (~12 candidates per row in the worst case) while
+// still bounded enough that a flapping tenant cannot saturate the
+// 128-deep active_probe queue. Override via tests only.
+const onNoCandidatesFanoutLimit = 8
+
 // Manager 凭据状态管理器 - 统一管理所有探测结果和状态更新
 type Manager struct {
 	memCache      *sync.Map
@@ -340,39 +348,39 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 				m.invalidateCandidateCache()
 			}
 
-		// 递增退避探测 (30s → 2m → 5m)：探测用于在 cooling 期间提前发现
-		// 凭据恢复，探测成功后 UpdateFromProbe 会立即恢复路由。
-		//
-		// 2026-07-13 (BUG #2 fix): the previous code computed `backoff`
-		// (30s / 2m / 5m depending on the consecutive_failures count) but
-		// then fired credProbeV2Submitter immediately — the backoff value
-		// was unused. credProbeV2 itself adds its own 5-minute delay, so
-		// the effective schedule collapsed to "always 5 minutes" regardless
-		// of how many consecutive failures had accumulated. This made the
-		// "分级回退" tiered retry a documentation-only feature.
-		//
-		// After the fix we actually honor the backoff via time.AfterFunc.
-		// The timer is keyed by (credID, model) and stored on the manager
-		// so Stop() can cancel a pending reprobe at shutdown.
-		var backoff time.Duration
-		switch {
-		case state.ConsecutiveFails <= 3:
-			backoff = 30 * time.Second
-		case state.ConsecutiveFails <= 5:
-			backoff = 2 * time.Minute
-		default:
-			backoff = 5 * time.Minute
-		}
+			// 递增退避探测 (30s → 2m → 5m)：探测用于在 cooling 期间提前发现
+			// 凭据恢复，探测成功后 UpdateFromProbe 会立即恢复路由。
+			//
+			// 2026-07-13 (BUG #2 fix): the previous code computed `backoff`
+			// (30s / 2m / 5m depending on the consecutive_failures count) but
+			// then fired credProbeV2Submitter immediately — the backoff value
+			// was unused. credProbeV2 itself adds its own 5-minute delay, so
+			// the effective schedule collapsed to "always 5 minutes" regardless
+			// of how many consecutive failures had accumulated. This made the
+			// "分级回退" tiered retry a documentation-only feature.
+			//
+			// After the fix we actually honor the backoff via time.AfterFunc.
+			// The timer is keyed by (credID, model) and stored on the manager
+			// so Stop() can cancel a pending reprobe at shutdown.
+			var backoff time.Duration
+			switch {
+			case state.ConsecutiveFails <= 3:
+				backoff = 30 * time.Second
+			case state.ConsecutiveFails <= 5:
+				backoff = 2 * time.Minute
+			default:
+				backoff = 5 * time.Minute
+			}
 
-		if state.LastSuccessAt == nil || now.Sub(*state.LastSuccessAt) > 2*time.Second {
-			slog.Info("credstate: transient failure, scheduling reprobe",
-				"credential_id", credID,
-				"model", model,
-				"consecutive_fails", state.ConsecutiveFails,
-				"backoff", backoff)
+			if state.LastSuccessAt == nil || now.Sub(*state.LastSuccessAt) > 2*time.Second {
+				slog.Info("credstate: transient failure, scheduling reprobe",
+					"credential_id", credID,
+					"model", model,
+					"consecutive_fails", state.ConsecutiveFails,
+					"backoff", backoff)
 
-			m.scheduleCredProbe(credID, model, backoff)
-		}
+				m.scheduleCredProbe(credID, model, backoff)
+			}
 		} // end non-free cooling
 	}
 
@@ -431,6 +439,99 @@ func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
 		"model", state.Model,
 		"available", state.Available,
 		"source", state.Source)
+}
+
+// OnNoCandidates (2026-07-14) fans out per-candidate probes when the
+// router reports zero available nodes. The previous code path emitted
+// only a failed request_logs row (kind="no_candidate") and stopped
+// there, leaving operators with no follow-up investigation artifact
+// beyond the per-request breakdown. This is the missing link that
+// produced the 2026-07-14 minimax-m3 incident where every request for
+// ~30 minutes returned "no available nodes" with no probe history.
+//
+// Behaviour:
+//   - Filter out credential_id == 0 (placeholder / phantom rows).
+//   - Dedup (credID, model) pairs so the active_probe worker can apply
+//     its own dedup map without us double-firing.
+//   - Cap the fan-out at OnNoCandidatesFanoutLimit (8) so a request with
+//     30 candidates does not flood the worker queue.
+//   - Submit one (credID, model) pair per call to activeProbeSubmitter,
+//     reusing the existing ActiveProbeWorker.Submit signature so the
+//     probe appears in the live request stream and request_logs with
+//     task_type='probe_triggered'.
+//
+// Safe when no activeProbeSubmitter is wired: emits a debug log and
+// returns without touching any state. Safe to call concurrently — the
+// underlying Submit is goroutine-safe.
+func (m *Manager) OnNoCandidates(ctx context.Context, sig NoCandidatesSignal) {
+	if m == nil {
+		return
+	}
+	if m.activeProbeSubmitter == nil {
+		slog.Debug("credstate: OnNoCandidates received but no active_probe submitter wired",
+			"client_model", sig.ClientModel,
+			"request_id", sig.RequestID,
+			"candidates", len(sig.Candidates))
+		return
+	}
+	if len(sig.Candidates) == 0 {
+		return
+	}
+
+	// Dedup (credID, model) — different credentials can serve the same
+	// outbound model; only the first wins.
+	seen := make(map[string]struct{}, len(sig.Candidates))
+	dispatched := 0
+
+	for _, c := range sig.Candidates {
+		if c.CredentialID == 0 || c.RawModel == "" {
+			continue
+		}
+		k := fmt.Sprintf("%d|%s", c.CredentialID, c.RawModel)
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+
+		// Mirror UpdateOnFailure's flash-protection: if this pair was
+		// just touched by a successful request, the no-candidates
+		// signal is almost certainly stale (race between router
+		// snapshot and the live state manager). Skip to avoid
+		// spamming probes on a credential that just worked.
+		cacheK := m.cacheKey(c.CredentialID, c.RawModel)
+		if cached, ok := m.getFromMemCache(cacheK); ok && cached.LastSuccessAt != nil {
+			if time.Since(*cached.LastSuccessAt) < 2*time.Second {
+				slog.Debug("credstate: OnNoCandidates skipping probe — flash-protection",
+					"credential_id", c.CredentialID,
+					"model", c.RawModel,
+					"last_success_at", cached.LastSuccessAt.Format(time.RFC3339Nano),
+				)
+				continue
+			}
+		}
+
+		m.activeProbeSubmitter(c.CredentialID, c.RawModel, sig.TenantID, sig.RequestID)
+		dispatched++
+		if dispatched >= onNoCandidatesFanoutLimit {
+			slog.Info("credstate: OnNoCandidates fan-out cap reached",
+				"client_model", sig.ClientModel,
+				"request_id", sig.RequestID,
+				"cap", onNoCandidatesFanoutLimit,
+				"remaining_candidates", len(sig.Candidates)-dispatched,
+			)
+			break
+		}
+	}
+
+	if dispatched > 0 {
+		slog.Info("credstate: OnNoCandidates dispatched active_probe",
+			"client_model", sig.ClientModel,
+			"tenant_id", sig.TenantID,
+			"request_id", sig.RequestID,
+			"probes_dispatched", dispatched,
+			"candidates_considered", len(sig.Candidates),
+		)
+	}
 }
 
 // GetState 查询状态（三层缓存：内存 → Redis → DB）
