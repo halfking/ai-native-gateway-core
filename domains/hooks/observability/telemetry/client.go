@@ -231,6 +231,27 @@ type RequestLogEntry struct {
 	// 从请求体中提取的 base64/data-URI 附件元数据，存储到 request_logs.attachments JSONB。
 	// 附件实体文件已保存到文件系统（按 SHA256 hash 去重），此处仅记录路径、大小、类型等元信息。
 	Attachments json.RawMessage `json:"attachments,omitempty"`
+
+	// 2026-07-14 (migration 341): client-side origin metadata.
+	// ClientIP / ClientForwardedFor are populated by middleware/origin_mw.go
+	// for every business row (the columns were added by the 2026-07-11
+	// observability migration but every row on 252 was NULL — no writer
+	// existed until commit 3 of this change).
+	ClientIP           *string `json:"client_ip,omitempty"`
+	ClientForwardedFor *string `json:"client_forwarded_for,omitempty"`
+	// OriginStage labels the row by which component produced it:
+	//   self_check       — bg/credential_selfcheck.go (24h/cred daily)
+	//   node_probe       — bg/node_probe.go (5s..24h backoff)
+	//   system_health    — bg/system_health.go (30s windowed read)
+	//   business         — normal user request
+	//   probe_direct / probe_v2 / model_probe / passive_probe / manual
+	//                    — legacy values from older workers; kept valid by
+	//                      the additive CHECK constraint.
+	OriginStage *string `json:"origin_stage,omitempty"`
+	// OriginActor names the worker / actor that emitted the row, e.g.
+	//   credential-selfcheck-worker, node-probe-worker,
+	//   system-health-worker, manual:<session_user_id>
+	OriginActor *string `json:"origin_actor,omitempty"`
 }
 
 func NewClient() *Client {
@@ -673,7 +694,12 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- 2026-07-01: 附件元数据 (migration 325)。JSONB 数组，
 			-- 存储从请求体提取的 base64/data-URI 附件元数据（路径/类型/大小/hash），
 			-- 附件实体文件已落盘，此处仅记录元信息。
-			attachments
+			attachments,
+			-- 2026-07-14 (migration 341): client-side origin. client_ip / client_forwarded_for
+			-- were added by 2026-07-11-observability-fields.sql; origin_stage / origin_actor
+			-- by migration 341. All four are populated by middleware/origin_mw.go for every
+			-- business row and by the probe workers (self_check / node_probe / system_health).
+			client_ip, client_forwarded_for, origin_stage, origin_actor
 		) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
@@ -704,7 +730,9 @@ $47,
 		CAST($72 AS jsonb),
 		$73,
 		$74, $75, $76, $77, $78,
-		CAST($79 AS jsonb)
+		CAST($79 AS jsonb),
+		-- 2026-07-14 (migration 341): client-side origin.
+		$80, $81, $82, $83
 		)
 				ON CONFLICT (request_id, ts) DO UPDATE SET
 				ts = EXCLUDED.ts,
@@ -789,7 +817,14 @@ $47,
 		stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0),
 		-- 2026-07-01: 附件元数据 (migration 325)。仅在目标行尚无附件时
 		-- 写入，避免后续 upsert（如失败补写）覆盖首次提取的完整附件列表。
-		attachments = COALESCE(request_logs_hot.attachments, EXCLUDED.attachments)
+		attachments = COALESCE(request_logs_hot.attachments, EXCLUDED.attachments),
+		-- 2026-07-14 (migration 341): origin metadata. First-write-wins:
+		-- the first writer (usually the origin middleware) keeps its value;
+		-- later replays must not overwrite the real client IP / origin label.
+		client_ip           = COALESCE(request_logs_hot.client_ip, EXCLUDED.client_ip),
+		client_forwarded_for = COALESCE(request_logs_hot.client_forwarded_for, EXCLUDED.client_forwarded_for),
+		origin_stage        = COALESCE(request_logs_hot.origin_stage, EXCLUDED.origin_stage),
+		origin_actor        = COALESCE(request_logs_hot.origin_actor, EXCLUDED.origin_actor)
 	`,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
@@ -887,6 +922,16 @@ $47,
 		streamChunksSentArg(entry.StreamChunksSent),
 		// 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
 		attachmentsArg(entry.Attachments),
+		// 2026-07-14 (migration 341): client-side origin.
+		// client_ip / client_forwarded_for are written for every business
+		// row by middleware/origin_mw.go; origin_stage / origin_actor are
+		// written by the new probe workers (credential-selfcheck,
+		// node-probe, system-health). All four accept NULL (the columns
+		// are nullable) so legacy emitters don't break.
+		entry.ClientIP,
+		entry.ClientForwardedFor,
+		entry.OriginStage,
+		entry.OriginActor,
 	)
 	if err != nil {
 		return err
@@ -1097,7 +1142,15 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	   client_timeout = COALESCE($72, client_timeout),
 	   client_endpoint = COALESCE($73, client_endpoint),
 	   stream_chunk_errors = COALESCE($74, stream_chunk_errors),
-	   stream_chunks_sent = COALESCE($75, stream_chunks_sent)
+	   stream_chunks_sent = COALESCE($75, stream_chunks_sent),
+	   -- 2026-07-14 (migration 341): origin metadata. First-write-wins
+	   -- (see INSERT path rationale) — middleware/origin_mw.go sets
+	   -- client_ip / client_forwarded_for on the inbound row and the
+	   -- probe workers set origin_stage / origin_actor on probe rows.
+	   client_ip            = COALESCE($76, client_ip),
+	   client_forwarded_for = COALESCE($77, client_forwarded_for),
+	   origin_stage         = COALESCE($78, origin_stage),
+	   origin_actor         = COALESCE($79, origin_actor)
 	  FROM latest
 	 WHERE request_logs_hot.id = latest.id
 	   AND request_logs_hot.ts = latest.ts
@@ -1189,6 +1242,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.ClientEndpoint,
 		entry.StreamChunkErrors,
 		entry.StreamChunksSent,
+		// 2026-07-14 (migration 341): client-side origin.
+		entry.ClientIP,
+		entry.ClientForwardedFor,
+		entry.OriginStage,
+		entry.OriginActor,
 	)
 	if err != nil {
 		return err
