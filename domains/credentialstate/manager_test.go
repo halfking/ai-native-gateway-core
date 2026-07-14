@@ -70,14 +70,14 @@ func TestManager_UpdateOnFailure(t *testing.T) {
 	}, nil)
 
 	// 第一次失败
-	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-1", "default")
+	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-1", "default", "")
 	if triggered {
 		t.Error("should not trigger probe after 1 failure")
 	}
 
 	// 第二次失败（应该触发快速探测）
 	time.Sleep(3 * time.Second) // 等待超过2秒
-	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-2", "default")
+	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-2", "default", "")
 
 	if !triggered {
 		t.Error("should trigger probe after 2 consecutive failures")
@@ -152,7 +152,7 @@ func TestManager_UpdateOnFailure_IgnoresCanceled(t *testing.T) {
 	initialFails := state.ConsecutiveFails
 
 	// 用户取消 - 不应计入错误统计
-	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindCanceled, "req-1", "default")
+	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindCanceled, "req-1", "default", "")
 
 	// 验证状态未变化
 	state, _ = m.GetState(ctx, 1, "test-model")
@@ -170,7 +170,7 @@ func TestManager_UpdateOnFailure_IgnoresCanceled(t *testing.T) {
 	}
 
 	// 验证真实错误仍然会被计入
-	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-2", "default")
+	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-2", "default", "")
 	state, _ = m.GetState(ctx, 1, "test-model")
 
 	if state.ConsecutiveFails != initialFails+1 {
@@ -205,8 +205,8 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 	// 1st and 2nd stream-timeout failures: below the 3-failure threshold,
 	// no cooling should be scheduled (RecoverAt stays nil, cache not
 	// invalidated). These two alone must NOT trip the new fast-cooling.
-	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-1", "default")
-	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-2", "default")
+	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-1", "default", "")
+	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-2", "default", "")
 	s, _ := m.GetState(ctx, credID, model)
 	if s == nil {
 		t.Fatal("expected state after 2 failures")
@@ -225,7 +225,7 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 	// ~5min RecoverAt and invalidate the candidate cache so the router
 	// drops the credential on its next resolve.
 	before := time.Now()
-	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-3", "default")
+	m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout, "req-3", "default", "")
 	s, _ = m.GetState(ctx, credID, model)
 	if s == nil {
 		t.Fatal("expected state after 3 failures")
@@ -259,6 +259,80 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 		t.Fatalf("consecutive_fails should reset to 0 after success, got %d", s.ConsecutiveFails)
 	}
 }
+
+// TestManager_FreeCredentialTransientTolerated 验证 2026-07-14 修复：
+// billing_mode="free" 的凭据在 transient 错误（timeout/stream_timeout/network/
+// rate_limit/upstream_down）连续失败时，不进入 cooling（Available 保持 true、
+// RecoverAt 不设、候选缓存不失效），仅靠 RecentSuccessRate 软降权。产品原则：
+// 50% 成功率的免费凭据"有总比没有强"。对照上面的 StreamTimeoutCoolingAfterThree
+// —— 那个用 billingMode="" (paid)，3 次 stream_timeout 后必 cooling。
+//
+// 纯内存测试（无 DB/Redis）。
+func TestManager_FreeCredentialTransientTolerated(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager(nil, nil)
+
+	cacheInvalidated := false
+	m.SetProbeSubmitter(func(credID int) {}, nil)
+	m.SetInvalidateCandidateCache(func() { cacheInvalidated = true })
+
+	credID, model := 42, "nim-test-model"
+
+	// 连续 4 次 stream-timeout（超过 paid 的 3 次阈值），billingMode="free"。
+	for i := 1; i <= 4; i++ {
+		m.UpdateOnFailure(ctx, credID, model, errorsx.KindStreamTimeout,
+			"req-"+itoa(i), "default", "free")
+	}
+
+	s, _ := m.GetState(ctx, credID, model)
+	if s == nil {
+		t.Fatal("expected state after 4 failures")
+	}
+
+	// 核心断言：免费凭据 transient 不硬剔。
+	if !s.Available {
+		t.Fatal("free credential must remain Available=true after transient failures (soft demote only)")
+	}
+	if s.RecoverAt != nil {
+		t.Fatalf("free credential must NOT get a cooling RecoverAt, got %v", s.RecoverAt)
+	}
+	if cacheInvalidated {
+		t.Fatal("candidate cache must NOT be invalidated for free credential transient failures")
+	}
+	// 但观测信号保留：失败计数累加，供 RecentSuccessRate / 软降权感知。
+	if s.ConsecutiveFails != 4 {
+		t.Fatalf("consecutive_fails should still increment (observation signal), got %d", s.ConsecutiveFails)
+	}
+	if s.LastError != string(errorsx.KindStreamTimeout) {
+		t.Fatalf("LastError should record the kind, got %q", s.LastError)
+	}
+}
+
+// TestManager_FreeCredentialPermanentStillHardExcludes 验证免费凭据对永久错误
+// （auth/model_not_found/quota_permanent）仍硬剔——坏 key 不该拖垮路由。
+func TestManager_FreeCredentialPermanentStillHardExcludes(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager(nil, nil)
+	m.SetProbeSubmitter(func(credID int) {}, nil)
+	m.SetInvalidateCandidateCache(func() {})
+
+	credID, model := 43, "nim-test-model"
+
+	// 永久错误连续 2 次（达到 permanent 阈值）。
+	m.UpdateOnFailure(ctx, credID, model, errorsx.KindAuth, "req-1", "default", "free")
+	m.UpdateOnFailure(ctx, credID, model, errorsx.KindAuth, "req-2", "default", "free")
+
+	s, _ := m.GetState(ctx, credID, model)
+	if s == nil {
+		t.Fatal("expected state after 2 auth failures")
+	}
+	if s.Available {
+		t.Fatal("free credential MUST be hard-excluded (Available=false) after permanent (auth) failure")
+	}
+}
+
+// itoa avoids importing strconv just for a 1..N loop counter in the test.
+func itoa(i int) string { return string(rune('0'+i)) }
 
 // TestManager_TieredReprobeUsesBackoff verifies the BUG #2 fix
 // (2026-07-13): a positive backoff is honored at runtime, replacing an

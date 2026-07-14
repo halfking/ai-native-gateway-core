@@ -40,15 +40,20 @@ type CommonExecutor struct {
 	// protocol-specific executor at composition time.
 	providerID   int
 	credentialID int
+	// billingMode mirrors the bound candidate's model_offers.billing_mode
+	// so RunWithCredential can honor freeCredentialsTolerateTransient.
+	// Empty = paid (default), keeps legacy behavior.
+	billingMode string
 }
 
 // SetProviderCredential binds the CommonExecutor instance to a
 // specific (providerID, credentialID) pair so RunWithCredential can
 // record circuit success/failure. Called by the surrounding Executor
 // before invoking a protocol-specific executor.
-func (c *CommonExecutor) SetProviderCredential(providerID, credentialID int) {
+func (c *CommonExecutor) SetProviderCredential(providerID, credentialID int, billingMode string) {
 	c.providerID = providerID
 	c.credentialID = credentialID
+	c.billingMode = billingMode
 }
 
 // AttemptFunc is the per-attempt callback passed to RunWithCredential.
@@ -93,7 +98,10 @@ func (c *CommonExecutor) RunWithCredential(ctx context.Context, attempt AttemptF
 			return err
 		}
 		if c.Circuit != nil {
-			c.Circuit.RecordFailure(c.providerID, c.credentialID, classifyKind(err))
+			kind := classifyKind(err)
+			if !freeCredentialsTolerateTransient(c.billingMode, kind) {
+				c.Circuit.RecordFailure(c.providerID, c.credentialID, kind)
+			}
 		}
 	}
 	return errors.New("exhausted retries")
