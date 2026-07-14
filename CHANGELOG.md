@@ -63,6 +63,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/changelogs/2026-07-15-oss-s3-storage-canonical.md` for the design
   notes and known limitations.
 
+### Storage backend boot wiring (Phase 3D)
+
+- Wires `domains/attachments/`'s pluggable storage matrix into
+  `cmd/gateway/main.go` boot so the Phase 3A/3B adapters are not dead
+  code. New helper `initAttachmentStorage(defaultBaseDir)` selects a
+  backend based on `LLM_GATEWAY_STORAGE_TYPE`:
+  - Unset / `filesystem` / `local` / `fs` (case-insensitive) → existing
+    LocalStorageBackend behaviour, unchanged.
+  - `oss` / `s3` / `minio` / `cloudreve` → opt-in to the canonical
+    backend constructed via
+    `attachments.LoadStorageConfigFromEnv` +
+    `NewStorageBackendFromConfig` + `NewStorageWithBackend`.
+  - Anything else → Warn + degrade to LocalStorageBackend.
+- Fail-safe semantics: any boot-time error (typo type / missing fields /
+  missing build tag / unreachable backend) logs a WARN and falls back
+  to LocalStorageBackend. Gateway is **never** blocked by attachment
+  storage failure; storage errors surface at first write instead.
+- New files: `cmd/gateway/attachment_storage_init.go` (~165 lines,
+  fail-safe helper + alias / opt-in tables + build-tag hint map) and
+  `cmd/gateway/attachment_storage_init_test.go` (~290 lines, 12 tests /
+  5 sub-tests).
+- `cmd/gateway/main.go` lines 1190–1224: replaced the hardcoded
+  `attachments.NewStorage(attachmentDir)` block with a single
+  `initAttachmentStorage` call + the same logging path. No other
+  reference to `attachmentStorage` changed.
+- 6 tag-combo × {build, vet, test} matrix verified: `""`,
+  `cloudreve_storage`, `storage_oss`, `storage_s3`,
+  `cloudreve_storage,storage_oss`, `cloudreve_storage,storage_s3` —
+  all green. New tests cover default path, all alias spellings,
+  unknown-type fallback, OSS/S3 validation failure, max-size
+  application, max-size parse-failure ignored, nested-dir creation,
+  and build-tag mapping hints.
+- Deployment: this commit is safe to roll to 245/154 (zero behaviour
+  change without the env var set). Real OSS/S3/Cloudreve enablement
+  (changing `.env` + rebuild with the right tag) is a separate,
+  business-owner-reviewed change — see
+  `docs/changelogs/2026-07-15-storage-backend-boot-wiring.md` for the
+  full design rationale and rollout plan.
+
 ### Storage adapter deploy verification (245 / 154 live smoke test)
 
 - Both `f17c97c85` (Cloudreve) and `ac8519d62` (OSS/S3 canonical) are
