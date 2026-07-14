@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -343,3 +344,48 @@ func TestMergeRequestLogBatch_MultipleUpdatesCoalesce(t *testing.T) {
 // strPtrT is a small helper to avoid pulling strings package
 // indirection into this section.
 func strPtrT(s string) *string { return &s }
+
+// TestRequestLogEntry_ApplyOriginFromContext verifies the helper
+// reads context values written by middleware/origin_mw.go and copies
+// them onto the entry. The test covers the four new fields, the
+// nil-safe path, and the first-write-wins precedence rule.
+func TestRequestLogEntry_ApplyOriginFromContext(t *testing.T) {
+	t.Run("populates all four fields from ctx", func(t *testing.T) {
+		ctx := context.Background()
+		ctx = context.WithValue(ctx, originCtxKey("origin.stage"), "node_probe")
+		ctx = context.WithValue(ctx, originCtxKey("origin.actor"), "node-probe-worker")
+		ctx = context.WithValue(ctx, originCtxKey("origin.client_ip"), "203.0.113.5")
+		ctx = context.WithValue(ctx, originCtxKey("origin.xff"), "203.0.113.5, 10.0.0.1")
+		var e RequestLogEntry
+		e.ApplyOriginFromContext(ctx)
+		if e.OriginStage == nil || *e.OriginStage != "node_probe" {
+			t.Fatalf("stage: %v", e.OriginStage)
+		}
+		if e.OriginActor == nil || *e.OriginActor != "node-probe-worker" {
+			t.Fatalf("actor: %v", e.OriginActor)
+		}
+		if e.ClientIP == nil || *e.ClientIP != "203.0.113.5" {
+			t.Fatalf("client_ip: %v", e.ClientIP)
+		}
+		if e.ClientForwardedFor == nil || *e.ClientForwardedFor != "203.0.113.5, 10.0.0.1" {
+			t.Fatalf("xff: %v", e.ClientForwardedFor)
+		}
+	})
+
+	t.Run("nil ctx and nil entry are safe", func(t *testing.T) {
+		var e *RequestLogEntry
+		e.ApplyOriginFromContext(context.Background()) // must not panic
+		e = &RequestLogEntry{}
+		e.ApplyOriginFromContext(nil) // must not panic
+	})
+
+	t.Run("first-write-wins: pre-set fields are not overwritten", func(t *testing.T) {
+		ctx := context.Background()
+		ctx = context.WithValue(ctx, originCtxKey("origin.stage"), "business")
+		e := RequestLogEntry{OriginStage: strPtrT("node_probe")}
+		e.ApplyOriginFromContext(ctx)
+		if e.OriginStage == nil || *e.OriginStage != "node_probe" {
+			t.Fatalf("OriginStage should keep pre-set value, got %v", e.OriginStage)
+		}
+	})
+}

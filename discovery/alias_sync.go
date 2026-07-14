@@ -156,6 +156,11 @@ func (s *AliasSyncService) cleanOrphanedAliases(ctx context.Context, result *Ali
 		}
 		result.TotalAliases++
 
+		// 2026-07-14: model_aliases.raw_name is now guaranteed lowercase at
+		// write time (modelcatalog + discovery + rebuildAliasIndex). The
+		// EqualFold check stays for legacy rows still mixed-case, and
+		// remains safe (it just won't match the canonical since both are
+		// already lowercase after migration 395 backfill).
 		if r.CanonicalID == 0 || r.CanonicalName == "" {
 			toDisable = append(toDisable, r.ID)
 			continue
@@ -181,8 +186,11 @@ func (s *AliasSyncService) syncCanonicalNames(ctx context.Context, result *Alias
 		CanonicalID int
 	}
 
+	// 2026-07-14: model_aliases.raw_name is persisted lowercase (see
+	// modelcatalog + rebuildAliasIndex), so we no longer wrap it in
+	// lower() here.
 	rows, err := s.db.Query(ctx, `
-		SELECT lower(raw_name), canonical_id
+		SELECT raw_name, canonical_id
 		FROM model_aliases
 		WHERE status = 'active'
 	`)
@@ -213,11 +221,16 @@ func (s *AliasSyncService) syncCanonicalNames(ctx context.Context, result *Alias
 }
 
 func (s *AliasSyncService) rebuildAliasIndex(ctx context.Context, result *AliasSyncResult) error {
+	// 2026-07-14: provider_models.canonical_raw_name (added in migration
+	// 395) is the lowercased client-facing key and is now what we mirror
+	// into model_aliases.raw_name. raw_model_name is preserved for the
+	// upstream HTTP body and stays in its original casing.
 	err := s.db.Exec(ctx, `
 		INSERT INTO model_aliases (raw_name, canonical_id, status)
-		SELECT DISTINCT lower(mo.raw_model_name), mo.canonical_id, 'active'
+		SELECT DISTINCT mo.canonical_raw_name, mo.canonical_id, 'active'
 		FROM model_offers mo
 		WHERE mo.available = TRUE
+		  AND mo.canonical_raw_name IS NOT NULL
 		ON CONFLICT (raw_name) DO NOTHING
 	`)
 	if err != nil {
