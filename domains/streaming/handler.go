@@ -1006,7 +1006,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
+	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
 	if err != nil {
 		logCtx.CapturePartialBody(bodyBytes)
 		logCtx.SetError("body_read_error", fmt.Sprintf("failed to read request body: %v", err))
@@ -2186,6 +2186,7 @@ func (h *ChatHandler) serveWithExecutor(
 		writeErrorJSONWithDebug(w, http.StatusBadGateway, requestID, i18n.T(r.Context(), i18n.MsgProviderError), "server_error", "provider_error", debugInfo)
 		return
 	}
+	logCtx.markAttachmentsSent()
 	if preStream != nil {
 		preStream.stop()
 		preStream = nil
