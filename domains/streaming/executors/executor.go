@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -497,9 +498,15 @@ type Executor struct {
 	// classified error kinds. KindCanceled (user cancellation) is automatically
 	// skipped by the manager to avoid false positives.
 	// Nil disables credential state tracking (preserves legacy behavior).
+	//
+	// 2026-07-14: OnNoCandidates fans out per-candidate probes when the
+	// router returns zero available nodes, closing the gap where
+	// "no_candidate" failures produced no follow-up probe history
+	// (minimax-m3 incident).
 	StateObserver interface {
 		UpdateOnSuccess(ctx context.Context, credID int, model string, latencyMs int, requestID string)
 		UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID, tenantID, billingMode string)
+		OnNoCandidates(ctx context.Context, sig credentialstate.NoCandidatesSignal)
 	}
 
 	// URSM (2026-07-03): 统一路由状态管理器，替代分散的状态管理逻辑。
@@ -603,6 +610,14 @@ type ExecParams struct {
 	// mode (legacy "default" tenant); the Memora user_id falls back to the
 	// pre-v7 "k:<api_key_id>:<task_id>" format so existing tests stay green.
 	TenantID string
+	// RequestID is the per-request id used in request_logs.request_id and
+	// surfaced on the dashboard swim lane. 2026-07-14: required so the
+	// no-candidates fallback can hand it to ActiveProbeWorker as the
+	// probe's parent_request_id — without this the live-stream probe row
+	// would have no way to correlate with the failed business request.
+	// The handler passes the same value it uses for request_logs insert;
+	// executor does not generate one itself.
+	RequestID string
 	// AppID is the application ID from keyInfo.ApplicationID.
 	// 2026-07-07: Used by multi-level sticky routing (L1/L2/L3).
 	AppID *int
@@ -952,6 +967,49 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			"client_model", params.ClientModel,
 			"reasons", reasonCounts,
 		)
+		// 2026-07-14: previously the no-candidates path stopped here with
+		// only a failed request_logs row to show for it. The realtime
+		// dashboard would render the failure tile but no follow-up probe
+		// ever fired, leaving operators to investigate the outage from
+		// request_logs alone. We now fan the signal out to the
+		// credential-state manager which will trigger ActiveProbeWorker
+		// for each candidate with a real credential_id. Probes land in
+		// request_logs with task_type='probe_triggered' and show up in
+		// the live stream alongside the failed request.
+		//
+		// We attach the original failed request_id as the probe's
+		// parent_request_id so /request-logs can correlate them. The
+		// billing_mode is read off the first candidate (best effort) —
+		// the manager doesn't currently need per-cred billing info to
+		// dispatch the probe, only to decide the failure-handling
+		// policy on the result.
+		if e.StateObserver != nil && len(params.Candidates) > 0 && params.RequestID != "" {
+			noCands := make([]credentialstate.NoCandidatesCandidate, 0, len(params.Candidates))
+			for _, c := range params.Candidates {
+				if c.CredentialID == 0 {
+					continue
+				}
+				noCands = append(noCands, credentialstate.NoCandidatesCandidate{
+					CredentialID: c.CredentialID,
+					ProviderID:   c.ProviderID,
+					RawModel:     c.RawModel,
+					BillingMode:  c.BillingMode,
+				})
+			}
+			// Detached context: this runs on the request hot-path and
+			// the upstream caller (handler.go) may cancel r.Context()
+			// before probes finish dispatching. Use Background with a
+			// short timeout so the manager has enough headroom to enqueue
+			// all probes but never blocks longer than the network RTT.
+			probeCtx, probeCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			e.StateObserver.OnNoCandidates(probeCtx, credentialstate.NoCandidatesSignal{
+				ClientModel: params.ClientModel,
+				TenantID:    params.TenantID,
+				RequestID:   params.RequestID,
+				Candidates:  noCands,
+			})
+			probeCancel()
+		}
 		if params.AuditBuilder != nil {
 			params.AuditBuilder.DecisionTrace(trace)
 		}

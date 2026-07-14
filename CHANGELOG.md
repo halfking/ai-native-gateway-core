@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-14
 
+### Responses API tool-call continuity
+
+- Preserve `function_call` and `function_call_output` IDs when converting
+  `/v1/responses` input into Chat Completions messages. This prevents
+  gpt-5.6-luna from receiving an orphaned tool output and returning
+  `tool call id mismatch`.
+
+### Live request stream: idle markers, probe on no-candidates, swim-lane flicker
+
+- **Active probe on no-candidates (regression fix).** 2026-07-14 minimax-m3
+  incident: every request for ~30 min returned "no available nodes" with no
+  follow-up probe history. The router path now propagates a `NoCandidatesSignal`
+  to `credentialstate.Manager.OnNoCandidates` which fans out per-candidate
+  `ActiveProbeWorker.Submit` calls (8-cap, dedup, 2-second flash protection).
+  The probe row in `request_logs` carries the original failed request's
+  `parent_request_id` so `/request-logs` can correlate. New
+  `ExecParams.RequestID` field plumbs the per-request id from
+  `handler.go`/`responses.go`/`messages.go`.
+- **Idle marker threshold raised 60s → 5 min.** Lanes now show "空闲 X 分钟"
+  only after a genuine 5-minute silence, not after the next request's normal
+  inter-arrival gap. `idleThresholdSeconds = 300` (admin/live_stream_redis_store.go).
+  Every idle marker now carries `error_kind="no_traffic_5min"` and
+  `failure_stage="idle"` so the dashboard can render the explicit reason in
+  the tile + tooltip.
+- **Swim-lane flicker fix (frontend).** Previous `mergeDelta` did
+  `s.dimensions[dim] = delta.changed_lanes[dim]` — replacing the entire
+  lane array per dimension and triggering Vue TransitionGroup re-mounts on
+  every snapshot. New `mergeDelta` mutates lanes in place by `lane.id` and
+  appends new lanes to the tail; unchanged lanes keep their component
+  identity so the dashboard no longer flickers. 7 unit tests in
+  `web/src/composables/liveStreamStore.test.ts` lock the behaviour.
+- **Same request_id re-arrival animates cleanly.** When an in-progress
+  request transitions to success/failure, the tile is now `splice()`-ed
+  out and `push()`-ed back in (instead of overwritten in place), so
+  SwimLane.vue's `swim-tile-leave-active` / `swim-tile-enter-active`
+  transitions run — the operator sees a "blue tile slides out, green
+  tile slides in" animation instead of a silent colour swap.
+- **Explicit error-reason strip on RequestTile.** Probe failures and idle
+  markers now surface their typed reason ("5xx", "rate_limit", "空闲 5 分钟")
+  in a small line below the model label. New `request-tile__reason`,
+  `request-tile__reason--idle`, `request-tile__reason--probe` styles.
+- **Lane sort stability.** `buildLiveStreamLanes` already sorted by
+  `stats.Total DESC, lane.id ASC`; the inline comment now explains why
+  the tie-breaker matters (it stops the back-and-forth lane swap that
+  contributed to the flicker report).
+- **New regression tests.**
+  - `TestManager_OnNoCandidates_FansOutActiveProbe` (cap, dedup,
+    phantom-id filter).
+  - `TestManager_OnNoCandidates_CapRespected` (8-pair cap).
+  - `TestManager_OnNoCandidates_NilSubmitter` (no-panic fallback).
+  - `TestLiveStreamRedisStore_IdleMarkerWritesMainQueue` extended to
+    assert `error_kind="no_traffic_5min"` + `failure_stage="idle"`.
+  - `TestLiveStreamRedisStore_IdleThresholdIs5Min` locks the 300s
+    constant so a future "tighten to 30s" tweak can't silently regress.
+
 ### Sessions i18n leaks (P2)
 
 - Fixed Chinese leaks in `sessions.ts` for de-DE, fr-FR, es-ES, ar-SA, ja-JP, en-US, and zh-TW (`management`/`turns`, audit flat keys, root config).
@@ -17,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Distribution business-process alignment
 
 - Added the user agreement and data-processing authorization for runtime telemetry and controlled update notifications.
+- Added opt-in runtime telemetry preferences and immutable consent events for activated instances; telemetry remains disabled by default.
 - Enforced explicit terms acceptance for Trial requests from browser and installer clients.
 - Persisted Trial agreement version, acceptance time, source, and License association atomically with issuance.
 - Added business-process standards, code-verification addenda, and an honest completion assessment with release blockers.

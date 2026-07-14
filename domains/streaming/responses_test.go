@@ -67,6 +67,51 @@ func TestConvertResponsesToChatBody_PreservesExtraParams(t *testing.T) {
 	assert.Equal(t, true, result["parallel_tool_calls"])
 }
 
+func TestConvertResponsesToChatBody_PreservesFunctionCallChain(t *testing.T) {
+	var req responsesRequestBody
+	err := json.Unmarshal([]byte(`{
+		"model":"gpt-5.6-luna",
+		"input":[
+			{"role":"user","content":"look up the weather"},
+			{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Shanghai\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"{\"temperature\":28} "},
+			{"role":"user","content":"thanks"}
+		]
+	}`), &req)
+	require.NoError(t, err)
+
+	result := convertResponsesToChatBody(&req)
+	messages, ok := result["messages"].([]any)
+	require.True(t, ok)
+	require.Len(t, messages, 4)
+
+	assistant := messages[1].(map[string]any)
+	toolCalls := assistant["tool_calls"].([]any)
+	require.Len(t, toolCalls, 1)
+	toolCall := toolCalls[0].(map[string]any)
+	assert.Equal(t, "call_1", toolCall["id"])
+	function := toolCall["function"].(map[string]any)
+	assert.Equal(t, "get_weather", function["name"])
+	assert.Equal(t, `{"city":"Shanghai"}`, function["arguments"])
+
+	tool := messages[2].(map[string]any)
+	assert.Equal(t, "tool", tool["role"])
+	assert.Equal(t, "call_1", tool["tool_call_id"])
+	assert.Equal(t, `{"temperature":28} `, tool["content"])
+}
+
+func TestConvertResponsesInputItem_UsesItemIDWhenCallIDMissing(t *testing.T) {
+	message, ok := convertResponsesInputItem(map[string]any{
+		"type":      "function_call",
+		"id":        "fc_1",
+		"name":      "lookup",
+		"arguments": "{}",
+	})
+	require.True(t, ok)
+	toolCalls := message["tool_calls"].([]any)
+	assert.Equal(t, "fc_1", toolCalls[0].(map[string]any)["id"])
+}
+
 func TestConvertChatResponseToResponses(t *testing.T) {
 	chatResp := map[string]any{
 		"choices": []map[string]any{{
