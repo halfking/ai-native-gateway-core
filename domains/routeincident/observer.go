@@ -239,6 +239,12 @@ var nonRoutingFailureKinds = map[string]struct{}{
 	"forbidden":            {},
 	"rate_limited_client":  {},
 	"context_length_input": {}, // user supplied too many tokens
+	// 2026-07-15: empty-stream / benign-EOF signals are upstream quirks
+	// (e.g. MiniMax returns no tokens), not a routing miss. detectEmpty-
+	// StreamResponse marks these on the reqLog; without excluding them a
+	// 3-streak opens a spurious active incident and pollutes the swim lane.
+	"empty_response":        {},
+	"upstream_empty_response": {},
 }
 
 func isNonRoutingFailure(e *telemetry.RequestLogEntry) bool {
