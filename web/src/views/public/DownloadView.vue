@@ -111,29 +111,45 @@ onMounted(load)
       </div>
 
       <el-card shadow="never" class="dl-extra">
-        <h3>{{ t('public.download.offlineTools') }}</h3>
-        <el-button link type="primary" @click="router.push('/offline-activation')">
-          {{ t('public.download.offlineLink') }}
-        </el-button>
-        <el-button link type="primary" @click="router.push('/support')">
-          {{ t('public.download.supportUs') }}
-        </el-button>
+        <h3>{{ t('public.download.nextSteps') }}</h3>
+        <ol class="dl-steps">
+          <li>{{ t('public.download.nextStepInstall') }}</li>
+          <li>{{ t('public.download.nextStepActivate') }}</li>
+        </ol>
+        <div class="dl-actions">
+          <el-button type="primary" @click="router.push('/activate')">
+            {{ t('public.download.activateLink') }}
+          </el-button>
+          <el-button @click="router.push('/offline-activation')">
+            {{ t('public.download.offlineLink') }}
+          </el-button>
+          <el-button link type="primary" @click="router.push('/support')">
+            {{ t('public.download.supportUs') }}
+          </el-button>
+        </div>
       </el-card>
     </div>
   </PublicPortalLayout>
 </template>
 
 <style scoped>
-.dl-page h1 { margin: 0 0 0.5rem; font-size: 1.75rem; color: #0f172a; }
-.dl-sub { color: #64748b; margin-bottom: 1.5rem; }
+.dl-page h1 { margin: 0 0 0.5rem; font-size: 1.75rem; color: var(--text, #e8eaed); }
+.dl-sub { color: var(--text-secondary, #94a3b8); margin-bottom: 1.5rem; }
 .dl-meta { margin-bottom: 1.5rem; }
 .dl-meta__row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
-.dl-hint { margin: 0.75rem 0 0; color: #64748b; font-size: 0.875rem; }
+.dl-hint { margin: 0.75rem 0 0; color: var(--text-secondary, #94a3b8); font-size: 0.875rem; }
 .dl-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
 .dl-card h3 { margin: 0 0 0.5rem; font-size: 1rem; }
-.dl-file { font-family: monospace; font-size: 0.8rem; color: #475569; word-break: break-all; }
-.dl-size, .dl-sha { font-size: 0.8rem; color: #64748b; }
+.dl-file { font-family: monospace; font-size: 0.8rem; color: var(--text-secondary, #94a3b8); word-break: break-all; }
+.dl-size, .dl-sha { font-size: 0.8rem; color: var(--text-secondary, #64748b); }
 .dl-actions { margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .dl-extra { margin-top: 2rem; }
-.dl-extra h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.dl-extra h3 { margin: 0 0 0.75rem; font-size: 1rem; }
+.dl-steps {
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
+  color: var(--text-secondary, #94a3b8);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
 </style>

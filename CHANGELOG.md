@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-15
 
-### Comprehensive test fixes (local R112 Docker) — round 2
+### Guest UI — unified header & deploy flow (245)
+
+- **`GuestHeader`**: 40px logo, brand title「AI-Native 组织核心网关」, nav links
+  (home / download / support / offline activation / activate), login entry.
+- **`DeployFlowSection`**: four-step download → install → activate → sign-in
+  on landing page, wired to existing license / activation routes.
+- **Layout**: public portal routes share guest chrome; fixed auto login modal
+  on public home/download paths.
+
 
 After pulling origin/main (27 new commits including Cloudreve / OSS / S3
 storage adapters, operational dashboard panel, runtime metrics / alerts

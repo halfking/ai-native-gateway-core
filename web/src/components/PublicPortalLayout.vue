@@ -4,91 +4,59 @@ import { useRouter } from 'vue-router'
 
 const { t } = useI18n()
 const router = useRouter()
-
-const links = [
-  { path: '/', labelKey: 'public.layout.home' },
-  { path: '/download', labelKey: 'public.layout.download' },
-  { path: '/support', labelKey: 'public.layout.support' },
-  { path: '/offline-activation', labelKey: 'public.layout.offline' },
-  { path: '/activate', labelKey: 'public.download.activateLink' },
-]
 </script>
 
 <template>
   <div class="pub-layout">
-    <header class="pub-header">
-      <router-link to="/" class="pub-brand">KX Gateway</router-link>
-      <nav class="pub-nav">
-        <router-link
-          v-for="link in links"
-          :key="link.path"
-          :to="link.path"
-          class="pub-nav__link"
-          active-class="pub-nav__link--active"
-        >
-          {{ t(link.labelKey) }}
-        </router-link>
-      </nav>
-    </header>
     <main class="pub-main">
       <slot />
     </main>
     <footer class="pub-footer">
-      <span>LLM Gateway · {{ t('landing.kicker') }}</span>
-      <el-button link type="primary" @click="router.push('/support')">{{ t('public.layout.support') }}</el-button>
+      <span>{{ t('landing.brandTitle') }} · {{ t('landing.kicker') }}</span>
+      <div class="pub-footer__links">
+        <el-button link type="primary" @click="router.push('/activate')">
+          {{ t('public.download.activateLink') }}
+        </el-button>
+        <el-button link type="primary" @click="router.push('/support')">
+          {{ t('public.layout.support') }}
+        </el-button>
+      </div>
     </footer>
   </div>
 </template>
 
 <style scoped>
 .pub-layout {
-  min-height: 100vh;
+  min-height: calc(100vh - 69px);
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, #0f172a 0%, #1e293b 40%, #f8fafc 40%);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.35) 0%, transparent 280px);
 }
-.pub-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 2rem;
-  color: #e2e8f0;
-}
-.pub-brand {
-  font-weight: 700;
-  font-size: 1.125rem;
-  color: #fff;
-  text-decoration: none;
-}
-.pub-nav {
-  display: flex;
-  gap: 1.25rem;
-  flex-wrap: wrap;
-}
-.pub-nav__link {
-  color: #94a3b8;
-  text-decoration: none;
-  font-size: 0.9rem;
-}
-.pub-nav__link--active,
-.pub-nav__link:hover {
-  color: #fff;
-}
+
 .pub-main {
   flex: 1;
   max-width: 960px;
   width: 100%;
   margin: 0 auto;
-  padding: 2rem 1.5rem 3rem;
+  padding: 1.5rem 1.5rem 2rem;
 }
+
 .pub-footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
   padding: 1rem 2rem;
-  border-top: 1px solid #e2e8f0;
-  background: #fff;
-  color: #64748b;
+  border-top: 1px solid var(--border, #2a2d3a);
+  background: var(--panel, #1a1d27);
+  color: var(--text-secondary, #8b949e);
   font-size: 0.875rem;
+}
+
+.pub-footer__links {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
 }
 </style>
