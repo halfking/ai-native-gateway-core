@@ -91,7 +91,7 @@ func (s *CatalogService) BuildCatalog(ctx context.Context) (*CatalogResponse, er
 
 	gitRepo := os.Getenv("GIT_REPO_URL")
 	if gitRepo == "" {
-		gitRepo = "https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go"
+		gitRepo = "https://github.com/halfking/SI-LLM-Gateway"
 	}
 	gitBranch := os.Getenv("GIT_REPO_BRANCH")
 	if gitBranch == "" {
@@ -101,17 +101,22 @@ func (s *CatalogService) BuildCatalog(ctx context.Context) (*CatalogResponse, er
 	if docsURL == "" {
 		docsURL = "https://llmgo.kxpms.cn/docs"
 	}
+	contactEmail := os.Getenv("CONTACT_EMAIL")
+	if contactEmail == "" {
+		contactEmail = "huangxutao@kxpms.cn"
+	}
 
 	return &CatalogResponse{
-		Version:     version,
-		BuildSeq:    buildSeq,
-		Channel:     "stable",
-		ReleaseDate: releaseDate,
-		Items:       items,
-		Supporters:  supporters,
-		GitRepoURL:  gitRepo,
-		GitBranch:   gitBranch,
-		DocsURL:     docsURL,
+		Version:      version,
+		BuildSeq:     buildSeq,
+		Channel:      "stable",
+		ReleaseDate:  releaseDate,
+		Items:        items,
+		Supporters:   supporters,
+		GitRepoURL:   gitRepo,
+		GitBranch:    gitBranch,
+		DocsURL:      docsURL,
+		ContactEmail: contactEmail,
 	}, nil
 }
 

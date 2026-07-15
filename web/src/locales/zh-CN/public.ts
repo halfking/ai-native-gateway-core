@@ -26,6 +26,13 @@ export default {
     copyRepo: '复制仓库地址',
     gitBranch: '默认分支',
   },
+  contact: {
+    title: '开源地址与联系',
+    desc: '欢迎访问 GitHub 仓库、提交 Issue，或通过邮件联系我们。',
+    repo: '开源地址',
+    email: '联系邮件',
+    copyEmail: '复制邮箱',
+  },
   support: {
     title: '支持 AI-Native 组织核心网关开源社区',
     subtitle: '让每家企业都用得起的 LLM 网关 — 您的捐赠帮助我们持续维护与改进',
@@ -52,7 +59,7 @@ export default {
     supporterCount: '已有 {n} 位支持者',
     creating: '创建订单中…',
     created: '感谢您的支持！',
-    stubHint: '占位支付模式：可点击下方确认完成（仅开发环境）',
+    stubHint: '扫码支付后如有疑问，请邮件联系 huangxutao@kxpms.cn（开发环境可点击下方确认）',
     confirmStub: '我已支付（开发确认）',
     goDownload: '前往下载',
   },

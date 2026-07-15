@@ -25,6 +25,13 @@ export default {
     copyRepo: 'Copy repo URL',
     gitBranch: 'Default branch',
   },
+  contact: {
+    title: 'Open source & contact',
+    desc: 'Visit our GitHub repo or reach us by email.',
+    repo: 'Repository',
+    email: 'Contact email',
+    copyEmail: 'Copy email',
+  },
   support: {
     title: 'Support the AI-Native Organization Core Gateway community',
     subtitle: 'Your donation helps us maintain and improve the open-source gateway',
@@ -51,7 +58,7 @@ export default {
     supporterCount: '{n} supporters so far',
     creating: 'Creating order…',
     created: 'Thank you for your support!',
-    stubHint: 'Stub payment: click confirm below (dev only)',
+    stubHint: 'After paying, contact huangxutao@kxpms.cn if needed (dev: confirm below)',
     confirmStub: 'Mark as paid (dev)',
     goDownload: 'Go to download',
   },

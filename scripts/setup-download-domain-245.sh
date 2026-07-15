@@ -43,7 +43,7 @@ remote "grep -q '^DOWNLOAD_ARTIFACT_ROOT=' /opt/llm-gateway-go/.env 2>/dev/null 
   grep -q '^DOWNLOAD_BASE_URL=' /opt/llm-gateway-go/.env 2>/dev/null || \
   echo 'DOWNLOAD_BASE_URL=https://download.kxpms.cn/llm-gateway-go' >> /opt/llm-gateway-go/.env; \
   grep -q '^GIT_REPO_URL=' /opt/llm-gateway-go/.env 2>/dev/null || \
-  echo 'GIT_REPO_URL=https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go' >> /opt/llm-gateway-go/.env"
+  echo 'GIT_REPO_URL=https://github.com/halfking/SI-LLM-Gateway' >> /opt/llm-gateway-go/.env"
 
 echo "[setup] Restarting gateway to pick up download env..."
 remote "systemctl restart llm-gateway-go && sleep 4"
