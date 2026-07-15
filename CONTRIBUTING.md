@@ -93,14 +93,14 @@ a2a/          # A2A 协议 (Q1 2027)
 
 ### 命名约定
 
-| 类别 | 约定 | 示例 |
-|------|------|------|
-| 包名 | 全小写，无下划线 | `routing`, `auth` |
-| 接口 | 方法名 + er | `Reader`, `Executor` |
-| 私有 struct | camelCase | `routePlan` |
-| 导出 struct | PascalCase | `RoutePlan` |
-| 常量 | PascalCase 或 UPPER_SNAKE | `MaxRetries` 或 `MAX_RETRIES` |
-| 环境变量 | `LLM_GATEWAY_<MODULE>_<KEY>` | `LLM_GATEWAY_DB_DSN` |
+| 类别        | 约定                           | 示例                              |
+| ----------- | ------------------------------ | --------------------------------- |
+| 包名        | 全小写，无下划线               | `routing`, `auth`             |
+| 接口        | 方法名 + er                    | `Reader`, `Executor`          |
+| 私有 struct | camelCase                      | `routePlan`                     |
+| 导出 struct | PascalCase                     | `RoutePlan`                     |
+| 常量        | PascalCase 或 UPPER_SNAKE      | `MaxRetries` 或 `MAX_RETRIES` |
+| 环境变量    | `LLM_GATEWAY_<MODULE>_<KEY>` | `LLM_GATEWAY_DB_DSN`            |
 
 ---
 
@@ -144,15 +144,15 @@ func TestExecutor_PickCandidate_AllDisabled(t *testing.T) { ... }
 
 ### Type
 
-| Type | 用途 |
-|------|------|
-| `feat` | 新功能 |
-| `fix` | Bug 修复 |
-| `docs` | 文档改动 |
+| Type         | 用途                    |
+| ------------ | ----------------------- |
+| `feat`     | 新功能                  |
+| `fix`      | Bug 修复                |
+| `docs`     | 文档改动                |
 | `refactor` | 重构（无新功能 / 修复） |
-| `test` | 测试相关 |
-| `chore` | 杂项（依赖、CI、构建） |
-| `perf` | 性能优化 |
+| `test`     | 测试相关                |
+| `chore`    | 杂项（依赖、CI、构建）  |
+| `perf`     | 性能优化                |
 
 ### Scope
 
@@ -251,7 +251,7 @@ Closes #123
 
 ## 联系方式
 
-- 项目仓库：https://github.com/halfking/SI-LLM-Gateway
+- 项目仓库：https://github.com/halfking/ai-native-gateway
 - 内部仓库：https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go
 - 内部 IM：halfking
 - 邮件：dev@internal.example.com

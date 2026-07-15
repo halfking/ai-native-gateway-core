@@ -91,7 +91,7 @@ type catalogMetaBundle struct {
 func (s *CatalogService) catalogMeta() catalogMetaBundle {
 	gitRepo := os.Getenv("GIT_REPO_URL")
 	if gitRepo == "" {
-		gitRepo = "https://github.com/halfking/SI-LLM-Gateway"
+		gitRepo = "https://github.com/halfking/ai-native-gateway"
 	}
 	gitBranch := os.Getenv("GIT_REPO_BRANCH")
 	if gitBranch == "" {

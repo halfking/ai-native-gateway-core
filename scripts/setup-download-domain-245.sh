@@ -42,7 +42,7 @@ remote "ENV=/opt/llm-gateway-go/.env; touch \"\$ENV\"; \
   for kv in \
     'DOWNLOAD_ARTIFACT_ROOT=/var/www/download/llm-gateway-go' \
     'DOWNLOAD_BASE_URL=https://download.kxpms.cn/llm-gateway-go' \
-    'GIT_REPO_URL=https://github.com/halfking/SI-LLM-Gateway' \
+    'GIT_REPO_URL=https://github.com/halfking/ai-native-gateway' \
     'CONTACT_EMAIL=huangxutao@kxpms.cn'; do \
     key=\${kv%%=*}; val=\${kv#*=}; \
     if grep -q \"^\${key}=\" \"\$ENV\" 2>/dev/null; then \
