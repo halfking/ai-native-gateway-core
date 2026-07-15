@@ -303,7 +303,12 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 		  AND NOT EXISTS (
 		      SELECT 1
 		      FROM model_probe_state mps
-		      JOIN provider_models pm ON (pm.raw_model_name = mps.raw_model_name OR pm.standardized_name = mps.raw_model_name)
+		      -- node_probe_state.raw_model_name stores the upstream raw name
+		      -- (the probe must send a name the upstream recognises), so match
+		      -- against pm.raw_model_name. The previous "OR standardized_name"
+		      -- was dead: standardized_name is lowercase+unprefixed and can
+		      -- never equal a vendor-prefixed raw value.
+		      JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
 		      JOIN credential_model_bindings cmb
 		           ON cmb.credential_id = mps.credential_id
 		          AND cmb.provider_model_id = pm.id
