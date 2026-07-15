@@ -34,7 +34,25 @@ const trialAgreed = ref(false)
 const offlineForm = ref({ signed_license: '', request_id: '', activation_code: '' })
 const lastResult = ref<ActivationResult | null>(null)
 const offlineRequestResult = ref<{ request_id: string; signed_request: string } | null>(null)
-const trialAgreementVersion = '2026-07-14'
+const trialAgreementVersion = '2026-07-15'
+
+const comparisonRows = computed(() => [
+  {
+    feature: t('customer.wizard.compare.rows.console'),
+    inactive: t('customer.wizard.compare.inactiveLimited'),
+    active: t('customer.wizard.compare.activeFull'),
+  },
+  {
+    feature: t('customer.wizard.compare.rows.api'),
+    inactive: t('customer.wizard.compare.inactiveHealth'),
+    active: t('customer.wizard.compare.activeAll'),
+  },
+  {
+    feature: t('customer.wizard.compare.rows.trial'),
+    inactive: t('customer.wizard.compare.inactiveTrial'),
+    active: t('customer.wizard.compare.activeTrial'),
+  },
+])
 
 const showDeviceLimit = computed(() =>
   lastResult.value?.need_deactivate === true
@@ -246,6 +264,26 @@ onMounted(refresh)
           {{ stateLabel }}
         </el-tag>
       </div>
+      <div v-if="status?.hardware_hash" class="device-id-row">
+        <span>{{ t('customer.wizard.deviceId.label') }}</span>
+        <code>{{ status.hardware_hash }}</code>
+        <el-button link size="small" @click="copyToClipboard(status.hardware_hash!)">
+          {{ t('customer.wizard.deviceId.copy') }}
+        </el-button>
+      </div>
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        class="flow-alert"
+        :title="t('customer.wizard.flow.title')"
+        :description="t('customer.wizard.flow.desc')"
+      />
+      <el-table :data="comparisonRows" size="small" class="compare-table">
+        <el-table-column :label="t('customer.wizard.compare.feature')" prop="feature" />
+        <el-table-column :label="t('customer.wizard.compare.inactive')" prop="inactive" />
+        <el-table-column :label="t('customer.wizard.compare.active')" prop="active" />
+      </el-table>
       <div v-if="status?.state === 'active'" class="status-summary">
         <el-descriptions :column="3" border size="small">
           <el-descriptions-item :label="t('customer.wizard.status.customer')">{{ status.customer_name || '—' }}</el-descriptions-item>
@@ -486,6 +524,10 @@ onMounted(refresh)
 }
 .device-limit-alert { margin-top: 16px; }
 .device-limit-table { margin-top: 12px; }
+.device-id-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; font-size: 13px; color: #94a3b8; }
+.device-id-row code { word-break: break-all; color: #cbd5e1; }
+.flow-alert { margin: 12px 0; }
+.compare-table { margin-top: 8px; }
 .signed-request {
   background: #f5f7fa;
   border: 1px solid #dcdfe6;

@@ -100,6 +100,11 @@ export default {
       description: '客服、HR、销售、物流四大行业模板，开箱即用的智能体方案。',
     },
   },
+  activateBanner: {
+    title: '网关尚未激活',
+    desc: '检测到本实例未绑定有效 License。点击右侧按钮打开激活向导，可在线激活或走离线流程。',
+    action: '立即激活',
+  },
   downloadCta: {
     title: '私有化部署 · 5 分钟上手',
     subtitle: '多平台离线包，无需注册即可下载；安装后免费试用 15 天',

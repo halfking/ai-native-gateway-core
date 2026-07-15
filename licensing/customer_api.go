@@ -192,6 +192,8 @@ func (api *CustomerAPI) handleTrial(c echo.Context) error {
 //	restricted— service is in restricted mode (see restricted_mode.go)
 type CustomerStatusResponse struct {
 	State            string     `json:"state"`
+	HardwareHash     string     `json:"hardware_hash,omitempty"`
+	DeviceName       string     `json:"device_name,omitempty"`
 	LicenseKey       string     `json:"license_key,omitempty"`
 	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
 	DaysRemaining    int        `json:"days_remaining,omitempty"`
@@ -223,7 +225,7 @@ func (api *CustomerAPI) handleStatus(c echo.Context) error {
 		mode = "community"
 	}
 
-	resp := CustomerStatusResponse{Mode: mode}
+	resp := CustomerStatusResponse{Mode: mode, HardwareHash: hwHash, DeviceName: defaultDeviceName("", fp)}
 
 	if lic == nil {
 		resp.State = "none"

@@ -58,6 +58,7 @@ import routingOverride from './routingOverride'
 import approval from './approval'
 import probeHealth from './probeHealth'
 import tenantModels from './tenantModels'
+import publicPortal from './public'
 
 export default {
   common,
@@ -117,6 +118,7 @@ export default {
   approval,
   probeHealth,
   tenantModels,
+  public: publicPortal,
 
 
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
@@ -9,6 +9,7 @@ import {
   getOfflineStatus,
   getOfflineResponse,
 } from '../../api/public'
+import { getLicenseStatus, createOfflineRequest } from '../../api/customer'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -20,6 +21,42 @@ const rejectReason = ref('')
 const responseJson = ref('')
 const loading = ref(false)
 const polling = ref(false)
+const hardwareHash = ref('')
+const deviceName = ref('')
+const licenseKey = ref('')
+const localRequest = ref('')
+
+async function loadDevice() {
+  try {
+    const st = await getLicenseStatus()
+    hardwareHash.value = st.hardware_hash || ''
+    deviceName.value = st.device_name || ''
+  } catch { /* optional on center portal */ }
+}
+
+onMounted(loadDevice)
+
+async function generateLocalRequest() {
+  if (!licenseKey.value.trim()) {
+    ElMessage.warning(t('public.offline.needLicenseKey'))
+    return
+  }
+  loading.value = true
+  try {
+    const res = await createOfflineRequest({
+      license_key: licenseKey.value.trim(),
+      device_name: deviceName.value || undefined,
+    })
+    localRequest.value = res.signed_request
+    content.value = res.signed_request
+    requestId.value = res.request_id
+    ElMessage.success(t('public.offline.localRequestOk'))
+  } catch (err) {
+    ElMessage.error((err as Error).message || t('public.offline.submitFailed'))
+  } finally {
+    loading.value = false
+  }
+}
 
 async function handleSubmit() {
   if (!content.value.trim()) return
@@ -97,6 +134,36 @@ async function copyResponse() {
     :kicker="t('public.layout.offline')"
   >
     <div class="off-page">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        :title="t('public.offline.deviceTitle')"
+        :description="t('public.offline.deviceDesc')"
+      />
+
+      <el-card v-if="hardwareHash" shadow="never" class="pub-card off-device">
+        <p><strong>{{ t('public.offline.deviceId') }}:</strong> <code>{{ hardwareHash }}</code></p>
+        <p v-if="deviceName"><strong>{{ t('public.offline.deviceName') }}:</strong> {{ deviceName }}</p>
+      </el-card>
+
+      <el-card shadow="never" class="pub-card off-local">
+        <h3>{{ t('public.offline.localGenTitle') }}</h3>
+        <p>{{ t('public.offline.localGenDesc') }}</p>
+        <el-form label-position="top">
+          <el-form-item :label="t('customer.wizard.step2.licenseKey')">
+            <el-input v-model="licenseKey" :placeholder="t('customer.wizard.step2.licenseKeyPlaceholder')" />
+          </el-form-item>
+          <el-form-item :label="t('customer.wizard.step2.deviceName')">
+            <el-input v-model="deviceName" :placeholder="t('customer.wizard.step2.deviceNamePlaceholder')" />
+          </el-form-item>
+        </el-form>
+        <el-button type="primary" :loading="loading" @click="generateLocalRequest">
+          {{ t('public.offline.localGenBtn') }}
+        </el-button>
+        <el-button link @click="router.push('/activate')">{{ t('public.offline.goActivate') }}</el-button>
+      </el-card>
+
       <el-steps :active="requestId ? 2 : 1" finish-status="success" simple class="off-steps">
         <el-step :title="t('public.offline.step1')" />
         <el-step :title="t('public.offline.step2')" />
@@ -143,6 +210,7 @@ async function copyResponse() {
       <el-card v-if="responseJson" shadow="never" class="pub-card off-resp">
         <pre>{{ responseJson }}</pre>
         <el-button @click="copyResponse">{{ t('public.offline.copyResponse') }}</el-button>
+        <el-button type="primary" @click="router.push('/activate')">{{ t('public.offline.applyOnActivate') }}</el-button>
       </el-card>
     </div>
   </PublicPortalLayout>
@@ -152,7 +220,8 @@ async function copyResponse() {
 .off-hint { color: #94a3b8; }
 .off-steps { margin: 1.5rem 0; }
 .off-upload { margin-top: 0.5rem; }
-.off-status, .off-resp { margin-top: 1.5rem; }
+.off-device, .off-local, .off-status, .off-resp { margin-top: 1rem; }
+.off-local h3 { margin: 0 0 8px; }
 .off-reject { color: var(--el-color-danger); }
 .off-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
 .off-resp pre {

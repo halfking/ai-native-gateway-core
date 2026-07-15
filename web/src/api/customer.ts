@@ -9,6 +9,8 @@ import { req, BASE, headers } from './_core'
 
 export interface CustomerLicenseStatus {
   state: 'none' | 'active' | 'grace' | 'expired' | 'revoked'
+  hardware_hash?: string
+  device_name?: string
   customer_name?: string
   customer_email?: string
   license_key?: string

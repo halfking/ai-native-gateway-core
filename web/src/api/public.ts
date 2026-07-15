@@ -12,12 +12,21 @@ export interface CatalogItem {
   size_label?: string
 }
 
+export interface VersionGroup {
+  version: string
+  build_seq: number
+  release_date?: string
+  items: CatalogItem[]
+  install_doc_url?: string
+}
+
 export interface DownloadCatalog {
   version: string
   build_seq: number
   channel: string
   release_date?: string
   items: CatalogItem[]
+  versions?: VersionGroup[]
   supporters: number
   git_repo_url?: string
   git_branch?: string

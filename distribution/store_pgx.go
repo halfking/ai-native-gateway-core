@@ -320,3 +320,54 @@ func (p *ReleaseCatalogProvider) LatestPublishedVersion(ctx context.Context) (st
 	}
 	return version, buildSeq, publishedAt, nil
 }
+
+// PublishedVersion is a row from the releases catalog.
+type PublishedVersion struct {
+	Version     string
+	BuildSeq    int
+	PublishedAt *time.Time
+}
+
+// ListPublishedVersions returns recent stable releases newest-first.
+func (p *ReleaseCatalogProvider) ListPublishedVersions(ctx context.Context, limit int) ([]PublishedVersion, error) {
+	if limit <= 0 {
+		limit = 12
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT version, build_seq, published_at FROM releases
+		WHERE published_at IS NOT NULL AND channel = 'stable'
+		ORDER BY build_seq DESC LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PublishedVersion
+	for rows.Next() {
+		var v PublishedVersion
+		if err := rows.Scan(&v.Version, &v.BuildSeq, &v.PublishedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	if len(out) > 0 {
+		return out, rows.Err()
+	}
+	// Fallback: distinct artifact versions when releases table is empty.
+	rows2, err := p.pool.Query(ctx, `
+		SELECT DISTINCT release_version FROM release_artifacts
+		ORDER BY release_version DESC LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows2.Close()
+	for rows2.Next() {
+		var ver string
+		if err := rows2.Scan(&ver); err != nil {
+			return nil, err
+		}
+		out = append(out, PublishedVersion{Version: ver})
+	}
+	return out, rows2.Err()
+}

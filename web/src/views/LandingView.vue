@@ -1,15 +1,29 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import ServiceLandingPage from '../components/ServiceLandingPage.vue'
 import DeployFlowSection from '../components/DeployFlowSection.vue'
 import PublicContactBox from '../components/PublicContactBox.vue'
+import { getLicenseStatus } from '../api/customer'
 import { useLoginModal } from '../composables/useLoginModal'
 
 const { t, tm } = useI18n()
 const router = useRouter()
 const { openLogin } = useLoginModal()
+
+const licenseState = ref<string | null>(null)
+
+onMounted(async () => {
+  try {
+    const st = await getLicenseStatus()
+    licenseState.value = st.state
+  } catch {
+    licenseState.value = null
+  }
+})
+
+const showActivateBanner = computed(() => licenseState.value === 'none')
 
 const heroPoints = computed(() => tm('landing.heroPoints') as string[])
 
@@ -84,6 +98,21 @@ const advantages = computed(() => [
 
 <template>
   <div class="llmgo-landing">
+    <el-alert
+      v-if="showActivateBanner"
+      class="llmgo-activate-banner"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="t('landing.activateBanner.title')"
+      :description="t('landing.activateBanner.desc')"
+    >
+      <template #default>
+        <el-button type="primary" size="small" @click="router.push('/activate')">
+          {{ t('landing.activateBanner.action') }}
+        </el-button>
+      </template>
+    </el-alert>
     <ServiceLandingPage
       :kicker="t('landing.kicker')"
       :title="t('landing.title')"
@@ -157,6 +186,12 @@ const advantages = computed(() => [
   min-height: 100vh;
   overflow-y: auto;
   background: var(--kx-bg-page, #0f1117);
+}
+
+.llmgo-activate-banner {
+  max-width: 960px;
+  margin: 12px auto 0;
+  width: calc(100% - 32px);
 }
 
 .llmgo-landing :deep(.kx-landing) {

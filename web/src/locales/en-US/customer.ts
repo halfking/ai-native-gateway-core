@@ -115,6 +115,31 @@ export default {
       instanceId: 'Instance ID',
       lastHeartbeat: 'Last heartbeat',
     },
+    deviceId: {
+      label: 'Device identifier',
+      copy: 'Copy',
+      hint: 'Offline activation and license binding rely on this ID — do not share across machines.',
+    },
+    flow: {
+      title: 'Activation flow',
+      desc: '① Note device ID → ② Enter license key online or generate offline request → ③ Apply signed license. Unactivated: health + license APIs only; activated: full console and data plane.',
+    },
+    compare: {
+      feature: 'Capability',
+      inactive: 'Not activated',
+      active: 'Activated',
+      inactiveLimited: 'Activation wizard & basic pages only',
+      activeFull: 'Full console & tenant governance',
+      inactiveHealth: 'Health check + license APIs',
+      activeAll: 'All OpenAI-compatible proxy APIs',
+      inactiveTrial: '15-day trial available',
+      activeTrial: 'Full trial/commercial features',
+      rows: {
+        console: 'Admin console',
+        api: 'LLM proxy API',
+        trial: 'Trial & renewal',
+      },
+    },
   },
   info: {
     title: 'License information',

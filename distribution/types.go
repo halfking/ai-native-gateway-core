@@ -75,17 +75,26 @@ type CatalogItem struct {
 	SizeLabel      string `json:"size_label,omitempty"`
 }
 
+type VersionGroup struct {
+	Version       string        `json:"version"`
+	BuildSeq      int           `json:"build_seq"`
+	ReleaseDate   string        `json:"release_date,omitempty"`
+	Items         []CatalogItem `json:"items"`
+	InstallDocURL string        `json:"install_doc_url,omitempty"`
+}
+
 type CatalogResponse struct {
-	Version     string        `json:"version"`
-	BuildSeq    int           `json:"build_seq"`
-	Channel     string        `json:"channel"`
-	ReleaseDate string        `json:"release_date,omitempty"`
-	Items       []CatalogItem `json:"items"`
-	Supporters  int           `json:"supporters"`
-	GitRepoURL    string        `json:"git_repo_url,omitempty"`
-	GitBranch     string        `json:"git_branch,omitempty"`
-	DocsURL       string        `json:"docs_url,omitempty"`
-	ContactEmail  string        `json:"contact_email,omitempty"`
+	Version      string         `json:"version"`
+	BuildSeq     int            `json:"build_seq"`
+	Channel      string         `json:"channel"`
+	ReleaseDate  string         `json:"release_date,omitempty"`
+	Items        []CatalogItem  `json:"items"`
+	Versions     []VersionGroup `json:"versions,omitempty"`
+	Supporters   int            `json:"supporters"`
+	GitRepoURL   string         `json:"git_repo_url,omitempty"`
+	GitBranch    string         `json:"git_branch,omitempty"`
+	DocsURL      string         `json:"docs_url,omitempty"`
+	ContactEmail string         `json:"contact_email,omitempty"`
 }
 
 type DownloadTicket struct {

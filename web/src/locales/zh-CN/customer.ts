@@ -115,6 +115,31 @@ export default {
       instanceId: '实例 ID',
       lastHeartbeat: '上次心跳',
     },
+    deviceId: {
+      label: '设备识别码',
+      copy: '复制',
+      hint: '离线激活与 License 绑定均依赖此标识，请勿与他人混用。',
+    },
+    flow: {
+      title: '激活流程说明',
+      desc: '① 查看设备识别码 → ② 在线输入 License Key 或生成离线请求 → ③ 获得签名 License 后完成激活。未激活时仅开放健康检查与激活相关 API；激活后解锁控制台与全部数据面能力。',
+    },
+    compare: {
+      feature: '能力项',
+      inactive: '未激活',
+      active: '已激活',
+      inactiveLimited: '仅激活向导与基础页面',
+      activeFull: '完整控制台与租户治理',
+      inactiveHealth: '健康检查 + License API',
+      activeAll: '全部 OpenAI 兼容 API 与路由',
+      inactiveTrial: '可申请 15 天试用',
+      activeTrial: '试用/正式 License 全功能',
+      rows: {
+        console: '管理控制台',
+        api: 'LLM 代理 API',
+        trial: '试用与续期',
+      },
+    },
   },
   info: {
     title: 'License 信息',
