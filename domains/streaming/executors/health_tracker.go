@@ -36,7 +36,7 @@ func NewHealthTracker(
 	// 30s availableModelsCache would still serve the just-degraded
 	// binding until TTL expiry. (2026-06-22 audit, Fix C1.)
 	checkerCfg := credentialhealth.DefaultCheckerConfig()
-	checkerCfg.InvalidateCandidateCache = provider.InvalidateAllCandidateCache
+	checkerCfg.InvalidateCandidateCache = provider.InvalidateCandidateCacheForCredential
 	checker := credentialhealth.NewChecker(recorder, db, checkerCfg)
 
 	return &HealthTracker{

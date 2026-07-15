@@ -23,8 +23,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
+	"github.com/kaixuan/llm-gateway-go/domains/session"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -509,6 +510,14 @@ type Executor struct {
 		OnNoCandidates(ctx context.Context, sig credentialstate.NoCandidatesSignal)
 	}
 
+	// RoutingStateShadow observes the same request facts as StateObserver.
+	// It is shadow-only: it never writes state, invalidates candidate caches,
+	// or dispatches probes. Nil preserves all existing routing behaviour.
+	RoutingStateShadow interface {
+		ObserveState(evidence routingstate.Evidence)
+		ObserveProbe(task routingstate.ProbeTask)
+	}
+
 	// URSM (2026-07-03): 统一路由状态管理器，替代分散的状态管理逻辑。
 	// 当非nil时，Executor使用URSM.RecordRequest()记录请求结果，
 	// 自动触发状态更新、探测调度和资源释放。
@@ -983,6 +992,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// the manager doesn't currently need per-cred billing info to
 		// dispatch the probe, only to decide the failure-handling
 		// policy on the result.
+		if e.RoutingStateShadow != nil {
+			for _, c := range params.Candidates {
+				e.RoutingStateShadow.ObserveProbe(routingstate.ProbeTask{
+					CredentialID:  c.CredentialID,
+					RawModelName:  candidateRawModel(c),
+					Scope:         routingstate.ScopeModel,
+					Trigger:       routingstate.ProbeTriggerNoCandidates,
+					CorrelationID: params.RequestID,
+				})
+			}
+		}
 		if e.StateObserver != nil && len(params.Candidates) > 0 && params.RequestID != "" {
 			noCands := make([]credentialstate.NoCandidatesCandidate, 0, len(params.Candidates))
 			for _, c := range params.Candidates {
@@ -1333,6 +1353,19 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 			}
 
+			if e.RoutingStateShadow != nil {
+				e.RoutingStateShadow.ObserveState(routingstate.Evidence{
+					CredentialID:     cand.CredentialID,
+					RawModelName:     candidateRawModel(cand),
+					CanonicalName:    params.ClientModel,
+					Scope:            routingstate.ScopeModel,
+					Source:           routingstate.SourceRequest,
+					ObservedAt:       time.Now(),
+					CorrelationID:    params.RequestID,
+					BindingAvailable: boolPtrCompat(true),
+				})
+			}
+
 			// 2026-07-03: URSM统一状态回写（优先于旧的StateObserver）
 			if e.URSM != nil && e.URSM.Enabled() {
 				requestID := params.R.Header.Get("X-Request-Id")
@@ -1513,6 +1546,13 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			)
 			lastErr = execErr
 			lastKind = kind
+			if e.RoutingStateShadow != nil {
+				e.observeRoutingStateFailure(params, cand, kind)
+				if !errorsx.IsClientBug(kind) {
+					e.observeRoutingStateProbe(params, cand, routingstate.ProbeTriggerRequestFailure)
+				}
+			}
+
 			attempts = append(attempts, AttemptRecord{
 				ProviderID:   cand.ProviderID,
 				CredentialID: cand.CredentialID,
@@ -1556,6 +1596,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					params.TenantID,
 					cand.BillingMode,
 				)
+			}
+
+			if e.RoutingStateShadow != nil {
+				e.observeRoutingStateFailure(params, cand, kind)
+				e.observeRoutingStateProbe(params, cand, routingstate.ProbeTriggerRequestFailure)
 			}
 
 			// 2026-07-03: URSM统一状态回写（失败）
@@ -2104,6 +2149,43 @@ func (e *Executor) resetMnfStreak(params *ExecParams, credentialID int) {
 	}
 	key := BuildMnfStreakKey(params.StickyKey, credentialID)
 	e.MnfStreak.Reset(key)
+}
+
+func (e *Executor) observeRoutingStateFailure(params *ExecParams, cand provider.Candidate, kind errorsx.ErrorKind) {
+	if e == nil || e.RoutingStateShadow == nil || params == nil || params.ClientModel == "" {
+		return
+	}
+	e.RoutingStateShadow.ObserveState(routingstate.Evidence{
+		CredentialID:     cand.CredentialID,
+		RawModelName:     candidateRawModel(cand),
+		CanonicalName:    params.ClientModel,
+		Scope:            routingstate.ScopeModel,
+		Source:           routingstate.SourceRequest,
+		ObservedAt:       time.Now(),
+		CorrelationID:    params.RequestID,
+		BindingAvailable: boolPtrCompat(false),
+		ErrorKind:        string(kind),
+	})
+}
+
+func (e *Executor) observeRoutingStateProbe(params *ExecParams, cand provider.Candidate, trigger routingstate.ProbeTrigger) {
+	if e == nil || e.RoutingStateShadow == nil || params == nil {
+		return
+	}
+	e.RoutingStateShadow.ObserveProbe(routingstate.ProbeTask{
+		CredentialID:  cand.CredentialID,
+		RawModelName:  candidateRawModel(cand),
+		Scope:         routingstate.ScopeModel,
+		Trigger:       trigger,
+		CorrelationID: params.RequestID,
+	})
+}
+
+func candidateRawModel(candidate provider.Candidate) string {
+	if candidate.OfferRawModel != "" {
+		return candidate.OfferRawModel
+	}
+	return candidate.RawModel
 }
 
 func (e *Executor) restoreCredentialState(ctx context.Context, credentialID int, canonicalModel string) {

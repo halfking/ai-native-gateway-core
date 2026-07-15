@@ -266,14 +266,18 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		// Decrypt API key (same pattern as credential_cycler.go)
 		apiKey, decErr := decryptCiphertext(ciphertext, c.keyring, c.encKey)
 		if decErr != nil {
-			slog.Warn("credential probe v2: decrypt failed (will mark health=error; is_routable may go FALSE)",
+			slog.Warn("credential probe v2: decrypt failed (will mark credential unreachable)",
 				"credential_id", s.ID,
 				"error", decErr,
 			)
+			recoverAt := time.Now().Add(5 * time.Minute)
 			c.writeHealth(timeoutCtx, s.ID, probeResult{
-				HealthStatus: "error",
-				HealthError:  "decrypt failed",
-				HealthSource: "probe",
+				HealthStatus:          "unreachable",
+				HealthError:           "decrypt failed",
+				HealthSource:          "probe",
+				AvailabilityState:     "unreachable",
+				AvailabilityRecoverAt: &recoverAt,
+				StateReasonCode:       "decrypt_failed",
 			})
 			failed++
 			continue
@@ -642,7 +646,7 @@ func classifyProbeFailure(errMsg string) probeResult {
 	pr := probeResult{HealthSource: "probe"}
 	switch {
 	case strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403"):
-		pr.HealthStatus = "auth_failed"
+		pr.HealthStatus = "unreachable"
 		pr.AvailabilityState = "auth_failed"
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "auth_error"
