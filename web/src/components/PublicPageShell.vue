@@ -175,4 +175,14 @@ const { t } = useI18n()
   color: #a5b4fc;
   word-break: break-all;
 }
+
+:deep(.el-descriptions) {
+  --el-descriptions-table-border: var(--pub-border);
+}
+
+:deep(.el-descriptions__label),
+:deep(.el-descriptions__content) {
+  background: var(--pub-panel) !important;
+  color: var(--pub-text) !important;
+}
 </style>

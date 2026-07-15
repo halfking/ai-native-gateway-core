@@ -45,4 +45,11 @@ remote "grep -q '^DOWNLOAD_ARTIFACT_ROOT=' /opt/llm-gateway-go/.env 2>/dev/null 
   grep -q '^GIT_REPO_URL=' /opt/llm-gateway-go/.env 2>/dev/null || \
   echo 'GIT_REPO_URL=https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go' >> /opt/llm-gateway-go/.env"
 
-echo "[setup] Done. Verify: curl -sI https://download.kxpms.cn/healthz"
+echo "[setup] Restarting gateway to pick up download env..."
+remote "systemctl restart llm-gateway-go && sleep 4"
+
+echo "[setup] Verifying endpoints..."
+curl -sfI "https://download.kxpms.cn/healthz" | head -3 || echo "WARN: download.kxpms.cn healthz check failed"
+curl -sfI "https://llmgo.kxpms.cn/download" | head -3 || echo "WARN: llmgo download page check failed"
+
+echo "[setup] Done. Artifact root: /var/www/download/llm-gateway-go/{version}/"

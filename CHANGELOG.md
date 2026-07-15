@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on landing page, wired to existing license / activation routes.
 - **Layout**: public portal routes share guest chrome; fixed auto login modal
   on public home/download paths.
+- **Phase 2**: all guest pages (`/license`, `/upgrade`, `/forbidden`) use
+  `PublicPortalLayout`; download page shows open-source Git URL; ops download
+  release panel links to public portal; `download.kxpms.cn` nginx + cert setup.
 
 
 After pulling origin/main (27 new commits including Cloudreve / OSS / S3

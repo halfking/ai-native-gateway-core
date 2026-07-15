@@ -27,6 +27,9 @@ export default {
     tests: 'Tests',
     createdAt: 'Created',
     summary: 'Summary',
+    storageHint: 'Offline packages are stored at 245:/var/www/download/llm-gateway-go/v{version}/. Publish runs distribution tests and writes audit rows to download_publish_runs.',
+    openPublicDownload: 'Open public download page',
+    openActivate: 'Open activation wizard',
   },
 
   overview: {

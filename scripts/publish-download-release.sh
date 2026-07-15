@@ -48,29 +48,42 @@ ARTIFACT="llm-gateway-go-${VERSION}-linux-amd64-offline.tar.gz"
 tar czf "$OUT_DIR/$ARTIFACT" -C "$STAGING" "llm-gateway-go-${VERSION}-linux-amd64-offline"
 SHA=$(sha256sum "$OUT_DIR/$ARTIFACT" | awk '{print $1}')
 SIZE=$(stat -c%s "$OUT_DIR/$ARTIFACT" 2>/dev/null || stat -f%z "$OUT_DIR/$ARTIFACT")
+echo "${SHA}  ${ARTIFACT}" > "$OUT_DIR/SHA256SUMS"
 
 ln -sfn "v${VERSION}" "$ROOT/latest"
 
-# Upsert artifact metadata via local psql when available
-if [[ -n "${DATABASE_URL:-}" ]] || [[ -f "$GW_ROOT/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  [[ -f "$GW_ROOT/.env" ]] && source "$GW_ROOT/.env"
-  set +a
-  if [[ -n "${LLM_GATEWAY_PG_DSN:-}" ]]; then
-    psql "$LLM_GATEWAY_PG_DSN" -v ON_ERROR_STOP=1 <<SQL
+# Upsert artifact metadata via psql when DATABASE URL is available
+DB_URL=""
+if [[ -f "$GW_ROOT/.env" ]]; then
+  DB_URL=$(grep -E '^LLM_GATEWAY_DATABASE_URL=' "$GW_ROOT/.env" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+fi
+DB_URL="${DB_URL:-${LLM_GATEWAY_DATABASE_URL:-}}"
+
+if [[ -n "$DB_URL" ]]; then
+  BUILD_SEQ=0
+  if [[ -f "$CURRENT/version.json" ]]; then
+    BUILD_SEQ=$(python3 -c "import json; print(json.load(open('$CURRENT/version.json')).get('build_seq',0))" 2>/dev/null || echo 0)
+  fi
+  psql "$DB_URL" -v ON_ERROR_STOP=1 <<SQL
+INSERT INTO releases (version, build_seq, channel, title, image_tag, created_by, published_at)
+VALUES ('v${VERSION}', ${BUILD_SEQ}, 'stable', 'LLM Gateway v${VERSION}', 'offline', 'publish-script', now())
+ON CONFLICT (version) DO UPDATE SET
+  build_seq = GREATEST(releases.build_seq, EXCLUDED.build_seq),
+  published_at = COALESCE(releases.published_at, EXCLUDED.published_at);
+
 INSERT INTO release_artifacts (release_version, platform, arch, edition, artifact_name, sha256, size_bytes, download_path)
 VALUES ('v${VERSION}', 'linux', 'amd64', 'customer', '${ARTIFACT}', '${SHA}', ${SIZE}, 'v${VERSION}/${ARTIFACT}')
 ON CONFLICT (release_version, platform, arch, edition, artifact_name) DO UPDATE SET
   sha256 = EXCLUDED.sha256, size_bytes = EXCLUDED.size_bytes, download_path = EXCLUDED.download_path;
 SQL
-  fi
 fi
 
+export OUT_DIR
 python3 - <<PY
-import json
+import json, os
+out_dir = os.environ.get("OUT_DIR", "${OUT_DIR}")
 print(json.dumps({
   "artifact_count": 1,
-  "summary": f"Published v${VERSION} linux/amd64 → {OUT_DIR}/{ARTIFACT} sha256={SHA[:16]}…"
+  "summary": f"Published v${VERSION} linux/amd64 → {out_dir}/${ARTIFACT} sha256=${SHA[:16]}…"
 }))
 PY

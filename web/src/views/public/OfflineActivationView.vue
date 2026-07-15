@@ -158,9 +158,10 @@ async function copyResponse() {
 .off-resp pre {
   max-height: 240px;
   overflow: auto;
-  background: #f1f5f9;
+  background: rgba(15, 23, 42, 0.75);
   padding: 1rem;
   border-radius: 6px;
   font-size: 0.8rem;
+  color: #cbd5e1;
 }
 </style>

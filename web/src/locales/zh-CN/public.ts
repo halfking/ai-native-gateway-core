@@ -88,4 +88,11 @@ export default {
     docs: '文档',
     navAria: '公开门户导航',
   },
+  license: {
+    subtitle: '查看当前实例绑定的 License 状态、到期时间与设备配额',
+  },
+  upgrade: {
+    title: '软件升级',
+    subtitle: '检查是否有新版本可用；离线包请前往下载页获取',
+  },
 }

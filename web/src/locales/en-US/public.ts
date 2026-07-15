@@ -87,4 +87,11 @@ export default {
     docs: 'Docs',
     navAria: 'Public portal navigation',
   },
+  license: {
+    subtitle: 'View bound license status, expiry, and device quotas for this instance',
+  },
+  upgrade: {
+    title: 'Software upgrade',
+    subtitle: 'Check for updates; download offline packages from the download page',
+  },
 }
