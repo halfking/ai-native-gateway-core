@@ -133,7 +133,7 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 			FROM provider_models pm
 			WHERE pm.id = cmb.provider_model_id
 			  AND cmb.credential_id = $1
-			  AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
+			  AND pm.canonical_raw_name = $2
 			  AND cmb.available = FALSE
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
@@ -150,9 +150,9 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 			FROM credential_model_bindings cmb
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
 			WHERE mo.credential_id = cmb.credential_id
-			  AND mo.raw_model_name = pm.raw_model_name
+			  AND mo.canonical_raw_name = pm.canonical_raw_name
 			  AND cmb.credential_id = $1
-			  AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
+			  AND pm.canonical_raw_name = $2
 			  AND mo.available = FALSE
 			  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
@@ -361,7 +361,7 @@ func (w *Writer) writeModelLevelFailureOnly(
 			FROM provider_models pm
 			WHERE pm.id = cmb.provider_model_id
 			  AND cmb.credential_id = $3
-			  AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $4
+			  AND pm.canonical_raw_name = $4
 			  AND cmb.available = TRUE
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
@@ -380,7 +380,7 @@ func (w *Writer) writeModelLevelFailureOnly(
 			    unavailable_at     = now(),
 			    unavailable_recover_at = $2
 			WHERE mo.credential_id = $3
-			  AND (mo.raw_model_name = $4 OR mo.standardized_name = $4)
+			  AND mo.canonical_raw_name = $4
 			  AND mo.available = TRUE
 			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
 		`, reason, recoverAt, credentialID, rawModel); err != nil {

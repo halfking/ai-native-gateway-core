@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 )
@@ -30,6 +31,14 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	cfg.MinConns = 2
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
+
+	// 2026-07-15 P0 fix: disable pgx statement cache to prevent stale prepared
+	// statements after schema changes (provider_model_bindings → credential_model_bindings).
+	// When a table is renamed but old prepared statements remain cached in long-lived
+	// connections, queries fail with "relation does not exist". Disabling the cache
+	// forces re-preparation on every query, trading ~5% perf for correctness.
+	// See docs/changelogs/2026-07-15-provider-model-bindings-fix.md for details.
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
