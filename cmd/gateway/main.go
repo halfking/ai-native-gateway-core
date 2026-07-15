@@ -2940,7 +2940,10 @@ func main() {
 		if len(ticketSecret) == 0 {
 			ticketSecret = []byte(jwtSecret)
 		}
-		distPayment := maas.StubQRProvider{}
+		distPayment := maas.StubQRProvider{Settings: maas.PaymentSettings{
+			StubAlipayQRURL: "/donation-qr.png",
+			StubWechatQRURL: "/donation-qr.png",
+		}}
 		distPublic := distribution.NewPublicAPI(distStore, distCatalog, distribution.NewTicketSigner(ticketSecret, 10*time.Minute), distPayment)
 		distDonation := distribution.NewDonationAPI(distStore, distPayment)
 		distAdmin := distribution.NewAdminAPI(distStore)

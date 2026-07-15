@@ -82,9 +82,10 @@ type CatalogResponse struct {
 	ReleaseDate string        `json:"release_date,omitempty"`
 	Items       []CatalogItem `json:"items"`
 	Supporters  int           `json:"supporters"`
-	GitRepoURL  string        `json:"git_repo_url,omitempty"`
-	GitBranch   string        `json:"git_branch,omitempty"`
-	DocsURL     string        `json:"docs_url,omitempty"`
+	GitRepoURL    string        `json:"git_repo_url,omitempty"`
+	GitBranch     string        `json:"git_branch,omitempty"`
+	DocsURL       string        `json:"docs_url,omitempty"`
+	ContactEmail  string        `json:"contact_email,omitempty"`
 }
 
 type DownloadTicket struct {

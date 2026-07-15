@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import ServiceLandingPage from '../components/ServiceLandingPage.vue'
 import DeployFlowSection from '../components/DeployFlowSection.vue'
+import PublicContactBox from '../components/PublicContactBox.vue'
 import { useLoginModal } from '../composables/useLoginModal'
 
 const { t, tm } = useI18n()
@@ -111,6 +112,12 @@ const advantages = computed(() => [
       </template>
     </ServiceLandingPage>
 
+    <section class="llmgo-contact">
+      <div class="llmgo-contact__inner">
+        <PublicContactBox />
+      </div>
+    </section>
+
     <DeployFlowSection @login="openLogin" />
 
     <!-- 路线图预告区块 -->
@@ -174,6 +181,18 @@ const advantages = computed(() => [
   flex-wrap: wrap;
   align-items: center;
   margin-top: 4px;
+}
+
+.llmgo-contact {
+  padding: 0 16px 8px;
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.llmgo-contact__inner {
+  max-width: 880px;
+  margin: 0 auto;
 }
 
 /* 路线图预告区块 */

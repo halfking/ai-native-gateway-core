@@ -22,6 +22,7 @@ export interface DownloadCatalog {
   git_repo_url?: string
   git_branch?: string
   docs_url?: string
+  contact_email?: string
 }
 
 export interface DownloadTicket {
