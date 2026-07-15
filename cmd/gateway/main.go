@@ -42,6 +42,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/distribution"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/integration"                        //nolint:depguard // clientprofile worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/approval"                            //nolint:depguard // D1: approval config management
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1014,6 +1015,39 @@ func main() {
 	}
 	if telemetryClient.Enabled() {
 		chatHandler.SetTelemetry(telemetryClient)
+	}
+
+	// 2026-07-15: clientprofile 画像管线接通（消费 EventEmitter → ProfileWorker →
+	// client_profiles / client_behavior_events 表）。Setup 内部启动 RunLoop goroutine。
+	if dbConn != nil && dbConn.Enabled() {
+		pub := bus.NewPGPublisher(dbConn.Pool(), slog.Default())
+		profileBundle, profileErr := integration.SetupClientProfileIntegration(
+			context.Background(),
+			bus.AsPGDB(dbConn.Pool()),
+			nil, // *sql.DB 桥接复用 main pipeline 已有的 nil-safe 模式（同位 detector/checker）
+			pub,
+			integration.ClientProfileLoopConfig{
+				Interval:  5 * time.Second,
+				BatchSize: 10,
+				Logger:    slog.Default(),
+			},
+		)
+		if profileErr == nil && profileBundle != nil {
+			chatHandler.SetProfileEmitter(profileBundle.Emitter)
+			slog.Info("clientprofile: bundle wired into chatHandler",
+				"worker", profileBundle.Worker.Name())
+			defer func() {
+				if profileBundle.Cancel != nil {
+					profileBundle.Cancel()
+				}
+			}()
+		} else {
+			slog.Warn("clientprofile: SetupClientProfileIntegration failed; profile disabled",
+				"error", profileErr)
+		}
+	}
+
+	if telemetryClient.Enabled() {
 		// 2026-06-20: wire telemetry into the executor so that
 		// runAsyncRetry can write success back to request_logs.
 		// Without this, async-retry success leaves the original
