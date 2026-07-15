@@ -4,12 +4,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import {
-  getCenterStats,
-  getLicenses,
-  getOfflineActivationRequests,
-  getUpgradeLogs,
-  getFaultStats,
-  getFaultEvents,
+  getOpsOverviewBundle,
   getLicenseHealth,
   getLicenseStatus,
   type CenterStats,
@@ -17,9 +12,11 @@ import {
   type LicenseHealth,
   type LicenseStatus,
   type OfflineActivationRequest,
+  type RegionStats,
   type UpgradeLog,
+  type CenterInstance,
 } from '../../api/ops'
-import { getDownloadStats, type DownloadStats } from '../../api/public'
+import type { DownloadStats } from '../../api/public'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -39,9 +36,13 @@ const pendingRequests = ref<OfflineActivationRequest[]>([])
 const licenseHealth = ref<LicenseHealth | null>(null)
 const licenseStatus = ref<LicenseStatus | null>(null)
 const downloadStats = ref<DownloadStats | null>(null)
+const regionStats = ref<RegionStats[]>([])
+const deploymentNodes = ref<CenterInstance[]>([])
+const dataPlaneTables = ref<Record<string, number>>({})
 
 const quickLinks = computed(() => [
   { path: '/ops/center', icon: '🖥️', label: t('ops.center.title') },
+  { path: '/ops/blocklist', icon: '🚫', label: t('ops.blocklist.title') },
   { path: '/ops/licenses', icon: '🔑', label: t('ops.license.title') },
   { path: '/ops/autoupdate', icon: '🚀', label: t('ops.autoupdate.title') },
   { path: '/ops/faults', icon: '⚠️', label: t('ops.fault.title') },
@@ -73,44 +74,29 @@ function faultSeverityType(severity: string) {
 async function load() {
   loading.value = true
   try {
-    const [
-      center,
-      licenses,
-      offlineReqs,
-      upgradeRes,
-      faultStats,
-      faultEvents,
-      licHealth,
-      licStatus,
-      dlStats,
-    ] = await Promise.all([
-      getCenterStats(),
-      getLicenses({ limit: 1 }),
-      getOfflineActivationRequests(),
-      getUpgradeLogs({ limit: 20 }),
-      getFaultStats(),
-      getFaultEvents({ status: 'new', limit: 5 }),
-      // v2 Phase 3B-1: license subsystem health. These endpoints are
-      // allowed without admin auth (they expose only metadata), but a
-      // 4xx/5xx here shouldn't fail the whole page — catch locally.
+    const [bundle, licHealth, licStatus] = await Promise.all([
+      getOpsOverviewBundle(),
       getLicenseHealth().catch(() => null),
       getLicenseStatus().catch(() => null),
-      getDownloadStats().catch(() => null),
     ])
 
-    centerStats.value = center
-    licenseTotal.value = licenses.total
+    centerStats.value = bundle.center_stats ?? null
+    licenseTotal.value = bundle.license_total ?? 0
+    const offlineReqs = bundle.offline_requests ?? []
     pendingOffline.value = offlineReqs.filter((r) => r.status === 'pending').length
-    openFaults.value = faultStats.open_events
+    openFaults.value = bundle.fault_stats?.open_events ?? 0
     pendingRequests.value = offlineReqs.filter((r) => r.status === 'pending').slice(0, 5)
-    recentLogs.value = (upgradeRes.items || []).slice(0, 5)
-    recentFaults.value = faultEvents.events || []
-    todayUpgrades.value = (upgradeRes.items || []).filter((log) =>
+    recentLogs.value = (bundle.recent_upgrades?.items || []).slice(0, 5)
+    recentFaults.value = bundle.recent_faults?.events || []
+    todayUpgrades.value = (bundle.recent_upgrades?.items || []).filter((log) =>
       isToday(log.completed_at || log.started_at)
     ).length
     licenseHealth.value = licHealth
     licenseStatus.value = licStatus
-    downloadStats.value = dlStats
+    downloadStats.value = bundle.download_stats ?? null
+    regionStats.value = bundle.region_stats ?? []
+    deploymentNodes.value = bundle.deployment_nodes ?? []
+    dataPlaneTables.value = bundle.data_plane_tables ?? {}
   } catch (error) {
     ElMessage.error(t('ops.overview.loadFailed'))
     console.error(error)
@@ -156,6 +142,29 @@ function formatRel(iso?: string): string {
 
 function goTo(path: string) {
   router.push(path)
+}
+
+function nodeStatusType(status: string) {
+  const map: Record<string, 'success' | 'warning' | 'danger' | 'info'> = {
+    online: 'success',
+    degraded: 'warning',
+    offline: 'danger',
+  }
+  return map[status] || 'info'
+}
+
+function regionStatusType(row: RegionStats) {
+  if (row.missing) return 'info'
+  if (row.online_instances > 0) return 'success'
+  if (row.degraded_instances > 0) return 'warning'
+  return 'danger'
+}
+
+function regionStatusLabel(row: RegionStats) {
+  if (row.missing) return t('ops.overview.regionMissing')
+  if (row.online_instances > 0) return t('ops.overview.regionOnline')
+  if (row.degraded_instances > 0) return t('ops.overview.regionDegraded')
+  return t('ops.overview.regionOffline')
 }
 
 onMounted(load)
@@ -220,6 +229,57 @@ onMounted(load)
         </div>
       </el-card>
     </div>
+
+    <el-card shadow="never" class="deployment-nodes-card">
+      <template #header>
+        <div class="panel-header">
+          <span>{{ t('ops.overview.deploymentNodes') }}</span>
+          <el-button link type="primary" @click="goTo('/ops/center')">
+            {{ t('ops.overview.viewAll') }}
+          </el-button>
+        </div>
+      </template>
+      <div class="region-grid">
+        <div
+          v-for="row in regionStats"
+          :key="row.region"
+          class="region-chip"
+          :class="{ 'region-chip-missing': row.missing }"
+        >
+          <div class="region-name">{{ row.region }}</div>
+          <el-tag size="small" :type="regionStatusType(row)">{{ regionStatusLabel(row) }}</el-tag>
+          <div class="region-meta">
+            {{ t('ops.overview.regionOnlineCount', { n: row.online_instances }) }}
+            <span v-if="row.last_heartbeat"> · {{ formatRel(row.last_heartbeat) }}</span>
+          </div>
+        </div>
+      </div>
+      <el-table :data="deploymentNodes" size="small" empty-text="—" style="margin-top: 12px">
+        <el-table-column prop="region" :label="t('ops.center.region')" width="90" />
+        <el-table-column prop="hostname" :label="t('ops.license.hostname')" width="180" show-overflow-tooltip />
+        <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="120" show-overflow-tooltip />
+        <el-table-column prop="status" :label="t('common.table.status')" width="100">
+          <template #default="{ row = {} } = {}">
+            <el-tag size="small" :type="nodeStatusType(row.status)">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="last_heartbeat" :label="t('ops.center.lastHeartbeat')">
+          <template #default="{ row = {} } = {}">{{ formatDate(row.last_heartbeat) }}</template>
+        </el-table-column>
+      </el-table>
+      <div v-if="Object.keys(dataPlaneTables).length" class="data-plane-tables">
+        <span class="data-plane-label">{{ t('ops.overview.dataPlaneTables') }}:</span>
+        <el-tag
+          v-for="(count, table) in dataPlaneTables"
+          :key="table"
+          size="small"
+          :type="count > 0 ? 'success' : 'info'"
+          class="table-tag"
+        >
+          {{ table }}={{ count < 0 ? '?' : count }}
+        </el-tag>
+      </div>
+    </el-card>
 
     <!-- v2 Phase 3B-1: License subsystem detail card. Shows the
          daemon's most recent refresh outcome + consecutive-failure
@@ -462,5 +522,54 @@ onMounted(load)
 
 .full-width {
   grid-column: 1 / -1;
+}
+
+.deployment-nodes-card {
+  margin-bottom: 20px;
+}
+
+.region-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.region-chip {
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.region-chip-missing {
+  opacity: 0.75;
+  border-style: dashed;
+}
+
+.region-name {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.region-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.data-plane-tables {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.data-plane-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.table-tag {
+  font-family: monospace;
 }
 </style>

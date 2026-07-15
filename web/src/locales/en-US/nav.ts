@@ -54,6 +54,7 @@ export default {
     chat: 'Chat',
     opsOverview: 'Operations Overview',
     opsLicenses: 'License Management',
+    opsDownloads: 'Download Releases',
     opsFaults: 'Fault Management',
     opsAutoUpdate: 'Auto Update',
     opsCenter: 'Center Operations',

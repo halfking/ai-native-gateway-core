@@ -4,7 +4,9 @@
 // 2026-07-05: 更新为中性化、全球化的产品定位。
 export default {
   kicker: '内核开源 · 企业级 · 私有部署',
-  title: 'AI-Native组织核心网关',
+  brandTitle: 'AI-Native 组织核心网关',
+  brandSubtitle: '开轩启圭 · 私有化部署',
+  title: 'AI-Native 组织核心网关',
   subtitle: 'AI-Native 组织核心网关。统一治理、全球 LLM 接入、合规与数据主权 — 内核开源、私有化部署。',
   featuresTitle: '核心能力',
   featuresSubtitle: '覆盖从接入到运营的关键环节',
@@ -105,5 +107,37 @@ export default {
     support: '支持开源',
     activate: '已有安装包？去激活',
     note: '捐赠完全自愿，不影响下载与功能使用',
+  },
+  deployFlow: {
+    title: '下载 · 安装 · 激活 · 登录',
+    subtitle: '与 License 激活向导打通的私有化部署全流程',
+    steps: {
+      download: {
+        title: '下载离线安装包',
+        description: '按平台选择 tar.gz / 安装器，无需注册即可获取限时下载链接。',
+        action: '前往下载页',
+      },
+      install: {
+        title: '安装到目标环境',
+        description: '解压后在服务器执行安装器，完成 k3s / Docker 部署与基础配置。',
+        hint: 'llm-gw-installer install --target /opt/kx-gateway',
+      },
+      activate: {
+        title: '激活 License',
+        description: '在线输入 License Key 或走离线 activation.req → activation.resp 流程，支持 15 天试用。',
+        action: '打开激活向导',
+        offlineAction: '离线激活门户',
+      },
+      login: {
+        title: '登录控制面',
+        description: '激活完成后使用管理员账号登录，进入租户治理、路由与可观测控制台。',
+        action: '登录控制面',
+      },
+    },
+    notes: [
+      '下载与捐赠完全解耦，跳过捐赠不影响任何功能',
+      '离线环境请使用「离线激活门户」提交 activation.req',
+      '激活向导路径：/activate · 与安装器 CLI 命令互通',
+    ],
   },
 }

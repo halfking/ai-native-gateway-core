@@ -164,8 +164,10 @@ func (w *NodeProbeWorker) loop(ctx context.Context) {
 }
 
 // Submit enqueues a (credID, model) pair for probing.  Called by the
-// state manager when a real request fails.  Idempotent: if the pair is
-// already paused or in flight the call is a no-op.
+// state manager when a real request fails.  Idempotent: if the row
+// is currently in flight (in-memory `inFlight` map in cycle) the
+// DB write is a no-op; pickDueAtomically's SKIP LOCKED handles
+// cross-instance dedup.
 func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string) {
 	if w == nil {
 		return
@@ -175,14 +177,34 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	// 2026-07-15 P0 fix (B-series cascade follow-up): the previous
+	// Submit set in_flight_until = now() + 5 minutes, which the
+	// pickDueAtomically filter combined with `in_flight_until <= now()`
+	// to dead-letter the row for 5 minutes after every real
+	// failure. Worse, after 7 consecutive failures runOne would
+	// `paused = TRUE` and never auto-resume. The combined effect
+	// was the "I never see the probe after a failure" complaint
+	// logged by operators on 2026-07-15 — the worker logged
+	// `submit` for each failure but the next cycle's pickDue
+	// skipped the row because in_flight_until was always in the
+	// future.
+	//
+	// Fix: Submit now writes a next_retry_at 5 seconds in the future
+	// and leaves in_flight_until NULL. Paused rows are unpaused
+	// (with consecutive_failures reset) so any fresh real failure
+	// can restart the probe cycle. The in-memory `inFlight` map
+	// plus the SELECT FOR UPDATE SKIP LOCKED in pickDueAtomically
+	// are the only two dedup mechanisms.
 	_, _ = w.db.Exec(ctx, `
-		INSERT INTO node_probe_state (credential_id, raw_model_name, next_retry_at, next_retry_seconds, paused, in_flight_until)
-		VALUES ($1, $2, now() + interval '5 seconds', 5, FALSE, now() + interval '5 minutes')
+		INSERT INTO node_probe_state (credential_id, raw_model_name, next_retry_at, next_retry_seconds, paused, in_flight_until, consecutive_failures, last_err_code)
+		VALUES ($1, $2, now() + interval '5 seconds', 5, FALSE, NULL, 0, NULL)
 		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
-		SET next_retry_at = CASE
-			WHEN node_probe_state.paused = TRUE OR node_probe_state.in_flight_until > now() THEN node_probe_state.next_retry_at
-			ELSE LEAST(node_probe_state.next_retry_at, now() + interval '5 seconds')
-		END
+		SET next_retry_at = LEAST(node_probe_state.next_retry_at, now() + interval '5 seconds'),
+		    in_flight_until = NULL,
+		    paused = FALSE,
+		    consecutive_failures = 0,
+		    last_err_code = NULL,
+		    updated_at = now()
 	`, credID, model)
 	slog.Info("node_probe_worker: submit",
 		"credential_id", credID, "model", model,
@@ -238,7 +260,6 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) {
 //	  SELECT credential_id, raw_model_name
 //	    FROM node_probe_state
 //	   WHERE paused = FALSE AND next_retry_at <= now()
-//	     AND (in_flight_until IS NULL OR in_flight_until <= now())
 //	   ORDER BY next_retry_at ASC
 //	   LIMIT 1
 //	   FOR UPDATE SKIP LOCKED;
@@ -247,6 +268,16 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) {
 //
 // Returns (credID, model, true, nil) on success, (0, "", false, nil)
 // when nothing is due.
+//
+// 2026-07-15 P0 fix: the in_flight_until predicate was removed
+// from the WHERE clause because Submit() no longer sets
+// in_flight_until. The cross-instance dedup relies on
+// `FOR UPDATE SKIP LOCKED` plus the in-memory `inFlight` map in
+// cycle() — adding in_flight_until back into the predicate would
+// re-introduce the 5-minute dead-letter window from the previous
+// design. We still set the column inside the transaction so an
+// out-of-band reader can see "this row was picked at time T" if
+// needed for forensic logs, but it does not gate the WHERE filter.
 func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, bool, error) {
 	tx, err := w.db.Begin(ctx)
 	if err != nil {
@@ -261,7 +292,6 @@ func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, b
 		FROM node_probe_state
 		WHERE paused = FALSE
 		  AND next_retry_at <= now()
-		  AND (in_flight_until IS NULL OR in_flight_until <= now())
 		ORDER BY next_retry_at ASC
 		LIMIT 1
 		FOR UPDATE SKIP LOCKED
@@ -299,10 +329,23 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		return fmt.Errorf("load state: %w", err)
 	}
 	attempt := state.ConsecutiveFailures + 1
+	// 2026-07-15 P0 fix: previously the worker paused the row forever
+	// after nodeProbeMaxAttempts (7) consecutive failures, with no
+	// way to unpause except a manual UPDATE. That meant a cred that
+	// genuinely recovered (e.g. upstream transient) stayed hidden
+	// from the router for hours/days, contributing to the
+	// `no_candidates` cascade seen on 2026-07-15 14:00~15:35. We now
+	// let the chained backoff in the else branch below stretch the
+	// retry interval indefinitely (1h, 4h, 12h, 24h) so the worker
+	// naturally throttles itself without permanently abandoning the
+	// pair. Submit() below unpauses + resets failure count on any
+	// fresh real failure, so the next user-visible 503 will restart
+	// the cycle.
 	if attempt > nodeProbeMaxAttempts {
-		// Mark paused; the next manual reset can resume.
-		_, _ = w.db.Exec(ctx, `UPDATE node_probe_state SET paused = TRUE, updated_at = now() WHERE credential_id = $1 AND raw_model_name = $2`, credID, model)
-		return nil
+		slog.Info("node_probe_worker: attempt cap reached, applying long backoff without pausing",
+			"credential_id", credID, "model", model,
+			"consecutive_failures", state.ConsecutiveFailures,
+			"max_attempts", nodeProbeMaxAttempts)
 	}
 
 	// Round 1: direct upstream
@@ -334,6 +377,27 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			WHERE credential_id = $1 AND raw_model_name = $2
 		`, credID, model)
 	} else {
+		// 2026-07-15 P0 fix (B-series cascade follow-up): the previous
+		// implementation set in_flight_until = now() + 5min on the
+		// failure path, which combined with pickDueAtomically's
+		// `in_flight_until <= now()` clause meant a 5-minute dead
+		// window after every probe — the worker logged `submit` but
+		// the next cycle kept skipping it because in_flight_until was
+		// still in the future. Worse, when the cycle finally did fire
+		// 5 minutes later, runOne's "attempt > maxAttempts" branch set
+		// paused=TRUE with no automatic un-pause, so subsequent
+		// Submit() calls accumulated more `submit` log lines without
+		// ever producing a probe run. The result was silent stuck
+		// credentials: cred 19 (NVIDIA) and cred 21 (minimaxi.com
+		// direct) stayed paused=TRUE with consecutive_failures=7 for
+		// 6+ hours, masking the actual no_candidates outage.
+		//
+		// Fix: rely on the in-memory `inFlight` map (cycle()) and
+		// SELECT ... FOR UPDATE SKIP LOCKED in pickDueAtomically for
+		// cross-instance dedup, instead of an in_flight_until column
+		// that bypasses both. The DB column now stays NULL after
+		// runOne, and the chained backoff in next_retry_at naturally
+		// paces retries (30s → 60s → 120s → ...).
 		backoff := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
 		nextRetryAt := now.Add(backoff)
 		nextSec := int(backoff.Seconds())
@@ -348,12 +412,11 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 				last_gateway_ok = $7,
 				last_err_code = $8,
 				last_err_detail = $9,
-				in_flight_until = $10,
+				in_flight_until = NULL,
 				updated_at = now()
 			WHERE credential_id = $1 AND raw_model_name = $2
 		`, credID, model, attempt, nextRetryAt, nextSec,
-			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw),
-			now.Add(nodeProbeInFlightWindow))
+			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw))
 	}
 
 	// Persist audit row.
@@ -464,8 +527,8 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		SELECT c.secret_ciphertext, p.base_url
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
-		JOIN provider_model_bindings pmb ON pmb.credential_id = c.id
-		JOIN provider_models pm ON pm.id = pmb.provider_model_id
+		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE c.id = $1 AND pm.raw_model_name = $2
 		LIMIT 1
 	`, credID, model).Scan(&ciphertext, &baseURL)
@@ -479,8 +542,33 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 	if w.keyring == nil {
 		return "", "", fmt.Errorf("keyring not configured")
 	}
-	pt, err := secret.DecryptAESGCM(ciphertext, w.keyring)
+	// 2026-07-15 P0 fix: previously this called DecryptAESGCM directly,
+	// which only handles v1:<kid>:<b64> envelopes with a non-legacy kid.
+	// v1:legacy:<b64> envelopes (the historical default for credentials
+	// created before the v1 multi-kid keyring landed) decode to
+	// "unsupported secret format" or to "AES-GCM decryption failed",
+	// both surfaced as `endpoint_build` in node_probe_state.last_err_code.
+	// The result: every probe of those credentials failed at the
+	// endpoint-build step, consecutive_failures climbed to 7, the row
+	// got paused (the previous design), and the router lost a
+	// perfectly valid minimaxi.com direct candidate. DecryptAny
+	// tries AES-GCM first, then falls back to Fernet with the legacy
+	// v1:legacy: prefix, matching what the production request path
+	// already does via secret.DecryptAny.
+	pt, _, err := secret.DecryptAny(s, w.keyring, w.encKey)
 	if err != nil {
+		// 2026-07-15 P0 fix: surface the raw error to operator logs.
+		// endpoint_build was the only signal in node_probe_state,
+		// but the upstream cause (keyring nil? unknown kid? Fernet
+		// signature mismatch?) was swallowed. We log the full chain
+		// here so the next no_candidates outage is root-causable
+		// from a single grep on "node_probe_worker: decrypt failed".
+		slog.Error("node_probe_worker: decrypt failed",
+			"credential_id", credID, "model", model,
+			"keyring_nil", w.keyring == nil,
+			"enc_key_len", len(w.encKey),
+			"envelope_prefix", s[:min(len(s), 24)],
+			"error", err.Error())
 		return "", "", fmt.Errorf("decrypt: %w", err)
 	}
 	return string(pt), baseURL, nil

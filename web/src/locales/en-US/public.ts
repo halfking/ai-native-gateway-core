@@ -1,6 +1,6 @@
 export default {
   download: {
-    title: 'Download KX Gateway',
+    title: 'Download AI-Native Organization Core Gateway',
     subtitle: 'Self-hosted · Offline packages · No signup required',
     version: 'Version',
     supporters: 'supporters',
@@ -17,9 +17,16 @@ export default {
     ticketFailed: 'Failed to get download link',
     started: 'Download started',
     platformHint: 'Choose the platform matching your server',
+    nextSteps: 'After download',
+    nextStepInstall: 'Extract and run llm-gw-installer install on your server',
+    nextStepActivate: 'Then open the activation wizard for online or offline activation.req flow',
+    openSourceTitle: 'Core open source · Git repository',
+    openSourceDesc: 'LLM Gateway data and control planes are open source (Apache 2.0) — auditable, customizable, self-hostable.',
+    copyRepo: 'Copy repo URL',
+    gitBranch: 'Default branch',
   },
   support: {
-    title: 'Support KX Gateway',
+    title: 'Support the AI-Native Organization Core Gateway community',
     subtitle: 'Your donation helps us maintain and improve the open-source gateway',
     impactTitle: 'Your support funds',
     impacts: [
@@ -34,7 +41,7 @@ export default {
       custom: { label: 'Custom', amount: 0, desc: 'Pay what you want' },
     },
     email: 'Email (optional, for receipt & thanks list)',
-    emailPlaceholder: 'you@company.com',
+    emailPlaceholder: "you{'@'}company.com",
     payChannel: 'Payment',
     alipay: 'Alipay',
     wechat: 'WeChat Pay',
@@ -78,5 +85,13 @@ export default {
     support: 'Support',
     offline: 'Offline',
     docs: 'Docs',
+    navAria: 'Public portal navigation',
+  },
+  license: {
+    subtitle: 'View bound license status, expiry, and device quotas for this instance',
+  },
+  upgrade: {
+    title: 'Software upgrade',
+    subtitle: 'Check for updates; download offline packages from the download page',
   },
 }

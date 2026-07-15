@@ -195,8 +195,22 @@ type Limiter struct {
 	idents map[string]*Semaphore // "providerID/credentialID/identityHash" → semaphore
 	keys   map[int]*Semaphore    // keyID → per-key semaphore (limit from DB)
 
+	// 2026-07-15: per-credential RPM sliding windows. Keyed by the
+	// same "providerID/credentialID" string as creds. Each window stores
+	// unix-seconds timestamps for the last 60s and rejects AcquireAll
+	// when the count would exceed the credential's rpm_limit. Default
+	// behaviour (limit==0 or nil) is unlimited, matching pre-fix semantics.
+	credsRPM map[string]*rpmWindow
+	rpmMu    sync.Mutex
+
 	mu     sync.RWMutex
 	stopCh chan struct{}
+}
+
+// rpmWindow is a 60-second sliding window of acquire timestamps. Stale
+// entries (>60s) are pruned on every Check, keeping memory bounded.
+type rpmWindow struct {
+	timestamps []float64 // unix-seconds
 }
 
 // NewLimiter creates a new limiter with default limits.
@@ -219,10 +233,52 @@ func NewWithLimits(global, pool, credential, identity int) *Limiter {
 		creds:           make(map[string]*Semaphore),
 		idents:          make(map[string]*Semaphore),
 		keys:            make(map[int]*Semaphore),
+		credsRPM:        make(map[string]*rpmWindow),
 		stopCh:          make(chan struct{}),
 	}
 	go l.recoveryLoop()
 	return l
+}
+
+// CheckCredentialRPM records a credential acquire and returns true if
+// the per-credential RPM cap (60-second sliding window) is not yet hit.
+//
+// 2026-07-15: limit==0 or nil = unlimited (default for paid credentials).
+// Returns false when the credential has exceeded its rpm_limit in the
+// last 60s, signalling the executor to failover to the next candidate.
+// Memory bound: per-credential window holds at most `limit` floats (oldest
+// entries are pruned on every Check).
+func (l *Limiter) CheckCredentialRPM(providerID, credentialID int, limit *int) bool {
+	if limit == nil || *limit <= 0 {
+		return true
+	}
+	key := fmt.Sprintf("%d/%d", providerID, credentialID)
+	now := float64(time.Now().UnixMilli()) / 1000.0
+	cutoff := now - 60.0
+
+	l.rpmMu.Lock()
+	defer l.rpmMu.Unlock()
+
+	w, ok := l.credsRPM[key]
+	if !ok {
+		w = &rpmWindow{}
+		l.credsRPM[key] = w
+	}
+	// Prune stale timestamps.
+	if len(w.timestamps) > 0 {
+		filtered := w.timestamps[:0]
+		for _, t := range w.timestamps {
+			if t > cutoff {
+				filtered = append(filtered, t)
+			}
+		}
+		w.timestamps = filtered
+	}
+	if len(w.timestamps) >= *limit {
+		return false
+	}
+	w.timestamps = append(w.timestamps, now)
+	return true
 }
 
 // Stop stops the recovery loop.
@@ -334,10 +390,21 @@ func (l *Limiter) Key(keyID int, limit int) *Semaphore {
 // bounded timeout matches the executor's expectation: when a layer is
 // saturated beyond the budget, return an error so the executor can move
 // on to the next candidate.
-func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, identityHash string, keyID int, keyConcurrentLimit int) (ReleaseFunc, error) {
+func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, identityHash string, keyID int, keyConcurrentLimit int, rpmLimit *int) (ReleaseFunc, error) {
 	// AUDIT-2: 限流总开关关闭 → 直接放行，返回 no-op release。
 	if !ratelimit.IsRateLimitEnabled() {
 		return func() {}, nil
+	}
+
+	// 2026-07-15: per-credential RPM sliding window (60s). When the
+	// rpm_limit is hit, refuse this acquire immediately (no blocking
+	// wait — callers should failover to the next candidate). Returned
+	// as a typed error so the executor maps it to KindRateLimit and
+	// routes it through the existing transient-error continue branch
+	// (executor.go:1814). Memory bound: one float64 per RPM per
+	// credential, pruned on every Check.
+	if !l.CheckCredentialRPM(providerID, credentialID, rpmLimit) {
+		return nil, fmt.Errorf("credential rpm limit (provider=%d credential=%d limit=%d)", providerID, credentialID, derefInt(rpmLimit))
 	}
 
 	// OPT-2: cap the blocking wait per layer. ctx may have no deadline
@@ -406,6 +473,16 @@ func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, 
 		pool.Release()
 		l.global.Release()
 	}, nil
+}
+
+// derefInt safely dereferences a *int (e.g. Candidate.RPMLimit which may
+// be nil for paid credentials). Returns 0 when nil so the limiter treats
+// 0 as "unlimited" everywhere.
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // Shrink reduces credential capacity on rate-limit events.

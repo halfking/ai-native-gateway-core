@@ -60,12 +60,12 @@ async function handleDownload(item: CatalogItem) {
   }
 }
 
-async function copyArtifactName(item: CatalogItem) {
+async function copyText(text: string) {
   try {
-    await navigator.clipboard.writeText(item.artifact_name)
+    await navigator.clipboard.writeText(text)
     ElMessage.success(t('common.copied', '已复制'))
   } catch {
-    ElMessage.warning(item.artifact_name)
+    ElMessage.warning(text)
   }
 }
 
@@ -73,12 +73,27 @@ onMounted(load)
 </script>
 
 <template>
-  <PublicPortalLayout>
+  <PublicPortalLayout
+    :title="t('public.download.title')"
+    :subtitle="t('public.download.subtitle')"
+    :kicker="t('public.layout.download')"
+  >
     <div v-loading="loading" class="dl-page">
-      <h1>{{ t('public.download.title') }}</h1>
-      <p class="dl-sub">{{ t('public.download.subtitle') }}</p>
+      <el-card v-if="catalog?.git_repo_url" shadow="never" class="pub-card pub-git-box">
+        <h3>{{ t('public.download.openSourceTitle') }}</h3>
+        <p>{{ t('public.download.openSourceDesc') }}</p>
+        <div class="pub-link-row">
+          <a :href="catalog.git_repo_url" target="_blank" rel="noopener">{{ catalog.git_repo_url }}</a>
+          <el-button size="small" @click="copyText(catalog.git_repo_url!)">
+            {{ t('public.download.copyRepo') }}
+          </el-button>
+        </div>
+        <p v-if="catalog.git_branch" class="dl-meta-line">
+          {{ t('public.download.gitBranch') }}: <code>{{ catalog.git_branch }}</code>
+        </p>
+      </el-card>
 
-      <el-card v-if="catalog" shadow="never" class="dl-meta">
+      <el-card v-if="catalog" shadow="never" class="pub-card dl-meta">
         <div class="dl-meta__row">
           <span>{{ t('public.download.version') }}: <strong>{{ catalog.version }}</strong> (build {{ catalog.build_seq }})</span>
           <span>{{ catalog.supporters }} {{ t('public.download.supporters') }}</span>
@@ -91,13 +106,16 @@ onMounted(load)
           v-for="item in catalog.items"
           :key="itemKey(item)"
           shadow="hover"
-          class="dl-card"
+          class="pub-card dl-card"
         >
+          <div class="dl-card__icon" aria-hidden="true">📦</div>
           <h3>{{ item.label }}</h3>
           <p class="dl-file">{{ item.artifact_name }}</p>
           <p v-if="item.size_label" class="dl-size">{{ item.size_label }}</p>
-          <p v-if="item.sha256" class="dl-sha">{{ t('public.download.sha256') }}: <code>{{ item.sha256.slice(0, 16) }}…</code></p>
-          <div class="dl-actions">
+          <p v-if="item.sha256" class="dl-sha">
+            {{ t('public.download.sha256') }}: <code>{{ item.sha256.slice(0, 16) }}…</code>
+          </p>
+          <div class="pub-actions">
             <el-button
               type="primary"
               :loading="downloading === itemKey(item)"
@@ -105,35 +123,42 @@ onMounted(load)
             >
               {{ t('public.download.downloadBtn') }}
             </el-button>
-            <el-button link @click="copyArtifactName(item)">{{ t('public.download.copyLink') }}</el-button>
+            <el-button link @click="copyText(item.artifact_name)">{{ t('public.download.copyLink') }}</el-button>
           </div>
         </el-card>
       </div>
 
-      <el-card shadow="never" class="dl-extra">
-        <h3>{{ t('public.download.offlineTools') }}</h3>
-        <el-button link type="primary" @click="router.push('/offline-activation')">
-          {{ t('public.download.offlineLink') }}
-        </el-button>
-        <el-button link type="primary" @click="router.push('/support')">
-          {{ t('public.download.supportUs') }}
-        </el-button>
+      <el-card shadow="never" class="pub-card dl-extra">
+        <h3>{{ t('public.download.nextSteps') }}</h3>
+        <ol class="pub-steps">
+          <li>{{ t('public.download.nextStepInstall') }}</li>
+          <li>{{ t('public.download.nextStepActivate') }}</li>
+        </ol>
+        <div class="pub-actions">
+          <el-button type="primary" @click="router.push('/activate')">
+            {{ t('public.download.activateLink') }}
+          </el-button>
+          <el-button @click="router.push('/offline-activation')">
+            {{ t('public.download.offlineLink') }}
+          </el-button>
+          <el-button link type="primary" @click="router.push('/support')">
+            {{ t('public.download.supportUs') }}
+          </el-button>
+        </div>
       </el-card>
     </div>
   </PublicPortalLayout>
 </template>
 
 <style scoped>
-.dl-page h1 { margin: 0 0 0.5rem; font-size: 1.75rem; color: #0f172a; }
-.dl-sub { color: #64748b; margin-bottom: 1.5rem; }
-.dl-meta { margin-bottom: 1.5rem; }
+.dl-meta { margin-bottom: 1rem; }
 .dl-meta__row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
-.dl-hint { margin: 0.75rem 0 0; color: #64748b; font-size: 0.875rem; }
-.dl-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.dl-hint, .dl-meta-line { margin: 0.75rem 0 0; color: #94a3b8; font-size: 0.875rem; }
+.dl-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); margin-bottom: 1rem; }
+.dl-card { position: relative; }
+.dl-card__icon { font-size: 28px; margin-bottom: 8px; }
 .dl-card h3 { margin: 0 0 0.5rem; font-size: 1rem; }
-.dl-file { font-family: monospace; font-size: 0.8rem; color: #475569; word-break: break-all; }
+.dl-file { font-family: ui-monospace, monospace; font-size: 0.8rem; color: #94a3b8; word-break: break-all; }
 .dl-size, .dl-sha { font-size: 0.8rem; color: #64748b; }
-.dl-actions { margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
-.dl-extra { margin-top: 2rem; }
-.dl-extra h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.dl-extra h3 { margin: 0 0 0.75rem; font-size: 1rem; }
 </style>

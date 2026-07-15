@@ -1,0 +1,16 @@
+[Unit]
+Description=License Authority (llm.kxpms.cn /api/v1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/license-authority
+ExecStart=/opt/license-authority/license-authority
+EnvironmentFile=/etc/license-authority/env
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

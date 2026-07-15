@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -40,6 +41,17 @@ func (h *Handler) ensureBoardOperationalCache() *boardOperationalCache {
 		h.boardOperationalCache = &boardOperationalCache{}
 	}
 	return h.boardOperationalCache
+}
+
+func includeBoardOperational(r *http.Request) bool {
+	if r == nil {
+		return true
+	}
+	v := strings.TrimSpace(r.URL.Query().Get("include_operational"))
+	if v == "" || v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes") {
+		return true
+	}
+	return false
 }
 
 func (h *Handler) boardOperationalPayload(ctx context.Context) map[string]any {

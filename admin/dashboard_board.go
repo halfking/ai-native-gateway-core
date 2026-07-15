@@ -59,6 +59,9 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 			payload["source"] = "redis_baseline_delta"
 		}
 		payload["days"] = days
+		if includeBoardOperational(r) {
+			payload["operational"] = h.boardOperationalPayload(ctx)
+		}
 		writeJSON(w, http.StatusOK, payload)
 		return
 	}
@@ -83,6 +86,9 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 			}
 			return "_degraded_no_redis"
 		}(),
+	}
+	if includeBoardOperational(r) {
+		resp["operational"] = h.boardOperationalPayload(ctx)
 	}
 	if tr.Custom {
 		resp["range_start"] = tr.Start.Format("2006-01-02")

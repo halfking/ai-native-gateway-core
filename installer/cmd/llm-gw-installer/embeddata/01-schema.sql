@@ -1474,6 +1474,13 @@ COMMENT ON COLUMN public.credentials.fp_slot_limit IS 'Fingerprint slot pool siz
 
 
 --
+-- Name: COLUMN credentials.rpm_limit; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.credentials.rpm_limit IS 'Client-side requests-per-minute cap enforced by domains/credential/limiter. NULL/0 = unlimited (default). Positive value limits per-minute in-flight requests to the credential, causing the executor to failover to the next candidate when the limit is hit. Free-pool credentials (admin/free_pool_extra.go) auto-populate this from the template rpmLimit; paid credentials are typically NULL. Added by migration 407.';
+
+
+--
 -- Name: credentials_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 

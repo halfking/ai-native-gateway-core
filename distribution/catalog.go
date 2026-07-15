@@ -89,6 +89,19 @@ func (s *CatalogService) BuildCatalog(ctx context.Context) (*CatalogResponse, er
 
 	supporters, _ := s.store.CountSupporters(ctx)
 
+	gitRepo := os.Getenv("GIT_REPO_URL")
+	if gitRepo == "" {
+		gitRepo = "https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go"
+	}
+	gitBranch := os.Getenv("GIT_REPO_BRANCH")
+	if gitBranch == "" {
+		gitBranch = "main"
+	}
+	docsURL := os.Getenv("DOCS_URL")
+	if docsURL == "" {
+		docsURL = "https://llmgo.kxpms.cn/docs"
+	}
+
 	return &CatalogResponse{
 		Version:     version,
 		BuildSeq:    buildSeq,
@@ -96,6 +109,9 @@ func (s *CatalogService) BuildCatalog(ctx context.Context) (*CatalogResponse, er
 		ReleaseDate: releaseDate,
 		Items:       items,
 		Supporters:  supporters,
+		GitRepoURL:  gitRepo,
+		GitBranch:   gitBranch,
+		DocsURL:     docsURL,
 	}, nil
 }
 

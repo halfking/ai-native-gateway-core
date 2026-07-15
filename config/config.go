@@ -73,6 +73,17 @@ type Config struct {
 	// default so production rollouts opt in via config.
 	EnablePreStreamKeepalive bool `yaml:"enable_pre_stream_keepalive" env:"LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE"`
 
+	// EnableEmptyStreamGate (2026-07-15): when true, the stream reader
+	// buffers the first few upstream chunks without writing to the client,
+	// and only flushes once a chunk carries real content. If [DONE] arrives
+	// with no content ever seen, the reader returns Resumable=true so the
+	// executor transparently fails over to the next candidate. This catches
+	// the NIM (Provider 18) failure mode: ~13% of streams open, send
+	// empty choices, then [DONE] — currently invisible to the retry/circuit
+	// path. ON by default; set to false to disable per-deploy if it causes
+	// regressions with a particular upstream.
+	EnableEmptyStreamGate bool `yaml:"enable_empty_stream_gate" env:"LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE"`
+
 	// Pool grace period (seconds)
 	PoolGracePeriod int `yaml:"pool_grace_period_seconds" env:"LLM_GATEWAY_POOL_GRACE_PERIOD"`
 
@@ -239,10 +250,11 @@ func Load() *Config {
 		EnablePreStreamKeepalive:           false, // opt-in; see LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE
 		PoolGracePeriod:                    180,   // Default: 3 minutes grace period before marking pool as dead
 		DefaultCredentialConcurrency:       20,    // 2026-06-24: 5 → 20. 每个凭据 20 个 fp_slot，更宽松避免争抢。
-		EnableCredentialFpSlots:            true,
-		CredentialFpSlotActiveGateSeconds:  300,   // 5 min — "5 min 内不允许抢的"
-		CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长
-		EnableDisguise:                     false, // off by default; opt-in
+EnableCredentialFpSlots:            true,
+			CredentialFpSlotActiveGateSeconds:  300,   // 5 min — 5 min 内不允许抢的"
+			CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长
+			EnableDisguise:                     false, // off by default; opt-in
+			EnableEmptyStreamGate:              true,  // 2026-07-15: ON by default; kills the 13% NIM empty-stream failure mode.
 		DeployEnv:                          firstNonEmpty(os.Getenv("LLM_GATEWAY_ENV"), os.Getenv("GO_ENV"), os.Getenv("APP_ENV")),
 		DefaultLanguage:                    envOrDefault("LLM_GATEWAY_DEFAULT_LANGUAGE", "en"),
 		// WeChat Work notification settings

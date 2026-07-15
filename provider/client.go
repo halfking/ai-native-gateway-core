@@ -105,6 +105,11 @@ type Candidate struct {
 	// count). 0 = unlimited fingerprint pool. Used by credentialfpslot
 	// Manager.Acquire as the pool size when picking a stable identity.
 	FpSlotLimit          *int     `json:"fp_slot_limit,omitempty"`
+	// 2026-07-15: per-credential client-side RPM cap (migration 407).
+	// nil/0 = unlimited (default for paid credentials). Free-pool
+	// credentials auto-populate from the free-pool template rpmLimit.
+	// Enforced by domains/credential/limiter.go in AcquireAll.
+	RPMLimit *int `json:"rpm_limit,omitempty"`
 	BalanceUSD           *float64 `json:"balance_usd"`
 	CircuitState         string   `json:"circuit_state"`
 	AvailabilityState    string   `json:"availability_state"`
@@ -799,6 +804,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(mo.p95_latency_ms, 9999)::int AS p95_latency_ms,
 			c.concurrency_limit,
 			COALESCE(c.fp_slot_limit, 20) AS fp_slot_limit,  -- 2026-06-24: 5→20
+			-- 2026-07-15: per-credential RPM cap (migration 407). NULL/0 = unlimited.
+			c.rpm_limit,
 			c.balance_usd::float8,
 			COALESCE(c.circuit_state, 'closed') AS circuit_state,
 			COALESCE(c.availability_state, 'ready') AS availability_state,
@@ -945,6 +952,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.P95LatencyMs,
 			&cand.ConcurrencyLimit,
 			&cand.FpSlotLimit,
+			&cand.RPMLimit,
 			&cand.BalanceUSD,
 			&cand.CircuitState,
 			&cand.AvailabilityState,

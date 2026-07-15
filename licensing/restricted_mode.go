@@ -62,6 +62,7 @@ func customerPublicPathAllowed(path string) bool {
 		"/api/downloads",
 		"/api/donations",
 		"/api/public/offline-activation",
+		"/llm-gateway-go",
 	}
 	for _, prefix := range prefixes {
 		if pathAllowedWithBoundary(path, prefix) {

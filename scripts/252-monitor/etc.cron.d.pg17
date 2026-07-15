@@ -1,0 +1,21 @@
+# 252 PG17 全面监控与清理 (2026-07-15 升级)
+#
+# 触发频率（运行成本可控）：
+#   - pg17-disk-watch.sh    每 10 分钟  采样 + 告警推送
+#   - pg17-emergency.sh     每 15 分钟  disk>=90% 自动 L2
+#   - pg17-vacuum-bloat.sh  周日 03:15  VACUUM FULL 防患于未然
+#   - pg17-drop-columnar.sh 每月 1 号 02:30  DROP 老分区 + VACUUM FULL 元数据
+#
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# === 高频监控 ===
+*/10 * * * * root /opt/scripts/pg17-disk-watch.sh >/dev/null 2>&1
+*/15 * * * * root /opt/scripts/pg17-emergency-cleanup.sh --auto >/dev/null 2>&1
+
+# === 周级 bloat 清理（防 dead tuple 长期堆积）===
+15 3 * * 0 root /opt/scripts/pg17-vacuum-bloat.sh >/dev/null 2>&1
+
+# === 月度列存分区清理 ===
+30 2 1 * * root /opt/scripts/pg17-drop-old-columnar-partitions.sh >/dev/null 2>&1

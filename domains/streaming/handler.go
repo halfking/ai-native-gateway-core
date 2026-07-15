@@ -221,6 +221,12 @@ type ChatHandler struct {
 	keyVerifier     *authentication.KeyVerifier
 	rateLimiter     ratelimit.RPMLimiter
 	telemetryClient *telemetry.Client
+	// profileEmitter (2026-07-15) 把请求/会话事件投到 clientprofile 画像聚合。
+	// nil 禁用画像聚合；调用方负责 graceful 注入（main.go SetupClientProfileIntegration）。
+	profileEmitter interface {
+		EmitRequestCompleted(ctx context.Context, sc *session.SessionContext, identityHash string, success bool, tokensUsed int, latencyMs int64) error
+		EmitSessionStarted(ctx context.Context, sc *session.SessionContext, identityHash string) error
+	}
 	// decider (v2.0) is the optional autoroute.Decider. When non-nil,
 	// requests with model="auto" trigger task classification + 6-dim
 	// scoring. When nil, model="auto" falls back to default chat model.
@@ -535,6 +541,18 @@ func (h *ChatHandler) SetAuth(kv *authentication.KeyVerifier, rl ratelimit.RPMLi
 
 func (h *ChatHandler) SetTelemetry(tc *telemetry.Client) {
 	h.telemetryClient = tc
+}
+
+// SetProfileEmitter wires the client-profile event emitter (2026-07-15).
+//
+// When non-nil, request-completed / session-closed / failure events flow to
+// clientprofile.EventEmitter → analysis 总线 → ProfileWorker → client_profiles。
+// nil disables profile aggregation (no behavioural impact on request flow).
+func (h *ChatHandler) SetProfileEmitter(emitter interface {
+	EmitRequestCompleted(ctx context.Context, sc *session.SessionContext, identityHash string, success bool, tokensUsed int, latencyMs int64) error
+	EmitSessionStarted(ctx context.Context, sc *session.SessionContext, identityHash string) error
+}) {
+	h.profileEmitter = emitter
 }
 
 func (h *ChatHandler) SetMaas(svc *maas.Service) {
@@ -2962,6 +2980,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		h.requestLogHook(reqLog)
 	}
 
+	// 2026-07-15: clientprofile 画像聚合（best-effort，失败仅日志）。
+	if h.profileEmitter != nil && logCtx != nil {
+		emitProfileFromLogCtx(h.profileEmitter, logCtx, reqLog, true)
+	}
+
 	// v2.1: emit implicit feedback signal for the auto-route tuning loop.
 	// Best-effort async write via the dedicated tuning writer; never blocks
 	// the request path on DB latency.
@@ -3025,6 +3048,12 @@ func (h *ChatHandler) emitClientDisconnectProbe(originalRequestID string, r *htt
 		h.requestLogHook(entry)
 	}
 	h.telemetryClient.EmitRequestLogInsert(entry)
+	// 2026-07-15: 侧表 request_context_attrs（best-effort，origin_stage="business"）。
+	if logCtx != nil {
+		if attrs := BuildContextAttrsEntry(logCtx, logCtx.KeyInfo, &logCtx.meta, r.Context()); attrs != nil {
+			h.telemetryClient.EmitContextAttrs(attrs)
+		}
+	}
 }
 
 // buildClientDisconnectProbeEntry constructs the probe RequestLogEntry from
@@ -3394,6 +3423,12 @@ func (h *ChatHandler) recordInitialRequestLog(
 	}
 	applyKeyInfoToRequestLog(reqLog, keyInfo)
 	h.telemetryClient.EmitRequestLogInsert(reqLog)
+	// 2026-07-15: 侧表 request_context_attrs（best-effort）。
+	if autoCtx != nil {
+		if attrs := BuildContextAttrsEntry(autoCtx, keyInfo, &autoCtx.meta, nil); attrs != nil {
+			h.telemetryClient.EmitContextAttrs(attrs)
+		}
+	}
 }
 
 func extractModelFromBody(body []byte) string {
@@ -4447,4 +4482,56 @@ func extractFirstUserMessage(bodyBytes []byte) string {
 		}
 	}
 	return ""
+}
+
+// 2026-07-15: clientprofile helper —— 从 RequestLogContext 构造 SessionContext 并 emit。
+//
+// 镜像 clientprofile.EventEmitter.EmitRequestCompleted 的入参语义：
+//   - identityHash: meta.IdentityHash（identity 域）
+//   - tokens: prompt + completion
+//   - latencyMs: reqLog.LatencyMs 或 logCtx.LatencyMs()
+//   - success: reqLog.Success
+//
+// 失败仅日志，不阻塞主请求流。
+func emitProfileFromLogCtx(emitter interface {
+	EmitRequestCompleted(ctx context.Context, sc *session.SessionContext, identityHash string, success bool, tokensUsed int, latencyMs int64) error
+}, logCtx *RequestLogContext, reqLog *telemetry.RequestLogEntry, success bool) {
+	if emitter == nil || logCtx == nil {
+		return
+	}
+	tokens := 0
+	if reqLog != nil {
+		if reqLog.PromptTokens != nil {
+			tokens += *reqLog.PromptTokens
+		}
+		if reqLog.CompletionTokens != nil {
+			tokens += *reqLog.CompletionTokens
+		}
+	}
+	latency := int64(logCtx.LatencyMs())
+	sc := &session.SessionContext{
+		TenantID:      logCtx.sessionTenantID(),
+		SessionID:     logCtx.sessionID(),
+		RequestID:     logCtx.RequestID,
+		ClientModel:   logCtx.ClientModel,
+		UpstreamModel: logCtx.OutboundModel,
+	}
+	identityHash := logCtx.meta.IdentityHash
+	if err := emitter.EmitRequestCompleted(context.Background(), sc, identityHash, success, tokens, latency); err != nil {
+		slog.Debug("profile emitter: EmitRequestCompleted failed",
+			"request_id", logCtx.RequestID, "error", err)
+	}
+}
+
+// sessionTenantID / sessionID 私有 helper：从 RequestLogContext 派生最小 SessionContext。
+func (c *RequestLogContext) sessionTenantID() string {
+	if c.KeyInfo != nil && c.KeyInfo.TenantID != "" {
+		return c.KeyInfo.TenantID
+	}
+	return "default"
+}
+
+func (c *RequestLogContext) sessionID() string {
+	sid, _ := c.SessionTask()
+	return sid
 }

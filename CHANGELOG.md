@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-15
 
+
+### Guest UI — unified header & deploy flow (245)
+
+- **`GuestHeader`**: 40px logo, brand title「AI-Native 组织核心网关」, nav links
+  (home / download / support / offline activation / activate), login entry.
+- **`DeployFlowSection`**: four-step download → install → activate → sign-in
+  on landing page, wired to existing license / activation routes.
+- **Layout**: public portal routes share guest chrome; fixed auto login modal
+  on public home/download paths.
+- **Phase 2**: all guest pages (`/license`, `/upgrade`, `/forbidden`) use
+  `PublicPortalLayout`; download page shows open-source Git URL; ops download
+  release panel links to public portal; `download.kxpms.cn` nginx + cert setup.
+
+### Fixed (P0) — minimax-m3 no_candidates cascade on llm.kxpms.cn
+
+`llm.kxpms.cn` 上的 minimax-m3 在 2026-07-15 上午 11:00-11:38 期间出现 `all candidates failed: circuit open / no_candidates` 雪崩，用户看到 minimax-m3 不可用，但 `https://api.minimaxi.com/v1/chat/completions` 直连供应商健康。根因是 `credentialhealth/checker.go` 把 MiniMax 供应商的 `eof_without_done` 良性 EOF 算作 credential 失败，累积到 80% 失败率 + 5 个样本阈值后 `markDegraded` 把直连凭据 21 标 15 分钟 cooldown；与此同时 NVIDIA 代理凭据 19/23 因 `integrate.api.nvidia.com` 持续 timeout 也被 cooldown，路由层无候选。修复：
+
+- **`credentialhealth/checker.go CheckAndUpdate`** — 把 `error_kind == "eof_without_done"` 加入与 `network` 同级的失败排除白名单。`stream.go` 已经把带 chunks 的 EOF 标记 success，`executor_chat.go` 的 `isBenignEOF` 分支也已经 `RecordSuccess`，checker 的失败统计口径应该与这些保持一致。这是上次 `2026-07-13 no-candidates-and-storage-cleanup` 复盘未触及的根因（那次只修了 router reason 的可观测性）。
+- **`credentialhealth/checker.go markDegraded`** — `UPDATE model_offers` 镜像写不再引用 `unavailable_recover_at` 列（视图无该列，SQLSTATE 42703 每次都污染 journald；`RecoverExpired` 的镜像写已经正确，本次补对称修复）。
+- **`credentialhealth/checker_test.go`** — 新增 `TestChecker_CheckAndUpdate_ExcludeBenignEOF`（10 次 eof_without_done 不应触发 markDegraded）+ `TestChecker_CheckAndUpdate_MixedEOFStillFlagsTrueFailures`（4 eof + 6 quota 仍按 100% 真实失败触发）+ 修 `AboveThreshold` 测试补 model_offers 镜像 mock。
+- **154 紧急热修 SQL** — 部署前手动清掉已误判冷却的 7 行 minimax-m3 凭据（`available=TRUE, unavailable_reason=NULL, unavailable_recover_at=NULL, consecutive_failures=0`），11:44 / 11:47 / 11:48 多次 `success=true, stream_chunks>0` 确认用户恢复。
+- **部署** — `v1029.linux.amd64` (build_seq 1033) 替换 PID 3471 → PID 9253，systemd 单元 `llm-gateway-go.service` active。
+
+详见 `docs/changelogs/2026-07-15-minimax-m3-no-candidates-fix.md`（11 节：用户报告 / journalctl 证据 / DB 调查 / 根因 / 修复 / 测试 / 验证 / 部署 / 遗留风险 / 下一步 / 相关文件）。
+
 ### Comprehensive test fixes (local R112 Docker) — round 2
 
 After pulling origin/main (27 new commits including Cloudreve / OSS / S3
@@ -176,6 +201,80 @@ ran against the freshly provisioned local DB.
   green; `go vet` clean. See
   `docs/changelogs/2026-07-15-oss-s3-storage-canonical.md` for the design
   notes and known limitations.
+
+### Storage backend boot wiring (Phase 3D)
+
+- Wires `domains/attachments/`'s pluggable storage matrix into
+  `cmd/gateway/main.go` boot so the Phase 3A/3B adapters are not dead
+  code. New helper `initAttachmentStorage(defaultBaseDir)` selects a
+  backend based on `LLM_GATEWAY_STORAGE_TYPE`:
+  - Unset / `filesystem` / `local` / `fs` (case-insensitive) → existing
+    LocalStorageBackend behaviour, unchanged.
+  - `oss` / `s3` / `minio` / `cloudreve` → opt-in to the canonical
+    backend constructed via
+    `attachments.LoadStorageConfigFromEnv` +
+    `NewStorageBackendFromConfig` + `NewStorageWithBackend`.
+  - Anything else → Warn + degrade to LocalStorageBackend.
+- Fail-safe semantics: any boot-time error (typo type / missing fields /
+  missing build tag / unreachable backend) logs a WARN and falls back
+  to LocalStorageBackend. Gateway is **never** blocked by attachment
+  storage failure; storage errors surface at first write instead.
+- New files: `cmd/gateway/attachment_storage_init.go` (~165 lines,
+  fail-safe helper + alias / opt-in tables + build-tag hint map) and
+  `cmd/gateway/attachment_storage_init_test.go` (~290 lines, 12 tests /
+  5 sub-tests).
+- `cmd/gateway/main.go` lines 1190–1224: replaced the hardcoded
+  `attachments.NewStorage(attachmentDir)` block with a single
+  `initAttachmentStorage` call + the same logging path. No other
+  reference to `attachmentStorage` changed.
+- 6 tag-combo × {build, vet, test} matrix verified: `""`,
+  `cloudreve_storage`, `storage_oss`, `storage_s3`,
+  `cloudreve_storage,storage_oss`, `cloudreve_storage,storage_s3` —
+  all green. New tests cover default path, all alias spellings,
+  unknown-type fallback, OSS/S3 validation failure, max-size
+  application, max-size parse-failure ignored, nested-dir creation,
+  and build-tag mapping hints.
+- Deployment: this commit is safe to roll to 245/154 (zero behaviour
+  change without the env var set). Real OSS/S3/Cloudreve enablement
+  (changing `.env` + rebuild with the right tag) is a separate,
+  business-owner-reviewed change — see
+  `docs/changelogs/2026-07-15-storage-backend-boot-wiring.md` for the
+  full design rationale and rollout plan.
+
+### files.kxpms.cn outage fix (deploy verification)
+
+- `files.kxpms.cn` previously returned **502 Bad Gateway** because 252 had no
+  nginx vhost for it (default_server 502'd). This is now fixed end-to-end
+  with certbot-issued cert + dedicated 9444 vhost + SNI stream routing +
+  Cloudreve `[CORS] AllowOrigins` updated.
+- Live ops changes (NOT in this repo — on 252 / 154):
+  - 252: added `files.kxpms.cn` to `kxpms-on-252.conf :80` server_name (for
+    ACME webroot challenge).
+  - 252: new SNI map entry in `stream.d/sni-proxy.conf`:
+    `files.kxpms.cn → kxpms_nginx_backend` (so SNI dispatches to 9444).
+  - 252: new file `conf.d/files-kxpms-cn-9444.conf` — 9444 ssl proxy_protocol
+    vhost, server_name files.kxpms.cn, cert `live/files.kxpms.cn`,
+    proxy_pass to `172.16.2.209:5212` (Cloudreve on 154).
+  - 252: certbot certonly for `files.kxpms.cn` (Let's Encrypt, expires
+    2026-10-13, auto-renewed by certbot timer).
+  - 154: `conf.ini [CORS] AllowOrigins` updated to include
+    `https://files.kxpms.cn`. Cloudreve process restarted (PID 4433 → 26382)
+    to pick up new conf.
+- 13/13 smoke tests pass: HTTPS 200 with valid cert chain, WebDAV 401 with
+  Basic realm=cloudreve, CORS behavior (same-origin no ACAO needed, cross-origin
+  ACAO=res.itestu.cn emitted, evil origin 403, /dav/ preflight 204 with
+  ACAO), all other `*.kxpms.cn` regression 200, ACME renewal webroot 200,
+  HTTP→HTTPS 301.
+- **Note on CORS**: The CORS middleware (gin-contrib/cors in Cloudreve v4) does
+  a same-origin short-circuit. When `Origin: https://files.kxpms.cn` matches
+  the request `Host: files.kxpms.cn`, no `Access-Control-Allow-Origin` header
+  is emitted — this is spec-compliant behavior, not a bug. Cross-origin
+  requests (e.g. from `res.itestu.cn`) get the proper ACAO header. See
+  `docs/2026-07-15-files-kxpms-cn-deploy-verification.md` for the full
+  matrix and the 4 deployment gotchas (one of which is a misdiagnosis of
+  CORS that turned out to be spec-correct).
+- See `docs/2026-07-15-files-kxpms-cn-deploy-verification.md` for full
+  topology, smoke test transcript, and the 4 deployment gotchas.
 
 ### Storage adapter deploy verification (245 / 154 live smoke test)
 
