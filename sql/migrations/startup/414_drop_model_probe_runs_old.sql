@@ -1,0 +1,20 @@
+-- 414_drop_model_probe_runs_old.sql
+-- 清理 model_probe_runs_old 孤儿备份表。
+--
+-- 背景：migration 386（2026-07-14）把原 columnar 分区表 model_probe_runs
+-- RENAME 成 model_probe_runs_old 作为备份，并新建纯 hot 表
+-- model_probe_runs_hot 替代。此后 hot 表策略已稳定运行（14 天 DELETE TTL，
+-- 由 PartitionManager.cleanupOldModelProbeRuns 维护），旧的 columnar
+-- 分区策略（ensure/promote 函数）已在 partition_manager.go 注释停用。
+--
+-- model_probe_runs_old 无任何 Go 代码、视图或函数引用（全仓库 grep 确认），
+-- 仅 migration 386 自身（创建）和 386.down.sql（回滚用 RENAME 回去）引用。
+-- 它在 252 上保留了 595k 行历史数据，占空间无收益。
+--
+-- 幂等：IF EXISTS 保护，已 DROP 或未创建的环境安全跳过。
+--
+-- 对 386.down.sql 的影响：386 回滚的第 8 步会 RENAME model_probe_runs_old
+-- 回 model_probe_runs。DROP 后该回滚路径会在 RAISE EXCEPTION 处失败——但
+-- 386 是一个月前的迁移，hot 表策略已稳定，回滚到 columnar 分区已不现实，
+-- 这个回滚路径本就不会执行。
+DROP TABLE IF EXISTS public.model_probe_runs_old;
