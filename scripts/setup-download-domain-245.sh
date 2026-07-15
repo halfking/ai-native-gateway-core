@@ -35,7 +35,7 @@ remote "certbot certonly --nginx --non-interactive --agree-tos --expand \
   echo 'WARN: certbot expand skipped — verify SAN manually'"
 
 echo "[setup] Testing nginx and reloading..."
-remote "nginx -t && systemctl reload nginx"
+remote "nginx -t && (systemctl reload nginx 2>/dev/null || nginx -s reload)"
 
 echo "[setup] Setting gateway env for download artifacts..."
 remote "grep -q '^DOWNLOAD_ARTIFACT_ROOT=' /opt/llm-gateway-go/.env 2>/dev/null || \

@@ -79,11 +79,14 @@ SQL
 fi
 
 export OUT_DIR
-python3 - <<PY
+export ARTIFACT SHA
+python3 - <<'PY'
 import json, os
-out_dir = os.environ.get("OUT_DIR", "${OUT_DIR}")
+out_dir = os.environ.get("OUT_DIR", "")
+artifact = os.environ.get("ARTIFACT", "")
+sha = os.environ.get("SHA", "")
 print(json.dumps({
   "artifact_count": 1,
-  "summary": f"Published v${VERSION} linux/amd64 → {out_dir}/${ARTIFACT} sha256=${SHA[:16]}…"
+  "summary": f"Published → {out_dir}/{artifact} sha256={sha[:16]}…" if sha else f"Published → {out_dir}/{artifact}"
 }))
 PY
