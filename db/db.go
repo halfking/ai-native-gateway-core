@@ -1741,7 +1741,8 @@ func (d *DB) ensureFpSlotLimit(ctx context.Context) error {
 	return nil
 }
 
-// ensureRoutingRecentSuccessRate mirrors db/migrations/035_routing_recent_success_rate.sql.
+// ensureRoutingRecentSuccessRate mirrors the live request_logs_hot definition
+// from sql/migrations/startup/406_recent_success_rate_read_hot.sql.
 //
 // Two parts, both idempotent:
 //  1. Backfill: any binding whose (credential, model) pair is currently
@@ -1752,8 +1753,8 @@ func (d *DB) ensureFpSlotLimit(ctx context.Context) error {
 //     candidate pool.
 //  2. recent_success_rate(cred, model, sample_n) helper used by
 //     loadCandidatesDB so the last-N gate is a single SQL expression. The
-//     function is STABLE and uses idx_request_logs_credential_ts so the
-//     LIMIT scan is a 50-row index descent.
+//     function is STABLE and uses the request_logs_hot composite index for a
+//     50-row index descent.
 //
 // Runs at startup via ensureSchema so every gateway instance converges on the
 // same function definition without a separate migration runner.
@@ -1779,7 +1780,9 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		  );
 
 		-- (2) recent_success_rate helper. DROP+CREATE keeps the body in sync
-		--     with the source file even if a prior deploy left an older body.
+		--     with the live hot-table source even if a prior deploy left an
+		--     older body. request_logs only receives promoted rows, so using it
+		--     for the default 3-hour window yields samples=0 by design.
 		--     2026-06-23: Add p_window_hours parameter for time-based windowing.
 		DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int);
 		DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int, int);
@@ -1793,7 +1796,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		AS $$
 		    WITH recent AS (
 		        SELECT success
-		        FROM request_logs
+			    FROM request_logs_hot
 		        WHERE credential_id = p_credential_id
 		          AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
 		          AND ts > NOW() - (p_window_hours || ' hours')::interval

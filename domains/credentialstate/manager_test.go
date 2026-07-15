@@ -198,9 +198,9 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 	// db=nil + redis=nil + NOT started → exercises memCache logic only.
 	m := NewManager(nil, nil)
 
-	cacheInvalidated := false
+	invalidatedCredentialID := 0
 	m.SetProbeSubmitter(func(credID int) {}, nil)
-	m.SetInvalidateCandidateCache(func() { cacheInvalidated = true })
+	m.SetInvalidateCandidateCache(func(credentialID int) { invalidatedCredentialID = credentialID })
 
 	credID, model := 11, "nvidia-test-model"
 
@@ -219,7 +219,7 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 	if s.RecoverAt != nil {
 		t.Fatalf("RecoverAt must be nil below the 3-failure threshold, got %v", s.RecoverAt)
 	}
-	if cacheInvalidated {
+	if invalidatedCredentialID != 0 {
 		t.Fatal("candidate cache must NOT be invalidated below the 3-failure threshold")
 	}
 
@@ -244,8 +244,8 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 	if s.RecoverAt.Before(minRecover) || s.RecoverAt.After(maxRecover) {
 		t.Fatalf("RecoverAt=%v should be ~5min from now (%v..%v)", s.RecoverAt, minRecover, maxRecover)
 	}
-	if !cacheInvalidated {
-		t.Fatal("candidate cache should be invalidated when a credential trips cooling")
+	if invalidatedCredentialID != credID {
+		t.Fatalf("candidate cache invalidated credential %d, want %d", invalidatedCredentialID, credID)
 	}
 
 	// A subsequent success must restore availability (recovery path).
@@ -274,9 +274,9 @@ func TestManager_FreeCredentialTransientTolerated(t *testing.T) {
 	ctx := context.Background()
 	m := NewManager(nil, nil)
 
-	cacheInvalidated := false
+	invalidatedCredentialID := 0
 	m.SetProbeSubmitter(func(credID int) {}, nil)
-	m.SetInvalidateCandidateCache(func() { cacheInvalidated = true })
+	m.SetInvalidateCandidateCache(func(credentialID int) { invalidatedCredentialID = credentialID })
 
 	credID, model := 42, "nim-test-model"
 
@@ -298,7 +298,7 @@ func TestManager_FreeCredentialTransientTolerated(t *testing.T) {
 	if s.RecoverAt != nil {
 		t.Fatalf("free credential must NOT get a cooling RecoverAt, got %v", s.RecoverAt)
 	}
-	if cacheInvalidated {
+	if invalidatedCredentialID != 0 {
 		t.Fatal("candidate cache must NOT be invalidated for free credential transient failures")
 	}
 	// 但观测信号保留：失败计数累加，供 RecentSuccessRate / 软降权感知。
@@ -316,7 +316,7 @@ func TestManager_FreeCredentialPermanentStillHardExcludes(t *testing.T) {
 	ctx := context.Background()
 	m := NewManager(nil, nil)
 	m.SetProbeSubmitter(func(credID int) {}, nil)
-	m.SetInvalidateCandidateCache(func() {})
+	m.SetInvalidateCandidateCache(func(int) {})
 
 	credID, model := 43, "nim-test-model"
 

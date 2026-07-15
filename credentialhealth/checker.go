@@ -13,12 +13,12 @@ import (
 type Checker struct {
 	recorder         *Recorder
 	db               DBQuerier
-	windowDuration   time.Duration // default 1 hour
-	failureThreshold float64       // default 0.80 (80%)
-	minSampleSize    int           // default 5
-	degradedCooldown time.Duration // default 15 minutes
-	enableCheck      bool          // feature flag
-	invalidateCache  func()        // candidate-cache invalidator (nil → no-op)
+	windowDuration   time.Duration          // default 1 hour
+	failureThreshold float64                // default 0.80 (80%)
+	minSampleSize    int                    // default 5
+	degradedCooldown time.Duration          // default 15 minutes
+	enableCheck      bool                   // feature flag
+	invalidateCache  func(credentialID int) // candidate-cache invalidator (nil → no-op)
 }
 
 // CheckerConfig holds checker configuration.
@@ -28,11 +28,10 @@ type CheckerConfig struct {
 	MinSampleSize    int
 	DegradedCooldown time.Duration
 	EnableCheck      bool
-	// InvalidateCandidateCache (optional) is invoked synchronously after a
-	// successful state change so the routing layer picks up the new
-	// (cred, model) availability on the very next request — no waiting
-	// for the 30s availableModelsCache TTL. nil → no-op.
-	InvalidateCandidateCache func()
+	// InvalidateCandidateCache (optional) is invoked synchronously with the
+	// affected credential after a successful state change so unrelated cached
+	// candidate lists stay warm. nil → no-op.
+	InvalidateCandidateCache func(credentialID int)
 }
 
 // DefaultCheckerConfig returns sensible defaults.
@@ -202,7 +201,7 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 		}
 
 		if c.invalidateCache != nil {
-			c.invalidateCache()
+			c.invalidateCache(credentialID)
 		}
 	}
 
