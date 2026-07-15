@@ -32,6 +32,13 @@ export default {
     donationTotal: '捐赠总额',
     activationRate: '30 日激活率',
     publicPortal: '公开门户',
+    deploymentNodes: '部署节点',
+    regionMissing: '未注册',
+    regionOnline: '在线',
+    regionDegraded: '降级',
+    regionOffline: '离线',
+    regionOnlineCount: '{n} 在线',
+    dataPlaneTables: '252 数据面表记录数',
   },
 
   // License Management
