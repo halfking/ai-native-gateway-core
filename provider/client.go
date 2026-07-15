@@ -879,7 +879,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		  AND NOT EXISTS (
 		      SELECT 1 FROM model_probe_state mps
 		      WHERE mps.credential_id = c.id
-		        AND (mps.raw_model_name = mo.raw_model_name OR mps.raw_model_name = mo.standardized_name)
+		        AND mps.raw_model_name = mo.raw_model_name
 		        AND mps.state = 'broken_confirmed'
 		  )
 		  -- 2026-06-22 defect (3) hard gate: exclude pairs whose real recent
@@ -887,12 +887,11 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		  -- min-sample threshold avoids cold-start false positives (a brand-new
 		  -- credential with 1 unlucky failure). Pairs in the 0.5-0.9 band are
 		  -- kept but soft-de-prioritized via RecentSuccessRate in the router.
-		  -- 2026-06-23 TEMPORARY: lower threshold to 0.3 to allow recovery after
-		  -- resource leak fix. The leak caused 54% failure rate; with the fix
-		  -- deployed, new requests will succeed and gradually push the rolling
-		  -- 50-request window above 0.5. This gate will be restored to 0.5 once
-		  -- the success rate recovers (expected within 50-100 requests).
-		  AND NOT (rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < 0.3)
+		  -- 2026-07-15: restored to 0.5. The 2026-06-23 temporary 0.3 was
+		  -- lowered to absorb the 54% failure spike from a resource leak;
+		  -- the leak is fixed and the rolling 50-request window has long
+		  -- since rotated past it.
+		  AND NOT (rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < 0.5)
 		  AND (
 		      -- (1) exact match on the offer's canonical_raw_name (lowercase)
 		      mo.canonical_raw_name = $1
