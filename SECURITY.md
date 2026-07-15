@@ -109,5 +109,5 @@ go list -m -json -u all | jq '.Path + " " + .Version'  # 详细
 ## 联系方式
 
 - 安全邮箱：security@internal.example.com
-- 项目仓库：https://github.com/halfking/SI-LLM-Gateway
+- 项目仓库：https://github.com/halfking/ai-native-gateway
 - 主仓库：https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go
