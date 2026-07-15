@@ -30,3 +30,30 @@
 | 405 | `405_glm52_promote_per_token_to_token_plan.sql` |
 | 406 | `406_recent_success_rate_read_hot.sql` |
 
+## 2026-07-15T02:31:35Z — deploy 245 build_seq 1033 (9b98b1e7)
+
+| Migration | File |
+|-----------|------|
+| 403 | `403_runtime_alert_events.sql` |
+| 404 | `404_partition_autovacuum_analyze.sql` |
+| 405 | `405_glm52_promote_per_token_to_token_plan.sql` |
+| 406 | `406_recent_success_rate_read_hot.sql` |
+
+## 2026-07-15T02:32:05Z — deploy 245 build_seq 1034 (9b98b1e7)
+
+| Migration | File |
+|-----------|------|
+| 403 | `403_runtime_alert_events.sql` |
+| 404 | `404_partition_autovacuum_analyze.sql` |
+| 405 | `405_glm52_promote_per_token_to_token_plan.sql` |
+| 406 | `406_recent_success_rate_read_hot.sql` |
+
+## 2026-07-15T02:32:59Z — deploy 245 build_seq 1035 (9b98b1e7)
+
+| Migration | File |
+|-----------|------|
+| 403 | `403_runtime_alert_events.sql` |
+| 404 | `404_partition_autovacuum_analyze.sql` |
+| 405 | `405_glm52_promote_per_token_to_token_plan.sql` |
+| 406 | `406_recent_success_rate_read_hot.sql` |
+
