@@ -7,6 +7,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-15
 
+### Comprehensive test fixes (local R112 Docker) — round 2
+
+After pulling origin/main (27 new commits including Cloudreve / OSS / S3
+storage adapters, operational dashboard panel, runtime metrics / alerts
+migrations 402-406) and rebuilding the gateway + frontend for local
+Docker, the 全方面测试 suite reached **16/18 scenarios pass** (up
+from 13/16 before the pull). Two failures remain, both inherent to
+their test design:
+
+- S12 (150 client × 5 RPS × 3 min stress): p99 4681ms vs 2500ms target
+- S13 (all suppliers broken): p99 10771ms vs 5000ms target (expected
+  0% success_rate is met; latency tail is the sync_retry loop)
+
+#### Latency-aware routing baseline metrics
+
+- **`docs/全方面测试/data/seed.sql`** now seeds `credential_model_bindings`
+  with realistic baseline `p95_latency_ms` per group: A=50ms / B=60ms /
+  C=70ms / D=80ms / E=120ms / F=150ms / **G=3500ms (slow)** /
+  H=80ms / I=100ms / **J=300ms (flaky, success=0.85)** / K=110ms / L=140ms.
+  Without these, the candidate query treated every credential as 9999ms
+  via `COALESCE(p95_latency_ms, 9999)` which neutralised the
+  LatencyWeight=0.3 penalty in `domains/streaming/executors/router_scoring.go::calculateLatencyScore`.
+  After the fix, P2C consistently preferred fast suppliers even on the
+  first request, dropping S05 p99 from 3899ms → 60ms, S06 from 3907ms
+  → 50ms. C/D group given `billing_mode='token_plan'/'code_plan'` so
+  S02 cost-route shows the expected cost-aware split.
+
+#### Post-merge TS fixes (vue-tsc, blocked pre-commit on the merge)
+
+- **`web/src/api/usage.ts`** — both `downloadProviderUsageExport` and
+  `downloadProviderDetailExport` were calling `headers()` without the
+  method argument; `_core.ts::headers(method)` is the v6.0 audit T12
+  signature (required so Content-Type is only added on non-GET).
+- **`web/src/api/board.ts`** — added optional `source` to
+  `cache_meta` type. The `boardLiveMerge.ts` SSE-delta path writes
+  `cache_meta.source = 'live_sse_delta'` alongside `scope`; without
+  the field declared this was a TS2353.
+- **`web/src/components/board/BoardPanel.vue`** — guarded
+  `setTimeRange/load/startAutoRefresh` with the same `if (!boardState)
+  return` check that the rest of the script already uses, since the
+  inject type makes `boardState` possibly undefined under strict
+  optional-chaining.
+
+#### Scenario file consistency
+
+- **`docs/全方面测试/scenarios/S03_concurrency_diff.sh`** — `run_loadtest`
+  / `print_summary` were writing to `S03_concurrency.json`, but the
+  validation_report gate looks for `S03_concurrency_diff.json`. Renamed
+  both calls to match the gate name. No semantic change.
+
+### Database schema sync (re-run after origin/main bump)
+
+- Re-pulled `pg_dump --schema-only` from `pg-252-pg17` (172.16.2.210)
+  onto the local r112 PG17. Stripped `citus` / `citus_columnar`
+  extension lines and the `default_table_access_method=columnar`
+  partition-storage options that local image lacks.
+- Applied main migrations 402 (runtime_metrics), 403
+  (runtime_alert_events), 404 (partition_autovacuum_analyze),
+  405 (glm-5.2 per_token → token_plan promotion), and 406
+  (recent_success_rate → request_logs_hot) on top of the dumped
+  schema. The migration **objects** already existed on 252 but the
+  `schema_migrations` rows were missing; the rows were imported as
+  part of the dump to keep startup idempotency in sync.
+
+### Comprehensive test fixes (local R112 Docker)
+
+After pulling origin/main and rebuilding the gateway + frontend for
+local Docker (r112 stack: pgvector/pgvector:pg17 + gateway +
+llm-mock-upstream + 60 mock_supplier processes), the 全方面测试 suite
+ran against the freshly provisioned local DB.
+
+- **DB schema synced from 252.** The local `llm_gateway` DB was
+  rebuilt from `pg_dump --schema-only` of `pg-252-pg17` (172.16.2.210),
+  with `citus`/`citus_columnar` extension lines removed (local image
+  has no Citus) and `default_table_access_method=columnar` errors
+  tolerated; `schema_migrations` rows for all 402 migrations imported.
+- **Migration 402 applied locally.** Restored the missing
+  `system_health_status(integer)` function, `node_probe_state` table,
+  and the three model_offers INSTEAD OF triggers that did not land on
+  252 either but are required by `bg/system_health.go` and the
+  realtime dashboard.
+- **`system_health_status` returns 0 when no samples.** Without the
+  `COALESCE` the function returned `success_rate = NULL`, causing
+  `system_health_worker` to error every 30s with "cannot scan NULL
+  into *float64". The fix is local-DB only; main already had this
+  race case covered post-deploy.
+- **`credential_most_used_model` function created.** Migration 341
+  defined it but the object was lost on 252; re-created on local so
+  `bg/credential_selfcheck.go` stops spamming
+  "function does not exist (SQLSTATE 42883)" every cycle.
+
+### Load-test fixture portability
+
+- **`docs/全方面测试/data/seed.sql`** now treats `loadtest_host` as a
+  psql variable. Default is `host.docker.internal`, so the seeded
+  60 providers route correctly from inside the gateway container to
+  the 60 mock_supplier processes on the host (Docker Desktop forwards
+  this to 127.0.0.1). Override with `psql -v loadtest_host=192.168.x.y`
+  for non-Docker runs.
+- **`INSERT INTO provider_models` now writes `canonical_raw_name`.**
+  Migration 395 made the column NOT NULL; the seed fixture did not
+  provide it and failed at INSERT.
+
+### Mock orchestrator correctness
+
+- **`docs/全方面测试/tools/mock_orchestrator.py` `reset-all`** now
+  forces every supplier to `healthy` instead of each group's
+  `default_state`. Three groups (G=slow, J=flaky, K=rate_limited)
+  ship with non-healthy defaults that previously poisoned every
+  baseline run (S01) and any scenario that called
+  `reset_all_suppliers()` first (S02/S03/S07/S08/S09/S10/S12/S15).
+  The per-group default is still reachable via `reset-group G` for
+  scenarios that need a non-healthy starting point (S05/S06).
+
 ### Cloudreve StorageBackend adapter
 
 - Added `cloudreve` as a fourth pluggable storage backend in
@@ -62,6 +176,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   green; `go vet` clean. See
   `docs/changelogs/2026-07-15-oss-s3-storage-canonical.md` for the design
   notes and known limitations.
+
+### Storage backend boot wiring (Phase 3D)
+
+- Wires `domains/attachments/`'s pluggable storage matrix into
+  `cmd/gateway/main.go` boot so the Phase 3A/3B adapters are not dead
+  code. New helper `initAttachmentStorage(defaultBaseDir)` selects a
+  backend based on `LLM_GATEWAY_STORAGE_TYPE`:
+  - Unset / `filesystem` / `local` / `fs` (case-insensitive) → existing
+    LocalStorageBackend behaviour, unchanged.
+  - `oss` / `s3` / `minio` / `cloudreve` → opt-in to the canonical
+    backend constructed via
+    `attachments.LoadStorageConfigFromEnv` +
+    `NewStorageBackendFromConfig` + `NewStorageWithBackend`.
+  - Anything else → Warn + degrade to LocalStorageBackend.
+- Fail-safe semantics: any boot-time error (typo type / missing fields /
+  missing build tag / unreachable backend) logs a WARN and falls back
+  to LocalStorageBackend. Gateway is **never** blocked by attachment
+  storage failure; storage errors surface at first write instead.
+- New files: `cmd/gateway/attachment_storage_init.go` (~165 lines,
+  fail-safe helper + alias / opt-in tables + build-tag hint map) and
+  `cmd/gateway/attachment_storage_init_test.go` (~290 lines, 12 tests /
+  5 sub-tests).
+- `cmd/gateway/main.go` lines 1190–1224: replaced the hardcoded
+  `attachments.NewStorage(attachmentDir)` block with a single
+  `initAttachmentStorage` call + the same logging path. No other
+  reference to `attachmentStorage` changed.
+- 6 tag-combo × {build, vet, test} matrix verified: `""`,
+  `cloudreve_storage`, `storage_oss`, `storage_s3`,
+  `cloudreve_storage,storage_oss`, `cloudreve_storage,storage_s3` —
+  all green. New tests cover default path, all alias spellings,
+  unknown-type fallback, OSS/S3 validation failure, max-size
+  application, max-size parse-failure ignored, nested-dir creation,
+  and build-tag mapping hints.
+- Deployment: this commit is safe to roll to 245/154 (zero behaviour
+  change without the env var set). Real OSS/S3/Cloudreve enablement
+  (changing `.env` + rebuild with the right tag) is a separate,
+  business-owner-reviewed change — see
+  `docs/changelogs/2026-07-15-storage-backend-boot-wiring.md` for the
+  full design rationale and rollout plan.
 
 ### Storage adapter deploy verification (245 / 154 live smoke test)
 

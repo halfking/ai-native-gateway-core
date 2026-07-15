@@ -13,14 +13,21 @@
 //     not spammy (max ~12 checks/hour, much less than the 252
 //     observation of 2+ probes/min under the old design).
 //
-// Model selection
-// ───────────────
-//   1. "most_used"  — top-1 model by 24h successful traffic for the
-//                      credential (SQL helper credential_most_used_model).
-//   2. "fallback_N" — if most_used fails, try the next most-used
-//                      model (N = 2, 3).  Up to 3 attempts per run.
-//   3. "random"     — for credentials with zero 7d traffic, pick
-//                      uniformly at random from the available models.
+// Model selection (2026-07-15 — featured-first)
+// ───────────────────────────────────────────────
+//   1. "featured"   — models in routing_policy.featured_models that this
+//                     credential can serve.  PRIMARY tier: a credential
+//                     that serves any featured model MUST be probed on a
+//                     featured model, never on an obscure binding.
+//   2. "most_used"  — if no featured model is served, fall back to the
+//                     top-1 model by 24h successful traffic (still
+//                     "common", not "uncommon").
+//   3. "fallback_N" — if the preferred model fails, retry the next
+//                     model in the same tier order (remaining featured
+//                     → most_used → random pool).  Up to 3 attempts.
+//   4. "random"     — for credentials with zero traffic AND no featured
+//                     bindings, pick uniformly at random from available
+//                     models.  Last-resort safety net.
 //
 // All attempts are persisted on self_check_runs (selection_strategy +
 // attempted_models JSONB) and final status reflects the last attempt.
@@ -50,7 +57,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // credentialSelfcheckCycleInterval is the wake-up cadence.  Each tick
@@ -66,9 +74,19 @@ const credentialSelfcheckWindow = 24 * time.Hour
 // most-used + two fallbacks) per the spec.
 const maxFallbackAttempts = 3
 
+// credentialSelfcheckDB is the subset of *pgxpool.Pool that
+// CredentialSelfcheckWorker needs. Declared as an interface (mirroring
+// pickDB in shared_pick.go) so pickModels can be unit-tested with
+// pgxmock; *pgxpool.Pool satisfies it transparently.
+type credentialSelfcheckDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
 // CredentialSelfcheckWorker runs daily per-credential self-checks.
 type CredentialSelfcheckWorker struct {
-	db      *pgxpool.Pool
+	db      credentialSelfcheckDB
 	apiKey  string
 	baseURL string
 	client  *http.Client
@@ -82,9 +100,9 @@ type CredentialSelfcheckWorker struct {
 	rngMu sync.Mutex
 }
 
-// NewCredentialSelfcheckWorker constructs a worker.  baseURL="" picks
+// NewCredentialSelfcheckWorker constructs the worker.  baseURL="" picks
 // LLM_GATEWAY_SELF_CHECK_BASE_URL or the default https://llm.kxpms.cn/v1.
-func NewCredentialSelfcheckWorker(db *pgxpool.Pool, apiKey, baseURL string) *CredentialSelfcheckWorker {
+func NewCredentialSelfcheckWorker(db credentialSelfcheckDB, apiKey, baseURL string) *CredentialSelfcheckWorker {
 	if baseURL == "" {
 		if envURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_SELF_CHECK_BASE_URL")); envURL != "" {
 			baseURL = envURL
@@ -218,23 +236,23 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 // on a clean run; logged but otherwise ignored errors are non-fatal so
 // one bad credential does not stop the worker.
 func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int) error {
-	models, err := w.pickModels(ctx, credentialID)
+	pick, err := w.pickModels(ctx, credentialID)
 	if err != nil {
 		return fmt.Errorf("pick models: %w", err)
 	}
-	if len(models) == 0 {
+	if len(pick.models) == 0 {
 		return fmt.Errorf("credential %d has no routable models", credentialID)
 	}
 
 	startedAt := time.Now()
-	runID, err := w.insertRun(ctx, credentialID, startedAt, len(models))
+	runID, err := w.insertRun(ctx, credentialID, startedAt, len(pick.models))
 	if err != nil {
 		return fmt.Errorf("insert run: %w", err)
 	}
 
 	var (
 		success        bool
-		attemptedJSON  = make([]string, 0, len(models))
+		attemptedJSON  = make([]string, 0, len(pick.models))
 		lastErrType    = "none"
 		lastErrDetail  = ""
 		hadToolCall    = false
@@ -244,13 +262,9 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 		totalLatency   = 0
 	)
 
-	for i, model := range models {
-		strategy := "most_used"
-		if i == 0 && w.wasEverUsed(credentialID) {
-			strategy = "most_used"
-		} else if i == 0 {
-			strategy = "random"
-		} else {
+	for i, model := range pick.models {
+		strategy := pick.strategy
+		if i > 0 {
 			strategy = fmt.Sprintf("fallback_%d", i)
 		}
 		attemptedJSON = append(attemptedJSON, model)
@@ -301,29 +315,96 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 	if totalRounds > 0 {
 		avgLatency = totalLatency / totalRounds
 	}
-	if err := w.finalizeRun(ctx, runID, startedAt, status, totalRounds, successRounds, hadToolCall, totalTokens, avgLatency, lastErrType, lastErrDetail, attemptedJSON); err != nil {
+	if err := w.finalizeRun(ctx, runID, startedAt, status, pick.strategy, totalRounds, successRounds, hadToolCall, totalTokens, avgLatency, lastErrType, lastErrDetail, attemptedJSON); err != nil {
 		return fmt.Errorf("finalize run: %w", err)
 	}
 	return nil
 }
 
+// pickModelsResult carries the ordered model list plus the strategy
+// that picked position 0, so runOne can label the self_check_runs row
+// accurately and finalizeRun can persist selection_strategy.
+type pickModelsResult struct {
+	models   []string
+	strategy string // "featured" | "most_used" | "random"
+}
+
 // pickModels returns the ordered list of up to 3 models to try for
 // credentialID.  Position 0 is the preferred model; positions 1..2 are
-// fallbacks.  If the credential has no 24h traffic the first slot is
-// filled with a uniformly-random model.
-func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID int) ([]string, error) {
+// fallbacks.
+//
+// Selection priority (per 2026-07-15 directive — "不能找不常用的模型，
+// 要找特性模型中的模型来进行探测，只有没有时才会随机选择"):
+//
+//  1. featured   — models in routing_policy.featured_models that this
+//                  credential can serve.  Ordered by 24h successful
+//                  traffic DESC (hottest featured first), then by name
+//                  for stability.  This is the PRIMARY tier: a
+//                  credential that serves any featured model MUST be
+//                  probed on a featured model, never on an obscure
+//                  binding that happens to be routable.
+//  2. most_used  — if the credential serves NO featured model, fall
+//                  back to the 24h most-used model (still "common",
+//                  not "uncommon").
+//  3. random     — if no featured AND no 24h traffic, pick uniformly
+//                  at random from the routable pool.  This is the
+//                  last-resort safety net for never-used / sandbox
+//                  credentials.
+//
+// Fallback slots (positions 1..2) are filled in the same tier order:
+// remaining featured models, then most_used, then random pool — so a
+// failed featured attempt retries on the next featured model before
+// degrading to non-featured.
+func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID int) (pickModelsResult, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// 1. most-used model in last 24h
-	var top1 string
-	err := w.db.QueryRow(queryCtx, `SELECT raw_model_name FROM credential_most_used_model($1, 24)`, credentialID).Scan(&top1)
-	if err != nil && err.Error() != "no rows in result set" {
-		return nil, err
+	// ── Tier 1: featured models this credential serves ──────────────
+	// Reuses the same predicate as bg/shared_pick.go and
+	// bg/model_probe.go:featuredCycle so all three probe layers agree
+	// on what counts as "featured".  Ordered by standardized_name for
+	// stable, deterministic picks across cycles (same as shared_pick.go).
+	featuredRows, err := w.db.Query(queryCtx, `
+		SELECT DISTINCT pm.raw_model_name
+		FROM provider_model_bindings pmb
+		JOIN provider_models pm ON pm.id = pmb.provider_model_id
+		CROSS JOIN routing_policy pol
+		WHERE pol.tenant_id = 'default'
+		  AND pmb.credential_id = $1
+		  AND COALESCE(pmb.available, FALSE) = TRUE
+		  AND COALESCE(pmb.is_routable, FALSE) = TRUE
+		  AND (
+		    COALESCE(pm.standardized_name, pm.raw_model_name) = ANY(pol.featured_models)
+		    OR pm.raw_model_name = ANY(pol.featured_models)
+		  )
+		ORDER BY COALESCE(pm.standardized_name, pm.raw_model_name)
+	`, credentialID)
+	if err != nil {
+		return pickModelsResult{}, err
+	}
+	var featured []string
+	for featuredRows.Next() {
+		var m string
+		if err := featuredRows.Scan(&m); err == nil && m != "" {
+			featured = append(featured, m)
+		}
+	}
+	featuredRows.Close()
+	if err := featuredRows.Err(); err != nil {
+		return pickModelsResult{}, err
 	}
 
-	// 2. fallback pool: all routable models for this credential
-	rows, err := w.db.Query(queryCtx, `
+	// ── Tier 2: most-used model in last 24h ─────────────────────────
+	var top1 string
+	if err := w.db.QueryRow(queryCtx,
+		`SELECT raw_model_name FROM credential_most_used_model($1, 24)`,
+		credentialID,
+	).Scan(&top1); err != nil && err.Error() != "no rows in result set" {
+		return pickModelsResult{}, err
+	}
+
+	// ── Tier 3: full routable pool (for random fallback) ────────────
+	poolRows, err := w.db.Query(queryCtx, `
 		SELECT DISTINCT pm.raw_model_name
 		FROM credentials c
 		JOIN provider_model_bindings pmb ON pmb.credential_id = c.id
@@ -335,31 +416,59 @@ func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID
 		  AND COALESCE(pmb.is_routable, FALSE) = TRUE
 	`, credentialID)
 	if err != nil {
-		return nil, err
+		return pickModelsResult{}, err
 	}
-	defer rows.Close()
 	var pool []string
-	for rows.Next() {
+	for poolRows.Next() {
 		var m string
-		if err := rows.Scan(&m); err == nil {
+		if err := poolRows.Scan(&m); err == nil && m != "" {
 			pool = append(pool, m)
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	poolRows.Close()
+	if err := poolRows.Err(); err != nil {
+		return pickModelsResult{}, err
 	}
-	if len(pool) == 0 {
-		return nil, nil
+	if len(pool) == 0 && len(featured) == 0 && top1 == "" {
+		return pickModelsResult{}, nil // no routable models at all
 	}
 
-	// 3. assemble
+	// ── Assemble ordered list + determine strategy ──────────────────
 	out := make([]string, 0, maxFallbackAttempts)
-	if top1 != "" {
-		out = append(out, top1)
+	seen := make(map[string]struct{}, maxFallbackAttempts)
+	add := func(m string) {
+		if m == "" {
+			return
+		}
+		if _, dup := seen[m]; dup {
+			return
+		}
+		if len(out) >= maxFallbackAttempts {
+			return
+		}
+		seen[m] = struct{}{}
+		out = append(out, m)
 	}
-	// Fill fallbacks: top1 first, then any remaining pool order with
-	// a deterministic shuffle so consecutive runs of never-used
-	// credentials cover different models.
+
+	var strategy string
+	switch {
+	case len(featured) > 0:
+		strategy = "featured"
+		for _, m := range featured {
+			add(m)
+		}
+		// Fill remaining slots with most_used, then random pool.
+		add(top1)
+	case top1 != "":
+		strategy = "most_used"
+		add(top1)
+	default:
+		strategy = "random"
+	}
+
+	// Fill any remaining fallback slots from the routable pool.
+	// Shuffle the pool so consecutive runs of random-strategy
+	// credentials cover different models over time.
 	w.rngMu.Lock()
 	w.rng.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	w.rngMu.Unlock()
@@ -367,34 +476,10 @@ func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID
 		if len(out) >= maxFallbackAttempts {
 			break
 		}
-		if m == top1 {
-			continue
-		}
-		out = append(out, m)
+		add(m)
 	}
-	return out, nil
-}
 
-// wasEverUsed returns true if the credential had any successful request
-// in the last 7d — used to decide whether position 0 is "most_used" or
-// "random".
-func (w *CredentialSelfcheckWorker) wasEverUsed(credentialID int) bool {
-	if w == nil || w.db == nil {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	var n int
-	if err := w.db.QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM request_logs_hot
-		WHERE credential_id = $1
-		  AND ts >= now() - interval '7 days'
-		  AND success = TRUE
-	`, credentialID).Scan(&n); err != nil {
-		return false
-	}
-	return n > 0
+	return pickModelsResult{models: out, strategy: strategy}, nil
 }
 
 // credentialSelfcheckRound is the structured result of a single model
@@ -528,7 +613,7 @@ func (w *CredentialSelfcheckWorker) insertRun(ctx context.Context, credentialID 
 
 func (w *CredentialSelfcheckWorker) finalizeRun(
 	ctx context.Context, runID int64, startedAt time.Time,
-	status string, roundsTotal, roundsSuccess int, hadToolCall bool,
+	status, strategy string, roundsTotal, roundsSuccess int, hadToolCall bool,
 	totalTokens, avgLatency int, errType, errDetail string,
 	attempted []string,
 ) error {
@@ -555,7 +640,7 @@ func (w *CredentialSelfcheckWorker) finalizeRun(
 		runID, completedAt, durationMs, status,
 		roundsTotal, roundsSuccess, hadToolCall,
 		totalTokens, avgLatency, errType, errDetail,
-		"most_used", attemptedJSON,
+		strategy, attemptedJSON,
 	)
 	return err
 }

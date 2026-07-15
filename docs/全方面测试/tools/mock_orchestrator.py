@@ -194,8 +194,22 @@ async def cmd_reset_group(args):
 
 
 async def cmd_reset_all(args):
+    # 2026-07-15: BUG FIX — `reset-all` should reset every group to a healthy
+    # baseline, not to each group's `default_state`. Multiple groups (G, J, K)
+    # ship with non-healthy defaults (slow / flaky / rate_limited) which would
+    # poison the baseline run S01 and any other scenario that calls
+    # `reset_all_suppliers()` (S02, S03, S07, S08, S09, S10, S12, S15).
+    # The per-group `default_state` is still reachable via `reset-group G`.
+    healthy_state = "healthy"
+    ports_all: list[int] = []
     for g in GROUPS:
-        await cmd_reset_group(argparse.Namespace(group=g))
+        ports_all.extend(ports_for_group(g))
+    async with aiohttp.ClientSession() as session:
+        results = await asyncio.gather(
+            *[post_state(session, p, healthy_state) for p in ports_all]
+        )
+    print("\nreset-all (every group forced to healthy):")
+    print(f"  ok: {sum(1 for r in results if r.get('ok'))}/{len(ports_all)}")
     print("\nreset-all: done")
 
 
