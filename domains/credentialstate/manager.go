@@ -64,8 +64,9 @@ type Manager struct {
 	// Phase 2: 模型热度追踪器（可选，nil 时禁用热度感知探测）
 	popularityTracker *ModelPopularityTracker
 
-	// 2026-07-03: 候选缓存失效函数（函数注入，避免循环依赖）
-	invalidateCandidateCache func()
+	// 2026-07-15: Candidate cache invalidator scoped to a credential. Per-state
+	// transitions must not flush unrelated models and tenants back to the DB.
+	invalidateCandidateCache func(credentialID int)
 }
 
 // CacheEntry 缓存条目
@@ -139,9 +140,10 @@ func (m *Manager) SetActiveProbeSubmitter(fn func(credID int, model string, tena
 	}
 }
 
-// SetInvalidateCandidateCache 设置候选缓存失效函数（避免循环依赖）
-// 2026-07-03: Added to fix bug #8 - UpdateOnFailure must invalidate candidate cache
-func (m *Manager) SetInvalidateCandidateCache(fn func()) {
+// SetInvalidateCandidateCache sets the credential-scoped candidate cache
+// invalidator. Broad provider or admin mutations continue to use the separate
+// global invalidator in provider.
+func (m *Manager) SetInvalidateCandidateCache(fn func(credentialID int)) {
 	m.invalidateCandidateCache = fn
 }
 
@@ -299,7 +301,7 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 		// 2026-07-03: Bug #8 fix - invalidate candidate cache when marking unavailable
 		// Without this, the router sees stale candidate list for 30s (cache TTL)
 		if m.invalidateCandidateCache != nil {
-			m.invalidateCandidateCache()
+			m.invalidateCandidateCache(credID)
 		}
 
 	} else if isTransient && state.ConsecutiveFails >= 3 {
@@ -345,7 +347,7 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 				"recover_at", nextRetry)
 
 			if m.invalidateCandidateCache != nil {
-				m.invalidateCandidateCache()
+				m.invalidateCandidateCache(credID)
 			}
 
 			// 递增退避探测 (30s → 2m → 5m)：探测用于在 cooling 期间提前发现
@@ -419,7 +421,7 @@ func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
 	oldState, _ := m.getFromMemCache(key)
 	if oldState != nil && !oldState.Available && state.Available {
 		if m.invalidateCandidateCache != nil {
-			m.invalidateCandidateCache()
+			m.invalidateCandidateCache(state.CredentialID)
 		}
 		slog.Info("credstate: probe recovered credential, invalidated candidate cache",
 			"credential_id", state.CredentialID,

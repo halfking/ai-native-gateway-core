@@ -42,7 +42,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/distribution"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/integration"                        //nolint:depguard // clientprofile worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/approval"                            //nolint:depguard // D1: approval config management
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -54,10 +53,12 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/integration"                         //nolint:depguard // clientprofile worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
-	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
+	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming" //nolint:depguard
@@ -66,8 +67,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
-	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
+	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -955,6 +956,12 @@ func main() {
 			routingExec.StateObserver = stateManager
 			slog.Info("credential state observer enabled (Phase 2.x real request feedback)")
 		}
+
+		// 2026-07-15: shadow-only state/probe observer. It reads the hot
+		// platform settings on each event and cannot alter routing, state,
+		// cache invalidation, or probe dispatch while in shadow mode.
+		routingExec.RoutingStateShadow = routingstate.NewShadowObserver()
+		slog.Info("routing state shadow observer initialized")
 
 		// 2026-07-07 Phase 1: wire FpSlot degradation tracker.
 		// Unconditional — it is in-memory only (Prometheus counters + a
@@ -1852,7 +1859,7 @@ func main() {
 				)
 			}
 			// 2026-07-03: Bug #8 fix - wire candidate cache invalidation
-			stateManager.SetInvalidateCandidateCache(provider.InvalidateAllCandidateCache)
+			stateManager.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 			// 2026-07-13: wire active_probe submitter so consecutive_fails >= threshold
 			// immediately triggers a direct-to-provider probe (instead of waiting
 			// for credProbeV2's 5-min delayed reprobe).

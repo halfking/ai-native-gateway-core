@@ -240,7 +240,7 @@ func (h *Handler) batchRecoverCredentials(w http.ResponseWriter, r *http.Request
 		SET availability_state = 'ready', availability_recover_at = NULL,
 		    state_reason_code = NULL, state_reason_detail = NULL, state_updated_at = now()
 		WHERE provider_id = $1
-		  AND availability_state IN ('cooling','unreachable','degraded')
+		  AND availability_state IN ('cooling','unreachable')
 		  AND lifecycle_status = 'active'
 	`, providerID)
 	if err != nil {

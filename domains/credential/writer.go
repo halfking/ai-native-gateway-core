@@ -47,7 +47,7 @@ func (w *Writer) Enabled() bool {
 	return w != nil && w.dbPool != nil
 }
 
-// RestoreOnSuccess clears cooling / rate_limited / unreachable / degraded
+// RestoreOnSuccess clears cooling / rate_limited / unreachable
 // state on the credential. The (credential, model) bindings are restored
 // in lock-step so production routing (cmb) and /api/routing/resolve
 // (model_offers) agree on which bindings are live.
@@ -74,7 +74,7 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 		    state_reason_code       = NULL,
 		    state_updated_at        = now()
 		WHERE id = $1
-		  AND availability_state IN ('cooling', 'rate_limited', 'unreachable', 'degraded')
+		  AND availability_state IN ('cooling', 'rate_limited', 'unreachable')
 	`, credentialID); err != nil {
 		return err
 	}

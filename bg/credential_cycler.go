@@ -112,12 +112,12 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 
 		decrypted, decErr := decryptCredWithKeyring(string(ciphertext), c.keyring, c.encKey)
 		if decErr != nil {
-			slog.Warn("credential cycler: decrypt failed (will mark health=error; is_routable may go FALSE)",
+			slog.Warn("credential cycler: decrypt failed (will mark health=unreachable)",
 				"credential_id", credID,
 				"label", label,
 				"error", decErr,
 			)
-			c.updateHealth(ctx, credID, "error", "decrypt failed")
+			c.updateHealth(ctx, credID, "unreachable", "decrypt failed")
 			continue
 		}
 
@@ -129,13 +129,10 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 		} else {
 			unreachable++
 			status := "unreachable"
-			if strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403") {
-				status = "auth_failed"
-			}
 			if unreachable == 1 || unreachable%5 == 0 {
 				// Log first failure and every 5th to avoid log flood,
 				// while still surfacing the root cause on recurring failures.
-				slog.Warn("credential cycler: probe failed (will mark health=unreachable/auth_failed; is_routable may go FALSE)",
+				slog.Warn("credential cycler: probe failed (will mark health=unreachable; is_routable may go FALSE)",
 					"credential_id", credID,
 					"label", label,
 					"status", status,
@@ -304,9 +301,6 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 		c.updateHealth(ctx, credID, "healthy", "")
 	} else {
 		status := "unreachable"
-		if strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403") {
-			status = "auth_failed"
-		}
 		result.Status = status
 		result.Error = errMsg
 		c.updateHealth(ctx, credID, status, errMsg)

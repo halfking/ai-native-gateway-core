@@ -17,10 +17,10 @@ func PlatformSpecs() []*Spec {
 	out = append(out, SelfCheckSpecs()...)
 	// 2026-07-13: 错误触发的主动探测（连续失败立即直连上游探测）
 	out = append(out, ErrorProbeSpecs()...)
-	// 会话全景分析模块主开关（admin/modules 统一管理）→ platform 范围。
-	// 2026-07-13: 数据生命周期（hot 表 retention / promote 频率 / batch size）
+	// 2026-07-15: shadow-only routing state, probe, and capability coordinators.
+	out = append(out, RoutingStateSpecs()...)
 	out = append(out, LifecycleSpecs()...)
-  	out = append(out, SessionAnalyticsSpecs()...)
+	out = append(out, SessionAnalyticsSpecs()...)
 	out = append(out, DashboardSpecs()...)
 	return out
 }
