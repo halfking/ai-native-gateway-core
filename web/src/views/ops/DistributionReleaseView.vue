@@ -93,6 +93,11 @@ onMounted(load)
           <a :href="catalog.git_repo_url" target="_blank" rel="noopener">{{ catalog.git_repo_url }}</a>
         </el-form-item>
       </el-form>
+      <p class="ops-downloads__hint">{{ t('ops.downloads.storageHint') }}</p>
+      <div class="ops-downloads__links">
+        <el-button link type="primary" @click="$router.push('/download')">{{ t('ops.downloads.openPublicDownload') }}</el-button>
+        <el-button link type="primary" @click="$router.push('/activate')">{{ t('ops.downloads.openActivate') }}</el-button>
+      </div>
     </el-card>
 
     <el-card shadow="never" class="ops-downloads__card">
@@ -142,4 +147,15 @@ onMounted(load)
 .ops-downloads__head p { margin: 0; color: var(--text-secondary, #8b949e); font-size: 14px; }
 .ops-downloads__stats { margin-bottom: 16px; }
 .ops-downloads__card { margin-bottom: 16px; }
+.ops-downloads__hint {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--text-secondary, #8b949e);
+}
+.ops-downloads__links {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
 </style>

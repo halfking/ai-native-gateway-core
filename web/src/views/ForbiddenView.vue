@@ -3,6 +3,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { clearAll } from '../store'
 import { logout as apiLogout } from '../api/auth'
+import PublicPortalLayout from '../components/PublicPortalLayout.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -14,58 +15,40 @@ function goHome() {
 async function logout() {
   try { await apiLogout() } catch { /* ignore */ }
   clearAll()
-  router.push('/login')
+  router.push('/')
 }
 </script>
 
 <template>
-  <div class="forbidden-page">
-    <div class="forbidden-card">
+  <PublicPortalLayout
+    :title="t('forbidden.title')"
+    :subtitle="t('forbidden.subtitle')"
+    kicker="403"
+  >
+    <el-card shadow="never" class="pub-card forbidden-card">
       <div class="forbidden-icon" aria-hidden="true">🔒</div>
-      <h1>{{ t('forbidden.title') }}</h1>
-      <p class="subtitle">{{ t('forbidden.subtitle') }}</p>
       <div class="actions">
-        <button class="btn btn-primary" @click="goHome">{{ t('forbidden.goDashboard') }}</button>
-        <button class="btn btn-ghost" @click="logout">{{ t('forbidden.switchAccount') }}</button>
+        <el-button type="primary" @click="goHome">{{ t('forbidden.goDashboard') }}</el-button>
+        <el-button @click="logout">{{ t('forbidden.switchAccount') }}</el-button>
       </div>
-    </div>
-  </div>
+    </el-card>
+  </PublicPortalLayout>
 </template>
 
 <style scoped>
-.forbidden-page {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg);
-}
 .forbidden-card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 48px 40px;
   text-align: center;
-  max-width: 480px;
+  padding: 24px 16px 32px;
 }
 .forbidden-icon {
-  font-size: 64px;
+  font-size: 56px;
   margin-bottom: 16px;
-}
-h1 {
-  font-size: 24px;
-  margin: 0 0 12px;
-  color: var(--text);
-}
-.subtitle {
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1.6;
-  margin-bottom: 28px;
 }
 .actions {
   display: flex;
   gap: 12px;
   justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 8px;
 }
 </style>

@@ -27,6 +27,9 @@ export default {
     tests: '测试',
     createdAt: '时间',
     summary: '摘要',
+    storageHint: '离线包按版本号存放于 245:/var/www/download/llm-gateway-go/v{version}/，发版前自动跑 distribution 测试并写入 download_publish_runs 审计表。',
+    openPublicDownload: '打开公开下载页',
+    openActivate: '打开激活向导',
   },
 
   overview: {
