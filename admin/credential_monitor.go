@@ -612,7 +612,7 @@ func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http
 	})
 }
 
-// handleDemote manually demotes a credential (set degraded + auto-recover).
+// handleDemote manually demotes a credential (set cooling + auto-recover).
 // POST /api/credentials/demote
 // Body: {"credential_id": 123, "reason": "手动降级", "recover_after_hours": 2}
 func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.Request) {
@@ -646,7 +646,7 @@ func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.
 
 	_, err := m.h.db.Exec(ctx, `
 		UPDATE credentials
-		SET availability_state = 'degraded',
+		SET availability_state = 'cooling',
 		    availability_recover_at = $1,
 		    state_reason_code = 'manual_demote',
 		    state_reason_detail = $2,

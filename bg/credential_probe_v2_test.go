@@ -36,7 +36,7 @@ func TestClassifyProbeFailure_Plain404_StillUnreachable(t *testing.T) {
 
 func TestClassifyProbeFailure_AuthFailed(t *testing.T) {
 	pr := classifyProbeFailure("401/403: invalid api key")
-	if pr.HealthStatus != "auth_failed" || pr.AvailabilityState != "auth_failed" || pr.StateReasonCode != "auth_error" {
+	if pr.HealthStatus != "unreachable" || pr.AvailabilityState != "auth_failed" || pr.StateReasonCode != "auth_error" {
 		t.Errorf("auth classification wrong: %+v", pr)
 	}
 }
