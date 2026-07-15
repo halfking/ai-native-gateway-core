@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-15
 
+### Multimodal test infrastructure (round 2 of 全方面测试)
+
+Adds multimodal-aware test fixtures and a real-vendor smoke
+script. Built on top of the round-1 seed.sql (MM group 9070-9074)
+and 5 multimodal_supplier instances (ports 19280-19284).
+
+- **`docs/全方面测试/tools/multimodal_supplier.py` (new)** — aiohttp mock
+  supplier that parses multipart content (image_url / image /
+  input_audio / file) into a structural summary and captures client
+  fingerprint headers (X-Device-Seed / X-Machine-Id / X-Client-Profile /
+  X-Runtime-* / X-OS-* / X-Tenant-Id / User-Agent / Authorization).
+  /admin/requests and /admin/request?id=... expose the recorded ring
+  buffer (50 most-recent requests) for assertions.
+
+- **`docs/全方面测试/tools/multimodal_client.py` (new)** — 8-scenario
+  test client covering OpenAI image_url, Anthropic Messages image
+  block, mixed text+image+audio+file, multi-image, multi-turn with
+  history, streaming, plus 2 client-profile labelling scenarios
+  (S23 fingerprint funnel, S24 X-Tenant-Id). Asserts modality counts
+  match the sent payload, image URL lengths are recorded, Anthropic
+  base64 data sizes are captured. The client query-all-suppliers logic
+  handles gateway routing to any of the 5 mock instances in the MM
+  group. **7/8 scenarios pass locally**; S18 (Anthropic Messages +
+  base64 image) fails because the gateway's attachment storage can't
+  handle base64 in Anthropic format — production workaround is to use
+  the OpenAI image_url shape (S19).
+
+- **`docs/全方面测试/tools/multimodal_real_vendor.py` (new)** —
+  sequential (no concurrency, no burst) smoke test against real
+  multimodal vendors. Per the user's explicit requirement: "不需要做并发
+  测试，只需要做流程测试". Supports Volcano Ark GLM-4.6V / Doubao 1.5
+  Vision, Zhipu GLM-4V, DeepSeek Janus-Pro, Moonshot Kimi-VL, and
+  MiniMax M2-7B. Each scenario: 1 request, 1s spacing, full report
+  with HTTP status / latency / response model / content preview /
+  request_logs row (tenant_id / client_profile / identity_hash /
+  virtual_client_id / virtual_ip).
+
+- **`docs/全方面测试/10-多模态客户端与画像.md` (new)** — operator
+  playbook for the multimodal flow + 4-step client-profile labelling
+  verification (image → identity.BuildIdentity → request_context_attrs
+  → client_profiles), with runnable SQL probes and known limitations
+  (Anthropic base64, fp_slot X-Device-Seed overwrite, fingerprint
+  headers not forwarded to upstream).
+
+### Round-2 test fixes (from 2026-07-15 pull-and-rebuild)
+
+- **`db/db.go ensureApplicationsTable`**: ON CONFLICT (id) and
+  ON CONFLICT (tenant_id, code) require primary key + unique
+  constraint. After pg_dump --schema-only from 252 onto local PG17,
+  several tables (tenants, applications, ...) were missing the
+  PK/unique constraints. The schema-apply step in this branch
+  re-applies those constraints so ON CONFLICT statements work.
+- **`system_health_status(integer)`** function on local: wrapped
+  the success_rate column in COALESCE(..., 0) so the 0-sample case
+  returns 0 instead of NULL. Without this, `bg/system_health.go`
+  errors every 30s with "cannot scan NULL into *float64".
+- **`credential_most_used_model(bigint, integer)`** function on
+  local: re-created since the migration 341 object was lost on 252.
+
+### Round-1 comprehensive test fixes (already on main)
+
+See `CHANGELOG.md` history: 16/18 全方面测试 scenarios pass after
+merge of feature/deploy-ops-license-v2. S12 (150-client stress test)
+and S13 (all-broken) fail on p99 thresholds but are inherent to
+their test design.
+
+## [Unreleased] - 2026-07-15
+
 
 ### Guest UI — unified header & deploy flow (245)
 
