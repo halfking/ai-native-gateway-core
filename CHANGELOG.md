@@ -241,6 +241,36 @@ ran against the freshly provisioned local DB.
   `docs/changelogs/2026-07-15-storage-backend-boot-wiring.md` for the
   full design rationale and rollout plan.
 
+### files.kxpms.cn outage fix (deploy verification)
+
+- `files.kxpms.cn` previously returned **502 Bad Gateway** because 252 had no
+  nginx vhost for it (default_server 502'd). This is now fixed end-to-end
+  with certbot-issued cert + dedicated 9444 vhost + SNI stream routing +
+  Cloudreve `[CORS] AllowOrigins` updated.
+- Live ops changes (NOT in this repo — on 252 / 154):
+  - 252: added `files.kxpms.cn` to `kxpms-on-252.conf :80` server_name (for
+    ACME webroot challenge).
+  - 252: new SNI map entry in `stream.d/sni-proxy.conf`:
+    `files.kxpms.cn → kxpms_nginx_backend` (so SNI dispatches to 9444).
+  - 252: new file `conf.d/files-kxpms-cn-9444.conf` — 9444 ssl proxy_protocol
+    vhost, server_name files.kxpms.cn, cert `live/files.kxpms.cn`,
+    proxy_pass to `172.16.2.209:5212` (Cloudreve on 154).
+  - 252: certbot certonly for `files.kxpms.cn` (Let's Encrypt, expires
+    2026-10-13, auto-renewed by certbot timer).
+  - 154: `conf.ini [CORS] AllowOrigins` updated to include
+    `https://files.kxpms.cn`. Cloudreve process restarted (PID 4433 → 26382)
+    to pick up new conf.
+- 12/12 smoke tests pass: HTTPS 200 with valid cert chain, WebDAV 401 with
+  Basic realm=cloudreve, CORS preflight 204 + headers, GET 200 + ACAO for
+  both `files.kxpms.cn` and `res.itestu.cn` origins, 403 for unknown origin,
+  all other `*.kxpms.cn` regression 200, ACME renewal webroot still 200.
+- Key debugging gotcha: nginx `add_header` directives in security snippet
+  combined with `proxy_buffering off` + `proxy_set_header Connection "upgrade"`
+  were stripping `Access-Control-Allow-Origin` from upstream responses. Final
+  vhost uses minimal directives and CORS passes through cleanly.
+- See `docs/2026-07-15-files-kxpms-cn-deploy-verification.md` for full
+  topology, smoke test transcript, and the 3 deployment gotchas.
+
 ### Storage adapter deploy verification (245 / 154 live smoke test)
 
 - Both `f17c97c85` (Cloudreve) and `ac8519d62` (OSS/S3 canonical) are
