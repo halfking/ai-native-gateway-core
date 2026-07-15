@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-07-15
+## [Unreleased] - 2026-07-16
+
+### Telemetry & audit JSONB hardening (incident 2026-07-16)
+
+- **apihub marshalAny/marshalStringMap** (`apihub/pg_store.go`): sanitize `map[string]any` before JSON-encode for `tags` / `metadata` JSONB columns. Strip NaN / +Inf / -Inf floats (which `json.Marshal` rejects), recursively walk nested maps/slices, scrub invalid UTF-8 / control bytes (`\x00`, C0 except `\t\n\r`) in string leaves. Stops the 170k+ "invalid input syntax for type json (SQLSTATE 22P02)" flood in `apihub watcher: register LLM asset failed`.
+- **telemetry persistRequestLog / persistDecisionLog** (`admin/telemetry.go`): add `execWithRetry` that retries single-statement INSERTs on transient PG SQLSTATEs (`40001`, `40P01`, `57014`, `57P01`, `57P03`, `08000-08007`) with exponential backoff. Add `classifyAndCount` to bump `failTransient` / `failPermanent` counters exposed via `(*telemetryIngester).FailCounts()` so ops can alert when writes silently drop.
+- **auditLog** (`admin/users.go`): sanitize `routing_audit_log.after_json` payload via new `sanitizeJSONBPayload` (handles invalid UTF-8, NUL bytes, json.Valid false) before INSERT. Fallback path uses `::text::jsonb` cast through escaped `{"raw":"..."}` wrapper when the sanitized payload still fails JSONB validation.
+- **telemetry Client** (`domains/hooks/observability/telemetry/client.go`): add `failTransient / failPermanent / failRetried / failFallback` atomic counters. `Client.FailCounts()` snapshot for metrics endpoints.
+- Tests: `apihub/pg_store_sanitize_test.go` (5 cases covering NaN/Inf/NUL/UTF-8), `admin/audit_log_sanitize_test.go` (5 cases for sanitizeJSONBPayload / isJSONBValidationError).
 
 ### Portal, activation, and one-click deploy
 

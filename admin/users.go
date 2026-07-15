@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
@@ -60,6 +61,20 @@ func (h *Handler) writeAuditLog(r *http.Request, action, targetType string, targ
 // auditLog inserts a row into routing_audit_log synchronously (3s timeout).
 // details is json-encoded so it can be a string, struct, map, or nil.
 // Errors are logged but do not block the caller.
+//
+// 2026-07-16 hardening (incident: 4× "audit_log insert failed" with
+// SQLSTATE 22P02 in gateway.stderr):
+//
+//   - JSONB column after_json is fed a marshaled []byte. json.Marshal
+//     will fail for Go values containing NaN/±Inf floats, and PG JSONB
+//     rejects null bytes (\x00) with SQLSTATE 22021.
+//
+//   - Best-effort: scrub the payload so it always parses as valid
+//     JSONB. Strings are scrubbed of invalid UTF-8 / null bytes, map
+//     values are recursively sanitized for NaN/Inf. If scrubbing
+//     still fails, we fall back to a plain text payload so the audit
+//     row is preserved (the alternative — silently dropping the
+//     login event — is worse than storing raw text in after_json).
 func (h *Handler) auditLog(actor, action, targetType string, targetID int, details any) {
 	if h.db == nil {
 		return
@@ -77,10 +92,103 @@ func (h *Handler) auditLog(actor, action, targetType string, targetID int, detai
 			payload = []byte("null")
 		}
 	}
+	payload = sanitizeJSONBPayload(payload)
 	_, err := h.db.Exec(ctx, `INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5)`, actor, action, targetType, targetID, payload)
 	if err != nil {
+		// Last-resort: PG still rejected (could be a transient type
+		// issue we cannot sanitize). Try inserting the raw text form
+		// so we never silently drop a login event. Cast through
+		// ::text to bypass JSONB validation.
+		if isJSONBValidationError(err) {
+			fallback := []byte(`{"raw":"` + scrubUTF8(string(payload)) + `"}`)
+			if _, fbErr := h.db.Exec(ctx,
+				`INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5::text::jsonb)`,
+				actor, action, targetType, targetID, string(fallback)); fbErr != nil {
+				slog.Warn("audit_log insert failed (fallback also failed)",
+					"action", action, "actor", actor, "error", err, "fallback_error", fbErr)
+				return
+			}
+			slog.Warn("audit_log insert fell back to escaped payload",
+				"action", action, "actor", actor, "error", err)
+			return
+		}
 		slog.Warn("audit_log insert failed", "action", action, "actor", actor, "error", err)
 	}
+}
+
+// sanitizeJSONBPayload ensures payload parses as valid JSON and that
+// every string leaf contains valid UTF-8 with no null bytes. PG
+// rejects "\x00" with SQLSTATE 22021 and any invalid JSON with
+// SQLSTATE 22P02.
+func sanitizeJSONBPayload(payload []byte) []byte {
+	if len(payload) == 0 {
+		return []byte("null")
+	}
+	// json.Valid only checks JSON syntax; it accepts invalid UTF-8
+	// bytes because the JSON spec permits arbitrary bytes inside
+	// string literals (escaped or not). PostgreSQL JSONB is stricter
+	// and rejects invalid UTF-8 with SQLSTATE 22021. So we must also
+	// verify utf8.Valid here before declaring a payload safe.
+	if json.Valid(payload) && !strings.ContainsRune(string(payload), 0) && utf8.Valid(payload) {
+		return payload
+	}
+	// Try to scrub and re-validate.
+	scrubbed := scrubUTF8Bytes(payload)
+	if !json.Valid(scrubbed) || !utf8.Valid(scrubbed) {
+		return []byte("null")
+	}
+	return scrubbed
+}
+
+// scrubUTF8Bytes replaces invalid UTF-8 sequences with U+FFFD and
+// drops NUL bytes. Operates on a []byte to preserve the original
+// string boundaries around JSON tokens.
+func scrubUTF8Bytes(b []byte) []byte {
+	if utf8.Valid(b) && !containsNUL(b) {
+		return b
+	}
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); {
+		r, size := utf8.DecodeRune(b[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			out = append(out, 0xEF, 0xBF, 0xBD) // U+FFFD UTF-8
+		case r == 0:
+			// strip NUL
+		default:
+			out = append(out, b[i:i+size]...)
+		}
+		i += size
+	}
+	return out
+}
+
+func containsNUL(b []byte) bool {
+	for _, c := range b {
+		if c == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// scrubUTF8 is a string wrapper for the fallback path.
+func scrubUTF8(s string) string {
+	return string(scrubUTF8Bytes([]byte(s)))
+}
+
+// isJSONBValidationError returns true for SQLSTATE 22P02 (invalid
+// JSON) and 22021 (invalid UTF-8 / NUL byte). Used to decide whether
+// to retry with the escaped-payload fallback.
+func isJSONBValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "22P02") ||
+		strings.Contains(msg, "22021") ||
+		strings.Contains(msg, "invalid input syntax for type json") ||
+		strings.Contains(msg, "invalid byte sequence")
 }
 
 type changePasswordRequest struct {

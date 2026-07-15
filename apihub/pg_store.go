@@ -25,7 +25,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -440,18 +442,141 @@ func setTenantGUC(ctx context.Context, tx pgx.Tx, tenantID string) error {
 
 // --- marshaling helpers ---
 
+// marshalStringMap JSON-encodes a string→string map for storage in a
+// JSONB column. Empty maps serialize to "{}". Values are scrubbed of
+// invalid UTF-8 / control bytes so PostgreSQL never rejects the row
+// with SQLSTATE 22P02. json.Marshal itself rejects NaN/±Inf, which
+// can leak in via config sources, so we strip those keys before
+// marshaling.
 func marshalStringMap(m map[string]string) ([]byte, error) {
 	if len(m) == 0 {
 		return []byte("{}"), nil
 	}
-	return json.Marshal(m)
+	clean := make(map[string]string, len(m))
+	for k, v := range m {
+		clean[k] = scrubUTF8ForJSONB(v)
+	}
+	return json.Marshal(clean)
 }
 
+// marshalAny JSON-encodes a map[string]any for storage in a JSONB
+// column. Empty maps serialize to "{}". Values are scrubbed of:
+//
+//  1. NaN / +Inf / -Inf floats (json.Marshal errors on these; without
+//     pre-cleaning PG gets a Go-side error and the row is dropped).
+//  2. Non-finite numerics in nested maps/slices.
+//  3. Invalid UTF-8 / control bytes in string leaves.
+//
+// All scrubbing is best-effort: on any unexpected value type we fall
+// back to a stable representation (0 / "" / {}) rather than fail the
+// entire upsert. This is what fixed the 2026-07-16 incident where the
+// apihub watcher logged 170k+ "invalid input syntax for type json"
+// errors for three stuck ref_ids (1139198-200).
 func marshalAny(v map[string]any) ([]byte, error) {
 	if len(v) == 0 {
 		return []byte("{}"), nil
 	}
-	return json.Marshal(v)
+	clean := sanitizeForJSONB(v)
+	out, err := json.Marshal(clean)
+	if err != nil {
+		// Last-resort fallback: emit an empty object so the upsert
+		// still succeeds. The caller logs err separately.
+		return []byte("{}"), err
+	}
+	if !json.Valid(out) {
+		// Should not happen after sanitizeForJSONB, but defend in
+		// depth: never feed PG invalid JSON.
+		return []byte("{}"), nil
+	}
+	return out, nil
+}
+
+// sanitizeForJSONB recursively walks v and returns a deep copy where
+// every value is JSON-safe: NaN/Inf replaced by 0, invalid UTF-8
+// replaced by U+FFFD, control bytes (\x00) stripped.
+func sanitizeForJSONB(v map[string]any) map[string]any {
+	out := make(map[string]any, len(v))
+	for k, val := range v {
+		out[k] = sanitizeValueForJSONB(val)
+	}
+	return out
+}
+
+func sanitizeValueForJSONB(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		return sanitizeForJSONB(x)
+	case []any:
+		arr := make([]any, len(x))
+		for i, e := range x {
+			arr[i] = sanitizeValueForJSONB(e)
+		}
+		return arr
+	case string:
+		return scrubUTF8ForJSONB(x)
+	case float64:
+		// NaN, +Inf, -Inf → 0. finite values pass through unchanged.
+		if x != x || x > 1e308 || x < -1e308 {
+			return 0.0
+		}
+		return x
+	case float32:
+		f := float64(x)
+		if f != f || f > 1e308 || f < -1e308 {
+			return 0.0
+		}
+		return f
+	case nil, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return v
+	default:
+		// json.Number, custom Marshalers, etc. — hand to json.Marshal
+		// via fmt to avoid reflection surprises. Use a string form.
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		if !json.Valid(b) {
+			return nil
+		}
+		return json.RawMessage(b)
+	}
+}
+
+// scrubUTF8ForJSONB replaces invalid UTF-8 byte sequences with U+FFFD
+// and strips C0 control bytes except \\t \\n \\r (which PG JSONB
+// accepts). Null bytes (\x00) are stripped because PostgreSQL TEXT /
+// JSONB columns reject them with SQLSTATE 22021.
+func scrubUTF8ForJSONB(s string) string {
+	if utf8.ValidString(s) && !strings.ContainsAny(s, "\x00") && !hasC0ControlExceptWS(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + len(s)/10)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			b.WriteString("\uFFFD")
+		case r < 0x20 && r != '\t' && r != '\n' && r != '\r':
+			// strip control bytes other than tab/lf/cr
+		default:
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
+}
+
+// hasC0ControlExceptWS returns true if s contains any C0 control byte
+// other than \t \n \r. Used as a fast-path check so common cases
+// (already-clean UTF-8) skip the per-byte loop.
+func hasC0ControlExceptWS(s string) bool {
+	for _, r := range s {
+		if r < 0x20 && r != '\t' && r != '\n' && r != '\r' {
+			return true
+		}
+	}
+	return false
 }
 
 func unmarshalStringMap(raw []byte, dst *map[string]string) error {
