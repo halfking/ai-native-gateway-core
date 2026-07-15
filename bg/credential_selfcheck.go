@@ -15,19 +15,19 @@
 //
 // Model selection (2026-07-15 — featured-first)
 // ───────────────────────────────────────────────
-//   1. "featured"   — models in routing_policy.featured_models that this
-//                     credential can serve.  PRIMARY tier: a credential
-//                     that serves any featured model MUST be probed on a
-//                     featured model, never on an obscure binding.
-//   2. "most_used"  — if no featured model is served, fall back to the
-//                     top-1 model by 24h successful traffic (still
-//                     "common", not "uncommon").
-//   3. "fallback_N" — if the preferred model fails, retry the next
-//                     model in the same tier order (remaining featured
-//                     → most_used → random pool).  Up to 3 attempts.
-//   4. "random"     — for credentials with zero traffic AND no featured
-//                     bindings, pick uniformly at random from available
-//                     models.  Last-resort safety net.
+//  1. "featured"   — models in routing_policy.featured_models that this
+//     credential can serve.  PRIMARY tier: a credential
+//     that serves any featured model MUST be probed on a
+//     featured model, never on an obscure binding.
+//  2. "most_used"  — if no featured model is served, fall back to the
+//     top-1 model by 24h successful traffic (still
+//     "common", not "uncommon").
+//  3. "fallback_N" — if the preferred model fails, retry the next
+//     model in the same tier order (remaining featured
+//     → most_used → random pool).  Up to 3 attempts.
+//  4. "random"     — for credentials with zero traffic AND no featured
+//     bindings, pick uniformly at random from available
+//     models.  Last-resort safety net.
 //
 // All attempts are persisted on self_check_runs (selection_strategy +
 // attempted_models JSONB) and final status reflects the last attempt.
@@ -35,10 +35,11 @@
 //
 // Outbound X-LLM-Origin-* headers
 // ────────────────────────────────
-//   X-LLM-Origin-Stage : self_check
-//   X-LLM-Origin-Actor : credential-selfcheck-worker
-//   X-Forwarded-For    : $LLM_GATEWAY_EGRESS_FORWARDED_FOR + egress IP
-//   X-Real-IP          : $LLM_GATEWAY_EGRESS_IP
+//
+//	X-LLM-Origin-Stage : self_check
+//	X-LLM-Origin-Actor : credential-selfcheck-worker
+//	X-Forwarded-For    : $LLM_GATEWAY_EGRESS_FORWARDED_FOR + egress IP
+//	X-Real-IP          : $LLM_GATEWAY_EGRESS_IP
 //
 // OriginMiddleware (commit 3) only honours those headers when the
 // request carries the static global API key (system key path), so
@@ -199,8 +200,8 @@ func (w *CredentialSelfcheckWorker) cycleOnce(ctx context.Context) {
 // pickDueCredential returns one credential that has not been self-checked
 // in the last 24h.  Priority:
 //
-//	1. never-checked credentials first (NULL last_selfcheck_at)
-//	2. oldest-checked credentials
+//  1. never-checked credentials first (NULL last_selfcheck_at)
+//  2. oldest-checked credentials
 //
 // Returns (id, true, nil) if a candidate exists, (0, false, nil) otherwise.
 func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int, bool, error) {
@@ -251,15 +252,15 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 	}
 
 	var (
-		success        bool
-		attemptedJSON  = make([]string, 0, len(pick.models))
-		lastErrType    = "none"
-		lastErrDetail  = ""
-		hadToolCall    = false
-		successRounds  = 0
-		totalRounds    = 0
-		totalTokens    = 0
-		totalLatency   = 0
+		success       bool
+		attemptedJSON = make([]string, 0, len(pick.models))
+		lastErrType   = "none"
+		lastErrDetail = ""
+		hadToolCall   = false
+		successRounds = 0
+		totalRounds   = 0
+		totalTokens   = 0
+		totalLatency  = 0
 	)
 
 	for i, model := range pick.models {
@@ -337,19 +338,19 @@ type pickModelsResult struct {
 // 要找特性模型中的模型来进行探测，只有没有时才会随机选择"):
 //
 //  1. featured   — models in routing_policy.featured_models that this
-//                  credential can serve.  Ordered by 24h successful
-//                  traffic DESC (hottest featured first), then by name
-//                  for stability.  This is the PRIMARY tier: a
-//                  credential that serves any featured model MUST be
-//                  probed on a featured model, never on an obscure
-//                  binding that happens to be routable.
+//     credential can serve.  Ordered by 24h successful
+//     traffic DESC (hottest featured first), then by name
+//     for stability.  This is the PRIMARY tier: a
+//     credential that serves any featured model MUST be
+//     probed on a featured model, never on an obscure
+//     binding that happens to be routable.
 //  2. most_used  — if the credential serves NO featured model, fall
-//                  back to the 24h most-used model (still "common",
-//                  not "uncommon").
+//     back to the 24h most-used model (still "common",
+//     not "uncommon").
 //  3. random     — if no featured AND no 24h traffic, pick uniformly
-//                  at random from the routable pool.  This is the
-//                  last-resort safety net for never-used / sandbox
-//                  credentials.
+//     at random from the routable pool.  This is the
+//     last-resort safety net for never-used / sandbox
+//     credentials.
 //
 // Fallback slots (positions 1..2) are filled in the same tier order:
 // remaining featured models, then most_used, then random pool — so a
@@ -366,13 +367,13 @@ func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID
 	// stable, deterministic picks across cycles (same as shared_pick.go).
 	featuredRows, err := w.db.Query(queryCtx, `
 		SELECT DISTINCT pm.raw_model_name
-		FROM provider_model_bindings pmb
-		JOIN provider_models pm ON pm.id = pmb.provider_model_id
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		CROSS JOIN routing_policy pol
 		WHERE pol.tenant_id = 'default'
-		  AND pmb.credential_id = $1
-		  AND COALESCE(pmb.available, FALSE) = TRUE
-		  AND COALESCE(pmb.is_routable, FALSE) = TRUE
+		  AND cmb.credential_id = $1
+		  AND COALESCE(cmb.available, FALSE) = TRUE
+		  AND COALESCE(cmb.is_routable, FALSE) = TRUE
 		  AND (
 		    COALESCE(pm.standardized_name, pm.raw_model_name) = ANY(pol.featured_models)
 		    OR pm.raw_model_name = ANY(pol.featured_models)
@@ -407,13 +408,13 @@ func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID
 	poolRows, err := w.db.Query(queryCtx, `
 		SELECT DISTINCT pm.raw_model_name
 		FROM credentials c
-		JOIN provider_model_bindings pmb ON pmb.credential_id = c.id
-		JOIN provider_models pm ON pm.id = pmb.provider_model_id
+		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE c.id = $1
 		  AND c.status = 'active'
 		  AND c.lifecycle_status = 'active'
-		  AND COALESCE(pmb.available, FALSE) = TRUE
-		  AND COALESCE(pmb.is_routable, FALSE) = TRUE
+		  AND COALESCE(cmb.available, FALSE) = TRUE
+		  AND COALESCE(cmb.is_routable, FALSE) = TRUE
 	`, credentialID)
 	if err != nil {
 		return pickModelsResult{}, err
@@ -485,13 +486,13 @@ func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID
 // credentialSelfcheckRound is the structured result of a single model
 // attempt.  Mirrors the per-round fields persisted today.
 type credentialSelfcheckRound struct {
-	Success    bool
+	Success     bool
 	HadToolCall bool
-	Tokens     int
-	LatencyMs  int
-	HTTPCode   int
-	ErrType    string
-	ErrDetail  string
+	Tokens      int
+	LatencyMs   int
+	HTTPCode    int
+	ErrType     string
+	ErrDetail   string
 }
 
 // doRequest issues a single ping + tool-call conversation against the
