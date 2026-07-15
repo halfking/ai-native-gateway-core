@@ -62,6 +62,8 @@ type Handler struct {
 	boardCache *boardcache.Service
 	// boardOperationalCache caches discovery/probe/selfcheck for /dashboard/operational.
 	boardOperationalCache *boardOperationalCache
+	// opsOverviewCache bundles ops overview stats for /api/admin/ops/overview.
+	opsOverviewCache *opsOverviewCache
 	// routeIncidentHandler (2026-07-13) backs the read-only
 	// /api/admin/route-incidents* endpoints. nil disables the
 	// diagnose feature on the swim lane.
@@ -595,6 +597,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/board", admin(h.handleDashboardBoard))
 	mux.HandleFunc("/api/admin/dashboard/operational", admin(h.handleDashboardOperational))
 	mux.HandleFunc("/api/admin/dashboard/board/error-drill", admin(h.handleDashboardBoardErrorDrill))
+	mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))
 
 	// 2026-07-07: P2会话分析 - 客户端/任务维度分析
 	mux.HandleFunc("/api/admin/session-analytics/clients", admin(h.handleClientAnalyticsList))

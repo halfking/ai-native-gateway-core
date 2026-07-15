@@ -66,6 +66,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
+	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -359,6 +360,16 @@ func main() {
 			Version:      Version(),
 			StartTime:    processStartedAt,
 		})
+		centeragent.MaybeStart(context.Background(), centeragent.StartupConfig{
+			Pool:         dbConn.Pool(),
+			Version:      Version(),
+			BuildSeq:     BuildSeqInt(),
+			StartTime:    processStartedAt,
+			Region:       os.Getenv("OPS_NODE_REGION"),
+			DataDir:      strings.TrimSpace(os.Getenv("OPS_DATA_DIR")),
+			AuthorityURL: os.Getenv("LICENSE_AUTHORITY_URL"),
+		})
+		go center.MonitorInstances(context.Background(), center.NewPgxStore(dbConn.Pool()), 30*time.Second)
 	}
 
 	// Check if community mode is active

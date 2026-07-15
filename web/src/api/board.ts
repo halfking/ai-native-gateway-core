@@ -61,6 +61,7 @@ export interface BoardPayload {
   trends: BoardTrendPoint[]
   background_tasks?: BoardBackgroundTasks
   selfcheck?: BoardSelfcheck
+  operational?: BoardOperationalPayload
   days: number
   source?: 'postgresql_baseline' | 'redis_baseline_delta' | 'live_sse_delta' | string
   cache_meta?: {
@@ -90,7 +91,8 @@ export function fetchDashboardBoard(params: BoardQuery = {}): Promise<BoardPaylo
   if (params.tenant_id) qs.set('tenant_id', params.tenant_id)
   if (params.provider_id != null) qs.set('provider_id', String(params.provider_id))
   const q = qs.toString()
-  return req<BoardPayload>('GET', `/api/admin/dashboard/board${q ? `?${q}` : ''}`)
+  const suffix = q ? `?${q}&include_operational=1` : '?include_operational=1'
+  return req<BoardPayload>('GET', `/api/admin/dashboard/board${suffix}`)
 }
 
 export function fetchBoardOperational(): Promise<BoardOperationalPayload> {

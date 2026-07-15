@@ -33,6 +33,13 @@ export default {
     donationTotal: 'Donations (CNY)',
     activationRate: '30d Activation Rate',
     publicPortal: 'Public Portal',
+    deploymentNodes: 'Deployment Nodes',
+    regionMissing: 'Not registered',
+    regionOnline: 'Online',
+    regionDegraded: 'Degraded',
+    regionOffline: 'Offline',
+    regionOnlineCount: '{n} online',
+    dataPlaneTables: '252 data-plane row counts',
   },
 
   // License Management

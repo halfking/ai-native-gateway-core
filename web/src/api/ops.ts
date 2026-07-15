@@ -662,3 +662,40 @@ export async function getLicenseHealth(): Promise<LicenseHealth> {
 export async function getLicenseStatus(): Promise<LicenseStatus> {
   return req<LicenseStatus>('GET', '/api/system/license/status')
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Ops Overview Bundle (single round-trip)
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface OpsOverviewBundle {
+  generated_at?: string
+  center_stats?: CenterStats
+  region_stats?: RegionStats[]
+  deployment_nodes?: CenterInstance[]
+  data_plane_tables?: Record<string, number>
+  license_total?: number
+  offline_requests?: OfflineActivationRequest[]
+  fault_stats?: Pick<FaultStats, 'open_events'>
+  recent_faults?: { events: FaultEvent[]; total: number }
+  recent_upgrades?: { items: UpgradeLog[]; total: number }
+  download_stats?: {
+    today_downloads: number
+    week_downloads: number
+    total_downloads: number
+    supporter_count: number
+  }
+}
+
+export interface RegionStats {
+  region: string
+  total_instances: number
+  online_instances: number
+  offline_instances: number
+  degraded_instances: number
+  last_heartbeat?: string
+  missing?: boolean
+}
+
+export async function getOpsOverviewBundle(): Promise<OpsOverviewBundle> {
+  return req<OpsOverviewBundle>('GET', '/api/admin/ops/overview')
+}

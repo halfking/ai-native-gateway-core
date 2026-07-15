@@ -293,6 +293,9 @@ do_deploy() {
   log "[0/9] 部署前 PG 预检"
   deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)" || exit 2
 
+  log "[0.5/9] 运维节点 env (OPS_NODE_REGION)"
+  bash "$SCRIPT_DIR/ops/ensure-ops-node-env.sh" "$TARGET" || warn "OPS_NODE_REGION 设置失败，继续部署"
+
   if [[ "$TARGET" == "245" ]]; then
     if ! $SSH_CMD "grep -q '^LLM_GATEWAY_ADMIN_USER=' '$(_env_file_for_target)' && grep -q '^LLM_GATEWAY_ADMIN_PASSWORD=' '$(_env_file_for_target)'" 2>/dev/null; then
       warn "245 .env 缺少 ADMIN_USER/PASSWORD → 从 154 同步"
