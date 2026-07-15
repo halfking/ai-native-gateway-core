@@ -1298,7 +1298,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.HealthTracker.OnSuccess(
 					sideEffectCtx,
 					cand.CredentialID,
-					cand.RawModel,
+					cand.StandardizedName,
 					result.LatencyMs,
 					requestID,
 				)
@@ -1716,7 +1716,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			e.HealthTracker.OnError(
 				failureCtx,
 				cand.CredentialID,
-				cand.RawModel,
+				cand.StandardizedName,
 				kind,
 				requestID,
 			)

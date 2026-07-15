@@ -92,20 +92,19 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 		// Client bugs (tool_call_id_mismatch, invalid_request_format, etc.)
 		// are not credential health issues and should not affect failureRate.
 		//
-		// 2026-07-15 P0 fix: also skip "eof_without_done".
-		// MiniMax (and several other SSE providers) routinely terminate
-		// otherwise-successful streams without emitting the [DONE] sentinel
-		// — the relay flags this in domains/streaming/stream.go and the
-		// executor's isBenignEOF branch in executor_chat.go already records
-		// it as a success. Counting it as a credential failure was the root
-		// cause of the 154 minimax-m3 "no_candidates" cascade on 2026-07-15:
-		// every benign EOF counted toward the 80% threshold, so a credential
-		// that was genuinely healthy got pushed into a 15-minute cooldown
-		// while the user-visible state showed "all 1 candidates failed".
-		// Direct curl against api.minimaxi.com from 154 confirmed the
-		// upstream was reachable throughout the incident.
+		// 2026-07-15 P0 fix: skip benign stream-timeout (SSE EOF without
+		// [DONE]). The previous guard excluded the literal "eof_without_done",
+		// but errorsx.ClassifyError maps that condition to KindStreamTimeout
+		// (= "stream_timeout"), which is what the recorder stores — so the
+		// guard never matched and benign EOFs counted toward the 80%
+		// threshold. That was the root cause of the 154 minimax-m3
+		// "no_candidates" cascade: every benign EOF pushed a healthy
+		// credential into a 15-minute cooldown. Now the guard uses the
+		// actual classified kind. (Genuinely benign EOFs — ChunkCount>0 —
+		// are also short-circuited as success in executor_chat.go:687 and
+		// never reach the recorder; this guard covers the non-benign tail.)
 		if e.ErrorKind == "network" ||
-			e.ErrorKind == "eof_without_done" ||
+			e.ErrorKind == string(errorsx.KindStreamTimeout) ||
 			errorsx.IsClientBug(errorsx.ErrorKind(e.ErrorKind)) {
 			continue
 		}
@@ -156,7 +155,7 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 		FROM provider_models pm
 		WHERE pm.id = cmb.provider_model_id
 		  AND cmb.credential_id = $1
-		  AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
+		  AND pm.canonical_raw_name = $2
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'

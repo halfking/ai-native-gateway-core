@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/redis/go-redis/v9"
 )
@@ -221,20 +222,22 @@ func TestChecker_CheckAndUpdate_ExcludeNetworkErrors(t *testing.T) {
 
 // TestChecker_CheckAndUpdate_ExcludeBenignEOF (2026-07-15 P0 regression test)
 //
-// Before the fix, the credentialhealth.Checker would treat every
-// "eof_without_done" failure as evidence that the credential was unhealthy.
+// Before the fix, the credentialhealth.Checker would treat every benign
+// stream-timeout failure as evidence that the credential was unhealthy.
 // MiniMax (and other SSE providers) routinely close streams without the
 // [DONE] sentinel on otherwise-successful completions, so a healthy
 // minimax-m3 binding on credential 21 was being pushed into a 15-minute
 // cooldown whenever the upstream happened to skip [DONE] more than five
-// times in an hour. This regression test pins the new behaviour: even
-// when 100% of the recorded failures are eof_without_done, the checker
-// must NOT write a degraded cooldown.
+// times in an hour. This regression test pins the behaviour: even when
+// 100% of the recorded failures are stream_timeout, the checker must NOT
+// write a degraded cooldown.
 //
-// The relay layer in domains/streaming/stream.go already marks
-// eof_without_done as a successful completion from the caller's
-// perspective, so success=true is the correct accounting — the exclude
-// branch is what makes the failureRate 0% rather than 100%.
+// Note (2026-07-15): errorsx.ClassifyError maps "EOF without [DONE]" to
+// KindStreamTimeout (= "stream_timeout"), which is what the recorder stores.
+// The original guard excluded the literal "eof_without_done", which never
+// matched production data. Genuinely benign EOFs (ChunkCount>0) are also
+// short-circuited as success in executor_chat.go and never reach the
+// recorder; this test covers the non-benign stream_timeout tail.
 func TestChecker_CheckAndUpdate_ExcludeBenignEOF(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {
@@ -255,10 +258,10 @@ func TestChecker_CheckAndUpdate_ExcludeBenignEOF(t *testing.T) {
 
 	checker := NewChecker(recorder, mockDB, DefaultCheckerConfig())
 
-	// 10 failures, all eof_without_done. Before the fix this was 100%
-	// failure rate → 15-minute cooldown. After the fix, all 10 are
-	// excluded from the failureRate sample (treated like network/client
-	// bugs) → no UPDATE expected.
+	// 10 failures, all stream_timeout (the classified kind for benign EOF).
+	// Before the fix the guard excluded the literal "eof_without_done",
+	// which never matched → 100% failure rate → 15-minute cooldown. After
+	// the fix, all 10 are excluded from the failureRate sample → no UPDATE.
 	ctx := context.Background()
 	credID := 121
 	model := "MiniMax-M3"
@@ -270,7 +273,7 @@ func TestChecker_CheckAndUpdate_ExcludeBenignEOF(t *testing.T) {
 			RequestID: "req_eof_" + now.Add(time.Duration(i)*time.Minute).Format(time.RFC3339),
 			Timestamp: now.Add(time.Duration(i) * time.Minute).UnixMilli(),
 			Success:   false,
-			ErrorKind: "eof_without_done",
+			ErrorKind: string(errorsx.KindStreamTimeout),
 		})
 	}
 
@@ -284,7 +287,7 @@ func TestChecker_CheckAndUpdate_ExcludeBenignEOF(t *testing.T) {
 
 // TestChecker_CheckAndUpdate_MixedEOFStillFlagsTrueFailures ensures the
 // exclude guard does not also swallow real credential failures mixed in
-// with benign EOFs. 6 quota + 4 eof_without_done over 10 calls leaves
+// with benign EOFs. 6 quota + 4 stream_timeout over 10 calls leaves
 // 6 real failures out of 6 real samples = 100% > 80% threshold → one
 // markDegraded UPDATE is expected.
 func TestChecker_CheckAndUpdate_MixedEOFStillFlagsTrueFailures(t *testing.T) {
@@ -319,7 +322,7 @@ func TestChecker_CheckAndUpdate_MixedEOFStillFlagsTrueFailures(t *testing.T) {
 			RequestID: "req_eof_" + now.Add(time.Duration(i)*time.Minute).Format(time.RFC3339),
 			Timestamp: now.Add(time.Duration(i) * time.Minute).UnixMilli(),
 			Success:   false,
-			ErrorKind: "eof_without_done", // excluded
+			ErrorKind: string(errorsx.KindStreamTimeout), // excluded
 		})
 	}
 
