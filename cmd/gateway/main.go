@@ -83,6 +83,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
+	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/tenantops"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
@@ -1988,6 +1989,14 @@ func main() {
 				slog.Info("boardcache wired (telemetry onPersisted)")
 			}
 			slog.Info("boardcache service started")
+		}
+		if dbConn.Pool() != nil && fpSlotRedis != nil && adminHandler != nil {
+			blSvc := ipblocklist.NewService(dbConn.Pool(), fpSlotRedis)
+			if err := blSvc.Warmup(context.Background()); err != nil {
+				slog.Warn("ip blocklist warmup failed", "error", err)
+			}
+			adminHandler.SetIPBlocklist(blSvc)
+			slog.Info("ip blocklist admin wired")
 		}
 
 		// Weekly rollup + auto-tune suggester require writes to
