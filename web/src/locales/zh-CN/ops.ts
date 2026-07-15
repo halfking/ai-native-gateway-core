@@ -69,6 +69,27 @@ export default {
     dataPlaneTables: '252 数据面表记录数',
   },
 
+  blocklist: {
+    title: 'IP 黑名单',
+    loadFailed: '加载黑名单失败',
+    add: '添加封禁',
+    ip: 'IP/CIDR',
+    ipPlaceholder: '例: 203.0.113.10 或 10.0.0.0/8',
+    ipRequired: '请输入 IP 或 CIDR',
+    reason: '原因',
+    scope: '作用域',
+    hits: '命中次数',
+    total: '共 {n} 条',
+    createSuccess: '已添加',
+    createFailed: '添加失败',
+    updateFailed: '更新失败',
+    deleteConfirm: '确认删除 {ip}？',
+    deleteSuccess: '已删除',
+    reloadCache: '刷新 Redis 缓存',
+    reloadSuccess: '缓存已刷新',
+    reloadFailed: '缓存刷新失败',
+  },
+
   // License Management
   license: {
     title: 'License管理',

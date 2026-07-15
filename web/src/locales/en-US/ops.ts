@@ -70,6 +70,27 @@ export default {
     dataPlaneTables: '252 data-plane row counts',
   },
 
+  blocklist: {
+    title: 'IP Blocklist',
+    loadFailed: 'Failed to load blocklist',
+    add: 'Add block',
+    ip: 'IP/CIDR',
+    ipPlaceholder: 'e.g. 203.0.113.10 or 10.0.0.0/8',
+    ipRequired: 'IP or CIDR required',
+    reason: 'Reason',
+    scope: 'Scope',
+    hits: 'Hits',
+    total: '{n} entries',
+    createSuccess: 'Added',
+    createFailed: 'Add failed',
+    updateFailed: 'Update failed',
+    deleteConfirm: 'Delete {ip}?',
+    deleteSuccess: 'Deleted',
+    reloadCache: 'Reload Redis cache',
+    reloadSuccess: 'Cache reloaded',
+    reloadFailed: 'Cache reload failed',
+  },
+
   // License Management
   license: {
     title: 'License Management',
