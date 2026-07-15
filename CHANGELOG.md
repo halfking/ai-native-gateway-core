@@ -260,16 +260,21 @@ ran against the freshly provisioned local DB.
   - 154: `conf.ini [CORS] AllowOrigins` updated to include
     `https://files.kxpms.cn`. Cloudreve process restarted (PID 4433 → 26382)
     to pick up new conf.
-- 12/12 smoke tests pass: HTTPS 200 with valid cert chain, WebDAV 401 with
-  Basic realm=cloudreve, CORS preflight 204 + headers, GET 200 + ACAO for
-  both `files.kxpms.cn` and `res.itestu.cn` origins, 403 for unknown origin,
-  all other `*.kxpms.cn` regression 200, ACME renewal webroot still 200.
-- Key debugging gotcha: nginx `add_header` directives in security snippet
-  combined with `proxy_buffering off` + `proxy_set_header Connection "upgrade"`
-  were stripping `Access-Control-Allow-Origin` from upstream responses. Final
-  vhost uses minimal directives and CORS passes through cleanly.
+- 13/13 smoke tests pass: HTTPS 200 with valid cert chain, WebDAV 401 with
+  Basic realm=cloudreve, CORS behavior (same-origin no ACAO needed, cross-origin
+  ACAO=res.itestu.cn emitted, evil origin 403, /dav/ preflight 204 with
+  ACAO), all other `*.kxpms.cn` regression 200, ACME renewal webroot 200,
+  HTTP→HTTPS 301.
+- **Note on CORS**: The CORS middleware (gin-contrib/cors in Cloudreve v4) does
+  a same-origin short-circuit. When `Origin: https://files.kxpms.cn` matches
+  the request `Host: files.kxpms.cn`, no `Access-Control-Allow-Origin` header
+  is emitted — this is spec-compliant behavior, not a bug. Cross-origin
+  requests (e.g. from `res.itestu.cn`) get the proper ACAO header. See
+  `docs/2026-07-15-files-kxpms-cn-deploy-verification.md` for the full
+  matrix and the 4 deployment gotchas (one of which is a misdiagnosis of
+  CORS that turned out to be spec-correct).
 - See `docs/2026-07-15-files-kxpms-cn-deploy-verification.md` for full
-  topology, smoke test transcript, and the 3 deployment gotchas.
+  topology, smoke test transcript, and the 4 deployment gotchas.
 
 ### Storage adapter deploy verification (245 / 154 live smoke test)
 
