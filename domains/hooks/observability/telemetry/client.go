@@ -473,6 +473,12 @@ func (c *Client) flush(batch []any) {
 					slog.Warn("telemetry request db persist failed", "request_id", v.RequestID, "op", v.Op, "error", err)
 				}
 			}
+		case *ContextAttrsEntry:
+			// 2026-07-15: 侧表 request_context_attrs。失败仅日志，不阻塞主请求日志。
+			if err := c.persistContextAttrs(v); err != nil {
+				slog.Warn("telemetry context_attrs persist failed",
+					"request_id", v.RequestID, "error", err)
+			}
 		}
 	}
 }

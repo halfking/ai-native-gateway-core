@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/telemetry" //nolint:depguard // canonical IP resolver lives in telemetry
 )
 
 var identitySalt = os.Getenv("LLM_GATEWAY_IDENTITY_SALT")
@@ -178,23 +180,13 @@ func ExtractFingerprint(r *http.Request, clientProfile string) ClientFingerprint
 }
 
 // extractClientIP extracts the client IP from X-Forwarded-For or RemoteAddr.
+//
+// 2026-07-15: Unified to delegate to telemetry.ExtractClientIP (X-Real-IP >
+// XFF[0] > RemoteAddr). Previously this used only XFF and RemoteAddr,
+// causing the fingerprint's IP and the logged client_ip to disagree on
+// proxied requests. Now both share the canonical precedence chain.
 func extractClientIP(r *http.Request) string {
-	// Try X-Forwarded-For first (for proxied requests)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP (client IP)
-		if idx := strings.IndexByte(xff, ','); idx > 0 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
-	// Fall back to RemoteAddr (ip:port format)
-	if addr := r.RemoteAddr; addr != "" {
-		if idx := strings.LastIndex(addr, ":"); idx > 0 {
-			return addr[:idx]
-		}
-		return addr
-	}
-	return ""
+	return telemetry.ExtractClientIP(r)
 }
 
 func firstNonEmpty(values ...string) string {

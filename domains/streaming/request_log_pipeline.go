@@ -66,6 +66,13 @@ type RequestLogContext struct {
 	ErrCode string
 	ErrMsg  string
 
+	// 2026-07-15: 请求性质维度（侧表 request_context_attrs 消费）。
+	// 这些字段是最佳努力存储，权威 turn_no 用 ROW_NUMBER 派生查询。
+	AttemptNo int    // 网关 failover 轮次（≥1）
+	IsRetry   bool   // 客户端重试 / follow-up（FollowUpDepth > 0 或 client_request_id 重复）
+	TurnNo    int    // 会话内轮次（best-effort，由 session 已知请求计数取）
+	OriginStage string // self_check/node_probe/system_health/business/probe_*
+
 	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 	// QualityFlags accumulates detected issues across the response
 	// post-processing pass. QualityFixActions is the JSON-encoded
@@ -511,6 +518,12 @@ func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, 
 	if c.handler.telemetryClient != nil && c.handler.telemetryClient.Enabled() {
 		c.handler.telemetryClient.EmitRequestLogUpdate(reqLog)
 	}
+	// 2026-07-15: 侧表 request_context_attrs（best-effort）。
+	if c.handler.telemetryClient != nil {
+		if attrs := BuildContextAttrsEntry(c, c.KeyInfo, &c.meta, c.Request.Context()); attrs != nil {
+			c.handler.telemetryClient.EmitContextAttrs(attrs)
+		}
+	}
 	c.logged = true
 }
 
@@ -587,4 +600,40 @@ func mergeCompressionMetaV3(existing json.RawMessage, windowTriggered, summaryMa
 		return existing
 	}
 	return b
+}
+
+// ─── 2026-07-15: 请求性质维度 setter ───
+
+// SetAttemptNo 记录网关 failover 轮次（从候选执行器取，≥1）。
+func (c *RequestLogContext) SetAttemptNo(n int) {
+	if c == nil || n <= 0 {
+		return
+	}
+	if n > c.AttemptNo {
+		c.AttemptNo = n
+	}
+}
+
+// MarkRetry 标记为重试请求（客户端重试或 follow-up）。
+func (c *RequestLogContext) MarkRetry() {
+	if c == nil {
+		return
+	}
+	c.IsRetry = true
+}
+
+// SetTurnNo 显式设置轮次号（best-effort；权威口径见 ROW_NUMBER 派生）。
+func (c *RequestLogContext) SetTurnNo(n int) {
+	if c == nil || n <= 0 {
+		return
+	}
+	c.TurnNo = n
+}
+
+// SetOriginStage 设置 origin_stage（business/self_check/node_probe/system_health/...）。
+func (c *RequestLogContext) SetOriginStage(stage string) {
+	if c == nil {
+		return
+	}
+	c.OriginStage = strings.TrimSpace(stage)
 }

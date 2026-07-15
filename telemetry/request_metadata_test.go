@@ -274,3 +274,44 @@ func TestExtractForwardedFor(t *testing.T) {
 		t.Errorf("ExtractForwardedFor() = %v, want %v", got, expected)
 	}
 }
+
+func TestAPIKeyFingerprint(t *testing.T) {
+	tests := []struct {
+		name   string
+		key    string
+		want   string
+		wantLen int
+	}{
+		{name: "empty", key: "", want: "", wantLen: 0},
+		{name: "whitespace only", key: "   ", want: "", wantLen: 0},
+		{name: "typical key", key: "sk-1234abcd5678efgh", wantLen: 16},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := APIKeyFingerprint(tt.key)
+			if tt.want != "" && got != tt.want {
+				t.Errorf("APIKeyFingerprint(%q) = %q, want %q", tt.key, got, tt.want)
+			}
+			if len(got) != tt.wantLen {
+				t.Errorf("APIKeyFingerprint(%q) len = %d, want %d (got=%q)", tt.key, len(got), tt.wantLen, got)
+			}
+		})
+	}
+
+	// Determinism: same input → same output
+	a := APIKeyFingerprint("sk-test-key-1")
+	b := APIKeyFingerprint("sk-test-key-1")
+	if a != b {
+		t.Errorf("APIKeyFingerprint not deterministic: %q vs %q", a, b)
+	}
+	// Distinct inputs → distinct outputs
+	c := APIKeyFingerprint("sk-test-key-2")
+	if a == c {
+		t.Errorf("APIKeyFingerprint collision for distinct inputs: %q == %q", a, c)
+	}
+	// Whitespace trimming
+	d := APIKeyFingerprint("  sk-test-key-1  ")
+	if d != a {
+		t.Errorf("APIKeyFingerprint should trim whitespace: %q vs %q", d, a)
+	}
+}
