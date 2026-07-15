@@ -61,7 +61,8 @@ func TestKeyVerifier_Verify_Cache_StaleKeyPrefix(t *testing.T) {
 		"id", "tenant_id", "application_id", "application_code", "key_prefix",
 		"default_client_profile", "owner_user", "rate_limit_rpm", "rate_limit_concurrent",
 		"rate_limit_tpm", "key_tier", "budget_usd", "status", "key_alias",
-	}).AddRow(1, "tenant-x", 1, "app1", "sk-1", nil, nil, nil, nil, nil, "default", nil, "active", nil)
+		"customer_id", // 2026-07-15 (migration 407): applications.customer_id
+	}).AddRow(1, "tenant-x", 1, "app1", "sk-1", nil, nil, nil, nil, nil, "default", nil, "active", nil, nil)
 	mp.ExpectQuery(`SELECT`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnRows(rows)
@@ -180,7 +181,8 @@ func TestKeyVerifier_LookupKeyMeta_OK(t *testing.T) {
 	rows := pgxmock.NewRows([]string{
 		"id", "key_prefix", "owner_user", "status", "enabled",
 		"code", "default_client_profile", "tenant_id", "application_id",
-	}).AddRow(1, "sk-1", nil, "active", true, "app1", nil, "tenant-x", 7)
+		"customer_id", // 2026-07-15 (migration 407): applications.customer_id
+	}).AddRow(1, "sk-1", nil, "active", true, "app1", nil, "tenant-x", 7, nil)
 	mp.ExpectQuery(`SELECT`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnRows(rows)
