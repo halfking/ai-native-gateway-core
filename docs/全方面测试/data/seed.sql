@@ -98,6 +98,66 @@ SELECT
     NOW()
 FROM generate_series(0, 59) AS i;
 
+-- ── 5 MM group (multimodal-aware mock suppliers) ────────────────
+-- ids 9070-9074, ports 19280-19284
+-- These point at multimodal_supplier.py which records the exact
+-- request body parts + fingerprint headers for end-to-end assertions.
+INSERT INTO providers (id, code, display_name, base_url, kind, enabled,
+                       manual_disabled, protocol, egress_profile, quality_fix_mode, category,
+                       created_at, updated_at)
+SELECT
+    9070 + i,
+    'mm-loadtest-' || LPAD((9070+i)::text, 4, '0'),
+    'Multimodal Loadtest ' || (9070+i),
+    'http://host.docker.internal:' || (19280 + i),
+    'cloud', TRUE, FALSE, 'openai', 'direct', 'off', 'official',
+    NOW(), NOW()
+FROM generate_series(0, 4) AS i;
+
+INSERT INTO credentials (id, provider_id, tenant_id, label,
+                        secret_ciphertext, secret_kid, status, trust_level,
+                        health_status, plan_consumed_json, tags,
+                        effective_concurrency, concurrency_limit, fp_slot_limit,
+                        created_at, updated_at)
+SELECT
+    9070 + i,
+    9070 + i,
+    'default',
+    'cred-mm-' || (9070+i),
+    NULL, 'k1', 'active', 'trusted', 'healthy',
+    '{}'::jsonb, '[]'::jsonb,
+    100, 100, 50,
+    NOW(), NOW()
+FROM generate_series(0, 4) AS i;
+
+INSERT INTO provider_models (id, provider_id, raw_model_name, outbound_model_name,
+                             canonical_raw_name, standardized_name, created_at)
+SELECT
+    9170 + i,
+    9070 + i,
+    'loadtest-vision-alpha',
+    'loadtest-vision-alpha',
+    'loadtest-vision-alpha',
+    'loadtest-vision-alpha',
+    NOW()
+FROM generate_series(0, 4) AS i;
+
+INSERT INTO credential_model_bindings (credential_id, provider_model_id, available,
+                                       created_at, updated_at)
+SELECT
+    9070 + i,
+    9170 + i,
+    TRUE,
+    NOW(),
+    NOW()
+FROM generate_series(0, 4) AS i;
+
+UPDATE credential_model_bindings cmb
+SET p95_latency_ms = 60,
+    success_rate = 0.99,
+    billing_mode = 'per_token'
+WHERE cmb.credential_id BETWEEN 9070 AND 9074;
+
 -- ── Set baseline metrics on every cmb ───────────────────────────
 -- Without these, the candidate query treats every credential as 9999ms
 -- (COALESCE of NULL p95_latency_ms) which neutralises the latency-aware
@@ -167,6 +227,9 @@ SELECT 'providers'        AS tbl, COUNT(*) FROM providers WHERE id BETWEEN 9010 
 UNION ALL SELECT 'credentials', COUNT(*) FROM credentials WHERE id BETWEEN 9010 AND 9069
 UNION ALL SELECT 'provider_models', COUNT(*) FROM provider_models WHERE id BETWEEN 9100 AND 9159
 UNION ALL SELECT 'cmb', COUNT(*) FROM credential_model_bindings WHERE credential_id BETWEEN 9010 AND 9069
-UNION ALL SELECT 'api_keys', COUNT(*) FROM api_keys WHERE key_hash LIKE 'sk-loadtest%';
+UNION ALL SELECT 'api_keys', COUNT(*) FROM api_keys WHERE key_hash LIKE 'sk-loadtest%'
+UNION ALL SELECT 'mm_providers', COUNT(*) FROM providers WHERE id BETWEEN 9070 AND 9074
+UNION ALL SELECT 'mm_credentials', COUNT(*) FROM credentials WHERE id BETWEEN 9070 AND 9074
+UNION ALL SELECT 'mm_cmb', COUNT(*) FROM credential_model_bindings WHERE credential_id BETWEEN 9070 AND 9074;
 
 COMMIT;
