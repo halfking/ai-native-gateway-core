@@ -41,7 +41,7 @@ export default {
       custom: { label: 'Custom', amount: 0, desc: 'Pay what you want' },
     },
     email: 'Email (optional, for receipt & thanks list)',
-    emailPlaceholder: 'you@company.com',
+    emailPlaceholder: "you{'@'}company.com",
     payChannel: 'Payment',
     alipay: 'Alipay',
     wechat: 'WeChat Pay',

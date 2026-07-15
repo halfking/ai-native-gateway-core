@@ -42,7 +42,7 @@ export default {
       custom: { label: '自定义', amount: 0, desc: '随心支持' },
     },
     email: '邮箱（可选，用于收据与致谢名单）',
-    emailPlaceholder: 'you@company.com',
+    emailPlaceholder: "you{'@'}company.com",
     payChannel: '支付方式',
     alipay: '支付宝',
     wechat: '微信支付',
