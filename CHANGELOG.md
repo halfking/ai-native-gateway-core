@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-15
 
+### Portal, activation, and one-click deploy
+
+- Download catalog grouped by version with per-platform artifacts and install docs
+- Support page: Alipay QR by amount, custom gateway contact block
+- Activation wizard: device ID, flow guide, inactive vs active comparison
+- First-launch user agreement (2026-07-15) and expanded `user-agreement.html`
+- Multi-platform offline build (`scripts/build-offline-packages.sh`) and publish pipeline
+- Integrated one-click deploy under `deploy/one-click/` (Linux/macOS/Windows)
+- Public download API smoke test (`scripts/test-public-download-api.sh`)
+
 ### Multimodal test infrastructure (round 2 of 全方面测试)
 
 Adds multimodal-aware test fixtures and a real-vendor smoke

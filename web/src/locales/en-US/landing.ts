@@ -99,6 +99,11 @@ export default {
       description: 'Four industry templates for customer service, HR, sales, logistics, out-of-the-box agent solutions.',
     },
   },
+  activateBanner: {
+    title: 'Gateway not activated',
+    desc: 'No valid license on this instance. Open the activation wizard for online or offline activation.',
+    action: 'Activate now',
+  },
   downloadCta: {
     title: 'Self-hosted · Deploy in 5 minutes',
     subtitle: 'Offline packages for every platform — no signup required. 15-day free trial after install.',

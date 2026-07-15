@@ -25,6 +25,12 @@ type CatalogService struct {
 	fallback VersionFallback
 }
 
+// ExtendedCatalogProvider can list multiple published versions.
+type ExtendedCatalogProvider interface {
+	CatalogProvider
+	ListPublishedVersions(ctx context.Context, limit int) ([]PublishedVersion, error)
+}
+
 type VersionFallback struct {
 	Version  string
 	BuildSeq int
@@ -46,49 +52,43 @@ func LoadVersionFallback() VersionFallback {
 }
 
 func (s *CatalogService) BuildCatalog(ctx context.Context) (*CatalogResponse, error) {
-	version := s.fallback.Version
-	buildSeq := s.fallback.BuildSeq
-	var releaseDate string
-
-	if s.releases != nil {
-		if v, bs, pub, err := s.releases.LatestPublishedVersion(ctx); err == nil && v != "" {
-			version = v
-			buildSeq = bs
-			if pub != nil {
-				releaseDate = pub.Format(time.RFC3339)
-			}
-		}
-	}
-
-	artifacts, _ := s.store.ListArtifacts(ctx, version)
-	items := make([]CatalogItem, 0)
-	if len(artifacts) > 0 {
-		for _, a := range artifacts {
-			items = append(items, CatalogItem{
-				Platform:     a.Platform,
-				Arch:         a.Arch,
-				Label:        platformLabel(a.Platform, a.Arch),
-				ArtifactName: a.ArtifactName,
-				SHA256:       a.SHA256,
-				SizeBytes:    a.SizeBytes,
-				SizeLabel:    formatSize(a.SizeBytes),
-			})
-		}
-	} else {
-		for _, p := range defaultPlatforms {
-			name := artifactFileName(version, p.Platform, p.Arch)
-			items = append(items, CatalogItem{
-				Platform:     p.Platform,
-				Arch:         p.Arch,
-				Label:        p.Label,
-				ArtifactName: name,
-				SizeLabel:    p.SizeLabel,
-			})
-		}
-	}
-
+	meta := s.catalogMeta()
 	supporters, _ := s.store.CountSupporters(ctx)
 
+	groups, latest := s.buildVersionGroups(ctx, meta)
+	if latest.Version == "" {
+		latest = VersionGroup{
+			Version:  meta.fallback.Version,
+			BuildSeq: meta.fallback.BuildSeq,
+			Items:    s.defaultItems(meta.fallback.Version),
+		}
+		groups = []VersionGroup{latest}
+	}
+
+	return &CatalogResponse{
+		Version:      latest.Version,
+		BuildSeq:     latest.BuildSeq,
+		Channel:      "stable",
+		ReleaseDate:  latest.ReleaseDate,
+		Items:        latest.Items,
+		Versions:     groups,
+		Supporters:   supporters,
+		GitRepoURL:   meta.gitRepo,
+		GitBranch:    meta.gitBranch,
+		DocsURL:      meta.docsURL,
+		ContactEmail: meta.contactEmail,
+	}, nil
+}
+
+type catalogMetaBundle struct {
+	fallback     VersionFallback
+	gitRepo      string
+	gitBranch    string
+	docsURL      string
+	contactEmail string
+}
+
+func (s *CatalogService) catalogMeta() catalogMetaBundle {
 	gitRepo := os.Getenv("GIT_REPO_URL")
 	if gitRepo == "" {
 		gitRepo = "https://github.com/halfking/SI-LLM-Gateway"
@@ -105,19 +105,102 @@ func (s *CatalogService) BuildCatalog(ctx context.Context) (*CatalogResponse, er
 	if contactEmail == "" {
 		contactEmail = "huangxutao@kxpms.cn"
 	}
+	return catalogMetaBundle{
+		fallback:     s.fallback,
+		gitRepo:      gitRepo,
+		gitBranch:    gitBranch,
+		docsURL:      docsURL,
+		contactEmail: contactEmail,
+	}
+}
 
-	return &CatalogResponse{
-		Version:      version,
-		BuildSeq:     buildSeq,
-		Channel:      "stable",
-		ReleaseDate:  releaseDate,
-		Items:        items,
-		Supporters:   supporters,
-		GitRepoURL:   gitRepo,
-		GitBranch:    gitBranch,
-		DocsURL:      docsURL,
-		ContactEmail: contactEmail,
-	}, nil
+func (s *CatalogService) buildVersionGroups(ctx context.Context, meta catalogMetaBundle) ([]VersionGroup, VersionGroup) {
+	var published []PublishedVersion
+	if ext, ok := s.releases.(ExtendedCatalogProvider); ok {
+		if rows, err := ext.ListPublishedVersions(ctx, 12); err == nil && len(rows) > 0 {
+			published = rows
+		}
+	}
+	if len(published) == 0 {
+		version := meta.fallback.Version
+		buildSeq := meta.fallback.BuildSeq
+		if s.releases != nil {
+			if v, bs, pub, err := s.releases.LatestPublishedVersion(ctx); err == nil && v != "" {
+				version, buildSeq = v, bs
+				if pub != nil {
+					published = append(published, PublishedVersion{Version: version, BuildSeq: buildSeq, PublishedAt: pub})
+				}
+			}
+		}
+		if len(published) == 0 {
+			published = []PublishedVersion{{Version: version, BuildSeq: buildSeq}}
+		}
+	}
+
+	groups := make([]VersionGroup, 0, len(published))
+	var latest VersionGroup
+	for i, row := range published {
+		group := s.versionGroup(ctx, row, meta)
+		groups = append(groups, group)
+		if i == 0 {
+			latest = group
+		}
+	}
+	return groups, latest
+}
+
+func (s *CatalogService) versionGroup(ctx context.Context, row PublishedVersion, meta catalogMetaBundle) VersionGroup {
+	items := s.itemsForVersion(ctx, row.Version)
+	releaseDate := ""
+	if row.PublishedAt != nil {
+		releaseDate = row.PublishedAt.Format(time.RFC3339)
+	}
+	installDoc := meta.docsURL
+	if meta.gitRepo != "" {
+		installDoc = fmt.Sprintf("%s/blob/%s/docs/DEPLOYMENT_GUIDE.md", strings.TrimRight(meta.gitRepo, "/"), meta.gitBranch)
+	}
+	return VersionGroup{
+		Version:       row.Version,
+		BuildSeq:      row.BuildSeq,
+		ReleaseDate:   releaseDate,
+		Items:         items,
+		InstallDocURL: installDoc,
+	}
+}
+
+func (s *CatalogService) itemsForVersion(ctx context.Context, version string) []CatalogItem {
+	artifacts, _ := s.store.ListArtifacts(ctx, version)
+	if len(artifacts) > 0 {
+		items := make([]CatalogItem, 0, len(artifacts))
+		for _, a := range artifacts {
+			items = append(items, CatalogItem{
+				Platform:     a.Platform,
+				Arch:         a.Arch,
+				Label:        platformLabel(a.Platform, a.Arch),
+				ArtifactName: a.ArtifactName,
+				SHA256:       a.SHA256,
+				SizeBytes:    a.SizeBytes,
+				SizeLabel:    formatSize(a.SizeBytes),
+			})
+		}
+		return items
+	}
+	return s.defaultItems(version)
+}
+
+func (s *CatalogService) defaultItems(version string) []CatalogItem {
+	items := make([]CatalogItem, 0, len(defaultPlatforms))
+	for _, p := range defaultPlatforms {
+		name := artifactFileName(version, p.Platform, p.Arch)
+		items = append(items, CatalogItem{
+			Platform:     p.Platform,
+			Arch:         p.Arch,
+			Label:        p.Label,
+			ArtifactName: name,
+			SizeLabel:    p.SizeLabel,
+		})
+	}
+	return items
 }
 
 func (s *CatalogService) ArtifactURL(version, platform, arch string) (fileName, url string) {

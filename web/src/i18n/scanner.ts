@@ -106,12 +106,22 @@ function loadLocale(locale: string, localesDir: string): Record<string, unknown>
   if (!existsSync(indexPath)) return {}
   const src = readFileSync(indexPath, 'utf8')
   const importRe = /^\s*import\s+(\w+)\s+from\s+['"]\.\/(\w+)['"]\s*$/gm
-  const merged: Record<string, unknown> = {}
+  const modules = new Map<string, Record<string, unknown>>()
   let m: RegExpExecArray | null
   while ((m = importRe.exec(src)) !== null) {
-    const localName = m[1]
-    const moduleName = m[2]
-    merged[localName] = loadModuleFile(locale, moduleName, localesDir)
+    modules.set(m[1], loadModuleFile(locale, m[2], localesDir))
+  }
+  const merged: Record<string, unknown> = Object.fromEntries(modules)
+  // index.ts 常见 `public: publicPortal` 别名；扫描器需与运行时 i18n 命名一致
+  const exportBlock = src.match(/export\s+default\s*\{([\s\S]*?)\n\}/)
+  if (exportBlock) {
+    for (const line of exportBlock[1].split('\n')) {
+      const am = line.match(/^\s*(\w+)\s*:\s*(\w+)\s*,?\s*$/)
+      if (am && modules.has(am[2]) && am[1] !== am[2]) {
+        merged[am[1]] = modules.get(am[2])!
+        delete merged[am[2]]
+      }
+    }
   }
   return merged
 }
