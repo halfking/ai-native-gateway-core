@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import PublicPortalLayout from '../../components/PublicPortalLayout.vue'
+import PublicContactBox from '../../components/PublicContactBox.vue'
 import {
   getDownloadCatalog,
   createDownloadTicket,
@@ -79,19 +80,7 @@ onMounted(load)
     :kicker="t('public.layout.download')"
   >
     <div v-loading="loading" class="dl-page">
-      <el-card v-if="catalog?.git_repo_url" shadow="never" class="pub-card pub-git-box">
-        <h3>{{ t('public.download.openSourceTitle') }}</h3>
-        <p>{{ t('public.download.openSourceDesc') }}</p>
-        <div class="pub-link-row">
-          <a :href="catalog.git_repo_url" target="_blank" rel="noopener">{{ catalog.git_repo_url }}</a>
-          <el-button size="small" @click="copyText(catalog.git_repo_url!)">
-            {{ t('public.download.copyRepo') }}
-          </el-button>
-        </div>
-        <p v-if="catalog.git_branch" class="dl-meta-line">
-          {{ t('public.download.gitBranch') }}: <code>{{ catalog.git_branch }}</code>
-        </p>
-      </el-card>
+      <PublicContactBox />
 
       <el-card v-if="catalog" shadow="never" class="pub-card dl-meta">
         <div class="dl-meta__row">

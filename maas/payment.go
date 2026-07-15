@@ -51,7 +51,7 @@ func (p StubQRProvider) GenerateQR(orderNo string, amountCents int, channel Paym
 	case PaymentAlipay:
 		qrURL = p.Settings.StubAlipayQRURL
 		if stub {
-			hint = fmt.Sprintf("占位模式：请备注订单号 %s 后联系客服完成支付（支付宝账号待接入）", orderNo)
+			hint = fmt.Sprintf("请扫码支付并备注订单号 %s；如有疑问请联系 huangxutao@kxpms.cn", orderNo)
 		} else {
 			hint = fmt.Sprintf("请向支付宝账号 %s 转账 ¥%.2f，备注订单号 %s",
 				p.Settings.AlipayAccount, float64(amountCents)/100, orderNo)
@@ -59,7 +59,7 @@ func (p StubQRProvider) GenerateQR(orderNo string, amountCents int, channel Paym
 	case PaymentWechat:
 		qrURL = p.Settings.StubWechatQRURL
 		if stub {
-			hint = fmt.Sprintf("占位模式：请备注订单号 %s 后联系客服完成支付（微信商户号待接入）", orderNo)
+			hint = fmt.Sprintf("请扫码支付并备注订单号 %s；如有疑问请联系 huangxutao@kxpms.cn", orderNo)
 		} else {
 			hint = fmt.Sprintf("请向微信商户 %s 支付 ¥%.2f，备注订单号 %s",
 				p.Settings.WechatMchID, float64(amountCents)/100, orderNo)

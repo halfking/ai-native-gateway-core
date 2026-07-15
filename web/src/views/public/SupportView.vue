@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import PublicPortalLayout from '../../components/PublicPortalLayout.vue'
+import PublicContactBox from '../../components/PublicContactBox.vue'
 import { createDonation, confirmStubDonation, getDownloadCatalog } from '../../api/public'
 
 const { t, tm } = useI18n()
@@ -91,6 +92,7 @@ function skip() {
     :kicker="t('public.layout.support')"
   >
     <div class="sup-page">
+      <PublicContactBox />
       <p class="sup-count">{{ t('public.support.supporterCount', { n: supporterCount }) }}</p>
 
       <el-card shadow="never" class="pub-card sup-impact">
