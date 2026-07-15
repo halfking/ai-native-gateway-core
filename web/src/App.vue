@@ -167,7 +167,14 @@ watch(
 watch(
   () => route.query.login,
   (login) => {
-    if (login && !isLoggedIn.value) openLogin()
+    if (!login || isLoggedIn.value) return
+    if (isGuestPublicRoute(route.path) || route.meta.public === true) {
+      const q = { ...route.query }
+      delete q.login
+      router.replace({ path: route.path, query: q, hash: route.hash })
+      return
+    }
+    openLogin()
   },
   { immediate: true },
 )

@@ -20,6 +20,10 @@ export default {
     nextSteps: 'After download',
     nextStepInstall: 'Extract and run llm-gw-installer install on your server',
     nextStepActivate: 'Then open the activation wizard for online or offline activation.req flow',
+    openSourceTitle: 'Core open source · Git repository',
+    openSourceDesc: 'LLM Gateway data and control planes are open source (Apache 2.0) — auditable, customizable, self-hostable.',
+    copyRepo: 'Copy repo URL',
+    gitBranch: 'Default branch',
   },
   support: {
     title: 'Support the AI-Native Organization Core Gateway community',

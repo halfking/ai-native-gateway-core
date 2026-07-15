@@ -12,6 +12,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
+import PublicPortalLayout from '../components/PublicPortalLayout.vue'
 import {
   getLicenseStatus,
   activateLicense,
@@ -233,13 +234,14 @@ onMounted(refresh)
 </script>
 
 <template>
+  <PublicPortalLayout
+    :title="t('customer.wizard.headerTitle')"
+    :subtitle="t('customer.wizard.headerSubtitle')"
+    :kicker="t('public.download.activateLink')"
+  >
   <div class="activation-wizard" v-loading="loading">
-    <el-card class="wizard-header" shadow="never">
+    <el-card class="wizard-header pub-card" shadow="never">
       <div class="header-row">
-        <div>
-          <h2>{{ t('customer.wizard.headerTitle') }}</h2>
-          <p class="subtitle">{{ t('customer.wizard.headerSubtitle') }}</p>
-        </div>
         <el-tag :type="stateColor as any" size="large" effect="dark">
           {{ stateLabel }}
         </el-tag>
@@ -447,6 +449,7 @@ onMounted(refresh)
       </el-result>
     </el-card>
   </div>
+  </PublicPortalLayout>
 </template>
 
 <style scoped>
