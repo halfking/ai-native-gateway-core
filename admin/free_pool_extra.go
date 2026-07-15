@@ -1010,6 +1010,10 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 		acquisitionMode:   acquisitionMode,
 		acquisitionDetail: sourceDetail,
 		credentialLabel:   credLabel,
+		// 2026-07-15: look up the free-pool template rpmLimit so the
+		// registering endpoint can persist it via migration 407. Falls
+		// back to 0 (unlimited) for unknown catalog codes.
+		rpmLimit:          lookupFreePoolRPMLimit(catalogCode),
 	}
 
 	h.logAudit(r, "free_pool_quick_entry", map[string]any{
@@ -1224,6 +1228,7 @@ func (h *Handler) handleFreePoolAddKey(w http.ResponseWriter, r *http.Request) {
 		acquisitionMode:   source,
 		acquisitionDetail: acqDetail,
 		credentialLabel:   label,
+		rpmLimit:          lookupFreePoolRPMLimit(req.CatalogCode),
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
@@ -1326,6 +1331,7 @@ func (h *Handler) handleFreePoolAddKeysBulk(w http.ResponseWriter, r *http.Reque
 			acquisitionMode:   source,
 			acquisitionDetail: acqDetail,
 			credentialLabel:   label,
+			rpmLimit:          lookupFreePoolRPMLimit(item.CatalogCode),
 		}
 
 		result := h.registerFreeProviderWithCtx(ctx, cfg)
@@ -1420,11 +1426,11 @@ func (h *Handler) registerFreeProviderWithCtx(ctx context.Context, cfg freeProvi
 		insertErr := h.db.QueryRow(ctx, `
 			INSERT INTO credentials (provider_id, tenant_id, label, secret_ciphertext,
 				trust_level, status, lifecycle_status, availability_state, quota_state,
-				pool_group, acquisition_source, acquisition_detail, tags)
+				pool_group, acquisition_source, acquisition_detail, tags, rpm_limit)
 			VALUES ($1, 'default', $2, $3, 'degraded', 'active',
-				'active', 'ready', 'ok', 'free', $4, $5, CAST($6 AS jsonb))
+				'active', 'ready', 'ok', 'free', $4, $5, CAST($6 AS jsonb), $7)
 			RETURNING id
-		`, providerID, credLabel, cipherParam, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON).Scan(&credID)
+		`, providerID, credLabel, cipherParam, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON, cfg.rpmLimit).Scan(&credID)
 		if insertErr != nil {
 			return map[string]any{"status": "error", "message": "credential insert failed: " + insertErr.Error()}
 		}
@@ -1434,9 +1440,9 @@ func (h *Handler) registerFreeProviderWithCtx(ctx context.Context, cfg freeProvi
 				secret_ciphertext = $1,
 				status = 'active', pool_group = 'free',
 				acquisition_source = $2, acquisition_detail = $3,
-				tags = CAST($4 AS jsonb), updated_at = NOW()
-			WHERE id = $5
-		`, cipherParam, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON, credID); uerr != nil {
+				tags = CAST($4 AS jsonb), rpm_limit = $5, updated_at = NOW()
+			WHERE id = $6
+		`, cipherParam, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON, cfg.rpmLimit, credID); uerr != nil {
 			return map[string]any{"status": "error", "message": "credential update failed: " + uerr.Error()}
 		}
 	}
@@ -1493,6 +1499,19 @@ type freeProviderTemplate struct {
 	envVars         []string
 	tags            []string
 	acquisitionMode string
+}
+
+// lookupFreePoolRPMLimit returns the rpmLimit from the static free-pool
+// template, or 0 if the catalog code is not recognised. Used by the
+// registering endpoints to thread the recommended per-credential RPM
+// cap into migration 407's credentials.rpm_limit column. Returns 0
+// (= unlimited) for unknown codes so newly-registered non-template
+// credentials remain unthrottled.
+func lookupFreePoolRPMLimit(catalogCode string) int {
+	if tpl, ok := freeProviders[catalogCode]; ok {
+		return tpl.rpmLimit
+	}
+	return 0
 }
 
 // Static catalog mirroring Python FREE_PROVIDERS for free-pool template lookup.
