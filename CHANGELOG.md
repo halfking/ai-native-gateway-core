@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-15
 
+
 ### Guest UI — unified header & deploy flow (245)
 
 - **`GuestHeader`**: 40px logo, brand title「AI-Native 组织核心网关」, nav links
@@ -19,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PublicPortalLayout`; download page shows open-source Git URL; ops download
   release panel links to public portal; `download.kxpms.cn` nginx + cert setup.
 
+### Fixed (P0) — minimax-m3 no_candidates cascade on llm.kxpms.cn
+
+`llm.kxpms.cn` 上的 minimax-m3 在 2026-07-15 上午 11:00-11:38 期间出现 `all candidates failed: circuit open / no_candidates` 雪崩，用户看到 minimax-m3 不可用，但 `https://api.minimaxi.com/v1/chat/completions` 直连供应商健康。根因是 `credentialhealth/checker.go` 把 MiniMax 供应商的 `eof_without_done` 良性 EOF 算作 credential 失败，累积到 80% 失败率 + 5 个样本阈值后 `markDegraded` 把直连凭据 21 标 15 分钟 cooldown；与此同时 NVIDIA 代理凭据 19/23 因 `integrate.api.nvidia.com` 持续 timeout 也被 cooldown，路由层无候选。修复：
+
+- **`credentialhealth/checker.go CheckAndUpdate`** — 把 `error_kind == "eof_without_done"` 加入与 `network` 同级的失败排除白名单。`stream.go` 已经把带 chunks 的 EOF 标记 success，`executor_chat.go` 的 `isBenignEOF` 分支也已经 `RecordSuccess`，checker 的失败统计口径应该与这些保持一致。这是上次 `2026-07-13 no-candidates-and-storage-cleanup` 复盘未触及的根因（那次只修了 router reason 的可观测性）。
+- **`credentialhealth/checker.go markDegraded`** — `UPDATE model_offers` 镜像写不再引用 `unavailable_recover_at` 列（视图无该列，SQLSTATE 42703 每次都污染 journald；`RecoverExpired` 的镜像写已经正确，本次补对称修复）。
+- **`credentialhealth/checker_test.go`** — 新增 `TestChecker_CheckAndUpdate_ExcludeBenignEOF`（10 次 eof_without_done 不应触发 markDegraded）+ `TestChecker_CheckAndUpdate_MixedEOFStillFlagsTrueFailures`（4 eof + 6 quota 仍按 100% 真实失败触发）+ 修 `AboveThreshold` 测试补 model_offers 镜像 mock。
+- **154 紧急热修 SQL** — 部署前手动清掉已误判冷却的 7 行 minimax-m3 凭据（`available=TRUE, unavailable_reason=NULL, unavailable_recover_at=NULL, consecutive_failures=0`），11:44 / 11:47 / 11:48 多次 `success=true, stream_chunks>0` 确认用户恢复。
+- **部署** — `v1029.linux.amd64` (build_seq 1033) 替换 PID 3471 → PID 9253，systemd 单元 `llm-gateway-go.service` active。
+
+详见 `docs/changelogs/2026-07-15-minimax-m3-no-candidates-fix.md`（11 节：用户报告 / journalctl 证据 / DB 调查 / 根因 / 修复 / 测试 / 验证 / 部署 / 遗留风险 / 下一步 / 相关文件）。
+
+### Comprehensive test fixes (local R112 Docker) — round 2
 
 After pulling origin/main (27 new commits including Cloudreve / OSS / S3
 storage adapters, operational dashboard panel, runtime metrics / alerts

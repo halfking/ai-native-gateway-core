@@ -91,7 +91,22 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 		// 2026-07-03 P0 fix: skip network errors AND client bugs.
 		// Client bugs (tool_call_id_mismatch, invalid_request_format, etc.)
 		// are not credential health issues and should not affect failureRate.
-		if e.ErrorKind == "network" || errorsx.IsClientBug(errorsx.ErrorKind(e.ErrorKind)) {
+		//
+		// 2026-07-15 P0 fix: also skip "eof_without_done".
+		// MiniMax (and several other SSE providers) routinely terminate
+		// otherwise-successful streams without emitting the [DONE] sentinel
+		// — the relay flags this in domains/streaming/stream.go and the
+		// executor's isBenignEOF branch in executor_chat.go already records
+		// it as a success. Counting it as a credential failure was the root
+		// cause of the 154 minimax-m3 "no_candidates" cascade on 2026-07-15:
+		// every benign EOF counted toward the 80% threshold, so a credential
+		// that was genuinely healthy got pushed into a 15-minute cooldown
+		// while the user-visible state showed "all 1 candidates failed".
+		// Direct curl against api.minimaxi.com from 154 confirmed the
+		// upstream was reachable throughout the incident.
+		if e.ErrorKind == "network" ||
+			e.ErrorKind == "eof_without_done" ||
+			errorsx.IsClientBug(errorsx.ErrorKind(e.ErrorKind)) {
 			continue
 		}
 		total++
@@ -154,12 +169,22 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 		// Mirror to model_offers so /api/routing/resolve ("test route")
 		// surfaces the same unavailability — admin UI and production
 		// routing must stay in lock-step.
+		//
+		// 2026-07-15 P1 fix: model_offers is a VIEW over
+		// credential_model_bindings + provider_models, and the view does
+		// not expose unavailable_recover_at (only unavailable_at). Writing
+		// that column raises SQLSTATE 42703 and pollutes the journald
+		// stream with "checker: model_offers mirror write failed" warnings
+		// on every degraded credential. The recover_at remains visible
+		// on the cmb row (which is what the production router reads via
+		// v_routable_credential_models) and on the underlying
+		// credential_model_bindings table that the view selects from, so
+		// dropping the column from this mirror is lossless.
 		if _, moErr := c.db.Exec(ctx, `
 			UPDATE model_offers mo
-			SET available              = FALSE,
-			    unavailable_reason     = 'continuous_failure',
-			    unavailable_at         = now(),
-			    unavailable_recover_at = $3
+			SET available          = FALSE,
+			    unavailable_reason = 'continuous_failure',
+			    unavailable_at     = now()
 			FROM provider_models pm
 			WHERE pm.raw_model_name = mo.raw_model_name
 			  AND pm.id IN (
@@ -172,7 +197,7 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 			  AND mo.credential_id = $1
 			  AND mo.available = TRUE
 			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		`, credentialID, recoverAt, recoverAt); moErr != nil {
+		`, credentialID, recoverAt); moErr != nil {
 			slog.Warn("checker: model_offers mirror write failed",
 				"credential_id", credentialID, "model", model, "error", moErr)
 		}
