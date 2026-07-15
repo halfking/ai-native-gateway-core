@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -103,6 +104,14 @@ type telemetryIngester struct {
 	queue chan any
 	done  chan struct{}
 	wg    sync.WaitGroup
+
+	// 2026-07-16: failure counters split by category so ops can
+	// distinguish transient (worth retrying) from permanent (data
+	// quality / schema drift) failures. Read via admin/metrics if
+	// needed; updated atomically here.
+	failTransient uint64 // atomic
+	failPermanent uint64 // atomic
+	failRetried   uint64 // atomic
 }
 
 var ingester *telemetryIngester
@@ -193,7 +202,8 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 	// write target per the 2026-07 data-lifecycle architecture — never
 	// the parent table, which would let PG auto-route rows into monthly
 	// partitions that are not safe to UPDATE/DELETE later).
-	_, err := t.db.Exec(ctx, `
+	err := t.execWithRetry(ctx, "decision_log", e.RequestID, func(ctx context.Context) error {
+		_, err := t.db.Exec(ctx, `
 		INSERT INTO routing_decision_log_hot (
 			ts, request_id, idempotency_key, tenant_id, api_key_id,
 			model, chosen_credential_id, chosen_provider_id, tier,
@@ -216,18 +226,20 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 			$29, $30, CAST($31 AS jsonb), CAST($32 AS jsonb)
 		)
 	`,
-		e.RequestID, e.IdempotencyKey, nonEmptyDefault(e.TenantID), e.APIKeyID,
-		e.Model, e.ChosenCredentialID, e.ChosenProviderID, e.Tier,
-		e.CandidatesTried, e.LatencyMs, e.Success, e.ErrorClass,
-		e.PromptTokens, e.CompletionTokens, e.CostUSD,
-		e.RequestBytes, e.ResponseBytes,
-		e.ClientModel, e.ResolvedRawModel, e.StickyHit, e.ClientProfile,
-		e.OutboundModel, e.RequestMode, e.IdentityHash, e.TransformRuleID,
-		e.EgressProtocol, e.FailureStage, e.FailureDetailCode,
-		e.ResolutionPath, e.CanonicalModel, rawModelsJSON, traceJSON,
-	)
+			e.RequestID, e.IdempotencyKey, nonEmptyDefault(e.TenantID), e.APIKeyID,
+			e.Model, e.ChosenCredentialID, e.ChosenProviderID, e.Tier,
+			e.CandidatesTried, e.LatencyMs, e.Success, e.ErrorClass,
+			e.PromptTokens, e.CompletionTokens, e.CostUSD,
+			e.RequestBytes, e.ResponseBytes,
+			e.ClientModel, e.ResolvedRawModel, e.StickyHit, e.ClientProfile,
+			e.OutboundModel, e.RequestMode, e.IdentityHash, e.TransformRuleID,
+			e.EgressProtocol, e.FailureStage, e.FailureDetailCode,
+			e.ResolutionPath, e.CanonicalModel, rawModelsJSON, traceJSON,
+		)
+		return err
+	})
 	if err != nil {
-		slog.Warn("telemetry ingest decision log failed", "error", err)
+		slog.Warn("telemetry ingest decision log failed", "request_id", e.RequestID, "error", err)
 	}
 }
 
@@ -284,6 +296,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		totalTok, e.CostUSD, e.LatencyMs, e.Success, e.ErrorKind,
 	)
 	if err != nil {
+		t.classifyAndCount("usage_ledger", e.RequestID, err)
 		slog.Warn("telemetry ingest usage_ledger failed", "error", err)
 		return
 	}
@@ -351,13 +364,116 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		e.UpstreamFinishReason,
 	)
 	if err != nil {
-		slog.Warn("telemetry ingest request_logs failed", "error", err)
+		t.classifyAndCount("request_logs_hot", e.RequestID, err)
+		slog.Warn("telemetry ingest request_logs failed", "request_id", e.RequestID, "error", err)
 		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		slog.Warn("telemetry ingest commit failed", "error", err)
 	}
+}
+
+// execWithRetry runs op with up to 2 retries on transient PG errors.
+// Returns the first non-transient error or the last transient error
+// after exhausting retries. The op is invoked with the same ctx; if
+// the op has its own timeout it will surface that.
+//
+// 2026-07-16 hardening: replaces the bare `t.db.Exec(...)` calls so
+// PG-side hiccups (deadlock 40P01, connection reset 57P01/08006,
+// serialization failure 40001) don't immediately count as a lost
+// telemetry row.
+//
+// NOTE: this helper is for SINGLE-statement, transaction-less
+// operations. Wrapping a pgx.Tx.Exec in retry is unsafe because a
+// failed statement aborts the transaction.
+func (t *telemetryIngester) execWithRetry(ctx context.Context, label, requestID string, op func(context.Context) error) error {
+	var lastErr error
+	backoff := 50 * time.Millisecond
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := op(ctx)
+		if err == nil {
+			if attempt > 0 {
+				atomic.AddUint64(&t.failRetried, 1)
+				slog.Info("telemetry ingest retry succeeded",
+					"label", label, "request_id", requestID, "attempt", attempt+1)
+			}
+			return nil
+		}
+		lastErr = err
+		if !isTransientPGError(err) {
+			t.classifyAndCount(label, requestID, err)
+			return err
+		}
+		if attempt < 2 {
+			atomic.AddUint64(&t.failRetried, 1)
+			slog.Warn("telemetry ingest transient error, retrying",
+				"label", label, "request_id", requestID, "attempt", attempt+1, "backoff_ms", backoff.Milliseconds(), "error", err)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			backoff *= 2
+		}
+	}
+	if lastErr != nil {
+		t.classifyAndCount(label, requestID, lastErr)
+	}
+	return lastErr
+}
+
+// classifyAndCount bumps one of the failure counters based on the PG
+// SQLSTATE classification. Permanent errors (schema drift, bad
+// data, permission) are recorded as failPermanent; transient as
+// failTransient.
+func (t *telemetryIngester) classifyAndCount(label, requestID string, err error) {
+	if err == nil {
+		return
+	}
+	if isTransientPGError(err) {
+		atomic.AddUint64(&t.failTransient, 1)
+		return
+	}
+	atomic.AddUint64(&t.failPermanent, 1)
+}
+
+// isTransientPGError returns true for SQLSTATEs that indicate a
+// retry might succeed: deadlock (40P01), serialization failure
+// (40001), admin shutdown (57P01), cannot connect now (57P03),
+// connection failures (08000/08003/08006/08001/08004/08007), and
+// statement timeout (57014).
+func isTransientPGError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, code := range []string{
+		"40P01", "40001",
+		"57P01", "57P03",
+		"57014",
+		"08000", "08003", "08006", "08001", "08004", "08007",
+	} {
+		if strings.Contains(msg, code) {
+			return true
+		}
+	}
+	return false
+}
+
+// FailCounts returns a snapshot of the telemetry ingester failure
+// counters. Exposed via admin/metrics so ops can detect "writes
+// silently dropping" without parsing stderr.
+func (t *telemetryIngester) FailCounts() (transient, permanent, retried uint64) {
+	if t == nil {
+		return 0, 0, 0
+	}
+	return atomic.LoadUint64(&t.failTransient),
+		atomic.LoadUint64(&t.failPermanent),
+		atomic.LoadUint64(&t.failRetried)
 }
 
 func (h *Handler) handleTelemetryDecisionLog(w http.ResponseWriter, r *http.Request) {

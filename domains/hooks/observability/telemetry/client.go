@@ -37,6 +37,14 @@ type Client struct {
 	onEmitted func(entry *RequestLogEntry)
 	fallback  dbdegradation.BackupWriter
 	degraded  atomic.Bool
+
+	// 2026-07-16: failure counters so ops can detect "telemetry rows
+	// silently dropping" via FailCounts() instead of grepping stderr.
+	// Bumped in worker/EmitRequestLog paths; safe for concurrent reads.
+	failTransient uint64
+	failPermanent uint64
+	failRetried   uint64
+	failFallback  uint64
 }
 
 type DecisionLogEntry struct {
@@ -395,10 +403,12 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 	default:
 		// Request logs power /request-logs — never silently drop on backpressure.
 		if err := c.persistRequestLog(entry); err != nil {
+			atomic.AddUint64(&c.failPermanent, 1)
 			if c.fallback != nil {
 				if fallbackErr := c.fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry); fallbackErr != nil {
 					slog.Warn("telemetry request sync fallback failed", "request_id", entry.RequestID, "db_error", err, "fallback_error", fallbackErr)
 				} else {
+					atomic.AddUint64(&c.failFallback, 1)
 					slog.Warn("telemetry request db persist failed; fallback written", "request_id", entry.RequestID, "op", entry.Op, "error", err)
 				}
 			} else {
@@ -421,6 +431,21 @@ func (c *Client) EmitRequestLogUpdate(entry *RequestLogEntry) {
 func (c *Client) Stop() {
 	close(c.done)
 	c.wg.Wait()
+}
+
+// FailCounts returns a snapshot of telemetry write failure counters.
+// Safe to call concurrently from any goroutine. Use these values
+// to alert when permanent/fallback failures grow faster than the
+// gateway can recover (see incident 2026-07-16 where 12 rows dropped
+// silently to "audit_log insert failed" with no surfaced metric).
+func (c *Client) FailCounts() (transient, permanent, retried, fallback uint64) {
+	if c == nil {
+		return 0, 0, 0, 0
+	}
+	return atomic.LoadUint64(&c.failTransient),
+		atomic.LoadUint64(&c.failPermanent),
+		atomic.LoadUint64(&c.failRetried),
+		atomic.LoadUint64(&c.failFallback)
 }
 
 func (c *Client) worker() {
@@ -463,10 +488,12 @@ func (c *Client) flush(batch []any) {
 			}
 		case *RequestLogEntry:
 			if err := c.persistRequestLog(v); err != nil {
+				atomic.AddUint64(&c.failPermanent, 1)
 				if c.fallback != nil {
 					if fallbackErr := c.fallback.WriteRequestLog(context.Background(), v.RequestID+":"+string(v.Op), v); fallbackErr != nil {
 						slog.Warn("telemetry request fallback failed", "request_id", v.RequestID, "db_error", err, "fallback_error", fallbackErr)
 					} else {
+						atomic.AddUint64(&c.failFallback, 1)
 						slog.Warn("telemetry request db persist failed; fallback written", "request_id", v.RequestID, "op", v.Op, "error", err)
 					}
 				} else {
