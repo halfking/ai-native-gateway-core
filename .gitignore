@@ -204,3 +204,4 @@ bin/
 backups/
 llm-gateway-go.v969.linux.amd64
 fix-selfcheck-keyhash
+gateway.new
