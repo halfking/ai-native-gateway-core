@@ -646,13 +646,31 @@ func (e *Executor) executeOpenAI(
 					streamQualityFlags = params.Capture.QualityFlags
 					streamQualityScore = params.Capture.QualityScore
 				}
-				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
-					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
+if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
+						isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
 
-					streamKind := errorsx.KindStreamTimeout
-					if errorsx.IsConcurrentOverload(streamOutcome.Reason) {
-						streamKind = errorsx.KindConcurrent
-					}
+						streamKind := errorsx.KindStreamTimeout
+						if errorsx.IsConcurrentOverload(streamOutcome.Reason) {
+							streamKind = errorsx.KindConcurrent
+						}
+
+						// 2026-07-15: empty-stream content-gate returns
+						// Resumable=true with ChunkCount=0 when the upstream
+						// opened a stream but produced zero content (notably
+						// NIM's 13% empty-stream rate). Classify it as
+						// KindEmptyResponse so:
+						//   - freeCredentialsTolerateTransient does NOT skip
+						//     RecordFailure (we want circuit feedback to demote
+						//     the chronically-empty credential via recent_success_rate)
+						//   - shouldWriteCredentialState returns false (soft kind,
+						//     keeps the credential 'ready' for retry)
+						//   - isCredentialFatal returns false (transient)
+						//   - Resumable + ChunkCount=0 < StreamRetryThreshold
+						//     routes it through the candidate-loop continue,
+						//     failing over to the next credential transparently.
+						if streamOutcome.Reason == "empty_stream_no_content" {
+							streamKind = errorsx.KindEmptyResponse
+						}
 
 					isBenignEOF := streamOutcome.Reason == "eof_without_done" && streamOutcome.ChunkCount > 0
 
@@ -762,6 +780,29 @@ func (e *Executor) executeOpenAI(
 			if len(respBody) > maxBodySize {
 				slog.Warn("upstream response truncated", "size", len(respBody))
 				respBody = respBody[:maxBodySize]
+			}
+			// 2026-07-15: non-stream empty-response failover. The upstream
+			// returned HTTP 200 with a well-formed but content-less body
+			// (notably NIM: `{"choices":[{"message":{}}],"usage":{...}}`).
+			// Previously this fell through to the handler's terminal 502
+			// (messages.go:863 / responses.go:691). Now we return a
+			// retryable error with KindEmptyResponse BEFORE WriteHeader so
+			// the outer candidate loop's transient-error continue branch
+			// (executor.go:1814) fails over to the next credential with
+			// no client-side error. The handler-side 502 stays as the
+			// final fallback when ALL candidates are empty.
+			if !params.IsStream && isNonStreamEmptyResponse(respBody) {
+				slog.Warn("executor: non-stream empty response, failing over to next candidate",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+					"raw_model", cand.RawModel,
+				)
+				return nil, &upstreampkg.Error{
+					Kind:       errorsx.KindEmptyResponse,
+					Message:    "upstream returned empty response (zero content)",
+					Body:       append([]byte(nil), respBody...),
+					StatusCode: resp.StatusCode,
+				}
 			}
 			// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 			// Run before any other body transform so the scanner sees

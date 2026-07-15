@@ -20,6 +20,17 @@ import (
 const (
 	streamBufSize       = 64 * 1024
 	sseKeepaliveComment = ": keep-alive\n\n"
+
+	// 2026-07-15: empty-stream content-gate parameters.
+	// The gate buffers up to emptyGateMaxChunks chunks (64 KiB total) before
+	// any byte is committed to the client. If a chunk with real content
+	// arrives, the buffer is flushed and we switch to write-through (no
+	// latency penalty for normal streams). If [DONE] arrives while still
+	// buffering with zero content seen, we return Resumable=true so the
+	// executor transparently fails over to the next candidate — killing the
+	// NIM (Provider 18) ~13% empty-response rate.
+	emptyGateMaxChunks = 8
+	emptyGateMaxBytes  = 64 * 1024
 )
 
 // qualityFixModeCtxKey is the context value key used to thread the
@@ -51,6 +62,219 @@ func qualityFixModeFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// chunkHasContent returns true when an OpenAI SSE chunk carries real
+// user-facing content. Used by the empty-stream content-gate to decide
+// whether to flush the buffer (real content seen) or fail over (zero
+// content seen before [DONE]).
+//
+// "Real content" = delta.content != "" OR delta.reasoning_content != ""
+// OR delta.tool_calls non-empty. Usage-only and role-only chunks
+// (Type="usage" / first-chunk assistant role announcement) do NOT count.
+//
+// Returns false (no content) on parse errors — a malformed chunk is treated
+// like an empty one so the gate keeps buffering and either hits the chunk/
+// byte cap or [DONE] arrives with zero content → Resumable failover.
+func chunkHasContent(payload string) bool {
+	if payload == "" || payload == "[DONE]" {
+		return false
+	}
+	chunk, err := ir.ParseOpenAIStreamChunk("data: " + payload + "\n\n")
+	if err != nil || chunk == nil {
+		return false
+	}
+	if chunk.Type == ir.ChunkTypeDone || chunk.Type == ir.ChunkTypeError {
+		return false
+	}
+	if chunk.Delta == nil {
+		return false
+	}
+	if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" {
+		return true
+	}
+	if len(chunk.Delta.ToolCalls) > 0 {
+		return true
+	}
+	if chunk.Delta.AudioDelta != nil &&
+		(chunk.Delta.AudioDelta.Data != "" || chunk.Delta.AudioDelta.Transcript != "") {
+		return true
+	}
+	return false
+}
+
+// runEmptyStreamGate buffers upstream chunks BEFORE writing them to the
+// client, so an empty stream (notably the NIM (Provider 18) ~13% failure
+// mode: stream opens, sends 1-3 chunks with empty choices, then [DONE])
+// can be detected and the executor transparently fails over to the next
+// candidate. Architecture mirrors the existing json_error_in_stream /
+// first_byte_timeout branches that already return Resumable=true with
+// ChunkCount=0 < StreamRetryThreshold(5).
+//
+// The HTTP 200 + SSE headers are already committed by the caller before
+// this gate runs (stream.go:142). On Resumable return the client will see
+// 200 + SSE headers + (nothing from this candidate) + the next candidate's
+// real chunks — SSE clients tolerate this because no data chunks were
+// sent before failover.
+//
+// Cost: zero added latency for normal streams — the first chunk with real
+// content triggers an immediate buffer flush and switch to write-through.
+// For pathological all-empty streams, we cap buffering at emptyGateMaxChunks
+// / emptyGateMaxBytes then flush+continue (don't block slow models
+// indefinitely).
+//
+// The starting line is the already-transformed first line (quality fix /
+// XML coerce / model rewrite / normalize already applied). The gate does
+// not re-transform it — it only buffers subsequent lines and applies the
+// same transforms to them.
+//
+// Returns:
+//   - gatePassed=true, flushedLines=non-empty: gate flushed the buffer (either
+//     because content appeared or because the buffer cap was hit). Caller
+//     writes flushedLines via safeWriteSSE and continues with the main loop.
+//     lastSend/chunkCount are updated inside this function.
+//   - gatePassed=false, outcome!=nil: empty stream detected → caller returns
+//     the outcome (Interrupted=true, Resumable=true, ChunkCount=0).
+//   - gatePassed=true, flushedLines=nil: timed out / error during buffering,
+//     fall through to normal main-loop read.
+func runEmptyStreamGate(
+	ctx context.Context,
+	reader *bufio.Reader,
+	bodyCloser io.ReadCloser,
+	w http.ResponseWriter,
+	flusher http.Flusher,
+	norm *Normalizer,
+	capture *audit.StreamCapture,
+	pc *pendingCapturer,
+	clientModel string,
+	discoveredUpstream *string,
+	startingLine string,
+	firstByteTimeout time.Duration,
+	lastSend *time.Time,
+	chunkCount *int,
+) (flushedLines []string, outcome *StreamOutcome) {
+	buffered := make([]string, 0, emptyGateMaxChunks)
+	bufferedBytes := 0
+	if startingLine != "" {
+		buffered = append(buffered, startingLine)
+		bufferedBytes += len(startingLine)
+	}
+
+	for {
+		// Read the next upstream line, with the same first-byte / inter-chunk
+		// timeout semantics as the main loop.
+		line, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, firstByteTimeout)
+		if err != nil {
+			// Timeout / network error during buffering → flush whatever we
+			// have so the caller can write them, then let the main loop
+			// surface the error as a stream interruption.
+			return buffered, nil
+		}
+
+		// Observe chunks in capture for audit, but do NOT count them as
+		// "sent to client" — nothing reached the wire during buffering.
+		payload := extractPayload(line)
+		if payload != "" && capture != nil {
+			if chunk, perr := ir.ParseOpenAIStreamChunk(line); perr == nil {
+				capture.ObserveChunk(chunk)
+			}
+		}
+
+		// Apply the same line transforms the main loop would apply, so
+		// flushed chunks are byte-identical to what write-through would
+		// have produced (quality fix / XML coerce / model rewrite / norm).
+		line = applyGateLineTransforms(ctx, line, clientModel, discoveredUpstream, norm, capture)
+
+		buffered = append(buffered, line)
+		bufferedBytes += len(line)
+
+		// [DONE] while buffering: classify and decide.
+		if payload == "[DONE]" {
+			break
+		}
+
+		// Real content seen? Flush immediately. This is the common case
+		// for normal streams — first content chunk arrives, gate exits,
+		// caller writes flushed lines and continues write-through.
+		if chunkHasContent(payload) {
+			return buffered, nil
+		}
+
+		// Buffer cap: too many chunks / bytes without content. Likely a
+		// degenerate stream (usage-only blocks, role announcements, etc.).
+		// Flush and fall through to write-through — don't block slow models.
+		if len(buffered) >= emptyGateMaxChunks || bufferedBytes >= emptyGateMaxBytes {
+			return buffered, nil
+		}
+	}
+
+	// Loop exited because [DONE] was seen while still buffering.
+	// Look back: did any buffered chunk have real content?
+	sawContent := false
+	for _, l := range buffered {
+		if chunkHasContent(extractPayload(l)) {
+			sawContent = true
+			break
+		}
+	}
+	if !sawContent {
+		// Empty stream — signal Resumable failover. The executor will
+		// continue to the next candidate. We do NOT write [DONE] to the
+		// client, so the next candidate's stream begins cleanly.
+		if capture != nil {
+			capture.MarkInterruptedWithReason("empty_stream_no_content")
+		}
+		*chunkCount = 0
+		_ = lastSend
+		return nil, &StreamOutcome{
+			Interrupted: true,
+			Reason:      "empty_stream_no_content",
+			Resumable:   true,
+			ChunkCount:  0,
+		}
+	}
+
+	// Had content + [DONE] — flush all buffered chunks to the client and
+	// continue write-through (the caller will resume the main loop).
+	return buffered, nil
+}
+
+// applyGateLineTransforms runs quality-fix + XML-coerce + model-rewrite +
+// normalize on a line that the content gate is buffering. Mirrors the
+// transformations the main loop applies at stream.go:467-504 so flushed
+// chunks are byte-identical to write-through output.
+func applyGateLineTransforms(
+	ctx context.Context,
+	line string,
+	clientModel string,
+	discoveredUpstream *string,
+	norm *Normalizer,
+	capture *audit.StreamCapture,
+) string {
+	qualityMode := qualityFixModeFromContext(ctx)
+	if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
+		newLine, newFlags, newSeen := ProcessStreamLine(line, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
+		if newLine != "" {
+			line = newLine
+		}
+		if len(newFlags) > 0 {
+			capture.QualityFlags = newFlags
+		}
+		if newSeen != nil {
+			capture.QualitySeenToolCallIDs = newSeen
+		}
+	}
+	line = coerceXMLToolCallsInStreamLine(line, false)
+	if clientModel != "" && *discoveredUpstream == "" {
+		*discoveredUpstream = extractModelFromChunk(line)
+	}
+	if clientModel != "" {
+		line = replaceModelInChunk(line, clientModel, *discoveredUpstream)
+	}
+	if norm != nil {
+		line = string(norm.NormalizeChunk([]byte(line), true))
+	}
+	return line
 }
 
 type StreamOutcome struct {
@@ -182,6 +406,16 @@ func StreamChatWithPendingCapture(
 		return outcome
 	}
 
+	// upstreamDoneReceived tracks whether the upstream sent the literal
+	// "data: [DONE]\n\n" terminator. If the stream ended by EOF without
+	// [DONE] (e.g. upstream crashed mid-response), we do NOT want to
+	// mark the capture as doneReceived=true — that would misreport an
+	// interruption as a clean completion.
+	//
+	// 2026-07-15: hoisted before the empty-stream gate so the gate can
+	// flip it true if its buffered output included [DONE].
+	upstreamDoneReceived := false
+
 	if firstLine != "" {
 		// 2026-06-20 audit fix: when the upstream returns a
 		// non-SSE JSON error body (e.g. {"error":{"type":
@@ -256,26 +490,79 @@ func StreamChatWithPendingCapture(
 		if norm != nil {
 			firstLine = string(norm.NormalizeChunk([]byte(firstLine), true))
 		}
-		if pc != nil {
-			pc.append(firstLine)
-		}
-		if safeWriteSSE(w, firstLine) && safeFlush(flusher) {
-			lastSend = time.Now()
-			chunkCount++ // Count first chunk
-			if capture != nil {
-				capture.RecordChunkSent()
+
+		// 2026-07-15: Empty-stream content-gate. Instead of writing the
+		// first chunk immediately, buffer firstLine + subsequent chunks
+		// until either real content appears (normal stream → flush
+		// immediately, ~0 latency) or [DONE] arrives with zero content
+		// (NIM empty-stream failure → Resumable failover to next
+		// candidate BEFORE any byte reaches the client).
+		//
+		// When disabled via LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE=false
+		// or config, fall through to the original write-immediately
+		// path so behavior is unchanged from prior releases.
+		if currentStreamRuntimeConfig().enableEmptyStreamGate {
+			flushedLines, gateOutcome := runEmptyStreamGate(
+				ctx, reader, bodyCloser, w, flusher, norm, capture, pc,
+				clientModel, &discoveredUpstream, firstLine,
+				runtimeCfg.firstByteTimeout, &lastSend, &chunkCount,
+			)
+			if gateOutcome != nil {
+				return *gateOutcome
+			}
+			// Write flushed lines and update counters; the last flushed
+			// line may be [DONE] or a content chunk — the main loop
+			// handles terminator detection and write-through either way.
+			for _, l := range flushedLines {
+				if pc != nil {
+					pc.append(l)
+				}
+				p := extractPayload(l)
+				if p == "[DONE]" {
+					upstreamDoneReceived = true
+				}
+				if safeWriteSSE(w, l) && safeFlush(flusher) {
+					lastSend = time.Now()
+					chunkCount++
+					if capture != nil {
+						capture.RecordChunkSent()
+					}
+				} else {
+					slog.Warn("failed to send flushed chunk to client", "chunk_num", chunkCount)
+					if capture != nil {
+						capture.MarkInterruptedWithReason("client_write_failed")
+					}
+					outcome.Interrupted = true
+					outcome.Reason = "client_write_failed"
+					outcome.ChunkCount = chunkCount
+					outcome.Resumable = false
+					return outcome
+				}
 			}
 		} else {
-			// Write failed, client likely disconnected
-			slog.Warn("failed to send first chunk to client")
-			if capture != nil {
-				capture.MarkInterruptedWithReason("client_write_failed")
+			// Gate disabled: original write-immediately path (unchanged
+			// from pre-2026-07-15 behaviour).
+			if pc != nil {
+				pc.append(firstLine)
 			}
-			outcome.Interrupted = true
-			outcome.Reason = "client_write_failed"
-			outcome.ChunkCount = 0
-			outcome.Resumable = false
-			return outcome
+			if safeWriteSSE(w, firstLine) && safeFlush(flusher) {
+				lastSend = time.Now()
+				chunkCount++ // Count first chunk
+				if capture != nil {
+					capture.RecordChunkSent()
+				}
+			} else {
+				// Write failed, client likely disconnected
+				slog.Warn("failed to send first chunk to client")
+				if capture != nil {
+					capture.MarkInterruptedWithReason("client_write_failed")
+				}
+				outcome.Interrupted = true
+				outcome.Reason = "client_write_failed"
+				outcome.ChunkCount = 0
+				outcome.Resumable = false
+				return outcome
+			}
 		}
 	}
 
@@ -285,7 +572,10 @@ func StreamChatWithPendingCapture(
 	// [DONE] (e.g. upstream crashed mid-response), we do NOT want to
 	// mark the capture as doneReceived=true — that would misreport an
 	// interruption as a clean completion.
-	upstreamDoneReceived := false
+	//
+	// 2026-07-15: declared earlier (before the empty-stream gate call
+	// at first-line write) so the gate can flip it true if the gate
+	// flushed [DONE] as part of its buffered output.
 	for {
 		select {
 		case <-ctx.Done():
