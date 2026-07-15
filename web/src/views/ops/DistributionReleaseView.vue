@@ -21,6 +21,14 @@ const artifacts = ref<ReleaseArtifact[]>([])
 const runs = ref<PublishRun[]>([])
 const publishVersion = ref('')
 
+function formatArtifactSize(row: ReleaseArtifact) {
+  return row.size_bytes ? `${(row.size_bytes / 1024 / 1024).toFixed(1)} MB` : '—'
+}
+
+function formatTestPassed(row: PublishRun) {
+  return row.test_passed ? '✓' : '—'
+}
+
 async function load() {
   loading.value = true
   try {
@@ -106,11 +114,12 @@ onMounted(load)
         <el-table-column prop="platform" :label="t('ops.downloads.platform')" width="100" />
         <el-table-column prop="arch" label="arch" width="90" />
         <el-table-column prop="artifact_name" :label="t('ops.downloads.file')" min-width="220" />
-        <el-table-column prop="size_bytes" :label="t('ops.downloads.size')" width="100">
-          <template #default="{ row }">{{ row.size_bytes ? `${(row.size_bytes / 1024 / 1024).toFixed(1)} MB` : '—' }}</template>
-        </el-table-column>
+        <el-table-column prop="size_bytes" :label="t('ops.downloads.size')" width="100" :formatter="formatArtifactSize" />
         <el-table-column prop="sha256" label="SHA256" min-width="140">
-          <template #default="{ row }"><code>{{ row.sha256?.slice(0, 12) }}…</code></template>
+          <template #default="scope">
+            <code v-if="scope?.row?.sha256">{{ scope.row.sha256.slice(0, 12) }}…</code>
+            <span v-else>—</span>
+          </template>
         </el-table-column>
         <el-table-column prop="download_path" :label="t('ops.downloads.path')" min-width="160" />
       </el-table>
@@ -123,9 +132,7 @@ onMounted(load)
         <el-table-column prop="build_seq" label="seq" width="70" />
         <el-table-column prop="status" :label="t('ops.downloads.status')" width="100" />
         <el-table-column prop="artifact_count" :label="t('ops.downloads.artifactCount')" width="90" />
-        <el-table-column prop="test_passed" :label="t('ops.downloads.tests')" width="80">
-          <template #default="{ row }">{{ row.test_passed ? '✓' : '—' }}</template>
-        </el-table-column>
+        <el-table-column prop="test_passed" :label="t('ops.downloads.tests')" width="80" :formatter="formatTestPassed" />
         <el-table-column prop="created_by" label="by" width="90" />
         <el-table-column prop="created_at" :label="t('ops.downloads.createdAt')" min-width="160" />
         <el-table-column prop="log_summary" :label="t('ops.downloads.summary')" min-width="200" show-overflow-tooltip />
