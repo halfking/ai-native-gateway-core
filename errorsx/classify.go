@@ -57,6 +57,25 @@ const (
 	// the client with the upstream reason + an actionable hint. The
 	// credential is healthy — no cooling / circuit / state write.
 	KindContentFilter ErrorKind = "content_filter"
+	// KindEmptyResponse: upstream returned HTTP 200 with a well-formed stream
+	// or JSON body that contains zero actual content — no delta.content, no
+	// reasoning_content, no tool_calls, and no meaningful finish_reason. This
+	// is the NIM (Provider 18) failure mode: the stream opens, sends ~1-3
+	// chunks with empty choices, then [DONE], producing 0 completion tokens.
+	//
+	// Classification rationale:
+	//   - NOT in IsCredentialFatal: a transient empty burst must not hard-exclude
+	//     the credential — it may succeed on retry.
+	//   - NOT in IsClientBug: the client's request is valid; the upstream is at
+	//     fault.
+	//   - NOT in freeCredentialsTolerateTransient: we WANT circuit
+	//     RecordFailure to fire so recent_success_rate soft-demotes the
+	//     credential, while the non-fatal kind keeps the availability machine
+	//     from marking it 'unavailable'.
+	//   - Handled by the dedicated stream-resumable failover path (content-gate
+	//     returns Resumable=true → executor continues to next candidate), not
+	//     the generic IsRetryable retry loop.
+	KindEmptyResponse ErrorKind = "empty_response"
 )
 
 // contextLengthRe matches upstream error bodies that signal "prompt too

@@ -75,9 +75,15 @@ function handleClick(key: string) {
           <span class="legend-swatch legend-swatch--border" :style="{ borderColor: statusColor(item.key) }" />
           <span class="legend-label">{{ item.name }}</span>
         </span>
-        <!-- 2026-07-14: 探测请求图例（T 角标 + 青色底） -->
-        <span class="legend-item legend-item--status" title="探测请求：出错后主动直连上游验证（T 角标 + 青色卡片）">
-          <span class="legend-probe-badge">T</span>
+        <!-- 2026-07-15: 探测图例与 RequestTile 雷达角标一致 -->
+        <span class="legend-item legend-item--status" title="探测请求：出错后主动直连上游验证（雷达角标 + 青色卡片）">
+          <span class="legend-probe-badge" aria-hidden="true">
+            <svg class="legend-probe-icon" viewBox="0 0 16 16">
+              <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <circle cx="8" cy="8" r="1.6" fill="currentColor" />
+              <path d="M8 2.2v2.2M8 11.6v2.2M2.2 8h2.2M11.6 8h2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+          </span>
           <span class="legend-label">探测</span>
         </span>
       </div>
@@ -177,7 +183,7 @@ function handleClick(key: string) {
   box-shadow: none;
 }
 
-/* 2026-07-14: 探测请求图例角标（与 RequestTile 的 T 角标一致） */
+/* 2026-07-15: 探测图例角标（与 RequestTile 雷达 SVG 一致） */
 .legend-probe-badge {
   display: inline-flex;
   align-items: center;
@@ -185,15 +191,17 @@ function handleClick(key: string) {
   width: 14px;
   height: 14px;
   border-radius: 3px;
-  font-size: 10px;
-  font-weight: 900;
-  line-height: 1;
-  letter-spacing: -0.5px;
   color: #0c1a26;
   background: linear-gradient(180deg, #7dd3fc 0%, #38bdf8 100%);
   border: 1.5px solid #0284c7;
   box-shadow: 0 0 4px rgba(56, 189, 248, 0.6);
   flex-shrink: 0;
+}
+
+.legend-probe-icon {
+  width: 10px;
+  height: 10px;
+  display: block;
 }
 
 .legend-label {

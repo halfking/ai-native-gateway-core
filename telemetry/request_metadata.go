@@ -2,6 +2,8 @@
 package telemetry
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -88,6 +90,25 @@ func MaskAPIKey(key string) string {
 		return "***"
 	}
 	return key[:8] + "***"
+}
+
+// APIKeyFingerprint returns a stable, non-reversible fingerprint for an
+// raw API key: SHA-256 hex truncated to 16 chars (8 bytes).
+//
+// 2026-07-15: Unified the convention previously split across
+// `cmd/gateway-v2` (SHA-256[:16]) and the observability migration comment
+// ("first 8 chars"). We pick SHA-256[:16] for collision-resistance while
+// staying short enough to fit request_context_attrs.api_key_fingerprint
+// VARCHAR(16) without truncation variance.
+//
+// Empty input returns "" — callers distinguish "no key" from a real fingerprint.
+func APIKeyFingerprint(rawKey string) string {
+	rawKey = strings.TrimSpace(rawKey)
+	if rawKey == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(rawKey))
+	return fmt.Sprintf("%x", sum[:8]) // 8 bytes = 16 hex chars
 }
 
 // ExtractAgentName extracts agent name from User-Agent or custom headers

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 )
@@ -30,6 +31,14 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	cfg.MinConns = 2
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
+
+	// 2026-07-15 P0 fix: disable pgx statement cache to prevent stale prepared
+	// statements after schema changes (provider_model_bindings → credential_model_bindings).
+	// When a table is renamed but old prepared statements remain cached in long-lived
+	// connections, queries fail with "relation does not exist". Disabling the cache
+	// forces re-preparation on every query, trading ~5% perf for correctness.
+	// See docs/changelogs/2026-07-15-provider-model-bindings-fix.md for details.
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -2710,6 +2719,25 @@ func (d *DB) ensureCenterOpsSchema(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_isr_instance ON instance_status_reports (instance_id, timestamp DESC);
 		CREATE INDEX IF NOT EXISTS idx_isr_timestamp ON instance_status_reports (timestamp DESC);
+
+		ALTER TABLE gateway_instances
+			ADD COLUMN IF NOT EXISTS instance_token    TEXT,
+			ADD COLUMN IF NOT EXISTS refresh_token     TEXT,
+			ADD COLUMN IF NOT EXISTS refresh_token_issued_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS refresh_token_expires_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS public_key        TEXT,
+			ADD COLUMN IF NOT EXISTS current_version   TEXT,
+			ADD COLUMN IF NOT EXISTS license_key_hash  TEXT,
+			ADD COLUMN IF NOT EXISTS hardware_hash     TEXT,
+			ADD COLUMN IF NOT EXISTS instance_type     TEXT DEFAULT 'standalone',
+			ADD COLUMN IF NOT EXISTS deployment_id     TEXT,
+			ADD COLUMN IF NOT EXISTS replica_count     INT DEFAULT 1;
+		CREATE INDEX IF NOT EXISTS idx_gi_license ON gateway_instances (license_key_hash);
+		CREATE INDEX IF NOT EXISTS idx_gi_deployment ON gateway_instances (deployment_id);
+		CREATE INDEX IF NOT EXISTS idx_gi_refresh_token ON gateway_instances (refresh_token);
+
+		ALTER TABLE instance_heartbeats
+			ADD COLUMN IF NOT EXISTS metrics JSONB;
 	`)
 	if err != nil {
 		return err
@@ -3029,6 +3057,21 @@ func (d *DB) ensureDistributionSchema(ctx context.Context) error {
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
 			UNIQUE (release_version, platform, arch, edition, artifact_name)
 		);
+
+		CREATE TABLE IF NOT EXISTS download_publish_runs (
+			id              BIGSERIAL PRIMARY KEY,
+			release_version TEXT NOT NULL,
+			build_seq       INT NOT NULL DEFAULT 0,
+			status          TEXT NOT NULL DEFAULT 'pending',
+			artifact_count  INT NOT NULL DEFAULT 0,
+			test_passed     BOOLEAN NOT NULL DEFAULT FALSE,
+			log_summary     TEXT,
+			created_by      TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			finished_at     TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_download_publish_runs_created
+			ON download_publish_runs (created_at DESC);
 	`)
 	if err != nil {
 		return err

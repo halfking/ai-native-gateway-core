@@ -6,11 +6,15 @@
 
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useI18n } from 'vue-i18n'
+import PublicPortalLayout from '../components/PublicPortalLayout.vue'
 import {
   getUpgradeStatus,
   checkForUpgrade,
   type UpgradeStatus,
 } from '../api/customer'
+
+const { t } = useI18n()
 
 const status = ref<UpgradeStatus | null>(null)
 const loading = ref(false)
@@ -82,11 +86,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="upgrade-panel" v-loading="loading">
-    <el-card>
-      <template #header>
-        <div class="header-row">
-          <span class="card-title">软件升级</span>
+  <PublicPortalLayout
+    :title="t('public.upgrade.title')"
+    :subtitle="t('public.upgrade.subtitle')"
+    :kicker="t('public.download.activateLink')"
+  >
+    <div v-loading="loading" class="upgrade-panel">
+      <el-card shadow="never" class="pub-card">
+        <template #header>
+          <div class="header-row">
+            <span class="card-title">{{ t('public.upgrade.title') }}</span>
           <div class="header-actions">
             <el-button :loading="checking" @click="manualCheck" type="primary" size="small">
               立即检查
@@ -156,14 +165,13 @@ onBeforeUnmount(() => {
         系统每 30 分钟自动检查一次更新；点击"立即检查"立即触发。
       </div>
     </el-card>
-  </div>
+    </div>
+  </PublicPortalLayout>
 </template>
 
 <style scoped>
 .upgrade-panel {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 24px;
+  width: 100%;
 }
 .header-row {
   display: flex;

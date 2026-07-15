@@ -2,6 +2,7 @@ package identity
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -109,3 +110,53 @@ func TestVirtualMACFormat(t *testing.T) {
 }
 
 func intPtr(n int) *int { return &n }
+
+// TestExtractClientIPUnified 验证 2026-07-15 IP 解析统一：
+// X-Real-IP > X-Forwarded-For[0] > RemoteAddr。原先 identity.extractClientIP
+// 不查 X-Real-IP，与 telemetry.ExtractClientIP 不一致；现已统一。
+func TestExtractClientIPUnified(t *testing.T) {
+	tests := []struct {
+		name       string
+		headers    map[string]string
+		remoteAddr string
+		want       string
+	}{
+		{
+			name:       "X-Real-IP wins over XFF",
+			headers:    map[string]string{"X-Real-IP": "203.0.113.5", "X-Forwarded-For": "10.0.0.5"},
+			remoteAddr: "10.0.0.1:12345",
+			want:       "203.0.113.5",
+		},
+		{
+			name:       "XFF first hop when no X-Real-IP",
+			headers:    map[string]string{"X-Forwarded-For": "203.0.113.10, 10.0.0.5"},
+			remoteAddr: "10.0.0.1:12345",
+			want:       "203.0.113.10",
+		},
+		{
+			name:       "RemoteAddr fallback strips port",
+			headers:    map[string]string{},
+			remoteAddr: "10.0.0.1:12345",
+			want:       "10.0.0.1",
+		},
+		{
+			name:       "no headers no remote",
+			headers:    map[string]string{},
+			remoteAddr: "",
+			want:       "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/test", nil)
+			for k, v := range tt.headers {
+				r.Header.Set(k, v)
+			}
+			r.RemoteAddr = tt.remoteAddr
+			got := extractClientIP(r)
+			if got != tt.want {
+				t.Errorf("extractClientIP() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

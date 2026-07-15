@@ -1,0 +1,5 @@
+# License Authority upstream — injected by scripts/deploy-license-authority-154.sh
+upstream license_authority {
+    server 127.0.0.1:8443 max_fails=3 fail_timeout=10s;
+    keepalive 8;
+}

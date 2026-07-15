@@ -42,6 +42,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/distribution"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/integration"                        //nolint:depguard // clientprofile worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/approval"                            //nolint:depguard // D1: approval config management
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -66,6 +67,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
+	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -82,6 +84,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
+	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/tenantops"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
@@ -359,6 +362,16 @@ func main() {
 			Version:      Version(),
 			StartTime:    processStartedAt,
 		})
+		centeragent.MaybeStart(context.Background(), centeragent.StartupConfig{
+			Pool:         dbConn.Pool(),
+			Version:      Version(),
+			BuildSeq:     BuildSeqInt(),
+			StartTime:    processStartedAt,
+			Region:       os.Getenv("OPS_NODE_REGION"),
+			DataDir:      strings.TrimSpace(os.Getenv("OPS_DATA_DIR")),
+			AuthorityURL: os.Getenv("LICENSE_AUTHORITY_URL"),
+		})
+		go center.MonitorInstances(context.Background(), center.NewPgxStore(dbConn.Pool()), 30*time.Second)
 	}
 
 	// Check if community mode is active
@@ -1002,6 +1015,39 @@ func main() {
 	}
 	if telemetryClient.Enabled() {
 		chatHandler.SetTelemetry(telemetryClient)
+	}
+
+	// 2026-07-15: clientprofile 画像管线接通（消费 EventEmitter → ProfileWorker →
+	// client_profiles / client_behavior_events 表）。Setup 内部启动 RunLoop goroutine。
+	if dbConn != nil && dbConn.Enabled() {
+		pub := bus.NewPGPublisher(dbConn.Pool(), slog.Default())
+		profileBundle, profileErr := integration.SetupClientProfileIntegration(
+			context.Background(),
+			bus.AsPGDB(dbConn.Pool()),
+			nil, // *sql.DB 桥接复用 main pipeline 已有的 nil-safe 模式（同位 detector/checker）
+			pub,
+			integration.ClientProfileLoopConfig{
+				Interval:  5 * time.Second,
+				BatchSize: 10,
+				Logger:    slog.Default(),
+			},
+		)
+		if profileErr == nil && profileBundle != nil {
+			chatHandler.SetProfileEmitter(profileBundle.Emitter)
+			slog.Info("clientprofile: bundle wired into chatHandler",
+				"worker", profileBundle.Worker.Name())
+			defer func() {
+				if profileBundle.Cancel != nil {
+					profileBundle.Cancel()
+				}
+			}()
+		} else {
+			slog.Warn("clientprofile: SetupClientProfileIntegration failed; profile disabled",
+				"error", profileErr)
+		}
+	}
+
+	if telemetryClient.Enabled() {
 		// 2026-06-20: wire telemetry into the executor so that
 		// runAsyncRetry can write success back to request_logs.
 		// Without this, async-retry success leaves the original
@@ -1188,31 +1234,34 @@ func main() {
 	}
 
 	// ── Attachment Extractor (2026-07-01) ───────────────────────────────
-	// 从请求体中提取 base64/data-URI 附件并保存到文件系统。
+	// 从请求体中提取 base64/data-URI 附件并保存到存储后端。
 	// 配置项：
-	//   LLM_GATEWAY_ATTACHMENT_DIR: 存储根目录 (默认 ./data/attachments)
-	//   LLM_GATEWAY_ATTACHMENT_MAX_SIZE: 单文件上限 (默认 10MB)
-	attachmentDir := os.Getenv("LLM_GATEWAY_ATTACHMENT_DIR")
-	if attachmentDir == "" {
-		attachmentDir = "./data/attachments"
+	//   LLM_GATEWAY_STORAGE_TYPE          : "filesystem" | "oss" | "s3" | "minio" | "cloudreve"
+	//                                       （未设置 = filesystem，旧行为）
+	//   LLM_GATEWAY_ATTACHMENT_DIR        : 文件系统后端根目录 (默认 ./data/attachments)
+	//                                       —— 当 STORAGE_TYPE=filesystem 时使用
+	//   LLM_GATEWAY_ATTACHMENT_MAX_SIZE   : 单文件上限（字节，默认 10MB）
+	//   LLM_GATEWAY_OSS_* / S3_* / CLOUDREVE_* : 对应后端的认证/端点变量
+	//                                          （详见 domains/attachments/storage_config.go）
+	//
+	// initAttachmentStorage 是 boot 接线入口：
+	//   - 默认行为不变（filesystem / unset 走 LocalStorageBackend）
+	//   - 显式 opt-in 到 oss / s3 / cloudreve 时走对应后端构造
+	//   - 任何错误退化到 filesystem + Warn，不阻塞启动
+	// 详见 cmd/gateway/attachment_storage_init.go。
+	defaultAttachmentDir := "./data/attachments"
+	if envDir := os.Getenv("LLM_GATEWAY_ATTACHMENT_DIR"); envDir != "" {
+		defaultAttachmentDir = envDir
 	}
-	// attachmentStorage 提升到外层作用域：admin mux 需要它构造下载/列表 handler。
-	// 初始化失败时为 nil，对应的 admin 端点会返回 503（见 admin/attachments_routes.go）。
-	var attachmentStorage *attachments.Storage
-	if storage, err := attachments.NewStorage(attachmentDir); err != nil {
-		slog.Warn("attachment storage init failed, extraction disabled", "error", err, "dir", attachmentDir)
-	} else {
-		attachmentStorage = storage
-		// 配置单文件大小上限
-		if maxSizeStr := os.Getenv("LLM_GATEWAY_ATTACHMENT_MAX_SIZE"); maxSizeStr != "" {
-			if maxSize, parseErr := strconv.ParseInt(maxSizeStr, 10, 64); parseErr == nil && maxSize > 0 {
-				attachmentStorage.MaxSize = maxSize
-			}
-		}
+	attachmentStorage, attachmentBackendType := initAttachmentStorage(defaultAttachmentDir)
+	slog.Info("attachment extractor: storage backend selected",
+		"type", attachmentBackendType,
+		"dir", defaultAttachmentDir)
+	if attachmentStorage != nil {
 		attachmentExtractor := attachments.NewExtractor(attachmentStorage)
 		chatHandler.SetAttachmentExtractor(attachmentExtractor)
 		slog.Info("attachment extractor enabled",
-			"dir", attachmentStorage.BaseDir(),
+			"type", attachmentBackendType,
 			"max_size_mb", attachmentStorage.MaxSize/(1024*1024))
 	}
 
@@ -1974,6 +2023,14 @@ func main() {
 				slog.Info("boardcache wired (telemetry onPersisted)")
 			}
 			slog.Info("boardcache service started")
+		}
+		if dbConn.Pool() != nil && fpSlotRedis != nil && adminHandler != nil {
+			blSvc := ipblocklist.NewService(dbConn.Pool(), fpSlotRedis)
+			if err := blSvc.Warmup(context.Background()); err != nil {
+				slog.Warn("ip blocklist warmup failed", "error", err)
+			}
+			adminHandler.SetIPBlocklist(blSvc)
+			slog.Info("ip blocklist admin wired")
 		}
 
 		// Weekly rollup + auto-tune suggester require writes to
@@ -2902,7 +2959,13 @@ func main() {
 		distOffline.RegisterRoutes(offlinePublicGroup)
 
 		distAdmin.RegisterRoutes(adminGroup.Group("/downloads"))
-		slog.Info("Phase 8: Distribution API enabled (/api/downloads/*, /api/donations/*, /api/admin/downloads/*)")
+		distPublish := distribution.NewPublishAdminAPI(distStore, distCatalog)
+		distPublish.RegisterRoutes(adminGroup.Group("/downloads"))
+
+		artifactRoot := os.Getenv("DOWNLOAD_ARTIFACT_ROOT")
+		distFiles := distribution.NewFileHandler(artifactRoot, distribution.NewTicketSigner(ticketSecret, 10*time.Minute), distStore)
+		distFiles.RegisterRoutes(customerEcho)
+		slog.Info("Phase 8: Distribution API enabled (/api/downloads/*, /api/donations/*, /api/admin/downloads/*, /llm-gateway-go/*)")
 
 		// 将 Echo 挂载到 http.ServeMux
 		mux.Handle("/api/admin/", e)
@@ -2915,6 +2978,7 @@ func main() {
 		mux.Handle("/api/downloads/", customerEcho)
 		mux.Handle("/api/donations/", customerEcho)
 		mux.Handle("/api/public/offline-activation/", customerEcho)
+		mux.Handle("/llm-gateway-go/", customerEcho)
 		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
 	}
 

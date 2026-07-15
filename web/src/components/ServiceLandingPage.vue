@@ -243,11 +243,11 @@ const accentStyle = computed(() =>
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   margin: 0 0 10px;
-  border-radius: 8px;
-  font-size: 17px;
+  border-radius: 10px;
+  font-size: 20px;
   line-height: 1;
   background: color-mix(in srgb, var(--landing-accent) 14%, transparent);
 }
@@ -318,7 +318,7 @@ const accentStyle = computed(() =>
 }
 
 .kx-landing__adv-icon {
-  font-size: 15px;
+  font-size: 18px;
   line-height: 1;
 }
 

@@ -7,6 +7,7 @@
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
+import PublicPortalLayout from '../components/PublicPortalLayout.vue'
 import {
   getLicenseInfo,
   getRuntimeTelemetryPreference,
@@ -112,17 +113,22 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="license-info-view" v-loading="loading">
-    <el-card>
-      <template #header>
-        <div class="header-row">
-          <span class="card-title">{{ t('customer.info.title') }}</span>
-          <div class="header-actions">
-            <el-tag :type="stateColor as any" size="large">{{ stateLabel }}</el-tag>
-            <el-button @click="refresh" :loading="loading" size="small">{{ t('customer.info.refresh') }}</el-button>
+  <PublicPortalLayout
+    :title="t('customer.info.title')"
+    :subtitle="t('public.license.subtitle')"
+    :kicker="t('public.layout.offline')"
+  >
+    <div v-loading="loading" class="license-info-view">
+      <el-card shadow="never" class="pub-card">
+        <template #header>
+          <div class="header-row">
+            <span class="card-title">{{ t('customer.info.title') }}</span>
+            <div class="header-actions">
+              <el-tag :type="stateColor as any" size="large">{{ stateLabel }}</el-tag>
+              <el-button @click="refresh" :loading="loading" size="small">{{ t('customer.info.refresh') }}</el-button>
+            </div>
           </div>
-        </div>
-      </template>
+        </template>
 
       <el-alert
         v-if="info?.state === 'expired'"
@@ -241,15 +247,14 @@ onBeforeUnmount(() => {
           @update:model-value="updateTelemetryPreference"
         />
       </section>
-    </el-card>
-  </div>
+      </el-card>
+    </div>
+  </PublicPortalLayout>
 </template>
 
 <style scoped>
 .license-info-view {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 24px;
+  width: 100%;
 }
 .header-row {
   display: flex;

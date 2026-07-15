@@ -1,7 +1,7 @@
 // public.ts — 公开门户文案（下载 / 捐赠 / 离线激活）
 export default {
   download: {
-    title: '下载 KX Gateway',
+    title: '下载 AI-Native 组织核心网关',
     subtitle: '私有化部署 · 多平台离线包 · 无需注册即可下载',
     version: '当前版本',
     supporters: '位支持者',
@@ -18,9 +18,16 @@ export default {
     ticketFailed: '获取下载链接失败',
     started: '已开始下载',
     platformHint: '选择与您服务器匹配的平台',
+    nextSteps: '下载后的下一步',
+    nextStepInstall: '解压并在服务器执行 llm-gw-installer install 完成部署',
+    nextStepActivate: '安装完成后打开激活向导，在线激活或走离线 activation.req 流程',
+    openSourceTitle: '内核开源 · Git 仓库',
+    openSourceDesc: 'LLM Gateway 数据面与控制面内核开源（Apache 2.0），可审计、可定制、可私有化部署。',
+    copyRepo: '复制仓库地址',
+    gitBranch: '默认分支',
   },
   support: {
-    title: '支持 KX Gateway 开源社区',
+    title: '支持 AI-Native 组织核心网关开源社区',
     subtitle: '让每家企业都用得起的 LLM 网关 — 您的捐赠帮助我们持续维护与改进',
     impactTitle: '您的捐赠将用于',
     impacts: [
@@ -35,7 +42,7 @@ export default {
       custom: { label: '自定义', amount: 0, desc: '随心支持' },
     },
     email: '邮箱（可选，用于收据与致谢名单）',
-    emailPlaceholder: 'you@company.com',
+    emailPlaceholder: "you{'@'}company.com",
     payChannel: '支付方式',
     alipay: '支付宝',
     wechat: '微信支付',
@@ -79,5 +86,13 @@ export default {
     support: '支持我们',
     offline: '离线激活',
     docs: '文档',
+    navAria: '公开门户导航',
+  },
+  license: {
+    subtitle: '查看当前实例绑定的 License 状态、到期时间与设备配额',
+  },
+  upgrade: {
+    title: '软件升级',
+    subtitle: '检查是否有新版本可用；离线包请前往下载页获取',
   },
 }

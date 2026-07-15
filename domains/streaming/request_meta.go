@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	telemetryv1 "github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // RequestLogEntry struct lives here; aliased to avoid clash with /telemetry extractor package
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/ir"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/telemetry"                             //nolint:depguard // canonical IP / agent / protocol extractors
 )
 
 var errBodyTooLarge = errors.New("request body too large")
@@ -23,6 +25,10 @@ const defaultRequestBodyTimeout = 120 * time.Second
 
 // requestAttemptMeta captures request-side facts as early as possible so
 // request_logs rows stay useful even when auth or body read fails later.
+//
+// 2026-07-15 (docs/会话优化v2/07-08):  扩展为客户端感知的统一提取载体。
+// fillAttemptMeta 现在一次性提取全部客户端感知字段（agent/ip/protocol/
+// virtual-*/fingerprint 原材），供 request_context_attrs 侧表消费。
 type requestAttemptMeta struct {
 	APIKeyPrefix    string
 	APIKeyOwnerUser string
@@ -32,6 +38,20 @@ type requestAttemptMeta struct {
 	RequestMode     string
 	KeyStatus       string // missing | valid | invalid_<db-status> | invalid_unknown
 	LookupKeyID     *int
+
+	// ─── 客户端感知（2026-07-15）─── 由 fillAttemptMeta 填充，供侧表写入。
+	VirtualClientID string                  // "vc-" + hash[:16]
+	VirtualIP       string                  // 10.x.x.x 派生 IP
+	VirtualMAC      string                  // 02:xx:xx:xx:xx:xx
+	AgentName       string                  // claude-code/cursor/curl/...
+	AgentType       string                  // web/cli/api/bot/mobile/unknown
+	ClientIP        string                  // X-Real-IP > XFF[0] > RemoteAddr
+	ForwardedFor    string                  // 完整 XFF 链
+	APIKeyFingerprint string                // SHA-256(rawKey)[:16]，在认证阶段设置
+	ClientProtocol  string                  // openai-chat/anthropic-messages/gemini-generate
+	ProjectID       string                  // X-Gw-Project-Id
+	SourceChannel   string                  // web/api/mcp/agent
+	FingerprintRaw  map[string]any          // 原始指纹字段（取证原材）
 }
 
 // bufferRequestBody reads the body into memory and replaces r.Body so later
@@ -152,6 +172,46 @@ func (h *ChatHandler) fillAttemptMeta(r *http.Request, keyInfo *authentication.K
 	if meta.IdentityHash == "" {
 		meta.IdentityHash = clientID.ShortID()
 	}
+
+	// 2026-07-15: 客户端感知字段——一次性从 *http.Request 提取，供侧表消费。
+	// 复用 telemetry.Extract*（原死代码）+ identity.ClientIdentity（已算出但未落库）。
+	if meta.VirtualClientID == "" {
+		meta.VirtualClientID = clientID.VirtualClientID
+	}
+	if meta.VirtualIP == "" {
+		meta.VirtualIP = clientID.VirtualIP
+	}
+	if meta.VirtualMAC == "" {
+		meta.VirtualMAC = clientID.VirtualMAC
+	}
+	if meta.AgentName == "" {
+		meta.AgentName = telemetry.ExtractAgentName(r)
+	}
+	if meta.AgentType == "" {
+		meta.AgentType = telemetry.ExtractAgentType(r)
+	}
+	if meta.ClientIP == "" {
+		meta.ClientIP = telemetry.ExtractClientIP(r)
+	}
+	if meta.ForwardedFor == "" {
+		meta.ForwardedFor = telemetry.ExtractForwardedFor(r)
+	}
+	if meta.ClientProtocol == "" {
+		// body 为空时 DetectProtocolByURL 退回 URL path 路由（openai-chat/
+		// anthropic-messages/gemini-generate）。调用方在 body 已知后可覆盖。
+		if proto, _, err := ir.DetectProtocolByURL(nil, r.URL.Path); err == nil && proto != "" {
+			meta.ClientProtocol = proto
+		}
+	}
+	if meta.ProjectID == "" {
+		meta.ProjectID = strings.TrimSpace(r.Header.Get("X-Gw-Project-Id"))
+	}
+	if meta.SourceChannel == "" {
+		meta.SourceChannel = sourceChannelFromRequest(r)
+	}
+	if meta.FingerprintRaw == nil {
+		meta.FingerprintRaw = fingerprintRawMap(clientID.Fingerprint)
+	}
 }
 
 func (h *ChatHandler) resolveKeyMeta(ctx context.Context, rawKey string, keyInfo *authentication.KeyInfo, meta *requestAttemptMeta) {
@@ -170,6 +230,9 @@ func (h *ChatHandler) resolveKeyMeta(ctx context.Context, rawKey string, keyInfo
 		id := keyInfo.ID
 		meta.LookupKeyID = &id
 		meta.KeyStatus = "valid"
+		if meta.APIKeyFingerprint == "" {
+			meta.APIKeyFingerprint = telemetry.APIKeyFingerprint(rawKey)
+		}
 		return
 	}
 	if strings.TrimSpace(rawKey) == "" {
@@ -214,7 +277,45 @@ func applicationIDForLog(keyInfo *authentication.KeyInfo) *int {
 	return appID(keyInfo)
 }
 
-func enrichRequestLogFromMeta(reqLog *telemetry.RequestLogEntry, keyInfo *authentication.KeyInfo, meta *requestAttemptMeta) {
+// sourceChannelFromRequest derives the request source channel for the side
+// table. Priority: explicit X-Client-Channel header > agent_type inference.
+// Returns web/api/mcp/agent, or "" when nothing is available.
+func sourceChannelFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if ch := strings.TrimSpace(r.Header.Get("X-Client-Channel")); ch != "" {
+		return ch
+	}
+	switch telemetry.ExtractAgentType(r) {
+	case "web", "mobile":
+		return "web"
+	case "cli":
+		return "agent"
+	case "bot":
+		return "api"
+	case "api":
+		return "api"
+	}
+	return ""
+}
+
+// fingerprintRawMap serialises the raw identity.ClientFingerprint into a
+// map for the side table's fingerprint_raw JSONB column (forensic material).
+func fingerprintRawMap(fp identity.ClientFingerprint) map[string]any {
+	return map[string]any{
+		"device_seed":     fp.DeviceSeed,
+		"machine_id":      fp.MachineID,
+		"runtime_name":    fp.RuntimeName,
+		"runtime_version": fp.RuntimeVersion,
+		"os_name":         fp.OSName,
+		"os_arch":         fp.OSArch,
+		"user_agent":      fp.UserAgent,
+		"client_profile":  fp.ClientProfile,
+	}
+}
+
+func enrichRequestLogFromMeta(reqLog *telemetryv1.RequestLogEntry, keyInfo *authentication.KeyInfo, meta *requestAttemptMeta) {
 	if reqLog == nil || meta == nil {
 		return
 	}
@@ -260,7 +361,7 @@ func keyMetaFromKeyInfo(keyInfo *authentication.KeyInfo) (prefix, owner, appCode
 }
 
 // applyKeyInfoToRequestLog fills api key display fields on a telemetry row.
-func applyKeyInfoToRequestLog(reqLog *telemetry.RequestLogEntry, keyInfo *authentication.KeyInfo) {
+func applyKeyInfoToRequestLog(reqLog *telemetryv1.RequestLogEntry, keyInfo *authentication.KeyInfo) {
 	if reqLog == nil || keyInfo == nil {
 		return
 	}

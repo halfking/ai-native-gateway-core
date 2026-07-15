@@ -91,11 +91,12 @@ async function copyResponse() {
 </script>
 
 <template>
-  <PublicPortalLayout>
+  <PublicPortalLayout
+    :title="t('public.offline.title')"
+    :subtitle="t('public.offline.subtitle')"
+    :kicker="t('public.layout.offline')"
+  >
     <div class="off-page">
-      <h1>{{ t('public.offline.title') }}</h1>
-      <p class="off-sub">{{ t('public.offline.subtitle') }}</p>
-
       <el-steps :active="requestId ? 2 : 1" finish-status="success" simple class="off-steps">
         <el-step :title="t('public.offline.step1')" />
         <el-step :title="t('public.offline.step2')" />
@@ -126,7 +127,7 @@ async function copyResponse() {
         </el-button>
       </el-form>
 
-      <el-card v-if="requestId" shadow="never" class="off-status">
+      <el-card v-if="requestId" shadow="never" class="pub-card off-status">
         <p><strong>{{ t('public.offline.requestId') }}:</strong> <code>{{ requestId }}</code></p>
         <p><strong>{{ t('public.offline.status') }}:</strong> {{ status }}</p>
         <p v-if="rejectReason" class="off-reject">{{ rejectReason }}</p>
@@ -139,7 +140,7 @@ async function copyResponse() {
         </div>
       </el-card>
 
-      <el-card v-if="responseJson" shadow="never" class="off-resp">
+      <el-card v-if="responseJson" shadow="never" class="pub-card off-resp">
         <pre>{{ responseJson }}</pre>
         <el-button @click="copyResponse">{{ t('public.offline.copyResponse') }}</el-button>
       </el-card>
@@ -148,8 +149,7 @@ async function copyResponse() {
 </template>
 
 <style scoped>
-.off-page h1 { margin: 0 0 0.5rem; }
-.off-sub, .off-hint { color: #64748b; }
+.off-hint { color: #94a3b8; }
 .off-steps { margin: 1.5rem 0; }
 .off-upload { margin-top: 0.5rem; }
 .off-status, .off-resp { margin-top: 1.5rem; }
@@ -158,9 +158,10 @@ async function copyResponse() {
 .off-resp pre {
   max-height: 240px;
   overflow: auto;
-  background: #f1f5f9;
+  background: rgba(15, 23, 42, 0.75);
   padding: 1rem;
   border-radius: 6px;
   font-size: 0.8rem;
+  color: #cbd5e1;
 }
 </style>

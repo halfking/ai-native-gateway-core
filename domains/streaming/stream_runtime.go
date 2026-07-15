@@ -16,6 +16,10 @@ type streamRuntimeConfig struct {
 	firstByteTimeout         time.Duration
 	keepaliveInterval        time.Duration
 	enablePreStreamKeepalive bool
+	// 2026-07-15: content-gate buffers the first few chunks before writing
+	// to the client, so the executor can transparently failover an empty
+	// upstream stream (notably NIM) before the client sees [DONE].
+	enableEmptyStreamGate bool
 }
 
 var streamConfigStore atomic.Pointer[config.Store]
@@ -26,6 +30,7 @@ func SetConfigStore(store *config.Store) {
 
 func currentStreamRuntimeConfig() streamRuntimeConfig {
 	envKeepaliveEnabled := envBool("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE", false)
+	envEmptyGateEnabled := envBool("LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE", true)
 	if store := streamConfigStore.Load(); store != nil {
 		if cfg := store.Get(); cfg != nil {
 			return streamRuntimeConfig{
@@ -35,6 +40,7 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 				firstByteTimeout:         durationSecondsOrDefault(cfg.FirstByteTimeout, 30*time.Second),
 				keepaliveInterval:        durationSecondsOrDefault(cfg.KeepaliveInterval, 15*time.Second),
 				enablePreStreamKeepalive: cfg.EnablePreStreamKeepalive || envKeepaliveEnabled,
+				enableEmptyStreamGate:    cfg.EnableEmptyStreamGate && envEmptyGateEnabled,
 			}
 		}
 	}
@@ -45,6 +51,7 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 		firstByteTimeout:         envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 30*time.Second),
 		keepaliveInterval:        envDurationSeconds("LLM_GATEWAY_KEEPALIVE_INTERVAL", 15*time.Second),
 		enablePreStreamKeepalive: envKeepaliveEnabled,
+		enableEmptyStreamGate:    envEmptyGateEnabled,
 	}
 }
 
