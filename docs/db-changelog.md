@@ -155,3 +155,10 @@
 | 410 | `410_ip_blocklist.sql` |
 | 411 | `411_ops_node_registrations.sql` |
 
+## 2026-07-15T15:24:40Z — deploy 245 build_seq 1063 (db7f4d68)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+
