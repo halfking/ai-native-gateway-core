@@ -26,7 +26,10 @@ mkdir -p "$OUT_DIR"
 artifact_count=0
 summary=""
 
-if [[ "${BUILD_MULTI_PLATFORM:-1}" == "1" ]]; then
+if [[ -f "$OUT_DIR/SHA256SUMS" && "${SKIP_BUILD:-0}" == "1" ]]; then
+  artifact_count=$(wc -l <"$OUT_DIR/SHA256SUMS" | tr -d ' ')
+  summary="DB sync only — artifacts already in $OUT_DIR"
+elif [[ "${BUILD_MULTI_PLATFORM:-1}" == "1" ]]; then
   build_json=$(bash "$SCRIPT_DIR/build-offline-packages.sh" "$GIT_TAG" --out "$OUT_DIR" 2>&1 | tail -1)
   artifact_count=$(python3 -c "import json;print(json.load(open(0))['artifact_count'])" <<<"$build_json" 2>/dev/null || echo 0)
   summary=$(python3 -c "import json;print(json.load(open(0))['summary'])" <<<"$build_json" 2>/dev/null || echo "built packages in $OUT_DIR")

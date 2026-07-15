@@ -44,8 +44,8 @@ resolve_installer() {
     local out
     out="$(mktemp -d)/llm-gw-installer"
     echo "[one-click] building installer for ${os}/${arch}..." >&2
-    (cd "$(repo_root)" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-      go build -trimpath -ldflags="-s -w" -o "$out" ./installer/cmd/llm-gw-installer)
+    (cd "$(repo_root)/installer" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+      go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/llm-gw-installer)
     chmod +x "$out"
     printf '%s\n' "$out"
     return 0

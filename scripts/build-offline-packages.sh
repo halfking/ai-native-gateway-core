@@ -39,6 +39,7 @@ if [[ -z "$OUT_DIR" ]]; then
   OUT_DIR="${DOWNLOAD_ARTIFACT_ROOT:-$ROOT/dist/offline}/v${VERSION}"
 fi
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 if [[ "$SKIP_WEB" != "true" ]]; then
   echo "[build] frontend..."
@@ -64,14 +65,18 @@ build_one() {
   mkdir -p "$work/bin" "$work/web" "$work/sql/baseline"
 
   echo "[build] ${goos}/${goarch} gateway..."
-  CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    go build -trimpath -ldflags="-s -w" -o "$work/bin/gateway" ./cmd/gateway
+  if [[ "$goos" == "windows" ]]; then
+    echo "[build] skip gateway binary on windows (compose uses container image)"
+  else
+    CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+      go build -trimpath -ldflags="-s -w" -o "$work/bin/gateway" ./cmd/gateway
+  fi
 
   local inst="llm-gw-installer"
   [[ "$goos" == "windows" ]] && inst="llm-gw-installer.exe"
   echo "[build] ${goos}/${goarch} installer..."
-  CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    go build -trimpath -ldflags="-s -w" -o "$work/bin/$inst" ./installer/cmd/llm-gw-installer
+  (cd "$ROOT/installer" && CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+    go build -trimpath -ldflags="-s -w" -o "$work/bin/$inst" ./cmd/llm-gw-installer)
 
   cp -a web/dist/. "$work/web/"
   cp -a version.json "$work/version.json"
@@ -83,7 +88,7 @@ build_one() {
   local inst_root="llm-gw-installer-${goos}-${goarch}"
   [[ "$goos" == "windows" ]] && inst_root="${inst_root}.exe"
   cp -a "$work/bin/$inst" "$work/$inst_root"
-  [[ "$goos" != "windows" ]] && cp -a "$work/bin/gateway" "$work/gateway"
+  [[ "$goos" != "windows" && -f "$work/bin/gateway" ]] && cp -a "$work/bin/gateway" "$work/gateway"
 
   cat >"$work/INSTALL.md" <<EOF
 # LLM Gateway ${GIT_TAG} — offline (${goos}/${goarch})

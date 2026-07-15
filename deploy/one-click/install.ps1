@@ -34,11 +34,11 @@ function Find-Installer([string]$Root) {
   if (Get-Command go -ErrorAction SilentlyContinue) {
     $out = Join-Path $env:TEMP "llm-gw-installer.exe"
     Write-Host "[one-click] building installer..."
-    Push-Location $RepoRoot
+    Push-Location (Join-Path $RepoRoot "installer")
     $env:CGO_ENABLED = "0"
     $env:GOOS = "windows"
     $env:GOARCH = $Arch
-    go build -trimpath -ldflags="-s -w" -o $out ./installer/cmd/llm-gw-installer
+    go build -trimpath -ldflags="-s -w" -o $out ./cmd/llm-gw-installer
     Pop-Location
     return $out
   }
