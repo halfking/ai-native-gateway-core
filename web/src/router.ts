@@ -72,6 +72,7 @@ const OpsOverviewView = () => import('./views/ops/OpsOverviewView.vue')
 const LicenseManagementView = () => import('./views/ops/LicenseManagementView.vue')
 const FaultManagementView = () => import('./views/ops/FaultManagementView.vue')
 const AutoUpdateView = () => import('./views/ops/AutoUpdateView.vue')
+const DistributionReleaseView = () => import('./views/ops/DistributionReleaseView.vue')
 const CenterOpsView = () => import('./views/ops/CenterOpsView.vue')
 const VibeCodingView = () => import('./views/ops/VibeCodingView.vue')
 const TenantLicenseView = () => import('./views/tenant/TenantLicenseView.vue')
@@ -232,6 +233,7 @@ export const router = createRouter({
     { path: '/ops',                redirect: '/ops/overview' },
     { path: '/ops/overview',       component: OpsOverviewView, meta: { requiresSuper: true } },
     { path: '/ops/licenses',       component: LicenseManagementView, meta: { requiresSuper: true } },
+    { path: '/ops/downloads',      component: DistributionReleaseView, meta: { requiresSuper: true } },
     { path: '/ops/faults',         component: FaultManagementView, meta: { requiresSuper: true } },
     { path: '/ops/autoupdate',     component: AutoUpdateView, meta: { requiresSuper: true } },
     { path: '/ops/center',         component: CenterOpsView, meta: { requiresSuper: true } },

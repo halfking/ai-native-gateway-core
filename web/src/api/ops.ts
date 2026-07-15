@@ -424,6 +424,30 @@ export async function upsertReleaseArtifact(data: ReleaseArtifact): Promise<Rele
   return req('POST', '/api/admin/downloads/artifacts', data)
 }
 
+export interface PublishRun {
+  id: number
+  release_version: string
+  build_seq: number
+  status: string
+  artifact_count: number
+  test_passed: boolean
+  log_summary?: string
+  created_by?: string
+  created_at: string
+  finished_at?: string
+}
+
+export async function getPublishRuns(limit = 20): Promise<{ items: PublishRun[] }> {
+  return req('GET', `/api/admin/downloads/publish-runs?limit=${limit}`)
+}
+
+export async function publishDownloadRelease(data: {
+  version?: string
+  build_seq?: number
+}): Promise<{ status: string; summary: string; run: PublishRun }> {
+  return req('POST', '/api/admin/downloads/publish', data)
+}
+
 export interface OpsAlert {
   id: string
   severity: string

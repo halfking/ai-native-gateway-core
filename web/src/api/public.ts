@@ -19,6 +19,9 @@ export interface DownloadCatalog {
   release_date?: string
   items: CatalogItem[]
   supporters: number
+  git_repo_url?: string
+  git_branch?: string
+  docs_url?: string
 }
 
 export interface DownloadTicket {

@@ -2916,7 +2916,13 @@ func main() {
 		distOffline.RegisterRoutes(offlinePublicGroup)
 
 		distAdmin.RegisterRoutes(adminGroup.Group("/downloads"))
-		slog.Info("Phase 8: Distribution API enabled (/api/downloads/*, /api/donations/*, /api/admin/downloads/*)")
+		distPublish := distribution.NewPublishAdminAPI(distStore, distCatalog)
+		distPublish.RegisterRoutes(adminGroup.Group("/downloads"))
+
+		artifactRoot := os.Getenv("DOWNLOAD_ARTIFACT_ROOT")
+		distFiles := distribution.NewFileHandler(artifactRoot, distribution.NewTicketSigner(ticketSecret, 10*time.Minute), distStore)
+		distFiles.RegisterRoutes(customerEcho)
+		slog.Info("Phase 8: Distribution API enabled (/api/downloads/*, /api/donations/*, /api/admin/downloads/*, /llm-gateway-go/*)")
 
 		// 将 Echo 挂载到 http.ServeMux
 		mux.Handle("/api/admin/", e)
@@ -2929,6 +2935,7 @@ func main() {
 		mux.Handle("/api/downloads/", customerEcho)
 		mux.Handle("/api/donations/", customerEcho)
 		mux.Handle("/api/public/offline-activation/", customerEcho)
+		mux.Handle("/llm-gateway-go/", customerEcho)
 		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
 	}
 

@@ -21,6 +21,10 @@ export default {
     nextSteps: '下载后的下一步',
     nextStepInstall: '解压并在服务器执行 llm-gw-installer install 完成部署',
     nextStepActivate: '安装完成后打开激活向导，在线激活或走离线 activation.req 流程',
+    openSourceTitle: '内核开源 · Git 仓库',
+    openSourceDesc: 'LLM Gateway 数据面与控制面内核开源（Apache 2.0），可审计、可定制、可私有化部署。',
+    copyRepo: '复制仓库地址',
+    gitBranch: '默认分支',
   },
   support: {
     title: '支持 AI-Native 组织核心网关开源社区',

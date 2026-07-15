@@ -85,13 +85,15 @@ function skip() {
 </script>
 
 <template>
-  <PublicPortalLayout>
+  <PublicPortalLayout
+    :title="t('public.support.title')"
+    :subtitle="t('public.support.subtitle')"
+    :kicker="t('public.layout.support')"
+  >
     <div class="sup-page">
-      <h1>{{ t('public.support.title') }}</h1>
-      <p class="sup-sub">{{ t('public.support.subtitle') }}</p>
       <p class="sup-count">{{ t('public.support.supporterCount', { n: supporterCount }) }}</p>
 
-      <el-card shadow="never" class="sup-impact">
+      <el-card shadow="never" class="pub-card sup-impact">
         <h3>{{ t('public.support.impactTitle') }}</h3>
         <ul>
           <li v-for="(line, i) in impacts" :key="i">{{ line }}</li>
@@ -103,7 +105,7 @@ function skip() {
           v-for="tier in tiers"
           :key="tier.key"
           shadow="hover"
-          class="sup-tier"
+          class="pub-card sup-tier"
           :class="{ 'sup-tier--active': selectedTier === tier.key }"
           @click="selectedTier = tier.key"
         >
@@ -144,7 +146,7 @@ function skip() {
         <el-button size="large" @click="skip">{{ t('public.support.skipBtn') }}</el-button>
       </div>
 
-      <el-card v-if="orderNo" shadow="never" class="sup-payment">
+      <el-card v-if="orderNo" shadow="never" class="pub-card sup-payment">
         <p>{{ paymentHint }}</p>
         <img v-if="qrUrl" :src="qrUrl" alt="QR" class="sup-qr" />
         <template v-if="stubMode">
@@ -158,8 +160,7 @@ function skip() {
 </template>
 
 <style scoped>
-.sup-page h1 { margin: 0 0 0.5rem; font-size: 1.75rem; }
-.sup-sub, .sup-count, .sup-note { color: #64748b; }
+.sup-count, .sup-note { color: #94a3b8; }
 .sup-impact ul { margin: 0.5rem 0 0; padding-left: 1.25rem; }
 .sup-tiers { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.75rem; margin: 1.5rem 0; }
 .sup-tier { cursor: pointer; text-align: center; transition: border-color 0.2s; }

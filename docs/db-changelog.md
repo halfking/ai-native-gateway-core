@@ -5,6 +5,14 @@
 
 ---
 
+## 2026-07-15 — download publish runs
+
+| Migration | File |
+|-----------|------|
+| 407 | `407_download_publish_runs.sql` |
+
+---
+
 ## 2026-07-14T19:57:33Z — deploy 245 build_seq 1030 (4c445c1d)
 
 | Migration | File |
@@ -94,6 +102,15 @@
 | 406 | `406_recent_success_rate_read_hot.sql` |
 
 ## 2026-07-15T02:50:12Z — deploy 154 build_seq 1042 (54fd632f)
+
+| Migration | File |
+|-----------|------|
+| 403 | `403_runtime_alert_events.sql` |
+| 404 | `404_partition_autovacuum_analyze.sql` |
+| 405 | `405_glm52_promote_per_token_to_token_plan.sql` |
+| 406 | `406_recent_success_rate_read_hot.sql` |
+
+## 2026-07-15T03:06:21Z — deploy 245 build_seq 1044 (93404bc3)
 
 | Migration | File |
 |-----------|------|

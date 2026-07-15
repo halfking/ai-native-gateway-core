@@ -55,6 +55,7 @@ export default {
     chat: '对话',
     opsOverview: '运维概览',
     opsLicenses: 'License管理',
+    opsDownloads: '下载发版',
     opsFaults: '故障管理',
     opsAutoUpdate: '自动更新',
     opsCenter: '中心运维',

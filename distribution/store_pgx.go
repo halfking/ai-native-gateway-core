@@ -257,6 +257,46 @@ func (s *PgxStore) UpsertArtifact(ctx context.Context, a *ReleaseArtifact) error
 	return err
 }
 
+func (s *PgxStore) CreatePublishRun(ctx context.Context, run *PublishRun) error {
+	return s.pool.QueryRow(ctx, `
+		INSERT INTO download_publish_runs (release_version, build_seq, status, artifact_count, test_passed, log_summary, created_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		RETURNING id, created_at
+	`, run.ReleaseVersion, run.BuildSeq, run.Status, run.ArtifactCount, run.TestPassed, run.LogSummary, run.CreatedBy,
+	).Scan(&run.ID, &run.CreatedAt)
+}
+
+func (s *PgxStore) UpdatePublishRun(ctx context.Context, run *PublishRun) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE download_publish_runs SET
+			status = $2, artifact_count = $3, test_passed = $4, log_summary = $5, finished_at = $6
+		WHERE id = $1
+	`, run.ID, run.Status, run.ArtifactCount, run.TestPassed, run.LogSummary, run.FinishedAt)
+	return err
+}
+
+func (s *PgxStore) ListPublishRuns(ctx context.Context, limit int) ([]PublishRun, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, release_version, build_seq, status, artifact_count, test_passed,
+		       COALESCE(log_summary, ''), COALESCE(created_by, ''), created_at, finished_at
+		FROM download_publish_runs ORDER BY created_at DESC LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PublishRun
+	for rows.Next() {
+		var r PublishRun
+		if err := rows.Scan(&r.ID, &r.ReleaseVersion, &r.BuildSeq, &r.Status, &r.ArtifactCount,
+			&r.TestPassed, &r.LogSummary, &r.CreatedBy, &r.CreatedAt, &r.FinishedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ReleaseCatalogProvider reads latest published release from autoupdate releases table.
 type ReleaseCatalogProvider struct {
 	pool *pgxpool.Pool
