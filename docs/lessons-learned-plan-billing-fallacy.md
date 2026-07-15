@@ -69,7 +69,7 @@ WHEN c.plan_type IN ('token_plan', 'code_plan', 'agent_plan')
 
 **正确做法**：
 - 确认每个字段的业务含义和来源
-- billing_mode 来自 provider_model_bindings（采购侧）
+- billing_mode 来自 credential_model_bindings（采购侧）
 - plan_type 来自 credentials（销售侧）
 - 两者独立，不需要一致性
 

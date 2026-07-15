@@ -224,6 +224,18 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// Request/response bodies are only needed for debugging; older than
 	// lifecycle.request_logs_bodies_ttl_days (default 7d) get DROP'd.
 	pm.dropOldRequestLogsBodiesPartitions(ctx)
+
+	// 6. 2026-07-15: node_probe_runs audit-table TTL cleanup (every tick).
+	// Append-only audit table with no partition strategy; without this it
+	// grows unboundedly. Default 14d via lifecycle.node_probe_runs_ttl_days.
+	// Does NOT touch node_probe_state (the upsert state machine).
+	pm.cleanupOldNodeProbeRuns(ctx)
+
+	// 7. 2026-07-15: request_context_attrs side-table TTL cleanup (every
+	// tick). One row per business request, no partition strategy; grows at
+	// the same rate as request_logs. Default 7d via
+	// lifecycle.request_context_attrs_ttl_days.
+	pm.cleanupOldRequestContextAttrs(ctx)
 }
 
 // dropOldStatePartitions calls the SQL helper
@@ -338,6 +350,67 @@ func (pm *PartitionManager) cleanupOldModelProbeRuns(ctx context.Context) {
 	n := tag.RowsAffected()
 	if n > 0 {
 		slog.Info("partition_manager: cleaned model_probe_runs_hot",
+			"deleted_rows", n, "retention_days", retentionDays)
+	}
+}
+
+// cleanupOldNodeProbeRuns deletes audit rows from node_probe_runs older
+// than the configured TTL. node_probe_runs is an append-only audit table
+// (one row per probe attempt) and has no partition strategy, so without
+// this cleanup it grows unboundedly. The sibling node_probe_state table
+// is the upsert state machine and is intentionally NOT touched here.
+// Retention: lifecycle.node_probe_runs_ttl_days (default 14, hot-reloadable).
+// Uses the existing idx_node_probe_runs_started index on started_at.
+func (pm *PartitionManager) cleanupOldNodeProbeRuns(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.node_probe_runs_ttl_days", 14)
+	if retentionDays < 1 {
+		retentionDays = 14
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	tag, err := pm.db.Exec(timeoutCtx,
+		"DELETE FROM node_probe_runs WHERE started_at < now() - ($1 || ' days')::interval",
+		retentionDays)
+	if err != nil {
+		slog.Error("partition_manager: node_probe_runs cleanup failed",
+			"retention_days", retentionDays, "error", err)
+		return
+	}
+	n := tag.RowsAffected()
+	if n > 0 {
+		slog.Info("partition_manager: cleaned node_probe_runs",
+			"deleted_rows", n, "retention_days", retentionDays)
+	}
+}
+
+// cleanupOldRequestContextAttrs deletes rows from request_context_attrs
+// older than the configured TTL. This side table stores per-request
+// observability attributes (one row per business request) and has no
+// partition strategy, so it grows at the same rate as request_logs.
+// Retention: lifecycle.request_context_attrs_ttl_days (default 7,
+// hot-reloadable). Backed by idx_rca_ts (added in migration 412).
+func (pm *PartitionManager) cleanupOldRequestContextAttrs(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.request_context_attrs_ttl_days", 7)
+	if retentionDays < 1 {
+		retentionDays = 7
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	tag, err := pm.db.Exec(timeoutCtx,
+		"DELETE FROM request_context_attrs WHERE ts < now() - ($1 || ' days')::interval",
+		retentionDays)
+	if err != nil {
+		slog.Error("partition_manager: request_context_attrs cleanup failed",
+			"retention_days", retentionDays, "error", err)
+		return
+	}
+	n := tag.RowsAffected()
+	if n > 0 {
+		slog.Info("partition_manager: cleaned request_context_attrs",
 			"deleted_rows", n, "retention_days", retentionDays)
 	}
 }
