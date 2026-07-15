@@ -11,6 +11,7 @@ import LanguageSelector from './components/LanguageSelector.vue'
 import SystemStatusIndicator from './components/SystemStatusIndicator.vue'
 import SystemHealthBadge from './components/SystemHealthBadge.vue'
 import UpgradeBanner from './components/UpgradeBanner.vue'
+import GuestHeader from './components/GuestHeader.vue'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
 import { useNavAccordion } from './composables/useNavAccordion'
@@ -34,9 +35,21 @@ const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
 const isTenantPortal = computed(() => !isPlatformOps.value)
 
-/** Public download/donation portal — always full-page, no app chrome */
-const PUBLIC_PORTAL_PATHS = ['/download', '/support', '/offline-activation']
-const isPublicPortalRoute = computed(() => PUBLIC_PORTAL_PATHS.includes(route.path))
+const PUBLIC_GUEST_PATHS = new Set([
+  '/',
+  '/login',
+  '/forbidden',
+  '/activate',
+  '/license',
+  '/upgrade',
+  '/download',
+  '/support',
+  '/offline-activation',
+])
+
+function isGuestPublicRoute(path: string) {
+  return PUBLIC_GUEST_PATHS.has(path)
+}
 
 onMounted(async () => {
   // 2026-07-10: Auth hydration — probe /api/auth/me if JWT not already in localStorage.
@@ -49,8 +62,7 @@ onMounted(async () => {
   // /license, /upgrade). The activation wizard must remain reachable without a
   // login, and the API client's 401 handler would otherwise trigger a redirect
   // to /login before App.vue's own redirect-suppression runs.
-  const publicPaths = ['/activate', '/license', '/upgrade', ...PUBLIC_PORTAL_PATHS]
-  const onPublicRoute = publicPaths.includes(route.path)
+  const onPublicRoute = route.meta.public === true || isGuestPublicRoute(route.path)
   try {
     if (!onPublicRoute && !store.jwtToken && !store.apiKey) {
       // No JWT in localStorage, no API key — check if cookie is still valid
@@ -70,7 +82,7 @@ onMounted(async () => {
     // else: store.jwtToken or store.apiKey already present → authenticated
   } finally {
     markAuthHydrated()
-    if (!isLoggedIn.value && !publicPaths.includes(route.path)) {
+    if (!isLoggedIn.value && !onPublicRoute) {
       router.replace({ path: '/', query: { login: '1', redirect: route.fullPath } })
     }
   }
@@ -235,9 +247,6 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
     <div class="auth-loading-spinner" />
     <div class="auth-loading-text">{{ t('login.checking') || '正在检测登录状态…' }}</div>
   </div>
-  <div v-else-if="isPublicPortalRoute" class="public-portal-shell">
-    <RouterView />
-  </div>
   <div v-else-if="isLoggedIn" class="app-layout" :class="{ 'sidebar-collapsed': collapsed }">
     <aside class="sidebar">
       <div class="sidebar-logo">
@@ -364,20 +373,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
     </main>
   </div>
   <div v-else class="guest-layout">
-    <header class="guest-header">
-      <div class="guest-brand">
-        <img
-          src="/logo-icon-dark.png"
-          height="36"
-          alt="开轩启圭 Qigui · AI-Native LLM Gateway"
-          class="guest-brand-img"
-        />
-      </div>
-      <div class="guest-header-right">
-        <LanguageSelector />
-        <button type="button" class="btn btn-primary btn-sm guest-login-btn" @click="openLogin">{{ t('login.submit') }}</button>
-      </div>
-    </header>
+    <GuestHeader @login="openLogin" />
     <main class="guest-main">
       <UpgradeBanner />
       <RouterView />
@@ -389,9 +385,6 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
 
 <style scoped>
 /* 2026-07-09: 首次进入时的 auth 探测加载中状态 */
-.public-portal-shell {
-  min-height: 100vh;
-}
 .auth-loading {
   display: flex;
   flex-direction: column;
@@ -856,46 +849,6 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
   background: var(--bg);
 }
 
-.guest-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border);
-  background: var(--sidebar);
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-
-.guest-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.guest-brand-img {
-  display: block;
-  height: 28px;
-  width: auto;
-}
-
-.guest-header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
-  margin-left: auto;
-}
-
-.guest-login-btn {
-  flex-shrink: 0;
-}
-
 .guest-main {
   flex: 1;
   overflow-y: auto;
@@ -920,8 +873,5 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
     font-size: 10px;
   }
 
-  .guest-header {
-    padding: 12px 16px;
-  }
 }
 </style>

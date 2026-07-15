@@ -3,9 +3,12 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import ServiceLandingPage from '../components/ServiceLandingPage.vue'
+import DeployFlowSection from '../components/DeployFlowSection.vue'
+import { useLoginModal } from '../composables/useLoginModal'
 
 const { t, tm } = useI18n()
 const router = useRouter()
+const { openLogin } = useLoginModal()
 
 const heroPoints = computed(() => tm('landing.heroPoints') as string[])
 
@@ -55,25 +58,25 @@ const features = computed(() => [
 ])
 
 const advantages = computed(() => [
-  { 
-    icon: '🌐', 
-    title: t('landing.advantages.openSource.title'), 
-    description: t('landing.advantages.openSource.description') 
+  {
+    icon: '🌐',
+    title: t('landing.advantages.openSource.title'),
+    description: t('landing.advantages.openSource.description'),
   },
-  { 
-    icon: '🔒', 
-    title: t('landing.advantages.private.title'), 
-    description: t('landing.advantages.private.description') 
+  {
+    icon: '🔒',
+    title: t('landing.advantages.private.title'),
+    description: t('landing.advantages.private.description'),
   },
-  { 
-    icon: '🛡️', 
-    title: t('landing.advantages.antiBan.title'), 
-    description: t('landing.advantages.antiBan.description') 
+  {
+    icon: '🛡️',
+    title: t('landing.advantages.antiBan.title'),
+    description: t('landing.advantages.antiBan.description'),
   },
-  { 
-    icon: '⚡', 
-    title: t('landing.advantages.perf.title'), 
-    description: t('landing.advantages.perf.description') 
+  {
+    icon: '⚡',
+    title: t('landing.advantages.perf.title'),
+    description: t('landing.advantages.perf.description'),
   },
 ])
 </script>
@@ -92,27 +95,23 @@ const advantages = computed(() => [
       :footer-text="t('landing.footer')"
       accent="#6366f1"
       :hide-cta="true"
-    />
-
-    <!-- 私有化下载入口 -->
-    <section class="llmgo-download-cta">
-      <div class="llmgo-download-cta__inner">
-        <h2 class="llmgo-download-cta__title">{{ t('landing.downloadCta.title') }}</h2>
-        <p class="llmgo-download-cta__sub">{{ t('landing.downloadCta.subtitle') }}</p>
-        <div class="llmgo-download-cta__actions">
+    >
+      <template #hero-extra>
+        <div class="llmgo-hero-actions">
           <el-button type="primary" size="large" @click="router.push('/download')">
             {{ t('landing.downloadCta.download') }}
           </el-button>
-          <el-button size="large" @click="router.push('/support')">
-            {{ t('landing.downloadCta.support') }}
-          </el-button>
-          <el-button link type="primary" @click="router.push('/activate')">
+          <el-button size="large" @click="router.push('/activate')">
             {{ t('landing.downloadCta.activate') }}
           </el-button>
+          <el-button link type="primary" @click="openLogin">
+            {{ t('landing.deployFlow.steps.login.action') }}
+          </el-button>
         </div>
-        <p class="llmgo-download-cta__note">{{ t('landing.downloadCta.note') }}</p>
-      </div>
-    </section>
+      </template>
+    </ServiceLandingPage>
+
+    <DeployFlowSection @login="openLogin" />
 
     <!-- 路线图预告区块 -->
     <section class="llmgo-roadmap">
@@ -169,52 +168,17 @@ const advantages = computed(() => [
   border-color: var(--border, #2a2d3a);
 }
 
-/* 下载 CTA */
-.llmgo-download-cta {
-  padding: 24px 16px 8px;
-  max-width: 960px;
-  margin: 0 auto;
-  width: 100%;
-}
-
-.llmgo-download-cta__inner {
-  padding: 28px 24px;
-  border: 1px solid rgba(99, 102, 241, 0.35);
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(15, 17, 23, 0.6));
-  text-align: center;
-}
-
-.llmgo-download-cta__title {
-  margin: 0 0 8px;
-  font-size: 22px;
-  font-weight: 600;
-  color: #e8eaed;
-}
-
-.llmgo-download-cta__sub {
-  margin: 0 0 20px;
-  font-size: 14px;
-  color: #94a3b8;
-}
-
-.llmgo-download-cta__actions {
+.llmgo-hero-actions {
   display: flex;
   gap: 12px;
-  justify-content: center;
   flex-wrap: wrap;
   align-items: center;
-}
-
-.llmgo-download-cta__note {
-  margin: 16px 0 0;
-  font-size: 12px;
-  color: #64748b;
+  margin-top: 4px;
 }
 
 /* 路线图预告区块 */
 .llmgo-roadmap {
-  padding: 32px 16px 48px;
+  padding: 16px 16px 48px;
   max-width: 960px;
   margin: 0 auto;
   width: 100%;

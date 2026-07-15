@@ -3,7 +3,9 @@
 // 2026-07-05: Updated to neutral, global positioning.
 export default {
   kicker: 'Core Open Source · Enterprise-Grade · Private Deployment',
-  title: 'LLM Gateway — Enterprise Open Source AI Gateway',
+  brandTitle: 'AI-Native Organization Core Gateway',
+  brandSubtitle: 'Qigui · Self-hosted',
+  title: 'AI-Native Organization Core Gateway',
   subtitle: 'Core open source enterprise AI gateway. Unified governance, global LLM access, compliance and data sovereignty — all core open source.',
   featuresTitle: 'Core Capabilities',
   featuresSubtitle: 'Covering key aspects from access to operations',
@@ -104,5 +106,37 @@ export default {
     support: 'Support us',
     activate: 'Already installed? Activate',
     note: 'Donation is voluntary and never blocks downloads or features',
+  },
+  deployFlow: {
+    title: 'Download · Install · Activate · Sign in',
+    subtitle: 'End-to-end private deployment integrated with the License activation wizard',
+    steps: {
+      download: {
+        title: 'Download offline package',
+        description: 'Pick your platform/arch artifact — no signup required for a time-limited download URL.',
+        action: 'Go to download',
+      },
+      install: {
+        title: 'Install on target environment',
+        description: 'Extract and run the installer on your server to deploy via k3s or Docker.',
+        hint: 'llm-gw-installer install --target /opt/kx-gateway',
+      },
+      activate: {
+        title: 'Activate License',
+        description: 'Online License Key or offline activation.req → activation.resp flow; 15-day trial available.',
+        action: 'Open activation wizard',
+        offlineAction: 'Offline activation portal',
+      },
+      login: {
+        title: 'Sign in to control plane',
+        description: 'After activation, sign in with admin credentials to manage tenants, routing, and observability.',
+        action: 'Sign in',
+      },
+    },
+    notes: [
+      'Donation is optional and never blocks downloads or features',
+      'Air-gapped sites should use the offline activation portal for activation.req',
+      'Activation wizard: /activate · interoperates with installer CLI commands',
+    ],
   },
 }

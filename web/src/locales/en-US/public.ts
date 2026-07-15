@@ -1,6 +1,6 @@
 export default {
   download: {
-    title: 'Download KX Gateway',
+    title: 'Download AI-Native Organization Core Gateway',
     subtitle: 'Self-hosted · Offline packages · No signup required',
     version: 'Version',
     supporters: 'supporters',
@@ -17,9 +17,12 @@ export default {
     ticketFailed: 'Failed to get download link',
     started: 'Download started',
     platformHint: 'Choose the platform matching your server',
+    nextSteps: 'After download',
+    nextStepInstall: 'Extract and run llm-gw-installer install on your server',
+    nextStepActivate: 'Then open the activation wizard for online or offline activation.req flow',
   },
   support: {
-    title: 'Support KX Gateway',
+    title: 'Support the AI-Native Organization Core Gateway community',
     subtitle: 'Your donation helps us maintain and improve the open-source gateway',
     impactTitle: 'Your support funds',
     impacts: [
@@ -78,5 +81,6 @@ export default {
     support: 'Support',
     offline: 'Offline',
     docs: 'Docs',
+    navAria: 'Public portal navigation',
   },
 }
