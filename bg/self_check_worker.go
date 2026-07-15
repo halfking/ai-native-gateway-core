@@ -330,8 +330,8 @@ func (w *SelfCheckWorker) topNModels(ctx context.Context, n int) ([]string, erro
 	rows, err := w.db.Query(ctx, `
 		SELECT pm.raw_model_name
 		FROM provider_models pm
-		JOIN provider_model_bindings pmb ON pmb.provider_model_id = pm.id
-		WHERE pmb.available = TRUE AND pmb.is_routable = TRUE
+		JOIN credential_model_bindings cmb ON cmb.provider_model_id = pm.id
+		WHERE cmb.available = TRUE AND cmb.is_routable = TRUE
 		GROUP BY pm.raw_model_name
 		ORDER BY COUNT(*) DESC
 		LIMIT $1`, n)
@@ -624,11 +624,11 @@ func (w *SelfCheckWorker) isolateUpstream(ctx context.Context, model string) (re
 		SELECT c.secret_ciphertext, p.base_url
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
-		JOIN provider_model_bindings pmb ON pmb.credential_id = c.id
-		JOIN provider_models pm ON pm.id = pmb.provider_model_id
+		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE pm.raw_model_name = $1
 		  AND c.status = 'active' AND c.lifecycle_status = 'active'
-		  AND pmb.available = TRUE
+		  AND cmb.available = TRUE
 		LIMIT 1`, model).Scan(&secretCiphertext, &baseURL)
 	if err != nil {
 		return "no_credential", 0, "no routable credential found"
