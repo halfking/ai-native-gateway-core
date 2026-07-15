@@ -38,12 +38,17 @@ echo "[setup] Testing nginx and reloading..."
 remote "nginx -t && (systemctl reload nginx 2>/dev/null || nginx -s reload)"
 
 echo "[setup] Setting gateway env for download artifacts..."
-remote "grep -q '^DOWNLOAD_ARTIFACT_ROOT=' /opt/llm-gateway-go/.env 2>/dev/null || \
-  echo 'DOWNLOAD_ARTIFACT_ROOT=/var/www/download/llm-gateway-go' >> /opt/llm-gateway-go/.env; \
-  grep -q '^DOWNLOAD_BASE_URL=' /opt/llm-gateway-go/.env 2>/dev/null || \
-  echo 'DOWNLOAD_BASE_URL=https://download.kxpms.cn/llm-gateway-go' >> /opt/llm-gateway-go/.env; \
-  grep -q '^GIT_REPO_URL=' /opt/llm-gateway-go/.env 2>/dev/null || \
-  echo 'GIT_REPO_URL=https://github.com/halfking/SI-LLM-Gateway' >> /opt/llm-gateway-go/.env"
+remote "ENV=/opt/llm-gateway-go/.env; touch \"\$ENV\"; \
+  for kv in \
+    'DOWNLOAD_ARTIFACT_ROOT=/var/www/download/llm-gateway-go' \
+    'DOWNLOAD_BASE_URL=https://download.kxpms.cn/llm-gateway-go' \
+    'GIT_REPO_URL=https://github.com/halfking/SI-LLM-Gateway' \
+    'CONTACT_EMAIL=huangxutao@kxpms.cn'; do \
+    key=\${kv%%=*}; val=\${kv#*=}; \
+    if grep -q \"^\${key}=\" \"\$ENV\" 2>/dev/null; then \
+      sed -i \"s|^\${key}=.*|\${key}=\${val}|\" \"\$ENV\"; \
+    else echo \"\${key}=\${val}\" >> \"\$ENV\"; fi; \
+  done"
 
 echo "[setup] Restarting gateway to pick up download env..."
 remote "systemctl restart llm-gateway-go && sleep 4"
