@@ -236,6 +236,23 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// the same rate as request_logs. Default 7d via
 	// lifecycle.request_context_attrs_ttl_days.
 	pm.cleanupOldRequestContextAttrs(ctx)
+
+	// 8. 2026-07-15: request_stats_minute family TTL cleanup (every tick).
+	// Minute-level rollup tables upserted every minute; without this they
+	// grow linearly with (minutes × dimension cardinality). Default 14d via
+	// lifecycle.request_stats_minute_ttl_days. Covers all three rollup
+	// tables; the single-row rollup cursor is not touched.
+	pm.cleanupOldRequestStatsMinute(ctx)
+
+	// 9. 2026-07-15: runtime_metrics TTL cleanup (every tick). Instances
+	// push metrics periodically, no partition strategy. Default 30d via
+	// lifecycle.runtime_metrics_ttl_days.
+	pm.cleanupOldRuntimeMetrics(ctx)
+
+	// 10. 2026-07-15: runtime_alert_events TTL cleanup (every tick).
+	// Append-only alert events, no partition strategy. Default 30d via
+	// lifecycle.runtime_alert_events_ttl_days.
+	pm.cleanupOldRuntimeAlertEvents(ctx)
 }
 
 // dropOldStatePartitions calls the SQL helper
@@ -411,6 +428,99 @@ func (pm *PartitionManager) cleanupOldRequestContextAttrs(ctx context.Context) {
 	n := tag.RowsAffected()
 	if n > 0 {
 		slog.Info("partition_manager: cleaned request_context_attrs",
+			"deleted_rows", n, "retention_days", retentionDays)
+	}
+}
+
+// cleanupOldRequestStatsMinute deletes rows older than the configured TTL
+// from the three minute-level rollup tables. They are upserted every minute
+// (bg/stats_minute_rollup.go) with no partition strategy, so without this
+// they grow linearly with (minutes × dimension cardinality). All three share
+// the `bucket` timestamp column and the lifecycle.request_stats_minute_ttl_days
+// setting (default 14). request_stats_rollup_cursor (single-row state table)
+// is intentionally NOT touched. Each table has a bucket-leading index so the
+// DELETE is an index descent.
+func (pm *PartitionManager) cleanupOldRequestStatsMinute(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.request_stats_minute_ttl_days", 14)
+	if retentionDays < 1 {
+		retentionDays = 14
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	for _, table := range []string{
+		"request_stats_minute",
+		"request_stats_dim_minute",
+		"request_stats_error_drill_minute",
+	} {
+		tag, err := pm.db.Exec(timeoutCtx,
+			"DELETE FROM "+table+" WHERE bucket < now() - ($1 || ' days')::interval",
+			retentionDays)
+		if err != nil {
+			slog.Error("partition_manager: request_stats cleanup failed",
+				"table", table, "retention_days", retentionDays, "error", err)
+			continue
+		}
+		if n := tag.RowsAffected(); n > 0 {
+			slog.Info("partition_manager: cleaned request_stats table",
+				"table", table, "deleted_rows", n, "retention_days", retentionDays)
+		}
+	}
+}
+
+// cleanupOldRuntimeMetrics deletes rows from runtime_metrics older than the
+// configured TTL. Instances push metrics periodically (center/runtime_metrics)
+// and the table has no partition strategy. Retention:
+// lifecycle.runtime_metrics_ttl_days (default 30, hot-reloadable). Backed by
+// idx_rt_time (timestamp DESC).
+func (pm *PartitionManager) cleanupOldRuntimeMetrics(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.runtime_metrics_ttl_days", 30)
+	if retentionDays < 1 {
+		retentionDays = 30
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	tag, err := pm.db.Exec(timeoutCtx,
+		"DELETE FROM runtime_metrics WHERE timestamp < now() - ($1 || ' days')::interval",
+		retentionDays)
+	if err != nil {
+		slog.Error("partition_manager: runtime_metrics cleanup failed",
+			"retention_days", retentionDays, "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("partition_manager: cleaned runtime_metrics",
+			"deleted_rows", n, "retention_days", retentionDays)
+	}
+}
+
+// cleanupOldRuntimeAlertEvents deletes rows from runtime_alert_events older
+// than the configured TTL. Alert events are append-only (status can be
+// triggered/resolved but rows are never deleted). Retention:
+// lifecycle.runtime_alert_events_ttl_days (default 30, hot-reloadable).
+// Backed by idx_rae_detected_at (added in migration 413).
+func (pm *PartitionManager) cleanupOldRuntimeAlertEvents(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.runtime_alert_events_ttl_days", 30)
+	if retentionDays < 1 {
+		retentionDays = 30
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	tag, err := pm.db.Exec(timeoutCtx,
+		"DELETE FROM runtime_alert_events WHERE detected_at < now() - ($1 || ' days')::interval",
+		retentionDays)
+	if err != nil {
+		slog.Error("partition_manager: runtime_alert_events cleanup failed",
+			"retention_days", retentionDays, "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("partition_manager: cleaned runtime_alert_events",
 			"deleted_rows", n, "retention_days", retentionDays)
 	}
 }
