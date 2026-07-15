@@ -1270,7 +1270,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			result.StickyHit = stickyHitForChosen(stickyCredID, cand.CredentialID)
 			sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 			defer sideEffectCancel()
-			e.restoreCredentialState(sideEffectCtx, cand.CredentialID, cand.RawModel)
+			e.restoreCredentialState(sideEffectCtx, cand.CredentialID, cand.StandardizedName)
 			e.recordStickySuccess(params, cand.CredentialID)
 			if e.Recorder != nil {
 				e.Recorder.RecordSuccess(sideEffectCtx, cand.CredentialID, cand.RawModel)
@@ -1385,7 +1385,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// credential/model pair leaves the candidate pool while the probe
 			// worker determines whether the offer has recovered.
 			e.recordModelNotFound(mnfCtx, mnf.credentialID, mnf.rawModel, mnf.body)
-			e.writeCredentialStateOnError(mnfCtx, mnf.credentialID, mnf.rawModel, errorsx.KindModelNotFound, execErr)
+			e.writeCredentialStateOnError(mnfCtx, mnf.credentialID, cand.StandardizedName, errorsx.KindModelNotFound, execErr)
 			// Step 6 (2026-06-18): MnfStreak — client hot-path break
 			// for persistent (not intermittent) model_not_found. The
 			// background probe consensus (bg/model_probe.go) owns
@@ -1603,10 +1603,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				}
 				e.recordBanditFailure(cand.CredentialID, kind)
 				if kind == errorsx.KindConcurrent {
-					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
+					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.StandardizedName, kind, execErr)
 					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
 				} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
-					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
+					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.StandardizedName, kind, execErr)
 					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
 				}
 
@@ -1636,7 +1636,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				}
 				e.recordBanditFailure(cand.CredentialID, kind)
 				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
-					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
+					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.StandardizedName, kind, execErr)
 					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
 				}
 
@@ -1784,7 +1784,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			Reason:       fmt.Sprintf("request_failed:%s", kind),
 		})
 		if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
-			e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.RawModel, kind, execErr)
+			e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.StandardizedName, kind, execErr)
 			e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
 		}
 
@@ -2106,216 +2106,16 @@ func (e *Executor) resetMnfStreak(params *ExecParams, credentialID int) {
 	e.MnfStreak.Reset(key)
 }
 
-// coolBindingOnMnfStreak (BUG-4 fix, 2026-06-18) checks the recent
-// model_not_found count for a credential+model pair. If the count
-// exceeds MnfCoolThreshold (default 5) within the last MnfCoolWindow
-// (default 10 minutes), it temporarily marks the
-// credential_model_binding unavailable with a short cooling period
-// (default 2 minutes) so the router skips it and picks a different
-// candidate. This prevents a 0%-success credential from being
-// repeatedly selected when it's the only routable candidate — the
-// background probe consensus (bg/model_probe.go) may take 30s-15m to
-// confirm broken_confirmed, during which every user request fails.
-//
-// The cooling is short (2 min) so the binding auto-recovers if the
-// upstream comes back. It does NOT set circuit_open or cooling_until
-// on the credentials table — it only flips the cmb.available flag,
-// which the router's filterAvailable() checks.
-func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int, rawModel string) {
-	if e.DB == nil || !e.DB.Enabled() {
-		return
-	}
-	threshold := e.MnfCoolThreshold
-	if threshold <= 0 {
-		threshold = 5
-	}
-	coolMins := e.MnfCoolMinutes
-	if coolMins <= 0 {
-		coolMins = 2
-	}
-	recoverAt := time.Now().Add(time.Duration(coolMins) * time.Minute)
-
-	var recentCount int
-	err := e.DB.Pool().QueryRow(ctx, `
-		SELECT count(*) FROM model_probe_runs_with_current_month
-		WHERE credential_id = $1
-		  AND (raw_model_name = $2 OR standardized_name = $2)
-		  AND status = 'http_4xx'
-		  AND error_code = 'model_not_found'
-		  AND created_at > now() - ($3 * interval '1 minute')
-	`, credentialID, rawModel, coolMins).Scan(&recentCount)
-	if err != nil {
-		slog.Debug("cool_binding_mnf: count query failed",
-			"credential_id", credentialID,
-			"raw_model", rawModel,
-			"error", err)
-		return
-	}
-	if recentCount < threshold {
-		return
-	}
-
-	_, err = e.DB.Pool().Exec(ctx, `
-		UPDATE credential_model_bindings cmb
-		SET available = FALSE,
-		    unavailable_reason = 'mnf_cooling',
-		    unavailable_at = now(),
-		    unavailable_recover_at = $3,
-		    updated_at = now()
-		FROM model_offers mo
-		WHERE mo.id = cmb.provider_model_id
-		  AND cmb.credential_id = $1
-		  AND COALESCE(mo.outbound_model_name, mo.raw_model_name) = $2
-		  AND cmb.available = TRUE
-		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
-		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-	`, credentialID, rawModel, recoverAt)
-	if err != nil {
-		slog.Warn("cool_binding_mnf: update failed",
-			"credential_id", credentialID,
-			"raw_model", rawModel,
-			"error", err)
-		return
-	}
-	slog.Warn("cool_binding_mnf: temporarily disabled binding",
-		"credential_id", credentialID,
-		"raw_model", rawModel,
-		"recent_mnf_count", recentCount,
-		"threshold", threshold,
-		"cool_minutes", coolMins,
-	)
-}
-
-func (e *Executor) restoreCredentialState(ctx context.Context, credentialID int, rawModel string) {
+func (e *Executor) restoreCredentialState(ctx context.Context, credentialID int, canonicalModel string) {
 	if e.State == nil || !e.State.Enabled() {
 		return
 	}
-	if err := e.State.RestoreOnSuccess(ctx, credentialID, rawModel); err != nil {
-		slog.Debug("credential state restore failed", "credential_id", credentialID, "raw_model", rawModel, "error", err)
+	if err := e.State.RestoreOnSuccess(ctx, credentialID, canonicalModel); err != nil {
+		slog.Debug("credential state restore failed", "credential_id", credentialID, "canonical_model", canonicalModel, "error", err)
 	}
 }
 
-func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawModel string, kind errorsx.ErrorKind, detail string) { //nolint:unused
-	// 2026-06-13: IsClientBug kinds (model_not_found, tool_call_id_mismatch,
-	// canceled, unsupported_feature) are NOT the credential's fault. Without
-	// this guard, a single upstream 404 (e.g. Zhipu/Aliyun intermittent
-	// 'InvalidEndpointOrModel.NotFound' for glm-5.1) would silently cool the
-	// user's sticky credential for 60s. Skip the DB write entirely; the
-	// credential stays available.
-	if errorsx.IsClientBug(kind) {
-		slog.Warn("disable_model_offer: skipping (client-bug kind, not credential's fault)",
-			"credential_id", credentialID,
-			"model", rawModel,
-			"kind", kind,
-		)
-		return
-	}
-	if e.DB == nil || !e.DB.Enabled() {
-		slog.Warn("disable_model_offer: no db pool available")
-		return
-	}
-	pool := e.DB.Pool()
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		slog.Warn("disable_model_offer: begin tx failed", "error", err)
-		return
-	}
-	//nolint:errcheck // deferred rollback, best-effort
-	defer tx.Rollback(ctx)
-
-	reason := "auto_" + string(kind)
-	if len(reason) > 100 {
-		reason = reason[:100]
-	}
-
-	tag, err := tx.Exec(ctx,
-		`UPDATE model_offers SET available = FALSE, unavailable_reason = $3, unavailable_at = now()
-		 WHERE credential_id = $1 AND (raw_model_name = $2 OR standardized_name = $2) AND available = TRUE
-		   AND COALESCE(admin_protected, FALSE) = FALSE`,
-		credentialID, rawModel, reason,
-	)
-	if err != nil {
-		slog.Warn("disable_model_offer: model_offers update failed", "error", err)
-		return
-	}
-
-	// Mirror the disable to credential_model_bindings (the production
-	// router's source of truth via v_routable_credential_models). Without
-	// this, a disableModelOffer() on a single (cred, model) pair leaves
-	// cmb.available=TRUE and the router keeps picking the just-disabled
-	// model until the 60s cache expiry. Sibling models on the same
-	// credential are NOT touched.
-	cmbTag, err := tx.Exec(ctx,
-		`UPDATE credential_model_bindings cmb
-		 SET available = FALSE,
-		     unavailable_reason = $3,
-		     unavailable_at = now(),
-		     updated_at = now()
-		 FROM provider_models pm
-		 WHERE pm.id = cmb.provider_model_id
-		   AND cmb.credential_id = $1
-		   AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
-		   AND cmb.available = TRUE
-		   AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
-		   AND COALESCE(cmb.admin_protected, FALSE) = FALSE`,
-		credentialID, rawModel, reason,
-	)
-	if err != nil {
-		slog.Warn("disable_model_offer: credential_model_bindings update failed", "error", err)
-		return
-	}
-
-	coolingSeconds := 60
-	detailStr := detail
-	if len(detailStr) > 500 {
-		detailStr = detailStr[:500]
-	}
-
-	// Legacy credentials.availability_state update. KEPT for the admin
-	// UI badge — but it is no longer the router's source of truth (the
-	// router reads cmb.available). A single model's failure should
-	// flip the credential's cooling badge but NOT touch the other
-	// models' bindings (those are individually toggled above).
-	_, err = tx.Exec(ctx,
-		`UPDATE credentials SET availability_state = 'cooling',
-			availability_recover_at = now() + ($2 || ' seconds')::interval,
-			state_reason_code = $3, state_reason_detail = $4, state_updated_at = now()
-		 WHERE id = $1 AND lifecycle_status = 'active'
-		   AND availability_state NOT IN ('suspended', 'auth_failed')
-		   AND NOT EXISTS (
-		       SELECT 1 FROM credential_model_bindings cmb
-		       WHERE cmb.credential_id = $1
-		         AND cmb.admin_protected = TRUE
-		   )`,
-		credentialID, coolingSeconds, string(kind), detailStr,
-	)
-	if err != nil {
-		slog.Warn("disable_model_offer: credentials update failed", "error", err)
-		return
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		slog.Warn("disable_model_offer: commit failed", "error", err)
-		return
-	}
-
-	if tag.RowsAffected() > 0 || cmbTag.RowsAffected() > 0 {
-		slog.Info("model_offer_disabled",
-			"credential_id", credentialID,
-			"model", rawModel,
-			"reason", reason,
-			"model_offers_rows", tag.RowsAffected(),
-			"cmb_rows", cmbTag.RowsAffected(),
-		)
-		// 2026-06-13: Invalidate the in-memory candidate cache so the next
-		// request reflects the new state immediately rather than waiting
-		// for the 30s cache TTL. Without this, the just-cooled credential
-		// can still be picked from the cache.
-		provider.InvalidateAllCandidateCache()
-	}
-}
-
-func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID int, rawModel string, kind errorsx.ErrorKind, err error) {
+func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID int, canonicalModel string, kind errorsx.ErrorKind, err error) {
 	if e.State == nil || !e.State.Enabled() {
 		return
 	}
@@ -2326,7 +2126,7 @@ func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID
 	if err != nil {
 		failure.Detail = err.Error()
 	}
-	if err := e.State.WriteOnError(ctx, credentialID, rawModel, failure); err != nil {
+	if err := e.State.WriteOnError(ctx, credentialID, canonicalModel, failure); err != nil {
 		slog.Debug("credential state error write failed", "credential_id", credentialID, "kind", kind, "error", err)
 		return
 	}
