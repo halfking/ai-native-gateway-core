@@ -1214,10 +1214,12 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			params.ClientID.IdentityHash,
 			params.KeyID,
 			params.KeyConcurrentLimit,
+			cand.RPMLimit, // 2026-07-15: per-credential RPM cap (migration 407)
 		)
 		if acquireErr != nil {
-			slog.Debug("executor: concurrency limit, skipping candidate",
+			slog.Debug("executor: concurrency or RPM limit, skipping candidate",
 				"credential_id", cand.CredentialID,
+				"err", acquireErr.Error(),
 			)
 			lastErr = acquireErr
 			releaseFpLease(e.FpSlots, fpLease)

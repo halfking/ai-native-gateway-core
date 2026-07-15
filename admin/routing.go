@@ -2987,6 +2987,11 @@ type freeProviderConfig struct {
 	credentialLabel   string
 	acquisitionMode   string
 	acquisitionDetail string
+	// 2026-07-15: per-credential client-side RPM cap (migration 407).
+	// 0 = unlimited (default). Populated from the free-pool template's
+	// rpmLimit field so freshly registered free credentials get the
+	// recommended throttle without manual ops intervention.
+	rpmLimit int
 }
 
 func (h *Handler) collectEnvProviderConfigs() []freeProviderConfig {
