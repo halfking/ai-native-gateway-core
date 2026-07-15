@@ -119,3 +119,27 @@
 | 405 | `405_glm52_promote_per_token_to_token_plan.sql` |
 | 406 | `406_recent_success_rate_read_hot.sql` |
 
+## 2026-07-15T03:34:16Z — deploy 245 build_seq 1047 (ddee0470)
+
+| Migration | File |
+|-----------|------|
+| 403 | `403_runtime_alert_events.sql` |
+| 404 | `404_partition_autovacuum_analyze.sql` |
+| 405 | `405_glm52_promote_per_token_to_token_plan.sql` |
+| 406 | `406_recent_success_rate_read_hot.sql` |
+| 407 | `407_download_publish_runs.sql` |
+| 410 | `410_ip_blocklist.sql` |
+| 411 | `411_ops_node_registrations.sql` |
+
+## 2026-07-15T03:35:45Z — deploy 245 build_seq 1048 (ddee0470)
+
+| Migration | File |
+|-----------|------|
+| 403 | `403_runtime_alert_events.sql` |
+| 404 | `404_partition_autovacuum_analyze.sql` |
+| 405 | `405_glm52_promote_per_token_to_token_plan.sql` |
+| 406 | `406_recent_success_rate_read_hot.sql` |
+| 407 | `407_download_publish_runs.sql` |
+| 410 | `410_ip_blocklist.sql` |
+| 411 | `411_ops_node_registrations.sql` |
+
