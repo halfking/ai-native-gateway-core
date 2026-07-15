@@ -85,8 +85,10 @@ func TestChecker_CheckAndUpdate_AboveThreshold(t *testing.T) {
 
 	recorder := NewRecorder(redisClient, 1*time.Hour, 100)
 
-	// Setup mock DB
-	mockDB, err := pgxmock.NewPool()
+	// Setup mock DB with a regex matcher so the test can match the
+	// multi-line model_offers mirror UPDATE (which uses WHERE ... FROM ...
+	// against provider_models and a SELECT subquery in the predicate).
+	mockDB, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("failed to create mock: %v", err)
 	}
@@ -127,6 +129,12 @@ func TestChecker_CheckAndUpdate_AboveThreshold(t *testing.T) {
 	// even though the credential is "degraded" in the admin UI.
 	mockDB.ExpectExec("UPDATE credential_model_bindings").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	// 2026-07-15 P1 fix: the model_offers mirror UPDATE no longer carries
+	// the unavailable_recover_at placeholder; the remaining $1/$2 are
+	// credential_id and unavailable_at for the cmb subquery join.
+	mockDB.ExpectExec(`UPDATE model_offers[\s\S]*continuous_failure`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	err = checker.CheckAndUpdate(ctx, credID, model)
@@ -208,6 +216,142 @@ func TestChecker_CheckAndUpdate_ExcludeNetworkErrors(t *testing.T) {
 
 	if err := mockDB.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestChecker_CheckAndUpdate_ExcludeBenignEOF (2026-07-15 P0 regression test)
+//
+// Before the fix, the credentialhealth.Checker would treat every
+// "eof_without_done" failure as evidence that the credential was unhealthy.
+// MiniMax (and other SSE providers) routinely close streams without the
+// [DONE] sentinel on otherwise-successful completions, so a healthy
+// minimax-m3 binding on credential 21 was being pushed into a 15-minute
+// cooldown whenever the upstream happened to skip [DONE] more than five
+// times in an hour. This regression test pins the new behaviour: even
+// when 100% of the recorded failures are eof_without_done, the checker
+// must NOT write a degraded cooldown.
+//
+// The relay layer in domains/streaming/stream.go already marks
+// eof_without_done as a successful completion from the caller's
+// perspective, so success=true is the correct accounting — the exclude
+// branch is what makes the failureRate 0% rather than 100%.
+func TestChecker_CheckAndUpdate_ExcludeBenignEOF(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	//nolint:errcheck // best-effort close
+	defer redisClient.Close()
+
+	recorder := NewRecorder(redisClient, 1*time.Hour, 100)
+	mockDB, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("failed to create mock: %v", err)
+	}
+	defer mockDB.Close()
+
+	checker := NewChecker(recorder, mockDB, DefaultCheckerConfig())
+
+	// 10 failures, all eof_without_done. Before the fix this was 100%
+	// failure rate → 15-minute cooldown. After the fix, all 10 are
+	// excluded from the failureRate sample (treated like network/client
+	// bugs) → no UPDATE expected.
+	ctx := context.Background()
+	credID := 121
+	model := "MiniMax-M3"
+	now := time.Now()
+
+	for i := 0; i < 10; i++ {
+		//nolint:errcheck // test append, non-critical
+		recorder.Append(ctx, credID, model, CallEntry{
+			RequestID: "req_eof_" + now.Add(time.Duration(i)*time.Minute).Format(time.RFC3339),
+			Timestamp: now.Add(time.Duration(i) * time.Minute).UnixMilli(),
+			Success:   false,
+			ErrorKind: "eof_without_done",
+		})
+	}
+
+	if err := checker.CheckAndUpdate(ctx, credID, model); err != nil {
+		t.Fatalf("CheckAndUpdate failed: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Errorf("eof_without_done must be excluded from failure rate, but checker issued a DB write: %v", err)
+	}
+}
+
+// TestChecker_CheckAndUpdate_MixedEOFStillFlagsTrueFailures ensures the
+// exclude guard does not also swallow real credential failures mixed in
+// with benign EOFs. 6 quota + 4 eof_without_done over 10 calls leaves
+// 6 real failures out of 6 real samples = 100% > 80% threshold → one
+// markDegraded UPDATE is expected.
+func TestChecker_CheckAndUpdate_MixedEOFStillFlagsTrueFailures(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	//nolint:errcheck // best-effort close
+	defer redisClient.Close()
+
+	recorder := NewRecorder(redisClient, 1*time.Hour, 100)
+	// regex matcher for the same reason as AboveThreshold.
+	mockDB, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("failed to create mock: %v", err)
+	}
+	defer mockDB.Close()
+
+	checker := NewChecker(recorder, mockDB, DefaultCheckerConfig())
+
+	ctx := context.Background()
+	credID := 122
+	model := "MiniMax-M3"
+	now := time.Now()
+
+	for i := 0; i < 4; i++ {
+		//nolint:errcheck // test append, non-critical
+		recorder.Append(ctx, credID, model, CallEntry{
+			RequestID: "req_eof_" + now.Add(time.Duration(i)*time.Minute).Format(time.RFC3339),
+			Timestamp: now.Add(time.Duration(i) * time.Minute).UnixMilli(),
+			Success:   false,
+			ErrorKind: "eof_without_done", // excluded
+		})
+	}
+
+	for i := 0; i < 6; i++ {
+		//nolint:errcheck // test append, non-critical
+		recorder.Append(ctx, credID, model, CallEntry{
+			RequestID: "req_quota_" + now.Add(time.Duration(4+i)*time.Minute).Format(time.RFC3339),
+			Timestamp: now.Add(time.Duration(4+i) * time.Minute).UnixMilli(),
+			Success:   false,
+			ErrorKind: "quota", // real failure, must count
+		})
+	}
+
+	// Expect: cmb UPDATE (the production source of truth).
+	mockDB.ExpectExec("UPDATE credential_model_bindings").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	// Expect: model_offers mirror UPDATE — but it must NOT carry an
+	// unavailable_recover_at column (the column does not exist on the
+	// view, see checker.go markDegraded comment). 2026-07-15 P1 fix
+	// removed the third placeholder from this UPDATE entirely; the
+	// remaining $1/$2 are the credential_id and unavailable_at timestamp
+	// used to JOIN the cmb subquery.
+	mockDB.ExpectExec(`UPDATE model_offers[\s\S]*continuous_failure`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	if err := checker.CheckAndUpdate(ctx, credID, model); err != nil {
+		t.Fatalf("CheckAndUpdate failed: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Errorf("expected one cmb UPDATE + one model_offers mirror, got: %v", err)
 	}
 }
 
