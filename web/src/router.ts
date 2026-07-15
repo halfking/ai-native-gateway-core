@@ -74,6 +74,7 @@ const FaultManagementView = () => import('./views/ops/FaultManagementView.vue')
 const AutoUpdateView = () => import('./views/ops/AutoUpdateView.vue')
 const DistributionReleaseView = () => import('./views/ops/DistributionReleaseView.vue')
 const CenterOpsView = () => import('./views/ops/CenterOpsView.vue')
+const IpBlocklistView = () => import('./views/ops/IpBlocklistView.vue')
 const VibeCodingView = () => import('./views/ops/VibeCodingView.vue')
 const TenantLicenseView = () => import('./views/tenant/TenantLicenseView.vue')
 const TenantAutoUpdateView = () => import('./views/tenant/TenantAutoUpdateView.vue')
@@ -237,6 +238,7 @@ export const router = createRouter({
     { path: '/ops/faults',         component: FaultManagementView, meta: { requiresSuper: true } },
     { path: '/ops/autoupdate',     component: AutoUpdateView, meta: { requiresSuper: true } },
     { path: '/ops/center',         component: CenterOpsView, meta: { requiresSuper: true } },
+    { path: '/ops/blocklist',      component: IpBlocklistView, meta: { requiresSuper: true } },
     { path: '/ops/vibecoding',     component: VibeCodingView, meta: { requiresSuper: true } },
 
     // Tenant operations: visible to authenticated tenant admins, scoped by

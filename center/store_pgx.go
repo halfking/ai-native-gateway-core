@@ -18,6 +18,14 @@ func NewPgxStore(db *pgxpool.Pool) *PgxStore {
 	return &PgxStore{db: db}
 }
 
+// Pool exposes the underlying pgx pool for auxiliary queries.
+func (s *PgxStore) Pool() *pgxpool.Pool {
+	if s == nil {
+		return nil
+	}
+	return s.db
+}
+
 // RegisterInstance 注册实例（新增字段支持）
 func (s *PgxStore) RegisterInstance(ctx context.Context, instance *InstanceInfo) error {
 	query := `

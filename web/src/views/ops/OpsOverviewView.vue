@@ -42,6 +42,7 @@ const dataPlaneTables = ref<Record<string, number>>({})
 
 const quickLinks = computed(() => [
   { path: '/ops/center', icon: '🖥️', label: t('ops.center.title') },
+  { path: '/ops/blocklist', icon: '🚫', label: t('ops.blocklist.title') },
   { path: '/ops/licenses', icon: '🔑', label: t('ops.license.title') },
   { path: '/ops/autoupdate', icon: '🚀', label: t('ops.autoupdate.title') },
   { path: '/ops/faults', icon: '⚠️', label: t('ops.fault.title') },

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/center"
 	mw "github.com/kaixuan/llm-gateway-go/cmd/license-authority/middleware"
 	"github.com/kaixuan/llm-gateway-go/licensing"
+	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
 	"github.com/labstack/echo/v4"
 	"github.com/redis/go-redis/v9"
 )
@@ -20,6 +22,12 @@ import (
 // Routes are mapped from traditional /api/admin/* to /api/v1/* for License Authority.
 func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.PrivateKey, redisClient *redis.Client) {
 	serverPubKey := serverPrivKey.Public().(ed25519.PublicKey)
+
+	blocklistSvc := ipblocklist.NewService(pool, redisClient)
+	if err := blocklistSvc.Warmup(context.Background()); err != nil {
+		slog.Warn("ip blocklist warmup failed", "error", err)
+	}
+	api.Use(ipblocklist.EchoMiddleware(blocklistSvc, ipblocklist.ScopeGlobal))
 
 	// ── RSA Keys for Licensing CryptoConfig ───────────────────────────────
 	dataDir := getEnv("LICENSE_AUTHORITY_DATA_DIR", "./data")
@@ -77,6 +85,12 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 	instanceClientGroup := api.Group("/instances")
 	centerAPI.RegisterRoutes(instancesGroup)
 
+	// ── Ops node register/heartbeat (HTTP aggregation → central DB) ───────
+	opsGroup := api.Group("/ops", ipblocklist.EchoMiddleware(blocklistSvc, ipblocklist.ScopeOps))
+	opsTokenGroup := instanceTokenGroup(opsGroup, serverPubKey)
+	opsNodeHandler := NewOpsNodeHandler(licenseStore, centerStore, blocklistSvc, serverPrivKey)
+	opsNodeHandler.RegisterRoutes(opsGroup, opsTokenGroup)
+
 	// ── Register endpoint ─────────────────────────────────────────────────
 	registerHandler := NewRegisterHandler(licenseStore, centerStore, serverPrivKey)
 	registerHandler.RegisterRoutes(instanceClientGroup)
@@ -90,7 +104,7 @@ func setupAPIRoutes(api *echo.Group, pool *pgxpool.Pool, serverPrivKey ed25519.P
 	heartbeatHandler.RegisterRoutes(instanceClientGroup)
 
 	// ── Runtime metrics ingest ────────────────────────────────────────────
-	collectHandler := NewCollectHandler(centerStore)
+	collectHandler := NewCollectHandler(centerStore, blocklistSvc)
 	collectHandler.RegisterRoutes(instanceTokenGroup(api, serverPubKey))
 
 	// ── Autoupdate routes (/api/v1/updates/*) ─────────────────────────────

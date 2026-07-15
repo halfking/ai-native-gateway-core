@@ -24,6 +24,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
@@ -64,6 +65,8 @@ type Handler struct {
 	boardOperationalCache *boardOperationalCache
 	// opsOverviewCache bundles ops overview stats for /api/admin/ops/overview.
 	opsOverviewCache *opsOverviewCache
+	// ipBlocklist backs security IP denylist admin + request gate cache.
+	ipBlocklist *ipblocklist.Service
 	// routeIncidentHandler (2026-07-13) backs the read-only
 	// /api/admin/route-incidents* endpoints. nil disables the
 	// diagnose feature on the swim lane.
@@ -476,6 +479,10 @@ func (h *Handler) fpSlotsDefaultLimit() int {
 	return h.fpSlots.DefaultLimit()
 }
 
+func (h *Handler) SetIPBlocklist(svc *ipblocklist.Service) {
+	h.ipBlocklist = svc
+}
+
 func (h *Handler) admin(fn http.HandlerFunc) http.HandlerFunc {
 	return AdminMiddleware(fn, h.db, h.secret)
 }
@@ -598,6 +605,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/operational", admin(h.handleDashboardOperational))
 	mux.HandleFunc("/api/admin/dashboard/board/error-drill", admin(h.handleDashboardBoardErrorDrill))
 	mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))
+	mux.HandleFunc("/api/admin/security/ip-blocklist", h.superAdmin(h.handleIPBlocklistCollection))
+	mux.HandleFunc("/api/admin/security/ip-blocklist/reload", h.superAdmin(h.handleIPBlocklistReload))
+	mux.HandleFunc("/api/admin/security/ip-blocklist/", h.superAdmin(h.handleIPBlocklistItem))
 
 	// 2026-07-07: P2会话分析 - 客户端/任务维度分析
 	mux.HandleFunc("/api/admin/session-analytics/clients", admin(h.handleClientAnalyticsList))
