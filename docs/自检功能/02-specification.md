@@ -16,9 +16,14 @@
 
 ### 2.1 选模策略
 
-1. **most_used**（首选）：credential × model 在 24h 内调用次数最多的模型，SQL 由 `credential_most_used_model(cred_id, 24)` 提供。
-2. **fallback_N**（失败重选）：首选失败 → 同凭据下按 24h 流量从大到小换下一个模型（最多 3 次尝试）。
-3. **random**（从未用过）：7 天内无任何成功调用的凭据，从其可用模型中**随机**选一个。
+> 2026-07-15 修正：**优先探测特性模型**，只有当凭据不提供任何特性模型时才回退。
+
+1. **featured**（首选）：该凭据可路由且在 `routing_policy.featured_models` 特性模型列表中的模型。多个特性模型时按 `standardized_name` 排序稳定选取，并依次填入 fallback 槽位。
+2. **most_used**（无特性模型时）：credential × model 在 24h 内调用次数最多的模型，SQL 由 `credential_most_used_model(cred_id, 24)` 提供。
+3. **fallback_N**（失败重选）：首选失败 → 按上述优先级换下一个模型（最多 3 次尝试，featured 优先于 most_used，最后随机）。
+4. **random**（从未用过且无特性模型）：7 天内无任何成功调用、且不提供任何特性模型的凭据，从其可用模型中**随机**选一个。
+
+> 与 `bg/shared_pick.go:PickProbeModelForCredential`、`bg/model_probe.go:featuredCycle` 共用同一特性模型判定谓词（`standardized_name` / `raw_model_name` = ANY(featured_models)），确保三层探测对"什么是特性模型"达成一致。
 
 ### 2.2 会话形态
 
@@ -28,7 +33,7 @@ ping + 1 轮工具调用（与原 `bg/self_check_worker.go` 的 3 轮相比节�
 
 `self_check_runs` 沿用，新增列：
 
-- `selection_strategy text` — `most_used | fallback_N | random`
+- `selection_strategy text` — `featured | most_used | fallback_N | random`
 - `attempted_models jsonb` — 该 run 试过的所有模型顺序
 
 新增 status：`retrying`（预留，3 次 fallback 仍失败时使用 `failed`）。

@@ -1188,31 +1188,34 @@ func main() {
 	}
 
 	// ── Attachment Extractor (2026-07-01) ───────────────────────────────
-	// 从请求体中提取 base64/data-URI 附件并保存到文件系统。
+	// 从请求体中提取 base64/data-URI 附件并保存到存储后端。
 	// 配置项：
-	//   LLM_GATEWAY_ATTACHMENT_DIR: 存储根目录 (默认 ./data/attachments)
-	//   LLM_GATEWAY_ATTACHMENT_MAX_SIZE: 单文件上限 (默认 10MB)
-	attachmentDir := os.Getenv("LLM_GATEWAY_ATTACHMENT_DIR")
-	if attachmentDir == "" {
-		attachmentDir = "./data/attachments"
+	//   LLM_GATEWAY_STORAGE_TYPE          : "filesystem" | "oss" | "s3" | "minio" | "cloudreve"
+	//                                       （未设置 = filesystem，旧行为）
+	//   LLM_GATEWAY_ATTACHMENT_DIR        : 文件系统后端根目录 (默认 ./data/attachments)
+	//                                       —— 当 STORAGE_TYPE=filesystem 时使用
+	//   LLM_GATEWAY_ATTACHMENT_MAX_SIZE   : 单文件上限（字节，默认 10MB）
+	//   LLM_GATEWAY_OSS_* / S3_* / CLOUDREVE_* : 对应后端的认证/端点变量
+	//                                          （详见 domains/attachments/storage_config.go）
+	//
+	// initAttachmentStorage 是 boot 接线入口：
+	//   - 默认行为不变（filesystem / unset 走 LocalStorageBackend）
+	//   - 显式 opt-in 到 oss / s3 / cloudreve 时走对应后端构造
+	//   - 任何错误退化到 filesystem + Warn，不阻塞启动
+	// 详见 cmd/gateway/attachment_storage_init.go。
+	defaultAttachmentDir := "./data/attachments"
+	if envDir := os.Getenv("LLM_GATEWAY_ATTACHMENT_DIR"); envDir != "" {
+		defaultAttachmentDir = envDir
 	}
-	// attachmentStorage 提升到外层作用域：admin mux 需要它构造下载/列表 handler。
-	// 初始化失败时为 nil，对应的 admin 端点会返回 503（见 admin/attachments_routes.go）。
-	var attachmentStorage *attachments.Storage
-	if storage, err := attachments.NewStorage(attachmentDir); err != nil {
-		slog.Warn("attachment storage init failed, extraction disabled", "error", err, "dir", attachmentDir)
-	} else {
-		attachmentStorage = storage
-		// 配置单文件大小上限
-		if maxSizeStr := os.Getenv("LLM_GATEWAY_ATTACHMENT_MAX_SIZE"); maxSizeStr != "" {
-			if maxSize, parseErr := strconv.ParseInt(maxSizeStr, 10, 64); parseErr == nil && maxSize > 0 {
-				attachmentStorage.MaxSize = maxSize
-			}
-		}
+	attachmentStorage, attachmentBackendType := initAttachmentStorage(defaultAttachmentDir)
+	slog.Info("attachment extractor: storage backend selected",
+		"type", attachmentBackendType,
+		"dir", defaultAttachmentDir)
+	if attachmentStorage != nil {
 		attachmentExtractor := attachments.NewExtractor(attachmentStorage)
 		chatHandler.SetAttachmentExtractor(attachmentExtractor)
 		slog.Info("attachment extractor enabled",
-			"dir", attachmentStorage.BaseDir(),
+			"type", attachmentBackendType,
 			"max_size_mb", attachmentStorage.MaxSize/(1024*1024))
 	}
 
