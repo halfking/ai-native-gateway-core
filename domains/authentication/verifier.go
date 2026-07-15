@@ -91,6 +91,10 @@ type KeyInfo struct {
 	Status               string   `json:"status"`
 	IsInternal           bool     `json:"is_internal"`
 	KeyAlias             *string  `json:"key_alias"`
+
+	// 2026-07-15: 客户/组织归属。来源 applications.customer_id（迁移 407 新增），
+	// 用于 request_context_attrs.customer_id 的派生。无映射时为 nil。
+	CustomerID *int64 `json:"customer_id,omitempty"`
 }
 
 // EffectiveRPM returns the applicable RPM limit (per-key or tier default).
@@ -240,6 +244,9 @@ type KeyLookupMeta struct {
 	DefaultClientProfile *string
 	TenantID             string
 	ApplicationID        int
+
+	// 2026-07-15: 客户维度（迁移 407 applications.customer_id）
+	CustomerID *int64
 }
 
 func (kv *KeyVerifier) LookupKeyMeta(ctx context.Context, rawKey string) (*KeyLookupMeta, error) {
@@ -259,7 +266,8 @@ func (kv *KeyVerifier) LookupKeyMeta(ctx context.Context, rawKey string) (*KeyLo
 			app.code,
 			app.default_client_profile,
 			ak.tenant_id,
-			ak.application_id
+			ak.application_id,
+			app.customer_id
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1
@@ -273,6 +281,7 @@ func (kv *KeyVerifier) LookupKeyMeta(ctx context.Context, rawKey string) (*KeyLo
 		&meta.DefaultClientProfile,
 		&meta.TenantID,
 		&appID,
+		&meta.CustomerID,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -307,7 +316,8 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 			COALESCE(ak.key_tier, 'default') AS key_tier,
 			ak.budget_usd::float8,
 			COALESCE(ak.status, 'active') AS status,
-			ak.key_alias
+			ak.key_alias,
+			app.customer_id
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1
@@ -329,6 +339,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 		&info.BudgetUSD,
 		&info.Status,
 		&info.KeyAlias,
+		&info.CustomerID,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
