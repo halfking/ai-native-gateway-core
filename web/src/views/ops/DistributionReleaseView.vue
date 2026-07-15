@@ -21,11 +21,13 @@ const artifacts = ref<ReleaseArtifact[]>([])
 const runs = ref<PublishRun[]>([])
 const publishVersion = ref('')
 
-function formatArtifactSize(row: ReleaseArtifact) {
-  return row.size_bytes ? `${(row.size_bytes / 1024 / 1024).toFixed(1)} MB` : '—'
+function formatArtifactSize(row?: ReleaseArtifact) {
+  if (!row?.size_bytes) return '—'
+  return `${(row.size_bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-function formatTestPassed(row: PublishRun) {
+function formatTestPassed(row?: PublishRun) {
+  if (!row) return '—'
   return row.test_passed ? '✓' : '—'
 }
 
@@ -39,10 +41,10 @@ async function load() {
     ])
     stats.value = st
     catalog.value = cat
-    runs.value = runList.items
+    runs.value = runList.items ?? []
     publishVersion.value = cat.version
     const art = await getReleaseArtifacts(cat.version)
-    artifacts.value = art.items
+    artifacts.value = art.items ?? []
   } catch {
     ElMessage.error(t('ops.downloads.loadFailed'))
   } finally {
