@@ -471,6 +471,30 @@ func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantI
 	if tenantID == "" {
 		tenantID = "default"
 	}
+	// 2026-07-17 audit fix (P1): profile was previously a dead parameter.
+	// Normalise it the same way resolveModelDB/aliasRawNamesDB do so the
+	// alias EXISTS path honours client_profiles (empty matches all, matching
+	// the legacy single-profile behaviour).
+	profile = strings.TrimSpace(strings.ToLower(profile))
+	// 2026-07-17 audit fix (P0): the previous query referenced
+	// `ma.canonical_name`, but model_aliases has no such column (only
+	// raw_name + canonical_id). PostgreSQL rejected the whole query with
+	// "column ma.canonical_name does not exist", so GetProbeCandidates
+	// ALWAYS errored and the executor silently fell back to the already-
+	// filtered params.Candidates — the no-candidate full-set probe never
+	// fired in production.
+	//
+	// The canonical_name lives on models_canonical, reached via
+	// model_aliases.canonical_id OR model_offers.canonical_id. We now match
+	// the same 4-path matrix as loadCandidatesByModalityDB
+	// (canonical_raw_name / standardized_name / models_canonical via the
+	// offer's canonical_id / alias EXISTS) so the probe set lines up with
+	// what the router can actually route.
+	//
+	// The alias JOIN is also downgraded from INNER to LEFT: the previous
+	// INNER JOIN dropped every offer that had no model_aliases row, so a
+	// model served only via canonical_raw_name (no alias registered) was
+	// invisible to probes.
 	rows, err := c.dbPool.Query(ctx, `
 		SELECT DISTINCT ON (c.id, mo.raw_model_name)
 		       c.id::int, p.id::int, p.base_url, p.protocol,
@@ -479,7 +503,7 @@ func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantI
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		JOIN model_aliases ma ON ma.raw_name = mo.canonical_raw_name
+		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
 		WHERE p.tenant_id = $2
 		  AND p.enabled = TRUE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
@@ -493,10 +517,25 @@ func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantI
 		  AND (
 		    mo.canonical_raw_name = $1
 		    OR mo.standardized_name = $1
-		    OR ma.canonical_name = $1
+		    OR mc.canonical_name = $1
+		    OR EXISTS (
+		        SELECT 1 FROM model_aliases ma
+		        WHERE ma.raw_name = $1
+		          AND COALESCE(ma.status, 'active') = 'active'
+		          AND (
+		              ma.client_profiles IS NULL
+		              OR cardinality(ma.client_profiles) = 0
+		              OR $3 = ANY(ma.client_profiles)
+		              OR $3 = ''
+		          )
+		          AND (
+		              (mo.canonical_id IS NOT NULL AND ma.canonical_id = mo.canonical_id)
+		              OR (mo.canonical_id IS NULL AND ma.canonical_id IS NULL)
+		          )
+		    )
 		  )
 		ORDER BY c.id, mo.raw_model_name, p.id
-	`, canonical, tenantID)
+	`, canonical, tenantID, profile)
 	if err != nil {
 		return nil, err
 	}
