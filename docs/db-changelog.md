@@ -167,3 +167,27 @@
 |-----------|------|
 | 414 | `414_drop_model_probe_runs_old.sql` |
 
+## 2026-07-16T02:26:28Z — deploy 245 build_seq 1073 (914503d6)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+
+## 2026-07-16T02:31:47Z — deploy 245 build_seq 1074 (914503d6)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+
+## 2026-07-16T02:40:54Z — deploy 245 build_seq 1075 (f7c4a591)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+

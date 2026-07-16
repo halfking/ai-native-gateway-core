@@ -74,7 +74,7 @@ INSERT INTO public.assets (
     tags, health_state, version, registered_at, last_seen_at, metadata
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
-    COALESCE($8, '{}'::jsonb), $9, $10, now(), now(), COALESCE($11, '{}'::jsonb)
+    COALESCE($8::text::jsonb, '{}'::jsonb), $9, $10, now(), now(), COALESCE($11::text::jsonb, '{}'::jsonb)
 )
 ON CONFLICT (kind, ref_id) DO UPDATE SET
     tenant_id    = EXCLUDED.tenant_id,
@@ -117,6 +117,8 @@ func (s *pgStore) Upsert(ctx context.Context, a Asset) error {
 	}
 
 	return s.withTenantTx(ctx, a.TenantID, func(tx pgx.Tx) error {
+		// 2026-07-16: Force text protocol for metadata JSONB to avoid
+		// pgx binary encoding issues. Cast string → text → jsonb in SQL.
 		_, err := tx.Exec(ctx, upsertAssetSQL,
 			string(a.Kind),         // 1
 			a.RefID,                // 2
@@ -125,10 +127,10 @@ func (s *pgStore) Upsert(ctx context.Context, a Asset) error {
 			nullable(a.Owner),      // 5
 			nullable(a.Team),       // 6
 			nullable(a.CostCenter), // 7
-			tagsJSON,               // 8
+			string(tagsJSON),       // 8 — text protocol
 			string(health),         // 9
-			version,                // 10 — never empty; defaults to "0.0.0"
-			metadataJSON,           // 11
+			version,                // 10
+			string(metadataJSON),   // 11 — text protocol
 		)
 		return err
 	})
@@ -379,6 +381,14 @@ func (s *pgStore) Neighbors(ctx context.Context, tenantID string, k Kind, refID 
 //
 // Routes through s.q when present (test seam); otherwise uses s.pool.
 // In production NewPGStore sets only pool, so s.q is always nil.
+//
+// 2026-07-16: RESET app.current_tenant before returning the connection
+// to the pool to prevent GUC pollution across transactions when pgxpool
+// reuses the same underlying PG connection. Without this, a connection
+// that previously ran `SET LOCAL app.current_tenant='tenant_a'` inside
+// a transaction will retain 'tenant_a' at session level after commit,
+// causing subsequent transactions on that connection to inherit the
+// stale tenant context even when set_config(..., true) is called again.
 func (s *pgStore) withTenantTx(ctx context.Context, tenantID string, fn func(pgx.Tx) error) error {
 	if s.pool == nil && s.q == nil {
 		return ErrNoDB
@@ -391,8 +401,11 @@ func (s *pgStore) withTenantTx(ctx context.Context, tenantID string, fn func(pgx
 	if err != nil {
 		return fmt.Errorf("apihub: begin tx: %w", err)
 	}
-	//nolint:errcheck // deferred rollback, best-effort
-	defer tx.Rollback(ctx)
+	defer func() {
+		// Clean up session-level GUC before returning conn to pool
+		_, _ = tx.Exec(ctx, "RESET app.current_tenant")
+		_ = tx.Rollback(ctx) // rollback is idempotent after commit
+	}()
 
 	if err := setTenantGUC(ctx, tx, tenantID); err != nil {
 		return err
@@ -405,6 +418,9 @@ func (s *pgStore) withTenantTx(ctx context.Context, tenantID string, fn func(pgx
 
 // withTenantReadOnlyTx is the read-only variant. We use READ ONLY for
 // planner hints and to make accidental writes fail loudly.
+//
+// 2026-07-16: RESET app.current_tenant before returning the connection
+// to the pool (same reasoning as withTenantTx).
 func (s *pgStore) withTenantReadOnlyTx(ctx context.Context, tenantID string, fn func(pgx.Tx) error) error {
 	if s.pool == nil && s.q == nil {
 		return ErrNoDB
@@ -417,8 +433,10 @@ func (s *pgStore) withTenantReadOnlyTx(ctx context.Context, tenantID string, fn 
 	if err != nil {
 		return fmt.Errorf("apihub: begin read tx: %w", err)
 	}
-	//nolint:errcheck // deferred rollback, best-effort
-	defer tx.Rollback(ctx)
+	defer func() {
+		_, _ = tx.Exec(ctx, "RESET app.current_tenant")
+		_ = tx.Rollback(ctx)
+	}()
 
 	if err := setTenantGUC(ctx, tx, tenantID); err != nil {
 		return err
