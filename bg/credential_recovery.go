@@ -75,7 +75,13 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		  AND NOT EXISTS (
 		      SELECT 1
 		      FROM model_probe_state mps
-		      JOIN provider_models pm ON (pm.raw_model_name = mps.raw_model_name OR pm.standardized_name = mps.raw_model_name)
+		      -- 2026-07-16: dropped dead "OR pm.standardized_name = mps.raw_model_name"
+		      -- branch. model_probe_state.raw_model_name stores the upstream
+		      -- vendor form (e.g. "z-ai/glm-5.2"); pm.standardized_name is
+		      -- lowercase+unprefixed (e.g. "glm-5.2") and can never match it,
+		      -- so the OR was dead code. Same defect removed from
+		      -- credentialhealth/checker.go (9e7eb23f1) and provider/client.go.
+		      JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
 		      JOIN credential_model_bindings cmb
 		           ON cmb.credential_id = mps.credential_id
 		          AND cmb.provider_model_id = pm.id
