@@ -31,11 +31,19 @@ func NewHealthTracker(
 
 	recorder := credentialhealth.NewRecorder(redisClient, windowTTL, maxSize)
 	tuner := credentialhealth.NewTuner(db, credentialhealth.DefaultTunerConfig())
+
+	// 2026-07-16 P0 fix: Initialize prober to prevent false positive degradation.
+	// DBProber checks recent call history (last 30s). If there's a successful
+	// call, don't mark degraded even if failure rate > 80% (prevents client
+	// disconnect / timeout from degrading healthy credentials).
+	prober := credentialhealth.NewDBProber(recorder, 30*time.Second)
+
 	// Wire the candidate-cache invalidator so a continuous-failure flip
 	// of (cred, model) is visible to the next request — without this, the
 	// 30s availableModelsCache would still serve the just-degraded
 	// binding until TTL expiry. (2026-06-22 audit, Fix C1.)
 	checkerCfg := credentialhealth.DefaultCheckerConfig()
+	checkerCfg.Prober = prober
 	checkerCfg.InvalidateCandidateCache = provider.InvalidateCandidateCacheForCredential
 	checker := credentialhealth.NewChecker(recorder, db, checkerCfg)
 

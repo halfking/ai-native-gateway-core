@@ -13,6 +13,7 @@ import (
 type Checker struct {
 	recorder         *Recorder
 	db               DBQuerier
+	prober           CredentialProber       // optional: probe before marking degraded
 	windowDuration   time.Duration          // default 1 hour
 	failureThreshold float64                // default 0.80 (80%)
 	minSampleSize    int                    // default 5
@@ -28,6 +29,9 @@ type CheckerConfig struct {
 	MinSampleSize    int
 	DegradedCooldown time.Duration
 	EnableCheck      bool
+	// Prober (optional) probes credential before marking degraded.
+	// If probe succeeds, degradation is skipped (prevents false positives).
+	Prober CredentialProber
 	// InvalidateCandidateCache (optional) is invoked synchronously with the
 	// affected credential after a successful state change so unrelated cached
 	// candidate lists stay warm. nil → no-op.
@@ -50,6 +54,7 @@ func NewChecker(recorder *Recorder, db DBQuerier, cfg CheckerConfig) *Checker {
 	return &Checker{
 		recorder:         recorder,
 		db:               db,
+		prober:           cfg.Prober,
 		windowDuration:   cfg.WindowDuration,
 		failureThreshold: cfg.FailureThreshold,
 		minSampleSize:    cfg.MinSampleSize,
@@ -82,7 +87,7 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 		return nil // not enough data
 	}
 
-	// Compute stats (exclude network errors)
+	// Compute stats (exclude network errors, client problems, and transient issues)
 	var total, failed int
 	errorKinds := make(map[string]int)
 
@@ -102,8 +107,25 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 		// actual classified kind. (Genuinely benign EOFs — ChunkCount>0 —
 		// are also short-circuited as success in executor_chat.go:687 and
 		// never reach the recorder; this guard covers the non-benign tail.)
+		//
+		// 2026-07-16 P0 fix: skip client-side failures (canceled, timeout, transient).
+		// Root cause of "No available provider" false positive: client_disconnect
+		// (VSCode cancel, curl timeout, network hiccup) was counted as credential
+		// failure. 15 client disconnects → credential degraded 15 minutes → all
+		// requests fail even though credential is healthy.
+		//
+		// Skip list now includes:
+		// - network: DNS/TCP/connection errors
+		// - stream_timeout: benign SSE EOF
+		// - canceled: client cancel (context.Canceled)
+		// - timeout: client-side timeout
+		// - transient: temporary upstream issues (503 for <5s)
+		// - client bugs: malformed requests
 		if e.ErrorKind == "network" ||
 			e.ErrorKind == string(errorsx.KindStreamTimeout) ||
+			e.ErrorKind == string(errorsx.KindCanceled) ||
+			e.ErrorKind == string(errorsx.KindTimeout) ||
+			e.ErrorKind == string(errorsx.KindTransient) ||
 			errorsx.IsClientBug(errorsx.ErrorKind(e.ErrorKind)) {
 			continue
 		}
@@ -125,6 +147,33 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 	// Check threshold
 	if failureRate < c.failureThreshold {
 		return nil // below threshold, credential is healthy
+	}
+
+	// 2026-07-16 P0 fix: probe before marking degraded.
+	// If recent call history shows success (within last 30s), don't mark degraded.
+	// This prevents false positives where transient errors (that passed the skip
+	// filter above) trigger degradation even though credential is actually healthy.
+	if c.prober != nil {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		result := c.prober.ProbeCredential(probeCtx, credentialID, model)
+		if result.Success {
+			slog.Info("credential probe succeeded, skipping degradation",
+				"credential_id", credentialID,
+				"model", model,
+				"failure_rate", failureRate,
+				"sample_size", total,
+				"probe_latency_ms", result.Latency.Milliseconds())
+			return nil // probe passed, don't mark degraded
+		}
+
+		slog.Warn("credential probe failed, proceeding with degradation",
+			"credential_id", credentialID,
+			"model", model,
+			"failure_rate", failureRate,
+			"sample_size", total,
+			"probe_detail", result.Detail)
 	}
 
 	// Mark as degraded

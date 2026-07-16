@@ -148,6 +148,26 @@ var unsupportedFeatureRe = regexp.MustCompile(
 		`当前模型不支持)`,
 )
 
+// budgetExceededRe detects permanent quota exhaustion (balance insufficient,
+// budget exceeded, credits depleted). These are KindQuotaPermanent, not
+// KindRateLimit, because they won't resolve until the user tops up their
+// account — retrying or waiting is futile.
+//
+// 2026-07-16 P0 fix: Anthropic 429 with "Organization balance insufficient" +
+// "budget_exceeded" was misclassified as KindRateLimit (transient), causing
+// the executor to retry and trigger false-positive credential degradation.
+// Direct API calls worked (different key with balance), but gateway kept
+// trying the exhausted credential.
+var budgetExceededRe = regexp.MustCompile(
+	`(?i)(budget[_ -]?exceeded|` +
+		`balance[_ -]?insufficient|` +
+		`insufficient[_ -]?(credit|balance|funds)|` +
+		`credit[s]?[_ -]?(exhausted|depleted|insufficient)|` +
+		`account[_ -]?balance[_ -]?(low|insufficient|exhausted)|` +
+		`quota[_ -]?exceeded|` +
+		`usage[_ -]?limit[_ -]?exceeded)`,
+)
+
 // concurrentOverloadRe matches upstream error bodies that signal
 // "service overloaded / too many concurrent requests". Providers like
 // MiniMax surface concurrent-rate-limit problems as either:
@@ -388,6 +408,17 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if toolCallIdMismatchRe.Match(body) {
 			return KindToolCallIdMismatch
 		}
+		// 2026-07-16 P0 fix: budget_exceeded / balance insufficient on 429.
+		// These are permanent quota exhaustion (KindQuotaPermanent), not
+		// transient rate limits. Anthropic returns:
+		//   429 {"error":{"message":"Organization balance insufficient",
+		//        "type":"rate_limit_error","code":"budget_exceeded"}}
+		// Without this check, such errors are classified as KindRateLimit
+		// (transient), causing retries, probes, and false-positive degradation
+		// even though the credential is permanently unusable until top-up.
+		if status == 429 && budgetExceededRe.Match(body) {
+			return KindQuotaPermanent
+		}
 	}
 	// 2026-06-13: protocol/shape 4xx codes (e.g. 405 Method Not Allowed,
 	// 406 Not Acceptable, 415 Unsupported Media Type) are NOT transient —
@@ -453,6 +484,10 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		}
 		if contextLengthRe.Match(body) || contextLengthCJKRe.Match(body) {
 			return KindContextLength
+		}
+		// 2026-07-16 P0 fix: budget_exceeded on 429 → KindQuotaPermanent
+		if status == 429 && budgetExceededRe.Match(body) {
+			return KindQuotaPermanent
 		}
 	}
 	return ""
