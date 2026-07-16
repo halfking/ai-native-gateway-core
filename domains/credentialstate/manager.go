@@ -499,7 +499,15 @@ func (m *Manager) OnNoCandidates(ctx context.Context, sig NoCandidatesSignal) {
 	if len(sig.Candidates) == 0 {
 		return
 	}
-	debounceKey := strings.ToLower(strings.TrimSpace(sig.TenantID + "|" + sig.ClientModel))
+	model := strings.ToLower(strings.TrimSpace(sig.ClientModel))
+	if model == "" {
+		return
+	}
+	tenant := strings.TrimSpace(sig.TenantID)
+	if tenant == "" {
+		tenant = "default"
+	}
+	debounceKey := strings.ToLower(tenant) + "|" + model
 	now := time.Now()
 	m.noCandidatesMu.Lock()
 	if last, ok := m.noCandidatesDispatched[debounceKey]; ok && now.Sub(last) < noCandidatesDebounceWindow {

@@ -455,26 +455,32 @@ func (c *Client) GetPolicy(ctx context.Context) (*Policy, error) {
 // diagnostics when normal routing has no executable candidates. It includes
 // transiently unavailable nodes but excludes manual, disabled, and permanently
 // exhausted credentials.
+//
+// The lookup is restricted to the calling tenant: a request that comes in
+// for `tenant=X` will never probe a credential owned by `tenant=default`,
+// because that would leak probe traffic and noise into the default
+// tenant's request_logs.
 func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantID string) ([]Candidate, error) {
 	if !c.Enabled() || c.dbPool == nil {
 		return nil, fmt.Errorf("routing DB not configured")
 	}
+	canonical := strings.TrimSpace(modelname.CanonicalizeClientModel(model))
+	if canonical == "" {
+		return nil, nil
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	resolved, err := c.resolveModelDB(ctx, model, profile)
-	if err != nil {
-		return nil, err
-	}
-	rawModels := uniqueRawModels(append(resolved.RawModels, model))
 	rows, err := c.dbPool.Query(ctx, `
-		SELECT c.id::int, p.id::int, p.base_url, p.protocol,
+		SELECT DISTINCT ON (c.id, mo.raw_model_name)
+		       c.id::int, p.id::int, p.base_url, p.protocol,
 		       COALESCE(mo.outbound_model_name, mo.raw_model_name),
 		       mo.raw_model_name, COALESCE(mo.billing_mode, 'per_token')
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		WHERE (p.tenant_id = $2 OR p.tenant_id = 'default')
+		JOIN model_aliases ma ON ma.raw_name = mo.canonical_raw_name
+		WHERE p.tenant_id = $2
 		  AND p.enabled = TRUE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.base_url, '') <> ''
@@ -484,9 +490,13 @@ func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantI
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 		  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
-		  AND (mo.canonical_raw_name = ANY($1) OR mo.standardized_name = ANY($1))
-		ORDER BY p.id, c.id, mo.raw_model_name
-	`, rawModels, tenantID)
+		  AND (
+		    mo.canonical_raw_name = $1
+		    OR mo.standardized_name = $1
+		    OR ma.canonical_name = $1
+		  )
+		ORDER BY c.id, mo.raw_model_name, p.id
+	`, canonical, tenantID)
 	if err != nil {
 		return nil, err
 	}
