@@ -524,6 +524,31 @@ func TestManager_OnNoCandidates_DispatchesAllByDefault(t *testing.T) {
 	}
 }
 
+func TestManager_OnNoCandidates_DebouncesTenantModelBurst(t *testing.T) {
+	m := NewManager(nil, nil)
+	m.Start(context.Background())
+	defer m.Stop()
+
+	var fired atomic.Int32
+	m.SetActiveProbeSubmitter(func(credID int, model, tenantID, parentRequestID string) {
+		fired.Add(1)
+	}, 2)
+	signal := NoCandidatesSignal{
+		ClientModel: "minimax-m3",
+		TenantID:    "tenant-a",
+		Candidates: []NoCandidatesCandidate{
+			{CredentialID: 1, RawModel: "minimax-m3"},
+			{CredentialID: 2, RawModel: "minimax-m3"},
+		},
+	}
+	m.OnNoCandidates(context.Background(), signal)
+	signal.RequestID = "second-request"
+	m.OnNoCandidates(context.Background(), signal)
+	if got := fired.Load(); got != 2 {
+		t.Fatalf("debounced burst dispatched %d probes, want 2", got)
+	}
+}
+
 // OnNoCandidates before any active_probe submitter is a no-op
 // rather than a panic. The manager also tolerates an empty
 // candidate list (returns immediately).

@@ -104,12 +104,12 @@ type Candidate struct {
 	// INDEPENDENT from ConcurrencyLimit (which controls in-flight request
 	// count). 0 = unlimited fingerprint pool. Used by credentialfpslot
 	// Manager.Acquire as the pool size when picking a stable identity.
-	FpSlotLimit          *int     `json:"fp_slot_limit,omitempty"`
+	FpSlotLimit *int `json:"fp_slot_limit,omitempty"`
 	// 2026-07-15: per-credential client-side RPM cap (migration 407).
 	// nil/0 = unlimited (default for paid credentials). Free-pool
 	// credentials auto-populate from the free-pool template rpmLimit.
 	// Enforced by domains/credential/limiter.go in AcquireAll.
-	RPMLimit *int `json:"rpm_limit,omitempty"`
+	RPMLimit             *int     `json:"rpm_limit,omitempty"`
 	BalanceUSD           *float64 `json:"balance_usd"`
 	CircuitState         string   `json:"circuit_state"`
 	AvailabilityState    string   `json:"availability_state"`
@@ -449,6 +449,63 @@ func (c *Client) GetPolicy(ctx context.Context) (*Policy, error) {
 		return DefaultPolicy(), nil
 	}
 	return c.getPolicyCached(ctx)
+}
+
+// GetProbeCandidates returns valid provider/credential/model bindings for
+// diagnostics when normal routing has no executable candidates. It includes
+// transiently unavailable nodes but excludes manual, disabled, and permanently
+// exhausted credentials.
+func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantID string) ([]Candidate, error) {
+	if !c.Enabled() || c.dbPool == nil {
+		return nil, fmt.Errorf("routing DB not configured")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	resolved, err := c.resolveModelDB(ctx, model, profile)
+	if err != nil {
+		return nil, err
+	}
+	rawModels := uniqueRawModels(append(resolved.RawModels, model))
+	rows, err := c.dbPool.Query(ctx, `
+		SELECT c.id::int, p.id::int, p.base_url, p.protocol,
+		       COALESCE(mo.outbound_model_name, mo.raw_model_name),
+		       mo.raw_model_name, COALESCE(mo.billing_mode, 'per_token')
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		WHERE (p.tenant_id = $2 OR p.tenant_id = 'default')
+		  AND p.enabled = TRUE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.base_url, '') <> ''
+		  AND COALESCE(p.protocol, '') <> ''
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
+		  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND (mo.canonical_raw_name = ANY($1) OR mo.standardized_name = ANY($1))
+		ORDER BY p.id, c.id, mo.raw_model_name
+	`, rawModels, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var candidates []Candidate
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var candidate Candidate
+		if err := rows.Scan(&candidate.CredentialID, &candidate.ProviderID, &candidate.BaseURL, &candidate.Protocol, &candidate.RawModel, &candidate.OfferRawModel, &candidate.BillingMode); err != nil {
+			return nil, err
+		}
+		key := fmt.Sprintf("%d|%s", candidate.CredentialID, candidate.OfferRawModel)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, rows.Err()
 }
 
 // ModelKnown reports whether the model name has any explicitly-registered
