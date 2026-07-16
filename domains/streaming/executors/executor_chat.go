@@ -520,6 +520,7 @@ func (e *Executor) executeOpenAI(
 							credentialID: cand.CredentialID,
 							rawModel:     cand.RawModel,
 							body:         string(body[:n]),
+							status:       resp.StatusCode,
 						}}
 					}
 
@@ -541,6 +542,7 @@ func (e *Executor) executeOpenAI(
 						credentialID: cand.CredentialID,
 						rawModel:     cand.RawModel,
 						body:         string(body[:n]),
+						status:       resp.StatusCode,
 					}
 				}
 
