@@ -61,6 +61,7 @@ const { locale } = useI18n()
 
 const isIdle = computed(() => props.request.type === 'idle_marker')
 const isFailure = computed(() => props.request.status === 'failure' && !!props.request.error_kind)
+const isProbe = computed(() => props.request.is_probe === true)
 
 // Idle markers occupy ~2 tile widths so they read as a heartbeat
 // gap rather than as a real request in the swim lane.
@@ -136,6 +137,9 @@ const tooltip = computed(() => {
   if (r.status === 'failure' && r.error_kind) {
     lines.push(`Error: ${r.error_kind}`)
   }
+  if (isProbe.value) {
+    lines.push(`Probe: ${r.probe_origin || 'scheduled'}${r.probe_attempt ? ` #${r.probe_attempt}` : ''}`)
+  }
   if (r.model) lines.push(`Model: ${r.model}`)
   if (r.provider_code) lines.push(`Provider: ${r.provider_code}`)
   lines.push(`Status: ${r.status ?? '?'}`)
@@ -210,6 +214,18 @@ function onClick() {
     @keyup.enter="onClick"
     @keyup.space.prevent="onClick"
   >
+    <span
+      v-if="isProbe"
+      class="live-block__probe"
+      :title="`探测请求 · ${request.probe_origin || 'scheduled'}${request.probe_attempt ? ` #${request.probe_attempt}` : ''}`"
+      aria-label="探测请求"
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+        <circle cx="8" cy="8" r="1.6" fill="currentColor" />
+        <path d="M8 1.5v2.2M8 12.3v2.2M1.5 8h2.2M12.3 8h2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+      </svg>
+    </span>
     <span class="live-block__time">{{ timeLabel }}</span>
     <!-- Failure mode: line 2 shows the error_kind label so the
          operator sees the failure mode WITHOUT hovering. -->
@@ -296,6 +312,22 @@ function onClick() {
   letter-spacing: 0.3px;
   text-align: center;
   width: 100%;
+}
+
+.live-block__probe {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  z-index: 1;
+  color: #fbbf24;
+  font-weight: 800;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+}
+
+.live-block__probe svg {
+  display: block;
+  width: 13px;
+  height: 13px;
 }
 
 .live-block__vendor {

@@ -53,6 +53,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -62,6 +63,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -86,18 +89,28 @@ const (
 // (direct + gateway) probe for each (credential, model) whose
 // next_retry_at has elapsed.
 type NodeProbeWorker struct {
-	db      *pgxpool.Pool
-	encKey  []byte
-	keyring *secret.Keyring
-	apiKey  string
-	baseURL string
-	client  *http.Client
+	db            *pgxpool.Pool
+	encKey        []byte
+	keyring       *secret.Keyring
+	apiKey        string
+	baseURL       string
+	client        *http.Client
+	stateObserver credentialstate.StateObserver
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
 
 	mu       sync.Mutex
 	inFlight map[string]struct{} // dedup key: "<credID>|<model>"
+}
+
+// SetStateObserver wires probe results into the router's in-memory and Redis
+// state caches. PostgreSQL writes alone are insufficient because routing reads
+// the credentialstate cache before it reaches the database.
+func (w *NodeProbeWorker) SetStateObserver(observer credentialstate.StateObserver) {
+	if w != nil {
+		w.stateObserver = observer
+	}
 }
 
 // NewNodeProbeWorker constructs a worker.  baseURL="" picks
@@ -231,18 +244,21 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
 		SET next_retry_at = CASE
 		        WHEN node_probe_state.paused = TRUE
+		          OR node_probe_state.consecutive_failures >= $3
 		          OR node_probe_state.next_retry_at <= now()
 		        THEN now() + interval '5 seconds'
 		        ELSE node_probe_state.next_retry_at
 		    END,
 		    next_retry_seconds = CASE
 		        WHEN node_probe_state.paused = TRUE
+		          OR node_probe_state.consecutive_failures >= $3
 		          OR node_probe_state.next_retry_at <= now()
 		        THEN 5
 		        ELSE node_probe_state.next_retry_seconds
 		    END,
 		    in_flight_until = CASE
 		        WHEN node_probe_state.paused = TRUE
+		          OR node_probe_state.consecutive_failures >= $3
 		          OR node_probe_state.next_retry_at <= now()
 		        THEN NULL
 		        ELSE node_probe_state.in_flight_until
@@ -254,11 +270,12 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 		    -- touching it here would collapse the ladder back to rung 1.
 		    consecutive_failures = CASE
 		        WHEN node_probe_state.paused = TRUE THEN 0
+		        WHEN node_probe_state.consecutive_failures >= $3 THEN 0
 		        ELSE node_probe_state.consecutive_failures
 		    END,
 		    last_err_code = NULL,
 		    updated_at = now()
-	`, credID, model)
+	`, credID, model, nodeProbeMaxAttempts)
 	slog.Info("node_probe_worker: submit",
 		"credential_id", credID, "model", model,
 		"tenant_id", tenantID, "parent_request_id", parentReqID,
@@ -407,6 +424,18 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	gw := w.probeGateway(ctx, credID, model)
 
 	success := direct.ok && gw.ok
+	// Only the direct round proves the health of this credential. The gateway
+	// round may select a different candidate, so its result must not mutate
+	// this credential's routing state.
+	if direct.ok {
+		w.updateBindingAvailability(ctx, credID, model, true, "")
+		w.updateCredentialHealth(ctx, credID)
+		w.updateObservedState(ctx, credID, model, true, "", time.Now())
+	} else {
+		w.updateBindingAvailability(ctx, credID, model, false, direct.errCode)
+		recoverAt := time.Now().Add(5 * time.Minute)
+		w.updateObservedState(ctx, credID, model, false, direct.errCode, recoverAt)
+	}
 	now := time.Now()
 	durationMs := int(now.Sub(startedAt).Milliseconds())
 
@@ -539,7 +568,7 @@ type nodeProbeRoundResult struct {
 // failures for a healthy credential.
 func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model string) nodeProbeRoundResult {
 	r := nodeProbeRoundResult{errCode: "none"}
-	plain, outboundModel, baseURL, err := w.resolveDirectTarget(ctx, credID, model)
+	plain, outboundModel, baseURL, protocol, err := w.resolveDirectTarget(ctx, credID, model)
 	if err != nil {
 		r.errCode = "endpoint_build"
 		r.errDetail = err.Error()
@@ -552,10 +581,15 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	if bodyModel == "" {
 		bodyModel = model
 	}
-	endpoint := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
-	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, bodyModel)
+	endpoint := directProbeEndpoint(baseURL, protocol)
+	body := directProbeBody(bodyModel, protocol)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+plain)
+	if strings.HasPrefix(protocol, "anthropic") {
+		req.Header.Set("x-api-key", plain)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+plain)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-LLM-Origin-Stage", "node_probe")
 	req.Header.Set("X-LLM-Origin-Actor", "node-probe-worker")
@@ -586,34 +620,35 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	return r
 }
 
-func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, string, error) {
+func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, string, string, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var (
-		ciphertext     []byte
-		outboundModel  string
-		baseURL        string
+		ciphertext    []byte
+		outboundModel string
+		baseURL       string
+		protocol      string
 	)
 	err := w.db.QueryRow(queryCtx, `
 		SELECT c.secret_ciphertext,
 		       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
-		       p.base_url
+		       p.base_url, COALESCE(p.protocol, 'openai-completions')
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE c.id = $1 AND pm.raw_model_name = $2
 		LIMIT 1
-	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL)
+	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	s := string(ciphertext)
 	if !secret.IsV1Envelope(s) {
-		return "", "", "", fmt.Errorf("unsupported secret format")
+		return "", "", "", "", fmt.Errorf("unsupported secret format")
 	}
 	if w.keyring == nil {
-		return "", "", "", fmt.Errorf("keyring not configured")
+		return "", "", "", "", fmt.Errorf("keyring not configured")
 	}
 	// 2026-07-15 P0 fix: previously this called DecryptAESGCM directly,
 	// which only handles v1:<kid>:<b64> envelopes with a non-legacy kid.
@@ -642,9 +677,121 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 			"enc_key_len", len(w.encKey),
 			"envelope_prefix", s[:min(len(s), 24)],
 			"error", err.Error())
-		return "", "", "", fmt.Errorf("decrypt: %w", err)
+		return "", "", "", "", fmt.Errorf("decrypt: %w", err)
 	}
-	return string(pt), outboundModel, baseURL, nil
+	return string(pt), outboundModel, baseURL, protocol, nil
+}
+
+func directProbeEndpoint(baseURL, protocol string) string {
+	ep := upstreamurl.EpChatCompletions
+	if strings.HasPrefix(protocol, "anthropic") {
+		ep = upstreamurl.EpMessages
+	}
+	return upstreamurl.Build(baseURL, ep)
+}
+
+func directProbeBody(model, protocol string) string {
+	if strings.HasPrefix(protocol, "anthropic") {
+		body, _ := json.Marshal(map[string]any{
+			"model":      model,
+			"max_tokens": 10,
+			"messages":   []map[string]any{{"role": "user", "content": "ping"}},
+		})
+		return string(body)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model":      model,
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"max_tokens": 10,
+	})
+	return string(body)
+}
+
+func firstErrCodeValue(a, b nodeProbeRoundResult) string {
+	if !a.ok {
+		return a.errCode
+	}
+	if !b.ok {
+		return b.errCode
+	}
+	return ""
+}
+
+func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string) {
+	if w == nil || w.db == nil {
+		return
+	}
+	if available {
+		_, _ = w.db.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET available = TRUE,
+			    unavailable_reason = NULL,
+			    unavailable_at = NULL,
+			    unavailable_recover_at = NULL,
+			    updated_at = now()
+			FROM provider_models pm
+			WHERE pm.id = cmb.provider_model_id
+			  AND cmb.credential_id = $1
+			  AND pm.raw_model_name = $2
+			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		`, credID, model)
+		return
+	}
+	_, _ = w.db.Exec(ctx, `
+		UPDATE credential_model_bindings cmb
+		SET available = FALSE,
+		    unavailable_reason = $3,
+		    unavailable_at = now(),
+		    unavailable_recover_at = now() + interval '5 minutes',
+		    updated_at = now()
+		FROM provider_models pm
+		WHERE pm.id = cmb.provider_model_id
+		  AND cmb.credential_id = $1
+		  AND pm.raw_model_name = $2
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		`, credID, model, "probe_"+reason)
+}
+
+func (w *NodeProbeWorker) updateCredentialHealth(ctx context.Context, credID int) {
+	_, _ = w.db.Exec(ctx, `
+		UPDATE credentials
+		SET health_status = 'healthy',
+		    health_error = NULL,
+		    health_checked_at = now(),
+		    availability_state = 'ready',
+		    availability_recover_at = NULL,
+		    state_reason_code = NULL,
+		    state_reason_detail = NULL,
+		    state_updated_at = now()
+		WHERE id = $1
+		  AND lifecycle_status = 'active'
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  AND COALESCE(quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
+	`, credID)
+}
+
+func (w *NodeProbeWorker) updateObservedState(ctx context.Context, credID int, model string, available bool, lastError string, recoverAt time.Time) {
+	if w == nil || w.stateObserver == nil {
+		return
+	}
+	state := &credentialstate.State{
+		CredentialID:  credID,
+		Model:         model,
+		Available:     available,
+		HealthStatus:  "healthy",
+		LastUpdatedAt: time.Now(),
+		LastError:     lastError,
+		Source:        "node_probe",
+	}
+	if available {
+		now := time.Now()
+		state.LastSuccessAt = &now
+	} else {
+		state.HealthStatus = "unreachable"
+		state.RecoverAt = &recoverAt
+	}
+	w.stateObserver.UpdateFromProbe(ctx, state)
 }
 
 // probeGateway issues a chat-completion ping through the local gateway

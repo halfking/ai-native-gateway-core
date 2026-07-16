@@ -1655,6 +1655,16 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}
 
 		if sie, ok := execErr.(*streamInterruptedError); ok {
+			if sie.reason == "client_write_failed" {
+				// The caller disconnected. Preserve the error for the handler, but
+				// do not classify a broken pipe as an upstream failure or penalize
+				// the credential that was serving it.
+				slog.Info("executor: client disconnected during stream",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+				)
+				return nil, execErr
+			}
 			kind := sie.kind
 			if kind == "" {
 				kind = errorsx.KindStreamTimeout

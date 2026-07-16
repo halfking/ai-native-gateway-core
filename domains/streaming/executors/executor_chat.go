@@ -425,8 +425,8 @@ func (e *Executor) executeOpenAI(
 			// For session requests it is context.WithTimeout(background, streamTimeout)
 			// so client disconnect does not cancel the vendor call; the response
 			// is cached for reconnect via pending/ and sessions/handler.go C3.
-			// For stateless requests upCtx inherits params.R.Context() so client
-			// disconnect still cancels the vendor call immediately.
+			// Streaming requests use a detached context so a browser cancellation
+			// cannot abort the upstream deadline before timeout health is recorded.
 
 			if e.Upstream != nil {
 				req.GetBody = func() (io.ReadCloser, error) {
@@ -1321,7 +1321,7 @@ func hasSessionID(params *ExecParams) bool {
 // block. The timeout is still respected, so a stuck vendor is
 // bounded regardless of client state.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if hasSessionID(params) {
+	if hasSessionID(params) || params.IsStream {
 		return context.WithTimeout(context.Background(), timeout)
 	}
 	return context.WithTimeout(params.R.Context(), timeout)

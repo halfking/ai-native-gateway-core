@@ -1908,6 +1908,7 @@ func main() {
 				// B. node_probe — error-triggered 5s/30s/60s/5m/1h/2h/24h
 				// backoff, direct + gateway two rounds.
 				nodeProbe := bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "")
+				nodeProbe.SetStateObserver(stateManager)
 				nodeProbe.Start(context.Background())
 				slog.Info("CHECKPOINT: node_probe_worker started")
 				// Wire stateManager → node_probe so consecutive

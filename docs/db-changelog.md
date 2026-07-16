@@ -343,3 +343,97 @@
 | 413 | `413_runtime_alert_events_ts_index.sql` |
 | 414 | `414_drop_model_probe_runs_old.sql` |
 
+## 2026-07-16T08:33:13Z — deploy 245 build_seq 1101 (2c63da4c)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+
+## 2026-07-16T08:47:44Z — deploy 154 build_seq 1102 (2c63da4c)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+
+## 2026-07-16T10:52:49Z — deploy 245 build_seq 1103 (f3a3ec02)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+
+## 2026-07-16T11:48:42Z — deploy 245 build_seq 1104 (f3a3ec02)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+
+## 2026-07-16T11:56:01Z — deploy 245 build_seq 1105 (f3a3ec02)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+| 415 | `415_restore_node_probe_runs.sql` |
+
+## 2026-07-16T12:00:43Z — deploy 245 build_seq 1106 (f3a3ec02)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+| 415 | `415_restore_node_probe_runs.sql` |
+
+## 2026-07-16T12:07:41Z — deploy 245 build_seq 1108 (f3a3ec02)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+| 415 | `415_restore_node_probe_runs.sql` |
+| 416 | `416_reconcile_node_probe_bindings.sql` |
+
+## 2026-07-16T12:16:06Z — deploy 245 build_seq 1111 (f3a3ec02)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+| 415 | `415_restore_node_probe_runs.sql` |
+| 416 | `416_reconcile_node_probe_bindings.sql` |
+| 417 | `417_route_excludes_failed_node_probes.sql` |
+
+## 2026-07-16T12:20:49Z — deploy 245 build_seq 1112 (f3a3ec02)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+| 415 | `415_restore_node_probe_runs.sql` |
+| 416 | `416_reconcile_node_probe_bindings.sql` |
+| 417 | `417_route_excludes_failed_node_probes.sql` |
+
+## 2026-07-16T12:22:45Z — deploy 245 build_seq 1113 (f3a3ec02)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+| 415 | `415_restore_node_probe_runs.sql` |
+| 416 | `416_reconcile_node_probe_bindings.sql` |
+| 417 | `417_route_excludes_failed_node_probes.sql` |
+| 418 | `418_rearm_node_probes_after_url_fix.sql` |
+
