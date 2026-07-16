@@ -535,7 +535,9 @@ func StreamChatWithPendingCapture(
 					outcome.Interrupted = true
 					outcome.Reason = "client_write_failed"
 					outcome.ChunkCount = chunkCount
-					outcome.Resumable = false
+					// 2026-07-16 fix: client_write_failed should be resumable if chunk_count is low,
+					// allowing failover to another credential instead of immediately failing.
+					outcome.Resumable = (chunkCount < 5) // Resumable if less than 5 chunks sent
 					return outcome
 				}
 			}
@@ -560,7 +562,8 @@ func StreamChatWithPendingCapture(
 				outcome.Interrupted = true
 				outcome.Reason = "client_write_failed"
 				outcome.ChunkCount = 0
-				outcome.Resumable = false
+				// 2026-07-16 fix: first chunk write failure should be resumable (no data sent yet)
+				outcome.Resumable = true
 				return outcome
 			}
 		}
@@ -737,7 +740,8 @@ func StreamChatWithPendingCapture(
 			outcome.Interrupted = true
 			outcome.Reason = "client_write_failed"
 			outcome.ChunkCount = chunkCount
-			outcome.Resumable = false
+			// 2026-07-16 fix: client_write_failed should be resumable if chunk_count is low
+			outcome.Resumable = (chunkCount < 5)
 			return outcome
 		}
 	}
