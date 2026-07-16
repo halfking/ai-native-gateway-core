@@ -315,6 +315,18 @@ func (c *Client) SetDB(pool *pgxpool.Pool) {
 	c.dbPool = pool
 }
 
+// DBPool 返回底层 *pgxpool.Pool,供需要直接操作 PG 的模块使用。
+// 仅返回已注入的 pool, 未注入时返回 nil。
+// 用途示例: trace.Recorder.FlushToPG 直接复用同一连接池。
+//
+// 调用方不得关闭该 pool(其生命周期由 Client 管理方负责)。
+func (c *Client) DBPool() *pgxpool.Pool {
+	if c == nil {
+		return nil
+	}
+	return c.dbPool
+}
+
 func (c *Client) SetDegraded(enabled bool) { c.degraded.Store(enabled) }
 
 func (c *Client) SetFallbackWriter(writer dbdegradation.BackupWriter) {

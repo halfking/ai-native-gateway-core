@@ -30,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
+	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -53,6 +54,10 @@ type providerResolver interface {
 	// 2026-07-03: Bug #7 fix - added tenantID parameter
 	GetCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, *provider.Policy, error)
 	ModelKnown(ctx context.Context, model string) bool
+}
+
+type probeCandidateResolver interface {
+	GetProbeCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, error)
 }
 
 type NormalizerFunc func(chunk []byte, isStream bool) []byte
@@ -300,6 +305,9 @@ type Executor struct {
 	Upstream   *upstreampkg.Client
 	Normalize  NormalizerFunc
 	StreamChat StreamHandler
+	// traceRecorder (2026-07-17) 注入请求链路追踪器,记录 upstream_request /
+	// stream_start 事件。nil 时降级为 NoopRecorder 等价。
+	traceRecorder gwtrace.Recorder
 	// XMLCoerceNonStream post-processes a non-stream chat response body to
 	// turn XML-style tool calls into structured tool_calls. Wired from
 	// main.go (relay.coerceXMLToolCallsInChatResponse) so the routing
@@ -717,6 +725,23 @@ type ExecParams struct {
 	ApiKeyID *int
 }
 
+// SetTraceRecorder (2026-07-17) 注入请求链路追踪器,
+// 用于记录 upstream_request / stream_start 等阶段事件。
+func (e *Executor) SetTraceRecorder(rec gwtrace.Recorder) {
+	if e != nil {
+		e.traceRecorder = rec
+	}
+}
+
+// emitTraceExec 是 Executor 内部使用的 trace 注入薄包装,避免热路径
+// 重复写 nil-check。
+func (e *Executor) emitTraceExec(ctx context.Context, requestID string, ev gwtrace.EventBuilder) {
+	if e == nil || e.traceRecorder == nil || requestID == "" {
+		return
+	}
+	ev.Append(ctx, e.traceRecorder, requestID)
+}
+
 func (e *Executor) stripVendorFields(body []byte, catalogCode string) []byte {
 	code := strings.ToLower(strings.TrimSpace(catalogCode))
 	switch code {
@@ -834,7 +859,13 @@ func (e *ExecuteError) Error() string {
 	return fmt.Sprintf("all %d candidates failed", e.Tried)
 }
 
-// releaseFpLease releases a fingerprint slot lease using an independent
+func (e *ExecuteError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.LastErr
+}
+
 // background context. This is critical: using params.R.Context() (which is
 // already cancelled when the client disconnects) would cause the Redis
 // release operation to fail with context.Canceled, leaking the slot
@@ -1078,8 +1109,19 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// the manager doesn't currently need per-cred billing info to
 		// dispatch the probe, only to decide the failure-handling
 		// policy on the result.
+		probeCandidates := params.Candidates
+		if resolver, ok := e.Provider.(probeCandidateResolver); ok {
+			probeCtx, probeCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			if allCandidates, err := resolver.GetProbeCandidates(probeCtx, params.ClientModel, params.ClientID.Fingerprint.ClientProfile, params.TenantID); err == nil && len(allCandidates) > 0 {
+				probeCandidates = allCandidates
+			} else if err != nil {
+				slog.Warn("executor: full probe candidate lookup failed", "model", params.ClientModel, "error", err)
+			}
+			probeCancel()
+		}
 		if e.RoutingStateShadow != nil {
-			for _, c := range params.Candidates {
+			for _, c := range probeCandidates {
+
 				e.RoutingStateShadow.ObserveProbe(routingstate.ProbeTask{
 					CredentialID:  c.CredentialID,
 					RawModelName:  candidateRawModel(c),
@@ -1090,8 +1132,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			}
 		}
 		if e.StateObserver != nil && len(params.Candidates) > 0 && params.RequestID != "" {
-			noCands := make([]credentialstate.NoCandidatesCandidate, 0, len(params.Candidates))
-			for _, c := range params.Candidates {
+			noCands := make([]credentialstate.NoCandidatesCandidate, 0, len(probeCandidates))
+			for _, c := range probeCandidates {
+
 				if c.CredentialID == 0 {
 					continue
 				}
@@ -1364,6 +1407,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			}()
 
 			// Execute the actual call
+			// ── 2026-07-17: trace.upstream_request ────────────────────────────────
+			// 在每个候选凭据真正向上游发出 HTTP 前, 记录目标 URL 与超时。
+			// 若凭据全部失败(loop 退出), trace 会显示一连串失败注入,
+			// 便于运维看到"试过哪几个、哪个先出错"。
+			e.emitTraceExec(params.R.Context(), params.RequestID,
+				gwtrace.UpstreamRequest(cand.BaseURL, retryPerCred, fpLease != nil).
+					WithDetails(
+						"protocol", cand.Protocol,
+						"raw_model", cand.RawModel,
+						"credential_id", cand.CredentialID,
+					))
 			switch cand.Protocol {
 			case "anthropic-messages":
 				result, execErr = e.executeAnthropic(params, cand, retryPerCred, tTotal, fpLease)
@@ -1960,7 +2014,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			kind == errorsx.KindRateLimit ||
 			kind == errorsx.KindTimeout ||
 			kind == errorsx.KindStreamTimeout ||
-			kind == errorsx.KindUpstreamDown {
+			kind == errorsx.KindUpstreamDown ||
+			kind == errorsx.KindEmptyResponse {
+
 			slog.Warn("executor: transient error, trying next candidate",
 				"kind", kind,
 				"credential_id", cand.CredentialID,
@@ -3180,6 +3236,13 @@ type retryableError struct {
 
 func (e *retryableError) Error() string { return e.err.Error() }
 
+func (e *retryableError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
 // contextLengthHTTPError signals the upstream rejected the request because
 // the prompt exceeded the model context window. executeAnthropic uses this
 // to attempt one client-side trim + retry before bubbling the 4xx up.
@@ -3193,7 +3256,18 @@ func (e *contextLengthHTTPError) Error() string {
 	return fmt.Sprintf("upstream %d context_length_exceeded", e.status)
 }
 
-// contextLengthExhaustedError signals that handleContextLengthRecovery
+func (e *contextLengthHTTPError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return &upstreampkg.Error{
+		Kind:       errorsx.KindContextLength,
+		Body:       append([]byte(nil), e.body...),
+		StatusCode: e.status,
+		Message:    e.Error(),
+	}
+}
+
 // gave up after both phases (mechanical trim + LLM summary fallback
 // chain). Carries the credential that was the last to fail so the outer
 // Execute loop can decide which kind of failover to attempt next
@@ -3212,7 +3286,18 @@ func (e *contextLengthExhaustedError) Error() string {
 	return fmt.Sprintf("context_length_exhausted: %s (cred=%d, status=%d)", e.rawModel, e.credentialID, e.status)
 }
 
-// classifyContentFilterError derives KindContentFilter from an executor
+func (e *contextLengthExhaustedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return &upstreampkg.Error{
+		Kind:       errorsx.KindContextLength,
+		Body:       []byte(e.body),
+		StatusCode: e.status,
+		Message:    e.Error(),
+	}
+}
+
 // error. Returns (kind, true) when the error is a content-moderation /
 // safety-policy rejection that should short-circuit the candidate loop.
 func classifyContentFilterError(err error) (errorsx.ErrorKind, bool) {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -302,6 +304,10 @@ type ChatHandler struct {
 	// at request arrival and asynchronous stage updates. nil disables.
 	requestLogger *telemetry.RequestLogger
 
+	// traceRecorder (2026-07-17) 注入请求链路追踪器。
+	// nil 禁用(降级为 NoopRecorder 等价)。调用方负责 best-effort 注入。
+	traceRecorder gwtrace.Recorder
+
 	// autoTitleGenerator (2026-06-22) automatically generates session titles
 	// after the first successful request. nil disables auto-title generation.
 	autoTitleGenerator interface {
@@ -405,6 +411,21 @@ func (h *ChatHandler) SetSessionRouting(lastSystemSession *session.LastSystemSes
 // SetRotationHook (2026-07-06) wires the session rotation hook.
 func (h *ChatHandler) SetRotationHook(hook *session.RotationHook) {
 	h.rotationHook = hook
+}
+
+// SetTraceRecorder (2026-07-17) 注入请求链路追踪器。
+// 传 nil 等价于禁用(内部 trace.Recorder 接口自身为 nil-safe)。
+func (h *ChatHandler) SetTraceRecorder(rec gwtrace.Recorder) {
+	h.traceRecorder = rec
+}
+
+// emitTrace 是 trace 注入的薄包装,避免在 6 处 hot path 中重复写
+// if h.traceRecorder != nil { ... } 代码。
+func (h *ChatHandler) emitTrace(ctx context.Context, requestID string, ev gwtrace.EventBuilder) {
+	if h == nil || h.traceRecorder == nil || requestID == "" {
+		return
+	}
+	ev.Append(ctx, h.traceRecorder, requestID)
 }
 
 // SetSessionReuseWindow configures the look-back window used by
@@ -696,6 +717,20 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if wt := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); wt != "" {
 		logCtx.SetWorkType(wt)
 	}
+
+	// ── 2026-07-17: 请求链路追踪 — 注入 receive_request 事件 ───────────────
+	// 在 requestID 生成后第一时刻记录,便于运维在 trace 视图里看到
+	// 客户端真实 IP / path / X-Gw-Client-Request-Id 等关键信息。
+	clientIP := r.Header.Get("X-Forwarded-For")
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+	h.emitTrace(r.Context(), requestID,
+		gwtrace.ReceiveRequest(r.Method, r.URL.Path, clientIP).
+			WithDetails(
+				"client_request_id", clientRequestID,
+				"user_agent", r.Header.Get("User-Agent"),
+			))
 	// ── Ensure every request has a gw_session_id (2026-06-26) ────────────
 	// Even pre-keyInfo failures (missing_key, invalid_key, auth_unavailable)
 	// emit a request_log row via the safety net. Without a session_id here
@@ -766,6 +801,37 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				slog.Warn("request_logger: client-disconnect UpdateSync failed", "request_id", requestID, "error", err)
 			}
 			cancel()
+		}
+		// ── 2026-07-17: 请求链路追踪 - 强制 Finalize + FlushToPG ─────────────
+		// 把 trace 状态收尾,异步刷到 PG。即使 client_disconnect 已触发,
+		// 这里仍写 finalize 让前端能看到这是次"在 client 端被取消"的请求。
+		// 同时,失败事件携带上下文快照,便于事后定位客户端断连时的凭据/限流状态。
+		if h.traceRecorder != nil {
+			var (
+				fs    gwtrace.FinalStatus
+				failS gwtrace.Stage
+			)
+			if logCtx.ErrCode == "" {
+				fs, failS = gwtrace.FinalSuccess, ""
+			} else {
+				fs = gwtrace.FinalFailed
+				failS = gwtrace.ClassifyFailureToStage(logCtx.ErrCode)
+			}
+			// Finalize 标记整个 trace 的终态(在 Redis)
+			_ = h.traceRecorder.Finalize(r.Context(), requestID, fs, failS)
+
+			// FlushToPG 把 Redis trace 打包写入 request_logs.trace_events
+			// 异步执行,失败仅日志,绝不阻塞 defer 的客户端响应。
+			if h.telemetryClient != nil {
+				// telemetryClient 内含 pgxpool.Pool, 抽出 pool 做 FlushToPG
+				if pool := h.telemetryClient.DBPool(); pool != nil {
+					go func(rid string) {
+						flushCtx, flushCancel := context.WithTimeout(context.Background(), 2*time.Second)
+						defer flushCancel()
+						_ = h.traceRecorder.FlushToPG(flushCtx, pool, rid)
+					}(requestID)
+				}
+			}
 		}
 	}()
 
@@ -844,6 +910,13 @@ func (h *ChatHandler) serveWithExecutor(
 	startTime := logCtx.StartTime
 	logCtx.EnsureCaptured()
 
+	// ── 2026-07-17: trace.body_parse ──────────────────────────────────────
+	// 在 EnsureCaptured 后 (body 已读取) 立即记录, body_size 用于分析上游
+	// prompt cache 命中与上下文窗口风险。
+	h.emitTrace(r.Context(), requestID,
+		gwtrace.BodyParse(len(logCtx.Body), nil).
+			WithDetails("client_model", logCtx.ClientModel))
+
 	markLogged := func() { logCtx.MarkLogged() }
 
 	// 2026-06-20 audit fix helper: capture body + model + emit failure
@@ -876,6 +949,16 @@ func (h *ChatHandler) serveWithExecutor(
 			return
 		}
 		ki, verifyErr := h.keyVerifier.Verify(r.Context(), rawKey)
+		// ── 2026-07-17: trace.Authenticate ──────────────────────────────────
+		// 无论成功/失败都记录, 让运维在 trace 视图里看到完整鉴权链路。
+		if ki != nil {
+			h.emitTrace(r.Context(), requestID,
+				gwtrace.Authenticate(int64(ki.ID), ki.TenantID, true))
+		} else {
+			h.emitTrace(r.Context(), requestID,
+				gwtrace.Authenticate(0, "", false).
+					WithError(verifyErr))
+		}
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
 				captureAndEmitFailure("invalid_key", "invalid or expired api key", nil, nil)
@@ -972,6 +1055,9 @@ func (h *ChatHandler) serveWithExecutor(
 					sessionInfo = newSession
 					sessionID = newSession.SessionID
 					logCtx.SetSession(newSession)
+					// ── 2026-07-17: trace.session_lookup (auto-created 命中) ──────────
+					h.emitTrace(r.Context(), requestID,
+						gwtrace.SessionLookup(newSession.SessionID, true, nil))
 					ctx = session.SessionFromContextWith(ctx, newSession)
 					w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
 					w.Header().Set("X-Gw-Session-Auto", "true")
@@ -1004,6 +1090,9 @@ func (h *ChatHandler) serveWithExecutor(
 		} else {
 			sessionInfo = si
 			logCtx.SetSession(si)
+			// ── 2026-07-17: trace.session_lookup (found 命中路径) ──────────────────
+			h.emitTrace(r.Context(), requestID,
+				gwtrace.SessionLookup(si.SessionID, false, nil))
 			if keyInfo != nil && si.APIKeyID != keyInfo.ID {
 				if si.APIKeyID == 0 {
 					if bindErr := h.sessionGetter.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr != nil {
@@ -1451,6 +1540,13 @@ func (h *ChatHandler) serveWithExecutor(
 		tenantID = keyInfo.TenantID
 	}
 	candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile, tenantID)
+
+	// ── 2026-07-17: trace.route_resolve ─────────────────────────────────────
+	// 在 GetCandidates 后立刻记录候选数量。失败时也记录,便于前端看到"路由
+	// 求解失败"独立于"上游失败"的视角,例如 model_not_found vs no_candidate。
+	h.emitTrace(r.Context(), requestID,
+		gwtrace.RouteResolve(clientModel, len(candidates)).
+			WithDetails("profile", clientID.Fingerprint.ClientProfile))
 	if err != nil {
 		// Database or infrastructure error - do NOT disguise as no_candidate
 		slog.Error("failed to get candidates from provider", "error", err, "model", clientModel, "request_id", requestID)
@@ -1952,6 +2048,22 @@ func (h *ChatHandler) serveWithExecutor(
 		}(),
 	})
 
+	// ── 2026-07-17: trace.route_credential ──────────────────────────────────
+	// 在 executor.Execute 返回后立即记录"实际命中的凭据"。 这是 trace 视图里
+	// 最关键的一行: 让运维看到"gpt-5.6-luna 请求 → 选中了 provider_id=12,
+	// credential_id=2451 (z-ai/glm-5.2, tier=premium)", 失败时凭据也记。
+	if result != nil && result.Candidate.ProviderID > 0 {
+		h.emitTrace(r.Context(), requestID,
+			gwtrace.RouteCredential(
+				result.Candidate.ProviderID,
+				result.Candidate.CredentialID,
+				clientModel,
+				result.Candidate.RawModel,
+				strconv.Itoa(result.Candidate.Tier),
+				"",
+			))
+	}
+
 	if execErr != nil {
 		if preStream != nil {
 			preStream.stop()
@@ -2114,7 +2226,26 @@ func (h *ChatHandler) serveWithExecutor(
 				return
 			}
 
-			// Step 6 (2026-06-18): preserve backward-compat error.code
+			if execErrTyped.LastKind == errorsx.KindContextLength {
+				reason := extractUpstreamReason(execErr)
+				if reason == "" {
+					reason = "input exceeds the model context window"
+				}
+				status := http.StatusRequestEntityTooLarge
+				if ue, ok := extractUpstreamError(execErr); ok && ue.StatusCode > 0 {
+					status = ue.StatusCode
+				}
+				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
+				if preStreamPrepared {
+					writePrewarmedStreamError(w, reason, "invalid_request_error", string(execErrTyped.LastKind))
+					return
+				}
+				writeErrorJSONWithKind(w, status, requestID, reason, "invalid_request_error", "context_length_exceeded", string(execErrTyped.LastKind), map[string]any{
+					"stage": "execution", "kind": string(execErrTyped.LastKind), "attempts": execErrTyped.Attempts, "tried": execErrTyped.Tried, "retryable": false,
+				})
+				return
+			}
+
 			// = "model_not_found" but surface the REAL underlying
 			// kind in error.kind + X-Gateway-Last-Kind header. Many
 			// in-the-wild failures labeled model_not_found are
