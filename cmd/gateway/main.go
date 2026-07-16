@@ -76,6 +76,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metatools"
@@ -990,6 +991,16 @@ func main() {
 
 		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
 		chatHandler.SetSessionRouting(lastSystemSession, sessionPref)
+
+		// ── 2026-07-17: 请求链路追踪 ──────────────────────────────────────
+		// 创建 trace.Recorder (Redis 暂存 + JSONB 持久化),注入到 ChatHandler
+		// 与 routingExec。Redis 不可用时降级 NoopRecorder (零开销)。
+		var traceRec gwtrace.Recorder = gwtrace.NewRedisRecorder(redisClientForCache.Client())
+		chatHandler.SetTraceRecorder(traceRec)
+		routingExec.SetTraceRecorder(traceRec)
+		slog.Info("request_trace_recorder: enabled",
+			"redis_connected", redisClientForCache != nil,
+			"recorder_type", fmt.Sprintf("%T", traceRec))
 		// 2026-06-26: configurable recent-session reuse window. Default
 		// is 5m (session.LastSystemSessionTTL). Operators can shorten it
 		// to reduce the chance of two unrelated clients being merged.
@@ -1469,6 +1480,24 @@ func main() {
 		// fully configured); this just registers the route.
 		if liveStreamHub != nil {
 			adminHandler.SetLiveStreamSSE(liveStreamHub)
+		}
+
+		// ── 2026-07-17: 请求链路追踪查看 API ──────────────────────────────
+		// 把 trace viewer 端点挂到 admin handler。复用现有 redis + db 连接。
+		var traceRDB *redis.Client
+		if redisClientForCache != nil {
+			traceRDB = redisClientForCache.Client()
+		}
+		var traceDB *pgxpool.Pool
+		if dbConn != nil && dbConn.Enabled() {
+			traceDB = dbConn.Pool()
+		}
+		traceHandler := admin.NewRequestTraceHandler(traceRDB, traceDB)
+		if traceHandler != nil {
+			adminHandler.SetRequestTraceHandler(traceHandler)
+			slog.Info("admin_handler: request_trace wired",
+				"redis_connected", traceRDB != nil,
+				"db_connected", traceDB != nil)
 		}
 
 		slog.Info("CHECKPOINT: before modelPolicy check")

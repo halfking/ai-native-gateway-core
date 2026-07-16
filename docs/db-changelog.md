@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-07-17 — 请求链路追踪系统 (Redis暂存+JSONB持久化)
+
+详见 `docs/deployment/2026-07-17-request-trace-system.md`。
+
+| Migration | File |
+|-----------|------|
+| 420 | `420_request_logs_trace_events.sql` |
+
+---
+
 ## 2026-07-15 — download publish runs
 
 | Migration | File |

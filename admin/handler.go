@@ -59,6 +59,9 @@ type Handler struct {
 	// request_logs rows to dashboard SSE clients at
 	// GET /api/admin/live-stream. nil disables the endpoint.
 	liveStreamHub *LiveStreamSSEHub
+	// requestTraceHandler (2026-07-17) exposes the per-request trace
+	// viewer + AI prompt builder. nil hides the endpoints.
+	requestTraceHandler *RequestTraceHandler
 	// boardCache (2026-07-14) Redis baseline+delta for dashboard board API.
 	boardCache *boardcache.Service
 	// boardOperationalCache caches discovery/probe/selfcheck for /dashboard/operational.
@@ -284,6 +287,12 @@ func (h *Handler) SetKeyring(kr *secret.Keyring) {
 // telemetry to connected dashboards. Pass nil to disable.
 func (h *Handler) SetLiveStreamSSE(hub *LiveStreamSSEHub) {
 	h.liveStreamHub = hub
+}
+
+// SetRequestTraceHandler (2026-07-17) wires the trace viewer endpoints.
+// nil disables the page.
+func (h *Handler) SetRequestTraceHandler(rth *RequestTraceHandler) {
+	h.requestTraceHandler = rth
 }
 
 // SetRouteIncidentsHandler wires the read-only route-incident API
@@ -586,6 +595,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// is suppressed.
 	if h.routeIncidentHandler != nil {
 		h.routeIncidentHandler.RegisterRoutes(mux, h.superAdmin)
+	}
+
+	// 2026-07-17: 请求链路追踪查看端点 (super_admin only, 仅子路径 /trace 与 /ai-prompt).
+	if h.requestTraceHandler != nil {
+		h.requestTraceHandler.RegisterRoutes(mux, h.superAdmin)
 	}
 
 	// 2026-07-05: 泳道初始化数据接口（从request_logs查询最近N小时的请求）
