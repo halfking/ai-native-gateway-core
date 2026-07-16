@@ -6,6 +6,7 @@ CREATE VIEW public.model_offers AS
  SELECT cmb.id,
     cmb.credential_id,
     pm.canonical_id,
+    pm.canonical_raw_name,
     pm.raw_model_name,
     cmb.success_rate,
     cmb.p95_latency_ms,
@@ -29,7 +30,9 @@ CREATE VIEW public.model_offers AS
     cmb.manual_priority,
     cmb.active_sessions,
     cmb.consecutive_failures,
-    cmb.admin_protected
+    cmb.admin_protected,
+    cmb.created_at,
+    cmb.updated_at
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
