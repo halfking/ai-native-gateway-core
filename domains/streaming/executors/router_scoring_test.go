@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domains/credential" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/stretchr/testify/assert"
 )
@@ -27,6 +28,25 @@ func TestCalculateLoadScore_BalancedWeights(t *testing.T) {
 	// 验证分数在合理范围内
 	assert.GreaterOrEqual(t, score, 0.0)
 	assert.LessOrEqual(t, score, 1.0)
+}
+
+func TestConcurrencyScoreUsesCredentialLimiter(t *testing.T) {
+	limiter := credential.NewWithLimits(10, 10, 4, 2)
+	defer limiter.Stop()
+	if !limiter.Credential(7, 9).TryAcquire() {
+		t.Fatal("expected credential limiter token")
+	}
+
+	router := &Router{Limiter: limiter}
+	score := calculateConcurrencyScore(provider.Candidate{
+		ProviderID:   7,
+		CredentialID: 9,
+	}, router, context.Background())
+	assert.InDelta(t, 0.25, score, 1e-9)
+}
+
+func TestFPSlotTenantUsesAuthenticatedParams(t *testing.T) {
+	assert.Equal(t, "tenant-a", fpSlotTenantID(&ExecParams{TenantID: "tenant-a"}))
 }
 
 func TestConcurrencyScore_Saturation(t *testing.T) {

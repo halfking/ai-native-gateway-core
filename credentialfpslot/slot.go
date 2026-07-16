@@ -95,6 +95,7 @@ type Lease struct {
 	Unlimited    bool
 	CredentialID int
 	Holder       string
+	TenantID     string
 }
 
 // resolveActiveGateSeconds returns the configured active gate, falling
@@ -249,16 +250,40 @@ func EffectiveLimit(limit *int, defaultLimit int) *int {
 	return &v
 }
 
-func slotRedisKey(credentialID, slotIndex int) string {
-	return fmt.Sprintf("llmgw:cred_fp_slot:%d:%d", credentialID, slotIndex)
+func normalizeTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return "default"
+	}
+	return tenantID
+}
+
+func tenantSlotRedisPrefix(tenantID string, credentialID int) string {
+	return fmt.Sprintf("llmgw:tenant:%s:cred_fp_slot:%d", normalizeTenantID(tenantID), credentialID)
+}
+
+func tenantSlotRedisKey(tenantID string, credentialID, slotIndex int) string {
+	return fmt.Sprintf("%s:%d", tenantSlotRedisPrefix(tenantID, credentialID), slotIndex)
+}
+
+func tenantPinRedisPrefix(tenantID string) string {
+	return fmt.Sprintf("llmgw:tenant:%s:sess_cred_fp:", normalizeTenantID(tenantID))
+}
+
+func tenantPinRedisKey(tenantID, holder string, credentialID int) string {
+	return fmt.Sprintf("%s%s:%d", tenantPinRedisPrefix(tenantID), holder, credentialID)
 }
 
 func pinRedisKey(holder string, credentialID int) string {
-	return fmt.Sprintf("llmgw:sess_cred_fp:%s:%d", holder, credentialID)
+	return tenantPinRedisKey("default", holder, credentialID)
 }
 
 // RoutingEligible reports whether holder can acquire a slot (prefilter).
 func (m *Manager) RoutingEligible(ctx context.Context, credentialID int, limit *int, holder string) bool {
+	return m.RoutingEligibleForTenant(ctx, credentialID, limit, holder, "default")
+}
+
+func (m *Manager) RoutingEligibleForTenant(ctx context.Context, credentialID int, limit *int, holder, tenantID string) bool {
 	if !ratelimit.IsRateLimitEnabled() {
 		return true
 	}
@@ -269,10 +294,10 @@ func (m *Manager) RoutingEligible(ctx context.Context, credentialID int, limit *
 	if eff == nil {
 		return true
 	}
-	if m.hasPin(ctx, holder, credentialID) {
+	if m.hasPinForTenant(ctx, tenantID, holder, credentialID) {
 		return true
 	}
-	free, _ := m.AvailableCount(ctx, credentialID, limit)
+	free, _ := m.AvailableCountForTenant(ctx, credentialID, limit, tenantID)
 	return free > 0
 }
 
@@ -284,15 +309,16 @@ func (m *Manager) RoutingEligible(ctx context.Context, credentialID int, limit *
 // index 0 is used for the virtual fingerprint, which is fine when the
 // "spread distinct identities" optimization is disabled.
 func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, holder, tenantID string) (*Lease, bool) {
+	tenantID = normalizeTenantID(tenantID)
 	if !ratelimit.IsRateLimitEnabled() {
-		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder}, true
+		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
 	}
 	if !m.Enabled() {
-		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder}, true
+		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
 	}
 	eff := EffectiveLimit(limit, m.cfg.DefaultLimit)
 	if eff == nil {
-		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder}, true
+		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
 	}
 	if m.client == nil {
 		recordAcquireRedisError()
@@ -335,8 +361,9 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	if m.client == nil {
 		return
 	}
-	key := slotRedisKey(lease.CredentialID, lease.SlotIndex)
-	pinKey := pinRedisKey(lease.Holder, lease.CredentialID)
+	tenantID := normalizeTenantID(lease.TenantID)
+	key := tenantSlotRedisKey(tenantID, lease.CredentialID, lease.SlotIndex)
+	pinKey := tenantPinRedisKey(tenantID, lease.Holder, lease.CredentialID)
 
 	var lastErr error
 	for attempt := 1; attempt <= releaseRetryCount; attempt++ {
@@ -401,10 +428,14 @@ const releaseRetryCount = 3
 // permanent) so the next request doesn't try to re-acquire a slot in a dead
 // credential. The slot itself is untouched; this only clears the pinning hint.
 func (m *Manager) ForceUnpin(ctx context.Context, holder string, credentialID int) {
+	m.ForceUnpinForTenant(ctx, holder, credentialID, "default")
+}
+
+func (m *Manager) ForceUnpinForTenant(ctx context.Context, holder string, credentialID int, tenantID string) {
 	if holder == "" {
 		return
 	}
-	pinKey := pinRedisKey(holder, credentialID)
+	pinKey := tenantPinRedisKey(tenantID, holder, credentialID)
 	if m.client == nil {
 		return
 	}
@@ -452,11 +483,15 @@ var forceUnpinScript = redis.NewScript(`
 
 // Stats returns occupancy snapshot for admin dashboards.
 func (m *Manager) Stats(ctx context.Context, credentialID int, limit *int) (slotLimit, used, free *int) {
+	return m.StatsForTenant(ctx, credentialID, limit, "default")
+}
+
+func (m *Manager) StatsForTenant(ctx context.Context, credentialID int, limit *int, tenantID string) (slotLimit, used, free *int) {
 	eff := EffectiveLimit(limit, m.cfg.DefaultLimit)
 	if eff == nil {
 		return nil, nil, nil
 	}
-	avail, _ := m.AvailableCount(ctx, credentialID, limit)
+	avail, _ := m.AvailableCountForTenant(ctx, credentialID, limit, tenantID)
 	u := *eff - avail
 	if u < 0 {
 		u = 0
@@ -481,6 +516,10 @@ type SlotDetail struct {
 // the "cred-11/minimax-m3 alternating success/failure" issue where one
 // session bounces between credentials due to intermittent failures.
 func (m *Manager) DetailedStats(ctx context.Context, credentialID int, limit *int) (slotLimit *int, holders []string, details []SlotDetail, healthySlots int) {
+	return m.DetailedStatsForTenant(ctx, credentialID, limit, "default")
+}
+
+func (m *Manager) DetailedStatsForTenant(ctx context.Context, credentialID int, limit *int, tenantID string) (slotLimit *int, holders []string, details []SlotDetail, healthySlots int) {
 	if !m.Enabled() {
 		return nil, nil, nil, 0
 	}
@@ -494,11 +533,11 @@ func (m *Manager) DetailedStats(ctx context.Context, credentialID int, limit *in
 	if m.client == nil {
 		return slotLimit, nil, nil, 0
 	}
-	holders, details, healthySlots = m.detailedStatsRedis(ctx, credentialID, limitVal)
+	holders, details, healthySlots = m.detailedStatsRedis(ctx, tenantID, credentialID, limitVal)
 	return slotLimit, holders, details, healthySlots
 }
 
-func (m *Manager) detailedStatsRedis(ctx context.Context, credentialID, limit int) ([]string, []SlotDetail, int) {
+func (m *Manager) detailedStatsRedis(ctx context.Context, tenantID string, credentialID, limit int) ([]string, []SlotDetail, int) {
 	holders := make([]string, 0, limit)
 	details := make([]SlotDetail, 0, limit)
 	healthySlots := 0
@@ -507,7 +546,7 @@ func (m *Manager) detailedStatsRedis(ctx context.Context, credentialID, limit in
 	getCmds := make([]*redis.StringCmd, limit)
 	ttlCmds := make([]*redis.DurationCmd, limit)
 	for slot := 0; slot < limit; slot++ {
-		key := slotRedisKey(credentialID, slot)
+		key := tenantSlotRedisKey(tenantID, credentialID, slot)
 		getCmds[slot] = pipe.Get(ctx, key)
 		ttlCmds[slot] = pipe.TTL(ctx, key)
 	}
@@ -537,6 +576,10 @@ func (m *Manager) detailedStatsRedis(ctx context.Context, credentialID, limit in
 
 // AvailableCount returns free slots.
 func (m *Manager) AvailableCount(ctx context.Context, credentialID int, limit *int) (int, error) {
+	return m.AvailableCountForTenant(ctx, credentialID, limit, "default")
+}
+
+func (m *Manager) AvailableCountForTenant(ctx context.Context, credentialID int, limit *int, tenantID string) (int, error) {
 	eff := EffectiveLimit(limit, m.cfg.DefaultLimit)
 	if eff == nil {
 		return 0, nil
@@ -545,7 +588,7 @@ func (m *Manager) AvailableCount(ctx context.Context, credentialID int, limit *i
 		return 0, ErrRedisRequired
 	}
 	result, err := availableCountScript.Run(ctx, m.client,
-		[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
+		[]string{tenantSlotRedisPrefix(tenantID, credentialID)},
 		*eff,
 	).Int()
 	if err != nil {
@@ -553,7 +596,7 @@ func (m *Manager) AvailableCount(ctx context.Context, credentialID int, limit *i
 		pipe := m.client.Pipeline()
 		cmds := make([]*redis.StringCmd, *eff)
 		for slot := 0; slot < *eff; slot++ {
-			cmds[slot] = pipe.Get(ctx, slotRedisKey(credentialID, slot))
+			cmds[slot] = pipe.Get(ctx, tenantSlotRedisKey(tenantID, credentialID, slot))
 		}
 		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil && pipeErr != redis.Nil {
 			return *eff, pipeErr
@@ -594,15 +637,19 @@ var availableCountScript = redis.NewScript(`
 `)
 
 func (m *Manager) hasPin(ctx context.Context, holder string, credentialID int) bool {
+	return m.hasPinForTenant(ctx, "default", holder, credentialID)
+}
+
+func (m *Manager) hasPinForTenant(ctx context.Context, tenantID, holder string, credentialID int) bool {
 	if m.client == nil {
 		return false
 	}
-	_, err := m.client.Get(ctx, pinRedisKey(holder, credentialID)).Result()
+	_, err := m.client.Get(ctx, tenantPinRedisKey(tenantID, holder, credentialID)).Result()
 	return err == nil
 }
 
 func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, holder, tenantID string) (*Lease, bool) {
-	pinKey := pinRedisKey(holder, credentialID)
+	pinKey := tenantPinRedisKey(tenantID, holder, credentialID)
 	gate := m.cfg.resolveActiveGateSeconds()
 	// Phase 1: pin-reuse path. The Lua script applies the active
 	// gate for us — if our pin is on a slot that some other holder
@@ -611,14 +658,14 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 		slot, parseErr := strconv.Atoi(strings.TrimSpace(pinned))
 		if parseErr == nil && slot >= 0 && slot < limit {
 			acquired, err := acquireSlotScript.Run(ctx, m.client,
-				[]string{slotRedisKey(credentialID, slot), pinKey},
+				[]string{tenantSlotRedisKey(tenantID, credentialID, slot), pinKey},
 				holder, slotTTLSeconds, sessionPinTTLSeconds, slot, gate,
 			).Bool()
 			if err != nil {
 				slog.Debug("cred_fp_slot redis pin-reuse failed", "cred", credentialID, "slot", slot, "error", err)
 			} else if acquired {
 				eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
-				return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
+				return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
 			}
 		}
 	}
@@ -629,8 +676,8 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 	// the LONGEST (and is past the active gate). Per operator spec
 	// (2026-06-24): "长时间占用的 slot 在 slot 满时，优先被抢占".
 	res, err := acquireLRUScript.Run(ctx, m.client,
-		[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
-		limit, holder, slotTTLSeconds, sessionPinTTLSeconds, gate, pinKey, credentialID,
+		[]string{tenantSlotRedisPrefix(tenantID, credentialID)},
+		limit, holder, slotTTLSeconds, sessionPinTTLSeconds, gate, pinKey, credentialID, tenantPinRedisPrefix(tenantID),
 	).Result()
 	if err != nil {
 		slog.Debug("cred_fp_slot redis LRU acquire failed", "cred", credentialID, "error", err)
@@ -657,12 +704,12 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 		)
 	}
 	eg := identity.BuildEgressIdentity(credentialID, int(slot), tenantID)
-	return &Lease{SlotIndex: int(slot), Egress: &eg, CredentialID: credentialID, Holder: holder}, true
+	return &Lease{SlotIndex: int(slot), Egress: &eg, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
 }
 
 func (m *Manager) tryRedisLock(ctx context.Context, credentialID, slot int, holder string) bool { //nolint:unused
 	acquired, err := acquireSlotScript.Run(ctx, m.client,
-		[]string{slotRedisKey(credentialID, slot), ""},
+		[]string{tenantSlotRedisKey("default", credentialID, slot), ""},
 		holder, slotTTLSeconds, 0, slot, m.cfg.resolveActiveGateSeconds(),
 	).Bool()
 	if err != nil {
@@ -786,6 +833,7 @@ var acquireLRUScript = redis.NewScript(`
 	local gate    = tonumber(ARGV[5])
 	local pinKey  = ARGV[6]
 	local credID  = tonumber(ARGV[7])
+	local pinPrefix = ARGV[8]
 
 	local bestSlot = -1
 	local bestIdle = -1
@@ -850,7 +898,7 @@ var acquireLRUScript = redis.NewScript(`
 	-- Acquire would either re-take the slot (racing the new
 	-- holder) or fail spuriously.
 	if bestOldHolder then
-		local oldPinKey = 'llmgw:sess_cred_fp:' .. bestOldHolder .. ':' .. tostring(credID)
+		local oldPinKey = pinPrefix .. bestOldHolder .. ':' .. tostring(credID)
 		if redis.call('GET', oldPinKey) == tostring(bestSlot) then
 			redis.call('DEL', oldPinKey)
 		end
@@ -866,6 +914,10 @@ var acquireLRUScript = redis.NewScript(`
 //
 // Returns (deleted_slots, deleted_pins, error).
 func (m *Manager) ResetSlots(ctx context.Context, credentialID int, limit *int) (int, int, error) {
+	return m.ResetSlotsForTenant(ctx, credentialID, limit, "default")
+}
+
+func (m *Manager) ResetSlotsForTenant(ctx context.Context, credentialID int, limit *int, tenantID string) (int, int, error) {
 	if !m.Enabled() {
 		return 0, 0, nil
 	}
@@ -878,9 +930,10 @@ func (m *Manager) ResetSlots(ctx context.Context, credentialID int, limit *int) 
 		return 0, 0, ErrRedisRequired
 	}
 	result, err := resetSlotsScript.Run(ctx, m.client,
-		[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
+		[]string{tenantSlotRedisPrefix(tenantID, credentialID)},
 		*eff,
 		credentialID,
+		tenantPinRedisPrefix(tenantID),
 	).Result()
 	if err != nil {
 		return 0, 0, fmt.Errorf("redis reset failed: %w", err)
@@ -899,6 +952,10 @@ func (m *Manager) ResetSlots(ctx context.Context, credentialID int, limit *int) 
 // ReleaseSlot frees a single fingerprint slot (and its pin) for a credential.
 // Returns true if the slot was actually occupied and released.
 func (m *Manager) ReleaseSlot(ctx context.Context, credentialID, slotIndex int) (bool, error) {
+	return m.ReleaseSlotForTenant(ctx, credentialID, slotIndex, "default")
+}
+
+func (m *Manager) ReleaseSlotForTenant(ctx context.Context, credentialID, slotIndex int, tenantID string) (bool, error) {
 	if !m.Enabled() {
 		return false, nil
 	}
@@ -907,8 +964,9 @@ func (m *Manager) ReleaseSlot(ctx context.Context, credentialID, slotIndex int) 
 		return false, ErrRedisRequired
 	}
 	result, err := releaseFpSlotScript.Run(ctx, m.client,
-		[]string{slotRedisKey(credentialID, slotIndex)},
+		[]string{tenantSlotRedisKey(tenantID, credentialID, slotIndex)},
 		credentialID,
+		tenantPinRedisPrefix(tenantID),
 	).Result()
 	if err != nil {
 		return false, fmt.Errorf("redis release slot failed: %w", err)
@@ -927,6 +985,7 @@ func (m *Manager) ReleaseSlot(ctx context.Context, credentialID, slotIndex int) 
 var releaseFpSlotScript = redis.NewScript(`
 	local slotKey = KEYS[1]
 	local credentialID = tonumber(ARGV[1])
+	local pinPrefix = ARGV[2]
 	
 	local holder = redis.call('GET', slotKey)
 	if not holder then
@@ -936,7 +995,7 @@ var releaseFpSlotScript = redis.NewScript(`
 	redis.call('DEL', slotKey)
 	
 	-- Also delete the associated pin key
-	local pinKey = 'llmgw:sess_cred_fp:' .. holder .. ':' .. tostring(credentialID)
+	local pinKey = pinPrefix .. holder .. ':' .. tostring(credentialID)
 	redis.call('DEL', pinKey)
 	
 	return 1
@@ -946,6 +1005,7 @@ var resetSlotsScript = redis.NewScript(`
 	local prefix = KEYS[1]
 	local limit = tonumber(ARGV[1])
 	local credentialID = tonumber(ARGV[2])
+	local pinPrefix = ARGV[3]
 	
 	local deletedSlots = 0
 	local deletedPins = 0
@@ -960,7 +1020,7 @@ var resetSlotsScript = redis.NewScript(`
 	
 	-- Delete all pin keys (llmgw:sess_cred_fp:*:{credentialID})
 	-- Use SCAN to find matching pin keys
-	local pinPattern = 'llmgw:sess_cred_fp:*:' .. tostring(credentialID)
+	local pinPattern = pinPrefix .. '*:' .. tostring(credentialID)
 	local cursor = '0'
 	repeat
 		local result = redis.call('SCAN', cursor, 'MATCH', pinPattern, 'COUNT', 100)

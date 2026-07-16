@@ -495,18 +495,19 @@ func (h *Handler) resetCredentialFpSlots(w http.ResponseWriter, r *http.Request,
 	// This is conceptually independent from concurrency_limit — see
 	// EffectiveFpSlotLimit for the distinction.
 	var fpSlotLimit *int
+	var tenantID string
 	err := h.db.QueryRow(ctx, `
-		SELECT fp_slot_limit
+		SELECT fp_slot_limit, COALESCE(tenant_id, 'default')
 		FROM credentials
 		WHERE id = $1 AND provider_id = $2
-	`, credID, providerID).Scan(&fpSlotLimit)
+	`, credID, providerID).Scan(&fpSlotLimit, &tenantID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
 		return
 	}
 
 	// Reset all slots
-	deletedSlots, deletedPins, err := h.fpSlots.ResetSlots(ctx, credID, fpSlotLimit)
+	deletedSlots, deletedPins, err := h.fpSlots.ResetSlotsForTenant(ctx, credID, fpSlotLimit, tenantID)
 	if err != nil {
 		slog.Error("reset fp slots failed", "credential_id", credID, "error", err)
 		writeError(w, http.StatusInternalServerError, "reset failed: "+err.Error())
@@ -547,7 +548,17 @@ func (h *Handler) releaseCredentialFpSlot(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	released, err := h.fpSlots.ReleaseSlot(ctx, credID, body.SlotIndex)
+	var tenantID string
+	if err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(tenant_id, 'default')
+		FROM credentials
+		WHERE id = $1 AND provider_id = $2
+	`, credID, providerID).Scan(&tenantID); err != nil {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+
+	released, err := h.fpSlots.ReleaseSlotForTenant(ctx, credID, body.SlotIndex, tenantID)
 	if err != nil {
 		slog.Error("release fp slot failed", "credential_id", credID, "slot_index", body.SlotIndex, "error", err)
 		writeError(w, http.StatusInternalServerError, "release failed: "+err.Error())
@@ -585,17 +596,18 @@ func (h *Handler) getCredentialFpSlotStats(w http.ResponseWriter, r *http.Reques
 	defer cancel()
 
 	var fpSlotLimit *int
+	var tenantID string
 	err := h.db.QueryRow(ctx, `
-		SELECT fp_slot_limit
+		SELECT fp_slot_limit, COALESCE(tenant_id, 'default')
 		FROM credentials
 		WHERE id = $1 AND provider_id = $2
-	`, credID, providerID).Scan(&fpSlotLimit)
+	`, credID, providerID).Scan(&fpSlotLimit, &tenantID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
 		return
 	}
 
-	limit, holders, details, healthySlots := h.fpSlots.DetailedStats(ctx, credID, fpSlotLimit)
+	limit, holders, details, healthySlots := h.fpSlots.DetailedStatsForTenant(ctx, credID, fpSlotLimit, tenantID)
 
 	if limit == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
