@@ -93,7 +93,8 @@ func (h *Handler) auditLog(actor, action, targetType string, targetID int, detai
 		}
 	}
 	payload = sanitizeJSONBPayload(payload)
-	_, err := h.db.Exec(ctx, `INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5)`, actor, action, targetType, targetID, payload)
+	// 2026-07-16: Force text protocol to avoid pgx binary encoding issues (same fix as apihub/telemetry)
+	_, err := h.db.Exec(ctx, `INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5::text::jsonb)`, actor, action, targetType, targetID, string(payload))
 	if err != nil {
 		// Last-resort: PG still rejected (could be a transient type
 		// issue we cannot sanitize). Try inserting the raw text form
