@@ -1,8 +1,12 @@
---
--- Name: model_offers; Type: VIEW; Schema: public; Owner: -
---
+-- Migration: Add unavailable_recover_at to model_offers view
+-- Date: 2026-07-16
+-- Issue: RestoreOnSuccess fails with "column unavailable_recover_at does not exist"
+-- Root cause: model_offers view missing cmb.unavailable_recover_at column
 
-CREATE VIEW public.model_offers AS
+-- Drop and recreate view with unavailable_recover_at column
+DROP VIEW IF EXISTS model_offers;
+
+CREATE VIEW model_offers AS
  SELECT cmb.id,
     cmb.credential_id,
     pm.canonical_id,
@@ -22,7 +26,7 @@ CREATE VIEW public.model_offers AS
     pm.standardized_name,
     cmb.unavailable_reason,
     cmb.unavailable_at,
-    cmb.unavailable_recover_at,
+    cmb.unavailable_recover_at,  -- Added: allows RestoreOnSuccess to clear recovery timestamp
     cmb.billing_mode,
     cmb.pricing_source,
     cmb.pricing_updated_at,
@@ -30,6 +34,5 @@ CREATE VIEW public.model_offers AS
     cmb.active_sessions,
     cmb.consecutive_failures,
     cmb.admin_protected
-   FROM (public.credential_model_bindings cmb
-     JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
-
+   FROM credential_model_bindings cmb
+     JOIN provider_models pm ON pm.id = cmb.provider_model_id;
