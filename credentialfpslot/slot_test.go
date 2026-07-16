@@ -20,6 +20,19 @@ func TestEffectiveLimit(t *testing.T) {
 	}
 }
 
+func TestAcquireIsolatesTenants(t *testing.T) {
+	m, _ := newTestManager(t, Config{DefaultLimit: 1, Enabled: true})
+	ctx := context.Background()
+
+	first := acquireSuccess(t, m, ctx, 31, nil, "sess-a", "tenant-a")
+	second := acquireSuccess(t, m, ctx, 31, nil, "sess-b", "tenant-b")
+	if first.SlotIndex != second.SlotIndex {
+		t.Fatalf("independent tenants should each use slot 0: got %d and %d", first.SlotIndex, second.SlotIndex)
+	}
+	m.Release(ctx, first)
+	m.Release(ctx, second)
+}
+
 func TestAcquireReleaseRedis(t *testing.T) {
 	m, _ := newTestManager(t, Config{DefaultLimit: 2, Enabled: true})
 	ctx := context.Background()

@@ -945,6 +945,10 @@ func ensureFpReleaseWorker() {
 func init() { ensureFpReleaseWorker() }
 
 func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
+	if params.R != nil && strings.TrimSpace(params.TenantID) != "" {
+		params.R = params.R.WithContext(session.SetTenantID(params.R.Context(), params.TenantID))
+	}
+
 	// Keep the inbound body immutable across candidate failover. Per-candidate
 	// protocol rendering works from this snapshot and never re-enters attachment extraction.
 	params.BodyBytes = append([]byte(nil), params.BodyBytes...)
@@ -1137,7 +1141,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	if e.FpSlots != nil && e.FpSlots.Enabled() && !fpSlotKilled {
 		filtered := make([]provider.Candidate, 0, len(candidates))
 		for _, cand := range candidates {
-			if e.FpSlots.RoutingEligible(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder) {
+			if e.FpSlots.RoutingEligibleForTenant(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder, fpSlotTenantID(params)) {
 				filtered = append(filtered, cand)
 			} else {
 				slog.Info("cred_fp_slot prefilter skip",
@@ -1262,7 +1266,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 		var fpLease *credentialfpslot.Lease
 		if e.FpSlots != nil && e.FpSlots.Enabled() {
-			lease, ok := e.FpSlots.Acquire(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder, "default")
+			lease, ok := e.FpSlots.Acquire(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder, fpSlotTenantID(params))
 			if !ok {
 				if fpSlotDegraded {
 					// Degradation path: all slot pools were saturated at the
@@ -1731,10 +1735,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.recordBanditFailure(cand.CredentialID, kind)
 				if kind == errorsx.KindConcurrent {
 					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.StandardizedName, kind, execErr)
-					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
+					e.forceUnpinOnFatalKindForTenant(failureCtx, holder, cand.CredentialID, kind, params.TenantID)
 				} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.StandardizedName, kind, execErr)
-					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
+					e.forceUnpinOnFatalKindForTenant(failureCtx, holder, cand.CredentialID, kind, params.TenantID)
 				}
 
 				lastErr = execErr
@@ -1764,7 +1768,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.recordBanditFailure(cand.CredentialID, kind)
 				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 					e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.StandardizedName, kind, execErr)
-					e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
+					e.forceUnpinOnFatalKindForTenant(failureCtx, holder, cand.CredentialID, kind, params.TenantID)
 				}
 
 				slog.Warn("candidate stream interrupted (non-resumable), returning error",
@@ -1912,7 +1916,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		})
 		if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 			e.writeCredentialStateOnError(failureCtx, cand.CredentialID, cand.StandardizedName, kind, execErr)
-			e.forceUnpinOnFatalKind(failureCtx, holder, cand.CredentialID, kind)
+			e.forceUnpinOnFatalKindForTenant(failureCtx, holder, cand.CredentialID, kind, params.TenantID)
 		}
 
 		// ── Fatal 凭证错误：透明切换到下一个候选人（前端无感知）────────
@@ -2311,13 +2315,17 @@ func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID
 // to the credential, so we keep the pin for them. Concurrent calls are safe
 // because pin is keyed by (holder, credentialID).
 func (e *Executor) forceUnpinOnFatalKind(ctx context.Context, holder string, credentialID int, kind errorsx.ErrorKind) {
+	e.forceUnpinOnFatalKindForTenant(ctx, holder, credentialID, kind, session.GetTenantIDFromContext(ctx))
+}
+
+func (e *Executor) forceUnpinOnFatalKindForTenant(ctx context.Context, holder string, credentialID int, kind errorsx.ErrorKind, tenantID string) {
 	if e.FpSlots == nil || !e.FpSlots.Enabled() {
 		return
 	}
 	if !errorsx.IsCredentialFatal(kind) {
 		return
 	}
-	e.FpSlots.ForceUnpin(ctx, holder, credentialID)
+	e.FpSlots.ForceUnpinForTenant(ctx, holder, credentialID, tenantID)
 }
 
 func (e *Executor) stickyCredentialID(stickyKey string) *int {
@@ -3093,7 +3101,18 @@ func strPtr(s string) *string {
 	return &s
 }
 
-// tenantFromCtx pulls the tenant id from request context, falling
+func fpSlotTenantID(params *ExecParams) string {
+	if params != nil {
+		if tenantID := strings.TrimSpace(params.TenantID); tenantID != "" {
+			return tenantID
+		}
+		if params.R != nil {
+			return tenantFromCtx(params.R)
+		}
+	}
+	return "default"
+}
+
 // back to the literal "default" if unset. Uses the exported
 // session.GetTenantIDFromContext (Track C C4 audit fix #5).
 func tenantFromCtx(r *http.Request) string {

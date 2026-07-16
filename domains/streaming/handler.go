@@ -539,6 +539,13 @@ func (h *ChatHandler) SetAuth(kv *authentication.KeyVerifier, rl ratelimit.RPMLi
 	h.rateLimiter = rl
 }
 
+func (h *ChatHandler) AuthKeyVerifier() *authentication.KeyVerifier {
+	if h == nil {
+		return nil
+	}
+	return h.keyVerifier
+}
+
 func (h *ChatHandler) SetTelemetry(tc *telemetry.Client) {
 	h.telemetryClient = tc
 }

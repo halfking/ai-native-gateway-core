@@ -58,18 +58,19 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 // calculateConcurrencyScore 计算全局并发压力分数
 // 返回 0.0-1.0，值越大表示压力越大
 func calculateConcurrencyScore(c provider.Candidate, r *Router, ctx context.Context) float64 {
-	if r.FpSlots == nil || !r.FpSlots.Enabled() {
-		return 0.5 // 默认中等压力
-	}
-
-	limit, used, _ := r.FpSlots.Stats(ctx, c.CredentialID, c.ConcurrencyLimit)
-	if used == nil || limit == nil || *limit == 0 {
+	if r.Limiter == nil {
 		return 0.5
 	}
 
-	pressure := float64(*used) / float64(*limit)
+	cred := r.Limiter.Credential(c.ProviderID, c.CredentialID)
+	capacity := cred.Capacity()
+	if capacity <= 0 {
+		return 0.5
+	}
+
+	pressure := float64(cred.Used()) / float64(capacity)
 	if pressure > 1.0 {
-		pressure = 1.0 // 饱和限制
+		pressure = 1.0
 	}
 
 	return pressure

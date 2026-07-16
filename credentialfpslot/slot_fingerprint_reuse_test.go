@@ -33,7 +33,7 @@ func TestLongTermOccupancy(t *testing.T) {
 	credID := 456
 	limit := 3
 
-	avail, err := m.AvailableCount(ctx, credID, &limit)
+	avail, err := m.AvailableCountForTenant(ctx, credID, &limit, "tenant2")
 	if err != nil || avail != 3 {
 		t.Fatalf("expected 3 available, got avail=%d err=%v", avail, err)
 	}
@@ -42,7 +42,7 @@ func TestLongTermOccupancy(t *testing.T) {
 	l2 := acquireSuccess(t, m, ctx, credID, &limit, "sess-b", "tenant2")
 	l3 := acquireSuccess(t, m, ctx, credID, &limit, "sess-c", "tenant2")
 
-	avail, _ = m.AvailableCount(ctx, credID, &limit)
+	avail, _ = m.AvailableCountForTenant(ctx, credID, &limit, "tenant2")
 	if avail != 0 {
 		t.Fatalf("expected 0 available, got %d", avail)
 	}
@@ -51,7 +51,7 @@ func TestLongTermOccupancy(t *testing.T) {
 	m.Release(ctx, l2)
 	m.Release(ctx, l3)
 
-	avail, _ = m.AvailableCount(ctx, credID, &limit)
+	avail, _ = m.AvailableCountForTenant(ctx, credID, &limit, "tenant2")
 	if avail != 0 {
 		t.Fatalf("expected 0 available after release, got %d", avail)
 	}
