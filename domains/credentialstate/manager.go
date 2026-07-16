@@ -33,7 +33,8 @@ func onNoCandidatesFanoutLimit() int {
 	return value
 }
 
-// Manager 凭据状态管理器 - 统一管理所有探测结果和状态更新
+const noCandidatesDebounceWindow = 5 * time.Second
+
 type Manager struct {
 	memCache      *sync.Map
 	redisClient   *redis.Client
@@ -73,6 +74,10 @@ type Manager struct {
 	// 2026-07-15: Candidate cache invalidator scoped to a credential. Per-state
 	// transitions must not flush unrelated models and tenants back to the DB.
 	invalidateCandidateCache func(credentialID int)
+
+	// 2026-07-17: debounce repeated no-candidate bursts per tenant/model.
+	noCandidatesMu         sync.Mutex
+	noCandidatesDispatched map[string]time.Time
 }
 
 // CacheEntry 缓存条目
@@ -90,13 +95,14 @@ type pendingProbeTimer struct {
 // NewManager 创建状态管理器
 func NewManager(db *pgxpool.Pool, redisClient *redis.Client) *Manager {
 	m := &Manager{
-		memCache:      &sync.Map{},
-		redisClient:   redisClient,
-		db:            db,
-		memCacheTTL:   10 * time.Second,
-		redisCacheTTL: 5 * time.Minute,
-		staleTTL:      2 * time.Minute,
-		pendingTimers: make(map[string]*pendingProbeTimer),
+		memCache:               &sync.Map{},
+		redisClient:            redisClient,
+		db:                     db,
+		memCacheTTL:            10 * time.Second,
+		redisCacheTTL:          5 * time.Minute,
+		staleTTL:               2 * time.Minute,
+		pendingTimers:          make(map[string]*pendingProbeTimer),
+		noCandidatesDispatched: make(map[string]time.Time),
 	}
 	m.batchWriter = NewBatchWriter(db, 5*time.Second, 100)
 	return m
@@ -493,6 +499,21 @@ func (m *Manager) OnNoCandidates(ctx context.Context, sig NoCandidatesSignal) {
 	if len(sig.Candidates) == 0 {
 		return
 	}
+	debounceKey := strings.ToLower(strings.TrimSpace(sig.TenantID + "|" + sig.ClientModel))
+	now := time.Now()
+	m.noCandidatesMu.Lock()
+	if last, ok := m.noCandidatesDispatched[debounceKey]; ok && now.Sub(last) < noCandidatesDebounceWindow {
+		m.noCandidatesMu.Unlock()
+		slog.Debug("credstate: OnNoCandidates debounced", "client_model", sig.ClientModel, "tenant_id", sig.TenantID)
+		return
+	}
+	m.noCandidatesDispatched[debounceKey] = now
+	for key, at := range m.noCandidatesDispatched {
+		if now.Sub(at) > 2*noCandidatesDebounceWindow {
+			delete(m.noCandidatesDispatched, key)
+		}
+	}
+	m.noCandidatesMu.Unlock()
 
 	// Dedup (credID, model) — different credentials can serve the same
 	// outbound model; only the first wins.
