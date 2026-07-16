@@ -2258,8 +2258,11 @@ func (e *Executor) stickyCredentialID(stickyKey string) *int {
 // L3, so a session-scoped request retried after a transient error could hop
 // to a different credential than the first attempt.
 func (e *Executor) pickStickyCredentialID(params *ExecParams) *int {
+	var stickyID *int
+	var level string
+
 	if params.SessionID != "" && params.Model != "" {
-		return e.stickyCredentialIDMultiLevel(
+		stickyID = e.stickyCredentialIDMultiLevel(
 			params.TenantID,
 			params.AppID,
 			params.ApiKeyID,
@@ -2267,8 +2270,25 @@ func (e *Executor) pickStickyCredentialID(params *ExecParams) *int {
 			params.SessionID,
 			params.Model,
 		)
+		level = "multi-level"
+	} else {
+		stickyID = e.stickyCredentialID(params.StickyKey)
+		level = "sticky-key"
 	}
-	return e.stickyCredentialID(params.StickyKey)
+
+	// 2026-07-16: Diagnostic logging for sticky routing debugging
+	if stickyID != nil {
+		slog.Debug("sticky_routing: credential locked",
+			"credential_id", *stickyID,
+			"model", params.Model,
+			"session_id", params.SessionID,
+			"sticky_key", params.StickyKey,
+			"level", level,
+			"request_id", params.RequestID,
+		)
+	}
+
+	return stickyID
 }
 
 // stickyCredentialIDMultiLevel uses the multi-level sticky lookup (L1 → L2 → L3).
