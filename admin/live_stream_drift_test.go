@@ -151,6 +151,16 @@ func TestLiveRequestFromTelemetry_ModelPrefersCanonicalName(t *testing.T) {
 			wantModel:     "minimax-m3",
 			wantCanonical: "minimax-m3",
 		},
+		{
+			// canonicalID > 0 但 canonical_name 为空（模型被删除/inactive）：
+			// 应回退到 clientModel，而不是用空字符串覆盖。
+			name:          "canonicalID > 0 但 resolves 为空: 回退到 client",
+			clientModel:   "deepseek-v3",
+			outbound:      "deepseek-chat-v3-raw",
+			canonicalID:   999, // cache 未预热 → 返回 ""
+			wantModel:     "deepseek-v3",
+			wantCanonical: "deepseek-v3",
+		},
 	}
 
 	for _, c := range cases {
@@ -188,5 +198,27 @@ func TestLiveRequestFromTelemetry_ModelPrefersCanonicalName(t *testing.T) {
 					key, c.wantModel, normalizeModelKey(c.wantModel))
 			}
 		})
+	}
+}
+
+// TestCanonicalNameFor_NilHubDoesNotPanic guards against the 2026-07-16
+// regression where CanonicalNameFor's cache check was moved BEFORE the
+// h == nil guard, which would cause a nil pointer dereference panic on
+// h.canonicalCache.Load(...) when called with a nil receiver.
+//
+// LiveRequestFromTelemetry and ModelVendorFor already defend against nil h,
+// so the live stream pipeline must never panic even when the hub is
+// uninitialized (e.g. during graceful shutdown or test wiring).
+func TestCanonicalNameFor_NilHubDoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("CanonicalNameFor panicked on nil receiver: %v", r)
+		}
+	}()
+
+	var nilHub *LiveStreamSSEHub
+	got := nilHub.CanonicalNameFor(context.Background(), 42)
+	if got != "" {
+		t.Errorf("nil hub should return empty string, got %q", got)
 	}
 }
