@@ -292,6 +292,72 @@ func TestLimiterStats(t *testing.T) {
 	if !ok || len(creds) != 1 {
 		t.Fatalf("expected 1 credential entry, got %d", len(creds))
 	}
+
+	// keys + identities should be present (possibly empty) so per-key/per-identity
+	// used counts are observable. identity_count is kept for backwards compat.
+	if _, ok := stats["keys"].([]map[string]any); !ok {
+		t.Fatal("expected keys entry (slice) in stats")
+	}
+	if _, ok := stats["identities"].([]map[string]any); !ok {
+		t.Fatal("expected identities entry (slice) in stats")
+	}
+	if _, ok := stats["identity_count"].(int); !ok {
+		t.Fatal("expected identity_count (int) in stats")
+	}
+}
+
+// TestLimiterStatsKeyUsed verifies that the per-key semaphore's used count is
+// reflected in Stats() — this is the observability that lets us detect a leaked
+// per-key concurrency slot (used > 0 with no in-flight request).
+func TestLimiterStatsKeyUsed(t *testing.T) {
+	l := NewLimiter()
+	defer l.Stop()
+
+	// Acquire two slots on key 7 (capacity 5).
+	s := l.Key(7, 5)
+	if !s.TryAcquire() || !s.TryAcquire() {
+		t.Fatal("expected to acquire 2 slots")
+	}
+
+	stats := l.Stats()
+	keys, ok := stats["keys"].([]map[string]any)
+	if !ok {
+		t.Fatal("expected keys slice in stats")
+	}
+	var entry map[string]any
+	for _, e := range keys {
+		if e["key_id"] == 7 {
+			entry = e
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatal("no stats entry for key_id=7")
+	}
+	if entry["used"] != 2 || entry["capacity"] != 5 || entry["available"] != 3 {
+		t.Fatalf("key stats wrong: got %v, want used=2 capacity=5 available=3", entry)
+	}
+
+	// Release one slot; Stats must reflect it.
+	s.Release()
+	entry = nil
+	for _, e := range keys {
+		if e["key_id"] == 7 {
+			entry = e
+			break
+		}
+	}
+	// re-read after release
+	stats = l.Stats()
+	keys = stats["keys"].([]map[string]any)
+	for _, e := range keys {
+		if e["key_id"] == 7 {
+			entry = e
+		}
+	}
+	if entry["used"] != 1 {
+		t.Fatalf("after release: got used=%v, want 1", entry["used"])
+	}
 }
 
 func TestLimiterRecoveryLoop(t *testing.T) {

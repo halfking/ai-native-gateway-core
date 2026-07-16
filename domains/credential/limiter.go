@@ -531,6 +531,33 @@ func (l *Limiter) Stats() map[string]any {
 		})
 	}
 
+	// Per-API-key semaphores. Exposing used/capacity here is what makes a
+	// leaked used-count observable: if a key shows used > 0 while no requests
+	// are in flight, the ReleaseFunc was not invoked for some acquire. Without
+	// this, per-key concurrency leaks are invisible (Stats previously only
+	// returned identity_count).
+	keyEntries := make([]map[string]any, 0, len(l.keys))
+	for keyID, s := range l.keys {
+		keyEntries = append(keyEntries, map[string]any{
+			"key_id":    keyID,
+			"capacity":  s.Capacity(),
+			"used":      s.Used(),
+			"available": s.Available(),
+		})
+	}
+
+	// Per-identity (providerID/credentialID/identityHash) semaphores. Same
+	// rationale as keys: surface used so soft-cap saturation is observable.
+	identEntries := make([]map[string]any, 0, len(l.idents))
+	for k, s := range l.idents {
+		identEntries = append(identEntries, map[string]any{
+			"identity":  k,
+			"capacity":  s.Capacity(),
+			"used":      s.Used(),
+			"available": s.Available(),
+		})
+	}
+
 	return map[string]any{
 		"global": map[string]int{
 			"capacity":  l.global.Capacity(),
@@ -539,6 +566,8 @@ func (l *Limiter) Stats() map[string]any {
 		},
 		"pools":          poolEntries,
 		"credentials":    credEntries,
+		"keys":           keyEntries,
+		"identities":     identEntries,
 		"identity_count": len(l.idents),
 	}
 }
