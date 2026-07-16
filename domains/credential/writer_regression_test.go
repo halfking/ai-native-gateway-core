@@ -87,9 +87,8 @@ func TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials(t *testing.T) {
 			mockDB.ExpectExec(`UPDATE credential_model_bindings`).
 				WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-			mockDB.ExpectExec(`UPDATE model_offers`).
-				WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+				// model_offers is a VIEW that automatically reflects cmb updates.
+				// No separate UPDATE needed (removed in writer.go:344-347).
 
 			w := &Writer{dbPool: mockDB}
 			err := w.WriteOnError(context.Background(), 42, "minimax-m3", Failure{Kind: tc.kind})

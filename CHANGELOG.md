@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-16
 
+### Fixed
+
+- **Test**: Removed obsolete `UPDATE model_offers` mock expectation in `writer_regression_test.go`. The `model_offers` VIEW automatically reflects `credential_model_bindings` updates through the underlying table, so no separate UPDATE is executed (as documented in `writer.go:344-347`). The outdated mock was causing 6 test failures in `TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials`.
+
 ### Live stream model dimension: prefer canonical (standard) name over vendor raw name
 
 - **Symptom**: 首页实时请求流"按模型分维"时，泳道名称还是供应商原始模型名（如
