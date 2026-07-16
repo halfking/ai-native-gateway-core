@@ -27,6 +27,7 @@ coverage/
 /llm-gateway
 /llm-gateway-go
 /llm-gateway-go-*
+/gateway-*
 /build_seq
 Dockerfile.local
 # ─────────────────────────────────────────────────────────────
