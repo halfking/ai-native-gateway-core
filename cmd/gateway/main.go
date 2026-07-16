@@ -971,6 +971,20 @@ func main() {
 		routingExec.DegradationTracker = executors.NewDegradationTracker()
 		slog.Info("fp_slot_degradation_tracker enabled (Phase 1 monitoring)")
 
+		// 2026-07-16: 自适应超时与状态管理增强
+		routingExec.TimeoutAdapter = executors.NewTimeoutAdapter()
+		routingExec.TTFBTracker = executors.NewTTFBTracker()
+		routingExec.PreRequestValidator = executors.NewRequestValidator(false) // non-strict mode
+		if routingExec.State != nil {
+			routingExec.PostExecutionHook = executors.NewExecutionRecorder(routingExec.State)
+		}
+		slog.Info("adaptive_timeout_and_state_management enabled",
+			"base_timeout", "30s",
+			"min_timeout", "15s",
+			"max_timeout", "120s",
+			"validator_strict", false,
+		)
+
 		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
 		chatHandler.SetSessionRouting(lastSystemSession, sessionPref)
 		// 2026-06-26: configurable recent-session reuse window. Default
