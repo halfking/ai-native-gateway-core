@@ -570,22 +570,43 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 
 	// Persist audit row.
 	nextSec := int(ChainBackoffIndex(attempt, NodeProbeBackoffChain).Seconds())
+
+	// 准备新字段数据
+	var requestHeadersJSON []byte
+	if len(direct.requestHeaders) > 0 {
+		requestHeadersJSON, _ = json.Marshal(direct.requestHeaders)
+	}
+
+	timeoutAtMs := 0
+	if direct.errCode == "network_error" && direct.latencyMs >= 14900 {
+		timeoutAtMs = direct.latencyMs
+	}
+
 	_, _ = w.db.Exec(ctx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
 			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,
 			gateway_ok, gateway_http_status, gateway_err_code, gateway_latency_ms, gateway_err_detail,
-			success, started_at, completed_at, duration_ms
+			success, started_at, completed_at, duration_ms,
+			api_model, outbound_model, provider_id, 
+			request_url, request_headers, request_body, response_body, 
+			timeout_at_ms, via_proxy
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15,
-			$16, $17, $18, $19
+			$16, $17, $18, $19,
+			$20, $21, $22,
+			$23, $24, $25, $26,
+			$27, $28
 		)`,
 		credID, model, triggerKind, attempt, nextSec,
 		direct.ok, direct.httpStatus, direct.errCode, direct.latencyMs, direct.errDetail,
 		gw.ok, gw.httpStatus, gw.errCode, gw.latencyMs, gw.errDetail,
 		success, startedAt, now, durationMs,
+		model, direct.outboundModel, direct.providerID,
+		direct.requestURL, requestHeadersJSON, direct.requestBody, direct.responseBody,
+		timeoutAtMs, direct.viaProxy,
 	)
 	return nil
 }
@@ -620,6 +641,12 @@ type nodeProbeRoundResult struct {
 	errCode       string
 	errDetail     string
 	latencyMs     int
+	// 2026-07-16: 新增详细字段用于完整记录probe过程
+	requestURL     string
+	requestHeaders map[string]string // 已脱敏（不含Authorization/x-api-key）
+	requestBody    string
+	responseBody   string // 前512字节
+	viaProxy       bool   // probeDirect是否通过代理
 }
 
 // probeDirect issues a chat-completion ping directly to the upstream
@@ -654,6 +681,12 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	}
 	endpoint := directProbeEndpoint(baseURL, protocol)
 	body := directProbeBody(bodyModel, protocol)
+
+	// 2026-07-16: 记录请求详情
+	r.requestURL = endpoint
+	r.requestBody = body
+	r.viaProxy = (w.probeClient != w.client) // 如果probeClient与client不同，说明使用了代理
+
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	if strings.HasPrefix(protocol, "anthropic") {
 		req.Header.Set("x-api-key", plain)
@@ -670,6 +703,16 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_EGRESS_FORWARDED_FOR")); v != "" {
 		req.Header.Set("X-Forwarded-For", v)
 	}
+
+	// 记录请求头（脱敏）
+	r.requestHeaders = make(map[string]string)
+	for k, v := range req.Header {
+		// 脱敏：不记录Authorization和x-api-key
+		if k != "Authorization" && k != "X-Api-Key" && k != "x-api-key" {
+			r.requestHeaders[k] = strings.Join(v, ", ")
+		}
+	}
+
 	start := time.Now()
 	// 2026-07-16 fix: use probeClient (proxy-respecting) instead of client
 	// (direct). probeDirect previously bypassed the proxy, reporting
@@ -683,18 +726,31 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	if err != nil {
 		r.errCode = "network_error"
 		r.errDetail = err.Error()
+		// 如果是超时，记录超时时长
+		if r.latencyMs >= 14900 { // 接近15秒超时
+			// timeout_at_ms在后面的Submit函数中设置为latencyMs
+		}
 		return r
 	}
 	defer resp.Body.Close()
 	r.httpStatus = resp.StatusCode
+
+	// 读取响应body（前512字节）
+	respBuf := make([]byte, 512)
+	n, _ := resp.Body.Read(respBuf)
+	r.responseBody = string(respBuf[:n])
+
 	if resp.StatusCode == 200 {
 		r.ok = true
 		return r
 	}
 	r.errCode = fmt.Sprintf("http_%d", resp.StatusCode)
-	buf := make([]byte, 256)
-	n, _ := resp.Body.Read(buf)
-	r.errDetail = string(buf[:n])
+	// errDetail已经在responseBody中，保持兼容性也设置errDetail
+	if n > 0 && n <= 256 {
+		r.errDetail = string(respBuf[:n])
+	} else if n > 256 {
+		r.errDetail = string(respBuf[:256])
+	}
 	return r
 }
 
