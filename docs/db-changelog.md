@@ -437,3 +437,15 @@
 | 417 | `417_route_excludes_failed_node_probes.sql` |
 | 418 | `418_rearm_node_probes_after_url_fix.sql` |
 
+## 2026-07-16T14:16:56Z — deploy 245 build_seq 1114 (77bbf2e9)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+| 415 | `415_restore_node_probe_runs.sql` |
+| 416 | `416_reconcile_node_probe_bindings.sql` |
+| 417 | `417_route_excludes_failed_node_probes.sql` |
+| 418 | `418_rearm_node_probes_after_url_fix.sql` |
+
