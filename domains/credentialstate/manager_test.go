@@ -407,9 +407,10 @@ func TestManager_TieredReprobeUsesBackoff(t *testing.T) {
 //  1. credential_id == 0 is filtered out (no phantom probes).
 //  2. Empty RawModel is filtered out.
 //  3. Dedup: same (credID, model) repeated → 1 submit.
-//  4. Cap: more than onNoCandidatesFanoutLimit candidates → capped.
+//  4. An explicit cap is respected when configured.
 //  5. parentReqID / tenantID are propagated as-is so the probe
-//     row in request_logs carries the right correlation ids.
+
+// row in request_logs carries the right correlation ids.
 func TestManager_OnNoCandidates_FansOutActiveProbe(t *testing.T) {
 	m := NewManager(nil, nil)
 	m.Start(context.Background())
@@ -467,10 +468,10 @@ func TestManager_OnNoCandidates_FansOutActiveProbe(t *testing.T) {
 }
 
 // TestManager_OnNoCandidates_CapRespected asserts that the manager
-// stops dispatching after onNoCandidatesFanoutLimit even when the
+// stops dispatching after the configured fan-out limit even when the
 // router reported a very long candidate list. The cap exists so a
 // flapping tenant cannot saturate the 128-deep ActiveProbeWorker
-// queue; the test keeps the assertion in lock-step with the constant.
+// queue; the test uses an explicit environment cap.
 func TestManager_OnNoCandidates_CapRespected(t *testing.T) {
 	m := NewManager(nil, nil)
 	m.Start(context.Background())
@@ -481,8 +482,10 @@ func TestManager_OnNoCandidates_CapRespected(t *testing.T) {
 		fired.Add(1)
 	}, 2)
 
-	cands := make([]NoCandidatesCandidate, 0, onNoCandidatesFanoutLimit*2)
-	for i := 0; i < onNoCandidatesFanoutLimit*2; i++ {
+	const cap = 3
+	t.Setenv("LLM_GATEWAY_NO_CANDIDATE_PROBE_FANOUT", "3")
+	cands := make([]NoCandidatesCandidate, 0, cap*2)
+	for i := 0; i < cap*2; i++ {
 		cands = append(cands, NoCandidatesCandidate{
 			CredentialID: 1000 + i,
 			ProviderID:   1,
@@ -496,12 +499,31 @@ func TestManager_OnNoCandidates_CapRespected(t *testing.T) {
 		Candidates:  cands,
 	})
 
-	if got := int(fired.Load()); got != onNoCandidatesFanoutLimit {
-		t.Fatalf("OnNoCandidates fired %d probes, want %d (cap)", got, onNoCandidatesFanoutLimit)
+	if got := int(fired.Load()); got != cap {
+		t.Fatalf("OnNoCandidates fired %d probes, want %d (cap)", got, cap)
 	}
 }
 
-// TestManager_OnNoCandidates_NilSubmitter asserts that wiring
+func TestManager_OnNoCandidates_DispatchesAllByDefault(t *testing.T) {
+	m := NewManager(nil, nil)
+	m.Start(context.Background())
+	defer m.Stop()
+
+	var fired atomic.Int32
+	m.SetActiveProbeSubmitter(func(credID int, model string, tenantID string, parentReqID string) {
+		fired.Add(1)
+	}, 2)
+	cands := []NoCandidatesCandidate{
+		{CredentialID: 1, RawModel: "gpt-5.6-luna"},
+		{CredentialID: 2, RawModel: "gpt-5.6-luna"},
+		{CredentialID: 3, RawModel: "gpt-5.6-luna"},
+	}
+	m.OnNoCandidates(context.Background(), NoCandidatesSignal{Candidates: cands, RequestID: "req"})
+	if got := int(fired.Load()); got != len(cands) {
+		t.Fatalf("OnNoCandidates fired %d probes, want %d", got, len(cands))
+	}
+}
+
 // OnNoCandidates before any active_probe submitter is a no-op
 // rather than a panic. The manager also tolerates an empty
 // candidate list (returns immediately).

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -90,8 +91,50 @@ func (m *Manager) setToRedis(ctx context.Context, key string, state *State) {
 }
 
 func (m *Manager) getFromDB(ctx context.Context, credID int, model string) (*State, error) {
-	// 从 model_probe_state 表读取最新探测状态。该表由
-	// bg.ModelProbeRunner 维护，记录 (credential, model) 级别的健康。
+	// node_probe_state is the authoritative model-level state in the new probe
+	// mode. Keep the legacy model_probe_state fallback for older deployments and
+	// for rows that have not entered the new probe pipeline yet.
+	var (
+		lastDirectOK *bool
+		lastErrCode  *string
+		nextRetryAt  time.Time
+		consecFails  int
+	)
+	nodeErr := m.db.QueryRow(ctx, `
+		SELECT last_direct_ok, last_err_code, next_retry_at, consecutive_failures
+		FROM node_probe_state
+		WHERE credential_id = $1 AND raw_model_name = $2
+	`, credID, model).Scan(&lastDirectOK, &lastErrCode, &nextRetryAt, &consecFails)
+	if nodeErr == nil {
+		state := &State{
+			CredentialID:     credID,
+			Model:            model,
+			Available:        true,
+			ConsecutiveFails: consecFails,
+			LastUpdatedAt:    time.Now(),
+			RecoverAt:        &nextRetryAt,
+			Source:           "node_probe_db",
+		}
+		if lastErrCode != nil {
+			state.LastError = *lastErrCode
+		}
+		if lastDirectOK != nil && !*lastDirectOK && nextRetryAt.After(time.Now()) {
+			state.Available = false
+			state.HealthStatus = "unreachable"
+		}
+		return state, nil
+	}
+	if nodeErr != nil && nodeErr != pgx.ErrNoRows && !isUndefinedTable(nodeErr) {
+		return nil, nodeErr
+	}
+	if nodeErr != nil && !isUndefinedTable(nodeErr) && nodeErr != pgx.ErrNoRows {
+		return nil, nodeErr
+	}
+
+	return m.getLegacyStateFromDB(ctx, credID, model)
+}
+
+func (m *Manager) getLegacyStateFromDB(ctx context.Context, credID int, model string) (*State, error) {
 	var (
 		state          State
 		healthStatus   *string
@@ -128,18 +171,6 @@ func (m *Manager) getFromDB(ctx context.Context, credID int, model string) (*Sta
 
 	if healthStatus != nil {
 		state.HealthStatus = *healthStatus
-		// model_probe_state.state 的合法值集合（见
-		// migrations/329_model_probe_state_canonicalize.sql）：
-		//   healthy_confirmed / probing → 可用
-		//   recovering / unknown / broken_confirmed /
-		//   suspicious / manual_offline / manual_online → 不可用
-		//
-		// 向后兼容（旧字面量）：
-		//   'available' / 'healthy' 是早期废弃 init 路径写入的字面量
-		//   （db/db.go），语义上等同 healthy_confirmed。为防止旧
-		//   字面量行再次让路由报"无可用凭据"，这里也视作可用，并在
-		//   读取时同步把 state 写回 healthy_confirmed（best-effort，
-		//   失败不影响本请求）。
 		if *healthStatus == "healthy_confirmed" ||
 			*healthStatus == "probing" ||
 			*healthStatus == "available" ||
@@ -157,4 +188,9 @@ func (m *Manager) getFromDB(ctx context.Context, credID int, model string) (*Sta
 	state.Source = "db"
 
 	return &state, nil
+}
+
+func isUndefinedTable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
 }

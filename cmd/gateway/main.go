@@ -1910,6 +1910,8 @@ func main() {
 				nodeProbe := bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
 				nodeProbe.SetStateObserver(stateManager)
 				nodeProbe.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
+				nodeProbe.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
+
 				nodeProbe.Start(context.Background())
 				slog.Info("CHECKPOINT: node_probe_worker started")
 				// Wire stateManager → node_probe so consecutive

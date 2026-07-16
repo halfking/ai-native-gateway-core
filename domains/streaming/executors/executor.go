@@ -1038,7 +1038,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		trace.PlannedCandidates = append(trace.PlannedCandidates, TraceCandidate{
 			ProviderID:   c.ProviderID,
 			CredentialID: c.CredentialID,
-			RawModel:     c.RawModel,
+			RawModel:     candidateRawModel(c),
 			Tier:         c.Tier,
 		})
 	}
@@ -1098,7 +1098,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				noCands = append(noCands, credentialstate.NoCandidatesCandidate{
 					CredentialID: c.CredentialID,
 					ProviderID:   c.ProviderID,
-					RawModel:     c.RawModel,
+					RawModel:     candidateRawModel(c),
 					BillingMode:  c.BillingMode,
 				})
 			}
@@ -1417,7 +1417,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.UnifiedProbeScheduler.OnRealRequest(
 					sideEffectCtx,
 					int64(cand.CredentialID),
-					cand.RawModel,
+					candidateRawModel(cand),
 					true, // success
 					"",
 				)
@@ -1433,7 +1433,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.StateObserver.UpdateOnSuccess(
 					sideEffectCtx,
 					cand.CredentialID,
-					cand.RawModel,
+					candidateRawModel(cand),
 					result.LatencyMs,
 					requestID,
 				)
@@ -1686,7 +1686,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.StateObserver.UpdateOnFailure(
 					failureCtx,
 					cand.CredentialID,
-					cand.RawModel,
+					candidateRawModel(cand),
 					kind,
 					requestID,
 					params.TenantID,
@@ -1871,7 +1871,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			e.UnifiedProbeScheduler.OnRealRequest(
 				failureCtx,
 				int64(cand.CredentialID),
-				cand.RawModel,
+				candidateRawModel(cand),
+
 				false, // failure
 				execErr.Error(),
 			)
@@ -1903,7 +1904,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			e.StateObserver.UpdateOnFailure(
 				failureCtx,
 				cand.CredentialID,
-				cand.RawModel,
+				candidateRawModel(cand),
+
 				kind,
 				requestID,
 				params.TenantID,
