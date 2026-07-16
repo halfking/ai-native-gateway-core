@@ -224,6 +224,7 @@ type v2DispatchDeps struct {
 	// (/v1/messages, /v1/responses, /v1/completions) all funnel
 	// into ChatHandler internally (domains/streaming/messages.go etc.).
 	ChatHandler *streaming.ChatHandler
+	KeyVerifier *authentication.KeyVerifier
 
 	// ── V4 async analysis Loop (PR-V4-09) ────────────────────────
 	// PGDBPool 由 main.go 注入；nil 时 EnableAnalysis 自动失效。
@@ -279,7 +280,10 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	// 2026-06-29: Enable when LLM_GATEWAY_V2_AUTH=true
 	// Extract API Key from metadata and verify against database.
 	if deps.Config.EnableAuth {
-		keyVerifier := authentication.NewKeyVerifier()
+		keyVerifier := deps.KeyVerifier
+		if keyVerifier == nil {
+			keyVerifier = authentication.NewKeyVerifier()
+		}
 		// Note: KeyVerifier needs DB connection to verify keys.
 		// In production, pass the DB pool from main.go.
 		// For demo/test: keys are not verified, hook will skip.
@@ -504,7 +508,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 // It only references the existing in-memory singletons from main.go's
 // scope. The Pipeline runs in-process; there is no DB/Redis fan-out
 // from here.
-func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.ChatHandler) *v2DispatchDeps {
+func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.ChatHandler, keyVerifier *authentication.KeyVerifier) *v2DispatchDeps {
 	// Always build deps (even if chatHandler is nil — e.g. test stubs
 	// or dev/smoke). The wrapping handler will pass through to the
 	// nil chatHandler if Pipeline hooks don't short-circuit, which
@@ -567,6 +571,7 @@ func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.Chat
 		ProviderProber:   provProber,
 		EventBus:         eventbus.NewMemoryBus(100),
 		ChatHandler:      chatHandler,
+		KeyVerifier:      keyVerifier,
 	}
 	deps.Pipeline = buildV2DispatchPipeline(deps)
 	return deps
@@ -649,7 +654,6 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 				IsStream: false, // updated below after body sniff
 			},
 		})
-		env.TenantID = r.Header.Get("X-Tenant-ID")
 		env.SessionID = r.Header.Get("X-Session-ID")
 
 		// Best-effort body sniff for metadata. chatHandler will
@@ -667,15 +671,40 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			"agent":  r.UserAgent(),
 		}
 
-		// Extract API Key from Authorization header for authentication hook
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			if len(auth) > 7 && auth[:7] == "Bearer " {
-				env.Metadata["api_key"] = auth[7:]
-			}
+		rawKey := pipelineAPIKey(r)
+		if rawKey != "" {
+			env.Metadata["api_key"] = rawKey
 		}
-		// Also check X-API-Key header (fallback)
-		if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
-			env.Metadata["api_key"] = apiKey
+		if deps.KeyVerifier != nil && deps.KeyVerifier.Enabled() {
+			if rawKey == "" {
+				if strings.TrimSpace(r.Header.Get("X-Tenant-ID")) != "" {
+					http.Error(w, "authentication required", http.StatusUnauthorized)
+					return
+				}
+			} else {
+				keyInfo, verifyErr := deps.KeyVerifier.Verify(ctx, rawKey)
+				if verifyErr != nil {
+					http.Error(w, "authentication failed", http.StatusUnauthorized)
+					return
+				}
+				tenantID, tenantErr := validatePipelineTenantHeader(r.Header.Get("X-Tenant-ID"), keyInfo)
+				if tenantErr != nil {
+					status := http.StatusUnauthorized
+					if _, ok := tenantErr.(*tenantHeaderMismatchError); ok {
+						status = http.StatusForbidden
+					}
+					http.Error(w, tenantErr.Error(), status)
+					return
+				}
+				env.TenantID = tenantID
+				env.APIKey = &domain.PipelineAPIKey{
+					ID:       fmt.Sprintf("%d", keyInfo.ID),
+					Key:      rawKey,
+					TenantID: tenantID,
+					Enabled:  true,
+				}
+				env.Authenticated = true
+			}
 		}
 
 		// Preflight pipeline. A stage error is logged but does NOT
@@ -782,6 +811,34 @@ func extractFirstUserMessage(env *domain.PipelineRequest) string {
 	return ""
 }
 
+type tenantHeaderMismatchError struct{}
+
+func (e *tenantHeaderMismatchError) Error() string {
+	return "X-Tenant-ID does not match authenticated tenant"
+}
+
+func validatePipelineTenantHeader(header string, keyInfo *authentication.KeyInfo) (string, error) {
+	if keyInfo == nil || strings.TrimSpace(keyInfo.TenantID) == "" {
+		return "", fmt.Errorf("authenticated tenant is missing")
+	}
+	tenantID := strings.TrimSpace(keyInfo.TenantID)
+	requestedTenant := strings.TrimSpace(header)
+	if requestedTenant != "" && requestedTenant != tenantID {
+		return "", &tenantHeaderMismatchError{}
+	}
+	return tenantID, nil
+}
+
+func pipelineAPIKey(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	}
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(auth, "bearer "))
+	}
+	return strings.TrimSpace(r.Header.Get("X-API-Key"))
+}
+
 // v2DispatchMux wires the v2 dispatch dependencies when the flag is
 // on. It is the production entry point used by main.go. Returns
 // (nil, nil, false) when the flag is off — main.go then leaves the v1
@@ -820,7 +877,11 @@ func v2DispatchMux(chatHandler, messagesHandler, responsesHandler http.Handler) 
 			"actual", fmt.Sprintf("%T", chatHandler))
 	}
 
-	deps := newV2DispatchDepsFromMain(cfg, ch)
+	keyVerifier := (*authentication.KeyVerifier)(nil)
+	if ch != nil {
+		keyVerifier = ch.AuthKeyVerifier()
+	}
+	deps := newV2DispatchDepsFromMain(cfg, ch, keyVerifier)
 
 	// Wrap the chatHandler in the Pipeline. messagesHandler and
 	// responsesHandler internally call chatHandler.ServeHTTP, so

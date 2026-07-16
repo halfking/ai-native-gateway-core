@@ -497,7 +497,7 @@ func p2cOrder(cands []provider.Candidate, r *Router) []provider.Candidate {
 	copy(pool, cands)
 	out := make([]provider.Candidate, 0, len(pool))
 
-	ctx := context.Background() // for FpSlots.Stats
+	ctx := context.Background()
 
 	for len(pool) > 0 {
 		if len(pool) == 1 {
@@ -729,8 +729,6 @@ func (r *Router) banditOrder(cands []provider.Candidate) []provider.Candidate {
 		return cands
 	}
 
-	ctx := context.Background()
-
 	// Score each candidate using Bandit + pressure factor
 	type scoredCandidate struct {
 		cand  provider.Candidate
@@ -745,9 +743,11 @@ func (r *Router) banditOrder(cands []provider.Candidate) []provider.Candidate {
 
 		// Apply pressure factor to avoid overloading high-performing credentials
 		pressureFactor := 1.0
-		if r.FpSlots != nil && r.FpSlots.Enabled() {
-			if limit, used, _ := r.FpSlots.Stats(ctx, c.CredentialID, c.ConcurrencyLimit); used != nil && limit != nil && *limit > 0 {
-				pressure := float64(*used) / float64(*limit)
+		if r.Limiter != nil {
+			cred := r.Limiter.Credential(c.ProviderID, c.CredentialID)
+			capacity := cred.Capacity()
+			if capacity > 0 {
+				pressure := float64(cred.Used()) / float64(capacity)
 				if pressure > 1.0 {
 					pressure = 1.0
 				}

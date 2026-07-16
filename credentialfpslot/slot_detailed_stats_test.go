@@ -14,7 +14,7 @@ func TestDetailedStats_Empty(t *testing.T) {
 	credID := 100
 	limit := 3
 
-	lim, holders, details, healthy := m.DetailedStats(ctx, credID, &limit)
+	lim, holders, details, healthy := m.DetailedStatsForTenant(ctx, credID, &limit, "tenant1")
 	if lim == nil || *lim != 3 {
 		t.Fatalf("expected limit=3, got %v", lim)
 	}
@@ -31,7 +31,7 @@ func TestDetailedStats_Empty(t *testing.T) {
 	m.Acquire(ctx, credID, &limit, "sess-a", "tenant1")
 	m.Acquire(ctx, credID, &limit, "sess-b", "tenant1")
 
-	_, holders, _, healthy = m.DetailedStats(ctx, credID, &limit)
+	_, holders, _, healthy = m.DetailedStatsForTenant(ctx, credID, &limit, "tenant1")
 	if healthy != 2 {
 		t.Errorf("expected 2 healthy, got %d", healthy)
 	}
@@ -51,13 +51,13 @@ func TestDetailedStats_Redis(t *testing.T) {
 	credID := 200
 	limit := 2
 
-	_, _, _, healthy := m.DetailedStats(ctx, credID, &limit)
+	_, _, _, healthy := m.DetailedStatsForTenant(ctx, credID, &limit, "tenant1")
 	if healthy != 0 {
 		t.Errorf("expected 0 healthy, got %d", healthy)
 	}
 
 	l1, _ := m.Acquire(ctx, credID, &limit, "sess-x", "tenant-x")
-	_, _, details, healthy := m.DetailedStats(ctx, credID, &limit)
+	_, _, details, healthy := m.DetailedStatsForTenant(ctx, credID, &limit, "tenant-x")
 	if healthy != 1 {
 		t.Errorf("expected 1 healthy, got %d", healthy)
 	}
@@ -89,7 +89,7 @@ func TestDetailedStats_Disabled(t *testing.T) {
 	credID := 400
 	limit := 5
 
-	lim, holders, details, healthy := m.DetailedStats(ctx, credID, &limit)
+	lim, holders, details, healthy := m.DetailedStatsForTenant(ctx, credID, &limit, "tenant1")
 	if lim != nil || holders != nil || details != nil || healthy != 0 {
 		t.Errorf("expected all empty when disabled")
 	}

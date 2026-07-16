@@ -204,7 +204,7 @@ func (m *Manager) reclaimIdleSlots(ctx context.Context, cfg reclaimConfig) (int,
 	}
 
 	totalReclaimed := 0
-	iter := m.client.Scan(ctx, 0, "llmgw:cred_fp_slot:*", 1000).Iterator()
+	iter := m.client.Scan(ctx, 0, "llmgw:tenant:*:cred_fp_slot:*:*", 1000).Iterator()
 	for iter.Next(ctx) {
 		slotKey := iter.Val()
 		// Skip if key disappeared between SCAN and the script call.
@@ -231,19 +231,20 @@ func (m *Manager) reclaimIdleSlots(ctx context.Context, cfg reclaimConfig) (int,
 // parseSlotKey extracts (credentialID, slotIndex) from a key like
 // "llmgw:cred_fp_slot:123:4".
 func parseSlotKey(key string) (credID, slotIdx int, ok bool) { //nolint:unused
-	const prefix = "llmgw:cred_fp_slot:"
-	if !strings.HasPrefix(key, prefix) {
+	const marker = ":cred_fp_slot:"
+	start := strings.Index(key, marker)
+	if start < 0 {
 		return 0, 0, false
 	}
-	rest := key[len(prefix):]
+	rest := key[start+len(marker):]
 	colon := strings.IndexByte(rest, ':')
 	if colon < 0 {
 		return 0, 0, false
 	}
-	c1, err1 := strconv.Atoi(rest[:colon])
-	c2, err2 := strconv.Atoi(rest[colon+1:])
+	credID, err1 := strconv.Atoi(rest[:colon])
+	slotIdx, err2 := strconv.Atoi(rest[colon+1:])
 	if err1 != nil || err2 != nil {
 		return 0, 0, false
 	}
-	return c1, c2, true
+	return credID, slotIdx, true
 }
