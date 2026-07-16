@@ -31,11 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `clientModel → outboundModel`（向后兼容）。
   - `CanonicalNameFor` 把 cache check 提前到 db nil 守卫之前，让单元测试
     可以用预填 `canonicalCache` 验证 fallback 链路。
+  - **审计修复**：`CanonicalNameFor` cache 重排后 `h == nil` 守卫在 cache check
+    之后，导致 nil receiver 调用 `h.canonicalCache.Load()` 会触发 nil pointer
+    dereference panic。拆分为 `h == nil` 单独守卫在前 + `h.db == nil` 守卫在后。
 - **Verification**: 新增
-  `TestLiveRequestFromTelemetry_ModelPrefersCanonicalName`（4 cases：
+  `TestLiveRequestFromTelemetry_ModelPrefersCanonicalName`（5 cases：
   canonical 优先 / client 优先于 outbound / outbound 兜底 / canonical
-  与 client/outbound 都冲突时必须用 canonical）。`go test ./admin/...`
-  全部通过；`go vet ./admin/... ./cmd/gateway/...` 无告警。
+  与 client/outbound 都冲突时必须用 canonical / canonicalID>0 但 resolves 为空
+  时回退到 client）。新增 `TestCanonicalNameFor_NilHubDoesNotPanic`。
+  `go test ./admin/...` 全部通过；`go vet ./admin/... ./cmd/gateway/...` 无告警。
 
 ### `/request-logs` empty items bug fix (incident 2026-07-16)
 

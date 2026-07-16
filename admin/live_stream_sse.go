@@ -654,13 +654,17 @@ func (h *LiveStreamSSEHub) CanonicalNameFor(ctx context.Context, canonicalID int
 	if canonicalID == 0 {
 		return ""
 	}
+	// h == nil guard MUST come before any h.<field> access to avoid panic.
+	if h == nil {
+		return ""
+	}
 
 	// Check cache first (works without DB; tests pre-populate here).
 	if cached, ok := h.canonicalCache.Load(canonicalID); ok {
 		return cached.(string)
 	}
 
-	if h == nil || h.db == nil {
+	if h.db == nil {
 		return ""
 	}
 
