@@ -1909,6 +1909,7 @@ func main() {
 				// backoff, direct + gateway two rounds.
 				nodeProbe := bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "")
 				nodeProbe.SetStateObserver(stateManager)
+				nodeProbe.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
 				nodeProbe.Start(context.Background())
 				slog.Info("CHECKPOINT: node_probe_worker started")
 				// Wire stateManager → node_probe so consecutive

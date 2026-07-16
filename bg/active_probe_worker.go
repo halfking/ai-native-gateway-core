@@ -308,7 +308,7 @@ func (w *ActiveProbeWorker) processOne(ctx context.Context, task probeTask) {
 
 	// 3. Emit to request_logs (auto-pushed to live-stream SSE).
 	w.emitter.Emit(ctx, target.CredentialID, target.ProviderID, state.TenantID,
-		task.Model, target.OutboundModel, state.ParentReqID, attempt, result)
+		task.Model, target.OutboundModel, "direct", state.ParentReqID, attempt, result)
 
 	// 4. Close the loop with the state manager.
 	if result.Status == ProbeStatusSuccess {
