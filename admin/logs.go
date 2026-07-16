@@ -159,8 +159,15 @@ const requestLogsListCols = `
 	rl.parent_request_id,
 	-- 2026-07-01: 附件数量 (migration 325)。列表只需数量以渲染角标，
 	-- 完整的 attachments JSONB 由 requestLogsDetailCols 在详情抽屉加载。
-	-- jsonb_array_length 对 NULL 返回 NULL，前端按 null 处理为"无附件"。
-	COALESCE(jsonb_array_length(rl.attachments), 0) AS attachment_count
+	-- 2026-07-16 fix: attachments 列允许 JSON literal null (非 SQL NULL),
+	-- 直接调 jsonb_array_length 会抛 cannot get array length of a scalar
+	-- (SQLSTATE 22023),导致整个 SELECT 中途失败、list 接口静默返回 items=[].
+	-- 用 jsonb_typeof 守门:只有真正是 array 时才调 array_length,
+	-- 其他情况(SQL NULL / JSON null / object / scalar) 一律返回 0.
+	CASE WHEN jsonb_typeof(rl.attachments) = 'array'
+	     THEN jsonb_array_length(rl.attachments)
+	     ELSE 0
+	END AS attachment_count
 `
 
 // requestLogsDetailCols extends the list columns with the three JSONB blobs
@@ -483,12 +490,28 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	items := make([]requestLogRow, 0)
+	scanErrCount := 0
 	for rows.Next() {
 		l, err := scanRequestListRow(rows, chrono)
 		if err != nil {
+			// 2026-07-16 fix: 之前这里 silent continue,导致 mid-stream 错误
+			// (例如 attachments 列出现 JSON null 触发 jsonb_array_length 抛错)
+			// 静默吞掉,客户端拿到 items=[] 但 status=200 误以为查询成功.
+			// 现在至少计数+日志,便于排查.
+			scanErrCount++
+			if scanErrCount <= 3 {
+				slog.Warn("admin listLogs scan failed", "err", err.Error())
+			}
 			continue
 		}
 		items = append(items, l)
+	}
+	if err := rows.Err(); err != nil {
+		// 2026-07-16 fix: pgx 在游标中途出错时通过 rows.Err() 报告,
+		// 必须显式检查,否则会拿到空 items 但无任何日志.
+		slog.Warn("admin listLogs rows.Err after iteration", "err", err.Error(), "items_returned", len(items), "count", count)
+	} else if scanErrCount > 0 {
+		slog.Warn("admin listLogs completed with partial scan failures", "scan_err_count", scanErrCount, "items_returned", len(items), "count", count)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

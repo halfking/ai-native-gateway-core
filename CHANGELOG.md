@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-16
 
+### `/request-logs` empty items bug fix (incident 2026-07-16)
+
+- **Root cause**: `admin/logs.go` list SQL used
+  `COALESCE(jsonb_array_length(rl.attachments), 0)`. When `rl.attachments`
+  is the JSON literal `null` (not SQL NULL), `jsonb_array_length` raises
+  `cannot get array length of a scalar (SQLSTATE 22023)`. pgx surfaces this
+  mid-stream via `rows.Err()`, but the handler never checked it; the
+  for-loop `continue` swallowed per-row scan errors too. Result: 24h
+  hot data showed `{"count":833,"items":[]}` with HTTP 200 — silent failure.
+- **Fix**: replace `COALESCE(jsonb_array_length(...), 0)` with
+  `CASE WHEN jsonb_typeof(rl.attachments) = 'array' THEN jsonb_array_length(rl.attachments) ELSE 0 END`
+  so JSON `null` / object / scalar all safely degrade to 0. Add
+  `rows.Err()` check + scan-error counter to `listLogs` so any future
+  mid-stream SQL error logs immediately instead of hiding behind empty
+  items.
+- **Verification**: 245 deployed at `seq=1084` (757cdef5).
+  `/api/logs?page_size=3` returns 3 items (was 0). Browser-use verified
+  on `https://llmgo.kxpms.cn/request-logs`: page shows 833 entries with
+  50 table rows.
+
 ### User notice summary on public portal
 
 - Surface the user-notice summary on `/download` and on the trial activation
