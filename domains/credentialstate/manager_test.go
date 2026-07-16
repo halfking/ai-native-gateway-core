@@ -518,78 +518,38 @@ func TestManager_OnNoCandidates_DispatchesAllByDefault(t *testing.T) {
 		{CredentialID: 2, RawModel: "gpt-5.6-luna"},
 		{CredentialID: 3, RawModel: "gpt-5.6-luna"},
 	}
-	m.OnNoCandidates(context.Background(), NoCandidatesSignal{
-		ClientModel: "gpt-5.6-luna",
-		TenantID:    "dispatches-all-default-test",
-		Candidates:  cands,
-		RequestID:   "req",
-	})
+	m.OnNoCandidates(context.Background(), NoCandidatesSignal{Candidates: cands, RequestID: "req"})
 	if got := int(fired.Load()); got != len(cands) {
 		t.Fatalf("OnNoCandidates fired %d probes, want %d", got, len(cands))
 	}
 }
 
-func TestManager_OnNoCandidates_DebouncesTenantModelBurst(t *testing.T) {
+func TestManager_OnNoCandidates_DebouncesSameModel(t *testing.T) {
 	m := NewManager(nil, nil)
 	m.Start(context.Background())
 	defer m.Stop()
 
 	var fired atomic.Int32
-	m.SetActiveProbeSubmitter(func(credID int, model, tenantID, parentRequestID string) {
+	m.SetActiveProbeSubmitter(func(credID int, model string, tenantID string, parentReqID string) {
 		fired.Add(1)
 	}, 2)
-	signal := NoCandidatesSignal{
+	sig := NoCandidatesSignal{
 		ClientModel: "minimax-m3",
 		TenantID:    "tenant-a",
+		RequestID:   "req-1",
 		Candidates: []NoCandidatesCandidate{
 			{CredentialID: 1, RawModel: "minimax-m3"},
 			{CredentialID: 2, RawModel: "minimax-m3"},
 		},
 	}
-	m.OnNoCandidates(context.Background(), signal)
-	signal.RequestID = "second-request"
-	m.OnNoCandidates(context.Background(), signal)
-	if got := fired.Load(); got != 2 {
-		t.Fatalf("debounced burst dispatched %d probes, want 2", got)
+	m.OnNoCandidates(context.Background(), sig)
+	sig.RequestID = "req-2"
+	m.OnNoCandidates(context.Background(), sig)
+	if got := int(fired.Load()); got != 2 {
+		t.Fatalf("debounced fan-out fired %d probes, want 2", got)
 	}
 }
 
-// TestManager_OnNoCandidates_DebouncesEmptyModel guards against the bug
-// where empty ClientModel collides with valid keys via the wrong tenant
-// bucket, and ensures a different tenant bypasses the debounce window.
-func TestManager_OnNoCandidates_DebouncesEmptyModel(t *testing.T) {
-	m := NewManager(nil, nil)
-	m.Start(context.Background())
-	defer m.Stop()
-
-	var fired atomic.Int32
-	m.SetActiveProbeSubmitter(func(credID int, model, tenantID, parentRequestID string) {
-		fired.Add(1)
-	}, 2)
-
-	// Empty model: should be dropped, not dispatched.
-	m.OnNoCandidates(context.Background(), NoCandidatesSignal{
-		TenantID:   "tenant-a",
-		Candidates: []NoCandidatesCandidate{{CredentialID: 1, RawModel: "minimax-m3"}},
-	})
-	if got := fired.Load(); got != 0 {
-		t.Fatalf("empty client model fired %d probes, want 0", got)
-	}
-
-	// Different tenant bypasses the debounce window.
-	for _, tenant := range []string{"tenant-a", "TENANT-A", "tenant-b"} {
-		m.OnNoCandidates(context.Background(), NoCandidatesSignal{
-			ClientModel: "minimax-m3",
-			TenantID:    tenant,
-			Candidates:  []NoCandidatesCandidate{{CredentialID: 1, RawModel: "minimax-m3"}},
-		})
-	}
-	if got := fired.Load(); got != 2 {
-		t.Fatalf("expected tenant-a/tenant-b to dispatch 2 probes, got %d", got)
-	}
-}
-
-// OnNoCandidates before any active_probe submitter is a no-op
 // rather than a panic. The manager also tolerates an empty
 // candidate list (returns immediately).
 func TestManager_OnNoCandidates_NilSubmitter(t *testing.T) {
