@@ -24,8 +24,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
-	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/streaming"
+	"github.com/kaixuan/llm-gateway-go/domains/session"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -57,6 +56,82 @@ type providerResolver interface {
 }
 
 type NormalizerFunc func(chunk []byte, isStream bool) []byte
+
+// 2026-07-16: 自适应超时与状态管理接口（避免循环依赖）
+
+// TimeoutCalculator 计算自适应超时
+type TimeoutCalculator interface {
+	Calculate(input AdaptiveTimeoutInput) time.Duration
+}
+
+// AdaptiveTimeoutInput 自适应超时输入参数
+type AdaptiveTimeoutInput struct {
+	RequestSize int
+	IsSession   bool
+	IsRetry     bool
+	AttemptNum  int
+	ProviderURL string
+	RecentTTFB  *time.Duration
+}
+
+// TTFBRecorder 记录和查询 TTFB 历史
+type TTFBRecorder interface {
+	Record(credentialID int, ttfb time.Duration)
+	Get(credentialID int) *TTFBStats
+}
+
+// TTFBStats TTFB 统计信息
+type TTFBStats struct {
+	RecentTTFB  time.Duration
+	AvgTTFB     time.Duration
+	UpdatedAt   time.Time
+	SampleCount int
+}
+
+// RequestValidator 请求格式校验器
+type RequestValidator interface {
+	Validate(ctx context.Context, requestBody []byte) (*ValidationResult, error)
+}
+
+// ValidationResult 校验结果
+type ValidationResult struct {
+	Valid    bool
+	Errors   []ValidationError
+	Warnings []string
+}
+
+// ValidationError 校验错误
+type ValidationError struct {
+	Field   string
+	Code    string
+	Message string
+}
+
+// ExecutionRecorder 记录执行结果
+type ExecutionRecorder interface {
+	RecordOutcome(ctx context.Context, outcome ExecutionOutcome) error
+}
+
+// ExecutionOutcome 执行结果
+type ExecutionOutcome struct {
+	CredentialID   int
+	ProviderID     int
+	RawModel       string
+	CanonicalModel string
+	RequestID      string
+	TenantID       string
+	Success        bool
+	ErrorKind      errorsx.ErrorKind
+	ErrorDetail    string
+	LatencyMs      int64
+	TTFBMs         int64
+	IsStream       bool
+	ChunkCount     int
+	IsRetry        bool
+	AttemptNum     int
+	StartedAt      time.Time
+	CompletedAt    time.Time
+}
 
 type StreamOutcome = struct {
 	Interrupted bool
@@ -529,11 +604,11 @@ type Executor struct {
 	// 用于监控和告警。Nil 时禁用该功能。
 	DegradationTracker *DegradationTracker
 
-	// 2026-07-16: 自适应超时与状态管理增强
-	TimeoutAdapter      *streaming.TimeoutAdapter // 自适应超时计算器
-	TTFBTracker         *streaming.TTFBTracker    // TTFB 历史追踪器
-	PreRequestValidator *PreRequestValidator      // 请求格式校验器
-	PostExecutionHook   *PostExecutionHook        // 执行后状态更新 hook
+	// 2026-07-16: 自适应超时与状态管理增强（使用接口避免循环依赖）
+	TimeoutAdapter      TimeoutCalculator // 自适应超时计算器
+	TTFBTracker         TTFBRecorder      // TTFB 历史追踪器
+	PreRequestValidator RequestValidator  // 请求格式校验器
+	PostExecutionHook   ExecutionRecorder // 执行后状态更新 hook
 }
 
 func NewExecutor(

@@ -93,7 +93,16 @@ async function load() {
     ).length
     licenseHealth.value = licHealth
     licenseStatus.value = licStatus
-    downloadStats.value = bundle.download_stats ?? null
+    downloadStats.value = bundle.download_stats ? {
+      today_downloads: bundle.download_stats.today_downloads || 0,
+      week_downloads: bundle.download_stats.week_downloads || 0,
+      total_downloads: bundle.download_stats.total_downloads || 0,
+      today_donations: 0,
+      total_donations: 0,
+      donation_amount_cents: 0,
+      activation_rate_pct: 0,
+      supporter_count: bundle.download_stats.supporter_count || 0
+    } : null
     regionStats.value = bundle.region_stats ?? []
     deploymentNodes.value = bundle.deployment_nodes ?? []
     dataPlaneTables.value = bundle.data_plane_tables ?? {}
