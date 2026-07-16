@@ -33,6 +33,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 )
 
 // v2ChatHandlerStub is a stand-in for *relay.ChatHandler that records
@@ -57,7 +59,36 @@ func (s *v2ChatHandlerStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(s.body)
 }
 
-// TestV2Dispatch_DefaultOff_NoPipeline verifies the production safety
+func TestValidatePipelineTenantHeader(t *testing.T) {
+	keyInfo := &authentication.KeyInfo{TenantID: "tenant-a"}
+
+	cases := []struct {
+		header string
+		want   string
+		err    bool
+	}{
+		{header: "", want: "tenant-a"},
+		{header: "tenant-a", want: "tenant-a"},
+		{header: " tenant-a ", want: "tenant-a"},
+		{header: "tenant-b", err: true},
+	}
+	for _, tc := range cases {
+		got, err := validatePipelineTenantHeader(tc.header, keyInfo)
+		if tc.err {
+			if err == nil {
+				t.Fatalf("header %q should be rejected", tc.header)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("header %q returned error: %v", tc.header, err)
+		}
+		if got != tc.want {
+			t.Fatalf("header %q returned tenant %q, want %q", tc.header, got, tc.want)
+		}
+	}
+}
+
 // guarantee: when LLM_GATEWAY_USE_V2_PIPELINE is not set, the
 // Pipeline wrapper is NOT constructed. The 4 v1 endpoints stay on
 // the v1 chatHandler (mux state unchanged).

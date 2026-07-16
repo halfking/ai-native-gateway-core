@@ -34,7 +34,7 @@ func TestResetSlots_Redis(t *testing.T) {
 	}
 
 	// Verify all slots are occupied
-	avail, err := m.AvailableCount(ctx, credentialID, &limit)
+	avail, err := m.AvailableCountForTenant(ctx, credentialID, &limit, "tenant-1")
 	if err != nil {
 		t.Fatalf("AvailableCount failed: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestResetSlots_Redis(t *testing.T) {
 	}
 
 	// Reset all slots
-	deletedSlots, deletedPins, err := m.ResetSlots(ctx, credentialID, &limit)
+	deletedSlots, deletedPins, err := m.ResetSlotsForTenant(ctx, credentialID, &limit, "tenant-1")
 	if err != nil {
 		t.Fatalf("ResetSlots failed: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestResetSlots_Redis(t *testing.T) {
 	}
 
 	// Verify all slots are now free
-	avail, err = m.AvailableCount(ctx, credentialID, &limit)
+	avail, err = m.AvailableCountForTenant(ctx, credentialID, &limit, "tenant-1")
 	if err != nil {
 		t.Fatalf("AvailableCount after reset failed: %v", err)
 	}
@@ -161,13 +161,13 @@ func TestResetSlots_PartialOccupancy(t *testing.T) {
 	}
 
 	// Verify 7 free
-	avail, _ := m.AvailableCount(ctx, credentialID, &limit)
+	avail, _ := m.AvailableCountForTenant(ctx, credentialID, &limit, "tenant-4")
 	if avail != 7 {
 		t.Errorf("expected 7 available, got %d", avail)
 	}
 
 	// Reset should clear only the 3 occupied
-	deletedSlots, deletedPins, err := m.ResetSlots(ctx, credentialID, &limit)
+	deletedSlots, deletedPins, err := m.ResetSlotsForTenant(ctx, credentialID, &limit, "tenant-4")
 	if err != nil {
 		t.Fatalf("ResetSlots failed: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestResetSlots_PartialOccupancy(t *testing.T) {
 	}
 
 	// Now all 10 should be free
-	avail, _ = m.AvailableCount(ctx, credentialID, &limit)
+	avail, _ = m.AvailableCountForTenant(ctx, credentialID, &limit, "tenant-4")
 	if avail != 10 {
 		t.Errorf("expected 10 available after reset, got %d", avail)
 	}
@@ -212,13 +212,13 @@ func TestResetSlots_ExpiredSlotsStillCounted(t *testing.T) {
 	mr.FastForward(time.Hour * 2)
 
 	// Now slots are expired but we can still reset (DEL is idempotent)
-	deletedSlots, deletedPins, err := m.ResetSlots(ctx, credentialID, &limit)
+	deletedSlots, deletedPins, err := m.ResetSlotsForTenant(ctx, credentialID, &limit, "tenant-5")
 	if err != nil {
 		t.Fatalf("ResetSlots failed: %v", err)
 	}
 	// miniredis GC'd the keys, so deletedSlots/Pins might be 0
 	// We just verify no error and that available is now full
-	avail, _ := m.AvailableCount(ctx, credentialID, &limit)
+	avail, _ := m.AvailableCountForTenant(ctx, credentialID, &limit, "tenant-5")
 	if avail != 5 {
 		t.Errorf("expected 5 available after reset of expired slots, got %d", avail)
 	}

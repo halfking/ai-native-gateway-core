@@ -24,7 +24,7 @@ func TestReclaim_Redis_IdleSlotIsDeleted(t *testing.T) {
 	l2, _ := m.Acquire(ctx, credID, &limit, "bob", "tenant1")
 
 	// Verify slots exist
-	avail, _ := m.AvailableCount(ctx, credID, &limit)
+	avail, _ := m.AvailableCountForTenant(ctx, credID, &limit, "tenant1")
 	if avail != 1 {
 		t.Fatalf("expected 1 free slot, got %d", avail)
 	}
@@ -46,7 +46,7 @@ func TestReclaim_Redis_IdleSlotIsDeleted(t *testing.T) {
 	// After 25h fast-forward, the slot TTL is -2 (key expired/deleted by
 	// miniredis) so our script returns 0 (nothing to do). But the keys
 	// are already gone — verify the pool is empty:
-	availAfter, _ := m.AvailableCount(ctx, credID, &limit)
+	availAfter, _ := m.AvailableCountForTenant(ctx, credID, &limit, "tenant1")
 	if availAfter != 3 {
 		t.Errorf("expected 3 free slots after 25h, got %d", availAfter)
 	}
