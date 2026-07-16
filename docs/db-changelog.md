@@ -215,3 +215,11 @@
 | 413 | `413_runtime_alert_events_ts_index.sql` |
 | 414 | `414_drop_model_probe_runs_old.sql` |
 
+## 2026-07-16T04:22:43Z — deploy 245 build_seq 1084 (757cdef5)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+
