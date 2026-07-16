@@ -31,6 +31,7 @@ const loading = ref(false)
 const onlineForm = ref({ license_key: '', device_name: '' })
 const trialEmail = ref('')
 const trialAgreed = ref(false)
+const noticeExpanded = ref(false)
 const offlineForm = ref({ signed_license: '', request_id: '', activation_code: '' })
 const lastResult = ref<ActivationResult | null>(null)
 const offlineRequestResult = ref<{ request_id: string; signed_request: string } | null>(null)
@@ -335,6 +336,25 @@ onMounted(refresh)
           :placeholder="t('customer.wizard.step1.trialEmail')"
           clearable
         />
+        <el-collapse v-model="noticeExpanded" class="trial-notice">
+          <el-collapse-item :title="t('public.userNotice.title')" name="user-notice">
+            <p class="trial-notice__summary">{{ t('public.userNotice.summary') }}</p>
+            <dl class="trial-notice__list">
+              <dt>{{ t('public.userNotice.rights.title') }}</dt>
+              <dd>{{ t('public.userNotice.rights.body') }}</dd>
+              <dt>{{ t('public.userNotice.data.title') }}</dt>
+              <dd>{{ t('public.userNotice.data.body') }}</dd>
+              <dt>{{ t('public.userNotice.openSource.title') }}</dt>
+              <dd>{{ t('public.userNotice.openSource.body') }}</dd>
+              <dt>{{ t('public.userNotice.liability.title') }}</dt>
+              <dd>{{ t('public.userNotice.liability.body') }}</dd>
+            </dl>
+            <p class="trial-notice__full">
+              <a href="/user-agreement.html" target="_blank" rel="noopener">{{ t('public.userNotice.viewFull') }}</a>
+              <span>{{ t('public.userNotice.fullLink') }}</span>
+            </p>
+          </el-collapse-item>
+        </el-collapse>
         <el-checkbox v-model="trialAgreed" class="trial-consent">
           {{ t('customer.wizard.step1.trialConsent') }}
           <a href="/user-agreement.html" target="_blank" rel="noopener">{{ t('customer.wizard.step1.trialAgreement') }}</a>
@@ -516,6 +536,15 @@ onMounted(refresh)
   margin-top: 16px;
 }
 .trial-email { margin-top: 16px; }
+.trial-notice { margin-top: 16px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; }
+.trial-notice :deep(.el-collapse-item__header) { font-weight: 600; padding-left: 12px; }
+.trial-notice :deep(.el-collapse-item__content) { padding: 0 12px 12px; }
+.trial-notice__summary { margin: 0 0 8px; color: #303133; font-size: 13px; line-height: 1.6; }
+.trial-notice__list { margin: 0; padding: 0; display: grid; gap: 6px; }
+.trial-notice__list dt { font-weight: 600; color: #303133; font-size: 13px; margin: 0; }
+.trial-notice__list dd { margin: 0; color: #606266; font-size: 12px; line-height: 1.55; }
+.trial-notice__full { margin: 8px 0 0; font-size: 12px; color: #909399; display: flex; flex-direction: column; gap: 2px; }
+.trial-notice__full a { color: var(--el-color-primary); font-weight: 500; }
 .trial-consent { margin-top: 12px; display: block; }
 .trial-version {
   margin: 8px 0 0;

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-16
 
+### User notice summary on public portal
+
+- Surface the user-notice summary on `/download` and on the trial activation
+  step of `/activate` as a collapsible block, with a link to the full
+  `/user-agreement.html`. Add a "User Notice" item to the public portal top
+  navigation. New keys added to `zh-CN` and `en-US` locales; other locales
+  fall back to English. No changes to the landing page footer.
+
 ### Telemetry & audit JSONB hardening (incident 2026-07-16)
 
 - **apihub marshalAny/marshalStringMap** (`apihub/pg_store.go`): sanitize `map[string]any` before JSON-encode for `tags` / `metadata` JSONB columns. Strip NaN / +Inf / -Inf floats (which `json.Marshal` rejects), recursively walk nested maps/slices, scrub invalid UTF-8 / control bytes (`\x00`, C0 except `\t\n\r`) in string leaves. Stops the 170k+ "invalid input syntax for type json (SQLSTATE 22P02)" flood in `apihub watcher: register LLM asset failed`.

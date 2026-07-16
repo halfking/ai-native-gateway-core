@@ -20,6 +20,7 @@ const router = useRouter()
 const catalog = ref<DownloadCatalog | null>(null)
 const loading = ref(false)
 const downloading = ref<string | null>(null)
+const noticeExpanded = ref(false)
 
 const versionGroups = computed<VersionGroup[]>(() => {
   if (!catalog.value) return []
@@ -98,6 +99,34 @@ onMounted(load)
       <p v-if="catalog" class="dl-supporters">
         {{ catalog.supporters }} {{ t('public.download.supporters') }}
       </p>
+
+      <el-collapse v-model="noticeExpanded" class="dl-notice">
+        <el-collapse-item :title="t('public.userNotice.title')" name="user-notice">
+          <p class="dl-notice__summary">{{ t('public.userNotice.summary') }}</p>
+          <dl class="dl-notice__list">
+            <dt>{{ t('public.userNotice.rights.title') }}</dt>
+            <dd>{{ t('public.userNotice.rights.body') }}</dd>
+            <dt>{{ t('public.userNotice.data.title') }}</dt>
+            <dd>{{ t('public.userNotice.data.body') }}</dd>
+            <dt>{{ t('public.userNotice.openSource.title') }}</dt>
+            <dd>{{ t('public.userNotice.openSource.body') }}</dd>
+            <dt>{{ t('public.userNotice.liability.title') }}</dt>
+            <dd>{{ t('public.userNotice.liability.body') }}</dd>
+          </dl>
+          <p class="dl-notice__full">
+            <a href="/user-agreement.html" target="_blank" rel="noopener">{{ t('public.userNotice.viewFull') }}</a>
+            <span>{{ t('public.userNotice.fullLink') }}</span>
+          </p>
+        </el-collapse-item>
+      </el-collapse>
+
+      <el-card v-if="catalog" shadow="never" class="dl-meta">
+        <div class="dl-meta__row">
+          <span>{{ t('public.download.version') }}: <strong>{{ catalog.version }}</strong> (build {{ catalog.build_seq }})</span>
+          <span>{{ catalog.supporters }} {{ t('public.download.supporters') }}</span>
+        </div>
+        <p class="dl-hint">{{ t('public.download.platformHint') }}</p>
+      </el-card>
 
       <section
         v-for="group in versionGroups"
@@ -178,6 +207,15 @@ onMounted(load)
 
 <style scoped>
 .dl-supporters { color: #94a3b8; margin: 0 0 1rem; }
+.dl-notice { margin-bottom: 1.5rem; border: 1px solid #e2e8f0; border-radius: 8px; }
+.dl-notice :deep(.el-collapse-item__header) { font-weight: 600; color: #0f172a; padding-left: 1rem; }
+.dl-notice :deep(.el-collapse-item__content) { padding: 0 1rem 1rem; }
+.dl-notice__summary { margin: 0 0 0.75rem; color: #334155; font-size: 0.9rem; line-height: 1.6; }
+.dl-notice__list { margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.dl-notice__list dt { font-weight: 600; color: #0f172a; font-size: 0.875rem; margin: 0; }
+.dl-notice__list dd { margin: 0; color: #475569; font-size: 0.85rem; line-height: 1.55; }
+.dl-notice__full { margin: 0.75rem 0 0; font-size: 0.8rem; color: #64748b; display: flex; flex-direction: column; gap: 0.25rem; }
+.dl-notice__full a { color: #4f46e5; font-weight: 500; }
 .dl-version { margin-bottom: 1.5rem; }
 .dl-version__head { margin-bottom: 0.75rem; }
 .dl-version__row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
@@ -185,6 +223,8 @@ onMounted(load)
 .dl-version__meta { margin: 4px 0 0; color: #94a3b8; font-size: 0.875rem; }
 .dl-doc-link { color: #a5b4fc; font-weight: 500; text-decoration: none; white-space: nowrap; }
 .dl-doc-link:hover { text-decoration: underline; }
+.dl-meta { margin-bottom: 1.5rem; }
+.dl-meta__row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
 .dl-hint { margin: 0.75rem 0 0; color: #94a3b8; font-size: 0.875rem; }
 .dl-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
 .dl-card__icon { font-size: 28px; margin-bottom: 8px; }
