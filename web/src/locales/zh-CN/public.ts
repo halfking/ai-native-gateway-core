@@ -118,6 +118,7 @@ export default {
     offline: '离线激活',
     docs: '文档',
     navAria: '公开门户导航',
+    userNotice: '用户需知',
   },
   license: {
     subtitle: '查看当前实例绑定的 License 状态、到期时间与设备配额',

@@ -117,6 +117,7 @@ export default {
     offline: 'Offline',
     docs: 'Docs',
     navAria: 'Public portal navigation',
+    userNotice: 'User Notice',
   },
   license: {
     subtitle: 'View bound license status, expiry, and device quotas for this instance',
