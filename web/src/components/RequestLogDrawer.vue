@@ -19,6 +19,7 @@ import {
   type RequestLogDetail,
   type AttachmentInfo,
 } from '../api'
+import RequestTraceModal from './RequestTraceModal.vue'
 
 const props = defineProps<{
   requestId: string | null
@@ -32,6 +33,10 @@ const loading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
 const error = ref('')
 const tab = ref<'request' | 'response' | 'attachments'>('request')
+
+// 2026-07-17: 流程详情 Modal - 在原"原始请求详情"内点击按钮弹出,
+//  显示该请求的端到端链路 + 失败快照 + AI 提示词生成器。
+const showTrace = ref(false)
 
 // 2026-07-02: 附件 lightbox 状态。Teleport 到 body 后由 handleKeydown 全局监听 ESC。
 const attachmentsLightbox = ref(false)
@@ -314,6 +319,17 @@ function probeAttempt(row: RequestLogDetail | null): number | null {
               {{ t('requests.detail_extra.attachmentsTab') }}
               <span class="tab-badge">{{ detailAttachments().length }}</span>
             </button>
+            <!-- 2026-07-17: 流程详情按钮 — 弹出 RequestTraceModal,
+                 显示端到端链路 + 失败快照 + AI 提示词。super_admin 限定。
+                 开启与否不依赖 detail 字段, 因此即使 attachments=0 也显示。 -->
+            <button
+              class="btn btn-sm btn-trace"
+              type="button"
+              @click="showTrace = true"
+              :title="t('trace.modal.tooltip')"
+            >
+              {{ t('trace.modal.openButton') }}
+            </button>
           </div>
         </div>
 
@@ -424,6 +440,16 @@ function probeAttempt(row: RequestLogDetail | null): number | null {
           </button>
         </div>
       </Teleport>
+
+      <!-- 2026-07-17: 流程详情 Modal。Teleport 到 body 避免被抽屉裁剪。
+           点击遮罩或右上关闭按钮关闭,ESC 由 modal 内部处理。 -->
+      <Teleport to="body">
+        <RequestTraceModal
+          v-if="showTrace"
+          :request-id="detail?.request_id ?? props.requestId"
+          @close="showTrace = false"
+        />
+      </Teleport>
     </div>
   </div>
 </template>
@@ -464,7 +490,21 @@ function probeAttempt(row: RequestLogDetail | null): number | null {
   border-radius: 3px;
   font-weight: 600;
 }
-.tab-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+.tab-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; flex-wrap: wrap; }
+.btn-trace {
+  margin-left: auto;
+  background: var(--bg-muted, #f3f4f6);
+  border: 1px solid var(--border-color, #e5e7eb);
+  color: var(--text-default, #1f2937);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.btn-trace:hover {
+  background: var(--accent-bg, #dbeafe);
+  border-color: var(--accent, #3b82f6);
+  color: var(--accent, #1d4ed8);
+}
 .tab-badge {
   display: inline-block;
   margin-left: 4px;

@@ -35,6 +35,7 @@ func onNoCandidatesFanoutLimit() int {
 
 const noCandidatesDebounceWindow = 5 * time.Second
 
+// Manager 凭据状态管理器 - 统一管理所有探测结果和状态更新
 type Manager struct {
 	memCache      *sync.Map
 	redisClient   *redis.Client
@@ -71,11 +72,10 @@ type Manager struct {
 	// Phase 2: 模型热度追踪器（可选，nil 时禁用热度感知探测）
 	popularityTracker *ModelPopularityTracker
 
-	// 2026-07-15: Candidate cache invalidator scoped to a credential. Per-state
+	// Candidate cache invalidator scoped to a credential. Per-state
 	// transitions must not flush unrelated models and tenants back to the DB.
 	invalidateCandidateCache func(credentialID int)
 
-	// 2026-07-17: debounce repeated no-candidate bursts per tenant/model.
 	noCandidatesMu         sync.Mutex
 	noCandidatesDispatched map[string]time.Time
 }
@@ -499,15 +499,7 @@ func (m *Manager) OnNoCandidates(ctx context.Context, sig NoCandidatesSignal) {
 	if len(sig.Candidates) == 0 {
 		return
 	}
-	model := strings.ToLower(strings.TrimSpace(sig.ClientModel))
-	if model == "" {
-		return
-	}
-	tenant := strings.TrimSpace(sig.TenantID)
-	if tenant == "" {
-		tenant = "default"
-	}
-	debounceKey := strings.ToLower(tenant) + "|" + model
+	debounceKey := sig.TenantID + "|" + strings.ToLower(strings.TrimSpace(sig.ClientModel))
 	now := time.Now()
 	m.noCandidatesMu.Lock()
 	if last, ok := m.noCandidatesDispatched[debounceKey]; ok && now.Sub(last) < noCandidatesDebounceWindow {

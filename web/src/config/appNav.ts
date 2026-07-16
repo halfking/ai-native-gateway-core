@@ -57,6 +57,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '', platformOps: true, hideForTenant: true },
       { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '', super: true, hideForTenant: true },
+      // M2（22 章 §22.6）— 显式默认路由：为 (task,profile,tenant) 指定首选/兜底模型。
+      { path: '/routing/defaults', label: '默认路由', labelKey: 'nav.item.routingDefaults', icon: '', super: true, hideForTenant: true },
     ],
   },
   {
@@ -77,7 +79,6 @@ export const NAV_GROUPS: NavGroup[] = [
     labelKey: 'nav.group.requestsSessions',
     items: [
       { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '' },
-      { path: '/admin/request-trace', label: '请求链路追踪', labelKey: 'nav.item.requestTrace', icon: '', super: true, hideForTenant: true },
       { path: '/sessions', label: '会话列表', labelKey: 'nav.item.sessions', icon: '' },
       { path: '/admin/sessions', label: '会话管理', labelKey: 'nav.item.sessionManagement', icon: '', super: true, hideForTenant: true },
       { path: '/session-compare', label: '会话对比', labelKey: 'nav.item.sessionCompare', icon: '' },

@@ -1,12 +1,11 @@
 // trace.ts — 2026-07-17
-// 请求链路追踪 API 客户端。
+// 请求链路追踪 API 客户端 (用于 RequestTraceModal)。
 //
-// 后端实现见 admin/request_trace.go, 数据源:
-//   1) Redis (request:trace:{id}, 进行中的请求或刚完成 600s 内)
+// 数据源:
+//   1) Redis (request:trace:{id}, 进行中或刚完成 10min 内)
 //   2) PostgreSQL (request_logs.trace_events JSONB, 已 flush 的历史)
 //
-// 该模块被 RequestTraceView.vue 调用, 也可被 RequestLogDrawer.vue 的
-// "流程详情" 入口复用以嵌入侧滑。
+// 后端见 admin/request_trace.go
 import { req } from './_core'
 
 // TraceEvent 与后端 internal/trace.TraceEvent 字段一一对应。
@@ -89,6 +88,3 @@ export async function buildAIPrompt(
     body,
   )
 }
-
-// getRequestLogsList 是从 logs.ts 复制的间接导出 (便于 view 单文件引用)
-export { getRequestLogs as getFailedRequestsList } from './logs'

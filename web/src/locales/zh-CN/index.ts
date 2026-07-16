@@ -55,6 +55,7 @@ import ops from './ops'
 import qualityCorrelations from './qualityCorrelations'
 import routingAudit from './routingAudit'
 import routingOverride from './routingOverride'
+import routingDefault from './routingDefault'
 import probeHealth from './probeHealth'
 import approval from './approval'
 import tenantModels from './tenantModels'
@@ -116,6 +117,7 @@ export default {
   qualityCorrelations,
   routingAudit,
   routingOverride,
+  routingDefault,
   probeHealth,
   approval,
   tenantModels,
