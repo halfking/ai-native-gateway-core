@@ -527,3 +527,45 @@
 | 419 | `419_node_probe_runs_complete_fields.sql` |
 | 420 | `420_request_logs_trace_events.sql` |
 
+## 2026-07-16T18:37:58Z — deploy 245 build_seq 1121 (5c3e8cb0)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+| 415 | `415_restore_node_probe_runs.sql` |
+| 416 | `416_reconcile_node_probe_bindings.sql` |
+| 417 | `417_route_excludes_failed_node_probes.sql` |
+| 418 | `418_rearm_node_probes_after_url_fix.sql` |
+| 419 | `419_node_probe_runs_complete_fields.sql` |
+| 420 | `420_request_logs_trace_events.sql` |
+
+## 2026-07-16T18:38:07Z — deploy 154 build_seq 1122 (5c3e8cb0)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+| 415 | `415_restore_node_probe_runs.sql` |
+| 416 | `416_reconcile_node_probe_bindings.sql` |
+| 417 | `417_route_excludes_failed_node_probes.sql` |
+| 418 | `418_rearm_node_probes_after_url_fix.sql` |
+| 419 | `419_node_probe_runs_complete_fields.sql` |
+| 420 | `420_request_logs_trace_events.sql` |
+
+## 2026-07-16T18:39:43Z — deploy 154 build_seq 1123 (5c3e8cb0)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+| 415 | `415_restore_node_probe_runs.sql` |
+| 416 | `416_reconcile_node_probe_bindings.sql` |
+| 417 | `417_route_excludes_failed_node_probes.sql` |
+| 418 | `418_rearm_node_probes_after_url_fix.sql` |
+| 419 | `419_node_probe_runs_complete_fields.sql` |
+| 420 | `420_request_logs_trace_events.sql` |
+
