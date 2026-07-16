@@ -118,7 +118,6 @@ export default {
     offline: '离线激活',
     docs: '文档',
     navAria: '公开门户导航',
-    userNotice: '用户需知',
   },
   license: {
     subtitle: '查看当前实例绑定的 License 状态、到期时间与设备配额',
@@ -140,5 +139,27 @@ export default {
     checkbox: '我已阅读并同意',
     fullLink: '《用户协议与数据处理授权》',
     accept: '同意并继续',
+  },
+  userNotice: {
+    title: '用户须知',
+    summary: '本软件按「现状提供（AS IS）」开源分享；使用前请了解以下要点：',
+    rights: {
+      title: '权利与义务',
+      body: '您需自行完成安装、配置、备份与合规使用；我们仅提供软件与文档，不对您的业务结果、模型输出或第三方服务可用性作保证。',
+    },
+    data: {
+      title: '数据采集',
+      body: '默认不采集业务内容。可选的运行遥测仅包含版本、实例标识、License 状态、聚合指标等最小必要信息，不涉及提示词、会话原文、API Key 或可直接识别个人的数据。',
+    },
+    openSource: {
+      title: '开源分享',
+      body: '非定制版本以社区分享为目的，不构成商业承诺或专属技术支持义务；定制需求请通过支持页另行约定。',
+    },
+    liability: {
+      title: '免责声明',
+      body: '软件按现状提供；我们不就间接损失、业务中断、数据丢失或 AI 决策后果承担责任。',
+    },
+    viewFull: '查看完整协议',
+    fullLink: '《用户协议与数据处理授权》',
   },
 }

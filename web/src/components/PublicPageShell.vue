@@ -28,7 +28,6 @@ const { t } = useI18n()
         <router-link to="/download">{{ t('public.layout.download') }}</router-link>
         <router-link to="/activate">{{ t('public.download.activateLink') }}</router-link>
         <router-link to="/support">{{ t('public.layout.support') }}</router-link>
-        <a href="/user-agreement.html" target="_blank" rel="noopener">{{ t('public.layout.userNotice') }}</a>
       </div>
     </footer>
   </div>

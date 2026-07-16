@@ -35,6 +35,7 @@ export default {
     keyApplications: '密钥申请',
     auditLogs: '审计日志',
     requestLogs: '请求日志',
+    requestTrace: '请求链路追踪',
     sessions: '会话列表',
     sessionManagement: '会话管理',
     sessionCompare: '会话对比',

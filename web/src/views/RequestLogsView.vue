@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
 import { localeRef } from '../i18n'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestLogs,
@@ -361,9 +361,10 @@ const traceMode = computed(() =>
 )
 
 // listColCount — 列表表头/空态占位的列数。基础 9 列（时间/脉络/调用方/路由/Token/
-// 延迟/压缩/状态/附件），trace 模式多一个序号列，非默认租户多一个积分列。
+// 延迟/压缩/状态/附件），trace 模式多一个序号列，非默认租户多一个积分列，
+// super_admin 额外多一个「流程详情」列。
 const listColCount = computed(() =>
-  9 + (traceMode.value ? 1 : 0) + (isDefaultTenant() ? 0 : 1),
+  9 + (traceMode.value ? 1 : 0) + (isDefaultTenant() ? 0 : 1) + (isSuperAdmin() ? 1 : 0),
 )
 
 const taskSummary = computed(() => {
@@ -916,6 +917,14 @@ function roleColor(role: string): string {
 }
 
 const route = useRoute()
+const router = useRouter()
+
+// 2026-07-17: super_admin 在每条日志行可一键跳转至 /admin/request-trace，
+// 在那里可以查看完整链路时间线与生成 AI 分析提示词。其他角色看不到此列。
+function gotoTrace(requestId: string) {
+  if (!requestId) return
+  router.push({ path: '/admin/request-trace', query: { requestId } })
+}
 
 onMounted(async () => {
   const q = route.query
@@ -1194,6 +1203,7 @@ onMounted(async () => {
             <th class="col-compress">压缩</th>
             <th class="col-status">状态</th>
             <th class="col-attach">附件</th>
+            <th v-if="isSuperAdmin()" class="col-trace-action">流程</th>
           </tr>
         </thead>
         <tbody>
@@ -1288,6 +1298,13 @@ onMounted(async () => {
                 class="attach-badge"
               >📎 {{ r.attachment_count }}</span>
               <span v-else class="cell-line1 muted">—</span>
+            </td>
+            <td v-if="isSuperAdmin()" class="col-trace-action">
+              <button
+                class="btn btn-sm btn-ghost trace-action-btn"
+                :title="`查看 ${r.request_id} 的请求链路`"
+                @click.stop="gotoTrace(r.request_id)"
+              >🔍 流程详情</button>
             </td>
           </tr>
         </tbody>
@@ -1634,6 +1651,23 @@ onMounted(async () => {
 }
 .trace-summary {
   border-left: 3px solid var(--accent, #3b82f6);
+}
+.col-trace-action {
+  white-space: nowrap;
+  text-align: center;
+}
+.trace-action-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #30363d);
+  background: rgba(99, 102, 241, 0.08);
+  color: var(--accent, #6366f1);
+  cursor: pointer;
+}
+.trace-action-btn:hover {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: var(--accent, #6366f1);
 }
 .tenant-badge {
   display: inline-flex;

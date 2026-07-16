@@ -31,6 +31,7 @@ export default {
     keyApplications: "キー申請",
     auditLogs: "監査ログ",
     requestLogs: "リクエストログ",
+    requestTrace: "リクエストトレース",
     sessions: "セッション一覧",
     sessionManagement: "セッション管理",
     sessionCompare: "セッション比較",

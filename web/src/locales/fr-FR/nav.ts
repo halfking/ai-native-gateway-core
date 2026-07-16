@@ -31,6 +31,7 @@ export default {
     keyApplications: "Demandes de clés",
     auditLogs: "Journaux d'audit",
     requestLogs: "Journaux de requêtes",
+    requestTrace: "Traçage des requêtes",
     sessions: "Sessions",
     sessionManagement: "Gestion des sessions",
     sessionCompare: "Comparaison de sessions",

@@ -139,4 +139,26 @@ export default {
     fullLink: 'User Agreement & Data Processing Authorization',
     accept: 'Accept and continue',
   },
+  userNotice: {
+    title: 'User notice',
+    summary: 'This software is shared as open source on an AS IS basis. Please review the points below before use:',
+    rights: {
+      title: 'Rights & duties',
+      body: 'You are responsible for installation, configuration, backup, and compliant use in your environment. We provide the software and documentation but make no warranty regarding business outcomes, model output, or third-party service availability.',
+    },
+    data: {
+      title: 'Data collection',
+      body: 'Business content is never collected by default. Optional runtime telemetry is limited to version, instance ID, license state, and aggregated metrics — never prompts, session text, API keys, or directly identifying personal data.',
+    },
+    openSource: {
+      title: 'Open-source sharing',
+      body: 'Non-custom builds are shared as a community contribution and carry no commercial commitment or dedicated technical support obligation. For custom needs please contact us separately via the Support page.',
+    },
+    liability: {
+      title: 'Disclaimer',
+      body: 'The software is provided AS IS. We are not liable for indirect losses, business interruption, data loss, or consequences of AI decisions.',
+    },
+    viewFull: 'View full agreement',
+    fullLink: 'User Agreement & Data Processing Authorization',
+  },
 }
