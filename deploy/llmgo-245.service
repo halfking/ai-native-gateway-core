@@ -16,6 +16,15 @@ RestartSec=5
 StandardOutput=append:/var/log/llm-gateway-go/gateway.stdout.log
 StandardError=append:/var/log/llm-gateway-go/gateway.stderr.log
 
+# 2026-07-16: 更短的 stop 超时 — Go srv.Shutdown 内部 30s drain,
+# 25s 给 systemd 等信号, 然后 SIGKILL. 默认 90s 太长, restart 期间
+# :8781 一直 unbound, nginx 拿 connection refused.
+TimeoutStopSec=25s
+KillSignal=SIGTERM
+
+# drain 标记: 部署脚本读这个文件判断旧实例是否已退出.
+ExecStopPost=/bin/sh -c 'date +%s > /var/run/llm-gateway-go.drained 2>/dev/null || true'
+
 # Hardening
 NoNewPrivileges=true
 PrivateTmp=true

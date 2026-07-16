@@ -27,6 +27,9 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/api"
@@ -3263,6 +3266,26 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+	// Wrap handler with h2c so the same listener accepts BOTH HTTP/1.1 and
+	// HTTP/2 cleartext. h2c.NewHandler falls back to HTTP/1.1 when the
+	// client doesn't send the HTTP/2 preface, so existing HTTP/1.1 clients
+	// (older curl, most monitoring agents) keep working unchanged.
+	//
+	// Why this matters (2026-07-16):
+	//   252 nginx fronts llm.kxpms.cn with `http2 on;` (HTTP/2 to client)
+	//   and proxies to gateway over HTTP/1.1 with `proxy_buffering off;`.
+	//   That combination caused `HTTP/2 stream ... INTERNAL_ERROR`
+	//   surfaced as `net::ERR_HTTP2_PROTOCOL_ERROR` in VSCode Copilot.
+	//   With h2c on the gateway, 252 nginx can speak HTTP/2 to the backend
+	//   (`proxy_http_version 1.1` becomes optional) and HTTP/2 frame
+	//   conversion stays correct end-to-end.
+	srv.Handler = h2c.NewHandler(handler, &http2.Server{
+		MaxConcurrentStreams: 250,
+		MaxReadFrameSize:     1 << 20,
+		// IdleTimeout: h2c default is 0 (no idle). Match srv.IdleTimeout
+		// so that idle h2 connections close alongside idle h1 connections.
+		IdleTimeout: 60 * time.Second,
+	})
 	var pprofSrv *http.Server
 	if pprofAddr := strings.TrimSpace(os.Getenv("LLM_GATEWAY_PPROF_LISTEN")); pprofAddr != "" {
 		var enabled bool

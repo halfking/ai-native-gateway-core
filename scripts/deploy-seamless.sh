@@ -36,6 +36,8 @@ cd "$PROJECT_ROOT"
 # source 共享库
 # shellcheck source=deploy-lib/targets.sh
 source "$SCRIPT_DIR/deploy-lib/targets.sh"
+# shellcheck source=deploy-lib/ssh-retry.sh
+source "$SCRIPT_DIR/deploy-lib/ssh-retry.sh"
 # shellcheck source=deploy-lib/host.sh
 source "$SCRIPT_DIR/deploy-lib/host.sh"
 # shellcheck source=deploy-lib/post-deploy-verify.sh
@@ -57,6 +59,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --seq) SEQ_FLAG="--seq $2"; shift 2 ;;
     --no-frontend) SKIP_FRONTEND=true; shift ;;
+    --ssh-retries) export SSH_RETRY_MAX=$2; shift 2 ;;
+    --ssh-verbose) export SSH_RETRY_VERBOSE=1; shift ;;
     -h|--help)
       sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -64,7 +68,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$ACTION" ]] || { err "用法: deploy-seamless.sh <deploy|rollback|status> <245|154> [--seq N]"; exit 1; }
+[[ -n "$ACTION" ]] || { err "用法: deploy-seamless.sh <deploy|rollback|status> <245|154> [--seq N] [--ssh-retries N]"; exit 1; }
 [[ -n "$TARGET" ]] || { err "缺少目标 (245|154)"; exit 1; }
 
 case "$TARGET" in
@@ -72,55 +76,33 @@ case "$TARGET" in
   *) err "不支持的目标: $TARGET (仅 154|245)"; exit 1 ;;
 esac
 
-# ── SSH 命令构造 ────────────────────────────────────────────────
-# 关键设计：host.sh 内部用 "$ssh_cmd" "remote-shell-cmd" 调用，引号会把
-# ssh_cmd 当成一个整体单词。因此 ssh_cmd 不能是带空格的字符串（"ssh -i ... root@host"），
-# 必须是一个无空格的「名字」——我们用一个 bash 函数 remote_ssh 来包装。
-# host.sh 调用 "remote_ssh" "ls /tmp" → bash 展开成 remote_ssh "ls /tmp"
-# → 函数体内用 eval ssh ... "$1" 真正执行。
+# ── SSH 命令构造 (2026-07-16: 走 ssh-retry.sh) ─────────────────
+# 关键设计：host.sh 内部用 "$ssh_cmd" "remote-shell-cmd" 调用。
+# 我们包装两个函数 remote_ssh / remote_ssh_pipe, 内部走 ssh-retry
+# (ControlMaster 连接复用 + 指数退避重试). ssh-retry.sh 在 source 时
+# 已安装 EXIT trap 自动清理 master socket.
+#
+# 154 公网 IP 47.97.111.154 偶发抖动 — 加 fallback via 252.
+# 通过 ProxyCommand 实现: 本机 ssh → 252:25022 → 154.
+# ssh-retry 会先直连, 失败 N 次后切到 ProxyCommand 路径.
 SSH_PORT=25022
 SSH_KEY_FILE="${SSH_KEY_FILE:-}"
 for k in ~/.ssh/id_ed25519 ~/.ssh/56_id_rsa ~/.ssh/71_id_rsa; do
   if [[ -f "$k" ]]; then SSH_KEY_FILE="$k"; break; fi
 done
+export SSH_KEY_FILE
 
-SSH_HOST=$(target_field "$TARGET" ssh_host)
-
-# remote_ssh <remote-shell-command> — host.sh 的每个函数都通过这个名字调用。
-# 用 eval 把 SSH_ARGS (含空格的 ssh 选项) 正确分词后执行。
-# 2026-07-14: ConnectTimeout=20 + ServerAliveInterval=5 (154 公网 IP 偶发抖动)。
-remote_ssh() {
-  if [[ -n "${SSH_KEY_FILE:-}" ]] && [[ -f "$SSH_KEY_FILE" ]]; then
-    ssh -i "$SSH_KEY_FILE" -p "$SSH_PORT" \
-      -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
-      -o ConnectTimeout=20 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
-      "$SSH_HOST" "$1"
-  else
-    sshpass -e ssh -p "$SSH_PORT" \
-      -o StrictHostKeyChecking=accept-new \
-      -o ConnectTimeout=20 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
-      "$SSH_HOST" "$1"
-  fi
-}
-
-# remote_ssh_pipe <remote-shell-command> — 用于 tar 管道，透传 stdin。
-remote_ssh_pipe() {
-  if [[ -n "${SSH_KEY_FILE:-}" ]] && [[ -f "$SSH_KEY_FILE" ]]; then
-    ssh -i "$SSH_KEY_FILE" -p "$SSH_PORT" \
-      -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
-      -o ConnectTimeout=20 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
-      "$SSH_HOST" "$1"
-  else
-    sshpass -e ssh -p "$SSH_PORT" \
-      -o StrictHostKeyChecking=accept-new \
-      -o ConnectTimeout=20 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
-      "$SSH_HOST" "$1"
-  fi
-}
+SSH_HOST_CACHE=()
+ssh_retry_init "$TARGET"
 
 # host.sh 函数签名要求 ssh_cmd 是一个「可被 "$ssh_cmd" 调用的名字」。
-# 传函数名 "remote_ssh"，host.sh 内部 "$ssh_cmd" "cmd" → "remote_ssh" "cmd"
-# → bash 调用函数 remote_ssh "cmd"。✓
+# 我们定义 wrapper, 内部调 ssh_run <target> <cmd>。
+remote_ssh() {
+  ssh_run "$TARGET" "$1"
+}
+remote_ssh_pipe() {
+  ssh_run_pipe "$TARGET" "$1"
+}
 SSH_CMD="remote_ssh"
 
 # upload 不用 scp，用 tar 管道走 ssh (单连接，更可靠)。

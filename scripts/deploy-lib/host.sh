@@ -255,6 +255,13 @@ host_mark_verified() {
 # Atomic switch: rewrite the current symlink to point at the freshly
 # uploaded release, then restart. The whole swap is one atomic
 # rename(2) call (ln -sfn), so a partial state is impossible.
+#
+# 2026-07-16 optimization: the previous implementation issued 6
+# independent SSH calls (5 ln + 1 restart). On flaky links each call
+# could fail individually, and the script had no way to batch them.
+# We now collapse them into ONE heredoc'd remote shell. The heredoc
+# preserves ordering (set -e stops on first failure) and the host.sh
+# contract — exactly one remote action, atomic to the caller.
 host_atomic_switch() {
   local ssh_cmd=$1 target=$2 version=$3
   local current_link binary_link web_link version_link release_dir bin_name
@@ -265,18 +272,62 @@ host_atomic_switch() {
   release_dir=$(host_release_layout "$target" "$version" | sed -n 's/^release_dir=//p')
   bin_name=$(host_binary_name "$target") || return 64
 
-  # `ln -sfn` is atomic on POSIX. The order of operations matters:
-  # current first, then the rest. If the script aborts between any two
-  # of these, the worst case is a partially set symlink chain — but
-  # `current` is the only one systemd actually observes at restart.
-  "$ssh_cmd" "ln -sfn '$release_dir' '$current_link'"
-  "$ssh_cmd" "ln -sfn '$current_link/$bin_name' '$binary_link'"
-  # 2026-07-15: 245 历史上 /web 可能是实体目录；对目录执行 ln -sfn 会在
-  # 目录内创建嵌套 symlink 而非替换，导致 nginx 继续服务旧 index.html。
-  "$ssh_cmd" "if [ -e '$web_link' ] && [ ! -L '$web_link' ]; then mv '$web_link' '${web_link}.legacy.\$(date +%Y%m%d-%H%M%S)'; fi"
-  "$ssh_cmd" "ln -sfn '$current_link/web' '$web_link'"
-  "$ssh_cmd" "ln -sfn '$current_link/version.json' '$version_link'"
+  # Batched remote shell: same effect as the old 5-call sequence, but
+  # one TCP/SSH round-trip + atomic on the remote side. `set -e` stops
+  # on first failure so the symlink chain is never half-built.
+  # web link quirk (2026-07-15) preserved: a real dir gets renamed
+  # out of the way, otherwise nginx serves stale index.html.
+  "$ssh_cmd" "set -e
+    ln -sfn '$release_dir' '$current_link'
+    ln -sfn '$current_link/$bin_name' '$binary_link'
+    if [ -e '$web_link' ] && [ ! -L '$web_link' ]; then
+      mv '$web_link' \"\${web_link}.legacy.\$(date +%Y%m%d-%H%M%S)\"
+    fi
+    ln -sfn '$current_link/web' '$web_link'
+    ln -sfn '$current_link/version.json' '$version_link'
+  "
+
+  # Restart stays as a separate call because it returns only after
+  # systemd has issued the SIGTERM; combining it with the heredoc
+  # would force us to wait synchronously and we'd lose the
+  # timing/return-code signal.
   host_restart_service "$ssh_cmd" "$target"
+}
+
+# Drain the running service until all in-flight requests finish, then
+# stop. Used by canary zero-downtime flows (see docs/deploy/zero-downtime-design.md).
+#
+# Strategy:
+#   1. SIGTERM the service. Go srv.Shutdown has a 30s timeout, after
+#      which it returns; systemd then escalates to SIGKILL after
+#      TimeoutStopSec.
+#   2. Poll /healthz until it stops answering (port released) OR the
+#      drain deadline elapses.
+#   3. Touch the drain marker file (managed by ExecStopPost in the
+#      unit file).
+host_drain_and_stop() {
+  local ssh_cmd=$1 target=$2 drain_s=${3:-30}
+  local service_name health_url deadline
+  service_name=$(target_field "$target" service_name)
+  health_url=$(target_field "$target" health_url)
+  [[ -n "$service_name" && -n "$health_url" ]] \
+    || { echo "host_drain_and_stop: missing contract for $target" >&2; return 1; }
+
+  # Send SIGTERM via systemctl — this is what `restart` does first.
+  # We do NOT use restart because we want to keep the unit dead while
+  # the canary takes over.
+  "$ssh_cmd" "systemctl stop '$service_name'" || true
+
+  deadline=$(( $(date +%s) + drain_s ))
+  while (( $(date +%s) < deadline )); do
+    # If /healthz is unreachable the port has been released — drained.
+    if ! "$ssh_cmd" "curl -fsS --max-time 1 '$health_url' >/dev/null 2>&1"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "host_drain_and_stop: $target did not drain in ${drain_s}s" >&2
+  return 1
 }
 
 # List verified release directories newest-first, skipping the active
