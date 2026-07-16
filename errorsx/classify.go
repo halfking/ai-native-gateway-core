@@ -97,6 +97,7 @@ var contextLengthRe = regexp.MustCompile(
 		`context[ _-]?window.{0,30}(exceed|limit|maximum)|` +
 		`prompt is too long|` +
 		`input is too long|` +
+		`input.{0,30}(exceed|context window|limit)|` +
 		`too many (input )?tokens|` +
 		`tokens? exceed|` +
 		`reduce the length|` +
@@ -248,6 +249,14 @@ var contentFilterRe = regexp.MustCompile(
 
 func ClassifyError(err error, resp *http.Response) ErrorKind {
 	if err != nil {
+		// Check timeout BEFORE cancel: if the error wraps DeadlineExceeded
+		// the upstream DID exceed the deadline; classifying it as Canceled
+		// (when the ctx tree shadows DeadlineExceeded with the parent's
+		// Canceled) would lose the timeout signal and skip failover.
+		// The cancel-check below catches the remaining pure-cancel cases.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return KindTimeout
+		}
 		if errors.Is(err, context.Canceled) {
 			return KindCanceled
 		}
