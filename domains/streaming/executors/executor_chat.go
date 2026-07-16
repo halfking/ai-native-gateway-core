@@ -443,7 +443,19 @@ func (e *Executor) executeOpenAI(
 				var doErr error
 				resp, doErr = httpClient.Do(req)
 				if doErr != nil {
-					uErr = &upstreampkg.Error{Kind: errorsx.ClassifyError(doErr, nil), Message: doErr.Error(), Err: doErr}
+					kind := errorsx.ClassifyError(doErr, nil)
+					// P0 fix (2026-07-16): distinguish timeout from client cancel
+					// in non-session mode. When the client disconnects WHILE the
+					// gateway's own context deadline has been reached, Go's context
+					// tree returns Canceled (inherited from the parent) instead of
+					// DeadlineExceeded — but the real cause is an upstream timeout.
+					// Check the actual deadline to disambiguate.
+					if kind == errorsx.KindCanceled {
+						if dl, ok := upCtx.Deadline(); ok && !time.Now().Before(dl) {
+							kind = errorsx.KindTimeout
+						}
+					}
+					uErr = &upstreampkg.Error{Kind: kind, Message: doErr.Error(), Err: doErr}
 				}
 			}
 			upstreamLatency := time.Since(reqStart)
@@ -734,6 +746,28 @@ func (e *Executor) executeOpenAI(
 					streamQualityScore = params.Capture.QualityScore
 				}
 				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
+					if streamOutcome.Reason == "client_write_failed" {
+						// The client closed the response. Preserve the interruption
+						// for request telemetry, but do not treat it as upstream
+						// failure or trigger a probe.
+						slog.Info("executor: client disconnected during stream",
+							"credential_id", cand.CredentialID,
+							"provider_id", cand.ProviderID,
+							"chunk_count", streamOutcome.ChunkCount,
+						)
+						return &ExecuteResult{
+								Response:    resp,
+								Candidate:   cand,
+								LatencyMs:   latencyMs,
+								RequestBody: append([]byte(nil), bodyBytes...),
+								InboundBody: sourceBody,
+							}, &streamInterruptedError{
+								reason:       streamOutcome.Reason,
+								credentialID: cand.CredentialID,
+								resumable:    false,
+								kind:         errorsx.KindCanceled,
+							}
+					}
 					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
 
 					streamKind := errorsx.KindStreamTimeout

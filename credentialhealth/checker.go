@@ -108,23 +108,29 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 		// are also short-circuited as success in executor_chat.go:687 and
 		// never reach the recorder; this guard covers the non-benign tail.)
 		//
-		// 2026-07-16 P0 fix: skip client-side failures (canceled, timeout, transient).
+		// 2026-07-16 P0 fix: skip client-side failures (canceled, transient).
 		// Root cause of "No available provider" false positive: client_disconnect
-		// (VSCode cancel, curl timeout, network hiccup) was counted as credential
-		// failure. 15 client disconnects → credential degraded 15 minutes → all
+		// (VSCode cancel, network hiccup) was counted as credential failure.
+		// 15 client cancellations → credential degraded 15 minutes → all
 		// requests fail even though credential is healthy.
+		//
+		// 2026-07-16 P1 fix: KindTimeout and KindStreamTimeout are NO LONGER
+		// excluded. These are gateway-level timeout signals (first-byte timeout,
+		// upstream context deadline), NOT client-side issues — client disconnect
+		// produces KindCanceled, not KindTimeout. A credential that consistently
+		// times out should be degraded so the router can fail over to healthier
+		// candidates. This was the root cause of "minimax-m3 on NIM keeps timing
+		// out but never fails over": every timeout was silently skipped here,
+		// the 80% threshold was never reached, and the credential stayed in the
+		// candidate pool indefinitely.
 		//
 		// Skip list now includes:
 		// - network: DNS/TCP/connection errors
-		// - stream_timeout: benign SSE EOF
 		// - canceled: client cancel (context.Canceled)
-		// - timeout: client-side timeout
 		// - transient: temporary upstream issues (503 for <5s)
 		// - client bugs: malformed requests
 		if e.ErrorKind == "network" ||
-			e.ErrorKind == string(errorsx.KindStreamTimeout) ||
 			e.ErrorKind == string(errorsx.KindCanceled) ||
-			e.ErrorKind == string(errorsx.KindTimeout) ||
 			e.ErrorKind == string(errorsx.KindTransient) ||
 			errorsx.IsClientBug(errorsx.ErrorKind(e.ErrorKind)) {
 			continue

@@ -220,24 +220,16 @@ func TestChecker_CheckAndUpdate_ExcludeNetworkErrors(t *testing.T) {
 	}
 }
 
-// TestChecker_CheckAndUpdate_ExcludeBenignEOF (2026-07-15 P0 regression test)
+// TestChecker_CheckAndUpdate_ExcludeBenignEOF — stream_timeout NOW counted.
 //
-// Before the fix, the credentialhealth.Checker would treat every benign
-// stream-timeout failure as evidence that the credential was unhealthy.
-// MiniMax (and other SSE providers) routinely close streams without the
-// [DONE] sentinel on otherwise-successful completions, so a healthy
-// minimax-m3 binding on credential 21 was being pushed into a 15-minute
-// cooldown whenever the upstream happened to skip [DONE] more than five
-// times in an hour. This regression test pins the behaviour: even when
-// 100% of the recorded failures are stream_timeout, the checker must NOT
-// write a degraded cooldown.
+// 2026-07-15: KindStreamTimeout was excluded from failureRate because
+// "EOF without [DONE]" on SSE streams from MiniMax was benign. Genuinely
+// benign EOFs (ChunkCount>0) are short-circuited as success in
+// executor_chat.go:687 and never reach the recorder.
 //
-// Note (2026-07-15): errorsx.ClassifyError maps "EOF without [DONE]" to
-// KindStreamTimeout (= "stream_timeout"), which is what the recorder stores.
-// The original guard excluded the literal "eof_without_done", which never
-// matched production data. Genuinely benign EOFs (ChunkCount>0) are also
-// short-circuited as success in executor_chat.go and never reach the
-// recorder; this test covers the non-benign stream_timeout tail.
+// 2026-07-16: The exclusion is REMOVED. Non-benign StreamTimeouts (no
+// chunks, first-byte timeout) ARE a credential health signal; the
+// exclusion was the root cause of "NIM times out but never fails over".
 func TestChecker_CheckAndUpdate_ExcludeBenignEOF(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {
@@ -258,10 +250,12 @@ func TestChecker_CheckAndUpdate_ExcludeBenignEOF(t *testing.T) {
 
 	checker := NewChecker(recorder, mockDB, DefaultCheckerConfig())
 
-	// 10 failures, all stream_timeout (the classified kind for benign EOF).
-	// Before the fix the guard excluded the literal "eof_without_done",
-	// which never matched → 100% failure rate → 15-minute cooldown. After
-	// the fix, all 10 are excluded from the failureRate sample → no UPDATE.
+	// 10 failures, all stream_timeout (the classified kind for non-benign
+	// EOF / first-byte timeout). After the 2026-07-16 P1 fix, stream_timeout
+	// IS counted as credential failure — non-benign StreamTimeouts (no chunks)
+	// are a legitimate health signal. Truly benign EOFs (ChunkCount>0) are
+	// short-circuited as success in executor_chat.go and never reach the
+	// recorder, so this test's data represents the non-benign tail.
 	ctx := context.Background()
 	credID := 121
 	model := "MiniMax-M3"
@@ -277,11 +271,19 @@ func TestChecker_CheckAndUpdate_ExcludeBenignEOF(t *testing.T) {
 		})
 	}
 
+	// 2026-07-16 P1: stream_timeout IS counted → 10/10 = 100% > 80% → markDegraded fires.
+	mockDB.ExpectExec("UPDATE credential_model_bindings").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectExec(`UPDATE model_offers[\s\S]*continuous_failure`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
 	if err := checker.CheckAndUpdate(ctx, credID, model); err != nil {
 		t.Fatalf("CheckAndUpdate failed: %v", err)
 	}
 	if err := mockDB.ExpectationsWereMet(); err != nil {
-		t.Errorf("eof_without_done must be excluded from failure rate, but checker issued a DB write: %v", err)
+		t.Errorf("stream_timeout triggered unexpected DB state: %v", err)
 	}
 }
 
