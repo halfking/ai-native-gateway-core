@@ -404,6 +404,37 @@ func (kv *KeyVerifier) setCache(key string, info *KeyInfo) {
 	}
 }
 
+// InvalidateKeyID drops the cached KeyInfo for the given api_key id.
+//
+// Admin write endpoints (update rate limits, enable/disable, revoke, patch
+// profile) only know the key's DB id, not its raw plaintext, so the cache —
+// which is keyed by raw key — must be scanned for a matching entry.info.ID.
+// The map is capped at 10000 entries (see setCache), so this scan is cheap.
+// After invalidation, the next Verify() reloads from DB and picks up the new
+// rate_limit_rpm / rate_limit_concurrent / status immediately, rather than
+// serving a stale entry for up to ttl (60s).
+func (kv *KeyVerifier) InvalidateKeyID(id int) {
+	if id <= 0 {
+		return
+	}
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	for k, e := range kv.cache {
+		if e.info != nil && e.info.ID == id {
+			delete(kv.cache, k)
+		}
+	}
+}
+
+// InvalidateAll drops every cached KeyInfo. Useful for tests and as a coarse
+// escape hatch; prefer InvalidateKeyID in request paths to avoid stampeding
+// the DB.
+func (kv *KeyVerifier) InvalidateAll() {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	clear(kv.cache)
+}
+
 type InvalidKeyError struct {
 	Message string
 }

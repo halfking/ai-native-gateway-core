@@ -714,6 +714,7 @@ func (h *Handler) deleteKey(w http.ResponseWriter, r *http.Request, id int) {
 		writeError(w, http.StatusNotFound, "key not found")
 		return
 	}
+	h.invalidateKeyCache(id)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "revoked"})
 }
 
@@ -773,6 +774,7 @@ func (h *Handler) approveKey(w http.ResponseWriter, r *http.Request, id int) {
 	defer cancel()
 	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `UPDATE api_keys SET enabled = TRUE WHERE id = $1`, id)
+	h.invalidateKeyCache(id)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "approved"})
 }
 
@@ -786,6 +788,7 @@ func (h *Handler) setKeyEnabled(w http.ResponseWriter, r *http.Request, id int, 
 		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
 	}
+	h.invalidateKeyCache(id)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
@@ -848,6 +851,12 @@ func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, id int
 		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
 	}
+
+	// Drop the cached KeyInfo so EffectiveRPM/EffectiveConcurrent pick up the
+	// new values on the next request instead of after the 60s TTL. Also lets
+	// the credential Limiter resize this key's per-key semaphore (see
+	// Limiter.Key).
+	h.invalidateKeyCache(id)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                "ok",
@@ -1450,5 +1459,6 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 		writeError(w, http.StatusNotFound, "key not found")
 		return
 	}
+	h.invalidateKeyCache(id)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }

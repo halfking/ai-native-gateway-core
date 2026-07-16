@@ -350,17 +350,30 @@ func (l *Limiter) Identity(providerID, credentialID int, identityHash string) *S
 
 // Key returns the per-key semaphore for the given API key ID.
 // The limit is dynamic (from DB per-key setting) so capacity is passed in.
+//
+// Because the per-key rate_limit_concurrent can be changed at runtime via the
+// admin API, an already-cached semaphore whose capacity diverges from the
+// caller-supplied limit is resized in place. capacity is an atomic.Int64, so
+// Store is safe vs concurrent Acquire/Release; Shrink/RecoverStep already
+// mutate it the same way. A non-positive limit means "unlimited" — the per-key
+// layer is skipped by AcquireAll in that case, so we leave the semaphore as-is.
 func (l *Limiter) Key(keyID int, limit int) *Semaphore {
 	l.mu.RLock()
 	s, ok := l.keys[keyID]
 	l.mu.RUnlock()
 	if ok {
+		if limit > 0 && s.Capacity() != limit {
+			s.capacity.Store(int64(limit))
+		}
 		return s
 	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if s, ok = l.keys[keyID]; ok {
+		if limit > 0 && s.Capacity() != limit {
+			s.capacity.Store(int64(limit))
+		}
 		return s
 	}
 	s = NewSemaphore(fmt.Sprintf("key_%d", keyID), limit)

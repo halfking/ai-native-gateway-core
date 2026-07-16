@@ -1363,6 +1363,13 @@ func main() {
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
 	if dbConn != nil && dbConn.Enabled() {
 		slog.Info("CHECKPOINT: before admin.SetKeyring etc")
+		// 2026-07-17: wire KeyVerifier so admin write endpoints
+		// (updateKeyLimits/enable/disable/revoke/patchKey) invalidate the
+		// cached KeyInfo and rate-limit changes apply immediately instead of
+		// after the 60s TTL.
+		if keyVerifier != nil && keyVerifier.Enabled() {
+			adminHandler.SetKeyVerifier(keyVerifier)
+		}
 		if keyring != nil {
 			adminHandler.SetKeyring(keyring)
 		}

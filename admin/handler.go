@@ -116,6 +116,14 @@ type Handler struct {
 	modelPolicy interface {
 		Invalidate(tenantID string)
 	}
+	// keyVerifier (2026-07-17) invalidates the KeyInfo cache when admin
+	// writes (update rate limits, enable/disable, revoke, patch profile)
+	// change a key, so the next chat request reloads from DB instead of
+	// serving a stale entry for up to 60s. Interface avoids importing
+	// domains/authentication here.
+	keyVerifier interface {
+		InvalidateKeyID(id int)
+	}
 	// providerSettingsResolver (2026-06-20) provides provider-level setting
 	// overrides for compression, cache, etc. Wired from cmd/gateway/main.go.
 	providerSettingsResolver *settings.ProviderSettingsResolver
@@ -232,6 +240,24 @@ func (h *Handler) SetAttachmentStorage(s AttachmentStorageService) {
 // the admin Handler and the modelpolicy.Checker.
 func (h *Handler) SetModelPolicy(mp interface{ Invalidate(string) }) {
 	h.modelPolicy = mp
+}
+
+// SetKeyVerifier (2026-07-17) wires the KeyInfo cache so admin write endpoints
+// (updateKeyLimits, setKeyEnabled, deleteKey, patchKey) can invalidate a key's
+// cached entry after mutating it, making rate-limit / status changes effective
+// immediately instead of after the 60s TTL. Called from cmd/gateway/main.go.
+func (h *Handler) SetKeyVerifier(kv interface{ InvalidateKeyID(id int) }) {
+	h.keyVerifier = kv
+}
+
+// invalidateKeyCache drops the cached KeyInfo for an api_key after a write.
+// Safe to call when no verifier is wired (no-op). Called by admin write
+// endpoints in admin/keys.go so rate-limit / status changes apply on the next
+// request instead of after the 60s TTL.
+func (h *Handler) invalidateKeyCache(id int) {
+	if h.keyVerifier != nil {
+		h.keyVerifier.InvalidateKeyID(id)
+	}
 }
 
 // SetProviderSettingsResolver (2026-06-20) wires the provider-level settings
