@@ -311,3 +311,38 @@ func TestLimiterRecoveryLoop(t *testing.T) {
 		t.Fatalf("expected recovery after step, got capacity %d", s.Capacity())
 	}
 }
+
+// TestKeyResizesCapacity verifies that raising a key's rate_limit_concurrent at
+// runtime (via admin API) takes effect on the already-cached per-key semaphore,
+// rather than being pinned to the capacity it was first created with.
+func TestKeyResizesCapacity(t *testing.T) {
+	l := NewLimiter()
+
+	// First call creates the semaphore with capacity 5.
+	s1 := l.Key(42, 5)
+	if s1.Capacity() != 5 {
+		t.Fatalf("initial capacity: got %d, want 5", s1.Capacity())
+	}
+
+	// Same key, new (larger) limit must resize in place.
+	s2 := l.Key(42, 10)
+	if s2 != s1 {
+		t.Fatal("Key() should return the same semaphore instance for a key")
+	}
+	if s2.Capacity() != 10 {
+		t.Fatalf("after raising limit: got capacity %d, want 10", s2.Capacity())
+	}
+
+	// Shrinking also applies.
+	l.Key(42, 3)
+	if s2.Capacity() != 3 {
+		t.Fatalf("after lowering limit: got capacity %d, want 3", s2.Capacity())
+	}
+
+	// A non-positive limit means "unlimited" (per-key layer skipped by
+	// AcquireAll), so the cached semaphore must keep its current capacity.
+	l.Key(42, 0)
+	if s2.Capacity() != 3 {
+		t.Fatalf("unlimited (0) limit must not change capacity: got %d, want 3", s2.Capacity())
+	}
+}

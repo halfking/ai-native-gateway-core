@@ -150,3 +150,43 @@ func TestEffectiveConcurrent(t *testing.T) {
 		})
 	}
 }
+
+// TestInvalidateKeyID verifies that admin write endpoints can drop a single
+// key's cached KeyInfo by DB id (they don't know the raw plaintext key), and
+// that sibling entries survive.
+func TestInvalidateKeyID(t *testing.T) {
+	kv := NewKeyVerifier()
+	kv.setCache("sk-aaa", &KeyInfo{ID: 101})
+	kv.setCache("sk-bbb", &KeyInfo{ID: 202})
+	kv.setCache("sk-ccc", &KeyInfo{ID: 303})
+
+	kv.InvalidateKeyID(202)
+
+	if kv.getCache("sk-aaa") == nil {
+		t.Error("sk-aaa (id=101) should survive invalidating id 202")
+	}
+	if kv.getCache("sk-bbb") != nil {
+		t.Error("sk-bbb (id=202) should have been invalidated")
+	}
+	if kv.getCache("sk-ccc") == nil {
+		t.Error("sk-ccc (id=303) should survive invalidating id 202")
+	}
+
+	// Non-positive ids are a no-op (guard against accidental misuse).
+	kv.InvalidateKeyID(0)
+	if kv.getCache("sk-aaa") == nil || kv.getCache("sk-ccc") == nil {
+		t.Error("InvalidateKeyID(0) must not clear anything")
+	}
+}
+
+func TestInvalidateAll(t *testing.T) {
+	kv := NewKeyVerifier()
+	kv.setCache("sk-aaa", &KeyInfo{ID: 101})
+	kv.setCache("sk-bbb", &KeyInfo{ID: 202})
+
+	kv.InvalidateAll()
+
+	if kv.getCache("sk-aaa") != nil || kv.getCache("sk-bbb") != nil {
+		t.Fatal("InvalidateAll should clear every cached entry")
+	}
+}
