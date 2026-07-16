@@ -2368,6 +2368,21 @@ func (e *Executor) pickStickyCredentialID(params *ExecParams) *int {
 			"level", level,
 			"request_id", params.RequestID,
 		)
+
+		// 2026-07-16: Health-aware sticky breaker
+		// If the sticky credential has recent consecutive failures, break the stickiness
+		if e.TTFBTracker != nil {
+			stats := e.TTFBTracker.Get(*stickyID)
+			// If no recent TTFB data (>5 min old or never recorded), it might be unhealthy
+			if stats == nil {
+				slog.Debug("sticky_routing: breaking stickiness due to no recent TTFB data",
+					"credential_id", *stickyID,
+					"model", params.Model,
+					"reason", "no_recent_activity",
+				)
+				return nil // Break stickiness, allow re-selection
+			}
+		}
 	}
 
 	return stickyID
