@@ -10,6 +10,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,13 +22,16 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// onNoCandidatesFanoutLimit caps the number of (credential, model)
-// pairs OnNoCandidates will hand to the active_probe worker per call.
-// 8 is empirically enough for the largest model_offers rows we have
-// seen in production (~12 candidates per row in the worst case) while
-// still bounded enough that a flapping tenant cannot saturate the
-// 128-deep active_probe queue. Override via tests only.
-const onNoCandidatesFanoutLimit = 8
+// onNoCandidatesFanoutLimit returns the optional per-request fan-out cap.
+// Zero or an invalid value means all candidates are dispatched; the probe
+// worker still deduplicates pairs and applies its own bounded drain.
+func onNoCandidatesFanoutLimit() int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("LLM_GATEWAY_NO_CANDIDATE_PROBE_FANOUT")))
+	if err != nil || value <= 0 {
+		return 0
+	}
+	return value
+}
 
 // Manager 凭据状态管理器 - 统一管理所有探测结果和状态更新
 type Manager struct {
@@ -492,6 +498,7 @@ func (m *Manager) OnNoCandidates(ctx context.Context, sig NoCandidatesSignal) {
 	// outbound model; only the first wins.
 	seen := make(map[string]struct{}, len(sig.Candidates))
 	dispatched := 0
+	fanoutLimit := onNoCandidatesFanoutLimit()
 
 	for _, c := range sig.Candidates {
 		if c.CredentialID == 0 || c.RawModel == "" {
@@ -522,15 +529,16 @@ func (m *Manager) OnNoCandidates(ctx context.Context, sig NoCandidatesSignal) {
 
 		m.activeProbeSubmitter(c.CredentialID, c.RawModel, sig.TenantID, sig.RequestID)
 		dispatched++
-		if dispatched >= onNoCandidatesFanoutLimit {
+		if fanoutLimit > 0 && dispatched >= fanoutLimit {
 			slog.Info("credstate: OnNoCandidates fan-out cap reached",
 				"client_model", sig.ClientModel,
 				"request_id", sig.RequestID,
-				"cap", onNoCandidatesFanoutLimit,
+				"cap", fanoutLimit,
 				"remaining_candidates", len(sig.Candidates)-dispatched,
 			)
 			break
 		}
+
 	}
 
 	if dispatched > 0 {

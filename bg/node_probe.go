@@ -74,11 +74,10 @@ const (
 	// nodeProbeMaxAttempts matches the length of NodeProbeBackoffChain.
 	nodeProbeMaxAttempts = 7
 
-	// nodeProbeTickInterval is how often the worker scans for due
-	// rows in node_probe_state.  30s is a good middle ground:
-	// close enough to honour 5s backoffs in the first 60s window
-	// without hammering the DB.
+	// 30s is a safety-net scan; Submit also wakes the worker immediately.
 	nodeProbeTickInterval = 30 * time.Second
+	// A bounded batch keeps a large outage from monopolizing the worker.
+	nodeProbeBatchSize = 8
 
 	// nodeProbeInFlightWindow prevents the same (cred, model) from
 	// being probed concurrently by two workers / re-deploys.  Set
@@ -114,12 +113,18 @@ type NodeProbeWorker struct {
 	stateObserver credentialstate.StateObserver
 	emitter       *ActiveProbeEmitter
 
+	// Candidate cache invalidation keeps a direct probe result visible to the
+	// next routing decision instead of waiting for the provider cache TTL.
+	invalidateCandidateCache func(credentialID int)
+
 	stopCh   chan struct{}
 	stopOnce sync.Once
+	wakeCh   chan struct{}
 
-	mu       sync.Mutex
-	inFlight map[string]struct{} // dedup key: "<credID>|<model>"
-	triggers map[string]nodeProbeTrigger
+	mu         sync.Mutex
+	inFlight   map[string]struct{} // dedup key: "<credID>|<model>"
+	triggers   map[string]nodeProbeTrigger
+	wakeTimers map[string]*time.Timer
 }
 
 type nodeProbeTrigger struct {
@@ -144,6 +149,14 @@ func (w *NodeProbeWorker) SetEmitter(emitter *ActiveProbeEmitter) {
 	}
 }
 
+// SetInvalidateCandidateCache wires the provider cache invalidator used after
+// direct probe state changes.
+func (w *NodeProbeWorker) SetInvalidateCandidateCache(fn func(credentialID int)) {
+	if w != nil {
+		w.invalidateCandidateCache = fn
+	}
+}
+
 // NewNodeProbeWorker constructs a worker.  baseURL="" picks
 // LLM_GATEWAY_NODE_PROBE_BASE_URL or the default https://llm.kxpms.cn/v1.
 // apiKey is the system-level API key the worker uses for the gateway
@@ -164,15 +177,17 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 		}
 	}
 	w := &NodeProbeWorker{
-		db:       db,
-		encKey:   encKey,
-		keyring:  keyring,
-		apiKey:   apiKey,
-		baseURL:  baseURL,
-		client:   &http.Client{Timeout: 15 * time.Second},
-		stopCh:   make(chan struct{}),
-		inFlight: make(map[string]struct{}),
-		triggers: make(map[string]nodeProbeTrigger),
+		db:         db,
+		encKey:     encKey,
+		keyring:    keyring,
+		apiKey:     apiKey,
+		baseURL:    baseURL,
+		client:     &http.Client{Timeout: 15 * time.Second},
+		stopCh:     make(chan struct{}),
+		wakeCh:     make(chan struct{}, 1),
+		inFlight:   make(map[string]struct{}),
+		triggers:   make(map[string]nodeProbeTrigger),
+		wakeTimers: make(map[string]*time.Timer),
 	}
 
 	if proxyFunc != nil {
@@ -210,7 +225,17 @@ func (w *NodeProbeWorker) Stop() {
 	if w == nil {
 		return
 	}
-	w.stopOnce.Do(func() { close(w.stopCh) })
+	w.stopOnce.Do(func() {
+		close(w.stopCh)
+		w.mu.Lock()
+		for key, timer := range w.wakeTimers {
+			if timer != nil {
+				timer.Stop()
+			}
+			delete(w.wakeTimers, key)
+		}
+		w.mu.Unlock()
+	})
 }
 
 func (w *NodeProbeWorker) loop(ctx context.Context) {
@@ -228,7 +253,9 @@ func (w *NodeProbeWorker) loop(ctx context.Context) {
 		case <-w.stopCh:
 			return
 		case <-ticker.C:
-			w.cycle(ctx)
+			w.drainDue(ctx)
+		case <-w.wakeCh:
+			w.drainDue(ctx)
 		}
 	}
 }
@@ -333,10 +360,19 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 		    last_err_code = NULL,
 		    updated_at = now()
 	`, credID, model, nodeProbeMaxAttempts)
+	key := fmt.Sprintf("%d|%s", credID, model)
 	w.mu.Lock()
-	w.triggers[fmt.Sprintf("%d|%s", credID, model)] = nodeProbeTrigger{
+	w.triggers[key] = nodeProbeTrigger{
 		tenantID: tenantID,
 		parentID: parentReqID,
+	}
+	if _, exists := w.wakeTimers[key]; !exists {
+		w.wakeTimers[key] = time.AfterFunc(5*time.Second, func() {
+			w.mu.Lock()
+			delete(w.wakeTimers, key)
+			w.mu.Unlock()
+			nonBlockingWake(w.wakeCh)
+		})
 	}
 	w.mu.Unlock()
 	slog.Info("node_probe_worker: submit",
@@ -345,10 +381,22 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 	)
 }
 
-// cycle picks at most one due (cred, model) per tick and runs the
-// two-round probe.  Concurrency is deliberately 1 per tick — the
-// worker is in a low-traffic hot path and we want predictable DB
-// pressure.
+func nonBlockingWake(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func (w *NodeProbeWorker) drainDue(ctx context.Context) {
+	for i := 0; i < nodeProbeBatchSize; i++ {
+		if !w.cycle(ctx) {
+			return
+		}
+	}
+}
+
+// worker is in a low-traffic hot path and we want predictable DB pressure.
 //
 // Cross-instance isolation: pickDueAtomically issues a single
 // SELECT ... FOR UPDATE SKIP LOCKED + UPDATE in_flight_until inside
@@ -356,20 +404,20 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 // (cred, model) row at the same instant.  Combined with the in-memory
 // dedup map this guarantees "one in-flight probe per (cred, model)
 // globally".
-func (w *NodeProbeWorker) cycle(ctx context.Context) {
+func (w *NodeProbeWorker) cycle(ctx context.Context) bool {
 	credID, model, ok, err := w.pickDueAtomically(ctx)
 	if err != nil {
 		slog.Warn("node_probe_worker: pick due failed", "error", err)
-		return
+		return false
 	}
 	if !ok {
-		return
+		return false
 	}
 	key := fmt.Sprintf("%d|%s", credID, model)
 	w.mu.Lock()
 	if _, busy := w.inFlight[key]; busy {
 		w.mu.Unlock()
-		return
+		return false
 	}
 	w.inFlight[key] = struct{}{}
 	trigger := w.triggers[key]
@@ -385,6 +433,7 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) {
 		slog.Warn("node_probe_worker: runOne failed",
 			"credential_id", credID, "model", model, "error", err)
 	}
+	return true
 }
 
 // pickDueAtomically selects the next-due (cred, model) row and marks
@@ -404,15 +453,9 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) {
 // Returns (credID, model, true, nil) on success, (0, "", false, nil)
 // when nothing is due.
 //
-// 2026-07-15 P0 fix: the in_flight_until predicate was removed
-// from the WHERE clause because Submit() no longer sets
-// in_flight_until. The cross-instance dedup relies on
-// `FOR UPDATE SKIP LOCKED` plus the in-memory `inFlight` map in
-// cycle() — adding in_flight_until back into the predicate would
-// re-introduce the 5-minute dead-letter window from the previous
-// design. We still set the column inside the transaction so an
-// out-of-band reader can see "this row was picked at time T" if
-// needed for forensic logs, but it does not gate the WHERE filter.
+// 2026-07-16: in_flight_until is a post-pick lease, not a submit-time delay.
+// Submit leaves it NULL, so filtering it here prevents cross-instance duplicate
+// probes without delaying a newly submitted row.
 func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, bool, error) {
 	tx, err := w.db.Begin(ctx)
 	if err != nil {
@@ -423,10 +466,12 @@ func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, b
 	var credID int
 	var model string
 	err = tx.QueryRow(ctx, `
-		SELECT credential_id, raw_model_name
-		FROM node_probe_state
-		WHERE paused = FALSE
-		  AND next_retry_at <= now()
+			SELECT credential_id, raw_model_name
+			FROM node_probe_state
+			WHERE paused = FALSE
+			  AND next_retry_at <= now()
+			  AND (in_flight_until IS NULL OR in_flight_until <= now())
+
 		ORDER BY next_retry_at ASC
 		LIMIT 1
 		FOR UPDATE SKIP LOCKED
@@ -502,6 +547,9 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		w.updateBindingAvailability(ctx, credID, model, false, direct.errCode)
 		recoverAt := time.Now().Add(5 * time.Minute)
 		w.updateObservedState(ctx, credID, model, false, direct.errCode, recoverAt)
+	}
+	if w.invalidateCandidateCache != nil {
+		w.invalidateCandidateCache(credID)
 	}
 	now := time.Now()
 	durationMs := int(now.Sub(startedAt).Milliseconds())
