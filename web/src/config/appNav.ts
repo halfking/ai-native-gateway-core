@@ -77,6 +77,7 @@ export const NAV_GROUPS: NavGroup[] = [
     labelKey: 'nav.group.requestsSessions',
     items: [
       { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '' },
+      { path: '/admin/request-trace', label: '请求链路追踪', labelKey: 'nav.item.requestTrace', icon: '', super: true, hideForTenant: true },
       { path: '/sessions', label: '会话列表', labelKey: 'nav.item.sessions', icon: '' },
       { path: '/admin/sessions', label: '会话管理', labelKey: 'nav.item.sessionManagement', icon: '', super: true, hideForTenant: true },
       { path: '/session-compare', label: '会话对比', labelKey: 'nav.item.sessionCompare', icon: '' },

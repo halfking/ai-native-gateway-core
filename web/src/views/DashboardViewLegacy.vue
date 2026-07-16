@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, watch, inject, type Ref, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStream from '../components/LiveRequestStream.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
@@ -196,7 +196,13 @@ const resetLiveStream = dashboardData?.resetLiveStream || (() => {})
 const discoveryStatus = dashboardData?.discoveryStatus || ref(null)
 
 const activeRequestId = ref<string | null>(null)
+const router = useRouter()
 function openRequestDetail(id: string) {
+  // 2026-07-17: super_admin 实时请求流点击 → 请求链路追踪；其他用户保留旧抽屉行为。
+  if (isSuperAdmin()) {
+    router.push({ path: '/admin/request-trace', query: { requestId: id } })
+    return
+  }
   activeRequestId.value = id
 }
 function closeRequestDrawer() {

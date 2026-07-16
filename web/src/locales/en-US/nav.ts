@@ -34,6 +34,7 @@ export default {
     keyApplications: 'Key Applications',
     auditLogs: 'Audit Logs',
     requestLogs: 'Request Logs',
+    requestTrace: 'Request Trace',
     sessions: 'Sessions',
     sessionManagement: 'Session Management',
     sessionCompare: 'Session Compare',

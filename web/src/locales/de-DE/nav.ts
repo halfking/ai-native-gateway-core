@@ -31,6 +31,7 @@ export default {
     keyApplications: "Schlüssel-Anträge",
     auditLogs: "Audit-Logs",
     requestLogs: "Anfrage-Logs",
+    requestTrace: "Anfrage-Verfolgung",
     sessions: "Sitzungen",
     sessionManagement: "Sitzungsverwaltung",
     sessionCompare: "Sitzungsvergleich",

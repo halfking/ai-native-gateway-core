@@ -31,6 +31,7 @@ export default {
     keyApplications: "金鑰申請",
     auditLogs: "稽核記錄",
     requestLogs: "請求記錄",
+    requestTrace: "請求鏈路追蹤",
     sessions: "會話清單",
     sessionManagement: "會話管理",
     sessionCompare: "會話對比",

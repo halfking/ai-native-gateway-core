@@ -31,6 +31,7 @@ export default {
     keyApplications: "طلب المفتاح",
     auditLogs: "سجلات التدقيق",
     requestLogs: "سجلات الطلبات",
+    requestTrace: "تتبع الطلبات",
     sessions: "قائمة الجلسات",
     sessionManagement: "إدارة الجلسات",
     sessionCompare: "مقارنة الجلسات",
