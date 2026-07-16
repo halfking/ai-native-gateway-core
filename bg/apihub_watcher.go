@@ -96,7 +96,8 @@ func (w *AssetWatcher) SyncOnce(ctx context.Context) (llmAdded, mcpAdded int64, 
 			a.Kind = apihub.KindLLMEndpoint
 			if regErr := w.hub.Register(ctx, a); regErr != nil {
 				slog.Warn("apihub watcher: register LLM asset failed",
-					"ref_id", a.RefID, "tenant", a.TenantID, "error", regErr)
+					"ref_id", a.RefID, "tenant", a.TenantID, "name", a.Name,
+					"metadata", a.Metadata, "error", regErr)
 				continue
 			}
 			llmAdded++

@@ -152,7 +152,8 @@ func isLinkRelationship(sql string) bool {
 func (f *fakeQuerier) upsertAsset(args []any) error {
 	// Expected arg order from PGStore.Upsert:
 	//  0: kind, 1: refID, 2: tenantID, 3: name, 4: owner, 5: team,
-	//  6: costCenter, 7: tagsBytes, 8: health, 9: version, 10: metadataBytes
+	//  6: costCenter, 7: tagsString, 8: health, 9: version, 10: metadataString
+	// 2026-07-16: Args 7 and 10 are now string (text protocol), not []byte.
 	if len(args) < 11 {
 		return fmt.Errorf("fake: upsert expects 11 args, got %d", len(args))
 	}
@@ -163,10 +164,30 @@ func (f *fakeQuerier) upsertAsset(args []any) error {
 	owner, _ := args[4].(string)
 	team, _ := args[5].(string)
 	costCenter, _ := args[6].(string)
-	tagsBytes, _ := args[7].([]byte)
+
+	// Accept both string (new) and []byte (old test data)
+	var tagsBytes []byte
+	switch v := args[7].(type) {
+	case string:
+		tagsBytes = []byte(v)
+	case []byte:
+		tagsBytes = v
+	default:
+		return fmt.Errorf("fake: tags must be string or []byte, got %T", v)
+	}
+
 	health, _ := args[8].(string)
 	version, _ := args[9].(string)
-	metadataBytes, _ := args[10].([]byte)
+
+	var metadataBytes []byte
+	switch v := args[10].(type) {
+	case string:
+		metadataBytes = []byte(v)
+	case []byte:
+		metadataBytes = v
+	default:
+		return fmt.Errorf("fake: metadata must be string or []byte, got %T", v)
+	}
 
 	now := time.Now().UTC()
 	key := kind + "|" + itoa(refID)
@@ -197,7 +218,9 @@ func (f *fakeQuerier) upsertAsset(args []any) error {
 		tags:       tagsBytes,
 		health:     health,
 		version:    version,
+		metadata:   metadataBytes,
 		registered: now,
+		lastSeen:   &now,
 	}
 	return nil
 }
