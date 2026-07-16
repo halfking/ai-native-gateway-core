@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -47,12 +48,16 @@ func (e *ActiveProbeEmitter) Emit(
 	tenantID string,
 	rawModel string,
 	outboundModel string,
+	origin string,
 	parentReqID string,
 	attempt int,
 	result *ProbeResult,
 ) {
-	if e == nil || e.telemetry == nil || !e.telemetry.Enabled() {
+	if e == nil || e.telemetry == nil || !e.telemetry.Enabled() || result == nil {
 		return
+	}
+	if origin == "" {
+		origin = "direct"
 	}
 
 	if tenantID == "" {
@@ -86,7 +91,7 @@ func (e *ActiveProbeEmitter) Emit(
 
 	autoDecision, err := json.Marshal(map[string]any{
 		"probe_attempt":     attempt,
-		"probe_origin":      "direct",
+		"probe_origin":      origin,
 		"probe_trigger":     "consecutive_failures",
 		"parent_request_id": parentReqID,
 		"probe_http_status": result.HTTPStatus,
@@ -96,7 +101,14 @@ func (e *ActiveProbeEmitter) Emit(
 		"tenant_id":         tenantID,
 	})
 	if err != nil {
-		autoDecision = []byte(`{}`)
+		// The payload is internal and should always be JSON-safe. Fail closed
+		// if that invariant changes so a malformed probe row is never emitted.
+		slog.Error("probe telemetry JSON encoding failed",
+			"credential_id", credID,
+			"model", rawModel,
+			"attempt", attempt,
+			"error", err)
+		return
 	}
 	autoDecisionStr := string(autoDecision)
 
@@ -136,8 +148,8 @@ func (e *ActiveProbeEmitter) Emit(
 		// 2026-07-13: probe observability fields
 		IsAutoRequest:  boolPtrTelemetry(true),
 		TaskType:       strPtrTelemetry("probe_triggered"),
-		TaskTypeChosen: strPtrTelemetry("probe_direct"),
-		QualityFlags:   buildProbeQualityFlags(result, attempt),
+		TaskTypeChosen: strPtrTelemetry("probe_" + origin),
+		QualityFlags:   buildProbeQualityFlags(result, attempt, origin),
 		AutoDecision:   &autoDecisionStr,
 	}
 	// Override the success-path request_status so the row reads
@@ -174,8 +186,12 @@ func buildProbeRequestID(credID int, model string, attempt int, success bool, ts
 //  1. recognise the row as a probe (presence of "probe")
 //  2. identify the origin (presence of "direct" or "gateway")
 //  3. surface timeout/final-attempt flags as pills in the UI
-func buildProbeQualityFlags(result *ProbeResult, attempt int) []string {
-	flags := []string{"probe", "direct"}
+func buildProbeQualityFlags(result *ProbeResult, attempt int, origins ...string) []string {
+	origin := "direct"
+	if len(origins) > 0 && origins[0] != "" {
+		origin = origins[0]
+	}
+	flags := []string{"probe", origin}
 	if result.Status == ProbeStatusTimeout {
 		flags = append(flags, "probe_timeout")
 	}

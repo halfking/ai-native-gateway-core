@@ -96,12 +96,19 @@ type NodeProbeWorker struct {
 	baseURL       string
 	client        *http.Client
 	stateObserver credentialstate.StateObserver
+	emitter       *ActiveProbeEmitter
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
 
 	mu       sync.Mutex
 	inFlight map[string]struct{} // dedup key: "<credID>|<model>"
+	triggers map[string]nodeProbeTrigger
+}
+
+type nodeProbeTrigger struct {
+	tenantID string
+	parentID string
 }
 
 // SetStateObserver wires probe results into the router's in-memory and Redis
@@ -110,6 +117,14 @@ type NodeProbeWorker struct {
 func (w *NodeProbeWorker) SetStateObserver(observer credentialstate.StateObserver) {
 	if w != nil {
 		w.stateObserver = observer
+	}
+}
+
+// SetEmitter makes node-probe rounds visible in the same request stream as
+// legacy active probes. The worker remains usable without telemetry.
+func (w *NodeProbeWorker) SetEmitter(emitter *ActiveProbeEmitter) {
+	if w != nil {
+		w.emitter = emitter
 	}
 }
 
@@ -135,6 +150,7 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 		client:   &http.Client{Timeout: 15 * time.Second},
 		stopCh:   make(chan struct{}),
 		inFlight: make(map[string]struct{}),
+		triggers: make(map[string]nodeProbeTrigger),
 	}
 }
 
@@ -276,6 +292,12 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 		    last_err_code = NULL,
 		    updated_at = now()
 	`, credID, model, nodeProbeMaxAttempts)
+	w.mu.Lock()
+	w.triggers[fmt.Sprintf("%d|%s", credID, model)] = nodeProbeTrigger{
+		tenantID: tenantID,
+		parentID: parentReqID,
+	}
+	w.mu.Unlock()
 	slog.Info("node_probe_worker: submit",
 		"credential_id", credID, "model", model,
 		"tenant_id", tenantID, "parent_request_id", parentReqID,
@@ -309,6 +331,8 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) {
 		return
 	}
 	w.inFlight[key] = struct{}{}
+	trigger := w.triggers[key]
+	delete(w.triggers, key)
 	w.mu.Unlock()
 	defer func() {
 		w.mu.Lock()
@@ -316,7 +340,7 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) {
 		w.mu.Unlock()
 	}()
 
-	if err := w.runOne(ctx, credID, model, ""); err != nil {
+	if err := w.runOne(ctx, credID, model, "", trigger); err != nil {
 		slog.Warn("node_probe_worker: runOne failed",
 			"credential_id", credID, "model", model, "error", err)
 	}
@@ -388,7 +412,7 @@ func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, b
 // runOne executes the two-round probe and updates the state row +
 // audit log accordingly.  triggerKind is recorded on node_probe_runs;
 // "" defaults to "request_failure".
-func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, triggerKind string) error {
+func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, triggerKind string, trigger nodeProbeTrigger) error {
 	if triggerKind == "" {
 		triggerKind = "request_failure"
 	}
@@ -424,6 +448,8 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	gw := w.probeGateway(ctx, credID, model)
 
 	success := direct.ok && gw.ok
+	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
+	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "gateway", attempt, trigger, gw)
 	// Only the direct round proves the health of this credential. The gateway
 	// round may select a different candidate, so its result must not mutate
 	// this credential's routing state.
@@ -546,11 +572,13 @@ func (w *NodeProbeWorker) loadState(ctx context.Context, credID int, model strin
 }
 
 type nodeProbeRoundResult struct {
-	ok         bool
-	httpStatus int
-	errCode    string
-	errDetail  string
-	latencyMs  int
+	ok            bool
+	providerID    int
+	outboundModel string
+	httpStatus    int
+	errCode       string
+	errDetail     string
+	latencyMs     int
 }
 
 // probeDirect issues a chat-completion ping directly to the upstream
@@ -568,12 +596,14 @@ type nodeProbeRoundResult struct {
 // failures for a healthy credential.
 func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model string) nodeProbeRoundResult {
 	r := nodeProbeRoundResult{errCode: "none"}
-	plain, outboundModel, baseURL, protocol, err := w.resolveDirectTarget(ctx, credID, model)
+	plain, outboundModel, baseURL, protocol, providerID, err := w.resolveDirectTarget(ctx, credID, model)
 	if err != nil {
 		r.errCode = "endpoint_build"
 		r.errDetail = err.Error()
 		return r
 	}
+	r.providerID = providerID
+	r.outboundModel = outboundModel
 	// Use the outbound name for the upstream body; fall back to the raw name
 	// passed in (matches active_probe_executor.go's OutboundModel→RawModel
 	// fallback) so providers without a distinct outbound_model_name still work.
@@ -620,7 +650,26 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	return r
 }
 
-func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, string, string, error) {
+func (w *NodeProbeWorker) emitProbe(ctx context.Context, credID, providerID int, model, outboundModel, origin string, attempt int, trigger nodeProbeTrigger, result nodeProbeRoundResult) {
+	if w == nil || w.emitter == nil {
+		return
+	}
+	status := ProbeStatusFailed
+	if result.ok {
+		status = ProbeStatusSuccess
+	}
+	w.emitter.Emit(ctx, credID, providerID, trigger.tenantID, model, outboundModel, origin, trigger.parentID, attempt, &ProbeResult{
+		Status:      status,
+		HTTPStatus:  result.httpStatus,
+		ErrCode:     result.errCode,
+		ErrMsg:      result.errDetail,
+		LatencyMs:   result.latencyMs,
+		StartedAt:   time.Now().Add(-time.Duration(result.latencyMs) * time.Millisecond),
+		CompletedAt: time.Now(),
+	})
+}
+
+func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, string, string, int, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var (
@@ -628,27 +677,28 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		outboundModel string
 		baseURL       string
 		protocol      string
+		providerID    int
 	)
 	err := w.db.QueryRow(queryCtx, `
 		SELECT c.secret_ciphertext,
 		       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
-		       p.base_url, COALESCE(p.protocol, 'openai-completions')
+		       p.base_url, COALESCE(p.protocol, 'openai-completions'), p.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE c.id = $1 AND pm.raw_model_name = $2
 		LIMIT 1
-	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol)
+	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", 0, err
 	}
 	s := string(ciphertext)
 	if !secret.IsV1Envelope(s) {
-		return "", "", "", "", fmt.Errorf("unsupported secret format")
+		return "", "", "", "", 0, fmt.Errorf("unsupported secret format")
 	}
 	if w.keyring == nil {
-		return "", "", "", "", fmt.Errorf("keyring not configured")
+		return "", "", "", "", 0, fmt.Errorf("keyring not configured")
 	}
 	// 2026-07-15 P0 fix: previously this called DecryptAESGCM directly,
 	// which only handles v1:<kid>:<b64> envelopes with a non-legacy kid.
@@ -677,9 +727,9 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 			"enc_key_len", len(w.encKey),
 			"envelope_prefix", s[:min(len(s), 24)],
 			"error", err.Error())
-		return "", "", "", "", fmt.Errorf("decrypt: %w", err)
+		return "", "", "", "", 0, fmt.Errorf("decrypt: %w", err)
 	}
-	return string(pt), outboundModel, baseURL, protocol, nil
+	return string(pt), outboundModel, baseURL, protocol, providerID, nil
 }
 
 func directProbeEndpoint(baseURL, protocol string) string {
