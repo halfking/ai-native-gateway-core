@@ -3213,10 +3213,34 @@ type modelNotFoundError struct {
 	credentialID int
 	rawModel     string
 	body         string
+	// status is the upstream HTTP status (typically 404) captured at the
+	// construction site. Carried through Unwrap() into *upstreampkg.Error so
+	// the typed error chain exposes the same (Kind, StatusCode, Body) triple
+	// as contextLengthHTTPError / contextLengthExhaustedError.
+	status int
 }
 
 func (e *modelNotFoundError) Error() string {
 	return "model_not_found: " + e.rawModel
+}
+
+// Unwrap surfaces the upstream (Kind, StatusCode, Body) triple so
+// modelNotFoundError participates in the typed error chain like its
+// siblings (retryableError / contextLengthHTTPError / contextLengthExhaustedError).
+// This lets errors.As / extractUpstreamError reach *upstreampkg.Error when a
+// model_not_found is the terminal failure — currently no active response path
+// consumes it, but it keeps the chain consistent and ready for a future
+// handler change that surfaces the real upstream body instead of a fixed 503.
+func (e *modelNotFoundError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return &upstreampkg.Error{
+		Kind:       errorsx.KindModelNotFound,
+		Body:       []byte(e.body),
+		StatusCode: e.status,
+		Message:    e.Error(),
+	}
 }
 
 type streamInterruptedError struct {

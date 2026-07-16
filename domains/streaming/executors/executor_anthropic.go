@@ -834,6 +834,7 @@ func (e *Executor) executeAnthropicOnce(
 				credentialID: cand.CredentialID,
 				rawModel:     cand.RawModel,
 				body:         string(body[:n]),
+				status:       resp.StatusCode,
 			}
 		}
 
