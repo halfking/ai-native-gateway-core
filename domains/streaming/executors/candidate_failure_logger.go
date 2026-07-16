@@ -113,7 +113,7 @@ func (w *CandidateFailureWriter) LogFailure(
 			$1, $2, $3, $4, $5,
 			$6, $7, $8,
 			$9, NULLIF($10, ''), NULLIF($11, ''),
-			$12, $13, $14, $15
+			$12, $13, $14, $15::text::jsonb
 		)
 	`,
 		row.RequestID, row.TenantID, row.CredentialID, row.ProviderID, row.RawModelName,
@@ -213,9 +213,10 @@ func unwrapErr(err error) error {
 	return nil
 }
 
-// marshalContext renders a map as compact JSON, returning nil when the
+// marshalContext renders a map as compact JSON string, returning nil when the
 // input is empty so the column is NULL (not an empty object).
-func marshalContext(m map[string]any) []byte {
+// Returns string instead of []byte to match the $N::text::jsonb cast pattern.
+func marshalContext(m map[string]any) any {
 	if len(m) == 0 {
 		return nil
 	}
@@ -223,5 +224,5 @@ func marshalContext(m map[string]any) []byte {
 	if err != nil {
 		return nil
 	}
-	return b
+	return string(b)
 }

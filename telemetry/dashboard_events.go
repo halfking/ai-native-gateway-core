@@ -261,6 +261,8 @@ func (r *DashboardEventRecorder) flush() {
 func (r *DashboardEventRecorder) insertEvent(ctx context.Context, event *DashboardEvent) error {
 	queryParamsJSON, _ := json.Marshal(event.QueryParams)
 
+	// 2026-07-16: Use $N::text::jsonb instead of CAST($N AS jsonb) to fix
+	// pgx binary protocol 22P02 error (same fix as apihub/pg_store.go:71).
 	query := `
 			INSERT INTO dashboard_access_events_hot (
 
@@ -272,14 +274,14 @@ func (r *DashboardEventRecorder) insertEvent(ctx context.Context, event *Dashboa
 			error_code, error_message,
 			client_ip, user_agent, referer,
 			db_query_time_ms, cache_query_time_ms
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::jsonb, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 	`
 
 	_, err := r.db.Exec(ctx, query,
 		event.EventID, event.EventType, event.Timestamp,
 		event.TenantID, event.UserID, event.UserRole, event.SessionID,
 		event.APIPath, event.APIMethod, event.APIVersion,
-		queryParamsJSON,
+		string(queryParamsJSON),
 		event.StatusCode, event.ResponseTime, event.CacheHit, event.DataSize,
 		event.ErrorCode, event.ErrorMessage,
 		event.ClientIP, event.UserAgent, event.Referer,

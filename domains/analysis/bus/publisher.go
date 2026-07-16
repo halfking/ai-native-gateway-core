@@ -49,7 +49,7 @@ func (p *PGPublisher) Publish(ctx context.Context, evt analysis.AnalysisEvent) e
 	if p == nil || p.pool == nil {
 		return nil
 	}
-	payload := []byte("null")
+	payloadStr := "null"
 	if evt.Payload != nil {
 		raw, err := json.Marshal(evt.Payload)
 		if err != nil {
@@ -57,7 +57,7 @@ func (p *PGPublisher) Publish(ctx context.Context, evt analysis.AnalysisEvent) e
 				"event_id", evt.EventID, "type", evt.Type, "error", err)
 			return err
 		}
-		payload = raw
+		payloadStr = string(raw)
 	}
 	occurredAt := evt.OccurredAt
 	if occurredAt.IsZero() {
@@ -75,12 +75,17 @@ func (p *PGPublisher) Publish(ctx context.Context, evt analysis.AnalysisEvent) e
 	if _, err := tx.Exec(ctx, `SET LOCAL app.bypass_rls = 'true'`); err != nil {
 		return err
 	}
+	// 2026-07-16: Fix 22P02 error by using $6::text::jsonb cast pattern.
+	// Passing []byte directly to JSONB column causes "invalid input syntax for type json"
+	// when payload contains escaped quotes. Converting to string and using ::text::jsonb
+	// cast matches the pattern used in apihub/pg_store.go, candidate_failure_logger.go,
+	// and telemetry/client.go (see rule 43 + apihub 22P02 fix precedent).
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO analysis_events
 			(event_id, type, tenant_id, session_id, request_id, payload, occurred_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6::text::jsonb, $7)
 		ON CONFLICT (event_id) DO NOTHING
-	`, evt.EventID, string(evt.Type), evt.TenantID, evt.SessionID, evt.RequestID, payload, occurredAt); err != nil {
+	`, evt.EventID, string(evt.Type), evt.TenantID, evt.SessionID, evt.RequestID, payloadStr, occurredAt); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
