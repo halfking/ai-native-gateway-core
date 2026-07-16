@@ -178,6 +178,29 @@ func (e *Executor) executeOpenAI(
 	if err != nil {
 		return nil, err
 	}
+
+	// 2026-07-16: Pre-request validation
+	if e.PreRequestValidator != nil {
+		validationResult, validationErr := e.PreRequestValidator.Validate(params.R.Context(), bodyBytes)
+		if validationErr != nil {
+			slog.Warn("pre_request_validation failed",
+				"error", validationErr,
+				"credential_id", cand.CredentialID,
+				"model", params.Model,
+			)
+			// Non-strict mode: log but continue
+		}
+		if validationResult != nil && len(validationResult.Warnings) > 0 {
+			for _, warning := range validationResult.Warnings {
+				slog.Debug("pre_request_validation warning",
+					"warning", warning,
+					"credential_id", cand.CredentialID,
+					"model", params.Model,
+				)
+			}
+		}
+	}
+
 	// Round 47 compression v7 T-NEW-4: capture the pre-request trim
 	// delta (transformation.CompressMessagesIfNeeded inside finalize) so
 	// emitTelemetry writes compression_meta into request_logs even when
@@ -199,9 +222,48 @@ func (e *Executor) executeOpenAI(
 	// BUG-2 fix (2026-06-19): compute timeout once outside the retry loop.
 	// Previously the timeout was computed inside the anonymous closure, which
 	// caused it to be recomputed on every attempt — minor but cleaner here.
+	// 2026-07-16: Use adaptive timeout if available
 	timeout := e.UpstreamTimeout
 	if params.IsStream {
 		timeout = e.StreamTimeout
+
+		// Apply adaptive timeout calculation
+		if e.TimeoutAdapter != nil {
+			var recentTTFB *time.Duration
+			if e.TTFBTracker != nil {
+				stats := e.TTFBTracker.Get(cand.CredentialID)
+				if stats != nil {
+					recentTTFB = &stats.RecentTTFB
+				}
+			}
+
+			adaptiveTimeout := e.TimeoutAdapter.Calculate(AdaptiveTimeoutInput{
+				RequestSize: len(bodyBytes),
+				IsSession:   params.SessionID != "",
+				IsRetry:     false, // Will be updated in retry loop
+				AttemptNum:  0,
+				ProviderURL: cand.BaseURL,
+				RecentTTFB:  recentTTFB,
+			})
+
+			slog.Debug("adaptive_timeout calculated",
+				"credential_id", cand.CredentialID,
+				"model", params.Model,
+				"request_size", len(bodyBytes),
+				"is_session", params.SessionID != "",
+				"provider_url", cand.BaseURL,
+				"recent_ttfb_ms", func() int64 {
+					if recentTTFB != nil {
+						return recentTTFB.Milliseconds()
+					}
+					return 0
+				}(),
+				"calculated_timeout_ms", adaptiveTimeout.Milliseconds(),
+				"default_timeout_ms", timeout.Milliseconds(),
+			)
+
+			timeout = adaptiveTimeout
+		}
 	}
 
 	// Ensure at least 1 retry is available for internal model_not_found retry.
@@ -588,6 +650,31 @@ func (e *Executor) executeOpenAI(
 			e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
 			latencyMs := int(time.Since(tTotal).Milliseconds())
 
+			// 2026-07-16: Record TTFB and execution outcome
+			ttfbMs := upstreamLatency.Milliseconds()
+			if e.TTFBTracker != nil {
+				e.TTFBTracker.Record(cand.CredentialID, upstreamLatency)
+			}
+			if e.PostExecutionHook != nil {
+				_ = e.PostExecutionHook.RecordOutcome(params.R.Context(), ExecutionOutcome{
+					CredentialID:   cand.CredentialID,
+					ProviderID:     cand.ProviderID,
+					RawModel:       cand.RawModel,
+					CanonicalModel: params.Model,
+					RequestID:      params.RequestID,
+					TenantID:       params.TenantID,
+					Success:        true,
+					LatencyMs:      int64(latencyMs),
+					TTFBMs:         ttfbMs,
+					IsStream:       params.IsStream,
+					ChunkCount:     0, // Will be updated for stream
+					IsRetry:        attempt > 0,
+					AttemptNum:     attempt,
+					StartedAt:      tTotal,
+					CompletedAt:    time.Now(),
+				})
+			}
+
 			if params.IsStream {
 				if params.OnStreamReady != nil {
 					params.OnStreamReady()
@@ -646,31 +733,31 @@ func (e *Executor) executeOpenAI(
 					streamQualityFlags = params.Capture.QualityFlags
 					streamQualityScore = params.Capture.QualityScore
 				}
-if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
-						isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
+				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
+					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
 
-						streamKind := errorsx.KindStreamTimeout
-						if errorsx.IsConcurrentOverload(streamOutcome.Reason) {
-							streamKind = errorsx.KindConcurrent
-						}
+					streamKind := errorsx.KindStreamTimeout
+					if errorsx.IsConcurrentOverload(streamOutcome.Reason) {
+						streamKind = errorsx.KindConcurrent
+					}
 
-						// 2026-07-15: empty-stream content-gate returns
-						// Resumable=true with ChunkCount=0 when the upstream
-						// opened a stream but produced zero content (notably
-						// NIM's 13% empty-stream rate). Classify it as
-						// KindEmptyResponse so:
-						//   - freeCredentialsTolerateTransient does NOT skip
-						//     RecordFailure (we want circuit feedback to demote
-						//     the chronically-empty credential via recent_success_rate)
-						//   - shouldWriteCredentialState returns false (soft kind,
-						//     keeps the credential 'ready' for retry)
-						//   - isCredentialFatal returns false (transient)
-						//   - Resumable + ChunkCount=0 < StreamRetryThreshold
-						//     routes it through the candidate-loop continue,
-						//     failing over to the next credential transparently.
-						if streamOutcome.Reason == "empty_stream_no_content" {
-							streamKind = errorsx.KindEmptyResponse
-						}
+					// 2026-07-15: empty-stream content-gate returns
+					// Resumable=true with ChunkCount=0 when the upstream
+					// opened a stream but produced zero content (notably
+					// NIM's 13% empty-stream rate). Classify it as
+					// KindEmptyResponse so:
+					//   - freeCredentialsTolerateTransient does NOT skip
+					//     RecordFailure (we want circuit feedback to demote
+					//     the chronically-empty credential via recent_success_rate)
+					//   - shouldWriteCredentialState returns false (soft kind,
+					//     keeps the credential 'ready' for retry)
+					//   - isCredentialFatal returns false (transient)
+					//   - Resumable + ChunkCount=0 < StreamRetryThreshold
+					//     routes it through the candidate-loop continue,
+					//     failing over to the next credential transparently.
+					if streamOutcome.Reason == "empty_stream_no_content" {
+						streamKind = errorsx.KindEmptyResponse
+					}
 
 					isBenignEOF := streamOutcome.Reason == "eof_without_done" && streamOutcome.ChunkCount > 0
 
