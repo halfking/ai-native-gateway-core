@@ -474,16 +474,33 @@ type nodeProbeRoundResult struct {
 // probeDirect issues a chat-completion ping directly to the upstream
 // provider using the decrypted credential.  Mirrors the structure of
 // bg/active_probe_executor.go:Run.
+//
+// `model` is the raw_model_name (vendor form, e.g. "z-ai/glm-5.2") used to
+// resolve the credential via the provider_models JOIN. The actual name sent
+// to the upstream in the request body is the outbound_model_name (which may
+// differ from raw_model_name for some providers), selected from the DB by
+// resolveDirectTarget — mirroring active_probe_executor.go:188-192. Without
+// this split, a provider whose outbound_model_name differs from
+// raw_model_name would fail the JOIN (since node_probe_state stores
+// COALESCE(outbound,raw), the outbound name) and report endpoint_build
+// failures for a healthy credential.
 func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model string) nodeProbeRoundResult {
 	r := nodeProbeRoundResult{errCode: "none"}
-	plain, baseURL, err := w.resolveDirectTarget(ctx, credID, model)
+	plain, outboundModel, baseURL, err := w.resolveDirectTarget(ctx, credID, model)
 	if err != nil {
 		r.errCode = "endpoint_build"
 		r.errDetail = err.Error()
 		return r
 	}
+	// Use the outbound name for the upstream body; fall back to the raw name
+	// passed in (matches active_probe_executor.go's OutboundModel→RawModel
+	// fallback) so providers without a distinct outbound_model_name still work.
+	bodyModel := outboundModel
+	if bodyModel == "" {
+		bodyModel = model
+	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
-	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, model)
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, bodyModel)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+plain)
 	req.Header.Set("Content-Type", "application/json")
@@ -516,31 +533,34 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	return r
 }
 
-func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, error) {
+func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, string, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var (
-		ciphertext []byte
-		baseURL    string
+		ciphertext     []byte
+		outboundModel  string
+		baseURL        string
 	)
 	err := w.db.QueryRow(queryCtx, `
-		SELECT c.secret_ciphertext, p.base_url
+		SELECT c.secret_ciphertext,
+		       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
+		       p.base_url
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE c.id = $1 AND pm.raw_model_name = $2
 		LIMIT 1
-	`, credID, model).Scan(&ciphertext, &baseURL)
+	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	s := string(ciphertext)
 	if !secret.IsV1Envelope(s) {
-		return "", "", fmt.Errorf("unsupported secret format")
+		return "", "", "", fmt.Errorf("unsupported secret format")
 	}
 	if w.keyring == nil {
-		return "", "", fmt.Errorf("keyring not configured")
+		return "", "", "", fmt.Errorf("keyring not configured")
 	}
 	// 2026-07-15 P0 fix: previously this called DecryptAESGCM directly,
 	// which only handles v1:<kid>:<b64> envelopes with a non-legacy kid.
@@ -569,9 +589,9 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 			"enc_key_len", len(w.encKey),
 			"envelope_prefix", s[:min(len(s), 24)],
 			"error", err.Error())
-		return "", "", fmt.Errorf("decrypt: %w", err)
+		return "", "", "", fmt.Errorf("decrypt: %w", err)
 	}
-	return string(pt), baseURL, nil
+	return string(pt), outboundModel, baseURL, nil
 }
 
 // probeGateway issues a chat-completion ping through the local gateway
