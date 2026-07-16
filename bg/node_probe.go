@@ -861,16 +861,6 @@ func directProbeBody(model, protocol string) string {
 	return string(body)
 }
 
-func firstErrCodeValue(a, b nodeProbeRoundResult) string {
-	if !a.ok {
-		return a.errCode
-	}
-	if !b.ok {
-		return b.errCode
-	}
-	return ""
-}
-
 func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string) {
 	if w == nil || w.db == nil {
 		return
