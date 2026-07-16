@@ -108,20 +108,8 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 		`, credentialID); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `
-			UPDATE model_offers mo
-			SET available          = TRUE,
-			    unavailable_reason = NULL,
-			    unavailable_at     = NULL,
-			    unavailable_recover_at = NULL,
-			    updated_at         = now()
-			WHERE mo.credential_id = $1
-			  AND mo.available = FALSE
-			  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
-			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		`, credentialID); err != nil {
-			return err
-		}
+		// model_offers is a VIEW over credential_model_bindings, so it
+		// automatically reflects the update above. No separate UPDATE needed.
 	} else {
 		if _, err = tx.Exec(ctx, `
 			UPDATE credential_model_bindings cmb
@@ -140,25 +128,8 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 		`, credentialID, rawModel); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `
-			UPDATE model_offers mo
-			SET available          = TRUE,
-			    unavailable_reason = NULL,
-			    unavailable_at     = NULL,
-			    unavailable_recover_at = NULL,
-			    updated_at         = now()
-			FROM credential_model_bindings cmb
-			JOIN provider_models pm ON pm.id = cmb.provider_model_id
-			WHERE mo.credential_id = cmb.credential_id
-			  AND mo.canonical_raw_name = pm.canonical_raw_name
-			  AND cmb.credential_id = $1
-			  AND pm.canonical_raw_name = $2
-			  AND mo.available = FALSE
-			  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
-			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		`, credentialID, rawModel); err != nil {
-			return err
-		}
+		// model_offers is a VIEW over credential_model_bindings, so it
+		// automatically reflects the update above. No separate UPDATE needed.
 	}
 	return tx.Commit(ctx)
 }
@@ -370,23 +341,10 @@ func (w *Writer) writeModelLevelFailureOnly(
 		}
 	}
 
-	// 2. Mirror to model_offers so /api/routing/resolve reflects the same
-	//    state. Skip the write if rawModel is empty (no clean JOIN).
-	if rawModel != "" {
-		if _, err := w.dbPool.Exec(ctx, `
-			UPDATE model_offers mo
-			SET available          = FALSE,
-			    unavailable_reason = $1,
-			    unavailable_at     = now(),
-			    unavailable_recover_at = $2
-			WHERE mo.credential_id = $3
-			  AND mo.canonical_raw_name = $4
-			  AND mo.available = TRUE
-			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		`, reason, recoverAt, credentialID, rawModel); err != nil {
-			return err
-		}
-	}
+	// 2. model_offers is a VIEW over credential_model_bindings, so it
+	//    automatically reflects the update above. No separate UPDATE needed.
+	//    (Previously we tried to UPDATE model_offers directly, but views
+	//    cannot be updated and caused "cannot update view" errors.)
 
 	// 3. ✅ DO NOT update credentials.availability_state.
 	//    Model-level failures must not pollute the credential-level state,
