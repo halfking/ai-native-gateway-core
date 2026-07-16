@@ -1543,7 +1543,7 @@ func main() {
 	// a database; the SSE hub is required for the live publish path.
 	// Either being nil degrades gracefully (the diagnose entry is
 	// hidden, the API returns 503, the observer drops its events).
-	// The observer is wired to telemetry.SetOnRequestLogPersisted (NOT
+	// The observer is wired to telemetry.AddOnRequestLogPersisted (NOT
 	// the "Emitted" hook) so it only runs on rows that are already
 	// durable in request_logs.
 	if adminHandler != nil && dbConn != nil && dbConn.Enabled() {

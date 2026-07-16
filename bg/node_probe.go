@@ -195,14 +195,67 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 	// can restart the probe cycle. The in-memory `inFlight` map
 	// plus the SELECT FOR UPDATE SKIP LOCKED in pickDueAtomically
 	// are the only two dedup mechanisms.
+	//
+	// 2026-07-16 (audit follow-up — backoff collapse): the previous
+	// Submit's ON CONFLICT unconditionally took LEAST(next_retry_at,
+	// now+5s) and reset consecutive_failures=0. Combined with
+	// credentialstate.Manager firing Submit on every failure where
+	// ConsecutiveFails>=2, the 5s/30s/60s/5m/1h/2h/24h backoff ladder
+	// never advanced — each fresh user failure pulled the row back to
+	// the 5s rung and reset the counter, so runOne always computed
+	// attempt=1. Result: the same credential could be probed roughly
+	// every (round_duration+5s) under sustained failure, producing the
+	// "lots of probe tiles in the live stream" symptom operators saw.
+	//
+	// Fix: ON CONFLICT now only re-arms when the row is EITHER paused
+	// (restart the cycle from scratch) OR has no future next_retry_at
+	// (a previous Submit's 5s window has already elapsed and runOne
+	// has either processed it or is about to). When the row already
+	// has a future next_retry_at — i.e. runOne is mid-cycle and the
+	// ladder has been legitimately escalated — we update only the
+	// audit columns and leave next_retry_at / consecutive_failures /
+	// in_flight_until alone, so the backoff chain
+	// (5s→30s→60s→5m→1h→2h→24h) can actually advance.
+	//
+	// consecutive_failures is reset only for paused rows (re-arm from
+	// scratch); for already-expired rows it is left at its current
+	// value so runOne's increment by 1 (line 331: attempt = state+1)
+	// correctly reflects "one more failed probe round on top of the
+	// previous ladder position" rather than collapsing back to rung 1.
+	//
+	// The 2-second flash-protection in Manager.UpdateOnFailure still
+	// prevents transient noise (a success within 2s) from re-arming.
 	_, _ = w.db.Exec(ctx, `
 		INSERT INTO node_probe_state (credential_id, raw_model_name, next_retry_at, next_retry_seconds, paused, in_flight_until, consecutive_failures, last_err_code)
 		VALUES ($1, $2, now() + interval '5 seconds', 5, FALSE, NULL, 0, NULL)
 		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
-		SET next_retry_at = LEAST(node_probe_state.next_retry_at, now() + interval '5 seconds'),
-		    in_flight_until = NULL,
+		SET next_retry_at = CASE
+		        WHEN node_probe_state.paused = TRUE
+		          OR node_probe_state.next_retry_at <= now()
+		        THEN now() + interval '5 seconds'
+		        ELSE node_probe_state.next_retry_at
+		    END,
+		    next_retry_seconds = CASE
+		        WHEN node_probe_state.paused = TRUE
+		          OR node_probe_state.next_retry_at <= now()
+		        THEN 5
+		        ELSE node_probe_state.next_retry_seconds
+		    END,
+		    in_flight_until = CASE
+		        WHEN node_probe_state.paused = TRUE
+		          OR node_probe_state.next_retry_at <= now()
+		        THEN NULL
+		        ELSE node_probe_state.in_flight_until
+		    END,
 		    paused = FALSE,
-		    consecutive_failures = 0,
+		    -- Reset the counter only when the cycle is being restarted
+		    -- from a paused row. For already-expired rows the worker
+		    -- (runOne) owns the counter and increments it by 1 per round;
+		    -- touching it here would collapse the ladder back to rung 1.
+		    consecutive_failures = CASE
+		        WHEN node_probe_state.paused = TRUE THEN 0
+		        ELSE node_probe_state.consecutive_failures
+		    END,
 		    last_err_code = NULL,
 		    updated_at = now()
 	`, credID, model)
@@ -474,16 +527,33 @@ type nodeProbeRoundResult struct {
 // probeDirect issues a chat-completion ping directly to the upstream
 // provider using the decrypted credential.  Mirrors the structure of
 // bg/active_probe_executor.go:Run.
+//
+// `model` is the raw_model_name (vendor form, e.g. "z-ai/glm-5.2") used to
+// resolve the credential via the provider_models JOIN. The actual name sent
+// to the upstream in the request body is the outbound_model_name (which may
+// differ from raw_model_name for some providers), selected from the DB by
+// resolveDirectTarget — mirroring active_probe_executor.go:188-192. Without
+// this split, a provider whose outbound_model_name differs from
+// raw_model_name would fail the JOIN (since node_probe_state stores
+// COALESCE(outbound,raw), the outbound name) and report endpoint_build
+// failures for a healthy credential.
 func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model string) nodeProbeRoundResult {
 	r := nodeProbeRoundResult{errCode: "none"}
-	plain, baseURL, err := w.resolveDirectTarget(ctx, credID, model)
+	plain, outboundModel, baseURL, err := w.resolveDirectTarget(ctx, credID, model)
 	if err != nil {
 		r.errCode = "endpoint_build"
 		r.errDetail = err.Error()
 		return r
 	}
+	// Use the outbound name for the upstream body; fall back to the raw name
+	// passed in (matches active_probe_executor.go's OutboundModel→RawModel
+	// fallback) so providers without a distinct outbound_model_name still work.
+	bodyModel := outboundModel
+	if bodyModel == "" {
+		bodyModel = model
+	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
-	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, model)
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, bodyModel)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+plain)
 	req.Header.Set("Content-Type", "application/json")
@@ -516,31 +586,34 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	return r
 }
 
-func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, error) {
+func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, string, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var (
-		ciphertext []byte
-		baseURL    string
+		ciphertext     []byte
+		outboundModel  string
+		baseURL        string
 	)
 	err := w.db.QueryRow(queryCtx, `
-		SELECT c.secret_ciphertext, p.base_url
+		SELECT c.secret_ciphertext,
+		       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
+		       p.base_url
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE c.id = $1 AND pm.raw_model_name = $2
 		LIMIT 1
-	`, credID, model).Scan(&ciphertext, &baseURL)
+	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	s := string(ciphertext)
 	if !secret.IsV1Envelope(s) {
-		return "", "", fmt.Errorf("unsupported secret format")
+		return "", "", "", fmt.Errorf("unsupported secret format")
 	}
 	if w.keyring == nil {
-		return "", "", fmt.Errorf("keyring not configured")
+		return "", "", "", fmt.Errorf("keyring not configured")
 	}
 	// 2026-07-15 P0 fix: previously this called DecryptAESGCM directly,
 	// which only handles v1:<kid>:<b64> envelopes with a non-legacy kid.
@@ -569,9 +642,9 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 			"enc_key_len", len(w.encKey),
 			"envelope_prefix", s[:min(len(s), 24)],
 			"error", err.Error())
-		return "", "", fmt.Errorf("decrypt: %w", err)
+		return "", "", "", fmt.Errorf("decrypt: %w", err)
 	}
-	return string(pt), baseURL, nil
+	return string(pt), outboundModel, baseURL, nil
 }
 
 // probeGateway issues a chat-completion ping through the local gateway
