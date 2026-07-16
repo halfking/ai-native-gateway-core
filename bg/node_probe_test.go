@@ -1,6 +1,7 @@
 package bg
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,6 +26,30 @@ func TestNodeProbeBackoffLadder(t *testing.T) {
 		if NodeProbeBackoffChain[i] != v {
 			t.Fatalf("backoff[%d] = %v, want %v", i, NodeProbeBackoffChain[i], v)
 		}
+	}
+}
+
+func TestDirectProbeEndpointUsesAnthropicMessages(t *testing.T) {
+	if got := directProbeEndpoint("https://apiclaude.cc", "anthropic-messages"); got != "https://apiclaude.cc/v1/messages" {
+		t.Fatalf("endpoint = %q", got)
+	}
+	if got := directProbeEndpoint("https://token.sensenova.cn/v1", "openai-completions"); got != "https://token.sensenova.cn/v1/chat/completions" {
+		t.Fatalf("endpoint = %q", got)
+	}
+}
+
+func TestDirectProbeBodyUsesAnthropicMessagesShape(t *testing.T) {
+	body := directProbeBody("claude-sonnet-5", "anthropic-messages")
+	if !strings.Contains(body, `"max_tokens":10`) || !strings.Contains(body, `"content":"ping"`) {
+		t.Fatalf("unexpected anthropic probe body: %s", body)
+	}
+}
+
+func TestNodeProbeMaxAttemptsRearmsFreshFailure(t *testing.T) {
+	// Submit's SQL uses the cap as a reset boundary. Keep the invariant here
+	// so a terminal backoff row cannot become a silent dead letter again.
+	if nodeProbeMaxAttempts != 7 {
+		t.Fatalf("unexpected probe cap: %d", nodeProbeMaxAttempts)
 	}
 }
 

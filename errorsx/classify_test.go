@@ -430,10 +430,10 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		{"422_unsupported_tools_body", 422, `{"error":{"message":"This model does not support tools","type":"invalid_request_error"}}`, KindUnsupportedFeature},
 		{"408_request_timeout_still_timeout", 408, `request timeout`, KindTimeout},
 		{"401_unauthorized_still_auth", 401, `unauthorized`, KindAuth},
-		// 429 with overload-shaped body intentionally upgrades to
-		// KindConcurrent per the comment in ClassifyResponseStatus; only
-		// a plain 429 stays as KindRateLimit.
-		{"429_plain_still_rate_limit", 429, `quota exceeded`, KindRateLimit},
+		// 2026-07-16 P0 fix: "quota exceeded" on 429 now maps to
+		// KindQuotaPermanent (per budgetExceededRe match), not KindRateLimit.
+		// Only a truly plain 429 (no quota/balance/budget text) stays rate_limit.
+		{"429_quota_exceeded_now_permanent", 429, `quota exceeded`, KindQuotaPermanent},
 		{"500_still_upstream_down", 500, `internal server error`, KindUpstreamDown},
 		{"502_still_upstream_down", 502, `bad gateway`, KindUpstreamDown},
 		{"503_still_concurrent", 503, `service unavailable`, KindConcurrent},

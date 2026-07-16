@@ -265,7 +265,15 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	// active_probe 与下面的"永久/临时分级探测"并行：
 	//   - active_probe 优先用于快速隔离"上游 vs gateway"问题，0s 延迟
 	//   - credProbeV2（按 30s/2m/5m 分级延迟后立即探测）作为兜底
-	if m.activeProbeSubmitter != nil && state.ConsecutiveFails >= m.activeProbeThreshold {
+	// A timeout/network failure must start probing after the first confirmed
+	// failure. Waiting for a second request is too late for streaming clients:
+	// they commonly cancel while the upstream is still waiting for headers.
+	probeImmediately := errKind == errorsx.KindNetwork ||
+		errKind == errorsx.KindTimeout ||
+		errKind == errorsx.KindUpstreamDown ||
+		errKind == errorsx.KindStreamTimeout
+	if m.activeProbeSubmitter != nil &&
+		(probeImmediately || state.ConsecutiveFails >= m.activeProbeThreshold) {
 		// 闪断保护：2秒内有成功 → 不触发探测，避免误判瞬时网络抖动
 		if state.LastSuccessAt == nil || now.Sub(*state.LastSuccessAt) > 2*time.Second {
 			slog.Info("credstate: triggering active_probe",

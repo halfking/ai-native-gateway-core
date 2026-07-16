@@ -13,6 +13,7 @@ func TestClassifyErrorWithBody_ContextLength(t *testing.T) {
 		{"anthropic-400", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long"}}`, KindContextLength},
 		{"minimax-400", 400, `{"error":{"code":"context_length_exceeded","message":"max_tokens exceed"}}`, KindContextLength},
 		{"deepseek-400", 400, `{"error":{"message":"context window exceeded"}}`, KindContextLength},
+		{"input-exceeds-context-window", 400, `{"error":{"message":"Your input exceeds the context window of this model."}}`, KindContextLength},
 		{"zhipu-400-cjk", 400, `{"error":{"message":"上下文长度超出限制"}}`, KindContextLength},
 		// 413 with a context-length-shaped body
 		{"413-with-context-body", 413, `{"error":{"message":"context_length_exceeded"}}`, KindContextLength},

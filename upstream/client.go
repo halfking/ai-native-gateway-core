@@ -22,7 +22,9 @@ const (
 	retryBaseDelay = 500 * time.Millisecond
 	defaultTimeout = 120 * time.Second
 	connectTimeout = 10 * time.Second
-	headerTimeout  = 60 * time.Second
+	// A stalled streaming upstream must fail before typical browser request
+	// timeouts, otherwise the client cancels first and no health probe starts.
+	headerTimeout = 30 * time.Second
 )
 
 type ErrorKind = errorsx.ErrorKind

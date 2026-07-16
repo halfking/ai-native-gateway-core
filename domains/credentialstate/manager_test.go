@@ -262,6 +262,18 @@ func TestManager_StreamTimeoutCoolingAfterThree(t *testing.T) {
 	}
 }
 
+func TestManager_TimeoutTriggersProbeAfterFirstFailure(t *testing.T) {
+	m := NewManager(nil, nil)
+	var probes int
+	m.SetActiveProbeSubmitter(func(int, string, string, string) { probes++ }, 2)
+
+	m.UpdateOnFailure(context.Background(), 11, "minimax-m3", errorsx.KindTimeout, "req-1", "default", "")
+
+	if probes != 1 {
+		t.Fatalf("timeout should trigger one probe after the first failure, got %d", probes)
+	}
+}
+
 // TestManager_FreeCredentialTransientTolerated 验证 2026-07-14 修复：
 // billing_mode="free" 的凭据在 transient 错误（timeout/stream_timeout/network/
 // rate_limit/upstream_down）连续失败时，不进入 cooling（Available 保持 true、
