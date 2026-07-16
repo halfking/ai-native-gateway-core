@@ -527,6 +527,8 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 	// the parent's auto-routing ensures writes never accidentally land in
 	// a non-default partition (which would block subsequent UPDATEs once
 	// the partition is converted to columnar).
+	// 2026-07-16: JSONB columns use $N::text::jsonb (not CAST($N AS jsonb))
+	// to fix pgx binary protocol 22P02 error — same fix as apihub/pg_store.go:71.
 	_, err := c.dbPool.Exec(ctx, `
 		INSERT INTO routing_decision_log_hot (
 			ts, request_id, idempotency_key, tenant_id, api_key_id,
@@ -547,7 +549,7 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 			$18, $19, $20, $21,
 			$22, $23, $24, $25,
 			$26, $27, $28,
-			$29, $30, CAST($31 AS jsonb), CAST($32 AS jsonb)
+			$29, $30, $31::text::jsonb, $32::text::jsonb
 		)
 	`,
 		entry.RequestID,
@@ -580,8 +582,8 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 		entry.FailureDetailCode,
 		entry.ResolutionPath,
 		entry.CanonicalModel,
-		rawModelsJSON,
-		traceJSON,
+		string(rawModelsJSON),
+		string(traceJSON),
 	)
 	return err
 }
@@ -690,6 +692,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// The ON CONFLICT (request_id, ts) clause catches same-row upserts
 	// from race conditions (e.g. async retry landing on the same
 	// request_id). 热表的 UNIQUE 约束覆盖冲突目标。
+	// 2026-07-16: JSONB columns use $N::text::jsonb to fix pgx binary protocol 22P02.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_hot (
 			request_id, ts, tenant_id, application_id, api_key_id,
@@ -756,22 +759,22 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$32, $33,
 		$34, $35, $36, $37,
 		$38, $39, $40,
-		CAST($41 AS jsonb), CAST($42 AS jsonb),
+		$41::text::jsonb, $42::text::jsonb,
 		$43, $44, $45,
 		$46,
 $47,
 		$48, $49,
 		$50, $51, $52,
-		$53, $54, $55, $56, $57,
+		$53, $54, $55, $56::text::jsonb, $57,
 		$58, $59,
-		$60, $61, $62, $63,
-		$64, $65, $66, $67,
-		CAST($68 AS text[]), CAST($69 AS jsonb), $70,
+		$60, $61, $62, $63::text::jsonb,
+		$64, $65, $66, $67::text::jsonb,
+		CAST($68 AS text[]), $69::text::jsonb, $70,
 		$71,
-		CAST($72 AS jsonb),
+		$72::text::jsonb,
 		$73,
 		$74, $75, $76, $77, $78,
-		CAST($79 AS jsonb),
+		$79::text::jsonb,
 		-- 2026-07-14 (migration 341): client-side origin.
 		$80, $81, $82, $83
 		)
@@ -908,8 +911,8 @@ $47,
 		entry.RequestPreview,
 		entry.TransformSummary,
 		entry.ResponsePreview,
-		entry.RequestBody,
-		entry.ResponseBody,
+		strPtrToJSON(entry.RequestBody),
+		strPtrToJSON(entry.ResponseBody),
 		entry.StreamFirstChunkMs,
 		entry.StreamChunkCount,
 		entry.StreamDoneReceived,
@@ -923,7 +926,7 @@ $47,
 		entry.IsAutoRequest,
 		entry.TaskType,
 		entry.AutoProfile,
-		entry.AutoDecision,
+		strPtrToJSON(entry.AutoDecision),
 		entry.AutoConfidence,
 		entry.WorkType,
 		entry.CreditsCharged,
@@ -931,24 +934,24 @@ $47,
 		entry.ParentRequestID,
 		entry.CompressionReason,
 		entry.CompressionStrategy,
-		entry.CompressionMeta,
+		jsonOrNull(entry.CompressionMeta),
 		// v3 (2026-06-19) T23: session-level outbound body payload.
-		entry.OutboundBody,
+		jsonOrNull(entry.OutboundBody),
 		entry.OutboundMsgCount,
 		entry.OutboundTokenEst,
-		entry.OutboundMsgHashes,
+		jsonOrNull(entry.OutboundMsgHashes),
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 		// quality_flags is bound as text[]; we cast nil to NULL so the
 		// column DEFAULT '{}' kicks in. quality_fix_actions is JSONB.
 		qualityFlagsArg(entry.QualityFlags),
-		qualityActionsArg(entry.QualityFixActions),
+		qualityActionsArgStr(entry.QualityFixActions),
 		entry.QualityScore,
 		// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
 		// (db/migrations/018_upstream_finish_reason.sql). The new column is
 		// the SOLE home for the upstream finish_reason.
 		entry.UpstreamFinishReason,
 		// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		entry.ToolCalls,
+		jsonOrNull(entry.ToolCalls),
 		// 2026-06-26: client-supplied X-Request-Id (debug only).
 		entry.ClientRequestID,
 		// 2026-06-30: upstream diagnostics (migration 320).
@@ -962,7 +965,7 @@ $47,
 		// not set the field (e.g. /api/telemetry/request-log HTTP path).
 		streamChunksSentArg(entry.StreamChunksSent),
 		// 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
-		attachmentsArg(entry.Attachments),
+		attachmentsArgStr(entry.Attachments),
 		// 2026-07-14 (migration 341): client-side origin.
 		// client_ip / client_forwarded_for are written for every business
 		// row by middleware/origin_mw.go; origin_stage / origin_actor are
@@ -1092,6 +1095,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		-- subsequent parameter; the UPDATE SET clause had to be rewritten
 		-- in lock-step to keep COALESCE($N, column) aligned with the
 		-- positional VALUES below.
+		-- 2026-07-16: JSONB columns use $N::text::jsonb to fix pgx binary protocol 22P02.
 		UPDATE request_logs_hot
 		   SET client_model = COALESCE($2, client_model),
 		       outbound_model = COALESCE($3, outbound_model),
@@ -1122,14 +1126,14 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       stream_interrupted = COALESCE($27, stream_interrupted),
 		       response_checksum = COALESCE($28, response_checksum),
 		       response_preview = COALESCE($29, response_preview),
-		       response_body = COALESCE(CAST($30 AS jsonb), response_body),
+		       response_body = COALESCE($30::text::jsonb, response_body),
 		       failure_stage = COALESCE($31, failure_stage),
 		       failure_detail_code = COALESCE($32, failure_detail_code),
 		       transform_rule_id = COALESCE($33, transform_rule_id),
 		       egress_protocol = COALESCE($34, egress_protocol),
 		       request_preview = COALESCE($35, request_preview),
 		       transform_summary = COALESCE($36, transform_summary),
-		       request_body = COALESCE(CAST($37 AS jsonb), request_body),
+		       request_body = COALESCE($37::text::jsonb, request_body),
 		       usage_source = COALESCE(NULLIF($38, ''), usage_source),
 		       success = COALESCE($39, success),
 		       request_status = COALESCE($40, request_status),
@@ -1151,7 +1155,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       is_auto_request = COALESCE($50, is_auto_request),
 		       task_type = COALESCE($51, task_type),
 		       auto_profile = COALESCE($52, auto_profile),
-		       auto_decision = COALESCE(CAST($53 AS jsonb), auto_decision),
+		       auto_decision = COALESCE($53::text::jsonb, auto_decision),
 		       auto_confidence = COALESCE($54, auto_confidence),
 		       work_type = COALESCE($55, work_type),
 		       credits_charged = COALESCE($56, credits_charged),
@@ -1159,22 +1163,22 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       parent_request_id = COALESCE($57, parent_request_id),
 		       compression_reason = COALESCE($58, compression_reason),
 		       compression_strategy = COALESCE($59, compression_strategy),
-		       compression_meta = COALESCE(CAST($60 AS jsonb), compression_meta),
+		       compression_meta = COALESCE($60::text::jsonb, compression_meta),
 		       -- v3 (2026-06-19) T23: session-level outbound body payload.
-		       outbound_body      = COALESCE(CAST($61 AS jsonb), outbound_body),
+		       outbound_body      = COALESCE($61::text::jsonb, outbound_body),
 		       outbound_msg_count = COALESCE($62, outbound_msg_count),
 		       outbound_token_est = COALESCE($63, outbound_token_est),
-		       outbound_msg_hashes = COALESCE(CAST($64 AS jsonb), outbound_msg_hashes),
+		       outbound_msg_hashes = COALESCE($64::text::jsonb, outbound_msg_hashes),
 		       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 		       quality_flags        = COALESCE(CAST($65 AS text[]), quality_flags),
-		       quality_fix_actions  = COALESCE(CAST($66 AS jsonb), quality_fix_actions),
+		       quality_fix_actions  = COALESCE($66::text::jsonb, quality_fix_actions),
 		       quality_score        = COALESCE($67, quality_score),
 	   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
 	   -- (db/migrations/018_upstream_finish_reason.sql). The new column is
 	   -- the SOLE home for the upstream finish_reason.
 	   upstream_finish_reason = COALESCE($68, upstream_finish_reason),
 	   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-	   tool_calls = COALESCE(CAST($69 AS jsonb), tool_calls),
+	   tool_calls = COALESCE($69::text::jsonb, tool_calls),
 	   -- 2026-06-26: client-supplied X-Request-Id (debug only). COALESCE so
 	   -- a late success UPDATE does not blank a value set on INSERT.
 	   client_request_id = COALESCE($70, client_request_id),
@@ -1226,14 +1230,14 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.StreamInterrupted,
 		entry.ResponseChecksum,
 		entry.ResponsePreview,
-		entry.ResponseBody,
+		strPtrToJSON(entry.ResponseBody),
 		entry.FailureStage,
 		entry.FailureDetailCode,
 		entry.TransformRuleID,
 		entry.EgressProtocol,
 		entry.RequestPreview,
 		entry.TransformSummary,
-		entry.RequestBody,
+		strPtrToJSON(entry.RequestBody),
 		nonEmptyPtr(entry.UsageSource, ""),
 		boolptr(entry.Success),
 		entry.RequestStatus,
@@ -1249,7 +1253,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.IsAutoRequest,
 		entry.TaskType,
 		entry.AutoProfile,
-		entry.AutoDecision,
+		strPtrToJSON(entry.AutoDecision),
 		entry.AutoConfidence,
 		entry.WorkType,
 		entry.CreditsCharged,
@@ -1257,24 +1261,24 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.ParentRequestID,
 		entry.CompressionReason,
 		entry.CompressionStrategy,
-		entry.CompressionMeta,
+		string(jsonOrNull(entry.CompressionMeta)),
 		// v3 (2026-06-19) T23: session-level outbound body payload.
-		entry.OutboundBody,
+		string(jsonOrNull(entry.OutboundBody)),
 		entry.OutboundMsgCount,
 		entry.OutboundTokenEst,
-		entry.OutboundMsgHashes,
+		string(jsonOrNull(entry.OutboundMsgHashes)),
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 		// quality_flags is bound as text[]; we cast nil to NULL so the
 		// column DEFAULT '{}' kicks in. quality_fix_actions is JSONB.
 		qualityFlagsArg(entry.QualityFlags),
-		qualityActionsArg(entry.QualityFixActions),
+		string(qualityActionsArgStr(entry.QualityFixActions)),
 		entry.QualityScore,
 		// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
 		// (db/migrations/018_upstream_finish_reason.sql). The new column is
 		// the SOLE home for the upstream finish_reason.
 		entry.UpstreamFinishReason,
 		// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		entry.ToolCalls,
+		string(jsonOrNull(entry.ToolCalls)),
 		// 2026-06-26: client-supplied X-Request-Id (debug only).
 		entry.ClientRequestID,
 		// 2026-06-30: upstream diagnostics (migration 320).
@@ -1380,6 +1384,14 @@ func qualityActionsArg(raw json.RawMessage) any {
 	return []byte(raw)
 }
 
+// qualityActionsArgStr returns string for $N::text::jsonb binding (pgx binary protocol fix).
+func qualityActionsArgStr(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "{}"
+	}
+	return string(raw)
+}
+
 // attachmentsArg returns a value safe to bind to the NULLABLE
 // request_logs.attachments JSONB column. Unlike quality_flags /
 // quality_fix_actions this column has no NOT NULL constraint, so an
@@ -1391,6 +1403,33 @@ func attachmentsArg(raw json.RawMessage) any {
 		return nil
 	}
 	return []byte(raw)
+}
+
+// attachmentsArgStr returns string for $N::text::jsonb binding (pgx binary protocol fix).
+// Returns "null" for empty input so PostgreSQL interprets it as JSON NULL.
+func attachmentsArgStr(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "null"
+	}
+	return string(raw)
+}
+
+// jsonOrNull returns string representation of json.RawMessage for $N::text::jsonb binding.
+// Returns "null" for empty input so PostgreSQL interprets it as JSON NULL.
+func jsonOrNull(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "null"
+	}
+	return string(raw)
+}
+
+// strPtrToJSON converts *string to string for $N::text::jsonb binding.
+// Returns "null" for nil/empty input.
+func strPtrToJSON(s *string) string {
+	if s == nil || *s == "" {
+		return "null"
+	}
+	return *s
 }
 
 // streamChunksSentArg returns a value safe to bind to the NOT NULL
