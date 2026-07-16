@@ -847,7 +847,7 @@ func (e *Executor) executeAnthropicOnce(
 		} else if errKind == errorsx.KindRateLimit {
 			e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 		} else if errKind == errorsx.KindConcurrent {
-			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, errorsx.KindConcurrent,
+			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, errorsx.KindConcurrent,
 				fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
 			e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
 		}

@@ -7,7 +7,7 @@
 // retries failed transitions with bounded backoff.
 //
 // IMPORTANT: this MUST be wired through
-// `telemetry.SetOnRequestLogPersisted` (not the "Emitted" hook) so
+// `telemetry.AddOnRequestLogPersisted` (not the "Emitted" hook) so
 // the state machine only runs on a row that is already durable in
 // request_logs. The live stream SSE hub uses the "Emitted" hook
 // because it only needs to render the request; the incident state
@@ -151,7 +151,7 @@ func (o *Observer) Stop() {
 }
 
 // OnPersisted is the hook callback registered against
-// telemetry.SetOnRequestLogPersisted. It is intentionally
+// telemetry.AddOnRequestLogPersisted. It is intentionally
 // non-blocking: if the queue is full, the event is dropped and a
 // counter is bumped. We accept drops here because the request is
 // already durable in request_logs — a recovery sweeper can
