@@ -3261,10 +3261,15 @@ func main() {
 		// previous 10s total caused body_read_error when clients uploaded
 		// large chat payloads slowly — production logs showed latency_ms ≈ 10001.
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       120 * time.Second,
-		WriteTimeout:      0,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+		// ReadTimeout 从 120s → 300s: LLM 推理（特别是 reasoning models）
+		// 可能超过 2 分钟。SSE streaming 期间持续有数据传输，不受 IdleTimeout 限制，
+		// 但 ReadTimeout 是整个请求的上限（从接受连接到最后一个 byte）。
+		ReadTimeout:  300 * time.Second,
+		WriteTimeout: 0,
+		// IdleTimeout 从 60s → 300s: 匹配 ReadTimeout，防止 keepalive 连接
+		// 在 LLM 推理期间被提前关闭。IdleTimeout 是指连接完全空闲（无读写）的时间。
+		IdleTimeout:    300 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 	// Wrap handler with h2c so the same listener accepts BOTH HTTP/1.1 and
 	// HTTP/2 cleartext. h2c.NewHandler falls back to HTTP/1.1 when the
@@ -3282,9 +3287,11 @@ func main() {
 	srv.Handler = h2c.NewHandler(handler, &http2.Server{
 		MaxConcurrentStreams: 250,
 		MaxReadFrameSize:     1 << 20,
-		// IdleTimeout: h2c default is 0 (no idle). Match srv.IdleTimeout
-		// so that idle h2 connections close alongside idle h1 connections.
-		IdleTimeout: 60 * time.Second,
+		// IdleTimeout 从 60s → 300s: 匹配 http.Server.IdleTimeout。
+		// 对于 LLM reasoning models (o1/o3/deepseek-reasoner)，推理时间可能
+		// 超过 2 分钟。HTTP/2 connection 在 SSE streaming 期间有持续 DATA frame，
+		// 不算 idle，但 connection 复用的 keepalive 窗口需要足够长。
+		IdleTimeout: 300 * time.Second,
 	})
 	var pprofSrv *http.Server
 	if pprofAddr := strings.TrimSpace(os.Getenv("LLM_GATEWAY_PPROF_LISTEN")); pprofAddr != "" {
