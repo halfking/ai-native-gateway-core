@@ -1,8 +1,8 @@
---
--- Name: model_offers; Type: VIEW; Schema: public; Owner: -
---
+-- Rollback: Remove unavailable_recover_at from model_offers view
 
-CREATE VIEW public.model_offers AS
+DROP VIEW IF EXISTS model_offers;
+
+CREATE VIEW model_offers AS
  SELECT cmb.id,
     cmb.credential_id,
     pm.canonical_id,
@@ -22,7 +22,6 @@ CREATE VIEW public.model_offers AS
     pm.standardized_name,
     cmb.unavailable_reason,
     cmb.unavailable_at,
-    cmb.unavailable_recover_at,
     cmb.billing_mode,
     cmb.pricing_source,
     cmb.pricing_updated_at,
@@ -30,6 +29,5 @@ CREATE VIEW public.model_offers AS
     cmb.active_sessions,
     cmb.consecutive_failures,
     cmb.admin_protected
-   FROM (public.credential_model_bindings cmb
-     JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
-
+   FROM credential_model_bindings cmb
+     JOIN provider_models pm ON pm.id = cmb.provider_model_id;

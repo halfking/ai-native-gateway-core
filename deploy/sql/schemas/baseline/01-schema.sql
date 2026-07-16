@@ -2278,6 +2278,7 @@ CREATE VIEW public.model_offers AS
     pm.standardized_name,
     cmb.unavailable_reason,
     cmb.unavailable_at,
+    cmb.unavailable_recover_at,
     cmb.billing_mode,
     cmb.pricing_source,
     cmb.pricing_updated_at,
