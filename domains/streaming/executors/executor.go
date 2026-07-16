@@ -24,7 +24,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
-	"github.com/kaixuan/llm-gateway-go/domains/session"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -527,6 +528,12 @@ type Executor struct {
 	// DegradationTracker (2026-07-07 Phase 1): 追踪 FpSlot 降级模式请求
 	// 用于监控和告警。Nil 时禁用该功能。
 	DegradationTracker *DegradationTracker
+
+	// 2026-07-16: 自适应超时与状态管理增强
+	TimeoutAdapter      *streaming.TimeoutAdapter // 自适应超时计算器
+	TTFBTracker         *streaming.TTFBTracker    // TTFB 历史追踪器
+	PreRequestValidator *PreRequestValidator      // 请求格式校验器
+	PostExecutionHook   *PostExecutionHook        // 执行后状态更新 hook
 }
 
 func NewExecutor(
