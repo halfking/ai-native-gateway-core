@@ -27,6 +27,14 @@ func NewAggregator(store Store, logger *slog.Logger) *Aggregator {
 
 // UpdateProfile 根据事件更新客户端画像
 func (a *Aggregator) UpdateProfile(ctx context.Context, event *ClientBehaviorEvent) error {
+	// 2026-07-16: nil store 防护。集成路径 (cmd/gateway/main.go) 在
+	// pgx + sql.DB 双轨场景下, sql.DB 桥接可能为 nil, 导致 store==nil。
+	// 早期集成代码路径漏掉了 nil check, UpdateProfile 在 a.store.SaveEvent
+	// 解引用 nil 触发 SIGSEGV, 网关 SIGSEGV → systemd restart → nginx fail → 502。
+	// store 为 nil 时静默跳过 (ProfileWorker 也只 WARN, 不污染总线)。
+	if a == nil || a.store == nil {
+		return nil
+	}
 	// 先保存事件
 	if err := a.store.SaveEvent(ctx, event); err != nil {
 		return fmt.Errorf("save event: %w", err)
@@ -98,7 +106,7 @@ func (a *Aggregator) UpdateProfile(ctx context.Context, event *ClientBehaviorEve
 	if event.EventType == EventTypeApprovalRequired {
 		totalRequests := float64(profile.TotalRequests)
 		if totalRequests > 0 {
-			approvalCount := profile.ApprovalRate * (totalRequests - 1) + 1
+			approvalCount := profile.ApprovalRate*(totalRequests-1) + 1
 			profile.ApprovalRate = approvalCount / totalRequests
 		}
 	}

@@ -9,12 +9,19 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/opt/llm-gateway-go
-EnvironmentFile=/opt/llm-gateway-go/.env
+EnvironmentFile=/etc/llm-gateway-go/env
 ExecStart=/opt/llm-gateway-go/llm-gateway-go
 Restart=always
 RestartSec=5
 StandardOutput=append:/var/log/llm-gateway-go/gateway.stdout.log
 StandardError=append:/var/log/llm-gateway-go/gateway.stderr.log
+
+# 2026-07-16: 更短的 stop 超时 + drain 标记 (与 245 对齐).
+# Go srv.Shutdown 内部 30s drain, 25s 给 systemd 等信号, 然后 SIGKILL.
+# 默认 90s 太长, restart 期间 :8781 一直 unbound, nginx 拿 connection refused.
+TimeoutStopSec=25s
+KillSignal=SIGTERM
+ExecStopPost=/bin/sh -c 'date +%s > /var/run/llm-gateway-go.drained 2>/dev/null || true'
 
 # Hardening — mirror of deploy/llmgo-245.service. Slice 1 pins the
 # tracked 154 unit so the deploy path can validate `systemctl show`
