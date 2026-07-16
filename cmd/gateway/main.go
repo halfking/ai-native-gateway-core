@@ -1907,7 +1907,7 @@ func main() {
 
 				// B. node_probe — error-triggered 5s/30s/60s/5m/1h/2h/24h
 				// backoff, direct + gateway two rounds.
-				nodeProbe := bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "")
+				nodeProbe := bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
 				nodeProbe.SetStateObserver(stateManager)
 				nodeProbe.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
 				nodeProbe.Start(context.Background())

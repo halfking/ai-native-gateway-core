@@ -56,7 +56,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -88,13 +90,27 @@ const (
 // NodeProbeWorker polls node_probe_state and executes the two-round
 // (direct + gateway) probe for each (credential, model) whose
 // next_retry_at has elapsed.
+//
+// probeDirect and probeGateway use separate HTTP clients:
+//   - probeClient — respects the upstream HTTP_PROXY via ProxyFunc,
+//     matching the path real user requests take through the gateway.
+//   - client — direct (no proxy), used only for the gateway round
+//     which hits the local gateway API endpoint.
+//
+// 2026-07-16 fix: probeDirect previously used the direct client (no proxy),
+// which bypassed the proxy resolver and reported false-positive recoveries
+// when the proxy was actually broken. Credentials oscillated between
+// "available" (probeDirect through proxy-less client → OK) and
+// "unavailable" (real requests through proxy → timeout), producing the
+// "models briefly work then 5xx" pattern.
 type NodeProbeWorker struct {
 	db            *pgxpool.Pool
 	encKey        []byte
 	keyring       *secret.Keyring
 	apiKey        string
 	baseURL       string
-	client        *http.Client
+	client        *http.Client // direct (no proxy), for probeGateway
+	probeClient   *http.Client // proxy-respecting, for probeDirect
 	stateObserver credentialstate.StateObserver
 	emitter       *ActiveProbeEmitter
 
@@ -133,7 +149,13 @@ func (w *NodeProbeWorker) SetEmitter(emitter *ActiveProbeEmitter) {
 // apiKey is the system-level API key the worker uses for the gateway
 // round; it should be an is_system=true key with read+write on the
 // provider model bindings.
-func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring, apiKey, baseURL string) *NodeProbeWorker {
+//
+// proxyFunc is optional.  When non-nil, the direct probe respects the
+// upstream HTTP_PROXY configured in the environment so that the probe
+// result accurately reflects what real user requests experience
+// (instead of reporting a false-positive recovery by bypassing the
+// proxy).  Pass upClient.Proxy().ProxyFunc() from main.go.
+func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring, apiKey, baseURL string, proxyFunc func(*http.Request) (*url.URL, error)) *NodeProbeWorker {
 	if baseURL == "" {
 		if envURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL")); envURL != "" {
 			baseURL = envURL
@@ -141,7 +163,7 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 			baseURL = "https://llm.kxpms.cn/v1"
 		}
 	}
-	return &NodeProbeWorker{
+	w := &NodeProbeWorker{
 		db:       db,
 		encKey:   encKey,
 		keyring:  keyring,
@@ -152,6 +174,25 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 		inFlight: make(map[string]struct{}),
 		triggers: make(map[string]nodeProbeTrigger),
 	}
+
+	if proxyFunc != nil {
+		w.probeClient = &http.Client{
+			Timeout: 15 * time.Second,
+			Transport: &http.Transport{
+				Proxy:                 proxyFunc,
+				IdleConnTimeout:       90 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+				DialContext: (&net.Dialer{
+					Timeout:   10 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+			},
+		}
+	} else {
+		w.probeClient = w.client
+	}
+
+	return w
 }
 
 func (w *NodeProbeWorker) Start(ctx context.Context) {
@@ -630,7 +671,14 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 		req.Header.Set("X-Forwarded-For", v)
 	}
 	start := time.Now()
-	resp, err := w.client.Do(req)
+	// 2026-07-16 fix: use probeClient (proxy-respecting) instead of client
+	// (direct). probeDirect previously bypassed the proxy, reporting
+	// false-positive recoveries when the proxy was broken — the credential
+	// oscillated between "available" (probe OK, no proxy) and "unavailable"
+	// (real requests through proxy → timeout), causing the "models briefly
+	// work then 5xx" pattern for non-domestic providers like apiclaude.cc
+	// and integrate.api.nvidia.com.
+	resp, err := w.probeClient.Do(req)
 	r.latencyMs = int(time.Since(start).Milliseconds())
 	if err != nil {
 		r.errCode = "network_error"
