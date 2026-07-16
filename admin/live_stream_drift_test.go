@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"context"
 	"testing"
+	"time"
 )
 
 // TestClassifyModelCategoryFallback_Minimax covers the 2026-07-09 fix for
@@ -12,10 +14,10 @@ import (
 // "minimax-m3" (model-name fallback) as two separate lanes.
 func TestClassifyModelCategoryFallback_Minimax(t *testing.T) {
 	cases := map[string]string{
-		"minimax-m3":            "minimax",
-		"MiniMax-M3":            "minimax",
-		"minimax-m2.7":          "minimax",
-		"minimaxai/minimax-m3":  "minimax",
+		"minimax-m3":           "minimax",
+		"MiniMax-M3":           "minimax",
+		"minimax-m2.7":         "minimax",
+		"minimaxai/minimax-m3": "minimax",
 		// mimo must still map to xiaomi and not be shadowed by the new rule.
 		"mimo-v2.5-pro": "xiaomi",
 	}
@@ -31,10 +33,10 @@ func TestClassifyModelCategoryFallback_Minimax(t *testing.T) {
 // dimension never degrades to the model name.
 func TestInferVendorFromModel_Minimax(t *testing.T) {
 	cases := map[string]string{
-		"minimax-m3":   "minimax",
-		"MiniMax-M3":   "minimax",
-		"mimo-v2.5":    "xiaomi",
-		"glm-5.2":      "zhipu",
+		"minimax-m3":    "minimax",
+		"MiniMax-M3":    "minimax",
+		"mimo-v2.5":     "xiaomi",
+		"glm-5.2":       "zhipu",
 		"claude-opus-4": "anthropic",
 	}
 	for model, want := range cases {
@@ -94,5 +96,97 @@ func TestLiveStreamDimensionKey_ModelStillShowsModelName(t *testing.T) {
 	})
 	if got != "minimax-m3" {
 		t.Errorf("model dimension should still show the model name, got %q", got)
+	}
+}
+
+// TestLiveRequestFromTelemetry_ModelPrefersCanonicalName 是 2026-07-16 bug 修复
+// 的回归测试：实时请求流后台"按模型分维"时，Model 字段应当优先采用标准化
+// 模型名（CanonicalName），而不是供应商原始模型名（outbound_model）。原先的
+// 顺序是 outbound → client → canonical，导致同名标准模型跨凭证/跨供应商
+// 在前端泳道里分裂成多个名字。
+//
+// 这里通过预填 canonicalCache（避开 DB 依赖）来验证 fallback 链路。
+func TestLiveRequestFromTelemetry_ModelPrefersCanonicalName(t *testing.T) {
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{})
+	// 预热 canonicalCache: canonicalID=42 → "minimax-m3"
+	hub.canonicalCache.Store(42, "minimax-m3")
+
+	cases := []struct {
+		name          string
+		clientModel   string
+		outbound      string
+		canonicalID   int
+		wantModel     string
+		wantCanonical string
+	}{
+		{
+			name:          "canonical resolves: 标准名优先",
+			clientModel:   "minimax-m3",
+			outbound:      "minimax-m3-vendor-raw",
+			canonicalID:   42,
+			wantModel:     "minimax-m3",
+			wantCanonical: "minimax-m3",
+		},
+		{
+			name:          "no canonical: client 优先于 outbound",
+			clientModel:   "claude-sonnet-4-5",
+			outbound:      "claude-sonnet-4-5-20251001",
+			canonicalID:   0,
+			wantModel:     "claude-sonnet-4-5",
+			wantCanonical: "claude-sonnet-4-5",
+		},
+		{
+			name:          "no canonical, no client: outbound 兜底（向后兼容）",
+			clientModel:   "",
+			outbound:      "gpt-4o-2024-08-06",
+			canonicalID:   0,
+			wantModel:     "gpt-4o-2024-08-06",
+			wantCanonical: "gpt-4o-2024-08-06",
+		},
+		{
+			name:          "canonical resolves 但 client/outbound 都不同: 必须用 canonical",
+			clientModel:   "gpt-4o",
+			outbound:      "azure-gpt-4o-mini",
+			canonicalID:   42,
+			wantModel:     "minimax-m3",
+			wantCanonical: "minimax-m3",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := hub.LiveRequestFromTelemetry(
+				context.Background(),
+				"req-1",
+				time.Now().UTC(),
+				"tenant-a",
+				c.clientModel,
+				c.outbound,
+				c.canonicalID,
+				"openai",
+				"success",
+				true,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+			)
+			if got.Model != c.wantModel {
+				t.Errorf("Model = %q, want %q", got.Model, c.wantModel)
+			}
+			if got.CanonicalName != c.wantCanonical {
+				t.Errorf("CanonicalName = %q, want %q", got.CanonicalName, c.wantCanonical)
+			}
+			// 同时验证分维度 key 与显示 model 一致：
+			// 同一标准模型的请求都应落到同一 model 维度 key 下。
+			if key := liveStreamDimensionKey("model", got); key != "" && key != normalizeModelKey(c.wantModel) {
+				t.Errorf("liveStreamDimensionKey(model)=%q, must equal normalizeModelKey(%q)=%q",
+					key, c.wantModel, normalizeModelKey(c.wantModel))
+			}
+		})
 	}
 }

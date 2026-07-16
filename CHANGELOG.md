@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-16
 
+### Live stream model dimension: prefer canonical (standard) name over vendor raw name
+
+- **Symptom**: 首页实时请求流"按模型分维"时，泳道名称还是供应商原始模型名（如
+  `"minimax-m3-vendor-raw"`、`"azure-gpt-4o-mini"`、`"claude-sonnet-4-5-20251001"`），
+  不是标准模型名。同一标准模型跨凭证/跨供应商在前端被分裂成多个泳道名称。
+- **Root cause**:
+  - `liveStreamDimensionKey`（model 分支）已经用 CanonicalName 优先 +
+    normalizeModelKey case-insensitive 聚合，分维度 key 是对的。
+  - 但 `LiveRequestFromTelemetry` 把 `out.Model` 设为 `outboundModel`
+    （供应商原始名）优先，单条 tile 显示的 model 也是供应商原始名。
+  - `adminLiveRequestFromEntry` 走 hub-为-nil 的兜底分支时，model 也用
+    outbound 优先。
+  - DB replay SQL（`replay`）的 `model` 列也是 `COALESCE(NULLIF(outbound), client)`
+    优先 outbound。
+- **Fix**:
+  - `LiveRequestFromTelemetry`: Model 选择顺序倒过来 →
+    **canonical_name → clientModel → outboundModel**；CanonicalName
+    字段直接复用解析过的 canonical_name（不再调两次 `CanonicalNameFor`）。
+  - `replay` SQL 的 `model` 列改为
+    `COALESCE(NULLIF(mc.canonical_name, ''), NULLIF(rl.client_model, ''), rl.outbound_model, '')`。
+  - `adminLiveRequestFromEntry` 的 hub-nil 兜底改为
+    `clientModel → outboundModel`（向后兼容）。
+  - `CanonicalNameFor` 把 cache check 提前到 db nil 守卫之前，让单元测试
+    可以用预填 `canonicalCache` 验证 fallback 链路。
+- **Verification**: 新增
+  `TestLiveRequestFromTelemetry_ModelPrefersCanonicalName`（4 cases：
+  canonical 优先 / client 优先于 outbound / outbound 兜底 / canonical
+  与 client/outbound 都冲突时必须用 canonical）。`go test ./admin/...`
+  全部通过；`go vet ./admin/... ./cmd/gateway/...` 无告警。
+
 ### `/request-logs` empty items bug fix (incident 2026-07-16)
 
 - **Root cause**: `admin/logs.go` list SQL used
