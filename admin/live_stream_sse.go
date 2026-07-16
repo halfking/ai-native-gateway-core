@@ -170,8 +170,8 @@ type LiveRequest struct {
 	// if the request was sent through a session. Empty when the request
 	// is one-off (e.g. a /v1/chat/completions call without a session).
 	GwSessionID      string   `json:"gw_session_id,omitempty"`
-	Model            string   `json:"model"`          // Display name (for backward compat, may be outbound or canonical)
-	CanonicalName    string   `json:"canonical_name"` // Standard model name for aggregation
+	Model            string   `json:"model"`          // Standard model name (canonical preferred; 2026-07-16: outbound-only as last-resort fallback so tile matches the dimension key)
+	CanonicalName    string   `json:"canonical_name"` // Standard model name for aggregation (canonical_name in DB)
 	ModelCategory    string   `json:"model_category"`
 	ProviderCode     string   `json:"provider_code"`
 	Status           string   `json:"status"`
@@ -187,12 +187,12 @@ type LiveRequest struct {
 	// IsProbe 由 entry.TaskType=='probe_triggered' 推断。
 	// ProbeOrigin = "direct" / "gateway" / "scheduled"，目前仅 "direct"。
 	// ProbeAttempt 是当前轮次 (1-5)。
-	IsProbe      bool   `json:"is_probe,omitempty"`
-	ProbeOrigin  string `json:"probe_origin,omitempty"`
-	ProbeAttempt int    `json:"probe_attempt,omitempty"`
-	ClientProfile string `json:"client_profile,omitempty"`
-	IdentityHash  string `json:"identity_hash,omitempty"`
-	CreditsCharged *int  `json:"credits_charged,omitempty"`
+	IsProbe        bool   `json:"is_probe,omitempty"`
+	ProbeOrigin    string `json:"probe_origin,omitempty"`
+	ProbeAttempt   int    `json:"probe_attempt,omitempty"`
+	ClientProfile  string `json:"client_profile,omitempty"`
+	IdentityHash   string `json:"identity_hash,omitempty"`
+	CreditsCharged *int   `json:"credits_charged,omitempty"`
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -646,17 +646,22 @@ func (h *LiveStreamSSEHub) ModelVendorFor(ctx context.Context, model string) str
 // standard identity rather than credential-level outbound names, so the same
 // model from different credentials aggregates into one lane instead of being
 // scattered. Returns empty string when the ID is zero, invalid, or lookup fails.
+//
+// 2026-07-16: cache check moved BEFORE the db nil guard so unit tests can
+// pre-populate canonicalCache to drive the new canonical-first fallback in
+// LiveRequestFromTelemetry without standing up a real database.
 func (h *LiveStreamSSEHub) CanonicalNameFor(ctx context.Context, canonicalID int) string {
 	if canonicalID == 0 {
 		return ""
 	}
-	if h == nil || h.db == nil {
-		return ""
-	}
 
-	// Check cache first
+	// Check cache first (works without DB; tests pre-populate here).
 	if cached, ok := h.canonicalCache.Load(canonicalID); ok {
 		return cached.(string)
+	}
+
+	if h == nil || h.db == nil {
+		return ""
 	}
 
 	// Query database: canonical_id → canonical_name
@@ -1254,7 +1259,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		       rl.ts,
 		       COALESCE(NULLIF(rl.tenant_id, ''), 'default') AS tenant_id,
 		       COALESCE(NULLIF(rl.gw_session_id, ''), '') AS gw_session_id,
-		       COALESCE(NULLIF(rl.outbound_model, ''), rl.client_model, '') AS model,
+		       COALESCE(NULLIF(mc.canonical_name, ''), NULLIF(rl.client_model, ''), rl.outbound_model, '') AS model,
 		       COALESCE(mc.canonical_name, '') AS canonical_name,
 		       COALESCE(NULLIF(p.name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), '') AS provider_code,
 		       COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status,
@@ -1371,7 +1376,9 @@ func classifyModelCategoryFallback(model string) string {
 // LiveRequestFromTelemetry adapts a raw RequestLogEntry into a
 // LiveRequest. This is a method on Hub to enable database-backed model vendor lookup.
 // Implements fallback chains for all three key dimensions:
-//   - Model: outboundModel → clientModel → canonical_name (from canonicalID)
+//   - Model: canonical_name (from canonicalID) → clientModel → outboundModel
+//     (2026-07-16: standard-name-first; vendor raw name only as last-resort fallback
+//     so the dashboard tile matches the dimension key built from CanonicalName.)
 //   - ModelCategory: from Model → from Provider (when model is empty)
 //   - ProviderCode: already resolved by caller (credential → provider)
 //
@@ -1415,24 +1422,33 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 		FailureStage:     failureStage,
 	}
 
-	// Model fallback chain: outbound → client → canonical_name
-	if outboundModel != "" {
-		out.Model = outboundModel
+	// Model fallback chain: canonical_name → client → outbound.
+	//
+	// 老板要求（2026-07-16）"实时请求流后台分维要根据模型进行分维时，
+	// 需要将调用的模型名称全部转成标准名称再建立维度，然后请求过来后
+	// 要使用请求中的标准模型名称，不是供应商的原始模型名称"：
+	//
+	//   1. 分维度（liveStreamDimensionKey 的 model 分支）已经用
+	//      CanonicalName 优先 + normalizeModelKey 做 case-insensitive 聚合；
+	//   2. 但流式推给前端的单条 tile 仍然把供应商原始名（outbound_model）
+	//      当成"model"显示，会让同一标准模型跨凭证散成多个泳道名称。
+	//
+	// 这里把 Model 字段的选择顺序倒过来，标准名 (CanonicalName) 永远优先；
+	// 解析不出标准名时回退到 client，再没才用 outbound（兜底保留向后兼容）。
+	canonicalName := ""
+	if canonicalID > 0 {
+		canonicalName = h.CanonicalNameFor(ctx, canonicalID)
+	}
+	if canonicalName != "" {
+		out.Model = canonicalName
 	} else if clientModel != "" {
 		out.Model = clientModel
-	} else if canonicalID > 0 {
-		canonicalName := h.CanonicalNameFor(ctx, canonicalID)
-		if canonicalName != "" {
-			out.Model = canonicalName
-			slog.Debug("live stream: using canonical_name as model fallback",
-				"request_id", requestID, "canonical_id", canonicalID, "canonical_name", canonicalName)
-		}
+	} else {
+		out.Model = outboundModel
 	}
 
 	// Set CanonicalName for model dimension aggregation (always use canonical if available)
-	if canonicalID > 0 {
-		out.CanonicalName = h.CanonicalNameFor(ctx, canonicalID)
-	}
+	out.CanonicalName = canonicalName
 	// Fallback: if no canonicalID but we have a model, use that as canonical (best effort)
 	if out.CanonicalName == "" && out.Model != "" {
 		out.CanonicalName = out.Model

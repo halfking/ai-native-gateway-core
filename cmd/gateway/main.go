@@ -4007,12 +4007,6 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		totalTokens = &t
 	}
 
-	// Determine model display name: outbound → client (shared by both paths)
-	displayModel := outboundModel
-	if displayModel == "" {
-		displayModel = clientModel
-	}
-
 	if hub != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
@@ -4073,14 +4067,24 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 	}
 	// Fallback when hub is nil (defensive; unreachable in normal operation
 	// because SetOnRequestLogEmitted is only wired when hub != nil).
+	//
+	// 2026-07-16: model fallback order matches the canonical fix in
+	// LiveRequestFromTelemetry: client → outbound. Without the hub we
+	// cannot resolve canonical_id (need DB), so client_supplied model
+	// (usually the standard form like "claude-sonnet-4-5") wins over
+	// the vendor raw name ("claude-sonnet-4-5-20251001" or similar).
+	fallbackModel := clientModel
+	if fallbackModel == "" {
+		fallbackModel = outboundModel
+	}
 	return admin.LiveRequest{
 		RequestID:        entry.RequestID,
 		Ts:               time.Now().UTC().Format(time.RFC3339),
 		TenantID:         entry.TenantID,
-		Model:            displayModel,
-		CanonicalName:    displayModel, // best-effort: use display name as canonical
-		ModelCategory:    "",           // cannot resolve without hub
-		ProviderCode:     "",           // cannot resolve without hub
+		Model:            fallbackModel,
+		CanonicalName:    fallbackModel, // best-effort: prefer client over vendor raw
+		ModelCategory:    "",            // cannot resolve without hub
+		ProviderCode:     "",            // cannot resolve without hub
 		Status:           status,
 		LatencyMs:        entry.LatencyMs,
 		PromptTokens:     entry.PromptTokens,
