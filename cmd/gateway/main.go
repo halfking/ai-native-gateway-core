@@ -2711,7 +2711,7 @@ func main() {
 		middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(healthHandler))
 	// 2026-07-14: 30s system-health JSON for the GDRT H badge on the
 	// homepage. CORS open (no auth) so the SPA login page can show
-	// the indicator. Returns 503 only when the worker is not
+	// the indicator. Returns "suspect" when the worker is not
 	// configured (db disabled).
 	mux.HandleFunc("/api/health/system", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -2720,7 +2720,7 @@ func main() {
 			return
 		}
 		if systemHealthWorker == nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
+			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"suspect","detail":"worker not configured"}`))
 			return
 		}
