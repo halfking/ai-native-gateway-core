@@ -12,7 +12,47 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
+
+// appendTimeseriesFilters appends the standard tenant + model + provider +
+// regular-user owner filters to a WHERE clause and returns the next arg index.
+// Filters are pinned to request_logs/owner_user against session_dim so RLS +
+// application-layer filtering remain defense in depth.
+func appendTimeseriesFilters(r *http.Request, alias string, filters *timeseriesFilters, argStart int) (string, []any, int) {
+	fragments := []string{}
+	args := []any{}
+	idx := argStart
+
+	if tenantID := effectiveScopeTenant(r); tenantID != "" {
+		fragments = append(fragments, fmt.Sprintf(" AND %s.tenant_id = $%d", alias, idx))
+		args = append(args, tenantID)
+		idx++
+	}
+	if IsRegularUser(r) {
+		owner := GetAuthContext(r).Username
+		if owner == "" {
+			fragments = append(fragments, fmt.Sprintf(" AND %s.gw_session_id IN (SELECT gw_session_id FROM session_dim WHERE owner_user = '')", alias))
+		} else {
+			fragments = append(fragments, fmt.Sprintf(" AND %s.gw_session_id IN (SELECT gw_session_id FROM session_dim WHERE owner_user = $%d)", alias, idx))
+			args = append(args, owner)
+			idx++
+		}
+	}
+	if len(filters.model) > 0 {
+		fragments = append(fragments, fmt.Sprintf(" AND %s.upstream_model = ANY($%d)", alias, idx))
+		args = append(args, filters.model)
+		idx++
+	}
+	if len(filters.provider) > 0 {
+		fragments = append(fragments, fmt.Sprintf(" AND %s.provider = ANY($%d)", alias, idx))
+		args = append(args, filters.provider)
+		idx++
+	}
+
+	return strings.Join(fragments, ""), args, idx
+}
 
 // timeseriesFilters 时间序列专用过滤器（扩展支持 granularity 和数组过滤）
 type timeseriesFilters struct {
@@ -127,69 +167,49 @@ func (h *Handler) HandleActivityTrend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-		tenantID := effectiveScopeTenant(r)
-	
-		// 构建查询
-		query := `
-			SELECT 
-				date_trunc($1, ts)::date AS date,
-				COUNT(DISTINCT gw_session_id) AS session_count,
-				COUNT(*) AS request_count,
-				SUM(CASE WHEN success THEN 1 ELSE 0 END) AS success_count,
-				SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS error_count,
-			SUM(COALESCE(cost_usd, 0)) AS total_cost_usd,
-			SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)) AS total_tokens,
-			COUNT(DISTINCT end_user_id) AS distinct_users
-		FROM request_logs
-		WHERE ts >= $2 AND ts < $3`
+	query := `
+		SELECT
+			date_trunc($1, ts)::date AS date,
+			COUNT(DISTINCT gw_session_id) AS session_count,
+			COUNT(*) AS request_count,
+			SUM(CASE WHEN success THEN 1 ELSE 0 END) AS success_count,
+			SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS error_count,
+		SUM(COALESCE(cost_usd, 0)) AS total_cost_usd,
+		SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)) AS total_tokens,
+		COUNT(DISTINCT end_user_id) AS distinct_users
+	FROM request_logs
+	WHERE ts >= $2 AND ts < $3`
 
 	args := []interface{}{filters.granularity, filters.dateFrom, filters.dateTo}
-	argIdx := 4
-
-	if tenantID != "" {
-		query += fmt.Sprintf(" AND tenant_id = $%d", argIdx)
-		args = append(args, tenantID)
-		argIdx++
-	}
-
-	if len(filters.model) > 0 {
-		query += fmt.Sprintf(" AND upstream_model = ANY($%d)", argIdx)
-		args = append(args, filters.model)
-		argIdx++
-	}
-
-	if len(filters.provider) > 0 {
-		query += fmt.Sprintf(" AND provider = ANY($%d)", argIdx)
-		args = append(args, filters.provider)
-		argIdx++
-	}
-
+	extra, extraArgs, _ := appendTimeseriesFilters(r, "", filters, 4)
+	query += extra
+	args = append(args, extraArgs...)
 	query += ` GROUP BY date_trunc($1, ts) ORDER BY date ASC`
 
-	rows, err := h.db.Query(ctx, query, args...)
-	if err != nil {
+	var series []ActivityDataPoint
+	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var dp ActivityDataPoint
+			var date time.Time
+			if err := rows.Scan(&date, &dp.SessionCount, &dp.RequestCount, &dp.SuccessCount,
+				&dp.ErrorCount, &dp.TotalCostUSD, &dp.TotalTokens, &dp.DistinctUsers); err != nil {
+				return err
+			}
+			dp.Date = date.Format("2006-01-02")
+			series = append(series, dp)
+		}
+		return rows.Err()
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
 	}
-	defer rows.Close()
 
-	var series []ActivityDataPoint
-	for rows.Next() {
-		var dp ActivityDataPoint
-		var date time.Time
-		if err := rows.Scan(&date, &dp.SessionCount, &dp.RequestCount, &dp.SuccessCount,
-			&dp.ErrorCount, &dp.TotalCostUSD, &dp.TotalTokens, &dp.DistinctUsers); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
-			return
-		}
-		dp.Date = date.Format("2006-01-02")
-		series = append(series, dp)
-	}
-
-	// 缺日补零
 	series = fillMissingActivityDates(series, filters.dateFrom, filters.dateTo, filters.granularity)
-
-	// 计算汇总
 	summary := calculateActivitySummary(series)
 
 	writeJSON(w, http.StatusOK, ActivityResponse{
@@ -217,68 +237,49 @@ func (h *Handler) HandleCostTrend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer cancel()
+	defer cancel()
 
-		tenantID := effectiveScopeTenant(r)
-
-		query := `
-			SELECT 
-				date_trunc($1, ts)::date AS date,
-				SUM(COALESCE(input_cost_usd, 0)) AS input_cost_usd,
-			SUM(COALESCE(output_cost_usd, 0)) AS output_cost_usd,
-			SUM(COALESCE(cost_usd, 0)) AS total_cost_usd,
-			SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens,
-			SUM(COALESCE(cache_creation_tokens, 0)) AS cache_write_tokens
-		FROM request_logs
-		WHERE ts >= $2 AND ts < $3`
+	query := `
+		SELECT
+			date_trunc($1, ts)::date AS date,
+			SUM(COALESCE(input_cost_usd, 0)) AS input_cost_usd,
+		SUM(COALESCE(output_cost_usd, 0)) AS output_cost_usd,
+		SUM(COALESCE(cost_usd, 0)) AS total_cost_usd,
+		SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens,
+		SUM(COALESCE(cache_creation_tokens, 0)) AS cache_write_tokens
+	FROM request_logs
+	WHERE ts >= $2 AND ts < $3`
 
 	args := []interface{}{filters.granularity, filters.dateFrom, filters.dateTo}
-	argIdx := 4
-
-	if tenantID != "" {
-		query += fmt.Sprintf(" AND tenant_id = $%d", argIdx)
-		args = append(args, tenantID)
-		argIdx++
-	}
-
-	if len(filters.model) > 0 {
-		query += fmt.Sprintf(" AND upstream_model = ANY($%d)", argIdx)
-		args = append(args, filters.model)
-		argIdx++
-	}
-
-	if len(filters.provider) > 0 {
-		query += fmt.Sprintf(" AND provider = ANY($%d)", argIdx)
-		args = append(args, filters.provider)
-		argIdx++
-	}
-
+	extra, extraArgs, _ := appendTimeseriesFilters(r, "", filters, 4)
+	query += extra
+	args = append(args, extraArgs...)
 	query += ` GROUP BY date_trunc($1, ts) ORDER BY date ASC`
 
-	rows, err := h.db.Query(ctx, query, args...)
-	if err != nil {
+	var series []CostDataPoint
+	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var dp CostDataPoint
+			var date time.Time
+			if err := rows.Scan(&date, &dp.InputCostUSD, &dp.OutputCostUSD, &dp.TotalCostUSD,
+				&dp.CacheReadTokens, &dp.CacheWriteTokens); err != nil {
+				return err
+			}
+			dp.Date = date.Format("2006-01-02")
+			series = append(series, dp)
+		}
+		return rows.Err()
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
 	}
-	defer rows.Close()
 
-	var series []CostDataPoint
-	for rows.Next() {
-		var dp CostDataPoint
-		var date time.Time
-		if err := rows.Scan(&date, &dp.InputCostUSD, &dp.OutputCostUSD, &dp.TotalCostUSD,
-			&dp.CacheReadTokens, &dp.CacheWriteTokens); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
-			return
-		}
-		dp.Date = date.Format("2006-01-02")
-		series = append(series, dp)
-	}
-
-	// 缺日补零
 	series = fillMissingCostDates(series, filters.dateFrom, filters.dateTo, filters.granularity)
-
-	// 计算汇总与趋势
 	summary := calculateCostSummary(series)
 
 	writeJSON(w, http.StatusOK, CostResponse{
@@ -308,66 +309,48 @@ func (h *Handler) HandleLatencyTrend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-		tenantID := effectiveScopeTenant(r)
-
-		query := `
-			SELECT 
-				date_trunc($1, ts)::date AS date,
-				percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)::int AS p50_latency_ms,
-			percentile_cont(0.9) WITHIN GROUP (ORDER BY latency_ms)::int AS p90_latency_ms,
-			percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::int AS p99_latency_ms,
-			MAX(latency_ms) AS max_latency_ms,
-			AVG(latency_ms)::int AS avg_latency_ms,
-			COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY stream_first_chunk_ms)::int, 0) AS stream_first_chunk_p50_ms
-		FROM request_logs
-		WHERE ts >= $2 AND ts < $3 AND latency_ms IS NOT NULL`
+	query := `
+		SELECT
+			date_trunc($1, ts)::date AS date,
+			percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)::int AS p50_latency_ms,
+		percentile_cont(0.9) WITHIN GROUP (ORDER BY latency_ms)::int AS p90_latency_ms,
+		percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::int AS p99_latency_ms,
+		MAX(latency_ms) AS max_latency_ms,
+		AVG(latency_ms)::int AS avg_latency_ms,
+		COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY stream_first_chunk_ms)::int, 0) AS stream_first_chunk_p50_ms
+	FROM request_logs
+	WHERE ts >= $2 AND ts < $3 AND latency_ms IS NOT NULL`
 
 	args := []interface{}{filters.granularity, filters.dateFrom, filters.dateTo}
-	argIdx := 4
-
-	if tenantID != "" {
-		query += fmt.Sprintf(" AND tenant_id = $%d", argIdx)
-		args = append(args, tenantID)
-		argIdx++
-	}
-
-	if len(filters.model) > 0 {
-		query += fmt.Sprintf(" AND upstream_model = ANY($%d)", argIdx)
-		args = append(args, filters.model)
-		argIdx++
-	}
-
-	if len(filters.provider) > 0 {
-		query += fmt.Sprintf(" AND provider = ANY($%d)", argIdx)
-		args = append(args, filters.provider)
-		argIdx++
-	}
-
+	extra, extraArgs, _ := appendTimeseriesFilters(r, "", filters, 4)
+	query += extra
+	args = append(args, extraArgs...)
 	query += ` GROUP BY date_trunc($1, ts) ORDER BY date ASC`
 
-	rows, err := h.db.Query(ctx, query, args...)
-	if err != nil {
+	var series []LatencyDataPoint
+	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var dp LatencyDataPoint
+			var date time.Time
+			if err := rows.Scan(&date, &dp.P50LatencyMs, &dp.P90LatencyMs, &dp.P99LatencyMs,
+				&dp.MaxLatencyMs, &dp.AvgLatencyMs, &dp.StreamFirstChunkP50Ms); err != nil {
+				return err
+			}
+			dp.Date = date.Format("2006-01-02")
+			series = append(series, dp)
+		}
+		return rows.Err()
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
 	}
-	defer rows.Close()
 
-	var series []LatencyDataPoint
-	for rows.Next() {
-		var dp LatencyDataPoint
-		var date time.Time
-		if err := rows.Scan(&date, &dp.P50LatencyMs, &dp.P90LatencyMs, &dp.P99LatencyMs,
-			&dp.MaxLatencyMs, &dp.AvgLatencyMs, &dp.StreamFirstChunkP50Ms); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
-			return
-		}
-		dp.Date = date.Format("2006-01-02")
-		series = append(series, dp)
-	}
-
-	// 缺日补零
 	series = fillMissingLatencyDates(series, filters.dateFrom, filters.dateTo, filters.granularity)
-
 	writeJSON(w, http.StatusOK, LatencyResponse{
 		Granularity: filters.granularity,
 		Series:      series,
@@ -391,80 +374,88 @@ func (h *Handler) HandleHealthTrend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-		tenantID := effectiveScopeTenant(r)
+	tenantID := effectiveScopeTenant(r)
 
-		query := `
-			SELECT 
-				date_trunc($1, first_request_at)::date AS date,
-			AVG(health_score) AS avg_health_score,
-			COUNT(*) FILTER (WHERE health_grade = 'A') AS grade_a,
-			COUNT(*) FILTER (WHERE health_grade = 'B') AS grade_b,
-			COUNT(*) FILTER (WHERE health_grade = 'C') AS grade_c,
-			COUNT(*) FILTER (WHERE health_grade = 'D') AS grade_d,
-			COUNT(*) FILTER (WHERE health_grade = 'F') AS grade_f,
-			COUNT(*) FILTER (WHERE outcome = 'completed') AS outcome_completed,
-			COUNT(*) FILTER (WHERE outcome = 'error') AS outcome_error,
-			COUNT(*) FILTER (WHERE outcome = 'abandoned') AS outcome_abandoned
-		FROM session_summaries
-		WHERE first_request_at >= $2 AND first_request_at < $3 AND health_score IS NOT NULL`
+	query := `
+		SELECT
+			date_trunc($1, first_request_at)::date AS date,
+		AVG(health_score) AS avg_health_score,
+		COUNT(*) FILTER (WHERE health_grade = 'A') AS grade_a,
+		COUNT(*) FILTER (WHERE health_grade = 'B') AS grade_b,
+		COUNT(*) FILTER (WHERE health_grade = 'C') AS grade_c,
+		COUNT(*) FILTER (WHERE health_grade = 'D') AS grade_d,
+		COUNT(*) FILTER (WHERE health_grade = 'F') AS grade_f,
+		COUNT(*) FILTER (WHERE outcome = 'completed') AS outcome_completed,
+		COUNT(*) FILTER (WHERE outcome = 'error') AS outcome_error,
+		COUNT(*) FILTER (WHERE outcome = 'abandoned') AS outcome_abandoned
+	FROM session_summaries
+	WHERE first_request_at >= $2 AND first_request_at < $3 AND health_score IS NOT NULL`
 
 	args := []interface{}{filters.granularity, filters.dateFrom, filters.dateTo}
-	argIdx := 4
-
+	idx := 4
 	if tenantID != "" {
-		query += fmt.Sprintf(" AND tenant_id = $%d", argIdx)
+		query += fmt.Sprintf(" AND tenant_id = $%d", idx)
 		args = append(args, tenantID)
-		argIdx++
+		idx++
 	}
-
+	if IsRegularUser(r) {
+		owner := GetAuthContext(r).Username
+		if owner == "" {
+			query += " AND session_key IN (SELECT gw_session_id FROM session_dim WHERE owner_user = '')"
+		} else {
+			query += fmt.Sprintf(" AND session_key IN (SELECT gw_session_id FROM session_dim WHERE owner_user = $%d)", idx)
+			args = append(args, owner)
+			idx++
+		}
+	}
 	query += ` GROUP BY date_trunc($1, first_request_at) ORDER BY date ASC`
 
-	rows, err := h.db.Query(ctx, query, args...)
-	if err != nil {
+	var series []HealthDataPoint
+	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var dp HealthDataPoint
+			var date time.Time
+			var avgScore *float64
+			var gradeA, gradeB, gradeC, gradeD, gradeF int
+			var outcomeCompleted, outcomeError, outcomeAbandoned int
+			if err := rows.Scan(&date, &avgScore, &gradeA, &gradeB, &gradeC, &gradeD, &gradeF,
+				&outcomeCompleted, &outcomeError, &outcomeAbandoned); err != nil {
+				return err
+			}
+
+			dp.Date = date.Format("2006-01-02")
+			if avgScore != nil {
+				dp.AvgHealthScore = *avgScore
+			}
+			dp.GradeDistribution = map[string]int{
+				"A": gradeA,
+				"B": gradeB,
+				"C": gradeC,
+				"D": gradeD,
+				"F": gradeF,
+			}
+			dp.OutcomeDistribution = map[string]int{
+				"completed": outcomeCompleted,
+				"error":     outcomeError,
+				"abandoned": outcomeAbandoned,
+			}
+			series = append(series, dp)
+		}
+		return rows.Err()
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
 	}
-	defer rows.Close()
 
-	var series []HealthDataPoint
-	for rows.Next() {
-		var dp HealthDataPoint
-		var date time.Time
-		var avgScore *float64
-		var gradeA, gradeB, gradeC, gradeD, gradeF int
-		var outcomeCompleted, outcomeError, outcomeAbandoned int
-
-		if err := rows.Scan(&date, &avgScore, &gradeA, &gradeB, &gradeC, &gradeD, &gradeF,
-			&outcomeCompleted, &outcomeError, &outcomeAbandoned); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
-			return
-		}
-
-		dp.Date = date.Format("2006-01-02")
-		if avgScore != nil {
-			dp.AvgHealthScore = *avgScore
-		}
-		dp.GradeDistribution = map[string]int{
-			"A": gradeA,
-			"B": gradeB,
-			"C": gradeC,
-			"D": gradeD,
-			"F": gradeF,
-		}
-		dp.OutcomeDistribution = map[string]int{
-			"completed": outcomeCompleted,
-			"error":     outcomeError,
-			"abandoned": outcomeAbandoned,
-		}
-		series = append(series, dp)
-	}
-
-	// 缺日补零
 	series = fillMissingHealthDates(series, filters.dateFrom, filters.dateTo, filters.granularity)
-
 	writeJSON(w, http.StatusOK, HealthResponse{
 		Granularity: filters.granularity,
 		Series:      series,

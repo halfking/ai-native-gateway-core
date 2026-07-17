@@ -16,7 +16,35 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
+
+// appendOwnerFilterForRegular appends an owner_user restriction for regular
+// users (regular means JWT-bearer users without admin/tenant_admin role).
+// Returns true if any fragment was added; argStart should be the next
+// placeholder index expected in the calling query.
+func appendOwnerFilterForRegular(r *http.Request, tableAlias, sessionKeyColumn string, argStart int) (string, []any, int, bool) {
+	if !IsRegularUser(r) {
+		return "", nil, argStart, false
+	}
+	owner := GetAuthContext(r).Username
+	if owner == "" {
+		// Empty username is unsatisfiable for regular users; deny.
+		return fmt.Sprintf(" AND %s.%s IN (SELECT gw_session_id FROM session_dim WHERE owner_user = '')", tableAlias, sessionKeyColumn), nil, argStart, true
+	}
+	return fmt.Sprintf(" AND %s.%s IN (SELECT gw_session_id FROM session_dim WHERE owner_user = $%d)", tableAlias, sessionKeyColumn, argStart),
+		[]any{owner}, argStart + 1, true
+}
+
+// queryer is the minimal interface satisfied by *pgxpool.Pool, pgx.Tx and
+// pgxmock — keeps the breakdown/timeseries helpers portable so the public
+// handlers can run them inside withSessionAnalyticsReadTx without rewriting
+// every query.
+type queryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 // ── 响应类型 ────────────────────────────────────────────────────────
 
@@ -96,16 +124,20 @@ func (h *Handler) HandleModelBreakdown(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	// 查询按模型聚合
-	byModel, err := h.queryModelBreakdown(ctx, r, filters)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
-	}
-
-	// 查询按提供商聚合
-	byProvider, err := h.queryProviderBreakdown(ctx, r, filters)
-	if err != nil {
+	var (
+		byModel    []ModelStats
+		byProvider []ProviderStats
+	)
+	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		var err error
+		if byModel, err = h.queryModelBreakdown(ctx, tx, r, filters); err != nil {
+			return err
+		}
+		if byProvider, err = h.queryProviderBreakdown(ctx, tx, r, filters); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
 	}
@@ -142,16 +174,20 @@ func (h *Handler) HandleSessionShape(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	// 按请求数分桶
-	requestBuckets, err := h.queryRequestCountBuckets(ctx, r, filters)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
-	}
-
-	// 按时长分桶
-	durationBuckets, err := h.queryDurationBuckets(ctx, r, filters)
-	if err != nil {
+	var (
+		requestBuckets []ShapeBucket
+		durationBuckets []ShapeBucket
+	)
+	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		var err error
+		if requestBuckets, err = h.queryRequestCountBuckets(ctx, tx, r, filters); err != nil {
+			return err
+		}
+		if durationBuckets, err = h.queryDurationBuckets(ctx, tx, r, filters); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
 	}
@@ -185,54 +221,37 @@ func (h *Handler) HandleHealthDistribution(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	// 按等级分布
-	gradeDistribution, err := h.queryGradeDistribution(ctx, r, filters)
-	if err != nil {
+	var response HealthDistributionResponse
+	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		var err error
+		if response.GradeDistribution, err = h.queryGradeDistribution(ctx, tx, r, filters); err != nil {
+			return err
+		}
+		if response.OutcomeDistribution, err = h.queryOutcomeDistribution(ctx, tx, r, filters); err != nil {
+			return err
+		}
+		if response.ComplianceDistribution, err = h.queryComplianceDistribution(ctx, tx, r, filters); err != nil {
+			return err
+		}
+		if response.LatencyBuckets, err = h.queryLatencyBuckets(ctx, tx, r, filters); err != nil {
+			return err
+		}
+		if response.AvgHealthScore, err = h.queryAvgHealthScore(ctx, tx, r, filters); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
 	}
 
-	// 按结果分类
-	outcomeDistribution, err := h.queryOutcomeDistribution(ctx, r, filters)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
-	}
-
-	// 按合规状态
-	complianceDistribution, err := h.queryComplianceDistribution(ctx, r, filters)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
-	}
-
-	// 延迟分桶
-	latencyBuckets, err := h.queryLatencyBuckets(ctx, r, filters)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
-	}
-
-	// 平均健康分
-	avgHealthScore, err := h.queryAvgHealthScore(ctx, r, filters)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, HealthDistributionResponse{
-		GradeDistribution:      gradeDistribution,
-		OutcomeDistribution:    outcomeDistribution,
-		ComplianceDistribution: complianceDistribution,
-		LatencyBuckets:         latencyBuckets,
-		AvgHealthScore:         avgHealthScore,
-	})
+	writeJSON(w, http.StatusOK, response)
 }
 
 // ── 查询逻辑 ────────────────────────────────────────────────────────
 
 // queryModelBreakdown 按模型聚合
-func (h *Handler) queryModelBreakdown(ctx context.Context, r *http.Request, filters *analyticsFilters) ([]ModelStats, error) {
+func (h *Handler) queryModelBreakdown(ctx context.Context, q queryer, r *http.Request, filters *analyticsFilters) ([]ModelStats, error) {
 	where, args := buildWhereClause(r, filters, "rl")
 
 	query := `
@@ -261,7 +280,7 @@ func (h *Handler) queryModelBreakdown(ctx context.Context, r *http.Request, filt
 		ORDER BY total_cost_usd DESC
 	`
 
-	rows, err := h.db.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +299,7 @@ func (h *Handler) queryModelBreakdown(ctx context.Context, r *http.Request, filt
 }
 
 // queryProviderBreakdown 按提供商聚合
-func (h *Handler) queryProviderBreakdown(ctx context.Context, r *http.Request, filters *analyticsFilters) ([]ProviderStats, error) {
+func (h *Handler) queryProviderBreakdown(ctx context.Context, q queryer, r *http.Request, filters *analyticsFilters) ([]ProviderStats, error) {
 	where, args := buildWhereClause(r, filters, "rl")
 
 	query := `
@@ -309,7 +328,7 @@ func (h *Handler) queryProviderBreakdown(ctx context.Context, r *http.Request, f
 		ORDER BY total_cost_usd DESC
 	`
 
-	rows, err := h.db.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +347,7 @@ func (h *Handler) queryProviderBreakdown(ctx context.Context, r *http.Request, f
 }
 
 // queryRequestCountBuckets 按请求数分桶
-func (h *Handler) queryRequestCountBuckets(ctx context.Context, r *http.Request, filters *analyticsFilters) ([]ShapeBucket, error) {
+func (h *Handler) queryRequestCountBuckets(ctx context.Context, q queryer, r *http.Request, filters *analyticsFilters) ([]ShapeBucket, error) {
 	where, args := buildSessionSummariesWhereClause(r, filters)
 
 	query := `
@@ -361,7 +380,7 @@ func (h *Handler) queryRequestCountBuckets(ctx context.Context, r *http.Request,
 			END
 	`
 
-	rows, err := h.db.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -380,7 +399,7 @@ func (h *Handler) queryRequestCountBuckets(ctx context.Context, r *http.Request,
 }
 
 // queryDurationBuckets 按时长分桶
-func (h *Handler) queryDurationBuckets(ctx context.Context, r *http.Request, filters *analyticsFilters) ([]ShapeBucket, error) {
+func (h *Handler) queryDurationBuckets(ctx context.Context, q queryer, r *http.Request, filters *analyticsFilters) ([]ShapeBucket, error) {
 	where, args := buildSessionSummariesWhereClause(r, filters)
 
 	query := `
@@ -409,7 +428,7 @@ func (h *Handler) queryDurationBuckets(ctx context.Context, r *http.Request, fil
 			END
 	`
 
-	rows, err := h.db.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -428,7 +447,7 @@ func (h *Handler) queryDurationBuckets(ctx context.Context, r *http.Request, fil
 }
 
 // queryGradeDistribution 按健康等级分布
-func (h *Handler) queryGradeDistribution(ctx context.Context, r *http.Request, filters *analyticsFilters) (map[string]int, error) {
+func (h *Handler) queryGradeDistribution(ctx context.Context, q queryer, r *http.Request, filters *analyticsFilters) (map[string]int, error) {
 	where, args := buildSessionSummariesWhereClause(r, filters)
 
 	query := `
@@ -440,7 +459,7 @@ func (h *Handler) queryGradeDistribution(ctx context.Context, r *http.Request, f
 		GROUP BY health_grade
 	`
 
-	rows, err := h.db.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -460,7 +479,7 @@ func (h *Handler) queryGradeDistribution(ctx context.Context, r *http.Request, f
 }
 
 // queryOutcomeDistribution 按结果分类分布
-func (h *Handler) queryOutcomeDistribution(ctx context.Context, r *http.Request, filters *analyticsFilters) (map[string]int, error) {
+func (h *Handler) queryOutcomeDistribution(ctx context.Context, q queryer, r *http.Request, filters *analyticsFilters) (map[string]int, error) {
 	where, args := buildSessionSummariesWhereClause(r, filters)
 
 	query := `
@@ -472,7 +491,7 @@ func (h *Handler) queryOutcomeDistribution(ctx context.Context, r *http.Request,
 		GROUP BY outcome
 	`
 
-	rows, err := h.db.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +511,7 @@ func (h *Handler) queryOutcomeDistribution(ctx context.Context, r *http.Request,
 }
 
 // queryComplianceDistribution 按合规状态分布
-func (h *Handler) queryComplianceDistribution(ctx context.Context, r *http.Request, filters *analyticsFilters) (map[string]int, error) {
+func (h *Handler) queryComplianceDistribution(ctx context.Context, q queryer, r *http.Request, filters *analyticsFilters) (map[string]int, error) {
 	where, args := buildSessionSummariesWhereClause(r, filters)
 
 	query := `
@@ -504,7 +523,7 @@ func (h *Handler) queryComplianceDistribution(ctx context.Context, r *http.Reque
 		GROUP BY compliance_status
 	`
 
-	rows, err := h.db.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -524,7 +543,7 @@ func (h *Handler) queryComplianceDistribution(ctx context.Context, r *http.Reque
 }
 
 // queryLatencyBuckets 按延迟分桶
-func (h *Handler) queryLatencyBuckets(ctx context.Context, r *http.Request, filters *analyticsFilters) ([]ShapeBucket, error) {
+func (h *Handler) queryLatencyBuckets(ctx context.Context, q queryer, r *http.Request, filters *analyticsFilters) ([]ShapeBucket, error) {
 	where, args := buildSessionSummariesWhereClause(r, filters)
 
 	query := `
@@ -553,7 +572,7 @@ func (h *Handler) queryLatencyBuckets(ctx context.Context, r *http.Request, filt
 			END
 	`
 
-	rows, err := h.db.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -572,7 +591,7 @@ func (h *Handler) queryLatencyBuckets(ctx context.Context, r *http.Request, filt
 }
 
 // queryAvgHealthScore 平均健康分
-func (h *Handler) queryAvgHealthScore(ctx context.Context, r *http.Request, filters *analyticsFilters) (float64, error) {
+func (h *Handler) queryAvgHealthScore(ctx context.Context, q queryer, r *http.Request, filters *analyticsFilters) (float64, error) {
 	where, args := buildSessionSummariesWhereClause(r, filters)
 
 	query := `
@@ -582,7 +601,7 @@ func (h *Handler) queryAvgHealthScore(ctx context.Context, r *http.Request, filt
 	`
 
 	var avg float64
-	err := h.db.QueryRow(ctx, query, args...).Scan(&avg)
+	err := q.QueryRow(ctx, query, args...).Scan(&avg)
 	return avg, err
 }
 
@@ -640,24 +659,33 @@ func parseAnalyticsFilters(r *http.Request) (*analyticsFilters, error) {
 	}, nil
 }
 
-// buildWhereClause 构建 request_logs WHERE 子句
+// buildWhereClause builds request_logs WHERE clause. For regular users the
+// clause restricts to gw_session_ids owned by the caller via session_dim.
 func buildWhereClause(r *http.Request, filters *analyticsFilters, alias string) (string, []interface{}) {
 	where := " WHERE " + alias + ".ts >= $1 AND " + alias + ".ts < $2"
 	args := []interface{}{filters.dateFrom, filters.dateTo.AddDate(0, 0, 1)}
 
-	// 租户隔离
 	tenantFrag, tenantArgs, nextIdx := tenantLogsClause(r, 3)
 	where += tenantFrag
 	args = append(args, tenantArgs...)
 
-	// 模型过滤
+	if IsRegularUser(r) {
+		owner := GetAuthContext(r).Username
+		if owner == "" {
+			where += fmt.Sprintf(" AND %s.gw_session_id IN (SELECT gw_session_id FROM session_dim WHERE owner_user = '')", alias)
+		} else {
+			where += fmt.Sprintf(" AND %s.gw_session_id IN (SELECT gw_session_id FROM session_dim WHERE owner_user = $%d)", alias, nextIdx)
+			args = append(args, owner)
+			nextIdx++
+		}
+	}
+
 	if filters.model != "" {
 		where += fmt.Sprintf(" AND %s.outbound_model = $%d", alias, nextIdx)
 		args = append(args, filters.model)
 		nextIdx++
 	}
 
-	// 提供商过滤
 	if filters.provider != "" {
 		where += fmt.Sprintf(" AND %s.provider_id = $%d", alias, nextIdx)
 		args = append(args, filters.provider)
@@ -667,24 +695,33 @@ func buildWhereClause(r *http.Request, filters *analyticsFilters, alias string) 
 	return where, args
 }
 
-// buildSessionSummariesWhereClause 构建 session_summaries WHERE 子句
+// buildSessionSummariesWhereClause builds session_summaries WHERE clause with
+// optional owner_user filter for regular users (via session_dim JOIN).
 func buildSessionSummariesWhereClause(r *http.Request, filters *analyticsFilters) (string, []interface{}) {
 	where := " WHERE ss.first_request_at >= $1 AND ss.first_request_at < $2"
 	args := []interface{}{filters.dateFrom, filters.dateTo.AddDate(0, 0, 1)}
 
-	// 租户隔离
 	tenantFrag, tenantArgs, nextIdx := tenantSummariesClause(r, 3)
 	where += tenantFrag
 	args = append(args, tenantArgs...)
 
-	// 合规状态过滤
+	if IsRegularUser(r) {
+		owner := GetAuthContext(r).Username
+		if owner == "" {
+			where += " AND EXISTS (SELECT 1 FROM session_dim sd WHERE sd.gw_session_id = ss.session_key AND sd.owner_user = '')"
+		} else {
+			where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM session_dim sd WHERE sd.gw_session_id = ss.session_key AND sd.owner_user = $%d)", nextIdx)
+			args = append(args, owner)
+			nextIdx++
+		}
+	}
+
 	if filters.complianceStatus != "" {
 		where += fmt.Sprintf(" AND ss.compliance_status = $%d", nextIdx)
 		args = append(args, filters.complianceStatus)
 		nextIdx++
 	}
 
-	// 意图过滤
 	if filters.userIntent != "" {
 		where += fmt.Sprintf(" AND ss.user_intent = $%d", nextIdx)
 		args = append(args, filters.userIntent)
