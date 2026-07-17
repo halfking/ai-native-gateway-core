@@ -81,3 +81,33 @@ func TestNodeProbeDedupHashStable(t *testing.T) {
 		t.Fatalf("hash should differ across cred IDs")
 	}
 }
+
+// TestNodeProbeResultToStatus verifies the audit fix that maps a
+// nodeProbeRoundResult back to the fine-grained ProbeStatus taxonomy, so a
+// 429/503/network error on the node_probe path is classified as
+// Rate/HTTP5xx/Network (not collapsed to probe_direct_internal_error).
+func TestNodeProbeResultToStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		r    nodeProbeRoundResult
+		want ProbeStatus
+	}{
+		{"success", nodeProbeRoundResult{ok: true}, ProbeStatusSuccess},
+		{"endpoint_build", nodeProbeRoundResult{errCode: "endpoint_build"}, ProbeStatusFailed},
+		{"network_error", nodeProbeRoundResult{errCode: "network_error", latencyMs: 500}, ProbeStatusNetwork},
+		{"network_error near timeout", nodeProbeRoundResult{errCode: "network_error", latencyMs: 14900}, ProbeStatusTimeout},
+		{"429", nodeProbeRoundResult{errCode: "http_429", httpStatus: 429}, ProbeStatusRate},
+		{"401", nodeProbeRoundResult{errCode: "http_401", httpStatus: 401}, ProbeStatusAuth},
+		{"403", nodeProbeRoundResult{errCode: "http_403", httpStatus: 403}, ProbeStatusAuth},
+		{"503", nodeProbeRoundResult{errCode: "http_503", httpStatus: 503}, ProbeStatusHTTP5xx},
+		{"404", nodeProbeRoundResult{errCode: "http_404", httpStatus: 404}, ProbeStatusHTTP4xx},
+		{"unknown errCode no status", nodeProbeRoundResult{errCode: "weird"}, ProbeStatusFailed},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := nodeProbeResultToStatus(c.r); got != c.want {
+				t.Errorf("nodeProbeResultToStatus(%+v) = %q, want %q", c.r, got, c.want)
+			}
+		})
+	}
+}

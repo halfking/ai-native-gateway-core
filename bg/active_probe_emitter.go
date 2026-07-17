@@ -75,30 +75,40 @@ func (e *ActiveProbeEmitter) Emit(
 	}
 
 	requestID := buildProbeRequestID(credID, rawModel, attempt, success, ts)
-	failureStage := "upstream"
-	if success {
-		failureStage = ""
-		// keep empty so request_logs.failure_stage stays NULL for ok rows
-	}
+	// 2026-07-17: failure_stage is now derived from the real failure
+	// point instead of a hardcoded "upstream". A decrypt/endpoint_build
+	// failure is gateway-side and must read "gateway"; only faults that
+	// reached the provider are "upstream". See classifyProbeFailureStage.
+	failureStage := classifyProbeFailureStage(result)
 
-	promptTokens := 1
+	// 2026-07-17: token counts were previously hardcoded (1/0 fail, 1/1
+	// success) as "optimistic placeholders". That misled operators into
+	// reading a failed probe as "request sent, response incomplete"
+	// (prompt=1, completion=0). Now: failures are 0/0 (nothing
+	// billable); success attempts to parse the real usage from the
+	// upstream response body, falling back to 0/0 when unparseable
+	// rather than inventing a token.
+	promptTokens := 0
 	completionTokens := 0
 	if success {
-		// optimistic — the model at least echoed the prompt and gave us
-		// back a finish_reason, so 1 completion token is a fair upper bound.
-		completionTokens = 1
+		if pt, ct, ok := parseProbeUsage(result.ResponseBody); ok {
+			promptTokens = pt
+			completionTokens = ct
+		}
 	}
 
 	autoDecision, err := json.Marshal(map[string]any{
-		"probe_attempt":     attempt,
-		"probe_origin":      origin,
-		"probe_trigger":     "consecutive_failures",
-		"parent_request_id": parentReqID,
-		"probe_http_status": result.HTTPStatus,
-		"probe_status":      string(result.Status),
-		"probe_err_code":    result.ErrCode,
-		"probe_latency_ms":  result.LatencyMs,
-		"tenant_id":         tenantID,
+		"probe_attempt":       attempt,
+		"probe_origin":        origin,
+		"probe_trigger":       "consecutive_failures",
+		"parent_request_id":   parentReqID,
+		"probe_http_status":   result.HTTPStatus,
+		"probe_status":        string(result.Status),
+		"probe_err_code":      result.ErrCode,
+		"probe_latency_ms":    result.LatencyMs,
+		"probe_failure_stage": failureStage,
+		"probe_via_proxy":     result.ViaProxy,
+		"tenant_id":           tenantID,
 	})
 	if err != nil {
 		// The payload is internal and should always be JSON-safe. Fail closed
@@ -247,4 +257,46 @@ func strPtrOrNil(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// parseProbeUsage extracts prompt/completion token counts from a probe
+// response body. Most OpenAI-compatible providers return a `usage` object
+// even for max_tokens=1 probes; Anthropic returns it at top level too.
+// Returns ok=false when the body is empty, not JSON, or lacks a usage
+// object — in which case the caller should report 0/0 rather than the
+// old hardcoded 1/1 "optimistic" placeholder.
+//
+// We only parse the leading ~512 bytes of the body (RespPreview /
+// ResponseBody are already truncated upstream), so this stays cheap.
+func parseProbeUsage(body string) (promptTokens, completionTokens int, ok bool) {
+	if len(body) == 0 {
+		return 0, 0, false
+	}
+	var parsed struct {
+		Usage *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			// Anthropic shape:
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		return 0, 0, false
+	}
+	if parsed.Usage == nil {
+		return 0, 0, false
+	}
+	pt := parsed.Usage.PromptTokens
+	ct := parsed.Usage.CompletionTokens
+	if pt == 0 {
+		pt = parsed.Usage.InputTokens
+	}
+	if ct == 0 {
+		ct = parsed.Usage.OutputTokens
+	}
+	if pt == 0 && ct == 0 {
+		return 0, 0, false
+	}
+	return pt, ct, true
 }

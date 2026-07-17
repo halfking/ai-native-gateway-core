@@ -79,18 +79,40 @@ CREATE TABLE IF NOT EXISTS public.credential_probe_model_log (
     created_at timestamp with time zone NOT NULL DEFAULT now()
 );
 
--- 主键 + 索引（baseline 快照里 id 无主键约束，这里补上以免重复写入；
--- 若库里已存在无主键的同名表，CREATE TABLE IF NOT EXISTS 会跳过，
--- 此 PK 子句同样跳过，不影响幂等）。
-ALTER TABLE public.credential_probe_model_log
-    ADD CONSTRAINT credential_probe_model_log_pkey PRIMARY KEY (id);
+-- 主键 + 序列 + 默认值。
+-- 幂等性说明：245 与 154 共享同一个 252 PG，第一个目标部署时建表+建主键，
+-- 第二个目标重跑时表与主键都已存在。PG 不支持 ADD CONSTRAINT IF NOT EXISTS，
+-- 所以用 DO 块检查 pg_constraint 是否已有同名 pkey，没有才加。
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.credential_probe_model_log'::regclass
+          AND conname = 'credential_probe_model_log_pkey'
+    ) THEN
+        ALTER TABLE public.credential_probe_model_log
+            ADD CONSTRAINT credential_probe_model_log_pkey PRIMARY KEY (id);
+    END IF;
+END $$;
 
--- 序列对齐（baseline 用独立 seq；若已存在则跳过）。
+-- 序列对齐（baseline 用独立 seq；IF NOT EXISTS 幂等）。
 CREATE SEQUENCE IF NOT EXISTS public.credential_probe_model_log_id_seq;
 ALTER SEQUENCE public.credential_probe_model_log_id_seq
     OWNED BY public.credential_probe_model_log.id;
-ALTER TABLE public.credential_probe_model_log
-    ALTER COLUMN id SET DEFAULT nextval('public.credential_probe_model_log_id_seq');
+-- 仅在 id 列还没有默认值时设置，避免覆盖运维侧已设的默认值。
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_attrdef
+        WHERE adrelid = 'public.credential_probe_model_log'::regclass
+          AND adnum = (SELECT attnum FROM pg_attribute
+                       WHERE attrelid = 'public.credential_probe_model_log'::regclass
+                         AND attname = 'id')
+    ) THEN
+        ALTER TABLE public.credential_probe_model_log
+            ALTER COLUMN id SET DEFAULT nextval('public.credential_probe_model_log_id_seq');
+    END IF;
+END $$;
 
 -- partition_manager cleanup 走 created_at 过滤，建时间索引。
 CREATE INDEX IF NOT EXISTS idx_credential_probe_model_log_created

@@ -82,6 +82,24 @@ type ProbeResult struct {
 	StartedAt   time.Time
 	CompletedAt time.Time
 	Target      ProbeTarget
+
+	// 2026-07-17: diagnostic detail for the probe observability surface.
+	// Previously the emitter only persisted status/err_code/latency/http_status,
+	// so the dashboard showed probe rows as "probe_direct_failed" with no
+	// request/response context — operators could not tell a 429 from an
+	// endpoint_build failure without querying node_probe_runs directly.
+	// These fields are populated by both probe paths (ActiveProbeExecutor.Run
+	// for the legacy stack, NodeProbeWorker.emitProbe for the new stack) and
+	// surfaced through auto_decision JSONB / synthetic traces.
+	RequestURL string // full upstream URL the probe posted to
+	// RequestBody is the marshalled probe body (small, ~80 bytes).
+	RequestBody string
+	// ResponseBody is the truncated upstream response (<=512 chars).
+	ResponseBody string
+	// ViaProxy is true when the probe honoured HTTP_PROXY. A mismatch
+	// between probe and real-traffic egress paths was the root cause of
+	// the "probe OK, requests fail" oscillation fixed on 2026-07-16.
+	ViaProxy bool
 }
 
 // NewActiveProbeExecutor constructs an executor.
@@ -217,6 +235,13 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	req.Header.Set("Content-Type", "application/json")
 	providercap.ApplyAuthHeaders(req, desc, t.APIKey)
 
+	// Record the request context so the emitter can surface it. We do
+	// this here (after the request is built) rather than at the top of
+	// Run so that endpoint_build / body_build early-returns keep these
+	// empty — they genuinely have no request to show.
+	res.RequestURL = endpoint
+	res.RequestBody = body
+
 	resp, err := e.httpClient.Do(req)
 	latency := time.Since(start)
 	res.LatencyMs = int(latency.Milliseconds())
@@ -245,6 +270,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	res.HTTPStatus = resp.StatusCode
 	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	res.RespPreview = truncatePreview(string(bodyBytes), 500)
+	res.ResponseBody = res.RespPreview
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
@@ -358,7 +384,56 @@ func classifyProbeErrorKind(r *ProbeResult) string {
 		return "probe_direct_http_4xx"
 	case ProbeStatusCanceled:
 		return "probe_direct_canceled"
+	case ProbeStatusFailed:
+		// Failed happens before the HTTP request reaches the wire:
+		// endpoint decryption/resolution, body marshalling, etc. Split
+		// by ErrCode so the operator can see exactly which build step
+		// broke (these are gateway-side, NOT upstream, faults).
+		switch r.ErrCode {
+		case "endpoint_build":
+			return "probe_direct_endpoint_build"
+		case "body_build":
+			return "probe_direct_body_build"
+		default:
+			return "probe_direct_internal_error"
+		}
+	case ProbeStatusSkipped:
+		return "probe_direct_skipped"
 	default:
-		return "probe_direct_failed"
+		return "probe_direct_unknown"
+	}
+}
+
+// classifyProbeFailureStage returns the coarse failure_stage value
+// (request_logs.failure_stage) for a probe result. It distinguishes
+// gateway-side build failures (decrypt / endpoint / body marshalling —
+// the request never left the gateway) from genuine upstream faults
+// (network / timeout / HTTP status / auth / rate-limit — the request
+// reached the provider and the provider answered or dropped it).
+//
+// Previously emitter.go hardcoded failure_stage="upstream" for every
+// failed probe, which labelled a v1:legacy decrypt error
+// (probe_direct_endpoint_build) as "upstream" — actively misleading
+// operators to blame the provider for a gateway-side keyring problem.
+func classifyProbeFailureStage(r *ProbeResult) string {
+	if r == nil || r.Status == ProbeStatusSuccess {
+		return ""
+	}
+	// request_build (http.NewRequestWithContext failure) is a gateway-side
+	// URL/header construction problem — the request never reached the wire —
+	// even though Run labels it ProbeStatusNetwork. Treat it as gateway so
+	// operators aren't told to chase the provider for it.
+	if r.Status == ProbeStatusNetwork && r.ErrCode == "request_build" {
+		return "gateway"
+	}
+	switch r.Status {
+	case ProbeStatusFailed, ProbeStatusSkipped, ProbeStatusCanceled:
+		// Build-time / pre-dispatch failures never reached the upstream.
+		return "gateway"
+	default:
+		// timeout / network / auth / rate / http_4xx / http_5xx — the
+		// request reached the provider; the provider's response (or lack
+		// thereof) is the cause.
+		return "upstream"
 	}
 }
