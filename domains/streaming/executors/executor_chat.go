@@ -469,46 +469,56 @@ func (e *Executor) executeOpenAI(
 			// provider/credential/raw_model and what came back. Without
 			// this, distinguishing client-side tool_id_mismatch vs
 			// upstream rate-limit vs upstream timeout is impossible.
-			//
-			// 2026-07-18 (later): when upstream returns 4xx the body
-			// often contains the real classifier signal
-			// ("tool_call_id_mismatch" / "invalid_request_format" / …).
-			// Capture a 256-byte preview of the 4xx body here so
-			// downstream operators don't need to tcpdump or hit
-			// request_logs to figure out WHY the upstream rejected us.
-			attemptAttrs := []any{
-				"request_id", params.RequestID,
-				"attempt", attempt,
-				"provider_id", cand.ProviderID,
-				"credential_id", cand.CredentialID,
-				"raw_model", cand.RawModel,
-				"client_model", params.Model,
-				"upstream_url", req.URL.String(),
-				"upstream_method", req.Method,
-				"body_bytes", len(bodyBytes),
-				"is_stream", params.IsStream,
-				"latency_ms", upstreamLatency.Milliseconds(),
+			attemptLog := func(status int, errKind string, bodyPreview string) {
+				attrs := []any{
+					"request_id", params.RequestID,
+					"attempt", attempt,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"client_model", params.Model,
+					"upstream_url", req.URL.String(),
+					"upstream_method", req.Method,
+					"body_bytes", len(bodyBytes),
+					"is_stream", params.IsStream,
+					"latency_ms", upstreamLatency.Milliseconds(),
+				}
+				if status > 0 {
+					attrs = append(attrs, "upstream_status", status)
+				}
+				if errKind != "" {
+					attrs = append(attrs, "err_kind", errKind)
+				}
+				if bodyPreview != "" {
+					attrs = append(attrs, "body_preview", bodyPreview)
+				}
+				if uErr != nil {
+					attrs = append(attrs, "err_message", uErr.Message)
+				}
+				slog.Info("upstream_http_attempt", attrs...)
 			}
+			_ = attemptLog // ensure variable used even if early-return below
 			if uErr != nil {
-				attemptAttrs = append(attemptAttrs,
-					"err_kind", string(uErr.Kind),
-					"err_message", uErr.Message,
-				)
+				attemptLog(0, string(uErr.Kind), "")
 			}
 			if resp != nil {
-				attemptAttrs = append(attemptAttrs, "upstream_status", resp.StatusCode)
-			}
-			// Peek at 4xx body preview (re-read Body here is cheap; later
-			// reads use resp.Body after this point). Truncate to 256 bytes
-			// to keep journald sane.
-			if resp != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.Body != nil {
-				peek := make([]byte, 256)
-				n, _ := resp.Body.Read(peek)
-				if n > 0 {
-					attemptAttrs = append(attemptAttrs, "upstream_body_preview", strings.TrimSpace(string(peek[:n])))
+				attemptLog(resp.StatusCode, "", "")
+				// 2026-07-18: when upstream returns 4xx, the body often
+				// carries the real classifier signal
+				// ("tool_call_id_mismatch" / "invalid_request_format" / …).
+				// Capture a 256-byte preview of the 4xx body so operators
+				// don't need tcpdump / request_logs excavation to figure
+				// out WHY the upstream rejected us. Goes after the
+				// attemptLog call (the resp.Body is still untouched at
+				// this point).
+				if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.Body != nil {
+					peek := make([]byte, 256)
+					n, _ := resp.Body.Read(peek)
+					if n > 0 {
+						attemptLog(0, "", strings.TrimSpace(string(peek[:n])))
+					}
 				}
 			}
-			slog.Info("upstream_http_attempt", attemptAttrs...)
 
 			if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
 				errKind := uErr.Kind
@@ -1237,13 +1247,12 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		}
 	} else {
 		// 2026-07-18 (e.IR == nil): legacy path WITHOUT IR converter.
-		// prepareRequestBody already ran above (line 1145); capture
-		// before/after so prod logs prove what the legacy transforms
-		// (whitelist / sanitizer / collapse / merge / compress) actually
-		// did. applyInlineValidation (inline_validation.go) was written
-		// but never wired into a caller, so tool-message sanitization is
-		// not currently exercised in this branch. Document the gap in
-		// production logs so future ops can prove which path ran.
+		// applyInlineValidation (inline_validation.go) was defined 2026-07-12
+		// but had zero callers until 2026-07-18. THIS wiring is the fix
+		// for the minimax-m3 tool_call_id_mismatch incident class
+		// (req 3905e839e0abab5a53efc09222e2d45b): without it, orphan
+		// tool messages reach upstream unmangled; MiniMax 4xx-cascades;
+		// gateway loops 90s; client gets 503.
 		preBodyBytes := len(bodyBytes)
 		bodyBytes = applyInlineValidation(bodyBytes, params.RequestID)
 		postBodyBytes := len(bodyBytes)
