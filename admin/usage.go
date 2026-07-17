@@ -1052,7 +1052,7 @@ func (h *Handler) usageKeyTraffic(w http.ResponseWriter, r *http.Request, keyID 
 				+ (FLOOR(EXTRACT(minute FROM ts) / 5) * INTERVAL '5 minutes') AS bucket,
 			COUNT(*) AS requests,
 			COUNT(*) FILTER (WHERE success) AS success_count,
-			COUNT(*) FILTER (WHERE NOT success) AS failure_count,
+			COUNT(*) FILTER (WHERE request_status = 'failure') AS failure_count,
 			COUNT(*) FILTER (
 				WHERE COALESCE(failure_stage, '') = 'gateway'
 				   OR COALESCE(failure_detail_code, '') LIKE 'gw_%'

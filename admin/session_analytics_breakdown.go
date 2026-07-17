@@ -244,7 +244,7 @@ func (h *Handler) queryModelBreakdown(ctx context.Context, r *http.Request, filt
 				COALESCE(SUM(rl.cost_usd), 0) AS total_cost_usd,
 				COALESCE(SUM(rl.prompt_tokens + rl.completion_tokens), 0) AS total_tokens,
 				COALESCE(AVG(rl.latency_ms), 0) AS avg_latency_ms,
-				COUNT(*) FILTER (WHERE rl.request_status != 'success') AS error_count
+				COUNT(*) FILTER (WHERE rl.request_status = 'failure') AS error_count
 			FROM request_logs_with_current_month rl
 			` + where + `
 			GROUP BY rl.outbound_model
@@ -292,7 +292,7 @@ func (h *Handler) queryProviderBreakdown(ctx context.Context, r *http.Request, f
 				COALESCE(SUM(rl.cost_usd), 0) AS total_cost_usd,
 				COALESCE(SUM(rl.prompt_tokens + rl.completion_tokens), 0) AS total_tokens,
 				COALESCE(AVG(rl.latency_ms), 0) AS avg_latency_ms,
-				COUNT(*) FILTER (WHERE rl.request_status != 'success') AS error_count
+				COUNT(*) FILTER (WHERE rl.request_status = 'failure') AS error_count
 			FROM request_logs_with_current_month rl
 			` + where + `
 			GROUP BY rl.provider_id

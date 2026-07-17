@@ -19,7 +19,7 @@ import (
 // Design:
 //   - Main queue: ZSET llmgw:live:main (score = unix_ms, member = JSON)
 //   - Dimension queues: ZSET llmgw:live:dim:{vendor|provider|model}:{key}
-//   - Status queues: ZSET llmgw:live:status:{success|failure|in_progress}
+//   - Status queues: ZSET llmgw:live:status:{success|failure|rate_limited|in_progress}
 //   - TTL: LiveStreamRecordRetention (default 2 hours, product minimum)
 //   - Visible lane window: LiveStreamLaneVisibleLimit (20 tiles)
 //   - Idle markers: inserted after LiveStreamIdleThreshold (5 min) of silence
@@ -31,10 +31,11 @@ type LiveStreamRedisStore struct {
 }
 
 type LiveStreamStats struct {
-	Total      int `json:"total"`
-	Success    int `json:"success"`
-	Failure    int `json:"failure"`
-	InProgress int `json:"in_progress"`
+	Total       int `json:"total"`
+	Success     int `json:"success"`
+	Failure     int `json:"failure"`
+	RateLimited int `json:"rate_limited"`
+	InProgress  int `json:"in_progress"`
 }
 
 type LiveStreamTile struct {
@@ -645,7 +646,7 @@ func buildStatusLegends(items []LiveRequest) []LiveStreamLegendItem {
 		}
 		counts[emptyAs(req.Status, "in_progress")]++
 	}
-	order := []string{"success", "in_progress", "failure", "idle"}
+	order := []string{"success", "in_progress", "rate_limited", "failure", "idle"}
 	legends := make([]LiveStreamLegendItem, 0, len(order))
 	for _, key := range order {
 		legends = append(legends, LiveStreamLegendItem{Key: key, Name: key, Count: counts[key]})
@@ -821,6 +822,10 @@ func countStatus(stats *LiveStreamStats, status string) {
 		stats.Success++
 	case "failure":
 		stats.Failure++
+	case "rate_limited":
+		stats.RateLimited++
+	case "in_progress":
+		stats.InProgress++
 	default:
 		stats.InProgress++
 	}

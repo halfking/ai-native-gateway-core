@@ -32,7 +32,7 @@ export interface RequestLogRow {
   cost_currency: string | null
   latency_ms: number | null
   success: boolean
-  request_status: 'in_progress' | 'success' | 'failure'
+  request_status: 'in_progress' | 'success' | 'failure' | 'rate_limited'
   error_kind: string | null
   search_text: string | null
   identity_hash: string | null

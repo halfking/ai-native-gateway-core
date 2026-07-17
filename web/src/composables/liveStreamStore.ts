@@ -11,7 +11,7 @@ import { reactive, computed, type ComputedRef } from 'vue'
 import { authBearer } from '../store'
 import type { RouteIncidentUpdate } from '../types/routeIncident'
 
-export type LiveStatus = 'in_progress' | 'success' | 'failure'
+export type LiveStatus = 'in_progress' | 'success' | 'failure' | 'rate_limited'
 
 export type LiveModelCategory = 'openai' | 'anthropic' | 'domestic' | 'oss' | 'other'
 
@@ -198,7 +198,7 @@ const terminalListeners = new Set<(req: LiveRequest) => void>()
 
 function notifyTerminalRequest(req: LiveRequest) {
   if (req.type === 'idle_marker' || !req.request_id) return
-  if (req.status !== 'success' && req.status !== 'failure') return
+  if (req.status !== 'success' && req.status !== 'failure' && req.status !== 'rate_limited') return
   for (const fn of terminalListeners) fn(req)
 }
 

@@ -132,13 +132,13 @@ func (w *StatsMinuteRollup) rollupVirtualIP(ctx context.Context, since, until ti
 			'virtual_ip',
 			COALESCE(NULLIF(r.virtual_ip, ''), '__unknown__'),
 			COUNT(*)::bigint,
-			COUNT(*) FILTER (WHERE r.success)::bigint,
-			COUNT(*) FILTER (WHERE NOT r.success)::bigint,
+			COUNT(*) FILTER (WHERE r.request_status = 'success')::bigint,
+			COUNT(*) FILTER (WHERE r.request_status = 'failure')::bigint,
 			COALESCE(SUM(COALESCE(r.prompt_tokens,0)+COALESCE(r.completion_tokens,0)), 0)::bigint,
 			COALESCE(SUM(`+creditsExpr+`), 0)::bigint,
 			COALESCE(SUM(r.cost_usd), 0)
 		FROM request_logs_with_current_month r
-		WHERE r.request_status IN ('success', 'failure')
+		WHERE r.request_status IN ('success', 'failure', 'rate_limited')
 		  AND r.ts > $1 AND r.ts <= $2
 		GROUP BY 1, 2, 4
 		ON CONFLICT (bucket, tenant_id, dim_type, dim_key) DO UPDATE SET
@@ -166,8 +166,8 @@ func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Ti
 			COALESCE(r.provider_id, 0),
 			COALESCE(r.canonical_id, 0),
 			COUNT(*)::bigint,
-			COUNT(*) FILTER (WHERE r.success)::bigint,
-			COUNT(*) FILTER (WHERE NOT r.success)::bigint,
+			COUNT(*) FILTER (WHERE r.request_status = 'success')::bigint,
+			COUNT(*) FILTER (WHERE r.request_status = 'failure')::bigint,
 			COALESCE(SUM(r.prompt_tokens), 0)::bigint,
 			COALESCE(SUM(r.completion_tokens), 0)::bigint,
 			COALESCE(SUM(COALESCE(r.prompt_tokens,0)+COALESCE(r.completion_tokens,0)), 0)::bigint,
@@ -175,7 +175,7 @@ func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Ti
 			COALESCE(SUM(r.cost_usd), 0),
 			COALESCE(SUM(r.latency_ms), 0)::bigint
 		FROM request_logs_with_current_month r
-		WHERE r.request_status IN ('success', 'failure')
+		WHERE r.request_status IN ('success', 'failure', 'rate_limited')
 		  AND r.ts > $1 AND r.ts <= $2
 		GROUP BY 1, 2, 3, 4
 		ON CONFLICT (bucket, tenant_id, provider_id, canonical_id) DO UPDATE SET
@@ -224,9 +224,9 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 				COALESCE(SUM(`+creditsExpr+`), 0)::bigint,
 				COALESCE(SUM(r.cost_usd), 0)
 			FROM request_logs_with_current_month r
-			WHERE r.request_status IN ('success', 'failure')
+			WHERE r.request_status IN ('success', 'failure', 'rate_limited')
 			  AND r.ts > $1 AND r.ts <= $2
-			  AND ($3 <> 'error_kind' OR NOT r.success)
+			  AND ($3 <> 'error_kind' OR r.request_status = 'failure')
 			GROUP BY 1, 2, 4
 			ON CONFLICT (bucket, tenant_id, dim_type, dim_key) DO UPDATE SET
 				requests = request_stats_dim_minute.requests + EXCLUDED.requests,
