@@ -24,11 +24,12 @@ case "$REGION" in
   *) REGION="$TARGET" ;;
 esac
 
-SSH_PORT="${LLM_GATEWAY_SSH_PORT:-25022}"
-SSH_KEY_FILE="${SSH_KEY_FILE:-}"
-for k in ~/.ssh/id_ed25519 ~/.ssh/56_id_rsa ~/.ssh/71_id_rsa; do
-  [[ -f "$k" ]] && SSH_KEY_FILE="$k" && break
-done
+SSH_PORT="${LLM_GATEWAY_SSH_PORT:-${SSH_PORT:-25022}}"
+case "$TARGET" in
+  245) SSH_KEY_FILE="${SSH_KEY_245:-${SSH_KEY_FILE:-}}" ;;
+  154) SSH_KEY_FILE="${SSH_KEY_154:-${SSH_KEY_FILE:-}}" ;;
+esac
+[[ -n "$SSH_KEY_FILE" && -f "$SSH_KEY_FILE" ]] || { echo "ERROR: missing SSH key for $TARGET" >&2; exit 1; }
 SSH_OPTS=(-i "$SSH_KEY_FILE" -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 
 env_file_for_target() {

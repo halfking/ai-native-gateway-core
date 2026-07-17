@@ -603,7 +603,7 @@ func (s *Store) Timeline24h(ctx context.Context, tenantID, incidentID string) ([
 		)
 		SELECT bucket,
 		       COUNT(*) AS requests,
-		       COUNT(*) FILTER (WHERE success = FALSE OR lower(COALESCE(request_status, '')) = 'failure') AS errors,
+		       COUNT(*) FILTER (WHERE lower(COALESCE(request_status, '')) = 'failure') AS errors,
 		       AVG(latency_ms)::float8 AS avg_latency,
 		       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms)::float8 AS p99_latency
 		FROM buckets

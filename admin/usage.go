@@ -765,7 +765,7 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 			COUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'gateway'
 				OR COALESCE(failure_detail_code, '') LIKE 'gw_%'),
 			COUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'upstream'
-				OR (NOT success AND COALESCE(failure_stage, '') = '' AND provider_id IS NOT NULL)),
+				OR (NOT success AND COALESCE(failure_stage, '') = '' AND provider_id IS NOT NULL AND COALESCE(request_status, '') <> 'rate_limited')),
 			COALESCE((
 				SELECT MAX(bucket_count) FROM (
 					SELECT COUNT(*) AS bucket_count

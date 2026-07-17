@@ -173,7 +173,7 @@ func (h *Handler) HandleActivityTrend(w http.ResponseWriter, r *http.Request) {
 			COUNT(DISTINCT gw_session_id) AS session_count,
 			COUNT(*) AS request_count,
 			SUM(CASE WHEN success THEN 1 ELSE 0 END) AS success_count,
-			SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS error_count,
+			SUM(CASE WHEN lower(COALESCE(request_status, '')) = 'failure' THEN 1 ELSE 0 END) AS error_count,
 		SUM(COALESCE(cost_usd, 0)) AS total_cost_usd,
 		SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)) AS total_tokens,
 		COUNT(DISTINCT end_user_id) AS distinct_users

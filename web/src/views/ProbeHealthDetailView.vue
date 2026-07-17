@@ -627,8 +627,8 @@ onMounted(() => {
                 <div v-if="log.provider_name" class="muted-text small">{{ log.provider_name }}</div>
               </td>
               <td>
-                <span :class="['badge', log.success ? 'badge-green' : 'badge-red']">
-                  {{ log.success ? '成功' : '失败' }}
+                <span :class="['badge', log.request_status === 'rate_limited' ? 'badge-amber' : log.success ? 'badge-green' : 'badge-red']">
+                  {{ log.request_status === 'rate_limited' ? '限流' : (log.success ? '成功' : '失败') }}
                 </span>
               </td>
               <td>{{ log.latency_ms ?? '—' }}ms</td>

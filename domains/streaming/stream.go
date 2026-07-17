@@ -390,7 +390,39 @@ func StreamChatWithPendingCapture(
 		)
 	}
 
+	// C1/C2: session-backed streams have an upstream timeout context
+	// independent of the client connection. Once a pending capturer is
+	// active, a failed client write only disables response writes; the
+	// upstream body must still be consumed for replay.
+	clientDisconnected := false
+	writeClientLine := func(line string) bool {
+		if clientDisconnected {
+			return false
+		}
+		if !safeWriteSSE(w, line) || !safeFlush(flusher) {
+			clientDisconnected = true
+			slog.Info("stream client disconnected; continuing upstream capture")
+			return false
+		}
+		return true
+	}
+
+	clientWriteFailure := func() bool {
+		if !clientDisconnected || pc != nil {
+			return false
+		}
+		outcome.Interrupted = true
+		outcome.Reason = "client_write_failed"
+		outcome.Resumable = chunkCount < 5
+		outcome.ChunkCount = chunkCount
+		if capture != nil {
+			capture.MarkInterruptedWithReason("client_write_failed")
+		}
+		return true
+	}
+
 	// ── First-byte timeout ──────────────────────────────────────────
+
 	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, runtimeCfg.firstByteTimeout)
 	if err != nil {
 		if capture != nil {
@@ -521,25 +553,17 @@ func StreamChatWithPendingCapture(
 				if p == "[DONE]" {
 					upstreamDoneReceived = true
 				}
-				if safeWriteSSE(w, l) && safeFlush(flusher) {
+				if writeClientLine(l) {
 					lastSend = time.Now()
 					chunkCount++
 					if capture != nil {
 						capture.RecordChunkSent()
 					}
-				} else {
-					slog.Warn("failed to send flushed chunk to client", "chunk_num", chunkCount)
-					if capture != nil {
-						capture.MarkInterruptedWithReason("client_write_failed")
-					}
-					outcome.Interrupted = true
-					outcome.Reason = "client_write_failed"
-					outcome.ChunkCount = chunkCount
-					// 2026-07-16 fix: client_write_failed should be resumable if chunk_count is low,
-					// allowing failover to another credential instead of immediately failing.
-					outcome.Resumable = (chunkCount < 5) // Resumable if less than 5 chunks sent
+				}
+				if clientWriteFailure() {
 					return outcome
 				}
+
 			}
 		} else {
 			// Gate disabled: original write-immediately path (unchanged
@@ -547,29 +571,21 @@ func StreamChatWithPendingCapture(
 			if pc != nil {
 				pc.append(firstLine)
 			}
-			if safeWriteSSE(w, firstLine) && safeFlush(flusher) {
+			if writeClientLine(firstLine) {
 				lastSend = time.Now()
 				chunkCount++ // Count first chunk
 				if capture != nil {
 					capture.RecordChunkSent()
 				}
-			} else {
-				// Write failed, client likely disconnected
-				slog.Warn("failed to send first chunk to client")
-				if capture != nil {
-					capture.MarkInterruptedWithReason("client_write_failed")
-				}
-				outcome.Interrupted = true
-				outcome.Reason = "client_write_failed"
-				outcome.ChunkCount = 0
-				// 2026-07-16 fix: first chunk write failure should be resumable (no data sent yet)
-				outcome.Resumable = true
+			}
+			if clientWriteFailure() {
 				return outcome
 			}
 		}
 	}
 
 	// ── Main streaming loop with keep-alive ─────────────────────────
+
 	// upstreamDoneReceived tracks whether the upstream sent the literal
 	// "data: [DONE]\n\n" terminator. If the stream ended by EOF without
 	// [DONE] (e.g. upstream crashed mid-response), we do NOT want to
@@ -610,6 +626,14 @@ func StreamChatWithPendingCapture(
 					}
 					outcome.Interrupted = true
 					outcome.Reason = "eof_without_done"
+				}
+				// When the client has gone away but the capturer is
+				// still alive and the upstream DID send [DONE], do NOT
+				// report eof_without_done as the failure reason — the
+				// capture is complete and replayable.
+				if pc != nil && upstreamDoneReceived {
+					outcome.Interrupted = false
+					outcome.Reason = ""
 				}
 				safeWriteSSE(w, "data: [DONE]\n\n")
 				safeFlush(flusher)
@@ -686,13 +710,14 @@ func StreamChatWithPendingCapture(
 		}
 
 		payload := extractPayload(line)
-		if payload != "" && capture != nil {
+		if payload != "" {
 			if payload == "[DONE]" {
 				upstreamDoneReceived = true
 			}
-			// IR-based audit: parse to chunk and observe
-			if chunk, err := ir.ParseOpenAIStreamChunk(line); err == nil {
-				capture.ObserveChunk(chunk)
+			if capture != nil {
+				if chunk, err := ir.ParseOpenAIStreamChunk(line); err == nil {
+					capture.ObserveChunk(chunk)
+				}
 			}
 		}
 
@@ -725,25 +750,14 @@ func StreamChatWithPendingCapture(
 			}
 		}
 
-		if safeWriteSSE(w, line) && safeFlush(flusher) {
+		if writeClientLine(line) {
 			lastSend = time.Now()
 			chunkCount++ // Track chunks sent
 			if capture != nil {
 				capture.RecordChunkSent()
 			}
-		} else {
-			// Write failed, client likely disconnected
-			slog.Warn("failed to send chunk to client", "chunk_num", chunkCount)
-			if capture != nil {
-				capture.MarkInterruptedWithReason("client_write_failed")
-			}
-			outcome.Interrupted = true
-			outcome.Reason = "client_write_failed"
-			outcome.ChunkCount = chunkCount
-			// 2026-07-16 fix: client_write_failed should be resumable if chunk_count is low
-			outcome.Resumable = (chunkCount < 5)
-			return outcome
 		}
+
 	}
 }
 
@@ -860,20 +874,28 @@ func extractModelFromChunk(line string) string {
 	return ""
 }
 
-func safeFlush(flusher http.Flusher) bool {
+func safeFlush(flusher http.Flusher) (ok bool) {
+	if flusher == nil {
+		return false
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Warn("flush after close (client likely disconnected)", "recover", r)
+			ok = false
 		}
 	}()
 	flusher.Flush()
 	return true
 }
 
-func safeWriteSSE(w io.Writer, line string) bool {
+func safeWriteSSE(w io.Writer, line string) (ok bool) {
+	if w == nil {
+		return false
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Warn("write after close (client likely disconnected)", "recover", r)
+			ok = false
 		}
 	}()
 	n, err := io.WriteString(w, line)

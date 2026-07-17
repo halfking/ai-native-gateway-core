@@ -225,7 +225,8 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		      OR mps.state = 'recovering'
 		  )
 		  AND COALESCE(mps.state, 'unknown') <> 'broken_confirmed'
-		  AND mps.next_retry_at <= NOW()
+			  AND (mps.next_retry_at IS NULL OR mps.next_retry_at <= NOW())
+
 		ORDER BY
 		  -- 2026-06-23: probe the most-urgent targets first.
 		  -- 1. The oldest failures (largest age_secs) — they've been

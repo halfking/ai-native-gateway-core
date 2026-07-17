@@ -24,6 +24,11 @@ AS $$
           -- "minimax-m3"). Fall back to client_model when outbound is NULL.
           AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
           AND ts > NOW() - (p_window_hours || ' hours')::interval
+          -- Probe/self-check rows measure the health worker, not the
+          -- business route. Keep legacy probe IDs excluded for old rows.
+          AND COALESCE(task_type, '') <> 'probe_triggered'
+          AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
+          AND request_id NOT LIKE 'probe-%'
         ORDER BY ts DESC
         LIMIT p_sample_n
     )

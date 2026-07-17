@@ -407,7 +407,7 @@ func (h *Handler) handleFeishuSendLogList(w http.ResponseWriter, r *http.Request
 	if successFilter == "true" {
 		q += " AND success = true"
 	} else if successFilter == "false" {
-		q += " AND success = false"
+		q += " AND lower(COALESCE(request_status, '')) = 'failure'"
 	}
 	q += " ORDER BY id DESC LIMIT " + strconv.Itoa(limit)
 
