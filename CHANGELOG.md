@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Frontend freeze when viewing live request stream**: Dashboard's
+  `LiveRequestStreamV2` component used `v-show` instead of `v-if`, causing
+  the SSE connection to remain active even when switching to other tabs. Over
+  time, continuous SSE messages triggered Vue reactivity updates that accumulated
+  DOM operations, eventually freezing the browser main thread and making the
+  sidebar unclickable. Changed to `v-if` so the component unmounts and closes
+  the SSE connection when switching tabs. Users will see a brief reload (0.5-1s)
+  when returning to the stream tab, but the browser will no longer freeze.
+  (DashboardViewV2.vue, TenantDashboardView.vue)
+
 - **Minimax-m3 "no available model" / "model not found" through gateway**:
   `credentialhealth.Checker` was counting `KindEmptyResponse` (NIM's 13%
   empty-stream rate) toward the 80% degradation threshold. After ~30
