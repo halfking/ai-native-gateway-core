@@ -43,18 +43,21 @@ REMOTE
 
 _deploy_applied_migration_ids() {
   local ssh_cmd=$1 env_file=$2
-  "$ssh_cmd" "$(_deploy_remote_psql_script "$env_file")"
-_psql -tAc "SELECT version FROM schema_migrations WHERE version ~ '^[0-9]+$' ORDER BY version::int" \
+  local remote_psql
+  remote_psql=$(_deploy_remote_psql_script "$env_file")
+  "$ssh_cmd" "${remote_psql}
+_psql -tAc \"SELECT version FROM schema_migrations WHERE version ~ '^[0-9]+$' ORDER BY version::int\"" \
     2>/dev/null | grep -E '^[0-9]+$' || true
 }
 
 _deploy_pending_startup_migrations() {
   local ssh_cmd=$1 env_file=$2
-  local repo_root f base ver line
+  local repo_root f base ver line remote_psql
   local -a applied_ids=()
   declare -A applied=()
 
   repo_root=$(_db_changelog_repo_root)
+  remote_psql=$(_deploy_remote_psql_script "$env_file")
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
     applied_ids+=("$line")
@@ -84,7 +87,7 @@ _deploy_pending_startup_migrations() {
 
 deploy_apply_pending_migrations() {
   local ssh_cmd=$1 env_file=$2 target=$3 seq=$4 git_sha=$5
-  local repo_root remote_dir applied_count=0
+  local repo_root remote_dir applied_count=0 remote_psql
   local -a pending=() applied_files=()
 
   repo_root=$(_db_changelog_repo_root)
@@ -113,8 +116,8 @@ deploy_apply_pending_migrations() {
     ver=$(echo "$base" | grep -oE '^[0-9]+')
     desc=$(echo "$base" | sed 's/^[0-9]*_//;s/.sql$//')
     _db_log "  → $base"
-    if ! _deploy_verify_ssh "$ssh_cmd" "$(_deploy_remote_psql_script "$env_file")"
-_psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base' 2>/tmp/_mig_err_${ver}.log; then
+    if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base' 2>/tmp/_mig_err_${ver}.log"; then
       if grep -qiE 'already exists|duplicate key|relation .* already exists' "/tmp/_mig_err_${ver}.log" 2>/dev/null; then
         _db_warn "  ⊘ $base idempotent"
       else
@@ -127,14 +130,14 @@ _psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base' 2>/tmp/_mig_err_${ver}.log; then
       applied_count=$((applied_count + 1))
     fi
 
-    if ! _deploy_verify_ssh "$ssh_cmd" "$(_deploy_remote_psql_script "$env_file")"
-_psql -v ON_ERROR_STOP=1 -c "BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('llm-gateway:schema_migrations', 0)); INSERT INTO schema_migrations (version, description) SELECT '$ver', '$desc' WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '$ver'); COMMIT;" >/dev/null; then
+    if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -c \"BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('llm-gateway:schema_migrations', 0)); INSERT INTO schema_migrations (version, description) SELECT '$ver', '$desc' WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '$ver'); COMMIT;\" >/dev/null"; then
       _db_err "  ✗ $base: migration applied but schema_migrations ledger write failed"
       "$ssh_cmd" "rm -rf '$remote_dir'" || true
       return 1
     fi
-    if ! _deploy_verify_ssh "$ssh_cmd" "$(_deploy_remote_psql_script "$env_file")"
-_psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM schema_migrations WHERE version = '$ver' LIMIT 1" | grep -qx '1'; then
+    if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -tAc \"SELECT 1 FROM schema_migrations WHERE version = '$ver' LIMIT 1\" | grep -qx '1'"; then
       _db_err "  ✗ $base: schema_migrations ledger verification failed"
       "$ssh_cmd" "rm -rf '$remote_dir'" || true
       return 1
