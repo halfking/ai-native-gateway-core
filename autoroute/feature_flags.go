@@ -50,6 +50,8 @@ type FeatureFlags struct {
 	AutoOnMessages   bool
 	AutoOnResponses  bool
 	AutoOnEmbeddings bool
+	// AutoEmbeddingRoute enables the M3 embedding shadow path. Default off.
+	AutoEmbeddingRoute bool
 }
 
 // DefaultFeatureFlags returns the default flags.
@@ -76,6 +78,7 @@ func DefaultFeatureFlags() *FeatureFlags {
 		AutoOnMessages:           false,
 		AutoOnResponses:          false,
 		AutoOnEmbeddings:         false,
+		AutoEmbeddingRoute:       false,
 	}
 }
 
@@ -98,6 +101,7 @@ func LoadFeatureFlagsFromEnv() *FeatureFlags {
 		AutoOnMessages:           getEnvBool("AUTO_ON_MESSAGES", false),
 		AutoOnResponses:          getEnvBool("AUTO_ON_RESPONSES", false),
 		AutoOnEmbeddings:         getEnvBool("AUTO_ON_EMBEDDINGS", false),
+		AutoEmbeddingRoute:       getEnvBool("AUTO_EMBEDDING_ROUTE", false),
 	}
 
 	if flags.EnableV2Logic {
@@ -162,6 +166,9 @@ func activeFeatureNames(flags *FeatureFlags) []string {
 	}
 	if flags.UseChannelQualityRouting {
 		features = append(features, "channel_quality_routing")
+	}
+	if flags.AutoEmbeddingRoute {
+		features = append(features, "embedding_shadow")
 	}
 	return features
 }

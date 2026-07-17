@@ -129,6 +129,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		FallbackUsed:       fallbackUsed,
 		DecidedAt:          time.Now(),
 	}
+	d.populateShadow(ctx, sigs, decision)
 
 	slog.Info("autoroute.v2: decision made",
 		"chosen_model", decision.ChosenModel,
