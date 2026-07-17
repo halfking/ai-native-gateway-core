@@ -5,13 +5,17 @@
 // 本文件仅保留 InMemorySink 及其附加方法，适配 audit.go 中的统一 Sink 接口。
 package audit
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // InMemorySink 内存 sink（用于测试）。
 //
 // 实现了 audit.Sink 接口的全部三个方法：Emit / Write / Close。
 // 既支持 BatchWriter 的批量写入，也支持源审计代码的单条 Emit。
 type InMemorySink struct {
+	mu     sync.RWMutex
 	events []*Event
 }
 
@@ -22,13 +26,18 @@ func NewInMemorySink() *InMemorySink {
 
 // Write 批量写入（适配 BatchWriter 调用方式）
 func (s *InMemorySink) Write(events []*Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.events = append(s.events, events...)
 	return nil
 }
 
 // Emit 单条写入（适配源审计代码 EmitCredentialSwitch 等）
 func (s *InMemorySink) Emit(_ context.Context, event Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.events = append(s.events, &event)
+	return
 }
 
 // Close 关闭
@@ -36,6 +45,8 @@ func (s *InMemorySink) Close() error { return nil }
 
 // Events 返回所有事件（测试用，返回副本）
 func (s *InMemorySink) Events() []*Event {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make([]*Event, len(s.events))
 	copy(out, s.events)
 	return out

@@ -129,7 +129,7 @@ func (h *Handler) fallbackDimPie(ctx context.Context, tenantID string, tr boardT
 
 	groupExpr, onlyFailures := fallbackDimGroupExpr(alias, dimType)
 	if onlyFailures {
-		where += ` AND (` + alias + `.success = FALSE OR COALESCE(` + alias + `.error_kind, '') <> '')`
+		where += ` AND (` + alias + `.request_status = 'failure' OR (` + alias + `.request_status = '' AND (` + alias + `.success = FALSE OR COALESCE(` + alias + `.error_kind, '') <> '')))`
 	}
 
 	creditsExpr := maas.RequestLogCreditsSQL(alias, tenantID == "" || tenantID == "default")

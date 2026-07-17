@@ -275,7 +275,7 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 	// for the same window. Two CTEs joined by credential.
 	rows, err := m.db.Query(ctx, `
 		WITH win AS (
-		    SELECT credential_id, COUNT(*) FILTER (WHERE NOT success) AS fails,
+		    SELECT credential_id, COUNT(*) FILTER (WHERE lower(COALESCE(request_status, '')) = 'failure') AS fails,
 		                  COUNT(*) AS attempts
 		    FROM request_logs
 		    WHERE ts >= now() - interval '5 minutes'

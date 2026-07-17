@@ -728,7 +728,7 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		-- Per 2026-07 partition architecture: 24-hour window query targets
 		-- request_logs_hot directly (independent hot table for the last 7 days,
 		-- migration 341, 2026-07-05).
-		LEFT JOIN (SELECT provider_id, COALESCE(SUM(CASE WHEN NOT success THEN 1 ELSE 0 END)::float8 / NULLIF(COUNT(*),0), 0) rate FROM request_logs_hot WHERE ts >= now() - interval '24 hours' GROUP BY provider_id) er ON er.provider_id = p.id
+		LEFT JOIN (SELECT provider_id, COALESCE(SUM(CASE WHEN lower(COALESCE(request_status, '')) IN ('failure', '') AND NOT success THEN 1 ELSE 0 END)::float8 / NULLIF(COUNT(*),0), 0) rate FROM request_logs_hot WHERE ts >= now() - interval '24 hours' GROUP BY provider_id) er ON er.provider_id = p.id
 		WHERE p.id = $1 AND p.tenant_id = 'default'
 	`, id).Scan(
 		&p.ID, &p.Code, &p.DisplayName, &p.CatalogCode,

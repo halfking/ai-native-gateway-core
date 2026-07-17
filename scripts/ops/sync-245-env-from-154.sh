@@ -2,29 +2,30 @@
 # 从 154 同步 245 缺失的关键 env（admin 登录等）。
 set -euo pipefail
 
-SSH_PORT="${LLM_GATEWAY_SSH_PORT:-25022}"
-SSH_KEY_FILE="${SSH_KEY_FILE:-}"
-for k in ~/.ssh/id_ed25519 ~/.ssh/56_id_rsa ~/.ssh/71_id_rsa; do
-  [[ -f "$k" ]] && SSH_KEY_FILE="$k" && break
-done
-
+SSH_PORT="${LLM_GATEWAY_SSH_PORT:-${SSH_PORT:-25022}}"
+SSH_KEY_154="${SSH_KEY_154:-${SSH_KEY_FILE:-}}"
+SSH_KEY_245="${SSH_KEY_245:-${SSH_KEY_FILE:-}}"
+[[ -n "$SSH_KEY_154" && -f "$SSH_KEY_154" ]] || { echo "ERROR: missing SSH_KEY_154" >&2; exit 1; }
+[[ -n "$SSH_KEY_245" && -f "$SSH_KEY_245" ]] || { echo "ERROR: missing SSH_KEY_245" >&2; exit 1; }
+SSH_OPTS_154=(-i "$SSH_KEY_154" -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+SSH_OPTS_245=(-i "$SSH_KEY_245" -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+SCP_OPTS_245=(-i "$SSH_KEY_245" -P "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 SSH_154="${LLM_GATEWAY_154_SSH:-root@47.97.111.154}"
 SSH_245="${LLM_GATEWAY_245_SSH:-root@8.136.114.245}"
-SSH_OPTS=(-i "$SSH_KEY_FILE" -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP="/tmp/llm-gateway-154-admin-keys.$$"
 trap 'rm -f "$TMP"' EXIT
 
 echo "[sync-245-env] 从 154 导出 admin 键..."
-ssh "${SSH_OPTS[@]}" "$SSH_154" \
+ssh "${SSH_OPTS_154[@]}" "$SSH_154" \
   "grep -E '^LLM_GATEWAY_(ADMIN_USER|ADMIN_PASSWORD|PUBLIC_URL)=' /etc/llm-gateway-go/env" >"$TMP"
 [[ -s "$TMP" ]] || { echo "ERROR: 154 未找到 ADMIN 键" >&2; exit 1; }
 
 echo "[sync-245-env] 合并到 245 .env..."
-scp -i "$SSH_KEY_FILE" -P "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+scp "${SCP_OPTS_245[@]}" \
   "$TMP" "$SSH_245:/tmp/llm-154-admin-keys.env"
-ssh "${SSH_OPTS[@]}" "$SSH_245" "python3 - <<'PY'
+ssh "${SSH_OPTS_245[@]}" "$SSH_245" "python3 - <<'PY'
 import shutil, time
 from pathlib import Path
 
@@ -75,7 +76,7 @@ echo "[sync-245-env] 同步 admin 密码到 users 表..."
 bash "$SCRIPT_DIR/sync-admin-password-from-env.sh" 245
 
 echo "[sync-245-env] 验证登录..."
-ssh "${SSH_OPTS[@]}" "$SSH_245" "python3 - <<'PY'
+ssh "${SSH_OPTS_245[@]}" "$SSH_245" "python3 - <<'PY'
 import json, urllib.request
 from pathlib import Path
 env = {}

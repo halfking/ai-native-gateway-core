@@ -377,12 +377,14 @@ const taskSummary = computed(() => {
   let ok = 0
   let fail = 0
   let pending = 0
+  let rateLimited = 0
   for (const r of rows.value) {
     if (r.request_status === 'in_progress') pending++
+    else if (r.request_status === 'rate_limited') rateLimited++
     else if (r.request_status === 'success' || r.success) ok++
     else fail++
   }
-  return { total: rows.value.length, ok, fail, pending }
+  return { total: rows.value.length, ok, fail, pending, rateLimited }
 })
 
 /** 点击脉络：优先按会话聚合（同一会话含多步请求）；无会话时按任务 ID */
@@ -1218,7 +1220,7 @@ onMounted(async () => {
             v-for="r in rows"
             :key="r.request_id + r.ts"
             class="request-log-row"
-            :class="{ 'row-failure': r.request_status === 'failure' || (!r.success && r.request_status !== 'in_progress') }"
+            :class="{ 'row-failure': r.request_status === 'failure' || (!r.success && r.request_status !== 'in_progress' && r.request_status !== 'rate_limited'), 'row-rate-limited': r.request_status === 'rate_limited' }"
             @click="showDetail(r.request_id)"
           >
             <td v-if="traceMode" class="col-seq">

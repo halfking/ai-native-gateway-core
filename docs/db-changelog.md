@@ -617,3 +617,10 @@
 | 422 | `422_models_canonical_complexity.sql` |
 | 423 | `423_approval_routing_rules_add_legacy_columns.sql` |
 
+## 2026-07-17T14:19:09Z — deploy 245 build_seq 1128 (dd2d9b81)
+
+| Migration | File |
+|-----------|------|
+| 426 | `426_task_type_centroids.sql` |
+| 427 | `427_task_type_centroids_model.sql` |
+

@@ -85,12 +85,16 @@ esac
 # 154 公网 IP 47.97.111.154 偶发抖动 — 加 fallback via 252.
 # 通过 ProxyCommand 实现: 本机 ssh → 252:25022 → 154.
 # ssh-retry 会先直连, 失败 N 次后切到 ProxyCommand 路径.
-SSH_PORT=25022
-SSH_KEY_FILE="${SSH_KEY_FILE:-}"
-for k in ~/.ssh/id_ed25519 ~/.ssh/56_id_rsa ~/.ssh/71_id_rsa; do
-  if [[ -f "$k" ]]; then SSH_KEY_FILE="$k"; break; fi
-done
-export SSH_KEY_FILE
+SSH_PORT="${LLM_GATEWAY_SSH_PORT:-${SSH_PORT:-25022}}"
+case "$TARGET" in
+  245) SSH_KEY_FILE="${SSH_KEY_245:-${SSH_KEY_FILE:-}}" ;;
+  154) SSH_KEY_FILE="${SSH_KEY_154:-${SSH_KEY_FILE:-}}" ;;
+esac
+if [[ -z "$SSH_KEY_FILE" || ! -f "$SSH_KEY_FILE" ]]; then
+  err "missing injected SSH key for target $TARGET"
+  exit 1
+fi
+export SSH_PORT SSH_KEY_FILE
 
 SSH_HOST_CACHE=()
 ssh_retry_init "$TARGET"

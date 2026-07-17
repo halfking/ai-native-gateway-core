@@ -127,10 +127,8 @@ func TestCycleQueryFiltersManualOfflineReasons(t *testing.T) {
 	if strings.Contains(cycleBody, "unavailable_reason, '') <> 'manual'") {
 		t.Errorf("cycle() still uses the old `unavailable_reason <> 'manual'` exact-match; see 2026-06-23 bug 2 fix")
 	}
-	if !strings.Contains(cycleBody, "mps.next_retry_at <= NOW()") {
-		t.Errorf("cycle() must filter by `mps.next_retry_at <= NOW()`; see 2026-06-23 bug 3 fix (dead `IS NULL OR` branch removed)")
+	if !strings.Contains(cycleBody, "mps.next_retry_at IS NULL OR mps.next_retry_at <= NOW()") {
+		t.Errorf("cycle() must include new bindings with NULL next_retry_at and due states")
 	}
-	if strings.Contains(cycleBody, "mps.next_retry_at IS NULL OR") {
-		t.Errorf("cycle() still has the dead `IS NULL OR` branch; see 2026-06-23 bug 3 fix (next_retry_at is NOT NULL in schema)")
-	}
+
 }

@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS request_logs_hot (
     provider TEXT,
     provider_id TEXT,
     upstream_model TEXT,
+    task_type TEXT,
+    origin_stage TEXT,
     status_code INTEGER,
     error_message TEXT,
     latency_ms INTEGER,

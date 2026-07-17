@@ -1763,6 +1763,10 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		return nil
 	}
 	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE IF EXISTS request_logs_hot
+		    ADD COLUMN IF NOT EXISTS task_type TEXT,
+		    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32);
+
 		-- (1) Backfill broken_confirmed → binding available=FALSE.
 		UPDATE credential_model_bindings cmb
 		SET available          = FALSE,
@@ -1794,15 +1798,22 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		LANGUAGE sql
 		STABLE
 		AS $$
-		    WITH recent AS (
-		        SELECT success
-			    FROM request_logs_hot
-		        WHERE credential_id = p_credential_id
-		          AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
-		          AND ts > NOW() - (p_window_hours || ' hours')::interval
-		        ORDER BY ts DESC
-		        LIMIT p_sample_n
-		    )
+			    WITH recent AS (
+			        SELECT success
+				    FROM request_logs_hot
+				    WHERE credential_id = p_credential_id
+				      AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
+				      AND ts > NOW() - (p_window_hours || ' hours')::interval
+				      -- Probe/self-check rows measure the health worker, not the
+				      -- business route. Legacy probe IDs are retained for old rows
+				      -- created before origin_stage/task_type was added.
+				      AND COALESCE(task_type, '') <> 'probe_triggered'
+				      AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
+				      AND request_id NOT LIKE 'probe-%'
+				    ORDER BY ts DESC
+				    LIMIT p_sample_n
+			    )
+
 		    SELECT AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END)::double precision,
 		           COUNT(*)::int
 		    FROM recent;
