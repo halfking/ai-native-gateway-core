@@ -65,3 +65,48 @@ func TestRequestLogContext_BuildFailureEntry_EmptyClientRequestID(t *testing.T) 
 		t.Fatalf("ClientRequestID must be nil when no client header was sent, got %v", *entry.ClientRequestID)
 	}
 }
+
+// TestRequestLogContext_RateLimitedStatus asserts the rate-limit vs failure
+// status split: gateway RPM/throttle rejections must record
+// request_status="rate_limited" (not "failure") so dashboards can exclude
+// them from provider error counts while still keeping them in the success-rate
+// denominator. Success stays false in both cases — the request did not
+// complete — but the status category is what separates "client was rate
+// limited" from "system error".
+func TestRequestLogContext_RateLimitedStatus(t *testing.T) {
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"minimax-m3"}`))
+
+	ctx := ch.NewRequestLogContext(r, "server-uuid-rl", time.Now())
+	ctx.Body = []byte(`{"model":"minimax-m3"}`)
+	ctx.SetClientModel("minimax-m3")
+	ctx.SetKey(&authentication.KeyInfo{ID: 1, TenantID: "default"})
+
+	// A genuine failure entry stays "failure".
+	failEntry := ctx.BuildFailureEntry("transient", "upstream transient", nil, nil)
+	if failEntry == nil || failEntry.RequestStatus == nil {
+		t.Fatal("nil failure entry / status")
+	}
+	if *failEntry.RequestStatus != "failure" {
+		t.Fatalf("BuildFailureEntry status=%q, want failure", *failEntry.RequestStatus)
+	}
+	if failEntry.Success {
+		t.Fatal("failure entry must have Success=false")
+	}
+
+	// A rate-limited entry uses the dedicated status.
+	rlEntry := ctx.buildEntry("rate_limit_exceeded", "rate limit exceeded", nil, nil, "rate_limited")
+	if rlEntry == nil || rlEntry.RequestStatus == nil {
+		t.Fatal("nil rate-limited entry / status")
+	}
+	if *rlEntry.RequestStatus != "rate_limited" {
+		t.Fatalf("rate-limited status=%q, want rate_limited", *rlEntry.RequestStatus)
+	}
+	if rlEntry.Success {
+		t.Fatal("rate-limited entry must have Success=false (request did not complete)")
+	}
+	// ErrorKind is preserved so the specific cause (rpm vs throttle) is queryable.
+	if rlEntry.ErrorKind == nil || *rlEntry.ErrorKind != "rate_limit_exceeded" {
+		t.Fatalf("ErrorKind=%v, want rate_limit_exceeded", rlEntry.ErrorKind)
+	}
+}

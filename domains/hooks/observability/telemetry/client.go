@@ -92,9 +92,10 @@ const (
 
 // Request log lifecycle status stored in request_logs.request_status.
 const (
-	RequestStatusInProgress = "in_progress"
-	RequestStatusSuccess    = "success"
-	RequestStatusFailure    = "failure"
+	RequestStatusInProgress  = "in_progress"
+	RequestStatusSuccess     = "success"
+	RequestStatusFailure     = "failure"
+	RequestStatusRateLimited = "rate_limited" // gateway rejected the client (RPM/concurrent/throttle): NOT a system error
 )
 
 type RequestLogEntry struct {

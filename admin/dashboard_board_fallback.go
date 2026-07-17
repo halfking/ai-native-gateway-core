@@ -36,7 +36,7 @@ func boardPiesAllEmpty(pies map[string]any) bool {
 func (h *Handler) fillOverviewCountsFromLogs(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {
 	logsTable, alias := boardRequestLogsFromClause()
 	where, args := boardLogsWhere(tr, alias, tenantID)
-	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
+	where += ` AND ` + alias + `.request_status IN ('success', 'failure', 'rate_limited')`
 	modelExpr := fmt.Sprintf(`COALESCE(NULLIF(%s.client_model, ''), NULLIF(%s.outbound_model, ''))`, alias, alias)
 	var logModels, logProviders int
 	err := h.db.QueryRow(ctx, fmt.Sprintf(`
@@ -59,7 +59,7 @@ func (h *Handler) fillOverviewCountsFromLogs(ctx context.Context, tenantID strin
 func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64) ([]boardTrendPoint, error) {
 	logsTable, alias := boardRequestLogsFromClause()
 	where, args := boardLogsWhere(tr, alias, tenantID)
-	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
+	where += ` AND ` + alias + `.request_status IN ('success', 'failure', 'rate_limited')`
 	if providerID > 0 {
 		where += fmt.Sprintf(" AND %s.provider_id = $%d", alias, len(args)+1)
 		args = append(args, providerID)
@@ -125,7 +125,7 @@ func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, tr boa
 func (h *Handler) fallbackDimPie(ctx context.Context, tenantID string, tr boardTimeRange, dimType string) ([]boardPieItem, error) {
 	logsTable, alias := boardRequestLogsFromClause()
 	where, args := boardLogsWhere(tr, alias, tenantID)
-	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
+	where += ` AND ` + alias + `.request_status IN ('success', 'failure', 'rate_limited')`
 
 	groupExpr, onlyFailures := fallbackDimGroupExpr(alias, dimType)
 	if onlyFailures {
@@ -192,7 +192,7 @@ func (h *Handler) fallbackErrorDrill(
 ) ([]boardPieItem, error) {
 	logsTable, alias := requestLogsFromClause(days)
 	where := alias + `.ts >= now() - ($1 * INTERVAL '1 day')`
-	where += ` AND ` + alias + `.request_status IN ('success', 'failure')`
+	where += ` AND ` + alias + `.request_status IN ('success', 'failure', 'rate_limited')`
 	where += ` AND COALESCE(` + alias + `.error_kind, '') = $2`
 	args := []any{days, errorKind}
 	if tenantID != "" {

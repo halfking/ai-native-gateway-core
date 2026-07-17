@@ -938,6 +938,25 @@ func (h *ChatHandler) serveWithExecutor(
 		logCtx.EmitFailure(errCode, errMsg, providerID, credentialID)
 		logCtx.MarkLogged()
 	}
+	// captureAndEmitRateLimited mirrors captureAndEmitFailure but records the
+	// exit as request_status="rate_limited" instead of "failure". Used by the
+	// gateway's own rate-limit / throttle rejections (RPM, per-key concurrent,
+	// throttled key) so they don't pollute provider error counts while still
+	// appearing in the dashboard denominator.
+	captureAndEmitRateLimited := func(errCode, errMsg string, providerID, credentialID *int) {
+		logCtx.SetError(errCode, errMsg)
+		logCtx.EnsureCaptured()
+		if logCtx.ClientModel == "" {
+			if len(logCtx.Body) > 0 {
+				logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
+			}
+			if logCtx.ClientModel == "" {
+				logCtx.SetClientModel("<unknown>")
+			}
+		}
+		logCtx.EmitRateLimited(errCode, errMsg, providerID, credentialID)
+		logCtx.MarkLogged()
+	}
 
 	// ── API key authentication ──────────────────────────────────────────
 	var keyInfo *authentication.KeyInfo
@@ -987,7 +1006,7 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// ── Status checks (throttled key → hard rate-limit) ────────────────
 	if keyInfo != nil && keyInfo.Status == "throttled" {
-		captureAndEmitFailure("key_throttled", "api key throttled due to anomalous usage", nil, nil)
+		captureAndEmitRateLimited("key_throttled", "api key throttled due to anomalous usage", nil, nil)
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID,
 			"Your API key has been throttled due to anomalous usage. Contact admin.",
 			"rate_limit_error", "key_throttled")
@@ -998,7 +1017,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if rlOutcome := checkGatewayRateLimit(keyInfo, h.rateLimiter); !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
-			captureAndEmitFailure("rate_limit_exceeded", "rate limit exceeded", nil, nil)
+			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
 			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
 			return
 		}

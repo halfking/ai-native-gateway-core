@@ -379,12 +379,12 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := strings.TrimSpace(queryString(r, "request_status")); v != "" {
 		switch v {
-		case "in_progress", "success", "failure":
+		case "in_progress", "success", "failure", "rate_limited":
 			clauses = append(clauses, fmt.Sprintf("(%s) = $%d", requestLogStatusExpr, argIdx))
 			args = append(args, v)
 			argIdx++
 		default:
-			writeError(w, http.StatusBadRequest, "request_status must be 'in_progress', 'success', or 'failure'")
+			writeError(w, http.StatusBadRequest, "request_status must be 'in_progress', 'success', 'failure', or 'rate_limited'")
 			return
 		}
 	} else if v := queryOptionalBool(r, "success"); v != nil {
