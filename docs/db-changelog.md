@@ -600,3 +600,20 @@
 | 422 | `422_models_canonical_complexity.sql` |
 | 423 | `423_approval_routing_rules_add_legacy_columns.sql` |
 
+## 2026-07-17T06:43:54Z — deploy 245 build_seq 1126 (5ce49a70)
+
+| Migration | File |
+|-----------|------|
+| 412 | `412_rca_ts_index.sql` |
+| 413 | `413_runtime_alert_events_ts_index.sql` |
+| 414 | `414_drop_model_probe_runs_old.sql` |
+| 415 | `415_restore_node_probe_runs.sql` |
+| 416 | `416_reconcile_node_probe_bindings.sql` |
+| 417 | `417_route_excludes_failed_node_probes.sql` |
+| 418 | `418_rearm_node_probes_after_url_fix.sql` |
+| 419 | `419_node_probe_runs_complete_fields.sql` |
+| 420 | `420_request_logs_trace_events.sql` |
+| 421 | `421_task_default_routing.sql` |
+| 422 | `422_models_canonical_complexity.sql` |
+| 423 | `423_approval_routing_rules_add_legacy_columns.sql` |
+

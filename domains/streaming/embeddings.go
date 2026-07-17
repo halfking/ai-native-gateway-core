@@ -12,6 +12,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
@@ -33,6 +34,7 @@ type EmbeddingsHandler struct {
 	upstream    *upstream.Client
 	keyVerifier *authentication.KeyVerifier
 	rateLimiter ratelimit.RPMLimiter
+	telemetry   *telemetry.Client
 	// autoIndex enables model="auto" for embeddings (22 章 §22.2).
 	// When nil, model="auto" is passed through unchanged.
 	autoIndex *autoroute.Index
@@ -47,12 +49,38 @@ func (h *EmbeddingsHandler) SetAuth(keyVerifier *authentication.KeyVerifier, rat
 	h.rateLimiter = rateLimiter
 }
 
+func (h *EmbeddingsHandler) SetTelemetry(tc *telemetry.Client) {
+	h.telemetry = tc
+}
+
 // SetAutoIndex wires the autoroute index for model="auto" resolution.
 // When set AND FeatureFlags.AutoOnEmbeddings is true, a model="auto"
 // request is resolved to the best embedding candidate via
 // RecommendByModality. Pass nil to disable.
 func (h *EmbeddingsHandler) SetAutoIndex(idx *autoroute.Index) {
 	h.autoIndex = idx
+}
+
+func (h *EmbeddingsHandler) recordRateLimited(requestID string, keyInfo *authentication.KeyInfo, model, errCode string) {
+	if h.telemetry == nil || !h.telemetry.Enabled() {
+		return
+	}
+	entry := &telemetry.RequestLogEntry{
+		Op:            telemetry.RequestLogInsert,
+		RequestID:     requestID,
+		TenantID:      "default",
+		Success:       false,
+		RequestStatus: strPtr(telemetry.RequestStatusRateLimited),
+		ErrorKind:     strPtr(errCode),
+		FailureStage:  strPtr("gateway"),
+		ClientModel:   strPtr(model),
+		RequestMode:   strPtr("embeddings"),
+	}
+	if keyInfo != nil {
+		entry.TenantID = keyInfo.TenantID
+		entry.APIKeyID = intPtr(keyInfo.ID)
+	}
+	h.telemetry.EmitRequestLogInsert(entry)
 }
 
 func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -190,12 +218,14 @@ func (h *EmbeddingsHandler) authenticate(w http.ResponseWriter, r *http.Request,
 		return nil, false
 	}
 	if keyInfo.Status == "throttled" {
+		h.recordRateLimited(requestID, keyInfo, "<unknown>", "key_throttled")
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
 		return nil, false
 	}
 	if outcome := checkGatewayRateLimit(keyInfo, h.rateLimiter); !outcome.Skipped {
 		writeRateLimitHeaders(w, outcome)
 		if outcome.Blocked {
+			h.recordRateLimited(requestID, keyInfo, "<unknown>", "rate_limit_exceeded")
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 			return nil, false
 		}

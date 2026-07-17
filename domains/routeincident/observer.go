@@ -243,7 +243,7 @@ var nonRoutingFailureKinds = map[string]struct{}{
 	// (e.g. MiniMax returns no tokens), not a routing miss. detectEmpty-
 	// StreamResponse marks these on the reqLog; without excluding them a
 	// 3-streak opens a spurious active incident and pollutes the swim lane.
-	"empty_response":        {},
+	"empty_response":          {},
 	"upstream_empty_response": {},
 }
 

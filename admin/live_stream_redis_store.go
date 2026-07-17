@@ -104,12 +104,12 @@ type liveRequestRedisPayload struct {
 	ErrorKind        *string  `json:"error_kind,omitempty"`
 	FailureStage     *string  `json:"failure_stage,omitempty"`
 	// 2026-07-13: 主动探测标记
-	IsProbe          bool     `json:"is_probe,omitempty"`
-	ProbeOrigin      string   `json:"probe_origin,omitempty"`
-	ProbeAttempt     int      `json:"probe_attempt,omitempty"`
-	ClientProfile    string   `json:"client_profile,omitempty"`
-	IdentityHash     string   `json:"identity_hash,omitempty"`
-	CreditsCharged   *int     `json:"credits_charged,omitempty"`
+	IsProbe        bool   `json:"is_probe,omitempty"`
+	ProbeOrigin    string `json:"probe_origin,omitempty"`
+	ProbeAttempt   int    `json:"probe_attempt,omitempty"`
+	ClientProfile  string `json:"client_profile,omitempty"`
+	IdentityHash   string `json:"identity_hash,omitempty"`
+	CreditsCharged *int   `json:"credits_charged,omitempty"`
 }
 
 // LiveStreamRecordRetention is the Redis TTL for request detail keys and

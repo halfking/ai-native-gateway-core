@@ -250,11 +250,11 @@ func Load() *Config {
 		EnablePreStreamKeepalive:           false, // opt-in; see LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE
 		PoolGracePeriod:                    180,   // Default: 3 minutes grace period before marking pool as dead
 		DefaultCredentialConcurrency:       20,    // 2026-06-24: 5 → 20. 每个凭据 20 个 fp_slot，更宽松避免争抢。
-EnableCredentialFpSlots:            true,
-			CredentialFpSlotActiveGateSeconds:  300,   // 5 min — 5 min 内不允许抢的"
-			CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长
-			EnableDisguise:                     false, // off by default; opt-in
-			EnableEmptyStreamGate:              true,  // 2026-07-15: ON by default; kills the 13% NIM empty-stream failure mode.
+		EnableCredentialFpSlots:            true,
+		CredentialFpSlotActiveGateSeconds:  300,   // 5 min — 5 min 内不允许抢的"
+		CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长
+		EnableDisguise:                     false, // off by default; opt-in
+		EnableEmptyStreamGate:              true,  // 2026-07-15: ON by default; kills the 13% NIM empty-stream failure mode.
 		DeployEnv:                          firstNonEmpty(os.Getenv("LLM_GATEWAY_ENV"), os.Getenv("GO_ENV"), os.Getenv("APP_ENV")),
 		DefaultLanguage:                    envOrDefault("LLM_GATEWAY_DEFAULT_LANGUAGE", "en"),
 		// WeChat Work notification settings

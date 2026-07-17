@@ -1070,6 +1070,9 @@ func main() {
 	}
 	if telemetryClient.Enabled() {
 		chatHandler.SetTelemetry(telemetryClient)
+		if embeddingsHandler != nil {
+			embeddingsHandler.SetTelemetry(telemetryClient)
+		}
 	}
 
 	// 2026-07-15: clientprofile 画像管线接通（消费 EventEmitter → ProfileWorker →
