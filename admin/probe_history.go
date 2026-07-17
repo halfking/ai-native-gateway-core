@@ -325,7 +325,7 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 			       MAX(ts) AS last_failed_at,
 			       MIN(failure_detail_code) AS sample_error_code
 			FROM request_logs
-			WHERE success = FALSE
+			WHERE lower(COALESCE(request_status, '')) = 'failure'
 			  AND error_kind IN (
 			    'model_not_found', 'quota', 'quota_periodic', 'quota_balance',
 			    'quota_permanent', 'rate_limit', 'auth', 'auth_revoked', 'upstream_down'

@@ -526,8 +526,8 @@ onUnmounted(() => {
             <td class="mono">{{ fmtTime(r.ts) }}</td>
             <td><code>{{ r.client_model || r.outbound_model || '—' }}</code></td>
             <td>
-              <span class="badge" :class="r.success ? 'badge-green' : 'badge-red'">
-                {{ r.success ? t('tenants.dashboard.statusOk') : t('tenants.dashboard.statusFail') }}
+              <span class="badge" :class="r.request_status === 'rate_limited' ? 'badge-amber' : r.success ? 'badge-green' : 'badge-red'">
+                {{ r.request_status === 'rate_limited' ? t('requests.resultRateLimited') || '限流' : r.success ? t('tenants.dashboard.statusOk') : t('tenants.dashboard.statusFail') }}
               </span>
             </td>
             <td class="num credits">{{ creditsDisplay(r.credits_charged) }}</td>

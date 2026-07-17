@@ -135,7 +135,7 @@ func buildCredentialDiagnostic(ctx context.Context, db *pgxpool.Pool, credID, mi
 	frows, err := db.Query(ctx, `
 		SELECT request_id, client_model, ts, error_kind, COALESCE(request_status::text,''), provider_id
 		FROM request_logs_hot
-		WHERE credential_id = $1 AND success = false
+		WHERE credential_id = $1 AND lower(COALESCE(request_status, '')) = 'failure'
 		  AND ts > now() - ($2 || ' minutes')::interval
 		ORDER BY ts DESC LIMIT 20
 	`, credID, fmt.Sprintf("%d", minutes))
