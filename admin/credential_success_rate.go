@@ -128,7 +128,7 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 		DELETE FROM request_logs_hot
 		WHERE credential_id = $1
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
-		  AND success = false
+		  AND lower(COALESCE(request_status, '')) = 'failure'
 		  AND ts < NOW() - INTERVAL '10 minutes'
 	`, req.CredentialID, req.RawModel)
 		if err != nil {

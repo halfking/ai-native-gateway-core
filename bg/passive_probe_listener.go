@@ -170,7 +170,7 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    AND pps.raw_model_name = COALESCE(rl.outbound_model, rl.client_model)
 		    AND pps.error_kind = rl.error_kind
 		    AND pps.last_seen_at > NOW() - INTERVAL '45 seconds'
-		WHERE rl.success = FALSE
+		WHERE rl.request_status = 'failure'
 		  AND rl.ts > NOW() - INTERVAL '5 minutes'
 		  AND rl.error_kind = ANY($1)
 		  AND rl.error_kind IS NOT NULL

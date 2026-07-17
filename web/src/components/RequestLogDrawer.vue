@@ -219,7 +219,7 @@ function statusLabel(row: RequestLogDetail): string {
     // fallback: 下划线替换为空格
     return ek.replace(/_/g, ' ')
   }
-  return row.success ? '成功' : '失败'
+  return row.request_status === 'rate_limited' ? '限流' : (row.success ? '成功' : '失败')
 }
 
 // 失败阶段标签
