@@ -48,7 +48,7 @@ describe('dashboard board tab contract', () => {
     expect(source).not.toContain('boardState.operational.value')
   })
 
-  it('opens request details locally after the trace page was replaced by a modal', async () => {
+  it('opens request details locally after the trace page was replaced by an inline panel', async () => {
     const [v2, legacy, logs] = await Promise.all([
       readViewSource('DashboardViewV2.vue'),
       readViewSource('DashboardViewLegacy.vue'),
@@ -60,9 +60,11 @@ describe('dashboard board tab contract', () => {
     expect(legacy).toContain('activeRequestId.value = id')
     expect(v2).not.toContain('/admin/request-trace')
     expect(legacy).not.toContain('/admin/request-trace')
-    // 请求日志列表的流程详情应直接挂载 modal。
+    // 请求日志列表的流程详情应直接挂载内嵌面板 (RequestTracePanel),
+    // 而非 modal/teleport;并保留旧变量名 traceRequestId 作为状态载体。
     expect(logs).toContain('traceRequestId.value = requestId')
-    expect(logs).toContain('<RequestTraceModal')
+    expect(logs).toContain('<RequestTracePanel')
+    expect(logs).not.toContain('<RequestTraceModal')
     expect(logs).not.toContain('/admin/request-trace')
   })
 })

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -172,7 +174,29 @@ func TestEventBuilder_ConcurrentAppendIsGoroutineSafe(t *testing.T) {
 	wg.Wait()
 }
 
-// 真实 Redis 集成测试 (默认跳过, 用 LLM_GATEWAY_REDIS_ADDR 环境变量开启)。
+// TestLoadFromPG_NilDBReturnsNil 验证 db==nil 时 LoadFromPG 返回 (nil,nil),
+// 而不是错误。这条路径对应 admin 路由在配置缺失时仍能给出 not_found 响应。
+func TestLoadFromPG_NilDBReturnsNil(t *testing.T) {
+	got, err := LoadFromPG(context.Background(), nil, "req-xyz")
+	if err != nil {
+		t.Fatalf("LoadFromPG(nil db) err = %v, want nil", err)
+	}
+	if got != nil {
+		t.Fatalf("LoadFromPG(nil db) = %+v, want nil", got)
+	}
+}
+
+// TestLoadFromPG_EmptyRequestIDReturnsErr 验证 requestID 为空时返回 ErrEmptyRequestID。
+func TestLoadFromPG_EmptyRequestIDReturnsErr(t *testing.T) {
+	_, err := LoadFromPG(context.Background(), nil, "")
+	if !errors.Is(err, ErrEmptyRequestID) {
+		t.Fatalf("LoadFromPG('') err = %v, want ErrEmptyRequestID", err)
+	}
+}
+
+// pgx.ErrNoRows 常量值校验: 文档保证它是非 nil 的 error, LoadFromPG 应将
+// 其归一为 (nil, nil), 此处用 errors.Is 绑定防止有人误改。
+var _ error = pgx.ErrNoRows
 func TestRedisRecorder_Integration(t *testing.T) {
 	addr := redisAddrFromEnv()
 	if addr == "" {

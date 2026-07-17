@@ -8,6 +8,7 @@ import errors from './errors'
 import users from './users'
 import keys from './keys'
 import requests from './requests'
+import trace from './trace'
 import credentialMonitor from './credentialMonitor'
 import providers from './providers'
 import landing from './landing'
@@ -70,6 +71,7 @@ export default {
   users,
   keys,
   requests,
+  trace,
   credentialMonitor,
   providers,
   landing,

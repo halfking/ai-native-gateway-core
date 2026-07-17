@@ -1,5 +1,5 @@
 // trace.ts — 2026-07-17
-// 请求链路追踪 API 客户端 (用于 RequestTraceModal)。
+// 请求链路追踪 API 客户端 (用于 RequestTracePanel)。
 //
 // 数据源:
 //   1) Redis (request:trace:{id}, 进行中或刚完成 10min 内)

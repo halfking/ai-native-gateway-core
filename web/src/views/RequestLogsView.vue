@@ -19,7 +19,7 @@ import {
   type SessionSummaryToMemoraResponse,
 } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
-import RequestTraceModal from '../components/RequestTraceModal.vue'
+import RequestTracePanel from '../components/RequestTracePanel.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
 const rows = ref<RequestLogRow[]>([])
@@ -1401,6 +1401,14 @@ onMounted(async () => {
             </div>
           </div>
 
+          <!-- 2026-07-17: 流程详情内嵌面板 — 在「请求详情」与「Tabs/按钮」之间展开一层,
+               与 RequestLogDrawer 一致;不再使用 modal/teleport。 -->
+          <RequestTracePanel
+            v-if="traceRequestId"
+            :request-id="traceRequestId"
+            @close="traceRequestId = null"
+          />
+
           <div class="drawer-section">
             <div style="display:flex;gap:8px;margin-bottom:12px">
               <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'request' }" @click="detailTab = 'request'">请求消息</button>
@@ -1423,6 +1431,17 @@ onMounted(async () => {
               >
                 📎 {{ t('requests.detail_extra.attachmentsTab') }}
                 <span class="outbound-diff-badge">{{ detailAttachments().length }}</span>
+              </button>
+              <!-- 2026-07-17: 流程详情按钮 — 切换内嵌面板 (RequestTracePanel)。
+                   重复点击可关闭。super_admin 限定。 -->
+              <button
+                class="btn btn-sm btn-trace"
+                type="button"
+                :class="{ 'btn-trace-active': traceRequestId === detail.request_id }"
+                :title="t('trace.modal.tooltip')"
+                @click.stop="traceRequestId = (traceRequestId === detail.request_id ? null : detail.request_id)"
+              >
+                {{ traceRequestId === detail.request_id ? '✕ ' + t('trace.modal.close') : t('trace.modal.openButton') }}
               </button>
             </div>
           </div>
@@ -1557,14 +1576,8 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- 2026-07-17: 流程详情入口直接挂载现有 modal，避免失效路由。 -->
-    <Teleport to="body">
-      <RequestTraceModal
-        v-if="traceRequestId"
-        :request-id="traceRequestId"
-        @close="traceRequestId = null"
-      />
-    </Teleport>
+    <!-- 2026-07-17: 流程详情面板改为内嵌, 不再使用 modal/teleport。
+         RequestTracePanel 已在抽屉「请求详情」与「Tabs」之间展开。 -->
   </div>
 </template>
 
@@ -1682,6 +1695,22 @@ onMounted(async () => {
 .trace-action-btn:hover {
   background: rgba(99, 102, 241, 0.18);
   border-color: var(--accent, #6366f1);
+}
+
+/* 2026-07-17: 详情抽屉内的流程详情按钮 — 暗色调, 与 btn-trace 一致。 */
+.btn-trace {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border, #30363d);
+  color: var(--text, #e6edf3);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.btn-trace:hover,
+.btn-trace-active {
+  border-color: var(--accent, #6366f1);
+  color: var(--accent-h, #818cf8);
 }
 .tenant-badge {
   display: inline-flex;

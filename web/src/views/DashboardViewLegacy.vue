@@ -198,7 +198,7 @@ const discoveryStatus = dashboardData?.discoveryStatus || ref(null)
 const activeRequestId = ref<string | null>(null)
 function openRequestDetail(id: string) {
   // 2026-07-17: 实时请求流点击打开原始请求详情抽屉。
-  // 抽屉内的「流程详情」按钮负责打开 RequestTraceModal，避免依赖已删除的独立 trace 路由。
+  // 抽屉内的「流程详情」按钮负责打开内嵌面板 RequestTracePanel，避免依赖已删除的独立 trace 路由。
   activeRequestId.value = id
 }
 function closeRequestDrawer() {

@@ -19,7 +19,7 @@ import {
   type RequestLogDetail,
   type AttachmentInfo,
 } from '../api'
-import RequestTraceModal from './RequestTraceModal.vue'
+import RequestTracePanel from './RequestTracePanel.vue'
 
 const props = defineProps<{
   requestId: string | null
@@ -34,8 +34,9 @@ const detail = ref<RequestLogDetail | null>(null)
 const error = ref('')
 const tab = ref<'request' | 'response' | 'attachments'>('request')
 
-// 2026-07-17: 流程详情 Modal - 在原"原始请求详情"内点击按钮弹出,
-//  显示该请求的端到端链路 + 失败快照 + AI 提示词生成器。
+// 2026-07-17: 流程详情 inline panel - 在"原始请求详情"内点击按钮,
+//  在「请求详情」与「Tabs/按钮」之间展开一层, 显示该请求的端到端链路 +
+// 失败快照 + AI 提示词生成器 (不再弹出 modal)。
 const showTrace = ref(false)
 
 // 2026-07-02: 附件 lightbox 状态。Teleport 到 body 后由 handleKeydown 全局监听 ESC。
@@ -303,6 +304,14 @@ function probeAttempt(row: RequestLogDetail | null): number | null {
           </div>
         </div>
 
+        <!-- 2026-07-17: 流程详情内嵌面板 — 直接在「请求详情」与「Tabs/按钮」之间
+             展开一层 (不再弹窗), 暗色背景不抢抽屉主视觉。 -->
+        <RequestTracePanel
+          v-if="showTrace"
+          :request-id="detail?.request_id ?? props.requestId"
+          @close="showTrace = false"
+        />
+
         <div class="drawer-section">
           <div class="tab-row">
             <button class="btn btn-sm" type="button" :class="{ 'btn-primary': tab === 'request' }" @click="tab = 'request'">请求消息</button>
@@ -319,16 +328,17 @@ function probeAttempt(row: RequestLogDetail | null): number | null {
               {{ t('requests.detail_extra.attachmentsTab') }}
               <span class="tab-badge">{{ detailAttachments().length }}</span>
             </button>
-            <!-- 2026-07-17: 流程详情按钮 — 弹出 RequestTraceModal,
-                 显示端到端链路 + 失败快照 + AI 提示词。super_admin 限定。
+            <!-- 2026-07-17: 流程详情按钮 — 展开 RequestTracePanel (内嵌面板),
+                 在「请求详情」与「Tabs」之间显示端到端链路 + 失败快照 + AI 提示词。
+                 不再弹窗, 避免被亮色块 modal 抢戏;super_admin 限定,
                  开启与否不依赖 detail 字段, 因此即使 attachments=0 也显示。 -->
             <button
               class="btn btn-sm btn-trace"
               type="button"
-              @click="showTrace = true"
+              @click="showTrace = !showTrace"
               :title="t('trace.modal.tooltip')"
             >
-              {{ t('trace.modal.openButton') }}
+              {{ showTrace ? '✕ ' + t('trace.modal.close') : t('trace.modal.openButton') }}
             </button>
           </div>
         </div>
@@ -441,15 +451,8 @@ function probeAttempt(row: RequestLogDetail | null): number | null {
         </div>
       </Teleport>
 
-      <!-- 2026-07-17: 流程详情 Modal。Teleport 到 body 避免被抽屉裁剪。
-           点击遮罩或右上关闭按钮关闭,ESC 由 modal 内部处理。 -->
-      <Teleport to="body">
-        <RequestTraceModal
-          v-if="showTrace"
-          :request-id="detail?.request_id ?? props.requestId"
-          @close="showTrace = false"
-        />
-      </Teleport>
+      <!-- 2026-07-17: 流程详情面板改为内嵌, 不再使用 Teleport modal。
+           RequestTracePanel 已在抽屉「请求详情」与「Tabs」之间展开。 -->
     </div>
   </div>
 </template>
@@ -491,19 +494,20 @@ function probeAttempt(row: RequestLogDetail | null): number | null {
   font-weight: 600;
 }
 .tab-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; flex-wrap: wrap; }
+/* 2026-07-17: 流程详情按钮 — 暗色调, 与全局 btn-ghost 风格一致,
+   hover 时轻微 accent 高亮, 但不引入亮色块背景。 */
 .btn-trace {
   margin-left: auto;
-  background: var(--bg-muted, #f3f4f6);
-  border: 1px solid var(--border-color, #e5e7eb);
-  color: var(--text-default, #1f2937);
+  background: transparent;
+  border: 1px solid var(--border, #30363d);
+  color: var(--text, #e6edf3);
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
 .btn-trace:hover {
-  background: var(--accent-bg, #dbeafe);
-  border-color: var(--accent, #3b82f6);
-  color: var(--accent, #1d4ed8);
+  border-color: var(--accent, #6366f1);
+  color: var(--accent-h, #818cf8);
 }
 .tab-badge {
   display: inline-block;
