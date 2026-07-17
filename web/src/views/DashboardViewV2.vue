@@ -3,7 +3,6 @@
 
 import { ref, computed, inject, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import StatsDrawer from '../components/StatsDrawer.vue'
@@ -17,7 +16,6 @@ import type { DashboardTabId } from './DashboardView.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
 const { t } = useI18n()
-const router = useRouter()
 
 const boardState = inject<{
   board: Ref<BoardPayload | null>
@@ -62,14 +60,9 @@ const tenantLabel = computed(() => {
 })
 
 function openRequestDetail(id: string) {
-  // 2026-07-17: 实时请求流点击直接跳到请求链路追踪页（super_admin 限定路由）。
-  // 旧行为是打开 RequestLogDrawer 展示请求/响应详情；现在改为跳转 trace 页，
-  // 用户可以在那里查看完整生命周期、AI 提示词等。仅对 super_admin 可见。
-  if (isSuperAdmin()) {
-    router.push({ path: '/admin/request-trace', query: { requestId: id } })
-  } else {
-    activeRequestId.value = id
-  }
+  // 2026-07-17: 实时请求流点击打开原始请求详情抽屉。
+  // 抽屉内的「流程详情」按钮负责打开 RequestTraceModal，避免依赖已删除的独立 trace 路由。
+  activeRequestId.value = id
 }
 
 function closeRequestDrawer() {
