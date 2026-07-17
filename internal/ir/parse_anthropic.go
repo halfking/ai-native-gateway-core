@@ -361,15 +361,14 @@ func parseAnthropicContentBlocks(blocks []any) ([]ContentBlock, error) {
 				IsError:   isError,
 			}
 
-		case "image":
-			img := parseAnthropicImageBlock(blockMap)
-			irBlock.Image = img
+			case "image":
+				img := parseAnthropicImageBlock(blockMap)
+				irBlock.Image = img
 
-		case "document":
-			raw, _ := json.Marshal(blockMap)
-			irBlock.RawContent = string(raw)
+			case "document":
+				irBlock.Document = parseAnthropicDocumentBlock(blockMap)
 
-		case "thinking":
+			case "thinking":
 			thinking, _ := blockMap["thinking"].(string)
 			sig, _ := blockMap["signature"].(string)
 			irBlock.Thinking = &ThinkingBlock{Thinking: thinking, Signature: sig}
@@ -448,12 +447,11 @@ func parseAnthropicContentBlock(blockMap map[string]any) *ContentBlock {
 			}
 		}
 		irBlock.ToolResult = &ToolResult{ToolUseID: toolUseID, Content: contentBlocks, IsError: isError}
-	case "image":
-		irBlock.Image = parseAnthropicImageBlock(blockMap)
-	case "document":
-		raw, _ := json.Marshal(blockMap)
-		irBlock.RawContent = string(raw)
-	case "thinking":
+		case "image":
+			irBlock.Image = parseAnthropicImageBlock(blockMap)
+		case "document":
+			irBlock.Document = parseAnthropicDocumentBlock(blockMap)
+		case "thinking":
 		if thinking, ok := blockMap["thinking"].(string); ok {
 			sig, _ := blockMap["signature"].(string)
 			irBlock.Thinking = &ThinkingBlock{Thinking: thinking, Signature: sig}
@@ -479,6 +477,31 @@ func parseAnthropicImageBlock(block map[string]any) *ImageSource {
 	}
 
 	return img
+}
+
+// parseAnthropicDocumentBlock parses an Anthropic document content block.
+func parseAnthropicDocumentBlock(block map[string]any) *DocumentBlock {
+	doc := &DocumentBlock{}
+
+	if title, ok := block["title"].(string); ok {
+		doc.Title = title
+	}
+	if context, ok := block["context"].(string); ok {
+		doc.Context = context
+	}
+
+	if source, ok := block["source"].(map[string]any); ok {
+		doc.Source = &DocumentSource{}
+		doc.Source.Type, _ = source["type"].(string)
+		doc.Source.MediaType, _ = source["media_type"].(string)
+		doc.Source.Data, _ = source["data"].(string)
+		if url, ok := source["url"].(string); ok {
+			doc.Source.Data = url // URL stored in Data field
+		}
+		doc.MIMEType = doc.Source.MediaType
+	}
+
+	return doc
 }
 
 // parseAnthropicTools parses Anthropic tool definitions into IR ToolDefinition.
