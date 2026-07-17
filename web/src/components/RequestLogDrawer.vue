@@ -286,7 +286,7 @@ function probeAttempt(row: RequestLogDetail | null): number | null {
             <span><strong>模型:</strong> {{ detail.client_model ?? '—' }}</span>
             <span><strong>出站:</strong> {{ outboundModelDisplay(detail) }}</span>
             <span><strong>状态:</strong>
-              <span :style="{ color: detail.success ? 'var(--success)' : 'var(--danger)' }">
+              <span :style="{ color: detail.request_status === 'rate_limited' ? 'var(--warning)' : detail.success ? 'var(--success)' : 'var(--danger)' }">
                 {{ detail.success ? '成功' : statusLabel(detail) }}
               </span>
             </span>

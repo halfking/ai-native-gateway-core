@@ -132,7 +132,7 @@ export function applyLiveRequestToBoard(
   pies.providers = bumpPieItem(pies.providers ?? [], pieKey(req.provider_code), pieDelta)
   pies.tenants = bumpPieItem(pies.tenants ?? [], pieKey(req.tenant_id), pieDelta)
   pies.identity_hashes = bumpPieItem(pies.identity_hashes ?? [], pieKey(req.identity_hash ?? undefined), pieDelta)
-  if (!success) {
+  if (!success && req.status !== 'rate_limited') {
     pies.errors = bumpPieItem(pies.errors ?? [], pieKey(req.error_kind ?? undefined), pieDelta)
   }
 
