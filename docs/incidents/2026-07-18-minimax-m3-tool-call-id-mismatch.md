@@ -2,11 +2,11 @@
 
 ## Summary
 
-**Date**: 2026-07-18 01:01:54 - 02:21:00 (UTC+8)  
-**Severity**: P1 (Production outage for minimax-m3 requests with tool calls)  
-**Duration**: ~80 minutes (detection to fix deployment)  
-**Impact**: All minimax-m3 requests containing orphan tool messages failed with 503 after 90s timeout  
-**Root Cause**: `applyInlineValidation` function defined but never called in legacy routing path  
+**Date**: 2026-07-18 01:01:54 - 02:21:00 (UTC+8)
+**Severity**: P1 (Production outage for minimax-m3 requests with tool calls)
+**Duration**: ~80 minutes (detection to fix deployment)
+**Impact**: All minimax-m3 requests containing orphan tool messages failed with 503 after 90s timeout
+**Root Cause**: `applyInlineValidation` function defined but never called in legacy routing path
 
 ## Timeline (UTC+8)
 
@@ -237,11 +237,11 @@ The script synthesizes 3 request variants:
 2. **malicious_orphan_tail**: Valid tool_calls + tool_result, followed by orphan tool_result at tail
 3. **malicious_parallel_orphan**: tool_result with call_id not in tool_calls array
 
-Before fix: #2 and #3 triggered 90s timeout → 503  
+Before fix: #2 and #3 triggered 90s timeout → 503
 After fix: #2 and #3 sanitized → 200
 
 ---
 
-**Report prepared by**: ACC Agent (oncall 2026-07-18)  
-**Reviewed by**: TBD  
+**Report prepared by**: ACC Agent (oncall 2026-07-18)
+**Reviewed by**: TBD
 **Status**: RESOLVED
