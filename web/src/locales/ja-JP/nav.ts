@@ -25,6 +25,7 @@ export default {
     pricing: "コスト価格",
     modelPricing: "価格管理",
     freePool: "無料リソース",
+    routingDefaults: "Routing Defaults",
     tenants: "テナント管理",
     users: "ユーザー管理",
     keys: "API キー",

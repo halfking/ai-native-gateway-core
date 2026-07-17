@@ -86,6 +86,7 @@ const (
 var AllTaskTypes = []TaskType{
 	TaskChat, TaskReasoning, TaskCode, TaskAgent,
 	TaskCreative, TaskLongContext, TaskVision, TaskFunctionCall,
+	TaskCodeAudit, TaskIntentClassification,
 }
 
 // ClassificationSignals is the extracted request fingerprint fed into

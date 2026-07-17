@@ -2257,6 +2257,15 @@ func main() {
 			// runs on every decision.
 			decider.SetOverrideStore(overrideStore)
 
+			defaultRoutingStore := autoroute.NewDefaultRoutingStore(dbConn.Pool())
+			if err := defaultRoutingStore.Reload(context.Background()); err != nil {
+				slog.Warn("default routing store initial reload failed", "error", err)
+			}
+			defaultRoutingRefresher := bg.NewDefaultRoutingStoreRefresher(dbConn.Pool(), defaultRoutingStore)
+			defaultRoutingRefresher.Start(context.Background())
+			defer func() { defaultRoutingRefresher.Stop() }()
+			decider.SetDefaultRoutingStore(defaultRoutingStore)
+
 			// v2.2 (P8.8): AuditTrimmer caps growth of the two
 			// audit tables (routing_overrides_audit from P7.9
 			// trigger, routing_audit_log from P7.9.1 app-level

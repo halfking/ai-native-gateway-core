@@ -28,6 +28,7 @@ export default {
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',
+    routingDefaults: 'Routing Defaults',
     tenants: 'Tenant Management',
     users: 'User Management',
     keys: 'API Keys',
