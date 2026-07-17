@@ -225,6 +225,7 @@ interface RequestLog {
   ts: string
   request_id: string
   success: boolean
+  request_status: 'in_progress' | 'success' | 'failure' | 'rate_limited'
   latency_ms: number | null
   error_kind: string | null
   credential_id: number | null
