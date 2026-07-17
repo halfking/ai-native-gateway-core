@@ -293,6 +293,24 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	pipe.Set(ctx, liveStreamRequestDetailKey(tenantID, req.RequestID), data, liveStreamTTL)
 	pipe.Set(ctx, liveStreamGlobalRequestDetailKey(req.RequestID), data, liveStreamTTL)
 
+	// Remove stale idle markers for the same lane — when a lane that
+	// previously had an idle marker becomes active again, its idle
+	// marker must not persist in the queue (otherwise the next delta
+	// would still include the idle tile alongside real requests).
+	modelKey := normalizeModelKey(emptyAs(req.CanonicalName, req.Model))
+	addIdleRemoval := func(dim, val string) {
+		if val == "" {
+			return
+		}
+		pipe.ZRem(ctx, liveStreamMainKey, idleMarkerRequestID("", dim, val))
+		if tenantID != "" {
+			pipe.ZRem(ctx, tenantLiveStreamKey(tenantID, "main"), idleMarkerRequestID(tenantID, dim, val))
+		}
+	}
+	addIdleRemoval("vendor", req.ModelCategory)
+	addIdleRemoval("provider", req.ProviderCode)
+	addIdleRemoval("model", modelKey)
+
 	_, err = pipe.Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("redis pipeline exec failed: request_id=%s tenant_id=%s model=%s provider=%s category=%s queue_count=%d: %w", req.RequestID, tenantID, req.Model, req.ProviderCode, req.ModelCategory, len(queueKeys), err)
@@ -1049,15 +1067,20 @@ func idleMarkerQueueKeys(tenantID, dimension, dimensionKey string) []string {
 	return []string{tenantLiveStreamKey(normalizeLiveStreamTenant(tenantID), "main")}
 }
 
-func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time) LiveRequest {
-	// Stable request_id per lane so each idle tick updates the same tile
-	// (ZADD member) instead of appending a new idle row.
+// idleMarkerRequestID returns the stable request_id for an idle marker tile.
+// The same lane always produces the same request_id so each idle tick
+// updates the same tile (ZADD member) instead of appending a new row.
+func idleMarkerRequestID(tenantID, dimension, key string) string {
 	scope := "global"
 	if tenantID != "" {
 		scope = "t-" + tenantID
 	}
 	safeKey := strings.NewReplacer(":", "_", "/", "_").Replace(key)
-	requestID := fmt.Sprintf("idle-%s-%s-%s", scope, dimension, safeKey)
+	return fmt.Sprintf("idle-%s-%s-%s", scope, dimension, safeKey)
+}
+
+func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time) LiveRequest {
+	requestID := idleMarkerRequestID(tenantID, dimension, key)
 
 	errKind := idleMarkerErrorKind
 	failStage := idleMarkerFailureStage
