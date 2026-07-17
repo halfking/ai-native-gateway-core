@@ -13,6 +13,9 @@ import (
 //
 // 通过 Feature Flag 控制是否启用。
 func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType, sessionID string) (*Decision, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// 类型断言：获取具体的 *Index 类型以访问 V2 方法
 	idx, ok := d.index.(*Index)
 	if !ok {
@@ -38,7 +41,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 						"cached_model", cached.ChosenModel,
 						"task_type", cached.TaskType,
 					)
-					return &Decision{
+					decision := &Decision{
 						ChosenModel:        cached.ChosenModel,
 						ChosenCredentialID: cached.CredentialID,
 						ChosenRawModel:     cached.ChosenModel,
@@ -50,7 +53,9 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 						EnabledFeatures:    enabledFeatures,
 						CacheReused:        true,
 						DecidedAt:          time.Now(),
-					}, nil
+					}
+					d.populateShadow(ctx, sigs, decision)
+					return decision, nil
 				} else {
 					// 可用性校验失败，清除缓存并重新决策
 					d.intentCache.Invalidate(sessionID)

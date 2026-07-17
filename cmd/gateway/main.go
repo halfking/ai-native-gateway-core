@@ -2207,19 +2207,35 @@ func main() {
 			decider.SetTuningStore(tuningStore)
 			if flags := autoroute.GetFeatureFlags(); flags != nil && flags.AutoEmbeddingRoute {
 				analysisBaseURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ANALYSIS_BASE_URL"))
+				if analysisBaseURL == "" {
+					analysisBaseURL = strings.TrimSpace(os.Getenv("LLM_ANALYSIS_BASE_URL"))
+				}
 				analysisAPIKey := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ANALYSIS_API_KEY"))
+				if analysisAPIKey == "" {
+					analysisAPIKey = strings.TrimSpace(os.Getenv("LLM_ANALYSIS_API_KEY"))
+				}
 				analysisModel := strings.TrimSpace(os.Getenv("LLM_GATEWAY_EMBEDDING_MODEL"))
 				if analysisModel == "" {
 					analysisModel = strings.TrimSpace(os.Getenv("LLM_GATEWAY_SA_MODEL_EMBEDDING"))
 				}
-				if analysisModel == "" {
+				if analysisModel == "" || analysisModel == "auto" {
+					analysisModel = analysis.NewLLMStageConfig(nil).ModelFor(analysis.StageEmbedding)
+				}
+				if analysisModel == "" || analysisModel == "auto" {
 					analysisModel = "text-embedding-3-small"
 				}
-				oc := analysis.NewOpenAIClientWithNetworkPolicy(analysisBaseURL, analysisAPIKey, 10*time.Second, false)
-				embedClf := autoroute.NewEmbeddingClassifier(dbConn.Pool(), &embedAdapter{oc: oc, model: analysisModel}, analysisModel, 1024)
-				decider.SetShadowClassifier(embedClf)
-				decider.SetShadowSampleRate(0.01)
-				slog.Info("autoroute: embedding shadow enabled", "sample_rate", 0.01, "model", analysisModel)
+				allowInsecureLocal := os.Getenv("LLM_GATEWAY_ANALYSIS_ALLOW_INSECURE_LOCAL") == "true"
+				if analysisBaseURL == "" || analysisAPIKey == "" {
+					slog.Warn("autoroute: embedding shadow disabled, analysis client is not configured")
+				} else if validatedURL, validateErr := validateAnalysisEndpoint(analysisBaseURL, allowInsecureLocal); validateErr != nil {
+					slog.Warn("autoroute: embedding shadow disabled, analysis endpoint rejected", "error", validateErr)
+				} else {
+					oc := analysis.NewOpenAIClientWithNetworkPolicy(validatedURL, analysisAPIKey, 10*time.Second, allowInsecureLocal)
+					embedClf := autoroute.NewEmbeddingClassifier(dbConn.Pool(), &embedAdapter{oc: oc, model: analysisModel}, analysisModel, 1024)
+					decider.SetShadowClassifier(embedClf)
+					decider.SetShadowSampleRate(0.01)
+					slog.Info("autoroute: embedding shadow enabled", "sample_rate", 0.01, "model", analysisModel, "base_url", validatedURL)
+				}
 			}
 			// v2.1: Score() also reads profile weights from tuningStore.
 			autoroute.SetTuningStore(tuningStore)

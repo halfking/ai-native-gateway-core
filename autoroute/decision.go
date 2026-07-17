@@ -93,10 +93,12 @@ type IndexAccessor interface {
 // All inputs are read-only after construction (except the index, which
 // is refreshed by bg/auto_index_refresher.go).
 type Decider struct {
-	classifier          Classifier           // heuristic
-	fallback            Classifier           // optional LLM
-	shadowClassifier    Classifier           // optional embedding shadow
-	shadowSampleRate    float64              // sampled fraction, default 1%
+	classifier          Classifier    // heuristic
+	fallback            Classifier    // optional LLM
+	shadowClassifier    Classifier    // optional embedding shadow
+	shadowSampleRate    float64       // sampled fraction, default 1%
+	shadowSlots         chan struct{} // bounds classifiers that ignore cancellation
+	shadowMu            sync.RWMutex
 	index               IndexAccessor        // candidate pool
 	profileStore        ProfileStore         // per-API-Key sticky profile
 	intentCache         *SessionIntentCache  // per-session intent cache (v2.0.4)
@@ -146,6 +148,7 @@ func NewDecider(classifier Classifier, fallback Classifier, index IndexAccessor,
 		DefaultProfile:         ProfileSmart,
 		LLMConfidenceThreshold: 0.7,
 		shadowSampleRate:       0.01,
+		shadowSlots:            make(chan struct{}, 32),
 		StickyTTL:              30 * time.Minute,
 		IntentCacheTTL:         10 * time.Minute,
 		TopN:                   3,
@@ -179,7 +182,9 @@ func (d *Decider) SetDefaultRoutingStore(store *DefaultRoutingStore) {
 // SetShadowClassifier wires the optional embedding classifier used for
 // sampled observability. It never changes the primary routing result.
 func (d *Decider) SetShadowClassifier(c Classifier) {
+	d.shadowMu.Lock()
 	d.shadowClassifier = c
+	d.shadowMu.Unlock()
 }
 
 // SetShadowSampleRate configures the fraction of requests sent to shadow.
@@ -190,7 +195,9 @@ func (d *Decider) SetShadowSampleRate(rate float64) {
 	if rate > 1 {
 		rate = 1
 	}
+	d.shadowMu.Lock()
 	d.shadowSampleRate = rate
+	d.shadowMu.Unlock()
 }
 
 // SetTenantResolver wires the apiKeyID -> tenantID resolver used by Decide
@@ -232,6 +239,9 @@ func (d *Decider) effectiveLLMThreshold() float64 {
 //   - Caches intent for sessionID (10min TTL, best-effort)
 //   - Returns Decision including the chosen model + top-N candidates
 func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType, sessionID string) (*Decision, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Step 0: check session intent cache (skip if no sessionID or cache disabled)
 	if sessionID != "" && d.intentCache != nil {
 		if cached, ok := d.intentCache.Get(sessionID); ok {
@@ -239,7 +249,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 			cached.HitCount++
 			d.intentCache.Put(sessionID, cached)
 			if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
-				return &Decision{
+				decision := &Decision{
 					ChosenModel:        cached.ChosenModel,
 					ChosenCredentialID: cached.CredentialID,
 					ChosenRawModel:     cached.ChosenModel,
@@ -250,7 +260,9 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 					Reason:             "reused session intent (within " + d.IntentCacheTTL.String() + " TTL)",
 					DecidedAt:          time.Now(),
 					RoutingSource:      "session_cache",
-				}, nil
+				}
+				d.populateShadow(ctx, sigs, decision)
+				return decision, nil
 			}
 		}
 	}
@@ -344,15 +356,39 @@ type shadowResult struct {
 }
 
 func (d *Decider) populateShadow(ctx context.Context, sigs ClassificationSignals, decision *Decision) {
-	if d.shadowClassifier == nil || d.shadowSampleRate <= 0 || randomFloat64() >= d.shadowSampleRate {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	d.shadowMu.RLock()
+	classifier := d.shadowClassifier
+	rate := d.shadowSampleRate
+	slots := d.shadowSlots
+	d.shadowMu.RUnlock()
+	if classifier == nil || rate <= 0 || randomFloat64() >= rate {
 		return
 	}
+	if slots == nil {
+		d.shadowMu.Lock()
+		if d.shadowSlots == nil {
+			d.shadowSlots = make(chan struct{}, 32)
+		}
+		slots = d.shadowSlots
+		d.shadowMu.Unlock()
+	}
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	default:
+		slog.Warn("autoroute: embedding shadow capacity exhausted")
+		return
+	}
+
 	shadowCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 	result := make(chan shadowResult, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		if embedding, ok := d.shadowClassifier.(*EmbeddingClassifier); ok {
+		if embedding, ok := classifier.(*EmbeddingClassifier); ok {
 			classification, vector, err := embedding.ClassifyWithVector(shadowCtx, sigs)
 			if err != nil {
 				errCh <- err
@@ -361,7 +397,7 @@ func (d *Decider) populateShadow(ctx context.Context, sigs ClassificationSignals
 			result <- shadowResult{classification: classification, vector: vector}
 			return
 		}
-		classification, err := d.shadowClassifier.Classify(shadowCtx, sigs)
+		classification, err := classifier.Classify(shadowCtx, sigs)
 		if err != nil {
 			errCh <- err
 			return
@@ -378,7 +414,7 @@ func (d *Decider) populateShadow(ctx context.Context, sigs ClassificationSignals
 		decision.EmbeddingShadowTask = string(shadow.classification.Primary)
 		decision.EmbeddingShadowSimilarity = shadow.classification.Confidence
 		if len(shadow.vector) > 0 {
-			if embedding, ok := d.shadowClassifier.(*EmbeddingClassifier); ok {
+			if embedding, ok := classifier.(*EmbeddingClassifier); ok {
 				go func() {
 					updateCtx, updateCancel := context.WithTimeout(context.Background(), 2*time.Second)
 					defer updateCancel()
