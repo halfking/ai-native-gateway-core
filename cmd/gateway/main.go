@@ -1965,6 +1965,7 @@ func main() {
 				// backoff, direct + gateway two rounds.
 				nodeProbe := bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
 				nodeProbe.SetStateObserver(stateManager)
+				nodeProbe.SetStateProvider(stateManager)
 				nodeProbe.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
 				nodeProbe.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 				// 2026-07-17: 同步探测 hold 模式开关。env LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE
