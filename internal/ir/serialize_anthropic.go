@@ -44,7 +44,7 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 	}
 
 	// Messages
-	messages := serializeAnthropicMessages(req, req.TargetProvider)
+	messages := serializeAnthropicMessages(req, req.TargetProvider, req.Model)
 	if len(messages) > 0 {
 		out["messages"] = messages
 	}
@@ -52,7 +52,7 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 	// Validate tool_call integrity before sending to upstream
 	// Skip validation for single-message requests to avoid breaking unit tests
 	if len(messages) > 2 {
-		if err := validateAnthropicToolCallIntegrity(messages, req.TargetProvider); err != nil {
+		if err := validateAnthropicToolCallIntegrity(messages, req.TargetProvider, req.Model); err != nil {
 			return nil, fmt.Errorf("tool_call validation failed: %w", err)
 		}
 	}
@@ -201,7 +201,7 @@ func serializeAnthropicSystem(system *SystemPrompt) any {
 	if len(system.Parts) > 0 {
 		parts := make([]map[string]any, 0, len(system.Parts))
 		for _, part := range system.Parts {
-			parts = append(parts, serializeAnthropicContentBlock(part, ""))
+			parts = append(parts, serializeAnthropicContentBlock(part, "", ""))
 		}
 		return parts
 	}
@@ -243,11 +243,15 @@ func serializeAnthropicSystem(system *SystemPrompt) any {
 // serializeAnthropicMessages converts IR messages to Anthropic format.
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
-func serializeAnthropicMessages(req *InternalRequest, targetProvider string) []map[string]any {
+// serializeAnthropicMessages converts IR messages to Anthropic format.
+// targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
+// 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
+// modelName is used to detect relay scenarios (e.g., NVIDIA forwarding to MiniMax).
+func serializeAnthropicMessages(req *InternalRequest, targetProvider string, modelName string) []map[string]any {
 	messages := make([]map[string]any, 0, len(req.Messages))
 
 	for _, msg := range req.Messages {
-		messages = append(messages, serializeAnthropicMessage(msg, targetProvider))
+		messages = append(messages, serializeAnthropicMessage(msg, targetProvider, modelName))
 	}
 
 	return messages
@@ -256,7 +260,7 @@ func serializeAnthropicMessages(req *InternalRequest, targetProvider string) []m
 // serializeAnthropicMessage converts a single IR Message to Anthropic format.
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
-func serializeAnthropicMessage(msg Message, targetProvider string) map[string]any {
+func serializeAnthropicMessage(msg Message, targetProvider string, modelName string) map[string]any {
 	// Tool role messages: convert to user+tool_result format (Anthropic convention)
 	if msg.Role == "tool" {
 		out := map[string]any{
@@ -269,7 +273,8 @@ func serializeAnthropicMessage(msg Message, targetProvider string) map[string]an
 			// Provider-specific field name mapping: some providers (e.g., MiniMax)
 			// use "tool_call_id" while standard Anthropic uses "tool_use_id".
 			// Use the mapping table to ensure compatibility without breaking other providers.
-			fieldName := GetProviderFieldConfig(targetProvider).ToolResultIDField
+			// For relay providers (e.g., NVIDIA), also consider the model name.
+			fieldName := GetProviderFieldConfig(targetProvider, modelName).ToolResultIDField
 			toolResult[fieldName] = msg.ToolCallID
 		}
 		// Extract content from text blocks. Also handle tool_result blocks nested
@@ -309,7 +314,7 @@ func serializeAnthropicMessage(msg Message, targetProvider string) map[string]an
 		out["content"] = msg.Content[0].Text
 	} else {
 		// Content blocks (may include tool_use blocks)
-		content := serializeAnthropicMessageContent(msg, targetProvider)
+		content := serializeAnthropicMessageContent(msg, targetProvider, modelName)
 		out["content"] = content
 	}
 
@@ -337,12 +342,12 @@ func joinTextPartsAnthropic(parts []string) string {
 // serializeAnthropicMessageContent converts IR message content to Anthropic content blocks.
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
-func serializeAnthropicMessageContent(msg Message, targetProvider string) []map[string]any {
+func serializeAnthropicMessageContent(msg Message, targetProvider string, modelName string) []map[string]any {
 	result := make([]map[string]any, 0)
 
 	// First, add text and other content blocks
 	for _, block := range msg.Content {
-		result = append(result, serializeAnthropicContentBlock(block, targetProvider))
+		result = append(result, serializeAnthropicContentBlock(block, targetProvider, modelName))
 	}
 
 	// Then, add tool_use blocks from ToolCalls
@@ -370,7 +375,7 @@ func serializeAnthropicMessageContent(msg Message, targetProvider string) []map[
 // serializeAnthropicContentBlock converts an IR ContentBlock to Anthropic format.
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
-func serializeAnthropicContentBlock(block ContentBlock, targetProvider string) map[string]any {
+func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, modelName string) map[string]any {
 	out := map[string]any{
 		"type": block.Type,
 	}
@@ -439,7 +444,7 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string) m
 		if block.ToolResult != nil {
 			// Provider-specific field name mapping: use the mapping table to ensure
 			// compatibility without breaking other providers.
-			fieldName := GetProviderFieldConfig(targetProvider).ToolResultIDField
+			fieldName := GetProviderFieldConfig(targetProvider, modelName).ToolResultIDField
 			out[fieldName] = block.ToolResult.ToolUseID
 			out["is_error"] = block.ToolResult.IsError
 
@@ -663,7 +668,8 @@ func serializeAnthropicDocuments(docs []Document) []map[string]any {
 //
 // targetProvider is the catalog code of the target provider (e.g., "minimax"),
 // used to handle provider-specific field names (tool_call_id vs tool_use_id).
-func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvider string) error {
+// modelName is used to detect relay scenarios (e.g., NVIDIA forwarding to MiniMax).
+func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvider string, modelName string) error {
 	toolUseIDs := make(map[string]bool)
 
 	// 1. Collect all tool_use IDs from assistant messages
@@ -746,7 +752,7 @@ func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvide
 		for _, block := range contentBlocks {
 			if blockType, _ := block["type"].(string); blockType == "tool_result" {
 				// Provider-specific field name: use mapping table for compatibility
-				fieldName := GetProviderFieldConfig(targetProvider).ToolResultIDField
+				fieldName := GetProviderFieldConfig(targetProvider, modelName).ToolResultIDField
 				id, _ := block[fieldName].(string)
 
 				if id != "" && !toolUseIDs[id] {
