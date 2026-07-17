@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
@@ -468,41 +469,46 @@ func (e *Executor) executeOpenAI(
 			// provider/credential/raw_model and what came back. Without
 			// this, distinguishing client-side tool_id_mismatch vs
 			// upstream rate-limit vs upstream timeout is impossible.
-			attemptLog := func(status int, errKind string, bodyPreview string) {
-				attrs := []any{
-					"request_id", params.RequestID,
-					"attempt", attempt,
-					"provider_id", cand.ProviderID,
-					"credential_id", cand.CredentialID,
-					"raw_model", cand.RawModel,
-					"client_model", params.Model,
-					"upstream_url", req.URL.String(),
-					"upstream_method", req.Method,
-					"body_bytes", len(bodyBytes),
-					"is_stream", params.IsStream,
-					"latency_ms", upstreamLatency.Milliseconds(),
-				}
-				if status > 0 {
-					attrs = append(attrs, "upstream_status", status)
-				}
-				if errKind != "" {
-					attrs = append(attrs, "err_kind", errKind)
-				}
-				if bodyPreview != "" {
-					attrs = append(attrs, "body_preview", bodyPreview)
-				}
-				if uErr != nil {
-					attrs = append(attrs, "err_message", uErr.Message)
-				}
-				slog.Info("upstream_http_attempt", attrs...)
+			//
+			// 2026-07-18 (later): when upstream returns 4xx the body
+			// often contains the real classifier signal
+			// ("tool_call_id_mismatch" / "invalid_request_format" / …).
+			// Capture a 256-byte preview of the 4xx body here so
+			// downstream operators don't need to tcpdump or hit
+			// request_logs to figure out WHY the upstream rejected us.
+			attemptAttrs := []any{
+				"request_id", params.RequestID,
+				"attempt", attempt,
+				"provider_id", cand.ProviderID,
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel,
+				"client_model", params.Model,
+				"upstream_url", req.URL.String(),
+				"upstream_method", req.Method,
+				"body_bytes", len(bodyBytes),
+				"is_stream", params.IsStream,
+				"latency_ms", upstreamLatency.Milliseconds(),
 			}
-			_ = attemptLog // ensure variable used even if early-return below
 			if uErr != nil {
-				attemptLog(0, string(uErr.Kind), "")
+				attemptAttrs = append(attemptAttrs,
+					"err_kind", string(uErr.Kind),
+					"err_message", uErr.Message,
+				)
 			}
 			if resp != nil {
-				attemptLog(resp.StatusCode, "", "")
+				attemptAttrs = append(attemptAttrs, "upstream_status", resp.StatusCode)
 			}
+			// Peek at 4xx body preview (re-read Body here is cheap; later
+			// reads use resp.Body after this point). Truncate to 256 bytes
+			// to keep journald sane.
+			if resp != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.Body != nil {
+				peek := make([]byte, 256)
+				n, _ := resp.Body.Read(peek)
+				if n > 0 {
+					attemptAttrs = append(attemptAttrs, "upstream_body_preview", strings.TrimSpace(string(peek[:n])))
+				}
+			}
+			slog.Info("upstream_http_attempt", attemptAttrs...)
 
 			if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
 				errKind := uErr.Kind
