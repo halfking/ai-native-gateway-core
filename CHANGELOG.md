@@ -5,9 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-07-18
+
+### Fixed
+
+- **Settings/Modules toggle HTTP 500**: Fixed `StoreDB.Set()` passing `[]byte` to
+  `$2::jsonb` — pgx v5 encodes `[]byte` as `bytea` OID, which PG cannot cast to
+  `jsonb` (`SQLSTATE 22P02`). Convert to `string` so pgx uses `text` OID, which
+  supports `text::jsonb`. Applied to both `Set()` and `SetTenant()`.
+- **settings_kv duplicates**: Added `UNIQUE (key)` constraint to `settings_kv`
+  table; cleaned up 22 duplicate rows across 8 keys that accumulated due to
+  the missing constraint.
+
 ## [Unreleased] - 2026-07-16
 
 ### Fixed
+
+- **Homepage health badge**: `/api/health/system` no longer returns HTTP 503 when
+  `systemHealthWorker` is not configured; returns 200 with `suspect` status instead, so
+  the SPA badge shows neutral/grey instead of an HTTP error.
+- **System health worker**: Decoupled from `LLM_GATEWAY_USE_NEW_PROBE_MODE` gate.
+  The 30s system health monitor now starts unconditionally when the database is
+  available, so the homepage badge works even when the env var is set to `false`.
 
 - **Test**: Removed obsolete `UPDATE model_offers` mock expectation in `writer_regression_test.go`. The `model_offers` VIEW automatically reflects `credential_model_bindings` updates through the underlying table, so no separate UPDATE is executed (as documented in `writer.go:344-347`). The outdated mock was causing 6 test failures in `TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials`.
 

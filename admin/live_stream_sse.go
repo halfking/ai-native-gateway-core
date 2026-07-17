@@ -827,11 +827,23 @@ func (h *LiveStreamSSEHub) safeClose(c *liveStreamClient) {
 func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 	now := time.Now().UTC()
 
-	// Collect all known lane IDs from cached snapshots across all scopes.
-	// The frontend decides whether each lane has been active and whether
-	// to show the idle tile — the backend just provides the lane roster.
+	// 1) Write idle markers to Redis so they survive delta updates.
+	//    Previously the frontend managed idle tiles locally, but backend
+	//    delta updates (mergeLanesById → target.requests = lane.requests)
+	//    would wipe them, causing the "idle tile flicker" bug.
+	if h.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		if err := h.store.ScanAndRecordIdleMarkers(ctx, now, 0); err != nil {
+			slog.Warn("live stream idle marker scan failed", "err", err.Error())
+		}
+		cancel()
+	}
+
+	// 2) Collect all known lane IDs from cached snapshots across all
+	//    scopes. This is still sent so the frontend can synchronise its
+	//    lane roster without waiting for the next request delta.
 	h.cachedSnapshotMu.RLock()
-	seenIDs := make(map[string]bool) // de-duplicate across scopes
+	seenIDs := make(map[string]bool)
 	var laneIDs []string
 
 	for _, entry := range h.cachedSnapshot {
@@ -855,11 +867,63 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 		return
 	}
 
-	h.fanOut(LiveStreamEnvelope{
+	// 3) Compute a delta for each active scope so the idle markers
+	//    written in step 1 are pushed to every connected client as a
+	//    real delta (no flicker — the idle tile arrives via the same
+	//    mergeDelta path that regular request updates use).
+	h.mu.RLock()
+	type clientScope struct {
+		c        *liveStreamClient
+		tenantID string
+		isSuper  bool
+	}
+	all := make([]clientScope, 0, len(h.clients))
+	for c := range h.clients {
+		all = append(all, clientScope{
+			c:        c,
+			tenantID: normalizeLiveStreamTenant(c.tenantID),
+			isSuper:  c.isSuper,
+		})
+	}
+	h.mu.RUnlock()
+
+	// Deduplicate scopes so we call computeScopeDelta once per unique
+	// (tenantID, isSuper) pair.
+	deltaByCacheKey := make(map[string]*LiveStreamDelta, len(all))
+	for _, cs := range all {
+		sk := newLiveStreamScope(cs.tenantID, cs.isSuper).cacheKey
+		if _, ok := deltaByCacheKey[sk]; ok {
+			continue
+		}
+		if h.store == nil {
+			deltaByCacheKey[sk] = nil
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		deltaByCacheKey[sk] = h.computeScopeDelta(ctx, cs.tenantID, cs.isSuper)
+		cancel()
+	}
+
+	// 4) Fan out — each client receives the envelope whose delta matches
+	//    its own scope.
+	base := LiveStreamEnvelope{
 		Type:      "idle_marker",
 		Timestamp: now,
 		LaneIDs:   laneIDs,
-	})
+	}
+	for _, cs := range all {
+		sk := newLiveStreamScope(cs.tenantID, cs.isSuper).cacheKey
+		env := base
+		env.Delta = deltaByCacheKey[sk]
+		data, err := json.Marshal(env)
+		if err != nil {
+			slog.Warn("live stream idle marker marshal failed", "err", err.Error())
+			continue
+		}
+		if !h.writeEvent(cs.c, data) {
+			h.evict(cs.c)
+		}
+	}
 
 	slog.Debug("live stream idle marker injected",
 		"lanes", len(laneIDs))
