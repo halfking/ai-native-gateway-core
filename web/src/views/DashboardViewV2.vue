@@ -185,7 +185,7 @@ async function onRefresh() {
     <SelfCheckPanel v-if="activeTab === 'selfcheck'" />
 
     <LiveRequestStreamV2
-      v-show="activeTab === 'stream'"
+      v-if="activeTab === 'stream'"
       @open-detail="openRequestDetail"
     />
 

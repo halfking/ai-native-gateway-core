@@ -385,8 +385,8 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 实时请求流（v-show 避免 Tab 切换时 remount 导致泳道闪烁）-->
-    <div v-show="activeTab === 'stream'">
+    <!-- 实时请求流（修复：改用 v-if 避免切换后 SSE 持续运行导致卡顿）-->
+    <div v-if="activeTab === 'stream'">
       <LiveRequestStreamV2 @open-detail="openRequestDetail" />
     </div>
 
