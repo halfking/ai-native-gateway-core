@@ -168,6 +168,17 @@ func (d *Decider) SetDefaultRoutingStore(store *DefaultRoutingStore) {
 	d.defaultRoutingStore = store
 }
 
+// SetTenantResolver wires the apiKeyID -> tenantID resolver used by Decide
+// to look up tenant-scoped default routing rows (the top two priority
+// levels: tenant_profile / tenant_generic). Without a resolver the tenantID
+// is always 0 and tenant-scoped defaults silently never match, so any
+// tenant-level rule an operator configures is dead data. The resolver is
+// expected to be cheap (single-row PK lookup) and must return 0 when the
+// key is unknown / unauthenticated (falling back to platform-level rows).
+func (d *Decider) SetTenantResolver(fn func(apiKeyID int) int64) {
+	d.TenantResolver = fn
+}
+
 // effectiveLLMThreshold returns the dynamic threshold from the tuning
 // store, or the static field when no store is wired.
 func (d *Decider) effectiveLLMThreshold() float64 {

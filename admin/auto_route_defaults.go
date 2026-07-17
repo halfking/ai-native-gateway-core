@@ -235,8 +235,11 @@ func (h *AutoRouteHandlers) createDefaultRouting(w http.ResponseWriter, r *http.
 		req.Priority, req.Reason, createdBy, req.ExpiresAt,
 	).Scan(&newID)
 	if err != nil {
-		// 唯一约束冲突 → 409
-		if strings.Contains(err.Error(), "uq_task_default_routing") {
+		// 2026-07-17 (audit M3): reuse the shared isUniqueViolation helper
+		// (SQLSTATE 23505 with string fallback) instead of matching the
+		// constraint name verbatim, which breaks on pgx upgrades or
+		// localized error messages.
+		if isUniqueViolation(err) {
 			writeJSONErr(w, http.StatusConflict,
 				"a default for the same (task_type, profile, tier, tenant) already exists")
 			return
