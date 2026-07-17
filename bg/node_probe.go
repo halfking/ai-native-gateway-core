@@ -250,11 +250,45 @@ func (w *NodeProbeWorker) Start(ctx context.Context) {
 	if w == nil {
 		return
 	}
+	w.resolveProbeAPIKey(ctx)
 	go w.loop(ctx)
 	slog.Info("node_probe_worker started",
 		"tick_interval", nodeProbeTickInterval,
 		"max_attempts", nodeProbeMaxAttempts,
+		"api_key_resolved", w.apiKey != "",
 	)
+}
+
+// resolveProbeAPIKey tries to find a system API key owned by the default
+// tenant's admin user.  When found it replaces w.apiKey so the gateway
+// probe round uses a real admin-owned key.  If nothing is found the
+// caller-provided value (env var) is kept as-is.
+func (w *NodeProbeWorker) resolveProbeAPIKey(ctx context.Context) {
+	// The default tenant's admin login is "{tenant_code}user" — "defaultuser"
+	// for the "default" tenant (see admin/password.go:DefaultTenantAdminUsername).
+	adminUser := "defaultuser"
+
+	qr := w.db.QueryRow(ctx, `
+		SELECT key_ciphertext FROM api_keys
+		WHERE COALESCE(is_system, FALSE) = TRUE AND status = 'active'
+		  AND tenant_id = 'default' AND owner_user = $1
+		ORDER BY created_at DESC LIMIT 1`, adminUser)
+
+	var ciphertext string
+	if err := qr.Scan(&ciphertext); err != nil {
+		slog.Debug("node_probe_worker: no existing admin system key, keeping env key",
+			"admin_user", adminUser, "error", err)
+		return
+	}
+	pt, _, err := secret.DecryptAny(ciphertext, w.keyring, w.encKey)
+	if err != nil {
+		slog.Warn("node_probe_worker: admin system key exists but cannot decrypt, keeping env key",
+			"admin_user", adminUser, "error", err)
+		return
+	}
+	w.apiKey = string(pt)
+	slog.Info("node_probe_worker: resolved probe API key from DB",
+		"admin_user", adminUser)
 }
 
 func (w *NodeProbeWorker) Stop() {
@@ -364,21 +398,18 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
 		SET next_retry_at = CASE
 		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.consecutive_failures >= $3
 		          OR node_probe_state.next_retry_at <= now()
 		        THEN now() + interval '5 seconds'
 		        ELSE node_probe_state.next_retry_at
 		    END,
 		    next_retry_seconds = CASE
 		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.consecutive_failures >= $3
 		          OR node_probe_state.next_retry_at <= now()
 		        THEN 5
 		        ELSE node_probe_state.next_retry_seconds
 		    END,
 		    in_flight_until = CASE
 		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.consecutive_failures >= $3
 		          OR node_probe_state.next_retry_at <= now()
 		        THEN NULL
 		        ELSE node_probe_state.in_flight_until
@@ -390,12 +421,11 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 		    -- touching it here would collapse the ladder back to rung 1.
 		    consecutive_failures = CASE
 		        WHEN node_probe_state.paused = TRUE THEN 0
-		        WHEN node_probe_state.consecutive_failures >= $3 THEN 0
 		        ELSE node_probe_state.consecutive_failures
 		    END,
 		    last_err_code = NULL,
 		    updated_at = now()
-	`, credID, model, nodeProbeMaxAttempts)
+	`, credID, model)
 	key := fmt.Sprintf("%d|%s", credID, model)
 	w.mu.Lock()
 	w.triggers[key] = nodeProbeTrigger{

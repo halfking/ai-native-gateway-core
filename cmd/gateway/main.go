@@ -1128,7 +1128,12 @@ func main() {
 	// 2026-07-06: RedisClient wired for 1-hour persistent cache.
 	// 2026-07-09: cached snapshot TTL/cleanup interval are configurable.
 	// Cleanup follows TTL unless explicitly overridden.
+	// 2026-07-16: snapshot refresh interval (30 min default) — env LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL.
 	liveStreamCachedTTL, liveStreamCachedCleanup := liveStreamCachedDurationsFromEnv()
+	liveStreamSnapshotRefresh := positiveDurationEnv(
+		"LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL",
+		30*time.Minute,
+	)
 	var liveStreamHub *admin.LiveStreamSSEHub
 	if dbConn != nil && dbConn.Enabled() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
@@ -1140,6 +1145,7 @@ func main() {
 			RedisClient:                   fpSlotRedis, // reuse the existing Redis connection
 			CachedSnapshotTTL:             liveStreamCachedTTL,
 			CachedSnapshotCleanupInterval: liveStreamCachedCleanup,
+			SnapshotRefreshInterval:       liveStreamSnapshotRefresh,
 		})
 		go liveStreamHub.Run()
 

@@ -1891,6 +1891,7 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 
 	h.recordInitialRequestLog(
+		r.Context(),
 		requestID, clientModel, outboundForLog, endUser, "chat", keyInfo,
 		clientID.Fingerprint.ClientProfile, identityHash,
 		logCtx.ProviderID, logCtx.CredentialID, canonicalID,
@@ -3534,6 +3535,7 @@ func classifyFailureStage(errCode string) string {
 // appear immediately in /request-logs; completion paths update tokens, bodies,
 // and final success/error state via EmitRequestLogUpdate.
 func (h *ChatHandler) recordInitialRequestLog(
+	ctx context.Context,
 	requestID, clientModel, outboundModel, endUser, requestMode string,
 	keyInfo *authentication.KeyInfo,
 	clientProfile, identityHash string,
@@ -3631,6 +3633,9 @@ func (h *ChatHandler) recordInitialRequestLog(
 		h.requestLogHook(reqLog)
 	}
 	applyKeyInfoToRequestLog(reqLog, keyInfo)
+	// 2026-07-17: bridge OriginMiddleware context into the entry so
+	// node_probe / self_check requests are marked with origin_stage.
+	reqLog.ApplyOriginFromContext(ctx)
 	h.telemetryClient.EmitRequestLogInsert(reqLog)
 	// 2026-07-15: 侧表 request_context_attrs（best-effort）。
 	if autoCtx != nil {
