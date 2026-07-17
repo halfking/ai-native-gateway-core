@@ -295,6 +295,31 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// unchanged; the executor handles Q2/Q4 dispatch internally.
 	attemptClientModel = reqBody.Model
 
+	// model=auto: classify + rewrite before CanonicalizeClientModel.
+	if reqBody.Model == autoRequestMagic {
+		var apiKeyID int
+		if keyInfo != nil {
+			apiKeyID = keyInfo.ID
+		}
+		newBody, wire, shouldFail := h.maybeResolveAutoForMessages(&reqBody, bodyBytes, r, apiKeyID)
+		if shouldFail {
+			attemptErrCode = "auto_route_decider_failed"
+			attemptErrMsg = "auto-route temporarily unavailable; pass an explicit model name and retry"
+			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
+			h.chatHandler.recordFailedRequestWithKey(requestID, "auto", "",
+				nil, nil, attemptErrCode, attemptErrMsg, 0, bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeAnthropicError(w, http.StatusBadGateway, "server_error",
+				"auto-route temporarily unavailable; pass an explicit model name and retry")
+			return
+		}
+		bodyBytes = newBody
+		attemptClientModel = reqBody.Model
+		if wire != nil {
+			writeAutoDecisionHeader(w, wire)
+		}
+	}
+
 	// 2026-07-14: lowercase at the wire boundary.
 	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
 

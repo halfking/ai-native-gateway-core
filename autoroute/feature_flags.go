@@ -43,6 +43,13 @@ type FeatureFlags struct {
 
 	UseExplicitDefault bool
 	UseComplexityScore bool
+
+	// AutoOnMessages/AutoOnResponses/AutoOnEmbeddings gate model=auto on
+	// non-chat endpoints (22 章 §22.2). Default off; each is independent.
+	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
+	AutoOnMessages   bool
+	AutoOnResponses  bool
+	AutoOnEmbeddings bool
 }
 
 // DefaultFeatureFlags returns the default flags.
@@ -66,6 +73,9 @@ func DefaultFeatureFlags() *FeatureFlags {
 		EnableV2Logic:            false,
 		UseExplicitDefault:       false,
 		UseComplexityScore:       false,
+		AutoOnMessages:           false,
+		AutoOnResponses:          false,
+		AutoOnEmbeddings:         false,
 	}
 }
 
@@ -85,6 +95,9 @@ func LoadFeatureFlagsFromEnv() *FeatureFlags {
 		EnableV2Logic:            getEnvBool("AUTO_ENABLE_V2", false),
 		UseExplicitDefault:       getEnvBool("AUTO_USE_EXPLICIT_DEFAULT", false),
 		UseComplexityScore:       getEnvBool("AUTO_USE_COMPLEXITY_SCORE", false),
+		AutoOnMessages:           getEnvBool("AUTO_ON_MESSAGES", false),
+		AutoOnResponses:          getEnvBool("AUTO_ON_RESPONSES", false),
+		AutoOnEmbeddings:         getEnvBool("AUTO_ON_EMBEDDINGS", false),
 	}
 
 	if flags.EnableV2Logic {
@@ -125,6 +138,10 @@ func GetFeatureFlags() *FeatureFlags {
 	}
 	return globalFeatureFlags
 }
+
+// SetGlobalFeatureFlagsForTest overrides the global flags for tests.
+// Pass the previous value (from GetFeatureFlags) to restore in defer.
+func SetGlobalFeatureFlagsForTest(f *FeatureFlags) { globalFeatureFlags = f }
 
 func activeFeatureNames(flags *FeatureFlags) []string {
 	if flags == nil {
