@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func TestProbeContainsStringCaseInsensitive(t *testing.T) {
+	if !probeContainsString([]string{"MiniMax-M3", "gpt-5.4"}, "minimax-m3") {
+		t.Fatal("expected model match to be case-insensitive")
+	}
+	if probeContainsString([]string{"gpt-5.4"}, "gpt-5.6-luna") {
+		t.Fatal("unexpected model match")
+	}
+}
+
 func TestClassifyHTTPResponse_200OK(t *testing.T) {
 	// A successful GET /v1/models response with model list
 	body := `{"data":[{"id":"gpt-4o"},{"id":"gpt-4-turbo"},{"id":"deepseek-chat"}]}`

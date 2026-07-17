@@ -52,7 +52,7 @@ fi
 # ── 状态: master sockets map (target -> socket_path) ─────────────
 _SSH_RETRY_SOCKETS=()
 
-# ── 内部: 取 SSH 选项串 (供 -o ... 拼到 ssh 命令) ────────────────
+# ── 内部: 取 SSH 选项 (-o ... 以数组形式传递) ───────────────────────
 _ssh_retry_ssh_opts_for() {
   local target=$1
   local port=${SSH_PORT:-25022}
@@ -62,20 +62,33 @@ _ssh_retry_ssh_opts_for() {
     err "ssh-retry: unknown target $target"
     return 1
   fi
-  printf '%s' "-p $port -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=${SSH_RETRY_TIMEOUT} -o ServerAliveInterval=${SSH_RETRY_KEEPALIVE} -o ServerAliveCountMax=${SSH_RETRY_KEEPALIVE_MAX}"
+  SSH_RETRY_OPTS=(
+    -p "$port"
+    -o StrictHostKeyChecking=accept-new
+    -o BatchMode=yes
+    -o "ConnectTimeout=${SSH_RETRY_TIMEOUT}"
+    -o "ServerAliveInterval=${SSH_RETRY_KEEPALIVE}"
+    -o "ServerAliveCountMax=${SSH_RETRY_KEEPALIVE_MAX}"
+  )
 }
 
 # ── 内部: 取 SSH key flag (-i KEY) ────────────────────────────────
-_ssh_retry_key_flag() {
+_ssh_retry_key_args() {
+  local target=$1
   local key=${SSH_KEY_FILE:-}
-  for k in ~/.ssh/id_ed25519 ~/.ssh/56_id_rsa ~/.ssh/71_id_rsa; do
-    [[ -f "$k" ]] && key="$k" && break
-  done
-  if [[ -n "$key" ]] && [[ -f "$key" ]]; then
-    printf '%s' "-i $key"
-  else
-    printf '%s' ""
+  if [[ -z "$key" ]]; then
+    case "$target" in
+      245) key=${SSH_KEY_245:-} ;;
+      154) key=${SSH_KEY_154:-} ;;
+      252) key=${SSH_KEY_252:-} ;;
+    esac
   fi
+  if [[ -n "$key" && -f "$key" ]]; then
+    SSH_RETRY_KEY_ARGS=(-i "$key")
+    return 0
+  fi
+  echo "ssh-retry: injected SSH key missing for target $target" >&2
+  return 1
 }
 
 # ── 内部: 分类 SSH 错误 — 是否可重试 ─────────────────────────────
@@ -173,9 +186,8 @@ ssh_run() {
     sock=${_SSH_RETRY_SOCKETS[$target]}
   fi
 
-  local key_flag opts
-  key_flag=$(_ssh_retry_key_flag)
-  opts=$(_ssh_retry_ssh_opts_for "$target")
+  _ssh_retry_key_args "$target"
+  _ssh_retry_ssh_opts_for "$target"
 
   local hop=$(_ssh_retry_fallback_hop "$target")
   local proxy_flag=""
@@ -190,12 +202,12 @@ ssh_run() {
   local exit_code="" output="" classify="" used_proxy=false
   while (( attempt < max )); do
     attempt=$((attempt+1))
-    local extra_flags=""
+    local -a extra_flags=()
     if [[ "$used_proxy" == "true" ]]; then
-      extra_flags="$proxy_flag"
+      extra_flags=(-o "$proxy_flag")
     fi
     output=$(ssh -o ControlMaster=auto -o ControlPath="$sock" -o ControlPersist=600 \
-              $key_flag $opts $extra_flags "$host" "$script" 2>&1)
+              "${SSH_RETRY_KEY_ARGS[@]}" "${SSH_RETRY_OPTS[@]}" "${extra_flags[@]}" "$host" "$script" 2>&1)
     exit_code=$?
     classify=$(_ssh_retry_classify "$exit_code" "$output")
     case "$classify" in
@@ -255,9 +267,8 @@ ssh_run_pipe() {
     sock=${_SSH_RETRY_SOCKETS[$target]}
   fi
 
-  local key_flag opts
-  key_flag=$(_ssh_retry_key_flag)
-  opts=$(_ssh_retry_ssh_opts_for "$target")
+  _ssh_retry_key_args "$target"
+  _ssh_retry_ssh_opts_for "$target"
 
   local attempt=0 max=$SSH_RETRY_MAX backoff=$SSH_RETRY_BACKOFF
   local exit_code="" classify=""
@@ -265,7 +276,7 @@ ssh_run_pipe() {
     attempt=$((attempt+1))
     # 注意: 这里用 | ssh 让 stdin 直通; ssh 自身的 stderr 我们丢弃
     ssh -o ControlMaster=auto -o ControlPath="$sock" -o ControlPersist=600 \
-        $key_flag $opts "$host" "$script" >/dev/null 2>&1
+        "${SSH_RETRY_KEY_ARGS[@]}" "${SSH_RETRY_OPTS[@]}" "$host" "$script" >/dev/null 2>&1
     exit_code=$?
     classify=$(_ssh_retry_classify "$exit_code" "")
     case "$classify" in

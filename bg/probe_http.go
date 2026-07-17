@@ -436,7 +436,7 @@ func resolveProbeEndpoint(t probeTarget, desc providercap.Descriptor, mode Probe
 
 func probeContainsString(s []string, target string) bool {
 	for _, v := range s {
-		if v == target {
+		if strings.EqualFold(strings.TrimSpace(v), strings.TrimSpace(target)) {
 			return true
 		}
 	}

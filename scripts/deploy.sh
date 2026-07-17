@@ -24,10 +24,10 @@
 #   -h, --help            显示帮助
 #
 # 环境变量（覆盖默认）:
-#   SSH_KEY_154              154 SSH 私钥（默认 ~/.ssh/id_ed25519）
-#   SSH_KEY_252              252 SSH 私钥（默认 ~/.ssh/id_ed25519）
-#   SSH_KEY_245              245 SSH 私钥（默认 ~/.ssh/id_ed25519）
-#   SSH_KEY_KAIXUAN_1        kaixuan-1 SSH 私钥（默认 ~/.ssh/kaixuan1_id_rsa）
+#   SSH_KEY_154              154 SSH 私钥（必须由 env-injector 注入）
+#   SSH_KEY_252              252 SSH 私钥（必须由 env-injector 注入）
+#   SSH_KEY_245              245 SSH 私钥（必须由 env-injector 注入）
+#   SSH_KEY_KAIXUAN_1        kaixuan-1 SSH 私钥（必须由 env-injector 注入）
 #   SSH_PORT                 SSH 端口（默认 25022）
 #   SSH_USER                 SSH 用户（默认 root；kaixuan-* 用 kaixuan）
 #   BUILD_SEQ_TARGET=<seq>   使用指定 build_seq 而非 +1
@@ -36,10 +36,8 @@
 #
 # 鉴权:
 #   本脚本 100% SSH 公私钥鉴权（BatchMode=yes），不依赖 sshpass / 密码。
-#   部署前用 ssh-add 加载私钥，或让本用户运行 env-injector 的
+#   部署前由 env-injector 注入目标 SSH 私钥；脚本不再自动探测本地默认 key。
 #   `inject deploy-252` / `inject deploy-154` / `inject deploy-kaixuan-1`
-#   （会写入 ~/.ssh/config 而非注入密码）。
-#   sshpass 兼容路径：脚本也支持优先读 SSHPASS 环境变量（fallback to ~/.ssh）。
 #
 # 退出码:
 #   0 = 成功
@@ -197,29 +195,11 @@ EOF
           exit 0
           ;;
         deploy)
-          # Slice 4 wires the real deploy path. The full atomic flow
-          # is:
-          #   1. local lock + remote lock
-          #   2. host_preflight (systemctl show + writable checks)
-          #   3. build / select the source bundle
-          #   4. host_stage_release (assemble bundle + SHA256SUMS)
-          #   5. host_verify_bundle (checksum compare against staged dir)
-          #   6. scp the bundle to ${VERSION}/ and overwrite no existing
-          #      verified bundle unless --allow-overwrite is passed
-          #   7. host_atomic_switch (ln -sfn current + systemctl restart)
-          #   8. host_wait_healthy (curl /healthz loop)
-          #   9. host_mark_verified (deployment.json verified=true)
-          #   10. host_prune_releases (keep 5 newest + active)
-          #
-          # Steps 3-6 require SSH and the build pipeline; the offline
-          # harness exercises steps 1, 7-10. Production callers wire
-          # steps 3-6 via the existing legacy deploy orchestration.
-          # For this slice, the canonical `deploy <target>` is gated
-          # on the legacy path and only intercepts the dummy form
-          # `./scripts/deploy.sh deploy <target>` for shellcheck and
-          # CI validation.
-          echo "deploy $TARGET_CANONICAL: Slice 4 wired (offline-verified). Production wiring in slice 5."
-          exit 0
+          if [[ "$TARGET_CANONICAL" == "245" ]]; then
+            exec bash "$SCRIPT_DIR/deploy-245.sh" "$@"
+          fi
+          echo "ERROR: canonical deploy is not wired for target $TARGET_CANONICAL" >&2
+          exit 64
           ;;
       esac
       ;;
