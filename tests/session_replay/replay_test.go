@@ -39,7 +39,7 @@ func TestSessionReplay_LoadsRealSessions(t *testing.T) {
 		t.Fatalf("LoadAll: %v", err)
 	}
 	if len(sessions) == 0 {
-		t.Skip("no exported sessions; run /tmp/session_export/extract.py first")
+		t.Skip("no exported sessions; run make refresh-sessions first")
 	}
 
 	// 校验每个 session 至少有 1 turn + 必要字段
