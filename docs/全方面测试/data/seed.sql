@@ -3,16 +3,30 @@
 -- 测试 fixture：60 provider + 60 credential (1-to-1) + 60 provider_model + 60 cmb + 8 api_key
 -- 真实 schema 镜像（用 \d 验证列名后写入）。
 --
--- 用法：psql -h localhost -p 5432 -U <user> -d llm_gateway -f seed.sql
+-- 关于 tenant_id='default'：本文件是 docs/全方面测试 下的负载/多模态测试 fixture，
+-- 所有凭据和应用统一绑到占位租户 'default'（无 UUID 形态），不参与生产 RLS。
+-- 这是有意为之的硬编码，与 CONTRIBUTING.md § 多租户改动专项中生产 schema 的要求
+-- 不冲突 —— 后者约束的是 db/migrations/ 下的真实 schema 改动。
+--
+-- 用法：psql -h localhost -p 5432 -U <user> -d llm_gateway \
+--   -v loadtest_host=127.0.0.1 -v gateway_secret=local-test-secret-key-2026 -f seed.sql
+\if :{?loadtest_host}
+\else
+\set loadtest_host 'host.docker.internal'
+\endif
+\if :{?gateway_secret}
+\else
+\set gateway_secret 'local-test-secret-key-2026'
+\endif
 
 BEGIN;
 
 -- 清理（idempotent — 测试残留清理）
-DELETE FROM credential_model_bindings WHERE credential_id BETWEEN 9010 AND 9069;
-DELETE FROM api_keys WHERE key_hash LIKE 'sk-loadtest%';
-DELETE FROM provider_models WHERE id BETWEEN 9100 AND 9159;
-DELETE FROM credentials WHERE id BETWEEN 9010 AND 9069;
-DELETE FROM providers WHERE id BETWEEN 9010 AND 9069;
+DELETE FROM credential_model_bindings WHERE credential_id BETWEEN 9010 AND 9074;
+DELETE FROM api_keys WHERE key_prefix LIKE 'sk-loadtest-%';
+DELETE FROM provider_models WHERE id BETWEEN 9100 AND 9174;
+DELETE FROM credentials WHERE id BETWEEN 9010 AND 9074;
+DELETE FROM providers WHERE id BETWEEN 9010 AND 9074;
 
 -- ── 60 providers ─────────────────────────────────────────────────
 -- 一对一：每 provider = 1 mock_supplier 进程 (port 19080-19139)
@@ -109,7 +123,7 @@ SELECT
     9070 + i,
     'mm-loadtest-' || LPAD((9070+i)::text, 4, '0'),
     'Multimodal Loadtest ' || (9070+i),
-    'http://host.docker.internal:' || (19280 + i),
+    'http://' || COALESCE(NULLIF(:'loadtest_host', ''), 'host.docker.internal') || ':' || (19280 + i),
     'cloud', TRUE, FALSE, 'openai', 'direct', 'off', 'official',
     NOW(), NOW()
 FROM generate_series(0, 4) AS i;
@@ -135,10 +149,10 @@ INSERT INTO provider_models (id, provider_id, raw_model_name, outbound_model_nam
 SELECT
     9170 + i,
     9070 + i,
-    'loadtest-vision-alpha',
-    'loadtest-vision-alpha',
-    'loadtest-vision-alpha',
-    'loadtest-vision-alpha',
+    'loadtest-mm-vision-alpha',
+    'loadtest-mm-vision-alpha',
+    'loadtest-mm-vision-alpha',
+    'loadtest-mm-vision-alpha',
     NOW()
 FROM generate_series(0, 4) AS i;
 
@@ -204,13 +218,28 @@ SET p95_latency_ms = CASE
 WHERE cmb.credential_id BETWEEN 9010 AND 9069;
 
 -- ── 8 api_keys ───────────────────────────────────────────────────
--- application_id 引用真实 application，应用 ID 8001-8008 在真实表里，我们硬编码 8001
+-- key_hash 必须与 domains/authentication.HashAPIKey 完全一致：
+-- hex(HMAC-SHA256(gateway_secret, raw_key))。
+INSERT INTO applications (tenant_id, code, display_name, owner_user,
+                          data_sensitivity, enabled, notes, created_at, updated_at)
+VALUES ('default', 'loadtest', 'Full Test Loadtest', 'loadtest',
+        'internal', TRUE, 'docs/全方面测试 fixture', NOW(), NOW())
+ON CONFLICT (tenant_id, code) DO UPDATE
+SET enabled = TRUE, updated_at = NOW();
+
+WITH loadtest_app AS (
+    SELECT id FROM applications WHERE tenant_id = 'default' AND code = 'loadtest'
+)
 INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, owner_user,
                      data_sensitivity, rate_limit_rpm, enabled, status, created_at)
 SELECT
-    8001,
+    loadtest_app.id,
     'default',
-    'sk-loadtest-' || LPAD(n::text, 2, '0') || '-hash-' || LPAD(n::text, 20, '0'),
+    encode(hmac(
+        convert_to('sk-loadtest-' || LPAD(n::text, 2, '0'), 'UTF8'),
+        convert_to(:'gateway_secret', 'UTF8'),
+        'sha256'
+    ), 'hex'),
     'sk-loadtest-' || LPAD(n::text, 2, '0'),
     'loadtest-user-' || n,
     'internal',
@@ -219,7 +248,9 @@ SELECT
     'active',
     NOW()
 FROM generate_series(1, 8) AS n
-ON CONFLICT (key_hash) DO NOTHING;
+CROSS JOIN loadtest_app
+ON CONFLICT (key_hash) DO UPDATE
+SET enabled = TRUE, status = 'active', application_id = EXCLUDED.application_id;
 
 -- ── Verify ────────────────────────────────────────────────────────
 SELECT 'seed OK:' AS info;
@@ -227,7 +258,7 @@ SELECT 'providers'        AS tbl, COUNT(*) FROM providers WHERE id BETWEEN 9010 
 UNION ALL SELECT 'credentials', COUNT(*) FROM credentials WHERE id BETWEEN 9010 AND 9069
 UNION ALL SELECT 'provider_models', COUNT(*) FROM provider_models WHERE id BETWEEN 9100 AND 9159
 UNION ALL SELECT 'cmb', COUNT(*) FROM credential_model_bindings WHERE credential_id BETWEEN 9010 AND 9069
-UNION ALL SELECT 'api_keys', COUNT(*) FROM api_keys WHERE key_hash LIKE 'sk-loadtest%'
+UNION ALL SELECT 'api_keys', COUNT(*) FROM api_keys WHERE key_prefix LIKE 'sk-loadtest-%'
 UNION ALL SELECT 'mm_providers', COUNT(*) FROM providers WHERE id BETWEEN 9070 AND 9074
 UNION ALL SELECT 'mm_credentials', COUNT(*) FROM credentials WHERE id BETWEEN 9070 AND 9074
 UNION ALL SELECT 'mm_cmb', COUNT(*) FROM credential_model_bindings WHERE credential_id BETWEEN 9070 AND 9074;
