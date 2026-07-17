@@ -961,8 +961,13 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 	nowUnix := ts.Unix()
 
 	// 1) Collect candidate activity keys via SCAN.
+	//    The shared Redis DB has hundreds of thousands of unrelated keys
+	//    (request details, sessions, etc.), so SCAN must traverse them
+	//    all to find our ~50 activity keys. Use COUNT 5000 to amortise
+	//    round-trips — with COUNT 0 (Redis default 10) we made 40K SCAN
+	//    calls and exceeded any reasonable context deadline.
 	var activityKeys []string
-	iter := s.rdb.Scan(ctx, 0, liveStreamActivityPrefix+"*", 0).Iterator()
+	iter := s.rdb.Scan(ctx, 0, liveStreamActivityPrefix+"*", 5000).Iterator()
 	for iter.Next(ctx) {
 		activityKeys = append(activityKeys, iter.Val())
 	}

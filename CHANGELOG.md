@@ -38,6 +38,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **settings_kv duplicates**: Added `UNIQUE (key)` constraint to `settings_kv`
   table; cleaned up 22 duplicate rows across 8 keys that accumulated due to
   the missing constraint.
+- **Live-stream idle tile flicker / disappearance on refresh**: Idle tiles for
+  silent lanes are now backend-driven. `maybeEmitIdleMarker()` writes idle
+  markers to Redis (via `ScanAndRecordIdleMarkers`) and includes them in the
+  `idle_marker` SSE envelope's `delta` payload. Frontend
+  `handleEnvelope()` now calls `mergeDelta(env.delta)` instead of dropping
+  the payload — the old `handleLaneIdleCheck()` path was a no-op, so idle
+  tiles never actually landed in the snapshot. Three sub-fixes:
+  1. `live_stream_sse.go` `ScanAndRecordIdleMarkers` context timeout raised
+     from 1s to 60s — the 396K-key shared Redis DB needs more than 1s for
+     SCAN to traverse all keys and find the ~50 activity entries.
+  2. `live_stream_redis_store.go` SCAN `COUNT` raised from 0 (Redis default
+     10) to 5000 to amortise round-trips.
+  3. `Record()` already removes the stale idle marker for the same lane
+     when a new request arrives (vendor/provider/model dimensions).
 
 ## [Unreleased] - 2026-07-16
 

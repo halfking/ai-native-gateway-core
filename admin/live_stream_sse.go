@@ -832,7 +832,12 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 	//    delta updates (mergeLanesById → target.requests = lane.requests)
 	//    would wipe them, causing the "idle tile flicker" bug.
 	if h.store != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		// 60s budget: SCAN must traverse all 396K+ keys in the shared
+		// Redis DB to find ~50 activity keys. With 0.2ms RTT to Redis
+		// the actual scan takes <1s, but we keep 60s headroom so the
+		// hub never logs a spurious "context deadline exceeded" if the
+		// network blips.
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		if err := h.store.ScanAndRecordIdleMarkers(ctx, now, 0); err != nil {
 			slog.Warn("live stream idle marker scan failed", "err", err.Error())
 		}
