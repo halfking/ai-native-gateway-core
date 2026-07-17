@@ -364,6 +364,15 @@ func (c *RequestLogContext) SetAutoDecision(wire *autoRouteDecision) {
 
 // BuildFailureEntry assembles a failure row from cached context + exit metadata.
 func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, providerID, credentialID *int) *telemetry.RequestLogEntry {
+	return c.buildEntry(errCode, errMessage, providerID, credentialID, telemetry.RequestStatusFailure)
+}
+
+// buildEntry is the shared builder for non-success exits. status distinguishes
+// a genuine system error ("failure") from a client-side rejection
+// ("rate_limited"). Success is false in both cases — the request did not
+// complete — but request_status lets dashboards count rate-limit rejections
+// out of the error numerator while still keeping them in the denominator.
+func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, credentialID *int, status string) *telemetry.RequestLogEntry {
 	if c == nil {
 		return nil
 	}
@@ -480,7 +489,7 @@ func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, provid
 		GwTaskID:          strPtr(gwTaskID),
 		LatencyMs:         &latency,
 		Success:           false,
-		RequestStatus:     strPtr(telemetry.RequestStatusFailure),
+		RequestStatus:     strPtr(status),
 		ErrorKind:         strPtr(errCode),
 		FailureStage:      strPtr(failureStage),
 		FailureDetailCode: strPtr(detailCode),
@@ -519,6 +528,35 @@ func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, 
 		c.handler.telemetryClient.EmitRequestLogUpdate(reqLog)
 	}
 	// 2026-07-15: 侧表 request_context_attrs（best-effort）。
+	if c.handler.telemetryClient != nil {
+		if attrs := BuildContextAttrsEntry(c, c.KeyInfo, &c.meta, c.Request.Context()); attrs != nil {
+			c.handler.telemetryClient.EmitContextAttrs(attrs)
+		}
+	}
+	c.logged = true
+}
+
+// EmitRateLimited records a gateway-side rate-limit rejection (RPM/concurrent
+// cap or a throttled key) as request_status="rate_limited" rather than
+// "failure". Rate limiting is an expected, client-caused outcome — not a
+// system error — so it must not inflate provider error counts, yet it stays
+// in the dashboard denominator so success-rate is not artificially inflated.
+// The provider/credential are always nil because the request never reached
+// the executor or any upstream.
+func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, providerID, credentialID *int) {
+	if c == nil || c.handler == nil {
+		return
+	}
+	reqLog := c.buildEntry(errCode, errMessage, providerID, credentialID, telemetry.RequestStatusRateLimited)
+	if reqLog == nil {
+		return
+	}
+	if c.handler.requestLogHook != nil {
+		c.handler.requestLogHook(reqLog)
+	}
+	if c.handler.telemetryClient != nil && c.handler.telemetryClient.Enabled() {
+		c.handler.telemetryClient.EmitRequestLogUpdate(reqLog)
+	}
 	if c.handler.telemetryClient != nil {
 		if attrs := BuildContextAttrsEntry(c, c.KeyInfo, &c.meta, c.Request.Context()); attrs != nil {
 			c.handler.telemetryClient.EmitContextAttrs(attrs)

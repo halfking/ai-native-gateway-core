@@ -226,6 +226,7 @@ type sessionRow struct {
 	RequestCount    int
 	OkCount         int
 	FailCount       int
+	RateLimitedCnt  int
 	FirstActivity   time.Time
 	LastActivity    time.Time
 	LatestModel     *string
@@ -291,7 +292,7 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var s sessionRow
 		if err := rows.Scan(
-			&s.TaskID, &s.SessionID, &s.RequestCount, &s.OkCount, &s.FailCount,
+			&s.TaskID, &s.SessionID, &s.RequestCount, &s.OkCount, &s.FailCount, &s.RateLimitedCnt,
 			&s.FirstActivity, &s.LastActivity, &s.LatestModel,
 			&s.APIKeyPrefix, &s.APIKeyOwnerUser, &s.ApplicationCode,
 			&s.APIKeyID,
@@ -328,9 +329,10 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		entry := map[string]any{
-			"request_count":      s.RequestCount,
-			"ok_count":           s.OkCount,
-			"fail_count":         s.FailCount,
+			"request_count":     s.RequestCount,
+			"ok_count":          s.OkCount,
+			"fail_count":        s.FailCount,
+			"rate_limited_count": s.RateLimitedCnt,
 			"first_activity":     s.FirstActivity.UTC().Format(time.RFC3339),
 			"last_activity":      s.LastActivity.UTC().Format(time.RFC3339),
 			"no_topic":           s.NoTopic,
@@ -528,6 +530,7 @@ func buildMemoraSessionsSQL(r *http.Request, hours, noTopicWindow, limit int) (s
 				COUNT(*) AS request_count,
 				COUNT(*) FILTER (WHERE request_status = 'success') AS ok_count,
 				COUNT(*) FILTER (WHERE request_status = 'failure') AS fail_count,
+				COUNT(*) FILTER (WHERE request_status = 'rate_limited') AS rate_limited_count,
 				MIN(ts) AS first_activity,
 				MAX(ts) AS last_activity,
 				(SELECT client_model FROM base b2 WHERE b2.task_id = base.task_id ORDER BY b2.ts DESC LIMIT 1) AS latest_model,
@@ -549,6 +552,7 @@ func buildMemoraSessionsSQL(r *http.Request, hours, noTopicWindow, limit int) (s
 				COUNT(*) AS request_count,
 				COUNT(*) FILTER (WHERE request_status = 'success') AS ok_count,
 				COUNT(*) FILTER (WHERE request_status = 'failure') AS fail_count,
+				COUNT(*) FILTER (WHERE request_status = 'rate_limited') AS rate_limited_count,
 				MIN(ts) AS first_activity,
 				MAX(ts) AS last_activity,
 				(SELECT client_model FROM base b2 WHERE b2.task_id IS NULL AND b2.api_key_prefix IS NOT DISTINCT FROM base.api_key_prefix ORDER BY b2.ts DESC LIMIT 1) AS latest_model,

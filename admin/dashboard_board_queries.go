@@ -104,7 +104,7 @@ func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr 
 			COALESCE(AVG(`+alias+`.latency_ms) FILTER (WHERE `+alias+`.latency_ms IS NOT NULL), 0),
 			COALESCE(AVG(CASE WHEN `+alias+`.success THEN 1.0 ELSE 0.0 END), 0)
 		FROM `+logsTable+`
-		WHERE `+where+` AND `+alias+`.request_status IN ('success', 'failure')
+		WHERE `+where+` AND `+alias+`.request_status IN ('success', 'failure', 'rate_limited')
 	`, args...).Scan(&totalReq, &promptTok, &compTok, &costUSD, &avgLatency, &successRate)
 
 	credits := h.queryTotalCreditsCharged(ctx, tenantID, tr.Days)
