@@ -13,6 +13,8 @@ export type NavItem = {
   tenantOnly?: boolean
   /** Hidden when logged in as non-default tenant (tenant_admin) */
   hideForTenant?: boolean
+  /** Maintain service only: only visible to default tenant (platform operators) */
+  maintainOnly?: boolean
   /** Only highlight when the path matches exactly (no prefix matching).
    *  Use for items whose path is a prefix of another item's path, e.g.
    *  '/routing-v2' (路由全景) vs '/routing-v2/credentials' (凭据监控) —
@@ -109,13 +111,13 @@ export const NAV_GROUPS: NavGroup[] = [
     label: '运维平台',
     labelKey: 'nav.group.opsplatform',
     items: [
-      { path: '/ops/overview', label: '运维概览', labelKey: 'nav.item.opsOverview', icon: '', super: true, hideForTenant: true },
-      { path: '/ops/licenses', label: 'License管理', labelKey: 'nav.item.opsLicenses', icon: '', super: true, hideForTenant: true },
-      { path: '/ops/downloads', label: '下载发版', labelKey: 'nav.item.opsDownloads', icon: '', super: true, hideForTenant: true },
-      { path: '/ops/faults', label: '故障管理', labelKey: 'nav.item.opsFaults', icon: '', super: true, hideForTenant: true },
-      { path: '/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '', super: true, hideForTenant: true },
-      { path: '/ops/center', label: '中心运维', labelKey: 'nav.item.opsCenter', icon: '', super: true, hideForTenant: true },
-      { path: '/ops/vibecoding', label: 'VibeCoding', labelKey: 'nav.item.opsVibeCoding', icon: '', super: true, hideForTenant: true },
+      { path: '/ops/overview', label: '运维概览', labelKey: 'nav.item.opsOverview', icon: '', super: true, maintainOnly: true },
+      { path: '/ops/licenses', label: 'License管理', labelKey: 'nav.item.opsLicenses', icon: '', super: true, maintainOnly: true },
+      { path: '/ops/downloads', label: '下载发版', labelKey: 'nav.item.opsDownloads', icon: '', super: true, maintainOnly: true },
+      { path: '/ops/faults', label: '故障管理', labelKey: 'nav.item.opsFaults', icon: '', super: true, maintainOnly: true },
+      { path: '/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '', super: true, maintainOnly: true },
+      { path: '/ops/center', label: '中心运维', labelKey: 'nav.item.opsCenter', icon: '', super: true, maintainOnly: true },
+      { path: '/ops/vibecoding', label: 'VibeCoding', labelKey: 'nav.item.opsVibeCoding', icon: '', super: true, maintainOnly: true },
       { path: '/tenant/license', label: '我的授权', labelKey: 'nav.item.tenantLicense', icon: '', tenantOnly: true },
       { path: '/tenant/autoupdate', label: '我的更新', labelKey: 'nav.item.tenantAutoUpdate', icon: '', tenantOnly: true },
     ],
@@ -136,12 +138,13 @@ export const NAV_GROUPS: NavGroup[] = [
 
 export function canShowNavItem(
   item: NavItem,
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; canAccessMaintain: boolean },
 ): boolean {
   if (item.super && !opts.isSuperAdmin) return false
   if (item.platformOps && !opts.isPlatformOps) return false
   if (item.tenantOnly && !opts.isTenantPortal) return false
   if (item.hideForTenant && opts.isTenantPortal) return false
+  if (item.maintainOnly && !opts.canAccessMaintain) return false
   return true
 }
 
@@ -149,7 +152,7 @@ export function canShowNavItem(
 // 分组本身的隐藏规则由调用方传入的 hideForTenant 决定。
 export function canShowNavGroup(
   group: NavGroup,
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; canAccessMaintain: boolean },
 ): boolean {
   // 「模型与路由」分组对租户（tenant portal）整体隐藏：内部的 items 大多
   // 已带 hideForTenant:true，但显式分组隐藏更明确，避免任何 item 漏写导致
@@ -160,14 +163,14 @@ export function canShowNavGroup(
 
 export function visibleNavItems(
   items: NavItem[],
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; canAccessMaintain: boolean },
 ): NavItem[] {
   return items.filter((item) => canShowNavItem(item, opts))
 }
 
 export function visibleNavGroups(
   groups: NavGroup[],
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; canAccessMaintain: boolean },
 ): NavGroup[] {
   return groups
     .filter((g) => canShowNavGroup(g, opts))

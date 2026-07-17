@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { store, isDefaultTenant } from './store'
+import { store, isDefaultTenant, canAccessMaintain } from './store'
 
 // Critical views loaded immediately (login, home, layout)
 import LoginView from './views/LoginView.vue'
@@ -233,14 +233,14 @@ export const router = createRouter({
 
     // Operations Platform (platform management, super_admin only)
     { path: '/ops',                redirect: '/ops/overview' },
-    { path: '/ops/overview',       component: OpsOverviewView, meta: { requiresSuper: true } },
-    { path: '/ops/licenses',       component: LicenseManagementView, meta: { requiresSuper: true } },
-    { path: '/ops/downloads',      component: DistributionReleaseView, meta: { requiresSuper: true } },
-    { path: '/ops/faults',         component: FaultManagementView, meta: { requiresSuper: true } },
-    { path: '/ops/autoupdate',     component: AutoUpdateView, meta: { requiresSuper: true } },
-    { path: '/ops/center',         component: CenterOpsView, meta: { requiresSuper: true } },
+    { path: '/ops/overview',       component: OpsOverviewView, meta: { requiresSuper: true, requiresMaintain: true } },
+    { path: '/ops/licenses',       component: LicenseManagementView, meta: { requiresSuper: true, requiresMaintain: true } },
+    { path: '/ops/downloads',      component: DistributionReleaseView, meta: { requiresSuper: true, requiresMaintain: true } },
+    { path: '/ops/faults',         component: FaultManagementView, meta: { requiresSuper: true, requiresMaintain: true } },
+    { path: '/ops/autoupdate',     component: AutoUpdateView, meta: { requiresSuper: true, requiresMaintain: true } },
+    { path: '/ops/center',         component: CenterOpsView, meta: { requiresSuper: true, requiresMaintain: true } },
     { path: '/ops/blocklist',      component: IpBlocklistView, meta: { requiresSuper: true } },
-    { path: '/ops/vibecoding',     component: VibeCodingView, meta: { requiresSuper: true } },
+    { path: '/ops/vibecoding',     component: VibeCodingView, meta: { requiresSuper: true, requiresMaintain: true } },
 
     // Tenant operations: visible to authenticated tenant admins, scoped by
     // the current tenant. These intentionally do not reuse platform CRUD views.
@@ -290,6 +290,10 @@ router.beforeEach((to) => {
   // 4. Platform ops (super_admin on default tenant) for运维向页面
   if (to.meta.requiresPlatformOps && !isPlatformOpsView()) {
     return { path: '/' }
+  }
+  // 4.5. Maintain service routes (only default tenant can access)
+  if (to.meta.requiresMaintain && !canAccessMaintain()) {
+    return { path: '/forbidden' }
   }
   if (to.meta.tenantOps && isPlatformOpsView() && typeof to.query.tenant !== 'string') {
     return { path: '/', query: { tenant: 'required' } }
