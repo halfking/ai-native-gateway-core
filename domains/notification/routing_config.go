@@ -146,6 +146,12 @@ func (t *ApprovalRoutingTable) Route(tenantID string, riskLevel RiskLevel) []Rec
 	return t.rules.Route(tenantID, riskLevel)
 }
 
+func (t *ApprovalRoutingTable) RouteByChannel(tenantID string, riskLevel RiskLevel) map[ChannelType][]Recipient {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.rules.RouteByChannel(tenantID, riskLevel)
+}
+
 // SetRules 整体替换规则（用于热更新）。
 func (t *ApprovalRoutingTable) SetRules(rules RoutingRules) {
 	t.mu.Lock()
@@ -229,10 +235,28 @@ func rowToRoutingRule(row RoutingRuleDBRow) (RoutingRule, error) {
 	if err != nil {
 		return RoutingRule{}, fmt.Errorf("parse approvers: %w", err)
 	}
+
+	riskLevel := RiskLevel(strings.TrimSpace(row.RiskLevel))
+	switch riskLevel {
+	case RiskLevelLow, RiskLevelMedium, RiskLevelHigh, RiskLevelCritical:
+	default:
+		return RoutingRule{}, fmt.Errorf("invalid risk level %q", row.RiskLevel)
+	}
+
+	channel := ChannelType(strings.TrimSpace(row.Channel))
+	switch channel {
+	case ChannelLark, ChannelDingTalk, ChannelWeChat:
+	default:
+		return RoutingRule{}, fmt.Errorf("invalid channel %q", row.Channel)
+	}
+	if len(approvers) == 0 {
+		return RoutingRule{}, errors.New("no approvers")
+	}
+
 	return RoutingRule{
 		TenantID:   strings.TrimSpace(row.TenantID),
-		RiskLevel:  RiskLevel(strings.TrimSpace(row.RiskLevel)),
-		Channel:    ChannelType(strings.TrimSpace(row.Channel)),
+		RiskLevel:  riskLevel,
+		Channel:    channel,
 		Recipients: approvers,
 		Priority:   row.Priority,
 		Enabled:    row.Enabled,

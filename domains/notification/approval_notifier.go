@@ -133,8 +133,13 @@ func (n *ApprovalNotifier) NotifyApproval(ctx context.Context, record *sessionau
 		return fmt.Errorf("notification: no approvers for tenant %s risk %s", record.TenantID, risk)
 	}
 
-	// 3. 按渠道分组接收人
-	channelToRecipients := groupRecipientsByChannel(approvers)
+	// 3. 按规则选择的渠道分组接收人，避免把一个 recipient 广播到
+	// 与规则无关的其它渠道。
+	channelGroups := n.cfg.Routing.RouteByChannel(record.TenantID, risk)
+	channelToRecipients := groupRecipientsBySelectedChannel(channelGroups)
+	if len(channelToRecipients) == 0 {
+		return fmt.Errorf("notification: no valid recipients for selected channels")
+	}
 
 	// 4. 构造卡片
 	card := &ApprovalCard{
