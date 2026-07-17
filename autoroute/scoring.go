@@ -63,6 +63,9 @@ type Candidate struct {
 	ProviderCategory string
 	ProviderKind     string
 	IsFree           bool
+
+	ComplexityCeiling string
+	MinComplexity     string
 }
 
 // ScoringBreakdown is the per-dimension score output (each 0-100)
@@ -376,6 +379,10 @@ func requiredTagsForTask(task TaskType) []string {
 		return []string{"vision", "multimodal"}
 	case TaskFunctionCall:
 		return []string{"function_call", "tool_use"}
+	case TaskCodeAudit:
+		return []string{"code", "review", "security"}
+	case TaskIntentClassification:
+		return []string{"classification"}
 	case TaskChat:
 		return nil // no specific tags required
 	default:

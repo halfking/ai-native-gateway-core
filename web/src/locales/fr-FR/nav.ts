@@ -25,6 +25,7 @@ export default {
     pricing: "Tarification des coûts",
     modelPricing: "Gestion des tarifs",
     freePool: "Pool gratuit",
+    routingDefaults: "Routing Defaults",
     tenants: "Locataires",
     users: "Utilisateurs",
     keys: "Clés API",

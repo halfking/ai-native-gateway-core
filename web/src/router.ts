@@ -202,6 +202,7 @@ export const router = createRouter({
     { path: '/correlations',       component: CorrelationsView, meta: { requiresSuper: true } },
     { path: '/routing/overrides',  component: RoutingOverrideView, meta: { requiresSuper: true } },
     { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuper: true } },
+    { path: '/routing/defaults',  component: () => import('./views/RoutingDefaultsView.vue'), meta: { requiresSuper: true } },
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuper: true } },
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/session-compare',    component: SessionCompareView },

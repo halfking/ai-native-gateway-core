@@ -40,6 +40,9 @@ type FeatureFlags struct {
 
 	// EnableV2Logic is the umbrella switch. When true, all V2 features are enabled.
 	EnableV2Logic bool
+
+	UseExplicitDefault bool
+	UseComplexityScore bool
 }
 
 // DefaultFeatureFlags returns the default flags.
@@ -61,6 +64,8 @@ func DefaultFeatureFlags() *FeatureFlags {
 		// Opt-out：环境变量 AUTO_USE_CHANNEL_QUALITY_ROUTING=false。
 		UseChannelQualityRouting: true,
 		EnableV2Logic:            false,
+		UseExplicitDefault:       false,
+		UseComplexityScore:       false,
 	}
 }
 
@@ -78,6 +83,8 @@ func LoadFeatureFlagsFromEnv() *FeatureFlags {
 		// CHANNEL_QUALITY_ROUTING: 默认 true（全量启动）
 		UseChannelQualityRouting: getEnvBool("AUTO_USE_CHANNEL_QUALITY_ROUTING", true),
 		EnableV2Logic:            getEnvBool("AUTO_ENABLE_V2", false),
+		UseExplicitDefault:       getEnvBool("AUTO_USE_EXPLICIT_DEFAULT", false),
+		UseComplexityScore:       getEnvBool("AUTO_USE_COMPLEXITY_SCORE", false),
 	}
 
 	if flags.EnableV2Logic {

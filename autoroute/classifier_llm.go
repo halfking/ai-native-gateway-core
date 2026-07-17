@@ -103,7 +103,9 @@ func buildClassificationPrompt(sigs ClassificationSignals) string {
 		"  - creative      : writing, translation, summarisation\n" +
 		"  - long_context  : very long document (>50k tokens)\n" +
 		"  - vision        : request contains image input\n" +
-		"  - function_call : 1-2 tool/function calls\n\n" +
+		"  - function_call         : 1-2 tool/function calls\n" +
+		"  - code_audit            : code review, security analysis, quality checks\n" +
+		"  - intent_classification : intent detection, classification tasks\n\n" +
 		"Return ONLY the task type string, nothing else.\n\n"
 
 	if sigs.ToolCount > 0 {

@@ -110,7 +110,11 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
 	idx.mu.RUnlock()
 
 	if topN <= 0 {
-		topN = 3 // 默认返回 top-3
+		topN = 3
+	}
+	var reqLevel ComplexityLevel
+	if flags := GetFeatureFlags(); flags != nil && flags.UseComplexityScore {
+		reqLevel = EstimateComplexity(sigs, task, DefaultComplexityThresholds())
 	}
 
 	// L1: 热门池过滤（tier=primary）
@@ -122,6 +126,9 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
 		c := all[i]
 		// 跳过不可路由的候选
 		if c.UnavailableReason != "" {
+			continue
+		}
+		if reqLevel != "" && !ComplexityMatch(reqLevel, c.ComplexityCeiling, c.MinComplexity) {
 			continue
 		}
 
@@ -384,7 +391,9 @@ SELECT
     END AS is_free,
     -- CHANNEL_QUALITY_ROUTING: models_canonical.cost_tier 也单独加载
     -- 让 deriveIsFree() 的 CostTier 分支在 Go 侧能正确生效。
-    mc.cost_tier AS cost_tier
+    mc.cost_tier AS cost_tier,
+    mc.complexity_ceiling AS complexity_ceiling,
+    mc.min_complexity     AS min_complexity
 FROM credential_model_index cmi
 JOIN latest_bucket lb
   ON lb.credential_id = cmi.credential_id
@@ -433,6 +442,8 @@ func scanIndexRow(rows interface {
 	var providerKind *string
 	var isFree *bool
 	var costTier *string
+	var complexityCeiling *string
+	var minComplexity *string
 	if err := rows.Scan(
 		&c.CredentialID, &c.RawModel, &canonicalID,
 		&canonicalName, &tags, &ctxWindow,
@@ -443,6 +454,7 @@ func scanIndexRow(rows interface {
 		&routingTier, &unavailableReason,
 		&providerCategory, &providerKind, &isFree,
 		&costTier,
+		&complexityCeiling, &minComplexity,
 	); err != nil {
 		return c, err
 	}
@@ -515,6 +527,12 @@ func scanIndexRow(rows interface {
 	}
 	if costTier != nil {
 		c.CostTier = strings.TrimSpace(*costTier)
+	}
+	if complexityCeiling != nil {
+		c.ComplexityCeiling = strings.TrimSpace(*complexityCeiling)
+	}
+	if minComplexity != nil {
+		c.MinComplexity = strings.TrimSpace(*minComplexity)
 	}
 	c.Tags = tags
 	// PressureRatio: 0 when concurrency_limit is 0 (unknown → no penalty)

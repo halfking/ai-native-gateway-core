@@ -185,6 +185,8 @@ func TestScanIndexRow_LoadsAvailabilityAndTier(t *testing.T) {
 		"cloud",    // provider_kind
 		false,      // is_free
 		"",         // cost_tier
+		"",         // complexity_ceiling (M2)
+		"",         // min_complexity (M2)
 	}}
 
 	c, err := scanIndexRow(row)
@@ -241,6 +243,8 @@ func TestScanIndexRow_MapsSecondaryAndFallback(t *testing.T) {
 				"cloud",
 				false,
 				"",
+				"", // complexity_ceiling (M2)
+				"", // min_complexity (M2)
 			}}
 			c, err := scanIndexRow(row)
 			if err != nil {
@@ -279,6 +283,8 @@ func TestScanIndexRow_LoadsCostTier(t *testing.T) {
 		"cloud",
 		false,  // SQL CASE 没有命中，所以 is_free = false
 		"free", // 但 cost_tier = 'free' → Go 侧 deriveIsFree 应识别
+		"",     // complexity_ceiling (M2)
+		"",     // min_complexity (M2)
 	}}
 
 	c, err := scanIndexRow(row)

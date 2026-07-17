@@ -63,8 +63,10 @@ type Decision struct {
 	FallbackUsed bool
 
 	// DecidedAt is the wall-clock time when the decision was made.
-	// Used for observability latency tracking.
 	DecidedAt time.Time
+
+	// RoutingSource (M2): explicit_default/implicit_tag/override_pin/session_cache.
+	RoutingSource string
 }
 
 // IndexAccessor is the minimal interface Decider needs from autoroute.Index.
@@ -86,17 +88,20 @@ type IndexAccessor interface {
 // All inputs are read-only after construction (except the index, which
 // is refreshed by bg/auto_index_refresher.go).
 type Decider struct {
-	classifier    Classifier          // heuristic
-	fallback      Classifier          // optional LLM
-	index         IndexAccessor       // candidate pool
-	profileStore  ProfileStore        // per-API-Key sticky profile
-	intentCache   *SessionIntentCache // per-session intent cache (v2.0.4)
-	tuningStore   *TuningStore        // optional dynamic params (v2.1)
-	overrideStore *OverrideStore      // optional admin ban/pin overrides (P7.6)
+	classifier          Classifier           // heuristic
+	fallback            Classifier           // optional LLM
+	index               IndexAccessor        // candidate pool
+	profileStore        ProfileStore         // per-API-Key sticky profile
+	intentCache         *SessionIntentCache  // per-session intent cache (v2.0.4)
+	tuningStore         *TuningStore         // optional dynamic params (v2.1)
+	overrideStore       *OverrideStore       // optional admin ban/pin overrides (P7.6)
+	defaultRoutingStore *DefaultRoutingStore // optional explicit default routing (M2)
 
 	// DefaultProfile is used when no header AND no sticky entry exists.
-	// Default: ProfileSmart.
 	DefaultProfile Profile
+
+	// TenantResolver maps apiKeyID → tenantID. When nil, only platform-level rows resolve.
+	TenantResolver func(apiKeyID int) int64
 
 	// LLMConfidenceThreshold: heuristic results below this trigger LLM
 	// fallback. Default: 0.7.
@@ -158,6 +163,11 @@ func (d *Decider) SetOverrideStore(store *OverrideStore) {
 	d.overrideStore = store
 }
 
+// SetDefaultRoutingStore wires the explicit default routing store (M2).
+func (d *Decider) SetDefaultRoutingStore(store *DefaultRoutingStore) {
+	d.defaultRoutingStore = store
+}
+
 // effectiveLLMThreshold returns the dynamic threshold from the tuning
 // store, or the static field when no store is wired.
 func (d *Decider) effectiveLLMThreshold() float64 {
@@ -203,6 +213,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 					Classifier:         "session_cache",
 					Reason:             "reused session intent (within " + d.IntentCacheTTL.String() + " TTL)",
 					DecidedAt:          time.Now(),
+					RoutingSource:      "session_cache",
 				}, nil
 			}
 		}
@@ -225,14 +236,36 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 
 	// Step 3: score candidates
 	recommended := d.index.Recommend(cls.Primary, sigs, profile, d.TopN)
+
+	// Step 3a (M2): explicit default routing.
+	routingSource := "implicit_tag"
+	if flags := GetFeatureFlags(); flags != nil && flags.UseExplicitDefault && d.defaultRoutingStore != nil {
+		tenantID := int64(0)
+		if d.TenantResolver != nil {
+			tenantID = d.TenantResolver(apiKeyID)
+		}
+		if res, ok := d.defaultRoutingStore.Resolve(string(cls.Primary), string(profile), tenantID); ok {
+			prevWinner := ""
+			if len(recommended) > 0 {
+				prevWinner = recommended[0].Candidate.CanonicalName
+			}
+			recommended = promoteCanonical(recommended, res.CanonicalModel)
+			if len(recommended) > 0 && recommended[0].Candidate.CanonicalName == res.CanonicalModel && prevWinner != res.CanonicalModel {
+				routingSource = "explicit_default"
+			}
+		}
+	}
+
 	if d.overrideStore != nil {
 		task := string(cls.Primary)
 		prof := string(profile)
 		filtered := d.overrideStore.FilterBanned(recommended, task, prof)
 		recommended = d.overrideStore.PromotePins(filtered, task, prof)
+		if len(recommended) > 0 && len(filtered) > 0 && recommended[0].Candidate.CanonicalName != filtered[0].Candidate.CanonicalName {
+			routingSource = "override_pin"
+		}
 	}
 
-	// If no candidates matched, return a "no decision" sentinel.
 	if len(recommended) == 0 {
 		return nil, errors.New("autoroute: no candidates match task type " + string(cls.Primary))
 	}
@@ -250,6 +283,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		Reason:             cls.Reason,
 		CandidatesTopN:     recommended,
 		DecidedAt:          time.Now(),
+		RoutingSource:      routingSource,
 	}
 
 	// Step 4: cache the intent for this session
@@ -565,4 +599,26 @@ func (s *MemoryProfileStore) Put(_ context.Context, apiKeyID int, p Profile, ttl
 		expiresAt: s.now().Add(ttl),
 	}
 	return nil
+}
+
+// promoteCanonical (M2): move matched candidate to front; no-op if absent.
+func promoteCanonical(candidates []ScoredCandidate, model string) []ScoredCandidate {
+	if model == "" || len(candidates) == 0 {
+		return candidates
+	}
+	idx := -1
+	for i, c := range candidates {
+		if c.Candidate.CanonicalName == model {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 {
+		return candidates
+	}
+	out := make([]ScoredCandidate, 0, len(candidates))
+	out = append(out, candidates[idx])
+	out = append(out, candidates[:idx]...)
+	out = append(out, candidates[idx+1:]...)
+	return out
 }
