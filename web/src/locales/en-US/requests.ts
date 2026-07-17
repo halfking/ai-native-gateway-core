@@ -63,6 +63,7 @@ export default {
       resultAll: 'All',
       resultInProgress: 'In progress',
       resultSuccess: 'Success',
+      resultRateLimited: 'Rate limited',
       resultFailure: 'Failure',
       errorTitle: 'Error type',
       errorAll: 'All errors',

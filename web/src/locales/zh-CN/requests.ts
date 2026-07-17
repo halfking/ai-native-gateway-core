@@ -71,6 +71,7 @@ export default {
       resultAll: '全部',
       resultInProgress: '请求中',
       resultSuccess: '成功',
+      resultRateLimited: '限流',
       resultFailure: '失败',
       errorTitle: '错误类型',
       errorAll: '全部错误',

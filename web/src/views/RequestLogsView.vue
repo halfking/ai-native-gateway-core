@@ -30,7 +30,7 @@ const apiKeyId = ref<number | ''>('')
 const keyword = ref('')
 const modelFilter = ref('')
 const hours = ref(24)
-const successFilter = ref<'' | 'success' | 'failure' | 'in_progress'>('')
+const successFilter = ref<'' | 'success' | 'failure' | 'rate_limited' | 'in_progress'>('')
 const errorKindFilter = ref('')
 const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
 const gwSessionFilter = ref('')
@@ -235,6 +235,7 @@ function upstreamFinishReasonLabel(v: string | null | undefined): string {
 
 function statusLabel(row: RequestLogRow): string {
   if (row.request_status === 'in_progress') return t('requests.resultInProgress')
+  if (row.request_status === 'rate_limited') return t('requests.resultRateLimited') || '限流'
   if (row.request_status === 'success' || row.success) return t('requests.resultSuccess')
   // 2026-06-19 T-NEW-7: failure_detail_code now contains ONLY real failure
   // codes. upstream_finish_reason is informational and should never be
@@ -931,7 +932,7 @@ function gotoTrace(requestId: string) {
 
 onMounted(async () => {
   const q = route.query
-  if (q.success === 'success' || q.success === 'failure' || q.success === 'in_progress') {
+  if (q.success === 'success' || q.success === 'failure' || q.success === 'rate_limited' || q.success === 'in_progress') {
     successFilter.value = q.success
   }
   if (typeof q.error_kind === 'string' && q.error_kind.trim()) {
@@ -1051,6 +1052,7 @@ onMounted(async () => {
           <option value="in_progress">请求中</option>
           <option value="success">成功</option>
           <option value="failure">失败</option>
+          <option value="rate_limited">限流</option>
         </select>
         <select v-model="errorKindFilter" class="cf-select cf-error" title="错误类型">
           <option value="">全部错误</option>
@@ -1356,7 +1358,7 @@ onMounted(async () => {
               <span><strong>客户端模型:</strong> {{ detail.client_model ?? t('requests.none') }}</span>
               <span :title="outboundModelTitle(detail)"><strong>出站模型:</strong> {{ outboundModelDisplay(detail) }}</span>
               <span><strong>供应商:</strong> {{ detail.provider_name ?? t('requests.none') }}</span>
-              <span><strong>状态:</strong> <span :style="{ color: detail.success ? 'var(--success)' : 'var(--danger)' }">{{ detail.success ? t('requests.resultSuccess') : statusLabel(detail) }}</span></span>
+              <span><strong>状态:</strong> <span :style="{ color: detail.request_status === 'rate_limited' ? 'var(--warning)' : detail.success ? 'var(--success)' : 'var(--danger)' }">{{ detail.success ? t('requests.resultSuccess') : statusLabel(detail) }}</span></span>
               <span v-if="detail.failure_stage"><strong>失败阶段:</strong> {{ detail.failure_stage }}</span>
               <span v-if="detail.failure_detail_code">
                 <strong>失败详情:</strong>
