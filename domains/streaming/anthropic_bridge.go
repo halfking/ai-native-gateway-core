@@ -28,6 +28,44 @@ import (
 
 const anthropicSSEBufSize = 64 * 1024
 
+// clientStreamWriter wraps an http.ResponseWriter + http.Flusher pair and
+// remembers whether the client has gone away. The protocol-bridge paths
+// (Anthropic↔OpenAI, Anthropic↔Responses) use this wrapper so a failed
+// client write latches a per-request "clientDisconnected" flag and
+// subsequent writes short-circuit instead of repeatedly hitting a closed
+// TCP connection. The capturer keeps appending either way so the upstream
+// read loop can finish and persist a replayable body.
+type clientStreamWriter struct {
+	w                  http.ResponseWriter
+	flusher            http.Flusher
+	clientDisconnected bool
+}
+
+func newClientStreamWriter(w http.ResponseWriter, flusher http.Flusher) *clientStreamWriter {
+	return &clientStreamWriter{w: w, flusher: flusher}
+}
+
+// write writes line to the client (best-effort) and updates the
+// disconnected flag on failure.
+func (c *clientStreamWriter) write(line string) bool {
+	if c.clientDisconnected {
+		return false
+	}
+	if !safeWriteSSE(c.w, line) || !safeFlush(c.flusher) {
+		c.clientDisconnected = true
+		return false
+	}
+	return true
+}
+
+// flush performs a best-effort flush if the client is still connected.
+func (c *clientStreamWriter) flush() {
+	if c.clientDisconnected || c.flusher == nil {
+		return
+	}
+	safeFlush(c.flusher)
+}
+
 // StreamAnthropicPassthrough is the live Q4 Anthropic SSE forwarder. It
 // reads Anthropic-format SSE events from upstream and writes them to
 // the client unchanged (byte-for-byte), while scanning for
@@ -84,6 +122,7 @@ func StreamAnthropicPassthrough(
 	flusher.Flush()
 
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
+	clientDisconnected := false
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -98,13 +137,11 @@ func StreamAnthropicPassthrough(
 			}
 			return outcome
 		}
-		if _, werr := w.Write([]byte(line)); werr != nil {
-			outcome.Interrupted = true
-			outcome.Reason = "client_disconnected"
-			if capture != nil {
-				capture.MarkInterruptedWithReason("client_disconnected")
+		if !clientDisconnected {
+			if !safeWriteSSE(w, line) || !safeFlush(flusher) {
+				clientDisconnected = true
+				slog.Info("anthropic passthrough client disconnected; continuing upstream capture", "request_id", requestID)
 			}
-			return outcome
 		}
 		if pc != nil {
 			pc.append(line)
@@ -114,11 +151,13 @@ func StreamAnthropicPassthrough(
 			payload = strings.TrimSpace(payload)
 			observeAnthropicPayload(capture, payload, clientModel, outboundModel)
 		}
-		if line == "\n" {
-			flusher.Flush()
+		if line == "\n" && !clientDisconnected {
+			safeFlush(flusher)
 		}
 	}
-	flusher.Flush()
+	if !clientDisconnected {
+		safeFlush(flusher)
+	}
 	return outcome
 }
 
@@ -265,14 +304,15 @@ func StreamAnthropicSSEToOpenAI(
 		initialArgsSent     bool
 	)
 
+	clientWriter := newClientStreamWriter(w, flusher)
+
 	writeChunk := func(chunk *ir.StreamChunk) {
 		if chunk == nil {
 			return
 		}
 
 		sseLine := chunk.SerializeOpenAI(chatID, chunkModel, createdAt)
-		_, _ = io.WriteString(w, sseLine)
-		flusher.Flush()
+		clientWriter.write(sseLine)
 
 		if pc != nil {
 			pc.append(sseLine)

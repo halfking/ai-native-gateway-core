@@ -3,6 +3,8 @@ package streaming
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -46,6 +48,13 @@ type responsesScaffold struct {
 	respID  string // "resp_" + requestID-derived suffix
 	msgID   string // "msg_" + requestID-derived suffix
 	created int64  // unix timestamp
+
+	// pc is the optional pending capturer so initial/final envelope events
+	// are still recorded when the client has already gone away (Track C C5).
+	pc *pendingCapturer
+	// clientWriter latches the disconnected state so the scaffold stops
+	// hitting a closed client connection while still appending to pc.
+	clientWriter *clientStreamWriter
 }
 
 // newResponsesScaffold derives the deterministic response/msg IDs from the
@@ -76,10 +85,34 @@ func newResponsesScaffold(w http.ResponseWriter, flusher http.Flusher, requestID
 	}
 }
 
+func (s *responsesScaffold) attachCapturer(pc *pendingCapturer, cw *clientStreamWriter) {
+	s.pc = pc
+	s.clientWriter = cw
+}
+
+// writeSSEEvent writes a single Responses API SSE event. When pc is
+// attached, the same bytes are appended to the capturer so the envelope
+// survives a client disconnect.
+func (s *responsesScaffold) writeSSEEvent(event string, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	line := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
+	if s.clientWriter != nil {
+		s.clientWriter.write(line)
+	} else {
+		writeSSE(s.w, event, payload)
+	}
+	if s.pc != nil {
+		s.pc.append(line)
+	}
+}
+
 // writeInitialEvents emits the Responses API opening sequence so SDK
 // clients see a well-formed response envelope from the first event.
 func (s *responsesScaffold) writeInitialEvents() {
-	writeSSE(s.w, "response.created", map[string]any{
+	s.writeSSEEvent("response.created", map[string]any{
 		"type": "response.created",
 		"response": map[string]any{
 			"id":         s.respID,
@@ -90,9 +123,8 @@ func (s *responsesScaffold) writeInitialEvents() {
 			"output":     []any{},
 		},
 	})
-	s.flusher.Flush()
 
-	writeSSE(s.w, "response.output_item.added", map[string]any{
+	s.writeSSEEvent("response.output_item.added", map[string]any{
 		"type":         "response.output_item.added",
 		"output_index": 0,
 		"item": map[string]any{
@@ -103,9 +135,8 @@ func (s *responsesScaffold) writeInitialEvents() {
 			"content": []any{},
 		},
 	})
-	s.flusher.Flush()
 
-	writeSSE(s.w, "response.content_part.added", map[string]any{
+	s.writeSSEEvent("response.content_part.added", map[string]any{
 		"type":          "response.content_part.added",
 		"item_id":       s.msgID,
 		"output_index":  0,
@@ -116,7 +147,6 @@ func (s *responsesScaffold) writeInitialEvents() {
 			"annotations": []any{},
 		},
 	})
-	s.flusher.Flush()
 }
 
 // writeFinalEvents emits response.output_text.done, response.output_item.done,
@@ -137,7 +167,7 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 		"content_index": 0,
 		"text":          fullText,
 	}
-	writeSSE(s.w, "response.output_text.done", textDone)
+	s.writeSSEEvent("response.output_text.done", textDone)
 
 	itemDone := map[string]any{
 		"type":         "response.output_item.done",
@@ -152,7 +182,7 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 			},
 		},
 	}
-	writeSSE(s.w, "response.output_item.done", itemDone)
+	s.writeSSEEvent("response.output_item.done", itemDone)
 
 	completed := map[string]any{
 		"type": "response.completed",
@@ -180,8 +210,7 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 			},
 		},
 	}
-	writeSSE(s.w, "response.completed", completed)
-	s.flusher.Flush()
+	s.writeSSEEvent("response.completed", completed)
 }
 
 // StreamAnthropicSSEToResponses reads Anthropic SSE upstream and writes
@@ -245,7 +274,9 @@ func StreamAnthropicSSEToResponses(
 		clientModel = outboundModel
 	}
 
+	clientWriter := newClientStreamWriter(w, flusher)
 	scaffold := newResponsesScaffold(w, flusher, requestID, clientModel)
+	scaffold.attachCapturer(pc, clientWriter)
 	scaffold.writeInitialEvents()
 
 	var ctx context.Context
@@ -300,8 +331,7 @@ func StreamAnthropicSSEToResponses(
 		if sseLine == "" {
 			return
 		}
-		_, _ = io.WriteString(w, sseLine)
-		flusher.Flush()
+		clientWriter.write(sseLine)
 		if pc != nil {
 			pc.append(sseLine)
 		}
@@ -480,7 +510,9 @@ func StreamOpenAIToResponsesSSE(
 		clientModel = outboundModel
 	}
 
+	clientWriter := newClientStreamWriter(w, flusher)
 	scaffold := newResponsesScaffold(w, flusher, requestID, clientModel)
+	scaffold.attachCapturer(pc, clientWriter)
 	scaffold.writeInitialEvents()
 
 	var ctx context.Context
@@ -529,8 +561,7 @@ func StreamOpenAIToResponsesSSE(
 		if sseLine == "" {
 			return
 		}
-		_, _ = io.WriteString(w, sseLine)
-		flusher.Flush()
+		clientWriter.write(sseLine)
 		if pc != nil {
 			pc.append(sseLine)
 		}

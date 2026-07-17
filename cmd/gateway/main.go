@@ -660,6 +660,7 @@ func main() {
 				var pc *streaming.PendingCapturer
 				if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
 					pc = streaming.NewPendingCapturer(0)
+					markCapturedPendingInProgress(pendingStore, resp)
 				}
 				var stripFn func([]byte) []byte
 				switch catalogCode {
@@ -3650,6 +3651,36 @@ func (a sessionAuthAdapter) Verify(ctx context.Context, rawKey string) (session.
 	return session.KeyInfo{ID: ki.ID, TenantID: ki.TenantID}, nil
 }
 
+// markCapturedPendingInProgress creates the durable placeholder before the
+// stream starts. This makes a reconnect observe in_progress even if the
+// original HTTP client disconnects before the upstream produces a chunk.
+func markCapturedPendingInProgress(store *pending.Store, resp *http.Response) {
+	if store == nil || resp == nil {
+		return
+	}
+	sessionID := streaming.SessionIDFromResp(resp)
+	requestID := streaming.RequestIDFromResp(resp)
+	if sessionID == "" || requestID == "" {
+		return
+	}
+	tenantID := ""
+	if resp.Request != nil {
+		tenantID = session.GetTenantIDFromContext(resp.Request.Context())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := store.MarkInProgress(ctx, &pending.Response{
+		SessionID: sessionID,
+		TenantID:  tenantID,
+		RequestID: requestID,
+		Status:    pending.StatusInProgress,
+		IsStream:  true,
+		CreatedAt: time.Now().Unix(),
+	}); err != nil {
+		slog.Warn("pending_mark_in_progress_failed", "session_id", sessionID, "request_id", requestID, "error", err)
+	}
+}
+
 // saveCapturedPending persists the capturer's buffered SSE body to the
 // pending store so a client that disconnects mid-stream can pick up
 // the response via GET /v1/sessions/{id}/pending-response (Track C C5,
@@ -3665,8 +3696,13 @@ func saveCapturedPending(store *pending.Store, pc *streaming.PendingCapturer, re
 	}
 	saveCtx, saveCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer saveCancel()
+	tenantID := ""
+	if resp != nil && resp.Request != nil {
+		tenantID = session.GetTenantIDFromContext(resp.Request.Context())
+	}
 	if err := store.Save(saveCtx, &pending.Response{
 		SessionID:    streaming.SessionIDFromResp(resp),
+		TenantID:     tenantID,
 		RequestID:    streaming.RequestIDFromResp(resp),
 		Status:       pending.Status(state.Status),
 		Body:         string(body),

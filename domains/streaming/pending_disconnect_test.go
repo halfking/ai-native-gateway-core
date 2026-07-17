@@ -1,0 +1,93 @@
+package streaming
+
+import (
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+type disconnectingStreamWriter struct {
+	header http.Header
+}
+
+func (w *disconnectingStreamWriter) Header() http.Header { return w.header }
+
+func (w *disconnectingStreamWriter) Write([]byte) (int, error) {
+	return 0, errors.New("client disconnected")
+}
+
+func (w *disconnectingStreamWriter) WriteHeader(int) {}
+func (w *disconnectingStreamWriter) Flush()          {}
+
+func newDisconnectingStreamWriter() *disconnectingStreamWriter {
+	return &disconnectingStreamWriter{header: http.Header{}}
+}
+
+func TestStreamChatWithPendingCaptureContinuesAfterClientDisconnect(t *testing.T) {
+	body := strings.Join([]string{
+		"data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+		"data: [DONE]\n\n",
+	}, "")
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(body)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	pc := NewPendingCapturer(1024)
+
+	outcome := StreamChatWithPendingCapture(
+		newDisconnectingStreamWriter(),
+		resp,
+		"gpt-test",
+		"gpt-test",
+		NewNormalizer(),
+		nil,
+		false,
+		nil,
+		pc,
+	)
+
+	assert.False(t, outcome.Interrupted)
+	bodyCaptured, state, ok := pc.Snapshot()
+	require.True(t, ok)
+	assert.Equal(t, "completed", state.Status)
+	assert.Contains(t, string(bodyCaptured), `"content":"hello"`)
+	assert.Contains(t, string(bodyCaptured), "data: [DONE]")
+}
+
+func TestStreamAnthropicPassthroughContinuesAfterClientDisconnect(t *testing.T) {
+	body := strings.Join([]string{
+		"event: message_start\n",
+		"data: {\"type\":\"message_start\"}\n",
+		"\n",
+		"event: message_stop\n",
+		"data: {\"type\":\"message_stop\"}\n",
+		"\n",
+	}, "")
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(body)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+	}
+	pc := NewPendingCapturer(1024)
+
+	outcome := StreamAnthropicPassthrough(
+		newDisconnectingStreamWriter(),
+		resp,
+		"claude-test",
+		"claude-test",
+		"request-1",
+		nil,
+		pc,
+	)
+
+	assert.False(t, outcome.Interrupted)
+	bodyCaptured, state, ok := pc.Snapshot()
+	require.True(t, ok)
+	assert.Equal(t, "completed", state.Status)
+	assert.Equal(t, body, string(bodyCaptured))
+}
