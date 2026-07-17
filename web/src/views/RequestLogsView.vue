@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
 import { localeRef } from '../i18n'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestLogs,
@@ -19,6 +19,7 @@ import {
   type SessionSummaryToMemoraResponse,
 } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
+import RequestTraceModal from '../components/RequestTraceModal.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
 const rows = ref<RequestLogRow[]>([])
@@ -99,6 +100,9 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
 const detailTab = ref<'request' | 'outbound' | 'response' | 'attachments'>('request')
+
+// 2026-07-17: 流程详情直接使用 modal，避免导航到已删除的独立 trace 路由。
+const traceRequestId = ref<string | null>(null)
 
 // 2026-07-01 (migration 325): 附件查看状态。
 // detail.attachments 由详情接口直接返回（无需额外请求）；attachmentsLightbox
@@ -917,13 +921,12 @@ function roleColor(role: string): string {
 }
 
 const route = useRoute()
-const router = useRouter()
 
-// 2026-07-17: super_admin 在每条日志行可一键跳转至 /admin/request-trace，
-// 在那里可以查看完整链路时间线与生成 AI 分析提示词。其他角色看不到此列。
+// 2026-07-17: super_admin 在每条日志行可直接打开流程详情 modal，
+// 不再导航到已删除的独立 trace 页面。
 function gotoTrace(requestId: string) {
   if (!requestId) return
-  router.push({ path: '/admin/request-trace', query: { requestId } })
+  traceRequestId.value = requestId
 }
 
 onMounted(async () => {
@@ -1551,6 +1554,15 @@ onMounted(async () => {
         </Teleport>
       </div>
     </div>
+
+    <!-- 2026-07-17: 流程详情入口直接挂载现有 modal，避免失效路由。 -->
+    <Teleport to="body">
+      <RequestTraceModal
+        v-if="traceRequestId"
+        :request-id="traceRequestId"
+        @close="traceRequestId = null"
+      />
+    </Teleport>
   </div>
 </template>
 
