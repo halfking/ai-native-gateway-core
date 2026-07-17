@@ -4637,7 +4637,14 @@ func detectEmptyStreamResponse(m map[string]any, reqLog *telemetry.RequestLogEnt
 		return false // Has tokens means not empty
 	}
 
-	// Check 3: No content preview (check both reqLog and capture)
+	// Check 3: Structured tool calls are valid content even when the
+	// assistant has no text preview. This is common for tool-only streams
+	// whose first few deltas contain an id/name/arguments split across chunks.
+	if toolCalls, ok := m["tool_calls"]; ok && hasStructuredToolCalls(toolCalls) {
+		return false
+	}
+
+	// Check 4: No content preview (check both reqLog and capture)
 	hasPreview := reqLog.ResponsePreview != nil && *reqLog.ResponsePreview != ""
 	if hasPreview {
 		return false // Has content means not empty
@@ -4665,8 +4672,17 @@ func detectEmptyStreamResponse(m map[string]any, reqLog *telemetry.RequestLogEnt
 	return true
 }
 
-// extractFirstUserMessage 提取 chat 请求 body 中第一条 role="user" 的消息文本。
-//
+func hasStructuredToolCalls(value any) bool {
+	switch calls := value.(type) {
+	case []map[string]any:
+		return len(calls) > 0
+	case []any:
+		return len(calls) > 0
+	default:
+		return false
+	}
+}
+
 // 2026-06-28: 为 session-audit hook.CheckV1 提供 user content。
 // 返回 "" 表示 body 不可解析 / 找不到 user message（hook 收到空 content
 // 会降级 Pass，不阻断主流程）。

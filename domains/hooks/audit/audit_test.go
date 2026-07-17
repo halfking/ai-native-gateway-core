@@ -10,6 +10,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domain"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
 var _ pipeline.Hook = (*AuditLogHook)(nil)
@@ -722,17 +723,29 @@ func TestStreamCapture_ReasoningContent(t *testing.T) {
 
 func TestStreamCapture_Reset(t *testing.T) {
 	sc := NewStreamCapture()
+	chunk := &ir.StreamChunk{
+		Type: ir.ChunkTypeDelta,
+		Delta: &ir.StreamDelta{ToolCalls: []ir.StreamToolCallDelta{{
+			Index: 0, ID: "call_reset", Type: "function", Name: "tool", Arguments: "{}",
+		}}},
+	}
+	sc.ObserveChunk(chunk)
+	if _, ok := sc.SummaryAsMap()["tool_calls"]; !ok {
+		t.Fatal("expected tool calls before reset")
+	}
+
 	sc.ObservePayload(
 		`{"choices":[{"index":0,"delta":{"content":"first attempt"}}]}`,
 		"", false)
+
 	pt := 100
 	ct := 50
 	sc.ObserveUsage(&pt, &ct, nil, nil)
 	sc.MarkInterruptedWithReason("stream_timeout")
 
 	m := sc.SummaryAsMap()
-	if m["stream_chunk_count"].(int) != 1 {
-		t.Errorf("expected 1 chunk before reset, got %v", m["stream_chunk_count"])
+	if m["stream_chunk_count"].(int) != 2 {
+		t.Errorf("expected 2 chunks before reset, got %v", m["stream_chunk_count"])
 	}
 	if _, ok := m["stream_text_content"]; !ok {
 		t.Error("expected textContent before reset")
@@ -752,6 +765,9 @@ func TestStreamCapture_Reset(t *testing.T) {
 	}
 	if m2["stream_done_received"].(bool) != false {
 		t.Error("expected done_received=false after reset")
+	}
+	if _, ok := m2["tool_calls"]; ok {
+		t.Error("expected tool_calls to be cleared after reset")
 	}
 
 	sc.ObservePayload(

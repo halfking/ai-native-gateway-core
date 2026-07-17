@@ -195,7 +195,6 @@ func (sc *StreamCapture) RecordDone() {
 	sc.doneReceived = true
 }
 
-
 // RecordChunkSent increments the count of chunks successfully sent to the client.
 // This is called after a chunk is written and flushed to the client, distinguishing
 // it from chunkCount (which tracks chunks received from upstream).
@@ -238,6 +237,12 @@ func (sc *StreamCapture) Reset() {
 	sc.ModelMismatch = false
 	sc.InputTokens = nil
 	sc.OutputTokens = nil
+	sc.ToolCalls = nil
+	sc.QualityFlags = nil
+	sc.QualityFixActions = nil
+	sc.QualityScore = nil
+	sc.QualitySeenToolCallIDs = nil
+
 }
 
 func (sc *StreamCapture) Snapshot() (chunkCount, ttfbMs int, done, interrupted bool, checksum string) {
