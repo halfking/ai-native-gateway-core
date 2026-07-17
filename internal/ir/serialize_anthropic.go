@@ -266,14 +266,11 @@ func serializeAnthropicMessage(msg Message, targetProvider string) map[string]an
 			"type": "tool_result",
 		}
 		if msg.ToolCallID != "" {
-			// MiniMax（Anthropic 兼容协议）使用 tool_call_id 字段名而非标准
-			// Anthropic 的 tool_use_id。这里根据 targetProvider 分支处理。
-			// 参考：MiniMax-M3 tool_call_id not found (2013) bug 修复。
-			if targetProvider == "minimax" {
-				toolResult["tool_call_id"] = msg.ToolCallID
-			} else {
-				toolResult["tool_use_id"] = msg.ToolCallID
-			}
+			// Provider-specific field name mapping: some providers (e.g., MiniMax)
+			// use "tool_call_id" while standard Anthropic uses "tool_use_id".
+			// Use the mapping table to ensure compatibility without breaking other providers.
+			fieldName := GetProviderFieldConfig(targetProvider).ToolResultIDField
+			toolResult[fieldName] = msg.ToolCallID
 		}
 		// Extract content from text blocks. Also handle tool_result blocks nested
 		// inside the message content (e.g. when the IR was produced by parsing an
@@ -440,13 +437,10 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string) m
 
 	case "tool_result":
 		if block.ToolResult != nil {
-			// MiniMax（Anthropic 兼容协议）使用 tool_call_id 字段名而非标准
-			// Anthropic 的 tool_use_id。根据 targetProvider 分支处理。
-			if targetProvider == "minimax" {
-				out["tool_call_id"] = block.ToolResult.ToolUseID
-			} else {
-				out["tool_use_id"] = block.ToolResult.ToolUseID
-			}
+			// Provider-specific field name mapping: use the mapping table to ensure
+			// compatibility without breaking other providers.
+			fieldName := GetProviderFieldConfig(targetProvider).ToolResultIDField
+			out[fieldName] = block.ToolResult.ToolUseID
 			out["is_error"] = block.ToolResult.IsError
 
 			// Serialize content - can be text blocks
@@ -751,13 +745,9 @@ func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvide
 		// Check tool_result IDs
 		for _, block := range contentBlocks {
 			if blockType, _ := block["type"].(string); blockType == "tool_result" {
-				// MiniMax uses tool_call_id, standard Anthropic uses tool_use_id
-				var id string
-				if targetProvider == "minimax" {
-					id, _ = block["tool_call_id"].(string)
-				} else {
-					id, _ = block["tool_use_id"].(string)
-				}
+				// Provider-specific field name: use mapping table for compatibility
+				fieldName := GetProviderFieldConfig(targetProvider).ToolResultIDField
+				id, _ := block[fieldName].(string)
 
 				if id != "" && !toolUseIDs[id] {
 					orphans = append(orphans, id)
