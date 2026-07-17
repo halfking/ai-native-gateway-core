@@ -44,6 +44,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/distribution"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis"                            //nolint:depguard // M3 embedding shadow adapter
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/approval"                            //nolint:depguard // D1: approval config management
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -2204,6 +2205,22 @@ func main() {
 			// v2.1: Decider reads the LLM-fallback threshold from
 			// tuningStore dynamically (atomic.Pointer load, no lock).
 			decider.SetTuningStore(tuningStore)
+			if flags := autoroute.GetFeatureFlags(); flags != nil && flags.AutoEmbeddingRoute {
+				analysisBaseURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ANALYSIS_BASE_URL"))
+				analysisAPIKey := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ANALYSIS_API_KEY"))
+				analysisModel := strings.TrimSpace(os.Getenv("LLM_GATEWAY_EMBEDDING_MODEL"))
+				if analysisModel == "" {
+					analysisModel = strings.TrimSpace(os.Getenv("LLM_GATEWAY_SA_MODEL_EMBEDDING"))
+				}
+				if analysisModel == "" {
+					analysisModel = "text-embedding-3-small"
+				}
+				oc := analysis.NewOpenAIClientWithNetworkPolicy(analysisBaseURL, analysisAPIKey, 10*time.Second, false)
+				embedClf := autoroute.NewEmbeddingClassifier(dbConn.Pool(), &embedAdapter{oc: oc, model: analysisModel}, analysisModel, 1024)
+				decider.SetShadowClassifier(embedClf)
+				decider.SetShadowSampleRate(0.01)
+				slog.Info("autoroute: embedding shadow enabled", "sample_rate", 0.01, "model", analysisModel)
+			}
 			// v2.1: Score() also reads profile weights from tuningStore.
 			autoroute.SetTuningStore(tuningStore)
 			chatHandler.SetAutoRoute(decider)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +68,10 @@ type Decision struct {
 
 	// RoutingSource (M2): explicit_default/implicit_tag/override_pin/session_cache.
 	RoutingSource string
+
+	// Embedding shadow fields are populated only when a sampled shadow call succeeds.
+	EmbeddingShadowTask       string  `json:"embedding_shadow_task,omitempty"`
+	EmbeddingShadowSimilarity float64 `json:"embedding_shadow_similarity,omitempty"`
 }
 
 // IndexAccessor is the minimal interface Decider needs from autoroute.Index.
@@ -90,6 +95,8 @@ type IndexAccessor interface {
 type Decider struct {
 	classifier          Classifier           // heuristic
 	fallback            Classifier           // optional LLM
+	shadowClassifier    Classifier           // optional embedding shadow
+	shadowSampleRate    float64              // sampled fraction, default 1%
 	index               IndexAccessor        // candidate pool
 	profileStore        ProfileStore         // per-API-Key sticky profile
 	intentCache         *SessionIntentCache  // per-session intent cache (v2.0.4)
@@ -138,6 +145,7 @@ func NewDecider(classifier Classifier, fallback Classifier, index IndexAccessor,
 		intentCache:            NewSessionIntentCache(10 * time.Minute),
 		DefaultProfile:         ProfileSmart,
 		LLMConfidenceThreshold: 0.7,
+		shadowSampleRate:       0.01,
 		StickyTTL:              30 * time.Minute,
 		IntentCacheTTL:         10 * time.Minute,
 		TopN:                   3,
@@ -166,6 +174,23 @@ func (d *Decider) SetOverrideStore(store *OverrideStore) {
 // SetDefaultRoutingStore wires the explicit default routing store (M2).
 func (d *Decider) SetDefaultRoutingStore(store *DefaultRoutingStore) {
 	d.defaultRoutingStore = store
+}
+
+// SetShadowClassifier wires the optional embedding classifier used for
+// sampled observability. It never changes the primary routing result.
+func (d *Decider) SetShadowClassifier(c Classifier) {
+	d.shadowClassifier = c
+}
+
+// SetShadowSampleRate configures the fraction of requests sent to shadow.
+func (d *Decider) SetShadowSampleRate(rate float64) {
+	if rate < 0 {
+		rate = 0
+	}
+	if rate > 1 {
+		rate = 1
+	}
+	d.shadowSampleRate = rate
 }
 
 // SetTenantResolver wires the apiKeyID -> tenantID resolver used by Decide
@@ -296,6 +321,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
 	}
+	d.populateShadow(ctx, sigs, decision)
 
 	// Step 4: cache the intent for this session
 	if sessionID != "" && d.intentCache != nil {
@@ -311,6 +337,66 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 
 	return decision, nil
 }
+
+type shadowResult struct {
+	classification *Classification
+	vector         []float32
+}
+
+func (d *Decider) populateShadow(ctx context.Context, sigs ClassificationSignals, decision *Decision) {
+	if d.shadowClassifier == nil || d.shadowSampleRate <= 0 || randomFloat64() >= d.shadowSampleRate {
+		return
+	}
+	shadowCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	result := make(chan shadowResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		if embedding, ok := d.shadowClassifier.(*EmbeddingClassifier); ok {
+			classification, vector, err := embedding.ClassifyWithVector(shadowCtx, sigs)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			result <- shadowResult{classification: classification, vector: vector}
+			return
+		}
+		classification, err := d.shadowClassifier.Classify(shadowCtx, sigs)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		result <- shadowResult{classification: classification}
+	}()
+
+	select {
+	case shadow := <-result:
+		if shadow.classification == nil || !isValidTaskType(shadow.classification.Primary) {
+			slog.Warn("autoroute: embedding shadow returned invalid classification")
+			return
+		}
+		decision.EmbeddingShadowTask = string(shadow.classification.Primary)
+		decision.EmbeddingShadowSimilarity = shadow.classification.Confidence
+		if len(shadow.vector) > 0 {
+			if embedding, ok := d.shadowClassifier.(*EmbeddingClassifier); ok {
+				go func() {
+					updateCtx, updateCancel := context.WithTimeout(context.Background(), 2*time.Second)
+					defer updateCancel()
+					if err := embedding.UpdateCentroidEMA(updateCtx, decision.TaskType, shadow.vector); err != nil {
+						slog.Warn("autoroute: embedding shadow EMA update failed", "error", err)
+					}
+				}()
+			}
+		}
+	case err := <-errCh:
+		slog.Warn("autoroute: embedding shadow classify failed", "error", err)
+	case <-shadowCtx.Done():
+		slog.Warn("autoroute: embedding shadow timed out", "error", shadowCtx.Err())
+	}
+}
+
+// randomFloat64 is isolated for deterministic replacement in tests if needed.
+func randomFloat64() float64 { return rand.Float64() }
 
 // resolveProfile applies the profile precedence:
 //
