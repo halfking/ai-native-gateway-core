@@ -521,11 +521,76 @@ func serializeAnthropicTools(tools []ToolDefinition) []map[string]any {
 			toolMap["description"] = tool.Description
 		}
 		if tool.Parameters != nil {
-			toolMap["input_schema"] = tool.Parameters
+			// Unmarshal and sanitize the schema to fix common format errors
+			var params any
+			if err := json.Unmarshal(tool.Parameters, &params); err == nil {
+				toolMap["input_schema"] = sanitizeInputSchema(params)
+			} else {
+				// Fallback: use raw if unmarshal fails
+				toolMap["input_schema"] = tool.Parameters
+			}
 		}
 		result = append(result, toolMap)
 	}
 	return result
+}
+
+// sanitizeInputSchema 修正 JSON Schema 中的常见格式错误，确保符合 Anthropic API 要求。
+// 主要修正：
+//  1. required 字段必须是字符串数组，不能是单个字符串
+//  2. 递归处理嵌套的 properties 和 items
+//
+// 背景：claude-opus-4-8 对 input_schema.required 进行严格验证，要求必须是数组格式。
+// 某些客户端或 SDK 可能发送错误格式（单个字符串或混合类型数组），导致 400 错误。
+func sanitizeInputSchema(schema any) any {
+	schemaMap, ok := schema.(map[string]any)
+	if !ok {
+		return schema
+	}
+
+	// 修正 required 字段
+	if required, exists := schemaMap["required"]; exists && required != nil {
+		switch r := required.(type) {
+		case string:
+			// 单个字符串 → 数组
+			schemaMap["required"] = []string{r}
+		case []any:
+			// 确保所有元素都是字符串
+			strArray := make([]string, 0, len(r))
+			for _, v := range r {
+				if s, ok := v.(string); ok {
+					strArray = append(strArray, s)
+				}
+			}
+			schemaMap["required"] = strArray
+		case []string:
+			// 已经是正确格式，保持不变
+		default:
+			// 其他类型（如数字、布尔），删除该字段
+			delete(schemaMap, "required")
+		}
+	}
+
+	// 递归处理 properties
+	if properties, ok := schemaMap["properties"].(map[string]any); ok {
+		for key, prop := range properties {
+			properties[key] = sanitizeInputSchema(prop)
+		}
+	}
+
+	// 递归处理 items (数组类型)
+	if items, ok := schemaMap["items"]; ok {
+		schemaMap["items"] = sanitizeInputSchema(items)
+	}
+
+	// 递归处理 additionalProperties
+	if additionalProps, ok := schemaMap["additionalProperties"]; ok {
+		if additionalPropsMap, isMap := additionalProps.(map[string]any); isMap {
+			schemaMap["additionalProperties"] = sanitizeInputSchema(additionalPropsMap)
+		}
+	}
+
+	return schemaMap
 }
 
 // serializeAnthropicToolChoice converts IR ToolChoice to Anthropic format.
