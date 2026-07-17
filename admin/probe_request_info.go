@@ -35,12 +35,23 @@ func extractProbeInfo(entry *telemetry.RequestLogEntry) probeRequestInfo {
 	if entry == nil {
 		return probeRequestInfo{}
 	}
-	if entry.TaskType == nil || *entry.TaskType != "probe_triggered" {
+	// Two detection paths:
+	//   1. TaskType == "probe_triggered" (legacy ActiveProbeWorker path)
+	//   2. OriginStage == "node_probe"  (NodeProbeWorker probeGateway path)
+	isProbe := false
+	origin := ""
+	if entry.TaskType != nil && *entry.TaskType == "probe_triggered" {
+		isProbe = true
+	}
+	if entry.OriginStage != nil && *entry.OriginStage == "node_probe" {
+		isProbe = true
+		origin = "gateway"
+	}
+	if !isProbe {
 		return probeRequestInfo{}
 	}
 
-	origin := "direct"
-	if entry.TaskTypeChosen != nil {
+	if origin == "" && entry.TaskTypeChosen != nil {
 		switch *entry.TaskTypeChosen {
 		case "probe_direct":
 			origin = "direct"

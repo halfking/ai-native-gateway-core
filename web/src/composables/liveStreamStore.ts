@@ -101,7 +101,7 @@ export interface LiveStreamHealth {
 }
 
 export interface LiveStreamEnvelope {
-  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update' | 'incident_update'
+  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update' | 'incident_update' | 'snapshot_refresh'
   ts: string
   request?: LiveRequest
   requests?: LiveRequest[]
@@ -109,6 +109,7 @@ export interface LiveStreamEnvelope {
   delta?: LiveStreamDelta
   health?: LiveStreamHealth
   incident?: RouteIncidentUpdate
+  lane_ids?: string[]
 }
 
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' | 'unsupported'
@@ -138,7 +139,24 @@ export const lastEventAtRef: ComputedRef<number> = computed(() => liveStreamStat
 export const redisHealthyRef: ComputedRef<boolean> = computed(() => liveStreamState.redisHealthy)
 export const redisErrorRef: ComputedRef<string> = computed(() => liveStreamState.redisError)
 
-export const MAX_VISIBLE = 60
+const TILE_WIDTH = 80
+const TILE_GAP = 6
+const TILES_PER_LANE_ESTIMATE = 12 // average lanes visible in a typical viewport
+
+function computeMaxVisible(): number {
+  if (typeof window === 'undefined') return 60
+  const viewportWidth = window.innerWidth
+  const tilesPerRow = Math.floor((viewportWidth + TILE_GAP) / (TILE_WIDTH + TILE_GAP))
+  // Keep 2x viewport-width of tiles to allow smooth scroll buffer
+  return Math.max(20, Math.min(200, tilesPerRow * 2 * TILES_PER_LANE_ESTIMATE))
+}
+
+export let MAX_VISIBLE = computeMaxVisible()
+
+export function recomputeMaxVisible() {
+  MAX_VISIBLE = computeMaxVisible()
+}
+
 export const ENDPOINT = '/api/admin/live-stream'
 
 // localStorage 中允许管理员写入一个自定义 SSE endpoint（reverse proxy / 隧道）
@@ -328,6 +346,16 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     return
   }
 
+  // snapshot_refresh: 服务端每30分钟推送的全量快照刷新。
+  // 替换而非合并 snapshot，重置请求列表，避免增量偏差累积。
+  if (env.type === 'snapshot_refresh' && env.snapshot) {
+    liveStreamState.snapshot = null          // force full reset
+    liveStreamState.snapshot = env.snapshot
+    liveStreamState.requests = []
+    idIndex.clear()
+    return
+  }
+
   if (env.delta) {
     mergeDelta(env.delta)
   } else if (env.snapshot) {
@@ -340,7 +368,9 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     return
   }
   if (env.type === 'idle_marker') {
-    pushOrQueue({ type: 'idle_marker', ts: env.ts })
+    if (env.lane_ids && env.ts) {
+      handleLaneIdleCheck(env.lane_ids, env.ts)
+    }
     return
   }
   if (env.type === 'health_update') {
@@ -351,6 +381,71 @@ function handleEnvelope(env: LiveStreamEnvelope) {
       mod.applyIncidentUpdate(env.incident!)
     })
     return
+  }
+}
+
+/**
+ * Handle idle_marker envelope: backend broadcasts all known lane IDs every 5 min.
+ * For each lane, check if it has recent (<5min) non-idle activity.
+ * If idle → create/update an idle tile in the snapshot lane's request list.
+ * If active → remove any existing idle tile.
+ */
+function handleLaneIdleCheck(laneIds: string[], backendTs: string) {
+  const snap = liveStreamState.snapshot
+  if (!snap) return
+
+  const now = Date.now()
+  const idleThresholdMs = 5 * 60 * 1000
+
+  for (const laneId of laneIds) {
+    const colonIdx = laneId.indexOf(':')
+    if (colonIdx === -1) continue
+    const dim = laneId.substring(0, colonIdx) as 'vendor' | 'provider' | 'model'
+    const key = laneId.substring(colonIdx + 1)
+
+    const lanes = snap.dimensions[dim]
+    if (!lanes) continue
+    const lane = lanes.find(l => l.id === key)
+    if (!lane) continue
+
+    // Check for recent non-idle tiles
+    const hasRecentActivity = lane.requests.some(tile => {
+      if (tile.status === 'idle') return false
+      const tileTs = new Date(tile.timestamp).getTime()
+      return !Number.isNaN(tileTs) && (now - tileTs) < idleThresholdMs
+    })
+
+    const stableId = `idle-${dim}-${key.replace(/[:/]/g, '_')}`
+
+    // Remove existing idle tile if lane is active
+    if (hasRecentActivity) {
+      const idx = lane.requests.findIndex(t => t.request_id === stableId)
+      if (idx >= 0) lane.requests.splice(idx, 1)
+      continue
+    }
+
+    // Find the last non-idle tile's timestamp to calculate idle duration
+    const sorted = [...lane.requests]
+      .filter(t => t.status !== 'idle')
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    const idleSince = sorted.length > 0 ? sorted[0].timestamp : backendTs
+
+    const idleTile: LiveStreamTile = {
+      request_id: stableId,
+      timestamp: idleSince,
+      model: dim === 'model' ? key : '空闲',
+      vendor: dim === 'vendor' ? key : '__idle__',
+      provider: dim === 'provider' ? key : '系统心跳',
+      status: 'idle',
+    }
+
+    // Replace existing idle tile or add
+    const existing = lane.requests.findIndex(t => t.request_id === stableId)
+    if (existing >= 0) {
+      lane.requests[existing] = idleTile
+    } else {
+      lane.requests.push(idleTile)
+    }
   }
 }
 
@@ -542,6 +637,11 @@ function mergeLegendsByKey(existing: LiveStreamLegendItem[], incoming: LiveStrea
 
 function openConnection() {
   if (es) return
+  // Recompute MAX_VISIBLE on resize so the replay buffer stays at 2× viewport.
+  recomputeMaxVisible()
+  const onResize = () => recomputeMaxVisible()
+  window.addEventListener('resize', onResize)
+
   if (typeof EventSource === 'undefined') {
     liveStreamState.connection = 'unsupported'
     return
@@ -591,6 +691,7 @@ function closeConnection() {
   if (!es) return
   try { es.close() } catch { /* ignore */ }
   es = null
+  window.removeEventListener('resize', recomputeMaxVisible)
   liveStreamState.connection = 'closed'
 }
 

@@ -505,6 +505,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
 	}
 	h.chatHandler.recordInitialRequestLog(
+		r.Context(),
 		requestID, clientModel, outboundForLog, endUser, "messages", keyInfo,
 		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
 		attemptProviderID, attemptCredentialID, canonicalID,

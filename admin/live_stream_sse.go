@@ -70,6 +70,10 @@ type LiveStreamEnvelope struct {
 	// id, no credential value, no full request body.
 	Incident   *LiveIncidentUpdate `json:"incident,omitempty"`
 	superDelta *LiveStreamDelta    `json:"-"` // attached to Delta during fanOut for super clients; not serialised directly
+
+	// LaneIDs carries the list of known lane IDs for idle_marker envelopes.
+	// The frontend uses this to decide which lanes need idle tiles.
+	LaneIDs []string `json:"lane_ids,omitempty"`
 }
 
 // LiveIncidentUpdate is the wire shape of a route incident update
@@ -206,6 +210,7 @@ type LiveStreamConfig struct {
 	RedisClient                   *redis.Client // optional: enables 1-hour Redis cache
 	CachedSnapshotTTL             time.Duration // 淘汰阈值；零值 → 4h。可通过 LLM_GATEWAY_LIVE_STREAM_CACHED_TTL 覆盖
 	CachedSnapshotCleanupInterval time.Duration // evict ticker 周期；零值 → 与 TTL 一致。可通过 LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL 覆盖
+	SnapshotRefreshInterval       time.Duration // 全量快照推送间隔；零值 → 30min。可通过 LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL 覆盖
 }
 
 func (c *LiveStreamConfig) defaults() {
@@ -219,7 +224,7 @@ func (c *LiveStreamConfig) defaults() {
 		c.IdleThreshold = LiveStreamIdleThreshold
 	}
 	if c.IdleTickInterval <= 0 {
-		c.IdleTickInterval = 10 * time.Second
+		c.IdleTickInterval = 5 * time.Minute
 	}
 	if c.KeepaliveInterval <= 0 {
 		c.KeepaliveInterval = 25 * time.Second
@@ -229,6 +234,9 @@ func (c *LiveStreamConfig) defaults() {
 	}
 	if c.CachedSnapshotCleanupInterval <= 0 {
 		c.CachedSnapshotCleanupInterval = c.CachedSnapshotTTL
+	}
+	if c.SnapshotRefreshInterval <= 0 {
+		c.SnapshotRefreshInterval = 30 * time.Minute
 	}
 }
 
@@ -349,10 +357,12 @@ func (h *LiveStreamSSEHub) Run() {
 	// 拆开避免 TTL > TTL 时 ticker 也被放大导致过期 entry 滞留。
 	cacheCleanupTicker := time.NewTicker(h.cfg.CachedSnapshotCleanupInterval)
 	healthTicker := time.NewTicker(30 * time.Second) // Redis health check interval
+	snapshotRefreshTicker := time.NewTicker(h.cfg.SnapshotRefreshInterval)
 	defer idleTicker.Stop()
 	defer keepaliveTicker.Stop()
 	defer cacheCleanupTicker.Stop()
 	defer healthTicker.Stop()
+	defer snapshotRefreshTicker.Stop()
 
 	// Emit initial health status immediately so freshly-connected
 	// clients do not have to wait 30s to learn about Redis state.
@@ -414,6 +424,8 @@ func (h *LiveStreamSSEHub) Run() {
 			h.evictStaleCachedSnapshots()
 		case <-healthTicker.C:
 			h.checkAndBroadcastHealth()
+		case <-snapshotRefreshTicker.C:
+			h.pushFullSnapshots()
 		}
 	}
 }
@@ -526,6 +538,68 @@ func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 			"ttl", h.cfg.CachedSnapshotTTL.String(),
 			"cleanup_interval", h.cfg.CachedSnapshotCleanupInterval.String())
 	}
+}
+
+// pushFullSnapshots reads a fresh snapshot from Redis for every active
+// scope and pushes it to connected clients as a "snapshot_refresh" envelope.
+// This ensures the dashboard's base data stays current even when the delta
+// stream has gaps (e.g. after a period of no traffic or a Redis partition).
+// The frontend replaces its local snapshot with the fresh one.
+func (h *LiveStreamSSEHub) pushFullSnapshots() {
+	if h.store == nil {
+		return
+	}
+	h.mu.RLock()
+	type scopeEntry struct {
+		tenantID string
+		isSuper  bool
+	}
+	seen := make(map[string]scopeEntry) // cacheKey → entry (deduplicate per scope)
+	for c := range h.clients {
+		scope := newLiveStreamScope(c.tenantID, c.isSuper)
+		if _, ok := seen[scope.cacheKey]; !ok {
+			seen[scope.cacheKey] = scopeEntry{tenantID: scope.tenantID, isSuper: scope.isSuper}
+		}
+	}
+	h.mu.RUnlock()
+
+	if len(seen) == 0 {
+		return
+	}
+
+	for _, entry := range seen {
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			snapshot, err := h.store.Snapshot(ctx, entry.tenantID, entry.isSuper, h.cfg.InitialReplayLimit)
+			if err != nil {
+				slog.Debug("live stream snapshot refresh failed",
+					"tenant_id", entry.tenantID, "is_super", entry.isSuper, "err", err.Error())
+				return
+			}
+			if snapshot == nil || snapshot.Summary.Total == 0 {
+				return
+			}
+			// Update in-memory cached snapshot so subsequent deltas use the fresh baseline.
+			scope := newLiveStreamScope(entry.tenantID, entry.isSuper)
+			h.cachedSnapshotMu.Lock()
+			h.cachedSnapshot[scope.cacheKey] = &cachedSnapshotEntry{
+				snapshot:     snapshot,
+				lastAccessed: time.Now(),
+			}
+			h.cachedSnapshotMu.Unlock()
+
+			env := LiveStreamEnvelope{
+				Type:      "snapshot_refresh",
+				Timestamp: time.Now().UTC(),
+				Snapshot:  snapshot,
+			}
+			h.fanOut(env)
+		}()
+	}
+
+	slog.Debug("live stream snapshot refresh cycle completed",
+		"scopes", len(seen))
 }
 
 // Stop tears down the hub. Safe to call once.
@@ -751,39 +825,44 @@ func (h *LiveStreamSSEHub) safeClose(c *liveStreamClient) {
 }
 
 func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
-	h.lastActivityMu.RLock()
-	last := h.lastActivity
-	h.lastActivityMu.RUnlock()
-	if time.Since(last) < h.cfg.IdleThreshold {
-		return
-	}
 	now := time.Now().UTC()
-	if h.store != nil {
-		if err := h.store.ScanAndRecordIdleMarkers(context.Background(), now, h.cfg.IdleThreshold); err != nil {
-			slog.Debug("live stream scan and record idle markers failed", "err", err.Error(), "timestamp", now.Format(time.RFC3339))
+
+	// Collect all known lane IDs from cached snapshots across all scopes.
+	// The frontend decides whether each lane has been active and whether
+	// to show the idle tile — the backend just provides the lane roster.
+	h.cachedSnapshotMu.RLock()
+	seenIDs := make(map[string]bool) // de-duplicate across scopes
+	var laneIDs []string
+
+	for _, entry := range h.cachedSnapshot {
+		if entry == nil || entry.snapshot == nil {
+			continue
+		}
+		snap := entry.snapshot
+		for _, dim := range []string{"vendor", "provider", "model"} {
+			for _, lane := range snap.Dimensions[dim] {
+				lid := dim + ":" + lane.ID
+				if !seenIDs[lid] {
+					seenIDs[lid] = true
+					laneIDs = append(laneIDs, lid)
+				}
+			}
 		}
 	}
-	// Idle markers were just persisted to the main queues. Push the global
-	// (super) delta so super-admin dashboards refresh immediately. Tenant
-	// clients do not receive a delta here: idle markers are per-tenant and
-	// recomputing every tenant would be expensive; each tenant's lanes will
-	// refresh naturally the next time one of its requests arrives (or on
-	// reconnect via initial_data). Attaching only superDelta is safe because
-	// computeScopeDelta never overwrites the cache with an empty snapshot.
-	var superDelta *LiveStreamDelta
-	if h.store != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		superDelta = h.computeScopeDelta(ctx, "", true)
-		cancel()
+	h.cachedSnapshotMu.RUnlock()
+
+	if len(laneIDs) == 0 {
+		return
 	}
+
 	h.fanOut(LiveStreamEnvelope{
-		Type:       "idle_marker",
-		Timestamp:  now,
-		superDelta: superDelta,
+		Type:      "idle_marker",
+		Timestamp: now,
+		LaneIDs:   laneIDs,
 	})
-	h.lastActivityMu.Lock()
-	h.lastActivity = time.Now()
-	h.lastActivityMu.Unlock()
+
+	slog.Debug("live stream idle marker injected",
+		"lanes", len(laneIDs))
 }
 
 // checkAndBroadcastHealth pings Redis and broadcasts a health_update
