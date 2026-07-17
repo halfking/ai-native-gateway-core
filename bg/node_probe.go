@@ -85,6 +85,13 @@ const (
 	// 5 minutes so a re-entry within that window is treated as
 	// "still running".
 	nodeProbeInFlightWindow = 5 * time.Minute
+
+	// nodeProbeSyncFanout caps how many concurrent (cred, model)
+	// direct probes ProbeSync runs in parallel. Mirrors
+	// nodeProbeBatchSize so a no_candidate burst does not multiply
+	// upstream pressure beyond what the background worker would
+	// produce.
+	nodeProbeSyncFanout = 8
 )
 
 // NodeProbeWorker polls node_probe_state and executes the two-round
@@ -126,6 +133,14 @@ type NodeProbeWorker struct {
 	inFlight   map[string]struct{} // dedup key: "<credID>|<model>"
 	triggers   map[string]nodeProbeTrigger
 	wakeTimers map[string]*time.Timer
+
+	// syncWaiters lets ProbeSync callers wait for an in-flight cycle()
+	// run to finish instead of issuing a duplicate probe. Closed once
+	// per (cred,model) at the end of runOne, AFTER the state-cache
+	// writes so any waiter's subsequent re-PlanCandidates observes
+	// the recovered availability.
+	syncWaitersMu sync.Mutex
+	syncWaiters   map[string][]chan struct{}
 }
 
 type nodeProbeTrigger struct {
@@ -178,17 +193,18 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 		}
 	}
 	w := &NodeProbeWorker{
-		db:         db,
-		encKey:     encKey,
-		keyring:    keyring,
-		apiKey:     apiKey,
-		baseURL:    baseURL,
-		client:     &http.Client{Timeout: 15 * time.Second},
-		stopCh:     make(chan struct{}),
-		wakeCh:     make(chan struct{}, 1),
-		inFlight:   make(map[string]struct{}),
-		triggers:   make(map[string]nodeProbeTrigger),
-		wakeTimers: make(map[string]*time.Timer),
+		db:          db,
+		encKey:      encKey,
+		keyring:     keyring,
+		apiKey:      apiKey,
+		baseURL:     baseURL,
+		client:      &http.Client{Timeout: 15 * time.Second},
+		stopCh:      make(chan struct{}),
+		wakeCh:      make(chan struct{}, 1),
+		inFlight:    make(map[string]struct{}),
+		triggers:    make(map[string]nodeProbeTrigger),
+		wakeTimers:  make(map[string]*time.Timer),
+		syncWaiters: make(map[string][]chan struct{}),
 	}
 
 	if proxyFunc != nil {
@@ -389,6 +405,290 @@ func nonBlockingWake(ch chan<- struct{}) {
 	}
 }
 
+// ProbeSync fans out parallel direct→gateway probes for the supplied
+// candidates and reports whether at least one pair recovered.
+//
+// Behaviour
+// ─────────
+//   - Total wall time bounded by ctx. The executor passes a 5s timeout
+//     derived from the user's r.Context(); client disconnect cancels
+//     the inner HTTP requests via the same ctx.
+//   - For each (cred, model) that is NOT already in-flight (i.e. the
+//     background cycle() did not start it in the last 5 minutes),
+//     ProbeSync runs a new direct probe under nodeProbeSyncFanout
+//     concurrent goroutines. The first direct.ok pair immediately
+//     promotes to a gateway round; if the gateway round also passes
+//     the function returns true.
+//   - For each (cred, model) that IS in-flight, ProbeSync waits on a
+//     per-key channel that cycle() closes at runOne completion. This
+//     keeps concurrent no_candidate requests from issuing duplicate
+//     probes against the same credential.
+//   - The direct round's state-cache writes (updateObservedState +
+//     invalidateCandidateCache) are issued the same way cycle() does
+//     them, so the routing layer's next PlanCandidates sees the new
+//     availability. ProbeSync does NOT modify node_probe_state — the
+//     background backoff ladder is the worker's job, not the request's.
+//   - Audit rows are written with trigger_kind="sync_request" so
+//     dashboards can distinguish synchronous probes from the
+//     request_failure / tick-driven ones.
+//
+// Returns true iff at least one (cred, model) ended up healthy on both
+// direct and gateway rounds.
+func (w *NodeProbeWorker) ProbeSync(
+	ctx context.Context,
+	candidates []credentialstate.NoCandidatesCandidate,
+	tenantID string,
+	parentReqID string,
+) bool {
+	start := time.Now()
+	defer func() {
+		nodeProbeSyncDuration.Observe(time.Since(start).Seconds())
+	}()
+
+	if w == nil || len(candidates) == 0 {
+		nodeProbeSyncTotal.WithLabelValues("skipped").Inc()
+		return false
+	}
+
+	type syncJob struct {
+		key    string
+		credID int
+		model  string
+		reuse  bool // wait for in-flight instead of running new
+		waitCh chan struct{}
+	}
+
+	jobs := make([]syncJob, 0, len(candidates))
+	freshJobs := make([]syncJob, 0, len(candidates))
+	for _, c := range candidates {
+		if c.CredentialID == 0 || strings.TrimSpace(c.RawModel) == "" {
+			continue
+		}
+		key := fmt.Sprintf("%d|%s", c.CredentialID, c.RawModel)
+
+		w.mu.Lock()
+		_, busy := w.inFlight[key]
+		w.mu.Unlock()
+
+		if busy {
+			ch := make(chan struct{})
+			w.syncWaitersMu.Lock()
+			w.syncWaiters[key] = append(w.syncWaiters[key], ch)
+			w.syncWaitersMu.Unlock()
+			nodeProbeSyncInflightWaiters.Inc()
+			jobs = append(jobs, syncJob{key: key, credID: c.CredentialID, model: c.RawModel, reuse: true, waitCh: ch})
+			continue
+		}
+
+		// Reserve the in-flight slot ourselves so a concurrent
+		// background cycle() does not race us into a duplicate probe.
+		w.mu.Lock()
+		w.inFlight[key] = struct{}{}
+		w.triggers[key] = nodeProbeTrigger{tenantID: tenantID, parentID: parentReqID}
+		w.mu.Unlock()
+
+		freshJobs = append(freshJobs, syncJob{key: key, credID: c.CredentialID, model: c.RawModel})
+		jobs = append(jobs, freshJobs[len(freshJobs)-1])
+	}
+	defer func() {
+		// Release in-flight slots we reserved for fresh jobs only.
+		// Reuse jobs were never inserted by us; cycle() owns their slot.
+		for _, j := range freshJobs {
+			w.mu.Lock()
+			delete(w.inFlight, j.key)
+			w.mu.Unlock()
+		}
+	}()
+
+	type freshResult struct {
+		job     syncJob
+		direct  nodeProbeRoundResult
+		gateway nodeProbeRoundResult
+	}
+
+	results := make(chan freshResult, len(freshJobs))
+	sem := make(chan struct{}, nodeProbeSyncFanout)
+	var wg sync.WaitGroup
+	for _, j := range freshJobs {
+		j := j
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			res := freshResult{job: j}
+			res.direct = w.probeDirect(ctx, j.credID, j.model)
+			if res.direct.ok {
+				res.gateway = w.probeGateway(ctx, j.credID, j.model)
+			}
+			if res.direct.ok {
+				w.updateBindingAvailability(ctx, j.credID, j.model, true, "")
+				w.updateCredentialHealth(ctx, j.credID)
+				w.updateObservedState(ctx, j.credID, j.model, true, "", time.Now())
+			} else {
+				w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode)
+				recoverAt := time.Now().Add(5 * time.Minute)
+				w.updateObservedState(ctx, j.credID, j.model, false, res.direct.errCode, recoverAt)
+			}
+			if w.invalidateCandidateCache != nil {
+				w.invalidateCandidateCache(j.credID)
+			}
+			w.emitSyncAudit(ctx, j.credID, j.model, res.direct, res.gateway, start, parentReqID)
+			results <- res
+		}()
+	}
+
+	var (
+		winnerMu     sync.Mutex
+		winnerDirect nodeProbeRoundResult
+		winnerGw     nodeProbeRoundResult
+		winnerSet    bool
+	)
+
+	doneFresh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneFresh)
+	}()
+
+drainLoop:
+	for {
+		select {
+		case res := <-results:
+			if !winnerSet && res.direct.ok && res.gateway.ok {
+				winnerMu.Lock()
+				if !winnerSet {
+					winnerDirect = res.direct
+					winnerGw = res.gateway
+					winnerSet = true
+				}
+				winnerMu.Unlock()
+			}
+		case <-doneFresh:
+			for {
+				select {
+				case res := <-results:
+					if !winnerSet && res.direct.ok && res.gateway.ok {
+						winnerMu.Lock()
+						if !winnerSet {
+							winnerDirect = res.direct
+							winnerGw = res.gateway
+							winnerSet = true
+						}
+						winnerMu.Unlock()
+					}
+				default:
+					break drainLoop
+				}
+			}
+		case <-ctx.Done():
+			break drainLoop
+		}
+	}
+
+	for _, j := range jobs {
+		if !j.reuse {
+			continue
+		}
+		select {
+		case <-j.waitCh:
+			nodeProbeSyncInflightWaiters.Dec()
+		case <-ctx.Done():
+			nodeProbeSyncInflightWaiters.Dec()
+		}
+	}
+
+	if winnerSet {
+		nodeProbeSyncTotal.WithLabelValues("recovered").Inc()
+		slog.Info("node_probe_worker: sync probe recovered",
+			"credential_id", winnerDirect.providerID,
+			"outbound_model", winnerDirect.outboundModel,
+			"direct_status", winnerDirect.httpStatus,
+			"gateway_status", winnerGw.httpStatus,
+			"tenant_id", tenantID,
+			"parent_request_id", parentReqID,
+			"elapsed_ms", time.Since(start).Milliseconds(),
+		)
+		return true
+	}
+	if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			nodeProbeSyncTotal.WithLabelValues("client_cancel").Inc()
+		} else {
+			nodeProbeSyncTotal.WithLabelValues("timeout").Inc()
+		}
+	} else {
+		nodeProbeSyncTotal.WithLabelValues("exhausted").Inc()
+	}
+	slog.Info("node_probe_worker: sync probe exhausted",
+		"tenant_id", tenantID,
+		"parent_request_id", parentReqID,
+		"candidates", len(jobs),
+		"elapsed_ms", time.Since(start).Milliseconds(),
+	)
+	return false
+}
+
+// emitSyncAudit writes a node_probe_runs row for a sync_request probe
+// without touching node_probe_state. The columns mirror runOne() so
+// downstream dashboards can filter by trigger_kind="sync_request".
+func (w *NodeProbeWorker) emitSyncAudit(
+	ctx context.Context,
+	credID int,
+	model string,
+	direct nodeProbeRoundResult,
+	gw nodeProbeRoundResult,
+	startedAt time.Time,
+	parentReqID string,
+) {
+	if w.db == nil {
+		return
+	}
+	now := time.Now()
+	durationMs := int(now.Sub(startedAt).Milliseconds())
+	success := direct.ok && gw.ok
+	cleaned := make(map[string]string, len(direct.requestHeaders))
+	for k, v := range direct.requestHeaders {
+		switch k {
+		case "Authorization", "X-Api-Key", "x-api-key":
+			continue
+		}
+		cleaned[k] = v
+	}
+	requestHeadersJSON, _ := json.Marshal(cleaned)
+
+	_, _ = w.db.Exec(ctx, `
+		INSERT INTO node_probe_runs (
+			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
+			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,
+			gateway_ok, gateway_http_status, gateway_err_code, gateway_latency_ms, gateway_err_detail,
+			success, started_at, completed_at, duration_ms,
+			api_model, outbound_model, provider_id,
+			request_url, request_headers, request_body, response_body,
+			timeout_at_ms, via_proxy,
+			trigger_request_id
+		) VALUES (
+			$1, $2, 'sync_request', 1, 0,
+			$3, $4, $5, $6, $7,
+			$8, $9, $10, $11, $12,
+			$13, $14, $15, $16,
+			$17, $18, $19,
+			$20, $21, $22, $23,
+			$24, $25,
+			$26
+		)
+	`,
+		credID, model,
+		direct.ok, direct.httpStatus, direct.errCode, direct.latencyMs, direct.errDetail,
+		gw.ok, gw.httpStatus, gw.errCode, gw.latencyMs, gw.errDetail,
+		success, startedAt, now, durationMs,
+		model, direct.outboundModel, direct.providerID,
+		direct.requestURL, requestHeadersJSON, direct.requestBody, direct.responseBody,
+		direct.latencyMs, direct.viaProxy,
+		parentReqID,
+	)
+}
+
 func (w *NodeProbeWorker) drainDue(ctx context.Context) {
 	for i := 0; i < nodeProbeBatchSize; i++ {
 		if !w.cycle(ctx) {
@@ -433,6 +733,18 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) bool {
 	if err := w.runOne(ctx, credID, model, "", trigger); err != nil {
 		slog.Warn("node_probe_worker: runOne failed",
 			"credential_id", credID, "model", model, "error", err)
+	}
+
+	// Notify any ProbeSync callers that were waiting on this in-flight
+	// probe to complete (dedup reuse). Closing the channels AFTER runOne
+	// guarantees that the state-manager cache writes done inside runOne
+	// are visible to a waiter's subsequent re-PlanCandidates.
+	w.syncWaitersMu.Lock()
+	chs := w.syncWaiters[key]
+	delete(w.syncWaiters, key)
+	w.syncWaitersMu.Unlock()
+	for _, ch := range chs {
+		close(ch)
 	}
 	return true
 }

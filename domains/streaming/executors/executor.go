@@ -147,6 +147,22 @@ type StreamOutcome = struct {
 
 type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome
 
+// ProbeSyncFunc is the contract bg.NodeProbeWorker.ProbeSync satisfies.
+// Defined here (rather than imported from bg) so the executors package
+// does not transitively depend on the bg package. Wiring happens in
+// cmd/gateway/main.go.
+//
+// Returns true iff at least one (cred, model) pair recovered on both
+// direct + gateway rounds; the executor then re-plans candidates and
+// retries the request transparently. Returns false on every other
+// outcome (timeout, client cancel, all-failed).
+type ProbeSyncFunc func(
+	ctx context.Context,
+	candidates []credentialstate.NoCandidatesCandidate,
+	tenantID string,
+	parentReqID string,
+) bool
+
 type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
 
 // AnthropicPassthroughFunc is the signature for the Q4 Anthropic SSE
@@ -541,6 +557,22 @@ type Executor struct {
 	// or synchronous exhaustion).
 	SyncRetryTimeout time.Duration
 
+	// SyncNoCandidateProbe (2026-07-17): when the router returns zero
+	// candidates, the executor holds the request goroutine up to
+	// SyncNoCandidateTimeout and asks ProbeSync to fan out parallel
+	// (cred,model) direct probes. If at least one pair recovers the
+	// executor re-plans and retries the user's request transparently.
+	// Disable (false) to preserve the legacy "fire-and-forget + 503"
+	// behaviour for emergency rollback. Wired from main.go via env
+	// LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE (default true).
+	SyncNoCandidateProbe   bool
+	SyncNoCandidateTimeout time.Duration
+
+	// ProbeSync is the synchronous probe entry-point invoked from the
+	// no-candidate branch. Wired from main.go to bg.NodeProbeWorker.
+	// Nil disables the feature even if SyncNoCandidateProbe is true.
+	ProbeSync ProbeSyncFunc
+
 	// asyncDepth is the recursion guard (Track C C4). The async
 	// goroutine (runAsyncRetry) calls Execute again; we bump this
 	// so shouldAsyncFallback returns false on the inner call.
@@ -664,6 +696,21 @@ type ExecParams struct {
 	// control to the normal stream writer. The caller uses it to stop any
 	// pre-stream keepalive goroutine so no writes race with StreamChat.
 	OnStreamReady        func()
+	// OnProbeHoldStart is invoked when the executor enters the synchronous
+	// no-candidate hold. The handler wires this to its RequestLogContext so
+	// trace/log entries record the probe_hold_start event. Optional.
+	OnProbeHoldStart     func()
+	// OnProbeHoldEnd is invoked when the synchronous probe finishes, with
+	// recovered=true iff at least one (cred,model) recovered. The handler
+	// uses this to record probe_hold_end + duration in trace/log. Optional.
+	OnProbeHoldEnd       func(recovered bool)
+	// OnPreStreamKeepalivePause is invoked when the executor enters the
+	// probe hold AND params.PreStreamPrepared is true. The handler uses
+	// this to suspend the keepalive SSE comment goroutine so the client
+	// does not interpret a stale comment as a response-start signal during
+	// the hold. The keepalive goroutine resumes naturally when stream
+	// writing begins (or is stopped via OnStreamReady). Optional.
+	OnPreStreamKeepalivePause func()
 	SuppressSuccessWrite bool
 	ClientModel          string
 	OutboundModel        string
@@ -1158,6 +1205,76 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				Candidates:  noCands,
 			})
 			probeCancel()
+		}
+		// ── 2026-07-17 同步探测 hold: 把客户端请求暂停，并行探测同模型所有
+		// 候选节点的供应商直连；首个直连成功 → 网关路由测试 → 重发用户请求。
+		// 所有探测都失败 / 5s 超时 → fall through 到下方 503 返回。
+		if e.SyncNoCandidateProbe && e.ProbeSync != nil && params.R != nil {
+			syncNoCands := make([]credentialstate.NoCandidatesCandidate, 0, len(probeCandidates))
+			for _, c := range probeCandidates {
+				if c.CredentialID == 0 {
+					continue
+				}
+				syncNoCands = append(syncNoCands, credentialstate.NoCandidatesCandidate{
+					CredentialID: c.CredentialID,
+					ProviderID:   c.ProviderID,
+					RawModel:     candidateRawModel(c),
+					BillingMode:  c.BillingMode,
+				})
+			}
+			if len(syncNoCands) > 0 {
+				if params.OnPreStreamKeepalivePause != nil {
+					params.OnPreStreamKeepalivePause()
+				}
+				if params.OnProbeHoldStart != nil {
+					params.OnProbeHoldStart()
+				}
+				holdTimeout := e.SyncNoCandidateTimeout
+				if holdTimeout <= 0 {
+					holdTimeout = 5 * time.Second
+				}
+				holdCtx, holdCancel := context.WithTimeout(params.R.Context(), holdTimeout)
+				holdStart := time.Now()
+				recovered := e.ProbeSync(holdCtx, syncNoCands, params.TenantID, params.RequestID)
+				holdCancel()
+				if params.OnProbeHoldEnd != nil {
+					params.OnProbeHoldEnd(recovered)
+				}
+				if recovered {
+					var retrySticky *int
+					if ratelimit.IsRateLimitEnabled() {
+						retrySticky = stickyCredID
+					}
+					subCandidates := e.Router.PlanCandidates(
+						params.Candidates,
+						retrySticky,
+						params.Policy,
+						egressPref(params.Transform),
+					)
+					if len(subCandidates) > 0 {
+						e.asyncDepth.Add(1)
+						subParams := *params
+						subParams.Candidates = subCandidates
+						result, retryErr := e.Execute(&subParams)
+						e.asyncDepth.Add(-1)
+						if retryErr == nil {
+							slog.Info("sync_no_candidate_probe_recovered",
+								"model", params.ClientModel,
+								"request_id", params.RequestID,
+								"hold_ms", time.Since(holdStart).Milliseconds(),
+								"candidates", len(subCandidates),
+							)
+							return result, nil
+						}
+						if execErrTyped, ok := retryErr.(*ExecuteError); ok && execErrTyped.Trace != nil {
+							trace.BlockedCandidates = append(
+								trace.BlockedCandidates,
+								execErrTyped.Trace.BlockedCandidates...,
+							)
+						}
+					}
+				}
+			}
 		}
 		if params.AuditBuilder != nil {
 			params.AuditBuilder.DecisionTrace(trace)

@@ -73,6 +73,13 @@ type RequestLogContext struct {
 	TurnNo    int    // 会话内轮次（best-effort，由 session 已知请求计数取）
 	OriginStage string // self_check/node_probe/system_health/business/probe_*
 
+	// 2026-07-17: 同步探测 hold 维度。executor 进入 no_candidate 分支时
+	// 通过 OnProbeHoldStart/End 回调更新这三个字段；request_logs 写入时
+	// 可序列化进 attachment JSON 用于运维追查。
+	ProbeHoldStartedAt   *time.Time // hold 开始时刻（探针进入）
+	ProbeHoldDurationMs  int        // hold 总毫秒（OnProbeHoldEnd 计算）
+	ProbeHoldRecovered   bool       // hold 结束时是否至少一个候选恢复
+
 	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 	// QualityFlags accumulates detected issues across the response
 	// post-processing pass. QualityFixActions is the JSON-encoded
@@ -340,6 +347,32 @@ func (c *RequestLogContext) RequestMode() string {
 func (c *RequestLogContext) MarkLogged() { c.logged = true }
 func (c *RequestLogContext) IsLogged() bool {
 	return c != nil && c.logged
+}
+
+// MarkProbeHoldStart is invoked by the executor when it enters the
+// synchronous no-candidate probe hold. The timestamp is later used
+// by MarkProbeHoldEnd to compute ProbeHoldDurationMs for trace /
+// request_logs correlation. Idempotent.
+func (c *RequestLogContext) MarkProbeHoldStart() {
+	if c == nil {
+		return
+	}
+	now := time.Now()
+	c.ProbeHoldStartedAt = &now
+}
+
+// MarkProbeHoldEnd is invoked by the executor when the synchronous
+// probe finishes. recovered is true iff at least one (cred,model)
+// pair recovered and the request was retried. If MarkProbeHoldStart
+// was not called first the duration is recorded as 0.
+func (c *RequestLogContext) MarkProbeHoldEnd(recovered bool) {
+	if c == nil {
+		return
+	}
+	c.ProbeHoldRecovered = recovered
+	if c.ProbeHoldStartedAt != nil {
+		c.ProbeHoldDurationMs = int(time.Since(*c.ProbeHoldStartedAt).Milliseconds())
+	}
 }
 
 // SetAutoDecision stores the auto-route decision for persistence in

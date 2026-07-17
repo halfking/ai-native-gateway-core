@@ -115,6 +115,20 @@ func positiveDurationEnv(key string, fallback time.Duration) time.Duration {
 	return duration
 }
 
+// envBoolOff returns true when the env var is set to one of:
+// "0", "false", "off", "no" (case-insensitive). Returns false
+// (i.e. feature enabled) when unset or set to a truthy value.
+// Used for kill-switch style flags where the operator types the
+// explicit disable value to take the feature offline.
+func envBoolOff(key string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch v {
+	case "0", "false", "off", "no":
+		return true
+	}
+	return false
+}
+
 func liveStreamCachedDurationsFromEnv() (time.Duration, time.Duration) {
 	ttl := positiveDurationEnv("LLM_GATEWAY_LIVE_STREAM_CACHED_TTL", admin.LiveStreamLaneRetention)
 	cleanup := positiveDurationEnv("LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL", ttl)
@@ -1953,6 +1967,16 @@ func main() {
 				nodeProbe.SetStateObserver(stateManager)
 				nodeProbe.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
 				nodeProbe.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
+				// 2026-07-17: 同步探测 hold 模式开关。env LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE
+				// 取值 "0"/"false"/"off" 即关闭（默认开启）。关闭时 executor 走原 fire-and-forget
+				// 路径，503 立即返回。该 kill-switch 用于紧急回滚，无需重新打包。
+				if routingExec != nil {
+					syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
+					routingExec.SyncNoCandidateProbe = syncOn
+					routingExec.SyncNoCandidateTimeout = 5 * time.Second
+					routingExec.ProbeSync = nodeProbe.ProbeSync
+					slog.Info("sync_no_candidate_probe", "enabled", syncOn, "timeout", routingExec.SyncNoCandidateTimeout)
+				}
 
 				nodeProbe.Start(context.Background())
 				slog.Info("CHECKPOINT: node_probe_worker started")
