@@ -1,159 +1,133 @@
-# Sessions V2 Tools
+# Sessions V2 Validation Tool
 
-This directory contains operational tools for Sessions V2 storage architecture.
+Data validation tool for Sessions V2 storage architecture. Compares V1 (request_logs) and V2 (sessions tables) to verify dual-write integrity.
 
-## Tools
+## Features
 
-### 1. validate_sessions_v2
+- **7 Validation Checks**: Request ID parity, timestamps, tokens, costs, metadata, snapshot accuracy, bodies integrity
+- **Single Session Mode**: Detailed validation for one session
+- **Batch Mode**: Validate multiple sessions with date range and settle window
+- **Multiple Formats**: JSON (machine-readable) and text (human-readable)
+- **Exit Codes**: 0 for success/warnings, 1 for errors
 
-Data validation tool that compares V1 (request_logs) and V2 (sessions tables) to verify dual-write integrity.
+## Quick Start
 
-**Purpose:**
-- Validate row count parity between request_logs and session_turns
-- Verify token sum consistency
-- Verify cost sum consistency
-- Check session snapshot accuracy (sessions table vs session_turns aggregates)
-- Validate bodies integrity (session_bodies deltas)
-
-**Usage:**
 ```bash
+# Single session
 go run ./cmd/tools/validate_sessions_v2 \
-  -dsn "postgres://user:pass@host:5432/gateway" \
+  -dsn "postgres://..." \
+  -tenant-id "tenant_xxx" \
+  -session-id "gw_abc123" \
+  -format text
+
+# Batch validation
+go run ./cmd/tools/validate_sessions_v2 \
+  -dsn "postgres://..." \
   -tenant-id "tenant_xxx" \
   -start-date "2026-07-01" \
   -end-date "2026-07-17" \
-  [-session-id "gw_xxxxx"] \
-  [-verbose]
+  -format json
 ```
 
-**Parameters:**
-- `-dsn`: PostgreSQL connection string (required)
-- `-tenant-id`: Tenant ID to validate (required)
-- `-start-date`: Start date YYYY-MM-DD (optional)
-- `-end-date`: End date YYYY-MM-DD (optional)
-- `-session-id`: Specific session to validate (optional)
-- `-verbose`: Show detailed discrepancies (optional)
+## Command-Line Flags
 
-**Output:**
-- Summary report with pass/fail for each check
-- Exit code 0 if all checks pass, 1 otherwise
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-dsn` | string | - | PostgreSQL connection string (required) |
+| `-tenant-id` | string | - | Tenant ID to validate (required) |
+| `-session-id` | string | - | Specific session ID (single-session mode) |
+| `-start-date` | string | - | Start date YYYY-MM-DD (batch mode) |
+| `-end-date` | string | - | End date YYYY-MM-DD (batch mode) |
+| `-max-sessions` | int | 1000 | Max sessions in batch mode |
+| `-settle-window` | duration | 10m | Exclude recently updated sessions (batch mode) |
+| `-format` | string | json | Output format: `json` or `text` |
+| `-verbose` | bool | false | Show per-session details during batch |
 
-**Example:**
-```bash
-# Validate all data for a tenant in a date range
-go run ./cmd/tools/validate_sessions_v2 \
-  -dsn "postgres://localhost:5432/gateway?sslmode=disable" \
-  -tenant-id "tenant_123" \
-  -start-date "2026-07-01" \
-  -end-date "2026-07-17" \
-  -verbose
+## Validation Checks
 
-# Validate a specific session
-go run ./cmd/tools/validate_sessions_v2 \
-  -dsn "postgres://localhost:5432/gateway?sslmode=disable" \
-  -tenant-id "tenant_123" \
-  -session-id "gw_abc123" \
-  -verbose
+### 1. Request ID Parity (ERROR)
+Verifies V1 and V2 have the same set of request IDs.
+
+### 2. Timestamp Consistency (ERROR)
+Ensures timestamps match between V1 and V2 (1s tolerance).
+
+### 3. Token Sum (WARNING)
+Validates token counts with 1% or 10 token tolerance.
+
+### 4. Cost Sum (WARNING)
+Validates costs with $0.01 or 1% tolerance.
+
+### 5. Metadata Consistency (ERROR)
+Checks model, provider, credential, and verdict fields.
+
+### 6. Session Snapshot Accuracy (ERROR/WARNING)
+Verifies `sessions` table aggregates match `session_turns`.
+
+### 7. Bodies Integrity (WARNING for compressed)
+Validates JSON and delta reconstruction. Strict for `full` mode, warnings for compressed modes.
+
+## Output Examples
+
+### JSON Format
+
+```json
+{
+  "session_id": "gw_abc123",
+  "status": "error",
+  "summary": {
+    "v1_turns": 10,
+    "v2_turns": 9
+  },
+  "differences": [
+    {
+      "name": "Request ID Parity",
+      "severity": "error",
+      "description": "Missing in V2: 1 request(s)"
+    }
+  ]
+}
 ```
 
-## Related Files
+### Text Format
 
-### backfill_sessions_v2.sql
+```
+================================================================================
+SESSION VALIDATION REPORT
+================================================================================
+Session:    gw_abc123
+Status:     ERROR
 
-SQL script for backfilling historical data from request_logs to Sessions V2 tables.
+Summary:
+  V1: 10 turns, 15000 tokens, $0.150000
+  V2: 9 turns, 15000 tokens, $0.150000
 
-**Location:** `sql/scripts/backfill_sessions_v2.sql`
-
-**Usage:**
-```bash
-psql -h <host> -U <user> -d gateway -f sql/scripts/backfill_sessions_v2.sql \
-  -v tenant_id='tenant_xxx' \
-  -v start_date='2026-07-01' \
-  -v end_date='2026-07-17' \
-  -v batch_size=1000 \
-  -v dry_run=false
+Differences (1):
+  ✗ [1] Request ID Parity (ERROR)
+      Missing in V2: 1 request(s)
+================================================================================
 ```
 
-**Features:**
-- Idempotent (uses ON CONFLICT DO NOTHING)
-- Incremental batch processing
-- Progress logging
-- Can be interrupted and resumed
-- Dry-run mode for testing
+## Exit Codes
 
-**Parameters:**
-- `tenant_id`: Tenant to backfill (required)
-- `start_date`: Start date YYYY-MM-DD (required)
-- `end_date`: End date YYYY-MM-DD (required)
-- `batch_size`: Rows per batch (default: 1000)
-- `dry_run`: If true, only show counts (default: false)
-
-## Testing
-
-Run unit tests:
-```bash
-cd cmd/tools/validate_sessions_v2
-go test -v
-```
+- **0**: All checks passed or warnings only
+- **1**: At least one ERROR-level issue found
+- **2**: Invalid command-line arguments
 
 ## Architecture
 
-Both tools work with the Sessions V2 architecture:
-
-**Tables:**
-- `gateway.sessions` - Session snapshots (one per session)
-- `gateway.session_turns` - Turn metadata (no bodies)
-- `gateway.session_bodies` - Incremental message deltas (columnar)
-- `gateway.session_turn_logs` - Processing stage logs (24h TTL)
-
-**Migration:** `sql/migrations/startup/430_sessions_v2_schema.sql`
-
-## Workflow
-
-1. **Deploy V2 schema** via migration 430
-2. **Enable dual-write** via feature flag (writes to both V1 and V2)
-3. **Backfill historical data** using `backfill_sessions_v2.sql`
-4. **Validate data** using `validate_sessions_v2`
-5. **Monitor** for discrepancies
-6. **Cutover** to V2-only when validated
-
-## Monitoring
-
-Use validation tool in cron job for ongoing monitoring:
-```bash
-# Daily validation check
-0 2 * * * go run /path/to/validate_sessions_v2 \
-  -dsn "$DB_DSN" \
-  -tenant-id "tenant_prod" \
-  -start-date "$(date -d '1 day ago' +%Y-%m-%d)" \
-  -end-date "$(date +%Y-%m-%d)" \
-  || alert-on-failure
 ```
-
-## Troubleshooting
-
-### Validation failures
-
-If validation reports discrepancies:
-
-1. Check if dual-write is enabled and working
-2. Review application logs for write errors
-3. Check database constraints and RLS policies
-4. Run validation with `-verbose` for details
-5. Use `session-id` flag to inspect specific sessions
-
-### Backfill issues
-
-If backfill fails:
-
-1. Check partition existence (script auto-creates)
-2. Verify database has sufficient resources
-3. Reduce `batch_size` if timeouts occur
-4. Use `dry_run=true` to preview without writing
-5. Backfill is idempotent - safe to retry
+cmd/tools/validate_sessions_v2/
+├── main.go              # CLI entry, orchestration
+├── loader.go            # Load V1/V2 data
+├── validator.go         # 7 validation checks
+├── reconstruct.go       # Delta chain reconstruction
+├── report.go            # JSON/text formatting
+├── helpers.go           # Utility functions
+└── *_test.go           # Unit tests (34 tests)
+```
 
 ## See Also
 
-- [SESSION_V2_IMPLEMENTATION_SUMMARY.md](../../../docs/SESSION_V2_IMPLEMENTATION_SUMMARY.md)
-- [SESSION_V2_DATA_MAPPING.md](../../../docs/SESSION_V2_DATA_MAPPING.md)
-- [domains/session/v2/README.md](../../../domains/session/v2/README.md)
+- [Design Spec](../../../docs/superpowers/specs/2026-07-18-sessions-v2-validation-repair-design.md)
+- [Data Mapping](../../../docs/SESSION_V2_DATA_MAPPING.md)
+- [Backfill Script](../../../sql/scripts/backfill_sessions_v2.sql)
