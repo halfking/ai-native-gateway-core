@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo, authBearer } from './store'
+import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, canAccessMaintain as checkCanAccessMaintain, markAuthHydrated, setJwtToken, setUserInfo, authBearer } from './store'
 import { logout as apiLogout, login } from './api/auth'
 import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
@@ -33,6 +33,7 @@ const isHydrating = computed(() => !store.authHydrated)
 const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey || store.userInfo))
 const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
+const canAccessMaintain = computed(() => checkCanAccessMaintain())
 const isTenantPortal = computed(() => !isPlatformOps.value)
 
 const PUBLIC_GUEST_PATHS = new Set([
@@ -93,6 +94,7 @@ const navPrimaryItems = computed(() =>
     isSuperAdmin: isSuperAdmin.value,
     isPlatformOps: isPlatformOps.value,
     isTenantPortal: isTenantPortal.value,
+    canAccessMaintain: canAccessMaintain.value,
   }),
 )
 
@@ -101,6 +103,7 @@ const navGroups = computed(() =>
     isSuperAdmin: isSuperAdmin.value,
     isPlatformOps: isPlatformOps.value,
     isTenantPortal: isTenantPortal.value,
+    canAccessMaintain: canAccessMaintain.value,
   }),
 )
 

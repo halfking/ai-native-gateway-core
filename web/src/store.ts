@@ -182,6 +182,12 @@ export function isPlatformOpsView(): boolean {
   return isSuperAdmin() && isDefaultTenant()
 }
 
+// Can access maintain service: only default tenant can see maintain/ops menu
+// Maintain service is for platform operators only (not for other tenants)
+export function canAccessMaintain(): boolean {
+  return isDefaultTenant()
+}
+
 // Locale management
 export function setLocale(locale: string) {
   store.locale = locale
