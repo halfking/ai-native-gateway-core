@@ -184,15 +184,15 @@ onMounted(loadDefaults)
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingDefault.summary.primary') }}</div>
-        <div class="summary-value" style="color: #22c55e">{{ summary.primary }}</div>
+        <div class="summary-value text-success">{{ summary.primary }}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingDefault.summary.tenantScoped') }}</div>
-        <div class="summary-value" style="color: #3b82f6">{{ summary.tenantScoped }}</div>
+        <div class="summary-value text-accent">{{ summary.tenantScoped }}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingDefault.summary.expiring') }}</div>
-        <div class="summary-value" :style="{ color: summary.expiring > 0 ? '#eab308' : '#888' }">
+        <div :class="['summary-value', summary.expiring > 0 ? 'text-warning' : 'text-muted']">
           {{ summary.expiring }}
         </div>
       </div>
@@ -361,46 +361,212 @@ onMounted(loadDefaults)
 </template>
 
 <style scoped>
-.defaults-view { max-width: 1200px; margin: 0 auto; padding: 1rem; }
-.subtitle { color: #666; margin-bottom: 1rem; }
-.card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
-.summary-cards { display: flex; gap: 1rem; margin-bottom: 1rem; }
-.summary-card { flex: 1; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem; text-align: center; }
-.summary-label { font-size: 0.8rem; color: #666; }
-.summary-value { font-size: 1.8rem; font-weight: 600; }
-.filter-bar { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
-.filter-bar label { display: flex; align-items: center; gap: 0.3rem; font-size: 0.9rem; }
-.filter-bar input, .filter-bar select { padding: 0.3rem 0.5rem; border: 1px solid #d1d5db; border-radius: 4px; }
-button { padding: 0.4rem 0.8rem; border: 1px solid #d1d5db; background: #f9fafb; border-radius: 4px; cursor: pointer; }
-button:hover:not(:disabled) { background: #f3f4f6; }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-new { background: #2563eb; color: #fff; border-color: #2563eb; }
-.btn-new:hover:not(:disabled) { background: #1d4ed8; }
-.btn-audit { background: #6b7280; color: #fff; border-color: #6b7280; }
-.btn-primary { background: #2563eb; color: #fff; border-color: #2563eb; }
-.btn-delete { color: #dc2626; border-color: #fecaca; background: #fef2f2; }
-.btn-small { font-size: 0.75rem; padding: 0.2rem 0.5rem; }
-.create-form .hint { color: #666; font-size: 0.85rem; margin: 0.5rem 0 1rem; }
-.form-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; }
-.form-grid label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; }
+/* M2 (22 章 §22.6): routing/defaults — dark theme aligned with sibling
+ * RoutingAuditView / RoutingOverrideView. No more "大块的设色背景":
+ * summary cards use a tight grid (not full-width flex), cards use the dark
+ * `--card` / `--border` tokens, and value colors map to the global
+ * success / accent / warning / muted tokens via utility classes. */
+.defaults-view {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+  color: var(--text, #e6edf3);
+}
+.defaults-view h1 { margin: 0 0 8px; font-size: 24px; }
+.subtitle { color: var(--muted, #8b949e); margin: 0 0 16px; font-size: 14px; }
+
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.summary-card {
+  background: var(--card, #1c2128);
+  border: 1px solid var(--border, #30363d);
+  border-radius: var(--radius, 8px);
+  padding: 12px 16px;
+}
+.summary-label {
+  font-size: 11px;
+  color: var(--muted, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.summary-value {
+  font-size: 24px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.text-success { color: var(--success, #3fb950); }
+.text-accent  { color: var(--accent-h, #818cf8); }
+.text-warning { color: var(--warning, #d29922); }
+.text-muted   { color: var(--muted, #8b949e); }
+
+.card {
+  background: var(--card, #1c2128);
+  border: 1px solid var(--border, #30363d);
+  border-radius: var(--radius, 8px);
+  padding: 16px;
+  margin-bottom: 16px;
+  color: var(--text, #e6edf3);
+}
+.card h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.filter-bar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted, #8b949e);
+}
+.filter-bar input,
+.filter-bar select {
+  width: auto;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.create-form .hint {
+  color: var(--muted, #8b949e);
+  font-size: 12px;
+  margin: 0 0 12px;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 720px) {
+  .form-grid { grid-template-columns: 1fr; }
+}
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted, #8b949e);
+}
 .form-grid .full-row { grid-column: 1 / -1; }
-.form-grid input, .form-grid select { padding: 0.4rem; border: 1px solid #d1d5db; border-radius: 4px; }
-.form-actions { display: flex; gap: 0.5rem; margin-top: 1rem; }
-.error { color: #dc2626; }
-.defaults-table, .audit-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-.defaults-table th, .defaults-table td, .audit-table th, .audit-table td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #f3f4f6; }
-.defaults-table th, .audit-table th { background: #f9fafb; font-weight: 600; }
-.reason-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.badge { padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
-.tier-primary { background: #dcfce7; color: #166534; }
-.tier-secondary { background: #dbeafe; color: #1e40af; }
-.tier-fallback { background: #fef3c7; color: #92400e; }
-.audit-insert { background: #dcfce7; color: #166534; }
-.audit-update { background: #dbeafe; color: #1e40af; }
-.audit-delete { background: #fee2e2; color: #991b1b; }
+.form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+.error {
+  color: var(--danger, #f85149);
+  font-size: 13px;
+  margin: 8px 0 0;
+}
+.empty {
+  text-align: center;
+  padding: 32px 16px;
+  color: var(--muted, #8b949e);
+}
+
+button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--radius, 8px);
+  border: 1px solid var(--border, #30363d);
+  background: var(--card, #1c2128);
+  color: var(--text, #e6edf3);
+  font-size: 13px;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+button:hover:not(:disabled) { opacity: .85; }
+button:disabled { opacity: .4; cursor: not-allowed; }
+.btn-new,
+.btn-primary {
+  background: var(--accent, #6366f1);
+  border-color: var(--accent, #6366f1);
+  color: #fff;
+}
+.btn-audit {
+  background: var(--bg-subtle, #161b22);
+  color: var(--text, #e6edf3);
+}
+.btn-delete {
+  background: rgba(248, 81, 73, 0.12);
+  border-color: rgba(248, 81, 73, 0.4);
+  color: var(--danger, #f85149);
+  padding: 4px 8px;
+}
+.btn-small { font-size: 12px; padding: 4px 10px; }
+
+.defaults-table,
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.defaults-table th,
+.defaults-table td,
+.audit-table th,
+.audit-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+.defaults-table th,
+.audit-table th {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted, #8b949e);
+}
+.defaults-table tbody tr:hover,
+.audit-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+.reason-cell {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.tier-primary   { background: rgba(63,185,80,0.15);  color: var(--success, #3fb950); }
+.tier-secondary { background: rgba(99,102,241,0.15); color: var(--accent-h, #818cf8); }
+.tier-fallback  { background: rgba(210,153,34,0.15); color: var(--warning, #d29922); }
+.audit-insert   { background: rgba(63,185,80,0.15);  color: var(--success, #3fb950); }
+.audit-update   { background: rgba(99,102,241,0.15); color: var(--accent-h, #818cf8); }
+.audit-delete   { background: rgba(248,81,73,0.15);  color: var(--danger, #f85149); }
 .expired { opacity: 0.55; }
-.expired-tag { color: #dc2626; font-weight: 600; }
-.empty, .hint { color: #888; }
-code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.85rem; }
-.audit-section h3 { display: flex; align-items: center; gap: 0.75rem; }
+.expired-tag {
+  color: var(--danger, #f85149);
+  font-weight: 600;
+  font-size: 12px;
+}
+code {
+  background: var(--bg-subtle, #161b22);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text, #e6edf3);
+}
+.audit-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 </style>
