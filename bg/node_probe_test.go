@@ -95,7 +95,7 @@ func TestNodeProbeResultToStatus(t *testing.T) {
 		{"success", nodeProbeRoundResult{ok: true}, ProbeStatusSuccess},
 		{"endpoint_build", nodeProbeRoundResult{errCode: "endpoint_build"}, ProbeStatusFailed},
 		{"network_error", nodeProbeRoundResult{errCode: "network_error", latencyMs: 500}, ProbeStatusNetwork},
-		{"network_error near timeout", nodeProbeRoundResult{errCode: "network_error", latencyMs: 14900}, ProbeStatusTimeout},
+		{"network_error near timeout", nodeProbeRoundResult{errCode: "network_error", latencyMs: 14900, timedOut: true}, ProbeStatusTimeout},
 		{"429", nodeProbeRoundResult{errCode: "http_429", httpStatus: 429}, ProbeStatusRate},
 		{"401", nodeProbeRoundResult{errCode: "http_401", httpStatus: 401}, ProbeStatusAuth},
 		{"403", nodeProbeRoundResult{errCode: "http_403", httpStatus: 403}, ProbeStatusAuth},

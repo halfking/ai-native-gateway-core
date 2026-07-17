@@ -548,7 +548,7 @@ func (h *RouteIncidentsHandler) findingsFor(ctx context.Context, inc *routeincid
 		SELECT rl.error_kind, rl.failure_stage, rl.request_id
 		FROM request_logs_with_current_month rl
 		WHERE rl.tenant_id = $1
-		  AND rl.success = FALSE
+		  AND rl.request_status = 'failure'
 		  AND rl.ts >= $2
 		  AND (rl.outbound_model = $3 OR rl.client_model = $3)
 		  AND COALESCE(rl.provider_id, 0) = COALESCE($4, 0)

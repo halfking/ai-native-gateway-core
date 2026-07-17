@@ -696,7 +696,7 @@ func TestBuildLiveStreamSnapshot_ServerSideAggregation(t *testing.T) {
 	}
 
 	s := BuildLiveStreamSnapshot(items)
-	if s.Summary.Total != 3 || s.Summary.Success != 1 || s.Summary.Failure != 1 || s.Summary.InProgress != 1 {
+	if s.Summary.Total != 3 || s.Summary.Success != 1 || s.Summary.Failure != 1 || s.Summary.InProgress != 1 || s.Summary.RateLimited != 0 {
 		t.Fatalf("unexpected summary: %#v", s.Summary)
 	}
 	if len(s.Dimensions["vendor"]) != 2 {

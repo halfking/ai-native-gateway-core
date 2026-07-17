@@ -426,8 +426,31 @@ func (n *ApprovalNotifier) triggerResume(ctx context.Context, tenantID, sessionI
 	}
 }
 
-// 辅助函数
+// groupRecipientsBySelectedChannel converts rule-selected recipients into
+// channel-specific IDs without broadcasting a recipient to unrelated channels.
+func groupRecipientsBySelectedChannel(groups map[ChannelType][]Recipient) map[ChannelType][]string {
+	out := make(map[ChannelType][]string)
+	for channel, recipients := range groups {
+		for _, r := range recipients {
+			var id string
+			switch channel {
+			case ChannelLark:
+				id = r.LarkOpenID
+			case ChannelDingTalk:
+				id = r.DingTalkUserID
+			case ChannelWeChat:
+				id = r.WeChatUserID
+			}
+			if id != "" {
+				out[channel] = append(out[channel], id)
+			}
+		}
+	}
+	return out
+}
 
+// groupRecipientsByChannel is retained for callers that need the recipient's
+// available channel IDs rather than a rule-selected channel.
 func groupRecipientsByChannel(rs []Recipient) map[ChannelType][]string {
 	out := make(map[ChannelType][]string)
 	for _, r := range rs {

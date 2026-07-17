@@ -71,6 +71,11 @@ func FromTelemetryEntry(entry *telemetry.RequestLogEntry, ts time.Time) (
 	if status == telemetry.RequestStatusInProgress {
 		return main, nil, nil, false
 	}
+	if status != telemetry.RequestStatusSuccess &&
+		status != telemetry.RequestStatusFailure &&
+		status != telemetry.RequestStatusRateLimited {
+		return main, nil, nil, false
+	}
 
 	tenantID := entry.TenantID
 	if tenantID == "" {
@@ -103,9 +108,9 @@ func FromTelemetryEntry(entry *telemetry.RequestLogEntry, ts time.Time) (
 		CostUSD:          cost,
 		LatencyMsSum:     latency,
 	}
-	if entry.Success {
+	if status == telemetry.RequestStatusSuccess {
 		main.SuccessCount = 1
-	} else {
+	} else if status == telemetry.RequestStatusFailure {
 		main.FailureCount = 1
 	}
 
@@ -147,7 +152,7 @@ func FromTelemetryEntry(entry *telemetry.RequestLogEntry, ts time.Time) (
 	addDim("tenant", tenantID)
 	addDim("provider", itoa(providerID))
 
-	if !entry.Success {
+	if status == telemetry.RequestStatusFailure {
 		errKind := unknownDim
 		if entry.ErrorKind != nil && *entry.ErrorKind != "" {
 			errKind = *entry.ErrorKind

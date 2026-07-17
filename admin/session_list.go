@@ -128,7 +128,7 @@ func (api *SessionListAPI) loadSessions(
 		SELECT 
 			gw_session_id,
 			COUNT(*) as request_count,
-			COUNT(*) FILTER (WHERE NOT success) as error_count,
+			COUNT(*) FILTER (WHERE request_status = 'failure') as error_count,
 			COUNT(*) FILTER (WHERE compression_strategy IS NOT NULL AND compression_strategy != '') > 0 as is_compressed,
 			MIN(ts) as time_start,
 			MAX(ts) as time_end,
@@ -297,7 +297,7 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 	query := `
 		SELECT 
 			COUNT(*) as request_count,
-			COUNT(*) FILTER (WHERE NOT success) as error_count,
+			COUNT(*) FILTER (WHERE request_status = 'failure') as error_count,
 			COUNT(*) FILTER (WHERE compression_strategy IS NOT NULL AND compression_strategy != '') > 0 as is_compressed,
 			MAX(compression_strategy) as compression_strategy,
 			MIN(ts) as time_start,

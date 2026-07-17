@@ -77,6 +77,43 @@ func (rr RoutingRules) Route(tenantID string, riskLevel RiskLevel) []Recipient {
 	return out
 }
 
+// RouteByChannel preserves the channel selected by each matching rule.
+func (rr RoutingRules) RouteByChannel(tenantID string, riskLevel RiskLevel) map[ChannelType][]Recipient {
+	var matched []RoutingRule
+	for _, r := range rr {
+		if !r.Enabled || r.RiskLevel != riskLevel {
+			continue
+		}
+		if r.TenantID == tenantID || r.TenantID == "" {
+			matched = append(matched, r)
+		}
+	}
+	if len(matched) == 0 {
+		return nil
+	}
+	sortRulesByPriority(matched)
+
+	out := make(map[ChannelType][]Recipient)
+	seen := make(map[string]struct{})
+	for _, rule := range matched {
+		for _, rec := range rule.Recipients {
+			channels := []ChannelType{rule.Channel}
+			if rule.Channel == "" {
+				channels = []ChannelType{ChannelLark, ChannelDingTalk, ChannelWeChat}
+			}
+			for _, channel := range channels {
+				key := string(channel) + "|" + rec.ID + "|" + rec.LarkOpenID + "|" + rec.DingTalkUserID + "|" + rec.WeChatUserID
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				out[channel] = append(out[channel], rec)
+			}
+		}
+	}
+	return out
+}
+
 // sortRulesByPriority 按 Priority 升序排序（插入排序，规则数量通常很小）。
 func sortRulesByPriority(rules []RoutingRule) {
 	for i := 1; i < len(rules); i++ {

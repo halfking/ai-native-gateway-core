@@ -271,9 +271,37 @@ func TestApprovalRoutingTable_LoadFromDB(t *testing.T) {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Risk/Priority helpers
-// ─────────────────────────────────────────────────────────────────────────────
+func TestApprovalRoutingTable_LoadFromDBSkipsNullLegacyRule(t *testing.T) {
+	approvers, _ := json.Marshal([]ApproverDTO{{UserID: "u1", LarkOpenID: "ou_1"}})
+	tbl := NewEmptyRoutingTable()
+	loader := &fakeRoutingLoader{rows: []RoutingRuleDBRow{
+		{ID: 1, TenantID: "legacy", Approvers: nil, Enabled: true},
+		{ID: 2, TenantID: "valid", RiskLevel: "high", Channel: "lark", Approvers: approvers, Enabled: true},
+	}}
+	if err := tbl.LoadFromDB(context.Background(), loader); err != nil {
+		t.Fatalf("LoadFromDB: %v", err)
+	}
+	if got := tbl.Route("legacy", RiskLevelHigh); len(got) != 0 {
+		t.Fatalf("invalid legacy rule should be skipped, got %+v", got)
+	}
+	if got := tbl.Route("valid", RiskLevelHigh); len(got) != 1 || got[0].ID != "u1" {
+		t.Fatalf("valid rule should load, got %+v", got)
+	}
+}
+
+func TestRoutingRules_RouteByChannel(t *testing.T) {
+	rules := RoutingRules{{
+		TenantID: "t1", RiskLevel: RiskLevelHigh, Channel: ChannelLark, Enabled: true,
+		Recipients: []Recipient{{ID: "u1", LarkOpenID: "ou_1", DingTalkUserID: "dt_1"}},
+	}}
+	groups := rules.RouteByChannel("t1", RiskLevelHigh)
+	if len(groups[ChannelLark]) != 1 || groups[ChannelLark][0].LarkOpenID != "ou_1" {
+		t.Fatalf("expected only lark-selected recipient, got %+v", groups)
+	}
+	if _, ok := groups[ChannelDingTalk]; ok {
+		t.Fatalf("lark rule must not broadcast to dingtalk: %+v", groups)
+	}
+}
 
 func TestRiskLevelFromScore(t *testing.T) {
 	cases := []struct {

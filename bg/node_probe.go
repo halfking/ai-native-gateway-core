@@ -54,6 +54,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -689,6 +690,7 @@ type nodeProbeRoundResult struct {
 	errCode       string
 	errDetail     string
 	latencyMs     int
+	timedOut      bool // true if context deadline or client timeout triggered
 	// 2026-07-16: 新增详细字段用于完整记录probe过程
 	requestURL     string
 	requestHeaders map[string]string // 已脱敏（不含Authorization/x-api-key）
@@ -735,7 +737,12 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	r.requestBody = body
 	r.viaProxy = (w.probeClient != w.client) // 如果probeClient与client不同，说明使用了代理
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
+	if err != nil {
+		r.errCode = "request_build"
+		r.errDetail = err.Error()
+		return r
+	}
 	if strings.HasPrefix(protocol, "anthropic") {
 		req.Header.Set("x-api-key", plain)
 		req.Header.Set("anthropic-version", "2023-06-01")
@@ -774,9 +781,10 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	if err != nil {
 		r.errCode = "network_error"
 		r.errDetail = err.Error()
-		// 如果是超时，记录超时时长
-		if r.latencyMs >= 14900 { // 接近15秒超时
-			// timeout_at_ms在后面的Submit函数中设置为latencyMs
+		if errors.Is(err, context.DeadlineExceeded) {
+			r.timedOut = true
+		} else if ue, ok := err.(*url.Error); ok && ue.Timeout() {
+			r.timedOut = true
 		}
 		return r
 	}
@@ -788,7 +796,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	n, _ := resp.Body.Read(respBuf)
 	r.responseBody = string(respBuf[:n])
 
-	if resp.StatusCode == 200 {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		r.ok = true
 		return r
 	}
@@ -853,10 +861,8 @@ func nodeProbeResultToStatus(r nodeProbeRoundResult) ProbeStatus {
 		return ProbeStatusFailed // gateway-side build error (decrypt/resolve)
 	case "network_error":
 		// Transport failure. A request that hit the 15s client timeout is
-		// reported by probeDirect/probeGateway as network_error with a
-		// ~14900ms latency; surface it as Timeout so the dashboard pill
-		// distinguishes "upstream unreachable" from "upstream too slow".
-		if r.latencyMs >= 14900 {
+		// reported by probeDirect/probeGateway with timedOut=true.
+		if r.timedOut {
 			return ProbeStatusTimeout
 		}
 		return ProbeStatusNetwork
@@ -896,6 +902,8 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE c.id = $1 AND pm.raw_model_name = $2
+		  AND c.enabled = TRUE AND c.lifecycle IN ('active', 'grace')
+		  AND p.enabled = TRUE AND p.manual_disabled = FALSE
 		LIMIT 1
 	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
 	if err != nil {
@@ -1049,7 +1057,12 @@ func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model st
 	r := nodeProbeRoundResult{errCode: "none"}
 	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, model)
 	endpoint := w.baseURL + "/chat/completions"
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
+	if err != nil {
+		r.errCode = "request_build"
+		r.errDetail = err.Error()
+		return r
+	}
 	req.Header.Set("Authorization", "Bearer "+w.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-LLM-Origin-Stage", "node_probe")
@@ -1080,7 +1093,7 @@ func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model st
 	respBuf := make([]byte, 512)
 	n, _ := resp.Body.Read(respBuf)
 	r.responseBody = string(respBuf[:n])
-	if resp.StatusCode == 200 {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		r.ok = true
 		return r
 	}
