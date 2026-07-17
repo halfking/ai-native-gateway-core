@@ -13,7 +13,7 @@
 //   - emitting the result to request_logs (so it lands in the live stream)
 //   - feeding it back into CredentialStateManager.UpdateFromProbe
 //
-// HTTP-timeout: 10s by default, overridable via config.
+// HTTP-timeout: 30s by default, overridable via config.
 package bg
 
 import (
@@ -103,10 +103,11 @@ type ProbeResult struct {
 }
 
 // NewActiveProbeExecutor constructs an executor.
-// timeoutMs <= 0 falls back to 10s (matches spec §3.1).
+// timeoutMs <= 0 falls back to 30s so slow but healthy providers are not
+// classified as failed probes by default.
 func NewActiveProbeExecutor(db *pgxpool.Pool, keyring *secret.Keyring, encKey []byte, timeoutMs int) *ActiveProbeExecutor {
 	if timeoutMs <= 0 {
-		timeoutMs = 10000
+		timeoutMs = 30000
 	}
 	return &ActiveProbeExecutor{
 		db:      db,
@@ -115,6 +116,19 @@ func NewActiveProbeExecutor(db *pgxpool.Pool, keyring *secret.Keyring, encKey []
 		httpClient: &http.Client{
 			Timeout: time.Duration(timeoutMs) * time.Millisecond,
 		},
+	}
+}
+
+// IsPermanentProbeFailure reports whether a failed probe justifies marking a
+// credential unavailable for the cooldown period. Transport, rate-limit, and
+// upstream 5xx failures are transient and must not cascade into route-wide
+// outages when the provider is slow or temporarily overloaded.
+func IsPermanentProbeFailure(status ProbeStatus) bool {
+	switch status {
+	case ProbeStatusAuth, ProbeStatusHTTP4xx, ProbeStatusFailed:
+		return true
+	default:
+		return false
 	}
 }
 

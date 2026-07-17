@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when returning to the stream tab, but the browser will no longer freeze.
   (DashboardViewV2.vue, TenantDashboardView.vue)
 
+- **Active probe timeout no longer locks healthy slow providers**: Raised the
+  default direct probe timeout from 10s to 30s for slow upstreams such as NIM
+  `minimaxai/minimax-m3`. Only auth, HTTP 4xx, and gateway-side probe build
+  failures now mark a credential unavailable for the five-minute cooldown;
+  timeout, network, rate-limit, HTTP 5xx, canceled, and skipped results remain
+  routable while the retry chain continues. Added transient degraded-mode
+  handling for `state:probe_direct_timeout`.
+
 - **Minimax-m3 "no available model" / "model not found" through gateway**:
   `credentialhealth.Checker` was counting `KindEmptyResponse` (NIM's 13%
   empty-stream rate) toward the 80% degradation threshold. After ~30

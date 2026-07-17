@@ -1882,7 +1882,7 @@ func main() {
 			epEnabled := true
 			epThreshold := 2
 			epMaxAttempts := 5
-			epTimeoutMs := 10000
+			epTimeoutMs := 30000
 			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_ENABLED"); envStr == "false" || envStr == "0" {
 				epEnabled = false
 			}
