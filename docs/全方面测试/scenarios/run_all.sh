@@ -27,8 +27,12 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$FAST" = "1" ]; then
-    DURATION_MULT="2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2"  # placeholder, real scale happens below
-    echo "fast mode: 缩减 50% 时长"
+    export DURATION_NORMAL=15
+    export DURATION_HEAVY=30
+    export DURATION_RECOVERY=15
+    export QUOTA_WINDOW_SEC=10
+    export QUOTA_WAIT_SEC=12
+    echo "fast mode: normal=${DURATION_NORMAL}s heavy=${DURATION_HEAVY}s recovery=${DURATION_RECOVERY}s"
 fi
 
 export GATEWAY

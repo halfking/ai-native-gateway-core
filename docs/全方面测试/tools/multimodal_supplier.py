@@ -516,17 +516,20 @@ async def messages(request):
     return web.json_response(
         {
             "id": cid,
-            "type": "message",
-            "role": "assistant",
+            "object": "chat.completion",
+            "created": ts,
             "model": model,
-            "content": [
+            "choices": [
                 {
-                    "type": "text",
-                    "text": f"[{ARGS.group}/{ARGS.instance}] mock-mm: {summary}",
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": f"[{ARGS.group}/{ARGS.instance}] mock-mm: {summary}",
+                    },
+                    "finish_reason": "stop",
                 }
             ],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 50, "output_tokens": 20},
+            "usage": {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70},
             "_mock_meta": {
                 "request_id": rid,
                 "request_count": len(LAST_REQUESTS),

@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/_lib.sh"
 
 reset_all_suppliers
+refresh_p95_metrics
 echo "[S05] quality penalty: G=slow, J=flaky"
 set_group G slow
 set_group J flaky

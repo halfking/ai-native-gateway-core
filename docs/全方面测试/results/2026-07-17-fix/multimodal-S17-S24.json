@@ -1,0 +1,410 @@
+{
+  "passed": 7,
+  "failed": 1,
+  "results": [
+    {
+      "scenario": "S17_openai_image_url",
+      "ok": true,
+      "supplier_request_id": "mm-fb5a0295ea624dcb",
+      "supplier_endpoint": "/v1/chat/completions",
+      "supplier_model": "loadtest-mm-vision-alpha",
+      "mock_request_id": "mm-fb5a0295ea624dcb",
+      "notes": [
+        "http_status=200"
+      ],
+      "checks": [
+        {
+          "name": "supplier.endpoint",
+          "expect": "/v1/chat/completions",
+          "actual": "/v1/chat/completions",
+          "ok": true
+        },
+        {
+          "name": "supplier.model",
+          "expect": "loadtest-mm-vision-alpha",
+          "actual": "loadtest-mm-vision-alpha",
+          "ok": true
+        },
+        {
+          "name": "modalities.text",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "modalities.image",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "modalities.audio",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "modalities.file",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "image[1].http_url_length",
+          "expect": "url_len > 0",
+          "actual": "url_kind=http url_len=34",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "scenario": "S18_anthropic_image",
+      "ok": false,
+      "http_status": 502,
+      "body_excerpt": {
+        "message": "\u6a21\u578b\u672a\u8fd4\u56de\u4efb\u4f55\u5185\u5bb9",
+        "type": "api_error"
+      },
+      "notes": [
+        "http_status=502"
+      ],
+      "checks": []
+    },
+    {
+      "scenario": "S19_mixed_content",
+      "ok": true,
+      "supplier_request_id": "mm-10f3dca732744de1",
+      "supplier_endpoint": "/v1/chat/completions",
+      "supplier_model": "loadtest-mm-vision-alpha",
+      "mock_request_id": "mm-10f3dca732744de1",
+      "notes": [
+        "http_status=200"
+      ],
+      "checks": [
+        {
+          "name": "supplier.endpoint",
+          "expect": "/v1/chat/completions",
+          "actual": "/v1/chat/completions",
+          "ok": true
+        },
+        {
+          "name": "supplier.model",
+          "expect": "loadtest-mm-vision-alpha",
+          "actual": "loadtest-mm-vision-alpha",
+          "ok": true
+        },
+        {
+          "name": "modalities.text",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "modalities.image",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "modalities.audio",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "modalities.file",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "image[1].http_url_length",
+          "expect": "url_len > 0",
+          "actual": "url_kind=http url_len=34",
+          "ok": true
+        },
+        {
+          "name": "audio[2].data_length",
+          "expect": "data_len > 0",
+          "actual": "data_len=52",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "scenario": "S20_multi_image",
+      "ok": true,
+      "supplier_request_id": "mm-d3c29fd243e6495a",
+      "supplier_endpoint": "/v1/chat/completions",
+      "supplier_model": "loadtest-mm-vision-alpha",
+      "mock_request_id": "mm-d3c29fd243e6495a",
+      "notes": [
+        "http_status=200"
+      ],
+      "checks": [
+        {
+          "name": "supplier.endpoint",
+          "expect": "/v1/chat/completions",
+          "actual": "/v1/chat/completions",
+          "ok": true
+        },
+        {
+          "name": "supplier.model",
+          "expect": "loadtest-mm-vision-alpha",
+          "actual": "loadtest-mm-vision-alpha",
+          "ok": true
+        },
+        {
+          "name": "modalities.text",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "modalities.image",
+          "expect": 3,
+          "actual": 3,
+          "ok": true
+        },
+        {
+          "name": "modalities.audio",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "modalities.file",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "image[1].http_url_length",
+          "expect": "url_len > 0",
+          "actual": "url_kind=http url_len=34",
+          "ok": true
+        },
+        {
+          "name": "image[2].http_url_length",
+          "expect": "url_len > 0",
+          "actual": "url_kind=http url_len=38",
+          "ok": true
+        },
+        {
+          "name": "image[3].http_url_length",
+          "expect": "url_len > 0",
+          "actual": "url_kind=http url_len=36",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "scenario": "S21_history_with_image",
+      "ok": true,
+      "supplier_request_id": "mm-8624534d62b14dd8",
+      "supplier_endpoint": "/v1/chat/completions",
+      "supplier_model": "loadtest-mm-vision-alpha",
+      "mock_request_id": "mm-8624534d62b14dd8",
+      "notes": [
+        "http_status=200"
+      ],
+      "checks": [
+        {
+          "name": "supplier.endpoint",
+          "expect": "/v1/chat/completions",
+          "actual": "/v1/chat/completions",
+          "ok": true
+        },
+        {
+          "name": "supplier.model",
+          "expect": "loadtest-mm-vision-alpha",
+          "actual": "loadtest-mm-vision-alpha",
+          "ok": true
+        },
+        {
+          "name": "modalities.text",
+          "expect": 3,
+          "actual": 3,
+          "ok": true
+        },
+        {
+          "name": "modalities.image",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "modalities.audio",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "modalities.file",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "image[1].http_url_length",
+          "expect": "url_len > 0",
+          "actual": "url_kind=http url_len=34",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "scenario": "S22_streaming_image",
+      "ok": true,
+      "supplier_request_id": "mm-450f7ce172784718",
+      "supplier_endpoint": "/v1/chat/completions",
+      "supplier_model": "loadtest-mm-vision-alpha",
+      "mock_request_id": null,
+      "notes": [
+        "http_status=200"
+      ],
+      "checks": [
+        {
+          "name": "supplier.endpoint",
+          "expect": "/v1/chat/completions",
+          "actual": "/v1/chat/completions",
+          "ok": true
+        },
+        {
+          "name": "supplier.model",
+          "expect": "loadtest-mm-vision-alpha",
+          "actual": "loadtest-mm-vision-alpha",
+          "ok": true
+        },
+        {
+          "name": "modalities.text",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "modalities.image",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "modalities.audio",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "modalities.file",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "image[1].http_url_length",
+          "expect": "url_len > 0",
+          "actual": "url_kind=http url_len=34",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "scenario": "S23_client_profile_roocode",
+      "ok": true,
+      "supplier_request_id": "mm-7ad64cfb826143b4",
+      "supplier_endpoint": "/v1/chat/completions",
+      "supplier_model": "loadtest-mm-vision-alpha",
+      "mock_request_id": "mm-7ad64cfb826143b4",
+      "notes": [
+        "http_status=200"
+      ],
+      "checks": [
+        {
+          "name": "supplier.endpoint",
+          "expect": "/v1/chat/completions",
+          "actual": "/v1/chat/completions",
+          "ok": true
+        },
+        {
+          "name": "supplier.model",
+          "expect": "loadtest-mm-vision-alpha",
+          "actual": "loadtest-mm-vision-alpha",
+          "ok": true
+        },
+        {
+          "name": "modalities.text",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "modalities.image",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "modalities.audio",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "modalities.file",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "scenario": "S24_tenant_labeling",
+      "ok": true,
+      "supplier_request_id": "mm-5a5ad169cd224cd5",
+      "supplier_endpoint": "/v1/chat/completions",
+      "supplier_model": "loadtest-mm-vision-alpha",
+      "mock_request_id": "mm-5a5ad169cd224cd5",
+      "notes": [
+        "http_status=200"
+      ],
+      "checks": [
+        {
+          "name": "supplier.endpoint",
+          "expect": "/v1/chat/completions",
+          "actual": "/v1/chat/completions",
+          "ok": true
+        },
+        {
+          "name": "supplier.model",
+          "expect": "loadtest-mm-vision-alpha",
+          "actual": "loadtest-mm-vision-alpha",
+          "ok": true
+        },
+        {
+          "name": "modalities.text",
+          "expect": 1,
+          "actual": 1,
+          "ok": true
+        },
+        {
+          "name": "modalities.image",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "modalities.audio",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        },
+        {
+          "name": "modalities.file",
+          "expect": 0,
+          "actual": 0,
+          "ok": true
+        }
+      ]
+    }
+  ]
+}

@@ -37,7 +37,7 @@ import aiohttp
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAfbLI3wAAAABJRU5ErkJggg=="
 )
-PNG_1X1_B64 = PNG_1X1.decode("latin-1")
+PNG_1X1_B64 = base64.b64encode(PNG_1X1).decode("ascii")
 WAV_TINY = base64.b64encode(
     b"RIFF$\x00\x00\x00WAVEfmt \x00\x00\x00\x10\x00\x01\x00\x01\x00\x00\x01\x00\x00\x00\x00data\x00\x00\x00\x00"
 ).decode("ascii")
@@ -62,7 +62,7 @@ TEST_WAV_URL = "http://127.0.0.1:1/fixture-tiny.wav"
 SCENARIOS: Dict[str, Dict[str, Any]] = {
     "S17_openai_image_url": {
         "description": "OpenAI Chat Completions with a single image_url (data URI)",
-        "model": "loadtest-vision-alpha",
+        "model": "loadtest-mm-vision-alpha",
         "endpoint": "/v1/chat/completions",
         "extra_headers": {
             "X-Device-Seed": "test-device-001",
@@ -75,7 +75,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "X-Tenant-Id": "tenant-roocode-default",
         },
         "payload": {
-            "model": "loadtest-vision-alpha",
+            "model": "loadtest-mm-vision-alpha",
             "messages": [
                 {
                     "role": "user",
@@ -94,7 +94,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
     "S18_anthropic_image": {
         "description": "Anthropic Messages /v1/messages with native image block (base64)",
-        "model": "loadtest-vision-alpha",
+        "model": "loadtest-mm-vision-alpha",
         "endpoint": "/v1/messages",
         "extra_headers": {
             "anthropic-version": "2023-06-01",
@@ -102,7 +102,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "X-Tenant-Id": "tenant-claude-default",
         },
         "payload": {
-            "model": "loadtest-vision-alpha",
+            "model": "loadtest-mm-vision-alpha",
             "max_tokens": 100,
             "messages": [
                 {
@@ -128,14 +128,14 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
     "S19_mixed_content": {
         "description": "OpenAI mixed text + image + audio + file (one of each)",
-        "model": "loadtest-vision-alpha",
+        "model": "loadtest-mm-vision-alpha",
         "endpoint": "/v1/chat/completions",
         "extra_headers": {
             "X-Client-Profile": "vscode",
             "X-Tenant-Id": "tenant-vscode-default",
         },
         "payload": {
-            "model": "loadtest-vision-alpha",
+            "model": "loadtest-mm-vision-alpha",
             "messages": [
                 {
                     "role": "user",
@@ -155,14 +155,14 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
     "S20_multi_image": {
         "description": "Three images in one user message (data URIs)",
-        "model": "loadtest-vision-alpha",
+        "model": "loadtest-mm-vision-alpha",
         "endpoint": "/v1/chat/completions",
         "extra_headers": {
             "X-Client-Profile": "opencode",
             "X-Tenant-Id": "tenant-opencode-default",
         },
         "payload": {
-            "model": "loadtest-vision-alpha",
+            "model": "loadtest-mm-vision-alpha",
             "messages": [
                 {
                     "role": "user",
@@ -179,14 +179,14 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
     "S21_history_with_image": {
         "description": "Multi-turn conversation with image in earlier turn",
-        "model": "loadtest-vision-alpha",
+        "model": "loadtest-mm-vision-alpha",
         "endpoint": "/v1/chat/completions",
         "extra_headers": {
             "X-Client-Profile": "roocode",
             "X-Tenant-Id": "tenant-roocode-default",
         },
         "payload": {
-            "model": "loadtest-vision-alpha",
+            "model": "loadtest-mm-vision-alpha",
             "messages": [
                 {
                     "role": "user",
@@ -209,7 +209,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
     "S22_streaming_image": {
         "description": "Streaming OpenAI request with image, verify SSE chunks",
-        "model": "loadtest-vision-alpha",
+        "model": "loadtest-mm-vision-alpha",
         "endpoint": "/v1/chat/completions",
         "stream": True,
         "extra_headers": {
@@ -217,7 +217,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "X-Tenant-Id": "tenant-opencode-default",
         },
         "payload": {
-            "model": "loadtest-vision-alpha",
+            "model": "loadtest-mm-vision-alpha",
             "stream": True,
             "messages": [
                 {
@@ -233,7 +233,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
     "S23_client_profile_roocode": {
         "description": "Verify identity-funnel: gateway fingerprints the request and forwards a stable seed",
-        "model": "loadtest-vision-alpha",
+        "model": "loadtest-mm-vision-alpha",
         "endpoint": "/v1/chat/completions",
         "extra_headers": {
             "X-Device-Seed": "device-fixture-aaa",
@@ -242,7 +242,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "X-Tenant-Id": "tenant-roocode-default",
         },
         "payload": {
-            "model": "loadtest-vision-alpha",
+            "model": "loadtest-mm-vision-alpha",
             "messages": [{"role": "user", "content": "hi"}],
         },
         "expected_modalities": {"text": 1, "image": 0, "audio": 0, "file": 0},
@@ -256,14 +256,14 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
     "S24_tenant_labeling": {
         "description": "Verify X-Tenant-Id flows to request_logs.tenant_id column",
-        "model": "loadtest-vision-alpha",
+        "model": "loadtest-mm-vision-alpha",
         "endpoint": "/v1/chat/completions",
         "extra_headers": {
             "X-Tenant-Id": "tenant-labeling-test-xyz",
             "X-Client-Profile": "opencode",
         },
         "payload": {
-            "model": "loadtest-vision-alpha",
+            "model": "loadtest-mm-vision-alpha",
             "messages": [{"role": "user", "content": "label me"}],
         },
         "expected_modalities": {"text": 1, "image": 0, "audio": 0, "file": 0},
@@ -433,32 +433,10 @@ async def _post_request(
         return 0, None, [f"http_error: {e!r}"], None
 
 
-async def _get_last_record(
-    session: aiohttp.ClientSession, supplier: str
-) -> Tuple[Optional[dict], List[str]]:
-    try:
-        async with session.get(
-            supplier.rstrip("/") + "/admin/requests?n=1",
-            timeout=aiohttp.ClientTimeout(total=5.0),
-        ) as resp:
-            if resp.status != 200:
-                return None, [f"supplier_status={resp.status}"]
-            body = await resp.json()
-            reqs = body.get("requests", [])
-            if not reqs:
-                return None, ["no_requests_recorded"]
-            return reqs[-1], []
-    except Exception as e:
-        return None, [f"supplier_error: {e!r}"]
-
-
 async def _clear_all_supplier_records(
-    session: aiohttp.ClientSession, supplier: str, count: int = 5
+    session: aiohttp.ClientSession, supplier: str, count: int
 ) -> None:
-    """Clear records on all 5 multimodal suppliers in the group. The
-    gateway may route the request to any of them; we don't know
-    which one ahead of time, so we look at all 5 and pick the
-    freshest record. Replaces the old single-supplier clear."""
+    """Clear records on every multimodal supplier in the group."""
     base = supplier.rstrip("/")
     base_no_port = base.rsplit(":", 1)[0]
     primary_port = int(base.rsplit(":", 1)[1])
@@ -472,10 +450,8 @@ async def _clear_all_supplier_records(
             pass
 
 
-def _supplier_base_ports(supplier: str, count: int = 5) -> List[str]:
-    """Return the list of base URLs for all 5 multimodal suppliers in
-    the group. The first URL uses the supplied --supplier; the rest
-    increment the port number."""
+def _supplier_base_ports(supplier: str, count: int) -> List[str]:
+    """Return base URLs for every multimodal supplier in the group."""
     base = supplier.rstrip("/")
     base_no_port = base.rsplit(":", 1)[0]
     primary_port = int(base.rsplit(":", 1)[1])
@@ -484,10 +460,12 @@ def _supplier_base_ports(supplier: str, count: int = 5) -> List[str]:
 
 
 async def _query_all_suppliers(
-    session: aiohttp.ClientSession, supplier: str, count: int = 5
+    session: aiohttp.ClientSession,
+    supplier: str,
+    count: int,
+    request_id: Optional[str] = None,
 ) -> Tuple[Optional[dict], List[str]]:
-    """Query all multimodal suppliers in the group and return the most
-    recent record across them. The gateway may route to any of them."""
+    """Find the matching request across every multimodal supplier."""
     candidates: List[dict] = []
     for url in _supplier_base_ports(supplier, count):
         try:
@@ -504,6 +482,10 @@ async def _query_all_suppliers(
             continue
     if not candidates:
         return None, ["no_requests_recorded"]
+    if request_id:
+        for candidate in candidates:
+            if candidate.get("id") == request_id:
+                return candidate, []
     candidates.sort(key=lambda r: r.get("ts", 0), reverse=True)
     return candidates[0], []
 
@@ -512,10 +494,11 @@ async def _run_scenario(
     session: aiohttp.ClientSession,
     gateway: str,
     supplier: str,
+    supplier_count: int,
     name: str,
     scen: dict,
 ) -> dict:
-    await _clear_all_supplier_records(session, supplier)
+    await _clear_all_supplier_records(session, supplier, supplier_count)
 
     if scen.get("stream"):
         payload = dict(scen["payload"])
@@ -537,7 +520,9 @@ async def _run_scenario(
     # staleness from the post session (the supplier process accepted
     # the request on a different socket than our gateway socket).
     async with aiohttp.ClientSession() as query_session:
-        record, sup_notes = await _query_all_suppliers(query_session, supplier)
+        record, sup_notes = await _query_all_suppliers(
+            query_session, supplier, supplier_count, mock_req_id
+        )
     notes = http_notes + sup_notes
 
     if status != 200:
@@ -604,6 +589,9 @@ async def main() -> int:
     parser.add_argument("--gateway", default="http://localhost:8781")
     parser.add_argument("--supplier", default="http://127.0.0.1:19280")
     parser.add_argument(
+        "--mm-count", type=int, default=int(os.getenv("MM_COUNT", "5"))
+    )
+    parser.add_argument(
         "--scenario",
         action="append",
         default=None,
@@ -631,7 +619,9 @@ async def main() -> int:
     async with aiohttp.ClientSession() as session:
         for name in selected:
             scen = SCENARIOS[name]
-            res = await _run_scenario(session, args.gateway, args.supplier, name, scen)
+            res = await _run_scenario(
+                session, args.gateway, args.supplier, args.mm_count, name, scen
+            )
             results.append(res)
 
     passed = sum(1 for r in results if r["ok"])
