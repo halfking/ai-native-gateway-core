@@ -197,6 +197,14 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
 		fallbackFiltered := make([]Candidate, 0, len(fallbackCands))
 		for _, c := range fallbackCands {
 			if !existingIDs[c.CredentialID] {
+				// 2026-07-17 (audit H2): apply the same complexity filter
+				// the L1 build loop uses (line ~131). Without this, models
+				// that were filtered out as over-/under-powered re-enter
+				// the candidate set whenever L2 returned < 3, silently
+				// defeating UseComplexityScore.
+				if reqLevel != "" && !ComplexityMatch(reqLevel, c.ComplexityCeiling, c.MinComplexity) {
+					continue
+				}
 				c.TaskMatchScore = TaskMatchScore(task, c.Tags)
 				fallbackFiltered = append(fallbackFiltered, c)
 			}

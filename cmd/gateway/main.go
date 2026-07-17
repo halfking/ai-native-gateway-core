@@ -2265,6 +2265,24 @@ func main() {
 			defaultRoutingRefresher.Start(context.Background())
 			defer func() { defaultRoutingRefresher.Stop() }()
 			decider.SetDefaultRoutingStore(defaultRoutingStore)
+			// 2026-07-17 (audit H1): wire the apiKeyID -> tenantID resolver so
+			// tenant-scoped default routing rows can actually match. Without
+			// this, TenantResolver stays nil, tenantID is always 0, and every
+			// tenant-level rule an operator configures silently never resolves
+			// (Resolve falls back to platform-level rows). Best-effort: a
+			// missing/disabled key resolves to tenant 0 (platform-level).
+			decider.SetTenantResolver(func(apiKeyID int) int64 {
+				if apiKeyID <= 0 {
+					return 0
+				}
+				var tid int64
+				lookupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = dbConn.Pool().QueryRow(lookupCtx,
+					`SELECT COALESCE(tenant_id, 0) FROM api_keys WHERE id = $1`,
+					apiKeyID).Scan(&tid)
+				return tid
+			})
 
 			// v2.2 (P8.8): AuditTrimmer caps growth of the two
 			// audit tables (routing_overrides_audit from P7.9
