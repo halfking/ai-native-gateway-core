@@ -15,9 +15,10 @@
 --     domains/notification/routing_pgx.go:LoadRoutingRules 查询这 4 列 → 42703
 --     → 审批通知功能（飞书/钉钉/企微卡片下发）在 init 时降级失效。
 --     修复策略（用户批准：补列适配代码）：补 ADD COLUMN 把 135 的列加到现有表，
---     不改 Go 代码。补的列 NULL-able / 带默认值，不破坏 391 已有行；老行
---     risk_level 为 NULL → 代码 scan 出空串 → Route() 相等匹配不命中 →
---     该规则在通知路由里不生效（安全降级，由运维后续按需补录）。
+--     并由 loader 对 NULL/无效 legacy 行安全降级；不猜测 391 的业务字段映射。
+--     转成安全空值，rowToRoutingRule 会记录并跳过缺少风险级别、渠道或审批人的
+--     legacy 行。由于 391 的 conditions/approvers 无可靠通用映射，本迁移不猜测
+--     回填业务语义；旧行不会因补列自动恢复路由，需后续按业务契约显式迁移。
 --
 --   (B) partition_manager: credential_probe_model_log cleanup failed:
 --       relation "credential_probe_model_log" does not exist (SQLSTATE 42P01)
@@ -32,6 +33,7 @@
 -- =============================================================================
 
 \set ON_ERROR_STOP on
+BEGIN;
 
 \echo '=== 423 (A): approval_routing_rules 补 135 schema 列 ==='
 
@@ -121,3 +123,4 @@ CREATE INDEX IF NOT EXISTS idx_credential_probe_model_log_created
 \echo '--- credential_probe_model_log 已建 ---'
 
 \echo '=== 423 完成 ==='
+COMMIT;

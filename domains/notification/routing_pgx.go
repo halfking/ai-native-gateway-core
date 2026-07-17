@@ -28,7 +28,12 @@ func (l *PgxRoutingLoader) LoadRoutingRules(ctx context.Context) ([]RoutingRuleD
 	}
 
 	query := `
-		SELECT id, tenant_id, risk_level, channel_type, approver_ids, priority, enabled, updated_at
+		SELECT id, tenant_id,
+		       COALESCE(risk_level, ''),
+		       COALESCE(channel_type, ''),
+		       COALESCE(approver_ids, '[]'::jsonb),
+		       COALESCE(priority, 0),
+		       enabled, updated_at
 		FROM approval_routing_rules
 		WHERE enabled = true
 		ORDER BY tenant_id, risk_level, priority ASC
