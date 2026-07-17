@@ -38,10 +38,11 @@ export default {
   },
   empty: {
     title: '暂无链路事件',
-    desc: '该请求未触发 trace, 或 trace 数据已超出 Redis 10 分钟保留期。',
+    desc: '该请求的链路追踪数据不可用。',
     hint1: 'trace 仅在网关代码埋点启用时才会生成(默认开启)',
-    hint2: '完成时间 < 10 分钟的请求, Redis 中仍保留 trace',
-    hint3: '已完成的请求, trace_events JSONB 已 flush 到 PostgreSQL 后才可显示',
+    hint2: '进行中的请求：trace 数据暂存在 Redis，可实时查看',
+    hint3: '已完成的请求：trace 数据已持久化到 request_logs.trace_events (JSONB)',
+    hint4: '如果此处显示为空，可能原因：请求未完成 flush、或该请求确实未触发 trace 埋点',
   },
   aiPrompt: {
     button: '🤖 生成 AI 分析提示词',
