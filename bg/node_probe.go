@@ -119,6 +119,15 @@ type NodeProbeWorker struct {
 	client        *http.Client // direct (no proxy), for probeGateway
 	probeClient   *http.Client // proxy-respecting, for probeDirect
 	stateObserver credentialstate.StateObserver
+	// stateProvider (2026-07-17) is the READ-side contract used by
+	// ProbeSync's reuse path: after a syncWaiter channel closes, we
+	// re-check IsAvailable for that (cred,model) so the function can
+	// report recovery when cycle() (or another fresh-job goroutine)
+	// wrote availability=true. Without this the reuse path always
+	// returns false even when the pair did recover, producing a
+	// spurious 503. May be nil — in that case reuse-path callers fall
+	// back to ctx-driven 503.
+	stateProvider credentialstate.StateProvider
 	emitter       *ActiveProbeEmitter
 
 	// Candidate cache invalidation keeps a direct probe result visible to the
@@ -154,6 +163,16 @@ type nodeProbeTrigger struct {
 func (w *NodeProbeWorker) SetStateObserver(observer credentialstate.StateObserver) {
 	if w != nil {
 		w.stateObserver = observer
+	}
+}
+
+// SetStateProvider wires the READ-side cache so ProbeSync's reuse path
+// can re-check IsAvailable after a syncWaiter channel closes. The same
+// *credentialstate.Manager satisfies both StateObserver and
+// StateProvider, so the same instance is passed to both setters.
+func (w *NodeProbeWorker) SetStateProvider(provider credentialstate.StateProvider) {
+	if w != nil {
+		w.stateProvider = provider
 	}
 }
 
@@ -405,6 +424,30 @@ func nonBlockingWake(ch chan<- struct{}) {
 	}
 }
 
+// notifySyncWaiters closes every ProbeSync waiter channel registered
+// for `key` and removes the entry. It is called from BOTH
+// cycle() (after runOne completes for a background-triggered probe)
+// AND ProbeSync's fresh-job goroutine (after the synchronous probe
+// completes), so a concurrent ProbeSync caller that attached as a
+// syncWaiter is released as soon as EITHER path finishes — it does
+// not have to wait for ctx to expire.
+//
+// Closing happens AFTER the state-cache writes done inside runOne /
+// the fresh-job body, so any waiter's subsequent re-PlanCandidates
+// observes the recovered availability.
+func (w *NodeProbeWorker) notifySyncWaiters(key string) {
+	if w == nil {
+		return
+	}
+	w.syncWaitersMu.Lock()
+	chs := w.syncWaiters[key]
+	delete(w.syncWaiters, key)
+	w.syncWaitersMu.Unlock()
+	for _, ch := range chs {
+		close(ch)
+	}
+}
+
 // ProbeSync fans out parallel direct→gateway probes for the supplied
 // candidates and reports whether at least one pair recovered.
 //
@@ -516,6 +559,12 @@ func (w *NodeProbeWorker) ProbeSync(
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// Ensure syncWaiters for THIS key are released even if a
+			// concurrent ProbeSync caller attached as a reuse waiter
+			// after we reserved inFlight. cycle() would not fire for
+			// this key (we own the slot), so without this notify the
+			// waiter would burn its entire ctx budget.
+			defer w.notifySyncWaiters(j.key)
 			res := freshResult{job: j}
 			res.direct = w.probeDirect(ctx, j.credID, j.model)
 			if res.direct.ok {
@@ -586,6 +635,12 @@ drainLoop:
 		}
 	}
 
+	// Wait for reuse jobs (in-flight background probes OR fresh-job
+	// goroutines from another ProbeSync caller) to finish, then re-check
+	// availability so we can report recovery when cycle() / the other
+	// caller wrote availability=true. Without this re-check the reuse
+	// path always returned false even on a genuine recovery, producing
+	// a spurious 503 for every dedup-reuse request.
 	for _, j := range jobs {
 		if !j.reuse {
 			continue
@@ -593,6 +648,26 @@ drainLoop:
 		select {
 		case <-j.waitCh:
 			nodeProbeSyncInflightWaiters.Dec()
+			// A background / sibling probe finished. Did it actually
+			// mark this (cred,model) available? Re-check the cache.
+			if !winnerSet && w.stateProvider != nil {
+				if avail, _ := w.stateProvider.IsAvailable(ctx, j.credID, j.model); avail {
+					winnerMu.Lock()
+					if !winnerSet {
+						winnerSet = true
+						// We don't have the probe round result here;
+						// synthesize a minimal winner record so the
+						// success-path log line still fires.
+						winnerDirect = nodeProbeRoundResult{
+							ok:            true,
+							providerID:    j.credID,
+							outboundModel: j.model,
+						}
+						winnerGw = nodeProbeRoundResult{ok: true}
+					}
+					winnerMu.Unlock()
+				}
+			}
 		case <-ctx.Done():
 			nodeProbeSyncInflightWaiters.Dec()
 		}
@@ -736,16 +811,10 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) bool {
 	}
 
 	// Notify any ProbeSync callers that were waiting on this in-flight
-	// probe to complete (dedup reuse). Closing the channels AFTER runOne
-	// guarantees that the state-manager cache writes done inside runOne
-	// are visible to a waiter's subsequent re-PlanCandidates.
-	w.syncWaitersMu.Lock()
-	chs := w.syncWaiters[key]
-	delete(w.syncWaiters, key)
-	w.syncWaitersMu.Unlock()
-	for _, ch := range chs {
-		close(ch)
-	}
+	// background probe to complete (dedup reuse). Closing happens AFTER
+	// runOne so the state-manager cache writes are visible to a waiter's
+	// subsequent re-PlanCandidates.
+	w.notifySyncWaiters(key)
 	return true
 }
 
