@@ -50,20 +50,31 @@ _psql -tAc \"SELECT version FROM schema_migrations WHERE version ~ '^[0-9]+$' OR
     2>/dev/null | grep -E '^[0-9]+$' || true
 }
 
+_deploy_max_applied_migration_id() {
+  local ssh_cmd=$1 env_file=$2
+  local remote_psql max
+  remote_psql=$(_deploy_remote_psql_script "$env_file")
+  max=$($ssh_cmd "${remote_psql}
+_psql -tAc \"SELECT COALESCE(max(version::int), 0) FROM schema_migrations WHERE version ~ '^[0-9]+$'\"" \
+    2>/dev/null | tr -d '[:space:]')
+  max=${max:-0}
+  echo "$max"
+}
+
 _deploy_pending_startup_migrations() {
   local ssh_cmd=$1 env_file=$2
-  local repo_root f base ver line remote_psql
+  local repo_root f base ver line
+  local ledger_reconcile_from=${DB_LEDGER_RECONCILE_FROM:-412}
   local -a applied_ids=()
   declare -A applied=()
 
   repo_root=$(_db_changelog_repo_root)
-  remote_psql=$(_deploy_remote_psql_script "$env_file")
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
     applied_ids+=("$line")
     applied["$((10#$line))"]=1
   done < <(_deploy_applied_migration_ids "$ssh_cmd" "$env_file")
-  _db_log "schema_migrations 已记录 ${#applied_ids[@]} 个数字迁移（按缺号逐个检查）"
+  _db_log "schema_migrations 已记录 ${#applied_ids[@]} 个数字迁移（${ledger_reconcile_from}+逐版本核对）"
 
   cd "$repo_root"
   for f in sql/migrations/startup/[0-9]*.sql; do
@@ -74,12 +85,11 @@ _deploy_pending_startup_migrations() {
     [[ "$base" == *.bak.skip ]] && continue
     ver=$(echo "$base" | grep -oE '^[0-9]+' || true)
     [[ -n "$ver" ]] || continue
-    # 仅三位编号 startup 迁移（跳过 2026-07-13-*.sql 等）
     [[ "$base" =~ ^[0-9]{3}_ ]] || continue
     if head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED'; then
       continue
     fi
-    if [[ -z "${applied[$((10#$ver))]+x}" ]]; then
+    if (( 10#$ver >= ledger_reconcile_from )) && [[ -z "${applied[$((10#$ver))]+x}" ]]; then
       printf '%s\n' "$f"
     fi
   done
@@ -91,6 +101,7 @@ deploy_apply_pending_migrations() {
   local -a pending=() applied_files=()
 
   repo_root=$(_db_changelog_repo_root)
+  remote_psql=$(_deploy_remote_psql_script "$env_file")
   while IFS= read -r line; do
     [[ -n "$line" ]] && pending+=("$line")
   done < <(_deploy_pending_startup_migrations "$ssh_cmd" "$env_file")
@@ -104,7 +115,7 @@ deploy_apply_pending_migrations() {
   remote_dir="/tmp/llm-gateway-migrations-$(date +%s)"
   "$ssh_cmd" "mkdir -p '$remote_dir'"
 
-  local f base
+  local f base ver
   for f in "${pending[@]}"; do
     base=$(basename "$f")
     tar czf - -C "$repo_root" "$f" | "$ssh_cmd" "tar xzf - -C /tmp && mv '/tmp/$f' '$remote_dir/$base'"
