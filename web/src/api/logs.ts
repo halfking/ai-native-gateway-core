@@ -174,7 +174,7 @@ export function getRequestLogs(params: {
   q?: string
   model?: string
   error_kind?: string
-  request_status?: 'in_progress' | 'success' | 'failure'
+  request_status?: 'in_progress' | 'success' | 'failure' | 'rate_limited'
   success?: boolean
   canonical_id?: number
   usage_source?: 'llm' | 'estimated'

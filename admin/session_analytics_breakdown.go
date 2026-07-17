@@ -1,9 +1,9 @@
 // Package admin — Session Analytics Breakdown API
 //
 // 实现分析中心的 3 个分布归因 API 端点（Task T1.2）：
-//   1. GET /api/admin/session-analytics/model-breakdown - 模型/提供商分解
-//   2. GET /api/admin/session-analytics/session-shape    - 会话形态分布
-//   3. GET /api/admin/session-analytics/health-distribution - 健康分布
+//  1. GET /api/admin/session-analytics/model-breakdown - 模型/提供商分解
+//  2. GET /api/admin/session-analytics/session-shape    - 会话形态分布
+//  3. GET /api/admin/session-analytics/health-distribution - 健康分布
 //
 // 参考文档：
 //   - docs/session-management-analytics-plan.md §4.2.3（分布归因）
@@ -28,24 +28,24 @@ type ModelBreakdownResponse struct {
 
 // ModelStats 按模型聚合统计
 type ModelStats struct {
-	Model         string  `json:"model"`
-	RequestCount  int     `json:"request_count"`
-	SessionCount  int     `json:"session_count"`
-	TotalCostUSD  float64 `json:"total_cost_usd"`
-	TotalTokens   int64   `json:"total_tokens"`
-	AvgLatencyMs  int     `json:"avg_latency_ms"`
-	ErrorRate     float64 `json:"error_rate"`
+	Model        string  `json:"model"`
+	RequestCount int     `json:"request_count"`
+	SessionCount int     `json:"session_count"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	TotalTokens  int64   `json:"total_tokens"`
+	AvgLatencyMs int     `json:"avg_latency_ms"`
+	ErrorRate    float64 `json:"error_rate"`
 }
 
 // ProviderStats 按提供商聚合统计
 type ProviderStats struct {
-	Provider      string  `json:"provider"`
-	RequestCount  int     `json:"request_count"`
-	SessionCount  int     `json:"session_count"`
-	TotalCostUSD  float64 `json:"total_cost_usd"`
-	TotalTokens   int64   `json:"total_tokens"`
-	AvgLatencyMs  int     `json:"avg_latency_ms"`
-	ErrorRate     float64 `json:"error_rate"`
+	Provider     string  `json:"provider"`
+	RequestCount int     `json:"request_count"`
+	SessionCount int     `json:"session_count"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	TotalTokens  int64   `json:"total_tokens"`
+	AvgLatencyMs int     `json:"avg_latency_ms"`
+	ErrorRate    float64 `json:"error_rate"`
 }
 
 // SessionShapeResponse 会话形态分布响应
