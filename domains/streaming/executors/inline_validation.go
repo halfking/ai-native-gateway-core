@@ -11,34 +11,39 @@ import (
 //
 // 2026-07-12: Created to ensure tool_call_id_mismatch prevention works
 // even when e.IR is nil (which is the default in production).
-func applyInlineValidation(bodyBytes []byte) []byte {
+//
+// 2026-07-18: take requestID so each removal logs are correlated to
+// the gateway request. Caller must pass the actual value; no caller
+// is currently wired (see executor_chat.go:legacy_no_ir note).
+func applyInlineValidation(bodyBytes []byte, requestID string) []byte {
 	// Debug level: this runs on every request, so Info-level would flood
 	// production logs. Operators can opt-in via LLM_GATEWAY_DEBUG_INLINE_VALIDATION=1
 	// by switching back to slog.Info in a per-deploy override if needed.
-	slog.Debug("applyInlineValidation: called", "body_size", len(bodyBytes))
+	log := slog.With("request_id", requestID, "body_size", len(bodyBytes))
+	log.Debug("applyInlineValidation: called")
 
 	// Use IR converter to parse (handles string/array content correctly)
 	irReq, err := ir.ParseOpenAI(bodyBytes)
 	if err != nil {
-		slog.Warn("applyInlineValidation: ParseOpenAI failed, skipping validation",
+		log.Warn("applyInlineValidation: ParseOpenAI failed, skipping validation",
 			"error", err.Error(),
 		)
 		return bodyBytes
 	}
 
 	// Validate and fix
-	irReq = ir.ValidateAndFixRequest(irReq)
+	irReq = ir.ValidateAndFixRequest(irReq, requestID)
 
 	// Serialize back to OpenAI format
 	fixedBytes, err := ir.SerializeOpenAI(irReq)
 	if err != nil {
-		slog.Warn("applyInlineValidation: SerializeOpenAI failed, using original",
+		log.Warn("applyInlineValidation: SerializeOpenAI failed, using original",
 			"error", err.Error(),
 		)
 		return bodyBytes
 	}
 
-	slog.Debug("applyInlineValidation: validation applied",
+	log.Debug("applyInlineValidation: validation applied",
 		"original_size", len(bodyBytes),
 		"fixed_size", len(fixedBytes),
 	)

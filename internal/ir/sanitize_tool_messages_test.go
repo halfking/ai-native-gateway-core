@@ -22,7 +22,7 @@ func TestSanitizeToolMessages_OrphanedToolMessage(t *testing.T) {
 		{Role: "tool", ToolCallID: "call_123", Content: []ContentBlock{{Type: "text", Text: "stale"}}},
 	}
 
-	result := SanitizeToolMessages(messages)
+	result := SanitizeToolMessages(messages, "")
 
 	if len(result) != 5 {
 		t.Errorf("expected 5 messages after sanitize, got %d", len(result))
@@ -47,7 +47,7 @@ func TestSanitizeToolMessages_ValidSequence(t *testing.T) {
 		{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "Here's the answer"}}},
 	}
 
-	result := SanitizeToolMessages(messages)
+	result := SanitizeToolMessages(messages, "")
 
 	if len(result) != len(messages) {
 		t.Errorf("expected %d messages, got %d (valid sequence should not be modified)", len(messages), len(result))
@@ -67,7 +67,7 @@ func TestSanitizeToolMessages_MismatchedToolCallID(t *testing.T) {
 		{Role: "tool", ToolCallID: "call_valid", Content: []ContentBlock{{Type: "text", Text: "correct id"}}},
 	}
 
-	result := SanitizeToolMessages(messages)
+	result := SanitizeToolMessages(messages, "")
 
 	if len(result) != 2 {
 		t.Errorf("expected 2 messages (assistant + 1 valid tool), got %d", len(result))
@@ -91,7 +91,7 @@ func TestSanitizeToolMessages_EmptyToolCallID(t *testing.T) {
 		{Role: "tool", ToolCallID: "", Content: []ContentBlock{{Type: "text", Text: "no id"}}},
 	}
 
-	result := SanitizeToolMessages(messages)
+	result := SanitizeToolMessages(messages, "")
 
 	if len(result) != 1 {
 		t.Errorf("expected 1 message (only assistant), got %d", len(result))
@@ -120,7 +120,7 @@ func TestSanitizeToolMessages_MultipleToolCalls(t *testing.T) {
 		{Role: "tool", ToolCallID: "call_3", Content: []ContentBlock{{Type: "text", Text: "result 3"}}},
 	}
 
-	result := SanitizeToolMessages(messages)
+	result := SanitizeToolMessages(messages, "")
 
 	if len(result) != 4 {
 		t.Errorf("expected 4 messages, got %d", len(result))
@@ -146,7 +146,7 @@ func TestSanitizeToolMessages_RealWorldMiniMaxBug(t *testing.T) {
 		{Role: "tool", ToolCallID: "call_function_0ksgl64qo8yj_1", Content: []ContentBlock{{Type: "text", Text: "stale"}}},
 	}
 
-	result := SanitizeToolMessages(messages)
+	result := SanitizeToolMessages(messages, "")
 
 	// Should remove the orphaned tool message
 	if len(result) != 5 {

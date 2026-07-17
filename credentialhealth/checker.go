@@ -129,9 +129,19 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 		// - canceled: client cancel (context.Canceled)
 		// - transient: temporary upstream issues (503 for <5s)
 		// - client bugs: malformed requests
+		// - empty_response: NIM 13% empty-stream quirk (see errorsx.classify
+		//   line 60). The KindEmptyResponse design intent explicitly says
+		//   "a transient empty burst must not hard-exclude the credential".
+		//   Counting it toward the 80% degradation threshold defeats that
+		//   intent and triggered the 2026-07-18 credential 19 (NIM/endless)
+		//   1-hour cooldown after only ~30 empty streams — the upstream was
+		//   healthy throughout. The stream-resumable failover path in
+		//   executor_chat.go:838-840 already routes the per-request retry
+		//   to the next candidate, so we don't need degradation here either.
 		if e.ErrorKind == "network" ||
 			e.ErrorKind == string(errorsx.KindCanceled) ||
 			e.ErrorKind == string(errorsx.KindTransient) ||
+			e.ErrorKind == string(errorsx.KindEmptyResponse) ||
 			errorsx.IsClientBug(errorsx.ErrorKind(e.ErrorKind)) {
 			continue
 		}

@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Frontend freeze when viewing live request stream**: Dashboard's
+  `LiveRequestStreamV2` component used `v-show` instead of `v-if`, causing
+  the SSE connection to remain active even when switching to other tabs. Over
+  time, continuous SSE messages triggered Vue reactivity updates that accumulated
+  DOM operations, eventually freezing the browser main thread and making the
+  sidebar unclickable. Changed to `v-if` so the component unmounts and closes
+  the SSE connection when switching tabs. Users will see a brief reload (0.5-1s)
+  when returning to the stream tab, but the browser will no longer freeze.
+  (DashboardViewV2.vue, TenantDashboardView.vue)
+
+- **Active probe timeout no longer locks healthy slow providers**: Raised the
+  default direct probe timeout from 10s to 30s for slow upstreams such as NIM
+  `minimaxai/minimax-m3`. Only auth, HTTP 4xx, and gateway-side probe build
+  failures now mark a credential unavailable for the five-minute cooldown;
+  timeout, network, rate-limit, HTTP 5xx, canceled, and skipped results remain
+  routable while the retry chain continues. Added transient degraded-mode
+  handling for `state:probe_direct_timeout`.
+
+- **Minimax-m3 "no available model" / "model not found" through gateway**:
+  `credentialhealth.Checker` was counting `KindEmptyResponse` (NIM's 13%
+  empty-stream rate) toward the 80% degradation threshold. After ~30
+  empty streams, credential 19 (NVIDIA NIM / endless) was marked degraded
+  with `unavailable_recover_at = now+1h` despite the upstream being
+  healthy. Subsequent requests hit `no_candidates_from_router` because
+  the SQL filter `v.is_routable = FALSE` excluded the only candidate for
+  the request's `(credential, model)` pair. Two fixes:
+  1. **`credentialhealth.Checker`** now skips `errorsx.KindEmptyResponse`
+     from the failureRate computation (consistent with
+     `errorsx.classify.go:60-78` design intent: "a transient empty burst
+     must not hard-exclude the credential").
+  2. **`router.isTransientUnavailableReason`** now treats
+     `state:empty_response` as transient, so single-candidate degraded
+     mode activates and the router retries the candidate within the same
+     request lifecycle instead of returning 503.
+  Diagnostic comment also added to `executor.go` documenting that
+  `StateObserver` does not expose `IsAvailable`, so the real
+  StateManager reason is logged by the upstream `router.go:145`
+  `slog.Warn("router: all candidates unavailable", ...)`. Operator
+  correlate the two log lines (router + executor) for full diagnosis.
+
 - **Settings/Modules toggle HTTP 500**: Fixed `StoreDB.Set()` passing `[]byte` to
   `$2::jsonb` — pgx v5 encodes `[]byte` as `bytea` OID, which PG cannot cast to
   `jsonb` (`SQLSTATE 22P02`). Convert to `string` so pgx uses `text` OID, which
@@ -16,6 +56,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **settings_kv duplicates**: Added `UNIQUE (key)` constraint to `settings_kv`
   table; cleaned up 22 duplicate rows across 8 keys that accumulated due to
   the missing constraint.
+- **Live-stream idle tile flicker / disappearance on refresh**: Idle tiles for
+  silent lanes are now backend-driven. `maybeEmitIdleMarker()` writes idle
+  markers to Redis (via `ScanAndRecordIdleMarkers`) and includes them in the
+  `idle_marker` SSE envelope's `delta` payload. Frontend
+  `handleEnvelope()` now calls `mergeDelta(env.delta)` instead of dropping
+  the payload — the old `handleLaneIdleCheck()` path was a no-op, so idle
+  tiles never actually landed in the snapshot. Three sub-fixes:
+  1. `live_stream_sse.go` `ScanAndRecordIdleMarkers` context timeout raised
+     from 1s to 60s — the 396K-key shared Redis DB needs more than 1s for
+     SCAN to traverse all keys and find the ~50 activity entries.
+  2. `live_stream_redis_store.go` SCAN `COUNT` raised from 0 (Redis default
+     10) to 5000 to amortise round-trips.
+  3. `Record()` already removes the stale idle marker for the same lane
+     when a new request arrives (vendor/provider/model dimensions).
 
 ## [Unreleased] - 2026-07-16
 

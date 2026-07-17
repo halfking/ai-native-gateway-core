@@ -42,7 +42,7 @@ const localStorageMock = (() => {
 
 // ElDialog stub：暴露 modelValue + title，并在 v-model 写为 false 时触发 update:modelValue
 const ElDialogStub = {
-  compatConfig: { MODE: 3 },
+  compatConfig: { MODE: 3 as const },
   template: `<div class="dlg"><div class="dlg-title">{{ title }}</div><slot /><slot name="footer" /></div>`,
   props: { modelValue: Boolean, title: { type: String, default: '' } },
   emits: ['update:modelValue', 'open'],
@@ -103,7 +103,7 @@ describe('OperationAgreementDialog', () => {
     // 模拟 el-dialog 内部关闭：直接 emit update:modelValue=false 给 wrapper
     const w = makeWrapper({ modelValue: true, scope: 'download', version: '2026-07-15' })
     // 触发 dialogVisible setter (computed setter)
-    await w.getComponent(ElDialogStub).vm.$emit('update:modelValue', false)
+    await (w.getComponent(ElDialogStub as any).vm as any).$emit('update:modelValue', false)
     expect(w.emitted('update:modelValue')).toBeTruthy()
     const last = w.emitted('update:modelValue')!.at(-1)!
     expect(last[0]).toBe(false)

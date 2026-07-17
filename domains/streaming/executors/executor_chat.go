@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
@@ -459,6 +460,65 @@ func (e *Executor) executeOpenAI(
 				}
 			}
 			upstreamLatency := time.Since(reqStart)
+
+			// 2026-07-18: structured log around every upstream HTTP attempt
+			// so journald can correlate req_id → upstream url → status /
+			// err_kind. The minmax-m3 incident
+			// (3905e839e0abab5a53efc09222e2d45b) had ZERO logs from this
+			// code path: we knew the request was sent, but not to which
+			// provider/credential/raw_model and what came back. Without
+			// this, distinguishing client-side tool_id_mismatch vs
+			// upstream rate-limit vs upstream timeout is impossible.
+			attemptLog := func(status int, errKind string, bodyPreview string) {
+				attrs := []any{
+					"request_id", params.RequestID,
+					"attempt", attempt,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"client_model", params.Model,
+					"upstream_url", req.URL.String(),
+					"upstream_method", req.Method,
+					"body_bytes", len(bodyBytes),
+					"is_stream", params.IsStream,
+					"latency_ms", upstreamLatency.Milliseconds(),
+				}
+				if status > 0 {
+					attrs = append(attrs, "upstream_status", status)
+				}
+				if errKind != "" {
+					attrs = append(attrs, "err_kind", errKind)
+				}
+				if bodyPreview != "" {
+					attrs = append(attrs, "body_preview", bodyPreview)
+				}
+				if uErr != nil {
+					attrs = append(attrs, "err_message", uErr.Message)
+				}
+				slog.Info("upstream_http_attempt", attrs...)
+			}
+			_ = attemptLog // ensure variable used even if early-return below
+			if uErr != nil {
+				attemptLog(0, string(uErr.Kind), "")
+			}
+			if resp != nil {
+				attemptLog(resp.StatusCode, "", "")
+				// 2026-07-18: when upstream returns 4xx, the body often
+				// carries the real classifier signal
+				// ("tool_call_id_mismatch" / "invalid_request_format" / …).
+				// Capture a 256-byte preview of the 4xx body so operators
+				// don't need tcpdump / request_logs excavation to figure
+				// out WHY the upstream rejected us. Goes after the
+				// attemptLog call (the resp.Body is still untouched at
+				// this point).
+				if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.Body != nil {
+					peek := make([]byte, 256)
+					n, _ := resp.Body.Read(peek)
+					if n > 0 {
+						attemptLog(0, "", strings.TrimSpace(string(peek[:n])))
+					}
+				}
+			}
 
 			if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
 				errKind := uErr.Kind
@@ -1092,7 +1152,30 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		// tool_call structure, role alternation, system message placement.
 		// Prevents upstream rejections from MiniMax 2013, OpenAI item_reference,
 		// and other format-related errors.
-		irReq = ir.ValidateAndFixRequest(irReq)
+		//
+		// 2026-07-18: thread params.RequestID so each removal logs are
+		// request-scoped. Without this, the legacy + IR paths' orphan-
+		// removal logs cannot be correlated to gateway request id in
+		// journald, defeating the purpose of the fix.
+		irReq = ir.ValidateAndFixRequest(irReq, params.RequestID)
+		// 2026-07-18 (audit): summarize the IR path's effect so we can
+		// prove in production logs that the fix actually fired for the
+		// offending request.
+		if lr, lf := len(irReq.Messages), len(irReq.Messages); lf != lr {
+			slog.Debug("finalizeOpenAIUpstreamBody: IR validate+fix applied",
+				"request_id", params.RequestID,
+				"path", "anthropic_to_openai_ir",
+				"model", params.Model,
+				"messages", lf,
+			)
+		} else {
+			slog.Debug("finalizeOpenAIUpstreamBody: IR validate+fix passed",
+				"request_id", params.RequestID,
+				"path", "anthropic_to_openai_ir",
+				"model", params.Model,
+				"messages", lf,
+			)
+		}
 		bodyBytes, err := e.IR.SerializeOpenAI(irReq)
 		if err != nil {
 			return nil, fmt.Errorf("ir serialize openai: %w", err)
@@ -1123,18 +1206,67 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 
 	// 2026-07-12: Apply format validation even in legacy path.
 	// Parse → Validate → Serialize to clean up malformed requests.
+	//
+	// 2026-07-18: thread params.RequestID + log path/body-size/msg-count
+	// so we can prove in prod logs whether validation ran and what it
+	// changed. The minmax-m3 tool_call_id_mismatch incident (req
+	// 3905e839e0abab5a53efc09222e2d45b) had no logs from this path,
+	// making it impossible to confirm whether the sanitizer was hit.
 	if e.IR != nil {
+		preBodyBytes := len(bodyBytes)
+		preMsgs := -1 // populated only on successful parse
 		irReq, parseErr := e.IR.ParseOpenAI(bodyBytes)
 		if parseErr == nil {
-			irReq = ir.ValidateAndFixRequest(irReq)
+			preMsgs = len(irReq.Messages)
+			irReq = ir.ValidateAndFixRequest(irReq, params.RequestID)
 			// Override model to outbound model
 			irReq.Model = resolveOutboundModel(params, cand)
 			bodyBytes, _ = e.IR.SerializeOpenAI(irReq)
+			slog.Info("finalizeOpenAIUpstreamBody: legacy IR path validated",
+				"request_id", params.RequestID,
+				"path", "legacy_with_ir",
+				"model", params.Model,
+				"provider_id", cand.ProviderID,
+				"credential_id", cand.CredentialID,
+				"raw_model", cand.RawModel,
+				"pre_body_bytes", preBodyBytes,
+				"post_body_bytes", len(bodyBytes),
+				"pre_messages", preMsgs,
+				"post_messages", len(irReq.Messages),
+			)
 		} else {
 			slog.Warn("legacy path: IR parse failed, skipping validation",
+				"request_id", params.RequestID,
+				"path", "legacy_with_ir_parse_failed",
+				"model", params.Model,
+				"provider_id", cand.ProviderID,
+				"raw_model", cand.RawModel,
+				"pre_body_bytes", preBodyBytes,
 				"error", parseErr.Error(),
 			)
 		}
+	} else {
+		// 2026-07-18 (e.IR == nil): legacy path WITHOUT IR converter.
+		// applyInlineValidation (inline_validation.go) was defined 2026-07-12
+		// but had zero callers until 2026-07-18. THIS wiring is the fix
+		// for the minimax-m3 tool_call_id_mismatch incident class
+		// (req 3905e839e0abab5a53efc09222e2d45b): without it, orphan
+		// tool messages reach upstream unmangled; MiniMax 4xx-cascades;
+		// gateway loops 90s; client gets 503.
+		preBodyBytes := len(bodyBytes)
+		bodyBytes = applyInlineValidation(bodyBytes, params.RequestID)
+		postBodyBytes := len(bodyBytes)
+		slog.Info("finalizeOpenAIUpstreamBody: legacy path (no IR) + inline validation",
+			"request_id", params.RequestID,
+			"path", "legacy_no_ir_with_inline",
+			"model", params.Model,
+			"provider_id", cand.ProviderID,
+			"credential_id", cand.CredentialID,
+			"raw_model", cand.RawModel,
+			"pre_body_bytes", preBodyBytes,
+			"post_body_bytes", postBodyBytes,
+			"delta_bytes", postBodyBytes-preBodyBytes,
+		)
 	}
 
 	if e.NormalizeOpenAITools != nil {
