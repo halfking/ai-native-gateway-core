@@ -1,16 +1,18 @@
 // Package admin — Session Panorama, Tags, Clusters, Suggestions API.
 //
 // 扩展 /api/admin/session-analytics/<id>/* 的子路由：
-//   GET    /<id>/panorama    会话全景聚合 payload
-//   GET    /<id>/tags        会话标签列表
-//   POST   /<id>/tags        手动打标签
-//   DELETE /<id>/tags/<tag_id> 删除标签
-//   GET    /<id>/suggestions 优化建议列表
-//   POST   /<id>/suggestions/<sid>/apply 采纳建议
+//
+//	GET    /<id>/panorama    会话全景聚合 payload
+//	GET    /<id>/tags        会话标签列表
+//	POST   /<id>/tags        手动打标签
+//	DELETE /<id>/tags/<tag_id> 删除标签
+//	GET    /<id>/suggestions 优化建议列表
+//	POST   /<id>/suggestions/<sid>/apply 采纳建议
 //
 // 独立路由组：
-//   GET    /api/admin/session-clusters        聚类列表
-//   GET    /api/admin/session-clusters/<id>   聚类详情
+//
+//	GET    /api/admin/session-clusters        聚类列表
+//	GET    /api/admin/session-clusters/<id>   聚类详情
 package admin
 
 import (
@@ -20,55 +22,57 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ── Panorama ──────────────────────────────────────────────────────────
 
 // SessionPanorama 会话全景聚合（一次返回前端所需全部信息）。
 type SessionPanorama struct {
-	Summary       AnalyticsSessionSummary    `json:"summary"`
-	Timeline      []RequestEvent             `json:"timeline"`
-	StepSummaries []SessionStepSummary       `json:"step_summaries"`
-	Tags          []SessionTag               `json:"tags"`
-	Suggestions   []SessionOptimizationSugg  `json:"suggestions"`
-	Cluster       *SessionClusterMembership  `json:"cluster,omitempty"`
-	Analysis      SessionAnalysis            `json:"analysis"`
-	ModuleEnabled bool                       `json:"module_enabled"`
+	Summary       AnalyticsSessionSummary   `json:"summary"`
+	Timeline      []RequestEvent            `json:"timeline"`
+	StepSummaries []SessionStepSummary      `json:"step_summaries"`
+	Tags          []SessionTag              `json:"tags"`
+	Suggestions   []SessionOptimizationSugg `json:"suggestions"`
+	Cluster       *SessionClusterMembership `json:"cluster,omitempty"`
+	Analysis      SessionAnalysis           `json:"analysis"`
+	ModuleEnabled bool                      `json:"module_enabled"`
 }
 
 // SessionStepSummary 逐步摘要。
 type SessionStepSummary struct {
-	StepIndex       int     `json:"step_index"`
-	RequestID       string  `json:"request_id"`
-	RequestSummary  *string `json:"request_summary,omitempty"`
-	ResponseSummary *string `json:"response_summary,omitempty"`
-	IsLLMGenerated  bool    `json:"is_llm_generated"`
+	StepIndex        int     `json:"step_index"`
+	RequestID        string  `json:"request_id"`
+	RequestSummary   *string `json:"request_summary,omitempty"`
+	ResponseSummary  *string `json:"response_summary,omitempty"`
+	IsLLMGenerated   bool    `json:"is_llm_generated"`
 	ToolCallsSummary *string `json:"tool_calls_summary,omitempty"`
 }
 
 // SessionTag 标签。
 type SessionTag struct {
-	ID          int64   `json:"id"`
-	TagKey      string  `json:"tag_key"`
-	TagValue    string  `json:"tag_value"`
-	TagSource   string  `json:"tag_source"`
-	Confidence  float64 `json:"confidence"`
-	CreatedBy   *string `json:"created_by,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID         int64     `json:"id"`
+	TagKey     string    `json:"tag_key"`
+	TagValue   string    `json:"tag_value"`
+	TagSource  string    `json:"tag_source"`
+	Confidence float64   `json:"confidence"`
+	CreatedBy  *string   `json:"created_by,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // SessionOptimizationSugg 优化建议。
 type SessionOptimizationSugg struct {
-	ID                    int64      `json:"id"`
-	Category              string     `json:"category"`
-	Severity              string     `json:"severity"`
-	Title                 string     `json:"title"`
-	Description           *string    `json:"description,omitempty"`
+	ID                     int64     `json:"id"`
+	Category               string    `json:"category"`
+	Severity               string    `json:"severity"`
+	Title                  string    `json:"title"`
+	Description            *string   `json:"description,omitempty"`
 	PotentialSavingsTokens int64     `json:"potential_savings_tokens"`
-	PotentialSavingsCost  float64    `json:"potential_savings_cost"`
-	Applied               bool       `json:"applied"`
-	Dismissed             bool       `json:"dismissed"`
-	CreatedAt             time.Time  `json:"created_at"`
+	PotentialSavingsCost   float64   `json:"potential_savings_cost"`
+	Applied                bool      `json:"applied"`
+	Dismissed              bool      `json:"dismissed"`
+	CreatedAt              time.Time `json:"created_at"`
 }
 
 // SessionClusterMembership 会话所属聚类。
@@ -97,18 +101,39 @@ func (h *Handler) HandleSessionPanorama(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	// 普通用户 owner 访问检查
-	if !requireSessionOwnerAccess(w, r, ctx, h.db, gwSessionID) {
-		return
-	}
-
-	// 复用 detail 逻辑获取 summary + timeline + analysis
-	detail, err := h.loadSessionDetailData(ctx, tenantID, gwSessionID)
+	// Owner check, summary, timeline and analysis run inside a single RLS
+	// transaction so the pre-check and reads cannot drift.
+	var (
+		detail   *AnalyticsSessionDetail
+		notFound bool
+	)
+	err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		if IsRegularUser(r) {
+			ok, err := assertSessionOwnerAccessInTx(ctx, tx, r, gwSessionID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				notFound = true
+				return nil
+			}
+		}
+		d, err := h.loadSessionDetailDataInTx(ctx, tx, tenantID, gwSessionID)
+		if err == pgx.ErrNoRows {
+			notFound = true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		detail = d
+		return nil
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "load detail: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "panorama load failed: "+err.Error())
 		return
 	}
-	if detail == nil {
+	if notFound {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
@@ -126,8 +151,9 @@ func (h *Handler) HandleSessionPanorama(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, panorama)
 }
 
-// loadSessionDetailData 复用 HandleSessionAnalyticsDetail 的内部逻辑。
-func (h *Handler) loadSessionDetailData(ctx context.Context, tenantID, gwSessionID string) (*AnalyticsSessionDetail, error) {
+// loadSessionDetailDataInTx loads summary + timeline + analysis using the
+// caller-supplied RLS transaction. Compliance rows share the same tx context.
+func (h *Handler) loadSessionDetailDataInTx(ctx context.Context, tx pgx.Tx, tenantID, gwSessionID string) (*AnalyticsSessionDetail, error) {
 	query := "SELECT " + sessionSummarySelectCols +
 		" FROM session_summaries ss" +
 		" LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key" +
@@ -137,11 +163,10 @@ func (h *Handler) loadSessionDetailData(ctx context.Context, tenantID, gwSession
 		query += " AND ss.tenant_id = $2"
 		args = append(args, tenantID)
 	}
-	summary, err := scanSessionSummary(h.db.QueryRow(ctx, query, args...))
+	summary, err := scanSessionSummary(tx.QueryRow(ctx, query, args...))
 	if err != nil {
 		return nil, err
 	}
-	// timeline
 	timelineQuery := `
 		SELECT request_id, ts, success, client_model, outbound_model,
 		       COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0),
@@ -155,7 +180,7 @@ func (h *Handler) loadSessionDetailData(ctx context.Context, tenantID, gwSession
 		tArgs = append(tArgs, tenantID)
 	}
 	timelineQuery += " ORDER BY ts ASC LIMIT 100"
-	rows, err := h.db.Query(ctx, timelineQuery, tArgs...)
+	rows, err := tx.Query(ctx, timelineQuery, tArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +198,10 @@ func (h *Handler) loadSessionDetailData(ctx context.Context, tenantID, gwSession
 		e.CreatedAt = ts
 		timeline = append(timeline, e)
 	}
-	analysis := h.buildSessionAnalysis(ctx, tenantID, gwSessionID, timeline)
+	analysis, err := h.buildSessionAnalysisInTx(ctx, tx, tenantID, gwSessionID, timeline)
+	if err != nil {
+		return nil, err
+	}
 	return &AnalyticsSessionDetail{Summary: summary, Timeline: timeline, Analysis: analysis}, nil
 }
 
@@ -186,9 +214,17 @@ func (h *Handler) HandleSessionTags(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "gw_session_id is required")
 		return
 	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "db not available")
+		return
+	}
 	tenantID := effectiveScopeTenant(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+
+	if !requireSessionOwnerAccess(w, r, ctx, h.db, gwSessionID) {
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -239,6 +275,9 @@ func (h *Handler) HandleSessionTagDelete(w http.ResponseWriter, r *http.Request)
 	}
 	gwSessionID := pathSegment(r.URL.Path, "/api/admin/session-analytics/", 0)
 	tagIDStr := pathSegment(r.URL.Path, "/api/admin/session-analytics/", 2)
+	if !requireSessionOwnerAccess(w, r, r.Context(), h.db, gwSessionID) {
+		return
+	}
 	tagID, err := strconv.ParseInt(tagIDStr, 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid tag id")
@@ -246,7 +285,14 @@ func (h *Handler) HandleSessionTagDelete(w http.ResponseWriter, r *http.Request)
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	_, err = h.db.Exec(ctx, `DELETE FROM session_tags WHERE id=$1 AND gw_session_id=$2`, tagID, gwSessionID)
+	tenantID := effectiveScopeTenant(r)
+	query := `DELETE FROM session_tags WHERE id=$1 AND gw_session_id=$2`
+	args := []any{tagID, gwSessionID}
+	if tenantID != "" {
+		query += " AND tenant_id=$3"
+		args = append(args, tenantID)
+	}
+	_, err = h.db.Exec(ctx, query, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
 		return
@@ -262,14 +308,14 @@ func (h *Handler) HandleSessionSuggestions(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-		gwSessionID := pathSegment(r.URL.Path, "/api/admin/session-analytics/", 0)
-		tenantID := effectiveScopeTenant(r)
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-		if !requireSessionOwnerAccess(w, r, ctx, h.db, gwSessionID) {
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"suggestions": h.loadSuggestions(ctx, gwSessionID, tenantID)})
+	gwSessionID := pathSegment(r.URL.Path, "/api/admin/session-analytics/", 0)
+	tenantID := effectiveScopeTenant(r)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if !requireSessionOwnerAccess(w, r, ctx, h.db, gwSessionID) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"suggestions": h.loadSuggestions(ctx, gwSessionID, tenantID)})
 }
 
 // HandleSessionSuggestionApply POST /api/admin/session-analytics/<id>/suggestions/<sid>/apply
@@ -281,6 +327,10 @@ func (h *Handler) HandleSessionSuggestionApply(w http.ResponseWriter, r *http.Re
 	if RequireSuperAdminForWrite(w, r) {
 		return
 	}
+	gwSessionID := pathSegment(r.URL.Path, "/api/admin/session-analytics/", 0)
+	if !requireSessionOwnerAccess(w, r, r.Context(), h.db, gwSessionID) {
+		return
+	}
 	sidStr := pathSegment(r.URL.Path, "/api/admin/session-analytics/", 3)
 	sid, err := strconv.ParseInt(sidStr, 10, 64)
 	if err != nil {
@@ -289,9 +339,17 @@ func (h *Handler) HandleSessionSuggestionApply(w http.ResponseWriter, r *http.Re
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	_, err = h.db.Exec(ctx,
-		`UPDATE session_optimization_suggestions SET applied=TRUE, applied_at=NOW(), applied_by=$1 WHERE id=$2`,
-		getUsername(r), sid)
+	tenantID := effectiveScopeTenant(r)
+	query := `UPDATE session_optimization_suggestions
+		SET applied=TRUE, applied_at=NOW(), applied_by=$1
+		WHERE id=$2 AND gw_session_id=$3`
+	args := []any{getUsername(r), sid, gwSessionID}
+	if tenantID != "" {
+		query += " AND tenant_id=$4"
+		args = append(args, tenantID)
+	}
+	_, err = h.db.Exec(ctx, query, args...)
+
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "apply failed: "+err.Error())
 		return

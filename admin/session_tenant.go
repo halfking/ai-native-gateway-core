@@ -121,10 +121,36 @@ func ownerScopeClause(r *http.Request, col string, argStart int) (fragment strin
 	return fragment, []any{owner}, argStart + 1
 }
 
-// requireSessionOwnerAccess returns false and writes 404 when a regular user
-// tries to access a session whose primary owner_user is not theirs. Admin
-// tiers (super_admin/admin_key/tenant_admin) always pass. The check runs
-// inside a read-only tenant transaction so RLS on session_dim also applies.
+// assertSessionOwnerAccessInTx is the in-transaction variant of
+// requireSessionOwnerAccess. Use this when the caller already holds an open
+// tenant tx (e.g. detail handler) so the check runs in the same RLS context
+// as the actual reads, eliminating the pre-check / read security gap.
+func assertSessionOwnerAccessInTx(ctx context.Context, tx pgx.Tx, r *http.Request, gwSessionID string) (bool, error) {
+	if !IsRegularUser(r) || gwSessionID == "" {
+		return true, nil
+	}
+	tenantID := GetTenantID(r)
+	owner := GetAuthContext(r).Username
+	if owner == "" {
+		return false, nil
+	}
+	var ok bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM session_dim
+			WHERE gw_session_id = $1
+			  AND tenant_id = $2
+			  AND owner_user = $3
+			LIMIT 1
+		)
+	`, gwSessionID, tenantID, owner).Scan(&ok)
+	return err == nil && ok, err
+}
+
+// requireSessionOwnerAccess is the legacy standalone variant. It still
+// exists for callers that do not already hold a transaction (e.g. tags GET
+// that does not need other reads). New code paths should prefer
+// assertSessionOwnerAccessInTx inside the unified transaction.
 func requireSessionOwnerAccess(w http.ResponseWriter, r *http.Request, ctx context.Context, pool *pgxpool.Pool, gwSessionID string) bool {
 	if !IsRegularUser(r) || gwSessionID == "" {
 		return true

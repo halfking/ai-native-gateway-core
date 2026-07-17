@@ -56,6 +56,16 @@ var (
 	// 表名到列白名单的映射
 	tableColumns = map[string]*AllowedColumns{
 		"request_logs": &RequestLogsColumns,
+		"session_summaries": {
+			OrderBy: map[string]bool{
+				"first_request_at": true,
+				"last_request_at":  true,
+				"total_cost_usd":   true,
+				"total_tokens":     true,
+				"request_count":    true,
+				"quality_score":    true,
+			},
+		},
 	}
 )
 
