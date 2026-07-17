@@ -401,7 +401,8 @@ SELECT
     -- 让 deriveIsFree() 的 CostTier 分支在 Go 侧能正确生效。
     mc.cost_tier AS cost_tier,
     mc.complexity_ceiling AS complexity_ceiling,
-    mc.min_complexity     AS min_complexity
+    mc.min_complexity     AS min_complexity,
+    COALESCE(mc.modality, 'text') AS modality
 FROM credential_model_index cmi
 JOIN latest_bucket lb
   ON lb.credential_id = cmi.credential_id
@@ -452,6 +453,7 @@ func scanIndexRow(rows interface {
 	var costTier *string
 	var complexityCeiling *string
 	var minComplexity *string
+	var modality *string
 	if err := rows.Scan(
 		&c.CredentialID, &c.RawModel, &canonicalID,
 		&canonicalName, &tags, &ctxWindow,
@@ -463,6 +465,7 @@ func scanIndexRow(rows interface {
 		&providerCategory, &providerKind, &isFree,
 		&costTier,
 		&complexityCeiling, &minComplexity,
+		&modality,
 	); err != nil {
 		return c, err
 	}
@@ -541,6 +544,9 @@ func scanIndexRow(rows interface {
 	}
 	if minComplexity != nil {
 		c.MinComplexity = strings.TrimSpace(*minComplexity)
+	}
+	if modality != nil {
+		c.Modality = strings.TrimSpace(*modality)
 	}
 	c.Tags = tags
 	// PressureRatio: 0 when concurrency_limit is 0 (unknown → no penalty)

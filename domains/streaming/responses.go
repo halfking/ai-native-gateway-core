@@ -244,6 +244,28 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	attemptClientModel = reqBody.Model
 
+	// model=auto: classify + rewrite before CanonicalizeClientModel.
+	if reqBody.Model == autoRequestMagic {
+		var apiKeyID int
+		if keyInfo != nil {
+			apiKeyID = keyInfo.ID
+		}
+		newBody, wire, shouldFail := h.maybeResolveAutoForResponses(&reqBody, bodyBytes, r, apiKeyID)
+		if shouldFail {
+			attemptErrCode = "auto_route_decider_failed"
+			attemptErrMsg = "auto-route temporarily unavailable; pass an explicit model name and retry"
+			writeResponsesError(w, http.StatusBadGateway,
+				"auto-route temporarily unavailable; pass an explicit model name and retry",
+				"server_error", "auto_route_decider_failed")
+			return
+		}
+		bodyBytes = newBody
+		attemptClientModel = reqBody.Model
+		if wire != nil {
+			writeAutoDecisionHeader(w, wire)
+		}
+	}
+
 	// 2026-07-14: lowercase at the wire boundary.
 	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
 

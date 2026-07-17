@@ -66,6 +66,10 @@ type Candidate struct {
 
 	ComplexityCeiling string
 	MinComplexity     string
+
+	// Modality (from models_canonical.modality): text/vision/audio/multimodal/embedding.
+	// Empty when unknown. RecommendByModality filters on this.
+	Modality string
 }
 
 // ScoringBreakdown is the per-dimension score output (each 0-100)
