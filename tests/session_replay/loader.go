@@ -8,6 +8,7 @@ package session_replay
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -128,13 +129,45 @@ func LoadAll() ([]*Session, error) {
 	}
 	out := make([]*Session, 0, len(mf.SessionFiles))
 	for _, e := range mf.SessionFiles {
-		s, err := LoadSession(e.File)
+		file := e.File
+		if _, err := os.Stat(file); err != nil && filepath.IsAbs(file) {
+			file = filepath.Join(dir, filepath.Base(file))
+		}
+		s, err := LoadSession(file)
 		if err != nil {
+			// manifest may reference session files that are intentionally absent
+			// (e.g. extract runs without --include-failed); warn instead of
+			// failing the whole load.
+			if os.IsNotExist(unwrapPathError(err)) {
+				log.Printf("session_replay: skipping missing session file %q (manifest entry session_id=%s)", file, e.SessionID)
+				continue
+			}
 			return nil, err
 		}
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// unwrapPathError walks a wrapped error chain and returns the first
+// *os.PathError encountered (or the original error if none exists). It
+// exists so callers can use os.IsNotExist on the underlying path-level
+// cause rather than a higher-level wrapper such as fmt.Errorf("...: %w", ...).
+func unwrapPathError(err error) error {
+	for {
+		if pathErr, ok := err.(*os.PathError); ok {
+			return pathErr
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return err
+		}
+		next := u.Unwrap()
+		if next == nil {
+			return err
+		}
+		err = next
+	}
 }
 
 // LoadManifest 读 manifest.json

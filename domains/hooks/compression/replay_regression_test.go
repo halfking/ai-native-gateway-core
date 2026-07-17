@@ -46,7 +46,7 @@ func sessionsDir(t *testing.T) string {
 			return candidate
 		}
 	}
-	t.Skip("exported sessions not found; run /tmp/session_export/extract.py first")
+	t.Skip("exported sessions not found; run make refresh-sessions first")
 	return ""
 }
 
