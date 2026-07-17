@@ -209,6 +209,7 @@ git push github       # → github（自动严格扫描，命中即阻断）
 | **API** | [`docs/API.md`](docs/API.md) — 主控端 8 个 API 端点 |
 | **升级** | [`docs/UPGRADE.md`](docs/UPGRADE.md) — 在线/离线升级流程 |
 | **架构** | [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) — V3 架构方案 |
+| **会话优化V2** | [`docs/会话优化v2/配置说明.md`](docs/会话优化v2/配置说明.md) — Sessions V2 Feature Flag 配置与灰度发布 |
 | **双仓库** | [`docs/REPO-MIRROR-POLICY.md`](docs/REPO-MIRROR-POLICY.md) — codeup ⇄ github 工作流 |
 | **安全** | [`SECURITY.md`](SECURITY.md) — 漏洞报告 + 扫描器用法 |
 | **贡献** | [`CONTRIBUTING.md`](CONTRIBUTING.md) — 开发规范 + 提交规范 |

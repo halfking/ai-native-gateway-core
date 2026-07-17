@@ -21,11 +21,16 @@ import (
 //	writer := NewDualWriter(v1Writer, v2Writer, flags, metrics)
 //	err := writer.Write(ctx, req)
 type DualWriter struct {
-	v1Writer RequestLogWriter    // Legacy writer (request_logs)
-	v2Writer *v2.SessionWriterV2 // V2 writer (sessions tables)
+	v1Writer RequestLogWriter      // Legacy writer (request_logs)
+	v2Writer SessionWriterV2Interface // V2 writer (sessions tables)
 
 	flags   FeatureFlags
 	metrics *DualWriteMetrics
+}
+
+// SessionWriterV2Interface defines the interface for V2 writer
+type SessionWriterV2Interface interface {
+	Write(ctx context.Context, req *v2.ProcessedRequest) error
 }
 
 // RequestLogWriter is the interface for legacy request_logs writer
@@ -64,7 +69,7 @@ type Histogram interface {
 // NewDualWriter creates a new dual writer
 func NewDualWriter(
 	v1 RequestLogWriter,
-	v2 *v2.SessionWriterV2,
+	v2 SessionWriterV2Interface,
 	flags FeatureFlags,
 	metrics *DualWriteMetrics,
 ) *DualWriter {
@@ -264,7 +269,7 @@ func (w *DualWriter) GetV1Writer() RequestLogWriter {
 }
 
 // GetV2Writer returns the V2 writer (for testing/debugging)
-func (w *DualWriter) GetV2Writer() *v2.SessionWriterV2 {
+func (w *DualWriter) GetV2Writer() SessionWriterV2Interface {
 	return w.v2Writer
 }
 
