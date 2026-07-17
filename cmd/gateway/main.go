@@ -1718,17 +1718,21 @@ func main() {
 		}
 
 		if selfCheckAPIKey != "" {
-			// 2026-07-14: gate the legacy featured-model self-check
-			// (1-min tick, 3-model pool) behind the new-mode switch.
-			// The new bg/credential_selfcheck.go handles per-credential
-			// daily checks; the legacy worker is kept around for rollback.
+			// 2026-07-18: add explicit gate for legacy featured-model self-check.
+			// The legacy worker (1-min tick, 3-model pool) is now DOUBLE-GATED:
+			// 1. LLM_GATEWAY_USE_NEW_PROBE_MODE must be false (rollback mode)
+			// 2. LLM_GATEWAY_ENABLE_LEGACY_SELFCHECK must be explicitly "true"
+			// This prevents accidental re-activation when rolling back the probe mode.
+			// The new bg/credential_selfcheck.go handles per-credential daily checks.
 			if useNewProbeMode() {
 				slog.Info("selfCheckWorker (legacy featured) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
+			} else if strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_ENABLE_LEGACY_SELFCHECK"))) != "true" {
+				slog.Info("selfCheckWorker (legacy featured) skipped: LLM_GATEWAY_ENABLE_LEGACY_SELFCHECK != true (explicit opt-in required)")
 			} else {
 				// Use empty baseURL to trigger env var / default detection in NewSelfCheckWorker
 				selfCheckWorker = bg.NewSelfCheckWorker(dbConn.Pool(), selfCheckAPIKey, "", keyring)
 				selfCheckWorker.Start(context.Background())
-				slog.Info("CHECKPOINT: selfCheckWorker started", "api_key_source", func() string {
+				slog.Info("CHECKPOINT: selfCheckWorker started (LEGACY MODE - explicit opt-in)", "api_key_source", func() string {
 					if os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY") != "" {
 						return "env_var"
 					}
