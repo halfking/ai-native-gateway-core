@@ -360,6 +360,78 @@ func TestChecker_CheckAndUpdate_MixedEOFStillFlagsTrueFailures(t *testing.T) {
 	}
 }
 
+// TestChecker_CheckAndUpdate_ExcludeEmptyResponse — empty_response is
+// excluded from the failureRate computation. This guards the 2026-07-18
+// regression where credential 19 (NVIDIA NIM / endless) accumulated
+// 21 empty_response samples out of 34 calls (62% absolute rate) and was
+// marked degraded with unavailable_recover_at = now+1h, even though
+// the upstream was healthy. errorsx.KindEmptyResponse's design intent
+// (classify.go line 60-78) explicitly says "a transient empty burst
+// must not hard-exclude the credential". Counting it toward the 80%
+// degradation threshold defeats that intent.
+//
+// 10 empty_response + 10 success: failureRate after exclusion = 0/20 = 0%
+// → no DB UPDATE expected (markDegraded must not fire).
+func TestChecker_CheckAndUpdate_ExcludeEmptyResponse(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	//nolint:errcheck // best-effort close
+	defer redisClient.Close()
+
+	recorder := NewRecorder(redisClient, 1*time.Hour, 100)
+	// Plain QueryMatcher (not regex) so we can assert NO UPDATE is issued
+	// — pgxmock fails ExpectationsWereMet when an expected Exec was never
+	// called.
+	mockDB, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("failed to create mock: %v", err)
+	}
+	defer mockDB.Close()
+
+	checker := NewChecker(recorder, mockDB, DefaultCheckerConfig())
+
+	ctx := context.Background()
+	credID := 123
+	model := "minimaxai/minimax-m3"
+	now := time.Now()
+
+	for i := 0; i < 10; i++ {
+		//nolint:errcheck // test append, non-critical
+		recorder.Append(ctx, credID, model, CallEntry{
+			RequestID: "req_empty_" + now.Add(time.Duration(i)*time.Minute).Format(time.RFC3339),
+			Timestamp: now.Add(time.Duration(i) * time.Minute).UnixMilli(),
+			Success:   false,
+			ErrorKind: string(errorsx.KindEmptyResponse),
+		})
+	}
+	for i := 0; i < 10; i++ {
+		//nolint:errcheck // test append, non-critical
+		recorder.Append(ctx, credID, model, CallEntry{
+			RequestID: "req_ok_" + now.Add(time.Duration(10+i)*time.Minute).Format(time.RFC3339),
+			Timestamp: now.Add(time.Duration(10+i) * time.Minute).UnixMilli(),
+			Success:   true,
+			LatencyMs: 300,
+		})
+	}
+
+	if err := checker.CheckAndUpdate(ctx, credID, model); err != nil {
+		t.Fatalf("CheckAndUpdate failed: %v", err)
+	}
+	// empty_response is excluded → 0/10 counted failures (the 10 successes
+	// are not failures) → failureRate = 0% < 80% threshold → no UPDATE
+	// should be issued. ExpectationsWereMet returns nil only when every
+	// expected query was matched; with zero expectations on a plain
+	// (non-regex) matcher, this proves no UPDATE was issued.
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Errorf("empty_response triggered unexpected DB state: %v", err)
+	}
+}
+
 func TestRecoverExpired(t *testing.T) {
 	mockDB, err := pgxmock.NewPool()
 	if err != nil {

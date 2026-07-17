@@ -837,9 +837,14 @@ func (r *Router) tryDegradedMode(ctx context.Context, candidates []provider.Cand
 //
 // 以及 StateManager 内存态原因（state:<errKind>，对应 credentialstate/manager.go
 // isTransient 四个错误种类，触发 5min cooling）：
-// - state:timeout / state:stream_timeout - 上游超时
-// - state:rate_limit - 上游限流
-// - state:upstream_down - 上游不可用
+//   - state:timeout / state:stream_timeout - 上游超时
+//   - state:rate_limit - 上游限流
+//   - state:upstream_down - 上游不可用
+//   - state:empty_response - 上游 200 + 空流 (NIM 13% 偶发)，同次请求内可能恢复；
+//     errorsx.KindEmptyResponse 设计意图明确说"a transient empty burst must
+//     not hard-exclude the credential"（classify.go line 60-78）。把这个 kind
+//     加到瞬态分支，让单候选降级继续尝试，避免 cred 19 (NIM/endless) 这种
+//     "上游正常但 StateManager 标了 empty_response → 0 候选 503" 的误判。
 //
 // 永久原因（不应降级使用）：
 // - availability:auth_failed - 认证失败，需要人工修复
@@ -850,6 +855,7 @@ func (r *Router) tryDegradedMode(ctx context.Context, candidates []provider.Cand
 // 2026-07-04: 单候选者降级逻辑
 // 2026-07-14: 增加 state:<errKind> 瞬态分支。用 errorsx 常量字符串值而非魔法串，
 // 与 credentialstate/manager.go:248-251 的 isTransient 集合保持一致，避免漂移。
+// 2026-07-18: 增加 state:empty_response（对齐 KindEmptyResponse 设计意图）。
 func isTransientUnavailableReason(reason string) bool {
 	switch reason {
 	case "availability:cooling",
@@ -859,7 +865,8 @@ func isTransientUnavailableReason(reason string) bool {
 	case "state:" + string(errorsx.KindTimeout),
 		"state:" + string(errorsx.KindStreamTimeout),
 		"state:" + string(errorsx.KindRateLimit),
-		"state:" + string(errorsx.KindUpstreamDown):
+		"state:" + string(errorsx.KindUpstreamDown),
+		"state:" + string(errorsx.KindEmptyResponse):
 		return true
 	default:
 		return false
