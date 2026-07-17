@@ -24,10 +24,10 @@ DROP FUNCTION IF EXISTS ensure_sessions_v2_partitions(DATE);
 -- 2. 删除表（CASCADE会自动删除所有分区和依赖）
 -- =============================================
 
-DROP TABLE IF EXISTS public.session_turn_logs CASCADE;
-DROP TABLE IF EXISTS public.session_bodies CASCADE;
-DROP TABLE IF EXISTS public.session_turns CASCADE;
-DROP TABLE IF EXISTS public.sessions CASCADE;
+DROP TABLE IF EXISTS gateway.session_turn_logs CASCADE;
+DROP TABLE IF EXISTS gateway.session_bodies CASCADE;
+DROP TABLE IF EXISTS gateway.session_turns CASCADE;
+DROP TABLE IF EXISTS gateway.sessions CASCADE;
 
 -- =============================================
 -- 3. 验证回滚
@@ -37,19 +37,19 @@ DO $$
 BEGIN
     -- 验证表已删除
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'sessions') THEN
-        RAISE EXCEPTION 'Table public.sessions still exists after rollback';
+        RAISE EXCEPTION 'Table gateway.sessions still exists after rollback';
     END IF;
     
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'session_turns') THEN
-        RAISE EXCEPTION 'Table public.session_turns still exists after rollback';
+        RAISE EXCEPTION 'Table gateway.session_turns still exists after rollback';
     END IF;
     
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'session_bodies') THEN
-        RAISE EXCEPTION 'Table public.session_bodies still exists after rollback';
+        RAISE EXCEPTION 'Table gateway.session_bodies still exists after rollback';
     END IF;
     
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'session_turn_logs') THEN
-        RAISE EXCEPTION 'Table public.session_turn_logs still exists after rollback';
+        RAISE EXCEPTION 'Table gateway.session_turn_logs still exists after rollback';
     END IF;
     
     RAISE NOTICE '===== Migration 430 ROLLBACK SUCCESSFUL =====';
