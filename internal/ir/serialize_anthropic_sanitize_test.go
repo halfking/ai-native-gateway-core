@@ -41,13 +41,31 @@ func TestSerializeAnthropic_Tools_SanitizeRequired(t *testing.T) {
 	tools := outMap["tools"].([]any)
 	tool0 := tools[0].(map[string]any)
 	inputSchema := tool0["input_schema"].(map[string]any)
-	required := inputSchema["required"].([]any) // JSON unmarshals as []any
-
-	if len(required) != 1 {
-		t.Fatalf("required should have 1 element, got %d", len(required))
+	
+	// After sanitization, required should be an array
+	required, ok := inputSchema["required"]
+	if !ok {
+		t.Fatal("required field is missing")
 	}
-	if required[0] != "city" {
-		t.Errorf("required[0] = %v, want \"city\"", required[0])
+	
+	// Check if it's an array (can be []any or []string depending on JSON unmarshal)
+	switch r := required.(type) {
+	case []any:
+		if len(r) != 1 {
+			t.Fatalf("required should have 1 element, got %d", len(r))
+		}
+		if r[0] != "city" {
+			t.Errorf("required[0] = %v, want \"city\"", r[0])
+		}
+	case []string:
+		if len(r) != 1 {
+			t.Fatalf("required should have 1 element, got %d", len(r))
+		}
+		if r[0] != "city" {
+			t.Errorf("required[0] = %v, want \"city\"", r[0])
+		}
+	default:
+		t.Fatalf("required should be an array, got %T", required)
 	}
 }
 
@@ -88,13 +106,30 @@ func TestSerializeAnthropic_Tools_SanitizeMixedArray(t *testing.T) {
 	tools := outMap["tools"].([]any)
 	tool0 := tools[0].(map[string]any)
 	inputSchema := tool0["input_schema"].(map[string]any)
-	required := inputSchema["required"].([]any)
-
-	if len(required) != 2 {
-		t.Fatalf("required should have 2 elements (filtered), got %d", len(required))
+	
+	required, ok := inputSchema["required"]
+	if !ok {
+		t.Fatal("required field is missing")
 	}
-	if required[0] != "city" || required[1] != "unit" {
-		t.Errorf("required = %v, want [\"city\", \"unit\"]", required)
+	
+	// Check array type and content
+	switch r := required.(type) {
+	case []any:
+		if len(r) != 2 {
+			t.Fatalf("required should have 2 elements (filtered), got %d", len(r))
+		}
+		if r[0] != "city" || r[1] != "unit" {
+			t.Errorf("required = %v, want [\"city\", \"unit\"]", r)
+		}
+	case []string:
+		if len(r) != 2 {
+			t.Fatalf("required should have 2 elements (filtered), got %d", len(r))
+		}
+		if r[0] != "city" || r[1] != "unit" {
+			t.Errorf("required = %v, want [\"city\", \"unit\"]", r)
+		}
+	default:
+		t.Fatalf("required should be an array, got %T", required)
 	}
 }
 
@@ -141,13 +176,30 @@ func TestSerializeAnthropic_Tools_NestedRequired(t *testing.T) {
 	inputSchema := tool0["input_schema"].(map[string]any)
 	properties := inputSchema["properties"].(map[string]any)
 	address := properties["address"].(map[string]any)
-	required := address["required"].([]any)
-
-	if len(required) != 1 {
-		t.Fatalf("nested required should have 1 element, got %d", len(required))
+	
+	required, ok := address["required"]
+	if !ok {
+		t.Fatal("nested required field is missing")
 	}
-	if required[0] != "city" {
-		t.Errorf("nested required[0] = %v, want \"city\"", required[0])
+	
+	// Check array type and content
+	switch r := required.(type) {
+	case []any:
+		if len(r) != 1 {
+			t.Fatalf("nested required should have 1 element, got %d", len(r))
+		}
+		if r[0] != "city" {
+			t.Errorf("nested required[0] = %v, want \"city\"", r[0])
+		}
+	case []string:
+		if len(r) != 1 {
+			t.Fatalf("nested required should have 1 element, got %d", len(r))
+		}
+		if r[0] != "city" {
+			t.Errorf("nested required[0] = %v, want \"city\"", r[0])
+		}
+	default:
+		t.Fatalf("nested required should be an array, got %T", required)
 	}
 }
 
@@ -188,13 +240,30 @@ func TestSerializeAnthropic_Tools_ValidRequired(t *testing.T) {
 	tools := outMap["tools"].([]any)
 	tool0 := tools[0].(map[string]any)
 	inputSchema := tool0["input_schema"].(map[string]any)
-	required := inputSchema["required"].([]any)
-
-	if len(required) != 2 {
-		t.Fatalf("required should have 2 elements, got %d", len(required))
+	
+	required, ok := inputSchema["required"]
+	if !ok {
+		t.Fatal("required field is missing")
 	}
-	if required[0] != "city" || required[1] != "unit" {
-		t.Errorf("required = %v, want [\"city\", \"unit\"]", required)
+	
+	// Check array type and content
+	switch r := required.(type) {
+	case []any:
+		if len(r) != 2 {
+			t.Fatalf("required should have 2 elements, got %d", len(r))
+		}
+		if r[0] != "city" || r[1] != "unit" {
+			t.Errorf("required = %v, want [\"city\", \"unit\"]", r)
+		}
+	case []string:
+		if len(r) != 2 {
+			t.Fatalf("required should have 2 elements, got %d", len(r))
+		}
+		if r[0] != "city" || r[1] != "unit" {
+			t.Errorf("required = %v, want [\"city\", \"unit\"]", r)
+		}
+	default:
+		t.Fatalf("required should be an array, got %T", required)
 	}
 }
 

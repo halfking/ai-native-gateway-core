@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/domains/session/v2"
 )
 
 // DualWriter writes to both V1 (request_logs) and V2 (sessions) in parallel
@@ -17,12 +17,13 @@ import (
 //   - Feature flags control which systems are active
 //
 // Usage:
-//   writer := NewDualWriter(v1Writer, v2Writer, flags, metrics)
-//   err := writer.Write(ctx, req)
+//
+//	writer := NewDualWriter(v1Writer, v2Writer, flags, metrics)
+//	err := writer.Write(ctx, req)
 type DualWriter struct {
-	v1Writer RequestLogWriter // Legacy writer (request_logs)
+	v1Writer RequestLogWriter    // Legacy writer (request_logs)
 	v2Writer *v2.SessionWriterV2 // V2 writer (sessions tables)
-	
+
 	flags   FeatureFlags
 	metrics *DualWriteMetrics
 }
@@ -41,12 +42,12 @@ type FeatureFlags interface {
 
 // DualWriteMetrics tracks dual write performance
 type DualWriteMetrics struct {
-	V1WriteSuccess   Counter
-	V1WriteFailed    Counter
-	V2WriteSuccess   Counter
-	V2WriteFailed    Counter
-	V2WriteLatency   Histogram
-	ValidationDiff   Counter
+	V1WriteSuccess Counter
+	V1WriteFailed  Counter
+	V2WriteSuccess Counter
+	V2WriteFailed  Counter
+	V2WriteLatency Histogram
+	ValidationDiff Counter
 }
 
 // Counter is a simple counter interface (Prometheus compatible)
@@ -134,8 +135,8 @@ type ProcessedRequest struct {
 //  3. IF v2_dual_read enabled: validate consistency
 //
 // Guarantees:
-//  - V1 write failure → request fails (backward compatible)
-//  - V2 write failure → logged but doesn't fail request (safe rollout)
+//   - V1 write failure → request fails (backward compatible)
+//   - V2 write failure → logged but doesn't fail request (safe rollout)
 func (w *DualWriter) Write(ctx context.Context, req *ProcessedRequest) error {
 	// 1. PRIMARY WRITE: V1 (request_logs)
 	// This MUST succeed or the entire request fails
@@ -146,7 +147,7 @@ func (w *DualWriter) Write(ctx context.Context, req *ProcessedRequest) error {
 		return fmt.Errorf("v1 write failed (primary): %w", err)
 	}
 	w.metrics.V1WriteSuccess.Inc()
-	
+
 	slog.DebugContext(ctx, "dual writer v1 success",
 		"request_id", req.RequestID,
 		"duration_ms", time.Since(startV1).Milliseconds())
@@ -169,12 +170,12 @@ func (w *DualWriter) Write(ctx context.Context, req *ProcessedRequest) error {
 	// Write to V2 (shadow)
 	startV2 := time.Now()
 	v2Req := convertToV2Request(req)
-	
+
 	err = w.v2Writer.Write(ctx, v2Req)
 	v2Latency := time.Since(startV2)
-	
+
 	w.metrics.V2WriteLatency.Observe(v2Latency.Seconds())
-	
+
 	if err != nil {
 		// V2 write failed - LOG but DON'T fail the request
 		w.metrics.V2WriteFailed.Inc()
@@ -183,11 +184,11 @@ func (w *DualWriter) Write(ctx context.Context, req *ProcessedRequest) error {
 			"session_id", req.SessionID,
 			"error", err,
 			"duration_ms", v2Latency.Milliseconds())
-		
+
 		// Return nil - shadow write failure doesn't block request
 		return nil
 	}
-	
+
 	w.metrics.V2WriteSuccess.Inc()
 	slog.DebugContext(ctx, "dual writer v2 success",
 		"request_id", req.RequestID,

@@ -266,14 +266,11 @@ func serializeAnthropicMessage(msg Message, targetProvider string) map[string]an
 			"type": "tool_result",
 		}
 		if msg.ToolCallID != "" {
-			// MiniMax（Anthropic 兼容协议）使用 tool_call_id 字段名而非标准
-			// Anthropic 的 tool_use_id。这里根据 targetProvider 分支处理。
-			// 参考：MiniMax-M3 tool_call_id not found (2013) bug 修复。
-			if targetProvider == "minimax" {
-				toolResult["tool_call_id"] = msg.ToolCallID
-			} else {
-				toolResult["tool_use_id"] = msg.ToolCallID
-			}
+			// Provider-specific field name mapping: some providers (e.g., MiniMax)
+			// use "tool_call_id" while standard Anthropic uses "tool_use_id".
+			// Use the mapping table to ensure compatibility without breaking other providers.
+			fieldName := GetProviderFieldConfig(targetProvider).ToolResultIDField
+			toolResult[fieldName] = msg.ToolCallID
 		}
 		// Extract content from text blocks. Also handle tool_result blocks nested
 		// inside the message content (e.g. when the IR was produced by parsing an
@@ -440,13 +437,10 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string) m
 
 	case "tool_result":
 		if block.ToolResult != nil {
-			// MiniMax（Anthropic 兼容协议）使用 tool_call_id 字段名而非标准
-			// Anthropic 的 tool_use_id。根据 targetProvider 分支处理。
-			if targetProvider == "minimax" {
-				out["tool_call_id"] = block.ToolResult.ToolUseID
-			} else {
-				out["tool_use_id"] = block.ToolResult.ToolUseID
-			}
+			// Provider-specific field name mapping: use the mapping table to ensure
+			// compatibility without breaking other providers.
+			fieldName := GetProviderFieldConfig(targetProvider).ToolResultIDField
+			out[fieldName] = block.ToolResult.ToolUseID
 			out["is_error"] = block.ToolResult.IsError
 
 			// Serialize content - can be text blocks
@@ -521,11 +515,76 @@ func serializeAnthropicTools(tools []ToolDefinition) []map[string]any {
 			toolMap["description"] = tool.Description
 		}
 		if tool.Parameters != nil {
-			toolMap["input_schema"] = tool.Parameters
+			// Unmarshal and sanitize the schema to fix common format errors
+			var params any
+			if err := json.Unmarshal(tool.Parameters, &params); err == nil {
+				toolMap["input_schema"] = sanitizeInputSchema(params)
+			} else {
+				// Fallback: use raw if unmarshal fails
+				toolMap["input_schema"] = tool.Parameters
+			}
 		}
 		result = append(result, toolMap)
 	}
 	return result
+}
+
+// sanitizeInputSchema 修正 JSON Schema 中的常见格式错误，确保符合 Anthropic API 要求。
+// 主要修正：
+//  1. required 字段必须是字符串数组，不能是单个字符串
+//  2. 递归处理嵌套的 properties 和 items
+//
+// 背景：claude-opus-4-8 对 input_schema.required 进行严格验证，要求必须是数组格式。
+// 某些客户端或 SDK 可能发送错误格式（单个字符串或混合类型数组），导致 400 错误。
+func sanitizeInputSchema(schema any) any {
+	schemaMap, ok := schema.(map[string]any)
+	if !ok {
+		return schema
+	}
+
+	// 修正 required 字段
+	if required, exists := schemaMap["required"]; exists && required != nil {
+		switch r := required.(type) {
+		case string:
+			// 单个字符串 → 数组
+			schemaMap["required"] = []string{r}
+		case []any:
+			// 确保所有元素都是字符串
+			strArray := make([]string, 0, len(r))
+			for _, v := range r {
+				if s, ok := v.(string); ok {
+					strArray = append(strArray, s)
+				}
+			}
+			schemaMap["required"] = strArray
+		case []string:
+			// 已经是正确格式，保持不变
+		default:
+			// 其他类型（如数字、布尔），删除该字段
+			delete(schemaMap, "required")
+		}
+	}
+
+	// 递归处理 properties
+	if properties, ok := schemaMap["properties"].(map[string]any); ok {
+		for key, prop := range properties {
+			properties[key] = sanitizeInputSchema(prop)
+		}
+	}
+
+	// 递归处理 items (数组类型)
+	if items, ok := schemaMap["items"]; ok {
+		schemaMap["items"] = sanitizeInputSchema(items)
+	}
+
+	// 递归处理 additionalProperties
+	if additionalProps, ok := schemaMap["additionalProperties"]; ok {
+		if additionalPropsMap, isMap := additionalProps.(map[string]any); isMap {
+			schemaMap["additionalProperties"] = sanitizeInputSchema(additionalPropsMap)
+		}
+	}
+
+	return schemaMap
 }
 
 // serializeAnthropicToolChoice converts IR ToolChoice to Anthropic format.
@@ -686,13 +745,9 @@ func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvide
 		// Check tool_result IDs
 		for _, block := range contentBlocks {
 			if blockType, _ := block["type"].(string); blockType == "tool_result" {
-				// MiniMax uses tool_call_id, standard Anthropic uses tool_use_id
-				var id string
-				if targetProvider == "minimax" {
-					id, _ = block["tool_call_id"].(string)
-				} else {
-					id, _ = block["tool_use_id"].(string)
-				}
+				// Provider-specific field name: use mapping table for compatibility
+				fieldName := GetProviderFieldConfig(targetProvider).ToolResultIDField
+				id, _ := block[fieldName].(string)
 
 				if id != "" && !toolUseIDs[id] {
 					orphans = append(orphans, id)
