@@ -624,3 +624,9 @@
 | 426 | `426_task_type_centroids.sql` |
 | 427 | `427_task_type_centroids_model.sql` |
 
+## 2026-07-17T15:01:41Z — deploy 245 build_seq 1129 (aea52403)
+
+| Migration | File |
+|-----------|------|
+| 428 | `428_recent_success_rate_probe_filters.sql` |
+
