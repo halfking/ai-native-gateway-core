@@ -3,11 +3,9 @@ package v2
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -308,57 +306,4 @@ func TestSessionBodiesWriter_UpdateConflict(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "Updated response", retrieved.ResponseDelta[0].Content)
-}
-
-// setupTestDB creates a test database connection
-func setupTestDB(t *testing.T) *pgxpool.Pool {
-	dbURL := getTestDBURL()
-	if dbURL == "" {
-		t.Skip("Test database not configured (set TEST_DB_URL)")
-	}
-
-	ctx := context.Background()
-	db, err := pgxpool.New(ctx, dbURL)
-	require.NoError(t, err)
-
-	// Verify connection
-	err = db.Ping(ctx)
-	require.NoError(t, err)
-
-	return db
-}
-
-// cleanupTestDB cleans up test data
-func cleanupTestDB(t *testing.T, db *pgxpool.Pool) {
-	ctx := context.Background()
-
-	// Delete test data
-	_, err := db.Exec(ctx, `
-		DELETE FROM public.session_bodies 
-		WHERE tenant_id = 'test_tenant'
-	`)
-	if err != nil {
-		t.Logf("Warning: cleanup session_bodies failed: %v", err)
-	}
-
-	_, err = db.Exec(ctx, `
-		DELETE FROM public.session_turns 
-		WHERE tenant_id = 'test_tenant'
-	`)
-	if err != nil {
-		t.Logf("Warning: cleanup session_turns failed: %v", err)
-	}
-
-	db.Close()
-}
-
-// getTestDBURL returns the test database URL from environment
-func getTestDBURL() string {
-	// Try environment variable first
-	if url := os.Getenv("TEST_DB_URL"); url != "" {
-		return url
-	}
-
-	// Default to local test database
-	return "postgres://kxuser:kxpass@127.0.0.1:5432/llm_gateway_test?sslmode=disable"
 }

@@ -22,6 +22,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, LifecycleSpecs()...)
 	out = append(out, SessionAnalyticsSpecs()...)
 	out = append(out, DashboardSpecs()...)
+	// 2026-07-17: Sessions V2 feature flags (Migration 430)
+	out = append(out, SessionsV2Specs()...)
 	return out
 }
 
