@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -32,6 +33,9 @@ type EmbeddingsHandler struct {
 	upstream    *upstream.Client
 	keyVerifier *authentication.KeyVerifier
 	rateLimiter ratelimit.RPMLimiter
+	// autoIndex enables model="auto" for embeddings (22 章 §22.2).
+	// When nil, model="auto" is passed through unchanged.
+	autoIndex *autoroute.Index
 }
 
 func NewEmbeddingsHandler(providerResolver embeddingProviderResolver, upstreamClient *upstream.Client) *EmbeddingsHandler {
@@ -41,6 +45,14 @@ func NewEmbeddingsHandler(providerResolver embeddingProviderResolver, upstreamCl
 func (h *EmbeddingsHandler) SetAuth(keyVerifier *authentication.KeyVerifier, rateLimiter ratelimit.RPMLimiter) {
 	h.keyVerifier = keyVerifier
 	h.rateLimiter = rateLimiter
+}
+
+// SetAutoIndex wires the autoroute index for model="auto" resolution.
+// When set AND FeatureFlags.AutoOnEmbeddings is true, a model="auto"
+// request is resolved to the best embedding candidate via
+// RecommendByModality. Pass nil to disable.
+func (h *EmbeddingsHandler) SetAutoIndex(idx *autoroute.Index) {
+	h.autoIndex = idx
 }
 
 func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +97,19 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !validEmbeddingInput(payload["input"]) {
 		writeErrorJSON(w, http.StatusBadRequest, requestID, "input must be a non-empty string or array", "invalid_request_error", "invalid_input")
 		return
+	}
+
+	// model="auto": resolve to the best embedding candidate (22 章 §22.2).
+	// Bypasses task classification — embeddings have no chat taxonomy.
+	autoDecision := ""
+	if model == "auto" && h.autoIndex != nil {
+		if flags := autoroute.GetFeatureFlags(); flags != nil && flags.AutoOnEmbeddings {
+			if scored := h.autoIndex.RecommendByModality("embedding", 1); len(scored) > 0 {
+				autoDecision = scored[0].Candidate.RawModel
+				model = scored[0].Candidate.CanonicalName
+				payload["model"], _ = json.Marshal(model)
+			}
+		}
 	}
 
 	tenantID, profile := "", ""
@@ -134,6 +159,10 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
 			lastErr = fmt.Sprintf("upstream HTTP %d", resp.StatusCode)
 			continue
+		}
+		if autoDecision != "" {
+			// Minimal X-Gw-Auto-Decision for embeddings (no task taxonomy).
+			w.Header().Set("X-Gw-Auto-Decision", `{"task_type":"embedding","chosen_model":"`+autoDecision+`"}`)
 		}
 		copyEmbeddingResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)

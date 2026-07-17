@@ -430,6 +430,8 @@ func main() {
 	modelsHandler := streaming.NewModelsHandler()
 	messagesHandler := streaming.NewMessagesHandler(chatHandler)
 	responsesHandler := streaming.NewResponsesHandler(chatHandler)
+	// EmbeddingsHandler 在 providerClient 就绪后初始化（见 ~SetAuth 区）。
+	var embeddingsHandler *streaming.EmbeddingsHandler
 
 	// ── Tenant model policy (Round 48, 2026-06-21) ─────────────────
 	// Single Checkerr singleton shared by streaming.ChatHandler (hot
@@ -1038,6 +1040,10 @@ func main() {
 	if keyVerifier.Enabled() {
 		slidingRL := ratelimit.NewRedisLimiterFromEnv()
 		chatHandler.SetAuth(keyVerifier, slidingRL)
+		// /v1/embeddings handler (22 章 §22.2). providerClient + upClient
+		// are both ready by this point.
+		embeddingsHandler = streaming.NewEmbeddingsHandler(providerClient, upClient)
+		embeddingsHandler.SetAuth(keyVerifier, slidingRL)
 		slog.Info("API key authentication + RPM rate limiting enabled")
 	} else {
 		slog.Warn("API key authentication disabled (no database connection)")
@@ -2173,6 +2179,9 @@ func main() {
 			// v2.1: Score() also reads profile weights from tuningStore.
 			autoroute.SetTuningStore(tuningStore)
 			chatHandler.SetAutoRoute(decider)
+			// /v1/embeddings model=auto resolution (22 章 §22.2).
+			// Shares the same index as chat; AutoOnEmbeddings flag gates it.
+			embeddingsHandler.SetAutoIndex(autoIdx)
 
 			// ── Goal-mode auto control (2026-07-06) ───────────────────────
 			// Wire the goal/audit response interceptors. Safe-by-default:
@@ -2688,6 +2697,7 @@ func main() {
 	mux.Handle("/v1/completions", chatHandler)
 	mux.Handle("/v1/messages", messagesHandler)
 	mux.Handle("/v1/responses", responsesHandler)
+	mux.Handle("/v1/embeddings", embeddingsHandler)
 	mux.Handle("/v1/models", modelsHandler)
 
 	// audit-gateway-gemini (2026-07-13): Gemini native API endpoints.
