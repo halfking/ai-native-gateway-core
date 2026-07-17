@@ -14,9 +14,12 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ── 响应类型 ────────────────────────────────────────────────────────
@@ -105,11 +108,11 @@ func (h *Handler) HandleTopSessions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-		tenantID := effectiveScopeTenant(r)
+	tenantID := effectiveScopeTenant(r)
 
-		query := `
-			SELECT session_key, tenant_id, title, request_count,
-			       total_cost_usd, total_tokens, duration_seconds,
+	query := `
+		SELECT session_key, tenant_id, title, request_count,
+		       total_cost_usd, total_tokens, duration_seconds,
 		       avg_latency_ms, health_grade, primary_model
 		FROM session_summaries
 		WHERE first_request_at >= $1 AND first_request_at < $2`
@@ -136,28 +139,41 @@ func (h *Handler) HandleTopSessions(w http.ResponseWriter, r *http.Request) {
 		args = append(args, filters.complianceStatus)
 		argIdx++
 	}
+	if IsRegularUser(r) {
+		owner := GetAuthContext(r).Username
+		if owner == "" {
+			query += " AND session_key IN (SELECT gw_session_id FROM session_dim WHERE owner_user = '')"
+		} else {
+			query += fmt.Sprintf(" AND session_key IN (SELECT gw_session_id FROM session_dim WHERE owner_user = $%d)", argIdx)
+			args = append(args, owner)
+			argIdx++
+		}
+	}
 
 	query += " ORDER BY " + orderCol + " DESC NULLS LAST LIMIT " + strconv.Itoa(limit)
 
-	rows, err := h.db.Query(ctx, query, args...)
-	if err != nil {
+	sessions := []TopSessionItem{}
+	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s TopSessionItem
+			if err := rows.Scan(
+				&s.GwSessionID, &s.TenantID, &s.Title, &s.RequestCount,
+				&s.TotalCostUSD, &s.TotalTokens, &s.DurationSeconds,
+				&s.AvgLatencyMs, &s.HealthGrade, &s.PrimaryModel,
+			); err != nil {
+				return err
+			}
+			sessions = append(sessions, s)
+		}
+		return rows.Err()
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
-	}
-	defer rows.Close()
-
-	sessions := []TopSessionItem{}
-	for rows.Next() {
-		var s TopSessionItem
-		if err := rows.Scan(
-			&s.GwSessionID, &s.TenantID, &s.Title, &s.RequestCount,
-			&s.TotalCostUSD, &s.TotalTokens, &s.DurationSeconds,
-			&s.AvgLatencyMs, &s.HealthGrade, &s.PrimaryModel,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
-			return
-		}
-		sessions = append(sessions, s)
 	}
 
 	writeJSON(w, http.StatusOK, TopSessionsResponse{
@@ -184,7 +200,7 @@ func (h *Handler) HandleFilterOptions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-		tenantID := effectiveScopeTenant(r)
+	tenantID := effectiveScopeTenant(r)
 
 	// 模型列表（从近 30 天数据聚合，避免全表扫描）
 	modelQuery := `
@@ -199,21 +215,6 @@ func (h *Handler) HandleFilterOptions(w http.ResponseWriter, r *http.Request) {
 	}
 	modelQuery += ") t WHERE model IS NOT NULL AND model != '' ORDER BY model"
 
-	modelRows, err := h.db.Query(ctx, modelQuery, modelArgs...)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query models failed: "+err.Error())
-		return
-	}
-	defer modelRows.Close()
-
-	models := []string{}
-	for modelRows.Next() {
-		var m string
-		if err := modelRows.Scan(&m); err == nil {
-			models = append(models, m)
-		}
-	}
-
 	// 提供商列表
 	providerQuery := `
 		SELECT DISTINCT provider FROM (
@@ -227,19 +228,41 @@ func (h *Handler) HandleFilterOptions(w http.ResponseWriter, r *http.Request) {
 	}
 	providerQuery += ") t WHERE provider IS NOT NULL AND provider != '' ORDER BY provider"
 
-	providerRows, err := h.db.Query(ctx, providerQuery, providerArgs...)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query providers failed: "+err.Error())
-		return
-	}
-	defer providerRows.Close()
-
-	providers := []string{}
-	for providerRows.Next() {
-		var p string
-		if err := providerRows.Scan(&p); err == nil {
-			providers = append(providers, p)
+	var (
+		models    []string
+		providers []string
+	)
+	if err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		modelRows, err := tx.Query(ctx, modelQuery, modelArgs...)
+		if err != nil {
+			return err
 		}
+		defer modelRows.Close()
+		for modelRows.Next() {
+			var m string
+			if err := modelRows.Scan(&m); err == nil {
+				models = append(models, m)
+			}
+		}
+		if err := modelRows.Err(); err != nil {
+			return err
+		}
+
+		providerRows, err := tx.Query(ctx, providerQuery, providerArgs...)
+		if err != nil {
+			return err
+		}
+		defer providerRows.Close()
+		for providerRows.Next() {
+			var p string
+			if err := providerRows.Scan(&p); err == nil {
+				providers = append(providers, p)
+			}
+		}
+		return providerRows.Err()
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
 	}
 
 	writeJSON(w, http.StatusOK, FilterOptionsResponse{
