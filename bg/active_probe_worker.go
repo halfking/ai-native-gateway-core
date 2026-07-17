@@ -42,7 +42,7 @@ type ActiveProbeWorkerConfig struct {
 	Enabled              bool
 	ConsecutiveThreshold int // 2 by default; the value from settings
 	MaxAttempts          int // 5 by default
-	TimeoutMs            int // 10000 by default
+	TimeoutMs            int // 30000 by default
 	QueueSize            int // 128 by default
 }
 
@@ -91,7 +91,7 @@ func NewActiveProbeWorker(cfg ActiveProbeWorkerConfig) *ActiveProbeWorker {
 		cfg.ConsecutiveThreshold = 2
 	}
 	if cfg.TimeoutMs <= 0 {
-		cfg.TimeoutMs = 10000
+		cfg.TimeoutMs = 30000
 	}
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 128
@@ -326,17 +326,22 @@ func (w *ActiveProbeWorker) processOne(ctx context.Context, task probeTask) {
 		return
 	}
 
-	// Probe failed → cool the credential for 5 minutes + schedule next attempt.
+	// Only permanent failures should lock routing for five minutes. Slow or
+	// overloaded providers remain routable while the retry chain continues.
 	if w.cfg.StateManager != nil {
-		recoverAt := time.Now().Add(5 * time.Minute)
-		w.cfg.StateManager.UpdateFromProbe(ctx, &credentialstate.State{
+		state := &credentialstate.State{
 			CredentialID: task.CredID,
 			Model:        task.Model,
-			Available:    false,
+			Available:    true,
 			LastError:    classifyProbeErrorKind(result),
-			RecoverAt:    &recoverAt,
 			Source:       "probe_direct",
-		})
+		}
+		if IsPermanentProbeFailure(result.Status) {
+			recoverAt := time.Now().Add(5 * time.Minute)
+			state.Available = false
+			state.RecoverAt = &recoverAt
+		}
+		w.cfg.StateManager.UpdateFromProbe(ctx, state)
 	}
 
 	// 5. Decide whether to retry.
