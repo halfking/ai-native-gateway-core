@@ -177,6 +177,20 @@ if ! tgt_psql -c "SELECT 1" &>/dev/null; then
 fi
 ok "Target connection OK"
 
+# A catalog entry without its extension library makes pg_dump fail when it
+# reaches columns using the affected type. Refuse destructive sync before the
+# target has been backed up successfully.
+for ext in vector citus citus_columnar; do
+  if [[ "$(tgt_psql -tAc "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='$ext')")" == "t" ]]; then
+    libname="$ext"
+    if ! tgt_psql -tAc "LOAD '$libname'" &>/dev/null; then
+      err "Target extension $ext is registered but $libname.so is unavailable"
+      err "Repair the PG image before backup or destructive synchronization"
+      exit 1
+    fi
+  fi
+done
+
 # Capture source state for verification
 info "Capturing source state..."
 SRC_TABLE_COUNT=$(src_psql -tAc "SELECT count(*) FROM pg_tables WHERE schemaname='public';")
