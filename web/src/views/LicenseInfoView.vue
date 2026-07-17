@@ -233,11 +233,7 @@ onBeforeUnmount(() => {
           <p>
             仅采集软件版本、资源使用、服务可用性及聚合请求指标，用于可靠性与产品改良；
             不采集原始 AI 会话、提示词、模型回复、文件或凭据。
-            <a href="/user-agreement.html" target="_blank" rel="noopener">查看用户协议与数据处理授权</a>
           </p>
-          <span v-if="telemetryPreference?.updated_at" class="muted">
-            协议版本 {{ telemetryPreference.agreement_version }}，最近变更 {{ telemetryPreference.updated_at }}
-          </span>
         </div>
         <el-switch
           :model-value="telemetryPreference?.enabled ?? false"

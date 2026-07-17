@@ -12,7 +12,6 @@ import SystemStatusIndicator from './components/SystemStatusIndicator.vue'
 import SystemHealthBadge from './components/SystemHealthBadge.vue'
 import UpgradeBanner from './components/UpgradeBanner.vue'
 import GuestHeader from './components/GuestHeader.vue'
-import FirstLaunchAgreement from './components/FirstLaunchAgreement.vue'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
 import { useNavAccordion } from './composables/useNavAccordion'
@@ -389,7 +388,6 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
     <LoginModal v-model="showLoginModal" />
   </div>
   <ChangePasswordDialog v-model="showChangePassword" :forced="mustChangePassword" @success="handleChangePasswordSuccess" />
-  <FirstLaunchAgreement v-if="!isHydrating" />
 </template>
 
 <style scoped>

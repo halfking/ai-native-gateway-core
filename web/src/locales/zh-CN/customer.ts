@@ -40,9 +40,6 @@ export default {
       activeDesc: '无需再次激活。',
       trialCta: '申请试用',
       trialEmail: '用于接收试用信息的邮箱',
-      trialConsent: '我已阅读并同意',
-      trialAgreement: '用户协议与数据处理授权',
-      trialAgreementVersion: '协议版本：{version}',
     },
     step2: {
       title: '第 2 步：输入 License Key 进行在线激活',
@@ -96,7 +93,6 @@ export default {
       copied: '已复制到剪贴板',
       copyFailed: '复制失败，请手动选择',
       trialEmailInvalid: '请输入有效邮箱',
-      trialConsentRequired: '请先同意用户协议与数据处理授权',
       trialFailed: '试用申请失败',
       trialFailedWithMsg: '试用申请失败: {msg}',
       trialCreated: '试用 License 已创建，正在完成激活…',

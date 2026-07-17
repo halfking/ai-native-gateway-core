@@ -140,15 +140,11 @@ async function handleLogin() {
           </div>
           <div class="login-modal__actions">
             <button type="button" class="btn btn-ghost" @click="close">取消</button>
-            <button class="btn btn-primary" type="submit" :disabled="loading">
-              {{ loading ? '登录中…' : '登录' }}
-            </button>
-          </div>
+<button class="btn btn-primary" type="submit" :disabled="loading">
+            {{ loading ? '登录中…' : '登录' }}
+          </button>
+        </div>
         </form>
-        <p class="login-modal__agreement">
-          登录即代表您已阅读并同意
-          <a href="/user-agreement.html" target="_blank" rel="noopener">《用户协议与数据处理授权》</a>
-        </p>
       </div>
     </div>
   </Teleport>
@@ -206,22 +202,5 @@ async function handleLogin() {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 8px;
-}
-
-.login-modal__agreement {
-  margin: 14px 0 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--muted);
-  text-align: center;
-}
-
-.login-modal__agreement a {
-  color: var(--accent, #6366f1);
-  text-decoration: none;
-}
-
-.login-modal__agreement a:hover {
-  text-decoration: underline;
 }
 </style>
