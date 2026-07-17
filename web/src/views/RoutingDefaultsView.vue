@@ -87,7 +87,7 @@ async function submitCreate() {
       canonical_model: createForm.value.canonical_model.trim(),
       tenant_id: createForm.value.tenant_id || null,
       priority: createForm.value.priority ?? 100,
-      reason: createForm.value.reason.trim(),
+       reason: createForm.value.reason?.trim() || '',
       expires_at: createForm.value.expires_at || undefined,
     })
     createForm.value = {
