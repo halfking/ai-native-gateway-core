@@ -1589,6 +1589,34 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 	candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile, tenantID)
 
+	// 2026-07-18: structured log of routing_resolve so journald can
+	// correlate req_id → chosen providers. The minmax-m3 incident
+	// (req 3905e839e0abab5a53efc09222e2d45b) only emitted the final
+	// provider=14/credential=21 AFTER retry exhaustion; ops could not
+	// tell what was on the menu at routing time.
+	{
+		top := 0
+		if len(candidates) > 0 {
+			top = 1
+		}
+		attrs := []any{
+			"request_id", requestID,
+			"client_model", clientModel,
+			"profile", clientID.Fingerprint.ClientProfile,
+			"tenant_id", tenantID,
+			"candidates_count", len(candidates),
+			"policy_present", policy != nil,
+		}
+		if top == 1 {
+			attrs = append(attrs,
+				"top_provider_id", candidates[0].ProviderID,
+				"top_credential_id", candidates[0].CredentialID,
+				"top_raw_model", candidates[0].RawModel,
+			)
+		}
+		slog.Info("routing_resolve", attrs...)
+	}
+
 	// ── 2026-07-17: trace.route_resolve ─────────────────────────────────────
 	// 在 GetCandidates 后立刻记录候选数量。失败时也记录,便于前端看到"路由
 	// 求解失败"独立于"上游失败"的视角,例如 model_not_found vs no_candidate。

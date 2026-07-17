@@ -20,10 +20,16 @@ import "log/slog"
 // 2026-07-12: Created to fix MiniMax "tool id not found (2013)" and similar
 // errors caused by malformed conversation histories from AI SDK retries or
 // client-side tool-call state bugs.
-func SanitizeToolMessages(messages []Message) []Message {
+//
+// 2026-07-18: Added requestID parameter so each removal is correlated to the
+// gateway request that produced it. Pass "" when not in a request context
+// (e.g. unit tests). All slog lines now carry "request_id" so downstream
+// `journalctl _SYSTEMD_UNIT=... | grep <req_id>` works.
+func SanitizeToolMessages(messages []Message, requestID string) []Message {
 	if len(messages) == 0 {
 		return messages
 	}
+	log := slog.With("request_id", requestID)
 
 	// Track the set of valid tool_call_ids from the most recent assistant message
 	activeToolCallIds := make(map[string]bool)
@@ -53,7 +59,7 @@ func SanitizeToolMessages(messages []Message) []Message {
 			toolCallID := msg.ToolCallID
 			if toolCallID == "" {
 				// Tool message without tool_call_id → invalid, remove
-				slog.Warn("sanitize_tool_messages: removing tool message without tool_call_id",
+				log.Warn("sanitize_tool_messages: removing tool message without tool_call_id",
 					"index", i,
 					"total", len(messages),
 				)
@@ -63,7 +69,7 @@ func SanitizeToolMessages(messages []Message) []Message {
 
 			if !activeToolCallIds[toolCallID] {
 				// Orphaned tool message → remove
-				slog.Warn("sanitize_tool_messages: removing orphaned tool message",
+				log.Warn("sanitize_tool_messages: removing orphaned tool message",
 					"tool_call_id", toolCallID,
 					"index", i,
 					"total", len(messages),
@@ -92,7 +98,7 @@ func SanitizeToolMessages(messages []Message) []Message {
 	}
 
 	if removedCount > 0 {
-		slog.Info("sanitize_tool_messages: removed orphaned tool messages",
+		log.Info("sanitize_tool_messages: removed orphaned tool messages",
 			"removed", removedCount,
 			"original", len(messages),
 			"sanitized", len(out),

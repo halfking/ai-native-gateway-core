@@ -630,3 +630,9 @@
 |-----------|------|
 | 428 | `428_recent_success_rate_probe_filters.sql` |
 
+## 2026-07-17T17:22:33Z — deploy 245 build_seq 1138 (57a12597)
+
+| Migration | File |
+|-----------|------|
+| 430 | `430_sessions_v2_schema.sql` |
+
