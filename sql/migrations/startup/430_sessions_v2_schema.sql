@@ -320,7 +320,7 @@ COMMENT ON FUNCTION ensure_sessions_v2_partitions(DATE) IS
 -- =============================================
 
 SELECT ensure_sessions_v2_partitions(CURRENT_DATE);
-SELECT ensure_sessions_v2_partitions(CURRENT_DATE + INTERVAL '1 month');
+SELECT ensure_sessions_v2_partitions((CURRENT_DATE + INTERVAL '1 month')::DATE);
 
 -- =============================================
 -- 7. 环节日志自动清理函数

@@ -16,17 +16,24 @@ import (
 //  5. System message placement (moves misplaced system messages to the front)
 //
 // 2026-07-12: Created to prevent upstream rejections from malformed requests.
-func ValidateAndFixRequest(req *InternalRequest) *InternalRequest {
+//
+// 2026-07-18: Added requestID parameter so each fix is correlated to the
+// gateway request that produced it. Pass "" when not in a request context
+// (e.g. unit tests). Without this, every "removed_count" log line is
+// orphan — operators cannot tell which mini-max-m3 retry chain it
+// belongs to.
+func ValidateAndFixRequest(req *InternalRequest, requestID string) *InternalRequest {
 	if req == nil {
 		return req
 	}
+	log := slog.With("request_id", requestID)
 
 	original := len(req.Messages)
-	req.Messages = validateAndFixMessages(req.Messages)
+	req.Messages = validateAndFixMessages(req.Messages, requestID)
 	fixed := original - len(req.Messages)
 
 	if fixed > 0 {
-		slog.Info("validate_and_fix_request: applied automatic fixes",
+		log.Info("validate_and_fix_request: applied automatic fixes",
 			"original_messages", original,
 			"fixed_messages", len(req.Messages),
 			"removed_count", fixed,
@@ -37,13 +44,13 @@ func ValidateAndFixRequest(req *InternalRequest) *InternalRequest {
 }
 
 // validateAndFixMessages applies all validation and fix rules to message array.
-func validateAndFixMessages(messages []Message) []Message {
+func validateAndFixMessages(messages []Message, requestID string) []Message {
 	if len(messages) == 0 {
 		return messages
 	}
 
 	// Step 1: Remove orphaned tool messages (existing SanitizeToolMessages)
-	messages = SanitizeToolMessages(messages)
+	messages = SanitizeToolMessages(messages, requestID)
 
 	// Step 2: Fix empty content
 	messages = removeEmptyMessages(messages)

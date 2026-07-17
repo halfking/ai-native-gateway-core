@@ -52,8 +52,8 @@ func TestNewActiveProbeWorker_Defaults(t *testing.T) {
 	if w.cfg.ConsecutiveThreshold != 2 {
 		t.Errorf("ConsecutiveThreshold default = %d, want 2", w.cfg.ConsecutiveThreshold)
 	}
-	if w.cfg.TimeoutMs != 10000 {
-		t.Errorf("TimeoutMs default = %d, want 10000", w.cfg.TimeoutMs)
+	if w.cfg.TimeoutMs != 30000 {
+		t.Errorf("TimeoutMs default = %d, want 30000", w.cfg.TimeoutMs)
 	}
 	if w.cfg.QueueSize != 128 {
 		t.Errorf("QueueSize default = %d, want 128", w.cfg.QueueSize)
@@ -483,4 +483,28 @@ func TestNilWorkerSafety(t *testing.T) {
 		t.Error("nil worker Done() returned nil channel")
 	}
 	w.Stop() // should not panic
+}
+
+func TestIsPermanentProbeFailure(t *testing.T) {
+	tests := []struct {
+		status    ProbeStatus
+		permanent bool
+	}{
+		{ProbeStatusAuth, true},
+		{ProbeStatusHTTP4xx, true},
+		{ProbeStatusFailed, true},
+		{ProbeStatusTimeout, false},
+		{ProbeStatusNetwork, false},
+		{ProbeStatusRate, false},
+		{ProbeStatusHTTP5xx, false},
+		{ProbeStatusSkipped, false},
+		{ProbeStatusCanceled, false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.status), func(t *testing.T) {
+			if got := IsPermanentProbeFailure(tt.status); got != tt.permanent {
+				t.Errorf("IsPermanentProbeFailure(%s) = %v, want %v", tt.status, got, tt.permanent)
+			}
+		})
+	}
 }

@@ -368,9 +368,12 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     return
   }
   if (env.type === 'idle_marker') {
-    if (env.lane_ids && env.ts) {
-      handleLaneIdleCheck(env.lane_ids, env.ts)
-    }
+    // Backend now writes idle markers to Redis and includes them in the
+    // envelope's delta payload (see admin/live_stream_sse.go
+    // maybeEmitIdleMarker). Apply the delta so the idle tiles land in
+    // the snapshot — handleLaneIdleCheck was the old frontend-side
+    // reconstruction path, kept as a no-op for envelope-type compat.
+    if (env.delta) mergeDelta(env.delta)
     return
   }
   if (env.type === 'health_update') {

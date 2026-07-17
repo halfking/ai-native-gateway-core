@@ -221,10 +221,15 @@ func TestIsTransientUnavailableReason(t *testing.T) {
 
 		// StateManager 内存态原因（瞬态，应降级）
 		// 对应 credentialstate/manager.go isTransient 的四个 errKind
+		// 2026-07-18: 新增 state:empty_response，参考 errorsx.KindEmptyResponse
+		// 设计意图（classify.go line 60-78："must not hard-exclude the
+		// credential"）以及 NIM 13% empty-stream 偶发（executor_chat.go:826）。
 		{"state:" + string(errorsx.KindTimeout), true},
 		{"state:" + string(errorsx.KindStreamTimeout), true},
 		{"state:" + string(errorsx.KindRateLimit), true},
 		{"state:" + string(errorsx.KindUpstreamDown), true},
+		{"state:" + string(errorsx.KindEmptyResponse), true},
+		{"state:probe_direct_timeout", true},
 
 		// StateManager 内存态原因（永久，不应降级）
 		{"state:" + string(errorsx.KindAuth), false},

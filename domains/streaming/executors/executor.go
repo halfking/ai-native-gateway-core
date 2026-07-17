@@ -695,15 +695,15 @@ type ExecParams struct {
 	// OnStreamReady is called exactly once right before the executor hands
 	// control to the normal stream writer. The caller uses it to stop any
 	// pre-stream keepalive goroutine so no writes race with StreamChat.
-	OnStreamReady        func()
+	OnStreamReady func()
 	// OnProbeHoldStart is invoked when the executor enters the synchronous
 	// no-candidate hold. The handler wires this to its RequestLogContext so
 	// trace/log entries record the probe_hold_start event. Optional.
-	OnProbeHoldStart     func()
+	OnProbeHoldStart func()
 	// OnProbeHoldEnd is invoked when the synchronous probe finishes, with
 	// recovered=true iff at least one (cred,model) recovered. The handler
 	// uses this to record probe_hold_end + duration in trace/log. Optional.
-	OnProbeHoldEnd       func(recovered bool)
+	OnProbeHoldEnd func(recovered bool)
 	// OnPreStreamKeepalivePause is invoked when the executor enters the
 	// probe hold AND params.PreStreamPrepared is true. The handler uses
 	// this to suspend the keepalive SSE comment goroutine so the client
@@ -711,17 +711,17 @@ type ExecParams struct {
 	// the hold. The keepalive goroutine resumes naturally when stream
 	// writing begins (or is stopped via OnStreamReady). Optional.
 	OnPreStreamKeepalivePause func()
-	SuppressSuccessWrite bool
-	ClientModel          string
-	OutboundModel        string
-	ClientID             identity.ClientIdentity
-	Transform            *transformation.TransformResult
-	Resolution           *resolve.Resolution
-	Candidates           []provider.Candidate
-	Policy               *provider.Policy
-	AuditBuilder         *audit.EventBuilder
-	Capture              *audit.StreamCapture
-	StreamWrapper        StreamWrapperFunc
+	SuppressSuccessWrite      bool
+	ClientModel               string
+	OutboundModel             string
+	ClientID                  identity.ClientIdentity
+	Transform                 *transformation.TransformResult
+	Resolution                *resolve.Resolution
+	Candidates                []provider.Candidate
+	Policy                    *provider.Policy
+	AuditBuilder              *audit.EventBuilder
+	Capture                   *audit.StreamCapture
+	StreamWrapper             StreamWrapperFunc
 	// ToolsRequested indicates the upstream request body carried a non-empty
 	// `tools` array. Some providers (Xiaomi MiMo, MiniMax M2.7) cannot emit
 	// structured `tool_calls` and instead fall back to embedding
@@ -1125,6 +1125,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// Aggregate why every input candidate was filtered out so the next
 		// "every provider failed simultaneously" outage is diagnosable from
 		// this single log line.
+		//
+		// NOTE: this loop intentionally only consults the DB-derived
+		// UnavailableReason(); the in-memory StateManager reason (e.g.
+		// "state:empty_response") is captured by the upstream router log
+		// ("router: all candidates unavailable", router.go:145) because
+		// e.StateObserver is the narrow on-success/on-failure interface
+		// and does not expose IsAvailable. Operators correlating the
+		// two log lines (router + executor) get the full reason.
 		reasonCounts := make(map[string]int, 8)
 		// 2026-07-03: 不限制单轮候选数量，允许轮转完所有可用候选。
 		// 死循环保护由 sync_retry 的轮数限制 (maxSyncRetryRounds) 提供。
