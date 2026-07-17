@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Minimax-m3 "no available model" / "model not found" through gateway**:
+  `credentialhealth.Checker` was counting `KindEmptyResponse` (NIM's 13%
+  empty-stream rate) toward the 80% degradation threshold. After ~30
+  empty streams, credential 19 (NVIDIA NIM / endless) was marked degraded
+  with `unavailable_recover_at = now+1h` despite the upstream being
+  healthy. Subsequent requests hit `no_candidates_from_router` because
+  the SQL filter `v.is_routable = FALSE` excluded the only candidate for
+  the request's `(credential, model)` pair. Two fixes:
+  1. **`credentialhealth.Checker`** now skips `errorsx.KindEmptyResponse`
+     from the failureRate computation (consistent with
+     `errorsx.classify.go:60-78` design intent: "a transient empty burst
+     must not hard-exclude the credential").
+  2. **`router.isTransientUnavailableReason`** now treats
+     `state:empty_response` as transient, so single-candidate degraded
+     mode activates and the router retries the candidate within the same
+     request lifecycle instead of returning 503.
+  Diagnostic comment also added to `executor.go` documenting that
+  `StateObserver` does not expose `IsAvailable`, so the real
+  StateManager reason is logged by the upstream `router.go:145`
+  `slog.Warn("router: all candidates unavailable", ...)`. Operator
+  correlate the two log lines (router + executor) for full diagnosis.
+
 - **Settings/Modules toggle HTTP 500**: Fixed `StoreDB.Set()` passing `[]byte` to
   `$2::jsonb` — pgx v5 encodes `[]byte` as `bytea` OID, which PG cannot cast to
   `jsonb` (`SQLSTATE 22P02`). Convert to `string` so pgx uses `text` OID, which
