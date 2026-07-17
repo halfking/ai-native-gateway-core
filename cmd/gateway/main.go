@@ -1999,12 +1999,14 @@ func main() {
 				slog.Info("credstate: node_probe submitter wired",
 					"consecutive_threshold", 2)
 
-				// C. system_health — 30s windowed success-rate monitor
-				// for the GDRT H badge.
-				systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool())
-				systemHealthWorker.Start(context.Background())
-				slog.Info("CHECKPOINT: system_health_worker started")
 			}
+			// C. system_health — 30s windowed success-rate monitor
+			// for the GDRT H badge.  Runs unconditionally (outside
+			// useNewProbeMode) so the homepage badge works even when
+			// LLM_GATEWAY_USE_NEW_PROBE_MODE=false.
+			systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool())
+			systemHealthWorker.Start(context.Background())
+			slog.Info("CHECKPOINT: system_health_worker started")
 		}
 
 		slog.Info("CHECKPOINT: before NewStickyCleaner")

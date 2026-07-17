@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Homepage health badge**: `/api/health/system` no longer returns HTTP 503 when
+  `systemHealthWorker` is not configured; returns 200 with `suspect` status instead, so
+  the SPA badge shows neutral/grey instead of an HTTP error.
+- **System health worker**: Decoupled from `LLM_GATEWAY_USE_NEW_PROBE_MODE` gate.
+  The 30s system health monitor now starts unconditionally when the database is
+  available, so the homepage badge works even when the env var is set to `false`.
+
 - **Test**: Removed obsolete `UPDATE model_offers` mock expectation in `writer_regression_test.go`. The `model_offers` VIEW automatically reflects `credential_model_bindings` updates through the underlying table, so no separate UPDATE is executed (as documented in `writer.go:344-347`). The outdated mock was causing 6 test failures in `TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials`.
 
 ### Live stream model dimension: prefer canonical (standard) name over vendor raw name
