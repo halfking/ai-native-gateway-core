@@ -49,17 +49,19 @@ func TestDecisionToWire_IncludesEnabledFeatures(t *testing.T) {
 // every field must survive serialisation intact.
 func TestAutoDecision_RoundTrip(t *testing.T) {
 	dec := &autoroute.Decision{
-		TaskType:           autoroute.TaskCode,
-		Confidence:         0.87,
-		Profile:            autoroute.ProfileSpeedFirst,
-		Classifier:         "heuristic_v2",
-		Reason:             "code intent, speed-first",
-		ChosenModel:        "claude-sonnet",
-		ChosenRawModel:     "claude-sonnet-4-2026",
-		ChosenCredentialID: 777,
-		EnabledFeatures:    []string{"channel_quality_routing", "cache_revalidation"},
-		CacheReused:        false,
-		FallbackUsed:       true,
+		TaskType:                  autoroute.TaskCode,
+		Confidence:                0.87,
+		Profile:                   autoroute.ProfileSpeedFirst,
+		Classifier:                "heuristic_v2",
+		Reason:                    "code intent, speed-first",
+		ChosenModel:               "claude-sonnet",
+		ChosenRawModel:            "claude-sonnet-4-2026",
+		ChosenCredentialID:        777,
+		EnabledFeatures:           []string{"channel_quality_routing", "cache_revalidation"},
+		CacheReused:               false,
+		FallbackUsed:              true,
+		EmbeddingShadowTask:       string(autoroute.TaskReasoning),
+		EmbeddingShadowSimilarity: 0,
 		CandidatesTopN: []autoroute.ScoredCandidate{
 			{Candidate: autoroute.Candidate{CanonicalName: "claude-sonnet", CredentialID: 777},
 				Breakdown: autoroute.ScoringBreakdown{Composite: 85, MatchScore: 70, PriceScore: 60, ChannelQuality: 55}},
@@ -92,6 +94,8 @@ func TestAutoDecision_RoundTrip(t *testing.T) {
 	assertStr(t, decoded, "chosen_model", "claude-sonnet")
 	assertStr(t, decoded, "chosen_raw_model", "claude-sonnet-4-2026")
 	assertFloat(t, decoded, "chosen_credential_id", 777)
+	assertStr(t, decoded, "embedding_shadow_task", "reasoning")
+	assertFloat(t, decoded, "embedding_shadow_similarity", 0)
 
 	// Event-level audit fields — these are the ones most likely to be
 	// silently dropped by future struct changes.

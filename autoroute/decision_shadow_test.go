@@ -116,6 +116,27 @@ func TestDecider_Shadow_TimeoutNoImpact(t *testing.T) {
 	}
 }
 
+func TestDecider_Shadow_CacheHit(t *testing.T) {
+	shadow := &shadowTestClassifier{out: &Classification{Primary: TaskReasoning, Confidence: 0.8}}
+	d := shadowTestDecider(shadow)
+	d.SetShadowSampleRate(1)
+	d.SetIntentCache(NewSessionIntentCache(time.Minute))
+	d.intentCache.Put("session-1", CachedIntent{
+		TaskType: TaskCode, ChosenModel: "m", Profile: ProfileSmart, Confidence: 0.9,
+	})
+
+	decision, err := d.Decide(context.Background(), ClassificationSignals{LastUserPrompt: "cached"}, 0, "", "", "session-1")
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if shadow.calls != 1 {
+		t.Fatalf("shadow calls = %d, want 1", shadow.calls)
+	}
+	if decision.EmbeddingShadowTask != string(TaskReasoning) {
+		t.Fatalf("shadow task = %q", decision.EmbeddingShadowTask)
+	}
+}
+
 type blockingShadowClassifier struct{}
 
 func (*blockingShadowClassifier) Classify(ctx context.Context, _ ClassificationSignals) (*Classification, error) {

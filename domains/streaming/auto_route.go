@@ -78,7 +78,7 @@ type autoRouteDecision struct {
 	CacheReused               bool                 `json:"cache_reused"`
 	FallbackUsed              bool                 `json:"fallback_used"`
 	EmbeddingShadowTask       string               `json:"embedding_shadow_task,omitempty"`
-	EmbeddingShadowSimilarity float64              `json:"embedding_shadow_similarity,omitempty"`
+	EmbeddingShadowSimilarity *float64             `json:"embedding_shadow_similarity,omitempty"`
 	CandidatesTop3            []autoRouteCandidate `json:"candidates_top3"`
 }
 
@@ -365,19 +365,22 @@ func rewriteBodyWithModel(body []byte, newModel string) []byte {
 // decisionToWire converts an autoroute.Decision to the wire format.
 func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 	wire := &autoRouteDecision{
-		TaskType:                  string(d.TaskType),
-		Confidence:                d.Confidence,
-		Profile:                   string(d.Profile),
-		Classifier:                d.Classifier,
-		Reason:                    d.Reason,
-		ChosenModel:               d.ChosenModel,
-		ChosenRawModel:            d.ChosenRawModel,
-		ChosenCredID:              d.ChosenCredentialID,
-		EnabledFeatures:           d.EnabledFeatures,
-		CacheReused:               d.CacheReused,
-		FallbackUsed:              d.FallbackUsed,
-		EmbeddingShadowTask:       d.EmbeddingShadowTask,
-		EmbeddingShadowSimilarity: d.EmbeddingShadowSimilarity,
+		TaskType:            string(d.TaskType),
+		Confidence:          d.Confidence,
+		Profile:             string(d.Profile),
+		Classifier:          d.Classifier,
+		Reason:              d.Reason,
+		ChosenModel:         d.ChosenModel,
+		ChosenRawModel:      d.ChosenRawModel,
+		ChosenCredID:        d.ChosenCredentialID,
+		EnabledFeatures:     d.EnabledFeatures,
+		CacheReused:         d.CacheReused,
+		FallbackUsed:        d.FallbackUsed,
+		EmbeddingShadowTask: d.EmbeddingShadowTask,
+	}
+	if d.EmbeddingShadowTask != "" {
+		similarity := d.EmbeddingShadowSimilarity
+		wire.EmbeddingShadowSimilarity = &similarity
 	}
 	for _, c := range d.CandidatesTopN {
 		wire.CandidatesTop3 = append(wire.CandidatesTop3, autoRouteCandidate{

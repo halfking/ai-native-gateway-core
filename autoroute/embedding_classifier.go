@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // EmbeddingClient is the minimal embedding API needed by the shadow classifier.
@@ -18,10 +17,17 @@ type EmbeddingClient interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
+// EmbeddingDB is the minimal PostgreSQL API needed by the classifier.
+// It also allows pgxmock to cover vector queries and EMA transactions.
+type EmbeddingDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error)
+}
+
 // EmbeddingClassifier finds the nearest task centroid using cosine similarity.
 // Centroids are updated online by UpdateCentroidEMA after sampled requests.
 type EmbeddingClassifier struct {
-	pool  *pgxpool.Pool
+	pool  EmbeddingDB
 	embed EmbeddingClient
 	model string
 	dim   int
@@ -30,7 +36,7 @@ type EmbeddingClassifier struct {
 }
 
 // NewEmbeddingClassifier creates an embedding classifier with EMA defaults.
-func NewEmbeddingClassifier(pool *pgxpool.Pool, embed EmbeddingClient, model string, dim int) *EmbeddingClassifier {
+func NewEmbeddingClassifier(pool EmbeddingDB, embed EmbeddingClient, model string, dim int) *EmbeddingClassifier {
 	if dim <= 0 {
 		dim = 1024
 	}
@@ -59,10 +65,16 @@ func (c *EmbeddingClassifier) ClassifyWithVector(ctx context.Context, sigs Class
 }
 
 func (c *EmbeddingClassifier) classifyWithVector(ctx context.Context, sigs ClassificationSignals) (*Classification, []float32, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c == nil {
+		return &Classification{Primary: TaskChat, Confidence: 0, Classifier: "embedding", Signals: sigs}, nil, fmt.Errorf("embedding classifier: classifier is nil")
+	}
 	if strings.TrimSpace(sigs.LastUserPrompt) == "" {
 		return &Classification{Primary: TaskChat, Confidence: 0, Classifier: c.Name(), Signals: sigs}, nil, nil
 	}
-	if c == nil || c.embed == nil {
+	if c.embed == nil {
 		return c.lowConfidence("embedding client not configured"), nil, fmt.Errorf("embedding classifier: client not configured")
 	}
 	if c.pool == nil {
@@ -82,8 +94,9 @@ func (c *EmbeddingClassifier) classifyWithVector(ctx context.Context, sigs Class
 	err = c.pool.QueryRow(ctx, `
 		SELECT task_type, 1 - (centroid <=> $1::vector) AS similarity
 		FROM public.task_type_centroids
+		WHERE embedding_model = $2
 		ORDER BY centroid <=> $1::vector
-		LIMIT 1`, vectorLiteral(vec)).Scan(&task, &similarity)
+		LIMIT 1`, vectorLiteral(vec), c.model).Scan(&task, &similarity)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return &Classification{Primary: TaskChat, Confidence: 0, Classifier: c.Name(), Signals: sigs}, vec, nil
@@ -119,6 +132,9 @@ func (c *EmbeddingClassifier) lowConfidence(reason string) *Classification {
 // keeps concurrent requests from losing samples while the Go-side EMA avoids
 // relying on pgvector arithmetic operators.
 func (c *EmbeddingClassifier) UpdateCentroidEMA(ctx context.Context, taskType TaskType, vec []float32) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if c == nil || c.pool == nil {
 		return fmt.Errorf("embedding classifier: database not configured")
 	}
@@ -139,9 +155,9 @@ func (c *EmbeddingClassifier) UpdateCentroidEMA(ctx context.Context, taskType Ta
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO public.task_type_centroids (task_type, centroid, sample_count)
-		VALUES ($1, $2::vector, 0)
-		ON CONFLICT (task_type) DO NOTHING`, string(taskType), vectorLiteral(vec))
+		INSERT INTO public.task_type_centroids (task_type, embedding_model, centroid, sample_count)
+		VALUES ($1, $2, $3::vector, 0)
+		ON CONFLICT (task_type, embedding_model) DO NOTHING`, string(taskType), c.model, vectorLiteral(vec))
 	if err != nil {
 		return fmt.Errorf("embedding classifier: initialize centroid: %w", err)
 	}
@@ -151,8 +167,8 @@ func (c *EmbeddingClassifier) UpdateCentroidEMA(ctx context.Context, taskType Ta
 	err = tx.QueryRow(ctx, `
 		SELECT centroid::text, sample_count
 		FROM public.task_type_centroids
-		WHERE task_type = $1
-		FOR UPDATE`, string(taskType)).Scan(&rawCentroid, &sampleCount)
+		WHERE task_type = $1 AND embedding_model = $2
+		FOR UPDATE`, string(taskType), c.model).Scan(&rawCentroid, &sampleCount)
 	if err != nil {
 		return fmt.Errorf("embedding classifier: read centroid: %w", err)
 	}
@@ -170,7 +186,7 @@ func (c *EmbeddingClassifier) UpdateCentroidEMA(ctx context.Context, taskType Ta
 	_, err = tx.Exec(ctx, `
 		UPDATE public.task_type_centroids
 		SET centroid = $1::vector, sample_count = $2, updated_at = now()
-		WHERE task_type = $3`, vectorLiteral(old), sampleCount+1, string(taskType))
+		WHERE task_type = $3 AND embedding_model = $4`, vectorLiteral(old), sampleCount+1, string(taskType), c.model)
 	if err != nil {
 		return fmt.Errorf("embedding classifier: update centroid: %w", err)
 	}
