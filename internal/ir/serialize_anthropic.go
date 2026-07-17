@@ -481,10 +481,35 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 			}
 		}
 
-	case "redacted_thinking":
-		out["thinking"] = block.RedactedThinking
+		case "redacted_thinking":
+			out["thinking"] = block.RedactedThinking
 
-	default:
+		case "document":
+			// Serialize Anthropic document block
+			if block.Document != nil {
+				if block.Document.Source != nil {
+					source := map[string]any{
+						"type": block.Document.Source.Type,
+					}
+					if block.Document.Source.MediaType != "" {
+						source["media_type"] = block.Document.Source.MediaType
+					}
+					if block.Document.Source.Type == "base64" && block.Document.Source.Data != "" {
+						source["data"] = block.Document.Source.Data
+					} else if block.Document.Source.Type == "url" && block.Document.Source.Data != "" {
+						source["url"] = block.Document.Source.Data
+					}
+					out["source"] = source
+				}
+				if block.Document.Title != "" {
+					out["title"] = block.Document.Title
+				}
+				if block.Document.Context != "" {
+					out["context"] = block.Document.Context
+				}
+			}
+
+		default:
 		if raw, ok := block.RawContent.(string); ok && raw != "" {
 			var original map[string]any
 			if err := json.Unmarshal([]byte(raw), &original); err == nil {
