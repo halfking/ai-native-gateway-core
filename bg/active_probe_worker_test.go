@@ -173,7 +173,7 @@ func TestMarkFailedRetry_ReschedulesAtLaterTime(t *testing.T) {
 //
 // This test exercises the math inside processOne directly (so it does
 // not need a DB / executor / emitter) and asserts:
-//   * after attempt=N fails, the worker schedules the next attempt in
+//   - after attempt=N fails, the worker schedules the next attempt in
 //     chain[N-1] (= computeBackoff(N)) — NOT chain[N] (= computeBackoff(N+1)).
 //
 // To catch a regression to `computeBackoff(attempt + 1)` we compute the
@@ -260,15 +260,76 @@ func TestClassifyProbeErrorKind_AllStatuses(t *testing.T) {
 		{ProbeStatusHTTP5xx, "probe_direct_http_5xx"},
 		{ProbeStatusHTTP4xx, "probe_direct_http_4xx"},
 		{ProbeStatusCanceled, "probe_direct_canceled"},
-		{ProbeStatusSkipped, "probe_direct_failed"},
-		{ProbeStatusFailed, "probe_direct_failed"},
-		{"unknown_status", "probe_direct_failed"},
+		// 2026-07-17: previously these collapsed into the opaque
+		// "probe_direct_failed" bucket; they now carry the precise
+		// failure point so the dashboard can distinguish gateway-side
+		// build failures from upstream faults.
+		{ProbeStatusSkipped, "probe_direct_skipped"},
+		{"unknown_status", "probe_direct_unknown"},
 	}
 	for _, c := range cases {
 		got := classifyProbeErrorKind(&ProbeResult{Status: c.status})
 		if got != c.want {
 			t.Errorf("classifyProbeErrorKind(%q) = %q, want %q", c.status, got, c.want)
 		}
+	}
+}
+
+// TestClassifyProbeErrorKind_FailedByErrCode covers the
+// ProbeStatusFailed split by ErrCode (endpoint_build / body_build /
+// other) introduced 2026-07-17 to replace the opaque
+// probe_direct_failed bucket.
+func TestClassifyProbeErrorKind_FailedByErrCode(t *testing.T) {
+	cases := []struct {
+		errCode string
+		want    string
+	}{
+		{"endpoint_build", "probe_direct_endpoint_build"},
+		{"body_build", "probe_direct_body_build"},
+		{"", "probe_direct_internal_error"},
+		{"unexpected", "probe_direct_internal_error"},
+	}
+	for _, c := range cases {
+		r := &ProbeResult{Status: ProbeStatusFailed, ErrCode: c.errCode}
+		if got := classifyProbeErrorKind(r); got != c.want {
+			t.Errorf("classifyProbeErrorKind(Failed, errCode=%q) = %q, want %q", c.errCode, got, c.want)
+		}
+	}
+}
+
+// TestClassifyProbeFailureStage verifies that failure_stage reflects the
+// real failure point instead of a hardcoded "upstream" for every probe.
+func TestClassifyProbeFailureStage(t *testing.T) {
+	cases := []struct {
+		status  ProbeStatus
+		errCode string
+		want    string
+	}{
+		{ProbeStatusSuccess, "", ""},
+		{ProbeStatusFailed, "endpoint_build", "gateway"},
+		{ProbeStatusFailed, "body_build", "gateway"},
+		{ProbeStatusSkipped, "", "gateway"},
+		{ProbeStatusCanceled, "", "gateway"},
+		{ProbeStatusTimeout, "probe_timeout", "upstream"},
+		{ProbeStatusNetwork, "network_error", "upstream"},
+		// request_build (http.NewRequestWithContext failure) is gateway-side
+		// even though Run labels it ProbeStatusNetwork; the request never
+		// reached the wire.
+		{ProbeStatusNetwork, "request_build", "gateway"},
+		{ProbeStatusAuth, "Unauthorized", "upstream"},
+		{ProbeStatusRate, "rate_limited", "upstream"},
+		{ProbeStatusHTTP5xx, "Bad Gateway", "upstream"},
+		{ProbeStatusHTTP4xx, "Not Found", "upstream"},
+	}
+	for _, c := range cases {
+		r := &ProbeResult{Status: c.status, ErrCode: c.errCode}
+		if got := classifyProbeFailureStage(r); got != c.want {
+			t.Errorf("classifyProbeFailureStage(%q, %q) = %q, want %q", c.status, c.errCode, got, c.want)
+		}
+	}
+	// nil result must be safe and return "".
+	if got := classifyProbeFailureStage(nil); got != "" {
+		t.Errorf("classifyProbeFailureStage(nil) = %q, want empty", got)
 	}
 }
 

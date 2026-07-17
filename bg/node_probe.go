@@ -806,19 +806,75 @@ func (w *NodeProbeWorker) emitProbe(ctx context.Context, credID, providerID int,
 	if w == nil || w.emitter == nil {
 		return
 	}
-	status := ProbeStatusFailed
-	if result.ok {
-		status = ProbeStatusSuccess
-	}
+	// 2026-07-17 (audit fix): recover the precise ProbeStatus from the
+	// round result instead of collapsing every failure to
+	// ProbeStatusFailed. Without this, a 429/503/network error on the
+	// node_probe path was classified as probe_direct_internal_error /
+	// failure_stage="gateway" — i.e. the exact misattribution this whole
+	// change set was meant to eliminate. The errCode produced by
+	// probeDirect/probeGateway encodes the failure kind:
+	//   endpoint_build  -> gateway-side (decrypt/resolve) -> Failed
+	//   network_error   -> Network (request_build/transport)
+	//   http_<status>   -> mapped from the upstream status code
+	status := nodeProbeResultToStatus(result)
+	// 2026-07-17: forward the diagnostic detail already collected by
+	// probeDirect/probeGateway so the emitter can surface the real
+	// request/response context in auto_decision + synthetic traces.
+	// Previously these fields were dropped here, which is why probe rows
+	// showed only headers on the dashboard.
 	w.emitter.Emit(ctx, credID, providerID, trigger.tenantID, model, outboundModel, origin, trigger.parentID, attempt, &ProbeResult{
-		Status:      status,
-		HTTPStatus:  result.httpStatus,
-		ErrCode:     result.errCode,
-		ErrMsg:      result.errDetail,
-		LatencyMs:   result.latencyMs,
-		StartedAt:   time.Now().Add(-time.Duration(result.latencyMs) * time.Millisecond),
-		CompletedAt: time.Now(),
+		Status:       status,
+		HTTPStatus:   result.httpStatus,
+		ErrCode:      result.errCode,
+		ErrMsg:       result.errDetail,
+		LatencyMs:    result.latencyMs,
+		RespPreview:  result.responseBody,
+		ResponseBody: result.responseBody,
+		RequestURL:   result.requestURL,
+		RequestBody:  result.requestBody,
+		ViaProxy:     result.viaProxy,
+		StartedAt:    time.Now().Add(-time.Duration(result.latencyMs) * time.Millisecond),
+		CompletedAt:  time.Now(),
 	})
+}
+
+// nodeProbeResultToStatus maps a nodeProbeRoundResult (ok + httpStatus +
+// errCode) onto the fine-grained ProbeStatus taxonomy that
+// classifyProbeErrorKind / classifyProbeFailureStage consume. Mirrors the
+// HTTP-status mapping in ActiveProbeExecutor.Run so both probe paths emit
+// the same error_kind for the same upstream behaviour (e.g. a 429 is
+// probe_direct_rate_limited on either path).
+func nodeProbeResultToStatus(r nodeProbeRoundResult) ProbeStatus {
+	if r.ok {
+		return ProbeStatusSuccess
+	}
+	switch r.errCode {
+	case "endpoint_build":
+		return ProbeStatusFailed // gateway-side build error (decrypt/resolve)
+	case "network_error":
+		// Transport failure. A request that hit the 15s client timeout is
+		// reported by probeDirect/probeGateway as network_error with a
+		// ~14900ms latency; surface it as Timeout so the dashboard pill
+		// distinguishes "upstream unreachable" from "upstream too slow".
+		if r.latencyMs >= 14900 {
+			return ProbeStatusTimeout
+		}
+		return ProbeStatusNetwork
+	}
+	// errCode is "http_<status>" for non-200 upstream responses.
+	if r.httpStatus == 401 || r.httpStatus == 403 {
+		return ProbeStatusAuth
+	}
+	if r.httpStatus == 429 {
+		return ProbeStatusRate
+	}
+	if r.httpStatus >= 500 {
+		return ProbeStatusHTTP5xx
+	}
+	if r.httpStatus >= 400 {
+		return ProbeStatusHTTP4xx
+	}
+	return ProbeStatusFailed
 }
 
 func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, string, string, int, error) {
@@ -992,7 +1048,8 @@ func (w *NodeProbeWorker) updateObservedState(ctx context.Context, credID int, m
 func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model string) nodeProbeRoundResult {
 	r := nodeProbeRoundResult{errCode: "none"}
 	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, model)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, w.baseURL+"/chat/completions", strings.NewReader(body))
+	endpoint := w.baseURL + "/chat/completions"
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+w.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-LLM-Origin-Stage", "node_probe")
@@ -1003,6 +1060,10 @@ func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model st
 	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_EGRESS_FORWARDED_FOR")); v != "" {
 		req.Header.Set("X-Forwarded-For", v)
 	}
+	// 2026-07-17: record request context for diagnostics (mirrors probeDirect).
+	r.requestURL = endpoint
+	r.requestBody = body
+	r.viaProxy = false // gateway probe uses the direct (non-proxy) client
 	start := time.Now()
 	resp, err := w.client.Do(req)
 	r.latencyMs = int(time.Since(start).Milliseconds())
@@ -1013,14 +1074,23 @@ func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model st
 	}
 	defer resp.Body.Close()
 	r.httpStatus = resp.StatusCode
+	// Read the body for both success and failure so success-path usage
+	// parsing (emitter.parseProbeUsage) has something to work with,
+	// instead of reporting hardcoded token counts.
+	respBuf := make([]byte, 512)
+	n, _ := resp.Body.Read(respBuf)
+	r.responseBody = string(respBuf[:n])
 	if resp.StatusCode == 200 {
 		r.ok = true
 		return r
 	}
 	r.errCode = fmt.Sprintf("http_%d", resp.StatusCode)
-	buf := make([]byte, 256)
-	n, _ := resp.Body.Read(buf)
-	r.errDetail = string(buf[:n])
+	if n > 0 {
+		r.errDetail = r.responseBody
+		if len(r.errDetail) > 256 {
+			r.errDetail = r.errDetail[:256]
+		}
+	}
 	return r
 }
 
