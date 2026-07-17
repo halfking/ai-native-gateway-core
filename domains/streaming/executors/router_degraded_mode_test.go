@@ -229,6 +229,7 @@ func TestIsTransientUnavailableReason(t *testing.T) {
 		{"state:" + string(errorsx.KindRateLimit), true},
 		{"state:" + string(errorsx.KindUpstreamDown), true},
 		{"state:" + string(errorsx.KindEmptyResponse), true},
+		{"state:probe_direct_timeout", true},
 
 		// StateManager 内存态原因（永久，不应降级）
 		{"state:" + string(errorsx.KindAuth), false},

@@ -856,6 +856,8 @@ func (r *Router) tryDegradedMode(ctx context.Context, candidates []provider.Cand
 // 2026-07-14: 增加 state:<errKind> 瞬态分支。用 errorsx 常量字符串值而非魔法串，
 // 与 credentialstate/manager.go:248-251 的 isTransient 集合保持一致，避免漂移。
 // 2026-07-18: 增加 state:empty_response（对齐 KindEmptyResponse 设计意图）。
+// 2026-07-18: 增加 state:probe_direct_timeout，避免 active probe 探测超时
+// 把单候选降级拒之门外。
 func isTransientUnavailableReason(reason string) bool {
 	switch reason {
 	case "availability:cooling",
@@ -866,7 +868,8 @@ func isTransientUnavailableReason(reason string) bool {
 		"state:" + string(errorsx.KindStreamTimeout),
 		"state:" + string(errorsx.KindRateLimit),
 		"state:" + string(errorsx.KindUpstreamDown),
-		"state:" + string(errorsx.KindEmptyResponse):
+		"state:" + string(errorsx.KindEmptyResponse),
+		"state:probe_direct_timeout":
 		return true
 	default:
 		return false
