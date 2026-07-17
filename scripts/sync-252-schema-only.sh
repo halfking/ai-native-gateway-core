@@ -89,7 +89,7 @@ local_psql() {
 }
 local_psql_file() {
   docker exec -e PGPASSWORD="$LOCAL_PASS" "$LOCAL_CONTAINER" \
-    psql -U "$LOCAL_USER" -d "$LOCAL_DB" -v ON_ERROR_STOP=off -f "$1"
+    psql -U "$LOCAL_USER" -d "$LOCAL_DB" -v ON_ERROR_STOP=1 -f "$1"
 }
 local_run_sql() {
   docker exec -e PGPASSWORD="$LOCAL_PASS" "$LOCAL_CONTAINER" \
@@ -226,7 +226,12 @@ seg  = c[pre+1: nxt if nxt > 0 else len(c)]
 with open(outpath, 'w') as g: g.write(seg)
 PY
   docker cp "$WORK/${tbl}.sql" "$LOCAL_CONTAINER":/tmp/${tbl}.sql
-  local_psql_file "/tmp/${tbl}.sql" >/dev/null && ok "  created $tbl" || err "  failed to create $tbl"
+  if local_psql_file "/tmp/${tbl}.sql" >/dev/null; then
+    ok "  created $tbl"
+  else
+    err "  failed to create $tbl; aborting before further schema changes"
+    exit 1
+  fi
 done
 
 # ── Step 4: CREATE missing indexes ─────────────────────────
@@ -248,8 +253,12 @@ PY
 
 if [ -s "$WORK/missing_indexes.sql" ] && grep -q "CREATE INDEX" "$WORK/missing_indexes.sql"; then
   docker cp "$WORK/missing_indexes.sql" "$LOCAL_CONTAINER":/tmp/missing_indexes.sql
-  local_psql_file /tmp/missing_indexes.sql 2>&1 | tail -5
-  ok "index creation phase done"
+  if local_psql_file /tmp/missing_indexes.sql 2>&1 | tail -5; then
+    ok "index creation phase done"
+  else
+    err "index creation phase failed"
+    exit 1
+  fi
 else
   ok "no missing CREATE INDEX"
 fi
