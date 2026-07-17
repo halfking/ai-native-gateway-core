@@ -1,0 +1,102 @@
+# Sessions V2 配置示例
+#
+# 将此文件放置在项目根目录或通过 LLM_GATEWAY_CONFIG_FILE 环境变量指定路径
+# 配置优先级: 数据库配置 > 环境变量 > YAML 配置文件 > 默认值
+
+# ===== Sessions V2 Feature Flags =====
+# 会话存储优化 V2 的灰度发布控制配置
+
+sessions_v2:
+  # 总开关：启用会话存储V2架构
+  # 关闭时完全使用 request_logs，开启后根据其他开关决定读写路由
+  # 默认: false
+  enabled: false
+
+  # 副写模式：同时写入 request_logs 和 V2 表，但仅从 request_logs 读取
+  # 用于验证 V2 表写入正确性
+  # 前置条件: enabled=true
+  # 默认: false
+  shadow_write: false
+
+  # 灰度百分比：V2 表的流量灰度百分比 (0-100)
+  # 0 表示不路由到 V2，100 表示全部路由到 V2
+  # 基于 session_id 哈希决定路由
+  # 前置条件: enabled=true
+  # 默认: 0
+  rollout_percent: 0
+
+  # L3 读取：启用从 session_turns 读取会话数据作为 L3 缓存
+  # 前置条件: enabled=true
+  # 默认: false
+  l3_read: false
+
+  # 双读对账模式：同时读取 request_logs 和 V2 表，对比结果差异并记录
+  # 用于验证 V2 读取正确性
+  # 前置条件: enabled=true 且 l3_read=true
+  # 与 primary_read 互斥
+  # 默认: false
+  dual_read: false
+
+  # V2 作为主读取源：将 V2 表作为主读取源，request_logs 作为降级备份
+  # 前置条件: enabled=true 且 l3_read=true
+  # 与 dual_read 互斥
+  # 默认: false
+  primary_read: false
+
+  # V2 写入超时时间（毫秒）
+  # 超时后不阻塞主流程，异步重试
+  # 范围: 100-5000
+  # 默认: 500
+  write_timeout_ms: 500
+
+  # V2 读取超时时间（毫秒）
+  # 超时后降级到 request_logs
+  # 范围: 50-3000
+  # 默认: 300
+  read_timeout_ms: 300
+
+  # 启用 V2 压缩检测
+  # 检测客户端是否已压缩会话历史，标记 submit_mode 字段
+  # 默认: true
+  compression_enabled: true
+
+  # 环节日志保留时间（小时）
+  # session_turn_logs 表中环节日志的保留时间，超时后自动清理
+  # 范围: 1-168 (7天)
+  # 默认: 24
+  turn_logs_retention_hours: 24
+
+# ===== 灰度发布示例配置 =====
+
+# Phase 1: 副写验证（运行 1-3 天）
+# sessions_v2:
+#   enabled: true
+#   shadow_write: true
+
+# Phase 2: 小流量灰度（10%）
+# sessions_v2:
+#   enabled: true
+#   shadow_write: false
+#   rollout_percent: 10
+#   l3_read: true
+
+# Phase 3: 双读对账
+# sessions_v2:
+#   enabled: true
+#   rollout_percent: 10
+#   l3_read: true
+#   dual_read: true
+
+# Phase 4: 扩大灰度（50%）
+# sessions_v2:
+#   enabled: true
+#   rollout_percent: 50
+#   l3_read: true
+#   dual_read: false
+
+# Phase 5: 全量上线
+# sessions_v2:
+#   enabled: true
+#   rollout_percent: 100
+#   l3_read: true
+#   primary_read: true
