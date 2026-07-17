@@ -37,15 +37,21 @@ COMMENT ON TABLE public.task_default_routing IS
 
 -- 唯一约束：同一 (task_type, profile, tier, tenant) 只能有一条未过期行。
 -- COALESCE 处理 NULL tenant_id（NULL 在 UNIQUE 中不冲突，需归一化）。
--- 部分索引：只对未过期行生效，历史过期行可保留不冲突。
+--
+-- 2026-07-17 fix: 原 partial index 谓词 `WHERE expires_at IS NULL OR
+-- expires_at > now()` 在 PostgreSQL 上报 "functions in index predicate must
+-- be marked IMMUTABLE"（now() 是 STABLE），导致迁移失败、阻塞整个迁移链。
+-- partial index predicate 不允许非 IMMUTABLE 函数。改用全表索引：唯一约束
+-- 覆盖所有行，过期行的排重在应用层（default_routing_store 加载时按
+-- expires_at 过滤）保证。task_default_routing 是运营手动配置的小表，全表
+-- 索引无性能影响。
 CREATE UNIQUE INDEX IF NOT EXISTS uq_task_default_routing
-    ON public.task_default_routing (task_type, profile, tier, COALESCE(tenant_id, 0))
-    WHERE expires_at IS NULL OR expires_at > now();
+    ON public.task_default_routing (task_type, profile, tier, COALESCE(tenant_id, 0));
 
--- 热路径查询索引：Resolve 按 (task_type, profile) 过滤未过期行
+-- 热路径查询索引：default_routing_store.LoadAll 全表加载到内存 snapshot，
+-- 按 (task_type, profile) 内存过滤。全表索引足够。
 CREATE INDEX IF NOT EXISTS idx_task_default_routing_lookup
-    ON public.task_default_routing (task_type, profile, tenant_id)
-    WHERE expires_at IS NULL OR expires_at > now();
+    ON public.task_default_routing (task_type, profile, tenant_id);
 
 -- 审计表：记录每次 CRUD 的 actor / action / before / after
 CREATE TABLE IF NOT EXISTS public.task_default_routing_audit (
