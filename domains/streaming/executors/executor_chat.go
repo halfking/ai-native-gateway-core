@@ -1244,15 +1244,19 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		// but never wired into a caller, so tool-message sanitization is
 		// not currently exercised in this branch. Document the gap in
 		// production logs so future ops can prove which path ran.
-		slog.Info("finalizeOpenAIUpstreamBody: legacy path (no IR)",
+		preBodyBytes := len(bodyBytes)
+		bodyBytes = applyInlineValidation(bodyBytes, params.RequestID)
+		postBodyBytes := len(bodyBytes)
+		slog.Info("finalizeOpenAIUpstreamBody: legacy path (no IR) + inline validation",
 			"request_id", params.RequestID,
-			"path", "legacy_no_ir",
+			"path", "legacy_no_ir_with_inline",
 			"model", params.Model,
 			"provider_id", cand.ProviderID,
 			"credential_id", cand.CredentialID,
 			"raw_model", cand.RawModel,
-			"body_bytes", len(bodyBytes),
-			"note", "no IR converter set — applyInlineValidation not wired; sanitize depends on legacy transforms only",
+			"pre_body_bytes", preBodyBytes,
+			"post_body_bytes", postBodyBytes,
+			"delta_bytes", postBodyBytes-preBodyBytes,
 		)
 	}
 
