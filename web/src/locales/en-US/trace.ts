@@ -35,10 +35,11 @@ export default {
   },
   empty: {
     title: 'No trace events',
-    desc: 'Trace was not generated, or has expired (Redis retains 10 min).',
+    desc: 'Trace data is not available for this request.',
     hint1: 'Trace is emitted only when instrumentation is enabled (default: on)',
-    hint2: 'Completed within 10 min: still in Redis',
-    hint3: 'Already flushed to PostgreSQL: shown via fallback',
+    hint2: 'In-progress requests: trace data is in Redis and viewable in real-time',
+    hint3: 'Completed requests: trace data is persisted to request_logs.trace_events (JSONB)',
+    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
   },
   aiPrompt: {
     button: '🤖 Generate AI Prompt',

@@ -41,7 +41,8 @@ fi
 : "${SSH_RETRY_TIMEOUT:=20}"   # 单次 SSH ConnectTimeout (秒)
 : "${SSH_RETRY_KEEPALIVE:=5}"  # ServerAliveInterval
 : "${SSH_RETRY_KEEPALIVE_MAX:=3}"
-: "${SSH_RETRY_FALLBACK_AFTER:=2}"  # 直连失败 N 次后切到 ProxyCommand 路径
+: "${SSH_RETRY_FALLBACK_AFTER:=0}"  # 154 默认立即使用跳板机（0=不先尝试直连）
+                                     # 设为 2 可恢复"先直连 2 次再跳板"行为
 
 # 调试: export SSH_RETRY_VERBOSE=1 可看到每次重试
 : "${SSH_RETRY_VERBOSE:=0}"
@@ -116,10 +117,19 @@ _ssh_retry_classify() {
 }
 
 # ── 内部: 该 target 是否有 fallback 路径 ────────────────────────
-# 154 公网 IP 抖动, 通过 252 (115.29.212.252) 中转最稳.
+# 154 公网 IP 抖动, 默认通过 252 (115.29.212.252) 跳板机中转最稳.
 # 返回: 空字符串 (无 fallback) 或 "user@hop_host"
+#
+# 环境变量控制:
+#   SSH_RETRY_DIRECT_MODE=1  强制直连（跳过跳板机，用于应急场景）
+#   SSH_RETRY_FALLBACK_AFTER=0  立即使用跳板机（不先尝试直连）
 _ssh_retry_fallback_hop() {
   local target=$1
+  # 直连模式：跳过跳板机
+  if [[ "${SSH_RETRY_DIRECT_MODE:-0}" == "1" ]]; then
+    printf ''
+    return
+  fi
   case "$target" in
     154) printf 'root@115.29.212.252' ;;
     *)   printf '' ;;

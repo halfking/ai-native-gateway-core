@@ -15,11 +15,16 @@
 #
 # 用法:
 #   bash scripts/deploy-seamless.sh deploy 245 --seq 1004   # 部署到 245
-#   bash scripts/deploy-seamless.sh deploy 154 --seq 1005   # 部署到 154
+#   bash scripts/deploy-seamless.sh deploy 154 --seq 1005   # 部署到 154 (默认通过 252 跳板机)
+#   bash scripts/deploy-seamless.sh deploy 154 --direct     # 部署到 154 (直连，跳过跳板机)
 #   bash scripts/deploy-seamless.sh rollback 245            # 一键回滚
 #   bash scripts/deploy-seamless.sh rollback 154
 #   bash scripts/deploy-seamless.sh status 245              # 查看 releases
 #   bash scripts/deploy-seamless.sh deploy 245 --no-frontend --seq 1004
+#
+# 154 SSH 连接策略:
+#   默认: 通过 252 跳板机 (root@115.29.212.252) 连接，最稳定
+#   --direct: 直连 47.97.111.154:25022（应急场景，如 252 不可达）
 #
 # 安全网:
 #   - healthz 失败 → 自动 rollback 到上一个 verified 版本
@@ -59,6 +64,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --seq) SEQ_FLAG="--seq $2"; shift 2 ;;
     --no-frontend) SKIP_FRONTEND=true; shift ;;
+    --direct) export SSH_RETRY_DIRECT_MODE=1; shift ;;
     --ssh-retries) export SSH_RETRY_MAX=$2; shift 2 ;;
     --ssh-verbose) export SSH_RETRY_VERBOSE=1; shift ;;
     -h|--help)
