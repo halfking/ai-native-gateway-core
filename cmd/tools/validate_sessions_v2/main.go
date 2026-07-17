@@ -31,10 +31,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -51,12 +53,20 @@ func main() {
 	settleWindow := flag.Duration("settle-window", 10*time.Minute, "Exclude sessions updated within this window (batch mode)")
 	format := flag.String("format", "json", "Output format: json or text")
 	verbose := flag.Bool("verbose", false, "Show detailed per-session output during batch validation")
+	repair := flag.Bool("repair", false, "Enable repair mode (rebuild V2 from V1)")
+	apply := flag.Bool("apply", false, "Apply changes (without this, dry-run only)")
 	flag.Parse()
 
 	// Validate required flags
 	if *dsn == "" || *tenantID == "" {
 		fmt.Fprintln(os.Stderr, "Error: -dsn and -tenant-id are required")
 		flag.Usage()
+		os.Exit(2)
+	}
+
+	// Validate repair constraints
+	if *repair && *sessionID == "" {
+		fmt.Fprintln(os.Stderr, "Error: -repair requires -session-id (single-session only)")
 		os.Exit(2)
 	}
 
@@ -96,9 +106,17 @@ func main() {
 	reconstructor := NewMessageReconstructor()
 
 	if isSingleSession {
-		// Single-session validation
-		exitCode := validateSingleSession(ctx, loader, reportGen, reconstructor, *tenantID, *sessionID, *format)
-		os.Exit(exitCode)
+		if *repair {
+			// Repair mode
+			validator := NewSessionValidator(*tenantID, *sessionID)
+			repairer := NewSessionRepairer(pool, loader, validator, reconstructor, reportGen)
+			exitCode := repairSession(ctx, repairer, *tenantID, *sessionID, *apply, *format)
+			os.Exit(exitCode)
+		} else {
+			// Single-session validation
+			exitCode := validateSingleSession(ctx, loader, reportGen, reconstructor, *tenantID, *sessionID, *format)
+			os.Exit(exitCode)
+		}
 	} else {
 		// Batch validation
 		var start, end time.Time
@@ -263,6 +281,123 @@ func validateBatch(
 	
 	// Determine exit code
 	if batchReport.Summary.SessionsError > 0 {
+		return 1
+	}
+	return 0
+}
+
+// repairSession repairs a single session and returns exit code
+func repairSession(
+	ctx context.Context,
+	repairer *SessionRepairer,
+	tenantID, sessionID string,
+	apply bool,
+	format string,
+) int {
+	// Generate repair plan
+	plan, err := repairer.PlanRepair(ctx, tenantID, sessionID)
+	if err != nil {
+		log.Fatalf("Failed to generate repair plan: %v", err)
+	}
+	
+	if !apply {
+		// Dry-run mode: show plan without executing
+		if format == "json" {
+			jsonBytes, _ := json.MarshalIndent(plan, "", "  ")
+			fmt.Println(string(jsonBytes))
+		} else {
+			fmt.Println(strings.Repeat("=", 80))
+			fmt.Println("[DRY RUN] Repair plan for session", sessionID)
+			fmt.Println(strings.Repeat("=", 80))
+			fmt.Printf("Tenant:     %s\n", plan.TenantID)
+			fmt.Printf("Session:    %s\n", plan.SessionID)
+			fmt.Printf("V1 Source:  %d rows\n\n", plan.SourceRows)
+			
+			fmt.Println("Will DELETE:")
+			for table, count := range plan.DeleteCounts {
+				fmt.Printf("  - %-20s %d rows\n", table+":", count)
+			}
+			fmt.Println()
+			
+			fmt.Println("Will REBUILD:")
+			for table, count := range plan.RebuildCounts {
+				fmt.Printf("  - %-20s %d rows\n", table+":", count)
+			}
+			fmt.Println()
+			
+			fmt.Println("Run with --apply to execute this repair.")
+			fmt.Println(strings.Repeat("=", 80))
+		}
+		return 0
+	}
+	
+	// Execute repair
+	log.Printf("Executing repair for session %s...", sessionID)
+	result, err := repairer.ExecuteRepair(ctx, tenantID, sessionID)
+	if err != nil || !result.Success {
+		if format == "json" {
+			jsonBytes, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Println(string(jsonBytes))
+		} else {
+			fmt.Println(strings.Repeat("=", 80))
+			fmt.Println("✗ REPAIR FAILED")
+			fmt.Println(strings.Repeat("=", 80))
+			if result.Error != nil {
+				fmt.Printf("Error: %v\n", result.Error)
+			}
+			fmt.Println(strings.Repeat("=", 80))
+		}
+		return 1
+	}
+	
+	// Verify repair
+	log.Printf("Verifying repair for session %s...", sessionID)
+	verifyReport, err := repairer.VerifyRepair(ctx, tenantID, sessionID)
+	if err != nil {
+		log.Fatalf("Failed to verify repair: %v", err)
+	}
+	
+	result.VerificationReport = verifyReport
+	
+	// Output results
+	if format == "json" {
+		jsonBytes, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(jsonBytes))
+	} else {
+		fmt.Println(strings.Repeat("=", 80))
+		fmt.Println("REPAIR COMPLETED")
+		fmt.Println(strings.Repeat("=", 80))
+		fmt.Printf("Session:    %s\n", result.SessionID)
+		fmt.Printf("Tenant:     %s\n\n", result.TenantID)
+		
+		fmt.Println("Deleted:")
+		for table, count := range result.DeletedRows {
+			fmt.Printf("  ✓ %-20s %d rows\n", table+":", count)
+		}
+		fmt.Println()
+		
+		fmt.Println("Rebuilt:")
+		for table, count := range result.InsertedRows {
+			fmt.Printf("  ✓ %-20s %d rows\n", table+":", count)
+		}
+		fmt.Println()
+		
+		fmt.Println("Verification:")
+		if verifyReport.Status == "ok" {
+			fmt.Println("  ✓ Re-validation passed (status: ok)")
+		} else if verifyReport.Status == "warning" {
+			fmt.Printf("  ⚠ Re-validation passed with warnings (status: %s)\n", verifyReport.Status)
+			fmt.Printf("    %d warning(s) found\n", len(verifyReport.Differences))
+		} else {
+			fmt.Printf("  ✗ Re-validation failed (status: %s)\n", verifyReport.Status)
+			fmt.Printf("    %d error(s) found\n", len(verifyReport.Differences))
+		}
+		
+		fmt.Println(strings.Repeat("=", 80))
+	}
+	
+	// Exit code based on verification
+	if verifyReport.Status == "error" {
 		return 1
 	}
 	return 0
