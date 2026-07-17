@@ -78,6 +78,12 @@ function onAgreementAgreed() {
   if (run) run()
 }
 
+// 用户取消协议弹窗（点 X / Esc）→ 丢弃挂起的下载闭包，
+// 否则下次点其它版本下载按钮时仍可能执行旧 action。
+function onAgreementCancelled() {
+  pendingDownload.value = null
+}
+
 async function performDownload(group: VersionGroup, item: CatalogItem) {
   const key = itemKey(group.version, item)
   downloading.value = key
@@ -221,6 +227,7 @@ onMounted(load)
       scope="download"
       :version="AGREEMENT_VERSION"
       @agreed="onAgreementAgreed"
+      @cancelled="onAgreementCancelled"
     />
   </PublicPortalLayout>
 </template>

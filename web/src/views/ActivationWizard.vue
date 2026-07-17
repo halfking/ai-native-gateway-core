@@ -64,6 +64,12 @@ function onAgreementAgreed() {
   if (run) run()
 }
 
+// 用户取消协议弹窗（点 X / Esc）→ 丢弃挂起的激活操作闭包，
+// 避免下次点其它入口按钮时仍执行旧 action。
+function onAgreementCancelled() {
+  pendingAction.value = null
+}
+
 function goOnlineActivate() {
   requestActivateAgreementThen(() => { step.value = 2 })
 }
@@ -524,6 +530,7 @@ onMounted(refresh)
       scope="activate"
       :version="AGREEMENT_VERSION"
       @agreed="onAgreementAgreed"
+      @cancelled="onAgreementCancelled"
     />
   </PublicPortalLayout>
 </template>
