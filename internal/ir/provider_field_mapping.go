@@ -59,8 +59,11 @@ func GetProviderFieldConfig(catalogCode string, modelName string) ProviderFieldC
 	// NVIDIA NIM relays to various upstream providers based on model name patterns
 	if catalogCode == "nvidia" {
 		// NVIDIA forwards minimaxai/* models to MiniMax → use MiniMax protocol
-		if strings.Contains(strings.ToLower(modelName), "minimaxai/") ||
-			strings.Contains(strings.ToLower(modelName), "minimax") {
+		// Use case-insensitive matching but be specific to avoid false positives
+		modelLower := strings.ToLower(modelName)
+		if strings.HasPrefix(modelLower, "minimaxai/") ||
+			strings.HasPrefix(modelLower, "minimax-") ||
+			modelLower == "minimax" {
 			return ProviderFieldConfig{
 				ToolResultIDField: "tool_call_id",
 			}
