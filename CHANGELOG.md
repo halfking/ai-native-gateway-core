@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-07-18
+
+### Fixed
+
+- **Settings/Modules toggle HTTP 500**: Fixed `StoreDB.Set()` passing `[]byte` to
+  `$2::jsonb` — pgx v5 encodes `[]byte` as `bytea` OID, which PG cannot cast to
+  `jsonb` (`SQLSTATE 22P02`). Convert to `string` so pgx uses `text` OID, which
+  supports `text::jsonb`. Applied to both `Set()` and `SetTenant()`.
+- **settings_kv duplicates**: Added `UNIQUE (key)` constraint to `settings_kv`
+  table; cleaned up 22 duplicate rows across 8 keys that accumulated due to
+  the missing constraint.
+
 ## [Unreleased] - 2026-07-16
 
 ### Fixed

@@ -57,6 +57,7 @@ func (s *StoreDB) Set(scope Scope, key string, value any) (jsonRawMessage, error
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
+	newValStr := string(newVal)
 	var oldVal []byte
 	// Try UPDATE first; if no row matched, INSERT.
 	err = s.pool.QueryRow(context.Background(), `
@@ -68,13 +69,13 @@ func (s *StoreDB) Set(scope Scope, key string, value any) (jsonRawMessage, error
 		       prev_value = value, prev_updated_at = updated_at
 		 WHERE key = $1
 		RETURNING prev_value
-	`, key, newVal, valueType, category).Scan(&oldVal)
+	`, key, newValStr, valueType, category).Scan(&oldVal)
 	if err == pgx.ErrNoRows {
 		// No existing row → INSERT.
 		_, err = s.pool.Exec(context.Background(), `
 			INSERT INTO settings_kv (key, value, value_type, scope, category, updated_at)
 			VALUES ($1, $2::jsonb, $3, 'platform', $4, now())
-		`, key, newVal, valueType, category)
+		`, key, newValStr, valueType, category)
 		if err != nil {
 			return nil, fmt.Errorf("insert: %w", err)
 		}
@@ -114,6 +115,7 @@ func (s *StoreDB) SetTenant(tenantID, key string, value any) (jsonRawMessage, er
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
+	newValStr := string(newVal)
 	var oldVal []byte
 	err = s.pool.QueryRow(context.Background(), `
 		INSERT INTO tenant_settings_kv (tenant_id, key, value, value_type, category, updated_at)
@@ -126,7 +128,7 @@ func (s *StoreDB) SetTenant(tenantID, key string, value any) (jsonRawMessage, er
 		      prev_value = tenant_settings_kv.value,
 		      prev_updated_at = tenant_settings_kv.updated_at
 		RETURNING prev_value
-	`, tenantID, key, newVal, valueType, category).Scan(&oldVal)
+	`, tenantID, key, newValStr, valueType, category).Scan(&oldVal)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
