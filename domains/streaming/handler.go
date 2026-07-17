@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,6 +63,15 @@ type preStreamKeepalive struct {
 	doneCh  chan struct{}
 	mu      sync.Mutex
 	once    sync.Once
+	// paused is set by the executor when entering the synchronous
+	// no-candidate probe hold. While paused, the loop() goroutine
+	// skips writing SSE keepalive comments so the client does not
+	// interpret a stale comment as a response-start signal during
+	// the hold. Resumed by resume(); the goroutine checks the flag
+	// on every tick so the resume latency is at most one keepalive
+	// interval (default 15s — but the executor's 5s probe timeout
+	// means we resume long before that regardless).
+	paused atomic.Bool
 }
 
 func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration) (*preStreamKeepalive, bool) {
@@ -96,6 +106,9 @@ func (p *preStreamKeepalive) loop(interval time.Duration) {
 		case <-p.stopCh:
 			return
 		case <-ticker.C:
+			if p.paused.Load() {
+				continue
+			}
 			p.writeComment(sseKeepaliveComment)
 		}
 	}
@@ -109,6 +122,22 @@ func (p *preStreamKeepalive) writeComment(line string) {
 	defer p.mu.Unlock()
 	safeWriteSSE(p.w, line)
 	safeFlush(p.flusher)
+}
+
+// pause suspends future keepalive comments. Idempotent.
+func (p *preStreamKeepalive) pause() {
+	if p == nil {
+		return
+	}
+	p.paused.Store(true)
+}
+
+// resume re-enables keepalive comment writes. Idempotent.
+func (p *preStreamKeepalive) resume() {
+	if p == nil {
+		return
+	}
+	p.paused.Store(false)
 }
 
 func (p *preStreamKeepalive) stop() {
@@ -1992,6 +2021,29 @@ func (h *ChatHandler) serveWithExecutor(
 			if preStream != nil {
 				preStream.stop()
 				preStream = nil
+			}
+		},
+		// 2026-07-17 同步探测回调：执行器进入同步探测 hold 时调用
+		// preStream.pause() 暂停 keepalive SSE 注释（已 WriteHeader 200），
+		// 避免客户端把"探测中的心跳"误判为响应开始。
+		OnPreStreamKeepalivePause: func() {
+			if preStream != nil {
+				preStream.pause()
+			}
+		},
+		// 探测结束（无论恢复/失败）→ 如果 keepalive 还在跑就 resume，
+		// 让正常流式响应或后续错误路径不再卡在 pause 状态。
+		OnProbeHoldEnd: func(recovered bool) {
+			if preStream != nil {
+				preStream.resume()
+			}
+			if logCtx != nil {
+				logCtx.MarkProbeHoldEnd(recovered)
+			}
+		},
+		OnProbeHoldStart: func() {
+			if logCtx != nil {
+				logCtx.MarkProbeHoldStart()
 			}
 		},
 		ClientProtocol: clientProtocol,
