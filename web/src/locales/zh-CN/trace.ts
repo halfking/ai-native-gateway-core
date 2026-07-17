@@ -1,6 +1,7 @@
 // trace.ts — 2026-07-17
-// 请求链路追踪 modal (RequestTraceModal.vue) 文案。
-// 该 modal 从原始请求详情 (RequestLogDrawer / RequestLogsView inline drawer) 内点击按钮弹出。
+// 请求链路追踪面板 (RequestTracePanel.vue) 文案。
+// 该面板从原始请求详情 (RequestLogDrawer / RequestLogsView inline drawer) 内点击按钮,
+// 在「请求详情」与「Tabs/按钮」之间内嵌展开 (替代此前的 modal 弹窗)。
 export default {
   modal: {
     title: '请求链路详情',
