@@ -13,6 +13,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import PublicPortalLayout from '../components/PublicPortalLayout.vue'
+import OperationAgreementDialog from '../components/OperationAgreementDialog.vue'
 import {
   getLicenseStatus,
   activateLicense,
@@ -25,17 +26,55 @@ import {
 
 const { t } = useI18n()
 
+const AGREEMENT_VERSION = '2026-07-15'
+const AGREEMENT_STORAGE_KEY = `llmgw_op_agreement_activate_${AGREEMENT_VERSION}`
+
 const step = ref(1)
 const status = ref<CustomerLicenseStatus | null>(null)
 const loading = ref(false)
 const onlineForm = ref({ license_key: '', device_name: '' })
 const trialEmail = ref('')
-const trialAgreed = ref(false)
-const noticeExpanded = ref(false)
 const offlineForm = ref({ signed_license: '', request_id: '', activation_code: '' })
 const lastResult = ref<ActivationResult | null>(null)
 const offlineRequestResult = ref<{ request_id: string; signed_request: string } | null>(null)
-const trialAgreementVersion = '2026-07-15'
+
+const showAgreement = ref(false)
+const pendingAction = ref<null | (() => void)>(null)
+
+function hasAgreedActivate(): boolean {
+  try {
+    return !!localStorage.getItem(AGREEMENT_STORAGE_KEY)
+  } catch {
+    return false
+  }
+}
+
+function requestActivateAgreementThen(run: () => void) {
+  if (hasAgreedActivate()) {
+    run()
+    return
+  }
+  pendingAction.value = run
+  showAgreement.value = true
+}
+
+function onAgreementAgreed() {
+  const run = pendingAction.value
+  pendingAction.value = null
+  if (run) run()
+}
+
+function goOnlineActivate() {
+  requestActivateAgreementThen(() => { step.value = 2 })
+}
+
+function goOfflineActivate() {
+  requestActivateAgreementThen(() => { step.value = 3 })
+}
+
+function onTrialClicked() {
+  requestActivateAgreementThen(() => { handleTrial() })
+}
 
 const comparisonRows = computed(() => [
   {
@@ -95,7 +134,7 @@ async function handleActivationResult(result: ActivationResult) {
   ElMessage.error(activationErrorMessage(result))
 }
 
-const trialReady = computed(() => trialEmail.value.includes('@') && trialAgreed.value)
+const trialReady = computed(() => trialEmail.value.includes('@'))
 
 const stateLabel = computed(() => {
   switch (status.value?.state) {
@@ -151,10 +190,6 @@ async function handleActivate() {
 async function handleTrial() {
   if (!trialEmail.value.trim() || !trialEmail.value.includes('@')) {
     ElMessage.warning(t('customer.wizard.messages.trialEmailInvalid'))
-    return
-  }
-  if (!trialAgreed.value) {
-    ElMessage.warning(t('customer.wizard.messages.trialConsentRequired'))
     return
   }
   loading.value = true
@@ -319,13 +354,13 @@ onMounted(refresh)
           :description="t('customer.wizard.step1.noneDesc')"
         />
         <div class="cta-row">
-          <el-button type="primary" size="large" :disabled="!trialReady" :loading="loading" @click="handleTrial">
+          <el-button type="primary" size="large" :disabled="!trialReady" :loading="loading" @click="onTrialClicked">
             {{ t('customer.wizard.step1.trialCta') }}
           </el-button>
-          <el-button type="primary" size="large" @click="step = 2">
+          <el-button type="primary" size="large" @click="goOnlineActivate">
             {{ t('customer.wizard.step1.onlineActivate') }}
           </el-button>
-          <el-button size="large" @click="step = 3">
+          <el-button size="large" @click="goOfflineActivate">
             {{ t('customer.wizard.step1.offlineActivate') }}
           </el-button>
         </div>
@@ -336,30 +371,6 @@ onMounted(refresh)
           :placeholder="t('customer.wizard.step1.trialEmail')"
           clearable
         />
-        <el-collapse v-model="noticeExpanded" class="trial-notice">
-          <el-collapse-item :title="t('public.userNotice.title')" name="user-notice">
-            <p class="trial-notice__summary">{{ t('public.userNotice.summary') }}</p>
-            <dl class="trial-notice__list">
-              <dt>{{ t('public.userNotice.rights.title') }}</dt>
-              <dd>{{ t('public.userNotice.rights.body') }}</dd>
-              <dt>{{ t('public.userNotice.data.title') }}</dt>
-              <dd>{{ t('public.userNotice.data.body') }}</dd>
-              <dt>{{ t('public.userNotice.openSource.title') }}</dt>
-              <dd>{{ t('public.userNotice.openSource.body') }}</dd>
-              <dt>{{ t('public.userNotice.liability.title') }}</dt>
-              <dd>{{ t('public.userNotice.liability.body') }}</dd>
-            </dl>
-            <p class="trial-notice__full">
-              <a href="/user-agreement.html" target="_blank" rel="noopener">{{ t('public.userNotice.viewFull') }}</a>
-              <span>{{ t('public.userNotice.fullLink') }}</span>
-            </p>
-          </el-collapse-item>
-        </el-collapse>
-        <el-checkbox v-model="trialAgreed" class="trial-consent">
-          {{ t('customer.wizard.step1.trialConsent') }}
-          <a href="/user-agreement.html" target="_blank" rel="noopener">{{ t('customer.wizard.step1.trialAgreement') }}</a>
-        </el-checkbox>
-        <p class="trial-version">{{ t('customer.wizard.step1.trialAgreementVersion', { version: trialAgreementVersion }) }}</p>
       </div>
       <div v-else-if="status?.state === 'expired'">
         <el-alert
@@ -507,6 +518,13 @@ onMounted(refresh)
       </el-result>
     </el-card>
   </div>
+
+    <OperationAgreementDialog
+      v-model="showAgreement"
+      scope="activate"
+      :version="AGREEMENT_VERSION"
+      @agreed="onAgreementAgreed"
+    />
   </PublicPortalLayout>
 </template>
 
@@ -536,21 +554,6 @@ onMounted(refresh)
   margin-top: 16px;
 }
 .trial-email { margin-top: 16px; }
-.trial-notice { margin-top: 16px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; }
-.trial-notice :deep(.el-collapse-item__header) { font-weight: 600; padding-left: 12px; }
-.trial-notice :deep(.el-collapse-item__content) { padding: 0 12px 12px; }
-.trial-notice__summary { margin: 0 0 8px; color: #303133; font-size: 13px; line-height: 1.6; }
-.trial-notice__list { margin: 0; padding: 0; display: grid; gap: 6px; }
-.trial-notice__list dt { font-weight: 600; color: #303133; font-size: 13px; margin: 0; }
-.trial-notice__list dd { margin: 0; color: #606266; font-size: 12px; line-height: 1.55; }
-.trial-notice__full { margin: 8px 0 0; font-size: 12px; color: #909399; display: flex; flex-direction: column; gap: 2px; }
-.trial-notice__full a { color: var(--el-color-primary); font-weight: 500; }
-.trial-consent { margin-top: 12px; display: block; }
-.trial-version {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: #909399;
-}
 .device-limit-alert { margin-top: 16px; }
 .device-limit-table { margin-top: 12px; }
 .device-id-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; font-size: 13px; color: #94a3b8; }

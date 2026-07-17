@@ -40,9 +40,6 @@ export default {
       activeDesc: 'No further activation needed.',
       trialCta: 'Start trial',
       trialEmail: 'Email for trial notifications',
-      trialConsent: 'I have read and agree to the',
-      trialAgreement: 'User Agreement & Data Processing Authorization',
-      trialAgreementVersion: 'Agreement version: {version}',
     },
     step2: {
       title: 'Step 2: Enter license key for online activation',
@@ -96,7 +93,6 @@ export default {
       copied: 'Copied to clipboard',
       copyFailed: 'Copy failed — select manually',
       trialEmailInvalid: 'Please enter a valid email',
-      trialConsentRequired: 'Please accept the user agreement first',
       trialFailed: 'Trial request failed',
       trialFailedWithMsg: 'Trial request failed: {msg}',
       trialCreated: 'Trial license created — completing activation…',
