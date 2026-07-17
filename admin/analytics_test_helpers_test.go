@@ -28,6 +28,17 @@ func setTestTenantContext(r *http.Request, tenantID string) *http.Request {
 	})
 }
 
+// setTestRequestContext attaches an AuthContext matching the requested role so
+// analytics handlers exercise the correct effective scope / owner filter.
+func setTestRequestContext(r *http.Request, role, tenantID, username string) *http.Request {
+	return SetAuthContext(r, &AuthContext{
+		TenantID: tenantID,
+		Username: username,
+		Role:     role,
+		IsJWT:    role != "admin_key",
+	})
+}
+
 // parseJSONResponse decodes the JSON body of a httptest.ResponseRecorder into v.
 // Returns an error if the status code is not 2xx or decoding fails.
 func parseJSONResponse(w *httptest.ResponseRecorder, v interface{}) error {
@@ -70,4 +81,3 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 	}
 	return pool
 }
-

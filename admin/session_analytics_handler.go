@@ -4,14 +4,16 @@
 // 所有查询统一使用 gw_session_id 作为对外标识。
 //
 // 路由（在 cmd/gateway/main.go 注册）：
-//   GET    /api/admin/session-analytics                → HandleSessionAnalyticsList
-//   GET    /api/admin/session-analytics/stats          → HandleSessionAnalyticsStats
-//   GET    /api/admin/session-analytics/<gw_session_id>→ HandleSessionAnalyticsDetail
-//   GET    /api/admin/session-analytics/<gw_session_id>/export → HandleSessionAnalyticsExport
+//
+//	GET    /api/admin/session-analytics                → HandleSessionAnalyticsList
+//	GET    /api/admin/session-analytics/stats          → HandleSessionAnalyticsStats
+//	GET    /api/admin/session-analytics/<gw_session_id>→ HandleSessionAnalyticsDetail
+//	GET    /api/admin/session-analytics/<gw_session_id>/export → HandleSessionAnalyticsExport
 package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,49 +26,49 @@ import (
 
 // AnalyticsSessionSummary 会话摘要（对外暴露 gw_session_id）
 type AnalyticsSessionSummary struct {
-	GwSessionID            string     `json:"gw_session_id"`
-	TenantID               string     `json:"tenant_id"`
-	TaskID                 *string    `json:"task_id,omitempty"`
-	SessionStatus          *string    `json:"session_status,omitempty"`
-	FirstRequestAt         time.Time  `json:"first_request_at"`
-	LastRequestAt          time.Time  `json:"last_request_at"`
-	DurationSeconds        int        `json:"duration_seconds"`
-	RequestCount           int        `json:"request_count"`
-	SuccessCount           int        `json:"success_count"`
-	ErrorCount             int        `json:"error_count"`
-	TotalCostUSD           float64    `json:"total_cost_usd"`
-	InputCostUSD           float64    `json:"input_cost_usd"`
-	OutputCostUSD          float64    `json:"output_cost_usd"`
-	TotalPromptTokens      int64      `json:"total_prompt_tokens"`
-	TotalCompletionTokens  int64      `json:"total_completion_tokens"`
-	TotalTokens            int64      `json:"total_tokens"`
-	AvgLatencyMs           int        `json:"avg_latency_ms"`
-	MinLatencyMs           *int       `json:"min_latency_ms"`
-	MaxLatencyMs           *int       `json:"max_latency_ms"`
-	ModelsUsed             []string   `json:"models_used"`
-	PrimaryModel           *string    `json:"primary_model"`
-	ModelSwitchCount       int        `json:"model_switch_count"`
-	Title                  *string    `json:"title"`
-	Summary                *string    `json:"summary"`
-	KeyTopics              []string   `json:"key_topics"`
-	UserIntent             *string    `json:"user_intent"`
-	QualityScore           *int       `json:"quality_score"`
-	ComplianceStatus       string     `json:"compliance_status"`
-	ComplianceIssuesCount  int        `json:"compliance_issues_count"`
-	PromptInjectionDetected bool      `json:"prompt_injection_detected"`
-	PIIDetected            bool       `json:"pii_detected"`
-	ToxicOutputDetected    bool       `json:"toxic_output_detected"`
-	WorkTypes              []string   `json:"work_types"`
-	Providers              []string   `json:"providers"`
-	ClientModels           []string   `json:"client_models"`
-	LastSummarizedAt       *time.Time `json:"last_summarized_at"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
+	GwSessionID             string     `json:"gw_session_id"`
+	TenantID                string     `json:"tenant_id"`
+	TaskID                  *string    `json:"task_id,omitempty"`
+	SessionStatus           *string    `json:"session_status,omitempty"`
+	FirstRequestAt          time.Time  `json:"first_request_at"`
+	LastRequestAt           time.Time  `json:"last_request_at"`
+	DurationSeconds         int        `json:"duration_seconds"`
+	RequestCount            int        `json:"request_count"`
+	SuccessCount            int        `json:"success_count"`
+	ErrorCount              int        `json:"error_count"`
+	TotalCostUSD            float64    `json:"total_cost_usd"`
+	InputCostUSD            float64    `json:"input_cost_usd"`
+	OutputCostUSD           float64    `json:"output_cost_usd"`
+	TotalPromptTokens       int64      `json:"total_prompt_tokens"`
+	TotalCompletionTokens   int64      `json:"total_completion_tokens"`
+	TotalTokens             int64      `json:"total_tokens"`
+	AvgLatencyMs            int        `json:"avg_latency_ms"`
+	MinLatencyMs            *int       `json:"min_latency_ms"`
+	MaxLatencyMs            *int       `json:"max_latency_ms"`
+	ModelsUsed              []string   `json:"models_used"`
+	PrimaryModel            *string    `json:"primary_model"`
+	ModelSwitchCount        int        `json:"model_switch_count"`
+	Title                   *string    `json:"title"`
+	Summary                 *string    `json:"summary"`
+	KeyTopics               []string   `json:"key_topics"`
+	UserIntent              *string    `json:"user_intent"`
+	QualityScore            *int       `json:"quality_score"`
+	ComplianceStatus        string     `json:"compliance_status"`
+	ComplianceIssuesCount   int        `json:"compliance_issues_count"`
+	PromptInjectionDetected bool       `json:"prompt_injection_detected"`
+	PIIDetected             bool       `json:"pii_detected"`
+	ToxicOutputDetected     bool       `json:"toxic_output_detected"`
+	WorkTypes               []string   `json:"work_types"`
+	Providers               []string   `json:"providers"`
+	ClientModels            []string   `json:"client_models"`
+	LastSummarizedAt        *time.Time `json:"last_summarized_at"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
 	// 健康评分字段（T1.5）
-	HealthScore            *int       `json:"health_score,omitempty"`
-	HealthGrade            *string    `json:"health_grade,omitempty"`
-	Outcome                *string    `json:"outcome,omitempty"`
-	LastHealthAt           *time.Time `json:"last_health_at,omitempty"`
+	HealthScore  *int       `json:"health_score,omitempty"`
+	HealthGrade  *string    `json:"health_grade,omitempty"`
+	Outcome      *string    `json:"outcome,omitempty"`
+	LastHealthAt *time.Time `json:"last_health_at,omitempty"`
 }
 
 // AnalyticsSessionStats 会话统计（今日）
@@ -84,22 +86,22 @@ type AnalyticsSessionStats struct {
 
 // RequestEvent 单步请求事件
 type RequestEvent struct {
-	RequestID        string    `json:"request_id"`
-	CreatedAt        time.Time `json:"created_at"`
-	Success          bool      `json:"success"`
-	ClientModel      string    `json:"client_model"`
-	UpstreamModel    string    `json:"upstream_model"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	CostUSD          float64   `json:"cost_usd"`
-	LatencyMs        int       `json:"latency_ms"`
-	WorkType         *string   `json:"work_type,omitempty"`
-	Provider         *string   `json:"provider,omitempty"`
-	CompressionStrategy *string `json:"compression_strategy,omitempty"`
-	CacheReadTokens  *int      `json:"cache_read_tokens,omitempty"`
-	ErrorMessage     *string   `json:"error_message,omitempty"`
-	RequestPreview   *string   `json:"request_preview,omitempty"`
-	ResponsePreview  *string   `json:"response_preview,omitempty"`
+	RequestID           string    `json:"request_id"`
+	CreatedAt           time.Time `json:"created_at"`
+	Success             bool      `json:"success"`
+	ClientModel         string    `json:"client_model"`
+	UpstreamModel       string    `json:"upstream_model"`
+	PromptTokens        int       `json:"prompt_tokens"`
+	CompletionTokens    int       `json:"completion_tokens"`
+	CostUSD             float64   `json:"cost_usd"`
+	LatencyMs           int       `json:"latency_ms"`
+	WorkType            *string   `json:"work_type,omitempty"`
+	Provider            *string   `json:"provider,omitempty"`
+	CompressionStrategy *string   `json:"compression_strategy,omitempty"`
+	CacheReadTokens     *int      `json:"cache_read_tokens,omitempty"`
+	ErrorMessage        *string   `json:"error_message,omitempty"`
+	RequestPreview      *string   `json:"request_preview,omitempty"`
+	ResponsePreview     *string   `json:"response_preview,omitempty"`
 }
 
 // AnalyticsSessionDetail 会话详情（摘要 + 时间线 + 分析）
@@ -111,11 +113,11 @@ type AnalyticsSessionDetail struct {
 
 // SessionAnalysis 会话分析（成本/token 分解 + 模型切换 + 合规）
 type SessionAnalysis struct {
-	ModelSwitches     []ModelSwitch     `json:"model_switches"`
-	ComplianceIssues  []ComplianceIssue `json:"compliance_issues"`
-	CostBreakdown     CostBreakdown     `json:"cost_breakdown"`
-	TokenDistribution TokenDistribution `json:"token_distribution"`
-	CacheSavings      *CacheSavings     `json:"cache_savings,omitempty"`
+	ModelSwitches      []ModelSwitch       `json:"model_switches"`
+	ComplianceIssues   []ComplianceIssue   `json:"compliance_issues"`
+	CostBreakdown      CostBreakdown       `json:"cost_breakdown"`
+	TokenDistribution  TokenDistribution   `json:"token_distribution"`
+	CacheSavings       *CacheSavings       `json:"cache_savings,omitempty"`
 	CompressionSavings *CompressionSavings `json:"compression_savings,omitempty"`
 }
 
@@ -157,17 +159,17 @@ type TokenDistribution struct {
 
 // CacheSavings 缓存节省（prompt cache）
 type CacheSavings struct {
-	CacheReadTokens  int64   `json:"cache_read_tokens"`
-	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	CacheReadTokens   int64   `json:"cache_read_tokens"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens"`
 	EstimatedSavedUSD float64 `json:"estimated_saved_usd"`
 }
 
 // CompressionSavings 压缩节省
 type CompressionSavings struct {
-	CompressedRequests int     `json:"compressed_requests"`
-	OutboundTokenEst   int64   `json:"outbound_token_est"`
-	EstimatedTokensSaved int64 `json:"estimated_tokens_saved"`
-	EstimatedSavedUSD  float64 `json:"estimated_saved_usd"`
+	CompressedRequests   int     `json:"compressed_requests"`
+	OutboundTokenEst     int64   `json:"outbound_token_est"`
+	EstimatedTokensSaved int64   `json:"estimated_tokens_saved"`
+	EstimatedSavedUSD    float64 `json:"estimated_saved_usd"`
 }
 
 // ── SQL column list (used by list + detail) ───────────────────────────
@@ -207,7 +209,15 @@ func scanSessionSummary(row pgx.Row) (AnalyticsSessionSummary, error) {
 	return s, err
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────
+// withSessionAnalyticsReadTx selects the tenant-scoped RLS transaction for
+// tenant users and the explicit audited all-tenant transaction for super-admins.
+func (h *Handler) withSessionAnalyticsReadTx(ctx context.Context, r *http.Request, fn func(tx pgx.Tx) error) error {
+	tenantID := effectiveScopeTenant(r)
+	if tenantID == "" {
+		return withAllTenantReadOnlyTx(ctx, h.db, fn)
+	}
+	return withTenantTx(ctx, h.db, tenantID, fn)
+}
 
 // HandleSessionAnalyticsList GET /api/admin/session-analytics
 func (h *Handler) HandleSessionAnalyticsList(w http.ResponseWriter, r *http.Request) {
@@ -256,21 +266,19 @@ func (h *Handler) HandleSessionAnalyticsList(w http.ResponseWriter, r *http.Requ
 		orderDir = "DESC"
 	}
 
-	// 构建 WHERE
-	args := []any{}
-	argCount := 1
+	// 构建 WHERE — 应用层 tenant/owner 过滤与 RLS GUC 同步生效：
+	//   - tenant 用户走 withTenantTx(tenantID)，RLS 兜底；
+	//   - super_admin/admin-key 走 withAllTenantReadOnlyTx()，显式 bypass GUC。
 	where := " WHERE 1=1"
+	args := []any{}
 	if tenantID != "" {
-		where += " AND ss.tenant_id = $" + strconv.Itoa(argCount)
 		args = append(args, tenantID)
-		argCount++
+		where += " AND ss.tenant_id = $1"
 	}
-	// 普通用户仅见自己名下的会话（owner_user 过滤走 session_dim join）
-	ownerFrag, ownerArgs, nextArg := ownerScopeClause(r, "sd.owner_user", argCount)
+	ownerFrag, ownerArgs, argCount := ownerScopeClause(r, "sd.owner_user", len(args)+1)
 	if ownerFrag != "" {
 		where += ownerFrag
 		args = append(args, ownerArgs...)
-		argCount = nextArg
 	}
 	if complianceStatus != "" {
 		where += " AND ss.compliance_status = $" + strconv.Itoa(argCount)
@@ -299,36 +307,47 @@ func (h *Handler) HandleSessionAnalyticsList(w http.ResponseWriter, r *http.Requ
 		argCount += 2
 	}
 
-	query := "SELECT " + sessionSummarySelectCols +
+	listQuery := "SELECT " + sessionSummarySelectCols +
 		" FROM session_summaries ss" +
 		" LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key" +
 		where + " ORDER BY ss." + orderBy + " " + orderDir +
 		" LIMIT $" + strconv.Itoa(argCount) +
 		" OFFSET $" + strconv.Itoa(argCount+1)
-	args = append(args, pageSize, offset)
+	pagedArgs := append([]any{}, args...)
+	pagedArgs = append(pagedArgs, pageSize, offset)
 
-	rows, err := h.db.Query(ctx, query, args...)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
-	}
-	defer rows.Close()
-
-	sessions := []AnalyticsSessionSummary{}
-	for rows.Next() {
-		s, err := scanSessionSummary(rows)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
-			return
-		}
-		sessions = append(sessions, s)
-	}
-
-	// 总数（WHERE 可能引用 sd.owner_user，需带上 session_dim join）
 	countQuery := "SELECT COUNT(*) FROM session_summaries ss" +
 		" LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key" + where
-	var total int
-	_ = h.db.QueryRow(ctx, countQuery, args[:len(args)-2]...).Scan(&total)
+
+	var (
+		sessions []AnalyticsSessionSummary
+		total    int
+	)
+	err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, listQuery, pagedArgs...)
+		if err != nil {
+			return fmt.Errorf("list query: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			s, err := scanSessionSummary(rows)
+			if err != nil {
+				return fmt.Errorf("scan row: %w", err)
+			}
+			sessions = append(sessions, s)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("list rows: %w", err)
+		}
+		if err := tx.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+			return fmt.Errorf("count query: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "session analytics list failed: "+err.Error())
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sessions":  sessions,
@@ -348,10 +367,10 @@ func (h *Handler) HandleSessionAnalyticsStats(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusServiceUnavailable, "db not available")
 		return
 	}
-	tenantID := effectiveScopeTenant(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
+	tenantID := effectiveScopeTenant(r)
 	query := `
 		SELECT
 			COALESCE(COUNT(*), 0),
@@ -371,7 +390,6 @@ func (h *Handler) HandleSessionAnalyticsStats(w http.ResponseWriter, r *http.Req
 		query += " AND ss.tenant_id = $1"
 		args = append(args, tenantID)
 	}
-	// 普通用户 owner 过滤
 	ownerFrag, ownerArgs, _ := ownerScopeClause(r, "sd.owner_user", len(args)+1)
 	if ownerFrag != "" {
 		query += ownerFrag
@@ -379,17 +397,19 @@ func (h *Handler) HandleSessionAnalyticsStats(w http.ResponseWriter, r *http.Req
 	}
 
 	var stats AnalyticsSessionStats
-	err := h.db.QueryRow(ctx, query, args...).Scan(
-		&stats.TotalSessions,
-		&stats.ActiveSessions,
-		&stats.TotalRequests,
-		&stats.TotalCost,
-		&stats.AvgCostPerSession,
-		&stats.AvgTokensPerSession,
-		&stats.AvgLatency,
-		&stats.ComplianceRate,
-		&stats.HighQualityRate,
-	)
+	err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, query, args...).Scan(
+			&stats.TotalSessions,
+			&stats.ActiveSessions,
+			&stats.TotalRequests,
+			&stats.TotalCost,
+			&stats.AvgCostPerSession,
+			&stats.AvgTokensPerSession,
+			&stats.AvgLatency,
+			&stats.ComplianceRate,
+			&stats.HighQualityRate,
+		)
+	})
 	if err != nil && err != pgx.ErrNoRows {
 		writeError(w, http.StatusInternalServerError, "stats query failed: "+err.Error())
 		return
@@ -417,33 +437,19 @@ func (h *Handler) HandleSessionAnalyticsDetail(w http.ResponseWriter, r *http.Re
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	// 普通用户 owner 访问检查
-	if !requireSessionOwnerAccess(w, r, ctx, h.db, gwSessionID) {
-		return
-	}
-
-	// 摘要
-	query := "SELECT " + sessionSummarySelectCols +
+	// Run owner check + summary + timeline + compliance inside a single
+	// RLS-scoped transaction so the read context cannot drift between the
+	// pre-check and the actual rows.
+	summaryQuery := "SELECT " + sessionSummarySelectCols +
 		" FROM session_summaries ss" +
 		" LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key" +
 		" WHERE ss.session_key = $1"
-	args := []any{gwSessionID}
+	summaryArgs := []any{gwSessionID}
 	if tenantID != "" {
-		query += " AND ss.tenant_id = $2"
-		args = append(args, tenantID)
+		summaryQuery += " AND ss.tenant_id = $2"
+		summaryArgs = append(summaryArgs, tenantID)
 	}
 
-	summary, err := scanSessionSummary(h.db.QueryRow(ctx, query, args...))
-	if err == pgx.ErrNoRows {
-		writeError(w, http.StatusNotFound, "session not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
-	}
-
-	// 请求时间线（直接查 request_logs，按 gw_session_id）
 	timelineQuery := `
 		SELECT request_id, ts, success, client_model, outbound_model,
 		       COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0),
@@ -452,38 +458,82 @@ func (h *Handler) HandleSessionAnalyticsDetail(w http.ResponseWriter, r *http.Re
 		       error_kind, request_preview, response_preview
 		FROM request_logs
 		WHERE gw_session_id = $1`
-	tArgs := []any{gwSessionID}
+	timelineArgs := []any{gwSessionID}
 	if tenantID != "" {
 		timelineQuery += " AND tenant_id = $2"
-		tArgs = append(tArgs, tenantID)
+		timelineArgs = append(timelineArgs, tenantID)
 	}
 	timelineQuery += " ORDER BY ts ASC LIMIT 100"
 
-	rows, err := h.db.Query(ctx, timelineQuery, tArgs...)
+	var (
+		summary  AnalyticsSessionSummary
+		timeline []RequestEvent
+		analysis SessionAnalysis
+		notFound bool
+	)
+	err := h.withSessionAnalyticsReadTx(ctx, r, func(tx pgx.Tx) error {
+		if !IsRegularUser(r) {
+			// skip the explicit owner check for admin tiers, but still re-check
+			// inside the tx so RLS applies uniformly.
+		} else {
+			ok, err := assertSessionOwnerAccessInTx(ctx, tx, r, gwSessionID)
+			if err != nil {
+				return fmt.Errorf("owner check: %w", err)
+			}
+			if !ok {
+				notFound = true
+				return nil
+			}
+		}
+
+		row := tx.QueryRow(ctx, summaryQuery, summaryArgs...)
+		s, err := scanSessionSummary(row)
+		if err == pgx.ErrNoRows {
+			notFound = true
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("summary query: %w", err)
+		}
+		summary = s
+
+		rows, err := tx.Query(ctx, timelineQuery, timelineArgs...)
+		if err != nil {
+			return fmt.Errorf("timeline query: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var e RequestEvent
+			var ts time.Time
+			if err := rows.Scan(
+				&e.RequestID, &ts, &e.Success, &e.ClientModel, &e.UpstreamModel,
+				&e.PromptTokens, &e.CompletionTokens, &e.CostUSD, &e.LatencyMs,
+				&e.WorkType, &e.CompressionStrategy, &e.CacheReadTokens,
+				&e.ErrorMessage, &e.RequestPreview, &e.ResponsePreview,
+			); err != nil {
+				return fmt.Errorf("timeline scan: %w", err)
+			}
+			e.CreatedAt = ts
+			timeline = append(timeline, e)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("timeline rows: %w", err)
+		}
+
+		analysis, err = h.buildSessionAnalysisInTx(ctx, tx, tenantID, gwSessionID, timeline)
+		if err != nil {
+			return fmt.Errorf("session analysis: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "timeline query failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "session analytics detail failed: "+err.Error())
 		return
 	}
-	defer rows.Close()
-
-	timeline := []RequestEvent{}
-	for rows.Next() {
-		var e RequestEvent
-		var ts time.Time
-		if err := rows.Scan(
-			&e.RequestID, &ts, &e.Success, &e.ClientModel, &e.UpstreamModel,
-			&e.PromptTokens, &e.CompletionTokens, &e.CostUSD, &e.LatencyMs,
-			&e.WorkType, &e.CompressionStrategy, &e.CacheReadTokens,
-			&e.ErrorMessage, &e.RequestPreview, &e.ResponsePreview,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "timeline scan failed: "+err.Error())
-			return
-		}
-		e.CreatedAt = ts
-		timeline = append(timeline, e)
+	if notFound {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
 	}
-
-	analysis := h.buildSessionAnalysis(ctx, tenantID, gwSessionID, timeline)
 
 	writeJSON(w, http.StatusOK, AnalyticsSessionDetail{
 		Summary:  summary,
@@ -544,8 +594,11 @@ func (h *Handler) HandleSessionAnalyticsExport(w http.ResponseWriter, r *http.Re
 	_, _ = w.Write(result)
 }
 
-// buildSessionAnalysis 构建会话分析（成本/token 分解 + 模型切换 + 节省）
-func (h *Handler) buildSessionAnalysis(ctx context.Context, tenantID, gwSessionID string, timeline []RequestEvent) SessionAnalysis {
+// buildSessionAnalysisInTx builds the per-session cost/token/model analysis
+// using the timeline already loaded by the caller and queries compliance rows
+// in the same RLS tx. Errors from compliance reads are propagated so the
+// handler can return 5xx instead of silently swallowing the failure.
+func (h *Handler) buildSessionAnalysisInTx(ctx context.Context, tx pgx.Tx, tenantID, gwSessionID string, timeline []RequestEvent) (SessionAnalysis, error) {
 	analysis := SessionAnalysis{
 		ModelSwitches:    []ModelSwitch{},
 		ComplianceIssues: []ComplianceIssue{},
@@ -558,7 +611,6 @@ func (h *Handler) buildSessionAnalysis(ctx context.Context, tenantID, gwSessionI
 		},
 	}
 
-	// 模型切换检测
 	var lastModel string
 	for i, event := range timeline {
 		if i > 0 && event.UpstreamModel != "" && event.UpstreamModel != lastModel && lastModel != "" {
@@ -575,10 +627,8 @@ func (h *Handler) buildSessionAnalysis(ctx context.Context, tenantID, gwSessionI
 		}
 	}
 
-	// 成本分解 + token 分布（基于 timeline 实际值）
 	var cacheRead int64
 	var compressedCount int
-	var outboundTokenEst int64
 	for _, event := range timeline {
 		analysis.CostBreakdown.TotalCost += event.CostUSD
 		analysis.TokenDistribution.PromptTokens += int64(event.PromptTokens)
@@ -599,62 +649,58 @@ func (h *Handler) buildSessionAnalysis(ctx context.Context, tenantID, gwSessionI
 		}
 	}
 	analysis.TokenDistribution.TotalTokens = analysis.TokenDistribution.PromptTokens + analysis.TokenDistribution.CompletionTokens
-	// 用 session_summaries 已拆分的 input/output 比例（更准）
-	analysis.CostBreakdown.InputCost = analysis.CostBreakdown.TotalCost * 0.4
-	analysis.CostBreakdown.OutputCost = analysis.CostBreakdown.TotalCost * 0.6
 	if total := analysis.TokenDistribution.TotalTokens; total > 0 {
 		ratio := float64(analysis.TokenDistribution.PromptTokens) / float64(total)
 		analysis.CostBreakdown.InputCost = analysis.CostBreakdown.TotalCost * ratio
 		analysis.CostBreakdown.OutputCost = analysis.CostBreakdown.TotalCost - analysis.CostBreakdown.InputCost
+	} else {
+		analysis.CostBreakdown.InputCost = analysis.CostBreakdown.TotalCost * 0.4
+		analysis.CostBreakdown.OutputCost = analysis.CostBreakdown.TotalCost * 0.6
 	}
 
-	// cache 节省（估算：cache_read 按 input 价 × 0.1 计）
 	if cacheRead > 0 {
-		analysis.CacheSavings = &CacheSavings{
-			CacheReadTokens:   cacheRead,
-			EstimatedSavedUSD: 0, // 价格未知，先占位；后续按模型单价计算
-		}
+		analysis.CacheSavings = &CacheSavings{CacheReadTokens: cacheRead}
 	}
 	if compressedCount > 0 {
-		analysis.CompressionSavings = &CompressionSavings{
-			CompressedRequests: compressedCount,
-			OutboundTokenEst:   outboundTokenEst,
-		}
+		analysis.CompressionSavings = &CompressionSavings{CompressedRequests: compressedCount}
 	}
 
-	// 合规问题（prompt_injection + output_compliance）
-	if h.db != nil {
-		complianceQuery := `
-			SELECT request_id, detected_at, issue_type, severity, evidence, action_taken
-			FROM (
-				SELECT request_id, detected_at, issue_type, severity, evidence, action_taken
-				FROM prompt_injection_detections
-				WHERE session_key = $1
-				UNION ALL
-				SELECT request_id, detected_at, issue_type, severity, evidence, action_taken
-				FROM output_compliance_audit
-				WHERE session_key = $1
-			) combined
-			ORDER BY detected_at DESC
-			LIMIT 20`
-		cArgs := []any{gwSessionID}
-		if tenantID != "" {
-			complianceQuery = strings.Replace(complianceQuery, "WHERE session_key = $1", "WHERE session_key = $1 AND tenant_id = $2", -1)
-			cArgs = append(cArgs, tenantID)
+	complianceQuery := `
+		SELECT request_id, detected_at, issue_type, severity, evidence, action_taken
+		FROM (
+			SELECT request_id, detected_at, issue_type, severity, evidence, action_taken, tenant_id
+			FROM prompt_injection_detections
+			WHERE session_key = $1
+			UNION ALL
+			SELECT request_id, detected_at, issue_type, severity, evidence, action_taken, tenant_id
+			FROM output_compliance_audit
+			WHERE session_key = $1
+		) combined
+		WHERE session_key = $1`
+	cArgs := []any{gwSessionID}
+	if tenantID != "" {
+		complianceQuery += " AND tenant_id = $2"
+		cArgs = append(cArgs, tenantID)
+	}
+	complianceQuery += " ORDER BY detected_at DESC LIMIT 20"
+
+	rows, err := tx.Query(ctx, complianceQuery, cArgs...)
+	if err != nil {
+		return analysis, fmt.Errorf("compliance query: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ci ComplianceIssue
+		if err := rows.Scan(&ci.RequestID, &ci.Timestamp, &ci.IssueType, &ci.Severity, &ci.Description, &ci.ActionTaken); err != nil {
+			return analysis, fmt.Errorf("compliance scan: %w", err)
 		}
-		rows, err := h.db.Query(ctx, complianceQuery, cArgs...)
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var ci ComplianceIssue
-				if err := rows.Scan(&ci.RequestID, &ci.Timestamp, &ci.IssueType, &ci.Severity, &ci.Description, &ci.ActionTaken); err == nil {
-					analysis.ComplianceIssues = append(analysis.ComplianceIssues, ci)
-				}
-			}
-		}
+		analysis.ComplianceIssues = append(analysis.ComplianceIssues, ci)
+	}
+	if err := rows.Err(); err != nil {
+		return analysis, fmt.Errorf("compliance rows: %w", err)
 	}
 
-	return analysis
+	return analysis, nil
 }
 
 // RouteSessionAnalytics dispatches sub-routes under /api/admin/session-analytics/.

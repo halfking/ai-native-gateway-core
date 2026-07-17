@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -60,18 +61,18 @@ const (
 type Stage string
 
 const (
-	StageReceiveRequest  Stage = "receive_request"   // 中间件
-	StageAuthenticate    Stage = "authenticate"      // 鉴权
-	StageRateLimit       Stage = "rate_limit_check"  // RPM/TPM 限流
-	StageBodyParse       Stage = "body_parse"        // body 读取/解析
-	StageSessionLookup   Stage = "session_lookup"    // 会话查找/创建
-	StageRouteResolve    Stage = "route_resolve"     // 路由解析 (候选列表)
-	StageRouteCredential Stage = "route_credential"  // 选中具体凭据
-	StageUpstreamRequest Stage = "upstream_request"  // 向上游发出 HTTP
-	StageStreamStart     Stage = "stream_start"      // 首字节到达 (TTFB)
-	StageStreamChunk     Stage = "stream_chunk"      // 流式 chunk 汇总
-	StageStreamComplete  Stage = "stream_complete"   // 上游 [DONE] 到达
-	StageRequestComplete Stage = "request_complete"  // 整个请求退出(成功/失败)
+	StageReceiveRequest  Stage = "receive_request"  // 中间件
+	StageAuthenticate    Stage = "authenticate"     // 鉴权
+	StageRateLimit       Stage = "rate_limit_check" // RPM/TPM 限流
+	StageBodyParse       Stage = "body_parse"       // body 读取/解析
+	StageSessionLookup   Stage = "session_lookup"   // 会话查找/创建
+	StageRouteResolve    Stage = "route_resolve"    // 路由解析 (候选列表)
+	StageRouteCredential Stage = "route_credential" // 选中具体凭据
+	StageUpstreamRequest Stage = "upstream_request" // 向上游发出 HTTP
+	StageStreamStart     Stage = "stream_start"     // 首字节到达 (TTFB)
+	StageStreamChunk     Stage = "stream_chunk"     // 流式 chunk 汇总
+	StageStreamComplete  Stage = "stream_complete"  // 上游 [DONE] 到达
+	StageRequestComplete Stage = "request_complete" // 整个请求退出(成功/失败)
 )
 
 // Module 涉及的子模块,便于按模块聚合统计。
@@ -109,23 +110,23 @@ type TraceEvent struct {
 // 各字段都是 best-effort: 调用方未提供时为空。
 // 序列化时 fields map 按 key 排序,确保 Redis 与 PG 中字段顺序一致。
 type Snapshot struct {
-	CapturedAt     time.Time      `json:"captured_at"`           // 快照时刻
-	Candidates     []any          `json:"candidates,omitempty"`  // 当前候选列表(provider_id/credential_id/状态)
-	RoutingState   string         `json:"routing_state,omitempty"`
-	CredentialMode string         `json:"credential_mode,omitempty"`
-	NodeProbeState map[string]any `json:"node_probe_state,omitempty"` // 当前模型/凭据 探测状态
+	CapturedAt      time.Time            `json:"captured_at"`          // 快照时刻
+	Candidates      []any                `json:"candidates,omitempty"` // 当前候选列表(provider_id/credential_id/状态)
+	RoutingState    string               `json:"routing_state,omitempty"`
+	CredentialMode  string               `json:"credential_mode,omitempty"`
+	NodeProbeState  map[string]any       `json:"node_probe_state,omitempty"` // 当前模型/凭据 探测状态
 	ConcurrencySlot *ConcurrencySnapshot `json:"concurrency_slot,omitempty"`
-	CircuitState   string         `json:"circuit_state,omitempty"`
-	FailureHint    string         `json:"failure_hint,omitempty"` // 人工可读的归类提示
-	Extra          map[string]any `json:"extra,omitempty"`
+	CircuitState    string               `json:"circuit_state,omitempty"`
+	FailureHint     string               `json:"failure_hint,omitempty"` // 人工可读的归类提示
+	Extra           map[string]any       `json:"extra,omitempty"`
 }
 
 // ConcurrencySnapshot 凭据并发槽位快照。
 type ConcurrencySnapshot struct {
 	CredentialID int    `json:"credential_id"`
-	InUse        int    `json:"in_use"`         // 已被占用的槽位
-	MaxSlots     int    `json:"max_slots"`      // 总槽位
-	Blocked      bool   `json:"blocked"`        // 触发限流
+	InUse        int    `json:"in_use"`    // 已被占用的槽位
+	MaxSlots     int    `json:"max_slots"` // 总槽位
+	Blocked      bool   `json:"blocked"`   // 触发限流
 	Reason       string `json:"reason,omitempty"`
 }
 
@@ -485,6 +486,11 @@ func unmarshalTrace(raw, fallbackID string) (*RequestTrace, error) {
 // LoadFromPG 是 PG 兜底读取。供 admin/request_trace.go 在 Redis miss 时调用。
 //
 // 独立函数(非 RedisRecorder 方法),便于测试。
+//
+// 2026-07-17: request_id 不存在 → 返回 (nil, nil),而不是把 pgx.ErrNoRows 抛给上层。
+// "没有 trace 数据" 是预期路径 (例如尚未 flush 的进行中请求、或极老的 history 行),
+// 不应该作为 HTTP 500 报给前端。原实现会让前端展示 "no rows in result set" 红色错误,
+// 实际只是该行尚无 trace_events JSONB;此处把 ErrNoRows 当成"未找到"返回。
 func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*RequestTrace, error) {
 	if requestID == "" {
 		return nil, ErrEmptyRequestID
@@ -497,6 +503,11 @@ func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*Reque
 		`SELECT trace_events FROM request_logs WHERE request_id = $1 LIMIT 1`,
 		requestID).Scan(&raw)
 	if err != nil {
+		// 2026-07-17: 没有 trace_events JSONB 或 request_id 不存在都属于"没数据",
+		// 不算 load 失败。让上层进入 not-found / probe-synthesize 路径即可。
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if len(raw) == 0 {
