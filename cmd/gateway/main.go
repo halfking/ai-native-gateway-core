@@ -2350,19 +2350,19 @@ func main() {
 			decider.SetDefaultRoutingStore(defaultRoutingStore)
 			// 2026-07-17 (audit H1): wire the apiKeyID -> tenantID resolver so
 			// tenant-scoped default routing rows can actually match. Without
-			// this, TenantResolver stays nil, tenantID is always 0, and every
+			// this, TenantResolver stays nil, tenantID is always empty, and every
 			// tenant-level rule an operator configures silently never resolves
 			// (Resolve falls back to platform-level rows). Best-effort: a
-			// missing/disabled key resolves to tenant 0 (platform-level).
-			decider.SetTenantResolver(func(apiKeyID int) int64 {
+			// missing/disabled key resolves to an empty code (platform-level).
+			decider.SetTenantResolver(func(apiKeyID int) string {
 				if apiKeyID <= 0 {
-					return 0
+					return ""
 				}
-				var tid int64
+				var tid string
 				lookupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
 				_ = dbConn.Pool().QueryRow(lookupCtx,
-					`SELECT COALESCE(tenant_id, 0) FROM api_keys WHERE id = $1`,
+					`SELECT COALESCE(tenant_id, '') FROM api_keys WHERE id = $1`,
 					apiKeyID).Scan(&tid)
 				return tid
 			})
@@ -2814,6 +2814,12 @@ func main() {
 			mux.Handle("/v1/messages", v2DispatchHandler(v2Deps, messagesHandler))
 			mux.Handle("/v1/responses", v2DispatchHandler(v2Deps, responsesHandler))
 			slog.Info("v2 pipeline: 4 v1 endpoints overridden with Pipeline wrappers")
+			// 2026-07-18: 注入敏感词 AC 引擎，使 admin API 可实时重载词库
+			if v2Deps.SensitiveWordEngine != nil {
+				adminHandler.SetSensitiveWordEngine(v2Deps.SensitiveWordEngine)
+				slog.Info("admin: sensitive word engine wired",
+					"words", v2Deps.SensitiveWordEngine.LoadedWordCount())
+			}
 		}
 	}
 
