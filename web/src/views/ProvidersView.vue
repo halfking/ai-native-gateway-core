@@ -1360,16 +1360,23 @@ onUnmounted(() => {
 
 <style scoped>
 /* ── Table Base Styles ──────────────────────────────────────────────────── */
+.card {
+  overflow-x: auto;
+}
 table {
   table-layout: fixed;
   width: 100%;
-  overflow-x: visible;
+  min-width: 100%;
 }
 table td, table th {
   word-break: break-word;
   white-space: normal;
   overflow-wrap: break-word;
   max-width: 0;
+}
+table code {
+  white-space: normal;
+  word-break: break-all;
 }
 
 /* ── Filter Bar ─────────────────────────────────────────────────────────── */
