@@ -66,12 +66,17 @@ func (r *RedisRPMLimiter) CheckAndReserve(ctx context.Context, providerID, crede
 	if limit <= 0 {
 		return true, 0, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return false, 0, err
+	}
 	if r.client == nil {
 		return r.fallback.CheckAndReserve(ctx, providerID, credentialID, limit)
 	}
 
+	redisCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+	defer cancel()
 	now := float64(time.Now().UnixNano()) / float64(time.Second)
-	result, err := r.script.Run(ctx, r.client, []string{r.redisKey(providerID, credentialID)}, limit, now, int(rpmWindowSeconds)).Slice()
+	result, err := r.script.Run(redisCtx, r.client, []string{r.redisKey(providerID, credentialID)}, limit, now, int(rpmWindowSeconds)).Slice()
 	if err == nil && len(result) == 2 {
 		allowed, okAllowed := redisInt(result[0])
 		count, okCount := redisInt(result[1])
@@ -85,6 +90,9 @@ func (r *RedisRPMLimiter) CheckAndReserve(ctx context.Context, providerID, crede
 	}
 
 	slog.Warn("redis rpm limiter failed, fallback to memory", "error", err, "provider_id", providerID, "credential_id", credentialID)
+	if ctx.Err() != nil {
+		return false, 0, ctx.Err()
+	}
 	return r.fallback.CheckAndReserve(ctx, providerID, credentialID, limit)
 }
 
