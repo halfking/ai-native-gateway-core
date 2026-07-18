@@ -598,12 +598,13 @@ func (w *NodeProbeWorker) ProbeSync(
 			res := freshResult{job: j}
 			res.direct = w.probeDirect(ctx, j.credID, j.model)
 			if res.direct.ok {
-				res.gateway = w.probeGateway(ctx, j.credID, j.model)
-			}
-			if res.direct.ok {
+				// CRITICAL: update state BEFORE probeGateway so the
+				// routing layer sees the restored credential, not the
+				// stale cooling state left by the original 5xx.
 				w.updateBindingAvailability(ctx, j.credID, j.model, true, "")
 				w.updateCredentialHealth(ctx, j.credID)
 				w.updateObservedState(ctx, j.credID, j.model, true, "", time.Now())
+				res.gateway = w.probeGateway(ctx, j.credID, j.model)
 			} else {
 				w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode)
 				recoverAt := time.Now().Add(5 * time.Minute)
@@ -942,20 +943,21 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 
 	// Round 1: direct upstream
 	direct := w.probeDirect(ctx, credID, model)
-	// Round 2: gateway
+	// CRITICAL: update state BEFORE probeGateway so the routing layer
+	// sees the restored credential, not the stale cooling state from
+	// the original 5xx or transient failure.
+	if direct.ok {
+		w.updateBindingAvailability(ctx, credID, model, true, "")
+		w.updateCredentialHealth(ctx, credID)
+		w.updateObservedState(ctx, credID, model, true, "", time.Now())
+	}
+	// Round 2: gateway — now sees the restored state from the direct round
 	gw := w.probeGateway(ctx, credID, model)
 
 	success := direct.ok && gw.ok
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "gateway", attempt, trigger, gw)
-	// Only the direct round proves the health of this credential. The gateway
-	// round may select a different candidate, so its result must not mutate
-	// this credential's routing state.
-	if direct.ok {
-		w.updateBindingAvailability(ctx, credID, model, true, "")
-		w.updateCredentialHealth(ctx, credID)
-		w.updateObservedState(ctx, credID, model, true, "", time.Now())
-	} else {
+	if !direct.ok {
 		w.updateBindingAvailability(ctx, credID, model, false, direct.errCode)
 		recoverAt := time.Now().Add(5 * time.Minute)
 		w.updateObservedState(ctx, credID, model, false, direct.errCode, recoverAt)

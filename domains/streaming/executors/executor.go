@@ -1373,6 +1373,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	var lastErr error
 	var lastKind errorsx.ErrorKind
 	var attempts []AttemptRecord
+	// Track the last transient-failed credential so the sync retry loop
+	// can inline-probe it before re-planning candidates, bypassing the
+	// 5s ActiveProbeWorker backoff.
+	var lastTransientCred credentialstate.NoCandidatesCandidate
 	tried := 0
 
 	// 2026-07-09: 会话级凭据黑名单（修复 NVIDIA NIM 连续失败不降级问题）
@@ -2142,6 +2146,20 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			kind == errorsx.KindUpstreamDown ||
 			kind == errorsx.KindEmptyResponse {
 
+			// Track the last KindTransient credential for inline probe
+			// in the sync retry loop. We specifically track KindTransient
+			// (5xx overlay) because the sync retry loop's 1s window is
+			// shorter than the ActiveProbeWorker's 5s backoff, so the
+			// credential would still be in cooling state when re-planned.
+			if kind == errorsx.KindTransient {
+				lastTransientCred = credentialstate.NoCandidatesCandidate{
+					CredentialID: cand.CredentialID,
+					ProviderID:   cand.ProviderID,
+					RawModel:     candidateRawModel(cand),
+					BillingMode:  cand.BillingMode,
+				}
+			}
+
 			slog.Warn("executor: transient error, trying next candidate",
 				"kind", kind,
 				"credential_id", cand.CredentialID,
@@ -2202,6 +2220,23 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 			if err := params.R.Context().Err(); err != nil {
 				break syncRetryLoop
+			}
+
+			// Inline probe: if the previous round had a KindTransient (5xx)
+			// failure, synchronously probe that credential before
+			// re-planning. This bridges the gap between the 5s
+			// ActiveProbeWorker backoff and the 1s retry interval so the
+			// credential can recover within the sync retry window.
+			if e.ProbeSync != nil && lastTransientCred.CredentialID != 0 {
+				probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				recovered := e.ProbeSync(probeCtx, []credentialstate.NoCandidatesCandidate{lastTransientCred}, params.TenantID, params.RequestID)
+				probeCancel()
+				if recovered {
+					slog.Info("sync_retry: transient credential recovered by inline probe",
+						"credential_id", lastTransientCred.CredentialID,
+						"raw_model", lastTransientCred.RawModel,
+					)
+				}
 			}
 
 			// 重新推导候选。

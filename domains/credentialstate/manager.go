@@ -283,7 +283,8 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	probeImmediately := errKind == errorsx.KindNetwork ||
 		errKind == errorsx.KindTimeout ||
 		errKind == errorsx.KindUpstreamDown ||
-		errKind == errorsx.KindStreamTimeout
+		errKind == errorsx.KindStreamTimeout ||
+		errKind == errorsx.KindTransient
 	if m.activeProbeSubmitter != nil &&
 		(probeImmediately || state.ConsecutiveFails >= m.activeProbeThreshold) {
 		// 闪断保护：2秒内有成功 → 不触发探测，避免误判瞬时网络抖动
