@@ -35,7 +35,7 @@ func NewMessageReconstructor() *MessageReconstructor {
 func (r *MessageReconstructor) ReconstructFromDeltas(v2Bodies []V2Body) ([][]Message, error) {
 	var history [][]Message
 	var accumulated []Message
-	
+
 	for _, body := range v2Bodies {
 		// Parse request delta
 		var requestDelta []Message
@@ -44,7 +44,7 @@ func (r *MessageReconstructor) ReconstructFromDeltas(v2Bodies []V2Body) ([][]Mes
 				return nil, fmt.Errorf("turn %d: parse request_delta: %w", body.TurnNo, err)
 			}
 		}
-		
+
 		// Parse response delta
 		var responseDelta []Message
 		if len(body.ResponseDelta) > 0 && string(body.ResponseDelta) != "null" {
@@ -52,19 +52,19 @@ func (r *MessageReconstructor) ReconstructFromDeltas(v2Bodies []V2Body) ([][]Mes
 				return nil, fmt.Errorf("turn %d: parse response_delta: %w", body.TurnNo, err)
 			}
 		}
-		
+
 		// Accumulate request delta
 		accumulated = append(accumulated, requestDelta...)
-		
+
 		// Accumulate response delta
 		accumulated = append(accumulated, responseDelta...)
-		
+
 		// Snapshot after this turn
 		turnSnapshot := make([]Message, len(accumulated))
 		copy(turnSnapshot, accumulated)
 		history = append(history, turnSnapshot)
 	}
-	
+
 	return history, nil
 }
 
@@ -75,19 +75,19 @@ func (r *MessageReconstructor) ValidateReconstruction(
 	v2Bodies []V2Body,
 ) []ReconstructionResult {
 	var results []ReconstructionResult
-	
+
 	// Build submit mode map
 	submitModes := make(map[int]string)
 	for _, turn := range v2Turns {
 		submitModes[turn.TurnNo] = turn.SubmitMode
 	}
-	
+
 	// Build V1 bodies map by request_id
 	v1Bodies := make(map[string]json.RawMessage)
 	for _, turn := range v1Turns {
 		v1Bodies[turn.RequestID] = turn.RequestBody
 	}
-	
+
 	// Reconstruct from V2 deltas
 	reconstructed, err := r.ReconstructFromDeltas(v2Bodies)
 	if err != nil {
@@ -98,7 +98,7 @@ func (r *MessageReconstructor) ValidateReconstruction(
 		})
 		return results
 	}
-	
+
 	// Validate each turn
 	for i, body := range v2Bodies {
 		result := ReconstructionResult{
@@ -106,7 +106,7 @@ func (r *MessageReconstructor) ValidateReconstruction(
 			SubmitMode: submitModes[body.TurnNo],
 			Status:     "ok",
 		}
-		
+
 		// Get V1 request body
 		v1Body, exists := v1Bodies[body.RequestID]
 		if !exists {
@@ -115,7 +115,7 @@ func (r *MessageReconstructor) ValidateReconstruction(
 			results = append(results, result)
 			continue
 		}
-		
+
 		// Parse V1 messages
 		var v1Messages struct {
 			Messages []Message `json:"messages"`
@@ -126,7 +126,7 @@ func (r *MessageReconstructor) ValidateReconstruction(
 			results = append(results, result)
 			continue
 		}
-		
+
 		// Get reconstructed messages for this turn
 		if i >= len(reconstructed) {
 			result.Status = "error"
@@ -134,9 +134,9 @@ func (r *MessageReconstructor) ValidateReconstruction(
 			results = append(results, result)
 			continue
 		}
-		
+
 		reconstructedMsgs := reconstructed[i]
-		
+
 		// Compare based on submit mode
 		switch result.SubmitMode {
 		case "full":
@@ -151,7 +151,7 @@ func (r *MessageReconstructor) ValidateReconstruction(
 			} else {
 				result.Description = "Full mode: messages match"
 			}
-			
+
 		case "delta", "snapshot", "inferred_compressed":
 			// For compressed modes, we can't do strict comparison
 			result.Status = "warning"
@@ -159,15 +159,15 @@ func (r *MessageReconstructor) ValidateReconstruction(
 				"%s mode: strict comparison not possible (V1=%d msgs, V2=%d msgs)",
 				result.SubmitMode, len(v1Messages.Messages), len(reconstructedMsgs),
 			)
-			
+
 		default:
 			result.Status = "warning"
 			result.Description = fmt.Sprintf("Unknown submit_mode: %s", result.SubmitMode)
 		}
-		
+
 		results = append(results, result)
 	}
-	
+
 	return results
 }
 
@@ -176,13 +176,13 @@ func messagesEqual(a, b []Message) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	
+
 	for i := range a {
 		if !messageEqual(a[i], b[i]) {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
@@ -192,40 +192,40 @@ func messageEqual(a, b Message) bool {
 	if a.Role != b.Role {
 		return false
 	}
-	
+
 	// Compare content
 	if a.Content != b.Content {
 		return false
 	}
-	
+
 	// Compare name
 	if a.Name != b.Name {
 		return false
 	}
-	
+
 	// Compare tool_call_id
 	if a.ToolCallID != b.ToolCallID {
 		return false
 	}
-	
+
 	// For tool_calls, do a shallow comparison (count and structure)
 	// Deep comparison of tool_calls is complex and may have minor variations
 	if len(a.ToolCalls) != len(b.ToolCalls) {
 		return false
 	}
-	
+
 	return true
 }
 
 // describeMessageDiff generates a human-readable diff description
 func describeMessageDiff(v1, v2 []Message) []string {
 	var diffs []string
-	
+
 	maxLen := len(v1)
 	if len(v2) > maxLen {
 		maxLen = len(v2)
 	}
-	
+
 	for i := 0; i < maxLen; i++ {
 		if i >= len(v1) {
 			diffs = append(diffs, fmt.Sprintf("msg[%d]: present in V2 but not V1", i))
@@ -235,17 +235,17 @@ func describeMessageDiff(v1, v2 []Message) []string {
 			diffs = append(diffs, fmt.Sprintf("msg[%d]: present in V1 but not V2", i))
 			continue
 		}
-		
+
 		v1Msg := v1[i]
 		v2Msg := v2[i]
-		
+
 		if v1Msg.Role != v2Msg.Role {
 			diffs = append(diffs, fmt.Sprintf(
 				"msg[%d]: role mismatch (V1=%s, V2=%s)",
 				i, v1Msg.Role, v2Msg.Role,
 			))
 		}
-		
+
 		if v1Msg.Content != v2Msg.Content {
 			v1Preview := v1Msg.Content
 			if len(v1Preview) > 50 {
@@ -261,10 +261,10 @@ func describeMessageDiff(v1, v2 []Message) []string {
 			))
 		}
 	}
-	
+
 	if len(diffs) > 10 {
 		diffs = append(diffs[:10], fmt.Sprintf("... and %d more differences", len(diffs)-10))
 	}
-	
+
 	return diffs
 }

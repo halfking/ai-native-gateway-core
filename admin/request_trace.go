@@ -146,21 +146,21 @@ func (h *RequestTraceHandler) loadTrace(ctx context.Context, requestID string) (
 			return trace, "redis", nil
 		}
 	}
-		if h.db != nil {
-			trace, err := gwtrace.LoadFromPG(ctx, h.db, requestID)
-			if err != nil {
-				return nil, "", errTraceUnavailable
-			}
-			if trace != nil {
-				return trace, "postgres", nil
-			}
-			if state, err := h.requestTraceState(ctx, requestID); err != nil {
-				return nil, "", errTraceUnavailable
-			} else if state == traceStateNotReady {
-				return nil, "", errTraceNotReady
-			} else if state == traceStateUnavailable {
-				return nil, "", errTraceUnavailable
-			}
+	if h.db != nil {
+		trace, err := gwtrace.LoadFromPG(ctx, h.db, requestID)
+		if err != nil {
+			return nil, "", errTraceUnavailable
+		}
+		if trace != nil {
+			return trace, "postgres", nil
+		}
+		if state, err := h.requestTraceState(ctx, requestID); err != nil {
+			return nil, "", errTraceUnavailable
+		} else if state == traceStateNotReady {
+			return nil, "", errTraceNotReady
+		} else if state == traceStateUnavailable {
+			return nil, "", errTraceUnavailable
+		}
 
 		// Probe fallback: synthesize a trace from node_probe_runs so the
 		// /trace + /ai-prompt endpoints work for probe rows.
@@ -196,7 +196,6 @@ func (h *RequestTraceHandler) requestTraceState(ctx context.Context, requestID s
 	}
 	return traceStateUnavailable, nil
 }
-
 
 // aiPromptRequest 是 POST /ai-prompt 的 body。
 type aiPromptRequest struct {

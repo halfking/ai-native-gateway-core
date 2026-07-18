@@ -12,94 +12,94 @@ import (
 
 // V1Turn represents a turn from request_logs (V1 schema)
 type V1Turn struct {
-	RequestID   string
-	Ts          time.Time
-	SessionID   string
-	TenantID    string
-	ClientModel string
-	ProviderID  string
+	RequestID    string
+	Ts           time.Time
+	SessionID    string
+	TenantID     string
+	ClientModel  string
+	ProviderID   string
 	CredentialID string
-	
+
 	// Usage is stored as JSONB in request_logs
-	Usage       json.RawMessage
-	CostUSD     float64
-	
+	Usage   json.RawMessage
+	CostUSD float64
+
 	// Compression metadata
 	CompressionMeta json.RawMessage
-	
+
 	// Request body (for bodies validation)
-	RequestBody json.RawMessage
+	RequestBody  json.RawMessage
 	ResponseBody json.RawMessage
-	
+
 	Success bool
 }
 
 // V2Turn represents a turn from session_turns (V2 schema)
 type V2Turn struct {
-	RequestID        string
-	TurnNo           int
-	Ts               time.Time
-	SessionID        string
-	TenantID         string
-	
-	SubmitMode       string
-	
-	Model            string
-	Provider         string
-	CredentialID     string
-	
+	RequestID string
+	TurnNo    int
+	Ts        time.Time
+	SessionID string
+	TenantID  string
+
+	SubmitMode string
+
+	Model        string
+	Provider     string
+	CredentialID string
+
 	PromptTokens     int
 	CompletionTokens int
 	CacheReadTokens  int
 	CacheWriteTokens int
 	CostUSD          float64
-	
+
 	InjectionVerdict string
 	OutputVerdict    string
-	
-	LatencyMs        int
-	StatusCode       int
-	Success          bool
-	ErrorKind        string
-	
-	SourceKind       string
-	Quality          string
+
+	LatencyMs  int
+	StatusCode int
+	Success    bool
+	ErrorKind  string
+
+	SourceKind string
+	Quality    string
 }
 
 // V2Body represents a turn's bodies from session_bodies
 type V2Body struct {
-	SessionID    string
-	TurnNo       int
-	TenantID     string
-	RequestID    string
-	Ts           time.Time
-	
+	SessionID string
+	TurnNo    int
+	TenantID  string
+	RequestID string
+	Ts        time.Time
+
 	RequestDelta  json.RawMessage
 	ResponseDelta json.RawMessage
 	OutboundBody  json.RawMessage
-	
+
 	RequestAttachments  json.RawMessage
 	ResponseAttachments json.RawMessage
 }
 
 // V2Session represents the session snapshot from sessions table
 type V2Session struct {
-	SessionID   string
-	TenantID    string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	Status      string
-	
-	TotalTurns  int
-	TotalTokens int
+	SessionID string
+	TenantID  string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Status    string
+
+	TotalTurns   int
+	TotalTokens  int
 	TotalCostUSD float64
-	
+
 	LastTurnNo          int
 	LastRequestSummary  string
 	LastResponseSummary string
 	LastModel           string
 	LastProvider        string
-	
+
 	PrimaryRequestID string
 }
 
@@ -134,13 +134,13 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY ts ASC
 	`
-	
+
 	rows, err := l.db.Query(ctx, query, tenantID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query request_logs: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var turns []V1Turn
 	for rows.Next() {
 		var turn V1Turn
@@ -164,11 +164,11 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 		}
 		turns = append(turns, turn)
 	}
-	
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate request_logs: %w", err)
 	}
-	
+
 	return turns, nil
 }
 
@@ -202,13 +202,13 @@ func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID str
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
 	`
-	
+
 	rows, err := l.db.Query(ctx, query, tenantID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query session_turns: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var turns []V2Turn
 	for rows.Next() {
 		var turn V2Turn
@@ -241,11 +241,11 @@ func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID str
 		}
 		turns = append(turns, turn)
 	}
-	
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate session_turns: %w", err)
 	}
-	
+
 	return turns, nil
 }
 
@@ -267,13 +267,13 @@ func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID st
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
 	`
-	
+
 	rows, err := l.db.Query(ctx, query, tenantID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query session_bodies: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var bodies []V2Body
 	for rows.Next() {
 		var body V2Body
@@ -294,11 +294,11 @@ func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID st
 		}
 		bodies = append(bodies, body)
 	}
-	
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate session_bodies: %w", err)
 	}
-	
+
 	return bodies, nil
 }
 
@@ -324,7 +324,7 @@ func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID s
 		WHERE tenant_id = $1 AND session_id = $2
 		LIMIT 1
 	`
-	
+
 	var session V2Session
 	err := l.db.QueryRow(ctx, query, tenantID, sessionID).Scan(
 		&session.SessionID,
@@ -342,21 +342,21 @@ func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID s
 		&session.LastProvider,
 		&session.PrimaryRequestID,
 	)
-	
+
 	if err == pgx.ErrNoRows {
 		return nil, nil // Session not found in V2
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query sessions: %w", err)
 	}
-	
+
 	return &session, nil
 }
 
 // LoadSessionsInRange loads session IDs within a date range for batch validation
 func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string, startDate, endDate time.Time, settleWindow time.Duration, maxSessions int) ([]string, error) {
 	settleThreshold := time.Now().Add(-settleWindow)
-	
+
 	query := `
 		SELECT DISTINCT session_id
 		FROM gateway.request_logs
@@ -368,7 +368,7 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 		ORDER BY session_id
 		LIMIT $4
 	`
-	
+
 	// For batch mode, we select from request_logs and filter by settle window
 	// We'll additionally filter by updated_at from sessions table if it exists
 	rows, err := l.db.Query(ctx, query, tenantID, startDate, endDate, maxSessions)
@@ -376,29 +376,29 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 		return nil, fmt.Errorf("query session IDs: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var sessionIDs []string
 	for rows.Next() {
 		var sessionID string
 		if err := rows.Scan(&sessionID); err != nil {
 			return nil, fmt.Errorf("scan session_id: %w", err)
 		}
-		
+
 		// Check if session is settled (last update > settle window ago)
 		var lastUpdate time.Time
 		err := l.db.QueryRow(ctx, `
 			SELECT MAX(ts) FROM gateway.request_logs
 			WHERE tenant_id = $1 AND session_id = $2
 		`, tenantID, sessionID).Scan(&lastUpdate)
-		
+
 		if err == nil && lastUpdate.Before(settleThreshold) {
 			sessionIDs = append(sessionIDs, sessionID)
 		}
 	}
-	
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate session IDs: %w", err)
 	}
-	
+
 	return sessionIDs, nil
 }

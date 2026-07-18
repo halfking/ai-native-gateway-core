@@ -193,6 +193,57 @@ func UpstreamFailure(url string, statusCode int, err error, model string, creden
 	return eb
 }
 
+// UpstreamFailureWithBody 增强版 UpstreamFailure，携带 upstream.Error 的完整上下文
+// (StatusCode, Body, Headers)。用于 5xx 错误详细诊断（满足 rule 需求：不只是 5xx 标签）。
+func UpstreamFailureWithBody(url string, uErr error) EventBuilder {
+	eb := EventBuilder{
+		stage:  StageUpstreamRequest,
+		module: ModuleUpstream,
+		status: StatusFailed,
+		errMsg: fmt.Sprintf("upstream_error: %v", uErr),
+		details: map[string]any{
+			"url": url,
+		},
+	}
+	if uErr == nil {
+		return eb
+	}
+
+	// 类型断言提取 upstream.Error
+	type upstreamError interface {
+		error
+		StatusCode() int
+		Body() []byte
+	}
+
+	// 尝试断言为 *upstream.Error（通过接口模式避免循环导入）
+	var statusCode int
+	var body []byte
+	if ue, ok := uErr.(upstreamError); ok {
+		statusCode = ue.StatusCode()
+		body = ue.Body()
+	}
+
+	if statusCode > 0 {
+		eb.details["http_status"] = statusCode
+	}
+	if len(body) > 0 {
+		bodyStr := string(body)
+		if len(bodyStr) > 512 {
+			bodyStr = bodyStr[:512] + "..." // 限制 trace_events 大小
+		}
+		eb.details["response_body"] = bodyStr
+		eb.details["response_body_len"] = len(body)
+	}
+
+	eb.details["error"] = uErr.Error()
+	if hint := classifyUpstreamError(uErr, statusCode); hint != "" {
+		eb.details["failure_hint"] = hint
+	}
+
+	return eb
+}
+
 // StreamStart 构造 stream_start 事件。
 func StreamStart(ttfbMs int) EventBuilder {
 	return EventBuilder{

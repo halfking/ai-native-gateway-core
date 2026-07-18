@@ -42,9 +42,13 @@ func NewRedisRPMLimiter(client *redis.Client) *RedisRPMLimiter {
 	return &RedisRPMLimiter{client: client, script: redis.NewScript(rpmSlidingWindowLua), fallback: NewMemoryRPMLimiter()}
 }
 
-// NewRPMLimiterFromEnv selects Redis when RPM_REDIS_URL is configured.
+// NewRPMLimiterFromEnv selects Redis from the RPM-specific setting or the
+// gateway-wide Redis address used by existing deployments.
 func NewRPMLimiterFromEnv() RPMLimiter {
 	url := strings.TrimSpace(os.Getenv("RPM_REDIS_URL"))
+	if url == "" {
+		url = redisURLFromAddress(os.Getenv("LLM_GATEWAY_REDIS_ADDR"))
+	}
 	if url == "" {
 		recordRPMMode(false)
 		return NewMemoryRPMLimiter()
@@ -59,6 +63,17 @@ func NewRPMLimiterFromEnv() RPMLimiter {
 	options.ReadTimeout = 100 * time.Millisecond
 	options.WriteTimeout = 100 * time.Millisecond
 	return NewRedisRPMLimiter(redis.NewClient(options))
+}
+
+func redisURLFromAddress(address string) string {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return ""
+	}
+	if strings.Contains(address, "://") {
+		return address
+	}
+	return "redis://" + address
 }
 
 func (r *RedisRPMLimiter) redisKey(providerID, credentialID int) string {
