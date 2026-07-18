@@ -374,6 +374,7 @@ func insertEvent(
 	if err != nil {
 		return fmt.Errorf("marshal evidence: %w", err)
 	}
+	evidenceStr := string(evidenceJSON)
 
 	var requestID, terminalStatus, failureKind, failureStage *string
 	var fsi, rsi *int
@@ -405,7 +406,7 @@ func insertEvent(
 			failure_kind, failure_stage,
 			failure_streak, recovery_streak,
 			evidence
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
 		ON CONFLICT (incident_id, request_id, terminal_status)
 		WHERE request_id IS NOT NULL
 		DO NOTHING
@@ -415,7 +416,7 @@ func insertEvent(
 		requestID, terminalStatus,
 		failureKind, failureStage,
 		fsi, rsi,
-		evidenceJSON,
+		evidenceStr,
 	)
 	if err != nil {
 		return fmt.Errorf("insert event: %w", err)

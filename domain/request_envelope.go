@@ -75,6 +75,10 @@ type PipelineRequest struct {
 	//     写：outputcompliance.Hook.Execute（PostUpstream）
 	//     读：（暂无消费方；供 admin/telemetry 观测）
 	//
+	//   "sanitize_map" (sanitize.SanitizeMap)
+	//     写：sanitize.SanitizerInputHook.Execute（PreRouting）
+	//     读：sanitize.SanitizerOutputHook.Execute（PostUpstream）
+	//
 	//   "optimization_applied" (string: strip_tools|compress_thinking|summarize)
 	//     写：compression/strip 阶段
 	//     读：cache_update_hook → SessionState.ApplyOptimization

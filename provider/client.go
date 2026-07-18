@@ -412,19 +412,51 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 		key = key + "|modality:" + modality
 	}
 
+	cacheState := "miss"
 	c.mu.RLock()
-	if entry, ok := c.candCache[key]; ok && time.Now().Before(entry.expires) {
-		c.mu.RUnlock()
-		policy, _ := c.getPolicyCached(ctx)
-		cands := c.enrichWithAPIKeys(ctx, entry.value)
-		return cands, policy, nil
+	if entry, ok := c.candCache[key]; ok {
+		if time.Now().Before(entry.expires) {
+			cacheState = "hit"
+			c.mu.RUnlock()
+			policy, _ := c.getPolicyCached(ctx)
+			cands := c.enrichWithAPIKeys(ctx, entry.value)
+			if len(cands) == 0 {
+				logCandidateDiagnostic("cache_empty",
+					"model", routeModel,
+					"profile", profile,
+					"tenant_id", tenantID,
+					"cache_key", key,
+					"cache_plan_count", planCount(entry.value),
+					"cache_candidate_count", candidateCount(entry.value),
+				)
+			}
+			return cands, policy, nil
+		}
+		cacheState = "expired"
 	}
 	c.mu.RUnlock()
+	slog.Debug("[candidate_diag] candidate cache lookup",
+		"cache_state", cacheState,
+		"model", routeModel,
+		"profile", profile,
+		"tenant_id", tenantID,
+		"cache_key", key,
+	)
 
-	v, err, _ := c.sf.Do("cand:"+key, func() (any, error) {
+	v, err, shared := c.sf.Do("cand:"+key, func() (any, error) {
 		resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile, tenantID, modality)
 		if fetchErr != nil {
 			return nil, fetchErr
+		}
+		if planCount(resp) == 0 || candidateCount(resp) == 0 {
+			logCandidateDiagnostic("db_empty",
+				"model", routeModel,
+				"profile", profile,
+				"tenant_id", tenantID,
+				"cache_key", key,
+				"plan_count", planCount(resp),
+				"candidate_count", candidateCount(resp),
+			)
 		}
 
 		c.mu.Lock()
@@ -440,8 +472,39 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 	}
 
 	policy, _ := c.getPolicyCached(ctx)
-	cands := c.enrichWithAPIKeys(ctx, v.(*resolveResponse))
+	resp := v.(*resolveResponse)
+	cands := c.enrichWithAPIKeys(ctx, resp)
+	if len(cands) == 0 && candidateCount(resp) > 0 {
+		logCandidateDiagnostic("enrich_empty",
+			"model", routeModel,
+			"profile", profile,
+			"tenant_id", tenantID,
+			"cache_key", key,
+			"singleflight_shared", shared,
+			"plan_count", planCount(resp),
+			"candidate_count", candidateCount(resp),
+			"enriched_count", len(cands),
+		)
+	}
 	return cands, policy, nil
+}
+
+func planCount(resp *resolveResponse) int {
+	if resp == nil {
+		return 0
+	}
+	return len(resp.PlanOrder)
+}
+
+func candidateCount(resp *resolveResponse) int {
+	if resp == nil {
+		return 0
+	}
+	return len(resp.Candidates)
+}
+
+func logCandidateDiagnostic(event string, args ...any) {
+	slog.Warn("[candidate_diag] "+event, args...)
 }
 
 func (c *Client) GetPolicy(ctx context.Context) (*Policy, error) {

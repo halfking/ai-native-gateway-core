@@ -91,6 +91,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
+	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/tenantops"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
@@ -789,7 +790,8 @@ func main() {
 		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
 		// 2026-06-21: 同步重试超时（全候选失败后保持客户端连接继续重试）
-		routingExec.SyncRetryTimeout = 120 * time.Second
+		// 2026-07-18: 设为60s，给慢节点足够时间，同时配合单节点快速恢复机制
+		routingExec.SyncRetryTimeout = 60 * time.Second
 		if v := os.Getenv("LLM_GATEWAY_SYNC_RETRY_TIMEOUT"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				routingExec.SyncRetryTimeout = time.Duration(n) * time.Second
@@ -2255,7 +2257,10 @@ func main() {
 			chatHandler.SetAutoRoute(decider)
 			// /v1/embeddings model=auto resolution (22 章 §22.2).
 			// Shares the same index as chat; AutoOnEmbeddings flag gates it.
-			embeddingsHandler.SetAutoIndex(autoIdx)
+			// NOTE: embeddingsHandler may be nil if auth is disabled.
+			if embeddingsHandler != nil {
+				embeddingsHandler.SetAutoIndex(autoIdx)
+			}
 
 			// ── Goal-mode auto control (2026-07-06) ───────────────────────
 			// Wire the goal/audit response interceptors. Safe-by-default:
@@ -2350,19 +2355,19 @@ func main() {
 			decider.SetDefaultRoutingStore(defaultRoutingStore)
 			// 2026-07-17 (audit H1): wire the apiKeyID -> tenantID resolver so
 			// tenant-scoped default routing rows can actually match. Without
-			// this, TenantResolver stays nil, tenantID is always 0, and every
+			// this, TenantResolver stays nil, tenantID is always empty, and every
 			// tenant-level rule an operator configures silently never resolves
 			// (Resolve falls back to platform-level rows). Best-effort: a
-			// missing/disabled key resolves to tenant 0 (platform-level).
-			decider.SetTenantResolver(func(apiKeyID int) int64 {
+			// missing/disabled key resolves to an empty code (platform-level).
+			decider.SetTenantResolver(func(apiKeyID int) string {
 				if apiKeyID <= 0 {
-					return 0
+					return ""
 				}
-				var tid int64
+				var tid string
 				lookupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
 				_ = dbConn.Pool().QueryRow(lookupCtx,
-					`SELECT COALESCE(tenant_id, 0) FROM api_keys WHERE id = $1`,
+					`SELECT COALESCE(tenant_id, '') FROM api_keys WHERE id = $1`,
 					apiKeyID).Scan(&tid)
 				return tid
 			})
@@ -2691,6 +2696,26 @@ func main() {
 
 	slog.Info("CHECKPOINT: before healthz registration")
 
+	// ── Sensitive Word Engine (2026-07-18) ───────────────────────────────
+	// AC automaton for multi-pattern sensitive word detection. Lifted out
+	// of buildV2DispatchPipeline so it's always available regardless of
+	// v2 pipeline flag. Admin API can reload the word list at runtime.
+	// If configs/sensitive_words.json is missing or invalid, engine stays
+	// empty (all checks pass) — best-effort, non-blocking.
+	swEngine := sensitive.NewSensitiveWordEngine()
+	swCfgPath := "configs/sensitive_words.json"
+	if err := swEngine.BuildFromFile(swCfgPath); err != nil {
+		slog.Warn("sensitive word engine init skipped", "path", swCfgPath, "error", err)
+	} else {
+		slog.Info("sensitive word engine ready", "words", swEngine.LoadedWordCount())
+	}
+	// Wire into admin handler immediately so /api/admin/sensitive-words/*
+	// endpoints are always available.
+	if adminHandler != nil {
+		adminHandler.SetSensitiveWordEngine(swEngine)
+		slog.Info("admin: sensitive word engine wired", "words", swEngine.LoadedWordCount())
+	}
+
 	// 2026-07-09: 飞书机器人模块 late-binding（在 mux 创建后注入 callback 路由）。
 	// 复用 initApprovalNotifier 阶段创建的 LarkBotChannel 与 auditBus；
 	// 装配失败仅记日志，不影响主进程启动（best-effort）。
@@ -2794,6 +2819,10 @@ func main() {
 	// through them on a stage error or feature-flag off path.
 	if v2DispatchEnabled {
 		if _, v2Deps, ok := v2DispatchMux(chatHandler, messagesHandler, responsesHandler); ok && v2Deps != nil {
+			// 2026-07-18 P1 fix: Wire the sensitive word engine created above
+			// into v2Deps so the Pipeline plugins can reference it.
+			v2Deps.SensitiveWordEngine = swEngine
+
 			// PR-V4-09 / PR-V4-10: 注入 DB pool + ApprovalManager + Publisher +
 			// IntentStore 后再启动 Loop 和 Flusher。
 			if dbConn != nil && dbConn.Pool() != nil {

@@ -1,0 +1,25 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: 'default'
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+
+receivers:
+  - name: 'default'
+    # Webhook disabled by default - uncomment and set LARK_WEBHOOK_URL to enable
+    # webhook_configs:
+    #   - url: '${LARK_WEBHOOK_URL}'
+    #     send_resolved: true
+    #     http_config:
+    #       follow_redirects: true
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'cluster', 'service']

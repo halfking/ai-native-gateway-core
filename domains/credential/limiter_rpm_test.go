@@ -106,6 +106,36 @@ func TestAcquireAll_RPMDenialBlocksCandidate(t *testing.T) {
 	}
 }
 
+// TestAcquireAll_RPMDoesNotChargeFailedConcurrencyAcquire ensures a request
+// that cannot obtain the credential semaphore does not consume RPM capacity.
+func TestAcquireAll_RPMDoesNotChargeFailedConcurrencyAcquire(t *testing.T) {
+	l := NewWithLimits(10, 10, 1, 1)
+	defer l.Stop()
+
+	limit := 2
+	ctx := context.Background()
+	held, err := l.AcquireAll(ctx, 1, 1, "held", 0, 0, &limit)
+	if err != nil {
+		t.Fatalf("holding acquire failed: %v", err)
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if _, err := l.AcquireAll(timeoutCtx, 1, 1, "blocked", 0, 0, &limit); err == nil {
+		t.Fatal("expected saturated credential acquire to fail")
+	}
+
+	held()
+	first, err := l.AcquireAll(ctx, 1, 1, "first", 0, 0, &limit)
+	if err != nil {
+		t.Fatalf("first post-failure acquire should be allowed: %v", err)
+	}
+	first()
+	if _, err := l.AcquireAll(ctx, 1, 1, "second", 0, 0, &limit); err == nil {
+		t.Fatal("second post-failure acquire should be rejected after two successful reservations")
+	}
+}
+
 // TestAcquireAll_NilRPMLimitUnlimited guards against future regressions
 // where AcquireAll with nil rpm_limit accidentally throttles. Iterates
 // at the credential's default concurrency ceiling (50) and releases

@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-18
 
+### Added
+
+- **Candidate routing diagnostics**: Added cache, singleflight, database result,
+  and API-key enrichment counters for diagnosing empty routing results.
+
+- **Unified provider adapters**: Added OpenAI and Anthropic request/response
+  adapters with a registry and shared request contract.
+
+- **Sensitive word AC automaton engine**: Aho–Corasick multi-pattern matching
+  engine (`security/sensitive/`) that scans LLM input/output for P0/P1/P2
+  categories. Integrated into the request pipeline as a governance plugin
+  (`security/guardian/pipeline.go`) and exposed via admin API for runtime word
+  management: `POST /api/admin/sensitive-words/reload`,
+  `GET /api/admin/sensitive-words/status`,
+  `POST /api/admin/sensitive-words/match`. Ships with a production word list
+  (`configs/sensitive_words.json`, 6 categories, ~60 words). 7 integration
+  tests covering pass-through, blocking, evidence, and empty-body scenarios.
+
 ### Fixed
+
+- **Credential RPM reservation ordering**: RPM windows are now charged only
+  after the global, provider, and credential concurrency slots are acquired.
+  Requests that time out or fail at a concurrency layer no longer consume RPM
+  capacity and incorrectly reject subsequent requests. Added a regression test
+  covering the failed-acquire path.
 
 - **Frontend freeze when viewing live request stream**: Dashboard's
   `LiveRequestStreamV2` component used `v-show` instead of `v-if`, causing

@@ -166,6 +166,11 @@ host_stage_release() {
   if [[ -f version.json ]]; then cp version.json "$bundle_dir/version.json"; fi
   if [[ -f VERSION      ]]; then cp VERSION      "$bundle_dir/VERSION"; fi
 
+  # 2026-07-19: Copy configs directory for sensitive_words.json and other runtime configs
+  if [[ -d configs ]]; then
+    cp -R configs "$bundle_dir/configs"
+  fi
+
   # Checksums. sha256sum is in $PATH on every modern linux + macOS via
   # coreutils; the offline harness provides a stub.
   ( cd "$bundle_dir" && sha256sum "$bin_name" version.json VERSION 2>/dev/null > SHA256SUMS )
@@ -285,6 +290,9 @@ host_atomic_switch() {
     fi
     ln -sfn '$current_link/web' '$web_link'
     ln -sfn '$current_link/version.json' '$version_link'
+    if [ -d '$current_link/configs' ]; then
+      ln -sfn '$current_link/configs' '$(dirname "$current_link")/configs'
+    fi
   "
 
   # Restart stays as a separate call because it returns only after
