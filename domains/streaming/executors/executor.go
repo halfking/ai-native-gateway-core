@@ -1022,6 +1022,70 @@ func ensureFpReleaseWorker() {
 
 func init() { ensureFpReleaseWorker() }
 
+// buildEnhancedErrorContext creates a detailed context map for 5xx error analysis.
+// It includes request dimensions (tokens, messages, body size) to help diagnose
+// whether context length is related to transient errors.
+// 2026-07-19: Added to analyze claude-fable-5/sonnet-5 5xx errors.
+func buildEnhancedErrorContext(params *ExecParams, kind errorsx.ErrorKind, execErr error, candidateCount int, attemptIndex int) map[string]any {
+	ctx := map[string]any{
+		"client_model":    params.ClientModel,
+		"attempt_kind":    string(kind),
+		"err_msg":         execErr.Error(),
+		"is_stream":       params.IsStream,
+		"candidate_count": candidateCount,
+		"attempt_index":   attemptIndex,
+	}
+
+	// Request body size
+	if len(params.BodyBytes) > 0 {
+		ctx["request_body_size"] = len(params.BodyBytes)
+	}
+
+	// Parse request body to extract context dimensions
+	if len(params.BodyBytes) > 0 {
+		var reqBody map[string]any
+		if err := json.Unmarshal(params.BodyBytes, &reqBody); err == nil {
+			// Message count
+			if messages, ok := reqBody["messages"].([]any); ok {
+				ctx["message_count"] = len(messages)
+
+				// Calculate approximate input length
+				totalLen := 0
+				for _, msg := range messages {
+					if m, ok := msg.(map[string]any); ok {
+						if content, ok := m["content"].(string); ok {
+							totalLen += len(content)
+						}
+					}
+				}
+				ctx["total_message_length"] = totalLen
+			}
+
+			// System prompt
+			if system, ok := reqBody["system"].(string); ok && len(system) > 0 {
+				ctx["system_prompt_length"] = len(system)
+			}
+
+			// max_tokens
+			if maxTokens, ok := reqBody["max_tokens"]; ok {
+				ctx["max_tokens"] = maxTokens
+			}
+
+			// temperature
+			if temp, ok := reqBody["temperature"]; ok {
+				ctx["temperature"] = temp
+			}
+
+			// tools count
+			if tools, ok := reqBody["tools"].([]any); ok && len(tools) > 0 {
+				ctx["tools_count"] = len(tools)
+			}
+		}
+	}
+
+	return ctx
+}
+
 func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	if params.R != nil && strings.TrimSpace(params.TenantID) != "" {
 		params.R = params.R.WithContext(session.SetTenantID(params.R.Context(), params.TenantID))
@@ -2009,11 +2073,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				execErr,
 				nil, // latency_ms: end-to-end candidate latency, not yet tracked here
 				&perAttemptMs,
-				map[string]any{
-					"client_model": params.ClientModel,
-					"attempt_kind": string(kind),
-					"err_msg":      execErr.Error(),
-				},
+				buildEnhancedErrorContext(params, kind, execErr, len(candidates), tried),
 			)
 		} else {
 			// 2026-07-13: defensive log when FailureLogger is nil
