@@ -3,13 +3,47 @@
 > 日期：2026-07-18
 > 版本：v2 Production
 > 适用环境：kaixuan-1 / 154 / 245 / 252
+> 
+> ⚠️ **重要**: 本 Runbook 基于设计方案编写，包含的 `/internal/scheduler/*` 和
+> `/internal/watermark/*` 端点**尚未实现**（截至 2026-07-18 commit b18af2468）。
+> 当前可用的运维端点参见 `internal/handlers/internal.go`。
+
+---
+
+## 端点实现状态
+
+### ✅ 已实现的运维端点（可直接使用）
+
+```bash
+# 健康检查
+curl http://localhost:8080/internal/health
+
+# 并发限流器状态
+curl http://localhost:8080/internal/limiter/stats | jq
+
+# Bandit 评分器状态
+curl http://localhost:8080/internal/bandit/stats | jq
+
+# 熔断器状态
+curl http://localhost:8080/internal/breaker/stats | jq
+```
+
+### ❌ 待实施的端点（与调度器一起开发）
+
+以下端点在本文档 §2-§8 中被引用，但**尚未实现**：
+- `POST /internal/scheduler/reset-weights`
+- `GET /internal/scheduler/status`
+- `POST /internal/scheduler/reset-all-weights`
+- `POST /internal/watermark/check`
+- `POST /internal/watermark/disable`
+- 完整清单见各章节中的 `curl` 命令
 
 ---
 
 ## 使用说明
 
-本 Runbook 是**生产操作手册**，涵盖：
-- 日常运维命令
+本 Runbook 是**设计阶段的生产操作手册**，涵盖：
+- 日常运维命令（部分端点待实现）
 - 故障诊断流程
 - 应急响应预案
 - 配置变更 SOP
