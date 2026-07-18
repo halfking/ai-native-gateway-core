@@ -2175,6 +2175,40 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		params.AuditBuilder.DecisionTrace(trace)
 	}
 
+	// ── 单节点5xx快速恢复：立即probe，成功则直接重试 ──────────
+	// 2026-07-18: 单节点场景下，5xx后立即inline probe（不等1s），
+	// 成功后直接递归重试原请求，避免进入sync retry loop的等待。
+	// 这解决了单节点场景下前端超时导致credential被降级的问题。
+	if len(candidates) == 1 && lastKind == errorsx.KindTransient &&
+		e.ProbeSync != nil && lastTransientCred.CredentialID != 0 &&
+		e.asyncDepth.Load() < 3 {
+
+		slog.Info("single_node_5xx_immediate_probe",
+			"credential_id", lastTransientCred.CredentialID,
+			"model", params.ClientModel,
+			"raw_model", lastTransientCred.RawModel,
+		)
+
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		recovered := e.ProbeSync(probeCtx, []credentialstate.NoCandidatesCandidate{lastTransientCred}, params.TenantID, params.RequestID)
+		probeCancel()
+
+		if recovered {
+			slog.Info("single_node_recovered_immediate_retry",
+				"credential_id", lastTransientCred.CredentialID,
+				"model", params.ClientModel,
+				"elapsed_ms", time.Since(tTotal).Milliseconds(),
+			)
+			// 递归重试（asyncDepth已限制深度避免无限递归）
+			return e.Execute(params)
+		}
+
+		slog.Warn("single_node_probe_failed_fallback_to_sync_retry",
+			"credential_id", lastTransientCred.CredentialID,
+			"model", params.ClientModel,
+		)
+	}
+
 	// ── 同步重试：非流式请求，全候选失败后保持连接继续重试 ──────────
 	// 2026-06-21: 客户端在等待，不返回错误、不启动异步 goroutine，
 	// 而是保持 HTTP 连接，继续同步重试候选。客户端断开时自动停止。
@@ -2207,6 +2241,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 			// 间隔等待（可被 ctx 中断）
 			// 2026-07-03: Bug #12 fix - 降低重试间隔从5s到1s，减少白等时间
+			// 2026-07-18: 进一步降低到500ms，配合单节点快速恢复机制
 			select {
 			case <-params.R.Context().Done():
 				slog.Info("sync_retry_stopped",
@@ -2215,7 +2250,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"elapsed_ms", time.Since(tTotal).Milliseconds(),
 				)
 				break syncRetryLoop
-			case <-time.After(1 * time.Second):
+			case <-time.After(500 * time.Millisecond):
 			}
 
 			if err := params.R.Context().Err(); err != nil {
