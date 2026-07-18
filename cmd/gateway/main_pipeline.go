@@ -544,8 +544,8 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		})
 	}
 
-	// 暴露敏感词引擎给 admin handler（2026-07-18）
-	deps.SensitiveWordEngine = swEngine
+	// NOTE (2026-07-18): deps.SensitiveWordEngine is now set in main.go
+	// before calling buildV2DispatchPipeline, so no assignment needed here.
 
 	return p
 }
