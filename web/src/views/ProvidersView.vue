@@ -1385,12 +1385,12 @@ table code {
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
+  flex-wrap: wrap;
+  overflow-x: visible;
 }
 .filter-search {
   position: relative;
-  flex: 1;
+  flex: 1 1 200px;
   min-width: 200px;
   max-width: 320px;
 }
@@ -1423,6 +1423,9 @@ table code {
   background: var(--bg-subtle);
   border-radius: 6px;
   padding: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 .filter-tab {
   padding: 6px 14px;
