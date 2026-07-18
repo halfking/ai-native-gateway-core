@@ -32,7 +32,7 @@ type DefaultRoutingWire struct {
 	Profile        string     `json:"profile"`
 	Tier           string     `json:"tier"`
 	CanonicalModel string     `json:"canonical_model"`
-	TenantID       *int64     `json:"tenant_id,omitempty"`
+	TenantID       *string    `json:"tenant_id,omitempty"`
 	Priority       int        `json:"priority"`
 	Reason         string     `json:"reason"`
 	CreatedBy      *string    `json:"created_by,omitempty"`
@@ -47,7 +47,7 @@ type DefaultRoutingCreateReq struct {
 	Profile        string     `json:"profile"`
 	Tier           string     `json:"tier"`
 	CanonicalModel string     `json:"canonical_model"`
-	TenantID       *int64     `json:"tenant_id,omitempty"`
+	TenantID       *string    `json:"tenant_id,omitempty"`
 	Priority       int        `json:"priority"`
 	Reason         string     `json:"reason"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
@@ -135,7 +135,7 @@ func (h *AutoRouteHandlers) listDefaultRouting(w http.ResponseWriter, r *http.Re
 		args = append(args, profile)
 		sb.WriteString(fmt.Sprintf(` AND profile = $%d`, len(args)))
 	}
-	sb.WriteString(` ORDER BY task_type, profile, COALESCE(tenant_id,0), priority DESC`)
+	sb.WriteString(` ORDER BY task_type, profile, COALESCE(tenant_id,''), priority DESC`)
 
 	rows, err := h.db.Query(r.Context(), sb.String(), args...)
 	if err != nil {
@@ -402,7 +402,7 @@ func (h *AutoRouteHandlers) listDefaultRoutingAudit(w http.ResponseWriter, r *ht
 		Profile   *string    `json:"profile,omitempty"`
 		Tier      *string    `json:"tier,omitempty"`
 		Model     *string    `json:"canonical_model,omitempty"`
-		TenantID  *int64     `json:"tenant_id,omitempty"`
+		TenantID  *string    `json:"tenant_id,omitempty"`
 		Priority  *int       `json:"priority,omitempty"`
 		Reason    *string    `json:"reason,omitempty"`
 		ExpiresAt *time.Time `json:"expires_at,omitempty"`

@@ -155,7 +155,7 @@ export interface RoutingDefault {
   profile: string
   tier: 'primary' | 'secondary' | 'fallback'
   canonical_model: string
-  tenant_id?: number | null
+  tenant_id?: string | null
   priority: number
   reason: string
   created_by?: string
@@ -175,7 +175,7 @@ export interface RoutingDefaultCreate {
   profile?: string
   tier?: 'primary' | 'secondary' | 'fallback'
   canonical_model: string
-  tenant_id?: number | null
+  tenant_id?: string | null
   priority?: number
   reason?: string
   expires_at?: string
@@ -218,7 +218,7 @@ export interface RoutingDefaultAuditRow {
   profile?: string
   tier?: string
   canonical_model?: string
-  tenant_id?: number | null
+  tenant_id?: string | null
   priority?: number
   reason?: string
   expires_at?: string

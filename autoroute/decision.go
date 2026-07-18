@@ -109,8 +109,8 @@ type Decider struct {
 	// DefaultProfile is used when no header AND no sticky entry exists.
 	DefaultProfile Profile
 
-	// TenantResolver maps apiKeyID → tenantID. When nil, only platform-level rows resolve.
-	TenantResolver func(apiKeyID int) int64
+	// TenantResolver maps apiKeyID → tenant code. When nil, only platform-level rows resolve.
+	TenantResolver func(apiKeyID int) string
 
 	// LLMConfidenceThreshold: heuristic results below this trigger LLM
 	// fallback. Default: 0.7.
@@ -205,9 +205,9 @@ func (d *Decider) SetShadowSampleRate(rate float64) {
 // levels: tenant_profile / tenant_generic). Without a resolver the tenantID
 // is always 0 and tenant-scoped defaults silently never match, so any
 // tenant-level rule an operator configures is dead data. The resolver is
-// expected to be cheap (single-row PK lookup) and must return 0 when the
+// expected to be cheap (single-row PK lookup) and must return an empty string when the
 // key is unknown / unauthenticated (falling back to platform-level rows).
-func (d *Decider) SetTenantResolver(fn func(apiKeyID int) int64) {
+func (d *Decider) SetTenantResolver(fn func(apiKeyID int) string) {
 	d.TenantResolver = fn
 }
 
@@ -288,7 +288,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	// Step 3a (M2): explicit default routing.
 	routingSource := "implicit_tag"
 	if flags := GetFeatureFlags(); flags != nil && flags.UseExplicitDefault && d.defaultRoutingStore != nil {
-		tenantID := int64(0)
+		tenantID := ""
 		if d.TenantResolver != nil {
 			tenantID = d.TenantResolver(apiKeyID)
 		}
