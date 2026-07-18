@@ -16,6 +16,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -23,11 +24,24 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 )
+
+type traceLoadState string
+
+const (
+	traceStateReady       traceLoadState = "ready"
+	traceStateNotReady    traceLoadState = "not_ready"
+	traceStateUnavailable traceLoadState = "unavailable"
+	traceStateMissing     traceLoadState = "missing"
+)
+
+var errTraceNotReady = errors.New("trace is not ready yet")
+var errTraceUnavailable = errors.New("trace is unavailable")
 
 // RequestTraceHandler 是只读 API 的处理器, 不修改任何状态。
 type RequestTraceHandler struct {
@@ -98,12 +112,19 @@ func (h *RequestTraceHandler) handleTrace(w http.ResponseWriter, r *http.Request
 
 	trace, source, err := h.loadTrace(ctx, requestID)
 	if err != nil {
-		writeAdminError(w, http.StatusInternalServerError, "load_failed", err.Error())
+		if errors.Is(err, errTraceNotReady) {
+			writeAdminError(w, http.StatusAccepted, "not_ready", "trace is still being persisted; retry shortly")
+			return
+		}
+		if errors.Is(err, errTraceUnavailable) {
+			writeAdminError(w, http.StatusConflict, "trace_unavailable", "request exists but trace data is unavailable")
+			return
+		}
+		writeAdminError(w, http.StatusInternalServerError, "load_failed", "unable to load request trace")
 		return
 	}
 	if trace == nil {
-		writeAdminError(w, http.StatusNotFound, "not_found",
-			"trace not found in redis or postgres")
+		writeAdminError(w, http.StatusNotFound, "not_found", "request or trace not found")
 		return
 	}
 
@@ -125,14 +146,22 @@ func (h *RequestTraceHandler) loadTrace(ctx context.Context, requestID string) (
 			return trace, "redis", nil
 		}
 	}
-	if h.db != nil {
-		trace, err := gwtrace.LoadFromPG(ctx, h.db, requestID)
-		if err != nil {
-			return nil, "", err
-		}
-		if trace != nil {
-			return trace, "postgres", nil
-		}
+		if h.db != nil {
+			trace, err := gwtrace.LoadFromPG(ctx, h.db, requestID)
+			if err != nil {
+				return nil, "", errTraceUnavailable
+			}
+			if trace != nil {
+				return trace, "postgres", nil
+			}
+			if state, err := h.requestTraceState(ctx, requestID); err != nil {
+				return nil, "", errTraceUnavailable
+			} else if state == traceStateNotReady {
+				return nil, "", errTraceNotReady
+			} else if state == traceStateUnavailable {
+				return nil, "", errTraceUnavailable
+			}
+
 		// Probe fallback: synthesize a trace from node_probe_runs so the
 		// /trace + /ai-prompt endpoints work for probe rows.
 		if isProbeRequestID(requestID) {
@@ -144,7 +173,30 @@ func (h *RequestTraceHandler) loadTrace(ctx context.Context, requestID string) (
 	return nil, "", nil
 }
 
-// ─── AI 提示词生成 ────────────────────────────────────────────────────────────
+func (h *RequestTraceHandler) requestTraceState(ctx context.Context, requestID string) (traceLoadState, error) {
+	var status string
+	var traceEvents []byte
+	err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(request_status, ''), trace_events
+		FROM request_logs
+		WHERE request_id = $1
+		LIMIT 1
+	`, requestID).Scan(&status, &traceEvents)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return traceStateMissing, nil
+	}
+	if err != nil {
+		return traceStateUnavailable, err
+	}
+	if len(traceEvents) > 0 && string(traceEvents) != "null" {
+		return traceStateReady, nil
+	}
+	if status == "in_progress" || status == "pending" || status == "" {
+		return traceStateNotReady, nil
+	}
+	return traceStateUnavailable, nil
+}
+
 
 // aiPromptRequest 是 POST /ai-prompt 的 body。
 type aiPromptRequest struct {
