@@ -9,13 +9,13 @@ import (
 
 // SessionReport represents a complete validation report for one session
 type SessionReport struct {
-	SessionID        string                 `json:"session_id"`
-	TenantID         string                 `json:"tenant_id"`
-	ValidationTime   time.Time              `json:"validation_time"`
-	Status           string                 `json:"status"` // "ok" | "warning" | "error"
-	Summary          ReportSummary          `json:"summary"`
-	Differences      []ValidationCheckV2    `json:"differences,omitempty"`
-	IncrementalValid IncrementalValidation  `json:"incremental_validation"`
+	SessionID        string                `json:"session_id"`
+	TenantID         string                `json:"tenant_id"`
+	ValidationTime   time.Time             `json:"validation_time"`
+	Status           string                `json:"status"` // "ok" | "warning" | "error"
+	Summary          ReportSummary         `json:"summary"`
+	Differences      []ValidationCheckV2   `json:"differences,omitempty"`
+	IncrementalValid IncrementalValidation `json:"incremental_validation"`
 }
 
 // ReportSummary contains aggregate counts for a session
@@ -30,9 +30,9 @@ type ReportSummary struct {
 
 // IncrementalValidation contains delta reconstruction results
 type IncrementalValidation struct {
-	Status          string                 `json:"status"` // "ok" | "warning" | "error"
-	TurnsValidated  int                    `json:"turns_validated"`
-	Mismatches      []ReconstructionResult `json:"mismatches,omitempty"`
+	Status         string                 `json:"status"` // "ok" | "warning" | "error"
+	TurnsValidated int                    `json:"turns_validated"`
+	Mismatches     []ReconstructionResult `json:"mismatches,omitempty"`
 }
 
 // BatchReport represents a batch validation report
@@ -71,17 +71,17 @@ func (g *ReportGenerator) GenerateSessionReport(
 	reconResults []ReconstructionResult,
 ) *SessionReport {
 	report := &SessionReport{
-		SessionID:      sessionID,
-		TenantID:       tenantID,
-		ValidationTime: time.Now(),
-		Summary:        g.buildSummary(v1Turns, v2Turns),
-		Differences:    g.filterFailedChecks(checks),
+		SessionID:        sessionID,
+		TenantID:         tenantID,
+		ValidationTime:   time.Now(),
+		Summary:          g.buildSummary(v1Turns, v2Turns),
+		Differences:      g.filterFailedChecks(checks),
 		IncrementalValid: g.buildIncrementalValidation(reconResults),
 	}
-	
+
 	// Determine overall status
 	report.Status = g.determineStatus(checks, reconResults)
-	
+
 	return report
 }
 
@@ -91,7 +91,7 @@ func (g *ReportGenerator) buildSummary(v1Turns []V1Turn, v2Turns []V2Turn) Repor
 		V1Turns: len(v1Turns),
 		V2Turns: len(v2Turns),
 	}
-	
+
 	// Sum V1 tokens and cost
 	for _, turn := range v1Turns {
 		var usage map[string]interface{}
@@ -105,13 +105,13 @@ func (g *ReportGenerator) buildSummary(v1Turns []V1Turn, v2Turns []V2Turn) Repor
 		}
 		summary.V1Cost += turn.CostUSD
 	}
-	
+
 	// Sum V2 tokens and cost
 	for _, turn := range v2Turns {
 		summary.V2Tokens += int64(turn.PromptTokens + turn.CompletionTokens)
 		summary.V2Cost += turn.CostUSD
 	}
-	
+
 	return summary
 }
 
@@ -132,7 +132,7 @@ func (g *ReportGenerator) buildIncrementalValidation(results []ReconstructionRes
 		Status:         "ok",
 		TurnsValidated: len(results),
 	}
-	
+
 	for _, result := range results {
 		if result.Status == "error" {
 			iv.Status = "error"
@@ -142,7 +142,7 @@ func (g *ReportGenerator) buildIncrementalValidation(results []ReconstructionRes
 			iv.Mismatches = append(iv.Mismatches, result)
 		}
 	}
-	
+
 	return iv
 }
 
@@ -150,7 +150,7 @@ func (g *ReportGenerator) buildIncrementalValidation(results []ReconstructionRes
 func (g *ReportGenerator) determineStatus(checks []ValidationCheckV2, reconResults []ReconstructionResult) string {
 	hasError := false
 	hasWarning := false
-	
+
 	// Check validation checks
 	for _, check := range checks {
 		if !check.Passed {
@@ -161,7 +161,7 @@ func (g *ReportGenerator) determineStatus(checks []ValidationCheckV2, reconResul
 			}
 		}
 	}
-	
+
 	// Check reconstruction results
 	for _, result := range reconResults {
 		if result.Status == "error" {
@@ -170,7 +170,7 @@ func (g *ReportGenerator) determineStatus(checks []ValidationCheckV2, reconResul
 			hasWarning = true
 		}
 	}
-	
+
 	if hasError {
 		return "error"
 	}
@@ -194,11 +194,11 @@ func (g *ReportGenerator) GenerateBatchReport(
 		ValidationTime: time.Now(),
 		Sessions:       sessions,
 	}
-	
+
 	if settleWindow > 0 {
 		report.SettleWindow = settleWindow.String()
 	}
-	
+
 	// Calculate summary
 	report.Summary.SessionsChecked = len(sessions)
 	for _, session := range sessions {
@@ -211,7 +211,7 @@ func (g *ReportGenerator) GenerateBatchReport(
 			report.Summary.SessionsError++
 		}
 	}
-	
+
 	return report
 }
 
@@ -223,7 +223,7 @@ func (g *ReportGenerator) FormatJSON(report interface{}) ([]byte, error) {
 // FormatText formats a session report as human-readable text
 func (g *ReportGenerator) FormatTextSession(report *SessionReport) string {
 	var buf strings.Builder
-	
+
 	buf.WriteString(strings.Repeat("=", 80) + "\n")
 	buf.WriteString("SESSION VALIDATION REPORT\n")
 	buf.WriteString(strings.Repeat("=", 80) + "\n")
@@ -232,14 +232,14 @@ func (g *ReportGenerator) FormatTextSession(report *SessionReport) string {
 	buf.WriteString(fmt.Sprintf("Validated:  %s\n", report.ValidationTime.Format("2006-01-02 15:04:05")))
 	buf.WriteString(fmt.Sprintf("Status:     %s\n", strings.ToUpper(report.Status)))
 	buf.WriteString(strings.Repeat("-", 80) + "\n\n")
-	
+
 	// Summary
 	buf.WriteString("Summary:\n")
 	buf.WriteString(fmt.Sprintf("  V1: %d turns, %d tokens, $%.6f\n",
 		report.Summary.V1Turns, report.Summary.V1Tokens, report.Summary.V1Cost))
 	buf.WriteString(fmt.Sprintf("  V2: %d turns, %d tokens, $%.6f\n\n",
 		report.Summary.V2Turns, report.Summary.V2Tokens, report.Summary.V2Cost))
-	
+
 	// Differences
 	if len(report.Differences) == 0 {
 		buf.WriteString("✓ All validation checks passed\n\n")
@@ -261,7 +261,7 @@ func (g *ReportGenerator) FormatTextSession(report *SessionReport) string {
 		}
 		buf.WriteString("\n")
 	}
-	
+
 	// Incremental validation
 	buf.WriteString(fmt.Sprintf("Incremental Validation: %s (%d turns)\n",
 		strings.ToUpper(report.IncrementalValid.Status),
@@ -274,16 +274,16 @@ func (g *ReportGenerator) FormatTextSession(report *SessionReport) string {
 			}
 		}
 	}
-	
+
 	buf.WriteString(strings.Repeat("=", 80) + "\n")
-	
+
 	return buf.String()
 }
 
 // FormatTextBatch formats a batch report as human-readable text
 func (g *ReportGenerator) FormatTextBatch(report *BatchReport) string {
 	var buf strings.Builder
-	
+
 	buf.WriteString(strings.Repeat("=", 80) + "\n")
 	buf.WriteString("BATCH VALIDATION REPORT\n")
 	buf.WriteString(strings.Repeat("=", 80) + "\n")
@@ -298,14 +298,14 @@ func (g *ReportGenerator) FormatTextBatch(report *BatchReport) string {
 	}
 	buf.WriteString(fmt.Sprintf("Validated:     %s\n", report.ValidationTime.Format("2006-01-02 15:04:05")))
 	buf.WriteString(strings.Repeat("-", 80) + "\n\n")
-	
+
 	// Summary
 	buf.WriteString("Summary:\n")
 	buf.WriteString(fmt.Sprintf("  Sessions Checked: %d\n", report.Summary.SessionsChecked))
 	buf.WriteString(fmt.Sprintf("  ✓ OK:            %d\n", report.Summary.SessionsOK))
 	buf.WriteString(fmt.Sprintf("  ⚠ Warnings:      %d\n", report.Summary.SessionsWarning))
 	buf.WriteString(fmt.Sprintf("  ✗ Errors:        %d\n\n", report.Summary.SessionsError))
-	
+
 	// Session details (show errors and warnings only)
 	errorSessions := []SessionReport{}
 	warningSessions := []SessionReport{}
@@ -316,7 +316,7 @@ func (g *ReportGenerator) FormatTextBatch(report *BatchReport) string {
 			warningSessions = append(warningSessions, session)
 		}
 	}
-	
+
 	if len(errorSessions) > 0 {
 		buf.WriteString(fmt.Sprintf("Sessions with ERRORS (%d):\n", len(errorSessions)))
 		for _, session := range errorSessions {
@@ -325,7 +325,7 @@ func (g *ReportGenerator) FormatTextBatch(report *BatchReport) string {
 		}
 		buf.WriteString("\n")
 	}
-	
+
 	if len(warningSessions) > 0 {
 		buf.WriteString(fmt.Sprintf("Sessions with WARNINGS (%d):\n", len(warningSessions)))
 		for _, session := range warningSessions {
@@ -334,15 +334,15 @@ func (g *ReportGenerator) FormatTextBatch(report *BatchReport) string {
 		}
 		buf.WriteString("\n")
 	}
-	
+
 	// Exit code hint
 	if report.Summary.SessionsError > 0 {
 		buf.WriteString("Exit Code: 1 (errors found)\n")
 	} else {
 		buf.WriteString("Exit Code: 0 (no errors)\n")
 	}
-	
+
 	buf.WriteString(strings.Repeat("=", 80) + "\n")
-	
+
 	return buf.String()
 }

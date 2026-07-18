@@ -73,12 +73,12 @@ func main() {
 	// Validate mode: single-session or batch
 	isSingleSession := *sessionID != ""
 	isBatch := *startDate != "" || *endDate != ""
-	
+
 	if isSingleSession && isBatch {
 		fmt.Fprintln(os.Stderr, "Error: cannot use -session-id with -start-date/-end-date")
 		os.Exit(2)
 	}
-	
+
 	if !isSingleSession && !isBatch {
 		fmt.Fprintln(os.Stderr, "Error: must specify either -session-id or -start-date/-end-date")
 		flag.Usage()
@@ -132,7 +132,7 @@ func main() {
 				log.Fatalf("Invalid -end-date: %v", err)
 			}
 		}
-		
+
 		exitCode := validateBatch(ctx, loader, reportGen, reconstructor, *tenantID, start, end, *maxSessions, *settleWindow, *format, *verbose)
 		os.Exit(exitCode)
 	}
@@ -151,30 +151,30 @@ func validateSingleSession(
 	if err != nil {
 		log.Fatalf("Failed to load V1 turns: %v", err)
 	}
-	
+
 	v2Turns, err := loader.LoadV2Turns(ctx, tenantID, sessionID)
 	if err != nil {
 		log.Fatalf("Failed to load V2 turns: %v", err)
 	}
-	
+
 	v2Bodies, err := loader.LoadV2Bodies(ctx, tenantID, sessionID)
 	if err != nil {
 		log.Fatalf("Failed to load V2 bodies: %v", err)
 	}
-	
+
 	v2Session, err := loader.LoadV2Session(ctx, tenantID, sessionID)
 	if err != nil {
 		log.Fatalf("Failed to load V2 session: %v", err)
 	}
-	
+
 	// Run validation
 	validator := NewSessionValidator(tenantID, sessionID)
 	checks := validator.ValidateSession(v1Turns, v2Turns, v2Bodies, v2Session)
 	reconResults := reconstructor.ValidateReconstruction(v1Turns, v2Turns, v2Bodies)
-	
+
 	// Generate report
 	report := reportGen.GenerateSessionReport(tenantID, sessionID, v1Turns, v2Turns, checks, reconResults)
-	
+
 	// Output
 	if format == "json" {
 		jsonBytes, err := reportGen.FormatJSON(report)
@@ -185,7 +185,7 @@ func validateSingleSession(
 	} else {
 		fmt.Print(reportGen.FormatTextSession(report))
 	}
-	
+
 	// Determine exit code
 	if report.Status == "error" {
 		return 1
@@ -211,63 +211,63 @@ func validateBatch(
 	if err != nil {
 		log.Fatalf("Failed to load session IDs: %v", err)
 	}
-	
+
 	if len(sessionIDs) == 0 {
 		log.Println("No sessions found in the specified range")
 		return 0
 	}
-	
+
 	log.Printf("Found %d sessions to validate", len(sessionIDs))
-	
+
 	// Validate each session
 	var sessionReports []SessionReport
 	for i, sessionID := range sessionIDs {
 		if verbose {
 			log.Printf("[%d/%d] Validating session %s...", i+1, len(sessionIDs), sessionID)
 		}
-		
+
 		// Load data
 		v1Turns, err := loader.LoadV1Turns(ctx, tenantID, sessionID)
 		if err != nil {
 			log.Printf("Warning: failed to load V1 turns for %s: %v", sessionID, err)
 			continue
 		}
-		
+
 		v2Turns, err := loader.LoadV2Turns(ctx, tenantID, sessionID)
 		if err != nil {
 			log.Printf("Warning: failed to load V2 turns for %s: %v", sessionID, err)
 			continue
 		}
-		
+
 		v2Bodies, err := loader.LoadV2Bodies(ctx, tenantID, sessionID)
 		if err != nil {
 			log.Printf("Warning: failed to load V2 bodies for %s: %v", sessionID, err)
 			continue
 		}
-		
+
 		v2Session, err := loader.LoadV2Session(ctx, tenantID, sessionID)
 		if err != nil {
 			log.Printf("Warning: failed to load V2 session for %s: %v", sessionID, err)
 			continue
 		}
-		
+
 		// Run validation
 		validator := NewSessionValidator(tenantID, sessionID)
 		checks := validator.ValidateSession(v1Turns, v2Turns, v2Bodies, v2Session)
 		reconResults := reconstructor.ValidateReconstruction(v1Turns, v2Turns, v2Bodies)
-		
+
 		// Generate session report
 		report := reportGen.GenerateSessionReport(tenantID, sessionID, v1Turns, v2Turns, checks, reconResults)
 		sessionReports = append(sessionReports, *report)
-		
+
 		if verbose && report.Status != "ok" {
 			log.Printf("  Status: %s (%d differences)", report.Status, len(report.Differences))
 		}
 	}
-	
+
 	// Generate batch report
 	batchReport := reportGen.GenerateBatchReport(tenantID, startDate, endDate, settleWindow, sessionReports)
-	
+
 	// Output
 	if format == "json" {
 		jsonBytes, err := reportGen.FormatJSON(batchReport)
@@ -278,7 +278,7 @@ func validateBatch(
 	} else {
 		fmt.Print(reportGen.FormatTextBatch(batchReport))
 	}
-	
+
 	// Determine exit code
 	if batchReport.Summary.SessionsError > 0 {
 		return 1
@@ -299,7 +299,7 @@ func repairSession(
 	if err != nil {
 		log.Fatalf("Failed to generate repair plan: %v", err)
 	}
-	
+
 	if !apply {
 		// Dry-run mode: show plan without executing
 		if format == "json" {
@@ -312,25 +312,25 @@ func repairSession(
 			fmt.Printf("Tenant:     %s\n", plan.TenantID)
 			fmt.Printf("Session:    %s\n", plan.SessionID)
 			fmt.Printf("V1 Source:  %d rows\n\n", plan.SourceRows)
-			
+
 			fmt.Println("Will DELETE:")
 			for table, count := range plan.DeleteCounts {
 				fmt.Printf("  - %-20s %d rows\n", table+":", count)
 			}
 			fmt.Println()
-			
+
 			fmt.Println("Will REBUILD:")
 			for table, count := range plan.RebuildCounts {
 				fmt.Printf("  - %-20s %d rows\n", table+":", count)
 			}
 			fmt.Println()
-			
+
 			fmt.Println("Run with --apply to execute this repair.")
 			fmt.Println(strings.Repeat("=", 80))
 		}
 		return 0
 	}
-	
+
 	// Execute repair
 	log.Printf("Executing repair for session %s...", sessionID)
 	result, err := repairer.ExecuteRepair(ctx, tenantID, sessionID)
@@ -349,16 +349,16 @@ func repairSession(
 		}
 		return 1
 	}
-	
+
 	// Verify repair
 	log.Printf("Verifying repair for session %s...", sessionID)
 	verifyReport, err := repairer.VerifyRepair(ctx, tenantID, sessionID)
 	if err != nil {
 		log.Fatalf("Failed to verify repair: %v", err)
 	}
-	
+
 	result.VerificationReport = verifyReport
-	
+
 	// Output results
 	if format == "json" {
 		jsonBytes, _ := json.MarshalIndent(result, "", "  ")
@@ -369,19 +369,19 @@ func repairSession(
 		fmt.Println(strings.Repeat("=", 80))
 		fmt.Printf("Session:    %s\n", result.SessionID)
 		fmt.Printf("Tenant:     %s\n\n", result.TenantID)
-		
+
 		fmt.Println("Deleted:")
 		for table, count := range result.DeletedRows {
 			fmt.Printf("  ✓ %-20s %d rows\n", table+":", count)
 		}
 		fmt.Println()
-		
+
 		fmt.Println("Rebuilt:")
 		for table, count := range result.InsertedRows {
 			fmt.Printf("  ✓ %-20s %d rows\n", table+":", count)
 		}
 		fmt.Println()
-		
+
 		fmt.Println("Verification:")
 		if verifyReport.Status == "ok" {
 			fmt.Println("  ✓ Re-validation passed (status: ok)")
@@ -392,10 +392,10 @@ func repairSession(
 			fmt.Printf("  ✗ Re-validation failed (status: %s)\n", verifyReport.Status)
 			fmt.Printf("    %d error(s) found\n", len(verifyReport.Differences))
 		}
-		
+
 		fmt.Println(strings.Repeat("=", 80))
 	}
-	
+
 	// Exit code based on verification
 	if verifyReport.Status == "error" {
 		return 1

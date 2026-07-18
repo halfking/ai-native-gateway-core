@@ -16,7 +16,7 @@ func TestV1TurnStructure(t *testing.T) {
 		CostUSD:      0.05,
 		Success:      true,
 	}
-	
+
 	if turn.RequestID != "req_123" {
 		t.Errorf("RequestID = %v, want req_123", turn.RequestID)
 	}
@@ -45,7 +45,7 @@ func TestV2TurnStructure(t *testing.T) {
 		SourceKind:       "live",
 		Quality:          "verified",
 	}
-	
+
 	if turn.TurnNo != 1 {
 		t.Errorf("TurnNo = %v, want 1", turn.TurnNo)
 	}
@@ -65,7 +65,7 @@ func TestV2BodyStructure(t *testing.T) {
 		TenantID:  "tenant_1",
 		RequestID: "req_123",
 	}
-	
+
 	if body.TurnNo != 1 {
 		t.Errorf("TurnNo = %v, want 1", body.TurnNo)
 	}
@@ -88,7 +88,7 @@ func TestV2SessionStructure(t *testing.T) {
 		LastProvider:     "openai",
 		PrimaryRequestID: "req_001",
 	}
-	
+
 	if session.TotalTurns != 10 {
 		t.Errorf("TotalTurns = %v, want 10", session.TotalTurns)
 	}
