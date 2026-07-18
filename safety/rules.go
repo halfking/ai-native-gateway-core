@@ -8,7 +8,7 @@ func BuiltinRules() []Rule {
 			ID:          "api_key_openai",
 			Name:        "OpenAI API Key",
 			Type:        RuleTypeRegex,
-			Pattern:     `sk-[a-zA-Z0-9]{48}`,
+			Pattern:     `sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}`,
 			Action:      ActionBlock,
 			Severity:    SeverityCritical,
 			Enabled:     true,
