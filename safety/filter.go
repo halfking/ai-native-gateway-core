@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/logger"
 )
 
 // ContentFilter 是内容安全过滤器实现
@@ -25,6 +27,9 @@ type ContentFilter struct {
 	blockedByRule     map[string]int64
 	blockedBySeverity map[Severity]int64
 	statsMu           sync.Mutex
+
+	// 日志
+	logger logger.Logger
 }
 
 // NewContentFilter 创建内容过滤器
@@ -36,9 +41,15 @@ func NewContentFilter(rules []Rule) *ContentFilter {
 		hitsByRule:        make(map[string]int64),
 		blockedByRule:     make(map[string]int64),
 		blockedBySeverity: make(map[Severity]int64),
+		logger:            logger.New("safety"),
 	}
 
 	cf.UpdateRules(rules)
+
+	cf.logger.Info("content filter created",
+		"rules_count", len(rules),
+	)
+
 	return cf
 }
 
@@ -50,7 +61,24 @@ func (cf *ContentFilter) CheckRequest(ctx context.Context, req *CheckRequest) (*
 		atomic.AddInt64(&cf.totalLatencyNanos, time.Since(start).Nanoseconds())
 	}()
 
-	return cf.check(req.Content)
+	log := logger.WithContext(ctx, "safety")
+	log.Debug("checking request content",
+		"content_len", len(req.Content),
+		"rules_count", len(cf.rules),
+	)
+
+	result, err := cf.check(req.Content)
+
+	if err == nil && result != nil {
+		log.Info("request check completed",
+			"safe", result.Safe,
+			"action", result.Action,
+			"hits", len(result.Hits),
+			"duration_us", time.Since(start).Microseconds(),
+		)
+	}
+
+	return result, err
 }
 
 // CheckResponse 检查响应内容
@@ -136,6 +164,10 @@ func (cf *ContentFilter) applyRules(content string, hits []Hit) *CheckResult {
 			if rule.ID == hit.RuleID && rule.Enabled {
 				// 检查白名单
 				if cf.inWhiteList(content, rule.WhiteList) {
+					cf.logger.Debug("content matched whitelist",
+						"rule_id", rule.ID,
+						"rule_name", rule.Name,
+					)
 					continue
 				}
 
@@ -158,11 +190,28 @@ func (cf *ContentFilter) applyRules(content string, hits []Hit) *CheckResult {
 	switch highestAction {
 	case ActionBlock:
 		result.Reason = "内容包含敏感信息"
+		cf.logger.Warn("content blocked",
+			"action", highestAction,
+			"severity", highestSeverity,
+			"hits", len(hits),
+			"matched_rules", len(matchedRules),
+		)
 	case ActionWarn:
 		result.Reason = "内容可能包含敏感信息"
+		cf.logger.Info("content warning",
+			"action", highestAction,
+			"severity", highestSeverity,
+			"hits", len(hits),
+		)
 	case ActionSanitize:
 		result.SanitizedContent = cf.sanitize(content, hits)
 		result.Reason = "内容已脱敏"
+		cf.logger.Info("content sanitized",
+			"action", highestAction,
+			"original_len", len(content),
+			"sanitized_len", len(result.SanitizedContent),
+			"hits", len(hits),
+		)
 	}
 
 	return result
