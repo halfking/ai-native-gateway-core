@@ -322,11 +322,11 @@ async function copyRawJson() {
             <span class="label">{{ t('trace.detail.finalStatus') }}</span>
             <strong :style="{ color: finalStatusColor }">{{ finalStatusText }}</strong>
           </div>
-          <div v-if="trace.failed_at_stage" class="summary-item">
+          <div v-if="trace && trace.failed_at_stage" class="summary-item">
             <span class="label">{{ t('trace.detail.failedAtStage') }}</span>
             <strong>{{ stageName(trace.failed_at_stage) }}</strong>
           </div>
-          <div class="summary-item">
+          <div v-if="trace" class="summary-item">
             <span class="label">{{ t('trace.detail.eventCount') }}</span>
             <strong>{{ trace.events.length }}</strong>
           </div>
@@ -334,7 +334,7 @@ async function copyRawJson() {
             <span class="label">{{ t('trace.modal.failedCount') }}</span>
             <strong class="danger">{{ failedCount }}</strong>
           </div>
-          <div v-if="trace.total_duration_ms > 0" class="summary-item">
+          <div v-if="trace && trace.total_duration_ms > 0" class="summary-item">
             <span class="label">{{ t('trace.detail.totalDuration') }}</span>
             <strong>{{ trace.total_duration_ms }} ms</strong>
           </div>
@@ -345,7 +345,7 @@ async function copyRawJson() {
         </div>
 
         <!-- 时间轴 -->
-        <ol v-if="trace.events.length" class="timeline">
+        <ol v-if="trace && trace.events.length" class="timeline">
           <li
             v-for="ev in trace.events"
             :key="ev.seq"
