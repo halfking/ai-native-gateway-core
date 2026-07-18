@@ -2,7 +2,7 @@
 
 > 本文档系列分析第三方调度场景下的算力损耗与高延迟问题，基于 llm-gateway-go 代码库当前架构，给出分层优化方案。
 >
-> 最后更新: 2026-07-18 | **已完成审计 (AUDIT.md) 并制定实施计划 (IMPLEMENTATION_PLAN.md)**
+> 最后更新: 2026-07-18 | **已完成二次审计 (AUDIT_V2.md)，发现10个关键问题并提供修正方案**
 
 ---
 
@@ -12,7 +12,8 @@
 |------|------|------|
 | **INDEX.md** (本文档) | 总体说明与快速导航 | ✅ 完成 |
 | **AUDIT.md** | 基于开源项目最佳实践的审计报告 | ✅ 完成 |
-| **IMPLEMENTATION_PLAN.md** | 分4阶段、12周的执行计划 | ✅ 完成 |
+| **AUDIT_V2.md** | 二次审计报告（批判性复核，发现10个问题） | ✅ 完成 |
+| **IMPLEMENTATION_PLAN.md** | 分4阶段、12周的执行计划 | ⚠️ 需根据AUDIT_V2更新 |
 | **01-网络层优化.md** | 专线/HTTP3/连接池详细方案 | ✅ 完成 |
 | **02-算力损耗补偿.md** | Streaming/边缘调度详细方案 | ✅ 完成 |
 | **03-现有能力映射.md** | 代码现状与差距分析 | ✅ 完成 |
@@ -42,6 +43,46 @@
 
 # 1周内部署 → 验证48小时 → 金丝雀发布
 ```
+
+---
+
+## 二次审计关键发现 (AUDIT_V2.md)
+
+**审计日期**: 2026-07-18 | **发现**: 🔴 4个严重问题、🟡 5个中等问题、🟢 1个轻微问题
+
+**核心结论**: 初版方案存在参数配置冲突、实施风险和遗漏优化点，需前置修正才能启动 Phase 0。
+
+| 编号 | 问题 | 影响 | 修正优先级 |
+|------|------|------|-----------|
+| **A1** | 🔴 双层配置冲突 (pool 16 vs upstream 32) | Phase 0收益从30%降至15-20% | P0-PRE |
+| **A2** | 🔴 HTTP/2 Server Push 在 h2c 下不可用 | 40%优化目标无法实现 | P1 (改用Link Preload) |
+| **A3** | 🔴 回滚脚本不覆盖 DB/Nginx/Env | 回滚失败风险 | P0-PRE |
+| **A4** | 🔴 金丝雀方案缺流量控制 | 无法灰度发布 | P0-PRE (Nginx weight配置) |
+| **A6** | 🟡 DNS缓存缺失 | 每次解析+10-20ms | P1 (Phase 1新增) |
+| **A7** | 🟡 TLS Session复用未启用 | 握手开销1-RTT | P1 (Phase 1新增) |
+| **A9** | 🟡 Prometheus分桶不合理 | P99观测精度差 | P1 |
+
+**修正后的收益预测**:
+- Phase 0: ~~20-30%~~ → **15-20%** (因A1配置冲突打折)
+- Phase 1: ~~15%~~ → **25-30%** (A6+A7 DNS/TLS优化被初版遗漏)
+- **总计**: 40-50% TTFB优化 (目标不变，但执行路径调整)
+
+**前置任务（Day 0.5，必须在 Phase 0 前完成）**:
+```bash
+# A1: 统一代码参数
+vim pool/pool.go        # maxIdleConnsPerHost: 16→64
+vim upstream/client.go  # MaxIdleConnsPerHost: 32→64
+
+# A3: 增强回滚脚本
+vim scripts/rollback-optimization.sh  # 增加DB/Nginx/Env回滚
+
+# A4: 配置金丝雀
+ssh root@192.168.1.252
+vim /etc/nginx/conf.d/llm-gateway-upstream.conf
+# 添加: upstream llm_gateway_canary { server 192.168.1.71:8781 weight=1; }
+```
+
+详见 **AUDIT_V2.md** 完整报告。
 
 ---
 

@@ -2,7 +2,7 @@
 
 > **日期**: 2026-07-18  
 > **会话**: 号池管理二次审计 + 跨进程RPM设计  
-> **状态**: Phase 1 完成（设计），Phase 2 待实施（编码）  
+> **状态**: Phase 2 编码完成，远程部署验收待执行
 > **下一会话负责人**: 实施工程师
 
 ---
@@ -45,25 +45,25 @@
 
 ### 2.1 必须完成（P0）
 
-1. **引入 Redis 依赖**
+1. **引入 Redis 依赖**（已存在于 go.mod）
    ```bash
    go get github.com/redis/go-redis/v9
    go get github.com/alicebob/miniredis/v2  # 测试用
    ```
 
-2. **重构现有 RPM 代码**
+2. **重构现有 RPM 代码**（已完成）
    - 文件：`domains/credential/limiter.go:251-282`
    - 抽取为独立的 `MemoryRPMLimiter`
    - 保持 `rpmWindow` 结构不变（Line 212）
 
-3. **实现 RedisRPMLimiter**
+3. **实现 RedisRPMLimiter**（已完成）
    - 新文件：`domains/credential/rpm_redis.go`
    - Lua 脚本已就绪（`scripts/rpm_sliding_window.lua`）
    - 降级逻辑：Redis 失败 → MemoryRPMLimiter
 
-4. **单元测试**（5个）+ **集成测试**（2个）
+4. **单元测试**（5个）+ **集成测试**（2个，miniredis，已完成）
 
-5. **性能对比 benchmark**
+5. **性能对比 benchmark**（已完成；真实 Redis P99 待部署环境验证）
 
 ---
 
@@ -73,8 +73,9 @@
 |------|------|------|
 | `docs/号池优化/13-跨进程RPM实施方案.md` | ✅ | 完整技术设计 |
 | `scripts/rpm_sliding_window.lua` | ✅ | Redis Lua 脚本 |
-| `domains/credential/limiter.go:251-282` | ⚠️ 待重构 | 现有 RPM 逻辑 |
-| `domains/credential/rpm_redis.go` | ❌ 待创建 | Redis 适配器 |
+| `domains/credential/limiter.go:251-282` | ✅ | 委托 RPMLimiter |
+| `domains/credential/rpm_memory.go` | ✅ | 内存 fallback |
+| `domains/credential/rpm_redis.go` | ✅ | Redis 适配器 |
 
 ---
 
@@ -90,15 +91,15 @@ export RPM_REDIS_URL="redis://localhost:6379/2"
 ## § 5. 验收标准
 
 **功能**：
-- [ ] 3 实例 + Redis：全局 RPM = limit（不是 limit × 3）
-- [ ] Redis 不可用：自动降级
+- [x] 3 实例 + Redis：miniredis 模拟验证全局 RPM = limit
+- [x] Redis 不可用：自动降级
 
 **性能**：
-- [ ] Redis 模式 P99 ≤ 2ms
+- [ ] Redis 模式 P99 ≤ 2ms（miniredis benchmark 已完成，真实 Redis 待部署）
 
 **质量**：
-- [ ] 单元测试覆盖率 ≥ 85%
-- [ ] `go test -race` 无竞态
+- [ ] credential 包覆盖率 ≥ 85%（当前完整包约 81%；RPM 新增实现关键函数已覆盖，需补齐包口径）
+- [x] `go test -race` 无竞态
 
 ---
 
