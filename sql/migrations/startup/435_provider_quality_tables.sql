@@ -411,7 +411,7 @@ COMMENT ON VIEW provider_error_distribution IS '24小时错误分布统计 - 用
 DO $$
 BEGIN
     -- 验证表是否创建成功
-    ASSERT (SELECT COUNT(*) FROM information_schema.tables 
+    ASSERT (SELECT COUNT(*) FROM information_schema.tables
             WHERE table_name IN (
                 'provider_quality_profiles',
                 'provider_metrics_minute',
