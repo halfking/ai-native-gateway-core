@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/logger"
 )
 
 var (
@@ -115,6 +117,9 @@ type breaker struct {
 
 	// 用于 Half-Open 状态的并发控制
 	halfOpenMu sync.Mutex
+
+	// 日志
+	logger logger.Logger
 }
 
 // NewBreaker 创建一个新的熔断器
@@ -122,9 +127,18 @@ func NewBreaker(config Config) Breaker {
 	b := &breaker{
 		config: config,
 		window: NewSlidingWindow(config.WindowSize),
+		logger: logger.New("circuit"),
 	}
 	b.state.Store(int32(StateClosed))
 	b.lastStateChange.Store(time.Now().Unix())
+
+	b.logger.Info("circuit breaker created",
+		"error_threshold", config.ErrorThreshold,
+		"min_requests", config.MinRequests,
+		"window_size", config.WindowSize,
+		"open_timeout", config.OpenTimeout,
+	)
+
 	return b
 }
 
@@ -146,10 +160,25 @@ func (b *breaker) Call(ctx context.Context, fn func() error) error {
 
 // callClosed 在 Closed 状态下执行调用
 func (b *breaker) callClosed(ctx context.Context, fn func() error) error {
+	start := time.Now()
 	err := fn()
+	duration := time.Since(start)
 
 	// 记录结果
 	b.window.Record(err == nil)
+
+	if err == nil {
+		b.logger.Debug("request succeeded",
+			"state", "closed",
+			"duration_ms", duration.Milliseconds(),
+		)
+	} else {
+		b.logger.Warn("request failed",
+			"state", "closed",
+			"error", err.Error(),
+			"duration_ms", duration.Milliseconds(),
+		)
+	}
 
 	// 检查是否需要熔断
 	if b.shouldOpen() {
@@ -165,11 +194,17 @@ func (b *breaker) callOpen(ctx context.Context, fn func() error) error {
 	// 检查是否到期
 	openUntil := time.Unix(b.openUntil.Load(), 0)
 	if time.Now().After(openUntil) {
+		b.logger.Info("circuit breaker timeout expired, transitioning to half-open",
+			"open_duration", time.Since(time.Unix(b.lastStateChange.Load(), 0)),
+		)
 		b.transitionToHalfOpen()
 		return b.callHalfOpen(ctx, fn)
 	}
 
 	// 仍在 Open 状态，快速失败
+	b.logger.Debug("circuit breaker open, rejecting request",
+		"retry_after", openUntil.Sub(time.Now()),
+	)
 	return ErrOpen
 }
 
@@ -229,6 +264,9 @@ func (b *breaker) shouldOpen() bool {
 
 // transitionToOpen 转换到 Open 状态
 func (b *breaker) transitionToOpen() {
+	oldState := b.getState()
+	metrics := b.window.Metrics()
+
 	b.setState(StateOpen)
 	b.openUntil.Store(time.Now().Add(b.config.OpenTimeout).Unix())
 	b.lastStateChange.Store(time.Now().Unix())
@@ -237,10 +275,22 @@ func (b *breaker) transitionToOpen() {
 	b.halfOpenSuccesses.Store(0)
 	b.halfOpenFailures.Store(0)
 	b.halfOpenTotal.Store(0)
+
+	b.logger.Warn("circuit breaker opened",
+		"from_state", oldState.String(),
+		"to_state", "open",
+		"error_rate", metrics.ErrorRate,
+		"threshold", b.config.ErrorThreshold,
+		"total_requests", metrics.Total,
+		"failures", metrics.Failures,
+		"open_timeout", b.config.OpenTimeout,
+	)
 }
 
 // transitionToHalfOpen 转换到 Half-Open 状态
 func (b *breaker) transitionToHalfOpen() {
+	oldState := b.getState()
+
 	b.setState(StateHalfOpen)
 	b.lastStateChange.Store(time.Now().Unix())
 
@@ -248,15 +298,33 @@ func (b *breaker) transitionToHalfOpen() {
 	b.halfOpenSuccesses.Store(0)
 	b.halfOpenFailures.Store(0)
 	b.halfOpenTotal.Store(0)
+
+	b.logger.Info("circuit breaker transitioned to half-open",
+		"from_state", oldState.String(),
+		"to_state", "half_open",
+		"max_test_requests", b.config.HalfOpenMaxTest,
+		"success_threshold", b.config.HalfOpenSuccessThreshold,
+	)
 }
 
 // transitionToClosed 转换到 Closed 状态
 func (b *breaker) transitionToClosed() {
+	oldState := b.getState()
+	successes := b.halfOpenSuccesses.Load()
+	total := b.halfOpenTotal.Load()
+
 	b.setState(StateClosed)
 	b.lastStateChange.Store(time.Now().Unix())
 
 	// 重置滑动窗口
 	b.window.Reset()
+
+	b.logger.Info("circuit breaker closed",
+		"from_state", oldState.String(),
+		"to_state", "closed",
+		"half_open_successes", successes,
+		"half_open_total", total,
+	)
 }
 
 // State 返回当前状态
