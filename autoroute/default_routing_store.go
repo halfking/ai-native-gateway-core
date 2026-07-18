@@ -41,7 +41,7 @@ type DefaultRouting struct {
 	Profile        string // "" = 任意 profile（通用）
 	Tier           RoutingTier
 	CanonicalModel string
-	TenantID       *int64 // nil = 平台默认
+	TenantID       *string // nil = 平台默认
 	Priority       int
 	Reason         string
 	CreatedBy      string
@@ -113,7 +113,7 @@ func (s *DefaultRoutingStore) Reload(ctx context.Context) error {
 	for rows.Next() {
 		var d DefaultRouting
 		var tier string
-		var tenantID *int64
+		var tenantID *string
 		var createdBy *string
 		var expiresAt *time.Time
 		if err := rows.Scan(&d.ID, &d.TaskType, &d.Profile, &tier,
@@ -138,14 +138,14 @@ func (s *DefaultRoutingStore) Reload(ctx context.Context) error {
 }
 
 // Resolve 按 4 级优先级查找 (taskType, profile, tenantID) 的默认模型。
-// tenantID <= 0 视为无租户（只查平台级）。返回 ok=false 表示无显式默认。
-func (s *DefaultRoutingStore) Resolve(taskType, profile string, tenantID int64) (DefaultRoutingResolution, bool) {
+// 空 tenantID 视为无租户（只查平台级）。返回 ok=false 表示无显式默认。
+func (s *DefaultRoutingStore) Resolve(taskType, profile, tenantID string) (DefaultRoutingResolution, bool) {
 	snap := s.current()
 	rows := snap.byTask[taskType]
 	if len(rows) == 0 {
 		return DefaultRoutingResolution{}, false
 	}
-	hasTenant := tenantID > 0
+	hasTenant := tenantID != ""
 
 	// 4 级优先级。每级内按 priority DESC 取首个。
 	type level struct {

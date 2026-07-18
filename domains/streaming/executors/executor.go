@@ -1028,6 +1028,70 @@ func ensureFpReleaseWorker() {
 
 func init() { ensureFpReleaseWorker() }
 
+// buildEnhancedErrorContext creates a detailed context map for 5xx error analysis.
+// It includes request dimensions (tokens, messages, body size) to help diagnose
+// whether context length is related to transient errors.
+// 2026-07-19: Added to analyze claude-fable-5/sonnet-5 5xx errors.
+func buildEnhancedErrorContext(params *ExecParams, kind errorsx.ErrorKind, execErr error, candidateCount int, attemptIndex int) map[string]any {
+	ctx := map[string]any{
+		"client_model":    params.ClientModel,
+		"attempt_kind":    string(kind),
+		"err_msg":         execErr.Error(),
+		"is_stream":       params.IsStream,
+		"candidate_count": candidateCount,
+		"attempt_index":   attemptIndex,
+	}
+
+	// Request body size
+	if len(params.BodyBytes) > 0 {
+		ctx["request_body_size"] = len(params.BodyBytes)
+	}
+
+	// Parse request body to extract context dimensions
+	if len(params.BodyBytes) > 0 {
+		var reqBody map[string]any
+		if err := json.Unmarshal(params.BodyBytes, &reqBody); err == nil {
+			// Message count
+			if messages, ok := reqBody["messages"].([]any); ok {
+				ctx["message_count"] = len(messages)
+
+				// Calculate approximate input length
+				totalLen := 0
+				for _, msg := range messages {
+					if m, ok := msg.(map[string]any); ok {
+						if content, ok := m["content"].(string); ok {
+							totalLen += len(content)
+						}
+					}
+				}
+				ctx["total_message_length"] = totalLen
+			}
+
+			// System prompt
+			if system, ok := reqBody["system"].(string); ok && len(system) > 0 {
+				ctx["system_prompt_length"] = len(system)
+			}
+
+			// max_tokens
+			if maxTokens, ok := reqBody["max_tokens"]; ok {
+				ctx["max_tokens"] = maxTokens
+			}
+
+			// temperature
+			if temp, ok := reqBody["temperature"]; ok {
+				ctx["temperature"] = temp
+			}
+
+			// tools count
+			if tools, ok := reqBody["tools"].([]any); ok && len(tools) > 0 {
+				ctx["tools_count"] = len(tools)
+			}
+		}
+	}
+
+	return ctx
+}
+
 func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	if params.R != nil && strings.TrimSpace(params.TenantID) != "" {
 		params.R = params.R.WithContext(session.SetTenantID(params.R.Context(), params.TenantID))
@@ -2015,11 +2079,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				execErr,
 				nil, // latency_ms: end-to-end candidate latency, not yet tracked here
 				&perAttemptMs,
-				map[string]any{
-					"client_model": params.ClientModel,
-					"attempt_kind": string(kind),
-					"err_msg":      execErr.Error(),
-				},
+				buildEnhancedErrorContext(params, kind, execErr, len(candidates), tried),
 			)
 		} else {
 			// 2026-07-13: defensive log when FailureLogger is nil
@@ -2181,6 +2241,40 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		params.AuditBuilder.DecisionTrace(trace)
 	}
 
+	// ── 单节点5xx快速恢复：立即probe，成功则直接重试 ──────────
+	// 2026-07-18: 单节点场景下，5xx后立即inline probe（不等1s），
+	// 成功后直接递归重试原请求，避免进入sync retry loop的等待。
+	// 这解决了单节点场景下前端超时导致credential被降级的问题。
+	if len(candidates) == 1 && lastKind == errorsx.KindTransient &&
+		e.ProbeSync != nil && lastTransientCred.CredentialID != 0 &&
+		e.asyncDepth.Load() < 3 {
+
+		slog.Info("single_node_5xx_immediate_probe",
+			"credential_id", lastTransientCred.CredentialID,
+			"model", params.ClientModel,
+			"raw_model", lastTransientCred.RawModel,
+		)
+
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		recovered := e.ProbeSync(probeCtx, []credentialstate.NoCandidatesCandidate{lastTransientCred}, params.TenantID, params.RequestID)
+		probeCancel()
+
+		if recovered {
+			slog.Info("single_node_recovered_immediate_retry",
+				"credential_id", lastTransientCred.CredentialID,
+				"model", params.ClientModel,
+				"elapsed_ms", time.Since(tTotal).Milliseconds(),
+			)
+			// 递归重试（asyncDepth已限制深度避免无限递归）
+			return e.Execute(params)
+		}
+
+		slog.Warn("single_node_probe_failed_fallback_to_sync_retry",
+			"credential_id", lastTransientCred.CredentialID,
+			"model", params.ClientModel,
+		)
+	}
+
 	// ── 同步重试：非流式请求，全候选失败后保持连接继续重试 ──────────
 	// 2026-06-21: 客户端在等待，不返回错误、不启动异步 goroutine，
 	// 而是保持 HTTP 连接，继续同步重试候选。客户端断开时自动停止。
@@ -2213,6 +2307,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 			// 间隔等待（可被 ctx 中断）
 			// 2026-07-03: Bug #12 fix - 降低重试间隔从5s到1s，减少白等时间
+			// 2026-07-18: 进一步降低到500ms，配合单节点快速恢复机制
 			select {
 			case <-params.R.Context().Done():
 				slog.Info("sync_retry_stopped",
@@ -2221,7 +2316,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"elapsed_ms", time.Since(tTotal).Milliseconds(),
 				)
 				break syncRetryLoop
-			case <-time.After(1 * time.Second):
+			case <-time.After(500 * time.Millisecond):
 			}
 
 			if err := params.R.Context().Err(); err != nil {
