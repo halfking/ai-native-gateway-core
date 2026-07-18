@@ -409,17 +409,6 @@ func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, 
 		return func() {}, nil
 	}
 
-	// 2026-07-15: per-credential RPM sliding window (60s). When the
-	// rpm_limit is hit, refuse this acquire immediately (no blocking
-	// wait — callers should failover to the next candidate). Returned
-	// as a typed error so the executor maps it to KindRateLimit and
-	// routes it through the existing transient-error continue branch
-	// (executor.go:1814). Memory bound: one float64 per RPM per
-	// credential, pruned on every Check.
-	if !l.CheckCredentialRPM(providerID, credentialID, rpmLimit) {
-		return nil, fmt.Errorf("credential rpm limit (provider=%d credential=%d limit=%d)", providerID, credentialID, derefInt(rpmLimit))
-	}
-
 	// OPT-2: cap the blocking wait per layer. ctx may have no deadline
 	// (CLI, internal call), so derive a child context that fires after
 	// acquireWaitTimeout. The original ctx still wins on early cancel.
@@ -444,6 +433,18 @@ func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, 
 		pool.Release()
 		l.global.Release()
 		return nil, fmt.Errorf("credential limit: %w", err)
+	}
+
+	// Reserve RPM only after the request owns a credential slot. Recording
+	// before semaphore acquisition would charge requests that timed out or
+	// failed at an outer concurrency layer, causing false rate-limit failures.
+	// The reservation is atomic under rpmMu; on rejection, release all slots
+	// acquired so far and let the executor fail over to another candidate.
+	if !l.CheckCredentialRPM(providerID, credentialID, rpmLimit) {
+		cred.Release()
+		pool.Release()
+		l.global.Release()
+		return nil, fmt.Errorf("credential rpm limit (provider=%d credential=%d limit=%d)", providerID, credentialID, derefInt(rpmLimit))
 	}
 
 	// Acquire identity (non-blocking — identity limit is a soft cap)
