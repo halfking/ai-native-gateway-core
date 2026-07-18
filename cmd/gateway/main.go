@@ -3171,6 +3171,33 @@ func main() {
 			return admin.AdminMiddleware(fn, pool, secret)
 		}
 	}
+	var wrapSessionAnalytics func(http.HandlerFunc) http.HandlerFunc
+	if dbConn != nil {
+		pool := dbConn.Pool()
+		secret := cfg.SecretKey
+		wrapSessionAnalytics = func(fn http.HandlerFunc) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				serviceJWTEnabled := settings.GetPlatformBool("session_service_auth.enabled", false)
+				serviceJWTSecret := strings.TrimSpace(os.Getenv("LLM_GATEWAY_SESSION_SERVICE_JWT_SECRET"))
+				if !serviceJWTEnabled || serviceJWTSecret == "" {
+					if serviceJWTEnabled && serviceJWTSecret == "" {
+						slog.Warn("session service JWT enabled but secret is missing; using admin middleware")
+					}
+					admin.AdminMiddleware(fn, pool, secret)(w, r)
+					return
+				}
+				serviceJWTIssuer := os.Getenv("LLM_GATEWAY_SESSION_SERVICE_JWT_ISSUER")
+				if serviceJWTIssuer == "" {
+					serviceJWTIssuer = "ai-session-manager"
+				}
+				serviceJWTAudience := os.Getenv("LLM_GATEWAY_SESSION_SERVICE_JWT_AUDIENCE")
+				if serviceJWTAudience == "" {
+					serviceJWTAudience = "llm-gateway-session-analytics"
+				}
+				admin.SessionAnalyticsMiddleware(fn, pool, secret, serviceJWTSecret, serviceJWTIssuer, serviceJWTAudience)(w, r)
+			}
+		}
+	}
 
 	// Phase 2: Meta-tools API routes
 	if dbConn != nil && dbConn.Enabled() {
@@ -3238,15 +3265,16 @@ func main() {
 		// Phase 4: Session Analytics API (会话全景分析)
 		// 350 迁移修复 session_summaries 聚合链路后启用。
 		if adminHandler != nil {
-			mux.HandleFunc("/api/admin/session-analytics", wrapAdmin(adminHandler.HandleSessionAnalyticsList))
-			mux.HandleFunc("/api/admin/session-analytics/", wrapAdmin(adminHandler.RouteSessionAnalytics))
-			mux.HandleFunc("/api/admin/session-clusters", wrapAdmin(adminHandler.HandleSessionClustersList))
-			mux.HandleFunc("/api/admin/session-clusters/", wrapAdmin(adminHandler.RouteSessionClusters))
+			mux.HandleFunc("/api/admin/session-analytics", wrapSessionAnalytics(adminHandler.HandleSessionAnalyticsList))
+			mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
+			mux.HandleFunc("/api/admin/session-clusters", wrapSessionAnalytics(adminHandler.HandleSessionClustersList))
+			mux.HandleFunc("/api/admin/session-clusters/", wrapSessionAnalytics(adminHandler.RouteSessionClusters))
 			// Task T1.1: 时间序列分析端点 (2026-07-06)
-			mux.HandleFunc("/api/admin/session-analytics/activity", wrapAdmin(adminHandler.HandleActivityTrend))
-			mux.HandleFunc("/api/admin/session-analytics/cost-trend", wrapAdmin(adminHandler.HandleCostTrend))
-			mux.HandleFunc("/api/admin/session-analytics/latency-trend", wrapAdmin(adminHandler.HandleLatencyTrend))
-			mux.HandleFunc("/api/admin/session-analytics/health-trend", wrapAdmin(adminHandler.HandleHealthTrend))
+			mux.HandleFunc("/api/admin/session-analytics/activity", wrapSessionAnalytics(adminHandler.HandleActivityTrend))
+			mux.HandleFunc("/api/admin/session-analytics/cost-trend", wrapSessionAnalytics(adminHandler.HandleCostTrend))
+			mux.HandleFunc("/api/admin/session-analytics/latency-trend", wrapSessionAnalytics(adminHandler.HandleLatencyTrend))
+			mux.HandleFunc("/api/admin/session-analytics/health-trend", wrapSessionAnalytics(adminHandler.HandleHealthTrend))
+
 			slog.Info("Phase 4 session analytics API enabled (/api/admin/session-analytics)")
 
 			// Task T1.3: 会话健康评分后台 worker (2026-07-06)
