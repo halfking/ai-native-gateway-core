@@ -696,6 +696,12 @@ type ExecParams struct {
 	// control to the normal stream writer. The caller uses it to stop any
 	// pre-stream keepalive goroutine so no writes race with StreamChat.
 	OnStreamReady func()
+	// OnStreamStarted is called once when the upstream stream is ready, before
+	// the shared protocol-specific stream writer starts writing bytes.
+	OnStreamStarted func(ttfbMs int)
+	// OnStreamCompleted is called after the stream writer returns with its
+	// aggregate outcome, regardless of protocol bridge.
+	OnStreamCompleted func(outcome StreamOutcome)
 	// OnProbeHoldStart is invoked when the executor enters the synchronous
 	// no-candidate hold. The handler wires this to its RequestLogContext so
 	// trace/log entries record the probe_hold_start event. Optional.
