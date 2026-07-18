@@ -81,7 +81,11 @@ async function loadTrace(id: string) {
     const msg = e instanceof Error ? e.message : '加载失败'
     // 2026-07-17: 后端修复后, "no rows in result set" 不会再 500 上抛;
     // 此处仍兼容旧的 404 / not_found 错误信息 → 走空状态 UI。
-    if (msg.includes('404') || msg.includes('not found') || msg.includes('no rows')) {
+    if (msg.includes('202') || msg.includes('not_ready') || msg.includes('still being persisted')) {
+      error.value = 'not_ready'
+    } else if (msg.includes('409') || msg.includes('trace_unavailable')) {
+      error.value = 'unavailable'
+    } else if (msg.includes('404') || msg.includes('not found') || msg.includes('no rows')) {
       error.value = 'not_found'
     } else {
       error.value = msg
@@ -286,8 +290,16 @@ async function copyRawJson() {
         <span>{{ t('requests.common.loading') }}</span>
       </div>
 
-      <!-- 空数据: 区分 not_found 与其它 -->
-      <div v-else-if="error === 'not_found'" class="trace-empty">
+      <div v-else-if="error === 'not_ready'" class="trace-empty">
+        <div class="empty-icon" aria-hidden="true">⏳</div>
+        <h4>链路正在持久化</h4>
+        <p>请求日志已生成，但链路事件仍在从 Redis 写入 PostgreSQL，请稍后重试。</p>
+      </div>
+      <div v-else-if="error === 'unavailable'" class="trace-empty">
+        <div class="empty-icon" aria-hidden="true">⚠</div>
+        <h4>链路暂不可用</h4>
+        <p>请求记录存在，但当前没有可读取的完整链路数据。</p>
+      </div>
         <div class="empty-icon" aria-hidden="true">📭</div>
         <h4>{{ t('trace.empty.title') }}</h4>
         <p>{{ t('trace.empty.desc') }}</p>

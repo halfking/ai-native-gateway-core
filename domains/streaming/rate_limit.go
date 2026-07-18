@@ -73,7 +73,16 @@ func checkGatewayRateLimit(keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimi
 	return rateLimitOutcome{Limit: limit, Remaining: -1, ResetSec: 0}
 }
 
-// writeRateLimitHeaders writes the X-RateLimit-* family of headers when
+func rateLimitOutcomeKind(o rateLimitOutcome) string {
+	if o.Skipped {
+		return "skipped"
+	}
+	if o.Blocked {
+		return "blocked"
+	}
+	return "passed"
+}
+
 // applicable. Always writes Retry-After when the request was blocked.
 //
 // Header semantics follow RFC draft-ietf-httpapi-ratelimit-headers:

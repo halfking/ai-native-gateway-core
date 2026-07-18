@@ -24,6 +24,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, DashboardSpecs()...)
 	// 2026-07-17: Sessions V2 feature flags (Migration 430)
 	out = append(out, SessionsV2Specs()...)
+	// 2026-07-18: dedicated session-manager service JWT gate.
+	out = append(out, SessionServiceAuthSpecs()...)
 	return out
 }
 
