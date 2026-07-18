@@ -1669,6 +1669,7 @@ func main() {
 	var modelAvailabilityKeyCounter *bg.AvailabilityKeyCounter
 	var passiveProbe *bg.PassiveProbeListener
 	var activeProbe *bg.ActiveProbeWorker // 2026-07-13: 错误触发的主动探测
+	var probeQueueWorker *bg.ProbeQueueWorker
 	// 2026-07-14: 30s system-health monitor (GDRT H badge).
 	var systemHealthWorker *bg.SystemHealthWorker
 	var stickyCleaner *bg.StickyCleaner
@@ -1887,6 +1888,7 @@ func main() {
 			epThreshold := 2
 			epMaxAttempts := 5
 			epTimeoutMs := 30000
+			epWorkers := 1
 			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_ENABLED"); envStr == "false" || envStr == "0" {
 				epEnabled = false
 			}
@@ -1905,6 +1907,11 @@ func main() {
 					epTimeoutMs = n
 				}
 			}
+			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_WORKERS"); envStr != "" {
+				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
+					epWorkers = n
+				}
+			}
 			activeProbe = bg.NewActiveProbeWorker(bg.ActiveProbeWorkerConfig{
 				DB:                   dbConn.Pool(),
 				Keyring:              keyring,
@@ -1915,6 +1922,7 @@ func main() {
 				ConsecutiveThreshold: epThreshold,
 				MaxAttempts:          epMaxAttempts,
 				TimeoutMs:            epTimeoutMs,
+				Workers:              epWorkers,
 			})
 			slog.Info("CHECKPOINT: before activeProbe.Start")
 			if stateManager != nil {
@@ -1924,6 +1932,20 @@ func main() {
 				slog.Info("activeProbe (legacy error-triggered) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
 			} else {
 				activeProbe.Start(context.Background())
+			}
+			if os.Getenv("LLM_GATEWAY_PROBE_QUEUE_ENABLED") == "true" {
+				queueExecutor := bg.NewActiveProbeExecutor(dbConn.Pool(), keyring, fernetKey, epTimeoutMs)
+				probeQueueWorker = bg.NewProbeQueueWorker(bg.ProbeQueueWorkerConfig{
+					Queue:        bg.NewProbeQueue(dbConn.Pool()),
+					Executor:     queueExecutor,
+					Emitter:      bg.NewActiveProbeEmitter(telemetryClient),
+					BatchSize:    epWorkers,
+					Workers:      epWorkers,
+					Lease:        30 * time.Second,
+					PollInterval: 250 * time.Millisecond,
+				})
+				probeQueueWorker.Start(context.Background())
+				slog.Info("durable probe queue worker started", "workers", epWorkers)
 			}
 			slog.Info("CHECKPOINT: after activeProbe.Start")
 		}
@@ -3492,6 +3514,9 @@ func main() {
 	// Stop probe/state services before closing their shared dependencies.
 	if activeProbe != nil {
 		activeProbe.Stop()
+	}
+	if probeQueueWorker != nil {
+		probeQueueWorker.Stop()
 	}
 	if credProbeV2 != nil {
 		credProbeV2.Stop()
