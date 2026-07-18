@@ -25,6 +25,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
+	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
@@ -70,6 +71,10 @@ type Handler struct {
 	opsOverviewCache *opsOverviewCache
 	// ipBlocklist backs security IP denylist admin + request gate cache.
 	ipBlocklist *ipblocklist.Service
+	// sensitiveWordEngine (2026-07-18) backs the admin sensitive-words
+	// management endpoints (reload, status, match). nil disables the
+	// endpoints. Wired from cmd/gateway/main.go.
+	sensitiveWordEngine *sensitive.SensitiveWordEngine
 	// routeIncidentHandler (2026-07-13) backs the read-only
 	// /api/admin/route-incidents* endpoints. nil disables the
 	// diagnose feature on the swim lane.
@@ -518,6 +523,12 @@ func (h *Handler) SetIPBlocklist(svc *ipblocklist.Service) {
 	h.ipBlocklist = svc
 }
 
+// SetSensitiveWordEngine (2026-07-18) wires the sensitive word AC engine
+// for the /api/admin/sensitive-words/* endpoints. Pass nil to disable.
+func (h *Handler) SetSensitiveWordEngine(engine *sensitive.SensitiveWordEngine) {
+	h.sensitiveWordEngine = engine
+}
+
 func (h *Handler) admin(fn http.HandlerFunc) http.HandlerFunc {
 	return AdminMiddleware(fn, h.db, h.secret)
 }
@@ -648,6 +659,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/security/ip-blocklist", h.superAdmin(h.handleIPBlocklistCollection))
 	mux.HandleFunc("/api/admin/security/ip-blocklist/reload", h.superAdmin(h.handleIPBlocklistReload))
 	mux.HandleFunc("/api/admin/security/ip-blocklist/", h.superAdmin(h.handleIPBlocklistItem))
+
+	// 2026-07-18: 敏感词管理端点 (reload / status / match)
+	// 引擎未注入时隐藏这些端点（nil-safe）。
+	if h.sensitiveWordEngine != nil {
+		swH := NewSensitiveWordsHandler(h.sensitiveWordEngine)
+		swH.RegisterRoutes(mux, h.admin)
+	}
 
 	// 2026-07-07: P2会话分析 - 客户端/任务维度分析
 	mux.HandleFunc("/api/admin/session-analytics/clients", admin(h.handleClientAnalyticsList))

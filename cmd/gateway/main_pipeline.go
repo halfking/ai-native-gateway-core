@@ -120,6 +120,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/sessionsummary"                               //nolint:depguard // session summary worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize"  //nolint:depguard // SmartSaniGuard
+	"github.com/kaixuan/llm-gateway-go/security/sensitive" //nolint:depguard // AC敏感词引擎
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
@@ -265,6 +267,10 @@ type v2DispatchDeps struct {
 	SessionAnalysisEngines *sessionanalysis.Engines
 	SessionAnalysisConfig  *sessionanalytics.LLMStageConfig
 	AnalysisSQLDBs         []*sql.DB
+
+	// SensitiveWordEngine (2026-07-18) 敏感词 AC 自动机引擎。
+	// 由 buildV2DispatchPipeline 创建，main.go 从中提取并注入到 admin handler。
+	SensitiveWordEngine *sensitive.SensitiveWordEngine
 }
 
 // buildV2DispatchPipeline assembles the Hook Pipeline used by the v2
@@ -317,6 +323,10 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		})
 	}
 
+	// SmartSaniGuard: init sanitizer early so both input and output hooks can share it
+	sanitizerDetector := sanitize.NewPatternDetector()
+	sanitizer, _ := sanitize.NewSanitizer(sanitizerDetector)
+
 	if deps.Config.EnableSecurity {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "security", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
@@ -324,6 +334,19 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 				legacysec.NewSecurityHook(settings.Global),
 			},
 		})
+	}
+
+	// SmartSaniGuard: 输入侧脱敏（替换敏感信息为占位符）
+	// PhasePreRouting — 在 security hook 之后执行，确保脱敏发生在安全检查之后。
+	// 脱敏结果存入 Metadata["sanitize_map"]，输出侧 hook 读取后还原。
+	if sanitizer != nil {
+		inputHook, hErr := sanitize.NewSanitizerInputHook(sanitizer)
+		if hErr == nil {
+			p.AddStage(&pipeline.PipelineStage{
+				Name: "sanitizer_input", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
+				Hooks: []pipeline.Hook{inputHook},
+			})
+		}
 	}
 
 	if deps.ProviderStore != nil && deps.ProviderProber != nil {
@@ -393,9 +416,22 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	// runs at PreRouting as a coarse pre-filter (dual-path during
 	// migration; consolidated in a later PR).
 	secRegistry := security.NewRegistry()
+
+	// ── AC 自动机敏感词引擎（VibeCoding 多模式匹配，O(n) 线性扫描） ──
+	// 加载 configs/sensitive_words.json，构建 AC 自动机。如果文件不存
+	// 在或解析失败，引擎为空（所有检查 pass），不影响服务启动。
+	swEngine := sensitive.NewSensitiveWordEngine()
+	swCfgPath := "configs/sensitive_words.json"
+	if err := swEngine.BuildFromFile(swCfgPath); err != nil {
+		slog.Warn("sensitive word engine init skipped", "path", swCfgPath, "error", err)
+	} else {
+		slog.Info("sensitive word engine ready", "words", swEngine.LoadedWordCount())
+	}
+	// 注册输入/输出侧敏感词检测插件，替代占位实现
+	secRegistry.MustRegister(sensitive.NewSensitiveWordInputPlugin(swEngine))
+	secRegistry.MustRegister(sensitive.NewSensitiveWordOutputPlugin(swEngine))
+
 	secRegistry.MustRegister(securityplugins.NewPromptInjectionChecker())
-	secRegistry.MustRegister(securityplugins.NewSensitiveInputChecker())
-	secRegistry.MustRegister(securityplugins.NewSensitiveOutputChecker())
 	secRegistry.MustRegister(securityplugins.NewPolicyComplianceChecker())
 	secRegistry.MustRegister(securityplugins.NewToolRiskChecker())
 	secRegistry.MustRegister(securityplugins.NewDataExfiltrationChecker())
@@ -448,6 +484,19 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	})
 
 	if deps.Config.EnableStreaming {
+		// SmartSaniGuard: 输出侧还原（占位符 → 原始敏感值）
+		// PhasePostUpstream — 在 output compliance 之前执行，
+		// 先还原占位符，再让 compliance checker 审查还原后的内容。
+		if sanitizer != nil {
+			outputHook, hErr := sanitize.NewSanitizerOutputHook(sanitizer)
+			if hErr == nil {
+				p.AddStage(&pipeline.PipelineStage{
+					Name: "sanitizer_output", Phase: pipeline.PhasePostUpstream, Mode: pipeline.ModeSequential,
+					Hooks: []pipeline.Hook{outputHook},
+				})
+			}
+		}
+
 		// PR-V4-11: output compliance hook（可选；deps.OutputComplianceChecker 非 nil 时启用）。
 		// 放在 streaming 之前——这样 redaction 发生在 SSE 切片之前。
 		if deps.OutputComplianceChecker != nil {
@@ -494,6 +543,9 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 			},
 		})
 	}
+
+	// NOTE (2026-07-18): deps.SensitiveWordEngine is now set in main.go
+	// before calling buildV2DispatchPipeline, so no assignment needed here.
 
 	return p
 }

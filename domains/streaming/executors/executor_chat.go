@@ -754,6 +754,11 @@ func (e *Executor) executeOpenAI(
 					params.OnStreamReady()
 					params.OnStreamReady = nil
 				}
+				if params.OnStreamStarted != nil {
+					params.OnStreamStarted(int(ttfbMs))
+					params.OnStreamStarted = nil
+				}
+
 				var streamOutcome StreamOutcome
 				if params.StreamWrapper != nil {
 					streamOutcome = params.StreamWrapper(params.W, resp, e.Normalize, params.Capture)
@@ -797,7 +802,11 @@ func (e *Executor) executeOpenAI(
 						params.Capture, nil,
 					)
 				}
+				if params.OnStreamCompleted != nil {
+					params.OnStreamCompleted(streamOutcome)
+				}
 				// 2026-06-19 quality fix mode (017_quality_fix_mode.sql):
+
 				// relay/stream.go writes detected flags into the capture
 				// during the stream read loop. Pluck them out here so
 				// emitTelemetry can persist them on the request_log row.

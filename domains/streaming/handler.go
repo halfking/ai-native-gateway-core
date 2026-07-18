@@ -846,18 +846,29 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				fs = gwtrace.FinalFailed
 				failS = gwtrace.ClassifyFailureToStage(logCtx.ErrCode)
 			}
-			// Finalize 标记整个 trace 的终态(在 Redis)
-			_ = h.traceRecorder.Finalize(r.Context(), requestID, fs, failS)
+			// Finalize 必须使用独立 context；客户端断连后 r.Context 已取消。
+			finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = h.traceRecorder.Finalize(finalizeCtx, requestID, fs, failS)
+			finalizeCancel()
 
-			// FlushToPG 把 Redis trace 打包写入 request_logs.trace_events
-			// 异步执行,失败仅日志,绝不阻塞 defer 的客户端响应。
+			// FlushToPG 可能早于 telemetry worker 写入 request_logs；有限退避重试
+			// 覆盖该竞态，且只有 UPDATE 命中行时 recorder 才会删除 Redis key。
 			if h.telemetryClient != nil {
-				// telemetryClient 内含 pgxpool.Pool, 抽出 pool 做 FlushToPG
 				if pool := h.telemetryClient.DBPool(); pool != nil {
 					go func(rid string) {
-						flushCtx, flushCancel := context.WithTimeout(context.Background(), 2*time.Second)
-						defer flushCancel()
-						_ = h.traceRecorder.FlushToPG(flushCtx, pool, rid)
+						for attempt, delay := range []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond, 2 * time.Second} {
+							if delay > 0 {
+								time.Sleep(delay)
+							}
+							flushCtx, flushCancel := context.WithTimeout(context.Background(), 2*time.Second)
+							err := h.traceRecorder.FlushToPG(flushCtx, pool, rid)
+							flushCancel()
+							if err == nil {
+								return
+							}
+							slog.Warn("request_trace: flush attempt failed",
+								"request_id", rid, "attempt", attempt+1, "error", err)
+						}
 					}(requestID)
 				}
 			}
@@ -1043,9 +1054,14 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 
 	// ── RPM rate limit (unified via checkGatewayRateLimit) ──────────────
-	if rlOutcome := checkGatewayRateLimit(keyInfo, h.rateLimiter); !rlOutcome.Skipped {
+	rlOutcome := checkGatewayRateLimit(keyInfo, h.rateLimiter)
+	h.emitTrace(r.Context(), requestID,
+		gwtrace.RateLimitCheck(!rlOutcome.Blocked, rateLimitOutcomeKind(rlOutcome), rlOutcome.Remaining).
+			WithDetails("limit", rlOutcome.Limit, "reset_sec", rlOutcome.ResetSec))
+	if !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
+
 			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
 			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
 			return
@@ -2052,6 +2068,23 @@ func (h *ChatHandler) serveWithExecutor(
 				preStream = nil
 			}
 		},
+		OnStreamStarted: func(ttfbMs int) {
+			h.emitTrace(r.Context(), requestID, gwtrace.StreamStart(ttfbMs))
+		},
+		OnStreamCompleted: func(outcome executors.StreamOutcome) {
+			h.emitTrace(r.Context(), requestID,
+				gwtrace.StreamChunk(outcome.ChunkCount, 0))
+			finish := ""
+			if !outcome.Interrupted {
+				finish = "done"
+			}
+			event := gwtrace.StreamComplete(outcome.ChunkCount, 0, finish)
+			if outcome.Interrupted {
+				event = event.WithError(fmt.Errorf("%s", outcome.Reason))
+			}
+			h.emitTrace(r.Context(), requestID, event)
+		},
+
 		// 2026-07-17 同步探测回调：执行器进入同步探测 hold 时调用
 		// preStream.pause() 暂停 keepalive SSE 注释（已 WriteHeader 200），
 		// 避免客户端把"探测中的心跳"误判为响应开始。

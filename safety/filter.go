@@ -1,0 +1,336 @@
+package safety
+
+import (
+	"context"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// ContentFilter 是内容安全过滤器实现
+type ContentFilter struct {
+	keywordMatcher *KeywordMatcher
+	regexMatcher   *RegexMatcher
+	rules          []Rule
+	mu             sync.RWMutex
+
+	// 统计
+	totalChecks       int64
+	totalBlocked      int64
+	totalWarnings     int64
+	totalSanitized    int64
+	totalLatencyNanos int64
+	hitsByRule        map[string]int64
+	blockedByRule     map[string]int64
+	blockedBySeverity map[Severity]int64
+	statsMu           sync.Mutex
+}
+
+// NewContentFilter 创建内容过滤器
+func NewContentFilter(rules []Rule) *ContentFilter {
+	cf := &ContentFilter{
+		keywordMatcher:    NewKeywordMatcher(),
+		regexMatcher:      NewRegexMatcher(),
+		rules:             make([]Rule, 0),
+		hitsByRule:        make(map[string]int64),
+		blockedByRule:     make(map[string]int64),
+		blockedBySeverity: make(map[Severity]int64),
+	}
+
+	cf.UpdateRules(rules)
+	return cf
+}
+
+// CheckRequest 检查请求内容
+func (cf *ContentFilter) CheckRequest(ctx context.Context, req *CheckRequest) (*CheckResult, error) {
+	start := time.Now()
+	defer func() {
+		atomic.AddInt64(&cf.totalChecks, 1)
+		atomic.AddInt64(&cf.totalLatencyNanos, time.Since(start).Nanoseconds())
+	}()
+
+	return cf.check(req.Content)
+}
+
+// CheckResponse 检查响应内容
+func (cf *ContentFilter) CheckResponse(ctx context.Context, resp *CheckResponse) (*CheckResult, error) {
+	start := time.Now()
+	defer func() {
+		atomic.AddInt64(&cf.totalChecks, 1)
+		atomic.AddInt64(&cf.totalLatencyNanos, time.Since(start).Nanoseconds())
+	}()
+
+	return cf.check(resp.Content)
+}
+
+// check 执行检查
+func (cf *ContentFilter) check(content string) (*CheckResult, error) {
+	cf.mu.RLock()
+	defer cf.mu.RUnlock()
+
+	// 并行检测
+	var (
+		keywordHits []Hit
+		regexHits   []Hit
+		wg          sync.WaitGroup
+	)
+
+	wg.Add(2)
+
+	// Keyword 检测
+	go func() {
+		defer wg.Done()
+		keywordHits = cf.keywordMatcher.Match(content)
+	}()
+
+	// Regex 检测
+	go func() {
+		defer wg.Done()
+		regexHits = cf.regexMatcher.Match(content)
+	}()
+
+	wg.Wait()
+
+	// 合并结果
+	allHits := append(keywordHits, regexHits...)
+
+	// 如果没有匹配，直接放行
+	if len(allHits) == 0 {
+		return &CheckResult{
+			Safe:   true,
+			Action: ActionAllow,
+		}, nil
+	}
+
+	// 应用规则决策
+	result := cf.applyRules(content, allHits)
+
+	// 更新统计
+	cf.updateStats(result)
+
+	return result, nil
+}
+
+// applyRules 应用规则决策
+func (cf *ContentFilter) applyRules(content string, hits []Hit) *CheckResult {
+	// 按严重程度排序，取最高级别
+	highestSeverity := SeverityLow
+	highestAction := ActionAllow
+	var matchedRules []string
+	matchedRulesSet := make(map[string]bool)
+
+	for _, hit := range hits {
+		if !matchedRulesSet[hit.RuleID] {
+			matchedRules = append(matchedRules, hit.RuleID)
+			matchedRulesSet[hit.RuleID] = true
+		}
+
+		// 更新最高严重程度
+		if severityLevel(hit.Severity) > severityLevel(highestSeverity) {
+			highestSeverity = hit.Severity
+		}
+
+		// 找到对应规则
+		for _, rule := range cf.rules {
+			if rule.ID == hit.RuleID && rule.Enabled {
+				// 检查白名单
+				if cf.inWhiteList(content, rule.WhiteList) {
+					continue
+				}
+
+				// 更新最高动作
+				if actionLevel(rule.Action) > actionLevel(highestAction) {
+					highestAction = rule.Action
+				}
+			}
+		}
+	}
+
+	result := &CheckResult{
+		Safe:         highestAction == ActionAllow,
+		Action:       highestAction,
+		MatchedRules: matchedRules,
+		Hits:         hits,
+	}
+
+	// 根据动作类型处理
+	switch highestAction {
+	case ActionBlock:
+		result.Reason = "内容包含敏感信息"
+	case ActionWarn:
+		result.Reason = "内容可能包含敏感信息"
+	case ActionSanitize:
+		result.SanitizedContent = cf.sanitize(content, hits)
+		result.Reason = "内容已脱敏"
+	}
+
+	return result
+}
+
+// inWhiteList 检查是否在白名单
+func (cf *ContentFilter) inWhiteList(content string, whiteList []string) bool {
+	for _, pattern := range whiteList {
+		if strings.Contains(content, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitize 脱敏处理
+func (cf *ContentFilter) sanitize(content string, hits []Hit) string {
+	// 按位置倒序排序，避免索引偏移
+	sortedHits := make([]Hit, len(hits))
+	copy(sortedHits, hits)
+
+	// 简单冒泡排序（按位置倒序）
+	for i := 0; i < len(sortedHits)-1; i++ {
+		for j := 0; j < len(sortedHits)-i-1; j++ {
+			if sortedHits[j].Position < sortedHits[j+1].Position {
+				sortedHits[j], sortedHits[j+1] = sortedHits[j+1], sortedHits[j]
+			}
+		}
+	}
+
+	result := content
+	for _, hit := range sortedHits {
+		// 只脱敏中高严重程度
+		if hit.Severity == SeverityMedium || hit.Severity == SeverityHigh || hit.Severity == SeverityCritical {
+			// 替换为 ***
+			mask := strings.Repeat("*", hit.Length)
+			result = result[:hit.Position] + mask + result[hit.Position+hit.Length:]
+		}
+	}
+
+	return result
+}
+
+// UpdateRules 更新规则
+func (cf *ContentFilter) UpdateRules(rules []Rule) error {
+	cf.mu.Lock()
+	defer cf.mu.Unlock()
+
+	cf.rules = rules
+
+	// 更新 KeywordMatcher
+	keywordRules := make([]Rule, 0)
+	regexRules := make([]Rule, 0)
+
+	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+
+		switch rule.Type {
+		case RuleTypeKeyword:
+			keywordRules = append(keywordRules, rule)
+		case RuleTypeRegex:
+			regexRules = append(regexRules, rule)
+		}
+	}
+
+	cf.keywordMatcher.UpdatePatterns(keywordRules)
+	cf.regexMatcher.UpdatePatterns(regexRules)
+
+	return nil
+}
+
+// Metrics 返回统计指标
+func (cf *ContentFilter) Metrics() FilterMetrics {
+	cf.statsMu.Lock()
+	defer cf.statsMu.Unlock()
+
+	totalChecks := atomic.LoadInt64(&cf.totalChecks)
+	totalLatency := atomic.LoadInt64(&cf.totalLatencyNanos)
+
+	avgLatency := time.Duration(0)
+	if totalChecks > 0 {
+		avgLatency = time.Duration(totalLatency / totalChecks)
+	}
+
+	// 复制 map
+	hitsByRule := make(map[string]int64)
+	blockedByRule := make(map[string]int64)
+	blockedBySeverity := make(map[Severity]int64)
+
+	for k, v := range cf.hitsByRule {
+		hitsByRule[k] = v
+	}
+	for k, v := range cf.blockedByRule {
+		blockedByRule[k] = v
+	}
+	for k, v := range cf.blockedBySeverity {
+		blockedBySeverity[k] = v
+	}
+
+	return FilterMetrics{
+		TotalChecks:       totalChecks,
+		TotalBlocked:      atomic.LoadInt64(&cf.totalBlocked),
+		TotalWarnings:     atomic.LoadInt64(&cf.totalWarnings),
+		TotalSanitized:    atomic.LoadInt64(&cf.totalSanitized),
+		AverageLatency:    avgLatency,
+		HitsByRule:        hitsByRule,
+		BlockedByRule:     blockedByRule,
+		BlockedBySeverity: blockedBySeverity,
+	}
+}
+
+// updateStats 更新统计
+func (cf *ContentFilter) updateStats(result *CheckResult) {
+	cf.statsMu.Lock()
+	defer cf.statsMu.Unlock()
+
+	// 更新命中统计
+	for _, ruleID := range result.MatchedRules {
+		cf.hitsByRule[ruleID]++
+	}
+
+	// 更新动作统计
+	switch result.Action {
+	case ActionBlock:
+		atomic.AddInt64(&cf.totalBlocked, 1)
+		for _, ruleID := range result.MatchedRules {
+			cf.blockedByRule[ruleID]++
+		}
+		for _, hit := range result.Hits {
+			cf.blockedBySeverity[hit.Severity]++
+		}
+	case ActionWarn:
+		atomic.AddInt64(&cf.totalWarnings, 1)
+	case ActionSanitize:
+		atomic.AddInt64(&cf.totalSanitized, 1)
+	}
+}
+
+// Helper functions
+
+func severityLevel(s Severity) int {
+	switch s {
+	case SeverityLow:
+		return 1
+	case SeverityMedium:
+		return 2
+	case SeverityHigh:
+		return 3
+	case SeverityCritical:
+		return 4
+	default:
+		return 0
+	}
+}
+
+func actionLevel(a Action) int {
+	switch a {
+	case ActionAllow:
+		return 0
+	case ActionWarn:
+		return 1
+	case ActionSanitize:
+		return 2
+	case ActionBlock:
+		return 3
+	default:
+		return 0
+	}
+}

@@ -205,6 +205,19 @@ func StreamStart(ttfbMs int) EventBuilder {
 	}
 }
 
+// StreamChunk 构造 stream_chunk 事件（按一次请求汇总写入，而非每个 chunk 写 Redis）。
+func StreamChunk(chunkCount int, totalBytes int) EventBuilder {
+	return EventBuilder{
+		stage:  StageStreamChunk,
+		module: ModuleUpstream,
+		status: StatusSuccess,
+		details: map[string]any{
+			"chunk_count": chunkCount,
+			"total_bytes": totalBytes,
+		},
+	}
+}
+
 // StreamComplete 构造 stream_complete 事件 (流式响应结束)。
 func StreamComplete(chunkCount int, totalBytes int, finishReason string) EventBuilder {
 	return EventBuilder{
