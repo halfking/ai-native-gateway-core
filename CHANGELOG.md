@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Candidate routing diagnostics**: Added cache, singleflight, database result,
+  and API-key enrichment counters for diagnosing empty routing results.
+
+- **Unified provider adapters**: Added OpenAI and Anthropic request/response
+  adapters with a registry and shared request contract.
+
 - **Sensitive word AC automaton engine**: Aho–Corasick multi-pattern matching
   engine (`security/sensitive/`) that scans LLM input/output for P0/P1/P2
   categories. Integrated into the request pipeline as a governance plugin
