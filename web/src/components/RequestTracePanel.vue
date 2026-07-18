@@ -300,6 +300,7 @@ async function copyRawJson() {
         <h4>链路暂不可用</h4>
         <p>请求记录存在，但当前没有可读取的完整链路数据。</p>
       </div>
+      <div v-else-if="error === 'not_found'" class="trace-empty">
         <div class="empty-icon" aria-hidden="true">📭</div>
         <h4>{{ t('trace.empty.title') }}</h4>
         <p>{{ t('trace.empty.desc') }}</p>
