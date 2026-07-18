@@ -790,7 +790,8 @@ func main() {
 		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
 		// 2026-06-21: 同步重试超时（全候选失败后保持客户端连接继续重试）
-		routingExec.SyncRetryTimeout = 120 * time.Second
+		// 2026-07-18: 设为60s，给慢节点足够时间，同时配合单节点快速恢复机制
+		routingExec.SyncRetryTimeout = 60 * time.Second
 		if v := os.Getenv("LLM_GATEWAY_SYNC_RETRY_TIMEOUT"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				routingExec.SyncRetryTimeout = time.Duration(n) * time.Second
