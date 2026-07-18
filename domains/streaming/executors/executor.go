@@ -163,6 +163,10 @@ type ProbeSyncFunc func(
 	parentReqID string,
 ) bool
 
+// StreamWrapperFunc is injected by the main.go wiring to handle streaming
+// responses. Receives the upstream resp and returns a StreamOutcome to let
+// Execute() decide failover. The fourth argument (capture) is the audit
+// StreamCapture that accumulates IR chunks for request_logs.response_summary.
 type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
 
 // AnthropicPassthroughFunc is the signature for the Q4 Anthropic SSE
