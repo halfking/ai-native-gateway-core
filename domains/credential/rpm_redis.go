@@ -28,6 +28,8 @@ redis.call('EXPIRE', key, window + 5)
 return {1, count + 1}
 `
 
+const rpmRedisTimeout = 100 * time.Millisecond
+
 // RedisRPMLimiter is the cross-process RPM implementation with memory fallback.
 type RedisRPMLimiter struct {
 	client   *redis.Client
@@ -73,7 +75,7 @@ func (r *RedisRPMLimiter) CheckAndReserve(ctx context.Context, providerID, crede
 		return r.fallback.CheckAndReserve(ctx, providerID, credentialID, limit)
 	}
 
-	redisCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+	redisCtx, cancel := context.WithTimeout(ctx, rpmRedisTimeout)
 	defer cancel()
 	now := float64(time.Now().UnixNano()) / float64(time.Second)
 	result, err := r.script.Run(redisCtx, r.client, []string{r.redisKey(providerID, credentialID)}, limit, now, int(rpmWindowSeconds)).Slice()
