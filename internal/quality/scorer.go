@@ -77,8 +77,8 @@ func NewProfileCalculator(db *sql.DB) *ProfileCalculator {
 		availabilityScorer:   NewAvailabilityScorer(db),
 		performanceScorer:    NewPerformanceScorer(db),
 		reliabilityScorer:    NewReliabilityScorer(db),
-		stabilityScorer:      NewReliabilityScorer(db), // TODO: 实现 StabilityScorer
-		costEfficiencyScorer: NewReliabilityScorer(db), // TODO: 实现 CostEfficiencyScorer
+		stabilityScorer:      NewStabilityScorer(db),
+		costEfficiencyScorer: NewCostEfficiencyScorer(db),
 	}
 }
 
