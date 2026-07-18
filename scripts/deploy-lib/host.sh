@@ -181,7 +181,7 @@ host_stage_release() {
         sha256sum "$file"
       done < <(find configs -type f -print | sort)
     fi
-  ) > SHA256SUMS
+  ) > "$bundle_dir/SHA256SUMS"
 
   # Initial deployment.json (verified=false). The orchestrator flips
   # this to true only after /healthz returns 2xx.
