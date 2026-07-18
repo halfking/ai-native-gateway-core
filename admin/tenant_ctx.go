@@ -23,10 +23,10 @@ func withTenantTx(ctx context.Context, pool *pgxpool.Pool, tenantID string, fn f
 
 func withAllTenantReadOnlyTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) error {
 	return withReadOnlyTx(ctx, pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SET LOCAL app.current_role = 'super_admin'"); err != nil {
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_role', 'super_admin', true)"); err != nil {
 			return fmt.Errorf("set super-admin role GUC: %w", err)
 		}
-		if _, err := tx.Exec(ctx, "SET LOCAL app.bypass_rls = 'true'"); err != nil {
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
 			return fmt.Errorf("set RLS bypass GUC: %w", err)
 		}
 		return fn(tx)
