@@ -38,12 +38,13 @@ func NewTurnWriter(db *pgxpool.Pool) *TurnWriter {
 // TurnRecord represents a single turn's metadata
 type TurnRecord struct {
 	SessionID  string
+	TurnNo     int    // Turn number within session (populated on read)
 	TenantID   string
 	RequestID  string
 	Ts         time.Time
 
 	// Submit mode detection
-	SubmitMode string // full | delta | snapshot | inferred_compressed
+	SubmitMode string // full | delta | snapshot | inferred_compressed | attachment_only
 
 	// Compression metadata
 	CompressionApplied  bool
@@ -76,6 +77,11 @@ type TurnRecord struct {
 	// Data quality
 	SourceKind string // live | backfill
 	Quality    string // verified | inferred | partial | rejected
+
+	// Attachment metadata (added in migration 431)
+	AttachmentCount      int      // Number of attachments in this turn
+	AttachmentTotalBytes int64    // Total bytes of all attachments
+	MultimodalTypes      []string // Types present: ["image", "audio", "video", "document"]
 }
 
 // AppendTurn appends a new turn to the session, returning the assigned turn_no
@@ -135,6 +141,7 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 			prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, cost_usd,
 			latency_ms, status_code, success, error_kind,
 			source_kind, quality,
+			attachment_count, attachment_total_bytes, multimodal_types,
 			partition_date
 		) VALUES (
 			$1, $2, $3, $4, $5,
@@ -145,7 +152,8 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 			$16, $17, $18, $19, $20,
 			$21, $22, $23, $24,
 			$25, $26,
-			$27
+			$27, $28, $29,
+			$30
 		)
 		ON CONFLICT (request_id, partition_date) DO NOTHING
 	`,
@@ -157,6 +165,7 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 		rec.PromptTokens, rec.CompletionTokens, rec.CacheReadTokens, rec.CacheWriteTokens, rec.CostUSD,
 		rec.LatencyMs, rec.StatusCode, rec.Success, rec.ErrorKind,
 		rec.SourceKind, rec.Quality,
+		rec.AttachmentCount, rec.AttachmentTotalBytes, rec.MultimodalTypes,
 		partitionDate,
 	)
 
@@ -192,14 +201,17 @@ func (w *TurnWriter) GetTurn(ctx context.Context, requestID string) (*TurnRecord
 			COALESCE(cost_usd, 0),
 			COALESCE(latency_ms, 0), COALESCE(status_code, 0),
 			COALESCE(success, false), error_kind,
-			source_kind, quality
+			source_kind, quality,
+			COALESCE(attachment_count, 0),
+			COALESCE(attachment_total_bytes, 0),
+			COALESCE(multimodal_types, '{}')
 		FROM gateway.session_turns
 		WHERE request_id = $1
 		LIMIT 1
 	`
 
 	err := w.db.QueryRow(ctx, query, requestID).Scan(
-		&rec.SessionID, &rec.TenantID, &rec.RequestID, &rec.Ts,
+		&rec.SessionID, &rec.TurnNo, &rec.TenantID, &rec.RequestID, &rec.Ts,
 		&rec.SubmitMode,
 		&rec.CompressionApplied, &rec.CompressionStrategy, &compressionMetaJSON, &rec.TokensSaved,
 		&rec.InjectionVerdict, &rec.OutputVerdict,
@@ -210,6 +222,7 @@ func (w *TurnWriter) GetTurn(ctx context.Context, requestID string) (*TurnRecord
 		&rec.LatencyMs, &rec.StatusCode,
 		&rec.Success, &rec.ErrorKind,
 		&rec.SourceKind, &rec.Quality,
+		&rec.AttachmentCount, &rec.AttachmentTotalBytes, &rec.MultimodalTypes,
 	)
 
 	if err == pgx.ErrNoRows {

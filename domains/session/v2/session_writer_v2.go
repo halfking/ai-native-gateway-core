@@ -79,6 +79,12 @@ type ProcessedRequest struct {
 	Success     bool
 	ErrorKind   string
 
+	// Protocol-specific extensions (from ir.TransportContext)
+	ProviderExtensions map[string]interface{} // Preserves vendor-specific fields
+
+	// Multimodal content tracking
+	MultimodalTypes []string // Types present: ["image", "audio", "video", "document"]
+
 	// Processing stages (for turn logs)
 	ProcessingStages []ProcessingStage
 }
@@ -111,6 +117,11 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	requestDelta := extractRequestDelta(req, submitMode)
 
 	// 3. Write turn metadata
+	requestAttachments := extractRequestAttachments(req)
+	responseAttachments := extractResponseAttachments(req)
+	attachmentCount := len(requestAttachments) + len(responseAttachments)
+	attachmentTotalBytes := calculateTotalBytes(requestAttachments, responseAttachments)
+	
 	turnNo, err := w.turnWriter.AppendTurn(ctx, TurnRecord{
 		SessionID:  req.SessionID,
 		TenantID:   req.TenantID,
@@ -143,6 +154,11 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 
 		SourceKind: "live",
 		Quality:    "verified",
+		
+		// Attachment metadata
+		AttachmentCount:      attachmentCount,
+		AttachmentTotalBytes: attachmentTotalBytes,
+		MultimodalTypes:      req.MultimodalTypes,
 	})
 
 	if err != nil {
@@ -161,8 +177,8 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		ResponseDelta: req.ResponseBody,
 		OutboundBody:  req.OutboundBody,
 
-		RequestAttachments:  extractRequestAttachments(req),
-		ResponseAttachments: extractResponseAttachments(req),
+		RequestAttachments:  requestAttachments,
+		ResponseAttachments: responseAttachments,
 	})
 
 	if err != nil {
@@ -306,16 +322,29 @@ func messageKey(msg Message) string {
 
 // extractRequestAttachments extracts attachment references from request
 func extractRequestAttachments(req *ProcessedRequest) []AttachmentRef {
-	// In production, this would parse req.Attachments
-	// For now, return empty
-	return []AttachmentRef{}
+	// Return the attachments that were already extracted and stored
+	// In the full pipeline, this comes from the attachment extraction layer
+	return req.Attachments
 }
 
 // extractResponseAttachments extracts attachment references from response
 func extractResponseAttachments(req *ProcessedRequest) []AttachmentRef {
-	// In production, this would parse response for attachments
-	// For now, return empty
+	// For now, responses rarely contain attachments (future: audio/image outputs)
+	// This would be populated by the response parser if the LLM returns media
+	// TODO: Parse response_body for attachment references when models support output media
 	return []AttachmentRef{}
+}
+
+// calculateTotalBytes sums up the total bytes from all attachments
+func calculateTotalBytes(requestAttachments, responseAttachments []AttachmentRef) int64 {
+	var total int64
+	for _, att := range requestAttachments {
+		total += att.SizeBytes
+	}
+	for _, att := range responseAttachments {
+		total += att.SizeBytes
+	}
+	return total
 }
 
 // summarizeMessages creates a brief summary of messages for session snapshot
