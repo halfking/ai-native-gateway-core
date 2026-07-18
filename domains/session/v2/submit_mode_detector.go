@@ -12,6 +12,7 @@ const (
 	SubmitModeDelta              SubmitMode = "delta"               // Client sent only new messages
 	SubmitModeSnapshot           SubmitMode = "snapshot"            // Client sent compressed snapshot
 	SubmitModeInferredCompressed SubmitMode = "inferred_compressed" // Gateway inferred client compressed
+	SubmitModeAttachmentOnly     SubmitMode = "attachment_only"     // Only attachments changed, messages unchanged
 )
 
 // SubmitModeDetector detects how the client submitted the request

@@ -33,11 +33,17 @@ type Message struct {
 
 // AttachmentRef represents an attachment reference (no base64 data)
 type AttachmentRef struct {
-	Name        string `json:"name"`
-	ObjectKey   string `json:"object_key"`
-	ContentType string `json:"content_type"`
-	Size        int64  `json:"size"`
-	SHA256      string `json:"sha256"`
+	Name           string    `json:"name"`
+	ObjectKey      string    `json:"object_key"`
+	MIMEType       string    `json:"mime_type"`        // Renamed from ContentType for consistency
+	SizeBytes      int64     `json:"size_bytes"`       // Renamed from Size for clarity
+	SHA256         string    `json:"sha256"`
+	SourceProtocol string    `json:"source_protocol"`  // openai/anthropic/gemini/etc
+	DeclaredMIME   string    `json:"declared_mime"`    // Client-declared MIME type
+	SniffedMIME    string    `json:"sniffed_mime"`     // Server-detected MIME type
+	ProviderFileID string    `json:"provider_file_id"` // Provider-specific file ID (e.g., Gemini file_uri)
+	ExpiresAt      time.Time `json:"expires_at"`       // Expiration timestamp for provider files
+	Replayable     bool      `json:"replayable"`       // Whether attachment can be replayed to upstream
 }
 
 // BodiesRecord represents turn bodies (incremental deltas)

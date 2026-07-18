@@ -173,11 +173,11 @@ func TestSessionBodiesWriter_Attachments(t *testing.T) {
 		},
 		RequestAttachments: []AttachmentRef{
 			{
-				Name:        "image.png",
-				ObjectKey:   "attachments/abc123.png",
-				ContentType: "image/png",
-				Size:        1024,
-				SHA256:      "abc123def456",
+				Name:      "image.png",
+				ObjectKey: "attachments/abc123.png",
+				MIMEType:  "image/png",
+				SizeBytes: 1024,
+				SHA256:    "abc123def456",
 			},
 		},
 		ResponseAttachments: []AttachmentRef{},
@@ -195,8 +195,8 @@ func TestSessionBodiesWriter_Attachments(t *testing.T) {
 	assert.Len(t, retrieved.RequestAttachments, 1)
 	assert.Equal(t, "image.png", retrieved.RequestAttachments[0].Name)
 	assert.Equal(t, "attachments/abc123.png", retrieved.RequestAttachments[0].ObjectKey)
-	assert.Equal(t, "image/png", retrieved.RequestAttachments[0].ContentType)
-	assert.Equal(t, int64(1024), retrieved.RequestAttachments[0].Size)
+	assert.Equal(t, "image/png", retrieved.RequestAttachments[0].MIMEType)
+	assert.Equal(t, int64(1024), retrieved.RequestAttachments[0].SizeBytes)
 }
 
 // TestSessionBodiesWriter_ListAllBodies tests listing all bodies for a session
