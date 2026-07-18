@@ -17,6 +17,10 @@
 
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import ModelPicker from '../components/ModelPicker.vue'
+import { TASK_TYPES } from '../api-autoroute'
+import { L1_TASK_TYPES, listWorkTypes, type WorkTypeConfig } from '../api-work-types'
+import { getTenantsAdmin, type Tenant } from '../api/admin'
 import {
   getRoutingDefaults,
   createRoutingDefault,
@@ -67,6 +71,78 @@ const createForm = ref<RoutingDefaultCreate>({
 })
 const createError = ref<string | null>(null)
 const createSubmitting = ref(false)
+const showTaskTypePicker = ref(false)
+const workTypes = ref<WorkTypeConfig[]>([])
+const workTypesLoading = ref(false)
+const taskTypeLoadError = ref('')
+const showTenantPicker = ref(false)
+const tenants = ref<Tenant[]>([])
+const tenantsLoading = ref(false)
+const tenantLoadError = ref('')
+const tenantSearch = ref('')
+
+const selectedTaskType = computed(() =>
+  availableTaskTypes.value.find((task) => task.key === createForm.value.task_type)
+)
+const availableTaskTypes = computed(() => {
+  if (workTypes.value.length) {
+    return workTypes.value.map((workType) => ({
+      key: workType.key,
+      label: workType.label,
+      icon: '◈',
+    }))
+  }
+  return TASK_TYPES.length ? TASK_TYPES : L1_TASK_TYPES.map((task) => ({ ...task, icon: '◈' }))
+})
+const selectedTenant = computed(() =>
+  tenants.value.find((tenant) => tenant.code === createForm.value.tenant_id)
+)
+const filteredTenants = computed(() => {
+  const query = tenantSearch.value.trim().toLowerCase()
+  if (!query) return tenants.value
+  return tenants.value.filter((tenant) =>
+    `${tenant.code} ${tenant.name}`.toLowerCase().includes(query)
+  )
+})
+
+async function openTenantPicker() {
+  showTenantPicker.value = true
+  tenantSearch.value = ''
+  if (tenants.value.length || tenantsLoading.value) return
+  tenantsLoading.value = true
+  tenantLoadError.value = ''
+  try {
+    tenants.value = await getTenantsAdmin()
+  } catch (e: unknown) {
+    tenantLoadError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    tenantsLoading.value = false
+  }
+}
+
+function selectTaskType(key: string) {
+  createForm.value.task_type = key
+  showTaskTypePicker.value = false
+}
+
+async function openTaskTypePicker() {
+  showTaskTypePicker.value = true
+  if (workTypes.value.length || workTypesLoading.value) return
+  workTypesLoading.value = true
+  taskTypeLoadError.value = ''
+  try {
+    workTypes.value = (await listWorkTypes()).filter((workType) => workType.enabled)
+  } catch (e: unknown) {
+    taskTypeLoadError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    workTypesLoading.value = false
+  }
+}
+
+function selectTenant(code: string | null) {
+  createForm.value.tenant_id = code
+  showTenantPicker.value = false
+}
 
 async function submitCreate() {
   createError.value = null
@@ -236,8 +312,11 @@ onMounted(loadDefaults)
       <p class="hint">{{ t('routingDefault.create.hint') }}</p>
       <div class="form-grid">
         <label>{{ t('routingDefault.create.taskType') }} *
-          <input v-model="createForm.task_type"
-                 :placeholder="t('routingDefault.create.taskTypePlaceholder')" />
+          <button type="button" class="picker-trigger" @click="openTaskTypePicker">
+            <span v-if="selectedTaskType">{{ selectedTaskType.icon }} {{ selectedTaskType.label }} <code>{{ selectedTaskType.key }}</code></span>
+            <span v-else class="picker-placeholder">{{ t('routingDefault.create.taskTypePlaceholder') }}</span>
+            <span>▾</span>
+          </button>
         </label>
         <label>{{ t('routingDefault.create.profile') }}
           <select v-model="createForm.profile">
@@ -255,12 +334,18 @@ onMounted(loadDefaults)
           </select>
         </label>
         <label>{{ t('routingDefault.create.model') }} *
-          <input v-model="createForm.canonical_model"
-                 :placeholder="t('routingDefault.create.modelPlaceholder')" />
+          <ModelPicker
+            v-model="createForm.canonical_model"
+            :placeholder="t('routingDefault.create.modelPlaceholder')"
+            :title="t('routingDefault.create.modelPickerTitle')"
+          />
         </label>
         <label>{{ t('routingDefault.create.tenantId') }}
-          <input type="number" v-model.number="createForm.tenant_id"
-                 :placeholder="t('routingDefault.create.tenantIdPlaceholder')" />
+          <button type="button" class="picker-trigger" @click="openTenantPicker">
+            <span v-if="selectedTenant">{{ selectedTenant.name }} <code>{{ selectedTenant.code }}</code></span>
+            <span v-else class="picker-placeholder">{{ t('routingDefault.create.tenantIdPlaceholder') }}</span>
+            <span>▾</span>
+          </button>
         </label>
         <label>{{ t('routingDefault.create.priority') }}
           <input type="number" v-model.number="createForm.priority" />
@@ -280,6 +365,53 @@ onMounted(loadDefaults)
         <button @click="showCreateForm = false">{{ t('routingDefault.filter.cancel') }}</button>
       </div>
     </section>
+
+    <Teleport to="body">
+      <div v-if="showTaskTypePicker" class="choice-overlay" @click.self="showTaskTypePicker = false">
+        <div class="choice-dialog" role="dialog" :aria-label="t('routingDefault.create.taskTypePickerTitle')">
+          <header class="choice-header">
+            <h3>{{ t('routingDefault.create.taskTypePickerTitle') }}</h3>
+            <button type="button" class="choice-close" @click="showTaskTypePicker = false">×</button>
+          </header>
+          <div v-if="workTypesLoading" class="choice-status">{{ t('routingDefault.create.taskTypeLoading') }}</div>
+          <div v-else-if="taskTypeLoadError" class="choice-status choice-error">{{ taskTypeLoadError }}</div>
+          <div v-else class="choice-grid">
+            <button v-for="task in availableTaskTypes" :key="task.key" type="button" class="choice-option"
+                    :class="{ selected: createForm.task_type === task.key }" @click="selectTaskType(task.key)">
+              <span class="choice-icon">{{ task.icon }}</span>
+              <span>{{ task.label }}</span>
+              <code>{{ task.key }}</code>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="showTenantPicker" class="choice-overlay" @click.self="showTenantPicker = false">
+        <div class="choice-dialog tenant-dialog" role="dialog" :aria-label="t('routingDefault.create.tenantPickerTitle')">
+          <header class="choice-header">
+            <h3>{{ t('routingDefault.create.tenantPickerTitle') }}</h3>
+            <button type="button" class="choice-close" @click="showTenantPicker = false">×</button>
+          </header>
+          <div class="tenant-picker-body">
+            <input v-model="tenantSearch" class="tenant-search" type="search"
+                   :placeholder="t('routingDefault.create.tenantSearchPlaceholder')" autofocus />
+            <button type="button" class="tenant-option tenant-platform" @click="selectTenant(null)">
+              <span>{{ t('routingDefault.scope.platform') }}</span>
+              <small>{{ t('routingDefault.create.tenantPlatformHint') }}</small>
+            </button>
+            <div v-if="tenantsLoading" class="choice-status">{{ t('routingDefault.create.tenantLoading') }}</div>
+            <div v-else-if="tenantLoadError" class="choice-status choice-error">{{ tenantLoadError }}</div>
+            <div v-else-if="filteredTenants.length === 0" class="choice-status">{{ t('routingDefault.create.tenantEmpty') }}</div>
+            <button v-for="tenant in filteredTenants" v-else :key="tenant.code" type="button" class="tenant-option"
+                    :class="{ selected: createForm.tenant_id === tenant.code }" @click="selectTenant(tenant.code)">
+              <strong>{{ tenant.name }}</strong>
+              <code>{{ tenant.code }}</code>
+              <small>{{ tenant.status }}</small>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- ── Defaults table ────────────────────────────────── -->
     <section class="card">
@@ -457,6 +589,14 @@ onMounted(loadDefaults)
   color: var(--muted, #8b949e);
 }
 .form-grid .full-row { grid-column: 1 / -1; }
+.picker-trigger {
+  justify-content: space-between;
+  width: 100%;
+  min-height: 36px;
+  text-align: left;
+}
+.picker-placeholder { color: var(--muted, #8b949e); }
+.picker-trigger code { margin-left: 6px; }
 .form-actions {
   display: flex;
   gap: 8px;
@@ -568,5 +708,77 @@ code {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.choice-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.choice-dialog {
+  width: min(680px, 100%);
+  max-height: min(82vh, 680px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--card, #1c2128);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .35);
+}
+.tenant-dialog { width: min(620px, 100%); }
+.choice-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+.choice-header h3 { margin: 0; font-size: 16px; }
+.choice-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted, #8b949e);
+  font-size: 22px;
+  padding: 0 4px;
+}
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 16px;
+  overflow-y: auto;
+}
+.choice-option,
+.tenant-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid var(--border, #30363d);
+  background: var(--bg, #0d1117);
+  color: var(--text, #e6edf3);
+  text-align: left;
+}
+.choice-option { min-height: 52px; }
+.choice-option.selected,
+.tenant-option.selected { border-color: var(--accent, #6366f1); }
+.choice-icon { font-size: 18px; }
+.choice-option code { margin-left: auto; color: var(--muted, #8b949e); }
+.tenant-picker-body { padding: 16px; overflow-y: auto; }
+.tenant-search { width: 100%; margin-bottom: 10px; }
+.tenant-option { margin-bottom: 8px; flex-wrap: wrap; }
+.tenant-option small { width: 100%; color: var(--muted, #8b949e); }
+.tenant-option code { margin-left: auto; }
+.tenant-platform { border-style: dashed; }
+.choice-status { padding: 24px 8px; color: var(--muted, #8b949e); text-align: center; }
+.choice-error { color: var(--danger, #f85149); }
+@media (max-width: 560px) {
+  .choice-grid { grid-template-columns: 1fr; }
 }
 </style>

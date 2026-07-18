@@ -9,9 +9,9 @@ import (
 // See docs/拆分/22-Auto智能路由与任务识别.md §22.6.
 func TestResolve_FourLevelPriority(t *testing.T) {
 	s := &DefaultRoutingStore{}
-	tenantA := int64(42)
-	tenantB := int64(99)
-	tenantAPtr := new(int64)
+	tenantA := "tenant-a"
+	tenantB := "tenant-b"
+	tenantAPtr := new(string)
 	*tenantAPtr = tenantA
 
 	// Seed the snapshot directly via the package-internal field.
@@ -67,8 +67,8 @@ func TestResolve_FourLevelPriority(t *testing.T) {
 		t.Fatalf("level4 scope: got %q, want platform_generic", res.ScopeLevel)
 	}
 
-	// tenantID <= 0 → only platform rows eligible; +smart → platform-smart
-	res, ok = s.Resolve("code", "smart", 0)
+	// empty tenantID → only platform rows eligible; +smart → platform-smart
+	res, ok = s.Resolve("code", "smart", "")
 	if !ok || res.CanonicalModel != "platform-smart" {
 		t.Fatalf("no-tenant: got model=%q ok=%v, want platform-smart", res.CanonicalModel, ok)
 	}
@@ -82,7 +82,7 @@ func TestResolve_NoMatchReturnsFalse(t *testing.T) {
 			"code": {{TaskType: "code", Profile: "", CanonicalModel: "x"}},
 		},
 	})
-	if _, ok := s.Resolve("vision", "smart", 1); ok {
+	if _, ok := s.Resolve("vision", "smart", "tenant-a"); ok {
 		t.Fatal("want ok=false for unknown task")
 	}
 }
@@ -99,7 +99,7 @@ func TestResolve_PriorityDescWithinLevel(t *testing.T) {
 			},
 		},
 	})
-	res, ok := s.Resolve("chat", "smart", 0)
+	res, ok := s.Resolve("chat", "smart", "")
 	if !ok || res.CanonicalModel != "high" {
 		t.Fatalf("priority: got %q ok=%v, want high", res.CanonicalModel, ok)
 	}
@@ -108,7 +108,7 @@ func TestResolve_PriorityDescWithinLevel(t *testing.T) {
 // TestResolve_NeverLoadedReturnsEmpty: zero-value store never returns a hit.
 func TestResolve_NeverLoadedReturnsEmpty(t *testing.T) {
 	s := &DefaultRoutingStore{}
-	if _, ok := s.Resolve("code", "smart", 1); ok {
+	if _, ok := s.Resolve("code", "smart", "tenant-a"); ok {
 		t.Fatal("never-loaded store must not resolve")
 	}
 }
