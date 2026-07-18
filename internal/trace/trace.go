@@ -494,6 +494,13 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 		return ErrTraceParentNotFound
 	}
 
+	// 2026-07-19: 解析 trace_events 并写入 request_stage_events 规范化表（migration 434）
+	if err := r.writeStageEvents(runCtx, db, requestID, raw); err != nil {
+		// 非阻塞失败，记录警告但不返回错误（保证主流程不受影响）
+		slog.Warn("trace.FlushToPG: writeStageEvents failed",
+			"request_id", requestID, "err", err)
+	}
+
 	// Flush 成功后删除 Redis key (用 DEL 而非 UNLINK,确保后续读取立刻拿到 PG 版)。
 	if delErr := r.rdb.Del(runCtx, key).Err(); delErr != nil {
 		slog.Warn("trace.FlushToPG: Redis DEL failed",
