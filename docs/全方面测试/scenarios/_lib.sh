@@ -30,10 +30,11 @@ reset_all_suppliers() {
 # (auto_index_refresher updates the same column every 5 minutes in
 # production; we just do it inline for a 30-second test run).
 refresh_p95_metrics() {
-    PGHOST="${PGHOST:-localhost}" PGPORT="${PGPORT:-5432}" \
-    PGUSER="${PGUSER:-kxuser}" PGPASSWORD="${PGPASSWORD:-kxpass}" \
-    PGDB="${PGDB:-llm_gateway}" \
-    psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" -c "
+    (
+        export PGHOST="${PGHOST:-localhost}" PGPORT="${PGPORT:-5432}" \
+               PGUSER="${PGUSER:-kxuser}" PGPASSWORD="${PGPASSWORD:-kxpass}" \
+               PGDB="${PGDB:-llm_gateway}"
+        psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" -c "
         WITH p95_data AS (
             SELECT credential_id,
                    COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms)::int, 100)::int AS p95,
@@ -50,6 +51,7 @@ refresh_p95_metrics() {
           AND p95_data.samples >= 5
           AND COALESCE(mo.p95_latency_ms, 0) != p95_data.p95;
     " >/dev/null 2>&1 || true
+    )
 }
 
 # Run loadtest with given parameters, write JSON to results/SCENARIO_NAME.json

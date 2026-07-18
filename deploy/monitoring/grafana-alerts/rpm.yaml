@@ -1,0 +1,14 @@
+groups:
+  - name: rpm_limiter
+    interval: 30s
+    rules:
+      - alert: RPMRedisHighLatency
+        expr: histogram_quantile(0.99, rate(llmgw_rpm_redis_duration_seconds_bucket[5m])) > 0.005
+        for: 5m
+        annotations:
+          summary: "RPM Redis P99 latency exceeds 5ms"
+      - alert: RPMRedisFallbackHigh
+        expr: rate(llmgw_rpm_redis_fallback_total[5m]) > 10
+        for: 2m
+        annotations:
+          summary: "Redis RPM fallback rate is high"

@@ -696,6 +696,12 @@ type ExecParams struct {
 	// control to the normal stream writer. The caller uses it to stop any
 	// pre-stream keepalive goroutine so no writes race with StreamChat.
 	OnStreamReady func()
+	// OnStreamStarted is called once when the upstream stream is ready, before
+	// the shared protocol-specific stream writer starts writing bytes.
+	OnStreamStarted func(ttfbMs int)
+	// OnStreamCompleted is called after the stream writer returns with its
+	// aggregate outcome, regardless of protocol bridge.
+	OnStreamCompleted func(outcome StreamOutcome)
 	// OnProbeHoldStart is invoked when the executor enters the synchronous
 	// no-candidate hold. The handler wires this to its RequestLogContext so
 	// trace/log entries record the probe_hold_start event. Optional.
@@ -1021,6 +1027,70 @@ func ensureFpReleaseWorker() {
 }
 
 func init() { ensureFpReleaseWorker() }
+
+// buildEnhancedErrorContext creates a detailed context map for 5xx error analysis.
+// It includes request dimensions (tokens, messages, body size) to help diagnose
+// whether context length is related to transient errors.
+// 2026-07-19: Added to analyze claude-fable-5/sonnet-5 5xx errors.
+func buildEnhancedErrorContext(params *ExecParams, kind errorsx.ErrorKind, execErr error, candidateCount int, attemptIndex int) map[string]any {
+	ctx := map[string]any{
+		"client_model":    params.ClientModel,
+		"attempt_kind":    string(kind),
+		"err_msg":         execErr.Error(),
+		"is_stream":       params.IsStream,
+		"candidate_count": candidateCount,
+		"attempt_index":   attemptIndex,
+	}
+
+	// Request body size
+	if len(params.BodyBytes) > 0 {
+		ctx["request_body_size"] = len(params.BodyBytes)
+	}
+
+	// Parse request body to extract context dimensions
+	if len(params.BodyBytes) > 0 {
+		var reqBody map[string]any
+		if err := json.Unmarshal(params.BodyBytes, &reqBody); err == nil {
+			// Message count
+			if messages, ok := reqBody["messages"].([]any); ok {
+				ctx["message_count"] = len(messages)
+
+				// Calculate approximate input length
+				totalLen := 0
+				for _, msg := range messages {
+					if m, ok := msg.(map[string]any); ok {
+						if content, ok := m["content"].(string); ok {
+							totalLen += len(content)
+						}
+					}
+				}
+				ctx["total_message_length"] = totalLen
+			}
+
+			// System prompt
+			if system, ok := reqBody["system"].(string); ok && len(system) > 0 {
+				ctx["system_prompt_length"] = len(system)
+			}
+
+			// max_tokens
+			if maxTokens, ok := reqBody["max_tokens"]; ok {
+				ctx["max_tokens"] = maxTokens
+			}
+
+			// temperature
+			if temp, ok := reqBody["temperature"]; ok {
+				ctx["temperature"] = temp
+			}
+
+			// tools count
+			if tools, ok := reqBody["tools"].([]any); ok && len(tools) > 0 {
+				ctx["tools_count"] = len(tools)
+			}
+		}
+	}
+
+	return ctx
+}
 
 func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	if params.R != nil && strings.TrimSpace(params.TenantID) != "" {
@@ -1373,6 +1443,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	var lastErr error
 	var lastKind errorsx.ErrorKind
 	var attempts []AttemptRecord
+	// Track the last transient-failed credential so the sync retry loop
+	// can inline-probe it before re-planning candidates, bypassing the
+	// 5s ActiveProbeWorker backoff.
+	var lastTransientCred credentialstate.NoCandidatesCandidate
 	tried := 0
 
 	// 2026-07-09: 会话级凭据黑名单（修复 NVIDIA NIM 连续失败不降级问题）
@@ -2005,11 +2079,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				execErr,
 				nil, // latency_ms: end-to-end candidate latency, not yet tracked here
 				&perAttemptMs,
-				map[string]any{
-					"client_model": params.ClientModel,
-					"attempt_kind": string(kind),
-					"err_msg":      execErr.Error(),
-				},
+				buildEnhancedErrorContext(params, kind, execErr, len(candidates), tried),
 			)
 		} else {
 			// 2026-07-13: defensive log when FailureLogger is nil
@@ -2142,6 +2212,20 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			kind == errorsx.KindUpstreamDown ||
 			kind == errorsx.KindEmptyResponse {
 
+			// Track the last KindTransient credential for inline probe
+			// in the sync retry loop. We specifically track KindTransient
+			// (5xx overlay) because the sync retry loop's 1s window is
+			// shorter than the ActiveProbeWorker's 5s backoff, so the
+			// credential would still be in cooling state when re-planned.
+			if kind == errorsx.KindTransient {
+				lastTransientCred = credentialstate.NoCandidatesCandidate{
+					CredentialID: cand.CredentialID,
+					ProviderID:   cand.ProviderID,
+					RawModel:     candidateRawModel(cand),
+					BillingMode:  cand.BillingMode,
+				}
+			}
+
 			slog.Warn("executor: transient error, trying next candidate",
 				"kind", kind,
 				"credential_id", cand.CredentialID,
@@ -2155,6 +2239,40 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	trace.FailureReason = "all_candidates_failed"
 	if params.AuditBuilder != nil {
 		params.AuditBuilder.DecisionTrace(trace)
+	}
+
+	// ── 单节点5xx快速恢复：立即probe，成功则直接重试 ──────────
+	// 2026-07-18: 单节点场景下，5xx后立即inline probe（不等1s），
+	// 成功后直接递归重试原请求，避免进入sync retry loop的等待。
+	// 这解决了单节点场景下前端超时导致credential被降级的问题。
+	if len(candidates) == 1 && lastKind == errorsx.KindTransient &&
+		e.ProbeSync != nil && lastTransientCred.CredentialID != 0 &&
+		e.asyncDepth.Load() < 3 {
+
+		slog.Info("single_node_5xx_immediate_probe",
+			"credential_id", lastTransientCred.CredentialID,
+			"model", params.ClientModel,
+			"raw_model", lastTransientCred.RawModel,
+		)
+
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		recovered := e.ProbeSync(probeCtx, []credentialstate.NoCandidatesCandidate{lastTransientCred}, params.TenantID, params.RequestID)
+		probeCancel()
+
+		if recovered {
+			slog.Info("single_node_recovered_immediate_retry",
+				"credential_id", lastTransientCred.CredentialID,
+				"model", params.ClientModel,
+				"elapsed_ms", time.Since(tTotal).Milliseconds(),
+			)
+			// 递归重试（asyncDepth已限制深度避免无限递归）
+			return e.Execute(params)
+		}
+
+		slog.Warn("single_node_probe_failed_fallback_to_sync_retry",
+			"credential_id", lastTransientCred.CredentialID,
+			"model", params.ClientModel,
+		)
 	}
 
 	// ── 同步重试：非流式请求，全候选失败后保持连接继续重试 ──────────
@@ -2189,6 +2307,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 			// 间隔等待（可被 ctx 中断）
 			// 2026-07-03: Bug #12 fix - 降低重试间隔从5s到1s，减少白等时间
+			// 2026-07-18: 进一步降低到500ms，配合单节点快速恢复机制
 			select {
 			case <-params.R.Context().Done():
 				slog.Info("sync_retry_stopped",
@@ -2197,11 +2316,28 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"elapsed_ms", time.Since(tTotal).Milliseconds(),
 				)
 				break syncRetryLoop
-			case <-time.After(1 * time.Second):
+			case <-time.After(500 * time.Millisecond):
 			}
 
 			if err := params.R.Context().Err(); err != nil {
 				break syncRetryLoop
+			}
+
+			// Inline probe: if the previous round had a KindTransient (5xx)
+			// failure, synchronously probe that credential before
+			// re-planning. This bridges the gap between the 5s
+			// ActiveProbeWorker backoff and the 1s retry interval so the
+			// credential can recover within the sync retry window.
+			if e.ProbeSync != nil && lastTransientCred.CredentialID != 0 {
+				probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				recovered := e.ProbeSync(probeCtx, []credentialstate.NoCandidatesCandidate{lastTransientCred}, params.TenantID, params.RequestID)
+				probeCancel()
+				if recovered {
+					slog.Info("sync_retry: transient credential recovered by inline probe",
+						"credential_id", lastTransientCred.CredentialID,
+						"raw_model", lastTransientCred.RawModel,
+					)
+				}
 			}
 
 			// 重新推导候选。

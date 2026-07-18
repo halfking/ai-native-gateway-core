@@ -156,6 +156,9 @@ services:
         condition: service_healthy
     ports:
       - "8781:8781"
+    volumes:
+      # Mount configs directory for sensitive_words.json
+      - ./configs:/configs:ro
     environment:
       # ── 监听与运行环境 ──
       LLM_GATEWAY_LISTEN: ":8781"
@@ -172,6 +175,8 @@ services:
       LLM_GATEWAY_JWT_SECRET: "local-dev-secret-do-not-use-in-production-12345678"
       # ── 关闭数据面 auth (本地测试, 不设 API_KEY 即默认 off) ──
       # LLM_GATEWAY_API_KEY 留空 → auth middleware 不生效
+      # ── Admin API token for /api/admin/* endpoints ──
+      LLM_GATEWAY_ADMIN_API_KEY: "local-admin-test-token-do-not-use-in-production"
       # ── CORS (v1 启动时 panic 若未设; 本地用通配) ──
       LLM_GATEWAY_CORS_ORIGINS: "*"
       # ── 附件目录 (容器内可写, 避免启动时 mkdir 失败) ──

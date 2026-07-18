@@ -855,7 +855,7 @@ onUnmounted(() => {
             @keydown.enter="router.push('/providers/' + p.id)"
           >
             <td>
-              <div style="font-weight:500;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              <div style="font-weight:500;display:flex;align-items:center;gap:6px;flex-wrap:wrap;word-break:break-word;white-space:normal">
                 <span>{{ p.display_name }}</span>
                 <!-- 2026-07-03 v738: surface manual_disabled at a glance so
                      the operator cannot mistake a disabled vendor for an
@@ -866,7 +866,7 @@ onUnmounted(() => {
                   :title="pm('list.manualDisabledTooltip')"
                 >{{ pm('list.manualDisabledBadge') }}</span>
               </div>
-              <div style="font-size:11px;color:var(--muted)" v-if="p.notes">{{ p.notes }}</div>
+              <div style="font-size:11px;color:var(--muted);word-break:break-word;white-space:normal" v-if="p.notes">{{ p.notes }}</div>
             </td>
             <td>
               <span class="badge" :class="providerChannelLabel(p.category).cls">
@@ -876,7 +876,7 @@ onUnmounted(() => {
             <td><code style="font-size:12px">{{ p.catalog_code }}</code></td>
             <td><code style="font-size:11px">{{ p.header_profile_code || '—' }}</code></td>
             <td>
-              <div style="font-size:12px;color:var(--muted);max-width:220px;word-break:break-all">
+              <div style="font-size:12px;color:var(--muted);word-break:break-all;white-space:normal">
                 {{ p.base_url || '—' }}
               </div>
             </td>
@@ -1359,18 +1359,38 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* ── Table Base Styles ──────────────────────────────────────────────────── */
+.card {
+  overflow-x: auto;
+}
+table {
+  table-layout: fixed;
+  width: 100%;
+  min-width: 100%;
+}
+table td, table th {
+  word-break: break-word;
+  white-space: normal;
+  overflow-wrap: break-word;
+  max-width: 0;
+}
+table code {
+  white-space: normal;
+  word-break: break-all;
+}
+
 /* ── Filter Bar ─────────────────────────────────────────────────────────── */
 .filter-bar {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
+  flex-wrap: wrap;
+  overflow-x: visible;
 }
 .filter-search {
   position: relative;
-  flex: 1;
+  flex: 1 1 200px;
   min-width: 200px;
   max-width: 320px;
 }
@@ -1403,6 +1423,9 @@ onUnmounted(() => {
   background: var(--bg-subtle);
   border-radius: 6px;
   padding: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 .filter-tab {
   padding: 6px 14px;
@@ -1495,8 +1518,9 @@ onUnmounted(() => {
   font-size: 11px;
 }
 .health-error {
-  max-width: 240px;
   word-break: break-all;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 .badge-amber {
   background: rgba(210,153,34,.18);
