@@ -22,15 +22,23 @@ func seedSessionRow(t *testing.T, pool *pgxpool.Pool, tenant, owner, gwSessionID
 		t.Fatalf("acquire: %v", err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx,
-		`INSERT INTO session_dim (gw_session_id, tenant_id, owner_user, created_at)
-		 VALUES ($1,$2,$3,NOW())
-		 ON CONFLICT (gw_session_id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id, owner_user=EXCLUDED.owner_user`,
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin fixture tx: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_role', 'super_admin', true), set_config('app.bypass_rls', 'true', true)"); err != nil {
+		t.Fatalf("set fixture bypass GUC: %v", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO session_dim (gw_session_id, session_key, tenant_id, owner_user, created_at)
+		 VALUES ($1,$1,$2,$3,NOW())
+		 ON CONFLICT (gw_session_id) DO UPDATE SET session_key=EXCLUDED.session_key, tenant_id=EXCLUDED.tenant_id, owner_user=EXCLUDED.owner_user`,
 		gwSessionID, tenant, owner,
 	); err != nil {
 		t.Fatalf("seed session_dim: %v", err)
 	}
-	if _, err := conn.Exec(ctx,
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO session_summaries (session_key, tenant_id, first_request_at, last_request_at, updated_at)
 		 VALUES ($1,$2,NOW(),NOW(),NOW())
 		 ON CONFLICT (session_key) DO UPDATE SET tenant_id=EXCLUDED.tenant_id`,
@@ -38,11 +46,28 @@ func seedSessionRow(t *testing.T, pool *pgxpool.Pool, tenant, owner, gwSessionID
 	); err != nil {
 		t.Fatalf("seed session_summaries: %v", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit fixture tx: %v", err)
+	}
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, _ = conn.Exec(ctx, `DELETE FROM session_summaries WHERE session_key=$1`, gwSessionID)
-		_, _ = conn.Exec(ctx, `DELETE FROM session_dim WHERE gw_session_id=$1`, gwSessionID)
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			return
+		}
+		defer conn.Release()
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_role', 'super_admin', true), set_config('app.bypass_rls', 'true', true)"); err != nil {
+			return
+		}
+		_, _ = tx.Exec(ctx, `DELETE FROM session_summaries WHERE session_key=$1`, gwSessionID)
+		_, _ = tx.Exec(ctx, `DELETE FROM session_dim WHERE gw_session_id=$1`, gwSessionID)
+		_ = tx.Commit(ctx)
 	}
 }
 
@@ -56,8 +81,8 @@ func requireLowPrivilegeRole(t *testing.T, pool *pgxpool.Pool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var (
-		isSuper        bool
-		isBypassRLS    bool
+		isSuper     bool
+		isBypassRLS bool
 	)
 	if err := pool.QueryRow(ctx, `SELECT current_setting('is_superuser')::bool`).Scan(&isSuper); err != nil {
 		t.Fatalf("is_superuser probe failed (test DB unconfigured?): %v", err)
@@ -76,6 +101,7 @@ func requireLowPrivilegeRole(t *testing.T, pool *pgxpool.Pool) {
 //   - tenant-a / alice / sess-A
 //   - tenant-a / bob   / sess-B (same tenant, different owner)
 //   - tenant-b / carol / sess-C (different tenant)
+//
 // and returns cleanup.
 func seedThreeTenantFixture(t *testing.T, pool *pgxpool.Pool) (sessA, sessB, sessC string, cleanup func()) {
 	t.Helper()
