@@ -33,6 +33,20 @@ func TestRedisRPMLimiterBasicWindow(t *testing.T) {
 	}
 }
 
+func TestNewRPMLimiterFromEnvDefaultsToMemory(t *testing.T) {
+	t.Setenv("RPM_REDIS_URL", "")
+	if _, ok := NewRPMLimiterFromEnv().(*MemoryRPMLimiter); !ok {
+		t.Fatal("empty RPM_REDIS_URL should select memory limiter")
+	}
+}
+
+func TestNewRPMLimiterFromEnvInvalidURLDefaultsToMemory(t *testing.T) {
+	t.Setenv("RPM_REDIS_URL", "not-a-redis-url")
+	if _, ok := NewRPMLimiterFromEnv().(*MemoryRPMLimiter); !ok {
+		t.Fatal("invalid RPM_REDIS_URL should select memory limiter")
+	}
+}
+
 func TestRedisRPMLimiterConcurrent(t *testing.T) {
 	limiter, _ := newTestRedisRPMLimiter(t)
 	const limit = 20
