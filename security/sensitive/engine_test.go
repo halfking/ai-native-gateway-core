@@ -30,6 +30,32 @@ func TestBuildEmpty(t *testing.T) {
 	}
 }
 
+func TestMatchEmptyInputAndUninitializedReload(t *testing.T) {
+	e := NewSensitiveWordEngine()
+
+	if matches := e.Match(""); matches == nil || len(matches) != 0 {
+		t.Fatalf("Match(\"\") = %v, want a non-nil empty result", matches)
+	}
+	if err := e.ReloadFromFile(); err == nil {
+		t.Fatal("ReloadFromFile should fail before BuildFromFile")
+	}
+}
+
+func TestBuildNilConfigPreservesExistingEngine(t *testing.T) {
+	e := NewSensitiveWordEngine()
+	if err := e.Build(&SensitiveWordConfig{Categories: map[string]CategoryConf{
+		"test": {Name: "test", Words: []string{"secret"}},
+	}}); err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	if err := e.Build(nil); err == nil {
+		t.Fatal("Build(nil) should fail")
+	}
+	if matches := e.Match("secret"); len(matches) != 1 {
+		t.Fatalf("existing engine was changed after Build(nil): %v", matches)
+	}
+}
+
 func TestBasicMatch(t *testing.T) {
 	e := NewSensitiveWordEngine()
 	err := e.Build(&SensitiveWordConfig{

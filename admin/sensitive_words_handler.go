@@ -39,7 +39,7 @@ func (h *SensitiveWordsHandler) handleReload(w http.ResponseWriter, r *http.Requ
 
 	if err := h.engine.ReloadFromFile(); err != nil {
 		slog.Error("sensitive word reload failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Reload failed: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Sensitive word reload failed"})
 		return
 	}
 
