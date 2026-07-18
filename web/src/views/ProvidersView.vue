@@ -855,7 +855,7 @@ onUnmounted(() => {
             @keydown.enter="router.push('/providers/' + p.id)"
           >
             <td>
-              <div style="font-weight:500;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              <div style="font-weight:500;display:flex;align-items:center;gap:6px;flex-wrap:wrap;word-break:break-word;white-space:normal">
                 <span>{{ p.display_name }}</span>
                 <!-- 2026-07-03 v738: surface manual_disabled at a glance so
                      the operator cannot mistake a disabled vendor for an
@@ -866,7 +866,7 @@ onUnmounted(() => {
                   :title="pm('list.manualDisabledTooltip')"
                 >{{ pm('list.manualDisabledBadge') }}</span>
               </div>
-              <div style="font-size:11px;color:var(--muted)" v-if="p.notes">{{ p.notes }}</div>
+              <div style="font-size:11px;color:var(--muted);word-break:break-word;white-space:normal" v-if="p.notes">{{ p.notes }}</div>
             </td>
             <td>
               <span class="badge" :class="providerChannelLabel(p.category).cls">
@@ -876,7 +876,7 @@ onUnmounted(() => {
             <td><code style="font-size:12px">{{ p.catalog_code }}</code></td>
             <td><code style="font-size:11px">{{ p.header_profile_code || '—' }}</code></td>
             <td>
-              <div style="font-size:12px;color:var(--muted);max-width:220px;word-break:break-all">
+              <div style="font-size:12px;color:var(--muted);word-break:break-all;white-space:normal">
                 {{ p.base_url || '—' }}
               </div>
             </td>
@@ -1359,6 +1359,17 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* ── Table Base Styles ──────────────────────────────────────────────────── */
+table {
+  table-layout: auto;
+  width: 100%;
+}
+table td, table th {
+  word-break: break-word;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
 /* ── Filter Bar ─────────────────────────────────────────────────────────── */
 .filter-bar {
   display: flex;
@@ -1495,8 +1506,9 @@ onUnmounted(() => {
   font-size: 11px;
 }
 .health-error {
-  max-width: 240px;
   word-break: break-all;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 .badge-amber {
   background: rgba(210,153,34,.18);
