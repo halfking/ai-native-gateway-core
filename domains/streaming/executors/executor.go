@@ -2057,6 +2057,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}
 		lastKind = kind
 
+		// ── 2026-07-19: trace.upstream_failure 详细记录上游错误 ────────────
+		// 记录 upstream.Error 的完整上下文（StatusCode + Body），不只是 5xx 标签。
+		e.emitTraceExec(params.R.Context(), params.RequestID,
+			gwtrace.UpstreamFailureWithBody(cand.BaseURL, execErr).
+				WithDetails(
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"error_kind", string(kind),
+					"attempt_index", tried,
+				))
+
 		// 2026-06-23 Phase 2 (P1): log the per-candidate failure to
 		// candidate_failure_logs so operators can see WHICH credentials
 		// were tried, in what order, and what the vendor actually

@@ -21,10 +21,10 @@ func TestGenerateSessionReport_AllPass(t *testing.T) {
 	reconResults := []ReconstructionResult{
 		{TurnNo: 1, Status: "ok"},
 	}
-	
+
 	gen := NewReportGenerator()
 	report := gen.GenerateSessionReport("tenant_1", "gw_abc", v1Turns, v2Turns, checks, reconResults)
-	
+
 	if report.Status != "ok" {
 		t.Errorf("Expected status=ok, got %s", report.Status)
 	}
@@ -45,10 +45,10 @@ func TestGenerateSessionReport_WithErrors(t *testing.T) {
 		{Name: "Check 2", Passed: true, Severity: "warning"},
 	}
 	reconResults := []ReconstructionResult{}
-	
+
 	gen := NewReportGenerator()
 	report := gen.GenerateSessionReport("tenant_1", "gw_abc", v1Turns, v2Turns, checks, reconResults)
-	
+
 	if report.Status != "error" {
 		t.Errorf("Expected status=error, got %s", report.Status)
 	}
@@ -65,10 +65,10 @@ func TestGenerateSessionReport_WarningsOnly(t *testing.T) {
 		{Name: "Check 2", Passed: true, Severity: "error"},
 	}
 	reconResults := []ReconstructionResult{}
-	
+
 	gen := NewReportGenerator()
 	report := gen.GenerateSessionReport("tenant_1", "gw_abc", v1Turns, v2Turns, checks, reconResults)
-	
+
 	if report.Status != "warning" {
 		t.Errorf("Expected status=warning, got %s", report.Status)
 	}
@@ -82,10 +82,10 @@ func TestDetermineStatus_ErrorTakesPrecedence(t *testing.T) {
 	reconResults := []ReconstructionResult{
 		{Status: "warning"},
 	}
-	
+
 	gen := NewReportGenerator()
 	status := gen.determineStatus(checks, reconResults)
-	
+
 	if status != "error" {
 		t.Errorf("Expected error to take precedence over warning, got %s", status)
 	}
@@ -98,7 +98,7 @@ func TestGenerateBatchReport(t *testing.T) {
 		{SessionID: "s3", Status: "error"},
 		{SessionID: "s4", Status: "ok"},
 	}
-	
+
 	gen := NewReportGenerator()
 	report := gen.GenerateBatchReport(
 		"tenant_1",
@@ -107,7 +107,7 @@ func TestGenerateBatchReport(t *testing.T) {
 		10*time.Minute,
 		sessions,
 	)
-	
+
 	if report.Summary.SessionsChecked != 4 {
 		t.Errorf("Expected 4 sessions checked, got %d", report.Summary.SessionsChecked)
 	}
@@ -135,20 +135,20 @@ func TestFormatJSON(t *testing.T) {
 			V2Turns: 5,
 		},
 	}
-	
+
 	gen := NewReportGenerator()
 	jsonBytes, err := gen.FormatJSON(report)
-	
+
 	if err != nil {
 		t.Fatalf("FormatJSON failed: %v", err)
 	}
-	
+
 	// Verify it's valid JSON
 	var parsed SessionReport
 	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
 		t.Errorf("Generated JSON is not valid: %v", err)
 	}
-	
+
 	if parsed.SessionID != "gw_abc" {
 		t.Errorf("JSON parsing lost data: expected session_id=gw_abc, got %s", parsed.SessionID)
 	}
@@ -176,10 +176,10 @@ func TestFormatTextSession(t *testing.T) {
 			TurnsValidated: 9,
 		},
 	}
-	
+
 	gen := NewReportGenerator()
 	text := gen.FormatTextSession(report)
-	
+
 	// Verify key content is present
 	if !strings.Contains(text, "gw_abc") {
 		t.Errorf("Text report missing session ID")
@@ -213,10 +213,10 @@ func TestFormatTextBatch(t *testing.T) {
 			{SessionID: "warn1", Status: "warning", Differences: []ValidationCheckV2{{}}},
 		},
 	}
-	
+
 	gen := NewReportGenerator()
 	text := gen.FormatTextBatch(report)
-	
+
 	// Verify key content
 	if !strings.Contains(text, "tenant_1") {
 		t.Errorf("Batch report missing tenant ID")
@@ -241,10 +241,10 @@ func TestBuildSummary(t *testing.T) {
 		{PromptTokens: 100, CompletionTokens: 50, CostUSD: 0.05},
 		{PromptTokens: 200, CompletionTokens: 100, CostUSD: 0.10},
 	}
-	
+
 	gen := NewReportGenerator()
 	summary := gen.buildSummary(v1Turns, v2Turns)
-	
+
 	if summary.V1Turns != 2 || summary.V2Turns != 2 {
 		t.Errorf("Expected 2 turns each, got V1=%d, V2=%d", summary.V1Turns, summary.V2Turns)
 	}

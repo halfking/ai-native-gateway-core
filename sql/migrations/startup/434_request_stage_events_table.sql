@@ -23,12 +23,12 @@ BEGIN;
 CREATE TABLE IF NOT EXISTS request_stage_events (
     id                BIGSERIAL PRIMARY KEY,
     request_id        TEXT NOT NULL,
-    tenant_id         TEXT NOT NULL,
-    seq               INT NOT NULL,                -- 事件序号（对应 TraceEvent.Seq）
+    trace_id          TEXT,
+    seq               INT NOT NULL,                -- 序号（对应 TraceEvent.Seq）
     stage             TEXT NOT NULL,               -- upstream_request, stream_complete, etc.
     stage_name        TEXT,                        -- 中文显示名
     module            TEXT,                        -- middleware, upstream, handler, etc.
-    timestamp         TIMESTAMPTZ NOT NULL,
+    event_timestamp   TIMESTAMPTZ NOT NULL,        -- renamed from 'timestamp' (reserved word)
     duration_ms       INT,
     status            TEXT NOT NULL,               -- success, failed, timeout, skipped
     error_message     TEXT,
@@ -57,21 +57,21 @@ CREATE INDEX IF NOT EXISTS idx_stage_events_request_id
 
 -- 索引：按 tenant + 时间查询
 CREATE INDEX IF NOT EXISTS idx_stage_events_tenant_ts
-    ON request_stage_events (tenant_id, timestamp DESC);
+    ON request_stage_events (tenant_id, event_timestamp DESC);
 
 -- 索引：按阶段 + 状态查询（诊断特定阶段失败）
 CREATE INDEX IF NOT EXISTS idx_stage_events_stage_status
-    ON request_stage_events (stage, status, timestamp DESC)
+    ON request_stage_events (stage, status, event_timestamp DESC)
     WHERE status IN ('failed', 'timeout');
 
 -- 索引：上游失败（5xx 详细诊断）
 CREATE INDEX IF NOT EXISTS idx_stage_events_upstream_failure
-    ON request_stage_events (stage, http_status, timestamp DESC)
+    ON request_stage_events (stage, http_status, event_timestamp DESC)
     WHERE stage = 'upstream_request' AND http_status >= 500;
 
 -- 索引：Redis 缓存未命中（诊断缓存效率）
 CREATE INDEX IF NOT EXISTS idx_stage_events_redis_miss
-    ON request_stage_events (stage, timestamp DESC)
+    ON request_stage_events (stage, event_timestamp DESC)
     WHERE redis_hit = FALSE;
 
 COMMENT ON TABLE request_stage_events IS 
@@ -98,7 +98,7 @@ SELECT
     COUNT(*) FILTER (WHERE redis_hit = TRUE) AS redis_hit_count,
     COUNT(*) FILTER (WHERE redis_hit = FALSE) AS redis_miss_count
 FROM request_stage_events
-WHERE timestamp >= now() - INTERVAL '1 hour'
+WHERE event_timestamp >= now() - INTERVAL '1 hour'
 GROUP BY stage
 ORDER BY avg_duration_ms DESC NULLS LAST;
 
@@ -114,14 +114,14 @@ SELECT
     COUNT(DISTINCT request_id) AS affected_requests,
     array_agg(DISTINCT details->>'credential_id') FILTER (WHERE details ? 'credential_id') AS affected_credentials,
     array_agg(DISTINCT details->>'raw_model') FILTER (WHERE details ? 'raw_model') AS affected_models,
-    MIN(timestamp) AS first_seen,
-    MAX(timestamp) AS last_seen,
+    MIN(event_timestamp) AS first_seen,
+    MAX(event_timestamp) AS last_seen,
     array_agg(response_body) FILTER (WHERE response_body IS NOT NULL) AS sample_bodies
 FROM request_stage_events
 WHERE stage = 'upstream_request'
   AND status = 'failed'
   AND http_status >= 500
-  AND timestamp >= now() - INTERVAL '1 hour'
+  AND event_timestamp >= now() - INTERVAL '1 hour'
 GROUP BY http_status, failure_hint
 ORDER BY error_count DESC;
 

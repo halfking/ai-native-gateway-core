@@ -35,6 +35,7 @@ func TestRedisRPMLimiterBasicWindow(t *testing.T) {
 
 func TestNewRPMLimiterFromEnvDefaultsToMemory(t *testing.T) {
 	t.Setenv("RPM_REDIS_URL", "")
+	t.Setenv("LLM_GATEWAY_REDIS_ADDR", "")
 	if _, ok := NewRPMLimiterFromEnv().(*MemoryRPMLimiter); !ok {
 		t.Fatal("empty RPM_REDIS_URL should select memory limiter")
 	}
@@ -42,8 +43,30 @@ func TestNewRPMLimiterFromEnvDefaultsToMemory(t *testing.T) {
 
 func TestNewRPMLimiterFromEnvInvalidURLDefaultsToMemory(t *testing.T) {
 	t.Setenv("RPM_REDIS_URL", "not-a-redis-url")
+	t.Setenv("LLM_GATEWAY_REDIS_ADDR", "")
 	if _, ok := NewRPMLimiterFromEnv().(*MemoryRPMLimiter); !ok {
 		t.Fatal("invalid RPM_REDIS_URL should select memory limiter")
+	}
+}
+
+func TestNewRPMLimiterFromGatewayRedisAddress(t *testing.T) {
+	t.Setenv("RPM_REDIS_URL", "")
+	t.Setenv("LLM_GATEWAY_REDIS_ADDR", "127.0.0.1:6379")
+	limiter, ok := NewRPMLimiterFromEnv().(*RedisRPMLimiter)
+	if ok {
+		t.Cleanup(func() { _ = limiter.client.Close() })
+	}
+	if !ok || limiter.client == nil {
+		t.Fatal("LLM_GATEWAY_REDIS_ADDR should select Redis limiter")
+	}
+}
+
+func TestRedisURLFromAddress(t *testing.T) {
+	if got := redisURLFromAddress("redis.example:6379"); got != "redis://redis.example:6379" {
+		t.Fatalf("got %q", got)
+	}
+	if got := redisURLFromAddress("redis://redis.example:6379/2"); got != "redis://redis.example:6379/2" {
+		t.Fatalf("got %q", got)
 	}
 }
 
