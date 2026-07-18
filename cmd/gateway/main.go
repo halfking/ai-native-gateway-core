@@ -77,6 +77,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -3515,6 +3516,27 @@ func main() {
 				slog.Error("pprof diagnostic server failed", "error", err)
 			}
 		}()
+	}
+
+	// ── 启动质量指标采集器 ───────────────────────────────────────────────
+	if dbConn != nil && dbConn.Enabled() {
+		qualityCollectorEnabled := os.Getenv("QUALITY_COLLECTOR_ENABLED")
+		if qualityCollectorEnabled == "" || qualityCollectorEnabled == "true" {
+			slog.Info("启动质量指标采集器")
+			qualityCollector := quality.New(
+				dbConn.Stdlib(),
+				quality.WithMinuteInterval(1*time.Minute),
+				quality.WithHourInterval(1*time.Hour),
+				quality.WithTimeout(30*time.Second),
+			)
+			go func() {
+				if err := qualityCollector.Start(context.Background()); err != nil {
+					slog.Error("质量采集器退出", "error", err)
+				}
+			}()
+		} else {
+			slog.Info("质量指标采集器已禁用", "QUALITY_COLLECTOR_ENABLED", qualityCollectorEnabled)
+		}
 	}
 
 	slog.Info("CHECKPOINT: HTTP server configured, about to start", "listen", cfg.Listen)
