@@ -195,13 +195,8 @@ type Limiter struct {
 	idents map[string]*Semaphore // "providerID/credentialID/identityHash" → semaphore
 	keys   map[int]*Semaphore    // keyID → per-key semaphore (limit from DB)
 
-	// 2026-07-15: per-credential RPM sliding windows. Keyed by the
-	// same "providerID/credentialID" string as creds. Each window stores
-	// unix-seconds timestamps for the last 60s and rejects AcquireAll
-	// when the count would exceed the credential's rpm_limit. Default
-	// behaviour (limit==0 or nil) is unlimited, matching pre-fix semantics.
-	credsRPM map[string]*rpmWindow
-	rpmMu    sync.Mutex
+	// RPM uses Redis across instances when configured and memory otherwise.
+	rpmLimiter RPMLimiter
 
 	mu     sync.RWMutex
 	stopCh chan struct{}
@@ -233,7 +228,7 @@ func NewWithLimits(global, pool, credential, identity int) *Limiter {
 		creds:           make(map[string]*Semaphore),
 		idents:          make(map[string]*Semaphore),
 		keys:            make(map[int]*Semaphore),
-		credsRPM:        make(map[string]*rpmWindow),
+		rpmLimiter:      NewRPMLimiterFromEnv(),
 		stopCh:          make(chan struct{}),
 	}
 	go l.recoveryLoop()
@@ -252,33 +247,8 @@ func (l *Limiter) CheckCredentialRPM(providerID, credentialID int, limit *int) b
 	if limit == nil || *limit <= 0 {
 		return true
 	}
-	key := fmt.Sprintf("%d/%d", providerID, credentialID)
-	now := float64(time.Now().UnixMilli()) / 1000.0
-	cutoff := now - 60.0
-
-	l.rpmMu.Lock()
-	defer l.rpmMu.Unlock()
-
-	w, ok := l.credsRPM[key]
-	if !ok {
-		w = &rpmWindow{}
-		l.credsRPM[key] = w
-	}
-	// Prune stale timestamps.
-	if len(w.timestamps) > 0 {
-		filtered := w.timestamps[:0]
-		for _, t := range w.timestamps {
-			if t > cutoff {
-				filtered = append(filtered, t)
-			}
-		}
-		w.timestamps = filtered
-	}
-	if len(w.timestamps) >= *limit {
-		return false
-	}
-	w.timestamps = append(w.timestamps, now)
-	return true
+	allowed, _, err := l.rpmLimiter.CheckAndReserve(context.Background(), providerID, credentialID, *limit)
+	return err == nil && allowed
 }
 
 // Stop stops the recovery loop.
@@ -438,7 +408,8 @@ func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, 
 	// Reserve RPM only after the request owns a credential slot. Recording
 	// before semaphore acquisition would charge requests that timed out or
 	// failed at an outer concurrency layer, causing false rate-limit failures.
-	// The reservation is atomic under rpmMu; on rejection, release all slots
+	// The reservation is atomic in the selected RPM implementation; on
+	// rejection, release all slots
 	// acquired so far and let the executor fail over to another candidate.
 	if !l.CheckCredentialRPM(providerID, credentialID, rpmLimit) {
 		cred.Release()

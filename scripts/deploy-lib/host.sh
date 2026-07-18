@@ -290,6 +290,9 @@ host_atomic_switch() {
     fi
     ln -sfn '$current_link/web' '$web_link'
     ln -sfn '$current_link/version.json' '$version_link'
+    if [ -d '$current_link/configs' ]; then
+      ln -sfn '$current_link/configs' '$(dirname "$current_link")/configs'
+    fi
   "
 
   # Restart stays as a separate call because it returns only after

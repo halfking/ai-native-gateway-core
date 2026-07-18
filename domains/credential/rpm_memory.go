@@ -26,7 +26,10 @@ func NewMemoryRPMLimiter() *MemoryRPMLimiter {
 }
 
 // CheckAndReserve checks and records one request in the sliding window.
-func (m *MemoryRPMLimiter) CheckAndReserve(_ context.Context, providerID, credentialID int, limit int) (bool, int, error) {
+func (m *MemoryRPMLimiter) CheckAndReserve(ctx context.Context, providerID, credentialID int, limit int) (bool, int, error) {
+	if err := ctx.Err(); err != nil {
+		return false, 0, nil
+	}
 	if limit <= 0 {
 		return true, 0, nil
 	}
