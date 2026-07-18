@@ -4,7 +4,7 @@
 -- 用途：跨网关实例的全局 RPM 限流
 -- 算法：ZSET 滑动窗口
 --
--- KEYS[1] = "rpm:providerID:credentialID"
+-- KEYS[1] = "rpm:{providerID:credentialID}"
 -- ARGV[1] = limit (int)
 -- ARGV[2] = now (unix seconds, float)
 -- ARGV[3] = window_seconds (default 60)
@@ -32,7 +32,7 @@ if count >= limit then
 end
 
 -- 4. 未超限，添加当前时间戳
--- member 使用 now + 微秒随机数避免冲突
+-- member 使用 now + Redis TIME 微秒部分避免冲突
 local microseconds = redis.call('TIME')[2]
 local member = string.format("%.6f:%s", now, microseconds)
 redis.call('ZADD', key, now, member)

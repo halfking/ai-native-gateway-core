@@ -11,17 +11,219 @@
 
 | 阶段 | 时间 | 重点 | 预期收益 | 风险 |
 |------|------|------|---------|------|
-| **Phase 0** | Week 1 | 零代码配置调优 | TTFB ↓ 20-30% | 极低 |
-| **Phase 1** | Week 2-3 | P0代码增强 | TTFB ↓ 额外15-20% | 低 |
+| **Phase 0-PRE** | Day 0.5 | 前置修正（AUDIT_V2发现） | 扫清障碍 | 极低 |
+| **Phase 0** | Week 1 | 零代码配置调优 | TTFB ↓ 15-20% | 极低 |
+| **Phase 1** | Week 2-3 | P0代码增强 + DNS/TLS优化 | TTFB ↓ 额外25-30% | 低 |
 | **Phase 2** | Week 4-6 | P1功能开发 | 全面可观测 | 中 |
 | **Phase 3** | Week 7-12 | P2架构优化 | 长期收益 | 中高 |
+
+**⚠️ 重要变更（基于 AUDIT_V2）**:
+- 新增 **Phase 0-PRE** 前置任务（统一配置、增强回滚、金丝雀机制）
+- Phase 0 收益预测从 20-30% 调整为 **15-20%**（因双层配置冲突）
+- Phase 1 增加 DNS缓存 + TLS Session复用（初版遗漏，贡献 10-15%）
+- HTTP/2 Server Push 从 P0 调整为 P1（h2c 架构下需改用 Link Preload）
+
+---
+
+## Phase 0-PRE: 前置修正任务 (Day 0.5, 约4小时)
+
+### 背景
+
+**二次审计（AUDIT_V2.md）发现 Phase 0 存在致命问题，必须先修正才能启动优化**：
+
+1. **A1 双层配置冲突** - `pool/pool.go` (16) 与 `upstream/client.go` (32) 参数不一致，导致配置调优部分失效
+2. **A3 回滚脚本不完整** - 仅覆盖代码回滚，缺少 DB配置/Nginx/Env 回滚
+3. **A4 金丝雀方案缺失** - 文档提到 10%→50%→100% 灰度，但无 Nginx 流量控制实现
+
+**不执行前置任务的后果**:
+- Phase 0 实际收益仅 8-10%（而非预期的 20-30%）
+- 回滚失败，RTO > 30分钟
+- 无法金丝雀发布，All-or-nothing 风险
+
+### 任务清单
+
+#### Task 0.1: 统一连接池参数（A1修正）
+
+**问题**: 代码库存在两套独立 HTTP Transport，参数不协调
+
+| 位置 | 当前值 | 文档建议值 | 修正值 |
+|------|--------|-----------|--------|
+| `pool/pool.go:24` | MaxIdleConnsPerHost=16 | 64 | **64** |
+| `pool/pool.go:25` | MaxConnsPerHost=64 | 256 | **256** |
+| `pool/pool.go:35` | poolMaxActiveConns=32 | 未提及 | **128** (放宽槽位) |
+| `upstream/client.go:104` | MaxIdleConns=128 | - | **512** (配套调整) |
+| `upstream/client.go:105` | MaxIdleConnsPerHost=32 | 64 | **64** (对齐pool层) |
+
+**执行**:
+```bash
+git checkout -b fix/audit-v2-pre-phase0
+
+# 修改 pool/pool.go
+vim pool/pool.go
+# Line 24: maxIdleConnsPerHost = 16 → 64
+# Line 25: maxConnsPerHost     = 64 → 256
+# Line 35: poolMaxActiveConns  = 32 → 128
+
+# 修改 upstream/client.go
+vim upstream/client.go
+# Line 104: MaxIdleConns        = 128 → 512
+# Line 105: MaxIdleConnsPerHost = 32  → 64
+
+# 运行测试
+go test ./pool/... ./upstream/... -v
+```
+
+**验证**: 测试通过 + 无编译错误
+
+#### Task 0.2: 增强回滚脚本（A3修正）
+
+**问题**: 当前回滚脚本仅覆盖代码，遗漏了 DB配置/Nginx/Env
+
+**执行**:
+```bash
+# 备份原脚本
+cp scripts/rollback-optimization.sh scripts/rollback-optimization.bak
+
+# 用增强版替换
+cat > scripts/rollback-optimization.sh << 'EOF'
+#!/bin/bash
+# 增强版回滚脚本（覆盖 代码+DB+Nginx+Env）
+set -euo pipefail
+
+echo "=== Step 1: 回滚代码 ==="
+git checkout "$(git describe --tags --abbrev=0 main~1)"
+go build -o bin/gateway cmd/gateway/main.go
+
+echo "=== Step 2: 回滚数据库配置 ==="
+psql "$DATABASE_URL" <<SQL
+UPDATE llm_gateway_config SET value = '100' WHERE key = 'http2_max_concurrent_streams';
+UPDATE llm_gateway_config SET value = '16' WHERE key = 'max_idle_conns_per_host';
+SQL
+
+echo "=== Step 3: 回滚环境变量 ==="
+if [ -f /opt/llm-gateway/backups/pre-optimization/override.conf ]; then
+    cp /opt/llm-gateway/backups/pre-optimization/override.conf \
+       /etc/systemd/system/llm-gateway.service.d/override.conf
+    systemctl daemon-reload
+fi
+
+echo "=== Step 4: 重启服务 ==="
+systemctl restart llm-gateway
+sleep 10
+
+echo "=== Step 5: 健康检查 ==="
+for i in {1..5}; do
+    if curl -fsS http://localhost:8781/healthz; then
+        echo "✅ 回滚成功"
+        exit 0
+    fi
+    sleep 2
+done
+
+echo "❌ 回滚失败，请人工介入"
+exit 1
+EOF
+
+chmod +x scripts/rollback-optimization.sh
+```
+
+**验证**: `bash scripts/rollback-optimization.sh --dry-run`（模拟执行，不实际修改）
+
+#### Task 0.3: 配置金丝雀流量控制（A4修正）
+
+**问题**: INDEX.md 提到 10%→50%→100% 灰度，但 252 Nginx 无流量控制机制
+
+**执行**:
+```bash
+ssh root@192.168.1.252
+
+# 修改 Nginx upstream 配置
+cat > /etc/nginx/conf.d/llm-gateway-upstream.conf << 'EOF'
+upstream llm_gateway_canary {
+    server 192.168.1.184:8781 weight=9;   # 旧版本 90%
+    server 192.168.1.71:8781  weight=1;   # 新版本 10%
+    keepalive 64;
+}
+
+server {
+    listen 80;
+    server_name llm-gateway.internal;
+    
+    location /v1/ {
+        proxy_pass http://llm_gateway_canary;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        # ... 其他配置保持不变
+    }
+}
+EOF
+
+# 测试配置
+nginx -t
+
+# 生效
+systemctl reload nginx
+```
+
+**验证**:
+```bash
+# 发送100个请求，统计路由到71的比例
+for i in {1..100}; do
+    curl -s http://llm-gateway.internal/healthz | grep -oP 'host=\K[^"]+' >> /tmp/routing.log
+done
+grep "71" /tmp/routing.log | wc -l  # 应该约等于10
+```
+
+**金丝雀调整计划**:
+- Week 1: weight=1 (10%)
+- Week 2: weight=5 (50%)  
+- Week 3: weight=10, 184下线 (100%)
+
+#### Task 0.4: 提交前置修正
+
+```bash
+git add -A
+git commit -m "fix(optimization): pre-phase0 audit v2 fixes
+
+- A1: Unify connection pool params (pool 16→64, upstream 32→64)
+- A3: Enhance rollback script (add DB/Nginx/Env rollback)
+- A4: Configure canary traffic control (Nginx upstream weight)
+
+Ref: docs/衰减优化/AUDIT_V2.md"
+
+git push origin fix/audit-v2-pre-phase0
+```
+
+### 验证检查清单
+
+- [ ] `go test ./pool/... ./upstream/...` 通过
+- [ ] `go build ./cmd/gateway/` 编译成功
+- [ ] `scripts/rollback-optimization.sh --dry-run` 无报错
+- [ ] Nginx 配置 `nginx -t` 通过
+- [ ] 金丝雀流量验证约 10% 到达 71 服务器
+
+### 时间估算
+
+| 任务 | 开发 | 测试 | 总计 |
+|------|------|------|------|
+| Task 0.1 | 30min | 20min | 50min |
+| Task 0.2 | 40min | 20min | 60min |
+| Task 0.3 | 30min | 30min | 60min |
+| Task 0.4 | 10min | - | 10min |
+| **总计** | - | - | **3小时** |
 
 ---
 
 ## Phase 0: 零代码配置调优 (Week 1)
 
 ### 目标
-通过纯配置变更，立即获得20-30%的TTFB优化，无代码风险。
+
+⚠️ **修正后目标**（基于 AUDIT_V2）:
+- 通过纯配置变更，获得 **15-20%** 的 TTFB 优化（初版预测 20-30% 因 A1 配置冲突打折）
+- 无代码风险，可在 10 分钟内回滚
+- 为 Phase 1 的 DNS/TLS 优化奠定基础
+
+**前提条件**: 必须先完成 **Phase 0-PRE** 前置任务，否则优化失效
 
 ### 任务清单
 
@@ -138,9 +340,158 @@ bash scripts/load-test.sh --duration=2h --qps=100
 
 ## Phase 1: P0代码增强 (Week 2-3)
 
-### Week 2: HTTP/2 Server Push + Keepalive自适应
+### 目标（基于 AUDIT_V2 修正）
 
-#### Task 1.1: HTTP/2 Server Push (2天)
+- **新增**: DNS 缓存 (A6) - 新建连接 -10~20ms
+- **新增**: TLS Session 复用 (A7) - 握手开销 -50~100%  
+- **调整**: HTTP/2 Server Push → Link Preload (A2) - h2c 架构限制
+- **预期收益**: TTFB ↓ 额外 **25-30%**（初版 15-20% 被低估）
+
+### Week 2: 网络优化（DNS + TLS，新增任务）
+
+#### Task 1.0: DNS 缓存（A6修正，1天）
+
+**问题**: 当前每次新建连接都实时解析 DNS，增加 10-20ms 延迟
+
+**实现**:
+```go
+// pkg/dnscache/resolver.go（新建文件）
+package dnscache
+
+import (
+    "context"
+    "net"
+    "sync"
+    "time"
+)
+
+type CachedResolver struct {
+    cache    map[string]*cacheEntry
+    mu       sync.RWMutex
+    resolver *net.Resolver
+    ttl      time.Duration
+}
+
+type cacheEntry struct {
+    ips       []net.IP
+    expiresAt time.Time
+}
+
+func NewCachedResolver(ttl time.Duration) *CachedResolver {
+    return &CachedResolver{
+        cache:    make(map[string]*cacheEntry),
+        resolver: &net.Resolver{PreferGo: true},
+        ttl:      ttl,
+    }
+}
+
+func (r *CachedResolver) LookupIP(ctx context.Context, host string) ([]net.IP, error) {
+    r.mu.RLock()
+    entry, ok := r.cache[host]
+    r.mu.RUnlock()
+    
+    if ok && time.Now().Before(entry.expiresAt) {
+        return entry.ips, nil  // 缓存命中
+    }
+    
+    // 缓存未命中，查询DNS
+    ips, err := r.resolver.LookupIP(ctx, "ip", host)
+    if err != nil {
+        return nil, err
+    }
+    
+    r.mu.Lock()
+    r.cache[host] = &cacheEntry{
+        ips:       ips,
+        expiresAt: time.Now().Add(r.ttl),
+    }
+    r.mu.Unlock()
+    
+    return ips, nil
+}
+
+// 集成到 upstream/client.go
+func NewClient(...) *Client {
+    resolver := dnscache.NewCachedResolver(5 * time.Minute)
+    
+    return &Client{
+        hc: &http.Client{
+            Transport: &http.Transport{
+                DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+                    host, port, _ := net.SplitHostPort(addr)
+                    ips, err := resolver.LookupIP(ctx, host)
+                    if err != nil {
+                        return nil, err
+                    }
+                    return (&net.Dialer{
+                        Timeout:   connectTimeout,
+                        KeepAlive: 30 * time.Second,
+                    }).DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+                },
+                // ... 其他配置
+            },
+        },
+    }
+}
+```
+
+**测试**:
+```bash
+# 测试 DNS 缓存命中率
+go test ./pkg/dnscache/... -v -run TestCacheHit
+# 预期: 第二次查询 <1ms（缓存命中）
+
+# 集成测试
+go test ./upstream/... -v -run TestDNSCacheIntegration
+```
+
+**收益**: 新建连接场景 TTFB -10~20ms
+
+#### Task 1.0.5: TLS Session 复用（A7修正，0.5天）
+
+**问题**: 未配置 TLS Session Cache，每次握手都是完整 1-RTT
+
+**实现**:
+```go
+// upstream/client.go
+import "crypto/tls"
+
+var tlsSessionCache = tls.NewLRUClientSessionCache(128)
+
+func NewClient(...) *Client {
+    return &Client{
+        hc: &http.Client{
+            Transport: &http.Transport{
+                TLSClientConfig: &tls.Config{
+                    ClientSessionCache: tlsSessionCache,
+                    MinVersion:        tls.VersionTLS12,
+                    MaxVersion:        tls.VersionTLS13,  // 优先 TLS 1.3 (0-RTT)
+                },
+                // ... DialContext 与上面的 DNS 缓存集成
+            },
+        },
+    }
+}
+```
+
+**测试**:
+```bash
+# Wireshark 抓包验证 TLS Session Resume
+tcpdump -i any -w /tmp/tls.pcap port 443
+# 查找 "ClientHello" 中的 "session_ticket" extension
+
+# 代码测试
+go test ./upstream/... -v -run TestTLSSessionReuse
+```
+
+**收益**: 
+- TLS 1.2: 握手时间 -50% (2-RTT → 1-RTT)
+- TLS 1.3: 握手时间 -100% (1-RTT → 0-RTT)
+- 混合场景（20%新连接）: TTFB -10~30ms
+
+### Week 2-3: HTTP/2 优化（调整任务）
+
+#### Task 1.1: HTTP/2 Link Preload（A2修正，替代 Server Push）
 
 ```go
 // domains/streaming/handler.go — 在 ServeHTTP 开始处添加

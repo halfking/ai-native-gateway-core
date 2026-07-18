@@ -46,11 +46,13 @@ func NewRedisRPMLimiter(client *redis.Client) *RedisRPMLimiter {
 func NewRPMLimiterFromEnv() RPMLimiter {
 	url := strings.TrimSpace(os.Getenv("RPM_REDIS_URL"))
 	if url == "" {
+		recordRPMMode(false)
 		return NewMemoryRPMLimiter()
 	}
 	options, err := redis.ParseURL(url)
 	if err != nil {
 		slog.Warn("parse rpm redis url failed, using memory limiter", "error", err)
+		recordRPMMode(false)
 		return NewMemoryRPMLimiter()
 	}
 	options.DialTimeout = 100 * time.Millisecond

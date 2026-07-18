@@ -347,17 +347,17 @@ go test -bench=BenchmarkRPM -benchtime=10s ./domains/credential
 
 ## 8. 实施清单
 
-- [ ] 编写 `rpm_sliding_window.lua` 脚本
-- [ ] 实现 `RPMLimiter` 接口
-- [ ] 实现 `RedisRPMLimiter` + 降级逻辑
-- [ ] 重构 `MemoryRPMLimiter` 为独立实现
-- [ ] 修改 `Limiter.CheckCredentialRPM` 委托给 `rpmLimiter`
-- [ ] 编写单元测试（5 个）
-- [ ] 编写集成测试（2 个）
-- [ ] 编写性能对比测试
-- [ ] 增加 Prometheus 指标
-- [ ] 更新 `11-实现审计与整改边界.md`
-- [ ] 部署到 kaixuan-1 验证
+- [x] 编写 `rpm_sliding_window.lua` 脚本
+- [x] 实现 `RPMLimiter` 接口
+- [x] 实现 `RedisRPMLimiter` + 降级逻辑
+- [x] 重构 `MemoryRPMLimiter` 为独立实现
+- [x] 修改 `Limiter.CheckCredentialRPM` 委托给 `rpmLimiter`
+- [x] 编写单元测试（5 个）
+- [x] 编写集成测试（2 个，miniredis）
+- [x] 编写性能对比测试
+- [x] 增加 Prometheus 指标
+- [ ] 更新 `11-实现审计与整改边界.md`（待实际部署证据）
+- [ ] 部署到 kaixuan-1/245 验证（需人工批准远程部署）
 
 ---
 
