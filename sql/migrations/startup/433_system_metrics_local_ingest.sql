@@ -59,7 +59,7 @@ CREATE OR REPLACE FUNCTION get_system_snapshot(
     p_hours_ago INT DEFAULT 1
 )
 RETURNS TABLE (
-    timestamp TIMESTAMPTZ,
+    metric_timestamp TIMESTAMPTZ,
     cpu_usage_pct REAL,
     mem_usage_pct REAL,
     disk_usage_pct REAL,
@@ -72,7 +72,7 @@ RETURNS TABLE (
 BEGIN
     RETURN QUERY
     SELECT
-        rm.timestamp,
+        rm.timestamp AS metric_timestamp,
         rm.cpu_usage_pct,
         (rm.mem_used_mb::float / NULLIF(rm.mem_total_mb, 0) * 100)::REAL AS mem_usage_pct,
         (rm.disk_used_gb::float / NULLIF(rm.disk_total_gb, 0) * 100)::REAL AS disk_usage_pct,

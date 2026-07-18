@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Offline local gateway packaging**: Local arm64 gateway packaging now uses
+  the managed Go/Vue Alpine runtime base image, avoiding public Alpine package
+  downloads and keeping the build reproducible in restricted environments.
+
 - **Candidate routing diagnostics**: Added cache, singleflight, database result,
   and API-key enrichment counters for diagnosing empty routing results.
 

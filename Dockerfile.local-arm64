@@ -9,11 +9,9 @@
 #     -o .build-local/llm-gateway-go ./cmd/gateway
 #   cd web && npm ci && npm run build && cd ..
 
-FROM alpine:3.20
+FROM registry.kxpms.cn/kx-base:go-vue-alpine-slim-v2
 
-RUN apk add --no-cache ca-certificates tzdata wget bash \
-    && addgroup -g 1001 -S appuser \
-    && adduser -u 1001 -D -H -s /sbin/nologin -G appuser appuser
+USER root
 
 WORKDIR /
 

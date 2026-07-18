@@ -1,10 +1,13 @@
 package metrics
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/logger"
 )
 
 // PrometheusRecorder 是 Prometheus 实现
@@ -50,6 +53,8 @@ type PrometheusRecorder struct {
 	poolCapacity           *prometheus.GaugeVec
 	poolActiveCredentials  *prometheus.GaugeVec
 	poolHealthyCredentials *prometheus.GaugeVec
+
+	logger logger.Logger
 }
 
 // NewPrometheusRecorder 创建 Prometheus Recorder
@@ -283,12 +288,19 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 			},
 			[]string{"pool_id"},
 		),
+
+		logger: logger.New("metrics"),
 	}
 }
 
 // Circuit Breaker methods
 func (p *PrometheusRecorder) RecordCircuitRequest(state string) {
 	p.circuitRequests.WithLabelValues(state).Inc()
+	if p.logger.Enabled(slog.LevelDebug) {
+		p.logger.Debug("circuit request recorded",
+			"state", state,
+		)
+	}
 }
 
 func (p *PrometheusRecorder) RecordCircuitSuccess() {
@@ -301,6 +313,12 @@ func (p *PrometheusRecorder) RecordCircuitFailure() {
 
 func (p *PrometheusRecorder) RecordCircuitStateChange(from, to string) {
 	p.circuitStateChanges.WithLabelValues(from, to).Inc()
+	if p.logger.Enabled(slog.LevelDebug) {
+		p.logger.Debug("circuit state change recorded",
+			"from", from,
+			"to", to,
+		)
+	}
 }
 
 func (p *PrometheusRecorder) RecordCircuitTrip() {

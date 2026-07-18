@@ -55,9 +55,9 @@ CREATE TABLE IF NOT EXISTS request_stage_events (
 CREATE INDEX IF NOT EXISTS idx_stage_events_request_id
     ON request_stage_events (request_id, seq);
 
--- 索引：按 tenant + 时间查询
-CREATE INDEX IF NOT EXISTS idx_stage_events_tenant_ts
-    ON request_stage_events (tenant_id, event_timestamp DESC);
+-- 索引：按时间查询（tenant_id 暂未实现，先用时间索引）
+CREATE INDEX IF NOT EXISTS idx_stage_events_ts
+    ON request_stage_events (event_timestamp DESC);
 
 -- 索引：按阶段 + 状态查询（诊断特定阶段失败）
 CREATE INDEX IF NOT EXISTS idx_stage_events_stage_status
