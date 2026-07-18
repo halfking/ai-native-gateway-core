@@ -659,40 +659,43 @@ func main() {
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
 			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, normFunc executors.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) executors.StreamOutcome {
-				var pc *streaming.PendingCapturer
-				if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
-					pc = streaming.NewPendingCapturer(0)
-					markCapturedPendingInProgress(pendingStore, resp)
-				}
-				var stripFn func([]byte) []byte
-				switch catalogCode {
-				case "doubao":
-					stripFn = streaming.StripDoubaoFieldsBody
-				case "minimax":
-					stripFn = streaming.StripMinimaxFieldsBody
-				}
-				outcome := streaming.StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc)
-				saveCapturedPending(pendingStore, pc, resp)
-				return outcome
-			},
+			tenantID := extractTenantIDFromUpstreamResp(resp)
+			var pc *streaming.PendingCapturer
+			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
+				pc = streaming.NewPendingCapturer(0)
+				markCapturedPendingInProgress(pendingStore, resp, tenantID)
+			}
+			var stripFn func([]byte) []byte
+			switch catalogCode {
+			case "doubao":
+				stripFn = streaming.StripDoubaoFieldsBody
+			case "minimax":
+				stripFn = streaming.StripMinimaxFieldsBody
+			}
+			outcome := streaming.StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc)
+			saveCapturedPending(pendingStore, pc, resp, tenantID)
+			return outcome
+		},
 			auditSink,
 		)
 		routingExec.XMLCoerceNonStream = streaming.CoerceXMLToolCallsInChatResponse
 		routingExec.QualityProcessNonStream = streaming.WrapQualityProcessNonStream()
 		routingExec.QualitySetMode = streaming.WrapSetQualityFixModeOnContext()
-		routingExec.AnthropicPassthroughStream = func(
+routingExec.AnthropicPassthroughStream = func(
 			w http.ResponseWriter,
 			resp *http.Response,
 			clientModel, outboundModel, requestID string,
 			cap *audit.StreamCapture,
 			pcAny any,
 		) executors.StreamOutcome {
+			tenantID := extractTenantIDFromUpstreamResp(resp)
 			var pc *streaming.PendingCapturer
 			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
 				pc = streaming.NewPendingCapturer(0)
+				markCapturedPendingInProgress(pendingStore, resp, tenantID)
 			}
 			outcome := streaming.StreamAnthropicPassthrough(w, resp, clientModel, outboundModel, requestID, cap, pc)
-			saveCapturedPending(pendingStore, pc, resp)
+			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
 		routingExec.ChatToAnthropic = streaming.ConvertChatRequestToAnthropic
@@ -716,12 +719,14 @@ func main() {
 			cap *audit.StreamCapture,
 			pcAny any,
 		) executors.StreamOutcome {
+			tenantID := extractTenantIDFromUpstreamResp(resp)
 			var pc *streaming.PendingCapturer
 			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
 				pc = streaming.NewPendingCapturer(0)
+				markCapturedPendingInProgress(pendingStore, resp, tenantID)
 			}
 			outcome := streaming.StreamAnthropicSSEToOpenAI(w, resp, clientModel, outboundModel, requestID, cap, pc)
-			saveCapturedPending(pendingStore, pc, resp)
+			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
 		routingExec.AnthropicToChatResponse = streaming.ConvertAnthropicResponseToChat
@@ -738,12 +743,14 @@ func main() {
 			cap *audit.StreamCapture,
 			pcAny any,
 		) executors.StreamOutcome {
+			tenantID := extractTenantIDFromUpstreamResp(resp)
 			var pc *streaming.PendingCapturer
 			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
 				pc = streaming.NewPendingCapturer(0)
+				markCapturedPendingInProgress(pendingStore, resp, tenantID)
 			}
 			outcome := streaming.StreamOpenAIToAnthropicSSE(w, resp, clientModel, outboundModel, requestID, cap, pc)
-			saveCapturedPending(pendingStore, pc, resp)
+			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
 		// Phase E (2026-07-01): Responses API client target. Wired only
@@ -756,12 +763,14 @@ func main() {
 			cap *audit.StreamCapture,
 			pcAny any,
 		) executors.StreamOutcome {
+			tenantID := extractTenantIDFromUpstreamResp(resp)
 			var pc *streaming.PendingCapturer
 			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
 				pc = streaming.NewPendingCapturer(0)
+				markCapturedPendingInProgress(pendingStore, resp, tenantID)
 			}
 			outcome := streaming.StreamAnthropicSSEToResponses(w, resp, clientModel, outboundModel, requestID, cap, pc)
-			saveCapturedPending(pendingStore, pc, resp)
+			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
 		routingExec.OpenAIToResponsesStream = func(
@@ -771,12 +780,14 @@ func main() {
 			cap *audit.StreamCapture,
 			pcAny any,
 		) executors.StreamOutcome {
+			tenantID := extractTenantIDFromUpstreamResp(resp)
 			var pc *streaming.PendingCapturer
 			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
 				pc = streaming.NewPendingCapturer(0)
+				markCapturedPendingInProgress(pendingStore, resp, tenantID)
 			}
 			outcome := streaming.StreamOpenAIToResponsesSSE(w, resp, clientModel, outboundModel, requestID, cap, pc)
-			saveCapturedPending(pendingStore, pc, resp)
+			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
 		routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
@@ -3742,10 +3753,25 @@ func (a sessionAuthAdapter) Verify(ctx context.Context, rawKey string) (session.
 	return session.KeyInfo{ID: ki.ID, TenantID: ki.TenantID}, nil
 }
 
+// extractTenantIDFromUpstreamResp extracts tenantID from the upstream request
+// context. For session requests, the executor propagates session headers to
+// upstream (see executor_chat.go:359-362), and also injects TenantID into the
+// request context (executor.go:1097). This helper retrieves it for pending
+// store isolation.
+func extractTenantIDFromUpstreamResp(resp *http.Response) string {
+	if resp == nil || resp.Request == nil {
+		return ""
+	}
+	return session.GetTenantIDFromContext(resp.Request.Context())
+}
+
 // markCapturedPendingInProgress creates the durable placeholder before the
 // stream starts. This makes a reconnect observe in_progress even if the
 // original HTTP client disconnects before the upstream produces a chunk.
-func markCapturedPendingInProgress(store *pending.Store, resp *http.Response) {
+// 2026-07-19 audit fix: accepts tenantID as explicit parameter instead of
+// reading from resp.Request.Context() (which is the upstream context and
+// lacks tenant info after upstreamContext decoupling).
+func markCapturedPendingInProgress(store *pending.Store, resp *http.Response, tenantID string) {
 	if store == nil || resp == nil {
 		return
 	}
@@ -3753,10 +3779,6 @@ func markCapturedPendingInProgress(store *pending.Store, resp *http.Response) {
 	requestID := streaming.RequestIDFromResp(resp)
 	if sessionID == "" || requestID == "" {
 		return
-	}
-	tenantID := ""
-	if resp.Request != nil {
-		tenantID = session.GetTenantIDFromContext(resp.Request.Context())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -3776,9 +3798,11 @@ func markCapturedPendingInProgress(store *pending.Store, resp *http.Response) {
 // pending store so a client that disconnects mid-stream can pick up
 // the response via GET /v1/sessions/{id}/pending-response (Track C C5,
 // 2026-06-21). Shared by the OpenAI and both Anthropic (Q3 + Q4) stream
-// paths so all three contribute to the same pending store namespace.
-func saveCapturedPending(store *pending.Store, pc *streaming.PendingCapturer, resp *http.Response) {
-	if pc == nil || store == nil {
+// wrappers.
+// 2026-07-19 audit fix: accepts tenantID as explicit parameter instead of
+// reading from resp.Request.Context() (which is the upstream context).
+func saveCapturedPending(store *pending.Store, pc *streaming.PendingCapturer, resp *http.Response, tenantID string) {
+	if store == nil || pc == nil || resp == nil {
 		return
 	}
 	body, state, ok := pc.Snapshot()
@@ -3787,10 +3811,6 @@ func saveCapturedPending(store *pending.Store, pc *streaming.PendingCapturer, re
 	}
 	saveCtx, saveCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer saveCancel()
-	tenantID := ""
-	if resp != nil && resp.Request != nil {
-		tenantID = session.GetTenantIDFromContext(resp.Request.Context())
-	}
 	if err := store.Save(saveCtx, &pending.Response{
 		SessionID:    streaming.SessionIDFromResp(resp),
 		TenantID:     tenantID,

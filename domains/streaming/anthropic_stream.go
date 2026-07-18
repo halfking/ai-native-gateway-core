@@ -66,6 +66,8 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	clientWriter := newClientStreamWriter(w, flusher)
+
 	msgID := "msg_"
 	if len(requestID) > 24 {
 		msgID += requestID[:24]
@@ -85,8 +87,7 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 			return
 		}
 		line := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
-		//nolint:errcheck // HTTP write error non-recoverable
-		w.Write([]byte(line))
+		clientWriter.write(line)
 		if pc != nil {
 			pc.append(line)
 		}
@@ -106,18 +107,12 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 		},
 	}
 	captureSSE("message_start", initialMsg)
-	flusher.Flush()
-
-	blockStart := map[string]any{
+	captureSSE("content_block_start", map[string]any{
 		"type":          "content_block_start",
 		"index":         0,
 		"content_block": map[string]any{"type": "text", "text": ""},
-	}
-	captureSSE("content_block_start", blockStart)
-	flusher.Flush()
-
+	})
 	captureSSE("ping", map[string]any{"type": "ping"})
-	flusher.Flush()
 
 	var ctx context.Context
 	if resp.Request != nil {
