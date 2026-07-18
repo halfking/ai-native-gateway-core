@@ -139,6 +139,9 @@ type RequestTrace struct {
 	FinalStatus     FinalStatus  `json:"final_status"`
 	FailedAtStage   Stage        `json:"failed_at_stage,omitempty"`
 	TotalDurationMs int          `json:"total_duration_ms"`
+	NextSeq         int          `json:"-"`
+	StartedAt       time.Time    `json:"started_at,omitempty"`
+	UpdatedAt       time.Time    `json:"updated_at,omitempty"`
 }
 
 // ─── Recorder 接口 ────────────────────────────────────────────────────────────
@@ -208,9 +211,11 @@ const (
 //
 // KEYS[1] = request:trace:{id}
 // ARGV[1] = 新事件的 JSON 字符串
-// ARGV[2] = 当前时间 RFC3339Nano (用于重设 TTL)
+// ARGV[2] = 当前时间 RFC3339Nano
 // ARGV[3] = maxEventsPerRequest
 // ARGV[4] = TTL (秒)
+// ARGV[5] = request_id
+// ARGV[6] = 当前时间 Unix 毫秒
 //
 // 返回: trace 的最终 JSON 字符串(或错误时为 "ERR:...")。
 const luaAppendEvent = `
@@ -223,15 +228,23 @@ local ttlSec = tonumber(ARGV[4])
 local existing = redis.call('GET', key)
 local trace
 if not existing then
-    trace = { request_id = '', events = '[]', final_status = '', failed_at_stage = '', total_duration_ms = 0 }
+    trace = { request_id = ARGV[5], events = {}, final_status = '', failed_at_stage = '', total_duration_ms = 0, started_at = nowTs, started_at_unix_ms = tonumber(ARGV[6]) }
 else
     trace = cjson.decode(existing)
+    if trace.request_id == nil or trace.request_id == '' then
+        trace.request_id = ARGV[5]
+    end
 end
 
-local events = cjson.decode(trace.events)
--- 新事件的 Seq: 当前长度 + 1 (前端依赖递增 Seq 排序)
+local events = trace.events
+if type(events) == 'string' then
+    events = cjson.decode(events)
+end
+local nextSeq = tonumber(trace.next_seq) or (#events + 1)
+-- 新事件的 Seq: 由 envelope 维护的单调计数分配,截断后不重复
 local newEv = cjson.decode(newEvJson)
-newEv.seq = #events + 1
+newEv.seq = nextSeq
+nextSeq = nextSeq + 1
 table.insert(events, newEv)
 
 -- 截断:保留最后 maxEvents 个
@@ -244,7 +257,8 @@ if #events > maxEvents then
     events = trimmed
 end
 
-trace.events = cjson.encode(events)
+trace.events = events
+trace.next_seq = nextSeq
 trace.updated_at = nowTs
 local out = cjson.encode(trace)
 redis.call('SET', key, out, 'EX', ttlSec)
@@ -318,11 +332,13 @@ func (r *RedisRecorder) Append(ctx context.Context, requestID string, ev TraceEv
 		slog.Warn("trace.Append: SCRIPT LOAD failed",
 			"request_id", requestID, "err", err)
 		// Fallback: 用 Eval 直接传 script,SCRIPT LOAD 失败不会让整体失败。
+		eventTimeMs := ev.Timestamp.UnixMilli()
 		_, err = r.rdb.Eval(runCtx, luaAppendEvent, []string{keyFor(requestID)},
-			string(payload), nowTs, r.maxEvents, int(r.ttl.Seconds())).Result()
+			string(payload), nowTs, r.maxEvents, int(r.ttl.Seconds()), requestID, eventTimeMs).Result()
 	} else {
+		eventTimeMs := ev.Timestamp.UnixMilli()
 		_, err = r.rdb.EvalSha(runCtx, sha, []string{keyFor(requestID)},
-			string(payload), nowTs, r.maxEvents, int(r.ttl.Seconds())).Result()
+			string(payload), nowTs, r.maxEvents, int(r.ttl.Seconds()), requestID, eventTimeMs).Result()
 	}
 	if err != nil {
 		slog.Warn("trace.Append: EVAL failed",
@@ -340,35 +356,71 @@ func (r *RedisRecorder) Finalize(ctx context.Context, requestID string, status F
 	runCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 
-	// 通过 Lua 脚本同时更新 final_status 与 failed_at_stage 避免两阶段竞态。
+	// 通过 Lua 同时更新终态、耗时和完成事件,避免两阶段竞态。
 	const luaFinalize = `
 local key = KEYS[1]
 local status = ARGV[1]
 local failedStage = ARGV[2]
 local nowTs = ARGV[3]
 local ttlSec = tonumber(ARGV[4])
+local nowMs = tonumber(ARGV[5])
 
 local existing = redis.call('GET', key)
 if not existing then
-    return nil
+    return 0
 end
 local trace = cjson.decode(existing)
+local events = trace.events
+if type(events) == 'string' then
+    events = cjson.decode(events)
+end
+local hasComplete = false
+for _, ev in ipairs(events) do
+    if ev.stage == 'request_complete' then
+        hasComplete = true
+        break
+    end
+end
+if not hasComplete then
+    local nextSeq = tonumber(trace.next_seq) or (#events + 1)
+    table.insert(events, {
+        seq = nextSeq,
+        stage = 'request_complete',
+        stage_name = 'trace.stage.request_complete',
+        module = 'handler',
+        timestamp = nowTs,
+        duration_ms = 0,
+        status = status,
+        details = { failed_stage = failedStage }
+    })
+    trace.next_seq = nextSeq + 1
+end
+trace.events = events
 trace.final_status = status
 trace.failed_at_stage = failedStage
-trace.total_duration_ms = 0
+local startedMs = tonumber(trace.started_at_unix_ms)
+if startedMs and nowMs and nowMs >= startedMs then
+    trace.total_duration_ms = nowMs - startedMs
+else
+    trace.total_duration_ms = tonumber(trace.total_duration_ms) or 0
+end
 trace.updated_at = nowTs
 redis.call('SET', key, cjson.encode(trace), 'EX', ttlSec)
 return 1
 `
-	_, err := r.rdb.Eval(runCtx, luaFinalize, []string{key},
+	result, err := r.rdb.Eval(runCtx, luaFinalize, []string{key},
 		string(status), string(failedStage),
 		time.Now().UTC().Format(time.RFC3339Nano),
-		int(r.ttl.Seconds())).Result()
+		int(r.ttl.Seconds()), time.Now().UnixMilli()).Result()
 	if err != nil {
 		slog.Warn("trace.Finalize failed",
 			"request_id", requestID, "status", status, "err", err)
+		return err
 	}
-	return err
+	if n, ok := result.(int64); ok && n == 0 {
+		return fmt.Errorf("trace: request %q not found during finalize", requestID)
+	}
+	return nil
 }
 
 // Load implements Recorder.
@@ -426,7 +478,7 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 		return err
 	}
 
-	_, err = db.Exec(runCtx, `
+	result, err := db.Exec(runCtx, `
 		UPDATE request_logs
 		SET trace_events = $1::jsonb
 		WHERE request_id = $2
@@ -435,6 +487,11 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 		slog.Warn("trace.FlushToPG: UPDATE failed",
 			"request_id", requestID, "err", err)
 		return err
+	}
+	if !shouldDeleteTraceAfterFlush(result.RowsAffected()) {
+		slog.Warn("trace.FlushToPG: request log row not found, retaining Redis trace",
+			"request_id", requestID)
+		return ErrTraceParentNotFound
 	}
 
 	// Flush 成功后删除 Redis key (用 DEL 而非 UNLINK,确保后续读取立刻拿到 PG 版)。
@@ -455,6 +512,13 @@ func (r *RedisRecorder) Purge(ctx context.Context, requestID string) error {
 
 // ─── 辅助 ────────────────────────────────────────────────────────────────────
 
+func shouldDeleteTraceAfterFlush(rowsAffected int64) bool {
+	return rowsAffected > 0
+}
+
+// ErrTraceParentNotFound 表示 trace 对应的 request_logs 行尚未落库或已不存在。
+var ErrTraceParentNotFound = errors.New("trace: request log row not found")
+
 // ErrEmptyRequestID 当 requestID 为空时返回。
 var ErrEmptyRequestID = errors.New("trace: empty request_id")
 
@@ -462,24 +526,40 @@ var ErrEmptyRequestID = errors.New("trace: empty request_id")
 // 双向兼容: 既支持新格式({request_id, events, ...}) 也支持纯 events 数组的旧数据。
 func unmarshalTrace(raw, fallbackID string) (*RequestTrace, error) {
 	var env struct {
-		RequestID       string       `json:"request_id"`
-		Events          []TraceEvent `json:"events"`
-		FinalStatus     FinalStatus  `json:"final_status"`
-		FailedAtStage   Stage        `json:"failed_at_stage"`
-		TotalDurationMs int          `json:"total_duration_ms"`
+		RequestID       string          `json:"request_id"`
+		Events          json.RawMessage `json:"events"`
+		FinalStatus     FinalStatus     `json:"final_status"`
+		FailedAtStage   Stage           `json:"failed_at_stage"`
+		TotalDurationMs int             `json:"total_duration_ms"`
+		NextSeq         int             `json:"next_seq"`
+		StartedAt       time.Time       `json:"started_at"`
+		UpdatedAt       time.Time       `json:"updated_at"`
 	}
+
 	if err := json.Unmarshal([]byte(raw), &env); err != nil {
 		return nil, fmt.Errorf("trace: unmarshal envelope: %w", err)
+	}
+	var events []TraceEvent
+	if len(env.Events) > 0 && string(env.Events) != "null" {
+		if err := json.Unmarshal(env.Events, &events); err != nil {
+			var legacy string
+			if string(env.Events)[0] != '"' || json.Unmarshal(env.Events, &legacy) != nil || json.Unmarshal([]byte(legacy), &events) != nil {
+				return nil, fmt.Errorf("trace: unmarshal events: %w", err)
+			}
+		}
 	}
 	if env.RequestID == "" {
 		env.RequestID = fallbackID
 	}
 	return &RequestTrace{
 		RequestID:       env.RequestID,
-		Events:          env.Events,
+		Events:          events,
 		FinalStatus:     env.FinalStatus,
 		FailedAtStage:   env.FailedAtStage,
 		TotalDurationMs: env.TotalDurationMs,
+		NextSeq:         env.NextSeq,
+		StartedAt:       env.StartedAt,
+		UpdatedAt:       env.UpdatedAt,
 	}, nil
 }
 

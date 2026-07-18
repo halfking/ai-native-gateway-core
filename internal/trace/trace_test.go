@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/redis/go-redis/v9"
@@ -15,7 +16,8 @@ import (
 
 // 测试辅助: 用 miniredis 替代真实 Redis,避免外部依赖。
 // 注: 项目此前未引入 miniredis, 这里改为用 in-process test double,
-//     因为 trace 包仅依赖 redis.Client 接口, 可注入桩实例。
+//
+//	因为 trace 包仅依赖 redis.Client 接口, 可注入桩实例。
 //
 // 但 go-redis v9 没有内置接口, 这里使用 unittest-friendly 方案:
 // 起一个临时 127.0.0.1 端口不可控, 改为直接 stub Recorder 接口的测试。
@@ -100,10 +102,10 @@ func TestEventBuilder_RoundTripJSON(t *testing.T) {
 
 func TestSnapshot_Struct(t *testing.T) {
 	snap := &Snapshot{
-		CapturedAt:     time.Now(),
+		CapturedAt:      time.Now(),
 		ConcurrencySlot: &ConcurrencySnapshot{CredentialID: 99, InUse: 5, MaxSlots: 10, Blocked: true, Reason: "rpm_exceeded"},
-		FailureHint:    "upstream_timeout",
-		NodeProbeState: map[string]any{"last_known_status": "unreachable", "consec_fails": 4},
+		FailureHint:     "upstream_timeout",
+		NodeProbeState:  map[string]any{"last_known_status": "unreachable", "consec_fails": 4},
 	}
 	data, _ := json.Marshal(snap)
 	var back Snapshot
@@ -197,6 +199,7 @@ func TestLoadFromPG_EmptyRequestIDReturnsErr(t *testing.T) {
 // pgx.ErrNoRows 常量值校验: 文档保证它是非 nil 的 error, LoadFromPG 应将
 // 其归一为 (nil, nil), 此处用 errors.Is 绑定防止有人误改。
 var _ error = pgx.ErrNoRows
+
 func TestRedisRecorder_Integration(t *testing.T) {
 	addr := redisAddrFromEnv()
 	if addr == "" {
@@ -247,6 +250,93 @@ func TestRedisRecorder_Integration(t *testing.T) {
 	}
 }
 
+func TestUnmarshalTrace_LegacyStringEvents(t *testing.T) {
+	raw := `{"request_id":"legacy-1","events":"[{\"seq\":1,\"stage\":\"receive_request\",\"module\":\"middleware\",\"status\":\"success\"}]","final_status":"success"}`
+	trace, err := unmarshalTrace(raw, "legacy-1")
+	if err != nil {
+		t.Fatalf("unmarshal legacy trace failed: %v", err)
+	}
+	if len(trace.Events) != 1 || trace.Events[0].Stage != StageReceiveRequest {
+		t.Fatalf("legacy events = %+v", trace.Events)
+	}
+}
+
+func TestShouldDeleteTraceAfterFlush(t *testing.T) {
+	if shouldDeleteTraceAfterFlush(0) {
+		t.Fatal("zero rows affected must retain Redis trace")
+	}
+	if !shouldDeleteTraceAfterFlush(1) {
+		t.Fatal("one affected row should allow Redis deletion")
+	}
+	if !shouldDeleteTraceAfterFlush(10) {
+		t.Fatal("multiple affected rows should allow Redis deletion")
+	}
+}
+
+func TestRedisRecorder_FinalizeAppendsCompletionEventAndDuration(t *testing.T) {
+	server := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	rec := NewRedisRecorder(rdb)
+	ctx := context.Background()
+	if err := rec.Append(ctx, "finalize-test", ReceiveRequest("POST", "/v1/chat/completions", "127.0.0.1").WithTimestamp(time.Now().Add(-150*time.Millisecond)).Build()); err != nil {
+
+		t.Fatalf("append failed: %v", err)
+	}
+	if err := rec.Finalize(ctx, "finalize-test", FinalFailed, StageUpstreamRequest); err != nil {
+		t.Fatalf("finalize failed: %v", err)
+	}
+	trace, fromRedis, err := rec.Load(ctx, "finalize-test")
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if !fromRedis || trace == nil {
+		t.Fatalf("expected finalized trace in Redis, got trace=%+v fromRedis=%v", trace, fromRedis)
+	}
+	if trace.FinalStatus != FinalFailed || trace.FailedAtStage != StageUpstreamRequest {
+		t.Fatalf("final status = %q/%q", trace.FinalStatus, trace.FailedAtStage)
+	}
+	if trace.TotalDurationMs <= 0 {
+		t.Fatalf("total duration = %d, want positive", trace.TotalDurationMs)
+	}
+	if len(trace.Events) != 2 || trace.Events[1].Stage != StageRequestComplete {
+		t.Fatalf("events = %+v, want completion event appended once", trace.Events)
+	}
+	if trace.Events[1].Status != StatusFailed {
+		t.Fatalf("completion status = %q, want failed", trace.Events[1].Status)
+	}
+}
+
+func TestRedisRecorder_FinalizeIsIdempotent(t *testing.T) {
+	server := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	rec := NewRedisRecorder(rdb)
+	ctx := context.Background()
+
+	if err := rec.Append(ctx, "finalize-idempotent", ReceiveRequest("POST", "/v1/chat/completions", "127.0.0.1").Build()); err != nil {
+		t.Fatalf("append failed: %v", err)
+	}
+	if err := rec.Finalize(ctx, "finalize-idempotent", FinalSuccess, ""); err != nil {
+		t.Fatalf("first finalize failed: %v", err)
+	}
+	if err := rec.Finalize(ctx, "finalize-idempotent", FinalSuccess, ""); err != nil {
+		t.Fatalf("second finalize failed: %v", err)
+	}
+
+	trace, _, err := rec.Load(ctx, "finalize-idempotent")
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	count := 0
+	for _, event := range trace.Events {
+		if event.Stage == StageRequestComplete {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("completion event count = %d, want 1", count)
+	}
+}
+
 func redisAddrFromEnv() string {
 	if v := fromEnv("LLM_GATEWAY_REDIS_ADDR"); v != "" {
 		return v
@@ -256,6 +346,7 @@ func redisAddrFromEnv() string {
 
 // 极简 env getter, 避免 imports 增加.
 func fromEnv(k string) string {
+
 	for _, kv := range envPairs() {
 		if len(kv) >= 2 && kv[0] == k {
 			return kv[1]
