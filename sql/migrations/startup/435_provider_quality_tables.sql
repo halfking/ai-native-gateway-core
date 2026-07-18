@@ -361,7 +361,7 @@ COMMENT ON COLUMN provider_quality_configs.weight_availability IS '可用性权�
 CREATE OR REPLACE VIEW provider_health_status AS
 SELECT
     p.id as provider_id,
-    p.name as provider_name,
+    p.display_name as provider_name,
     pqp.model_name,
     pqp.quality_score,
     pqp.quality_grade,
