@@ -16,22 +16,22 @@ type RepairPlan struct {
 	SessionID  string
 	TenantID   string
 	SourceRows int // V1 rows that will be used as source
-	
+
 	// What will be deleted
 	DeleteCounts map[string]int // table -> row count
-	
+
 	// What will be rebuilt
 	RebuildCounts map[string]int // table -> expected row count
 }
 
 // RepairResult contains the outcome of a repair operation
 type RepairResult struct {
-	SessionID      string
-	TenantID       string
-	Success        bool
-	Error          error
-	DeletedRows    map[string]int
-	InsertedRows   map[string]int
+	SessionID          string
+	TenantID           string
+	Success            bool
+	Error              error
+	DeletedRows        map[string]int
+	InsertedRows       map[string]int
 	VerificationReport *SessionReport
 }
 
@@ -69,27 +69,27 @@ func (r *SessionRepairer) PlanRepair(ctx context.Context, tenantID, sessionID st
 		DeleteCounts:  make(map[string]int),
 		RebuildCounts: make(map[string]int),
 	}
-	
+
 	// Count V1 source rows
 	v1Turns, err := r.loader.LoadV1Turns(ctx, tenantID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load V1 turns: %w", err)
 	}
 	plan.SourceRows = len(v1Turns)
-	
+
 	// Count existing V2 rows that will be deleted
 	v2Turns, err := r.loader.LoadV2Turns(ctx, tenantID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load V2 turns: %w", err)
 	}
 	plan.DeleteCounts["session_turns"] = len(v2Turns)
-	
+
 	v2Bodies, err := r.loader.LoadV2Bodies(ctx, tenantID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load V2 bodies: %w", err)
 	}
 	plan.DeleteCounts["session_bodies"] = len(v2Bodies)
-	
+
 	v2Session, err := r.loader.LoadV2Session(ctx, tenantID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load V2 session: %w", err)
@@ -99,7 +99,7 @@ func (r *SessionRepairer) PlanRepair(ctx context.Context, tenantID, sessionID st
 	} else {
 		plan.DeleteCounts["sessions"] = 0
 	}
-	
+
 	// Count turn logs (may not exist for old sessions)
 	var turnLogsCount int
 	err = r.db.QueryRow(ctx, `
@@ -110,13 +110,13 @@ func (r *SessionRepairer) PlanRepair(ctx context.Context, tenantID, sessionID st
 		return nil, fmt.Errorf("count turn logs: %w", err)
 	}
 	plan.DeleteCounts["session_turn_logs"] = turnLogsCount
-	
+
 	// Expected rebuild counts
 	plan.RebuildCounts["session_turns"] = plan.SourceRows
 	plan.RebuildCounts["session_bodies"] = plan.SourceRows
 	plan.RebuildCounts["sessions"] = 1
 	// Turn logs are not rebuilt (they are transient)
-	
+
 	return plan, nil
 }
 
@@ -128,19 +128,19 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		DeletedRows:  make(map[string]int),
 		InsertedRows: make(map[string]int),
 	}
-	
+
 	// Load V1 source data before transaction
 	v1Turns, err := r.loader.LoadV1Turns(ctx, tenantID, sessionID)
 	if err != nil {
 		result.Error = fmt.Errorf("load V1 turns: %w", err)
 		return result, result.Error
 	}
-	
+
 	if len(v1Turns) == 0 {
 		result.Error = fmt.Errorf("no V1 turns found for session %s", sessionID)
 		return result, result.Error
 	}
-	
+
 	// Begin transaction
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -148,7 +148,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		return result, result.Error
 	}
 	defer tx.Rollback(ctx)
-	
+
 	// 1. Acquire advisory lock
 	lockKey := hashSessionKey(tenantID, sessionID)
 	_, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", lockKey)
@@ -156,9 +156,9 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		result.Error = fmt.Errorf("acquire advisory lock: %w", err)
 		return result, result.Error
 	}
-	
+
 	// 2. Delete existing V2 data (reverse FK order)
-	
+
 	// Delete turn logs
 	tag, err := tx.Exec(ctx, `
 		DELETE FROM gateway.session_turn_logs
@@ -169,7 +169,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		return result, result.Error
 	}
 	result.DeletedRows["session_turn_logs"] = int(tag.RowsAffected())
-	
+
 	// Delete bodies
 	tag, err = tx.Exec(ctx, `
 		DELETE FROM gateway.session_bodies
@@ -180,7 +180,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		return result, result.Error
 	}
 	result.DeletedRows["session_bodies"] = int(tag.RowsAffected())
-	
+
 	// Delete turns
 	tag, err = tx.Exec(ctx, `
 		DELETE FROM gateway.session_turns
@@ -191,7 +191,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		return result, result.Error
 	}
 	result.DeletedRows["session_turns"] = int(tag.RowsAffected())
-	
+
 	// Delete session snapshot
 	tag, err = tx.Exec(ctx, `
 		DELETE FROM gateway.sessions
@@ -202,14 +202,14 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		return result, result.Error
 	}
 	result.DeletedRows["sessions"] = int(tag.RowsAffected())
-	
+
 	// 3. Rebuild from V1
-	
+
 	// Insert session_turns
 	turnsInserted := 0
 	for i, turn := range v1Turns {
 		turnNo := i + 1
-		
+
 		// Extract submit mode from compression_meta
 		submitMode := "full" // Default
 		var compressionMeta map[string]interface{}
@@ -220,7 +220,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 				}
 			}
 		}
-		
+
 		// Extract tokens from usage
 		var promptTokens, completionTokens int
 		var usage map[string]interface{}
@@ -234,7 +234,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 				}
 			}
 		}
-		
+
 		// Extract verdicts
 		injectionVerdict := "skip"
 		outputVerdict := "skip"
@@ -246,7 +246,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 				outputVerdict = ov
 			}
 		}
-		
+
 		_, err = tx.Exec(ctx, `
 			INSERT INTO gateway.session_turns (
 				tenant_id, session_id, turn_no, request_id, ts,
@@ -266,7 +266,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 			promptTokens, completionTokens, turn.CostUSD,
 			injectionVerdict, outputVerdict,
 			turn.Success)
-		
+
 		if err != nil {
 			result.Error = fmt.Errorf("insert turn %d: %w", turnNo, err)
 			return result, result.Error
@@ -274,12 +274,12 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		turnsInserted++
 	}
 	result.InsertedRows["session_turns"] = turnsInserted
-	
+
 	// Insert session_bodies
 	bodiesInserted := 0
 	for i, turn := range v1Turns {
 		turnNo := i + 1
-		
+
 		// Extract messages from request body
 		var requestBody struct {
 			Messages []Message `json:"messages"`
@@ -290,13 +290,13 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 				requestDelta = requestBody.Messages
 			}
 		}
-		
+
 		requestDeltaJSON, _ := json.Marshal(requestDelta)
-		
+
 		// Response delta is empty for backfill (we don't have structured response)
 		responseDelta := []Message{}
 		responseDeltaJSON, _ := json.Marshal(responseDelta)
-		
+
 		_, err = tx.Exec(ctx, `
 			INSERT INTO gateway.session_bodies (
 				tenant_id, session_id, turn_no, request_id, ts,
@@ -309,7 +309,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 			)
 		`, tenantID, sessionID, turnNo, turn.RequestID, turn.Ts,
 			requestDeltaJSON, responseDeltaJSON)
-		
+
 		if err != nil {
 			result.Error = fmt.Errorf("insert body %d: %w", turnNo, err)
 			return result, result.Error
@@ -317,7 +317,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		bodiesInserted++
 	}
 	result.InsertedRows["session_bodies"] = bodiesInserted
-	
+
 	// Insert sessions snapshot (aggregated from turns)
 	totalTokens := 0
 	totalCost := 0.0
@@ -335,9 +335,9 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		}
 		totalCost += turn.CostUSD
 	}
-	
+
 	lastTurn := v1Turns[len(v1Turns)-1]
-	
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO gateway.sessions (
 			tenant_id, session_id, status,
@@ -354,19 +354,19 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		len(v1Turns), totalTokens, totalCost,
 		len(v1Turns), lastTurn.ClientModel, lastTurn.ProviderID,
 		v1Turns[0].RequestID, v1Turns[0].Ts, lastTurn.Ts)
-	
+
 	if err != nil {
 		result.Error = fmt.Errorf("insert session: %w", err)
 		return result, result.Error
 	}
 	result.InsertedRows["sessions"] = 1
-	
+
 	// 4. Commit transaction
 	if err := tx.Commit(ctx); err != nil {
 		result.Error = fmt.Errorf("commit transaction: %w", err)
 		return result, result.Error
 	}
-	
+
 	result.Success = true
 	return result, nil
 }
@@ -378,30 +378,30 @@ func (r *SessionRepairer) VerifyRepair(ctx context.Context, tenantID, sessionID 
 	if err != nil {
 		return nil, fmt.Errorf("load V1 turns: %w", err)
 	}
-	
+
 	v2Turns, err := r.loader.LoadV2Turns(ctx, tenantID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load V2 turns: %w", err)
 	}
-	
+
 	v2Bodies, err := r.loader.LoadV2Bodies(ctx, tenantID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load V2 bodies: %w", err)
 	}
-	
+
 	v2Session, err := r.loader.LoadV2Session(ctx, tenantID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load V2 session: %w", err)
 	}
-	
+
 	// Run validation
 	validator := NewSessionValidator(tenantID, sessionID)
 	checks := validator.ValidateSession(v1Turns, v2Turns, v2Bodies, v2Session)
 	reconResults := r.reconstructor.ValidateReconstruction(v1Turns, v2Turns, v2Bodies)
-	
+
 	// Generate report
 	report := r.reportGen.GenerateSessionReport(tenantID, sessionID, v1Turns, v2Turns, checks, reconResults)
-	
+
 	return report, nil
 }
 

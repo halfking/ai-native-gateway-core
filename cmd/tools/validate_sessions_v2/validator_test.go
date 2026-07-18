@@ -19,10 +19,10 @@ func TestCheckRequestIDParity_AllMatch(t *testing.T) {
 		{RequestID: "req_2"},
 		{RequestID: "req_3"},
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkRequestIDParity(v1Turns, v2Turns)
-	
+
 	if !check.Passed {
 		t.Errorf("Expected check to pass, got failed: %s", check.Description)
 	}
@@ -44,10 +44,10 @@ func TestCheckRequestIDParity_MissingInV2(t *testing.T) {
 		{RequestID: "req_1"},
 		{RequestID: "req_2"},
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkRequestIDParity(v1Turns, v2Turns)
-	
+
 	if check.Passed {
 		t.Errorf("Expected check to fail, got passed")
 	}
@@ -65,10 +65,10 @@ func TestCheckTokenSum_WithinTolerance(t *testing.T) {
 		{PromptTokens: 100, CompletionTokens: 50},
 		{PromptTokens: 200, CompletionTokens: 100},
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkTokenSum(v1Turns, v2Turns)
-	
+
 	if !check.Passed {
 		t.Errorf("Expected check to pass, got failed: %s", check.Description)
 	}
@@ -84,10 +84,10 @@ func TestCheckTokenSum_OutsideTolerance(t *testing.T) {
 	v2Turns := []V2Turn{
 		{PromptTokens: 1000, CompletionTokens: 600}, // 100 token difference
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkTokenSum(v1Turns, v2Turns)
-	
+
 	if check.Passed {
 		t.Errorf("Expected check to fail due to token mismatch")
 	}
@@ -107,10 +107,10 @@ func TestCheckCostSum_ExactMatch(t *testing.T) {
 		{CostUSD: 0.10},
 		{CostUSD: 0.15},
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkCostSum(v1Turns, v2Turns)
-	
+
 	if !check.Passed {
 		t.Errorf("Expected check to pass, got failed: %s", check.Description)
 	}
@@ -124,10 +124,10 @@ func TestCheckCostSum_ExactMatch(t *testing.T) {
 func TestCheckMetadataConsistency_AllMatch(t *testing.T) {
 	v1Turns := []V1Turn{
 		{
-			RequestID:    "req_1",
-			ClientModel:  "gpt-4",
-			ProviderID:   "openai",
-			CredentialID: "cred_1",
+			RequestID:       "req_1",
+			ClientModel:     "gpt-4",
+			ProviderID:      "openai",
+			CredentialID:    "cred_1",
 			CompressionMeta: json.RawMessage(`{"injection_verdict": "pass", "output_verdict": "pass"}`),
 		},
 	}
@@ -141,10 +141,10 @@ func TestCheckMetadataConsistency_AllMatch(t *testing.T) {
 			OutputVerdict:    "pass",
 		},
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkMetadataConsistency(v1Turns, v2Turns)
-	
+
 	if !check.Passed {
 		t.Errorf("Expected check to pass, got failed: %s", check.Description)
 	}
@@ -165,10 +165,10 @@ func TestCheckMetadataConsistency_ModelMismatch(t *testing.T) {
 			Provider:  "openai",
 		},
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkMetadataConsistency(v1Turns, v2Turns)
-	
+
 	if check.Passed {
 		t.Errorf("Expected check to fail due to model mismatch")
 	}
@@ -188,10 +188,10 @@ func TestCheckSnapshotAccuracy_Perfect(t *testing.T) {
 		TotalCostUSD: 0.15,
 		LastTurnNo:   2,
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkSnapshotAccuracy(v2Turns, v2Session)
-	
+
 	if !check.Passed {
 		t.Errorf("Expected check to pass, got failed: %s", check.Description)
 	}
@@ -208,10 +208,10 @@ func TestCheckSnapshotAccuracy_TurnCountMismatch(t *testing.T) {
 		TotalCostUSD: 0.15,
 		LastTurnNo:   2,
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkSnapshotAccuracy(v2Turns, v2Session)
-	
+
 	if check.Passed {
 		t.Errorf("Expected check to fail due to turn count mismatch")
 	}
@@ -228,10 +228,10 @@ func TestCheckBodiesIntegrity_ValidJSON(t *testing.T) {
 			ResponseDelta: json.RawMessage(`[{"role": "assistant", "content": "hi"}]`),
 		},
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkBodiesIntegrity(v2Turns, v2Bodies)
-	
+
 	if !check.Passed {
 		t.Errorf("Expected check to pass, got failed: %s", check.Description)
 	}
@@ -247,10 +247,10 @@ func TestCheckBodiesIntegrity_InvalidJSON(t *testing.T) {
 			RequestDelta: json.RawMessage(`{invalid json`),
 		},
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkBodiesIntegrity(v2Turns, v2Bodies)
-	
+
 	if check.Passed {
 		t.Errorf("Expected check to fail due to invalid JSON")
 	}
@@ -270,10 +270,10 @@ func TestCheckBodiesIntegrity_CompressedMode(t *testing.T) {
 			ResponseDelta: json.RawMessage(`[]`),
 		},
 	}
-	
+
 	validator := NewSessionValidator("tenant_1", "gw_abc")
 	check := validator.checkBodiesIntegrity(v2Turns, v2Bodies)
-	
+
 	if !check.Passed {
 		t.Errorf("Expected check to pass (compressed mode is warning, not error)")
 	}
