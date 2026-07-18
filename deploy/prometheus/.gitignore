@@ -1,0 +1,6 @@
+# Prometheus monitoring stack
+.env
+*.log
+prometheus-data/
+alertmanager-data/
+grafana-data/

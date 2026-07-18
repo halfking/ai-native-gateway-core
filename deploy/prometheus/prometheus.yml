@@ -1,0 +1,50 @@
+# Global settings
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'llm-gateway'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load rules
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Node Exporter (system metrics)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          instance: 'llm-gateway-host'
+
+  # PostgreSQL Database (llm-gateway-pg)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['172.17.0.1:5432']
+        labels:
+          service: 'postgres'
+          database: 'llm_gateway'
+
+  # DCGM GPU Exporter (will be added when GPU nodes are ready)
+  # Uncomment and configure after DCGM exporter is deployed
+  # - job_name: 'dcgm-gpu'
+  #   scrape_interval: 15s
+  #   static_configs:
+  #     - targets: ['192.168.31.28:9400']
+  #       labels:
+  #         cluster: 'kaixuan-1'
+  #         gpu_type: 'rtx4090'

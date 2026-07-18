@@ -1,0 +1,109 @@
+groups:
+  - name: gpu_alerts
+    interval: 30s
+    rules:
+      - alert: GPUHighUtilization
+        expr: DCGM_FI_DEV_GPU_UTIL > 90
+        for: 5m
+        labels:
+          severity: warning
+          component: gpu
+        annotations:
+          summary: "GPU {{ $labels.gpu }} 利用率过高"
+          description: "GPU {{ $labels.gpu }} 利用率持续 5 分钟 > 90% (当前: {{ $value }}%)"
+
+      - alert: GPUHighTemperature
+        expr: DCGM_FI_DEV_GPU_TEMP > 85
+        for: 2m
+        labels:
+          severity: critical
+          component: gpu
+        annotations:
+          summary: "GPU {{ $labels.gpu }} 温度过高"
+          description: "GPU {{ $labels.gpu }} 温度 > 85°C (当前: {{ $value }}°C)"
+
+      - alert: GPUMemoryPressure
+        expr: (DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE)) > 0.95
+        for: 5m
+        labels:
+          severity: warning
+          component: gpu
+        annotations:
+          summary: "GPU {{ $labels.gpu }} 内存不足"
+          description: "GPU {{ $labels.gpu }} 内存使用率 > 95% (当前: {{ $value | humanizePercentage }})"
+
+      - alert: GPUDown
+        expr: up{job="dcgm-gpu"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: gpu
+        annotations:
+          summary: "GPU 监控不可用"
+          description: "DCGM Exporter 无法连接到 GPU 节点 {{ $labels.instance }}"
+
+  - name: system_alerts
+    interval: 30s
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "主机 CPU 使用率过高"
+          description: "主机 {{ $labels.instance }} CPU 使用率 > 80% (当前: {{ $value | humanize }}%)"
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "主机内存使用率过高"
+          description: "主机 {{ $labels.instance }} 内存使用率 > 85% (当前: {{ $value | humanize }}%)"
+
+      - alert: DiskSpaceLow
+        expr: (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs"} / node_filesystem_size_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "磁盘空间不足"
+          description: "主机 {{ $labels.instance }} 挂载点 {{ $labels.mountpoint }} 磁盘使用率 > 85% (当前: {{ $value | humanize }}%)"
+
+  - name: llm_gateway_alerts
+    interval: 30s
+    rules:
+      - alert: LLMGatewayDown
+        expr: up{job="llm-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "LLM Gateway 服务不可用"
+          description: "LLM Gateway 实例 {{ $labels.instance }} 无法连接"
+
+      - alert: HighErrorRate
+        expr: rate(llm_gateway_requests_total{status=~"5.."}[5m]) / rate(llm_gateway_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "LLM Gateway 错误率过高"
+          description: "LLM Gateway 5xx 错误率 > 5% (当前: {{ $value | humanizePercentage }})"
+
+      - alert: HighLatency
+        expr: histogram_quantile(0.99, rate(llm_gateway_request_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "LLM Gateway 延迟过高"
+          description: "LLM Gateway P99 延迟 > 5s (当前: {{ $value | humanizeDuration }})"
