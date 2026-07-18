@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Credential RPM reservation ordering**: RPM windows are now charged only
+  after the global, provider, and credential concurrency slots are acquired.
+  Requests that time out or fail at a concurrency layer no longer consume RPM
+  capacity and incorrectly reject subsequent requests. Added a regression test
+  covering the failed-acquire path.
+
 - **Frontend freeze when viewing live request stream**: Dashboard's
   `LiveRequestStreamV2` component used `v-show` instead of `v-if`, causing
   the SSE connection to remain active even when switching to other tabs. Over
