@@ -146,7 +146,7 @@ host_preflight() {
 #   - executable copied from $2 (the freshly built binary)
 #   - web/ assets copied from $3 (the built static root)
 #   - version.json + VERSION copied from the repo root
-#   - SHA256SUMS manifest written for the three artifacts
+#   - SHA256SUMS manifest written for all runtime artifacts
 #   - deployment.json written with verified=false
 #
 # Returns 0 on success; nonzero leaves $1 untouched.
@@ -171,9 +171,17 @@ host_stage_release() {
     cp -R configs "$bundle_dir/configs"
   fi
 
-  # Checksums. sha256sum is in $PATH on every modern linux + macOS via
-  # coreutils; the offline harness provides a stub.
-  ( cd "$bundle_dir" && sha256sum "$bin_name" version.json VERSION 2>/dev/null > SHA256SUMS )
+  # Checksums. Include runtime configs so a changed sensitive-word list
+  # cannot be deployed without being detected by bundle verification.
+  (
+    cd "$bundle_dir"
+    sha256sum "$bin_name" version.json VERSION
+    if [[ -d configs ]]; then
+      while IFS= read -r file; do
+        sha256sum "$file"
+      done < <(find configs -type f -print | sort)
+    fi
+  ) > SHA256SUMS
 
   # Initial deployment.json (verified=false). The orchestrator flips
   # this to true only after /healthz returns 2xx.
