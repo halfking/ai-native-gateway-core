@@ -4,7 +4,24 @@
 // (regex parsing of probe request_ids) that gate the synthesis.
 package admin
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestRequestTraceRoutesFailClosedWithoutAuthorization(t *testing.T) {
+	mux := http.NewServeMux()
+	NewRequestTraceHandler(nil, nil).RegisterRoutes(mux, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/requests/req-1/trace", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
 
 func TestIsProbeRequestID(t *testing.T) {
 	cases := []struct {
