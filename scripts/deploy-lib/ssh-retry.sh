@@ -214,7 +214,8 @@ ssh_run() {
     attempt=$((attempt+1))
     local -a extra_flags=()
     if [[ "$used_proxy" == "true" ]]; then
-      extra_flags=(-o "$proxy_flag")
+      # ssh expects -o and its ProxyCommand value as separate argv entries.
+      extra_flags=(-o "${proxy_flag#-o }")
     fi
     output=$(ssh -o ControlMaster=auto -o ControlPath="$sock" -o ControlPersist=600 \
               "${SSH_RETRY_KEY_ARGS[@]}" "${SSH_RETRY_OPTS[@]}" "${extra_flags[@]}" "$host" "$script" 2>&1)
