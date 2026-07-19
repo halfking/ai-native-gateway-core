@@ -270,12 +270,12 @@ onMounted(load)
         <el-table-column prop="hostname" :label="t('ops.license.hostname')" width="180" show-overflow-tooltip />
         <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="120" show-overflow-tooltip />
         <el-table-column prop="status" :label="t('common.table.status')" width="100">
-          <template #default="{ row }">
-            <el-tag size="small" :type="nodeStatusType(row.status)">{{ row.status }}</el-tag>
+          <template #default="scope">
+            <el-tag size="small" :type="nodeStatusType(scope?.row?.status)">{{ scope?.row?.status }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="last_heartbeat" :label="t('ops.center.lastHeartbeat')">
-          <template #default="{ row }">{{ formatDate(row.last_heartbeat) }}</template>
+          <template #default="scope">{{ formatDate(scope?.row?.last_heartbeat) }}</template>
         </el-table-column>
       </el-table>
       <div v-if="Object.keys(dataPlaneTables).length" class="data-plane-tables">
@@ -345,12 +345,12 @@ onMounted(load)
           <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="160" show-overflow-tooltip />
           <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="100" />
           <el-table-column prop="status" :label="t('common.table.status')" width="100">
-            <template #default="{ row }">
-              <el-tag size="small">{{ row.status }}</el-tag>
+            <template #default="scope">
+              <el-tag size="small">{{ scope?.row?.status }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="started_at" :label="t('ops.autoupdate.startedAt')">
-            <template #default="{ row }">{{ formatDate(row.started_at) }}</template>
+            <template #default="scope">{{ formatDate(scope?.row?.started_at) }}</template>
           </el-table-column>
         </el-table>
       </el-card>
@@ -366,13 +366,13 @@ onMounted(load)
         </template>
         <el-table :data="recentFaults" size="small" empty-text="—">
           <el-table-column prop="severity" :label="t('ops.fault.severityLabel')" width="90">
-            <template #default="{ row }">
-              <el-tag :type="faultSeverityType(row.severity)" size="small">{{ row.severity }}</el-tag>
+            <template #default="scope">
+              <el-tag :type="faultSeverityType(scope?.row?.severity)" size="small">{{ scope?.row?.severity }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="title" :label="t('ops.fault.titleLabel')" show-overflow-tooltip />
           <el-table-column prop="detected_at" :label="t('ops.fault.detectedAt')" width="160">
-            <template #default="{ row }">{{ formatDate(row.detected_at) }}</template>
+            <template #default="scope">{{ formatDate(scope?.row?.detected_at) }}</template>
           </el-table-column>
         </el-table>
       </el-card>
@@ -391,7 +391,7 @@ onMounted(load)
           <el-table-column prop="instance_id" :label="t('ops.license.deviceId')" width="140" />
           <el-table-column prop="request_id" :label="t('ops.license.requestCode')" show-overflow-tooltip />
           <el-table-column prop="timestamp" :label="t('common.createdAt')" width="160">
-            <template #default="{ row }">{{ formatDate(row.timestamp) }}</template>
+            <template #default="scope">{{ formatDate(scope?.row?.timestamp) }}</template>
           </el-table-column>
         </el-table>
       </el-card>
@@ -409,38 +409,38 @@ onMounted(load)
           <el-table-column prop="hostname" label="实例" width="150" show-overflow-tooltip />
           <el-table-column prop="region" label="区域" width="80" />
           <el-table-column label="CPU">
-            <template #default="{ row }">
+            <template #default="scope">
               <el-progress 
-                :percentage="Math.min(100, Math.round(row.avg_cpu_pct))" 
-                :color="row.avg_cpu_pct > 80 ? '#f56c6c' : row.avg_cpu_pct > 60 ? '#e6a23c' : '#67c23a'"
-                :format="() => `${row.avg_cpu_pct.toFixed(1)}%`"
+                :percentage="Math.min(100, Math.round(scope?.row?.avg_cpu_pct))" 
+                :color="scope?.row?.avg_cpu_pct > 80 ? '#f56c6c' : scope?.row?.avg_cpu_pct > 60 ? '#e6a23c' : '#67c23a'"
+                :format="() => `${scope?.row?.avg_cpu_pct.toFixed(1)}%`"
               />
             </template>
           </el-table-column>
           <el-table-column label="内存">
-            <template #default="{ row }">
+            <template #default="scope">
               <el-progress 
-                :percentage="Math.min(100, Math.round(row.avg_mem_pct))"
-                :color="row.avg_mem_pct > 90 ? '#f56c6c' : row.avg_mem_pct > 70 ? '#e6a23c' : '#67c23a'"
-                :format="() => `${row.avg_mem_pct.toFixed(1)}%`"
+                :percentage="Math.min(100, Math.round(scope?.row?.avg_mem_pct))"
+                :color="scope?.row?.avg_mem_pct > 90 ? '#f56c6c' : scope?.row?.avg_mem_pct > 70 ? '#e6a23c' : '#67c23a'"
+                :format="() => `${scope?.row?.avg_mem_pct.toFixed(1)}%`"
               />
             </template>
           </el-table-column>
           <el-table-column prop="avg_tps" label="TPS" width="80">
-            <template #default="{ row }">{{ row.avg_tps.toFixed(2) }}</template>
+            <template #default="scope">{{ scope?.row?.avg_tps.toFixed(2) }}</template>
           </el-table-column>
           <el-table-column label="P99 延迟" width="100">
-            <template #default="{ row }">
-              <span :class="{ 'slow-p99': row.max_p99_ms > 30000 }">
-                {{ (row.max_p99_ms / 1000).toFixed(1) }}s
+            <template #default="scope">
+              <span :class="{ 'slow-p99': scope?.row?.max_p99_ms > 30000 }">
+                {{ (scope?.row?.max_p99_ms / 1000).toFixed(1) }}s
               </span>
             </template>
           </el-table-column>
           <el-table-column prop="version" label="版本" width="100" />
           <el-table-column label="状态" width="80">
-            <template #default="{ row }">
-              <el-tag :type="row.status === 'online' ? 'success' : 'danger'" size="small">
-                {{ row.status }}
+            <template #default="scope">
+              <el-tag :type="scope?.row?.status === 'online' ? 'success' : 'danger'" size="small">
+                {{ scope?.row?.status }}
               </el-tag>
             </template>
           </el-table-column>
