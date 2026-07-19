@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -53,12 +54,35 @@ type CredentialProbeV2 struct {
 	probeCtx   context.Context
 }
 
+// NewCredentialProbeV2 builds the background probe-v2 worker. The cycle
+// interval and fast-reprobe delay default to 1h / 5min (production) but
+// can both be shortened via env for local/test environments:
+//   LLM_GATEWAY_CRED_PROBE_V2_INTERVAL
+//   LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY
+// This avoids the "first probe missed mock startup, wait an hour for the
+// next tick" failure mode in scenario tests.
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
+	interval := 1 * time.Hour
+	fastDelay := 5 * time.Minute
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_CRED_PROBE_V2_INTERVAL")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			interval = d
+		} else if err != nil {
+			slog.Warn("credential probe v2: invalid LLM_GATEWAY_CRED_PROBE_V2_INTERVAL, using 1h", "value", v, "error", err)
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			fastDelay = d
+		} else if err != nil {
+			slog.Warn("credential probe v2: invalid LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY, using 5m", "value", v, "error", err)
+		}
+	}
 	return &CredentialProbeV2{
 		db:               db,
 		encKey:           encKey,
-		interval:         1 * time.Hour,
-		fastReprobeDelay: 5 * time.Minute,
+		interval:         interval,
+		fastReprobeDelay: fastDelay,
 		fastReprobeQueue: make(chan int, 64),
 		done:             make(chan struct{}),
 	}

@@ -1,6 +1,6 @@
 {
   "scenario": "S01_baseline",
-  "gateway": "http://127.0.0.1:8781",
+  "gateway": "http://localhost:8781",
   "models": [
     "loadtest-mini-alpha",
     "loadtest-mini-beta",
@@ -14,16 +14,16 @@
   "stream_ratio": 0.0,
   "fault_inject_cancel": 0.0,
   "metrics": {
-    "total": 790,
-    "succ": 790,
+    "total": 840,
+    "succ": 840,
     "fail": 0,
     "success_rate": 1.0,
-    "p50_ms": 48.49645803915337,
-    "p95_ms": 64.9967499775812,
-    "p99_ms": 75.42020798427984,
-    "max_ms": 172.98524995567277,
-    "throughput_rps": 23.93094012302464,
-    "elapsed_sec": 33.011657542025205,
+    "p50_ms": 21.568457945249975,
+    "p95_ms": 41.37691704090685,
+    "p99_ms": 271.3597499532625,
+    "max_ms": 297.31579101644456,
+    "throughput_rps": 25.444195802742666,
+    "elapsed_sec": 33.01342304202262,
     "fail_by_status": {},
     "fail_by_kind": {}
   }

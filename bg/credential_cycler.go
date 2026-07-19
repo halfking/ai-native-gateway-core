@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -23,11 +24,24 @@ type CredentialCycler struct {
 	done     chan struct{}
 }
 
+// NewCredentialCycler constructs the background credential prober. The
+// cycle interval defaults to 1h (production) but can be overridden via
+// LLM_GATEWAY_CRED_CYCLER_INTERVAL for local/test environments so that
+// mock suppliers that come up seconds after the gateway get re-probed
+// quickly instead of waiting an hour for the next tick.
 func NewCredentialCycler(db *pgxpool.Pool, encKey []byte) *CredentialCycler {
+	interval := 1 * time.Hour
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_CRED_CYCLER_INTERVAL")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			interval = d
+		} else if err != nil {
+			slog.Warn("credential cycler: invalid LLM_GATEWAY_CRED_CYCLER_INTERVAL, using 1h", "value", v, "error", err)
+		}
+	}
 	return &CredentialCycler{
 		db:       db,
 		encKey:   encKey,
-		interval: 1 * time.Hour,
+		interval: interval,
 		done:     make(chan struct{}),
 	}
 }
