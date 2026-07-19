@@ -86,8 +86,12 @@ END $$;
 
 COMMIT;
 
--- Step 3: verify
+-- Step 3: verify (PG17-safe: relhaspkey was removed from pg_class)
 SELECT
     (SELECT COUNT(*) FROM tenant_credit_wallets)             AS total_rows,
     (SELECT COUNT(DISTINCT tenant_id) FROM tenant_credit_wallets) AS distinct_tenants,
-    (SELECT relhaspkey FROM pg_class WHERE relname='tenant_credit_wallets') AS has_pkey;
+    (SELECT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.tenant_credit_wallets'::regclass
+          AND contype = 'p'
+    )) AS has_pkey;
