@@ -198,8 +198,6 @@ func TestNodeState_DisableCountTracking(t *testing.T) {
 
 	credID := 18
 	model := "nvidia/llama-3.1-nemotron-ultra-253b-instruct"
-	baseTime := time.Now()
-
 	// 第一次禁用
 	for i := 0; i < 3; i++ {
 		_ = mgr.RecordNodeFailure(ctx, credID, model, "fail-1-"+string(rune('1'+i)), "empty_response")
@@ -209,25 +207,30 @@ func TestNodeState_DisableCountTracking(t *testing.T) {
 	assert.Equal(t, 1, state.DisableCount, "第一次禁用，计数应为 1")
 
 	// 冷却期到期，失败恢复（延长冷却期）
-	s.SetTime(baseTime.Add(6 * time.Minute))
-	_ = mgr.RecordNodeFailure(ctx, credID, model, "fail-after-cooldown", "timeout")
+	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
+	require.NoError(t, mgr.SetNodeState(ctx, state))
+	require.NoError(t, mgr.RecordNodeFailure(ctx, credID, model, "fail-after-cooldown", "timeout"))
 
-	state, _ = mgr.GetNodeState(ctx, credID, model)
+	state, err := mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
 	assert.Equal(t, 1, state.DisableCount, "延长冷却期不增加计数")
 
 	// 再次冷却期到期，成功恢复
-	s.SetTime(baseTime.Add(12 * time.Minute))
-	_ = mgr.RecordNodeSuccess(ctx, credID, model, "success-recovery")
+	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
+	require.NoError(t, mgr.SetNodeState(ctx, state))
+	require.NoError(t, mgr.RecordNodeSuccess(ctx, credID, model, "success-recovery"))
 
-	state, _ = mgr.GetNodeState(ctx, credID, model)
+	state, err = mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
 	assert.Equal(t, 0, state.DisableCount, "成功恢复后计数重置")
 	assert.False(t, state.Disabled)
 
 	// 再次连续失败（第二次禁用）
 	for i := 0; i < 3; i++ {
-		_ = mgr.RecordNodeFailure(ctx, credID, model, "fail-2-"+string(rune('1'+i)), "timeout")
+		require.NoError(t, mgr.RecordNodeFailure(ctx, credID, model, "fail-2-"+string(rune('1'+i)), "timeout"))
 	}
 
-	state, _ = mgr.GetNodeState(ctx, credID, model)
+	state, err = mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
 	assert.Equal(t, 1, state.DisableCount, "第二次禁用，计数应为 1（已重置过）")
 }
