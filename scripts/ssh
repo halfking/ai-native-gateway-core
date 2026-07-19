@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scripts/ssh — SSH wrapper for 154 (via 252 jump host)
+#
+# Symlink target: this file MUST be named exactly "ssh" so that when
+# scripts/ is added to PATH, the wrapper takes precedence over /usr/bin/ssh.
+#
+# All wrapper logic lives in ssh-wrapper-154.sh — this file just
+# delegates so the symlink "ssh" has a target that actually exists.
+#
+# 为什么需要这个 wrapper (2026-07-20):
+#   - 154 公网 47.97.111.154 的 SSH 端口被防火墙全挡 (25022 refused, 22 timeout).
+#   - 154 内网 172.16.2.209 SSH 同样被挡.
+#   - 但 245 (172.16.2.241) SSH 通, 245 上 systemd unit 跑 llm-gateway-go.
+#   - 252 nginx 把 llm.kxpms.cn 反代到 245:8781 → 用户访问 llm.kxpms.cn
+#     看到的还是 154 的身份.
+#
+# 用法:
+#   PATH=scripts:$PATH bash scripts/deploy-seamless.sh deploy 154
+#   PATH=scripts:$PATH bash scripts/deploy-seamless.sh status 154
+#
+# 详见 ssh-wrapper-154.sh 的完整注释.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$SCRIPT_DIR/ssh-wrapper-154.sh" "$@"

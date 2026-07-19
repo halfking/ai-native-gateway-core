@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Request trace audit fixes** (2026-07-20): stage-event transaction failures now roll back and retain Redis traces for retry; hot/partition fallback reads select the newest row deterministically; migration 450 adds the missing `request_stage_events.tenant_id` column and index; trace routes fail closed when admin authorization is not configured.
 
+- **154 部署链路 5 类问题修复** (2026-07-20): `llm.kxpms.cn` 首页是旧版本 (`2.4.7-c1a01552` build 1200, 7月19日) 跟 245 对比明显旧，根因是 154 公网 SSH 被防火墙全挡 + deploy-seamless 走 252 跳板路径的 3 个 bug：
+  1. `ssh-retry.sh:217` 的 `extra_flags=(-o "$proxy_flag")` 多套了一层 `-o`，触发 `Bad configuration option: -o` 立即失败。
+  2. `host.sh:78` 给 154 算的 `binary_link` 跟 systemd unit `ExecStart=/opt/llm-gateway-go/gateway` 不一致（一个用 `llm-gateway-go` 一个用 `gateway`），atomic-switch 后 systemd 立即 `203/EXEC` 死循环。统一改为 `gateway`。
+  3. ssh 首次连内网 172.16.2.241 时 `Warning: Permanently added ... to the list of known hosts` 污染 deploy-seamless 解析 stdout，导致 `ln -sfn` 把 `current` 链接指向伪目录 `releases/Warning: ...`。
+  - 新增 `scripts/ssh-wrapper-154.sh` + symlink `scripts/ssh` + `scripts/deploy-154-via-252.sh`，把 `47.97.111.154`/`172.16.2.209` 自动重定向到 `252 → sshpass → 172.16.2.241:25022`（245），并强制 `ssh -q -o LogLevel=QUIET` 抑制 Warning。
+  - 实际"154 服务"是跑在 245 (`172.16.2.241`) 上的，252 nginx upstream `kxpms_llm_backend` 由 `172.16.2.209:8781` 改为 `172.16.2.241:8781`。
+  - 部署后 `/healthz` 返回 `2.4.7-dae265fb-20260719-1209-dae265fb`（7月20日 build 1209），登录后控制台看板/实时请求流/会话与统计/系统监测 4 tabpage 全部可见（browser-use 验证截图 `/tmp/154-{kanban,realtime,session,monitor}.png`）。
+  - 详见 [docs/changelogs/2026-07-20-ssh-wrapper-154-deploy-fix.md](docs/changelogs/2026-07-20-ssh-wrapper-154-deploy-fix.md)。
+
 ### Added
 
 - **动态 L1 任务类型端点 + 前端 composable** (2026-07-20): WorkType 体系下 L1 任务类型（chat / reasoning / code / agent / creative / long_context / vision / function_call）原本在前端 4 处硬编码（`L1_TASK_TYPES` / `TASK_TYPES`），与"work types 是 DB 配置"的设计原则不符。新增：

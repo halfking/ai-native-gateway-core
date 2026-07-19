@@ -75,7 +75,13 @@ root=$root
 releases_dir=$root/releases
 release_dir=$root/releases/$version
 current_link=$root/current
-binary_link=$root/$( [[ $target == 245 ]] && echo gateway || echo llm-gateway-go )
+# Both 154 and 245 use the systemd unit `llm-gateway-go.service` whose
+# ExecStart is `/opt/llm-gateway-go/gateway` — so the kernel-visible
+# binary symlink must be named `gateway` on BOTH targets. Earlier this
+# used `llm-gateway-go` for 154, which silently diverged from the systemd
+# unit and caused systemd to keep restarting (status=203/EXEC) after
+# every atomic-switch deploy.
+binary_link=$root/gateway
 web_link=$root/web
 version_link=$root/version.json
 metadata_file=$root/releases/$version/deployment.json
