@@ -999,7 +999,7 @@ $47,
 		entry.OriginStage,
 		entry.OriginActor,
 		// 2026-07-19 (migration 350): routing attempts tracking
-		string(entry.RoutingAttempts),
+		jsonOrNull(entry.RoutingAttempts),
 		entry.RoutingSummary,
 	)
 	if err != nil {
