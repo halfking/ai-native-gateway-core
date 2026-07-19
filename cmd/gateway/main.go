@@ -2885,6 +2885,15 @@ func main() {
 		dbConn.Pool(), cfg.SecretKey,
 	))
 
+	// canonical API for plugin processes (signed context, not admin cookie).
+	// Reuses admin.HandleSessionAnalyticsList under a tenant-scoped AuthContext.
+	// Only mount when the admin handler is available (requires DB). The plugin
+	// side (Task 8) signs with AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET, which
+	// must equal cfg.SecretKey for verification to pass.
+	if adminHandler != nil {
+		registerPluginCanonRoutes(mux, []byte(cfg.SecretKey), adminHandler.HandleSessionAnalyticsList)
+	}
+
 	// v2 Pipeline feature flag (R1.12). Opt-in via LLM_GATEWAY_V2_ENABLED.
 	// Default OFF → no-op; production v1 routes are untouched. When ON,
 	// a parallel /v2/* route group is mounted on the same mux. See
