@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,6 +49,38 @@ func (h *WorkTypeHandlers) RegisterWorkTypeRoutes(mux *http.ServeMux, adminWrap 
 	mux.HandleFunc("/api/admin/work-types/", adminWrap(h.handleSub))
 }
 
+// L1TaskTypeMeta describes one L1 task type as returned by
+// GET /api/admin/work-types/l1-task-types. The label / icon are merged
+// from the canonical 8-task-type taxonomy (seed list, see canonicalL1TaskTypes
+// below); the `count` is the live count of work_type_config rows that
+// reference this L1 key. Source-of-truth for which L1 types exist:
+// UNION (canonical 8) + (SELECT DISTINCT l1_task_type FROM work_type_config).
+// Empty DB still returns the canonical 8 so the "create first work type"
+// flow has something to pick.
+type L1TaskTypeMeta struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Icon  string `json:"icon"`
+	Count int    `json:"count"` // number of work_type_config rows using this L1
+}
+
+// canonicalL1TaskTypes are the 8 L1 categories that the LLM classifier's
+// heuristic recognises. They are seeded into every listL1TaskTypes response
+// even when the DB is empty so the work-type creation flow has choices.
+// Adding/removing entries here is a system-wide schema change — the LLM
+// classifier would need to learn the new categories too. Keep in sync with
+// web/src/api-work-types.ts canonicalL1TaskTypes if you change either side.
+var canonicalL1TaskTypes = []L1TaskTypeMeta{
+	{Key: "chat", Label: "通用对话", Icon: "💬"},
+	{Key: "reasoning", Label: "逻辑推理", Icon: "🧠"},
+	{Key: "code", Label: "代码", Icon: "💻"},
+	{Key: "agent", Label: "Agent", Icon: "🤖"},
+	{Key: "creative", Label: "创意", Icon: "✍️"},
+	{Key: "long_context", Label: "长文档", Icon: "📚"},
+	{Key: "vision", Label: "视觉", Icon: "👁️"},
+	{Key: "function_call", Label: "函数调用", Icon: "🔧"},
+}
+
 func (h *WorkTypeHandlers) handleRoot(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -64,6 +97,14 @@ func (h *WorkTypeHandlers) handleSub(w http.ResponseWriter, r *http.Request) {
 	rest = strings.Trim(rest, "/")
 	if rest == "" {
 		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_not_found")
+		return
+	}
+
+	// Reserved sub-paths that are NOT work-type keys. Must be matched
+	// before the generic key dispatch below, otherwise getWorkType would
+	// try to look up "l1-task-types" as a work type and 404.
+	if rest == "l1-task-types" {
+		h.listL1TaskTypes(w, r)
 		return
 	}
 
@@ -97,6 +138,84 @@ func (h *WorkTypeHandlers) handleSub(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 	}
+}
+
+// listL1TaskTypes returns the union of:
+//   - canonical 8-task-type taxonomy (always present, even on empty DB)
+//   - distinct l1_task_type values currently used in work_type_config
+//
+// Each entry includes `count` = number of work types using that L1, so
+// the UI can show "(used by N work types)" hints. Frontend uses this
+// for: TaskTypeRail filter, RoutingDefaultsView task_type picker,
+// WorkTypesView l1_task_type dropdown, l1Label() helper, and
+// RoutingDashboardView task pills.
+func (h *WorkTypeHandlers) listL1TaskTypes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// Counts from DB (best-effort; fall back to canonical-only on error)
+	dbCounts := map[string]int{}
+	if h.db == nil {
+		writeJSONOk(w, map[string]interface{}{"items": canonicalL1TaskTypes})
+		return
+	}
+	rows, err := h.db.Query(ctx, `
+		SELECT l1_task_type, COUNT(*)::int
+		FROM work_type_config
+		WHERE l1_task_type IS NOT NULL AND l1_task_type <> ''
+		GROUP BY l1_task_type
+	`)
+	if err == nil {
+		for rows.Next() {
+			var k string
+			var c int
+			if err := rows.Scan(&k, &c); err == nil {
+				dbCounts[k] = c
+			}
+		}
+		rows.Close()
+	}
+
+	// Start with canonical 8, overlay DB counts.
+	merged := make([]L1TaskTypeMeta, 0, len(canonicalL1TaskTypes)+len(dbCounts))
+	seen := map[string]bool{}
+	for _, c := range canonicalL1TaskTypes {
+		merged = append(merged, L1TaskTypeMeta{
+			Key:   c.Key,
+			Label: c.Label,
+			Icon:  c.Icon,
+			Count: dbCounts[c.Key],
+		})
+		seen[c.Key] = true
+	}
+	// Add any extra L1 keys discovered in DB (operator-added categories
+	// that aren't in the canonical list).
+	extraKeys := make([]string, 0, len(dbCounts))
+	for k := range dbCounts {
+		if !seen[k] {
+			extraKeys = append(extraKeys, k)
+		}
+	}
+	sort.Strings(extraKeys)
+	for _, k := range extraKeys {
+		c := dbCounts[k]
+		if seen[k] {
+			continue
+		}
+		merged = append(merged, L1TaskTypeMeta{
+			Key:   k,
+			Label: k, // unknown category — fall back to key as label
+			Icon:  "◆",
+			Count: c,
+		})
+	}
+
+	writeJSONOk(w, map[string]interface{}{"items": merged})
 }
 
 func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {

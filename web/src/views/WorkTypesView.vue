@@ -5,7 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   listWorkTypes, getWorkType, createWorkType, updateWorkType, deleteWorkType,
   putWorkTypeRoutes, getWorkTypeStats, syncWorkTypesFromACC,
-  L1_TASK_TYPES, PROFILES, CATEGORIES,
+  PROFILES, CATEGORIES,
   type WorkTypeConfig, type WorkTypeStats, type ModelRoute, type WorkTypeSyncMeta,
 } from '../api-work-types'
 import {
@@ -13,6 +13,7 @@ import {
   type AutoRouteAudit, type AutoRouteDecision,
 } from '../api-autoroute'
 import { probeModel, type ProbeResult } from '../api'
+import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import ModelPicker from '../components/ModelPicker.vue'
 
 const { t } = useI18n()
@@ -83,8 +84,13 @@ function fmt(n: number | undefined, digits = 1): string {
   if (n === undefined || n === null || isNaN(n)) return '-'
   return n.toFixed(digits)
 }
+// L1 task types come from useL1TaskTypes composable (DB-backed, refreshed on
+// mount via listL1TaskTypes()). The composable seeds canonical 8 immediately
+// so first paint isn't blank, then swaps in the live DB-derived list once
+// the response lands.
+const { l1TaskTypes, l1Label: l1LabelRaw, refreshL1TaskTypes } = useL1TaskTypes()
 function l1Label(key: string): string {
-  return L1_TASK_TYPES.find(t => t.key === key)?.label ?? key
+  return l1LabelRaw(key)
 }
 function profileLabel(key: string): string {
   return PROFILES.find(p => p.key === key)?.label ?? key
@@ -359,6 +365,10 @@ watch(() => route.fullPath, () => {
 onMounted(async () => {
   await loadOverview()
   if (activeTab.value === 'settings') await loadSettings()
+  // Refresh L1 taxonomy in background so dropdown reflects operator-added
+  // categories. Composable seeds canonical 8 immediately so first paint
+  // is never blank; this just upgrades the list once the response arrives.
+  void refreshL1TaskTypes()
 })
 watch(activeTab, (tab) => {
   if (tab === 'settings') loadSettings()
@@ -505,7 +515,7 @@ watch(activeTab, (tab) => {
             </label>
             <label>{{ t('workTypes.modal.fields.l1Task') }}
               <select v-model="detailForm.l1_task_type" class="input">
-                <option v-for="t in L1_TASK_TYPES" :key="t.key" :value="t.key">{{ t.label }}</option>
+                <option v-for="t in l1TaskTypes" :key="t.key" :value="t.key">{{ t.label }}</option>
               </select>
             </label>
             <label>{{ t('workTypes.modal.fields.profile') }}
@@ -720,7 +730,7 @@ watch(activeTab, (tab) => {
           </label>
           <label>{{ t('workTypes.modal.fields.l1Task') }}
             <select v-model="createForm.l1_task_type">
-              <option v-for="t in L1_TASK_TYPES" :key="t.key" :value="t.key">{{ t.label }}</option>
+              <option v-for="t in l1TaskTypes" :key="t.key" :value="t.key">{{ t.label }}</option>
             </select>
           </label>
           <label>{{ t('workTypes.modal.fields.profile') }}

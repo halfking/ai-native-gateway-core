@@ -82,7 +82,27 @@ export interface WorkTypeSyncResponse {
   sync_meta?: WorkTypeSyncMeta
 }
 
-export const L1_TASK_TYPES = [
+// 2026-07-20: L1 task types are now DB-backed.
+//
+//   `L1_TASK_TYPES` below is a frontend seed (canonical 8-task-type taxonomy)
+//   used by useL1TaskTypes() composable as immediate paint before the backend
+//   response lands. The live list comes from `listL1TaskTypes()` which queries
+//   /api/admin/work-types/l1-task-types (returns canonical 8 ∪ distinct
+//   l1_task_type from work_type_config).
+//
+//   Adding/removing entries here is a system-wide schema change — the LLM
+//   classifier must learn the new categories too. Keep in sync with
+//   admin/work_types.go:canonicalL1TaskTypes.
+
+export interface L1TaskTypeMeta {
+  key: string
+  label: string
+  icon: string
+  /** Number of work_type_config rows currently using this L1 (live count). */
+  count: number
+}
+
+export const L1_TASK_TYPES: Omit<L1TaskTypeMeta, 'count'>[] = [
   { key: 'chat',          label: '通用对话',  icon: '💬' },
   { key: 'reasoning',     label: '逻辑推理',  icon: '🧠' },
   { key: 'code',          label: '代码',      icon: '💻' },
@@ -92,6 +112,20 @@ export const L1_TASK_TYPES = [
   { key: 'vision',        label: '视觉',      icon: '👁️' },
   { key: 'function_call', label: '函数调用',  icon: '🔧' },
 ]
+
+export interface L1TaskTypesResponse {
+  items: L1TaskTypeMeta[]
+}
+
+/**
+ * Fetch L1 task types from the backend.
+ * Returns the union of canonical 8 + any operator-added categories from
+ * work_type_config. Each item carries a live `count` of how many work
+ * types currently use that L1.
+ */
+export function listL1TaskTypes(): Promise<L1TaskTypesResponse> {
+  return req<L1TaskTypesResponse>('GET', '/api/admin/work-types/l1-task-types')
+}
 
 export const PROFILES = [
   { key: 'smart', label: '智能' },
