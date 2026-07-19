@@ -18,8 +18,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ModelPicker from '../components/ModelPicker.vue'
-import { TASK_TYPES } from '../api-autoroute'
-import { L1_TASK_TYPES, listWorkTypes, type WorkTypeConfig } from '../api-work-types'
+import { listWorkTypes, type WorkTypeConfig } from '../api-work-types'
+import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import { getTenantsAdmin, type Tenant } from '../api/admin'
 import {
   getRoutingDefaults,
@@ -84,6 +84,11 @@ const tenantSearch = ref('')
 const selectedTaskType = computed(() =>
   availableTaskTypes.value.find((task) => task.key === createForm.value.task_type)
 )
+// L1 task types come from useL1TaskTypes composable (DB-backed, refreshed
+// on mount). Replaces the previous hardcoded TASK_TYPES / L1_TASK_TYPES
+// fallback chain.
+const { l1TaskTypes, refreshL1TaskTypes } = useL1TaskTypes()
+
 const availableTaskTypes = computed(() => {
   if (workTypes.value.length) {
     return workTypes.value.map((workType) => ({
@@ -92,7 +97,9 @@ const availableTaskTypes = computed(() => {
       icon: '◈',
     }))
   }
-  return TASK_TYPES.length ? TASK_TYPES : L1_TASK_TYPES.map((task) => ({ ...task, icon: '◈' }))
+  // Fallback when workTypes API hasn't returned yet: use the L1 task type
+  // list (canonical 8 seeded immediately, then live DB-backed).
+  return l1TaskTypes.value.map((task) => ({ key: task.key, label: task.label, icon: task.icon }))
 })
 const selectedTenant = computed(() =>
   tenants.value.find((tenant) => tenant.code === createForm.value.tenant_id)
@@ -244,7 +251,11 @@ const summary = computed(() => {
   return { total, primary, tenantScoped, expiring }
 })
 
-onMounted(loadDefaults)
+onMounted(() => {
+  loadDefaults()
+  // Refresh L1 taxonomy (composable seeds canonical 8 immediately).
+  void refreshL1TaskTypes()
+})
 </script>
 
 <template>

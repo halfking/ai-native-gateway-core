@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { L1_TASK_TYPES } from '../../api-work-types'
+import { useL1TaskTypes } from '../../composables/useL1TaskTypes'
 
 const props = defineProps<{
   modelValue: string
@@ -13,16 +13,23 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { l1TaskTypes, refreshL1TaskTypes } = useL1TaskTypes()
 
 const totalCount = computed(() =>
   Object.values(props.counts).reduce((sum, n) => sum + n, 0),
 )
 
-const tasks = computed(() => L1_TASK_TYPES)
-
 function select(key: string) {
   emit('update:modelValue', key)
 }
+
+// L1 task types are DB-backed. Composable seeds canonical 8 immediately so
+// first paint shows the rail populated; refresh upgrades once the response
+// lands. The composable module-state is shared across components, so this
+// is essentially free if another component already triggered the fetch.
+onMounted(() => {
+  void refreshL1TaskTypes()
+})
 </script>
 
 <template>
@@ -39,7 +46,7 @@ function select(key: string) {
       <span v-if="totalCount" class="rail-badge">{{ totalCount }}</span>
     </button>
     <button
-      v-for="task in tasks"
+      v-for="task in l1TaskTypes"
       :key="task.key"
       type="button"
       class="rail-item"

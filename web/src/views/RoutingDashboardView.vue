@@ -6,13 +6,14 @@ import {
   getAutoRouteIndex, getAutoRouteDecisions, getAutoRouteAudit,
   getCustomerCost, getModelCost, refreshAutoRouteIndex, simulateAutoRoute,
   getAnalyticsMatrix, getAnalyticsFlow, getAnalyticsFunnel, getDecisionReplay,
-  DEFAULT_PROFILE_WEIGHTS, TASK_TYPES, TASK_TAGS,
+  DEFAULT_PROFILE_WEIGHTS, TASK_TAGS,
   SPECIFIED_MODEL_TASK_KEY, SPECIFIED_MODEL_DISPLAY_LABEL,
   type AutoRouteIndexEntry, type AutoRouteDecision, type AutoRouteAudit,
   type CustomerCostRow, type ModelCostRow, type ProfileWeights,
   type AnalyticsMatrix, type AnalyticsFlow, type AnalyticsMetric, type AnalyticsWindow,
   type AnalyticsRowDim, type AnalyticsFunnelStage, type DecisionReplayResponse,
 } from '../api-autoroute'
+import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import { getWorkTypeStats, type WorkTypeSyncMeta } from '../api-work-types'
 import {
   getPolicy, patchPolicy, getScoringWeights, updateScoringWeights,
@@ -521,8 +522,11 @@ function distEntries(d: Record<string, number>): Array<[string, number]> {
 function distMax(d: Record<string, number>): number {
   return Math.max(...Object.values(d), 1)
 }
+// L1 task types come from useL1TaskTypes composable (DB-backed; canonical 8
+// seeded immediately, then live list replaces it after fetch).
+const { l1TaskTypes, l1Label: l1LabelRaw, refreshL1TaskTypes } = useL1TaskTypes()
 function taskLabel(key: string): string {
-  return TASK_TYPES.find(t => t.key === key)?.label ?? key
+  return l1LabelRaw(key)
 }
 
 const L1_STEPS = computed(() => ['Prompt', '8类分类', t('routing.sixDimScore'), 'Profile', t('routing.chooseModel')])
@@ -589,6 +593,10 @@ onMounted(async () => {
   }
   await loadIndex()
   await loadAudit()
+  // Refresh L1 task type taxonomy (DB-backed). Composable seeds canonical 8
+  // immediately so the toolbar pills + analytics labels are non-blank on first
+  // paint even before this fetch completes.
+  void refreshL1TaskTypes()
   try {
     const wt = await getWorkTypeStats()
     wtSyncMeta.value = wt.sync_meta ?? null
@@ -805,11 +813,11 @@ onUnmounted(() => stopPoll())
           </div>
           <div class="toolbar-filters">
             <button
-              v-for="t in TASK_TYPES"
+              v-for="t in l1TaskTypes"
               :key="t.key"
               class="task-pill sm"
               :class="{ active: selectedTask === t.key }"
-              :title="TASK_TAGS[t.key]?.join(', ') || ''"
+              :title="TASK_TAGS[t.key]?.join(', ') || t.label"
               @click="selectedTask = selectedTask === t.key ? '' : t.key"
             >{{ t.icon }}</button>
             <span class="toolbar-divider" />

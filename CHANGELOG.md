@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Request trace audit fixes** (2026-07-20): stage-event transaction failures now roll back and retain Redis traces for retry; hot/partition fallback reads select the newest row deterministically; migration 450 adds the missing `request_stage_events.tenant_id` column and index.
+
+### Added
+
+- **动态 L1 任务类型端点 + 前端 composable** (2026-07-20): WorkType 体系下 L1 任务类型（chat / reasoning / code / agent / creative / long_context / vision / function_call）原本在前端 4 处硬编码（`L1_TASK_TYPES` / `TASK_TYPES`），与"work types 是 DB 配置"的设计原则不符。新增：
+  - 后端 `GET /api/admin/work-types/l1-task-types` 返回 canonical 8 ∪ distinct `l1_task_type` from `work_type_config` 的 union，每项带 live `count`。
+  - 前端 `composables/useL1TaskTypes.ts` 模块级缓存 + inflight 去重 + canonical seed fallback；`useL1TaskTypes()` 提供 `l1TaskTypes` / `l1Label` / `l1Icon` / `refreshL1TaskTypes`。
+  - 替换 `TaskTypeRail` / `WorkTypesView` (`<option>` + `l1Label()`) / `RoutingDefaultsView` (`availableTaskTypes` fallback) / `RoutingDashboardView` (task pills + `taskLabel()`) 的 4 处硬编码。
+  - 保留 `L1_TASK_TYPES` 作为 frontend seed（empty-DB / 后端宕机时第一帧不空白），通过类型注解 `Omit<L1TaskTypeMeta, 'count'>` 与动态响应兼容。
+  - 详见 [docs/changelogs/2026-07-20-dynamic-l1-task-types.md](docs/changelogs/2026-07-20-dynamic-l1-task-types.md)。
+
+### Fixed
+
 - **流程详情 (RequestTracePanel) 显示为空 + 链路事件 100% 落库失败** (2026-07-20): 两个并行 bug 同源到 `request_logs_hot` 独立表 (migration 341) 上线后所有 trace 写入/读取路径未更新：
   1. `LoadFromPG` + `requestTraceState` + `fetchRequestSummary` 只查 `request_logs`，最近 7 天请求全部落到 `request_logs_hot`，Redis TTL 过期后前端"流程详情"永远拿不到 events。改用 hot + 分区表 UNION ALL fallback (按 ts desc 取最新)。
   2. `writeStageEvents` 100% 触发 SQLSTATE 22P02：(a) 漏传 `tenant_id NOT NULL` 列；(b) 更隐蔽的：`pgxpool` 在 `db/db.go` 强制启用 `QueryExecModeSimpleProtocol`（避免 stale prepared statement），此模式下 `[]byte` 参数被 `pgx/internal/sanitize.QuoteBytes` 序列化为 bytea hex literal `'\xHEX'`，PG 把 hex 解码为原始字节后再 `::jsonb` cast 时，jsonb parser 在 `\` 等特殊字符处失败。修复方案：`detailsJSON`/`snapshotJSON` 由 `[]byte` 改为 `string`（走 `QuoteString` 输出合法 quoted JSON 字面量），同时补 `tenant_id` 字段、改用 `tx.Exec` 串行（每请求 ~10ms overhead，可接受），并加 `extractTenantID` 单元测试 5 case + 失败时 dump 第一个失败 event 详情到 slog（便于下次同类问题快速定位）。详见 [docs/changelogs/2026-07-20-request-trace-panel-empty-and-stage-events-22p02.md](docs/changelogs/2026-07-20-request-trace-panel-empty-and-stage-events-22p02.md)。
