@@ -206,3 +206,33 @@ export function writeSidebarCollapsed(collapsed: boolean) {
     // ignore
   }
 }
+
+// ── plugin nav merging ──────────────────────────────────────────────
+import type { NavEntry } from '@/api/plugins'
+
+/** 把插件菜单条目合并进静态分组。返回新数组，不修改入参。 */
+export function mergeNav(
+  staticGroups: NavGroup[],
+  pluginItems: NavEntry[],
+): NavGroup[] {
+  const groups = staticGroups.map((g) => ({ ...g, items: [...g.items] }))
+  if (!groups.some((g) => g.id === 'plugins')) {
+    groups.push({ id: 'plugins', label: '插件', labelKey: 'nav.group.plugins', items: [] })
+  }
+  for (const item of pluginItems) {
+    // 只把条目合并进已存在的静态分组；未知 nav_group 一律落到 plugins 兜底分组，
+    // 不凭 nav_group 原值新建任意分组（否则兜底分组永远为空、被末尾 filter 剔除）。
+    const gid = staticGroups.some((g) => g.id === item.nav_group) ? item.nav_group : 'plugins'
+    const group = groups.find((g) => g.id === gid)
+    group!.items.push({
+      path: item.route_url,
+      label: item.label_key,
+      labelKey: item.label_key,
+      icon: item.icon || '',
+      super: item.super,
+      platformOps: item.platform_ops,
+      tenantOnly: item.tenant_only,
+    })
+  }
+  return groups.filter((g) => g.items.length > 0)
+}

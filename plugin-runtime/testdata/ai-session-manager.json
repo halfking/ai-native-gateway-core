@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "plugin_id": "ai-session-manager",
+  "display_name": "AI Session Manager",
+  "plugin_version": "0.1.0",
+  "build_seq": 1,
+  "channel": "dev",
+  "gateway_compatibility": {
+    "min_version": "0.0.0",
+    "max_version": "",
+    "api_contract": "gateway-plugin-v1"
+  },
+  "runtime": {
+    "entrypoint": "bin/ai-session-manager",
+    "protocol": "http-unix-socket",
+    "health_path": "/plugin/healthz",
+    "handshake_path": "/plugin/handshake",
+    "shutdown_grace_seconds": 20
+  },
+  "capabilities": ["session.read"],
+  "pages": [
+    {
+      "path": "sessions",
+      "type": "data",
+      "nav": {
+        "group": "requests-sessions",
+        "label_key": "nav.item.sessions",
+        "order": 100
+      }
+    },
+    {
+      "path": "settings",
+      "type": "settings",
+      "nav": {
+        "group": "data-ops",
+        "label_key": "nav.item.sessionConfig",
+        "super": true,
+        "order": 110
+      }
+    }
+  ],
+  "web": {
+    "mount": "iframe",
+    "base_path": "/plugins/ai-session-manager/",
+    "entry": "web/index.html"
+  },
+  "activation": {
+    "module_key": "session_manager",
+    "license_required": false
+  }
+}
