@@ -6,6 +6,7 @@ export default {
   back: '← 返回',
   tabCreds: '憑證 ({n})',
   tabModels: '模型',
+  tabQuality: '品質',
   tabLogs: '請求記錄',
   tabDiag: '診斷',
   tabProbe: '自動測試',

@@ -6,6 +6,7 @@ export default {
   back: '← 戻る',
   tabCreds: '認証情報 ({n})',
   tabModels: 'モデル',
+  tabQuality: '品質',
   tabLogs: 'リクエストログ',
   tabDiag: '診断',
   tabProbe: '自動テスト',

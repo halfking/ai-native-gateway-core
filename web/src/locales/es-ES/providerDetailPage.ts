@@ -4,6 +4,7 @@ export default {
   back: '← Volver',
   tabCreds: 'Credenciales ({n})',
   tabModels: 'Modelos',
+  tabQuality: 'Calidad',
   tabLogs: 'Registros de solicitudes',
   tabDiag: 'Diagnóstico',
   tabProbe: 'Sonda automática',
