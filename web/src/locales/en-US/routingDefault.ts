@@ -1,89 +1,67 @@
-// routingDefault.ts — RoutingDefaultsView copy (M2, 22 章 §22.6).
-// 显式默认路由：为 (task_type, profile, tenant_id) 指定首选/兜底模型。
+// routingDefault.ts — smart routing config (default routing) copy
 export default {
-  title: 'Routing Defaults',
-  subtitle: 'Pin a preferred or fallback model for a (task_type, profile, tenant) triple. Takes effect within ~1 minute via the DefaultRoutingStore refresh. Priority: ban > pin > this default > implicit tag > fallback.',
-
+  title: 'Smart routing',
+  subtitle: 'Configure primary / secondary / fallback models per task type. Changes apply within ~1 minute.',
   scope: {
-    platform: 'platform',
+    platform: 'Platform',
   },
-
-  summary: {
-    total: 'Total active',
-    primary: 'Primary tier',
-    tenantScoped: 'Tenant-scoped',
-    expiring: 'Expiring in 7d',
+  rail: {
+    all: 'All',
+    allHint: 'Show all task types',
   },
-
-  filter: {
-    activeOnly: 'Active only',
-    taskType: 'Task type',
-    taskTypePlaceholder: 'e.g. code, reasoning',
-    profile: 'Profile',
-    all: '(all)',
+  tiers: {
+    primary: 'Primary',
+    secondary: 'Secondary',
+    fallback: 'Fallback',
+  },
+  profiles: {
+    any: 'Any',
+    smart: 'Smart',
+    speed_first: 'Speed',
+    cost_first: 'Cost',
+  },
+  actions: {
+    addModel: '+ Add model',
+    detail: 'Details',
+    delete: 'Delete',
+    save: 'Save',
+    saving: 'Saving…',
+    cancel: 'Cancel',
     refresh: 'Refresh',
     loading: 'Loading…',
-    newDefault: '+ New default',
-    cancel: 'Cancel',
-    audit: 'Audit log',
   },
-
-  create: {
-    title: 'New routing default',
-    hint: 'Tenant-scoped rows override platform rows. Profile-specific rows override the generic (any-profile) row at the same scope.',
-    taskType: 'Task type *',
-    taskTypePlaceholder: 'e.g. code, reasoning, vision',
-    profile: 'Profile',
-    profileAny: 'any',
-    tier: 'Tier',
-    model: 'Canonical model *',
-    modelPlaceholder: 'e.g. claude-sonnet-4.5',
-    modelPickerTitle: 'Choose canonical model',
-    tenantId: 'Tenant ID',
-    tenantIdPlaceholder: 'empty = platform default',
-    taskTypePickerTitle: 'Choose task type',
-    taskTypeLoading: 'Loading task types…',
-    tenantPickerTitle: 'Choose tenant',
-    tenantSearchPlaceholder: 'Search tenant name or code…',
-    tenantPlatformHint: 'Do not bind to a specific tenant',
-    tenantLoading: 'Loading tenants…',
-    tenantEmpty: 'No matching tenants.',
-    priority: 'Priority',
-    reason: 'Reason',
-    expiresAt: 'Expires at (optional)',
-    submit: 'Create',
-    submitting: 'Creating…',
-    errors: {
-      taskTypeRequired: 'Task type is required.',
-      modelRequired: 'Canonical model is required.',
-    },
-  },
-
-  table: {
-    taskType: 'Task type',
-    profile: 'Profile',
-    tier: 'Tier',
+  fields: {
     model: 'Model',
-    scope: 'Scope',
+    profile: 'Preference',
     priority: 'Priority',
+    platform: 'Platform / tenant',
     reason: 'Reason',
     expires: 'Expires',
-    expired: 'expired',
-    empty: 'No routing defaults configured yet. Click "+ New default" to add one.',
-    deleteConfirm: 'Delete default #{id} (model {model} for task {task})?',
-    deleteFailed: 'Delete failed: ',
-  },
-
-  audit: {
-    title: 'Audit log (last 500)',
-    refresh: 'Refresh',
-    ts: 'Time',
-    action: 'Action',
-    routingId: 'Routing ID',
+    tier: 'Tier',
     taskType: 'Task type',
-    model: 'Model',
-    actor: 'Actor',
-    reason: 'Reason',
-    empty: 'No audit entries yet.',
+  },
+  empty: {
+    group: 'No models in this tier. Click "Add model" to configure.',
+    needTask: 'Select a task type on the left before adding models.',
+    none: 'No default routes configured yet.',
+  },
+  create: {
+    title: 'Add model to "{tier}"',
+    modelRequired: 'Model is required',
+    taskRequired: 'Select a task type first',
+    submit: 'Add',
+    submitting: 'Adding…',
+  },
+  detail: {
+    title: 'Edit default route #{id}',
+    clearExpires: 'Clear expiry (never expires)',
+  },
+  table: {
+    deleteConfirm: 'Delete default #{id} (model {model}, task {task})?',
+    deleteFailed: 'Delete failed: ',
+    saveFailed: 'Save failed: ',
+  },
+  filter: {
+    activeOnly: 'Active only',
   },
 }

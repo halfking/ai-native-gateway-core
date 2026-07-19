@@ -45,6 +45,7 @@ export default {
       tabPolicy: 'Policy',
       tabLive: 'Live decisions',
       tabResolve: 'Credential routing',
+      tabSmart: 'Smart routing',
       workTypes: 'Work types',
       enabled: 'enabled',
       mappings: 'routes',
@@ -111,6 +112,8 @@ export default {
     },
     overview: {
       title: 'Recommended models',
+      smartConfig: 'Smart routing',
+      smartConfigHint: 'Configure primary / secondary / fallback models per task type',
       profileSmart: 'Smart',
       profileSpeed: 'Speed',
       profileCost: 'Cost',
@@ -237,6 +240,7 @@ export default {
   },
   policy: {
     title: 'Routing policy',
+    backLink: '← Routing overview',
     description: 'Adjust routing v2 global policy: algorithm version, concurrency slots, circuit thresholds, scoring coefficients. Changes are written to the audit log and take effect immediately.',
     loading: 'Loading…',
     globalTitle: 'Global policy',

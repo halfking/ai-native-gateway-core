@@ -27,6 +27,7 @@ import models from './models'
 import pricingManagement from './pricingManagement'
 import standardModelPricing from './standardModelPricing'
 import routing from './routing'
+import routingDefault from './routingDefault'
 import chat from './chat'
 import sessions from './sessions'
 import compression from './compression'
@@ -55,7 +56,6 @@ import ops from './ops'
 import qualityCorrelations from './qualityCorrelations'
 import routingAudit from './routingAudit'
 import routingOverride from './routingOverride'
-import routingDefault from './routingDefault'
 import approval from './approval'
 import probeHealth from './probeHealth'
 import tenantModels from './tenantModels'
@@ -89,6 +89,7 @@ export default {
   pricingManagement,
   standardModelPricing,
   routing,
+  routingDefault,
   chat,
   sessions,
   compression,
@@ -117,7 +118,6 @@ export default {
   qualityCorrelations,
   routingAudit,
   routingOverride,
-  routingDefault,
   approval,
   probeHealth,
   tenantModels,
