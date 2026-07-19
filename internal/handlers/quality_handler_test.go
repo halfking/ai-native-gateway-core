@@ -11,6 +11,43 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
+func TestQualityHandlerRouteBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		statusCode int
+		code       int
+	}{
+		{name: "missing provider id", method: http.MethodGet, path: "/api/quality/providers/", statusCode: http.StatusBadRequest, code: 40001},
+		{name: "non numeric provider id", method: http.MethodGet, path: "/api/quality/providers/not-a-number", statusCode: http.StatusBadRequest, code: 40001},
+		{name: "wrong method for provider", method: http.MethodPost, path: "/api/quality/providers/1", statusCode: http.StatusMethodNotAllowed, code: 40501},
+		{name: "unknown path", method: http.MethodGet, path: "/api/providers/1", statusCode: http.StatusNotFound, code: 40404},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := NewQualityHandler(nil, nil)
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeHTTP(w, req)
+
+			if w.Code != tt.statusCode {
+				t.Fatalf("expected HTTP %d, got %d", tt.statusCode, w.Code)
+			}
+
+			var resp Response
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.Code != tt.code {
+				t.Errorf("expected code %d, got %d", tt.code, resp.Code)
+			}
+		})
+	}
+}
+
 // TestHandleGetProviderQuality_Success 测试成功获取供应商质量画像
 func TestHandleGetProviderQuality_Success(t *testing.T) {
 	db, mock, err := sqlmock.New()

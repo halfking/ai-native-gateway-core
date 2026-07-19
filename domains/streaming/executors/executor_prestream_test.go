@@ -15,6 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/identity"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -55,7 +56,7 @@ func TestShouldAsyncFallback_DisabledWhenPreStreamPrepared(t *testing.T) {
 		R:                 req,
 		PreStreamPrepared: true,
 	}
-	if exec.shouldAsyncFallback(params, time.Now().Add(-2*time.Second), 1) {
+	if exec.shouldAsyncFallback(params, time.Now().Add(-2*time.Second), 1, errorsx.KindTransient) {
 		t.Fatal("expected async fallback to be disabled after pre-stream response commit")
 	}
 }

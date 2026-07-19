@@ -265,7 +265,7 @@ fi
 
 # Apply the same additive migration that will later be synchronized to 252.
 # Keeping this as one source of truth prevents local-only schema drift.
-FORMAL_MIGRATION="$ROOT_DIR/deploy/sql/migrations/2026-07-14-routing-persistence-hardening.sql"
+FORMAL_MIGRATION="$ROOT_DIR/sql/migrations/startup/445_routing_persistence_hardening.sql"
 if [ -f "$FORMAL_MIGRATION" ]; then
   info "Applying routing persistence hardening migration..."
   if PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" -i \

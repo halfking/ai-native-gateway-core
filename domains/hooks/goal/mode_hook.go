@@ -52,12 +52,12 @@ type ModeConfig struct {
 	// the classic "infinite loop on the same model" failure: a stuck model
 	// gets N continues, then we rotate to a fallback model and reset the
 	// continue budget so the new model has a fresh attempt.
-	ModelSwitchOnLoop     bool
-	MaxModelSwitchCount   int
-	FallbackModels        []string // candidate models to rotate through; "auto" routes via autoroute
+	ModelSwitchOnLoop      bool
+	MaxModelSwitchCount    int
+	FallbackModels         []string // candidate models to rotate through; "auto" routes via autoroute
 	RepeatDetectionEnabled bool
-	RepeatThreshold       int  // consecutive identical responses ⇒ considered a loop
-	RepeatResetOnProgress bool // reset the repeat counter when a response differs
+	RepeatThreshold        int  // consecutive identical responses ⇒ considered a loop
+	RepeatResetOnProgress  bool // reset the repeat counter when a response differs
 	// CompletionConfidence is the minimum confidence for the LLM-based
 	// completion verdict to count as "done". Lower = more eager to declare
 	// completion (fewer continues), higher = more conservative.
@@ -67,6 +67,22 @@ type ModeConfig struct {
 	// defaults (MaxFollowUpDepth=15, MaxFollowUpsPerSession=50).
 	MaxFollowUpDepth       int
 	MaxFollowUpsPerSession int
+
+	// ── Cost Control & Budget (2026-07-19, Phase 0) ──────────────────────
+	// Three-tier cost mode system: users select one of minimal/balanced/aggressive
+	// instead of tuning individual settings. Each mode presets all the fields
+	// below. See: docs/会话优化v2/18-Goal模式成本控制与分级方案.md
+
+	// Retry settings (Phase 1 will implement network-layer retry)
+	RetryOnError      bool // enable auto-retry on LLM errors
+	RetryDelaySeconds int  // delay between retries (seconds)
+	RetryTotalTimeout int  // total timeout for all retries (seconds)
+
+	// Budget limits
+	MonthlyTokenLimit  int     // tenant-level monthly token cap (0 = unlimited)
+	SessionTokenBudget int     // single goal session token cap (0 = unlimited)
+	CostAlertThreshold float64 // alert when usage reaches this ratio (0.0-1.0)
+	DowngradeOnBudget  bool    // auto-downgrade to minimal mode when approaching limit
 }
 
 // SettingsGetter retrieves tenant-specific settings.
@@ -98,10 +114,10 @@ type Session struct {
 	// LastResponseHash     sha256 of the last assistant reply (for repeat detection).
 	// CurrentModel         the model currently driving this session; changes
 	//                       on each rotation so we can pick a *different* one next.
-	ModelSwitchCount  int
-	RepeatCount       int
-	LastResponseHash  string
-	CurrentModel      string
+	ModelSwitchCount int
+	RepeatCount      int
+	LastResponseHash string
+	CurrentModel     string
 }
 
 // ModeHook implements response.ResponseInterceptor for goal mode management.
@@ -239,6 +255,7 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
 //     switching is available → rotate to a fallback model, reset the continue
 //     budget, and continue on the new model.
 //  4. Else → give up (the client/operator can inspect the stuck session).
+//
 // alreadyKnownIncomplete: when true, the caller already ran IsCompleted and got
 // false, so shouldAutoContinue skips its own completion re-check for the "stop"
 // finish reason — avoiding a duplicate LLM judgement call on every stop turn.

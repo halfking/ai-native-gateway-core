@@ -417,32 +417,32 @@ onMounted(() => {
         <el-table-column prop="instance_id" :label="t('ops.license.deviceId')" width="150" />
         <el-table-column prop="request_id" :label="t('ops.license.requestCode')" />
         <el-table-column prop="activation_code" :label="t('ops.license.activationCode')" width="120">
-          <template #default="{ row = {} } = {}">
-            <span v-if="row.activation_code">{{ row.activation_code }}</span>
+          <template #default="scope">
+            <span v-if="scope?.row?.activation_code">{{ scope?.row?.activation_code }}</span>
             <span v-else class="cell-sub">—</span>
           </template>
         </el-table-column>
         <el-table-column prop="status" :label="t('common.table.status')" width="100">
-          <template #default="{ row = {} } = {}">
-            <el-tag :type="row.status === 'pending' ? 'warning' : 'success'" size="small">
-              {{ t(`ops.license.status.${row.status}`) }}
+          <template #default="scope">
+            <el-tag :type="scope?.row?.status === 'pending' ? 'warning' : 'success'" size="small">
+              {{ t(`ops.license.status.${scope?.row?.status}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="timestamp" :label="t('common.createdAt')" width="160">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.timestamp) }}</template>
+          <template #default="scope">{{ formatDate(scope?.row?.timestamp) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="180" fixed="right">
-          <template #default="{ row = {} } = {}">
-            <template v-if="row.status === 'pending'">
-              <el-button type="success" size="small" @click="handleApproveOffline(row)">
+          <template #default="scope">
+            <template v-if="scope?.row?.status === 'pending'">
+              <el-button type="success" size="small" @click="handleApproveOffline(scope?.row)">
                 {{ t('ops.license.approve') }}
               </el-button>
-              <el-button type="danger" size="small" @click="handleRejectOffline(row)">
+              <el-button type="danger" size="small" @click="handleRejectOffline(scope?.row)">
                 {{ t('ops.license.reject') }}
               </el-button>
             </template>
-            <el-tag v-else type="info" size="small">{{ t(`ops.license.status.${row.status}`) }}</el-tag>
+            <el-tag v-else type="info" size="small">{{ t(`ops.license.status.${scope?.row?.status}`) }}</el-tag>
           </template>
         </el-table-column>
       </el-table>
@@ -514,27 +514,27 @@ onMounted(() => {
         </el-table-column>
         <el-table-column prop="license_key" :label="t('ops.license.licenseKey')" width="200" />
         <el-table-column :label="t('ops.license.customer')" width="180">
-          <template #default="{ row = {} } = {}">
-            <div>{{ row.customer_name }}</div>
-            <div v-if="row.customer_email" class="cell-sub">{{ row.customer_email }}</div>
+          <template #default="scope">
+            <div>{{ scope?.row?.customer_name }}</div>
+            <div v-if="scope?.row?.customer_email" class="cell-sub">{{ scope?.row?.customer_email }}</div>
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.license.devices')" width="100">
-          <template #default="{ row = {} } = {}">
-            {{ (devices[row.id] || []).filter((d: LicenseDevice) => d.status === 'active').length }} / {{ row.max_devices }}
+          <template #default="scope">
+            {{ (devices[scope?.row?.id] || []).filter((d: LicenseDevice) => d.status === 'active').length }} / {{ scope?.row?.max_devices }}
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.license.tier')" width="100">
-          <template #default="{ row = {} } = {}">
-            <el-tag v-if="row.subscription_tier" size="small" effect="plain">
-              {{ row.subscription_tier }}
+          <template #default="scope">
+            <el-tag v-if="scope?.row?.subscription_tier" size="small" effect="plain">
+              {{ scope?.row?.subscription_tier }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.license.features')" min-width="120">
-          <template #default="{ row = {} } = {}">
+          <template #default="scope">
             <el-tag
-              v-for="f in (row.features || [])"
+              v-for="f in (scope?.row?.features || [])"
               :key="f"
               size="small"
               style="margin-right: 4px; margin-bottom: 2px"
@@ -544,31 +544,31 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="expires_at" :label="t('ops.license.expiresAt')" width="160">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.expires_at) }}</template>
+          <template #default="scope">{{ formatDate(scope?.row?.expires_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.table.status')" width="100">
-          <template #default="{ row = {} } = {}">
-            <el-tag :type="statusType(licenseStatus(row))" size="small">
-              {{ t(`ops.license.status.${licenseStatus(row)}`) }}
+          <template #default="scope">
+            <el-tag :type="statusType(licenseStatus(scope?.row))" size="small">
+              {{ t(`ops.license.status.${licenseStatus(scope?.row)}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.created_at) }}</template>
+          <template #default="scope">{{ formatDate(scope?.row?.created_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="240" fixed="right">
-          <template #default="{ row = {} } = {}">
-            <el-button size="small" @click="handleEditLicense(row)">
+          <template #default="scope">
+            <el-button size="small" @click="handleEditLicense(scope?.row)">
               {{ t('common.edit') }}
             </el-button>
-            <el-button size="small" @click="handleManageModules(row)">
+            <el-button size="small" @click="handleManageModules(scope?.row)">
               {{ t('ops.license.modules') }}
             </el-button>
             <el-button
-              v-if="licenseStatus(row) === 'active'"
+              v-if="licenseStatus(scope?.row) === 'active'"
               type="danger"
               size="small"
-              @click="handleRevoke(row)"
+              @click="handleRevoke(scope?.row)"
             >
               {{ t('ops.license.revoke') }}
             </el-button>
@@ -606,16 +606,16 @@ onMounted(() => {
             <el-table-column prop="email" :label="t('ops.license.holderEmail')" min-width="200" />
             <el-table-column prop="display_name" :label="t('ops.license.customer')" width="140" />
             <el-table-column :label="t('ops.license.holderLicenses')" width="100">
-              <template #default="{ row = {} } = {}">{{ row.license_count ?? 0 }}</template>
+              <template #default="scope">{{ scope?.row?.license_count ?? 0 }}</template>
             </el-table-column>
             <el-table-column :label="t('ops.license.holderDevices')" width="100">
-              <template #default="{ row = {} } = {}">{{ row.device_count ?? 0 }}</template>
+              <template #default="scope">{{ scope?.row?.device_count ?? 0 }}</template>
             </el-table-column>
             <el-table-column :label="t('ops.license.holderDonations')" width="120">
-              <template #default="{ row = {} } = {}">{{ formatDonation(row.donation_total_cents) }}</template>
+              <template #default="scope">{{ formatDonation(scope?.row?.donation_total_cents) }}</template>
             </el-table-column>
             <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
-              <template #default="{ row = {} } = {}">{{ formatDate(row.created_at) }}</template>
+              <template #default="scope">{{ formatDate(scope?.row?.created_at) }}</template>
             </el-table-column>
           </el-table>
           <div class="pagination-wrapper">

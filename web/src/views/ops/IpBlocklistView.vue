@@ -117,13 +117,13 @@ onMounted(load)
       <el-table-column prop="reason" :label="t('ops.blocklist.reason')" show-overflow-tooltip />
       <el-table-column prop="hit_count" :label="t('ops.blocklist.hits')" width="80" />
       <el-table-column prop="enabled" :label="t('common.table.status')" width="100">
-        <template #default="{ row }">
-          <el-switch :model-value="row.enabled" @change="toggleEnabled(row)" />
+        <template #default="scope">
+          <el-switch :model-value="scope?.row?.enabled" @change="toggleEnabled(scope?.row)" />
         </template>
       </el-table-column>
       <el-table-column :label="t('common.table.actions')" width="100">
-        <template #default="{ row }">
-          <el-button link type="danger" @click="onDelete(row)">{{ t('common.delete') }}</el-button>
+        <template #default="scope">
+          <el-button link type="danger" @click="onDelete(scope?.row)">{{ t('common.delete') }}</el-button>
         </template>
       </el-table-column>
     </el-table>

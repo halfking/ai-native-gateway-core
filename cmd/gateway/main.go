@@ -146,6 +146,35 @@ func sessionAuditApprovalTimeoutFromEnv() time.Duration {
 	return positiveDurationEnv("SESSION_AUDIT_APPROVAL_TIMEOUT", 15*time.Minute)
 }
 
+// parseModelFallbackEnv parses LLM_GATEWAY_MODEL_FALLBACK env var.
+//
+// Format: "primary=fb1,fb2;primary2=fb3"
+// Example: "claude-sonnet-4-20250514=gpt-4o-2024-11-20;deepseek-chat=gpt-4o-mini"
+func parseModelFallbackEnv(raw string) map[string][]string {
+	m := make(map[string][]string)
+	for _, entry := range strings.Split(raw, ";") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		primary := strings.TrimSpace(parts[0])
+		if primary == "" {
+			continue
+		}
+		for _, fb := range strings.Split(parts[1], ",") {
+			fb = strings.TrimSpace(fb)
+			if fb != "" {
+				m[primary] = append(m[primary], fb)
+			}
+		}
+	}
+	return m
+}
+
 // ── 模块装配后置状态 ──────────────────────────────────────────
 // 2026-07-09: 这些变量由 initApprovalNotifier 写入，由 router 注册阶段读取
 // 以完成 feishubot 模块的 late-binding。包级可见避免传递整条 init 链。
@@ -710,6 +739,25 @@ func main() {
 			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") == "true" {
 				routingExec.IR = transformation.NewTransportIRConverter(&irAdapter{})
 				slog.Info("transport_ir", "enabled", true, "features", "extensions-roundtrip,circuit-breaker")
+			}
+		}
+
+		// ── Cross-provider model fallback chain (Phase 2, 2026-07-19) ──
+		// When all credentials for the client-requested model are exhausted,
+		// try equivalent models from other providers. Format:
+		//
+		//	LLM_GATEWAY_MODEL_FALLBACK="primary=fb1,fb2;..."
+		//
+		// Example:
+		//	LLM_GATEWAY_MODEL_FALLBACK="claude-sonnet-4-20250514=gpt-4o-2024-11-20;claude-haiku-3-20240307=gpt-4o-mini-2024-07-18"
+		//
+		// When unset, a sensible default chain for common models is used.
+		// Set to empty to disable fallback entirely.
+		{
+			if raw := os.Getenv("LLM_GATEWAY_MODEL_FALLBACK"); raw != "" {
+				routingExec.ModelFallbackChain = parseModelFallbackEnv(raw)
+			} else {
+				routingExec.ModelFallbackChain = executors.DefaultFallbackChain()
 			}
 		}
 

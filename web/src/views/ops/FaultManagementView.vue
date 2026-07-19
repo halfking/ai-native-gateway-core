@@ -298,29 +298,29 @@ onMounted(load)
       <el-table v-loading="loading" :data="filteredEvents">
         <el-table-column prop="rule_name" :label="t('ops.fault.ruleName')" width="160" />
         <el-table-column prop="severity" :label="t('ops.fault.severityLabel')" width="80">
-          <template #default="{ row = {} } = {}">
-            <el-tag :type="severityType(row.severity)" size="small">
-              {{ t(`ops.fault.severity.${row.severity}`) }}
+          <template #default="scope">
+            <el-tag :type="severityType(scope?.row?.severity)" size="small">
+              {{ t(`ops.fault.severity.${scope?.row?.severity}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="status" :label="t('common.table.status')" width="100">
-          <template #default="{ row = {} } = {}">
-            <el-tag :type="statusType(row.status)" size="small">
-              {{ t(`ops.fault.status.${row.status}`) }}
+          <template #default="scope">
+            <el-tag :type="statusType(scope?.row?.status)" size="small">
+              {{ t(`ops.fault.status.${scope?.row?.status}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="title" :label="t('ops.fault.titleLabel')" min-width="220" show-overflow-tooltip />
         <el-table-column prop="source" :label="t('ops.fault.source')" width="100" />
         <el-table-column prop="detected_at" :label="t('ops.fault.detectedAt')" width="150">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.detected_at) }}</template>
+          <template #default="scope">{{ formatDate(scope?.row?.detected_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="200" fixed="right">
-          <template #default="{ row = {} } = {}">
-            <el-button size="small" @click="showDetail(row)">{{ t('common.view') }}</el-button>
-            <el-button v-if="row.status === 'new'" size="small" type="primary" @click="handleAcknowledge(row)">{{ t('ops.fault.acknowledge') }}</el-button>
-            <el-button v-if="row.status === 'acknowledged'" size="small" type="success" @click="handleResolve(row)">{{ t('ops.fault.resolve') }}</el-button>
+          <template #default="scope">
+            <el-button size="small" @click="showDetail(scope?.row)">{{ t('common.view') }}</el-button>
+            <el-button v-if="scope?.row?.status === 'new'" size="small" type="primary" @click="handleAcknowledge(scope?.row)">{{ t('ops.fault.acknowledge') }}</el-button>
+            <el-button v-if="scope?.row?.status === 'acknowledged'" size="small" type="success" @click="handleResolve(scope?.row)">{{ t('ops.fault.resolve') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -358,29 +358,29 @@ onMounted(load)
       <el-table :data="rules" size="small">
         <el-table-column prop="name" :label="t('ops.fault.ruleName')" width="160" />
         <el-table-column prop="severity" :label="t('ops.fault.severityLabel')" width="80">
-          <template #default="{ row = {} } = {}">
-            <el-tag :type="severityType(row.severity)" size="small">
-              {{ t(`ops.fault.severity.${row.severity}`) }}
+          <template #default="scope">
+            <el-tag :type="severityType(scope?.row?.severity)" size="small">
+              {{ t(`ops.fault.severity.${scope?.row?.severity}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.fault.condition')" width="180">
-          <template #default="{ row = {} } = {}">
-            <code>{{ row.metric }} {{ operatorLabels[row.operator] || row.operator }} {{ row.threshold }} ({{ row.duration }})</code>
+          <template #default="scope">
+            <code>{{ scope?.row?.metric }} {{ operatorLabels[scope?.row?.operator] || scope?.row?.operator }} {{ scope?.row?.threshold }} ({{ scope?.row?.duration }})</code>
           </template>
         </el-table-column>
         <el-table-column prop="action" :label="t('ops.fault.action')" width="100" />
         <el-table-column prop="enabled" :label="t('common.enabled')" width="70">
-          <template #default="{ row = {} } = {}">
-            <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
-              {{ row.enabled ? t('common.yes') : t('common.no') }}
+          <template #default="scope">
+            <el-tag :type="scope?.row?.enabled ? 'success' : 'info'" size="small">
+              {{ scope?.row?.enabled ? t('common.yes') : t('common.no') }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="160" fixed="right">
-          <template #default="{ row = {} } = {}">
-            <el-button type="primary" size="small" @click="openEditDialog(row)">{{ t('common.edit') }}</el-button>
-            <el-button type="danger" size="small" @click="handleDeleteRule(row)">{{ t('common.delete') }}</el-button>
+          <template #default="scope">
+            <el-button type="primary" size="small" @click="openEditDialog(scope?.row)">{{ t('common.edit') }}</el-button>
+            <el-button type="danger" size="small" @click="handleDeleteRule(scope?.row)">{{ t('common.delete') }}</el-button>
           </template>
         </el-table-column>
       </el-table>

@@ -483,7 +483,10 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	}
 	h.cachedSnapshotMu.Unlock()
 
-	snapshot, err := h.store.Snapshot(ctx, scope.tenantID, scope.isSuper, h.cfg.InitialReplayLimit)
+	// 2026-07-19: Use dimension-queue-based snapshot to fix swim lane flickering.
+	// Read from dimension queues ensures each vendor/provider/model gets its
+	// full 20-tile allocation regardless of traffic distribution in main queue.
+	snapshot, err := h.store.SnapshotFromDimensionQueues(ctx, scope.tenantID, scope.isSuper)
 	if err != nil {
 		slog.Debug("live stream scope snapshot failed",
 			"scope_tenant", scope.tenantID, "is_super", scope.isSuper, "err", err.Error())
@@ -616,77 +619,21 @@ func absInt(x int) int {
 // This ensures the dashboard's base data stays current even when the delta
 // stream has gaps (e.g. after a period of no traffic or a Redis partition).
 // The frontend replaces its local snapshot with the fresh one.
+//
+// 2026-07-19 TEMPORARY DISABLE: pushFullSnapshots causes race condition where
+// periodic snapshot_refresh overwrites newer delta updates that arrived between
+// snapshot read and push. This creates the "last few tiles disappear every 30s"
+// bug. Disabled until we implement timestamp-based versioning on snapshots.
+//
+// Root cause: cachedSnapshot lags behind Redis by up to 30s. When pushFullSnapshots
+// reads Redis and pushes snapshot_refresh, it may contain data older than what
+// the frontend already has via real-time deltas.
+//
+// Fix plan: Add LatestRequestTs to LiveStreamSnapshot, frontend only accepts
+// snapshot_refresh if LatestRequestTs > current local snapshot timestamp.
 func (h *LiveStreamSSEHub) pushFullSnapshots() {
-	if h.store == nil {
-		return
-	}
-	h.mu.RLock()
-	type scopeEntry struct {
-		tenantID string
-		isSuper  bool
-	}
-	seen := make(map[string]scopeEntry) // cacheKey → entry (deduplicate per scope)
-	for c := range h.clients {
-		scope := newLiveStreamScope(c.tenantID, c.isSuper)
-		if _, ok := seen[scope.cacheKey]; !ok {
-			seen[scope.cacheKey] = scopeEntry{tenantID: scope.tenantID, isSuper: scope.isSuper}
-		}
-	}
-	h.mu.RUnlock()
-
-	if len(seen) == 0 {
-		return
-	}
-
-	for _, entry := range seen {
-		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			snapshot, err := h.store.Snapshot(ctx, entry.tenantID, entry.isSuper, h.cfg.InitialReplayLimit)
-			if err != nil {
-				slog.Debug("live stream snapshot refresh failed",
-					"tenant_id", entry.tenantID, "is_super", entry.isSuper, "err", err.Error())
-				return
-			}
-			if snapshot == nil || snapshot.Summary.Total == 0 {
-				return
-			}
-
-			// 2026-07-19: 智能推送 - 只在数据显著变化时推送，减少前端泳道跳变。
-			scope := newLiveStreamScope(entry.tenantID, entry.isSuper)
-			h.cachedSnapshotMu.RLock()
-			cached := h.cachedSnapshot[scope.cacheKey]
-			h.cachedSnapshotMu.RUnlock()
-
-			var oldSnapshot *LiveStreamSnapshot
-			if cached != nil {
-				oldSnapshot = cached.snapshot
-			}
-
-			if !needsFullRefresh(oldSnapshot, snapshot) {
-				// 数据变化不显著，跳过推送
-				return
-			}
-
-			// 数据显著变化，推送全量快照
-			h.cachedSnapshotMu.Lock()
-			h.cachedSnapshot[scope.cacheKey] = &cachedSnapshotEntry{
-				snapshot:     snapshot,
-				lastAccessed: time.Now(),
-			}
-			h.cachedSnapshotMu.Unlock()
-
-			env := LiveStreamEnvelope{
-				Type:      "snapshot_refresh",
-				Timestamp: time.Now().UTC(),
-				Snapshot:  snapshot,
-			}
-			h.fanOut(env)
-		}()
-	}
-
-	slog.Debug("live stream snapshot refresh cycle completed",
-		"scopes", len(seen))
+	// DISABLED - see comment above
+	return
 }
 
 // Stop tears down the hub. Safe to call once.
@@ -1126,6 +1073,32 @@ func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 	}
 }
 
+// fanOutScope delivers a scope-specific refresh only to clients subscribed to
+// that scope. A snapshot for one tenant must never replace another tenant's
+// lane queue in an open dashboard.
+func (h *LiveStreamSSEHub) fanOutScope(scope liveStreamScope, env LiveStreamEnvelope) {
+	data, err := json.Marshal(env)
+	if err != nil {
+		slog.Warn("live stream scoped marshal failed", "err", err.Error())
+		return
+	}
+
+	h.mu.RLock()
+	clients := make([]*liveStreamClient, 0, len(h.clients))
+	for c := range h.clients {
+		if newLiveStreamScope(c.tenantID, c.isSuper).cacheKey == scope.cacheKey {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, c := range clients {
+		if !h.writeEvent(c, data) {
+			h.evict(c)
+		}
+	}
+}
+
 func (h *LiveStreamSSEHub) shouldDeliver(c *liveStreamClient, env LiveStreamEnvelope) bool {
 	if c.isSuper {
 		return true
@@ -1445,7 +1418,8 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 	} else if len(items) > 0 {
 		snapshot := BuildLiveStreamSnapshot(items)
 		if h.store != nil {
-			if ss, ssErr := h.store.Snapshot(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit); ssErr == nil && ss != nil && ss.Summary.Total > 0 {
+			// 2026-07-19: Use dimension-queue-based snapshot for initial data
+			if ss, ssErr := h.store.SnapshotFromDimensionQueues(r.Context(), tenantID, isSuper); ssErr == nil && ss != nil && ss.Summary.Total > 0 {
 				snapshot = ss
 			}
 		}

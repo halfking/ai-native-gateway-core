@@ -227,21 +227,31 @@ func (w *SessionBodiesWriter) ListAllBodies(ctx context.Context, tenantID, sessi
 			return nil, fmt.Errorf("scan bodies: %w", err)
 		}
 
-		// Parse JSONs
+		// Parse JSONs - strictly report errors for data quality
 		if len(requestDeltaJSON) > 0 {
-			json.Unmarshal(requestDeltaJSON, &rec.RequestDelta)
+			if err := json.Unmarshal(requestDeltaJSON, &rec.RequestDelta); err != nil {
+				return nil, fmt.Errorf("unmarshal request_delta at turn %d: %w", rec.TurnNo, err)
+			}
 		}
 		if len(responseDeltaJSON) > 0 {
-			json.Unmarshal(responseDeltaJSON, &rec.ResponseDelta)
+			if err := json.Unmarshal(responseDeltaJSON, &rec.ResponseDelta); err != nil {
+				return nil, fmt.Errorf("unmarshal response_delta at turn %d: %w", rec.TurnNo, err)
+			}
 		}
 		if len(outboundBodyJSON) > 0 {
-			json.Unmarshal(outboundBodyJSON, &rec.OutboundBody)
+			if err := json.Unmarshal(outboundBodyJSON, &rec.OutboundBody); err != nil {
+				return nil, fmt.Errorf("unmarshal outbound_body at turn %d: %w", rec.TurnNo, err)
+			}
 		}
 		if len(requestAttachmentsJSON) > 0 {
-			json.Unmarshal(requestAttachmentsJSON, &rec.RequestAttachments)
+			if err := json.Unmarshal(requestAttachmentsJSON, &rec.RequestAttachments); err != nil {
+				return nil, fmt.Errorf("unmarshal request_attachments at turn %d: %w", rec.TurnNo, err)
+			}
 		}
 		if len(responseAttachmentsJSON) > 0 {
-			json.Unmarshal(responseAttachmentsJSON, &rec.ResponseAttachments)
+			if err := json.Unmarshal(responseAttachmentsJSON, &rec.ResponseAttachments); err != nil {
+				return nil, fmt.Errorf("unmarshal response_attachments at turn %d: %w", rec.TurnNo, err)
+			}
 		}
 
 		bodies = append(bodies, rec)

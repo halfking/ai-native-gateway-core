@@ -349,9 +349,9 @@ onMounted(() => {
         <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="120" />
         <el-table-column prop="build_seq" :label="t('ops.autoupdate.buildSeq')" width="80" />
         <el-table-column prop="channel" :label="t('ops.autoupdate.channelLabel')" width="90">
-          <template #default="{ row = {} } = {}">
-            <el-tag :type="channelType(row.channel)" size="small">
-              {{ channelLabel(row.channel) }}
+          <template #default="scope">
+            <el-tag :type="channelType(scope?.row?.channel)" size="small">
+              {{ channelLabel(scope?.row?.channel) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -359,41 +359,41 @@ onMounted(() => {
         <el-table-column prop="image_tag" :label="t('ops.autoupdate.imageTag')" width="180" show-overflow-tooltip />
         <el-table-column prop="created_by" :label="t('ops.autoupdate.createdBy')" width="120" />
         <el-table-column prop="mandatory" :label="t('ops.autoupdate.mandatory')" width="80">
-          <template #default="{ row = {} } = {}">
-            <el-tag :type="row.mandatory ? 'danger' : 'info'" size="small">
-              {{ row.mandatory ? t('common.yes') : t('common.no') }}
+          <template #default="scope">
+            <el-tag :type="scope?.row?.mandatory ? 'danger' : 'info'" size="small">
+              {{ scope?.row?.mandatory ? t('common.yes') : t('common.no') }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="published_at" :label="t('ops.autoupdate.publishedAt')" width="160">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.published_at) }}</template>
+          <template #default="scope">{{ formatDate(scope?.row?.published_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="340" fixed="right">
-          <template #default="{ row = {} } = {}">
+          <template #default="scope">
             <el-button
-              v-if="!row.published_at"
+              v-if="!scope?.row?.published_at"
               type="success"
               size="small"
-              @click="handlePublish(row)"
+              @click="handlePublish(scope?.row)"
             >
               {{ t('ops.autoupdate.publish') }}
             </el-button>
             <el-button
-              v-if="row.published_at"
+              v-if="scope?.row?.published_at"
               type="warning"
               size="small"
-              @click="handleUnpublish(row)"
+              @click="handleUnpublish(scope?.row)"
             >
               {{ t('ops.autoupdate.unpublish') }}
             </el-button>
-            <el-button size="small" @click="openGrayDialog(row)">
+            <el-button size="small" @click="openGrayDialog(scope?.row)">
               {{ t('ops.autoupdate.gray') }}
             </el-button>
             <el-button
-              v-if="row.published_at"
+              v-if="scope?.row?.published_at"
               size="small"
               type="info"
-              @click="openRolloutDialog(row)"
+              @click="openRolloutDialog(scope?.row)"
             >
               {{ t('ops.autoupdate.rolloutGate') }}
             </el-button>
@@ -420,17 +420,17 @@ onMounted(() => {
         <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="200" />
         <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="120" />
         <el-table-column prop="status" :label="t('common.table.status')" width="120">
-          <template #default="{ row = {} } = {}">
-            <el-tag :type="logStatusType(row.status)" size="small">
-              {{ logStatusLabel(row.status) }}
+          <template #default="scope">
+            <el-tag :type="logStatusType(scope?.row?.status)" size="small">
+              {{ logStatusLabel(scope?.row?.status) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="started_at" :label="t('ops.autoupdate.startedAt')" width="160">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.started_at) }}</template>
+          <template #default="scope">{{ formatDate(scope?.row?.started_at) }}</template>
         </el-table-column>
         <el-table-column prop="completed_at" :label="t('ops.autoupdate.completedAt')" width="160">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.completed_at) }}</template>
+          <template #default="scope">{{ formatDate(scope?.row?.completed_at) }}</template>
         </el-table-column>
         <el-table-column prop="error" :label="t('ops.autoupdate.errorMessage')" min-width="200" show-overflow-tooltip />
         <el-table-column prop="retry_count" :label="t('ops.autoupdate.retryCount')" width="90" />

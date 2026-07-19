@@ -503,6 +503,35 @@ func (e *Executor) executeOpenAI(
 			}
 			if resp != nil {
 				attemptLog(resp.StatusCode, "", "")
+			}
+
+			// 2026-07-19: 记录路由尝试到追踪器，用于前端展示完整的路由决策过程
+			if params.RoutingTracker != nil {
+				var statusCode int
+				var errMsg string
+				if resp != nil {
+					statusCode = resp.StatusCode
+				}
+				if uErr != nil {
+					errMsg = uErr.Message
+				}
+
+				result := ClassifyResult(uErr, statusCode)
+
+				params.RoutingTracker.Add(RoutingAttempt{
+					ProviderID:   int64(cand.ProviderID),
+					CredentialID: int64(cand.CredentialID),
+					RawModel:     cand.RawModel,
+					UpstreamURL:  req.URL.String(),
+					Result:       result,
+					LatencyMs:    upstreamLatency.Milliseconds(),
+					HTTPStatus:   statusCode,
+					ErrorMessage: errMsg,
+				})
+			}
+
+			// Continue with original logic
+			if resp != nil {
 				// 2026-07-18: when upstream returns 4xx, the body often
 				// carries the real classifier signal
 				// ("tool_call_id_mismatch" / "invalid_request_format" / …).
@@ -812,11 +841,12 @@ func (e *Executor) executeOpenAI(
 							"chunk_count", streamOutcome.ChunkCount,
 						)
 						return &ExecuteResult{
-								Response:    resp,
-								Candidate:   cand,
-								LatencyMs:   latencyMs,
-								RequestBody: append([]byte(nil), bodyBytes...),
-								InboundBody: sourceBody,
+								Response:       resp,
+								Candidate:      cand,
+								LatencyMs:      latencyMs,
+								RequestBody:    append([]byte(nil), bodyBytes...),
+								InboundBody:    sourceBody,
+								RoutingTracker: params.RoutingTracker,
 							}, &streamInterruptedError{
 								reason:       streamOutcome.Reason,
 								credentialID: cand.CredentialID,
@@ -876,6 +906,7 @@ func (e *Executor) executeOpenAI(
 							CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
 							CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
 							CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+							RoutingTracker:      params.RoutingTracker,
 						}, nil
 					} else if isResumable {
 						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
@@ -923,8 +954,9 @@ func (e *Executor) executeOpenAI(
 						InboundBody: sourceBody,
 						// 2026-06-19 quality fix mode: capture any flags the
 						// stream reader observed before the interrupt fired.
-						QualityFlags: streamQualityFlags,
-						QualityScore: streamQualityScore,
+						QualityFlags:   streamQualityFlags,
+						QualityScore:   streamQualityScore,
+						RoutingTracker: params.RoutingTracker,
 					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
 				}
 				return &ExecuteResult{
@@ -944,8 +976,9 @@ func (e *Executor) executeOpenAI(
 					// capture.QualityFlags as each chunk was processed.
 					// relay/handler.go emitTelemetry writes these into
 					// request_logs.quality_flags / quality_score.
-					QualityFlags: streamQualityFlags,
-					QualityScore: streamQualityScore,
+					QualityFlags:   streamQualityFlags,
+					QualityScore:   streamQualityScore,
+					RoutingTracker: params.RoutingTracker,
 				}, nil
 			}
 			//nolint:errcheck // best-effort close
@@ -1077,6 +1110,7 @@ func (e *Executor) executeOpenAI(
 				QualityFlags:      qualityFlags,
 				QualityFixActions: qualityActions,
 				QualityScore:      qualityScore,
+				RoutingTracker:    params.RoutingTracker,
 			}, nil
 		}()
 

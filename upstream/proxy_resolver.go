@@ -60,6 +60,10 @@ type ProxyResolver struct {
 
 	probeInterval time.Duration
 	probeStop     chan struct{}
+
+	// P0-1 (2026-07-19): failure tracking for gradual degradation
+	failureCount     atomic.Int32
+	failureThreshold int32
 }
 
 // NewProxyResolver reads HTTP_PROXY/HTTPS_PROXY from the environment and
@@ -72,10 +76,11 @@ type ProxyResolver struct {
 // re-enable the proxy once it becomes reachable again.
 func NewProxyResolver(extraDomesticHosts ...string) *ProxyResolver {
 	r := &ProxyResolver{
-		domesticHosts: make(map[string]bool, len(defaultDomesticDomains)+len(extraDomesticHosts)),
-		healthTimeout: 5 * time.Second,
-		probeInterval: 30 * time.Second,
-		probeStop:     make(chan struct{}),
+		domesticHosts:    make(map[string]bool, len(defaultDomesticDomains)+len(extraDomesticHosts)),
+		healthTimeout:    5 * time.Second,
+		probeInterval:    5 * time.Second, // P0-1: reduced from 30s to 5s (2026-07-19 perf optimization)
+		failureThreshold: 3,               // P0-1: require 3 consecutive failures before disabling proxy
+		probeStop:        make(chan struct{}),
 	}
 	for _, h := range defaultDomesticDomains {
 		r.domesticHosts[strings.ToLower(h)] = true
@@ -156,17 +161,30 @@ func (r *ProxyResolver) healthCheck() {
 	var d net.Dialer
 	conn, err := d.DialContext(dctx, "tcp", host)
 	if err != nil {
-		if r.proxyEnabled.Load() {
-			slog.Warn("proxy resolver: proxy health check FAILED — disabling HTTP proxy for this process (will retry periodically)",
+		// P0-1 (2026-07-19): gradual degradation - only disable after N consecutive failures
+		failures := r.failureCount.Add(1)
+		if failures >= r.failureThreshold && r.proxyEnabled.Load() {
+			slog.Warn("proxy resolver: proxy health check FAILED (consecutive failures reached threshold) — disabling HTTP proxy",
 				"proxy", r.proxyURL.String(),
 				"host", host,
 				"error", err,
+				"failures", failures,
+				"threshold", r.failureThreshold,
+			)
+			r.proxyEnabled.Store(false)
+		} else if failures < r.failureThreshold {
+			slog.Debug("proxy resolver: proxy health check failed but below threshold",
+				"proxy", r.proxyURL.String(),
+				"failures", failures,
+				"threshold", r.failureThreshold,
 			)
 		}
-		r.proxyEnabled.Store(false)
 		return
 	}
 	_ = conn.Close()
+
+	// P0-1 (2026-07-19): reset failure counter on success
+	r.failureCount.Store(0)
 	if !r.proxyEnabled.Load() {
 		slog.Info("proxy resolver: proxy health check RECOVERED — re-enabling HTTP proxy",
 			"proxy", r.proxyURL.String(),
