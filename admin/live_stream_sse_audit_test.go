@@ -2,12 +2,38 @@ package admin
 
 import (
 	"context"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
+
+func TestLiveStreamSSEHub_FanOutScopeDoesNotCrossDeliverSnapshot(t *testing.T) {
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{})
+	tenantWriter := httptest.NewRecorder()
+	superWriter := httptest.NewRecorder()
+	tenantClient := &liveStreamClient{w: tenantWriter, tenantID: "tenant-a"}
+	superClient := &liveStreamClient{w: superWriter, isSuper: true}
+
+	hub.clients[tenantClient] = struct{}{}
+	hub.clients[superClient] = struct{}{}
+
+	hub.fanOutScope(newLiveStreamScope("tenant-a", false), LiveStreamEnvelope{
+		Type:      "snapshot_refresh",
+		Timestamp: time.Now().UTC(),
+		Snapshot:  &LiveStreamSnapshot{Summary: LiveStreamStats{Total: 1}},
+	})
+
+	if !strings.Contains(tenantWriter.Body.String(), "snapshot_refresh") {
+		t.Fatalf("tenant scope did not receive its snapshot refresh: %q", tenantWriter.Body.String())
+	}
+	if superWriter.Body.Len() != 0 {
+		t.Fatalf("super scope received tenant snapshot refresh: %q", superWriter.Body.String())
+	}
+}
 
 func TestLiveStreamSSEHub_ComputeScopeDeltaPreservesBaselineAcrossEmptyRead(t *testing.T) {
 	mr := miniredis.RunT(t)

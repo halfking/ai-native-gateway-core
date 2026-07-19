@@ -3,10 +3,8 @@
 // fixes. These tests exercise the pure helpers (pushOrQueue /
 // mergeDelta) without spinning up a real SSE connection.
 //
-// Origin-side: lane-object reference preservation in mergeDelta
-// (admin/feat/live-stream Redis pub/sub series). HEAD-side: splice
-// + push for same request_id transition so Vue TransitionGroup
-// runs the leave/enter animation. We keep both.
+// Lane and request identity must remain stable across server deltas so the
+// dashboard does not animate a routine state update as a remove/reinsert.
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { __testing } from './liveStreamStore'
@@ -186,10 +184,42 @@ describe('mergeSnapshotFromServer', () => {
     expect(__testing.state.snapshot!.summary.total).toBe(2)
     expect(__testing.state.snapshot!.dimensions.vendor[0].requests).toHaveLength(2)
   })
+
+  it('keeps existing request replay during a snapshot refresh', () => {
+    __testing.state.requests = [makeRequest('r1', 'in_progress')]
+    __testing.handleEnvelope({
+      type: 'snapshot_refresh',
+      ts: '2026-07-14T00:01:00Z',
+      snapshot: {
+        summary: { total: 2, success: 2, failure: 0 },
+        detail_dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
+        dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
+        dimension_legends: { vendor: [], provider: [], model: [] },
+        status_legends: [],
+      },
+    })
+    expect(__testing.state.requests.map((request) => request.request_id)).toEqual(['r1'])
+  })
+
+  it('applies an idle marker delta to the affected lane', () => {
+    const delta: LiveStreamDelta = {
+      summary: { total: 2, success: 2, failure: 0 },
+      changed_lanes: {
+        vendor: [lane('anthropic', 2), lane('openai', 1, [tile('r1')])],
+        provider: [],
+        model: [],
+      },
+      dimension_legends: { vendor: [], provider: [], model: [] },
+      status_legends: [],
+    }
+    __testing.handleEnvelope({ type: 'idle_marker', ts: '2026-07-14T00:01:00Z', delta })
+    const anthropic = __testing.state.snapshot!.dimensions.vendor.find((lane) => lane.id === 'anthropic')
+    expect(anthropic?.stats.total).toBe(2)
+  })
 })
 
 // ---------------------------------------------------------------------------
-// pushOrQueue (HEAD-side: same request_id transition triggers leave+enter)
+// pushOrQueue
 // ---------------------------------------------------------------------------
 
 describe('pushOrQueue', () => {
@@ -203,18 +233,14 @@ describe('pushOrQueue', () => {
     expect(__testing.state.requests.map((r) => r.request_id)).toEqual(['r1', 'r2'])
   })
 
-  // 2026-07-14 regression guard: an in_progress -> success transition
-  // used to overwrite the tile in place, producing a "blue silently
-  // turns green" flicker. The fix splice+pushes so the old key
-  // disappears (Vue TransitionGroup leave animation) and a fresh key
-  // appears at the tail (enter animation).
-  it('moves an updated request_id to the tail (animate out + in)', () => {
+  it('updates an existing request without changing queue order or length', () => {
     __testing.pushOrQueue(makeRequest('r1', 'in_progress'))
     __testing.pushOrQueue(makeRequest('r2', 'in_progress'))
     __testing.pushOrQueue(makeRequest('r1', 'success'))
     const ids = __testing.state.requests.map((r) => r.request_id)
-    expect(ids).toEqual(['r2', 'r1'])
-    expect(__testing.state.requests[1]?.status).toBe('success')
+    expect(ids).toEqual(['r1', 'r2'])
+    expect(__testing.state.requests).toHaveLength(2)
+    expect(__testing.state.requests[0]?.status).toBe('success')
   })
 
   it('updates idle_marker in place when request_id is stable', () => {

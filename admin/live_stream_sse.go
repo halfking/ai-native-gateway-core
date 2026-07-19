@@ -681,7 +681,7 @@ func (h *LiveStreamSSEHub) pushFullSnapshots() {
 				Timestamp: time.Now().UTC(),
 				Snapshot:  snapshot,
 			}
-			h.fanOut(env)
+			h.fanOutScope(scope, env)
 		}()
 	}
 
@@ -1121,6 +1121,32 @@ func (h *LiveStreamSSEHub) fanOut(env LiveStreamEnvelope) {
 			payload = superData
 		}
 		if !h.writeEvent(c, payload) {
+			h.evict(c)
+		}
+	}
+}
+
+// fanOutScope delivers a scope-specific refresh only to clients subscribed to
+// that scope. A snapshot for one tenant must never replace another tenant's
+// lane queue in an open dashboard.
+func (h *LiveStreamSSEHub) fanOutScope(scope liveStreamScope, env LiveStreamEnvelope) {
+	data, err := json.Marshal(env)
+	if err != nil {
+		slog.Warn("live stream scoped marshal failed", "err", err.Error())
+		return
+	}
+
+	h.mu.RLock()
+	clients := make([]*liveStreamClient, 0, len(h.clients))
+	for c := range h.clients {
+		if newLiveStreamScope(c.tenantID, c.isSuper).cacheKey == scope.cacheKey {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, c := range clients {
+		if !h.writeEvent(c, data) {
 			h.evict(c)
 		}
 	}
