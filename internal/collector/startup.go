@@ -75,6 +75,14 @@ func MaybeStart(ctx context.Context, cfg StartupConfig) {
 		return fp.Hash(), nil
 	}
 
+	// 三合一增强: 双写 Reporter (Authority + 本地 PG)
+	httpReporter := &HTTPReporter{ReportURL: authorityURL + "/api/v1/collect/runtime", Token: token}
+	localReporter := &LocalDBReporter{
+		Pool:       cfg.Pool,
+		InstanceID: instanceID,
+	}
+	multiReporter := NewMultiReporter(httpReporter, localReporter)
+
 	c := NewCollector(Config{
 		InstanceID:     instanceID,
 		Version:        version,
@@ -86,7 +94,7 @@ func MaybeStart(ctx context.Context, cfg StartupConfig) {
 		&PgTrafficReader{Pool: cfg.Pool},
 		&PgDBSizeReader{Pool: cfg.Pool},
 		&PgLicenseInfoReader{Store: prefStore, Hash: fingerprintFn},
-		&HTTPReporter{ReportURL: authorityURL + "/api/v1/collect/runtime", Token: token},
+		multiReporter,
 	)
 
 	go c.Run(ctx)
