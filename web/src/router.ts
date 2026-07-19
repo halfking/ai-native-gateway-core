@@ -233,33 +233,36 @@ export const router = createRouter({
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 
-    // Operations Platform (platform management, super_admin only)
-    { path: '/ops',                redirect: '/ops/overview' },
-    { path: '/ops/overview',       component: OpsOverviewView, meta: { requiresSuper: true, requiresMaintain: true } },
-    { path: '/ops/licenses',       component: LicenseManagementView, meta: { requiresSuper: true, requiresMaintain: true } },
-    { path: '/ops/downloads',      component: DistributionReleaseView, meta: { requiresSuper: true, requiresMaintain: true } },
-    { path: '/ops/faults',         component: FaultManagementView, meta: { requiresSuper: true, requiresMaintain: true } },
-    { path: '/ops/autoupdate',     component: AutoUpdateView, meta: { requiresSuper: true, requiresMaintain: true } },
-    { path: '/ops/center',         component: CenterOpsView, meta: { requiresSuper: true, requiresMaintain: true } },
+    // Operations Platform — now owned by the maintain SPA. These Gateway
+    // routes redirect to /maintain/ops/* (served by the maintain-web build
+    // via the Gateway reverse proxy). The component imports are kept for
+    // now so the redirect can be reverted during B0; B1+ removes them once
+    // the maintain pages are verified. See docs/优化v1/01 §3.
+    { path: '/ops',                redirect: (to) => ({ path: '/maintain/ops/overview', query: to.query }) },
+    { path: '/ops/overview',       redirect: (to) => ({ path: '/maintain/ops/overview', query: to.query }) },
+    { path: '/ops/licenses',       redirect: (to) => ({ path: '/maintain/ops/licenses', query: to.query }) },
+    { path: '/ops/downloads',      redirect: (to) => ({ path: '/maintain/ops/downloads', query: to.query }) },
+    { path: '/ops/faults',         redirect: (to) => ({ path: '/maintain/ops/faults', query: to.query }) },
+    { path: '/ops/autoupdate',     redirect: (to) => ({ path: '/maintain/ops/autoupdate', query: to.query }) },
+    { path: '/ops/center',         redirect: (to) => ({ path: '/maintain/ops/center', query: to.query }) },
     { path: '/ops/blocklist',      component: IpBlocklistView, meta: { requiresSuper: true } },
-    { path: '/ops/vibecoding',     component: VibeCodingView, meta: { requiresSuper: true, requiresMaintain: true } },
+    { path: '/ops/vibecoding',     redirect: (to) => ({ path: '/maintain/ops/vibecoding', query: to.query }) },
 
-    // Tenant operations: visible to authenticated tenant admins, scoped by
-    // the current tenant. These intentionally do not reuse platform CRUD views.
-    { path: '/tenant/license',     component: TenantLicenseView, meta: { requiresAuth: true, tenantOps: true } },
-    { path: '/tenant/autoupdate',  component: TenantAutoUpdateView, meta: { requiresAuth: true, tenantOps: true } },
+    // Tenant license/autoupdate self-service now lives under the maintain
+    // namespace too. Other /tenant/* routes (models, account, pricing, ...)
+    // stay on the Gateway SPA.
+    { path: '/tenant/license',     redirect: (to) => ({ path: '/maintain/tenant/license', query: to.query }) },
+    { path: '/tenant/autoupdate',  redirect: (to) => ({ path: '/maintain/tenant/autoupdate', query: to.query }) },
 
-    // Customer-facing (public). The customer can complete activation before
-    // logging in; once logged in the same routes remain reachable but the
-    // sidebar/nav guides them to richer /tenant/* or /ops/* views.
-    { path: '/activate', component: ActivationWizard, meta: { public: true } },
-    { path: '/license',  component: LicenseInfoView,  meta: { public: true } },
-    { path: '/upgrade',  component: UpgradePanel,      meta: { public: true } },
+    // Customer-facing activation/license/upgrade — owned by maintain SPA.
+    { path: '/activate', redirect: (to) => ({ path: '/maintain/activate', query: to.query }) },
+    { path: '/license',  redirect: (to) => ({ path: '/maintain/license', query: to.query }) },
+    { path: '/upgrade',  redirect: (to) => ({ path: '/maintain/upgrade', query: to.query }) },
 
-    // Public distribution portal — standalone layout (no app sidebar)
-    { path: '/download',           component: DownloadView,          meta: { public: true, publicPortal: true } },
-    { path: '/support',            component: SupportView,           meta: { public: true, publicPortal: true } },
-    { path: '/offline-activation', component: OfflineActivationView, meta: { public: true, publicPortal: true } },
+    // Public distribution portal — owned by maintain SPA.
+    { path: '/download',           redirect: (to) => ({ path: '/maintain/download', query: to.query }) },
+    { path: '/support',            redirect: (to) => ({ path: '/maintain/support', query: to.query }) },
+    { path: '/offline-activation', redirect: (to) => ({ path: '/maintain/offline-activation', query: to.query }) },
 
     // Plugin runtime — iframe-mounted plugin web assets (reverse-proxied at /plugins/<id>/)
     { path: '/plugins/:pluginId/:page(.*)*', component: PluginMount, meta: { requiresAuth: true } },

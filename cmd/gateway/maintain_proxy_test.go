@@ -16,7 +16,9 @@ func TestParseMaintainServiceURLRejectsUnsafeValues(t *testing.T) {
 
 func TestMaintainCompatProxyStripsTokenAndAddsDeprecation(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("token") != "" { t.Error("token query parameter was forwarded") }
+		if r.URL.Query().Get("token") != "" {
+			t.Error("token query parameter was forwarded")
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer upstream.Close()
@@ -27,9 +29,15 @@ func TestMaintainCompatProxyStripsTokenAndAddsDeprecation(t *testing.T) {
 	request.Header.Set("X-Request-ID", "req-1")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusNoContent { t.Fatalf("status = %d", response.Code) }
-	if response.Header().Get("Deprecation") != "true" { t.Fatal("missing Deprecation header") }
-	if response.Header().Get("Link") == "" { t.Fatal("missing successor Link header") }
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if response.Header().Get("Deprecation") != "true" {
+		t.Fatal("missing Deprecation header")
+	}
+	if response.Header().Get("Link") == "" {
+		t.Fatal("missing successor Link header")
+	}
 }
 
 func TestMaintainCompatProxyFallsBackToLegacyWhenUnset(t *testing.T) {
@@ -38,5 +46,72 @@ func TestMaintainCompatProxyFallsBackToLegacyWhenUnset(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/downloads/catalog", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusTeapot { t.Fatalf("status = %d", response.Code) }
+	if response.Code != http.StatusTeapot {
+		t.Fatalf("status = %d", response.Code)
+	}
+}
+
+// Canonical /maintain-api/* must NOT carry a Deprecation header — it is the
+// successor surface, not the shim.
+func TestMaintainCanonicalProxyHasNoDeprecation(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	t.Setenv("MAINTAIN_SERVICE_URL", upstream.URL)
+	handler := newMaintainCompatHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	request := httptest.NewRequest(http.MethodGet, "/maintain-api/downloads/catalog", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if response.Header().Get("Deprecation") != "" {
+		t.Fatalf("canonical path must not be deprecated, got %q", response.Header().Get("Deprecation"))
+	}
+}
+
+// Client-supplied X-Tenant-ID must be stripped so tenant scope can only come
+// from the authenticated session on the backend.
+func TestMaintainProxyStripsClientTenantID(t *testing.T) {
+	var seenHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenHeader = r.Header.Get("X-Tenant-ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	t.Setenv("MAINTAIN_SERVICE_URL", upstream.URL)
+	handler := newMaintainCompatHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	request := httptest.NewRequest(http.MethodGet, "/maintain-api/downloads/catalog", nil)
+	request.Header.Set("X-Tenant-ID", "forged")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if seenHeader != "" {
+		t.Fatalf("X-Tenant-ID was forwarded as %q", seenHeader)
+	}
+}
+
+// Gateway's own routes (/, /v1/*, /api/auth/*) must not be swallowed by the
+// maintain proxy.
+func TestMaintainProxyPreservesGatewayRoutes(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("maintain upstream should not receive Gateway routes")
+	}))
+	defer upstream.Close()
+
+	t.Setenv("MAINTAIN_SERVICE_URL", upstream.URL)
+	handler := newMaintainCompatHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }))
+	for _, path := range []string{"/", "/v1/chat/completions", "/api/auth/me", "/providers"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusTeapot {
+			t.Fatalf("path %s should hit legacy handler, got %d", path, response.Code)
+		}
+	}
 }

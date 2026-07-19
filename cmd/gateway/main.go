@@ -2759,6 +2759,14 @@ func main() {
 	// ── Static files (Vue SPA) ───────────────────────────────────────────
 	staticHandler := streaming.NewStaticHandler(cfg.StaticDir)
 
+	// maintain-web SPA + assets. Optional: only configured when
+	// MAINTAIN_WEB_DIST points at the maintain-web build. When absent the
+	// /maintain/* and /maintain-assets/* routes simply aren't registered.
+	maintainStatic := NewMaintainStaticHandler(os.Getenv("MAINTAIN_WEB_DIST"))
+	if maintainStatic != nil {
+		slog.Info("maintain-web static handler configured", "dir", os.Getenv("MAINTAIN_WEB_DIST"))
+	}
+
 	slog.Info("CHECKPOINT: before router init")
 
 	// ── Router ────────────────────────────────────────────────────────────
@@ -3566,9 +3574,18 @@ func main() {
 		Then(mux)
 
 	slog.Info("CHECKPOINT: after middleware build, before http.Server init")
+
+	// Wrap the final handler with the maintain gateway: reverse-proxies
+	// /maintain-api/* (canonical) and legacy /api/* ops prefixes (with
+	// Deprecation headers) to the maintain backend, and serves maintain-web
+	// under /maintain/*. When MAINTAIN_SERVICE_URL is unset this is a no-op
+	// pass-through, preserving the pre-migration rollback path. This call
+	// was previously missing — the proxy existed but was never mounted.
+	finalHandler := newMaintainGatewayHandler(handler, maintainStatic)
+
 	srv := &http.Server{
 		Addr:    cfg.Listen,
-		Handler: handler,
+		Handler: finalHandler,
 		// ReadHeaderTimeout: headers only. ReadTimeout covers the full request
 		// body window from connection accept (see net/http readRequest). The
 		// previous 10s total caused body_read_error when clients uploaded
