@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cooldown routing recovery correction**: Restore nodes to the routing pool
+  when their cooldown expires. The router must be able to send a real request
+  before outcome recording can detect whether the node is healthy again.
+
 - **Node health recovery audit**: Use Redis server time for node outcome writes,
   keep cooldown-expired nodes disabled until an actual successful request,
   preserve the post-recovery failure reason, and make database integration tests

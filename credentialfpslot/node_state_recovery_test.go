@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNodeState_RecoveryRequiresActualSuccess 验证 P0 修复：
-// 冷却期到期后，必须有实际成功请求才能恢复节点。
-func TestNodeState_RecoveryRequiresActualSuccess(t *testing.T) {
+// TestNodeState_RecoveryAfterCooldown verifies that a cooldown-expired node
+// returns to the routing pool before its next real request.
+func TestNodeState_RecoveryAfterCooldown(t *testing.T) {
 	s := miniredis.RunT(t)
 	defer s.Close()
 
@@ -41,13 +41,16 @@ func TestNodeState_RecoveryRequiresActualSuccess(t *testing.T) {
 	assert.Greater(t, state.DisabledUntil, time.Now().Unix(), "应该设置冷却期")
 	assert.Equal(t, 1, state.DisableCount, "禁用次数应为 1")
 
-	// 2. Mark the cooldown expired. miniredis.SetTime does not affect Redis
-	// TIME, which is deliberately used by the production Lua writer.
+	// 2. Mark the cooldown expired.
 	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
 	require.NoError(t, mgr.SetNodeState(ctx, state))
 
-	// 3. 冷却期到期后，记录一次失败请求
-	// 预期：节点仍然禁用，冷却期延长
+	state, err = mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	assert.True(t, state.IsUsable(time.Now()), "冷却期到期后应重新进入路由池")
+	assert.False(t, state.Disabled, "读取状态时应自动恢复")
+
+	// 3. A real request after recovery can fail and extend the cooldown.
 	err = mgr.RecordNodeFailure(ctx, credID, model, "req-fail-after-cooldown", "timeout")
 	require.NoError(t, err)
 
@@ -56,14 +59,13 @@ func TestNodeState_RecoveryRequiresActualSuccess(t *testing.T) {
 	assert.True(t, state.Disabled, "冷却期到期但失败请求不应恢复节点")
 	assert.Equal(t, "cooldown_extended_due_to_failure", state.DisabledReason)
 
-	// 4. Expire the extended cooldown before the actual success.
+	// 4. Expire the extended cooldown before the next successful request.
 	state, err = mgr.GetNodeState(ctx, credID, model)
 	require.NoError(t, err)
 	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
 	require.NoError(t, mgr.SetNodeState(ctx, state))
 
-	// 5. 记录一次成功请求
-	// 预期：节点恢复
+	// 5. Record a successful request after the node is routable again.
 	err = mgr.RecordNodeSuccess(ctx, credID, model, "req-success-1")
 	require.NoError(t, err)
 
@@ -160,15 +162,17 @@ func TestNodeState_IsUsableRespectsCooldown(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, state.IsUsable(time.Now()), "冷却期内应不可用")
 
-	// 3. 冷却期到期后，IsUsable 仍应返回 false
-	// 因为还没有实际成功请求验证
+	// 3. 冷却期到期后，节点应重新进入路由池
 	state, err = mgr.GetNodeState(ctx, credID, model)
 	require.NoError(t, err)
-	// 注意：GetNodeState 会调用 recoverIfCooldownExpired，
-	// 但不会自动恢复（需要实际成功请求）
-	assert.True(t, state.Disabled, "冷却期到期但未验证，仍应禁用")
+	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
+	require.NoError(t, mgr.SetNodeState(ctx, state))
+	state, err = mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	assert.True(t, state.IsUsable(time.Now()), "冷却期到期后应可路由")
+	assert.False(t, state.Disabled, "冷却期到期后应自动恢复")
 
-	// 4. Expire the cooldown before the actual success request.
+	// 4. Record a real successful request.
 	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
 	require.NoError(t, mgr.SetNodeState(ctx, state))
 
