@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/logger"
 )
 
 // AvailabilityScorer L1 可用性评分器（35% 权重）
@@ -15,12 +17,16 @@ import (
 //   - 4xx 错误率（5% 权重）
 //   - 超时率（5% 权重）
 type AvailabilityScorer struct {
-	db *sql.DB
+	db     *sql.DB
+	logger logger.Logger
 }
 
 // NewAvailabilityScorer 创建可用性评分器
 func NewAvailabilityScorer(db *sql.DB) *AvailabilityScorer {
-	return &AvailabilityScorer{db: db}
+	return &AvailabilityScorer{
+		db:     db,
+		logger: logger.NewWithComponent("quality", "availability"),
+	}
 }
 
 // Name 返回评分器名称
@@ -30,6 +36,11 @@ func (s *AvailabilityScorer) Name() string {
 
 // Calculate 计算可用性评分（0-100）
 func (s *AvailabilityScorer) Calculate(ctx context.Context, providerID int64, modelName string) (float64, error) {
+	s.logger.Debug("calculating availability score",
+		"provider_id", providerID,
+		"model", modelName,
+	)
+
 	// 查询 24 小时数据
 	query := `
 SELECT
@@ -55,11 +66,20 @@ WHERE provider_id = $1
 		&totalRequests,
 	)
 	if err != nil {
+		s.logger.Error("failed to query availability data",
+			"provider_id", providerID,
+			"model", modelName,
+			"error", err.Error(),
+		)
 		return 0, fmt.Errorf("查询可用性数据失败: %w", err)
 	}
 
 	// 如果没有数据，返回 0 分
 	if !totalRequests.Valid || totalRequests.Int64 == 0 {
+		s.logger.Warn("no availability data",
+			"provider_id", providerID,
+			"model", modelName,
+		)
 		return 0, nil
 	}
 
@@ -74,6 +94,15 @@ WHERE provider_id = $1
 		error5xxScore*0.20 +
 		error4xxScore*0.05 +
 		timeoutScore*0.05
+
+	s.logger.Info("availability score calculated",
+		"provider_id", providerID,
+		"model", modelName,
+		"score", finalScore,
+		"success_rate", successRate.Float64,
+		"error_5xx_rate", error5xxRate.Float64,
+		"total_requests", totalRequests.Int64,
+	)
 
 	return clamp(finalScore, 0, 100), nil
 }

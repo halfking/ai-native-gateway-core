@@ -51,8 +51,8 @@ CREATE TABLE IF NOT EXISTS request_stage_events (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 索引：按 request_id 查询完整链路
-CREATE INDEX IF NOT EXISTS idx_stage_events_request_id
+-- 索引：按 request_id 查询完整链路（防止重复插入）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stage_events_request_seq
     ON request_stage_events (request_id, seq);
 
 -- 索引：按时间查询（tenant_id 暂未实现，先用时间索引）

@@ -65,9 +65,17 @@ func (r *RedisRecorder) writeStageEvents(ctx context.Context, db *pgxpool.Pool, 
 	results := db.SendBatch(ctx, batch)
 	defer results.Close()
 
-	// 消费所有结果（忽略错误，非阻塞）
+	// 消费所有结果并记录首个错误（非阻塞，仅日志警告）
+	var firstErr error
 	for i := 0; i < len(trace.Events); i++ {
-		_, _ = results.Exec()
+		if _, err := results.Exec(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	if firstErr != nil {
+		// 非致命错误，仅记录日志，不阻塞 FlushToPG 主流程
+		return firstErr
 	}
 
 	return nil
