@@ -73,6 +73,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
 	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
+	"github.com/kaixuan/llm-gateway-go/internal/handlers"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -3240,6 +3241,16 @@ func main() {
 		}
 	}
 
+	// ── 质量画像更新器（先创建，后续启动和注册 API）───────────────────
+	var profileUpdater *quality.ProfileUpdater
+	if dbConn != nil && dbConn.Enabled() {
+		profileUpdater = quality.NewProfileUpdater(
+			dbConn.Stdlib(),
+			quality.WithUpdateInterval(1*time.Hour),
+			quality.WithUpdateTimeout(5*time.Minute),
+		)
+	}
+
 	// Phase 2: Meta-tools API routes
 	if dbConn != nil && dbConn.Enabled() {
 		metaHandler := metatools.NewHandler(dbConn.Pool())
@@ -3256,6 +3267,17 @@ func main() {
 		mux.HandleFunc("/api/admin/tools/list", wrapAdmin(toolRegistryAPI.HandleList))
 		mux.HandleFunc("/api/admin/tools/get", wrapAdmin(toolRegistryAPI.HandleGet))
 		slog.Info("Phase 3 tool registry admin API enabled (/api/admin/tools/*)")
+	}
+
+	// ── 质量画像 API ───────────────────────────────────────────────────
+	if dbConn != nil && dbConn.Enabled() && profileUpdater != nil {
+		qualityHandler := handlers.NewQualityHandler(dbConn.Stdlib(), profileUpdater)
+		mux.Handle("/api/providers/", qualityHandler)
+		slog.Info("质量画像 API 已启用", "routes", []string{
+			"GET /api/providers/:id/quality",
+			"GET /api/providers/quality/ranking",
+			"POST /api/providers/:id/quality/recalculate",
+		})
 	}
 
 	// Phase 3.4: Tool Policy Admin API routes
@@ -3551,16 +3573,10 @@ func main() {
 	}
 
 	// ── 启动质量画像更新器 ───────────────────────────────────────────────
-	if dbConn != nil && dbConn.Enabled() {
+	if profileUpdater != nil {
 		profileUpdaterEnabled := os.Getenv("PROFILE_UPDATER_ENABLED")
 		if profileUpdaterEnabled == "" || profileUpdaterEnabled == "true" {
 			slog.Info("启动质量画像更新器")
-
-			profileUpdater := quality.NewProfileUpdater(
-				dbConn.Stdlib(),
-				quality.WithUpdateInterval(1*time.Hour),
-				quality.WithUpdateTimeout(5*time.Minute),
-			)
 
 			go func() {
 				if err := profileUpdater.Start(context.Background()); err != nil {
