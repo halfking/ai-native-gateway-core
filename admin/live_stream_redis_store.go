@@ -1156,6 +1156,14 @@ func ComputeDelta(old, new *LiveStreamSnapshot) *LiveStreamDelta {
 	return delta
 }
 
+// lanesChanged reports whether two ordered lane slices differ in any
+// field that would invalidate the delta cache. The previous implementation
+// compared LiveStreamTile values with `!=`, which compares *struct pointers*;
+// liveRequestTile() returns a fresh struct on every snapshot, so the test
+// was always true and every delta carried the whole lane array. The new
+// check compares by request_id (the stable identity in the UI's
+// TransitionGroup key) — a tile whose identity + status + ts match is
+// considered unchanged even if the backend re-serialised it.
 func lanesChanged(old, new []LiveStreamLane) bool {
 	if len(old) != len(new) {
 		return true
@@ -1166,7 +1174,11 @@ func lanesChanged(old, new []LiveStreamLane) bool {
 			return true
 		}
 		for j := range old[i].Requests {
-			if old[i].Requests[j] != new[i].Requests[j] {
+			if old[i].Requests[j].RequestID != new[i].Requests[j].RequestID {
+				return true
+			}
+			if old[i].Requests[j].Status != new[i].Requests[j].Status ||
+				old[i].Requests[j].Timestamp != new[i].Requests[j].Timestamp {
 				return true
 			}
 		}

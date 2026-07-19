@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -86,6 +87,22 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 			allRequests = append(allRequests, req)
 		}
 	}
+
+	// 2026-07-20: Sort ASC by timestamp so grouped[key] inside
+	// buildLiveStreamLanes is also ASC (oldest first, newest at the
+	// tail). Without this, the order is determined by redis SCAN +
+	// cross-dimKey deduplication order, which is non-deterministic
+	// across calls. lastTiles() then picks an unstable subset and
+	// the frontend sees different request_id sets in consecutive
+	// snapshots — the root cause of the swim-lane flicker reported
+	// on 245 (cache/window count dropping by a handful on every new
+	// request). Sorting guarantees grouped[key] is ASC and lastTiles
+	// consistently returns the "newest N" tile window.
+	sort.SliceStable(allRequests, func(i, j int) bool {
+		// Ts is RFC3339 — lexicographic compare matches chronological order,
+		// no need to parse to time.Time (which would also be ~10× slower).
+		return allRequests[i].Ts < allRequests[j].Ts
+	})
 
 	if len(allRequests) == 0 {
 		// No valid requests found, return empty snapshot
