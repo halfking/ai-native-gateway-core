@@ -483,7 +483,10 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	}
 	h.cachedSnapshotMu.Unlock()
 
-	snapshot, err := h.store.Snapshot(ctx, scope.tenantID, scope.isSuper, h.cfg.InitialReplayLimit)
+	// 2026-07-19: Use dimension-queue-based snapshot to fix swim lane flickering.
+	// Read from dimension queues ensures each vendor/provider/model gets its
+	// full 20-tile allocation regardless of traffic distribution in main queue.
+	snapshot, err := h.store.SnapshotFromDimensionQueues(ctx, scope.tenantID, scope.isSuper)
 	if err != nil {
 		slog.Debug("live stream scope snapshot failed",
 			"scope_tenant", scope.tenantID, "is_super", scope.isSuper, "err", err.Error())
@@ -642,7 +645,8 @@ func (h *LiveStreamSSEHub) pushFullSnapshots() {
 		func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			snapshot, err := h.store.Snapshot(ctx, entry.tenantID, entry.isSuper, h.cfg.InitialReplayLimit)
+			// 2026-07-19: Use dimension-queue-based snapshot for periodic refresh
+			snapshot, err := h.store.SnapshotFromDimensionQueues(ctx, entry.tenantID, entry.isSuper)
 			if err != nil {
 				slog.Debug("live stream snapshot refresh failed",
 					"tenant_id", entry.tenantID, "is_super", entry.isSuper, "err", err.Error())
