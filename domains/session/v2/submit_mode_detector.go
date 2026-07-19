@@ -116,6 +116,8 @@ func (d *SubmitModeDetector) checkHeader(header string) SubmitMode {
 		return SubmitModeSnapshot
 	case "full":
 		return SubmitModeFull
+	case "attachment_only":
+		return SubmitModeAttachmentOnly
 	default:
 		return ""
 	}
@@ -319,11 +321,16 @@ func min(a, b int) int {
 }
 
 // DetectWithRequest is a convenience method that extracts detection context from ProcessedRequest
-func (d *SubmitModeDetector) DetectWithRequest(req *ProcessedRequest, header string) SubmitMode {
+//
+// The previousAttachments parameter should contain the attachments from the previous turn.
+// If not available, pass nil or empty slice - the detector will still work for other submit modes.
+func (d *SubmitModeDetector) DetectWithRequest(req *ProcessedRequest, header string, previousAttachments []AttachmentRef) SubmitMode {
 	return d.Detect(DetectionContext{
-		SubmitModeHeader:   header,
-		ClientMessages:     req.RequestBody,
-		LastOutboundBody:   req.LastOutboundBody,
-		CompressionApplied: req.CompressionApplied,
+		SubmitModeHeader:    header,
+		ClientMessages:      req.RequestBody,
+		LastOutboundBody:    req.LastOutboundBody,
+		CompressionApplied:  req.CompressionApplied,
+		CurrentAttachments:  req.Attachments,
+		PreviousAttachments: previousAttachments,
 	})
 }

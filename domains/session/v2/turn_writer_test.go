@@ -274,3 +274,56 @@ func TestTurnWriter_ListTurns(t *testing.T) {
 		assert.Equal(t, (i+1)*100, turn.PromptTokens)
 	}
 }
+
+// TestTurnWriter_ListTurns_WithAttachments tests that ListTurns correctly returns attachment fields
+func TestTurnWriter_ListTurns_WithAttachments(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping database test in short mode")
+	}
+
+	db := setupTestDB(t)
+	defer cleanupTestDB(t, db)
+
+	writer := NewTurnWriter(db)
+
+	sessionID := "test_session_attachments"
+	tenantID := "test_tenant"
+
+	ctx := context.Background()
+
+	// Insert turns with attachment metadata
+	for i := 1; i <= 3; i++ {
+		rec := TurnRecord{
+			SessionID:            sessionID,
+			TenantID:             tenantID,
+			RequestID:            fmt.Sprintf("req_attach_%d", i),
+			Ts:                   time.Now(),
+			SubmitMode:           "full",
+			Model:                "gpt-4",
+			Provider:             "openai",
+			PromptTokens:         100,
+			SourceKind:           "live",
+			Quality:              "verified",
+			AttachmentCount:      i,                  // 1, 2, 3 attachments
+			AttachmentTotalBytes: int64(i * 1024),    // 1KB, 2KB, 3KB
+			MultimodalTypes:      []string{"image"},  // All have images
+		}
+
+		turnNo, err := writer.AppendTurn(ctx, rec)
+		require.NoError(t, err)
+		assert.Equal(t, i, turnNo)
+	}
+
+	// List turns and verify attachment fields are returned
+	turns, err := writer.ListTurns(ctx, tenantID, sessionID, 10)
+	require.NoError(t, err)
+	require.Len(t, turns, 3)
+
+	// Verify attachment fields for each turn
+	for i, turn := range turns {
+		expectedCount := i + 1
+		assert.Equal(t, expectedCount, turn.AttachmentCount, "Turn %d attachment count mismatch", i+1)
+		assert.Equal(t, int64(expectedCount*1024), turn.AttachmentTotalBytes, "Turn %d attachment bytes mismatch", i+1)
+		assert.Equal(t, []string{"image"}, turn.MultimodalTypes, "Turn %d multimodal types mismatch", i+1)
+	}
+}
