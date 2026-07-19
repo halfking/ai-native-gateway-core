@@ -81,6 +81,10 @@ func scopedAdminContext(next http.HandlerFunc) http.HandlerFunc {
 func registerPluginCanonRoutes(mux *http.ServeMux, secret []byte, adminList http.HandlerFunc, adminDetail http.HandlerFunc, opts ...pluginruntime.CanonOption) {
 	dispatch := func(w http.ResponseWriter, r *http.Request) {
 		if id := r.PathValue("gw_session_id"); id != "" {
+			if !isValidSessionID(id) {
+				http.Error(w, "invalid session id", http.StatusBadRequest)
+				return
+			}
 			// admin.HandleSessionAnalyticsDetail parses the id via pathSegment
 			// expecting the /api/admin/session-analytics/ prefix; rewrite so it
 			// finds the id. Reached only after VerifyPluginContext + nonce.
@@ -93,4 +97,25 @@ func registerPluginCanonRoutes(mux *http.ServeMux, secret []byte, adminList http
 	wrapped := pluginruntime.VerifyPluginContext(secret, scopedAdminContext(dispatch), opts...)
 	mux.Handle("GET /_gateway/plugin/v1/sessions", wrapped)
 	mux.Handle("GET /_gateway/plugin/v1/sessions/{gw_session_id}", wrapped)
+}
+
+// isValidSessionID 只允许字母、数字、下划线、连字符。session id 通常是
+// "sess-xxx" / UUID / 数字串，不需要路径分隔符或点号。这是对 admin handler
+// pathSegment 解析的 defense-in-depth（SQL 已参数化兜底）。
+func isValidSessionID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, c := range id {
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '_', c == '-':
+			// allowed
+		default:
+			return false
+		}
+	}
+	return true
 }
