@@ -636,3 +636,10 @@
 |-----------|------|
 | 430 | `430_sessions_v2_schema.sql` |
 
+## 2026-07-19T14:34:47Z — deploy 245 build_seq 1179 (2c52f1ef)
+
+| Migration | File |
+|-----------|------|
+| 446 | `446_volcengine_model_aliases.sql` |
+| 447 | `447_volcano_glm_outbound_mapping.sql` |
+
