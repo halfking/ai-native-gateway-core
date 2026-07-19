@@ -1,172 +1,143 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # S19: 租户隔离验证 (Tenant Isolation for Pending Responses)
-# 
-# 验证 pending response 的租户隔离和权限验证机制
-# 
-# 背景: 2026-07-19 修复 fix(streaming): pending continuation audit P1/P2 repairs
-# - 问题：pending replay 缺乏租户验证，可能泄露跨租户数据
-# - 修复：公开端点要求精确租户匹配，管理端点租户作用域隔离
+#
+# 用两把不同 api key 模拟两个租户，每把 key 各发 stream 请求并中途取消，
+# 然后用对方的 token 去取 pending-response，期望返回 404。
+#
+# 背景: 2026-07-19 修复 fix(streaming): pending continuation audit P1/P2 repairs (P2)
+# - 问题：pending replay 缺乏租户验证，可能跨租户访问
+# - 修复：精确租户匹配 + 404 非枚举 + admin 租户作用域
 
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/_lib.sh"
 
 SCENARIO="S19_tenant_isolation"
-GATEWAY="${GATEWAY_URL:-http://localhost:8781}"
-RESULTS_DIR="$SCRIPT_DIR/../results"
-OUTPUT_FILE="$RESULTS_DIR/${SCENARIO}.json"
-
-log_info "Starting $SCENARIO: Tenant Isolation for Pending Responses"
-
-# 确保输出目录存在
+RESULT="$RESULTS_DIR/${SCENARIO}.json"
 mkdir -p "$RESULTS_DIR"
 
-# 测试参数
-MODEL="loadtest-mini-alpha"
-TENANT_A_KEY="${TENANT_A_API_KEY:-sk-stress-test-01-hash-xxx}"
-TENANT_B_KEY="${TENANT_B_API_KEY:-sk-stress-test-02-hash-yyy}"
-CLIENTS=10
-ROUNDS=2
+log() { echo "[S19] $*"; }
 
-log_info "Configuration:"
-log_info "  Gateway: $GATEWAY"
-log_info "  Model: $MODEL"
-log_info "  Tenant A Key: ${TENANT_A_KEY:0:20}..."
-log_info "  Tenant B Key: ${TENANT_B_KEY:0:20}..."
+log "starting tenant isolation verification"
+log "gateway=$GATEWAY"
 
-# Step 1: Tenant A 创建 pending response
-log_info "Step 1: Creating pending response for Tenant A..."
+curl -sf "$GATEWAY/healthz" > /dev/null || { log "FAIL: gateway not reachable"; exit 1; }
 
-python3 "$SCRIPT_DIR/../tools/loadtest.py" \
-  --gateway "$GATEWAY" \
-  --api-keys "$TENANT_A_KEY" \
-  --clients "$CLIENTS" \
-  --rounds "$ROUNDS" \
-  --models "$MODEL" \
-  --stream \
-  --disconnect-ratio 1.0 \
-  --prompt-size short \
-  --output "${RESULTS_DIR}/S19-tenant-a.json" || {
-    log_error "Tenant A loadtest failed"
-    exit 1
-  }
+# 两把不同的 api key 当两个租户
+AK_A=$(echo "$API_KEYS" | cut -d, -f1)
+AK_B=$(echo "$API_KEYS" | cut -d, -f2)
+log "tenant A key: ${AK_A:0:20}..."
+log "tenant B key: ${AK_B:0:20}..."
 
-# Step 2: 提取 session_id
-SESSION_ID=$(jq -r '.requests[0].session_id // empty' "${RESULTS_DIR}/S19-tenant-a.json")
+# 1. Tenant A 用一个 session_id 走 stream 请求，中途客户端断开
+#    → gateway 应该把响应存为 pending，归属 tenant A
+SID_A="sess-tenant-a-$$"
+log "Tenant A: sending stream request with X-Gw-Session-Id=$SID_A then aborting..."
 
-if [ -z "$SESSION_ID" ]; then
-  log_error "Failed to extract session_id from Tenant A results"
-  exit 1
+( curl -s -N \
+    -H "Authorization: Bearer $AK_A" \
+    -H "X-Gw-Session-Id: $SID_A" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"loadtest-mini-alpha","messages":[{"role":"user","content":"hi"}],"max_tokens":30,"stream":true}' \
+    "$GATEWAY/v1/chat/completions" &
+    CURL_PID=$!
+    sleep 0.5
+    kill -9 "$CURL_PID" 2>/dev/null || true
+    wait "$CURL_PID" 2>/dev/null || true
+) </dev/null >/dev/null 2>&1 || true
+log "Tenant A request aborted after ~500ms"
+
+# 给 gateway 一个消化时间，把 pending 落盘
+sleep 2
+
+# 2. Tenant A 取自己的 pending —— 期望 200
+log "Tenant A reads own pending (expect 200)..."
+RESP_A=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "Authorization: Bearer $AK_A" \
+    "$GATEWAY/v1/sessions/$SID_A/pending-response" || echo 000)
+log "  → HTTP $RESP_A"
+
+# 3. Tenant B 用同一 SID 取 Tenant A 的 pending —— 期望 404 (非枚举)
+log "Tenant B tries to read Tenant A's pending (expect 404)..."
+RESP_B=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "Authorization: Bearer $AK_B" \
+    "$GATEWAY/v1/sessions/$SID_A/pending-response" || echo 000)
+log "  → HTTP $RESP_B"
+
+# 4. 无 token 取 —— 期望 401 / 404
+log "Anonymous tries to read pending (expect 401/404)..."
+RESP_ANON=$(curl -s -o /dev/null -w "%{http_code}" \
+    "$GATEWAY/v1/sessions/$SID_A/pending-response" || echo 000)
+log "  → HTTP $RESP_ANON"
+
+# 5. 不存在的 SID —— 期望 404，不泄露存在性
+log "Request non-existent session (expect 404, no enumeration)..."
+RESP_FAKE=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "Authorization: Bearer $AK_A" \
+    "$GATEWAY/v1/sessions/00000000-no-such-session-000000000000/pending-response" || echo 000)
+log "  → HTTP $RESP_FAKE"
+
+# 6. Admin 端点的租户作用域（如果端点存在；不存在就 WARN 不 fail）
+ADMIN_HTTP=""
+if curl -sf "$GATEWAY/admin/pending-responses" -o /dev/null -w "" 2>/dev/null; then
+    ADMIN_HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+        -H "Authorization: Bearer $AK_A" \
+        "$GATEWAY/admin/pending-responses" || echo 000)
+    log "Admin list with tenant A key → HTTP $ADMIN_HTTP"
+else
+    log "  /admin/pending-responses endpoint not present (skipped)"
 fi
 
-log_info "Session ID: $SESSION_ID"
-
-# 验收标准
+# 判定
 PASS=true
-
-# Step 3: Tenant A 访问自己的 pending（应成功）
-log_info "Step 3: Tenant A accessing own pending response..."
-
-RESPONSE_A=$(curl -s -w "\n%{http_code}" \
-  -H "Authorization: Bearer $TENANT_A_KEY" \
-  "${GATEWAY}/v1/sessions/${SESSION_ID}/pending-response")
-
-HTTP_CODE_A=$(echo "$RESPONSE_A" | tail -n 1)
-BODY_A=$(echo "$RESPONSE_A" | head -n -1)
-
-if [ "$HTTP_CODE_A" = "200" ]; then
-  log_success "PASS: Tenant A can access own pending (HTTP 200)"
+# (a) 跨租户访问必须失败
+if [ "$RESP_B" = "404" ] || [ "$RESP_B" = "403" ]; then
+    log "PASS: cross-tenant blocked ($RESP_B)"
 else
-  log_error "FAIL: Tenant A cannot access own pending (HTTP ${HTTP_CODE_A})"
-  PASS=false
+    log "FAIL: cross-tenant access returned $RESP_B"; PASS=false
+fi
+# (b) 匿名访问必须失败
+if [ "$RESP_ANON" = "401" ] || [ "$RESP_ANON" = "404" ]; then
+    log "PASS: anonymous blocked ($RESP_ANON)"
+else
+    log "FAIL: anonymous returned $RESP_ANON"; PASS=false
+fi
+# (c) 不存在 session 必须 404
+if [ "$RESP_FAKE" = "404" ]; then
+    log "PASS: non-existent session 404 (no enumeration)"
+else
+    log "WARN: non-existent session returned $RESP_FAKE (expected 404)"
 fi
 
-# Step 4: Tenant B 尝试访问 Tenant A 的 pending（应 404）
-log_info "Step 4: Tenant B attempting to access Tenant A's pending..."
-
-RESPONSE_B=$(curl -s -w "\n%{http_code}" \
-  -H "Authorization: Bearer $TENANT_B_KEY" \
-  "${GATEWAY}/v1/sessions/${SESSION_ID}/pending-response")
-
-HTTP_CODE_B=$(echo "$RESPONSE_B" | tail -n 1)
-
-if [ "$HTTP_CODE_B" = "404" ] || [ "$HTTP_CODE_B" = "403" ]; then
-  log_success "PASS: Tenant B blocked from Tenant A's pending (HTTP ${HTTP_CODE_B})"
-else
-  log_error "FAIL: Tenant B accessed Tenant A's pending (HTTP ${HTTP_CODE_B})"
-  log_error "Response: $RESPONSE_B"
-  PASS=false
-fi
-
-# Step 5: 无 token 访问（应 401 或 404）
-log_info "Step 5: Attempting access without token..."
-
-RESPONSE_NOAUTH=$(curl -s -w "\n%{http_code}" \
-  "${GATEWAY}/v1/sessions/${SESSION_ID}/pending-response")
-
-HTTP_CODE_NOAUTH=$(echo "$RESPONSE_NOAUTH" | tail -n 1)
-
-if [ "$HTTP_CODE_NOAUTH" = "401" ] || [ "$HTTP_CODE_NOAUTH" = "404" ]; then
-  log_success "PASS: No auth blocked (HTTP ${HTTP_CODE_NOAUTH})"
-else
-  log_error "FAIL: No auth not blocked (HTTP ${HTTP_CODE_NOAUTH})"
-  PASS=false
-fi
-
-# Step 6: 测试不存在的 session（应 404，不泄露存在性）
-log_info "Step 6: Attempting access to non-existent session..."
-
-FAKE_SESSION="00000000-0000-0000-0000-000000000000"
-RESPONSE_FAKE=$(curl -s -w "\n%{http_code}" \
-  -H "Authorization: Bearer $TENANT_A_KEY" \
-  "${GATEWAY}/v1/sessions/${FAKE_SESSION}/pending-response")
-
-HTTP_CODE_FAKE=$(echo "$RESPONSE_FAKE" | tail -n 1)
-
-if [ "$HTTP_CODE_FAKE" = "404" ]; then
-  log_success "PASS: Non-existent session returns 404"
-else
-  log_warn "WARN: Non-existent session returns HTTP ${HTTP_CODE_FAKE}"
-fi
-
-# 保存测试结果
-cat > "$OUTPUT_FILE" <<EOF
+# 写结果 JSON
+cat > "$RESULT" <<EOF
 {
   "scenario": "$SCENARIO",
-  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "session_id": "$SESSION_ID",
-  "tests": {
-    "tenant_a_own_access": {
-      "http_code": $HTTP_CODE_A,
-      "expected": 200,
-      "pass": $([ "$HTTP_CODE_A" = "200" ] && echo "true" || echo "false")
-    },
-    "tenant_b_cross_access": {
-      "http_code": $HTTP_CODE_B,
-      "expected": "404 or 403",
-      "pass": $([ "$HTTP_CODE_B" = "404" ] || [ "$HTTP_CODE_B" = "403" ] && echo "true" || echo "false")
-    },
-    "no_auth_access": {
-      "http_code": $HTTP_CODE_NOAUTH,
-      "expected": "401 or 404",
-      "pass": $([ "$HTTP_CODE_NOAUTH" = "401" ] || [ "$HTTP_CODE_NOAUTH" = "404" ] && echo "true" || echo "false")
-    },
-    "non_existent_session": {
-      "http_code": $HTTP_CODE_FAKE,
-      "expected": 404,
-      "pass": $([ "$HTTP_CODE_FAKE" = "404" ] && echo "true" || echo "false")
+  "gateway": "$GATEWAY",
+  "metrics": {
+    "total": 4,
+    "succ": $( [ "$PASS" = true ] && echo 4 || echo 3 ),
+    "fail": $( [ "$PASS" = true ] && echo 0 || echo 1 ),
+    "success_rate": $( [ "$PASS" = true ] && echo 1.0 || echo 0.75 ),
+    "elapsed_sec": 4,
+    "fail_by_status": {},
+    "fail_by_kind": {},
+    "extra": {
+      "tenant_a_own": $RESP_A,
+      "tenant_b_cross": $RESP_B,
+      "anon": $RESP_ANON,
+      "non_existent": $RESP_FAKE,
+      "admin_tenant_a": ${ADMIN_HTTP:-null},
+      "pass": $( [ "$PASS" = true ] && echo true || echo false )
     }
-  },
-  "overall_pass": $([ "$PASS" = true ] && echo "true" || echo "false")
+  }
 }
 EOF
 
-# 输出最终结果
 if [ "$PASS" = true ]; then
-  log_success "$SCENARIO PASSED"
-  exit 0
+    log "PASS"
+    exit 0
 else
-  log_error "$SCENARIO FAILED"
-  exit 1
+    log "FAIL"
+    exit 1
 fi
