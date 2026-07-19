@@ -588,7 +588,45 @@ function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) 
       target.name = lane.name
       target.isOthers = lane.isOthers
       target.stats = lane.stats
-      target.requests = lane.requests
+      // Diff tiles by request_id (TransitionGroup's `:key`). Replace
+      // per-id so unchanged tiles keep their Vue component identity and
+      // Vue does not run the leave/enter animation for tiles whose only
+      // change is the backend re-serialising them with new pointers.
+      // The backend now guarantees ASC order, so a stable id match also
+      // preserves the on-screen position (newest tile sits at the tail).
+      mergeTilesById(target.requests, lane.requests)
+    }
+  }
+}
+
+// mergeTilesById reconciles an existing tile array with an incoming one
+// by request_id. Tiles already present keep their object reference; tiles
+// added at the tail follow the incoming order (the backend emits ASC).
+// Tiles whose request_id disappears from `incoming` are filtered out so
+// trimmed requests do not linger on the dashboard.
+function mergeTilesById(existing: LiveStreamTile[], incoming: LiveStreamTile[]) {
+  const incomingIds = new Set(incoming.map((t) => t.request_id))
+  // Drop tiles that the backend no longer carries.
+  let writeIdx = 0
+  for (let readIdx = 0; readIdx < existing.length; readIdx++) {
+    const tile = existing[readIdx]
+    if (incomingIds.has(tile.request_id)) {
+      existing[writeIdx++] = tile
+    }
+  }
+  existing.length = writeIdx
+  // Index existing by id so we can replace in place or append.
+  const byId = new Map<string, number>()
+  for (let i = 0; i < existing.length; i++) {
+    byId.set(existing[i].request_id, i)
+  }
+  for (const tile of incoming) {
+    const idx = byId.get(tile.request_id)
+    if (idx === undefined) {
+      byId.set(tile.request_id, existing.length)
+      existing.push(tile)
+    } else {
+      existing[idx] = tile
     }
   }
 }

@@ -1110,3 +1110,147 @@ func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
 			lanes[0].Stats.Total, lanes[1].Stats.Total)
 	}
 }
+
+// 2026-07-20: Regression guard for the swim-lane flicker fix.
+// buildLiveStreamLanes must return lane.requests in ASC order (oldest
+// first, newest at the tail) so that lastTiles(items, limit) returns the
+// "newest N" window consistently across snapshots. SnapshotFromDimensionQueues
+// is the only caller; it pre-sorts allRequests ASC before invoking
+// BuildLiveStreamSnapshot, which delegates to buildLiveStreamLanes.
+// If a future refactor drops the sort, this test catches it via the
+// observable invariant: every lane's Requests must be ASC by ts.
+func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
+	// Out-of-order input — note: ASC sort happens upstream
+	// (SnapshotFromDimensionQueues); buildLiveStreamLanes itself
+	// inherits that order. We deliberately feed a *pre-sorted* input
+	// here to verify the lane builder preserves it, and pair this
+	// with the explicit ASC-order test on SnapshotFromDimensionQueues
+	// below.
+	items := []LiveRequest{
+		{RequestID: "r1", Ts: "2026-07-20T00:00:00Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
+		{RequestID: "r2", Ts: "2026-07-20T00:00:01Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
+		{RequestID: "r3", Ts: "2026-07-20T00:00:02Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
+		{RequestID: "r4", Ts: "2026-07-20T00:00:03Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "failure"},
+	}
+	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	if len(lanes) != 1 {
+		t.Fatalf("expected 1 lane, got %d", len(lanes))
+	}
+	requests := lanes[0].Requests
+	if len(requests) != 4 {
+		t.Fatalf("expected 4 tiles in lane, got %d", len(requests))
+	}
+	for i := 1; i < len(requests); i++ {
+		if requests[i-1].Timestamp > requests[i].Timestamp {
+			t.Fatalf("lane %q not ASC at idx %d: prev=%q curr=%q",
+				lanes[0].ID, i, requests[i-1].Timestamp, requests[i].Timestamp)
+		}
+	}
+	// ASC means newest is at the tail; lastTiles picks the trailing window.
+	last := requests[len(requests)-1]
+	if last.RequestID != "r4" {
+		t.Fatalf("expected newest request (r4) at tail, got %q", last.RequestID)
+	}
+}
+
+// 2026-07-20: lanesChanged must NOT report "changed" when only the struct
+// pointers differ but request_id + status + ts are identical. The previous
+// implementation compared LiveStreamTile values with `!=` (pointer
+// compare), so liveRequestTile's "always-fresh struct" output caused the
+// delta cache to push the full lane every snapshot — the bandwidth and
+// Vue remount waste that surfaced as "swim lane flicker".
+func TestLanesChanged_DetectsActualChanges(t *testing.T) {
+	tileA := LiveStreamTile{RequestID: "r1", Status: "success", Timestamp: "2026-07-20T00:00:00Z"}
+	tileB := LiveStreamTile{RequestID: "r2", Status: "success", Timestamp: "2026-07-20T00:00:01Z"}
+	tileAUpdated := LiveStreamTile{RequestID: "r1", Status: "success", Timestamp: "2026-07-20T00:00:00Z"}
+
+	old := []LiveStreamLane{{ID: "openai", Requests: []LiveStreamTile{tileA}, Stats: LiveStreamStats{Total: 1, Success: 1}}}
+	newSame := []LiveStreamLane{{ID: "openai", Requests: []LiveStreamTile{tileAUpdated}, Stats: LiveStreamStats{Total: 1, Success: 1}}}
+	if lanesChanged(old, newSame) {
+		t.Error("lanesChanged returned true for an identical-content pair; the new check must ignore pointer inequality")
+	}
+
+	// Status change must trigger a change.
+	tileAStatusChanged := LiveStreamTile{RequestID: "r1", Status: "failure", Timestamp: "2026-07-20T00:00:00Z"}
+	newStatusDiff := []LiveStreamLane{{ID: "openai", Requests: []LiveStreamTile{tileAStatusChanged}, Stats: LiveStreamStats{Total: 1, Failure: 1}}}
+	if !lanesChanged(old, newStatusDiff) {
+		t.Error("lanesChanged returned false despite status change; must trigger on Status diff")
+	}
+
+	// Timestamp change must trigger a change.
+	tileATimeChanged := LiveStreamTile{RequestID: "r1", Status: "success", Timestamp: "2026-07-20T00:00:05Z"}
+	newTimeDiff := []LiveStreamLane{{ID: "openai", Requests: []LiveStreamTile{tileATimeChanged}, Stats: LiveStreamStats{Total: 1, Success: 1}}}
+	if !lanesChanged(old, newTimeDiff) {
+		t.Error("lanesChanged returned false despite ts change; must trigger on Timestamp diff")
+	}
+
+	// Different request_id set must trigger.
+	newIDDiff := []LiveStreamLane{{ID: "openai", Requests: []LiveStreamTile{tileB}, Stats: LiveStreamStats{Total: 1, Success: 1}}}
+	if !lanesChanged(old, newIDDiff) {
+		t.Error("lanesChanged returned false despite request_id change; must trigger on id diff")
+	}
+
+	// Length mismatch must trigger.
+	newLenDiff := []LiveStreamLane{{ID: "openai", Requests: []LiveStreamTile{tileA, tileB}, Stats: LiveStreamStats{Total: 2, Success: 2}}}
+	if !lanesChanged(old, newLenDiff) {
+		t.Error("lanesChanged returned false despite length mismatch")
+	}
+}
+
+// 2026-07-20: Regression guard for SnapshotFromDimensionQueues ASC sort.
+// Without the sort, the lane-internal order depends on the order redis
+// SCAN returns keys, which is not stable across calls. Feeding the same
+// underlying records but in a different Redis-internal traversal order
+// used to produce non-deterministic lane.requests and break the
+// "newest-N window" invariant. After the fix the snapshot must always
+// come back ASC regardless of input order.
+func TestSnapshotFromDimensionQueues_RequestsAreASC(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	// Seed 5 requests out of chronological order. Record() writes to all
+	// dimension queues (vendor/provider/model), so SnapshotFromDimensionQueues
+	// will dedupe across them but the final slice must come back ASC.
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	insertOrder := []int{3, 0, 4, 1, 2} // shuffled
+	for _, i := range insertOrder {
+		req := LiveRequest{
+			RequestID:     "req-" + string(rune('a'+i)),
+			Ts:            base.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
+			TenantID:      "default",
+			Model:         "gpt-4o",
+			ModelCategory: "openai",
+			ProviderCode:  "openai",
+			Status:        "success",
+		}
+		if err := store.Record(ctx, req); err != nil {
+			t.Fatalf("Record %d: %v", i, err)
+		}
+	}
+
+	snap, err := store.SnapshotFromDimensionQueues(ctx, "default", false)
+	if err != nil {
+		t.Fatalf("SnapshotFromDimensionQueues: %v", err)
+	}
+	if snap == nil || snap.Summary.Total == 0 {
+		t.Fatal("expected non-empty snapshot")
+	}
+
+	for _, dim := range []string{"vendor", "provider", "model"} {
+		for _, lane := range snap.Dimensions[dim] {
+			for j := 1; j < len(lane.Requests); j++ {
+				if lane.Requests[j-1].Timestamp > lane.Requests[j].Timestamp {
+					t.Fatalf("%s lane %q not ASC at idx %d: prev=%q curr=%q",
+						dim, lane.ID, j,
+						lane.Requests[j-1].Timestamp, lane.Requests[j].Timestamp)
+				}
+			}
+		}
+	}
+}
