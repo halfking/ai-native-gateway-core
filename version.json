@@ -1,8 +1,8 @@
 {
-  "version": "phase0-complete-2c52f1ef-20260719-1179",
+  "version": "phase0-complete-b70dd31f-20260719-1180",
   "git_tag": "phase0",
-  "git_sha": "2c52f1ef",
-  "build_seq": 1179,
+  "git_sha": "b70dd31f",
+  "build_seq": 1180,
   "build_date": "20260719",
   "module": "llm-gateway-go"
 }
