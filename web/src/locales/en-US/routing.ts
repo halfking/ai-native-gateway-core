@@ -45,6 +45,7 @@ export default {
       tabPolicy: 'Policy',
       tabLive: 'Live decisions',
       tabResolve: 'Credential routing',
+      tabSmart: 'Smart routing',
       workTypes: 'Work types',
       enabled: 'enabled',
       mappings: 'routes',

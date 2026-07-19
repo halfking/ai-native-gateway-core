@@ -25,6 +25,7 @@ import models from './models'
 import pricingManagement from './pricingManagement'
 import standardModelPricing from './standardModelPricing'
 import routing from './routing'
+import routingDefault from './routingDefault'
 import chat from './chat'
 import sessions from './sessions'
 import compression from './compression'
@@ -78,6 +79,7 @@ export default {
   pricingManagement,
   standardModelPricing,
   routing,
+  routingDefault,
   chat,
   sessions,
   compression,

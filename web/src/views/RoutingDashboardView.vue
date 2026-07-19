@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   getAutoRouteIndex, getAutoRouteDecisions, getAutoRouteAudit,
   getCustomerCost, getModelCost, refreshAutoRouteIndex, simulateAutoRoute,
@@ -29,6 +29,7 @@ import { computeSankeyCardHeight, SANKEY_DOM_LEGEND_H, SANKEY_SECTION_HEAD_H } f
 import ModelTaskIndexPanel from '../components/analytics/ModelTaskIndexPanel.vue'
 import DecisionDetail from '../components/analytics/DecisionDetail.vue'
 import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
+import SmartRoutingConfigPanel from '../components/routing/SmartRoutingConfigPanel.vue'
 
 const { t } = useI18n()
 
@@ -47,7 +48,8 @@ interface ResolveLogEntry {
 }
 
 const route = useRoute()
-const activeTab = ref<'analytics' | 'overview' | 'policy' | 'live' | 'resolve'>('analytics')
+const router = useRouter()
+const activeTab = ref<'analytics' | 'overview' | 'policy' | 'live' | 'resolve' | 'smart'>('analytics')
 
 /** Map the synthetic __specified__ task key to its display label. */
 function displayTaskKey(key: string): string {
@@ -55,7 +57,7 @@ function displayTaskKey(key: string): string {
 }
 
 function tabFromQuery(q: unknown): typeof activeTab.value | null {
-  if (q === 'analytics' || q === 'resolve' || q === 'overview' || q === 'policy' || q === 'live') return q
+  if (q === 'analytics' || q === 'resolve' || q === 'overview' || q === 'policy' || q === 'live' || q === 'smart') return q
   return null
 }
 
@@ -486,10 +488,13 @@ watch(activeTab, (tab) => {
   else stopPoll()
   if (tab === 'policy') { loadPolicy(); loadCosts() }
   if (tab === 'resolve') loadResolveLog()
+  if (route.query.tab !== tab) {
+    router.replace({ query: { ...route.query, tab } })
+  }
 })
 watch(() => route.query.tab, (q) => {
   const t = tabFromQuery(q)
-  if (t) activeTab.value = t
+  if (t && t !== activeTab.value) activeTab.value = t
 }, { immediate: true })
 
 // ── Helpers ───────────────────────────────────────────
@@ -599,11 +604,12 @@ onUnmounted(() => stopPoll())
       <div class="top-bar-head">
         <h2>路由全景</h2>
         <div class="seg-tabs">
-          <button class="seg-tab" :class="{ active: activeTab === 'analytics' }" @click="activeTab = 'analytics'">数据分析</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">两层路由</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">策略配置</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">实时决策</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'resolve' }" @click="activeTab = 'resolve'">凭据路由</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'analytics' }" @click="activeTab = 'analytics'">{{ t('routing.dashboard.tabAnalytics') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">{{ t('routing.dashboard.tabOverview') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">{{ t('routing.dashboard.tabPolicy') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">{{ t('routing.dashboard.tabLive') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'resolve' }" @click="activeTab = 'resolve'">{{ t('routing.dashboard.tabResolve') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'smart' }" @click="activeTab = 'smart'">{{ t('routing.dashboard.tabSmart') }}</button>
         </div>
         <div class="nav-chips">
           <router-link to="/routing-v2/work-types" class="nav-link-wt chip-link">
@@ -1194,6 +1200,11 @@ onUnmounted(() => stopPoll())
           <div v-else class="text-muted">暂无 auto 决策</div>
         </div>
       </div>
+    </div>
+
+    <!-- ═══ Tab: Smart routing config ═══ -->
+    <div v-if="activeTab === 'smart'" class="tab-content">
+      <SmartRoutingConfigPanel />
     </div>
   </div>
 </template>

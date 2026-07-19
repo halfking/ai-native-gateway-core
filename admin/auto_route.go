@@ -98,6 +98,9 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 	// v2.1 — P8.2 quality correlations endpoint
 	mux.HandleFunc("/api/admin/auto-route/quality-correlations",
 		adminWrap(h.handleQualityCorrelations))
+	// Explicit default routing (task_type × profile × tier × tenant)
+	mux.HandleFunc("/api/admin/auto-route/defaults", adminWrap(h.HandleDefaultRoutingCollection))
+	mux.HandleFunc("/api/admin/auto-route/defaults/", adminWrap(h.HandleDefaultRoutingItem))
 }
 
 // handleDecisions returns the most recent N auto-route decisions from

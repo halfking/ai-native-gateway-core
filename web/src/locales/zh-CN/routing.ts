@@ -44,6 +44,7 @@ export default {
       tabPolicy: '策略配置',
       tabLive: '实时决策',
       tabResolve: '凭据路由',
+      tabSmart: '智能路由配置',
       workTypes: '工作类型',
       enabled: '启用',
       mappings: '映射',
