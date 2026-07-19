@@ -384,9 +384,7 @@ onMounted(() => {
             <h3>{{ t('routingDefault.create.taskTypePickerTitle') }}</h3>
             <button type="button" class="choice-close" @click="showTaskTypePicker = false">×</button>
           </header>
-          <div v-if="workTypesLoading" class="choice-status">{{ t('routingDefault.create.taskTypeLoading') }}</div>
-          <div v-else-if="taskTypeLoadError" class="choice-status choice-error">{{ taskTypeLoadError }}</div>
-          <div v-else class="choice-grid">
+          <div class="choice-grid">
             <button v-for="task in availableTaskTypes" :key="task.key" type="button" class="choice-option"
                     :class="{ selected: createForm.task_type === task.key }" @click="selectTaskType(task.key)">
               <span class="choice-icon">{{ task.icon }}</span>
