@@ -830,6 +830,12 @@ type ExecParams struct {
 	// to Execute(). Set true before the recursive call so the inner
 	// invocation skips its own fallback chain lookup.
 	InFallback bool
+
+	// RoutingTracker (2026-07-19) records每次 upstream 尝试的详情，用于
+	// 解决用户困惑"为什么供应商泳道显示 A 但 upstream URL 显示 B"。
+	// 在 handler.go 中创建，在 executor_chat.go 中填充，在 telemetry
+	// 中写入 request_logs_hot.routing_attempts。可选，nil 表示不追踪。
+	RoutingTracker *RoutingAttemptsTracker
 }
 
 // SetTraceRecorder (2026-07-17) 注入请求链路追踪器,
@@ -920,6 +926,10 @@ type ExecuteResult struct {
 	QualityFlags      []string
 	QualityFixActions []byte // JSONB: {"empty_tool_name":{"detected":2,"renamed":1},...}
 	QualityScore      *float64
+
+	// 2026-07-19: 路由尝试追踪器（从 ExecParams 传递过来）
+	// 包含所有 upstream 尝试的详细记录，供 handler 填充到 telemetry。
+	RoutingTracker *RoutingAttemptsTracker
 }
 
 type AttemptRecord struct {

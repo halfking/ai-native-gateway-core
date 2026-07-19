@@ -258,6 +258,12 @@ type RequestLogEntry struct {
 	//   credential-selfcheck-worker, node-probe-worker,
 	//   system-health-worker, manual:<session_user_id>
 	OriginActor *string `json:"origin_actor,omitempty"`
+
+	// 2026-07-19: 路由尝试追踪字段，记录每次 upstream 尝试详情。
+	// RoutingAttempts 是 JSONB 数组，RoutingSummary 是人类可读摘要。
+	// 单次成功时两者均为空，节省存储空间。
+	RoutingAttempts json.RawMessage `json:"routing_attempts,omitempty"`
+	RoutingSummary  *string         `json:"routing_summary,omitempty"`
 }
 
 func NewClient() *Client {
@@ -989,6 +995,9 @@ $47,
 		entry.ClientForwardedFor,
 		entry.OriginStage,
 		entry.OriginActor,
+		// 2026-07-19 (migration 350): routing attempts tracking
+		string(entry.RoutingAttempts),
+		entry.RoutingSummary,
 	)
 	if err != nil {
 		return err
