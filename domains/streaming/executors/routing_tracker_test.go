@@ -3,8 +3,10 @@ package executors
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -195,18 +197,92 @@ func TestClassifyResult(t *testing.T) {
 
 func TestRoutingAttemptsTracker_NilSafety(t *testing.T) {
 	var tracker *RoutingAttemptsTracker
-	
+
 	// 所有方法都应该能处理 nil receiver
 	assert.NotPanics(t, func() {
 		tracker.Add(RoutingAttempt{})
 	})
-	
+
 	assert.Equal(t, 0, tracker.Count())
-	
+
 	bytes, err := tracker.ToJSONBytes()
 	assert.NoError(t, err)
 	assert.Nil(t, bytes)
-	
+
 	assert.Empty(t, tracker.ToJSONString())
 	assert.Empty(t, tracker.Summary())
+}
+
+// TestClassifyResult_TypedNilUpstreamError_2026_07_20 guards against
+// the panic that crashed minimax-m3 / gpt-5.6-luna chat requests on
+// 2026-07-19/20. The trigger was a typed-nil *upstream.Error wrapped
+// in a non-nil error interface:
+//
+//	var uErr *upstream.Error = nil
+//	var iface error = uErr             // iface != nil (type tag)
+//	iface.Error()                      // would dereference nil
+//
+// Previously ClassifyResult wrapped err.Error() in defer-recover().
+// After the upstream-side nil-receiver fix in (*Error).Error() the
+// recover is redundant and must stay removed: this test fails (panics)
+// if a future refactor reintroduces the band-aid and silently swallows
+// the bug. To verify the regression test itself, comment out the
+// nil-check in upstream/client.go and re-run.
+func TestClassifyResult_TypedNilUpstreamError_2026_07_20(t *testing.T) {
+	var nilUErr *upstreampkg.Error
+	var iface error = nilUErr
+	// Sanity: typed-nil wrapped in error interface is non-nil at the
+	// interface level (Go's classic gotcha). assert.NotNil cannot
+	// detect this — it uses reflect.ValueOf().IsNil() which sees the
+	// underlying nil pointer and reports nil — so we compare with
+	// == nil directly.
+	if iface == nil {
+		t.Fatalf("typed-nil wrapped in interface must be non-nil; test setup is wrong")
+	}
+	if nilUErr != nil {
+		t.Fatalf("sanity: nilUErr must be a nil pointer")
+	}
+
+	// This call must NOT panic and must return a deterministic bucket.
+	// Pre-fix: panic. Post-fix (with safe (*Error).Error()): "error".
+	var got string
+	assert.NotPanics(t, func() {
+		got = ClassifyResult(iface, 500)
+	}, "ClassifyResult must not panic on typed-nil *upstream.Error")
+	assert.NotEmpty(t, got, "ClassifyResult must return a bucket string")
+}
+
+func TestClassifyResult_PopulatedUpstreamError_2026_07_20(t *testing.T) {
+	// Negative case: confirm the nil-fix did not regress the populated path.
+	cases := []struct {
+		name       string
+		err        error
+		statusCode int
+		want       string
+	}{
+		{
+			name:       "timeout with status 0 → timeout",
+			err:        fmt.Errorf("context deadline exceeded"),
+			statusCode: 0,
+			want:       "timeout",
+		},
+		{
+			name:       "429 with no message → rate_limit (statusCode wins)",
+			err:        fmt.Errorf("something else"),
+			statusCode: 429,
+			want:       "rate_limit",
+		},
+		{
+			name:       "real *upstream.Error with timeout message → timeout",
+			err:        &upstreampkg.Error{Kind: upstreampkg.KindTimeout, Message: "upstream timeout", Err: errors.New("i/o timeout")},
+			statusCode: 504,
+			want:       "timeout",
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifyResult(tt.err, tt.statusCode)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

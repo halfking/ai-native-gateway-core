@@ -3,7 +3,6 @@ package executors
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 )
@@ -157,27 +156,19 @@ func translateResult(result string) string {
 }
 
 // ClassifyResult 根据错误信息分类结果
+//
+// 2026-07-20: previously wrapped err.Error() in a defer-recover() to
+// mask a nil-receiver panic on *upstream.Error. The root cause has
+// been fixed in upstream/client.go's (*Error).Error() method, which
+// now nil-checks the receiver. The recover is no longer needed and
+// has been removed; any future panic in err.Error() should be
+// investigated rather than silently swallowed.
 func ClassifyResult(err error, statusCode int) string {
 	if err == nil {
 		return "success"
 	}
 
-	// 2026-07-20 fix: Guard against nil pointer when upstream.Error is nil but error interface is not.
-	// This happens when uErr (*upstream.Error) is nil but gets passed as error interface.
-	// Calling .Error() on nil pointer causes panic in routing_tracker.go:164.
-	errMsg := ""
-	if err != nil {
-		// Safely get error message, handling nil pointer case
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Warn("ClassifyResult: recovered from panic in err.Error()",
-					"panic", r,
-					"statusCode", statusCode)
-				errMsg = "<error.Error() panicked>"
-			}
-		}()
-		errMsg = err.Error()
-	}
+	errMsg := err.Error()
 
 	// 按优先级判断
 	if strings.Contains(errMsg, "context canceled") || strings.Contains(errMsg, "canceled") {
