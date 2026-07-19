@@ -643,3 +643,9 @@
 | 446 | `446_volcengine_model_aliases.sql` |
 | 447 | `447_volcano_glm_outbound_mapping.sql` |
 
+## 2026-07-19T20:21:16Z — deploy 154 build_seq 1198 (cfbd0a36)
+
+| Migration | File |
+|-----------|------|
+| 449 | `449_request_logs_hot_trace_events.sql` |
+
