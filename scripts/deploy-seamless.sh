@@ -82,6 +82,19 @@ case "$TARGET" in
   *) err "不支持的目标: $TARGET (仅 154|245)"; exit 1 ;;
 esac
 
+# Load the shared envs SSOT before resolving SSH keys or target settings.
+ENVS_ROOT="${ENVS_ROOT:-${HOME}/workspace/ai-native-tools/envs}"
+case "$TARGET" in
+  245) ENV_SERVER="8.136.114.245" ;;
+  154) ENV_SERVER="47.97.111.154" ;;
+esac
+if [[ ! -f "$ENVS_ROOT/loader.sh" ]]; then
+  err "envs SSOT loader not found: $ENVS_ROOT/loader.sh"
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$ENVS_ROOT/loader.sh" --all --project llm-gateway-go --server "$ENV_SERVER"
+
 # ── SSH 命令构造 (2026-07-16: 走 ssh-retry.sh) ─────────────────
 # 关键设计：host.sh 内部用 "$ssh_cmd" "remote-shell-cmd" 调用。
 # 我们包装两个函数 remote_ssh / remote_ssh_pipe, 内部走 ssh-retry

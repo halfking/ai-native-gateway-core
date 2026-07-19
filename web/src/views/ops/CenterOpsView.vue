@@ -270,7 +270,7 @@ onMounted(load)
           <span>{{ t('ops.center.alerts.empty') }}</span>
         </template>
         <el-table-column prop="severity" :label="t('ops.center.alerts.severity')" width="100">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <el-tag :type="alertSeverityType(row.severity)" size="small">{{ row.severity }}</el-tag>
           </template>
         </el-table-column>
@@ -278,7 +278,7 @@ onMounted(load)
         <el-table-column prop="message" :label="t('ops.center.alerts.message')" min-width="220" show-overflow-tooltip />
         <el-table-column prop="source" :label="t('ops.center.alerts.source')" width="120" />
         <el-table-column prop="status" :label="t('common.table.status')" width="110">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <el-tag :type="alertStatusType(row.status)" size="small">
               {{ t(`ops.center.alerts.status.${row.status}`, row.status) }}
             </el-tag>
@@ -286,10 +286,10 @@ onMounted(load)
         </el-table-column>
         <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="180" />
         <el-table-column prop="detected_at" :label="t('ops.center.alerts.detectedAt')" width="170">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.detected_at) }}</template>
+          <template #default="{ row }">{{ formatDate(row.detected_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="220" fixed="right">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <template v-if="canManageAlert(row)">
               <el-button
                 v-if="row.status === 'triggered'"
@@ -331,20 +331,20 @@ onMounted(load)
         <el-table-column prop="version" :label="t('ops.center.version')" width="120" />
         <el-table-column prop="build_seq" :label="t('ops.center.buildSeq')" width="80" />
         <el-table-column prop="status" :label="t('common.table.status')" width="100">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <el-tag :type="statusType(row.status)" size="small">
               {{ t(`ops.center.status.${row.status}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="last_heartbeat" :label="t('ops.center.lastHeartbeat')" width="160">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.last_heartbeat) }}</template>
+          <template #default="{ row }">{{ formatDate(row.last_heartbeat) }}</template>
         </el-table-column>
         <el-table-column prop="started_at" :label="t('ops.center.startedAt')" width="160">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.started_at) }}</template>
+          <template #default="{ row }">{{ formatDate(row.started_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="200" fixed="right">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <el-button type="primary" size="small" @click="openCommandDialog(row)">
               {{ t('ops.center.sendCommand') }}
             </el-button>

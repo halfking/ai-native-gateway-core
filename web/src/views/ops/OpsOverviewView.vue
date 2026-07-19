@@ -108,8 +108,6 @@ async function load() {
     regionStats.value = bundle.region_stats ?? []
     deploymentNodes.value = bundle.deployment_nodes ?? []
     dataPlaneTables.value = bundle.data_plane_tables ?? {}
-    // 🔧 2026-07-19: runtime_metrics_summary 字段在后端未返回，注释避免 undefined 赋值
-    // runtimeMetrics.value = bundle.runtime_metrics_summary ?? []
   } catch (error) {
     ElMessage.error(t('ops.overview.loadFailed'))
     console.error(error)
@@ -272,12 +270,12 @@ onMounted(load)
         <el-table-column prop="hostname" :label="t('ops.license.hostname')" width="180" show-overflow-tooltip />
         <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="120" show-overflow-tooltip />
         <el-table-column prop="status" :label="t('common.table.status')" width="100">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <el-tag size="small" :type="nodeStatusType(row.status)">{{ row.status }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="last_heartbeat" :label="t('ops.center.lastHeartbeat')">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.last_heartbeat) }}</template>
+          <template #default="{ row }">{{ formatDate(row.last_heartbeat) }}</template>
         </el-table-column>
       </el-table>
       <div v-if="Object.keys(dataPlaneTables).length" class="data-plane-tables">
@@ -347,12 +345,12 @@ onMounted(load)
           <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="160" show-overflow-tooltip />
           <el-table-column prop="version" :label="t('ops.autoupdate.version')" width="100" />
           <el-table-column prop="status" :label="t('common.table.status')" width="100">
-            <template #default="{ row = {} } = {}">
+            <template #default="{ row }">
               <el-tag size="small">{{ row.status }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="started_at" :label="t('ops.autoupdate.startedAt')">
-            <template #default="{ row = {} } = {}">{{ formatDate(row.started_at) }}</template>
+            <template #default="{ row }">{{ formatDate(row.started_at) }}</template>
           </el-table-column>
         </el-table>
       </el-card>
@@ -368,13 +366,13 @@ onMounted(load)
         </template>
         <el-table :data="recentFaults" size="small" empty-text="—">
           <el-table-column prop="severity" :label="t('ops.fault.severityLabel')" width="90">
-            <template #default="{ row = {} } = {}">
+            <template #default="{ row }">
               <el-tag :type="faultSeverityType(row.severity)" size="small">{{ row.severity }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="title" :label="t('ops.fault.titleLabel')" show-overflow-tooltip />
           <el-table-column prop="detected_at" :label="t('ops.fault.detectedAt')" width="160">
-            <template #default="{ row = {} } = {}">{{ formatDate(row.detected_at) }}</template>
+            <template #default="{ row }">{{ formatDate(row.detected_at) }}</template>
           </el-table-column>
         </el-table>
       </el-card>
@@ -393,7 +391,7 @@ onMounted(load)
           <el-table-column prop="instance_id" :label="t('ops.license.deviceId')" width="140" />
           <el-table-column prop="request_id" :label="t('ops.license.requestCode')" show-overflow-tooltip />
           <el-table-column prop="timestamp" :label="t('common.createdAt')" width="160">
-            <template #default="{ row = {} } = {}">{{ formatDate(row.timestamp) }}</template>
+            <template #default="{ row }">{{ formatDate(row.timestamp) }}</template>
           </el-table-column>
         </el-table>
       </el-card>
@@ -637,7 +635,6 @@ onMounted(load)
 .table-tag {
   font-family: monospace;
 }
-</style>
 
 .runtime-metrics-card {
   margin-top: 20px;
@@ -647,3 +644,4 @@ onMounted(load)
   color: #f56c6c;
   font-weight: bold;
 }
+</style>

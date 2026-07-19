@@ -417,23 +417,23 @@ onMounted(() => {
         <el-table-column prop="instance_id" :label="t('ops.license.deviceId')" width="150" />
         <el-table-column prop="request_id" :label="t('ops.license.requestCode')" />
         <el-table-column prop="activation_code" :label="t('ops.license.activationCode')" width="120">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <span v-if="row.activation_code">{{ row.activation_code }}</span>
             <span v-else class="cell-sub">—</span>
           </template>
         </el-table-column>
         <el-table-column prop="status" :label="t('common.table.status')" width="100">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <el-tag :type="row.status === 'pending' ? 'warning' : 'success'" size="small">
               {{ t(`ops.license.status.${row.status}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="timestamp" :label="t('common.createdAt')" width="160">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.timestamp) }}</template>
+          <template #default="{ row }">{{ formatDate(row.timestamp) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="180" fixed="right">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <template v-if="row.status === 'pending'">
               <el-button type="success" size="small" @click="handleApproveOffline(row)">
                 {{ t('ops.license.approve') }}
@@ -514,25 +514,25 @@ onMounted(() => {
         </el-table-column>
         <el-table-column prop="license_key" :label="t('ops.license.licenseKey')" width="200" />
         <el-table-column :label="t('ops.license.customer')" width="180">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <div>{{ row.customer_name }}</div>
             <div v-if="row.customer_email" class="cell-sub">{{ row.customer_email }}</div>
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.license.devices')" width="100">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             {{ (devices[row.id] || []).filter((d: LicenseDevice) => d.status === 'active').length }} / {{ row.max_devices }}
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.license.tier')" width="100">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <el-tag v-if="row.subscription_tier" size="small" effect="plain">
               {{ row.subscription_tier }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.license.features')" min-width="120">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <el-tag
               v-for="f in (row.features || [])"
               :key="f"
@@ -544,20 +544,20 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="expires_at" :label="t('ops.license.expiresAt')" width="160">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.expires_at) }}</template>
+          <template #default="{ row }">{{ formatDate(row.expires_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.table.status')" width="100">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <el-tag :type="statusType(licenseStatus(row))" size="small">
               {{ t(`ops.license.status.${licenseStatus(row)}`) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
-          <template #default="{ row = {} } = {}">{{ formatDate(row.created_at) }}</template>
+          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="240" fixed="right">
-          <template #default="{ row = {} } = {}">
+          <template #default="{ row }">
             <el-button size="small" @click="handleEditLicense(row)">
               {{ t('common.edit') }}
             </el-button>
@@ -606,16 +606,16 @@ onMounted(() => {
             <el-table-column prop="email" :label="t('ops.license.holderEmail')" min-width="200" />
             <el-table-column prop="display_name" :label="t('ops.license.customer')" width="140" />
             <el-table-column :label="t('ops.license.holderLicenses')" width="100">
-              <template #default="{ row = {} } = {}">{{ row.license_count ?? 0 }}</template>
+              <template #default="{ row }">{{ row.license_count ?? 0 }}</template>
             </el-table-column>
             <el-table-column :label="t('ops.license.holderDevices')" width="100">
-              <template #default="{ row = {} } = {}">{{ row.device_count ?? 0 }}</template>
+              <template #default="{ row }">{{ row.device_count ?? 0 }}</template>
             </el-table-column>
             <el-table-column :label="t('ops.license.holderDonations')" width="120">
-              <template #default="{ row = {} } = {}">{{ formatDonation(row.donation_total_cents) }}</template>
+              <template #default="{ row }">{{ formatDonation(row.donation_total_cents) }}</template>
             </el-table-column>
             <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
-              <template #default="{ row = {} } = {}">{{ formatDate(row.created_at) }}</template>
+              <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
             </el-table-column>
           </el-table>
           <div class="pagination-wrapper">
