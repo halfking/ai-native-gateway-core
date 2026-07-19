@@ -104,7 +104,7 @@ func (h *QualityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *QualityHandler) handleGetProviderQuality(w http.ResponseWriter, r *http.Request) {
 	// 解析 provider_id (从 /api/quality/providers/:id/quality 提取)
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/quality/providers/"), "/")
-	if len(parts) < 2 {
+	if len(parts) < 1 || parts[0] == "" {
 		h.writeError(w, http.StatusBadRequest, 40001, "参数错误: provider_id 缺失")
 		return
 	}
