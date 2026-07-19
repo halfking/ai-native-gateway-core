@@ -32,6 +32,12 @@ export default {
     freeChipNo: 'Ohne kostenlos',
     freeBadgeTooltipYes: 'Dieser Anbieter hat Modelle mit billing_mode=free',
     freeBadgeTooltipNo: 'Dieser Anbieter hat keine kostenlosen Modelle',
+    sortLabel: 'Sortierung',
+    sortDefault: 'Standard',
+    sortUsage: '24h Anfragen',
+    sortQuality: 'Qualität',
+    sortAvailability: 'Verfügbarkeit',
+    sortPerformance: 'Leistung',
   },
   list: {
     table: {
@@ -44,6 +50,10 @@ export default {
       availableModels: 'Verfügbare Modelle',
       freeModels: 'Kostenlose Modelle',
       errorRate24h: '24h Fehlerrate',
+      usage24h: '24h Nutzung',
+      qualityScore: 'Qualität',
+      availabilityScore: 'Verfügbarkeit',
+      performanceScore: 'Leistung',
       health: 'Systemzustand',
       status: 'Status',
     },
