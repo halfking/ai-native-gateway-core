@@ -147,6 +147,93 @@ export function extendRoutingOverride(id: number, expires_at: string | null) {
     `/api/admin/routing/overrides/${id}/extend`, { expires_at })
 }
 
+// ── task_default_routing (explicit default routing) ──────────────
+
+export interface RoutingDefault {
+  id: number
+  task_type: string
+  profile: string
+  tier: 'primary' | 'secondary' | 'fallback'
+  canonical_model: string
+  tenant_id?: string | null
+  priority: number
+  reason: string
+  created_by?: string
+  expires_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface RoutingDefaultsResponse {
+  defaults: RoutingDefault[]
+  count: number
+  filter: { task_type: string; profile: string; active: string }
+}
+
+export interface RoutingDefaultCreate {
+  task_type: string
+  profile?: string
+  tier?: 'primary' | 'secondary' | 'fallback'
+  canonical_model: string
+  tenant_id?: string | null
+  priority?: number
+  reason?: string
+  expires_at?: string
+}
+
+export interface RoutingDefaultUpdate {
+  tier?: 'primary' | 'secondary' | 'fallback'
+  priority?: number
+  reason?: string
+  profile?: string
+  canonical_model?: string
+  tenant_id?: string | null
+  clear_tenant?: boolean
+  expires_at?: string | null
+  clear_expires?: boolean
+}
+
+export function getRoutingDefaults(params: { active?: boolean; task_type?: string; profile?: string } = {}) {
+  const q = new URLSearchParams()
+  if (params.active) q.set('active', 'true')
+  if (params.task_type) q.set('task_type', params.task_type)
+  if (params.profile) q.set('profile', params.profile)
+  const path = '/api/admin/auto-route/defaults' + (q.toString() ? '?' + q : '')
+  return req<RoutingDefaultsResponse>('GET', path)
+}
+
+export function createRoutingDefault(body: RoutingDefaultCreate) {
+  return req<{ id: number; status: string; message: string }>('POST', '/api/admin/auto-route/defaults', body)
+}
+
+export function updateRoutingDefault(id: number, body: RoutingDefaultUpdate) {
+  return req<{ id: number; status: string }>('PATCH', `/api/admin/auto-route/defaults/${id}`, body)
+}
+
+export function deleteRoutingDefault(id: number) {
+  return req<{ id: number; status: string }>('DELETE', `/api/admin/auto-route/defaults/${id}`)
+}
+
+export interface RoutingDefaultAuditRow {
+  id: number
+  ts: string
+  action: 'insert' | 'update' | 'delete'
+  routing_id?: number
+  task_type?: string
+  profile?: string
+  tier?: string
+  canonical_model?: string
+  tenant_id?: string | null
+  priority?: number
+  reason?: string
+  expires_at?: string
+  actor?: string
+}
+
+export function getRoutingDefaultsAudit() {
+  return req<{ audit: RoutingDefaultAuditRow[]; count: number }>('GET', '/api/admin/auto-route/defaults/audit')
+}
+
 export interface QualityCorrelationRow {
   bucket: string
   samples: number

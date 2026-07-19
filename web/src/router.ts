@@ -184,6 +184,7 @@ export const router = createRouter({
     { path: '/keys',               component: KeysView },
     { path: '/keys/:id',           component: KeyDetailView },
     { path: '/routing',            redirect: { path: '/routing-v2', query: { tab: 'resolve' } } },
+    { path: '/routing/defaults',   redirect: { path: '/routing-v2', query: { tab: 'smart' } } },
     { path: '/routing-overview',   component: RoutingOverviewView, meta: { requiresPlatformOps: true } },
     { path: '/routing-decisions',  component: DecisionsView, meta: { requiresPlatformOps: true } },
     { path: '/correlations',       component: CorrelationsView, meta: { requiresSuper: true } },
