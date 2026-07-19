@@ -279,7 +279,10 @@ func (w *TurnWriter) ListTurns(ctx context.Context, tenantID, sessionID string, 
 			COALESCE(cost_usd, 0),
 			COALESCE(latency_ms, 0), COALESCE(status_code, 0),
 			COALESCE(success, false), error_kind,
-			source_kind, quality
+			source_kind, quality,
+			COALESCE(attachment_count, 0),
+			COALESCE(attachment_total_bytes, 0),
+			COALESCE(multimodal_types, '{}')
 		FROM gateway.session_turns
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
@@ -309,6 +312,7 @@ func (w *TurnWriter) ListTurns(ctx context.Context, tenantID, sessionID string, 
 			&rec.LatencyMs, &rec.StatusCode,
 			&rec.Success, &rec.ErrorKind,
 			&rec.SourceKind, &rec.Quality,
+			&rec.AttachmentCount, &rec.AttachmentTotalBytes, &rec.MultimodalTypes,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan turn: %w", err)

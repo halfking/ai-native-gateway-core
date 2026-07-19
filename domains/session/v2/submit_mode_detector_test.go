@@ -558,3 +558,100 @@ func TestSubmitModeDetector_AttachmentOnlyChange(t *testing.T) {
 		}
 	})
 }
+
+// TestDetectWithRequest_ConvenienceMethod tests the DetectWithRequest convenience method
+func TestDetectWithRequest_ConvenienceMethod(t *testing.T) {
+	detector := NewSubmitModeDetector()
+
+	tests := []struct {
+		name                string
+		req                 *ProcessedRequest
+		header              string
+		previousAttachments []AttachmentRef
+		want                SubmitMode
+	}{
+		{
+			name: "First turn with no previous attachments",
+			req: &ProcessedRequest{
+				RequestBody: []Message{
+					{Role: "user", Content: "Hello"},
+				},
+				LastOutboundBody: []Message{},
+				Attachments: []AttachmentRef{
+					{ObjectKey: "file1.pdf", SHA256: "abc123"},
+				},
+			},
+			header:              "",
+			previousAttachments: []AttachmentRef{},
+			want:                SubmitModeFull,
+		},
+		{
+			name: "Explicit header takes precedence",
+			req: &ProcessedRequest{
+				RequestBody: []Message{
+					{Role: "user", Content: "Hello"},
+				},
+				LastOutboundBody: []Message{
+					{Role: "user", Content: "Hello"},
+				},
+				Attachments: []AttachmentRef{
+					{ObjectKey: "file2.pdf", SHA256: "def456"},
+				},
+			},
+			header: "attachment_only",
+			previousAttachments: []AttachmentRef{
+				{ObjectKey: "file1.pdf", SHA256: "abc123"},
+			},
+			want: SubmitModeAttachmentOnly,
+		},
+		{
+			name: "Attachment change with same messages",
+			req: &ProcessedRequest{
+				RequestBody: []Message{
+					{Role: "user", Content: "Analyze this document"},
+					{Role: "assistant", Content: "Sure"},
+				},
+				LastOutboundBody: []Message{
+					{Role: "user", Content: "Analyze this document"},
+					{Role: "assistant", Content: "Sure"},
+				},
+				Attachments: []AttachmentRef{
+					{ObjectKey: "file2.pdf", SHA256: "def456"},
+				},
+			},
+			header: "",
+			previousAttachments: []AttachmentRef{
+				{ObjectKey: "file1.pdf", SHA256: "abc123"},
+			},
+			want: SubmitModeAttachmentOnly,
+		},
+		{
+			name: "Different messages with different attachments - not attachment-only",
+			req: &ProcessedRequest{
+				RequestBody: []Message{
+					{Role: "user", Content: "New question"},
+				},
+				LastOutboundBody: []Message{
+					{Role: "user", Content: "Old question"},
+				},
+				Attachments: []AttachmentRef{
+					{ObjectKey: "file2.pdf", SHA256: "def456"},
+				},
+			},
+			header: "",
+			previousAttachments: []AttachmentRef{
+				{ObjectKey: "file1.pdf", SHA256: "abc123"},
+			},
+			want: SubmitModeInferredCompressed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detector.DetectWithRequest(tt.req, tt.header, tt.previousAttachments)
+			if got != tt.want {
+				t.Errorf("DetectWithRequest() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
