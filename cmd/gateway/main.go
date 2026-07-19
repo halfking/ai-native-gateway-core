@@ -2870,10 +2870,12 @@ func main() {
 	// nav is admin-auth-gated; viewer is derived from the real auth context
 	// (replaces the P0 super-admin placeholder).
 	pluginRegistry := pluginruntime.NewRegistry()
-	if pluginsDir := os.Getenv("LLM_GATEWAY_PLUGINS_DIR"); pluginsDir != "" {
+	pluginsDir := os.Getenv("LLM_GATEWAY_PLUGINS_DIR")
+	if pluginsDir != "" {
 		if err := ScanPlugins(pluginsDir, pluginRegistry); err != nil {
 			slog.Warn("plugin scan failed", "error", err, "dir", pluginsDir)
 		}
+		registerPluginStaticRoutes(mux, pluginsDir)
 	}
 	wirePluginAuthExtractor()
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(
