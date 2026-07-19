@@ -6,6 +6,7 @@ export default {
   back: '← العودة',
   tabCreds: 'بيانات الاعتماد ({n})',
   tabModels: 'النماذج',
+  tabQuality: 'الجودة',
   tabLogs: 'سجلات الطلبات',
   tabDiag: 'التشخيص',
   tabProbe: 'الاختبار التلقائي',
