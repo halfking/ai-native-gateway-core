@@ -1998,6 +1998,9 @@ func main() {
 				nodeProbe.SetStateProvider(stateManager)
 				nodeProbe.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
 				nodeProbe.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
+				if routingExec != nil && routingExec.Circuit != nil {
+					nodeProbe.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
+				}
 				// 2026-07-17: 同步探测 hold 模式开关。env LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE
 				// 取值 "0"/"false"/"off" 即关闭（默认开启）。关闭时 executor 走原 fire-and-forget
 				// 路径，503 立即返回。该 kill-switch 用于紧急回滚，无需重新打包。
@@ -2011,6 +2014,10 @@ func main() {
 
 				nodeProbe.Start(context.Background())
 				slog.Info("CHECKPOINT: node_probe_worker started")
+
+				dailyProbeAudit := bg.NewDailyProbeAudit(dbConn.Pool(), nodeProbe)
+				dailyProbeAudit.Start(context.Background())
+				slog.Info("CHECKPOINT: daily_probe_audit started")
 				// Wire stateManager → node_probe so consecutive
 				// failures >= threshold trigger the new path
 				// (replaces the legacy active_probe wiring above).
