@@ -30,6 +30,7 @@ import ModelTaskIndexPanel from '../components/analytics/ModelTaskIndexPanel.vue
 import DecisionDetail from '../components/analytics/DecisionDetail.vue'
 import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
 import SmartRoutingConfigPanel from '../components/routing/SmartRoutingConfigPanel.vue'
+import SmartRoutingConfigDrawer from '../components/routing/SmartRoutingConfigDrawer.vue'
 
 const { t } = useI18n()
 
@@ -69,6 +70,7 @@ const expandedModel = ref<string>('')
 const indexLoading = ref(false)
 const layer2Cache = ref<Record<string, RoutingResolveResponse | null>>({})
 const layer2Loading = ref<string>('')
+const showSmartConfigDrawer = ref(false)
 
 const audit = ref<AutoRouteAudit>({
   total_auto_requests: 0, success_rate: 0,
@@ -792,8 +794,14 @@ onUnmounted(() => stopPoll())
         <div class="card-toolbar">
           <div class="toolbar-left">
             <span class="layer-tag l1">L1</span>
-            <span class="toolbar-title">模型推荐</span>
+            <span class="toolbar-title">{{ t('routing.dashboard.overview.title') }}</span>
             <span v-if="selectedTask" class="task-hint">{{ taskLabel(selectedTask) }}</span>
+            <button
+              type="button"
+              class="btn btn-sm btn-ghost smart-config-btn"
+              :title="t('routing.dashboard.overview.smartConfigHint')"
+              @click="showSmartConfigDrawer = true"
+            >⚙ {{ t('routing.dashboard.overview.smartConfig') }}</button>
           </div>
           <div class="toolbar-filters">
             <button
@@ -805,9 +813,9 @@ onUnmounted(() => stopPoll())
               @click="selectedTask = selectedTask === t.key ? '' : t.key"
             >{{ t.icon }}</button>
             <span class="toolbar-divider" />
-            <button class="profile-pill" :class="{ active: selectedProfile === 'smart' }" @click="selectedProfile = 'smart'">智能</button>
-            <button class="profile-pill" :class="{ active: selectedProfile === 'speed_first' }" @click="selectedProfile = 'speed_first'">速度</button>
-            <button class="profile-pill" :class="{ active: selectedProfile === 'cost_first' }" @click="selectedProfile = 'cost_first'">成本</button>
+            <button class="profile-pill" :class="{ active: selectedProfile === 'smart' }" @click="selectedProfile = 'smart'">{{ t('routing.dashboard.overview.profileSmart') }}</button>
+            <button class="profile-pill" :class="{ active: selectedProfile === 'speed_first' }" @click="selectedProfile = 'speed_first'">{{ t('routing.dashboard.overview.profileSpeed') }}</button>
+            <button class="profile-pill" :class="{ active: selectedProfile === 'cost_first' }" @click="selectedProfile = 'cost_first'">{{ t('routing.dashboard.overview.profileCost') }}</button>
           </div>
         </div>
         <div v-if="indexLoading" class="loading-hint">加载索引…</div>
@@ -1206,6 +1214,12 @@ onUnmounted(() => stopPoll())
     <div v-if="activeTab === 'smart'" class="tab-content">
       <SmartRoutingConfigPanel />
     </div>
+
+    <SmartRoutingConfigDrawer
+      :open="showSmartConfigDrawer"
+      :task-type="selectedTask"
+      @close="showSmartConfigDrawer = false"
+    />
   </div>
 </template>
 
@@ -1360,6 +1374,11 @@ onUnmounted(() => stopPoll())
   border-bottom: 1px solid var(--border);
 }
 .toolbar-left { display: flex; align-items: center; gap: 6px; }
+.smart-config-btn {
+  margin-left: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+}
 .toolbar-title { font-size: 12px; font-weight: 600; }
 .toolbar-filters { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
 .toolbar-divider { width: 1px; height: 14px; background: var(--border); margin: 0 3px; }

@@ -111,6 +111,8 @@ export default {
     },
     overview: {
       title: '模型推荐',
+      smartConfig: '智能路由配置',
+      smartConfigHint: '按任务类型配置主要 / 次级 / 托底模型',
       profileSmart: '智能',
       profileSpeed: '速度',
       profileCost: '成本',
@@ -208,6 +210,7 @@ export default {
   },
   policy: {
     title: '路由策略',
+    backLink: '← 路由全景',
     description: '调整路由 v2 全局策略：算法版本、并发槽位、熔断阈值、综合得分系数。改动会写入审计日志并立即生效。',
     loading: '加载中…',
     globalTitle: '全局策略',

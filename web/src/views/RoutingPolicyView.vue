@@ -137,11 +137,14 @@ onMounted(load)
 <template>
   <div>
     <div class="page-header">
-      <h2>路由策略</h2>
+      <div class="page-header-left">
+        <router-link to="/routing-v2" class="back-link">{{ t('routing.policy.backLink') }}</router-link>
+        <h2>{{ t('routing.policy.title') }}</h2>
+      </div>
       <button class="btn btn-ghost" @click="load" :disabled="loading">刷新</button>
     </div>
     <p style="color:var(--muted);margin-bottom:16px">
-      调整路由 v2 全局策略：算法版本、并发槽位、熔断阈值、综合得分系数。改动会写入审计日志并立即生效。
+      {{ t('routing.policy.description') }}
     </p>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
@@ -247,6 +250,18 @@ onMounted(load)
 </template>
 
 <style scoped>
+.page-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.back-link {
+  font-size: 11px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.back-link:hover { color: var(--accent-h); }
 .weights-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
