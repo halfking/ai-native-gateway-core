@@ -59,3 +59,26 @@ func signContextForTest(secret []byte, pluginID, tenantID string, ts int64, nonc
 	mac.Write([]byte(msg))
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+func TestRegisterPluginCanonRoutes_DetailRejectsBadSessionID(t *testing.T) {
+	mux := http.NewServeMux()
+	upstream := func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream should NOT be called for invalid session id, path=%s", r.URL.Path)
+	}
+	secret := []byte("s")
+	registerPluginCanonRoutes(mux, secret, upstream, upstream)
+
+	ts := time.Now().Unix()
+	req := httptest.NewRequest(http.MethodGet, "/_gateway/plugin/v1/sessions/..%2Fadmin", nil)
+	req.Header.Set("X-Gateway-Plugin-ID", "ai-session-manager")
+	req.Header.Set("X-Gateway-Tenant-ID", "tenant-A")
+	req.Header.Set("X-Gateway-Context-Timestamp", strconv.FormatInt(ts, 10))
+	req.Header.Set("X-Gateway-Context-Nonce", "n")
+	req.Header.Set("X-Gateway-Context-Signature", signContextForTest(secret, "ai-session-manager", "tenant-A", ts, "n"))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid session id, got %d", rec.Code)
+	}
+}
