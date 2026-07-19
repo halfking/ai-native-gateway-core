@@ -10,11 +10,16 @@
 //     on the same page only trigger one network round-trip.
 //   - On fetch error, keeps the canonical seed (UI is never blank).
 //
+// 2026-07-20: l1Label() now prefers i18n over the backend label so
+// switching locale to en-US shows "Code" instead of the Chinese "代码".
+// Fallback chain: i18n key (common.l1TaskType.{key}) → backend label → key.
+//
 // Usage:
 //   const { l1TaskTypes, l1Label, refreshL1TaskTypes } = useL1TaskTypes()
 //   <option v-for="t in l1TaskTypes" :key="t.key" :value="t.key">{{ t.label }}</option>
 
 import { ref, type Ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { L1_TASK_TYPES, listL1TaskTypes, type L1TaskTypeMeta } from '../api-work-types'
 
 type L1TaskType = Omit<L1TaskTypeMeta, 'count'>
@@ -54,9 +59,19 @@ async function refreshL1TaskTypes(): Promise<void> {
   return inflight
 }
 
-function l1Label(key: string): string {
+function l1Label(key: string, t?: (k: string) => string): string {
   if (!key) return ''
-  return l1TaskTypes.value.find((t) => t.key === key)?.label ?? key
+  // i18n takes priority so locale switch reflects localized labels
+  // (e.g. en-US shows "Code" instead of the backend's Chinese "代码").
+  // vue-i18n's t() returns the key itself when missing, so we explicitly
+  // detect that to avoid showing raw keys.
+  if (t) {
+    const translated = t(`common.l1TaskType.${key}`)
+    if (translated && translated !== `common.l1TaskType.${key}`) return translated
+  }
+  // Fallback: backend label (which is the canonical Chinese label the
+  // classifier was trained with) → finally the raw key.
+  return l1TaskTypes.value.find((task) => task.key === key)?.label ?? key
 }
 
 function l1Icon(key: string): string {
@@ -65,12 +80,15 @@ function l1Icon(key: string): string {
 }
 
 export function useL1TaskTypes() {
+  const { t } = useI18n()
   return {
     l1TaskTypes,
     loading,
     error,
     refreshL1TaskTypes,
-    l1Label,
+    // Bind t() so consumers don't need to thread useI18n() through.
+    // We use a closure so locale changes are picked up reactively.
+    l1Label: (key: string) => l1Label(key, t),
     l1Icon,
   }
 }
