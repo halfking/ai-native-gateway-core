@@ -133,6 +133,9 @@ type NodeProbeWorker struct {
 	// Candidate cache invalidation keeps a direct probe result visible to the
 	// next routing decision instead of waiting for the provider cache TTL.
 	invalidateCandidateCache func(credentialID int)
+	// recordCircuitSuccess closes the in-memory breaker as soon as the direct
+	// provider probe confirms recovery.
+	recordCircuitSuccess func(providerID, credentialID int)
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -189,6 +192,13 @@ func (w *NodeProbeWorker) SetEmitter(emitter *ActiveProbeEmitter) {
 func (w *NodeProbeWorker) SetInvalidateCandidateCache(fn func(credentialID int)) {
 	if w != nil {
 		w.invalidateCandidateCache = fn
+	}
+}
+
+// SetCircuitRecovery wires the request-path circuit breaker recovery hook.
+func (w *NodeProbeWorker) SetCircuitRecovery(fn func(providerID, credentialID int)) {
+	if w != nil {
+		w.recordCircuitSuccess = fn
 	}
 }
 
@@ -960,6 +970,9 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		w.updateBindingAvailability(ctx, credID, model, true, "")
 		w.updateCredentialHealth(ctx, credID)
 		w.updateObservedState(ctx, credID, model, true, "", time.Now())
+		if w.recordCircuitSuccess != nil {
+			w.recordCircuitSuccess(direct.providerID, credID)
+		}
 	}
 	// Round 2: gateway — now sees the restored state from the direct round
 	gw := w.probeGateway(ctx, credID, model)
