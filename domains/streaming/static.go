@@ -95,3 +95,10 @@ var allowedStaticExt = map[string]bool{
 func isAllowedStaticExt(ext string) bool {
 	return allowedStaticExt[ext]
 }
+
+// IsAllowedStaticExt is the exported form of isAllowedStaticExt, for reuse
+// by other handlers (e.g. the maintain-web static handler) that serve build
+// artifacts and need the same NET-010 leak protection.
+func IsAllowedStaticExt(ext string) bool {
+	return isAllowedStaticExt(ext)
+}
