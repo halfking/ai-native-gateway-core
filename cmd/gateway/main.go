@@ -2936,11 +2936,31 @@ func main() {
 	// window, so a signed token cannot fall out of the cache before its
 	// freshness window closes — every token within that window is seen at most
 	// once and a replayed (pluginID|tenantID|ts|nonce) is rejected with 401.
+	//
+	// compareAPI is hoisted to function scope (declared here, assigned below at
+	// the Phase 3.5 block inside `if dbConn != nil && toolRegistry != nil`)
+	// because the canon turns route — registered here at ~line 294x — needs to
+	// close over it via HandleCompare, but that block runs before the Phase 3.5
+	// block where the admin /api/admin/session-compare route is mounted.
+	//
+	// Pool extraction mirrors the adminHandler wiring above (line ~1468): when
+	// dbConn is nil/disabled the pool is nil, the API is constructed against a
+	// nil pool (same as every other admin handler in that mode), and requests
+	// fail at query time rather than crashing at startup. This preserves the
+	// original `if adminHandler != nil` semantics — canon routes still mount
+	// even when DB is unavailable, matching list/detail.
+	var canonPool *pgxpool.Pool
+	if dbConn != nil && dbConn.Enabled() {
+		canonPool = dbConn.Pool()
+	}
+	var compareAPI *admin.SessionCompareAPI
 	if adminHandler != nil {
+		compareAPI = admin.NewSessionCompareAPI(canonPool)
 		pluginNonceCache := pluginruntime.NewNonceCache(10 * time.Minute)
 		registerPluginCanonRoutes(mux, []byte(cfg.SecretKey),
 			adminHandler.HandleSessionAnalyticsList,
 			adminHandler.HandleSessionAnalyticsDetail,
+			compareAPI.HandleCompare,
 			pluginruntime.WithCanonNonceCache(pluginNonceCache))
 	}
 
@@ -3424,7 +3444,13 @@ func main() {
 		slog.Info("Phase 3.3 tool usage stats API enabled (/api/admin/tools/stats, /top)")
 
 		// Phase 3.5: Session Compare & Handoff API
-		compareAPI := admin.NewSessionCompareAPI(dbConn.Pool())
+		// compareAPI was hoisted to function scope for the canonical plugin
+		// turns route (registered earlier). If adminHandler was nil at that
+		// point (canon block skipped), compareAPI is still nil — construct it
+		// here so the admin /api/admin/session-compare route still works.
+		if compareAPI == nil {
+			compareAPI = admin.NewSessionCompareAPI(dbConn.Pool())
+		}
 		mux.HandleFunc("/api/admin/session-compare", wrapAdmin(compareAPI.HandleCompare))
 		handoffAPI := admin.NewHandoffAPI(dbConn.Pool())
 		mux.HandleFunc("/api/admin/session-handoff", wrapAdmin(handoffAPI.HandleHandoff))

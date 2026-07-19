@@ -26,7 +26,8 @@ func TestRegisterPluginCanonRoutes_DetailRouteRegistered(t *testing.T) {
 	}
 	secret := []byte("s")
 	// list and detail both use the same fake upstream for this routing test
-	registerPluginCanonRoutes(mux, secret, upstream, upstream)
+	noop := func(http.ResponseWriter, *http.Request) {}
+	registerPluginCanonRoutes(mux, secret, upstream, upstream, noop)
 
 	ts := time.Now().Unix()
 	sig := signContextForTest(secret, "ai-session-manager", "tenant-A", ts, "n")
@@ -66,7 +67,8 @@ func TestRegisterPluginCanonRoutes_DetailRejectsBadSessionID(t *testing.T) {
 		t.Fatalf("upstream should NOT be called for invalid session id, path=%s", r.URL.Path)
 	}
 	secret := []byte("s")
-	registerPluginCanonRoutes(mux, secret, upstream, upstream)
+	noop := func(http.ResponseWriter, *http.Request) {}
+	registerPluginCanonRoutes(mux, secret, upstream, upstream, noop)
 
 	ts := time.Now().Unix()
 	req := httptest.NewRequest(http.MethodGet, "/_gateway/plugin/v1/sessions/..%2Fadmin", nil)
@@ -80,5 +82,40 @@ func TestRegisterPluginCanonRoutes_DetailRejectsBadSessionID(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid session id, got %d", rec.Code)
+	}
+}
+
+func TestRegisterPluginCanonRoutes_TurnsRouteRegistered(t *testing.T) {
+	mux := http.NewServeMux()
+	var called bool
+	var seenTenant, seenQuerySessionID string
+	turnsUpstream := func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		seenTenant = pluginruntime.TenantFromVerified(r)
+		seenQuerySessionID = r.URL.Query().Get("session_id")
+		w.WriteHeader(http.StatusOK)
+	}
+	noop := func(http.ResponseWriter, *http.Request) {}
+	secret := []byte("s")
+	registerPluginCanonRoutes(mux, secret, noop, noop, turnsUpstream)
+
+	ts := time.Now().Unix()
+	req := httptest.NewRequest(http.MethodGet, "/_gateway/plugin/v1/sessions/sess-7/turns", nil)
+	req.Header.Set("X-Gateway-Plugin-ID", "ai-session-manager")
+	req.Header.Set("X-Gateway-Tenant-ID", "tenant-A")
+	req.Header.Set("X-Gateway-Context-Timestamp", strconv.FormatInt(ts, 10))
+	req.Header.Set("X-Gateway-Context-Nonce", "n")
+	req.Header.Set("X-Gateway-Context-Signature", signContextForTest(secret, "ai-session-manager", "tenant-A", ts, "n"))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if !called {
+		t.Fatal("turns upstream not called; route not registered or sig failed")
+	}
+	if seenTenant != "tenant-A" {
+		t.Fatalf("turns saw tenant %q, want tenant-A", seenTenant)
+	}
+	if seenQuerySessionID != "sess-7" {
+		t.Fatalf("turns upstream session_id query = %q, want sess-7", seenQuerySessionID)
 	}
 }
