@@ -1,6 +1,6 @@
 {
   "scenario": "S03_concurrency_diff",
-  "gateway": "http://127.0.0.1:8781",
+  "gateway": "http://localhost:8781",
   "models": [
     "loadtest-mini-alpha",
     "loadtest-standard-alpha",
@@ -14,16 +14,16 @@
   "stream_ratio": 0.0,
   "fault_inject_cancel": 0.0,
   "metrics": {
-    "total": 790,
-    "succ": 790,
+    "total": 821,
+    "succ": 821,
     "fail": 0,
     "success_rate": 1.0,
-    "p50_ms": 46.907082956749946,
-    "p95_ms": 66.85587496031076,
-    "p99_ms": 118.31849999725819,
-    "max_ms": 151.987207995262,
-    "throughput_rps": 23.93160048677147,
-    "elapsed_sec": 33.01074662501924,
+    "p50_ms": 28.537584003061056,
+    "p95_ms": 48.40629198588431,
+    "p99_ms": 271.95129194296896,
+    "max_ms": 302.9731250135228,
+    "throughput_rps": 24.870067905450593,
+    "elapsed_sec": 33.0115704999771,
     "fail_by_status": {},
     "fail_by_kind": {}
   }
