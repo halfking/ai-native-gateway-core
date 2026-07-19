@@ -1475,7 +1475,8 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 	} else if len(items) > 0 {
 		snapshot := BuildLiveStreamSnapshot(items)
 		if h.store != nil {
-			if ss, ssErr := h.store.Snapshot(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit); ssErr == nil && ss != nil && ss.Summary.Total > 0 {
+			// 2026-07-19: Use dimension-queue-based snapshot for initial data
+			if ss, ssErr := h.store.SnapshotFromDimensionQueues(r.Context(), tenantID, isSuper); ssErr == nil && ss != nil && ss.Summary.Total > 0 {
 				snapshot = ss
 			}
 		}
