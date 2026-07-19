@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "plugin_id": "x",
+  "plugin_version": "0.1.0",
+  "gateway_compatibility": { "min_version": "0.0.0", "api_contract": "unknown" },
+  "runtime": { "handshake_path": "/plugin/handshake", "health_path": "/plugin/healthz" }
+}
