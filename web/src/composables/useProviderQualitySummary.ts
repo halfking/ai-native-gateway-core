@@ -13,6 +13,39 @@ export type ProviderWithQuality<T extends { id: number }> = T & {
   quality?: QualitySummaryItem | null
 }
 
+export function sortProvidersByQuality<T extends { id: number }>(
+  providers: ProviderWithQuality<T>[],
+  sortKey: QualitySortKey,
+): ProviderWithQuality<T>[] {
+  if (sortKey === 'default') return providers
+
+  const metric = (q: QualitySummaryItem | null | undefined): number | null => {
+    if (!q) return null
+    switch (sortKey) {
+      case 'usage':
+        return q.total_requests_24h
+      case 'quality_score':
+        return q.quality_score
+      case 'availability_score':
+        return q.availability_score
+      case 'performance_score':
+        return q.performance_score
+      default:
+        return null
+    }
+  }
+
+  return [...providers].sort((a, b) => {
+    const av = metric(a.quality)
+    const bv = metric(b.quality)
+    // No quality data sinks to the bottom.
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
+    return bv - av
+  })
+}
+
 export function useProviderQualitySummary() {
   const qualityByProviderId = ref<Map<number, QualitySummaryItem>>(new Map())
   const qualityLoading = ref(false)
@@ -41,39 +74,6 @@ export function useProviderQualitySummary() {
       ...p,
       quality: qualityByProviderId.value.get(p.id) ?? null,
     }))
-  }
-
-  function sortProvidersByQuality<T extends { id: number }>(
-    providers: ProviderWithQuality<T>[],
-    sortKey: QualitySortKey,
-  ): ProviderWithQuality<T>[] {
-    if (sortKey === 'default') return providers
-
-    const metric = (q: QualitySummaryItem | null | undefined): number | null => {
-      if (!q) return null
-      switch (sortKey) {
-        case 'usage':
-          return q.total_requests_24h
-        case 'quality_score':
-          return q.quality_score
-        case 'availability_score':
-          return q.availability_score
-        case 'performance_score':
-          return q.performance_score
-        default:
-          return null
-      }
-    }
-
-    return [...providers].sort((a, b) => {
-      const av = metric(a.quality)
-      const bv = metric(b.quality)
-      // No quality data sinks to the bottom.
-      if (av == null && bv == null) return 0
-      if (av == null) return 1
-      if (bv == null) return -1
-      return bv - av
-    })
   }
 
   return {
