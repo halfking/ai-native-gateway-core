@@ -1,7 +1,9 @@
 package executors
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,10 +14,36 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credential"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/identity"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/session"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
+func TestUpstreamContext_DetachesCancellationAndRetainsTenant(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	req.Header.Set("X-Gw-Session-Id", "session-1")
+	params := &ExecParams{
+		R:        req,
+		IsStream: true,
+		TenantID: "tenant-a",
+	}
+	params.R = params.R.WithContext(session.SetTenantID(params.R.Context(), params.TenantID))
+	cancel()
+
+	upstreamCtx, upstreamCancel := (&Executor{}).upstreamContext(params, time.Second)
+	defer upstreamCancel()
+
+	if err := upstreamCtx.Err(); err != nil {
+		t.Fatalf("detached upstream context cancelled with client: %v", err)
+	}
+	if got := session.GetTenantIDFromContext(upstreamCtx); got != "tenant-a" {
+		t.Fatalf("tenant ID = %q, want tenant-a", got)
+	}
+	if _, ok := upstreamCtx.Deadline(); !ok {
+		t.Fatal("detached upstream context must retain timeout deadline")
+	}
+}
 func TestShouldAsyncFallback_DisabledWhenPreStreamPrepared(t *testing.T) {
 	exec := &Executor{
 		AsyncShortTimeout: 1 * time.Second,
@@ -39,6 +67,49 @@ func TestShouldAsyncFallback_DisabledWhenPreStreamPrepared(t *testing.T) {
 //     content chunk is forwarded.
 //  3. The stream body delivered to the client still contains the
 //     upstream payload in order.
+func TestExecuteOpenAI_Q2BridgeOwnsResponseBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	var genericCalls atomic.Int32
+	var bridgeCalls atomic.Int32
+	exec := NewExecutor(
+		NewRouter(NewStickyCache(), credential.NewLimiter()), credential.NewManager(), credential.NewLimiter(),
+		pool.NewPoolManager(nil), nil, func(chunk []byte, isStream bool) []byte { return chunk }, nil, nil,
+	)
+	exec.OpenAIToAnthropicStream = func(_ http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture, _ any) StreamOutcome {
+		bridgeCalls.Add(1)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read bridge body: %v", err)
+		}
+		if !strings.Contains(string(body), `"content":"hi"`) {
+			t.Fatalf("bridge body = %q", body)
+		}
+		return StreamOutcome{}
+	}
+	cand := provider.Candidate{ProviderID: 1, CredentialID: 1, BaseURL: upstream.URL, Protocol: "openai-completions", RawModel: "gpt-test", APIKey: "key"}
+	_, err := exec.executeOpenAI(&ExecParams{
+		W: httptest.NewRecorder(), R: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+		BodyBytes: []byte(`{"stream":true}`), IsStream: true, ClientProtocol: "anthropic-messages",
+		ClientModel: "claude-test", ClientID: identity.ClientIdentity{IdentityHash: "test"},
+		StreamWrapper: func(http.ResponseWriter, *http.Response, NormalizerFunc, *audit.StreamCapture) StreamOutcome {
+			genericCalls.Add(1)
+			return StreamOutcome{}
+		},
+	}, cand, 0, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("executeOpenAI: %v", err)
+	}
+	if genericCalls.Load() != 0 || bridgeCalls.Load() != 1 {
+		t.Fatalf("generic calls=%d bridge calls=%d", genericCalls.Load(), bridgeCalls.Load())
+	}
+}
+
 func TestExecuteOpenAI_StreamPreStreamStopOrdering(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

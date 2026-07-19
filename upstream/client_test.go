@@ -192,6 +192,23 @@ func TestDo_NonRetryable429(t *testing.T) {
 	}
 }
 
+func TestNewWithRetries_UsesRequestContextForFullDeadline(t *testing.T) {
+	client := NewWithRetries(0)
+	if client.hc.Timeout != 0 {
+		t.Fatalf("http.Client.Timeout = %s, want 0", client.hc.Timeout)
+	}
+	transport, ok := client.hc.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client transport type = %T, want *http.Transport", client.hc.Transport)
+	}
+	if transport.ResponseHeaderTimeout != defaultHeaderTimeout {
+		t.Fatalf("ResponseHeaderTimeout = %s, want %s", transport.ResponseHeaderTimeout, defaultHeaderTimeout)
+	}
+	if transport.TLSHandshakeTimeout <= 0 || transport.ExpectContinueTimeout <= 0 {
+		t.Fatalf("transport handshake timeouts must remain bounded: tls=%s expect=%s", transport.TLSHandshakeTimeout, transport.ExpectContinueTimeout)
+	}
+}
+
 func TestNewWithRetries_DefaultResponseHeaderTimeout(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_RESPONSE_HEADER_TIMEOUT", "")
 	client := NewWithRetries(0)

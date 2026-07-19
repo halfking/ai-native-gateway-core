@@ -3098,6 +3098,10 @@ func (e *Executor) startAsyncRetry(
 		requestID = "async-" + time.Now().Format("20060102T150405.000")
 	}
 	startedAt := time.Now()
+	tenantID := pendingTenant(params)
+	if tenantID == "" {
+		return nil
+	}
 
 	// Mark in_progress BEFORE the goroutine starts so a concurrent
 	// GET immediately knows the work is in flight. Save is a no-op
@@ -3112,7 +3116,7 @@ func (e *Executor) startAsyncRetry(
 	mipCtx, mipCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	_ = e.PendingStore.MarkInProgress(mipCtx, &pending.Response{
 		SessionID:   sessionID,
-		TenantID:    tenantFromCtx(params.R),
+		TenantID:    tenantID,
 		RequestID:   requestID,
 		Status:      pending.StatusInProgress,
 		Body:        "",
@@ -3200,6 +3204,7 @@ func (e *Executor) runAsyncRetry(
 	longTimeout time.Duration,
 	maxFallbacks int,
 ) {
+	tenantID := pendingTenant(params)
 	defer func() {
 		// Defensive: an async goroutine panic must NOT take the
 		// process down. The request is already in_progress in
@@ -3215,6 +3220,7 @@ func (e *Executor) runAsyncRetry(
 			defer cancel()
 			_ = e.PendingStore.Save(ctx, &pending.Response{
 				SessionID:    sessionID,
+				TenantID:     tenantID,
 				RequestID:    requestID,
 				Status:       pending.StatusFailed,
 				ErrorMessage: "async_retry_panic",
@@ -3246,6 +3252,7 @@ func (e *Executor) runAsyncRetry(
 		// No candidates available — fail and write the reason.
 		_ = e.PendingStore.Save(ctx, &pending.Response{
 			SessionID:    sessionID,
+			TenantID:     tenantID,
 			RequestID:    requestID,
 			Status:       pending.StatusFailed,
 			ErrorMessage: "async_no_candidates",
@@ -3280,6 +3287,7 @@ func (e *Executor) runAsyncRetry(
 		if !params.IsStream && len(result.ResponseBody) > 0 {
 			_ = e.PendingStore.Save(ctx, &pending.Response{
 				SessionID:   sessionID,
+				TenantID:    tenantID,
 				RequestID:   requestID,
 				Status:      pending.StatusCompleted,
 				Body:        string(result.ResponseBody),
@@ -3296,6 +3304,7 @@ func (e *Executor) runAsyncRetry(
 			if entry, found, _ := e.PendingStore.Get(ctx, sessionID, requestID); found && entry.Status == pending.StatusInProgress {
 				_ = e.PendingStore.Save(ctx, &pending.Response{
 					SessionID:   sessionID,
+					TenantID:    tenantID,
 					RequestID:   requestID,
 					Status:      pending.StatusCompleted,
 					Body:        entry.Body,
@@ -3329,6 +3338,7 @@ func (e *Executor) runAsyncRetry(
 	}
 	_ = e.PendingStore.Save(ctx, &pending.Response{
 		SessionID:    sessionID,
+		TenantID:     tenantID,
 		RequestID:    requestID,
 		Status:       pending.StatusFailed,
 		ErrorMessage: truncateForStore(asyncErr),
@@ -3493,6 +3503,13 @@ func fpSlotTenantID(params *ExecParams) string {
 
 // back to the literal "default" if unset. Uses the exported
 // session.GetTenantIDFromContext (Track C C4 audit fix #5).
+func pendingTenant(params *ExecParams) string {
+	if params == nil {
+		return ""
+	}
+	return strings.TrimSpace(params.TenantID)
+}
+
 func tenantFromCtx(r *http.Request) string {
 	if r == nil {
 		return "default"

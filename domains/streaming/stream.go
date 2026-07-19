@@ -976,6 +976,7 @@ type PendingFinalState struct {
 	Status      string
 	ErrMessage  string
 	CompletedAt int64
+	Overflowed  bool
 }
 
 // pendingCapturer is the unexported canonical name. We also
@@ -988,6 +989,7 @@ type pendingCapturer struct {
 	maxBytes int
 
 	finalized  bool
+	overflowed bool
 	finalState PendingFinalState
 }
 
@@ -1018,12 +1020,14 @@ func (p *pendingCapturer) append(line string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.bytes >= p.maxBytes {
+		p.overflowed = true
 		return
 	}
 	remaining := p.maxBytes - p.bytes
 	if len(line) > remaining {
 		// Drop the entire chunk — truncating mid-JSON would
 		// produce an invalid SSE line on replay.
+		p.overflowed = true
 		return
 	}
 	p.buffer = append(p.buffer, line...)
@@ -1075,7 +1079,14 @@ func (p *pendingCapturer) finalize(outcome StreamOutcome) {
 		return
 	}
 	clientWentAway := outcome.Reason == "client_cancel" || outcome.Reason == "client_disconnected"
-	if outcome.Interrupted {
+	if p.overflowed {
+		p.finalState = PendingFinalState{
+			Status:      "failed",
+			ErrMessage:  "pending_capture_overflow",
+			CompletedAt: time.Now().Unix(),
+			Overflowed:  true,
+		}
+	} else if outcome.Interrupted {
 		if clientWentAway && p.bytes > 0 {
 			// Client disconnected but we captured at least one chunk —
 			// the body is replayable.
