@@ -261,6 +261,63 @@ func TestUnmarshalTrace_LegacyStringEvents(t *testing.T) {
 	}
 }
 
+// TestExtractTenantID 验证 2026-07-20 新增的 tenant_id 提取逻辑。
+// 修复点: request_stage_events 表的 tenant_id 列 NOT NULL,stage_events.go 必须
+// 从 authenticate 事件的 details 中提取 tenant_id,否则每条 INSERT 都失败。
+func TestExtractTenantID(t *testing.T) {
+	cases := []struct {
+		name string
+		evs  []TraceEvent
+		want string
+	}{
+		{
+			name: "authenticate 事件带 tenant_id",
+			evs: []TraceEvent{
+				{Stage: StageReceiveRequest, Details: map[string]any{"path": "/x"}},
+				{Stage: StageAuthenticate, Details: map[string]any{"tenant_id": "default", "api_key_id": 2}},
+				{Stage: StageRouteResolve, Details: map[string]any{}},
+			},
+			want: "default",
+		},
+		{
+			name: "tenant_id 在非 authenticate 事件中(也应能提取)",
+			evs: []TraceEvent{
+				{Stage: StageRouteResolve, Details: map[string]any{"tenant_id": "tenant-xyz"}},
+			},
+			want: "tenant-xyz",
+		},
+		{
+			name: "完全无 tenant_id (空字符串 fallback)",
+			evs: []TraceEvent{
+				{Stage: StageReceiveRequest, Details: map[string]any{"path": "/x"}},
+				{Stage: StageAuthenticate, Details: map[string]any{"api_key_id": 0}},
+			},
+			want: "",
+		},
+		{
+			name: "空 events",
+			evs:  nil,
+			want: "",
+		},
+		{
+			name: "空字符串 tenant_id 不被采用,继续找下一个非空值",
+			evs: []TraceEvent{
+				{Stage: StageReceiveRequest, Details: map[string]any{"tenant_id": ""}},
+				{Stage: StageAuthenticate, Details: map[string]any{"tenant_id": "t1"}},
+			},
+			want: "t1",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := extractTenantID(c.evs)
+			if got != c.want {
+				t.Errorf("extractTenantID = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestShouldDeleteTraceAfterFlush(t *testing.T) {
 	if shouldDeleteTraceAfterFlush(0) {
 		t.Fatal("zero rows affected must retain Redis trace")

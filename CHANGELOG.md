@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **流程详情 (RequestTracePanel) 显示为空 + 链路事件 100% 落库失败** (2026-07-20): 两个并行 bug 同源到 `request_logs_hot` 独立表 (migration 341) 上线后所有 trace 写入/读取路径未更新：
+  1. `LoadFromPG` + `requestTraceState` + `fetchRequestSummary` 只查 `request_logs`，最近 7 天请求全部落到 `request_logs_hot`，Redis TTL 过期后前端"流程详情"永远拿不到 events。改用 hot + 分区表 UNION ALL fallback (按 ts desc 取最新)。
+  2. `writeStageEvents` 100% 触发 SQLSTATE 22P02：(a) 漏传 `tenant_id NOT NULL` 列；(b) 更隐蔽的：`pgxpool` 在 `db/db.go` 强制启用 `QueryExecModeSimpleProtocol`（避免 stale prepared statement），此模式下 `[]byte` 参数被 `pgx/internal/sanitize.QuoteBytes` 序列化为 bytea hex literal `'\xHEX'`，PG 把 hex 解码为原始字节后再 `::jsonb` cast 时，jsonb parser 在 `\` 等特殊字符处失败。修复方案：`detailsJSON`/`snapshotJSON` 由 `[]byte` 改为 `string`（走 `QuoteString` 输出合法 quoted JSON 字面量），同时补 `tenant_id` 字段、改用 `tx.Exec` 串行（每请求 ~10ms overhead，可接受），并加 `extractTenantID` 单元测试 5 case + 失败时 dump 第一个失败 event 详情到 slog（便于下次同类问题快速定位）。详见 [docs/changelogs/2026-07-20-request-trace-panel-empty-and-stage-events-22p02.md](docs/changelogs/2026-07-20-request-trace-panel-empty-and-stage-events-22p02.md)。
+
 - **Live Stream 泳道点击 RequestLogDrawer 404 重试** (2026-07-20): 把详情接口重试从 1×100ms 升级为 4 次尝试 + 指数退避（200/500/1500ms），给异步 DB 持久化（probe-direct tile 等）约 2.2s 容忍窗口。见 [docs/changelogs/2026-07-20-live-stream-drawer-retry-backoff.md](docs/changelogs/2026-07-20-live-stream-drawer-retry-backoff.md)。
 
 ### Added
