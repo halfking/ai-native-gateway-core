@@ -15,7 +15,6 @@ import {
   type RegionStats,
   type UpgradeLog,
   type CenterInstance,
-  type RuntimeMetricsSummary,
 } from '../../api/ops'
 import type { DownloadStats } from '../../api/public'
 
@@ -40,7 +39,8 @@ const downloadStats = ref<DownloadStats | null>(null)
 const regionStats = ref<RegionStats[]>([])
 const deploymentNodes = ref<CenterInstance[]>([])
 const dataPlaneTables = ref<Record<string, number>>({})
-const runtimeMetrics = ref<RuntimeMetricsSummary[]>([])
+// 🔧 2026-07-19: runtime_metrics_summary 字段在 OpsOverviewBundle 中不存在，注释掉避免 TS 错误
+// const runtimeMetrics = ref<RuntimeMetricsSummary[]>([])
 
 const quickLinks = computed(() => [
   { path: '/ops/center', icon: '🖥️', label: t('ops.center.title') },
@@ -108,7 +108,8 @@ async function load() {
     regionStats.value = bundle.region_stats ?? []
     deploymentNodes.value = bundle.deployment_nodes ?? []
     dataPlaneTables.value = bundle.data_plane_tables ?? {}
-    runtimeMetrics.value = bundle.runtime_metrics_summary ?? []
+    // 🔧 2026-07-19: runtime_metrics_summary 字段在后端未返回，注释避免 undefined 赋值
+    // runtimeMetrics.value = bundle.runtime_metrics_summary ?? []
   } catch (error) {
     ElMessage.error(t('ops.overview.loadFailed'))
     console.error(error)
@@ -398,6 +399,8 @@ onMounted(load)
       </el-card>
 
       <!-- Runtime Metrics Summary Card -->
+      <!-- 🔧 2026-07-19: runtime_metrics_summary 后端未返回，临时注释该卡片避免报错 -->
+      <!--
       <el-card v-if="runtimeMetrics.length > 0" shadow="never" class="full-width runtime-metrics-card">
         <template #header>
           <div class="panel-header">
@@ -445,6 +448,7 @@ onMounted(load)
           </el-table-column>
         </el-table>
       </el-card>
+      -->
     </div>
   </div>
 </template>
