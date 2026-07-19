@@ -535,6 +535,27 @@ type Executor struct {
 	AsyncLongTimeout      time.Duration
 	AsyncMaxFallbackCreds int // cap on credential fallbacks in async goroutine
 
+	// AsyncRetrySem (2026-07-19, Phase 1 success-rate priority) limits
+	// concurrent async retry goroutines. When the semaphore is full,
+	// startAsyncRetry returns nil (no async) and the request falls back
+	// to synchronous exhaustion. Default 200 when non-nil. Nil = unlimited
+	// (preserves the pre-Phase-1 behaviour).
+	AsyncRetrySem chan struct{}
+
+	// ModelFallbackChain (Phase 2, 2026-07-19) maps a client-requested
+	// model name to fallback model names from other providers. When all
+	// candidates for the primary model fail, the executor fetches
+	// candidates for each fallback model and retries transparently.
+	// Example:
+	//
+	//	"claude-sonnet-4-20250514" → ["gpt-4o-2024-11-20", "gemini-2.0-flash-001"]
+	//
+	// Empty map (or nil) disables cross-provider fallback. The keys and
+	// values must be client model names as they appear in the request
+	// "model" field (after CanonicalizeClientModel). Wired from main.go
+	// via env LLM_GATEWAY_MODEL_FALLBACK (format: "primary=fb1,fb2;...").
+	ModelFallbackChain map[string][]string
+
 	// RequestLogEmitter (2026-06-20): optional hook that runAsyncRetry
 	// calls when a backgrounded retry succeeds, so the original
 	// request_logs row (stuck at "in_progress" because the sync phase
@@ -653,6 +674,29 @@ type Executor struct {
 	TTFBTracker         TTFBRecorder      // TTFB 历史追踪器
 	PreRequestValidator RequestValidator  // 请求格式校验器
 	PostExecutionHook   ExecutionRecorder // 执行后状态更新 hook
+}
+
+// DefaultFallbackChain (Phase 2, 2026-07-19) returns a sensible default
+// cross-provider model fallback map. These mappings cover the most commonly
+// used models. The chain is opt-out — unset env means "use defaults".
+func DefaultFallbackChain() map[string][]string {
+	return map[string][]string{
+		// Anthropic → OpenAI
+		"claude-sonnet-4-20250514": {"gpt-4o-2024-11-20"},
+		"claude-sonnet-4":          {"gpt-4o"},
+		"claude-haiku-3-20240307":  {"gpt-4o-mini-2024-07-18"},
+		"claude-haiku-3":           {"gpt-4o-mini"},
+		"claude-opus-4-20250514":   {"gpt-4o-2024-11-20"},
+		"claude-opus-4":            {"gpt-4o"},
+		// OpenAI → Anthropic
+		"gpt-4o-2024-11-20":      {"claude-sonnet-4-20250514"},
+		"gpt-4o":                 {"claude-sonnet-4"},
+		"gpt-4o-mini-2024-07-18": {"claude-haiku-3-20240307"},
+		"gpt-4o-mini":            {"claude-haiku-3"},
+		// DeepSeek → OpenAI (cheaper model → capable model, cost trade-off accepted)
+		"deepseek-chat":     {"gpt-4o-mini"},
+		"deepseek-reasoner": {"gpt-4o"},
+	}
 }
 
 func NewExecutor(
@@ -780,6 +824,12 @@ type ExecParams struct {
 	// ApiKeyID is the API key ID from keyInfo.ID (same as KeyID but as pointer).
 	// 2026-07-07: Used by multi-level sticky routing (L1/L2/L3).
 	ApiKeyID *int
+
+	// InFallback (Phase 2, 2026-07-19) prevents infinite recursion when
+	// the cross-provider model fallback chain triggers a recursive call
+	// to Execute(). Set true before the recursive call so the inner
+	// invocation skips its own fallback chain lookup.
+	InFallback bool
 }
 
 // SetTraceRecorder (2026-07-17) 注入请求链路追踪器,
@@ -898,6 +948,10 @@ type Trace struct {
 	BlockedCandidates []TraceCandidate `json:"blocked_candidates,omitempty"`
 	Chosen            *TraceCandidate  `json:"chosen,omitempty"`
 	FailureReason     string           `json:"failure_reason,omitempty"`
+	// FallbackFromModel (Phase 2, 2026-07-19) is the original client-requested
+	// model when the executor fell back to an equivalent model from a different
+	// provider. Empty means no fallback occurred.
+	FallbackFromModel string `json:"fallback_from_model,omitempty"`
 }
 
 type TraceCandidate struct {
@@ -2303,11 +2357,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// 而是保持 HTTP 连接，继续同步重试候选。客户端断开时自动停止。
 	// 2026-07-03: 增加最多 3 轮重试限制（加主循环共 4 轮），避免死循环。
 	const maxSyncRetryRounds = 3
-	if !params.IsStream && e.SyncRetryTimeout > 0 && tried > 0 {
+	if !params.PreStreamPrepared && e.SyncRetryTimeout > 0 && tried > 0 {
 		retried := 0
 		retryRound := 0
 		e.asyncDepth.Add(1)
-		defer e.asyncDepth.Add(-1)
 
 		deadline := time.Now().Add(e.SyncRetryTimeout)
 
@@ -2414,6 +2467,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			subParams.Candidates = subCandidates
 			result, retryErr := e.Execute(&subParams)
 			if retryErr == nil {
+				e.asyncDepth.Add(-1)
 				slog.Info("sync_retry_succeeded",
 					"model", params.ClientModel,
 					"elapsed_ms", time.Since(tTotal).Milliseconds(),
@@ -2434,7 +2488,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}
 
 		if params.R.Context().Err() == nil {
-			slog.Warn("sync_retry_exhausted",
+			slog.Warn("sync_retry_exhausted_fallthrough_async",
 				"model", params.ClientModel,
 				"elapsed_ms", time.Since(tTotal).Milliseconds(),
 				"tried", tried,
@@ -2442,16 +2496,81 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				"last_kind", lastKind,
 			)
 		}
-		// 同步重试耗尽了所有时间 → 返回 ExecuteError
-		// 不走到 async 回退路径
+		// 同步重试耗尽：客户端仍在等待 → 清除 asyncDepth 后走到 async 回退路径
+		// 不再直接返回 ExecuteError（旧行为）
+		e.asyncDepth.Add(-1)
 		trace.FailureReason = "sync_retry_exhausted"
-		return nil, &ExecuteError{
-			LastErr:   fmt.Errorf("sync retry exhausted after %v: %w", time.Since(tTotal), lastErr),
-			Tried:     tried,
-			Exhausted: true,
-			Trace:     trace,
-			Attempts:  attempts,
-			LastKind:  lastKind,
+		if params.R.Context().Err() != nil {
+			return nil, &ExecuteError{
+				LastErr:   fmt.Errorf("sync retry exhausted after %v: %w", time.Since(tTotal), lastErr),
+				Tried:     tried,
+				Exhausted: true,
+				Trace:     trace,
+				Attempts:  attempts,
+				LastKind:  lastKind,
+			}
+		}
+	}
+
+	// ── Cross-provider model fallback (Phase 2, 2026-07-19) ──
+	// All primary candidates exhausted after sync retry. Before handing
+	// off to async, try equivalent models from other providers. This is
+	// the single biggest success-rate improvement: a full-provider outage
+	// (e.g. Anthropic down) does not block the request — the executor
+	// transparently retries on an equivalent model from a different
+	// provider (e.g. gpt-4o).
+	//
+	// InFallback prevents infinite recursion; the chain only applies to
+	// the outermost Execute call. Recursive Execute inherits
+	// InFallback=true so it never re-enters this block.
+	if !params.InFallback && len(e.ModelFallbackChain) > 0 {
+		fbModels := e.ModelFallbackChain[params.ClientModel]
+		for _, fbModel := range fbModels {
+			if params.R.Context().Err() != nil {
+				break
+			}
+			fbCtx, fbCancel := runctx.DetachedTimeout(params.R.Context(), 2*time.Second)
+			fbCandidates, _, fbErr := e.Provider.GetCandidates(
+				fbCtx, fbModel,
+				params.ClientID.Fingerprint.ClientProfile,
+				params.TenantID,
+			)
+			fbCancel()
+			if len(fbCandidates) == 0 || fbErr != nil {
+				continue
+			}
+			slog.Warn("executor: trying fallback model",
+				"original_model", params.ClientModel,
+				"fallback_model", fbModel,
+				"fallback_candidates", len(fbCandidates),
+				"elapsed_ms", time.Since(tTotal).Milliseconds(),
+			)
+			subParams := *params
+			subParams.Candidates = fbCandidates
+			subParams.InFallback = true
+			subParams.ClientModel = fbModel
+			e.asyncDepth.Add(1)
+			result, fbExecErr := e.Execute(&subParams)
+			e.asyncDepth.Add(-1)
+			if fbExecErr == nil {
+				result.Trace.FallbackFromModel = params.ClientModel
+				slog.Info("executor: fallback model succeeded",
+					"original_model", params.ClientModel,
+					"fallback_model", fbModel,
+					"elapsed_ms", time.Since(tTotal).Milliseconds(),
+				)
+				return result, nil
+			}
+			// Accumulate failure details from the fallback attempt
+			if execErrTyped, ok := fbExecErr.(*ExecuteError); ok {
+				lastErr = execErrTyped.LastErr
+				lastKind = execErrTyped.LastKind
+				attempts = append(attempts, execErrTyped.Attempts...)
+				tried += execErrTyped.Tried
+				if execErrTyped.Trace != nil {
+					trace.BlockedCandidates = append(trace.BlockedCandidates, execErrTyped.Trace.BlockedCandidates...)
+				}
+			}
 		}
 	}
 
@@ -2468,7 +2587,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// (sanity); and at least one credential must have been tried
 	// (otherwise there's nothing to demote — the failure was a
 	// no_candidates condition, not a slow path).
-	if e.shouldAsyncFallback(params, tTotal, tried) {
+	if e.shouldAsyncFallback(params, tTotal, tried, lastKind) {
 		asyncErr := e.startAsyncRetry(params, trace, attempts, lastKind, lastErr)
 		if asyncErr != nil {
 			return nil, asyncErr
@@ -3006,7 +3125,15 @@ func (e *AsyncPendingError) Error() string {
 // fallback path. Returns false (synchronous exhaustion, as before)
 // if any precondition is missing. Each check is a one-liner so a
 // regression in the gate is easy to spot.
-func (e *Executor) shouldAsyncFallback(params *ExecParams, tTotal time.Time, tried int) bool {
+//
+// 2026-07-19 (Phase 1 success-rate priority):
+//   - Fast path A: tried >= 3 candidates with recoverable errors →
+//     allow async even if elapsed < AsyncShortTimeout.
+//   - Fast path B: transient/timeout/network single failure →
+//     allow async immediately (provider may recover in async window).
+//   - Both paths skip the 15s timeout wait, prioritizing success rate
+//     over latency symmetry.
+func (e *Executor) shouldAsyncFallback(params *ExecParams, tTotal time.Time, tried int, lastKind errorsx.ErrorKind) bool {
 	if params != nil && params.PreStreamPrepared {
 		return false
 	}
@@ -3036,13 +3163,6 @@ func (e *Executor) shouldAsyncFallback(params *ExecParams, tTotal time.Time, tri
 	if !hasSession {
 		return false
 	}
-	short := e.AsyncShortTimeout
-	if short <= 0 {
-		short = 15 * time.Second
-	}
-	if time.Since(tTotal) < short {
-		return false
-	}
 	// Nothing was tried at all — that's a no_candidates condition,
 	// not a slow path. Async would not help.
 	if tried <= 0 {
@@ -3051,6 +3171,10 @@ func (e *Executor) shouldAsyncFallback(params *ExecParams, tTotal time.Time, tri
 	// Sanity: long timeout must exceed short. If mis-configured
 	// the goroutine would just bail immediately; easier to skip
 	// the async detour and return the synchronous error.
+	short := e.AsyncShortTimeout
+	if short <= 0 {
+		short = 15 * time.Second
+	}
 	long := e.AsyncLongTimeout
 	if long <= 0 {
 		long = 300 * time.Second
@@ -3058,6 +3182,30 @@ func (e *Executor) shouldAsyncFallback(params *ExecParams, tTotal time.Time, tri
 	if long <= short {
 		return false
 	}
+
+	// ── Fast paths (success-rate priority, skip 15s timeout) ──
+
+	// Fast path A: 3+ candidates exhausted quickly.
+	// Exclude errors where re-trying the same content/model won't help.
+	if tried >= 3 &&
+		lastKind != errorsx.KindContentFilter &&
+		lastKind != errorsx.KindModelNotFound &&
+		!errorsx.IsClientBug(lastKind) {
+		return true
+	}
+
+	// Fast path B: single/multi candidate with retryable error
+	// (transient 5xx, timeout, network, upstream down, concurrent, stream timeout).
+	// The provider may recover in the 300s async window.
+	if errorsx.IsRetryable(lastKind) {
+		return true
+	}
+
+	// ── Standard path: only async after AsyncShortTimeout (>15s) ──
+	if time.Since(tTotal) < short {
+		return false
+	}
+
 	return true
 }
 
@@ -3098,6 +3246,23 @@ func (e *Executor) startAsyncRetry(
 		requestID = "async-" + time.Now().Format("20060102T150405.000")
 	}
 	startedAt := time.Now()
+
+	// Async semaphore guard: limit concurrent async retry goroutines.
+	// When the semaphore is full (e.g. batch provider outage triggers
+	// many concurrent async attempts), skip async and return nil so
+	// the caller falls back to synchronous exhaustion. This prevents
+	// goroutine explosion under systemic failure.
+	if e.AsyncRetrySem != nil {
+		select {
+		case e.AsyncRetrySem <- struct{}{}:
+		default:
+			slog.Warn("async_retry_semaphore_full",
+				"session_id", sessionID,
+				"request_id", requestID,
+			)
+			return nil
+		}
+	}
 
 	// Mark in_progress BEFORE the goroutine starts so a concurrent
 	// GET immediately knows the work is in flight. Save is a no-op
@@ -3200,6 +3365,10 @@ func (e *Executor) runAsyncRetry(
 	longTimeout time.Duration,
 	maxFallbacks int,
 ) {
+	// Phase 1 (2026-07-19): release async semaphore slot on completion.
+	if e.AsyncRetrySem != nil {
+		defer func() { <-e.AsyncRetrySem }()
+	}
 	defer func() {
 		// Defensive: an async goroutine panic must NOT take the
 		// process down. The request is already in_progress in
