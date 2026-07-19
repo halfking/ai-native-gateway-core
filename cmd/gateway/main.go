@@ -516,8 +516,9 @@ func main() {
 		pingErr := redisClient.Ping(pingCtx)
 		pingCancel()
 		if pingErr == nil {
-			ttl := time.Duration(cfg.SessionTTLHours) * time.Hour
-			sessionMgr = session.NewManager(redisClient, ttl)
+			sessionTTL := time.Duration(cfg.SessionTTLHours) * time.Hour
+			pendingTTL := time.Duration(cfg.PendingTTLSeconds) * time.Second
+			sessionMgr = session.NewManager(redisClient, sessionTTL)
 			chatHandler.SetSessionGetter(sessionMgr)
 			redisClientForCache = redisClient
 			fpSlotRedis = redis.NewClient(&redis.Options{
@@ -525,7 +526,7 @@ func main() {
 				Password: cfg.RedisPassword,
 				DB:       cfg.RedisDB,
 			})
-			pendingStore = pending.NewStore(fpSlotRedis, ttl)
+			pendingStore = pending.NewStore(fpSlotRedis, pendingTTL)
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
 			sessionPref = session.NewSessionPreference(redisClient)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
@@ -3865,7 +3866,7 @@ func extractTenantIDFromUpstreamResp(resp *http.Response) string {
 // reading from resp.Request.Context() (which is the upstream context and
 // lacks tenant info after upstreamContext decoupling).
 func markCapturedPendingInProgress(store *pending.Store, resp *http.Response, tenantID string) {
-	if store == nil || resp == nil {
+	if store == nil || resp == nil || tenantID == "" {
 		return
 	}
 	sessionID := streaming.SessionIDFromResp(resp)
@@ -3895,12 +3896,19 @@ func markCapturedPendingInProgress(store *pending.Store, resp *http.Response, te
 // 2026-07-19 audit fix: accepts tenantID as explicit parameter instead of
 // reading from resp.Request.Context() (which is the upstream context).
 func saveCapturedPending(store *pending.Store, pc *streaming.PendingCapturer, resp *http.Response, tenantID string) {
-	if store == nil || pc == nil || resp == nil {
+	if store == nil || pc == nil || resp == nil || tenantID == "" {
 		return
 	}
 	body, state, ok := pc.Snapshot()
 	if !ok {
 		return
+	}
+	if state.Overflowed {
+		slog.Warn("pending_capture_overflow",
+			"session_id", streaming.SessionIDFromResp(resp),
+			"request_id", streaming.RequestIDFromResp(resp),
+			"captured_bytes", len(body),
+		)
 	}
 	saveCtx, saveCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer saveCancel()
