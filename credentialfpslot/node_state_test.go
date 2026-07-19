@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNodeStateCooldownRecoveryOnRead(t *testing.T) {
+func TestNodeStateCooldownDoesNotRecoverOnRead(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() {
@@ -45,10 +45,10 @@ func TestNodeStateCooldownRecoveryOnRead(t *testing.T) {
 	state, err = mgr.GetNodeState(ctx, 100, "gpt-4")
 	require.NoError(t, err)
 	require.NotNil(t, state)
-	assert.True(t, state.IsUsable(time.Now()))
-	assert.False(t, state.Disabled)
-	assert.Equal(t, int64(0), state.FailureCount)
-	assert.Len(t, state.SlideWindow, 0)
+	assert.False(t, state.IsUsable(time.Now()))
+	assert.True(t, state.Disabled)
+	assert.Equal(t, int64(3), state.FailureCount)
+	assert.Len(t, state.SlideWindow, 3)
 }
 
 func TestNodeStateCooldownRecoveryPure(t *testing.T) {
@@ -59,8 +59,8 @@ func TestNodeStateCooldownRecoveryPure(t *testing.T) {
 		SlideWindow:   []NodeRecord{{Success: false, Timestamp: time.Now().Unix()}},
 	}
 
-	assert.True(t, state.IsUsable(time.Now()))
-	assert.False(t, state.Disabled)
-	assert.Equal(t, int64(0), state.FailureCount)
-	assert.Len(t, state.SlideWindow, 0)
+	assert.False(t, state.IsUsable(time.Now()))
+	assert.True(t, state.Disabled)
+	assert.Equal(t, int64(3), state.FailureCount)
+	assert.Len(t, state.SlideWindow, 1)
 }

@@ -63,8 +63,9 @@ func (n *NodeState) IsUsable(now time.Time) bool {
 	if n.Disabled && n.DisabledUntil > 0 && now.Unix() < n.DisabledUntil {
 		return false
 	}
-	n.recoverIfCooldownExpired(now.Unix())
-	return n.ConsecutiveFailureStreak(now) < nodeFailStreakLimit
+	// Expiring the cooldown only permits a real request to probe the node.
+	// RecordNodeSuccess is the sole path that can clear Disabled.
+	return !n.Disabled
 }
 
 // ConsecutiveFailureStreak counts tail failures within the active sliding window.
@@ -114,15 +115,6 @@ func (m *Manager) GetNodeState(ctx context.Context, credentialID int, model stri
 	if state.Model == "" {
 		state.Model = model
 	}
-	if state.Disabled {
-		before := state.Disabled
-		state.recoverIfCooldownExpired(time.Now().Unix())
-		if before && !state.Disabled {
-			if err := m.SetNodeState(ctx, &state); err != nil {
-				return nil, err
-			}
-		}
-	}
 	return &state, nil
 }
 
@@ -163,8 +155,11 @@ func (m *Manager) recordNodeOutcome(ctx context.Context, credentialID int, model
 		return nil
 	}
 	key := nodeKey(credentialID, model)
-	now := time.Now().Unix()
-	_, err := recordNodeOutcomeScript.Run(ctx, m.client,
+	now, err := m.redisNow(ctx)
+	if err != nil {
+		return fmt.Errorf("get redis time for node outcome failed: %w (credential_id=%d, model=%s)", err, credentialID, model)
+	}
+	_, err = recordNodeOutcomeScript.Run(ctx, m.client,
 		[]string{key},
 		kind,
 		requestID,
@@ -178,6 +173,14 @@ func (m *Manager) recordNodeOutcome(ctx context.Context, credentialID int, model
 		return fmt.Errorf("record node outcome: %w", err)
 	}
 	return nil
+}
+
+func (m *Manager) redisNow(ctx context.Context) (int64, error) {
+	current, err := m.client.Time(ctx).Result()
+	if err != nil {
+		return 0, err
+	}
+	return current.Unix(), nil
 }
 
 func newZeroNodeState(credentialID int, model string) *NodeState {
@@ -353,6 +356,7 @@ var recordNodeOutcomeScript = redis.NewScript(`
 
 	-- P0 Fix: 连续失败达到阈值时禁用节点
 	if not state.disabled and streak >= streak_limit then
+		local recovered_before_disable = state.disabled_reason == 'recovered_with_actual_success'
 		state.disabled = true
 		state.disabled_until = now + cooldown
 		state.last_disabled_at = now
@@ -361,7 +365,7 @@ var recordNodeOutcomeScript = redis.NewScript(`
 		end
 		state.disable_count = state.disable_count + 1
 		-- 区分是否是恢复后再次失败
-		if state.last_success_at and state.last_success_at > (state.last_disabled_at or 0) then
+		if recovered_before_disable or (state.last_success_at and state.last_success_at > (state.last_disabled_at or 0)) then
 			state.disabled_reason = 'consecutive_' .. streak_limit .. '_failures_after_recovery'
 		else
 			state.disabled_reason = 'consecutive_' .. streak_limit .. '_failures'

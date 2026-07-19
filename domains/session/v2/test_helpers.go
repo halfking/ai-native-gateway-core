@@ -57,11 +57,7 @@ func cleanupTestDB(t *testing.T, db *pgxpool.Pool) {
 //
 // This is shared across all V2 tests to avoid duplication.
 func getTestDBURL() string {
-	// Try environment variable first
-	if url := os.Getenv("TEST_DB_URL"); url != "" {
-		return url
-	}
-
-	// Default to local test database
-	return "postgres://kxuser:kxpass@127.0.0.1:5432/llm_gateway_test?sslmode=disable"
+	// Require an explicit URL so local databases with an incompatible schema do
+	// not make the default unit-test command fail unexpectedly.
+	return os.Getenv("TEST_DB_URL")
 }
