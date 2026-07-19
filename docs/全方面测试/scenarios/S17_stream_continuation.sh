@@ -69,12 +69,20 @@ done
 
 # 5. 判定
 PASS=true
-# (a) 成功率 ≥ 90%（含 fault_inject_cancel=30% 时，剩余 70% stream+non-stream 应基本全成）
+# (a) 排除 client_cancel 的"有效成功率" ≥ 90%
+#     注：fault_inject_cancel=0.3 × stream_ratio=0.5 会主动 cancel ≈15% 的请求，
+#     把这部分按预期事件剔除后再算，剩 ~85% 应基本全成。
 SUCC_RATE=$(awk "BEGIN{print $SUCC*100/$TOTAL}")
-if awk "BEGIN{exit !($SUCC_RATE >= 90)}"; then
-    log "PASS: success_rate=$SUCC_RATE% (>=90%)"
+EFFECTIVE_TOTAL=$((TOTAL - CANCELS))
+if [ "$EFFECTIVE_TOTAL" -gt 0 ]; then
+    EFFECTIVE_RATE=$(awk "BEGIN{print $SUCC*100/$EFFECTIVE_TOTAL}")
 else
-    log "FAIL: success_rate=$SUCC_RATE% (<90%)"; PASS=false
+    EFFECTIVE_RATE="$SUCC_RATE"
+fi
+if awk "BEGIN{exit !($EFFECTIVE_RATE >= 90)}"; then
+    log "PASS: effective_success_rate=$EFFECTIVE_RATE% (>=90%, excludes $CANCELS client_cancel out of $TOTAL)"
+else
+    log "FAIL: effective_success_rate=$EFFECTIVE_RATE% (<90%); raw=$SUCC_RATE%"; PASS=false
 fi
 # (b) 必须有 cancel 事件被记到，证明 fault_inject 起效
 if [ "$CANCELS" -ge 1 ]; then

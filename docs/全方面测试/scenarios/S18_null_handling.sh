@@ -114,7 +114,8 @@ cat > "$RESULT" <<EOF
       "healthz_after_idle": "$HEALTH_BEFORE",
       "first_request_http": $HTTP_AFTER_IDLE,
       "second_request_http": $HEALTH_CODE2,
-      "gateway_alive": true
+      "gateway_alive": true,
+      "pass": $($PASS && echo true || echo false)
     }
   }
 }
