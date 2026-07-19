@@ -48,8 +48,8 @@ type SystemHealthStatus struct {
 
 // SystemHealthWorker runs the 30s system-health scan.
 type SystemHealthWorker struct {
-	pool      *pgxpool.Pool
-	interval  time.Duration
+	pool       *pgxpool.Pool
+	interval   time.Duration
 	lastStatus atomic.Value // SystemHealthStatus
 }
 
@@ -103,19 +103,22 @@ func (w *SystemHealthWorker) tick(ctx context.Context) {
 		`SELECT status, success_rate, sample_count, failure_count, last_check_at
 		   FROM system_health_status(30)`)
 	var (
-		status       string
-		successRate  float64
-		sampleCount  int64
-		failureCount int64
-		lastCheck    time.Time
+		status                    string
+		successRate               *float64
+		sampleCount, failureCount int64
+		lastCheck                 time.Time
 	)
 	if err := row.Scan(&status, &successRate, &sampleCount, &failureCount, &lastCheck); err != nil {
 		slog.Warn("system_health_worker: query failed", "error", err)
 		return
 	}
+	sr := 0.0
+	if successRate != nil {
+		sr = *successRate
+	}
 	w.lastStatus.Store(SystemHealthStatus{
 		Status:       status,
-		SuccessRate:  successRate,
+		SuccessRate:  sr,
 		SampleCount:  sampleCount,
 		FailureCount: failureCount,
 		LastCheckAt:  lastCheck,

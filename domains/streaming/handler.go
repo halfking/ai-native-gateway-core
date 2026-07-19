@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"regexp"
@@ -227,6 +228,116 @@ type chatRequestBody struct {
 }
 
 //-----------------------------------------------------------------------------
+
+// Phase 1: Retry logic helpers for Goal mode error retry
+// Added: 2026-07-19
+
+// isRetriableError determines if an error should trigger a retry attempt.
+// Returns true for transient errors (network, timeout, 5xx, 429, no_candidates),
+// false for permanent errors (4xx client errors, auth failures, content filters).
+func isRetriableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check ExecuteError type for error kind classification
+	if execErr, ok := err.(*executors.ExecuteError); ok {
+		kind := execErr.LastKind
+
+		// Network-related errors (transient)
+		if kind == errorsx.KindNetwork ||
+			kind == errorsx.KindTimeout ||
+			kind == errorsx.KindUpstreamDown {
+			return true
+		}
+
+		// Rate limiting (transient, should retry with backoff)
+		if kind == errorsx.KindRateLimit {
+			return true
+		}
+
+		// Transient errors (general)
+		if kind == errorsx.KindTransient {
+			return true
+		}
+
+		// No available model (may recover on retry with different routing)
+		if kind == errorsx.KindModelNotFound {
+			return true
+		}
+
+		// Concurrency limit exceeded (transient)
+		if kind == errorsx.KindConcurrent {
+			return true
+		}
+
+		// Permanent errors - do NOT retry
+		if kind == errorsx.KindAuth ||
+			kind == errorsx.KindAuthRevoked ||
+			kind == errorsx.KindContentFilter ||
+			kind == errorsx.KindContextLength ||
+			kind == errorsx.KindQuotaPermanent {
+			return false
+		}
+	}
+
+	// Check upstream HTTP status code via extractUpstreamError
+	if ue, ok := extractUpstreamError(err); ok {
+		// 429 Too Many Requests - retriable
+		// 5xx Server Error - retriable
+		if ue.StatusCode == 429 || ue.StatusCode >= 500 {
+			return true
+		}
+	}
+
+	// Default: not retriable (conservative approach)
+	return false
+}
+
+// calculateRetryDelay computes the delay before the next retry attempt using
+// exponential backoff with random jitter to prevent thundering herd.
+//
+// Formula:
+//
+//	delayMs = baseDelayMs * (2 ^ attempt)
+//	delayMs = min(delayMs, maxDelayMs)
+//	jitter = delayMs * 0.2 * random(-1, 1)  // ±20%
+//	finalDelay = delayMs + jitter
+//
+// Example progression with baseDelayMs=100, maxDelayMs=5000:
+//
+//	attempt=0: 100ms ± 20% = 80-120ms
+//	attempt=1: 200ms ± 40% = 160-240ms
+//	attempt=2: 400ms ± 80% = 320-480ms
+//	attempt=3: 800ms ± 160ms = 640-960ms
+//	attempt=4+: 5000ms ± 1000ms = 4000-6000ms (capped)
+func calculateRetryDelay(attempt int, baseDelayMs int, maxDelayMs int) time.Duration {
+	if baseDelayMs <= 0 {
+		baseDelayMs = 100 // default 100ms
+	}
+	if maxDelayMs <= 0 {
+		maxDelayMs = 5000 // default max 5s
+	}
+
+	// Exponential backoff: 100ms -> 200ms -> 400ms -> 800ms -> ...
+	delayMs := baseDelayMs * (1 << attempt)
+	if delayMs > maxDelayMs {
+		delayMs = maxDelayMs
+	}
+
+	// Add ±20% random jitter to prevent retry storms
+	jitter := float64(delayMs) * 0.2
+	jitterMs := int(jitter * (2*rand.Float64() - 1)) // range: -20% to +20%
+	delayMs += jitterMs
+
+	// Ensure non-negative
+	if delayMs < 0 {
+		delayMs = baseDelayMs
+	}
+
+	return time.Duration(delayMs) * time.Millisecond
+}
+
 // Chat handler — integrates circuit breaker + concurrency limiter
 //-----------------------------------------------------------------------------
 
@@ -2056,132 +2167,227 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 
-	result, execErr := h.executor.Execute(&executors.ExecParams{
-		W:                 w,
-		R:                 r,
-		BodyBytes:         upstreamBody,
-		IsStream:          isStream,
-		PreStreamPrepared: preStreamPrepared,
-		OnStreamReady: func() {
-			if preStream != nil {
-				preStream.stop()
-				preStream = nil
-			}
-		},
-		OnStreamStarted: func(ttfbMs int) {
-			h.emitTrace(r.Context(), requestID, gwtrace.StreamStart(ttfbMs))
-		},
-		OnStreamCompleted: func(outcome executors.StreamOutcome) {
-			h.emitTrace(r.Context(), requestID,
-				gwtrace.StreamChunk(outcome.ChunkCount, 0))
-			finish := ""
-			if !outcome.Interrupted {
-				finish = "done"
-			}
-			event := gwtrace.StreamComplete(outcome.ChunkCount, 0, finish)
-			if outcome.Interrupted {
-				event = event.WithError(fmt.Errorf("%s", outcome.Reason))
-			}
-			h.emitTrace(r.Context(), requestID, event)
-		},
+	// ── Phase 1: Goal mode retry logic (2026-07-19) ──────────────────────
+	// Wrap executor.Execute in a retry loop with exponential backoff.
+	// Retriable errors: network, timeout, 5xx, 429, transient, concurrent.
+	// Non-retriable: 4xx auth, content filter, context length exceeded.
+	var result *executors.ExecuteResult
+	var execErr error
 
-		// 2026-07-17 同步探测回调：执行器进入同步探测 hold 时调用
-		// preStream.pause() 暂停 keepalive SSE 注释（已 WriteHeader 200），
-		// 避免客户端把"探测中的心跳"误判为响应开始。
-		OnPreStreamKeepalivePause: func() {
-			if preStream != nil {
-				preStream.pause()
+	// Retry configuration (default values, will be overridden by cost_mode preset)
+	maxRetries := 3
+	baseDelayMs := 100
+	maxDelayMs := 5000
+	retryTotalTimeout := 50 * time.Second
+
+	// TODO: Read from Phase 0 cost_mode preset when integrated with goal store
+	// For now, use hardcoded defaults (minimal mode: 2 retries, balanced: 3 retries)
+
+	// Create retry context with total timeout protection
+	retryCtx, retryCancel := context.WithTimeout(r.Context(), retryTotalTimeout)
+	defer retryCancel()
+
+	// Retry loop
+	retryStartTime := time.Now()
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Check if context is cancelled (client disconnected or timeout)
+		select {
+		case <-retryCtx.Done():
+			execErr = fmt.Errorf("retry timeout after %v: %w", time.Since(retryStartTime), retryCtx.Err())
+			slog.Warn("goal_retry_timeout",
+				"request_id", requestID,
+				"attempt", attempt,
+				"elapsed_sec", time.Since(retryStartTime).Seconds())
+			break
+		default:
+		}
+
+		// Log retry attempt (skip for first attempt)
+		if attempt > 0 {
+			slog.Info("goal_retry_attempt",
+				"request_id", requestID,
+				"attempt", attempt,
+				"max_retries", maxRetries,
+				"prev_error", func() string {
+					if execErr != nil {
+						return execErr.Error()
+					}
+					return ""
+				}())
+		}
+
+		// Execute the request
+		result, execErr = h.executor.Execute(&executors.ExecParams{
+			W:                 w,
+			R:                 r,
+			BodyBytes:         upstreamBody,
+			IsStream:          isStream,
+			PreStreamPrepared: preStreamPrepared,
+			OnStreamReady: func() {
+				if preStream != nil {
+					preStream.stop()
+					preStream = nil
+				}
+			},
+			OnStreamStarted: func(ttfbMs int) {
+				h.emitTrace(r.Context(), requestID, gwtrace.StreamStart(ttfbMs))
+			},
+			OnStreamCompleted: func(outcome executors.StreamOutcome) {
+				h.emitTrace(r.Context(), requestID,
+					gwtrace.StreamChunk(outcome.ChunkCount, 0))
+				finish := ""
+				if !outcome.Interrupted {
+					finish = "done"
+				}
+				event := gwtrace.StreamComplete(outcome.ChunkCount, 0, finish)
+				if outcome.Interrupted {
+					event = event.WithError(fmt.Errorf("%s", outcome.Reason))
+				}
+				h.emitTrace(r.Context(), requestID, event)
+			},
+
+			// 2026-07-17 同步探测回调：执行器进入同步探测 hold 时调用
+			// preStream.pause() 暂停 keepalive SSE 注释（已 WriteHeader 200），
+			// 避免客户端把"探测中的心跳"误判为响应开始。
+			OnPreStreamKeepalivePause: func() {
+				if preStream != nil {
+					preStream.pause()
+				}
+			},
+			// 探测结束（无论恢复/失败）→ 如果 keepalive 还在跑就 resume，
+			// 让正常流式响应或后续错误路径不再卡在 pause 状态。
+			OnProbeHoldEnd: func(recovered bool) {
+				if preStream != nil {
+					preStream.resume()
+				}
+				if logCtx != nil {
+					logCtx.MarkProbeHoldEnd(recovered)
+				}
+			},
+			OnProbeHoldStart: func() {
+				if logCtx != nil {
+					logCtx.MarkProbeHoldStart()
+				}
+			},
+			ClientProtocol: clientProtocol,
+			ClientModel:    clientModel,
+			// OutboundModel is intentionally set to clientModel here so the
+			// upstream body builder (executor_chat.prepareRequestBody /
+			// executor_anthropic.prepareAnthropicRequestBody) does NOT echo
+			// the FIRST candidate's model into a retry/failover attempt's
+			// request body. The actual upstream model id is resolved per
+			// candidate inside the executor via resolveOutboundModel().
+			//
+			// outboundForLog is preserved for request_logs / decision log /
+			// audit and is exposed via params.Transform.MatchedRule +
+			// explicitOutbound (see recordInitialRequestLog below).
+			//
+			// Historical behaviour before 2026-07-14 wrote
+			// `OutboundModel: outboundForLog` here, which caused retries to
+			// the NEXT candidate to still send the previous candidate's
+			// upstream model id. For NVIDIA NIM this meant candidate #2+
+			// received a short id like "glm-5.2" or "minimax-m3" instead of
+			// the required publisher-prefixed "z-ai/glm-5.2" /
+			// "minimaxai/minimax-m3" → model_not_found.
+			OutboundModel:  clientModel,
+			ClientID:       clientID,
+			Transform:      txResult,
+			Resolution:     modelResolution,
+			Candidates:     candidates,
+			Policy:         policy,
+			AuditBuilder:   auditBuilder,
+			Capture:        streamCapture,
+			ToolsRequested: requestHasTools(bodyBytes),
+			SessionKey:     sessionKey,
+			StickyKey:      stickyKey,
+			KeyID: func() int {
+				if keyInfo != nil {
+					return keyInfo.ID
+				}
+				return 0
+			}(),
+			KeyConcurrentLimit: func() int {
+				if keyInfo != nil {
+					return keyInfo.EffectiveConcurrent()
+				}
+				return 0
+			}(),
+			// Round 47 compression v7 T13: tenant-namespaced Memora user_id.
+			TenantID: func() string {
+				if keyInfo != nil {
+					return keyInfo.TenantID
+				}
+				return ""
+			}(),
+			// 2026-07-14: pass the per-request id so the no-candidates
+			// fallback inside Execute() can hand it to ActiveProbeWorker
+			// as the probe row's parent_request_id. Without this the
+			// probe row in request_logs / live-stream would have no link
+			// back to the failed business request.
+			RequestID: requestID,
+			// 2026-07-07: Multi-level sticky routing (L1: session+model, L2: client+model, L3: client).
+			SessionID: gwSessionID,
+			Model:     clientModel,
+			AppID: func() *int {
+				if keyInfo != nil {
+					return &keyInfo.ApplicationID
+				}
+				return nil
+			}(),
+			ApiKeyID: func() *int {
+				if keyInfo != nil {
+					return &keyInfo.ID
+				}
+				return nil
+			}(),
+			// 2026-07-19: 路由尝试追踪器，记录每次 upstream 尝试详情
+			RoutingTracker: executors.NewRoutingAttemptsTracker(),
+		})
+
+		// Success or non-retriable error - exit retry loop immediately
+		if execErr == nil || !isRetriableError(execErr) {
+			if execErr == nil && attempt > 0 {
+				slog.Info("goal_retry_succeeded",
+					"request_id", requestID,
+					"attempt", attempt,
+					"total_elapsed_sec", time.Since(retryStartTime).Seconds())
 			}
-		},
-		// 探测结束（无论恢复/失败）→ 如果 keepalive 还在跑就 resume，
-		// 让正常流式响应或后续错误路径不再卡在 pause 状态。
-		OnProbeHoldEnd: func(recovered bool) {
-			if preStream != nil {
-				preStream.resume()
-			}
-			if logCtx != nil {
-				logCtx.MarkProbeHoldEnd(recovered)
-			}
-		},
-		OnProbeHoldStart: func() {
-			if logCtx != nil {
-				logCtx.MarkProbeHoldStart()
-			}
-		},
-		ClientProtocol: clientProtocol,
-		ClientModel:    clientModel,
-		// OutboundModel is intentionally set to clientModel here so the
-		// upstream body builder (executor_chat.prepareRequestBody /
-		// executor_anthropic.prepareAnthropicRequestBody) does NOT echo
-		// the FIRST candidate's model into a retry/failover attempt's
-		// request body. The actual upstream model id is resolved per
-		// candidate inside the executor via resolveOutboundModel().
-		//
-		// outboundForLog is preserved for request_logs / decision log /
-		// audit and is exposed via params.Transform.MatchedRule +
-		// explicitOutbound (see recordInitialRequestLog below).
-		//
-		// Historical behaviour before 2026-07-14 wrote
-		// `OutboundModel: outboundForLog` here, which caused retries to
-		// the NEXT candidate to still send the previous candidate's
-		// upstream model id. For NVIDIA NIM this meant candidate #2+
-		// received a short id like "glm-5.2" or "minimax-m3" instead of
-		// the required publisher-prefixed "z-ai/glm-5.2" /
-		// "minimaxai/minimax-m3" → model_not_found.
-		OutboundModel:  clientModel,
-		ClientID:       clientID,
-		Transform:      txResult,
-		Resolution:     modelResolution,
-		Candidates:     candidates,
-		Policy:         policy,
-		AuditBuilder:   auditBuilder,
-		Capture:        streamCapture,
-		ToolsRequested: requestHasTools(bodyBytes),
-		SessionKey:     sessionKey,
-		StickyKey:      stickyKey,
-		KeyID: func() int {
-			if keyInfo != nil {
-				return keyInfo.ID
-			}
-			return 0
-		}(),
-		KeyConcurrentLimit: func() int {
-			if keyInfo != nil {
-				return keyInfo.EffectiveConcurrent()
-			}
-			return 0
-		}(),
-		// Round 47 compression v7 T13: tenant-namespaced Memora user_id.
-		TenantID: func() string {
-			if keyInfo != nil {
-				return keyInfo.TenantID
-			}
-			return ""
-		}(),
-		// 2026-07-14: pass the per-request id so the no-candidates
-		// fallback inside Execute() can hand it to ActiveProbeWorker
-		// as the probe row's parent_request_id. Without this the
-		// probe row in request_logs / live-stream would have no link
-		// back to the failed business request.
-		RequestID: requestID,
-		// 2026-07-07: Multi-level sticky routing (L1: session+model, L2: client+model, L3: client).
-		SessionID: gwSessionID,
-		Model:     clientModel,
-		AppID: func() *int {
-			if keyInfo != nil {
-				return &keyInfo.ApplicationID
-			}
-			return nil
-		}(),
-		ApiKeyID: func() *int {
-			if keyInfo != nil {
-				return &keyInfo.ID
-			}
-			return nil
-		}(),
-		// 2026-07-19: 路由尝试追踪器，记录每次 upstream 尝试详情
-		RoutingTracker: executors.NewRoutingAttemptsTracker(),
-	})
+			break
+		}
+
+		// Last attempt - no more retries, exit loop
+		if attempt >= maxRetries {
+			slog.Warn("goal_retry_exhausted",
+				"request_id", requestID,
+				"attempts", attempt+1,
+				"last_error", execErr.Error())
+			break
+		}
+
+		// Calculate exponential backoff delay with jitter
+		delay := calculateRetryDelay(attempt, baseDelayMs, maxDelayMs)
+
+		slog.Info("goal_retry_scheduled",
+			"request_id", requestID,
+			"attempt", attempt+1,
+			"delay_ms", delay.Milliseconds(),
+			"error_kind", func() string {
+				if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
+					return string(execErrTyped.LastKind)
+				}
+				return "unknown"
+			}())
+
+		// Wait for delay or context cancellation
+		select {
+		case <-time.After(delay):
+			// Continue to next retry attempt
+		case <-retryCtx.Done():
+			execErr = fmt.Errorf("retry cancelled during delay: %w", retryCtx.Err())
+			break
+		}
+	}
+	// ── End of retry loop ────────────────────────────────────────────────
 
 	// ── 2026-07-17: trace.route_credential ──────────────────────────────────
 	// 在 executor.Execute 返回后立即记录"实际命中的凭据"。 这是 trace 视图里
