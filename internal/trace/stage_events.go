@@ -41,10 +41,6 @@ func (r *RedisRecorder) writeStageEvents(ctx context.Context, db *pgxpool.Pool, 
 			detailsJSON = []byte("{}")
 		}
 
-		// 从 requestID 推断 tenant_id（简化版，实际应从 request_logs 读取）
-		// 这里先用空字符串，后续可优化为 JOIN request_logs
-		tenantID := ""
-
 		// Snapshot 转 JSON（如果存在）
 		var snapshotJSON any
 		if ev.Snapshot != nil {
@@ -54,14 +50,14 @@ func (r *RedisRecorder) writeStageEvents(ctx context.Context, db *pgxpool.Pool, 
 
 		batch.Queue(`
 			INSERT INTO request_stage_events (
-				request_id, tenant_id, seq, stage, module, timestamp, duration_ms, status,
+				request_id, seq, stage, module, event_timestamp, duration_ms, status,
 				error_message, http_status, response_body, failure_hint, details, snapshot
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8,
-				$9, $10, $11, $12, $13::jsonb, $14::jsonb
+				$1, $2, $3, $4, $5, $6, $7,
+				$8, $9, $10, $11, $12::jsonb, $13::jsonb
 			)
 			ON CONFLICT DO NOTHING
-		`, requestID, tenantID, ev.Seq, ev.Stage, ev.Module, ev.Timestamp, ev.DurationMs, ev.Status,
+		`, requestID, ev.Seq, ev.Stage, ev.Module, ev.Timestamp, ev.DurationMs, ev.Status,
 			ev.Error, httpStatus, responseBody, failureHint, detailsJSON, snapshotJSON)
 	}
 
