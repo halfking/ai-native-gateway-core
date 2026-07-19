@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   getProviderQualityDetail,
 } from '../../api/quality'
@@ -14,6 +15,8 @@ import {
 const props = defineProps<{
   providerId: number
 }>()
+const { t } = useI18n()
+const qp = (key: string): string => t(`providerDetailPage.quality.${key}`)
 
 const loading = ref(false)
 const error = ref('')
@@ -47,10 +50,10 @@ const radarData = computed(() => {
   const scores = bestModel.value?.scores
   if (!scores) return []
   return [
-    { name: '可用性', value: scores.availability },
-    { name: '性能', value: scores.performance },
-    { name: '稳定性', value: scores.stability },
-    { name: '成本效益', value: scores.cost_efficiency },
+    { name: qp('availability'), value: scores.availability },
+    { name: qp('performance'), value: scores.performance },
+    { name: qp('stability'), value: scores.stability },
+    { name: qp('costEfficiency'), value: scores.cost_efficiency },
   ]
 })
 
@@ -66,10 +69,10 @@ function gradeLabel(grade: string | undefined): string {
 }
 
 function scoreColor(n: number): string {
-  if (n >= 90) return '#67C23A'
-  if (n >= 70) return '#409EFF'
-  if (n >= 60) return '#E6A23C'
-  return '#F56C6C'
+  if (n >= 90) return 'var(--success)'
+  if (n >= 70) return 'var(--accent)'
+  if (n >= 60) return 'var(--warning)'
+  return 'var(--danger)'
 }
 
 function barWidth(n: number): string {
@@ -77,22 +80,22 @@ function barWidth(n: number): string {
 }
 
 function modelLabel(name: string | null | undefined): string {
-  if (!name) return '供应商级聚合'
+  if (!name) return qp('providerAggregate')
   return name
 }
 </script>
 
 <template>
   <div class="quality-tab">
-    <div v-if="loading" class="empty">加载品质数据…</div>
+    <div v-if="loading" class="empty">{{ qp('loading') }}</div>
     <div v-else-if="error" class="alert alert-danger">{{ error }}</div>
     <div v-else-if="!data || !data.models?.length" class="empty">
-      暂无质量数据。品质画像由后台定时计算，稍后刷新或触发探测后再看。
+      {{ qp('noData') }}
     </div>
     <template v-else>
       <div class="overview-row">
         <div class="stat-card">
-          <div class="stat-label">综合评分</div>
+          <div class="stat-label">{{ qp('overallScore') }}</div>
           <div class="stat-value" :style="{ color: scoreColor(bestModel?.quality_score ?? 0) }">
             {{ bestModel ? formatQualityScore(bestModel.quality_score) : '—' }}
             <span
@@ -115,18 +118,18 @@ function modelLabel(name: string | null | undefined): string {
       </div>
 
       <div class="card models-card">
-        <h3 class="section-title">模型质量明细</h3>
+        <h3 class="section-title">{{ qp('modelDetails') }}</h3>
         <table class="quality-table">
           <thead>
             <tr>
-              <th>模型</th>
-              <th>综合质量</th>
-              <th>等级</th>
-              <th>可用性</th>
-              <th>性能</th>
-              <th>稳定性</th>
-              <th>成本效益</th>
-              <th>更新时间</th>
+              <th>{{ qp('model') }}</th>
+              <th>{{ qp('overallQuality') }}</th>
+              <th>{{ qp('grade') }}</th>
+              <th>{{ qp('availability') }}</th>
+              <th>{{ qp('performance') }}</th>
+              <th>{{ qp('stability') }}</th>
+              <th>{{ qp('costEfficiency') }}</th>
+              <th>{{ qp('updatedAt') }}</th>
             </tr>
           </thead>
           <tbody>
