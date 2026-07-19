@@ -2523,7 +2523,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// InFallback prevents infinite recursion; the chain only applies to
 	// the outermost Execute call. Recursive Execute inherits
 	// InFallback=true so it never re-enters this block.
-	if !params.InFallback && len(e.ModelFallbackChain) > 0 {
+	//
+	// tried > 0 ensures we only fallback when real failures occurred,
+	// not when no candidates were available (routing misconfiguration).
+	if !params.InFallback && tried > 0 && len(e.ModelFallbackChain) > 0 {
 		fbModels := e.ModelFallbackChain[params.ClientModel]
 		for _, fbModel := range fbModels {
 			if params.R.Context().Err() != nil {
@@ -2540,7 +2543,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				continue
 			}
 			slog.Warn("executor: trying fallback model",
-				"original_model", params.ClientModel,
+				"client_model", params.ClientModel,
 				"fallback_model", fbModel,
 				"fallback_candidates", len(fbCandidates),
 				"elapsed_ms", time.Since(tTotal).Milliseconds(),
@@ -2554,8 +2557,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			e.asyncDepth.Add(-1)
 			if fbExecErr == nil {
 				result.Trace.FallbackFromModel = params.ClientModel
+				// Clear stale FailureReason from sync retry phase — this
+				// request ultimately succeeded via fallback, not failed.
+				result.Trace.FailureReason = ""
 				slog.Info("executor: fallback model succeeded",
-					"original_model", params.ClientModel,
+					"client_model", params.ClientModel,
 					"fallback_model", fbModel,
 					"elapsed_ms", time.Since(tTotal).Milliseconds(),
 				)
