@@ -58,6 +58,9 @@ func TestNewActiveProbeWorker_Defaults(t *testing.T) {
 	if w.cfg.QueueSize != 128 {
 		t.Errorf("QueueSize default = %d, want 128", w.cfg.QueueSize)
 	}
+	if w.cfg.Workers != 1 {
+		t.Errorf("Workers default = %d, want 1", w.cfg.Workers)
+	}
 }
 
 func TestNewActiveProbeWorker_DisabledNoStart(t *testing.T) {
