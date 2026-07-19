@@ -479,7 +479,7 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 	}
 
 	result, err := db.Exec(runCtx, `
-		UPDATE request_logs
+		UPDATE request_logs_hot
 		SET trace_events = $1::jsonb
 		WHERE request_id = $2
 	`, raw, requestID)
