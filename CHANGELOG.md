@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Live Stream 泳道点击 RequestLogDrawer 404 重试** (2026-07-20): 把详情接口重试从 1×100ms 升级为 4 次尝试 + 指数退避（200/500/1500ms），给异步 DB 持久化（probe-direct tile 等）约 2.2s 容忍窗口。见 [docs/changelogs/2026-07-20-live-stream-drawer-retry-backoff.md](docs/changelogs/2026-07-20-live-stream-drawer-retry-backoff.md)。
 
+### Added
+
+- **telemetry fallback ring buffer + 在线 dump/replay** (2026-07-20): telemetry worker 写 DB 失败时，原架构只输出 `slog.Warn`，请求体丢失。新增 `domains/dbdegradation.RingBuffer`（cap 默认 10000，env `TELEMETRY_FALLBACK_BUFFER_CAP` 可覆盖）+ `MultiBackupWriter`（FileWriter + ring buffer 双写）+ 4 个 admin-token 端点 `/internal/telemetry/fallback-buffer/{stats,dump,clear,replay}`。运维可在线 dump 最近失败条目并 replay 回 DB，不再 grep 几百 MB gzip 日志。见 [docs/changelogs/2026-07-20-telemetry-fallback-ring-buffer.md](docs/changelogs/2026-07-20-telemetry-fallback-ring-buffer.md)。
+
 - **telemetry request_logs INSERT 22P02 (nil RoutingAttempts)** (2026-07-20): `persistRequestLog` 用 `string(entry.RoutingAttempts)`，nil 时传 `""` 触发 `""::text::jsonb` → SQLSTATE 22P02，影响所有 probe 和大部分普通请求。改用 `jsonOrNull()` 后 nil → `"null"` → SQL NULL（合法）。见 [docs/changelogs/2026-07-20-telemetry-routing-attempts-json-cast.md](docs/changelogs/2026-07-20-telemetry-routing-attempts-json-cast.md)。
 
 - **Self-Check 触发测试按钮 503 → 410 + UI 友好提示** (2026-07-20): 新探针模式下 legacy featured-mode `SelfCheckWorker` 默认不实例化，但 `/api/self-check/trigger` 仍挂在前端触发；按钮点击恒回 503 现已修复为 **410 Gone** + `error_code: self_check.trigger.disabled_in_new_probe_mode`，并新增 `GET /api/self-check/trigger/availability` 端点 + 前端按可用性 disable 按钮 + tooltip。详见 [docs/changelogs/2026-07-20-self-check-trigger-gone.md](docs/changelogs/2026-07-20-self-check-trigger-gone.md)。
