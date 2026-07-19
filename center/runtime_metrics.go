@@ -156,12 +156,13 @@ func (s *PgxStore) ListRuntimeAlertsForInstance(ctx context.Context, instanceID 
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, rule_key, instance_id, severity, title, message, status, metric_value,
-		       detected_at, acked_at, acked_by, resolved_at, resolved_by, suppressed_until
-		FROM runtime_alert_events
+		SELECT id, rule_key, instance_id, severity, title, message, status,
+		       COALESCE(metric_value, 0), detected_at,
+		       acked_at, COALESCE(acked_by, ''), resolved_at, COALESCE(resolved_by, ''),
+		       suppressed_until
+		FROM runtime_alerts
 		WHERE instance_id = $1
 		  AND status IN ('triggered', 'acknowledged', 'suppressed')
-		  AND (suppressed_until IS NULL OR suppressed_until > now())
 		ORDER BY detected_at DESC
 		LIMIT $2
 	`, instanceID, limit)
@@ -169,5 +170,21 @@ func (s *PgxStore) ListRuntimeAlertsForInstance(ctx context.Context, instanceID 
 		return nil, err
 	}
 	defer rows.Close()
-	return scanRuntimeAlerts(rows)
+
+	var items []RuntimeAlertEvent
+	for rows.Next() {
+		var e RuntimeAlertEvent
+		if err := rows.Scan(
+			&e.ID, &e.RuleKey, &e.InstanceID, &e.Severity, &e.Title, &e.Message, &e.Status,
+			&e.MetricValue, &e.DetectedAt,
+			&e.AckedAt, &e.AckedBy, &e.ResolvedAt, &e.ResolvedBy, &e.SuppressedUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, e)
+	}
+	if items == nil {
+		items = []RuntimeAlertEvent{}
+	}
+	return items, rows.Err()
 }

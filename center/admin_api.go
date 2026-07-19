@@ -33,7 +33,6 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 	g.POST("/instances/:id/command", a.IssueCommand)
 	g.GET("/instances/:id/heartbeats", a.GetHeartbeats)
 	g.GET("/instances/:id/status", a.GetStatus)
-	g.GET("/instances/:id/runtime", a.GetRuntime)
 	g.GET("/commands/:id", a.GetCommand)
 	g.GET("/commands/:id/status", a.GetCommandStatus)
 	g.GET("/dashboard/stats", a.GetDashboardStats)
@@ -145,46 +144,6 @@ func (a *AdminAPI) GetStatus(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, status)
-}
-
-// GetRuntime returns recent runtime_metrics + open alerts for one instance.
-func (a *AdminAPI) GetRuntime(c echo.Context) error {
-	instanceID := c.Param("id")
-	pgxStore, ok := a.store.(*PgxStore)
-	if !ok {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "runtime metrics unavailable"})
-	}
-
-	since := time.Now().Add(-24 * time.Hour)
-	if sinceStr := c.QueryParam("since"); sinceStr != "" {
-		if t, err := time.Parse(time.RFC3339, sinceStr); err == nil {
-			since = t
-		}
-	}
-	limit := 120
-	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
-
-	metrics, err := pgxStore.ListRuntimeMetricsForInstance(c.Request().Context(), instanceID, since, limit)
-	if err != nil {
-		slog.Error("list runtime metrics failed", "error", err, "instance_id", instanceID)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "list runtime metrics failed"})
-	}
-	alerts, err := pgxStore.ListRuntimeAlertsForInstance(c.Request().Context(), instanceID, 20)
-	if err != nil {
-		slog.Error("list instance runtime alerts failed", "error", err, "instance_id", instanceID)
-		alerts = []RuntimeAlertEvent{}
-	}
-
-	var latest *RuntimeMetricPoint
-	if len(metrics) > 0 {
-		latest = &metrics[0]
-	}
-	return c.JSON(http.StatusOK, map[string]any{
-		"instance_id": instanceID,
-		"latest":      latest,
-		"items":       metrics,
-		"alerts":      alerts,
-	})
 }
 
 // GetCommand 获取命令详情
