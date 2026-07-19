@@ -287,3 +287,45 @@ func TestSingleRune(t *testing.T) {
 		t.Errorf("expected 2 matches, got %d: %v", len(matches), matches)
 	}
 }
+
+// TestEvaluateSafety 测试安全评估
+func TestEvaluateSafety(t *testing.T) {
+	engine := NewSensitiveWordEngine()
+	config := &SensitiveWordConfig{
+		Version: "1.0",
+		Categories: map[string]CategoryConf{
+			"terrorism": {Name: "恐怖主义", Words: []string{"炸弹", "恐怖"}},
+			"political": {Name: "政治敏感", Words: []string{"敏感词"}},
+			"general":   {Name: "一般敏感", Words: []string{"测试"}},
+		},
+	}
+	if err := engine.Build(config); err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		text         string
+		expectAction Action
+		minScore     float64
+		maxScore     float64
+	}{
+		{"clean", "正常文本", ActionAllow, 0.0, 0.0},
+		{"low risk", "这是测试", ActionAllow, 0.0, 0.3},
+		{"medium risk", "敏感词", ActionWarn, 0.3, 0.6},
+		{"high risk", "炸弹恐怖", ActionBlock, 0.6, 1.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.EvaluateSafety(tt.text)
+			if result.Action != tt.expectAction {
+				t.Errorf("Action = %v, want %v", result.Action, tt.expectAction)
+			}
+			if result.Score < tt.minScore || result.Score > tt.maxScore {
+				t.Errorf("Score = %.2f, want [%.2f, %.2f]", result.Score, tt.minScore, tt.maxScore)
+			}
+			t.Logf("score=%.2f action=%s", result.Score, result.Action)
+		})
+	}
+}

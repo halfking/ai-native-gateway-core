@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -281,4 +282,93 @@ func sortResults(results []*MatchResult) {
 			}
 		}
 	}
+}
+
+// EvaluateSafety 评估文本安全性，返回评分和建议动作
+func (e *SensitiveWordEngine) EvaluateSafety(text string) *SafetyResult {
+	matches := e.Match(text)
+	if len(matches) == 0 {
+		return &SafetyResult{
+			Score:        0.0,
+			MatchedWords: []string{},
+			Matches:      []*MatchResult{},
+			Category:     "clean",
+			Action:       ActionAllow,
+			Reason:       "no sensitive words detected",
+		}
+	}
+
+	score := 0.0
+	categoryCount := make(map[string]int)
+	categoryLevel := make(map[string]AlertLevel)
+	matchedWords := make([]string, 0, len(matches))
+
+	for _, match := range matches {
+		matchedWords = append(matchedWords, match.Word)
+		if match.Category != nil {
+			cat := match.Category.Key
+			categoryCount[cat]++
+			if existingLevel, ok := categoryLevel[cat]; !ok || match.Category.Level < existingLevel {
+				categoryLevel[cat] = match.Category.Level
+			}
+			switch match.Category.Level {
+			case LevelP0:
+				score += 0.5
+			case LevelP1:
+				score += 0.3
+			case LevelP2:
+				score += 0.1
+			}
+		}
+	}
+
+	score = math.Min(score, 1.0)
+
+	mainCategory := "mixed"
+	highestLevel := LevelP2
+	maxCount := 0
+	for cat, level := range categoryLevel {
+		count := categoryCount[cat]
+		if level < highestLevel || (level == highestLevel && count > maxCount) {
+			highestLevel = level
+			maxCount = count
+			mainCategory = cat
+		}
+	}
+
+	action := ActionAllow
+	reason := ""
+	if score >= 0.6 {
+		action = ActionBlock
+		reason = fmt.Sprintf("high risk score %.2f, %d sensitive words detected", score, len(matches))
+	} else if score >= 0.3 {
+		action = ActionWarn
+		reason = fmt.Sprintf("medium risk score %.2f, %d sensitive words detected", score, len(matches))
+	} else {
+		action = ActionAllow
+		reason = fmt.Sprintf("low risk score %.2f, %d sensitive words detected", score, len(matches))
+	}
+
+	return &SafetyResult{
+		Score:        score,
+		MatchedWords: matchedWords,
+		Matches:      matches,
+		Category:     mainCategory,
+		Action:       action,
+		Reason:       reason,
+	}
+}
+
+// GetHighestAlertLevel 获取匹配结果中最高的告警等级
+func (e *SensitiveWordEngine) GetHighestAlertLevel(matches []*MatchResult) AlertLevel {
+	if len(matches) == 0 {
+		return LevelP2
+	}
+	highest := LevelP2
+	for _, match := range matches {
+		if match.Category != nil && match.Category.Level < highest {
+			highest = match.Category.Level
+		}
+	}
+	return highest
 }
