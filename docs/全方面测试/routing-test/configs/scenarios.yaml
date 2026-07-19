@@ -1,0 +1,97 @@
+# 测试场景配置
+
+scenarios:
+  S20_routing_balance:
+    name: "路由均衡性测试"
+    description: "验证加权平均路由在 3 个供应商间的分布"
+    models:
+      - minimax-m3
+    clients: 5
+    requests_per_client: 10
+    request_interval_sec: 10
+    success_criteria:
+      success_rate_min: 0.95
+      distribution_error_max: 0.15  # 15%
+      p95_latency_ms_max: 2000
+    mock_modes:
+      - healthy
+      - healthy
+      - healthy
+
+  S21_error_recovery:
+    name: "错误恢复测试"
+    description: "验证单个供应商故障时的 failover 和探测恢复"
+    models:
+      - minimax-m3
+    clients: 5
+    rounds: 15
+    request_interval_sec: 10
+    phases:
+      - round_start: 1
+        round_end: 5
+        mock_modes: ["healthy", "healthy", "healthy"]
+      - round_start: 6
+        round_end: 10
+        mock_modes: ["slow", "healthy", "healthy"]
+      - round_start: 11
+        round_end: 15
+        mock_modes: ["healthy", "healthy", "healthy"]
+    success_criteria:
+      success_rate_min: 0.95
+      recovery_time_sec_max: 5
+
+  S22_large_context_multiround:
+    name: "大上下文多轮会话"
+    description: "验证 40K+ 上下文的多轮会话稳定性"
+    models:
+      - minimax-m3
+    sessions: 5
+    rounds_per_session: 5
+    context_sizes:
+      - round: 1
+        tokens: 10000
+      - round: 2
+        tokens: 20000
+      - round: 3
+        tokens: 40000
+      - round: 4
+        tokens: 40000
+      - round: 5
+        tokens: 40000
+    success_criteria:
+      success_rate_min: 0.98
+      sticky_hit_rate_min: 0.90
+
+  S23_latency_management:
+    name: "延迟管理测试"
+    description: "验证慢供应商场景下的客户端体验"
+    models:
+      - minimax-m3
+    clients: 5
+    requests_per_client: 20
+    request_interval_sec: 5
+    mock_modes:
+      - healthy   # 100-500ms
+      - slow      # 3-5s
+      - timeout   # 10s+
+    success_criteria:
+      slow_supplier_ratio_max: 0.20
+      p95_latency_ms_max: 3000
+
+  S24_5xx_diagnosis:
+    name: "5xx 错误诊断"
+    description: "监控网关引入的额外延迟和错误"
+    models:
+      - minimax-m3
+    clients: 3
+    requests_per_client: 30
+    request_interval_sec: 2
+    mock_modes:
+      - healthy
+      - healthy
+      - healthy
+    success_criteria:
+      gateway_routing_latency_ms_max: 10
+      gateway_upstream_latency_ms_max: 20
+      gateway_response_latency_ms_max: 50
+      protocol_conversion_ms_max: 10
