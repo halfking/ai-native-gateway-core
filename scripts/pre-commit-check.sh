@@ -113,8 +113,13 @@ check_sql_set_local() {
   local bad
   # The PostgreSQL trap: SET/SET LOCAL do not accept placeholders. AI agents
   # frequently write `SET LOCAL app.x = $1` and only find out at runtime.
+  #
+  # Skip lines starting with `--` (SQL comments) — historically 449_request_logs_hot_trace_events
+  # documented the trap *as a comment* and tripped this check. Comments can't be
+  # executed, so excluding them doesn't weaken the safety guarantee.
   bad=$(grep -rE 'SET[[:space:]]+(LOCAL[[:space:]]+)?[A-Za-z_][A-Za-z0-9_.]*[[:space:]]*=' \
         "$mig_dir"/ 2>/dev/null \
+      | grep -v -E '^[^:]+:[[:space:]]*--' \
       | grep -E '\$[0-9]+' || true)
   if [[ -n "$bad" ]]; then
     echo "Found SET ... = \$N placeholders (PostgreSQL does not support placeholders in SET):"
