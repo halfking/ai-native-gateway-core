@@ -236,7 +236,11 @@ func (c *LiveStreamConfig) defaults() {
 		c.CachedSnapshotCleanupInterval = c.CachedSnapshotTTL
 	}
 	if c.SnapshotRefreshInterval <= 0 {
-		c.SnapshotRefreshInterval = 30 * time.Minute
+		// 2026-07-19: 从 30 分钟延长到 2 小时，减少前端泳道跳变频率。
+		// 全量快照推送会导致前端重建所有泳道，视觉上出现跳变。
+		// 2 小时与 Redis TTL 对齐，在数据同步和用户体验间取得平衡。
+		// 可通过环境变量 LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL 覆盖。
+		c.SnapshotRefreshInterval = 2 * time.Hour
 	}
 }
 
