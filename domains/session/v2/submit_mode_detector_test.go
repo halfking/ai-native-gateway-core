@@ -414,3 +414,147 @@ func TestSubmitModeDetector_RealWorldScenarios(t *testing.T) {
 		}
 	})
 }
+
+func TestSubmitModeDetector_AttachmentOnlyChange(t *testing.T) {
+	detector := NewSubmitModeDetector()
+
+	t.Run("Same messages, different attachments", func(t *testing.T) {
+		ctx := DetectionContext{
+			ClientMessages: []Message{
+				{Role: "user", Content: "Look at this image"},
+				{Role: "assistant", Content: "I can see it"},
+			},
+			LastOutboundBody: []Message{
+				{Role: "user", Content: "Look at this image"},
+				{Role: "assistant", Content: "I can see it"},
+			},
+			CurrentAttachments: []AttachmentRef{
+				{ObjectKey: "new_image.png", SHA256: "abc123"},
+			},
+			PreviousAttachments: []AttachmentRef{
+				{ObjectKey: "old_image.png", SHA256: "def456"},
+			},
+		}
+
+		got := detector.Detect(ctx)
+		if got != SubmitModeAttachmentOnly {
+			t.Errorf("Same messages with different attachments should detect SubmitModeAttachmentOnly, got %v", got)
+		}
+	})
+
+	t.Run("Same messages, added attachment", func(t *testing.T) {
+		ctx := DetectionContext{
+			ClientMessages: []Message{
+				{Role: "user", Content: "Analyze this"},
+			},
+			LastOutboundBody: []Message{
+				{Role: "user", Content: "Analyze this"},
+			},
+			CurrentAttachments: []AttachmentRef{
+				{ObjectKey: "document.pdf", SHA256: "xyz789"},
+			},
+			PreviousAttachments: []AttachmentRef{},
+		}
+
+		got := detector.Detect(ctx)
+		if got != SubmitModeAttachmentOnly {
+			t.Errorf("Adding attachment with same messages should detect SubmitModeAttachmentOnly, got %v", got)
+		}
+	})
+
+	t.Run("Same messages, removed attachment", func(t *testing.T) {
+		ctx := DetectionContext{
+			ClientMessages: []Message{
+				{Role: "user", Content: "What do you think?"},
+			},
+			LastOutboundBody: []Message{
+				{Role: "user", Content: "What do you think?"},
+			},
+			CurrentAttachments: []AttachmentRef{},
+			PreviousAttachments: []AttachmentRef{
+				{ObjectKey: "file.txt", SHA256: "aaa111"},
+			},
+		}
+
+		got := detector.Detect(ctx)
+		if got != SubmitModeAttachmentOnly {
+			t.Errorf("Removing attachment with same messages should detect SubmitModeAttachmentOnly, got %v", got)
+		}
+	})
+
+	t.Run("Different messages, different attachments - not attachment-only", func(t *testing.T) {
+		ctx := DetectionContext{
+			ClientMessages: []Message{
+				{Role: "user", Content: "Look at this NEW image"},
+			},
+			LastOutboundBody: []Message{
+				{Role: "user", Content: "Look at this OLD image"},
+			},
+			CurrentAttachments: []AttachmentRef{
+				{ObjectKey: "new.png", SHA256: "abc"},
+			},
+			PreviousAttachments: []AttachmentRef{
+				{ObjectKey: "old.png", SHA256: "def"},
+			},
+		}
+
+		got := detector.Detect(ctx)
+		if got == SubmitModeAttachmentOnly {
+			t.Errorf("Different messages should NOT detect SubmitModeAttachmentOnly, got %v", got)
+		}
+	})
+
+	t.Run("Same messages, same attachments - not attachment-only", func(t *testing.T) {
+		ctx := DetectionContext{
+			ClientMessages: []Message{
+				{Role: "user", Content: "Hello"},
+			},
+			LastOutboundBody: []Message{
+				{Role: "user", Content: "Hello"},
+			},
+			CurrentAttachments: []AttachmentRef{
+				{ObjectKey: "file.txt", SHA256: "same123"},
+			},
+			PreviousAttachments: []AttachmentRef{
+				{ObjectKey: "file.txt", SHA256: "same123"},
+			},
+		}
+
+		got := detector.Detect(ctx)
+		if got == SubmitModeAttachmentOnly {
+			t.Errorf("Same messages and attachments should NOT detect SubmitModeAttachmentOnly, got %v", got)
+		}
+	})
+
+	t.Run("Nearly identical messages (90%+ match), different attachments", func(t *testing.T) {
+		// 5 messages, 4 identical = 80% match, should still trigger with high LCS overlap
+		ctx := DetectionContext{
+			ClientMessages: []Message{
+				{Role: "user", Content: "Message 1"},
+				{Role: "assistant", Content: "Response 1"},
+				{Role: "user", Content: "Message 2"},
+				{Role: "assistant", Content: "Response 2"},
+				{Role: "user", Content: "Message 3"},
+			},
+			LastOutboundBody: []Message{
+				{Role: "user", Content: "Message 1"},
+				{Role: "assistant", Content: "Response 1"},
+				{Role: "user", Content: "Message 2"},
+				{Role: "assistant", Content: "Response 2"},
+				{Role: "user", Content: "Message 3"},
+			},
+			CurrentAttachments: []AttachmentRef{
+				{ObjectKey: "new_file.pdf", SHA256: "new123"},
+			},
+			PreviousAttachments: []AttachmentRef{
+				{ObjectKey: "old_file.pdf", SHA256: "old123"},
+			},
+		}
+
+		got := detector.Detect(ctx)
+		// With 100% message match and different attachments, should be attachment-only
+		if got != SubmitModeAttachmentOnly {
+			t.Errorf("Identical messages with different attachments should detect SubmitModeAttachmentOnly, got %v", got)
+		}
+	})
+}
