@@ -1,3 +1,6 @@
+# github.com/DATA-DOG/go-sqlmock v1.5.2
+## explicit; go 1.15
+github.com/DATA-DOG/go-sqlmock
 # github.com/alicebob/miniredis/v2 v2.38.0
 ## explicit; go 1.17
 github.com/alicebob/miniredis/v2

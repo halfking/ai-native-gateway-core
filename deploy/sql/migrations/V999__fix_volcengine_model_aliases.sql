@@ -65,8 +65,10 @@ WHERE mc.canonical_name = 'deepseek-v4-flash-260425'
 ON CONFLICT (raw_name, canonical_id) DO NOTHING;
 
 -- 2. 更新 provider_catalog 中的模型列表，使用正确的完整版本号
+-- 注意：provider_catalog 实际列名是 code / models_manifest_json，
+--   历史迁移脚本误用 slug / supported_models 已修正
 UPDATE provider_catalog
-SET supported_models = '[
+SET models_manifest_json = '[
   {"id": "doubao-seed-2-0-code-preview-260215", "ctx_k": 128, "display_name": "Doubao Seed Code"},
   {"id": "doubao-seed-2-0-pro-260215", "ctx_k": 128, "display_name": "Doubao Seed 2.0 Pro"},
   {"id": "doubao-seed-2-0-lite-260428", "ctx_k": 128, "display_name": "Doubao Seed 2.0 Lite"},
@@ -75,8 +77,9 @@ SET supported_models = '[
   {"id": "deepseek-v4-flash-260425", "ctx_k": 64, "display_name": "DeepSeek V4 Flash"},
   {"id": "glm-5-2-260617", "ctx_k": 128, "display_name": "GLM-5.2"},
   {"id": "glm-4-7-251222", "ctx_k": 128, "display_name": "GLM-4.7"}
-]'::jsonb
-WHERE slug = 'volcengine-coding';
+]'::jsonb,
+    updated_at = NOW()
+WHERE code = 'volcengine-coding';
 
 -- 3. 确保 models_canonical 中有这些完整版本号的条目
 INSERT INTO models_canonical (canonical_name, status, created_at, updated_at)
