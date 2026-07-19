@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { TASK_TYPES } from '../../api-autoroute'
+import { L1_TASK_TYPES } from '../../api-work-types'
 
 const props = defineProps<{
   modelValue: string
@@ -17,6 +17,8 @@ const { t } = useI18n()
 const totalCount = computed(() =>
   Object.values(props.counts).reduce((sum, n) => sum + n, 0),
 )
+
+const tasks = computed(() => L1_TASK_TYPES)
 
 function select(key: string) {
   emit('update:modelValue', key)
@@ -37,7 +39,7 @@ function select(key: string) {
       <span v-if="totalCount" class="rail-badge">{{ totalCount }}</span>
     </button>
     <button
-      v-for="task in TASK_TYPES"
+      v-for="task in tasks"
       :key="task.key"
       type="button"
       class="rail-item"
@@ -60,7 +62,7 @@ function select(key: string) {
   min-width: 148px;
   max-width: 180px;
   padding: 8px;
-  border-right: 1px solid var(--border, #e5e7eb);
+  border-right: 1px solid var(--border, #30363d);
   overflow-y: auto;
 }
 .rail-item {
@@ -73,16 +75,16 @@ function select(key: string) {
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: var(--text, #1f2937);
+  color: var(--text, #e6edf3);
   text-align: left;
   cursor: pointer;
 }
 .rail-item:hover {
-  background: var(--bg-muted, #f3f4f6);
+  background: var(--bg-subtle, #161b22);
 }
 .rail-item.active {
-  background: var(--bg-accent-soft, #eef2ff);
-  border-color: var(--border-accent, #c7d2fe);
+  background: rgba(99, 102, 241, 0.18);
+  border-color: var(--accent, #6366f1);
 }
 .rail-icon {
   font-size: 16px;
@@ -99,7 +101,7 @@ function select(key: string) {
   min-width: 18px;
   padding: 0 6px;
   border-radius: 999px;
-  background: var(--bg-muted, #e5e7eb);
+  background: var(--bg-subtle, #161b22);
   font-size: 11px;
   text-align: center;
 }
@@ -109,7 +111,7 @@ function select(key: string) {
     max-width: none;
     min-width: 0;
     border-right: none;
-    border-bottom: 1px solid var(--border, #e5e7eb);
+    border-bottom: 1px solid var(--border, #30363d);
     overflow-x: auto;
   }
   .rail-item {

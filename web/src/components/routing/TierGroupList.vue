@@ -229,10 +229,10 @@ function onTenantChange(row: RoutingDefault, value: string) {
   gap: 16px;
 }
 .tier-group {
-  border: 1px solid var(--border, #e5e7eb);
+  border: 1px solid var(--border, #30363d);
   border-radius: 10px;
   padding: 12px;
-  background: var(--bg-card, #fff);
+  background: var(--card, #1c2128);
 }
 .tier-head {
   display: flex;
@@ -261,7 +261,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
   margin-bottom: 12px;
   padding: 10px;
   border-radius: 8px;
-  background: var(--bg-muted, #f9fafb);
+  background: var(--bg-subtle, #161b22);
 }
 .add-title { font-size: 13px; margin-bottom: 8px; font-weight: 600; }
 .add-grid {
@@ -274,11 +274,11 @@ function onTenantChange(row: RoutingDefault, value: string) {
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  color: var(--text-muted, #6b7280);
+  color: var(--muted, #8b949e);
 }
 .add-grid input, .add-grid select, .row-meta input {
   padding: 6px 8px;
-  border: 1px solid var(--border, #d1d5db);
+  border: 1px solid var(--border, #30363d);
   border-radius: 6px;
   font-size: 13px;
 }
@@ -288,7 +288,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
   margin-top: 8px;
 }
 .empty {
-  color: var(--text-muted, #9ca3af);
+  color: var(--muted, #8b949e);
   font-size: 13px;
   padding: 8px 0;
 }
@@ -301,7 +301,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
   gap: 10px;
 }
 .row-item {
-  border: 1px solid var(--border, #e5e7eb);
+  border: 1px solid var(--border, #30363d);
   border-radius: 8px;
   padding: 10px;
 }
@@ -319,7 +319,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
 }
 .profile-seg {
   display: inline-flex;
-  border: 1px solid var(--border, #d1d5db);
+  border: 1px solid var(--border, #30363d);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -331,8 +331,8 @@ function onTenantChange(row: RoutingDefault, value: string) {
   cursor: pointer;
 }
 .seg.active {
-  background: var(--bg-accent-soft, #eef2ff);
-  color: var(--text-accent, #3730a3);
+  background: rgba(99, 102, 241, 0.2);
+  color: var(--accent-h, #818cf8);
   font-weight: 600;
 }
 .row-meta {
@@ -346,7 +346,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
   font-size: 11px;
   padding: 4px 8px;
   border-radius: 999px;
-  background: var(--bg-muted, #f3f4f6);
+  background: var(--bg-subtle, #161b22);
   align-self: center;
 }
 .error { color: #b91c1c; font-size: 12px; margin: 6px 0 0; }

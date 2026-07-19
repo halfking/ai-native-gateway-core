@@ -19,7 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Self-Check 触发测试按钮 503 → 410 + UI 友好提示** (2026-07-20): 新探针模式下 legacy featured-mode `SelfCheckWorker` 默认不实例化，但 `/api/self-check/trigger` 仍挂在前端触发；按钮点击恒回 503 现已修复为 **410 Gone** + `error_code: self_check.trigger.disabled_in_new_probe_mode`，并新增 `GET /api/self-check/trigger/availability` 端点 + 前端按可用性 disable 按钮 + tooltip。详见 [docs/changelogs/2026-07-20-self-check-trigger-gone.md](docs/changelogs/2026-07-20-self-check-trigger-gone.md)。
 
+### Added
+
+- **TaskTypeRail L1 任务类型迁到 `api-work-types`** (2026-07-20): `api-work-types.ts` 的 `L1_TASK_TYPES` 升为 canonical source（每项补 `icon` 字段），`TaskTypeRail.vue` 从 `api-autoroute.TASK_TYPES` 切到 `L1_TASK_TYPES` 并包一层 `tasks = computed(...)` 便于未来动态加载；`TASK_TYPES` 暂留（`RoutingDashboardView.vue` 仍在用）。
+
+- **WorkTypesView 意图识别配置 UI（关键词 chips + acc_task_type）** (2026-07-20): `WorkTypeConfig.prompt_keywords` 从逗号输入改为 chip 编辑器（Enter/comma/中文逗号添加，Backspace 在空输入时回退删除，blur 自动 flush），新增 `acc_task_type` 字段（ACC 端 task_type 映射，nullable），独立 IR 卡片 + 计数 + 提示文案；create modal 同步暴露 `acc_task_type`。新增 8 个 i18n key（`workTypes.detail.intentRecog*` / `accTaskType*` / `keywordCountLabel` / `removeKeyword`）。详见 [docs/changelogs/2026-07-20-routing-drawer-theme-worktype-intent.md](docs/changelogs/2026-07-20-routing-drawer-theme-worktype-intent.md)。
+
 - **request-logs 详情 query failed / 500** (2026-07-20): VIEW `request_logs_with_current_month` 未暴露 `routing_attempts`/`routing_summary`（migration 448 重建）。见 [docs/changelogs/2026-07-20-request-logs-routing-attempts-view.md](docs/changelogs/2026-07-20-request-logs-routing-attempts-view.md)。
+
+- **路由抽屉 / 面板 / 任务栏暗色主题透传 #fff** (2026-07-20): `SmartRoutingConfigDrawer` / `Panel` / `TierGroupList` / `DefaultRoutingDetailDrawer` / `TaskTypeRail` 5 个组件此前用 `var(--bg-card, #fff)` / `var(--text-muted, ...)` / `var(--border, #e5e7eb)`，这些 token 在 `src/style.css` 未定义，深色背景下全部 fallback 到白底浅灰。改为项目实际定义的 `--card` / `--muted` / `--border` / `--bg-subtle` / `--text`，accent 部分用 `rgba(99,102,241,...)` 替代缺失的 `--border-accent` / `--bg-accent-soft`。见 [docs/changelogs/2026-07-20-routing-drawer-theme-worktype-intent.md](docs/changelogs/2026-07-20-routing-drawer-theme-worktype-intent.md)。
 
 ### Fixed
 

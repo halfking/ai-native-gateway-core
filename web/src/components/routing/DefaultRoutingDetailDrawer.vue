@@ -158,7 +158,7 @@ async function onSave() {
 .drawer {
   width: min(420px, 100vw);
   height: 100%;
-  background: var(--bg-card, #fff);
+  background: var(--card, #1c2128);
   box-shadow: -8px 0 24px rgba(0,0,0,0.12);
   display: flex;
   flex-direction: column;
@@ -168,11 +168,11 @@ async function onSave() {
   align-items: center;
   gap: 8px;
   padding: 14px 16px;
-  border-bottom: 1px solid var(--border, #e5e7eb);
+  border-bottom: 1px solid var(--border, #30363d);
 }
 .drawer-foot {
   border-bottom: none;
-  border-top: 1px solid var(--border, #e5e7eb);
+  border-top: 1px solid var(--border, #30363d);
   margin-top: auto;
 }
 .drawer-head h3 { margin: 0; font-size: 15px; flex: 1; }
@@ -195,12 +195,12 @@ async function onSave() {
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  color: var(--text-muted, #6b7280);
+  color: var(--muted, #8b949e);
 }
 .drawer-body input,
 .drawer-body select {
   padding: 8px 10px;
-  border: 1px solid var(--border, #d1d5db);
+  border: 1px solid var(--border, #30363d);
   border-radius: 6px;
   font-size: 13px;
 }

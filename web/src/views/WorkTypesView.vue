@@ -107,6 +107,7 @@ const createForm = ref({
   key: '', label: '', category: '通用', l1_task_type: 'chat',
   default_profile: 'smart' as 'smart' | 'speed_first' | 'cost_first',
   tags: '', prompt_keywords: '', sort_order: 0, enabled: true,
+  acc_task_type: '',
 })
 const createError = ref('')
 
@@ -114,10 +115,39 @@ const detail = ref<WorkTypeConfig | null>(null)
 const detailForm = ref({
   label: '', category: '通用', l1_task_type: 'chat',
   default_profile: 'smart' as 'smart' | 'speed_first' | 'cost_first',
-  tags: '', prompt_keywords: '', sort_order: 0,
+  tags: '', prompt_keywords: [] as string[], sort_order: 0,
+  acc_task_type: '',
 })
 const detailSaving = ref(false)
 const detailMsg = ref('')
+
+const keywordInput = ref('')
+
+function addKeyword() {
+  const raw = keywordInput.value.trim()
+  if (!raw) return
+  const parts = raw.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+  for (const kw of parts) {
+    if (!detailForm.value.prompt_keywords.includes(kw)) {
+      detailForm.value.prompt_keywords.push(kw)
+    }
+  }
+  keywordInput.value = ''
+}
+
+function removeKeyword(kw: string) {
+  const idx = detailForm.value.prompt_keywords.indexOf(kw)
+  if (idx >= 0) detailForm.value.prompt_keywords.splice(idx, 1)
+}
+
+function onKeywordKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter' || e.key === ',') {
+    e.preventDefault()
+    addKeyword()
+  } else if (e.key === 'Backspace' && !keywordInput.value && detailForm.value.prompt_keywords.length) {
+    removeKeyword(detailForm.value.prompt_keywords[detailForm.value.prompt_keywords.length - 1])
+  }
+}
 
 const routesDraft = ref<ModelRoute[]>([])
 const routesSaving = ref(false)
@@ -135,8 +165,9 @@ function syncDetailForm(wt: WorkTypeConfig) {
     l1_task_type: wt.l1_task_type,
     default_profile: wt.default_profile,
     tags: wt.tags.join(', '),
-    prompt_keywords: wt.prompt_keywords.join(', '),
+    prompt_keywords: [...wt.prompt_keywords],
     sort_order: wt.sort_order,
+    acc_task_type: wt.acc_task_type ?? '',
   }
 }
 
@@ -165,6 +196,7 @@ function openCreate() {
     key: '', label: '', category: '通用', l1_task_type: 'chat',
     default_profile: 'smart', tags: '', prompt_keywords: '',
     sort_order: workTypes.value.length + 1, enabled: true,
+    acc_task_type: '',
   }
   createError.value = ''
   showCreateModal.value = true
@@ -175,7 +207,7 @@ async function saveCreate() {
   const tags = createForm.value.tags.split(/[,，]/).map(s => s.trim()).filter(Boolean)
   const kw = createForm.value.prompt_keywords.split(/[,，]/).map(s => s.trim()).filter(Boolean)
   try {
-    const wt = await createWorkType({
+    const payload: Partial<WorkTypeConfig> & { key: string; label: string; category: string; l1_task_type: string } = {
       key: createForm.value.key.trim(),
       label: createForm.value.label.trim(),
       category: createForm.value.category,
@@ -184,7 +216,11 @@ async function saveCreate() {
       tags, prompt_keywords: kw,
       sort_order: createForm.value.sort_order,
       enabled: createForm.value.enabled,
-    })
+    }
+    const accType = createForm.value.acc_task_type.trim()
+    if (accType) payload.acc_task_type = accType
+    else payload.acc_task_type = null
+    const wt = await createWorkType(payload)
     showCreateModal.value = false
     router.push(`/routing-v2/work-types/${wt.key}`)
   } catch (e) {
@@ -197,16 +233,22 @@ async function saveDetailMeta() {
   detailSaving.value = true
   detailMsg.value = ''
   const tags = detailForm.value.tags.split(/[,，]/).map(s => s.trim()).filter(Boolean)
-  const kw = detailForm.value.prompt_keywords.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+  // Flush any pending keyword input before save
+  if (keywordInput.value.trim()) addKeyword()
   try {
-    detail.value = await updateWorkType(detailKey.value, {
+    const payload: Partial<WorkTypeConfig> = {
       label: detailForm.value.label.trim(),
       category: detailForm.value.category,
       l1_task_type: detailForm.value.l1_task_type,
       default_profile: detailForm.value.default_profile,
-      tags, prompt_keywords: kw,
+      tags,
+      prompt_keywords: [...detailForm.value.prompt_keywords],
       sort_order: detailForm.value.sort_order,
-    })
+    }
+    const accType = detailForm.value.acc_task_type.trim()
+    if (accType) payload.acc_task_type = accType
+    else payload.acc_task_type = null
+    detail.value = await updateWorkType(detailKey.value, payload)
     syncDetailForm(detail.value)
     detailMsg.value = t('workTypes.savedOk')
     await loadSettings()
@@ -473,7 +515,54 @@ watch(activeTab, (tab) => {
             </label>
             <label>{{ t('workTypes.modal.fields.sortOrder') }}<input v-model.number="detailForm.sort_order" type="number" class="input" /></label>
             <label class="span-2">{{ t('workTypes.modal.fields.tags') }}<input v-model="detailForm.tags" class="input" /></label>
-            <label class="span-2">{{ t('workTypes.modal.fields.promptKeywords') }}<input v-model="detailForm.prompt_keywords" class="input" /></label>
+          </div>
+        </section>
+
+        <section class="card detail-section detail-section--intent">
+          <div class="section-head">
+            <span class="layer-tag intent-tag">IR</span>
+            <h3>{{ t('workTypes.detail.intentRecogTitle') }}</h3>
+            <span class="text-muted">{{ t('workTypes.detail.keywordCountLabel', { n: detailForm.prompt_keywords.length }) }}</span>
+          </div>
+          <p class="text-muted intent-hint">{{ t('workTypes.detail.intentRecogHint') }}</p>
+          <div class="keyword-chips">
+            <span
+              v-for="kw in detailForm.prompt_keywords"
+              :key="kw"
+              class="kw-chip"
+            >
+              <span class="kw-chip-label">{{ kw }}</span>
+              <button
+                type="button"
+                class="kw-chip-x"
+                :title="t('workTypes.detail.removeKeyword')"
+                :aria-label="`${t('workTypes.detail.removeKeyword')}: ${kw}`"
+                @click="removeKeyword(kw)"
+              >×</button>
+            </span>
+            <input
+              v-model="keywordInput"
+              class="kw-input"
+              :placeholder="detailForm.prompt_keywords.length ? '' : t('workTypes.detail.promptKeywordsPlaceholder')"
+              @keydown="onKeywordKeydown"
+              @blur="addKeyword"
+            />
+          </div>
+          <div class="acc-mapping">
+            <label>
+              <span class="field-label">{{ t('workTypes.detail.accTaskTypeLabel') }}</span>
+              <input
+                v-model="detailForm.acc_task_type"
+                class="input"
+                :placeholder="t('workTypes.detail.accTaskTypePlaceholder')"
+              />
+            </label>
+            <p class="text-muted field-hint">{{ t('workTypes.detail.accTaskTypeHint') }}</p>
+          </div>
+          <div class="intent-actions">
+            <button class="btn btn-primary btn-sm" :disabled="detailSaving" @click="saveDetailMeta">
+              {{ detailSaving ? t('workTypes.saving') : t('workTypes.save') }}
+            </button>
           </div>
         </section>
 
@@ -642,6 +731,10 @@ watch(activeTab, (tab) => {
           <label>{{ t('workTypes.modal.fields.sortOrder') }} <input v-model.number="createForm.sort_order" type="number" /></label>
           <label class="span-2">{{ t('workTypes.modal.fields.tags') }}<input v-model="createForm.tags" /></label>
           <label class="span-2">{{ t('workTypes.modal.fields.promptKeywords') }} <input v-model="createForm.prompt_keywords" /></label>
+          <label class="span-2">
+            <span class="field-label">{{ t('workTypes.detail.accTaskTypeLabel') }}</span>
+            <input v-model="createForm.acc_task_type" :placeholder="t('workTypes.detail.accTaskTypePlaceholder')" />
+          </label>
         </div>
         <div v-if="createError" class="alert alert-danger compact-alert">{{ createError }}</div>
         <div class="modal-actions">
@@ -738,6 +831,66 @@ watch(activeTab, (tab) => {
 }
 .layer-tag.l1 { background: rgba(99,102,241,.22); color: var(--accent-h); }
 .layer-tag.l2 { background: rgba(63,185,80,.22); color: var(--success); }
+.layer-tag.intent-tag { background: rgba(210,153,34,.22); color: var(--warning, #d29922); width: 26px; }
+
+.detail-section--intent { display: flex; flex-direction: column; gap: 8px; }
+.intent-hint { margin: 0; font-size: 11px; line-height: 1.4; }
+.keyword-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 6px 8px;
+  background: var(--card, #1c2128);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+}
+.kw-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  background: rgba(210,153,34,.15);
+  border: 1px solid rgba(210,153,34,.4);
+  border-radius: 99px;
+  font-size: 11px;
+  color: var(--warning, #d29922);
+  max-width: 100%;
+}
+.kw-chip-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+.kw-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.kw-chip-x:hover { background: rgba(210,153,34,.3); }
+.kw-input {
+  flex: 1;
+  min-width: 160px;
+  padding: 4px 6px;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text, #e6edf3);
+  font-size: 12px;
+}
+.kw-input:focus { outline: none; }
+.acc-mapping { margin-top: 4px; }
+.acc-mapping label { display: flex; flex-direction: column; gap: 4px; }
+.acc-mapping .field-label { font-size: 11px; color: var(--muted, #8b949e); }
+.field-hint { margin: 6px 0 0; font-size: 11px; line-height: 1.4; }
+.intent-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
 
 .stat-row { display: flex; gap: 16px; margin-bottom: 8px; }
 .stat-block { text-align: center; }
