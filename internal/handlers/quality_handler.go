@@ -76,22 +76,22 @@ func (h *QualityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 路由分发
 	path := r.URL.Path
 
-	if strings.HasPrefix(path, "/api/providers/") && strings.HasSuffix(path, "/quality/recalculate") {
-		// POST /api/providers/:id/quality/recalculate
+	if strings.HasPrefix(path, "/api/quality/providers/") && strings.HasSuffix(path, "/quality/recalculate") {
+		// POST /api/quality/providers/:id/quality/recalculate
 		if r.Method != http.MethodPost {
 			h.writeError(w, http.StatusMethodNotAllowed, 40501, "方法不允许")
 			return
 		}
 		h.handleRecalculate(w, r)
-	} else if strings.HasPrefix(path, "/api/providers/") && strings.Contains(path, "/quality") {
-		// GET /api/providers/:id/quality
+	} else if strings.HasPrefix(path, "/api/quality/providers/") && strings.Contains(path, "/quality") {
+		// GET /api/quality/providers/:id/quality
 		if r.Method != http.MethodGet {
 			h.writeError(w, http.StatusMethodNotAllowed, 40501, "方法不允许")
 			return
 		}
 		h.handleGetProviderQuality(w, r)
-	} else if path == "/api/providers/quality/ranking" {
-		// GET /api/providers/quality/ranking
+	} else if path == "/api/quality/ranking" {
+		// GET /api/quality/ranking
 		if r.Method != http.MethodGet {
 			h.writeError(w, http.StatusMethodNotAllowed, 40501, "方法不允许")
 			return
@@ -104,8 +104,8 @@ func (h *QualityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleGetProviderQuality 查询单个供应商质量画像
 func (h *QualityHandler) handleGetProviderQuality(w http.ResponseWriter, r *http.Request) {
-	// 解析 provider_id (从 /api/providers/:id/quality 提取)
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/providers/"), "/")
+	// 解析 provider_id (从 /api/quality/providers/:id/quality 提取)
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/quality/providers/"), "/")
 	if len(parts) < 2 {
 		h.writeError(w, http.StatusBadRequest, 40001, "参数错误: provider_id 缺失")
 		return
@@ -321,7 +321,7 @@ LIMIT $3
 // handleRecalculate 手动重算质量画像
 func (h *QualityHandler) handleRecalculate(w http.ResponseWriter, r *http.Request) {
 	// 解析 provider_id
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/providers/"), "/")
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/quality/providers/"), "/")
 	if len(parts) < 3 {
 		h.writeError(w, http.StatusBadRequest, 40001, "参数错误: provider_id 缺失")
 		return

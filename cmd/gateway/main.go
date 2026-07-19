@@ -3272,11 +3272,11 @@ func main() {
 	// ── 质量画像 API ───────────────────────────────────────────────────
 	if dbConn != nil && dbConn.Enabled() && profileUpdater != nil {
 		qualityHandler := handlers.NewQualityHandler(dbConn.Stdlib(), profileUpdater)
-		mux.Handle("/api/providers/", qualityHandler)
+		mux.Handle("/api/quality/", qualityHandler)
 		slog.Info("质量画像 API 已启用", "routes", []string{
-			"GET /api/providers/:id/quality",
-			"GET /api/providers/quality/ranking",
-			"POST /api/providers/:id/quality/recalculate",
+			"GET /api/quality/providers/:id",
+			"GET /api/quality/ranking",
+			"POST /api/quality/providers/:id/recalculate",
 		})
 	}
 
