@@ -28,6 +28,8 @@ const (
 // Merged into credentialfpslot package as part of P3 "深度整合"
 // (2026-06-26): the slot pool owns both identity AND health tracking,
 // eliminating the separate streaming.RouteNodeStore.
+//
+// P0 Update (2026-07-19): 新增恢复追踪字段，用于实际流量优先恢复机制。
 type NodeState struct {
 	CredentialID   int          `json:"credential_id"`
 	Model          string       `json:"model"`
@@ -39,6 +41,10 @@ type NodeState struct {
 	Disabled       bool         `json:"disabled"`
 	DisabledUntil  int64        `json:"disabled_until,omitempty"` // unix seconds
 	DisabledReason string       `json:"disabled_reason,omitempty"`
+
+	// P0 新增字段（2026-07-19）：支持实际流量优先恢复
+	LastDisabledAt int64 `json:"last_disabled_at,omitempty"` // 最后一次被禁用的时间
+	DisableCount   int   `json:"disable_count,omitempty"`    // 累计禁用次数（用于动态调整冷却时间）
 }
 
 // NodeRecord is one request record in the sliding window.
@@ -212,6 +218,15 @@ const (
 // recordNodeOutcomeScript atomically reads, updates, and writes NodeState.
 // Entirely in Lua — no Go-side TOCTOU race.
 //
+// P0 Fix (2026-07-19): 实际流量优先恢复机制
+// 问题：健康探测成功不等于实际请求成功。节点冷却期到期后，如果立即恢复，
+//
+//	可能导致仍然不稳定的节点（如商汤、NVIDIA NIM）继续接收流量。
+//
+// 修复：冷却期到期后，必须等待实际成功请求才恢复，确保节点真正可用。
+//
+//	同时，如果恢复后再次连续失败3次，立即重新禁用（不等冷却期到期）。
+//
 // KEYS[1] = llmgw:cred_fp_node:{credentialID}:{model}
 // ARGV[1] = kind ("success" | "failure")
 // ARGV[2] = request_id
@@ -254,6 +269,60 @@ var recordNodeOutcomeScript = redis.NewScript(`
 	end
 	state.slide_window = pruned
 
+	-- P0 Fix: 先检查是否需要处理冷却期到期
+	-- 如果冷却期到期，根据本次请求类型决定恢复或延长
+	-- 这个检查必须在添加新记录之前进行
+	local cooldown_expired = state.disabled and state.disabled_until and now >= state.disabled_until
+	
+	if cooldown_expired then
+		if kind == 'success' then
+			-- 冷却期到期 + 成功请求 → 恢复节点
+			state.disabled = false
+			state.failure_count = 0
+			state.slide_window = {}  -- 清空历史失败记录
+			state.disabled_reason = 'recovered_with_actual_success'
+			state.disabled_until = 0
+			if not state.disable_count then
+				state.disable_count = 0
+			end
+			state.disable_count = 0
+			-- 添加本次成功记录
+			local record = {
+				request_id = request_id,
+				success = true,
+				timestamp = now,
+			}
+			table.insert(state.slide_window, record)
+			state.success_count = state.success_count + 1
+			state.last_success_at = now
+			-- 直接保存并返回，不再执行后续逻辑
+			redis.call('SET', key, cjson.encode(state), 'EX', 3600)
+			return 1
+		else
+			-- 冷却期到期 + 失败请求 → 延长冷却期
+			state.slide_window = {}  -- 清空历史记录
+			state.failure_count = 0
+			state.disabled_until = now + cooldown
+			state.disabled_reason = 'cooldown_extended_due_to_failure'
+			-- 添加本次失败记录
+			local record = {
+				request_id = request_id,
+				success = false,
+				timestamp = now,
+			}
+			if error_kind ~= '' then
+				record.error_kind = error_kind
+			end
+			table.insert(state.slide_window, record)
+			state.failure_count = state.failure_count + 1
+			state.last_failure_at = now
+			-- 直接保存并返回
+			redis.call('SET', key, cjson.encode(state), 'EX', 3600)
+			return 1
+		end
+	end
+
+	-- 正常路径：添加新记录
 	local record = {
 		request_id = request_id,
 		success = (kind == 'success'),
@@ -272,6 +341,7 @@ var recordNodeOutcomeScript = redis.NewScript(`
 		state.last_failure_at = now
 	end
 
+	-- 计算连续失败次数（从滑动窗口尾部开始）
 	local streak = 0
 	for i = #state.slide_window, 1, -1 do
 		if not state.slide_window[i].success then
@@ -281,16 +351,21 @@ var recordNodeOutcomeScript = redis.NewScript(`
 		end
 	end
 
-	if streak >= streak_limit and not state.disabled then
+	-- P0 Fix: 连续失败达到阈值时禁用节点
+	if not state.disabled and streak >= streak_limit then
 		state.disabled = true
 		state.disabled_until = now + cooldown
-		state.disabled_reason = 'consecutive ' .. streak_limit .. ' failures'
-	end
-
-	if state.disabled and state.disabled_until and now >= state.disabled_until then
-		state.disabled = false
-		state.failure_count = 0
-		state.slide_window = {}
+		state.last_disabled_at = now
+		if not state.disable_count then
+			state.disable_count = 0
+		end
+		state.disable_count = state.disable_count + 1
+		-- 区分是否是恢复后再次失败
+		if state.last_success_at and state.last_success_at > (state.last_disabled_at or 0) then
+			state.disabled_reason = 'consecutive_' .. streak_limit .. '_failures_after_recovery'
+		else
+			state.disabled_reason = 'consecutive_' .. streak_limit .. '_failures'
+		end
 	end
 
 	redis.call('SET', key, cjson.encode(state), 'EX', 3600)

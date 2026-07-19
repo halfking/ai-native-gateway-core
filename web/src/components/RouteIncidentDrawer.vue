@@ -537,6 +537,22 @@ function runStateLabel(state: string): string {
       return state
   }
 }
+
+function formatRunValue(value: unknown): string {
+  if (value == null) return '—'
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return '—'
+  }
+}
+
+function hasRunValues(values: Record<string, unknown>): boolean {
+  return Object.keys(values || {}).length > 0
+}
 </script>
 
 <template>
@@ -806,6 +822,35 @@ function runStateLabel(state: string): string {
               第一期只读展示，<code>release_slot / reset_slots / reset_availability / reprobe / recover</code>
               将在第二期提供（spec §"Phase Two Diagnostic Runs And Actions"）。
             </p>
+          </section>
+
+          <section class="route-incident-drawer__section">
+            <h3 class="route-incident-drawer__section-title">诊断运行</h3>
+            <p v-if="auditError" class="route-incident-drawer__error">{{ auditError }}</p>
+            <p v-else-if="auditLoading" class="route-incident-drawer__empty">诊断运行加载中…</p>
+            <p v-else-if="runs.length === 0" class="route-incident-drawer__empty">暂无诊断运行记录</p>
+            <ol v-else class="diagnostic-run-list">
+              <li v-for="run in runs" :key="run.id" class="diagnostic-run-row">
+                <div class="diagnostic-run-row__summary">
+                  <span class="diagnostic-run-row__kind">{{ actionLabel(run.kind) }}</span>
+                  <span :class="['diagnostic-run-row__state', `diagnostic-run-row__state--${run.state}`]">
+                    {{ runStateLabel(run.state) }}
+                  </span>
+                  <span class="diagnostic-run-row__time">开始 {{ formatTs(run.started_at) }}</span>
+                  <span v-if="run.finished_at" class="diagnostic-run-row__time">结束 {{ formatTs(run.finished_at) }}</span>
+                </div>
+                <dl v-if="hasRunValues(run.parameters) || hasRunValues(run.result)" class="diagnostic-run-row__data">
+                  <template v-for="(value, key) in run.parameters" :key="`parameter-${run.id}-${String(key)}`">
+                    <dt>参数 · {{ key }}</dt>
+                    <dd>{{ formatRunValue(value) }}</dd>
+                  </template>
+                  <template v-for="(value, key) in run.result" :key="`result-${run.id}-${String(key)}`">
+                    <dt>结果 · {{ key }}</dt>
+                    <dd>{{ formatRunValue(value) }}</dd>
+                  </template>
+                </dl>
+              </li>
+            </ol>
           </section>
 
           <!-- 7. Logs and requests -->
@@ -1250,6 +1295,66 @@ function runStateLabel(state: string): string {
   border: 1px solid var(--border, #30363d);
   padding: 1px 4px;
   border-radius: 3px;
+}
+
+.diagnostic-run-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.diagnostic-run-row {
+  padding: 10px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg, #0f1117);
+}
+
+.diagnostic-run-row__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.diagnostic-run-row__kind { font-weight: 600; }
+
+.diagnostic-run-row__state {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-subtle, #161b22);
+  color: var(--text-secondary, #8b949e);
+}
+
+.diagnostic-run-row__state--succeeded { color: var(--success, #3fb950); }
+.diagnostic-run-row__state--failed,
+.diagnostic-run-row__state--cancelled { color: var(--danger, #f85149); }
+.diagnostic-run-row__state--running,
+.diagnostic-run-row__state--pending { color: var(--warning, #d29922); }
+
+.diagnostic-run-row__time {
+  color: var(--text-secondary, #8b949e);
+  font-variant-numeric: tabular-nums;
+}
+
+.diagnostic-run-row__data {
+  display: grid;
+  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+  gap: 4px 8px;
+  margin: 8px 0 0;
+  font-size: 11px;
+}
+
+.diagnostic-run-row__data dt { color: var(--text-secondary, #8b949e); }
+
+.diagnostic-run-row__data dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
 }
 
 .route-incident-drawer__link {

@@ -516,6 +516,9 @@ func (e *Executor) executeOpenAI(
 					n, _ := resp.Body.Read(peek)
 					if n > 0 {
 						attemptLog(0, "", strings.TrimSpace(string(peek[:n])))
+						// Restore the preview so the classifier below sees the
+						// complete upstream body, not only its unread suffix.
+						resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peek[:n]), resp.Body))
 					}
 				}
 			}
