@@ -59,12 +59,16 @@ func scopedAdminContext(next http.HandlerFunc) http.HandlerFunc {
 // plugin reuses the same SQL/list logic as the browser admin without
 // duplicating it.
 //
+// `opts` are forwarded to VerifyPluginContext. The caller in main.go passes
+// WithCanonNonceCache so a token can be used at most once within the cache
+// TTL — closing the 5-minute replay window HMAC alone leaves open.
+//
 // Coupling note: `secret` MUST equal the value the plugin process uses to
 // sign its outgoing requests. The plugin side reads
 // AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET; the gateway reads cfg.SecretKey.
 // They must be configured to the same value, or verification will reject
 // every plugin call with 401.
-func registerPluginCanonRoutes(mux *http.ServeMux, secret []byte, adminHandler http.HandlerFunc) {
+func registerPluginCanonRoutes(mux *http.ServeMux, secret []byte, adminHandler http.HandlerFunc, opts ...pluginruntime.CanonOption) {
 	mux.Handle("GET /_gateway/plugin/v1/sessions",
-		pluginruntime.VerifyPluginContext(secret, scopedAdminContext(adminHandler)))
+		pluginruntime.VerifyPluginContext(secret, scopedAdminContext(adminHandler), opts...))
 }

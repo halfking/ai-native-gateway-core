@@ -2890,8 +2890,16 @@ func main() {
 	// Only mount when the admin handler is available (requires DB). The plugin
 	// side (Task 8) signs with AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET, which
 	// must equal cfg.SecretKey for verification to pass.
+	//
+	// Replay protection: a single NonceCache backs the canonical routes. Its
+	// TTL (10 min) deliberately exceeds the VerifyPluginContext ±5min skew
+	// window, so a signed token cannot fall out of the cache before its
+	// freshness window closes — every token within that window is seen at most
+	// once and a replayed (pluginID|tenantID|ts|nonce) is rejected with 401.
 	if adminHandler != nil {
-		registerPluginCanonRoutes(mux, []byte(cfg.SecretKey), adminHandler.HandleSessionAnalyticsList)
+		pluginNonceCache := pluginruntime.NewNonceCache(10 * time.Minute)
+		registerPluginCanonRoutes(mux, []byte(cfg.SecretKey), adminHandler.HandleSessionAnalyticsList,
+			pluginruntime.WithCanonNonceCache(pluginNonceCache))
 	}
 
 	// v2 Pipeline feature flag (R1.12). Opt-in via LLM_GATEWAY_V2_ENABLED.
