@@ -85,6 +85,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/metatools"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/pending"
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
@@ -2835,6 +2836,19 @@ func main() {
 	mux.Handle("/metrics", middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(middleware.MetricsHandler()))
 
 	slog.Info("CHECKPOINT: healthz and metrics registered")
+
+	// P0 plugin-runtime: scan installed plugins and serve /api/v1/plugin-nav.
+	// TODO(P1): replace placeholder viewer with real auth context (super/platformOps/tenant).
+	pluginRegistry := pluginruntime.NewRegistry()
+	if pluginsDir := os.Getenv("LLM_GATEWAY_PLUGINS_DIR"); pluginsDir != "" {
+		if err := ScanPlugins(pluginsDir, pluginRegistry); err != nil {
+			slog.Warn("plugin scan failed", "error", err, "dir", pluginsDir)
+		}
+	}
+	mux.Handle("/api/v1/plugin-nav", pluginruntime.NavHandler(pluginRegistry, func(*http.Request) pluginruntime.ViewerOpts {
+		// P0 placeholder: super-admin visibility. P1 will derive from auth context.
+		return pluginruntime.ViewerOpts{IsSuper: true, IsPlatformOps: true}
+	}))
 
 	// v2 Pipeline feature flag (R1.12). Opt-in via LLM_GATEWAY_V2_ENABLED.
 	// Default OFF → no-op; production v1 routes are untouched. When ON,
