@@ -1,116 +1,39 @@
-# Multi-stage build for llm-gateway-go data plane
-# Build with: docker build -t kx-llm-gateway-go:latest .
-#
-# This Dockerfile is self-contained: the builder stage compiles the Go
-# binary AND builds the Vue SPA from source. The resulting image is
-# reproducible regardless of whether web/dist/ is pre-built in the
-# build context.
+# LLM Gateway Dockerfile
 
-# ── Build stage ──────────────────────────────────────────────────────────────
-# REGISTRY: pass --build-arg REGISTRY=<your-registry> to override.
-# Default is empty to use local images (kx-base:*) without registry prefix.
-# Production builds pass REGISTRY=registry.kxpms.cn/ via --build-arg
-# (registry.kxpms.cn = 8.136.114.245, kaixuan/Veritrans&9527).
-# Dev/test builds on the 245 server use REGISTRY=registry.itestu.cn/
-# (= 192.168.31.8:5000).
-ARG REGISTRY=""
-FROM --platform=linux/amd64 ${REGISTRY}kx-base:go-vue-amd64 AS builder
+# 构建阶段
+FROM golang:1.21-alpine AS builder
 
-# Defensive: kx-base:go-vue already provides git/ca-certificates, nodejs + npm.
-# Verify availability; fail fast if any are missing.
-RUN for cmd in git node npm; do command -v "$cmd" >/dev/null 2>&1 || (echo "ERROR: $cmd not found in base image" && exit 1); done
+WORKDIR /app
 
-# kx-base:go-vue runs as non-root 'appuser' — switch back to root for build
-USER root
-
-WORKDIR /src
+# 复制依赖文件
 COPY go.mod go.sum ./
-ARG GOTOOLCHAIN=auto
-# GFW blocks proxy.golang.org (Google IP 142.251.33.209) — use goproxy.cn
-# (Qiniu CDN) as primary. See AGENTS.md 2026-05-12 "key learning".
-ARG GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
-ARG NPM_REGISTRY=https://registry.npmmirror.com/
-ENV GOPROXY=${GOPROXY}
-# vendor/ 目录存在时跳过 go mod download，使用 -mod=vendor
-COPY vendor/ /src/vendor/
-RUN if [ -d vendor ]; then echo "vendor dir found, skipping go mod download"; else GOTOOLCHAIN=auto GOPROXY=${GOPROXY} go mod download; fi
+RUN go mod download
 
-# Build the Vue SPA first so we know web/dist/ is always fresh.
-COPY web/package.json web/package-lock.json* web/
-RUN cd /src/web && npm config set registry "${NPM_REGISTRY}" && npm ci --no-audit --no-fund
-COPY web/ /src/web/
-RUN cd /src/web && npm run build
-
+# 复制源代码
 COPY . .
 
-# Version injection — populated by deploy scripts or manual --build-arg.
-# See scripts/bump-llm-gateway-go-version.sh for the canonical build pipeline.
-ARG GIT_TAG=""
-ARG GIT_SHA=""
-ARG BUILD_DATE=""
-ARG BUILD_SEQ="0"
+# 编译
+RUN CGO_ENABLED=0 GOOS=linux go build -mod=mod -o /app/bin/llm-gateway ./cmd/server
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=auto \
-    go build $(if [ -d vendor ]; then echo -mod=vendor; fi) -a -ldflags="-s -w" -o /llm-gateway-go ./cmd/gateway
+# 运行阶段
+FROM alpine:latest
 
-# ── Runtime stage ───────────────────────────────────────────────────────────
-# 2026-06-22 T14: switched from kx-base:go-vue-amd64 (1.09GB Debian) to
-# kx-base:go-vue-alpine-slim-runtime (15.6MB alpine 3.20). Runtime only
-# needs ca-certs + tzdata + non-root appuser; no Go SDK / nodejs / pip
-# packages (those are build-time only). 预估 kx-llm-gateway-go 镜像
-# 2.14GB → ~0.95GB (-55%).
-# Builder stage (above) still uses kx-base:go-vue for Go toolchain
-# compatibility (Q2 decision: only swap runtime, keep builder).
-FROM --platform=linux/amd64 ${REGISTRY}kx-base:go-vue-alpine-slim-runtime
+RUN apk --no-cache add ca-certificates
 
-ARG GIT_TAG=""
-ARG GIT_SHA=""
-ARG BUILD_DATE=""
-ARG BUILD_SEQ="0"
+WORKDIR /app
 
-# kx-base:go-vue already provides ca-certificates + tzdata + a non-root
-# 'appuser' (uid=1001). The runtime runs as this user (matches the
-# original alpine llmgw user spec: uid=1001, no shell). No additional
-# user creation is needed.
+# 复制二进制文件
+COPY --from=builder /app/bin/llm-gateway .
 
-WORKDIR /
+# 复制配置文件
+COPY config.example.yaml config.yaml
 
-COPY --from=builder /llm-gateway-go /usr/local/bin/llm-gateway-go
-COPY --from=builder /src/web/dist /opt/llm-gateway-go/web/dist
+# 暴露端口
+EXPOSE 8080
 
-# kx-base:go-vue defaults USER=appuser (uid=1001); the COPY --from=builder
-# files are owned by root, so we need root to chown them to appuser.
-USER root
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-# Stamp version files after COPY so the running process can read
-# ./.deploy_seq, /.deploy_seq, /opt/llm-gateway-go/VERSION and
-# /opt/llm-gateway-go/.deploy_seq from a single image, regardless
-# of which path the runtime / post-deploy script picks.
-# (chown -R so the appuser runtime can re-stamp these on post-deploy.)
-#
-# Version source (set by scripts/bump-llm-gateway-go-version.sh which calls
-# deploy/shared/lib/version-build-info.sh):
-#   GIT_TAG    = latest semver tag, e.g. v2.0.5
-#   GIT_SHA    = 8-char short SHA, e.g. e80322f1
-#   BUILD_DATE = YYYYMMDD, e.g. 20260622
-#   BUILD_SEQ  = monotonically-increasing per-module build counter
-# Display format: <semver>-<8char-sha>-<YYYYMMDD>-<seq>
-#   e.g. 2.0.5-e80322f1-20260622-495
-RUN chown -R appuser:appuser /opt/llm-gateway-go && \
-    SEMVER="${GIT_TAG:-v0.0.0}"; SEMVER="${SEMVER#v}"; \
-    echo "${SEMVER}-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}-${BUILD_SEQ:-0}" > /opt/llm-gateway-go/VERSION && \
-    echo "${BUILD_SEQ:-0}" > /opt/llm-gateway-go/.deploy_seq && \
-    printf '%s\n' "${BUILD_SEQ:-0}" > /.deploy_seq && \
-    printf '%s-%s-%s-%s\n' "${SEMVER}" "${GIT_SHA:-unknown}" "${BUILD_DATE:-$(date -u +%Y%m%d)}" "${BUILD_SEQ:-0}" > /.VERSION
-
-USER appuser
-
-EXPOSE 8781
-
-# P2 修复：添加 HEALTHCHECK 以便 Docker/orchestrator 验证容器健康状态
-# 使用 wget 因为 alpine slim runtime 不一定有 curl
-# 健康端点 /healthz 与服务 cmd/gateway 中的 health handler 对应
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8781/healthz || exit 1
-
-ENTRYPOINT ["/usr/local/bin/llm-gateway-go"]
+# 运行
+CMD ["./llm-gateway"]
