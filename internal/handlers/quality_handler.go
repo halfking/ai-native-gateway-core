@@ -53,7 +53,6 @@ type ModelQualityProfile struct {
 type QualityScores struct {
 	Availability   float64 `json:"availability"`
 	Performance    float64 `json:"performance"`
-	Reliability    float64 `json:"reliability"`
 	Stability      float64 `json:"stability"`
 	CostEfficiency float64 `json:"cost_efficiency"`
 }
@@ -144,10 +143,9 @@ SELECT
     quality_grade,
     availability_score,
     performance_score,
-    reliability_score,
     stability_score,
     cost_efficiency_score,
-    calculated_at
+    updated_at
 FROM provider_quality_profiles
 WHERE provider_id = $1 AND model_name = $2
 `
@@ -160,10 +158,9 @@ SELECT
     quality_grade,
     availability_score,
     performance_score,
-    reliability_score,
     stability_score,
     cost_efficiency_score,
-    calculated_at
+    updated_at
 FROM provider_quality_profiles
 WHERE provider_id = $1
 ORDER BY quality_score DESC
@@ -189,7 +186,6 @@ ORDER BY quality_score DESC
 			&m.QualityGrade,
 			&scores.Availability,
 			&scores.Performance,
-			&scores.Reliability,
 			&scores.Stability,
 			&scores.CostEfficiency,
 			&m.CalculatedAt,
@@ -267,7 +263,7 @@ SELECT
     p.quality_grade,
     p.availability_score,
     p.performance_score,
-    p.calculated_at
+    p.updated_at
 FROM provider_quality_profiles p
 LEFT JOIN providers pr ON p.provider_id = pr.id
 WHERE ($1::text IS NULL OR $1 = '' OR p.model_name = $1)
@@ -363,7 +359,7 @@ func (h *QualityHandler) handleRecalculate(w http.ResponseWriter, r *http.Reques
 	}
 
 	query := `
-SELECT quality_score, quality_grade, calculated_at
+SELECT quality_score, quality_grade, updated_at
 FROM provider_quality_profiles
 WHERE provider_id = $1 AND model_name = $2
 `
@@ -386,7 +382,7 @@ WHERE provider_id = $1 AND model_name = $2
 			"model_name":    req.ModelName,
 			"quality_score": result.QualityScore,
 			"quality_grade": result.QualityGrade,
-			"calculated_at": result.CalculatedAt,
+			"updated_at": result.CalculatedAt,
 		},
 	})
 }
