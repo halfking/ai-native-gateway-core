@@ -95,7 +95,9 @@ type requestLogDetail struct {
 	ResponseBody any `json:"response_body"`
 	// 2026-07-01: 完整附件元数据数组 (migration 325)。仅详情接口返回，
 	// 列表接口为节省载荷不加载。nil / 空数组表示无附件。
-	Attachments json.RawMessage `json:"attachments,omitempty"`
+	Attachments     json.RawMessage `json:"attachments,omitempty"`
+	RoutingAttempts json.RawMessage `json:"routing_attempts,omitempty"`
+	RoutingSummary  *string         `json:"routing_summary,omitempty"`
 }
 
 const requestLogStatusExpr = `COALESCE(
@@ -179,7 +181,9 @@ const requestLogsDetailCols = requestLogsListCols + `,
 	rl.compression_meta,
 	-- 2026-07-01: 完整附件元数据 JSONB 数组 (migration 325)，
 	-- 供详情抽屉的"附件"标签页渲染缩略图/下载链接。
-	rl.attachments
+	rl.attachments,
+	rl.routing_attempts,
+	rl.routing_summary
 `
 
 const requestLogsJoins = `
@@ -624,6 +628,8 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.CompressionMeta,
 		// 2026-07-01: 完整附件元数据 JSONB (migration 325)。
 		&detail.Attachments,
+		&detail.RoutingAttempts,
+		&detail.RoutingSummary,
 		&requestBodyRaw,
 		&responseBodyRaw,
 	)

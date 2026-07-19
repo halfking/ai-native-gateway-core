@@ -82,3 +82,92 @@ func (s *PgxStore) DeleteRuntimeMetricsForHardwareHash(ctx context.Context, hard
 	`, hardwareHash)
 	return err
 }
+
+// RuntimeMetricPoint is a single telemetry sample for admin detail views.
+type RuntimeMetricPoint struct {
+	Timestamp          time.Time `json:"timestamp"`
+	CPUUsagePct        float64   `json:"cpu_usage_pct"`
+	MemUsedMB          int64     `json:"mem_used_mb"`
+	MemTotalMB         int64     `json:"mem_total_mb"`
+	DiskUsedGB         int64     `json:"disk_used_gb"`
+	DiskTotalGB        int64     `json:"disk_total_gb"`
+	DBSizeMB           int64     `json:"db_size_mb"`
+	UptimeSecs         int64     `json:"uptime_secs"`
+	CurrentConcurrency int       `json:"current_concurrency"`
+	Last5MinTPS        float64   `json:"last_5min_tps"`
+	Last5MinP50Ms      float64   `json:"last_5min_p50_ms"`
+	Last5MinP99Ms      float64   `json:"last_5min_p99_ms"`
+	Last5MinSuccessPct float64   `json:"last_5min_success_pct"`
+	TenantCount        int       `json:"tenant_count"`
+}
+
+// ListRuntimeMetricsForInstance returns recent runtime_metrics samples (newest first).
+func (s *PgxStore) ListRuntimeMetricsForInstance(ctx context.Context, instanceID string, since time.Time, limit int) ([]RuntimeMetricPoint, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 120
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT timestamp,
+		       COALESCE(cpu_usage_pct, 0),
+		       COALESCE(mem_used_mb, 0),
+		       COALESCE(mem_total_mb, 0),
+		       COALESCE(disk_used_gb, 0),
+		       COALESCE(disk_total_gb, 0),
+		       COALESCE(db_size_mb, 0),
+		       COALESCE(uptime_secs, 0),
+		       COALESCE(current_concurrency, 0),
+		       COALESCE(last_5min_tps, 0),
+		       COALESCE(last_5min_p50_ms, 0),
+		       COALESCE(last_5min_p99_ms, 0),
+		       COALESCE(last_5min_success_pct, 0),
+		       COALESCE(tenant_count, 0)
+		FROM runtime_metrics
+		WHERE instance_id = $1 AND timestamp >= $2
+		ORDER BY timestamp DESC
+		LIMIT $3
+	`, instanceID, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []RuntimeMetricPoint
+	for rows.Next() {
+		var p RuntimeMetricPoint
+		if err := rows.Scan(
+			&p.Timestamp, &p.CPUUsagePct, &p.MemUsedMB, &p.MemTotalMB,
+			&p.DiskUsedGB, &p.DiskTotalGB, &p.DBSizeMB, &p.UptimeSecs,
+			&p.CurrentConcurrency, &p.Last5MinTPS, &p.Last5MinP50Ms, &p.Last5MinP99Ms,
+			&p.Last5MinSuccessPct, &p.TenantCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, p)
+	}
+	if items == nil {
+		items = []RuntimeMetricPoint{}
+	}
+	return items, rows.Err()
+}
+
+// ListRuntimeAlertsForInstance returns open/recent alerts for one instance.
+func (s *PgxStore) ListRuntimeAlertsForInstance(ctx context.Context, instanceID string, limit int) ([]RuntimeAlertEvent, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, rule_key, instance_id, severity, title, message, status, metric_value,
+		       detected_at, acked_at, acked_by, resolved_at, resolved_by, suppressed_until
+		FROM runtime_alert_events
+		WHERE instance_id = $1
+		  AND status IN ('triggered', 'acknowledged', 'suppressed')
+		  AND (suppressed_until IS NULL OR suppressed_until > now())
+		ORDER BY detected_at DESC
+		LIMIT $2
+	`, instanceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanRuntimeAlerts(rows)
+}

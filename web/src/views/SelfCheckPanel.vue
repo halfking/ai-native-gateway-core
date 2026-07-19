@@ -47,9 +47,15 @@ async function loadAll() {
       fetchSelfCheckModels(),
     ])
     settings.value = s
-    stats.value = st
-    recentRuns.value = ru.items
-    models.value = mo.models
+    // Go nil slices encode as JSON null — normalize to [] so template .length is safe.
+    stats.value = {
+      ...st,
+      by_model: st.by_model ?? [],
+      error_breakdown: st.error_breakdown ?? [],
+      trend: st.trend ?? [],
+    }
+    recentRuns.value = ru.items ?? []
+    models.value = mo.models ?? []
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -315,7 +321,7 @@ function healthColor(rate: number): string {
     </div>
 
     <!-- 错误分类 -->
-    <div v-if="stats && stats.error_breakdown.length > 0" class="error-section">
+    <div v-if="stats?.error_breakdown?.length" class="error-section">
       <h4 class="section-title">错误分类</h4>
       <div class="error-bars">
         <div v-for="e in stats.error_breakdown" :key="e.error_type" class="error-bar">
@@ -334,7 +340,7 @@ function healthColor(rate: number): string {
     </div>
 
     <!-- 趋势图（纯 CSS 柱状图） -->
-    <div v-if="stats && stats.trend.length > 0" class="trend-section">
+    <div v-if="stats?.trend?.length" class="trend-section">
       <h4 class="section-title">成功率趋势 ({{ stats.trend.length }} 小时)</h4>
       <div class="trend-chart">
         <div v-for="(p, idx) in stats.trend" :key="idx" class="trend-bar-wrap">
@@ -345,7 +351,7 @@ function healthColor(rate: number): string {
                }"
                :title="`${p.timestamp}: ${fmtPct(p.success_rate)} (${p.total} 次)`"
           ></div>
-          <div class="trend-label">{{ p.timestamp.slice(11, 16) }}</div>
+          <div class="trend-label">{{ p.timestamp?.slice(11, 16) ?? '' }}</div>
         </div>
       </div>
     </div>
