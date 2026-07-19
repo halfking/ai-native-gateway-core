@@ -1,0 +1,53 @@
+# 路由测试模型配置
+# 每个模型配置 2 个 mock 供应商 + 1 个真实供应商
+
+models:
+  - name: minimax-m3
+    description: "MiniMax M3 模型（512K 上下文）"
+    mock_credentials: 2
+    real_credentials: 1
+    concurrency: 10
+    fingerprint_slots: 3
+    mock_ports:
+      - 19200  # healthy
+      - 19201  # slow (2s delay)
+    
+  - name: glm-5.2
+    description: "智谱 GLM-5.2 模型"
+    mock_credentials: 2
+    real_credentials: 1
+    concurrency: 10
+    fingerprint_slots: 3
+    mock_ports:
+      - 19203  # healthy
+      - 19204  # slow
+    
+  - name: gpt-5.6-luna
+    description: "OpenAI GPT-5.6-Luna 测试模型"
+    mock_credentials: 2
+    real_credentials: 1
+    concurrency: 10
+    fingerprint_slots: 3
+    mock_ports:
+      - 19206  # healthy
+      - 19207  # slow
+
+# Mock 供应商配置
+mock_supplier:
+  base_port: 19200
+  modes:
+    healthy:
+      latency_ms: 100
+      error_rate: 0
+    slow:
+      latency_ms: 2000
+      error_rate: 0
+    flaky:
+      latency_ms: 500
+      error_rate: 0.5
+    timeout:
+      latency_ms: 10000
+      error_rate: 0
+
+# 真实供应商配置（通过环境变量注入）
+# MINIMAX_API_KEY, GLM_API_KEY, GPT_API_KEY

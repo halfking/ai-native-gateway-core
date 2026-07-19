@@ -38,7 +38,7 @@ fi
 export GATEWAY
 
 echo "===================================================================="
-echo " LLM Gateway Full Test Suite — 16 scenarios"
+echo " LLM Gateway Full Test Suite — 19 scenarios"
 echo " gateway=$GATEWAY"
 echo " scenarios to skip: ${SKIP_SCENARIOS:-NONE}"
 echo "===================================================================="
@@ -48,7 +48,7 @@ SCENARIOS=(S01_baseline S02_cost_route S03_concurrency_diff S04_quota_failover
            S05_quality_penalty S06_mixed_fault S07_peak_dispatch S08_sticky
            S09_streaming S10_long_prompt S11_quota_recovery S12_comprehensive
            S13_no_candidate S14_model_not_found S15_cross_group_failover
-           S16_quick_recovery)
+           S16_quick_recovery S17_stream_continuation S18_null_handling S19_tenant_isolation)
 
 # 先启动 mock_supplier cluster
 echo "─── 启动 60 个 mock_supplier ───"
