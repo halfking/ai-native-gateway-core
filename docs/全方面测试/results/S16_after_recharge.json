@@ -8,27 +8,23 @@
   ],
   "n_clients": 10,
   "rps_per_client": 3.0,
-  "duration_sec": 30,
+  "duration_sec": 15,
   "prompt_size": "short",
   "sticky_ratio": 0.0,
   "stream_ratio": 0.0,
   "fault_inject_cancel": 0.0,
   "metrics": {
-    "total": 451,
-    "succ": 305,
-    "fail": 146,
-    "success_rate": 0.6762749445676275,
-    "p50_ms": 18.140750005841255,
-    "p95_ms": 1020.0588339939713,
-    "p99_ms": 1026.6904160089325,
-    "max_ms": 1047.2401670122053,
-    "throughput_rps": 13.660759578298329,
-    "elapsed_sec": 33.01426962498226,
-    "fail_by_status": {
-      "503": 146
-    },
-    "fail_by_kind": {
-      "server_error": 146
-    }
+    "total": 428,
+    "succ": 428,
+    "fail": 0,
+    "success_rate": 1.0,
+    "p50_ms": 17.380042001605034,
+    "p95_ms": 28.263374930247664,
+    "p99_ms": 220.29241605196148,
+    "max_ms": 228.08049991726875,
+    "throughput_rps": 23.767233269144864,
+    "elapsed_sec": 18.00798583298456,
+    "fail_by_status": {},
+    "fail_by_kind": {}
   }
 }
