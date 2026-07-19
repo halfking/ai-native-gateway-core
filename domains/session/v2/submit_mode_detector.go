@@ -53,6 +53,10 @@ type DetectionContext struct {
 
 	// Compression metadata
 	CompressionApplied bool
+	
+	// Attachment metadata
+	CurrentAttachments  []AttachmentRef // Current turn's attachments
+	PreviousAttachments []AttachmentRef // Previous turn's attachments
 }
 
 // Detect detects the submit mode based on multiple signals
@@ -65,6 +69,11 @@ func (d *SubmitModeDetector) Detect(ctx DetectionContext) SubmitMode {
 	// P5: First turn or no previous context
 	if len(ctx.LastOutboundBody) == 0 {
 		return SubmitModeFull
+	}
+	
+	// P1.5: Attachment-only change detection (new priority)
+	if d.checkAttachmentOnlyChange(ctx) {
+		return SubmitModeAttachmentOnly
 	}
 
 	// P1: Message count regression (client sent fewer messages than last outbound)
@@ -127,6 +136,79 @@ func (d *SubmitModeDetector) checkMessageCountRegression(ctx DetectionContext) b
 	}
 
 	return false
+}
+
+// checkAttachmentOnlyChange checks if only attachments changed (messages unchanged)
+//
+// This detects cases where the client resends the same conversation but with
+// different attachments (e.g., replacing an image, adding a new file).
+func (d *SubmitModeDetector) checkAttachmentOnlyChange(ctx DetectionContext) bool {
+	// Need both current and previous attachment info
+	if len(ctx.CurrentAttachments) == 0 && len(ctx.PreviousAttachments) == 0 {
+		return false // No attachments at all
+	}
+	
+	// Attachments must have changed
+	if !d.attachmentsChanged(ctx.CurrentAttachments, ctx.PreviousAttachments) {
+		return false
+	}
+	
+	// Messages must be very similar (high overlap)
+	if len(ctx.ClientMessages) == 0 || len(ctx.LastOutboundBody) == 0 {
+		return false
+	}
+	
+	overlap := d.calculateLCSOverlap(ctx.ClientMessages, ctx.LastOutboundBody)
+	
+	// High message overlap (>= 90%) + attachment change = attachment-only change
+	if overlap >= 0.9 {
+		return true
+	}
+	
+	// Also check if message count and text content are nearly identical
+	if len(ctx.ClientMessages) == len(ctx.LastOutboundBody) {
+		// Count how many messages have identical content
+		matchCount := 0
+		for i := 0; i < len(ctx.ClientMessages) && i < len(ctx.LastOutboundBody); i++ {
+			if ctx.ClientMessages[i].Role == ctx.LastOutboundBody[i].Role &&
+				ctx.ClientMessages[i].Content == ctx.LastOutboundBody[i].Content {
+				matchCount++
+			}
+		}
+		
+		// If 90% or more messages are identical
+		if float64(matchCount)/float64(len(ctx.ClientMessages)) >= 0.9 {
+			return true
+		}
+	}
+	
+	return false
+}
+
+// attachmentsChanged checks if attachment list has changed
+func (d *SubmitModeDetector) attachmentsChanged(current, previous []AttachmentRef) bool {
+	// Different count = changed
+	if len(current) != len(previous) {
+		return true
+	}
+	
+	// Build set of previous attachment keys
+	prevSet := make(map[string]bool)
+	for _, att := range previous {
+		// Use ObjectKey + SHA256 as unique identifier
+		key := att.ObjectKey + ":" + att.SHA256
+		prevSet[key] = true
+	}
+	
+	// Check if any current attachment is not in previous set
+	for _, att := range current {
+		key := att.ObjectKey + ":" + att.SHA256
+		if !prevSet[key] {
+			return true // Found different attachment
+		}
+	}
+	
+	return false // All attachments are the same
 }
 
 // checkSummaryMarker checks if messages contain summary markers

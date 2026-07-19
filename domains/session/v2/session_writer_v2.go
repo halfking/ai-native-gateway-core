@@ -122,6 +122,12 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	attachmentCount := len(requestAttachments) + len(responseAttachments)
 	attachmentTotalBytes := calculateTotalBytes(requestAttachments, responseAttachments)
 	
+	// Auto-populate MultimodalTypes if not provided
+	if len(req.MultimodalTypes) == 0 && attachmentCount > 0 {
+		allAttachments := append(requestAttachments, responseAttachments...)
+		req.MultimodalTypes = ExtractMultimodalTypes(allAttachments)
+	}
+	
 	turnNo, err := w.turnWriter.AppendTurn(ctx, TurnRecord{
 		SessionID:  req.SessionID,
 		TenantID:   req.TenantID,
