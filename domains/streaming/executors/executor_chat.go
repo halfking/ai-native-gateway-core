@@ -792,47 +792,29 @@ func (e *Executor) executeOpenAI(
 				}
 
 				var streamOutcome StreamOutcome
-				if params.StreamWrapper != nil {
-					streamOutcome = params.StreamWrapper(params.W, resp, e.Normalize, params.Capture)
-				} else if e.StreamChat != nil {
-					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
-				}
-				// Q2 streaming response (anthropic client ← openai upstream):
-				// if the standard StreamChat hook did not emit any chunks
-				// (or the executor reaches this branch via an OpenAI-shaped
-				// upstream reply), dispatch to the OpenAI→Anthropic SSE
-				// converter so the Anthropic client receives
-				// Anthropic-shaped `message_start` / `content_block_delta`
-				// events instead of raw OpenAI `choices` chunks.
-				//
-				// 2026-06-29: pre-fix, this branch did not exist and the
-				// OpenAI SSE bytes were forwarded verbatim. See
-				// docs/2026-06-29-protocol-conversion-matrix.md.
-				if e.OpenAIToAnthropicStream != nil &&
+				switch {
+				case e.OpenAIToAnthropicStream != nil &&
 					params.ClientProtocol == "anthropic-messages" &&
-					cand.Protocol != "anthropic-messages" {
+					cand.Protocol != "anthropic-messages":
 					streamOutcome = e.OpenAIToAnthropicStream(
 						params.W, resp,
 						params.ClientModel, outboundModel,
 						params.R.Header.Get("X-Request-Id"),
 						params.Capture, nil,
 					)
-				}
-				// Phase E (2026-07-01): Responses API client target with
-				// an OpenAI-shaped upstream. Dispatch to the
-				// OpenAI→Responses bridge so the client receives
-				// `response.output_text.delta` events instead of raw
-				// `chat.completion.chunk` payloads (which the Responses
-				// API SDK rejects on schema validation).
-				if e.OpenAIToResponsesStream != nil &&
+				case e.OpenAIToResponsesStream != nil &&
 					params.ClientProtocol == "openai-responses" &&
-					cand.Protocol != "anthropic-messages" {
+					cand.Protocol != "anthropic-messages":
 					streamOutcome = e.OpenAIToResponsesStream(
 						params.W, resp,
 						params.ClientModel, outboundModel,
 						params.R.Header.Get("X-Request-Id"),
 						params.Capture, nil,
 					)
+				case params.StreamWrapper != nil:
+					streamOutcome = params.StreamWrapper(params.W, resp, e.Normalize, params.Capture)
+				case e.StreamChat != nil:
+					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
 				}
 				if params.OnStreamCompleted != nil {
 					params.OnStreamCompleted(streamOutcome)
@@ -1502,7 +1484,7 @@ func hasSessionID(params *ExecParams) bool {
 // bounded regardless of client state.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if hasSessionID(params) || params.IsStream {
-		return context.WithTimeout(context.Background(), timeout)
+		return context.WithTimeout(context.WithoutCancel(params.R.Context()), timeout)
 	}
 	return context.WithTimeout(params.R.Context(), timeout)
 }

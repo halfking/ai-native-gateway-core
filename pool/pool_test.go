@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+func TestNewPool_UsesRequestContextForFullDeadline(t *testing.T) {
+	p := NewPool(PoolKey{IdentityHash: "stream", ProviderID: 1, CredentialID: 1}, "", nil)
+	if p.Client().Timeout != 0 {
+		t.Fatalf("http.Client.Timeout = %s, want 0", p.Client().Timeout)
+	}
+	if p.transport.TLSHandshakeTimeout <= 0 || p.transport.ExpectContinueTimeout <= 0 {
+		t.Fatalf("transport handshake timeouts must remain bounded: tls=%s expect=%s", p.transport.TLSHandshakeTimeout, p.transport.ExpectContinueTimeout)
+	}
+}
 func TestPoolKeyString(t *testing.T) {
 	key := PoolKey{
 		IdentityHash: "abcdef1234567890",

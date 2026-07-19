@@ -111,6 +111,8 @@ func NewPool(key PoolKey, probeURL string, proxyFunc func(*http.Request) (*url.U
 		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		IdleConnTimeout:       idleConnTimeout,
 		ResponseHeaderTimeout: 60 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -121,7 +123,7 @@ func NewPool(key PoolKey, probeURL string, proxyFunc func(*http.Request) (*url.U
 	p := &Pool{
 		key:         key,
 		transport:   transport,
-		client:      &http.Client{Transport: transport, Timeout: 120 * time.Second},
+		client:      &http.Client{Transport: transport},
 		probeURL:    probeURL,
 		stopCh:      make(chan struct{}),
 		activeConns: make(chan struct{}, poolMaxActiveConns),

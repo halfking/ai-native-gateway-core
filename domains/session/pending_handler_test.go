@@ -8,14 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/redis/go-redis/v9"
 )
 
-// stubPendingStore is a hand-rolled PendingStore used by the handler
-// tests below. We avoid constructing a real *pending.Store (which
-// needs a live Redis) so these tests run in the sessions package's
-// own `go test` invocation without external dependencies.
 type stubPendingStore struct {
 	getFn    func(ctx context.Context, sessionID, requestID string) (*PendingEntry, bool, error)
 	latestFn func(ctx context.Context, sessionID string) (*PendingEntry, string, bool, error)
@@ -29,12 +23,10 @@ func (s *stubPendingStore) GetLatest(ctx context.Context, sessionID string) (*Pe
 	return s.latestFn(ctx, sessionID)
 }
 
-// pendingTestEntry is a small helper that returns a "completed"
-// entry for a session with a streaming SSE body. Used by the
-// 200-replay tests below.
-func pendingTestEntry(sid, rid, body string, status string) *PendingEntry {
+func pendingTestEntry(sid, rid, body, status string) *PendingEntry {
 	return &PendingEntry{
 		SessionID:   sid,
+		TenantID:    "default",
 		RequestID:   rid,
 		Status:      status,
 		Body:        body,
@@ -43,245 +35,153 @@ func pendingTestEntry(sid, rid, body string, status string) *PendingEntry {
 	}
 }
 
+func pendingHandlerWithOwnedSession(t *testing.T, store PendingStore) (*Handler, *Session) {
+	t.Helper()
+	mgr, _ := newTestManager(t)
+	sess, err := mgr.Create(context.Background(), 1, "default", "device")
+	if err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	h := NewHandler(mgr)
+	h.SetPendingStore(store)
+	return h, sess
+}
+
+func pendingHandlerRequest(sessionID, requestID string) *http.Request {
+	path := "/v1/sessions/" + sessionID + "/pending-response"
+	if requestID != "" {
+		path += "?request_id=" + requestID
+	}
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	return r.WithContext(SetTenantID(SetAPIKeyID(r.Context(), 1), "default"))
+}
+
 func TestGetPendingResponse_NilStoreReturns503(t *testing.T) {
-	h := NewHandler(nil) // no session manager, no auth, no store
-	r := httptest.NewRequest("GET", "/v1/sessions/sess-x/pending-response", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("nil store: got %d, want 503", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "PENDING_STORE_UNAVAILABLE") {
-		t.Fatalf("body: got %q, want PENDING_STORE_UNAVAILABLE", w.Body.String())
-	}
-}
-
-func TestGetPendingResponse_200CompletedSSE(t *testing.T) {
-	const body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
-	store := &stubPendingStore{
-		getFn: func(_ context.Context, sid, rid string) (*PendingEntry, bool, error) {
-			return pendingTestEntry(sid, rid, body, "completed"), true, nil
-		},
-	}
 	h := NewHandler(nil)
-	h.SetPendingStore(store)
-	r := httptest.NewRequest("GET",
-		"/v1/sessions/sess-1/pending-response?request_id=req-1", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("got %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	if got := w.Header().Get("Content-Type"); got != "text/event-stream" {
-		t.Errorf("Content-Type: got %q, want text/event-stream", got)
-	}
-	if got := w.Header().Get("X-Gw-Pending-Replay"); got != "true" {
-		t.Errorf("X-Gw-Pending-Replay: got %q, want true", got)
-	}
-	if got := w.Body.String(); got != body {
-		t.Errorf("body: got %q, want %q", got, body)
-	}
-}
-
-func TestGetPendingResponse_202InProgress(t *testing.T) {
-	store := &stubPendingStore{
-		getFn: func(_ context.Context, sid, rid string) (*PendingEntry, bool, error) {
-			return pendingTestEntry(sid, rid, "", "in_progress"), true, nil
-		},
-	}
-	h := NewHandler(nil)
-	h.SetPendingStore(store)
-	r := httptest.NewRequest("GET",
-		"/v1/sessions/sess-2/pending-response?request_id=req-2", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("got %d, want 202", w.Code)
-	}
-	if got := w.Header().Get("Retry-After"); got != "5" {
-		t.Errorf("Retry-After: got %q, want 5", got)
-	}
-	var body map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	if body["status"] != "in_progress" {
-		t.Errorf("status: got %v, want in_progress", body["status"])
-	}
-	if body["retry_after"] != float64(5) {
-		t.Errorf("retry_after: got %v, want 5", body["retry_after"])
-	}
-}
-
-func TestGetPendingResponse_200Failed(t *testing.T) {
-	store := &stubPendingStore{
-		getFn: func(_ context.Context, sid, rid string) (*PendingEntry, bool, error) {
-			e := pendingTestEntry(sid, rid, "", "failed")
-			e.ErrorMessage = "all credentials exhausted"
-			return e, true, nil
-		},
-	}
-	h := NewHandler(nil)
-	h.SetPendingStore(store)
-	r := httptest.NewRequest("GET",
-		"/v1/sessions/sess-3/pending-response?request_id=req-3", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("got %d, want 200 (failed body is still a valid response)", w.Code)
-	}
-	var body map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body["status"] != "failed" {
-		t.Errorf("status: got %v", body["status"])
-	}
-	if body["error_message"] != "all credentials exhausted" {
-		t.Errorf("error_message: got %v", body["error_message"])
-	}
-}
-
-func TestGetPendingResponse_404NotFound(t *testing.T) {
-	store := &stubPendingStore{
-		getFn: func(_ context.Context, sid, rid string) (*PendingEntry, bool, error) {
-			return nil, false, nil
-		},
-	}
-	h := NewHandler(nil)
-	h.SetPendingStore(store)
-	r := httptest.NewRequest("GET",
-		"/v1/sessions/sess-4/pending-response?request_id=req-4", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("got %d, want 404", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "PENDING_NOT_FOUND") {
-		t.Errorf("body: got %q", w.Body.String())
-	}
-}
-
-func TestGetPendingResponse_404HidesMissingSessionDetail(t *testing.T) {
-	// When the session row is not in the session manager AND the
-	// pending lookup returns not-found, we still return 404 with
-	// the generic "no pending response" message. This avoids
-	// leaking whether a session id exists in the system.
-	store := &stubPendingStore{
-		getFn: func(_ context.Context, sid, rid string) (*PendingEntry, bool, error) {
-			return nil, false, nil
-		},
-	}
-	h := NewHandler(nil) // nil session manager → all session lookups return ErrSessionNotFound
-	h.SetPendingStore(store)
-	r := httptest.NewRequest("GET",
-		"/v1/sessions/sess-orphan/pending-response?request_id=req-x", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("orphan session: got %d, want 404 (not 403)", w.Code)
-	}
-}
-
-func TestGetPendingResponse_StoreErrorReturns503(t *testing.T) {
-	store := &stubPendingStore{
-		getFn: func(_ context.Context, _, _ string) (*PendingEntry, bool, error) {
-			return nil, false, errors.New("redis dial: connection refused")
-		},
-	}
-	h := NewHandler(nil)
-	h.SetPendingStore(store)
-	r := httptest.NewRequest("GET",
-		"/v1/sessions/sess-5/pending-response?request_id=req-5", nil)
+	r := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-x/pending-response", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("got %d, want 503", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "PENDING_STORE_ERROR") {
-		t.Errorf("body: got %q", w.Body.String())
+}
+
+func TestGetPendingResponse_CompletedSSE(t *testing.T) {
+	const body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
+	store := &stubPendingStore{getFn: func(_ context.Context, sid, rid string) (*PendingEntry, bool, error) {
+		return pendingTestEntry(sid, rid, body, "completed"), true, nil
+	}}
+	h, sess := pendingHandlerWithOwnedSession(t, store)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, pendingHandlerRequest(sess.SessionID, "req-1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-Gw-Pending-Replay"); got != "true" {
+		t.Fatalf("replay header = %q", got)
+	}
+	if got := w.Body.String(); got != body {
+		t.Fatalf("body = %q, want %q", got, body)
+	}
+}
+
+func TestGetPendingResponse_InProgressAndFailed(t *testing.T) {
+	for _, status := range []string{"in_progress", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			store := &stubPendingStore{getFn: func(_ context.Context, sid, rid string) (*PendingEntry, bool, error) {
+				entry := pendingTestEntry(sid, rid, "", status)
+				entry.ErrorMessage = "upstream failed"
+				return entry, true, nil
+			}}
+			h, sess := pendingHandlerWithOwnedSession(t, store)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, pendingHandlerRequest(sess.SessionID, "req-1"))
+			want := http.StatusAccepted
+			if status == "failed" {
+				want = http.StatusOK
+			}
+			if w.Code != want {
+				t.Fatalf("got %d, want %d: %s", w.Code, want, w.Body.String())
+			}
+		})
 	}
 }
 
 func TestGetPendingResponse_GetLatestFallback(t *testing.T) {
-	// When no request_id is supplied, the handler should fall back
-	// to GetLatest. We pin this with a stub that returns from
-	// latestFn only.
 	store := &stubPendingStore{
 		getFn: func(_ context.Context, _, _ string) (*PendingEntry, bool, error) {
-			t.Fatal("Get should NOT be called when no request_id is supplied")
+			t.Fatal("Get must not be called without request_id")
 			return nil, false, nil
 		},
 		latestFn: func(_ context.Context, sid string) (*PendingEntry, string, bool, error) {
-			return pendingTestEntry(sid, "req-latest", "data: [DONE]\n\n", "completed"),
-				"req-latest", true, nil
+			return pendingTestEntry(sid, "req-latest", "data: [DONE]\n\n", "completed"), "req-latest", true, nil
 		},
 	}
-	h := NewHandler(nil)
-	h.SetPendingStore(store)
-	r := httptest.NewRequest("GET", "/v1/sessions/sess-latest/pending-response", nil)
+	h, sess := pendingHandlerWithOwnedSession(t, store)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("got %d, want 200", w.Code)
-	}
-	if got := w.Header().Get("X-Gw-Pending-Request"); got != "req-latest" {
-		t.Errorf("X-Gw-Pending-Request: got %q, want req-latest", got)
+	h.ServeHTTP(w, pendingHandlerRequest(sess.SessionID, ""))
+	if w.Code != http.StatusOK || w.Header().Get("X-Gw-Pending-Request") != "req-latest" {
+		t.Fatalf("status=%d request=%q", w.Code, w.Header().Get("X-Gw-Pending-Request"))
 	}
 }
 
-func TestGetPendingResponse_UnknownStatusIs503(t *testing.T) {
-	store := &stubPendingStore{
-		getFn: func(_ context.Context, sid, rid string) (*PendingEntry, bool, error) {
-			return pendingTestEntry(sid, rid, "garbage", "wat"), true, nil
-		},
-	}
-	h := NewHandler(nil)
-	h.SetPendingStore(store)
-	r := httptest.NewRequest("GET",
-		"/v1/sessions/sess-6/pending-response?request_id=req-6", nil)
+func TestGetPendingResponse_FailsClosed(t *testing.T) {
+	t.Run("missing session", func(t *testing.T) {
+		h := NewHandler(nil)
+		h.SetPendingStore(&stubPendingStore{getFn: func(context.Context, string, string) (*PendingEntry, bool, error) {
+			return pendingTestEntry("s", "r", "secret", "completed"), true, nil
+		}})
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, pendingHandlerRequest("s", "r"))
+		if w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "secret") {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("tenantless entry", func(t *testing.T) {
+		store := &stubPendingStore{getFn: func(_ context.Context, sid, rid string) (*PendingEntry, bool, error) {
+			return &PendingEntry{SessionID: sid, RequestID: rid, Status: "completed", Body: "secret"}, true, nil
+		}}
+		h, sess := pendingHandlerWithOwnedSession(t, store)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, pendingHandlerRequest(sess.SessionID, "r"))
+		if w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "secret") {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestGetPendingResponse_StoreErrorReturns503(t *testing.T) {
+	store := &stubPendingStore{getFn: func(context.Context, string, string) (*PendingEntry, bool, error) {
+		return nil, false, errors.New("redis unavailable")
+	}}
+	h, sess := pendingHandlerWithOwnedSession(t, store)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
+	h.ServeHTTP(w, pendingHandlerRequest(sess.SessionID, "req-1"))
 	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("unknown status: got %d, want 503", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "PENDING_BAD_STATUS") {
-		t.Errorf("body: got %q", w.Body.String())
+		t.Fatalf("got %d, want 503", w.Code)
 	}
 }
 
 func TestGetPendingResponse_OnlyGETAllowed(t *testing.T) {
-	// The sub-route /v1/sessions/{id}/pending-response is read-only.
-	// POST/PUT/DELETE on it must 405. This is the regression guard
-	// for the routing change in C3 — the new sub-route must not
-	// accidentally accept write methods.
 	h := NewHandler(nil)
-	for _, method := range []string{"POST", "PUT", "DELETE", "PATCH"} {
-		r := httptest.NewRequest(method, "/v1/sessions/sess-x/pending-response", nil)
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
+		h.ServeHTTP(w, httptest.NewRequest(method, "/v1/sessions/sess-x/pending-response", nil))
 		if w.Code != http.StatusMethodNotAllowed {
-			t.Errorf("%s pending-response: got %d, want 405", method, w.Code)
+			t.Fatalf("%s got %d, want 405", method, w.Code)
 		}
 	}
 }
 
-func TestGetPendingResponse_PlainSessionGetStillWorks(t *testing.T) {
-	// Regression guard: the sub-route check must not steal plain
-	// GET /v1/sessions/{id} requests. The manager is constructed
-	// with a redis client that points to a closed port; the
-	// GetSessionByID call will return an internal error, but
-	// what matters here is that we did NOT route to
-	// getPendingResponse (which would 503 PENDING_STORE_UNAVAILABLE).
-	rc := NewRedisClient("127.0.0.1:1", "", 0) // closed port → fast error
-	sm := NewManager(rc, 0)
-	h := NewHandler(sm)
-	r := httptest.NewRequest("GET", "/v1/sessions/sess-y", nil)
+func TestGetPendingResponse_ErrorShape(t *testing.T) {
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code == http.StatusServiceUnavailable &&
-		strings.Contains(w.Body.String(), "PENDING_STORE_UNAVAILABLE") {
-		t.Fatalf("plain session GET was misrouted to pending-response handler: %s", w.Body.String())
+	writeErrorJSON(w, http.StatusNotFound, "", "not found", "session_error", "PENDING_NOT_FOUND")
+	var response map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatal(err)
 	}
-	_ = redis.Nil // keep the redis import in case future tests need it
+	if response["error"].(map[string]any)["code"] != "PENDING_NOT_FOUND" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
 }

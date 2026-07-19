@@ -60,6 +60,19 @@ func TestStreamChatWithPendingCaptureContinuesAfterClientDisconnect(t *testing.T
 	assert.Contains(t, string(bodyCaptured), "data: [DONE]")
 }
 
+func TestPendingCapturer_OverflowFailsReplay(t *testing.T) {
+	pc := NewPendingCapturer(8)
+	pc.append("data: ok\n")
+	pc.append("data: overflow\n")
+	pc.finalize(StreamOutcome{})
+
+	body, state, ok := pc.Snapshot()
+	require.True(t, ok)
+	assert.Equal(t, "failed", state.Status)
+	assert.Equal(t, "pending_capture_overflow", state.ErrMessage)
+	assert.True(t, state.Overflowed)
+	assert.LessOrEqual(t, len(body), 8)
+}
 func TestStreamAnthropicPassthroughContinuesAfterClientDisconnect(t *testing.T) {
 	body := strings.Join([]string{
 		"event: message_start\n",
