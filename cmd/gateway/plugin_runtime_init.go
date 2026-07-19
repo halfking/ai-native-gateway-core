@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 
+	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
 )
 
@@ -37,4 +39,22 @@ func ScanPlugins(pluginsDir string, reg *pluginruntime.Registry) error {
 		reg.SetNav(m.PluginID, m.PluginVersion, m.Pages)
 	}
 	return nil
+}
+
+// wirePluginAuthExtractor bridges admin.AuthContext → plugin-runtime AuthExtractor.
+// Super = super_admin or admin_key (legacy). PlatformOps = Super AND default tenant.
+// TenantPortal = non-default tenant. Called once at startup after admin middleware is ready.
+func wirePluginAuthExtractor() {
+	pluginruntime.SetAuthExtractor(func(r *http.Request) (pluginruntime.AuthInfo, bool) {
+		auth := admin.GetAuthContext(r)
+		if auth == nil {
+			return pluginruntime.AuthInfo{}, false
+		}
+		super := auth.Role == "super_admin" || auth.Role == "admin_key"
+		return pluginruntime.AuthInfo{
+			Super:        super,
+			PlatformOps:  super && auth.TenantID == "default",
+			TenantPortal: auth.TenantID != "default",
+		}, true
+	})
 }
