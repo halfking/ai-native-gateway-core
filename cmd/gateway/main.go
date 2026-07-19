@@ -3344,6 +3344,7 @@ func main() {
 		qualityHandler := handlers.NewQualityHandler(dbConn.Stdlib(), profileUpdater)
 		mux.Handle("/api/quality/", qualityHandler)
 		slog.Info("质量画像 API 已启用", "routes", []string{
+			"GET /api/quality/summary",
 			"GET /api/quality/providers/:id",
 			"GET /api/quality/ranking",
 			"POST /api/quality/providers/:id/recalculate",

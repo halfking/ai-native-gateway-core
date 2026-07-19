@@ -35,6 +35,12 @@ export default {
     freeChipNo: '不含免费',
     freeBadgeTooltipYes: '该供应商存在免费 (billing_mode=free) 的模型',
     freeBadgeTooltipNo: '该供应商没有免费模型',
+    sortLabel: '排序',
+    sortDefault: '默认顺序',
+    sortUsage: '24h 请求量',
+    sortQuality: '质量分',
+    sortAvailability: '可用性分',
+    sortPerformance: '性能分',
   },
   list: {
     table: {
@@ -47,6 +53,10 @@ export default {
       availableModels: '可用模型',
       freeModels: '免费模型',
       errorRate24h: '24h 错误率',
+      usage24h: '24h 用量',
+      qualityScore: '综合质量',
+      availabilityScore: '可用性',
+      performanceScore: '性能',
       health: '系统健康',
       status: '状态',
     },

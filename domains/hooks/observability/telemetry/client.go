@@ -762,7 +762,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- were added by 2026-07-11-observability-fields.sql; origin_stage / origin_actor
 			-- by migration 341. All four are populated by middleware/origin_mw.go for every
 			-- business row and by the probe workers (self_check / node_probe / system_health).
-			client_ip, client_forwarded_for, origin_stage, origin_actor
+			client_ip, client_forwarded_for, origin_stage, origin_actor,
+			-- 2026-07-19 (migration 350): routing attempts tracking.
+			routing_attempts, routing_summary
 		) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
@@ -795,7 +797,8 @@ $47,
 		$74, $75, $76, $77, $78,
 		$79::text::jsonb,
 		-- 2026-07-14 (migration 341): client-side origin.
-		$80, $81, $82, $83
+		$80, $81, $82, $83,
+		$84::text::jsonb, $85
 		)
 				ON CONFLICT (request_id, ts) DO UPDATE SET
 				ts = EXCLUDED.ts,

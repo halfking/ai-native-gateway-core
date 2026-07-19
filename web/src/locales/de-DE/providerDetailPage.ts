@@ -6,6 +6,7 @@ export default {
   back: '← Zurück',
   tabCreds: 'Anmeldedaten ({n})',
   tabModels: 'Modelle',
+  tabQuality: 'Qualität',
   tabLogs: 'Anfrage-Logs',
   tabDiag: 'Diagnose',
   tabProbe: 'Auto-Prüfung',

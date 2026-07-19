@@ -235,7 +235,7 @@ function upstreamFinishReasonLabel(v: string | null | undefined): string {
 
 function statusLabel(row: RequestLogRow): string {
   if (row.request_status === 'in_progress') return t('requests.resultInProgress')
-  if (row.request_status === 'rate_limited') return t('requests.resultRateLimited') || '限流'
+  if (row.request_status === 'rate_limited') return t('requests.list.filter.resultRateLimited') || '限流'
   if (row.request_status === 'success' || row.success) return t('requests.resultSuccess')
   // 2026-06-19 T-NEW-7: failure_detail_code now contains ONLY real failure
   // codes. upstream_finish_reason is informational and should never be
@@ -2012,4 +2012,3 @@ onMounted(async () => {
   right: 24px;
 }
 </style>
-

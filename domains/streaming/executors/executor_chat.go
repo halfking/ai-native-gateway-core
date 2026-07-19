@@ -1046,6 +1046,11 @@ func (e *Executor) executeOpenAI(
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
 			}
+			// 2026-07-20: Strip vendor-private fields (minimax/zhipu/deepseek/doubao)
+			// before protocol conversion and client write. Missing this step caused
+			// 5xx errors for gpt-5.2/gpt-5.6-luna/Minimax-m3 when vendor fields were
+			// present in the response body but not properly cleaned.
+			respBody = e.stripVendorFields(respBody, cand.CatalogCode)
 			// Q2 non-stream response (anthropic client ← openai upstream):
 			// the upstream body is still OpenAI-shaped at this point; if
 			// the client is Anthropic, convert to Anthropic Messages JSON

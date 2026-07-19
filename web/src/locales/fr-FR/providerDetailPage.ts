@@ -6,6 +6,7 @@ export default {
   back: '← Retour',
   tabCreds: 'Identifiants ({n})',
   tabModels: 'Modèles',
+  tabQuality: 'Qualité',
   tabLogs: 'Journaux de requêtes',
   tabDiag: 'Diagnostic',
   tabProbe: 'Vérification auto',

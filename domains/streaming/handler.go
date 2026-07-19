@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -888,7 +889,14 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"attempt_err_code", logCtx.ErrCode,
 			"attempt_logged", logCtx.IsLogged())
 		if rec := recover(); rec != nil {
-			slog.Error("chat handler panic", "panic", rec, "request_id", requestID)
+			// 2026-07-20: Capture full stack trace for nil pointer panic debugging
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			stackTrace := string(buf[:n])
+			slog.Error("chat handler panic",
+				"panic", rec,
+				"request_id", requestID,
+				"stack_trace", stackTrace)
 			logCtx.SetError("internal_panic", "internal server error")
 			if len(logCtx.Body) == 0 {
 				logCtx.EnsureCaptured()
