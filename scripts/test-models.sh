@@ -5,8 +5,10 @@
 set -e
 
 # 配置
-GATEWAY_URL="http://localhost:8781"
-API_KEY="sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9"
+GATEWAY_URL="${GATEWAY_URL:-http://localhost:8781}"
+# API_KEY 来自 envs/projects/llm-gateway-go (LLM_GATEWAY_API_KEY)
+# 加载方式: source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server <target>
+API_KEY="${LLM_GATEWAY_API_KEY:?LLM_GATEWAY_API_KEY 未加载，请先 source envs/loader.sh}"
 TIMESTAMP=$(date +%s)
 
 # 颜色输出
