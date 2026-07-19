@@ -659,29 +659,29 @@ func main() {
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
 			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, normFunc executors.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) executors.StreamOutcome {
-			tenantID := extractTenantIDFromUpstreamResp(resp)
-			var pc *streaming.PendingCapturer
-			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
-				pc = streaming.NewPendingCapturer(0)
-				markCapturedPendingInProgress(pendingStore, resp, tenantID)
-			}
-			var stripFn func([]byte) []byte
-			switch catalogCode {
-			case "doubao":
-				stripFn = streaming.StripDoubaoFieldsBody
-			case "minimax":
-				stripFn = streaming.StripMinimaxFieldsBody
-			}
-			outcome := streaming.StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc)
-			saveCapturedPending(pendingStore, pc, resp, tenantID)
-			return outcome
-		},
+				tenantID := extractTenantIDFromUpstreamResp(resp)
+				var pc *streaming.PendingCapturer
+				if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
+					pc = streaming.NewPendingCapturer(0)
+					markCapturedPendingInProgress(pendingStore, resp, tenantID)
+				}
+				var stripFn func([]byte) []byte
+				switch catalogCode {
+				case "doubao":
+					stripFn = streaming.StripDoubaoFieldsBody
+				case "minimax":
+					stripFn = streaming.StripMinimaxFieldsBody
+				}
+				outcome := streaming.StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc)
+				saveCapturedPending(pendingStore, pc, resp, tenantID)
+				return outcome
+			},
 			auditSink,
 		)
 		routingExec.XMLCoerceNonStream = streaming.CoerceXMLToolCallsInChatResponse
 		routingExec.QualityProcessNonStream = streaming.WrapQualityProcessNonStream()
 		routingExec.QualitySetMode = streaming.WrapSetQualityFixModeOnContext()
-routingExec.AnthropicPassthroughStream = func(
+		routingExec.AnthropicPassthroughStream = func(
 			w http.ResponseWriter,
 			resp *http.Response,
 			clientModel, outboundModel, requestID string,
@@ -3547,6 +3547,28 @@ routingExec.AnthropicPassthroughStream = func(
 			}()
 		} else {
 			slog.Info("质量指标采集器已禁用", "QUALITY_COLLECTOR_ENABLED", qualityCollectorEnabled)
+		}
+	}
+
+	// ── 启动质量画像更新器 ───────────────────────────────────────────────
+	if dbConn != nil && dbConn.Enabled() {
+		profileUpdaterEnabled := os.Getenv("PROFILE_UPDATER_ENABLED")
+		if profileUpdaterEnabled == "" || profileUpdaterEnabled == "true" {
+			slog.Info("启动质量画像更新器")
+
+			profileUpdater := quality.NewProfileUpdater(
+				dbConn.Stdlib(),
+				quality.WithUpdateInterval(1*time.Hour),
+				quality.WithUpdateTimeout(5*time.Minute),
+			)
+
+			go func() {
+				if err := profileUpdater.Start(context.Background()); err != nil {
+					slog.Error("质量画像更新器退出", "error", err)
+				}
+			}()
+		} else {
+			slog.Info("质量画像更新器已禁用", "PROFILE_UPDATER_ENABLED", profileUpdaterEnabled)
 		}
 	}
 
