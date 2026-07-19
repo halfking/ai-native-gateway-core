@@ -1,20 +1,15 @@
 package admin
 
-// auto_route_defaults.go — M2: task_default_routing 的 admin CRUD。
+// auto_route_defaults.go — task_default_routing admin CRUD.
 //
-// 端点（仿 routing_overrides，挂在 /api/admin/auto-route/defaults）：
-//   GET    /api/admin/auto-route/defaults          列表（支持 task_type/profile/tenant_id/active 过滤）
-//   POST   /api/admin/auto-route/defaults          创建
-//   DELETE /api/admin/auto-route/defaults/:id      删除（带审计）
-//   PATCH  /api/admin/auto-route/defaults/:id      更新（reason/expires_at/priority/tier）
-//   GET    /api/admin/auto-route/defaults/audit    审计列表
+// Endpoints (mounted under /api/admin/auto-route/defaults):
+//   GET    /api/admin/auto-route/defaults          list (task_type/profile/active filters)
+//   POST   /api/admin/auto-route/defaults          create
+//   DELETE /api/admin/auto-route/defaults/:id      delete (with audit)
+//   PATCH  /api/admin/auto-route/defaults/:id      update (tier/priority/reason/profile/model/tenant/expires)
+//   GET    /api/admin/auto-route/defaults/audit    audit list
 //
-// 权限：super_admin 可操作任意行；tenant_admin 仅可见/操作本租户行（tenant_id
-// 必须等于调用者 tenant）。本文件暂以 superAdmin 中间件保护（与
-// RegisterAutoRouteRoutes 一致），tenant_admin 细粒度过滤为后续 P1。
-//
-// 审计：直接写 task_default_routing_audit（无 DB trigger，事务内原子提交）。
-// 详见 docs/拆分/22-Auto智能路由与任务识别.md §22.6。
+// Permission: wrapped with superAdmin (same as RegisterAutoRouteRoutes).
 
 import (
 	"encoding/json"
@@ -25,7 +20,7 @@ import (
 	"time"
 )
 
-// DefaultRoutingWire 是 task_default_routing 行的 JSON 格式。
+// DefaultRoutingWire is the JSON format for task_default_routing rows.
 type DefaultRoutingWire struct {
 	ID             int64      `json:"id"`
 	TaskType       string     `json:"task_type"`
@@ -41,7 +36,7 @@ type DefaultRoutingWire struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
-// DefaultRoutingCreateReq 是 POST body。
+// DefaultRoutingCreateReq is the POST body.
 type DefaultRoutingCreateReq struct {
 	TaskType       string     `json:"task_type"`
 	Profile        string     `json:"profile"`
@@ -53,18 +48,22 @@ type DefaultRoutingCreateReq struct {
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 }
 
-// DefaultRoutingUpdateReq 是 PATCH body（全部可选）。
+// DefaultRoutingUpdateReq is the PATCH body (all optional).
+// clear_tenant / clear_expires allow explicit nulling (COALESCE cannot clear).
 type DefaultRoutingUpdateReq struct {
-	Tier      *string    `json:"tier,omitempty"`
-	Priority  *int       `json:"priority,omitempty"`
-	Reason    *string    `json:"reason,omitempty"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Tier           *string    `json:"tier,omitempty"`
+	Priority       *int       `json:"priority,omitempty"`
+	Reason         *string    `json:"reason,omitempty"`
+	Profile        *string    `json:"profile,omitempty"`
+	CanonicalModel *string    `json:"canonical_model,omitempty"`
+	TenantID       *string    `json:"tenant_id,omitempty"`
+	ClearTenant    bool       `json:"clear_tenant,omitempty"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	ClearExpires   bool       `json:"clear_expires,omitempty"`
 }
 
-// validTiers 与 SQL CHECK 一致。
 var validDefaultTiers = map[string]bool{"primary": true, "secondary": true, "fallback": true}
 
-// validProfiles 与 SQL CHECK 一致（” 表示通用）。
 var validDefaultProfiles = map[string]bool{"": true, "smart": true, "speed_first": true, "cost_first": true}
 
 // HandleDefaultRoutingCollection: GET (list) / POST (create).
@@ -79,7 +78,7 @@ func (h *AutoRouteHandlers) HandleDefaultRoutingCollection(w http.ResponseWriter
 	}
 }
 
-// HandleDefaultRoutingItem: DELETE / PATCH /:id 和 /audit 子路径。
+// HandleDefaultRoutingItem: DELETE / PATCH /:id and /audit sub-path.
 func (h *AutoRouteHandlers) HandleDefaultRoutingItem(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/auto-route/defaults")
 	path = strings.Trim(path, "/")
@@ -97,10 +96,6 @@ func (h *AutoRouteHandlers) HandleDefaultRoutingItem(w http.ResponseWriter, r *h
 		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_invalid_default_routing_id")
 		return
 	}
-	if len(parts) > 1 {
-		writeJSONErr(w, http.StatusBadRequest, "unknown sub-path")
-		return
-	}
 	switch r.Method {
 	case http.MethodDelete:
 		h.deleteDefaultRouting(w, r, id)
@@ -110,8 +105,6 @@ func (h *AutoRouteHandlers) HandleDefaultRoutingItem(w http.ResponseWriter, r *h
 		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 	}
 }
-
-// ── GET (list) ──────────────────────────────────────────────────
 
 func (h *AutoRouteHandlers) listDefaultRouting(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -135,7 +128,7 @@ func (h *AutoRouteHandlers) listDefaultRouting(w http.ResponseWriter, r *http.Re
 		args = append(args, profile)
 		sb.WriteString(fmt.Sprintf(` AND profile = $%d`, len(args)))
 	}
-	sb.WriteString(` ORDER BY task_type, profile, COALESCE(tenant_id,''), priority DESC`)
+	sb.WriteString(` ORDER BY task_type, profile, COALESCE(tenant_id,''), priority DESC, id ASC`)
 
 	rows, err := h.db.Query(r.Context(), sb.String(), args...)
 	if err != nil {
@@ -146,29 +139,32 @@ func (h *AutoRouteHandlers) listDefaultRouting(w http.ResponseWriter, r *http.Re
 
 	out := make([]DefaultRoutingWire, 0)
 	for rows.Next() {
-		var dr DefaultRoutingWire
-		var createdBy *string
-		if err := rows.Scan(&dr.ID, &dr.TaskType, &dr.Profile, &dr.Tier,
-			&dr.CanonicalModel, &dr.TenantID, &dr.Priority, &dr.Reason,
-			&createdBy, &dr.ExpiresAt, &dr.CreatedAt, &dr.UpdatedAt); err != nil {
+		var row DefaultRoutingWire
+		if err := rows.Scan(
+			&row.ID, &row.TaskType, &row.Profile, &row.Tier, &row.CanonicalModel,
+			&row.TenantID, &row.Priority, &row.Reason, &row.CreatedBy,
+			&row.ExpiresAt, &row.CreatedAt, &row.UpdatedAt,
+		); err != nil {
 			writeInternalErr(w, err)
 			return
 		}
-		dr.CreatedBy = createdBy
-		out = append(out, dr)
+		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
 		writeInternalErr(w, err)
 		return
 	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"defaults": out,
 		"count":    len(out),
-		"filter":   map[string]string{"task_type": taskType, "profile": profile, "active": strconv.FormatBool(activeOnly)},
+		"filter": map[string]string{
+			"task_type": taskType,
+			"profile":   profile,
+			"active":    strconv.FormatBool(activeOnly),
+		},
 	})
 }
-
-// ── POST (create) ───────────────────────────────────────────────
 
 func (h *AutoRouteHandlers) createDefaultRouting(w http.ResponseWriter, r *http.Request) {
 	var req DefaultRoutingCreateReq
@@ -176,6 +172,11 @@ func (h *AutoRouteHandlers) createDefaultRouting(w http.ResponseWriter, r *http.
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}
+	req.TaskType = strings.TrimSpace(req.TaskType)
+	req.CanonicalModel = strings.TrimSpace(req.CanonicalModel)
+	req.Profile = strings.TrimSpace(req.Profile)
+	req.Tier = strings.TrimSpace(req.Tier)
+	req.Reason = strings.TrimSpace(req.Reason)
 	if req.TaskType == "" {
 		writeJSONErr(w, http.StatusBadRequest, "task_type is required")
 		return
@@ -192,7 +193,23 @@ func (h *AutoRouteHandlers) createDefaultRouting(w http.ResponseWriter, r *http.
 		return
 	}
 	if !validDefaultProfiles[req.Profile] {
-		writeJSONErr(w, http.StatusBadRequest, "profile must be '', smart, speed_first, cost_first")
+		writeJSONErr(w, http.StatusBadRequest, "profile must be ''/smart/speed_first/cost_first")
+		return
+	}
+	if req.Priority == 0 {
+		req.Priority = 100
+	}
+	if req.TenantID != nil {
+		trimmed := strings.TrimSpace(*req.TenantID)
+		if trimmed == "" {
+			req.TenantID = nil
+		} else {
+			req.TenantID = &trimmed
+		}
+	}
+
+	if err := h.validateCanonicalModelActive(r, req.CanonicalModel); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -200,61 +217,39 @@ func (h *AutoRouteHandlers) createDefaultRouting(w http.ResponseWriter, r *http.
 	if createdBy == "" {
 		createdBy = "admin"
 	}
-
 	ctx := r.Context()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		writeInternalErr(w, err)
 		return
 	}
-	//nolint:errcheck // deferred rollback, best-effort
-	defer tx.Rollback(ctx)
-
-	// 校验 canonical_model 存在且 active。
-	var status string
-	err = tx.QueryRow(ctx,
-		`SELECT status FROM models_canonical WHERE canonical_name = $1`, req.CanonicalModel).Scan(&status)
-	if err != nil {
-		writeJSONErr(w, http.StatusBadRequest,
-			fmt.Sprintf("canonical_model %q not found: %v", req.CanonicalModel, err))
-		return
-	}
-	if status != "active" {
-		writeJSONErr(w, http.StatusBadRequest,
-			fmt.Sprintf("canonical_model %q status is %q, must be active", req.CanonicalModel, status))
-		return
-	}
+	defer tx.Rollback(ctx) //nolint:errcheck
 
 	var newID int64
 	err = tx.QueryRow(ctx, `
 		INSERT INTO task_default_routing
 		  (task_type, profile, tier, canonical_model, tenant_id, priority, reason, created_by, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		RETURNING id`,
 		req.TaskType, req.Profile, req.Tier, req.CanonicalModel, req.TenantID,
 		req.Priority, req.Reason, createdBy, req.ExpiresAt,
 	).Scan(&newID)
 	if err != nil {
-		// 2026-07-17 (audit M3): reuse the shared isUniqueViolation helper
-		// (SQLSTATE 23505 with string fallback) instead of matching the
-		// constraint name verbatim, which breaks on pgx upgrades or
-		// localized error messages.
 		if isUniqueViolation(err) {
 			writeJSONErr(w, http.StatusConflict,
-				"a default for the same (task_type, profile, tier, tenant) already exists")
+				"a default with the same (task_type, profile, tier, tenant_id) already exists")
 			return
 		}
 		writeInternalErr(w, err)
 		return
 	}
-
-	// 审计
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO task_default_routing_audit
 		  (action, routing_id, task_type, profile, tier, canonical_model, tenant_id, priority, reason, expires_at, actor)
-		VALUES ('insert', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		VALUES ('insert',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		newID, req.TaskType, req.Profile, req.Tier, req.CanonicalModel, req.TenantID,
-		req.Priority, req.Reason, req.ExpiresAt, createdBy); err != nil {
+		req.Priority, req.Reason, req.ExpiresAt, createdBy,
+	); err != nil {
 		writeInternalErr(w, err)
 		return
 	}
@@ -263,19 +258,12 @@ func (h *AutoRouteHandlers) createDefaultRouting(w http.ResponseWriter, r *http.
 		return
 	}
 
-	h.writeAuditLog(r, "default_routing.create", newID, map[string]any{
-		"task_type": req.TaskType, "profile": req.Profile, "tier": req.Tier,
-		"canonical_model": req.CanonicalModel, "ip": clientIP(r),
-	})
-
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":      newID,
 		"status":  "created",
-		"message": "default created. DefaultRoutingStore refreshes on the next 1-min reload (within 60s).",
+		"message": "default routing created; hot path refreshes within ~1 minute",
 	})
 }
-
-// ── DELETE ──────────────────────────────────────────────────────
 
 func (h *AutoRouteHandlers) deleteDefaultRouting(w http.ResponseWriter, r *http.Request, id int64) {
 	createdBy := requestUser(r)
@@ -288,20 +276,19 @@ func (h *AutoRouteHandlers) deleteDefaultRouting(w http.ResponseWriter, r *http.
 		writeInternalErr(w, err)
 		return
 	}
-	//nolint:errcheck // deferred rollback
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck
 
-	var dr DefaultRoutingWire
+	var row DefaultRoutingWire
 	err = tx.QueryRow(ctx, `
 		SELECT id, task_type, profile, tier, canonical_model, tenant_id, priority, reason, expires_at
-		FROM task_default_routing WHERE id = $1`, id).
-		Scan(&dr.ID, &dr.TaskType, &dr.Profile, &dr.Tier, &dr.CanonicalModel,
-			&dr.TenantID, &dr.Priority, &dr.Reason, &dr.ExpiresAt)
+		FROM task_default_routing WHERE id = $1`, id).Scan(
+		&row.ID, &row.TaskType, &row.Profile, &row.Tier, &row.CanonicalModel,
+		&row.TenantID, &row.Priority, &row.Reason, &row.ExpiresAt,
+	)
 	if err != nil {
 		writeJSONErr(w, http.StatusNotFound, fmt.Sprintf("id %d not found", id))
 		return
 	}
-
 	if _, err := tx.Exec(ctx, `DELETE FROM task_default_routing WHERE id = $1`, id); err != nil {
 		writeInternalErr(w, err)
 		return
@@ -309,9 +296,10 @@ func (h *AutoRouteHandlers) deleteDefaultRouting(w http.ResponseWriter, r *http.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO task_default_routing_audit
 		  (action, routing_id, task_type, profile, tier, canonical_model, tenant_id, priority, reason, expires_at, actor)
-		VALUES ('delete', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		id, dr.TaskType, dr.Profile, dr.Tier, dr.CanonicalModel, dr.TenantID,
-		dr.Priority, dr.Reason, dr.ExpiresAt, createdBy); err != nil {
+		VALUES ('delete',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		row.ID, row.TaskType, row.Profile, row.Tier, row.CanonicalModel, row.TenantID,
+		row.Priority, row.Reason, row.ExpiresAt, createdBy,
+	); err != nil {
 		writeInternalErr(w, err)
 		return
 	}
@@ -322,18 +310,52 @@ func (h *AutoRouteHandlers) deleteDefaultRouting(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "deleted"})
 }
 
-// ── PATCH (update) ──────────────────────────────────────────────
-
 func (h *AutoRouteHandlers) updateDefaultRouting(w http.ResponseWriter, r *http.Request, id int64) {
 	var req DefaultRoutingUpdateReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}
-	if req.Tier != nil && !validDefaultTiers[*req.Tier] {
-		writeJSONErr(w, http.StatusBadRequest, "tier must be primary/secondary/fallback")
-		return
+	if req.Tier != nil {
+		*req.Tier = strings.TrimSpace(*req.Tier)
+		if !validDefaultTiers[*req.Tier] {
+			writeJSONErr(w, http.StatusBadRequest, "tier must be primary/secondary/fallback")
+			return
+		}
 	}
+	if req.Profile != nil {
+		*req.Profile = strings.TrimSpace(*req.Profile)
+		if !validDefaultProfiles[*req.Profile] {
+			writeJSONErr(w, http.StatusBadRequest, "profile must be ''/smart/speed_first/cost_first")
+			return
+		}
+	}
+	if req.CanonicalModel != nil {
+		*req.CanonicalModel = strings.TrimSpace(*req.CanonicalModel)
+		if *req.CanonicalModel == "" {
+			writeJSONErr(w, http.StatusBadRequest, "canonical_model cannot be empty")
+			return
+		}
+		if err := h.validateCanonicalModelActive(r, *req.CanonicalModel); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if req.Reason != nil {
+		*req.Reason = strings.TrimSpace(*req.Reason)
+	}
+	if req.ClearTenant {
+		req.TenantID = nil
+	} else if req.TenantID != nil {
+		trimmed := strings.TrimSpace(*req.TenantID)
+		if trimmed == "" {
+			req.ClearTenant = true
+			req.TenantID = nil
+		} else {
+			req.TenantID = &trimmed
+		}
+	}
+
 	createdBy := requestUser(r)
 	if createdBy == "" {
 		createdBy = "admin"
@@ -344,19 +366,46 @@ func (h *AutoRouteHandlers) updateDefaultRouting(w http.ResponseWriter, r *http.
 		writeInternalErr(w, err)
 		return
 	}
-	//nolint:errcheck // deferred rollback
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck
 
 	res, err := tx.Exec(ctx, `
 		UPDATE task_default_routing SET
-		  tier        = COALESCE($2, tier),
-		  priority    = COALESCE($3, priority),
-		  reason      = COALESCE($4, reason),
-		  expires_at  = COALESCE($5, expires_at),
-		  updated_at  = NOW()
+		  tier            = COALESCE($2, tier),
+		  priority        = COALESCE($3, priority),
+		  reason          = COALESCE($4, reason),
+		  profile         = COALESCE($5, profile),
+		  canonical_model = COALESCE($6, canonical_model),
+		  tenant_id       = CASE
+		                      WHEN $7::boolean THEN NULL
+		                      WHEN $8::boolean THEN $9
+		                      ELSE tenant_id
+		                    END,
+		  expires_at      = CASE
+		                      WHEN $10::boolean THEN NULL
+		                      WHEN $11::boolean THEN $12
+		                      ELSE expires_at
+		                    END,
+		  updated_at      = NOW()
 		WHERE id = $1`,
-		id, req.Tier, req.Priority, req.Reason, req.ExpiresAt)
+		id,
+		req.Tier,
+		req.Priority,
+		req.Reason,
+		req.Profile,
+		req.CanonicalModel,
+		req.ClearTenant,
+		req.TenantID != nil,
+		req.TenantID,
+		req.ClearExpires,
+		req.ExpiresAt != nil,
+		req.ExpiresAt,
+	)
 	if err != nil {
+		if isUniqueViolation(err) {
+			writeJSONErr(w, http.StatusConflict,
+				"a default with the same (task_type, profile, tier, tenant_id) already exists")
+			return
+		}
 		writeInternalErr(w, err)
 		return
 	}
@@ -364,11 +413,24 @@ func (h *AutoRouteHandlers) updateDefaultRouting(w http.ResponseWriter, r *http.
 		writeJSONErr(w, http.StatusNotFound, fmt.Sprintf("id %d not found", id))
 		return
 	}
+
+	var row DefaultRoutingWire
+	if err := tx.QueryRow(ctx, `
+		SELECT id, task_type, profile, tier, canonical_model, tenant_id, priority, reason, expires_at
+		FROM task_default_routing WHERE id = $1`, id).Scan(
+		&row.ID, &row.TaskType, &row.Profile, &row.Tier, &row.CanonicalModel,
+		&row.TenantID, &row.Priority, &row.Reason, &row.ExpiresAt,
+	); err != nil {
+		writeInternalErr(w, err)
+		return
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO task_default_routing_audit
-		  (action, routing_id, actor, reason, expires_at)
-		VALUES ('update', $1, $2, $3, $4)`,
-		id, createdBy, req.Reason, req.ExpiresAt); err != nil {
+		  (action, routing_id, task_type, profile, tier, canonical_model, tenant_id, priority, reason, expires_at, actor)
+		VALUES ('update',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		row.ID, row.TaskType, row.Profile, row.Tier, row.CanonicalModel, row.TenantID,
+		row.Priority, row.Reason, row.ExpiresAt, createdBy,
+	); err != nil {
 		writeInternalErr(w, err)
 		return
 	}
@@ -379,14 +441,17 @@ func (h *AutoRouteHandlers) updateDefaultRouting(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "updated"})
 }
 
-// ── GET /audit ──────────────────────────────────────────────────
-
 func (h *AutoRouteHandlers) listDefaultRoutingAudit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
+		return
+	}
 	rows, err := h.db.Query(r.Context(), `
-		SELECT id, ts, action, routing_id, task_type, profile, tier,
-		       canonical_model, tenant_id, priority, reason, expires_at, actor
+		SELECT id, ts, action, routing_id, task_type, profile, tier, canonical_model,
+		       tenant_id, priority, reason, expires_at, actor
 		FROM task_default_routing_audit
-		ORDER BY ts DESC LIMIT 500`)
+		ORDER BY ts DESC
+		LIMIT 500`)
 	if err != nil {
 		writeInternalErr(w, err)
 		return
@@ -394,34 +459,51 @@ func (h *AutoRouteHandlers) listDefaultRoutingAudit(w http.ResponseWriter, r *ht
 	defer rows.Close()
 
 	type auditRow struct {
-		ID        int64      `json:"id"`
-		TS        time.Time  `json:"ts"`
-		Action    string     `json:"action"`
-		RoutingID *int64     `json:"routing_id,omitempty"`
-		TaskType  *string    `json:"task_type,omitempty"`
-		Profile   *string    `json:"profile,omitempty"`
-		Tier      *string    `json:"tier,omitempty"`
-		Model     *string    `json:"canonical_model,omitempty"`
-		TenantID  *string    `json:"tenant_id,omitempty"`
-		Priority  *int       `json:"priority,omitempty"`
-		Reason    *string    `json:"reason,omitempty"`
-		ExpiresAt *time.Time `json:"expires_at,omitempty"`
-		Actor     *string    `json:"actor,omitempty"`
+		ID             int64      `json:"id"`
+		TS             time.Time  `json:"ts"`
+		Action         string     `json:"action"`
+		RoutingID      *int64     `json:"routing_id,omitempty"`
+		TaskType       *string    `json:"task_type,omitempty"`
+		Profile        *string    `json:"profile,omitempty"`
+		Tier           *string    `json:"tier,omitempty"`
+		CanonicalModel *string    `json:"canonical_model,omitempty"`
+		TenantID       *string    `json:"tenant_id,omitempty"`
+		Priority       *int       `json:"priority,omitempty"`
+		Reason         *string    `json:"reason,omitempty"`
+		ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+		Actor          *string    `json:"actor,omitempty"`
 	}
 	out := make([]auditRow, 0)
 	for rows.Next() {
-		var a auditRow
-		if err := rows.Scan(&a.ID, &a.TS, &a.Action, &a.RoutingID, &a.TaskType,
-			&a.Profile, &a.Tier, &a.Model, &a.TenantID, &a.Priority,
-			&a.Reason, &a.ExpiresAt, &a.Actor); err != nil {
+		var row auditRow
+		if err := rows.Scan(
+			&row.ID, &row.TS, &row.Action, &row.RoutingID, &row.TaskType, &row.Profile,
+			&row.Tier, &row.CanonicalModel, &row.TenantID, &row.Priority, &row.Reason,
+			&row.ExpiresAt, &row.Actor,
+		); err != nil {
 			writeInternalErr(w, err)
 			return
 		}
-		out = append(out, a)
+		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
 		writeInternalErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"audit": out, "count": len(out)})
+}
+
+func (h *AutoRouteHandlers) validateCanonicalModelActive(r *http.Request, name string) error {
+	var status string
+	err := h.db.QueryRow(r.Context(), `
+		SELECT COALESCE(status, 'active') FROM models_canonical
+		WHERE lower(canonical_name) = lower($1)
+		LIMIT 1`, name).Scan(&status)
+	if err != nil {
+		return fmt.Errorf("canonical_model %q not found in models_canonical", name)
+	}
+	if status != "active" {
+		return fmt.Errorf("canonical_model %q is not active (status=%s)", name, status)
+	}
+	return nil
 }

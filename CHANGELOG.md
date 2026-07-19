@@ -78,6 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capacity and incorrectly reject subsequent requests. Added a regression test
   covering the failed-acquire path.
 
+- **Realtime credential failover and durable probe queue**: Added explicit
+  upstream error policy for auth, permanent quota, rate-limit, overload, and
+  transient failures; added a 300-second leased probe queue with deduplication,
+  multi-round retry, and configurable workers. The durable worker remains
+  disabled unless `LLM_GATEWAY_PROBE_QUEUE_ENABLED=true`.
+
 - **Frontend freeze when viewing live request stream**: Dashboard's
   `LiveRequestStreamV2` component used `v-show` instead of `v-if`, causing
   the SSE connection to remain active even when switching to other tabs. Over

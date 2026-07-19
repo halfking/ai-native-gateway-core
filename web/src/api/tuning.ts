@@ -147,7 +147,7 @@ export function extendRoutingOverride(id: number, expires_at: string | null) {
     `/api/admin/routing/overrides/${id}/extend`, { expires_at })
 }
 
-// ── task_default_routing (M2, 22 章 §22.6) ───────────────────────
+// ── task_default_routing (explicit default routing) ──────────────
 
 export interface RoutingDefault {
   id: number
@@ -185,7 +185,12 @@ export interface RoutingDefaultUpdate {
   tier?: 'primary' | 'secondary' | 'fallback'
   priority?: number
   reason?: string
+  profile?: string
+  canonical_model?: string
+  tenant_id?: string | null
+  clear_tenant?: boolean
   expires_at?: string | null
+  clear_expires?: boolean
 }
 
 export function getRoutingDefaults(params: { active?: boolean; task_type?: string; profile?: string } = {}) {

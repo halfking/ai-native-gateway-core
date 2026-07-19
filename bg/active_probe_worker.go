@@ -44,6 +44,7 @@ type ActiveProbeWorkerConfig struct {
 	MaxAttempts          int // 5 by default
 	TimeoutMs            int // 30000 by default
 	QueueSize            int // 128 by default
+	Workers              int // 1 by default; bounded parallel probe consumers
 }
 
 // ActiveProbeWorker is the singleton orchestrator.
@@ -95,6 +96,9 @@ func NewActiveProbeWorker(cfg ActiveProbeWorkerConfig) *ActiveProbeWorker {
 	}
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 128
+	}
+	if cfg.Workers <= 0 {
+		cfg.Workers = 1
 	}
 	w := &ActiveProbeWorker{
 		cfg:      cfg,
@@ -190,14 +194,17 @@ func (w *ActiveProbeWorker) Start(ctx context.Context) {
 	w.started = true
 	wctx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
-	w.wg.Add(1)
+	w.wg.Add(w.cfg.Workers)
 	w.mu.Unlock()
-	go w.runLoop(wctx)
+	for i := 0; i < w.cfg.Workers; i++ {
+		go w.runLoop(wctx)
+	}
 	slog.Info("active_probe worker started",
 		"consecutive_threshold", w.cfg.ConsecutiveThreshold,
 		"max_attempts", w.cfg.MaxAttempts,
 		"timeout_ms", w.cfg.TimeoutMs,
 		"queue_size", w.cfg.QueueSize,
+		"workers", w.cfg.Workers,
 	)
 }
 

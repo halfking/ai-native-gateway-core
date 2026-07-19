@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   getAutoRouteIndex, getAutoRouteDecisions, getAutoRouteAudit,
   getCustomerCost, getModelCost, refreshAutoRouteIndex, simulateAutoRoute,
@@ -29,6 +29,8 @@ import { computeSankeyCardHeight, SANKEY_DOM_LEGEND_H, SANKEY_SECTION_HEAD_H } f
 import ModelTaskIndexPanel from '../components/analytics/ModelTaskIndexPanel.vue'
 import DecisionDetail from '../components/analytics/DecisionDetail.vue'
 import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
+import SmartRoutingConfigPanel from '../components/routing/SmartRoutingConfigPanel.vue'
+import SmartRoutingConfigDrawer from '../components/routing/SmartRoutingConfigDrawer.vue'
 
 const { t } = useI18n()
 
@@ -47,7 +49,8 @@ interface ResolveLogEntry {
 }
 
 const route = useRoute()
-const activeTab = ref<'analytics' | 'overview' | 'policy' | 'live' | 'resolve'>('analytics')
+const router = useRouter()
+const activeTab = ref<'analytics' | 'overview' | 'policy' | 'live' | 'resolve' | 'smart'>('analytics')
 
 /** Map the synthetic __specified__ task key to its display label. */
 function displayTaskKey(key: string): string {
@@ -55,7 +58,7 @@ function displayTaskKey(key: string): string {
 }
 
 function tabFromQuery(q: unknown): typeof activeTab.value | null {
-  if (q === 'analytics' || q === 'resolve' || q === 'overview' || q === 'policy' || q === 'live') return q
+  if (q === 'analytics' || q === 'resolve' || q === 'overview' || q === 'policy' || q === 'live' || q === 'smart') return q
   return null
 }
 
@@ -67,6 +70,7 @@ const expandedModel = ref<string>('')
 const indexLoading = ref(false)
 const layer2Cache = ref<Record<string, RoutingResolveResponse | null>>({})
 const layer2Loading = ref<string>('')
+const showSmartConfigDrawer = ref(false)
 
 const audit = ref<AutoRouteAudit>({
   total_auto_requests: 0, success_rate: 0,
@@ -486,10 +490,13 @@ watch(activeTab, (tab) => {
   else stopPoll()
   if (tab === 'policy') { loadPolicy(); loadCosts() }
   if (tab === 'resolve') loadResolveLog()
+  if (route.query.tab !== tab) {
+    router.replace({ query: { ...route.query, tab } })
+  }
 })
 watch(() => route.query.tab, (q) => {
   const t = tabFromQuery(q)
-  if (t) activeTab.value = t
+  if (t && t !== activeTab.value) activeTab.value = t
 }, { immediate: true })
 
 // ── Helpers ───────────────────────────────────────────
@@ -599,11 +606,12 @@ onUnmounted(() => stopPoll())
       <div class="top-bar-head">
         <h2>{{ t('routing.dashboard.title') }}</h2>
         <div class="seg-tabs">
-          <button class="seg-tab" :class="{ active: activeTab === 'analytics' }" @click="activeTab = 'analytics'">数据分析</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">两层路由</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">策略配置</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">实时决策</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'resolve' }" @click="activeTab = 'resolve'">凭据路由</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'analytics' }" @click="activeTab = 'analytics'">{{ t('routing.dashboard.tabAnalytics') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">{{ t('routing.dashboard.tabOverview') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">{{ t('routing.dashboard.tabPolicy') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">{{ t('routing.dashboard.tabLive') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'resolve' }" @click="activeTab = 'resolve'">{{ t('routing.dashboard.tabResolve') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'smart' }" @click="activeTab = 'smart'">{{ t('routing.dashboard.tabSmart') }}</button>
         </div>
         <div class="nav-chips">
           <router-link to="/routing-v2/work-types" class="nav-link-wt chip-link">
@@ -786,8 +794,14 @@ onUnmounted(() => stopPoll())
         <div class="card-toolbar">
           <div class="toolbar-left">
             <span class="layer-tag l1">L1</span>
-            <span class="toolbar-title">模型推荐</span>
+            <span class="toolbar-title">{{ t('routing.dashboard.overview.title') }}</span>
             <span v-if="selectedTask" class="task-hint">{{ taskLabel(selectedTask) }}</span>
+            <button
+              type="button"
+              class="btn btn-sm btn-ghost smart-config-btn"
+              :title="t('routing.dashboard.overview.smartConfigHint')"
+              @click="showSmartConfigDrawer = true"
+            >⚙ {{ t('routing.dashboard.overview.smartConfig') }}</button>
           </div>
           <div class="toolbar-filters">
             <button
@@ -799,9 +813,9 @@ onUnmounted(() => stopPoll())
               @click="selectedTask = selectedTask === t.key ? '' : t.key"
             >{{ t.icon }}</button>
             <span class="toolbar-divider" />
-            <button class="profile-pill" :class="{ active: selectedProfile === 'smart' }" @click="selectedProfile = 'smart'">智能</button>
-            <button class="profile-pill" :class="{ active: selectedProfile === 'speed_first' }" @click="selectedProfile = 'speed_first'">速度</button>
-            <button class="profile-pill" :class="{ active: selectedProfile === 'cost_first' }" @click="selectedProfile = 'cost_first'">成本</button>
+            <button class="profile-pill" :class="{ active: selectedProfile === 'smart' }" @click="selectedProfile = 'smart'">{{ t('routing.dashboard.overview.profileSmart') }}</button>
+            <button class="profile-pill" :class="{ active: selectedProfile === 'speed_first' }" @click="selectedProfile = 'speed_first'">{{ t('routing.dashboard.overview.profileSpeed') }}</button>
+            <button class="profile-pill" :class="{ active: selectedProfile === 'cost_first' }" @click="selectedProfile = 'cost_first'">{{ t('routing.dashboard.overview.profileCost') }}</button>
           </div>
         </div>
         <div v-if="indexLoading" class="loading-hint">加载索引…</div>
@@ -1195,6 +1209,17 @@ onUnmounted(() => stopPoll())
         </div>
       </div>
     </div>
+
+    <!-- ═══ Tab: Smart routing config ═══ -->
+    <div v-if="activeTab === 'smart'" class="tab-content">
+      <SmartRoutingConfigPanel />
+    </div>
+
+    <SmartRoutingConfigDrawer
+      :open="showSmartConfigDrawer"
+      :task-type="selectedTask"
+      @close="showSmartConfigDrawer = false"
+    />
   </div>
 </template>
 
@@ -1349,6 +1374,11 @@ onUnmounted(() => stopPoll())
   border-bottom: 1px solid var(--border);
 }
 .toolbar-left { display: flex; align-items: center; gap: 6px; }
+.smart-config-btn {
+  margin-left: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+}
 .toolbar-title { font-size: 12px; font-weight: 600; }
 .toolbar-filters { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
 .toolbar-divider { width: 1px; height: 14px; background: var(--border); margin: 0 3px; }
