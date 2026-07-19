@@ -1267,7 +1267,15 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		for _, c := range params.Candidates {
 			reason := c.UnavailableReason()
 			if reason == "" {
-				reason = "unknown"
+				// 2026-07-19: Infer reason instead of defaulting to "unknown"
+				// to improve diagnostic clarity in request_logs
+				if c.CredentialID == 0 {
+					reason = "no_credential"
+				} else if c.ProviderID == 0 {
+					reason = "no_provider"
+				} else {
+					reason = "availability_check_failed"
+				}
 			}
 			reasonCounts[reason]++
 		}
