@@ -347,7 +347,7 @@ async function load() {
 
 // ── Derived summary cards ──────────────────────────────────────────────
 const summary = computed(() => {
-  const all = credentials.value
+  const all = credentials.value || []  // ← 防御性：null/undefined 时返回空数组
   const total = all.length
   const ready = all.filter(c => c.availability_state === 'ready').length
   const abnormal = all.filter(c =>
@@ -358,7 +358,7 @@ const summary = computed(() => {
 })
 
 const filteredCreds = computed(() => {
-  let result = credentials.value
+  let result = credentials.value || []  // ← 防御性：null/undefined 时返回空数组
   if (availStateFilter.value) {
     result = result.filter(c => c.availability_state === availStateFilter.value)
   }
