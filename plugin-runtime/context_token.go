@@ -2,6 +2,7 @@ package pluginruntime
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -33,10 +34,20 @@ func signContext(secret []byte, pluginID, tenantID string, ts int64, nonce strin
 // SignHeaders 把签名头加到已有 Header（供 proxy 注入到转发请求）。
 func SignHeaders(h http.Header, secret []byte, pluginID, tenantID string) {
 	ts := time.Now().Unix()
-	nonce := fmt.Sprintf("%d", ts) // P0 简单 nonce；P3 改随机
+	nonce := newNonce(ts)
 	h.Set("X-Gateway-Plugin-ID", pluginID)
 	h.Set("X-Gateway-Tenant-ID", tenantID)
 	h.Set("X-Gateway-Context-Timestamp", strconv.FormatInt(ts, 10))
 	h.Set("X-Gateway-Context-Nonce", nonce)
 	h.Set("X-Gateway-Context-Signature", signContext(secret, pluginID, tenantID, ts, nonce))
+}
+
+// newNonce 返回 "<ts>-<随机 hex>"，保证同秒多次调用 nonce 不同（避免 NonceCache 误判重放）。
+func newNonce(ts int64) string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// rand.Read 几乎不会失败；退化用 ts 仍可工作（仅丧失同秒唯一性）。
+		return strconv.FormatInt(ts, 10)
+	}
+	return strconv.FormatInt(ts, 10) + "-" + hex.EncodeToString(b[:])
 }
