@@ -101,3 +101,47 @@ func signAllHeaders(t *testing.T, h http.Header, secret []byte, pluginID, tenant
 	h.Set("X-Gateway-Context-Signature", sig)
 	_ = msg
 }
+
+func TestVerifyPluginContext_TenantIsolatedToSignature(t *testing.T) {
+	secret := []byte("s")
+	ts := time.Now().Unix()
+
+	// Request signed for tenant-A
+	var seenTenant string
+	h := VerifyPluginContext(secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenTenant = TenantFromVerified(r)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_gateway/plugin/v1/sessions", nil)
+	signAllHeaders(t, req.Header, secret, "ai-session-manager", "tenant-A", ts)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if seenTenant != "tenant-A" {
+		t.Fatalf("handler saw tenant %q, want tenant-A (must match signature, not leak)", seenTenant)
+	}
+}
+
+func TestVerifyPluginContext_QueryTenantCannotOverrideSignature(t *testing.T) {
+	secret := []byte("s")
+	ts := time.Now().Unix()
+	var seenTenant string
+	h := VerifyPluginContext(secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenTenant = TenantFromVerified(r)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Signed for tenant-A, but query tries tenant_id=tenant-B
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_gateway/plugin/v1/sessions?tenant_id=tenant-B", nil)
+	signAllHeaders(t, req.Header, secret, "ai-session-manager", "tenant-A", ts)
+	h.ServeHTTP(rec, req)
+
+	if seenTenant != "tenant-A" {
+		t.Fatalf("query must not override signed tenant: got %q want tenant-A", seenTenant)
+	}
+}
