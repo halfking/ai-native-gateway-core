@@ -370,20 +370,22 @@ func (h *Handler) getPendingResponse(w http.ResponseWriter, r *http.Request, ses
 
 	apiKeyID := GetAPIKeyIDFromContext(r.Context())
 	tenantID := getTenantIDFromContext(r.Context())
-	if h.manager != nil {
-		if session, err := h.manager.Get(r.Context(), sessionID); err == nil && session != nil {
-			if session.GetAPIKeyID() != apiKeyID {
-				writeErrorJSON(w, http.StatusForbidden, "", "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
-				return
-			}
-		}
+	if h.manager == nil {
+		writeErrorJSON(w, http.StatusNotFound, "",
+			"no pending response for this session", "session_error", "PENDING_NOT_FOUND")
+		return
+	}
+	session, err := h.manager.Get(r.Context(), sessionID)
+	if err != nil || session == nil || session.GetAPIKeyID() != apiKeyID {
+		writeErrorJSON(w, http.StatusNotFound, "",
+			"no pending response for this session", "session_error", "PENDING_NOT_FOUND")
+		return
 	}
 
 	requestID := r.URL.Query().Get("request_id")
 
 	var entry *PendingEntry
 	var found bool
-	var err error
 	if requestID != "" {
 		entry, found, err = h.pendingStore.Get(r.Context(), sessionID, requestID)
 	} else {
@@ -400,7 +402,7 @@ func (h *Handler) getPendingResponse(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
-	if entry.TenantID != "" && entry.TenantID != tenantID {
+	if entry.TenantID == "" || entry.TenantID != tenantID {
 		writeErrorJSON(w, http.StatusNotFound, "",
 			"no pending response for this session", "session_error", "PENDING_NOT_FOUND")
 		return

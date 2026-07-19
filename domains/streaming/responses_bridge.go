@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -347,32 +348,10 @@ func StreamAnthropicSSEToResponses(
 	}
 
 	for {
-		readCtx, readCancel := context.WithTimeout(ctx, runtimeCfg.streamChunkTimeout)
-		resultCh := make(chan struct {
-			eventType string
-			data      []byte
-			err       error
-		}, 1)
-		go func() {
-			et, d, e := readAnthropicSSEEvent(readCtx, reader)
-			resultCh <- struct {
-				eventType string
-				data      []byte
-				err       error
-			}{et, d, e}
-		}()
-
-		var (
-			eventType string
-			data      []byte
-			err       error
+		eventType, data, err := readAnthropicSSEEventWithTimeout(
+			ctx, reader, resp.Body, runtimeCfg.streamChunkTimeout,
 		)
-		select {
-		case res := <-resultCh:
-			eventType, data, err = res.eventType, res.data, res.err
-			readCancel()
-		case <-readCtx.Done():
-			readCancel()
+		if errors.Is(err, context.DeadlineExceeded) {
 			slog.Warn("anthropic_to_responses: chunk timeout",
 				"timeout_seconds", runtimeCfg.streamChunkTimeout.Seconds(),
 				"chunks_received", chunkCount,
@@ -392,7 +371,7 @@ func StreamAnthropicSSEToResponses(
 		}
 
 		if err != nil {
-			if err == io.EOF || readCtx.Err() != nil {
+			if err == io.EOF {
 				totalTokens := inputTokens + outputTokens
 				scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, totalTokens)
 				return StreamOutcome{ChunkCount: chunkCount}

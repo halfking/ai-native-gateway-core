@@ -25,6 +25,7 @@ type Config struct {
 
 	// Sessions
 	SessionTTLHours   int      `yaml:"session_ttl_hours" env:"LLM_GATEWAY_SESSION_TTL_HOURS"`
+	PendingTTLSeconds int      `yaml:"pending_ttl_seconds" env:"LLM_GATEWAY_PENDING_TTL_SECONDS"`
 	SessionIDBodyKeys []string `yaml:"session_id_body_keys" env:"LLM_GATEWAY_SESSION_ID_BODY_KEYS"`
 
 	// Server
@@ -245,6 +246,7 @@ func Load() *Config {
 		FirstByteTimeout:                   30,
 		KeepaliveInterval:                  15,
 		SessionTTLHours:                    168,
+		PendingTTLSeconds:                  300,
 		SessionIDBodyKeys:                  parseCommaList(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")),
 		StreamRetryThreshold:               5,     // Default: allow stream failover if < 5 chunks sent
 		EnablePreStreamKeepalive:           false, // opt-in; see LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE
@@ -279,11 +281,13 @@ func Load() *Config {
 			cfg.RedisDB = v
 		}
 	}
-	if ttlStr := os.Getenv("LLM_GATEWAY_SESSION_TTL_HOURS"); ttlStr != "" {
-		if v, err := strconv.Atoi(ttlStr); err == nil {
-			cfg.SessionTTLHours = v
-		}
-	}
+	applyPositiveIntEnv("LLM_GATEWAY_SESSION_TTL_HOURS", &cfg.SessionTTLHours)
+	applyPositiveIntEnv("LLM_GATEWAY_PENDING_TTL_SECONDS", &cfg.PendingTTLSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_UPSTREAM_TIMEOUT", &cfg.UpstreamTimeout)
+	applyPositiveIntEnv("LLM_GATEWAY_STREAM_TIMEOUT", &cfg.StreamTimeout)
+	applyPositiveIntEnv("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT", &cfg.StreamChunkTimeout)
+	applyPositiveIntEnv("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", &cfg.FirstByteTimeout)
+	applyPositiveIntEnv("LLM_GATEWAY_KEEPALIVE_INTERVAL", &cfg.KeepaliveInterval)
 	if pidStr := os.Getenv("LLM_GATEWAY_DEFAULT_PROVIDER"); pidStr != "" {
 		if v, err := strconv.Atoi(pidStr); err == nil {
 			cfg.DefaultProvider = v
@@ -359,6 +363,17 @@ func Load() *Config {
 	}
 
 	return cfg
+}
+
+func applyPositiveIntEnv(key string, target *int) {
+	if target == nil {
+		return
+	}
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			*target = parsed
+		}
+	}
 }
 
 // LoadFile merges config from a YAML file on top of the current config.
@@ -449,6 +464,9 @@ func (cfg *Config) mergeFrom(other *Config) {
 	}
 	if other.SessionTTLHours != 0 && os.Getenv("LLM_GATEWAY_SESSION_TTL_HOURS") == "" {
 		cfg.SessionTTLHours = other.SessionTTLHours
+	}
+	if other.PendingTTLSeconds != 0 && os.Getenv("LLM_GATEWAY_PENDING_TTL_SECONDS") == "" {
+		cfg.PendingTTLSeconds = other.PendingTTLSeconds
 	}
 	if other.EnablePreStreamKeepalive && os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE") == "" {
 		cfg.EnablePreStreamKeepalive = true

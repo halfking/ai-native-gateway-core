@@ -166,7 +166,31 @@ func TestStreamOpenAIToResponsesSSE_DisconnectsKeepsCapturer(t *testing.T) {
 	assert.Contains(t, got, `event: response.completed`)
 }
 
-// flusherAfterFirstDisconnectWriter is a writer that fails writes after
+func TestStreamOpenAIToAnthropicSSE_DisconnectsKeepsCapturer(t *testing.T) {
+	body := strings.Join([]string{
+		"data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+		"data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-test\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+		"data: [DONE]\n\n",
+	}, "")
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(body)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	pc := NewPendingCapturer(8192)
+
+	outcome := StreamOpenAIToAnthropicSSE(
+		newDisconnectingStreamWriter(), resp, "claude-test", "gpt-test", "req-q2", nil, pc,
+	)
+
+	assert.False(t, outcome.Interrupted)
+	captured, state, ok := pc.Snapshot()
+	require.True(t, ok)
+	assert.Equal(t, "completed", state.Status)
+	assert.Contains(t, string(captured), "event: message_start")
+	assert.Contains(t, string(captured), "event: message_stop")
+	assert.NotContains(t, string(captured), `\"choices\"`)
+}
+
 // the first chunk goes through. Used to exercise the "client goes away
 // mid-stream" path while still allowing the upstream read loop to finish.
 type flusherAfterFirstDisconnectWriter struct {

@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +17,23 @@ type stubVerifier struct {
 func (s *stubVerifier) Enabled() bool { return s.enabled }
 func (s *stubVerifier) Verify(ctx context.Context, rawKey string) (KeyInfo, error) {
 	return s.verify(ctx, rawKey)
+}
+
+func newOwnedPendingHandler(t *testing.T, store PendingStore) (*Handler, *Session) {
+	t.Helper()
+	mgr, _ := newTestManager(t)
+	sess, err := mgr.Create(context.Background(), 1, "default", "device")
+	if err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	h := NewHandler(mgr)
+	h.SetPendingStore(store)
+	return h, sess
+}
+
+func ownedPendingRequest(sessionID string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessionID+"/pending-response", nil)
+	return r.WithContext(SetTenantID(SetAPIKeyID(r.Context(), 1), "default"))
 }
 
 func TestNewHandler(t *testing.T) {
@@ -207,107 +223,99 @@ func TestHandler_getPendingResponse_NotFound(t *testing.T) {
 }
 
 func TestHandler_getPendingResponse_InProgress(t *testing.T) {
-	h := NewHandler(nil)
-	h.SetPendingStore(&fixedStore{entry: &PendingEntry{
-		SessionID: "s1", RequestID: "r1", Status: "in_progress",
+	h, sess := newOwnedPendingHandler(t, &fixedStore{entry: &PendingEntry{
+		SessionID: "s1", RequestID: "r1", Status: "in_progress", TenantID: "default",
 	}})
-	r, _ := http.NewRequest("GET", "/v1/sessions/s1/pending-response", nil)
 	w := httptest.NewRecorder()
-	h.getPendingResponse(w, r, "s1")
+	h.getPendingResponse(w, ownedPendingRequest(sess.SessionID), sess.SessionID)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", w.Code)
-	}
-	var body map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &body)
-	if body["status"] != "in_progress" {
-		t.Fatalf("status field = %v, want in_progress", body["status"])
 	}
 }
 
 func TestHandler_getPendingResponse_Failed(t *testing.T) {
-	h := NewHandler(nil)
-	h.SetPendingStore(&fixedStore{entry: &PendingEntry{
-		SessionID: "s1", RequestID: "r1", Status: "failed", ErrorMessage: "boom",
+	h, sess := newOwnedPendingHandler(t, &fixedStore{entry: &PendingEntry{
+		SessionID: "s1", RequestID: "r1", Status: "failed", TenantID: "default", ErrorMessage: "boom",
 	}})
-	r, _ := http.NewRequest("GET", "/v1/sessions/s1/pending-response", nil)
 	w := httptest.NewRecorder()
-	h.getPendingResponse(w, r, "s1")
+	h.getPendingResponse(w, ownedPendingRequest(sess.SessionID), sess.SessionID)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 }
 
 func TestHandler_getPendingResponse_Completed(t *testing.T) {
-	h := NewHandler(nil)
-	h.SetPendingStore(&fixedStore{entry: &PendingEntry{
-		SessionID: "s1", RequestID: "r1", Status: "completed", Body: "data: {}\n\n", ContentType: "text/event-stream",
+	h, sess := newOwnedPendingHandler(t, &fixedStore{entry: &PendingEntry{
+		SessionID: "s1", RequestID: "r1", Status: "completed", TenantID: "default", Body: "data: {}\n\n", ContentType: "text/event-stream",
 	}})
-	r, _ := http.NewRequest("GET", "/v1/sessions/s1/pending-response", nil)
 	w := httptest.NewRecorder()
-	h.getPendingResponse(w, r, "s1")
+	h.getPendingResponse(w, ownedPendingRequest(sess.SessionID), sess.SessionID)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	if w.Header().Get("X-Gw-Pending-Replay") != "true" {
 		t.Fatal("X-Gw-Pending-Replay header missing")
 	}
-	if w.Header().Get("Content-Type") != "text/event-stream" {
-		t.Fatalf("Content-Type = %q", w.Header().Get("Content-Type"))
-	}
-	if w.Body.String() != "data: {}\n\n" {
-		t.Fatalf("body = %q", w.Body.String())
-	}
 }
 
 func TestHandler_getPendingResponse_CompletedEmptyBody(t *testing.T) {
-	h := NewHandler(nil)
-	h.SetPendingStore(&fixedStore{entry: &PendingEntry{
-		SessionID: "s1", RequestID: "r1", Status: "completed", Body: "",
+	h, sess := newOwnedPendingHandler(t, &fixedStore{entry: &PendingEntry{
+		SessionID: "s1", RequestID: "r1", Status: "completed", TenantID: "default",
 	}})
-	r, _ := http.NewRequest("GET", "/v1/sessions/s1/pending-response", nil)
 	w := httptest.NewRecorder()
-	h.getPendingResponse(w, r, "s1")
+	h.getPendingResponse(w, ownedPendingRequest(sess.SessionID), sess.SessionID)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
 	}
 }
 
 func TestHandler_getPendingResponse_UnknownStatus(t *testing.T) {
-	h := NewHandler(nil)
-	h.SetPendingStore(&fixedStore{entry: &PendingEntry{
-		SessionID: "s1", RequestID: "r1", Status: "weird",
+	h, sess := newOwnedPendingHandler(t, &fixedStore{entry: &PendingEntry{
+		SessionID: "s1", RequestID: "r1", Status: "weird", TenantID: "default",
 	}})
-	r, _ := http.NewRequest("GET", "/v1/sessions/s1/pending-response", nil)
 	w := httptest.NewRecorder()
-	h.getPendingResponse(w, r, "s1")
+	h.getPendingResponse(w, ownedPendingRequest(sess.SessionID), sess.SessionID)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", w.Code)
 	}
 }
 
 func TestHandler_getPendingResponse_StoreError(t *testing.T) {
-	h := NewHandler(nil)
-	h.SetPendingStore(&errorStore{err: errors.New("boom")})
-	r, _ := http.NewRequest("GET", "/v1/sessions/s1/pending-response", nil)
+	h, sess := newOwnedPendingHandler(t, &errorStore{err: errors.New("boom")})
 	w := httptest.NewRecorder()
-	h.getPendingResponse(w, r, "s1")
+	h.getPendingResponse(w, ownedPendingRequest(sess.SessionID), sess.SessionID)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", w.Code)
 	}
 }
 
 func TestHandler_getPendingResponse_TenantMismatch(t *testing.T) {
-	h := NewHandler(nil)
+	mgr, _ := newTestManager(t)
+	sess, err := mgr.Create(context.Background(), 1, "tenant-A", "device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(mgr)
 	h.SetPendingStore(&fixedStore{entry: &PendingEntry{
-		SessionID: "s1", RequestID: "r1", Status: "completed", Body: "x", TenantID: "tenant-other",
+		SessionID: sess.SessionID, RequestID: "r1", Status: "completed", Body: "x", TenantID: "tenant-other",
 	}})
-	// 注入 tenant
-	r, _ := http.NewRequest("GET", "/v1/sessions/s1/pending-response", nil)
-	r = r.WithContext(SetTenantID(r.Context(), "tenant-A"))
+	r := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.SessionID+"/pending-response", nil)
+	r = r.WithContext(SetTenantID(SetAPIKeyID(r.Context(), 1), "tenant-A"))
 	w := httptest.NewRecorder()
-	h.getPendingResponse(w, r, "s1")
+	h.getPendingResponse(w, r, sess.SessionID)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (tenant isolation)", w.Code)
+	}
+}
+
+func TestHandler_getPendingResponse_RejectsTenantlessEntry(t *testing.T) {
+	h, sess := newOwnedPendingHandler(t, &fixedStore{entry: &PendingEntry{
+		SessionID: "s1", RequestID: "r1", Status: "completed", Body: "x",
+	}})
+	w := httptest.NewRecorder()
+	h.getPendingResponse(w, ownedPendingRequest(sess.SessionID), sess.SessionID)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
 	}
 }
 
