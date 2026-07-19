@@ -434,3 +434,61 @@ func TestHandleGetRanking_EmptyResult(t *testing.T) {
 		t.Errorf("unmet expectations: %v", err)
 	}
 }
+
+// TestHandleGetSummary_Success 测试供应商级品质汇总
+func TestHandleGetSummary_Success(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create mock db: %v", err)
+	}
+	defer db.Close()
+
+	handler := NewQualityHandler(db, nil)
+	now := time.Now()
+
+	mock.ExpectQuery(`SELECT DISTINCT ON \(p\.provider_id\).*FROM provider_quality_profiles p.*ORDER BY p\.provider_id`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"provider_id", "provider_name", "model_name", "quality_score", "quality_grade",
+			"availability_score", "performance_score", "total_requests_24h", "updated_at",
+		}).
+			AddRow(1, "Anthropic", "claude-3-opus", 95.5, "S", 98.0, 92.0, int64(1200), now).
+			AddRow(2, "OpenAI", nil, 88.0, "A", 90.0, 85.0, int64(500), now))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/quality/summary", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.Code != 0 {
+		t.Errorf("expected code 0, got %d", resp.Code)
+	}
+
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected data map, got %T", resp.Data)
+	}
+	if total, _ := data["total"].(float64); total != 2 {
+		t.Errorf("expected total 2, got %v", data["total"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestHandleGetSummary_WrongMethod(t *testing.T) {
+	handler := NewQualityHandler(nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/quality/summary", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
