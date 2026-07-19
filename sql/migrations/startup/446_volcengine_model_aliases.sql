@@ -1,3 +1,31 @@
+-- ===========================================================================
+-- File:          sql/migrations/startup/446_volcengine_model_aliases.sql
+-- Database:      llm_gateway
+-- Purpose:       修复火山方舟普通版的模型别名映射
+-- Status:        active
+-- Idempotent:    YES (使用 ON CONFLICT)
+-- Rollback:      手工删除本迁移新增的 alias；provider_catalog 回滚需使用备份
+-- Changelog:
+--   2026-07-19  v1.0  Add verified Volcano model aliases and catalog mapping
+-- ===========================================================================
+
+\set ON_ERROR_STOP on
+BEGIN;
+
+-- Canonical rows must exist before alias INSERT ... SELECT statements run.
+INSERT INTO models_canonical (canonical_name, status, created_at, updated_at)
+VALUES
+    ('doubao-seed-2-0-code-preview-260215', 'active', NOW(), NOW()),
+    ('doubao-seed-2-0-pro-260215', 'active', NOW(), NOW()),
+    ('doubao-seed-2-0-lite-260428', 'active', NOW(), NOW()),
+    ('doubao-seed-2-0-mini-260428', 'active', NOW(), NOW()),
+    ('deepseek-v4-pro-260425', 'active', NOW(), NOW()),
+    ('deepseek-v4-flash-260425', 'active', NOW(), NOW()),
+    ('glm-5-2-260617', 'active', NOW(), NOW())
+ON CONFLICT (canonical_name) DO UPDATE SET
+    status = 'active',
+    updated_at = NOW();
+
 -- 修复火山方舟普通版的模型别名映射
 -- 问题：客户端使用简短名称（如 doubao-seed-code），但火山 API 要求完整版本号（如 doubao-seed-2-0-code-preview-260215）
 
@@ -81,17 +109,4 @@ SET models_manifest_json = '[
     updated_at = NOW()
 WHERE code = 'volcengine-coding';
 
--- 3. 确保 models_canonical 中有这些完整版本号的条目
-INSERT INTO models_canonical (canonical_name, status, created_at, updated_at)
-VALUES 
-    ('doubao-seed-2-0-code-preview-260215', 'active', NOW(), NOW()),
-    ('doubao-seed-2-0-pro-260215', 'active', NOW(), NOW()),
-    ('doubao-seed-2-0-lite-260428', 'active', NOW(), NOW()),
-    ('doubao-seed-2-0-mini-260428', 'active', NOW(), NOW()),
-    ('deepseek-v4-pro-260425', 'active', NOW(), NOW()),
-    ('deepseek-v4-flash-260425', 'active', NOW(), NOW()),
-    ('glm-5-2-260617', 'active', NOW(), NOW())
-ON CONFLICT (canonical_name) DO UPDATE SET 
-    status = 'active',
-    updated_at = NOW();
-
+COMMIT;

@@ -8,7 +8,7 @@ BEGIN;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'session_state' AND column_name = 'input_cost_usd'
     ) THEN
         ALTER TABLE session_state ADD COLUMN input_cost_usd NUMERIC(12,6) DEFAULT 0.0;
@@ -19,7 +19,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'session_state' AND column_name = 'output_cost_usd'
     ) THEN
         ALTER TABLE session_state ADD COLUMN output_cost_usd NUMERIC(12,6) DEFAULT 0.0;
@@ -31,7 +31,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'session_state' AND column_name = 'health_score'
     ) THEN
         ALTER TABLE session_state ADD COLUMN health_score INTEGER;
@@ -43,7 +43,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'session_state' AND column_name = 'health_grade'
     ) THEN
         ALTER TABLE session_state ADD COLUMN health_grade VARCHAR(1);
@@ -55,7 +55,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'session_state' AND column_name = 'range'
     ) THEN
         ALTER TABLE session_state ADD COLUMN range VARCHAR(20);
@@ -67,7 +67,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'session_state' AND column_name = 'last_health_at'
     ) THEN
         ALTER TABLE session_state ADD COLUMN last_health_at TIMESTAMP;

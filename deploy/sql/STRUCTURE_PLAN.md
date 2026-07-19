@@ -116,7 +116,7 @@ graph TD
 ## 执行顺序
 
 1. **初始化**：`deploy/sql/schemas/baseline/00-prereqs.sql` → `01-schema.sql` → `02-seed.sql`
-2. **迁移**：按 `deploy/sql/migrations/` 目录下的序号顺序执行
+2. **迁移**：按 `sql/migrations/startup/` 目录下的序号顺序执行。`deploy/sql/migrations/` 已废弃，不得新增迁移。
 3. **验证**：运行 `deploy/sql/tests/smoke_tests.sql`
 4. **定时任务**：通过K8s CronJob调度 `deploy/sql/cron/` 下的SQL
 

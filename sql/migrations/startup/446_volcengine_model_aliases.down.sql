@@ -1,9 +1,27 @@
--- Rollback for 446_volcengine_model_aliases.sql
--- This migration adds model aliases and can be safely rolled back by deleting them
+-- Rollback for 446_volcengine_model_aliases.sql.
+-- Only remove the aliases introduced by migration 446. The catalog manifest
+-- requires a separately captured backup before it can be restored.
 
--- Remove volcengine model aliases
-DELETE FROM model_aliases WHERE model_canonical_name IN (
-  'doubao-pro-32k',
-  'doubao-lite-32k'
-) AND provider_id = (SELECT id FROM providers WHERE name = 'volcengine' LIMIT 1);
+\set ON_ERROR_STOP on
+BEGIN;
 
+DELETE FROM public.model_aliases
+WHERE raw_name IN (
+    'doubao-seed-code',
+    'doubao-seed-2.0-code',
+    'glm-5.1',
+    'deepseek-v4-pro',
+    'deepseek-v4-flash'
+)
+AND canonical_id IN (
+    SELECT id
+    FROM public.models_canonical
+    WHERE canonical_name IN (
+        'doubao-seed-2-0-code-preview-260215',
+        'glm-5-2-260617',
+        'deepseek-v4-pro-260425',
+        'deepseek-v4-flash-260425'
+    )
+);
+
+COMMIT;
