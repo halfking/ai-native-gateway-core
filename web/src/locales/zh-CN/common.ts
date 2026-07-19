@@ -147,4 +147,16 @@ export default {
   updateSuccess: '更新成功',
   operationFailed: '操作失败',
   errorColumn: '错误',
+  // 2026-07-20: L1 task type labels (used by routing panels, work type picker, dashboard).
+  // These are user-facing names; the underlying L1 keys (chat/reasoning/...) are stable.
+  l1TaskType: {
+    chat: '通用对话',
+    reasoning: '逻辑推理',
+    code: '代码',
+    agent: 'Agent',
+    creative: '创意',
+    long_context: '长文档',
+    vision: '视觉',
+    function_call: '函数调用',
+  },
 }

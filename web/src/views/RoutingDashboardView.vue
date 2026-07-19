@@ -524,10 +524,7 @@ function distMax(d: Record<string, number>): number {
 }
 // L1 task types come from useL1TaskTypes composable (DB-backed; canonical 8
 // seeded immediately, then live list replaces it after fetch).
-const { l1TaskTypes, l1Label: l1LabelRaw, refreshL1TaskTypes } = useL1TaskTypes()
-function taskLabel(key: string): string {
-  return l1LabelRaw(key)
-}
+const { l1TaskTypes, l1Label: taskLabel, refreshL1TaskTypes } = useL1TaskTypes()
 
 const L1_STEPS = computed(() => ['Prompt', '8类分类', t('routing.sixDimScore'), 'Profile', t('routing.chooseModel')])
 const L2_STEPS = computed(() => [t('routing.modelParse'), t('routing.tierFallback'), '计费轮次', 'P2C得分', '执行/熔断'])

@@ -88,10 +88,7 @@ function fmt(n: number | undefined, digits = 1): string {
 // mount via listL1TaskTypes()). The composable seeds canonical 8 immediately
 // so first paint isn't blank, then swaps in the live DB-derived list once
 // the response lands.
-const { l1TaskTypes, l1Label: l1LabelRaw, refreshL1TaskTypes } = useL1TaskTypes()
-function l1Label(key: string): string {
-  return l1LabelRaw(key)
-}
+const { l1TaskTypes, l1Label, refreshL1TaskTypes } = useL1TaskTypes()
 function profileLabel(key: string): string {
   return PROFILES.find(p => p.key === key)?.label ?? key
 }

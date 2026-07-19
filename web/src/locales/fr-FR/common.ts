@@ -145,4 +145,16 @@ export default {
   updateSuccess: 'Mis à jour',
   operationFailed: 'Échec de l’opération',
   errorColumn: 'Erreur',
+  // 2026-07-20: L1 task type labels (used by routing panels, work type picker, dashboard).
+  // These are user-facing names; the underlying L1 keys (chat/reasoning/...) are stable.
+  l1TaskType: {
+    chat: 'Chat général',
+    reasoning: 'Raisonnement',
+    code: 'Code',
+    agent: 'Agent',
+    creative: 'Écriture créative',
+    long_context: 'Contexte long',
+    vision: 'Vision',
+    function_call: 'Appel de fonction',
+  },
 }

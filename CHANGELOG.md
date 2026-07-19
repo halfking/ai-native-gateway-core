@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **删 dead code `TASK_TYPES` (api-autoroute.ts)** (2026-07-20): `feat(work-types): dynamic L1` 之后 `TASK_TYPES` 已无消费者（前端 4 处全部走 `useL1TaskTypes()`，仅留 `TASK_TAGS` 因 dashboard pills tooltip 仍需）。删 8 项硬编码数组 + 加注释指向 `L1_TASK_TYPES` / `canonicalL1TaskTypes` 双源 SSOT。
 
+- **L1 task type labels 全 locale i18n** (2026-07-20): `useL1TaskTypes().l1Label(key)` 之前直接返回后端硬编码的中文 label（`代码`/`创意`/`视觉` 等），切到 en-US / ja-JP / fr-FR 等 locale 仍显示中文。新增 `common.l1TaskType.{key}` 命名空间（8 个 key × 8 个 locale = 64 条翻译），`l1Label` 改为 fallback chain：i18n key → 后端 label → key。WorkTypesView / RoutingDashboardView 删掉冗余 wrapper（composable 内部已 bind `t`，reactive 跟随 locale 切换）。zh-CN locale 翻译与原中文 label 保持一致（避免视觉回归），en-US / ja-JP / 其他 locale 各自本地化（"Code" / "コード" / "Code" / "Code" 等）。`l1TaskType` 命名空间放进 `common` 而非 `workTypes`，因为 L1 任务类型是跨模块（routing / dashboard / work types 都用）的通用概念。
+
 ### Fixed
 
 - **流程详情 (RequestTracePanel) 显示为空 + 链路事件 100% 落库失败** (2026-07-20): 两个并行 bug 同源到 `request_logs_hot` 独立表 (migration 341) 上线后所有 trace 写入/读取路径未更新：

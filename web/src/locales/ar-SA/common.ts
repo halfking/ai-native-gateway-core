@@ -144,4 +144,16 @@ export default {
   updateSuccess: 'تم التحديث',
   operationFailed: 'فشلت العملية',
   errorColumn: 'خطأ',
+  // 2026-07-20: L1 task type labels (used by routing panels, work type picker, dashboard).
+  // These are user-facing names; the underlying L1 keys (chat/reasoning/...) are stable.
+  l1TaskType: {
+    chat: 'دردشة عامة',
+    reasoning: 'تفكير منطقي',
+    code: 'كود',
+    agent: 'وكيل',
+    creative: 'كتابة إبداعية',
+    long_context: 'سياق طويل',
+    vision: 'رؤية',
+    function_call: 'استدعاء دالة',
+  },
 }
