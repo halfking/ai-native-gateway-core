@@ -83,14 +83,14 @@ export interface WorkTypeSyncResponse {
 }
 
 export const L1_TASK_TYPES = [
-  { key: 'chat', label: '通用对话' },
-  { key: 'reasoning', label: '逻辑推理' },
-  { key: 'code', label: '代码' },
-  { key: 'agent', label: 'Agent' },
-  { key: 'creative', label: '创意' },
-  { key: 'long_context', label: '长文档' },
-  { key: 'vision', label: '视觉' },
-  { key: 'function_call', label: '函数调用' },
+  { key: 'chat',          label: '通用对话',  icon: '💬' },
+  { key: 'reasoning',     label: '逻辑推理',  icon: '🧠' },
+  { key: 'code',          label: '代码',      icon: '💻' },
+  { key: 'agent',         label: 'Agent',    icon: '🤖' },
+  { key: 'creative',      label: '创意',      icon: '✍️' },
+  { key: 'long_context',  label: '长文档',    icon: '📚' },
+  { key: 'vision',        label: '视觉',      icon: '👁️' },
+  { key: 'function_call', label: '函数调用',  icon: '🔧' },
 ]
 
 export const PROFILES = [
