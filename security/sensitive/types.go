@@ -50,3 +50,22 @@ type CategoryConf struct {
 	Name  string   `json:"name"`
 	Words []string `json:"words"`
 }
+
+// Action 安全检测后的动作
+type Action string
+
+const (
+	ActionAllow Action = "allow" // 允许通过
+	ActionWarn  Action = "warn"  // 警告但允许
+	ActionBlock Action = "block" // 阻止
+)
+
+// SafetyResult 内容安全评估结果
+type SafetyResult struct {
+	Score        float64        `json:"score"`         // 安全评分 0.0 (安全) - 1.0 (危险)
+	MatchedWords []string       `json:"matched_words"` // 命中的敏感词列表
+	Matches      []*MatchResult `json:"matches"`       // 详细匹配信息
+	Category     string         `json:"category"`      // 主要类别
+	Action       Action         `json:"action"`        // 建议动作
+	Reason       string         `json:"reason"`        // 决策原因
+}
