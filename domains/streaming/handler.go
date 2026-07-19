@@ -148,7 +148,23 @@ func (p *preStreamKeepalive) stop() {
 	<-p.doneCh
 }
 
-func writePrewarmedStreamError(w http.ResponseWriter, message, errType, code string) {
+// writePrewarmedStreamError appends an SSE error envelope to a stream whose
+// 200 OK + Content-Type=text/event-stream + initial keep-alive comment have
+// already been written by startPreStreamKeepalive. Passing psk == nil is
+// safe — the helper degrades to a plain error write.
+//
+// 2026-07-19 audit fix: this helper must stop the live *preStreamKeepalive
+// before writing the error. The previous implementation left the background
+// ticker running, which had two failure modes:
+//   - every keepalive interval the goroutine would write another
+//     ": keep-alive\n\n" after the error envelope, potentially confusing
+//     SSE clients that treat a comment after the data as a continuation signal,
+//   - in stress runs the goroutine raced with the error writer on p.mu,
+//     leading to "concurrent write to ResponseWriter" symptoms.
+func writePrewarmedStreamError(w http.ResponseWriter, psk *preStreamKeepalive, message, errType, code string) {
+	if psk != nil {
+		psk.stop()
+	}
 	if errType == "" {
 		errType = "server_error"
 	}
@@ -1524,8 +1540,17 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 
 	var preStream *preStreamKeepalive
-	preStreamPrepared := false
+	// 2026-07-19 audit fix: top-level defer now also stops the preStream
+	// keepalive. Previously a panic or unexpected return between
+	// startPreStreamKeepalive and one of the explicit preStream.stop()
+	// call sites would leak the ticker goroutine. stop() is idempotent
+	// (sync.Once inside) so this is safe even when the success path has
+	// already stopped psk.
 	defer func() {
+		if preStream != nil {
+			preStream.stop()
+			preStream = nil
+		}
 		if streamCapture != nil {
 			auditBuilder.StreamMetrics(streamCapture)
 		}
@@ -2051,17 +2076,20 @@ func (h *ChatHandler) serveWithExecutor(
 		if cfg.enablePreStreamKeepalive {
 			if psk, ok := startPreStreamKeepalive(w, cfg.keepaliveInterval); ok {
 				preStream = psk
-				preStreamPrepared = true
 			}
 		}
 	}
 
 	result, execErr := h.executor.Execute(&executors.ExecParams{
-		W:                 w,
-		R:                 r,
-		BodyBytes:         upstreamBody,
-		IsStream:          isStream,
-		PreStreamPrepared: preStreamPrepared,
+		W:         w,
+		R:         r,
+		BodyBytes: upstreamBody,
+		IsStream:  isStream,
+		// 2026-07-19 audit fix: signal "200 OK + initial keep-alive already
+		// committed" via preStream != nil instead of a separate
+		// preStreamPrepared bool. The old design had two parallel state
+		// sources for the same fact and they could drift.
+		PreStreamPrepared: preStream != nil,
 		OnStreamReady: func() {
 			if preStream != nil {
 				preStream.stop()
@@ -2247,9 +2275,9 @@ func (h *ChatHandler) serveWithExecutor(
 		// when the async goroutine completes.
 		var asyncErr *executors.AsyncPendingError
 		if errors.As(execErr, &asyncErr) {
-			if preStreamPrepared {
+			if preStream != nil {
 				logCtx.SetError("async_pending_unsupported_after_stream_start", "stream already prepared")
-				writePrewarmedStreamError(w, "upstream request delayed; async fallback unavailable after stream start", "server_error", "provider_error")
+				writePrewarmedStreamError(w, preStream, "upstream request delayed; async fallback unavailable after stream start", "server_error", "provider_error")
 				return
 			}
 			w.Header().Set("X-Gw-Pending", asyncErr.SessionID)
@@ -2290,8 +2318,8 @@ func (h *ChatHandler) serveWithExecutor(
 					int(time.Since(startTime).Milliseconds()))
 				markLogged()
 				w.Header().Set("X-Gateway-Last-Kind", "content_filter")
-				if preStreamPrepared {
-					writePrewarmedStreamError(w, msg, "content_filter", "content_filter")
+				if preStream != nil {
+					writePrewarmedStreamError(w, preStream, msg, "content_filter", "content_filter")
 					return
 				}
 				writeErrorJSONWithKind(w, http.StatusBadRequest, requestID,
@@ -2350,8 +2378,8 @@ func (h *ChatHandler) serveWithExecutor(
 					"attempts":          execErrTyped.Attempts,
 				}
 				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
-				if preStreamPrepared {
-					writePrewarmedStreamError(w, i18n.T(r.Context(), credI18nKey), credErrType, credCode)
+				if preStream != nil {
+					writePrewarmedStreamError(w, preStream, i18n.T(r.Context(), credI18nKey), credErrType, credCode)
 					return
 				}
 				writeErrorJSONWithDebug(w, credHTTPStatus, requestID,
@@ -2369,8 +2397,8 @@ func (h *ChatHandler) serveWithExecutor(
 					status = ue.StatusCode
 				}
 				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
-				if preStreamPrepared {
-					writePrewarmedStreamError(w, reason, "invalid_request_error", string(execErrTyped.LastKind))
+				if preStream != nil {
+					writePrewarmedStreamError(w, preStream, reason, "invalid_request_error", string(execErrTyped.LastKind))
 					return
 				}
 				writeErrorJSONWithKind(w, status, requestID, reason, "invalid_request_error", "context_length_exceeded", string(execErrTyped.LastKind), map[string]any{
@@ -2411,8 +2439,8 @@ func (h *ChatHandler) serveWithExecutor(
 			if realKind != "" {
 				w.Header().Set("X-Gateway-Last-Kind", realKind)
 			}
-			if preStreamPrepared {
-				writePrewarmedStreamError(w,
+			if preStream != nil {
+				writePrewarmedStreamError(w, preStream,
 					fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
 					"server_error", "model_not_found")
 				return
@@ -2474,8 +2502,8 @@ func (h *ChatHandler) serveWithExecutor(
 			debugInfo["attempts"] = execErrTyped.Attempts
 			debugInfo["retryable"] = errorsx.IsRetryable(execErrTyped.LastKind)
 		}
-		if preStreamPrepared {
-			writePrewarmedStreamError(w, "upstream request failed", "server_error", "provider_error")
+		if preStream != nil {
+			writePrewarmedStreamError(w, preStream, "upstream request failed", "server_error", "provider_error")
 			return
 		}
 		writeErrorJSONWithDebug(w, http.StatusBadGateway, requestID, i18n.T(r.Context(), i18n.MsgProviderError), "server_error", "provider_error", debugInfo)
