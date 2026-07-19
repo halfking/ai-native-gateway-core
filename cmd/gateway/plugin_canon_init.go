@@ -50,15 +50,16 @@ func scopedAdminContext(next http.HandlerFunc) http.HandlerFunc {
 // registerPluginCanonRoutes mounts the canonical plugin-facing API under
 // /_gateway/plugin/v1/. Currently this exposes:
 //
-//	GET /_gateway/plugin/v1/sessions           → adminList
-//	GET /_gateway/plugin/v1/sessions/{id}      → adminDetail
+//	GET /_gateway/plugin/v1/sessions              → adminList
+//	GET /_gateway/plugin/v1/sessions/{id}         → adminDetail (path rewritten)
+//	GET /_gateway/plugin/v1/sessions/{id}/turns   → adminTurns (id → ?session_id=)
 //
 // Auth is the signed plugin context (X-Gateway-Context-Signature HMAC over
 // pluginID|tenantID|ts|nonce keyed by secret), NOT an admin cookie. After
 // verification the request is handed to the existing admin handlers
-// (HandleSessionAnalyticsList / HandleSessionAnalyticsDetail) under a
-// tenant-scoped AuthContext, so the plugin reuses the same SQL/logic as the
-// browser admin without duplicating it.
+// (HandleSessionAnalyticsList / HandleSessionAnalyticsDetail /
+// SessionCompareAPI.HandleCompare) under a tenant-scoped AuthContext, so the
+// plugin reuses the same SQL/logic as the browser admin without duplicating it.
 //
 // Path rewrite for detail: admin.HandleSessionAnalyticsDetail parses the
 // gw_session_id via pathSegment(r.URL.Path, "/api/admin/session-analytics/", 0),
@@ -69,6 +70,14 @@ func scopedAdminContext(next http.HandlerFunc) http.HandlerFunc {
 // *verified* request only (after signature + nonce checks have passed), so a
 // forged caller can never reach this branch.
 //
+// Turns (compare): admin.SessionCompareAPI.HandleCompare reads the target
+// session from ?session_id= (not the path) and the tenant via
+// EffectiveTenantID(r). The dispatch below sets ?session_id=<id> from the path
+// value before invoking adminTurns. Any non-"turns" suffix on
+// /sessions/{id}/{turns} is rejected with 404 rather than falling through to
+// detail — this prevents an attacker from probing arbitrary sub-resources and
+// keeps the {turns} wildcard from accidentally hitting the detail branch.
+//
 // `opts` are forwarded to VerifyPluginContext. The caller in main.go passes
 // WithCanonNonceCache so a token can be used at most once within the cache
 // TTL — closing the 5-minute replay window HMAC alone leaves open.
@@ -78,25 +87,43 @@ func scopedAdminContext(next http.HandlerFunc) http.HandlerFunc {
 // AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET; the gateway reads cfg.SecretKey.
 // They must be configured to the same value, or verification will reject
 // every plugin call with 401.
-func registerPluginCanonRoutes(mux *http.ServeMux, secret []byte, adminList http.HandlerFunc, adminDetail http.HandlerFunc, opts ...pluginruntime.CanonOption) {
+func registerPluginCanonRoutes(mux *http.ServeMux, secret []byte, adminList, adminDetail, adminTurns http.HandlerFunc, opts ...pluginruntime.CanonOption) {
 	dispatch := func(w http.ResponseWriter, r *http.Request) {
-		if id := r.PathValue("gw_session_id"); id != "" {
-			if !isValidSessionID(id) {
-				http.Error(w, "invalid session id", http.StatusBadRequest)
-				return
-			}
-			// admin.HandleSessionAnalyticsDetail parses the id via pathSegment
-			// expecting the /api/admin/session-analytics/ prefix; rewrite so it
-			// finds the id. Reached only after VerifyPluginContext + nonce.
-			r.URL.Path = "/api/admin/session-analytics/" + id
-			adminDetail(w, r)
+		id := r.PathValue("gw_session_id")
+		turns := r.PathValue("turns")
+		if id == "" {
+			adminList(w, r)
 			return
 		}
-		adminList(w, r)
+		if !isValidSessionID(id) {
+			http.Error(w, "invalid session id", http.StatusBadRequest)
+			return
+		}
+		if turns != "" {
+			if turns != "turns" {
+				// Reject unknown sub-resources; don't fall through to detail.
+				http.NotFound(w, r)
+				return
+			}
+			// SessionCompareAPI.HandleCompare reads ?session_id= and
+			// EffectiveTenantID(r). We synthesize the query param from the
+			// canonical path value so the existing handler needs no changes.
+			q := r.URL.Query()
+			q.Set("session_id", id)
+			r.URL.RawQuery = q.Encode()
+			adminTurns(w, r)
+			return
+		}
+		// admin.HandleSessionAnalyticsDetail parses the id via pathSegment
+		// expecting the /api/admin/session-analytics/ prefix; rewrite so it
+		// finds the id. Reached only after VerifyPluginContext + nonce.
+		r.URL.Path = "/api/admin/session-analytics/" + id
+		adminDetail(w, r)
 	}
 	wrapped := pluginruntime.VerifyPluginContext(secret, scopedAdminContext(dispatch), opts...)
 	mux.Handle("GET /_gateway/plugin/v1/sessions", wrapped)
 	mux.Handle("GET /_gateway/plugin/v1/sessions/{gw_session_id}", wrapped)
+	mux.Handle("GET /_gateway/plugin/v1/sessions/{gw_session_id}/{turns}", wrapped)
 }
 
 // isValidSessionID 只允许字母、数字、下划线、连字符。session id 通常是
