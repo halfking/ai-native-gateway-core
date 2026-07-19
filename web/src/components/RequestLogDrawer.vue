@@ -20,6 +20,7 @@ import {
   type AttachmentInfo,
 } from '../api'
 import RequestTracePanel from './RequestTracePanel.vue'
+import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
 
 const props = defineProps<{
   requestId: string | null
@@ -32,7 +33,7 @@ const emit = defineEmits<{
 const loading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
 const error = ref('')
-const tab = ref<'request' | 'response' | 'attachments'>('request')
+const tab = ref<'request' | 'response' | 'attachments' | 'routing'>('request')
 
 // 2026-07-17: 流程详情 inline panel - 在"原始请求详情"内点击按钮,
 //  在「请求详情」与「Tabs/按钮」之间展开一层, 显示该请求的端到端链路 +
@@ -266,6 +267,10 @@ function probeAttempt(row: RequestLogDetail | null): number | null {
   }
   return null
 }
+
+function routingAttempts(): RequestLogDetail['routing_attempts'] {
+  return detail.value?.routing_attempts
+}
 </script>
 
 <template>
@@ -327,6 +332,16 @@ function probeAttempt(row: RequestLogDetail | null): number | null {
             >
               {{ t('requests.detail_extra.attachmentsTab') }}
               <span class="tab-badge">{{ detailAttachments().length }}</span>
+            </button>
+            <button
+              v-if="routingAttempts()?.attempts?.length"
+              class="btn btn-sm"
+              type="button"
+              :class="{ 'btn-primary': tab === 'routing' }"
+              @click="tab = 'routing'"
+            >
+              路由尝试
+              <span class="tab-badge">{{ routingAttempts()?.attempts?.length }}</span>
             </button>
             <!-- 2026-07-17: 流程详情按钮 — 展开 RequestTracePanel (内嵌面板),
                  在「请求详情」与「Tabs」之间显示端到端链路 + 失败快照 + AI 提示词。
@@ -437,6 +452,12 @@ function probeAttempt(row: RequestLogDetail | null): number | null {
             </div>
             <div v-else class="text-muted">{{ t('requests.detail_extra.noAttachments') }}</div>
           </template>
+
+          <RoutingAttemptsTimeline
+            v-else-if="tab === 'routing'"
+            :summary="detail.routing_summary"
+            :attempts="routingAttempts()?.attempts"
+          />
         </div>
       </template>
 

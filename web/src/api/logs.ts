@@ -111,14 +111,29 @@ export interface AttachmentInfo {
 }
 
 export interface RequestLogDetail extends RequestLogRow {
-  request_body: any | null
-  response_body: any | null
+	request_body: any | null
+	response_body: any | null
   // 2026-07-01: 完整附件元数据数组。仅详情接口返回；为空/undefined 表示无附件。
   attachments?: AttachmentInfo[] | null
   // 2026-07-13: 错误触发的主动探测元数据
   task_type?: string
   auto_decision?: Record<string, unknown> | null
-  quality_flags?: string[]
+	quality_flags?: string[]
+	routing_attempts?: { attempts?: RoutingAttempt[] } | null
+	routing_summary?: string | null
+}
+
+export interface RoutingAttempt {
+	seq: number
+	provider_id: number
+	provider_name?: string
+	credential_id: number
+	raw_model: string
+	upstream_url: string
+	result: string
+	latency_ms: number
+	http_status?: number
+	error_message?: string
 }
 
 export interface RequestLogsResponse {

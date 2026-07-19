@@ -26,6 +26,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"                          //nolint:depguard // Phase 1.5: cost_mode preset integration
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"                       //nolint:depguard // request-side session handoff hook
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -2174,14 +2175,31 @@ func (h *ChatHandler) serveWithExecutor(
 	var result *executors.ExecuteResult
 	var execErr error
 
-	// Retry configuration (default values, will be overridden by cost_mode preset)
-	maxRetries := 3
-	baseDelayMs := 100
-	maxDelayMs := 5000
-	retryTotalTimeout := 50 * time.Second
+	// Retry configuration - Phase 1.5: read from Phase 0 cost_mode preset
+	maxRetries := 3                       // default: balanced mode
+	baseDelayMs := 100                    // fixed: 100ms base delay
+	maxDelayMs := 5000                    // fixed: 5s max delay
+	retryTotalTimeout := 50 * time.Second // default: balanced mode
 
-	// TODO: Read from Phase 0 cost_mode preset when integrated with goal store
-	// For now, use hardcoded defaults (minimal mode: 2 retries, balanced: 3 retries)
+	// Read from Phase 0 cost_mode preset if available
+	// Uses goal.GetPreset() to load the preset based on tenant settings
+	if keyInfo != nil && keyInfo.TenantID != "" {
+		// Infer cost mode from settings (defaults to "minimal" if not set)
+		// For now, use hardcoded "balanced" mode - will be read from settings in future
+		costMode := "balanced" // TODO: read from settings system
+
+		if preset := goal.GetPreset(costMode); preset.RetryEnabled {
+			maxRetries = preset.MaxRetryCount
+			retryTotalTimeout = time.Duration(preset.RetryTotalTimeout) * time.Second
+
+			slog.Debug("goal_retry_config_loaded",
+				"request_id", requestID,
+				"tenant_id", keyInfo.TenantID,
+				"cost_mode", costMode,
+				"max_retries", maxRetries,
+				"retry_timeout_sec", retryTotalTimeout.Seconds())
+		}
+	}
 
 	// Create retry context with total timeout protection
 	retryCtx, retryCancel := context.WithTimeout(r.Context(), retryTotalTimeout)

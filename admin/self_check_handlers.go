@@ -110,7 +110,8 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 	}
 	defer rows.Close()
 
-	var items []scRun
+	// Non-nil empty slice so JSON encodes as [] not null (frontend reads .length).
+	items := make([]scRun, 0)
 	for rows.Next() {
 		var item scRun
 		if err := rows.Scan(&item.ID, &item.ModelName, &item.StartedAt, &item.CompletedAt,
@@ -210,7 +211,7 @@ func (h *SelfCheckHandler) handleGetRun(w http.ResponseWriter, r *http.Request) 
 		ResponsePreview  string    `json:"response_preview"`
 		CreatedAt        time.Time `json:"created_at"`
 	}
-	var rounds []round
+	rounds := make([]round, 0)
 	for rows.Next() {
 		var rd round
 		if err := rows.Scan(&rd.ID, &rd.RoundIndex, &rd.IsPing, &rd.IsToolCall,
@@ -499,7 +500,8 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		SuccessRate float64 `json:"success_rate"`
 		AvgLatency  int     `json:"avg_latency_ms"`
 	}
-	var byModel []modelStat
+	// Non-nil empty slices so JSON encodes as [] not null.
+	byModel := make([]modelStat, 0)
 	for rows.Next() {
 		var ms modelStat
 		if err := rows.Scan(&ms.Model, &ms.Total, &ms.Success, &ms.Partial, &ms.Failed, &ms.AvgLatency); err != nil {
@@ -520,7 +522,7 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		ErrorType string `json:"error_type"`
 		Count     int    `json:"count"`
 	}
-	var errBreakdown []errStat
+	errBreakdown := make([]errStat, 0)
 	if errRows != nil {
 		defer errRows.Close()
 		for errRows.Next() {
@@ -544,7 +546,7 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		SuccessRate float64 `json:"success_rate"`
 		Total       int     `json:"total"`
 	}
-	var trend []trendPoint
+	trend := make([]trendPoint, 0)
 	if trendRows != nil {
 		defer trendRows.Close()
 		for trendRows.Next() {
@@ -594,7 +596,7 @@ func (h *SelfCheckHandler) handleModels(w http.ResponseWriter, r *http.Request) 
 		Failed  int        `json:"failed"`
 		LastRun *time.Time `json:"last_run,omitempty"`
 	}
-	var models []modelInfo
+	models := make([]modelInfo, 0)
 	for rows.Next() {
 		var m modelInfo
 		if rows.Scan(&m.Model, &m.Total, &m.Success, &m.Failed, &m.LastRun) == nil {
