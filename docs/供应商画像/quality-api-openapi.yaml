@@ -1,0 +1,619 @@
+openapi: 3.0.3
+info:
+  title: LLM Gateway - 质量画像 API
+  description: |
+    供应商和模型质量画像查询接口
+    
+    ## 功能
+    - 查询单个供应商的质量画像
+    - 查询质量排行榜（支持过滤和排序）
+    - 手动触发质量重算
+    
+    ## 版本历史
+    - v1.0 (2026-07-19): 初始版本，支持供应商查询和排行榜
+  version: 1.0.0
+  contact:
+    name: LLM Gateway Team
+    email: dev@kaixuan.com
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:8781
+    description: 本地开发环境
+  - url: http://192.168.31.28:8781
+    description: kaixuan-1 开发服务器
+  - url: http://8.136.114.245:8781
+    description: 245 测试环境
+  - url: https://api.kxpms.cn
+    description: 154 生产环境
+
+tags:
+  - name: quality
+    description: 质量画像查询
+
+paths:
+  /api/quality/providers/{provider_id}:
+    get:
+      tags:
+        - quality
+      summary: 查询供应商质量画像
+      description: |
+        获取指定供应商的所有模型质量画像数据
+        
+        ## 返回数据
+        - 供应商基本信息（ID、名称）
+        - 模型列表及其质量评分
+        - 五维评分详情（可用性、性能、稳定性、成本效益、可靠性）
+        
+        ## 使用场景
+        - 前端展示供应商详情页
+        - 智能路由决策参考
+        - 运维质量监控
+      operationId: getProviderQuality
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          description: 供应商 ID
+          schema:
+            type: integer
+            format: int64
+            example: 1
+        - name: model_name
+          in: query
+          required: false
+          description: 可选的模型名称过滤（精确匹配）
+          schema:
+            type: string
+            example: claude-3-opus
+      responses:
+        '200':
+          description: 成功返回质量画像数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderQualityResponse'
+              examples:
+                allModels:
+                  summary: 所有模型
+                  value:
+                    code: 0
+                    message: success
+                    data:
+                      provider_id: 1
+                      provider_name: "Anthropic"
+                      models:
+                        - model_name: "claude-3-opus"
+                          quality_score: 95.5
+                          quality_grade: "S"
+                          scores:
+                            availability: 98
+                            performance: 92
+                            stability: 94
+                            cost_efficiency: 85
+                          calculated_at: "2026-07-19T11:22:56.293705+08:00"
+                        - model_name: "claude-3-sonnet"
+                          quality_score: 88.5
+                          quality_grade: "A"
+                          scores:
+                            availability: 95
+                            performance: 88
+                            stability: 90
+                            cost_efficiency: 80
+                          calculated_at: "2026-07-19T11:22:56.293705+08:00"
+                filteredModel:
+                  summary: 按模型过滤
+                  value:
+                    code: 0
+                    message: success
+                    data:
+                      provider_id: 1
+                      provider_name: "Anthropic"
+                      models:
+                        - model_name: "claude-3-opus"
+                          quality_score: 95.5
+                          quality_grade: "S"
+                          scores:
+                            availability: 98
+                            performance: 92
+                            stability: 94
+                            cost_efficiency: 85
+                          calculated_at: "2026-07-19T11:22:56.293705+08:00"
+        '400':
+          description: 参数错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: 40001
+                message: "参数错误: provider_id 必须是数字"
+        '404':
+          description: 供应商不存在或暂无质量数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                providerNotFound:
+                  summary: 供应商不存在
+                  value:
+                    code: 40401
+                    message: "供应商不存在"
+                noQualityData:
+                  summary: 暂无质量数据
+                  value:
+                    code: 40402
+                    message: "暂无质量数据"
+        '500':
+          description: 服务器内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: 50001
+                message: "服务器内部错误"
+
+  /api/quality/ranking:
+    get:
+      tags:
+        - quality
+      summary: 查询质量排行榜
+      description: |
+        获取全局或过滤后的模型质量排行榜
+        
+        ## 排序规则
+        - 默认按 quality_score 降序
+        - 支持按 availability_score、performance_score 排序
+        - 自动计算排名（rank）
+        
+        ## 使用场景
+        - 前端展示排行榜页面
+        - 智能推荐最佳供应商
+        - 质量趋势分析
+      operationId: getQualityRanking
+      parameters:
+        - name: model_name
+          in: query
+          required: false
+          description: 可选的模型名称过滤
+          schema:
+            type: string
+            example: claude-3-opus
+        - name: limit
+          in: query
+          required: false
+          description: 返回条数限制（1-100，默认20）
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+            example: 10
+        - name: order_by
+          in: query
+          required: false
+          description: 排序字段
+          schema:
+            type: string
+            enum:
+              - quality_score
+              - availability_score
+              - performance_score
+            default: quality_score
+            example: quality_score
+        - name: min_score
+          in: query
+          required: false
+          description: 最低质量分数过滤（0-100，默认0）
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 100
+            default: 0
+            example: 80
+      responses:
+        '200':
+          description: 成功返回排行榜数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RankingResponse'
+              examples:
+                default:
+                  summary: 默认排行榜（前20名）
+                  value:
+                    code: 0
+                    message: success
+                    data:
+                      ranking:
+                        - rank: 1
+                          provider_id: 1
+                          provider_name: "Anthropic"
+                          model_name: "claude-3-opus"
+                          quality_score: 95.5
+                          quality_grade: "S"
+                          availability_score: 98
+                          performance_score: 92
+                          calculated_at: "2026-07-19T11:22:56.293705+08:00"
+                        - rank: 2
+                          provider_id: 2
+                          provider_name: "OpenAI"
+                          model_name: "gpt-4"
+                          quality_score: 88.5
+                          quality_grade: "A"
+                          availability_score: 92
+                          performance_score: 88
+                          calculated_at: "2026-07-19T11:22:56.293705+08:00"
+                      total: 2
+                filtered:
+                  summary: 过滤条件（分数≥90）
+                  value:
+                    code: 0
+                    message: success
+                    data:
+                      ranking:
+                        - rank: 1
+                          provider_id: 1
+                          provider_name: "Anthropic"
+                          model_name: "claude-3-opus"
+                          quality_score: 95.5
+                          quality_grade: "S"
+                          availability_score: 98
+                          performance_score: 92
+                          calculated_at: "2026-07-19T11:22:56.293705+08:00"
+                      total: 1
+        '500':
+          description: 服务器内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: 50001
+                message: "服务器内部错误"
+
+  /api/quality/recalculate:
+    post:
+      tags:
+        - quality
+      summary: 手动触发质量重算
+      description: |
+        立即触发指定供应商的质量画像重新计算
+        
+        ## 注意事项
+        - 需要管理员权限（未来实现）
+        - 计算过程异步执行（1-5秒）
+        - 重复调用会返回上次计算结果
+        
+        ## 使用场景
+        - 运维手动刷新质量数据
+        - 调试质量计算逻辑
+        - 紧急更新质量评分
+      operationId: recalculateQuality
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - provider_id
+              properties:
+                provider_id:
+                  type: integer
+                  format: int64
+                  description: 供应商 ID
+                  example: 1
+            example:
+              provider_id: 1
+      responses:
+        '200':
+          description: 重算成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecalculateResponse'
+              example:
+                code: 0
+                message: success
+                data:
+                  provider_id: 1
+                  models_updated: 2
+                  duration_ms: 1234
+        '400':
+          description: 参数错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: 40001
+                message: "参数错误: provider_id 必须是正整数"
+        '404':
+          description: 供应商不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: 40401
+                message: "供应商不存在"
+        '500':
+          description: 服务器内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: 50001
+                message: "服务器内部错误"
+
+components:
+  schemas:
+    ProviderQualityResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          type: integer
+          description: 响应码（0=成功）
+          example: 0
+        message:
+          type: string
+          description: 响应消息
+          example: success
+        data:
+          type: object
+          required:
+            - provider_id
+            - provider_name
+            - models
+          properties:
+            provider_id:
+              type: integer
+              format: int64
+              description: 供应商 ID
+              example: 1
+            provider_name:
+              type: string
+              description: 供应商名称
+              example: "Anthropic"
+            models:
+              type: array
+              description: 模型质量画像列表
+              items:
+                $ref: '#/components/schemas/ModelQualityProfile'
+
+    RankingResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          type: integer
+          description: 响应码（0=成功）
+          example: 0
+        message:
+          type: string
+          description: 响应消息
+          example: success
+        data:
+          type: object
+          required:
+            - ranking
+            - total
+          properties:
+            ranking:
+              type: array
+              description: 排行榜列表
+              items:
+                $ref: '#/components/schemas/RankingItem'
+            total:
+              type: integer
+              description: 总条数
+              example: 10
+
+    RecalculateResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          type: integer
+          description: 响应码（0=成功）
+          example: 0
+        message:
+          type: string
+          description: 响应消息
+          example: success
+        data:
+          type: object
+          required:
+            - provider_id
+            - models_updated
+            - duration_ms
+          properties:
+            provider_id:
+              type: integer
+              format: int64
+              description: 供应商 ID
+              example: 1
+            models_updated:
+              type: integer
+              description: 更新的模型数量
+              example: 2
+            duration_ms:
+              type: integer
+              description: 计算耗时（毫秒）
+              example: 1234
+
+    ModelQualityProfile:
+      type: object
+      required:
+        - model_name
+        - quality_score
+        - quality_grade
+        - scores
+        - calculated_at
+      properties:
+        model_name:
+          type: string
+          description: 模型名称
+          example: "claude-3-opus"
+        quality_score:
+          type: number
+          format: float
+          description: 综合质量分数（0-100）
+          minimum: 0
+          maximum: 100
+          example: 95.5
+        quality_grade:
+          type: string
+          description: 质量等级
+          enum: [S, A, B, C, D]
+          example: "S"
+        scores:
+          $ref: '#/components/schemas/QualityScores'
+        calculated_at:
+          type: string
+          format: date-time
+          description: 计算时间（ISO 8601）
+          example: "2026-07-19T11:22:56.293705+08:00"
+
+    QualityScores:
+      type: object
+      required:
+        - availability
+        - performance
+        - stability
+        - cost_efficiency
+      properties:
+        availability:
+          type: number
+          format: float
+          description: 可用性评分（0-100）
+          minimum: 0
+          maximum: 100
+          example: 98
+        performance:
+          type: number
+          format: float
+          description: 性能评分（0-100）
+          minimum: 0
+          maximum: 100
+          example: 92
+        stability:
+          type: number
+          format: float
+          description: 稳定性评分（0-100）
+          minimum: 0
+          maximum: 100
+          example: 94
+        cost_efficiency:
+          type: number
+          format: float
+          description: 成本效益评分（0-100）
+          minimum: 0
+          maximum: 100
+          example: 85
+
+    RankingItem:
+      type: object
+      required:
+        - rank
+        - provider_id
+        - provider_name
+        - model_name
+        - quality_score
+        - quality_grade
+        - availability_score
+        - performance_score
+        - calculated_at
+      properties:
+        rank:
+          type: integer
+          description: 排名（从1开始）
+          minimum: 1
+          example: 1
+        provider_id:
+          type: integer
+          format: int64
+          description: 供应商 ID
+          example: 1
+        provider_name:
+          type: string
+          description: 供应商名称
+          example: "Anthropic"
+        model_name:
+          type: string
+          description: 模型名称
+          example: "claude-3-opus"
+        quality_score:
+          type: number
+          format: float
+          description: 综合质量分数
+          example: 95.5
+        quality_grade:
+          type: string
+          description: 质量等级
+          enum: [S, A, B, C, D]
+          example: "S"
+        availability_score:
+          type: number
+          format: float
+          description: 可用性评分
+          example: 98
+        performance_score:
+          type: number
+          format: float
+          description: 性能评分
+          example: 92
+        calculated_at:
+          type: string
+          format: date-time
+          description: 计算时间
+          example: "2026-07-19T11:22:56.293705+08:00"
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: integer
+          description: 错误码
+          example: 40001
+        message:
+          type: string
+          description: 错误消息
+          example: "参数错误"
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT Token 认证（未来实现）
+        
+        ## 获取方式
+        POST /api/auth/login
+        
+        ## 使用方式
+        Authorization: Bearer <token>
+
+# 未来可能需要认证
+# security:
+#   - bearerAuth: []
