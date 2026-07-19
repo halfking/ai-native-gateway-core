@@ -53,6 +53,17 @@ type ProbeTarget struct {
 	APIKey        string // already decrypted
 }
 
+// ProbeCommand is the common execution contract for synchronous and queued
+// probes. The current worker still resolves targets from the database, while
+// future queue consumers can supply the same target through this command.
+type ProbeCommand struct {
+	Target   *ProbeTarget
+	Mode     ProbeMode
+	Attempt  int
+	Origin   string
+	ParentID string
+}
+
 // ProbeStatus enumerates the categorised outcomes of a single probe.
 // Values mirror credential_probe_v2 / probe_http conventions so the
 // downstream dashboard can render the same kind of error pill.
@@ -304,6 +315,66 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	}
 	res.ErrMsg = truncatePreview(string(bodyBytes), 500)
 	return res
+}
+
+// RunCommand executes a probe through the same single-attempt implementation
+// used by ActiveProbeWorker. Mode is reserved for the template variants; the
+// existing direct chat probe remains the default until callers opt in.
+func (e *ActiveProbeExecutor) RunCommand(ctx context.Context, command ProbeCommand) *ProbeResult {
+	if command.Target == nil {
+		return &ProbeResult{
+			Status:      ProbeStatusFailed,
+			ErrCode:     "missing_probe_target",
+			ErrMsg:      "probe command missing target",
+			StartedAt:   time.Now(),
+			CompletedAt: time.Now(),
+		}
+	}
+	if command.Mode == ProbeModeModelsList {
+		return e.runModelsList(ctx, command.Target)
+	}
+	return e.Run(ctx, command.Target)
+}
+
+func (e *ActiveProbeExecutor) runModelsList(ctx context.Context, target *ProbeTarget) *ProbeResult {
+	start := time.Now()
+	desc := providercap.Resolve(target.Protocol, "")
+	endpoint := upstreamurl.ModelsURL(target.BaseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return &ProbeResult{Status: ProbeStatusFailed, ErrCode: "request_build", ErrMsg: err.Error(), StartedAt: start, CompletedAt: time.Now(), Target: *target}
+	}
+	providercap.ApplyAuthHeaders(req, desc, target.APIKey)
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		status := ProbeStatusNetwork
+		code := "network_error"
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout") {
+			status = ProbeStatusTimeout
+			code = "probe_timeout"
+		}
+		return &ProbeResult{Status: status, ErrCode: code, ErrMsg: err.Error(), StartedAt: start, CompletedAt: time.Now(), LatencyMs: int(time.Since(start).Milliseconds()), Target: *target, RequestURL: endpoint}
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	parsed := classifyHTTPResponse(resp.StatusCode, string(body), int(time.Since(start).Milliseconds()))
+	status := ProbeStatusHTTP4xx
+	switch parsed.status {
+	case "ok":
+		status = ProbeStatusSuccess
+	case "auth":
+		status = ProbeStatusAuth
+	case "http_5xx", "network":
+		status = ProbeStatusHTTP5xx
+	case "rate_limit", "rate_limit_5h", "rate_limit_weekly", "rate_limit_monthly":
+		status = ProbeStatusRate
+	}
+	return &ProbeResult{
+		Status: status, HTTPStatus: resp.StatusCode, ErrCode: parsed.errCode,
+		ErrMsg: parsed.errMsg, RespPreview: truncatePreview(string(body), 500),
+		ResponseBody: truncatePreview(string(body), 500), RequestURL: endpoint,
+		LatencyMs: parsed.latencyMs, StartedAt: start, CompletedAt: time.Now(), Target: *target,
+	}
 }
 
 // buildEndpoint returns the chat-completions URL for the protocol.
