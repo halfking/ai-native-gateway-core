@@ -364,6 +364,24 @@ func StreamAnthropicSSEToOpenAI(
 	runtimeCfg := currentStreamRuntimeConfig()
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
 
+	// Added panic recovery (2026-07-19): Prevent SSE parser crashes from killing the stream
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("anthropic_to_openai: stream reader panic",
+				"panic", r,
+				"request_id", requestID,
+				"chunk_count", chunkCount)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("stream_panic")
+			}
+			emitAnthropicBridgeErrorChunk(w, "stream_panic",
+				fmt.Sprintf("internal error: %v", r), flusher)
+			outcome.Interrupted = true
+			outcome.Reason = "stream_panic"
+			outcome.ChunkCount = chunkCount
+		}
+	}()
+
 	type readResult struct {
 		eventType string
 		data      []byte
