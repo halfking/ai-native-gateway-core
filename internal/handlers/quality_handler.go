@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -42,11 +43,11 @@ type ProviderQualityResponse struct {
 
 // ModelQualityProfile 模型质量画像
 type ModelQualityProfile struct {
-	ModelName     string        `json:"model_name"`
-	QualityScore  float64       `json:"quality_score"`
-	QualityGrade  string        `json:"quality_grade"`
-	Scores        QualityScores `json:"scores"`
-	CalculatedAt  time.Time     `json:"calculated_at"`
+	ModelName    string        `json:"model_name"`
+	QualityScore float64       `json:"quality_score"`
+	QualityGrade string        `json:"quality_grade"`
+	Scores       QualityScores `json:"scores"`
+	CalculatedAt time.Time     `json:"calculated_at"`
 }
 
 // QualityScores 五个维度评分
@@ -101,8 +102,12 @@ func (h *QualityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (h *QualityHandler) handleGetProviderQuality(w http.ResponseWriter, r *http.Request) {
+	slog.Info("quality: handleGetProviderQuality called", "path", r.URL.Path, "query", r.URL.RawQuery)
+
 	// 解析 provider_id (从 /api/quality/providers/:id/quality 提取)
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/quality/providers/"), "/")
+	slog.Info("quality: parsed path parts", "parts", parts, "len", len(parts))
+
 	if len(parts) < 1 || parts[0] == "" {
 		h.writeError(w, http.StatusBadRequest, 40001, "参数错误: provider_id 缺失")
 		return
@@ -121,12 +126,14 @@ func (h *QualityHandler) handleGetProviderQuality(w http.ResponseWriter, r *http
 
 	// 查询供应商名称
 	var providerName string
-	err = h.db.QueryRowContext(ctx, "SELECT name FROM providers WHERE id = $1", providerID).Scan(&providerName)
+	err = h.db.QueryRowContext(ctx, "SELECT display_name FROM providers WHERE id = $1", providerID).Scan(&providerName)
 	if err == sql.ErrNoRows {
+		slog.Warn("quality: provider not found", "provider_id", providerID)
 		h.writeError(w, http.StatusNotFound, 40401, "供应商不存在")
 		return
 	}
 	if err != nil {
+		slog.Error("quality: failed to query provider name", "error", err, "provider_id", providerID)
 		h.writeError(w, http.StatusInternalServerError, 50001, "服务器内部错误")
 		return
 	}
@@ -168,8 +175,11 @@ ORDER BY quality_score DESC
 		args = []interface{}{providerID}
 	}
 
+	slog.Info("quality: querying profiles", "provider_id", providerID, "model_name", modelName)
+
 	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
+		slog.Error("quality: failed to query profiles", "error", err, "provider_id", providerID, "model_name", modelName)
 		h.writeError(w, http.StatusInternalServerError, 50001, "服务器内部错误")
 		return
 	}
@@ -191,6 +201,7 @@ ORDER BY quality_score DESC
 			&m.CalculatedAt,
 		)
 		if err != nil {
+			slog.Error("quality: failed to scan row", "error", err, "provider_id", providerID)
 			continue
 		}
 
@@ -216,6 +227,8 @@ ORDER BY quality_score DESC
 
 // handleGetRanking 查询质量排行榜
 func (h *QualityHandler) handleGetRanking(w http.ResponseWriter, r *http.Request) {
+	slog.Info("quality: handleGetRanking called", "query", r.URL.RawQuery)
+
 	query := r.URL.Query()
 	modelName := query.Get("model_name")
 	limitStr := query.Get("limit")
@@ -257,7 +270,7 @@ func (h *QualityHandler) handleGetRanking(w http.ResponseWriter, r *http.Request
 	sqlQuery := `
 SELECT 
     p.provider_id,
-    COALESCE(pr.name, '') as provider_name,
+    COALESCE(pr.display_name, '') as provider_name,
     p.model_name,
     p.quality_score,
     p.quality_grade,
@@ -272,8 +285,11 @@ ORDER BY p.` + orderBy + ` DESC
 LIMIT $3
 `
 
+	slog.Info("quality: executing ranking query", "model_name", modelName, "min_score", minScore, "limit", limit, "order_by", orderBy)
+
 	rows, err := h.db.QueryContext(ctx, sqlQuery, modelName, minScore, limit)
 	if err != nil {
+		slog.Error("quality: failed to query ranking", "error", err, "model_name", modelName)
 		h.writeError(w, http.StatusInternalServerError, 50001, "服务器内部错误")
 		return
 	}
@@ -294,6 +310,7 @@ LIMIT $3
 			&item.CalculatedAt,
 		)
 		if err != nil {
+			slog.Error("quality: failed to scan ranking row", "error", err)
 			continue
 		}
 
@@ -382,7 +399,7 @@ WHERE provider_id = $1 AND model_name = $2
 			"model_name":    req.ModelName,
 			"quality_score": result.QualityScore,
 			"quality_grade": result.QualityGrade,
-			"updated_at": result.CalculatedAt,
+			"updated_at":    result.CalculatedAt,
 		},
 	})
 }
