@@ -2,21 +2,15 @@
 # =====================================================================
 # scripts/ssh-wrapper-154.sh — 154 SSH wrapper via 252 jump host
 #
-# Trigger: any ssh invocation whose target is root@47.97.111.154 or
-#          root@172.16.2.209 (the two IPs the deploy-seamless contract
-#          maps to "154").
+# Trigger: any SSH invocation whose target matches injected host values for
+# the canonical 154 deployment target.
 #
 # Effect: rewrites the call so it actually runs
-#     ssh -> root@252:25022 -> sshpass -p $SSHPASS_154 ssh root@172.16.2.241:25022
-#   (注意: 实际部署落到 245 (172.16.2.241), 245 上 systemd + llm-gateway-go
-#    跑得好好的, 然后 252 nginx 把 llm.kxpms.cn 反代到 245:8781)
+#     ssh -> injected jump host -> sshpass -e ssh injected target
 #
 # Why this exists (2026-07-20):
-#   - 154 公网 47.97.111.154 的 SSH 端口被防火墙全挡,
-#     所有 25022 / 22 / 2222 端口从任何源都连不上.
-#   - 154 内网 172.16.2.209 在 252 上也只有 HTTPS 端口通, SSH 同样被挡.
-#   - 但 245 (172.16.2.241) 上 systemd + llm-gateway-go + nginx 全部活得好好的,
-#     只要 nginx upstream (在 252 上) 反代到 245:8781 就行.
+#   - The canonical target's direct SSH path is unavailable, so the wrapper
+#     routes through an injected jump host.
 #
 # 用法:
 #   PATH=scripts:$PATH bash scripts/deploy-seamless.sh deploy 154
@@ -34,12 +28,10 @@
 #     一个名为 "Warning: ..." 的伪目录, systemd 立即 203/EXEC).
 # =====================================================================
 set -e
-# 默认值都跟脚本/ssh-wrapper-154.sh 现场跑的版本一致.
-# 任何字段都可以用环境变量覆盖 (e.g. CI 或 env-injector 注入).
+# All connection details and credentials must be injected by env-injector.
 HOP_KEY=${SSH_WRAPPER_HOP_KEY:-}
 HOP_HOST=${SSH_WRAPPER_HOP_HOST:-}
 HOP_PORT=${SSH_WRAPPER_HOP_PORT:-25022}
-# 154/245 root 密码 (生产服务器统一密码, 与 deploy-154.sh.legacy 一致)
 TARGET_PASS=${SSHPASS_154:-${DEPLOY_SSH_PASS:-}}
 TARGET_IP=${SSH_WRAPPER_TARGET_IP:-}
 TARGET_HOST=${SSH_WRAPPER_TARGET_HOST:-}

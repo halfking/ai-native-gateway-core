@@ -11,14 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Request trace audit fixes** (2026-07-20): stage-event transaction failures now roll back and retain Redis traces for retry; hot/partition fallback reads select the newest row deterministically; migration 450 adds the missing `request_stage_events.tenant_id` column and index; trace routes fail closed when admin authorization is not configured.
 
-- **154 部署链路 5 类问题修复** (2026-07-20): `llm.kxpms.cn` 首页是旧版本 (`2.4.7-c1a01552` build 1200, 7月19日) 跟 245 对比明显旧，根因是 154 公网 SSH 被防火墙全挡 + deploy-seamless 走 252 跳板路径的 3 个 bug：
-  1. `ssh-retry.sh:217` 的 `extra_flags=(-o "$proxy_flag")` 多套了一层 `-o`，触发 `Bad configuration option: -o` 立即失败。
-  2. `host.sh:78` 给 154 算的 `binary_link` 跟 systemd unit `ExecStart=/opt/llm-gateway-go/gateway` 不一致（一个用 `llm-gateway-go` 一个用 `gateway`），atomic-switch 后 systemd 立即 `203/EXEC` 死循环。统一改为 `gateway`。
-  3. ssh 首次连内网 172.16.2.241 时 `Warning: Permanently added ... to the list of known hosts` 污染 deploy-seamless 解析 stdout，导致 `ln -sfn` 把 `current` 链接指向伪目录 `releases/Warning: ...`。
-  - 新增 `scripts/ssh-wrapper-154.sh` + symlink `scripts/ssh` + `scripts/deploy-154-via-252.sh`，把 `47.97.111.154`/`172.16.2.209` 自动重定向到 `252 → sshpass → 172.16.2.241:25022`（245），并强制 `ssh -q -o LogLevel=QUIET` 抑制 Warning。
-  - 实际"154 服务"是跑在 245 (`172.16.2.241`) 上的，252 nginx upstream `kxpms_llm_backend` 由 `172.16.2.209:8781` 改为 `172.16.2.241:8781`。
-  - 部署后 `/healthz` 返回 `2.4.7-dae265fb-20260719-1209-dae265fb`（7月20日 build 1209），登录后控制台看板/实时请求流/会话与统计/系统监测 4 tabpage 全部可见（browser-use 验证截图 `/tmp/154-{kanban,realtime,session,monitor}.png`）。
-  - 详见 [docs/changelogs/2026-07-20-ssh-wrapper-154-deploy-fix.md](docs/changelogs/2026-07-20-ssh-wrapper-154-deploy-fix.md)。
+- **SSH deployment wrapper hardening** (2026-07-20): fixed ProxyCommand argument construction, made the 154 wrapper fail closed when injected connection settings are missing, and removed credentials/default endpoints from the wrapper. The 154 and 245 binary-name contracts remain distinct.
 
 ### Added
 
@@ -28,6 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 替换 `TaskTypeRail` / `WorkTypesView` (`<option>` + `l1Label()`) / `RoutingDefaultsView` (`availableTaskTypes` fallback) / `RoutingDashboardView` (task pills + `taskLabel()`) 的 4 处硬编码。
   - 保留 `L1_TASK_TYPES` 作为 frontend seed（empty-DB / 后端宕机时第一帧不空白），通过类型注解 `Omit<L1TaskTypeMeta, 'count'>` 与动态响应兼容。
   - 详见 [docs/changelogs/2026-07-20-dynamic-l1-task-types.md](docs/changelogs/2026-07-20-dynamic-l1-task-types.md)。
+
+### Fixed
+
+- **`RoutingDefaultsView` task_type 语义混淆 (work type key vs L1 key)** (2026-07-20): pre-existing bug — `availableTaskTypes` computed 之前 fallback 到 `workTypes.value.map((workType) => ({ key: workType.key, ... }))`，但 `task_type` 在 `routing_defaults` 表里是 L1 分类（`code` / `chat` 等），不是 work type key（`customer_support` 等）。用户在 picker 选 work type 后会存 `task_type = "customer_support"` 到 routing_defaults — 既不是已知 L1，也对下游表无意义。修复：`availableTaskTypes` 唯一从 `useL1TaskTypes()` composable 派生；同时清掉死代码 `workTypes` / `workTypesLoading` / `taskTypeLoadError` 状态 + 死分支 UI 元素。
+
+- **L1 task types endpoint 全面测试覆盖** (2026-07-20): `admin/work_types_l1_test.go` 从 2 个测试（empty-DB + non-GET 拒绝）扩展到 9 个测试：
+  - `TestListL1TaskTypesDbCountsOverlayCanonical` — DB 有数据时 canonical key 合并 + operator-added 追加 ◆ + label=key fallback
+  - `TestListL1TaskTypesDbQueryErrorFallsBackToCanonical` — DB query 失败时仍返回 canonical 8（UI 永不空白）
+  - `TestListL1TaskTypesExtraKeysSorted` — operator-added key 按字母序追加（dropdown 顺序稳定）
+  - `TestMergeL1TaskTypes` 4 子测试 — 纯函数 `mergeL1TaskTypes` 边界场景（empty / overlay / extra / 防御性空 key 过滤）
+  - 配套：handler 拆出 `fetchL1Counts(ctx)` (DB 注入点) + `mergeL1TaskTypes(counts)` (纯函数)，测试无需 pgxmock。
+
+- **删 dead code `TASK_TYPES` (api-autoroute.ts)** (2026-07-20): `feat(work-types): dynamic L1` 之后 `TASK_TYPES` 已无消费者（前端 4 处全部走 `useL1TaskTypes()`，仅留 `TASK_TAGS` 因 dashboard pills tooltip 仍需）。删 8 项硬编码数组 + 加注释指向 `L1_TASK_TYPES` / `canonicalL1TaskTypes` 双源 SSOT。
 
 ### Fixed
 
