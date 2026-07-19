@@ -125,6 +125,18 @@ func (e *ActiveProbeEmitter) Emit(
 	providerIDCopy := providerID
 	credIDCopy := credID
 
+	// 2026-07-19: Populate request_body and response_body from ProbeResult
+	// so probe rows show the actual HTTP exchange in /request-logs detail view.
+	// Previously these fields were NULL, making it impossible to diagnose
+	// why a probe failed without querying node_probe_runs directly.
+	var requestBody, responseBody *string
+	if result.RequestBody != "" {
+		requestBody = strPtrTelemetry(result.RequestBody)
+	}
+	if result.ResponseBody != "" {
+		responseBody = strPtrTelemetry(result.ResponseBody)
+	}
+
 	entry := &telemetry.RequestLogEntry{
 		RequestID:        requestID,
 		TenantID:         tenantID,
@@ -161,6 +173,9 @@ func (e *ActiveProbeEmitter) Emit(
 		TaskTypeChosen: strPtrTelemetry("probe_" + origin),
 		QualityFlags:   buildProbeQualityFlags(result, attempt, origin),
 		AutoDecision:   &autoDecisionStr,
+		// 2026-07-19: Probe request/response bodies for diagnostics
+		RequestBody:  requestBody,
+		ResponseBody: responseBody,
 	}
 	// Override the success-path request_status so the row reads
 	// "success" (the default fallback writes "failure" for !success
