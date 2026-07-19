@@ -63,9 +63,11 @@ func (n *NodeState) IsUsable(now time.Time) bool {
 	if n.Disabled && n.DisabledUntil > 0 && now.Unix() < n.DisabledUntil {
 		return false
 	}
-	// Expiring the cooldown only permits a real request to probe the node.
-	// RecordNodeSuccess is the sole path that can clear Disabled.
-	return !n.Disabled
+	// Cooldown expiry puts the node back into the routing pool. The following
+	// real request is still recorded by the atomic Lua transition and can
+	// immediately disable the node again if it fails.
+	n.recoverIfCooldownExpired(now.Unix())
+	return !n.Disabled && n.ConsecutiveFailureStreak(now) < nodeFailStreakLimit
 }
 
 // ConsecutiveFailureStreak counts tail failures within the active sliding window.
@@ -221,14 +223,9 @@ const (
 // recordNodeOutcomeScript atomically reads, updates, and writes NodeState.
 // Entirely in Lua — no Go-side TOCTOU race.
 //
-// P0 Fix (2026-07-19): 实际流量优先恢复机制
-// 问题：健康探测成功不等于实际请求成功。节点冷却期到期后，如果立即恢复，
-//
-//	可能导致仍然不稳定的节点（如商汤、NVIDIA NIM）继续接收流量。
-//
-// 修复：冷却期到期后，必须等待实际成功请求才恢复，确保节点真正可用。
-//
-//	同时，如果恢复后再次连续失败3次，立即重新禁用（不等冷却期到期）。
+// Cooldown expiry is handled by IsUsable so the router can send a real
+// request to the node again. This script still handles the outcome
+// atomically and re-disables the node after the failure threshold.
 //
 // KEYS[1] = llmgw:cred_fp_node:{credentialID}:{model}
 // ARGV[1] = kind ("success" | "failure")
@@ -272,7 +269,7 @@ var recordNodeOutcomeScript = redis.NewScript(`
 	end
 	state.slide_window = pruned
 
-	-- P0 Fix: 先检查是否需要处理冷却期到期
+	-- Check whether the cooldown has expired before recording this outcome.
 	-- 如果冷却期到期，根据本次请求类型决定恢复或延长
 	-- 这个检查必须在添加新记录之前进行
 	local cooldown_expired = state.disabled and state.disabled_until and now >= state.disabled_until
