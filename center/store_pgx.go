@@ -399,3 +399,80 @@ func (s *PgxStore) UpdateRefreshToken(ctx context.Context, instanceID, refreshTo
 
 // Ensure interface compliance
 var _ Store = (*PgxStore)(nil)
+
+// GetRuntimeMetricsSummary 获取实例性能汇总（最近 N 小时）
+func (s *PgxStore) GetRuntimeMetricsSummary(ctx context.Context, hours int) ([]RuntimeMetricsSummary, error) {
+	query := `
+		WITH recent_metrics AS (
+			SELECT 
+				rm.instance_id,
+				AVG(rm.cpu_usage_pct) as avg_cpu,
+				AVG(rm.mem_used_mb::float / NULLIF(rm.mem_total_mb, 0) * 100) as avg_mem_pct,
+				AVG(rm.last_5min_tps) as avg_tps,
+				MAX(rm.last_5min_p99_ms) as max_p99,
+				MAX(rm.timestamp) as last_update,
+				jsonb_object_agg(
+					model_key, 
+					model_count
+				) FILTER (WHERE model_key IS NOT NULL) as top_models
+			FROM runtime_metrics rm
+			LEFT JOIN LATERAL (
+				SELECT 
+					jsonb_object_keys(rm.model_usage) as model_key,
+					(rm.model_usage->>jsonb_object_keys(rm.model_usage))::bigint as model_count
+			) models ON true
+			WHERE rm.timestamp >= NOW() - ($1 || ' hours')::interval
+			GROUP BY rm.instance_id
+		)
+		SELECT 
+			gi.instance_id,
+			gi.hostname,
+			COALESCE(gi.region, '') as region,
+			gi.version,
+			gi.status,
+			COALESCE(m.avg_cpu, 0)::numeric(5,2) as avg_cpu_pct,
+			COALESCE(m.avg_mem_pct, 0)::numeric(5,2) as avg_mem_pct,
+			COALESCE(m.avg_tps, 0)::numeric(6,2) as avg_tps,
+			COALESCE(m.max_p99, 0)::int as max_p99_ms,
+			COALESCE(m.top_models, '{}'::jsonb) as top_models,
+			m.last_update
+		FROM gateway_instances gi
+		LEFT JOIN recent_metrics m ON gi.instance_id = m.instance_id
+		WHERE gi.status != 'offline' OR m.last_update IS NOT NULL
+		ORDER BY gi.region, gi.hostname
+	`
+
+	rows, err := s.db.Query(ctx, query, hours)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []RuntimeMetricsSummary
+	for rows.Next() {
+		var summary RuntimeMetricsSummary
+		var topModelsJSON []byte
+		err := rows.Scan(
+			&summary.InstanceID,
+			&summary.Hostname,
+			&summary.Region,
+			&summary.Version,
+			&summary.Status,
+			&summary.AvgCPU,
+			&summary.AvgMemPct,
+			&summary.AvgTPS,
+			&summary.MaxP99,
+			&topModelsJSON,
+			&summary.LastUpdate,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(topModelsJSON) > 0 {
+			json.Unmarshal(topModelsJSON, &summary.TopModels)
+		}
+		summaries = append(summaries, summary)
+	}
+
+	return summaries, rows.Err()
+}

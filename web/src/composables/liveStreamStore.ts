@@ -230,25 +230,6 @@ function trimOldest() {
   }
 }
 
-// 2026-07-14: when an incoming request has the same request_id as an
-// existing tile, we previously just overwrote the slot in place — the
-// tile would stay where it was (middle of the visible region) but the
-// status/fields would suddenly swap. The operator's eye sees this as
-// a "status flicker": the blue (in_progress) tile silently turns into
-// a green (success) tile at the same position.
-//
-// The correct visual is: the OLD tile animates out (slides off to the
-// left), and the NEW tile animates in at the right (the natural
-// "latest request" slot). To trigger the TransitionGroup leave/enter
-// animations inside SwimLane.vue, we must:
-//
-//   1. Splice the old entry out of the array first, then
-//   2. push the new entry.
-//
-// Reusing the slot (as before) only re-runs the same render path and
-// the transition hooks see no key change. Splice + push makes the key
-// disappear and reappear, which is what Vue needs to fire the
-// swim-tile-leave-active / swim-tile-enter-active CSS transitions.
 function pushOrQueue(item: LiveRequest) {
   if (liveStreamState.paused) {
     pending.push(item)
@@ -280,16 +261,14 @@ function pushOrQueue(item: LiveRequest) {
         r => r.request_id === item.request_id
       )
       if (existingIndex >= 0) {
-        // 1) Splice the old entry — Vue TransitionGroup sees the key
-        // disappear and runs the swim-tile-leave-active animation.
-        const old = liveStreamState.requests.splice(existingIndex, 1)[0]
-        // Mark it evicted for any downstream subscribers (e.g. the
-        // detail drawer). If they were already showing this request,
-        // they should re-open with the fresh data once the new tile
-        // is pushed in step 2.
-        if (old && onEvictCb) onEvictCb(old.request_id!)
-        // 2) Push the new entry — Vue TransitionGroup sees a new key
-        // appear at the tail and runs swim-tile-enter-active.
+        // A lifecycle update keeps the same request identity. Replacing the
+        // item in place preserves both queue order and the tile's Vue key,
+        // preventing a routine in-progress -> terminal transition from
+        // looking like a remove/reinsert flicker.
+        liveStreamState.requests[existingIndex] = item
+      } else {
+        // The index can be stale after a snapshot reconcile. Recover by
+        // inserting the request instead of silently dropping the update.
         liveStreamState.requests.push(item)
       }
       return
@@ -346,13 +325,10 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     return
   }
 
-  // snapshot_refresh: 服务端每30分钟推送的全量快照刷新。
-  // 替换而非合并 snapshot，重置请求列表，避免增量偏差累积。
+  // A periodic snapshot reconciles lane aggregates. Keep the independent
+  // flat replay buffer intact so the UI never briefly renders an empty queue.
   if (env.type === 'snapshot_refresh' && env.snapshot) {
-    liveStreamState.snapshot = null          // force full reset
-    liveStreamState.snapshot = env.snapshot
-    liveStreamState.requests = []
-    idIndex.clear()
+    mergeSnapshotFromServer(env.snapshot)
     return
   }
 
@@ -370,10 +346,9 @@ function handleEnvelope(env: LiveStreamEnvelope) {
   if (env.type === 'idle_marker') {
     // Backend now writes idle markers to Redis and includes them in the
     // envelope's delta payload (see admin/live_stream_sse.go
-    // maybeEmitIdleMarker). Apply the delta so the idle tiles land in
-    // the snapshot — handleLaneIdleCheck was the old frontend-side
-    // reconstruction path, kept as a no-op for envelope-type compat.
-    if (env.delta) mergeDelta(env.delta)
+    // maybeEmitIdleMarker). The delta was merged above, so do not merge it
+    // again here: the five-minute heartbeat must not trigger a second lane
+    // array replacement and unnecessary repaint.
     return
   }
   if (env.type === 'health_update') {

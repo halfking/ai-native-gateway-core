@@ -128,6 +128,10 @@ type ProcessedRequest struct {
 	Success     bool
 	ErrorKind   string
 
+	// Protocol-specific extensions (added for V2 compatibility)
+	ProviderExtensions map[string]interface{} // Preserves vendor-specific fields
+	MultimodalTypes    []string                // Types present: ["image", "audio", "video", "document"]
+
 	// Processing stages
 	ProcessingStages []v2.ProcessingStage
 }
@@ -259,6 +263,8 @@ func convertToV2Request(req *ProcessedRequest) *v2.ProcessedRequest {
 		StatusCode:          req.StatusCode,
 		Success:             req.Success,
 		ErrorKind:           req.ErrorKind,
+		ProviderExtensions:  req.ProviderExtensions,
+		MultimodalTypes:     req.MultimodalTypes,
 		ProcessingStages:    req.ProcessingStages,
 	}
 }

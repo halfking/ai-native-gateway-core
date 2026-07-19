@@ -151,31 +151,88 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 
 	// 5. Goal mode hook: drives activation, completion detection, and the
 	//    "please continue" auto-follow-up, including model switching on loops.
+	//
+	//    Cost Mode Integration (2026-07-19, Phase 0):
+	//    The config below is seeded from environment variables BUT can be
+	//    overridden by cost_mode presets at runtime (per-tenant). The preset
+	//    system (docs/会话优化v2/18-Goal模式成本控制与分级方案.md) lets
+	//    users select "minimal", "balanced", or "aggressive" instead of tuning
+	//    dozens of individual knobs.
+	//
+	//    At boot, we infer the cost mode from env vars for backward compat
+	//    (if LLM_GATEWAY_GOAL_AUTO_FIX=true → aggressive, etc.). At runtime,
+	//    ModeHook.loadCostMode reads the tenant's goal.cost_mode setting and
+	//    applies the full preset.
+	//
+	//    Env var precedence (for explicit overrides by advanced users):
+	//      1. Explicit goal.cost_mode setting (tenant-scoped)
+	//      2. Inferred mode from legacy env vars (boot-time fallback)
+	//      3. Individual env var overrides (LLM_GATEWAY_GOAL_MAX_RETRY, etc.)
+	//
+	// Infer cost mode from env vars (backward compat).
+	inferredCostMode := goal.InferCostMode(
+		getEnv("LLM_GATEWAY_GOAL_COST_MODE", ""),
+		getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", false),
+		getEnvBool("LLM_GATEWAY_GOAL_AUTO_CONTINUE", false),
+		getEnvBool("LLM_GATEWAY_GOAL_RETRY_ON_ERROR", false),
+	)
+
+	// Load the preset as the baseline configuration.
+	preset := goal.GetPreset(inferredCostMode)
+
+	// Build config: preset defaults + env var overrides.
 	goalCfg := goal.ModeConfig{
 		Enabled:               getEnvBool("LLM_GATEWAY_GOAL_ENABLED", false),
-		DetectionMode:         goal.DetectionMode(getEnv("LLM_GATEWAY_GOAL_DETECTION_MODE", "hybrid")),
+		DetectionMode:         goal.DetectionMode(getEnv("LLM_GATEWAY_GOAL_DETECTION_MODE", preset.DetectionMode)),
 		AutoSelectRecommended: getEnvBool("LLM_GATEWAY_GOAL_AUTO_SELECT", true),
-		AutoContinueOnPause:   getEnvBool("LLM_GATEWAY_GOAL_AUTO_CONTINUE", true),
-		MaxRetryCount:         getEnvInt("LLM_GATEWAY_GOAL_MAX_RETRY", 3),
-		MaxAutoContinueCount:  getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", 3),
-		UseAutorouteForAudit:  getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", true),
-		UseAutorouteForIntent: getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_INTENT", true),
-		FallbackAuditModel:    getEnv("LLM_GATEWAY_GOAL_FALLBACK_AUDIT_MODEL", "auto"),
-		AutoFixEnabled:        getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", false),
-		SettingsGetter:        adapter,
 
-		// Loop-detection & model switching (all also overridable per-tenant
-		// via settings; these env defaults seed the boot-time config).
-		ModelSwitchOnLoop:      getEnvBool("LLM_GATEWAY_GOAL_MODEL_SWITCH_ON_LOOP", true),
-		MaxModelSwitchCount:    getEnvInt("LLM_GATEWAY_GOAL_MAX_MODEL_SWITCH", 3),
+		// Retry settings from preset (overridable by env)
+		RetryOnError:      getEnvBool("LLM_GATEWAY_GOAL_RETRY_ON_ERROR", preset.RetryEnabled),
+		MaxRetryCount:     getEnvInt("LLM_GATEWAY_GOAL_MAX_RETRY", preset.MaxRetryCount),
+		RetryDelaySeconds: getEnvInt("LLM_GATEWAY_GOAL_RETRY_DELAY_SECONDS", preset.RetryDelaySeconds),
+		RetryTotalTimeout: getEnvInt("LLM_GATEWAY_GOAL_RETRY_TOTAL_TIMEOUT", preset.RetryTotalTimeout),
+
+		// Auto-continue settings from preset
+		AutoContinueOnPause:  getEnvBool("LLM_GATEWAY_GOAL_AUTO_CONTINUE", preset.AutoContinue),
+		MaxAutoContinueCount: getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", preset.MaxContinueCount),
+		CompletionConfidence: getEnvFloat("LLM_GATEWAY_GOAL_COMPLETION_CONFIDENCE", preset.CompletionConfidence),
+
+		// Audit/Fix settings from preset
+		UseAutorouteForAudit: getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", preset.UseAutorouteAudit),
+		AutoFixEnabled:       getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", preset.AutoFixEnabled),
+
+		// Loop detection from preset
+		ModelSwitchOnLoop:      getEnvBool("LLM_GATEWAY_GOAL_MODEL_SWITCH_ON_LOOP", preset.LoopDetectionEnabled),
+		MaxModelSwitchCount:    getEnvInt("LLM_GATEWAY_GOAL_MAX_MODEL_SWITCH", preset.MaxModelSwitch),
+		RepeatDetectionEnabled: getEnvBool("LLM_GATEWAY_GOAL_REPEAT_DETECTION", preset.LoopDetectionEnabled),
+		RepeatThreshold:        getEnvInt("LLM_GATEWAY_GOAL_REPEAT_THRESHOLD", preset.LoopThreshold),
+
+		// Budget limits from preset
+		MonthlyTokenLimit:  getEnvInt("LLM_GATEWAY_GOAL_MONTHLY_TOKEN_LIMIT", preset.MonthlyTokenLimit),
+		SessionTokenBudget: getEnvInt("LLM_GATEWAY_GOAL_SESSION_TOKEN_BUDGET", preset.SessionTokenBudget),
+		CostAlertThreshold: getEnvFloat("LLM_GATEWAY_GOAL_COST_ALERT_THRESHOLD", preset.CostAlertThreshold),
+		DowngradeOnBudget:  getEnvBool("LLM_GATEWAY_GOAL_DOWNGRADE_ON_BUDGET", preset.DowngradeOnBudget),
+
+		// Legacy settings (not in preset)
+		UseAutorouteForIntent:  getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_INTENT", true),
+		FallbackAuditModel:     getEnv("LLM_GATEWAY_GOAL_FALLBACK_AUDIT_MODEL", "auto"),
 		FallbackModels:         parseModelList(getEnv("LLM_GATEWAY_GOAL_FALLBACK_MODELS", "")),
-		RepeatDetectionEnabled: getEnvBool("LLM_GATEWAY_GOAL_REPEAT_DETECTION", true),
-		RepeatThreshold:        getEnvInt("LLM_GATEWAY_GOAL_REPEAT_THRESHOLD", 3),
 		RepeatResetOnProgress:  true,
-		CompletionConfidence:   getEnvFloat("LLM_GATEWAY_GOAL_COMPLETION_CONFIDENCE", goal.DefaultCompletionConfidence),
 		MaxFollowUpDepth:       getEnvInt("LLM_GATEWAY_GOAL_MAX_FOLLOW_UP_DEPTH", 15),
 		MaxFollowUpsPerSession: getEnvInt("LLM_GATEWAY_GOAL_MAX_FOLLOW_UPS_PER_SESSION", 50),
+
+		SettingsGetter: adapter,
 	}
+
+	slog.Info("goal_control: cost_mode configured",
+		"inferred_mode", inferredCostMode,
+		"retry_enabled", goalCfg.RetryOnError,
+		"max_retry", goalCfg.MaxRetryCount,
+		"auto_continue", goalCfg.AutoContinueOnPause,
+		"max_continue", goalCfg.MaxAutoContinueCount,
+		"auto_fix", goalCfg.AutoFixEnabled,
+		"monthly_limit", goalCfg.MonthlyTokenLimit,
+	)
 
 	// Apply the follow-up engine limits so the loop guardrails honour the
 	// goal config from boot. Per-tenant runtime overrides still apply inside

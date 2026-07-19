@@ -143,9 +143,17 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 		return nil, fmt.Errorf("empty line")
 	}
 
-	// Extract "data: " prefix
+	// Extract "data: " prefix (with lenient parsing for malformed SSE)
 	if !strings.HasPrefix(line, "data: ") {
-		return nil, fmt.Errorf("not a data line: %s", line)
+		// Lenient mode: if line looks like JSON, auto-prefix it
+		if strings.HasPrefix(line, "{") && strings.Contains(line, "\"id\"") {
+			line = "data: " + line
+		} else if strings.HasPrefix(line, "event:") || strings.HasPrefix(line, ":") {
+			// SSE comment or event line without data - skip silently
+			return nil, nil
+		} else {
+			return nil, fmt.Errorf("not a data line: %s", line)
+		}
 	}
 	payload := strings.TrimPrefix(line, "data: ")
 	payload = strings.TrimSpace(payload)
@@ -1034,6 +1042,7 @@ func mapOpenAIFinishReasonToAnthropic(reason string) string {
 		return "end_turn"
 	}
 }
+
 // ─── Gemini Stream Serializer (audit-gemini-stream, 2026-07-13) ─────────────
 
 // SerializeGemini serializes a StreamChunk IR to the Gemini

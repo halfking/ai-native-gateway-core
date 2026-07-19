@@ -551,6 +551,9 @@ func liveStreamRequestDetailKey(tenantID, requestID string) string {
 	return tenantLiveStreamKey(tenantID, "req:"+requestID)
 }
 
+// Snapshot builds a snapshot from the main queue (legacy method).
+// DEPRECATED: Use SnapshotFromDimensionQueues for stable per-lane tile counts.
+// This method is kept for backward compatibility and fallback scenarios.
 func (s *LiveStreamRedisStore) Snapshot(ctx context.Context, tenantID string, isSuper bool, limit int) (*LiveStreamSnapshot, error) {
 	items, err := s.Replay(ctx, tenantID, isSuper, limit)
 	if err != nil {

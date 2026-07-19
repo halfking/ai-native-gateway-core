@@ -56,6 +56,9 @@ type ProcessedRequest struct {
 	CompressionMeta     map[string]interface{}
 	TokensSaved         int
 
+	// Submit mode detection
+	SubmitModeHeader string // X-Gw-Submit-Mode header value from client
+
 	// Governance verdicts
 	InjectionVerdict string
 	OutputVerdict    string
@@ -99,19 +102,37 @@ type ProcessingStage struct {
 	ErrorMsg   string
 }
 
-// Write writes a processed request to all V2 tables
-//
-// This is a coordinated write that ensures consistency across:
-//   1. session_turns (metadata)
-//   2. session_bodies (incremental deltas)
-//   3. session_turn_logs (processing stages)
-//   4. sessions (snapshot, async)
-//
-// Error handling: If turn or bodies write fails, we return error.
-// Session aggregation is async, so its failures are logged but don't fail the write.
-func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) error {
-	// 1. Detect submit mode
-	submitMode := detectSubmitMode(req)
+	// Write writes a processed request to all V2 tables
+	//
+	// This is a coordinated write that ensures consistency across:
+	//   1. session_turns (metadata)
+	//   2. session_bodies (incremental deltas)
+	//   3. session_turn_logs (processing stages)
+	//   4. sessions (snapshot, async)
+	//
+	// Error handling: If turn or bodies write fails, we return error.
+	// Session aggregation is async, so its failures are logged but don't fail the write.
+	func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) error {
+		// 1. Detect submit mode using the full detector
+		detector := NewSubmitModeDetector()
+		
+		// Get previous turn's attachments for attachment-only detection
+		previousAttachments, err := w.getPreviousAttachments(ctx, req.SessionID, req.TenantID)
+		if err != nil {
+			// Log but don't fail - we can still detect other submit modes
+			slog.WarnContext(ctx, "failed to get previous attachments for submit mode detection",
+				"session_id", req.SessionID,
+				"error", err)
+		}
+		
+		submitMode := string(detector.Detect(DetectionContext{
+			SubmitModeHeader:    req.SubmitModeHeader,
+			ClientMessages:      req.RequestBody,
+			LastOutboundBody:    req.LastOutboundBody,
+			CompressionApplied:  req.CompressionApplied,
+			CurrentAttachments:  req.Attachments,
+			PreviousAttachments: previousAttachments,
+		}))
 
 	// 2. Extract request delta (incremental messages)
 	requestDelta := extractRequestDelta(req, submitMode)
@@ -247,27 +268,25 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	return nil
 }
 
-// detectSubmitMode detects how the client submitted the request
+// getPreviousAttachments retrieves attachments from the most recent turn
 //
-// Priority order (high to low):
-//   P0: X-Gw-Submit-Mode header
-//   P1: Message count regression
-//   P2: Summary marker detection
-//   P3: Orphaned tool_result
-//   P4: Normal full submission
-func detectSubmitMode(req *ProcessedRequest) string {
-	// For now, default to "full" mode
-	// Full detection logic will be implemented in submit_mode_detector.go
-	
-	// Quick heuristic: if compression was applied and client sent fewer messages
-	// than last outbound, likely client-side compression
-	if req.CompressionApplied && len(req.LastOutboundBody) > 0 {
-		if len(req.RequestBody) < len(req.LastOutboundBody) {
-			return "inferred_compressed"
-		}
+// This is used for attachment-only change detection. If we can't retrieve
+// the previous attachments, we return empty slice (detection will still work
+// for other submit modes).
+func (w *SessionWriterV2) getPreviousAttachments(ctx context.Context, sessionID, tenantID string) ([]AttachmentRef, error) {
+	// Query the most recent turn's bodies
+	bodies, err := w.bodiesWriter.ListAllBodies(ctx, tenantID, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list bodies: %w", err)
 	}
-
-	return "full"
+	
+	if len(bodies) == 0 {
+		return []AttachmentRef{}, nil // First turn, no previous attachments
+	}
+	
+	// Get the last turn's attachments
+	lastBody := bodies[len(bodies)-1]
+	return lastBody.RequestAttachments, nil
 }
 
 // extractRequestDelta extracts incremental messages that are new in this turn

@@ -180,8 +180,8 @@ SELECT
     unavailable_reason
 FROM v_routable_credential_models
 WHERE provider_code IN ('volcano', 'volc', 'volcengine', 'bytedance')
-  AND raw_model_name = 'glm-5.2'
-ORDER BY credential_id;
+  AND (raw_model_name = 'glm-5.2' OR raw_model_name = 'GLM-5.2')  -- 查询两个版本
+ORDER BY credential_id, raw_model_name;
 
 \echo ''
 \echo '=== 完成 ==='

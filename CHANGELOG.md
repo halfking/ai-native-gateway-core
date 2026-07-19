@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-18
 
+### Fixed
+
+- **System health worker NULL scan fix** (2026-07-19): `system_health_status(30)` returns NULL for `success_rate` when no requests exist (status='suspect'), but pgx cannot scan NULL into `float64`. Changed scan type to `*float64` with nil → 0.0 fallback. Also fixed `isRetriableError` in handler.go to use existing `errorsx` constants (`KindUpstreamDown`, `KindTransient`, `KindModelNotFound`).
+
+### Fixed
+
+- **Migration SSOT consolidation** (2026-07-19): moved the remaining hot-fix migrations into `sql/migrations/startup/441-447`, added retry-safe guards and rollback scripts, and removed duplicate entries from `deploy/sql/migrations/`.
+- **Quality API route regression coverage** (2026-07-19): added boundary tests for provider ID parsing, method guards, and the dedicated `/api/quality/` route prefix.
+
+### Fixed
+
+- **Live Stream Queue Stabilization** (`fdd38a305`, 2026-07-19): Eliminated periodic flicker and queue length drift in dashboard swim lanes. Fixed three root causes: cross-scope snapshot delivery, frontend queue clearing on refresh, and request update triggering re-insert animation. See [docs/changelogs/2026-07-19-live-stream-queue-stabilization.md](docs/changelogs/2026-07-19-live-stream-queue-stabilization.md) for details.
+
 ### Added
 
 - **Offline local gateway packaging**: Local arm64 gateway packaging now uses

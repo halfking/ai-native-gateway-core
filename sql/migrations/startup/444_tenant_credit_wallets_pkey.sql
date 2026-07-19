@@ -26,9 +26,13 @@
 
 BEGIN;
 
+-- The source table may already be repaired on a partially migrated target.
+-- Keep the data rewrite and constraint creation safe to retry as one unit.
+
 -- Step 1: dedupe by tenant_id
 -- 1a. Create a dedup'd mirror table with merged balances.
-CREATE TABLE tenant_credit_wallets_dedup AS
+DROP TABLE IF EXISTS tenant_credit_wallets_dedup;
+CREATE TABLE IF NOT EXISTS tenant_credit_wallets_dedup AS
 SELECT
     tenant_id,
     -- Take the LATEST balance_credits (per updated_at, then ctid as tie-breaker)
@@ -67,13 +71,27 @@ FROM tenant_credit_wallets_dedup;
 DROP TABLE tenant_credit_wallets_dedup;
 
 -- Step 2: add PRIMARY KEY
-ALTER TABLE tenant_credit_wallets
-    ADD CONSTRAINT tenant_credit_wallets_pkey PRIMARY KEY (tenant_id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'tenant_credit_wallets'::regclass
+          AND contype = 'p'
+    ) THEN
+        ALTER TABLE tenant_credit_wallets
+            ADD CONSTRAINT tenant_credit_wallets_pkey PRIMARY KEY (tenant_id);
+    END IF;
+END $$;
 
 COMMIT;
 
--- Step 3: verify
+-- Step 3: verify (PG17-safe: relhaspkey was removed from pg_class)
 SELECT
     (SELECT COUNT(*) FROM tenant_credit_wallets)             AS total_rows,
     (SELECT COUNT(DISTINCT tenant_id) FROM tenant_credit_wallets) AS distinct_tenants,
-    (SELECT relhaspkey FROM pg_class WHERE relname='tenant_credit_wallets') AS has_pkey;
+    (SELECT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.tenant_credit_wallets'::regclass
+          AND contype = 'p'
+    )) AS has_pkey;
