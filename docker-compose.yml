@@ -1,26 +1,30 @@
-version: '3.8'
-
 services:
   llm-gateway:
     build: .
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8781:8781"
     environment:
-      - ENVIRONMENT=production
+      - LLM_GATEWAY_ENV=production
+      - LLM_GATEWAY_LISTEN=:8781
+      - LLM_GATEWAY_DATABASE_URL=${LLM_GATEWAY_DATABASE_URL:?LLM_GATEWAY_DATABASE_URL is required}
+      - LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:?LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY is required}
+      - LLM_GATEWAY_API_KEY=${LLM_GATEWAY_API_KEY:?LLM_GATEWAY_API_KEY is required}
+      - LLM_GATEWAY_ADMIN_API_KEY=${LLM_GATEWAY_ADMIN_API_KEY:?LLM_GATEWAY_ADMIN_API_KEY is required}
+      - LLM_GATEWAY_SECRET_KEY=${LLM_GATEWAY_SECRET_KEY:?LLM_GATEWAY_SECRET_KEY is required}
     volumes:
       - ./logs:/app/logs
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8781/healthz"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 5s
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.47.0
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
     command:
@@ -28,11 +32,11 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.1.5
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
     volumes:
       - grafana-data:/var/lib/grafana
     restart: unless-stopped
