@@ -604,7 +604,7 @@ func (h *RequestTraceHandler) buildProbeTrace(ctx context.Context, requestID str
 				SELECT task_type_chosen, ts FROM request_logs WHERE request_id = $1
 			) t
 		ORDER BY ts DESC NULLS LAST
-		LIMIT 1
+			LIMIT 1
 		`, requestID).Scan(&chosen)
 		if o := strings.TrimPrefix(chosen, "probe_"); o == "gateway" || o == "direct" {
 			origin = o
