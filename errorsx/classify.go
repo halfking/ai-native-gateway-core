@@ -159,6 +159,10 @@ var unsupportedFeatureRe = regexp.MustCompile(
 // the executor to retry and trigger false-positive credential degradation.
 // Direct API calls worked (different key with balance), but gateway kept
 // trying the exhausted credential.
+//
+// 2026-07-19 P0 fix: 智谱AI 429 with "您已达到每周/每月使用上限" (code: 1310)
+// was misclassified as KindRateLimit because Chinese quota messages weren't
+// matched. Extended regex to support Chinese patterns.
 var budgetExceededRe = regexp.MustCompile(
 	`(?i)(budget[_ -]?exceeded|` +
 		`balance[_ -]?insufficient|` +
@@ -166,7 +170,12 @@ var budgetExceededRe = regexp.MustCompile(
 		`credit[s]?[_ -]?(exhausted|depleted|insufficient)|` +
 		`account[_ -]?balance[_ -]?(low|insufficient|exhausted)|` +
 		`quota[_ -]?exceeded|` +
-		`usage[_ -]?limit[_ -]?exceeded)`,
+		`usage[_ -]?limit[_ -]?exceeded|` +
+		// Chinese quota exhaustion patterns (智谱AI, etc.)
+		`达到.{0,10}(每周|每月|每日|使用)?上限|` +
+		`(配额|额度|余额).{0,10}(用尽|耗尽|不足|超限)|` +
+		`(限额|使用量).{0,10}重置|` +
+		`"code"\s*:\s*"1310")`, // 智谱AI specific code
 )
 
 // concurrentOverloadRe matches upstream error bodies that signal

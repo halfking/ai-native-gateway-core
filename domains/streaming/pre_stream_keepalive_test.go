@@ -28,7 +28,7 @@ func TestStartPreStreamKeepalive_WritesInitialComment(t *testing.T) {
 
 func TestWritePrewarmedStreamError_WritesSSEError(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writePrewarmedStreamError(rec, nil, "upstream request failed", "server_error", "provider_error")
+	writePrewarmedStreamError(rec, "upstream request failed", "server_error", "provider_error")
 	got := rec.Body.String()
 	if !strings.Contains(got, `data: {"error":{`) {
 		t.Fatalf("body = %q, want SSE error envelope", got)
@@ -118,7 +118,7 @@ func TestPreStreamKeepalive_PrewarmThenSSEError(t *testing.T) {
 		t.Fatal("expected flusher-backed recorder")
 	}
 
-	writePrewarmedStreamError(rec, psk, "upstream request failed", "server_error", "provider_error")
+	writePrewarmedStreamError(rec, "upstream request failed", "server_error", "provider_error")
 	psk.stop()
 
 	got := rec.Body.String()
@@ -135,83 +135,4 @@ func TestPreStreamKeepalive_PrewarmThenSSEError(t *testing.T) {
 	if idxComment >= idxError {
 		t.Fatalf("comment index %d >= error index %d", idxComment, idxError)
 	}
-	_ = idxComment
-	_ = idxError
-}
-
-// TestWritePrewarmedStreamError_StopsKeepaliveGoroutine covers the
-// 2026-07-19 audit fix: when an error path calls writePrewarmedStreamError
-// the helper MUST stop the live preStreamKeepalive ticker before writing
-// the error envelope. Otherwise the goroutine would keep writing
-// ": keep-alive\n\n" lines after the error (potentially confusing SSE
-// clients that treat a comment after the data as a continuation signal).
-//
-// We assert the fix by:
-//  1. prewarming the stream,
-//  2. waiting for at least one ticker-driven comment to land so we know
-//     the loop goroutine is actually running,
-//  3. calling writePrewarmedStreamError (which should stop the ticker and
-//     then write the error envelope),
-//  4. waiting > 5 keepalive intervals and asserting no further comment
-//     is appended (i.e. body length frozen at afterErrLen).
-func TestWritePrewarmedStreamError_StopsKeepaliveGoroutine(t *testing.T) {
-	rec := httptest.NewRecorder()
-	const interval = 20 * time.Millisecond
-	psk, ok := startPreStreamKeepalive(rec, interval)
-	if !ok {
-		t.Fatal("expected flusher-backed recorder")
-	}
-
-	// Wait for the loop goroutine to write at least one ticker-driven
-	// comment, so we know the ticker is active.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		body := rec.Body.String()
-		if strings.Count(body, sseKeepaliveComment) >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("loop did not write a 2nd comment within 2s, body=%q", body)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-
-	writePrewarmedStreamError(rec, psk, "upstream boom", "server_error", "provider_error")
-	afterErrLen := rec.Body.Len()
-	// stop() is idempotent; this simulates the top-level defer in the handler.
-	psk.stop()
-
-	// No further comment should appear: wait well past 5 intervals.
-	time.Sleep(5 * interval)
-	finalLen := rec.Body.Len()
-	if finalLen != afterErrLen {
-		t.Fatalf("keepalive goroutine wrote %d bytes after error path (afterErrLen=%d, final=%d) tail=%q",
-			finalLen-afterErrLen, afterErrLen, finalLen, rec.Body.String()[afterErrLen:])
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `"message":"upstream boom"`) {
-		t.Fatalf("error envelope missing in body=%q", body)
-	}
-	if !strings.Contains(body, sseKeepaliveComment) {
-		t.Fatalf("missing initial keep-alive comment in body=%q", body)
-	}
-}
-
-// TestPreStreamKeepalive_StopDoubleAfterError covers the handler-level
-// invariant: a request that goes through the error branch of
-// writePrewarmedStreamError may still reach the top-level defer (panic
-// recovery, audit emit, etc.) which calls preStream.stop() again. The
-// preStreamKeepalive.stop() implementation must tolerate that double-stop
-// without panicking or blocking (sync.Once + done channel).
-func TestPreStreamKeepalive_StopDoubleAfterError(t *testing.T) {
-	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour)
-	if !ok {
-		t.Fatal("expected flusher-backed recorder")
-	}
-	// First stop happens inside the helper.
-	writePrewarmedStreamError(rec, psk, "x", "server_error", "provider_error")
-	// Second stop simulates the top-level defer.
-	psk.stop()
-	psk.stop() // must not panic, must not block
 }

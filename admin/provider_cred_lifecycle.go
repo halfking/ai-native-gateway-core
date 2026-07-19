@@ -144,6 +144,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 	var healthStatus, healthError string
 	var healthLatencyMs int
 	var modelsCount int
+	var routingModelsUpserted int
 	var sampleModels []string
 	var apiModelsErr *string
 	var effectiveSource string
@@ -186,6 +187,19 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 				healthError = fmt.Sprintf("used %s fallback (%d models)", source, len(models))
 			}
 			modelsStatus = 1
+			if probeModelsEligibleForRouting(source, models) {
+				upserted, failed := h.enrollCredentialModels(ctx, cred.id, models)
+				routingModelsUpserted = upserted
+				if upserted > 0 {
+					provider.InvalidateAllCandidateCache()
+				}
+				if failed > 0 {
+					slog.Warn("health check: some discovered models were not enrolled for routing",
+						"credential_id", cred.id,
+						"upserted", upserted,
+						"failed", failed)
+				}
+			}
 		}
 	}
 
@@ -214,6 +228,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 		"models_status":            modelsStatus,
 		"sample_models":            sampleModels,
 		"effective_source":         effectiveSource,
+		"routing_models_upserted":  routingModelsUpserted,
 		"discovery_strategy":       cred.discoveryStrategy,
 		"models_endpoint_template": cred.modelsEndpointTpl,
 	}, nil

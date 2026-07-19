@@ -404,6 +404,16 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 		return 0, 0, fmt.Errorf("vendor API failed; only manifest fallback available (%d models)", len(models))
 	}
 
+	upserted, failed = h.enrollCredentialModels(ctx, cred.id, models)
+	h.updateCredHealth(ctx, cred.id, "healthy", "")
+	return upserted, failed, nil
+}
+
+// enrollCredentialModels writes models discovered by any successful probe into
+// the same binding tables used by the routing resolver. Health checks can run
+// before the periodic discovery worker, so this keeps a newly verified
+// credential routable immediately.
+func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, models []string) (upserted, failed int) {
 	for _, m := range models {
 		stdName := modelname.StandardizeName(m)
 		if stdName != "" {
@@ -421,18 +431,21 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 				ON CONFLICT (canonical_name) DO UPDATE SET
 					family = CASE
 						WHEN models_canonical.family = 'unknown' THEN EXCLUDED.family
-						ELSE models_canonical.family
-					END
+				ELSE models_canonical.family
+				END
 			`, stdName, family)
 		}
-		if uErr := h.upsertModelForProvider(ctx, cred.id, m); uErr != nil {
+		if uErr := h.upsertModelForProvider(ctx, credentialID, m); uErr != nil {
 			failed++
 			continue
 		}
 		upserted++
 	}
-	h.updateCredHealth(ctx, cred.id, "healthy", "")
-	return upserted, failed, nil
+	return upserted, failed
+}
+
+func probeModelsEligibleForRouting(source string, models []string) bool {
+	return len(models) > 0 && source != "" && source != "none"
 }
 
 func modelsURLCandidatesForBase(baseURL string) []string {
@@ -727,9 +740,9 @@ func (h *Handler) upsertModelForProvider(ctx context.Context, credentialID int, 
 		ctx,
 		h.db,
 		credentialID,
-		rawName,             // provider-facing name, keep casing
-		canonicalRawName,    // client-facing lowercase key
-		standardizedName,    // standardized_name = lower(NormalizeRouteKey(raw))
+		rawName,          // provider-facing name, keep casing
+		canonicalRawName, // client-facing lowercase key
+		standardizedName, // standardized_name = lower(NormalizeRouteKey(raw))
 		nil,
 	)
 }
