@@ -113,7 +113,7 @@ func (a *SessionAggregator) GetSession(ctx context.Context, tenantID, sessionID 
 			COALESCE(client_type, ''),
 			COALESCE(topic, ''),
 			COALESCE(intent, ''),
-			primary_request_id,
+			COALESCE(primary_request_id, ''),
 			turn_logs_summary
 		FROM gateway.sessions
 		WHERE tenant_id = $1 AND session_id = $2
@@ -159,9 +159,9 @@ type SessionSnapshot struct {
 	ClosedAt  *time.Time
 	Status    string
 
-	TotalTurns    int
-	TotalTokens   int
-	TotalCostUSD  float64
+	TotalTurns   int
+	TotalTokens  int
+	TotalCostUSD float64
 
 	LastTurnNo          int
 	LastRequestSummary  string
@@ -196,10 +196,10 @@ func (a *SessionAggregator) SetSessionMetadata(ctx context.Context, tenantID, se
 	_, err := a.db.Exec(ctx, `
 		UPDATE gateway.sessions
 		SET 
-			task_type = COALESCE($3, task_type),
-			client_type = COALESCE($4, client_type),
-			topic = COALESCE($5, topic),
-			intent = COALESCE($6, intent)
+			task_type = COALESCE(NULLIF($3, ''), task_type),
+			client_type = COALESCE(NULLIF($4, ''), client_type),
+			topic = COALESCE(NULLIF($5, ''), topic),
+			intent = COALESCE(NULLIF($6, ''), intent)
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID, meta.TaskType, meta.ClientType, meta.Topic, meta.Intent)
 
