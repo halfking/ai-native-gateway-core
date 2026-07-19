@@ -144,16 +144,13 @@ export const DEFAULT_PROFILE_WEIGHTS: Record<string, ProfileWeights> = {
   cost_first:  { Price: 50, Speed: 10, Stability: 15, Match: 20, Pressure: 5,  ContextFit: 10 },
 }
 
-export const TASK_TYPES = [
-  { key: 'chat',          label: '通用对话',  icon: '💬' },
-  { key: 'reasoning',     label: '逻辑推理',  icon: '🧠' },
-  { key: 'code',          label: '代码生成',  icon: '💻' },
-  { key: 'agent',         label: 'Agent',    icon: '🤖' },
-  { key: 'creative',      label: '创意写作',  icon: '✍️' },
-  { key: 'long_context',  label: '长文档',    icon: '📚' },
-  { key: 'vision',        label: '图像理解',  icon: '👁️' },
-  { key: 'function_call', label: '函数调用',  icon: '🔧' },
-]
+// 2026-07-20: TASK_TYPES removed. L1 task types are now DB-driven via
+// /api/admin/work-types/l1-task-types (see api-work-types.ts:listL1TaskTypes
+// and composables/useL1TaskTypes.ts). Frontend consumers should use
+// useL1TaskTypes() composable. The hardcoded canonical 8 lives in
+// api-work-types.ts:L1_TASK_TYPES (frontend seed) and
+// admin/work_types.go:canonicalL1TaskTypes (backend authoritative) —
+// keep them in sync.
 
 export const TASK_TAGS: Record<string, string[]> = {
   reasoning:     ['reasoning', 'math', 'logic'],
