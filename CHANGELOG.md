@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-18
 
+### Fixed
+
+- **Live Stream Queue Stabilization** (`fdd38a305`, 2026-07-19): Eliminated periodic flicker and queue length drift in dashboard swim lanes. Fixed three root causes: cross-scope snapshot delivery, frontend queue clearing on refresh, and request update triggering re-insert animation. See [docs/changelogs/2026-07-19-live-stream-queue-stabilization.md](docs/changelogs/2026-07-19-live-stream-queue-stabilization.md) for details.
+
 ### Added
 
 - **Offline local gateway packaging**: Local arm64 gateway packaging now uses
