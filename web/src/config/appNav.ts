@@ -56,7 +56,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/routing-v2/credentials', label: '凭据监控', labelKey: 'nav.item.credentialMonitor', icon: '' },
       { path: '/probe-health', label: '探测健康度', labelKey: 'nav.item.probeHealth', icon: '', super: true, hideForTenant: true },
       { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '', super: true, hideForTenant: true },
-      { path: '/provider-quality', label: '供应商质量画像', labelKey: 'nav.item.providerQuality', icon: '', super: true, hideForTenant: true },
+      // 2026-07-20: temporarily hide standalone quality page — fields merged into /providers + detail Quality tab.
+      // { path: '/provider-quality', label: '供应商质量画像', labelKey: 'nav.item.providerQuality', icon: '', super: true, hideForTenant: true },
       { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '', platformOps: true, hideForTenant: true },
       { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '', super: true, hideForTenant: true },

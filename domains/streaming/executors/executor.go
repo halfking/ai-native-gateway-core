@@ -857,6 +857,45 @@ func (e *Executor) emitTraceExec(ctx context.Context, requestID string, ev gwtra
 
 func (e *Executor) stripVendorFields(body []byte, catalogCode string) []byte {
 	code := strings.ToLower(strings.TrimSpace(catalogCode))
+
+	// 2026-07-20: When catalog_code is empty (third-party providers),
+	// auto-detect vendor fields in the response body to prevent downstream
+	// parsing errors. This fixes 5xx errors for gpt-5.2/gpt-5.6-luna/Minimax-m3
+	// from providers without catalog_code.
+	if code == "" && len(body) > 0 {
+		// Auto-detect minimax fields (nvext, base_resp, etc.)
+		if bytes.Contains(body, []byte(`"nvext"`)) ||
+			bytes.Contains(body, []byte(`"base_resp"`)) ||
+			bytes.Contains(body, []byte(`"input_sensitive"`)) {
+			if e.StripMinimaxFields != nil {
+				return e.StripMinimaxFields(body)
+			}
+		}
+		// Auto-detect zhipu fields (zhipu_request_id, web_search_results, etc.)
+		if bytes.Contains(body, []byte(`"zhipu_request_id"`)) ||
+			bytes.Contains(body, []byte(`"web_search_results"`)) {
+			if e.StripZhipuFields != nil {
+				return e.StripZhipuFields(body)
+			}
+		}
+		// Auto-detect deepseek fields (deepseek_request_id, model_type, etc.)
+		if bytes.Contains(body, []byte(`"deepseek_request_id"`)) ||
+			bytes.Contains(body, []byte(`"cache_hit_tokens"`)) {
+			if e.StripDeepSeekFields != nil {
+				return e.StripDeepSeekFields(body)
+			}
+		}
+		// Auto-detect doubao fields (doubao_request_id, seeddance_request_id, etc.)
+		if bytes.Contains(body, []byte(`"doubao_request_id"`)) ||
+			bytes.Contains(body, []byte(`"seeddance_request_id"`)) {
+			if e.StripDoubaoFields != nil {
+				return e.StripDoubaoFields(body)
+			}
+		}
+		return body
+	}
+
+	// Explicit catalog_code routing
 	switch code {
 	case "minimax":
 		if e.StripMinimaxFields != nil {

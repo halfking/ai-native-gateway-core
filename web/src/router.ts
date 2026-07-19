@@ -205,7 +205,7 @@ export const router = createRouter({
     { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuper: true } },
     { path: '/routing/defaults',  component: () => import('./views/RoutingDefaultsView.vue'), meta: { requiresSuper: true } },
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuper: true } },
-    { path: '/provider-quality',  component: ProviderQualityView, meta: { requiresSuper: true } },
+    { path: '/provider-quality',  redirect: '/providers' },
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/session-compare',    component: SessionCompareView },
     { path: '/sessions',           component: SessionListView },
