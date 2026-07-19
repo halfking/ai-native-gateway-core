@@ -34,6 +34,10 @@ import (
 // WorkTypeHandlers serves admin CRUD for work_type_config.
 type WorkTypeHandlers struct {
 	db *pgxpool.Pool
+	// l1CountsFetch is the DB-query function used by listL1TaskTypes. When nil
+	// (the default), the handler queries h.db directly. Tests inject a stub
+	// to exercise the merge/sort logic without spinning up a real DB pool.
+	l1CountsFetch func(ctx context.Context) (map[string]int, error)
 }
 
 // NewWorkTypeHandlers constructs the handler set.
@@ -159,10 +163,20 @@ func (h *WorkTypeHandlers) listL1TaskTypes(w http.ResponseWriter, r *http.Reques
 	defer cancel()
 
 	// Counts from DB (best-effort; fall back to canonical-only on error)
-	dbCounts := map[string]int{}
+	dbCounts, _ := h.fetchL1Counts(ctx)
+	items := mergeL1TaskTypes(dbCounts)
+	writeJSONOk(w, map[string]interface{}{"items": items})
+}
+
+// fetchL1Counts returns a map of l1_task_type → number of work_type_config
+// rows using it. Errors are returned to the caller, which falls back to
+// canonical-only. Split out so tests can stub the DB.
+func (h *WorkTypeHandlers) fetchL1Counts(ctx context.Context) (map[string]int, error) {
+	if h.l1CountsFetch != nil {
+		return h.l1CountsFetch(ctx)
+	}
 	if h.db == nil {
-		writeJSONOk(w, map[string]interface{}{"items": canonicalL1TaskTypes})
-		return
+		return nil, nil
 	}
 	rows, err := h.db.Query(ctx, `
 		SELECT l1_task_type, COUNT(*)::int
@@ -170,18 +184,29 @@ func (h *WorkTypeHandlers) listL1TaskTypes(w http.ResponseWriter, r *http.Reques
 		WHERE l1_task_type IS NOT NULL AND l1_task_type <> ''
 		GROUP BY l1_task_type
 	`)
-	if err == nil {
-		for rows.Next() {
-			var k string
-			var c int
-			if err := rows.Scan(&k, &c); err == nil {
-				dbCounts[k] = c
-			}
-		}
-		rows.Close()
+	if err != nil {
+		return nil, err
 	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var k string
+		var c int
+		if err := rows.Scan(&k, &c); err == nil {
+			out[k] = c
+		}
+	}
+	return out, nil
+}
 
-	// Start with canonical 8, overlay DB counts.
+// mergeL1TaskTypes returns canonical 8 with DB counts overlaid, plus any
+// operator-added L1 keys discovered in DB (appended in sorted order with
+// default label/icon). Pure function — testable without a DB.
+//
+// Defensive: filters out empty-string keys from dbCounts. The SQL
+// already enforces `l1_task_type <> ''` but this is a safety net for any
+// future caller that constructs the map in-process.
+func mergeL1TaskTypes(dbCounts map[string]int) []L1TaskTypeMeta {
 	merged := make([]L1TaskTypeMeta, 0, len(canonicalL1TaskTypes)+len(dbCounts))
 	seen := map[string]bool{}
 	for _, c := range canonicalL1TaskTypes {
@@ -193,29 +218,23 @@ func (h *WorkTypeHandlers) listL1TaskTypes(w http.ResponseWriter, r *http.Reques
 		})
 		seen[c.Key] = true
 	}
-	// Add any extra L1 keys discovered in DB (operator-added categories
-	// that aren't in the canonical list).
 	extraKeys := make([]string, 0, len(dbCounts))
 	for k := range dbCounts {
-		if !seen[k] {
-			extraKeys = append(extraKeys, k)
+		if k == "" || seen[k] {
+			continue
 		}
+		extraKeys = append(extraKeys, k)
 	}
 	sort.Strings(extraKeys)
 	for _, k := range extraKeys {
-		c := dbCounts[k]
-		if seen[k] {
-			continue
-		}
 		merged = append(merged, L1TaskTypeMeta{
 			Key:   k,
 			Label: k, // unknown category — fall back to key as label
 			Icon:  "◆",
-			Count: c,
+			Count: dbCounts[k],
 		})
 	}
-
-	writeJSONOk(w, map[string]interface{}{"items": merged})
+	return merged
 }
 
 func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
