@@ -33,6 +33,8 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 	g.POST("/instances/:id/command", a.IssueCommand)
 	g.GET("/instances/:id/heartbeats", a.GetHeartbeats)
 	g.GET("/instances/:id/status", a.GetStatus)
+	g.GET("/instances/:id/runtime-metrics", a.GetRuntimeMetrics)
+	g.GET("/instances/:id/runtime-alerts", a.GetRuntimeAlerts)
 	g.GET("/commands/:id", a.GetCommand)
 	g.GET("/commands/:id/status", a.GetCommandStatus)
 	g.GET("/dashboard/stats", a.GetDashboardStats)
@@ -144,6 +146,55 @@ func (a *AdminAPI) GetStatus(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, status)
+}
+
+// GetRuntimeMetrics returns recent runtime_metrics samples for one instance.
+func (a *AdminAPI) GetRuntimeMetrics(c echo.Context) error {
+	instanceID := c.Param("id")
+	pgxStore, ok := a.store.(*PgxStore)
+	if !ok {
+		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "runtime metrics unavailable"})
+	}
+
+	since := time.Now().Add(-24 * time.Hour)
+	if sinceStr := c.QueryParam("since"); sinceStr != "" {
+		if t, err := time.Parse(time.RFC3339, sinceStr); err == nil {
+			since = t
+		}
+	}
+	limit := 120
+	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
+
+	items, err := pgxStore.ListRuntimeMetricsForInstance(c.Request().Context(), instanceID, since, limit)
+	if err != nil {
+		slog.Error("list runtime metrics failed", "error", err, "instance_id", instanceID)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "list runtime metrics failed"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"items": items,
+		"total": len(items),
+	})
+}
+
+// GetRuntimeAlerts returns open/recent runtime alerts for one instance.
+func (a *AdminAPI) GetRuntimeAlerts(c echo.Context) error {
+	instanceID := c.Param("id")
+	pgxStore, ok := a.store.(*PgxStore)
+	if !ok {
+		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "runtime alerts unavailable"})
+	}
+	limit := 20
+	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
+
+	items, err := pgxStore.ListRuntimeAlertsForInstance(c.Request().Context(), instanceID, limit)
+	if err != nil {
+		slog.Error("list runtime alerts failed", "error", err, "instance_id", instanceID)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "list runtime alerts failed"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"items": items,
+		"total": len(items),
+	})
 }
 
 // GetCommand 获取命令详情

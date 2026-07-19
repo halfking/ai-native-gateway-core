@@ -33,6 +33,12 @@ export default {
     freeChipNo: 'لا يشمل المجاني',
     freeBadgeTooltipYes: 'هذا المزود لديه نماذج مجانية (billing_mode=free)',
     freeBadgeTooltipNo: 'هذا المزود ليس لديه نماذج مجانية',
+    sortLabel: 'ترتيب',
+    sortDefault: 'افتراضي',
+    sortUsage: 'طلبات 24س',
+    sortQuality: 'الجودة',
+    sortAvailability: 'التوفر',
+    sortPerformance: 'الأداء',
   },
   list: {
     table: {
@@ -45,6 +51,10 @@ export default {
       availableModels: 'النماذج المتاحة',
       freeModels: 'النماذج المجانية',
       errorRate24h: 'معدل الخطأ 24 ساعة',
+      usage24h: 'استخدام 24س',
+      qualityScore: 'الجودة',
+      availabilityScore: 'التوفر',
+      performanceScore: 'الأداء',
       health: 'صحة النظام',
       status: 'الحالة',
     },

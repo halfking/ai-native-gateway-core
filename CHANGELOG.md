@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **request-logs 详情 query failed / 500** (2026-07-20): VIEW `request_logs_with_current_month` 未暴露 `routing_attempts`/`routing_summary`（migration 448 重建）。见 [docs/changelogs/2026-07-20-request-logs-routing-attempts-view.md](docs/changelogs/2026-07-20-request-logs-routing-attempts-view.md)。
+
+### Fixed
+
 - **System health worker NULL scan fix** (2026-07-19): `system_health_status(30)` returns NULL for `success_rate` when no requests exist (status='suspect'), but pgx cannot scan NULL into `float64`. Changed scan type to `*float64` with nil → 0.0 fallback. Also fixed `isRetriableError` in handler.go to use existing `errorsx` constants (`KindUpstreamDown`, `KindTransient`, `KindModelNotFound`).
 
 ### Fixed

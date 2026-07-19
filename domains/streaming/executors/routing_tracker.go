@@ -3,22 +3,23 @@ package executors
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 )
 
 // RoutingAttempt 记录单次 upstream 尝试的详情
 type RoutingAttempt struct {
-	Seq           int    `json:"seq"`
-	ProviderID    int64  `json:"provider_id"`
-	ProviderName  string `json:"provider_name,omitempty"`
-	CredentialID  int64  `json:"credential_id"`
-	RawModel      string `json:"raw_model"`
-	UpstreamURL   string `json:"upstream_url"`
-	Result        string `json:"result"` // success/canceled/timeout/model_not_found/rate_limit/error
-	LatencyMs     int64  `json:"latency_ms"`
-	HTTPStatus    int    `json:"http_status,omitempty"`
-	ErrorMessage  string `json:"error_message,omitempty"`
+	Seq          int    `json:"seq"`
+	ProviderID   int64  `json:"provider_id"`
+	ProviderName string `json:"provider_name,omitempty"`
+	CredentialID int64  `json:"credential_id"`
+	RawModel     string `json:"raw_model"`
+	UpstreamURL  string `json:"upstream_url"`
+	Result       string `json:"result"` // success/canceled/timeout/model_not_found/rate_limit/error
+	LatencyMs    int64  `json:"latency_ms"`
+	HTTPStatus   int    `json:"http_status,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 // RoutingAttemptsTracker 累积所有路由尝试，线程安全
@@ -41,7 +42,7 @@ func (t *RoutingAttemptsTracker) Add(attempt RoutingAttempt) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	
+
 	attempt.Seq = len(t.attempts) + 1
 	t.attempts = append(t.attempts, attempt)
 }
@@ -62,19 +63,19 @@ func (t *RoutingAttemptsTracker) ToJSONBytes() ([]byte, error) {
 	if t == nil {
 		return nil, nil
 	}
-	
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	
+
 	// 优化：单次成功不记录
 	if len(t.attempts) == 1 && t.attempts[0].Result == "success" {
 		return nil, nil
 	}
-	
+
 	if len(t.attempts) == 0 {
 		return nil, nil
 	}
-	
+
 	data := map[string]interface{}{
 		"attempts": t.attempts,
 	}
@@ -96,19 +97,19 @@ func (t *RoutingAttemptsTracker) Summary() string {
 	if t == nil {
 		return ""
 	}
-	
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	
+
 	if len(t.attempts) == 0 {
 		return ""
 	}
-	
+
 	// 优化：单次成功不生成摘要
 	if len(t.attempts) == 1 && t.attempts[0].Result == "success" {
 		return ""
 	}
-	
+
 	parts := make([]string, len(t.attempts))
 	for i, a := range t.attempts {
 		latency := formatLatency(a.LatencyMs)
@@ -116,12 +117,12 @@ func (t *RoutingAttemptsTracker) Summary() string {
 		if a.ProviderName != "" {
 			providerDesc = a.ProviderName
 		}
-		
+
 		resultText := translateResult(a.Result)
-		parts[i] = fmt.Sprintf("候选%d: %s(%d) %s %s", 
+		parts[i] = fmt.Sprintf("候选%d: %s(%d) %s %s",
 			a.Seq, providerDesc, a.ProviderID, resultText, latency)
 	}
-	
+
 	return strings.Join(parts, " → ")
 }
 
@@ -160,9 +161,24 @@ func ClassifyResult(err error, statusCode int) string {
 	if err == nil {
 		return "success"
 	}
-	
-	errMsg := err.Error()
-	
+
+	// 2026-07-20 fix: Guard against nil pointer when upstream.Error is nil but error interface is not.
+	// This happens when uErr (*upstream.Error) is nil but gets passed as error interface.
+	// Calling .Error() on nil pointer causes panic in routing_tracker.go:164.
+	errMsg := ""
+	if err != nil {
+		// Safely get error message, handling nil pointer case
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Warn("ClassifyResult: recovered from panic in err.Error()",
+					"panic", r,
+					"statusCode", statusCode)
+				errMsg = "<error.Error() panicked>"
+			}
+		}()
+		errMsg = err.Error()
+	}
+
 	// 按优先级判断
 	if strings.Contains(errMsg, "context canceled") || strings.Contains(errMsg, "canceled") {
 		return "canceled"
@@ -170,7 +186,7 @@ func ClassifyResult(err error, statusCode int) string {
 	if strings.Contains(errMsg, "timeout") || strings.Contains(errMsg, "deadline exceeded") {
 		return "timeout"
 	}
-	
+
 	// 根据 HTTP 状态码判断
 	switch statusCode {
 	case 404:

@@ -527,7 +527,7 @@ onUnmounted(() => {
             <td><code>{{ r.client_model || r.outbound_model || '—' }}</code></td>
             <td>
               <span class="badge" :class="r.request_status === 'rate_limited' ? 'badge-amber' : r.success ? 'badge-green' : 'badge-red'">
-                {{ r.request_status === 'rate_limited' ? t('requests.resultRateLimited') || '限流' : r.success ? t('tenants.dashboard.statusOk') : t('tenants.dashboard.statusFail') }}
+                {{ r.request_status === 'rate_limited' ? t('requests.list.filter.resultRateLimited') || '限流' : r.success ? t('tenants.dashboard.statusOk') : t('tenants.dashboard.statusFail') }}
               </span>
             </td>
             <td class="num credits">{{ creditsDisplay(r.credits_charged) }}</td>

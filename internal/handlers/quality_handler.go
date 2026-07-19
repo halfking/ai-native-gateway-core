@@ -71,12 +71,31 @@ type RankingItem struct {
 	CalculatedAt      time.Time `json:"calculated_at"`
 }
 
+// ProviderQualitySummaryItem 供应商级品质汇总（列表页一行）
+type ProviderQualitySummaryItem struct {
+	ProviderID          int64     `json:"provider_id"`
+	ProviderName        string    `json:"provider_name"`
+	BestModelName       *string   `json:"best_model_name"`
+	QualityScore        float64   `json:"quality_score"`
+	QualityGrade        string    `json:"quality_grade"`
+	AvailabilityScore   float64   `json:"availability_score"`
+	PerformanceScore    float64   `json:"performance_score"`
+	TotalRequests24h    int64     `json:"total_requests_24h"`
+	CalculatedAt        time.Time `json:"calculated_at"`
+}
+
 // ServeHTTP 实现 http.Handler 接口
 func (h *QualityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 路由分发
 	path := r.URL.Path
 
-	if path == "/api/quality/ranking" {
+	if path == "/api/quality/summary" {
+		if r.Method != http.MethodGet {
+			h.writeError(w, http.StatusMethodNotAllowed, 40501, "方法不允许")
+			return
+		}
+		h.handleGetSummary(w, r)
+	} else if path == "/api/quality/ranking" {
 		// GET /api/quality/ranking
 		if r.Method != http.MethodGet {
 			h.writeError(w, http.StatusMethodNotAllowed, 40501, "方法不允许")
@@ -189,9 +208,10 @@ ORDER BY quality_score DESC
 	for rows.Next() {
 		var m ModelQualityProfile
 		var scores QualityScores
+		var modelName sql.NullString
 
 		err := rows.Scan(
-			&m.ModelName,
+			&modelName,
 			&m.QualityScore,
 			&m.QualityGrade,
 			&scores.Availability,
@@ -205,6 +225,9 @@ ORDER BY quality_score DESC
 			continue
 		}
 
+		if modelName.Valid {
+			m.ModelName = modelName.String
+		}
 		m.Scores = scores
 		models = append(models, m)
 	}
@@ -221,6 +244,75 @@ ORDER BY quality_score DESC
 			ProviderID:   providerID,
 			ProviderName: providerName,
 			Models:       models,
+		},
+	})
+}
+
+// handleGetSummary 供应商级品质汇总（优先 provider 级行，否则取最高分模型）
+func (h *QualityHandler) handleGetSummary(w http.ResponseWriter, r *http.Request) {
+	slog.Info("quality: handleGetSummary called")
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	const sqlQuery = `
+SELECT DISTINCT ON (p.provider_id)
+    p.provider_id,
+    COALESCE(pr.display_name, '') AS provider_name,
+    p.model_name,
+    COALESCE(p.quality_score, 0),
+    COALESCE(p.quality_grade, ''),
+    COALESCE(p.availability_score, 0),
+    COALESCE(p.performance_score, 0),
+    COALESCE(p.total_requests_24h, 0),
+    p.updated_at
+FROM provider_quality_profiles p
+LEFT JOIN providers pr ON p.provider_id = pr.id
+ORDER BY p.provider_id,
+    CASE WHEN p.model_name IS NULL THEN 0 ELSE 1 END,
+    p.quality_score DESC NULLS LAST
+`
+
+	rows, err := h.db.QueryContext(ctx, sqlQuery)
+	if err != nil {
+		slog.Error("quality: failed to query summary", "error", err)
+		h.writeError(w, http.StatusInternalServerError, 50001, "服务器内部错误")
+		return
+	}
+	defer rows.Close()
+
+	summary := make([]ProviderQualitySummaryItem, 0)
+	for rows.Next() {
+		var item ProviderQualitySummaryItem
+		var modelName sql.NullString
+		err := rows.Scan(
+			&item.ProviderID,
+			&item.ProviderName,
+			&modelName,
+			&item.QualityScore,
+			&item.QualityGrade,
+			&item.AvailabilityScore,
+			&item.PerformanceScore,
+			&item.TotalRequests24h,
+			&item.CalculatedAt,
+		)
+		if err != nil {
+			slog.Error("quality: failed to scan summary row", "error", err)
+			continue
+		}
+		if modelName.Valid && modelName.String != "" {
+			name := modelName.String
+			item.BestModelName = &name
+		}
+		summary = append(summary, item)
+	}
+
+	h.writeJSON(w, http.StatusOK, Response{
+		Code:    0,
+		Message: "success",
+		Data: map[string]interface{}{
+			"total":   len(summary),
+			"summary": summary,
 		},
 	})
 }

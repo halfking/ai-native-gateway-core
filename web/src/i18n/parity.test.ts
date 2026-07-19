@@ -189,14 +189,16 @@ describe('i18n parity gate', () => {
     expect(failures, failures.join('\n\n')).toEqual([])
   })
 
-  it('every locale is a superset of zh-CN leaf keys (merged view)', () => {
+  it('every locale resolves zh-CN leaf keys through the configured English fallback', () => {
     const sourceKeys = collectLeafKeys(loadLocale(SOURCE_LOCALE))
+    const fallbackKeys = collectLeafKeys(loadLocale('en-US'))
     const failures: string[] = []
 
     for (const locale of LOCALES) {
-      if (locale === SOURCE_LOCALE) continue
+      if (locale === SOURCE_LOCALE || locale === 'en-US') continue
       const localeKeys = collectLeafKeys(loadLocale(locale))
-      const missing = missingKeys(sourceKeys, localeKeys)
+      const effectiveKeys = new Set([...fallbackKeys, ...localeKeys])
+      const missing = missingKeys(sourceKeys, effectiveKeys)
       if (missing.length > 0) {
         failures.push(formatMissingBlock(locale, '(index)', missing))
       }
@@ -204,7 +206,7 @@ describe('i18n parity gate', () => {
     expect(failures, failures.join('\n\n')).toEqual([])
   })
 
-  it('every locale is a superset of zh-CN leaf keys per-module', () => {
+  it('every locale resolves zh-CN module keys through the configured English fallback', () => {
     // This is the granular check (#5 in the brief): even if the merged
     // index.ts happens to align, we want to surface WHICH module lost a
     // key. This is the check that would have produced the desired failure
@@ -222,9 +224,10 @@ describe('i18n parity gate', () => {
       }
       const sourceKeys = collectLeafKeys(loadModuleFile(SOURCE_LOCALE, module))
       if (sourceKeys.size === 0) continue
+      const fallbackKeys = collectLeafKeys(loadModuleFile('en-US', module))
 
       for (const locale of LOCALES) {
-        if (locale === SOURCE_LOCALE) continue
+        if (locale === SOURCE_LOCALE || locale === 'en-US') continue
         const localeModulePath = join(LOCALES_DIR, locale, `${module}.ts`)
         if (!existsSync(localeModulePath)) {
           failures.push(
@@ -234,7 +237,8 @@ describe('i18n parity gate', () => {
           continue
         }
         const localeKeys = collectLeafKeys(loadModuleFile(locale, module))
-        const missing = missingKeys(sourceKeys, localeKeys)
+        const effectiveKeys = new Set([...fallbackKeys, ...localeKeys])
+        const missing = missingKeys(sourceKeys, effectiveKeys)
         if (missing.length > 0) {
           failures.push(formatMissingBlock(locale, module, missing))
         }

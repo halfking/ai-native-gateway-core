@@ -11,6 +11,16 @@ import {
   type Provider, type CatalogEntry, type ProviderCredential, type CredentialStatus,
   type BackgroundTasksStatus, type CredentialCheckResult, type ProbeURLResult,
 } from '../api'
+import {
+  useProviderQualitySummary,
+  type QualitySortKey,
+} from '../composables/useProviderQualitySummary'
+import {
+  formatQualityScore,
+  QUALITY_GRADE_COLORS,
+  QUALITY_GRADE_LABELS,
+  type QualityGrade,
+} from '../types/quality-api'
 
 const { t } = useI18n()
 const pm = (k: string, params?: Record<string, unknown>): string =>
@@ -21,6 +31,19 @@ const catalog   = ref<CatalogEntry[]>([])
 const loading   = ref(false)
 const error     = ref('')
 const router = useRouter()
+const {
+  loadQualitySummary,
+  enrichProviders,
+  sortProvidersByQuality,
+} = useProviderQualitySummary()
+const qualitySortKey = ref<QualitySortKey>('default')
+const qualitySortOptions = computed(() => [
+  { value: 'default' as const, label: pm('filter.sortDefault') },
+  { value: 'usage' as const, label: pm('filter.sortUsage') },
+  { value: 'quality_score' as const, label: pm('filter.sortQuality') },
+  { value: 'availability_score' as const, label: pm('filter.sortAvailability') },
+  { value: 'performance_score' as const, label: pm('filter.sortPerformance') },
+])
 const credentialsByProvider = ref<Record<number, ProviderCredential[]>>({})
 const credentialLoading = ref<Record<number, boolean>>({})
 const credentialSaving = ref<Record<number, boolean>>({})
@@ -97,15 +120,37 @@ const filterFreeModel = ref<'all' | 'yes' | 'no'>(
 )
 let _searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
-// 2026-07-03 v738: visibleProviders is now a no-op (returns providers
-// verbatim). The server-side routability + health_status + manual_disabled
-// filters do all the work; this just keeps the v-for="p in visibleProviders"
-// line in the template stable. The previous client-side .filter() was
-// removed because the visibleProviders comment in the previous revision
-// noted it raced with the stale provider.Client candidate cache (see
-// admin/provider_offer_force_recover.go:437 — fixed in v733 but the
-// client-side filter was still risky).
-const visibleProviders = computed<Provider[]>(() => providers.value)
+// 2026-07-03 v738: visibleProviders used to be a no-op. Now it enriches
+// each row with /api/quality/summary and optionally sorts by usage /
+// quality / availability / performance. Server-side filters still own
+// health/routability; this only reorders the already-filtered page.
+const visibleProviders = computed(() => {
+  const enriched = enrichProviders(providers.value)
+  return sortProvidersByQuality(enriched, qualitySortKey.value)
+})
+
+function qualityGradeStyle(grade: string | undefined): Record<string, string> {
+  if (!grade) return {}
+  const color = QUALITY_GRADE_COLORS[grade as QualityGrade]
+  return color ? { backgroundColor: color, color: '#fff' } : {}
+}
+
+function qualityGradeLabel(grade: string | undefined): string {
+  if (!grade) return ''
+  return QUALITY_GRADE_LABELS[grade as QualityGrade] || grade
+}
+
+function fmtQuality(n: number | null | undefined): string {
+  if (n == null || Number.isNaN(n)) return '—'
+  return formatQualityScore(n)
+}
+
+function fmtUsage(n: number | null | undefined): string {
+  if (n == null) return '—'
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
 
 const healthStatusOptions = computed(() => [
   { value: 'all',         label: pm('filter.healthChipAll') },
@@ -677,6 +722,7 @@ async function load() {
         manual_disabled: 'all',
       }),
       getCatalog(),
+      loadQualitySummary(),
     ])
     providers.value = p
     catalog.value   = c
@@ -820,6 +866,15 @@ onUnmounted(() => {
           @click="onFreeModelChange(opt.value as 'all' | 'yes' | 'no')"
         >{{ opt.label }}</button>
       </div>
+      <div class="filter-divider" aria-hidden="true"></div>
+      <div class="filter-sort">
+        <span class="filter-tab-label">{{ pm('filter.sortLabel') }}</span>
+        <select v-model="qualitySortKey" class="filter-sort-select">
+          <option v-for="opt in qualitySortOptions" :key="opt.value" :value="opt.value">
+            {{ opt.label }}
+          </option>
+        </select>
+      </div>
     </div>
 
     <div class="card" v-if="!loading">
@@ -835,6 +890,10 @@ onUnmounted(() => {
             <th>{{ pm('list.table.availableModels') }}</th>
             <th>{{ pm('list.table.freeModels') }}</th>
             <th>{{ pm('list.table.errorRate24h') }}</th>
+            <th>{{ pm('list.table.usage24h') }}</th>
+            <th>{{ pm('list.table.qualityScore') }}</th>
+            <th>{{ pm('list.table.availabilityScore') }}</th>
+            <th>{{ pm('list.table.performanceScore') }}</th>
             <th>{{ pm('list.table.health') }}</th>
             <!-- 2026-07-03 v738: new column showing routability
                  (available / unavailable / no_models / manual_disabled).
@@ -897,6 +956,31 @@ onUnmounted(() => {
             </td>
             <td>
               <span style="font-size:12px">{{ (p as any).error_rate_24h != null ? Number((p as any).error_rate_24h).toFixed(1) + '%' : '—' }}</span>
+            </td>
+            <td>
+              <span style="font-size:12px">{{ fmtUsage(p.quality?.total_requests_24h) }}</span>
+            </td>
+            <td>
+              <template v-if="p.quality">
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                  <span style="font-weight:600">{{ fmtQuality(p.quality.quality_score) }}</span>
+                  <span
+                    class="badge"
+                    :style="qualityGradeStyle(p.quality.quality_grade)"
+                    :title="qualityGradeLabel(p.quality.quality_grade)"
+                  >{{ p.quality.quality_grade }}</span>
+                </div>
+                <div class="muted" v-if="p.quality.best_model_name" style="font-size:11px;margin-top:2px">
+                  {{ p.quality.best_model_name }}
+                </div>
+              </template>
+              <span v-else style="font-size:12px;color:var(--muted)">—</span>
+            </td>
+            <td>
+              <span style="font-size:12px">{{ fmtQuality(p.quality?.availability_score) }}</span>
+            </td>
+            <td>
+              <span style="font-size:12px">{{ fmtQuality(p.quality?.performance_score) }}</span>
             </td>
             <td>
               <span class="badge" :class="healthBadgeClass(p.health_status)">
@@ -1458,6 +1542,19 @@ table code {
   color: var(--muted);
   padding: 6px 8px 6px 4px;
   white-space: nowrap;
+}
+.filter-sort {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.filter-sort-select {
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
 }
 
 .credential-toolbar {
