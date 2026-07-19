@@ -37,11 +37,11 @@ func NewTurnWriter(db *pgxpool.Pool) *TurnWriter {
 
 // TurnRecord represents a single turn's metadata
 type TurnRecord struct {
-	SessionID  string
-	TurnNo     int    // Turn number within session (populated on read)
-	TenantID   string
-	RequestID  string
-	Ts         time.Time
+	SessionID string
+	TurnNo    int // Turn number within session (populated on read)
+	TenantID  string
+	RequestID string
+	Ts        time.Time
 
 	// Submit mode detection
 	SubmitMode string // full | delta | snapshot | inferred_compressed | attachment_only
@@ -62,11 +62,11 @@ type TurnRecord struct {
 	CredentialID string
 
 	// Usage & cost
-	PromptTokens      int
-	CompletionTokens  int
-	CacheReadTokens   int
-	CacheWriteTokens  int
-	CostUSD           float64
+	PromptTokens     int
+	CompletionTokens int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	CostUSD          float64
 
 	// Performance
 	LatencyMs  int
@@ -99,6 +99,22 @@ type TurnRecord struct {
 // If the same request_id already exists (idempotency), the insert is skipped
 // via ON CONFLICT DO NOTHING.
 func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int, err error) {
+	if rec.SubmitMode == "" {
+		rec.SubmitMode = "full"
+	}
+	if rec.InjectionVerdict == "" {
+		rec.InjectionVerdict = "skip"
+	}
+	if rec.OutputVerdict == "" {
+		rec.OutputVerdict = "skip"
+	}
+	if rec.SourceKind == "" {
+		rec.SourceKind = "live"
+	}
+	if rec.Quality == "" {
+		rec.Quality = "verified"
+	}
+
 	tx, err := w.db.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin tx: %w", err)
@@ -130,7 +146,7 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 
 	// 4. Insert turn record
 	partitionDate := rec.Ts.Truncate(24 * time.Hour)
-	
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO gateway.session_turns (
 			session_id, turn_no, tenant_id, request_id, ts,
@@ -282,7 +298,7 @@ func (w *TurnWriter) ListTurns(ctx context.Context, tenantID, sessionID string, 
 		var compressionMetaJSON []byte
 
 		err := rows.Scan(
-			&rec.SessionID, &rec.TenantID, &rec.RequestID, &rec.Ts,
+			&rec.SessionID, &rec.TurnNo, &rec.TenantID, &rec.RequestID, &rec.Ts,
 			&rec.SubmitMode,
 			&rec.CompressionApplied, &rec.CompressionStrategy, &compressionMetaJSON, &rec.TokensSaved,
 			&rec.InjectionVerdict, &rec.OutputVerdict,
@@ -324,7 +340,7 @@ func hashSessionKey(tenantID, sessionID string) int64 {
 	h := sha256.New()
 	h.Write([]byte(tenantID + ":" + sessionID))
 	sum := h.Sum(nil)
-	
+
 	// Take first 8 bytes as int64
 	return int64(binary.BigEndian.Uint64(sum[:8]))
 }

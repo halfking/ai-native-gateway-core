@@ -20,6 +20,8 @@
 
 BEGIN;
 
+CREATE SCHEMA IF NOT EXISTS gateway;
+
 -- =============================================
 -- 1. sessions 表：会话快照
 -- =============================================
@@ -298,10 +300,10 @@ BEGIN
         partition_suffix, month_start, month_end
     );
     
-    -- session_bodies 分区（columnar格式，优化存储）
+    -- session_bodies 分区使用 heap，因为正文写入支持冲突更新。
     EXECUTE format(
         'CREATE TABLE IF NOT EXISTS gateway.session_bodies_%s PARTITION OF gateway.session_bodies
-         FOR VALUES FROM (%L) TO (%L) USING columnar',
+         FOR VALUES FROM (%L) TO (%L)',
         partition_suffix, month_start, month_end
     );
     
@@ -312,7 +314,7 @@ $$;
 COMMENT ON FUNCTION ensure_sessions_v2_partitions(DATE) IS
     'Ensure monthly partitions for sessions V2 tables.
      Called by bg.PartitionManager alongside ensure_request_logs_partition.
-     session_bodies uses columnar format for space efficiency.
+     session_bodies uses heap storage because response bodies can be updated.
      Created: 2026-07-17, Migration 430';
 
 -- =============================================
@@ -320,7 +322,7 @@ COMMENT ON FUNCTION ensure_sessions_v2_partitions(DATE) IS
 -- =============================================
 
 SELECT ensure_sessions_v2_partitions(CURRENT_DATE);
-SELECT ensure_sessions_v2_partitions(CURRENT_DATE + INTERVAL '1 month');
+SELECT ensure_sessions_v2_partitions((CURRENT_DATE + INTERVAL '1 month')::DATE);
 
 -- =============================================
 -- 7. 环节日志自动清理函数

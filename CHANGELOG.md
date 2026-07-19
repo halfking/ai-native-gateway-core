@@ -31,6 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Sessions V2 migration date type**: Cast the next-month partition date to
+  `DATE` before calling the partition helper, so startup migration 430 can
+  complete on PostgreSQL 17 without a timestamp/function signature error.
+
+- **Sessions V2 body storage compatibility**: Use heap partitions for session
+  bodies because the writer updates an existing row when a response arrives;
+  Citus columnar storage does not support that conflict-update path.
+
+- **Sessions V2 input defaults**: Preserve existing metadata when partial
+  updates provide empty fields and normalize zero-value turn records to the
+  schema's allowed defaults before insertion.
+
 - **Credential RPM reservation ordering**: RPM windows are now charged only
   after the global, provider, and credential concurrency slots are acquired.
   Requests that time out or fail at a concurrency layer no longer consume RPM
