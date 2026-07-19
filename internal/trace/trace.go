@@ -578,6 +578,11 @@ func unmarshalTrace(raw, fallbackID string) (*RequestTrace, error) {
 // "没有 trace 数据" 是预期路径 (例如尚未 flush 的进行中请求、或极老的 history 行),
 // 不应该作为 HTTP 500 报给前端。原实现会让前端展示 "no rows in result set" 红色错误,
 // 实际只是该行尚无 trace_events JSONB;此处把 ErrNoRows 当成"未找到"返回。
+//
+// 2026-07-20: 增加 request_logs_hot 回退查找。migration 341 把 request_logs 拆分成
+// 热表 request_logs_hot + 月度分区 request_logs,最近的请求 (0-7 天) 只在 hot 表;
+// 只查 request_logs 会让前端"流程详情"对所有近 7 天的请求都返回空。
+// 这里用 UNION ALL 先查 hot、再查分区表,顺序按"最近优先"。
 func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*RequestTrace, error) {
 	if requestID == "" {
 		return nil, ErrEmptyRequestID
@@ -587,7 +592,11 @@ func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*Reque
 	}
 	var raw []byte
 	err := db.QueryRow(ctx,
-		`SELECT trace_events FROM request_logs WHERE request_id = $1 LIMIT 1`,
+		`SELECT trace_events FROM (
+			SELECT trace_events, ts FROM request_logs_hot WHERE request_id = $1
+			UNION ALL
+			SELECT trace_events, ts FROM request_logs WHERE request_id = $1
+		) t WHERE trace_events IS NOT NULL ORDER BY ts DESC LIMIT 1`,
 		requestID).Scan(&raw)
 	if err != nil {
 		// 2026-07-17: 没有 trace_events JSONB 或 request_id 不存在都属于"没数据",

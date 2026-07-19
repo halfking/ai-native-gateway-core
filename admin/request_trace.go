@@ -176,10 +176,15 @@ func (h *RequestTraceHandler) loadTrace(ctx context.Context, requestID string) (
 func (h *RequestTraceHandler) requestTraceState(ctx context.Context, requestID string) (traceLoadState, error) {
 	var status string
 	var traceEvents []byte
+	// 2026-07-20: 与 LoadFromPG 同步 — 同时查 hot + 分区表。
+	// 最近 7 天的请求只写在 request_logs_hot(参 migration 341 hot_table_independence)。
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(request_status, ''), trace_events
-		FROM request_logs
-		WHERE request_id = $1
+		FROM (
+			SELECT request_status, trace_events FROM request_logs_hot WHERE request_id = $1
+			UNION ALL
+			SELECT request_status, trace_events FROM request_logs WHERE request_id = $1
+		) t
 		LIMIT 1
 	`, requestID).Scan(&status, &traceEvents)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -281,13 +286,23 @@ func (h *RequestTraceHandler) fetchRequestSummary(ctx context.Context, requestID
 	if h.db == nil {
 		return requestSummary{RequestID: requestID}
 	}
+	// 2026-07-20: 与 requestTraceState 同步 — 同时查 hot + 分区表。
 	row := h.db.QueryRow(ctx, `
 		SELECT ts, client_model, outbound_model, provider_id, credential_id,
 		       latency_ms, success, COALESCE(error_kind, ''), COALESCE(failure_stage, ''),
 		       COALESCE(auto_decision::text, ''),
 		       COALESCE(task_type, ''), COALESCE(task_type_chosen, '')
-		FROM request_logs
-		WHERE request_id = $1
+		FROM (
+			SELECT ts, client_model, outbound_model, provider_id, credential_id,
+			       latency_ms, success, error_kind, failure_stage,
+			       auto_decision, task_type, task_type_chosen
+			FROM request_logs_hot WHERE request_id = $1
+			UNION ALL
+			SELECT ts, client_model, outbound_model, provider_id, credential_id,
+			       latency_ms, success, error_kind, failure_stage,
+			       auto_decision, task_type, task_type_chosen
+			FROM request_logs WHERE request_id = $1
+		) t
 		LIMIT 1
 	`, requestID)
 	var s requestSummary
@@ -572,10 +587,14 @@ func (h *RequestTraceHandler) buildProbeTrace(ctx context.Context, requestID str
 	origin := "direct"
 	if h.db != nil {
 		var chosen string
+		// 2026-07-20: 同时查 hot + 分区表
 		_ = h.db.QueryRow(ctx, `
 			SELECT COALESCE(task_type_chosen, '')
-			FROM request_logs
-			WHERE request_id = $1
+			FROM (
+				SELECT task_type_chosen FROM request_logs_hot WHERE request_id = $1
+				UNION ALL
+				SELECT task_type_chosen FROM request_logs WHERE request_id = $1
+			) t
 			LIMIT 1
 		`, requestID).Scan(&chosen)
 		if o := strings.TrimPrefix(chosen, "probe_"); o == "gateway" || o == "direct" {
