@@ -50,14 +50,24 @@ func scopedAdminContext(next http.HandlerFunc) http.HandlerFunc {
 // registerPluginCanonRoutes mounts the canonical plugin-facing API under
 // /_gateway/plugin/v1/. Currently this exposes:
 //
-//	GET /_gateway/plugin/v1/sessions
+//	GET /_gateway/plugin/v1/sessions           → adminList
+//	GET /_gateway/plugin/v1/sessions/{id}      → adminDetail
 //
 // Auth is the signed plugin context (X-Gateway-Context-Signature HMAC over
 // pluginID|tenantID|ts|nonce keyed by secret), NOT an admin cookie. After
-// verification the request is handed to the existing
-// admin.HandleSessionAnalyticsList under a tenant-scoped AuthContext, so the
-// plugin reuses the same SQL/list logic as the browser admin without
-// duplicating it.
+// verification the request is handed to the existing admin handlers
+// (HandleSessionAnalyticsList / HandleSessionAnalyticsDetail) under a
+// tenant-scoped AuthContext, so the plugin reuses the same SQL/logic as the
+// browser admin without duplicating it.
+//
+// Path rewrite for detail: admin.HandleSessionAnalyticsDetail parses the
+// gw_session_id via pathSegment(r.URL.Path, "/api/admin/session-analytics/", 0),
+// so it expects the URL path to begin with that admin prefix. The canonical
+// plugin path is /_gateway/plugin/v1/sessions/{gw_session_id}; the dispatch
+// below rewrites r.URL.Path to /api/admin/session-analytics/<id> before
+// invoking adminDetail, so pathSegment finds the id. The rewrite runs on the
+// *verified* request only (after signature + nonce checks have passed), so a
+// forged caller can never reach this branch.
 //
 // `opts` are forwarded to VerifyPluginContext. The caller in main.go passes
 // WithCanonNonceCache so a token can be used at most once within the cache
@@ -68,7 +78,19 @@ func scopedAdminContext(next http.HandlerFunc) http.HandlerFunc {
 // AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET; the gateway reads cfg.SecretKey.
 // They must be configured to the same value, or verification will reject
 // every plugin call with 401.
-func registerPluginCanonRoutes(mux *http.ServeMux, secret []byte, adminHandler http.HandlerFunc, opts ...pluginruntime.CanonOption) {
-	mux.Handle("GET /_gateway/plugin/v1/sessions",
-		pluginruntime.VerifyPluginContext(secret, scopedAdminContext(adminHandler), opts...))
+func registerPluginCanonRoutes(mux *http.ServeMux, secret []byte, adminList http.HandlerFunc, adminDetail http.HandlerFunc, opts ...pluginruntime.CanonOption) {
+	dispatch := func(w http.ResponseWriter, r *http.Request) {
+		if id := r.PathValue("gw_session_id"); id != "" {
+			// admin.HandleSessionAnalyticsDetail parses the id via pathSegment
+			// expecting the /api/admin/session-analytics/ prefix; rewrite so it
+			// finds the id. Reached only after VerifyPluginContext + nonce.
+			r.URL.Path = "/api/admin/session-analytics/" + id
+			adminDetail(w, r)
+			return
+		}
+		adminList(w, r)
+	}
+	wrapped := pluginruntime.VerifyPluginContext(secret, scopedAdminContext(dispatch), opts...)
+	mux.Handle("GET /_gateway/plugin/v1/sessions", wrapped)
+	mux.Handle("GET /_gateway/plugin/v1/sessions/{gw_session_id}", wrapped)
 }

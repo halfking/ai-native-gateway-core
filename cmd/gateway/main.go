@@ -2938,7 +2938,9 @@ func main() {
 	// once and a replayed (pluginID|tenantID|ts|nonce) is rejected with 401.
 	if adminHandler != nil {
 		pluginNonceCache := pluginruntime.NewNonceCache(10 * time.Minute)
-		registerPluginCanonRoutes(mux, []byte(cfg.SecretKey), adminHandler.HandleSessionAnalyticsList,
+		registerPluginCanonRoutes(mux, []byte(cfg.SecretKey),
+			adminHandler.HandleSessionAnalyticsList,
+			adminHandler.HandleSessionAnalyticsDetail,
 			pluginruntime.WithCanonNonceCache(pluginNonceCache))
 	}
 
