@@ -45,6 +45,7 @@ export default {
       tabPolicy: 'ポリシー設定',
       tabLive: 'リアルタイム判断',
       tabResolve: '認証情報ルーティング',
+      tabSmart: 'スマートルーティング',
       workTypes: 'ワークタイプ',
       enabled: '有効',
       mappings: 'マッピング',

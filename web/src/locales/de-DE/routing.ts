@@ -46,6 +46,7 @@ export default {
       tabPolicy: 'Strategiekonfiguration',
       tabLive: 'Live-Entscheidungen',
       tabResolve: 'Anmeldedaten-Routing',
+      tabSmart: 'Smart Routing',
       workTypes: 'Arbeitstypen',
       enabled: 'Aktiviert',
       mappings: 'Zuordnungen',

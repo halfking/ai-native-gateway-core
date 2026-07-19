@@ -611,12 +611,12 @@ onUnmounted(() => stopPoll())
       <div class="top-bar-head">
         <h2>{{ t('routing.dashboard.title') }}</h2>
         <div class="seg-tabs">
-          <button class="seg-tab" :class="{ active: activeTab === 'analytics' }" @click="activeTab = 'analytics'">{{ t('routing.dashboard.tabAnalytics') }}</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">{{ t('routing.dashboard.tabOverview') }}</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">{{ t('routing.dashboard.tabPolicy') }}</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">{{ t('routing.dashboard.tabLive') }}</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'resolve' }" @click="activeTab = 'resolve'">{{ t('routing.dashboard.tabResolve') }}</button>
-          <button class="seg-tab" :class="{ active: activeTab === 'smart' }" @click="activeTab = 'smart'">{{ t('routing.dashboard.tabSmart') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'analytics' }" @click="activeTab = 'analytics'">{{ t('routing.dashboard.topBar.tabAnalytics') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">{{ t('routing.dashboard.topBar.tabOverview') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">{{ t('routing.dashboard.topBar.tabPolicy') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">{{ t('routing.dashboard.topBar.tabLive') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'resolve' }" @click="activeTab = 'resolve'">{{ t('routing.dashboard.topBar.tabResolve') }}</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'smart' }" @click="activeTab = 'smart'">{{ t('routing.dashboard.topBar.tabSmart') }}</button>
         </div>
         <div class="nav-chips">
           <router-link to="/routing-v2/work-types" class="nav-link-wt chip-link">

@@ -45,6 +45,7 @@ export default {
       tabPolicy: 'تكوين السياسة',
       tabLive: 'القرارات الحية',
       tabResolve: 'توجيه بيانات الاعتماد',
+      tabSmart: 'التوجيه الذكي',
       workTypes: 'أنواع العمل',
       enabled: 'مفعّل',
       mappings: 'التعيينات',

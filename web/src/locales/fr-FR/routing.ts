@@ -46,6 +46,7 @@ export default {
       tabPolicy: 'Configuration de la stratégie',
       tabLive: 'Décisions en direct',
       tabResolve: 'Routage des identifiants',
+      tabSmart: 'Routage intelligent',
       workTypes: 'Types de travail',
       enabled: 'Activé',
       mappings: 'Correspondances',
