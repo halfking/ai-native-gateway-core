@@ -26,6 +26,7 @@ export default {
     credentialMonitor: '凭据监控',
     probeHealth: '探测健康度',
     providers: '供应商',
+    providerQuality: '供应商质量画像',
     pricing: '成本价格',
     modelPricing: '定价管理',
     freePool: '免费资源',

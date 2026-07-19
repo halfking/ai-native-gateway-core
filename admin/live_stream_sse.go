@@ -544,6 +544,73 @@ func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 	}
 }
 
+// needsFullRefresh 判断是否需要推送全量快照。
+// 只有在数据显著变化时才返回 true，避免无意义的推送导致前端跳变。
+// 2026-07-19: 智能推送策略 - 减少泳道跳变频率。
+func needsFullRefresh(cached, fresh *LiveStreamSnapshot) bool {
+	if cached == nil {
+		return true // 首次推送
+	}
+
+	// 判断 1: 总请求数变化 > 20%
+	oldTotal := cached.Summary.Total
+	newTotal := fresh.Summary.Total
+	if oldTotal > 0 {
+		diff := float64(absInt(newTotal - oldTotal))
+		threshold := float64(oldTotal) * 0.2
+		if diff > threshold {
+			slog.Debug("snapshot refresh needed: total count changed",
+				"old", oldTotal, "new", newTotal, "diff_pct", diff/float64(oldTotal)*100)
+			return true
+		}
+	}
+
+	// 判断 2: 泳道数量变化（任一维度）
+	for _, dim := range []string{"vendor", "provider", "model"} {
+		oldLanes := cached.Dimensions[dim]
+		newLanes := fresh.Dimensions[dim]
+		if len(oldLanes) != len(newLanes) {
+			slog.Debug("snapshot refresh needed: lane count changed",
+				"dimension", dim, "old_count", len(oldLanes), "new_count", len(newLanes))
+			return true
+		}
+	}
+
+	// 判断 3: Top 5 泳道顺序变化（任一维度）
+	for _, dim := range []string{"vendor", "provider", "model"} {
+		oldLanes := cached.Dimensions[dim]
+		newLanes := fresh.Dimensions[dim]
+		topN := 5
+		if len(oldLanes) < topN {
+			topN = len(oldLanes)
+		}
+		if len(newLanes) < topN {
+			topN = len(newLanes)
+		}
+
+		for i := 0; i < topN; i++ {
+			if oldLanes[i].ID != newLanes[i].ID {
+				slog.Debug("snapshot refresh needed: top lane order changed",
+					"dimension", dim, "position", i,
+					"old_id", oldLanes[i].ID, "new_id", newLanes[i].ID)
+				return true
+			}
+		}
+	}
+
+	// 数据变化不显著，跳过推送
+	slog.Debug("snapshot refresh skipped: no significant changes",
+		"old_total", oldTotal, "new_total", newTotal)
+	return false
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // pushFullSnapshots reads a fresh snapshot from Redis for every active
 // scope and pushes it to connected clients as a "snapshot_refresh" envelope.
 // This ensures the dashboard's base data stays current even when the delta
@@ -584,8 +651,24 @@ func (h *LiveStreamSSEHub) pushFullSnapshots() {
 			if snapshot == nil || snapshot.Summary.Total == 0 {
 				return
 			}
-			// Update in-memory cached snapshot so subsequent deltas use the fresh baseline.
+
+			// 2026-07-19: 智能推送 - 只在数据显著变化时推送，减少前端泳道跳变。
 			scope := newLiveStreamScope(entry.tenantID, entry.isSuper)
+			h.cachedSnapshotMu.RLock()
+			cached := h.cachedSnapshot[scope.cacheKey]
+			h.cachedSnapshotMu.RUnlock()
+
+			var oldSnapshot *LiveStreamSnapshot
+			if cached != nil {
+				oldSnapshot = cached.snapshot
+			}
+
+			if !needsFullRefresh(oldSnapshot, snapshot) {
+				// 数据变化不显著，跳过推送
+				return
+			}
+
+			// 数据显著变化，推送全量快照
 			h.cachedSnapshotMu.Lock()
 			h.cachedSnapshot[scope.cacheKey] = &cachedSnapshotEntry{
 				snapshot:     snapshot,

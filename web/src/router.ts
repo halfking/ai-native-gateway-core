@@ -20,6 +20,7 @@ const DecisionsView = () => import('./views/DecisionsView.vue')
 const CorrelationsView = () => import('./views/CorrelationsView.vue')
 const RoutingOverrideView = () => import('./views/RoutingOverrideView.vue')
 const QualityCorrelationsView = () => import('./views/QualityCorrelationsView.vue')
+const ProviderQualityView = () => import('./views/ProviderQualityView.vue')
 const RoutingAuditView = () => import('./views/RoutingAuditView.vue')
 const RequestLogsView = () => import('./views/RequestLogsView.vue')
 const ModelsView = () => import('./views/ModelsView.vue')
@@ -204,6 +205,7 @@ export const router = createRouter({
     { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuper: true } },
     { path: '/routing/defaults',  component: () => import('./views/RoutingDefaultsView.vue'), meta: { requiresSuper: true } },
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuper: true } },
+    { path: '/provider-quality',  component: ProviderQualityView, meta: { requiresSuper: true } },
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/session-compare',    component: SessionCompareView },
     { path: '/sessions',           component: SessionListView },
