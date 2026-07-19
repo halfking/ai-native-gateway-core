@@ -23,7 +23,8 @@ func ValidatePayload(data []byte) error {
 	dec.DisallowUnknownFields()
 	var payload RuntimeMetrics
 	if err := dec.Decode(&payload); err != nil {
-		return fmt.Errorf("payload does not match allowlist schema: %w", err)
+		// 2026-07-20: 增强诊断 - 详细记录解码失败原因
+		return fmt.Errorf("payload does not match allowlist schema: %w (json_length=%d)", err, len(data))
 	}
 	if payload.InstanceID == "" {
 		return fmt.Errorf("instance_id is required")

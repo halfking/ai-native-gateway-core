@@ -96,9 +96,26 @@ func (c *Collector) collectOnce(ctx context.Context) error {
 	metrics := BuildRuntimeMetrics(c.cfg, traffic, dbSize, nil, licenseType, expiresIn)
 	body, err := json.Marshal(metrics)
 	if err != nil {
+		// 2026-07-20: 增强诊断 - 记录 JSON Marshal 失败
+		slog.Warn("collector: json.Marshal failed",
+			"error", err,
+			"metrics_summary", map[string]any{
+				"instance_id": metrics.InstanceID,
+				"version":     metrics.Version,
+				"uptime_secs": metrics.UptimeSecs,
+			})
 		return err
 	}
 	if err := ValidatePayload(body); err != nil {
+		// 2026-07-20: 增强诊断 - 记录失败的 JSON 片段（前 500 字符）
+		preview := string(body)
+		if len(preview) > 500 {
+			preview = preview[:500] + "..."
+		}
+		slog.Warn("collector: ValidatePayload failed",
+			"error", err,
+			"payload_length", len(body),
+			"payload_preview", preview)
 		return err
 	}
 	if c.reporter == nil {
