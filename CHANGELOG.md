@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **L1 task type labels 全 locale i18n** (2026-07-20): `useL1TaskTypes().l1Label(key)` 之前直接返回后端硬编码的中文 label（`代码`/`创意`/`视觉` 等），切到 en-US / ja-JP / fr-FR 等 locale 仍显示中文。新增 `common.l1TaskType.{key}` 命名空间（8 个 key × 8 个 locale = 64 条翻译），`l1Label` 改为 fallback chain：i18n key → 后端 label → key。WorkTypesView / RoutingDashboardView 删掉冗余 wrapper（composable 内部已 bind `t`，reactive 跟随 locale 切换）。zh-CN locale 翻译与原中文 label 保持一致（避免视觉回归），en-US / ja-JP / 其他 locale 各自本地化（"Code" / "コード" / "Code" / "Code" 等）。`l1TaskType` 命名空间放进 `common` 而非 `workTypes`，因为 L1 任务类型是跨模块（routing / dashboard / work types 都用）的通用概念。
 
+- **RoutingDashboardView 6 个 tab i18n key path 错 + tabSmart 6 locale 缺失** (2026-07-20): 实测 https://llmgo.kxpms.cn/routing-v2 中文界面，发现 6 个 tab 渲染为原始 key path（如 `routing.dashboard.tabAnalytics` 显示在按钮上）而不是中文。两个并行 bug：
+  1. **view code 路径错**：view 引用 `routing.dashboard.tabXxx`，但 i18n 文件里这些 key 在 `routing.dashboard.topBar.tabXxx` 命名空间下。修复：view 6 行 `t("routing.dashboard.tabXxx")` 改为 `t("routing.dashboard.topBar.tabXxx")`。
+  2. **tabSmart 6 locale 缺失**：zh-TW / ja-JP / de-DE / fr-FR / es-ES / ar-SA 缺 `tabSmart` key（只有 en-US + zh-CN 有）。修复：补 6 条翻译。
+  验证：`pnpm run i18n:check` 输出从 `❌ missing keys (referenced but not in any locale): 6` 变为 `✅ no missing keys`。
+
+- **useL1TaskTypes composable 16 单元测试** (2026-07-20): `web/src/composables/useL1TaskTypes.test.ts` 覆盖 l1Label 在 zh-CN / en / 切换 / 未知 key / 空 key / operator-added key / 8 个 canonical key 全有翻译 7 个场景。用 `mount` + `createI18n` 模拟生产 i18n 上下文（`messages: { "zh-CN": { common: { l1TaskType: ... } } }`），不依赖 pgxmock / DB。回归保护：未来若有人误把 l1Label 退回返回后端 label（中文），en-US 测试会 fail 并指出问题。
+
 ### Fixed
 
 - **流程详情 (RequestTracePanel) 显示为空 + 链路事件 100% 落库失败** (2026-07-20): 两个并行 bug 同源到 `request_logs_hot` 独立表 (migration 341) 上线后所有 trace 写入/读取路径未更新：

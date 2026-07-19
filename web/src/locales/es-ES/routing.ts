@@ -44,6 +44,7 @@ export default {
       tabPolicy: 'Política',
       tabLive: 'Decisiones en vivo',
       tabResolve: 'Enrutamiento de credenciales',
+      tabSmart: 'Enrutamiento inteligente',
       workTypes: 'Tipos de trabajo',
       enabled: 'activado',
       mappings: 'rutas',

@@ -45,6 +45,7 @@ export default {
       tabPolicy: '策略設定',
       tabLive: '即時決策',
       tabResolve: '憑證路由',
+      tabSmart: '智慧路由設定',
       workTypes: '工作類型',
       enabled: '啟用',
       mappings: '對應',
