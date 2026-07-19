@@ -151,7 +151,13 @@ func (w *CandidateFailureWriter) buildRow(
 		ProviderID:          providerID,
 		RawModelName:        rawModelName,
 		AttemptIndex:        attemptIndex,
-		ErrorMessage:        execErr.Error(),
+		// 2026-07-20: defensive nil-check on execErr.Error(). Callers
+		// pass typed-nil *upstream.Error via the error interface in
+		// some stream-interrupt paths. (*upstream.Error).Error() is
+		// also nil-receiver safe now, but this guard means the row
+		// renders cleanly even if a future refactor introduces a
+		// different Error type without that protection.
+		ErrorMessage:        safeErrorMessage(execErr),
 		LatencyMs:           latencyMs,
 		PerAttemptLatencyMs: perAttemptLatencyMs,
 	}
@@ -211,6 +217,25 @@ func unwrapErr(err error) error {
 		return u.Unwrap()
 	}
 	return nil
+}
+
+// safeErrorMessage renders an error's message without panicking on a
+// typed-nil interface (Go's classic "var x *T = nil; var e error = x"
+// gotcha). The upstream package's (*Error).Error() is also nil-receiver
+// safe as of 2026-07-20, but this helper makes the build_row path
+// robust to ANY error type a future caller might pass — a panic here
+// would block the safety-net audit emit and turn a recoverable
+// upstream error into a 500 for the client.
+func safeErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	defer func() {
+		// Last-resort guard: any panic during err.Error() becomes an
+		// empty string rather than crashing the request handler.
+		_ = recover()
+	}()
+	return err.Error()
 }
 
 // marshalContext renders a map as compact JSON string, returning nil when the
