@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import TaskTypeRail from './TaskTypeRail.vue'
 import TierGroupList, { type TierKey } from './TierGroupList.vue'
@@ -13,15 +13,29 @@ import {
   type RoutingDefaultUpdate,
 } from '../../api/tuning'
 
+const props = withDefaults(defineProps<{
+  /** Prefill task-type filter when opened from overview. */
+  initialTaskType?: string
+  /** Compact layout for drawer embedding. */
+  compact?: boolean
+}>(), {
+  initialTaskType: '',
+  compact: false,
+})
+
 const { t } = useI18n()
 
 const defaults = ref<RoutingDefault[]>([])
 const loading = ref(false)
 const error = ref('')
 const filterActive = ref(true)
-const selectedTask = ref('')
+const selectedTask = ref(props.initialTaskType || '')
 const busyId = ref<number | null>(null)
 const detailRow = ref<RoutingDefault | null>(null)
+
+watch(() => props.initialTaskType, (v) => {
+  if (v !== undefined) selectedTask.value = v || ''
+})
 
 const filteredRows = computed(() => {
   if (!selectedTask.value) return defaults.value
@@ -115,10 +129,10 @@ defineExpose({ reload: loadDefaults })
 </script>
 
 <template>
-  <div class="smart-routing-panel">
+  <div class="smart-routing-panel" :class="{ compact }">
     <div class="panel-head">
       <div>
-        <h3>{{ t('routingDefault.title') }}</h3>
+        <h3 v-if="!compact">{{ t('routingDefault.title') }}</h3>
         <p class="subtitle">{{ t('routingDefault.subtitle') }}</p>
       </div>
       <div class="head-actions">
@@ -166,6 +180,11 @@ defineExpose({ reload: loadDefaults })
   gap: 12px;
   min-height: 480px;
 }
+.smart-routing-panel.compact {
+  min-height: 0;
+  height: 100%;
+  gap: 8px;
+}
 .panel-head {
   display: flex;
   justify-content: space-between;
@@ -181,6 +200,9 @@ defineExpose({ reload: loadDefaults })
   font-size: 12px;
   color: var(--text-muted, #6b7280);
   max-width: 720px;
+}
+.compact .subtitle {
+  font-size: 11px;
 }
 .head-actions {
   display: flex;
@@ -201,6 +223,10 @@ defineExpose({ reload: loadDefaults })
   background: var(--bg-card, #fff);
   min-height: 420px;
   overflow: hidden;
+  flex: 1;
+}
+.compact .panel-body {
+  min-height: 0;
 }
 .panel-main {
   flex: 1;
