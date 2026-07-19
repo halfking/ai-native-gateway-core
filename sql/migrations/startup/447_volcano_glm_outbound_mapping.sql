@@ -1,5 +1,5 @@
 -- ===========================================================================
--- File:          deploy/sql/migrations/V1000__fix_volcano_glm_outbound_mapping.sql
+-- File:          sql/migrations/startup/447_volcano_glm_outbound_mapping.sql
 -- Database:      llm_gateway
 -- Object Type:   MIGRATION (DML, provider mapping correction)
 -- Purpose:       Map Volcano GLM standard names to the supplier model ID
@@ -8,7 +8,7 @@
 -- Idempotent:    YES
 -- Changelog:
 --   2026-07-19  v1.0  Fix Volcano GLM outbound model mapping after direct API verification
--- Rollback:      deploy/sql/migrations/V1000__fix_volcano_glm_outbound_mapping.down.sql
+-- Rollback:      sql/migrations/startup/447_volcano_glm_outbound_mapping.down.sql
 -- ===========================================================================
 
 \set ON_ERROR_STOP on

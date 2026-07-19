@@ -1,5 +1,5 @@
 -- ===========================================================================
--- File:          deploy/sql/migrations/V1000__fix_volcano_glm_outbound_mapping.down.sql
+-- File:          sql/migrations/startup/447_volcano_glm_outbound_mapping.down.sql
 -- Database:      llm_gateway
 -- Object Type:   ROLLBACK (DML, provider mapping correction)
 -- Purpose:       Restore provider-model mappings captured before V1000.

@@ -8,7 +8,7 @@ BEGIN;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'session_summaries' AND column_name = 'health_score'
     ) THEN
         ALTER TABLE session_summaries ADD COLUMN health_score INTEGER;
@@ -20,7 +20,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'session_summaries' AND column_name = 'health_grade'
     ) THEN
         ALTER TABLE session_summaries ADD COLUMN health_grade VARCHAR(1);
@@ -32,7 +32,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'session_summaries' AND column_name = 'range'
     ) THEN
         ALTER TABLE session_summaries ADD COLUMN range VARCHAR(20);
@@ -44,7 +44,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'session_summaries' AND column_name = 'last_health_at'
     ) THEN
         ALTER TABLE session_summaries ADD COLUMN last_health_at TIMESTAMP;
