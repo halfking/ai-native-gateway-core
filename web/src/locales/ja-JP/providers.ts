@@ -33,6 +33,12 @@ export default {
     freeChipNo: '無料を含まない',
     freeBadgeTooltipYes: 'このプロバイダーには無料 (billing_mode=free) のモデルがあります',
     freeBadgeTooltipNo: 'このプロバイダーには無料モデルがありません',
+    sortLabel: '並べ替え',
+    sortDefault: 'デフォルト',
+    sortUsage: '24h リクエスト',
+    sortQuality: '品質スコア',
+    sortAvailability: '可用性',
+    sortPerformance: '性能',
   },
   list: {
     table: {
@@ -45,6 +51,10 @@ export default {
       availableModels: '利用可能モデル',
       freeModels: '無料モデル',
       errorRate24h: '24時間のエラー率',
+      usage24h: '24h 使用量',
+      qualityScore: '総合品質',
+      availabilityScore: '可用性',
+      performanceScore: '性能',
       health: 'システム健全性',
       status: 'ステータス',
     },
