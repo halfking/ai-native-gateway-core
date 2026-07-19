@@ -82,6 +82,7 @@ const TenantAutoUpdateView = () => import('./views/tenant/TenantAutoUpdateView.v
 const ActivationWizard = () => import('./views/ActivationWizard.vue')
 const LicenseInfoView = () => import('./views/LicenseInfoView.vue')
 const UpgradePanel = () => import('./views/UpgradePanel.vue')
+const PluginMount = () => import('./components/PluginMount.vue')
 const DownloadView = () => import('./views/public/DownloadView.vue')
 const SupportView = () => import('./views/public/SupportView.vue')
 const OfflineActivationView = () => import('./views/public/OfflineActivationView.vue')
@@ -260,6 +261,9 @@ export const router = createRouter({
     { path: '/download',           component: DownloadView,          meta: { public: true, publicPortal: true } },
     { path: '/support',            component: SupportView,           meta: { public: true, publicPortal: true } },
     { path: '/offline-activation', component: OfflineActivationView, meta: { public: true, publicPortal: true } },
+
+    // Plugin runtime — iframe-mounted plugin web assets (reverse-proxied at /plugins/<id>/)
+    { path: '/plugins/:pluginId/:page(.*)*', component: PluginMount, meta: { requiresAuth: true } },
 
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
