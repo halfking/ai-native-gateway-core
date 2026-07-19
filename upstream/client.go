@@ -3,12 +3,15 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,9 +25,10 @@ const (
 	retryBaseDelay = 500 * time.Millisecond
 	defaultTimeout = 120 * time.Second
 	connectTimeout = 10 * time.Second
-	// A stalled streaming upstream must fail before typical browser request
-	// timeouts, otherwise the client cancels first and no health probe starts.
-	headerTimeout = 30 * time.Second
+	// The stream executor owns the 30s first-byte product policy. The transport
+	// must allow slower reasoning models to reach their headers first.
+	defaultHeaderTimeout = 120 * time.Second
+	maxErrorBodyBytes    = 4096
 )
 
 type ErrorKind = errorsx.ErrorKind
@@ -96,7 +100,7 @@ func NewWithRetries(maxRetries int) *Client {
 			Transport: &http.Transport{
 				Proxy:                 proxy.ProxyFunc(),
 				IdleConnTimeout:       90 * time.Second,
-				ResponseHeaderTimeout: headerTimeout,
+				ResponseHeaderTimeout: responseHeaderTimeout(),
 				DialContext: (&net.Dialer{
 					Timeout:   connectTimeout,
 					KeepAlive: 30 * time.Second,
@@ -109,6 +113,20 @@ func NewWithRetries(maxRetries int) *Client {
 		baseDelay:  retryBaseDelay,
 		proxy:      proxy,
 	}
+}
+
+func responseHeaderTimeout() time.Duration {
+	value := strings.TrimSpace(os.Getenv("LLM_GATEWAY_RESPONSE_HEADER_TIMEOUT"))
+	if value == "" {
+		return defaultHeaderTimeout
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if duration, err := time.ParseDuration(value); err == nil && duration > 0 {
+		return duration
+	}
+	return defaultHeaderTimeout
 }
 
 // ProxyStatus returns a snapshot of the proxy resolver state.
@@ -176,9 +194,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 				statusCode = resp.StatusCode
 				// 2026-06-23 P0: capture upstream body (4KB cap) so transient
 				// errors have a diagnostic message in request_logs.
-				body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-				//nolint:errcheck // best-effort close
-				resp.Body.Close()
+				body := captureErrorBody(resp, true)
 				bodyBytes = body
 				msg = strings.TrimSpace(string(body))
 				if msg == "" {
@@ -193,9 +209,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 		statusCode := 0
 		if resp != nil {
 			statusCode = resp.StatusCode
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			//nolint:errcheck // best-effort close
-			resp.Body.Close()
+			body := captureErrorBody(resp, attempt == c.maxRetries)
 			bodyBytes = body
 		}
 		if doErr != nil {
@@ -211,6 +225,21 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 		}
 	}
 	return resp, uErr
+}
+
+// captureErrorBody consumes an error response once and restores a readable
+// body so callers can still inspect or relay the response after Do returns.
+func captureErrorBody(resp *http.Response, restore bool) []byte {
+	if resp == nil || resp.Body == nil {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	//nolint:errcheck // best-effort close
+	resp.Body.Close()
+	if restore {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	return body
 }
 
 // BuildUpstreamRequest creates an HTTP request to the upstream LLM provider.

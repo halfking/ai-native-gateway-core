@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -188,5 +189,86 @@ func TestDo_NonRetryable429(t *testing.T) {
 	}
 	if attempts.Load() != 1 {
 		t.Errorf("expected 1 attempt (no retry for 429), got %d", attempts.Load())
+	}
+}
+
+func TestNewWithRetries_DefaultResponseHeaderTimeout(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_RESPONSE_HEADER_TIMEOUT", "")
+	client := NewWithRetries(0)
+	transport, ok := client.hc.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client transport type = %T, want *http.Transport", client.hc.Transport)
+	}
+	if transport.ResponseHeaderTimeout != 120*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %s, want 2m", transport.ResponseHeaderTimeout)
+	}
+}
+
+func TestNewWithRetries_ResponseHeaderTimeoutOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "seconds", value: "45", want: 45 * time.Second},
+		{name: "duration", value: "75s", want: 75 * time.Second},
+		{name: "invalid", value: "nope", want: 120 * time.Second},
+		{name: "non-positive", value: "0", want: 120 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LLM_GATEWAY_RESPONSE_HEADER_TIMEOUT", tc.value)
+			client := NewWithRetries(0)
+			transport, ok := client.hc.Transport.(*http.Transport)
+			if !ok {
+				t.Fatalf("client transport type = %T, want *http.Transport", client.hc.Transport)
+			}
+			if transport.ResponseHeaderTimeout != tc.want {
+				t.Fatalf("ResponseHeaderTimeout = %s, want %s", transport.ResponseHeaderTimeout, tc.want)
+			}
+		})
+	}
+}
+
+func TestCaptureErrorBodyRestoresBody(t *testing.T) {
+	const body = `{"error":{"message":"upstream unavailable"}}`
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+
+	got := captureErrorBody(resp, true)
+	if string(got) != body {
+		t.Fatalf("captured body = %q, want %q", got, body)
+	}
+	restored, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read restored response body failed: %v", err)
+	}
+	if string(restored) != body {
+		t.Fatalf("restored response body = %q, want %q", restored, body)
+	}
+}
+
+func TestDo_ExhaustedRetryResponseBodyRemainsReadable(t *testing.T) {
+	const body = `{"error":{"message":"upstream unavailable"}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client := NewWithRetries(0)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	resp, uErr := client.Do(req)
+	if uErr == nil || resp == nil {
+		t.Fatalf("Do() error/response = %v/%v, want both", uErr, resp)
+	}
+	defer resp.Body.Close()
+	restored, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read exhausted response body failed: %v", err)
+	}
+	if string(restored) != body {
+		t.Fatalf("restored response body = %q, want %q", restored, body)
 	}
 }
