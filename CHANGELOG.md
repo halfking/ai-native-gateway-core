@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Request trace audit fixes** (2026-07-20): stage-event transaction failures now roll back and retain Redis traces for retry; hot/partition fallback reads select the newest row deterministically; migration 450 adds the missing `request_stage_events.tenant_id` column and index.
+- **Request trace audit fixes** (2026-07-20): stage-event transaction failures now roll back and retain Redis traces for retry; hot/partition fallback reads select the newest row deterministically; migration 450 adds the missing `request_stage_events.tenant_id` column and index; trace routes fail closed when admin authorization is not configured.
 
 ### Added
 

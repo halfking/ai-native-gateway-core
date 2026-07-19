@@ -649,3 +649,9 @@
 |-----------|------|
 | 449 | `449_request_logs_hot_trace_events.sql` |
 
+## 2026-07-19T22:44:52Z — deploy 154 build_seq 1207 (3998271e)
+
+| Migration | File |
+|-----------|------|
+| 450 | `450_request_stage_events_tenant.sql` |
+

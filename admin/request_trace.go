@@ -60,7 +60,13 @@ func (h *RequestTraceHandler) RegisterRoutes(mux *http.ServeMux, superAdmin func
 		return
 	}
 	if superAdmin == nil {
-		superAdmin = func(fn http.HandlerFunc) http.HandlerFunc { return fn }
+		// Trace data includes request bodies and upstream responses. Fail closed
+		// when the caller has not supplied the required admin authorization layer.
+		mux.HandleFunc("/api/admin/requests/", func(w http.ResponseWriter, _ *http.Request) {
+			writeAdminError(w, http.StatusServiceUnavailable, "authorization_unavailable",
+				"request trace authorization is not configured")
+		})
+		return
 	}
 	mux.HandleFunc("/api/admin/requests/", superAdmin(h.handleSubrouter))
 }
@@ -181,10 +187,11 @@ func (h *RequestTraceHandler) requestTraceState(ctx context.Context, requestID s
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(request_status, ''), trace_events
 		FROM (
-			SELECT request_status, trace_events FROM request_logs_hot WHERE request_id = $1
+			SELECT request_status, trace_events, ts FROM request_logs_hot WHERE request_id = $1
 			UNION ALL
-			SELECT request_status, trace_events FROM request_logs WHERE request_id = $1
+			SELECT request_status, trace_events, ts FROM request_logs WHERE request_id = $1
 		) t
+		ORDER BY ts DESC NULLS LAST
 		LIMIT 1
 	`, requestID).Scan(&status, &traceEvents)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -303,6 +310,7 @@ func (h *RequestTraceHandler) fetchRequestSummary(ctx context.Context, requestID
 			       auto_decision, task_type, task_type_chosen
 			FROM request_logs WHERE request_id = $1
 		) t
+		ORDER BY ts DESC NULLS LAST
 		LIMIT 1
 	`, requestID)
 	var s requestSummary
@@ -591,11 +599,12 @@ func (h *RequestTraceHandler) buildProbeTrace(ctx context.Context, requestID str
 		_ = h.db.QueryRow(ctx, `
 			SELECT COALESCE(task_type_chosen, '')
 			FROM (
-				SELECT task_type_chosen FROM request_logs_hot WHERE request_id = $1
+				SELECT task_type_chosen, ts FROM request_logs_hot WHERE request_id = $1
 				UNION ALL
-				SELECT task_type_chosen FROM request_logs WHERE request_id = $1
+				SELECT task_type_chosen, ts FROM request_logs WHERE request_id = $1
 			) t
-			LIMIT 1
+		ORDER BY ts DESC NULLS LAST
+		LIMIT 1
 		`, requestID).Scan(&chosen)
 		if o := strings.TrimPrefix(chosen, "probe_"); o == "gateway" || o == "direct" {
 			origin = o

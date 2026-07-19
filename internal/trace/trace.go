@@ -496,9 +496,10 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 
 	// 2026-07-19: 解析 trace_events 并写入 request_stage_events 规范化表（migration 434）
 	if err := r.writeStageEvents(runCtx, db, requestID, raw); err != nil {
-		// 非阻塞失败，记录警告但不返回错误（保证主流程不受影响）
+		// 保留 Redis key，允许下一次 flush 重试规范化事件写入。
 		slog.Warn("trace.FlushToPG: writeStageEvents failed",
 			"request_id", requestID, "err", err)
+		return err
 	}
 
 	// Flush 成功后删除 Redis key (用 DEL 而非 UNLINK,确保后续读取立刻拿到 PG 版)。

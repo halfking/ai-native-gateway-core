@@ -3,6 +3,7 @@ package trace
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,6 +34,9 @@ func (r *RedisRecorder) writeStageEvents(ctx context.Context, db *pgxpool.Pool, 
 	// 其他事件不携带。找不到时用空字符串(对应 PG 的 NOT NULL → 23502,但 PG schema 现状
 	// 是 `text NOT NULL`,空字符串是合法值,前端会显示"未知租户")。
 	tenantID := extractTenantID(trace.Events)
+	if tenantID == "" {
+		tenantID = "default"
+	}
 
 	// 批量插入 — 2026-07-20 修复: 改为在 tx 中逐条 Exec。
 	// 原始实现用 pgx.Batch.Queue + SendBatch + ::jsonb cast,
@@ -74,14 +78,20 @@ func (r *RedisRecorder) writeStageEvents(ctx context.Context, db *pgxpool.Pool, 
 				details[k] = v
 			}
 		}
-		detailsJSON, _ := json.Marshal(details)
+		detailsJSON, marshalErr := json.Marshal(details)
+		if marshalErr != nil {
+			return fmt.Errorf("marshal stage event details failed: %w (request_id=%s, seq=%d)", marshalErr, requestID, ev.Seq)
+		}
 		if len(details) == 0 {
 			detailsJSON = []byte("{}")
 		}
 
 		var snapshotJSON []byte = []byte("null")
 		if ev.Snapshot != nil {
-			b, _ := json.Marshal(ev.Snapshot)
+			b, marshalErr := json.Marshal(ev.Snapshot)
+			if marshalErr != nil {
+				return fmt.Errorf("marshal stage event snapshot failed: %w (request_id=%s, seq=%d)", marshalErr, requestID, ev.Seq)
+			}
 			if len(b) > 0 {
 				snapshotJSON = b
 			}
@@ -98,20 +108,14 @@ func (r *RedisRecorder) writeStageEvents(ctx context.Context, db *pgxpool.Pool, 
 			tenantID, requestID, ev.Seq, ev.Stage, ev.Module, ev.Timestamp, ev.DurationMs, ev.Status,
 			ev.Error, httpStatus, responseBody, failureHint,
 			string(detailsJSON), string(snapshotJSON))
-		if execErr != nil && firstErr == nil {
+		if execErr != nil {
 			firstErr = execErr
 			firstFailedIdx = i
+			break
 		}
 	}
 
-	if commitErr := tx.Commit(ctx); commitErr != nil {
-		slog.Warn("trace.writeStageEvents: commit failed",
-			"request_id", requestID, "err", commitErr)
-	}
-
 	if firstErr != nil {
-		// 2026-07-20: 增加诊断信息 — 第一个失败的 event 序号、stage、details 截断字符串,
-		// 便于运维直接看到具体是哪个 event 的哪种内容触发了 jsonb cast 失败。
 		if firstFailedIdx >= 0 && firstFailedIdx < len(trace.Events) {
 			ev := trace.Events[firstFailedIdx]
 			detailsBytes, _ := json.Marshal(ev.Details)
@@ -128,6 +132,12 @@ func (r *RedisRecorder) writeStageEvents(ctx context.Context, db *pgxpool.Pool, 
 				"error", firstErr.Error())
 		}
 		return firstErr
+	}
+
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		slog.Warn("trace.writeStageEvents: commit failed",
+			"request_id", requestID, "err", commitErr)
+		return fmt.Errorf("commit stage events failed: %w (request_id=%s, event_count=%d)", commitErr, requestID, len(trace.Events))
 	}
 
 	return nil
