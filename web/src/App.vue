@@ -15,13 +15,15 @@ import GuestHeader from './components/GuestHeader.vue'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
 import { useNavAccordion } from './composables/useNavAccordion'
-import { NAV_GROUPS, NAV_PRIMARY_ITEMS, visibleNavGroups, visibleNavItems, isNavItemActive } from './config/appNav'
+import { usePluginNav } from './composables/usePluginNav'
+import { NAV_GROUPS, NAV_PRIMARY_ITEMS, mergeNav, visibleNavGroups, visibleNavItems, isNavItemActive } from './config/appNav'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const { showLoginModal, openLogin, closeLogin } = useLoginModal()
 const { collapsed, toggleSidebar } = useSidebar()
+const { pluginNav } = usePluginNav()
 const showChangePassword = ref(false)
 const passwordSuccessMessage = ref('')
 const mustChangePassword = computed(() => !!store.jwtToken && !!store.userInfo?.must_change_password)
@@ -99,7 +101,7 @@ const navPrimaryItems = computed(() =>
 )
 
 const navGroups = computed(() =>
-  visibleNavGroups(NAV_GROUPS, {
+  visibleNavGroups(mergeNav(NAV_GROUPS, pluginNav.value), {
     isSuperAdmin: isSuperAdmin.value,
     isPlatformOps: isPlatformOps.value,
     isTenantPortal: isTenantPortal.value,
