@@ -49,6 +49,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
+	"github.com/kaixuan/llm-gateway-go/settings" //nolint:depguard // Phase 1.6: read goal.cost_mode from settings
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -2184,9 +2185,19 @@ func (h *ChatHandler) serveWithExecutor(
 	// Read from Phase 0 cost_mode preset if available
 	// Uses goal.GetPreset() to load the preset based on tenant settings
 	if keyInfo != nil && keyInfo.TenantID != "" {
-		// Infer cost mode from settings (defaults to "minimal" if not set)
-		// For now, use hardcoded "balanced" mode - will be read from settings in future
-		costMode := "balanced" // TODO: read from settings system
+		// Read cost_mode from settings system (Phase 1.6)
+		costMode := "balanced" // default fallback
+
+		// Attempt to read from global settings registry
+		if settings.Global != nil {
+			val, _, err := settings.Global.EffectiveValue(settings.ScopeTenant, "goal.cost_mode", keyInfo.TenantID)
+			if err == nil && len(val) > 0 {
+				var mode string
+				if json.Unmarshal(val, &mode) == nil && mode != "" {
+					costMode = mode
+				}
+			}
+		}
 
 		if preset := goal.GetPreset(costMode); preset.RetryEnabled {
 			maxRetries = preset.MaxRetryCount
