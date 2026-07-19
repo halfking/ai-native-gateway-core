@@ -59,7 +59,7 @@ export type QualityGrade = 'S' | 'A' | 'B' | 'C' | 'D';
  * 模型质量画像
  */
 export interface ModelQualityProfile {
-  /** 模型名称 */
+  /** 模型名称（空字符串表示供应商级聚合） */
   model_name: string;
   /** 综合质量分数（0-100） */
   quality_score: number;
@@ -286,11 +286,11 @@ export function getErrorMessage(code: number): string {
  * 质量等级颜色映射
  */
 export const QUALITY_GRADE_COLORS: Record<QualityGrade, string> = {
-  S: '#ff4757', // 红色
-  A: '#ffa502', // 橙色
-  B: '#ffd700', // 金色
-  C: '#5352ed', // 蓝色
-  D: '#747d8c', // 灰色
+  S: 'var(--danger)',
+  A: 'var(--warning)',
+  B: 'var(--warning)',
+  C: 'var(--accent)',
+  D: 'var(--muted)',
 };
 
 /**

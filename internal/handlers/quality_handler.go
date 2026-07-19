@@ -208,9 +208,10 @@ ORDER BY quality_score DESC
 	for rows.Next() {
 		var m ModelQualityProfile
 		var scores QualityScores
+		var modelName sql.NullString
 
 		err := rows.Scan(
-			&m.ModelName,
+			&modelName,
 			&m.QualityScore,
 			&m.QualityGrade,
 			&scores.Availability,
@@ -224,6 +225,9 @@ ORDER BY quality_score DESC
 			continue
 		}
 
+		if modelName.Valid {
+			m.ModelName = modelName.String
+		}
 		m.Scores = scores
 		models = append(models, m)
 	}
