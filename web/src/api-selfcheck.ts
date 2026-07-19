@@ -16,7 +16,10 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   })
   if (!resp.ok) {
     const text = await resp.text().catch(() => '')
-    throw new Error(`${resp.status} ${resp.statusText}: ${text}`)
+    const err = new Error(`${resp.status} ${resp.statusText}: ${text}`) as Error & { status?: number; body?: string }
+    err.status = resp.status
+    err.body = text
+    throw err
   }
   return resp.json() as Promise<T>
 }
@@ -166,4 +169,20 @@ export async function fetchSelfCheckModels(): Promise<{ models: SelfCheckModelIn
 
 export async function triggerSelfCheck(model = ''): Promise<{ ok: boolean; message: string }> {
   return req<{ ok: boolean; message: string }>('POST', '/api/self-check/trigger', { model })
+}
+
+// Trigger availability — tells the UI whether POST /api/self-check/trigger can
+// accept runs right now. Under the new probe mode (default since 2026-07-14)
+// the legacy featured-model worker is not instantiated, so available=false
+// and the UI must disable the "触发测试" / "手动触发" buttons instead of
+// firing a 410/503.
+export interface SelfCheckTriggerAvailability {
+  available: boolean
+  new_probe_mode: boolean
+  reason?: string
+  error_code?: string
+}
+
+export async function fetchSelfCheckTriggerAvailability(): Promise<SelfCheckTriggerAvailability> {
+  return req<SelfCheckTriggerAvailability>('GET', '/api/self-check/trigger/availability')
 }

@@ -1,0 +1,189 @@
+package admin
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+)
+
+// TestHandleTriggerAvailability_NoWorker verifies GET /trigger/availability
+// reports available=false with the right reason when the legacy worker is
+// not initialized (the default in new probe mode since 2026-07-14).
+func TestHandleTriggerAvailability_NoWorker(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "true")
+	h := &SelfCheckHandler{} // worker nil
+
+	req := httptest.NewRequest(http.MethodGet, "/api/self-check/trigger/availability", nil)
+	rr := httptest.NewRecorder()
+	h.handleTriggerAvailability(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("availability endpoint must return 200 even when worker is nil (got %d)", rr.Code)
+	}
+	var body struct {
+		Available    bool   `json:"available"`
+		NewProbeMode bool   `json:"new_probe_mode"`
+		Reason       string `json:"reason"`
+		ErrorCode    string `json:"error_code"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Available {
+		t.Fatalf("available should be false when worker is nil")
+	}
+	if !body.NewProbeMode {
+		t.Fatalf("new_probe_mode should mirror LLM_GATEWAY_USE_NEW_PROBE_MODE")
+	}
+	if body.ErrorCode != "self_check.trigger.disabled_in_new_probe_mode" {
+		t.Fatalf("unexpected error_code: %q", body.ErrorCode)
+	}
+	if !strings.Contains(body.Reason, "new probe mode") {
+		t.Fatalf("reason should mention new probe mode, got: %q", body.Reason)
+	}
+}
+
+// TestHandleTriggerAvailability_OldProbeFallback verifies that when
+// LLM_GATEWAY_USE_NEW_PROBE_MODE is false but worker is still nil, we
+// fall back to the generic "worker_unavailable" error code.
+func TestHandleTriggerAvailability_OldProbeFallback(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "false")
+	h := &SelfCheckHandler{}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/self-check/trigger/availability", nil)
+	rr := httptest.NewRecorder()
+	h.handleTriggerAvailability(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (got %d)", rr.Code)
+	}
+	var body struct {
+		ErrorCode string `json:"error_code"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.ErrorCode != "self_check.trigger.worker_unavailable" {
+		t.Fatalf("expected generic worker_unavailable code, got %q", body.ErrorCode)
+	}
+}
+
+// TestHandleTrigger_NoWorkerReturnsGone verifies POST /trigger returns 410
+// (Gone) instead of 503 when the worker is nil. 503 misled the UI into
+// thinking it was a transient outage; 410 is the correct semantic for
+// "endpoint retired under current probe mode".
+func TestHandleTrigger_NoWorkerReturnsGone(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "true")
+	h := &SelfCheckHandler{}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/self-check/trigger",
+		strings.NewReader(`{"model":"minimax-m2.7"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.handleTrigger(rr, req)
+
+	if rr.Code != http.StatusGone {
+		t.Fatalf("expected 410 Gone (got %d, body=%s)", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		ErrorCode string `json:"error_code"`
+		Message   string `json:"message"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.ErrorCode != "self_check.trigger.disabled_in_new_probe_mode" {
+		t.Fatalf("expected disabled_in_new_probe_mode, got %q", body.ErrorCode)
+	}
+	if !strings.Contains(body.Message, "NodeProbe") {
+		t.Fatalf("message should point to the new probes, got: %q", body.Message)
+	}
+}
+
+// TestHandleTrigger_OldProbeFallbackGone verifies that under old probe mode
+// (rollback path) with no worker, we still return 410 but with the generic
+// worker_unavailable error code so operators know to inspect worker startup.
+func TestHandleTrigger_OldProbeFallbackGone(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "false")
+	h := &SelfCheckHandler{}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/self-check/trigger",
+		strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.handleTrigger(rr, req)
+
+	if rr.Code != http.StatusGone {
+		t.Fatalf("expected 410 Gone (got %d)", rr.Code)
+	}
+	var body struct {
+		ErrorCode string `json:"error_code"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.ErrorCode != "self_check.trigger.worker_unavailable" {
+		t.Fatalf("expected generic worker_unavailable, got %q", body.ErrorCode)
+	}
+}
+
+// TestHandleTrigger_MethodNotAllowed guards against non-POST traffic.
+func TestHandleTrigger_MethodNotAllowed(t *testing.T) {
+	h := &SelfCheckHandler{}
+	req := httptest.NewRequest(http.MethodGet, "/api/self-check/trigger", nil)
+	rr := httptest.NewRecorder()
+	h.handleTrigger(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for GET on POST endpoint, got %d", rr.Code)
+	}
+}
+
+// TestScNewProbeMode_EnvMatrix locks down the env-parsing contract so future
+// refactors in either cmd/gateway/main.go or admin/self_check_handlers.go
+// don't drift.
+func TestScNewProbeMode_EnvMatrix(t *testing.T) {
+	cases := []struct {
+		env   string
+		unset bool
+		want  bool
+	}{
+		{"", true, true},  // unset → default true
+		{"", false, true}, // empty → default true
+		{"true", false, true},
+		{"TRUE", false, true},
+		{"1", false, true},
+		{"yes", false, true},
+		{"on", false, true},
+		{"false", false, false},
+		{"0", false, false},
+		{"no", false, false},
+		{"off", false, false},
+		{"random", false, false},
+	}
+	for _, c := range cases {
+		name := c.env
+		if c.unset {
+			name = "<unset>"
+		}
+		t.Run(name, func(t *testing.T) {
+			if c.unset {
+				// best-effort unset for the duration of the test
+				old, had := os.LookupEnv("LLM_GATEWAY_USE_NEW_PROBE_MODE")
+				os.Unsetenv("LLM_GATEWAY_USE_NEW_PROBE_MODE")
+				defer func() {
+					if had {
+						os.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", old)
+					}
+				}()
+			} else {
+				t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", c.env)
+			}
+			if got := scNewProbeMode(); got != c.want {
+				t.Fatalf("env=%q want=%v got=%v", c.env, c.want, got)
+			}
+		})
+	}
+}

@@ -7,7 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,6 +39,7 @@ func (h *SelfCheckHandler) RegisterRoutes(mux *http.ServeMux, admin, superAdmin 
 	mux.HandleFunc("/api/self-check/runs/", admin(h.handleGetRun))
 	mux.HandleFunc("/api/self-check/settings", admin(h.handleGetSettings))
 	mux.HandleFunc("/api/self-check/settings/update", superAdmin(h.handleUpdateSettings))
+	mux.HandleFunc("/api/self-check/trigger/availability", admin(h.handleTriggerAvailability))
 	mux.HandleFunc("/api/self-check/trigger", superAdmin(h.handleTrigger))
 	mux.HandleFunc("/api/self-check/stats", admin(h.handleStats))
 	mux.HandleFunc("/api/self-check/models", admin(h.handleModels))
@@ -406,6 +409,36 @@ func (h *SelfCheckHandler) handleUpdateSettings(w http.ResponseWriter, r *http.R
 
 // --- Trigger ---
 
+// handleTriggerAvailability reports whether POST /api/self-check/trigger can
+// accept runs right now. In the new probe mode (LLM_GATEWAY_USE_NEW_PROBE_MODE
+// default true since 2026-07-14), the legacy featured-model worker is no
+// longer instantiated, so manual triggers are intentionally unavailable.
+// Front-end uses this to disable the "触发测试" / "手动触发" buttons instead
+// of letting them fire a request that would 503.
+//
+// Route: GET /api/self-check/trigger/availability (admin).
+func (h *SelfCheckHandler) handleTriggerAvailability(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	available := h.worker != nil
+	resp := map[string]any{
+		"available":      available,
+		"new_probe_mode": scNewProbeMode(),
+	}
+	if !available {
+		if scNewProbeMode() {
+			resp["reason"] = "self-check worker disabled in new probe mode (LLM_GATEWAY_USE_NEW_PROBE_MODE=true); use NodeProbe / ActiveProbe / SystemHealth instead"
+			resp["error_code"] = "self_check.trigger.disabled_in_new_probe_mode"
+		} else {
+			resp["reason"] = "self-check worker is not initialized (server may still be starting)"
+			resp["error_code"] = "self_check.trigger.worker_unavailable"
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, 405, map[string]any{"error": "method not allowed"})
@@ -419,7 +452,20 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if h.worker == nil {
-		writeJSON(w, 503, map[string]any{"error": "worker not available", "message": "self-check worker is not initialized"})
+		// 410 Gone: this endpoint is intentionally retired under the new
+		// probe mode (no longer transiently unavailable). 503 misled the UI
+		// into a red "服务不可用" banner that wasn't actionable.
+		resp := map[string]any{
+			"error":   "trigger endpoint retired",
+			"message": "self-check worker is not initialized",
+		}
+		if scNewProbeMode() {
+			resp["message"] = "self-check is disabled in new probe mode (LLM_GATEWAY_USE_NEW_PROBE_MODE=true). Use NodeProbe / ActiveProbe / SystemHealth for live probes."
+			resp["error_code"] = "self_check.trigger.disabled_in_new_probe_mode"
+		} else {
+			resp["error_code"] = "self_check.trigger.worker_unavailable"
+		}
+		writeJSON(w, http.StatusGone, resp)
 		return
 	}
 	if err := h.worker.TriggerManualRun(body.Model); err != nil {
@@ -427,6 +473,17 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "message": "manual trigger queued", "model": body.Model})
+}
+
+// scNewProbeMode mirrors cmd/gateway.useNewProbeMode() without taking on a
+// cross-package dependency. Keeps admin/self_check_handlers.go self-contained
+// so availability + 410 reason text can be derived from the live env.
+func scNewProbeMode() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_USE_NEW_PROBE_MODE")))
+	if v == "" {
+		return true // default since 2026-07-14
+	}
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
 // --- Stats ---

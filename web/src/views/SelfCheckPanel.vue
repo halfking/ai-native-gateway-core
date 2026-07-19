@@ -11,11 +11,13 @@ import {
   fetchSelfCheckRuns,
   fetchSelfCheckModels,
   fetchSelfCheckRunDetail,
+  fetchSelfCheckTriggerAvailability,
   triggerSelfCheck,
   type SelfCheckSettings,
   type SelfCheckStats,
   type SelfCheckRun,
   type SelfCheckRunDetail,
+  type SelfCheckTriggerAvailability,
 } from '../api-selfcheck'
 
 const loading = ref(false)
@@ -30,6 +32,11 @@ const runDetail = ref<SelfCheckRunDetail | null>(null)
 const showSettings = ref(false)
 const editingSettings = ref<SelfCheckSettings | null>(null)
 const triggerBusy = ref(false)
+// Trigger availability — drives enable/disable of the "触发测试" / "手动触发"
+// buttons. Default to "available" so the first paint isn't broken if the
+// availability endpoint is slow; we re-fetch immediately on mount and on
+// every poll cycle.
+const triggerAvailability = ref<SelfCheckTriggerAvailability>({ available: true, new_probe_mode: true })
 const range = ref<'1h' | '6h' | '24h' | '7d'>('24h')
 
 let pollTimer: number | undefined
@@ -40,11 +47,12 @@ async function loadAll() {
   loading.value = true
   error.value = null
   try {
-    const [s, st, ru, mo] = await Promise.all([
+    const [s, st, ru, mo, avail] = await Promise.all([
       fetchSelfCheckSettings(),
       fetchSelfCheckStats(range.value),
       fetchSelfCheckRuns({ limit: 30 }),
       fetchSelfCheckModels(),
+      fetchSelfCheckTriggerAvailability().catch(() => triggerAvailability.value),
     ])
     settings.value = s
     // Go nil slices encode as JSON null — normalize to [] so template .length is safe.
@@ -56,6 +64,7 @@ async function loadAll() {
     }
     recentRuns.value = ru.items ?? []
     models.value = mo.models ?? []
+    if (avail) triggerAvailability.value = avail
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -134,12 +143,37 @@ async function saveSettings() {
 // ── 手动触发 ──────────────────────────────────────────
 
 async function onTrigger(model = '') {
+  // Front-end gate mirrors the back-end worker state so we don't fire
+  // requests the server is guaranteed to 410 on.
+  if (!triggerAvailability.value.available) {
+    error.value = triggerAvailability.value.reason ?? '自检触发功能不可用'
+    return
+  }
   triggerBusy.value = true
   try {
     await triggerSelfCheck(model)
     setTimeout(() => void loadAll(), 1000)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '触发失败'
+    // 410 Gone = server explicitly retired this endpoint (new probe mode).
+    // Surface the friendly reason from the payload instead of the raw 410
+    // banner, then refresh availability so the buttons disable.
+    const err = e as Error & { status?: number; body?: string }
+    if (err.status === 410) {
+      let parsed: { message?: string; reason?: string } = {}
+      try {
+        parsed = JSON.parse(err.body || '{}') as { message?: string; reason?: string }
+      } catch {
+        // ignore JSON parse errors, fall back to defaults
+      }
+      error.value = parsed.message || parsed.reason || triggerAvailability.value.reason || '该触发功能已下线'
+      try {
+        triggerAvailability.value = await fetchSelfCheckTriggerAvailability()
+      } catch {
+        // best-effort refresh; ignore failure
+      }
+    } else {
+      error.value = e instanceof Error ? e.message : '触发失败'
+    }
   } finally {
     triggerBusy.value = false
   }
@@ -269,8 +303,19 @@ function healthColor(rate: number): string {
           <option value="7d">7d</option>
         </select>
         <button class="btn btn-secondary" @click="openSettings">⚙ 设置</button>
-        <button class="btn btn-primary" :disabled="triggerBusy" @click="onTrigger('')">
-          {{ triggerBusy ? '⏳ 触发中' : '▶ 手动触发' }}
+        <button
+          class="btn btn-primary"
+          :disabled="triggerBusy || !triggerAvailability.available"
+          :title="triggerAvailability.available ? '' : (triggerAvailability.reason || '触发功能不可用')"
+          @click="onTrigger('')"
+        >
+          {{
+            triggerBusy
+              ? '⏳ 触发中'
+              : triggerAvailability.available
+                ? '▶ 手动触发'
+                : '⛔ 触发已下线'
+          }}
         </button>
         <button class="btn btn-secondary" @click="loadAll">🔄</button>
       </div>
@@ -315,7 +360,14 @@ function healthColor(rate: number): string {
             <span class="stat-value">{{ fmtRelative(m.last_run) }}</span>
           </div>
         </div>
-        <button class="btn btn-tiny" @click="onTrigger(m.model_name)">触发测试</button>
+        <button
+          class="btn btn-tiny"
+          :disabled="triggerBusy || !triggerAvailability.available"
+          :title="triggerAvailability.available ? '' : (triggerAvailability.reason || '触发功能不可用')"
+          @click="onTrigger(m.model_name)"
+        >
+          触发测试
+        </button>
       </div>
       <div v-if="models.length === 0" class="empty-state">暂无模型</div>
     </div>
