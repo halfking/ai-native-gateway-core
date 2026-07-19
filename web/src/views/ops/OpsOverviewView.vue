@@ -15,6 +15,7 @@ import {
   type RegionStats,
   type UpgradeLog,
   type CenterInstance,
+  type RuntimeMetricsSummary,
 } from '../../api/ops'
 import type { DownloadStats } from '../../api/public'
 
@@ -39,6 +40,7 @@ const downloadStats = ref<DownloadStats | null>(null)
 const regionStats = ref<RegionStats[]>([])
 const deploymentNodes = ref<CenterInstance[]>([])
 const dataPlaneTables = ref<Record<string, number>>({})
+const runtimeMetrics = ref<RuntimeMetricsSummary[]>([])
 
 const quickLinks = computed(() => [
   { path: '/ops/center', icon: '🖥️', label: t('ops.center.title') },
@@ -106,6 +108,7 @@ async function load() {
     regionStats.value = bundle.region_stats ?? []
     deploymentNodes.value = bundle.deployment_nodes ?? []
     dataPlaneTables.value = bundle.data_plane_tables ?? {}
+    runtimeMetrics.value = bundle.runtime_metrics_summary ?? []
   } catch (error) {
     ElMessage.error(t('ops.overview.loadFailed'))
     console.error(error)
@@ -393,6 +396,55 @@ onMounted(load)
           </el-table-column>
         </el-table>
       </el-card>
+
+      <!-- Runtime Metrics Summary Card -->
+      <el-card v-if="runtimeMetrics.length > 0" shadow="never" class="full-width runtime-metrics-card">
+        <template #header>
+          <div class="panel-header">
+            <span>实例性能（最近 24 小时）</span>
+          </div>
+        </template>
+        <el-table :data="runtimeMetrics" size="small">
+          <el-table-column prop="hostname" label="实例" width="150" show-overflow-tooltip />
+          <el-table-column prop="region" label="区域" width="80" />
+          <el-table-column label="CPU">
+            <template #default="{ row }">
+              <el-progress 
+                :percentage="Math.min(100, Math.round(row.avg_cpu_pct))" 
+                :color="row.avg_cpu_pct > 80 ? '#f56c6c' : row.avg_cpu_pct > 60 ? '#e6a23c' : '#67c23a'"
+                :format="() => `${row.avg_cpu_pct.toFixed(1)}%`"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="内存">
+            <template #default="{ row }">
+              <el-progress 
+                :percentage="Math.min(100, Math.round(row.avg_mem_pct))"
+                :color="row.avg_mem_pct > 90 ? '#f56c6c' : row.avg_mem_pct > 70 ? '#e6a23c' : '#67c23a'"
+                :format="() => `${row.avg_mem_pct.toFixed(1)}%`"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column prop="avg_tps" label="TPS" width="80">
+            <template #default="{ row }">{{ row.avg_tps.toFixed(2) }}</template>
+          </el-table-column>
+          <el-table-column label="P99 延迟" width="100">
+            <template #default="{ row }">
+              <span :class="{ 'slow-p99': row.max_p99_ms > 30000 }">
+                {{ (row.max_p99_ms / 1000).toFixed(1) }}s
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="version" label="版本" width="100" />
+          <el-table-column label="状态" width="80">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'online' ? 'success' : 'danger'" size="small">
+                {{ row.status }}
+              </el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
     </div>
   </div>
 </template>
@@ -582,3 +634,12 @@ onMounted(load)
   font-family: monospace;
 }
 </style>
+
+.runtime-metrics-card {
+  margin-top: 20px;
+}
+
+.slow-p99 {
+  color: #f56c6c;
+  font-weight: bold;
+}

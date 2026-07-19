@@ -95,6 +95,7 @@ func (h *Handler) buildOpsOverviewPayload(ctx context.Context) (map[string]any, 
 		{"recent_faults", h.queryOpsRecentFaults},
 		{"recent_upgrades", h.queryOpsRecentUpgrades},
 		{"download_stats", h.queryOpsDownloadStats},
+		{"runtime_metrics_summary", h.queryOpsRuntimeMetricsSummary},
 	}
 
 	ch := make(chan result, len(queries))
@@ -175,9 +176,9 @@ func (h *Handler) queryOpsRegionStats(ctx context.Context) (any, error) {
 	byRegion := make(map[string]map[string]any)
 	for rows.Next() {
 		var (
-			region                                    string
-			total, online, offline, degraded          int
-			lastHeartbeat                             *time.Time
+			region                           string
+			total, online, offline, degraded int
+			lastHeartbeat                    *time.Time
 		)
 		if err := rows.Scan(&region, &total, &online, &offline, &degraded, &lastHeartbeat); err != nil {
 			return nil, err
@@ -361,9 +362,9 @@ func (h *Handler) queryOpsRecentFaults(ctx context.Context) (any, error) {
 	var events []map[string]any
 	for rows.Next() {
 		var (
-			id, ruleID                                                        int64
-			ruleName, severity, status, title, description, source            string
-			detectedAt                                                        time.Time
+			id, ruleID                                             int64
+			ruleName, severity, status, title, description, source string
+			detectedAt                                             time.Time
 		)
 		if err := rows.Scan(&id, &ruleID, &ruleName, &severity, &status, &title, &description, &source, &detectedAt); err != nil {
 			return nil, err
@@ -397,8 +398,8 @@ func (h *Handler) queryOpsRecentUpgrades(ctx context.Context) (any, error) {
 	for rows.Next() {
 		var (
 			instanceID, status, version string
-			startedAt                    time.Time
-			completedAt                  *time.Time
+			startedAt                   time.Time
+			completedAt                 *time.Time
 		)
 		if err := rows.Scan(&instanceID, &status, &version, &startedAt, &completedAt); err != nil {
 			return nil, err
@@ -434,9 +435,82 @@ func (h *Handler) queryOpsDownloadStats(ctx context.Context) (any, error) {
 		return nil, err
 	}
 	return map[string]int{
-		"today_downloads":  todayDownloads,
-		"week_downloads":   weekDownloads,
-		"total_downloads":  totalDownloads,
-		"supporter_count":  supporterCount,
+		"today_downloads": todayDownloads,
+		"week_downloads":  weekDownloads,
+		"total_downloads": totalDownloads,
+		"supporter_count": supporterCount,
 	}, nil
+}
+
+func (h *Handler) queryOpsRuntimeMetricsSummary(ctx context.Context) (any, error) {
+	query := `
+		WITH recent_metrics AS (
+			SELECT 
+				rm.instance_id,
+				AVG(rm.cpu_usage_pct) as avg_cpu,
+				AVG(rm.mem_used_mb::float / NULLIF(rm.mem_total_mb, 0) * 100) as avg_mem_pct,
+				AVG(rm.last_5min_tps) as avg_tps,
+				MAX(rm.last_5min_p99_ms) as max_p99,
+				MAX(rm.timestamp) as last_update
+			FROM runtime_metrics rm
+			WHERE rm.timestamp >= NOW() - INTERVAL '24 hours'
+			GROUP BY rm.instance_id
+		)
+		SELECT 
+			gi.instance_id,
+			gi.hostname,
+			COALESCE(gi.region, '') as region,
+			gi.version,
+			gi.status,
+			COALESCE(m.avg_cpu, 0)::numeric(5,2) as avg_cpu_pct,
+			COALESCE(m.avg_mem_pct, 0)::numeric(5,2) as avg_mem_pct,
+			COALESCE(m.avg_tps, 0)::numeric(6,2) as avg_tps,
+			COALESCE(m.max_p99, 0)::int as max_p99_ms,
+			m.last_update
+		FROM gateway_instances gi
+		LEFT JOIN recent_metrics m ON gi.instance_id = m.instance_id
+		WHERE gi.status != 'offline' OR m.last_update IS NOT NULL
+		ORDER BY gi.region, gi.hostname
+	`
+
+	rows, err := h.db.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []map[string]any
+	for rows.Next() {
+		var instanceID, hostname, region, version, status string
+		var avgCPU, avgMemPct, avgTPS float64
+		var maxP99 int
+		var lastUpdate *time.Time
+
+		err := rows.Scan(
+			&instanceID, &hostname, &region, &version, &status,
+			&avgCPU, &avgMemPct, &avgTPS, &maxP99, &lastUpdate,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		summaries = append(summaries, map[string]any{
+			"instance_id": instanceID,
+			"hostname":    hostname,
+			"region":      region,
+			"version":     version,
+			"status":      status,
+			"avg_cpu_pct": avgCPU,
+			"avg_mem_pct": avgMemPct,
+			"avg_tps":     avgTPS,
+			"max_p99_ms":  maxP99,
+			"last_update": lastUpdate,
+		})
+	}
+
+	if summaries == nil {
+		summaries = []map[string]any{}
+	}
+
+	return summaries, rows.Err()
 }

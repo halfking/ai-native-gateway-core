@@ -2179,6 +2179,8 @@ func (h *ChatHandler) serveWithExecutor(
 			}
 			return nil
 		}(),
+		// 2026-07-19: 路由尝试追踪器，记录每次 upstream 尝试详情
+		RoutingTracker: executors.NewRoutingAttemptsTracker(),
 	})
 
 	// ── 2026-07-17: trace.route_credential ──────────────────────────────────
@@ -3246,6 +3248,17 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	applyKeyInfoToRequestLog(reqLog, keyInfo)
 	// v3: merge session compressor outbound fields into the log entry.
 	applySessionCompressorFields(reqLog, logCtx)
+
+	// 2026-07-19: 填充路由尝试追踪数据到 telemetry
+	if result != nil && result.RoutingTracker != nil {
+		if jsonBytes, err := result.RoutingTracker.ToJSONBytes(); err == nil && jsonBytes != nil {
+			reqLog.RoutingAttempts = jsonBytes
+		}
+		if summary := result.RoutingTracker.Summary(); summary != "" {
+			reqLog.RoutingSummary = &summary
+		}
+	}
+
 	h.telemetryClient.EmitRequestLogUpdate(reqLog)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
