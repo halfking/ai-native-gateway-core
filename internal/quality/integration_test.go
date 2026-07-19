@@ -16,8 +16,7 @@ func getTestDB(t *testing.T) *sql.DB {
 	// 优先使用环境变量
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
-		// 默认使用本地 Docker
-		dsn = "postgres://kxuser:kxpass@localhost:15432/llm_gateway?sslmode=disable"
+		t.Skip("测试数据库未配置 (set TEST_DATABASE_URL)")
 	}
 
 	db, err := sql.Open("pgx", dsn)

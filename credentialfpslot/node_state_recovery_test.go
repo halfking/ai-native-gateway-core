@@ -28,7 +28,6 @@ func TestNodeState_RecoveryRequiresActualSuccess(t *testing.T) {
 
 	credID := 15 // 商汤
 	model := "sense-5.5-large"
-
 	// 1. 记录连续 3 次失败，触发禁用
 	for i := 0; i < 3; i++ {
 		err := mgr.RecordNodeFailure(ctx, credID, model, "req-fail-"+string(rune('1'+i)), "rate_limit")
@@ -42,8 +41,10 @@ func TestNodeState_RecoveryRequiresActualSuccess(t *testing.T) {
 	assert.Greater(t, state.DisabledUntil, time.Now().Unix(), "应该设置冷却期")
 	assert.Equal(t, 1, state.DisableCount, "禁用次数应为 1")
 
-	// 2. 快进到冷却期到期后（5分钟）
-	s.FastForward(6 * time.Minute)
+	// 2. Mark the cooldown expired. miniredis.SetTime does not affect Redis
+	// TIME, which is deliberately used by the production Lua writer.
+	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
+	require.NoError(t, mgr.SetNodeState(ctx, state))
 
 	// 3. 冷却期到期后，记录一次失败请求
 	// 预期：节点仍然禁用，冷却期延长
@@ -55,8 +56,11 @@ func TestNodeState_RecoveryRequiresActualSuccess(t *testing.T) {
 	assert.True(t, state.Disabled, "冷却期到期但失败请求不应恢复节点")
 	assert.Equal(t, "cooldown_extended_due_to_failure", state.DisabledReason)
 
-	// 4. 再次快进到新的冷却期到期
-	s.FastForward(6 * time.Minute)
+	// 4. Expire the extended cooldown before the actual success.
+	state, err = mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
+	require.NoError(t, mgr.SetNodeState(ctx, state))
 
 	// 5. 记录一次成功请求
 	// 预期：节点恢复
@@ -88,7 +92,6 @@ func TestNodeState_ReDisableAfterRecovery(t *testing.T) {
 
 	credID := 18 // NVIDIA NIM
 	model := "nvidia/llama-3.1-nemotron-ultra-253b-instruct"
-
 	// 1. 记录连续 3 次失败 → 禁用
 	for i := 0; i < 3; i++ {
 		err := mgr.RecordNodeFailure(ctx, credID, model, "req-fail-"+string(rune('1'+i)), "empty_response")
@@ -100,8 +103,11 @@ func TestNodeState_ReDisableAfterRecovery(t *testing.T) {
 	assert.True(t, state.Disabled)
 	assert.Equal(t, 1, state.DisableCount)
 
-	// 2. 快进到冷却期到期，记录成功请求 → 恢复
-	s.FastForward(6 * time.Minute)
+	// 2. Expire the cooldown before the actual success request.
+	state, err = mgr.GetNodeState(ctx, credID, model)
+	require.NoError(t, err)
+	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
+	require.NoError(t, mgr.SetNodeState(ctx, state))
 	err = mgr.RecordNodeSuccess(ctx, credID, model, "req-success-recovery")
 	require.NoError(t, err)
 
@@ -143,7 +149,6 @@ func TestNodeState_IsUsableRespectsCooldown(t *testing.T) {
 
 	credID := 15
 	model := "sense-5.5-medium"
-
 	// 1. 连续失败 3 次
 	for i := 0; i < 3; i++ {
 		err := mgr.RecordNodeFailure(ctx, credID, model, "req-"+string(rune('1'+i)), "rate_limit")
@@ -155,16 +160,17 @@ func TestNodeState_IsUsableRespectsCooldown(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, state.IsUsable(time.Now()), "冷却期内应不可用")
 
-	// 3. 快进到冷却期到期
-	s.FastForward(6 * time.Minute)
-
-	// 4. 冷却期到期后，IsUsable 仍应返回 false
+	// 3. 冷却期到期后，IsUsable 仍应返回 false
 	// 因为还没有实际成功请求验证
 	state, err = mgr.GetNodeState(ctx, credID, model)
 	require.NoError(t, err)
 	// 注意：GetNodeState 会调用 recoverIfCooldownExpired，
 	// 但不会自动恢复（需要实际成功请求）
 	assert.True(t, state.Disabled, "冷却期到期但未验证，仍应禁用")
+
+	// 4. Expire the cooldown before the actual success request.
+	state.DisabledUntil = time.Now().Add(-time.Second).Unix()
+	require.NoError(t, mgr.SetNodeState(ctx, state))
 
 	// 5. 记录成功请求
 	err = mgr.RecordNodeSuccess(ctx, credID, model, "req-success")
@@ -192,6 +198,7 @@ func TestNodeState_DisableCountTracking(t *testing.T) {
 
 	credID := 18
 	model := "nvidia/llama-3.1-nemotron-ultra-253b-instruct"
+	baseTime := time.Now()
 
 	// 第一次禁用
 	for i := 0; i < 3; i++ {
@@ -202,14 +209,14 @@ func TestNodeState_DisableCountTracking(t *testing.T) {
 	assert.Equal(t, 1, state.DisableCount, "第一次禁用，计数应为 1")
 
 	// 冷却期到期，失败恢复（延长冷却期）
-	s.FastForward(6 * time.Minute)
+	s.SetTime(baseTime.Add(6 * time.Minute))
 	_ = mgr.RecordNodeFailure(ctx, credID, model, "fail-after-cooldown", "timeout")
 
 	state, _ = mgr.GetNodeState(ctx, credID, model)
 	assert.Equal(t, 1, state.DisableCount, "延长冷却期不增加计数")
 
 	// 再次冷却期到期，成功恢复
-	s.FastForward(6 * time.Minute)
+	s.SetTime(baseTime.Add(12 * time.Minute))
 	_ = mgr.RecordNodeSuccess(ctx, credID, model, "success-recovery")
 
 	state, _ = mgr.GetNodeState(ctx, credID, model)

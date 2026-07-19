@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Node health recovery audit**: Use Redis server time for node outcome writes,
+  keep cooldown-expired nodes disabled until an actual successful request,
+  preserve the post-recovery failure reason, and make database integration tests
+  opt-in so the default test suite does not depend on an incompatible local
+  schema.
+
 - **Sessions V2 migration date type**: Cast the next-month partition date to
   `DATE` before calling the partition helper, so startup migration 430 can
   complete on PostgreSQL 17 without a timestamp/function signature error.
