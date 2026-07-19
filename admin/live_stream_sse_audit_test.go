@@ -67,8 +67,13 @@ func TestLiveStreamSSEHub_ComputeScopeDeltaPreservesBaselineAcrossEmptyRead(t *t
 	}
 	accessedBeforeEmptyRead := entryBeforeEmptyRead.lastAccessed
 
-	if err := rdb.Del(ctx, tenantLiveStreamKey("default", "main")).Err(); err != nil {
-		t.Fatalf("delete tenant main queue: %v", err)
+	if err := rdb.Del(ctx,
+		tenantLiveStreamKey("default", "main"),
+		tenantLiveStreamKey("default", "dim:vendor:vendor-a"),
+		tenantLiveStreamKey("default", "dim:provider:provider-a"),
+		tenantLiveStreamKey("default", "dim:model:model-a"),
+	).Err(); err != nil {
+		t.Fatalf("delete tenant queues: %v", err)
 	}
 	if delta := hub.computeScopeDelta(ctx, "default", false); delta != nil {
 		t.Fatalf("empty Redis read should not emit a delta, got %#v", delta)
