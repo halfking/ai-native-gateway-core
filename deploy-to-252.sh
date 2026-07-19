@@ -46,6 +46,16 @@ DB_USER="${DB_USER:-llm_gateway}"
 DB_NAME="${DB_NAME:-llm_gateway}"
 LOCAL_BIN="${LOCAL_BIN:-$REPO_DIR/bin/llm-gateway-go-linux-amd64}"
 MIGRATION_FILE="${MIGRATION_FILE:-$REPO_DIR/sql/migrations/startup/366_model_name_mapping.sql}"
+# Admin API Key 用于部署后 smoke test（/api/admin/* 端点）
+# 来自 252 远程 /opt/llm-gateway-go/.env 的 LLM_GATEWAY_ADMIN_API_KEY
+# TODO(secrets): 此 key 尚未注册到 envs，需补充到 envs/projects/llm-gateway-go/
+ADMIN_API_KEY="${LLM_GATEWAY_ADMIN_API_KEY_252:-}"
+if [[ -z "$ADMIN_API_KEY" ]]; then
+  echo -e "${YELLOW}! LLM_GATEWAY_ADMIN_API_KEY_252 未设置，admin smoke test 将跳过${NC}" >&2
+  echo -e "${YELLOW}  加载方式: export LLM_GATEWAY_ADMIN_API_KEY_252=... 或从 252 .env 读取${NC}" >&2
+fi
+AUTH_HEADER=""
+[[ -n "$ADMIN_API_KEY" ]] && AUTH_HEADER="-H 'Authorization: Bearer $ADMIN_API_KEY'"
 
 # 颜色
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -179,23 +189,31 @@ fi
 
 # 2. handoff 路由
 echo -n "  /api/admin/handoff/logs ... "
-HF=$($SSH_BASE "curl -sS -m 5 -H 'Authorization: Bearer sk-k40DVd9aqFGumYcEkfkQvSgdv06uepSNDK0BqHwtwS3RzTgY' http://127.0.0.1:8780/api/admin/handoff/logs?limit=5 2>&1" || echo 'FAIL')
-if echo "$HF" | grep -q '"items"'; then
-  echo -e "${GREEN}OK${NC}"
-  echo "$HF" | python3 -c "import json,sys; d=json.load(sys.stdin); print('    handoff logs:', len(d.get('items',[])))" 2>/dev/null
+if [[ -z "$ADMIN_API_KEY" ]]; then
+  echo -e "${YELLOW}SKIP (ADMIN_API_KEY 未设置)${NC}"
 else
-  echo -e "${YELLOW}?? (route may not be wired yet, raw: ${HF:0:200})${NC}"
+  HF=$($SSH_BASE "curl -sS -m 5 -H 'Authorization: Bearer $ADMIN_API_KEY' http://127.0.0.1:8780/api/admin/handoff/logs?limit=5 2>&1" || echo 'FAIL')
+  if echo "$HF" | grep -q '"items"'; then
+    echo -e "${GREEN}OK${NC}"
+    echo "$HF" | python3 -c "import json,sys; d=json.load(sys.stdin); print('    handoff logs:', len(d.get('items',[])))" 2>/dev/null
+  else
+    echo -e "${YELLOW}?? (route may not be wired yet, raw: ${HF:0:200})${NC}"
+  fi
 fi
 
 # 3. handoff spec 数量
 echo -n "  /api/admin/modules/handoff ... "
-MD=$($SSH_BASE "curl -sS -m 5 -H 'Authorization: Bearer sk-k40DVd9aqFGumYcEkfkQvSgdv06uepSNDK0BqHwtwS3RzTgY' http://127.0.0.1:8780/api/admin/modules/handoff 2>&1" || echo 'FAIL')
-if echo "$MD" | grep -q '"module"'; then
-  KEYS=$(echo "$MD" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('module',{}).get('config_keys',[])))" 2>/dev/null || echo '?')
-  CAPS=$(echo "$MD" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('module',{}).get('capabilities',[])))" 2>/dev/null || echo '?')
-  echo -e "${GREEN}OK${NC} (config_keys=$KEYS, capabilities=$CAPS)"
+if [[ -z "$ADMIN_API_KEY" ]]; then
+  echo -e "${YELLOW}SKIP (ADMIN_API_KEY 未设置)${NC}"
 else
-  echo -e "${RED}FAIL${NC} ($MD)"
+  MD=$($SSH_BASE "curl -sS -m 5 -H 'Authorization: Bearer $ADMIN_API_KEY' http://127.0.0.1:8780/api/admin/modules/handoff 2>&1" || echo 'FAIL')
+  if echo "$MD" | grep -q '"module"'; then
+    KEYS=$(echo "$MD" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('module',{}).get('config_keys',[])))" 2>/dev/null || echo '?')
+    CAPS=$(echo "$MD" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('module',{}).get('capabilities',[])))" 2>/dev/null || echo '?')
+    echo -e "${GREEN}OK${NC} (config_keys=$KEYS, capabilities=$CAPS)"
+  else
+    echo -e "${RED}FAIL${NC} ($MD)"
+  fi
 fi
 
 echo ""

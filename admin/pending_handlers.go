@@ -50,6 +50,7 @@ func newPendingStoreAdapter(s *pending.Store) *pendingStoreAdapter {
 // Internal-only fields (Credentials, Bytes) are hidden; the
 // admin UI gets exactly what it needs to render the table.
 type listEntry struct {
+	TenantID    string `json:"-"`
 	SessionID   string `json:"session_id"`
 	RequestID   string `json:"request_id"`
 	Status      string `json:"status"`
@@ -88,6 +89,7 @@ func (a *pendingStoreAdapter) list(ctx pendingListContext) ([]listEntry, error) 
 	for _, e := range raw {
 		age := time.Now().Unix() - e.CreatedAt
 		results = append(results, listEntry{
+			TenantID:   e.TenantID,
 			SessionID:  e.SessionID,
 			RequestID:  e.RequestID,
 			Status:     "in_progress",
@@ -179,6 +181,9 @@ func (h *Handler) handlePendingList(w http.ResponseWriter, r *http.Request) {
 	}
 	filtered := make([]listEntry, 0, len(all))
 	for _, e := range all {
+		if IsTenantAdmin(r) && e.TenantID != GetTenantID(r) {
+			continue
+		}
 		if statusFilter != "" && e.Status != statusFilter {
 			continue
 		}
@@ -220,7 +225,7 @@ func (h *Handler) handlePendingDetail(w http.ResponseWriter, r *http.Request, se
 			fmt.Sprintf("pending store error: %s", err), "PENDING_STORE_ERROR")
 		return
 	}
-	if !found {
+	if !found || (IsTenantAdmin(r) && entry.TenantID != GetTenantID(r)) {
 		writeErrorJSON(w, http.StatusNotFound,
 			"no pending response for this session", "PENDING_NOT_FOUND")
 		return
@@ -256,15 +261,27 @@ func (h *Handler) handlePendingDelete(w http.ResponseWriter, r *http.Request, se
 		return
 	}
 	requestID := r.URL.Query().Get("request_id")
-	if requestID == "" {
-		// Find the latest and delete it.
-		_, rid, found, err := store.GetLatest(r.Context(), sessionID)
+	if requestID != "" {
+		entry, found, err := store.Get(r.Context(), sessionID, requestID)
 		if err != nil {
 			writeErrorJSON(w, http.StatusServiceUnavailable,
 				fmt.Sprintf("pending store error: %s", err), "PENDING_STORE_ERROR")
 			return
 		}
-		if !found {
+		if !found || (IsTenantAdmin(r) && entry.TenantID != GetTenantID(r)) {
+			writeErrorJSON(w, http.StatusNotFound,
+				"no pending response for this session", "PENDING_NOT_FOUND")
+			return
+		}
+	} else {
+		// Find the latest and delete it.
+		entry, rid, found, err := store.GetLatest(r.Context(), sessionID)
+		if err != nil {
+			writeErrorJSON(w, http.StatusServiceUnavailable,
+				fmt.Sprintf("pending store error: %s", err), "PENDING_STORE_ERROR")
+			return
+		}
+		if !found || (IsTenantAdmin(r) && entry.TenantID != GetTenantID(r)) {
 			writeErrorJSON(w, http.StatusNotFound,
 				"no pending response for this session", "PENDING_NOT_FOUND")
 			return

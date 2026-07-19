@@ -23,7 +23,6 @@ import (
 const (
 	maxRetries     = 2
 	retryBaseDelay = 500 * time.Millisecond
-	defaultTimeout = 120 * time.Second
 	connectTimeout = 10 * time.Second
 	// The stream executor owns the 30s first-byte product policy. The transport
 	// must allow slower reasoning models to reach their headers first.
@@ -96,11 +95,12 @@ func NewWithRetries(maxRetries int) *Client {
 	}
 	return &Client{
 		hc: &http.Client{
-			Timeout: defaultTimeout,
 			Transport: &http.Transport{
 				Proxy:                 proxy.ProxyFunc(),
 				IdleConnTimeout:       90 * time.Second,
 				ResponseHeaderTimeout: responseHeaderTimeout(),
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: time.Second,
 				DialContext: (&net.Dialer{
 					Timeout:   connectTimeout,
 					KeepAlive: 30 * time.Second,
@@ -146,6 +146,9 @@ func (c *Client) Proxy() *ProxyResolver {
 
 // Stop releases the background probe goroutine.
 func (c *Client) Stop() {
+	if c.hc != nil {
+		c.hc.CloseIdleConnections()
+	}
 	if c.proxy != nil {
 		c.proxy.Stop()
 	}

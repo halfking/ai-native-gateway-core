@@ -41,7 +41,11 @@ WARN_DAYS="${WARN:-30}"
 TIMEOUT="${TIMEOUT:-10}"
 LLM_MODEL="${LLM_MODEL:-minimax-text-01}"
 LLM_PROMPT="${LLM_PROMPT:-NPS_VERIFY_OK}"
-LLM_API_KEY="${LLM_API_KEY:-sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9}"
+LLM_API_KEY="${LLM_API_KEY:-${LLM_GATEWAY_API_KEY:-}}"
+if [[ -z "$LLM_API_KEY" ]]; then
+  echo "ERROR: LLM_API_KEY 未设置。请先 source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server <target>" >&2
+  exit 2
+fi
 LOG="/var/log/verify-llm-kxpms-nps.log"
 
 MODE="text"
