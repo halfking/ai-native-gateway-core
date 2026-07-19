@@ -856,6 +856,13 @@ func (e *Executor) emitTraceExec(ctx context.Context, requestID string, ev gwtra
 }
 
 func (e *Executor) stripVendorFields(body []byte, catalogCode string) []byte {
+	// 2026-07-20 fix: Guard against empty/invalid catalogCode to prevent panic.
+	// Third-party providers (provider_id 36/314/5917) have empty catalog_code,
+	// causing nil pointer dereference when passed as empty string.
+	if catalogCode == "" && len(body) == 0 {
+		return body
+	}
+
 	code := strings.ToLower(strings.TrimSpace(catalogCode))
 
 	// 2026-07-20: When catalog_code is empty (third-party providers),
@@ -868,28 +875,64 @@ func (e *Executor) stripVendorFields(body []byte, catalogCode string) []byte {
 			bytes.Contains(body, []byte(`"base_resp"`)) ||
 			bytes.Contains(body, []byte(`"input_sensitive"`)) {
 			if e.StripMinimaxFields != nil {
-				return e.StripMinimaxFields(body)
+				stripped := e.StripMinimaxFields(body)
+				slog.Info("stripVendorFields: auto-detected minimax fields",
+					"catalog_code", catalogCode,
+					"original_bytes", len(body),
+					"stripped_bytes", len(stripped))
+				return stripped
+			} else {
+				slog.Warn("stripVendorFields: detected minimax fields but StripMinimaxFields is nil",
+					"catalog_code", catalogCode,
+					"body_preview", string(body[:min(100, len(body))]))
 			}
 		}
 		// Auto-detect zhipu fields (zhipu_request_id, web_search_results, etc.)
 		if bytes.Contains(body, []byte(`"zhipu_request_id"`)) ||
 			bytes.Contains(body, []byte(`"web_search_results"`)) {
 			if e.StripZhipuFields != nil {
-				return e.StripZhipuFields(body)
+				stripped := e.StripZhipuFields(body)
+				slog.Info("stripVendorFields: auto-detected zhipu fields",
+					"catalog_code", catalogCode,
+					"original_bytes", len(body),
+					"stripped_bytes", len(stripped))
+				return stripped
+			} else {
+				slog.Warn("stripVendorFields: detected zhipu fields but StripZhipuFields is nil",
+					"catalog_code", catalogCode,
+					"body_preview", string(body[:min(100, len(body))]))
 			}
 		}
 		// Auto-detect deepseek fields (deepseek_request_id, model_type, etc.)
 		if bytes.Contains(body, []byte(`"deepseek_request_id"`)) ||
 			bytes.Contains(body, []byte(`"cache_hit_tokens"`)) {
 			if e.StripDeepSeekFields != nil {
-				return e.StripDeepSeekFields(body)
+				stripped := e.StripDeepSeekFields(body)
+				slog.Info("stripVendorFields: auto-detected deepseek fields",
+					"catalog_code", catalogCode,
+					"original_bytes", len(body),
+					"stripped_bytes", len(stripped))
+				return stripped
+			} else {
+				slog.Warn("stripVendorFields: detected deepseek fields but StripDeepSeekFields is nil",
+					"catalog_code", catalogCode,
+					"body_preview", string(body[:min(100, len(body))]))
 			}
 		}
 		// Auto-detect doubao fields (doubao_request_id, seeddance_request_id, etc.)
 		if bytes.Contains(body, []byte(`"doubao_request_id"`)) ||
 			bytes.Contains(body, []byte(`"seeddance_request_id"`)) {
 			if e.StripDoubaoFields != nil {
-				return e.StripDoubaoFields(body)
+				stripped := e.StripDoubaoFields(body)
+				slog.Info("stripVendorFields: auto-detected doubao fields",
+					"catalog_code", catalogCode,
+					"original_bytes", len(body),
+					"stripped_bytes", len(stripped))
+				return stripped
+			} else {
+				slog.Warn("stripVendorFields: detected doubao fields but StripDoubaoFields is nil",
+					"catalog_code", catalogCode,
+					"body_preview", string(body[:min(100, len(body))]))
 			}
 		}
 		return body

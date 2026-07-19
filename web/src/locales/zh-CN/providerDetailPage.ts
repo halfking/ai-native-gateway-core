@@ -5,6 +5,7 @@ export default {
   back: '← 返回',
   tabCreds: '凭据 ({n})',
   tabModels: '模型',
+  tabQuality: '品质',
   tabLogs: '请求日志',
   tabDiag: '诊断',
   tabProbe: '自动测试',
