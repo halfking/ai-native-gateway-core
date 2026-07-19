@@ -59,18 +59,21 @@ watch(
     try {
       // 2026-07-04: live-stream requests may arrive before DB persistence.
       // Retry once after 100ms if first attempt is 404/not-found.
-      try {
-        detail.value = await getRequestLogDetail(id)
-      } catch (firstError: unknown) {
-        const isNotFound = firstError instanceof Error &&
-          (firstError.message.includes('not found') ||
-           firstError.message.includes('404'))
-
-        if (isNotFound) {
-          await new Promise(resolve => setTimeout(resolve, 100))
+      // 2026-07-20: increased to 3 retries with 200/500/1500ms exponential
+      // backoff — probe tiles and async telemetry writes may take longer.
+      const retryMs = [200, 500, 1500]
+      for (let i = 0; i <= retryMs.length; i++) {
+        try {
           detail.value = await getRequestLogDetail(id)
-        } else {
-          throw firstError
+          break
+        } catch (err: unknown) {
+          const isNotFound = err instanceof Error &&
+            (err.message.includes('not found') ||
+             err.message.includes('404'))
+          if (!isNotFound || i === retryMs.length) {
+            throw err
+          }
+          await new Promise(r => setTimeout(r, retryMs[i]))
         }
       }
     } catch (e: unknown) {
