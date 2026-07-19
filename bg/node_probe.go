@@ -505,8 +505,10 @@ func (w *NodeProbeWorker) notifySyncWaiters(key string) {
 //     dashboards can distinguish synchronous probes from the
 //     request_failure / tick-driven ones.
 //
-// Returns true iff at least one (cred, model) ended up healthy on both
-// direct and gateway rounds.
+// Returns true iff at least one (cred, model) is reachable directly from the
+// supplier. The gateway round is still executed and recorded for diagnostics,
+// but a gateway-side probe failure must not hide a recovered supplier node
+// from the request router.
 func (w *NodeProbeWorker) ProbeSync(
 	ctx context.Context,
 	candidates []credentialstate.NoCandidatesCandidate,
@@ -635,7 +637,7 @@ drainLoop:
 	for {
 		select {
 		case res := <-results:
-			if !winnerSet && res.direct.ok && res.gateway.ok {
+			if !winnerSet && probeRecovered(res.direct) {
 				winnerMu.Lock()
 				if !winnerSet {
 					winnerDirect = res.direct
@@ -648,7 +650,7 @@ drainLoop:
 			for {
 				select {
 				case res := <-results:
-					if !winnerSet && res.direct.ok && res.gateway.ok {
+					if !winnerSet && probeRecovered(res.direct) {
 						winnerMu.Lock()
 						if !winnerSet {
 							winnerDirect = res.direct
@@ -733,6 +735,14 @@ drainLoop:
 		"elapsed_ms", time.Since(start).Milliseconds(),
 	)
 	return false
+}
+
+// probeRecovered reports whether the supplier can serve the credential/model
+// pair again. The direct round is authoritative for routing recovery because
+// it isolates supplier availability from gateway-side probe failures. The
+// gateway round remains an audit signal and is still emitted to diagnostics.
+func probeRecovered(direct nodeProbeRoundResult) bool {
+	return direct.ok
 }
 
 // emitSyncAudit writes a node_probe_runs row for a sync_request probe

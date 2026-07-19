@@ -1323,12 +1323,20 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					params.OnProbeHoldEnd(recovered)
 				}
 				if recovered {
+					// The initial candidate slice is a point-in-time snapshot and may
+					// still carry Routable=false after the probe restored the node.
+					// Reload candidates so the retry is based on the persisted/cache
+					// state rather than re-filtering stale request data.
+					retryCandidates := e.refreshedCandidatesAfterProbe(params)
+					if len(retryCandidates) == 0 {
+						retryCandidates = params.Candidates
+					}
 					var retrySticky *int
 					if ratelimit.IsRateLimitEnabled() {
 						retrySticky = stickyCredID
 					}
 					subCandidates := e.Router.PlanCandidates(
-						params.Candidates,
+						retryCandidates,
 						retrySticky,
 						params.Policy,
 						egressPref(params.Transform),
@@ -2616,6 +2624,32 @@ func candidateRawModel(candidate provider.Candidate) string {
 		return candidate.OfferRawModel
 	}
 	return candidate.RawModel
+}
+
+func (e *Executor) refreshedCandidatesAfterProbe(params *ExecParams) []provider.Candidate {
+	if e == nil || e.Provider == nil || params == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(params.R.Context(), 500*time.Millisecond)
+	defer cancel()
+	candidates, _, err := e.Provider.GetCandidates(
+		ctx,
+		params.ClientModel,
+		params.ClientID.Fingerprint.ClientProfile,
+		params.TenantID,
+	)
+	if err != nil {
+		slog.Warn("executor: refreshed candidates after probe failed",
+			"model", params.ClientModel,
+			"tenant_id", params.TenantID,
+			"error", err)
+		return nil
+	}
+	slog.Info("executor: refreshed candidates after probe",
+		"model", params.ClientModel,
+		"tenant_id", params.TenantID,
+		"candidates", len(candidates))
+	return candidates
 }
 
 func (e *Executor) restoreCredentialState(ctx context.Context, credentialID int, canonicalModel string) {
