@@ -539,7 +539,6 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		AuditBuilder:   auditBuilder,
 		Capture:        streamCapture,
 		ToolsRequested: false,
-		StreamWrapper:  anthropicStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
 		StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
 		KeyID: func() int {
 			if keyInfo != nil {
@@ -1043,16 +1042,6 @@ func writeAnthropicError(w http.ResponseWriter, statusCode int, errType, message
 		"type":  "error",
 		"error": map[string]any{"type": errType, "message": message},
 	})
-}
-
-func anthropicStreamWrapper(requestID, clientModel, outboundModel string, capture *audit.StreamCapture) executors.StreamWrapperFunc {
-	return func(w http.ResponseWriter, resp *http.Response, norm executors.NormalizerFunc, cap *audit.StreamCapture) executors.StreamOutcome {
-		c := cap
-		if c == nil {
-			c = capture
-		}
-		return StreamOpenAIToAnthropicSSE(w, resp, clientModel, outboundModel, requestID, c, nil)
-	}
 }
 
 func extractEndUser(r *http.Request) string {

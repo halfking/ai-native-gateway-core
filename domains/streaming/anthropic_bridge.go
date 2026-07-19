@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -382,31 +383,11 @@ func StreamAnthropicSSEToOpenAI(
 		}
 	}()
 
-	type readResult struct {
-		eventType string
-		data      []byte
-		err       error
-	}
-
 	for {
-		readCtx, readCancel := context.WithTimeout(ctx, runtimeCfg.streamChunkTimeout)
-		resultCh := make(chan readResult, 1)
-		go func() {
-			et, d, e := readAnthropicSSEEvent(readCtx, reader)
-			resultCh <- readResult{et, d, e}
-		}()
-
-		var (
-			eventType string
-			data      []byte
-			err       error
+		eventType, data, err := readAnthropicSSEEventWithTimeout(
+			ctx, reader, resp.Body, runtimeCfg.streamChunkTimeout,
 		)
-		select {
-		case res := <-resultCh:
-			eventType, data, err = res.eventType, res.data, res.err
-			readCancel()
-		case <-readCtx.Done():
-			readCancel()
+		if errors.Is(err, context.DeadlineExceeded) {
 			slog.Warn("anthropic_to_openai: chunk timeout",
 				"timeout_seconds", runtimeCfg.streamChunkTimeout.Seconds(),
 				"chunks_received", chunkCount,
@@ -426,7 +407,7 @@ func StreamAnthropicSSEToOpenAI(
 		}
 
 		if err != nil {
-			if err == io.EOF || readCtx.Err() != nil {
+			if err == io.EOF {
 				flushBufferedText()
 				if inputTokens > 0 || outputTokens > 0 {
 					writeChunk(&ir.StreamChunk{
