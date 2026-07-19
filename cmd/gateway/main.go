@@ -43,7 +43,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
-	"github.com/kaixuan/llm-gateway-go/distribution"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis"                            //nolint:depguard // M3 embedding shadow adapter
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/approval"                            //nolint:depguard // D1: approval config management
@@ -3245,47 +3244,14 @@ func main() {
 		tenantops.NewHandler(pool).RegisterRoutes(e.Group("/api/tenant", jwtMiddleware))
 		slog.Info("Phase 7: VibeCoding API enabled (/api/admin/vibecoding/*)")
 
-		// Phase 8: Distribution — public download/donation + ops stats
-		distStore := distribution.NewPgxStore(pool)
-		distCatalog := distribution.NewCatalogService(
-			distStore,
-			distribution.NewReleaseCatalogProvider(pool),
-			os.Getenv("DOWNLOAD_BASE_URL"),
-			distribution.LoadVersionFallback(),
-		)
-		ticketSecret := []byte(strings.TrimSpace(os.Getenv("DOWNLOAD_TICKET_SECRET")))
-		if len(ticketSecret) == 0 {
-			ticketSecret = []byte(jwtSecret)
-		}
-		distPayment := maas.StubQRProvider{Settings: maas.PaymentSettings{
-			StubAlipayQRURL: "/donation-qr.png",
-			StubWechatQRURL: "/donation-qr.png",
-		}}
-		distPublic := distribution.NewPublicAPI(distStore, distCatalog, distribution.NewTicketSigner(ticketSecret, 10*time.Minute), distPayment)
-		distDonation := distribution.NewDonationAPI(distStore, distPayment)
-		distAdmin := distribution.NewAdminAPI(distStore)
-		distOffline := distribution.NewOfflinePublicAPI(licensingOffline, licensingStore)
-
-		downloadPublicGroup := customerEcho.Group("/api/downloads")
-		downloadPublicGroup.Use(noAuthCustomerMiddleware())
-		distPublic.RegisterRoutes(downloadPublicGroup)
-
-		donationPublicGroup := customerEcho.Group("/api/donations")
-		donationPublicGroup.Use(noAuthCustomerMiddleware())
-		distDonation.RegisterRoutes(donationPublicGroup)
-
-		offlinePublicGroup := customerEcho.Group("/api/public/offline-activation")
-		offlinePublicGroup.Use(noAuthCustomerMiddleware())
-		distOffline.RegisterRoutes(offlinePublicGroup)
-
-		distAdmin.RegisterRoutes(adminGroup.Group("/downloads"))
-		distPublish := distribution.NewPublishAdminAPI(distStore, distCatalog)
-		distPublish.RegisterRoutes(adminGroup.Group("/downloads"))
-
-		artifactRoot := os.Getenv("DOWNLOAD_ARTIFACT_ROOT")
-		distFiles := distribution.NewFileHandler(artifactRoot, distribution.NewTicketSigner(ticketSecret, 10*time.Minute), distStore)
-		distFiles.RegisterRoutes(customerEcho)
-		slog.Info("Phase 8: Distribution API enabled (/api/downloads/*, /api/donations/*, /api/admin/downloads/*, /llm-gateway-go/*)")
+		// Phase 8: Distribution was here. The whole distribution/ package has
+		// been retired to _to_be_deleted/distribution-v1/ (B1 of the maintain
+		// migration). The /api/downloads/*, /api/donations/*,
+		// /api/public/offline-activation/* and /llm-gateway-go/* (artifact)
+		// paths are now served by ai-native-maintain via the
+		// newMaintainGatewayHandler reverse proxy registered in B0, which also
+		// tags those legacy prefixes with a Deprecation header.
+		slog.Info("Phase 8: Distribution retired to maintain (see _to_be_deleted/distribution-v1/)")
 
 		// 将 Echo 挂载到 http.ServeMux
 		mux.Handle("/api/admin/", e)
@@ -3295,11 +3261,7 @@ func main() {
 		// activation and status checks remain reachable before login.
 		mux.Handle("/api/system/license/", customerEcho)
 		mux.Handle("/api/system/upgrade/", customerEcho)
-		mux.Handle("/api/downloads/", customerEcho)
-		mux.Handle("/api/donations/", customerEcho)
-		mux.Handle("/api/public/offline-activation/", customerEcho)
-		mux.Handle("/llm-gateway-go/", customerEcho)
-		slog.Info("运维平台 API 已注册 (5 modules via Echo bridge)")
+		slog.Info("运维平台 API 已注册 (4 modules via Echo bridge; distribution → maintain)")
 	}
 
 	slog.Info("CHECKPOINT: before middleware chain")
