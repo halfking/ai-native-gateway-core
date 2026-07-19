@@ -541,6 +541,78 @@ export async function getHeartbeatHistory(instanceId: string, hours: number = 24
   return req<HeartbeatRecord[]>('GET', `/api/admin/center/instances/${instanceId}/heartbeats?since=${encodeURIComponent(since)}&limit=100`)
 }
 
+export async function getCenterInstance(instanceId: string): Promise<CenterInstance> {
+  return req<CenterInstance>('GET', `/api/admin/center/instances/${encodeURIComponent(instanceId)}`)
+}
+
+export interface InstanceStatusReport {
+  state: string
+  active_licenses: number
+  active_devices: number
+  requests_total: number
+  requests_ok: number
+  requests_err: number
+  avg_latency_ms: number
+  p99_latency_ms: number
+}
+
+export async function getInstanceStatus(instanceId: string): Promise<InstanceStatusReport | null> {
+  try {
+    return await req<InstanceStatusReport>('GET', `/api/admin/center/instances/${encodeURIComponent(instanceId)}/status`)
+  } catch {
+    return null
+  }
+}
+
+export interface RuntimeMetricPoint {
+  timestamp: string
+  cpu_usage_pct: number
+  mem_used_mb: number
+  mem_total_mb: number
+  disk_used_gb: number
+  disk_total_gb: number
+  db_size_mb: number
+  uptime_secs: number
+  current_concurrency: number
+  last_5min_tps: number
+  last_5min_p50_ms: number
+  last_5min_p99_ms: number
+  last_5min_success_pct: number
+  tenant_count: number
+}
+
+export async function getInstanceRuntimeMetrics(
+  instanceId: string,
+  hours: number = 24,
+): Promise<RuntimeMetricPoint[]> {
+  const since = new Date(Date.now() - hours * 3600_000).toISOString()
+  const res = await req<{ items: RuntimeMetricPoint[]; total: number }>(
+    'GET',
+    `/api/admin/center/instances/${encodeURIComponent(instanceId)}/runtime-metrics?since=${encodeURIComponent(since)}&limit=120`,
+  )
+  return res.items ?? []
+}
+
+export interface InstanceRuntimeAlert {
+  id: number
+  rule_key: string
+  instance_id: string
+  severity: string
+  title: string
+  message: string
+  status: string
+  metric_value: number
+  detected_at: string
+}
+
+export async function getInstanceRuntimeAlerts(instanceId: string): Promise<InstanceRuntimeAlert[]> {
+  const res = await req<{ items: InstanceRuntimeAlert[]; total: number }>(
+    'GET',
+    `/api/admin/center/instances/${encodeURIComponent(instanceId)}/runtime-alerts?limit=20`,
+  )
+  return res.items ?? []
+}
+
 export interface IssuedCommand {
   command_id: string
   instance_id: string
