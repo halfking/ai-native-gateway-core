@@ -10,6 +10,7 @@ import LogsTab from './provider-detail/LogsTab.vue'
 import DiagTab from './provider-detail/DiagTab.vue'
 import SettingsTab from './provider-detail/SettingsTab.vue'
 import ProbeHistoryTab from './provider-detail/ProbeHistoryTab.vue'
+import QualityTab from './provider-detail/QualityTab.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -151,6 +152,7 @@ watch(providerId, () => {
       <div class="tabs">
         <button type="button" class="tab-btn" :class="{ active: tab === 'creds' }" @click="tab = 'creds'">{{ pp('tabCreds', { n: creds.length }) }}</button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'models' }" @click="tab = 'models'">{{ pp('tabModels') }}</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'quality' }" @click="tab = 'quality'">{{ pp('tabQuality') }}</button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'logs' }" @click="tab = 'logs'">{{ pp('tabLogs') }}</button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'diag' }" @click="tab = 'diag'">{{ pp('tabDiag') }}</button>
         <button
@@ -182,6 +184,7 @@ watch(providerId, () => {
         :provider-id="providerId"
         :focus-offer="modelsFocusOffer"
       />
+      <QualityTab v-if="tab==='quality'" :provider-id="providerId" />
       <LogsTab v-if="tab==='logs'" :provider-id="providerId" />
       <DiagTab v-if="tab==='diag'" :provider-id="providerId" />
       <ProbeHistoryTab v-if="tab==='probe'" :provider-id="providerId" @open-models-tab="onOpenModelsTab" />
