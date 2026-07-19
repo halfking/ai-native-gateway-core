@@ -119,6 +119,23 @@ func positiveDurationEnv(key string, fallback time.Duration) time.Duration {
 	return duration
 }
 
+// positiveIntEnv parses a positive integer from key. Missing, zero,
+// negative, and malformed values fall back to the supplied default.
+// Used for capacities / limits (e.g. TELEMETRY_FALLBACK_BUFFER_CAP).
+func positiveIntEnv(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		slog.Warn("invalid positive int env, using default",
+			"key", key, "value", value, "default", fallback)
+		return fallback
+	}
+	return parsed
+}
+
 // envBoolOff returns true when the env var is set to one of:
 // "0", "false", "off", "no" (case-insensitive). Returns false
 // (i.e. feature enabled) when unset or set to a truthy value.
@@ -228,6 +245,12 @@ func main() {
 	// memorySvc holds the legacy memora concrete client/sink behind the
 	// live memory.Reader / memory.Writer interfaces used by gateway runtime.
 	var memorySvc *legacyMemoryServices
+
+	// 2026-07-20: ringBuffer holds failed request_log INSERTs in memory
+	// for online dump/replay via /internal/telemetry/fallback-buffer/*.
+	// Declared at top-level so the HTTP handler (registered later in main)
+	// can reach it; assigned in the dbConn != nil block below.
+	var ringBuffer *dbdegradation.RingBuffer
 
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
@@ -2576,11 +2599,15 @@ func main() {
 				RecoverThreshold: 3,
 			})
 
-			// 2. 初始化文件写入器（支持 gzip 压缩）
+			// 2. 初始化文件写入器（支持 gzip 压缩）+ 内存 ring buffer（在线 dump/replay）
+			// 2026-07-20: 双写。FileWriter 继续写磁盘（重启恢复），ring buffer 是快速访问层。
+			// ring buffer 容量走 env TELEMETRY_FALLBACK_BUFFER_CAP，默认 10000。
 			fileWriter := dbdegradation.NewFileWriter(backupDir)
-			telemetryClient.SetFallbackWriter(fileWriter)
+			ringBuffer = dbdegradation.NewRingBuffer(positiveIntEnv("TELEMETRY_FALLBACK_BUFFER_CAP", 10000))
+			fallbackWriter := dbdegradation.NewMultiBackupWriter(fileWriter, ringBuffer)
+			telemetryClient.SetFallbackWriter(fallbackWriter)
 			if requestLogger != nil {
-				requestLogger.SetFallbackWriter(fileWriter)
+				requestLogger.SetFallbackWriter(fallbackWriter)
 			}
 			defer fileWriter.Close()
 
@@ -2863,6 +2890,19 @@ func main() {
 	// 指标含 provider / credential 等敏感标签）。使用
 	// LLM_GATEWAY_ADMIN_API_KEY 静态 token（与 AdminTokenMiddleware 配合）。
 	mux.Handle("/metrics", middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(middleware.MetricsHandler()))
+
+	// 2026-07-20: telemetry fallback ring buffer 暴露面。
+	// 路径: /internal/telemetry/fallback-buffer/{stats,dump,clear,replay}
+	// 鉴权: 与 /healthz/full 一致（LLM_GATEWAY_ADMIN_API_KEY）。
+	// 用途: 当 telemetry worker 写 DB 失败时，ring buffer 保留最近 N 条
+	//       BackupRecord 在内存中；运维可通过 dump 拉快照，replay 重放到 DB。
+	// 注: ringBuffer 在 dbConn != nil 块里赋值；db 关闭模式（ringBuffer == nil）
+	//     下不挂路由，运维接口自动 fail-closed。
+	if ringBuffer != nil {
+		fbHandler := NewTelemetryFallbackBufferHandler(ringBuffer, telemetryClient.ReplayFallback)
+		mux.Handle("/internal/telemetry/fallback-buffer/",
+			middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(fbHandler))
+	}
 
 	slog.Info("CHECKPOINT: healthz and metrics registered")
 
