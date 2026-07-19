@@ -46,6 +46,32 @@ func TestVerifyPluginContext_RejectsBadSig(t *testing.T) {
 	}
 }
 
+func TestVerifyPluginContext_RejectsReplay(t *testing.T) {
+	secret := []byte("s")
+	cache := NewNonceCache(5 * time.Minute)
+	ts := time.Now().Unix()
+	h := VerifyPluginContext(secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), WithCanonNonceCache(cache))
+
+	// first call accepted
+	rec1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodGet, "/", nil)
+	signAllHeaders(t, req1.Header, secret, "p", "t", ts)
+	h.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first call: expected 200, got %d", rec1.Code)
+	}
+	// replay same token → rejected
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	signAllHeaders(t, req2.Header, secret, "p", "t", ts) // same ts+nonce → same signature
+	h.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("replay: expected 401, got %d", rec2.Code)
+	}
+}
+
 func TestVerifyPluginContext_RejectsExpired(t *testing.T) {
 	secret := []byte("s")
 	ts := time.Now().Add(-10 * time.Minute).Unix()
