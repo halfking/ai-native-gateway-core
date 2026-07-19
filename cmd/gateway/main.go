@@ -2866,18 +2866,22 @@ func main() {
 
 	slog.Info("CHECKPOINT: healthz and metrics registered")
 
-	// P0 plugin-runtime: scan installed plugins and serve /api/v1/plugin-nav.
-	// TODO(P1): replace placeholder viewer with real auth context (super/platformOps/tenant).
+	// plugin-runtime: scan installed plugins and serve /api/v1/plugin-nav.
+	// nav is admin-auth-gated; viewer is derived from the real auth context
+	// (replaces the P0 super-admin placeholder).
 	pluginRegistry := pluginruntime.NewRegistry()
 	if pluginsDir := os.Getenv("LLM_GATEWAY_PLUGINS_DIR"); pluginsDir != "" {
 		if err := ScanPlugins(pluginsDir, pluginRegistry); err != nil {
 			slog.Warn("plugin scan failed", "error", err, "dir", pluginsDir)
 		}
 	}
-	mux.Handle("/api/v1/plugin-nav", pluginruntime.NavHandler(pluginRegistry, func(*http.Request) pluginruntime.ViewerOpts {
-		// P0 placeholder: super-admin visibility. P1 will derive from auth context.
-		return pluginruntime.ViewerOpts{IsSuper: true, IsPlatformOps: true}
-	}))
+	wirePluginAuthExtractor()
+	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(
+		func(w http.ResponseWriter, r *http.Request) {
+			pluginruntime.NavHandler(pluginRegistry, pluginruntime.ViewerFromRequest).ServeHTTP(w, r)
+		},
+		dbConn.Pool(), cfg.SecretKey,
+	))
 
 	// v2 Pipeline feature flag (R1.12). Opt-in via LLM_GATEWAY_V2_ENABLED.
 	// Default OFF → no-op; production v1 routes are untouched. When ON,
