@@ -76,33 +76,31 @@ func (h *QualityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 路由分发
 	path := r.URL.Path
 
-	if strings.HasPrefix(path, "/api/quality/providers/") && strings.HasSuffix(path, "/quality/recalculate") {
-		// POST /api/quality/providers/:id/quality/recalculate
-		if r.Method != http.MethodPost {
-			h.writeError(w, http.StatusMethodNotAllowed, 40501, "方法不允许")
-			return
-		}
-		h.handleRecalculate(w, r)
-	} else if strings.HasPrefix(path, "/api/quality/providers/") && strings.Contains(path, "/quality") {
-		// GET /api/quality/providers/:id/quality
-		if r.Method != http.MethodGet {
-			h.writeError(w, http.StatusMethodNotAllowed, 40501, "方法不允许")
-			return
-		}
-		h.handleGetProviderQuality(w, r)
-	} else if path == "/api/quality/ranking" {
+	if path == "/api/quality/ranking" {
 		// GET /api/quality/ranking
 		if r.Method != http.MethodGet {
 			h.writeError(w, http.StatusMethodNotAllowed, 40501, "方法不允许")
 			return
 		}
 		h.handleGetRanking(w, r)
+	} else if strings.HasPrefix(path, "/api/quality/providers/") && strings.HasSuffix(path, "/recalculate") {
+		// POST /api/quality/providers/:id/recalculate
+		if r.Method != http.MethodPost {
+			h.writeError(w, http.StatusMethodNotAllowed, 40501, "方法不允许")
+			return
+		}
+		h.handleRecalculate(w, r)
+	} else if strings.HasPrefix(path, "/api/quality/providers/") {
+		// GET /api/quality/providers/:id
+		if r.Method != http.MethodGet {
+			h.writeError(w, http.StatusMethodNotAllowed, 40501, "方法不允许")
+			return
+		}
+		h.handleGetProviderQuality(w, r)
 	} else {
 		h.writeError(w, http.StatusNotFound, 40404, "路径不存在")
 	}
 }
-
-// handleGetProviderQuality 查询单个供应商质量画像
 func (h *QualityHandler) handleGetProviderQuality(w http.ResponseWriter, r *http.Request) {
 	// 解析 provider_id (从 /api/quality/providers/:id/quality 提取)
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/quality/providers/"), "/")
