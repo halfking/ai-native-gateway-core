@@ -3,6 +3,7 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -287,5 +288,70 @@ func TestDo_ExhaustedRetryResponseBodyRemainsReadable(t *testing.T) {
 	}
 	if string(restored) != body {
 		t.Fatalf("restored response body = %q, want %q", restored, body)
+	}
+}
+
+// TestError_NilReceiver_2026_07_20 documents and guards against the
+// nil-pointer dereference that crashed minimax-m3 / gpt-5.6-luna chat
+// requests with `panic: runtime error: invalid memory address or nil
+// pointer dereference` at upstream/client.go:61.
+//
+// The crash trigger was Go's classic "typed-nil wrapped in non-nil
+// error interface" gotcha:
+//
+//	var uErr *upstream.Error = nil       // typed nil pointer
+//	var iface error = uErr               // iface != nil (has type tag)
+//	iface.Error()                        // used to dereference nil uErr
+//
+// `ClassifyResult(uErr, statusCode)` previously masked this with a
+// defer-recover; the proper fix is to make (*Error).Error() and
+// (*Error).Unwrap() nil-receiver safe so the panic cannot happen at
+// any call site.
+func TestError_NilReceiver_2026_07_20(t *testing.T) {
+	var nilPtr *Error // typed-nil pointer, NOT a nil interface
+
+	// Sanity-check the gotcha: typed-nil pointer wrapped in an interface
+	// is NOT nil at the interface level. This is the precondition for
+	// the bug we are guarding against.
+	var iface error = nilPtr
+	if iface == nil {
+		t.Fatalf("typed-nil wrapped in interface must be non-nil; test setup is wrong")
+	}
+
+	// Guard 1: (*Error).Error() must not panic and must return a
+	// deterministic string when called on a typed-nil receiver.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("(*Error).Error() panicked on nil receiver: %v", r)
+		}
+	}()
+	if got := nilPtr.Error(); got == "" {
+		t.Fatalf("(*Error).Error() returned empty string for nil receiver; want sentinel like <nil upstream.Error>")
+	}
+
+	// Guard 2: (*Error).Unwrap() must not panic and must return nil
+	// when called on a typed-nil receiver.
+	if got := nilPtr.Unwrap(); got != nil {
+		t.Fatalf("(*Error).Unwrap() returned %v on nil receiver; want nil", got)
+	}
+}
+
+// TestError_NonNilReceiver_2026_07_20 confirms the nil-receiver guards
+// above did not regress the normal path. A populated *Error must still
+// render its full "[Kind] Message: Err" string.
+func TestError_NonNilReceiver_2026_07_20(t *testing.T) {
+	e := &Error{
+		Kind:       KindRateLimit,
+		Message:    "rate limited",
+		Err:        fmt.Errorf("429 hit"),
+		StatusCode: 429,
+	}
+	got := e.Error()
+	want := "[rate_limit] rate limited: 429 hit"
+	if got != want {
+		t.Fatalf("(*Error).Error() = %q, want %q", got, want)
+	}
+	if err := e.Unwrap(); err == nil || err.Error() != "429 hit" {
+		t.Fatalf("(*Error).Unwrap() returned %v, want non-nil with %q", err, "429 hit")
 	}
 }

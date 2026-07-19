@@ -58,8 +58,26 @@ type Error struct {
 	StatusCode int
 }
 
-func (e *Error) Error() string { return fmt.Sprintf("[%s] %s: %v", e.Kind, e.Message, e.Err) }
-func (e *Error) Unwrap() error { return e.Err }
+// Error renders the upstream failure. The receiver is nil-checked so
+// callers that pass a typed-nil *Error via the error interface (Go's
+// classic nil-interface gotcha) get a deterministic string instead of
+// a panic. 2026-07-20: this guard complements the defer-recover that
+// routing_tracker.ClassifyResult used as a band-aid; the recover can
+// be removed once this guard is in place because err.Error() never
+// panics here.
+func (e *Error) Error() string {
+	if e == nil {
+		return "<nil upstream.Error>"
+	}
+	return fmt.Sprintf("[%s] %s: %v", e.Kind, e.Message, e.Err)
+}
+
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // Client wraps http.Client with upstream-specific configuration.
 type Client struct {
