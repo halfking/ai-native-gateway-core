@@ -1,6 +1,6 @@
 {
   "scenario": "S04_quota_failover",
-  "gateway": "http://localhost:8781",
+  "gateway": "http://127.0.0.1:8781",
   "models": [
     "loadtest-mini-alpha",
     "loadtest-standard-alpha",
@@ -18,12 +18,12 @@
     "succ": 830,
     "fail": 0,
     "success_rate": 1.0,
-    "p50_ms": 26.476541999727488,
-    "p95_ms": 38.575040991418064,
-    "p99_ms": 243.2324580149725,
-    "max_ms": 288.9550830004737,
-    "throughput_rps": 25.13920145040239,
-    "elapsed_sec": 33.016164082917385,
+    "p50_ms": 17.450541025027633,
+    "p95_ms": 64.12933301180601,
+    "p99_ms": 247.10833292920142,
+    "max_ms": 268.8606249867007,
+    "throughput_rps": 25.14190795842808,
+    "elapsed_sec": 33.012609916971996,
     "fail_by_status": {},
     "fail_by_kind": {}
   }
