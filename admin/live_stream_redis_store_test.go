@@ -1215,8 +1215,9 @@ func TestSnapshotFromDimensionQueues_RequestsAreASC(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed 5 requests out of chronological order. Record() writes to all
-	// dimension queues (vendor/provider/model), so SnapshotFromDimensionQueues
-	// will dedupe across them but the final slice must come back ASC.
+	// dimension queues (vendor/provider/model). SnapshotFromDimensionQueues
+	// now loads every dimKey member verbatim, while BuildLiveStreamSnapshot
+	// dedupes Summary/lanes in the next stage.
 	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	insertOrder := []int{3, 0, 4, 1, 2} // shuffled
 	for _, i := range insertOrder {
@@ -1231,6 +1232,19 @@ func TestSnapshotFromDimensionQueues_RequestsAreASC(t *testing.T) {
 		}
 		if err := store.Record(ctx, req); err != nil {
 			t.Fatalf("Record %d: %v", i, err)
+		}
+	}
+	for _, id := range []string{"req-z", "req-y"} {
+		if err := store.Record(ctx, LiveRequest{
+			RequestID:     id,
+			Ts:            base.Add(2 * time.Second).Format(time.RFC3339),
+			TenantID:      "default",
+			Model:         "gpt-4o",
+			ModelCategory: "openai",
+			ProviderCode:  "openai",
+			Status:        "success",
+		}); err != nil {
+			t.Fatalf("Record %s: %v", id, err)
 		}
 	}
 
@@ -1251,6 +1265,61 @@ func TestSnapshotFromDimensionQueues_RequestsAreASC(t *testing.T) {
 						lane.Requests[j-1].Timestamp, lane.Requests[j].Timestamp)
 				}
 			}
+			for j := 1; j < len(lane.Requests); j++ {
+				if lane.Requests[j-1].Timestamp == lane.Requests[j].Timestamp &&
+					lane.Requests[j-1].RequestID > lane.Requests[j].RequestID {
+					t.Fatalf("%s lane %q tie-break is not stable at idx %d: prev=%q curr=%q",
+						dim, lane.ID, j,
+						lane.Requests[j-1].RequestID, lane.Requests[j].RequestID)
+				}
+			}
+		}
+	}
+}
+
+// 2026-07-20: The dimension-queue snapshot path no longer dedupes across
+// dimKeys before building the snapshot. This regression test ensures the
+// later-stage per-lane and Summary dedupe keep counts stable: one request
+// should appear once in vendor, once in provider, once in model, but
+// Summary.Total must still be 1.
+func TestBuildLiveStreamSnapshot_DedupesSummaryAndLaneMembers(t *testing.T) {
+	req := LiveRequest{
+		RequestID:     "req-1",
+		Ts:            "2026-07-20T12:00:00Z",
+		TenantID:      "default",
+		Model:         "glm-5.2",
+		CanonicalName: "glm-5.2",
+		ModelCategory: "zhipu ai",
+		ProviderCode:  "普联",
+		Status:        "success",
+	}
+	// Simulate SnapshotFromDimensionQueues loading the same request once per
+	// dimKey (vendor/provider/model). The snapshot builder must count it once
+	// in Summary while keeping exactly one tile in each lane.
+	items := []LiveRequest{req, req, req}
+	snap := BuildLiveStreamSnapshot(items)
+	if snap.Summary.Total != 1 {
+		t.Fatalf("summary.total=%d want 1", snap.Summary.Total)
+	}
+	if snap.Summary.Success != 1 {
+		t.Fatalf("summary.success=%d want 1", snap.Summary.Success)
+	}
+	if got := len(snap.Dimensions["vendor"]); got != 1 {
+		t.Fatalf("vendor lanes=%d want 1", got)
+	}
+	if got := len(snap.Dimensions["provider"]); got != 1 {
+		t.Fatalf("provider lanes=%d want 1", got)
+	}
+	if got := len(snap.Dimensions["model"]); got != 1 {
+		t.Fatalf("model lanes=%d want 1", got)
+	}
+	for _, dim := range []string{"vendor", "provider", "model"} {
+		lane := snap.Dimensions[dim][0]
+		if got := len(lane.Requests); got != 1 {
+			t.Fatalf("%s lane requests=%d want 1", dim, got)
+		}
+		if lane.Requests[0].RequestID != req.RequestID {
+			t.Fatalf("%s lane request_id=%q want %q", dim, lane.Requests[0].RequestID, req.RequestID)
 		}
 	}
 }

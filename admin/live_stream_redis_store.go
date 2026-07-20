@@ -582,10 +582,15 @@ func BuildLiveStreamSnapshot(items []LiveRequest) *LiveStreamSnapshot {
 		StatusLegends: []LiveStreamLegendItem{},
 	}
 
+	seenForSummary := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		if item.Type == "idle_marker" {
 			continue
 		}
+		if _, ok := seenForSummary[item.RequestID]; ok {
+			continue
+		}
+		seenForSummary[item.RequestID] = struct{}{}
 		countStatus(&s.Summary, item.Status)
 	}
 
@@ -602,6 +607,7 @@ func BuildLiveStreamSnapshot(items []LiveRequest) *LiveStreamSnapshot {
 func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLane, []LiveStreamLane, []LiveStreamLegendItem) {
 	stats := map[string]LiveStreamStats{}
 	grouped := map[string][]LiveStreamTile{}
+	seenByLane := map[string]map[string]struct{}{}
 
 	for _, req := range items {
 		key := liveStreamDimensionKey(dimension, req)
@@ -609,6 +615,15 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		if key == "" {
 			continue
 		}
+		laneSeen := seenByLane[key]
+		if laneSeen == nil {
+			laneSeen = map[string]struct{}{}
+			seenByLane[key] = laneSeen
+		}
+		if _, exists := laneSeen[req.RequestID]; exists {
+			continue
+		}
+		laneSeen[req.RequestID] = struct{}{}
 		// Idle markers are displayed as tiles inside the lane but do NOT
 		// inflate the lane's business stats (success/failure/in_progress),
 		// keeping lane.Stats consistent with the global Summary.
@@ -660,7 +675,12 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 
 func buildStatusLegends(items []LiveRequest) []LiveStreamLegendItem {
 	counts := map[string]int{}
+	seen := map[string]struct{}{}
 	for _, req := range items {
+		if _, ok := seen[req.RequestID]; ok {
+			continue
+		}
+		seen[req.RequestID] = struct{}{}
 		if req.Type == "idle_marker" {
 			counts["idle"]++
 			continue

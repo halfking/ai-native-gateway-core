@@ -41,8 +41,22 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 		return s.Snapshot(ctx, tenantID, isSuper, liveStreamReplayLimit)
 	}
 
-	// Step 2: Read last N requests from each dimension queue
-	seenRequestIDs := make(map[string]bool)
+	// Step 2: Read last N requests from each dimension queue.
+	//
+	// 2026-07-20: Do NOT dedupe across dimKeys here. The same request_id
+	// intentionally appears in three Redis sorted-sets (vendor / provider /
+	// model). When we dedup at this stage, whichever dimKey redis SCAN returns
+	// first "claims" the request and later dimKeys silently lose it. Because
+	// SCAN order is not stable across calls, provider/model lanes end up with
+	// different request sets on consecutive snapshots even when Redis data did
+	// not materially change, which is the root cause of the swim-lane flicker.
+	//
+	// We now append every dimKey member verbatim and defer dedupe to the
+	// consumers:
+	//   - BuildLiveStreamSnapshot / buildStatusLegends dedupe Summary counts
+	//     and legend counts by request_id.
+	//   - buildLiveStreamLanes dedupes per (dimension,lane,request_id) so a
+	//     request still appears only once inside a given lane.
 	var allRequests []LiveRequest
 
 	for _, key := range dimKeys {
@@ -53,11 +67,6 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 		}
 
 		for _, requestID := range requestIDs {
-			if seenRequestIDs[requestID] {
-				continue // deduplicate across dimensions
-			}
-			seenRequestIDs[requestID] = true
-
 			// Load request detail
 			detailKey := liveStreamGlobalRequestDetailKey(requestID)
 			if !isSuper && tenantID != "" {
@@ -90,18 +99,15 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 
 	// 2026-07-20: Sort ASC by timestamp so grouped[key] inside
 	// buildLiveStreamLanes is also ASC (oldest first, newest at the
-	// tail). Without this, the order is determined by redis SCAN +
-	// cross-dimKey deduplication order, which is non-deterministic
-	// across calls. lastTiles() then picks an unstable subset and
-	// the frontend sees different request_id sets in consecutive
-	// snapshots — the root cause of the swim-lane flicker reported
-	// on 245 (cache/window count dropping by a handful on every new
-	// request). Sorting guarantees grouped[key] is ASC and lastTiles
-	// consistently returns the "newest N" tile window.
+	// tail). lastTiles() then picks the trailing window = "newest N"
+	// consistently across snapshots.
 	sort.SliceStable(allRequests, func(i, j int) bool {
 		// Ts is RFC3339 — lexicographic compare matches chronological order,
 		// no need to parse to time.Time (which would also be ~10× slower).
-		return allRequests[i].Ts < allRequests[j].Ts
+		if allRequests[i].Ts != allRequests[j].Ts {
+			return allRequests[i].Ts < allRequests[j].Ts
+		}
+		return allRequests[i].RequestID < allRequests[j].RequestID
 	})
 
 	if len(allRequests) == 0 {

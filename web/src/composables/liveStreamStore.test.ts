@@ -114,6 +114,29 @@ describe('mergeDelta', () => {
     expect(__testing.state.snapshot!.dimensions.vendor[1].requests).toHaveLength(2)
   })
 
+  it('drops trimmed tiles while preserving surviving tile identity', () => {
+    const survivor = tile('r2')
+    __testing.state.snapshot!.dimensions.vendor[1].requests = [tile('r1'), survivor]
+    __testing.state.snapshot!.detail_dimensions.vendor[1].requests = [tile('r1'), survivor]
+
+    const delta: LiveStreamDelta = {
+      summary: { total: 2, success: 2, failure: 0 },
+      changed_lanes: {
+        vendor: [lane('anthropic', 1), lane('openai', 1, [tile('r2')])],
+        provider: [],
+        model: [],
+      },
+      dimension_legends: { vendor: [], provider: [], model: [] },
+      status_legends: [],
+    }
+
+    __testing.mergeDelta(delta)
+
+    const after = __testing.state.snapshot!.dimensions.vendor[1]
+    expect(after.requests).toHaveLength(1)
+    expect(after.requests[0].request_id).toBe('r2')
+  })
+
   // 2026-07-14: a brand-new lane id arrives. Origin's
   // mergeLaneList implementation only preserves lanes that are
   // also present in the incoming batch; the SSE wire payload must
