@@ -10,6 +10,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // jsonMarshal is a local alias used by auto_route.go to avoid pulling
@@ -101,6 +102,10 @@ type RequestLogContext struct {
 	// 2026-07-01: 附件元数据字段 (migration 325)
 	// 存储从请求体中提取的 base64/data-URI 附件元数据，写入 request_logs.attachments JSONB。
 	Attachments []attachments.AttachmentMetadata
+
+	// RoutingTracker (2026-07-20) 记录所有路由轮次，供 buildEntry 写入
+	// request_logs.routing_attempts。nil 表示不追踪（旧路径/降级）。
+	RoutingTracker *executors.RoutingAttemptsTracker
 
 	meta   requestAttemptMeta
 	logged bool
@@ -547,6 +552,17 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 	enrichRequestLogFromMeta(reqLog, c.KeyInfo, &c.meta)
 	applyAutoRouteFields(reqLog, c)
+
+	// 2026-07-20: serialize routing attempts into request_logs
+	if c.RoutingTracker != nil {
+		if jsonBytes, err := c.RoutingTracker.ToJSONBytes(); err == nil && jsonBytes != nil {
+			reqLog.RoutingAttempts = jsonBytes
+		}
+		if summary := c.RoutingTracker.Summary(); summary != "" {
+			reqLog.RoutingSummary = &summary
+		}
+	}
+
 	return reqLog
 }
 
