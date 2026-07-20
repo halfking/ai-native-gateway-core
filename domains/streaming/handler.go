@@ -347,6 +347,7 @@ func calculateRetryDelay(attempt int, baseDelayMs int, maxDelayMs int) time.Dura
 type providerResolver interface {
 	Enabled() bool
 	GetCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, *provider.Policy, error)
+	GetCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]provider.Candidate, *provider.Policy, error)
 	ModelKnown(ctx context.Context, model string) bool
 }
 
@@ -1724,7 +1725,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if keyInfo != nil {
 		tenantID = keyInfo.TenantID
 	}
-	candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile, tenantID)
+	candidates, policy, requestModality, err := resolveCandidatesForRequest(r.Context(), h.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
 
 	// 2026-07-18: structured log of routing_resolve so journald can
 	// correlate req_id → chosen providers. The minmax-m3 incident
@@ -1739,6 +1740,7 @@ func (h *ChatHandler) serveWithExecutor(
 		attrs := []any{
 			"request_id", requestID,
 			"client_model", clientModel,
+			"request_modality", requestModality,
 			"profile", clientID.Fingerprint.ClientProfile,
 			"tenant_id", tenantID,
 			"candidates_count", len(candidates),
@@ -2624,6 +2626,32 @@ func (h *ChatHandler) serveWithExecutor(
 				return
 			}
 
+			if execErrTyped.LastKind == errorsx.KindUnsupportedFeature {
+				reason := extractUpstreamReason(execErr)
+				msg := i18n.T(r.Context(), i18n.MsgUnsupportedFeature, nil)
+				if reason != "" {
+					msg = msg + " Reason: " + reason
+				}
+				logCtx.SetOutboundModel(explicitOutbound)
+				logCtx.failAndMark("unsupported_feature", execErr.Error(), providerID, credentialID)
+				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "unsupported_feature", failTrace, int(time.Since(startTime).Milliseconds()))
+				markLogged()
+				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
+				debugInfo := map[string]any{
+					"stage":     "execution",
+					"kind":      string(execErrTyped.LastKind),
+					"tried":     execErrTyped.Tried,
+					"retryable": false,
+					"reason":    reason,
+				}
+				if preStreamPrepared {
+					writePrewarmedStreamError(w, msg, "invalid_request_error", "unsupported_feature")
+					return
+				}
+				writeErrorJSONWithKind(w, http.StatusBadRequest, requestID, msg, "invalid_request_error", "unsupported_feature", string(execErrTyped.LastKind), debugInfo)
+				return
+			}
+
 			// = "model_not_found" but surface the REAL underlying
 			// kind in error.kind + X-Gateway-Last-Kind header. Many
 			// in-the-wild failures labeled model_not_found are
@@ -3088,9 +3116,14 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	}
 
 	loggedOutbound := outboundModelForLog(evt.ClientModel, evt.OutboundModel, result.Candidate.RawModel)
+	eventAt := time.Now().UTC()
+	if logCtx != nil {
+		eventAt = logCtx.StartTime.Add(time.Duration(result.LatencyMs) * time.Millisecond)
+	}
 
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:       evt.RequestID,
+		EventAt:         &eventAt,
 		TenantID:        tenantID,
 		ApplicationID:   applicationID,
 		APIKeyID:        apiKeyID,
@@ -3626,8 +3659,10 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 	}
 
 	stage := "probe"
+	eventAt := time.Now().UTC()
 	return &telemetry.RequestLogEntry{
 		RequestID:     probeRequestID,
+		EventAt:       &eventAt,
 		TenantID:      tenantID,
 		ClientModel:   strPtr(clientModel),
 		OutboundModel: strPtr(outboundModel),
@@ -3902,6 +3937,10 @@ func (h *ChatHandler) recordInitialRequestLog(
 		transformRuleID = strPtr(txResult.MatchedRule)
 	}
 	streamInterrupted := false
+	eventAt := time.Now().UTC()
+	if autoCtx != nil {
+		eventAt = autoCtx.StartTime
+	}
 	var clientRequestIDPtr *string
 	if autoCtx != nil && autoCtx.ClientRequestID != "" {
 		v := autoCtx.ClientRequestID
@@ -3909,6 +3948,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	}
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:         requestID,
+		EventAt:           &eventAt,
 		TenantID:          tenantID,
 		ApplicationID:     applicationID,
 		APIKeyID:          apiKeyID,

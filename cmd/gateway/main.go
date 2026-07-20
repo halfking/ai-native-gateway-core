@@ -4559,7 +4559,7 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		return hub.LiveRequestFromTelemetry(
 			ctx,
 			entry.RequestID,
-			time.Now().UTC(),
+			liveStreamEventTime(entry),
 			entry.TenantID,
 			clientModel,
 			outboundModel,
@@ -4591,7 +4591,7 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 	}
 	return admin.LiveRequest{
 		RequestID:        entry.RequestID,
-		Ts:               time.Now().UTC().Format(time.RFC3339),
+		Ts:               liveStreamEventTime(entry).Format(time.RFC3339),
 		TenantID:         entry.TenantID,
 		Model:            fallbackModel,
 		CanonicalName:    fallbackModel, // best-effort: prefer client over vendor raw
@@ -4605,6 +4605,13 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		CostUSD:          entry.CostUSD,
 		ErrorKind:        entry.ErrorKind,
 	}
+}
+
+func liveStreamEventTime(entry *telemetry.RequestLogEntry) time.Time {
+	if entry != nil && entry.EventAt != nil && !entry.EventAt.IsZero() {
+		return entry.EventAt.UTC()
+	}
+	return time.Now().UTC()
 }
 
 // incidentUpdateFromResult converts a route-incident transition

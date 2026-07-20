@@ -3658,8 +3658,10 @@ func (e *Executor) buildAsyncSuccessEntry(
 		latencyMs := int(time.Since(startedAt).Milliseconds())
 		status := telemetry.RequestStatusSuccess
 		emptyKind := ""
+		eventAt := startedAt.Add(time.Duration(latencyMs) * time.Millisecond)
 		return &telemetry.RequestLogEntry{
 			RequestID:     requestID,
+			EventAt:       &eventAt,
 			Success:       true,
 			RequestStatus: &status,
 			LatencyMs:     &latencyMs,
@@ -3671,9 +3673,11 @@ func (e *Executor) buildAsyncSuccessEntry(
 	success := true
 	status := telemetry.RequestStatusSuccess
 	emptyKind := ""
+	eventAt := startedAt.Add(time.Duration(latencyMs) * time.Millisecond)
 
 	entry := &telemetry.RequestLogEntry{
 		RequestID:     requestID,
+		EventAt:       &eventAt,
 		TenantID:      tenantFromCtx(params.R),
 		ClientModel:   strPtr(params.ClientModel),
 		OutboundModel: strPtr(params.OutboundModel),

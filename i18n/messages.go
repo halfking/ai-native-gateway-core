@@ -37,10 +37,11 @@ const (
 	MsgContentFilterHint = "content_filter_hint" // "Check your input for sensitive or prohibited content and try again."
 
 	// Model / provider selection.
-	MsgNoCandidate   = "no_candidate"    // "No available provider for model '{{.Model}}'"
-	MsgInvalidModel  = "invalid_model"   // "Model '{{.Model}}' is not supported by this gateway"
-	MsgMetaToolError = "meta_tool_error" // "Meta-tool processing failed"
-	MsgProviderError = "provider_error"  // "upstream request failed"
+	MsgNoCandidate        = "no_candidate"        // "No available provider for model '{{.Model}}'"
+	MsgInvalidModel       = "invalid_model"       // "Model '{{.Model}}' is not supported by this gateway"
+	MsgUnsupportedFeature = "unsupported_feature" // "The selected model does not support this request format or modality."
+	MsgMetaToolError      = "meta_tool_error"     // "Meta-tool processing failed"
+	MsgProviderError      = "provider_error"      // "upstream request failed"
 
 	// Upstream credential errors — the gateway's stored credential for an
 	// upstream provider was rejected by that provider (HTTP 401/403/402).

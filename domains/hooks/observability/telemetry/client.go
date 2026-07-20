@@ -101,6 +101,7 @@ const (
 type RequestLogEntry struct {
 	Op               RequestLogOp `json:"op,omitempty"`
 	RequestID        string       `json:"request_id"`
+	EventAt          *time.Time   `json:"event_at,omitempty"`
 	TenantID         string       `json:"tenant_id"`
 	ApplicationID    *int         `json:"application_id,omitempty"`
 	APIKeyID         *int         `json:"api_key_id,omitempty"`
@@ -1623,11 +1624,43 @@ func truncateToValidJSON(s string) (string, bool) {
 	return "", false
 }
 
+// escapeInvalidEscape catches sequences that look like JSON \uXXXX escapes
+// but the following 4 chars are not valid hex. PostgreSQL's jsonb cast
+// rejects these with SQLSTATE 22P05 ("unsupported Unicode escape sequence").
+// We double the backslash so the cast sees "\\\\uXXXX" which is harmless text.
+func escapeInvalidEscape(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c == 0x5C && i+1 < len(s) && s[i+1] == 'u' {
+			hexOK := i+5 < len(s)
+			for j := 0; hexOK && j < 4; j++ {
+				k := s[i+2+j]
+				if !((k >= '0' && k <= '9') || (k >= 'a' && k <= 'f') || (k >= 'A' && k <= 'F')) {
+					hexOK = false
+					break
+				}
+			}
+			if !hexOK {
+				b.WriteString("\\\\u") // double the backslash
+				i += 2 // skip the \u
+				continue
+			}
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
+}
+
 // sanitizeUTF8JSON scrubs invalid UTF-8 and ensures the result is valid JSON
 // before CAST(... AS jsonb). On unrecoverable corruption it returns "" so callers
 // can store NULL and let UPDATE COALESCE keep the previous body.
 func sanitizeUTF8JSON(s string) string {
 	cleaned := scrubUTF8ForJSON(s)
+	cleaned = escapeInvalidEscape(cleaned)
 	if repaired, ok := truncateToValidJSON(cleaned); ok {
 		return repaired
 	}
@@ -1663,6 +1696,16 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeStringPtr(&e.APIKeyPrefix)
 	sanitizeStringPtr(&e.APIKeyOwnerUser)
 	sanitizeStringPtr(&e.ApplicationCode)
+	sanitizeStringPtr(&e.TaskType)
+	sanitizeStringPtr(&e.AutoProfile)
+	sanitizeStringPtr(&e.AutoDecision)
+	sanitizeStringPtr(&e.WorkType)
+	sanitizeStringPtr(&e.TaskTypeChosen)
+	sanitizeStringPtr(&e.ModelChosen)
+	sanitizeStringPtr(&e.StrategyUsed)
+	sanitizeStringPtr(&e.ParentRequestID)
+	sanitizeStringPtr(&e.CompressionReason)
+	sanitizeStringPtr(&e.CompressionStrategy)
 	e.RequestID = sanitizeUTF8(e.RequestID)
 	e.TenantID = sanitizeUTF8(e.TenantID)
 	if e.EndUserID != nil {
@@ -1762,6 +1805,7 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.APIKeyOwnerUser, src.APIKeyOwnerUser)
 	mergeStringPtr(&dst.ApplicationCode, src.ApplicationCode)
 	mergeInt64Ptr(&dst.CreditsCharged, src.CreditsCharged)
+	mergeTimePtr(&dst.EventAt, src.EventAt)
 	// 2026-06-26: keep first non-empty client_request_id across merges
 	// so a follow-up UPDATE never blanks the value the initial INSERT
 	// captured. Critical for debugging client-side retry storms where
@@ -1820,6 +1864,13 @@ func mergeFloatPtr(dst **float64, src *float64) {
 
 func mergeBoolPtr(dst **bool, src *bool) {
 	if src != nil {
+		v := *src
+		*dst = &v
+	}
+}
+
+func mergeTimePtr(dst **time.Time, src *time.Time) {
+	if src != nil && !src.IsZero() {
 		v := *src
 		*dst = &v
 	}
