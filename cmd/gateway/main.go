@@ -3117,45 +3117,11 @@ func main() {
 		customerEcho.HideBanner = true
 		customerEcho.HidePort = true
 
-		jwtSecret := func() string {
-			if s := os.Getenv("LLM_GATEWAY_JWT_SECRET"); s != "" {
-				return s
-			}
-			return cfg.SecretKey
-		}()
-
-		jwtMiddleware := func(next echo.HandlerFunc) echo.HandlerFunc {
-			return func(c echo.Context) error {
-				if jwtSecret == "" {
-					return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "admin authentication is not configured"})
-				}
-				auth := c.Request().Header.Get("Authorization")
-				if len(auth) < 7 || auth[:7] != "Bearer " {
-					return c.JSON(http.StatusUnauthorized, map[string]string{"error": "authentication required"})
-				}
-				tokenStr := auth[7:]
-				claims, err := admin.VerifyToken(tokenStr, jwtSecret)
-				if err != nil || claims.UserID <= 0 {
-					return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
-				}
-				// 将用户信息注入 Echo context
-				c.Set("user_id", claims.UserID)
-				c.Set("tenant_id", claims.TenantID)
-				c.Set("username", claims.Username)
-				c.Set("role", claims.Role)
-				return next(c)
-			}
-		}
+		jwtSecret := resolveJWTSecret(os.Getenv("LLM_GATEWAY_JWT_SECRET"), cfg.SecretKey)
+		jwtMiddleware := newJWTMiddleware(jwtSecret)
 		e.Use(jwtMiddleware)
 
-		requireSuperAdmin := func(next echo.HandlerFunc) echo.HandlerFunc {
-			return func(c echo.Context) error {
-				if role, _ := c.Get("role").(string); role != "super_admin" {
-					return c.JSON(http.StatusForbidden, map[string]string{"error": "super_admin required"})
-				}
-				return next(c)
-			}
-		}
+		requireSuperAdmin := newRequireSuperAdminMiddleware()
 
 		if jwtSecret == "" {
 			slog.Warn("JWT secret not configured — admin Echo routes will reject requests")
@@ -3309,36 +3275,13 @@ func main() {
 	if dbConn != nil {
 		pool := dbConn.Pool()
 		secret := cfg.SecretKey
-		wrapAdmin = func(fn http.HandlerFunc) http.HandlerFunc {
-			return admin.AdminMiddleware(fn, pool, secret)
-		}
+		wrapAdmin = newWrapAdmin(pool, secret)
 	}
 	var wrapSessionAnalytics func(http.HandlerFunc) http.HandlerFunc
 	if dbConn != nil {
 		pool := dbConn.Pool()
 		secret := cfg.SecretKey
-		wrapSessionAnalytics = func(fn http.HandlerFunc) http.HandlerFunc {
-			return func(w http.ResponseWriter, r *http.Request) {
-				serviceJWTEnabled := settings.GetPlatformBool("session_service_auth.enabled", false)
-				serviceJWTSecret := strings.TrimSpace(os.Getenv("LLM_GATEWAY_SESSION_SERVICE_JWT_SECRET"))
-				if !serviceJWTEnabled || serviceJWTSecret == "" {
-					if serviceJWTEnabled && serviceJWTSecret == "" {
-						slog.Warn("session service JWT enabled but secret is missing; using admin middleware")
-					}
-					admin.AdminMiddleware(fn, pool, secret)(w, r)
-					return
-				}
-				serviceJWTIssuer := os.Getenv("LLM_GATEWAY_SESSION_SERVICE_JWT_ISSUER")
-				if serviceJWTIssuer == "" {
-					serviceJWTIssuer = "ai-session-manager"
-				}
-				serviceJWTAudience := os.Getenv("LLM_GATEWAY_SESSION_SERVICE_JWT_AUDIENCE")
-				if serviceJWTAudience == "" {
-					serviceJWTAudience = "llm-gateway-session-analytics"
-				}
-				admin.SessionAnalyticsMiddleware(fn, pool, secret, serviceJWTSecret, serviceJWTIssuer, serviceJWTAudience)(w, r)
-			}
-		}
+		wrapSessionAnalytics = newWrapSessionAnalytics(pool, secret)
 	}
 
 	// ── 质量画像更新器（先创建，后续启动和注册 API）───────────────────
