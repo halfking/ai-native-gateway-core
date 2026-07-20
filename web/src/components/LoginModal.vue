@@ -1,9 +1,20 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { login, getAuthMe } from '../api'
 import { setApiKey, setJwtToken, setUserInfo } from '../store'
 import { useLoginModal } from '../composables/useLoginModal'
+import { detectTheme, logoSrc } from '../theme'
+import { SITE_LOGO_SIZE, SITE_TITLE } from '../config/brand'
+
+const brandLogo = ref(logoSrc())
+let logoObserver: MutationObserver | null = null
+onMounted(() => {
+  brandLogo.value = logoSrc(detectTheme())
+  logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
+  logoObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+})
+onUnmounted(() => logoObserver?.disconnect())
 
 const props = defineProps<{
   modelValue: boolean
@@ -52,8 +63,7 @@ async function handleLogin() {
       } else {
         try {
           const me = await getAuthMe()
-          const meAny = me as { user?: typeof resp.user }
-          setUserInfo(meAny?.user ?? me)
+          setUserInfo(me)
         } catch { /* ignore */ }
       }
       close()
@@ -98,15 +108,15 @@ async function handleLogin() {
         <div class="login-modal__header">
           <div class="login-modal__brand">
             <img
-              src="/logo-icon-dark.png"
-              width="40"
-              height="40"
-              alt="开轩启圭 Qigui"
+              :src="brandLogo"
+              :width="SITE_LOGO_SIZE"
+              :height="SITE_LOGO_SIZE"
+              alt="开轩启圭"
               class="login-modal__brand-img"
             />
             <div>
               <h2 id="login-modal-title">登录控制面</h2>
-              <p class="login-modal__subtitle">AI-Native 超级智能大模型网关 · 开轩启圭</p>
+              <p class="login-modal__subtitle">{{ SITE_TITLE }}</p>
               <p class="login-modal__hint">首次登录或管理员重置密码后，需要先修改密码才能继续使用。</p>
             </div>
           </div>
@@ -140,10 +150,10 @@ async function handleLogin() {
           </div>
           <div class="login-modal__actions">
             <button type="button" class="btn btn-ghost" @click="close">取消</button>
-<button class="btn btn-primary" type="submit" :disabled="loading">
-            {{ loading ? '登录中…' : '登录' }}
-          </button>
-        </div>
+            <button class="btn btn-primary" type="submit" :disabled="loading">
+              {{ loading ? '登录中…' : '登录' }}
+            </button>
+          </div>
         </form>
       </div>
     </div>

@@ -48,6 +48,12 @@ export default defineConfig({
       },
       '/v1':  { target: 'http://localhost:8781', changeOrigin: true, cookieDomainRewrite: { '*': '127.0.0.1' } },
       '/healthz': { target: 'http://localhost:8781', changeOrigin: true, cookieDomainRewrite: { '*': '127.0.0.1' } },
+      '/maintain-api': {
+        target: 'http://127.0.0.1:8082',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/maintain-api/, '/maintain-api'),
+      },
+      '/artifacts': { target: 'http://127.0.0.1:8082', changeOrigin: true },
     },
   },
   // @ts-ignore - vitest config is valid but not in vite's types
