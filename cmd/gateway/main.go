@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -2935,20 +2934,22 @@ func main() {
 			return pluginBases[pluginID] // "" if not running → apiproxy returns 502
 		}, dbConn.Pool(), cfg.SecretKey)
 
-		// P6: health loop — socket-liveness as a health proxy. Each tick dials
-		// the plugin's unix socket; consecutive failures (default 2) mark the
-		// plugin degraded in the registry, which surfaces in /api/v1/plugin-nav.
+		// P6: health loop — precise HTTP health check as the liveness signal.
+		// Each tick GETs manifest.Runtime.HealthPath over the plugin's unix
+		// socket; consecutive failures (default 2) mark the plugin degraded in
+		// the registry, which surfaces in /api/v1/plugin-nav. P8: switched from
+		// socket-only dial (which missed wedged-but-listening plugins) to a
+		// real GET that requires a 200 response.
 		healthCheck := func(pluginID string) error {
 			socketPath := sup.SocketPathOf(pluginID)
 			if socketPath == "" {
 				return fmt.Errorf("plugin %s not started", pluginID)
 			}
-			conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
-			if err != nil {
-				return fmt.Errorf("plugin %s socket unreachable: %w", pluginID, err)
+			healthPath := "/plugin/healthz"
+			if m := sup.ManifestOf(pluginID); m != nil && m.Runtime.HealthPath != "" {
+				healthPath = m.Runtime.HealthPath
 			}
-			_ = conn.Close()
-			return nil
+			return pluginruntime.PreciseHealthCheck(socketPath, healthPath, 2*time.Second)()
 		}
 		healthLoop := pluginruntime.NewHealthLoop(pluginRegistry, healthCheck, pluginruntime.HealthLoopConfig{
 			Interval:         30 * time.Second,
