@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useL1TaskTypes } from '../../composables/useL1TaskTypes'
+import { useWorkTypes } from '../../composables/useWorkTypes'
 
 const props = defineProps<{
   modelValue: string
@@ -13,7 +13,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const { l1TaskTypes, refreshL1TaskTypes } = useL1TaskTypes()
+const { workTypes, workTypeIcon, refreshWorkTypes } = useWorkTypes()
 
 const totalCount = computed(() =>
   Object.values(props.counts).reduce((sum, n) => sum + n, 0),
@@ -23,17 +23,13 @@ function select(key: string) {
   emit('update:modelValue', key)
 }
 
-// L1 task types are DB-backed. Composable seeds canonical 8 immediately so
-// first paint shows the rail populated; refresh upgrades once the response
-// lands. The composable module-state is shared across components, so this
-// is essentially free if another component already triggered the fetch.
 onMounted(() => {
-  void refreshL1TaskTypes()
+  void refreshWorkTypes()
 })
 </script>
 
 <template>
-  <aside class="task-rail" aria-label="task types">
+  <aside class="task-rail" aria-label="work types">
     <button
       type="button"
       class="rail-item"
@@ -46,17 +42,17 @@ onMounted(() => {
       <span v-if="totalCount" class="rail-badge">{{ totalCount }}</span>
     </button>
     <button
-      v-for="task in l1TaskTypes"
-      :key="task.key"
+      v-for="wt in workTypes"
+      :key="wt.key"
       type="button"
       class="rail-item"
-      :class="{ active: modelValue === task.key }"
-      :title="task.label"
-      @click="select(task.key)"
+      :class="{ active: modelValue === wt.key }"
+      :title="wt.label"
+      @click="select(wt.key)"
     >
-      <span class="rail-icon">{{ task.icon }}</span>
-      <span class="rail-label">{{ task.label }}</span>
-      <span v-if="counts[task.key]" class="rail-badge">{{ counts[task.key] }}</span>
+      <span class="rail-icon">{{ workTypeIcon(wt.key) }}</span>
+      <span class="rail-label">{{ wt.label }}</span>
+      <span v-if="counts[wt.key]" class="rail-badge">{{ counts[wt.key] }}</span>
     </button>
   </aside>
 </template>

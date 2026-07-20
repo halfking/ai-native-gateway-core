@@ -1,13 +1,13 @@
 // routingDefault.ts — 智能路由配置（默认路由）文案
 export default {
   title: '智能路由配置',
-  subtitle: '按任务类型配置主要 / 次级 / 托底模型；约 1 分钟内刷新生效。优先级：ban > pin > 本默认 > 隐式 tag > fallback。',
+  subtitle: '按工作类型配置主要 / 次级 / 托底模型；约 1 分钟内刷新生效。优先级：ban > pin > 本默认 > 隐式 tag > fallback。',
   scope: {
     platform: '平台',
   },
   rail: {
     all: '全部',
-    allHint: '显示所有任务类型',
+    allHint: '显示所有工作类型',
   },
   tiers: {
     primary: '主要',
@@ -38,11 +38,11 @@ export default {
     reason: '原因',
     expires: '过期时间',
     tier: '分组',
-    taskType: '任务类型',
+    taskType: '工作类型',
   },
   empty: {
     group: '该分组暂无模型，点击「添加模型」配置。',
-    needTask: '请先在左侧选择一个任务类型，再添加模型。',
+    needTask: '请先在左侧选择一个工作类型，再添加模型。',
     none: '尚未配置默认路由。',
   },
   create: {

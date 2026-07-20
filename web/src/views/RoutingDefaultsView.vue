@@ -18,8 +18,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ModelPicker from '../components/ModelPicker.vue'
-import { listWorkTypes, type WorkTypeConfig } from '../api-work-types'
-import { useL1TaskTypes } from '../composables/useL1TaskTypes'
+import { useWorkTypes } from '../composables/useWorkTypes'
 import { getTenantsAdmin, type Tenant } from '../api/admin'
 import {
   getRoutingDefaults,
@@ -72,8 +71,6 @@ const createForm = ref<RoutingDefaultCreate>({
 const createError = ref<string | null>(null)
 const createSubmitting = ref(false)
 const showTaskTypePicker = ref(false)
-const workTypes = ref<WorkTypeConfig[]>([])
-const workTypesLoading = ref(false)
 const taskTypeLoadError = ref('')
 const showTenantPicker = ref(false)
 const tenants = ref<Tenant[]>([])
@@ -81,26 +78,26 @@ const tenantsLoading = ref(false)
 const tenantLoadError = ref('')
 const tenantSearch = ref('')
 
+// Work types from work_type_config (DB, typically 20+). Shared with TaskTypeRail.
+const {
+  workTypes,
+  loading: workTypesLoading,
+  error: workTypesError,
+  refreshWorkTypes,
+  workTypeIcon,
+} = useWorkTypes()
+
 const selectedTaskType = computed(() =>
   availableTaskTypes.value.find((task) => task.key === createForm.value.task_type)
 )
-// L1 task types come from useL1TaskTypes composable (DB-backed, refreshed
-// on mount). Replaces the previous hardcoded TASK_TYPES / L1_TASK_TYPES
-// fallback chain.
-const { l1TaskTypes, refreshL1TaskTypes } = useL1TaskTypes()
 
-const availableTaskTypes = computed(() => {
-  if (workTypes.value.length) {
-    return workTypes.value.map((workType) => ({
-      key: workType.key,
-      label: workType.label,
-      icon: '◈',
-    }))
-  }
-  // Fallback when workTypes API hasn't returned yet: use the L1 task type
-  // list (canonical 8 seeded immediately, then live DB-backed).
-  return l1TaskTypes.value.map((task) => ({ key: task.key, label: task.label, icon: task.icon }))
-})
+const availableTaskTypes = computed(() =>
+  workTypes.value.map((workType) => ({
+    key: workType.key,
+    label: workType.label,
+    icon: workTypeIcon(workType.key),
+  })),
+)
 const selectedTenant = computed(() =>
   tenants.value.find((tenant) => tenant.code === createForm.value.tenant_id)
 )
@@ -134,16 +131,9 @@ function selectTaskType(key: string) {
 
 async function openTaskTypePicker() {
   showTaskTypePicker.value = true
-  if (workTypes.value.length || workTypesLoading.value) return
-  workTypesLoading.value = true
   taskTypeLoadError.value = ''
-  try {
-    workTypes.value = (await listWorkTypes()).filter((workType) => workType.enabled)
-  } catch (e: unknown) {
-    taskTypeLoadError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    workTypesLoading.value = false
-  }
+  await refreshWorkTypes()
+  if (workTypesError.value) taskTypeLoadError.value = workTypesError.value
 }
 
 function selectTenant(code: string | null) {
@@ -253,8 +243,7 @@ const summary = computed(() => {
 
 onMounted(() => {
   loadDefaults()
-  // Refresh L1 taxonomy (composable seeds canonical 8 immediately).
-  void refreshL1TaskTypes()
+  void refreshWorkTypes()
 })
 </script>
 

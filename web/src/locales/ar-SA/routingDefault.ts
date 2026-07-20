@@ -7,7 +7,7 @@ export default {
   },
   rail: {
     all: 'الكل',
-    allHint: 'إظهار جميع أنواع المهام',
+    allHint: 'إظهار جميع أنواع العمل',
   },
   tiers: {
     primary: 'رئيسي',

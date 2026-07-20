@@ -7,7 +7,7 @@ export default {
   },
   rail: {
     all: 'Tous',
-    allHint: 'Afficher tous les types de tâche',
+    allHint: 'Afficher tous les types de travail',
   },
   tiers: {
     primary: 'Principal',

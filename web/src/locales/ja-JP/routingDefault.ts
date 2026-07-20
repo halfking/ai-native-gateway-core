@@ -7,7 +7,7 @@ export default {
   },
   rail: {
     all: 'すべて',
-    allHint: 'すべてのタスク種別を表示',
+    allHint: 'すべてのワークタイプを表示',
   },
   tiers: {
     primary: '主要',
