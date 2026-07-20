@@ -2927,6 +2927,7 @@ func main() {
 		sup := pluginruntime.NewSupervisor(pluginruntime.SupervisorConfig{
 			SocketDir:     filepath.Join(pluginsDir, ".sockets"),
 			ContextSecret: []byte(cfg.SecretKey),
+			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
 		pluginBases := ScanAndStartPlugins(sup, pluginsDir, pluginManifests)
 		registerPluginAPIProxy(mux, []byte(cfg.SecretKey), func(pluginID string) string {

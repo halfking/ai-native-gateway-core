@@ -28,29 +28,22 @@ func PluginAPIProxy(pluginBase string, secret []byte) http.Handler {
 			http.Error(w, "invalid plugin base url", http.StatusBadGateway)
 		})
 	}
-	proxy := httputil.NewSingleHostReverseProxy(u)
-
+	var proxy *httputil.ReverseProxy
 	if u.Scheme == "unix" {
-		// NewSingleHostReverseProxy 的 Director 会把 req.URL.Scheme 设为 target 的
-		// scheme（这里是 "unix"），而 http.Transport 只认 http/https；同时它不会
-		// 把请求路由到 unix socket。我们做两件事：
-		//   1) 包裹 Director，强制 scheme=http、host="unix"（占位，DialContext
-		//      会忽略它，真正拨号到 socket path）。
-		//   2) 设置自定义 Transport，其 DialContext 忽略传入的 addr，直接拨号到
-		//      unix socket path。
 		socketPath := u.Path
-		origDirector := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			origDirector(req)
-			req.URL.Scheme = "http"
-			req.URL.Host = "unix"
-		}
+		// IMPORTANT: target.Path must be empty, else NewSingleHostReverseProxy's
+		// Director prepends the socket path to every request path (singleJoiningSlash),
+		// corrupting the upstream URL (C1 fix). Use a bare target with no path.
+		target := &url.URL{Scheme: "http", Host: "unix"}
+		proxy = httputil.NewSingleHostReverseProxy(target)
 		proxy.Transport = &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				d := net.Dialer{Timeout: 5 * time.Second}
 				return d.DialContext(ctx, "unix", socketPath)
 			},
 		}
+	} else {
+		proxy = httputil.NewSingleHostReverseProxy(u)
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
