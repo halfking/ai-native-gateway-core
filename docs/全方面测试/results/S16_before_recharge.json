@@ -1,6 +1,6 @@
 {
   "scenario": "S16_before_recharge",
-  "gateway": "http://localhost:8781",
+  "gateway": "http://127.0.0.1:8781",
   "models": [
     "loadtest-mini-alpha",
     "loadtest-standard-alpha",
@@ -14,16 +14,16 @@
   "stream_ratio": 0.0,
   "fault_inject_cancel": 0.0,
   "metrics": {
-    "total": 426,
-    "succ": 426,
+    "total": 430,
+    "succ": 430,
     "fail": 0,
     "success_rate": 1.0,
-    "p50_ms": 17.80770893674344,
-    "p95_ms": 45.21112504880875,
-    "p99_ms": 90.62087500933558,
-    "max_ms": 261.2731669796631,
-    "throughput_rps": 23.65466367662765,
-    "elapsed_sec": 18.0091336669866,
+    "p50_ms": 16.252583009190857,
+    "p95_ms": 24.01029202155769,
+    "p99_ms": 212.03608298674226,
+    "max_ms": 232.3834999697283,
+    "throughput_rps": 23.882074924233834,
+    "elapsed_sec": 18.005135708022863,
     "fail_by_status": {},
     "fail_by_kind": {}
   }
