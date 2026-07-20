@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { View, Delete } from '@element-plus/icons-vue'
+import { View as ViewIcon, Delete as DeleteIcon } from '@element-plus/icons-vue'
 import ModelPicker from '../ModelPicker.vue'
 import type { RoutingDefault } from '../../api/tuning'
 
@@ -176,6 +176,14 @@ function onTenantChange(row: RoutingDefault, value: string) {
                 @click="patchField(row, { profile: p.key })"
               >{{ t(p.labelKey) }}</button>
             </div>
+            <div class="row-actions">
+              <button type="button" class="btn btn-sm btn-ghost icon-btn" :title="t('routingDefault.actions.detail')" :aria-label="t('routingDefault.actions.detail')" @click="emit('detail', row)">
+                <ViewIcon class="icon-svg" />
+              </button>
+              <button type="button" class="btn btn-sm btn-ghost icon-btn icon-btn-danger" :title="t('routingDefault.actions.delete')" :aria-label="t('routingDefault.actions.delete')" @click="emit('remove', row)">
+                <DeleteIcon class="icon-svg" />
+              </button>
+            </div>
           </div>
           <div class="row-meta">
             <label>
@@ -212,14 +220,6 @@ function onTenantChange(row: RoutingDefault, value: string) {
               />
             </label>
             <span class="scope-chip" :title="scopeLabel(row)">{{ scopeLabel(row) }}</span>
-          </div>
-          <div class="row-actions">
-            <button type="button" class="btn btn-sm icon-btn" :title="t('routingDefault.actions.detail')" :aria-label="t('routingDefault.actions.detail')" @click="emit('detail', row)">
-              <el-icon><View /></el-icon>
-            </button>
-            <button type="button" class="btn btn-sm icon-btn icon-btn-danger" :title="t('routingDefault.actions.delete')" :aria-label="t('routingDefault.actions.delete')" @click="emit('remove', row)">
-              <el-icon><Delete /></el-icon>
-            </button>
           </div>
         </li>
       </ul>
@@ -287,10 +287,16 @@ function onTenantChange(row: RoutingDefault, value: string) {
   border-radius: 6px;
   font-size: 13px;
 }
-.add-actions, .row-actions {
+.add-actions {
   display: flex;
   gap: 8px;
   margin-top: 8px;
+}
+.row-actions {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .empty {
   color: var(--muted, #8b949e);
@@ -363,23 +369,24 @@ function onTenantChange(row: RoutingDefault, value: string) {
 .error { color: #b91c1c; font-size: 12px; margin: 6px 0 0; }
 .btn-danger { color: #b91c1c; }
 
-/* Icon-only action buttons: same neutral bg as 明细, but compact + colored
- * variants for delete (red text). The original 文字 + bg-danger visually
- * overwhelmed the row and pushed 原因 out of single-line budget. */
+/* Icon-only actions: render @element-plus/icons-vue directly.
+ * Do NOT wrap in <el-icon> — Element Plus is not registered in main.ts. */
 .icon-btn {
-  padding: 4px 8px;
+  padding: 4px 6px;
+  min-width: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  color: var(--text, #e6edf3);
 }
-.icon-btn .el-icon {
-  font-size: 14px;
-  line-height: 1;
+.icon-svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  flex-shrink: 0;
 }
 .icon-btn-danger {
-  /* Same neutral surface as .btn (transparent bg) — only the text/icon is
-   * red so the row stays visually balanced. */
-  color: #b91c1c;
+  color: var(--danger, #f85149);
 }
 .icon-btn-danger:hover { opacity: .85; }
 

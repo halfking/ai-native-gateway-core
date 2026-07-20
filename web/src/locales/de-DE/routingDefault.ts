@@ -7,7 +7,7 @@ export default {
   },
   rail: {
     all: 'Alle',
-    allHint: 'Alle Aufgabentypen anzeigen',
+    allHint: 'Alle Arbeitstypen anzeigen',
   },
   tiers: {
     primary: 'Primär',

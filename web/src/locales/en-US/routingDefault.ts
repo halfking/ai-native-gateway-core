@@ -1,13 +1,13 @@
 // routingDefault.ts — smart routing config (default routing) copy
 export default {
   title: 'Smart routing',
-  subtitle: 'Configure primary / secondary / fallback models per task type. Changes apply within ~1 minute.',
+  subtitle: 'Configure primary / secondary / fallback models per work type. Changes apply within ~1 minute.',
   scope: {
     platform: 'Platform',
   },
   rail: {
     all: 'All',
-    allHint: 'Show all task types',
+    allHint: 'Show all work types',
   },
   tiers: {
     primary: 'Primary',
@@ -38,11 +38,11 @@ export default {
     reason: 'Reason',
     expires: 'Expires',
     tier: 'Tier',
-    taskType: 'Task type',
+    taskType: 'Work type',
   },
   empty: {
     group: 'No models in this tier. Click "Add model" to configure.',
-    needTask: 'Select a task type on the left before adding models.',
+    needTask: 'Select a work type on the left before adding models.',
     none: 'No default routes configured yet.',
   },
   create: {

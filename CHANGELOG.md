@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-18
 
+### Fixed
+
+- **Smart 页空图标 + 左侧工作类型 DB 同源** (2026-07-21): `TierGroupList` 去掉未注册的 `<el-icon>`，直接渲染 16px SVG 图标并收到行首右侧；`TaskTypeRail` / `RoutingDefaultsView` 改用 `useWorkTypes()` 拉取 `work_type_config`（20+），不再误用 L1 八分类。详见 [docs/changelogs/2026-07-21-smart-worktypes-icons.md](docs/changelogs/2026-07-21-smart-worktypes-icons.md).
+
 ### Changed
 
 - **Gateway ops nav → /maintain/*** (2026-07-20): sidebar ops/tenant maintain entries use full-page `<a href>` (`external`); legacy `/ops/*` bookmarks use `window.location.replace` into the maintain SPA; `/ops/vibecoding` stays on Gateway. See [docs/changelogs/2026-07-20-maintain-nav-align.md](docs/changelogs/2026-07-20-maintain-nav-align.md).

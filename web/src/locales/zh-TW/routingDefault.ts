@@ -7,7 +7,7 @@ export default {
   },
   rail: {
     all: '全部',
-    allHint: '顯示所有任務類型',
+    allHint: '顯示所有工作類型',
   },
   tiers: {
     primary: '主要',
