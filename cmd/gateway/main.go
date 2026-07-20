@@ -3502,6 +3502,8 @@ func main() {
 					wrapAdmin(approvalAPI.ApproveApproval)(w, r)
 				case strings.HasSuffix(path, "/reject"):
 					wrapAdmin(approvalAPI.RejectApproval)(w, r)
+				case strings.HasSuffix(path, "/resume"):
+					wrapAdmin(adminHandler.HandleApprovalResume)(w, r)
 				case strings.Contains(path, "/approvals/") && !strings.HasSuffix(path, "/approvals/"):
 					wrapAdmin(approvalAPI.GetApproval)(w, r)
 				default:
