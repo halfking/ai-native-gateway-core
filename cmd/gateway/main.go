@@ -2953,6 +2953,10 @@ func main() {
 		healthLoop := pluginruntime.NewHealthLoop(pluginRegistry, healthCheck, pluginruntime.HealthLoopConfig{
 			Interval:         30 * time.Second,
 			FailureThreshold: 2,
+			Restarter:        sup.Restart, // P7: auto-restart crashed plugins
+			MaxRestarts:      5,
+			BackoffStart:     5 * time.Second,
+			BackoffMax:       2 * time.Minute,
 		})
 		healthLoop.Start()
 		defer healthLoop.Stop() // graceful shutdown: stop the loop on gateway exit
