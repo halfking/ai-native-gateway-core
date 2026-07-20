@@ -2920,17 +2920,17 @@ func main() {
 		}
 		registerPluginStaticRoutes(mux, pluginsDir)
 
-		// P4: start plugin processes + register API proxy.
+		// P5: start plugin processes + register API proxy wired to the
+		// supervisor's actual unix socket paths. pluginBaseFor returns
+		// "unix://<socketPath>" for a running plugin, or "" if the plugin
+		// failed to start — the proxy then responds 502 Bad Gateway.
 		sup := pluginruntime.NewSupervisor(pluginruntime.SupervisorConfig{
 			SocketDir:     filepath.Join(pluginsDir, ".sockets"),
 			ContextSecret: []byte(cfg.SecretKey),
 		})
-		ScanAndStartPlugins(sup, pluginsDir, pluginManifests)
-		// P4: pluginBaseFor returns a tcp URL placeholder. True unix-socket
-		// dialing (custom Transport.DialContext) is P5; for now the proxy
-		// unit test (TestPluginAPIProxy) covers forwarding correctness.
+		pluginBases := ScanAndStartPlugins(sup, pluginsDir, pluginManifests)
 		registerPluginAPIProxy(mux, []byte(cfg.SecretKey), func(pluginID string) string {
-			return "http://127.0.0.1:8782" // P4 placeholder; P5 maps pluginID -> supervisor socketPath
+			return pluginBases[pluginID] // "" if not running → apiproxy returns 502
 		}, dbConn.Pool(), cfg.SecretKey)
 	}
 	wirePluginAuthExtractor()
