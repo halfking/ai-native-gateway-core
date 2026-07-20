@@ -373,7 +373,12 @@ func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID
 		WHERE pol.tenant_id = 'default'
 		  AND cmb.credential_id = $1
 		  AND COALESCE(cmb.available, FALSE) = TRUE
-		  AND COALESCE(cmb.is_routable, FALSE) = TRUE
+		  AND EXISTS (
+		    SELECT 1
+		    FROM v_routable_credential_models v
+		    WHERE v.binding_id = cmb.id
+		      AND v.is_routable = TRUE
+		  )
 		  AND (
 		    COALESCE(pm.standardized_name, pm.raw_model_name) = ANY(pol.featured_models)
 		    OR pm.raw_model_name = ANY(pol.featured_models)
@@ -414,7 +419,12 @@ func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID
 		  AND c.status = 'active'
 		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(cmb.available, FALSE) = TRUE
-		  AND COALESCE(cmb.is_routable, FALSE) = TRUE
+		  AND EXISTS (
+		    SELECT 1
+		    FROM v_routable_credential_models v
+		    WHERE v.binding_id = cmb.id
+		      AND v.is_routable = TRUE
+		  )
 	`, credentialID)
 	if err != nil {
 		return pickModelsResult{}, err
