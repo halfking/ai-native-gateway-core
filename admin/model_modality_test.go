@@ -10,7 +10,7 @@ import (
 )
 
 func TestValidModalities_AllExpected(t *testing.T) {
-	expected := []string{"text", "vision", "audio", "multimodal", "embedding"}
+	expected := []string{"text", "vision", "audio", "video", "multimodal", "embedding"}
 	for _, m := range expected {
 		if !validModalities[m] {
 			t.Errorf("expected modality %q to be in validModalities", m)
@@ -19,7 +19,7 @@ func TestValidModalities_AllExpected(t *testing.T) {
 }
 
 func TestValidModalities_RejectsOthers(t *testing.T) {
-	invalid := []string{"video", "image", "Video", "", "TEXT", "Video_2"}
+	invalid := []string{"image", "Video", "", "TEXT", "Video_2", "speech"}
 	for _, m := range invalid {
 		if validModalities[m] {
 			t.Errorf("expected modality %q to NOT be in validModalities", m)
@@ -45,7 +45,8 @@ func TestUpdateModelModality_RequestShape(t *testing.T) {
 }
 
 func TestUpdateModelModality_RejectsInvalidModality_Contract(t *testing.T) {
-	invalidModalities := []string{"video", "image", "TEXT", "", "Video_2"}
+	// 'video' is now valid (migration 451, 2026-07-20). Removed from invalid list.
+	invalidModalities := []string{"image", "TEXT", "", "Video_2", "speech"}
 	for _, m := range invalidModalities {
 		if validModalities[m] {
 			t.Errorf("test invariant broken: %q should not be in validModalities", m)

@@ -84,6 +84,9 @@ var modalityRules = []modalityRule{
 	{"textembedding-", "embedding", 1},
 
 	// Google Gemini - Specific multimodal patterns (add for test coverage)
+	// Note: Gemini 1.5/2.0 Pro/Flash are TRUE multimodal (text+image+audio+video).
+	// They are categorized as "multimodal" so the SQL filter accepts them for
+	// ANY modality request. Dedicated video-only models should use "video".
 	{"gemini-1.5-pro", "multimodal", 0},
 	{"gemini-1.5-flash", "multimodal", 0},
 	{"gemini-2.0-flash-exp", "multimodal", 0},
