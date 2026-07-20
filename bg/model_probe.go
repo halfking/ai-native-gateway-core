@@ -43,6 +43,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -198,12 +199,14 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 	rows, err := r.db.Query(timeoutCtx, `
 		SELECT cmb.credential_id, pm.raw_model_name,
 		       COALESCE(pm.outbound_model_name, ''),
+		       COALESCE(mc.modality, 'text'),
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
 		       COALESCE(mps.state, 'unknown'), COALESCE(mps.consecutive_successes, 0),
 		       COALESCE(mps.consecutive_failures, 0)
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
 		JOIN credentials c ON c.id = cmb.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN v_routable_credential_models v
@@ -250,7 +253,7 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		var q queued
 		var ciphertext []byte
 		if err := rows.Scan(
-			&q.t.CredentialID, &q.t.RawModel, &q.t.OutboundModel,
+			&q.t.CredentialID, &q.t.RawModel, &q.t.OutboundModel, &q.t.Modality,
 			&q.t.BaseURL, &q.t.Protocol,
 			&ciphertext, &q.t.ManualDisabled,
 			&q.state, &q.succCnt, &q.failCnt,
@@ -306,6 +309,7 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		}
 
 		status, category, httpStatus, errCode, errMsg, latency := r.probeModel(timeoutCtx, q.t)
+		r.verifyTargetModality(timeoutCtx, q.t, status, "scheduler")
 
 		stateChange, applied, newSucc, newFail, newState := r.computeConsensus(
 			status, category, q.state, errCode, q.succCnt, q.failCnt,
@@ -361,10 +365,12 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 	rows, err := r.db.Query(timeout, `
 		SELECT cmb.credential_id, pm.raw_model_name,
 		       COALESCE(pm.outbound_model_name, ''),
+		       COALESCE(mc.modality, 'text'),
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE)
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
 		JOIN credentials c ON c.id = cmb.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		CROSS JOIN routing_policy pol
@@ -389,7 +395,7 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		var t probeTarget
 		var ciphertext []byte
 		if err := rows.Scan(
-			&t.CredentialID, &t.RawModel, &t.OutboundModel,
+			&t.CredentialID, &t.RawModel, &t.OutboundModel, &t.Modality,
 			&t.BaseURL, &t.Protocol, &ciphertext, &t.ManualDisabled,
 		); err != nil {
 			continue
@@ -838,6 +844,7 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 		       COALESCE(mps.consecutive_failures, 0)
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
 		JOIN credentials c ON c.id = cmb.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN model_probe_state mps
@@ -850,7 +857,7 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	var ciphertext []byte
 	var prevState string
 	var prevSucc, prevFail int
-	if err := row.Scan(&t.CredentialID, &t.RawModel, &t.OutboundModel, &t.BaseURL, &t.Protocol,
+	if err := row.Scan(&t.CredentialID, &t.RawModel, &t.OutboundModel, &t.Modality, &t.BaseURL, &t.Protocol,
 		&ciphertext, &t.ManualDisabled, &prevState, &prevSucc, &prevFail); err != nil {
 		if err == pgx.ErrNoRows {
 			return fmt.Errorf("binding not found")
@@ -868,6 +875,7 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	t.APIKey = apiKey
 
 	status, category, httpStatus, errCode, errMsg, latency := r.probeModel(ctx, t)
+	r.verifyTargetModality(ctx, t, status, "manual")
 	stateChange, applied, newSucc, newFail, newState := r.computeConsensus(status, category, prevState, errCode, prevSucc, prevFail)
 	r.recordRun(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual")
 	r.applyResult(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual",
@@ -986,10 +994,46 @@ type probeTarget struct {
 	CredentialID   int
 	RawModel       string
 	OutboundModel  string // COALESCE(pm.outbound_model_name, pm.raw_model_name)
+	Modality       string // canonical modality inferred during discovery
 	BaseURL        string
 	Protocol       string
 	APIKey         string
 	ManualDisabled bool
+}
+
+// verifyTargetModality records positive and negative modality evidence without
+// changing the global canonical value. A provider credential may reject a
+// modality that another credential with the same canonical model supports.
+func (r *ModelProbeRunner) verifyTargetModality(ctx context.Context, t probeTarget, status, triggeredBy string) {
+	if status != "ok" || t.Modality == "" || t.Modality == "text" || t.Modality == "embedding" || t.BaseURL == "" {
+		return
+	}
+
+	model := t.OutboundModel
+	if model == "" {
+		model = t.RawModel
+	}
+	desc := providercap.Resolve(t.Protocol, "")
+	endpoint := upstreamurl.Build(t.BaseURL, desc.ChatProbeEndpoint)
+	result := ProbeModality(ctx, endpoint, t.APIKey, model, t.Modality, desc.Protocol == "anthropic-messages")
+	if result.ErrCode == "" && result.Supported {
+		slog.Info("model modality probe succeeded",
+			"credential_id", t.CredentialID,
+			"raw_model", t.RawModel,
+			"modality", t.Modality,
+			"latency_ms", result.LatencyMs,
+			"triggered_by", triggeredBy)
+		return
+	}
+	slog.Warn("model modality probe result",
+		"credential_id", t.CredentialID,
+		"raw_model", t.RawModel,
+		"modality", t.Modality,
+		"supported", result.Supported,
+		"error_code", result.ErrCode,
+		"error_message", result.ErrMsg,
+		"http_status", result.HTTPStatus,
+		"triggered_by", triggeredBy)
 }
 
 // GetState returns the current consensus state for a binding (used by
