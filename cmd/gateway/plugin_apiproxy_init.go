@@ -6,10 +6,14 @@ import (
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
 )
 
-// registerPluginAPIProxy 挂载 /plugins/{pluginId}/api/，反向代理到对应的插件进程。
-// pluginBaseFor 返回指定 pluginID 对应的插件监听 URL（空字符串表示插件未运行 → 502）。
+// registerPluginAPIProxy mounts GET /plugins/{pluginId}/api/{rest...} which
+// reverse-proxies to the plugin process. The {rest...} tail makes it
+// unambiguously more specific than the static-file route
+// GET /plugins/{pluginId}/{rest...} (Go ServeMux picks the more specific
+// pattern, no conflict). pluginBaseFor returns the plugin's listen URL for a
+// given pluginID ("" => plugin not running => 502).
 func registerPluginAPIProxy(mux *http.ServeMux, secret []byte, pluginBaseFor func(pluginID string) string) {
-	mux.Handle("/plugins/{pluginId}/api/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("GET /plugins/{pluginId}/api/{rest...}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pluginID := r.PathValue("pluginId")
 		base := pluginBaseFor(pluginID)
 		if base == "" {
