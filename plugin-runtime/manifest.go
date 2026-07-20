@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 func LoadManifest(path string) (*Manifest, error) {
@@ -18,6 +19,11 @@ func LoadManifest(path string) (*Manifest, error) {
 	if err := m.validate(); err != nil {
 		return nil, err
 	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	m.ManifestPath = abs
 	return &m, nil
 }
 
