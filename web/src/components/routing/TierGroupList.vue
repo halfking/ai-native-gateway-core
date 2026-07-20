@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { View, Delete } from '@element-plus/icons-vue'
 import ModelPicker from '../ModelPicker.vue'
 import type { RoutingDefault } from '../../api/tuning'
 
@@ -213,8 +214,12 @@ function onTenantChange(row: RoutingDefault, value: string) {
             <span class="scope-chip" :title="scopeLabel(row)">{{ scopeLabel(row) }}</span>
           </div>
           <div class="row-actions">
-            <button type="button" class="btn btn-sm" @click="emit('detail', row)">{{ t('routingDefault.actions.detail') }}</button>
-            <button type="button" class="btn btn-sm btn-danger" @click="emit('remove', row)">{{ t('routingDefault.actions.delete') }}</button>
+            <button type="button" class="btn btn-sm icon-btn" :title="t('routingDefault.actions.detail')" :aria-label="t('routingDefault.actions.detail')" @click="emit('detail', row)">
+              <el-icon><View /></el-icon>
+            </button>
+            <button type="button" class="btn btn-sm icon-btn icon-btn-danger" :title="t('routingDefault.actions.delete')" :aria-label="t('routingDefault.actions.delete')" @click="emit('remove', row)">
+              <el-icon><Delete /></el-icon>
+            </button>
           </div>
         </li>
       </ul>
@@ -337,11 +342,17 @@ function onTenantChange(row: RoutingDefault, value: string) {
 }
 .row-meta {
   display: grid;
-  grid-template-columns: 90px 140px 1fr 170px auto;
+  grid-template-columns: 80px 130px 200px 160px auto;
   gap: 8px;
   align-items: end;
 }
-.row-meta .grow { min-width: 120px; }
+.row-meta .grow { min-width: 0; }
+.row-meta label input[type="text"],
+.row-meta label input[type="number"],
+.row-meta label input[type="datetime-local"] {
+  width: 100%;
+  box-sizing: border-box;
+}
 .scope-chip {
   font-size: 11px;
   padding: 4px 8px;
@@ -351,6 +362,27 @@ function onTenantChange(row: RoutingDefault, value: string) {
 }
 .error { color: #b91c1c; font-size: 12px; margin: 6px 0 0; }
 .btn-danger { color: #b91c1c; }
+
+/* Icon-only action buttons: same neutral bg as 明细, but compact + colored
+ * variants for delete (red text). The original 文字 + bg-danger visually
+ * overwhelmed the row and pushed 原因 out of single-line budget. */
+.icon-btn {
+  padding: 4px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.icon-btn .el-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+.icon-btn-danger {
+  /* Same neutral surface as .btn (transparent bg) — only the text/icon is
+   * red so the row stays visually balanced. */
+  color: #b91c1c;
+}
+.icon-btn-danger:hover { opacity: .85; }
+
 @media (max-width: 1100px) {
   .add-grid, .row-meta {
     grid-template-columns: 1fr 1fr;

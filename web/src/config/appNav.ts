@@ -66,8 +66,9 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '', platformOps: true, hideForTenant: true },
       { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '', super: true, hideForTenant: true },
-      // M2（22 章 §22.6）— 显式默认路由：为 (task,profile,tenant) 指定首选/兜底模型。
-      { path: '/routing/defaults', label: '默认路由', labelKey: 'nav.item.routingDefaults', icon: '', super: true, hideForTenant: true },
+      // M2（22 章 §22.6）— 显式默认路由：菜单入口已隐藏，配置仍保留在
+      // Smart 路由标签页（/routing-v2?tab=smart）内通过 SmartRoutingConfigPanel
+      // 直接管理，避免重复入口。路由本身仍可用（router.ts 仍保留 /routing/defaults）。
     ],
   },
   {

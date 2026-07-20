@@ -1,11 +1,15 @@
 package pluginruntime
 
 import (
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPluginAPIProxy_ForwardsWithSignedContext(t *testing.T) {
@@ -62,5 +66,52 @@ func TestPluginAPIProxy_StripsApiPrefix(t *testing.T) {
 	// upstream should receive /v1/sessions (the /plugins/{id}/api prefix stripped)
 	if seenPath != "/v1/sessions" {
 		t.Fatalf("upstream path = %q, want /v1/sessions", seenPath)
+	}
+}
+
+func TestPluginAPIProxy_DialsUnixSocket(t *testing.T) {
+	// Use a short path under /tmp: on macOS the sun_path limit (~104 bytes)
+	// means t.TempDir()'s deep path produces "bind: invalid argument".
+	socketPath := fmt.Sprintf("/tmp/p5-sock-%d-%d.sock", os.Getpid(), time.Now().UnixNano())
+	os.Remove(socketPath)
+	defer os.Remove(socketPath)
+
+	var gotPluginID, gotTenant string
+	var seenPath string
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPluginID = r.Header.Get("X-Gateway-Plugin-ID")
+		gotTenant = r.Header.Get("X-Gateway-Tenant-ID")
+		seenPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "from-socket")
+	})}
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer server.Close()
+	go server.Serve(listener)
+
+	h := PluginAPIProxy("unix://"+socketPath, []byte("s"))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/plugins/ai-session-manager/api/plugin/handshake", nil)
+	req.SetPathValue("pluginId", "ai-session-manager")
+	req.Header.Set("X-Caller-Tenant", "t-socket")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "from-socket") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+	if gotPluginID != "ai-session-manager" || gotTenant != "t-socket" {
+		t.Fatalf("upstream plugin=%q tenant=%q", gotPluginID, gotTenant)
+	}
+	// Round-trip path assertion: the upstream must see the CORRECT stripped path
+	// (/plugin/handshake), NOT the socket path leaking into the request path
+	// (which was the C1 bug: singleJoiningSlash prepended target.Path = socket path).
+	if seenPath != "/plugin/handshake" {
+		t.Fatalf("upstream path corrupted: got %q want /plugin/handshake (socket path leaked into request path)", seenPath)
 	}
 }
