@@ -108,6 +108,12 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case subPath == "modality":
+		if r.Method == http.MethodPatch {
+			h.updateModelModality(w, r, id)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	default:
 		http.NotFound(w, r)
 	}
