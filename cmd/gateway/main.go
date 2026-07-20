@@ -2956,6 +2956,12 @@ func main() {
 		})
 		healthLoop.Start()
 		defer healthLoop.Stop() // graceful shutdown: stop the loop on gateway exit
+		// graceful shutdown: SIGTERM each plugin process (health loop already stopped above)
+		defer func() {
+			for pluginID := range pluginBases {
+				_ = sup.Stop(pluginID)
+			}
+		}()
 	}
 	wirePluginAuthExtractor()
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(
