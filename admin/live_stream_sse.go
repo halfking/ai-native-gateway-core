@@ -389,37 +389,45 @@ func (h *LiveStreamSSEHub) Run() {
 			}
 			h.mu.Unlock()
 			atomic.AddInt64(&h.totalDisconnections, 1)
-		case req := <-h.broadcast:
-			h.lastActivityMu.Lock()
-			h.lastActivity = time.Now()
-			h.lastActivityMu.Unlock()
-			atomic.AddInt64(&h.broadcastCount, 1)
-			// Compute BOTH scopes so super-admin and tenant-admin clients each
-			// receive a delta consistent with their own view. Previously a
-			// single tenant-scoped snapshot was fanned out to everyone, which
-			// caused super-admin lanes to flicker/disappear as different
-			// tenants' requests alternately overwrote the shared cache.
-			// The super-scope delta is only computed when at least one
-			// super-admin client is connected (avoids 2x Redis reads when no
-			// super admin is watching).
-			tenantID := normalizeLiveStreamTenant(req.TenantID)
-			hasSuperClient := h.hasSuperClient()
-			var tenantDelta, superDelta *LiveStreamDelta
-			if h.store != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-				tenantDelta = h.computeScopeDelta(ctx, tenantID, false)
-				if hasSuperClient {
-					superDelta = h.computeScopeDelta(ctx, "", true)
+			case req := <-h.broadcast:
+				h.lastActivityMu.Lock()
+				h.lastActivity = time.Now()
+				h.lastActivityMu.Unlock()
+				atomic.AddInt64(&h.broadcastCount, 1)
+				// Compute BOTH scopes so super-admin and tenant-admin clients each
+				// receive a delta consistent with their own view. Previously a
+				// single tenant-scoped snapshot was fanned out to everyone, which
+				// caused super-admin lanes to flicker/disappear as different
+				// tenants' requests alternately overwrote the shared cache.
+				// The super-scope delta is only computed when at least one
+				// super-admin client is connected (avoids 2x Redis reads when no
+				// super admin is watching).
+				tenantID := normalizeLiveStreamTenant(req.TenantID)
+				hasSuperClient := h.hasSuperClient()
+				var tenantDelta, superDelta *LiveStreamDelta
+				if h.store != nil {
+					ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+					tenantDelta = h.computeScopeDelta(ctx, tenantID, false)
+					if hasSuperClient {
+						superDelta = h.computeScopeDelta(ctx, "", true)
+					}
+					cancel()
+					
+					// 2026-07-21: 详细日志记录每次推送的delta内容，用于诊断泳道跳变问题
+					if tenantDelta != nil {
+						h.logDeltaDetails("tenant", tenantID, req.RequestID, tenantDelta)
+					}
+					if superDelta != nil {
+						h.logDeltaDetails("super", "", req.RequestID, superDelta)
+					}
 				}
-				cancel()
-			}
-			h.fanOut(LiveStreamEnvelope{
-				Type:       "request",
-				Timestamp:  time.Now().UTC(),
-				Request:    &req,
-				Delta:      tenantDelta,
-				superDelta: superDelta,
-			})
+				h.fanOut(LiveStreamEnvelope{
+					Type:       "request",
+					Timestamp:  time.Now().UTC(),
+					Request:    &req,
+					Delta:      tenantDelta,
+					superDelta: superDelta,
+				})
 		case <-idleTicker.C:
 			h.maybeEmitIdleMarker()
 		case <-keepaliveTicker.C:
@@ -1148,6 +1156,75 @@ func (h *LiveStreamSSEHub) hasSuperClient() bool {
 	}
 	return false
 }
+
+// logDeltaDetails logs detailed delta information for debugging swim-lane rolling issues.
+// 2026-07-21: Track every delta push to identify when/why lane windows shift.
+func (h *LiveStreamSSEHub) logDeltaDetails(scope string, tenantID string, requestID string, delta *LiveStreamDelta) {
+	if delta == nil {
+		return
+	}
+	
+	// Only log when there are actual lane changes
+	if len(delta.ChangedLanes) == 0 {
+		return
+	}
+	
+	// Build a compact summary of what changed
+	var changedSummary []string
+	for dim, lanes := range delta.ChangedLanes {
+		for _, lane := range lanes {
+			// Extract request IDs for detailed tracking
+			requestIDs := make([]string, 0, len(lane.Requests))
+			for _, tile := range lane.Requests {
+				requestIDs = append(requestIDs, tile.RequestID)
+			}
+			
+			summary := fmt.Sprintf("%s/%s: total=%d tiles=%d ids=[%s...%s]",
+				dim,
+				lane.Name,
+				lane.Stats.Total,
+				len(lane.Requests),
+				firstN(requestIDs, 2),
+				lastN(requestIDs, 2),
+			)
+			changedSummary = append(changedSummary, summary)
+		}
+	}
+	
+	slog.Info("live stream delta push",
+		"scope", scope,
+		"tenant_id", tenantID,
+		"trigger_request", requestID,
+		"summary_total", delta.Summary.Total,
+		"summary_success", delta.Summary.Success,
+		"summary_failure", delta.Summary.Failure,
+		"changed_lanes_count", len(delta.ChangedLanes),
+		"changed_details", strings.Join(changedSummary, " | "),
+	)
+}
+
+// firstN returns the first N elements of a slice as a comma-separated string
+func firstN(items []string, n int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	if len(items) <= n {
+		return strings.Join(items, ",")
+	}
+	return strings.Join(items[:n], ",")
+}
+
+// lastN returns the last N elements of a slice as a comma-separated string
+func lastN(items []string, n int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	if len(items) <= n {
+		return strings.Join(items, ",")
+	}
+	return strings.Join(items[len(items)-n:], ",")
+}
+
 
 // writeEvent serialises one envelope to one client.
 //
