@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-18
 
+### Changed
+
+- **Gateway ops nav → /maintain/*** (2026-07-20): sidebar ops/tenant maintain entries use full-page `<a href>` (`external`); legacy `/ops/*` bookmarks use `window.location.replace` into the maintain SPA; `/ops/vibecoding` stays on Gateway. See [docs/changelogs/2026-07-20-maintain-nav-align.md](docs/changelogs/2026-07-20-maintain-nav-align.md).
+
 ### Fixed
 
 - **Request trace audit fixes** (2026-07-20): stage-event transaction failures now roll back and retain Redis traces for retry; hot/partition fallback reads select the newest row deterministically; migration 450 adds the missing `request_stage_events.tenant_id` column and index; trace routes fail closed when admin authorization is not configured.

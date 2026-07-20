@@ -68,26 +68,31 @@ const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
 const SessionConfigView = () => import('./views/SessionConfigView.vue')
 const SessionReplayView = () => import('./views/SessionReplayView.vue')
-const OpsOverviewView = () => import('./views/ops/OpsOverviewView.vue')
-const LicenseManagementView = () => import('./views/ops/LicenseManagementView.vue')
-const FaultManagementView = () => import('./views/ops/FaultManagementView.vue')
-const AutoUpdateView = () => import('./views/ops/AutoUpdateView.vue')
-const DistributionReleaseView = () => import('./views/ops/DistributionReleaseView.vue')
-const CenterOpsView = () => import('./views/ops/CenterOpsView.vue')
 const IpBlocklistView = () => import('./views/ops/IpBlocklistView.vue')
 const VibeCodingView = () => import('./views/ops/VibeCodingView.vue')
-const TenantLicenseView = () => import('./views/tenant/TenantLicenseView.vue')
-const TenantAutoUpdateView = () => import('./views/tenant/TenantAutoUpdateView.vue')
-const ActivationWizard = () => import('./views/ActivationWizard.vue')
-const LicenseInfoView = () => import('./views/LicenseInfoView.vue')
-const UpgradePanel = () => import('./views/UpgradePanel.vue')
 const PluginMount = () => import('./components/PluginMount.vue')
-const DownloadView = () => import('./views/public/DownloadView.vue')
-const SupportView = () => import('./views/public/SupportView.vue')
-const OfflineActivationView = () => import('./views/public/OfflineActivationView.vue')
 
-// Operations Platform views. Platform management remains super-admin only;
-// tenant routes below expose read-only, tenant-scoped status views.
+// Operations Platform — vibecoding still lives in Gateway; other /ops/*
+// pages and public/tenant maintain aliases full-page jump to /maintain/*.
+/** Full-page jump to maintain SPA (nginx/Gateway serves /maintain/* separately). */
+function externalMaintainRedirect(path: string, target: string) {
+  return {
+    path,
+    component: { render: () => null },
+    beforeEnter(to: { fullPath: string; query: Record<string, unknown> }) {
+      if (typeof window !== 'undefined') {
+        const qs = new URLSearchParams()
+        for (const [k, v] of Object.entries(to.query || {})) {
+          if (v == null) continue
+          if (Array.isArray(v)) v.forEach((x) => qs.append(k, String(x)))
+          else qs.append(k, String(v))
+        }
+        const q = qs.toString()
+        window.location.replace(q ? `${target}?${q}` : target)
+      }
+    },
+  }
+}
 
 function isAuthed(): boolean {
   if (store.jwtToken || store.apiKey || store.userInfo) return true
@@ -234,36 +239,31 @@ export const router = createRouter({
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 
-    // Operations Platform — now owned by the maintain SPA. These Gateway
-    // routes redirect to /maintain/ops/* (served by the maintain-web build
-    // via the Gateway reverse proxy). The component imports are kept for
-    // now so the redirect can be reverted during B0; B1+ removes them once
-    // the maintain pages are verified. See docs/优化v1/01 §3.
-    { path: '/ops',                redirect: (to) => ({ path: '/maintain/ops/overview', query: to.query }) },
-    { path: '/ops/overview',       redirect: (to) => ({ path: '/maintain/ops/overview', query: to.query }) },
-    { path: '/ops/licenses',       redirect: (to) => ({ path: '/maintain/ops/licenses', query: to.query }) },
-    { path: '/ops/downloads',      redirect: (to) => ({ path: '/maintain/ops/downloads', query: to.query }) },
-    { path: '/ops/faults',         redirect: (to) => ({ path: '/maintain/ops/faults', query: to.query }) },
-    { path: '/ops/autoupdate',     redirect: (to) => ({ path: '/maintain/ops/autoupdate', query: to.query }) },
-    { path: '/ops/center',         redirect: (to) => ({ path: '/maintain/ops/center', query: to.query }) },
-    { path: '/ops/blocklist',      component: IpBlocklistView, meta: { requiresSuper: true } },
-    { path: '/ops/vibecoding',     redirect: (to) => ({ path: '/maintain/ops/vibecoding', query: to.query }) },
+    // Operations Platform — legacy /ops/* bookmarks → maintain SPA (full page).
+    // Vue History redirect cannot load the other SPA; use window.location.replace.
+    externalMaintainRedirect('/ops', '/maintain/ops/overview'),
+    externalMaintainRedirect('/ops/overview', '/maintain/ops/overview'),
+    externalMaintainRedirect('/ops/licenses', '/maintain/ops/licenses'),
+    externalMaintainRedirect('/ops/downloads', '/maintain/ops/downloads'),
+    externalMaintainRedirect('/ops/faults', '/maintain/ops/faults'),
+    externalMaintainRedirect('/ops/autoupdate', '/maintain/ops/autoupdate'),
+    externalMaintainRedirect('/ops/center', '/maintain/ops/center'),
+    { path: '/ops/blocklist', component: IpBlocklistView, meta: { requiresSuper: true } },
+    { path: '/ops/vibecoding', component: VibeCodingView, meta: { requiresSuper: true } },
 
-    // Tenant license/autoupdate self-service now lives under the maintain
-    // namespace too. Other /tenant/* routes (models, account, pricing, ...)
-    // stay on the Gateway SPA.
-    { path: '/tenant/license',     redirect: (to) => ({ path: '/maintain/tenant/license', query: to.query }) },
-    { path: '/tenant/autoupdate',  redirect: (to) => ({ path: '/maintain/tenant/autoupdate', query: to.query }) },
+    // Tenant license/autoupdate self-service → maintain namespace.
+    externalMaintainRedirect('/tenant/license', '/maintain/tenant/license'),
+    externalMaintainRedirect('/tenant/autoupdate', '/maintain/tenant/autoupdate'),
 
     // Customer-facing activation/license/upgrade — owned by maintain SPA.
-    { path: '/activate', redirect: (to) => ({ path: '/maintain/activate', query: to.query }) },
-    { path: '/license',  redirect: (to) => ({ path: '/maintain/license', query: to.query }) },
-    { path: '/upgrade',  redirect: (to) => ({ path: '/maintain/upgrade', query: to.query }) },
+    externalMaintainRedirect('/activate', '/maintain/activate'),
+    externalMaintainRedirect('/license', '/maintain/license'),
+    externalMaintainRedirect('/upgrade', '/maintain/upgrade'),
 
     // Public distribution portal — owned by maintain SPA.
-    { path: '/download',           redirect: (to) => ({ path: '/maintain/download', query: to.query }) },
-    { path: '/support',            redirect: (to) => ({ path: '/maintain/support', query: to.query }) },
-    { path: '/offline-activation', redirect: (to) => ({ path: '/maintain/offline-activation', query: to.query }) },
+    externalMaintainRedirect('/download', '/maintain/download'),
+    externalMaintainRedirect('/support', '/maintain/support'),
+    externalMaintainRedirect('/offline-activation', '/maintain/offline-activation'),
 
     // Plugin runtime — iframe-mounted plugin web assets (reverse-proxied at /plugins/<id>/)
     { path: '/plugins/:pluginId/:page(.*)*', component: PluginMount, meta: { requiresAuth: true } },

@@ -51,11 +51,14 @@ export default {
     promptInjection: "提示詞注入檢測",
     examples: "接入範例",
     chat: "對話",
+    opsOverview: "運維總覽",
     opsLicenses: "License管理",
+    opsDownloads: "發布與下載",
     opsFaults: "故障管理",
     opsAutoUpdate: "自动更新",
     opsCenter: "中心运维",
     opsVibeCoding: "VibeCoding",
+    opsProductEntry: "產品入口",
     tenantLicense: "我的授權",
     tenantAutoUpdate: "我的更新"
   }

@@ -23,3 +23,21 @@ describe('mergeNav', () => {
     expect(merged.some((g) => g.id === 'plugins')).toBe(true)
   })
 })
+
+describe('opsplatform maintain external links', () => {
+  const ops = NAV_GROUPS.find((g) => g.id === 'opsplatform')!
+
+  it('marks migrated ops items as external /maintain/* paths', () => {
+    const migrated = ops.items.filter((i) => i.path.startsWith('/maintain/'))
+    expect(migrated.length).toBeGreaterThanOrEqual(7)
+    for (const item of migrated) {
+      expect(item.external).toBe(true)
+    }
+  })
+
+  it('keeps vibecoding inside Gateway SPA (not external)', () => {
+    const vibe = ops.items.find((i) => i.path === '/ops/vibecoding')
+    expect(vibe).toBeTruthy()
+    expect(vibe!.external).toBeFalsy()
+  })
+})
