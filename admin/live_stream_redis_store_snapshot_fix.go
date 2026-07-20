@@ -137,7 +137,8 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 }
 
 // discoverDimensionQueues scans Redis for all dimension queue keys.
-// Returns the list of keys to read from.
+// Returns the list of keys to read from, sorted by most recent activity
+// to ensure stable snapshot windows across calls.
 func (s *LiveStreamRedisStore) discoverDimensionQueues(ctx context.Context, tenantID string, isSuper bool) ([]string, error) {
 	var patterns []string
 
@@ -165,6 +166,19 @@ func (s *LiveStreamRedisStore) discoverDimensionQueues(ctx context.Context, tena
 			return nil, fmt.Errorf("scan keys pattern=%s: %w", pattern, err)
 		}
 		allKeys = append(allKeys, keys...)
+	}
+
+	// 2026-07-20: Sort keys by last activity timestamp to stabilize snapshot
+	// windows. Redis SCAN order is non-deterministic, causing the same request
+	// to appear/disappear across consecutive snapshots when different dimension
+	// queues are scanned in different orders (the "swim-lane rolling" issue
+	// reported on 245). Sorting by recency ensures we consistently prioritize
+	// active lanes, and the deduplication logic produces stable results.
+	allKeys, err := s.sortKeysByActivity(ctx, allKeys)
+	if err != nil {
+		// Fallback to alphabetical sort if activity lookup fails
+		slog.Debug("failed to sort by activity, using lexicographic order", "err", err.Error())
+		sort.Strings(allKeys)
 	}
 
 	return allKeys, nil
@@ -199,4 +213,64 @@ func (s *LiveStreamRedisStore) scanKeysWithPattern(ctx context.Context, pattern 
 	}
 
 	return queueKeys, nil
+}
+
+// sortKeysByActivity sorts dimension queue keys by their most recent request
+// timestamp (descending), ensuring stable snapshot windows. Keys with no
+// activity fall back to alphabetical order at the end.
+func (s *LiveStreamRedisStore) sortKeysByActivity(ctx context.Context, keys []string) ([]string, error) {
+	if len(keys) == 0 {
+		return keys, nil
+	}
+
+	type keyWithScore struct {
+		key   string
+		score float64 // timestamp of most recent request, or 0 if empty
+	}
+
+	keysWithScores := make([]keyWithScore, 0, len(keys))
+
+	// Batch read last activity timestamp from each queue
+	pipe := s.rdb.Pipeline()
+	cmds := make([]*redis.ZSliceCmd, len(keys))
+	for i, key := range keys {
+		// Get the most recent entry (highest score = latest timestamp)
+		cmds[i] = pipe.ZRevRangeWithScores(ctx, key, 0, 0)
+	}
+
+	_, err := pipe.Exec(ctx)
+	if err != nil && err != redis.Nil {
+		return keys, fmt.Errorf("pipeline exec failed: %w", err)
+	}
+
+	// Collect scores
+	for i, cmd := range cmds {
+		result, err := cmd.Result()
+		if err == redis.Nil || len(result) == 0 {
+			// Empty queue, use 0 as score (will sort to end)
+			keysWithScores = append(keysWithScores, keyWithScore{key: keys[i], score: 0})
+		} else if err != nil {
+			// Error reading this key, use 0
+			keysWithScores = append(keysWithScores, keyWithScore{key: keys[i], score: 0})
+		} else {
+			// Use the timestamp of the most recent entry
+			keysWithScores = append(keysWithScores, keyWithScore{key: keys[i], score: result[0].Score})
+		}
+	}
+
+	// Sort: highest score first (most recent activity), then alphabetically
+	sort.SliceStable(keysWithScores, func(i, j int) bool {
+		if keysWithScores[i].score != keysWithScores[j].score {
+			return keysWithScores[i].score > keysWithScores[j].score // descending
+		}
+		return keysWithScores[i].key < keysWithScores[j].key // alphabetical tie-breaker
+	})
+
+	// Extract sorted keys
+	sortedKeys := make([]string, len(keysWithScores))
+	for i, kws := range keysWithScores {
+		sortedKeys[i] = kws.key
+	}
+
+	return sortedKeys, nil
 }
