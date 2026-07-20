@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -2933,6 +2934,28 @@ func main() {
 		registerPluginAPIProxy(mux, []byte(cfg.SecretKey), func(pluginID string) string {
 			return pluginBases[pluginID] // "" if not running → apiproxy returns 502
 		}, dbConn.Pool(), cfg.SecretKey)
+
+		// P6: health loop — socket-liveness as a health proxy. Each tick dials
+		// the plugin's unix socket; consecutive failures (default 2) mark the
+		// plugin degraded in the registry, which surfaces in /api/v1/plugin-nav.
+		healthCheck := func(pluginID string) error {
+			socketPath := sup.SocketPathOf(pluginID)
+			if socketPath == "" {
+				return fmt.Errorf("plugin %s not started", pluginID)
+			}
+			conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+			if err != nil {
+				return fmt.Errorf("plugin %s socket unreachable: %w", pluginID, err)
+			}
+			_ = conn.Close()
+			return nil
+		}
+		healthLoop := pluginruntime.NewHealthLoop(pluginRegistry, healthCheck, pluginruntime.HealthLoopConfig{
+			Interval:         30 * time.Second,
+			FailureThreshold: 2,
+		})
+		healthLoop.Start()
+		defer healthLoop.Stop() // graceful shutdown: stop the loop on gateway exit
 	}
 	wirePluginAuthExtractor()
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(

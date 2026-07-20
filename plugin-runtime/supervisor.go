@@ -95,6 +95,16 @@ func (s *Supervisor) Stop(pluginID string) error {
 	return cmd.Stop()
 }
 
+// SocketPathOf returns the unix socket path for a started plugin ("" if not started).
+func (s *Supervisor) SocketPathOf(pluginID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st, ok := s.states[pluginID]; ok {
+		return st.SocketPath
+	}
+	return ""
+}
+
 // execCommand 用 os/exec 启动插件 entrypoint。
 type execCommand struct {
 	mu         sync.Mutex
