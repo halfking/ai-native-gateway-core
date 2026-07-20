@@ -1785,6 +1785,26 @@ func (h *ChatHandler) serveWithExecutor(
 			writeErrorJSONCtx(r.Context(), w, http.StatusBadRequest, requestID, "invalid_request_error", i18n.MsgInvalidModel, map[string]any{"Model": clientModel})
 			return
 		}
+		// 2026-07-20: Record routing attempts for the no_candidate exit so
+		// /api/logs/<id> 详情页 surfaces the full decision chain instead of
+		// an empty routing_attempts JSONB. The tracker is stored on logCtx
+		// so buildEntry picks it up and writes to request_logs.routing_attempts.
+		// This covers ALL routing rounds at the candidate-resolution layer —
+		// each subsequent executor round is tracked separately inside Execute().
+		noCandReason := "router_returned_zero_candidates"
+		if requestModality != "" {
+			noCandReason = fmt.Sprintf("modality=%s => 0 candidates", requestModality)
+		}
+		noCandTracker := executors.NewRoutingAttemptsTracker()
+		noCandTracker.Add(executors.RoutingAttempt{
+			Seq:          1,
+			ProviderName: "router",
+			RawModel:     clientModel,
+			Result:       "error",
+			LatencyMs:    int64(time.Since(startTime).Milliseconds()),
+			ErrorMessage: noCandReason,
+		})
+		logCtx.RoutingTracker = noCandTracker
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
 		logCtx.failAndMark("no_candidate",
 			fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
@@ -2186,6 +2206,37 @@ func (h *ChatHandler) serveWithExecutor(
 	var result *executors.ExecuteResult
 	var execErr error
 
+	// 2026-07-20: Pre-populate the routing tracker with the full candidate
+	// list so request_logs.routing_attempts captures ALL rounds — both the
+	// initial candidate pool and each subsequent upstream attempt (recorded
+	// inside executor_chat.go). When candidates > 10, log the count only to
+	// avoid bloating the JSONB payload.
+	candTracker := executors.NewRoutingAttemptsTracker()
+	for i, cand := range candidates {
+		if i >= 10 {
+			candTracker.Add(executors.RoutingAttempt{
+				ProviderName: fmt.Sprintf("... and %d more", len(candidates)-10),
+				RawModel:     clientModel,
+				Result:       "pending",
+				ErrorMessage: "truncated for payload size",
+			})
+			break
+		}
+		candTracker.Add(executors.RoutingAttempt{
+			ProviderID:   int64(cand.ProviderID),
+			CredentialID: int64(cand.CredentialID),
+			ProviderName: func() string {
+				if cand.CatalogCode != "" {
+					return cand.CatalogCode
+				}
+				return fmt.Sprintf("provider_%d", cand.ProviderID)
+			}(),
+			RawModel:     cand.RawModel,
+			Result:       "pending",
+			ErrorMessage: fmt.Sprintf("candidate #%d from routing", i+1),
+		})
+	}
+
 	// Retry configuration - Phase 1.5: read from Phase 0 cost_mode preset
 	maxRetries := 3                       // default: balanced mode
 	baseDelayMs := 100                    // fixed: 100ms base delay
@@ -2380,7 +2431,9 @@ func (h *ChatHandler) serveWithExecutor(
 				return nil
 			}(),
 			// 2026-07-19: 路由尝试追踪器，记录每次 upstream 尝试详情
-			RoutingTracker: executors.NewRoutingAttemptsTracker(),
+			// 2026-07-20: Pre-populated with the candidate list above so
+			// request_logs.routing_attempts captures ALL routing rounds.
+			RoutingTracker: candTracker,
 		})
 
 		// Success or non-retriable error - exit retry loop immediately
@@ -3526,11 +3579,14 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	applySessionCompressorFields(reqLog, logCtx)
 
 	// 2026-07-19: 填充路由尝试追踪数据到 telemetry
-	if result != nil && result.RoutingTracker != nil {
-		if jsonBytes, err := result.RoutingTracker.ToJSONBytes(); err == nil && jsonBytes != nil {
+	// 2026-07-20: Try result.RoutingTracker first (populated by the executor),
+	// then fall back to logCtx.RoutingTracker (set by no_candidate path etc.).
+	tracker := trackerFromResultOrLogCtx(result, logCtx)
+	if tracker != nil {
+		if jsonBytes, err := tracker.ToJSONBytes(); err == nil && jsonBytes != nil {
 			reqLog.RoutingAttempts = jsonBytes
 		}
-		if summary := result.RoutingTracker.Summary(); summary != "" {
+		if summary := tracker.Summary(); summary != "" {
 			reqLog.RoutingSummary = &summary
 		}
 	}
@@ -4503,6 +4559,20 @@ func classifyStreamInterruption(m map[string]any) (isError bool, detailCode stri
 // canonicalOrClient prefers the canonical name (standardised model key from the
 // routing table). When the resolution did not yield a canonical entry (direct
 // passthrough), it falls back to whatever the client supplied.
+// trackerFromResultOrLogCtx returns the routing tracker from the executor
+// result first, falling back to the logCtx-level tracker. This ensures the
+// failure path (no_candidate, pre-executor errors) also surfaces routing
+// attempts in the request_logs.routing_attempts column.
+func trackerFromResultOrLogCtx(result *executors.ExecuteResult, logCtx *RequestLogContext) *executors.RoutingAttemptsTracker {
+	if result != nil && result.RoutingTracker != nil {
+		return result.RoutingTracker
+	}
+	if logCtx != nil && logCtx.RoutingTracker != nil {
+		return logCtx.RoutingTracker
+	}
+	return nil
+}
+
 func canonicalOrClient(canonical, client string) string {
 	if canonical != "" {
 		return canonical
