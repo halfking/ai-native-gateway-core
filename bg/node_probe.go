@@ -1339,7 +1339,7 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE c.id = $1 AND pm.raw_model_name = $2
 		  AND c.status IN ('active', 'cooling', 'degraded')
-		  AND c.lifecycle_status IN ('active', 'grace')
+		  AND c.lifecycle_status = 'active'
 		  AND p.enabled = TRUE AND p.manual_disabled = FALSE
 		LIMIT 1
 	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
