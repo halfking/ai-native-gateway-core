@@ -59,3 +59,75 @@ func TestHealthLoop_RecoversWhenHealthy(t *testing.T) {
 		t.Fatalf("degraded plugin should recover to ready when health check passes, got %+v", st)
 	}
 }
+
+func TestHealthLoop_RestartsDegradedPlugin(t *testing.T) {
+	reg := NewRegistry()
+	reg.SetPlugin(&PluginState{PluginID: "p1", Status: "ready"})
+
+	check := func(pluginID string) error { return fmt.Errorf("down") }
+	var restartCalls uint32
+	restarter := func(pluginID string) error {
+		atomic.AddUint32(&restartCalls, 1)
+		return nil
+	}
+
+	loop := NewHealthLoop(reg, check, HealthLoopConfig{
+		Interval:         10 * time.Millisecond,
+		FailureThreshold: 1,
+		Restarter:        restarter,
+		MaxRestarts:      3,
+		BackoffStart:     1 * time.Millisecond,
+		BackoffMax:       5 * time.Millisecond,
+	})
+	loop.Start()
+	defer loop.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+	if atomic.LoadUint32(&restartCalls) == 0 {
+		t.Fatal("Restarter should have been called for degraded plugin")
+	}
+}
+
+func TestHealthLoop_MaxRestartsMarksFailed(t *testing.T) {
+	reg := NewRegistry()
+	reg.SetPlugin(&PluginState{PluginID: "p1", Status: "ready"})
+
+	check := func(pluginID string) error { return fmt.Errorf("down") }
+	var restartCalls uint32
+	restarter := func(pluginID string) error {
+		atomic.AddUint32(&restartCalls, 1)
+		return nil
+	}
+
+	loop := NewHealthLoop(reg, check, HealthLoopConfig{
+		Interval:         5 * time.Millisecond,
+		FailureThreshold: 1,
+		Restarter:        restarter,
+		MaxRestarts:      2,
+		BackoffStart:     1 * time.Millisecond,
+		BackoffMax:       2 * time.Millisecond,
+	})
+	loop.Start()
+	defer loop.Stop()
+
+	// statusOf reads Status under the registry lock; otherwise the loop's
+	// in-place SetPluginStatus write races with our read.
+	statusOf := func() string {
+		reg.mu.RLock()
+		defer reg.mu.RUnlock()
+		if st := reg.plugins["p1"]; st != nil {
+			return st.Status
+		}
+		return ""
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if statusOf() == "failed" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := statusOf(); got != "failed" {
+		t.Fatalf("plugin should be failed after MaxRestarts, got %q", got)
+	}
+}
