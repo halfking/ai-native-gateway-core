@@ -1,6 +1,6 @@
 {
   "scenario": "S09_streaming",
-  "gateway": "http://localhost:8781",
+  "gateway": "http://127.0.0.1:8781",
   "models": [
     "loadtest-mini-alpha",
     "loadtest-standard-alpha",
@@ -14,16 +14,16 @@
   "stream_ratio": 0.5,
   "fault_inject_cancel": 0.0,
   "metrics": {
-    "total": 843,
-    "succ": 843,
+    "total": 855,
+    "succ": 855,
     "fail": 0,
     "success_rate": 1.0,
-    "p50_ms": 21.022833068855107,
-    "p95_ms": 34.4015839509666,
-    "p99_ms": 64.07004094216973,
-    "max_ms": 275.57087503373623,
-    "throughput_rps": 25.53778105516803,
-    "elapsed_sec": 33.009915707982145,
+    "p50_ms": 16.64749998599291,
+    "p95_ms": 26.07729099690914,
+    "p99_ms": 45.37091706879437,
+    "max_ms": 265.3685830300674,
+    "throughput_rps": 25.900894388177427,
+    "elapsed_sec": 33.010443083010614,
     "fail_by_status": {},
     "fail_by_kind": {}
   }

@@ -1,6 +1,6 @@
 {
   "scenario": "S06_mixed_fault",
-  "gateway": "http://localhost:8781",
+  "gateway": "http://127.0.0.1:8781",
   "models": [
     "loadtest-mini-alpha",
     "loadtest-standard-alpha",
@@ -14,16 +14,16 @@
   "stream_ratio": 0.0,
   "fault_inject_cancel": 0.0,
   "metrics": {
-    "total": 465,
-    "succ": 465,
+    "total": 502,
+    "succ": 502,
     "fail": 0,
     "success_rate": 1.0,
-    "p50_ms": 23.51837500464171,
-    "p95_ms": 3047.3759580636397,
-    "p99_ms": 3912.07891702652,
-    "max_ms": 4294.784958008677,
-    "throughput_rps": 14.08535209943078,
-    "elapsed_sec": 33.01301924989093,
+    "p50_ms": 14.75729199592024,
+    "p95_ms": 2905.267291003838,
+    "p99_ms": 3801.520708948374,
+    "max_ms": 4138.016332988627,
+    "throughput_rps": 15.20551048234219,
+    "elapsed_sec": 33.01434704102576,
     "fail_by_status": {},
     "fail_by_kind": {}
   }
