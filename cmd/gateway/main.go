@@ -2911,11 +2911,27 @@ func main() {
 	// (replaces the P0 super-admin placeholder).
 	pluginRegistry := pluginruntime.NewRegistry()
 	pluginsDir := os.Getenv("LLM_GATEWAY_PLUGINS_DIR")
+	var pluginManifests []*pluginruntime.Manifest
 	if pluginsDir != "" {
-		if err := ScanPlugins(pluginsDir, pluginRegistry); err != nil {
+		var err error
+		pluginManifests, err = ScanPlugins(pluginsDir, pluginRegistry)
+		if err != nil {
 			slog.Warn("plugin scan failed", "error", err, "dir", pluginsDir)
 		}
 		registerPluginStaticRoutes(mux, pluginsDir)
+
+		// P4: start plugin processes + register API proxy.
+		sup := pluginruntime.NewSupervisor(pluginruntime.SupervisorConfig{
+			SocketDir:     filepath.Join(pluginsDir, ".sockets"),
+			ContextSecret: []byte(cfg.SecretKey),
+		})
+		ScanAndStartPlugins(sup, pluginsDir, pluginManifests)
+		// P4: pluginBaseFor returns a tcp URL placeholder. True unix-socket
+		// dialing (custom Transport.DialContext) is P5; for now the proxy
+		// unit test (TestPluginAPIProxy) covers forwarding correctness.
+		registerPluginAPIProxy(mux, []byte(cfg.SecretKey), func(pluginID string) string {
+			return "http://127.0.0.1:8782" // P4 placeholder; P5 maps pluginID -> supervisor socketPath
+		})
 	}
 	wirePluginAuthExtractor()
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(

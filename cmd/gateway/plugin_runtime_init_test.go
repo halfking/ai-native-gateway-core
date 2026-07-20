@@ -18,8 +18,12 @@ func TestScanPlugins_PopulatesRegistry(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "ai-session-manager", "plugin-manifest.json"), data, 0644)
 
 	reg := pluginruntime.NewRegistry()
-	if err := ScanPlugins(dir, reg); err != nil {
+	manifests, err := ScanPlugins(dir, reg)
+	if err != nil {
 		t.Fatalf("scan: %v", err)
+	}
+	if len(manifests) < 1 {
+		t.Fatalf("expected at least 1 manifest, got %d", len(manifests))
 	}
 	entries := reg.NavEntries(pluginruntime.ViewerOpts{IsSuper: true})
 	if len(entries) == 0 {
