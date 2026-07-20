@@ -78,6 +78,7 @@ type PluginState struct {
 	StartedAt     time.Time
 	LastHealth    time.Time
 	SocketPath    string
+	Pid           int // 进程 PID，0 表示未启动
 }
 
 // NavEntry 是 plugin_nav 表的一行，返回给 web。
