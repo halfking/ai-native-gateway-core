@@ -331,7 +331,13 @@ func (w *SelfCheckWorker) topNModels(ctx context.Context, n int) ([]string, erro
 		SELECT pm.raw_model_name
 		FROM provider_models pm
 		JOIN credential_model_bindings cmb ON cmb.provider_model_id = pm.id
-		WHERE cmb.available = TRUE AND cmb.is_routable = TRUE
+		WHERE cmb.available = TRUE
+		  AND EXISTS (
+		    SELECT 1
+		    FROM v_routable_credential_models v
+		    WHERE v.binding_id = cmb.id
+		      AND v.is_routable = TRUE
+		  )
 		GROUP BY pm.raw_model_name
 		ORDER BY COUNT(*) DESC
 		LIMIT $1`, n)
