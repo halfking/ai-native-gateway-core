@@ -1,6 +1,7 @@
 /** Sidebar navigation — grouped menus with role / tenant visibility flags. */
 
 import { showOpsPlatform } from './edition'
+import type { NavEntry } from '@/api/plugins'
 
 export type NavItem = {
   path: string
@@ -179,6 +180,55 @@ export function visibleNavGroups(
       items: g.items.filter((item) => canShowNavItem(item, opts)),
     }))
     .filter((g) => g.items.length > 0)
+}
+
+/**
+ * Merge plugin-runtime `NavEntry` items into the static `NAV_GROUPS`.
+ *
+ * Rules:
+ * - Items with a known `nav_group` are inserted into that group, sorted by `order`.
+ * - Items with an unknown `nav_group` are gathered under a synthetic `plugins` group
+ *   so they are still discoverable in the sidebar.
+ * - The synthetic group is appended at the end and ordered ascending by `order`.
+ */
+export function mergeNav(groups: NavGroup[], entries: NavEntry[]): NavGroup[] {
+  if (!entries || entries.length === 0) return groups
+  const pluginsBucket: { entry: NavEntry; navItem: NavItem }[] = []
+  const next: NavGroup[] = groups.map((g) => ({ ...g, items: [...g.items] }))
+
+  for (const entry of entries) {
+    const navItem: NavItem = {
+      path: entry.route_url,
+      label: entry.label_key,
+      labelKey: entry.label_key,
+      icon: entry.icon ?? '🧩',
+      super: entry.super,
+      platformOps: entry.platform_ops,
+      tenantOnly: entry.tenant_only,
+    }
+    const target = next.find((g) => g.id === entry.nav_group)
+    if (!target) {
+      pluginsBucket.push({ entry, navItem })
+      continue
+    }
+    target.items.push(navItem)
+    target.items.sort((a, b) => {
+      const ao = entries.find((e) => e.route_url === a.path)?.order ?? 0
+      const bo = entries.find((e) => e.route_url === b.path)?.order ?? 0
+      return ao - bo
+    })
+  }
+
+  if (pluginsBucket.length > 0) {
+    pluginsBucket.sort((a, b) => a.entry.order - b.entry.order)
+    next.push({
+      id: 'plugins',
+      label: '插件',
+      labelKey: 'nav.group.plugins',
+      items: pluginsBucket.map((b) => b.navItem),
+    })
+  }
+  return next
 }
 
 export function isNavItemActive(path: string, currentPath: string, exact?: boolean): boolean {

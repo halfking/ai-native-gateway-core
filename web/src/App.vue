@@ -15,8 +15,9 @@ import { SITE_LOGO_SIZE, SITE_TITLE } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
 import { useNavAccordion } from './composables/useNavAccordion'
-import { NAV_GROUPS, NAV_PRIMARY_ITEMS, visibleNavGroups, visibleNavItems, isNavItemActive } from './config/appNav'
+import { NAV_GROUPS, NAV_PRIMARY_ITEMS, visibleNavGroups, visibleNavItems, isNavItemActive, mergeNav } from './config/appNav'
 import { onMaintainAvailabilityChange, probeMaintainAvailable } from './config/edition'
+import { usePluginNav } from './composables/usePluginNav'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -28,6 +29,7 @@ const passwordSuccessMessage = ref('')
 const mustChangePassword = computed(() => !!store.jwtToken && !!store.userInfo?.must_change_password)
 /** Bumps when Maintain probe settles so ops-center nav can recompute. */
 const maintainNavTick = ref(0)
+const { pluginNav, reload: reloadPluginNav } = usePluginNav()
 
 // 2026-07-09: isHydrating 防止页面在 auth probe 完成前误判为未登录。
 // 与 store.authHydrated 配合：App.vue onMounted 触发 /api/auth/me，settle 后翻为 true。
@@ -78,6 +80,8 @@ onMounted(async () => {
     maintainNavTick.value += 1
   })
   void probeMaintainAvailable()
+  // 拉取 session-manager 等插件菜单条目
+  void reloadPluginNav()
 })
 
 onUnmounted(() => {
@@ -97,11 +101,12 @@ const navPrimaryItems = computed(() => {
 
 const navGroups = computed(() => {
   void maintainNavTick.value
-  return visibleNavGroups(NAV_GROUPS, {
+  const base = visibleNavGroups(NAV_GROUPS, {
     isSuperAdmin: isSuperAdmin.value,
     isPlatformOps: isPlatformOps.value,
     isTenantPortal: isTenantPortal.value,
   })
+  return mergeNav(base, pluginNav.value)
 })
 
 const { toggleGroup, isGroupExpanded, groupHasActive } = useNavAccordion(
