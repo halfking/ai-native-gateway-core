@@ -1034,7 +1034,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		-- aggregate over the whole partitioned table.
 		CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
 			WHERE (p.tenant_id = $2 OR p.tenant_id = 'default')
-			  AND ($3 = '' OR COALESCE(mc.modality, 'text') = $3)
+			  AND (
+			      $3 = ''
+			      OR $3 = 'text'
+			      OR ($3 IN ('vision', 'audio') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
+			      OR COALESCE(mc.modality, 'text') = $3
+			  )
 			  AND COALESCE(mc.status, 'active') != 'disabled'
 		  AND COALESCE(c.status, 'active') NOT IN ('disabled')
 		  -- v.is_routable is FALSE for any model with manual disable at any layer
