@@ -144,6 +144,8 @@ var modelNotFoundCJKRe = regexp.MustCompile(
 
 var unsupportedFeatureRe = regexp.MustCompile(
 	`(?i)((does not|doesn'?t) support (coding plan|tool|function|tools|function call)|` +
+		`(does not|doesn'?t) support (image|vision|image input|multimodal)|` +
+		`cannot read .{0,80}(image\.[a-z0-9]+)|` +
 		`(tool|function)[- _]?call(ing|s)? (is )?not supported|` +
 		`unsupported (parameter|model|feature).{0,20}(tools?|function|tool_choice)|` +
 		`当前模型不支持)`,

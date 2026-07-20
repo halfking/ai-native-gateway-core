@@ -506,6 +506,60 @@ func TestLiveStreamRedisStore_StatusTransitionReplacesRequestID(t *testing.T) {
 	}
 }
 
+func TestLiveStreamRedisStore_StatusTransitionDoesNotMoveTimestampBackward(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+	base := time.Now().UTC()
+	start := LiveRequest{
+		RequestID:     "req-backward-ts",
+		Ts:            base.Format(time.RFC3339),
+		TenantID:      "tenant-a",
+		Model:         "gpt-4o",
+		ModelCategory: "openai",
+		ProviderCode:  "openai",
+		Status:        "in_progress",
+	}
+	staleDone := start
+	staleDone.Ts = base.Add(-12 * time.Minute).Format(time.RFC3339)
+	staleDone.Status = "success"
+
+	if err := store.Record(ctx, start); err != nil {
+		t.Fatalf("Record start: %v", err)
+	}
+	if err := store.Record(ctx, staleDone); err != nil {
+		t.Fatalf("Record staleDone: %v", err)
+	}
+
+	items, err := store.Replay(ctx, "tenant-a", false, 10)
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one request after stale transition, got %#v", items)
+	}
+	if items[0].Status != "success" {
+		t.Fatalf("expected success state, got %#v", items[0])
+	}
+	if items[0].Ts != start.Ts {
+		t.Fatalf("timestamp moved backward: got %q want %q", items[0].Ts, start.Ts)
+	}
+
+	snap := BuildLiveStreamSnapshot(items)
+	vendor := snap.Dimensions["vendor"]
+	if len(vendor) != 1 || len(vendor[0].Requests) != 1 {
+		t.Fatalf("unexpected vendor lanes: %#v", vendor)
+	}
+	if vendor[0].Requests[0].Timestamp != start.Ts {
+		t.Fatalf("lane timestamp moved backward: got %q want %q", vendor[0].Requests[0].Timestamp, start.Ts)
+	}
+}
+
 func TestLiveStreamRedisStore_IdleMarkerWritesMainQueue(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()

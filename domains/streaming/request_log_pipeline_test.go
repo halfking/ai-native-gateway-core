@@ -66,6 +66,22 @@ func TestRequestLogContext_BuildFailureEntry_EmptyClientRequestID(t *testing.T) 
 	}
 }
 
+func TestRequestLogContext_BuildFailureEntry_EventAtUsesStartPlusLatency(t *testing.T) {
+	before := time.Now().UTC()
+	ctx := &RequestLogContext{
+		RequestID: "req-1",
+		StartTime: before.Add(-250 * time.Millisecond),
+	}
+	entry := ctx.BuildFailureEntry("transient", "upstream transient", nil, nil)
+	if entry == nil || entry.EventAt == nil {
+		t.Fatal("expected EventAt on failure entry")
+	}
+	after := time.Now().UTC()
+	if entry.EventAt.Before(before) || entry.EventAt.After(after.Add(100*time.Millisecond)) {
+		t.Fatalf("EventAt=%s want between %s and %s", entry.EventAt.Format(time.RFC3339Nano), before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+	}
+}
+
 // TestRequestLogContext_RateLimitedStatus asserts the rate-limit vs failure
 // status split: gateway RPM/throttle rejections must record
 // request_status="rate_limited" (not "failure") so dashboards can exclude

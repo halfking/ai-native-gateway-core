@@ -57,6 +57,48 @@ func TestSanitizeUTF8_InvalidBytesPlusBackslash(t *testing.T) {
 	}
 }
 
+func TestEscapeInvalidEscape(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "valid hex backslash-u escape is preserved",
+			in:   "hello\u4e2d\u4e16",
+			want: "hello\u4e2d\u4e16", // backslash + u + 4 hex chars, leave alone
+		},
+		{
+			name: "invalid backslash-uZZZ gets backslash doubled",
+			in:   `x\uZZZZy`,
+			want: `x\\uZZZZy`, // 4 hex digits but Z is not hex -> double backslash
+		},
+		{
+			name: "trailing backslash-u without 4 chars gets backslash doubled",
+			in:   `x\uabcy`,
+			want: `x\\uabcy`, // only 3 chars (abc) after \u -> double backslash
+		},
+		{
+			name: "lone backslash is left alone",
+			in:   `x\\y`,
+			want: `x\\y`,
+		},
+		{
+			name: "empty input returns empty",
+			in:   "",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := escapeInvalidEscape(tc.in)
+			if got != tc.want {
+				t.Errorf("escapeInvalidEscape(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSanitizeUTF8JSON_PreservesBackslashesInJSON(t *testing.T) {
 	// JSONB fields must NOT have backslashes escaped — that would corrupt the JSON.
 	json := `{"content":"hello\nworld"}`

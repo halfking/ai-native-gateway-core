@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -68,6 +69,7 @@ func (h *EmbeddingsHandler) recordRateLimited(requestID string, keyInfo *authent
 	entry := &telemetry.RequestLogEntry{
 		Op:            telemetry.RequestLogInsert,
 		RequestID:     requestID,
+		EventAt:       func() *time.Time { now := time.Now().UTC(); return &now }(),
 		TenantID:      "default",
 		Success:       false,
 		RequestStatus: strPtr(telemetry.RequestStatusRateLimited),

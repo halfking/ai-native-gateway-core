@@ -68,17 +68,17 @@ type RequestLogContext struct {
 
 	// 2026-07-15: 请求性质维度（侧表 request_context_attrs 消费）。
 	// 这些字段是最佳努力存储，权威 turn_no 用 ROW_NUMBER 派生查询。
-	AttemptNo int    // 网关 failover 轮次（≥1）
-	IsRetry   bool   // 客户端重试 / follow-up（FollowUpDepth > 0 或 client_request_id 重复）
-	TurnNo    int    // 会话内轮次（best-effort，由 session 已知请求计数取）
+	AttemptNo   int    // 网关 failover 轮次（≥1）
+	IsRetry     bool   // 客户端重试 / follow-up（FollowUpDepth > 0 或 client_request_id 重复）
+	TurnNo      int    // 会话内轮次（best-effort，由 session 已知请求计数取）
 	OriginStage string // self_check/node_probe/system_health/business/probe_*
 
 	// 2026-07-17: 同步探测 hold 维度。executor 进入 no_candidate 分支时
 	// 通过 OnProbeHoldStart/End 回调更新这三个字段；request_logs 写入时
 	// 可序列化进 attachment JSON 用于运维追查。
-	ProbeHoldStartedAt   *time.Time // hold 开始时刻（探针进入）
-	ProbeHoldDurationMs  int        // hold 总毫秒（OnProbeHoldEnd 计算）
-	ProbeHoldRecovered   bool       // hold 结束时是否至少一个候选恢复
+	ProbeHoldStartedAt  *time.Time // hold 开始时刻（探针进入）
+	ProbeHoldDurationMs int        // hold 总毫秒（OnProbeHoldEnd 计算）
+	ProbeHoldRecovered  bool       // hold 结束时是否至少一个候选恢复
 
 	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 	// QualityFlags accumulates detected issues across the response
@@ -448,6 +448,10 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 
 	latency := c.LatencyMs()
+	eventAt := c.StartTime
+	if latency > 0 {
+		eventAt = c.StartTime.Add(time.Duration(latency) * time.Millisecond)
+	}
 	tenantID := "default"
 	apiKeyID := apiKeyIDForLog(c.KeyInfo, &c.meta)
 	var applicationID *int
@@ -508,6 +512,7 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:         c.RequestID,
+		EventAt:           &eventAt,
 		TenantID:          tenantID,
 		ApplicationID:     applicationID,
 		APIKeyID:          apiKeyID,

@@ -138,6 +138,7 @@ func (e *ActiveProbeEmitter) Emit(
 	}
 
 	entry := &telemetry.RequestLogEntry{
+		EventAt:          &result.CompletedAt,
 		RequestID:        requestID,
 		TenantID:         tenantID,
 		ClientModel:      strPtrTelemetry(rawModel),

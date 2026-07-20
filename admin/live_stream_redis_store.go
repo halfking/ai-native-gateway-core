@@ -222,14 +222,12 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	}
 
 	var oldData string
+	var oldReq LiveRequest
+	hasOldReq := false
 	if v, err := s.rdb.Get(ctx, liveStreamRequestDetailKey(tenantID, req.RequestID)).Result(); err == nil {
 		oldData = v
 	} else if err != redis.Nil {
 		return fmt.Errorf("failed to fetch old request data: request_id=%s tenant_id=%s: %w", req.RequestID, tenantID, err)
-	}
-	data, err := marshalLiveRequestRedisPayload(req)
-	if err != nil {
-		return fmt.Errorf("marshal live request failed: request_id=%s tenant_id=%s model=%s provider=%s category=%s: %w", req.RequestID, tenantID, req.Model, req.ProviderCode, req.ModelCategory, err)
 	}
 
 	ts, err := time.Parse(time.RFC3339, req.Ts)
@@ -237,16 +235,28 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 		slog.Warn("live stream record: invalid timestamp, using now", "request_id", req.RequestID, "ts", req.Ts, "err", err.Error())
 		ts = time.Now().UTC()
 	}
-	score := float64(ts.UnixMilli())
-
-	pipe := s.rdb.Pipeline()
 	if oldData != "" {
-		var oldReq LiveRequest
 		if oldReq, err = unmarshalLiveRequestRedisPayload(oldData); err == nil {
-			removeLiveRequestFromQueues(ctx, pipe, normalizeLiveStreamTenant(oldReq.TenantID), oldReq)
+			hasOldReq = true
+			if oldTs, oldTsErr := time.Parse(time.RFC3339, oldReq.Ts); oldTsErr == nil && oldTs.After(ts) {
+				// Keep request timestamps monotonic so a delayed/stale update cannot
+				// push the same request backwards in the visible lane window.
+				ts = oldTs
+				req.Ts = oldReq.Ts
+			}
 		} else {
 			slog.Warn("live stream record: failed to unmarshal old request", "request_id", req.RequestID, "err", err.Error())
 		}
+	}
+	data, err := marshalLiveRequestRedisPayload(req)
+	if err != nil {
+		return fmt.Errorf("marshal live request failed: request_id=%s tenant_id=%s model=%s provider=%s category=%s: %w", req.RequestID, tenantID, req.Model, req.ProviderCode, req.ModelCategory, err)
+	}
+	score := float64(ts.UnixMilli())
+
+	pipe := s.rdb.Pipeline()
+	if hasOldReq {
+		removeLiveRequestFromQueues(ctx, pipe, normalizeLiveStreamTenant(oldReq.TenantID), oldReq)
 	}
 
 	pipe.SAdd(ctx, liveStreamTenantSet, tenantID)
