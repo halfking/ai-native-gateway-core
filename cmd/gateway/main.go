@@ -2906,14 +2906,14 @@ func main() {
 		compareAPI = admin.NewSessionCompareAPI(canonPool)
 		pluginNonceCache := pluginruntime.NewNonceCache(10 * time.Minute)
 		registerPluginCanonRoutes(mux, []byte(cfg.SecretKey), CanonHandlers{
-			List:       adminHandler.HandleSessionAnalyticsList,
-			Detail:     adminHandler.HandleSessionAnalyticsDetail,
-			Turns:      compareAPI.HandleCompare,
-			Panorama:   adminHandler.HandleSessionPanorama,
-			Breakdown:  adminHandler.HandleModelBreakdown,
-			Timeseries: adminHandler.HandleCostTrend,
-			Top:        adminHandler.HandleTopSessions,
-			Clusters:   adminHandler.HandleSessionClustersList,
+			List:       http.HandlerFunc(adminHandler.HandleSessionAnalyticsList),
+			Detail:     http.HandlerFunc(adminHandler.HandleSessionAnalyticsDetail),
+			Turns:      http.HandlerFunc(compareAPI.HandleCompare),
+			Panorama:   http.HandlerFunc(adminHandler.HandleSessionPanorama),
+			Breakdown:  http.HandlerFunc(adminHandler.HandleModelBreakdown),
+			Timeseries: http.HandlerFunc(adminHandler.HandleCostTrend),
+			Top:        http.HandlerFunc(adminHandler.HandleTopSessions),
+			Clusters:   http.HandlerFunc(adminHandler.HandleSessionClustersList),
 		}, pluginruntime.WithCanonNonceCache(pluginNonceCache))
 	}
 
@@ -3733,107 +3733,127 @@ func main() {
 		}
 	}
 
-	// Stop probe/state services before closing their shared dependencies.
-	if activeProbe != nil {
-		activeProbe.Stop()
-	}
-	if probeQueueWorker != nil {
-		probeQueueWorker.Stop()
-	}
-	if credProbeV2 != nil {
-		credProbeV2.Stop()
-	}
-	if stateManager != nil {
-		stateManager.Stop()
-	}
+	// ── Stop background services with a global timeout ──
+	// systemd TimeoutStopSec is 25s; srv.Shutdown uses ~5s for
+	// in-flight HTTP drain, leaving ~20s for all Stop() calls.
+	// If they exceed this budget the process exits anyway (SIGKILL
+	// from systemd), but a clean(ish) log is better than a silent kill.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer stopCancel()
+	stopDone := make(chan struct{}, 1)
 
-	// 2. Stop hub/background producers before closing their dependencies.
-	if liveStreamHub != nil {
-		liveStreamHub.Stop()
-	}
-	telemetryClient.Stop()
-	lim.Stop()
-	pools.Stop()
-	pools.CloseAll()
-	upClient.Stop()
+	go func() {
+		// Stop probe/state services before closing their shared dependencies.
+		if activeProbe != nil {
+			activeProbe.Stop()
+		}
+		if probeQueueWorker != nil {
+			probeQueueWorker.Stop()
+		}
+		if credProbeV2 != nil {
+			credProbeV2.Stop()
+		}
+		if stateManager != nil {
+			stateManager.Stop()
+		}
 
-	// 3. Stop background services last
-	if discoverySvc != nil {
-		discoverySvc.Stop()
-	}
-	if credRecovery != nil {
-		credRecovery.Stop()
-	}
-	if brokenProbeReviver != nil {
-		brokenProbeReviver.Stop()
-	}
-	if pendingSweeper != nil {
-		pendingSweeper.Stop()
-	}
-	if credCycler != nil {
-		credCycler.Stop()
-	}
-	if modelProbe != nil {
-		modelProbe.Stop()
-	}
-	if suspiciousProbe != nil {
-		suspiciousProbe.Stop()
-	}
-	if unifiedProbe != nil {
-		unifiedProbe.Stop()
-	}
-	if passiveProbe != nil {
-		passiveProbe.Stop()
-	}
-	if taxonomySync != nil {
-		taxonomySync.Stop()
-	}
-	if stickyCleaner != nil {
-		stickyCleaner.Stop()
-	}
-	if partitionManager != nil {
-		partitionManager.Stop()
-	}
-	if envelopeCleaner != nil {
-		envelopeCleaner.Stop()
-	}
-	if settingsAuditCleaner != nil {
-		settingsAuditCleaner.Stop()
-	}
-	if peakCollector != nil {
-		peakCollector.Stop()
-	}
-	if weeklyPeakRollup != nil {
-		weeklyPeakRollup.Stop()
-	}
-	if statsBoardCache != nil {
-		statsBoardCache.Stop()
-	}
-	if statsMinuteAccumulator != nil {
-		statsMinuteAccumulator.Stop()
-	}
-	if statsMinuteRollup != nil {
-		statsMinuteRollup.Stop()
-	}
-	if slotSuggester != nil {
-		slotSuggester.Stop()
-	}
-	if autoIndexRefresher != nil {
-		autoIndexRefresher.Stop()
-		if autoRouteListener != nil {
-			autoRouteListener.Stop()
+		// 2. Stop hub/background producers before closing their dependencies.
+		if liveStreamHub != nil {
+			liveStreamHub.Stop()
 		}
-		if healthAutoRecover != nil {
-			healthAutoRecover.Stop()
+		telemetryClient.Stop()
+		lim.Stop()
+		pools.Stop()
+		pools.CloseAll()
+		upClient.Stop()
+
+		// 3. Stop background services last
+		if discoverySvc != nil {
+			discoverySvc.Stop()
 		}
-	}
-	// Drain the Memora sink queue on shutdown so in-flight writes
-	// are not lost. Bounded to 5s so shutdown is not held hostage
-	// to a slow Memora.
-	if memorySvc != nil {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		memorySvc.Stop(stopCtx)
-		stopCancel()
+		if credRecovery != nil {
+			credRecovery.Stop()
+		}
+		if brokenProbeReviver != nil {
+			brokenProbeReviver.Stop()
+		}
+		if pendingSweeper != nil {
+			pendingSweeper.Stop()
+		}
+		if credCycler != nil {
+			credCycler.Stop()
+		}
+		if modelProbe != nil {
+			modelProbe.Stop()
+		}
+		if suspiciousProbe != nil {
+			suspiciousProbe.Stop()
+		}
+		if unifiedProbe != nil {
+			unifiedProbe.Stop()
+		}
+		if passiveProbe != nil {
+			passiveProbe.Stop()
+		}
+		if taxonomySync != nil {
+			taxonomySync.Stop()
+		}
+		if stickyCleaner != nil {
+			stickyCleaner.Stop()
+		}
+		if partitionManager != nil {
+			partitionManager.Stop()
+		}
+		if envelopeCleaner != nil {
+			envelopeCleaner.Stop()
+		}
+		if settingsAuditCleaner != nil {
+			settingsAuditCleaner.Stop()
+		}
+		if peakCollector != nil {
+			peakCollector.Stop()
+		}
+		if weeklyPeakRollup != nil {
+			weeklyPeakRollup.Stop()
+		}
+		if statsBoardCache != nil {
+			statsBoardCache.Stop()
+		}
+		if statsMinuteAccumulator != nil {
+			statsMinuteAccumulator.Stop()
+		}
+		if statsMinuteRollup != nil {
+			statsMinuteRollup.Stop()
+		}
+		if slotSuggester != nil {
+			slotSuggester.Stop()
+		}
+		if autoIndexRefresher != nil {
+			autoIndexRefresher.Stop()
+			if autoRouteListener != nil {
+				autoRouteListener.Stop()
+			}
+			if healthAutoRecover != nil {
+				healthAutoRecover.Stop()
+			}
+		}
+		// Drain the Memora sink queue on shutdown so in-flight writes
+		// are not lost. Bounded to 5s so shutdown is not held hostage
+		// to a slow Memora.
+		if memorySvc != nil {
+			memStopCtx, memStopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			memorySvc.Stop(memStopCtx)
+			memStopCancel()
+		}
+
+		close(stopDone)
+	}()
+
+	select {
+	case <-stopDone:
+		slog.Info("background services stopped cleanly")
+	case <-stopCtx.Done():
+		slog.Warn("background service stop timed out, forcing shutdown")
 	}
 
 	// Flush + close the rotated log file last so the final
