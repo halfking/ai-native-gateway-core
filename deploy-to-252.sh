@@ -46,6 +46,10 @@ DB_USER="${DB_USER:-llm_gateway}"
 DB_NAME="${DB_NAME:-llm_gateway}"
 LOCAL_BIN="${LOCAL_BIN:-$REPO_DIR/bin/llm-gateway-go-linux-amd64}"
 MIGRATION_FILE="${MIGRATION_FILE:-$REPO_DIR/sql/migrations/startup/366_model_name_mapping.sql}"
+
+# 颜色（必须在使用前定义）
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+
 # Admin API Key 用于部署后 smoke test（/api/admin/* 端点）
 # 来自 252 远程 /opt/llm-gateway-go/.env 的 LLM_GATEWAY_ADMIN_API_KEY
 # TODO(secrets): 此 key 尚未注册到 envs，需补充到 envs/projects/llm-gateway-go/
@@ -56,9 +60,6 @@ if [[ -z "$ADMIN_API_KEY" ]]; then
 fi
 AUTH_HEADER=""
 [[ -n "$ADMIN_API_KEY" ]] && AUTH_HEADER="-H 'Authorization: Bearer $ADMIN_API_KEY'"
-
-# 颜色
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
 # ── 参数 ────────────────────────────────────────────────────────────────
 SKIP_BUILD=0; SKIP_MIGRATION=0; SKIP_RESTART=0
