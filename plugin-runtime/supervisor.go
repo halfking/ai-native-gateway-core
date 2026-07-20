@@ -33,6 +33,7 @@ type Supervisor struct {
 	mu             sync.Mutex
 	procs          map[string]command
 	states         map[string]*PluginState
+	manifests      map[string]*Manifest // P7: for Restart
 	commandFactory func(socketPath, entrypoint string, env []string) command
 }
 
@@ -42,7 +43,7 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 	if cfg.SocketDir != "" {
 		_ = os.MkdirAll(cfg.SocketDir, 0o755) // ignore "already exists"；真正的失败会在插件尝试 listen 时暴露
 	}
-	s := &Supervisor{cfg: cfg, procs: map[string]command{}, states: map[string]*PluginState{}}
+	s := &Supervisor{cfg: cfg, procs: map[string]command{}, states: map[string]*PluginState{}, manifests: map[string]*Manifest{}}
 	s.commandFactory = func(socketPath, entrypoint string, env []string) command {
 		return newExecCommand(socketPath, entrypoint, env)
 	}
@@ -79,6 +80,7 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 	s.mu.Lock()
 	s.procs[m.PluginID] = cmd
 	s.states[m.PluginID] = st
+	s.manifests[m.PluginID] = m
 	s.mu.Unlock()
 	return st, nil
 }
@@ -103,6 +105,35 @@ func (s *Supervisor) SocketPathOf(pluginID string) string {
 		return st.SocketPath
 	}
 	return ""
+}
+
+// Restart stops the old process (if running) and re-Starts with the original
+// manifest. Used for crash recovery (same version, not an upgrade).
+func (s *Supervisor) Restart(pluginID string) error {
+	s.mu.Lock()
+	m, ok := s.manifests[pluginID]
+	oldCmd, oldRunning := s.procs[pluginID]
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("plugin %s manifest not found (never started)", pluginID)
+	}
+	if oldRunning && oldCmd != nil {
+		_ = oldCmd.Stop()
+		s.mu.Lock()
+		delete(s.procs, pluginID)
+		s.mu.Unlock()
+	}
+	if _, err := s.Start(context.Background(), m); err != nil {
+		return fmt.Errorf("restart plugin %s: %w", pluginID, err)
+	}
+	return nil
+}
+
+// ManifestOf returns the stored manifest for a plugin (nil if never started).
+func (s *Supervisor) ManifestOf(pluginID string) *Manifest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.manifests[pluginID]
 }
 
 // execCommand 用 os/exec 启动插件 entrypoint。

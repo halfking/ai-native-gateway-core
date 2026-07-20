@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -199,3 +200,58 @@ func main(){
 		t.Fatalf("graceful stop marker = %q, want \"graceful\" (SIGTERM may have been skipped, fell back to kill)", string(got))
 	}
 }
+
+func TestSupervisor_RestartStopsOldAndStartsNew(t *testing.T) {
+	s := NewSupervisor(SupervisorConfig{SocketDir: t.TempDir()})
+	var events []string
+	var mu sync.Mutex
+	s.commandFactory = func(socketPath, entrypoint string, env []string) command {
+		return &restartFakeProc{
+			onStart: func() { mu.Lock(); events = append(events, "start:"+entrypoint); mu.Unlock() },
+			onStop:  func() { mu.Lock(); events = append(events, "stop"); mu.Unlock() },
+		}
+	}
+	m := &Manifest{PluginID: "p1", PluginVersion: "1", Runtime: Runtime{Entrypoint: "/bin/x"}}
+	if _, err := s.Start(context.Background(), m); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := s.Restart("p1"); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"start:/bin/x", "stop", "start:/bin/x"}
+	if len(events) != 3 || events[0] != want[0] || events[1] != want[1] || events[2] != want[2] {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestSupervisor_RestartUnknownPlugin(t *testing.T) {
+	s := NewSupervisor(SupervisorConfig{SocketDir: t.TempDir()})
+	if err := s.Restart("nope"); err == nil {
+		t.Fatal("Restart of unknown plugin should error")
+	}
+}
+
+// restartFakeProc implements command, recording Start/Stop events.
+type restartFakeProc struct {
+	pid     int
+	onStart func()
+	onStop  func()
+}
+
+func (f *restartFakeProc) Start(ctx context.Context) error {
+	f.pid = 1
+	if f.onStart != nil {
+		f.onStart()
+	}
+	return nil
+}
+func (f *restartFakeProc) Wait() error { return nil }
+func (f *restartFakeProc) Stop() error {
+	if f.onStop != nil {
+		f.onStop()
+	}
+	return nil
+}
+func (f *restartFakeProc) Pid() int { return f.pid }
