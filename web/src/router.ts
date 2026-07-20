@@ -30,7 +30,15 @@ const FreePoolView = () => import('./views/FreePoolView.vue')
 const TenantsView = () => import('./views/TenantsView.vue')
 const TenantDetailView = () => import('./views/TenantDetailView.vue')
 const RoutingDashboardView = () => import('./views/RoutingDashboardView.vue')
-const WorkTypesView = () => import('./views/WorkTypesView.vue')
+// 2026-07-20: WorkTypesView is small (~25 KB minified) and is reached from
+// the prominent 「工作类型」 chip at the top of /routing-v2, so users hit
+// the lazy-load boundary on a high-traffic path. The previous lazy import
+// produced a hashed chunk (WorkTypesView-*.js) that could fail with
+// "Failed to fetch dynamically imported module" when CDN/browser caches
+// were stale and referenced a chunk hash that no longer existed on the
+// origin. Bundling it eagerly into the same chunk as RoutingDashboardView
+// eliminates the dynamic import entirely — the click always succeeds.
+import WorkTypesView from './views/WorkTypesView.vue'
 const UsersView = () => import('./views/UsersView.vue')
 const AuditLogView = () => import('./views/AuditLogView.vue')
 const CompressionView = () => import('./views/CompressionView.vue')

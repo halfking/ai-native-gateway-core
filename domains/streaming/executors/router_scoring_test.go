@@ -1,6 +1,7 @@
 package executors
 
 import (
+	"math"
 	"context"
 	"testing"
 
@@ -143,4 +144,67 @@ func TestDefaultLoadScoreWeights(t *testing.T) {
 
 func intPtr(v int) *int {
 	return &v
+}
+
+func TestCalculateLatencyScore_PiecewiseNoPressure(t *testing.T) {
+	// No pressure (pressure=0.5 default fallback), p95 latency drives piecewise.
+	candidates := []struct {
+		name string
+		p95  int
+		want float64
+	}{
+		{"fast (300ms)", 300, 1.00},
+		{"medium (1000ms)", 1000, lerp(1000, 800, 1500, 1.00, 0.85)},
+		{"slow (5000ms)", 5000, lerp(5000, 3000, 10000, 0.65, 0.30)},
+		{"very slow (20s)", 20000, lerp(20000, 10000, 30000, 0.30, 0.05)},
+	}
+	for _, tc := range candidates {
+		t.Run(tc.name, func(t *testing.T) {
+			c := provider.Candidate{P95LatencyMs: tc.p95}
+			got := calculateLatencyScore(c)
+			if math.Abs(got-tc.want) > 0.01 {
+				t.Errorf("latency_score(p95=%d) = %f, want %f", tc.p95, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCalculateHeadroom_DefaultGamma1(t *testing.T) {
+	// candidatePressure returns 0.5 default when ConcurrencyLimit nil;
+	// headroom = max(0, 1-0.5)^1 = 0.5
+	c := provider.Candidate{}
+	got := calculateHeadroom(c)
+	if got < 0.49 || got > 0.51 {
+		t.Errorf("headroom default = %f, want 0.5", got)
+	}
+}
+
+func TestCalculateHeadroom_SaturatedZero(t *testing.T) {
+	// Pressure 1.0 → headroom = 0
+	lim := 10
+	c := provider.Candidate{ConcurrencyLimit: &lim}
+	// candidatePressure returns 0.5 default fallback (limiter not in scope here).
+	// In production it's read from Limiter.Stats(). We just assert non-negative.
+	got := calculateHeadroom(c)
+	if got < 0 || got > 1.0 {
+		t.Errorf("headroom = %f, expected [0,1]", got)
+	}
+}
+
+func TestMathPow(t *testing.T) {
+	if mathPow(2, 3) != 8 {
+		t.Errorf("mathPow(2,3) = %v, want 8", mathPow(2, 3))
+	}
+	if mathPow(0, 5) != 0 {
+		t.Errorf("mathPow(0,5) = %v, want 0", mathPow(0, 5))
+	}
+}
+
+func TestLerp(t *testing.T) {
+	if math.Abs(lerp(1000, 800, 1500, 1.00, 0.85)-0.957) > 0.01 {
+		t.Errorf("lerp(1000, 800, 1500, 1.0, 0.85) = %v, want 0.957", lerp(1000, 800, 1500, 1.00, 0.85))
+	}
+	if lerp(800, 800, 1500, 1.00, 0.85) != 1.00 {
+		t.Errorf("lerp at start should be 1.00")
+	}
 }

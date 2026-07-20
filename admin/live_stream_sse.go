@@ -492,6 +492,14 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 			"scope_tenant", scope.tenantID, "is_super", scope.isSuper, "err", err.Error())
 		return nil
 	}
+	if snapshot == nil || snapshot.Summary.Total == 0 {
+		if items, replayErr := h.replay(ctx, scope.tenantID, scope.isSuper, h.cfg.InitialReplayLimit); replayErr == nil && len(items) > 0 {
+			snapshot = BuildLiveStreamSnapshot(items)
+		} else if replayErr != nil {
+			slog.Debug("live stream scope replay fallback failed",
+				"scope_tenant", scope.tenantID, "is_super", scope.isSuper, "err", replayErr.Error())
+		}
+	}
 	// Guard: do not let an empty snapshot overwrite a populated cache.
 	// An empty read from Redis is treated as "no change" (return the
 	// last delta is pointless; better to simply skip). This is what
@@ -1474,7 +1482,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		       COALESCE(NULLIF(rl.gw_session_id, ''), '') AS gw_session_id,
 		       COALESCE(NULLIF(mc.canonical_name, ''), NULLIF(rl.client_model, ''), rl.outbound_model, '') AS model,
 		       COALESCE(mc.canonical_name, '') AS canonical_name,
-		       COALESCE(NULLIF(p.name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), '') AS provider_code,
+		       COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), '') AS provider_code,
 		       COALESCE(NULLIF(rl.request_status, ''), CASE WHEN rl.success THEN 'success' WHEN rl.success = FALSE THEN 'failure' ELSE 'in_progress' END) AS status,
 		       rl.latency_ms,
 		       rl.prompt_tokens,

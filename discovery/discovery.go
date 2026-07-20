@@ -507,37 +507,16 @@ func (s *Service) fetchModelsFromURLs(ctx context.Context, urls []string, apiKey
 }
 
 // extractModelIDs parses various /v1/models response formats.
-// mergeManifestModels appends manifest-registered model ids that the live
-// /models list omitted, de-duplicating case-insensitively. Returns live
-// unchanged when manifestJSON is nil/empty or fails to parse.
-func mergeManifestModels(live []string, manifestJSON *string) []string {
-	if manifestJSON == nil || strings.TrimSpace(*manifestJSON) == "" {
-		return live
-	}
-	manifest, err := extractModelIDs([]byte(*manifestJSON))
-	if err != nil || len(manifest) == 0 {
-		return live
-	}
-	seen := make(map[string]bool, len(live))
-	for _, m := range live {
-		seen[strings.ToLower(strings.TrimSpace(m))] = true
-	}
-	for _, m := range manifest {
-		key := strings.ToLower(strings.TrimSpace(m))
-		if key == "" || seen[key] {
-			continue
-		}
-		seen[key] = true
-		live = append(live, m)
-	}
-	return live
-}
-
+// Returns a slice of discovered models with ID and inferred modality.
 func extractModelIDs(data []byte) ([]string, error) {
-	// Try standard OpenAI format: {"data": [{"id": "..."}]}
+	// Try standard OpenAI format: {"data": [{"id": "...", "capabilities": {...}}]}
 	var openai struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID           string `json:"id"`
+			Capabilities *struct {
+				Vision bool `json:"vision"`
+				Audio  bool `json:"audio"`
+			} `json:"capabilities"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &openai); err == nil && len(openai.Data) > 0 {
@@ -591,6 +570,32 @@ func extractModelIDs(data []byte) ([]string, error) {
 	return nil, fmt.Errorf("unrecognized models response format")
 }
 
+// mergeManifestModels appends manifest-registered model ids that the live
+// /models list omitted, de-duplicating case-insensitively. Returns live
+// unchanged when manifestJSON is nil/empty or fails to parse.
+func mergeManifestModels(live []string, manifestJSON *string) []string {
+	if manifestJSON == nil || strings.TrimSpace(*manifestJSON) == "" {
+		return live
+	}
+	manifest, err := extractModelIDs([]byte(*manifestJSON))
+	if err != nil || len(manifest) == 0 {
+		return live
+	}
+	seen := make(map[string]bool, len(live))
+	for _, m := range live {
+		seen[strings.ToLower(strings.TrimSpace(m))] = true
+	}
+	for _, m := range manifest {
+		key := strings.ToLower(strings.TrimSpace(m))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		live = append(live, m)
+	}
+	return live
+}
+
 // splitFamilyIDs is the set of "raw" family tokens that the legacy
 // Python admin UI / old Go scans stored in models_canonical.family
 // but which should now be canonicalized to the vendor-prefixed form
@@ -641,10 +646,15 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 	//
 	// 2026-07-14: canonical_name is now always written as lowercase so
 	// internal SQL joins don't need `lower(...) = lower(...)` wrappers.
+	//
+	// 2026-07-20: modality is seeded using modelname.InferModality for
+	// zero-cost initialization. Actual probe validation happens later.
+	inferredModality := modelname.InferModality(rawName)
+
 	var canonicalID int
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO models_canonical (canonical_name, family, tags, source, status)
-		VALUES ($1, $2, ARRAY['family:' || $2]::text[], 'discovery', 'active')
+		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality)
+		VALUES ($1, $2, ARRAY['family:' || $2]::text[], 'discovery', 'active', $4)
 		ON CONFLICT (canonical_name) DO UPDATE SET
 			family = CASE
 				WHEN models_canonical.family = $2
@@ -677,9 +687,10 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 				)
 				ELSE models_canonical.tags
 			END,
-			status = 'active'
+			status = 'active',
+			modality = COALESCE(models_canonical.modality, $4)
 		RETURNING id
-	`, canonicalName, family, splitFamilyIDs).Scan(&canonicalID)
+	`, canonicalName, family, splitFamilyIDs, inferredModality).Scan(&canonicalID)
 	if err != nil {
 		return err
 	}
@@ -708,8 +719,8 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 		ctx,
 		s.db,
 		cred.ID,
-		rawName,                           // provider-facing: keep casing
-		canonicalRawName,                  // client-facing lowercase key (no vendor prefix)
+		rawName,                              // provider-facing: keep casing
+		canonicalRawName,                     // client-facing lowercase key (no vendor prefix)
 		modelname.NormalizeRouteKey(rawName), // 2026-07-14: standardized_name = stripped lower
 		&canonicalID,
 	)
