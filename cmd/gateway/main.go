@@ -3008,11 +3008,16 @@ func main() {
 	if adminHandler != nil {
 		compareAPI = admin.NewSessionCompareAPI(canonPool)
 		pluginNonceCache := pluginruntime.NewNonceCache(10 * time.Minute)
-		registerPluginCanonRoutes(mux, []byte(cfg.SecretKey),
-			adminHandler.HandleSessionAnalyticsList,
-			adminHandler.HandleSessionAnalyticsDetail,
-			compareAPI.HandleCompare,
-			pluginruntime.WithCanonNonceCache(pluginNonceCache))
+		registerPluginCanonRoutes(mux, []byte(cfg.SecretKey), CanonHandlers{
+			List:       adminHandler.HandleSessionAnalyticsList,
+			Detail:     adminHandler.HandleSessionAnalyticsDetail,
+			Turns:      compareAPI.HandleCompare,
+			Panorama:   adminHandler.HandleSessionPanorama,
+			Breakdown:  adminHandler.HandleModelBreakdown,
+			Timeseries: adminHandler.HandleCostTrend,
+			Top:        adminHandler.HandleTopSessions,
+			Clusters:   adminHandler.HandleSessionClustersList,
+		}, pluginruntime.WithCanonNonceCache(pluginNonceCache))
 	}
 
 	// v2 Pipeline feature flag (R1.12). Opt-in via LLM_GATEWAY_V2_ENABLED.
