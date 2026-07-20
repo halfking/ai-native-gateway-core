@@ -188,7 +188,9 @@ func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, buc
 	// (live metrics overwrite baseline) but does it via DELETE-then-INSERT
 	// instead of ON CONFLICT.
 	deleteSQL := `DELETE FROM credential_model_index_hot
-		WHERE (bucket, credential_id, raw_model) IN (` + rollupCredentialModelIndexSQL + `)`
+		WHERE (bucket, credential_id, raw_model) IN (
+			SELECT bucket, credential_id, raw_model FROM (` + rollupCredentialModelIndexSQL + `) _fresh
+		)`
 	if _, err := r.db.Exec(ctx, deleteSQL, bucket); err != nil {
 		return 0, fmt.Errorf("delete: %w", err)
 	}
