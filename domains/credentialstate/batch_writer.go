@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -115,7 +116,22 @@ func (bw *BatchWriter) flush() {
 // COALESCE(EXCLUDED.x, existing.x) to avoid clobbering fields that weren't
 // in the current update batch. The semicolon-separated parameter list is
 // sent in a single Execute message — 1 round-trip per batch instead of N.
+//
+// 2026-07-20: dedupDedupBeforeInsert() must run before building the multi-row
+// INSERT. Without it, a single statement containing two rows that hit the
+// same (credential_id, raw_model_name) ON CONFLICT key raises SQLSTATE
+// 21000 ('ON CONFLICT DO UPDATE command cannot affect row a second time'),
+// which aborts the entire batch and emits the cascading
+// 'batch writer: write failed count=N' warning visible in high-concurrency
+// load tests (S07/S12). We deduplicate by keeping the row with the latest
+// UpdatedAt per key; ties prefer the last occurrence to preserve input
+// ordering intuition.
 func (bw *BatchWriter) batchUpsert(ctx context.Context, updates []StateUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	updates = dedupByCredentialModel(updates)
 	if len(updates) == 0 {
 		return nil
 	}
@@ -172,4 +188,70 @@ func (bw *BatchWriter) batchUpsert(ctx context.Context, updates []StateUpdate) e
 	// 2. 单事务执行
 	_, err := bw.db.Exec(ctx, sb.String(), args...)
 	return err
+}
+
+// dedupByCredentialModel collapses entries that share the same ON CONFLICT
+// target (credential_id, raw_model_name) so a single multi-row INSERT ...
+// ON CONFLICT statement cannot hit SQLSTATE 21000 ("ON CONFLICT DO UPDATE
+// command cannot affect row a second time"). PostgreSQL refuses to update
+// the same row twice in one statement, so we keep the row with the latest
+// UpdatedAt for each key. Ties prefer the last occurrence so callers that
+// emit updates in time-ascending order see the "newest" field values
+// retained. The returned slice is allocated freshly so the caller's buffer
+// stays untouched.
+func dedupByCredentialModel(updates []StateUpdate) []StateUpdate {
+	if len(updates) < 2 {
+		return updates
+	}
+	// Preserve insertion order on output by scanning input in order and
+	// recording the *index* of the winning row. We then materialize the
+	// winners in ascending index order.
+	type pending struct {
+		idx int
+		upd StateUpdate
+	}
+	best := make(map[uint64]*pending, len(updates))
+	for i, u := range updates {
+		key := uint64(uint32(u.CredentialID))<<32 | hashStringKey(u.Model)
+		if cur, ok := best[key]; ok {
+			if !u.UpdatedAt.Before(cur.upd.UpdatedAt) {
+				// Tie (equal UpdatedAt) keeps the later occurrence per the
+				// contract documented above.
+				best[key] = &pending{idx: i, upd: u}
+			}
+		} else {
+			best[key] = &pending{idx: i, upd: u}
+		}
+	}
+	winners := make([]pending, 0, len(best))
+	for _, p := range best {
+		winners = append(winners, *p)
+	}
+	// Stable order by insertion index (matches upstream emission order).
+	sort.SliceStable(winners, func(i, j int) bool {
+		return winners[i].idx < winners[j].idx
+	})
+	out := make([]StateUpdate, len(winners))
+	for i, w := range winners {
+		out[i] = w.upd
+	}
+	return out
+}
+
+// hashStringKey produces a 32-bit FNV-1a hash of s, used only as a
+// collision-free discriminator inside dedupByCredentialModel's key
+// composition. Postgres-style escaping is not required because the value
+// never leaves this function.
+func hashStringKey(s string) uint64 {
+	const (
+		offset uint64 = 14695981039346656037
+		prime  uint64 = 1099511628211
+	)
+	h := offset
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= prime
+	}
+	// Fold to 32 bits so the composite key fits in uint64 alongside CredentialID.
+	return h & 0xFFFFFFFF
 }
