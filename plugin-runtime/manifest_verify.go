@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 )
 
@@ -13,6 +14,7 @@ import (
 // 这是离线最小闭环：完整签名链（maintain 签发 + activation）由分发激活模块提供。
 func VerifyManifestSignature(manifestPath, pubkeyHex string) error {
 	if pubkeyHex == "" {
+		slog.Warn("plugin manifest signature verification skipped (LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY unset — dev mode)", "manifest", manifestPath)
 		return nil
 	}
 	pub, err := hex.DecodeString(pubkeyHex)

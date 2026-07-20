@@ -77,9 +77,11 @@ func TestPluginAPIProxy_DialsUnixSocket(t *testing.T) {
 	defer os.Remove(socketPath)
 
 	var gotPluginID, gotTenant string
+	var seenPath string
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPluginID = r.Header.Get("X-Gateway-Plugin-ID")
 		gotTenant = r.Header.Get("X-Gateway-Tenant-ID")
+		seenPath = r.URL.Path
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "from-socket")
 	})}
@@ -105,5 +107,11 @@ func TestPluginAPIProxy_DialsUnixSocket(t *testing.T) {
 	}
 	if gotPluginID != "ai-session-manager" || gotTenant != "t-socket" {
 		t.Fatalf("upstream plugin=%q tenant=%q", gotPluginID, gotTenant)
+	}
+	// Round-trip path assertion: the upstream must see the CORRECT stripped path
+	// (/plugin/handshake), NOT the socket path leaking into the request path
+	// (which was the C1 bug: singleJoiningSlash prepended target.Path = socket path).
+	if seenPath != "/plugin/handshake" {
+		t.Fatalf("upstream path corrupted: got %q want /plugin/handshake (socket path leaked into request path)", seenPath)
 	}
 }
