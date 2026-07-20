@@ -19,6 +19,8 @@ type Manifest struct {
 	Pages                []Page               `json:"pages"`
 	Web                  Web                  `json:"web"`
 	Activation           Activation           `json:"activation"`
+	// ManifestPath 是 manifest 文件的绝对路径，由 LoadManifest 填充；不参与 JSON 序列化。
+	ManifestPath string `json:"-"`
 }
 
 type GatewayCompatibility struct {

@@ -83,6 +83,16 @@ var modalityRules = []modalityRule{
 	// Google Gemini - Embedding
 	{"textembedding-", "embedding", 1},
 
+	// Google Gemini - Specific multimodal patterns (add for test coverage)
+	// Note: Gemini 1.5/2.0 Pro/Flash are TRUE multimodal (text+image+audio+video).
+	// They are categorized as "multimodal" so the SQL filter accepts them for
+	// ANY modality request. Dedicated video-only models should use "video".
+	{"gemini-1.5-pro", "multimodal", 0},
+	{"gemini-1.5-flash", "multimodal", 0},
+	{"gemini-2.0-flash-exp", "multimodal", 0},
+	{"gemini-2.0-flash", "multimodal", 0},
+	{"gemini-2.0-pro", "multimodal", 0},
+
 	// Meta Llama - Vision (specific patterns first)
 	{"llama-3.2-11b-vision", "vision", 1},
 	{"llama-3.2-90b-vision", "vision", 1},
@@ -116,8 +126,11 @@ var modalityRules = []modalityRule{
 	{"moonshot-", "text", 1},
 	{"kimi-", "text", 1},
 
-	// ByteDance Doubao - Vision first
-	{"doubao-", "vision", 1}, // doubao-*-vision, doubao-vision-*
+	// ByteDance Doubao - Text specific patterns first (longer wins)
+	{"doubao-pro-", "text", 1},      // doubao-pro-32k (10 chars, before doubao-)
+	{"doubao-lite-", "text", 1},     // doubao-lite-* (11 chars)
+	{"doubao-vision-", "vision", 1}, // doubao-vision-* (14 chars)
+	{"doubao-", "text", 1},          // fallback (7 chars)
 	{"seed-", "text", 1},
 
 	// Alibaba Qwen - Vision first
@@ -148,8 +161,9 @@ var modalityRules = []modalityRule{
 	// Huawei Pangu
 	{"pangu-", "text", 1},
 
-	// Baidu Ernie - Vision first
-	{"ernie-", "vision", 1}, // ernie-*-vision-*, ernie-*-vision
+	// Baidu Ernie - Only specific text patterns, vision caught by suffix/contains
+	{"ernie-bot-", "text", 1}, // ernie-bot-4, ernie-bot-turbo (text models)
+	// Note: removed generic "ernie-" prefix to allow "-vision" suffix/contains to work
 
 	// Tencent Hunyuan
 	{"hunyuan-", "text", 1}, // hunyuan-vision handled by exact match
@@ -160,8 +174,10 @@ var modalityRules = []modalityRule{
 	{"embed-", "embedding", 1},
 	{"rerank-", "text", 1},
 
-	// xAI Grok - Vision first
-	{"grok-", "vision", 1}, // grok-*-vision, grok-vision-*
+	// xAI Grok
+	{"grok-beta", "text", 0},      // exact match first
+	{"grok-vision-", "vision", 1}, // grok-vision-beta (12 chars)
+	{"grok-", "text", 1},          // fallback to text (5 chars)
 
 	// StepFun - Vision first
 	{"step-1v-", "vision", 1},
@@ -172,7 +188,7 @@ var modalityRules = []modalityRule{
 
 	// ========== Priority 2: Suffix matches (pattern starts with *) ==========
 	{"-vision-instruct", "vision", 2},
-	{"-vision", "vision", 2},
+	{"-vision", "vision", 2}, // catches ernie-4.0-vision, grok-vision, etc.
 	{"-audio-preview", "audio", 2},
 	{"-audio", "audio", 2},
 	{"-nemo", "text", 2},
