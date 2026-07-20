@@ -98,6 +98,7 @@ type Candidate struct {
 	StandardizedName string  `json:"standardized_name"`
 	SuccessRate      float64 `json:"success_rate"`
 	P95LatencyMs     int     `json:"p95_latency_ms"`
+	P50LatencyMs     int     `json:"p50_latency_ms"` // 2026-07-20: 用于 concurrency-aware latency scoring
 	ConcurrencyLimit *int    `json:"concurrency_limit"`
 	// FpSlotLimit is the fingerprint slot pool size — how many distinct
 	// virtual user identities this credential can simulate. Conceptually

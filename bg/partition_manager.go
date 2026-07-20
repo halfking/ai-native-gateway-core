@@ -66,7 +66,7 @@ type PartitionManager struct {
 	cancel          context.CancelFunc
 	done            chan struct{}
 	mu              sync.Mutex // 2026-07-20: protect lastAnalyzeAt
-	lastAnalyzeAt   time.Time // 2026-07-20: analyze cooldown 5min
+	lastAnalyzeAt   time.Time  // 2026-07-20: analyze cooldown 5min
 }
 
 // archiveSpec describes one archive_xxx call: which SQL function to

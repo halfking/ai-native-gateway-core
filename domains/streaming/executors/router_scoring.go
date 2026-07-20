@@ -3,7 +3,10 @@ package executors
 import (
 	"context"
 	"log/slog"
+	"math"
 	"math/rand"
+	"os"
+	"strconv"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -34,11 +37,14 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	latencyScore := calculateLatencyScore(c)
 	qualityScore := calculateQualityScore(c)
 
+	headroom := calculateHeadroom(c)
+	headroomWeight := envFloat("LLM_GATEWAY_ROUTING_W_HEADROOM", 0.05)
 	composite :=
 		concurrencyScore*weights.ConcurrencyWeight +
 			identityScore*weights.IdentityWeight +
 			latencyScore*weights.LatencyWeight +
-			qualityScore*weights.QualityWeight
+			qualityScore*weights.QualityWeight +
+			headroom*headroomWeight // P2-#5: 奖励 headroom
 
 	// DEBUG: 采样日志（10%）
 	if rand.Float64() < 0.1 {
@@ -48,6 +54,7 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 			"identity_score", identityScore,
 			"latency_score", latencyScore,
 			"quality_score", qualityScore,
+			"headroom", headroom,
 			"composite", composite,
 		)
 	}
@@ -103,21 +110,84 @@ func calculateIdentityScore(c provider.Candidate, r *Router) float64 {
 
 // calculateLatencyScore 计算延迟分数
 // 使用饱和曲线：快速增长后趋于平缓
+// 2026-07-20 P2-#5: concurrency-aware latency score (docs/design/2026-07-20-latency-aware-routing.md §2.1)
+// idle slope × queue-amplification
 func calculateLatencyScore(c provider.Candidate) float64 {
-	latency := float64(c.P95LatencyMs)
-	if latency < 100 {
-		return 0.0 // 极快，无惩罚
+	pressure := candidatePressure(c) // 复用 headroom 计算
+	p95 := c.P95LatencyMs
+	if p95 < 100 {
+		return 0.0
 	}
-
-	// 饱和曲线: score = latency / (latency + k)
-	// k=1000: 1000ms→0.5, 2000ms→0.67, 5000ms→0.83
-	const k = 1000.0
-	score := latency / (latency + k)
-
-	if score > 1.0 {
-		return 1.0
+	// queue-amplification: pressure 超过 knee (0.6) 越多, p95 被放大
+	// alpha=1.2, beta=1.8, knee=0.6 (env LLM_GATEWAY_PRESSURE_* 可改)
+	alpha := envFloat("LLM_GATEWAY_PRESSURE_ALPHA", 1.2)
+	beta := envFloat("LLM_GATEWAY_PRESSURE_BETA", 1.8)
+	knee := envFloat("LLM_GATEWAY_PRESSURE_KNEE", 0.6)
+	amp := 1.0
+	if pressure > knee {
+		delta := pressure - knee
+		amp = 1.0 + alpha*mathPow(delta, beta)
 	}
-	return score
+	observed := float64(p95) * amp
+	// piecewise table (在 amplified observed 上)
+	switch {
+	case observed < 800: return 1.00
+	case observed < 1500: return lerp(observed, 800, 1500, 1.00, 0.85)
+	case observed < 3000: return lerp(observed, 1500, 3000, 0.85, 0.65)
+	case observed < 10000: return lerp(observed, 3000, 10000, 0.65, 0.30)
+	case observed < 30000: return lerp(observed, 10000, 30000, 0.30, 0.05)
+	default: return 0.0 // hard block (> block threshold 默认 30s)
+	}
+}
+
+// mathPow 包装 math.Pow, 处理 x<=0 边界
+func mathPow(x, y float64) float64 {
+	if x <= 0 {
+		return 0
+	}
+	return math.Pow(x, y)
+}
+
+// lerp 线性插值
+func lerp(x, x0, x1, y0, y1 float64) float64 {
+	if x1 == x0 {
+		return y0
+	}
+	return y0 + (y1-y0)*(x-x0)/(x1-x0)
+}
+
+// envFloat 从 env 读 float 配 fallback
+func envFloat(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
+}
+
+// candidatePressure 计算 candidate 当前的并发压力
+// (在 0-1.5 范围: 1.0+ 表示超载)
+func candidatePressure(c provider.Candidate) float64 {
+	if c.ConcurrencyLimit == nil || *c.ConcurrencyLimit <= 0 {
+		return 0.5 // 无限流: 假设中等
+	}
+	// 从全局 limiter 取实时 (Limiter 在 Router 上下文, 这里简化)
+	// P1: 估计 pressure, 实际在 planByTier 时取
+	return 0.5
+}
+
+// calculateHeadroom bonus (P2-#5 §3.1): 奖励并发富裕的 candidate
+func calculateHeadroom(c provider.Candidate) float64 {
+	gamma := envFloat("LLM_GATEWAY_HEADROOM_GAMMA", 1.0)
+	pressure := candidatePressure(c)
+	if pressure > 1.0 {
+		return 0.0
+	}
+	return mathPow(1.0-pressure, gamma)
 }
 
 // calculateQualityScore 计算质量分数（基于成功率）
