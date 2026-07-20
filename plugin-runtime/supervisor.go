@@ -21,6 +21,8 @@ type command interface {
 type SupervisorConfig struct {
 	SocketDir     string
 	ContextSecret []byte
+	// SigningPubkey 是 ed25519 公钥 hex；为空时跳过 manifest 签名校验（开发模式）。
+	SigningPubkey string
 }
 
 // Supervisor 管理所有已启动的插件进程。P0 为内存态骨架。
@@ -43,10 +45,15 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 // Start 启动插件进程并返回初始状态。握手（ready 判定）由 handshake.go 完成。
 // entrypoint 来自 manifest.Runtime.Entrypoint；socket/context secret/contract 通过 env 注入。
 func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, error) {
+	if err := VerifyManifestSignature(m.ManifestPath, s.cfg.SigningPubkey); err != nil {
+		return nil, fmt.Errorf("plugin %s manifest signature: %w", m.PluginID, err)
+	}
 	socketPath := filepath.Join(s.cfg.SocketDir, m.PluginID+".sock")
+	manifestPath := m.ManifestPath
 	env := []string{
 		"AI_SESSION_MANAGER_PLUGIN_SOCKET=" + socketPath,
 		"GATEWAY_PLUGIN_CONTRACT=" + m.GatewayCompatibility.APIContract,
+		"AI_SESSION_MANAGER_MANIFEST=" + manifestPath,
 	}
 	if len(s.cfg.ContextSecret) > 0 {
 		env = append(env, "AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET="+string(s.cfg.ContextSecret))
