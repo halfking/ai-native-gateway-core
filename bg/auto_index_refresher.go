@@ -180,15 +180,27 @@ func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
 // metrics always overwrite the conservative half-2 baseline as soon as
 // a credential gets real traffic.
 func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, bucket time.Time) (int, error) {
-	fullSQL := `INSERT INTO credential_model_index_hot (
+	// 2026-07-20 P2-#6: split into DELETE + INSERT to avoid
+	// "ON CONFLICT DO UPDATE command cannot affect row a second time"
+	// (SQLSTATE 21000) when half-1 (traffic) and half-2 (cold-start) of
+	// the UNION ALL produce the same (bucket, credential_id, raw_model)
+	// triple. Two-statement version preserves the original semantics
+	// (live metrics overwrite baseline) but does it via DELETE-then-INSERT
+	// instead of ON CONFLICT.
+	deleteSQL := `DELETE FROM credential_model_index_hot
+		WHERE (bucket, credential_id, raw_model) IN (` + rollupCredentialModelIndexSQL + `)`
+	if _, err := r.db.Exec(ctx, deleteSQL, bucket); err != nil {
+		return 0, fmt.Errorf("delete: %w", err)
+	}
+	insertSQL := `INSERT INTO credential_model_index_hot (
 	    bucket, credential_id, raw_model, canonical_id,
 	    billing_mode, unit_price_in_per_1m, unit_price_out_per_1m, context_window,
 	    success_rate, p95_latency_ms, active_sessions, concurrency_limit, pressure_ratio,
 	    score_smart, score_speed_first, score_cost_first
-	)` + rollupCredentialModelIndexSQL + rollupCredentialModelIndexONCONFLICT
-	tag, err := r.db.Exec(ctx, fullSQL, bucket)
+	) ` + rollupCredentialModelIndexSQL
+	tag, err := r.db.Exec(ctx, insertSQL, bucket)
 	if err != nil {
-		return 0, fmt.Errorf("exec: %w", err)
+		return 0, fmt.Errorf("insert: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }
