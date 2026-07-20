@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -2920,18 +2921,47 @@ func main() {
 		}
 		registerPluginStaticRoutes(mux, pluginsDir)
 
-		// P4: start plugin processes + register API proxy.
+		// P5: start plugin processes + register API proxy wired to the
+		// supervisor's actual unix socket paths. pluginBaseFor returns
+		// "unix://<socketPath>" for a running plugin, or "" if the plugin
+		// failed to start — the proxy then responds 502 Bad Gateway.
 		sup := pluginruntime.NewSupervisor(pluginruntime.SupervisorConfig{
 			SocketDir:     filepath.Join(pluginsDir, ".sockets"),
 			ContextSecret: []byte(cfg.SecretKey),
+			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
-		ScanAndStartPlugins(sup, pluginsDir, pluginManifests)
-		// P4: pluginBaseFor returns a tcp URL placeholder. True unix-socket
-		// dialing (custom Transport.DialContext) is P5; for now the proxy
-		// unit test (TestPluginAPIProxy) covers forwarding correctness.
+		pluginBases := ScanAndStartPlugins(sup, pluginsDir, pluginManifests)
 		registerPluginAPIProxy(mux, []byte(cfg.SecretKey), func(pluginID string) string {
-			return "http://127.0.0.1:8782" // P4 placeholder; P5 maps pluginID -> supervisor socketPath
+			return pluginBases[pluginID] // "" if not running → apiproxy returns 502
+		}, dbConn.Pool(), cfg.SecretKey)
+
+		// P6: health loop — socket-liveness as a health proxy. Each tick dials
+		// the plugin's unix socket; consecutive failures (default 2) mark the
+		// plugin degraded in the registry, which surfaces in /api/v1/plugin-nav.
+		healthCheck := func(pluginID string) error {
+			socketPath := sup.SocketPathOf(pluginID)
+			if socketPath == "" {
+				return fmt.Errorf("plugin %s not started", pluginID)
+			}
+			conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+			if err != nil {
+				return fmt.Errorf("plugin %s socket unreachable: %w", pluginID, err)
+			}
+			_ = conn.Close()
+			return nil
+		}
+		healthLoop := pluginruntime.NewHealthLoop(pluginRegistry, healthCheck, pluginruntime.HealthLoopConfig{
+			Interval:         30 * time.Second,
+			FailureThreshold: 2,
 		})
+		healthLoop.Start()
+		defer healthLoop.Stop() // graceful shutdown: stop the loop on gateway exit
+		// graceful shutdown: SIGTERM each plugin process (health loop already stopped above)
+		defer func() {
+			for pluginID := range pluginBases {
+				_ = sup.Stop(pluginID)
+			}
+		}()
 	}
 	wirePluginAuthExtractor()
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(
