@@ -51,11 +51,14 @@ export default {
     promptInjection: "Prompt Injection Detection",
     examples: "Ejemplos",
     chat: "Chat",
+    opsOverview: "Ops Overview",
     opsLicenses: "License管理",
+    opsDownloads: "Releases & Downloads",
     opsFaults: "故障管理",
     opsAutoUpdate: "自动更新",
     opsCenter: "中心运维",
     opsVibeCoding: "VibeCoding",
+    opsProductEntry: "Product Entry",
     tenantLicense: "Mi Licencia",
     tenantAutoUpdate: "Mis Actualizaciones"
   }
