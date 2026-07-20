@@ -109,6 +109,26 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 		}
 		return allRequests[i].RequestID < allRequests[j].RequestID
 	})
+	
+	// 2026-07-21: Log snapshot details for debugging
+	slog.Info("snapshot from dimension queues built",
+		"tenant_id", tenantID,
+		"is_super", isSuper,
+		"total_requests", len(allRequests),
+		"dimension_keys_scanned", len(dimKeys),
+		"first_request_ts", func() string {
+			if len(allRequests) > 0 {
+				return allRequests[0].Ts
+			}
+			return ""
+		}(),
+		"last_request_ts", func() string {
+			if len(allRequests) > 0 {
+				return allRequests[len(allRequests)-1].Ts
+			}
+			return ""
+		}(),
+	)
 
 	if len(allRequests) == 0 {
 		// No valid requests found, return empty snapshot
@@ -180,6 +200,19 @@ func (s *LiveStreamRedisStore) discoverDimensionQueues(ctx context.Context, tena
 		slog.Debug("failed to sort by activity, using lexicographic order", "err", err.Error())
 		sort.Strings(allKeys)
 	}
+	
+	// 2026-07-21: Log dimension queue discovery details
+	slog.Info("dimension queues discovered",
+		"tenant_id", tenantID,
+		"is_super", isSuper,
+		"total_keys", len(allKeys),
+		"first_3_keys", func() string {
+			if len(allKeys) > 3 {
+				return strings.Join(allKeys[:3], ", ")
+			}
+			return strings.Join(allKeys, ", ")
+		}(),
+	)
 
 	return allKeys, nil
 }
