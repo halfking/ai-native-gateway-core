@@ -657,6 +657,56 @@ func TestLiveStreamRedisStore_IdleMarkerWritesMainQueue(t *testing.T) {
 	}
 }
 
+func TestComputeScopeDelta_FallsBackToReplayWhenDimensionSnapshotEmpty(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{RedisClient: rdb, InitialReplayLimit: 50})
+	ctx := context.Background()
+	req := LiveRequest{
+		RequestID:     "req-replay-fallback",
+		Ts:            time.Now().UTC().Format(time.RFC3339),
+		TenantID:      "tenant-a",
+		Model:         "gpt-4o",
+		ModelCategory: "openai",
+		ProviderCode:  "openai",
+		Status:        "success",
+	}
+	if err := hub.store.Record(ctx, req); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// Simulate a local/no-dimension-scan environment: remove dimension queues so
+	// SnapshotFromDimensionQueues returns empty, but keep the main queue intact.
+	for _, key := range []string{
+		liveStreamDimPrefix + "vendor:openai",
+		liveStreamDimPrefix + "provider:openai",
+		liveStreamDimPrefix + "model:gpt-4o",
+		tenantLiveStreamKey("tenant-a", "dim:vendor:openai"),
+		tenantLiveStreamKey("tenant-a", "dim:provider:openai"),
+		tenantLiveStreamKey("tenant-a", "dim:model:gpt-4o"),
+	} {
+		mr.Del(key)
+	}
+
+	delta := hub.computeScopeDelta(ctx, "tenant-a", false)
+	if delta == nil {
+		t.Fatal("expected delta from replay fallback")
+	}
+	if delta.Summary.Total != 1 {
+		t.Fatalf("summary.total=%d want 1", delta.Summary.Total)
+	}
+	if got := len(delta.ChangedLanes["vendor"]); got != 1 {
+		t.Fatalf("vendor lanes=%d want 1", got)
+	}
+	if got := delta.ChangedLanes["vendor"][0].Requests[0].RequestID; got != req.RequestID {
+		t.Fatalf("vendor request_id=%q want %q", got, req.RequestID)
+	}
+}
+
 func TestIdleMarkerQueueKeys_ScopeRouting(t *testing.T) {
 	global := idleMarkerQueueKeys("", "vendor", "openai")
 	if len(global) != 1 || global[0] != liveStreamMainKey {

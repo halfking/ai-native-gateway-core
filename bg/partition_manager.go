@@ -3,6 +3,7 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -64,6 +65,8 @@ type PartitionManager struct {
 	promoteInterval time.Duration
 	cancel          context.CancelFunc
 	done            chan struct{}
+	mu              sync.Mutex // 2026-07-20: protect lastAnalyzeAt
+	lastAnalyzeAt   time.Time // 2026-07-20: analyze cooldown 5min
 }
 
 // archiveSpec describes one archive_xxx call: which SQL function to
@@ -760,6 +763,15 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 // monthly partitions. Columnar partitions after bulk promote often keep
 // n_mod_since_analyze=0 so autovacuum analyze never fires.
 func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
+	// 2026-07-20: 5 min cooldown. analyze 一次 3.3s 频繁跑会拖慢 commit.
+	pm.mu.Lock()
+	if !pm.lastAnalyzeAt.IsZero() && time.Since(pm.lastAnalyzeAt) < 5*time.Minute {
+		pm.mu.Unlock()
+		return
+	}
+	pm.lastAnalyzeAt = time.Now()
+	pm.mu.Unlock()
+
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	var n int64
