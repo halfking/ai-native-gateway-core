@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { store, isDefaultTenant, canAccessMaintain } from './store'
+import { store, isDefaultTenant } from './store'
+import { showOpsPlatform } from './config/edition'
 
 // Critical views loaded immediately (login, home, layout)
 import LoginView from './views/LoginView.vue'
@@ -30,15 +31,7 @@ const FreePoolView = () => import('./views/FreePoolView.vue')
 const TenantsView = () => import('./views/TenantsView.vue')
 const TenantDetailView = () => import('./views/TenantDetailView.vue')
 const RoutingDashboardView = () => import('./views/RoutingDashboardView.vue')
-// 2026-07-20: WorkTypesView is small (~25 KB minified) and is reached from
-// the prominent 「工作类型」 chip at the top of /routing-v2, so users hit
-// the lazy-load boundary on a high-traffic path. The previous lazy import
-// produced a hashed chunk (WorkTypesView-*.js) that could fail with
-// "Failed to fetch dynamically imported module" when CDN/browser caches
-// were stale and referenced a chunk hash that no longer existed on the
-// origin. Bundling it eagerly into the same chunk as RoutingDashboardView
-// eliminates the dynamic import entirely — the click always succeeds.
-import WorkTypesView from './views/WorkTypesView.vue'
+const WorkTypesView = () => import('./views/WorkTypesView.vue')
 const UsersView = () => import('./views/UsersView.vue')
 const AuditLogView = () => import('./views/AuditLogView.vue')
 const CompressionView = () => import('./views/CompressionView.vue')
@@ -75,28 +68,27 @@ const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
 const SessionConfigView = () => import('./views/SessionConfigView.vue')
-const SessionReplayView = () => import('./views/SessionReplayView.vue')
-const IpBlocklistView = () => import('./views/ops/IpBlocklistView.vue')
-const VibeCodingView = () => import('./views/ops/VibeCodingView.vue')
-const PluginMount = () => import('./components/PluginMount.vue')
+
+// Customer lifecycle (activation / agreement) — available for download installs
+const CustomerActivateView = () => import('./views/lifecycle/ActivateView.vue')
+const CustomerLicenseView = () => import('./views/lifecycle/LicenseStatusView.vue')
+const CustomerSiteView = () => import('./views/lifecycle/SiteInfoView.vue')
+const CustomerAgreementView = () => import('./views/lifecycle/AgreementView.vue')
+const CustomerOfflineActivationView = () => import('./views/lifecycle/OfflineActivationView.vue')
+const BootstrapWizardView = () => import('./views/bootstrap/BootstrapWizardView.vue')
 
 // Operations Platform — vibecoding still lives in Gateway; other /ops/*
-// pages and public/tenant maintain aliases full-page jump to /maintain/*.
-/** Full-page jump to maintain SPA (nginx/Gateway serves /maintain/* separately). */
+// pages redirect to ai-native-maintain SPA under /maintain/ops/*.
+const VibeCodingView = () => import('./views/ops/VibeCodingView.vue')
+
+/** Full-page jump to maintain SPA (nginx serves /maintain/* separately). */
 function externalMaintainRedirect(path: string, target: string) {
   return {
     path,
     component: { render: () => null },
-    beforeEnter(to: { fullPath: string; query: Record<string, unknown> }) {
+    beforeEnter() {
       if (typeof window !== 'undefined') {
-        const qs = new URLSearchParams()
-        for (const [k, v] of Object.entries(to.query || {})) {
-          if (v == null) continue
-          if (Array.isArray(v)) v.forEach((x) => qs.append(k, String(x)))
-          else qs.append(k, String(v))
-        }
-        const q = qs.toString()
-        window.location.replace(q ? `${target}?${q}` : target)
+        window.location.replace(target)
       }
     },
   }
@@ -211,15 +203,12 @@ export const router = createRouter({
     { path: '/keys',               component: KeysView },
     { path: '/keys/:id',           component: KeyDetailView },
     { path: '/routing',            redirect: { path: '/routing-v2', query: { tab: 'resolve' } } },
-    { path: '/routing/defaults',   redirect: { path: '/routing-v2', query: { tab: 'smart' } } },
     { path: '/routing-overview',   component: RoutingOverviewView, meta: { requiresPlatformOps: true } },
     { path: '/routing-decisions',  component: DecisionsView, meta: { requiresPlatformOps: true } },
     { path: '/correlations',       component: CorrelationsView, meta: { requiresSuper: true } },
     { path: '/routing/overrides',  component: RoutingOverrideView, meta: { requiresSuper: true } },
     { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuper: true } },
-    { path: '/routing/defaults',  component: () => import('./views/RoutingDefaultsView.vue'), meta: { requiresSuper: true } },
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuper: true } },
-    { path: '/provider-quality',  redirect: '/providers' },
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/session-compare',    component: SessionCompareView },
     { path: '/sessions',           component: SessionListView },
@@ -231,10 +220,9 @@ export const router = createRouter({
     { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/clients/:id', component: ClientAnalyticsView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/tasks/:id', component: TaskAnalyticsView, meta: { requiresAuth: true } },
-    { path: '/admin/session-config', component: SessionConfigView, meta: { requiresSuper: true } },
-    { path: '/admin/session-replay', component: SessionReplayView, meta: { requiresSuper: true } },
+    { path: '/admin/session-config', component: SessionConfigView, meta: { requiresAuth: true } },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
-    { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresSuper: true } },
+    { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },
     { path: '/admin/agents',       component: AgentRegistryView, meta: { requiresSuper: true } },
     { path: '/admin/modules',      component: ModulesView, meta: { requiresSuper: true } },
@@ -247,50 +235,105 @@ export const router = createRouter({
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 
-    // Operations Platform — legacy /ops/* bookmarks → maintain SPA (full page).
-    // Vue History redirect cannot load the other SPA; use window.location.replace.
-    externalMaintainRedirect('/ops', '/maintain/ops/overview'),
-    externalMaintainRedirect('/ops/overview', '/maintain/ops/overview'),
+    // Local first-boot bootstrap (public; works offline)
+    { path: '/bootstrap', component: BootstrapWizardView, meta: { public: true } },
+
+    // Customer lifecycle — activation + agreement (public for guest homepage flow)
+    { path: '/customer/site', component: CustomerSiteView, meta: { public: true } },
+    { path: '/customer/activate', component: CustomerActivateView, meta: { public: true } },
+    { path: '/customer/license', component: CustomerLicenseView, meta: { public: true } },
+    { path: '/customer/agreement', component: CustomerAgreementView, meta: { public: true } },
+    { path: '/customer/offline-activation', component: CustomerOfflineActivationView, meta: { public: true } },
+
+    // Operations Platform — legacy /ops/* bookmarks → maintain SPA (full page)
     externalMaintainRedirect('/ops/licenses', '/maintain/ops/licenses'),
-    externalMaintainRedirect('/ops/downloads', '/maintain/ops/downloads'),
     externalMaintainRedirect('/ops/faults', '/maintain/ops/faults'),
     externalMaintainRedirect('/ops/autoupdate', '/maintain/ops/autoupdate'),
     externalMaintainRedirect('/ops/center', '/maintain/ops/center'),
-    { path: '/ops/blocklist', component: IpBlocklistView, meta: { requiresSuper: true } },
-    { path: '/ops/vibecoding', component: VibeCodingView, meta: { requiresSuper: true } },
-
-    // Tenant license/autoupdate self-service → maintain namespace.
-    externalMaintainRedirect('/tenant/license', '/maintain/tenant/license'),
-    externalMaintainRedirect('/tenant/autoupdate', '/maintain/tenant/autoupdate'),
-
-    // Customer-facing activation/license/upgrade — owned by maintain SPA.
-    externalMaintainRedirect('/activate', '/maintain/activate'),
-    externalMaintainRedirect('/license', '/maintain/license'),
-    externalMaintainRedirect('/upgrade', '/maintain/upgrade'),
-
-    // Public distribution portal — owned by maintain SPA.
-    externalMaintainRedirect('/download', '/maintain/download'),
-    externalMaintainRedirect('/support', '/maintain/support'),
-    externalMaintainRedirect('/offline-activation', '/maintain/offline-activation'),
-
-    // Plugin runtime — iframe-mounted plugin web assets (reverse-proxied at /plugins/<id>/)
-    { path: '/plugins/:pluginId/:page(.*)*', component: PluginMount, meta: { requiresAuth: true } },
+    externalMaintainRedirect('/ops', '/maintain/ops/overview'),
+    { path: '/ops/vibecoding', component: VibeCodingView, meta: { requiresSuper: true, requiresOpsPlatform: true } },
 
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
 
-router.beforeEach((to) => {
+/** Soft bootstrap gate: fail-open when status cannot be fetched. */
+let bootstrapGateCache: { at: number; redirect: boolean } | null = null
+const BOOTSTRAP_GATE_TTL_MS = 15_000
+
+async function shouldRedirectToBootstrap(toPath: string): Promise<boolean> {
+  if (toPath === '/bootstrap' || toPath === '/forbidden' || toPath === '/login') return false
+  if (toPath.startsWith('/customer/')) return false
+  try {
+    if (localStorage.getItem('llmgw_require_bootstrap') === '0') return false
+    if (localStorage.getItem('llmgw_activated') === '1') return false
+  } catch {
+    return false
+  }
+  const now = Date.now()
+  if (bootstrapGateCache && now - bootstrapGateCache.at < BOOTSTRAP_GATE_TTL_MS) {
+    return bootstrapGateCache.redirect
+  }
+  try {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+    const timer = controller ? window.setTimeout(() => controller.abort(), 2500) : 0
+    const res = await fetch('/api/system/bootstrap/status', {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: controller?.signal,
+    })
+    if (timer) window.clearTimeout(timer)
+    if (!res.ok) {
+      bootstrapGateCache = { at: now, redirect: false }
+      return false // fail-open
+    }
+    const body = await res.json().catch(() => null)
+    if (!body || typeof body !== 'object') {
+      bootstrapGateCache = { at: now, redirect: false }
+      return false
+    }
+    if (body.activated) {
+      try {
+        localStorage.setItem('llmgw_activated', '1')
+      } catch { /* ignore */ }
+      bootstrapGateCache = { at: now, redirect: false }
+      return false
+    }
+    bootstrapGateCache = { at: now, redirect: true }
+    return true
+  } catch {
+    bootstrapGateCache = { at: now, redirect: false }
+    return false // fail-open on network / missing API
+  }
+}
+
+router.beforeEach(async (to) => {
+  // Soft redirect: local first-boot when not activated (fail-open).
+  if (await shouldRedirectToBootstrap(to.path)) {
+    return { path: '/bootstrap', query: { redirect: to.fullPath } }
+  }
+
   // 2026-07-09: auth probe 还没完成时不要做任何 redirect，否则会在 cookie 登录后
   // 把用户弹回首页 / login，App.vue 的 hydration 永远没机会切到 app-layout。
   // 让 /api/auth/me 先 settle（store.authHydrated=true）再评估 auth。
   if (!store.authHydrated) {
-    // App.vue performs the cookie probe from onMounted. A guard promise here
-    // would block that mount and leave RouterView as an empty comment node.
-    // Evaluate the currently persisted credentials and let App.vue settle the
-    // final layout once hydration completes. App.vue redirects an unauthenticated
-    // user after the probe settles.
-    return
+    // 把目标 path 保存到 query，hydration 完成后会重定向过去
+    if (to.path === '/' && to.query.login) {
+      // Already going to home with login=1, allow
+      return
+    }
+    // 第一次访问：等 hydration 完成
+    return new Promise<void>((resolve) => {
+      const check = () => {
+        if (store.authHydrated) {
+          resolve()
+        } else {
+          setTimeout(check, 30)
+        }
+      }
+      check()
+    })
   }
   // 1. Auth check — unauthenticated users land on home, not full-page login
   if (!to.meta.public && !isAuthed()) {
@@ -304,16 +347,16 @@ router.beforeEach((to) => {
   if (to.meta.requiresSuper && !isSuperAdmin()) {
     return { path: '/forbidden' }
   }
+  // 3b. Ops-center routes only when Maintain is available (or forced on)
+  if (to.meta.requiresOpsPlatform && !showOpsPlatform()) {
+    return { path: '/customer/activate' }
+  }
+  if (to.path.startsWith('/ops') && !showOpsPlatform()) {
+    return { path: '/customer/activate' }
+  }
   // 4. Platform ops (super_admin on default tenant) for运维向页面
   if (to.meta.requiresPlatformOps && !isPlatformOpsView()) {
     return { path: '/' }
-  }
-  // 4.5. Maintain service routes (only default tenant can access)
-  if (to.meta.requiresMaintain && !canAccessMaintain()) {
-    return { path: '/forbidden' }
-  }
-  if (to.meta.tenantOps && isPlatformOpsView() && typeof to.query.tenant !== 'string') {
-    return { path: '/', query: { tenant: 'required' } }
   }
   // 5. Default-tenant ops must not browse tenant portal without ?tenant= context
   if (

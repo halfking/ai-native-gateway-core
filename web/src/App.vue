@@ -1,73 +1,59 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, canAccessMaintain as checkCanAccessMaintain, markAuthHydrated, setJwtToken, setUserInfo, authBearer } from './store'
-import { logout as apiLogout, login } from './api/auth'
+import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo, authBearer } from './store'
+import { logout as apiLogout } from './api/auth'
 import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
+import ThemeToggle from './components/ThemeToggle.vue'
 import SystemStatusIndicator from './components/SystemStatusIndicator.vue'
-import SystemHealthBadge from './components/SystemHealthBadge.vue'
-import UpgradeBanner from './components/UpgradeBanner.vue'
-import GuestHeader from './components/GuestHeader.vue'
+import { detectTheme, logoSrc } from './theme'
+import { SITE_LOGO_SIZE, SITE_TITLE } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
 import { useNavAccordion } from './composables/useNavAccordion'
-import { usePluginNav } from './composables/usePluginNav'
-import { NAV_GROUPS, NAV_PRIMARY_ITEMS, mergeNav, visibleNavGroups, visibleNavItems, isNavItemActive } from './config/appNav'
+import { NAV_GROUPS, NAV_PRIMARY_ITEMS, visibleNavGroups, visibleNavItems, isNavItemActive } from './config/appNav'
+import { onMaintainAvailabilityChange, probeMaintainAvailable } from './config/edition'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const { showLoginModal, openLogin, closeLogin } = useLoginModal()
 const { collapsed, toggleSidebar } = useSidebar()
-const { pluginNav } = usePluginNav()
 const showChangePassword = ref(false)
 const passwordSuccessMessage = ref('')
 const mustChangePassword = computed(() => !!store.jwtToken && !!store.userInfo?.must_change_password)
+/** Bumps when Maintain probe settles so ops-center nav can recompute. */
+const maintainNavTick = ref(0)
 
 // 2026-07-09: isHydrating 防止页面在 auth probe 完成前误判为未登录。
 // 与 store.authHydrated 配合：App.vue onMounted 触发 /api/auth/me，settle 后翻为 true。
 const isHydrating = computed(() => !store.authHydrated)
 
 const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey || store.userInfo))
+const brandLogo = ref(logoSrc(detectTheme()))
+const logoObserver = typeof MutationObserver !== 'undefined'
+  ? new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
+  : null
 const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
-const canAccessMaintain = computed(() => checkCanAccessMaintain())
 const isTenantPortal = computed(() => !isPlatformOps.value)
 
-const PUBLIC_GUEST_PATHS = new Set([
-  '/',
-  '/login',
-  '/forbidden',
-  '/activate',
-  '/license',
-  '/upgrade',
-  '/download',
-  '/support',
-  '/offline-activation',
-])
-
-function isGuestPublicRoute(path: string) {
-  return PUBLIC_GUEST_PATHS.has(path)
-}
+let stopMaintainWatch: (() => void) | null = null
 
 onMounted(async () => {
+  brandLogo.value = logoSrc(detectTheme())
+  logoObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
   // 2026-07-10: Auth hydration — probe /api/auth/me if JWT not already in localStorage.
   // If store.jwtToken is already populated (from localStorage), we're authenticated.
   // Otherwise, check if the HttpOnly cookie is still valid (for users who logged in
   // before this JWT-persistence change). The server's /api/auth/me now returns a
   // fresh access_token in the response so we can persist it to localStorage.
-  //
-  // 2026-07-13: Skip the probe on customer-facing public routes (/activate,
-  // /license, /upgrade). The activation wizard must remain reachable without a
-  // login, and the API client's 401 handler would otherwise trigger a redirect
-  // to /login before App.vue's own redirect-suppression runs.
-  const onPublicRoute = route.meta.public === true || isGuestPublicRoute(route.path)
   try {
-    if (!onPublicRoute && !store.jwtToken && !store.apiKey) {
+    if (!store.jwtToken && !store.apiKey) {
       // No JWT in localStorage, no API key — check if cookie is still valid
       try {
         const me = await getAuthMe()
@@ -76,7 +62,7 @@ onMounted(async () => {
         if (meAny?.access_token) {
           setJwtToken(meAny.access_token)
         }
-        setUserInfo(meAny?.user ?? me)
+        setUserInfo(me)
       } catch {
         // 401 → no valid cookie either, user is logged out
         clearJwt()
@@ -85,29 +71,38 @@ onMounted(async () => {
     // else: store.jwtToken or store.apiKey already present → authenticated
   } finally {
     markAuthHydrated()
-    if (!isLoggedIn.value && !onPublicRoute) {
-      router.replace({ path: '/', query: { login: '1', redirect: route.fullPath } })
-    }
   }
+
+  // Dynamically inject 运维中心 when ai-native-maintain is reachable.
+  stopMaintainWatch = onMaintainAvailabilityChange(() => {
+    maintainNavTick.value += 1
+  })
+  void probeMaintainAvailable()
 })
 
-const navPrimaryItems = computed(() =>
-  visibleNavItems(NAV_PRIMARY_ITEMS, {
-    isSuperAdmin: isSuperAdmin.value,
-    isPlatformOps: isPlatformOps.value,
-    isTenantPortal: isTenantPortal.value,
-    canAccessMaintain: canAccessMaintain.value,
-  }),
-)
+onUnmounted(() => {
+  logoObserver?.disconnect()
+  stopMaintainWatch?.()
+  stopMaintainWatch = null
+})
 
-const navGroups = computed(() =>
-  visibleNavGroups(mergeNav(NAV_GROUPS, pluginNav.value), {
+const navPrimaryItems = computed(() => {
+  void maintainNavTick.value
+  return visibleNavItems(NAV_PRIMARY_ITEMS, {
     isSuperAdmin: isSuperAdmin.value,
     isPlatformOps: isPlatformOps.value,
     isTenantPortal: isTenantPortal.value,
-    canAccessMaintain: canAccessMaintain.value,
-  }),
-)
+  })
+})
+
+const navGroups = computed(() => {
+  void maintainNavTick.value
+  return visibleNavGroups(NAV_GROUPS, {
+    isSuperAdmin: isSuperAdmin.value,
+    isPlatformOps: isPlatformOps.value,
+    isTenantPortal: isTenantPortal.value,
+  })
+})
 
 const { toggleGroup, isGroupExpanded, groupHasActive } = useNavAccordion(
   navGroups,
@@ -120,11 +115,6 @@ const versionInfo = ref<{
   build_date?: string
   build_seq?: number
 }>({})
-
-function formatVersionDisplay(v?: string): string {
-  if (!v) return ''
-  return v.replace(/^v+/i, '')
-}
 
 async function loadVersion() {
   if (!isLoggedIn.value) return
@@ -172,14 +162,7 @@ watch(
 watch(
   () => route.query.login,
   (login) => {
-    if (!login || isLoggedIn.value) return
-    if (isGuestPublicRoute(route.path) || route.meta.public === true) {
-      const q = { ...route.query }
-      delete q.login
-      router.replace({ path: route.path, query: q, hash: route.hash })
-      return
-    }
-    openLogin()
+    if (login && !isLoggedIn.value) openLogin()
   },
   { immediate: true },
 )
@@ -196,53 +179,7 @@ function openChangePassword() {
   showChangePassword.value = true
 }
 
-async function handleChangePasswordSuccess(payload?: { oldPassword: string; newPassword: string }) {
-  if (mustChangePassword.value) {
-    // 强制修改密码（首次登录）流程：注销当前会话 → 重新登录 → 刷新页面。
-    // 这是必须的，因为改密后服务端会撤销旧会话 / 旧 token 的有效性，
-    // 也避免用户带着一个挂着旧身份的页面继续操作。
-    // 重要：clearAll() 之后 store.userInfo 会被清空，所以必须在 clearAll 之前
-    // 拿到 username，否则下面的自动重登会因为 store.userInfo 为 null 而跳过。
-    const username = store.userInfo?.username ?? ''
-    const newPassword = payload?.newPassword ?? ''
-    try {
-      await apiLogout()
-    } catch {
-      /* ignore — server may have already invalidated the session */
-    }
-    clearAll()
-    markAuthHydrated()
-    // 重新登录以触发 store.jwtToken / store.userInfo.must_change_password=false 重新拉取
-    if (newPassword && username) {
-      try {
-        const resp = await login(username, newPassword)
-        const respAny = resp as any
-        if (respAny?.access_token) {
-          setJwtToken(respAny.access_token)
-        }
-        if (respAny?.user) {
-          setUserInfo(respAny.user)
-        }
-      } catch {
-        // 自动登录失败 → 用户需要手动登录
-        passwordSuccessMessage.value = t('login.passwordChangedReLogin')
-        router.push('/')
-        return
-      }
-    } else {
-      // 没有 username 也没法自动重登，让用户手动登录
-      passwordSuccessMessage.value = t('login.passwordChangedReLogin')
-      router.push('/')
-      return
-    }
-    passwordSuccessMessage.value = t('login.passwordChangedReloading')
-    // 强制刷新整个页面，确保所有 store / i18n / 数据视图都按新身份重建
-    window.setTimeout(() => {
-      window.location.reload()
-    }, 600)
-    return
-  }
-  // 非强制改密：仅清除标志，留在当前页继续使用
+function handleChangePasswordSuccess() {
   clearMustChangePasswordFlag()
   showChangePassword.value = false
   passwordSuccessMessage.value = t('login.passwordChangeSuccess')
@@ -261,16 +198,16 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
   </div>
   <div v-else-if="isLoggedIn" class="app-layout" :class="{ 'sidebar-collapsed': collapsed }">
     <aside class="sidebar">
-      <div class="sidebar-logo">
+      <RouterLink to="/" class="sidebar-logo" :title="SITE_TITLE">
         <img
-          src="/logo-icon-dark.png"
-          width="36"
-          height="36"
+          :src="brandLogo"
+          :width="SITE_LOGO_SIZE"
+          :height="SITE_LOGO_SIZE"
           alt="开轩启圭"
           class="sidebar-logo-img"
         />
-        <span v-show="!collapsed" class="sidebar-logo-text">{{ $t('app.brand') }}</span>
-      </div>
+        <span v-show="!collapsed" class="sidebar-logo-text">{{ SITE_TITLE }}</span>
+      </RouterLink>
 
       <nav class="sidebar-nav">
         <div v-if="navPrimaryItems.length" class="nav-primary">
@@ -281,7 +218,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
               class="nav-item nav-item-primary"
               :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
             >
-              <span v-if="item.icon" class="nav-icon">{{ item.icon }}</span>
+              <span class="nav-icon">{{ item.icon }}</span>
               <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
             </a>
             <RouterLink
@@ -291,7 +228,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
               :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
               :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
             >
-              <span v-if="item.icon" class="nav-icon">{{ item.icon }}</span>
+              <span class="nav-icon">{{ item.icon }}</span>
               <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
             </RouterLink>
           </template>
@@ -323,7 +260,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
                 class="nav-item"
                 :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
               >
-                <span v-if="item.icon" class="nav-icon">{{ item.icon }}</span>
+                <span class="nav-icon">{{ item.icon }}</span>
                 <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
               </a>
               <RouterLink
@@ -333,7 +270,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
                 :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
                 :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
               >
-                <span v-if="item.icon" class="nav-icon">{{ item.icon }}</span>
+                <span class="nav-icon">{{ item.icon }}</span>
                 <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
               </RouterLink>
             </template>
@@ -365,7 +302,6 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
     </aside>
 
     <main class="main-content">
-      <UpgradeBanner />
       <header class="main-header">
         <button
           type="button"
@@ -376,7 +312,6 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
           {{ collapsed ? '»' : '«' }}
         </button>
         <SystemStatusIndicator />
-        <SystemHealthBadge />
         <div class="main-header-right">
           <div v-if="passwordSuccessMessage" class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
           <div class="header-meta">
@@ -387,13 +322,14 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
             </template>
             <template v-if="versionInfo.version">
               <span v-if="store.userInfo" class="meta-sep" aria-hidden="true">·</span>
-              <span class="version-tag">v{{ formatVersionDisplay(versionInfo.version) }}</span>
+              <span class="version-tag">v{{ versionInfo.version }}</span>
               <template v-if="versionInfo.build_seq != null">
                 <span class="meta-sep" aria-hidden="true">·</span>
                 <span class="version-build">#{{ versionInfo.build_seq }}</span>
               </template>
             </template>
           </div>
+          <ThemeToggle />
           <LanguageSelector />
           <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('login.changePassword') }}</button>
           <button class="btn btn-ghost btn-sm" @click="logout">{{ t('app.logout') }}</button>
@@ -405,9 +341,32 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
     </main>
   </div>
   <div v-else class="guest-layout">
-    <GuestHeader @login="openLogin" />
+    <header class="guest-header">
+      <RouterLink to="/" class="guest-brand" :aria-label="SITE_TITLE">
+        <img
+          :src="brandLogo"
+          :width="SITE_LOGO_SIZE"
+          :height="SITE_LOGO_SIZE"
+          alt="开轩启圭"
+          class="guest-brand-img"
+        />
+        <span class="guest-brand-text">{{ SITE_TITLE }}</span>
+      </RouterLink>
+      <nav class="guest-nav" :aria-label="t('landing.guestNavAria') || '产品导航'">
+        <a href="/maintain/download">{{ t('landing.navDownload') }}</a>
+        <a href="/bootstrap">{{ t('landing.navSetup') || '安装激活' }}</a>
+        <a href="/customer/activate">{{ t('landing.navActivate') }}</a>
+        <a href="/customer/license">{{ t('landing.navLicense') }}</a>
+        <a href="/customer/agreement">{{ t('landing.navAgreement') }}</a>
+        <a href="/maintain/support">{{ t('landing.navSupport') }}</a>
+      </nav>
+      <div class="guest-header-right">
+        <ThemeToggle />
+        <LanguageSelector />
+        <button type="button" class="btn btn-primary btn-sm guest-login-btn" @click="openLogin">{{ t('login.submit') }}</button>
+      </div>
+    </header>
     <main class="guest-main">
-      <UpgradeBanner />
       <RouterView />
     </main>
     <LoginModal v-model="showLoginModal" />
@@ -477,13 +436,18 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
 .sidebar-logo {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 20px 16px 16px;
-  font-size: 14px;
+  gap: 12px;
+  padding: 16px 14px 14px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--text);
   border-bottom: 1px solid var(--border);
-  min-height: 60px;
+  min-height: 76px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.sidebar-logo:hover {
+  color: var(--accent-h, var(--text));
 }
 
 .app-layout.sidebar-collapsed .sidebar-logo {
@@ -492,13 +456,23 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
 }
 
 .sidebar-logo-text {
-  white-space: nowrap;
+  line-height: 1.35;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .sidebar-logo-img {
   flex-shrink: 0;
   display: block;
+  width: 60px;
+  height: 60px;
+  object-fit: contain;
+  border-radius: 12px;
 }
 
 .sidebar-nav {
@@ -699,7 +673,7 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, var(--accent), var(--accent-h));
   color: white;
   font-size: 12px;
   font-weight: 700;
@@ -878,12 +852,93 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  width: 100%;
   background: var(--bg);
+}
+
+.guest-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px clamp(20px, 4vw, 48px);
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.guest-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  flex: 1;
+  min-width: 0;
+  margin-inline-start: 12px;
+}
+
+.guest-nav a {
+  color: var(--muted, #5b6b82);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+.guest-nav a:hover {
+  color: var(--accent-h, #1e4fd6);
+}
+
+.guest-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.guest-brand-img {
+  display: block;
+  width: 60px;
+  height: 60px;
+  object-fit: contain;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.guest-brand-text {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  max-width: min(52vw, 420px);
+}
+
+.guest-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.guest-login-btn {
+  flex-shrink: 0;
 }
 
 .guest-main {
   flex: 1;
   overflow-y: auto;
+  width: 100%;
 }
 
 @media (max-width: 640px) {
@@ -905,5 +960,16 @@ async function handleChangePasswordSuccess(payload?: { oldPassword: string; newP
     font-size: 10px;
   }
 
+  .guest-header {
+    padding: 12px 16px;
+    flex-wrap: wrap;
+  }
+
+  .guest-nav {
+    order: 3;
+    width: 100%;
+    margin: 4px 0 0;
+    gap: 8px 12px;
+  }
 }
 </style>

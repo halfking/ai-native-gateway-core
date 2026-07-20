@@ -1,72 +1,65 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import ServiceLandingPage from '../components/ServiceLandingPage.vue'
-import DeployFlowSection from '../components/DeployFlowSection.vue'
-import PublicContactBox from '../components/PublicContactBox.vue'
-import { getLicenseStatus } from '../api/customer'
-import { useLoginModal } from '../composables/useLoginModal'
+import { SITE_LOGO_SIZE, SITE_TITLE } from '../config/brand'
+import { detectTheme, logoSrc } from '../theme'
 
 const { t, tm } = useI18n()
 const router = useRouter()
-const { openLogin } = useLoginModal()
+const brandLogo = ref(logoSrc())
+let logoObserver: MutationObserver | null = null
 
-const licenseState = ref<string | null>(null)
-
-onMounted(async () => {
-  try {
-    const st = await getLicenseStatus()
-    licenseState.value = st.state
-  } catch {
-    licenseState.value = null
-  }
+onMounted(() => {
+  brandLogo.value = logoSrc(detectTheme())
+  logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
+  logoObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 })
-
-const showActivateBanner = computed(() => licenseState.value === 'none')
+onUnmounted(() => logoObserver?.disconnect())
 
 const heroPoints = computed(() => tm('landing.heroPoints') as string[])
 
 const features = computed(() => [
   {
-    icon: '🧭',
+    icon: '01',
     title: t('landing.features.smartRouting.title'),
     description: t('landing.features.smartRouting.description'),
   },
   {
-    icon: '🔐',
+    icon: '02',
     title: t('landing.features.safety.title'),
     description: t('landing.features.safety.description'),
     badge: t('landing.features.safety.badge'),
   },
   {
-    icon: '⚡',
+    icon: '03',
     title: t('landing.features.cache.title'),
     description: t('landing.features.cache.description'),
   },
   {
-    icon: '🤖',
+    icon: '04',
     title: t('landing.features.agent.title'),
     description: t('landing.features.agent.description'),
     badge: t('landing.features.agent.badge'),
   },
   {
-    icon: '📊',
+    icon: '05',
     title: t('landing.features.observability.title'),
     description: t('landing.features.observability.description'),
   },
   {
-    icon: '💳',
+    icon: '06',
     title: t('landing.features.billing.title'),
     description: t('landing.features.billing.description'),
   },
   {
-    icon: '🌐',
+    icon: '07',
     title: t('landing.features.multiProtocol.title'),
     description: t('landing.features.multiProtocol.description'),
   },
   {
-    icon: '🏗️',
+    icon: '08',
     title: t('landing.features.multiTenant.title'),
     description: t('landing.features.multiTenant.description'),
   },
@@ -74,86 +67,65 @@ const features = computed(() => [
 
 const advantages = computed(() => [
   {
-    icon: '🌐',
     title: t('landing.advantages.openSource.title'),
     description: t('landing.advantages.openSource.description'),
   },
   {
-    icon: '🔒',
     title: t('landing.advantages.private.title'),
     description: t('landing.advantages.private.description'),
   },
   {
-    icon: '🛡️',
     title: t('landing.advantages.antiBan.title'),
     description: t('landing.advantages.antiBan.description'),
   },
   {
-    icon: '⚡',
     title: t('landing.advantages.perf.title'),
     description: t('landing.advantages.perf.description'),
   },
 ])
+
+function openLogin() {
+  router.replace({ path: '/', query: { ...router.currentRoute.value.query, login: '1' } })
+}
 </script>
 
 <template>
   <div class="llmgo-landing">
-    <el-alert
-      v-if="showActivateBanner"
-      class="llmgo-activate-banner"
-      type="warning"
-      :closable="false"
-      show-icon
-      :title="t('landing.activateBanner.title')"
-      :description="t('landing.activateBanner.desc')"
-    >
-      <template #default>
-        <el-button type="primary" size="small" @click="router.push('/activate')">
-          {{ t('landing.activateBanner.action') }}
-        </el-button>
-      </template>
-    </el-alert>
     <ServiceLandingPage
+      :brand="SITE_TITLE"
+      :logo-src="brandLogo"
+      :logo-size="SITE_LOGO_SIZE"
       :kicker="t('landing.kicker')"
       :title="t('landing.title')"
       :subtitle="t('landing.subtitle')"
       :hero-points="heroPoints"
       :features="features"
+      :features-title="t('landing.featuresTitle')"
+      :features-subtitle="t('landing.featuresSubtitle')"
       :advantages="advantages"
       :advantages-title="t('landing.advantagesTitle')"
       :advantages-subtitle="t('landing.advantagesSubtitle')"
       :footer-text="t('landing.footer')"
-      accent="#6366f1"
-      :hide-cta="true"
+      :cta-label="t('landing.ctaLogin')"
+      :secondary-cta-label="t('landing.ctaDownload')"
+      secondary-cta-href="/maintain/download"
+      :hide-cta="false"
+      @login="openLogin"
     >
       <template #hero-extra>
-        <div class="llmgo-hero-actions">
-          <el-button type="primary" size="large" @click="router.push('/download')">
-            {{ t('landing.downloadCta.download') }}
-          </el-button>
-          <el-button size="large" @click="router.push('/activate')">
-            {{ t('landing.downloadCta.activate') }}
-          </el-button>
-          <el-button link type="primary" @click="openLogin">
-            {{ t('landing.deployFlow.steps.login.action') }}
-          </el-button>
+        <div class="llmgo-landing__extra-links">
+          <a href="/maintain/activate">{{ t('landing.ctaActivate') }}</a>
+          <a href="/maintain/setup">{{ t('landing.navSetup') }}</a>
+          <a href="/customer/agreement">{{ t('landing.ctaAgreement') }}</a>
+          <a href="/user-agreement.html" target="_blank" rel="noopener">完整协议 ↗</a>
         </div>
       </template>
-    </ServiceLandingPage>
-
-    <section class="llmgo-contact">
-      <div class="llmgo-contact__inner">
-        <PublicContactBox />
-      </div>
-    </section>
-
-    <DeployFlowSection @login="openLogin" />
-
-    <!-- 路线图预告区块 -->
-    <section class="llmgo-roadmap">
-      <div class="llmgo-roadmap__inner">
-        <h2 class="llmgo-roadmap__title">{{ t('landing.roadmap.title') }}</h2>
-        <p class="llmgo-roadmap__sub">{{ t('landing.roadmap.subtitle') }}</p>
+      <section class="llmgo-roadmap">
+        <header class="llmgo-roadmap__head">
+          <span class="llmgo-roadmap__eyebrow">ROADMAP</span>
+          <h2>{{ t('landing.roadmap.title') }}</h2>
+          <p>{{ t('landing.roadmap.subtitle') }}</p>
+        </header>
         <ol class="llmgo-roadmap__list">
           <li>
             <span class="llmgo-roadmap__phase">{{ t('landing.roadmap.v31.phase') }}</span>
@@ -176,142 +148,131 @@ const advantages = computed(() => [
             <span>{{ t('landing.roadmap.v50.description') }}</span>
           </li>
         </ol>
-      </div>
-    </section>
+      </section>
+    </ServiceLandingPage>
   </div>
 </template>
 
 <style scoped>
 .llmgo-landing {
-  min-height: 100vh;
-  overflow-y: auto;
-  background: var(--kx-bg-page, #0f1117);
+  min-height: 100%;
+  width: 100%;
 }
 
-.llmgo-activate-banner {
-  max-width: 960px;
-  margin: 12px auto 0;
-  width: calc(100% - 32px);
-}
-
-.llmgo-landing :deep(.kx-landing) {
-  background: var(--page-bg, #0f1117);
-  color: var(--text, #e8eaed);
-}
-
-.llmgo-landing :deep(.kx-landing__card),
-.llmgo-landing :deep(.kx-landing__adv-flow li) {
-  background: var(--panel, #1a1d27);
-  border-color: var(--border, #2a2d3a);
-}
-
-.llmgo-landing :deep(.kx-landing__points li) {
-  background: var(--panel, #1a1d27);
-  border-color: var(--border, #2a2d3a);
-}
-
-.llmgo-hero-actions {
+.llmgo-landing__extra-links {
   display: flex;
-  gap: 12px;
   flex-wrap: wrap;
-  align-items: center;
-  margin-top: 4px;
+  justify-content: flex-start;
+  gap: 14px;
+  margin-top: 16px;
 }
 
-.llmgo-contact {
-  padding: 0 16px 8px;
-  max-width: 960px;
-  margin: 0 auto;
-  width: 100%;
+.llmgo-landing__extra-links a {
+  color: #1e4fd6;
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
 }
 
-.llmgo-contact__inner {
-  max-width: 880px;
-  margin: 0 auto;
+.llmgo-landing__extra-links a:hover {
+  text-decoration: underline;
 }
 
-/* 路线图预告区块 */
 .llmgo-roadmap {
-  padding: 16px 16px 48px;
-  max-width: 960px;
-  margin: 0 auto;
+  padding: 8px clamp(28px, 5vw, 72px) 48px;
   width: 100%;
+  max-width: none;
+  margin: 0;
+  box-sizing: border-box;
+  text-align: left;
 }
 
-.llmgo-roadmap__inner {
-  padding: 24px;
-  border: 1px solid var(--border, #2a2d3a);
-  border-radius: 14px;
-  background: var(--panel, #1a1d27);
+.llmgo-roadmap__head {
+  margin-bottom: 18px;
+  text-align: left;
 }
 
-.llmgo-roadmap__title {
-  margin: 0 0 4px;
-  font-size: 20px;
-  font-weight: 600;
-  color: #e8eaed;
+.llmgo-roadmap__eyebrow {
+  display: block;
+  color: #1e4fd6;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
 }
 
-.llmgo-roadmap__sub {
-  margin: 0 0 20px;
+.llmgo-roadmap__head h2 {
+  margin: 8px 0 6px;
+  font-family: "Outfit", "Noto Sans SC", "PingFang SC", sans-serif;
+  font-size: clamp(1.4rem, 2.4vw, 1.75rem);
+  letter-spacing: -0.03em;
+  color: #152033;
+  text-align: left;
+}
+
+.llmgo-roadmap__head p {
+  margin: 0;
+  color: #5b6b82;
   font-size: 14px;
-  color: #6b7280;
+  line-height: 1.6;
+  text-align: left;
 }
 
 .llmgo-roadmap__list {
   display: grid;
-  gap: 14px;
+  gap: 12px;
   margin: 0;
   padding: 0;
   list-style: none;
+  width: 100%;
 }
 
 .llmgo-roadmap__list li {
   display: grid;
-  grid-template-columns: 140px 1fr;
+  grid-template-columns: 88px minmax(0, 1fr);
   gap: 4px 16px;
-  padding: 12px 0;
-  border-top: 1px solid var(--border, #2a2d3a);
-}
-
-.llmgo-roadmap__list li:first-child {
-  border-top: none;
+  padding: 16px 18px;
+  border: 1px solid #dce3ee;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 10px 32px rgba(30, 45, 75, 0.04);
+  text-align: left;
 }
 
 .llmgo-roadmap__phase {
   grid-row: span 2;
   align-self: start;
+  width: fit-content;
   padding: 4px 10px;
   border-radius: 6px;
   font-size: 12px;
-  font-weight: 600;
-  color: #a5b4fc;
-  background: rgba(99, 102, 241, 0.12);
+  font-weight: 700;
+  color: #1e4fd6;
+  background: #eaf0ff;
   white-space: nowrap;
 }
 
 .llmgo-roadmap__list strong {
   font-size: 14px;
-  font-weight: 600;
-  color: #e8eaed;
+  font-weight: 650;
+  color: #152033;
+  letter-spacing: -0.02em;
 }
 
-.llmgo-roadmap__list span {
+.llmgo-roadmap__list span:last-child {
   font-size: 13px;
   line-height: 1.55;
-  color: #9aa0a6;
+  color: #5b6b82;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 640px) {
   .llmgo-roadmap__list li {
     grid-template-columns: 1fr;
-    gap: 4px;
+    gap: 6px;
   }
 
   .llmgo-roadmap__phase {
     grid-row: auto;
-    display: inline-block;
-    width: fit-content;
   }
 }
 </style>
