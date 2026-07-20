@@ -1,6 +1,6 @@
 {
   "scenario": "S16_after_recharge",
-  "gateway": "http://localhost:8781",
+  "gateway": "http://127.0.0.1:8781",
   "models": [
     "loadtest-mini-alpha",
     "loadtest-standard-alpha",
@@ -18,12 +18,12 @@
     "succ": 428,
     "fail": 0,
     "success_rate": 1.0,
-    "p50_ms": 17.380042001605034,
-    "p95_ms": 28.263374930247664,
-    "p99_ms": 220.29241605196148,
-    "max_ms": 228.08049991726875,
-    "throughput_rps": 23.767233269144864,
-    "elapsed_sec": 18.00798583298456,
+    "p50_ms": 17.265709000639617,
+    "p95_ms": 23.88816699385643,
+    "p99_ms": 195.157999987714,
+    "max_ms": 220.72920796927065,
+    "throughput_rps": 23.77224495273189,
+    "elapsed_sec": 18.00418937508948,
     "fail_by_status": {},
     "fail_by_kind": {}
   }
