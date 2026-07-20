@@ -135,3 +135,67 @@ func TestSupervisor_StartRejectsBadSignature(t *testing.T) {
 		t.Fatal("Start should reject when signature verification fails")
 	}
 }
+
+func TestNewSupervisor_CreatesSocketDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "deep", "sockets") // does not exist
+	_ = NewSupervisor(SupervisorConfig{SocketDir: dir})
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("NewSupervisor should create SocketDir, got %v", err)
+	}
+}
+
+func TestExecCommand_GracefulStopSIGTERM(t *testing.T) {
+	// helper: registers SIGTERM handler; on signal writes marker file and exits cleanly.
+	// Writes a ".armed" marker immediately after signal.Notify so the test can wait
+	// deterministically (a fixed sleep is flaky because the freshly-compiled helper
+	// binary can take >300ms to reach main under go test load).
+	helperSrc := filepath.Join(t.TempDir(), "h.go")
+	helperBin := filepath.Join(t.TempDir(), "h")
+	marker := filepath.Join(t.TempDir(), "stopped")
+	os.WriteFile(helperSrc, []byte(`package main
+import ("os";"os/signal";"syscall")
+func main(){
+	c := make(chan os.Signal, 1); signal.Notify(c, syscall.SIGTERM)
+	_ = os.WriteFile(os.Getenv("MARKER")+".armed", []byte("1"), 0644)
+	<-c
+	_ = os.WriteFile(os.Getenv("MARKER"), []byte("graceful"), 0644)
+}`), 0644)
+	build := exec.Command("go", "build", "-o", helperBin, helperSrc)
+	build.Env = append(os.Environ(), "GO111MODULE=off")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build helper: %v %s", err, out)
+	}
+
+	c := newExecCommand("", helperBin, []string{"MARKER=" + marker})
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// Wait until the helper has armed its SIGTERM handler, so we don't race the
+	// signal against signal.Notify (which would terminate the helper before it
+	// could write the graceful marker).
+	armDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(armDeadline) {
+		if _, err := os.Stat(marker + ".armed"); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := os.Stat(marker + ".armed"); err != nil {
+		t.Fatalf("helper never armed SIGTERM handler within 5s: %v", err)
+	}
+	if err := c.Stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	// wait for marker (within grace window)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	got, _ := os.ReadFile(marker)
+	if string(got) != "graceful" {
+		t.Fatalf("graceful stop marker = %q, want \"graceful\" (SIGTERM may have been skipped, fell back to kill)", string(got))
+	}
+}

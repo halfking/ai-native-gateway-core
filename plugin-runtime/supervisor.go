@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
+	"time"
 )
 
 // command 是对一个插件进程的抽象，便于测试注入 fake。
@@ -30,12 +32,17 @@ type Supervisor struct {
 	cfg            SupervisorConfig
 	mu             sync.Mutex
 	procs          map[string]command
+	states         map[string]*PluginState
 	commandFactory func(socketPath, entrypoint string, env []string) command
 }
 
 // NewSupervisor 构造一个新的 supervisor，默认 commandFactory 走 exec 实现。
+// 若 cfg.SocketDir 指定的目录不存在则会创建（修复 P5 中"插件因 .sockets/ 缺失而退出"的问题）。
 func NewSupervisor(cfg SupervisorConfig) *Supervisor {
-	s := &Supervisor{cfg: cfg, procs: map[string]command{}}
+	if cfg.SocketDir != "" {
+		_ = os.MkdirAll(cfg.SocketDir, 0o755) // ignore "already exists"；真正的失败会在插件尝试 listen 时暴露
+	}
+	s := &Supervisor{cfg: cfg, procs: map[string]command{}, states: map[string]*PluginState{}}
 	s.commandFactory = func(socketPath, entrypoint string, env []string) command {
 		return newExecCommand(socketPath, entrypoint, env)
 	}
@@ -62,16 +69,18 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 	if err := cmd.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start plugin %s: %w", m.PluginID, err)
 	}
-	s.mu.Lock()
-	s.procs[m.PluginID] = cmd
-	s.mu.Unlock()
-	return &PluginState{
+	st := &PluginState{
 		PluginID:      m.PluginID,
 		PluginVersion: m.PluginVersion,
 		Status:        "starting",
 		SocketPath:    socketPath,
 		Pid:           cmd.Pid(),
-	}, nil
+	}
+	s.mu.Lock()
+	s.procs[m.PluginID] = cmd
+	s.states[m.PluginID] = st
+	s.mu.Unlock()
+	return st, nil
 }
 
 // Stop 停止并注销一个插件进程。
@@ -93,10 +102,11 @@ type execCommand struct {
 	entrypoint string
 	env        []string
 	cmd        *exec.Cmd
+	done       chan struct{} // 在 Wait 完成后关闭；Stop 用它判断进程是否已退出
 }
 
 func newExecCommand(socketPath, entrypoint string, env []string) *execCommand {
-	return &execCommand{socketPath: socketPath, entrypoint: entrypoint, env: env}
+	return &execCommand{socketPath: socketPath, entrypoint: entrypoint, env: env, done: make(chan struct{})}
 }
 
 // Start 启动 entrypoint 进程。不阻塞等待退出（Wait 在独立 goroutine 中调用，
@@ -113,11 +123,12 @@ func (e *execCommand) Start(ctx context.Context) error {
 		return fmt.Errorf("exec %s: %w", e.entrypoint, err)
 	}
 	e.cmd = c
-	go c.Wait() // 回收僵尸进程；Stop 时通过 kill 终止
+	go func() { _ = c.Wait(); close(e.done) }() // 回收僵尸进程；Stop 通过 done 判断是否已退出
 	return nil
 }
 
 // Wait 阻塞直到进程退出。若进程尚未 Start，则返回 nil。
+// 通过 done 通道等待（而非再次调用 c.Wait），避免与 Start 中的后台 Wait 并发。
 func (e *execCommand) Wait() error {
 	e.mu.Lock()
 	c := e.cmd
@@ -125,10 +136,12 @@ func (e *execCommand) Wait() error {
 	if c == nil {
 		return nil
 	}
-	return c.Wait()
+	<-e.done
+	return nil
 }
 
-// Stop 终止进程。若未 Start 或已退出，返回 nil。
+// Stop 优雅终止进程：先发 SIGTERM，给进程 5 秒优雅退出的窗口；
+// 超时仍存活则 Kill。未 Start 或已退出时返回 nil。
 func (e *execCommand) Stop() error {
 	e.mu.Lock()
 	c := e.cmd
@@ -136,7 +149,13 @@ func (e *execCommand) Stop() error {
 	if c == nil || c.Process == nil {
 		return nil
 	}
-	return c.Process.Kill()
+	_ = c.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-e.done:
+		return nil
+	case <-time.After(5 * time.Second):
+		return c.Process.Kill()
+	}
 }
 
 // Pid 返回进程 PID；未启动时返回 0。
