@@ -10,15 +10,17 @@ import (
 )
 
 // validModalities is the canonical allow-list for models_canonical.modality.
-// Mirrors the SQL CHECK constraint models_canonical_modality_check:
+// Mirrors the SQL CHECK constraint models_canonical_modality_check after
+// migration 451 (2026-07-20) which added 'video':
 //
-//	CHECK (modality = ANY (ARRAY['text','vision','audio','multimodal','embedding']))
+//	CHECK (modality = ANY (ARRAY['text','vision','audio','video','multimodal','embedding']))
 //
-// Keep this in sync with sql/schema/01-schema.sql line ~2520.
+// Keep this in sync with sql/migrations/startup/451_models_canonical_modality_video.sql.
 var validModalities = map[string]bool{
 	"text":       true,
 	"vision":     true,
 	"audio":      true,
+	"video":      true, // 2026-07-20: added to support video-capable models
 	"multimodal": true,
 	"embedding":  true,
 }
@@ -63,7 +65,7 @@ func (h *Handler) updateModelModality(w http.ResponseWriter, r *http.Request, id
 	}
 	if !validModalities[req.Modality] {
 		writeError(w, http.StatusBadRequest,
-			"invalid modality: must be one of text/vision/audio/multimodal/embedding")
+			"invalid modality: must be one of text/vision/audio/video/multimodal/embedding")
 		return
 	}
 
