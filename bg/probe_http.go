@@ -64,13 +64,13 @@ var (
 )
 
 // singleGet does ONE GET /v1/models request with 5s timeout, returns parsed result.
-func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.Descriptor) httpProbeResult {
+func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.Descriptor, credID int, rawModel string) httpProbeResult {
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return httpProbeResult{
 			status: "network", category: probeCategoryProviderError,
-			errCode: "request_build", errMsg: err.Error(),
+			errCode: "request_build", errMsg: fmt.Sprintf("build request failed: %s (url=%s)", err.Error(), endpoint),
 			latencyMs: int(time.Since(start).Milliseconds()),
 		}
 	}
@@ -80,7 +80,7 @@ func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.De
 	if err != nil {
 		return httpProbeResult{
 			status: "network", category: probeCategoryProviderError,
-			errCode: "request_error", errMsg: err.Error(),
+			errCode: "request_error", errMsg: fmt.Sprintf("upstream call failed: %s (cred_id=%d, url=%s, model=%s)", err.Error(), credID, endpoint, rawModel),
 			latencyMs: int(time.Since(start).Milliseconds()),
 		}
 	}
@@ -92,7 +92,7 @@ func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.De
 }
 
 // singleChatPing does ONE POST chat completion with max_tokens=1 (Layer 4).
-func singleChatPing(ctx context.Context, endpoint, apiKey, modelField string, desc providercap.Descriptor) httpProbeResult {
+func singleChatPing(ctx context.Context, endpoint, apiKey, modelField string, desc providercap.Descriptor, credID int, rawModel string) httpProbeResult {
 	start := time.Now()
 	body, _ := json.Marshal(map[string]any{
 		"model":       modelField,
@@ -104,7 +104,7 @@ func singleChatPing(ctx context.Context, endpoint, apiKey, modelField string, de
 	if err != nil {
 		return httpProbeResult{
 			status: "network", category: probeCategoryProviderError,
-			errCode: "request_build", errMsg: err.Error(),
+			errCode: "request_build", errMsg: fmt.Sprintf("build request failed: %s (url=%s)", err.Error(), endpoint),
 			latencyMs: int(time.Since(start).Milliseconds()),
 		}
 	}
@@ -115,7 +115,7 @@ func singleChatPing(ctx context.Context, endpoint, apiKey, modelField string, de
 	if err != nil {
 		return httpProbeResult{
 			status: "network", category: probeCategoryProviderError,
-			errCode: "request_error", errMsg: err.Error(),
+			errCode: "request_error", errMsg: fmt.Sprintf("upstream call failed: %s (cred_id=%d, url=%s, model=%s)", err.Error(), credID, endpoint, rawModel),
 			latencyMs: int(time.Since(start).Milliseconds()),
 		}
 	}
@@ -373,16 +373,16 @@ func probeWithRetry(
 		var result httpProbeResult
 		switch mode {
 		case ProbeModeChatPing:
-			result = singleChatPing(ctx, endpoint, t.APIKey, t.RawModel, desc)
+			result = singleChatPing(ctx, endpoint, t.APIKey, t.RawModel, desc, t.CredentialID, t.RawModel)
 		case ProbeModeMessages:
 			// Same as chat ping for now (uses POST /v1/messages); uses outbound model.
 			modelField := t.OutboundModel
 			if modelField == "" {
 				modelField = t.RawModel
 			}
-			result = singleChatPing(ctx, endpoint, t.APIKey, modelField, desc)
+			result = singleChatPing(ctx, endpoint, t.APIKey, modelField, desc, t.CredentialID, t.RawModel)
 		default: // ProbeModeModelsList
-			result = singleGet(ctx, endpoint, t.APIKey, desc)
+			result = singleGet(ctx, endpoint, t.APIKey, desc, t.CredentialID, t.RawModel)
 		}
 		// Piggy-back: was the model in the response?
 		if len(result.modelIDs) > 0 && mode == ProbeModeModelsList {
