@@ -377,6 +377,11 @@ onMounted(() => {
 
 <template>
   <div class="modules-view">
+    <!-- 三段硬约束提示（31 §2.3 + 31 §6 验收硬清单） -->
+    <div class="modules-mode-banner" role="note">
+      <strong>{{ t('modulesView.modeBannerTitle') }}</strong>
+      <span>{{ t('modulesView.modeBannerBody') }}</span>
+    </div>
     <!-- Header -->
     <div class="page-header">
       <div class="page-header-left">
@@ -1160,6 +1165,21 @@ onMounted(() => {
   border-radius: 6px;
   margin-bottom: 12px;
 }
+
+/* 31 §2.3 / §6：模块管理三段硬约束 — 已装 / 已授权未开通 / 无采购 */
+.modules-mode-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  background: color-mix(in srgb, var(--el-color-primary-light-9) 60%, transparent);
+  border-left: 3px solid var(--el-color-primary);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+.modules-mode-banner strong { color: var(--el-color-primary); }
 
 .layout {
   display: grid;

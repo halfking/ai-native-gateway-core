@@ -2,6 +2,9 @@
 export default {
   pageTitle: 'Modules',
   pageSubtitle: 'Centralized management of enterprise-grade feature modules — enable or disable capabilities on demand.',
+  // 31 §2.3 / §6: three-section hard constraint banner
+  modeBannerTitle: 'This page only does three things:',
+  modeBannerBody: 'Toggle installed modules, and download modules that are already licensed but not enabled. No pricing, ordering, or plan entry here (purchase flows are announced separately).',
   modulesEnabled: 'modules enabled',
   loading: 'Loading…',
 

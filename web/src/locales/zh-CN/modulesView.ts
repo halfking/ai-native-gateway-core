@@ -2,6 +2,9 @@
 export default {
   pageTitle: '模块管理',
   pageSubtitle: '企业级功能模块统一管理，按需开启/关闭各项能力',
+  // 31 §2.3 / §6：模块管理三段硬约束提示
+  modeBannerTitle: '本页仅做三件事：',
+  modeBannerBody: '已装模块开关、已授权未开通模块下载；本页不提供价格、订单或套餐入口（采购通道另行公告）。',
   modulesEnabled: '模块已启用',
   loading: '加载中…',
 
