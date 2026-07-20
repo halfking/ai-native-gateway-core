@@ -264,17 +264,41 @@ func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
 	//nolint:errcheck
 	defer tx.Rollback(ctx)
 
-	for _, update := range batch {
+	// 2026-07-20 P0: if any update fails inside the tx, the tx enters
+	// SQLSTATE 25P02 (current transaction is aborted). Continuing to call
+	// tx.Exec on subsequent updates would (a) emit one misleading
+	// 25P02 warning per remaining update, drowning the real root cause, and
+	// (b) make the eventual tx.Commit fail with "commit unexpectedly
+	// resulted in rollback" — same end-state, but with hundreds of red
+	// herrings in the gateway log during high-concurrency load (S07/S12).
+	//
+	// Stop the loop on first failure, fall back per-row to the on-disk
+	// WAL sink (preserves the most important per-row data), and let the
+	// deferred Rollback at function exit reclaim the aborted tx.
+	for i, update := range batch {
 		if err := rl.persistUpdateInTx(ctx, tx, update); err != nil {
+			firstFailed := update
+			slog.Warn("request_logger: persist update in batch failed (aborting batch)",
+				"request_id", firstFailed.RequestID,
+				"index", i,
+				"remaining", len(batch)-i-1,
+				"error", err)
 			if rl.fallback != nil {
-				if fallbackErr := rl.fallback.WriteRequestWAL(ctx, update.RequestID+":update", update); fallbackErr != nil {
-					slog.Warn("request_logger: update fallback failed", "request_id", update.RequestID, "error", fallbackErr)
+				for j := i + 1; j < len(batch); j++ {
+					remaining := batch[j]
+					if fallbackErr := rl.fallback.WriteRequestWAL(ctx, remaining.RequestID+":update", remaining); fallbackErr != nil {
+						slog.Warn("request_logger: update fallback failed",
+							"request_id", remaining.RequestID, "error", fallbackErr)
+					}
 				}
 			} else {
-				slog.Warn("request_logger: persist update in batch failed",
-					"request_id", update.RequestID,
-					"error", err)
+				for j := i + 1; j < len(batch); j++ {
+					remaining := batch[j]
+					slog.Warn("request_logger: persist update skipped due to prior tx abort",
+						"request_id", remaining.RequestID)
+				}
 			}
+			return
 		}
 	}
 
