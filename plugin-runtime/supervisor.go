@@ -45,7 +45,7 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 	}
 	s := &Supervisor{cfg: cfg, procs: map[string]command{}, states: map[string]*PluginState{}, manifests: map[string]*Manifest{}}
 	s.commandFactory = func(socketPath, entrypoint string, env []string) command {
-		return newExecCommand(socketPath, entrypoint, env)
+		return newExecCommand(socketPath, entrypoint, env, s.cfg.ContextSecret)
 	}
 	return s
 }
@@ -142,12 +142,13 @@ type execCommand struct {
 	socketPath string
 	entrypoint string
 	env        []string
+	secret     []byte
 	cmd        *exec.Cmd
 	done       chan struct{} // 在 Wait 完成后关闭；Stop 用它判断进程是否已退出
 }
 
-func newExecCommand(socketPath, entrypoint string, env []string) *execCommand {
-	return &execCommand{socketPath: socketPath, entrypoint: entrypoint, env: env, done: make(chan struct{})}
+func newExecCommand(socketPath, entrypoint string, env []string, secret []byte) *execCommand {
+	return &execCommand{socketPath: socketPath, entrypoint: entrypoint, env: env, secret: secret, done: make(chan struct{})}
 }
 
 // Start 启动 entrypoint 进程。不阻塞等待退出（Wait 在独立 goroutine 中调用，
@@ -157,9 +158,10 @@ func (e *execCommand) Start(ctx context.Context) error {
 	defer e.mu.Unlock()
 	c := exec.CommandContext(ctx, e.entrypoint)
 	c.Env = append(os.Environ(), e.env...)
-	// 插件 stdout/stderr 暂时直接复用 gateway 日志流；P5 改为结构化捕获。
-	c.Stdout = os.Stderr
-	c.Stderr = os.Stderr
+	// 插件 stdout/stderr 经过 redacting writer 过滤掉 context secret 后再写入 gateway 日志流；
+	// 防止插件把 env 打到日志里造成 HMAC secret 泄露。P5 计划改为结构化捕获。
+	c.Stdout = NewRedactingWriter(e.secret, os.Stderr)
+	c.Stderr = NewRedactingWriter(e.secret, os.Stderr)
 	if err := c.Start(); err != nil {
 		return fmt.Errorf("exec %s: %w", e.entrypoint, err)
 	}
