@@ -2931,7 +2931,7 @@ func main() {
 		// unit test (TestPluginAPIProxy) covers forwarding correctness.
 		registerPluginAPIProxy(mux, []byte(cfg.SecretKey), func(pluginID string) string {
 			return "http://127.0.0.1:8782" // P4 placeholder; P5 maps pluginID -> supervisor socketPath
-		})
+		}, dbConn.Pool(), cfg.SecretKey)
 	}
 	wirePluginAuthExtractor()
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(
