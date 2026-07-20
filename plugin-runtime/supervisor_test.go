@@ -65,7 +65,7 @@ func main(){ _=os.WriteFile(os.Getenv("PID_FILE"), []byte("alive"), 0644); time.
 		t.Fatalf("build helper: %v %s", err, out)
 	}
 
-	c := newExecCommand("", helperBin, []string{"PID_FILE=" + pidFile})
+	c := newExecCommand("", helperBin, []string{"PID_FILE=" + pidFile}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := c.Start(ctx); err != nil {
@@ -167,7 +167,7 @@ func main(){
 		t.Fatalf("build helper: %v %s", err, out)
 	}
 
-	c := newExecCommand("", helperBin, []string{"MARKER=" + marker})
+	c := newExecCommand("", helperBin, []string{"MARKER=" + marker}, nil)
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
