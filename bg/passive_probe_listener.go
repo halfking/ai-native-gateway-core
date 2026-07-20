@@ -76,7 +76,11 @@ func (l *PassiveProbeListener) run(ctx context.Context) {
 	defer close(l.done)
 
 	// Sleep 30s on start to let the gateway initialise.
-	time.Sleep(30 * time.Second)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(30 * time.Second):
+	}
 	l.pollNewErrors(ctx)
 	l.reviewPromotion(ctx)
 	l.reviewResolution(ctx)

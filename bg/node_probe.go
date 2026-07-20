@@ -433,7 +433,10 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 		        WHEN node_probe_state.paused = TRUE THEN 0
 		        ELSE node_probe_state.consecutive_failures
 		    END,
-		    last_err_code = NULL,
+		    last_err_code = CASE
+		        WHEN node_probe_state.paused = TRUE THEN NULL
+		        ELSE node_probe_state.last_err_code
+		    END,
 		    updated_at = now()
 	`, credID, model)
 	key := fmt.Sprintf("%d|%s", credID, model)
@@ -1153,7 +1156,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	plain, outboundModel, baseURL, protocol, providerID, err := w.resolveDirectTarget(ctx, credID, model)
 	if err != nil {
 		r.errCode = "endpoint_build"
-		r.errDetail = err.Error()
+		r.errDetail = fmt.Sprintf("build endpoint failed: %s (cred_id=%d, model=%s)", err.Error(), credID, model)
 		return r
 	}
 	r.providerID = providerID
@@ -1176,7 +1179,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {
 		r.errCode = "request_build"
-		r.errDetail = err.Error()
+		r.errDetail = fmt.Sprintf("build request failed: %s (url=%s)", err.Error(), endpoint)
 		return r
 	}
 	if strings.HasPrefix(protocol, "anthropic") {
@@ -1216,11 +1219,14 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	r.latencyMs = int(time.Since(start).Milliseconds())
 	if err != nil {
 		r.errCode = "network_error"
-		r.errDetail = err.Error()
 		if errors.Is(err, context.DeadlineExceeded) {
 			r.timedOut = true
+			r.errDetail = fmt.Sprintf("upstream timeout after %ds (cred_id=%d, url=%s, model=%s)", int(w.client.Timeout/time.Second), credID, endpoint, bodyModel)
 		} else if ue, ok := err.(*url.Error); ok && ue.Timeout() {
 			r.timedOut = true
+			r.errDetail = fmt.Sprintf("upstream timeout after %ds (cred_id=%d, url=%s, model=%s)", int(w.client.Timeout/time.Second), credID, endpoint, bodyModel)
+		} else {
+			r.errDetail = fmt.Sprintf("upstream call failed: %s (cred_id=%d, url=%s, model=%s)", err.Error(), credID, endpoint, bodyModel)
 		}
 		return r
 	}
@@ -1237,12 +1243,12 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 		return r
 	}
 	r.errCode = fmt.Sprintf("http_%d", resp.StatusCode)
-	// errDetail已经在responseBody中，保持兼容性也设置errDetail
-	if n > 0 && n <= 256 {
-		r.errDetail = string(respBuf[:n])
-	} else if n > 256 {
-		r.errDetail = string(respBuf[:256])
+	statusText := strings.TrimSpace(string(respBuf[:n]))
+	// Trim trailing newlines/whitespace from status text
+	if idx := strings.IndexAny(statusText, "\n\r"); idx >= 0 {
+		statusText = statusText[:idx]
 	}
+	r.errDetail = fmt.Sprintf("upstream returned HTTP %d %s (cred_id=%d, url=%s, model=%s)", resp.StatusCode, statusText, credID, endpoint, bodyModel)
 	return r
 }
 
