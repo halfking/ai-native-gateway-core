@@ -453,26 +453,19 @@ watch(
 
 /* 动画 */
 .swim-tile-enter-active {
-  transition:
-    transform 0.5s cubic-bezier(0.18, 1.25, 0.32, 1.0),
-    opacity 0.4s ease;
+  transition: opacity 0.15s linear;
 }
 
 .swim-tile-enter-from {
   opacity: 0;
-  transform: translateX(30px) scale(0.8);
 }
 
 .swim-tile-leave-active {
-  transition: 
-    transform 0.3s ease,
-    opacity 0.3s ease;
-  position: absolute;
+  transition: opacity 0.15s linear;
 }
 
 .swim-tile-leave-to {
   opacity: 0;
-  transform: translateX(-20px) scale(0.9);
 }
 
 .swim-tile-move {
