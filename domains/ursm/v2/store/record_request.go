@@ -16,15 +16,15 @@ var recordRequestSrc string
 var RecordRequestScript = redis.NewScript(recordRequestSrc)
 
 type RecordOutcome struct {
-	Success     bool
-	ErrorKind   string
-	NowMs       int64
-	LatencyMs   int
-	RequestID   string
-	NodeTTL     time.Duration
-	Window5mTTL time.Duration
+	Success      bool
+	ErrorKind    string
+	NowMs        int64
+	LatencyMs    int
+	RequestID    string
+	NodeTTL      time.Duration
+	Window5mTTL  time.Duration
 	Window30mTTL time.Duration
-	AdminHold   bool
+	AdminHold    bool
 }
 
 type RecordResult struct {
@@ -43,9 +43,9 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 		[]string{nodeKey, win1m, win5m, win30m},
 		boolFlag(o.Success), o.ErrorKind, fmt.Sprintf("%d", o.NowMs),
 		fmt.Sprintf("%d", o.LatencyMs), o.RequestID,
-		fmt.Sprintf("%d", int(o.NodeTTL.Seconds())),
-		fmt.Sprintf("%d", int(o.Window5mTTL.Seconds())),
-		fmt.Sprintf("%d", int(o.Window30mTTL.Seconds())),
+		fmt.Sprintf("%d", int64(o.NodeTTL/time.Second)),
+		fmt.Sprintf("%d", int64(o.Window5mTTL/time.Second)),
+		fmt.Sprintf("%d", int64(o.Window30mTTL/time.Second)),
 		boolFlag(o.AdminHold),
 	).Slice()
 	if err != nil {
