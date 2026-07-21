@@ -10,8 +10,8 @@ import (
 func TestRouterRespectsV2PlanInAuthoritative(t *testing.T) {
 	r := NewRouter(nil, nil)
 	// 不真正接 v2 时，PlanCandidates 行为不变；本测试仅断言不 panic
-	_, _ = r.PlanCandidates([]provider.Candidate{
+	_ = r.PlanCandidates([]provider.Candidate{
 		{CredentialID: 1, ProviderID: 1, RawModel: "m", Tier: 1},
-	}, PlanContext{}, nil, &provider.Policy{}, nil)
+	}, nil, &provider.Policy{}, nil)
 	_ = api.ModeAuthoritative
 }

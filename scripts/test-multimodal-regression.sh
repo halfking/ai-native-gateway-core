@@ -45,7 +45,7 @@ if [[ "${PHASE3_LIVE:-0}" == "1" ]]; then
   info "Phase 3 LIVE (LLM_GATEWAY_API_KEY set)"
   if [[ -z "${LLM_GATEWAY_API_KEY:-}" ]]; then
     fail "PHASE3_LIVE=1 but LLM_GATEWAY_API_KEY is empty"
-  elif bash scripts/multimodal-e2e/run_phase3.sh --id T-02,T-03 --id-file scripts/multimodal-e2e/cases/regression.live-ids 2>&1 | tee /tmp/regression-p3-live.log; then
+  elif bash scripts/multimodal-e2e/run_phase3.sh 2>&1 | tee /tmp/regression-p3-live.log; then
     pass "Phase 3 LIVE passed"
   else
     fail "Phase 3 LIVE FAILED (see /tmp/regression-p3-live.log)"

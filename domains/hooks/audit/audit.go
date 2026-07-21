@@ -123,11 +123,6 @@ type StreamCapture struct {
 	completionTokens *int
 	cacheReadTokens  *int
 	cacheWriteTokens *int
-	imageTokens      *int
-	audioTokens      *int
-	videoTokens      *int
-	reasoningTokens  *int
-	providerTokens   *int
 	// HasThinking is set when the stream contained at least one
 	// Anthropic-style thinking content block. Detected in the
 	// side-channel audit of the Q4 passthrough path.
@@ -378,25 +373,6 @@ func (sc *StreamCapture) ObserveUsage(promptTokens, completionTokens, cacheRead,
 	}
 }
 
-func (sc *StreamCapture) ObserveMultimodalUsage(reasoning, image, audio, video, provider *int) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	if reasoning != nil {
-		sc.reasoningTokens = reasoning
-	}
-	if image != nil {
-		sc.imageTokens = image
-	}
-	if audio != nil {
-		sc.audioTokens = audio
-	}
-	if video != nil {
-		sc.videoTokens = video
-	}
-	if provider != nil {
-		sc.providerTokens = provider
-	}
-}
 func (sc *StreamCapture) MarkInterruptedWithReason(finishReason string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -553,21 +529,6 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	}
 	if sc.OutputTokens != nil {
 		m["output_tokens"] = *sc.OutputTokens
-	}
-	if sc.reasoningTokens != nil {
-		m["reasoning_tokens"] = *sc.reasoningTokens
-	}
-	if sc.imageTokens != nil {
-		m["image_tokens"] = *sc.imageTokens
-	}
-	if sc.audioTokens != nil {
-		m["audio_tokens"] = *sc.audioTokens
-	}
-	if sc.videoTokens != nil {
-		m["video_tokens"] = *sc.videoTokens
-	}
-	if sc.providerTokens != nil {
-		m["provider_tokens"] = *sc.providerTokens
 	}
 	if sc.HasThinking {
 		m["has_thinking"] = true

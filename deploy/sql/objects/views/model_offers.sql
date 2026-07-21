@@ -32,8 +32,7 @@ CREATE VIEW public.model_offers AS
     cmb.consecutive_failures,
     cmb.admin_protected,
     cmb.created_at,
-    cmb.updated_at,
-    pm.modality AS provider_modality
+    cmb.updated_at
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 

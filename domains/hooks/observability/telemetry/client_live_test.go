@@ -3,11 +3,11 @@ package telemetry
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/require"
 )
 
 // TestRequestLogInsertParamCount is an integration test that catches
@@ -40,15 +40,12 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Ensure the schema is up-to-date (this is what the gateway does
-	// at startup). If the column is missing, the test fails here
-	// rather than at the INSERT — which is the correct shape, because
-	// the migration must run before the code.
+	// Ensure the active hot-table schema is up-to-date before issuing the write.
 	var hasCol bool
 	if err := pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM information_schema.columns
-			WHERE table_name = 'request_logs'
+			WHERE table_name = 'request_logs_hot'
 			  AND column_name = 'upstream_finish_reason'
 		)
 	`).Scan(&hasCol); err != nil {
@@ -145,13 +142,22 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 		t.Fatalf("persistRequestLog: %v", err)
 	}
 
-	// Verify the row made it in with the new column populated.
-	var gotUpstream *string
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM request_logs_bodies_hot WHERE request_id = $1`, entry.RequestID)
+		_, _ = pool.Exec(ctx, `DELETE FROM request_logs_hot WHERE request_id = $1`, entry.RequestID)
+		_, _ = pool.Exec(ctx, `DELETE FROM usage_ledger_hot WHERE request_id = $1`, entry.RequestID)
+	})
+
+	var (
+		gotUpstream     *string
+		gotRequestBody  *string
+		gotResponseBody *string
+	)
 	err = pool.QueryRow(ctx, `
-		SELECT upstream_finish_reason
-		FROM request_logs
+		SELECT upstream_finish_reason, request_body::text, response_body::text
+		FROM request_logs_hot
 		WHERE request_id = $1
-	`, entry.RequestID).Scan(&gotUpstream)
+	`, entry.RequestID).Scan(&gotUpstream, &gotRequestBody, &gotResponseBody)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -161,15 +167,48 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	if *gotUpstream != "stop" {
 		t.Fatalf("upstream_finish_reason = %q, want \"stop\"", *gotUpstream)
 	}
+	if gotRequestBody != nil || gotResponseBody != nil {
+		t.Fatal("request_logs_hot must not retain complete request or response bodies")
+	}
 
-	// Cleanup — best-effort, ignore errors (the row is keyed by
-	// a timestamped request_id that no real request would use).
-	// DELETE targets request_logs_default — the canonical write target
-	// per the 2026-07 data-lifecycle architecture (all INSERT/UPDATE/DELETE
-	// must go through the *_default partition, never the parent).
-	_, _ = pool.Exec(ctx, `DELETE FROM request_logs_default WHERE request_id = $1`, entry.RequestID)
+	var gotBodies struct {
+		RequestBody  string
+		ResponseBody string
+	}
+	err = pool.QueryRow(ctx, `
+		SELECT request_body::text, response_body::text
+		FROM request_logs_bodies_hot
+		WHERE request_id = $1
+	`, entry.RequestID).Scan(&gotBodies.RequestBody, &gotBodies.ResponseBody)
+	if err != nil {
+		t.Fatalf("verify bodies: %v", err)
+	}
+	require.JSONEq(t, *entry.RequestBody, gotBodies.RequestBody)
+	require.JSONEq(t, *entry.ResponseBody, gotBodies.ResponseBody)
 
-	// Verify the new column write + also a sanity check that
+	updatedRequestBody := `{"messages":[{"role":"user","content":"updated"}]}`
+	updatedResponseBody := `{"choices":[{"message":{"content":"updated"}}]}`
+	if err := cl.persistRequestLog(&RequestLogEntry{
+		Op:           RequestLogUpdate,
+		RequestID:    entry.RequestID,
+		RequestBody:  &updatedRequestBody,
+		ResponseBody: &updatedResponseBody,
+		Success:      true,
+	}); err != nil {
+		t.Fatalf("persistRequestLog update: %v", err)
+	}
+	err = pool.QueryRow(ctx, `
+		SELECT request_body::text, response_body::text
+		FROM request_logs_bodies_hot
+		WHERE request_id = $1
+	`, entry.RequestID).Scan(&gotBodies.RequestBody, &gotBodies.ResponseBody)
+	if err != nil {
+		t.Fatalf("verify updated bodies: %v", err)
+	}
+	require.JSONEq(t, updatedRequestBody, gotBodies.RequestBody)
+	require.JSONEq(t, updatedResponseBody, gotBodies.ResponseBody)
+
+	// Verify the new column write and also a sanity check that
 	// quality_flags and quality_fix_actions are written as
 	// non-NULL empty arrays (the DEFAULT-override footgun: an
 	// explicit nil bind in INSERT would trip the not-null check,
@@ -182,7 +221,7 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	)
 	err = pool.QueryRow(ctx, `
 		SELECT quality_flags, quality_fix_actions::text, success
-		FROM request_logs
+		FROM request_logs_hot
 		WHERE request_id = $1
 	`, entry.RequestID).Scan(&gotFlags, &gotActions, &gotSuccess)
 	if err != nil {
@@ -201,5 +240,4 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 		t.Error("success should be true")
 	}
 
-	_ = strings.Contains // keep import for future use
 }

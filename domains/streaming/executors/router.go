@@ -11,46 +11,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm"
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
-	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/shadow"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
-var (
-	tierOrder = [4]int{1, 2, 3, 9}
-
-	ursmShadowDiffTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "ursm_shadow_diff_total",
-			Help: "Total shadow diff events by type (identical, availability_mismatch, order_mismatch)",
-		},
-		[]string{"type"},
-	)
-)
-
-// PlanContext carries per-request routing context that affects v2 canary
-// decisions and audit logging. TenantID, CanonicalModel, RequestID are
-// best-effort: callers without them pass the zero value.
-//
-// 2026-07-21, URSM v2 plan T16 follow-up: this struct replaces the empty-string
-// placeholders previously hard-coded in planWithURSMv2 / the authoritative v2
-// filter block. Order matters — PlanCandidates places planCtx as the second
-// parameter (after candidates) because it is a behavioural input to the v2
-// gate, not a sorting preference.
-type PlanContext struct {
-	TenantID       string
-	CanonicalModel string // populated from params.Model after model resolution
-	RequestID      string
-}
+var tierOrder = [4]int{1, 2, 3, 9}
 
 type Router struct {
 	Sticky  *StickyCache
@@ -101,22 +72,18 @@ func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
 
 func (r *Router) PlanCandidates(
 	candidates []provider.Candidate,
-	planCtx PlanContext,
 	stickyCredentialID *int,
 	policy *provider.Policy,
 	egressPreference []string,
-) ([]provider.Candidate, string) {
+) []provider.Candidate {
 	candidates = deduplicateCandidates(candidates)
 	if len(candidates) == 0 {
-		return nil, "v1-legacy"
+		return nil
 	}
-
-	// Default to v1-legacy routing source
-	routingSource := "v1-legacy"
 
 	// 新增：优先使用URSM路由（如果可用）
 	if r.URSM != nil && r.URSM.Enabled() {
-		return r.planWithURSM(candidates, stickyCredentialID, policy, egressPreference), routingSource
+		return r.planWithURSM(candidates, stickyCredentialID, policy, egressPreference)
 	}
 
 	// 2026-07-21, URSM v2 plan T20 (convergence): 在 mode=authoritative 模式下
@@ -125,26 +92,21 @@ func (r *Router) PlanCandidates(
 	// 现有行为，避免一次错误的 v2 调用造成全量 503。URSMv2 == nil 时代码路径
 	// 是死的（main.go 默认 URSM_V2_MODE=off 时根本不会 wire）。
 	//
-	// 2026-07-21, T16 follow-up: 在权威模式下 ShouldUseV2 直接返回 true，
-	// 因此金丝雀闸门 (CanaryPercent / 租户 / 模型 白名单) 不会阻拦 FilterAndScore。
-	// 但仍把 tenant/canonical 透传到 CandidateSeed 以便将来 v2 评分按租户定价。
+	// TODO(T20+): PlanCandidates 签名没有 tenantID / canonical / reqID；
+	// FilterAndScore 的 seed 里 TenantID 暂传空串，与 T16 planWithURSMv2
+	// 的 "" 透传一致，等待后续任务把请求级上下文接进来。
 	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
-		routingSource = "v2-authoritative"
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 		if r.URSMv2.Ready(ctx) {
 			seeds := make([]ursmv2.CandidateSeed, 0, len(candidates))
 			for _, c := range candidates {
-				canonical := c.StandardizedName
-				if planCtx.CanonicalModel != "" {
-					canonical = planCtx.CanonicalModel
-				}
 				seeds = append(seeds, ursmv2.CandidateSeed{
 					ProviderID:   c.ProviderID,
 					CredentialID: c.CredentialID,
 					RawModel:     c.RawModel,
-					Canonical:    canonical,
-					TenantID:     planCtx.TenantID,
+					Canonical:    c.StandardizedName,
+					TenantID:     "",
 					PriceIn:      derefPrice(c.PriceInPer1M),
 					PriceOut:     derefPrice(c.PriceOutPer1M),
 					BillingMode:  c.BillingMode,
@@ -168,15 +130,9 @@ func (r *Router) PlanCandidates(
 				}
 				candidates = filtered
 				if len(candidates) == 0 {
-					return nil, routingSource
+					return nil
 				}
-			} else {
-				// v2 call failed, fall back to v1
-				routingSource = "v1-legacy"
 			}
-		} else {
-			// v2 not ready, fall back to v1
-			routingSource = "v1-legacy"
 		}
 	}
 
@@ -240,7 +196,7 @@ func (r *Router) PlanCandidates(
 					"degraded_count", len(degradedCandidates),
 					"reasons", reasonCounts,
 				)
-				return degradedCandidates, routingSource
+				return degradedCandidates
 			}
 		}
 
@@ -249,7 +205,7 @@ func (r *Router) PlanCandidates(
 			"reasons", reasonCounts,
 			"sample", sampleReasons,
 		)
-		return nil, routingSource
+		return nil
 	}
 
 	available = r.filterHealthyNodes(available)
@@ -280,61 +236,24 @@ func (r *Router) PlanCandidates(
 		ordered = applyProtocolAffinity(ordered, egressPreference)
 	}
 
-	// Shadow mode: compute v2 ordering for diff metrics, but do NOT use it in production.
-	// The diff reveals whether v2 would have chosen a different ordering or filtered different candidates.
-	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeShadow {
-		routingSource = "v2-shadow"
-		v2Ordered := r.planWithURSMv2(ordered, planCtx)
-		if v2Ordered != nil {
-			legacyIDs := make([]string, len(ordered))
-			for i, c := range ordered {
-				legacyIDs[i] = fmt.Sprintf("%d:%s", c.CredentialID, c.RawModel)
-			}
-			v2IDs := make([]string, len(v2Ordered))
-			for i, c := range v2Ordered {
-				v2IDs[i] = fmt.Sprintf("%d:%s", c.CredentialID, c.RawModel)
-			}
-			diff := shadow.Compute(planCtx.RequestID, planCtx.TenantID, planCtx.CanonicalModel, legacyIDs, v2IDs)
-			diffType := "identical"
-			if diff.HasAvailabilityMismatch() {
-				diffType = "availability_mismatch"
-			} else if diff.HasOrderMismatch() {
-				diffType = "order_mismatch"
-			}
-			ursmShadowDiffTotal.WithLabelValues(diffType).Inc()
-			slog.Debug("ursm.v2: shadow diff",
-				"request_id", planCtx.RequestID,
-				"type", diffType,
-				"legacy", legacyIDs,
-				"v2", v2IDs,
-			)
-		}
-	}
-
 	// 2026-07-21, URSM v2 plan T16: 在 canary / authoritative 模式下把 ordering
 	// 委托给 v2 Manager.Plan。v2 返回 nil 时回退到上面的 ordered 切片，保留旧
 	// 行为。URSMv2 == nil 时整段不进入；main.go 尚未 wire，运行时为 nil。
 	//
-	// 2026-07-21, T16 follow-up: 接入 r.URSMv2.ShouldUseV2 的金丝雀闸门：
-	//   - Canary 模式：仅 rollout.ShouldUseV2(tenant, model, reqID) 返回 true 时
-	//     才委托 v2 Plan；其余请求走旧 ordered 切片，避免灰度扩张到非白名单租户。
-	//   - Authoritative 模式：闸门 bypass（ShouldUseV2 对 Authoritative 直接
-	//     返回 true），仍按原口径走 v2 Plan。
+	// T16 暂不传入 tenant / canonical / reqID：PlanCandidates 签名没有这些参数
+	// 且现有调用方没传递；URSMv2 == nil 时代码路径本来就是死的。等到 T20 等
+	// 后续任务把 tenant/canonical/reqID 透传过来，再接入 r.URSMv2.ShouldUseV2
+	// 的金丝雀白名单过滤。当前仅按 Mode 粗粒度生效 (Canary/Authoritative)。
 	if r.URSMv2 != nil {
 		mode := r.URSMv2.Mode()
 		if mode == ursmv2api.ModeCanary || mode == ursmv2api.ModeAuthoritative {
-			if mode == ursmv2api.ModeAuthoritative || r.URSMv2.ShouldUseV2(planCtx.TenantID, planCtx.CanonicalModel, planCtx.RequestID) {
-				if v2Ordered := r.planWithURSMv2(ordered, planCtx); v2Ordered != nil {
-					if mode == ursmv2api.ModeCanary {
-						routingSource = "v2-canary"
-					}
-					ordered = v2Ordered
-				}
+			if v2Ordered := r.planWithURSMv2(ordered); v2Ordered != nil {
+				ordered = v2Ordered
 			}
 		}
 	}
 
-	return ordered, routingSource
+	return ordered
 }
 
 // planWithURSMv2 asks the v2 Manager to re-rank the input candidates. It
@@ -348,7 +267,7 @@ func (r *Router) PlanCandidates(
 // via a (CredentialID, RawModel) lookup.
 //
 // 2026-07-21, URSM v2 plan T16.
-func (r *Router) planWithURSMv2(fallback []provider.Candidate, planCtx PlanContext) []provider.Candidate {
+func (r *Router) planWithURSMv2(fallback []provider.Candidate) []provider.Candidate {
 	if r.URSMv2 == nil {
 		return nil
 	}
@@ -360,16 +279,12 @@ func (r *Router) planWithURSMv2(fallback []provider.Candidate, planCtx PlanConte
 	for _, c := range fallback {
 		key := seedLookupKey(c.CredentialID, c.RawModel)
 		lookup[key] = c
-		canonical := c.StandardizedName
-		if planCtx.CanonicalModel != "" {
-			canonical = planCtx.CanonicalModel
-		}
 		seeds = append(seeds, ursmv2.CandidateSeed{
 			ProviderID:   c.ProviderID,
 			CredentialID: c.CredentialID,
 			RawModel:     c.RawModel,
-			Canonical:    canonical,
-			TenantID:     planCtx.TenantID,
+			Canonical:    c.StandardizedName,
+			TenantID:     "", // TODO(T20): plumb tenant through PlanCandidates.
 			PriceIn:      derefPrice(c.PriceInPer1M),
 			PriceOut:     derefPrice(c.PriceOutPer1M),
 			BillingMode:  c.BillingMode,
@@ -385,7 +300,7 @@ func (r *Router) planWithURSMv2(fallback []provider.Candidate, planCtx PlanConte
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	ordered := r.URSMv2.Plan(ctx, seeds, planCtx.TenantID, planCtx.CanonicalModel)
+	ordered := r.URSMv2.Plan(ctx, seeds, "", "")
 	if len(ordered) == 0 {
 		return nil
 	}

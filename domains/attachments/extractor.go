@@ -61,7 +61,52 @@ type ExtractResult struct {
 // body 为原始 JSON 字节，不会被修改（转发用原始 body，确保上游收到完整图片）。
 // 保存策略由调用方决定；结果始终包含每个检测到的附件状态。
 func (e *Extractor) ExtractFromOpenAIBody(requestID string, body []byte) *ExtractResult {
-	return e.extractBody(requestID, body, "openai")
+	result := &ExtractResult{}
+
+	var bodyMap map[string]any
+	if err := json.Unmarshal(body, &bodyMap); err != nil {
+		slog.Debug("attachments: body is not a JSON object, skip",
+			"request_id", requestID, "error", err)
+		return result
+	}
+
+	messages, ok := bodyMap["messages"].([]any)
+	if !ok {
+		return result
+	}
+
+	for msgIdx, msg := range messages {
+		msgMap, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+		// content 可以是 string（纯文本）或 array（多模态）
+		contentArr, ok := msgMap["content"].([]any)
+		if !ok {
+			continue
+		}
+		for blockIdx, block := range contentArr {
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			if blockMap["type"] != "image_url" {
+				continue
+			}
+			imgURL, ok := blockMap["image_url"].(map[string]any)
+			if !ok {
+				continue
+			}
+			url, ok := imgURL["url"].(string)
+			if !ok || !strings.HasPrefix(url, "data:") {
+				continue
+			}
+			result.TotalFound++
+			e.processOne(requestID, url, msgIdx, blockIdx, result)
+		}
+	}
+
+	return result
 }
 
 // ExtractFromAnthropicBody 从 Anthropic Messages 格式的请求体中提取 base64 附件。
@@ -72,138 +117,64 @@ func (e *Extractor) ExtractFromOpenAIBody(requestID string, body []byte) *Extrac
 //
 // 我们将其归一化为 data URI 再交给 Storage。
 func (e *Extractor) ExtractFromAnthropicBody(requestID string, body []byte) *ExtractResult {
-	return e.extractBody(requestID, body, "anthropic")
-}
-
-func (e *Extractor) extractBody(requestID string, body []byte, protocol string) *ExtractResult {
 	result := &ExtractResult{}
+
 	var bodyMap map[string]any
 	if err := json.Unmarshal(body, &bodyMap); err != nil {
-		slog.Debug("attachments: body is not a JSON object, skip", "request_id", requestID, "error", err)
 		return result
 	}
 
-	if messages, ok := bodyMap["messages"].([]any); ok {
-		for messageIndex, rawMessage := range messages {
-			message, _ := rawMessage.(map[string]any)
-			if content, ok := message["content"].([]any); ok {
-				e.extractBlocks(requestID, content, messageIndex, result, protocol)
-			}
-		}
+	messages, ok := bodyMap["messages"].([]any)
+	if !ok {
+		return result
 	}
-	if contents, ok := bodyMap["contents"].([]any); ok {
-		for messageIndex, rawContent := range contents {
-			content, _ := rawContent.(map[string]any)
-			parts, _ := content["parts"].([]any)
-			e.extractBlocks(requestID, parts, messageIndex, result, "gemini")
-		}
-	}
-	if input, ok := bodyMap["input"].([]any); ok {
-		for messageIndex, rawItem := range input {
-			item, _ := rawItem.(map[string]any)
-			if content, ok := item["content"].([]any); ok {
-				e.extractBlocks(requestID, content, messageIndex, result, "responses")
-			} else {
-				e.extractBlocks(requestID, []any{item}, messageIndex, result, "responses")
-			}
-		}
-	}
-	return result
-}
 
-func (e *Extractor) extractBlocks(requestID string, blocks []any, messageIndex int, result *ExtractResult, protocol string) {
-	for blockIndex, rawBlock := range blocks {
-		block, _ := rawBlock.(map[string]any)
-		dataURI, attachmentType, ok := attachmentDataURI(block, protocol)
+	for msgIdx, msg := range messages {
+		msgMap, ok := msg.(map[string]any)
 		if !ok {
 			continue
 		}
-		result.TotalFound++
-		e.processOne(requestID, dataURI, attachmentType, messageIndex, blockIndex, result)
-	}
-}
-
-func attachmentDataURI(block map[string]any, protocol string) (string, string, bool) {
-	typ, _ := block["type"].(string)
-	switch typ {
-	case "image_url":
-		imageURL, _ := block["image_url"].(map[string]any)
-		url, _ := imageURL["url"].(string)
-		return dataURIValue(url, "image"), "image", strings.HasPrefix(url, "data:")
-	case "input_audio":
-		audio, _ := block["input_audio"].(map[string]any)
-		data, _ := audio["data"].(string)
-		format, _ := audio["format"].(string)
-		return audioDataURI(data, format), "audio", data != ""
-	case "input_image":
-		url, _ := block["image_url"].(string)
-		return dataURIValue(url, "image"), "image", strings.HasPrefix(url, "data:")
-	case "input_file", "file":
-		file := block[typ]
-		if file == nil {
-			file = block["file"]
+		contentArr, ok := msgMap["content"].([]any)
+		if !ok {
+			continue
 		}
-		fileMap, _ := file.(map[string]any)
-		data, _ := fileMap["file_data"].(string)
-		mime, _ := fileMap["mime_type"].(string)
-		if strings.HasPrefix(data, "data:") {
-			return data, attachmentTypeForMIME(mime), true
-		}
-	case "image":
-		source, _ := block["source"].(map[string]any)
-		if source["type"] == "base64" {
-			mime, _ := source["media_type"].(string)
+		for blockIdx, block := range contentArr {
+			blockMap, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			if blockMap["type"] != "image" {
+				continue
+			}
+			source, ok := blockMap["source"].(map[string]any)
+			if !ok {
+				continue
+			}
+			// 只处理 type=base64 的 source（type=url 的由上游直接拉取）
+			if source["type"] != "base64" {
+				continue
+			}
+			mediaType, _ := source["media_type"].(string)
 			data, _ := source["data"].(string)
-			return fmt.Sprintf("data:%s;base64,%s", mime, data), "image", data != ""
-		}
-	case "document":
-		source, _ := block["source"].(map[string]any)
-		if source["type"] == "base64" {
-			mime, _ := source["media_type"].(string)
-			data, _ := source["data"].(string)
-			return fmt.Sprintf("data:%s;base64,%s", mime, data), "file", data != ""
+			if data == "" {
+				continue
+			}
+			dataURI := fmt.Sprintf("data:%s;base64,%s", mediaType, data)
+			result.TotalFound++
+			e.processOne(requestID, dataURI, msgIdx, blockIdx, result)
 		}
 	}
-	if protocol == "gemini" {
-		if inline, ok := block["inlineData"].(map[string]any); ok {
-			mime, _ := inline["mimeType"].(string)
-			data, _ := inline["data"].(string)
-			return fmt.Sprintf("data:%s;base64,%s", mime, data), attachmentTypeForMIME(mime), data != ""
-		}
-	}
-	return "", "", false
-}
 
-func dataURIValue(value, attachmentType string) string { return value }
-
-func audioDataURI(data, format string) string {
-	mime := "audio/" + strings.ToLower(format)
-	if format == "pcm16" {
-		mime = "audio/pcm"
-	}
-	return fmt.Sprintf("data:%s;base64,%s", mime, data)
-}
-
-func attachmentTypeForMIME(mime string) string {
-	if strings.HasPrefix(strings.ToLower(mime), "image/") {
-		return "image"
-	}
-	if strings.HasPrefix(strings.ToLower(mime), "audio/") {
-		return "audio"
-	}
-	if strings.HasPrefix(strings.ToLower(mime), "video/") {
-		return "video"
-	}
-	return "file"
+	return result
 }
 
 // processOne 处理单个附件（同步或异步）。
-func (e *Extractor) processOne(requestID, dataURI, attachmentType string, msgIdx, blockIdx int, result *ExtractResult) {
+func (e *Extractor) processOne(requestID, dataURI string, msgIdx, blockIdx int, result *ExtractResult) {
 	if e.async {
 		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
-			meta, err := e.saveOne(requestID, dataURI, attachmentType, msgIdx, blockIdx)
+			meta, err := e.saveOne(requestID, dataURI, msgIdx, blockIdx)
 			if err == nil && e.callback != nil {
 				e.callback(requestID, []AttachmentMetadata{meta})
 			}
@@ -211,7 +182,7 @@ func (e *Extractor) processOne(requestID, dataURI, attachmentType string, msgIdx
 		return
 	}
 	// 同步
-	meta, err := e.saveOne(requestID, dataURI, attachmentType, msgIdx, blockIdx)
+	meta, err := e.saveOne(requestID, dataURI, msgIdx, blockIdx)
 	result.Attachments = append(result.Attachments, meta)
 	if err == nil {
 		result.Saved++
@@ -221,9 +192,9 @@ func (e *Extractor) processOne(requestID, dataURI, attachmentType string, msgIdx
 }
 
 // saveOne calls Storage and returns a log-safe record for both outcomes.
-func (e *Extractor) saveOne(requestID, dataURI, attachmentType string, msgIdx, blockIdx int) (AttachmentMetadata, error) {
+func (e *Extractor) saveOne(requestID, dataURI string, msgIdx, blockIdx int) (AttachmentMetadata, error) {
 	failed := AttachmentMetadata{
-		Type:         attachmentType,
+		Type:         "image",
 		OriginalURL:  truncateOriginalURL(dataURI),
 		MessageIndex: msgIdx,
 		BlockIndex:   blockIdx,
@@ -234,7 +205,7 @@ func (e *Extractor) saveOne(requestID, dataURI, attachmentType string, msgIdx, b
 	if e.storage == nil {
 		return failed, errors.New("attachments: storage is nil")
 	}
-	res, err := e.storage.SaveBase64Attachment(requestID, dataURI, attachmentType, msgIdx, blockIdx)
+	res, err := e.storage.SaveBase64Image(requestID, dataURI, msgIdx, blockIdx)
 	if err != nil {
 		slog.Warn("attachments: save failed",
 			"request_id", requestID,

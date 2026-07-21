@@ -2,7 +2,7 @@
 # E2E 集成测试：Ticket #9-11 Bodies 双写与查询
 # 用途：在 245 测试环境验证完整业务流程
 
-set -e
+set -euo pipefail
 
 # 配置
 ADMIN_API="${ADMIN_API:-http://localhost:8080}"
@@ -10,7 +10,8 @@ DB_HOST="${DB_HOST:-172.16.2.210}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-llm_gateway}"
 DB_USER="${DB_USER:-llm_gateway}"
-DB_PASS="${DB_PASS}"
+DB_PASS="${DB_PASS:-}"
+ADMIN_API_KEY="${ADMIN_API_KEY:-${LLM_GATEWAY_ADMIN_API_KEY:-}}"
 
 # 颜色输出
 GREEN='\033[0;32m'
@@ -51,15 +52,10 @@ check_env() {
     info "检查环境配置..."
     
     if [ -z "$DB_PASS" ]; then
-        warn "DB_PASS 未设置，尝试从 .env 读取"
-        if [ -f "/opt/llm-gateway-go/.env" ]; then
-            export $(grep "LLM_GATEWAY_DATABASE_URL" /opt/llm-gateway-go/.env | xargs)
-            DB_PASS=$(echo "$LLM_GATEWAY_DATABASE_URL" | sed -n 's/.*:\/\/[^:]*:\([^@]*\)@.*/\1/p')
-        fi
+        fail "DB_PASS 未设置"
     fi
-    
-    if [ -z "$DB_PASS" ]; then
-        fail "无法获取数据库密码"
+    if [ -z "$ADMIN_API_KEY" ]; then
+        fail "ADMIN_API_KEY 或 LLM_GATEWAY_ADMIN_API_KEY 未设置"
     fi
     
     pass "环境配置检查通过"
@@ -74,13 +70,12 @@ psql_query() {
 test_e2e_001() {
     test_start "TC-E2E-001: 创建会话并请求 → 查询详情"
     
-    # 1. 查询最近的一条记录（假设已有数据）
-    info "查询最近的请求记录..."
-    REQUEST_ID=$(psql_query "SELECT request_id FROM request_logs_hot ORDER BY ts DESC LIMIT 1;")
+    # Only a paired row validates that application dual-write has occurred.
+    info "查询最近的双写请求记录..."
+    REQUEST_ID=$(psql_query "SELECT rl.request_id FROM request_logs_hot rl JOIN request_logs_bodies_hot rb ON rb.request_id = rl.request_id AND rb.ts = rl.ts WHERE rb.request_body IS NOT NULL OR rb.response_body IS NOT NULL ORDER BY rl.ts DESC LIMIT 1;")
     
     if [ -z "$REQUEST_ID" ]; then
-        warn "没有找到请求记录，跳过此测试"
-        return 0
+        test_fail "未找到 request_logs_hot 与 request_logs_bodies_hot 的双写记录"
     fi
     
     info "使用 request_id: $REQUEST_ID"
@@ -96,28 +91,28 @@ test_e2e_001() {
         test_fail "request_logs_hot 记录数异常: $META_COUNT"
     fi
     
-    if [ "$BODIES_COUNT" -eq 1 ] || [ "$BODIES_COUNT" -eq 0 ]; then
-        test_pass "request_logs_bodies_hot 记录正常 (count=$BODIES_COUNT)"
+    if [ "$BODIES_COUNT" -eq 1 ]; then
+        test_pass "request_logs_bodies_hot 有配对记录"
     else
         test_fail "request_logs_bodies_hot 记录数异常: $BODIES_COUNT"
     fi
     
     # 3. 调用 Admin API 查询详情
     info "调用 Admin API 查询详情..."
-    API_RESPONSE=$(curl -s "$ADMIN_API/admin/logs/$REQUEST_ID" 2>/dev/null || echo "")
+    API_RESPONSE=$(curl -fsS -H "Authorization: Bearer $ADMIN_API_KEY" "$ADMIN_API/api/logs/$REQUEST_ID" 2>/dev/null || echo "")
     
     if echo "$API_RESPONSE" | grep -q "request_id"; then
         test_pass "Admin API 返回有效响应"
     else
-        warn "Admin API 调用失败或未部署: $API_RESPONSE"
+        test_fail "Admin API 未返回日志详情"
     fi
 }
 
 test_e2e_002() {
     test_start "TC-E2E-002: Null Bodies 场景"
     
-    info "查询 request_body 为 null 的记录..."
-    NULL_REQUEST_ID=$(psql_query "SELECT request_id FROM request_logs_hot WHERE request_body IS NULL ORDER BY ts DESC LIMIT 1;")
+    info "查询 sibling bodies 均为 null 的记录..."
+    NULL_REQUEST_ID=$(psql_query "SELECT rl.request_id FROM request_logs_hot rl LEFT JOIN request_logs_bodies_hot rb ON rb.request_id = rl.request_id AND rb.ts = rl.ts WHERE rb.request_id IS NULL OR (rb.request_body IS NULL AND rb.response_body IS NULL) ORDER BY rl.ts DESC LIMIT 1;")
     
     if [ -z "$NULL_REQUEST_ID" ]; then
         warn "没有找到 null bodies 记录，跳过此测试"

@@ -934,8 +934,10 @@ $47,
 		entry.RequestPreview,
 		entry.TransformSummary,
 		entry.ResponsePreview,
-		strPtrToJSON(entry.RequestBody),
-		strPtrToJSON(entry.ResponseBody),
+		// 2026-07-22: request_body and response_body are now stored in
+		// request_logs_bodies_hot side table. Main table keeps NULL to avoid bloat.
+		nil, // request_body
+		nil, // response_body
 		entry.StreamFirstChunkMs,
 		entry.StreamChunkCount,
 		entry.StreamDoneReceived,
@@ -1002,6 +1004,28 @@ $47,
 		// 2026-07-19 (migration 350): routing attempts tracking
 		jsonOrNull(entry.RoutingAttempts),
 		entry.RoutingSummary,
+	)
+	if err != nil {
+		return err
+	}
+
+	// 2026-07-22 Ticket #10: INSERT full bodies into request_logs_bodies_hot.
+	// This side table stores complete request_body and response_body to avoid
+	// bloating the main table. The side table uses ON CONFLICT DO UPDATE to
+	// handle race conditions (async retries landing on the same request_id).
+	_, err = tx.Exec(ctx, `
+		INSERT INTO request_logs_bodies_hot (
+			request_id, ts, request_body, response_body
+		) VALUES (
+			$1, now(), CAST($2 AS jsonb), CAST($3 AS jsonb)
+		)
+		ON CONFLICT (request_id, ts) DO UPDATE SET
+			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
+			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
+	`,
+		entry.RequestID,
+		strPtrToJSON(entry.RequestBody),
+		strPtrToJSON(entry.ResponseBody),
 	)
 	if err != nil {
 		return err
@@ -1152,36 +1176,36 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       stream_interrupted = COALESCE($27, stream_interrupted),
 		       response_checksum = COALESCE($28, response_checksum),
 		       response_preview = COALESCE($29, response_preview),
-		       response_body = COALESCE($30::text::jsonb, response_body),
-		       failure_stage = COALESCE($31, failure_stage),
-		       failure_detail_code = COALESCE($32, failure_detail_code),
-		       transform_rule_id = COALESCE($33, transform_rule_id),
-		       egress_protocol = COALESCE($34, egress_protocol),
-		       request_preview = COALESCE($35, request_preview),
-		       transform_summary = COALESCE($36, transform_summary),
-		       request_body = COALESCE($37::text::jsonb, request_body),
-		       usage_source = COALESCE(NULLIF($38, ''), usage_source),
-		       success = COALESCE($39, success),
-		       request_status = COALESCE($40, request_status),
+		       -- 2026-07-22: request_body and response_body removed from main table UPDATE.
+		       -- These fields are now stored in request_logs_bodies_hot side table.
+		       failure_stage = COALESCE($30, failure_stage),
+		       failure_detail_code = COALESCE($31, failure_detail_code),
+		       transform_rule_id = COALESCE($32, transform_rule_id),
+		       egress_protocol = COALESCE($33, egress_protocol),
+		       request_preview = COALESCE($34, request_preview),
+		       transform_summary = COALESCE($35, transform_summary),
+		       usage_source = COALESCE(NULLIF($36, ''), usage_source),
+		       success = COALESCE($37, success),
+		       request_status = COALESCE($38, request_status),
 		       -- 2026-06-20: clear error_kind on success to prevent
 		       -- cross-request pollution (e.g. a previous failure's
 		       -- error_kind leaking into a later successful UPDATE).
 		       error_kind = CASE
-		           WHEN COALESCE($39, success) = TRUE THEN NULL
-		           ELSE COALESCE($41, error_kind)
+		           WHEN COALESCE($37, success) = TRUE THEN NULL
+		           ELSE COALESCE($39, error_kind)
 		       END,
-		       latency_ms = COALESCE($42, latency_ms),
-		       identity_hash = COALESCE($43, identity_hash),
-		       search_text = COALESCE($44, search_text),
-		       gw_session_id = COALESCE($45, gw_session_id),
-		       gw_task_id = COALESCE($46, gw_task_id),
-		       api_key_prefix = COALESCE($47, api_key_prefix),
-		       api_key_owner_user = COALESCE($48, api_key_owner_user),
-		       application_code = COALESCE($49, application_code),
-		       is_auto_request = COALESCE($50, is_auto_request),
-		       task_type = COALESCE($51, task_type),
-		       auto_profile = COALESCE($52, auto_profile),
-		       auto_decision = COALESCE($53::text::jsonb, auto_decision),
+		       latency_ms = COALESCE($40, latency_ms),
+		       identity_hash = COALESCE($41, identity_hash),
+		       search_text = COALESCE($42, search_text),
+		       gw_session_id = COALESCE($43, gw_session_id),
+		       gw_task_id = COALESCE($44, gw_task_id),
+		       api_key_prefix = COALESCE($45, api_key_prefix),
+		       api_key_owner_user = COALESCE($46, api_key_owner_user),
+		       application_code = COALESCE($47, application_code),
+		       is_auto_request = COALESCE($48, is_auto_request),
+		       task_type = COALESCE($49, task_type),
+		       auto_profile = COALESCE($50, auto_profile),
+		       auto_decision = COALESCE($51::text::jsonb, auto_decision),
 		       auto_confidence = COALESCE($54, auto_confidence),
 		       work_type = COALESCE($55, work_type),
 		       credits_charged = COALESCE($56, credits_charged),
@@ -1256,14 +1280,14 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.StreamInterrupted,
 		entry.ResponseChecksum,
 		entry.ResponsePreview,
-		strPtrToJSON(entry.ResponseBody),
+		// 2026-07-22: request_body and response_body removed from main table UPDATE.
+		// These fields are now stored in request_logs_bodies_hot side table.
 		entry.FailureStage,
 		entry.FailureDetailCode,
 		entry.TransformRuleID,
 		entry.EgressProtocol,
 		entry.RequestPreview,
 		entry.TransformSummary,
-		strPtrToJSON(entry.RequestBody),
 		nonEmptyPtr(entry.UsageSource, ""),
 		boolptr(entry.Success),
 		entry.RequestStatus,
@@ -1322,6 +1346,31 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	if err != nil {
 		return err
 	}
+
+	// 2026-07-22 Ticket #10: UPDATE side table request_logs_bodies_hot.
+	// This ensures that body fields are updated correctly without being
+	// overwritten by NULL in the main table. Uses ON CONFLICT to handle
+	// the case where the side table row doesn't exist yet (race condition).
+	_, err = tx.Exec(ctx, `
+		INSERT INTO request_logs_bodies_hot (
+			request_id, ts, request_body, response_body
+		)
+		SELECT $1, ts, $2::jsonb, $3::jsonb
+		FROM request_logs_hot
+		WHERE request_id = $1
+		LIMIT 1
+		ON CONFLICT (request_id, ts) DO UPDATE SET
+			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
+			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
+	`,
+		entry.RequestID,
+		strPtrToJSON(entry.RequestBody),
+		strPtrToJSON(entry.ResponseBody),
+	)
+	if err != nil {
+		return err
+	}
+
 	if tag.RowsAffected() == 0 {
 		// No early row — fall back to insert so the request is not lost.
 		if rbErr := tx.Rollback(ctx); rbErr != nil {
@@ -1645,7 +1694,7 @@ func escapeInvalidEscape(s string) string {
 			}
 			if !hexOK {
 				b.WriteString("\\\\u") // double the backslash
-				i += 2 // skip the \u
+				i += 2                 // skip the \u
 				continue
 			}
 		}

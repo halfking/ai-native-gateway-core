@@ -9,26 +9,24 @@
 
 ---
 
-## ✅ 测试结果总览
+## 测试结果总览
 
 | Test Suite | 测试用例 | 状态 | 说明 |
 |-----------|---------|------|------|
-| **业务流程** | TC-E2E-001 | ✅ PASS | 双写验证通过 |
+| **业务流程** | TC-E2E-001 | ❌ 无效 | bodies 热表为 0 行，旧脚本仍将其判为通过 |
 | **业务流程** | TC-E2E-002 | ⏭️ SKIP | 无 null bodies 记录 |
 | **业务流程** | TC-E2E-003 | ✅ PASS | 向后兼容验证通过 |
-| **性能验证** | TC-PERF-001 | ⏭️ SKIP | 无 bodies 记录 |
+| **性能验证** | TC-PERF-001 | ❌ 未完成 | 无 bodies 记录，无法执行配对查询性能验证 |
 | **磁盘空间** | TC-DISK-001 | ✅ PASS | 表大小查询成功 |
 
 **总计**: 5 个测试
-**通过**: 4 个
-**失败**: 0 个
-**跳过**: 2 个（因环境无数据）
+**结论**: 本次 245 执行没有证明应用双写；需要使用修正后的脚本重新执行。
 
 ---
 
 ## 🔍 关键发现
 
-### 1. 双写逻辑验证 ✅
+### 1. 双写逻辑验证未完成
 
 **SQL 手动测试**:
 ```sql
@@ -46,7 +44,7 @@ SELECT COUNT(*) FROM request_logs_bodies_hot WHERE request_id LIKE 'e2e-test-%';
 ROLLBACK;
 ```
 
-**结果**: ✅ 两表都成功写入，双写逻辑正确
+**结果**: 手工 SQL 只能证明表约束可写，不能证明 gateway telemetry client 执行双写。
 
 ### 2. 向后兼容性验证 ✅
 
@@ -70,8 +68,8 @@ ROLLBACK;
 
 **分析**:
 - ✅ 表结构正确（Migration 353 已执行）
-- ⚠️ Bodies 表为空：245 环境没有真实 LLM 请求流量
-- ✅ 最新 10 条记录都有 `request_body` 和 `response_body`（仍在 hot 表中）
+- ❌ Bodies 表为空：245 环境没有应用写入的双写证据
+- ⚠️ 最新记录仍在 hot 表保留 body，表明当时实际写入路径未完成分离
 
 **原因**: 245 是测试环境，部署了代码（946e2c46c）但没有实际流量触发新的双写逻辑
 
@@ -136,17 +134,16 @@ ROLLBACK;
 
 ## 📝 测试结论
 
-### ✅ 核心功能验证通过
+### Docker PG17 验证通过，245 E2E 待执行
 
-1. **数据库层** ✅
-   - Schema 正确
-   - 双写逻辑正确
-   - 事务边界正确
+1. **Docker PostgreSQL 17 live test** ✅
+    - 真实 telemetry client insert/update 双写通过
+    - `request_logs_hot` 不保留 request/response body
+    - `request_logs_bodies_hot` 保留完整 JSON
 
-2. **代码层** ✅
-   - Ticket #9-11 已部署
-   - 二进制包含正确代码
-   - 进程正常运行
+2. **245 E2E** ⏳
+    - 需要部署本轮 telemetry client 修复
+    - 需要提供管理员 API Key 并产生一条真实测试请求
 
 3. **兼容性** ✅
    - 向后兼容旧记录
