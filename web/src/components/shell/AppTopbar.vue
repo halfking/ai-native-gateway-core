@@ -13,10 +13,30 @@ import { useRoute } from 'vue-router'
 import LanguageSelector from '../LanguageSelector.vue'
 import ThemeToggle from '../ThemeToggle.vue'
 import SystemStatusIndicator from '../SystemStatusIndicator.vue'
+import UserMenuDropdown from './UserMenuDropdown.vue'
 import { detectTheme, logoSrc } from '../../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE } from '../../config/brand'
-import { store, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from '../../store'
+import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from '../../store'
 import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, visibleNavGroups, visibleNavItems } from '../../config/appNav'
+
+export interface VersionInfo {
+  version?: string
+  git_sha?: string
+  build_date?: string
+  build_seq?: number
+}
+
+const props = withDefaults(defineProps<{
+  versionInfo?: VersionInfo | null
+}>(), {
+  versionInfo: null,
+})
+
+const emit = defineEmits<{
+  'user-info': []
+  'change-password': []
+  logout: []
+}>()
 
 const { t } = useI18n()
 const route = useRoute()
@@ -114,7 +134,7 @@ function cancelLeave() {
 function handleOutside(event: MouseEvent) {
   const target = event.target as HTMLElement | null
   if (!target) return
-  if (target.closest('.app-topbar__nav') || target.closest('.app-topbar__dropdown')) return
+  if (target.closest('.app-topbar__nav') || target.closest('.app-topbar__dropdown') || target.closest('.user-menu')) return
   closeAll()
 }
 
@@ -230,12 +250,21 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
     </Teleport>
 
     <div class="app-topbar__actions">
-      <SystemStatusIndicator />
-      <slot name="actions" />
-      <template v-if="store.userInfo">
-        <span class="app-topbar__user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
-        <span class="app-topbar__user-role">{{ store.userInfo.role ? t(`app.role.${store.userInfo.role}`) : '' }}</span>
-      </template>
+      <div class="app-topbar__meta">
+        <SystemStatusIndicator />
+        <div v-if="props.versionInfo?.version" class="app-topbar__version" :title="props.versionInfo.git_sha">
+          <span class="app-topbar__version-tag">v{{ props.versionInfo.version }}</span>
+          <template v-if="props.versionInfo.build_seq != null">
+            <span class="app-topbar__meta-sep" aria-hidden="true">·</span>
+            <span class="app-topbar__version-build">#{{ props.versionInfo.build_seq }}</span>
+          </template>
+        </div>
+      </div>
+      <UserMenuDropdown
+        @user-info="emit('user-info')"
+        @change-password="emit('change-password')"
+        @logout="emit('logout')"
+      />
       <ThemeToggle />
       <LanguageSelector />
     </div>
@@ -406,17 +435,39 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
   margin-left: auto;
 }
 
-.app-topbar__user-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--kx-text, var(--text));
+.app-topbar__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(99, 102, 241, 0.06);
+  flex-shrink: 0;
+}
+
+.app-topbar__version {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.2;
   white-space: nowrap;
 }
 
-.app-topbar__user-role {
-  font-size: 11px;
+.app-topbar__version-tag {
+  font-weight: 600;
+  color: var(--kx-primary, var(--accent));
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.app-topbar__version-build {
   color: var(--kx-muted, var(--muted));
-  white-space: nowrap;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.app-topbar__meta-sep {
+  color: var(--kx-muted, var(--muted));
+  opacity: 0.5;
 }
 
 @keyframes app-topbar-dropdown-enter {
@@ -434,8 +485,7 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
     width: 100%;
     margin-top: 6px;
   }
-  .app-topbar__user-name,
-  .app-topbar__user-role {
+  .app-topbar__version {
     display: none;
   }
 }

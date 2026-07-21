@@ -7,9 +7,9 @@ import { logout as apiLogout } from './api/auth'
 import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
+import UserInfoDialog from './components/UserInfoDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
-import SystemStatusIndicator from './components/SystemStatusIndicator.vue'
 import AppTopbar from './components/shell/AppTopbar.vue'
 import { detectTheme, logoSrc } from './theme'
 import { SITE_LOGO_SIZE, SITE_TITLE } from './config/brand'
@@ -21,6 +21,7 @@ const route = useRoute()
 const router = useRouter()
 const { showLoginModal, openLogin, closeLogin } = useLoginModal()
 const showChangePassword = ref(false)
+const showUserInfo = ref(false)
 const passwordSuccessMessage = ref('')
 const mustChangePassword = computed(() => !!store.jwtToken && !!store.userInfo?.must_change_password)
 
@@ -130,6 +131,10 @@ async function logout() {
   router.push('/')
 }
 
+function openUserInfo() {
+  showUserInfo.value = true
+}
+
 function openChangePassword() {
   passwordSuccessMessage.value = ''
   showChangePassword.value = true
@@ -155,28 +160,16 @@ function handleChangePasswordSuccess() {
     <div class="auth-loading-text">{{ t('login.checking') || '正在检测登录状态…' }}</div>
   </div>
   <div v-else-if="isLoggedIn" class="app-layout app-layout--topbar">
-    <AppTopbar>
-      <template #actions>
-        <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('login.changePassword') }}</button>
-        <button class="btn btn-ghost btn-sm" @click="logout">{{ t('app.logout') }}</button>
-      </template>
-    </AppTopbar>
+    <AppTopbar
+      :version-info="versionInfo"
+      @user-info="openUserInfo"
+      @change-password="openChangePassword"
+      @logout="logout"
+    />
     <main class="main-content">
-      <header class="main-header">
-        <SystemStatusIndicator />
-        <div class="main-header-right">
-          <div v-if="passwordSuccessMessage" class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
-          <div class="header-meta">
-            <template v-if="versionInfo.version">
-              <span class="version-tag">v{{ versionInfo.version }}</span>
-              <template v-if="versionInfo.build_seq != null">
-                <span class="meta-sep" aria-hidden="true">·</span>
-                <span class="version-build">#{{ versionInfo.build_seq }}</span>
-              </template>
-            </template>
-          </div>
-        </div>
-      </header>
+      <div v-if="passwordSuccessMessage" class="main-banner">
+        <div class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
+      </div>
       <section class="main-body">
         <RouterView />
       </section>
@@ -214,6 +207,7 @@ function handleChangePasswordSuccess() {
     <LoginModal v-model="showLoginModal" />
   </div>
   <ChangePasswordDialog v-model="showChangePassword" :forced="mustChangePassword" @success="handleChangePasswordSuccess" />
+  <UserInfoDialog v-model="showUserInfo" />
 </template>
 
 <style scoped>
@@ -655,67 +649,8 @@ function handleChangePasswordSuccess() {
   overflow: hidden;
 }
 
-.main-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  min-height: 40px;
-  padding: 6px 24px;
-  border-bottom: 1px solid var(--border);
-  background: var(--sidebar);
-  gap: 12px;
-}
-
-/* 2026-07-21: topbar 模式下顶部 user badge（双行：name + role） */
-.topbar-user-badge {
-  display: inline-flex;
-  flex-direction: column;
-  line-height: 1.2;
-  text-align: end;
-  margin-inline-end: 4px;
-}
-.topbar-user-badge .topbar-user-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-}
-.topbar-user-badge .topbar-user-role {
-  font-size: 10px;
-  color: var(--muted);
-}
-
-.header-sidebar-toggle {
-  flex-shrink: 0;
-  min-width: 32px;
-  font-family: inherit;
-}
-
-.main-header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  min-width: 0;
-  /* Push the cluster to the inline-end of the header in both directions.
-   * `margin-inline-start: auto` is the logical equivalent of `margin-left: auto`
-   * and works regardless of <html dir>. */
-  margin-inline-start: auto;
-}
-
-.header-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: rgba(99, 102, 241, 0.08);
-  border-radius: 6px;
-  font-size: 11px;
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
+.main-banner {
+  padding: 8px 24px 0;
 }
 
 .main-body {
