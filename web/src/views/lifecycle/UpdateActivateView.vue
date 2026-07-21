@@ -310,13 +310,13 @@ void usePolling
 }
 .eyebrow {
   margin: 0 0 6px;
-  color: var(--accent-h, #1e4fd6);
+  color: var(--accent-h);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
 }
 .ua-page__header h1 { margin: 0 0 8px; font-size: 24px; }
-.ua-page__header p { margin: 0; color: var(--muted, #5b6b82); font-size: 14px; line-height: 1.6; }
+.ua-page__header p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
 .ua-page__actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .ua-grid {
   display: grid;
@@ -324,7 +324,7 @@ void usePolling
   grid-template-columns: 1fr;
 }
 .ua-card__title { font-weight: 600; }
-.hint { margin: 0 0 16px; color: var(--muted, #5b6b82); font-size: 13px; line-height: 1.6; }
+.hint { margin: 0 0 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .mb { margin-bottom: 12px; }
 @media (min-width: 900px) {
   .ua-grid { grid-template-columns: 1fr 1fr; }

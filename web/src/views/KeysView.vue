@@ -1088,7 +1088,7 @@ onBeforeUnmount(() => {
 }
 
 .has-cost {
-  color: var(--accent, #d4a017);
+  color: var(--accent);
   font-weight: 600;
 }
 
