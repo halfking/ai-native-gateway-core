@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 #
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  DEPRECATED — Use scripts/sync-from-252.sh instead                     ║
+# ║  This script handled schema-only sync. The replacement also handles    ║
+# ║  cold table data sync and partition detection in a single invocation.  ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+#
 # sync-252-schema-only.sh — Sync only the SCHEMA (DDL) from 252 to local.
 #
 # Use case:

@@ -1,4 +1,9 @@
 #!/bin/bash
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  DEPRECATED — Use scripts/sync-from-252.sh instead                     ║
+# ║  This script did single-table bidirectional sync and schema check.     ║
+# ║  The replacement handles full schema + cold data sync automatically.   ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 set -euo pipefail
 
 # PostgreSQL 双向同步脚本
