@@ -35,21 +35,20 @@ trap "rm -f $TEMP_ENV" EXIT
 sops -d "$ENC_FILE" > "$TEMP_ENV" || error "Failed to decrypt $ENC_FILE"
 
 if [[ "$TARGET" == "154" ]]; then
-  SSH_HOST="47.97.111.154"
+  SSH_HOST="${HOST_154:-47.97.111.154}"
   SSH_USER="root"
   SSH_KEY="${SSH_KEY_154:-$HOME/.ssh/id_ed25519}"
 elif [[ "$TARGET" == "252" ]]; then
-  SSH_HOST="115.29.212.252"
+  SSH_HOST="${HOST_252:-115.29.212.252}"
   SSH_USER="root"
   SSH_KEY="${SSH_KEY_252:-$HOME/.ssh/id_ed25519}"
 else  # kaixuan-1
-  SSH_HOST="192.168.31.28"
+  SSH_HOST="${KAIXUAN_1_HOST:-192.168.31.28}"
   SSH_USER="kaixuan"
   SSH_KEY="${SSH_KEY_KAIXUAN_1:-$HOME/.ssh/kaixuan1_id_rsa}"
 fi
 
-SSH_PORT=25022
-SSH_OPTS="-P $SSH_PORT -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes"
+SSH_PORT="${SSH_PORT:-25022}"
 SSH_CMD="-p $SSH_PORT -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes"
 
 info "Backing up remote ops-env.sh..."
@@ -58,7 +57,7 @@ ssh $SSH_CMD ${SSH_USER}@$SSH_HOST "mkdir -p /etc/llm-gateway-go; \
   cp /etc/llm-gateway-go/ops-env.sh /etc/llm-gateway-go/ops-env.sh.bak.\$(date +%s)" || true
 
 info "Uploading ops-env.sh to $SSH_HOST..."
-scp $SSH_OPTS "$TEMP_ENV" ${SSH_USER}@$SSH_HOST:/etc/llm-gateway-go/ops-env.sh || error "SCP failed"
+scp $SSH_CMD "$TEMP_ENV" ${SSH_USER}@$SSH_HOST:/etc/llm-gateway-go/ops-env.sh || error "SCP failed"
 ssh $SSH_CMD ${SSH_USER}@$SSH_HOST "chmod 600 /etc/llm-gateway-go/ops-env.sh"
 
 info "Setting up auto-load..."
@@ -88,13 +87,13 @@ REMOTE
 info "Verifying..."
 if [[ "$TARGET" == "154" ]]; then
   VAR="HOST_154_IP"
-  EXPECTED="47.97.111.154"
+  EXPECTED="$SSH_HOST"
 elif [[ "$TARGET" == "252" ]]; then
   VAR="HOST_252_IP"
-  EXPECTED="115.29.212.252"
+  EXPECTED="$SSH_HOST"
 else
   VAR="KAIXUAN_1_IP"
-  EXPECTED="192.168.31.28"
+  EXPECTED="$SSH_HOST"
 fi
 
 ACTUAL=$(ssh $SSH_CMD ${SSH_USER}@$SSH_HOST "bash -l -c 'echo \$$VAR'")

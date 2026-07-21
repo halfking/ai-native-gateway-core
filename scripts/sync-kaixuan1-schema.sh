@@ -34,8 +34,15 @@ BACKUP_DIR="$REPO_DIR/backups"
 TARGET_HOST="${TARGET_HOST:-192.168.31.8}"
 TARGET_PORT="${TARGET_PORT:-30432}"
 TARGET_USER="${TARGET_USER:-llm_gateway}"
-TARGET_PASS="${TARGET_PASS:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}"
 TARGET_DB="${TARGET_DB:-llm_gateway}"
+
+# 必填：TARGET_PASS 必须从环境变量或 --target-pass 注入，仓库中无明文
+TARGET_PASS="${TARGET_PASS:-}"
+if [[ -z "$TARGET_PASS" ]]; then
+  echo "ERROR: TARGET_PASS not set. Use --target-pass or set env TARGET_PASS." >&2
+  echo "  Inject via env-injector before running." >&2
+  exit 1
+fi
 
 SCHEMA_ONLY=false
 
