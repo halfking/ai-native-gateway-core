@@ -1,0 +1,8 @@
+{
+  "id": "T-04",
+  "name": "anthropic-vision-source",
+  "model": "claude-3-5-sonnet-20241022",
+  "endpoint": "/v1/messages",
+  "provider": "anthropic",
+  "format": "anthropic-source-base64"
+}
