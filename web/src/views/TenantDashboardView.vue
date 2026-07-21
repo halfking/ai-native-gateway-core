@@ -843,7 +843,7 @@ onUnmounted(() => {
   border-radius: 5px;
 }
 .bar-fill.requests {
-  background: linear-gradient(90deg, #6366f1, #818cf8);
+  background: linear-gradient(90deg, var(--accent), var(--accent-h));
 }
 .bar-meta {
   font-size: 12px;
@@ -924,7 +924,7 @@ onUnmounted(() => {
   background: linear-gradient(180deg, #f59e0b, #d97706);
 }
 .trend-bar.requests {
-  background: linear-gradient(180deg, #6366f1, #4f46e5);
+  background: linear-gradient(180deg, var(--accent), var(--accent-h));
 }
 .trend-date {
   position: absolute;
