@@ -9,6 +9,9 @@
 # or manually export SSH_PASS_KAIXUAN1, PG_PASS_KAIXUAN1, REGISTRY_PASS_KAIXUAN1.
 # ============================================================================
 
+# ── Target type (docker / direct / tunnel) ──────────────────────────────
+TARGET_TYPE="direct"
+
 # ── SSH ────────────────────────────────────────────────────────────────────
 SSH_HOST="192.168.31.28"
 SSH_PORT="22"

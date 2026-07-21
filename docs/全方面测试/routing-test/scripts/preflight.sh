@@ -32,7 +32,7 @@ check "gateway container" docker inspect --format '{{.State.Running}}' "$GATEWAY
 check "existing mock tooling" test -x "$ROOT/docs/全方面测试/tools/start_suppliers.sh"
 check "existing seed data" test -f "$ROOT/docs/全方面测试/data/seed.sql"
 check "existing mock credentials" test -f "$ROOT/sql/scripts/04-loadtest-mock-credentials.sql"
-check "schema synchronization script" test -x "$ROOT/scripts/sync-252-schema-only.sh"
+check "schema synchronization script" test -x "$ROOT/scripts/sync-from-252.sh"
 check "routing client builds" go build ./cmd/routing-test-client
 
 if (( failures > 0 )); then

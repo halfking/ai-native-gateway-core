@@ -103,7 +103,7 @@ TGT_DB="$PG_DB"
 # the docker container's published port. When the target is the local docker
 # container (env file sets DOCKER_HOST="local" + DOCKER_PG_CONTAINER), route all
 # target access through `docker exec -i` instead of `psql -h localhost`.
-# This mirrors sync-252-schema-only.sh and avoids hitting the wrong instance
+# This mirrors sync-from-252.sh and avoids hitting the wrong instance
 # (see skill pg-sync-252-to-env Q0).
 TGT_IS_LOCAL_DOCKER=false
 TGT_CONTAINER="${DOCKER_PG_CONTAINER:-}"
