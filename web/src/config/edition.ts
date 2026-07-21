@@ -24,7 +24,13 @@ function envOpsOverride(): boolean | null {
   return null
 }
 
-/** Whether the ops-center nav group should be visible right now. */
+/**
+ * Whether the ops-center nav group should be visible right now.
+ *
+ * audit 2026-07-22 (A): 探测到 maintain 可达时，运维中心菜单优先用 maintain
+ * 远程 `/maintain-api/menu/ops` 返回的超集；否则降级到本地 6 项兜底，
+ * vibecoding 始终由本地菜单挂载（不在 maintain 描述里）。
+ */
 export function showOpsPlatform(): boolean {
   const forced = envOpsOverride()
   if (forced !== null) return forced
@@ -37,6 +43,81 @@ export function showOpsPlatform(): boolean {
  */
 export function isCoreNode(): boolean {
   return showOpsPlatform()
+}
+
+/** Cached remote ops menu (maintain). `null` while loading or when absent. */
+let remoteOpsMenu: OpsMenuGroup[] | null = null
+let remoteOpsMenuAt = 0
+let remoteOpsMenuPromise: Promise<OpsMenuGroup[] | null> | null = null
+const REMOTE_OPS_MENU_TTL_MS = 5 * 60_000
+
+export type OpsMenuItem = {
+  path: string
+  label: string
+  labelKey?: string
+  icon?: string
+  super?: boolean
+  hide_for_tenant?: boolean
+  external?: boolean
+  sort?: number
+}
+
+export type OpsMenuGroup = {
+  id: string
+  label: string
+  items: OpsMenuItem[]
+}
+
+export type OpsMenuDocument = { version: number; groups: OpsMenuGroup[] }
+
+async function loadRemoteOpsMenu(force = false): Promise<OpsMenuGroup[] | null> {
+  if (!showOpsPlatform()) return null
+  const now = Date.now()
+  if (!force && remoteOpsMenu && now - remoteOpsMenuAt < REMOTE_OPS_MENU_TTL_MS) {
+    return remoteOpsMenu
+  }
+  if (!force && remoteOpsMenuPromise) return remoteOpsMenuPromise
+  remoteOpsMenuPromise = (async () => {
+    try {
+      const res = await fetch(`${MAINTAIN_API_BASE}/menu/ops?tenant_id=default`, {
+        credentials: 'omit',
+        cache: 'no-store',
+      })
+      if (!res.ok) return null
+      const doc = (await res.json()) as OpsMenuDocument
+      remoteOpsMenu = doc.groups || []
+      remoteOpsMenuAt = Date.now()
+      return remoteOpsMenu
+    } catch {
+      return null
+    } finally {
+      remoteOpsMenuPromise = null
+    }
+  })()
+  return remoteOpsMenuPromise
+}
+
+/** Local fallback menu (when maintain is unreachable or remote menu not yet fetched). */
+export const LOCAL_OPS_MENU: OpsMenuGroup[] = [
+  {
+    id: 'opsplatform',
+    label: '运维中心',
+    items: [
+      { path: '/maintain/ops/overview', label: '运维总览', icon: '🧭', super: true, hide_for_tenant: true, external: true },
+      { path: '/maintain/ops/center', label: '中心运维', icon: '🖥️', super: true, hide_for_tenant: true, external: true },
+      { path: '/maintain/ops/downloads', label: '发布与下载', icon: '📦', super: true, hide_for_tenant: true, external: true },
+      { path: '/maintain/ops/licenses', label: 'License 管理', icon: '🔑', super: true, hide_for_tenant: true, external: true },
+      { path: '/maintain/ops/faults', label: '故障管理', icon: '⚠️', super: true, hide_for_tenant: true, external: true },
+      { path: '/maintain/ops/autoupdate', label: '自动更新', icon: '🛰️', super: true, hide_for_tenant: true, external: true },
+    ],
+  },
+]
+
+/** Resolve the ops-center menu (remote superset if available, else local fallback). */
+export async function resolveOpsMenu(): Promise<OpsMenuGroup[]> {
+  const remote = await loadRemoteOpsMenu()
+  if (remote && remote.length) return remote
+  return LOCAL_OPS_MENU
 }
 
 export function isMaintainProbed(): boolean {

@@ -39,6 +39,11 @@ export const moduleEntitlementApi = {
     const q = status ? `?status=${encodeURIComponent(status)}` : ''
     return request<{ items: ModuleEntitlement[] }>(`/admin/module-entitlements${q}`)
   },
+  /** 我的申请（maintain 按 AuthContext.Username 过滤）。 */
+  listMine: (status?: string) => {
+    const q = status ? `?status=${encodeURIComponent(status)}` : ''
+    return request<{ items: ModuleEntitlement[] }>(`/admin/module-entitlements/mine${q}`)
+  },
   apply: (payload: {
     module_id: string
     display_name?: string

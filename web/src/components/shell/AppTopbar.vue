@@ -17,7 +17,12 @@ import UserMenuDropdown from './UserMenuDropdown.vue'
 import { detectTheme, logoSrc } from '../../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE } from '../../config/brand'
 import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from '../../store'
-import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, visibleNavGroups, visibleNavItems } from '../../config/appNav'
+import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, visibleNavGroups, visibleNavItems, type NavGroup } from '../../config/appNav'
+import {
+  LOCAL_OPS_MENU,
+  resolveOpsMenu,
+  type OpsMenuGroup,
+} from '../../config/edition'
 
 export interface VersionInfo {
   version?: string
@@ -69,11 +74,51 @@ const navPrimaryItems = computed(() => visibleNavItems(NAV_PRIMARY_ITEMS, {
   isTenantPortal: isTenantPortal.value,
 }))
 
-const navGroups = computed(() => visibleNavGroups(NAV_GROUPS, {
-  isSuperAdmin: isSuperAdmin.value,
-  isPlatformOps: isPlatformOps.value,
-  isTenantPortal: isTenantPortal.value,
-}))
+const opsMenuOverrides = ref<OpsMenuGroup[] | null>(null)
+
+function mergeRemoteOps(localGroups: NavGroup[], remote: OpsMenuGroup[] | null): NavGroup[] {
+  if (!remote || !remote.length) return localGroups
+  const merged: NavGroup[] = []
+  for (const g of localGroups) {
+    if (g.id === 'opsplatform') continue
+    merged.push(g)
+  }
+  for (const g of remote) {
+    merged.push({
+      id: g.id,
+      label: g.label,
+      items: g.items.map((it) => ({
+        path: it.path,
+        label: it.label,
+        labelKey: it.labelKey,
+        icon: it.icon || '•',
+        super: it.super,
+        hideForTenant: it.hide_for_tenant,
+        external: it.external,
+        exact: false,
+      })),
+    })
+  }
+  return merged
+}
+
+const navGroups = computed(() => {
+  const local = visibleNavGroups(NAV_GROUPS, {
+    isSuperAdmin: isSuperAdmin.value,
+    isPlatformOps: isPlatformOps.value,
+    isTenantPortal: isTenantPortal.value,
+  })
+  if (!opsMenuOverrides.value) return local
+  return mergeRemoteOps(local, opsMenuOverrides.value)
+})
+
+onMounted(async () => {
+  try {
+    opsMenuOverrides.value = await resolveOpsMenu()
+  } catch {
+    opsMenuOverrides.value = LOCAL_OPS_MENU
+  }
+})
 
 const openGroupId = ref<string | null>(null)
 const dropdownStyle = ref<Record<string, string>>({})
