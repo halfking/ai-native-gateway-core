@@ -1404,10 +1404,10 @@ watch(activeTab, async (tab) => {
 }
 .tab-btn:hover:not(.active) { color: var(--text); }
 .tab-btn.active {
-  border-color: var(--primary, #6366f1);
+  border-color: var(--primary);
   color: var(--text);
   font-weight: 600;
-  outline: 2px solid color-mix(in srgb, var(--primary, #6366f1) 24%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--primary) 24%, transparent);
 }
 .tab-count {
   font-size: 11px;
@@ -1498,8 +1498,8 @@ watch(activeTab, async (tab) => {
 }
 
 .family-chip.active {
-  border-color: var(--primary, #6366f1);
-  outline: 2px solid color-mix(in srgb, var(--primary, #6366f1) 24%, transparent);
+  border-color: var(--primary);
+  outline: 2px solid color-mix(in srgb, var(--primary) 24%, transparent);
 }
 
 .family-chip code {
@@ -1545,7 +1545,7 @@ watch(activeTab, async (tab) => {
   border-radius: 12px; padding: 2px 8px; font-size: 12px; cursor: pointer;
   display: inline-flex; align-items: center; gap: 4px;
 }
-.tag-chip.active { outline: 2px solid var(--primary, #6366f1); }
+.tag-chip.active { outline: 2px solid var(--primary); }
 .tag-chip.disabled { opacity: .38; cursor: not-allowed; }
 .tag-chip:disabled { opacity: .38; cursor: not-allowed; }
 .tag-chip .cnt { color: var(--text-muted); font-size: 10px; }

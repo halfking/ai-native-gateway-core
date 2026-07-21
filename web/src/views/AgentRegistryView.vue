@@ -650,7 +650,7 @@ onBeforeUnmount(() => {
   margin: 6px 0 0;
   padding: 10px 12px;
   background: var(--surface-secondary, rgba(255, 255, 255, 0.04));
-  border: 1px solid var(--border, #333);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 11px;
   font-family: 'SF Mono', 'Fira Code', monospace;
