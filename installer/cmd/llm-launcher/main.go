@@ -78,6 +78,48 @@ func (d *daemon) getCurrentPlan() string {
 	return d.currentPlanID
 }
 
+// terminalStates are states where a plan is finished (success or settled
+// failure/rollback) and shouldn't block creating a new plan or be resumed.
+var terminalStates = map[string]bool{
+	store.StateDone: true, store.StateFailed: true, store.StateRolledBack: true,
+}
+
+// findPlanForVersion returns the most recent non-terminal plan whose
+// Target.Version matches, or nil. Used by checker OnUpdate to dedup (I1):
+// don't create a second NOTIFIED plan for a version already pending.
+func (d *daemon) findPlanForVersion(version string) *store.Plan {
+	plans, err := d.store.LoadAll()
+	if err != nil {
+		slog.Warn("LoadAll for dedup failed", "err", err)
+		return nil
+	}
+	for _, p := range plans { // LoadAll is newest-first
+		if p.Target.Version == version && !terminalStates[p.State] {
+			return p
+		}
+	}
+	return nil
+}
+
+// restoreInProgressPlan (I3): on daemon startup, find the most recent
+// non-terminal plan and adopt it as currentPlanID so the UI shows it.
+// Without this, a daemon restart mid-PREPARED (or NOTIFIED awaiting
+// operator action) loses the plan from the UI until the next checker tick.
+func (d *daemon) restoreInProgressPlan() {
+	plans, err := d.store.LoadAll()
+	if err != nil {
+		slog.Warn("LoadAll for restore failed", "err", err)
+		return
+	}
+	for _, p := range plans {
+		if !terminalStates[p.State] {
+			d.setCurrentPlan(p.ID)
+			slog.Info("restored in-progress plan on startup", "plan", p.ID, "state", p.State)
+			return
+		}
+	}
+}
+
 func main() {
 	var (
 		listen        = flag.String("listen", ":8781", "listen address (client-facing)")
@@ -114,6 +156,11 @@ func main() {
 
 	// Build proxy first — orchestrator needs it via ActiveSwitcher.
 	d.proxy = proxy.New(activeAddr)
+
+	// I3: restore any in-progress plan so the UI shows it after a restart.
+	// (e.g. daemon crashed mid-PREPARED, or was restarted while a NOTIFIED
+	// plan awaited operator action.)
+	d.restoreInProgressPlan()
 
 	// Backend (compose only for MVP).
 	bk := backend.NewComposeBackend(backend.ComposeConfig{
@@ -200,6 +247,13 @@ func main() {
 			Channel:        *channel,
 		},
 		OnUpdate: func(r *checker.FoundRelease) {
+			// I1 dedup: if there's already a non-terminal plan targeting the
+			// same version, don't create a duplicate. Otherwise over a weekend
+			// the operator accumulates dozens of NOTIFIED plans for v1.5.0.
+			if existing := d.findPlanForVersion(r.Version); existing != nil {
+				slog.Info("new version already has pending plan, skipping", "version", r.Version, "plan", existing.ID, "state", existing.State)
+				return
+			}
 			plan := &store.Plan{
 				ID:        fmt.Sprintf("plan-%d", time.Now().UnixNano()),
 				CreatedAt: time.Now().UTC(),

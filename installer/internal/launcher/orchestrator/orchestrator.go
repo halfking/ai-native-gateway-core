@@ -48,6 +48,11 @@ type Orchestrator struct {
 	cfg  Config
 	done chan struct{}
 
+	// opMu serializes Prepare/Apply/Rollback (I2). Without it, two
+	// concurrent Prepare calls would both try to stage a green container
+	// on the same port, or a Rollback could race an in-flight Apply.
+	opMu sync.Mutex
+
 	// retainedCancel tracks per-plan retained-remove goroutines so Rollback
 	// can cancel a pending remove before it kills the blue we just switched
 	// back to (I5). Guarded by retainedMu.
@@ -80,6 +85,8 @@ func (o *Orchestrator) Stop() {
 // Prepare runs: Stage green → Migrate → Health gate → PREPARED.
 // On any failure: cleans up green, plan marked FAILED.
 func (o *Orchestrator) Prepare(ctx context.Context, current, target store.Release) (*store.Plan, error) {
+	o.opMu.Lock()
+	defer o.opMu.Unlock()
 	plan := &store.Plan{
 		ID:         newPlanID(),
 		CreatedAt:  time.Now().UTC(),
@@ -125,6 +132,8 @@ func (o *Orchestrator) Prepare(ctx context.Context, current, target store.Releas
 // Apply: PREPARED → ACTIVATING → DRAINING → DONE.
 // Switches proxy to green, drains blue, schedules retained remove.
 func (o *Orchestrator) Apply(ctx context.Context, planID string) error {
+	o.opMu.Lock()
+	defer o.opMu.Unlock()
 	plan, err := o.cfg.Store.Load(planID)
 	if err != nil {
 		return err
@@ -168,6 +177,8 @@ func (o *Orchestrator) Apply(ctx context.Context, planID string) error {
 // Only valid when state is DONE or FAILED (I4): rolling back a NOTIFIED
 // plan (no green staged) or PREPARING plan is a confusing no-op.
 func (o *Orchestrator) Rollback(ctx context.Context, planID string) error {
+	o.opMu.Lock()
+	defer o.opMu.Unlock()
 	plan, err := o.cfg.Store.Load(planID)
 	if err != nil {
 		return err
