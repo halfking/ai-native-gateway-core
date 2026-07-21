@@ -42,9 +42,14 @@ func (m *Manager) EnterRecovery(ctx context.Context, reason string) error {
 	if err := m.SetReady(ctx, false); err != nil {
 		return fmt.Errorf("ursm.v2: enter recovery: %w", err)
 	}
-	epoch, _ := m.rdb.Incr(ctx, store.EpochKey(m.prefix)).Result()
-	_ = m.rdb.HSet(ctx, store.EpochKey(m.prefix),
-		"reason", reason, "started_at", time.Now().UTC().Format(time.RFC3339)).Err()
-	_ = epoch
+	pipe := m.rdb.Pipeline()
+	pipe.HIncrBy(ctx, store.EpochKey(m.prefix), "counter", 1)
+	pipe.HSet(ctx, store.EpochKey(m.prefix),
+		"reason", reason,
+		"started_at", time.Now().UTC().Format(time.RFC3339),
+	)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("ursm.v2: enter recovery pipeline: %w", err)
+	}
 	return nil
 }
