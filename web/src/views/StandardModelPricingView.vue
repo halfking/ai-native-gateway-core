@@ -794,7 +794,7 @@ onMounted(load)
 @media (max-width: 520px) { .edit-grid { grid-template-columns: 1fr; } }
 .edit-field { display: flex; flex-direction: column; gap: 6px; }
 .edit-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-.link-sm { font-size: 11px; margin-left: auto; background: none; border: none; color: var(--accent-h, #6366f1); cursor: pointer; }
+.link-sm { font-size: 11px; margin-left: auto; background: none; border: none; color: var(--accent-h); cursor: pointer; }
 .modal-actions { display: flex; gap: 8px; margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); }
 .bulk-bar {
   display: flex; align-items: center; gap: 10px;

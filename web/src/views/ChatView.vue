@@ -1098,7 +1098,7 @@ function onKeydown(e: KeyboardEvent) {
   font-size: 11px;
   border-radius: 8px;
   background: rgba(64, 158, 255, 0.12);
-  color: var(--primary, #409eff);
+  color: var(--primary);
   border: 1px solid rgba(64, 158, 255, 0.3);
   white-space: nowrap;
   cursor: help;

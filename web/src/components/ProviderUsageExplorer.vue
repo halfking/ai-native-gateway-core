@@ -452,8 +452,8 @@ watch(() => props.timeQuery, () => {
 }
 
 .pue-close:hover {
-  color: var(--danger, #f85149);
-  border-color: var(--danger, #f85149);
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .pue-body {
