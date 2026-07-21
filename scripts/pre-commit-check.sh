@@ -3,12 +3,13 @@
 # Local pre-commit gate for llm-gateway-go — catches the recurring "AI auto-fix"
 # anti-pattern documented in docs/2026-06-21-three-day-audit.md §1.
 #
-# Runs four checks before each commit. ANY failure => exit 1, commit blocked.
+# Runs the following checks before each commit. ANY failure => exit 1, commit blocked.
 #
-#   1. Vue type-check (cd web && npx vue-tsc --noEmit)
+#   1. Vue type-check (cd web && npx vue-tsc --noEmit)  [web changes only]
 #   2. SQL lint: forbid `$1` inside `SET LOCAL` statements (PG placeholder trap)
-    #   3. Migration numbering: every sql/migrations/startup/NNN_*.sql must have a unique NNN
+#   3. Migration numbering: every sql/migrations/startup/NNN_*.sql must have a unique NNN
 #   4. go vet ./...  (cheap, runs in <2s)
+#   5. Web token compliance: forbid P0 purple-family + var(--token, #hex) fallback [web changes only]
 #
 # Install (one-time per clone):
 #   bash scripts/install-githooks.sh --pre-commit
@@ -238,6 +239,66 @@ has_staged_web_changes() {
   git diff --cached --name-only -- 'web/**' | grep -q .
 }
 
+# ── 5. Web token compliance: forbid P0 purple-family + var() fallbacks ───
+# 2026-07-22: rule 12 P0 forbids purple-family hex in UI accents. Without this
+# check the 1145 var(--token, #hex) fallback patterns and ~150 direct purple
+# hex usages that were cleaned up across 90+ files would silently regress.
+# Only runs when web/ files have changes (to keep go-only commits fast).
+check_web_token_compliance() {
+  if [[ ! -d web/src ]]; then
+    return 0
+  fi
+  local files
+  # Staged + working-tree + untracked web/src changes; covers all commit paths.
+  files=$( { git diff --cached --name-only -- 'web/src/**'; \
+             git diff --name-only -- 'web/src/**'; \
+             git ls-files --others --exclude-standard -- 'web/src/**'; } \
+          | grep -E '\.(vue|ts|css)$' | sort -u)
+  if [[ -z "$files" ]]; then
+    return 0
+  fi
+
+  # Pattern 1: var(--token, #hex) fallback (was 1145 occurrences).
+  local fallback_violations
+  fallback_violations=$(grep -nE 'var\(--[a-z-]+,\s*#[0-9a-fA-F]+\)' $files 2>/dev/null \
+                        | head -20 || true)
+  if [[ -n "$fallback_violations" ]]; then
+    echo "❌ var(--token, #hex) fallback patterns found (rule 12 P0):"
+    echo "$fallback_violations" | sed 's/^/         /'
+    echo "   CSS variables are defined in web/src/style.css; fallbacks are vestigial."
+    echo "   Use bare var(--token) — fallbacks are never evaluated."
+    return 1
+  fi
+
+  # Pattern 2: P0 purple-family hex (#667eea, #764ba2, #8b5cf6, #a78bfa,
+  # #7c3aed, #6366f1, #5b21b6) outside of single/double-quoted strings.
+  # Chart configs (ECharts) require static hex; chart files use quoted strings.
+  # The quoted-string exclusion prevents false positives on those.
+  local css_purple_hex
+  css_purple_hex=$(grep -nE '#[0-9a-fA-F]{6}\b' $files 2>/dev/null \
+                   | grep -iE '#(667eea|764ba2|8b5cf6|a78bfa|7c3aed|6366f1|5b21b6)\b' \
+                   | grep -vE "['\"]#[0-9a-fA-F]+['\"]" \
+                   | head -20 || true)
+  if [[ -n "$css_purple_hex" ]]; then
+    echo "❌ P0 purple-family hex found in CSS context (rule 12 §1):"
+    echo "$css_purple_hex" | sed 's/^/         /'
+    echo "   Replace with var(--accent) / var(--accent-h) / data-viz palette color."
+    return 1
+  fi
+
+  # Pattern 3: P0 purple-family rgba() (e.g. rgba(99,102,241,...))
+  local purple_rgba
+  purple_rgba=$(grep -nE 'rgba\((99,?\s*102,?\s*241|139,?\s*92,?\s*246|67,?\s*56,?\s*202|168,?\s*85,?\s*247|124,?\s*58,?\s*237)' $files 2>/dev/null \
+                | head -20 || true)
+  if [[ -n "$purple_rgba" ]]; then
+    echo "❌ P0 purple-family rgba() found (rule 12 §1):"
+    echo "$purple_rgba" | sed 's/^/         /'
+    echo "   Replace with color-mix(in srgb, var(--accent) X%, transparent)."
+    return 1
+  fi
+  return 0
+}
+
 # ── runner ────────────────────────────────────────────────────────────
 echo "pre-commit checks for llm-gateway-go"
 echo "==================================="
@@ -252,8 +313,10 @@ if has_staged_web_changes; then
   else
     skip_check "Vue: vue-tsc" "web/node_modules not installed (cd web && npm ci to enable)"
   fi
+  run_check "Web: token compliance" check_web_token_compliance
 else
   skip_check "Vue: vue-tsc" "no staged web changes"
+  skip_check "Web: token compliance" "no staged web changes"
 fi
 
 echo "==================================="
