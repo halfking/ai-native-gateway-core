@@ -64,7 +64,7 @@ html[data-theme='dark'] {
   --kx-danger-soft: rgba(240, 113, 103, 0.14);
   --kx-shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.28);
   --kx-shadow-md: 0 16px 40px rgba(0, 0, 0, 0.4);
-  --bg:        #0f1117;
+  --bg:        var(--kx-bg);
   --sidebar:   var(--kx-sidebar);
   --card:      var(--kx-surface);
   --bg-subtle: var(--kx-sidebar);

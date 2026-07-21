@@ -10,24 +10,19 @@ import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import SystemStatusIndicator from './components/SystemStatusIndicator.vue'
+import AppTopbar from './components/shell/AppTopbar.vue'
 import { detectTheme, logoSrc } from './theme'
 import { SITE_LOGO_SIZE, SITE_TITLE } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
-import { useSidebar } from './composables/useSidebar'
-import { useNavAccordion } from './composables/useNavAccordion'
-import { NAV_GROUPS, NAV_PRIMARY_ITEMS, visibleNavGroups, visibleNavItems, isNavItemActive } from './config/appNav'
 import { onMaintainAvailabilityChange, probeMaintainAvailable } from './config/edition'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const { showLoginModal, openLogin, closeLogin } = useLoginModal()
-const { collapsed, toggleSidebar } = useSidebar()
 const showChangePassword = ref(false)
 const passwordSuccessMessage = ref('')
 const mustChangePassword = computed(() => !!store.jwtToken && !!store.userInfo?.must_change_password)
-/** Bumps when Maintain probe settles so ops-center nav can recompute. */
-const maintainNavTick = ref(0)
 
 // 2026-07-09: isHydrating 防止页面在 auth probe 完成前误判为未登录。
 // 与 store.authHydrated 配合：App.vue onMounted 触发 /api/auth/me，settle 后翻为 true。
@@ -38,76 +33,37 @@ const brandLogo = ref(logoSrc(detectTheme()))
 const logoObserver = typeof MutationObserver !== 'undefined'
   ? new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
   : null
-const isSuperAdmin = computed(() => checkSuperAdmin())
-const isPlatformOps = computed(() => checkPlatformOps())
-const isTenantPortal = computed(() => !isPlatformOps.value)
-
-let stopMaintainWatch: (() => void) | null = null
 
 onMounted(async () => {
   brandLogo.value = logoSrc(detectTheme())
   logoObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
   // 2026-07-10: Auth hydration — probe /api/auth/me if JWT not already in localStorage.
-  // If store.jwtToken is already populated (from localStorage), we're authenticated.
-  // Otherwise, check if the HttpOnly cookie is still valid (for users who logged in
-  // before this JWT-persistence change). The server's /api/auth/me now returns a
-  // fresh access_token in the response so we can persist it to localStorage.
   try {
     if (!store.jwtToken && !store.apiKey) {
-      // No JWT in localStorage, no API key — check if cookie is still valid
       try {
         const me = await getAuthMe()
-        // Server may return {user, access_token, expires_at} or just user
         const meAny = me as any
         if (meAny?.access_token) {
           setJwtToken(meAny.access_token)
         }
         setUserInfo(me)
       } catch {
-        // 401 → no valid cookie either, user is logged out
         clearJwt()
       }
     }
-    // else: store.jwtToken or store.apiKey already present → authenticated
   } finally {
     markAuthHydrated()
   }
 
-  // Dynamically inject 运维中心 when ai-native-maintain is reachable.
-  stopMaintainWatch = onMaintainAvailabilityChange(() => {
-    maintainNavTick.value += 1
-  })
   void probeMaintainAvailable()
+  // 保留 maintain 可用性订阅入口以便未来 topbar 内 onUnmounted 正确清理。
+  // 当前无回调（topbar 自取），不会泄漏 — onMaintainAvailabilityChange 在静态模块层仅保留全局 listener。
+  onMaintainAvailabilityChange(() => { /* noop */ })
 })
 
 onUnmounted(() => {
   logoObserver?.disconnect()
-  stopMaintainWatch?.()
-  stopMaintainWatch = null
 })
-
-const navPrimaryItems = computed(() => {
-  void maintainNavTick.value
-  return visibleNavItems(NAV_PRIMARY_ITEMS, {
-    isSuperAdmin: isSuperAdmin.value,
-    isPlatformOps: isPlatformOps.value,
-    isTenantPortal: isTenantPortal.value,
-  })
-})
-
-const navGroups = computed(() => {
-  void maintainNavTick.value
-  return visibleNavGroups(NAV_GROUPS, {
-    isSuperAdmin: isSuperAdmin.value,
-    isPlatformOps: isPlatformOps.value,
-    isTenantPortal: isTenantPortal.value,
-  })
-})
-
-const { toggleGroup, isGroupExpanded, groupHasActive } = useNavAccordion(
-  navGroups,
-  computed(() => route.path),
-)
 
 const versionInfo = ref<{
   version?: string
@@ -188,140 +144,34 @@ function handleChangePasswordSuccess() {
 
 <template>
   <!--
-    2026-07-09: 三态渲染 — hydrating / logged-in / guest.
-    - isHydrating=true 时显示加载中，避免在 /api/auth me 探测完成前误判为未登录
-    - 否则按 isLoggedIn 切 app-layout / guest-layout
+    2026-07-21: 三态渲染 — hydrating / logged-in / guest.
+    - isHydrating=true 时显示加载中
+    - 已登录态：顶部水平菜单（AppTopbar）+ 业务页（RouterView，业务页内部保持原貌）
+    - 未登录态：保持原 LifecycleShell / LandingView 体系
+    - 老板："其它页面风格保持不变" → 业务页 (DashboardView 等) 不动，只换外壳
   -->
   <div v-if="isHydrating" class="auth-loading">
     <div class="auth-loading-spinner" />
     <div class="auth-loading-text">{{ t('login.checking') || '正在检测登录状态…' }}</div>
   </div>
-  <div v-else-if="isLoggedIn" class="app-layout" :class="{ 'sidebar-collapsed': collapsed }">
-    <aside class="sidebar">
-      <RouterLink to="/" class="sidebar-logo" :title="SITE_TITLE">
-        <img
-          :src="brandLogo"
-          :width="SITE_LOGO_SIZE"
-          :height="SITE_LOGO_SIZE"
-          alt="开轩启圭"
-          class="sidebar-logo-img"
-        />
-        <span v-show="!collapsed" class="sidebar-logo-text">{{ SITE_TITLE }}</span>
-      </RouterLink>
-
-      <nav class="sidebar-nav">
-        <div v-if="navPrimaryItems.length" class="nav-primary">
-          <template v-for="item in navPrimaryItems" :key="item.path + item.label">
-            <a
-              v-if="item.external"
-              :href="item.path"
-              class="nav-item nav-item-primary"
-              :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
-            >
-              <span class="nav-icon">{{ item.icon }}</span>
-              <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
-            </a>
-            <RouterLink
-              v-else
-              :to="item.path"
-              class="nav-item nav-item-primary"
-              :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
-              :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
-            >
-              <span class="nav-icon">{{ item.icon }}</span>
-              <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
-            </RouterLink>
-          </template>
-        </div>
-
-        <section v-for="group in navGroups" :key="group.id" class="nav-group">
-          <button
-            v-if="!collapsed"
-            type="button"
-            class="nav-group-header"
-            :class="{
-              expanded: isGroupExpanded(group.id),
-              'has-active': groupHasActive(group.id),
-            }"
-            :aria-expanded="isGroupExpanded(group.id)"
-            @click="toggleGroup(group.id)"
-          >
-            <span class="nav-group-title">{{ group.labelKey ? t(group.labelKey) : group.label }}</span>
-            <span class="nav-group-chevron" aria-hidden="true" />
-          </button>
-          <div
-            v-show="collapsed || isGroupExpanded(group.id)"
-            class="nav-group-items"
-          >
-            <template v-for="item in group.items" :key="item.path + item.label">
-              <a
-                v-if="item.external"
-                :href="item.path"
-                class="nav-item"
-                :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
-              >
-                <span class="nav-icon">{{ item.icon }}</span>
-                <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
-              </a>
-              <RouterLink
-                v-else
-                :to="item.path"
-                class="nav-item"
-                :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
-                :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
-              >
-                <span class="nav-icon">{{ item.icon }}</span>
-                <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
-              </RouterLink>
-            </template>
-          </div>
-        </section>
-      </nav>
-
-      <div class="sidebar-footer">
-        <div v-if="store.userInfo" class="sidebar-user-badge">
-          <div class="sidebar-user-avatar" aria-hidden="true">
-            {{ (store.userInfo.display_name || store.userInfo.username || '?').charAt(0).toUpperCase() }}
-          </div>
-          <div v-show="!collapsed" class="sidebar-user-info">
-            <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
-            <span class="user-role">{{ store.userInfo.role ? t(`app.role.${store.userInfo.role}`) : '' }}</span>
-          </div>
-        </div>
-        <button
-          type="button"
-          class="sidebar-toggle"
-          :title="collapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')"
-          :aria-label="collapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')"
-          @click="toggleSidebar"
-        >
-          <span class="toggle-icon" aria-hidden="true">{{ collapsed ? '»' : '«' }}</span>
-          <span v-show="!collapsed" class="toggle-label">{{ t('nav.collapseSidebar') }}</span>
-        </button>
-      </div>
-    </aside>
-
+  <div v-else-if="isLoggedIn" class="app-layout app-layout--topbar">
+    <AppTopbar>
+      <template #actions>
+        <span v-if="store.userInfo" class="topbar-user-badge">
+          <span class="topbar-user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
+          <span v-if="store.userInfo.role" class="topbar-user-role">{{ t(`app.role.${store.userInfo.role}`) }}</span>
+        </span>
+        <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('login.changePassword') }}</button>
+        <button class="btn btn-ghost btn-sm" @click="logout">{{ t('app.logout') }}</button>
+      </template>
+    </AppTopbar>
     <main class="main-content">
       <header class="main-header">
-        <button
-          type="button"
-          class="header-sidebar-toggle btn btn-ghost btn-sm"
-          :title="collapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')"
-          @click="toggleSidebar"
-        >
-          {{ collapsed ? '»' : '«' }}
-        </button>
         <SystemStatusIndicator />
         <div class="main-header-right">
           <div v-if="passwordSuccessMessage" class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
           <div class="header-meta">
-            <template v-if="store.userInfo">
-              <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
-              <span class="meta-sep" aria-hidden="true">·</span>
-              <span class="user-role">{{ store.userInfo.role ? t(`app.role.${store.userInfo.role}`) : '' }}</span>
-            </template>
             <template v-if="versionInfo.version">
-              <span v-if="store.userInfo" class="meta-sep" aria-hidden="true">·</span>
               <span class="version-tag">v{{ versionInfo.version }}</span>
               <template v-if="versionInfo.build_seq != null">
                 <span class="meta-sep" aria-hidden="true">·</span>
@@ -329,10 +179,6 @@ function handleChangePasswordSuccess() {
               </template>
             </template>
           </div>
-          <ThemeToggle />
-          <LanguageSelector />
-          <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('login.changePassword') }}</button>
-          <button class="btn btn-ghost btn-sm" @click="logout">{{ t('app.logout') }}</button>
         </div>
       </header>
       <section class="main-body">
@@ -404,8 +250,20 @@ function handleChangePasswordSuccess() {
 
 .app-layout {
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
+}
+
+/* 2026-07-21: topbar 模式下，.app-layout 改为纵向 flex（topbar 在上 + main-content 在下）。
+ * 旧 sidebar 模式仍然保留 class 兼容，但已不在 DOM 里渲染。 */
+.app-layout--topbar {
+  flex-direction: column;
+}
+.app-layout--topbar .main-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-inline-start: 0;
 }
 
 .sidebar {
@@ -806,6 +664,24 @@ function handleChangePasswordSuccess() {
   border-bottom: 1px solid var(--border);
   background: var(--sidebar);
   gap: 12px;
+}
+
+/* 2026-07-21: topbar 模式下顶部 user badge（双行：name + role） */
+.topbar-user-badge {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.2;
+  text-align: end;
+  margin-inline-end: 4px;
+}
+.topbar-user-badge .topbar-user-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.topbar-user-badge .topbar-user-role {
+  font-size: 10px;
+  color: var(--muted);
 }
 
 .header-sidebar-toggle {

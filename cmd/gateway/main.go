@@ -113,6 +113,9 @@ var (
 	gAuditBus    *eventbus.MemoryBus
 	gLarkCh      *notification.LarkBotChannel
 	gApprovalMgr *sessionaudit.ApprovalManager
+	// gRestrictedMode 在 license 校验失败时设为 true；router 注册阶段
+	// 据此决定是否启用 licensing.RestrictedModeMiddleware。
+	gRestrictedMode bool
 )
 
 func main() {
@@ -296,7 +299,9 @@ func main() {
 			"/var/lib/kx-gateway",
 		); err != nil {
 			slog.Warn("license enforcement failed, entering restricted mode", "error", err)
-			// TODO: enable restricted mode middleware (留给后续任务)
+			// 2026-07-21: 设置全局受限模式标志，router 注册阶段会据此
+			// 启用 licensing.RestrictedModeMiddleware 阻止非白名单请求。
+			gRestrictedMode = true
 		} else {
 			slog.Info("license verification successful")
 		}
@@ -305,22 +310,29 @@ func main() {
 		if masterURL := os.Getenv("LICENSE_AUTHORITY_URL"); masterURL != "" {
 			homeDir, _ := os.UserHomeDir()
 			tokenDir := filepath.Join(homeDir, ".kx-gateway")
-			_ = tokenDir // TODO: use tokenDir when StartTokenRefreshDaemon is implemented
+			_ = tokenDir // 保留以兼容后续逻辑
 
-			// 后台启动守护进程（首次延迟 1 小时，之后每 6 天执行一次）
-			// TODO: implement StartTokenRefreshDaemon in licensing package
-			// go licensing.StartTokenRefreshDaemon(
-			// 	context.Background(),
-			// 	masterURL,
-			// 	refreshTokenPath,
-			// 	instanceTokenPath,
-			// 	6*24*time.Hour, // 518400 秒
-			// )
-			slog.Info("token refresh daemon configuration",
+			// 2026-07-21: 启用 token 自动续期守护进程。
+			// - 首次延迟 1 小时（避免启动风暴）
+			// - 之后每 6 天执行一次刷新
+			// - 失败不中断，自动按 BackoffConfig 退避
+			// - 守护进程使用独立 context，与主进程生命周期解耦
+			//   （关闭时由 daemon 内部的 ticker.Stop 自动回收）。
+			refreshTokenPath := filepath.Join(tokenDir, "refresh_token")
+			instanceTokenPath := filepath.Join(tokenDir, "instance_token")
+			daemonCtx, daemonCancel := context.WithCancel(context.Background())
+			defer daemonCancel() // 进程退出时通知守护进程退出
+			go licensing.StartTokenRefreshDaemon(
+				daemonCtx,
+				masterURL,
+				refreshTokenPath,
+				instanceTokenPath,
+				6*24*time.Hour, // 518400 秒 = 6 天
+			)
+			slog.Info("token refresh daemon started",
 				"master_url", masterURL,
 				"interval", "6d",
-				"initial_delay", "1h",
-				"status", "pending_implementation")
+				"initial_delay", "1h")
 		} else {
 			slog.Info("token refresh daemon disabled (LICENSE_AUTHORITY_URL not set)")
 		}
@@ -350,8 +362,13 @@ func main() {
 	if licensing.IsCommunityMode() {
 		slog.Warn("running in community mode",
 			"max_tenants", licensing.MaxCommunityTenants,
-			"features", "basic_api_only")
-		// TODO: wire community mode restrictions into middleware (留给后续任务)
+			"features", "basic_api_only",
+			"restrictions", licensing.GetCommunityModeRestrictions()["restrictions"])
+		// 2026-07-21: 社区模式的租户数量限制通过 admin API 主动检查
+		// （创建租户时校验），不在 middleware 层强制（middleware 难以
+		// 高效查询租户总数）。完整方案见 docs/TODO_COMMUNITY_MODE.md。
+		// 短期先暴露状态供 ops 仪表盘告警。
+		_ = licensing.GetCommunityModeRestrictions
 	}
 
 	cm := credential.NewManager()
@@ -3085,6 +3102,14 @@ func main() {
 		jwtSecret := resolveJWTSecret(os.Getenv("LLM_GATEWAY_JWT_SECRET"), cfg.SecretKey)
 		jwtMiddleware := newJWTMiddleware(jwtSecret)
 		e.Use(jwtMiddleware)
+
+		// 2026-07-21: 受限模式中间件必须在 jwtMiddleware 之前注册，
+		// 这样受限请求会先被白名单检查拦截，避免无效的 JWT 校验。
+		// 中间件内部已经包含 /api/healthz 等健康检查的放行逻辑。
+		if gRestrictedMode {
+			slog.Warn("enabling restricted mode middleware — only license/health/public endpoints are reachable")
+			e.Pre(licensing.RestrictedModeMiddleware())
+		}
 
 		requireSuperAdmin := newRequireSuperAdminMiddleware()
 
