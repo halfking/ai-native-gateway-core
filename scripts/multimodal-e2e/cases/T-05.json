@@ -4,5 +4,7 @@
   "model": "whisper-1",
   "endpoint": "/v1/audio/transcriptions",
   "provider": "openai",
-  "format": "multipart-audio"
+  "format": "multipart-audio",
+  "expected": "skip",
+  "skip_reason": "gateway does not yet implement /v1/audio/transcriptions multipart transport"
 }

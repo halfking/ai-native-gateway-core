@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -168,6 +169,7 @@ func installCmd() *cobra.Command {
 		skipPrompt bool
 		installDir string
 		configFile string
+		noOpen     bool
 	)
 
 	cmd := &cobra.Command{
@@ -179,6 +181,7 @@ func installCmd() *cobra.Command {
 				SkipPrompt: skipPrompt,
 				InstallDir: installDir,
 				ConfigFile: configFile,
+				NoOpen:     noOpen,
 			})
 		},
 	}
@@ -187,6 +190,7 @@ func installCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&skipPrompt, "skip-prompt", false, "跳过交互（需提供 --config）")
 	cmd.Flags().StringVar(&installDir, "dir", "", "安装目录（默认当前目录）")
 	cmd.Flags().StringVar(&configFile, "config", "", "配置文件路径（跳过交互）")
+	cmd.Flags().BoolVar(&noOpen, "no-open", false, "安装完成后不自动打开浏览器")
 
 	return cmd
 }
@@ -196,6 +200,7 @@ type installOpts struct {
 	SkipPrompt bool
 	InstallDir string
 	ConfigFile string
+	NoOpen     bool
 }
 
 func runInstall(opts installOpts) error {
@@ -420,6 +425,14 @@ prereqCheck:
 
 	if !health.AllOK() {
 		return fmt.Errorf("健康检查未全部通过，请查看 install-report.md")
+	}
+
+	// 安装成功且服务健康后，自动打开本地控制台（除非 --no-open）。失败
+	// 仅打印警告，不影响安装结果。
+	if !opts.NoOpen {
+		if err := openBrowser(cfg.AppPort); err != nil {
+			logWarn(fmt.Sprintf("打开浏览器失败（可手动访问 http://localhost:%d）: %v", cfg.AppPort, err))
+		}
 	}
 	return nil
 }
@@ -816,4 +829,40 @@ func printSummary(cfg *prompt.InstallConfig, health *dockerutil.HealthReport) {
 	fmt.Println()
 	fmt.Println("健康检查:")
 	fmt.Println(health.String())
+}
+
+// openBrowser opens the local gateway console in the user's default browser.
+// The command is OS-specific; on unknown platforms it returns an error so the
+// caller can print the URL for the user to open manually. Stdout/stderr of the
+// opener are discarded so a chatty helper app doesn't dirty our report.
+func openBrowser(port int) error {
+	url := fmt.Sprintf("http://localhost:%d", port)
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		// "start" is a cmd.exe builtin, not an executable, so shell out.
+		cmd = exec.Command("cmd", "/c", "start", "", url)
+	case "linux":
+		// xdg-open is the freedesktop standard; WSL may have wslview too.
+		if p, err := exec.LookPath("xdg-open"); err == nil {
+			cmd = exec.Command(p, url)
+		} else if p, err := exec.LookPath("wslview"); err == nil {
+			cmd = exec.Command(p, url)
+		} else {
+			return fmt.Errorf("no browser opener found (tried xdg-open, wslview); open %s manually", url)
+		}
+	default:
+		return fmt.Errorf("unsupported OS %s; open %s manually", runtime.GOOS, url)
+	}
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("launch opener: %w", err)
+	}
+	// Detach: don't wait on the browser process — it may stay open.
+	_ = cmd.Process.Release()
+	logInfo(fmt.Sprintf("已在默认浏览器中打开 %s", url))
+	return nil
 }

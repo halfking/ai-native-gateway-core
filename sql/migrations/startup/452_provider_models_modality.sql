@@ -1,8 +1,21 @@
---
--- Name: model_offers; Type: VIEW; Schema: public; Owner: -
---
+-- Migration: 452_provider_models_modality
+-- Purpose: persist provider-specific modality when the canonical model is too generic.
 
-CREATE VIEW public.model_offers AS
+BEGIN;
+
+ALTER TABLE public.provider_models
+    ADD COLUMN IF NOT EXISTS modality text NOT NULL DEFAULT 'text';
+
+DO $$
+BEGIN
+    ALTER TABLE public.provider_models
+        DROP CONSTRAINT IF EXISTS provider_models_modality_check;
+    ALTER TABLE public.provider_models
+        ADD CONSTRAINT provider_models_modality_check
+        CHECK (modality IN ('text', 'vision', 'audio', 'video', 'multimodal', 'embedding'));
+END $$;
+
+CREATE OR REPLACE VIEW public.model_offers AS
  SELECT cmb.id,
     cmb.credential_id,
     pm.canonical_id,
@@ -37,3 +50,7 @@ CREATE VIEW public.model_offers AS
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
+COMMENT ON COLUMN public.provider_models.modality IS
+    'Provider-specific modality fallback when models_canonical.modality is generic';
+
+COMMIT;
