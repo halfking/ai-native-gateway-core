@@ -46,19 +46,6 @@ const offlinePayload = ref('')
 const activateMode = ref<'online' | 'offline'>('online')
 const registerResult = ref<{ registered: boolean; deferred?: boolean; message?: string } | null>(null)
 const instanceIdCopied = ref(false)
-const offlineRequestCopied = ref(false)
-
-// 生成离线激活申请码（JSON格式）
-const offlineActivationRequest = computed(() => {
-  if (!instanceId.value || !hardwareHash.value) return ''
-  return JSON.stringify({
-    instance_id: instanceId.value,
-    hardware_hash: hardwareHash.value,
-    network_summary: networkSummary.value || 'offline',
-    device_name: deviceName.value || 'unknown',
-    timestamp: new Date().toISOString(),
-  }, null, 2)
-})
 
 const canActivate = computed(() => {
   if (!hardwareHash.value.trim() || !instanceId.value.trim()) return false
@@ -223,15 +210,6 @@ async function copyInstanceId() {
     await navigator.clipboard.writeText(instanceId.value)
     instanceIdCopied.value = true
     setTimeout(() => { instanceIdCopied.value = false }, 2000)
-  } catch { /* ignore */ }
-}
-
-async function copyOfflineRequest() {
-  if (!offlineActivationRequest.value) return
-  try {
-    await navigator.clipboard.writeText(offlineActivationRequest.value)
-    offlineRequestCopied.value = true
-    setTimeout(() => { offlineRequestCopied.value = false }, 2000)
   } catch { /* ignore */ }
 }
 
@@ -462,27 +440,21 @@ onMounted(async () => {
         <!-- 离线激活模式 -->
         <template v-else>
           <p class="muted mb">
-            <strong>第一步</strong>：复制下方的激活申请码，粘贴到
+            <strong>第一步</strong>：将实例ID（已在上一步显示）复制到
             <a href="https://llm.kxpms.cn/maintain/license" target="_blank" rel="noopener">公网激活站点</a>
-            获取激活响应。
+            获取激活响应码。
           </p>
           
-          <el-form label-position="top">
-            <el-form-item label="激活申请码（复制到公网站点）">
-              <el-input
-                :model-value="offlineActivationRequest"
-                type="textarea"
-                :rows="8"
-                readonly
-                class="mono-input"
-              />
-            </el-form-item>
-          </el-form>
-          <div class="mb">
-            <button type="button" class="btn btn-secondary" @click="copyOfflineRequest">
-              {{ offlineRequestCopied ? '✓ 已复制' : '复制激活申请码' }}
-            </button>
-          </div>
+          <el-descriptions :column="1" size="small" border class="mb">
+            <el-descriptions-item label="实例 ID">
+              <div class="instance-id-row">
+                <span class="mono">{{ instanceId || '—' }}</span>
+                <el-button class="btn-no-arrow" size="small" type="primary" link :disabled="!instanceId" @click="copyInstanceId">
+                  {{ instanceIdCopied ? '✓ 已复制' : '复制实例 ID' }}
+                </el-button>
+              </div>
+            </el-descriptions-item>
+          </el-descriptions>
 
           <el-divider />
 
