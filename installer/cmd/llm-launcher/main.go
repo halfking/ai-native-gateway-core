@@ -89,6 +89,7 @@ func main() {
 		masterURL     = flag.String("master-url", "https://llm.kxpms.cn", "master URL for update checks")
 		channel       = flag.String("channel", "stable", "update channel")
 		checkInterval = flag.Duration("check-interval", 1*time.Hour, "update check interval")
+		envFile       = flag.String("env-file", "/etc/kx-gateway/env", "env file shared with green container (DATABASE_URL etc.)")
 	)
 	flag.Parse()
 
@@ -118,6 +119,10 @@ func main() {
 	bk := backend.NewComposeBackend(backend.ComposeConfig{
 		ProjectDir: filepath.Join(*dataDir, "compose"),
 		GreenPort:  8783,
+		// EnvFile lets the green container inherit DATABASE_URL/REDIS/secrets
+		// from the same env file blue uses. Without it, green starts with no
+		// DB and /healthz still returns 200 (C2).
+		EnvFile: *envFile,
 	})
 
 	// Orchestrator wires backend + migrator + proxy switcher + store.

@@ -238,3 +238,55 @@ func TestRollbackSwitchesBack(t *testing.T) {
 		t.Fatalf("expected green Remove after rollback, calls: %v", bk.calls)
 	}
 }
+
+// TestApplyPersistsActive (C1): Apply must write active.json so daemon
+// restart restores the proxy target instead of reverting to drained blue.
+func TestApplyPersistsActive(t *testing.T) {
+	st := store.New(t.TempDir())
+	_ = st.Save(&store.Plan{
+		ID: "p1", State: store.StatePrepared,
+		Current:    store.Release{Version: "v1.4.2"},
+		Target:     store.Release{Version: "v1.5.0"},
+		BlueAddr:   "127.0.0.1:8782",
+		GreenAddr:  "127.0.0.1:8783",
+		ActiveAddr: "127.0.0.1:8782",
+	})
+	o := New(Config{
+		Store: st, Backend: &fakeBackend{}, Migrator: &fakeMigrator{},
+		ActiveSwitcher: &fakeSwitcher{current: "127.0.0.1:8782"},
+		RetainDuration: 1 * time.Hour,
+	})
+	if err := o.Apply(context.Background(), "p1"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	ap, err := st.LoadActive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ap == nil || ap.Addr != "127.0.0.1:8783" || ap.Version != "v1.5.0" {
+		t.Fatalf("active.json not persisted correctly: %+v", ap)
+	}
+}
+
+// TestRollbackRejectsNonTerminal (I4): Rollback must reject plans that
+// aren't DONE or FAILED (rolling back NOTIFIED/PREPARING/PREPARED is a
+// confusing no-op or worse).
+func TestRollbackRejectsNonTerminal(t *testing.T) {
+	for _, state := range []string{store.StateNotified, store.StatePreparing, store.StatePrepared} {
+		t.Run(state, func(t *testing.T) {
+			st := store.New(t.TempDir())
+			_ = st.Save(&store.Plan{
+				ID: "p1", State: state,
+				BlueAddr: "127.0.0.1:8782", GreenAddr: "127.0.0.1:8783",
+			})
+			o := New(Config{
+				Store: st, Backend: &fakeBackend{}, Migrator: &fakeMigrator{},
+				ActiveSwitcher: &fakeSwitcher{},
+			})
+			err := o.Rollback(context.Background(), "p1")
+			if err == nil {
+				t.Fatalf("expected rollback of %s plan to fail", state)
+			}
+		})
+	}
+}
