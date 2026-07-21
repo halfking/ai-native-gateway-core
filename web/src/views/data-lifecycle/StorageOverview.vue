@@ -608,8 +608,8 @@ function fmtNum(n: number) {
   border-radius: 10px;
   font-size: 11px;
   font-weight: 500;
-  background: rgba(99, 102, 241, 0.15);
-  color: #818cf8;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent-h);
 }
 .badge.warn { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
 .badge.danger { background: rgba(248, 113, 113, 0.15); color: #f87171; }
@@ -651,7 +651,7 @@ function fmtNum(n: number) {
 .metric-val.mono {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
-  color: #818cf8;
+  color: var(--accent-h);
   max-width: 70%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -672,7 +672,7 @@ function fmtNum(n: number) {
   height: 100%;
   transition: width 0.3s;
 }
-.bar-seg.tables { background: #6366f1; }
+.bar-seg.tables { background: var(--accent); }
 .bar-seg.indexes { background: #34d399; }
 .bar-seg.toast { background: #fbbf24; }
 .bar-seg.ok { background: #34d399; }
@@ -694,7 +694,7 @@ function fmtNum(n: number) {
   margin-right: 4px;
   vertical-align: middle;
 }
-.legend i.dot.tables { background: #6366f1; }
+.legend i.dot.tables { background: var(--accent); }
 .legend i.dot.indexes { background: #34d399; }
 .legend i.dot.toast { background: #fbbf24; }
 
@@ -735,7 +735,7 @@ function fmtNum(n: number) {
   padding: 2px 6px;
   background: #0f1117;
   border-radius: 4px;
-  color: #818cf8;
+  color: var(--accent-h);
 }
 
 .pct-track {
@@ -818,7 +818,7 @@ function fmtNum(n: number) {
   border-left: 2px solid #6366f1;
   border-radius: 4px;
   font-size: 12px;
-  color: #818cf8;
+  color: var(--accent-h);
 }
 
 @media (max-width: 800px) {
@@ -975,7 +975,7 @@ function fmtNum(n: number) {
 .modal-section-title {
   font-size: 12px;
   font-weight: 600;
-  color: #818cf8;
+  color: var(--accent-h);
   margin-bottom: 6px;
   letter-spacing: 0.02em;
 }
