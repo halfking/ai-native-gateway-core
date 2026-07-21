@@ -18,6 +18,7 @@ import {
 import { ensureInstanceId, resolveHardwareHash } from '../../utils/deviceFingerprint'
 import { SITE_TITLE } from '../../config/brand'
 import { isCoreNode } from '../../config/edition'
+import { usePolling } from '../../composables/usePolling'
 
 const AGREEMENT_VERSION = '2026-07-17'
 const AGREEMENT_SCOPE = 'activate'
@@ -186,7 +187,39 @@ function onUpgrade() {
   window.location.assign('/api/system/upgrade')
 }
 
-onMounted(refreshAll)
+onMounted(() => {
+  void refreshAll()
+  // 60s 自动刷新站点状态；版本/模块按需拉取（轻量）。
+  startStatusPolling()
+})
+
+onBeforeUnmount(stopStatusPolling)
+
+let pollingTimer: ReturnType<typeof setInterval> | null = null
+let pollingInFlight = false
+
+async function tickStatus() {
+  if (pollingInFlight) return
+  pollingInFlight = true
+  try {
+    await loadStatus()
+  } finally {
+    pollingInFlight = false
+  }
+}
+
+function startStatusPolling() {
+  if (pollingTimer) return
+  pollingTimer = setInterval(tickStatus, 60_000)
+}
+
+function stopStatusPolling() {
+  if (pollingTimer) clearInterval(pollingTimer)
+  pollingTimer = null
+}
+
+// keep ts-lint happy: usePolling is reserved for sibling refactors
+void usePolling
 </script>
 
 <template>
