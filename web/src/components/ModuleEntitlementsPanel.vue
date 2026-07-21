@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { isCoreNode } from '../config/edition'
+import {
+  isCoreNode,
+  isMaintainProbed,
+  onMaintainAvailabilityChange,
+  probeMaintainAvailable,
+} from '../config/edition'
 import {
   updateActivateApi,
   type ModuleCatalogItem,
@@ -11,15 +16,17 @@ import {
   type ModuleEntitlement,
 } from '../api/moduleEntitlements'
 
-const visible = isCoreNode()
+const visible = ref(false)
 const catalog = ref<ModuleCatalogItem[]>([])
 const entitlements = ref<ModuleEntitlement[]>([])
 const loading = ref(false)
 const applying = ref<string | null>(null)
 const error = ref('')
 
+let unsubscribe: (() => void) | null = null
+
 async function refresh() {
-  if (!visible) return
+  if (!visible.value) return
   loading.value = true
   error.value = ''
   try {
@@ -59,7 +66,22 @@ async function applyOpen(row: ModuleCatalogItem) {
   }
 }
 
-onMounted(refresh)
+onMounted(async () => {
+  if (!isMaintainProbed()) {
+    await probeMaintainAvailable()
+  }
+  visible.value = isCoreNode()
+  unsubscribe = onMaintainAvailabilityChange(() => {
+    visible.value = isCoreNode()
+    void refresh()
+  })
+  await refresh()
+})
+
+onBeforeUnmount(() => {
+  unsubscribe?.()
+  unsubscribe = null
+})
 </script>
 
 <template>

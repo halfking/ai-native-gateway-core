@@ -412,7 +412,7 @@ onMounted(async () => {
       </el-descriptions>
       <div class="wizard-actions">
         <el-button type="primary" @click="finish">进入登录</el-button>
-        <RouterLink class="btn btn-ghost" to="/customer/license">查看 License 状态</RouterLink>
+        <RouterLink class="btn btn-ghost" to="/customer/update-activate">查看更新与激活</RouterLink>
       </div>
     </el-card>
   </div>

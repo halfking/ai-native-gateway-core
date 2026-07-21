@@ -17,6 +17,7 @@ import {
 } from '../../api/updateActivate'
 import { ensureInstanceId, resolveHardwareHash } from '../../utils/deviceFingerprint'
 import { SITE_TITLE } from '../../config/brand'
+import { isCoreNode } from '../../config/edition'
 
 const AGREEMENT_VERSION = '2026-07-17'
 const AGREEMENT_SCOPE = 'activate'
@@ -177,8 +178,12 @@ async function onCheckUpgrade() {
 }
 
 function onUpgrade() {
-  // Prefer Maintain upgrade panel when co-deployed; else public download.
-  window.location.assign('/maintain/upgrade')
+  // Center 可达时走 maintain 升级面板；不可达时降级到公开下载页。
+  if (isCoreNode()) {
+    window.location.assign('/maintain/upgrade')
+    return
+  }
+  window.location.assign('/api/system/upgrade')
 }
 
 onMounted(refreshAll)

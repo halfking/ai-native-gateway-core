@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **更新与激活合并页（非核心节点）** (2026-07-22): 将 `/customer/site|activate|license|agreement` 合并为「数据运维 → 更新与激活」(` /customer/update-activate`)。一键同意协议后调用中心 `public/license/issue` 完成本地激活；页内展示站点信息、版本/发布说明/升级入口、已开通模块清单。后端补齐 `/api/system/bootstrap/*`（含 `activate-quick`）。核心节点超管仍通过 maintain healthz 注入完整「运维中心」。中心 `/admin/modules` 增加发版模块开通面板（maintain `module-entitlements` 内存 API）。详见 [docs/changelogs/2026-07-22-update-activate.md](docs/changelogs/2026-07-22-update-activate.md).
+- **更新与激活合并页（非核心节点）** (2026-07-22): 将 `/customer/site|activate|license|agreement` 合并为「数据运维 → 更新与激活」(` /customer/update-activate`)。一键同意协议后调用中心 `public/license/issue` 完成本地激活；页内展示站点信息、版本/发布说明/升级入口、已开通模块清单。后端补齐 `/api/system/bootstrap/*`（含 `activate-quick`）。核心节点超管仍通过 maintain healthz 注入完整「运维中心」。中心 `/admin/modules` 增加发版模块开通面板（maintain `module-entitlements` 内存 API）。修复升级按钮非核心降级路径，移除 `BootstrapWizardView` / `LandingView` / `UpdateActivateView` 内旧 route 引用。详见 [docs/changelogs/2026-07-22-update-activate.md](docs/changelogs/2026-07-22-update-activate.md).
 
 ### Fixed
 

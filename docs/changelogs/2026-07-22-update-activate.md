@@ -18,8 +18,8 @@
 - `web/src/config/appNav.ts` / `router.ts` / `edition.ts`（`isCoreNode`）
 - 旧 URL redirect → `/customer/update-activate`
 
-## 后续（P2）
+## 已知妥协 / 待办
 
-中心 `/admin/modules` 已挂载「发版模块开通」面板；maintain 提供内存态
-`/maintain-api/admin/module-entitlements`（apply / list / open / reject）。
-持久化入库与完整审批工单可后续迭代。
+1. **核心节点「运维中心」菜单** 仍为 Gateway 静态配置（`appNav.ts` 的 `opsplatform` 组），未引入 maintain 远程菜单协议。Maintain 端新增菜单项不会自动同步 — 由 maintain 部署侧维护两处同步。
+2. **模块开通申请** 内存态（`module_entitlements.go`），重启丢失；下一步迁移到 PG `maintain.module_entitlements` 表。
+3. **`/api/system/bootstrap/*` 旧调用方** — gateway 早期 `bootstrap_gate` 已 fail-open，新 API 接入前不会阻塞首启。
