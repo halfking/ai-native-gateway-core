@@ -2324,23 +2324,7 @@ func main() {
 			if lc := logging.ActiveConfig(); lc.File != "" {
 				logDirForWorker = filepath.Dir(lc.File)
 			}
-			retentionCfgProvider := func() bg.StorageRetentionConfig {
-				var c bg.StorageRetentionConfig
-				if b, _ := readBoolSettingPublic("storage.auto_cleanup_enabled"); b {
-					c.AutoCleanupEnabled = true
-				}
-				if v, _ := readIntSettingPublic("storage.auto_cleanup_threshold"); v > 0 {
-					c.AutoCleanupThreshold = float64(v)
-				} else {
-					c.AutoCleanupThreshold = 85
-				}
-				if v, _ := readIntSettingPublic("storage.disk_quota_percent"); v > 0 {
-					c.DiskQuotaPercent = float64(v)
-				} else {
-					c.DiskQuotaPercent = 80
-				}
-				return c
-			}
+			retentionCfgProvider := newStorageRetentionConfigProvider()
 			retentionWorker := bg.NewStorageRetentionWorker(attachmentStorage, logDirForWorker, retentionCfgProvider)
 			if ttl, _ := readIntSettingPublic("storage.attachment_ttl_days"); ttl > 0 {
 				retentionWorker.AttachmentTTLDays = ttl
