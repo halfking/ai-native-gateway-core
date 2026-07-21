@@ -986,9 +986,9 @@ onMounted(async () => {
     </div>
 
     <!-- v3 压缩说明卡片 (2026-06-20) -->
-    <div class="compression-guide-card" style="margin-bottom:12px;border:1px solid var(--border,#333);border-radius:8px;overflow:hidden;font-size:12px">
+    <div class="compression-guide-card" style="margin-bottom:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:12px">
       <div
-        style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;cursor:pointer;background:var(--surface-secondary,#1a1a2e)"
+        style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;cursor:pointer;background:var(--surface-secondary)"
         @click="showCompressionGuide = !showCompressionGuide"
       >
         <span style="font-weight:600;display:flex;align-items:center;gap:6px">
@@ -999,38 +999,38 @@ onMounted(async () => {
             <template v-if="compressionStats.slidingCount"> · 滑动窗口 {{ compressionStats.slidingCount }}</template>
           </span>
         </span>
-        <span style="color:var(--text-secondary,#6b7280);font-size:11px">{{ showCompressionGuide ? t('requests.collapse') : t('requests.expand') }}</span>
+        <span style="color:var(--text-secondary);font-size:11px">{{ showCompressionGuide ? t('requests.collapse') : t('requests.expand') }}</span>
       </div>
-      <div v-if="showCompressionGuide" style="padding:8px 12px 12px;border-top:1px solid var(--border,#333);line-height:1.7">
+      <div v-if="showCompressionGuide" style="padding:8px 12px 12px;border-top:1px solid var(--border);line-height:1.7">
         <p style="margin:0 0 6px"><strong>会话缓存机制</strong>：网关按 <code>X-Gw-Session-Id</code> 维度缓存会话历史。
         同一会话的多轮请求不再重复发送完整历史，只发送新增部分。缓存分三级：
         L1 进程内存 / L2 Redis / L3 数据库兜底。</p>
         <p style="margin:0 0 6px"><strong>压缩策略说明</strong>：</p>
         <table style="width:100%;border-collapse:collapse;font-size:11px">
           <tr>
-            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border,#444);background:var(--surface-primary,#16213e);white-space:nowrap">策略</th>
-            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border,#444);background:var(--surface-primary,#16213e)">触发条件</th>
-            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border,#444);background:var(--surface-primary,#16213e)">效果</th>
+            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border);background:var(--surface-primary);white-space:nowrap">策略</th>
+            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border);background:var(--surface-primary)">触发条件</th>
+            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border);background:var(--surface-primary)">效果</th>
           </tr>
           <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444);white-space:nowrap;color:var(--success,#22c55e)">增量拼接 (delta_append)</td>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444)">同会话有新增消息</td>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444)">只转发新增的消息（已压缩历史保留在缓存中）</td>
+            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:var(--success)">增量拼接 (delta_append)</td>
+            <td style="padding:3px 6px;border:1px solid var(--border)">同会话有新增消息</td>
+            <td style="padding:3px 6px;border:1px solid var(--border)">只转发新增的消息（已压缩历史保留在缓存中）</td>
           </tr>
           <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444);white-space:nowrap;color:var(--warning,#f59e0b)">滑动窗口 (sliding_window)</td>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444)">消息数 ≥ 50 / Token超阈值 / 空闲 ≥ 5 分钟</td>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444)">触发 LLM 无损摘要（保留关键事实、路径、ID、错误等）→ 摘要失败时降级为机械裁剪</td>
+            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:var(--warning)">滑动窗口 (sliding_window)</td>
+            <td style="padding:3px 6px;border:1px solid var(--border)">消息数 ≥ 50 / Token超阈值 / 空闲 ≥ 5 分钟</td>
+            <td style="padding:3px 6px;border:1px solid var(--border)">触发 LLM 无损摘要（保留关键事实、路径、ID、错误等）→ 摘要失败时降级为机械裁剪</td>
           </tr>
           <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444);white-space:nowrap;color:#b45309">机械裁剪 (mechanical_trim)</td>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444)">上游 4xx context_length / 滑动窗口摘要失败</td>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444)">从最早消息开始逐对裁剪，保留 system + 首条 user + 最近 N 对</td>
+            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:#b45309">机械裁剪 (mechanical_trim)</td>
+            <td style="padding:3px 6px;border:1px solid var(--border)">上游 4xx context_length / 滑动窗口摘要失败</td>
+            <td style="padding:3px 6px;border:1px solid var(--border)">从最早消息开始逐对裁剪，保留 system + 首条 user + 最近 N 对</td>
           </tr>
           <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444);white-space:nowrap;color:#6d28d9">Memora 注入</td>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444)">上下文超限时检索 Memora L1 事实</td>
-            <td style="padding:3px 6px;border:1px solid var(--border,#444)">将历史事实作为"动态上下文"注入请求</td>
+            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:#6d28d9">Memora 注入</td>
+            <td style="padding:3px 6px;border:1px solid var(--border)">上下文超限时检索 Memora L1 事实</td>
+            <td style="padding:3px 6px;border:1px solid var(--border)">将历史事实作为"动态上下文"注入请求</td>
           </tr>
         </table>
       </div>
@@ -1380,23 +1380,23 @@ onMounted(async () => {
                    Displayed when v3 ran for this request (compression_strategy
                    in {delta_append, sliding_window_*, mechanical_trim}). -->
               <template v-if="hasOutboundBody(detail)">
-                <div style="display:flex;flex-wrap:wrap;gap:8px;padding:6px 10px;background:var(--surface-primary,#16213e);border-radius:6px;margin-top:4px;font-size:12px">
+                <div style="display:flex;flex-wrap:wrap;gap:8px;padding:6px 10px;background:var(--surface-primary);border-radius:6px;margin-top:4px;font-size:12px">
                   <span><strong>转发消息数:</strong> {{ detail.outbound_msg_count ?? t('requests.none') }}</span>
                   <span><strong>转发 token 估算:</strong> {{ detail.outbound_token_est ?? t('requests.none') }}</span>
-                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--success,#22c55e);font-weight:600">
+                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--success);font-weight:600">
                     节约: {{ calcSavingDetail(detail).savingStr }}
                   </span>
-                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--warning,#f59e0b)">
+                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--warning)">
                     Token: {{ calcSavingDetail(detail).tokenSavingStr }}
                   </span>
-                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--text-secondary,#6b7280)">
+                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--text-secondary)">
                     消息: {{ calcSavingDetail(detail).msgReductionStr }}
                   </span>
                   <span v-if="outboundSummaryMarker(detail)">
                     <span class="summary-marker-badge" :title="outboundSummaryMarker(detail)">含 LLM 摘要</span>
                   </span>
                 </div>
-                <div v-if="detail.compression_strategy" style="margin-top:4px;font-size:11px;color:var(--text-secondary,#6b7280)">
+                <div v-if="detail.compression_strategy" style="margin-top:4px;font-size:11px;color:var(--text-secondary)">
                   {{ compressExplainText(detail) }}
                 </div>
               </template>
