@@ -230,7 +230,7 @@ onMounted(() => {
   padding: 20px;
   max-width: 1400px;
   margin: 0 auto;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .page-header {
@@ -244,13 +244,13 @@ onMounted(() => {
   margin: 0 0 8px;
   font-size: 28px;
   font-weight: 600;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .page-description {
   margin: 0;
   font-size: 14px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .message {
@@ -288,7 +288,7 @@ onMounted(() => {
 
 .loading-spinner {
   font-size: 16px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .content {
@@ -298,8 +298,8 @@ onMounted(() => {
 }
 
 .section {
-  background: var(--bg-card, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 20px;
 }
@@ -312,13 +312,13 @@ onMounted(() => {
   margin: 0 0 4px;
   font-size: 18px;
   font-weight: 600;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .section-description {
   margin: 0;
   font-size: 13px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .settings-grid {
@@ -332,8 +332,8 @@ onMounted(() => {
   gap: 16px;
   align-items: center;
   padding: 16px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 
@@ -346,12 +346,12 @@ onMounted(() => {
 .setting-label > span:first-child {
   font-size: 14px;
   font-weight: 500;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .setting-hint {
   font-size: 12px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .switch-label {
@@ -372,7 +372,7 @@ onMounted(() => {
   position: relative;
   width: 44px;
   height: 24px;
-  background: var(--border, #30363d);
+  background: var(--border);
   border-radius: 12px;
   transition: background 0.2s;
   flex-shrink: 0;
@@ -391,7 +391,7 @@ onMounted(() => {
 }
 
 .switch-input:checked + .switch-track {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
 }
 
 .switch-input:checked + .switch-track::after {
@@ -401,17 +401,17 @@ onMounted(() => {
 .switch-text {
   font-size: 14px;
   font-weight: 500;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
   min-width: 60px;
 }
 
 .form-select,
 .form-input {
   padding: 8px 12px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
   font-size: 14px;
   min-width: 280px;
 }
@@ -419,7 +419,7 @@ onMounted(() => {
 .form-select:focus,
 .form-input:focus {
   outline: none;
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 
 .timeout-input-group {
@@ -434,7 +434,7 @@ onMounted(() => {
 
 .input-suffix {
   font-size: 14px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .bottom-actions {
@@ -459,7 +459,7 @@ onMounted(() => {
 }
 
 .btn-primary {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: #fff;
 }
 
