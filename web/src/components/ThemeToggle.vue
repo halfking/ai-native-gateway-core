@@ -28,8 +28,8 @@ function toggle() {
   <button
     type="button"
     class="theme-toggle"
-    :aria-label="isDark ? t('theme.switchToLight', '切到浅色') : t('theme.switchToDark', '切到深色')"
-    :title="isDark ? t('theme.lightTitle', '浅色模式') : t('theme.darkTitle', '深色模式')"
+    :aria-label="isDark ? t('app.theme.switchToLight') : t('app.theme.switchToDark')"
+    :title="isDark ? t('app.theme.lightTitle') : t('app.theme.darkTitle')"
     :aria-pressed="isDark"
     @click="toggle"
   >
