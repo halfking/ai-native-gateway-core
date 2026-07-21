@@ -806,3 +806,25 @@ tbody tr:hover { background: rgba(255,255,255,.02); }
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
+
+/* ============================================================================
+ * Bootstrap UI - 控制 Element Plus icon 大小
+ * Bug: el-alert / el-input 的 svg icon 被异常拉高到 800px+
+ * 原因：未知（可能是 Element Plus 版本冲突或全局 CSS 覆盖）
+ * 修复：强制限定 icon svg 高度
+ * ==========================================================================*/
+.el-alert__icon svg,
+.el-alert__close-btn svg,
+.el-input__icon svg,
+.el-input__clear svg {
+  width: 1em !important;
+  height: 1em !important;
+  max-width: 24px !important;
+  max-height: 24px !important;
+}
+
+/* el-form-item 错误状态图标过大问题 */
+.el-form-item__error {
+  max-height: 20px !important;
+  overflow: hidden !important;
+}
