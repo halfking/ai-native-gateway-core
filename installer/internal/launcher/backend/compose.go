@@ -7,8 +7,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"time"
 )
+
+// imageTagRegex enforces an allowlist for image tags interpolated into
+// the compose YAML. Defense-in-depth against YAML injection via a
+// malformed Release.Image (e.g. containing a newline plus extra keys).
+// The name group also accepts ':' so registry "host:port" prefixes
+// like "localhost:5000/myapp" are valid; the tag group is kept narrow.
+var imageTagRegex = regexp.MustCompile(`^[a-zA-Z0-9._/:-]+:[a-zA-Z0-9._-]+$`)
+
+// validateImageTag returns nil iff img matches the allowlist. The
+// pattern permits the common forms registry/path/name:version but
+// rejects whitespace, shell metacharacters, and missing tags.
+func validateImageTag(img string) error {
+	if !imageTagRegex.MatchString(img) {
+		return fmt.Errorf("invalid image tag %q: must match [a-zA-Z0-9._/:-]+:[a-zA-Z0-9._-]+", img)
+	}
+	return nil
+}
 
 // ComposeConfig configures the ComposeBackend.
 type ComposeConfig struct {
@@ -54,6 +72,9 @@ func (b *ComposeBackend) greenContainerName() string {
 func (b *ComposeBackend) Stage(ctx context.Context, rel Release) (string, error) {
 	if rel.Image == "" {
 		return "", fmt.Errorf("compose backend requires Release.Image")
+	}
+	if err := validateImageTag(rel.Image); err != nil {
+		return "", err
 	}
 	compose := fmt.Sprintf(`services:
   gateway-green:

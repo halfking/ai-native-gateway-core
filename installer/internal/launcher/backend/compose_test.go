@@ -72,3 +72,33 @@ func TestComposeBackendStageMissingImage(t *testing.T) {
 		t.Fatal("expected error for non-existent image")
 	}
 }
+
+// TestValidateImageTag verifies the allowlist regex used by Stage to
+// prevent YAML injection via Release.Image. We exercise common valid
+// forms and several injection / malformed attempts.
+func TestValidateImageTag(t *testing.T) {
+	cases := []struct {
+		img   string
+		valid bool
+	}{
+		{"registry/kx-gateway:v1.5.0", true},
+		{"kx-gateway:latest", true},
+		{"localhost:5000/myapp:1.0", true},
+		// Injection attempts:
+		{"img:v1\n  privileged: true", false},
+		{"img:v1\n    volumes: [\"/:/host\"]", false},
+		{"img", false},      // missing tag
+		{"", false},         // empty
+		{"$EVIL:v1", false}, // shell special
+		{":v1", false},      // missing name
+	}
+	for _, c := range cases {
+		err := validateImageTag(c.img)
+		if c.valid && err != nil {
+			t.Errorf("expected %q valid, got error: %v", c.img, err)
+		}
+		if !c.valid && err == nil {
+			t.Errorf("expected %q rejected, got nil", c.img)
+		}
+	}
+}
