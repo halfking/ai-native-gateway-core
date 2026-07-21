@@ -192,3 +192,18 @@ func incidentUpdateFromResult(r *routeincident.TransitionResult) *admin.LiveInci
 	}
 	return out
 }
+
+// newIncidentPublishFn returns the Publish callback for the route-incident
+// observer. It gates nil/empty/no-op results and forwards the rest to the
+// hub for SSE delivery. Behaviour is identical to the inline closure that
+// previously lived in main(); the closure-captured `liveStreamHub` was
+// the only local dependency and is now an explicit parameter so the
+// publisher can be tested / reused.
+func newIncidentPublishFn(hub *admin.LiveStreamSSEHub) func(*routeincident.TransitionResult) {
+	return func(r *routeincident.TransitionResult) {
+		if r == nil || r.NoOp || hub == nil {
+			return
+		}
+		hub.PublishIncidentUpdate(incidentUpdateFromResult(r))
+	}
+}
