@@ -2,17 +2,16 @@ package audit
 
 import "testing"
 
-func TestStreamCaptureSummaryIncludesMultimodalUsage(t *testing.T) {
+func TestStreamCaptureSummaryIncludesUsage(t *testing.T) {
 	capture := NewStreamCapture()
-	reasoning, image, audio, video, provider := 7, 11, 13, 17, 19
-	capture.ObserveMultimodalUsage(&reasoning, &image, &audio, &video, &provider)
+	prompt, completion, cacheRead, cacheWrite := 7, 11, 13, 17
+	capture.ObserveUsage(&prompt, &completion, &cacheRead, &cacheWrite)
 	summary := capture.SummaryAsMap()
 	for key, want := range map[string]int{
-		"reasoning_tokens": 7,
-		"image_tokens":     11,
-		"audio_tokens":     13,
-		"video_tokens":     17,
-		"provider_tokens":  19,
+		"prompt_tokens":      7,
+		"completion_tokens":  11,
+		"cache_read_tokens":  13,
+		"cache_write_tokens": 17,
 	} {
 		got, ok := summary[key].(int)
 		if !ok || got != want {
