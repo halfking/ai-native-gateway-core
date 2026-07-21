@@ -2,6 +2,7 @@ package pluginruntime
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,9 +45,15 @@ type fakeProc struct {
 	socketPath string
 	started    bool
 	stopped    bool
+	startErr   error
+	startCount int
 }
 
-func (f *fakeProc) Start(ctx context.Context) error { f.started = true; return nil }
+func (f *fakeProc) Start(ctx context.Context) error {
+	f.startCount++
+	f.started = true
+	return f.startErr
+}
 func (f *fakeProc) Wait() error                     { return nil }
 func (f *fakeProc) Stop() error                     { f.stopped = true; return nil }
 func (f *fakeProc) Pid() int                        { return 0 }
@@ -255,3 +262,67 @@ func (f *restartFakeProc) Stop() error {
 	return nil
 }
 func (f *restartFakeProc) Pid() int { return f.pid }
+
+func TestSupervisor_UpgradeSwitchesManifest(t *testing.T) {
+	sup := NewSupervisor(SupervisorConfig{SocketDir: t.TempDir()})
+	var procs []*fakeProc
+	sup.commandFactory = func(socketPath, entrypoint string, env []string) command {
+		f := &fakeProc{socketPath: socketPath}
+		procs = append(procs, f)
+		return f
+	}
+
+	oldM := &Manifest{PluginID: "asm", PluginVersion: "0.1.0"}
+	if _, err := sup.Start(context.Background(), oldM); err != nil {
+		t.Fatalf("Start old: %v", err)
+	}
+
+	newM := &Manifest{PluginID: "asm", PluginVersion: "0.2.0"}
+	if err := sup.Upgrade(context.Background(), newM); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+
+	// new manifest is canonical
+	if m := sup.ManifestOf("asm"); m.PluginVersion != "0.2.0" {
+		t.Errorf("after upgrade, manifest version = %q, want 0.2.0", m.PluginVersion)
+	}
+	// two procs were created (old start + new start)
+	if len(procs) != 2 {
+		t.Errorf("procs created = %d, want 2", len(procs))
+	}
+	// old proc was stopped, new proc was started
+	if !procs[0].stopped {
+		t.Error("old proc should have been stopped")
+	}
+	if !procs[1].started {
+		t.Error("new proc should have been started")
+	}
+}
+
+func TestSupervisor_UpgradeRollbackOnStartFailure(t *testing.T) {
+	sup := NewSupervisor(SupervisorConfig{SocketDir: t.TempDir()})
+	sup.commandFactory = func(socketPath, entrypoint string, env []string) command {
+		return &fakeProc{socketPath: socketPath}
+	}
+	oldM := &Manifest{PluginID: "asm", PluginVersion: "0.1.0"}
+	if _, err := sup.Start(context.Background(), oldM); err != nil {
+		t.Fatalf("Start old: %v", err)
+	}
+
+	// swap factory so the next Start fails
+	sup.commandFactory = func(socketPath, entrypoint string, env []string) command {
+		return &fakeProc{socketPath: socketPath, startErr: errors.New("boom")}
+	}
+	newM := &Manifest{PluginID: "asm", PluginVersion: "0.2.0"}
+	err := sup.Upgrade(context.Background(), newM)
+	if err == nil {
+		t.Fatal("expected Upgrade to fail")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error should wrap cause, got: %v", err)
+	}
+	// rollback: manifest is the old one
+	if m := sup.ManifestOf("asm"); m.PluginVersion != "0.1.0" {
+		t.Errorf("after failed upgrade, manifest = %q, want 0.1.0 (rollback)", m.PluginVersion)
+	}
+}
