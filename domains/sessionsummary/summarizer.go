@@ -331,14 +331,18 @@ func (s *Summarizer) getPrevSummary(ctx context.Context, tenantID, sessionKey st
 
 // getMessagesSince 读取自指定时间以来的新消息（rolling 用）。
 // since 为零值时返回最近 20 条（首次总结）。
+// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
+// to retrieve full request_body (moved to separate table in #10).
 func (s *Summarizer) getMessagesSince(ctx context.Context, tenantID, sessionKey string, since time.Time) ([]SessionMessage, error) {
 	query := `
-		SELECT request_id,
-		       COALESCE(request_body->>'role', 'user') as role,
-		       COALESCE(request_body->'messages'->-1->>'content', '') as content,
-		       outbound_model, ts
-		FROM request_logs
-		WHERE gw_session_id = $1`
+		SELECT rl.request_id,
+		       COALESCE(COALESCE(rb.request_body, rl.request_body)->>'role', 'user') as role,
+		       COALESCE(COALESCE(rb.request_body, rl.request_body)->'messages'->-1->>'content', '') as content,
+		       rl.outbound_model, rl.ts
+		FROM request_logs rl
+		LEFT JOIN request_logs_bodies rb 
+		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		WHERE rl.gw_session_id = $1`
 	args := []any{sessionKey}
 	argN := 2
 	if tenantID != "" {
@@ -408,17 +412,21 @@ func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*Session
 
 // getSessionMessages 从数据库获取会话消息。
 // 注意：request_logs 使用 gw_session_id（350 迁移修正）。
+// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
+// to retrieve full request_body (moved to separate table in #10).
 func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKey string) ([]SessionMessage, error) {
 	query := `
 		SELECT
-			request_id,
-			COALESCE(request_body->>'role', 'user') as role,
-			COALESCE(request_body->'messages'->-1->>'content', '') as content,
-			outbound_model,
-			ts
-		FROM request_logs
-		WHERE tenant_id = $1 AND gw_session_id = $2
-		ORDER BY ts ASC
+			rl.request_id,
+			COALESCE(COALESCE(rb.request_body, rl.request_body)->>'role', 'user') as role,
+			COALESCE(COALESCE(rb.request_body, rl.request_body)->'messages'->-1->>'content', '') as content,
+			rl.outbound_model,
+			rl.ts
+		FROM request_logs rl
+		LEFT JOIN request_logs_bodies rb 
+		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		WHERE rl.tenant_id = $1 AND rl.gw_session_id = $2
+		ORDER BY rl.ts ASC
 		LIMIT 20
 	`
 
