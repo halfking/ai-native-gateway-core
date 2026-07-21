@@ -116,7 +116,7 @@ function openLogin() {
         <div class="llmgo-landing__extra-links">
           <a href="/maintain/activate">{{ t('landing.ctaActivate') }}</a>
           <a href="/maintain/setup">{{ t('landing.navSetup') }}</a>
-          <a href="/customer/agreement">{{ t('landing.ctaAgreement') }}</a>
+          <a href="/customer/update-activate">{{ t('landing.ctaAgreement') }}</a>
           <a href="/user-agreement.html" target="_blank" rel="noopener">完整协议 ↗</a>
         </div>
       </template>
