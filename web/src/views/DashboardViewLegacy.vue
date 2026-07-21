@@ -539,8 +539,8 @@ scheduleStatsRecalibrate()
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  background: var(--surface-secondary, #f3f4f6);
-  color: var(--text-secondary, #6b7280);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
 }
 
 .tenant-badge--admin {
@@ -633,7 +633,7 @@ scheduleStatsRecalibrate()
   color: var(--danger);
 }
 .probe-failures-count {
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
 .probe-failures-details {
@@ -661,7 +661,7 @@ scheduleStatsRecalibrate()
   align-items: baseline;
 }
 .probe-failures-meta {
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   font-size: 11px;
 }
 
@@ -670,8 +670,8 @@ scheduleStatsRecalibrate()
   display: inline-flex;
   gap: 3px;
   padding: 2px;
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 5px;
 }
 
@@ -680,7 +680,7 @@ scheduleStatsRecalibrate()
   border: 1px solid transparent;
   border-radius: 3px;
   background: transparent;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -690,12 +690,12 @@ scheduleStatsRecalibrate()
 }
 
 .version-btn:hover {
-  color: var(--text, #e6edf3);
-  background: var(--bg, #0f1117);
+  color: var(--text);
+  background: var(--bg);
 }
 
 .version-btn--active {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: white;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
