@@ -7,6 +7,7 @@ package v2
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -16,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/resource"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/rollout"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/sync"
 )
 
 // Dependencies wires the v2 facade. Redis is required; the resource
@@ -175,8 +177,34 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 	if err != nil {
 		return nil, fmt.Errorf("ursm.v2: pipeline: %w", err)
 	}
-	// 简化：缺失 key = available=false；评分后续 Task 14 接入
+	// 评分：price 0.4 + latency 0.4 + stability 0.2 (SR5m)；lat 缺失回退 baseURLMs
+	for i := range views {
+		s := seeds[i]
+		v := &views[i]
+		price := s.PriceIn + s.PriceOut
+		lat := v.LatEWMA
+		if lat == 0 {
+			lat = s.BaseURLMs
+		}
+		v.Score = 0.4*price + 0.4*float64(lat) + 0.2*v.SR5m*1000
+	}
+	sort.SliceStable(views, func(i, j int) bool { return views[i].Score < views[j].Score })
 	return views, nil
+}
+
+// SetSeedForTest is a test-only helper that writes a Seed for the given
+// (CredentialID, RawModel) pair via the config syncer. It is intentionally
+// narrow: only enough fields to make FilterAndScore's read path happy
+// (Available=true is the only state that matters here). Production code
+// must not call this; the syncer is wired through the boot/recovery flow.
+func (m *Manager) SetSeedForTest(ctx context.Context, s CandidateSeed) error {
+	if m == nil || m.store == nil {
+		return fmt.Errorf("ursm.v2: nil manager/store")
+	}
+	syncer := sync.NewSyncer(m.store.RawClient(), m.cfg.RedisKeyPrefix)
+	return syncer.UpsertNodeSeed(ctx, sync.Seed{
+		ProviderID: s.ProviderID, CredentialID: s.CredentialID, RawModel: s.RawModel, Available: true,
+	})
 }
 
 // RecordRequest is the executor sidecar entry point. It is a no-op
