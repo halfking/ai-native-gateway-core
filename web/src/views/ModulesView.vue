@@ -1812,7 +1812,7 @@ onMounted(() => {
 }
 .src-badge.src-env {
   background: rgba(99, 102, 241, 0.15);
-  color: #818cf8;
+  color: var(--accent-h);
 }
 .src-badge.src-default {
   background: rgba(139, 148, 158, 0.15);
@@ -2043,7 +2043,7 @@ onMounted(() => {
   display: inline-block;
   padding: 2px 8px;
   background: rgba(99, 102, 241, 0.12);
-  color: #818cf8;
+  color: var(--accent-h);
   border-radius: 4px;
   font-size: 10px;
   font-weight: 500;

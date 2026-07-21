@@ -1117,7 +1117,7 @@ onMounted(async () => {
     &.risk-critical { background: rgba(248,81,73,.12); color: #f85149; }
     &.risk-high { background: rgba(248,81,73,.12); color: #f85149; }
     &.risk-medium { background: rgba(210,153,34,.12); color: #d29922; }
-    &.risk-low { background: rgba(99,102,241,.12); color: #818cf8; }
+    &.risk-low { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-h); }
   }
 }
 .filter-form { margin-bottom: 16px; }
