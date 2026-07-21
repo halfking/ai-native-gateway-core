@@ -257,6 +257,21 @@ func seedKey(credentialID int, rawModel string) string {
 	return strconv.Itoa(credentialID) + "|" + rawModel
 }
 
+// SetRedisForTest swaps the underlying redis client used by the v2
+// store. It is a test-only helper used by integration tests that need
+// to simulate a Redis restart (the store is rebuilt against a fresh
+// miniredis) without reconstructing the whole Manager. The recovery
+// gate is *not* swapped; tests that exercise the ready gate after a
+// restart should construct a fresh recovery.Manager against the new
+// client rather than relying on the original m.recovery. The name
+// ends in "ForTest" so a future linter can flag production callers.
+func (m *Manager) SetRedisForTest(rdb *redis.Client) {
+	if m == nil || m.store == nil {
+		return
+	}
+	m.store = m.store.WithRedis(rdb)
+}
+
 // SetSeedForTest is a test-only helper that writes a Seed for the given
 // (CredentialID, RawModel) pair via the config syncer. It is intentionally
 // narrow: only enough fields to make FilterAndScore's read path happy
