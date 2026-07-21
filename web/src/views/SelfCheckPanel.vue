@@ -207,13 +207,13 @@ function fmtRelative(s: string | undefined): string {
 }
 
 // 与深色主题语义色对齐的色板（用于文字着色，在深色卡片背景上有良好对比度）
-// good=success / warn=warning / danger=danger / neutral=muted / accent=indigo
+// good=success / warn=warning / danger=danger / neutral=muted / accent=blue
 const COLOR = {
   good: '#3fb950',
   warn: '#d29922',
   danger: '#f85149',
   neutral: '#8b949e',
-  accent: '#6366f1',
+  accent: '#3b82f6',
 }
 
 function statusColor(status: string): string {
