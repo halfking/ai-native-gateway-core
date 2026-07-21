@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -190,6 +191,70 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 	}
 	sort.SliceStable(views, func(i, j int) bool { return views[i].Score < views[j].Score })
 	return views, nil
+}
+
+// Plan returns the input seeds filtered by v2 availability (Available==true)
+// and ordered by ascending Score. It is the canary/authoritative entry point
+// the executor's PlanCandidates calls when delegating routing to v2.
+//
+// Design notes (URSM v2 plan T16, 2026-07-21):
+//   - Works in CandidateSeed space (not provider.Candidate) so the v2 manager
+//     stays decoupled from the executor's richer candidate shape. The
+//     executor is responsible for building seeds from []provider.Candidate
+//     and mapping the returned seeds back to the upstream candidates.
+//   - Returns nil on nil receiver, on ModeOff, when not Ready, or when
+//     FilterAndScore errors — the executor falls through to its existing
+//     ordering slice on nil. This preserves the "v2 is strictly advisory
+//     until authoritative" invariant.
+//   - Score is set by FilterAndScore (price 0.4 + latency 0.4 + stability 0.2).
+//     Order is ascending: lower score = higher priority (matches FilterAndScore).
+func (m *Manager) Plan(ctx context.Context, seeds []CandidateSeed, tenant, canonical string) []CandidateSeed {
+	if m == nil {
+		return nil
+	}
+	if m.Mode() == api.ModeOff {
+		return nil
+	}
+	// Note: tenant/canonical are accepted for future filters (e.g. per-tenant
+	// overrides) but T16 does not use them — the rollout gate lives in
+	// rollout.ShouldUseV2, and T16 callers do not yet plumb tenant through.
+	_ = tenant
+	_ = canonical
+
+	views, err := m.FilterAndScore(ctx, seeds)
+	if err != nil {
+		m.log.Warn("ursm.v2: Plan filter failed, falling back", "error", err, "seed_count", len(seeds))
+		return nil
+	}
+	if len(views) == 0 {
+		return nil
+	}
+	// Build a lookup keyed by (CredentialID, RawModel) so we can map back to
+	// the input seeds while preserving FilterAndScore's ordering (and its
+	// availability filter — FilterAndScore returns one view per input seed
+	// with Available=false on missing Redis data).
+	idx := make(map[string]int, len(seeds))
+	for i, s := range seeds {
+		idx[seedKey(s.CredentialID, s.RawModel)] = i
+	}
+	out := make([]CandidateSeed, 0, len(views))
+	for _, v := range views {
+		if !v.Available {
+			continue
+		}
+		i, ok := idx[seedKey(v.CredentialID, v.RawModel)]
+		if !ok {
+			continue
+		}
+		out = append(out, seeds[i])
+	}
+	return out
+}
+
+// seedKey joins a credential/model pair into a single string for use as a
+// lookup map key. Cheap and avoids fmt.Sprintf allocations on the hot path.
+func seedKey(credentialID int, rawModel string) string {
+	return strconv.Itoa(credentialID) + "|" + rawModel
 }
 
 // SetSeedForTest is a test-only helper that writes a Seed for the given

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credential"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm"
+	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
+	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -49,6 +52,11 @@ type Router struct {
 
 	// 新增：URSM统一路由状态管理器
 	URSM *ursm.Manager
+
+	// URSMv2 (2026-07-21, URSM v2 plan T16): 在 canary / authoritative 模式下，
+	// PlanCandidates 会委托 v2 Manager.Plan 重新排序/过滤候选，v2 返回 nil 时
+	// 回退到原有 ordered 切片。Nil 即保留所有旧行为（main.go 未 wire，运行时为 nil）。
+	URSMv2 *ursmv2.Manager
 
 	// 新增：路由评分权重配置（Phase 1）
 	LoadScoreWeights LoadScoreWeights
@@ -178,7 +186,101 @@ func (r *Router) PlanCandidates(
 		ordered = applyProtocolAffinity(ordered, egressPreference)
 	}
 
+	// 2026-07-21, URSM v2 plan T16: 在 canary / authoritative 模式下把 ordering
+	// 委托给 v2 Manager.Plan。v2 返回 nil 时回退到上面的 ordered 切片，保留旧
+	// 行为。URSMv2 == nil 时整段不进入；main.go 尚未 wire，运行时为 nil。
+	//
+	// T16 暂不传入 tenant / canonical / reqID：PlanCandidates 签名没有这些参数
+	// 且现有调用方没传递；URSMv2 == nil 时代码路径本来就是死的。等到 T20 等
+	// 后续任务把 tenant/canonical/reqID 透传过来，再接入 r.URSMv2.ShouldUseV2
+	// 的金丝雀白名单过滤。当前仅按 Mode 粗粒度生效 (Canary/Authoritative)。
+	if r.URSMv2 != nil {
+		mode := r.URSMv2.Mode()
+		if mode == ursmv2api.ModeCanary || mode == ursmv2api.ModeAuthoritative {
+			if v2Ordered := r.planWithURSMv2(ordered); v2Ordered != nil {
+				ordered = v2Ordered
+			}
+		}
+	}
+
 	return ordered
+}
+
+// planWithURSMv2 asks the v2 Manager to re-rank the input candidates. It
+// returns nil when v2 declines (off mode, not ready, FilterAndScore error,
+// empty result) so the caller falls back to the existing ordered slice.
+//
+// The v2 manager operates on []CandidateSeed, not []provider.Candidate, so
+// the router builds the seed list from the *post-filter* candidates (so we
+// preserve the legacy availability/health filters that already ran above)
+// and then maps the v2-ordered seeds back to the upstream provider.Candidate
+// via a (CredentialID, RawModel) lookup.
+//
+// 2026-07-21, URSM v2 plan T16.
+func (r *Router) planWithURSMv2(fallback []provider.Candidate) []provider.Candidate {
+	if r.URSMv2 == nil {
+		return nil
+	}
+	// Build CandidateSeeds from the post-filter candidates. We re-use the
+	// fallback slice as the seed source rather than the raw input, so v2 only
+	// ranks candidates the legacy router considered routable.
+	seeds := make([]ursmv2.CandidateSeed, 0, len(fallback))
+	lookup := make(map[string]provider.Candidate, len(fallback))
+	for _, c := range fallback {
+		key := seedLookupKey(c.CredentialID, c.RawModel)
+		lookup[key] = c
+		seeds = append(seeds, ursmv2.CandidateSeed{
+			ProviderID:   c.ProviderID,
+			CredentialID: c.CredentialID,
+			RawModel:     c.RawModel,
+			Canonical:    c.StandardizedName,
+			TenantID:     "", // TODO(T20): plumb tenant through PlanCandidates.
+			PriceIn:      derefPrice(c.PriceInPer1M),
+			PriceOut:     derefPrice(c.PriceOutPer1M),
+			BillingMode:  c.BillingMode,
+			Trust:        0,
+			BaseURLMs:    c.P50LatencyMs,
+		})
+	}
+	if len(seeds) == 0 {
+		return nil
+	}
+
+	// Bounded ctx so v2 slowness can never block the request hot path.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	ordered := r.URSMv2.Plan(ctx, seeds, "", "")
+	if len(ordered) == 0 {
+		return nil
+	}
+
+	out := make([]provider.Candidate, 0, len(ordered))
+	for _, s := range ordered {
+		key := seedLookupKey(s.CredentialID, s.RawModel)
+		c, ok := lookup[key]
+		if !ok {
+			continue
+		}
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		// v2 returned seeds we couldn't map back; treat as no-op so the
+		// existing fallback slice stays in use.
+		return nil
+	}
+	return out
+}
+
+func seedLookupKey(credentialID int, rawModel string) string {
+	return strconv.Itoa(credentialID) + "|" + rawModel
+}
+
+func derefPrice(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // deduplicateCandidates keeps one route slot per provider/credential/model.
