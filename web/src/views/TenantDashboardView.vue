@@ -752,8 +752,8 @@ onUnmounted(() => {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 .stat-mini--highlight {
-  border-color: rgba(99, 102, 241, 0.4);
-  background: rgba(99, 102, 241, 0.06);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 .stat-mini__label {
   font-size: 11px;
@@ -822,8 +822,8 @@ onUnmounted(() => {
 }
 .bar-row:hover,
 .bar-row.active {
-  background: rgba(99, 102, 241, 0.08);
-  border-color: rgba(99, 102, 241, 0.25);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 .bar-label {
   font-size: 12px;
@@ -865,7 +865,7 @@ onUnmounted(() => {
 }
 .model-table tr.clickable:hover,
 .model-table tr.active {
-  background: rgba(99, 102, 241, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 .num {
   text-align: right;
@@ -911,7 +911,7 @@ onUnmounted(() => {
 }
 .trend-col.active .trend-bar {
   opacity: 1;
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.5);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 50%, transparent);
 }
 .trend-bar {
   width: 100%;

@@ -184,10 +184,10 @@ onMounted(async () => {
         <p>完成用户协议确认后，将 License 绑定到当前实例。离线环境可走离线激活流程。</p>
       </div>
       <div class="lifecycle-page__actions">
-        <RouterLink class="btn btn-ghost" to="/bootstrap">安装向导</RouterLink>
-        <RouterLink class="btn btn-ghost" to="/customer/offline-activation">离线激活</RouterLink>
-        <RouterLink class="btn btn-ghost" to="/customer/license">查看状态</RouterLink>
-        <RouterLink class="btn btn-ghost" to="/customer/agreement">用户协议</RouterLink>
+        <RouterLink class="btn btn-ghost btn-no-arrow" to="/bootstrap">安装向导</RouterLink>
+        <RouterLink class="btn btn-ghost btn-no-arrow" to="/customer/offline-activation">离线激活</RouterLink>
+        <RouterLink class="btn btn-ghost btn-no-arrow" to="/customer/license">查看状态</RouterLink>
+        <RouterLink class="btn btn-ghost btn-no-arrow" to="/customer/agreement">用户协议</RouterLink>
       </div>
     </header>
 

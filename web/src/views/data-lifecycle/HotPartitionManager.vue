@@ -1059,14 +1059,14 @@ function formatNumber(num: number): string {
 }
 
 :global(.retention-radio .el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: rgba(99, 102, 241, 0.2);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
   border-color: var(--accent);
   color: var(--accent-h);
   box-shadow: -1px 0 0 0 var(--accent);
 }
 
 :global(.retention-radio .el-radio-button.is-active .el-radio-button__inner) {
-  background: rgba(99, 102, 241, 0.2);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
   border-color: var(--accent);
   color: var(--accent-h);
 }
@@ -1271,7 +1271,7 @@ function formatNumber(num: number): string {
 }
 
 .data-table tr.active {
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .data-table tr.deleting {
@@ -1279,7 +1279,7 @@ function formatNumber(num: number): string {
 }
 
 .data-table tr.running td {
-  background: rgba(99, 102, 241, 0.04);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
 }
 
 .data-table .empty-row {

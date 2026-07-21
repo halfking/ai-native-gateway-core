@@ -267,8 +267,8 @@ watch(stateFilter, load)
   padding: 10px 14px;
   border-radius: var(--radius);
   font-size: 13px;
-  background: rgba(99, 102, 241, 0.08);
-  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   color: var(--text);
 }
 
