@@ -88,13 +88,13 @@ onMounted(load)
 }
 .eyebrow {
   margin: 0 0 6px;
-  color: var(--accent-h, #1e4fd6);
+  color: var(--accent-h);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
 }
 .lifecycle-page__header h1 { margin: 0 0 8px; font-size: 24px; }
-.lifecycle-page__header p { margin: 0; color: var(--muted, #5b6b82); font-size: 14px; line-height: 1.6; }
+.lifecycle-page__header p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
 .lifecycle-page__actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .lifecycle-grid {
   display: grid;
@@ -102,8 +102,8 @@ onMounted(load)
   gap: 16px;
 }
 .mono { font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; }
-.muted { color: var(--muted, #5b6b82); font-size: 13px; }
+.muted { color: var(--muted); font-size: 13px; }
 .action-links { display: flex; flex-direction: column; gap: 10px; }
-.action-links a { color: var(--accent-h, #1e4fd6); text-decoration: none; font-weight: 600; }
+.action-links a { color: var(--accent-h); text-decoration: none; font-weight: 600; }
 .mb { margin-bottom: 16px; }
 </style>

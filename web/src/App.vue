@@ -218,15 +218,15 @@ function handleChangePasswordSuccess() {
   align-items: center;
   justify-content: center;
   height: 100vh;
-  background: var(--bg-card, #161b22);
-  color: var(--text-secondary, #8b949e);
+  background: var(--bg-card);
+  color: var(--text-secondary);
   font-size: 13px;
 }
 .auth-loading-spinner {
   width: 32px;
   height: 32px;
-  border: 3px solid var(--border, #30363d);
-  border-top-color: var(--accent, #6366f1);
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: auth-spin 0.8s linear infinite;
   margin-bottom: 14px;
@@ -693,7 +693,7 @@ function handleChangePasswordSuccess() {
 }
 
 .guest-nav a {
-  color: var(--muted, #5b6b82);
+  color: var(--muted);
   font-size: 13px;
   font-weight: 600;
   text-decoration: none;
@@ -702,7 +702,7 @@ function handleChangePasswordSuccess() {
 }
 
 .guest-nav a:hover {
-  color: var(--accent-h, #1e4fd6);
+  color: var(--accent-h);
 }
 
 .guest-brand {
