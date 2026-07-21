@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -166,4 +167,38 @@ func readBoolSettingValue(key string) bool {
 	}
 	s := strings.Trim(string(raw), `"`)
 	return s == "true" || s == "1"
+}
+
+// newStorageRetentionConfigProvider returns a closure that reads storage.*
+// settings from settings.Global and constructs a bg.StorageRetentionConfig on
+// every call (so live-config changes in the admin UI take effect on the next
+// retention tick instead of requiring a restart).
+//
+// Defaults (matching the original inline closure in main()):
+//
+//	auto_cleanup_enabled   → false (only enabled when explicitly set)
+//	auto_cleanup_threshold → 85%
+//	disk_quota_percent     → 80%
+//
+// Behaviour is identical to the inline closure that previously lived in main();
+// only the dependency on closure-captured locals was eliminated by parameterising
+// the read helpers (already top-level functions).
+func newStorageRetentionConfigProvider() func() bg.StorageRetentionConfig {
+	return func() bg.StorageRetentionConfig {
+		var c bg.StorageRetentionConfig
+		if b, _ := readBoolSettingPublic("storage.auto_cleanup_enabled"); b {
+			c.AutoCleanupEnabled = true
+		}
+		if v, _ := readIntSettingPublic("storage.auto_cleanup_threshold"); v > 0 {
+			c.AutoCleanupThreshold = float64(v)
+		} else {
+			c.AutoCleanupThreshold = 85
+		}
+		if v, _ := readIntSettingPublic("storage.disk_quota_percent"); v > 0 {
+			c.DiskQuotaPercent = float64(v)
+		} else {
+			c.DiskQuotaPercent = 80
+		}
+		return c
+	}
 }
