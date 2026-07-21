@@ -49,8 +49,8 @@ const instanceIdCopied = ref(false)
 
 const canActivate = computed(() => {
   if (!hardwareHash.value.trim() || !instanceId.value.trim()) return false
-  if (activateMode.value === 'online') return !!licenseKey.value.trim()
-  return !!offlinePayload.value.trim()
+  if (activateMode.value === 'online') return true  // 在线激活不需要输入，总是可以点击
+  return !!offlinePayload.value.trim()  // 离线激活需要粘贴激活响应码
 })
 
 async function loadStatus() {
@@ -216,7 +216,7 @@ async function copyInstanceId() {
 async function performActivate() {
   if (!canActivate.value) {
     error.value = activateMode.value === 'online'
-      ? '请填写 License Key。'
+      ? '设备指纹信息不完整，请返回上一步重新采集。'
       : '请粘贴离线激活码或签名 License。'
     return
   }
@@ -233,14 +233,14 @@ async function performActivate() {
     setInstanceId(instanceId.value.trim())
 
     if (activateMode.value === 'online') {
-      const result = await bootstrapApi.activate({
+      // 在线激活：使用 activateQuick，无需 license_key
+      const result = await bootstrapApi.activateQuick({
         instance_id: instanceId.value.trim(),
-        license_key: licenseKey.value.trim(),
         hardware_hash: hardwareHash.value.trim(),
         device_name: deviceName.value.trim() || undefined,
       })
       if (!result.activated) {
-        throw new Error(result.error || result.online_error || '激活失败')
+        throw new Error(result.error || result.online_error || '在线激活失败')
       }
       message.value = result.mode === 'online'
         ? '在线激活成功。'
@@ -261,7 +261,6 @@ async function performActivate() {
       if (!result.activated) {
         throw new Error(result.error || '离线激活失败')
       }
-      if (result.license_key) licenseKey.value = result.license_key
       message.value = result.message || '离线激活成功。'
       registerResult.value = {
         registered: false,
@@ -425,14 +424,11 @@ onMounted(async () => {
         <!-- 在线激活模式 -->
         <template v-if="activateMode === 'online'">
           <p class="muted mb">
-            填入您的 License Key，系统将自动验证并激活本机实例。
+            点击"激活"按钮，系统将自动向中心 <code>llm.kxpms.cn</code> 申请 License 并完成本地激活（无需手动填写 License Key）。
           </p>
           <el-form label-position="top" @submit.prevent="ensureAgreementThenActivate">
-            <el-form-item label="License Key">
-              <el-input v-model="licenseKey" placeholder="LIC-••••••••" clearable />
-            </el-form-item>
             <el-form-item label="设备名称（可选）">
-              <el-input v-model="deviceName" placeholder="生产网关 01" clearable />
+              <el-input v-model="deviceName" placeholder="例如：生产网关 01" clearable />
             </el-form-item>
           </el-form>
         </template>
