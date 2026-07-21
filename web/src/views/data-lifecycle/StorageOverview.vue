@@ -815,7 +815,7 @@ function fmtNum(n: number) {
   margin: 12px 0 0;
   padding: 8px 12px;
   background: rgba(99, 102, 241, 0.08);
-  border-left: 2px solid #6366f1;
+  border-left: 2px solid var(--accent);
   border-radius: 4px;
   font-size: 12px;
   color: var(--accent-h);

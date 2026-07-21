@@ -239,7 +239,7 @@ onMounted(load)
 .dl-version__row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .dl-version h2 { margin: 0; font-size: 1.25rem; }
 .dl-version__meta { margin: 4px 0 0; color: #94a3b8; font-size: 0.875rem; }
-.dl-doc-link { color: #a5b4fc; font-weight: 500; text-decoration: none; white-space: nowrap; }
+.dl-doc-link { color: var(--accent-h); font-weight: 500; text-decoration: none; white-space: nowrap; }
 .dl-doc-link:hover { text-decoration: underline; }
 .dl-meta { margin-bottom: 1.5rem; }
 .dl-meta__row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
