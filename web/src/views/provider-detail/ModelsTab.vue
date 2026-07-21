@@ -12,6 +12,7 @@ import {
   updateModelOffer,
   getRoutableSummary,
   triggerProviderProbeAll,
+  resetNodeProbeState,
   getProviderCredentials,
   checkCredential,
   diagnoseProvider,
@@ -231,11 +232,46 @@ async function triggerAllProbes() {
       provider_error: result.provider_error,
       skipped: result.skipped,
     }
+    // 2026-07-21 P0: probeAllSummary.ok>0 implies TriggerAllSync wrote
+    // node_probe_state for those bindings. Surface a clear hint so
+    // operators know the next reload should reflect new routing.
+    if (result.ok > 0) {
+      probeAllHint.value = pm('probeAllRecoveredHint', { n: result.ok })
+    }
   } catch (e: unknown) {
     probeAllSummary.value = null
     alert(e instanceof Error ? e.message : pm('probeFailed'))
   } finally {
     probeAllLoading.value = false
+  }
+}
+
+const resetNodeProbeLoading = ref(false)
+const probeAllHint = ref('')
+
+// 2026-07-21 P0: clear failed node_probe_state rows so the routing
+// view v_routable_credential_models immediately re-admits bindings
+// without waiting for NodeProbeWorker's 5s/30s/.../24h backoff.
+// Useful when "全面探测" was run before this fix landed and stale
+// failed rows still block routing.
+async function resetFailedNodeProbes() {
+  if (resetNodeProbeLoading.value) return
+  if (!confirm(pm('resetNodeProbeConfirm'))) return
+  resetNodeProbeLoading.value = true
+  try {
+    const r = await resetNodeProbeState(props.providerId)
+    probeAllHint.value = pm('resetNodeProbeDone', { n: r.rows_updated })
+    // Re-fetch the routable summary so the operator sees the
+    // effect of the reset without having to reload the page.
+    try {
+      routable.value = await getRoutableSummary(props.providerId)
+    } catch {
+      routable.value = null
+    }
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : pm('probeFailed'))
+  } finally {
+    resetNodeProbeLoading.value = false
   }
 }
 
@@ -564,6 +600,17 @@ load()
           :title="pm('probeAllTitle')"
           @click="triggerAllProbes"
         >{{ probeAllLoading ? pm('probeAllLoading') : pm('probeAllBtn') }}</button>
+        <!-- 2026-07-21 P0: companion to "全面探测". When a stale
+             node_probe_state row is blocking a binding's routing
+             (NodeProbeWorker backoff 5s..24h), the operator can
+             force-clear it here without waiting for the ladder to
+             naturally roll over. -->
+        <button
+          class="btn btn-sm btn-ghost"
+          :disabled="resetNodeProbeLoading"
+          :title="pm('resetNodeProbeTitle')"
+          @click="resetFailedNodeProbes"
+        >{{ resetNodeProbeLoading ? pm('resetNodeProbeLoading') : pm('resetNodeProbeBtn') }}</button>
       </div>
       <div v-if="probeAllLoading" class="probe-all-loading">
         <span class="refresh-spinner" aria-hidden="true"></span>
@@ -576,6 +623,7 @@ load()
           <span class="stat stat-warn">{{ pm('probeResultProviderErr', { n: probeAllSummary.provider_error }) }}</span>
           <span class="stat stat-skip">{{ pm('probeResultSkipped', { n: probeAllSummary.skipped }) }}</span>
         </div>
+        <div v-if="probeAllHint" class="probe-all-hint">{{ probeAllHint }}</div>
         <details class="probe-results-details">
           <summary>{{ pm('probeResultsDetails', { n: probeAllResults.length }) }}</summary>
           <table class="data-table probe-results-table">
@@ -1048,6 +1096,15 @@ load()
   background: var(--bg-subtle, #161b22);
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+.probe-all-hint {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(34, 197, 94, 0.12);
+  border-left: 3px solid var(--ok, #22c55e);
+  color: var(--ok, #22c55e);
+  font-size: 12px;
+  border-radius: 4px;
 }
 .probe-summary-stats {
   display: flex;
