@@ -166,9 +166,9 @@ function onSelect(requestId: string) {
 
 <style scoped>
 .live-stream {
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
-  background: var(--card, #1c2128);
+  background: var(--card);
   padding: 12px 16px 10px;
   margin-bottom: 20px;
 }
@@ -186,7 +186,7 @@ function onSelect(requestId: string) {
   font-size: 14px;
   font-weight: 600;
   margin: 0;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -207,7 +207,7 @@ function onSelect(requestId: string) {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -215,15 +215,15 @@ function onSelect(requestId: string) {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--muted, #8b949e);
+  background: var(--muted);
   flex-shrink: 0;
 }
 .live-stream__status--ok .live-stream__dot {
-  background: var(--success, #3fb950);
+  background: var(--success);
   box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.18);
 }
 .live-stream__status--warn .live-stream__dot {
-  background: var(--warning, #d29922);
+  background: var(--warning);
   animation: live-dot-pulse 1.4s ease-in-out infinite;
 }
 @keyframes live-dot-pulse {
@@ -235,26 +235,26 @@ function onSelect(requestId: string) {
   font-size: 12px;
   padding: 4px 10px;
   border-radius: 4px;
-  border: 1px solid var(--border, #30363d);
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
   cursor: pointer;
   flex-shrink: 0;
   white-space: nowrap;
   min-width: 64px;
 }
 .live-stream__btn:hover {
-  background: var(--bg-subtle, #161b22);
-  border-color: var(--accent, #6366f1);
+  background: var(--bg-subtle);
+  border-color: var(--accent);
 }
 
 .live-stream__select {
   font-size: 12px;
   padding: 4px 10px;
   border-radius: 4px;
-  border: 1px solid var(--border, #30363d);
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
   cursor: pointer;
   flex: 0 1 auto;
   min-width: 120px;
@@ -264,8 +264,8 @@ function onSelect(requestId: string) {
   text-overflow: ellipsis;
 }
 .live-stream__select option {
-  background: var(--card, #1c2128);
-  color: var(--text, #e6edf3);
+  background: var(--card);
+  color: var(--text);
 }
 
 .live-stream__count {
@@ -276,29 +276,29 @@ function onSelect(requestId: string) {
   flex-shrink: 0;
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   padding: 4px 10px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--bg, #0f1117);
+  background: var(--bg);
   font-variant-numeric: tabular-nums;
   min-width: 78px;
   justify-content: center;
 }
 .live-stream__count-num {
-  color: var(--text, #e6edf3);
+  color: var(--text);
   font-weight: 600;
 }
 .live-stream__count-sep {
-  color: var(--border, #30363d);
+  color: var(--border);
 }
 
 .live-stream__track {
   position: relative;
   height: 80px;
   overflow: hidden;
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 8px;
 }
@@ -318,7 +318,7 @@ function onSelect(requestId: string) {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 12px;
   pointer-events: none;
 }
