@@ -1,178 +1,179 @@
 <script setup lang="ts">
-// 2026-07-21: 登录态的顶部水平 topbar（替代原侧栏 sidebar）。
-// - 左：品牌（logo + 标题，logo 跳首页 /）
-// - 中：水平菜单（NAV_PRIMARY + NAV_GROUPS 经 mergeNav 扁平化）
-// - 右：ThemeToggle + LanguageSelector + slot #actions（登录态业务按钮）
-// 二级菜单：每个 group 的 items 用 <details>/hover-popup 显示。
+/**
+ * AppTopbar — 顶部水平导航 + 二级下拉菜单。
+ * 替代原有 sidebar。结构与 ai-native-maintain 的 topbar + OpsShell 同源：
+ *   [logo 标题] [主菜单水平条 (group label)] [操作区]
+ *   hover/click 展开当前 group 的二级下拉（绝对定位 absolute）。
+ *
+ * 2026-07-21: 统一三项目导航规范（llm-gateway-go / ai-native-maintain / ai-session-manager）。
+ */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import LanguageSelector from '../LanguageSelector.vue'
 import ThemeToggle from '../ThemeToggle.vue'
+import SystemStatusIndicator from '../SystemStatusIndicator.vue'
 import { detectTheme, logoSrc } from '../../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE } from '../../config/brand'
-import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, mergeNav } from '../../config/appNav'
-import { store, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, isDefaultTenant } from '../../store'
-import { usePluginNav } from '../../composables/usePluginNav'
+import { store, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from '../../store'
+import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, visibleNavGroups, visibleNavItems } from '../../config/appNav'
 
 const { t } = useI18n()
 const route = useRoute()
-const router = useRouter()
 
 const brandLogo = ref(logoSrc(detectTheme()))
-let themeObserver: MutationObserver | null = null
+let logoObserver: MutationObserver | null = null
 
-const { pluginNav, reload: reloadPluginNav } = usePluginNav()
+onMounted(() => {
+  brandLogo.value = logoSrc(detectTheme())
+  logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
+  logoObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+  document.addEventListener('click', handleOutside)
+})
+onBeforeUnmount(() => {
+  logoObserver?.disconnect()
+  document.removeEventListener('click', handleOutside)
+})
 
 const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
 const isTenantPortal = computed(() => !isPlatformOps.value)
 
-const topbarGroups = computed(() =>
-  mergeNav(NAV_PRIMARY_ITEMS, NAV_GROUPS, {
-    isSuperAdmin: isSuperAdmin.value,
-    isPlatformOps: isPlatformOps.value,
-    isTenantPortal: isTenantPortal.value,
-  }),
-)
+const navPrimaryItems = computed(() => visibleNavItems(NAV_PRIMARY_ITEMS, {
+  isSuperAdmin: isSuperAdmin.value,
+  isPlatformOps: isPlatformOps.value,
+  isTenantPortal: isTenantPortal.value,
+}))
 
-// "总览" 组隐藏：用户已经在 dashboard 页面时，标题列在 topbar 就够冗余。
-// 把 NAV_PRIMARY_ITEMS（"/dashboard"）的组直接拍平成"首页"快捷链接。
-const flatPrimary = computed(() =>
-  NAV_PRIMARY_ITEMS.filter((it) =>
-    !(it.platformOps && !isPlatformOps.value) && !(it.super && !isSuperAdmin.value),
-  ),
-)
+const navGroups = computed(() => visibleNavGroups(NAV_GROUPS, {
+  isSuperAdmin: isSuperAdmin.value,
+  isPlatformOps: isPlatformOps.value,
+  isTenantPortal: isTenantPortal.value,
+}))
 
-onMounted(() => {
-  brandLogo.value = logoSrc(detectTheme())
-  themeObserver = new MutationObserver(() => {
-    brandLogo.value = logoSrc(detectTheme())
-  })
-  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-  reloadPluginNav().catch(() => { /* ignore — 插件菜单拉取失败不影响主壳 */ })
-})
+const openGroupId = ref<string | null>(null)
 
-onBeforeUnmount(() => themeObserver?.disconnect())
-
-function goHome(e: MouseEvent) {
-  e.preventDefault()
-  if (route.path === '/' || route.path === '/dashboard') {
-    // 已在首页 → 软刷新（router.go(0) 不会丢失 in-memory state）
-    return
-  }
-  router.push('/dashboard').catch(() => { /* duplicate nav */ })
+function toggleGroup(id: string) {
+  openGroupId.value = openGroupId.value === id ? null : id
 }
 
-function activeClass(path: string, exact?: boolean) {
-  return isNavItemActive(path, route.path, exact) ? 'is-active' : ''
+function closeAll() {
+  openGroupId.value = null
 }
 
-// "总览"快捷链接（导航栏最左）
-const primaryShortcuts = computed(() =>
-  flatPrimary.value.map((it) => ({
-    path: it.path,
-    label: it.labelKey ? t(it.labelKey, it.label) : it.label,
-    icon: it.icon,
-    exact: it.exact,
-  })),
-)
+function leaveGroup(id: string) {
+  // Only close when the cursor leaves the group that was opened by hover;
+  // click-opened groups stay open until the user clicks again or outside.
+  if (openGroupId.value === id) closeAll()
+}
+
+function handleOutside(event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  if (!target) return
+  if (target.closest('.app-topbar__nav') || target.closest('.app-topbar__dropdown')) return
+  closeAll()
+}
+
+function groupActive(id: string): boolean {
+  return navGroups.value
+    .find((g) => g.id === id)?.items
+    .some((it) => isNavItemActive(it.path, route.path, it.exact)) ?? false
+}
+
+function navLabel(labelKey: string | undefined, fallback: string): string {
+  return labelKey ? t(labelKey) : fallback
+}
 </script>
 
 <template>
   <header class="app-topbar">
-    <div class="topbar-left">
-      <a class="brand" href="/" :title="SITE_TITLE" @click="goHome">
-        <img
-          class="brand-logo"
-          :src="brandLogo"
-          :width="SITE_LOGO_SIZE"
-          :height="SITE_LOGO_SIZE"
-          :alt="SITE_TITLE"
-        />
-        <span class="brand-title">{{ SITE_TITLE }}</span>
-      </a>
-    </div>
+    <router-link to="/" class="app-topbar__brand" :title="SITE_TITLE">
+      <img
+        :src="brandLogo"
+        :width="SITE_LOGO_SIZE"
+        :height="SITE_LOGO_SIZE"
+        alt="开轩启圭"
+        class="app-topbar__brand-img"
+      />
+      <span class="app-topbar__brand-text">{{ SITE_TITLE }}</span>
+    </router-link>
 
-    <nav class="topnav" :aria-label="t('nav.mainAria', '主导航')">
-      <!-- 总览快捷链接（扁平） -->
-      <a
-        v-for="p in primaryShortcuts"
-        :key="p.path"
-        :href="p.path"
-        class="topnav-link topnav-link--primary"
-        :class="activeClass(p.path, p.exact)"
-        @click.prevent="router.push(p.path)"
-      >
-        <span v-if="p.icon" class="topnav-icon" aria-hidden="true">{{ p.icon }}</span>
-        <span>{{ p.label }}</span>
-      </a>
-
-      <!-- 分组：每个 group 一个顶层按钮 + 二级 dropdown -->
-      <div
-        v-for="group in topbarGroups.filter(g => g.id !== 'primary')"
-        :key="group.id"
-        class="topnav-group"
-      >
+    <nav class="app-topbar__nav" :aria-label="t('nav.mainAria', '主导航')">
+      <template v-for="item in navPrimaryItems" :key="item.path + item.label">
         <a
-          v-if="group.primaryPath"
-          :href="group.primaryPath"
-          class="topnav-link topnav-link--group"
-          :class="activeClass(group.primaryPath)"
-          @click.prevent="router.push(group.primaryPath)"
-        >{{ group.labelKey ? t(group.labelKey, group.label) : group.label }}</a>
-        <details v-else class="topnav-group-details">
-          <summary class="topnav-link topnav-link--group">
-            <span>{{ group.labelKey ? t(group.labelKey, group.label) : group.label }}</span>
-            <span class="topnav-chevron" aria-hidden="true">▾</span>
-          </summary>
-          <ul class="topnav-dropdown" role="menu">
-            <li v-for="item in group.items" :key="item.path + item.label">
-              <a
-                v-if="item.external"
-                :href="item.path"
-                class="topnav-dropdown-link"
-                role="menuitem"
-              >
-                <span v-if="item.icon" class="topnav-icon" aria-hidden="true">{{ item.icon }}</span>
-                <span>{{ item.labelKey ? t(item.labelKey, item.label) : item.label }}</span>
-              </a>
-              <a
-                v-else
-                :href="item.path"
-                class="topnav-dropdown-link"
-                :class="activeClass(item.path, item.exact)"
-                role="menuitem"
-                @click.prevent="router.push(item.path)"
-              >
-                <span v-if="item.icon" class="topnav-icon" aria-hidden="true">{{ item.icon }}</span>
-                <span>{{ item.labelKey ? t(item.labelKey, item.label) : item.label }}</span>
-              </a>
-            </li>
-          </ul>
-        </details>
-      </div>
+          v-if="item.external"
+          :href="item.path"
+          class="app-topbar__link app-topbar__link--primary"
+          :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
+        >{{ navLabel(item.labelKey, item.label) }}</a>
+        <router-link
+          v-else
+          :to="item.path"
+          class="app-topbar__link app-topbar__link--primary"
+          :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
+        >{{ navLabel(item.labelKey, item.label) }}</router-link>
+      </template>
 
-      <!-- 插件菜单（来自 usePluginNav） -->
-      <a
-        v-for="entry in pluginNav"
-        :key="entry.route_url + entry.label_key"
-        :href="entry.route_url"
-        class="topnav-link"
-        :class="{ 'is-active': route.path.startsWith(entry.route_url) }"
+      <div
+        v-for="group in navGroups"
+        :key="group.id"
+        class="app-topbar__group"
+        :class="{ 'app-topbar__group--open': openGroupId === group.id, 'app-topbar__group--active': groupActive(group.id) }"
+        @mouseenter="openGroupId = group.id"
+        @mouseleave="leaveGroup(group.id)"
       >
-        {{ t(entry.label_key) }}
-      </a>
+        <button
+          type="button"
+          class="app-topbar__link app-topbar__group-trigger"
+          :aria-expanded="openGroupId === group.id"
+          @click="toggleGroup(group.id)"
+        >
+          {{ navLabel(group.labelKey, group.label) }}
+          <span class="app-topbar__chevron" aria-hidden="true">▾</span>
+        </button>
+        <div
+          v-show="openGroupId === group.id"
+          class="app-topbar__dropdown"
+          role="menu"
+        >
+          <template v-for="item in group.items" :key="item.path + item.label">
+            <a
+              v-if="item.external"
+              :href="item.path"
+              class="app-topbar__dropdown-item"
+              role="menuitem"
+              :target="item.path.startsWith('http') ? '_blank' : undefined"
+              :rel="item.path.startsWith('http') ? 'noopener' : undefined"
+              @click="closeAll()"
+            >
+              <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
+              <span>{{ navLabel(item.labelKey, item.label) }}</span>
+            </a>
+            <router-link
+              v-else
+              :to="item.path"
+              class="app-topbar__dropdown-item"
+              :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
+              role="menuitem"
+              @click="closeAll()"
+            >
+              <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
+              <span>{{ navLabel(item.labelKey, item.label) }}</span>
+            </router-link>
+          </template>
+        </div>
+      </div>
     </nav>
 
-    <div class="topbar-right">
-      <span v-if="store.userInfo" class="topbar-user">
-        <span class="topbar-user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
-        <span v-if="store.userInfo.role" class="topbar-user-role">{{ t(`app.role.${store.userInfo.role}`) }}</span>
-      </span>
+    <div class="app-topbar__actions">
+      <SystemStatusIndicator />
+      <slot name="actions" />
+      <template v-if="store.userInfo">
+        <span class="app-topbar__user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
+        <span class="app-topbar__user-role">{{ store.userInfo.role ? t(`app.role.${store.userInfo.role}`) : '' }}</span>
+      </template>
       <ThemeToggle />
       <LanguageSelector />
-      <slot name="actions" />
     </div>
   </header>
 </template>
@@ -181,139 +182,196 @@ const primaryShortcuts = computed(() =>
 .app-topbar {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 24px;
-  background: var(--kx-surface-soft, var(--card));
+  gap: 16px;
+  padding: 10px clamp(16px, 3vw, 32px);
+  background: var(--kx-surface-soft, var(--sidebar));
   border-bottom: 1px solid var(--kx-border, var(--border));
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(14px);
   position: sticky;
   top: 0;
-  z-index: 100;
+  z-index: 30;
+  width: 100%;
+  box-sizing: border-box;
   min-height: 64px;
 }
-.topbar-left { display: inline-flex; align-items: center; flex-shrink: 0; }
-.brand {
+
+.app-topbar__brand {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   text-decoration: none;
   color: var(--kx-text, var(--text));
+  flex-shrink: 0;
 }
-.brand-logo {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
+
+.app-topbar__brand-img {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
   object-fit: contain;
   background: var(--kx-surface, var(--card));
+  box-shadow: var(--kx-shadow-sm, 0 2px 8px rgba(0, 0, 0, 0.06));
+  flex-shrink: 0;
 }
-.brand-title {
-  font-size: 13px;
+
+.app-topbar__brand-text {
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: -0.01em;
-  line-height: 1.3;
   white-space: nowrap;
-  max-width: 200px;
+  max-width: min(40vw, 320px);
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.topnav {
-  display: inline-flex;
+.app-topbar__nav {
+  display: flex;
   align-items: center;
-  gap: 2px;
-  flex: 1 1 auto;
-  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
   min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
-.topnav-link,
-.topnav-group-details > summary {
+
+.app-topbar__link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
-  border-radius: 6px;
-  font-size: 13px;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
   color: var(--kx-muted, var(--muted));
-  text-decoration: none;
-  cursor: pointer;
-  user-select: none;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.topnav-link:hover,
-.topnav-group-details[open] > summary,
-.topnav-group-details > summary:hover {
-  color: var(--kx-primary, var(--accent));
-  background: var(--kx-primary-soft, var(--bg-subtle));
-}
-.topnav-link.is-active {
-  color: var(--kx-primary, var(--accent));
-  background: var(--kx-primary-soft, var(--bg-subtle));
+  font-size: 13px;
   font-weight: 600;
+  text-decoration: none;
+  border-radius: 8px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+  font-family: inherit;
 }
-.topnav-link--primary { font-weight: 600; }
-.topnav-icon { font-size: 13px; line-height: 1; }
+.app-topbar__link:hover {
+  color: var(--kx-text, var(--text));
+  background: var(--kx-primary-soft, var(--bg-subtle));
+}
+.app-topbar__link.active {
+  color: var(--kx-primary, var(--accent));
+  background: var(--kx-primary-soft, var(--bg-subtle));
+}
+.app-topbar__link--primary {
+  color: var(--kx-text, var(--text));
+  font-weight: 700;
+}
 
-.topnav-group { position: relative; }
-.topnav-group-details { position: relative; }
-.topnav-group-details > summary { list-style: none; }
-.topnav-group-details > summary::-webkit-details-marker { display: none; }
-.topnav-chevron { font-size: 10px; opacity: 0.7; margin-left: 2px; }
-.topnav-dropdown {
+.app-topbar__group {
+  position: relative;
+}
+.app-topbar__group-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.app-topbar__group--active .app-topbar__group-trigger {
+  color: var(--kx-primary, var(--accent));
+}
+.app-topbar__chevron {
+  font-size: 10px;
+  opacity: 0.7;
+  transition: transform 0.15s ease;
+}
+.app-topbar__group--open .app-topbar__chevron {
+  transform: rotate(180deg);
+}
+
+.app-topbar__dropdown {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  min-width: 200px;
-  margin: 0;
+  z-index: 40;
+  min-width: 220px;
   padding: 6px;
+  margin: 0;
   background: var(--kx-surface, var(--card));
   border: 1px solid var(--kx-border, var(--border));
-  border-radius: 8px;
-  box-shadow: var(--kx-shadow-md, 0 8px 24px rgba(0,0,0,0.15));
-  list-style: none;
-  z-index: 110;
-  max-height: 70vh;
-  overflow-y: auto;
-}
-.topnav-dropdown-link {
+  border-radius: 12px;
+  box-shadow: var(--kx-shadow-md, 0 16px 40px rgba(0, 0, 0, 0.1));
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  font-size: 13px;
-  color: var(--kx-text, var(--text));
-  text-decoration: none;
-  white-space: nowrap;
-  transition: background 0.15s ease;
-}
-.topnav-dropdown-link:hover {
-  background: var(--kx-primary-soft, var(--bg-subtle));
-  color: var(--kx-primary, var(--accent));
-}
-.topnav-dropdown-link.is-active {
-  color: var(--kx-primary, var(--accent));
-  background: var(--kx-primary-soft, var(--bg-subtle));
-  font-weight: 600;
+  flex-direction: column;
+  gap: 2px;
+  animation: app-topbar-dropdown-enter 0.14s ease both;
 }
 
-.topbar-right {
-  display: inline-flex;
+.app-topbar__dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--kx-text, var(--text));
+  font-size: 13px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+  cursor: pointer;
+  font-family: inherit;
+}
+.app-topbar__dropdown-item:hover {
+  background: var(--kx-primary-soft, var(--bg-subtle));
+  color: var(--kx-primary, var(--accent));
+}
+.app-topbar__dropdown-item.active {
+  background: var(--kx-primary-soft, var(--bg-subtle));
+  color: var(--kx-primary, var(--accent));
+}
+.app-topbar__dropdown-icon {
+  width: 18px;
+  text-align: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.app-topbar__actions {
+  display: flex;
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
+  margin-left: auto;
 }
-.topbar-user {
-  display: inline-flex;
-  flex-direction: column;
-  line-height: 1.2;
-  margin-right: 4px;
-}
-.topbar-user-name { font-size: 12px; font-weight: 600; color: var(--kx-text, var(--text)); }
-.topbar-user-role { font-size: 10px; color: var(--kx-muted, var(--muted)); }
 
-@media (max-width: 720px) {
-  .app-topbar { flex-wrap: wrap; padding: 8px 14px; }
-  .topnav { order: 3; flex-basis: 100%; }
-  .brand-title { max-width: 140px; }
+.app-topbar__user-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--kx-text, var(--text));
+  white-space: nowrap;
+}
+
+.app-topbar__user-role {
+  font-size: 11px;
+  color: var(--kx-muted, var(--muted));
+  white-space: nowrap;
+}
+
+@keyframes app-topbar-dropdown-enter {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 768px) {
+  .app-topbar {
+    flex-wrap: wrap;
+    padding: 10px 14px;
+  }
+  .app-topbar__nav {
+    order: 3;
+    width: 100%;
+    margin-top: 6px;
+  }
+  .app-topbar__user-name,
+  .app-topbar__user-role {
+    display: none;
+  }
 }
 </style>

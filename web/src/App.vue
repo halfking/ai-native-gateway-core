@@ -157,10 +157,6 @@ function handleChangePasswordSuccess() {
   <div v-else-if="isLoggedIn" class="app-layout app-layout--topbar">
     <AppTopbar>
       <template #actions>
-        <span v-if="store.userInfo" class="topbar-user-badge">
-          <span class="topbar-user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
-          <span v-if="store.userInfo.role" class="topbar-user-role">{{ t(`app.role.${store.userInfo.role}`) }}</span>
-        </span>
         <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('login.changePassword') }}</button>
         <button class="btn btn-ghost btn-sm" @click="logout">{{ t('app.logout') }}</button>
       </template>

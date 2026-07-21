@@ -1,25 +1,24 @@
 <script setup lang="ts">
-// 2026-07-21: 单图标 ☼/☾ 切换（与 ai-native-maintain 对齐）。
-// 当前是浅色 → 显示 ☾ "切到深色"；当前是深色 → 显示 ☼ "切到浅色"。
-import { onMounted, ref } from 'vue'
+/**
+ * ThemeToggle — 单图标按钮（☼/☾），同一位置渲染。
+ * 与 ai-native-maintain 视觉一致（text glyph）。
+ * 2026-07-21: 替换原 SVG 双图标方案，统一为单图标按钮。
+ */
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { detectTheme, setTheme, type ThemeMode } from '../theme'
+import { detectTheme, setTheme } from '../theme'
 
 const { t } = useI18n()
-const theme = ref<ThemeMode>(detectTheme())
+const theme = ref<'light' | 'dark'>('light')
 
 onMounted(() => {
   theme.value = detectTheme()
-  // 监听跨组件 / URL 主题变化（其他 topbar 调用 setTheme 时本组件也要刷新）
-  const obs = new MutationObserver(() => {
-    const next = detectTheme()
-    if (next !== theme.value) theme.value = next
-  })
-  obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 })
 
+const isDark = computed(() => theme.value === 'dark')
+
 function toggle() {
-  const next: ThemeMode = theme.value === 'dark' ? 'light' : 'dark'
+  const next = isDark.value ? 'light' : 'dark'
   theme.value = next
   setTheme(next)
 }
@@ -29,11 +28,12 @@ function toggle() {
   <button
     type="button"
     class="theme-toggle"
-    :title="theme === 'dark' ? t('theme.switchToLight', '切到浅色') : t('theme.switchToDark', '切到深色')"
-    :aria-label="theme === 'dark' ? t('theme.lightTitle', '浅色模式') : t('theme.darkTitle', '深色模式')"
+    :aria-label="isDark ? t('theme.switchToLight', '切到浅色') : t('theme.switchToDark', '切到深色')"
+    :title="isDark ? t('theme.lightTitle', '浅色模式') : t('theme.darkTitle', '深色模式')"
+    :aria-pressed="isDark"
     @click="toggle"
   >
-    <span aria-hidden="true">{{ theme === 'dark' ? '☼' : '☾' }}</span>
+    <span class="theme-toggle-glyph" aria-hidden="true">{{ isDark ? '☾' : '☼' }}</span>
   </button>
 </template>
 
@@ -42,25 +42,23 @@ function toggle() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: 1px solid var(--kx-border, var(--border));
+  width: 36px;
+  height: 36px;
   border-radius: 8px;
-  background: var(--kx-surface-soft, var(--card));
-  color: var(--kx-text, var(--text));
+  border: 1px solid var(--kx-border, var(--border));
+  background: var(--kx-surface, var(--card));
+  color: var(--kx-muted, var(--muted));
   cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
 .theme-toggle:hover {
   background: var(--kx-primary-soft, var(--bg-subtle));
   color: var(--kx-primary, var(--accent));
   border-color: var(--kx-primary, var(--accent));
 }
-.theme-toggle:focus-visible {
-  outline: 2px solid var(--kx-primary, var(--accent));
-  outline-offset: 2px;
+.theme-toggle-glyph {
+  font-size: 16px;
+  line-height: 1;
+  font-weight: 600;
 }
 </style>
