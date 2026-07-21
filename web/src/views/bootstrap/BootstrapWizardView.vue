@@ -138,6 +138,9 @@ async function onAgreementAgreed() {
   localStorage.setItem(AGREEMENT_STORAGE_KEY, new Date().toISOString())
   agreementDialogResolved.value = 'agreed'
   showAgreementDialog.value = false
+  // 同意后自动进入步骤1（设备指纹）
+  step.value = 1
+  await loadFingerprint()
   if (pendingActivation.value) {
     pendingActivation.value = false
     await continueActivate()
@@ -321,8 +324,13 @@ onMounted(async () => {
     step.value = 4
     return
   }
-  // 强制：每次进入未激活的 bootstrap，必须先看到协议弹窗。
-  openAgreementDialog()
+  // 未同意协议 → 弹窗；已同意 → 进入步骤1（设备指纹）
+  if (!agreementAccepted.value) {
+    openAgreementDialog()
+  } else {
+    step.value = 1
+    await loadFingerprint()
+  }
 })
 </script>
 
