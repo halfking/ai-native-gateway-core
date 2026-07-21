@@ -91,6 +91,6 @@ defineProps<{
 .stage-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .tag { padding: 1px 6px; border-radius: 4px; font-size: 10px; }
 .tag-pos { background: rgba(52,211,153,.12); color: #34d399; }
-.tag-audit { background: rgba(99,102,241,.12); color: #818cf8; }
+.tag-audit { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-h); }
 .no-change { font-size: 10px; color: var(--text-muted); font-style: italic; }
 </style>

@@ -642,7 +642,7 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-weight: 600;
 }
-.kind-llm_endpoint { background: rgba(99, 102, 241, 0.18); color: #818cf8; }
+.kind-llm_endpoint { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-h); }
 .kind-mcp_server   { background: rgba(34, 197, 94, 0.18); color: #4ade80; }
 .kind-agent        { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
 
@@ -665,6 +665,6 @@ onBeforeUnmount(() => {
   transition: background 0.1s ease;
 }
 .agent-row:hover {
-  background: rgba(99, 102, 241, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 </style>
