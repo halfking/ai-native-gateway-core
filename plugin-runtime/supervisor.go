@@ -129,6 +129,44 @@ func (s *Supervisor) Restart(pluginID string) error {
 	return nil
 }
 
+// Upgrade stops the currently running plugin (if any) and starts the new
+// manifest. If the new Start fails, the supervisor restores the previous
+// manifest in its index so the caller and health-loop see the canonical
+// version. The old process is already stopped by this point; callers that
+// need the old version running again must call Restart after a failed Upgrade.
+// Returns nil on success.
+func (s *Supervisor) Upgrade(ctx context.Context, newManifest *Manifest) error {
+	s.mu.Lock()
+	oldManifest := s.manifests[newManifest.PluginID]
+	oldCmd, oldRunning := s.procs[newManifest.PluginID]
+	s.mu.Unlock()
+
+	// 1. stop old process first (it's about to be replaced)
+	if oldRunning && oldCmd != nil {
+		_ = oldCmd.Stop()
+		s.mu.Lock()
+		delete(s.procs, newManifest.PluginID)
+		s.mu.Unlock()
+	}
+
+	// 2. start new
+	if _, err := s.Start(ctx, newManifest); err != nil {
+		// rollback: restore old manifest in index so health-loop/caller see
+		// the canonical version. We do NOT auto-restart old here — if old
+		// must keep running, caller calls Restart after failed Upgrade.
+		s.mu.Lock()
+		if oldManifest != nil {
+			s.manifests[newManifest.PluginID] = oldManifest
+		} else {
+			delete(s.manifests, newManifest.PluginID)
+			delete(s.states, newManifest.PluginID)
+		}
+		s.mu.Unlock()
+		return fmt.Errorf("upgrade plugin %s: %w", newManifest.PluginID, err)
+	}
+	return nil
+}
+
 // ManifestOf returns the stored manifest for a plugin (nil if never started).
 func (s *Supervisor) ManifestOf(pluginID string) *Manifest {
 	s.mu.Lock()
