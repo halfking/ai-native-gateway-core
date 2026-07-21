@@ -452,6 +452,12 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		h.handleProviderProbeHistoryTrigger(w, r, providerID)
 	case "probe-history/trigger-all":
 		h.handleProviderProbeHistoryTriggerAll(w, r, providerID)
+	case "node-probe-state/reset":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.handleNodeProbeStateReset(w, r, providerID)
 	case "probe-states":
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")

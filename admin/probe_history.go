@@ -22,9 +22,14 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // probeRunResponse is the row shape sent to the UI.
@@ -244,6 +249,80 @@ func (h *Handler) handleProviderProbeHistoryTriggerAll(w http.ResponseWriter, r 
 		"provider_error":    providerError,
 		"skipped":           skipped,
 		"results":           results,
+	})
+}
+
+// handleNodeProbeStateReset clears failed node_probe_state rows so the
+// routing view immediately re-admits bindings blocked by the
+// NodeProbeWorker backoff ladder (5s/30s/.../24h). Without this, a
+// single failed probe can keep a credential out of routing for up to
+// 24h even when TriggerAllSync (全面探测) reports it as healthy.
+//
+// Companion to handleProviderProbeHistoryTriggerAll — that handler now
+// writes node_probe_state automatically on success, so this endpoint is
+// only needed when an operator wants to clear stale state without
+// re-probing. Body: {credential_id?: number} (empty body = all rows for
+// the provider).
+func (h *Handler) handleNodeProbeStateReset(w http.ResponseWriter, r *http.Request, providerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var req struct {
+		CredentialID int `json:"credential_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	var tag pgconn.CommandTag
+	var err error
+	if req.CredentialID > 0 {
+		var owned bool
+		if err = h.db.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM credentials WHERE id = $1 AND provider_id = $2)`,
+			req.CredentialID, providerID).Scan(&owned); err != nil || !owned {
+			writeError(w, http.StatusNotFound, "credential not found under provider")
+			return
+		}
+		tag, err = h.db.Exec(ctx, `
+			UPDATE node_probe_state SET
+				last_direct_ok    = TRUE,
+				last_gateway_ok   = TRUE,
+				last_err_code     = NULL,
+				last_err_detail   = NULL,
+				next_retry_at     = now(),
+				next_retry_seconds = 0,
+				consecutive_failures = 0,
+				paused            = FALSE,
+				in_flight_until   = NULL,
+				updated_at        = now()
+			WHERE credential_id = $1 AND last_direct_ok = FALSE
+		`, req.CredentialID)
+	} else {
+		tag, err = h.db.Exec(ctx, `
+			UPDATE node_probe_state SET
+				last_direct_ok    = TRUE,
+				last_gateway_ok   = TRUE,
+				last_err_code     = NULL,
+				last_err_detail   = NULL,
+				next_retry_at     = now(),
+				next_retry_seconds = 0,
+				consecutive_failures = 0,
+				paused            = FALSE,
+				in_flight_until   = NULL,
+				updated_at        = now()
+			WHERE credential_id IN (SELECT id FROM credentials WHERE provider_id = $1)
+			  AND last_direct_ok = FALSE
+		`, providerID)
+	}
+	if err != nil {
+		slog.Error("node_probe_state reset failed", "provider_id", providerID, "cred_id", req.CredentialID, "error", err)
+		writeError(w, http.StatusInternalServerError, "reset failed: "+err.Error())
+		return
+	}
+	provider.InvalidateAllCandidateCache()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":       "node_probe_state reset",
+		"rows_updated":  tag.RowsAffected(),
+		"credential_id": req.CredentialID,
 	})
 }
 
