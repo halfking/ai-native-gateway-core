@@ -16,4 +16,29 @@ export default {
     switch: '言語を切り替え',
     label: '言語',
   },
+  // 2026-07-22: 公開シェルフッターの文言（LifecycleShell と連動）。
+  footer: {
+    left: '© 2026 AI-Native ゲートウェイ',
+    right: 'ヘルプが必要ですか？',
+    feedbackLink: 'フィードバックを送信',
+  },
+  // 2026-07-22: ユーザーメニュー（UserMenuDropdown）+ プロフィールダイアログ（UserInfoDialog）。
+  userMenu: {
+    profile: 'プロフィール',
+    changePassword: 'パスワードを変更',
+    logout: 'サインアウト',
+  },
+  userInfo: {
+    displayName: '表示名',
+    username: 'ユーザー名',
+    email: 'メールアドレス',
+    role: '役割',
+    tenant: 'テナント',
+    close: '閉じる',
+  },
+  // 2026-07-22: スキップリンク（a11y）用文言。
+  nav: {
+    mainAria: 'メインナビゲーション',
+    skip: 'メインコンテンツへスキップ',
+  },
 }

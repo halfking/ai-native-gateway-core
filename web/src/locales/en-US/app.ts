@@ -22,8 +22,29 @@ export default {
     lightTitle: 'Light mode',
     darkTitle: 'Dark mode',
   },
-  // 2026-07-21: top-bar accessibility strings.
+  // 2026-07-22: top-bar accessibility strings (incl. a11y skip-link).
   nav: {
     mainAria: 'Main navigation',
+    skip: 'Skip to main content',
+  },
+  // 2026-07-22: public shell footer strings (used by LifecycleShell).
+  footer: {
+    left: '© 2026 AI-Native Org Gateway',
+    right: 'Need help?',
+    feedbackLink: 'Send feedback',
+  },
+  // 2026-07-22: user menu dropdown (UserMenuDropdown) + profile dialog (UserInfoDialog).
+  userMenu: {
+    profile: 'Profile',
+    changePassword: 'Change password',
+    logout: 'Sign out',
+  },
+  userInfo: {
+    displayName: 'Display name',
+    username: 'Username',
+    email: 'Email',
+    role: 'Role',
+    tenant: 'Tenant',
+    close: 'Close',
   },
 }
