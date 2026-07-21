@@ -124,7 +124,7 @@ onMounted(ensureReady)
         <h1>离线激活</h1>
         <p>本机无法联网访问中心时使用：复制实例 ID 到公网激活站点，生成激活码后粘贴回来即可。</p>
       </div>
-      <RouterLink class="btn btn-ghost" to="/customer/update-activate">返回更新与激活</RouterLink>
+      <RouterLink class="btn btn-ghost btn-no-arrow" to="/customer/update-activate">返回更新与激活</RouterLink>
     </header>
 
     <el-alert v-if="error" type="error" :title="error" show-icon class="mb" closable @close="error = ''" />
