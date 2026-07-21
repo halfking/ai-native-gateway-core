@@ -26,10 +26,4 @@ export default {
   nav: {
     mainAria: '主导航',
   },
-  // 2026-07-21: lifecycle shell 页脚文案（开轩启圭 + 反馈链接）。
-  footer: {
-    left: '开轩启圭 AI Native',
-    right: '© 2026 开轩启圭 · ',
-    feedbackLink: '反馈',
-  },
 }
