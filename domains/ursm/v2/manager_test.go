@@ -63,3 +63,42 @@ func TestFacadeSkipsWhenStoreNil(t *testing.T) {
 		t.Fatalf("nil receiver should be a no-op, got: %v", err)
 	}
 }
+
+// TestRecordRequestHonorsAdminHold verifies that RecordRequest reads
+// manual_hold from the node hash and threads AdminHold into the Lua
+// script, so the script's admin_hold short-circuit becomes reachable.
+// Under manual_hold="1" the Lua must NOT mutate generation, last_err,
+// success_count, etc.
+func TestRecordRequestHonorsAdminHold(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	cfg := DefaultConfig()
+	cfg.Mode = api.ModeCanary
+	cfg.CanaryPercent = 100
+	mgr := New(Dependencies{Redis: rdb, Config: cfg})
+	_ = mgr.SetReady(context.Background(), true)
+	ctx := context.Background()
+	// Seed admin_hold="1" before recording.
+	if err := rdb.HSet(ctx, "ursm:v2:node:42:gpt",
+		"manual_hold", "1", "source_priority", "40",
+	).Err(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := mgr.RecordRequest(ctx, api.RequestOutcome{
+		CredentialID: 42, RawModel: "gpt", Success: true,
+		RequestID: "r-admin",
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	// The Lua's admin_hold short-circuit must NOT have written last_err,
+	// generation, success_count etc. Verify by checking generation is
+	// empty (no HINCRBY happened) and last_err is empty.
+	gen, _ := rdb.HGet(ctx, "ursm:v2:node:42:gpt", "generation").Result()
+	if gen != "" && gen != "0" {
+		t.Fatalf("generation must not have been incremented under admin_hold, got %q", gen)
+	}
+	lastErr, _ := rdb.HGet(ctx, "ursm:v2:node:42:gpt", "last_err").Result()
+	if lastErr != "" {
+		t.Fatalf("last_err must not have been written under admin_hold, got %q", lastErr)
+	}
+}

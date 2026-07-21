@@ -315,8 +315,17 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	timeout := time.Duration(m.cfg.RecordTimeoutMs) * time.Millisecond
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
+	// Read the existing manual_hold so the Lua script's admin-hold
+	// short-circuit has real data. A missing key or transport error must
+	// NOT block the request: only an explicit "1" on manual_hold causes
+	// the Lua to ignore the outcome. Any other outcome (Nil, error,
+	// empty) is treated as "no hold" and the request is recorded normally.
+	// This mirrors the F3 ApplyProbe pattern.
+	nodeKey := store.NodeKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel)
+	manualHold, _ := m.store.RawClient().HGet(rctx, nodeKey, "manual_hold").Result()
+	adminHold := manualHold == "1"
 	if _, err := m.store.RecordRequest(rctx,
-		store.NodeKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel),
+		nodeKey,
 		store.WindowKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel, "1m"),
 		store.WindowKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel, "5m"),
 		store.WindowKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel, "30m"),
@@ -329,7 +338,7 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 			NodeTTL:      m.cfg.NodeTTL,
 			Window5mTTL:  m.cfg.Window5mTTL,
 			Window30mTTL: m.cfg.Window30mTTL,
-			AdminHold:    false,
+			AdminHold:    adminHold,
 		}); err != nil {
 		m.log.Warn("ursm.v2: record failed", "error", err, "cid", ev.CredentialID)
 		return fmt.Errorf("ursm.v2: record: %w", err)
