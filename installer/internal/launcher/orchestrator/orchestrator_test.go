@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -290,3 +291,67 @@ func TestRollbackRejectsNonTerminal(t *testing.T) {
 		})
 	}
 }
+// TestPrepareSerializesConcurrent (I2): two concurrent Prepare calls must
+// not both be inside Stage at the same time (would race on green port/
+// container). opMu serializes them; the peak concurrent Stage count must
+// be 1.
+func TestPrepareSerializesConcurrent(t *testing.T) {
+	st := store.New(t.TempDir())
+	bk := &concurrencyBackend{stageResult: "127.0.0.1:8783"}
+	o := New(Config{
+		Store: st, Backend: bk, Migrator: &fakeMigrator{},
+		ActiveSwitcher: &fakeSwitcher{current: "127.0.0.1:8782"},
+		CurrentAddr:    "127.0.0.1:8782",
+		HealthRetries:  1, HealthInterval: 1 * time.Millisecond,
+	})
+
+	done := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			_, err := o.Prepare(context.Background(),
+				store.Release{Version: "v1.4.2"},
+				store.Release{Version: "v1.5.0"},
+			)
+			done <- err
+		}()
+	}
+	<-done
+	<-done
+
+	if bk.peakInFlight() > 1 {
+		t.Fatalf("concurrent Stage calls detected: peak=%d (opMu not serializing)", bk.peakInFlight())
+	}
+	if bk.stageCount() != 2 {
+		t.Fatalf("expected 2 stage calls, got %d", bk.stageCount())
+	}
+}
+
+// concurrencyBackend tracks peak concurrent Stage calls to detect races.
+type concurrencyBackend struct {
+	stageResult string
+	inFlight    int32
+	peak        int32
+	count       int32
+}
+
+func (b *concurrencyBackend) Name() string { return "concurrency-test" }
+func (b *concurrencyBackend) Stage(ctx context.Context, r backend.Release) (string, error) {
+	cur := atomic.AddInt32(&b.inFlight, 1)
+	for {
+		p := atomic.LoadInt32(&b.peak)
+		if cur <= p || atomic.CompareAndSwapInt32(&b.peak, p, cur) {
+			break
+		}
+	}
+	atomic.AddInt32(&b.count, 1)
+	// Hold the slot briefly to maximize the chance of overlap if opMu
+	// weren't there.
+	time.Sleep(5 * time.Millisecond)
+	atomic.AddInt32(&b.inFlight, -1)
+	return b.stageResult, nil
+}
+func (b *concurrencyBackend) Health(ctx context.Context, addr string) error { return nil }
+func (b *concurrencyBackend) Drain(ctx context.Context, addr string) error  { return nil }
+func (b *concurrencyBackend) Remove(ctx context.Context, addr string) error { return nil }
+func (b *concurrencyBackend) peakInFlight() int32 { return atomic.LoadInt32(&b.peak) }
+func (b *concurrencyBackend) stageCount() int32   { return atomic.LoadInt32(&b.count) }

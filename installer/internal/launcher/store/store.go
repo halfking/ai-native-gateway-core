@@ -105,6 +105,27 @@ func (s *Store) List() ([]string, error) {
 	return ids, nil
 }
 
+// LoadAll returns all plans sorted newest-first. Used by the daemon for
+// checker dedup (I1) and in-progress-plan restore on restart (I3). A
+// corrupt single plan file is skipped with its error logged, not fatal —
+// one bad file shouldn't break the daemon's view of the rest.
+func (s *Store) LoadAll() ([]*Plan, error) {
+	ids, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	var plans []*Plan
+	for _, id := range ids {
+		p, err := s.Load(id)
+		if err != nil {
+			// Skip corrupt plan rather than failing the whole listing.
+			continue
+		}
+		plans = append(plans, p)
+	}
+	return plans, nil
+}
+
 // LoadActive returns the active pointer, or nil if none saved.
 func (s *Store) LoadActive() (*ActivePointer, error) {
 	data, err := os.ReadFile(filepath.Join(s.dir, "active.json"))
