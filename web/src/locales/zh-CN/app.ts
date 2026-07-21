@@ -22,8 +22,29 @@ export default {
     lightTitle: '浅色模式',
     darkTitle: '深色模式',
   },
-  // 2026-07-21: 顶部水平菜单的无障碍文案。
+  // 2026-07-22: 顶部水平菜单的无障碍文案 + skip-link。
   nav: {
     mainAria: '主导航',
+    skip: '跳到主内容',
+  },
+  // 2026-07-22: 公开壳页面底部文案（LifecycleShell.footer 三段）。
+  footer: {
+    left: '© 2026 AI-Native 组织网关',
+    right: '需要帮助？',
+    feedbackLink: '提交反馈',
+  },
+  // 2026-07-22: 用户菜单下拉（UserMenuDropdown）+ 用户信息弹窗（UserInfoDialog）。
+  userMenu: {
+    profile: '个人信息',
+    changePassword: '修改密码',
+    logout: '退出登录',
+  },
+  userInfo: {
+    displayName: '显示名',
+    username: '用户名',
+    email: '邮箱',
+    role: '角色',
+    tenant: '租户',
+    close: '关闭',
   },
 }

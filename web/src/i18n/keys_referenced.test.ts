@@ -18,6 +18,7 @@
 import { describe, it, expect } from 'vitest'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readdirSync, readFileSync } from 'node:fs'
 import { audit, formatReport } from './scanner'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -63,6 +64,35 @@ describe('i18n keys referenced in src/', () => {
       // warn-only：断言永远通过，但报告依然打印
       expect(true).toBe(true)
     }
+  })
+
+  it('every literal reference resolves in the source locale (zh-CN)', () => {
+    // 任何源码里的 t('xxx') / $t('xxx') / tc('xxx') 必须能在源 locale (zh-CN)
+    // 解析到；这能挡住 v735 事故（creds.tokenPlan vs creds.token_plan）。
+    const r = audit(SRC_DIR, LOCALES_DIR)
+    expect(
+      r.missingInSource,
+      `Found ${r.missingInSource.length} reference(s) missing in zh-CN:\n` +
+        formatReport(r, SRC_DIR),
+    ).toEqual([])
+  })
+
+  it('locale files do not contain literal PLACEHOLDER translations', () => {
+    // 防止有人误提交 "PLACEHOLDER" 占位串。扫描所有 locale 文件，
+    // 一旦发现任何 'PLACEHOLDER' / '[TODO: ...]' / 'TBD' 字面量即 fail。
+    const placeholders: string[] = []
+    for (const entry of readdirSync(LOCALES_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const localeDir = join(LOCALES_DIR, entry.name)
+      for (const file of readdirSync(localeDir)) {
+        if (!file.endsWith('.ts')) continue
+        const content = readFileSync(join(localeDir, file), 'utf8')
+        if (/(['"])(PLACEHOLDER|\[TODO[: ]|TBD|REPLACE_ME|FIXME)\1/.test(content)) {
+          placeholders.push(`${entry.name}/${file}`)
+        }
+      }
+    }
+    expect(placeholders, `locale files still contain placeholder translations:\n${placeholders.join('\n')}`).toEqual([])
   })
 })
 

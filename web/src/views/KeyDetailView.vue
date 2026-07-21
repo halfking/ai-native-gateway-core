@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { getKeyDetail, updateKeyLimits, type ApiKey, type UpdateKeyLimitsRequest } from '../api'
@@ -16,6 +17,7 @@ import {
 const route = useRoute()
 const router = useRouter()
 const keyId = computed(() => Number(route.params.id))
+const { t, tm } = useI18n()
 
 // ── State ──────────────────────────────────────────────────────────────────
 const keyInfo = ref<ApiKey | null>(null)
@@ -79,15 +81,15 @@ function modeToValue(mode: LimitMode, current: number | null | undefined): numbe
 function validateLimitsForm(): string | null {
   if (rpmMode.value === 'custom') {
     const v = limitsForm.value.rate_limit_rpm
-    if (v == null || v < 1) return 'RPM 自定义值必须 ≥ 1'
+    if (v == null || v < 1) return t('keys.detail.validation.rpmMin')
   }
   if (concurrentMode.value === 'custom') {
     const v = limitsForm.value.rate_limit_concurrent
-    if (v == null || v < 1) return '并发自定义值必须 ≥ 1'
+    if (v == null || v < 1) return t('keys.detail.validation.concurrentMin')
   }
   if (tpmMode.value === 'custom') {
     const v = limitsForm.value.rate_limit_tpm
-    if (v == null || v < 1) return 'TPM 自定义值必须 ≥ 1'
+    if (v == null || v < 1) return t('keys.detail.validation.tpmMin')
   }
   return null
 }
@@ -108,11 +110,11 @@ async function saveLimits() {
       rate_limit_tpm: modeToValue(tpmMode.value, limitsForm.value.rate_limit_tpm),
     }
     await updateKeyLimits(keyId.value, data)
-    limitsSuccess.value = '限制已保存'
+    limitsSuccess.value = t('keys.detail.limitsSaved')
     showLimitsEditor.value = false
     await loadKey()
   } catch (e: unknown) {
-    limitsErr.value = e instanceof Error ? e.message : '保存失败'
+    limitsErr.value = e instanceof Error ? e.message : t('keys.common.saveFailed')
   } finally {
     limitsSaving.value = false
   }
@@ -120,17 +122,17 @@ async function saveLimits() {
 
 // Time range (summary cards)
 type PeriodType = 'minute' | 'hour' | 'day' | 'week' | 'month'
-const periodOptions: { label: string; days: number }[] = [
-  { label: '最近 1 天', days: 1 },
-  { label: '最近 3 天', days: 3 },
-  { label: '最近 7 天', days: 7 },
-  { label: '最近 30 天', days: 30 },
-  { label: '最近 90 天', days: 90 },
-]
+const periodOptions = computed<{ label: string; days: number }[]>(() => [
+  { label: t('keys.detail.period.d1'), days: 1 },
+  { label: t('keys.detail.period.d3'), days: 3 },
+  { label: t('keys.detail.period.d7'), days: 7 },
+  { label: t('keys.detail.period.d30'), days: 30 },
+  { label: t('keys.detail.period.d90'), days: 90 },
+])
 const selectedPeriodDays = ref(7)
 
 function periodLabelForDays(days: number): string {
-  return periodOptions.find(o => o.days === days)?.label ?? `最近 ${days} 天`
+  return periodOptions.value.find(o => o.days === days)?.label ?? t('keys.detail.period.custom', { days })
 }
 
 // Trend chart controls
@@ -142,13 +144,13 @@ const hoveredTrendIndex = ref<number | null>(null)
 const CHART_W = 640
 const CHART_H = 160
 const CHART_PAD = { l: 44, r: 10, t: 8, b: 22 }
-const trendPeriodOptions: { label: string; value: PeriodType }[] = [
-  { label: '按分钟', value: 'minute' },
-  { label: '按小时', value: 'hour' },
-  { label: '按天', value: 'day' },
-  { label: '按周', value: 'week' },
-  { label: '按月', value: 'month' },
-]
+const trendPeriodOptions = computed<{ label: string; value: PeriodType }[]>(() => [
+  { label: t('keys.detail.granularity.minute'), value: 'minute' },
+  { label: t('keys.detail.granularity.hour'), value: 'hour' },
+  { label: t('keys.detail.granularity.day'), value: 'day' },
+  { label: t('keys.detail.granularity.week'), value: 'week' },
+  { label: t('keys.detail.granularity.month'), value: 'month' },
+])
 
 const TREND_WINDOW_LIMITS: Record<'minute' | 'hour', number> = {
   minute: 3,
@@ -180,7 +182,7 @@ const trendHasActivity = computed(() =>
 )
 
 const trendSummaryLabel = computed(() => {
-  const periodLabel = trendPeriodOptions.find(o => o.value === trendPeriod.value)?.label ?? '按小时'
+  const periodLabel = trendPeriodOptions.value.find(o => o.value === trendPeriod.value)?.label ?? t('keys.detail.granularity.hour')
   if (useCustomRange.value && customStart.value && customEnd.value) {
     return `${periodLabel} · ${customStart.value} ~ ${customEnd.value}`
   }
@@ -189,10 +191,10 @@ const trendSummaryLabel = computed(() => {
 
 const trendGranularityHint = computed(() => {
   if (trendPeriod.value === 'minute') {
-    return '按分钟最多 3 天窗口，便于观察日内峰谷'
+    return t('keys.detail.granularity.minuteHint')
   }
   if (trendPeriod.value === 'hour') {
-    return '按小时最多 31 天窗口，便于对比每日时段规律'
+    return t('keys.detail.granularity.hourHint')
   }
   return ''
 })
@@ -416,19 +418,19 @@ function fmtNum(n: number | string | null | undefined, decimals = 0): string {
 }
 
 function formatRpmLimit(v: number | null | undefined): string {
-  if (v == null) return '默认'
-  if (v === 0) return '无限制'
+  if (v == null) return t('keys.common.defaultLabel')
+  if (v === 0) return t('keys.common.unlimited')
   return `${v} RPM`
 }
 
 function formatConcurrentLimit(v: number | null | undefined): string {
-  if (v == null) return '默认'
-  if (v === 0) return '无限制'
+  if (v == null) return t('keys.common.defaultLabel')
+  if (v === 0) return t('keys.common.unlimited')
   return String(v)
 }
 
 function formatTpmLimit(v: number | null | undefined): string {
-  if (v == null || v === 0) return '不限制'
+  if (v == null || v === 0) return t('keys.common.noLimit')
   return `${fmtNum(v)} TPM`
 }
 
@@ -477,7 +479,7 @@ async function loadKey() {
   try {
     keyInfo.value = await getKeyDetail(keyId.value)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : t('keys.common.loadFailed')
   } finally {
     loading.value = false
   }
@@ -513,7 +515,7 @@ async function loadDetail() {
     keyModels.value = models
     keyTrend.value = trend
   } catch (e: unknown) {
-    detailError.value = e instanceof Error ? e.message : '加载详情失败'
+    detailError.value = e instanceof Error ? e.message : t('keys.detail.error.loadDetailFailed')
   } finally {
     detailLoading.value = false
   }
@@ -547,99 +549,99 @@ watch(keyId, async () => {
   <div class="key-detail-page">
     <!-- Back button -->
     <div class="page-header">
-      <button class="btn btn-ghost" @click="router.push('/keys')">← 返回密钥列表</button>
-      <h2 v-if="keyInfo">密钥统计: {{ keyInfo.key_prefix }}***</h2>
-      <h2 v-else>密钥统计</h2>
+      <button class="btn btn-ghost" @click="router.push('/keys')">{{ t('keys.detail.backToList') }}</button>
+      <h2 v-if="keyInfo">{{ t('keys.detail.titleWithPrefix', { prefix: keyInfo.key_prefix }) }}</h2>
+      <h2 v-else>{{ t('keys.detail.title') }}</h2>
     </div>
 
-    <div v-if="loading" class="empty">加载中…</div>
+    <div v-if="loading" class="empty">{{ t('keys.common.loading') }}</div>
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
     <template v-if="keyInfo && !loading">
       <!-- Key info card -->
       <div class="card key-info-card">
         <div class="key-info-header">
-          <span class="key-info-title">密钥信息</span>
-          <button class="btn btn-sm" @click="openLimitsEditor">⚙ 编辑限制</button>
+          <span class="key-info-title">{{ t('keys.detail.keyInfoTitle') }}</span>
+          <button class="btn btn-sm" @click="openLimitsEditor">{{ t('keys.detail.editLimitsBtn') }}</button>
         </div>
         <div class="key-info-row">
           <div class="key-info-item">
-            <span class="key-info-label">应用</span>
+            <span class="key-info-label">{{ t('keys.common.application') }}</span>
             <span class="key-info-value">{{ keyInfo.application_code }}</span>
           </div>
           <div class="key-info-item">
-            <span class="key-info-label">归属用户</span>
+            <span class="key-info-label">{{ t('keys.common.owner') }}</span>
             <span class="key-info-value">{{ keyInfo.owner_user ?? '—' }}</span>
           </div>
           <div class="key-info-item">
-            <span class="key-info-label">状态</span>
+            <span class="key-info-label">{{ t('keys.common.statusLabel') }}</span>
             <span class="badge" :class="keyInfo.enabled ? 'badge-green' : 'badge-red'">
-              {{ keyInfo.enabled ? '有效' : '已吊销' }}
+              {{ keyInfo.enabled ? t('keys.detail.enabled') : t('keys.detail.revoked') }}
             </span>
           </div>
           <div class="key-info-item">
-            <span class="key-info-label">预算</span>
-            <span class="key-info-value">{{ keyInfo.budget_usd != null ? fmtCost(keyInfo.budget_usd) : '无限制' }}</span>
+            <span class="key-info-label">{{ t('keys.common.budget') }}</span>
+            <span class="key-info-value">{{ keyInfo.budget_usd != null ? fmtCost(keyInfo.budget_usd) : t('keys.common.unlimited') }}</span>
           </div>
           <div class="key-info-item">
-            <span class="key-info-label">RPM</span>
+            <span class="key-info-label">{{ t('keys.detail.limitEditor.rpm') }}</span>
             <span class="key-info-value">{{ formatRpmLimit(keyInfo.rate_limit_rpm) }}</span>
           </div>
           <div class="key-info-item">
-            <span class="key-info-label">并发</span>
+            <span class="key-info-label">{{ t('keys.common.concurrent') }}</span>
             <span class="key-info-value">{{ formatConcurrentLimit(keyInfo.rate_limit_concurrent) }}</span>
           </div>
           <div class="key-info-item">
-            <span class="key-info-label">TPM</span>
+            <span class="key-info-label">{{ t('keys.detail.limitEditor.tpm') }}</span>
             <span class="key-info-value">{{ formatTpmLimit(keyInfo.rate_limit_tpm) }}</span>
           </div>
           <div class="key-info-item">
-            <span class="key-info-label">最后使用</span>
+            <span class="key-info-label">{{ t('keys.common.lastUsed') }}</span>
             <span class="key-info-value">{{ fmtDate(keyInfo.last_used_at) }}</span>
           </div>
         </div>
 
-        <!-- Limit editor modal -->
+<!-- Limit editor modal -->
         <div v-if="showLimitsEditor" class="modal-overlay" @click.self="showLimitsEditor = false">
           <div class="modal" style="max-width:450px" @click.stop>
-            <h3>编辑速率限制</h3>
+            <h3>{{ t('keys.detail.limitEditor.title') }}</h3>
             <div v-if="limitsErr" class="alert alert-danger">{{ limitsErr }}</div>
             <div v-if="limitsSuccess" class="alert alert-success">{{ limitsSuccess }}</div>
 
             <div class="form-group">
-              <label>RPM（每分钟请求数）</label>
-<div class="limit-options">
-                <label><input type="radio" v-model="rpmMode" value="default"> 默认</label>
-                <label><input type="radio" v-model="rpmMode" value="unlimited"> 无限制</label>
-                <label><input type="radio" v-model="rpmMode" value="custom"> 自定义</label>
+              <label>{{ t('keys.detail.limitEditor.rpm') }}</label>
+              <div class="limit-options">
+                <label><input type="radio" v-model="rpmMode" value="default"> {{ t('keys.common.defaultLabel') }}</label>
+                <label><input type="radio" v-model="rpmMode" value="unlimited"> {{ t('keys.common.unlimited') }}</label>
+                <label><input type="radio" v-model="rpmMode" value="custom"> {{ t('keys.common.custom') }}</label>
               </div>
-              <input v-if="rpmMode === 'custom'" v-model.number="limitsForm.rate_limit_rpm" type="number" min="1" placeholder="输入 RPM">
+              <input v-if="rpmMode === 'custom'" v-model.number="limitsForm.rate_limit_rpm" type="number" min="1" :placeholder="t('keys.detail.limitEditor.rpmPlaceholder')">
             </div>
 
             <div class="form-group">
-              <label>并发（同时请求数）</label>
+              <label>{{ t('keys.detail.limitEditor.concurrent') }}</label>
               <div class="limit-options">
-                <label><input type="radio" v-model="concurrentMode" value="default"> 默认</label>
-                <label><input type="radio" v-model="concurrentMode" value="unlimited"> 无限制</label>
-                <label><input type="radio" v-model="concurrentMode" value="custom"> 自定义</label>
+                <label><input type="radio" v-model="concurrentMode" value="default"> {{ t('keys.common.defaultLabel') }}</label>
+                <label><input type="radio" v-model="concurrentMode" value="unlimited"> {{ t('keys.common.unlimited') }}</label>
+                <label><input type="radio" v-model="concurrentMode" value="custom"> {{ t('keys.common.custom') }}</label>
               </div>
-              <input v-if="concurrentMode === 'custom'" v-model.number="limitsForm.rate_limit_concurrent" type="number" min="1" placeholder="输入并发数">
+              <input v-if="concurrentMode === 'custom'" v-model.number="limitsForm.rate_limit_concurrent" type="number" min="1" :placeholder="t('keys.detail.limitEditor.concurrentPlaceholder')">
             </div>
 
             <div class="form-group">
-              <label>TPM（每分钟 Token 数）</label>
+              <label>{{ t('keys.detail.limitEditor.tpm') }}</label>
               <div class="limit-options">
-                <label><input type="radio" v-model="tpmMode" value="default"> 不限制</label>
-                <label><input type="radio" v-model="tpmMode" value="custom"> 自定义</label>
+                <label><input type="radio" v-model="tpmMode" value="default"> {{ t('keys.common.noLimit') }}</label>
+                <label><input type="radio" v-model="tpmMode" value="custom"> {{ t('keys.common.custom') }}</label>
               </div>
-              <input v-if="tpmMode === 'custom'" v-model.number="limitsForm.rate_limit_tpm" type="number" min="1" placeholder="输入 TPM">
+              <input v-if="tpmMode === 'custom'" v-model.number="limitsForm.rate_limit_tpm" type="number" min="1" :placeholder="t('keys.detail.limitEditor.tpmPlaceholder')">
             </div>
 
             <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-              <button class="btn btn-ghost" @click="showLimitsEditor = false" :disabled="limitsSaving">取消</button>
+              <button class="btn btn-ghost" @click="showLimitsEditor = false" :disabled="limitsSaving">{{ t('keys.detail.limitEditor.cancel') }}</button>
 
               <button class="btn btn-primary" @click="saveLimits" :disabled="limitsSaving">
-                {{ limitsSaving ? '保存中…' : '保存' }}
+                {{ limitsSaving ? t('keys.detail.limitEditor.saving') : t('keys.detail.limitEditor.save') }}
               </button>
             </div>
           </div>
@@ -649,60 +651,60 @@ watch(keyId, async () => {
       <!-- Usage stats + trend -->
       <div class="card">
         <!-- Loading state -->
-        <div v-if="detailLoading" class="empty">加载中…</div>
+        <div v-if="detailLoading" class="empty">{{ t('keys.common.loading') }}</div>
         <div v-else-if="detailError" class="alert alert-danger">{{ detailError }}</div>
 
         <template v-else-if="keyUsage">
           <!-- Summary cards -->
           <div class="stats-grid">
             <div class="stat-card">
-              <div class="stat-label">总请求数</div>
+              <div class="stat-label">{{ t('keys.detail.stats.totalRequests') }}</div>
               <div class="stat-value">{{ fmtNum(keyUsage.total_requests) }}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Prompt Tokens</div>
+              <div class="stat-label">{{ t('keys.detail.stats.totalPromptTokens') }}</div>
               <div class="stat-value">{{ fmtNum(keyUsage.total_prompt_tokens) }}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">Completion Tokens</div>
+              <div class="stat-label">{{ t('keys.detail.stats.totalCompletionTokens') }}</div>
               <div class="stat-value">{{ fmtNum(keyUsage.total_completion_tokens) }}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">总 Tokens</div>
+              <div class="stat-label">{{ t('keys.detail.stats.totalTokens') }}</div>
               <div class="stat-value">{{ fmtNum(keyUsage.total_tokens) }}</div>
             </div>
             <div class="stat-card highlight">
-              <div class="stat-label">总费用</div>
+              <div class="stat-label">{{ t('keys.detail.stats.totalCost') }}</div>
               <div class="stat-value cost">{{ fmtCost(keyUsage.total_cost_usd) }}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">成功率</div>
+              <div class="stat-label">{{ t('keys.detail.stats.successRate') }}</div>
               <div class="stat-value">{{ keyUsage.total_requests > 0 ? (keyUsage.success_rate * 100).toFixed(1) + '%' : '—' }}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">平均延迟</div>
+              <div class="stat-label">{{ t('keys.detail.stats.avgLatency') }}</div>
               <div class="stat-value">{{ keyUsage.avg_latency_ms.toFixed(0) }}ms</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">使用模型数</div>
+              <div class="stat-label">{{ t('keys.detail.stats.modelCount') }}</div>
               <div class="stat-value">{{ keyUsage.unique_models }}</div>
             </div>
           </div>
 
           <!-- Time range info -->
           <div class="time-range-info">
-            <span>查询窗口：{{ fmtQueryWindow() }}</span>
+            <span>{{ t('keys.detail.queryWindow') }}{{ fmtQueryWindow() }}</span>
             <span v-if="keyUsage.first_request_at || keyUsage.last_request_at" class="time-range-actual">
-              · 实际使用 {{ fmtDate(keyUsage.first_request_at) }} ~ {{ fmtDate(keyUsage.last_request_at) }}
+              {{ t('keys.detail.actualRange', { start: fmtDate(keyUsage.first_request_at), end: fmtDate(keyUsage.last_request_at) }) }}
             </span>
           </div>
 
           <!-- Trend chart -->
           <div class="section trend-section">
             <div class="trend-header">
-              <div class="section-title">使用趋势</div>
+              <div class="section-title">{{ t('keys.detail.trend.title') }}</div>
               <div class="trend-controls">
-                <div class="trend-tabs" role="tablist" aria-label="趋势指标">
+                <div class="trend-tabs" role="tablist" :aria-label="t('keys.detail.trend.tabsAria')">
                   <button
                     type="button"
                     class="btn btn-sm"
@@ -710,7 +712,7 @@ watch(keyId, async () => {
                     role="tab"
                     :aria-selected="trendMetric === 'requests'"
                     @click="trendMetric = 'requests'"
-                  >次数</button>
+                  >{{ t('keys.detail.trend.count') }}</button>
                   <button
                     type="button"
                     class="btn btn-sm"
@@ -718,7 +720,7 @@ watch(keyId, async () => {
                     role="tab"
                     :aria-selected="trendMetric === 'cost'"
                     @click="trendMetric = 'cost'"
-                  >费用</button>
+                  >{{ t('keys.detail.trend.cost') }}</button>
                 </div>
                 <span class="trend-divider" aria-hidden="true"></span>
                 <div class="trend-window">
@@ -735,10 +737,10 @@ watch(keyId, async () => {
                     class="btn btn-sm"
                     :class="useCustomRange ? 'btn-primary' : 'btn-ghost'"
                     @click="useCustomRange = true; changePeriod()"
-                  >自定义</button>
+                  >{{ t('keys.detail.trend.customRange') }}</button>
                   <template v-if="useCustomRange">
                     <input type="date" v-model="customStart" @change="changePeriod" class="date-input">
-                    <span class="range-sep">至</span>
+                    <span class="range-sep">{{ t('keys.detail.trend.rangeSeparator') }}</span>
                     <input type="date" v-model="customEnd" @change="changePeriod" class="date-input">
                   </template>
                 </div>
@@ -763,7 +765,7 @@ watch(keyId, async () => {
                   :viewBox="chartViewBox"
                   preserveAspectRatio="none"
                   role="img"
-                  :aria-label="trendMetric === 'cost' ? '费用折线图' : '请求次数折线图'"
+                  :aria-label="trendMetric === 'cost' ? t('keys.detail.trend.costChartAria') : t('keys.detail.trend.requestChartAria')"
                 >
                   <line
                     :x1="CHART_PAD.l"
@@ -836,32 +838,32 @@ watch(keyId, async () => {
                 </div>
               </div>
               <div class="trend-summary">
-                <span>{{ trendSummaryLabel }} · 共 {{ keyTrend.length }} 个周期 · 合计 {{ fmtTrendValue(totalTrendValue) }}</span>
-                <span v-if="!trendHasActivity" class="trend-summary-muted">（该窗口内无使用记录）</span>
-                <span v-if="!trendTotalMatchesSummary" class="trend-summary-warn" title="趋势合计与上方汇总卡片不一致，可能由时区或聚合粒度导致">⚠ 与汇总不完全一致</span>
+                <span>{{ trendSummaryLabel }} · {{ t('keys.detail.trend.summary', { count: keyTrend.length, total: fmtTrendValue(totalTrendValue) }) }}</span>
+                <span v-if="!trendHasActivity" class="trend-summary-muted">{{ t('keys.detail.trend.summaryEmpty') }}</span>
+                <span v-if="!trendTotalMatchesSummary" class="trend-summary-warn" :title="t('keys.detail.trend.warnTitle')">{{ t('keys.detail.trend.warnText') }}</span>
               </div>
             </div>
             <div v-else-if="keyUsage.total_requests > 0" class="empty small">
-              汇总有数据但趋势序列为空，请刷新页面；若仍异常请联系管理员
+              {{ t('keys.detail.trend.emptyError') }}
             </div>
-            <div v-else class="empty small">{{ trendSummaryLabel }}内暂无使用记录</div>
+            <div v-else class="empty small">{{ t('keys.detail.trend.emptyNoRecord', { prefix: trendSummaryLabel }) }}</div>
           </div>
 
           <!-- Model breakdown -->
           <div class="section">
-            <div class="section-title">模型使用详情</div>
+            <div class="section-title">{{ t('keys.detail.modelTable.title') }}</div>
             <table class="detail-table" v-if="keyModels.length > 0">
               <thead>
                 <tr>
-                  <th>模型</th>
-                  <th>请求数</th>
-                  <th>Prompt Tokens</th>
-                  <th>Completion Tokens</th>
-                  <th>总 Tokens</th>
-                  <th>费用</th>
-                  <th>成功率</th>
-                  <th>首次使用</th>
-                  <th>最近使用</th>
+                  <th>{{ t('keys.detail.modelTable.model') }}</th>
+                  <th>{{ t('keys.detail.modelTable.requests') }}</th>
+                  <th>{{ t('keys.detail.modelTable.promptTokens') }}</th>
+                  <th>{{ t('keys.detail.modelTable.completionTokens') }}</th>
+                  <th>{{ t('keys.detail.modelTable.totalTokens') }}</th>
+                  <th>{{ t('keys.detail.modelTable.cost') }}</th>
+                  <th>{{ t('keys.detail.modelTable.successRate') }}</th>
+                  <th>{{ t('keys.detail.modelTable.firstUsed') }}</th>
+                  <th>{{ t('keys.detail.modelTable.lastUsed') }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -878,7 +880,7 @@ watch(keyId, async () => {
                 </tr>
               </tbody>
             </table>
-            <div v-else class="empty small">暂无模型使用数据</div>
+            <div v-else class="empty small">{{ t('keys.detail.modelTable.empty') }}</div>
           </div>
         </template>
       </div>

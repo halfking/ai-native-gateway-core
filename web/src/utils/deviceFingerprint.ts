@@ -53,17 +53,32 @@ export function readStoredHardwareHash(): string {
   }
 }
 
+/**
+ * Read the locally cached instance ID. The server (Gateway `/api/system/bootstrap/*`)
+ * is the SSOT — `instance.id` is generated once per physical machine from the
+ * hardware fingerprint and persisted on disk. The browser caches a copy for
+ * display only; do not generate or allow the user to edit it here.
+ */
 export function ensureInstanceId(): string {
   try {
-    let id = localStorage.getItem(STORAGE_INSTANCE) || localStorage.getItem('maintain_instance_id') || ''
-    if (!id) {
-      id = `gw-${Math.random().toString(36).slice(2, 10)}`
-      localStorage.setItem(STORAGE_INSTANCE, id)
-      localStorage.setItem('maintain_instance_id', id)
-    }
-    return id
+    const stored = localStorage.getItem(STORAGE_INSTANCE) || ''
+    if (stored) return stored
   } catch {
-    return `gw-${Date.now().toString(36)}`
+    /* ignore */
+  }
+  // No local copy yet — return an empty placeholder; callers should populate
+  // it from the bootstrap status response (BootstrapStatus.instance_id).
+  return ''
+}
+
+/** Cache the server-returned instance ID. Safe to call multiple times. */
+export function setInstanceId(id: string): void {
+  if (!id) return
+  try {
+    localStorage.setItem(STORAGE_INSTANCE, id)
+    localStorage.setItem('maintain_instance_id', id)
+  } catch {
+    /* ignore */
   }
 }
 

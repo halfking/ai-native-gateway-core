@@ -16,4 +16,29 @@ export default {
     switch: '切換語言',
     label: '語言',
   },
+  // 2026-07-22: 公開殼頁面底部文案（對齊 LifecycleShell）。
+  footer: {
+    left: '© 2026 AI-Native 組織閘道',
+    right: '需要協助嗎？',
+    feedbackLink: '提交意見',
+  },
+  // 2026-07-22: 使用者選單下拉（UserMenuDropdown）+ 使用者資訊對話框（UserInfoDialog）。
+  userMenu: {
+    profile: '個人資訊',
+    changePassword: '修改密碼',
+    logout: '退出登入',
+  },
+  userInfo: {
+    displayName: '顯示名稱',
+    username: '使用者名稱',
+    email: '電子郵件',
+    role: '角色',
+    tenant: '租戶',
+    close: '關閉',
+  },
+  // 2026-07-22: skip-link 無障礙文案。
+  nav: {
+    mainAria: '主導航',
+    skip: '跳到主要內容',
+  },
 }
