@@ -11,7 +11,8 @@ ExecStart=/usr/local/bin/kx-launcher \
     --data-dir /var/lib/kx-launcher \
     --backend compose \
     --current-addr 127.0.0.1:8782 \
-    --gateway-binary /usr/local/bin/kx-gateway
+    --gateway-binary /usr/local/bin/kx-gateway \
+    --env-file /etc/kx-gateway/env
 Restart=always
 RestartSec=3
 # Graceful drain window for in-flight proxy requests before SIGKILL.
@@ -20,6 +21,12 @@ TimeoutStopSec=15
 MemoryMax=256M
 # State directory ownership.
 StateDirectory=kx-launcher
+# C3: launcher's `gateway migrate` subcommand reads DATABASE_URL from env.
+# This file must contain DATABASE_URL (or LLM_GATEWAY_DATABASE_URL) pointing
+# at the same PG blue uses, plus LLM_GATEWAY_* runtime vars. Without it,
+# migrate is a silent no-op and the green container starts without DB
+# access. The same file is passed to green via ComposeBackend.EnvFile.
+EnvironmentFile=/etc/kx-gateway/env
 Environment=LLM_GATEWAY_LISTEN=:8781
 
 [Install]
