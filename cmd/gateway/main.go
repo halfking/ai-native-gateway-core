@@ -1606,12 +1606,7 @@ func main() {
 		adminHandler.SetRouteIncidentsHandler(incidentHandler)
 
 		if telemetryClient.Enabled() {
-			publishFn := func(r *routeincident.TransitionResult) {
-				if r == nil || r.NoOp || liveStreamHub == nil {
-					return
-				}
-				liveStreamHub.PublishIncidentUpdate(incidentUpdateFromResult(r))
-			}
+			publishFn := newIncidentPublishFn(liveStreamHub)
 			incidentObserver := routeincident.NewObserver(incidentStore, routeincident.ObserverConfig{
 				QueueSize:    1024,
 				MaxRetries:   4,
@@ -2821,17 +2816,7 @@ func main() {
 		// the registry, which surfaces in /api/v1/plugin-nav. P8: switched from
 		// socket-only dial (which missed wedged-but-listening plugins) to a
 		// real GET that requires a 200 response.
-		healthCheck := func(pluginID string) error {
-			socketPath := sup.SocketPathOf(pluginID)
-			if socketPath == "" {
-				return fmt.Errorf("plugin %s not started", pluginID)
-			}
-			healthPath := "/plugin/healthz"
-			if m := sup.ManifestOf(pluginID); m != nil && m.Runtime.HealthPath != "" {
-				healthPath = m.Runtime.HealthPath
-			}
-			return pluginruntime.PreciseHealthCheck(socketPath, healthPath, 2*time.Second)()
-		}
+		healthCheck := newPluginHealthCheck(sup)
 		healthLoop := pluginruntime.NewHealthLoop(pluginRegistry, healthCheck, pluginruntime.HealthLoopConfig{
 			Interval:         30 * time.Second,
 			FailureThreshold: 2,
