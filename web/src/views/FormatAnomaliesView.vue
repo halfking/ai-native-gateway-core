@@ -536,7 +536,7 @@ textarea {
 .badge-low {
   background: rgba(99, 102, 241, 0.12);
   border-color: rgba(99, 102, 241, 0.22);
-  color: #c7d2fe;
+  color: var(--accent-h);
 }
 .badge-medium {
   background: rgba(210, 153, 34, 0.14);
