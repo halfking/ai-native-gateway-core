@@ -1,0 +1,26 @@
+[Unit]
+Description=KX Gateway Launcher (update supervisor + reverse proxy)
+Documentation=https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/kx-launcher \
+    --listen :8781 \
+    --data-dir /var/lib/kx-launcher \
+    --backend compose \
+    --current-addr 127.0.0.1:8782 \
+    --gateway-binary /usr/local/bin/kx-gateway
+Restart=always
+RestartSec=3
+# Graceful drain window for in-flight proxy requests before SIGKILL.
+TimeoutStopSec=15
+# Lightweight resource cap (proxy + state machine only).
+MemoryMax=256M
+# State directory ownership.
+StateDirectory=kx-launcher
+Environment=LLM_GATEWAY_LISTEN=:8781
+
+[Install]
+WantedBy=multi-user.target

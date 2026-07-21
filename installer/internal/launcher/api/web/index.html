@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KX Launcher — Gateway 更新管理</title>
+<link rel="stylesheet" href="/launcher/style.css">
+</head>
+<body>
+<header>
+  <h1>KX Launcher</h1>
+  <span id="health-dot" class="dot unknown" title="active health"></span>
+  <span id="auth-status" class="muted"></span>
+</header>
+
+<main>
+  <section id="status-card" class="card">
+    <h2>当前状态</h2>
+    <div class="grid">
+      <div><span class="label">活跃版本</span><b id="active-version">—</b></div>
+      <div><span class="label">活跃实例</span><code id="active-addr">—</code></div>
+      <div><span class="label">Plan 状态</span><b id="plan-state">无</b></div>
+    </div>
+  </section>
+
+  <section id="plan-card" class="card hidden">
+    <h2>升级计划 <span id="plan-id" class="muted"></span></h2>
+    <div id="plan-progress" class="progress"></div>
+    <details>
+      <summary>详情</summary>
+      <pre id="plan-detail" class="detail"></pre>
+    </details>
+    <div class="actions">
+      <button id="btn-prepare">① Prepare(下载+迁移)</button>
+      <button id="btn-apply" class="danger" disabled>② Apply(切换)</button>
+      <button id="btn-rollback" class="warn">↩ Rollback</button>
+    </div>
+    <p class="hint" id="plan-hint"></p>
+  </section>
+
+  <section class="card">
+    <h2>检查更新</h2>
+    <button id="btn-check">立即检查</button>
+    <span id="check-result" class="muted"></span>
+  </section>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/launcher/app.js"></script>
+</body>
+</html>
