@@ -332,7 +332,7 @@ function handleTaskClick(taskId: string) {
 }
 
 .stat-icon.total {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, var(--accent), var(--accent-h));
   color: white;
 }
 

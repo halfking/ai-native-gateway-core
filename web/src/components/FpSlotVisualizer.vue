@@ -186,8 +186,8 @@ function isLongHeld(d: SlotDetail | null): boolean {
 }
 
 .fp-cell--occupied {
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  border-color: #4f46e5;
+  background: linear-gradient(135deg, var(--accent), var(--accent-h));
+  border-color: var(--accent-h);
   color: white;
 }
 .fp-cell--long {
