@@ -1,3 +1,4 @@
+// Package api holds shared types and constants for URSM v2.
 package api
 
 import "time"
@@ -21,6 +22,14 @@ const (
 	ScopeResource
 )
 
+// Source-priority ordering is the override hierarchy used by the
+// reducer CAS: lower-priority writes cannot override higher-priority ones.
+//
+//	Seed    = static config; baseline
+//	Request = live traffic; transient signals
+//	Probe   = dedicated probe worker; durable health evidence
+//	Recover = warmup / recovery boot
+//	Admin   = manual operator action; never overridden by lower priorities
 const (
 	SourcePrioritySeed    = 0
 	SourcePriorityRequest = 10
