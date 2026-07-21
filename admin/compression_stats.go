@@ -132,8 +132,10 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 
 	var estimatedOrig int64
 	err = h.db.QueryRow(ctx, `
-		SELECT COALESCE(SUM(CEIL(LENGTH(COALESCE(rl.request_body, ''))::numeric / 4.0)), 0)::bigint
+		SELECT COALESCE(SUM(CEIL(LENGTH(COALESCE(COALESCE(rb.request_body, rl.request_body), ''))::numeric / 4.0)), 0)::bigint
 		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
+		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 	`, aggArgs...).Scan(&estimatedOrig)

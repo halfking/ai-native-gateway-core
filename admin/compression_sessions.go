@@ -138,8 +138,10 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 			GROUP BY rl.gw_session_id
 		) s
 		LEFT JOIN LATERAL (
-			SELECT jsonb_array_length(COALESCE(rl2.request_body::jsonb->'messages', '[]'::jsonb)) AS orig_msg_count
-			FROM request_logs rl2
+			SELECT jsonb_array_length(COALESCE(COALESCE(rb2.request_body, rl2.request_body)::jsonb->'messages', '[]'::jsonb)) AS orig_msg_count
+			FROM request_logs_with_current_month rl2
+			LEFT JOIN request_logs_bodies_with_current_month rb2
+			  ON rb2.request_id = rl2.request_id AND rb2.ts = rl2.ts
 			WHERE rl2.gw_session_id = s.gw_session_id
 			  AND rl2.outbound_body IS NOT NULL
 			ORDER BY rl2.ts DESC

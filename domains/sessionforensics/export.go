@@ -110,6 +110,7 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 		Attachments: []ExportAttachment{},
 	}
 	turn := 0
+	seenAtt := map[string]struct{}{}
 
 	rows, err := tx.Query(ctx, `
 		SELECT
@@ -119,17 +120,15 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 			COALESCE(rb.request_body, rl.request_body) AS request_body,
 			COALESCE(rb.response_body, rl.response_body) AS response_body,
 			rl.client_model, rl.outbound_model
-		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb ON rb.request_id = rl.id
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id AND rb.ts = rl.ts
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
 		ORDER BY rl.created_at ASC, rl.id ASC
 	`, sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
-	defer rows.Close()
 
-	seenAtt := map[string]struct{}{}
 	for rows.Next() {
 		var (
 			id, role, parentID, reason, strategy string
@@ -247,8 +246,8 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 			COALESCE(rb.request_body, rl.request_body) AS request_body,
 			COALESCE(rb.response_body, rl.response_body) AS response_body,
 			rl.client_model, rl.outbound_model
-		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb ON rb.request_id = rl.id
+ 		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id AND rb.ts = rl.ts
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
 		ORDER BY rl.created_at ASC, rl.id ASC
 	`, sessionID, tenantID)
