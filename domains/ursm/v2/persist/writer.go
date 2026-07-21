@@ -34,12 +34,16 @@ type Row struct {
 	Available     bool
 	HealthStatus  string
 	FailStreak    int
+	CoolUntil     *time.Time // nullable: NULL when not in cooldown
 	SR1m          float64
 	SR5m          float64
 	SR30m         float64
 	Samples1m     int
+	Samples5m     int
+	Samples30m    int
 	LatP50Ms      int
 	Score         float64
+	SourcePriority int
 	Generation    int64
 	Payload       []byte
 }
@@ -99,23 +103,46 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 
 		// 6. 构造完整的 Row，包含所有必需字段
 		row := Row{
-			SnapshotTS:    snapshotTS,
-			RecoveryEpoch: recoveryEpoch,
-			CredentialID:  credentialID,
-			RawModel:      rawModel,
-			ProviderID:    atoi(hash["provider_id"]),
-			CanonicalName: hash["canonical"],
-			TenantID:      hash["tenant_id"],
-			Available:     hash["available"] == "1",
-			HealthStatus:  hash["health"],
-			FailStreak:    atoi(hash["fail_streak"]),
-			SR1m:          parseFloat(hash["sr_1m"]),
-			SR5m:          parseFloat(hash["sr_5m"]),
-			SR30m:         parseFloat(hash["sr_30m"]),
-			Samples1m:     atoi(hash["samples_1m"]),
-			LatP50Ms:      atoi(hash["lat_p50_ms"]),
-			Score:         parseFloat(hash["score"]),
-			Generation:    atoi64(hash["generation"]),
+			SnapshotTS:     snapshotTS,
+			RecoveryEpoch:  recoveryEpoch,
+			CredentialID:   credentialID,
+			RawModel:       rawModel,
+			ProviderID:     atoi(hash["provider_id"]),
+			CanonicalName:  hash["canonical"],
+			TenantID:       hash["tenant_id"],
+			Available:      hash["available"] == "1",
+			HealthStatus:   hash["health"],
+			FailStreak:     atoi(hash["fail_streak"]),
+			SR1m:           parseFloat(hash["sr_1m"]),
+			SR5m:           parseFloat(hash["sr_5m"]),
+			SR30m:          parseFloat(hash["sr_30m"]),
+			Samples1m:      atoi(hash["samples_1m"]),
+			Samples5m:      atoi(hash["samples_5m"]),
+			Samples30m:     atoi(hash["samples_30m"]),
+			LatP50Ms:       atoi(hash["lat_p50_ms"]),
+			Score:          parseFloat(hash["score"]),
+			SourcePriority: atoi(hash["source_priority"]),
+			Generation:     atoi64(hash["generation"]),
+		}
+
+		// Parse cool_until if present (nullable)
+		if coolStr := hash["cool_until"]; coolStr != "" {
+			if coolMs := atoi64(coolStr); coolMs > 0 {
+				coolTime := time.UnixMilli(coolMs)
+				row.CoolUntil = &coolTime
+			}
+		}
+
+		// 7. 将完整的 hash 序列化为 Payload（用于完整恢复）
+		// 即使我们已经提取了关键字段，Payload 包含所有原始数据
+		// 以防未来需要恢复其他字段（pricing, concurrency, etc.）
+		if payloadBytes, err := json.Marshal(hash); err == nil {
+			row.Payload = payloadBytes
+		} else {
+			slog.Warn("ursm.v2: persist failed to marshal payload",
+				"key", k,
+				"error", err)
+			// 继续处理，只是 Payload 为空
 		}
 
 		out = append(out, row)
@@ -147,9 +174,12 @@ func (w *Writer) Flush(ctx context.Context, rows []Row) error {
 	defer tx.Rollback(ctx)
 
 	for _, r := range rows {
-		// 确保 Payload 不为空
+		// Payload 应该在 Collect() 中已经填充；如果为空则用 placeholder
+		// （正常情况下不应该为空，除非 json.Marshal 失败）
 		if len(r.Payload) == 0 {
-			r.Payload, _ = json.Marshal(map[string]any{"placeholder": true})
+			r.Payload, _ = json.Marshal(map[string]any{
+				"_note": "payload empty, hash marshal failed in Collect()",
+			})
 		}
 
 		// 2026-07-22: 使用 ::text::jsonb cast 避免 22P02 错误
@@ -162,12 +192,15 @@ func (w *Writer) Flush(ctx context.Context, rows []Row) error {
 		_, err := tx.Exec(ctx, `
 INSERT INTO ursm_node_snapshot_min
   (snapshot_ts, recovery_epoch, provider_id, credential_id, raw_model_name, canonical_name, tenant_id,
-   available, health_status, fail_streak, sr_1m, sr_5m, sr_30m, samples_1m, lat_p50_ms, score, generation, payload)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::text::jsonb)
+   available, health_status, fail_streak, cool_until,
+   sr_1m, sr_5m, sr_30m, samples_1m, samples_5m, samples_30m,
+   lat_p50_ms, score, source_priority, generation, payload)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::text::jsonb)
 ON CONFLICT (snapshot_ts, credential_id, raw_model_name) DO NOTHING`,
 			r.SnapshotTS, r.RecoveryEpoch, r.ProviderID, r.CredentialID, r.RawModel,
-			r.CanonicalName, r.TenantID, r.Available, r.HealthStatus, r.FailStreak,
-			r.SR1m, r.SR5m, r.SR30m, r.Samples1m, r.LatP50Ms, r.Score, r.Generation,
+			r.CanonicalName, r.TenantID, r.Available, r.HealthStatus, r.FailStreak, r.CoolUntil,
+			r.SR1m, r.SR5m, r.SR30m, r.Samples1m, r.Samples5m, r.Samples30m,
+			r.LatP50Ms, r.Score, r.SourcePriority, r.Generation,
 			payloadStr,
 		)
 		if err != nil {
