@@ -109,10 +109,10 @@ function isExpanded(seq: number) {
 
 // ── 状态图标 — 使用暗色调, 仅在小尺寸元素上染色 ────────────────────
 const statusColor: Record<string, string> = {
-  success: 'var(--trace-status-ok, #3fb950)',
-  failed: 'var(--trace-status-fail, #f85149)',
-  timeout: 'var(--trace-status-warn, #d29922)',
-  skipped: 'var(--trace-status-skip, #8b949e)',
+  success: 'var(--trace-status-ok)',
+  failed: 'var(--trace-status-fail)',
+  timeout: 'var(--trace-status-warn)',
+  skipped: 'var(--trace-status-skip)',
 }
 function eventColor(ev: TraceEvent): string {
   return statusColor[ev.status] || statusColor.success
@@ -194,10 +194,10 @@ const finalStatusText = computed(() => {
 })
 const finalStatusColor = computed(() => {
   const fs = trace.value?.final_status
-  if (fs === 'success') return 'var(--success, #3fb950)'
-  if (fs === 'failed') return 'var(--danger, #f85149)'
-  if (fs === 'timeout') return 'var(--warning, #d29922)'
-  return 'var(--text-muted, #8b949e)'
+  if (fs === 'success') return 'var(--success)'
+  if (fs === 'failed') return 'var(--danger)'
+  if (fs === 'timeout') return 'var(--warning)'
+  return 'var(--text-muted)'
 })
 const sourceLabel = computed(() => {
   const src = trace.value?.source
@@ -481,9 +481,9 @@ async function copyRawJson() {
  */
 
 .trace-panel {
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
   /* 内嵌在 drawer 中, 不使用 fixed 定位, 不使用遮罩 */
   margin: 8px 0;
   overflow: hidden;
@@ -495,8 +495,8 @@ async function copyRawJson() {
   justify-content: space-between;
   gap: 8px;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--border, #30363d);
-  background: var(--card, #1c2128);
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
 }
 
 .trace-panel-title {
@@ -506,7 +506,7 @@ async function copyRawJson() {
   min-width: 0;
   font-size: 13px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 .trace-panel-title .icon {
   font-size: 14px;
@@ -518,10 +518,10 @@ async function copyRawJson() {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
   padding: 1px 6px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 3px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-weight: 400;
   max-width: 240px;
   overflow: hidden;
@@ -547,14 +547,14 @@ async function copyRawJson() {
   justify-content: center;
   gap: 10px;
   min-height: 120px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 12px;
 }
 .spinner {
   width: 18px;
   height: 18px;
-  border: 2px solid var(--border, #30363d);
-  border-top-color: var(--accent, #6366f1);
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -569,7 +569,7 @@ async function copyRawJson() {
   align-items: center;
   text-align: center;
   padding: 18px 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 12px;
 }
 .trace-empty .empty-icon {
@@ -580,7 +580,7 @@ async function copyRawJson() {
 .trace-empty h4 {
   margin: 0 0 4px;
   font-size: 13px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   font-weight: 600;
 }
 .trace-empty p {
@@ -590,14 +590,14 @@ async function copyRawJson() {
   list-style: none;
   padding: 6px 10px;
   margin: 0;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
-  border-left: 2px solid var(--warning, #d29922);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--warning);
   border-radius: 4px;
   font-size: 11px;
   max-width: 100%;
   text-align: left;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 .empty-hints li {
   padding: 1px 0;
@@ -605,7 +605,7 @@ async function copyRawJson() {
 .empty-hints li::before {
   content: '·';
   margin-right: 6px;
-  color: var(--warning, #d29922);
+  color: var(--warning);
 }
 
 /* 错误条 — 暗色背景, 仅左边 2px 细条 + 文字色变化, 严禁亮红填充 */
@@ -615,12 +615,12 @@ async function copyRawJson() {
   align-items: flex-start;
   padding: 8px 10px;
   margin: 4px 0;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
-  border-left: 2px solid var(--danger, #f85149);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--danger);
   border-radius: 4px;
   font-size: 12px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 /* 摘要条 — 暗色, 纯文字 + 小 chip, 无亮色背景 */
@@ -629,8 +629,8 @@ async function copyRawJson() {
   gap: 18px;
   flex-wrap: wrap;
   padding: 6px 8px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 4px;
   margin-bottom: 10px;
   font-size: 12px;
@@ -642,26 +642,26 @@ async function copyRawJson() {
 }
 .summary-item .label {
   font-size: 10px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .summary-item strong {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 .summary-item strong.danger {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 .source-pill {
   display: inline-block;
   padding: 1px 6px;
   font-size: 10px;
   border-radius: 8px;
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--border, #30363d);
-  color: var(--muted, #8b949e);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--muted);
 }
 
 /* 时间轴 */
@@ -669,7 +669,7 @@ async function copyRawJson() {
   list-style: none;
   padding: 0;
   margin: 0;
-  border-left: 1px solid var(--border, #30363d);
+  border-left: 1px solid var(--border);
   margin-left: 10px;
 }
 .timeline-item {
@@ -684,11 +684,11 @@ async function copyRawJson() {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: var(--bg-subtle, #161b22);
-  border: 2px solid var(--accent, var(--muted, #8b949e));
+  background: var(--bg-subtle);
+  border: 2px solid var(--accent, var(--muted));
 }
 .timeline-item.failed::before {
-  border-color: var(--accent, var(--danger, #f85149));
+  border-color: var(--accent, var(--danger));
 }
 .timeline-row {
   display: flex;
@@ -705,10 +705,10 @@ async function copyRawJson() {
   color: inherit;
 }
 .timeline-row:hover {
-  background: var(--bg, #0f1117);
+  background: var(--bg);
 }
 .timeline-row:focus-visible {
-  outline: 1px solid var(--accent, #6366f1);
+  outline: 1px solid var(--accent);
   outline-offset: -1px;
 }
 .timeline-row .seq {
@@ -718,7 +718,7 @@ async function copyRawJson() {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  color: var(--bg, #0f1117);
+  color: var(--bg);
   font-size: 10px;
   font-weight: 600;
   flex-shrink: 0;
@@ -732,26 +732,26 @@ async function copyRawJson() {
 .timeline-row .stage {
   font-weight: 500;
   font-size: 12px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 .timeline-row .module {
   font-size: 10px;
   padding: 0 5px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 3px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 .timeline-row .duration {
   font-family: ui-monospace, monospace;
   font-size: 10px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   margin-left: auto;
 }
 .timeline-row .caret {
   margin-left: 4px;
   font-size: 10px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   transition: transform 0.15s;
 }
 .timeline-row .caret.open {
@@ -762,17 +762,17 @@ async function copyRawJson() {
   padding: 4px 6px 8px 8px;
   font-size: 11px;
 }
-.muted { color: var(--muted, #8b949e); }
+.muted { color: var(--muted); }
 .small { font-size: 10px; margin-bottom: 4px; }
 
 /* 错误行 — 暗色背景, 仅左侧 2px 细条, 严禁亮红填充 */
 .error-line {
   display: flex;
   gap: 6px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
-  border-left: 2px solid var(--danger, #f85149);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--danger);
+  color: var(--text);
   padding: 4px 8px;
   border-radius: 3px;
   margin-bottom: 6px;
@@ -787,11 +787,11 @@ async function copyRawJson() {
 }
 .kv-table td {
   padding: 3px 6px;
-  border-bottom: 1px dashed var(--border, #30363d);
+  border-bottom: 1px dashed var(--border);
   vertical-align: top;
 }
 .kv-table td.k {
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   width: 32%;
   font-weight: 500;
   white-space: nowrap;
@@ -801,23 +801,23 @@ async function copyRawJson() {
   word-break: break-word;
   max-width: 0;
   overflow-wrap: anywhere;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 /* snapshot — 暗色背景, 仅左侧 2px 细条, 严禁亮黄填充 */
 .snapshot {
   margin-top: 6px;
   padding: 6px 10px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
-  border-left: 2px solid var(--warning, #d29922);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--warning);
   border-radius: 3px;
   font-size: 11px;
 }
 .snapshot-title {
   font-weight: 600;
   margin-bottom: 4px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 .snapshot-row {
   display: flex;
@@ -826,15 +826,15 @@ async function copyRawJson() {
 }
 .snapshot-row .label {
   flex-shrink: 0;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   min-width: 90px;
 }
 .danger-pill {
   display: inline-block;
   padding: 0 5px;
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--danger, #f85149);
-  color: var(--danger, #f85149);
+  background: var(--bg-subtle);
+  border: 1px solid var(--danger);
+  color: var(--danger);
   border-radius: 3px;
   font-size: 9px;
   margin-left: 4px;
@@ -842,26 +842,26 @@ async function copyRawJson() {
 .failure-hint {
   margin-top: 4px;
   font-size: 11px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 /* AI 面板 — 暗色, 与主面板一体 */
 .ai-panel {
-  border-top: 1px solid var(--border, #30363d);
-  background: var(--card, #1c2128);
+  border-top: 1px solid var(--border);
+  background: var(--card);
 }
 .ai-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 6px 12px;
-  border-bottom: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border);
 }
 .ai-panel-header h4 {
   margin: 0;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 .ai-panel-body {
   padding: 8px 12px;
@@ -871,15 +871,15 @@ async function copyRawJson() {
   flex-direction: column;
   gap: 3px;
   font-size: 11px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   margin-bottom: 8px;
 }
 .ai-label textarea {
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 3px;
   padding: 5px 7px;
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  color: var(--text);
   font-family: inherit;
   font-size: 12px;
   resize: vertical;
@@ -900,11 +900,11 @@ async function copyRawJson() {
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 .ai-result pre {
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 3px;
   padding: 8px 10px;
   font-size: 11px;
@@ -913,6 +913,6 @@ async function copyRawJson() {
   max-height: 200px;
   overflow-y: auto;
   margin: 0;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 </style>
