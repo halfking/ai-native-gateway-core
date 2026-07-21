@@ -290,13 +290,17 @@ host_atomic_switch() {
   # on first failure so the symlink chain is never half-built.
   # web link quirk (2026-07-15) preserved: a real dir gets renamed
   # out of the way, otherwise nginx serves stale index.html.
+  # 2026-07-21 fix: when deploying --no-frontend (release has no web/),
+  # preserve the existing web symlink so the UI is not broken.
   "$ssh_cmd" "set -e
     ln -sfn '$release_dir' '$current_link'
     ln -sfn '$current_link/$bin_name' '$binary_link'
-    if [ -e '$web_link' ] && [ ! -L '$web_link' ]; then
-      mv '$web_link' \"\${web_link}.legacy.\$(date +%Y%m%d-%H%M%S)\"
+    if [ -d '$current_link/web' ]; then
+      if [ -e '$web_link' ] && [ ! -L '$web_link' ]; then
+        mv '$web_link' \"\${web_link}.legacy.\$(date +%Y%m%d-%H%M%S)\"
+      fi
+      ln -sfn '$current_link/web' '$web_link'
     fi
-    ln -sfn '$current_link/web' '$web_link'
     ln -sfn '$current_link/version.json' '$version_link'
     if [ -d '$current_link/configs' ]; then
       ln -sfn '$current_link/configs' '$(dirname "$current_link")/configs'
