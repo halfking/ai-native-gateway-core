@@ -63,3 +63,22 @@ func newWrapSessionAnalytics(pool *pgxpool.Pool, secret string) func(http.Handle
 		}
 	}
 }
+
+// newAdminMiddleware returns a closure that wraps a handler with admin
+// JWT/API-key authentication. Thin wrapper used for the self-check API.
+// Behaviour is identical to the inline closure that previously lived in main().
+func newAdminMiddleware(pool *pgxpool.Pool, secret string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(fn http.HandlerFunc) http.HandlerFunc {
+		return admin.AdminMiddleware(fn, pool, secret)
+	}
+}
+
+// newSuperAdminMiddleware returns a closure that wraps a handler with
+// admin super-admin-gated authentication. Thin wrapper used for the
+// self-check API. Behaviour is identical to the inline closure that
+// previously lived in main().
+func newSuperAdminMiddleware(pool *pgxpool.Pool, secret string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(fn http.HandlerFunc) http.HandlerFunc {
+		return admin.SuperAdminMiddleware(fn, pool, secret)
+	}
+}
