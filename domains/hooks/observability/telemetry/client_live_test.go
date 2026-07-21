@@ -186,6 +186,19 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	require.JSONEq(t, *entry.RequestBody, gotBodies.RequestBody)
 	require.JSONEq(t, *entry.ResponseBody, gotBodies.ResponseBody)
 
+	var joinedRequestBody string
+	err = pool.QueryRow(ctx, `
+		SELECT rb.request_body::text
+		FROM request_logs_hot rl
+		JOIN request_logs_bodies_hot rb
+		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		WHERE rl.request_id = $1
+	`, entry.RequestID).Scan(&joinedRequestBody)
+	if err != nil {
+		t.Fatalf("verify metadata/body join: %v", err)
+	}
+	require.JSONEq(t, *entry.RequestBody, joinedRequestBody)
+
 	updatedRequestBody := `{"messages":[{"role":"user","content":"updated"}]}`
 	updatedResponseBody := `{"choices":[{"message":{"content":"updated"}}]}`
 	if err := cl.persistRequestLog(&RequestLogEntry{

@@ -71,6 +71,17 @@ func TestPersistRequestLog_BothTablesWritten(t *testing.T) {
 	assert.Contains(t, rbRequestBody, "claude-3", "request_body should contain model")
 	assert.Contains(t, rbResponseBody, "msg_123", "response_body should contain response id")
 
+	var joinedBody string
+	err = pool.QueryRow(ctx, `
+		SELECT rb.request_body::text
+		FROM request_logs_hot rl
+		JOIN request_logs_bodies_hot rb
+		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		WHERE rl.request_id = $1
+	`, requestID).Scan(&joinedBody)
+	require.NoError(t, err, "metadata/body join should find the request body")
+	assert.Contains(t, joinedBody, "claude-3")
+
 	// Cleanup
 	cleanupTestRequestLog(t, pool, requestID)
 }
