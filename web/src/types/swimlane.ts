@@ -96,9 +96,9 @@ export const VENDOR_COLORS: Record<string, string> = {
   'openai': '#10a37f',       // OpenAI - 青绿色
   'anthropic': '#d97757',    // Anthropic - 橙褐色
   'google': '#4285f4',       // Google - 蓝色
-  'deepseek': '#6366f1',     // DeepSeek - 靛蓝色
+  'deepseek': '#3b82f6',     // DeepSeek - 靛蓝色
   'minimax': '#ec4899',      // MiniMax - 粉红色
-  'zhipu': '#8b5cf6',        // 智谱AI - 紫色
+  'zhipu': '#06b6d4',        // 智谱AI - 紫色
   '__others__': '#6b7280',   // 其它 - 灰色
   '__unknown__': '#4b5563',  // 未知 - 深灰色
   '__idle__': '#374151',     // 空闲 - 更深的灰色
