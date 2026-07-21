@@ -452,41 +452,27 @@ onMounted(async () => {
         <!-- 离线激活模式 -->
         <template v-else>
           <p class="muted mb">
-            <strong>第一步</strong>：将实例ID（已在上一步显示）复制到
-            <a href="https://llm.kxpms.cn/maintain/license" target="_blank" rel="noopener">公网激活站点</a>
-            获取激活响应码。
+            复制实例ID到 <a href="https://llm.kxpms.cn/maintain/license" target="_blank" rel="noopener">公网激活站点</a> 获取激活码，然后粘贴到下方。
           </p>
           
-          <el-descriptions :column="1" size="small" border class="mb">
-            <el-descriptions-item label="实例 ID">
-              <div class="instance-id-row">
-                <span class="mono">{{ instanceId || '—' }}</span>
-                <el-button class="btn-no-arrow" size="small" type="primary" link :disabled="!instanceId" @click="copyInstanceId">
-                  {{ instanceIdCopied ? '✓ 已复制' : '复制实例 ID' }}
+          <el-form label-position="top" @submit.prevent="ensureAgreementThenActivate" style="max-width: 600px;">
+            <el-form-item label="实例 ID">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <el-input v-model="instanceId" readonly class="mono" size="small" />
+                <el-button size="small" type="primary" :disabled="!instanceId" @click="copyInstanceId">
+                  {{ instanceIdCopied ? '✓ 已复制' : '复制' }}
                 </el-button>
               </div>
-            </el-descriptions-item>
-          </el-descriptions>
-
-          <el-divider />
-
-          <p class="muted mb">
-            <strong>第二步</strong>：将公网站点返回的激活响应码粘贴到下方输入框。
-          </p>
-          <el-form label-position="top" @submit.prevent="ensureAgreementThenActivate">
-            <el-form-item label="激活响应码 / 签名 License / license.dat">
+            </el-form-item>
+            
+            <el-form-item label="激活响应码">
               <el-input
                 v-model="offlinePayload"
                 type="textarea"
-                :rows="5"
-                placeholder="粘贴审批通过后的激活响应、signed_license 或 license.dat 内容"
+                :rows="3"
+                placeholder="粘贴从公网站点获取的激活响应码"
               />
             </el-form-item>
-            <p class="hint">
-              也可在
-              <RouterLink to="/customer/offline-activation">离线激活页</RouterLink>
-              提交申请，审批后再导入。
-            </p>
           </el-form>
         </template>
 
