@@ -10,14 +10,14 @@ import (
 // removed; the test logic is unchanged.
 
 func TestAvailabilityMismatch(t *testing.T) {
-	d := Diff("req1", "t1", "gpt", []string{"a", "b"}, []string{"b", "c"})
+	d := Compute("req1", "t1", "gpt", []string{"a", "b"}, []string{"b", "c"})
 	if !d.HasAvailabilityMismatch() {
 		t.Fatalf("availability sets must mismatch")
 	}
 }
 
 func TestOrderMismatch(t *testing.T) {
-	d := Diff("req2", "t1", "gpt", []string{"a", "b"}, []string{"b", "a"})
+	d := Compute("req2", "t1", "gpt", []string{"a", "b"}, []string{"b", "a"})
 	if !d.HasOrderMismatch() {
 		t.Fatalf("order must mismatch")
 	}
