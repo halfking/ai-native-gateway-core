@@ -46,6 +46,19 @@ const offlinePayload = ref('')
 const activateMode = ref<'online' | 'offline'>('online')
 const registerResult = ref<{ registered: boolean; deferred?: boolean; message?: string } | null>(null)
 const instanceIdCopied = ref(false)
+const offlineRequestCopied = ref(false)
+
+// 生成离线激活申请码（JSON格式）
+const offlineActivationRequest = computed(() => {
+  if (!instanceId.value || !hardwareHash.value) return ''
+  return JSON.stringify({
+    instance_id: instanceId.value,
+    hardware_hash: hardwareHash.value,
+    network_summary: networkSummary.value || 'offline',
+    device_name: deviceName.value || 'unknown',
+    timestamp: new Date().toISOString(),
+  }, null, 2)
+})
 
 const canActivate = computed(() => {
   if (!hardwareHash.value.trim() || !instanceId.value.trim()) return false
@@ -213,6 +226,15 @@ async function copyInstanceId() {
   } catch { /* ignore */ }
 }
 
+async function copyOfflineRequest() {
+  if (!offlineActivationRequest.value) return
+  try {
+    await navigator.clipboard.writeText(offlineActivationRequest.value)
+    offlineRequestCopied.value = true
+    setTimeout(() => { offlineRequestCopied.value = false }, 2000)
+  } catch { /* ignore */ }
+}
+
 async function performActivate() {
   if (!canActivate.value) {
     error.value = activateMode.value === 'online'
@@ -368,37 +390,49 @@ onMounted(async () => {
 
     <!-- 已同意协议但未完成激活：显示后续步骤；否则提示未同意 -->
     <template v-if="agreementAccepted || agreementDialogResolved === 'agreed'">
-      <!-- Step 1: Fingerprint -->
+      <!-- Step 1: Fingerprint + 选择激活方式 -->
       <el-card v-if="step === 1" shadow="never" class="wizard-card">
         <template #header>设备指纹</template>
         <el-skeleton v-if="loading && !hardwareHash" :rows="3" animated />
         <template v-else>
-          <el-descriptions :column="1" size="small" border>
+          <el-descriptions :column="1" size="small" border class="mb">
             <el-descriptions-item label="实例 ID">
               <div class="instance-id-row">
                 <span class="mono">{{ instanceId || '—' }}</span>
                 <el-button class="btn-no-arrow" size="small" type="primary" link :disabled="!instanceId" @click="copyInstanceId">
-                  {{ instanceIdCopied ? '已复制' : '复制实例 ID' }}
+                  {{ instanceIdCopied ? '✓ 已复制' : '复制实例 ID' }}
                 </el-button>
               </div>
-              <p class="hint">实例 ID 由本机在安装时自动生成（每台物理设备唯一）。离线激活需复制此 ID 到公网激活站点。</p>
             </el-descriptions-item>
-            <el-descriptions-item label="硬件哈希">
+            <el-descriptions-item label="设备指纹">
               <span class="mono">{{ hardwareHash || '—' }}</span>
             </el-descriptions-item>
-            <el-descriptions-item v-if="fingerprint?.os" label="系统">
-              {{ fingerprint.os }} / {{ fingerprint.arch || '—' }}
+            <el-descriptions-item v-if="fingerprint?.os" label="系统信息">
+              <span class="mono">{{ fingerprint.os }} / {{ fingerprint.arch || '—' }}</span>
             </el-descriptions-item>
-            <el-descriptions-item label="网络摘要">
-              {{ networkSummary || '—' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="中心连通">
+            <el-descriptions-item label="网络状态">
               <el-tag :type="status?.center_online ? 'success' : 'info'" size="small">
                 {{ status?.center_online ? '在线（可自动注册）' : '离线（不阻塞激活）' }}
               </el-tag>
             </el-descriptions-item>
           </el-descriptions>
-          <p class="hint">指纹仅用于绑定本机 License，不会上传原始硬件标识。</p>
+          
+          <p class="hint mb">
+            实例 ID 由本机在安装时自动生成（每台物理设备唯一）。设备指纹仅用于绑定本机 License，不会上传原始硬件标识。
+          </p>
+
+          <el-divider content-position="left">选择激活方式</el-divider>
+          
+          <el-radio-group v-model="activateMode" class="mb">
+            <el-radio value="online" size="large">
+              <span style="font-weight: 500;">在线激活</span>
+              <span class="muted" style="font-size: 12px; margin-left: 8px;">需要 License Key</span>
+            </el-radio>
+            <el-radio value="offline" size="large">
+              <span style="font-weight: 500;">离线激活</span>
+              <span class="muted" style="font-size: 12px; margin-left: 8px;">生成激活申请码，到公网站点获取激活响应</span>
+            </el-radio>
+          </el-radio-group>
         </template>
         <div class="wizard-actions">
           <button type="button" class="btn btn-secondary btn-no-arrow" :disabled="loading" @click="loadFingerprint">重新采集</button>
@@ -409,34 +443,52 @@ onMounted(async () => {
       <!-- Step 2: Activate -->
       <el-card v-else-if="step === 2" shadow="never" class="wizard-card">
         <template #header>激活 License</template>
-        <p class="muted mb">
-          在线激活：填入 License Key；<br />
-          离线激活：复制上方实例 ID 到
-          <a href="https://llm.kxpms.cn/maintain/license" target="_blank" rel="noopener">公网激活站点</a>
-          生成激活码，粘贴回本机完成激活（可生成 license.dat 离线文件）。
-        </p>
-        <el-radio-group v-model="activateMode" class="mb">
-          <el-radio-button value="online">在线 / 填码激活</el-radio-button>
-          <el-radio-button value="offline">离线导入</el-radio-button>
-        </el-radio-group>
-
-        <el-form label-position="top" @submit.prevent="ensureAgreementThenActivate">
-          <el-form-item label="实例 ID（一机一实例，自动锁定）">
-            <el-input :model-value="instanceId" readonly class="mono-input" />
-          </el-form-item>
-          <el-form-item label="硬件哈希">
-            <el-input :model-value="hardwareHash" readonly class="mono-input" />
-          </el-form-item>
-          <template v-if="activateMode === 'online'">
+        
+        <!-- 在线激活模式 -->
+        <template v-if="activateMode === 'online'">
+          <p class="muted mb">
+            填入您的 License Key，系统将自动验证并激活本机实例。
+          </p>
+          <el-form label-position="top" @submit.prevent="ensureAgreementThenActivate">
             <el-form-item label="License Key">
-              <el-input v-model="licenseKey" placeholder="LIC-••••••••" />
+              <el-input v-model="licenseKey" placeholder="LIC-••••••••" clearable />
             </el-form-item>
             <el-form-item label="设备名称（可选）">
-              <el-input v-model="deviceName" placeholder="生产网关 01" />
+              <el-input v-model="deviceName" placeholder="生产网关 01" clearable />
             </el-form-item>
-          </template>
-          <template v-else>
-            <el-form-item label="离线激活码 / 签名 License / license.dat">
+          </el-form>
+        </template>
+
+        <!-- 离线激活模式 -->
+        <template v-else>
+          <p class="muted mb">
+            <strong>第一步</strong>：复制下方的激活申请码，粘贴到
+            <a href="https://llm.kxpms.cn/maintain/license" target="_blank" rel="noopener">公网激活站点</a>
+            获取激活响应。
+          </p>
+          
+          <el-form-item label="激活申请码（复制到公网站点）">
+            <el-input
+              :model-value="offlineActivationRequest"
+              type="textarea"
+              :rows="8"
+              readonly
+              class="mono-input"
+            />
+          </el-form-item>
+          <div class="mb">
+            <button type="button" class="btn btn-secondary" @click="copyOfflineRequest">
+              {{ offlineRequestCopied ? '✓ 已复制' : '复制激活申请码' }}
+            </button>
+          </div>
+
+          <el-divider />
+
+          <p class="muted mb">
+            <strong>第二步</strong>：将公网站点返回的激活响应码粘贴到下方输入框。
+          </p>
+          <el-form label-position="top" @submit.prevent="ensureAgreementThenActivate">
+            <el-form-item label="激活响应码 / 签名 License / license.dat">
               <el-input
                 v-model="offlinePayload"
                 type="textarea"
@@ -449,12 +501,18 @@ onMounted(async () => {
               <RouterLink to="/customer/offline-activation">离线激活页</RouterLink>
               提交申请，审批后再导入。
             </p>
-          </template>
-        </el-form>
+          </el-form>
+        </template>
+
         <div class="wizard-actions">
           <button type="button" class="btn btn-secondary btn-no-arrow" @click="step = 1">上一步</button>
-          <button type="button" class="btn btn-primary" :disabled="loading || !canActivate" @click="ensureAgreementThenActivate">
-            激活
+          <button 
+            type="button" 
+            class="btn btn-primary" 
+            :disabled="loading || !canActivate" 
+            @click="ensureAgreementThenActivate"
+          >
+            {{ activateMode === 'online' ? '激活' : '导入激活' }}
           </button>
         </div>
       </el-card>
