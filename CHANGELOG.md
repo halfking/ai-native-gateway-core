@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **更新与激活合并页（非核心节点）** (2026-07-22): 将 `/customer/site|activate|license|agreement` 合并为「数据运维 → 更新与激活」(` /customer/update-activate`)。一键同意协议后调用中心 `public/license/issue` 完成本地激活；页内展示站点信息、版本/发布说明/升级入口、已开通模块清单。后端补齐 `/api/system/bootstrap/*`（含 `activate-quick`）。核心节点超管仍通过 maintain healthz 注入完整「运维中心」。中心 `/admin/modules` 增加发版模块开通面板（maintain `module-entitlements` 内存 API）。修复升级按钮非核心降级路径，移除 `BootstrapWizardView` / `LandingView` / `UpdateActivateView` 内旧 route 引用。详见 [docs/changelogs/2026-07-22-update-activate.md](docs/changelogs/2026-07-22-update-activate.md).
 
+- **运维中心菜单动态化 + 模块开通持久化 (audit 2026-07-22)** (2026-07-22): maintain 新增 `/maintain-api/menu/ops`（tenant-aware 菜单描述）和 `/maintain-api/admin/module-entitlements/mine`（我的申请）。Gateway Topbar 在探测到 maintain 时拉取远程超集替换硬编码 6 项，本地兜底不变；`module_entitlements` 落 PG 表（migration 014），重启不再丢失。`ModuleEntitlementsPanel` 增加「已开通/我的申请」Tab 与「直开/提交申请」双按钮。`UpdateActivateView` 增加 60s 站点状态轮询。详见 [docs/changelogs/2026-07-22-update-activate.md](docs/changelogs/2026-07-22-update-activate.md).
+
 ### Fixed
 
 - **Live stream audit follow-up** (2026-07-22): kept Redis pub/sub as the single success-path delivery mechanism to avoid duplicate broadcasts; exposed queue drops and scope-delta diagnostics; added a Minimax request-body diagnostic warning. See [docs/changelogs/2026-07-22-live-stream-audit-follow-up.md](docs/changelogs/2026-07-22-live-stream-audit-follow-up.md).
