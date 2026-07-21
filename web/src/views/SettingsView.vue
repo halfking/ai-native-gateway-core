@@ -689,7 +689,7 @@ onMounted(() => {
 }
 .editor-textarea:focus {
   outline: none;
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 .editor-actions {
   display: flex;
@@ -705,7 +705,7 @@ onMounted(() => {
   border: 1px solid transparent;
 }
 .btn-primary {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: #fff;
 }
 .btn-primary:disabled {
@@ -714,11 +714,11 @@ onMounted(() => {
 }
 .btn-ghost {
   background: transparent;
-  color: var(--text-primary, #e6edf3);
-  border: 1px solid var(--border, #30363d);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
 }
 .btn-ghost:hover {
-  background: var(--bg-hover, #21262d);
+  background: var(--bg-hover);
 }
 
 /* === Smart Editor Styles === */
@@ -762,7 +762,7 @@ onMounted(() => {
 }
 
 .switch-input:checked + .switch-track {
-  background: var(--primary, #3b82f6);
+  background: var(--accent);
 }
 
 .switch-input:checked + .switch-track::after {
@@ -792,8 +792,8 @@ onMounted(() => {
 
 .select-input:focus, .number-input:focus, .text-input:focus {
   outline: none;
-  border-color: var(--primary, #3b82f6);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .tag-editor-shell {
@@ -813,8 +813,8 @@ onMounted(() => {
   gap: 6px;
   padding: 4px 10px;
   border-radius: 999px;
-  background: rgba(99, 102, 241, 0.14);
-  color: var(--accent-h, #818cf8);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-h);
   font-size: 12px;
 }
 
@@ -840,8 +840,8 @@ onMounted(() => {
 .select-hint {
   margin-top: 8px;
   padding: 8px 12px;
-  background: rgba(59, 130, 246, 0.05);
-  border-left: 3px solid var(--primary, #3b82f6);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border-left: 3px solid var(--accent);
   border-radius: 4px;
 }
 
@@ -862,7 +862,7 @@ onMounted(() => {
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(99, 102, 241, 0.05);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
 .alias-preview-title {
@@ -878,7 +878,7 @@ onMounted(() => {
 }
 
 .alias-preview-card {
-  border: 1px solid rgba(99, 102, 241, 0.14);
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, transparent);
   border-radius: 8px;
   background: var(--bg);
   padding: 10px;
@@ -886,7 +886,7 @@ onMounted(() => {
 
 .alias-preview-label {
   font-size: 12px;
-  color: var(--accent-h, #818cf8);
+  color: var(--accent-h);
   margin-bottom: 6px;
 }
 
@@ -902,7 +902,7 @@ onMounted(() => {
   word-break: break-word;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, monospace;
 }
 
@@ -912,9 +912,9 @@ onMounted(() => {
   gap: 12px;
   margin: 16px 0;
   padding: 16px;
-  background: rgba(251, 191, 36, 0.1);
-  border: 1px solid rgba(251, 191, 36, 0.3);
-  border-left: 4px solid rgb(251, 191, 36);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  border-left: 4px solid var(--warning);
   border-radius: 8px;
 }
 
@@ -978,7 +978,7 @@ onMounted(() => {
 
 .docs-content code {
   padding: 2px 6px;
-  background: rgba(99, 102, 241, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   border-radius: 3px;
   font-size: 12px;
   font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
@@ -987,8 +987,8 @@ onMounted(() => {
 .docs-note {
   margin-top: 12px;
   padding: 8px 12px;
-  background: rgba(59, 130, 246, 0.08);
-  border-left: 3px solid var(--primary, #3b82f6);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-left: 3px solid var(--accent);
   border-radius: 4px;
   font-size: 13px;
 }
