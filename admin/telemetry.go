@@ -378,9 +378,12 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (
 			request_id, ts, request_body, response_body
-		) VALUES (
-			$1, now(), CAST($2 AS jsonb), CAST($3 AS jsonb)
 		)
+		SELECT $1, rl.ts, CAST($2 AS jsonb), CAST($3 AS jsonb)
+		FROM request_logs_hot rl
+		WHERE rl.request_id = $1
+		ORDER BY rl.ts DESC
+		LIMIT 1
 	`,
 		e.RequestID,
 		e.RequestBody,
