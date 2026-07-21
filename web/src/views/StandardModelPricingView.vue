@@ -768,7 +768,7 @@ onMounted(load)
 .modality-badge.modality-vision { background: rgba(34, 197, 94, 0.18); color: #4ade80; }
 .modality-badge.modality-audio { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
 .modality-badge.modality-video { background: rgba(244, 63, 94, 0.18); color: #fb7185; }
-.modality-badge.modality-embedding { background: rgba(99, 102, 241, 0.18); color: #818cf8; }
+.modality-badge.modality-embedding { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-h); }
 .multimodal-tag {
   display: inline-block; padding: 1px 6px; border-radius: 6px;
   font-size: 10px; font-weight: 600;

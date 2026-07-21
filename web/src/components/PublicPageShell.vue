@@ -172,7 +172,7 @@ const { t } = useI18n()
 }
 
 :deep(.pub-git-box a) {
-  color: #a5b4fc;
+  color: var(--accent-h);
   word-break: break-all;
 }
 

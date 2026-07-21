@@ -614,7 +614,7 @@ function goManageFeatured() {
 .os-tab.active {
   background: rgba(99, 102, 241, 0.2);
   border-color: rgba(99, 102, 241, 0.5);
-  color: #818cf8;
+  color: var(--accent-h);
 }
 
 .path-hint {
@@ -671,7 +671,7 @@ function goManageFeatured() {
   font-size: 12px;
   padding: 2px 8px;
   background: rgba(99, 102, 241, 0.15);
-  color: #818cf8;
+  color: var(--accent-h);
   border-radius: 4px;
 }
 
@@ -882,8 +882,8 @@ function goManageFeatured() {
 }
 
 .tab-btn.active {
-  color: #818cf8;
-  border-bottom-color: #818cf8;
+  color: var(--accent-h);
+  border-bottom-color: var(--accent-h);
 }
 
 .tab-content {
