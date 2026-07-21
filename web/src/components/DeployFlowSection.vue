@@ -150,9 +150,9 @@ function handleSecondary(path?: string) {
   grid-template-columns: 36px 1fr;
   gap: 14px;
   padding: 16px;
-  border: 1px solid var(--border, #2a2d3a);
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--panel, #1a1d27);
+  background: var(--panel);
 }
 
 .deploy-flow__num {
