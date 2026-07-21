@@ -307,6 +307,7 @@ type LiveStreamSSEHub struct {
 	totalDisconnections           int64 // 累计断开数
 	authFailures                  int64 // 认证失败次数
 	broadcastCount                int64 // 广播消息数
+	broadcastDrops                int64 // 广播队列满丢弃数
 	cachedSnapshotBaselinePresent int64 // computeScopeDelta 时已有 delta baseline
 	cachedSnapshotBaselineAbsent  int64 // computeScopeDelta 时尚无 delta baseline
 	cachedSnapshotEmptySkips      int64 // 读出空 snapshot 触发早返的次数
@@ -389,45 +390,54 @@ func (h *LiveStreamSSEHub) Run() {
 			}
 			h.mu.Unlock()
 			atomic.AddInt64(&h.totalDisconnections, 1)
-			case req := <-h.broadcast:
-				h.lastActivityMu.Lock()
-				h.lastActivity = time.Now()
-				h.lastActivityMu.Unlock()
-				atomic.AddInt64(&h.broadcastCount, 1)
-				// Compute BOTH scopes so super-admin and tenant-admin clients each
-				// receive a delta consistent with their own view. Previously a
-				// single tenant-scoped snapshot was fanned out to everyone, which
-				// caused super-admin lanes to flicker/disappear as different
-				// tenants' requests alternately overwrote the shared cache.
-				// The super-scope delta is only computed when at least one
-				// super-admin client is connected (avoids 2x Redis reads when no
-				// super admin is watching).
-				tenantID := normalizeLiveStreamTenant(req.TenantID)
-				hasSuperClient := h.hasSuperClient()
-				var tenantDelta, superDelta *LiveStreamDelta
-				if h.store != nil {
-					ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-					tenantDelta = h.computeScopeDelta(ctx, tenantID, false)
-					if hasSuperClient {
-						superDelta = h.computeScopeDelta(ctx, "", true)
-					}
-					cancel()
-					
-					// 2026-07-21: 详细日志记录每次推送的delta内容，用于诊断泳道跳变问题
-					if tenantDelta != nil {
-						h.logDeltaDetails("tenant", tenantID, req.RequestID, tenantDelta)
-					}
-					if superDelta != nil {
-						h.logDeltaDetails("super", "", req.RequestID, superDelta)
-					}
+		case req := <-h.broadcast:
+			h.lastActivityMu.Lock()
+			h.lastActivity = time.Now()
+			h.lastActivityMu.Unlock()
+			atomic.AddInt64(&h.broadcastCount, 1)
+			// Compute BOTH scopes so super-admin and tenant-admin clients each
+			// receive a delta consistent with their own view. Previously a
+			// single tenant-scoped snapshot was fanned out to everyone, which
+			// caused super-admin lanes to flicker/disappear as different
+			// tenants' requests alternately overwrote the shared cache.
+			// The super-scope delta is only computed when at least one
+			// super-admin client is connected (avoids 2x Redis reads when no
+			// super admin is watching).
+			tenantID := normalizeLiveStreamTenant(req.TenantID)
+			hasSuperClient := h.hasSuperClient()
+			var tenantDelta, superDelta *LiveStreamDelta
+			if h.store != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				tenantDelta = h.computeScopeDelta(ctx, tenantID, false)
+				if hasSuperClient {
+					superDelta = h.computeScopeDelta(ctx, "", true)
 				}
-				h.fanOut(LiveStreamEnvelope{
-					Type:       "request",
-					Timestamp:  time.Now().UTC(),
-					Request:    &req,
-					Delta:      tenantDelta,
-					superDelta: superDelta,
-				})
+				cancel()
+
+				// 2026-07-21: 详细日志记录每次推送的delta内容
+				if tenantDelta != nil {
+					h.logDeltaDetails("tenant", tenantID, req.RequestID, tenantDelta)
+				}
+				if superDelta != nil {
+					h.logDeltaDetails("super", "", req.RequestID, superDelta)
+				}
+				// 2026-07-21: 当 delta 为 nil 但 store 可用时记录 warning，
+				// 帮助诊断"流不更新"类问题（空 snapshot / Redis 队列过期等）。
+				if tenantDelta == nil || (hasSuperClient && superDelta == nil) {
+					slog.Warn("live stream: scope delta nil, request may not appear in swim lanes",
+						"request_id", req.RequestID,
+						"tenant_id", tenantID,
+						"has_super_client", hasSuperClient,
+						"empty_skips", atomic.LoadInt64(&h.cachedSnapshotEmptySkips))
+				}
+			}
+			h.fanOut(LiveStreamEnvelope{
+				Type:       "request",
+				Timestamp:  time.Now().UTC(),
+				Request:    &req,
+				Delta:      tenantDelta,
+				superDelta: superDelta,
+			})
 		case <-idleTicker.C:
 			h.maybeEmitIdleMarker()
 		case <-keepaliveTicker.C:
@@ -1163,12 +1173,12 @@ func (h *LiveStreamSSEHub) logDeltaDetails(scope string, tenantID string, reques
 	if delta == nil {
 		return
 	}
-	
+
 	// Only log when there are actual lane changes
 	if len(delta.ChangedLanes) == 0 {
 		return
 	}
-	
+
 	// Build a compact summary of what changed
 	var changedSummary []string
 	for dim, lanes := range delta.ChangedLanes {
@@ -1178,7 +1188,7 @@ func (h *LiveStreamSSEHub) logDeltaDetails(scope string, tenantID string, reques
 			for _, tile := range lane.Requests {
 				requestIDs = append(requestIDs, tile.RequestID)
 			}
-			
+
 			summary := fmt.Sprintf("%s/%s: total=%d tiles=%d ids=[%s...%s]",
 				dim,
 				lane.Name,
@@ -1190,7 +1200,7 @@ func (h *LiveStreamSSEHub) logDeltaDetails(scope string, tenantID string, reques
 			changedSummary = append(changedSummary, summary)
 		}
 	}
-	
+
 	slog.Info("live stream delta push",
 		"scope", scope,
 		"tenant_id", tenantID,
@@ -1224,7 +1234,6 @@ func lastN(items []string, n int) string {
 	}
 	return strings.Join(items[len(items)-n:], ",")
 }
-
 
 // writeEvent serialises one envelope to one client.
 //
@@ -1334,7 +1343,10 @@ func (h *LiveStreamSSEHub) enqueueBroadcast(req LiveRequest) {
 	select {
 	case h.broadcast <- req:
 	default:
-		slog.Debug("live stream broadcast queue full, dropping request", "request_id", req.RequestID)
+		atomic.AddInt64(&h.broadcastDrops, 1)
+		slog.Warn("live stream broadcast queue full, dropping request",
+			"request_id", req.RequestID,
+			"drops_total", atomic.LoadInt64(&h.broadcastDrops))
 	}
 }
 
@@ -1855,6 +1867,7 @@ func (h *LiveStreamSSEHub) Stats() map[string]interface{} {
 		"total_disconnections":             atomic.LoadInt64(&h.totalDisconnections),
 		"auth_failures":                    atomic.LoadInt64(&h.authFailures),
 		"broadcast_count":                  atomic.LoadInt64(&h.broadcastCount),
+		"broadcast_drops":                  atomic.LoadInt64(&h.broadcastDrops),
 		"cached_snapshot_baseline_present": atomic.LoadInt64(&h.cachedSnapshotBaselinePresent),
 		"cached_snapshot_baseline_absent":  atomic.LoadInt64(&h.cachedSnapshotBaselineAbsent),
 		"cached_snapshot_empty_skips":      atomic.LoadInt64(&h.cachedSnapshotEmptySkips),
