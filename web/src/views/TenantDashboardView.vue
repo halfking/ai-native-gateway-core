@@ -590,8 +590,8 @@ onUnmounted(() => {
   display: inline-flex;
   gap: 4px;
   padding: 3px;
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 .tab-btn {
@@ -599,7 +599,7 @@ onUnmounted(() => {
   border: none;
   border-radius: 4px;
   background: transparent;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -607,11 +607,11 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .tab-btn:hover {
-  color: var(--text, #e6edf3);
-  background: var(--bg, #0f1117);
+  color: var(--text);
+  background: var(--bg);
 }
 .tab-btn--active {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: white;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
@@ -636,10 +636,10 @@ onUnmounted(() => {
 .days-select {
   width: auto;
   padding: 6px 12px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  color: var(--text);
   font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
@@ -648,10 +648,10 @@ onUnmounted(() => {
 }
 .btn-refresh {
   padding: 6px 12px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  color: var(--text);
   font-size: 13px;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -659,8 +659,8 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 .btn-refresh:hover:not(:disabled) {
-  background: var(--bg-subtle, #161b22);
-  border-color: var(--accent, #6366f1);
+  background: var(--bg-subtle);
+  border-color: var(--accent);
 }
 .btn-refresh:disabled {
   opacity: 0.5;
@@ -742,13 +742,13 @@ onUnmounted(() => {
   flex: 0 0 auto;
   min-width: 120px;
   padding: 8px 12px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--card, #1c2128);
+  background: var(--card);
   transition: all 0.15s ease;
 }
 .stat-mini:hover {
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 .stat-mini--highlight {
@@ -757,7 +757,7 @@ onUnmounted(() => {
 }
 .stat-mini__label {
   font-size: 11px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   white-space: nowrap;
   margin-bottom: 4px;
   font-weight: 500;
@@ -765,7 +765,7 @@ onUnmounted(() => {
 .stat-mini__value {
   font-size: 18px;
   font-weight: 700;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 .stat-mini__sub {
@@ -774,7 +774,7 @@ onUnmounted(() => {
   margin-top: 4px;
 }
 .stat-mini--skeleton {
-  background: linear-gradient(90deg, var(--bg-subtle, #161b22) 25%, var(--border, #30363d) 50%, var(--bg-subtle, #161b22) 75%);
+  background: linear-gradient(90deg, var(--bg-subtle) 25%, var(--border) 50%, var(--bg-subtle) 75%);
   background-size: 200% 100%;
   animation: skeleton-loading 1.5s ease-in-out infinite;
   min-height: 64px;
