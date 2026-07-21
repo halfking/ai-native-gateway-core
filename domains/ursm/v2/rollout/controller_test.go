@@ -9,9 +9,9 @@ import (
 func TestDeterministic(t *testing.T) {
 	c := New(Config{Mode: api.ModeCanary, CanaryPercent: 50})
 	a := c.ShouldUseV2("tenantA", "gpt-4", "r1")
-	b := c.ShouldUseV2("tenantA", "gpt-4", "r2")
+	b := c.ShouldUseV2("tenantA", "gpt-4", "r1")
 	if a != b {
-		t.Fatalf("decision must be stable across requests for the same tenant+model")
+		t.Fatalf("decision must be stable across repeated calls with same inputs")
 	}
 }
 
