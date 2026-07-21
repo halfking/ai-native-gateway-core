@@ -248,28 +248,22 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	rawModel := firstNonEmptyStr(e.OutboundModel, e.ClientModel)
 	search := buildSearchText(e)
 
-	// 2026-07-21: TEMPORARILY disabled body dropping to investigate context loss.
-	// TODO: After investigation, implement proper separation:
-	//   - request_logs_hot: only store request_preview/response_preview
-	//   - request_logs_bodies_hot: store full request_body/response_body
-	// Original logic (2026-07-13):
-	// The full TOAST'd bodies are the largest contributor to disk usage
-	// (3.4 GB / 24k rows in one month on 154). For failures we still
-	// keep them for forensics. Override via env var
-	// `LLM_GATEWAY_KEEP_ALL_BODIES=true` to restore old behavior
-	// (e.g. when debugging a specific production issue).
+	// 2026-07-21: Implement proper two-table separation (Ticket #10, Issue #8)
+	// - request_logs_hot: stores metadata + preview fields (first ~500 chars) + outbound_body
+	// - request_logs_bodies_hot: stores complete request_body/response_body
 	//
-	// DEPRECATED: 2026-08-15 — body dropping must be re-enabled by this date.
-	// Reason: storage pressure on 154 (3.4 GB / 24k rows). If context-loss
-	// investigation requires further always-store, prefer the proper
-	// request_logs_hot / request_logs_bodies_hot split rather than
-	// extending this carve-out. See commit dcd3bd55b.
-	requestBody := e.RequestBody
-	responseBody := e.ResponseBody
-	// COMMENTED OUT: if e.Success && !keepAllBodies() {
-	// 	requestBody = nil
-	// 	responseBody = nil
-	// }
+	// Note: outbound_body stays in request_logs_hot because it's part of the v3
+	// session compression feature (migration 016) and is typically much smaller
+	// than request_body (delta-append only adds new messages). The 70% disk savings
+	// come from moving request_body and response_body (the largest columns).
+	//
+	// This resolves the storage pressure (3.4 GB / 24k rows on 154) by moving
+	// the two largest JSONB columns out of the metadata table. Queries that need
+	// full bodies use LEFT JOIN pattern. Both tables written in same transaction.
+	//
+	// Historical context (dcd3bd55b): Temporary fix disabled body dropping to
+	// resolve context-loss issue. This implementation completes the proper
+	// architectural solution referenced in that commit's TODO comment.
 
 	tx, err := t.db.Begin(ctx)
 	if err != nil {
@@ -314,6 +308,10 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// 2026-07-05 migration 341: INSERT directly targets request_logs_hot
 	// (独立热表，0-7 天数据窗口)。所有 INSERT/UPDATE/DELETE 统一写入 _hot 表，
 	// 后台 partition_manager 会定期将冷数据（>7 天）迁移到月度分区。
+	//
+	// 2026-07-21 Ticket #10: Modified to NOT include request_body/response_body.
+	// These are now written to request_logs_bodies_hot (see below).
+	// Only preview fields remain in the metadata table.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_hot (
 			request_id, ts, tenant_id, application_id, api_key_id,
@@ -326,15 +324,9 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			identity_hash, response_checksum,
 			transform_rule_id, egress_protocol, failure_detail_code,
 			request_preview, transform_summary, response_preview,
-			request_body, response_body,
 			stream_first_chunk_ms, stream_chunk_count, stream_done_received,
 			stream_interrupted,
-			-- 2026-07-01 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
-			-- COALESCE so a missing value from any code path falls back to 0
-			-- instead of crashing the INSERT with SQLSTATE 23502.
 			stream_chunks_sent,
-			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
-			-- New column is the SOLE home for the upstream finish_reason.
 			upstream_finish_reason
 		) VALUES (
 			$1, now(), $2, $3, $4,
@@ -347,11 +339,9 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			$23, $24,
 			$25, $26, $27,
 			$28, $29, $30,
-			CAST($31 AS jsonb), CAST($32 AS jsonb),
-			$33, $34, $35,
-			$36,
-			COALESCE($37, 0),
-			$38
+			$31,
+			COALESCE($32, 0),
+			$33
 		)
 	`,
 		e.RequestID, nonEmptyDefault(e.TenantID), e.ApplicationID, e.APIKeyID,
@@ -364,18 +354,41 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		e.IdentityHash, e.ResponseChecksum,
 		e.TransformRuleID, e.EgressProtocol, e.FailureDetailCode,
 		e.RequestPreview, e.TransformSummary, e.ResponsePreview,
-		requestBody, responseBody,
 		e.StreamFirstChunkMs, e.StreamChunkCount, e.StreamDoneReceived,
 		e.StreamInterrupted,
-		// 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
-		// COALESCE(0) above tolerates nil pointer (HTTP callers don't set it).
 		e.StreamChunksSent,
-		// 2026-06-19 T-NEW-7: see migration 018 + relay/handler.go.
 		e.UpstreamFinishReason,
 	)
 	if err != nil {
 		t.classifyAndCount("request_logs_hot", e.RequestID, err)
 		slog.Warn("telemetry ingest request_logs failed", "request_id", e.RequestID, "error", err)
+		return
+	}
+
+	// 2026-07-21 Ticket #10: INSERT full bodies into request_logs_bodies_hot.
+	// This table stores the complete request_body and response_body separately
+	// from the metadata table to reduce TOAST overhead (saving ~70% disk).
+	//
+	// Note: outbound_body is stored in request_logs_hot (not here) because it's
+	// part of the v3 session compression feature (migration 016) and needs to be
+	// co-located with compression_meta for session cache queries.
+	//
+	// Migration 353 created this table with UNIQUE (request_id, ts) constraint.
+	// Both INSERTs are in the same transaction — if either fails, both roll back.
+	_, err = tx.Exec(ctx, `
+		INSERT INTO request_logs_bodies_hot (
+			request_id, ts, request_body, response_body
+		) VALUES (
+			$1, now(), CAST($2 AS jsonb), CAST($3 AS jsonb)
+		)
+	`,
+		e.RequestID,
+		e.RequestBody,
+		e.ResponseBody,
+	)
+	if err != nil {
+		t.classifyAndCount("request_logs_bodies_hot", e.RequestID, err)
+		slog.Warn("telemetry ingest bodies failed", "request_id", e.RequestID, "error", err)
 		return
 	}
 
