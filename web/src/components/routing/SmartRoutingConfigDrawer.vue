@@ -49,7 +49,7 @@ const { t } = useI18n()
 .smart-drawer {
   width: min(960px, 100vw);
   height: 100%;
-  background: var(--card, #1c2128);
+  background: var(--card);
   box-shadow: -12px 0 32px rgba(0, 0, 0, 0.16);
   display: flex;
   flex-direction: column;
@@ -59,7 +59,7 @@ const { t } = useI18n()
   align-items: flex-start;
   gap: 12px;
   padding: 14px 16px;
-  border-bottom: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border);
 }
 .smart-drawer-head h3 {
   margin: 0 0 2px;
@@ -68,7 +68,7 @@ const { t } = useI18n()
 .hint {
   margin: 0;
   font-size: 11px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 .close {
   margin-left: auto;
@@ -77,9 +77,9 @@ const { t } = useI18n()
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
-.close:hover { color: var(--text, #e6edf3); }
+.close:hover { color: var(--text); }
 .smart-drawer-body {
   flex: 1;
   min-height: 0;

@@ -65,7 +65,7 @@ onMounted(() => {
   min-width: 148px;
   max-width: 180px;
   padding: 8px;
-  border-right: 1px solid var(--border, #30363d);
+  border-right: 1px solid var(--border);
   overflow-y: auto;
 }
 .rail-item {
@@ -78,16 +78,16 @@ onMounted(() => {
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   text-align: left;
   cursor: pointer;
 }
 .rail-item:hover {
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
 }
 .rail-item.active {
   background: rgba(99, 102, 241, 0.18);
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 .rail-icon {
   font-size: 16px;
@@ -104,7 +104,7 @@ onMounted(() => {
   min-width: 18px;
   padding: 0 6px;
   border-radius: 999px;
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
   font-size: 11px;
   text-align: center;
 }
@@ -114,7 +114,7 @@ onMounted(() => {
     max-width: none;
     min-width: 0;
     border-right: none;
-    border-bottom: 1px solid var(--border, #30363d);
+    border-bottom: 1px solid var(--border);
     overflow-x: auto;
   }
   .rail-item {
