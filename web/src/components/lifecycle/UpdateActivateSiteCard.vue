@@ -51,6 +51,6 @@ defineProps<{
 
 <style scoped>
 .ua-card__title { font-weight: 600; }
-.muted { color: var(--muted, #5b6b82); font-size: 13px; }
+.muted { color: var(--muted); font-size: 13px; }
 code { font-size: 12px; word-break: break-all; }
 </style>

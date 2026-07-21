@@ -78,7 +78,7 @@ onMounted(load)
   padding: 4px 10px;
   border-radius: 12px;
   font-size: 12px;
-  background: var(--surface-secondary, #f3f4f6);
-  color: var(--text-secondary, #6b7280);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
 }
 </style>

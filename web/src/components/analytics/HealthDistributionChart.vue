@@ -62,7 +62,7 @@ const avgHealthScore = computed(() => props.data.avgHealthScore)
 // 颜色方案（与全局暗色语义色对齐）
 const gradeColors: Record<string, string> = {
   A: '#3fb950',
-  B: '#6366f1',
+  B: '#3b82f6',
   C: '#d29922',
   D: '#f85149',
   F: '#8b949e'

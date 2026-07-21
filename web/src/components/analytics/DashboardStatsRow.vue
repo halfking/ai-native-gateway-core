@@ -291,7 +291,7 @@ const changeClass = (change: number, isNegative: boolean) => {
 }
 
 /* 暗色系下的图标背景：使用对应语义色的低透明度叠加，避免浅色块 */
-.icon-accent  { background: rgba(99, 102, 241, 0.16); }
+.icon-accent  { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .icon-success { background: rgba(63, 185, 80, 0.16); }
 .icon-danger  { background: rgba(248, 81, 73, 0.16); }
 .icon-warning { background: rgba(210, 153, 34, 0.16); }

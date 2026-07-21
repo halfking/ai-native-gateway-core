@@ -279,7 +279,7 @@ onMounted(load)
 .weight-item input {
   width: 100%;
   padding: 6px 10px;
-  border: 1px solid var(--border, #e5e7eb);
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 14px;
 }
@@ -295,8 +295,8 @@ onMounted(load)
   flex-wrap: wrap;
   margin-bottom: 10px;
   padding: 8px 10px;
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 .featured-recommend-msg {

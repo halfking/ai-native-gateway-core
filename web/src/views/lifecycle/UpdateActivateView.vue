@@ -231,8 +231,8 @@ void usePolling
         <p>{{ SITE_TITLE }} — 站点信息、一键激活、版本升级与已开通模块。</p>
       </div>
       <div class="ua-page__actions">
-        <RouterLink class="btn btn-ghost" to="/customer/offline-activation">离线激活</RouterLink>
-        <button type="button" class="btn btn-primary btn-sm" :disabled="loading" @click="refreshAll">
+        <RouterLink class="btn btn-ghost btn-no-arrow" to="/customer/offline-activation">离线激活</RouterLink>
+        <button type="button" class="btn btn-secondary btn-sm btn-no-arrow" :disabled="loading" @click="refreshAll">
           刷新
         </button>
       </div>
@@ -266,9 +266,9 @@ void usePolling
               <el-input v-model="deviceName" maxlength="64" placeholder="例如：华东机房-网关-01" />
             </el-form-item>
             <el-form-item>
-              <el-button type="primary" :loading="activating" @click="onActivateClick">
+              <button type="button" class="btn btn-primary" :disabled="activating" @click="onActivateClick">
                 同意协议并激活
-              </el-button>
+              </button>
             </el-form-item>
           </el-form>
         </template>
@@ -310,13 +310,13 @@ void usePolling
 }
 .eyebrow {
   margin: 0 0 6px;
-  color: var(--accent-h, #1e4fd6);
+  color: var(--accent-h);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
 }
 .ua-page__header h1 { margin: 0 0 8px; font-size: 24px; }
-.ua-page__header p { margin: 0; color: var(--muted, #5b6b82); font-size: 14px; line-height: 1.6; }
+.ua-page__header p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
 .ua-page__actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .ua-grid {
   display: grid;
@@ -324,7 +324,7 @@ void usePolling
   grid-template-columns: 1fr;
 }
 .ua-card__title { font-weight: 600; }
-.hint { margin: 0 0 16px; color: var(--muted, #5b6b82); font-size: 13px; line-height: 1.6; }
+.hint { margin: 0 0 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .mb { margin-bottom: 12px; }
 @media (min-width: 900px) {
   .ua-grid { grid-template-columns: 1fr 1fr; }

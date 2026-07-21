@@ -1059,16 +1059,16 @@ function formatNumber(num: number): string {
 }
 
 :global(.retention-radio .el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: rgba(99, 102, 241, 0.2);
-  border-color: #6366f1;
-  color: #c7d2fe;
-  box-shadow: -1px 0 0 0 #6366f1;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: var(--accent);
+  color: var(--accent-h);
+  box-shadow: -1px 0 0 0 var(--accent);
 }
 
 :global(.retention-radio .el-radio-button.is-active .el-radio-button__inner) {
-  background: rgba(99, 102, 241, 0.2);
-  border-color: #6366f1;
-  color: #c7d2fe;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: var(--accent);
+  color: var(--accent-h);
 }
 
 :global(.retention-radio .el-radio-button__inner:hover) {
@@ -1093,7 +1093,7 @@ function formatNumber(num: number): string {
 
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #6366f1, #818cf8);
+  background: linear-gradient(90deg, var(--accent), var(--accent-h));
   transition: width 0.3s ease;
 }
 
@@ -1116,7 +1116,7 @@ function formatNumber(num: number): string {
 
 .progress-percent {
   flex-shrink: 0;
-  color: #818cf8;
+  color: var(--accent-h);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -1234,7 +1234,7 @@ function formatNumber(num: number): string {
   font-size: 14px;
   font-weight: 600;
   color: #e6edf3;
-  border-left: 3px solid #6366f1;
+  border-left: 3px solid var(--accent);
   padding-left: 10px;
 }
 
@@ -1271,7 +1271,7 @@ function formatNumber(num: number): string {
 }
 
 .data-table tr.active {
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .data-table tr.deleting {
@@ -1279,7 +1279,7 @@ function formatNumber(num: number): string {
 }
 
 .data-table tr.running td {
-  background: rgba(99, 102, 241, 0.04);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
 }
 
 .data-table .empty-row {
@@ -1294,7 +1294,7 @@ function formatNumber(num: number): string {
   padding: 2px 6px;
   background: #0f1117;
   border-radius: 4px;
-  color: #818cf8;
+  color: var(--accent-h);
 }
 
 .strong { color: #e6edf3; font-weight: 600; }
@@ -1309,8 +1309,8 @@ function formatNumber(num: number): string {
 }
 
 .pill-info {
-  background: rgba(99, 102, 241, 0.15);
-  color: #818cf8;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent-h);
 }
 
 .pill-warn {
@@ -1339,11 +1339,11 @@ function formatNumber(num: number): string {
 }
 
 .status-running {
-  background: rgba(99, 102, 241, 0.15);
-  color: #818cf8;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent-h);
 }
 
-.status-running .dot-pulse { background: #818cf8; }
+.status-running .dot-pulse { background: var(--accent-h); }
 
 .status-succeeded {
   background: rgba(52, 211, 153, 0.15);
@@ -1376,7 +1376,7 @@ function formatNumber(num: number): string {
 
 .mini-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #6366f1, #818cf8);
+  background: linear-gradient(90deg, var(--accent), var(--accent-h));
   transition: width 0.3s ease;
 }
 
@@ -1389,8 +1389,8 @@ function formatNumber(num: number): string {
 }
 
 .storage-badge.columnar {
-  background: rgba(99, 102, 241, 0.15);
-  color: #818cf8;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent-h);
 }
 
 .storage-badge.heap {
@@ -1452,14 +1452,14 @@ function formatNumber(num: number): string {
 }
 
 .btn-primary {
-  background: #6366f1;
-  border-color: #6366f1;
+  background: var(--accent);
+  border-color: var(--accent);
   color: #fff;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #818cf8;
-  border-color: #818cf8;
+  background: var(--accent-h);
+  border-color: var(--accent-h);
 }
 
 .btn-danger {
@@ -1571,7 +1571,7 @@ function formatNumber(num: number): string {
   border-radius: 4px;
   margin: 8px 0;
   font-family: ui-monospace, SFMono-Regular, monospace;
-  color: #818cf8;
+  color: var(--accent-h);
   word-break: break-all;
 }
 
@@ -1600,7 +1600,7 @@ function formatNumber(num: number): string {
 
 .confirm-input:focus {
   outline: none;
-  border-color: #6366f1;
+  border-color: var(--accent);
 }
 
 .empty-hint {

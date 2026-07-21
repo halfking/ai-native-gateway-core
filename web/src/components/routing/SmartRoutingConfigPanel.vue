@@ -198,7 +198,7 @@ defineExpose({ reload: loadDefaults })
 .subtitle {
   margin: 0;
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   max-width: 720px;
 }
 .compact .subtitle {
@@ -218,9 +218,9 @@ defineExpose({ reload: loadDefaults })
 }
 .panel-body {
   display: flex;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--card, #1c2128);
+  background: var(--card);
   min-height: 420px;
   overflow: hidden;
   flex: 1;
@@ -235,7 +235,7 @@ defineExpose({ reload: loadDefaults })
 }
 .error { color: #b91c1c; font-size: 13px; margin: 0; }
 .empty {
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 13px;
   margin: 0 0 12px;
 }

@@ -896,8 +896,8 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 .session-item.active .session-item__btn {
-  background: rgba(99, 102, 241, 0.18);
-  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .session-item__row {
@@ -997,7 +997,7 @@ function onKeydown(e: KeyboardEvent) {
 .chat-session-bar__model {
   font-size: 11px;
   color: var(--accent-h);
-  background: rgba(99, 102, 241, 0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   padding: 2px 8px;
   border-radius: 4px;
   max-width: 280px;
@@ -1053,8 +1053,8 @@ function onKeydown(e: KeyboardEvent) {
 
 .chat-bubble.user {
   align-self: flex-end;
-  background: rgba(99, 102, 241, 0.2);
-  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .chat-bubble.assistant {
@@ -1098,7 +1098,7 @@ function onKeydown(e: KeyboardEvent) {
   font-size: 11px;
   border-radius: 8px;
   background: rgba(64, 158, 255, 0.12);
-  color: var(--primary, #409eff);
+  color: var(--primary);
   border: 1px solid rgba(64, 158, 255, 0.3);
   white-space: nowrap;
   cursor: help;

@@ -318,13 +318,13 @@ const channelLabels = {
 .section-title {
   margin: 0 0 8px;
   font-size: 16px;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .channel-card {
   padding: 16px;
-  background: var(--bg-card, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
@@ -341,7 +341,7 @@ const channelLabels = {
   gap: 8px;
   font-size: 15px;
   font-weight: 600;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .channel-icon {
@@ -365,7 +365,7 @@ const channelLabels = {
   position: relative;
   width: 44px;
   height: 24px;
-  background: var(--border, #30363d);
+  background: var(--border);
   border-radius: 12px;
   transition: background 0.2s;
 }
@@ -383,7 +383,7 @@ const channelLabels = {
 }
 
 .switch-input:checked + .switch-track {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
 }
 
 .switch-input:checked + .switch-track::after {
@@ -392,7 +392,7 @@ const channelLabels = {
 
 .channel-body {
   padding-top: 12px;
-  border-top: 1px solid var(--border, #30363d);
+  border-top: 1px solid var(--border);
 }
 
 .form-group {
@@ -407,7 +407,7 @@ const channelLabels = {
   display: block;
   margin-bottom: 6px;
   font-size: 13px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .required {
@@ -415,23 +415,23 @@ const channelLabels = {
 }
 
 .optional {
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
 .form-input {
   width: 100%;
   padding: 8px 12px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
   font-size: 14px;
 }
 
 .form-input:focus {
   outline: none;
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 
 .channel-actions {
@@ -456,7 +456,7 @@ const channelLabels = {
 }
 
 .btn-primary {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: #fff;
 }
 

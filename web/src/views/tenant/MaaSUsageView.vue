@@ -387,7 +387,7 @@ onMounted(load)
   min-height: 2px;
   border-radius: 3px 3px 0 0;
 }
-.trend-bar.credits { background: #6366f1; }
+.trend-bar.credits { background: var(--accent); }
 .trend-bar.requests { background: #22c55e; }
 .trend-date {
   font-size: 10px;
@@ -423,7 +423,7 @@ onMounted(load)
   height: 100%;
   border-radius: 4px;
 }
-.bar-fill.credits { background: #6366f1; }
+.bar-fill.credits { background: var(--accent); }
 .bar-meta {
   font-size: 11px;
   color: var(--muted);
@@ -486,8 +486,8 @@ onMounted(load)
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  background: var(--surface-secondary, #f3f4f6);
-  color: var(--text-secondary, #6b7280);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
 }
 .tenant-badge--admin {
   background: rgba(59, 130, 246, 0.1);

@@ -469,7 +469,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
   padding: 20px;
   max-width: 1600px;
   margin: 0 auto;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .page-header {
@@ -488,7 +488,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 .page-description {
   margin: 0;
   font-size: 14px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .header-actions {
@@ -546,8 +546,8 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .stat-card {
-  background: var(--bg-card, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px;
   text-align: center;
@@ -555,14 +555,14 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .stat-label {
   font-size: 13px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   margin-bottom: 8px;
 }
 
 .stat-value {
   font-size: 32px;
   font-weight: 600;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .stat-value.stat-small {
@@ -582,8 +582,8 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .filters-section {
-  background: var(--bg-card, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 16px;
@@ -608,7 +608,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .filter-group label {
   font-size: 13px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
@@ -620,22 +620,22 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 .form-select,
 .form-input {
   padding: 8px 12px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
   font-size: 14px;
 }
 
 .form-select:focus,
 .form-input:focus {
   outline: none;
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 
 .table-container {
-  background: var(--bg-card, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
   margin-bottom: 16px;
@@ -645,7 +645,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 .empty-state {
   padding: 64px;
   text-align: center;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .empty-icon {
@@ -659,8 +659,8 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .data-table thead {
-  background: var(--bg, #0f1117);
-  border-bottom: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
 
 .data-table th {
@@ -668,14 +668,14 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
   text-align: left;
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .data-table td {
   padding: 12px 16px;
-  border-top: 1px solid var(--border, #30363d);
+  border-top: 1px solid var(--border);
   font-size: 14px;
 }
 
@@ -686,7 +686,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 .link-button {
   background: none;
   border: none;
-  color: var(--accent, #6366f1);
+  color: var(--accent);
   cursor: pointer;
   text-decoration: underline;
   font-size: 14px;
@@ -700,11 +700,11 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 .text-mono {
   font-family: 'Monaco', 'Menlo', monospace;
   font-size: 13px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .text-secondary {
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .time-left {
@@ -715,7 +715,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .trigger-reason {
   font-size: 13px;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .badge {
@@ -776,7 +776,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .pagination-info {
   font-size: 14px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .btn {
@@ -787,14 +787,14 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
   border: 1px solid transparent;
   transition: all 0.2s;
   font-weight: 500;
-  background: var(--bg-card, #161b22);
-  color: var(--text-primary, #e6edf3);
-  border-color: var(--border, #30363d);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-color: var(--border);
 }
 
 .btn:hover:not(:disabled) {
-  background: var(--bg, #0f1117);
-  border-color: var(--accent, #6366f1);
+  background: var(--bg);
+  border-color: var(--accent);
 }
 
 .btn:disabled {
@@ -803,9 +803,9 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .btn-primary {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: #fff;
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -813,8 +813,8 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .btn-secondary {
-  background: var(--bg-card, #161b22);
-  border-color: var(--border, #30363d);
+  background: var(--bg-card);
+  border-color: var(--border);
 }
 
 .btn-success {

@@ -350,8 +350,8 @@ watch(() => props.visible, (visible) => {
 }
 
 .modal-content {
-  background: var(--bg, #0d1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 8px;
   max-width: 900px;
   width: 100%;
@@ -366,20 +366,20 @@ watch(() => props.visible, (visible) => {
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border);
 }
 
 .modal-title {
   margin: 0;
   font-size: 18px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .modal-close {
   background: none;
   border: none;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 24px;
   cursor: pointer;
   padding: 0;
@@ -393,8 +393,8 @@ watch(() => props.visible, (visible) => {
 }
 
 .modal-close:hover {
-  background: var(--bg-subtle, #161b22);
-  color: var(--text, #e6edf3);
+  background: var(--bg-subtle);
+  color: var(--text);
 }
 
 .modal-body {
@@ -408,7 +408,7 @@ watch(() => props.visible, (visible) => {
   gap: 12px;
   justify-content: flex-end;
   padding: 16px 20px;
-  border-top: 1px solid var(--border, #30363d);
+  border-top: 1px solid var(--border);
 }
 
 /* 上下文信息 */
@@ -417,8 +417,8 @@ watch(() => props.visible, (visible) => {
   gap: 16px;
   margin-bottom: 20px;
   padding: 12px;
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 
@@ -429,12 +429,12 @@ watch(() => props.visible, (visible) => {
 }
 
 .diag-context-label {
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-weight: 500;
 }
 
 .diag-context-value {
-  color: var(--text, #e6edf3);
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -442,19 +442,19 @@ watch(() => props.visible, (visible) => {
 .diag-loading, .diag-error {
   padding: 40px;
   text-align: center;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 .diag-error {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 
 .spinner {
   width: 40px;
   height: 40px;
   margin: 0 auto 16px;
-  border: 3px solid var(--border, #30363d);
-  border-top-color: var(--accent, #58a6ff);
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -471,8 +471,8 @@ watch(() => props.visible, (visible) => {
 }
 
 .diag-section {
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 16px;
 }
@@ -481,7 +481,7 @@ watch(() => props.visible, (visible) => {
   margin: 0 0 12px 0;
   font-size: 14px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .diag-info-grid {
@@ -497,17 +497,17 @@ watch(() => props.visible, (visible) => {
 }
 
 .diag-info-label {
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-weight: 500;
 }
 
 .diag-info-value {
-  color: var(--text, #e6edf3);
+  color: var(--text);
   font-weight: 600;
 }
 
 .status-ok {
-  color: var(--success, #3fb950) !important;
+  color: var(--success) !important;
 }
 
 .status-warn {
@@ -515,7 +515,7 @@ watch(() => props.visible, (visible) => {
 }
 
 .status-error {
-  color: var(--danger, #f85149) !important;
+  color: var(--danger) !important;
 }
 
 /* Bindings 表格 */
@@ -532,16 +532,16 @@ watch(() => props.visible, (visible) => {
 .diag-bindings-table th {
   text-align: left;
   padding: 8px;
-  background: var(--bg, #0d1117);
-  color: var(--muted, #8b949e);
+  background: var(--bg);
+  color: var(--muted);
   font-weight: 600;
-  border-bottom: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border);
 }
 
 .diag-bindings-table td {
   padding: 8px;
-  color: var(--text, #e6edf3);
-  border-bottom: 1px solid var(--border, #30363d);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
 }
 
 .diag-bindings-table tbody tr:last-child td {
@@ -557,8 +557,8 @@ watch(() => props.visible, (visible) => {
 
 .diag-failure-item {
   padding: 10px;
-  background: var(--bg, #0d1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 12px;
 }
@@ -571,21 +571,21 @@ watch(() => props.visible, (visible) => {
 
 .diag-failure-model {
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .diag-failure-time {
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 .diag-failure-detail {
   display: flex;
   gap: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 .diag-failure-kind {
-  color: var(--danger, #f85149);
+  color: var(--danger);
   font-weight: 500;
 }
 
@@ -598,20 +598,20 @@ watch(() => props.visible, (visible) => {
 .diag-analysis {
   padding: 12px;
   background: rgba(248, 81, 73, 0.1);
-  border-left: 3px solid var(--danger, #f85149);
+  border-left: 3px solid var(--danger);
   border-radius: 4px;
   font-size: 13px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   line-height: 1.6;
 }
 
 .diag-recommendation {
   padding: 12px;
   background: rgba(88, 166, 255, 0.1);
-  border-left: 3px solid var(--accent, #58a6ff);
+  border-left: 3px solid var(--accent);
   border-radius: 4px;
   font-size: 13px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   line-height: 1.6;
 }
 
@@ -627,7 +627,7 @@ watch(() => props.visible, (visible) => {
 }
 
 .btn-primary {
-  background: var(--accent, #58a6ff);
+  background: var(--accent);
   color: #ffffff;
 }
 
@@ -641,13 +641,13 @@ watch(() => props.visible, (visible) => {
 }
 
 .btn-secondary {
-  background: var(--bg-subtle, #161b22);
-  color: var(--text, #e6edf3);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle);
+  color: var(--text);
+  border: 1px solid var(--border);
 }
 
 .btn-secondary:hover {
-  background: var(--bg, #0d1117);
-  border-color: var(--muted, #8b949e);
+  background: var(--bg);
+  border-color: var(--muted);
 }
 </style>

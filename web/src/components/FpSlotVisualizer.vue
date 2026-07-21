@@ -119,7 +119,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
 
 <style scoped>
 .fp-visualizer {
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px;
@@ -186,8 +186,8 @@ function isLongHeld(d: SlotDetail | null): boolean {
 }
 
 .fp-cell--occupied {
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  border-color: #4f46e5;
+  background: linear-gradient(135deg, var(--accent), var(--accent-h));
+  border-color: var(--accent-h);
   color: white;
 }
 .fp-cell--long {
@@ -197,8 +197,8 @@ function isLongHeld(d: SlotDetail | null): boolean {
 }
 .fp-cell--expired {
   background: rgba(239, 68, 68, 0.15);
-  border-color: var(--danger, #ef4444);
-  color: var(--danger, #ef4444);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .fp-cell-num {

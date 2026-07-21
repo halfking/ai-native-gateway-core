@@ -60,7 +60,7 @@ function openDialog(tool: ToolId) {
 }
 
 .tool-card:hover {
-  border-color: rgba(99, 102, 241, 0.4);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 .tool-card-header {

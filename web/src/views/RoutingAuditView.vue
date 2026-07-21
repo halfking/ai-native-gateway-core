@@ -223,13 +223,13 @@ onMounted(load)
   padding: 24px;
   max-width: 1400px;
   margin: 0 auto;
-  color: var(--text, #e6e6e6);
+  color: var(--text);
 }
 h1 { margin: 0 0 8px; font-size: 24px; }
 h2 {
   margin: 0 0 12px;
   font-size: 18px;
-  border-bottom: 1px solid var(--border, #2a2a2a);
+  border-bottom: 1px solid var(--border);
   padding-bottom: 8px;
 }
 .subtitle {
@@ -261,8 +261,8 @@ h2 {
   margin-top: 4px;
 }
 .card {
-  background: var(--card-bg, #1a1a1a);
-  border: 1px solid var(--border, #2a2a2a);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 20px;
   margin-bottom: 16px;

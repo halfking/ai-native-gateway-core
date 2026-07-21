@@ -195,7 +195,7 @@ onMounted(load)
 .data-table .num { text-align: right; }
 .data-table .strong { color: #e6edf3; font-weight: 600; }
 .data-table .empty { text-align: center; color: #8b949e; padding: 24px; }
-.code { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; padding: 2px 6px; background: #0f1117; border-radius: 4px; color: #818cf8; }
+.code { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; padding: 2px 6px; background: #0f1117; border-radius: 4px; color: var(--accent-h); }
 
 .cleanup-form { display: flex; flex-direction: column; gap: 12px; }
 .form-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -206,10 +206,10 @@ onMounted(load)
   padding: 6px 10px; background: #0f1117; border: 1px solid #30363d; border-radius: 6px;
   color: #e6edf3; font-size: 13px;
 }
-.field input:focus, .field select:focus { outline: none; border-color: #6366f1; }
+.field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
 .field .hint { font-size: 11px; color: #6b7280; }
 
-.preview-box { padding: 12px; background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 6px; }
+.preview-box { padding: 12px; background: color-mix(in srgb, var(--accent) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); border-radius: 6px; }
 .preview-row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 13px; }
 .preview-row .highlight { color: #fbbf24; font-weight: 600; }
 .preview-warn { margin-top: 8px; padding: 6px 10px; background: rgba(251, 191, 36, 0.1); border-left: 2px solid #fbbf24; color: #fbbf24; font-size: 12px; border-radius: 4px; }
@@ -218,8 +218,8 @@ onMounted(load)
 
 .btn { padding: 6px 14px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; cursor: pointer; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn-primary { background: #6366f1; color: #fff; }
-.btn-primary:hover:not(:disabled) { background: #818cf8; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-h); }
 .btn-danger { background: #ef4444; color: #fff; }
 .btn-danger:hover:not(:disabled) { background: #f87171; }
 .btn-ghost { background: transparent; border-color: #30363d; color: #e6edf3; }

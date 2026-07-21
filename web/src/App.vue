@@ -218,15 +218,15 @@ function handleChangePasswordSuccess() {
   align-items: center;
   justify-content: center;
   height: 100vh;
-  background: var(--bg-card, #161b22);
-  color: var(--text-secondary, #8b949e);
+  background: var(--bg-card);
+  color: var(--text-secondary);
   font-size: 13px;
 }
 .auth-loading-spinner {
   width: 32px;
   height: 32px;
-  border: 3px solid var(--border, #30363d);
-  border-top-color: var(--accent, #6366f1);
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: auth-spin 0.8s linear infinite;
   margin-bottom: 14px;
@@ -335,7 +335,7 @@ function handleChangePasswordSuccess() {
    * wide inside the 64px collapsed sidebar. Firefox uses the longhand
    * `scrollbar-*` properties; WebKit/Blink need the pseudo-elements. */
   scrollbar-width: thin;
-  scrollbar-color: rgba(99, 102, 241, 0.4) transparent;
+  scrollbar-color: color-mix(in srgb, var(--accent) 40%, transparent) transparent;
 }
 
 .sidebar-nav::-webkit-scrollbar {
@@ -347,13 +347,13 @@ function handleChangePasswordSuccess() {
 }
 
 .sidebar-nav::-webkit-scrollbar-thumb {
-  background: rgba(99, 102, 241, 0.4);
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
   border-radius: 4px;
   transition: background 0.15s;
 }
 
 .sidebar-nav::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.75);
+  background: color-mix(in srgb, var(--accent) 75%, transparent);
 }
 
 .nav-primary {
@@ -481,7 +481,7 @@ function handleChangePasswordSuccess() {
 }
 
 .nav-item.active {
-  background: rgba(99, 102, 241, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent-h);
 }
 
@@ -510,7 +510,7 @@ function handleChangePasswordSuccess() {
   padding: 8px 10px;
   margin-bottom: 4px;
   border-radius: 6px;
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   min-width: 0;
 }
 
@@ -693,7 +693,7 @@ function handleChangePasswordSuccess() {
 }
 
 .guest-nav a {
-  color: var(--muted, #5b6b82);
+  color: var(--muted);
   font-size: 13px;
   font-weight: 600;
   text-decoration: none;
@@ -702,7 +702,7 @@ function handleChangePasswordSuccess() {
 }
 
 .guest-nav a:hover {
-  color: var(--accent-h, #1e4fd6);
+  color: var(--accent-h);
 }
 
 .guest-brand {

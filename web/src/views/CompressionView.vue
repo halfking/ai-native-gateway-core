@@ -621,7 +621,7 @@ watch(activeTab, loadAll)
 .bar-track {
   flex: 1;
   height: 18px;
-  background: var(--bg-hover, #2a2a3e);
+  background: var(--bg-hover);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -634,7 +634,7 @@ watch(activeTab, loadAll)
 .strategy-count {
   width: 50px;
   flex-shrink: 0;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -652,7 +652,7 @@ watch(activeTab, loadAll)
   justify-content: space-between;
   padding-right: 4px;
   font-size: 9px;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   width: 32px;
   flex-shrink: 0;
 }
@@ -672,7 +672,7 @@ watch(activeTab, loadAll)
 .rate-bar {
   width: 100%;
   min-height: 1px;
-  background: var(--primary, #6366f1);
+  background: var(--primary);
   border-radius: 2px 2px 0 0;
   opacity: 0.8;
   transition: height 0.3s;
@@ -690,22 +690,22 @@ watch(activeTab, loadAll)
 .data-table th {
   text-align: left;
   padding: 8px 10px;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   font-weight: 500;
-  border-bottom: 1px solid var(--border, #333);
+  border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 .data-table td {
   padding: 8px 10px;
-  border-bottom: 1px solid var(--border, #333);
-  color: var(--text-primary, #e5e7eb);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
 }
 .session-row {
   cursor: pointer;
   transition: background 0.15s;
 }
 .session-row:hover {
-  background: var(--bg-hover, #2a2a3e);
+  background: var(--bg-hover);
 }
 .cell-session-id {
   font-family: monospace;
@@ -721,18 +721,18 @@ watch(activeTab, loadAll)
 }
 
 .saved-badge {
-  color: var(--success, #22c55e);
+  color: var(--success);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 .text-muted {
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
 }
 
 /* Current configuration chip bar */
 .current-config-bar {
-  background: var(--bg-card, #1e1e2e);
-  border: 1px solid var(--border, #333);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 12px;
   margin-bottom: 16px;
@@ -744,14 +744,14 @@ watch(activeTab, loadAll)
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   font-size: 13px;
   padding: 0;
   width: 100%;
   text-align: left;
 }
-.config-toggle:hover { color: var(--text-primary, #e5e7eb); }
-.config-toggle-label { font-weight: 600; color: var(--text-primary, #e5e7eb); }
+.config-toggle:hover { color: var(--text-primary); }
+.config-toggle-label { font-weight: 600; color: var(--text-primary); }
 .caret {
   font-size: 9px;
   transition: transform 0.2s;
@@ -770,14 +770,14 @@ watch(activeTab, loadAll)
   padding: 2px 10px;
   border-radius: 999px;
   font-size: 11px;
-  background: var(--bg-hover, #2a2a3e);
-  color: var(--text-primary, #e5e7eb);
-  border: 1px solid var(--border, #333);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
 }
 .chip-on { background: rgba(52,211,153,.15); color: #34d399; border-color: rgba(52,211,153,.3); }
 .chip-off { background: rgba(139,148,158,.15); color: #8b949e; border-color: rgba(139,148,158,.3); }
 .chip-item { display: flex; align-items: center; gap: 6px; }
-.chip-lbl { font-size: 11px; color: var(--text-secondary, #6b7280); }
+.chip-lbl { font-size: 11px; color: var(--text-secondary); }
 .code-chip { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pagination {
@@ -789,14 +789,14 @@ watch(activeTab, loadAll)
 }
 .page-info {
   font-size: 13px;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
 }
 
 .loading-hint,
 .empty-hint {
   text-align: center;
   padding: 32px;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
