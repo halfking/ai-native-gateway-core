@@ -53,7 +53,7 @@ func TestRouterPlanCandidates_FiltersDisabledRouteNodes(t *testing.T) {
 		{CredentialID: 200, ProviderID: 2, RawModel: "gpt-4", Tier: 1, Routable: true},
 	}
 
-	planned := router.PlanCandidates(candidates, nil, policy, nil)
+	planned := router.PlanCandidates(candidates, PlanContext{}, nil, policy, nil)
 	require.Len(t, planned, 1)
 	assert.Equal(t, 200, planned[0].CredentialID)
 }
@@ -86,7 +86,7 @@ func TestRouterPlanCandidates_FailsOpenWhenAllRouteNodesDisabled(t *testing.T) {
 		{CredentialID: 200, ProviderID: 2, RawModel: "gpt-4", Tier: 1, Routable: true},
 	}
 
-	planned := router.PlanCandidates(candidates, nil, policy, nil)
+	planned := router.PlanCandidates(candidates, PlanContext{}, nil, policy, nil)
 	require.Len(t, planned, 2)
 	assert.ElementsMatch(t, []int{100, 200}, []int{planned[0].CredentialID, planned[1].CredentialID})
 }
@@ -100,7 +100,7 @@ func TestRouterPlanCandidates_DeduplicatesSameCredentialModel(t *testing.T) {
 		{CredentialID: 23, ProviderID: 18, RawModel: "minimaxai/minimax-m3", Tier: 1, Routable: true},
 	}
 
-	planned := router.PlanCandidates(candidates, nil, policy, nil)
+	planned := router.PlanCandidates(candidates, PlanContext{}, nil, policy, nil)
 	require.Len(t, planned, 2)
 	assert.ElementsMatch(t, []int{21, 23}, []int{planned[0].CredentialID, planned[1].CredentialID})
 }
