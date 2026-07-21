@@ -41,4 +41,11 @@ export default {
     mainAria: 'メインナビゲーション',
     skip: 'メインコンテンツへスキップ',
   },
+
+  theme: {
+    switchToLight: '切到浅色',
+    switchToDark: '切到深色',
+    lightTitle: '浅色模式',
+    darkTitle: '深色模式',
+  },
 }

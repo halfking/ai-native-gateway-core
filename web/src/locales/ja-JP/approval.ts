@@ -61,10 +61,24 @@ export default {
       loadFailed: 'Failed to load',
       approveFailed: 'Approve failed',
       rejectFailed: 'Reject failed',
+
+      loadListFailed: '加载审批列表失败',
     },
     success: {
       approved: 'Approved',
       rejected: 'Rejected',
+    },
+
+    relativeTime: {
+      justNow: '刚刚',
+      minutesAgo: '{n} 分钟前',
+      hoursAgo: '{n} 小时前',
+      daysAgo: '{n} 天前',
+    },
+
+    confirm: {
+      approve: '确认批准此请求？\n请求 ID: {id}',
+      rejectPrompt: '请输入拒绝原因：',
     },
   },
   detail: {

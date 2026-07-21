@@ -40,6 +40,8 @@ export default {
     hint1: 'トレースは計装が有効な場合のみ生成されます (デフォルト: オン)',
     hint2: '10 分以内に完了したリクエスト: まだ Redis にあります',
     hint3: 'PostgreSQL にフラッシュ済み: フォールバックで表示',
+
+    hint4: '如果此处显示为空，可能原因：请求未完成 flush、或该请求确实未触发 trace 埋点',
   },
   aiPrompt: {
     button: '🤖 AI プロンプト生成',

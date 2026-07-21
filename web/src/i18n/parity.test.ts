@@ -189,16 +189,14 @@ describe('i18n parity gate', () => {
     expect(failures, failures.join('\n\n')).toEqual([])
   })
 
-  it('every locale resolves zh-CN leaf keys through the configured English fallback', () => {
+  it('every locale explicitly defines all zh-CN leaf keys', () => {
     const sourceKeys = collectLeafKeys(loadLocale(SOURCE_LOCALE))
-    const fallbackKeys = collectLeafKeys(loadLocale('en-US'))
     const failures: string[] = []
 
     for (const locale of LOCALES) {
-      if (locale === SOURCE_LOCALE || locale === 'en-US') continue
+      if (locale === SOURCE_LOCALE) continue
       const localeKeys = collectLeafKeys(loadLocale(locale))
-      const effectiveKeys = new Set([...fallbackKeys, ...localeKeys])
-      const missing = missingKeys(sourceKeys, effectiveKeys)
+      const missing = missingKeys(sourceKeys, localeKeys)
       if (missing.length > 0) {
         failures.push(formatMissingBlock(locale, '(index)', missing))
       }
@@ -224,10 +222,9 @@ describe('i18n parity gate', () => {
       }
       const sourceKeys = collectLeafKeys(loadModuleFile(SOURCE_LOCALE, module))
       if (sourceKeys.size === 0) continue
-      const fallbackKeys = collectLeafKeys(loadModuleFile('en-US', module))
 
       for (const locale of LOCALES) {
-        if (locale === SOURCE_LOCALE || locale === 'en-US') continue
+        if (locale === SOURCE_LOCALE) continue
         const localeModulePath = join(LOCALES_DIR, locale, `${module}.ts`)
         if (!existsSync(localeModulePath)) {
           failures.push(
@@ -237,8 +234,7 @@ describe('i18n parity gate', () => {
           continue
         }
         const localeKeys = collectLeafKeys(loadModuleFile(locale, module))
-        const effectiveKeys = new Set([...fallbackKeys, ...localeKeys])
-        const missing = missingKeys(sourceKeys, effectiveKeys)
+        const missing = missingKeys(sourceKeys, localeKeys)
         if (missing.length > 0) {
           failures.push(formatMissingBlock(locale, module, missing))
         }

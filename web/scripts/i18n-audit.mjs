@@ -98,7 +98,9 @@ async function main() {
   const code = `
     import { audit, formatReport } from ${JSON.stringify(pathToFileURL(scannerTs).href)}
     const r = audit(${JSON.stringify(opts.src)}, ${JSON.stringify(opts.locales)}, { sourceLocale: ${JSON.stringify(opts.sourceLocale)} })
-    if (process.argv.includes('--json')) {
+    if (process.argv.includes('--strict-summary')) {
+      process.stdout.write(JSON.stringify({ missingCount: r.missing.length }))
+    } else if (process.argv.includes('--json')) {
       process.stdout.write(JSON.stringify(r, null, 2))
     } else if (process.argv.includes('--missing-only')) {
       // 仅 missing
@@ -136,20 +138,31 @@ async function main() {
 
   // strict: re-run via JSON to read counts (only if user requested --strict)
   if (opts.strict || opts.outFile) {
-    const jsonArgs = [tmpFile, '--json', ...process.argv.slice(2).filter(a => !a.startsWith('--out='))]
-    if (nodeMajor >= 22) jsonArgs.unshift('--experimental-strip-types', '--no-warnings')
-    const r2 = spawnSync(process.execPath, jsonArgs, { cwd: ROOT })
+    const commonArgs = process.argv.slice(2).filter(a => !a.startsWith('--out='))
+    const reportArgs = [tmpFile, '--json', ...commonArgs]
+    const summaryArgs = [tmpFile, '--strict-summary', ...commonArgs]
+    if (nodeMajor >= 22) {
+      reportArgs.unshift('--experimental-strip-types', '--no-warnings')
+      summaryArgs.unshift('--experimental-strip-types', '--no-warnings')
+    }
+    const report = spawnSync(process.execPath, reportArgs, {
+      cwd: ROOT,
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    const summary = opts.strict
+      ? spawnSync(process.execPath, summaryArgs, { cwd: ROOT })
+      : null
     if (opts.outFile) {
       const dir = dirname(opts.outFile)
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-      writeFileSync(opts.outFile, r2.stdout)
+      writeFileSync(opts.outFile, report.stdout)
       console.error(`\nwrote report to ${opts.outFile}`)
     }
     if (opts.strict) {
       try {
-        const data = JSON.parse(r2.stdout.toString())
-        if (data.missing.length > 0) {
-          console.error(`\n❌ --strict: ${data.missing.length} missing keys (exit 1)`)
+        const data = JSON.parse(summary.stdout.toString())
+        if (data.missingCount > 0) {
+          console.error(`\n❌ --strict: ${data.missingCount} missing keys (exit 1)`)
           process.exit(1)
         }
       } catch (e) {

@@ -61,6 +61,20 @@ export default {
     opsProductEntry: "Product Entry",
     tenantLicense: "マイライセンス",
     tenantAutoUpdate: "マイアップデート"
+,
+    updateActivate: '更新与激活',
+
+    licenseActivate: '许可激活',
+
+    siteInfo: '站点信息',
+
+    licenseStatus: '许可状态',
+
+    licenseAgreement: '用户许可协议',
+
+    licenseOffline: '离线激活',
+
+    telemetryScope: '数据采集范围',
   },
 
   mainAria: 'メインナビゲーション',
@@ -72,4 +86,6 @@ export default {
   publicLicense: 'ライセンス',
   publicAgreement: '利用規約',
   publicSupport: 'サポート',
+
+  skip: '跳到主要内容',
 }

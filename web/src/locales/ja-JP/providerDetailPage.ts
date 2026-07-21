@@ -37,4 +37,20 @@ export default {
   loadFailed: '読み込み失敗',
   operationFailed: '操作失敗',
   diagFailed: '診断失敗',
+
+  quality: {
+    loading: '加载品质数据…',
+    noData: '暂无质量数据。品质画像由后台定时计算，稍后刷新或触发探测后再看。',
+    overallScore: '综合评分',
+    providerAggregate: '供应商级聚合',
+    modelDetails: '模型质量明细',
+    model: '模型',
+    overallQuality: '综合质量',
+    grade: '等级',
+    availability: '可用性',
+    performance: '性能',
+    stability: '稳定性',
+    costEfficiency: '成本效益',
+    updatedAt: '更新时间',
+  },
 }

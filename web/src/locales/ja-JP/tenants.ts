@@ -249,6 +249,10 @@ export default {
     onboardingKeysHint: "でキーを発行して呼び出しを開始。",
     loadFailed: "読み込み失敗",
     detailLoadFailed: "詳細読み込み失敗"
+,
+    statCreditsConsumed: '总积分消耗',
+
+    statCreditsConsumedSub: '近 {n} 天 · 按定价 × token 计算',
   },
   maasUsageView: {
     consumeLabel: "消費クレジット",
@@ -419,5 +423,13 @@ export default {
         revoked: '失効',
       },
     },
+  },
+
+  status: {
+    active: '正常',
+    trial: '试用',
+    suspended: '暂停',
+    expired: '过期',
+    disabled: '已禁用',
   },
 }
