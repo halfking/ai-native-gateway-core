@@ -49,6 +49,9 @@ func (c *CryptoConfig) VerifyLicense(signed *SignedLicense) (*License, error) {
 	if signed == nil {
 		return nil, errors.New("nil signed license")
 	}
+	if c == nil || c.PublicKey == nil {
+		return nil, errors.New("crypto config or public key not initialized (LICENSE_DISABLED=true)")
+	}
 
 	hash := sha256.Sum256(signed.Data)
 	if err := rsa.VerifyPKCS1v15(c.PublicKey, crypto.SHA256, hash[:], signed.Signature); err != nil {
