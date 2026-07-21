@@ -154,7 +154,7 @@ defineExpose({ open, close })
 
 .drawer {
   width: min(800px, 90vw);
-  background: var(--card, #1c2128);
+  background: var(--card);
   display: flex;
   flex-direction: column;
   box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
@@ -165,7 +165,7 @@ defineExpose({ open, close })
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border);
   gap: 12px;
 }
 
@@ -176,10 +176,10 @@ defineExpose({ open, close })
 
 .drawer-tab {
   padding: 8px 16px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  color: var(--text);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -187,23 +187,23 @@ defineExpose({ open, close })
 }
 
 .drawer-tab:hover {
-  background: var(--bg-subtle, #161b22);
-  border-color: var(--accent, #6366f1);
+  background: var(--bg-subtle);
+  border-color: var(--accent);
 }
 
 .drawer-tab--active {
   background: rgba(99, 102, 241, 0.15);
-  border-color: var(--accent, #6366f1);
-  color: var(--accent, #6366f1);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .drawer-close {
   width: 32px;
   height: 32px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  color: var(--text);
   font-size: 18px;
   cursor: pointer;
   display: flex;
@@ -214,9 +214,9 @@ defineExpose({ open, close })
 }
 
 .drawer-close:hover {
-  background: var(--bg-subtle, #161b22);
-  border-color: var(--danger, #f85149);
-  color: var(--danger, #f85149);
+  background: var(--bg-subtle);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .drawer-body {
@@ -237,13 +237,13 @@ defineExpose({ open, close })
 .drawer-loading {
   padding: 40px 20px;
   text-align: center;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 .drawer-empty {
   padding: 40px 20px;
   text-align: center;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 13px;
 }
 
@@ -256,7 +256,7 @@ defineExpose({ open, close })
 .stats-table thead {
   position: sticky;
   top: 0;
-  background: var(--card, #1c2128);
+  background: var(--card);
   z-index: 1;
 }
 
@@ -264,24 +264,24 @@ defineExpose({ open, close })
   padding: 10px 12px;
   text-align: left;
   font-weight: 600;
-  color: var(--text-secondary, #8b949e);
-  border-bottom: 2px solid var(--border, #30363d);
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border);
 }
 
 .stats-table td {
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border, #30363d);
-  color: var(--text, #e6edf3);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
 }
 
 .stats-table tbody tr:hover {
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
 }
 
 .mono-sm {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
   padding: 2px 6px;
   border-radius: 3px;
 }

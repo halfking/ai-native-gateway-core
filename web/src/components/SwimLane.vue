@@ -283,7 +283,7 @@ watch(
   justify-content: center;
   padding: 8px 10px;
   background: linear-gradient(180deg, #1a1f27 0%, #161b22 100%);
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 8px;
   gap: 5px;
   overflow-wrap: break-word;
@@ -293,7 +293,7 @@ watch(
 .swim-lane__name {
   font-size: 11px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   line-height: 1.4;
   /* 强制断词 + 折行；禁用单行省略，避免长名称被截断显示成 "..." */
   word-break: break-word;
@@ -312,16 +312,16 @@ watch(
 }
 
 .swim-lane__stat {
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-weight: 500;
 }
 
 .swim-lane__stat--success {
-  color: var(--success, #3fb950);
+  color: var(--success);
 }
 
 .swim-lane__stat--failure {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 
 .swim-lane__diagnose {
@@ -330,9 +330,9 @@ watch(
   gap: 4px;
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid var(--border, #30363d);
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
   font-size: 10px;
   font-weight: 600;
   cursor: pointer;
@@ -342,8 +342,8 @@ watch(
 }
 
 .swim-lane__diagnose:hover:not(:disabled) {
-  border-color: var(--accent, #6366f1);
-  background: var(--bg-subtle, #161b22);
+  border-color: var(--accent);
+  background: var(--bg-subtle);
 }
 
 .swim-lane__diagnose:disabled,
@@ -356,25 +356,25 @@ watch(
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--text-secondary, #8b949e);
+  background: var(--text-secondary);
 }
 
 .swim-lane__diagnose--active {
   border-color: rgba(248, 81, 73, 0.5);
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 .swim-lane__diagnose--active .swim-lane__diagnose-dot {
-  background: var(--danger, #f85149);
+  background: var(--danger);
   box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.18);
   animation: pulse-dot 1.4s ease-in-out infinite;
 }
 
 .swim-lane__diagnose--recovering {
   border-color: rgba(210, 153, 34, 0.5);
-  color: var(--warning, #d29922);
+  color: var(--warning);
 }
 .swim-lane__diagnose--recovering .swim-lane__diagnose-dot {
-  background: var(--warning, #d29922);
+  background: var(--warning);
 }
 
 .swim-lane__diagnose-label {
@@ -397,9 +397,9 @@ watch(
   padding: 2px 6px;
   font-size: 10px;
   font-weight: 600;
-  color: var(--danger, #f85149);
+  color: var(--danger);
   background: transparent;
-  border: 1px solid var(--danger, #f85149);
+  border: 1px solid var(--danger);
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -407,7 +407,7 @@ watch(
 }
 
 .swim-lane__emergency-btn:hover {
-  background: color-mix(in srgb, var(--danger, #f85149) 15%, transparent);
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
 }
 
 .swim-lane__emergency-btn:active {
@@ -430,7 +430,7 @@ watch(
       rgba(255, 255, 255, 0.035) calc(80px + 6px)
     ),
     linear-gradient(180deg, #14181f 0%, #161b22 100%);
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px 10px;
   overflow: hidden;
