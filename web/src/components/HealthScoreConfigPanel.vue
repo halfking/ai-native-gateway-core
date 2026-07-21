@@ -15,7 +15,7 @@ const { t } = useI18n()
       <article><strong>{{ t('sessions.config.healthMetricCompliance') }}</strong><span>{{ t('sessions.config.healthMetricComplianceHint') }}</span></article>
       <article><strong>{{ t('sessions.config.healthMetricOutcome') }}</strong><span>{{ t('sessions.config.healthMetricOutcomeHint') }}</span></article>
     </section>
-    <div class="health-footer"><span>{{ t('sessions.config.healthSource') }}</span><a href="/admin/session-analytics">{{ t('sessions.config.healthViewAnalytics') }}</a></div>
+    <div class="health-footer"><span>{{ t('sessions.config.healthSource') }}</span><a href="/plugins/ai-session-manager/sessions">{{ t('sessions.config.healthViewAnalytics') }}</a></div>
   </div>
 </template>
 

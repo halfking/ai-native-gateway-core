@@ -1,4 +1,6 @@
-// sessions.ts — SessionListView / SessionCompareView / SessionAuditView / SessionManagementView strings.
+// sessions.ts — Session strings (SessionListView / SessionCompareView /
+// SessionAuditView / SessionManagementView migrated to ai-session-manager plugin;
+// strings retained for plugin i18n merge).
 // Namespaces: list / compare / audit / management / config.
 export default {
   list: {
