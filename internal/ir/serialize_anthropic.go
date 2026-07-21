@@ -43,6 +43,10 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		out["system"] = system
 	}
 
+	if err := validateAnthropicMedia(req); err != nil {
+		return nil, err
+	}
+
 	// Messages
 	messages := serializeAnthropicMessages(req, req.TargetProvider, req.Model)
 	if len(messages) > 0 {
@@ -372,7 +376,26 @@ func serializeAnthropicMessageContent(msg Message, targetProvider string, modelN
 	return result
 }
 
-// serializeAnthropicContentBlock converts an IR ContentBlock to Anthropic format.
+func validateAnthropicMedia(req *InternalRequest) error {
+	for _, msg := range req.Messages {
+		for _, block := range msg.Content {
+			switch block.Type {
+			case "audio", "input_audio", "video":
+				return fmt.Errorf("unsupported_modality: Anthropic Messages cannot represent %s content", block.Type)
+			case "image":
+				if block.Image == nil {
+					return fmt.Errorf("invalid image content: source is missing")
+				}
+			case "document":
+				if block.Document == nil || block.Document.Source == nil {
+					return fmt.Errorf("invalid document content: source is missing")
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
 func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, modelName string) map[string]any {
@@ -481,35 +504,35 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 			}
 		}
 
-		case "redacted_thinking":
-			out["thinking"] = block.RedactedThinking
+	case "redacted_thinking":
+		out["thinking"] = block.RedactedThinking
 
-		case "document":
-			// Serialize Anthropic document block
-			if block.Document != nil {
-				if block.Document.Source != nil {
-					source := map[string]any{
-						"type": block.Document.Source.Type,
-					}
-					if block.Document.Source.MediaType != "" {
-						source["media_type"] = block.Document.Source.MediaType
-					}
-					if block.Document.Source.Type == "base64" && block.Document.Source.Data != "" {
-						source["data"] = block.Document.Source.Data
-					} else if block.Document.Source.Type == "url" && block.Document.Source.Data != "" {
-						source["url"] = block.Document.Source.Data
-					}
-					out["source"] = source
+	case "document":
+		// Serialize Anthropic document block
+		if block.Document != nil {
+			if block.Document.Source != nil {
+				source := map[string]any{
+					"type": block.Document.Source.Type,
 				}
-				if block.Document.Title != "" {
-					out["title"] = block.Document.Title
+				if block.Document.Source.MediaType != "" {
+					source["media_type"] = block.Document.Source.MediaType
 				}
-				if block.Document.Context != "" {
-					out["context"] = block.Document.Context
+				if block.Document.Source.Type == "base64" && block.Document.Source.Data != "" {
+					source["data"] = block.Document.Source.Data
+				} else if block.Document.Source.Type == "url" && block.Document.Source.Data != "" {
+					source["url"] = block.Document.Source.Data
 				}
+				out["source"] = source
 			}
+			if block.Document.Title != "" {
+				out["title"] = block.Document.Title
+			}
+			if block.Document.Context != "" {
+				out["context"] = block.Document.Context
+			}
+		}
 
-		default:
+	default:
 		if raw, ok := block.RawContent.(string); ok && raw != "" {
 			var original map[string]any
 			if err := json.Unmarshal([]byte(raw), &original); err == nil {
