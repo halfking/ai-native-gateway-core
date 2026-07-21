@@ -8,11 +8,21 @@ import (
 )
 
 func TestAdminDominatesProbe(t *testing.T) {
-	cur := api.NodeView{Generation: 10, SrcPriority: api.SourcePriorityProbe, Available: true}
-	ev := api.RequestOutcome{Success: false, ErrorKind: "timeout"}
+	// Admin hold sets generation=11, source_priority=admin (40), available=false.
+	// A request outcome should be REJECTED — manual_hold blocks the write.
+	cur := api.NodeView{
+		Generation:   11,
+		SrcPriority:  api.SourcePriorityAdmin,
+		Available:    false,
+		HealthStatus: "auth_failed",
+	}
+	ev := api.RequestOutcome{Success: true, RequestID: "r-1"} // request would otherwise succeed
 	dec := Apply(ev, cur)
-	if !dec.Accepted {
-		t.Fatalf("admin action must still be accepted despite failed request")
+	if dec.Accepted {
+		t.Fatalf("request must not override admin hold; accepted=%v reason=%q", dec.Accepted, dec.Reason)
+	}
+	if cur.Available {
+		t.Fatalf("cur.Available must remain false after rejected Apply (pure-function check)")
 	}
 }
 
