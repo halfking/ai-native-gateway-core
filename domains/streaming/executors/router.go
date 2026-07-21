@@ -105,15 +105,18 @@ func (r *Router) PlanCandidates(
 	stickyCredentialID *int,
 	policy *provider.Policy,
 	egressPreference []string,
-) []provider.Candidate {
+) ([]provider.Candidate, string) {
 	candidates = deduplicateCandidates(candidates)
 	if len(candidates) == 0 {
-		return nil
+		return nil, "v1-legacy"
 	}
+
+	// Default to v1-legacy routing source
+	routingSource := "v1-legacy"
 
 	// 新增：优先使用URSM路由（如果可用）
 	if r.URSM != nil && r.URSM.Enabled() {
-		return r.planWithURSM(candidates, stickyCredentialID, policy, egressPreference)
+		return r.planWithURSM(candidates, stickyCredentialID, policy, egressPreference), routingSource
 	}
 
 	// 2026-07-21, URSM v2 plan T20 (convergence): 在 mode=authoritative 模式下
@@ -126,6 +129,7 @@ func (r *Router) PlanCandidates(
 	// 因此金丝雀闸门 (CanaryPercent / 租户 / 模型 白名单) 不会阻拦 FilterAndScore。
 	// 但仍把 tenant/canonical 透传到 CandidateSeed 以便将来 v2 评分按租户定价。
 	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
+		routingSource = "v2-authoritative"
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 		if r.URSMv2.Ready(ctx) {
@@ -164,9 +168,15 @@ func (r *Router) PlanCandidates(
 				}
 				candidates = filtered
 				if len(candidates) == 0 {
-					return nil
+					return nil, routingSource
 				}
+			} else {
+				// v2 call failed, fall back to v1
+				routingSource = "v1-legacy"
 			}
+		} else {
+			// v2 not ready, fall back to v1
+			routingSource = "v1-legacy"
 		}
 	}
 
@@ -230,7 +240,7 @@ func (r *Router) PlanCandidates(
 					"degraded_count", len(degradedCandidates),
 					"reasons", reasonCounts,
 				)
-				return degradedCandidates
+				return degradedCandidates, routingSource
 			}
 		}
 
@@ -239,7 +249,7 @@ func (r *Router) PlanCandidates(
 			"reasons", reasonCounts,
 			"sample", sampleReasons,
 		)
-		return nil
+		return nil, routingSource
 	}
 
 	available = r.filterHealthyNodes(available)
@@ -273,6 +283,7 @@ func (r *Router) PlanCandidates(
 	// Shadow mode: compute v2 ordering for diff metrics, but do NOT use it in production.
 	// The diff reveals whether v2 would have chosen a different ordering or filtered different candidates.
 	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeShadow {
+		routingSource = "v2-shadow"
 		v2Ordered := r.planWithURSMv2(ordered, planCtx)
 		if v2Ordered != nil {
 			legacyIDs := make([]string, len(ordered))
@@ -314,13 +325,16 @@ func (r *Router) PlanCandidates(
 		if mode == ursmv2api.ModeCanary || mode == ursmv2api.ModeAuthoritative {
 			if mode == ursmv2api.ModeAuthoritative || r.URSMv2.ShouldUseV2(planCtx.TenantID, planCtx.CanonicalModel, planCtx.RequestID) {
 				if v2Ordered := r.planWithURSMv2(ordered, planCtx); v2Ordered != nil {
+					if mode == ursmv2api.ModeCanary {
+						routingSource = "v2-canary"
+					}
 					ordered = v2Ordered
 				}
 			}
 		}
 	}
 
-	return ordered
+	return ordered, routingSource
 }
 
 // planWithURSMv2 asks the v2 Manager to re-rank the input candidates. It

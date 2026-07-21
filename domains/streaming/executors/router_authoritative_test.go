@@ -14,7 +14,7 @@ import (
 // only assert that the baseline contract holds.
 func TestPlanCandidatesReturnsEmptyWhenV2MarksUnavailable(t *testing.T) {
 	r := NewRouter(nil, nil)
-	out := r.PlanCandidates(
+	out, _ := r.PlanCandidates(
 		[]provider.Candidate{
 			{CredentialID: 1, ProviderID: 1, RawModel: "m", Tier: 1, Routable: true},
 		},

@@ -71,7 +71,7 @@ func TestRouterShadowDiffEmitsMetric(t *testing.T) {
 		metricBefore := getCounterValue(t, ursmShadowDiffTotal)
 
 		// Call PlanCandidates - shadow mode should compute diff but not alter production ordering
-		out := r.PlanCandidates(candidates, planCtx, nil, &provider.Policy{}, nil)
+		out, _ := r.PlanCandidates(candidates, planCtx, nil, &provider.Policy{}, nil)
 
 		// Verify production ordering is unchanged (shadow mode doesn't modify it)
 		if len(out) != 2 {
@@ -124,7 +124,7 @@ func TestRouterShadowDiffEmitsMetric(t *testing.T) {
 		metricBefore := getCounterValue(t, ursmShadowDiffTotal)
 
 		// Call PlanCandidates in canary mode (not shadow)
-		out := r.PlanCandidates(candidates, planCtx, nil, &provider.Policy{}, nil)
+		out, _ := r.PlanCandidates(candidates, planCtx, nil, &provider.Policy{}, nil)
 
 		if len(out) != 2 {
 			t.Fatalf("expected 2 candidates, got %d", len(out))
