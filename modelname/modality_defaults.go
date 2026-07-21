@@ -92,6 +92,10 @@ var modalityRules = []modalityRule{
 	{"gemini-2.0-flash-exp", "multimodal", 0},
 	{"gemini-2.0-flash", "multimodal", 0},
 	{"gemini-2.0-pro", "multimodal", 0},
+	{"gemini-2.5-flash", "multimodal", 0},
+	{"gemini-2.5-flash-image", "multimodal", 0}, // image generation/editing variant, accepts image input
+	{"gemini-2.5-pro", "multimodal", 0},
+	{"gemini-3-flash", "multimodal", 0},
 
 	// Meta Llama - Vision (specific patterns first)
 	{"llama-3.2-11b-vision", "vision", 1},

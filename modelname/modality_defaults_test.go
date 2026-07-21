@@ -46,6 +46,10 @@ func TestInferModality(t *testing.T) {
 		// Google Gemini - Multimodal
 		{"gemini-1.5-pro", "gemini-1.5-pro", "multimodal"},
 		{"gemini-2.0-flash", "gemini-2.0-flash-exp", "multimodal"},
+		{"gemini-2.5-flash", "gemini-2.5-flash", "multimodal"},
+		{"gemini-2.5-flash-image", "gemini-2.5-flash-image", "multimodal"}, // image variant (Phase 4 T-21 gap fix)
+		{"gemini-2.5-pro", "gemini-2.5-pro", "multimodal"},
+		{"gemini-3-flash", "gemini-3-flash", "multimodal"},
 		{"gemini-ultra", "gemini-ultra", "multimodal"},
 
 		// Google Gemini - Vision
