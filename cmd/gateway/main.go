@@ -507,48 +507,56 @@ func main() {
 	}
 
 	// URSM v2 persist writer (T15+L6): snapshot v2 Redis state to DB periodically
+	// 2026-07-22: Only run in canary/full modes. Shadow mode never calls RecordRequest,
+	// so Redis will be empty and persist writer just wastes CPU logging "collect empty".
 	var persistWriterStop context.CancelFunc
 	if ursmV2Mgr != nil && dbConn != nil && dbConn.Enabled() {
 		v2Cfg := ursmv2.LoadFromEnv()
-		persistWriter := persist.New(redisClientForCache.Client(), v2Cfg.RedisKeyPrefix, dbConn.Pool())
-		persistInterval := time.Duration(v2Cfg.PersistIntervalSec) * time.Second
-		if persistInterval == 0 {
-			persistInterval = 60 * time.Second // default 1 minute
-		}
-
-		// 2026-07-22: 使用可取消的 context 支持 graceful shutdown
-		persistCtx, cancel := context.WithCancel(context.Background())
-		persistWriterStop = cancel
-
-		go func() {
-			defer cancel()
-			ticker := time.NewTicker(persistInterval)
-			defer ticker.Stop()
-
-			for {
-				select {
-				case <-ticker.C:
-					ctx, timeoutCancel := context.WithTimeout(persistCtx, 30*time.Second)
-					rows, err := persistWriter.Collect(ctx)
-					if err != nil {
-						slog.Warn("ursm.v2: persist collect failed", "error", err)
-						timeoutCancel()
-						continue
-					}
-					if err := persistWriter.Flush(ctx, rows); err != nil {
-						slog.Warn("ursm.v2: persist flush failed", "error", err)
-					} else {
-						slog.Debug("ursm.v2: persist flushed", "rows", len(rows))
-					}
-					timeoutCancel()
-
-				case <-persistCtx.Done():
-					slog.Info("ursm.v2: persist writer stopped")
-					return
-				}
+		
+		// Skip persist writer in shadow mode (no data to persist)
+		if v2Cfg.Mode != "shadow" {
+			persistWriter := persist.New(redisClientForCache.Client(), v2Cfg.RedisKeyPrefix, dbConn.Pool())
+			persistInterval := time.Duration(v2Cfg.PersistIntervalSec) * time.Second
+			if persistInterval == 0 {
+				persistInterval = 60 * time.Second // default 1 minute
 			}
-		}()
-		slog.Info("ursm.v2: persist writer started", "interval_sec", persistInterval.Seconds())
+
+			// 2026-07-22: 使用可取消的 context 支持 graceful shutdown
+			persistCtx, cancel := context.WithCancel(context.Background())
+			persistWriterStop = cancel
+
+			go func() {
+				defer cancel()
+				ticker := time.NewTicker(persistInterval)
+				defer ticker.Stop()
+
+				for {
+					select {
+					case <-ticker.C:
+						ctx, timeoutCancel := context.WithTimeout(persistCtx, 30*time.Second)
+						rows, err := persistWriter.Collect(ctx)
+						if err != nil {
+							slog.Warn("ursm.v2: persist collect failed", "error", err)
+							timeoutCancel()
+							continue
+						}
+						if err := persistWriter.Flush(ctx, rows); err != nil {
+							slog.Warn("ursm.v2: persist flush failed", "error", err)
+						} else {
+							slog.Debug("ursm.v2: persist flushed", "rows", len(rows))
+						}
+						timeoutCancel()
+
+					case <-persistCtx.Done():
+						slog.Info("ursm.v2: persist writer stopped")
+						return
+					}
+				}
+			}()
+			slog.Info("ursm.v2: persist writer started", "interval_sec", persistInterval.Seconds())
+		} else {
+			slog.Info("ursm.v2: persist writer disabled in shadow mode")
+		}
 	}
 
 	fpSlots := credentialfpslot.New(credentialfpslot.Config{
