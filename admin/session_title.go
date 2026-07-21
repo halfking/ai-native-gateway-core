@@ -119,12 +119,15 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 	limitArg := "$" + strconv.Itoa(len(args))
 	rows, err := h.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
-		       rl.request_body::text, rl.response_body::text,
+		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
+		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
+		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
 		`+where+`
-		ORDER BY ts ASC
+		ORDER BY rl.ts ASC
 		LIMIT `+limitArg+`
 	`, args...)
 	if err != nil {

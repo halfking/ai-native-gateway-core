@@ -178,14 +178,18 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 	// Query all request_logs for this session, ordered by time
 	query := `
 		SELECT 
-			request_id, request_body, outbound_body, response_body,
-			compression_strategy, compression_meta, 
-			outbound_msg_count, outbound_token_est,
-			client_model, outbound_model,
-			ts, provider_id
-		FROM request_logs
-		WHERE gw_session_id = $1 AND tenant_id = $2
-		ORDER BY ts ASC
+			rl.request_id,
+			COALESCE(rb.request_body, rl.request_body) AS request_body,
+			rl.outbound_body, COALESCE(rb.response_body, rl.response_body) AS response_body,
+			rl.compression_strategy, rl.compression_meta, 
+			rl.outbound_msg_count, rl.outbound_token_est,
+			rl.client_model, rl.outbound_model,
+			rl.ts, rl.provider_id
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
+		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+		ORDER BY rl.ts ASC
 		LIMIT 500
 	`
 

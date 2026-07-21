@@ -1,12 +1,13 @@
 // Package admin — 会话跨主机迁移：导出/导入/拉取 API
 //
 // 三个端点（挂载在 /api/admin/session-export 下，由 main.go 路由）：
-//   GET  /api/admin/session-export?id=<gw_session_id>&tenant=<tenant_id>
-//        导出完整会话迁移包（消息流 + 压缩链 + 附件 + 摘要 + resume brief）
-//   POST /api/admin/session-export/import   body = 迁移包 JSON
-//        导入迁移包到 staging（session_packs 表），返回 pack_id
-//   GET  /api/admin/session-export/pack?id=<pack_id>&tenant=<tenant_id>
-//        按 pack_id 拉取已导入的迁移包（供目标主机 manager/plugin 拉取）
+//
+//	GET  /api/admin/session-export?id=<gw_session_id>&tenant=<tenant_id>
+//	     导出完整会话迁移包（消息流 + 压缩链 + 附件 + 摘要 + resume brief）
+//	POST /api/admin/session-export/import   body = 迁移包 JSON
+//	     导入迁移包到 staging（session_packs 表），返回 pack_id
+//	GET  /api/admin/session-export/pack?id=<pack_id>&tenant=<tenant_id>
+//	     按 pack_id 拉取已导入的迁移包（供目标主机 manager/plugin 拉取）
 //
 // 设计要点：
 //   - 复用 request_logs + request_logs_bodies + 压缩链列（已天然落库）
@@ -32,16 +33,16 @@ import (
 // ── 迁移包 wire format（与 Pocket model.SessionResumeBrief + opencode-plugin MigrationPack 对齐）──
 
 type SessionExport struct {
-	SessionMeta SessionExportMeta   `json:"session_meta"`
-	ResumeBrief SessionResumeBrief  `json:"resume_brief"`
-	Messages    []ExportMessage     `json:"messages"`
-	Attachments []ExportAttachment  `json:"attachments"`
-	Summary     string              `json:"summary,omitempty"`
-	ExportedAt  string              `json:"exported_at"`
+	SessionMeta SessionExportMeta  `json:"session_meta"`
+	ResumeBrief SessionResumeBrief `json:"resume_brief"`
+	Messages    []ExportMessage    `json:"messages"`
+	Attachments []ExportAttachment `json:"attachments"`
+	Summary     string             `json:"summary,omitempty"`
+	ExportedAt  string             `json:"exported_at"`
 }
 
 type SessionExportMeta struct {
-	ID        string `json:"id"`        // gw_session_id
+	ID        string `json:"id"` // gw_session_id
 	Title     string `json:"title,omitempty"`
 	Directory string `json:"directory,omitempty"` // 工作目录（跨主机路径重映射用）
 	Instance  string `json:"instance,omitempty"`  // 来源实例标识
@@ -60,22 +61,22 @@ type SessionResumeBrief struct {
 }
 
 type ExportMessage struct {
-	Turn               int                    `json:"turn"`
-	Role               string                 `json:"role"`
-	Content            string                 `json:"content"`
-	ParentRequestID    string                 `json:"parent_request_id,omitempty"`    // 压缩链还原
-	CompressionReason  string                 `json:"compression_reason,omitempty"`   // mode_1_auto_threshold 等
-	CompressionStrategy string                `json:"compression_strategy,omitempty"` // mechanical_trim/memora_l1_inject/llm_summary
-	CompressionMeta    map[string]any         `json:"compression_meta,omitempty"`     // tokens_before/after 等
-	CreatedAt          string                 `json:"created_at,omitempty"`
+	Turn                int            `json:"turn"`
+	Role                string         `json:"role"`
+	Content             string         `json:"content"`
+	ParentRequestID     string         `json:"parent_request_id,omitempty"`    // 压缩链还原
+	CompressionReason   string         `json:"compression_reason,omitempty"`   // mode_1_auto_threshold 等
+	CompressionStrategy string         `json:"compression_strategy,omitempty"` // mechanical_trim/memora_l1_inject/llm_summary
+	CompressionMeta     map[string]any `json:"compression_meta,omitempty"`     // tokens_before/after 等
+	CreatedAt           string         `json:"created_at,omitempty"`
 }
 
 type ExportAttachment struct {
-	Type   string `json:"type"`             // file/diff/report
-	Name   string `json:"name"`
-	Path   string `json:"path,omitempty"`   // gateway attachment path（Pocket 据此上传 CloudReve 回填 URL）
-	Size   int64  `json:"size,omitempty"`
-	Hash   string `json:"hash,omitempty"`
+	Type string `json:"type"` // file/diff/report
+	Name string `json:"name"`
+	Path string `json:"path,omitempty"` // gateway attachment path（Pocket 据此上传 CloudReve 回填 URL）
+	Size int64  `json:"size,omitempty"`
+	Hash string `json:"hash,omitempty"`
 }
 
 // SessionExportAPI 提供会话导出/导入/拉取端点。
@@ -157,8 +158,8 @@ func (api *SessionExportAPI) buildExport(ctx context.Context, sessionID, tenantI
 				rl.attachments, rl.created_at,
 				COALESCE(rb.request_body, rl.request_body) AS request_body,
 				COALESCE(rb.response_body, rl.response_body) AS response_body
-			FROM request_logs rl
-			LEFT JOIN request_logs_bodies rb ON rb.request_id = rl.id
+			FROM request_logs_with_current_month rl
+			LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id AND rb.ts = rl.ts
 			WHERE rl.gw_session_id = $1
 			ORDER BY rl.created_at ASC
 		`, sessionID)
@@ -172,10 +173,10 @@ func (api *SessionExportAPI) buildExport(ctx context.Context, sessionID, tenantI
 		for rows.Next() {
 			var (
 				id, role, parentID, reason, strategy string
-				compMeta                              []byte
-				attachments                           []byte
-				createdAt                             time.Time
-				reqBody, respBody                     *string
+				compMeta                             []byte
+				attachments                          []byte
+				createdAt                            time.Time
+				reqBody, respBody                    *string
 			)
 			if err := rows.Scan(&id, &role, &parentID, &reason, &strategy, &compMeta, &attachments, &createdAt, &reqBody, &respBody); err != nil {
 				continue
