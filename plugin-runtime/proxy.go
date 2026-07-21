@@ -11,6 +11,11 @@ import (
 // Path values: pluginId, rest (rest is the path under web/; empty or trailing "/"
 // serves index.html). Rejects path traversal.
 //
+// For P12+ installs, plugins live under <pluginId>/<version>/ with a
+// <pluginId>/current symlink pointing at the active version. This handler
+// resolves <pluginId>/current/web first (os.Stat follows the symlink) and falls
+// back to <pluginId>/web for P0-P8 legacy flat installs, mirroring ScanPlugins.
+//
 // Files are streamed with http.ServeContent (rather than http.ServeFile) so the
 // handler controls status codes and avoids ServeFile's built-in index.html and
 // directory redirects, which would otherwise turn 404s and clean index serves
@@ -28,7 +33,10 @@ func PluginStaticHandler(pluginsDir string) http.Handler {
 		if rest == "" || strings.HasSuffix(rest, "/") {
 			rest = rest + "index.html"
 		}
-		webDir := filepath.Join(root, pluginID, "web")
+		webDir := filepath.Join(root, pluginID, "current", "web")
+		if _, err := os.Stat(webDir); err != nil {
+			webDir = filepath.Join(root, pluginID, "web")
+		}
 		target := filepath.Clean(filepath.Join(webDir, rest))
 		// Ensure target stays inside webDir.
 		if !strings.HasPrefix(target, webDir+string(filepath.Separator)) && target != webDir {
