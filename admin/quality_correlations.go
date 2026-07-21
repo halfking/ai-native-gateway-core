@@ -166,19 +166,21 @@ func buildBreakdownQuery(by string) (string, error) {
 			END`
 	case "tools":
 		// Count tools in the JSONB request_body
+		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN jsonb_array_length(COALESCE(request_body->'tools', '[]'::jsonb)) = 0
+				WHEN jsonb_array_length(COALESCE(COALESCE(rb.request_body, rl.request_body)->'tools', '[]'::jsonb)) = 0
 					THEN '0'
-				WHEN jsonb_array_length(COALESCE(request_body->'tools', '[]'::jsonb)) = 1
+				WHEN jsonb_array_length(COALESCE(COALESCE(rb.request_body, rl.request_body)->'tools', '[]'::jsonb)) = 1
 					THEN '1'
 				ELSE '2+'
 			END`
 	case "images":
 		// Count images in messages
+		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN request_body->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
+				WHEN COALESCE(rb.request_body, rl.request_body)->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
 					THEN 'has_image'
 				ELSE 'no_image'
 			END`
@@ -186,9 +188,10 @@ func buildBreakdownQuery(by string) (string, error) {
 		// Check for triple-backtick in any message. We use
 		// chr(96) three times to avoid backticks inside the
 		// raw string literal (which would terminate it).
+		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN position(chr(96) || chr(96) || chr(96) in request_body::text) > 0
+				WHEN position(chr(96) || chr(96) || chr(96) in COALESCE(rb.request_body, rl.request_body)::text) > 0
 					THEN 'has_code'
 				ELSE 'no_code'
 			END`
@@ -211,16 +214,22 @@ func buildBreakdownQuery(by string) (string, error) {
 		return "", nil // unreachable: caller already validated
 	}
 
+	// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
+	// to access JSONB fields in request_body (moved to separate table in #10).
+	// This affects "tools", "images", and "code_block" dimensions which need
+	// to read the full request_body JSONB structure.
 	return `
 		SELECT ` + bucketExpr + ` AS bucket,
 		       COUNT(*) AS samples,
-		       AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success_rate,
-		       COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
-		       AVG(quality_score) AS avg_quality,
-		       COALESCE(AVG(cost_usd), 0) AS avg_cost
-		FROM request_logs
-		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - INTERVAL '1 day' * $1
+		       AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END) AS success_rate,
+		       COALESCE(AVG(rl.latency_ms), 0)::int AS avg_latency,
+		       AVG(rl.quality_score) AS avg_quality,
+		       COALESCE(AVG(rl.cost_usd), 0) AS avg_cost
+		FROM request_logs rl
+		LEFT JOIN request_logs_bodies rb 
+		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		WHERE rl.is_auto_request = TRUE
+		  AND rl.ts >= NOW() - INTERVAL '1 day' * $1
 		GROUP BY 1
 		ORDER BY 1
 	`, nil
