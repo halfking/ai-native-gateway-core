@@ -25,7 +25,7 @@ func (m *MultiReporter) Report(ctx context.Context, payload []byte) error {
 			continue
 		}
 		if err := r.Report(ctx, payload); err != nil {
-			// 2026-07-22: 诊断 22P02 来源 - 记录每个 reporter 的错误
+			// 2026-07-22: 诊断 22P02 来源 - Debug 级别避免噪音，但保留诊断能力
 			reporterType := "unknown"
 			switch r.(type) {
 			case *HTTPReporter:
@@ -33,7 +33,7 @@ func (m *MultiReporter) Report(ctx context.Context, payload []byte) error {
 			case *LocalDBReporter:
 				reporterType = "local_db"
 			}
-			slog.Warn("multi_reporter: nested reporter failed",
+			slog.Debug("multi_reporter: nested reporter failed",
 				"index", i,
 				"type", reporterType,
 				"error", err)
