@@ -1,6 +1,7 @@
 package licensing
 
 import (
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -58,7 +59,15 @@ type bootstrapStatus struct {
 }
 
 func (h *BootstrapHandler) handleStatus(c echo.Context) error {
-	instanceID := strings.TrimSpace(c.QueryParam("instance_id"))
+	requested := strings.TrimSpace(c.QueryParam("instance_id"))
+	instanceID := resolveLocalInstanceID()
+	if requested != "" && requested != instanceID {
+		// Caller-supplied IDs are ignored: one physical machine always has
+		// exactly one local instance ID. Honoring a foreign ID would let a
+		// second user squat this seat.
+		slog.Warn("bootstrap status received foreign instance_id; using local",
+			"local", instanceID, "remote", requested)
+	}
 	fp, _ := GenerateFingerprint()
 	hash := ""
 	if fp != nil {
@@ -113,10 +122,12 @@ func (h *BootstrapHandler) handleStatus(c echo.Context) error {
 const timeRFC3339 = "2006-01-02T15:04:05Z07:00"
 
 func (h *BootstrapHandler) handleFingerprint(c echo.Context) error {
+	instanceID := resolveLocalInstanceID()
 	fp, err := GenerateFingerprint()
 	if err != nil || fp == nil {
 		return c.JSON(http.StatusOK, map[string]any{
 			"hardware_hash":   "",
+			"instance_id":     instanceID,
 			"os":              "",
 			"arch":            "",
 			"network_summary": primaryIPv4(),
@@ -125,6 +136,7 @@ func (h *BootstrapHandler) handleFingerprint(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"hardware_hash":   fp.Hash(),
+		"instance_id":     instanceID,
 		"os":              fp.OS,
 		"arch":            fp.Arch,
 		"network_summary": primaryIPv4(),
@@ -142,8 +154,15 @@ func (h *BootstrapHandler) handleActivate(c echo.Context) error {
 	if err := c.Bind(&input); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 	}
-	if input.InstanceID == "" || input.LicenseKey == "" || input.HardwareHash == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "instance_id, license_key, hardware_hash required"})
+	// One physical machine == one instance ID. Always derive from server state,
+	// ignore any client-supplied value to prevent license squating.
+	instanceID := resolveLocalInstanceID()
+	if strings.TrimSpace(input.InstanceID) != "" && input.InstanceID != instanceID {
+		slog.Warn("bootstrap activate received foreign instance_id; using local",
+			"local", instanceID, "remote", input.InstanceID)
+	}
+	if input.LicenseKey == "" || input.HardwareHash == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "license_key and hardware_hash required"})
 	}
 	wantOnline := h.centerURL != "" && h.probeCenter()
 	if input.Online != nil {
@@ -154,14 +173,14 @@ func (h *BootstrapHandler) handleActivate(c echo.Context) error {
 	}
 	if wantOnline {
 		ok, body, err := bootstrapPostJSON(h.centerURL+"/maintain-api/public/license/activate", map[string]string{
-			"instance_id": input.InstanceID, "license_key": input.LicenseKey,
+			"instance_id": instanceID, "license_key": input.LicenseKey,
 			"hardware_hash": input.HardwareHash, "device_name": input.DeviceName,
 		})
 		if err == nil && ok {
 			result["activated"] = true
 			result["mode"] = "online"
 			result["maintain"] = body
-			h.startCenterAgent(input.InstanceID, input.LicenseKey, input.HardwareHash)
+			h.startCenterAgent(instanceID, input.LicenseKey, input.HardwareHash)
 			result["registered"] = true
 			return c.JSON(http.StatusOK, result)
 		}
@@ -175,7 +194,7 @@ func (h *BootstrapHandler) handleActivate(c echo.Context) error {
 	}
 	resp, err := h.Activator.Activate(c.Request().Context(), &ActivationRequest{
 		LicenseKey: input.LicenseKey, HardwareHash: input.HardwareHash,
-		InstanceID: input.InstanceID, DeviceName: input.DeviceName,
+		InstanceID: instanceID, DeviceName: input.DeviceName,
 	})
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{
@@ -186,7 +205,7 @@ func (h *BootstrapHandler) handleActivate(c echo.Context) error {
 	result["mode"] = "local"
 	result["activation"] = resp
 	if h.probeCenter() {
-		h.startCenterAgent(input.InstanceID, input.LicenseKey, input.HardwareHash)
+		h.startCenterAgent(instanceID, input.LicenseKey, input.HardwareHash)
 		result["registered"] = true
 		result["center_online"] = true
 	}
@@ -203,8 +222,14 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 	if err := c.Bind(&input); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 	}
-	if input.InstanceID == "" || input.HardwareHash == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "instance_id and hardware_hash required"})
+	// One physical machine == one instance ID. Always derive from server state.
+	instanceID := resolveLocalInstanceID()
+	if strings.TrimSpace(input.InstanceID) != "" && input.InstanceID != instanceID {
+		slog.Warn("bootstrap activate-quick received foreign instance_id; using local",
+			"local", instanceID, "remote", input.InstanceID)
+	}
+	if input.HardwareHash == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "hardware_hash required"})
 	}
 	if h.centerURL == "" || !h.probeCenter() {
 		return c.JSON(http.StatusServiceUnavailable, map[string]any{
@@ -213,7 +238,7 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 		})
 	}
 	ok, body, err := bootstrapPostJSON(h.centerURL+"/maintain-api/public/license/issue", map[string]string{
-		"instance_id": input.InstanceID, "hardware_hash": input.HardwareHash, "device_name": input.DeviceName,
+		"instance_id": instanceID, "hardware_hash": input.HardwareHash, "device_name": input.DeviceName,
 	})
 	if err != nil || !ok {
 		return c.JSON(http.StatusBadRequest, map[string]any{
@@ -238,12 +263,13 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 	if h.Activator != nil && licenseKey != "" {
 		_, _ = h.Activator.Activate(c.Request().Context(), &ActivationRequest{
 			LicenseKey: licenseKey, HardwareHash: input.HardwareHash,
-			InstanceID: input.InstanceID, DeviceName: input.DeviceName,
+			InstanceID: instanceID, DeviceName: input.DeviceName,
 		})
 	}
-	h.startCenterAgent(input.InstanceID, licenseKey, input.HardwareHash)
+	h.startCenterAgent(instanceID, licenseKey, input.HardwareHash)
 	return c.JSON(http.StatusOK, map[string]any{
 		"activated": true, "mode": "quick", "center_online": true, "registered": true,
+		"instance_id": instanceID,
 		"license_key": maskBootstrapLicenseKey(licenseKey), "message": "已同意并完成激活",
 	})
 }

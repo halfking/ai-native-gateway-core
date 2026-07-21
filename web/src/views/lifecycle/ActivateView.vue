@@ -10,6 +10,7 @@ import {
 import {
   ensureInstanceId,
   resolveHardwareHash,
+  setInstanceId,
 } from '../../utils/deviceFingerprint'
 
 const AGREEMENT_VERSION = '2026-07-17'
@@ -26,17 +27,24 @@ const error = ref('')
 const status = ref<LicenseStatus | null>(null)
 const showAgreement = ref(false)
 const pendingActivation = ref(false)
+const agreementAccepted = ref(!!localStorage.getItem(AGREEMENT_STORAGE_KEY))
 
 async function ensureHash() {
   if (hardwareHash.value) return hardwareHash.value
   let serverHash = ''
+  let serverInstanceId = ''
   try {
     const fp = await bootstrapApi.fingerprint()
     serverHash = fp.hardware_hash || ''
+    serverInstanceId = fp.instance_id || ''
   } catch {
     /* fall back to client hash */
   }
   hardwareHash.value = await resolveHardwareHash(serverHash)
+  if (serverInstanceId) {
+    setInstanceId(serverInstanceId)
+    instanceId.value = serverInstanceId
+  }
   return hardwareHash.value
 }
 
@@ -45,7 +53,11 @@ async function loadStatus() {
   checking.value = true
   try {
     const hash = await ensureHash()
-    const boot = await bootstrapApi.status(instanceId.value.trim(), licenseKey.value.trim() || undefined)
+    const boot = await bootstrapApi.status(licenseKey.value.trim() || undefined)
+    if (boot.instance_id) {
+      setInstanceId(boot.instance_id)
+      instanceId.value = boot.instance_id
+    }
     if (boot.activated) {
       status.value = {
         state: 'active',
@@ -68,11 +80,17 @@ async function loadStatus() {
 }
 
 async function activate() {
-  if (!instanceId.value.trim() || !licenseKey.value.trim()) {
-    error.value = '请输入实例 ID 和 License Key。'
+  if (!instanceId.value.trim()) {
+    error.value = '实例 ID 尚未生成，请等待自动采集后重试。'
     return
   }
-  if (!localStorage.getItem(AGREEMENT_STORAGE_KEY)) {
+  if (!licenseKey.value.trim()) {
+    error.value = '请输入 License Key。'
+    return
+  }
+  // 强制：协议未同意 → 弹窗 → 取消 → 阻断。
+  agreementAccepted.value = !!localStorage.getItem(AGREEMENT_STORAGE_KEY)
+  if (!agreementAccepted.value) {
     pendingActivation.value = true
     showAgreement.value = true
     return
@@ -81,8 +99,7 @@ async function activate() {
 }
 
 async function performActivation() {
-  localStorage.setItem('maintain_instance_id', instanceId.value.trim())
-  localStorage.setItem('llmgw_instance_id', instanceId.value.trim())
+  setInstanceId(instanceId.value.trim())
   loading.value = true
   error.value = ''
   message.value = ''
@@ -110,7 +127,6 @@ async function performActivation() {
       ? 'License 已激活，并已尝试向中心注册。'
       : 'License 已激活（本地/离线模式可用）。'
 
-    // Best-effort center register — never block local success.
     try {
       const reg = await bootstrapApi.registerCenter({
         instance_id: instanceId.value.trim(),
@@ -133,16 +149,24 @@ async function performActivation() {
 }
 
 function onAgreed() {
+  agreementAccepted.value = true
+  localStorage.setItem(AGREEMENT_STORAGE_KEY, new Date().toISOString())
   showAgreement.value = false
   if (pendingActivation.value) {
-    performActivation()
     pendingActivation.value = false
+    void performActivation()
   }
 }
 
 function onCancelled() {
   showAgreement.value = false
+  // 取消即视为拒绝：清掉残留。
+  try {
+    localStorage.removeItem(AGREEMENT_STORAGE_KEY)
+  } catch { /* ignore */ }
+  agreementAccepted.value = false
   pendingActivation.value = false
+  error.value = '未同意用户协议，无法继续激活。'
 }
 
 onMounted(async () => {
@@ -188,14 +212,14 @@ onMounted(async () => {
       <el-card shadow="never">
         <template #header>在线激活</template>
         <el-form label-position="top" @submit.prevent="activate">
-          <el-form-item label="实例 ID">
-            <el-input v-model="instanceId" placeholder="gw-prod-01" @change="loadStatus" />
+          <el-form-item label="实例 ID（一机一实例，自动锁定）">
+            <el-input :model-value="instanceId" readonly class="mono-input" />
           </el-form-item>
           <el-form-item label="License Key">
             <el-input v-model="licenseKey" placeholder="LIC-••••••••" />
           </el-form-item>
           <el-form-item label="硬件哈希">
-            <el-input :model-value="hardwareHash" readonly placeholder="自动采集中…" />
+            <el-input :model-value="hardwareHash" readonly placeholder="自动采集中…" class="mono-input" />
           </el-form-item>
           <el-form-item label="设备名称（可选）">
             <el-input v-model="deviceName" placeholder="生产网关 01" />
@@ -243,5 +267,7 @@ onMounted(async () => {
 .mb { margin-bottom: 14px; }
 .ml { margin-left: 8px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.mono-input :deep(.el-input__inner),
+.mono-input input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .muted { color: #5b6b82; font-size: 13px; }
 </style>
