@@ -200,10 +200,10 @@ function extractMessagesFromBody(body: unknown): Record<string, unknown>[] {
 
 function roleColor(role: string): string {
   switch (role) {
-    case 'user': return 'var(--info, #3b82f6)'
-    case 'assistant': return 'var(--success, #22c55e)'
-    case 'system': return 'var(--warning, #f59e0b)'
-    case 'tool': return 'var(--muted, #94a3b8)'
+    case 'user': return 'var(--info)'
+    case 'assistant': return 'var(--success)'
+    case 'system': return 'var(--warning)'
+    case 'tool': return 'var(--muted)'
     default: return 'inherit'
   }
 }
@@ -523,15 +523,15 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
 .btn-trace {
   margin-left: auto;
   background: transparent;
-  border: 1px solid var(--border, #30363d);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--border);
+  color: var(--text);
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
 .btn-trace:hover {
-  border-color: var(--accent, #6366f1);
-  color: var(--accent-h, #818cf8);
+  border-color: var(--accent);
+  color: var(--accent-h);
 }
 .tab-badge {
   display: inline-block;
@@ -541,7 +541,7 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   height: 16px;
   line-height: 16px;
   border-radius: 8px;
-  background: var(--accent, #3b82f6);
+  background: var(--accent);
   color: #fff;
   font-size: 10px;
   text-align: center;
@@ -588,10 +588,10 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   gap: 12px;
 }
 .attachment-card {
-  border: 1px solid var(--border, #333);
+  border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
-  background: var(--surface-primary, #16213e);
+  background: var(--surface-primary);
   display: flex;
   flex-direction: column;
 }
@@ -618,7 +618,7 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   font-weight: 700;
   color: var(--muted);
   padding: 16px 20px;
-  border: 1px dashed var(--border, #333);
+  border: 1px dashed var(--border);
   border-radius: 6px;
 }
 .attachment-meta {
@@ -634,7 +634,7 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   gap: 8px;
 }
 .attachment-type {
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
   font-weight: 600;
 }
 .attachment-size {
@@ -642,7 +642,7 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
   font-variant-numeric: tabular-nums;
 }
 .attachment-line2 {
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
