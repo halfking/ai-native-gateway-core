@@ -124,6 +124,61 @@ func (m *Manager) SetReady(ctx context.Context, ready bool) error {
 	return m.recovery.SetReady(ctx, ready)
 }
 
+// CandidateSeed is the input to FilterAndScore. The router hands one
+// seed per candidate it is considering; the manager resolves each seed
+// against the v2 store to produce a NodeView. Fields beyond
+// CredentialID and RawModel are forwarded by the executor — the v2
+// scoring step (Task 14) will use PriceIn/PriceOut/BillingMode/Trust
+// and BaseURLMs to compute the final score.
+type CandidateSeed struct {
+	ProviderID   int
+	CredentialID int
+	RawModel     string
+	Canonical    string
+	TenantID     string
+	PriceIn      float64
+	PriceOut     float64
+	BillingMode  string
+	Trust        float64
+	BaseURLMs    int
+}
+
+// FilterAndScore resolves candidate seeds against the v2 store.
+//
+// Behavior:
+//   - nil receiver → error (defensive),
+//   - not ready → error (the v2 pipeline is not authoritative yet),
+//   - ModeOff → returns (nil, nil) — off mode skips work,
+//   - non-off + ready → calls store.PipelineNodeViews and returns the
+//     views. Missing Redis keys default Available=false (T4 contract),
+//     which is the protection-rejection invariant: a candidate with
+//     no observed telemetry is treated as not available.
+//
+// Pipeline errors are wrapped with %w so callers can errors.Is /
+// errors.As against store.ErrRedisUnavailable. Scoring logic lands in
+// Task 14; T12 only establishes the read path with the ready gate.
+func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]api.NodeView, error) {
+	if m == nil {
+		return nil, fmt.Errorf("ursm.v2: nil manager")
+	}
+	if !m.Ready(ctx) {
+		return nil, fmt.Errorf("ursm.v2: not ready")
+	}
+	if m.Mode() == api.ModeOff {
+		return nil, nil
+	}
+	queries := make([]store.NodeQuery, 0, len(seeds))
+	for _, s := range seeds {
+		queries = append(queries, store.NodeQuery{CredentialID: s.CredentialID, RawModel: s.RawModel})
+	}
+	views, err := m.store.PipelineNodeViews(ctx, m.cfg.RedisKeyPrefix, queries)
+	if err != nil {
+		return nil, fmt.Errorf("ursm.v2: pipeline: %w", err)
+	}
+	// 简化：缺失 key = available=false；评分后续 Task 14 接入
+	return views, nil
+}
+
 // RecordRequest is the executor sidecar entry point. It is a no-op
 // when:
 //
