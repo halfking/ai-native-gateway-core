@@ -69,7 +69,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"      //nolint:depguard // URSM v2 wiring (T20)
-	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist"     //nolint:depguard // URSM v2 persist writer (L6)
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
@@ -260,85 +259,92 @@ func main() {
 	// ── License enforcement (2026-07-12) ─────────────────────────────
 	// Verify license at startup. Failure enters restricted mode (warn only).
 	//
+	// LICENSE_DISABLED=true bypasses all license checks (for internal deploys)
 	// LICENSE_MODE controls offline vs online verification:
 	//   - "offline" (M1): runs OfflineVerificationDaemon (6h cron), no heartbeat
 	//   - "online" (default): runs StartTokenRefreshDaemon for token refresh
-	licenseMode := os.Getenv("LICENSE_MODE")
-	if licenseMode == "" {
-		licenseMode = "online"
-	}
 
-	if licenseMode == "offline" {
-		// M1 offline mode: verify license.dat locally, no network calls
-		slog.Info("license mode: offline (M1)", "interval", "6h", "heartbeat", "disabled")
-
-		// Initial verification at startup
-		if err := licensing.EnforceAtStartup(
-			"/var/lib/kx-gateway/license.dat",
-			"/var/lib/kx-gateway/server.pub",
-			"/var/lib/kx-gateway",
-		); err != nil {
-			slog.Warn("license verification failed, entering community mode", "error", err)
-			if enterErr := licensing.EnterCommunityMode(); enterErr != nil {
-				slog.Error("failed to enter community mode", "error", enterErr)
-			}
-		} else {
-			slog.Info("license verification successful")
-		}
-
-		// Start offline verification daemon (6h interval)
-		go licensing.OfflineVerificationDaemon(
-			context.Background(),
-			licensing.DefaultOfflineVerificationInterval,
-			"/var/lib/kx-gateway/license.dat",
-			"/var/lib/kx-gateway/server.pub",
-			"/var/lib/kx-gateway",
-		)
-		slog.Info("offline verification daemon started", "interval", "6h")
+	if os.Getenv("LICENSE_DISABLED") == "true" {
+		slog.Warn("license enforcement DISABLED via LICENSE_DISABLED=true")
+		// Skip all license checks, gRestrictedMode stays false
 	} else {
-		// Online mode: verify and start token refresh daemon
-		if err := licensing.EnforceAtStartup(
-			"/var/lib/kx-gateway/license.dat",
-			"/var/lib/kx-gateway/server.pub",
-			"/var/lib/kx-gateway",
-		); err != nil {
-			slog.Warn("license enforcement failed, entering restricted mode", "error", err)
-			// 2026-07-21: 设置全局受限模式标志，router 注册阶段会据此
-			// 启用 licensing.RestrictedModeMiddleware 阻止非白名单请求。
-			gRestrictedMode = true
-		} else {
-			slog.Info("license verification successful")
+		licenseMode := os.Getenv("LICENSE_MODE")
+		if licenseMode == "" {
+			licenseMode = "online"
 		}
 
-		// Token refresh daemon (online mode only)
-		if masterURL := os.Getenv("LICENSE_AUTHORITY_URL"); masterURL != "" {
-			homeDir, _ := os.UserHomeDir()
-			tokenDir := filepath.Join(homeDir, ".kx-gateway")
-			_ = tokenDir // 保留以兼容后续逻辑
+		if licenseMode == "offline" {
+			// M1 offline mode: verify license.dat locally, no network calls
+			slog.Info("license mode: offline (M1)", "interval", "6h", "heartbeat", "disabled")
 
-			// 2026-07-21: 启用 token 自动续期守护进程。
-			// - 首次延迟 1 小时（避免启动风暴）
-			// - 之后每 6 天执行一次刷新
-			// - 失败不中断，自动按 BackoffConfig 退避
-			// - 守护进程使用独立 context，与主进程生命周期解耦
-			//   （关闭时由 daemon 内部的 ticker.Stop 自动回收）。
-			refreshTokenPath := filepath.Join(tokenDir, "refresh_token")
-			instanceTokenPath := filepath.Join(tokenDir, "instance_token")
-			daemonCtx, daemonCancel := context.WithCancel(context.Background())
-			defer daemonCancel() // 进程退出时通知守护进程退出
-			go licensing.StartTokenRefreshDaemon(
-				daemonCtx,
-				masterURL,
-				refreshTokenPath,
-				instanceTokenPath,
-				6*24*time.Hour, // 518400 秒 = 6 天
+			// Initial verification at startup
+			if err := licensing.EnforceAtStartup(
+				"/var/lib/kx-gateway/license.dat",
+				"/var/lib/kx-gateway/server.pub",
+				"/var/lib/kx-gateway",
+			); err != nil {
+				slog.Warn("license verification failed, entering community mode", "error", err)
+				if enterErr := licensing.EnterCommunityMode(); enterErr != nil {
+					slog.Error("failed to enter community mode", "error", enterErr)
+				}
+			} else {
+				slog.Info("license verification successful")
+			}
+
+			// Start offline verification daemon (6h interval)
+			go licensing.OfflineVerificationDaemon(
+				context.Background(),
+				licensing.DefaultOfflineVerificationInterval,
+				"/var/lib/kx-gateway/license.dat",
+				"/var/lib/kx-gateway/server.pub",
+				"/var/lib/kx-gateway",
 			)
-			slog.Info("token refresh daemon started",
-				"master_url", masterURL,
-				"interval", "6d",
-				"initial_delay", "1h")
+			slog.Info("offline verification daemon started", "interval", "6h")
 		} else {
-			slog.Info("token refresh daemon disabled (LICENSE_AUTHORITY_URL not set)")
+			// Online mode: verify and start token refresh daemon
+			if err := licensing.EnforceAtStartup(
+				"/var/lib/kx-gateway/license.dat",
+				"/var/lib/kx-gateway/server.pub",
+				"/var/lib/kx-gateway",
+			); err != nil {
+				slog.Warn("license enforcement failed, entering restricted mode", "error", err)
+				// 2026-07-21: 设置全局受限模式标志，router 注册阶段会据此
+				// 启用 licensing.RestrictedModeMiddleware 阻止非白名单请求。
+				gRestrictedMode = true
+			} else {
+				slog.Info("license verification successful")
+			}
+
+			// Token refresh daemon (online mode only)
+			if masterURL := os.Getenv("LICENSE_AUTHORITY_URL"); masterURL != "" {
+				homeDir, _ := os.UserHomeDir()
+				tokenDir := filepath.Join(homeDir, ".kx-gateway")
+				_ = tokenDir // 保留以兼容后续逻辑
+
+				// 2026-07-21: 启用 token 自动续期守护进程。
+				// - 首次延迟 1 小时（避免启动风暴）
+				// - 之后每 6 天执行一次刷新
+				// - 失败不中断，自动按 BackoffConfig 退避
+				// - 守护进程使用独立 context，与主进程生命周期解耦
+				//   （关闭时由 daemon 内部的 ticker.Stop 自动回收）。
+				refreshTokenPath := filepath.Join(tokenDir, "refresh_token")
+				instanceTokenPath := filepath.Join(tokenDir, "instance_token")
+				daemonCtx, daemonCancel := context.WithCancel(context.Background())
+				defer daemonCancel() // 进程退出时通知守护进程退出
+				go licensing.StartTokenRefreshDaemon(
+					daemonCtx,
+					masterURL,
+					refreshTokenPath,
+					instanceTokenPath,
+					6*24*time.Hour, // 518400 秒 = 6 天
+				)
+				slog.Info("token refresh daemon started",
+					"master_url", masterURL,
+					"interval", "6d",
+					"initial_delay", "1h")
+			} else {
+				slog.Info("token refresh daemon disabled (LICENSE_AUTHORITY_URL not set)")
+			}
 		}
 	}
 
@@ -503,36 +509,6 @@ func main() {
 			"ready", ursmV2Mgr.Ready(context.Background()))
 	} else {
 		slog.Info("ursm.v2 manager disabled (no redis client)")
-	}
-
-	// URSM v2 persist writer (T15+L6): snapshot v2 Redis state to DB periodically
-	if ursmV2Mgr != nil && dbConn != nil && dbConn.Enabled() {
-		v2Cfg := ursmv2.LoadFromEnv()
-		persistWriter := persist.New(redisClientForCache.Client(), v2Cfg.RedisKeyPrefix, dbConn.Pool())
-		persistInterval := time.Duration(v2Cfg.PersistIntervalSec) * time.Second
-		if persistInterval == 0 {
-			persistInterval = 60 * time.Second // default 1 minute
-		}
-		go func() {
-			ticker := time.NewTicker(persistInterval)
-			defer ticker.Stop()
-			for range ticker.C {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				rows, err := persistWriter.Collect(ctx)
-				if err != nil {
-					slog.Warn("ursm.v2: persist collect failed", "error", err)
-					cancel()
-					continue
-				}
-				if err := persistWriter.Flush(ctx, rows); err != nil {
-					slog.Warn("ursm.v2: persist flush failed", "error", err)
-				} else {
-					slog.Debug("ursm.v2: persist flushed", "rows", len(rows))
-				}
-				cancel()
-			}
-		}()
-		slog.Info("ursm.v2: persist writer started", "interval_sec", persistInterval.Seconds())
 	}
 
 	fpSlots := credentialfpslot.New(credentialfpslot.Config{
@@ -2950,20 +2926,17 @@ func main() {
 	// pluginsDir is unset (sup == nil).
 	maintainURL := os.Getenv("LLM_GATEWAY_MAINTAIN_URL")
 	var installer pluginInstaller
-	var catalogClient *pluginruntime.MaintainCatalogClient // P12+poll: hoisted so PollLoop can reuse it
-	var concreteInstaller *pluginruntime.Installer         // poll: concrete type for PluginUpgrader interface
 	if maintainURL != "" && sup != nil {
-		catalogClient = pluginruntime.NewMaintainCatalogClient(
+		catalogClient := pluginruntime.NewMaintainCatalogClient(
 			maintainURL, runtime.GOOS, runtime.GOARCH, Version(),
 		)
-		concreteInstaller = pluginruntime.NewInstaller(pluginruntime.InstallerConfig{
+		installer = pluginruntime.NewInstaller(pluginruntime.InstallerConfig{
 			PluginsDir:    pluginsDir,
 			Client:        catalogClient,
 			Supervisor:    sup,
 			Registry:      pluginRegistry,
 			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
-		installer = concreteInstaller
 		slog.Info("plugin installer enabled", "maintain_url", maintainURL, "platform", runtime.GOOS, "arch", runtime.GOARCH)
 	} else {
 		slog.Info("plugin installer disabled", "maintain_url_set", maintainURL != "", "supervisor_set", sup != nil)
@@ -2972,14 +2945,6 @@ func main() {
 		makePluginInstallHandler(installer),
 		dbConn.Pool(), cfg.SecretKey,
 	))
-
-	// Plugin poll loop: auto-upgrade installed plugins when maintain publishes
-	// a newer compatible version. Env-gated (default off); only starts when
-	// LLM_GATEWAY_PLUGIN_POLL_INTERVAL is a positive duration AND the installer
-	// is wired (maintainURL + pluginsDir set). Stops on gateway shutdown.
-	if pollLoop := wirePluginPollLoop(catalogClient, concreteInstaller, sup, Version()); pollLoop != nil {
-		defer pollLoop.Stop()
-	}
 
 	// canonical API for plugin processes (signed context, not admin cookie).
 	// Reuses admin.HandleSessionAnalyticsList under a tenant-scoped AuthContext.
