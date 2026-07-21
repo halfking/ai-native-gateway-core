@@ -36,16 +36,16 @@ const { t } = useI18n()
 <style scoped>
 .pub-page {
   --pub-max: 960px;
-  --pub-accent: #6366f1;
-  --pub-bg: #0f1117;
-  --pub-panel: #1a1d27;
-  --pub-border: #2a2d3a;
-  --pub-text: #e8eaed;
-  --pub-muted: #94a3b8;
+  --pub-accent: var(--accent);
+  --pub-bg: var(--bg);
+  --pub-panel: var(--card);
+  --pub-border: var(--border);
+  --pub-text: var(--text);
+  --pub-muted: var(--muted);
   min-height: calc(100vh - 69px);
   padding: 1.25rem 1rem 2rem;
   background:
-    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(99, 102, 241, 0.14), transparent),
+    radial-gradient(ellipse 80% 50% at 50% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent),
     var(--pub-bg);
   color: var(--pub-text);
 }
