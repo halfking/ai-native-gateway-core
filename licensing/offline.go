@@ -159,6 +159,10 @@ func (om *OfflineManager) ImportSignedRequest(ctx context.Context, b64Signed str
 }
 
 func (om *OfflineManager) VerifyOfflineLicense(ctx context.Context, b64SignedLicense string) (*License, error) {
+	if om.crypto == nil {
+		return nil, errors.New("crypto config not initialized (LICENSE_DISABLED=true)")
+	}
+
 	signedLicense, err := UnmarshalFromBase64(b64SignedLicense)
 	if err != nil {
 		return nil, err
