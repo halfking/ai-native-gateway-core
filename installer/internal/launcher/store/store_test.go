@@ -54,6 +54,45 @@ func TestPlanList(t *testing.T) {
 	}
 }
 
+func TestPlanListNewestFirst(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir)
+	for _, id := range []string{"a", "b", "c"} {
+		_ = s.Save(&Plan{ID: id, State: StateDone})
+		time.Sleep(10 * time.Millisecond)
+	}
+	ids, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Newest first: c, b, a
+	if len(ids) != 3 || ids[0] != "c" || ids[1] != "b" || ids[2] != "a" {
+		t.Fatalf("expected [c b a], got %v", ids)
+	}
+}
+
+func TestPlanListSkipsNonJSON(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir)
+	// Save creates plans dir
+	_ = s.Save(&Plan{ID: "real", State: StateDone})
+	// Drop a stray file in plans dir
+	if err := os.WriteFile(filepath.Join(dir, "plans", "stray.txt"), []byte("ignore"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Drop a short file (potential panic source)
+	if err := os.WriteFile(filepath.Join(dir, "plans", "x"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "real" {
+		t.Fatalf("expected only [real], got %v", ids)
+	}
+}
+
 func TestActivePointer(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)

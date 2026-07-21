@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -85,11 +86,14 @@ func (s *Store) List() ([]string, error) {
 		if e.IsDir() {
 			continue
 		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".json") {
+			continue // not a plan file
+		}
 		fi, err := e.Info()
 		if err != nil {
 			continue
 		}
-		name := e.Name()
 		name = name[:len(name)-len(".json")]
 		infos = append(infos, info{id: name, mt: fi.ModTime()})
 	}
@@ -117,12 +121,15 @@ func (s *Store) LoadActive() (*ActivePointer, error) {
 	return &ap, nil
 }
 
-// SaveActive writes the active pointer (atomic via WriteFile).
+// SaveActive writes the active pointer. Not atomic (single WriteFile).
 func (s *Store) SaveActive(ap *ActivePointer) error {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}
 	ap.Updated = time.Now().UTC()
-	data, _ := json.MarshalIndent(ap, "", "  ")
+	data, err := json.MarshalIndent(ap, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal active: %w", err)
+	}
 	return os.WriteFile(filepath.Join(s.dir, "active.json"), data, 0o644)
 }
