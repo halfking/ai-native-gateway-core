@@ -68,6 +68,7 @@ import (
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"      //nolint:depguard // URSM v2 wiring (T20)
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
@@ -479,6 +480,30 @@ func main() {
 		slog.Warn("session manager disabled (no LLM_GATEWAY_REDIS_ADDR)")
 	}
 
+	// 2026-07-21, URSM v2 plan T20: 接入 v2 Manager。LoadFromEnv 默认 mode=off，
+	// 整个 v2 路径在生产环境（URSM_V2_MODE 未设）下保持 dead：URSMv2 != nil 走
+	// fast path 但 Manager 内部 Mode()==off 时 Plan/FilterAndScore 立即返回 nil。
+	// 当且仅当环境变量显式设为 shadow/canary/authoritative 时才 SetReady(true)，
+	// 把 v2 recovery gate 打开；off 模式下连 SetReady 都不调，保持 store 未初始化
+	// 状态。这是 T8 / T16 / T20 一脉相承的"opt-in 启用"约定。
+	var ursmV2Mgr *ursmv2.Manager
+	if redisClientForCache != nil {
+		ursmV2Mgr = ursmv2.New(ursmv2.Dependencies{
+			Redis:  redisClientForCache.Client(),
+			Config: ursmv2.LoadFromEnv(),
+		})
+		if env := os.Getenv("URSM_V2_MODE"); env == "shadow" || env == "canary" || env == "authoritative" {
+			if err := ursmV2Mgr.SetReady(context.Background(), true); err != nil {
+				slog.Warn("ursm.v2: ready set failed", "error", err)
+			}
+		}
+		slog.Info("ursm.v2 manager constructed",
+			"mode", ursmV2Mgr.Mode(),
+			"ready", ursmV2Mgr.Ready(context.Background()))
+	} else {
+		slog.Info("ursm.v2 manager disabled (no redis client)")
+	}
+
 	fpSlots := credentialfpslot.New(credentialfpslot.Config{
 		DefaultLimit:       cfg.DefaultCredentialConcurrency,
 		Enabled:            cfg.EnableCredentialFpSlots,
@@ -566,6 +591,12 @@ func main() {
 
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
+
+		// 2026-07-21, URSM v2 plan T20: 把 v2 Manager 注入 Router，使
+		// PlanCandidates 在 mode=authoritative 时按 v2 FilterAndScore 过滤候选。
+		// URSM_V2_MODE=off 时 Manager.Mode() == off，PlanCandidates 里的 v2 分支
+		// 不会进入（见 router.go:URSMv2.Mode() == ModeAuthoritative 守卫）。
+		router.URSMv2 = ursmV2Mgr
 
 		// 2026-06-30: Credential×model state manager — provides
 		// real-time (<1s) availability for routing decisions via a
@@ -981,6 +1012,12 @@ func main() {
 			routingExec.StateObserver = stateManager
 			slog.Info("credential state observer enabled (Phase 2.x real request feedback)")
 		}
+
+		// 2026-07-21, URSM v2 plan T20: 把 v2 Manager 注入 Executor，使
+		// 请求完成后能调 Manager.RecordRequest 把结果回写到 v2 store（影子/金丝雀
+		// 模式下由 Manager 内部 ShouldUseV2 决定是否真的写入）。Manager 自身 nil-safe，
+		// 这条赋值在 URSM_V2_MODE=off 时也安全——RecordRequest 在 off 模式下走 no-op。
+		routingExec.URSMv2 = ursmV2Mgr
 
 		// 2026-07-15: shadow-only state/probe observer. It reads the hot
 		// platform settings on each event and cannot alter routing, state,

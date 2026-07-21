@@ -86,6 +86,56 @@ func (r *Router) PlanCandidates(
 		return r.planWithURSM(candidates, stickyCredentialID, policy, egressPreference)
 	}
 
+	// 2026-07-21, URSM v2 plan T20 (convergence): 在 mode=authoritative 模式下
+	// 完全关掉旧 credentialstate / IsAvailable 读取，把"哪些候选可用"的判定
+	// 委托给 v2 FilterAndScore。Ready 为 false / 调用出错时回退到旧路径，保留
+	// 现有行为，避免一次错误的 v2 调用造成全量 503。URSMv2 == nil 时代码路径
+	// 是死的（main.go 默认 URSM_V2_MODE=off 时根本不会 wire）。
+	//
+	// TODO(T20+): PlanCandidates 签名没有 tenantID / canonical / reqID；
+	// FilterAndScore 的 seed 里 TenantID 暂传空串，与 T16 planWithURSMv2
+	// 的 "" 透传一致，等待后续任务把请求级上下文接进来。
+	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		if r.URSMv2.Ready(ctx) {
+			seeds := make([]ursmv2.CandidateSeed, 0, len(candidates))
+			for _, c := range candidates {
+				seeds = append(seeds, ursmv2.CandidateSeed{
+					ProviderID:   c.ProviderID,
+					CredentialID: c.CredentialID,
+					RawModel:     c.RawModel,
+					Canonical:    c.StandardizedName,
+					TenantID:     "",
+					PriceIn:      derefPrice(c.PriceInPer1M),
+					PriceOut:     derefPrice(c.PriceOutPer1M),
+					BillingMode:  c.BillingMode,
+					Trust:        0,
+					BaseURLMs:    c.P50LatencyMs,
+				})
+			}
+			views, err := r.URSMv2.FilterAndScore(ctx, seeds)
+			if err == nil {
+				allow := make(map[int]bool, len(views))
+				for _, v := range views {
+					if v.Available {
+						allow[v.CredentialID] = true
+					}
+				}
+				filtered := candidates[:0]
+				for _, c := range candidates {
+					if allow[c.CredentialID] {
+						filtered = append(filtered, c)
+					}
+				}
+				candidates = filtered
+				if len(candidates) == 0 {
+					return nil
+				}
+			}
+		}
+	}
+
 	// 使用状态管理器过滤（如果启用）
 	var available []provider.Candidate
 	if r.StateManager != nil && r.StateManager.Enabled() {
