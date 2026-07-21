@@ -1016,7 +1016,7 @@ function onTagsInput(ev: Event) {
   cursor: pointer;
 }
 .cred-row:hover td {
-  background: rgba(99, 102, 241, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 .cred-row--disabled td {
   background: rgba(220, 38, 38, 0.06);
@@ -1158,7 +1158,7 @@ function onTagsInput(ev: Event) {
   display: inline-block;
   width: 10px;
   height: 10px;
-  border: 2px solid rgba(99, 102, 241, 0.3);
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: probe-spin 0.8s linear infinite;

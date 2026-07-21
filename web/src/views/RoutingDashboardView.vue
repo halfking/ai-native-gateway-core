@@ -1404,7 +1404,7 @@ onUnmounted(() => stopPoll())
   font-size: 8px; font-weight: 700;
   flex-shrink: 0;
 }
-.layer-tag.l1 { background: rgba(99,102,241,.22); color: var(--accent-h); }
+.layer-tag.l1 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-h); }
 .layer-tag.l2 { background: rgba(63,185,80,.22); color: var(--success); }
 .task-hint { font-weight: 400; color: var(--muted); font-size: 10px; }
 
@@ -1618,7 +1618,7 @@ onUnmounted(() => stopPoll())
   font-size: 10px;
   background: var(--bg-subtle);
 }
-.sim-step.l1 { background: rgba(99,102,241,.12); color: var(--accent-h); }
+.sim-step.l1 { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-h); }
 .sim-step.l2.win { background: rgba(63,185,80,.15); color: var(--success); font-weight: 600; }
 
 .dist-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

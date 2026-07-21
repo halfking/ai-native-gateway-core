@@ -836,7 +836,7 @@ watch(activeTab, (tab) => {
   border-radius: 3px;
   font-size: 8px; font-weight: 700;
 }
-.layer-tag.l1 { background: rgba(99,102,241,.22); color: var(--accent-h); }
+.layer-tag.l1 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-h); }
 .layer-tag.l2 { background: rgba(63,185,80,.22); color: var(--success); }
 .layer-tag.intent-tag { background: rgba(210,153,34,.22); color: var(--warning); width: 26px; }
 
@@ -953,9 +953,9 @@ watch(activeTab, (tab) => {
   border-radius: 4px;
   font-size: 10px;
   font-family: ui-monospace, monospace;
-  background: rgba(99,102,241,.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent-h);
-  border: 1px solid rgba(99,102,241,.25);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .loading-hint { padding: 12px; text-align: center; color: var(--muted); font-size: 11px; }

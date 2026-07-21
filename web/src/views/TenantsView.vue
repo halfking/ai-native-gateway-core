@@ -156,7 +156,7 @@ onMounted(load)
   cursor: pointer;
 }
 .tenants-table .tenant-row:hover {
-  background: rgba(99, 102, 241, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 .tenants-table .tenant-row:focus-visible {
   outline: 2px solid var(--accent-h);

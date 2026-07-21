@@ -1679,7 +1679,7 @@ table code {
   cursor: pointer;
 }
 .provider-row:hover td {
-  background: rgba(99, 102, 241, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 .provider-row:focus-visible {
   outline: 2px solid var(--accent);

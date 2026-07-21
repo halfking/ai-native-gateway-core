@@ -1295,8 +1295,8 @@ onMounted(load)
   color: var(--success);
 }
 .model-tag.template {
-  background: rgba(99,102,241,.12);
-  border-color: rgba(99,102,241,.35);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
   color: var(--accent-h);
 }
 .model-tag.dim { opacity: 0.45; }

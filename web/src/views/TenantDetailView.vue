@@ -897,7 +897,7 @@ watch(() => route.params.tenantId, loadTenant)
 }
 .maas-shortcut-card:hover {
   border-color: var(--accent-h);
-  background: rgba(99,102,241,.06);
+  background: color-mix(in srgb, var(--accent) 06%, transparent);
 }
 .maas-shortcut-card--tab {
   background: transparent;
