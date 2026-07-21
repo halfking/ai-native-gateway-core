@@ -442,9 +442,9 @@ onMounted(async () => {
           <p class="muted mb">
             点击"激活"按钮，系统将自动向中心 <code>llm.kxpms.cn</code> 申请 License 并完成本地激活（无需手动填写 License Key）。
           </p>
-          <el-form label-position="top" @submit.prevent="ensureAgreementThenActivate">
+          <el-form label-position="top" @submit.prevent="ensureAgreementThenActivate" style="max-width: 600px; min-height: 0;">
             <el-form-item label="设备名称（可选）">
-              <el-input v-model="deviceName" placeholder="例如：生产网关 01" clearable />
+              <el-input v-model="deviceName" placeholder="例如：生产网关 01" clearable style="max-height: 40px;" />
             </el-form-item>
           </el-form>
         </template>
