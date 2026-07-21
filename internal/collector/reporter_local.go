@@ -34,6 +34,8 @@ func (r *LocalDBReporter) Report(ctx context.Context, payload []byte) error {
 	if metrics.ModelUsage == nil {
 		modelUsageJSON = []byte("{}")
 	}
+	// 2026-07-22: 转为 string 以配合 ::text::jsonb cast，避免 pgx 二进制协议的 22P02 错误
+	modelUsageStr := string(modelUsageJSON)
 
 	_, err = r.Pool.Exec(ctx, `
 		INSERT INTO runtime_metrics (
@@ -53,7 +55,7 @@ func (r *LocalDBReporter) Report(ctx context.Context, payload []byte) error {
 		metrics.CPUUsagePct, metrics.MemUsedMB, metrics.MemTotalMB, metrics.DiskUsedGB, metrics.DiskTotalGB,
 		metrics.DBSizeMB, metrics.UptimeSecs,
 		metrics.CurrentConcurrency, metrics.Last5MinTPS, metrics.Last5MinP50Ms, metrics.Last5MinP99Ms,
-		metrics.Last5MinSuccessPct, modelUsageJSON, metrics.TenantCount,
+		metrics.Last5MinSuccessPct, modelUsageStr, metrics.TenantCount,
 	)
 	return err
 }
