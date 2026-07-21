@@ -8,6 +8,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 )
 
+// Config is the static, mode-toggled configuration for the v2 facade.
+// Always construct via DefaultConfig(); the zero value is not safe
+// (RedisKeyPrefix is empty and Mode is "" rather than api.ModeOff).
 type Config struct {
 	Mode                api.RolloutMode
 	CanaryPercent       int
