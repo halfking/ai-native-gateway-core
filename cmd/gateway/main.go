@@ -123,6 +123,13 @@ var (
 )
 
 func main() {
+	// migrate subcommand: connect DB, run migrations, exit.
+	// Used by launcher to run forward-compatible migrations while old
+	// version still serves traffic (zero-downtime upgrade).
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		os.Exit(runMigrate(os.Getenv("DATABASE_URL")))
+	}
+
 	processStartedAt := time.Now()
 	// Round 39 (2026-06-16) — initialize OTel tracer.
 	// Default-disabled; activates only when OTEL_EXPORTER_OTLP_ENDPOINT
