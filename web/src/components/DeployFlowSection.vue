@@ -164,7 +164,7 @@ function handleSecondary(path?: string) {
   border-radius: 10px;
   font-size: 15px;
   font-weight: 700;
-  color: #a5b4fc;
+  color: var(--accent-h);
   background: rgba(99, 102, 241, 0.16);
 }
 
@@ -220,7 +220,7 @@ function handleSecondary(path?: string) {
   content: '·';
   position: absolute;
   left: 4px;
-  color: #6366f1;
+  color: var(--accent);
 }
 
 @media (max-width: 600px) {
