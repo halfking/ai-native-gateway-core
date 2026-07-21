@@ -366,8 +366,8 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 			completion_tokens = COALESCE($9, completion_tokens),
 			prompt_tokens = COALESCE($10, prompt_tokens),
 			error = COALESCE($11, error),
-			compression_strategy = COALESCE(NULLIF($12, ''), compression_strategy),
-			compression_meta = COALESCE($13, compression_meta)
+		compression_strategy = COALESCE(NULLIF($12, ''), compression_strategy),
+		compression_meta = COALESCE($13::text::jsonb, compression_meta)
 		WHERE request_id = $1
 		  AND created_at = (
 		      SELECT created_at FROM request_wal_hot
@@ -391,13 +391,17 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 	}
 
 	if len(update.OutboundBody) > 0 {
+		// 2026-07-22: Use ::text::jsonb cast to prevent 22P02 errors
+		// when compression_meta contains edge-case floats (NaN/Inf).
+		// Matches pattern in domains/session/v2/turn_writer.go
+		compressionMetaStr := string(compressionMetaJSON)
 		_, err = tx.Exec(ctx, `
 			INSERT INTO request_wal_bodies (request_id, outbound_body, compression_meta)
-			VALUES ($1, $2, $3)
+			VALUES ($1, $2, $3::text::jsonb)
 			ON CONFLICT (request_id) DO UPDATE SET
 				outbound_body = EXCLUDED.outbound_body,
 				compression_meta = EXCLUDED.compression_meta
-		`, update.RequestID, update.OutboundBody, compressionMetaJSON)
+		`, update.RequestID, update.OutboundBody, compressionMetaStr)
 		if err != nil {
 			return err
 		}
