@@ -2,6 +2,22 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
+  ElAlert,
+  ElButton,
+  ElCard,
+  ElDescriptions,
+  ElDescriptionsItem,
+  ElDivider,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElRadio,
+  ElRadioGroup,
+  ElResult,
+  ElSkeleton,
+  ElTag,
+} from 'element-plus'
+import {
   bootstrapApi,
   markBootstrapActivated,
   type BootstrapStatus,

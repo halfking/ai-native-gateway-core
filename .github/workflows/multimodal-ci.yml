@@ -1,0 +1,161 @@
+# GitHub Actions CI workflow for multimodal message handling
+#
+# 策略：Mock模式CI，验证validation + 协议转换逻辑
+# 触发条件：push / pull_request 到 main
+# 超时：10分钟
+#
+# 测试覆盖：
+#   1. Anthropic multimodal validation（拒绝不支持的模态）
+#   2. IR层multimodal序列化
+#   3. 跨协议转换正确性
+#   4. Phase 3 runner --dry-run（payload构建验证）
+
+name: Multimodal Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  multimodal-validation:
+    name: Multimodal Validation Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+      
+      - name: Show Go version
+        run: go version
+      
+      - name: Anthropic validation tests
+        run: |
+          echo "::group::Anthropic unsupported media validation"
+          go test ./domains/transformation/anthropic/... \
+            -run="TestConvertChatRequestToAnthropicRejectsUnsupportedMedia" \
+            -v -count=1
+          echo "::endgroup::"
+      
+      - name: IR layer validation tests
+        run: |
+          echo "::group::IR unsupported media validation"
+          go test ./internal/ir/... \
+            -run="TestSerializeAnthropicRejectsUnsupportedMedia" \
+            -v -count=1
+          echo "::endgroup::"
+      
+      - name: Mixed media detection tests
+        run: |
+          echo "::group::Mixed response media detection"
+          go test ./internal/ir/... \
+            -run="TestDetectRequestCapabilitiesMixedResponsesMedia" \
+            -v -count=1
+          echo "::endgroup::"
+  
+  multimodal-conversion:
+    name: Multimodal Protocol Conversion
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+      
+      - name: Anthropic document tests
+        run: |
+          echo "::group::Anthropic document conversion"
+          go test ./internal/ir/... \
+            -run="TestAnthropicDocument" \
+            -v -count=1
+          echo "::endgroup::"
+      
+      - name: Image base64 tests
+        run: |
+          echo "::group::Image base64 handling"
+          go test ./internal/ir/... \
+            -run="TestImageBase64" \
+            -v -count=1
+          echo "::endgroup::"
+      
+      - name: End-to-end serialization
+        run: |
+          echo "::group::End-to-end IR serialization"
+          go test ./internal/ir/... \
+            -run="TestSerializeEndToEnd" \
+            -v -count=1
+          echo "::endgroup::"
+  
+  phase3-dry-run:
+    name: Phase 3 Mock Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Verify Phase 3 runner script
+        run: |
+          test -f scripts/multimodal-e2e/run_phase3.sh
+          test -x scripts/multimodal-e2e/run_phase3.sh
+      
+      - name: Verify test cases exist
+        run: |
+          test -d scripts/multimodal-e2e/cases
+          ls -la scripts/multimodal-e2e/cases/T-*.json | wc -l
+      
+      - name: Run Phase 3 --dry-run
+        env:
+          GATEWAY_URL: http://localhost:8781
+          LLM_GATEWAY_API_KEY: mock-key-for-dry-run
+        run: |
+          echo "::group::Phase 3 dry-run (payload validation)"
+          bash scripts/multimodal-e2e/run_phase3.sh --dry-run
+          echo "::endgroup::"
+      
+      - name: Verify dry-run log
+        run: |
+          if [ -f /tmp/multimodal-e2e-phase3.log ]; then
+            echo "Dry-run log created:"
+            head -20 /tmp/multimodal-e2e-phase3.log
+          else
+            echo "Warning: No log file created"
+          fi
+  
+  multimodal-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [multimodal-validation, multimodal-conversion, phase3-dry-run]
+    if: always()
+    
+    steps:
+      - name: Check test results
+        run: |
+          echo "Multimodal CI Results:"
+          echo "  Validation: ${{ needs.multimodal-validation.result }}"
+          echo "  Conversion: ${{ needs.multimodal-conversion.result }}"
+          echo "  Phase3 Dry-run: ${{ needs.phase3-dry-run.result }}"
+          
+          if [[ "${{ needs.multimodal-validation.result }}" != "success" ]] || \
+             [[ "${{ needs.multimodal-conversion.result }}" != "success" ]] || \
+             [[ "${{ needs.phase3-dry-run.result }}" != "success" ]]; then
+            echo "❌ Multimodal tests failed"
+            exit 1
+          fi
+          
+          echo "✅ All multimodal tests passed"
