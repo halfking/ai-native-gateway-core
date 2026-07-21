@@ -20,6 +20,6 @@
 
 ## 已知妥协 / 待办
 
-1. **核心节点「运维中心」菜单** 仍为 Gateway 静态配置（`appNav.ts` 的 `opsplatform` 组），未引入 maintain 远程菜单协议。Maintain 端新增菜单项不会自动同步 — 由 maintain 部署侧维护两处同步。
-2. **模块开通申请** 内存态（`module_entitlements.go`），重启丢失；下一步迁移到 PG `maintain.module_entitlements` 表。
-3. **`/api/system/bootstrap/*` 旧调用方** — gateway 早期 `bootstrap_gate` 已 fail-open，新 API 接入前不会阻塞首启。
+1. 维护后 `module_entitlements` 数据已落 PG；持久化由 PG 承载。
+2. 菜单动态化已落地：maintain `/maintain-api/menu/ops` 返回的菜单描述在 maintain 可达时覆盖 Gateway 本地 6 项兜底；vibecoding 仍由本地菜单挂载。
+3. `/api/system/bootstrap/*` 旧调用方 — gateway 早期 `bootstrap_gate` 已 fail-open，新 API 接入前不会阻塞首启。
