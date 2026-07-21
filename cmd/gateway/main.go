@@ -69,6 +69,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"      //nolint:depguard // URSM v2 wiring (T20)
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist"     //nolint:depguard // URSM v2 persist writer (L6)
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
@@ -502,6 +503,36 @@ func main() {
 			"ready", ursmV2Mgr.Ready(context.Background()))
 	} else {
 		slog.Info("ursm.v2 manager disabled (no redis client)")
+	}
+
+	// URSM v2 persist writer (T15+L6): snapshot v2 Redis state to DB periodically
+	if ursmV2Mgr != nil && dbConn != nil && dbConn.Enabled() {
+		v2Cfg := ursmv2.LoadFromEnv()
+		persistWriter := persist.New(redisClientForCache.Client(), v2Cfg.RedisKeyPrefix, dbConn.Pool())
+		persistInterval := time.Duration(v2Cfg.PersistIntervalSec) * time.Second
+		if persistInterval == 0 {
+			persistInterval = 60 * time.Second // default 1 minute
+		}
+		go func() {
+			ticker := time.NewTicker(persistInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				rows, err := persistWriter.Collect(ctx)
+				if err != nil {
+					slog.Warn("ursm.v2: persist collect failed", "error", err)
+					cancel()
+					continue
+				}
+				if err := persistWriter.Flush(ctx, rows); err != nil {
+					slog.Warn("ursm.v2: persist flush failed", "error", err)
+				} else {
+					slog.Debug("ursm.v2: persist flushed", "rows", len(rows))
+				}
+				cancel()
+			}
+		}()
+		slog.Info("ursm.v2: persist writer started", "interval_sec", persistInterval.Seconds())
 	}
 
 	fpSlots := credentialfpslot.New(credentialfpslot.Config{
