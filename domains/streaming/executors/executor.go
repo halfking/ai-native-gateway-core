@@ -27,6 +27,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/session"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm"
+	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
+	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
@@ -664,6 +666,12 @@ type Executor struct {
 	// 自动触发状态更新、探测调度和资源释放。
 	// Nil则保留旧的状态管理逻辑（向后兼容）。
 	URSM *ursm.Manager
+
+	// URSMv2 (2026-07-21, URSM v2 plan T8): 旁路写新管线，影子/金丝雀模式下
+	// 通过 RecordRequest 把结果回写到 v2 store，**不影响**任何现有决策路径。
+	// 当 URSMv2 == nil 或 v2 模式为 off/shadow 时 Manager.RecordRequest
+	// 内部短路；本字段 nil 即保留所有旧行为。
+	URSMv2 *ursmv2.Manager
 
 	// DegradationTracker (2026-07-07 Phase 1): 追踪 FpSlot 降级模式请求
 	// 用于监控和告警。Nil 时禁用该功能。
@@ -1901,6 +1909,30 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				}()
 			}
 
+			// 2026-07-21 (URSM v2 T8): 旁路写 v2 store。Manager.RecordRequest
+			// 内部按 Mode + ShouldUseV2 决定是否真正写入；URSMv2==nil 时整段
+			// 跳过，保留所有旧行为。
+			if e.URSMv2 != nil {
+				requestID := params.R.Header.Get("X-Request-Id")
+				if requestID == "" {
+					requestID = "async-" + time.Now().Format("20060102T150405.000")
+				}
+				if err := e.URSMv2.RecordRequest(params.R.Context(), ursmv2api.RequestOutcome{
+					CredentialID: cand.CredentialID,
+					RawModel:     cand.RawModel,
+					TenantID:     params.TenantID,
+					BillingMode:  cand.BillingMode,
+					Success:      true,
+					LatencyMs:    result.LatencyMs,
+					RequestID:    requestID,
+				}); err != nil {
+					slog.Warn("ursm.v2: sidecar record success failed",
+						"error", err,
+						"request_id", requestID,
+						"credential_id", cand.CredentialID)
+				}
+			}
+
 			trace.Chosen = &TraceCandidate{
 				ProviderID:   cand.ProviderID,
 				CredentialID: cand.CredentialID,
@@ -2147,6 +2179,32 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 							"error_kind", kind)
 					}
 				}()
+			}
+
+			// 2026-07-21 (URSM v2 T8): 旁路写 v2 store。Manager.RecordRequest
+			// 内部按 Mode + ShouldUseV2 决定是否真正写入；URSMv2==nil 时整段
+			// 跳过，保留所有旧行为。
+			if e.URSMv2 != nil {
+				requestID := params.R.Header.Get("X-Request-Id")
+				if requestID == "" {
+					requestID = "async-" + time.Now().Format("20060102T150405.000")
+				}
+				if err := e.URSMv2.RecordRequest(params.R.Context(), ursmv2api.RequestOutcome{
+					CredentialID: cand.CredentialID,
+					RawModel:     cand.RawModel,
+					TenantID:     params.TenantID,
+					BillingMode:  cand.BillingMode,
+					Success:      false,
+					LatencyMs:    0,
+					ErrorKind:    string(kind),
+					RequestID:    requestID,
+				}); err != nil {
+					slog.Warn("ursm.v2: sidecar record failure failed",
+						"error", err,
+						"request_id", requestID,
+						"credential_id", cand.CredentialID,
+						"error_kind", kind)
+				}
 			}
 
 			if sie.resumable {
