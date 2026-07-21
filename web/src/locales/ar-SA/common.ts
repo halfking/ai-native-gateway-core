@@ -156,4 +156,11 @@ export default {
     vision: 'رؤية',
     function_call: 'استدعاء دالة',
   },
+
+  theme: {
+    switchToLight: 'التبديل إلى الوضع الفاتح',
+    switchToDark: 'التبديل إلى الوضع الداكن',
+    lightTitle: 'الوضع الفاتح',
+    darkTitle: 'الوضع الداكن',
+  },
 }

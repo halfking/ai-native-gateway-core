@@ -158,4 +158,12 @@ export default {
     vision: 'Vision',
     function_call: 'Function calling',
   },
+
+  // 2026-07-21: top-bar theme toggle
+  theme: {
+    switchToLight: 'Switch to light',
+    switchToDark: 'Switch to dark',
+    lightTitle: 'Light mode',
+    darkTitle: 'Dark mode',
+  },
 }

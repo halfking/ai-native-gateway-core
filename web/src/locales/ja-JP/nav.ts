@@ -61,5 +61,15 @@ export default {
     opsProductEntry: "Product Entry",
     tenantLicense: "マイライセンス",
     tenantAutoUpdate: "マイアップデート"
-  }
+  },
+
+  mainAria: 'メインナビゲーション',
+  guestAria: 'プロダクトナビゲーション',
+  signIn: 'ログイン',
+  publicDownload: 'ダウンロード',
+  publicSetup: 'インストールと有効化',
+  publicActivate: 'オンライン有効化',
+  publicLicense: 'ライセンス',
+  publicAgreement: '利用規約',
+  publicSupport: 'サポート',
 }

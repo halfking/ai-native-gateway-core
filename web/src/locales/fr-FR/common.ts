@@ -157,4 +157,11 @@ export default {
     vision: 'Vision',
     function_call: 'Appel de fonction',
   },
+
+  theme: {
+    switchToLight: 'Passer au mode clair',
+    switchToDark: 'Passer au mode sombre',
+    lightTitle: 'Mode clair',
+    darkTitle: 'Mode sombre',
+  },
 }

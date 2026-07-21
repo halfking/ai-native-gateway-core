@@ -157,4 +157,11 @@ export default {
     vision: '視覺',
     function_call: '函式呼叫',
   },
+
+  theme: {
+    switchToLight: '切換淺色',
+    switchToDark: '切換深色',
+    lightTitle: '淺色模式',
+    darkTitle: '深色模式',
+  },
 }

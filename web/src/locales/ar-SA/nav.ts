@@ -61,5 +61,15 @@ export default {
     opsProductEntry: "Product Entry",
     tenantLicense: "ترخيصي",
     tenantAutoUpdate: "تحديثاتي"
-  }
+  },
+
+  mainAria: 'التنقل الرئيسي',
+  guestAria: 'التنقل للمنتج',
+  signIn: 'تسجيل الدخول',
+  publicDownload: 'تنزيل',
+  publicSetup: 'تثبيت وتفعيل',
+  publicActivate: 'تفعيل أونلاين',
+  publicLicense: 'الترخيص',
+  publicAgreement: 'اتفاقية المستخدم',
+  publicSupport: 'الدعم الفني',
 }

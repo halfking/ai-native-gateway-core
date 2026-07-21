@@ -61,5 +61,15 @@ export default {
     opsProductEntry: "Product Entry",
     tenantLicense: "Mi Licencia",
     tenantAutoUpdate: "Mis Actualizaciones"
-  }
+  },
+
+  mainAria: 'Navegación principal',
+  guestAria: 'Navegación del producto',
+  signIn: 'Iniciar sesión',
+  publicDownload: 'Descargar',
+  publicSetup: 'Instalar y Activar',
+  publicActivate: 'Activación en línea',
+  publicLicense: 'Licencia',
+  publicAgreement: 'Acuerdo de Usuario',
+  publicSupport: 'Soporte',
 }

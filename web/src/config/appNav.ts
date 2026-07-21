@@ -41,7 +41,7 @@ export type NavGroup = {
 
 /** Top-level sidebar links (no accordion group). Used for default-tenant platform ops. */
 export const NAV_PRIMARY_ITEMS: NavItem[] = [
-  { path: '/', label: '总览', labelKey: 'nav.item.overview', icon: '📊', platformOps: true },
+  { path: '/dashboard', label: '总览', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
 ]
 
 export const NAV_GROUPS: NavGroup[] = [
@@ -203,4 +203,50 @@ export function writeSidebarCollapsed(collapsed: boolean) {
   } catch {
     // ignore
   }
+}
+
+// 2026-07-21: 顶部 topbar 用的"扁平化 + 分组标签"导航数据。
+// 把 NAV_PRIMARY_ITEMS（顶层无分组）+ NAV_GROUPS（分组）合并成一个 TopbarNavGroup[]，
+// 每个 group 含 items；同时附 group.titleKey 给 i18n（nav.group.*）。
+export type TopbarNavGroup = {
+  id: string
+  label: string
+  labelKey?: string
+  items: NavItem[]
+  /** Topbar 上的"展开所有子项"按钮（用于 chat / guide 等只有 1 个 item 的 group 折叠显示） */
+  primaryPath?: string
+}
+
+/**
+ * 将 PRIMARY + GROUPS 合并成 topbar 用的扁平分组结构。
+ * - PRIMARY（无分组）放到组 "primary"（总览）
+ * - 每个 group 的 items 过滤掉 visible 后打包
+ */
+export function mergeNav(
+  primary: NavItem[],
+  groups: NavGroup[],
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+): TopbarNavGroup[] {
+  const visiblePrimary = primary.filter((it) => canShowNavItem(it, opts))
+  const visibleGroups = visibleNavGroups(groups, opts)
+  const result: TopbarNavGroup[] = []
+  if (visiblePrimary.length > 0) {
+    result.push({
+      id: 'primary',
+      label: visiblePrimary.map((it) => (it.labelKey ? it.labelKey : it.label)).join(' / '),
+      labelKey: visiblePrimary[0].labelKey,
+      items: visiblePrimary,
+      primaryPath: visiblePrimary[0].path,
+    })
+  }
+  for (const g of visibleGroups) {
+    result.push({
+      id: g.id,
+      label: g.label,
+      labelKey: g.labelKey,
+      items: g.items,
+      primaryPath: g.items.length === 1 ? g.items[0].path : undefined,
+    })
+  }
+  return result
 }

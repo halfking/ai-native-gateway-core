@@ -7,14 +7,22 @@
     <title>开轩启圭 AI Native 组织核心网关</title>
     <link rel="icon" type="image/png" href="/favicon.png" />
     <script>
+      // 2026-07-21: 与 ai-native-maintain / ai-session-manager 主题统一。
+      // 优先级：URL ?theme=light|dark > localStorage['llmgw_theme'] > 系统偏好。
+      // URL 永远赢；命中后写回 localStorage，方便后续刷新保持。
       (function () {
         try {
-          var t = localStorage.getItem('llmgw_theme');
+          var sp = new URLSearchParams(window.location.search);
+          var t = sp.get('theme');
+          if (t !== 'light' && t !== 'dark') {
+            t = localStorage.getItem('llmgw_theme');
+          }
           if (t !== 'light' && t !== 'dark') {
             t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
           }
           document.documentElement.setAttribute('data-theme', t);
           document.documentElement.style.colorScheme = t;
+          try { localStorage.setItem('llmgw_theme', t); } catch (e) {}
         } catch (e) {}
       })();
     </script>
