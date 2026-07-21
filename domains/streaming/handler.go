@@ -3021,6 +3021,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	if len(requestBody) > 0 {
 		v := string(redactAttachmentBodyIfEnabled(requestBody))
 		requestBodyText = &v
+	} else if result != nil && strings.Contains(strings.ToLower(result.Candidate.RawModel), "minimax") {
+		slog.Warn("emitTelemetry: requestBody empty for known model",
+			"request_id", evt.RequestID,
+			"model", result.Candidate.RawModel,
+			"request_mode", requestMode)
 	}
 	var responseBodyText *string
 	if len(responseBody) > 0 {
