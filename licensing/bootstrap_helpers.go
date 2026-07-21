@@ -2,10 +2,13 @@ package licensing
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -17,6 +20,74 @@ func resolveCenterURL() string {
 		}
 	}
 	return ""
+}
+
+// instanceIDPath returns the on-disk file path that holds the local instance ID.
+// One physical machine == one instance ID (one license seat).
+// The file is generated on first install (or first bootstrap call) and persisted
+// to /var/lib/kx-gateway/instance.id, $LLM_GATEWAY_DATA_DIR/instance.id, or
+// ~/.local/share/kx-gateway/instance.id in that order.
+func instanceIDPath() string {
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_DATA_DIR")); v != "" {
+		return filepath.Join(v, "instance.id")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".local", "share", "kx-gateway", "instance.id")
+	}
+	return "/var/lib/kx-gateway/instance.id"
+}
+
+// resolveLocalInstanceID returns the locally persisted instance ID, or generates
+// and persists one if absent. The ID is derived from the hardware fingerprint
+// hash so that reinstalls on the same machine keep the same instance seat.
+// One physical device == one instance ID == one license seat.
+func resolveLocalInstanceID() string {
+	path := instanceIDPath()
+	if data, err := os.ReadFile(path); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id
+		}
+	}
+	fp, err := GenerateFingerprint()
+	if err != nil || fp == nil {
+		// Fall back to a random UUID; uniqueness still holds across installs.
+		return persistInstanceID(path, fallbackUUID())
+	}
+	id := deriveInstanceIDFromFingerprint(fp.Hash())
+	return persistInstanceID(path, id)
+}
+
+func fallbackUUID() string {
+	b := make([]byte, 16)
+	now := time.Now().UnixNano()
+	for i := 0; i < 8; i++ {
+		b[i] = byte(now >> (8 * i))
+	}
+	for i := 0; i < 8; i++ {
+		b[8+i] = byte(now >> (8 * (7 - i)))
+	}
+	return "inst-" + hex.EncodeToString(b)
+}
+
+// deriveInstanceIDFromFingerprint makes the instance ID human-readable and
+// stable per machine. Format: gw-<8 hex>. Changing the format would orphan
+// existing instances — keep prefix "gw-" for backwards compatibility.
+func deriveInstanceIDFromFingerprint(fpHash string) string {
+	h := sha256.Sum256([]byte("instance|" + fpHash))
+	return "gw-" + hex.EncodeToString(h[:8])
+}
+
+func persistInstanceID(path, id string) string {
+	if path == "" {
+		return id
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return id
+	}
+	if err := os.WriteFile(path, []byte(id), 0o644); err != nil {
+		return id
+	}
+	return id
 }
 
 func bootstrapPostJSON(url string, payload any) (bool, any, error) {

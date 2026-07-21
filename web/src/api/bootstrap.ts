@@ -24,6 +24,7 @@ export type ActivateQuickRequest = {
 
 export type FingerprintInfo = {
   hardware_hash: string
+  instance_id?: string
   os?: string
   arch?: string
   network_summary?: string

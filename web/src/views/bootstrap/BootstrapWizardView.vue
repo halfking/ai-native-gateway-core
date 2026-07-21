@@ -8,21 +8,29 @@ import {
   type FingerprintInfo,
 } from '../../api/bootstrap'
 import { maintainLifecycleApi } from '../../api/maintainLifecycle'
+import OperationAgreementDialog from '../../components/OperationAgreementDialog.vue'
 import {
   collectClientFingerprint,
   ensureInstanceId,
   resolveHardwareHash,
+  setInstanceId,
 } from '../../utils/deviceFingerprint'
 
 const AGREEMENT_VERSION = '2026-07-17'
-const AGREEMENT_STORAGE_KEY = `llmgw_product_terms_${AGREEMENT_VERSION}`
+const AGREEMENT_STORAGE_KEY = `llmgw_op_agreement_activate_${AGREEMENT_VERSION}`
+const PRODUCT_TERMS_STORAGE_KEY = `llmgw_product_terms_${AGREEMENT_VERSION}`
 
 const router = useRouter()
 
 const step = ref(0)
 const steps = ['用户协议', '设备指纹', '激活 License', '注册中心', '完成']
 
-const agreed = ref(!!localStorage.getItem(AGREEMENT_STORAGE_KEY))
+const agreementAccepted = ref(!!localStorage.getItem(AGREEMENT_STORAGE_KEY))
+const productTermsAccepted = ref(!!localStorage.getItem(PRODUCT_TERMS_STORAGE_KEY))
+const showAgreementDialog = ref(false)
+const agreementDialogResolved = ref<'agreed' | 'cancelled' | null>(null)
+const pendingActivation = ref(false)
+
 const loading = ref(false)
 const error = ref('')
 const message = ref('')
@@ -37,8 +45,8 @@ const deviceName = ref('')
 const offlinePayload = ref('')
 const activateMode = ref<'online' | 'offline'>('online')
 const registerResult = ref<{ registered: boolean; deferred?: boolean; message?: string } | null>(null)
+const instanceIdCopied = ref(false)
 
-const canNextFromAgreement = computed(() => agreed.value)
 const canActivate = computed(() => {
   if (!hardwareHash.value.trim() || !instanceId.value.trim()) return false
   if (activateMode.value === 'online') return !!licenseKey.value.trim()
@@ -47,7 +55,11 @@ const canActivate = computed(() => {
 
 async function loadStatus() {
   try {
-    status.value = await bootstrapApi.status(instanceId.value.trim() || undefined)
+    status.value = await bootstrapApi.status()
+    if (status.value.instance_id) {
+      setInstanceId(status.value.instance_id)
+      instanceId.value = status.value.instance_id
+    }
     if (status.value.hardware_hash) {
       hardwareHash.value = await resolveHardwareHash(status.value.hardware_hash)
     }
@@ -65,9 +77,11 @@ async function loadFingerprint() {
   error.value = ''
   try {
     let serverHash = ''
+    let serverInstanceId = ''
     try {
       fingerprint.value = await bootstrapApi.fingerprint()
       serverHash = fingerprint.value.hardware_hash || ''
+      serverInstanceId = fingerprint.value.instance_id || ''
       if (fingerprint.value.network_summary) {
         networkSummary.value = fingerprint.value.network_summary
       }
@@ -80,7 +94,15 @@ async function loadFingerprint() {
       if (!serverHash) serverHash = client.hardware_hash
     }
     hardwareHash.value = await resolveHardwareHash(serverHash)
-    if (!instanceId.value) instanceId.value = ensureInstanceId()
+    if (serverInstanceId) {
+      setInstanceId(serverInstanceId)
+      instanceId.value = serverInstanceId
+    }
+    await loadStatus()
+    if (!instanceId.value) {
+      error.value = '无法生成本机实例 ID，请检查 /var/lib/kx-gateway 目录权限后重试。'
+      return
+    }
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -88,32 +110,81 @@ async function loadFingerprint() {
   }
 }
 
-async function acceptAgreement() {
-  if (!agreed.value) {
-    error.value = '请先阅读并勾选同意用户协议。'
+async function recordProductTermsConsent() {
+  if (productTermsAccepted.value) return
+  try {
+    await maintainLifecycleApi.consent({
+      subject_id: instanceId.value || 'anonymous',
+      instance_id: instanceId.value || undefined,
+      agreement_type: 'product_terms',
+      agreement_version: AGREEMENT_VERSION,
+      granted: true,
+      source: 'gateway-web/bootstrap_wizard',
+    })
+    productTermsAccepted.value = true
+  } catch {
+    // offline-friendly: local cache still unlocks UX
+  }
+}
+
+function openAgreementDialog() {
+  // 强制弹窗：未勾选 + 未确认前不能继续。每一次启动流程都要再次确认。
+  agreementDialogResolved.value = null
+  showAgreementDialog.value = true
+}
+
+async function onAgreementAgreed() {
+  agreementAccepted.value = true
+  localStorage.setItem(AGREEMENT_STORAGE_KEY, new Date().toISOString())
+  agreementDialogResolved.value = 'agreed'
+  showAgreementDialog.value = false
+  if (pendingActivation.value) {
+    pendingActivation.value = false
+    await continueActivate()
+  }
+}
+
+function onAgreementCancelled() {
+  agreementDialogResolved.value = 'cancelled'
+  // 取消即视为拒绝：清掉本机任何残留的"已同意"标记，确保下次启动仍强制弹窗。
+  try {
+    localStorage.removeItem(AGREEMENT_STORAGE_KEY)
+  } catch { /* ignore */ }
+  agreementAccepted.value = false
+  showAgreementDialog.value = false
+  if (pendingActivation.value) {
+    pendingActivation.value = false
+    error.value = '未同意用户协议，无法继续激活。'
+  }
+}
+
+async function recordAgreementConsent() {
+  // 同意弹窗后异步上报一次 consent（best effort），用户授权过的协议记录可以留底。
+  try {
+    await maintainLifecycleApi.consent({
+      subject_id: instanceId.value || 'anonymous',
+      instance_id: instanceId.value || undefined,
+      agreement_type: 'activation_terms',
+      agreement_version: AGREEMENT_VERSION,
+      granted: true,
+      source: 'gateway-web/operation_dialog',
+    })
+  } catch { /* ignore */ }
+}
+
+async function ensureAgreementThenActivate() {
+  // 强制：未同意 → 弹窗 → 取消 → 阻断。
+  if (!agreementAccepted.value) {
+    pendingActivation.value = true
+    openAgreementDialog()
     return
   }
-  loading.value = true
-  error.value = ''
-  try {
-    localStorage.setItem(AGREEMENT_STORAGE_KEY, new Date().toISOString())
-    try {
-      await maintainLifecycleApi.consent({
-        subject_id: instanceId.value || 'anonymous',
-        instance_id: instanceId.value || undefined,
-        agreement_type: 'product_terms',
-        agreement_version: AGREEMENT_VERSION,
-        granted: true,
-        source: 'gateway-web/bootstrap_wizard',
-      })
-    } catch {
-      // offline-friendly: local consent is enough to proceed
-    }
-    step.value = 1
-    await loadFingerprint()
-  } finally {
-    loading.value = false
-  }
+  await continueActivate()
+}
+
+async function continueActivate() {
+  // 这里是协议已确认后的真正激活分支。
+  await performActivate()
 }
 
 async function goActivateStep() {
@@ -122,23 +193,41 @@ async function goActivateStep() {
     error.value = '无法采集设备指纹，请刷新后重试。'
     return
   }
+  if (!instanceId.value) {
+    error.value = '无法生成本机实例 ID，请稍后再试或检查服务器权限。'
+    return
+  }
   error.value = ''
   step.value = 2
+}
+
+async function copyInstanceId() {
+  if (!instanceId.value) return
+  try {
+    await navigator.clipboard.writeText(instanceId.value)
+    instanceIdCopied.value = true
+    setTimeout(() => { instanceIdCopied.value = false }, 2000)
+  } catch { /* ignore */ }
 }
 
 async function performActivate() {
   if (!canActivate.value) {
     error.value = activateMode.value === 'online'
-      ? '请填写实例 ID 与 License Key。'
+      ? '请填写 License Key。'
       : '请粘贴离线激活码或签名 License。'
+    return
+  }
+  // 二次保险：进 activate 之前再确认一次。
+  if (!agreementAccepted.value) {
+    pendingActivation.value = true
+    openAgreementDialog()
     return
   }
   loading.value = true
   error.value = ''
   message.value = ''
   try {
-    localStorage.setItem('llmgw_instance_id', instanceId.value.trim())
-    localStorage.setItem('maintain_instance_id', instanceId.value.trim())
+    setInstanceId(instanceId.value.trim())
 
     if (activateMode.value === 'online') {
       const result = await bootstrapApi.activate({
@@ -204,7 +293,6 @@ async function tryRegisterCenter() {
     }
     step.value = 4
   } catch (e) {
-    // Never block local use on center registration failure
     registerResult.value = {
       registered: false,
       deferred: true,
@@ -228,14 +316,13 @@ function skipToLogin() {
 
 onMounted(async () => {
   await loadStatus()
+  // 已激活且未点"重新激活"→ 直接到结束页，不要再弹协议。
   if (status.value?.activated) {
     step.value = 4
     return
   }
-  if (agreed.value) {
-    step.value = 1
-    await loadFingerprint()
-  }
+  // 强制：每次进入未激活的 bootstrap，必须先看到协议弹窗。
+  openAgreementDialog()
 })
 </script>
 
@@ -271,150 +358,162 @@ onMounted(async () => {
     <el-alert v-if="error" type="error" :title="error" show-icon closable class="mb" @close="error = ''" />
     <el-alert v-if="message" type="success" :title="message" show-icon class="mb" />
 
-    <!-- Step 0: Agreement -->
-    <el-card v-if="step === 0" shadow="never" class="wizard-card">
-      <template #header>用户协议与数据采集说明</template>
-      <p class="muted">激活前请确认：</p>
-      <ul class="agree-list">
-        <li>业务数据与配置默认保存在你的基础设施中。</li>
-        <li>本向导仅采集设备指纹哈希（hardware_hash）与网络摘要，不明文上传硬件序列号。</li>
-        <li>离线环境可完成本地激活；联网后自动向中心补注册与心跳。</li>
-        <li>软件按“现状”提供，请遵守适用的开源与商业授权条款。</li>
-      </ul>
-      <label class="check-row">
-        <input v-model="agreed" type="checkbox" />
-        <span>我已阅读并同意 <a href="/user-agreement.html" target="_blank" rel="noopener">用户许可协议</a></span>
-      </label>
-      <div class="wizard-actions">
-        <el-button type="primary" :loading="loading" :disabled="!canNextFromAgreement" @click="acceptAgreement">
-          同意并继续
-        </el-button>
-      </div>
-    </el-card>
+    <!-- 已同意协议但未完成激活：显示后续步骤；否则提示未同意 -->
+    <template v-if="agreementAccepted || agreementDialogResolved === 'agreed'">
+      <!-- Step 1: Fingerprint -->
+      <el-card v-if="step === 1" shadow="never" class="wizard-card">
+        <template #header>设备指纹</template>
+        <el-skeleton v-if="loading && !hardwareHash" :rows="3" animated />
+        <template v-else>
+          <el-descriptions :column="1" size="small" border>
+            <el-descriptions-item label="实例 ID">
+              <div class="instance-id-row">
+                <span class="mono">{{ instanceId || '—' }}</span>
+                <el-button size="small" type="primary" link :disabled="!instanceId" @click="copyInstanceId">
+                  {{ instanceIdCopied ? '已复制' : '复制实例 ID' }}
+                </el-button>
+              </div>
+              <p class="hint">实例 ID 由本机在安装时自动生成（每台物理设备唯一）。离线激活需复制此 ID 到公网激活站点。</p>
+            </el-descriptions-item>
+            <el-descriptions-item label="硬件哈希">
+              <span class="mono">{{ hardwareHash || '—' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item v-if="fingerprint?.os" label="系统">
+              {{ fingerprint.os }} / {{ fingerprint.arch || '—' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="网络摘要">
+              {{ networkSummary || '—' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="中心连通">
+              <el-tag :type="status?.center_online ? 'success' : 'info'" size="small">
+                {{ status?.center_online ? '在线（可自动注册）' : '离线（不阻塞激活）' }}
+              </el-tag>
+            </el-descriptions-item>
+          </el-descriptions>
+          <p class="hint">指纹仅用于绑定本机 License，不会上传原始硬件标识。</p>
+        </template>
+        <div class="wizard-actions">
+          <el-button :loading="loading" @click="loadFingerprint">重新采集</el-button>
+          <el-button type="primary" :disabled="!hardwareHash || !instanceId" @click="goActivateStep">下一步</el-button>
+        </div>
+      </el-card>
 
-    <!-- Step 1: Fingerprint -->
-    <el-card v-else-if="step === 1" shadow="never" class="wizard-card">
-      <template #header>设备指纹</template>
-      <el-skeleton v-if="loading && !hardwareHash" :rows="3" animated />
-      <template v-else>
-        <el-descriptions :column="1" size="small" border>
-          <el-descriptions-item label="实例 ID">
-            <span class="mono">{{ instanceId }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="硬件哈希">
-            <span class="mono">{{ hardwareHash || '—' }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item v-if="fingerprint?.os" label="系统">
-            {{ fingerprint.os }} / {{ fingerprint.arch || '—' }}
-          </el-descriptions-item>
-          <el-descriptions-item label="网络摘要">
-            {{ networkSummary || '—' }}
-          </el-descriptions-item>
-          <el-descriptions-item label="中心连通">
-            <el-tag :type="status?.center_online ? 'success' : 'info'" size="small">
-              {{ status?.center_online ? '在线（可自动注册）' : '离线（不阻塞激活）' }}
+      <!-- Step 2: Activate -->
+      <el-card v-else-if="step === 2" shadow="never" class="wizard-card">
+        <template #header>激活 License</template>
+        <p class="muted mb">
+          在线激活：填入 License Key；<br />
+          离线激活：复制上方实例 ID 到
+          <a href="https://llm.kxpms.cn/maintain/license" target="_blank" rel="noopener">公网激活站点</a>
+          生成激活码，粘贴回本机完成激活（可生成 license.dat 离线文件）。
+        </p>
+        <el-radio-group v-model="activateMode" class="mb">
+          <el-radio-button value="online">在线 / 填码激活</el-radio-button>
+          <el-radio-button value="offline">离线导入</el-radio-button>
+        </el-radio-group>
+
+        <el-form label-position="top" @submit.prevent="ensureAgreementThenActivate">
+          <el-form-item label="实例 ID（一机一实例，自动锁定）">
+            <el-input :model-value="instanceId" readonly class="mono-input" />
+          </el-form-item>
+          <el-form-item label="硬件哈希">
+            <el-input :model-value="hardwareHash" readonly class="mono-input" />
+          </el-form-item>
+          <template v-if="activateMode === 'online'">
+            <el-form-item label="License Key">
+              <el-input v-model="licenseKey" placeholder="LIC-••••••••" />
+            </el-form-item>
+            <el-form-item label="设备名称（可选）">
+              <el-input v-model="deviceName" placeholder="生产网关 01" />
+            </el-form-item>
+          </template>
+          <template v-else>
+            <el-form-item label="离线激活码 / 签名 License / license.dat">
+              <el-input
+                v-model="offlinePayload"
+                type="textarea"
+                :rows="5"
+                placeholder="粘贴审批通过后的激活响应、signed_license 或 license.dat 内容"
+              />
+            </el-form-item>
+            <p class="hint">
+              也可在
+              <RouterLink to="/customer/offline-activation">离线激活页</RouterLink>
+              提交申请，审批后再导入。
+            </p>
+          </template>
+        </el-form>
+        <div class="wizard-actions">
+          <el-button @click="step = 1">上一步</el-button>
+          <el-button type="primary" :loading="loading" :disabled="!canActivate" @click="ensureAgreementThenActivate">
+            激活
+          </el-button>
+        </div>
+      </el-card>
+
+      <!-- Step 3: Register center -->
+      <el-card v-else-if="step === 3" shadow="never" class="wizard-card">
+        <template #header>注册中心</template>
+        <el-skeleton v-if="loading" :rows="2" animated />
+        <template v-else-if="registerResult">
+          <p>
+            <el-tag :type="registerResult.registered ? 'success' : 'warning'" size="small">
+              {{ registerResult.registered ? '已注册' : '待补注册' }}
             </el-tag>
+            <span class="ml muted">{{ registerResult.message }}</span>
+          </p>
+          <p class="hint">中心不可达不会影响本机使用；恢复网络后将自动补注册与心跳。</p>
+        </template>
+        <div class="wizard-actions">
+          <el-button :loading="loading" @click="tryRegisterCenter">重试注册</el-button>
+          <el-button type="primary" @click="step = 4">继续</el-button>
+        </div>
+      </el-card>
+
+      <!-- Step 4: Done -->
+      <el-card v-else-if="step === 4" shadow="never" class="wizard-card">
+        <template #header>激活完成</template>
+        <p><strong>本机网关已就绪。</strong></p>
+        <p class="muted">
+          {{ status?.message || '可以登录本地后台开始使用。联网后中心将自动同步实例状态。' }}
+        </p>
+        <el-descriptions v-if="hardwareHash" :column="1" size="small" class="mt" border>
+          <el-descriptions-item label="实例 ID">{{ instanceId }}</el-descriptions-item>
+          <el-descriptions-item label="硬件哈希">
+            <span class="mono">{{ hardwareHash }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="中心">
+            {{ registerResult?.registered ? '已注册' : (registerResult?.message || '后台补注册') }}
           </el-descriptions-item>
         </el-descriptions>
-        <p class="hint">指纹仅用于绑定本机 License，不会上传原始硬件标识。</p>
-      </template>
-      <div class="wizard-actions">
-        <el-button @click="step = 0">上一步</el-button>
-        <el-button :loading="loading" @click="loadFingerprint">重新采集</el-button>
-        <el-button type="primary" :disabled="!hardwareHash" @click="goActivateStep">下一步</el-button>
-      </div>
-    </el-card>
+        <div class="wizard-actions">
+          <el-button type="primary" @click="finish">进入登录</el-button>
+          <RouterLink class="btn btn-ghost" to="/customer/license">查看 License 状态</RouterLink>
+        </div>
+      </el-card>
+    </template>
 
-    <!-- Step 2: Activate -->
-    <el-card v-else-if="step === 2" shadow="never" class="wizard-card">
-      <template #header>激活 License</template>
-      <p class="muted mb">
-        请先在云端 <a href="https://llm.kxpms.cn/maintain/license" target="_blank" rel="noopener">领取/查看激活码</a>，再回到本机填写。
-      </p>
-      <el-radio-group v-model="activateMode" class="mb">
-        <el-radio-button value="online">在线 / 填码激活</el-radio-button>
-        <el-radio-button value="offline">离线导入</el-radio-button>
-      </el-radio-group>
-
-      <el-form label-position="top" @submit.prevent="performActivate">
-        <el-form-item label="实例 ID">
-          <el-input v-model="instanceId" placeholder="gw-prod-01" />
-        </el-form-item>
-        <el-form-item label="硬件哈希">
-          <el-input :model-value="hardwareHash" readonly class="mono-input" />
-        </el-form-item>
-        <template v-if="activateMode === 'online'">
-          <el-form-item label="License Key">
-            <el-input v-model="licenseKey" placeholder="LIC-••••••••" />
-          </el-form-item>
-          <el-form-item label="设备名称（可选）">
-            <el-input v-model="deviceName" placeholder="生产网关 01" />
-          </el-form-item>
-        </template>
-        <template v-else>
-          <el-form-item label="离线激活码 / 签名 License">
-            <el-input
-              v-model="offlinePayload"
-              type="textarea"
-              :rows="5"
-              placeholder="粘贴审批通过后的激活响应或 signed_license"
-            />
-          </el-form-item>
-          <p class="hint">
-            也可在
-            <RouterLink to="/customer/offline-activation">离线激活页</RouterLink>
-            提交申请，审批后再导入。
-          </p>
-        </template>
-      </el-form>
-      <div class="wizard-actions">
-        <el-button @click="step = 1">上一步</el-button>
-        <el-button type="primary" :loading="loading" :disabled="!canActivate" @click="performActivate">
-          激活
-        </el-button>
-      </div>
-    </el-card>
-
-    <!-- Step 3: Register center -->
-    <el-card v-else-if="step === 3" shadow="never" class="wizard-card">
-      <template #header>注册中心</template>
-      <el-skeleton v-if="loading" :rows="2" animated />
-      <template v-else-if="registerResult">
-        <p>
-          <el-tag :type="registerResult.registered ? 'success' : 'warning'" size="small">
-            {{ registerResult.registered ? '已注册' : '待补注册' }}
-          </el-tag>
-          <span class="ml muted">{{ registerResult.message }}</span>
+    <template v-else>
+      <el-card shadow="never" class="wizard-card agreement-card">
+        <template #header>未同意用户协议</template>
+        <p class="muted">
+          激活本机 License 必须先阅读并同意 <a href="/user-agreement.html" target="_blank" rel="noopener">用户协议</a>。
+          点击下方按钮弹出协议确认窗口，勾选并"同意并继续"后才能进入后续步骤。
         </p>
-        <p class="hint">中心不可达不会影响本机使用；恢复网络后将自动补注册与心跳。</p>
-      </template>
-      <div class="wizard-actions">
-        <el-button :loading="loading" @click="tryRegisterCenter">重试注册</el-button>
-        <el-button type="primary" @click="step = 4">继续</el-button>
-      </div>
-    </el-card>
+        <div class="wizard-actions">
+          <el-button type="primary" @click="openAgreementDialog">阅读并同意用户协议</el-button>
+        </div>
+      </el-card>
+    </template>
 
-    <!-- Step 4: Done -->
-    <el-card v-else shadow="never" class="wizard-card">
-      <template #header>激活完成</template>
-      <p><strong>本机网关已就绪。</strong></p>
-      <p class="muted">
-        {{ status?.message || '可以登录本地后台开始使用。联网后中心将自动同步实例状态。' }}
-      </p>
-      <el-descriptions v-if="hardwareHash" :column="1" size="small" class="mt" border>
-        <el-descriptions-item label="实例 ID">{{ instanceId }}</el-descriptions-item>
-        <el-descriptions-item label="硬件哈希">
-          <span class="mono">{{ hardwareHash }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="中心">
-          {{ registerResult?.registered ? '已注册' : (registerResult?.message || '后台补注册') }}
-        </el-descriptions-item>
-      </el-descriptions>
-      <div class="wizard-actions">
-        <el-button type="primary" @click="finish">进入登录</el-button>
-        <RouterLink class="btn btn-ghost" to="/customer/license">查看 License 状态</RouterLink>
-      </div>
-    </el-card>
+    <OperationAgreementDialog
+      v-model="showAgreementDialog"
+      scope="activate"
+      :version="AGREEMENT_VERSION"
+      :subject-id="instanceId"
+      @agreed="onAgreementAgreed"
+      @cancelled="onAgreementCancelled"
+    />
   </div>
 </template>
 
@@ -484,6 +583,7 @@ onMounted(async () => {
 }
 
 .wizard-card { margin-bottom: 16px; }
+.agreement-card { border: 1px solid #f59e0b; background: #fffaf0; }
 .wizard-actions {
   display: flex;
   flex-wrap: wrap;
@@ -497,17 +597,12 @@ onMounted(async () => {
   line-height: 1.7;
   font-size: 14px;
 }
-.check-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-size: 14px;
-  color: #243044;
-}
-.check-row input { margin-top: 3px; }
 .muted { color: #5b6b82; font-size: 14px; line-height: 1.6; }
 .hint { margin: 10px 0 0; color: #7a879c; font-size: 12px; line-height: 1.5; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+.mono-input :deep(.el-input__inner),
+.mono-input input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.instance-id-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .mb { margin-bottom: 14px; }
 .ml { margin-left: 8px; }
 .mt { margin-top: 12px; }
