@@ -38,6 +38,10 @@ export default {
       later: 'Remind me later',
       activeTitle: 'License is valid',
       activeDesc: 'No further activation needed.',
+
+      trialCta: 'Start trial',
+
+      trialEmail: 'Email for trial notifications',
     },
     step2: {
       title: 'Step 2: Enter license key for online activation',
@@ -90,6 +94,77 @@ export default {
       offlineRequestFailed: 'Failed to generate offline request: {msg}',
       copied: 'Copied to clipboard',
       copyFailed: 'Copy failed — select manually',
+
+      trialEmailInvalid: 'Please enter a valid email',
+
+      trialFailed: 'Trial request failed',
+
+      trialFailedWithMsg: 'Trial request failed: {msg}',
+
+      trialCreated: 'Trial license created — completing activation…',
+
+      trialActivateFailed: 'Trial license issued, but auto-activation failed — complete step 2 manually',
     },
+
+    errorCodes: {
+      license_not_found: 'License key not found — check and try again',
+      license_expired: 'License has expired — contact License Authority to renew',
+      license_revoked: 'License has been revoked — contact License Authority',
+      device_limit_exceeded: 'Device limit reached — deactivate a device first',
+      device_already_activated: 'This device is already activated',
+    },
+
+    deviceTable: {
+      title: 'Currently active devices',
+      deviceName: 'Device name',
+      instanceId: 'Instance ID',
+      lastHeartbeat: 'Last heartbeat',
+    },
+
+    deviceId: {
+      label: 'Device identifier',
+      copy: 'Copy',
+      hint: 'Offline activation and license binding rely on this ID — do not share across machines.',
+    },
+
+    flow: {
+      title: 'Activation flow',
+      desc: '① Note device ID → ② Enter license key online or generate offline request → ③ Apply signed license. Unactivated: health + license APIs only; activated: full console and data plane.',
+    },
+
+    compare: {
+      feature: 'Capability',
+      inactive: 'Not activated',
+      active: 'Activated',
+      inactiveLimited: 'Activation wizard & basic pages only',
+      activeFull: 'Full console & tenant governance',
+      inactiveHealth: 'Health check + license APIs',
+      activeAll: 'All OpenAI-compatible proxy APIs',
+      inactiveTrial: '15-day trial available',
+      activeTrial: 'Full trial/commercial features',
+      rows: {
+        console: 'Admin console',
+        api: 'LLM proxy API',
+        trial: 'Trial & renewal',
+      },
+    },
+  },
+
+  info: {
+    title: 'License information',
+    refresh: 'Refresh',
+    gotoActivate: 'Go to activation wizard',
+    notActivated: 'This instance has no active license',
+    states: {
+      active: 'Activated',
+      grace: 'Grace period',
+      expired: 'Expired',
+      revoked: 'Revoked',
+      none: 'Not activated',
+    },
+    expiredBanner: 'License expired — some features are restricted. Renew and re-activate.',
+    revokedBanner: 'License revoked — request a new license or contact License Authority.',
+    reactivate: 'Re-activate',
+    loadFailed: 'Failed to load license info: {msg}',
   },
 }

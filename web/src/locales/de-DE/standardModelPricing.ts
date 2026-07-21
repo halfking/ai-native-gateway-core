@@ -47,6 +47,24 @@ export default {
     statusPartialCustom: '{n}/4 manuell',
     manualTagTitle: 'Manuelle Preisgestaltung',
     manualTag: 'M',
+
+    colModality: 'Modality',
+
+    modalityText: 'Text',
+
+    modalityVision: 'Vision',
+
+    modalityAudio: 'Audio',
+
+    modalityVideo: 'Video',
+
+    modalityMultimodal: 'Multimodal',
+
+    modalityEmbedding: 'Embedding',
+
+    modalityOther: 'Other',
+
+    hasMultimodal: 'Has manual multimodal pricing',
   },
   editModal: {
     title: 'Manuelle Preisgestaltung · {name}',
@@ -62,12 +80,28 @@ export default {
     resetConfirm: 'Alle Dimensionen von {name} auf die globale Basis zurücksetzen?',
     resetSuccess: 'Zurückgesetzt',
     resetFailed: 'Zurücksetzen fehlgeschlagen',
+
+    sectionText: 'Text-token dimensions',
+
+    sectionMultimodal: 'Multimodal-token dimensions (vision / audio / video)',
+
+    fieldImage: 'Vision tokens',
+
+    fieldAudio: 'Audio tokens',
+
+    fieldVideo: 'Video tokens',
   },
   field: {
     input: 'Eingabe',
     output: 'Ausgabe',
     cacheRead: 'Cache lesen',
     cacheWrite: 'Cache schreiben',
+
+    image: 'Vision',
+
+    audio: 'Audio',
+
+    video: 'Video',
   },
   error: {
     loadFailed: 'Laden fehlgeschlagen',
@@ -105,5 +139,7 @@ export default {
     msgReset: '已恢复 {n} 个模型',
     msgFilled: '已写入 {n} 个模型',
     msgFailed: '批量操作失败',
+
+    fillGlobal: 'Fill current global',
   },
 }

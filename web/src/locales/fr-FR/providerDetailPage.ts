@@ -37,4 +37,20 @@ export default {
   loadFailed: 'Échec du chargement',
   operationFailed: 'Échec de l\'opération',
   diagFailed: 'Échec du diagnostic',
+
+  quality: {
+    loading: 'Loading quality data…',
+    noData: 'No quality data yet. Quality profiles are calculated periodically; refresh later or run a probe first.',
+    overallScore: 'Overall score',
+    providerAggregate: 'Provider aggregate',
+    modelDetails: 'Model quality details',
+    model: 'Model',
+    overallQuality: 'Overall quality',
+    grade: 'Grade',
+    availability: 'Availability',
+    performance: 'Performance',
+    stability: 'Stability',
+    costEfficiency: 'Cost efficiency',
+    updatedAt: 'Updated at',
+  },
 }

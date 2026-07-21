@@ -82,6 +82,8 @@ export default {
       taskLabel: 'Aufgaben-ID',
       taskPlaceholder: 'Aufgaben-ID eingeben…',
       totalMeta: '{n} insgesamt',
+
+      resultRateLimited: 'Rate limited',
     },
     trace: {
       title: 'Aufgabenverlauf',

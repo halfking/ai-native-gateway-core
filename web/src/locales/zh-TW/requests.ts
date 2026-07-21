@@ -89,6 +89,8 @@ export default {
       taskLabel: '任務 ID',
       taskPlaceholder: '輸入任務 ID…',
       totalMeta: '共 {n} 條',
+
+      resultRateLimited: '限流',
     },
     trace: {
       title: '任務脈絡',

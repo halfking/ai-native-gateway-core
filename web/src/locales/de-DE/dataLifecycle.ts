@@ -310,6 +310,38 @@ promoteAll: "alles",
       toast: "TOAST"
     },
     migrationFailed: "迁移失败"
+,
+    jobIdMissing: 'Failed to start async job: missing job_id',
+
+    asyncCompleted: 'Async migration complete: {n} rows migrated',
+
+    asyncFailed: 'Async migration failed: {error}',
+
+    cancel: 'Cancel',
+
+    cancelTitle: 'Cancel migration job',
+
+    cancelConfirm: 'Cancel the currently running migration job? Already-migrated data will be preserved.',
+
+    cancelRequested: 'Cancellation requested. The job will stop at the next batch.',
+
+    asyncEnabledHint: 'Since 2026-07-13 migrations run in async mode. Real-time progress and cancel are visible on this page.',
+
+    cronStatsTitle: 'Nightly auto-migration',
+
+    cronStatsDesc: 'Every day at 02:00 AM, hot tables older than 24 hours are auto-migrated. Tunable via env vars.',
+
+    cronEnabled: 'Enabled',
+
+    cronDisabled: 'Disabled',
+
+    cronLastRun: 'Last run',
+
+    cronRunCount: 'Total runs',
+
+    cronLastError: 'Last error',
+
+    cronRunning: 'Running now',
   },
   preview: "预览清理",
   hotData: "热数据 (0-7天)",

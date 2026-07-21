@@ -164,4 +164,8 @@ export default {
     lightTitle: 'Heller Modus',
     darkTitle: 'Dunkler Modus',
   },
+
+  copied: 'Copied',
+
+  add: 'Add',
 }

@@ -40,6 +40,8 @@ export default {
     hint1: 'La trace n’est émise que si l’instrumentation est activée (par défaut : oui)',
     hint2: 'Terminées il y a < 10 min : encore dans Redis',
     hint3: 'Déjà vidées dans PostgreSQL : affichées en repli',
+
+    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
   },
   aiPrompt: {
     button: '🤖 Générer un prompt IA',

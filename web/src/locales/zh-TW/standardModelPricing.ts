@@ -47,6 +47,24 @@ export default {
     statusPartialCustom: '{n}/4 手工',
     manualTagTitle: '手工定價',
     manualTag: '手',
+
+    colModality: '模态',
+
+    modalityText: '文本',
+
+    modalityVision: '视觉',
+
+    modalityAudio: '音频',
+
+    modalityVideo: '视频',
+
+    modalityMultimodal: '多模态',
+
+    modalityEmbedding: '向量',
+
+    modalityOther: '其他',
+
+    hasMultimodal: '含多模态定价',
   },
   editModal: {
     title: '手工定價 · {name}',
@@ -62,12 +80,28 @@ export default {
     resetConfirm: '恢復 {name} 全部維度為全域基準？',
     resetSuccess: '已恢復',
     resetFailed: '恢復失敗',
+
+    sectionText: '文本 Token 维度',
+
+    sectionMultimodal: '多模态 Token 维度（视觉 / 音频 / 视频）',
+
+    fieldImage: '视觉 Token',
+
+    fieldAudio: '音频 Token',
+
+    fieldVideo: '视频 Token',
   },
   field: {
     input: '輸入',
     output: '輸出',
     cacheRead: '快取讀',
     cacheWrite: '快取寫',
+
+    image: '视觉',
+
+    audio: '音频',
+
+    video: '视频',
   },
   error: {
     loadFailed: '載入失敗',
@@ -105,5 +139,7 @@ export default {
     msgReset: '已恢復 {n} 個模型',
     msgFilled: '已寫入 {n} 個模型',
     msgFailed: '批量操作失敗',
+
+    fillGlobal: '填入当前全局',
   },
 }

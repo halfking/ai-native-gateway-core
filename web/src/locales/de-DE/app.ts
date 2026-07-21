@@ -41,4 +41,11 @@ export default {
     mainAria: 'Hauptnavigation',
     skip: 'Zum Hauptinhalt springen',
   },
+
+  theme: {
+    switchToLight: 'Switch to light',
+    switchToDark: 'Switch to dark',
+    lightTitle: 'Light mode',
+    darkTitle: 'Dark mode',
+  },
 }

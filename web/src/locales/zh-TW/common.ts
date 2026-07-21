@@ -164,4 +164,8 @@ export default {
     lightTitle: '淺色模式',
     darkTitle: '深色模式',
   },
+
+  copied: '已复制',
+
+  add: '添加',
 }

@@ -89,6 +89,8 @@ export default {
       taskLabel: 'معرّف المهمة',
       taskPlaceholder: 'إدخال معرّف المهمة…',
       totalMeta: 'إجمالي {n}',
+
+      resultRateLimited: 'Rate limited',
     },
     trace: {
       title: 'مسار المهمة',

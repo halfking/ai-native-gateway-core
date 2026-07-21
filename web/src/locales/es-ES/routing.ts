@@ -125,6 +125,10 @@ export default {
       noCreds: 'Sin credenciales',
       sixDimScore: 'Puntuación 6-dim',
       emptyHint: 'Sin datos de índice — clic en ↻ para actualizar',
+
+      smartConfig: 'Smart routing',
+
+      smartConfigHint: 'Configure primary / secondary / fallback models per task type',
     },
     policy: {
       fields: {
@@ -305,6 +309,8 @@ export default {
   weightsDirty: '系数有变更，未保存',
     },
     weightsDirty: 'Pesos modificados, sin guardar',
+
+    backLink: '← Routing overview',
   },
   test: {
     title: 'Prueba de enrutamiento',

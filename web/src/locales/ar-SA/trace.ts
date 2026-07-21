@@ -40,6 +40,8 @@ export default {
     hint1: 'يُنشأ trace فقط عند تفعيل أدوات القياس (مفعّل افتراضياً)',
     hint2: 'الطلبات المكتملة خلال 10 دقائق: لا تزال في Redis',
     hint3: 'بعد التفريغ في PostgreSQL: يمكن عرضها كنسخة احتياطية',
+
+    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
   },
   aiPrompt: {
     button: '🤖 إنشاء مطالبة AI',

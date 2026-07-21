@@ -249,6 +249,10 @@ export default {
     onboardingKeysHint: "簽發金鑰後發起呼叫。",
     loadFailed: "載入失敗",
     detailLoadFailed: "明細載入失敗"
+,
+    statCreditsConsumed: '总积分消耗',
+
+    statCreditsConsumedSub: '近 {n} 天 · 按定价 × token 计算',
   },
   maasUsageView: {
     consumeLabel: "積分消耗",
@@ -419,5 +423,13 @@ export default {
         revoked: '已撤銷',
       },
     },
+  },
+
+  status: {
+    active: '正常',
+    trial: '试用',
+    suspended: '暂停',
+    expired: '过期',
+    disabled: '已禁用',
   },
 }

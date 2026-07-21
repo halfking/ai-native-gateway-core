@@ -64,6 +64,12 @@ export default {
     cascadeEmpty: '所有依赖已启用，模块已正常开启',
     cascadeAlreadyEnabled: '模块已启用，无需级联',
     cascadeLogTitle: '本次级联开启的依赖：',
+
+    sectionDependencies: 'Dependencies',
+
+    dependencyDisabled: 'Dependency module is disabled',
+
+    notEnabled: 'Not enabled',
   },
 
   config: {
@@ -197,4 +203,8 @@ export default {
   routing_csvImportSuccess: '已导入 {imported} 条，跳过 {skipped} 条',
   routing_csvErrorRow: '第 {row} 行：{error}',
   // 同步的扁平键
+
+  modeBannerTitle: 'This page only does three things:',
+
+  modeBannerBody: 'Toggle installed modules, and download modules that are already licensed but not enabled. No pricing, ordering, or plan entry here (purchase flows are announced separately).',
 }

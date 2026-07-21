@@ -59,6 +59,20 @@ export default {
       approved: '已批准',
       rejected: '已拒絕',
     },
+
+    holdersTab: '持有人',
+
+    licensesTab: 'License 列表',
+
+    holderEmail: '持有人邮箱',
+
+    holderLicenses: 'License 数',
+
+    holderDevices: '设备数',
+
+    holderDonations: '累计捐赠',
+
+    loadHoldersFailed: '加载持有人失败',
   },
 
   // Fault Management
@@ -200,6 +214,38 @@ export default {
       rolled_back: '已回滾',
       _unknown: '未知',
     },
+
+    rolloutGate: '灰度门禁',
+
+    rolloutTitle: '灰度门禁 · {version}',
+
+    rolloutRuleStatus: '规则状态',
+
+    rolloutGateAllowed: '允许推进',
+
+    rolloutSuccessRate: '升级成功率',
+
+    rolloutRollbackRate: '回滚率',
+
+    rolloutSamples: '升级样本',
+
+    rolloutSuccessCount: '成功',
+
+    rolloutFailedCount: '失败',
+
+    rolloutRolledBackCount: '回滚',
+
+    rolloutPause: '暂停灰度',
+
+    rolloutResume: '恢复灰度',
+
+    rolloutPauseSuccess: '灰度已暂停',
+
+    rolloutResumeSuccess: '灰度已恢复',
+
+    rolloutLoadFailed: '加载灰度门禁状态失败',
+
+    rolloutActionFailed: '灰度门禁操作失败',
   },
 
   // Center Operations
@@ -243,6 +289,32 @@ export default {
       configUpdate: '更新配置',
       healthCheck: '健康檢查',
       collectLogs: '收集日誌',
+    },
+
+    lastCommand: '最近命令 {id} · 状态：{status}',
+
+    alerts: {
+      title: '运维告警',
+      openCount: '未关闭 {count}',
+      empty: '暂无告警',
+      severity: '级别',
+      alertTitle: '标题',
+      message: '详情',
+      source: '来源',
+      detectedAt: '检测时间',
+      acknowledge: '确认',
+      resolve: '解决',
+      suppress: '压制 24h',
+      ackSuccess: '告警已确认',
+      resolveSuccess: '告警已解决',
+      suppressSuccess: '告警已压制 24 小时',
+      actionFailed: '告警操作失败',
+      status: {
+        triggered: '待处理',
+        acknowledged: '已确认',
+        resolved: '已解决',
+        suppressed: '已压制',
+      },
     },
   },
 
@@ -313,5 +385,147 @@ export default {
     recentFaults: '最新告警',
     pendingOffline: '待審批離線啟用',
     viewAll: '查看全部',
+
+    subtitle: '一眼掌握集群健康；点进节点查看性能压力、请求汇总与错误详情',
+
+    licenseSubsystem: '许可子系统',
+
+    licenseModeNormal: '运行中',
+
+    licenseModeRestricted: '已停服',
+
+    licenseModeGrace: '宽容期（剩余 {hours} 小时）',
+
+    lastRefresh: '上次刷新',
+
+    consecutiveFailures: '连续失败次数',
+
+    totalCycles: '共 {n} 轮',
+
+    lastError: '最近错误',
+
+    justNow: '刚刚',
+
+    minutesAgo: '{n} 分钟前',
+
+    hoursAgo: '{n} 小时前',
+
+    daysAgo: '{n} 天前',
+
+    todayDownloads: '今日下载',
+
+    weekDownloads: '7 日下载',
+
+    supporterCount: '支持者',
+
+    donationTotal: '捐赠总额',
+
+    activationRate: '30 日激活率',
+
+    publicPortal: '公开门户',
+
+    deploymentNodes: '部署节点',
+
+    topologyTitle: '部署拓扑',
+
+    topologyHint: '按区域分区；节点少时卡片放大，多时自动换行。点击节点查看详情。',
+
+    regionEmpty: '未注册节点',
+
+    nodesOnlineOf: '{online} / {total} 在线',
+
+    noHeartbeat: '无心跳',
+
+    viewNode: '详情',
+
+    nodeDetailTitle: '节点详情',
+
+    nodeDetailLoadFailed: '加载节点详情失败',
+
+    perfPressure: '性能压力',
+
+    memory: '内存',
+
+    concurrency: '并发',
+
+    requestSummary: '请求汇总',
+
+    requestsTotal: '总请求',
+
+    requestsOk: '成功',
+
+    requestsErr: '错误',
+
+    successRate: '成功率',
+
+    avgLatency: '平均延迟',
+
+    nodeErrors: '错误与告警',
+
+    noNodeErrors: '暂无告警',
+
+    regionMissing: '未注册',
+
+    regionOnline: '在线',
+
+    regionDegraded: '降级',
+
+    regionOffline: '离线',
+
+    regionOnlineCount: '{n} 在线',
+
+    dataPlaneTables: '252 数据面表记录数',
   }
+,
+  downloads: {
+    title: '下载发版',
+    subtitle: '编译验证、打包离线安装包并发布到 download.kxpms.cn 版本目录',
+    publishBtn: '发布当前版本到下载站',
+    publishOk: '发布成功',
+    publishFailed: '发布失败',
+    loadFailed: '加载下载发版数据失败',
+    todayDl: '今日下载',
+    totalDl: '累计下载',
+    supporters: '支持者',
+    activationRate: '激活率',
+    currentVersion: '当前发布版本',
+    version: '版本号',
+    buildSeq: '构建序号',
+    gitRepo: '开源仓库',
+    artifacts: '已发布产物',
+    platform: '平台',
+    file: '文件名',
+    size: '大小',
+    path: '存储路径',
+    publishHistory: '发版记录',
+    status: '状态',
+    artifactCount: '产物数',
+    tests: '测试',
+    createdAt: '时间',
+    summary: '摘要',
+    storageHint: '离线包按版本号存放于 245:/var/www/download/llm-gateway-go/v{version}/，发版前自动跑 distribution 测试并写入 download_publish_runs 审计表。',
+    openPublicDownload: '打开公开下载页',
+    openActivate: '打开激活向导',
+  },
+
+  blocklist: {
+    title: 'IP 黑名单',
+    loadFailed: '加载黑名单失败',
+    add: '添加封禁',
+    ip: 'IP/CIDR',
+    ipPlaceholder: '例: 203.0.113.10 或 10.0.0.0/8',
+    ipRequired: '请输入 IP 或 CIDR',
+    reason: '原因',
+    scope: '作用域',
+    hits: '命中次数',
+    total: '共 {n} 条',
+    createSuccess: '已添加',
+    createFailed: '添加失败',
+    updateFailed: '更新失败',
+    deleteConfirm: '确认删除 {ip}？',
+    deleteSuccess: '已删除',
+    reloadCache: '刷新 Redis 缓存',
+    reloadSuccess: '缓存已刷新',
+    reloadFailed: '缓存刷新失败',
+  },
 }

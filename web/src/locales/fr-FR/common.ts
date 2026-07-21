@@ -164,4 +164,8 @@ export default {
     lightTitle: 'Mode clair',
     darkTitle: 'Mode sombre',
   },
+
+  copied: 'Copied',
+
+  add: 'Add',
 }

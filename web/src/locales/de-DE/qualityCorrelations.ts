@@ -20,6 +20,8 @@ export default {
     window: 'Window',
     totalSamples: 'Total samples',
     needSamples: 'Need ≥ 30 samples for insights',
+
+    windowDays: '{n} days',
   },
   breakdown: {
     title: 'Breakdown by {by}',
@@ -39,5 +41,9 @@ export default {
     empty: 'Not enough samples for insights.',
     buckets: '{n} buckets',
     samples: '{n} samples',
+
+    emptyInsufficient: 'Need at least 30 samples to compute meaningful correlations.',
+
+    emptyUnexpected: 'No insights (unexpected). Check server logs.',
   },
 }

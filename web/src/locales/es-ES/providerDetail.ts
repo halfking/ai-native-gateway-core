@@ -326,6 +326,18 @@ export default {
       chipAvailable: "可用",
       chipUnavailable: "不可用"
     }
+,
+    probeAllRecoveredHint: '✓ {n} model(s) probed OK; node_probe_state auto-recovered, routing candidates re-enabled',
+
+    resetNodeProbeBtn: 'Clear failed probes',
+
+    resetNodeProbeLoading: 'Clearing…',
+
+    resetNodeProbeTitle: 'Clear node_probe_state rows where last_direct_ok=FALSE (force-recover routing). Use when Probe all shows OK but routing candidates remain blocked.',
+
+    resetNodeProbeConfirm: 'Clear all failed node_probe_state rows for this provider?',
+
+    resetNodeProbeDone: '✓ Cleared {n} failed node_probe_state rows; routing candidates re-enabled',
   },
   settings: {
     overrideTitle: "🎛️ Configuración del modo passthrough",

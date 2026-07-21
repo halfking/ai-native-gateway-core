@@ -80,6 +80,8 @@ export default {
       taskLabel: 'ID de tarea',
       taskPlaceholder: 'Introduzca el ID de tarea…',
       totalMeta: '{n} en total',
+
+      resultRateLimited: 'Rate limited',
     },
     trace: {
       title: 'Traza de tarea',

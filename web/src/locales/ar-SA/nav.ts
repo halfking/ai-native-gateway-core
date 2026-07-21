@@ -61,6 +61,20 @@ export default {
     opsProductEntry: "Product Entry",
     tenantLicense: "ترخيصي",
     tenantAutoUpdate: "تحديثاتي"
+,
+    updateActivate: 'Update & Activate',
+
+    licenseActivate: 'License Activation',
+
+    siteInfo: 'Site Info',
+
+    licenseStatus: 'License Status',
+
+    licenseAgreement: 'User License Agreement',
+
+    licenseOffline: 'Offline Activation',
+
+    telemetryScope: 'Data Collection Scope',
   },
 
   mainAria: 'التنقل الرئيسي',
@@ -72,4 +86,6 @@ export default {
   publicLicense: 'الترخيص',
   publicAgreement: 'اتفاقية المستخدم',
   publicSupport: 'الدعم الفني',
+
+  skip: 'Skip to main content',
 }

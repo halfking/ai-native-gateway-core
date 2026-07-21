@@ -59,6 +59,20 @@ export default {
       approved: 'Approved',
       rejected: 'Rejected',
     },
+
+    holdersTab: 'License Holders',
+
+    licensesTab: 'Licenses',
+
+    holderEmail: 'Holder Email',
+
+    holderLicenses: 'Licenses',
+
+    holderDevices: 'Devices',
+
+    holderDonations: 'Total Donated',
+
+    loadHoldersFailed: 'Failed to load holders',
   },
 
   // Fault Management
@@ -99,12 +113,50 @@ export default {
       open: 'Open',
       resolving: 'Resolving',
       resolved: 'Resolved',
+
+      new: 'New',
+
+      acknowledged: 'Acknowledged',
+
+      ignored: 'Ignored',
     },
     severity: {
       critical: 'Critical',
       warning: 'Warning',
       info: 'Info',
+
+      error: 'Error',
     },
+
+    acknowledge: 'Acknowledge',
+
+    resolve: 'Resolve',
+
+    resolvedEvents24h: 'Resolved (24h)',
+
+    titleLabel: 'Title',
+
+    source: 'Source',
+
+    metric: 'Metric',
+
+    operator: 'Operator',
+
+    threshold: 'Threshold',
+
+    duration: 'Duration',
+
+    action: 'Action',
+
+    actionConfig: 'Action Config',
+
+    cooldown: 'Cooldown',
+
+    ackedAt: 'Acknowledged At',
+
+    metadata: 'Metadata',
+
+    eventDetail: 'Event Detail',
   },
 
   // Auto Update
@@ -178,6 +230,48 @@ export default {
       rolled_back: 'Rolled Back',
       _unknown: 'غير معروف',
     },
+
+    grayPhaseCanary: 'Canary',
+
+    grayPhaseBatch1: 'Batch 1',
+
+    grayPhaseBatch2: 'Batch 2',
+
+    grayPhaseBatch3: 'Batch 3',
+
+    grayPhaseFull: 'Full',
+
+    rolloutGate: 'Rollout Gate',
+
+    rolloutTitle: 'Rollout Gate · {version}',
+
+    rolloutRuleStatus: 'Rule Status',
+
+    rolloutGateAllowed: 'Advance Allowed',
+
+    rolloutSuccessRate: 'Success Rate',
+
+    rolloutRollbackRate: 'Rollback Rate',
+
+    rolloutSamples: 'Upgrade Samples',
+
+    rolloutSuccessCount: 'Success',
+
+    rolloutFailedCount: 'Failed',
+
+    rolloutRolledBackCount: 'Rolled Back',
+
+    rolloutPause: 'Pause Rollout',
+
+    rolloutResume: 'Resume Rollout',
+
+    rolloutPauseSuccess: 'Rollout paused',
+
+    rolloutResumeSuccess: 'Rollout resumed',
+
+    rolloutLoadFailed: 'Failed to load rollout gate status',
+
+    rolloutActionFailed: 'Rollout gate action failed',
   },
 
   // Center Operations
@@ -209,6 +303,50 @@ export default {
       online: 'Online',
       offline: 'Offline',
       degraded: 'Degraded',
+    },
+
+    lastCommand: 'Last command {id} · status: {status}',
+
+    ipAddress: 'IP Address',
+
+    region: 'Region',
+
+    buildSeq: 'Build',
+
+    startedAt: 'Started At',
+
+    totalInstances: 'Total',
+
+    cmd: {
+      restart: 'Restart Service',
+      upgrade: 'Upgrade Version',
+      configUpdate: 'Update Config',
+      healthCheck: 'Health Check',
+      collectLogs: 'Collect Logs',
+    },
+
+    alerts: {
+      title: 'Operational Alerts',
+      openCount: 'Open {count}',
+      empty: 'No alerts',
+      severity: 'Severity',
+      alertTitle: 'Title',
+      message: 'Message',
+      source: 'Source',
+      detectedAt: 'Detected At',
+      acknowledge: 'Acknowledge',
+      resolve: 'Resolve',
+      suppress: 'Suppress 24h',
+      ackSuccess: 'Alert acknowledged',
+      resolveSuccess: 'Alert resolved',
+      suppressSuccess: 'Alert suppressed for 24 hours',
+      actionFailed: 'Alert action failed',
+      status: {
+        triggered: 'Triggered',
+        acknowledged: 'Acknowledged',
+        resolved: 'Resolved',
+        suppressed: 'Suppressed',
+      },
     },
   },
 
@@ -279,5 +417,147 @@ export default {
     recentFaults: 'أحدث التنبيهات',
     pendingOffline: 'تفعيلات offline قيد الموافقة',
     viewAll: 'عرض الكل',
+
+    subtitle: 'Cluster health at a glance — open a node for pressure, requests, and errors',
+
+    licenseSubsystem: 'License Subsystem',
+
+    licenseModeNormal: 'Operational',
+
+    licenseModeRestricted: 'Restricted',
+
+    licenseModeGrace: 'Grace ({hours}h left)',
+
+    lastRefresh: 'Last Refresh',
+
+    consecutiveFailures: 'Consecutive Failures',
+
+    totalCycles: '{n} cycles',
+
+    lastError: 'Last Error',
+
+    justNow: 'just now',
+
+    minutesAgo: '{n}m ago',
+
+    hoursAgo: '{n}h ago',
+
+    daysAgo: '{n}d ago',
+
+    todayDownloads: 'Downloads Today',
+
+    weekDownloads: '7-Day Downloads',
+
+    supporterCount: 'Supporters',
+
+    donationTotal: 'Donations (CNY)',
+
+    activationRate: '30d Activation Rate',
+
+    publicPortal: 'Public Portal',
+
+    deploymentNodes: 'Deployment Nodes',
+
+    topologyTitle: 'Deployment Topology',
+
+    topologyHint: 'Grouped by region. Sparse nodes stay large; dense grids wrap. Click a node for details.',
+
+    regionEmpty: 'No registered nodes',
+
+    nodesOnlineOf: '{online} / {total} online',
+
+    noHeartbeat: 'no heartbeat',
+
+    viewNode: 'Details',
+
+    nodeDetailTitle: 'Node Detail',
+
+    nodeDetailLoadFailed: 'Failed to load node detail',
+
+    perfPressure: 'Performance Pressure',
+
+    memory: 'Memory',
+
+    concurrency: 'Concurrency',
+
+    requestSummary: 'Request Summary',
+
+    requestsTotal: 'Total',
+
+    requestsOk: 'OK',
+
+    requestsErr: 'Errors',
+
+    successRate: 'Success Rate',
+
+    avgLatency: 'Avg Latency',
+
+    nodeErrors: 'Errors & Alerts',
+
+    noNodeErrors: 'No open alerts',
+
+    regionMissing: 'Not registered',
+
+    regionOnline: 'Online',
+
+    regionDegraded: 'Degraded',
+
+    regionOffline: 'Offline',
+
+    regionOnlineCount: '{n} online',
+
+    dataPlaneTables: '252 data-plane row counts',
   }
+,
+  downloads: {
+    title: 'Download Releases',
+    subtitle: 'Build, verify, package offline installers and publish to download.kxpms.cn',
+    publishBtn: 'Publish current version to download site',
+    publishOk: 'Published successfully',
+    publishFailed: 'Publish failed',
+    loadFailed: 'Failed to load download release data',
+    todayDl: 'Downloads today',
+    totalDl: 'Total downloads',
+    supporters: 'Supporters',
+    activationRate: 'Activation rate',
+    currentVersion: 'Current release',
+    version: 'Version',
+    buildSeq: 'Build seq',
+    gitRepo: 'Open-source repo',
+    artifacts: 'Published artifacts',
+    platform: 'Platform',
+    file: 'File',
+    size: 'Size',
+    path: 'Storage path',
+    publishHistory: 'Publish history',
+    status: 'Status',
+    artifactCount: 'Artifacts',
+    tests: 'Tests',
+    createdAt: 'Created',
+    summary: 'Summary',
+    storageHint: 'Offline packages are stored at 245:/var/www/download/llm-gateway-go/v{version}/. Publish runs distribution tests and writes audit rows to download_publish_runs.',
+    openPublicDownload: 'Open public download page',
+    openActivate: 'Open activation wizard',
+  },
+
+  blocklist: {
+    title: 'IP Blocklist',
+    loadFailed: 'Failed to load blocklist',
+    add: 'Add block',
+    ip: 'IP/CIDR',
+    ipPlaceholder: 'e.g. 203.0.113.10 or 10.0.0.0/8',
+    ipRequired: 'IP or CIDR required',
+    reason: 'Reason',
+    scope: 'Scope',
+    hits: 'Hits',
+    total: '{n} entries',
+    createSuccess: 'Added',
+    createFailed: 'Add failed',
+    updateFailed: 'Update failed',
+    deleteConfirm: 'Delete {ip}?',
+    deleteSuccess: 'Deleted',
+    reloadCache: 'Reload Redis cache',
+    reloadSuccess: 'Cache reloaded',
+    reloadFailed: 'Cache reload failed',
+  },
 }

@@ -38,6 +38,10 @@ export default {
       later: '稍後處理',
       activeTitle: 'License 有效',
       activeDesc: '无需再次啟用。',
+
+      trialCta: '申请试用',
+
+      trialEmail: '用于接收试用信息的邮箱',
     },
     step2: {
       title: '第 2 步：输入 License Key 进行在线啟用',
@@ -90,6 +94,77 @@ export default {
       offlineRequestFailed: '產生離線請求失败: {msg}',
       copied: '已複製到剪貼簿',
       copyFailed: '複製失败，请手动选择',
+
+      trialEmailInvalid: '请输入有效邮箱',
+
+      trialFailed: '试用申请失败',
+
+      trialFailedWithMsg: '试用申请失败: {msg}',
+
+      trialCreated: '试用 License 已创建，正在完成激活…',
+
+      trialActivateFailed: '试用 License 已签发，但自动激活失败，请手动完成第 2 步',
     },
+
+    errorCodes: {
+      license_not_found: 'License Key 不存在，请核对后重试',
+      license_expired: 'License 已过期，请联系 License Authority 续期',
+      license_revoked: 'License 已被吊销，请联系 License Authority',
+      device_limit_exceeded: '设备数量已达上限，请先停用一台设备',
+      device_already_activated: '本机已激活，无需重复操作',
+    },
+
+    deviceTable: {
+      title: '当前已激活设备',
+      deviceName: '设备名称',
+      instanceId: '实例 ID',
+      lastHeartbeat: '上次心跳',
+    },
+
+    deviceId: {
+      label: '设备识别码',
+      copy: '复制',
+      hint: '离线激活与 License 绑定均依赖此标识，请勿与他人混用。',
+    },
+
+    flow: {
+      title: '激活流程说明',
+      desc: '① 查看设备识别码 → ② 在线输入 License Key 或生成离线请求 → ③ 获得签名 License 后完成激活。未激活时仅开放健康检查与激活相关 API；激活后解锁控制台与全部数据面能力。',
+    },
+
+    compare: {
+      feature: '能力项',
+      inactive: '未激活',
+      active: '已激活',
+      inactiveLimited: '仅激活向导与基础页面',
+      activeFull: '完整控制台与租户治理',
+      inactiveHealth: '健康检查 + License API',
+      activeAll: '全部 OpenAI 兼容 API 与路由',
+      inactiveTrial: '可申请 15 天试用',
+      activeTrial: '试用/正式 License 全功能',
+      rows: {
+        console: '管理控制台',
+        api: 'LLM 代理 API',
+        trial: '试用与续期',
+      },
+    },
+  },
+
+  info: {
+    title: 'License 信息',
+    refresh: '刷新',
+    gotoActivate: '前往激活向导',
+    notActivated: '本机尚未激活 License',
+    states: {
+      active: '已激活',
+      grace: '宽限期',
+      expired: '已过期',
+      revoked: '已吊销',
+      none: '未激活',
+    },
+    expiredBanner: 'License 已过期，部分功能受限。请续期后重新激活。',
+    revokedBanner: 'License 已被吊销，请重新申请或联系 License Authority。',
+    reactivate: '重新激活',
+    loadFailed: '查询 License 信息失败: {msg}',
   },
 }
