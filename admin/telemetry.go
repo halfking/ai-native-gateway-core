@@ -248,7 +248,11 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	rawModel := firstNonEmptyStr(e.OutboundModel, e.ClientModel)
 	search := buildSearchText(e)
 
-	// 2026-07-13: drop request_body/response_body for SUCCESS rows.
+	// 2026-07-21: TEMPORARILY disabled body dropping to investigate context loss.
+	// TODO: After investigation, implement proper separation:
+	//   - request_logs_hot: only store request_preview/response_preview
+	//   - request_logs_bodies_hot: store full request_body/response_body
+	// Original logic (2026-07-13):
 	// The full TOAST'd bodies are the largest contributor to disk usage
 	// (3.4 GB / 24k rows in one month on 154). For failures we still
 	// keep them for forensics. Override via env var
@@ -256,10 +260,10 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// (e.g. when debugging a specific production issue).
 	requestBody := e.RequestBody
 	responseBody := e.ResponseBody
-	if e.Success && !keepAllBodies() {
-		requestBody = nil
-		responseBody = nil
-	}
+	// COMMENTED OUT: if e.Success && !keepAllBodies() {
+	// 	requestBody = nil
+	// 	responseBody = nil
+	// }
 
 	tx, err := t.db.Begin(ctx)
 	if err != nil {
