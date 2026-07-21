@@ -222,7 +222,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	if err != nil {
 		res.Status = ProbeStatusFailed
 		res.ErrCode = "endpoint_build"
-		res.ErrMsg = err.Error()
+		res.ErrMsg = fmt.Sprintf("build endpoint failed: %s (cred_id=%d, model=%s)", err.Error(), t.CredentialID, t.RawModel)
 		res.LatencyMs = int(time.Since(start).Milliseconds())
 		res.CompletedAt = time.Now()
 		return res
@@ -239,7 +239,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	if err != nil {
 		res.Status = ProbeStatusFailed
 		res.ErrCode = "body_build"
-		res.ErrMsg = err.Error()
+		res.ErrMsg = fmt.Sprintf("build request body failed: %s (cred_id=%d, model=%s)", err.Error(), t.CredentialID, model)
 		res.LatencyMs = int(time.Since(start).Milliseconds())
 		res.CompletedAt = time.Now()
 		return res
@@ -252,7 +252,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	if err != nil {
 		res.Status = ProbeStatusNetwork
 		res.ErrCode = "request_build"
-		res.ErrMsg = err.Error()
+		res.ErrMsg = fmt.Sprintf("build request failed: %s (url=%s)", err.Error(), endpoint)
 		res.LatencyMs = int(time.Since(start).Milliseconds())
 		res.CompletedAt = time.Now()
 		return res
@@ -280,14 +280,16 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout") || strings.Contains(err.Error(), "context deadline exceeded") {
 			res.Status = ProbeStatusTimeout
 			res.ErrCode = "probe_timeout"
+			res.ErrMsg = fmt.Sprintf("upstream timeout after %ds (cred_id=%d, url=%s, model=%s)", int(e.httpClient.Timeout/time.Second), t.CredentialID, endpoint, model)
 		} else if errors.Is(err, context.Canceled) {
 			res.Status = ProbeStatusCanceled
 			res.ErrCode = "probe_canceled"
+			res.ErrMsg = fmt.Sprintf("upstream call canceled: %s (cred_id=%d, url=%s, model=%s)", err.Error(), t.CredentialID, endpoint, model)
 		} else {
 			res.Status = ProbeStatusNetwork
 			res.ErrCode = "network_error"
+			res.ErrMsg = fmt.Sprintf("upstream call failed: %s (cred_id=%d, url=%s, model=%s)", err.Error(), t.CredentialID, endpoint, model)
 		}
-		res.ErrMsg = err.Error()
 		return res
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -342,18 +344,15 @@ func (e *ActiveProbeExecutor) runModelsList(ctx context.Context, target *ProbeTa
 	endpoint := upstreamurl.ModelsURL(target.BaseURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return &ProbeResult{Status: ProbeStatusFailed, ErrCode: "request_build", ErrMsg: err.Error(), StartedAt: start, CompletedAt: time.Now(), Target: *target}
+		return &ProbeResult{Status: ProbeStatusFailed, ErrCode: "request_build", ErrMsg: fmt.Sprintf("build request failed: %s (url=%s)", err.Error(), endpoint), StartedAt: start, CompletedAt: time.Now(), Target: *target}
 	}
 	providercap.ApplyAuthHeaders(req, desc, target.APIKey)
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
-		status := ProbeStatusNetwork
-		code := "network_error"
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout") {
-			status = ProbeStatusTimeout
-			code = "probe_timeout"
+			return &ProbeResult{Status: ProbeStatusTimeout, ErrCode: "probe_timeout", ErrMsg: fmt.Sprintf("upstream timeout after %ds (cred_id=%d, url=%s, model=%s)", int(e.httpClient.Timeout/time.Second), target.CredentialID, endpoint, target.RawModel), StartedAt: start, CompletedAt: time.Now(), LatencyMs: int(time.Since(start).Milliseconds()), Target: *target, RequestURL: endpoint}
 		}
-		return &ProbeResult{Status: status, ErrCode: code, ErrMsg: err.Error(), StartedAt: start, CompletedAt: time.Now(), LatencyMs: int(time.Since(start).Milliseconds()), Target: *target, RequestURL: endpoint}
+		return &ProbeResult{Status: ProbeStatusNetwork, ErrCode: "network_error", ErrMsg: fmt.Sprintf("upstream call failed: %s (cred_id=%d, url=%s, model=%s)", err.Error(), target.CredentialID, endpoint, target.RawModel), StartedAt: start, CompletedAt: time.Now(), LatencyMs: int(time.Since(start).Milliseconds()), Target: *target, RequestURL: endpoint}
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
