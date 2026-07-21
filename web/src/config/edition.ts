@@ -71,7 +71,9 @@ export type OpsMenuGroup = {
 export type OpsMenuDocument = { version: number; groups: OpsMenuGroup[] }
 
 async function loadRemoteOpsMenu(force = false): Promise<OpsMenuGroup[] | null> {
-  if (!showOpsPlatform()) return null
+  // Do not gate on showOpsPlatform(): that races with probeMaintainAvailable
+  // (state starts unknown → false) and permanently fell back to LOCAL_OPS_MENU.
+  // A successful menu/ops fetch is itself proof maintain is reachable.
   const now = Date.now()
   if (!force && remoteOpsMenu && now - remoteOpsMenuAt < REMOTE_OPS_MENU_TTL_MS) {
     return remoteOpsMenu
@@ -87,6 +89,10 @@ async function loadRemoteOpsMenu(force = false): Promise<OpsMenuGroup[] | null> 
       const doc = (await res.json()) as OpsMenuDocument
       remoteOpsMenu = doc.groups || []
       remoteOpsMenuAt = Date.now()
+      if (maintainState !== 'available') {
+        maintainState = 'available'
+        notify()
+      }
       return remoteOpsMenu
     } catch {
       return null

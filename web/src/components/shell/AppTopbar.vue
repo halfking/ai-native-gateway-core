@@ -20,6 +20,7 @@ import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps 
 import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, visibleNavGroups, visibleNavItems, type NavGroup } from '../../config/appNav'
 import {
   LOCAL_OPS_MENU,
+  onMaintainAvailabilityChange,
   resolveOpsMenu,
   type OpsMenuGroup,
 } from '../../config/edition'
@@ -56,12 +57,18 @@ onMounted(() => {
   document.addEventListener('click', handleOutside)
   window.addEventListener('resize', onWindowChange)
   window.addEventListener('scroll', onWindowChange, true)
+  void refreshOpsMenu()
+  stopMaintainWatch = onMaintainAvailabilityChange(() => {
+    void refreshOpsMenu()
+  })
 })
 onBeforeUnmount(() => {
   logoObserver?.disconnect()
   document.removeEventListener('click', handleOutside)
   window.removeEventListener('resize', onWindowChange)
   window.removeEventListener('scroll', onWindowChange, true)
+  stopMaintainWatch?.()
+  stopMaintainWatch = null
 })
 
 const isSuperAdmin = computed(() => checkSuperAdmin())
@@ -112,13 +119,15 @@ const navGroups = computed(() => {
   return mergeRemoteOps(local, opsMenuOverrides.value)
 })
 
-onMounted(async () => {
+async function refreshOpsMenu() {
   try {
     opsMenuOverrides.value = await resolveOpsMenu()
   } catch {
     opsMenuOverrides.value = LOCAL_OPS_MENU
   }
-})
+}
+
+let stopMaintainWatch: (() => void) | null = null
 
 const openGroupId = ref<string | null>(null)
 const dropdownStyle = ref<Record<string, string>>({})
