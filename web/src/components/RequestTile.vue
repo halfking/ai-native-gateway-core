@@ -283,12 +283,12 @@ function handleClick() {
   width: 80px;
   height: 60px;
   border-radius: var(--tile-radius);
-  border: 1px solid color-mix(in srgb, var(--accent-color, #6b7280) 38%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-color) 38%, transparent);
   background:
     linear-gradient(
       145deg,
-      color-mix(in srgb, var(--accent-color, #6b7280) 16%, #1c2128) 0%,
-      color-mix(in srgb, var(--accent-color, #6b7280) 6%, #161b22) 100%
+      color-mix(in srgb, var(--accent-color) 16%, #1c2128) 0%,
+      color-mix(in srgb, var(--accent-color) 6%, #161b22) 100%
     );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
@@ -309,11 +309,11 @@ function handleClick() {
 
 .request-tile:hover {
   transform: translateY(-2px) scale(1.04);
-  border-color: color-mix(in srgb, var(--accent-color, #6b7280) 65%, transparent);
+  border-color: color-mix(in srgb, var(--accent-color) 65%, transparent);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     0 6px 16px rgba(0, 0, 0, 0.35),
-    0 0 0 1px color-mix(in srgb, var(--accent-color, #6b7280) 25%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--accent-color) 25%, transparent);
   z-index: 10;
 }
 
@@ -331,7 +331,7 @@ function handleClick() {
 
 .request-tile--idle {
   border-style: dashed;
-  border-color: color-mix(in srgb, var(--accent-color, #6b7280) 30%, transparent);
+  border-color: color-mix(in srgb, var(--accent-color) 30%, transparent);
   background: transparent;
   box-shadow: none;
   cursor: default;
@@ -344,11 +344,11 @@ function handleClick() {
 }
 
 .request-tile--failure {
-  border-color: color-mix(in srgb, #ef4444 45%, var(--accent-color, #6b7280));
+  border-color: color-mix(in srgb, #ef4444 45%, var(--accent-color));
 }
 
 .request-tile--probe {
-  border-color: color-mix(in srgb, #38bdf8 50%, var(--accent-color, #6b7280));
+  border-color: color-mix(in srgb, #38bdf8 50%, var(--accent-color));
   /* 2026-07-14: 探测请求特殊背景 — 青色玻璃质感，与正常业务请求一眼区分 */
   background:
     linear-gradient(
@@ -378,12 +378,12 @@ function handleClick() {
   top: 0;
   bottom: 0;
   width: 3px;
-  background: var(--accent-color, #6b7280);
+  background: var(--accent-color);
   border-radius: var(--tile-radius) 0 0 var(--tile-radius);
 }
 
 .request-tile--failure .request-tile__accent {
-  background: linear-gradient(180deg, #ef4444, var(--accent-color, #6b7280));
+  background: linear-gradient(180deg, #ef4444, var(--accent-color));
 }
 
 .request-tile__status-dot {
@@ -393,7 +393,7 @@ function handleClick() {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--status-color, #a1a1aa);
+  background: var(--status-color);
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
   z-index: 2;
 }
