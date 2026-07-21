@@ -8,7 +8,7 @@ import (
 func TestPipelineBatchReadMissing(t *testing.T) {
 	s, _ := newTestStore(t)
 	ctx := context.Background()
-	views, err := s.PipelineNodeViews(ctx, []NodeQuery{
+	views, err := s.PipelineNodeViews(ctx, "ursm:v2:", []NodeQuery{
 		{CredentialID: 1, RawModel: "gpt"},
 		{CredentialID: 2, RawModel: "gpt"},
 	})

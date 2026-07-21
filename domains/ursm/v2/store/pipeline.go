@@ -14,7 +14,7 @@ type NodeQuery struct {
 	RawModel     string
 }
 
-func (s *Store) PipelineNodeViews(ctx context.Context, qs []NodeQuery) ([]api.NodeView, error) {
+func (s *Store) PipelineNodeViews(ctx context.Context, prefix string, qs []NodeQuery) ([]api.NodeView, error) {
 	if s == nil || s.rdb == nil {
 		return nil, ErrRedisUnavailable
 	}
@@ -24,7 +24,7 @@ func (s *Store) PipelineNodeViews(ctx context.Context, qs []NodeQuery) ([]api.No
 	pipe := s.rdb.Pipeline()
 	cmds := make([]*redis.MapStringStringCmd, len(qs))
 	for i, q := range qs {
-		cmds[i] = pipe.HGetAll(ctx, NodeKey("ursm:v2:", q.CredentialID, q.RawModel))
+		cmds[i] = pipe.HGetAll(ctx, NodeKey(prefix, q.CredentialID, q.RawModel))
 	}
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
 		return nil, fmt.Errorf("ursm.v2: pipeline exec: %w", err)
