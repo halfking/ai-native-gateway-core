@@ -333,7 +333,7 @@ onMounted(() => { load(); loadTenants() })
 }
 .page-header h1 { font-size: 20px; margin: 0; }
 
-.badge-purple { background: rgba(139,92,246,.15); color: #a78bfa; }
+.badge-purple { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); }
 .badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; }
 .badge-green { background: rgba(34,197,94,.15); color: #4ade80; }
 .badge-red { background: rgba(239,68,68,.15); color: #f87171; }
