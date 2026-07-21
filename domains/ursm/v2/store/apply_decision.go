@@ -32,8 +32,8 @@ func (s *Store) ApplyDecision(ctx context.Context, key string, gen int64, pri in
 	}
 	res, err := ApplyDecisionScript.Run(ctx, s.rdb,
 		[]string{key},
-		fmt.Sprintf("%d", gen), fmt.Sprintf("%d", pri), boolFlag(avail),
-		fmt.Sprintf("%d", streak), reason, boolFlag(adminHold),
+		fmt.Sprintf("%d", gen), fmt.Sprintf("%d", pri), BoolFlag(avail),
+		fmt.Sprintf("%d", streak), reason, BoolFlag(adminHold),
 	).Slice()
 	if err != nil {
 		return RecordResult{}, fmt.Errorf("ursm.v2: apply_decision: %w", err)

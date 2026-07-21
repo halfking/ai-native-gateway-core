@@ -88,6 +88,13 @@ type RequestOutcome struct {
 	BillingMode  string
 }
 
+type ProbeOutcome struct {
+	CredentialID int
+	RawModel     string
+	Success      bool
+	LatencyMs    int
+}
+
 type AdminAction struct {
 	Scope          Scope
 	ProviderID     int

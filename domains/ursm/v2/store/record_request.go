@@ -41,12 +41,12 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 	}
 	res, err := RecordRequestScript.Run(ctx, s.rdb,
 		[]string{nodeKey, win1m, win5m, win30m},
-		boolFlag(o.Success), o.ErrorKind, fmt.Sprintf("%d", o.NowMs),
+		BoolFlag(o.Success), o.ErrorKind, fmt.Sprintf("%d", o.NowMs),
 		fmt.Sprintf("%d", o.LatencyMs), o.RequestID,
 		fmt.Sprintf("%d", int64(o.NodeTTL/time.Second)),
 		fmt.Sprintf("%d", int64(o.Window5mTTL/time.Second)),
 		fmt.Sprintf("%d", int64(o.Window30mTTL/time.Second)),
-		boolFlag(o.AdminHold),
+		BoolFlag(o.AdminHold),
 	).Slice()
 	if err != nil {
 		return RecordResult{}, fmt.Errorf("ursm.v2: record_request: %w", err)
@@ -57,7 +57,7 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 	return RecordResult{Status: asString(res[0]), FailNew: asInt64(res[1]), FailLast: asInt64(res[2])}, nil
 }
 
-func boolFlag(b bool) string {
+func BoolFlag(b bool) string {
 	if b {
 		return "1"
 	}
