@@ -11,17 +11,31 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm"
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/shadow"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
-var tierOrder = [4]int{1, 2, 3, 9}
+var (
+	tierOrder = [4]int{1, 2, 3, 9}
+
+	ursmShadowDiffTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ursm_shadow_diff_total",
+			Help: "Total shadow diff events by type (identical, availability_mismatch, order_mismatch)",
+		},
+		[]string{"type"},
+	)
+)
 
 // PlanContext carries per-request routing context that affects v2 canary
 // decisions and audit logging. TenantID, CanonicalModel, RequestID are
@@ -254,6 +268,36 @@ func (r *Router) PlanCandidates(
 
 	if len(egressPreference) > 0 {
 		ordered = applyProtocolAffinity(ordered, egressPreference)
+	}
+
+	// Shadow mode: compute v2 ordering for diff metrics, but do NOT use it in production.
+	// The diff reveals whether v2 would have chosen a different ordering or filtered different candidates.
+	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeShadow {
+		v2Ordered := r.planWithURSMv2(ordered, planCtx)
+		if v2Ordered != nil {
+			legacyIDs := make([]string, len(ordered))
+			for i, c := range ordered {
+				legacyIDs[i] = fmt.Sprintf("%d:%s", c.CredentialID, c.RawModel)
+			}
+			v2IDs := make([]string, len(v2Ordered))
+			for i, c := range v2Ordered {
+				v2IDs[i] = fmt.Sprintf("%d:%s", c.CredentialID, c.RawModel)
+			}
+			diff := shadow.Compute(planCtx.RequestID, planCtx.TenantID, planCtx.CanonicalModel, legacyIDs, v2IDs)
+			diffType := "identical"
+			if diff.HasAvailabilityMismatch() {
+				diffType = "availability_mismatch"
+			} else if diff.HasOrderMismatch() {
+				diffType = "order_mismatch"
+			}
+			ursmShadowDiffTotal.WithLabelValues(diffType).Inc()
+			slog.Debug("ursm.v2: shadow diff",
+				"request_id", planCtx.RequestID,
+				"type", diffType,
+				"legacy", legacyIDs,
+				"v2", v2IDs,
+			)
+		}
 	}
 
 	// 2026-07-21, URSM v2 plan T16: 在 canary / authoritative 模式下把 ordering
