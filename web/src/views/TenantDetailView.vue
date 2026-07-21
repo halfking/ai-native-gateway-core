@@ -791,7 +791,7 @@ watch(() => route.params.tenantId, loadTenant)
   font-weight: 400;
 }
 
-.badge-purple { background: rgba(139,92,246,.15); color: #a78bfa; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
+.badge-purple { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
 .badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
 .badge-red { background: rgba(239,68,68,.15); color: #f87171; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
 .badge-green { background: rgba(34,197,94,.15); color: #4ade80; padding: 2px 8px; border-radius: 8px; font-size: 11px; }

@@ -608,7 +608,7 @@ h1 {
 }
 .btn-approve { background: #16a34a; color: #fff; }
 .btn-reject { background: #6b7280; color: #fff; }
-.btn-trigger { background: #7c3aed; color: #fff; padding: 8px 16px; }
+.btn-trigger { background: var(--accent); color: #fff; padding: 8px 16px; }
 .reject-row {
   background: #1a0e0e;
 }
