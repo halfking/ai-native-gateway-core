@@ -143,6 +143,9 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 	if err != nil {
 		return 0, fmt.Errorf("marshal compression_meta: %w", err)
 	}
+	// 2026-07-22: 转为 string 以使用 ::text::jsonb cast，避免 22P02 错误
+	// 与 analysis/bus/publisher.go 和 telemetry/client.go 保持一致
+	compressionMetaStr := string(compressionMetaJSON)
 
 	// 4. Insert turn record
 	partitionDate := rec.Ts.Truncate(24 * time.Hour)
@@ -162,7 +165,7 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6,
-			$7, $8, $9, $10,
+			$7, $8, $9::text::jsonb, $10,
 			$11, $12,
 			$13, $14, $15,
 			$16, $17, $18, $19, $20,
@@ -175,7 +178,7 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 	`,
 		rec.SessionID, turnNo, rec.TenantID, rec.RequestID, rec.Ts,
 		rec.SubmitMode,
-		rec.CompressionApplied, rec.CompressionStrategy, compressionMetaJSON, rec.TokensSaved,
+		rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr, rec.TokensSaved,
 		rec.InjectionVerdict, rec.OutputVerdict,
 		rec.Model, rec.Provider, rec.CredentialID,
 		rec.PromptTokens, rec.CompletionTokens, rec.CacheReadTokens, rec.CacheWriteTokens, rec.CostUSD,

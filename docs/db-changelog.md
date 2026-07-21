@@ -655,3 +655,9 @@
 |-----------|------|
 | 450 | `450_request_stage_events_tenant.sql` |
 
+## 2026-07-21T16:18:13Z — deploy 245 build_seq 1262 (97259716)
+
+| Migration | File |
+|-----------|------|
+| 453 | `453_ursm_v2_node_snapshot_min.sql` |
+
