@@ -403,13 +403,13 @@ onUnmounted(() => {
   font-size: 11px;
   white-space: pre-wrap;
   word-break: break-all;
-  background: var(--bg, #13131f);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px;
   margin: 0;
   max-height: 320px;
   overflow-y: auto;
-  color: var(--text, #cdd6f4);
+  color: var(--text);
 }
 </style>
