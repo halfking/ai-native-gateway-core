@@ -734,7 +734,7 @@ onBeforeUnmount(() => {
 
 .role-user {
   background: rgba(99, 102, 241, 0.2);
-  color: #6366f1;
+  color: var(--accent);
 }
 
 .role-assistant {
@@ -866,7 +866,7 @@ onBeforeUnmount(() => {
 }
 
 .timeline-dot-blue {
-  background: #6366f1;
+  background: var(--accent);
 }
 
 .timeline-dot-green {
