@@ -7,6 +7,7 @@ package v2
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"time"
@@ -191,6 +192,28 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 		v.Score = weights.Price*price + weights.Latency*float64(lat) + weights.Stability*v.SR5m*1000
 	}
 	sort.SliceStable(views, func(i, j int) bool { return views[i].Score < views[j].Score })
+	if len(views) > 0 {
+		topN := 3
+		if len(views) < topN {
+			topN = len(views)
+		}
+		topCandidates := make([]map[string]any, topN)
+		for i := 0; i < topN; i++ {
+			topCandidates[i] = map[string]any{
+				"credential_id": views[i].CredentialID,
+				"raw_model":     views[i].RawModel,
+				"score":         views[i].Score,
+				"available":     views[i].Available,
+			}
+		}
+		// Use the first seed's tenant/canonical as a hint (all seeds in one call share tenant/canonical per design)
+		slog.Debug("ursm.v2: FilterAndScore result",
+			"tenant", seeds[0].TenantID,
+			"canonical", seeds[0].Canonical,
+			"total_candidates", len(views),
+			"top_candidates", topCandidates,
+		)
+	}
 	return views, nil
 }
 
