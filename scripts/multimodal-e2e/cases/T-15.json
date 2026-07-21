@@ -1,0 +1,9 @@
+{
+  "id": "T-15",
+  "name": "vision-to-text-only-rejection",
+  "model": "gpt-3.5-turbo",
+  "endpoint": "/v1/chat/completions",
+  "provider": "openai",
+  "format": "openai-image-url",
+  "expected": "reject"
+}
