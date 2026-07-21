@@ -11,16 +11,23 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# 配置
-LOCAL_CONTAINER="llm-gateway-pg"
-LOCAL_USER="llm_gateway"
-LOCAL_DB="llm_gateway"
+# 配置（所有凭据从环境变量注入，不保存在仓库中）
+LOCAL_CONTAINER="${LOCAL_CONTAINER:-llm-gateway-pg}"
+LOCAL_USER="${LOCAL_USER:-llm_gateway}"
+LOCAL_DB="${LOCAL_DB:-llm_gateway}"
 
-REMOTE_HOST="115.29.212.252"
-REMOTE_PORT="25022"
-REMOTE_CONTAINER="pg-252-pg17"
-REMOTE_USER="llm_gateway"
-REMOTE_DB="llm_gateway"
+REMOTE_HOSTNAME="${REMOTE_HOSTNAME:-115.29.212.252}"
+REMOTE_PORT="${REMOTE_PORT:-25022}"
+REMOTE_CONTAINER="${REMOTE_CONTAINER:-pg-252-pg17}"
+REMOTE_USER="${REMOTE_USER:-llm_gateway}"
+REMOTE_DB="${REMOTE_DB:-llm_gateway"}"
+
+# 必填：REMOTE_SSH_PASS 必须从环境变量注入，仓库中无明文
+REMOTE_SSH_PASS="${REMOTE_SSH_PASS:-}"
+if [[ -z "$REMOTE_SSH_PASS" ]]; then
+  echo "ERROR: REMOTE_SSH_PASS not set. Inject via env-injector before running." >&2
+  exit 1
+fi
 
 # 检查参数
 if [ $# -lt 1 ]; then
@@ -40,8 +47,7 @@ local_cmd() {
 
 # 函数：执行远程命令
 remote_cmd() {
-    export SSHPASS='Kaixuan2026&#*9527'
-    sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOST" \
+    SSHPASS="$REMOTE_SSH_PASS" sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOSTNAME" \
         "docker exec $REMOTE_CONTAINER psql -U $REMOTE_USER -d $REMOTE_DB -t -A -c \"$1\""
 }
 
@@ -84,24 +90,20 @@ sync_table() {
     echo -e "${YELLOW}▶ 同步表: $table ($direction)${NC}"
     
     if [ "$direction" = "local-to-remote" ]; then
-        # 本地 → 252
         docker exec "$LOCAL_CONTAINER" pg_dump -U "$LOCAL_USER" -d "$LOCAL_DB" -t "$table" --schema-only --no-owner --no-privileges > /tmp/sync_table.sql
         
-        export SSHPASS='Kaixuan2026&#*9527'
-        sshpass -e scp -o StrictHostKeyChecking=no -p "$REMOTE_PORT" /tmp/sync_table.sql root@"$REMOTE_HOST":/tmp/
+        SSHPASS="$REMOTE_SSH_PASS" sshpass -e scp -o StrictHostKeyChecking=no -p "$REMOTE_PORT" /tmp/sync_table.sql root@"$REMOTE_HOSTNAME":/tmp/
         
-        sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOST" \
+        SSHPASS="$REMOTE_SSH_PASS" sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOSTNAME" \
             "docker exec -i $REMOTE_CONTAINER psql -U $REMOTE_USER -d $REMOTE_DB < /tmp/sync_table.sql"
         
         echo -e "${GREEN}✓ 已同步 $table 到 252${NC}"
         
     elif [ "$direction" = "remote-to-local" ]; then
-        # 252 → 本地
-        export SSHPASS='Kaixuan2026&#*9527'
-        sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOST" \
+        SSHPASS="$REMOTE_SSH_PASS" sshpass -e ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOSTNAME" \
             "docker exec $REMOTE_CONTAINER pg_dump -U $REMOTE_USER -d $REMOTE_DB -t $table --schema-only --no-owner --no-privileges > /tmp/sync_table.sql"
         
-        sshpass -e scp -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOST":/tmp/sync_table.sql /tmp/
+        SSHPASS="$REMOTE_SSH_PASS" sshpass -e scp -o StrictHostKeyChecking=no -p "$REMOTE_PORT" root@"$REMOTE_HOSTNAME":/tmp/sync_table.sql /tmp/
         
         docker exec -i "$LOCAL_CONTAINER" psql -U "$LOCAL_USER" -d "$LOCAL_DB" < /tmp/sync_table.sql
         
