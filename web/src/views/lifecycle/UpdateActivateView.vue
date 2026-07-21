@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import OperationAgreementDialog from '../../components/lifecycle/OperationAgreementDialog.vue'
+import OperationAgreementDialog from '../../components/OperationAgreementDialog.vue'
 import UpdateActivateSiteCard from '../../components/lifecycle/UpdateActivateSiteCard.vue'
 import UpdateActivateVersionsCard from '../../components/lifecycle/UpdateActivateVersionsCard.vue'
 import UpdateActivateModulesCard from '../../components/lifecycle/UpdateActivateModulesCard.vue'
@@ -15,10 +15,12 @@ import {
   type ModuleCatalogItem,
   type UpgradeStatus,
 } from '../../api/updateActivate'
-import { ensureInstanceId, resolveHardwareHash } from '../../utils/deviceFingerprint'
+import {
+  ensureInstanceId,
+  resolveHardwareHash,
+  setInstanceId,
+} from '../../utils/deviceFingerprint'
 import { SITE_TITLE } from '../../config/brand'
-import { isCoreNode } from '../../config/edition'
-import { usePolling } from '../../composables/usePolling'
 
 const AGREEMENT_VERSION = '2026-07-17'
 const AGREEMENT_SCOPE = 'activate'
@@ -40,6 +42,11 @@ const activating = ref(false)
 const error = ref('')
 const message = ref('')
 const showAgreement = ref(false)
+const agreementAccepted = ref(!!localStorage.getItem(AGREEMENT_KEY))
+
+const canActivate = computed(
+  () => !!deviceName.value.trim() && !!instanceId.value.trim() && !!hardwareHash.value,
+)
 
 function readDeviceName(): string {
   try {
@@ -62,13 +69,19 @@ function persistDeviceName() {
 async function ensureHash() {
   if (hardwareHash.value) return hardwareHash.value
   let serverHash = ''
+  let serverInstanceId = ''
   try {
     const fp = await bootstrapApi.fingerprint()
     serverHash = fp.hardware_hash || ''
+    serverInstanceId = fp.instance_id || ''
   } catch {
     /* fall back */
   }
   hardwareHash.value = await resolveHardwareHash(serverHash)
+  if (serverInstanceId) {
+    setInstanceId(serverInstanceId)
+    instanceId.value = serverInstanceId
+  }
   return hardwareHash.value
 }
 
@@ -77,7 +90,11 @@ async function loadStatus() {
   error.value = ''
   try {
     await ensureHash()
-    status.value = await bootstrapApi.status(instanceId.value.trim() || undefined)
+    status.value = await bootstrapApi.status()
+    if (status.value?.instance_id) {
+      setInstanceId(status.value.instance_id)
+      instanceId.value = status.value.instance_id
+    }
     if (status.value?.device_name && !deviceName.value) {
       deviceName.value = status.value.device_name
     }
@@ -123,8 +140,18 @@ function onActivateClick() {
     error.value = '请先填写注册名称（站点显示名）。'
     return
   }
+  if (!instanceId.value.trim()) {
+    error.value = '实例 ID 尚未生成，请稍后再试。'
+    return
+  }
+  if (!hardwareHash.value.trim()) {
+    error.value = '设备指纹尚未采集，请稍后再试。'
+    return
+  }
   persistDeviceName()
-  if (!localStorage.getItem(AGREEMENT_KEY)) {
+  // 强制：弹窗确认。未同意 → 不能激活。
+  agreementAccepted.value = !!localStorage.getItem(AGREEMENT_KEY)
+  if (!agreementAccepted.value) {
     showAgreement.value = true
     return
   }
@@ -132,8 +159,20 @@ function onActivateClick() {
 }
 
 async function onAgreementAgreed() {
+  agreementAccepted.value = true
+  localStorage.setItem(AGREEMENT_KEY, new Date().toISOString())
   showAgreement.value = false
   await performQuickActivate()
+}
+
+function onAgreementCancelled() {
+  showAgreement.value = false
+  // 取消即视为拒绝：清掉残留，确保下次仍要求确认。
+  try {
+    localStorage.removeItem(AGREEMENT_KEY)
+  } catch { /* ignore */ }
+  agreementAccepted.value = false
+  error.value = '未同意用户协议，无法继续激活。'
 }
 
 async function performQuickActivate() {
@@ -179,47 +218,17 @@ async function onCheckUpgrade() {
 }
 
 function onUpgrade() {
-  // Center 可达时走 maintain 升级面板；不可达时降级到公开下载页。
-  if (isCoreNode()) {
-    window.location.assign('/maintain/upgrade')
-    return
-  }
-  window.location.assign('/api/system/upgrade')
+  // Prefer Maintain upgrade panel when co-deployed; else public download.
+  window.location.assign('/maintain/upgrade')
 }
 
-onMounted(() => {
-  void refreshAll()
-  // 60s 自动刷新站点状态；版本/模块按需拉取（轻量）。
-  startStatusPolling()
+onMounted(async () => {
+  await refreshAll()
+  // 未激活场景下，下次访问仍强制弹窗。
+  if (!status.value?.activated) {
+    await nextTick()
+  }
 })
-
-onBeforeUnmount(stopStatusPolling)
-
-let pollingTimer: ReturnType<typeof setInterval> | null = null
-let pollingInFlight = false
-
-async function tickStatus() {
-  if (pollingInFlight) return
-  pollingInFlight = true
-  try {
-    await loadStatus()
-  } finally {
-    pollingInFlight = false
-  }
-}
-
-function startStatusPolling() {
-  if (pollingTimer) return
-  pollingTimer = setInterval(tickStatus, 60_000)
-}
-
-function stopStatusPolling() {
-  if (pollingTimer) clearInterval(pollingTimer)
-  pollingTimer = null
-}
-
-// keep ts-lint happy: usePolling is reserved for sibling refactors
-void usePolling
 </script>
 
 <template>
@@ -258,8 +267,8 @@ void usePolling
         </template>
         <template v-else>
           <p class="hint">
-            默认激活只需填写注册名称、同意用户协议，即可向中心
-            <code>llm.kxpms.cn</code> 申请 license 并完成本地激活（无需手填 License Key）。
+            默认激活只需填写注册名称、点击"同意协议并激活"，系统将弹出用户协议窗口，
+            勾选并确认后即可向中心 <code>llm.kxpms.cn</code> 申请 license 并完成本地激活（无需手填 License Key）。
           </p>
           <el-form label-position="top" @submit.prevent="onActivateClick">
             <el-form-item label="注册名称" required>
@@ -295,6 +304,7 @@ void usePolling
       :version="AGREEMENT_VERSION"
       :subject-id="instanceId"
       @agreed="onAgreementAgreed"
+      @cancelled="onAgreementCancelled"
     />
   </div>
 </template>
