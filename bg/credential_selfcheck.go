@@ -365,8 +365,14 @@ func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID
 	// bg/model_probe.go:featuredCycle so all three probe layers agree
 	// on what counts as "featured".  Ordered by standardized_name for
 	// stable, deterministic picks across cycles (same as shared_pick.go).
+	//
+	// PG note: when paired with `SELECT DISTINCT`, every ORDER BY
+	// expression must appear in the SELECT list (SQLSTATE 42P10).
+	// We therefore SELECT both raw_model_name and the sort key, then
+	// de-duplicate to keep the wire shape identical to the previous
+	// query — only the sort expression was added to the SELECT list.
 	featuredRows, err := w.db.Query(queryCtx, `
-		SELECT DISTINCT pm.raw_model_name
+		SELECT DISTINCT pm.raw_model_name, COALESCE(pm.standardized_name, pm.raw_model_name) AS sort_key
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		CROSS JOIN routing_policy pol
@@ -383,15 +389,15 @@ func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID
 		    COALESCE(pm.standardized_name, pm.raw_model_name) = ANY(pol.featured_models)
 		    OR pm.raw_model_name = ANY(pol.featured_models)
 		  )
-		ORDER BY COALESCE(pm.standardized_name, pm.raw_model_name)
+		ORDER BY sort_key
 	`, credentialID)
 	if err != nil {
 		return pickModelsResult{}, err
 	}
 	var featured []string
 	for featuredRows.Next() {
-		var m string
-		if err := featuredRows.Scan(&m); err == nil && m != "" {
+		var m, sortKey string
+		if err := featuredRows.Scan(&m, &sortKey); err == nil && m != "" {
 			featured = append(featured, m)
 		}
 	}
