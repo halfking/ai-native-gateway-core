@@ -578,6 +578,14 @@ func filterAvailable(cands []provider.Candidate) []provider.Candidate {
 //
 // filterAvailableWithStateManager 新增：使用状态管理器优先判断可用性
 func (r *Router) filterAvailableWithStateManager(ctx context.Context, cands []provider.Candidate) []provider.Candidate {
+	// 2026-07-21, URSM v2 plan T21: in mode=authoritative, the v2 Manager
+	// already filtered the candidate set upstream (PlanCandidates step 1);
+	// skip the legacy StateManager/IsAvailable read entirely to avoid a
+	// second source-of-truth on top of v2. URSMv2 == nil keeps the legacy
+	// path live (main.go default URSM_V2_MODE=off leaves v2 un-wired).
+	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
+		return cands
+	}
 	var out []provider.Candidate
 	for _, c := range cands {
 		// 优先查询状态管理器
