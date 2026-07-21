@@ -224,7 +224,7 @@ onMounted(async () => {
           <el-form-item label="设备名称（可选）">
             <el-input v-model="deviceName" placeholder="生产网关 01" />
           </el-form-item>
-          <el-button type="primary" :loading="loading" @click="activate">激活 License</el-button>
+          <button type="button" class="btn btn-primary" :disabled="loading" @click="activate">激活 License</button>
         </el-form>
       </el-card>
     </div>

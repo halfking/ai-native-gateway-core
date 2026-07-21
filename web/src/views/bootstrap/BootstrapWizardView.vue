@@ -335,8 +335,8 @@ onMounted(async () => {
         <p>本机通过 IP:端口访问即可激活；可完全离线完成。联网时将自动向中心注册，不阻塞本地使用。</p>
       </div>
       <div class="lifecycle-page__actions">
-        <RouterLink class="btn btn-ghost" to="/customer/update-activate">高级激活页</RouterLink>
-        <button type="button" class="btn btn-ghost" @click="skipToLogin">稍后再说</button>
+        <RouterLink class="btn btn-ghost btn-no-arrow" to="/customer/update-activate">高级激活页</RouterLink>
+        <button type="button" class="btn btn-ghost btn-no-arrow" @click="skipToLogin">稍后再说</button>
       </div>
     </header>
 
@@ -369,7 +369,7 @@ onMounted(async () => {
             <el-descriptions-item label="实例 ID">
               <div class="instance-id-row">
                 <span class="mono">{{ instanceId || '—' }}</span>
-                <el-button size="small" type="primary" link :disabled="!instanceId" @click="copyInstanceId">
+                <el-button class="btn-no-arrow" size="small" type="primary" link :disabled="!instanceId" @click="copyInstanceId">
                   {{ instanceIdCopied ? '已复制' : '复制实例 ID' }}
                 </el-button>
               </div>
@@ -393,8 +393,8 @@ onMounted(async () => {
           <p class="hint">指纹仅用于绑定本机 License，不会上传原始硬件标识。</p>
         </template>
         <div class="wizard-actions">
-          <el-button :loading="loading" @click="loadFingerprint">重新采集</el-button>
-          <el-button type="primary" :disabled="!hardwareHash || !instanceId" @click="goActivateStep">下一步</el-button>
+          <button type="button" class="btn btn-secondary btn-no-arrow" :disabled="loading" @click="loadFingerprint">重新采集</button>
+          <button type="button" class="btn btn-primary" :disabled="!hardwareHash || !instanceId" @click="goActivateStep">下一步</button>
         </div>
       </el-card>
 
@@ -444,10 +444,10 @@ onMounted(async () => {
           </template>
         </el-form>
         <div class="wizard-actions">
-          <el-button @click="step = 1">上一步</el-button>
-          <el-button type="primary" :loading="loading" :disabled="!canActivate" @click="ensureAgreementThenActivate">
+          <button type="button" class="btn btn-secondary btn-no-arrow" @click="step = 1">上一步</button>
+          <button type="button" class="btn btn-primary" :disabled="loading || !canActivate" @click="ensureAgreementThenActivate">
             激活
-          </el-button>
+          </button>
         </div>
       </el-card>
 
@@ -465,8 +465,8 @@ onMounted(async () => {
           <p class="hint">中心不可达不会影响本机使用；恢复网络后将自动补注册与心跳。</p>
         </template>
         <div class="wizard-actions">
-          <el-button :loading="loading" @click="tryRegisterCenter">重试注册</el-button>
-          <el-button type="primary" @click="step = 4">继续</el-button>
+          <button type="button" class="btn btn-secondary btn-no-arrow" :disabled="loading" @click="tryRegisterCenter">重试注册</button>
+          <button type="button" class="btn btn-primary" @click="step = 4">继续</button>
         </div>
       </el-card>
 
@@ -487,8 +487,8 @@ onMounted(async () => {
           </el-descriptions-item>
         </el-descriptions>
         <div class="wizard-actions">
-          <el-button type="primary" @click="finish">进入登录</el-button>
-          <RouterLink class="btn btn-ghost" to="/customer/license">查看 License 状态</RouterLink>
+          <button type="button" class="btn btn-primary" @click="finish">进入登录</button>
+          <RouterLink class="btn btn-ghost btn-no-arrow" to="/customer/license">查看 License 状态</RouterLink>
         </div>
       </el-card>
     </template>
@@ -501,7 +501,7 @@ onMounted(async () => {
           点击下方按钮弹出协议确认窗口，勾选并"同意并继续"后才能进入后续步骤。
         </p>
         <div class="wizard-actions">
-          <el-button type="primary" @click="openAgreementDialog">阅读并同意用户协议</el-button>
+          <button type="button" class="btn btn-primary" @click="openAgreementDialog">阅读并同意用户协议</button>
         </div>
       </el-card>
     </template>
