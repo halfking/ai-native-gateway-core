@@ -609,7 +609,7 @@ onMounted(load)
 .status-ok { color: var(--success); font-weight: 600; }
 .status-bad { color: var(--danger); font-weight: 600; }
 
-.badge-purple { background: #ede9fe; color: #5b21b6; }
+.badge-purple { background: color-mix(in srgb, var(--accent) 15%, var(--surface-primary)); color: var(--accent-h); }
 
 @media (max-width: 720px) {
   .search-input { max-width: 100%; width: 100%; }

@@ -1778,12 +1778,12 @@ watch(activeTab, async (tab) => {
 .text-red { color: #991b1b; }
 
 /* Badge 样式 */
-.badge-red { background: #fee2e2; color: #991b1b; }
-.badge-green { background: #dcfce7; color: #166534; }
-.badge-blue { background: #dbeafe; color: #1e40af; }
-.badge-yellow { background: #fef3c7; color: #92400e; }
-.badge-purple { background: #ede9fe; color: #5b21b6; }
-.badge-gray { background: #f3f4f6; color: #374151; }
+.badge-red { background: color-mix(in srgb, var(--danger) 15%, var(--surface-primary)); color: var(--danger); }
+.badge-green { background: color-mix(in srgb, var(--success) 15%, var(--surface-primary)); color: var(--success); }
+.badge-blue { background: color-mix(in srgb, var(--accent) 15%, var(--surface-primary)); color: var(--accent-h); }
+.badge-yellow { background: color-mix(in srgb, var(--warning) 15%, var(--surface-primary)); color: var(--warning); }
+.badge-purple { background: color-mix(in srgb, var(--accent) 15%, var(--surface-primary)); color: var(--accent-h); }
+.badge-gray { background: var(--bg-tertiary); color: var(--muted); }
 
 @media (max-width: 900px) {
   .form-grid, .alias-add { grid-template-columns: 1fr; }
