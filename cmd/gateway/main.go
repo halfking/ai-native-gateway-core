@@ -77,6 +77,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -1194,6 +1195,20 @@ func main() {
 		attachmentRepo := attachments.NewRepository(dbConn.Pool())
 		telemetryClient.AddOnRequestLogPersisted(attachmentmirror.PersistHook(attachmentRepo))
 		slog.Info("attachment mirror enabled (request_attachments relational write)")
+	}
+
+	// 2026-07-21: V2 sessions shadow write (gateway.sessions / session_turns /
+	// session_bodies / session_turn_logs). Feature-flagged via
+	// sessions_v2.enabled + sessions_v2.shadow_write in the hot-reload
+	// settings system. Best-effort hook: any DB error is logged but never
+	// blocks the primary INSERT. Schema prerequisite: migration 430 must
+	// have been applied on the target database.
+	if telemetryClient != nil && dbConn != nil && dbConn.Enabled() {
+		sessionV2Writer := initSessionV2Writer(dbConn.Pool())
+		if sessionV2Writer != nil {
+			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer))
+			slog.Info("session V2 shadow write hook registered (gateway.sessions gateway.session_turns gateway.session_bodies gateway.session_turn_logs)")
+		}
 	}
 
 	// v3 (2026-06-19) session-level intelligent compression.
