@@ -438,14 +438,14 @@ scheduleStatsRecalibrate()
         </div>
         <div class="value">
           {{ compStats.compressed_total }}
-          <span style="font-size:12px;color:var(--text-secondary,#6b7280)">/ {{ compStats.total_requests }}</span>
+          <span style="font-size:12px;color:var(--text-secondary)">/ {{ compStats.total_requests }}</span>
         </div>
         <div class="sub">
           <span v-if="compStats.strategy_distribution['delta_append']">增量 {{ compStats.strategy_distribution['delta_append'] }} ·</span>
           <span v-if="compStats.strategy_distribution['sliding_window_token'] || compStats.strategy_distribution['sliding_window_count']">
             滑动 {{ (compStats.strategy_distribution['sliding_window_token']||0)+(compStats.strategy_distribution['sliding_window_count']||0) }} ·
           </span>
-          <span v-if="compStats.strategy_distribution['delta_append'] || compStats.strategy_distribution['sliding_window_token']" style="color:var(--success,#22c55e)">
+          <span v-if="compStats.strategy_distribution['delta_append'] || compStats.strategy_distribution['sliding_window_token']" style="color:var(--success)">
             ≈{{ compStats.total_outbound_tokens ? fmt(compStats.total_outbound_tokens) : '—' }} 出站 token
           </span>
         </div>
