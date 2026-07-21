@@ -1,8 +1,8 @@
---
--- Name: model_offers; Type: VIEW; Schema: public; Owner: -
---
+-- Rollback: 452_provider_models_modality
 
-CREATE VIEW public.model_offers AS
+BEGIN;
+
+CREATE OR REPLACE VIEW public.model_offers AS
  SELECT cmb.id,
     cmb.credential_id,
     pm.canonical_id,
@@ -32,8 +32,11 @@ CREATE VIEW public.model_offers AS
     cmb.consecutive_failures,
     cmb.admin_protected,
     cmb.created_at,
-    cmb.updated_at,
-    pm.modality AS provider_modality
+    cmb.updated_at
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
+ALTER TABLE public.provider_models DROP CONSTRAINT IF EXISTS provider_models_modality_check;
+ALTER TABLE public.provider_models DROP COLUMN IF EXISTS modality;
+
+COMMIT;

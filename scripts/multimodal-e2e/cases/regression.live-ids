@@ -1,0 +1,6 @@
+# Case IDs to run during PHASE3_LIVE=1 regression.
+# Comments (#) and blank lines are ignored by scripts/multimodal-e2e/run_phase3.sh
+# --id-file. Listed IDs are scoped to the vision LIVE matrix: T-02 (OpenAI image
+# URL) and T-03 (OpenAI base64) are the cheapest vision smoke tests.
+T-02
+T-03

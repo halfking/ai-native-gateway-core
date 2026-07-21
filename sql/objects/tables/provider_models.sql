@@ -15,7 +15,8 @@ CREATE TABLE public.provider_models (
     unavailable_at timestamp with time zone,
     last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    modality text DEFAULT 'text'::text NOT NULL
 );
 
 

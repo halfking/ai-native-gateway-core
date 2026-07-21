@@ -241,21 +241,12 @@ type SaveResult struct {
 }
 
 // SaveBase64Image 解析 data URI 并将其中的 base64 图片保存到存储后端。
-//
-// 流程：
-//  1. 解析 data:image/png;base64,... 提取 content type 和 base64 payload
-//  2. 流式解码 + 哈希计算
-//  3. 相同 hash 的文件已存在则跳过写入（去重）
-//
-// 该方法是幂等的：对相同内容重复调用只会保留一份文件。
-//
-// 失败场景（返回非 nil error）：
-//   - data URI 格式错误 → ErrInvalidDataURI
-//   - 超过 MaxSize → 文件不会被写入
-//   - 存储后端错误 → 写入失败
-//
-// 调用方应在收到 error 时记录 warning 但不要阻塞请求转发。
 func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx int) (*SaveResult, error) {
+	return s.SaveBase64Attachment(requestID, dataURI, "image", msgIdx, blockIdx)
+}
+
+// SaveBase64Attachment 解析 data URI 并将其中的 base64 附件保存到存储后端。
+func (s *Storage) SaveBase64Attachment(requestID, dataURI, attachmentType string, msgIdx, blockIdx int) (*SaveResult, error) {
 	if s == nil {
 		return nil, errors.New("attachments: storage is nil")
 	}
@@ -333,7 +324,7 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 	}
 
 	metadata := AttachmentMetadata{
-		Type:         "image",
+		Type:         attachmentType,
 		ContentType:  contentType,
 		Size:         counter.n,
 		Path:         relPath,
