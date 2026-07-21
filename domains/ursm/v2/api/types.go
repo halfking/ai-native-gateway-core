@@ -86,6 +86,10 @@ type RequestOutcome struct {
 	ErrorKind    string
 	RequestID    string
 	BillingMode  string
+	// AdminHold indicates whether a manual admin hold is currently set on
+	// the (credential, raw_model) target. When true, the request outcome
+	// MUST NOT mutate availability — admin priority dominates.
+	AdminHold bool
 }
 
 type ProbeOutcome struct {
