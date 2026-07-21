@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 )
@@ -1128,7 +1129,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		}
 	}
 
-	tag, err := tx.Exec(ctx, `
+	var updatedTS time.Time
+	err = tx.QueryRow(ctx, `
 		-- 2026-07-05 migration 341: CTE selects the latest row from request_logs_hot
 		-- (独立热表，0-7 天数据窗口)。一旦数据被后台 promote 函数迁移到月度分区，
 		-- 该行将从 _hot 表中删除，不再可编辑（columnar 归档分区不支持 UPDATE）。
@@ -1206,49 +1208,50 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       task_type = COALESCE($49, task_type),
 		       auto_profile = COALESCE($50, auto_profile),
 		       auto_decision = COALESCE($51::text::jsonb, auto_decision),
-		       auto_confidence = COALESCE($54, auto_confidence),
-		       work_type = COALESCE($55, work_type),
-		       credits_charged = COALESCE($56, credits_charged),
+		       auto_confidence = COALESCE($52, auto_confidence),
+		       work_type = COALESCE($53, work_type),
+		       credits_charged = COALESCE($54, credits_charged),
 		       -- Round 47 compression v7 T2: parent-child chain payload.
-		       parent_request_id = COALESCE($57, parent_request_id),
-		       compression_reason = COALESCE($58, compression_reason),
-		       compression_strategy = COALESCE($59, compression_strategy),
-		       compression_meta = COALESCE($60::text::jsonb, compression_meta),
+		       parent_request_id = COALESCE($55, parent_request_id),
+		       compression_reason = COALESCE($56, compression_reason),
+		       compression_strategy = COALESCE($57, compression_strategy),
+		       compression_meta = COALESCE($58::text::jsonb, compression_meta),
 		       -- v3 (2026-06-19) T23: session-level outbound body payload.
-		       outbound_body      = COALESCE($61::text::jsonb, outbound_body),
-		       outbound_msg_count = COALESCE($62, outbound_msg_count),
-		       outbound_token_est = COALESCE($63, outbound_token_est),
-		       outbound_msg_hashes = COALESCE($64::text::jsonb, outbound_msg_hashes),
+		       outbound_body      = COALESCE($59::text::jsonb, outbound_body),
+		       outbound_msg_count = COALESCE($60, outbound_msg_count),
+		       outbound_token_est = COALESCE($61, outbound_token_est),
+		       outbound_msg_hashes = COALESCE($62::text::jsonb, outbound_msg_hashes),
 		       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		       quality_flags        = COALESCE(CAST($65 AS text[]), quality_flags),
-		       quality_fix_actions  = COALESCE($66::text::jsonb, quality_fix_actions),
-		       quality_score        = COALESCE($67, quality_score),
+		       quality_flags        = COALESCE(CAST($63 AS text[]), quality_flags),
+		       quality_fix_actions  = COALESCE($64::text::jsonb, quality_fix_actions),
+		       quality_score        = COALESCE($65, quality_score),
 	   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
 	   -- (db/migrations/018_upstream_finish_reason.sql). The new column is
 	   -- the SOLE home for the upstream finish_reason.
-	   upstream_finish_reason = COALESCE($68, upstream_finish_reason),
+	   upstream_finish_reason = COALESCE($66, upstream_finish_reason),
 	   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-	   tool_calls = COALESCE($69::text::jsonb, tool_calls),
+	   tool_calls = COALESCE($67::text::jsonb, tool_calls),
 	   -- 2026-06-26: client-supplied X-Request-Id (debug only). COALESCE so
 	   -- a late success UPDATE does not blank a value set on INSERT.
-	   client_request_id = COALESCE($70, client_request_id),
+	   client_request_id = COALESCE($68, client_request_id),
 	   -- 2026-06-30: upstream diagnostics (migration 320).
-	   upstream_status_code = COALESCE($71, upstream_status_code),
-	   client_timeout = COALESCE($72, client_timeout),
-	   client_endpoint = COALESCE($73, client_endpoint),
-	   stream_chunk_errors = COALESCE($74, stream_chunk_errors),
-	   stream_chunks_sent = COALESCE($75, stream_chunks_sent),
+	   upstream_status_code = COALESCE($69, upstream_status_code),
+	   client_timeout = COALESCE($70, client_timeout),
+	   client_endpoint = COALESCE($71, client_endpoint),
+	   stream_chunk_errors = COALESCE($72, stream_chunk_errors),
+	   stream_chunks_sent = COALESCE($73, stream_chunks_sent),
 	   -- 2026-07-14 (migration 341): origin metadata. First-write-wins
 	   -- (see INSERT path rationale) — middleware/origin_mw.go sets
 	   -- client_ip / client_forwarded_for on the inbound row and the
 	   -- probe workers set origin_stage / origin_actor on probe rows.
-	   client_ip            = COALESCE($76, client_ip),
-	   client_forwarded_for = COALESCE($77, client_forwarded_for),
-	   origin_stage         = COALESCE($78, origin_stage),
-	   origin_actor         = COALESCE($79, origin_actor)
+	   client_ip            = COALESCE($74, client_ip),
+	   client_forwarded_for = COALESCE($75, client_forwarded_for),
+	   origin_stage         = COALESCE($76, origin_stage),
+	   origin_actor         = COALESCE($77, origin_actor)
 	  FROM latest
 	 WHERE request_logs_hot.id = latest.id
 	   AND request_logs_hot.ts = latest.ts
+	 RETURNING request_logs_hot.ts
 `,
 		entry.RequestID,
 		entry.ClientModel,
@@ -1342,36 +1345,34 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.ClientForwardedFor,
 		entry.OriginStage,
 		entry.OriginActor,
-	)
-	if err != nil {
+	).Scan(&updatedTS)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
 
-	// 2026-07-22 Ticket #10: UPDATE side table request_logs_bodies_hot.
-	// This ensures that body fields are updated correctly without being
-	// overwritten by NULL in the main table. Uses ON CONFLICT to handle
-	// the case where the side table row doesn't exist yet (race condition).
-	_, err = tx.Exec(ctx, `
+	if err == nil {
+		// Use the metadata row returned by UPDATE so retries cannot attach
+		// bodies to another row sharing the same request ID.
+		_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (
 			request_id, ts, request_body, response_body
 		)
-		SELECT $1, ts, $2::jsonb, $3::jsonb
-		FROM request_logs_hot
-		WHERE request_id = $1
-		LIMIT 1
+		VALUES ($1, $2, $3::jsonb, $4::jsonb)
 		ON CONFLICT (request_id, ts) DO UPDATE SET
 			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
 			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
 	`,
-		entry.RequestID,
-		strPtrToJSON(entry.RequestBody),
-		strPtrToJSON(entry.ResponseBody),
-	)
-	if err != nil {
-		return err
+			entry.RequestID,
+			updatedTS,
+			strPtrToJSON(entry.RequestBody),
+			strPtrToJSON(entry.ResponseBody),
+		)
+		if err != nil {
+			return err
+		}
 	}
 
-	if tag.RowsAffected() == 0 {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// No early row — fall back to insert so the request is not lost.
 		if rbErr := tx.Rollback(ctx); rbErr != nil {
 			slog.Warn("telemetry update rollback failed", "request_id", entry.RequestID, "error", rbErr)
