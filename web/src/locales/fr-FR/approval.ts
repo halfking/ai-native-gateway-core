@@ -61,10 +61,24 @@ export default {
       loadFailed: 'Failed to load',
       approveFailed: 'Approve failed',
       rejectFailed: 'Reject failed',
+
+      loadListFailed: 'Failed to load approval list',
     },
     success: {
       approved: 'Approved',
       rejected: 'Rejected',
+    },
+
+    relativeTime: {
+      justNow: 'just now',
+      minutesAgo: '{n} min ago',
+      hoursAgo: '{n} h ago',
+      daysAgo: '{n} d ago',
+    },
+
+    confirm: {
+      approve: 'Approve this request?\nRequest ID: {id}',
+      rejectPrompt: 'Enter rejection reason:',
     },
   },
   detail: {

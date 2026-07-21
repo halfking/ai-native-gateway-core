@@ -310,6 +310,38 @@ export default {
       toast: "TOAST"
     },
     migrationFailed: "迁移失败"
+,
+    jobIdMissing: '异步任务启动失败：未返回 job_id',
+
+    asyncCompleted: '异步迁移完成，共迁移 {n} 行',
+
+    asyncFailed: '异步迁移失败：{error}',
+
+    cancel: '取消',
+
+    cancelTitle: '取消迁移任务',
+
+    cancelConfirm: '确认取消当前正在运行的迁移任务？已迁移的数据会保留。',
+
+    cancelRequested: '已请求取消，任务将停止在下一个批次。',
+
+    asyncEnabledHint: '2026-07-13 起迁移已改为异步模式，迁移过程中可在此页面查看实时进度、取消任务。',
+
+    cronStatsTitle: '夜间自动迁移',
+
+    cronStatsDesc: '每天凌晨 02:00 自动迁移 hot 表中超过 24 小时的数据，可通过环境变量调整。',
+
+    cronEnabled: '已启用',
+
+    cronDisabled: '未启用',
+
+    cronLastRun: '上次运行',
+
+    cronRunCount: '累计运行',
+
+    cronLastError: '上次错误',
+
+    cronRunning: '正在运行',
   },
   preview: "预览清理",
   hotData: "热数据 (0-7天)",

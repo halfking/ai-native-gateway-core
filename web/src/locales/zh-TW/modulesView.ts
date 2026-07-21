@@ -64,6 +64,12 @@ export default {
     cascadeEmpty: '所有依赖已启用，模块已正常开启',
     cascadeAlreadyEnabled: '模块已启用，无需级联',
     cascadeLogTitle: '本次级联开启的依赖：',
+
+    sectionDependencies: '依赖模块',
+
+    dependencyDisabled: '依赖模块未启用',
+
+    notEnabled: '未启用',
   },
 
   config: {
@@ -198,4 +204,8 @@ export default {
   routing_csvImportSuccess: '已导入 {imported} 条，跳过 {skipped} 条',
   routing_csvErrorRow: '第 {row} 行：{error}',
   // 同步的扁平键
+
+  modeBannerTitle: '本页仅做三件事：',
+
+  modeBannerBody: '已装模块开关、已授权未开通模块下载；本页不提供价格、订单或套餐入口（采购通道另行公告）。',
 }

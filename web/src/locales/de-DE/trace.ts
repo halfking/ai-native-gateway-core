@@ -40,6 +40,8 @@ export default {
     hint1: 'Trace wird nur erzeugt, wenn Instrumentierung aktiviert ist (Standard: an)',
     hint2: 'Abgeschlossen vor < 10 Min.: noch in Redis',
     hint3: 'Bereits nach PostgreSQL geschrieben: wird als Fallback angezeigt',
+
+    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
   },
   aiPrompt: {
     button: '🤖 KI-Eingabe generieren',

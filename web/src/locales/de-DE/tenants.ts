@@ -249,6 +249,10 @@ export default {
     onboardingKeysHint: "um einen Schlüssel auszustellen und Aufrufe zu starten.",
     loadFailed: "Laden fehlgeschlagen",
     detailLoadFailed: "Details konnten nicht geladen werden"
+,
+    statCreditsConsumed: 'Total credits consumed',
+
+    statCreditsConsumedSub: 'Last {n} days · priced × tokens',
   },
   maasUsageView: {
     consumeLabel: "Credits verbraucht",
@@ -419,5 +423,13 @@ export default {
         revoked: 'Widerrufen',
       },
     },
+  },
+
+  status: {
+    active: 'Active',
+    trial: 'Trial',
+    suspended: 'Suspended',
+    expired: 'Expired',
+    disabled: 'Disabled',
   },
 }

@@ -97,4 +97,78 @@ export default {
       description: '客服、HR、銷售、物流四大行業範本，開箱即用的智慧體方案。',
     },
   },
+
+  brandTitle: 'AI-Native 组织核心网关',
+
+  brandSubtitle: '开轩启圭 · 私有化部署',
+
+  activateBanner: {
+    title: '网关尚未激活',
+    desc: '检测到本实例未绑定有效 License。点击右侧按钮打开激活向导，可在线激活或走离线流程。',
+    action: '立即激活',
+  },
+
+  downloadCta: {
+    title: '私有化部署 · 5 分钟上手',
+    subtitle: '多平台离线包，无需注册即可下载；安装后免费试用 15 天',
+    download: '立即下载',
+    support: '支持开源',
+    activate: '已有安装包？去激活',
+    note: '捐赠完全自愿，不影响下载与功能使用',
+  },
+
+  deployFlow: {
+    title: '下载 · 安装 · 激活 · 登录',
+    subtitle: '与 License 激活向导打通的私有化部署全流程',
+    steps: {
+      download: {
+        title: '下载离线安装包',
+        description: '按平台选择 tar.gz / 安装器，无需注册即可获取限时下载链接。',
+        action: '前往下载页',
+      },
+      install: {
+        title: '安装到目标环境',
+        description: '解压后在服务器执行安装器，完成 k3s / Docker 部署与基础配置。',
+        hint: 'llm-gw-installer install --target /opt/kx-gateway',
+      },
+      activate: {
+        title: '激活 License',
+        description: '在线输入 License Key 或走离线 activation.req → activation.resp 流程，支持 15 天试用。',
+        action: '打开激活向导',
+        offlineAction: '离线激活门户',
+      },
+      login: {
+        title: '登录控制面',
+        description: '激活完成后使用管理员账号登录，进入租户治理、路由与可观测控制台。',
+        action: '登录控制面',
+      },
+    },
+    notes: [
+      '下载与捐赠完全解耦，跳过捐赠不影响任何功能',
+      '离线环境请使用「离线激活门户」提交 activation.req',
+      '激活向导路径：/activate · 与安装器 CLI 命令互通',
+    ],
+  },
+
+  guestNavAria: '产品导航',
+
+  navDownload: '下载',
+
+  navSetup: '安装激活',
+
+  navActivate: '在线激活',
+
+  navLicense: '许可状态',
+
+  navAgreement: '用户协议',
+
+  navSupport: '技术支持',
+
+  ctaLogin: '登录控制面',
+
+  ctaDownload: '下载安装包',
+
+  ctaActivate: '激活 License',
+
+  ctaAgreement: '查看用户协议',
 }

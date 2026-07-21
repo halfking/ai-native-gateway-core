@@ -47,6 +47,24 @@ export default {
     statusPartialCustom: '{n}/4 manuel',
     manualTagTitle: 'Tarification manuelle',
     manualTag: 'M',
+
+    colModality: 'Modality',
+
+    modalityText: 'Text',
+
+    modalityVision: 'Vision',
+
+    modalityAudio: 'Audio',
+
+    modalityVideo: 'Video',
+
+    modalityMultimodal: 'Multimodal',
+
+    modalityEmbedding: 'Embedding',
+
+    modalityOther: 'Other',
+
+    hasMultimodal: 'Has manual multimodal pricing',
   },
   editModal: {
     title: 'Tarification manuelle · {name}',
@@ -62,12 +80,28 @@ export default {
     resetConfirm: 'Réinitialiser toutes les dimensions de {name} à la base globale ?',
     resetSuccess: 'Réinitialisé',
     resetFailed: 'Échec de la réinitialisation',
+
+    sectionText: 'Text-token dimensions',
+
+    sectionMultimodal: 'Multimodal-token dimensions (vision / audio / video)',
+
+    fieldImage: 'Vision tokens',
+
+    fieldAudio: 'Audio tokens',
+
+    fieldVideo: 'Video tokens',
   },
   field: {
     input: 'Entrée',
     output: 'Sortie',
     cacheRead: 'Lecture cache',
     cacheWrite: 'Écriture cache',
+
+    image: 'Vision',
+
+    audio: 'Audio',
+
+    video: 'Video',
   },
   error: {
     loadFailed: 'Échec du chargement',
@@ -105,5 +139,7 @@ export default {
     msgReset: '已恢复 {n} 个模型',
     msgFilled: '已写入 {n} 个模型',
     msgFailed: '批量操作失败',
+
+    fillGlobal: 'Fill current global',
   },
 }

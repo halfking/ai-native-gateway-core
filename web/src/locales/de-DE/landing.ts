@@ -97,4 +97,78 @@ export default {
       description: 'Four industry templates for customer service, HR, sales, logistics, out-of-the-box agent solutions.',
     },
   },
+
+  brandTitle: 'AI-Native Organization Core Gateway',
+
+  brandSubtitle: 'Qigui · Self-hosted',
+
+  activateBanner: {
+    title: 'Gateway not activated',
+    desc: 'No valid license on this instance. Open the activation wizard for online or offline activation.',
+    action: 'Activate now',
+  },
+
+  downloadCta: {
+    title: 'Self-hosted · Deploy in 5 minutes',
+    subtitle: 'Offline packages for every platform — no signup required. 15-day free trial after install.',
+    download: 'Download now',
+    support: 'Support us',
+    activate: 'Already installed? Activate',
+    note: 'Donation is voluntary and never blocks downloads or features',
+  },
+
+  deployFlow: {
+    title: 'Download · Install · Activate · Sign in',
+    subtitle: 'End-to-end private deployment integrated with the License activation wizard',
+    steps: {
+      download: {
+        title: 'Download offline package',
+        description: 'Pick your platform/arch artifact — no signup required for a time-limited download URL.',
+        action: 'Go to download',
+      },
+      install: {
+        title: 'Install on target environment',
+        description: 'Extract and run the installer on your server to deploy via k3s or Docker.',
+        hint: 'llm-gw-installer install --target /opt/kx-gateway',
+      },
+      activate: {
+        title: 'Activate License',
+        description: 'Online License Key or offline activation.req → activation.resp flow; 15-day trial available.',
+        action: 'Open activation wizard',
+        offlineAction: 'Offline activation portal',
+      },
+      login: {
+        title: 'Sign in to control plane',
+        description: 'After activation, sign in with admin credentials to manage tenants, routing, and observability.',
+        action: 'Sign in',
+      },
+    },
+    notes: [
+      'Donation is optional and never blocks downloads or features',
+      'Air-gapped sites should use the offline activation portal for activation.req',
+      'Activation wizard: /activate · interoperates with installer CLI commands',
+    ],
+  },
+
+  guestNavAria: 'Product navigation',
+
+  navDownload: 'Download',
+
+  navSetup: 'Install & Activate',
+
+  navActivate: 'Activate',
+
+  navLicense: 'License',
+
+  navAgreement: 'User Agreement',
+
+  navSupport: 'Support',
+
+  ctaLogin: 'Sign in',
+
+  ctaDownload: 'Download',
+
+  ctaActivate: 'Activate License',
+
+  ctaAgreement: 'View Agreement',
 }

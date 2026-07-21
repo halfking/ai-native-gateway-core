@@ -61,6 +61,20 @@ export default {
     opsProductEntry: "Product Entry",
     tenantLicense: "Meine Lizenz",
     tenantAutoUpdate: "Meine Updates"
+,
+    updateActivate: 'Update & Activate',
+
+    licenseActivate: 'License Activation',
+
+    siteInfo: 'Site Info',
+
+    licenseStatus: 'License Status',
+
+    licenseAgreement: 'User License Agreement',
+
+    licenseOffline: 'Offline Activation',
+
+    telemetryScope: 'Data Collection Scope',
   },
 
   mainAria: 'Hauptnavigation',
@@ -72,4 +86,6 @@ export default {
   publicLicense: 'Lizenz',
   publicAgreement: 'Benutzervereinbarung',
   publicSupport: 'Support',
+
+  skip: 'Skip to main content',
 }

@@ -127,6 +127,10 @@ export default {
       noCreds: 'Aucun identifiant',
       sixDimScore: 'Score 6 dimensions',
       emptyHint: 'Aucune donnée dans l\'index — cliquez sur ↻ Actualiser',
+
+      smartConfig: 'Smart routing',
+
+      smartConfigHint: 'Configure primary / secondary / fallback models per task type',
     },
     policy: {
       fields: {
@@ -307,6 +311,8 @@ export default {
   weightsDirty: '系数有变更，未保存',
     },
     weightsDirty: 'Coefficients modifiés, non enregistrés',
+
+    backLink: '← Routing overview',
   },
   test: {
     title: 'Test de routage',

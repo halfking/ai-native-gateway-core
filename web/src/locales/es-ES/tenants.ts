@@ -249,6 +249,10 @@ export default {
     onboardingKeysHint: "para emitir una clave y empezar a llamar.",
     loadFailed: "Error al cargar",
     detailLoadFailed: "Error al cargar el detalle"
+,
+    statCreditsConsumed: 'Total credits consumed',
+
+    statCreditsConsumedSub: 'Last {n} days · priced × tokens',
   },
   maasUsageView: {
     consumeLabel: "Créditos consumidos",
@@ -419,5 +423,13 @@ export default {
         revoked: 'Revocada',
       },
     },
+  },
+
+  status: {
+    active: 'Active',
+    trial: 'Trial',
+    suspended: 'Suspended',
+    expired: 'Expired',
+    disabled: 'Disabled',
   },
 }

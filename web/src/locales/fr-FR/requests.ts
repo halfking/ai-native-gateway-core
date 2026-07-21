@@ -82,6 +82,8 @@ export default {
       taskLabel: 'ID de tâche',
       taskPlaceholder: 'Saisir l\'ID de tâche…',
       totalMeta: '{n} au total',
+
+      resultRateLimited: 'Rate limited',
     },
     trace: {
       title: 'Trace de tâche',

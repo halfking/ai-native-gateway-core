@@ -249,6 +249,10 @@ export default {
     onboardingKeysHint: "لإصدار مفتاح وبدء الاستدعاء.",
     loadFailed: "فشل التحميل",
     detailLoadFailed: "فشل تحميل التفاصيل"
+,
+    statCreditsConsumed: 'Total credits consumed',
+
+    statCreditsConsumedSub: 'Last {n} days · priced × tokens',
   },
   maasUsageView: {
     consumeLabel: "الأرصدة المستهلكة",
@@ -419,5 +423,13 @@ export default {
         revoked: 'ملغى',
       },
     },
+  },
+
+  status: {
+    active: 'Active',
+    trial: 'Trial',
+    suspended: 'Suspended',
+    expired: 'Expired',
+    disabled: 'Disabled',
   },
 }

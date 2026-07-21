@@ -163,4 +163,8 @@ export default {
     lightTitle: 'الوضع الفاتح',
     darkTitle: 'الوضع الداكن',
   },
+
+  copied: 'Copied',
+
+  add: 'Add',
 }

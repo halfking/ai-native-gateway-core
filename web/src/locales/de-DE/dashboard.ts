@@ -68,6 +68,16 @@ v2: {
     trendCost: 'Cost (USD)',
     filterProvider: 'Provider ID',
     allProviders: 'All',
+
+    rangeCustomTab: 'Custom',
+
+    rangeFrom: 'From',
+
+    rangeTo: 'To',
+
+    rangePicker: 'Statistics period',
+
+    rangeCustom: '{start} to {end}',
   },
   proxyWarning: {
     title: "⚠ Ausgangs-Proxy nicht erreichbar",
@@ -166,6 +176,8 @@ v2: {
       success: "Erfolg",
       inProgress: "In Bearbeitung",
       failure: "Fehler"
+,
+      cancelled: 'Cancelled',
     },
     tooltip: {
       model: "Modell",
@@ -176,6 +188,24 @@ v2: {
       cost: "Kosten",
       error: "Fehler",
       time: "Zeit"
+,
+      vendor: 'Vendor',
+
+      requestId: 'ID',
+
+      errorKind: 'Error type',
+
+      errorRawCode: 'Raw code',
+
+      statusValue: {
+        success: 'Success',
+        inProgress: 'In progress',
+        cancelled: 'Cancelled by user',
+        idle: 'Idle (heartbeat placeholder)',
+        failure: 'Request failed',
+      },
+
+      tokenFormat: '{p} + {c}',
     },
     connecting: "Verbindung wird hergestellt…",
     reconnecting: "Verbindung wird wiederhergestellt…",
@@ -197,6 +227,38 @@ v2: {
     sseTestFail: 'SSE not connected\nStatus: {status}\nURL: {url}',
     redisWarning: 'Redis unavailable: {error}. Live data falls back to DB queries.',
     redisFallbackError: 'Cache service connection failed',
+
+    probeDirect: 'Active probe (direct upstream)',
+
+    probeGateway: 'Active probe (gateway path)',
+
+    probeScheduled: 'Scheduled probe (scheduler)',
+
+    probeGeneric: 'Probe request',
+
+    probeOriginLabel: 'Origin: {origin}',
+
+    probeAttempt: 'Attempt: #{n}',
+
+    originGateway: 'Gateway path',
+
+    originScheduled: 'Scheduled probe',
+
+    originDirect: 'Direct upstream',
+
+    idleHeartbeat: 'Heartbeat placeholder',
+
+    tileIdle: 'Idle',
+
+    idleUnderOneMin: 'Idle < 1 min',
+
+    idleMinutes: 'Idle {n} min',
+
+    idleHours: 'Idle {h} h',
+
+    idleHoursMinutes: 'Idle {h} h {m} min',
+
+    idleReasonNoTraffic: 'No traffic (5 minutes idle)',
   },
   charts: {
     gradeA: "Note A",
@@ -223,6 +285,10 @@ v2: {
     totalExecutions: 'Total Executions',
     avgCacheHitRate: 'Avg Cache Hit Rate',
     avgDuration: 'Avg Duration',
+
+    title: 'Module Execution Statistics',
+
+    successRate: 'Success Rate',
   },
 
   errors: {
@@ -234,6 +300,12 @@ v2: {
     rate: 'Rate',
     totalErrors: 'Total Errors',
     topErrors: 'Top Errors',
+
+    title: 'Error Statistics',
+
+    totalRequests: 'Total Requests',
+
+    avgLatency: 'Avg Error Latency',
   },
 
   performance: {
@@ -244,5 +316,37 @@ v2: {
     p99: 'P99 Latency',
     latencyDist: 'Latency Distribution',
     slowQueries: 'Slow Queries',
+
+    title: 'Performance Metrics',
+
+    avgLatency: 'Avg Latency',
+
+    latency: 'Latency',
+  },
+
+  providerUsage: {
+    title: 'Provider usage',
+    subtitle: '{period} — all-provider consumption (reconciliation-ready)',
+    periodHint: 'Current period: {period}',
+    more: 'More',
+    search: 'Search name, code, or ID…',
+    back: 'Back to list',
+    exportAll: 'Export all (Excel)',
+    exportDetail: 'Export detail (Excel)',
+    colName: 'Provider',
+    colCode: 'Code',
+    colRequests: 'Requests',
+    colTokens: 'Tokens',
+    colCost: 'Cost (USD)',
+    colSuccess: 'Success rate',
+    colModel: 'Model',
+    colDate: 'Date',
+    periodDay: 'Daily',
+    periodWeek: 'Weekly',
+    periodMonth: 'Monthly',
+    periodLabel: 'Period: {period}',
+    periodRange: '{start} to {end}',
+    modelBreakdown: 'By model',
+    dailyBreakdown: 'Daily model breakdown',
   },
 }

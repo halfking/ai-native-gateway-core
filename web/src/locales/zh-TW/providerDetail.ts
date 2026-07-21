@@ -326,6 +326,18 @@ export default {
       chipAvailable: "可用",
       chipUnavailable: "不可用"
     }
+,
+    probeAllRecoveredHint: '✓ {n} 个模型探测成功；node_probe_state 已自动恢复，路由候选已重新可用',
+
+    resetNodeProbeBtn: '清失败探测状态',
+
+    resetNodeProbeLoading: '清除中…',
+
+    resetNodeProbeTitle: '清除 node_probe_state 中 last_direct_ok=FALSE 的行（force-recover routing）。当全面探测显示 ok 但路由候选仍显示 blocked 时使用。',
+
+    resetNodeProbeConfirm: '确认清空该供应商所有失败的 node_probe_state 行？',
+
+    resetNodeProbeDone: '✓ 已清除 {n} 行失败的 node_probe_state，路由候选立即恢复',
   },
   settings: {
     overrideTitle: "🎛️ 透通模式設定",

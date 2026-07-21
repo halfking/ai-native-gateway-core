@@ -47,6 +47,24 @@ export default {
     statusPartialCustom: '{n}/4 يدوي',
     manualTagTitle: 'تسعير يدوي',
     manualTag: 'ي',
+
+    colModality: 'Modality',
+
+    modalityText: 'Text',
+
+    modalityVision: 'Vision',
+
+    modalityAudio: 'Audio',
+
+    modalityVideo: 'Video',
+
+    modalityMultimodal: 'Multimodal',
+
+    modalityEmbedding: 'Embedding',
+
+    modalityOther: 'Other',
+
+    hasMultimodal: 'Has manual multimodal pricing',
   },
   editModal: {
     title: 'تسعير يدوي · {name}',
@@ -62,12 +80,28 @@ export default {
     resetConfirm: 'استعادة جميع أبعاد {name} إلى المعيار العام؟',
     resetSuccess: 'تمت الاستعادة',
     resetFailed: 'فشل الاستعادة',
+
+    sectionText: 'Text-token dimensions',
+
+    sectionMultimodal: 'Multimodal-token dimensions (vision / audio / video)',
+
+    fieldImage: 'Vision tokens',
+
+    fieldAudio: 'Audio tokens',
+
+    fieldVideo: 'Video tokens',
   },
   field: {
     input: 'إدخال',
     output: 'إخراج',
     cacheRead: 'قراءة ذاكرة التخزين المؤقت',
     cacheWrite: 'كتابة ذاكرة التخزين المؤقت',
+
+    image: 'Vision',
+
+    audio: 'Audio',
+
+    video: 'Video',
   },
   error: {
     loadFailed: 'فشل التحميل',
@@ -105,5 +139,7 @@ export default {
     msgReset: '已恢复 {n} 个模型',
     msgFilled: '已写入 {n} 个模型',
     msgFailed: '批量操作失败',
+
+    fillGlobal: 'Fill current global',
   },
 }

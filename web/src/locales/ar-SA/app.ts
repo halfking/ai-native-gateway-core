@@ -41,4 +41,11 @@ export default {
     mainAria: 'التنقل الرئيسي',
     skip: 'الانتقال إلى المحتوى الرئيسي',
   },
+
+  theme: {
+    switchToLight: 'Switch to light',
+    switchToDark: 'Switch to dark',
+    lightTitle: 'Light mode',
+    darkTitle: 'Dark mode',
+  },
 }

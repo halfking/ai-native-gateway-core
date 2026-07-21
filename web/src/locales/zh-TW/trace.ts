@@ -40,6 +40,8 @@ export default {
     hint1: 'trace 僅在網關程式埋點啟用時才會生成（預設開啟）',
     hint2: '完成時間 < 10 分鐘的請求，Redis 中仍保留 trace',
     hint3: '已完成的請求，trace_events JSONB 已 flush 到 PostgreSQL 後才可顯示',
+
+    hint4: '如果此处显示为空，可能原因：请求未完成 flush、或该请求确实未触发 trace 埋点',
   },
   aiPrompt: {
     button: '🤖 生成 AI 分析提示詞',

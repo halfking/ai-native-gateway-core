@@ -88,7 +88,7 @@ export default {
     action: 'Action type:',
     actionArchive: 'Archive (recommended)',
     actionDelete: 'Delete (dangerous)',
-    actionTrim: 'Trim (TBD)',
+    actionTrim: 'Trim (pending implementation)',
     from: 'Start date:',
     to: 'End date:',
     preview: 'Preview impact',

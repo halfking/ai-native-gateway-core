@@ -126,6 +126,10 @@ export default {
       noCreds: 'لا توجد بيانات اعتماد',
       sixDimScore: 'تقييم 6 أبعاد',
       emptyHint: 'لا توجد بيانات في الفهرس — انقر فوق ↻ للتحديث',
+
+      smartConfig: 'Smart routing',
+
+      smartConfigHint: 'Configure primary / secondary / fallback models per task type',
     },
     policy: {
       fields: {
@@ -306,6 +310,8 @@ export default {
   weightsDirty: '系数有变更，未保存',
     },
     weightsDirty: 'تم تغيير المعاملات، لم يتم الحفظ',
+
+    backLink: '← Routing overview',
   },
   test: {
     title: 'اختبار التوجيه',

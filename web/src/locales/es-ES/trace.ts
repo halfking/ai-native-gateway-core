@@ -40,6 +40,8 @@ export default {
     hint1: 'La traza solo se genera si la instrumentación está habilitada (predeterminado: sí)',
     hint2: 'Completadas hace < 10 min: todavía en Redis',
     hint3: 'Ya volcadas a PostgreSQL: mostradas como respaldo',
+
+    hint4: 'If empty here, possible causes: flush not completed, or trace was not emitted',
   },
   aiPrompt: {
     button: '🤖 Generar prompt de IA',

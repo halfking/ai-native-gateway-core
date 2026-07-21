@@ -126,6 +126,10 @@ export default {
       noCreds: '無憑證',
       sixDimScore: '6維評分',
       emptyHint: '索引暫無資料 — 點擊 ↻ 重新整理',
+
+      smartConfig: '智能路由配置',
+
+      smartConfigHint: '按任务类型配置主要 / 次级 / 托底模型',
     },
     policy: {
       fields: {
@@ -306,6 +310,8 @@ export default {
   weightsDirty: '系数有变更，未保存',
     },
     weightsDirty: '係數有變更，未儲存',
+
+    backLink: '← 路由全景',
   },
   test: {
     title: '路由測試',

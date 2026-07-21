@@ -163,4 +163,8 @@ export default {
     lightTitle: 'Modo claro',
     darkTitle: 'Modo oscuro',
   },
+
+  copied: 'Copied',
+
+  add: 'Add',
 }
