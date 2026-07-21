@@ -980,6 +980,25 @@ func (r *ModelProbeRunner) TriggerAllSync(ctx context.Context, providerID int) (
 			ErrorMessage: errMsg,
 			LatencyMs:    latency,
 		})
+
+		// 2026-07-21 P0: when a manual "全面探测" probe returns OK,
+		// immediately mark the node_probe_state row healthy so the
+		// routing view (v_routable_credential_models) re-admits the
+		// binding without waiting up to 24h for NodeProbeWorker's
+		// backoff ladder to roll over (or forever if paused=TRUE).
+		//
+		// We deliberately do NOT touch model_probe_state here — the
+		// background cycle() still owns that state machine via
+		// consensus, and a single manual probe is just one data
+		// point (per TriggerManual's docstring).
+		if status == "ok" {
+			if err := MarkNodeProbeHealthy(timeoutCtx, r.db, t.CredentialID, t.RawModel); err != nil {
+				slog.Warn("triggerAllProbes: mark node_probe_state healthy failed",
+					"credential_id", t.CredentialID,
+					"raw_model_name", t.RawModel,
+					"error", err.Error())
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return results, fmt.Errorf("iterate bindings: %w", err)

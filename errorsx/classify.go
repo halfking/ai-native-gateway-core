@@ -186,7 +186,39 @@ var budgetExceededRe = regexp.MustCompile(
 //   - HTTP 429/503 with messages containing "concurrent", "too many",
 //     "overloaded", "engine busy", "rpm/tpm", etc.
 //   - SSE streams that close prematurely (EOF without [DONE]) under load.
+
+// 2026-07-21 P0 fix: Distinguish periodic (recoverable) from permanent
+// quota exhaustion. 智谱AI and similar providers return 429 + a "limit
+// will reset at YYYY-MM-DD HH:MM:SS" message when the user hits a
+// weekly/monthly cap. The previous single budgetExceededRe matched this
+// as KindQuotaPermanent, so writer.go wrote quota_state='permanently_exhausted'
+// with quota_recover_at=NULL and CredentialRecovery worker never picked it
+// up — the credential stayed blocked for weeks/months even though the
+// upstream had already reset the quota.
 //
+// quotaResetsRe matches recovery-time hints in the error body. If present,
+// the upstream is signaling "wait until X then retry" — that's a periodic
+// limit, not a permanent one. The {0,80} window covers cases like 智谱AI's
+// "您的限额将在 2026-07-19 21:32:20 重置。" (限额→重置 spans ~24 chars, but
+// we leave room for longer phrases including ISO timestamps).
+var quotaResetsRe = regexp.MustCompile(
+	`(?i)(reset[s]?[_ -]?(at|in|on)|` +
+		`will[_ -]?reset|` +
+		`retry[_ -]?after|` +
+		`try[_ -]?again[_ -]?(at|in|after)|` +
+		`available[_ -]?(at|in|from)|` +
+		`recover[s]?[_ -]?(at|by|until)|` +
+		// Chinese "重置" with up to 80 chars between the noun and 重置
+		// (covers 智谱AI "...限额将在 YYYY-MM-DD HH:MM:SS 重置。").
+		`(限额|使用量|配额|额度|余额).{0,80}重置|` +
+		`重置.{0,80}(时间|日期|于|在)|` +
+		// ISO timestamp / date-time pattern indicates a scheduled reset.
+		// Use \s instead of a literal space to dodge Go RE2 character-class
+		// edge cases at fragment boundaries.
+		`\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}|` +
+		`\d{4}/\d{2}/\d{2}\s\d{2}:\d{2}:\d{2})`,
+)
+
 // Both patterns must be classified as KindConcurrent so the breaker can
 // apply the 5-minute cooling policy and immediately route to the next
 // candidate credential instead of retrying the same overloaded one.
@@ -436,7 +468,15 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// Without this check, such errors are classified as KindRateLimit
 		// (transient), causing retries, probes, and false-positive degradation
 		// even though the credential is permanently unusable until top-up.
+		// 2026-07-21 P0 fix: when the body carries a reset timestamp, route
+		// to KindQuotaPeriodic instead so the credential can recover.
+		// 智谱AI 1310 returns "...限额将在 YYYY-MM-DD HH:MM:SS 重置" which
+		// signals "wait for the quota window to reset" — periodic, not
+		// permanent.
 		if status == 429 && budgetExceededRe.Match(body) {
+			if quotaResetsRe.Match(body) {
+				return KindQuotaPeriodic
+			}
 			return KindQuotaPermanent
 		}
 	}
@@ -505,8 +545,13 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		if contextLengthRe.Match(body) || contextLengthCJKRe.Match(body) {
 			return KindContextLength
 		}
-		// 2026-07-16 P0 fix: budget_exceeded on 429 → KindQuotaPermanent
+		// 2026-07-16 P0 fix: budget_exceeded on 429 → KindQuotaPermanent.
+		// 2026-07-21 P0 fix: when the body carries a reset timestamp, route
+		// to KindQuotaPeriodic instead so the credential can recover.
 		if status == 429 && budgetExceededRe.Match(body) {
+			if quotaResetsRe.Match(body) {
+				return KindQuotaPeriodic
+			}
 			return KindQuotaPermanent
 		}
 	}

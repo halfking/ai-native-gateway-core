@@ -467,6 +467,47 @@ func nonBlockingWake(ch chan<- struct{}) {
 	}
 }
 
+// MarkNodeProbeHealthy is the public hook for code paths outside
+// NodeProbeWorker (e.g. the manual "全面探测" / TriggerAllSync flow)
+// that successfully probe a (credential, model) pair and want the
+// row in node_probe_state to immediately reflect healthy.
+//
+// Without this, the routing view v_routable_credential_models keeps
+// excluding the binding until NodeProbeWorker's natural backoff
+// ladder rolls over — up to 24h after the most recent failure, or
+// indefinitely if paused=TRUE.
+//
+// The "next_retry_at = now() + 24h" choice mirrors runOne's success
+// branch so the row's lifecycle remains identical to a naturally-
+// recovered probe.
+func MarkNodeProbeHealthy(ctx context.Context, db *pgxpool.Pool, credentialID int, rawModel string) error {
+	_, err := db.Exec(ctx, `
+		INSERT INTO node_probe_state (
+			credential_id, raw_model_name,
+			consecutive_failures, consecutive_successes,
+			last_attempt_at, next_retry_at, next_retry_seconds,
+			paused, in_flight_until,
+			last_direct_ok, last_gateway_ok,
+			last_err_code, last_err_detail,
+			updated_at
+		) VALUES ($1, $2, 0, 1, now(), now() + interval '24 hours', 86400, FALSE, NULL, TRUE, TRUE, NULL, NULL, now())
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+		SET consecutive_failures = 0,
+		    consecutive_successes = node_probe_state.consecutive_successes + 1,
+		    last_attempt_at = now(),
+		    next_retry_at = now() + interval '24 hours',
+		    next_retry_seconds = 86400,
+		    paused = FALSE,
+		    in_flight_until = NULL,
+		    last_direct_ok = TRUE,
+		    last_gateway_ok = TRUE,
+		    last_err_code = NULL,
+		    last_err_detail = NULL,
+		    updated_at = now()
+	`, credentialID, rawModel)
+	return err
+}
+
 // notifySyncWaiters closes every ProbeSync waiter channel registered
 // for `key` and removes the entry. It is called from BOTH
 // cycle() (after runOne completes for a background-triggered probe)

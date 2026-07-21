@@ -393,6 +393,9 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 
 func inferQuotaRecoverAt(detail string) time.Time {
 	now := time.Now().UTC()
+	if t, ok := parseQuotaResetTimestamp(detail); ok {
+		return t.UTC()
+	}
 	lower := strings.ToLower(detail)
 	if strings.Contains(lower, "week") || strings.Contains(lower, "per week") || strings.Contains(lower, "周") {
 		daysUntilMonday := (7 - int(now.Weekday()) + int(time.Monday)) % 7
@@ -406,6 +409,65 @@ func inferQuotaRecoverAt(detail string) time.Time {
 	}
 	return midnightUTC(now.AddDate(0, 0, 1))
 }
+
+// parseQuotaResetTimestamp scans the body for a YYYY-MM-DD HH:MM:SS
+// timestamp and returns it. Returns false when no parseable timestamp
+// is found or when the timestamp is already in the past (caller falls
+// back to day-based heuristic).
+func parseQuotaResetTimestamp(detail string) (time.Time, bool) {
+	lower := strings.ToLower(detail)
+	for _, layout := range []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006/01/02 15:04:05",
+		"2006/01/02T15:04:05",
+	} {
+		const window = 19
+		if len(lower) < window {
+			continue
+		}
+		for i := 0; i+window <= len(lower); i++ {
+			candidate := lower[i : i+window]
+			if !looksLikeTimestamp(candidate, layout) {
+				continue
+			}
+			t, err := time.ParseInLocation(layout, candidate, time.UTC)
+			if err != nil {
+				continue
+			}
+			if t.Before(time.Now().Add(-1 * time.Minute)) {
+				return time.Time{}, false
+			}
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func looksLikeTimestamp(s, layout string) bool {
+	if len(s) != len(layout) {
+		return false
+	}
+	for i, r := range layout {
+		switch r {
+		case '2', '1', '0', '6', '5', '4':
+			if !isDigit(s[i]) {
+				return false
+			}
+		default:
+			if r == ' ' {
+				if s[i] != ' ' && s[i] != 'T' && s[i] != 't' {
+					return false
+				}
+			} else if byte(s[i]) != byte(r) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 
 func midnightUTC(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
