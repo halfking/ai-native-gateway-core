@@ -258,6 +258,12 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// keep them for forensics. Override via env var
 	// `LLM_GATEWAY_KEEP_ALL_BODIES=true` to restore old behavior
 	// (e.g. when debugging a specific production issue).
+	//
+	// DEPRECATED: 2026-08-15 — body dropping must be re-enabled by this date.
+	// Reason: storage pressure on 154 (3.4 GB / 24k rows). If context-loss
+	// investigation requires further always-store, prefer the proper
+	// request_logs_hot / request_logs_bodies_hot split rather than
+	// extending this carve-out. See commit dcd3bd55b.
 	requestBody := e.RequestBody
 	responseBody := e.ResponseBody
 	// COMMENTED OUT: if e.Success && !keepAllBodies() {
