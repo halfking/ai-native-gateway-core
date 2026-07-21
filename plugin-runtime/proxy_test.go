@@ -77,3 +77,47 @@ func TestPluginStaticHandler_NotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }
+
+func TestPluginStaticHandler_ServesFromCurrentSymlink(t *testing.T) {
+	dir := t.TempDir()
+	// versioned layout (P12+): <dir>/asm/0.2.0/web/index.html + current symlink
+	versioned := filepath.Join(dir, "asm", "0.2.0")
+	os.MkdirAll(filepath.Join(versioned, "web"), 0o755)
+	os.WriteFile(filepath.Join(versioned, "web", "index.html"), []byte("<html>versioned</html>"), 0o644)
+	os.Symlink(versioned, filepath.Join(dir, "asm", "current"))
+
+	handler := PluginStaticHandler(dir)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/plugins/asm/index.html", nil)
+	req.SetPathValue("pluginId", "asm")
+	req.SetPathValue("rest", "index.html")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "<html>versioned</html>" {
+		t.Errorf("body = %q, want versioned content", rec.Body.String())
+	}
+}
+
+func TestPluginStaticHandler_FallsBackToFlatWhenNoCurrent(t *testing.T) {
+	dir := t.TempDir()
+	// flat layout (P0-P8 legacy): <dir>/legacy/web/index.html, NO current symlink
+	os.MkdirAll(filepath.Join(dir, "legacy", "web"), 0o755)
+	os.WriteFile(filepath.Join(dir, "legacy", "web", "index.html"), []byte("<html>flat</html>"), 0o644)
+
+	handler := PluginStaticHandler(dir)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/plugins/legacy/index.html", nil)
+	req.SetPathValue("pluginId", "legacy")
+	req.SetPathValue("rest", "index.html")
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if rec.Body.String() != "<html>flat</html>" {
+		t.Errorf("body = %q, want flat content", rec.Body.String())
+	}
+}
