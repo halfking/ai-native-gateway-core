@@ -237,6 +237,14 @@ export default {
     probeAllBtn: '全面探测',
     probeAllLoading: '探测中…',
     probeAllTitle: '对列表中所有模型发起探测，验证可用性',
+    // 2026-07-21 P0: shown after "全面探测" reports ok=N — explains that
+    // the routing view will now re-admit the recovered bindings.
+    probeAllRecoveredHint: '✓ {n} 个模型探测成功；node_probe_state 已自动恢复，路由候选已重新可用',
+    resetNodeProbeBtn: '清失败探测状态',
+    resetNodeProbeLoading: '清除中…',
+    resetNodeProbeTitle: '清除 node_probe_state 中 last_direct_ok=FALSE 的行（force-recover routing）。当全面探测显示 ok 但路由候选仍显示 blocked 时使用。',
+    resetNodeProbeConfirm: '确认清空该供应商所有失败的 node_probe_state 行？',
+    resetNodeProbeDone: '✓ 已清除 {n} 行失败的 node_probe_state，路由候选立即恢复',
     probingModels: '正在探测模型…',
     probeResultOk: '✅ 成功 {n}',
     probeResultUnavailable: '❌ 模型不可用 {n}',

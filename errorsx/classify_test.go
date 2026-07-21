@@ -435,6 +435,14 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		// KindQuotaPermanent (per budgetExceededRe match), not KindRateLimit.
 		// Only a truly plain 429 (no quota/balance/budget text) stays rate_limit.
 		{"429_quota_exceeded_now_permanent", 429, `quota exceeded`, KindQuotaPermanent},
+		// 2026-07-21 P0 fix: a quota body that ALSO carries a reset
+		// timestamp should route to KindQuotaPeriodic, not
+		// KindQuotaPermanent. 智谱AI 1310 with "限额将在 ... 重置" is the
+		// canonical example — it auto-recovers weekly/monthly, so the
+		// credential must NOT be flagged permanently.
+		{"429_zhipu_1310_with_reset_now_periodic", 429, `{"error":{"code":"1310","message":"您已达到每周/每月使用上限，您的限额将在 2026-07-19 21:32:20 重置。"}}`, KindQuotaPeriodic},
+		{"429_anthropic_budget_exceeded_no_reset_still_permanent", 429, `{"error":{"message":"Organization balance insufficient","type":"rate_limit_error","code":"budget_exceeded"}}`, KindQuotaPermanent},
+		{"429_quota_exceeded_with_reset_now_periodic", 429, `quota exceeded, will reset at 2026-08-01 00:00:00`, KindQuotaPeriodic},
 		{"500_still_upstream_down", 500, `internal server error`, KindUpstreamDown},
 		{"502_still_upstream_down", 502, `bad gateway`, KindUpstreamDown},
 		{"503_still_concurrent", 503, `service unavailable`, KindConcurrent},
