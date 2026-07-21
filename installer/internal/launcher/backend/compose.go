@@ -38,6 +38,14 @@ type ComposeConfig struct {
 	// (the container itself listens on 8780, mapped to GreenPort on host).
 	// Default: 8783.
 	GreenPort int
+
+	// EnvFile is an optional path to an env file (docker-compose --env-file
+	// syntax) shared with the green container. Without this, the green
+	// container starts with no DATABASE_URL/REDIS/keys and Gateway's
+	// /healthz still returns 200 (it doesn't check DB), so the health gate
+	// would pass on a broken instance (C2). The daemon should point this at
+	// the same env file blue uses (e.g. /etc/kx-gateway/env).
+	EnvFile string
 }
 
 // ComposeBackend deploys green instances via `docker compose`.
@@ -76,6 +84,14 @@ func (b *ComposeBackend) Stage(ctx context.Context, rel Release) (string, error)
 	if err := validateImageTag(rel.Image); err != nil {
 		return "", err
 	}
+	// Build environment block. LLM_GATEWAY_LISTEN is forced to :8780
+	// (inside-container); the host port mapping exposes GreenPort.
+	// If EnvFile is configured, also mount it so the green container gets
+	// the same DATABASE_URL/REDIS/secrets as blue (C2 fix).
+	envBlock := "      - LLM_GATEWAY_LISTEN=:8780\n"
+	if b.cfg.EnvFile != "" {
+		envBlock += fmt.Sprintf("    env_file:\n      - %s\n", b.cfg.EnvFile)
+	}
 	compose := fmt.Sprintf(`services:
   gateway-green:
     image: %s
@@ -83,9 +99,8 @@ func (b *ComposeBackend) Stage(ctx context.Context, rel Release) (string, error)
     ports:
       - "%d:8780"
     environment:
-      - LLM_GATEWAY_LISTEN=:8780
-    restart: "no"
-`, rel.Image, b.greenContainerName(), b.cfg.GreenPort)
+%s    restart: "no"
+`, rel.Image, b.greenContainerName(), b.cfg.GreenPort, envBlock)
 	if err := writeFile(b.greenComposePath(), compose); err != nil {
 		return "", fmt.Errorf("write compose: %w", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/installer/internal/launcher/backend"
@@ -46,6 +47,12 @@ type Config struct {
 type Orchestrator struct {
 	cfg  Config
 	done chan struct{}
+
+	// retainedCancel tracks per-plan retained-remove goroutines so Rollback
+	// can cancel a pending remove before it kills the blue we just switched
+	// back to (I5). Guarded by retainedMu.
+	retainedMu     sync.Mutex
+	retainedCancel map[string]chan struct{}
 }
 
 func New(cfg Config) *Orchestrator {
@@ -58,7 +65,11 @@ func New(cfg Config) *Orchestrator {
 	if cfg.RetainDuration == 0 {
 		cfg.RetainDuration = 1 * time.Hour
 	}
-	return &Orchestrator{cfg: cfg, done: make(chan struct{})}
+	return &Orchestrator{
+		cfg:            cfg,
+		done:           make(chan struct{}),
+		retainedCancel: make(map[string]chan struct{}),
+	}
 }
 
 // Stop signals all background goroutines (scheduleRetainedRemove) to exit.
@@ -126,9 +137,11 @@ func (o *Orchestrator) Apply(ctx context.Context, planID string) error {
 	plan.History = append(plan.History, store.StateEvent{State: store.StateActivating, At: time.Now().UTC()})
 	o.save(plan)
 
-	// Switch active to green (atomic in proxy).
+	// Switch active to green (atomic in proxy). Persist so daemon restart
+	// restores the proxy target instead of reverting to drained blue (C1).
 	o.cfg.ActiveSwitcher.SwitchActive(plan.GreenAddr)
 	plan.ActiveAddr = plan.GreenAddr
+	o.persistActive(plan.GreenAddr, plan.Target.Version)
 
 	// Drain blue (Gateway graceful shutdown handles in-flight).
 	plan.State = store.StateDraining
@@ -146,18 +159,29 @@ func (o *Orchestrator) Apply(ctx context.Context, planID string) error {
 	o.save(plan)
 
 	// Schedule retained remove of blue (spec: 1h after drain).
-	go o.scheduleRetainedRemove(plan)
+	// Tracked per-plan so Rollback can cancel it (I5).
+	o.scheduleRetainedRemove(plan)
 	return nil
 }
 
 // Rollback: switch back to blue, mark ROLLED_BACK, remove green.
+// Only valid when state is DONE or FAILED (I4): rolling back a NOTIFIED
+// plan (no green staged) or PREPARING plan is a confusing no-op.
 func (o *Orchestrator) Rollback(ctx context.Context, planID string) error {
 	plan, err := o.cfg.Store.Load(planID)
 	if err != nil {
 		return err
 	}
+	if plan.State != store.StateDone && plan.State != store.StateFailed {
+		return fmt.Errorf("rollback only valid for DONE/FAILED plans (state=%s)", plan.State)
+	}
+	// Cancel any pending retained-remove so it doesn't kill blue after
+	// we switch back to it (I5).
+	o.cancelRetainedRemove(planID)
+
 	o.cfg.ActiveSwitcher.SwitchActive(plan.BlueAddr)
 	plan.ActiveAddr = plan.BlueAddr
+	o.persistActive(plan.BlueAddr, plan.Current.Version)
 	plan.State = store.StateRolledBack
 	plan.History = append(plan.History, store.StateEvent{State: store.StateRolledBack, At: time.Now().UTC()})
 	o.save(plan)
@@ -209,16 +233,49 @@ func (o *Orchestrator) save(plan *store.Plan) {
 	}
 }
 
-func (o *Orchestrator) scheduleRetainedRemove(plan *store.Plan) {
-	select {
-	case <-o.done:
-		return
-	case <-time.After(o.cfg.RetainDuration):
+// persistActive writes active.json so a daemon restart restores the proxy
+// target instead of reverting to a drained/stopped instance (C1).
+func (o *Orchestrator) persistActive(addr, version string) {
+	if err := o.cfg.Store.SaveActive(&store.ActivePointer{Addr: addr, Version: version}); err != nil {
+		slog.Warn("persist active failed", "addr", addr, "err", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := o.cfg.Backend.Remove(ctx, plan.BlueAddr); err != nil {
-		slog.Warn("retained remove failed", "addr", plan.BlueAddr, "err", err)
+}
+
+// scheduleRetainedRemove removes blue after RetainDuration. Tracks the
+// per-plan cancel channel so Rollback can cancel it (I5).
+func (o *Orchestrator) scheduleRetainedRemove(plan *store.Plan) {
+	cancel := make(chan struct{})
+	o.retainedMu.Lock()
+	o.retainedCancel[plan.ID] = cancel
+	o.retainedMu.Unlock()
+
+	go func() {
+		select {
+		case <-o.done:
+			return
+		case <-cancel:
+			slog.Info("retained remove cancelled (rollback)", "plan", plan.ID)
+			return
+		case <-time.After(o.cfg.RetainDuration):
+		}
+		ctx, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel2()
+		if err := o.cfg.Backend.Remove(ctx, plan.BlueAddr); err != nil {
+			slog.Warn("retained remove failed", "addr", plan.BlueAddr, "err", err)
+		}
+		o.retainedMu.Lock()
+		delete(o.retainedCancel, plan.ID)
+		o.retainedMu.Unlock()
+	}()
+}
+
+// cancelRetainedRemove cancels a pending retained-remove for a plan.
+func (o *Orchestrator) cancelRetainedRemove(planID string) {
+	o.retainedMu.Lock()
+	defer o.retainedMu.Unlock()
+	if c, ok := o.retainedCancel[planID]; ok {
+		close(c)
+		delete(o.retainedCancel, planID)
 	}
 }
 
