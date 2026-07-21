@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import OperationAgreementDialog from '../../components/OperationAgreementDialog.vue'
+import OperationAgreementDialog from '../../components/lifecycle/OperationAgreementDialog.vue'
 import UpdateActivateSiteCard from '../../components/lifecycle/UpdateActivateSiteCard.vue'
 import UpdateActivateVersionsCard from '../../components/lifecycle/UpdateActivateVersionsCard.vue'
 import UpdateActivateModulesCard from '../../components/lifecycle/UpdateActivateModulesCard.vue'
