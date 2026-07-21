@@ -109,12 +109,12 @@ type TurnView struct {
 // pipeline stage for a single turn. Send = the outbound request body that
 // went to the LLM; Receive = the LLM's response.
 type TurnStage struct {
-	Send         string   `json:"send"`          // request/outbound text forwarded to LLM
-	Receive      string   `json:"receive"`       // LLM response text
-	Tokens       int      `json:"tokens"`        // token estimate for Send
-	RangeStart   int      `json:"range_start,omitempty"` // compressed span start turn (1-based)
-	RangeEnd     int      `json:"range_end,omitempty"`   // compressed span end turn (1-based)
-	AppliedTags  []string `json:"applied_tags,omitempty"` // security transforms (pii_strip, strip_tools, ...)
+	Send        string   `json:"send"`                   // request/outbound text forwarded to LLM
+	Receive     string   `json:"receive"`                // LLM response text
+	Tokens      int      `json:"tokens"`                 // token estimate for Send
+	RangeStart  int      `json:"range_start,omitempty"`  // compressed span start turn (1-based)
+	RangeEnd    int      `json:"range_end,omitempty"`    // compressed span end turn (1-based)
+	AppliedTags []string `json:"applied_tags,omitempty"` // security transforms (pii_strip, strip_tools, ...)
 }
 
 // SessionCompareAPI handles session comparison endpoints.
@@ -721,13 +721,19 @@ func (api *HandoffAPI) executeHandoff(ctx context.Context, req HandoffRequest) (
 
 func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, tenantID string) (string, error) {
 	// Get the last few messages for context (wrapped in tenant tx for RLS)
+	// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
+	// to retrieve full request_body and response_body (moved to separate table in #10).
 	var summaries []string
 	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT request_body, response_body, created_at
-			FROM request_logs
-			WHERE gw_session_id = $1 AND tenant_id = $2
-			ORDER BY created_at DESC
+			SELECT COALESCE(rb.request_body, rl.request_body) AS request_body,
+			       COALESCE(rb.response_body, rl.response_body) AS response_body,
+			       rl.created_at
+			FROM request_logs rl
+			LEFT JOIN request_logs_bodies rb 
+			  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+			WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+			ORDER BY rl.created_at DESC
 			LIMIT 3
 		`, sessionID, tenantID)
 		if err != nil {
