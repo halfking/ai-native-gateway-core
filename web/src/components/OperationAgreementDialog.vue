@@ -115,9 +115,9 @@ function cancelDialog() {
 </template>
 
 <style scoped>
-.agree-intro { margin: 0 0 12px; line-height: 1.6; color: var(--text, #475569); }
-.agree-list { margin: 0 0 12px; padding-left: 1.25rem; color: var(--text, #64748b); line-height: 1.65; }
-.agree-note { margin: 0 0 16px; font-size: 13px; color: var(--muted, #94a3b8); line-height: 1.6; }
+.agree-intro { margin: 0 0 12px; line-height: 1.6; color: var(--text); }
+.agree-list { margin: 0 0 12px; padding-left: 1.25rem; color: var(--text); line-height: 1.65; }
+.agree-note { margin: 0 0 16px; font-size: 13px; color: var(--muted); line-height: 1.6; }
 .dialog-actions {
   display: flex;
   justify-content: flex-end;

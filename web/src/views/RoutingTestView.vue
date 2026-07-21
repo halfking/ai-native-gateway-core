@@ -360,7 +360,7 @@ function dateWindow(c: RoutingCandidate): string {
       </div>
       <div v-if="probeResult.reply" style="margin-top:16px">
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px">模型回复：</div>
-        <pre style="background:var(--bg-subtle,#161b22);border:1px solid var(--border,#30363d);border-radius:6px;padding:12px;font-size:13px;margin:0;white-space:pre-wrap;color:var(--text,#e6edf3)">{{ probeResult.reply }}</pre>
+        <pre style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:13px;margin:0;white-space:pre-wrap;color:var(--text)">{{ probeResult.reply }}</pre>
       </div>
       <div v-if="probeResult.error" class="alert alert-danger" style="margin-top:12px">
         {{ probeResult.error }}
