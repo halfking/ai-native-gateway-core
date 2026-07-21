@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -2819,6 +2820,7 @@ func main() {
 	// (replaces the P0 super-admin placeholder).
 	pluginRegistry := pluginruntime.NewRegistry()
 	pluginsDir := os.Getenv("LLM_GATEWAY_PLUGINS_DIR")
+	var sup *pluginruntime.Supervisor // P12: hoisted so the install handler can use it when plugins are enabled
 	var pluginManifests []*pluginruntime.Manifest
 	if pluginsDir != "" {
 		var err error
@@ -2832,7 +2834,7 @@ func main() {
 		// supervisor's actual unix socket paths. pluginBaseFor returns
 		// "unix://<socketPath>" for a running plugin, or "" if the plugin
 		// failed to start — the proxy then responds 502 Bad Gateway.
-		sup := pluginruntime.NewSupervisor(pluginruntime.SupervisorConfig{
+		sup = pluginruntime.NewSupervisor(pluginruntime.SupervisorConfig{
 			SocketDir:     filepath.Join(pluginsDir, ".sockets"),
 			ContextSecret: []byte(cfg.SecretKey),
 			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
@@ -2871,6 +2873,32 @@ func main() {
 		func(w http.ResponseWriter, r *http.Request) {
 			pluginruntime.NavHandler(pluginRegistry, pluginruntime.ViewerFromRequest).ServeHTTP(w, r)
 		},
+		dbConn.Pool(), cfg.SecretKey,
+	))
+
+	// P12: plugin installer — manual install trigger via admin API.
+	// Catalog base URL + platform/arch come from env; gateway version from version.json.
+	// Disabled (503 on the endpoint) when LLM_GATEWAY_MAINTAIN_URL is unset OR
+	// pluginsDir is unset (sup == nil).
+	maintainURL := os.Getenv("LLM_GATEWAY_MAINTAIN_URL")
+	var installer pluginInstaller
+	if maintainURL != "" && sup != nil {
+		catalogClient := pluginruntime.NewMaintainCatalogClient(
+			maintainURL, runtime.GOOS, runtime.GOARCH, Version(),
+		)
+		installer = pluginruntime.NewInstaller(pluginruntime.InstallerConfig{
+			PluginsDir:    pluginsDir,
+			Client:        catalogClient,
+			Supervisor:    sup,
+			Registry:      pluginRegistry,
+			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
+		})
+		slog.Info("plugin installer enabled", "maintain_url", maintainURL, "platform", runtime.GOOS, "arch", runtime.GOARCH)
+	} else {
+		slog.Info("plugin installer disabled", "maintain_url_set", maintainURL != "", "supervisor_set", sup != nil)
+	}
+	mux.Handle("POST /api/v1/plugins/install", admin.AdminMiddleware(
+		makePluginInstallHandler(installer),
 		dbConn.Pool(), cfg.SecretKey,
 	))
 
